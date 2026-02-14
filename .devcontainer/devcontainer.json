@@ -1,0 +1,58 @@
+{
+  "name": "Granny Smith Dev",
+  "image": "ghcr.io/pappadf/granny-smith-dev:ubuntu24-emsdk4.0.10-nodeLTS",
+  "remoteUser": "vscode",
+
+  // Keep your port forwarding setup
+  "forwardPorts": [8080, 18080],
+  "portsAttributes": {
+    "8080": {
+      "label": "Interactive Web Server",
+      "onAutoForward": "openPreview"
+    },
+    "18080": {
+      "label": "Test Web Server",
+      "onAutoForward": "ignore"
+    }
+  },
+  "otherPortsAttributes": {
+    "onAutoForward": "ignore"
+  },
+
+  // Customizations for VS Code
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "ms-vscode.cpptools",                 // C/C++ IntelliSense + Debug
+        "ms-vscode.js-debug",                 // JS + WASM debugging
+        "GitHub.copilot",                     // Copilot suggestions
+        "ms-vscode.cpptools-extension-pack",  // Helpful C/C++ add-ons (gdb etc.)
+        "ms-vscode.live-server",              // Previewing HTML/WASM
+        "ms-playwright.playwright",           // For Playwright testing
+        "GitHub.vscode-github-actions"        // GitHub Actions workflow authoring
+      ]
+    },
+    // Codespaces-specific settings for secrets
+    "codespaces": {
+      // These secrets will be prompted when creating a codespace (for repo owner)
+      // External users won't have access to these
+      "repositories": {
+        "pappadf/gs-test-data": {
+          "permissions": "read"
+        }
+      }
+    }
+  },
+
+  // Secrets that should be available in the codespace
+  // The owner can configure these in repository settings
+  "secrets": {
+    "GS_TEST_DATA_TOKEN": {
+      "description": "GitHub PAT for accessing private test data repository (pappadf/gs-test-data). Only needed for full test suite."
+    }
+  },
+
+  // Install Playwright browsers and fetch test data if token is available
+  // The fetch-test-data.sh script gracefully handles missing tokens
+  "postCreateCommand": "cd tests/e2e && npm ci && npx --yes playwright install --with-deps chromium && cd ../.. && ./scripts/fetch-test-data.sh || echo 'Note: Test data not available. See docs/TEST_DATA.md'"
+}
