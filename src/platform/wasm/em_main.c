@@ -929,6 +929,10 @@ static int save_quick_checkpoint(const char *reason, bool verbose, bool rate_lim
     if (!sched)
         return GS_ERROR;
 
+    // Skip checkpointing when the emulator is idle — nothing meaningful to save
+    if (!scheduler_is_running(sched) && cpu_instr_count() == 0)
+        return GS_SUCCESS;
+
     double now = emscripten_get_now();
 
     if (rate_limit && g_last_background_checkpoint_ms > 0.0) {

@@ -87,9 +87,10 @@ test.describe('Granny Smith UI basic', () => {
     async function pauseAndGetInstrCount(): Promise<number> {
       await page.click('#btn-run');
       // Wait for the emulator to be paused (status returns 0 when idle)
-      await page.waitForFunction(() => {
+      // runCommand is async, so the predicate must await it
+      await page.waitForFunction(async () => {
         try {
-          return (window as any).runCommand('status') === 0;
+          return (await (window as any).runCommand('status')) === 0;
         } catch { return false; }
       }, { timeout: 5000 });
       const raw = await page.evaluate(() => (window as any).runCommand('get instr'));
