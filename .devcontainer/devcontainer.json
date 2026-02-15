@@ -32,16 +32,10 @@
         "GitHub.vscode-github-actions"        // GitHub Actions workflow authoring
       ]
     },
-    // Codespaces-specific settings for secrets
-    "codespaces": {
-      // These secrets will be prompted when creating a codespace (for repo owner)
-      // External users won't have access to these
-      "repositories": {
-        "pappadf/gs-test-data": {
-          "permissions": "read"
-        }
-      }
-    }
+    // Test data (copyrighted ROMs/disk images) is fetched at runtime by
+    // scripts/fetch-test-data.sh using the GS_TEST_DATA_TOKEN secret below.
+    // No additional Codespaces repository permissions are needed.
+    "codespaces": {}
   },
 
   // Secrets that should be available in the codespace
