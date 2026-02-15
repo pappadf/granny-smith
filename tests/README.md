@@ -17,7 +17,6 @@ tests/
 │   ├── common.mk                  #   Shared build rules + harness selection
 │   ├── suites/                    #   All test suites
 │   │   ├── cpu/                   #     CPU single-step instruction tests
-│   │   ├── cputest/               #     CPU instruction dataset harness
 │   │   ├── disasm/                #     Disassembler corpus test
 │   │   └── storage/               #     Storage subsystem tests
 │   └── support/                   #   Shared infrastructure

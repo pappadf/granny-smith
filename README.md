@@ -63,6 +63,8 @@ This builds the WebAssembly version and starts a local server with the required 
 
 ## Development
 
+The easiest way to get up and running is by creating a GitHub Codespace based on the repository. From the granny-smith code page, click **Code** (the big green button) → **Codespaces** → **Create a Codespace on main**. It will take a minute or two, then you're up and running. To build: `make`. To run: `make run`.
+
 **Build and test instructions**: See [CONTRIBUTING.md](CONTRIBUTING.md)
 
 **Architecture and design docs**: See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
@@ -94,7 +96,7 @@ This builds the WebAssembly version and starts a local server with the required 
 
 ## Trademarks
 
-Macintosh, Apple, AppleTalk, and LaserWriter are trademarks of Apple Inc. This project is not affiliated with or endorsed by Apple Inc.
+All trademarks referenced in this project are the property of their respective owners and are used for identification purposes only. This project does not claim any endorsement by or affiliation with the trademark holders.
 
 ## License
 
