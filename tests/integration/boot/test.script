@@ -1,0 +1,12 @@
+# Integration test: Boot to desktop
+# This script boots the emulator with System 6.0.8 and verifies it reaches the desktop
+
+# Boot with VBL-based timing (~120M instructions for full boot)
+run 120000000
+
+# Compare screen against reference desktop image
+# Path is relative to the current working directory (tests/integration/boot/)
+screenshot --match desktop.png
+
+# Exit with success (screenshot --match sets exit code)
+quit

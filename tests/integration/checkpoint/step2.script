@@ -1,0 +1,18 @@
+# Step 2: Boot from SCSI HD, then load checkpoint and continue
+# This tests that checkpoint restore works even when starting from a different boot config
+
+# Run 100M instructions with SCSI boot (gets us into a completely different state)
+run 100000000
+
+# Load the checkpoint saved in step 1 (restores floppy boot state at 50M instructions)
+load-state checkpoint
+
+# Run another 50M instructions from the restored checkpoint
+# Total should be 50M + 50M = 100M instructions from floppy boot
+# This should get us close to but not quite at the desktop
+run 70000000
+
+# Match against the boot test's desktop reference
+screenshot --match desktop.png
+
+quit

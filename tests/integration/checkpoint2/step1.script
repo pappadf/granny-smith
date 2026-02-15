@@ -1,0 +1,19 @@
+
+# Step 1: Boot from floppy and save checkpoint
+# Floppy image is passed via fd= in run.sh (opened writable, matching
+# the conditions the desktop.png reference was captured under).
+# The local copy (in TEST_RESULTS_DIR) is used so consolidated checkpoint
+# restore does not overwrite the original test data.
+#
+# Run 50M instructions to get partway through boot process
+
+run 100000000
+
+# Save machine state to checkpoint file
+# Saved to current working directory (test-results/checkpoint2/)
+save-state checkpoint.gs
+
+# Save screenshot for debugging
+screenshot screenshot-step1.png
+
+quit

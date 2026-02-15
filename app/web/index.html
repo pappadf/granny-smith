@@ -1,0 +1,135 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Granny Smith Emulator</title>
+  <!-- Cache busting disabled here; dev server already handles rebuilds -->
+  <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate, max-age=0" />
+  <meta http-equiv="Pragma" content="no-cache" />
+  <meta http-equiv="Expires" content="0" />
+  <!-- xterm.js terminal library loaded from CDN (crossorigin required for COEP) -->
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.css" crossorigin="anonymous" />
+  <link rel="stylesheet" href="./style.css" />
+  <style>
+    /* Prevent page bounce / overscroll on touch devices (both axes).
+       This stops scroll-chaining and the rubber-band effect on mobile.
+       Keep this narrowly targeted so it doesn't interfere with other
+       input gestures unnecessarily. */
+    html, body, main, .screen-wrapper, .terminal-panel {
+      overscroll-behavior: none;
+    }
+    /* Ensure the canvas itself does not trigger panning on touch. */
+    canvas {
+      touch-action: none;
+    }
+  </style>
+</head>
+<body>
+  <!-- Toolbar outside main so it doesn't affect screenshot dimensions -->
+  <div class="screen-toolbar" id="screen-toolbar" style="width:1024px;">
+    <div class="toolbar-left">
+      <button class="tb-btn" id="btn-run" title="Run (R)" disabled>
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5v14l11-7z"/></svg>
+      </button>
+      <div class="tb-sep" role="separator"></div>
+      <nav class="switcher" id="schedule-switcher" role="navigation" aria-label="Scheduler mode">
+        <button class="switcher-btn" data-mode="hw" title="Hardware-accurate timing (slowest)">strict</button>
+        <button class="switcher-btn" data-mode="real" aria-current="page" title="Real-time emulation">live</button>
+        <button class="switcher-btn" data-mode="max" title="Maximum speed (fastest)">fast</button>
+      </nav>
+      <div class="tb-sep" role="separator"></div>
+      <button class="tb-btn" id="zoom-out" title="Zoom out">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M19 11H5v2h14v-2z"/></svg>
+      </button>
+      <input id="zoom-level" class="zoom-level" type="text" value="100%" aria-label="Zoom level" />
+      <button class="tb-btn" id="zoom-in" title="Zoom in">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M19 11h-6V5h-2v6H5v2h6v6h2v-6h6v-2z"/></svg>
+      </button>
+      <div class="tb-sep" role="separator"></div>
+      <button class="tb-btn" id="btn-download" title="Download State (D)">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 20h14v-2H5v2Zm7-4 5-6h-3V4h-4v6H7l5 6Z"/></svg>
+      </button>
+    </div>
+    <div class="toolbar-right">
+      <button class="tb-btn" id="btn-settings" title="More / Settings">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 15.5a3.5 3.5 0 1 1 0-7 3.5 3.5 0 0 1 0 7ZM19.43 12.98c.04-.32.07-.64.07-.98 0-.34-.03-.66-.07-.98l2.11-1.65a.5.5 0 0 0 .11-.64l-2-3.46a.5.5 0 0 0-.61-.22l-2.49 1a7.14 7.14 0 0 0-1.7-.98l-.38-2.65A.488.488 0 0 0 14 2h-4a.5.5 0 0 0-.5.42l-.38 2.65c-.63.24-1.2.56-1.74.95l-2.49-1a.5.5 0 0 0-.61.22l-2 3.46a.5.5 0 0 0 .11.64l2.11 1.65c-.05.32-.08.66-.08 1 0 .34.03.66.08.98L2.92 14.6a.5.5 0 0 0-.11.64l2 3.46c.14.24.43.34.68.22l2.49-1c.54.39 1.12.71 1.74.95l.38 2.65c.04.24.25.42.5.42h4c.25 0 .46-.18.5-.42l.38-2.65c.63-.24 1.2-.56 1.74-.95l2.49 1c.25.12.54.02.68-.22l2-3.46a.5.5 0 0 0-.11-.64l-2.11-1.62Z"/></svg>
+      </button>
+    </div>
+  </div>
+  <!-- hidden file picker used by Open/Upload -->
+  <input id="file-picker" type="file" webkitdirectory directory multiple style="display:none" />
+  <main class="main-layout">
+    <div class="screen-wrapper" style="width:1024px; height:684px;">
+      <canvas id="screen" width="512" height="342"></canvas>
+   <!-- Two distinct overlays:
+     1. rom-required-overlay : Shown until a valid ROM is found / loaded.
+     2. drop-hint            : Temporary cue when dragging files over canvas.
+     They intentionally overlap; whichever is relevant stays visible. -->
+   <div id="rom-required-overlay">Please drag & drop a 128KB Macintosh Plus ROM file to get started</div>
+   <div id="drop-hint">Drop files…</div>
+    </div>
+  <!-- quick commands removed -->
+  <section class="terminal-panel" id="terminal-panel" data-collapsed="true" style="width:1024px;">
+      <header class="terminal-header" id="terminal-toggle" role="button" aria-expanded="false" aria-controls="terminal" tabindex="0">
+        <button class="tb-btn toggle-btn" aria-hidden="true">
+          <svg class="chevron" viewBox="0 0 24 24" aria-hidden="true"><path d="M7.41 8.59L12 13.17l4.59-4.58L18 10l-6 6-6-6z"/></svg>
+        </button>
+        <span class="term-title">Terminal</span>
+        <span class="term-status" id="term-status"></span>
+      </header>
+      <div id="terminal" class="terminal-body"></div>
+    </section>
+  </main>
+
+  <!-- Settings modal - styles in style.css -->
+  <div id="settings-modal" class="modal" role="dialog" aria-modal="true" aria-hidden="true">
+    <div class="modal__content">
+      <h2 class="modal__title">Settings</h2>
+      <div class="modal__settings">
+        <div class="setting-item">
+          <div class="setting-label">
+            <span class="setting-name">Background Checkpointing</span>
+            <span class="setting-description">Automatically save emulator state in the background</span>
+          </div>
+          <label class="toggle-switch">
+            <input type="checkbox" id="checkpoint-toggle" checked />
+            <span class="toggle-slider"></span>
+          </label>
+        </div>
+      </div>
+      <div class="modal__actions">
+        <button id="settings-close" class="tb-btn">Close</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Upload dialog template -->
+  <template id="upload-dialog-template">
+    <div class="modal__content">
+      <div class="modal__message" data-upload-msg></div>
+      <div class="modal__actions">
+        <button class="modal__close-btn" data-upload-close>Close</button>
+      </div>
+    </div>
+  </template>
+
+  <!-- Checkpoint dialog template -->
+  <template id="checkpoint-dialog-template">
+    <div class="modal__content">
+      <div class="modal__subtitle">Resume Available</div>
+      <h2 class="modal__title" data-checkpoint-title></h2>
+      <p class="modal__message" data-checkpoint-message></p>
+      <div class="modal__actions">
+        <button class="modal__continue-btn" data-checkpoint-continue>Continue Session</button>
+        <button class="modal__fresh-btn" data-checkpoint-fresh>Start Fresh</button>
+      </div>
+    </div>
+  </template>
+
+  <!-- xterm.js and fit addon from CDN -->
+  <script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.js" crossorigin="anonymous"></script>
+  <script src="https://cdn.jsdelivr.net/npm/xterm-addon-fit@0.8.0/lib/xterm-addon-fit.js" crossorigin="anonymous"></script>
+  <script type="module" src="./js/main.js"></script>
+</body>
+</html>
+

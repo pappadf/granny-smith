@@ -1,0 +1,136 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    container:
+      image: ghcr.io/pappadf/granny-smith-dev:ubuntu24-emsdk4.0.10-nodeLTS
+      # Optionally, after a build you can pin by digest instead for immutability:
+      # image: ghcr.io/pappadf/granny-smith-dev@sha256:<digest-here>
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    
+    # Expose whether test data is available as an output for conditional steps
+    env:
+      # Only set the token for internal builds (not forks/external PRs)
+      # Secrets are not available to forks, so this will be empty for external PRs
+      GS_TEST_DATA_TOKEN: ${{ secrets.GS_TEST_DATA_TOKEN }}
+    
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      # Fetch proprietary test data (only works for internal builds with token access)
+      - name: Fetch test data
+        id: fetch-data
+        run: |
+          if [ -n "$GS_TEST_DATA_TOKEN" ]; then
+            echo "has_test_data=true" >> $GITHUB_OUTPUT
+            ./scripts/fetch-test-data.sh
+          else
+            echo "has_test_data=false" >> $GITHUB_OUTPUT
+            echo "::notice::Test data not available (external contributor or missing secret)"
+            echo "Skipping integration and e2e tests that require proprietary data."
+          fi
+        env:
+          GS_TEST_DATA_TOKEN: ${{ secrets.GS_TEST_DATA_TOKEN }}
+
+      - name: Verify emcc presence
+        shell: bash
+        run: |
+          which emcc || { echo 'emcc not on PATH'; exit 1; }
+          emcc -v | head -n 5
+
+      - name: Show tool versions
+        run: |
+          node -v
+          npm -v
+          emcc -v | head -n 5
+          g++ --version | head -n 1
+          cmake --version | head -n 1
+          ninja --version
+
+      - name: Install dependencies (root)
+        run: |
+          if [ -f package-lock.json ]; then npm ci; fi
+
+      - name: Install e2e dependencies & browsers
+        if: steps.fetch-data.outputs.has_test_data == 'true'
+        working-directory: tests/e2e
+        run: |
+          npm ci
+          npx playwright install --with-deps chromium
+
+      - name: Build (clean)
+        shell: bash
+        run: |
+          rm -rf build
+          make
+
+      - name: List build artifacts
+        run: ls -l build || true
+
+      # CPU unit tests can run without proprietary test data
+      # (they use third-party/single-step-tests)
+      - name: Run unit tests (CPU)
+        run: |
+          make -C tests/unit run
+
+      # Integration and e2e tests require proprietary test data
+      - name: Run integration tests
+        if: steps.fetch-data.outputs.has_test_data == 'true'
+        run: |
+          make integration-test
+
+      - name: Run Playwright E2E tests
+        if: steps.fetch-data.outputs.has_test_data == 'true'
+        env:
+          CI: true
+        run: |
+          npx --prefix tests/e2e playwright test --config=tests/e2e/playwright.config.ts
+
+      - name: Summary for builds without test data
+        if: steps.fetch-data.outputs.has_test_data == 'false'
+        run: |
+          echo "## ⚠️ Limited Test Coverage" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "This build ran with **limited test coverage** because proprietary test data is not available." >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Tests that ran:**" >> $GITHUB_STEP_SUMMARY
+          echo "- ✅ Unit tests (CPU instruction tests)" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Tests that were skipped:**" >> $GITHUB_STEP_SUMMARY
+          echo "- ⏭️ Integration tests (require ROM and disk images)" >> $GITHUB_STEP_SUMMARY
+          echo "- ⏭️ E2E Playwright tests (require ROM and disk images)" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "For full test coverage, see [docs/TEST_DATA.md](../docs/TEST_DATA.md)." >> $GITHUB_STEP_SUMMARY
+
+      - name: Upload Playwright traces & videos (on failure)
+        if: failure() && steps.fetch-data.outputs.has_test_data == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-traces-videos
+          path: |
+            tests/e2e/test-results/**/*.zip
+            tests/e2e/test-results/**/*.webm
+            tests/e2e/test-results/**/*.mp4
+            tests/e2e/test-results/**/*.png
+          if-no-files-found: ignore
+
+      - name: Upload Playwright report (always)
+        if: always() && steps.fetch-data.outputs.has_test_data == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: playwright-report
+          if-no-files-found: ignore

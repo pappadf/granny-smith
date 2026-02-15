@@ -1,0 +1,22 @@
+{
+  "name": "granny-smith-emulator-tests",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Playwright E2E test harness for Granny Smith Emulator (relocated test-only deps)",
+  "scripts": {
+    "build": "make -C ../..",
+    "test": "playwright test --config=tests/e2e/playwright.config.ts",
+    "test:e2e": "playwright test --config=tests/e2e/playwright.config.ts",
+    "test:headed": "playwright test --config=tests/e2e/playwright.config.ts --headed",
+    "test:ui": "playwright test --config=tests/e2e/playwright.config.ts --ui",
+    "test:c": "make -C ../.. test-c",
+    "test:all": "npm run test:c && npm run test:e2e",
+    "lint": "echo 'No lint configured'"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.46.0",
+    "@types/node": "^20.12.7",
+    "pngjs": "^7.0.0",
+    "jszip": "^3.10.1"
+  }
+}

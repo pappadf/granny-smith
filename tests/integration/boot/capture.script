@@ -1,0 +1,11 @@
+# Capture script: Boot to desktop and save reference image
+# Run this script to capture a new reference desktop image
+
+# Boot with VBL-based timing (~120M instructions for full boot)
+run 120000000
+
+# Save screenshot as reference image
+screenshot desktop.png
+
+# Exit the emulator
+quit

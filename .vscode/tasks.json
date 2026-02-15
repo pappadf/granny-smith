@@ -1,0 +1,43 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "serve (release)",
+      "type": "shell",
+      "command": "sh",
+      "args": ["-c", "make && python3 -m http.server 8080 &"],
+      "isBackground": true,
+      "problemMatcher": []
+    },
+    {
+      "label": "serve (debug)",
+      "type": "shell",
+      "command": "sh",
+      "args": ["-c", "make debug && python3 -m http.server 8080"],
+      "isBackground": true,
+      "problemMatcher": []
+    },
+    {
+      "label": "Open with Simple Browser",
+      "command": "simpleBrowser.show",
+      "args": "${command:CodespacesExtension.generateUrl}?port=8080&path=/?rom=ABC",
+      "problemMatcher": [],
+      "presentation": {
+        "reveal": "always",
+        "panel": "new"
+      },
+      "dependsOn": "serve (release)"
+    },
+     {
+      "label": "Run (release)",
+      "command": "simpleBrowser.show",
+      "args": "${command:CodespacesExtension.generateUrl}?port=8080&path=/?rom=ABC",
+      "problemMatcher": [],
+      "presentation": {
+        "reveal": "always",
+        "panel": "new"
+      },
+      "dependsOn": "serve (release)"
+    }
+  ]
+}

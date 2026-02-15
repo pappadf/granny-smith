@@ -1,0 +1,143 @@
+# Makefile for headless (native) build
+# Builds a command-line emulator using the system C compiler.
+# Supports automatic header dependency tracking via -MMD -MP.
+
+# -- Compiler --
+
+CC ?= gcc
+CFLAGS_BASE := -Wall -Wextra -std=c11 -D_GNU_SOURCE -D_POSIX_C_SOURCE=200809L -MMD -MP
+
+# -- Build mode (release | debug | sanitize) --
+
+MODE ?= release
+
+ifeq ($(MODE),debug)
+	CFLAGS_MODE := -g -O0 -DDEBUG
+else ifeq ($(MODE),sanitize)
+	CFLAGS_MODE := -g -O1 -fsanitize=address,undefined -fno-omit-frame-pointer
+	LDFLAGS_MODE := -fsanitize=address,undefined
+else
+	CFLAGS_MODE := -O2 -DNDEBUG
+endif
+
+# -- Submodule guard --
+# Fail early if required git submodules are not initialised.
+
+ifeq ($(wildcard third-party/peeler/include),)
+$(error Submodule third-party/peeler not initialised. Run: git submodule update --init --recursive)
+endif
+
+# -- Directories --
+
+BUILD_DIR    := build/headless
+CORE_DIR     := src/core
+PLATFORM_DIR := src/platform/headless
+PEELER_DIR   := third-party/peeler
+
+# -- Include paths --
+# Platform headers come first so platform.h overrides are picked up.
+
+INCLUDES := -I$(PLATFORM_DIR) \
+            -I$(CORE_DIR) \
+            -I$(CORE_DIR)/cpu \
+            -I$(CORE_DIR)/memory \
+            -I$(CORE_DIR)/peripherals \
+            -I$(CORE_DIR)/scheduler \
+            -I$(CORE_DIR)/debug \
+            -I$(CORE_DIR)/storage \
+            -I$(CORE_DIR)/network \
+            -I$(CORE_DIR)/shell \
+            -I$(PEELER_DIR)/include \
+            -I$(PEELER_DIR)/lib
+
+# -- Source discovery --
+# Wildcard patterns auto-discover new .c files in each subdirectory.
+
+# Core emulator sources (platform-agnostic)
+CORE_SRC := $(wildcard $(CORE_DIR)/*.c) \
+            $(wildcard $(CORE_DIR)/cpu/*.c) \
+            $(wildcard $(CORE_DIR)/memory/*.c) \
+            $(wildcard $(CORE_DIR)/peripherals/*.c) \
+            $(wildcard $(CORE_DIR)/scheduler/*.c) \
+            $(wildcard $(CORE_DIR)/debug/*.c) \
+            $(wildcard $(CORE_DIR)/storage/*.c) \
+            $(wildcard $(CORE_DIR)/network/*.c) \
+            $(wildcard $(CORE_DIR)/shell/*.c)
+
+# Platform-specific sources
+PLATFORM_SRC := $(wildcard $(PLATFORM_DIR)/*.c)
+
+# Peeler library sources
+PEELER_SRC := $(PEELER_DIR)/lib/peeler.c \
+              $(PEELER_DIR)/lib/err.c \
+              $(PEELER_DIR)/lib/util.c \
+              $(PEELER_DIR)/lib/formats/bin.c \
+              $(PEELER_DIR)/lib/formats/cpt.c \
+              $(PEELER_DIR)/lib/formats/hqx.c \
+              $(PEELER_DIR)/lib/formats/sit.c \
+              $(PEELER_DIR)/lib/formats/sit13.c \
+              $(PEELER_DIR)/lib/formats/sit15.c
+
+# All sources
+SRC := $(CORE_SRC) $(PLATFORM_SRC) $(PEELER_SRC)
+
+# Object and dependency files (mirror source tree under BUILD_DIR)
+OBJ := $(patsubst %.c,$(BUILD_DIR)/%.o,$(SRC))
+DEP := $(OBJ:.o=.d)
+
+# Output binary
+OUTPUT := $(BUILD_DIR)/gs-headless
+
+# -- Combined flags --
+
+CFLAGS  := $(CFLAGS_BASE) $(CFLAGS_MODE) $(INCLUDES)
+LDFLAGS := $(LDFLAGS_MODE) -lpthread -lm
+
+# -- Targets --
+
+.PHONY: all debug sanitize clean info FORCE
+
+all: $(OUTPUT)
+
+# Compile each .c -> .o with automatic dependency generation
+$(BUILD_DIR)/%.o: %.c
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -c $< -o $@
+
+# Force-rebuild build_id.o so __DATE__/__TIME__ stay current
+FORCE:
+$(BUILD_DIR)/$(CORE_DIR)/build_id.o: FORCE
+
+# Link all objects into the headless binary
+$(OUTPUT): $(OBJ)
+	@mkdir -p $(dir $@)
+	$(CC) $(OBJ) -o $@ $(LDFLAGS)
+	@echo "Built: $@"
+
+# Include auto-generated header dependency files
+-include $(DEP)
+
+# Convenience build-mode shortcuts
+debug:
+	$(MAKE) MODE=debug
+
+sanitize:
+	$(MAKE) MODE=sanitize
+
+# Clean build artifacts
+clean:
+	rm -rf $(BUILD_DIR)
+
+# Show build configuration
+info:
+	@echo "CC:       $(CC)"
+	@echo "MODE:     $(MODE)"
+	@echo "CFLAGS:   $(CFLAGS)"
+	@echo "LDFLAGS:  $(LDFLAGS)"
+	@echo "OUTPUT:   $(OUTPUT)"
+	@echo ""
+	@echo "Sources:"
+	@echo "  Core:     $(words $(CORE_SRC)) files"
+	@echo "  Platform: $(words $(PLATFORM_SRC)) files"
+	@echo "  Peeler:   $(words $(PEELER_SRC)) files"
+	@echo "  Total:    $(words $(SRC)) files"

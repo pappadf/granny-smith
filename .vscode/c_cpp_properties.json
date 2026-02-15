@@ -1,0 +1,21 @@
+{
+    "configurations": [
+        {
+            "name": "Linux",
+            "includePath": [
+                "${workspaceFolder}/**",
+                "/opt/emsdk/upstream/emscripten/system/include", // Main Emscripten headers
+                "/opt/emsdk/upstream/emscripten/system/include/compat", // Compatibility headers
+                "/opt/emsdk/upstream/emscripten/system/include/emscripten", // Emscripten-specific headers
+                "/opt/emsdk/upstream/emscripten/system/include/wasi" // WASI headers
+            ],
+            "defines": [],
+            "compilerPath": "/usr/bin/clang",
+            "cStandard": "c17",
+            "cppStandard": "c++14",
+            "intelliSenseMode": "linux-clang-x64",
+            "configurationProvider": "ms-vscode.makefile-tools"
+        }
+    ],
+    "version": 4
+}

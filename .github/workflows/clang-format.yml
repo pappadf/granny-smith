@@ -1,0 +1,25 @@
+name: Clang-Format Check
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  formatting-check:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install clang-format-18
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq clang-format-18
+
+      - name: Check formatting (src/)
+        run: |
+          find src -name '*.c' -o -name '*.h' \
+            | xargs clang-format-18 --dry-run --Werror
