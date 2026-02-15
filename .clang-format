@@ -1,0 +1,61 @@
+# Granny Smith — clang-format 18 configuration
+# Based on LLVM style; only project-specific overrides listed.
+---
+Language: Cpp
+BasedOnStyle: LLVM
+
+# --- Layout ---
+ColumnLimit: 120
+IndentWidth: 4
+TabWidth: 4
+UseTab: Never
+ContinuationIndentWidth: 4
+
+# --- Pointer / reference style ---
+DerivePointerAlignment: false
+PointerAlignment: Right
+
+# --- Braces ---
+BreakBeforeBraces: Attach
+
+# --- Short constructs ---
+AllowShortFunctionsOnASingleLine: Empty
+AllowShortBlocksOnASingleLine: Never
+AllowShortIfStatementsOnASingleLine: Never
+AllowShortLoopsOnASingleLine: false
+AllowShortEnumsOnASingleLine: true
+
+# --- Alignment ---
+AlignConsecutiveMacros: true
+AlignTrailingComments: false
+AlignArrayOfStructures: Left
+AlignEscapedNewlines: Right
+
+# --- Includes ---
+SortIncludes: CaseSensitive
+IncludeBlocks: Preserve
+IncludeCategories:
+  # 1. Own header (matches the .c filename)
+  - Regex: '^"[^/]*\.h"'
+    Priority: 1
+    CaseSensitive: true
+  # 2. Project headers (quoted)
+  - Regex: '^"'
+    Priority: 2
+    CaseSensitive: true
+  # 3. System / third-party headers (angle brackets)
+  - Regex: '^<'
+    Priority: 3
+    CaseSensitive: true
+
+# --- Miscellaneous ---
+InsertNewlineAtEOF: true
+LineEnding: DeriveLF
+MaxEmptyLinesToKeep: 1
+ReflowComments: true
+SpaceBeforeParens: ControlStatements
+BreakBeforeTernaryOperators: true
+BreakStringLiterals: true
+KeepEmptyLinesAtTheStartOfBlocks: true
+BitFieldColonSpacing: Both
+...

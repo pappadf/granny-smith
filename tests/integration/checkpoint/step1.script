@@ -1,0 +1,10 @@
+# Step 1: Boot from floppy and save checkpoint
+# Run 50M instructions to get partway through boot process
+
+run 50000000
+
+# Save machine state to checkpoint file
+# The checkpoint path is passed via --checkpoint argument
+save-state checkpoint
+
+quit

@@ -1,0 +1,27 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Run (release)",
+      "type": "pwa-chrome",
+      "request": "launch",
+      "url": "http://localhost:8080/?rom=ABC",
+      "webRoot": "${workspaceFolder}",
+      "preLaunchTask": "Run (release)",
+      "presentation": {
+        "reveal": "always"
+      }
+    },
+    {
+      "name": "Run (debug)",
+      "type": "pwa-chrome",
+      "request": "launch",
+      "url": "http://localhost:8080/?rom=ABC",
+      "webRoot": "${workspaceFolder}",
+      "preLaunchTask": "serve (debug)",
+      "presentation": {
+        "reveal": "always"
+      }
+    }
+  ]
+}

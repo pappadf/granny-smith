@@ -1,0 +1,3 @@
+# INSTRUCTIONS
+
+See AGENTS.md for all project instructions and coding patterns.

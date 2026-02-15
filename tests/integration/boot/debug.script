@@ -1,0 +1,28 @@
+# Debug script: Check screen at different points
+
+# First checkpoint - very early
+run 10000000
+screenshot --checksum
+echo "After 10M instructions"
+
+# Second checkpoint 
+run 50000000
+screenshot --checksum
+echo "After 60M instructions total"
+
+# Third checkpoint
+run 100000000
+screenshot --checksum
+echo "After 160M instructions total"
+
+# Fourth checkpoint
+run 200000000
+screenshot --checksum
+echo "After 360M instructions total"
+
+# Fifth checkpoint
+run 500000000
+screenshot --checksum
+echo "After 860M instructions total"
+
+quit

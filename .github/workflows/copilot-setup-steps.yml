@@ -1,0 +1,280 @@
+name: "Copilot Setup Steps"
+
+# This workflow configures the development environment for GitHub Copilot coding agent.
+# It installs all prerequisites needed to build and test the Granny Smith emulator:
+# - Emscripten 4.0.10 (for WASM builds)
+# - Node.js and npm (for Playwright e2e tests)
+# - Playwright with Chromium browser
+# - Build tools (gcc, make, cmake, etc.)
+# - Test data (if token is available)
+#
+# Based on: todo/agent-setup.md and .devcontainer/devcontainer.json
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - .github/workflows/copilot-setup-steps.yml
+  pull_request:
+    paths:
+      - .github/workflows/copilot-setup-steps.yml
+
+jobs:
+  # The job MUST be called `copilot-setup-steps` or it will not be picked up by Copilot.
+  copilot-setup-steps:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+
+    # Permissions needed for checkout and accessing secrets
+    permissions:
+      contents: read
+
+    env:
+      # Emscripten version required by this project (see Makefile)
+      EMSDK_VERSION: "4.0.10"
+      EMSDK_PATH: /opt/emsdk
+      
+    steps:
+      # ============================================
+      # 1. Checkout repository with submodules
+      # ============================================
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      # ============================================
+      # 2. Install system dependencies
+      # ============================================
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential \
+            cmake \
+            ninja-build \
+            python3 \
+            python3-pip \
+            ca-certificates \
+            curl \
+            git \
+            xz-utils \
+            valgrind
+          echo "System dependencies installed."
+
+      # ============================================
+      # 3. Set up Node.js (for Playwright)
+      # ============================================
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Verify Node.js
+        run: |
+          node -v
+          npm -v
+
+      # ============================================
+      # 4. Install Emscripten SDK
+      # ============================================
+      - name: Cache Emscripten SDK
+        id: cache-emsdk
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.EMSDK_PATH }}
+          key: emsdk-${{ env.EMSDK_VERSION }}-ubuntu24
+
+      - name: Install Emscripten SDK
+        if: steps.cache-emsdk.outputs.cache-hit != 'true'
+        run: |
+          set -e
+          
+          git clone --depth=1 https://github.com/emscripten-core/emsdk ${{ env.EMSDK_PATH }}
+          cd ${{ env.EMSDK_PATH }}
+          
+          # Install with retry logic for transient 403 errors from storage.googleapis.com
+          # The 403 errors can be rate limiting or network issues from Google Cloud Storage
+          MAX_RETRIES=3
+          RETRY_DELAY=30
+          INSTALL_SUCCESS=false
+          
+          for i in $(seq 1 $MAX_RETRIES); do
+            echo "::group::Emscripten install attempt $i of $MAX_RETRIES"
+            if ./emsdk install ${{ env.EMSDK_VERSION }} 2>&1; then
+              echo "Emscripten SDK installed successfully on attempt $i."
+              INSTALL_SUCCESS=true
+              echo "::endgroup::"
+              break
+            else
+              echo "::endgroup::"
+              if [ $i -eq $MAX_RETRIES ]; then
+                echo "::warning::All $MAX_RETRIES install attempts failed."
+              else
+                echo "::warning::Attempt $i failed. Retrying in ${RETRY_DELAY}s..."
+                sleep $RETRY_DELAY
+                RETRY_DELAY=$((RETRY_DELAY * 2))
+              fi
+            fi
+          done
+          
+          # If install failed (likely due to node download 403), try recovery approach:
+          # Configure emsdk to use system Node.js instead of downloaded one
+          if [ "$INSTALL_SUCCESS" = "false" ]; then
+            echo "::notice::Attempting recovery: configuring emsdk to use system Node.js"
+            
+            # Install without node (some versions support this)
+            ./emsdk install ${{ env.EMSDK_VERSION }} --ignore-node 2>&1 || true
+            
+            # Create the expected node directory structure pointing to system node
+            SYSTEM_NODE=$(which node)
+            SYSTEM_NODE_DIR=$(dirname "$SYSTEM_NODE")
+            NODE_VERSION=$(node -v | sed 's/^v//')
+            EMSDK_NODE_DIR="${{ env.EMSDK_PATH }}/node/${NODE_VERSION}_64bit"
+            
+            echo "System Node.js: $SYSTEM_NODE (version $NODE_VERSION)"
+            
+            # Create minimal structure expected by emsdk
+            mkdir -p "$EMSDK_NODE_DIR/bin"
+            ln -sf "$SYSTEM_NODE" "$EMSDK_NODE_DIR/bin/node"
+            ln -sf "$(which npm)" "$EMSDK_NODE_DIR/bin/npm" 2>/dev/null || true
+            
+            echo "Created emsdk node symlinks in $EMSDK_NODE_DIR"
+          fi
+          
+          ./emsdk activate ${{ env.EMSDK_VERSION }}
+          echo "Emscripten SDK setup completed."
+
+      - name: Activate Emscripten SDK
+        run: |
+          cd ${{ env.EMSDK_PATH }}
+          ./emsdk activate ${{ env.EMSDK_VERSION }}
+          
+          # Add to GITHUB_PATH for subsequent steps
+          echo "${{ env.EMSDK_PATH }}" >> $GITHUB_PATH
+          echo "${{ env.EMSDK_PATH }}/upstream/emscripten" >> $GITHUB_PATH
+          
+          # Source the environment and export to GITHUB_ENV
+          source ./emsdk_env.sh
+          
+          echo "EMSDK=${{ env.EMSDK_PATH }}" >> $GITHUB_ENV
+          echo "EM_CONFIG=${{ env.EMSDK_PATH }}/.emscripten" >> $GITHUB_ENV
+          
+          # CRITICAL: Override EMSDK_NODE to use system Node.js
+          # This ensures emcc uses the pre-installed node from setup-node action
+          # instead of the bundled node that may fail to download from storage.googleapis.com
+          SYSTEM_NODE=$(which node)
+          echo "EMSDK_NODE=$SYSTEM_NODE" >> $GITHUB_ENV
+          
+          # Also update the .emscripten config to use system node
+          if [ -f "${{ env.EMSDK_PATH }}/.emscripten" ]; then
+            # Append NODE_JS override to config
+            echo "NODE_JS = '$SYSTEM_NODE'" >> "${{ env.EMSDK_PATH }}/.emscripten"
+            echo "Configured .emscripten to use system Node.js: $SYSTEM_NODE"
+          fi
+
+      - name: Verify Emscripten
+        run: |
+          source ${{ env.EMSDK_PATH }}/emsdk_env.sh
+          
+          # Verify emcc is available
+          if ! which emcc; then
+            echo "::error::emcc not found in PATH after emsdk setup"
+            echo "::error::This likely means emsdk installation failed."
+            echo "::error::Common cause: HTTP 403 errors downloading from storage.googleapis.com"
+            echo "::error::Check the 'Install Emscripten SDK' step output for details."
+            exit 1
+          fi
+          
+          # Check version and basic functionality
+          emcc -v 2>&1 | head -n 5
+          
+          # Verify EMSDK_NODE is set and valid
+          echo "EMSDK_NODE: $EMSDK_NODE"
+          if [ -n "$EMSDK_NODE" ] && [ -x "$EMSDK_NODE" ]; then
+            echo "Node.js for Emscripten: $($EMSDK_NODE --version)"
+          else
+            echo "::warning::EMSDK_NODE not set or not executable. Using system node."
+          fi
+          
+          echo "Emscripten environment verified successfully."
+
+      # ============================================
+      # 5. Install Playwright and browsers
+      # ============================================
+      - name: Install Playwright dependencies
+        working-directory: tests/e2e
+        run: npm ci
+
+      - name: Install Playwright browsers
+        working-directory: tests/e2e
+        run: npx playwright install --with-deps chromium
+
+      - name: Verify Playwright
+        working-directory: tests/e2e
+        run: npx playwright --version
+
+      # ============================================
+      # 6. Fetch test data (if token available)
+      # ============================================
+      - name: Fetch test data
+        env:
+          GS_TEST_DATA_TOKEN: ${{ secrets.GS_TEST_DATA_TOKEN }}
+        run: |
+          if [ -n "$GS_TEST_DATA_TOKEN" ]; then
+            echo "Fetching proprietary test data..."
+            ./scripts/fetch-test-data.sh
+            echo "Test data fetched successfully."
+          else
+            echo "::notice::Test data token not available. Integration and e2e tests will be skipped."
+            echo "See docs/TEST_DATA.md for information on obtaining test data."
+          fi
+
+      # ============================================
+      # 7. Build verification
+      # ============================================
+      - name: Verify WASM build
+        run: |
+          source ${{ env.EMSDK_PATH }}/emsdk_env.sh
+          make clean
+          make
+          echo "WASM build completed successfully."
+
+      - name: Verify headless build
+        run: |
+          make -f Makefile.headless clean
+          make -f Makefile.headless
+          echo "Headless build completed successfully."
+
+      # ============================================
+      # 8. Print environment summary
+      # ============================================
+      - name: Environment summary
+        run: |
+          echo "=========================================="
+          echo "Copilot Agent Environment Ready"
+          echo "=========================================="
+          echo ""
+          echo "Tool Versions:"
+          echo "  Node.js: $(node -v)"
+          echo "  npm: $(npm -v)"
+          echo "  gcc: $(gcc --version | head -n 1)"
+          echo "  make: $(make --version | head -n 1)"
+          source ${{ env.EMSDK_PATH }}/emsdk_env.sh
+          echo "  emcc: $(emcc --version | head -n 1)"
+          echo ""
+          echo "Available Commands:"
+          echo "  make                     - Build WASM/Emscripten version"
+          echo "  make debug               - Build WASM with debug symbols"
+          echo "  make headless            - Build native headless CLI"
+          echo "  make -C tests/unit run   - Run CPU unit tests"
+          echo "  make integration-test    - Run integration tests"
+          echo "  npx --prefix tests/e2e playwright test --config=tests/e2e/playwright.config.ts"
+          echo "                           - Run Playwright e2e tests"
+          echo ""
+          if ./scripts/fetch-test-data.sh --check 2>/dev/null; then
+            echo "Test Data: ✅ Available"
+          else
+            echo "Test Data: ❌ Not available (limited test coverage)"
+          fi
+          echo "=========================================="

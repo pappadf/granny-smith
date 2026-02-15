@@ -1,55 +1,48 @@
-# Prerequisites
-*.d
+# ── Build output ──────────────────────────────────────────────────
+build/
 
-# Object files
-*.o
-*.ko
-*.obj
-*.elf
+# ── Emscripten / WASM artifacts ──────────────────────────────────
+*.wasm.map
+*.debug.wasm
+*.tmp.wasm
+.emsdk/
+.emsdk_env
 
-# Linker output
-*.ilk
-*.map
-*.exp
+# ── Test data (copyrighted; fetched by scripts/fetch-test-data.sh) ─
+tests/data/*
+!tests/data/README.md
+tests/data/**/*.blocks/
 
-# Precompiled Headers
-*.gch
-*.pch
+# ── Node / Playwright (tests/e2e) ───────────────────────────────
+node_modules/
+playwright-report/
+test-results/
 
-# Libraries
-*.lib
-*.a
-*.la
-*.lo
+# ── Native unit-test build artifacts ─────────────────────────────
+tests/unit/build/
+tests/unit/*.o
+tests/unit/c-tests
 
-# Shared objects (inc. Windows DLLs)
-*.dll
-*.so
-*.so.*
-*.dylib
+# ── Decoded single-step-test JSON (generated from .json.bin) ────
+third-party/single-step-tests/v1/*.json
 
-# Executables
-*.exe
-*.out
-*.app
-*.i*86
-*.x86_64
-*.hex
+# ── Runtime / temporary files ────────────────────────────────────
+test-server.pid
+*.log
 
-# Debug files
-*.dSYM/
-*.su
-*.idb
-*.pdb
+# ── ROM images (copyrighted; never commit) ──────────────────────
+*.rom
 
-# Kernel Module Compile Results
-*.mod*
-*.cmd
-.tmp_versions/
-modules.order
-Module.symvers
-Mkfile.old
-dkms.conf
+# ── OS / editor temporary files ──────────────────────────────────
+.DS_Store
+Thumbs.db
+.env
+.env.local
+*.swp
+*.swo
+*~
 
-# debug information files
-*.dwo
+# ── Internal development notes and checklists (not shipped) ─────
+notes/
+todo/
+

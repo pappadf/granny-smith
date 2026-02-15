@@ -1,0 +1,352 @@
+/* SPDX-License-Identifier: MIT */
+/* Copyright (c) pappadf */
+
+/* ============================================================================
+   Granny Smith Macintosh Emulator - Web UI Stylesheet
+   ---------------------------------------------------------------------------
+   Goal: Readability over minification. Sections are clearly delimited so the
+   intent of each group of rules is obvious when maintaining or extending the
+   UI.  This file was split out from the original inline <style> block in
+   index.html to declutter the HTML and make room for heavy inline JS comments.
+   ========================================================================== */
+
+/* --- CSS Custom Properties ("Design Tokens") ----------------------------- */
+:root {
+  --color-bg: #2d3338;              /* Page background */
+  --color-bg-alt: #ffffff;          /* Panels / cards */
+  --color-border: #d0d7de;          /* Default borders */
+  --color-border-accent: #afb8c1;   /* Hovered borders */
+  --color-text: #24292f;            /* Primary text */
+  --color-muted: #57606a;           /* Secondary text */
+  --color-hover: #f3f4f6;           /* Button hover */
+  --color-btn-bg: #f6f8fa;          /* Button background */
+  --color-btn-border: #d0d7de;      /* Button border */
+  --color-btn-hover-border: #afb8c1;/* Button border hover */
+  --color-focus: #0969da;           /* Focus outline */
+  --color-accent: #1e90ff;          /* Primary accent (drag highlight) */
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --shadow-sm: 0 1px 0 rgba(27,31,36,0.04);
+}
+
+/* --- Base / Typography ---------------------------------------------------- */
+body {
+  font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+               Oxygen, Ubuntu, Cantarell, "Fira Sans", "Droid Sans",
+               "Helvetica Neue", Arial, sans-serif;
+  background: var(--color-bg);
+  color: var(--color-text);
+  margin: 0;
+}
+
+/* --- Screen / Canvas Area ------------------------------------------------- */
+#screen { position: relative; background: #000; }
+#screen.dragover { outline: 3px dashed var(--color-accent); outline-offset: -3px; }
+
+/* Persistent ROM-required overlay (visible only when no ROM is present) */
+#rom-required-overlay {
+  position:absolute; inset:0; display:none; align-items:center; justify-content:center;
+  background:rgba(255,255,255,0.92); color:var(--color-muted); font-weight:500; font-size:1rem;
+  text-align:center; padding:1.5rem; letter-spacing:0.01em;
+  /* Allow drag/drop to work even when overlay is visible by letting events
+     fall through to the underlying canvas + window handlers. */
+  pointer-events:none;
+}
+#rom-required-overlay.visible { display:flex; }
+
+/* Drag & drop hint overlay (shown only while dragging) */
+#drop-hint { position:absolute; top:0; left:0; width:100%; height:100%; pointer-events:none;
+  display:none; align-items:center; justify-content:center; background:rgba(9,105,218,0.12);
+  color:#054082; font-weight:600; font-size:1rem; text-shadow:0 1px 0 #ffffff; }
+#drop-hint.active { display:flex; }
+
+/* --- Screen Toolbar (above canvas) --------------------------------------- */
+.screen-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: .5rem .7rem;
+  height: 48px;
+  background: var(--color-bg-alt);
+  border: 1px solid var(--color-border);
+  border-bottom: none;
+  border-radius: 8px 8px 0 0;
+  box-shadow: var(--shadow-sm);
+  box-sizing: border-box;
+  margin: 1rem 18px 0;  /* Match main-layout padding, no bottom margin */
+  /* max-width removed to allow toolbar to scale with zoom beyond 200% */
+}
+.toolbar-left { display: flex; align-items: center; gap: .25rem; }
+.toolbar-right { display: flex; align-items: center; gap: .25rem; }
+
+/* --- Toolbar Buttons ------------------------------------------------------ */
+.tb-btn { display:inline-flex; align-items:center; justify-content:center; width:32px; height:32px;
+  background:var(--color-btn-bg); border:1px solid var(--color-btn-border); border-radius: var(--radius-sm);
+  cursor:pointer; padding:0; transition: background .12s, border-color .12s, box-shadow .12s; }
+.tb-btn:hover { background: var(--color-hover); border-color: var(--color-btn-hover-border); }
+.tb-btn:active { background:#eaeef2; }
+.tb-btn:disabled { opacity:0.35; cursor:default; pointer-events:none; }
+.tb-btn:focus-visible { outline:2px solid var(--color-focus); outline-offset:2px; }
+.tb-btn svg { width:18px; height:18px; fill: var(--color-text); }
+.tb-btn:hover svg { fill: var(--color-text); }
+.tb-sep { width:1px; height:24px; background: var(--color-border); margin:0 .35rem; }
+.zoom-level { width:60px; text-align:center; border:1px solid var(--color-btn-border); background:var(--color-btn-bg); border-radius:4px; font-size:14px; font-weight:500; color: var(--color-text);
+  height:32px; box-sizing:border-box; padding:0 .5rem; display:inline-flex; align-items:center; justify-content:center; }
+
+/* --- 3-State Switcher (GitHub-style segmented control) ------------------- */
+.switcher { display:inline-flex; align-items:center; height:32px; border-radius:var(--radius-md); }
+.switcher-btn { display:inline-flex; align-items:center; justify-content:center; height:32px; padding:0 10px;
+  background:transparent; border:none; border-radius:var(--radius-md); cursor:pointer;
+  font-size:14px; font-weight:500; line-height:20px; color:#8b949e;
+  transition: background-color 120ms ease-out; box-sizing: border-box; }
+.switcher-btn:hover { background:#e8eaed; color:var(--color-text); }
+.switcher-btn:focus-visible { outline:2px solid var(--color-focus); outline-offset:1px; z-index:1; }
+.switcher-btn[aria-current="page"] { background:var(--color-bg-alt); border:1px solid var(--color-border); color:var(--color-text); }
+.switcher-btn[aria-current="page"]:hover { background:var(--color-bg-alt); }
+
+/* --- Layout Containers ---------------------------------------------------- */
+.main-layout { padding: 0 18px 3rem; max-width:1100px; }  /* No top padding - toolbar provides spacing */
+.screen-wrapper { position:relative; border:none; background:#000; border-radius:0; overflow:hidden; margin-bottom:1.25rem; box-sizing: border-box; }
+canvas { display:block; width:1024px; height:684px; image-rendering:pixelated; image-rendering: -moz-crisp-edges; image-rendering: crisp-edges; }
+
+/* --- Terminal Panel ------------------------------------------------------- */
+.terminal-panel { background: var(--color-bg-alt); border:1px solid var(--color-border); border-radius:8px; overflow:hidden; box-shadow: var(--shadow-sm); box-sizing: border-box; }
+.terminal-header { display:flex; align-items:center; gap:.5rem; padding:.5rem .7rem; height:48px; font-size:14px; font-weight:500; color:var(--color-text); background: var(--color-bg-alt); cursor:pointer; user-select:none; border-bottom:1px solid var(--color-border); box-sizing: border-box; }
+.terminal-header:hover { background: var(--color-hover); }
+.terminal-header:focus-visible { outline:2px solid var(--color-focus); outline-offset:2px; }
+.terminal-panel[data-collapsed='true'] .terminal-body { display:none; }
+.terminal-panel[data-collapsed='true'] .toggle-btn .chevron { transform: rotate(-90deg); }
+.toggle-btn .chevron { transition: transform 0.15s ease; }
+.terminal-body { background:#ffffff; position:relative; overflow:auto; min-height:180px; }
+.term-status { margin-left:auto; font-weight:400; font-size:12px; color: var(--color-muted); }
+
+/* --- Scrollbar Tuning (WebKit) ------------------------------------------- */
+::-webkit-scrollbar { width:8px; height:8px; }
+::-webkit-scrollbar-track { background: var(--color-bg-alt); }
+::-webkit-scrollbar-thumb { background:#d8dee3; border-radius:4px; }
+::-webkit-scrollbar-thumb:hover { background:#c8d0d6; }
+
+/* --- Modal Dialog Base Styles -------------------------------------------- */
+.modal {
+  display: none;
+  position: fixed;
+  inset: 0;
+  align-items: center;
+  justify-content: center;
+  z-index: 20;
+}
+.modal[aria-hidden="false"] { display: flex; }
+
+/* Settings modal specific */
+#settings-modal {
+  background: rgba(0,0,0,0.35);
+}
+#settings-modal .modal__content {
+  background: var(--color-bg-alt);
+  border: 1px solid var(--color-border);
+  padding: 1rem 1.25rem;
+  border-radius: 8px;
+  width: 360px;
+  box-shadow: 0 6px 24px rgba(0,0,0,0.12);
+}
+#settings-modal .modal__title {
+  margin: 0 0 1rem 0;
+  font-size: 1rem;
+}
+#settings-modal .modal__settings {
+  margin: 0 0 1.25rem 0;
+}
+#settings-modal .setting-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: .75rem 0;
+  border-bottom: 1px solid var(--color-border);
+}
+#settings-modal .setting-item:last-child {
+  border-bottom: none;
+}
+#settings-modal .setting-label {
+  display: flex;
+  flex-direction: column;
+  gap: .25rem;
+  flex: 1;
+}
+#settings-modal .setting-name {
+  font-size: .9rem;
+  font-weight: 500;
+  color: var(--color-text);
+}
+#settings-modal .setting-description {
+  font-size: .8rem;
+  color: var(--color-muted);
+  line-height: 1.3;
+}
+#settings-modal .modal__actions {
+  display: flex;
+  gap: .5rem;
+  justify-content: flex-end;
+}
+#settings-modal .modal__actions .tb-btn {
+  width: auto;
+  height: 32px;
+  padding: .25rem .6rem;
+}
+
+/* Toggle Switch Component */
+.toggle-switch {
+  position: relative;
+  display: inline-block;
+  width: 48px;
+  height: 26px;
+  flex-shrink: 0;
+  cursor: pointer;
+}
+.toggle-switch input {
+  opacity: 0;
+  width: 0;
+  height: 0;
+}
+.toggle-slider {
+  position: absolute;
+  inset: 0;
+  background-color: #cbd5e0;
+  border-radius: 13px;
+  transition: background-color 0.2s;
+}
+.toggle-slider:before {
+  content: "";
+  position: absolute;
+  height: 20px;
+  width: 20px;
+  left: 3px;
+  bottom: 3px;
+  background-color: white;
+  border-radius: 50%;
+  transition: transform 0.2s;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.2);
+}
+.toggle-switch input:checked + .toggle-slider {
+  background-color: #0969da;
+}
+.toggle-switch input:checked + .toggle-slider:before {
+  transform: translateX(22px);
+}
+.toggle-switch input:focus-visible + .toggle-slider {
+  outline: 2px solid var(--color-focus);
+  outline-offset: 2px;
+}
+
+/* Upload dialog styles */
+#upload-dialog {
+  background: rgba(0,0,0,0.4);
+  z-index: 50;
+  font-family: system-ui, sans-serif;
+}
+#upload-dialog .modal__content {
+  background: var(--color-bg-alt);
+  color: var(--color-text);
+  padding: 1rem 1.25rem;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  max-width: 480px;
+  width: 100%;
+  box-shadow: 0 6px 24px rgba(0,0,0,0.25);
+}
+#upload-dialog .modal__message {
+  margin: 0 0 1rem 0;
+  font-size: .9rem;
+  line-height: 1.4;
+  word-break: break-word;
+}
+#upload-dialog .modal__actions {
+  text-align: right;
+}
+#upload-dialog .modal__close-btn {
+  background: var(--color-accent, #1e90ff);
+  color: #fff;
+  border: none;
+  padding: .45rem .9rem;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: .85rem;
+}
+
+/* Checkpoint dialog styles */
+#checkpoint-dialog {
+  background: rgba(0,0,0,0.35);
+  z-index: 60;
+}
+#checkpoint-dialog .modal__content {
+  background: var(--color-bg-alt);
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  padding: 1.75rem 2rem;
+  max-width: 460px;
+  width: calc(100% - 2rem);
+  color: var(--color-text);
+  box-shadow: 0 6px 24px rgba(0,0,0,0.12);
+}
+#checkpoint-dialog .modal__subtitle {
+  font-size: .75rem;
+  letter-spacing: .2em;
+  text-transform: uppercase;
+  color: var(--color-focus);
+  margin-bottom: .75rem;
+}
+#checkpoint-dialog .modal__title {
+  margin: 0 0 .5rem 0;
+  font-size: 1.5rem;
+  font-weight: 600;
+  color: var(--color-text);
+}
+#checkpoint-dialog .modal__message {
+  margin: 0 0 1.25rem 0;
+  font-size: .95rem;
+  line-height: 1.5;
+  color: var(--color-muted);
+}
+#checkpoint-dialog .modal__actions {
+  display: flex;
+  gap: .75rem;
+  flex-wrap: wrap;
+}
+#checkpoint-dialog .modal__continue-btn {
+  flex: 1;
+  min-width: 150px;
+  background: var(--color-focus);
+  border: none;
+  color: #fff;
+  font-weight: 600;
+  padding: .75rem 1rem;
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  box-shadow: var(--shadow-sm);
+  transition: background .12s;
+}
+#checkpoint-dialog .modal__continue-btn:hover {
+  background: #0860ca;
+}
+#checkpoint-dialog .modal__fresh-btn {
+  flex: 1;
+  min-width: 150px;
+  background: var(--color-btn-bg);
+  border: 1px solid var(--color-btn-border);
+  color: var(--color-text);
+  font-weight: 500;
+  padding: .75rem 1rem;
+  border-radius: var(--radius-md);
+  cursor: pointer;
+}
+#checkpoint-dialog .modal__fresh-btn:hover {
+  background: var(--color-hover);
+  border-color: var(--color-btn-hover-border);
+}
+
+/* --- Responsive ----------------------------------------------------------- */
+@media (max-width:600px){
+  canvas { width:100%; height:auto; }
+  #drop-hint, #rom-required-overlay { width:100%; height:100%; }
+  .screen-wrapper { width:100% !important; height:auto !important; }
+}
