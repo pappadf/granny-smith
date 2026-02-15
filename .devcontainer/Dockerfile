@@ -22,7 +22,9 @@ RUN apt-get update \
     xz-utils \
     nodejs \
     npm \
- && rm -rf /var/lib/apt/lists/*
+    clang-format-18 \
+ && rm -rf /var/lib/apt/lists/* \
+ && pip3 install --break-system-packages --no-cache-dir pre-commit
 
 # Verify node/npm available
 RUN node -v && npm -v

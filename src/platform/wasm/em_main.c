@@ -578,6 +578,7 @@ EMSCRIPTEN_KEEPALIVE void sync_complete(int err) {
 }
 
 // Blocking sync: persist memfs changes to IndexedDB, wait for completion
+// clang-format off
 EM_ASYNC_JS(int, sync_and_wait, (), {
     if (typeof FS === 'undefined' || !FS.syncfs)
         return 0;
@@ -593,8 +594,10 @@ EM_ASYNC_JS(int, sync_and_wait, (), {
             });
     });
 });
+// clang-format on
 
 // Blocking sync: load IndexedDB contents into memfs, wait for completion
+// clang-format off
 EM_ASYNC_JS(int, sync_from_persist_and_wait, (), {
     if (typeof FS === 'undefined' || !FS.syncfs)
         return 0;
@@ -610,6 +613,7 @@ EM_ASYNC_JS(int, sync_from_persist_and_wait, (), {
             });
     });
 });
+// clang-format on
 
 // Sync command - sync persistent filesystem
 // Usage: sync [wait|status|from-persist [wait]]
