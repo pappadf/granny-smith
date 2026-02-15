@@ -52,7 +52,7 @@
     }
   },
 
-  // Install Playwright browsers and fetch test data if token is available
+  // Install Playwright browsers, activate pre-commit hooks, and fetch test data if token is available
   // The fetch-test-data.sh script gracefully handles missing tokens
-  "postCreateCommand": "cd tests/e2e && npm ci && npx --yes playwright install --with-deps chromium && cd ../.. && ./scripts/fetch-test-data.sh || echo 'Note: Test data not available. See docs/TEST_DATA.md'"
+  "postCreateCommand": "cd tests/e2e && npm ci && npx --yes playwright install --with-deps chromium && cd ../.. && pre-commit install && ./scripts/fetch-test-data.sh || echo 'Note: Test data not available. See docs/TEST_DATA.md'"
 }

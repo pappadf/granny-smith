@@ -107,6 +107,16 @@ Please follow the conventions in [docs/STYLE_GUIDE.md](docs/STYLE_GUIDE.md). Key
 - Put prototypes in headers when needed
 - Add `// SPDX-License-Identifier: MIT` at the top of new source files
 
+### Formatting
+
+The project uses `clang-format-18` to enforce consistent code style. The devcontainer includes pre-commit hooks that automatically check formatting before each commit.
+
+- **In the devcontainer**: Hooks are automatically installed during setup
+- **Manual setup**: Run `pip install pre-commit && pre-commit install` in the repository root
+- **Check formatting**: Run `pre-commit run --all-files` to check all files
+
+If the CI formatting check fails, the pre-commit hooks will catch it locally before you push.
+
 ## Repository Structure
 
 | Directory | Contents |
