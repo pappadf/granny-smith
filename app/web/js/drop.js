@@ -56,7 +56,7 @@ async function importCheckpointBuffer(buf, displayName) {
   const dest = makeCheckpointTmpPath(displayName);
   writeBinary(dest, buf);
   const label = displayName || dest;
-  showUploadDialog(`${label} stored at ${dest} of the browser filesystem`);
+  showUploadDialog(`Checkpoint restored from ${label}`);
   await loadCheckpointFromPath(dest, label);
   return true;
 }

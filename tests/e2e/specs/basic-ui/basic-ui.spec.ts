@@ -2,7 +2,6 @@
 // Copyright (c) pappadf
 
 import { test, expect } from '../../fixtures';
-import { getLastTerminalLine } from '../../helpers/terminal';
 import { bootWithMedia } from '../../helpers/boot';
 import { matchScreenFast } from '../../helpers/screen';
 
@@ -73,7 +72,7 @@ test.describe('Granny Smith UI basic', () => {
     }
   });
 
-  test('play/pause toggles emulator and prompts show differing addresses', async ({ page }) => {
+  test('play/pause toggles emulator and instruction count advances', async ({ page }) => {
     // Boot directly with ROM (auto-runs); no manual inject or initial Run click needed.
     await bootWithMedia(page, 'roms/Plus_v3.rom');
     await page.waitForFunction(() => typeof (window as any).runCommand === 'function');
@@ -84,48 +83,30 @@ test.describe('Granny Smith UI basic', () => {
     // Allow brief execution time before first pause
     await page.waitForTimeout(1000);
 
-    // Helper to retrieve the last non-empty terminal line via test hooks
-    const getLastLine = () => getLastTerminalLine(page);
+    // Helper: pause emulator and return instruction count
+    async function pauseAndGetInstrCount(): Promise<number> {
+      await page.click('#btn-run');
+      // Wait for the emulator to be paused (status returns 0 when idle)
+      await page.waitForFunction(() => {
+        try {
+          return (window as any).runCommand('status') === 0;
+        } catch { return false; }
+      }, { timeout: 5000 });
+      const raw = await page.evaluate(() => (window as any).runCommand('get instr'));
+      return typeof raw === 'bigint' ? Number(raw) : Number(raw);
+    }
 
     // First click pauses (was running already)
-    await page.click('#btn-run');
-    // Wait until a prompt line appears (ends with '>')
-    await page.waitForFunction(() => {
-      try {
-        const snap = (window as any).__gsTest?.getTerminalSnapshot(400) || '';
-  const lines = snap.split('\n').map((l: string) => l.trim()).filter(Boolean);
-        const last = lines.length ? lines[lines.length - 1] : '';
-        return />\s*$/.test(last);
-      } catch (e) { return false; }
-    }, { timeout: 5000 });
+    const firstInstr = await pauseAndGetInstrCount();
+    expect(firstInstr).toBeGreaterThan(0);
 
-    const firstPrompt = await getLastLine();
-    expect(firstPrompt).toMatch(/>\s*$/);
-    const firstAddrMatch = firstPrompt.match(/0x[0-9A-Fa-f]+|[0-9A-Fa-f]{3,}/);
-    expect(firstAddrMatch, 'first prompt should include an address-like token').toBeTruthy();
-    const firstAddr = firstAddrMatch ? firstAddrMatch[0] : '';
-
-  // Run again
+    // Run again, let it execute, then pause
     await page.click('#btn-run');
     await page.waitForTimeout(1000);
-    await page.click('#btn-run');
-    await page.waitForFunction(() => {
-      try {
-        const snap = (window as any).__gsTest?.getTerminalSnapshot(400) || '';
-  const lines = snap.split('\n').map((l: string) => l.trim()).filter(Boolean);
-        const last = lines.length ? lines[lines.length - 1] : '';
-        return />\s*$/.test(last);
-      } catch (e) { return false; }
-    }, { timeout: 5000 });
+    const secondInstr = await pauseAndGetInstrCount();
 
-    const secondPrompt = await getLastLine();
-    expect(secondPrompt).toMatch(/>\s*$/);
-    const secondAddrMatch = secondPrompt.match(/0x[0-9A-Fa-f]+|[0-9A-Fa-f]{3,}/);
-    expect(secondAddrMatch, 'second prompt should include an address-like token').toBeTruthy();
-    const secondAddr = secondAddrMatch ? secondAddrMatch[0] : '';
-
-    // Addresses ought to differ between two separate run sessions
-    expect(firstAddr).not.toEqual(secondAddr);
+    // Instruction count must have advanced between the two pauses
+    expect(secondInstr).toBeGreaterThan(firstInstr);
   });
 
   test('ROM boot prompt shows blinking question mark', async ({ page, log }) => {
