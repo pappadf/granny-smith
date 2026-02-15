@@ -39,7 +39,7 @@ jobs:
       # 1. Checkout repository with submodules
       # ============================================
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           submodules: recursive
 
