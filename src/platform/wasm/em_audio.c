@@ -24,9 +24,8 @@
 // WebAudio (AudioWorklet) Implementation
 // ============================================================================
 
-// WebAudio (AudioWorklet) bridge - High quality, low-jitter streaming
-// Primary path: SharedArrayBuffer ring buffer (requires crossOriginIsolated)
-// Fallback: message queue to worklet (copies chunks) when SAB not available
+// WebAudio (AudioWorklet) bridge — low-jitter streaming via MessagePort.
+// No SharedArrayBuffer or cross-origin isolation (COOP/COEP) required.
 // Audio format input: 8-bit unsigned mono at ~22.2545 kHz.
 
 // Initialize the WebAudio subsystem and create AudioWorklet
@@ -46,69 +45,78 @@ EM_JS(void, mplus_audio_init, (), {
     mp.targetLatency = mp.targetSamples / mp.srcRate; // ~83ms
     mp.ctx = mp.ctx || new (self.AudioContext || self.webkitAudioContext)();
 
-    // Create ring buffers (SAB) if available
+    // AudioWorklet processor — internal ring buffer fed via MessagePort.
     var RING_BYTES = 1 << 17; // 128 KiB ~ 5.7s at source rate
-    var STATE_INT32S = 8; // [writeIdx, readIdx, volume, flags, underruns, lastDepthSamples, pad0, pad1]
-
-    if (typeof SharedArrayBuffer === 'undefined') {
-        console.warn('[audio] SharedArrayBuffer unavailable; cannot init worklet path');
-        return;
-    }
-
-    mp.dataSAB = new SharedArrayBuffer(RING_BYTES);
-    mp.stateSAB = new SharedArrayBuffer(STATE_INT32S * 4);
-    mp.data = new Uint8Array(mp.dataSAB);
-    mp.state = new Int32Array(mp.stateSAB);
-    mp.mask = RING_BYTES - 1;
-
-    // Flags bit0: paused, bit1: silenceMode (currently unused placeholder)
-    var workletCode =
-        "class MPlusProcessor extends AudioWorkletProcessor {\\n" + "  constructor(opts){\\n" + "    super();\\n" +
-        "    var o = opts.processorOptions;\\n" + "    this.data=new Uint8Array(o.dataSAB);\\n" +
-        "    this.state=new Int32Array(o.stateSAB);\\n" + "    this.mask=o.mask|0;\\n" +
-        "    this.srcRate=o.srcRate||22254.5;\\n" + "    this.targetLatency=o.targetLatency||0.083;\\n" +
-        "    this.vblSamples=o.vblSamples||370;\\n" +
-        "    this.targetSamples=Math.floor(this.targetLatency*this.srcRate);\\n" + "    this.dstRate=sampleRate;\\n" +
-        "    this.step=this.srcRate/this.dstRate; /* base step */\\n" +
-        "    this.errI=0; /* integral term for depth control */\\n" + "    this.frac=0;\\n" + "    this.lpfY=0;\\n" +
-        "    this.lpfA=0.0;\\n" + "    var fc=8000; var x=Math.exp(-2*Math.PI*fc/this.dstRate); this.lpfA=1.0-x;\\n" +
-        "    this.curGain=0;\\n" + "    this.started=false;\\n" +
-
-        "  }\\n" + "  process(inputs,outputs,params){\\n" + "    var out=outputs[0][0];\\n" +
-        "    var frames=out.length;\\n" + "    var w=Atomics.load(this.state,0)|0;\\n" +
-        "    var r=Atomics.load(this.state,1)|0;\\n" + "    var volume=Atomics.load(this.state,2)|0;\\n" +
-        "    var flags=Atomics.load(this.state,3)|0;\\n" + "    var paused = (flags&1)!==0;\\n" +
-        "    var avail = (w-r)&this.mask;\\n" +
-        "    if(!this.started){ if(avail < this.targetSamples){ for(var i=0;i<frames;i++){ out[i]=0; } return true; } " +
-        "this.started=true; }\\n" +
-
-        "    var targetSamples = this.targetSamples;\\n" +
-        "    var targetGain = Math.pow(Math.min(Math.max(volume,0),7)/7,1.0);\\n" +
-        "    /* Micro rate trim: adjust effective step so ring depth hovers at targetSamples */\\n" +
-        "    var target = targetSamples;\\n" + "    var error = avail - target; /* + => overfull, - => draining */\\n" +
-        "    this.errI = this.errI*0.995 + error*0.005; /* slow integral */\\n" +
-        "    var adj = (error/target)*0.005 + (this.errI/target)*0.001; /* proportional + integral */\\n" +
-        "    if(adj>0.002) adj=0.002; else if(adj<-0.002) adj=-0.002; /* clamp +/-2000 ppm */\\n" +
-        "    var stepAdj = this.step * (1 + adj);\\n" + "    var gainStep = (targetGain - this.curGain)/frames;\\n" +
-        "    if(paused){ for(var i=0;i<frames;i++){ this.curGain+=gainStep; out[i]=0; } return true; }\\n" +
-        "    for(var i=0;i<frames;i++){\\n" + "      var have=(w-r)&this.mask;\\n" +
-        "      if(have < 2){ Atomics.add(this.state,4,1); this.curGain+=gainStep; out[i]=0; continue; }\\n" +
-        "      var i0=(this.frac|0); var i1=i0+1; if(i1>=have) i1=have-1;\\n" +
-        "      var b0=this.data[(r + i0)&this.mask];\\n" + "      var b1=this.data[(r + i1)&this.mask];\\n" +
-        "      var frac=this.frac - i0;\\n" + "      var x=((b0-128)/128) + (((b1-128)/128)-((b0-128)/128))*frac;\\n" +
-        "      this.lpfY += this.lpfA*(x - this.lpfY);\\n" + "      this.curGain += gainStep;\\n" +
-        "      out[i]=this.lpfY * this.curGain;\\n" + "      this.frac += stepAdj;\\n" +
-        "      var consumed=this.frac|0; if(consumed>0){ this.frac-=consumed; var willConsume = consumed < have ? " +
-        "consumed : have; r = (r + willConsume) & this.mask; }\\n" +
-        "    }\\n" + "    Atomics.store(this.state,1,r);\\n" +
-        "    /* Silence-aware depth trim: the worklet (sole consumer) trims excess */\\n" +
-        "    /* ring data during sustained silence to prevent latency buildup.     */\\n" +
-        "    var silentPushes = Atomics.load(this.state,5)|0;\\n" + "    if(silentPushes >= 8){\\n" +
-        "      var w2=Atomics.load(this.state,0)|0; var r2=Atomics.load(this.state,1)|0;\\n" +
-        "      var depth=(w2-r2)&this.mask;\\n" + "      if(depth > targetSamples){\\n" +
-        "        var trim=depth-targetSamples;\\n" + "        Atomics.store(this.state,1,(r2+trim)&this.mask);\\n" +
-        "      }\\n" + "    }\\n" + "    return true;\\n" + "  }\\n" + "}\\n" +
-        "registerProcessor('mplus-worklet', MPlusProcessor);";
+    var workletCode = [
+        "class MPlusProcessor extends AudioWorkletProcessor {",
+        "  constructor(opts){",
+        "    super();",
+        "    var o=opts.processorOptions;",
+        "    var RB=" + RING_BYTES + ";",
+        "    this.data=new Uint8Array(RB);",
+        "    this.mask=RB-1;",
+        "    this.wIdx=0; this.rIdx=0;",
+        "    this.vol=0; this.silentCount=0; this.underruns=0;",
+        "    this.srcRate=o.srcRate||22254.5;",
+        "    this.targetLatency=o.targetLatency||0.083;",
+        "    this.vblSamples=o.vblSamples||370;",
+        "    this.targetSamples=Math.floor(this.targetLatency*this.srcRate);",
+        "    this.dstRate=sampleRate;",
+        "    this.step=this.srcRate/this.dstRate;",
+        "    this.errI=0; this.frac=0; this.lpfY=0;",
+        "    var fc=8000; this.lpfA=1.0-Math.exp(-2*Math.PI*fc/this.dstRate);",
+        "    this.curGain=0; this.started=false;",
+        "    var self2=this;",
+        "    this.port.onmessage=function(e){",
+        "      var d=e.data; var src=new Uint8Array(d.buf);",
+        "      var len=src.length;",
+        "      self2.vol=d.vol;",
+        "      if(d.sil){self2.silentCount++;}else{self2.silentCount=0;}",
+        "      var w=self2.wIdx, r=self2.rIdx, mask=self2.mask;",
+        "      var used=(w-r)&mask, free=mask-used;",
+        "      if(len>free){self2.rIdx=(r+len-free)&mask;}",
+        "      for(var i=0;i<len;i++){self2.data[(w+i)&mask]=src[i];}",
+        "      self2.wIdx=(w+len)&mask;",
+        "    };",
+        "  }",
+        "  process(inputs,outputs){",
+        "    var out=outputs[0][0]; var frames=out.length;",
+        "    var w=this.wIdx, r=this.rIdx, mask=this.mask;",
+        "    var avail=(w-r)&mask;",
+        "    if(!this.started){if(avail<this.targetSamples){for(var i=0;i<frames;i++)out[i]=0;return true;}this.started=true;}",
+        "    var ts=this.targetSamples;",
+        "    var targetGain=Math.min(Math.max(this.vol,0),7)/7;",
+        "    var error=avail-ts;",
+        "    this.errI=this.errI*0.995+error*0.005;",
+        "    var adj=(error/ts)*0.005+(this.errI/ts)*0.001;",
+        "    if(adj>0.002)adj=0.002;else if(adj<-0.002)adj=-0.002;",
+        "    var stepAdj=this.step*(1+adj);",
+        "    var gainStep=(targetGain-this.curGain)/frames;",
+        "    for(var i=0;i<frames;i++){",
+        "      var have=(w-r)&mask;",
+        "      if(have<2){this.underruns++;this.curGain+=gainStep;out[i]=0;continue;}",
+        "      var i0=this.frac|0; var i1=i0+1; if(i1>=have)i1=have-1;",
+        "      var b0=this.data[(r+i0)&mask];",
+        "      var b1=this.data[(r+i1)&mask];",
+        "      var frac=this.frac-i0;",
+        "      var x=((b0-128)/128)+(((b1-128)/128)-((b0-128)/128))*frac;",
+        "      this.lpfY+=this.lpfA*(x-this.lpfY);",
+        "      this.curGain+=gainStep;",
+        "      out[i]=this.lpfY*this.curGain;",
+        "      this.frac+=stepAdj;",
+        "      var consumed=this.frac|0;",
+        "      if(consumed>0){this.frac-=consumed;var wc=consumed<have?consumed:have;r=(r+wc)&mask;}",
+        "    }",
+        "    this.rIdx=r;",
+        "    if(this.silentCount>=8){",
+        "      var depth=(this.wIdx-this.rIdx)&mask;",
+        "      if(depth>ts){this.rIdx=(this.rIdx+depth-ts)&mask;}",
+        "    }",
+        "    return true;",
+        "  }",
+        "}",
+        "registerProcessor('mplus-worklet',MPlusProcessor);"
+    ].join("\\n");
 
     // Create worklet from blob URL
     var blobURL = URL.createObjectURL(new Blob([workletCode], {type: 'application/javascript'}));
@@ -124,16 +132,13 @@ EM_JS(void, mplus_audio_init, (), {
                     numberOfOutputs: 1,
                     outputChannelCount: [1],
                     processorOptions: {
-                        dataSAB: mp.dataSAB,
-                        stateSAB: mp.stateSAB,
-                        mask: mp.mask,
                         srcRate: mp.srcRate,
                         targetLatency: mp.targetLatency,
                         vblSamples: mp.vblSamples
                     }
                 });
                 mp.node.connect(mp.ctx.destination);
-                console.log('[audio] worklet init targetLatency=' + (mp.targetLatency * 1000).toFixed(1) + 'ms');
+                console.log('[audio] worklet init (MessagePort) targetLatency=' + (mp.targetLatency * 1000).toFixed(1) + 'ms');
             } catch (e) {
                 console.error('[audio] worklet node creation failed', e);
             }
@@ -151,10 +156,10 @@ EM_JS(void, mplus_audio_resume, (), {
     }
 });
 
-// Push audio data into SAB ring buffer
+// Push audio data to worklet via MessagePort
 EM_JS(void, mplus_audio_push, (uint32_t ptr, int len, int volume), {
     var mp = Module.mPlusAudio;
-    if (!mp || !mp.ctx || !mp.data || !mp.state || len <= 0)
+    if (!mp || !mp.ctx || !mp.node || len <= 0)
         return;
     mplus_audio_resume();
 
@@ -164,46 +169,24 @@ EM_JS(void, mplus_audio_push, (uint32_t ptr, int len, int volume), {
     var end = Math.min(ptr + len, heap.length);
     if (ptr >= end)
         return;
-    var src = heap.subarray(ptr, end);
 
-    // Set volume
-    Atomics.store(mp.state, 2, (volume | 0) & 7);
+    // Copy samples from WASM heap (must copy — heap can grow/move)
+    var samples = heap.slice(ptr, end);
 
     // Silence detection (all bytes equal)
-    var silent = 1;
+    var silent = true;
     for (var k = 1; k < len; k++) {
-        if (src[k] !== src[0]) {
-            silent = 0;
+        if (samples[k] !== samples[0]) {
+            silent = false;
             break;
         }
     }
-    // Consecutive silent push count — lets worklet know when ring is all silence
-    var sc = silent ? (Atomics.load(mp.state, 5) | 0) + 1 : 0;
-    Atomics.store(mp.state, 5, sc);
 
-    var w = Atomics.load(mp.state, 0) | 0;
-    var r = Atomics.load(mp.state, 1) | 0;
-    var mask = mp.mask;
-    var capacity = mask + 1;
-    var used = (w - r) & mask;
-    var free = capacity - 1 - used;
-
-    // Drop oldest data if ring is completely full (overflow)
-    if (len > free) {
-        var need = len - free;
-        r = (r + need) & mask;
-        Atomics.store(mp.state, 1, r);
-    }
-
-    // Always write data to ring — maintains stream continuity for the worklet
-    // resampler/LPF so silence-to-sound transitions are glitch-free.
-    var first = Math.min(len, capacity - (w & mask));
-    for (var i = 0; i < first; i++)
-        mp.data[(w + i) & mask] = src[i];
-    for (var i2 = first; i2 < len; i2++)
-        mp.data[(w + i2) & mask] = src[i2];
-    w = (w + len) & mask;
-    Atomics.store(mp.state, 0, w);
+    // Send to worklet via MessagePort (transfer the underlying buffer)
+    mp.node.port.postMessage(
+        {buf: samples.buffer, vol: (volume | 0) & 7, sil: silent},
+        [samples.buffer]
+    );
 });
 // clang-format on
 

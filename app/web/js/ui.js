@@ -291,12 +291,6 @@ export function initUI({ canvas, panel, toggle, termBody, canvasWrapper, screenT
 
   // --- Audio unlock ---
   (function setupAudioUnlock() {
-    try {
-      if (typeof SharedArrayBuffer === 'undefined') {
-        console.warn('[audio] SharedArrayBuffer unavailable; audio engine will be disabled. Use `make run` to serve with COOP/COEP headers.');
-        setStatus('Audio disabled: need COOP/COEP (use make run)', 5000);
-      }
-    } catch (_) {}
 
     let unlocked = false;
     const tryUnlock = () => {

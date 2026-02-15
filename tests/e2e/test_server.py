@@ -4,9 +4,6 @@ import http.server, socketserver, sys, os, argparse
 
 class Handler(http.server.SimpleHTTPRequestHandler):
     def end_headers(self):
-        # COOP/COEP for SharedArrayBuffer support
-        self.send_header('Cross-Origin-Opener-Policy', 'same-origin')
-        self.send_header('Cross-Origin-Embedder-Policy', 'require-corp')
         super().end_headers()
 
 def main():
