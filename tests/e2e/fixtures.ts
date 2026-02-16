@@ -114,6 +114,7 @@ export const test = base.extend<LoggingFixtures>({
     // Start polling in background
     const pollerPromise = pollForAssertion();
     
+    let testError: unknown = null;
     try {
       // Race the test execution against the assertion poller
       testPromise = (async () => {
@@ -124,8 +125,23 @@ export const test = base.extend<LoggingFixtures>({
         testPromise,
         pollerPromise
       ]);
+    } catch (e) {
+      testError = e;
     } finally {
       pollingActive = false;
+      
+      // On failure, capture just the #screen canvas (not the full browser window)
+      // so failure screenshots match the baseline screenshot format
+      if (testError || assertionFailure) {
+        try {
+          const screen = page.locator('#screen');
+          const buf = await screen.screenshot();
+          await testInfo.attach('test-failed-screen', {
+            body: buf,
+            contentType: 'image/png'
+          });
+        } catch {}
+      }
       
       // Capture terminal snapshot before throwing any errors or closing page
       try {
@@ -148,6 +164,9 @@ export const test = base.extend<LoggingFixtures>({
           `  timestamp: ${new Date(assertionFailure.timestamp).toISOString()}`
         );
       }
+      
+      // Re-throw original test error if no assertion failure took precedence
+      if (testError) throw testError;
     }
   },
   logger: async ({ page }, use, testInfo) => {

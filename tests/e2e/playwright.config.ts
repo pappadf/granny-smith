@@ -31,6 +31,8 @@ export default defineConfig({
     trace: 'retain-on-failure',
     // Video recording is off by default to save CPU (ffmpeg). Enable with PWTEST_VIDEO=1
     video: process.env.PWTEST_VIDEO ? 'retain-on-failure' : 'off',
+    // Built-in screenshot captures full browser window on failure; the page
+    // fixture also captures just the #screen canvas for easy baseline comparison
     screenshot: 'only-on-failure',
     headless: true
   },
