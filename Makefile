@@ -205,10 +205,66 @@ copy-static: $(STATIC_HTML) $(STATIC_JS) $(STATIC_CSS)
 	@echo "Copied static assets."
 
 # -- Run --
+# Optional boot-media variables (paths relative to repo root):
+#   ROM=path/to/rom.bin   FD0=path/to/floppy.img
+#   HD0=path/to/hd.zip    HD1=...  (up to HD7)
+#   SPEED=max|realtime|hardware
+
+# Build the URL query string from media variables.
+RUN_PARAMS :=
+ifdef ROM
+RUN_PARAMS += rom=/$(ROM)
+endif
+ifdef FD0
+RUN_PARAMS += fd0=/$(FD0)
+endif
+ifdef HD0
+RUN_PARAMS += hd0=/$(HD0)
+endif
+ifdef HD1
+RUN_PARAMS += hd1=/$(HD1)
+endif
+ifdef HD2
+RUN_PARAMS += hd2=/$(HD2)
+endif
+ifdef HD3
+RUN_PARAMS += hd3=/$(HD3)
+endif
+ifdef HD4
+RUN_PARAMS += hd4=/$(HD4)
+endif
+ifdef HD5
+RUN_PARAMS += hd5=/$(HD5)
+endif
+ifdef HD6
+RUN_PARAMS += hd6=/$(HD6)
+endif
+ifdef HD7
+RUN_PARAMS += hd7=/$(HD7)
+endif
+ifdef SPEED
+RUN_PARAMS += speed=$(SPEED)
+endif
+
+# Join params list with & to form query string.
+EMPTY :=
+SPACE := $(EMPTY) $(EMPTY)
+RUN_QS = $(subst $(SPACE),&,$(strip $(RUN_PARAMS)))
+
+# Enable fallback root when any media variable is specified.
+RUN_SERVER_FLAGS :=
+ifneq ($(strip $(RUN_PARAMS)),)
+RUN_SERVER_FLAGS += --fallback-root .
+endif
 
 run: all
+ifneq ($(strip $(RUN_PARAMS)),)
+	@echo "Starting dev server on http://localhost:8080"
+	python3 scripts/dev_server.py --root $(BUILD_DIR) --port 8080 $(RUN_SERVER_FLAGS) --default-params '$(RUN_QS)'
+else
 	@echo "Starting dev server on http://localhost:8080"
 	python3 scripts/dev_server.py --root $(BUILD_DIR) --port 8080
+endif
 
 # -- Headless native build --
 
@@ -271,3 +327,12 @@ help:
 	@echo "Options:"
 	@echo "  MODE=release|debug|sanitize  Build mode (default: release)"
 	@echo "  EXTRA_CFLAGS=...             Additional compiler flags"
+	@echo ""
+	@echo "Boot media (for 'run' target):"
+	@echo "  ROM=path/to/rom.bin          ROM image"
+	@echo "  FD0=path/to/floppy.img       Floppy disk image"
+	@echo "  HD0=path/to/hd.zip  ...HD7   Hard disk images (zip or raw)"
+	@echo "  SPEED=max|realtime|hardware   Emulation speed"
+	@echo ""
+	@echo "Example:"
+	@echo "  make run ROM=tests/data/roms/Plus_v3.rom HD0=tests/data/systems/hd.zip"
