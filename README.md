@@ -3,9 +3,9 @@
 [![CI](https://github.com/pappadf/granny-smith/actions/workflows/tests.yml/badge.svg)](https://github.com/pappadf/granny-smith/actions/workflows/tests.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-**Granny Smith** is a browser-first 68000 Macintosh emulator. You can try it out live here:
+**Granny Smith** is a browser-first 68000 Macintosh emulator. You can try it out live here: **[Run Granny Smith in browser](https://pappadf.github.io/gs-pages/latest/)**
 
-* **[Launch Granny Smith](https://pappadf.github.io/gs-pages/latest/)**
+![AppleTalk mounted filesystem](tests/e2e/specs/appletalk/appletalk-7-mounted.png)
 
 The guiding principle for this project is to "keep it simple" — simple for everyone to run classic Macintosh software as well as simple to develop and maintain the emulator itself.
 
