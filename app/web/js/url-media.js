@@ -165,7 +165,7 @@ export async function processUrlMedia(params) {
   // After downloads issue commands
   for (const [k] of params.entries()) {
     if (/^fd\d+$/.test(k)) {
-      await window.runCommand(`insert-fd ${BOOT_DIR}/${k}`);
+      await window.runCommand(`insert-fd ${BOOT_DIR}/${k} 0 1`);
     }
   }
   // Hard disks must be attached prior to first run; defer to pre-run hook.

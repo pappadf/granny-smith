@@ -165,7 +165,7 @@ test.describe('Disk Image Drag/Drop', () => {
     log('starting archive drop test');
     
     // Boot with ROM and system disk
-    await bootWithUploadedMedia(page, ROM_REL, SYSTEM_DISK_REL, undefined, { hideOverlay: true });
+    await bootWithUploadedMedia(page, ROM_REL, SYSTEM_DISK_REL, undefined, { hideOverlay: true, fdWritable: true });
     await page.evaluate(() => (window as any).runCommand('run'));
     await page.waitForTimeout(5000);
     log('emulator running with ROM and system disk');

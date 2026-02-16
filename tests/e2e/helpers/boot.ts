@@ -72,11 +72,12 @@ export async function bootWithUploadedMedia(
 	romRel: string,
 	fd0Rel?: string,
 	hd0ZipRel?: string,
-	options?: { hdSlot?: number; navigatePath?: string; hideOverlay?: boolean }
+	options?: { hdSlot?: number; navigatePath?: string; hideOverlay?: boolean; fdWritable?: boolean }
 ) {
 	const hdSlot = options?.hdSlot ?? 0;
 	const navigatePath = options?.navigatePath ?? '/index.html';
 	const hideOverlay = options?.hideOverlay ?? true;
+	const fdWritable = options?.fdWritable ?? false;
 
 	// Resolve required/optional media on disk
 	const rom = resolveRequired(romRel, 'ROM');
@@ -146,12 +147,12 @@ export async function bootWithUploadedMedia(
 	}, { timeout: 60000 });
 
 	// Issue boot-time commands but DO NOT run
-	await page.evaluate(({ hasFd, hasHd, hdSlot }) => {
+	await page.evaluate(({ hasFd, hasHd, hdSlot, fdWritable }) => {
 		const send = (window as any).runCommand;
 		send('load-rom /tmp/rom');
-		if (hasFd) send('insert-fd /tmp/fd0');
+		if (hasFd) send(`insert-fd /tmp/fd0 0 ${fdWritable ? 1 : 0}`);
 		if (hasHd) send(`attach-hd /tmp/hd${hdSlot} ${hdSlot}`);
-	}, { hasFd: Boolean(fd0), hasHd: Boolean(hdZip), hdSlot });
+	}, { hasFd: Boolean(fd0), hasHd: Boolean(hdZip), hdSlot, fdWritable });
 }
 
 interface UploadEntry { name: string; data: Uint8Array; }

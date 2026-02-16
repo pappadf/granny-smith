@@ -59,16 +59,17 @@ export function persistImage(volatilePath) {
 async function preprocessCommand(cmd) {
   const trimmed = (cmd || '').trim();
 
-  // insert-fd [path] [drive] — skip --probe and other flag variants
-  const fdMatch = trimmed.match(/^(insert-fd\s+)(?!"?--)(?:"([^"]+)"|(\S+))(\s+\d+)?$/);
+  // insert-fd [path] [drive] [writable] — skip --probe and other flag variants
+  const fdMatch = trimmed.match(/^(insert-fd\s+)(?!"?--)(?:"([^"]+)"|(\S+))(\s+\d+)?(\s+\d+)?$/);
   if (fdMatch) {
     const prefix = fdMatch[1];
     const filePath = fdMatch[2] || fdMatch[3];
-    const suffix = fdMatch[4] || '';
+    const driveSuffix = fdMatch[4] || '';
+    const writableSuffix = fdMatch[5] || '';
     if (isVolatile(filePath)) {
       const newPath = persistImage(filePath);
       await persistSync();
-      return `${prefix}${newPath}${suffix}`;
+      return `${prefix}${newPath}${driveSuffix}${writableSuffix}`;
     }
     return cmd;
   }
