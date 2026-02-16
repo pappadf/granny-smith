@@ -1344,18 +1344,22 @@ static int atp_xo_alloc(const ddp_header_t *ddp, const atp_packet_t *atp) {
             g_xo_entries[i].trel_hint = (uint8_t)(atp->ctl & 0x07);
             // Start release timer immediately (Inside AppleTalk p. 9-17)
             atp_xo_schedule_release(&g_xo_entries[i]);
+            LOG(10, "ATP: XO alloc slot=%d tid=0x%04X node=%u sock=%u->%u trel=%u", i, atp->tid, ddp->llap.src,
+                ddp->src_socket, ddp->dst_socket, atp->ctl & 0x07);
             return i;
         }
     }
+    LOG(2, "ATP: XO cache full (tid=0x%04X node=%u sock=%u)", atp->tid, ddp->llap.src, ddp->src_socket);
     return -1;
 }
 
 static void atp_xo_free(atp_xo_entry_t *entry) {
     if (!entry)
         return;
+    uint16_t index = (uint16_t)(entry - g_xo_entries);
+    LOG(10, "ATP: XO free slot=%u tid=0x%04X", index, entry->tid);
     // Cancel pending release timer event
     if (g_scheduler) {
-        uint16_t index = (uint16_t)(entry - g_xo_entries);
         uint64_t data = atp_encode_event_data(index, entry->release_generation);
         remove_event_by_data(g_scheduler, &atp_release_timeout_cb, NULL, data);
     }
@@ -1408,6 +1412,7 @@ static void atp_release_timeout_cb(void *source, uint64_t data) {
 static void atp_xo_send_cached(atp_xo_entry_t *entry, const ddp_header_t *ddp, uint8_t bitmap) {
     if (!entry || !entry->response_ready)
         return;
+    LOG(6, "ATP: XO retransmit cached tid=0x%04X bitmap=0x%02X", entry->tid, bitmap);
     ddp_header_t reply;
     ddp_setup_reply(ddp, &reply);
     reply.type = DDP_ATP;
@@ -1553,6 +1558,7 @@ static void atp_handle_response(const ddp_header_t *ddp, const atp_packet_t *atp
 
 static void atp_handle_trel(const ddp_header_t *ddp, const atp_packet_t *atp) {
     int idx = atp_xo_find(atp->tid, ddp->llap.src, ddp->src_socket, ddp->dst_socket);
+    LOG(10, "ATP: TRel tid=0x%04X node=%u sock=%u xo_slot=%d", atp->tid, ddp->llap.src, ddp->src_socket, idx);
     if (idx >= 0)
         atp_xo_free(&g_xo_entries[idx]);
 }
@@ -1678,6 +1684,7 @@ static void asp_in(const ddp_header_t *ddp, atp_packet_t *atp, void *ctx) {
 
     // SLS GetStatus: no ATP data, SPFunction in UserByte0
     if (atp->data_len == 0 && atp->user[0] == ASP_GET_STAT) {
+        LOG(3, "ASP GetStatus: request from node=%u socket=%u", ddp->llap.src, ddp->src_socket);
         const char *server_name = atalk_server_object_name();
         const char *machine_type = "GrannySmith";
         uint8_t *status_block = NULL;
@@ -1708,6 +1715,7 @@ static void asp_in(const ddp_header_t *ddp, atp_packet_t *atp, void *ctx) {
         uint8_t session_id = 0;
         uint16_t err = 0x0000;
         if (new_ref < 0) {
+            LOG(1, "ASP OpenSess: failed (no free sessions) wss=%u ver=0x%04X", wss, asp_ver);
             err = 0x0001;
             sss = 0;
             session_id = 0;
@@ -1719,6 +1727,7 @@ static void asp_in(const ddp_header_t *ddp, atp_packet_t *atp, void *ctx) {
                 s->asp_version = asp_ver;
             }
             session_id = (uint8_t)((uint16_t)new_ref & 0xFF);
+            LOG(3, "ASP OpenSess: id=0x%02X sss=%u wss=%u ver=0x%04X", session_id, sss, wss, asp_ver);
         }
         reply_user[0] = sss;
         reply_user[1] = session_id;
@@ -1765,6 +1774,8 @@ static void asp_in(const ddp_header_t *ddp, atp_packet_t *atp, void *ctx) {
         const uint8_t *cmd = atp->data;
         int cmd_len = atp->data_len;
         uint8_t opcode = (cmd_len > 0) ? cmd[0] : 0;
+        LOG(6, "ASP Command: session=0x%02X seq=0x%04X opcode=0x%02X len=%d", atp->user[1],
+            (unsigned)((atp->user[2] << 8) | atp->user[3]), opcode, cmd_len);
         uint8_t afp_out[ATP_MAX_ATP_PAYLOAD];
         int afp_len = 0;
         uint32_t afp_result = afp_handle_command(opcode, (cmd_len > 0) ? (cmd + 1) : NULL,
@@ -1772,6 +1783,7 @@ static void asp_in(const ddp_header_t *ddp, atp_packet_t *atp, void *ctx) {
         if (afp_result != 0x00000000u) {
             afp_len = 0;
         }
+        LOG(6, "ASP Command result: opcode=0x%02X result=0x%08X replyLen=%d", opcode, afp_result, afp_len);
         reply_user[0] = (uint8_t)((afp_result >> 24) & 0xFF);
         reply_user[1] = (uint8_t)((afp_result >> 16) & 0xFF);
         reply_user[2] = (uint8_t)((afp_result >> 8) & 0xFF);
@@ -1800,6 +1812,8 @@ static void asp_in(const ddp_header_t *ddp, atp_packet_t *atp, void *ctx) {
         const uint8_t *cmd = atp->data;
         int cmd_len = atp->data_len;
         uint8_t opcode = (cmd_len > 0) ? cmd[0] : 0;
+        LOG(6, "ASP Write: session=0x%02X seq=0x%04X opcode=0x%02X len=%d", atp->user[1],
+            (unsigned)((atp->user[2] << 8) | atp->user[3]), opcode, cmd_len);
         uint8_t afp_out[ATP_MAX_ATP_PAYLOAD];
         int afp_len = 0;
         uint32_t afp_result = afp_handle_command(opcode, (cmd_len > 0) ? (cmd + 1) : NULL,
@@ -1807,6 +1821,7 @@ static void asp_in(const ddp_header_t *ddp, atp_packet_t *atp, void *ctx) {
         if (afp_result != 0x00000000u) {
             afp_len = 0;
         }
+        LOG(6, "ASP Write result: opcode=0x%02X result=0x%08X replyLen=%d", opcode, afp_result, afp_len);
         reply_user[0] = (uint8_t)((afp_result >> 24) & 0xFF);
         reply_user[1] = (uint8_t)((afp_result >> 16) & 0xFF);
         reply_user[2] = (uint8_t)((afp_result >> 8) & 0xFF);
@@ -1815,6 +1830,7 @@ static void asp_in(const ddp_header_t *ddp, atp_packet_t *atp, void *ctx) {
         return;
     }
     default: {
+        LOG(3, "ASP unknown func=0x%02X sess=0x%04X req=0x%04X dataLen=%d", func, sess_ref, req_ref, atp->data_len);
         asp_reply_len =
             asp_build_reply(asp_reply, sizeof(asp_reply), (func == 0xFF) ? 0 : func, sess_ref, req_ref, 0, NULL, 0);
         break;

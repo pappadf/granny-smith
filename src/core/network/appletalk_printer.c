@@ -302,6 +302,8 @@ static void pap_session_finish(bool success, const char *reason, bool notify_cli
     saved_path[sizeof(saved_path) - 1] = '\0';
 
     LOG(success ? 2 : 1, "pap: job %u %s (%s)", job_id, success ? "complete" : "aborted", reason ? reason : "done");
+    LOG(10, "pap: session finish: conn=%u bytes=%zu notify=%d spool='%s'", closing_conn, bytes, notify_client ? 1 : 0,
+        saved_path);
 
     const char *final_msg = PRINTER_STATUS_IDLE;
 
@@ -910,6 +912,21 @@ static void pap_handle_data_fragment(const atp_response_fragment_t *fragment, vo
     LOG(5, "pap: fragment seq=%u len=%d dup=%d eom=%d sts=%d bitmapRemaining=0x%02X", (unsigned)fragment->seq,
         fragment->data_len, fragment->duplicate ? 1 : 0, fragment->eom ? 1 : 0, fragment->sts ? 1 : 0,
         (unsigned)fragment->bitmap_remaining);
+    if (fragment->data && fragment->data_len > 0) {
+        // Show first 32 bytes of fragment content at level 10
+        char preview[100];
+        int plen = fragment->data_len > 32 ? 32 : fragment->data_len;
+        int ppos = 0;
+        for (int i = 0; i < plen && ppos < (int)sizeof(preview) - 4; i++) {
+            uint8_t ch = fragment->data[i];
+            if (ch >= 0x20 && ch < 0x7F)
+                preview[ppos++] = (char)ch;
+            else
+                preview[ppos++] = '.';
+        }
+        preview[ppos] = '\0';
+        LOG(10, "pap: fragment content[%d]: '%s'%s", fragment->data_len, preview, fragment->data_len > 32 ? "..." : "");
+    }
     if (fragment->duplicate)
         return;
     bool placeholder_eof = false;
@@ -1074,8 +1091,12 @@ static void pap_handle_open(const ddp_header_t *ddp, atp_packet_t *atp) {
         (unsigned)g_printer.status_len);
     atp_responder_send_simple(ddp, atp, user, payload_len ? payload : NULL, payload_len, false);
 
-    if (accepted)
+    if (accepted) {
+        LOG(10, "pap: session opened conn=%u job=%u clientSock=%u clientFlow=%u clientAddr=%u.%u.%u", conn_id,
+            g_session.job_id, g_session.client_socket, g_session.client_flow_quantum, g_session.client_addr.net,
+            g_session.client_addr.node, g_session.client_addr.socket);
         pap_issue_senddata_request();
+    }
 }
 
 // Handles PAP SendStatus requests (ConnID must be zero per spec).
@@ -1167,6 +1188,17 @@ static void pap_socket_request_handler(const ddp_header_t *ddp, atp_packet_t *re
     } else {
         LOG(2, "PAP <- Mac func=%u: conn=%u tid=0x%04X bitmap=0x%02X len=%d%s", func, (unsigned)request->user[0],
             request->tid, request->bitmap, request->data_len, detail);
+    }
+
+    if (request->data_len > 0) {
+        char hex[64];
+        int hpos = 0;
+        int hlimit = request->data_len > 16 ? 16 : request->data_len;
+        for (int i = 0; i < hlimit && hpos < (int)sizeof(hex) - 4; i++)
+            hpos += snprintf(&hex[hpos], sizeof(hex) - hpos, "%02X ", request->data[i]);
+        if (hlimit < request->data_len && hpos < (int)sizeof(hex) - 2)
+            hpos += snprintf(&hex[hpos], sizeof(hex) - hpos, "...");
+        LOG(10, "PAP <- Mac data[%d]: %s", request->data_len, hex);
     }
 
     LOG_INDENT(4);
