@@ -5,7 +5,7 @@
 
 **Granny Smith** is a browser-first 68000 Macintosh emulator.
 > **[Try Granny Smith instantly in your browser!](https://pappadf.github.io/gs-pages/latest/)**  
-> _For best results, use a Chromium-based browser (Chrome, Edge, Brave, etc.). Safari has known issues._
+> _For best results, use a Chromium-based browser (Chrome, Edge, etc.). Safari has known issues._
 
 ![AppleTalk mounted filesystem](tests/e2e/specs/appletalk/appletalk-7-mounted.png)
 
