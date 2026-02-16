@@ -1353,6 +1353,12 @@ static int atp_xo_alloc(const ddp_header_t *ddp, const atp_packet_t *atp) {
 static void atp_xo_free(atp_xo_entry_t *entry) {
     if (!entry)
         return;
+    // Cancel pending release timer event
+    if (g_scheduler) {
+        uint16_t index = (uint16_t)(entry - g_xo_entries);
+        uint64_t data = atp_encode_event_data(index, entry->release_generation);
+        remove_event_by_data(g_scheduler, &atp_release_timeout_cb, NULL, data);
+    }
     entry->in_use = false;
     entry->release_generation++;
 }
@@ -1374,6 +1380,9 @@ static void atp_xo_schedule_release(atp_xo_entry_t *entry) {
     if (!g_scheduler)
         return;
     uint16_t index = (uint16_t)(entry - g_xo_entries);
+    // Cancel any existing release event for this entry before scheduling a new one
+    uint64_t old_data = atp_encode_event_data(index, entry->release_generation);
+    remove_event_by_data(g_scheduler, &atp_release_timeout_cb, NULL, old_data);
     entry->release_generation++;
     uint64_t data = atp_encode_event_data(index, entry->release_generation);
     uint32_t seconds = atp_trel_hint_seconds(entry->trel_hint);

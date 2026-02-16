@@ -1556,10 +1556,11 @@ static uint32_t afp_cmd_get_srvr_parms(const uint8_t *in, int in_len, uint8_t *o
 }
 
 static uint32_t afp_cmd_get_vol_parms(const uint8_t *in, int in_len, uint8_t *out, int out_max, int *out_len) {
-    if (in_len < 4 || out_max < 2)
+    if (in_len < 5 || out_max < 2)
         return AFPERR_ParamErr;
-    uint16_t vol_id = rd16be(in + 0);
-    uint16_t bitmap = rd16be(in + 2);
+    // Skip pad byte at in[0]
+    uint16_t vol_id = rd16be(in + 1);
+    uint16_t bitmap = rd16be(in + 3);
     vol_t *v = resolve_vol_by_id(vol_id);
     if (!v)
         return AFPERR_ObjectNotFound;
@@ -2531,8 +2532,8 @@ static uint32_t afp_cmd_get_comment(const uint8_t *in, int in_len, uint8_t *out,
 static uint32_t afp_cmd_add_icon(const uint8_t *in, int in_len, uint8_t *out, int out_max, int *out_len) {
     (void)out;
     (void)out_max;
-    // Params: pad(1) + DTRefNum(2) + Creator(4) + FileType(4) + IconType(1) + pad(1) + IconSize(2) = 15
-    if (in_len < 15)
+    // Params: pad(1) + DTRefNum(2) + Creator(4) + FileType(4) + IconType(1) + pad(1) + IconTag(2) + BitmapSize(2) = 17
+    if (in_len < 17)
         return AFPERR_ParamErr;
     int pos = 0;
     pos++; // pad
@@ -2544,6 +2545,7 @@ static uint32_t afp_cmd_add_icon(const uint8_t *in, int in_len, uint8_t *out, in
     pos += 4;
     uint8_t icon_type = in[pos++];
     pos++; // pad
+    pos += 2; // icon tag (unused)
     uint16_t icon_size = rd16be(in + pos);
     pos += 2;
 
