@@ -374,7 +374,8 @@ static catalog_entry_t *afp_catalog_find_by_path(vol_t *v, const char *rel_path)
     return NULL;
 }
 
-static catalog_entry_t *afp_catalog_insert(vol_t *v, const char *rel_path) {
+// Insert a catalog entry for the given relative path
+static catalog_entry_t *afp_catalog_insert(vol_t *v, const char *rel_path, bool is_dir) {
     if (!v || !rel_path)
         return NULL;
     if (v->catalog_len == v->catalog_cap) {
@@ -387,12 +388,13 @@ static catalog_entry_t *afp_catalog_insert(vol_t *v, const char *rel_path) {
     }
     catalog_entry_t *entry = &v->catalog[v->catalog_len++];
     memset(entry, 0, sizeof(*entry));
-    entry->is_dir = true;
+    entry->is_dir = is_dir;
     entry->cnid = (rel_path[0] == '\0') ? AFP_CNID_ROOT : v->next_cnid++;
     strncpy(entry->rel_path, rel_path, sizeof(entry->rel_path) - 1);
     return entry;
 }
 
+// Ensure a catalog entry exists for the given path (defaults to directory)
 static catalog_entry_t *afp_catalog_ensure(vol_t *v, const char *rel_path) {
     if (!v)
         return NULL;
@@ -401,7 +403,7 @@ static catalog_entry_t *afp_catalog_ensure(vol_t *v, const char *rel_path) {
     catalog_entry_t *entry = afp_catalog_find_by_path(v, rel_path);
     if (entry)
         return entry;
-    return afp_catalog_insert(v, rel_path);
+    return afp_catalog_insert(v, rel_path, true);
 }
 
 static catalog_entry_t *afp_catalog_resolve(vol_t *v, uint32_t dir_id) {
@@ -579,9 +581,14 @@ static uint16_t afp_count_offspring(const char *full_path) {
     return (uint16_t)count;
 }
 
+// Return AFP file attribute bits based on host permissions
 static uint16_t afp_file_attributes_from_stat(const struct stat *st) {
-    (void)st;
-    return (uint16_t)(1u << 5); // WriteInhibit since the volume is read-only
+    if (!st)
+        return 0;
+    // Set WriteInhibit (bit 5) only if host file is not writable by owner
+    if (!(st->st_mode & S_IWUSR))
+        return (uint16_t)(1u << 5);
+    return 0;
 }
 
 static uint16_t afp_dir_attributes_from_stat(const struct stat *st) {
@@ -598,13 +605,37 @@ static uint32_t afp_compute_access_rights(const struct stat *st) {
     return 0x80000000u | (owner << 16) | (group << 8) | world;
 }
 
+// Per-file/dir Finder Info storage (32 bytes each)
+typedef struct {
+    bool in_use;
+    uint16_t vol_id;
+    char rel_path[AFP_MAX_REL_PATH];
+    uint8_t finder_info[32];
+} finder_info_entry_t;
+static finder_info_entry_t g_finder_info[256];
+
+// Look up Finder Info for a file or directory
+static finder_info_entry_t *afp_find_finder_info(uint16_t vol_id, const char *rel_path) {
+    for (int i = 0; i < ARRAY_LEN(g_finder_info); i++) {
+        if (g_finder_info[i].in_use && g_finder_info[i].vol_id == vol_id &&
+            strcmp(g_finder_info[i].rel_path, rel_path) == 0)
+            return &g_finder_info[i];
+    }
+    return NULL;
+}
+
 static bool afp_populate_param_area(bool is_dir, vol_t *vol, const char *rel_path, const struct stat *st, uint16_t bm,
                                     uint8_t *out, int pbase) {
     if (!st)
         return false;
     int ptr;
+    // Finder Info (bit 5): look up stored info or write zeros
     if ((ptr = afp_param_field_ptr(is_dir, bm, pbase, 5)) >= 0) {
-        memset(out + ptr, 0, 32);
+        finder_info_entry_t *fi = vol ? afp_find_finder_info(vol->vol_id, rel_path ? rel_path : "") : NULL;
+        if (fi)
+            memcpy(out + ptr, fi->finder_info, 32);
+        else
+            memset(out + ptr, 0, 32);
     }
     if ((ptr = afp_param_field_ptr(is_dir, bm, pbase, 0)) >= 0) {
         uint16_t attr = is_dir ? afp_dir_attributes_from_stat(st) : afp_file_attributes_from_stat(st);
@@ -677,18 +708,37 @@ static int afp_read_pstring(const uint8_t *in, int in_len, int pos, char *dst, s
     pos += raw_len;
     return pos;
 }
+// Open fork descriptor
 typedef struct {
     bool in_use;
     uint16_t fork_ref;
     uint16_t vol_id;
-    char path[512];
+    uint16_t access_mode; // AFP access/deny mode bits
+    bool is_resource; // true = resource fork, false = data fork
+    char path[512]; // full host path
+    char rel_path[AFP_MAX_REL_PATH]; // volume-relative path
     FILE *f;
 } fork_t;
 static vol_t g_vols[8]; // mirror shares at time of open (max shares)
 static fork_t g_forks[16];
 static uint16_t g_next_fork_ref = 0x0042;
 
+// Close an open fork and release its slot
+static void close_fork(fork_t *fk) {
+    if (!fk)
+        return;
+    if (fk->f)
+        fclose(fk->f);
+    memset(fk, 0, sizeof(*fk));
+    fk->in_use = false;
+}
+
 static void afp_release_volume(uint16_t vol_id) {
+    // Close any open forks on this volume
+    for (int i = 0; i < 16; i++) {
+        if (g_forks[i].in_use && g_forks[i].vol_id == vol_id)
+            close_fork(&g_forks[i]);
+    }
     for (int i = 0; i < MAX_SHARES; i++) {
         if (g_vols[i].in_use && g_vols[i].vol_id == vol_id) {
             afp_reset_volume(&g_vols[i]);
@@ -864,15 +914,28 @@ static int afp_write_vol_param_block(const vol_t *v, uint16_t *bitmap_ptr, uint8
     return vpos;
 }
 
-static fork_t *alloc_fork(uint16_t vol_id, const char *path) {
+// Allocate a fork slot; opens file with appropriate mode
+static fork_t *alloc_fork(uint16_t vol_id, const char *path, const char *rel_path, uint16_t access_mode,
+                          bool is_resource) {
     for (int i = 0; i < 16; i++)
         if (!g_forks[i].in_use) {
+            memset(&g_forks[i], 0, sizeof(g_forks[i]));
             g_forks[i].in_use = true;
             g_forks[i].fork_ref = g_next_fork_ref++;
             g_forks[i].vol_id = vol_id;
+            g_forks[i].access_mode = access_mode;
+            g_forks[i].is_resource = is_resource;
             strncpy(g_forks[i].path, path, sizeof(g_forks[i].path) - 1);
-            g_forks[i].path[sizeof(g_forks[i].path) - 1] = '\0';
-            g_forks[i].f = fopen(path, "rb");
+            if (rel_path)
+                strncpy(g_forks[i].rel_path, rel_path, sizeof(g_forks[i].rel_path) - 1);
+            if (is_resource) {
+                // Resource forks: open /dev/null as empty placeholder
+                g_forks[i].f = fopen("/dev/null", "rb");
+            } else {
+                // Data fork: "r+b" if write requested (bit 1), else "rb"
+                bool want_write = (access_mode & 0x0002);
+                g_forks[i].f = fopen(path, want_write ? "r+b" : "rb");
+            }
             if (!g_forks[i].f) {
                 g_forks[i].in_use = false;
                 return NULL;
@@ -897,6 +960,60 @@ typedef struct {
 } dt_entry_t;
 static dt_entry_t g_dt[8];
 static uint16_t g_next_dt_ref = 0x0100;
+
+// Store Finder Info for a file or directory
+static finder_info_entry_t *afp_set_finder_info(uint16_t vol_id, const char *rel_path, const uint8_t *info) {
+    finder_info_entry_t *fi = afp_find_finder_info(vol_id, rel_path);
+    if (!fi) {
+        for (int i = 0; i < ARRAY_LEN(g_finder_info); i++) {
+            if (!g_finder_info[i].in_use) {
+                fi = &g_finder_info[i];
+                break;
+            }
+        }
+    }
+    if (!fi)
+        return NULL;
+    fi->in_use = true;
+    fi->vol_id = vol_id;
+    strncpy(fi->rel_path, rel_path ? rel_path : "", sizeof(fi->rel_path) - 1);
+    if (info)
+        memcpy(fi->finder_info, info, 32);
+    return fi;
+}
+
+// Desktop DB icon storage
+typedef struct {
+    bool in_use;
+    uint16_t vol_id;
+    uint32_t creator; // 4-byte creator code
+    uint32_t file_type; // 4-byte type code
+    uint8_t icon_type; // icon type tag
+    uint16_t icon_size; // bitmap size in bytes
+    uint8_t icon_data[1024]; // icon bitmap
+} dt_icon_t;
+static dt_icon_t g_dt_icons[64];
+
+// Desktop DB APPL mapping storage
+typedef struct {
+    bool in_use;
+    uint16_t vol_id;
+    uint32_t creator; // 4-byte creator code
+    uint32_t appl_tag; // application tag
+    char path[AFP_MAX_REL_PATH]; // path to the application
+} dt_appl_t;
+static dt_appl_t g_dt_appls[32];
+
+// Desktop DB comment storage
+typedef struct {
+    bool in_use;
+    uint16_t vol_id;
+    uint32_t dir_id;
+    char path[AFP_MAX_REL_PATH];
+    uint8_t comment_len;
+    char comment[200];
+} dt_comment_t;
+static dt_comment_t g_dt_comments[64];
 
 static dt_entry_t *ensure_dt_for_vol(uint16_t vol_id) {
     for (int i = 0; i < MAX_SHARES; i++) {
@@ -1592,14 +1709,1500 @@ static uint32_t afp_cmd_open_dt(const uint8_t *in, int in_len, uint8_t *out, int
     return AFPERR_NoErr;
 }
 
-static uint32_t afp_cmd_read_only_denied(const uint8_t *in, int in_len, uint8_t *out, int out_max, int *out_len) {
+// FPOpenFork (AFP 0x1A) - Open a data or resource fork
+static uint32_t afp_cmd_open_fork(const uint8_t *in, int in_len, uint8_t *out, int out_max, int *out_len) {
+    if (in_len < 10)
+        return AFPERR_ParamErr;
+    int pos = 0;
+    uint8_t flag = in[pos++]; // bit 7 = resource fork
+    bool is_resource = (flag & 0x80) != 0;
+    uint16_t vol_id = rd16be(in + pos);
+    pos += 2;
+    uint32_t dir_id = rd32be(in + pos);
+    pos += 4;
+    uint16_t bitmap = rd16be(in + pos);
+    pos += 2;
+    uint16_t access_mode = (pos + 2 <= in_len) ? rd16be(in + pos) : 0x0001;
+    pos += 2;
+    uint8_t path_type = (pos < in_len) ? in[pos++] : 0;
+    (void)path_type;
+    char path[AFP_MAX_NAME];
+    if ((pos = afp_read_pstring(in, in_len, pos, path, sizeof(path))) < 0)
+        return AFPERR_ParamErr;
+
+    vol_t *vol = resolve_vol_by_id(vol_id);
+    if (!vol)
+        return AFPERR_ObjectNotFound;
+    catalog_entry_t *base = afp_catalog_resolve(vol, dir_id);
+    if (!base)
+        return AFPERR_DirNotFound;
+
+    char target_rel[AFP_MAX_REL_PATH];
+    if (!afp_normalize_relative_path(base->rel_path, path, target_rel, sizeof(target_rel)))
+        return AFPERR_ParamErr;
+    struct stat st;
+    if (!afp_stat_path(vol, target_rel, &st))
+        return AFPERR_ObjectNotFound;
+    if (S_ISDIR(st.st_mode))
+        return AFPERR_ObjectTypeErr;
+
+    char full[PATH_MAX];
+    if (!afp_full_path(vol, target_rel, full, sizeof(full)))
+        return AFPERR_ParamErr;
+
+    fork_t *fk = alloc_fork(vol_id, full, target_rel, access_mode, is_resource);
+    if (!fk)
+        return AFPERR_TooManyFilesOpen;
+
+    // Ensure catalog entry exists for the file
+    catalog_entry_t *file_entry = afp_catalog_find_by_path(vol, target_rel);
+    if (!file_entry)
+        file_entry = afp_catalog_insert(vol, target_rel, false);
+
+    // Reply: bitmap(2) + OForkRefNum(2) + file params
+    if (out_max < 4)
+        return AFPERR_ParamErr;
+    wr16be(out + 0, bitmap);
+    wr16be(out + 2, fk->fork_ref);
+
+    int pbase = 4;
+    int p = pbase;
+    if (bitmap) {
+        int pos_long_off = -1, pos_short_off = -1;
+        p = afp_write_param_area(false, bitmap, out, pbase, out_max, &pos_long_off, &pos_short_off);
+        if (p < 0) {
+            close_fork(fk);
+            return AFPERR_ParamErr;
+        }
+        if (!afp_populate_param_area(false, vol, target_rel, &st, bitmap, out, pbase)) {
+            close_fork(fk);
+            return AFPERR_ParamErr;
+        }
+        const char *name = afp_last_component(target_rel);
+        if (!name)
+            name = "";
+        uint8_t long_len = (uint8_t)(strlen(name) > 255 ? 255 : strlen(name));
+        uint8_t short_len = (uint8_t)(strlen(name) > 31 ? 31 : strlen(name));
+        p = afp_write_name_vars(out, p, out_max, pbase, name, bitmap, pos_long_off, pos_short_off, long_len, short_len);
+        if (p < 0) {
+            close_fork(fk);
+            return AFPERR_ParamErr;
+        }
+    }
+    if (p % 2 && p < out_max)
+        out[p++] = 0x00;
+    if (out_len)
+        *out_len = p;
+    LOG(1, "AFP FPOpenFork: vol=0x%04X dir=0x%08X %s path='%s' → ref=0x%04X", vol_id, (unsigned)dir_id,
+        is_resource ? "rsrc" : "data", target_rel, fk->fork_ref);
+    return AFPERR_NoErr;
+}
+
+// FPCloseFork (AFP 0x04) - Close an open fork
+static uint32_t afp_cmd_close_fork(const uint8_t *in, int in_len, uint8_t *out, int out_max, int *out_len) {
+    (void)out;
+    (void)out_max;
+    if (in_len < 3)
+        return AFPERR_ParamErr;
+    uint16_t fork_ref = rd16be(in + 1);
+    fork_t *fk = find_fork(fork_ref);
+    if (!fk)
+        return AFPERR_ParamErr;
+    LOG(1, "AFP FPCloseFork: ref=0x%04X path='%s'", fork_ref, fk->rel_path);
+    close_fork(fk);
+    if (out_len)
+        *out_len = 0;
+    return AFPERR_NoErr;
+}
+
+// FPRead (AFP 0x1B) - Read data from an open fork
+static uint32_t afp_cmd_read(const uint8_t *in, int in_len, uint8_t *out, int out_max, int *out_len) {
+    if (in_len < 13)
+        return AFPERR_ParamErr;
+    int pos = 0;
+    pos++; // pad
+    uint16_t fork_ref = rd16be(in + pos);
+    pos += 2;
+    uint32_t offset = rd32be(in + pos);
+    pos += 4;
+    uint32_t req_count = rd32be(in + pos);
+    pos += 4;
+    uint8_t newline_mask = (pos < in_len) ? in[pos++] : 0;
+    uint8_t newline_char = (pos < in_len) ? in[pos++] : 0;
+
+    fork_t *fk = find_fork(fork_ref);
+    if (!fk)
+        return AFPERR_ParamErr;
+
+    // Get file size for EOF detection
+    fseek(fk->f, 0, SEEK_END);
+    long file_size = ftell(fk->f);
+    if (file_size < 0)
+        file_size = 0;
+
+    // Check if starting beyond EOF
+    if ((long)offset >= file_size) {
+        if (out_len)
+            *out_len = 0;
+        return AFPERR_EOFErr;
+    }
+
+    fseek(fk->f, (long)offset, SEEK_SET);
+
+    uint32_t avail = (uint32_t)(file_size - (long)offset);
+    uint32_t to_read = req_count;
+    if (to_read > avail)
+        to_read = avail;
+    if (to_read > (uint32_t)out_max)
+        to_read = (uint32_t)out_max;
+
+    size_t got = fread(out, 1, to_read, fk->f);
+
+    // Handle newline termination if mask is set
+    if (newline_mask) {
+        for (size_t i = 0; i < got; i++) {
+            if ((out[i] & newline_mask) == (newline_char & newline_mask)) {
+                got = i + 1;
+                break;
+            }
+        }
+    }
+
+    if (out_len)
+        *out_len = (int)got;
+    LOG(2, "AFP FPRead: ref=0x%04X off=%u req=%u got=%zu", fork_ref, offset, req_count, got);
+
+    // Return EOF if we reached the end
+    if (offset + (uint32_t)got >= (uint32_t)file_size)
+        return AFPERR_EOFErr;
+    return AFPERR_NoErr;
+}
+
+// FPGetForkParms (AFP 0x0E) - Get parameters for an open fork
+static uint32_t afp_cmd_get_fork_parms(const uint8_t *in, int in_len, uint8_t *out, int out_max, int *out_len) {
+    if (in_len < 5)
+        return AFPERR_ParamErr;
+    int pos = 0;
+    pos++; // pad
+    uint16_t fork_ref = rd16be(in + pos);
+    pos += 2;
+    uint16_t bitmap = rd16be(in + pos);
+    pos += 2;
+
+    fork_t *fk = find_fork(fork_ref);
+    if (!fk)
+        return AFPERR_ParamErr;
+
+    vol_t *vol = find_vol_by_id(fk->vol_id);
+    if (!vol)
+        return AFPERR_ParamErr;
+
+    struct stat st;
+    if (stat(fk->path, &st) != 0)
+        return AFPERR_ObjectNotFound;
+
+    if (out_max < 2)
+        return AFPERR_ParamErr;
+    wr16be(out + 0, bitmap);
+
+    int pbase = 2;
+    int p = pbase;
+    if (bitmap) {
+        int pos_long_off = -1, pos_short_off = -1;
+        p = afp_write_param_area(false, bitmap, out, pbase, out_max, &pos_long_off, &pos_short_off);
+        if (p < 0)
+            return AFPERR_ParamErr;
+        if (!afp_populate_param_area(false, vol, fk->rel_path, &st, bitmap, out, pbase))
+            return AFPERR_ParamErr;
+        const char *name = afp_last_component(fk->rel_path);
+        if (!name)
+            name = "";
+        uint8_t long_len = (uint8_t)(strlen(name) > 255 ? 255 : strlen(name));
+        uint8_t short_len = (uint8_t)(strlen(name) > 31 ? 31 : strlen(name));
+        p = afp_write_name_vars(out, p, out_max, pbase, name, bitmap, pos_long_off, pos_short_off, long_len, short_len);
+        if (p < 0)
+            return AFPERR_ParamErr;
+    }
+    if (p % 2 && p < out_max)
+        out[p++] = 0x00;
+    if (out_len)
+        *out_len = p;
+    LOG(1, "AFP FPGetForkParms: ref=0x%04X bitmap=0x%04X", fork_ref, bitmap);
+    return AFPERR_NoErr;
+}
+
+// FPSetForkParms (AFP 0x1F) - Set fork parameters (e.g. truncate)
+static uint32_t afp_cmd_set_fork_parms(const uint8_t *in, int in_len, uint8_t *out, int out_max, int *out_len) {
+    (void)out;
+    (void)out_max;
+    if (in_len < 7)
+        return AFPERR_ParamErr;
+    int pos = 0;
+    pos++; // pad
+    uint16_t fork_ref = rd16be(in + pos);
+    pos += 2;
+    uint16_t bitmap = rd16be(in + pos);
+    pos += 2;
+
+    fork_t *fk = find_fork(fork_ref);
+    if (!fk)
+        return AFPERR_ParamErr;
+
+    // Data fork length is bit 9, resource fork length is bit 10
+    if (bitmap & (1u << 9)) {
+        if (pos + 4 > in_len)
+            return AFPERR_ParamErr;
+        uint32_t new_len = rd32be(in + pos);
+        pos += 4;
+        int fd = fileno(fk->f);
+        if (fd >= 0)
+            ftruncate(fd, (off_t)new_len);
+    }
+    if (bitmap & (1u << 10)) {
+        // Resource fork length - skip (resource fork is /dev/null)
+        pos += 4;
+    }
+    if (out_len)
+        *out_len = 0;
+    LOG(1, "AFP FPSetForkParms: ref=0x%04X bitmap=0x%04X", fork_ref, bitmap);
+    return AFPERR_NoErr;
+}
+
+// FPFlush (AFP 0x0A) - Flush all forks on a volume
+static uint32_t afp_cmd_flush(const uint8_t *in, int in_len, uint8_t *out, int out_max, int *out_len) {
+    (void)out;
+    (void)out_max;
+    if (in_len < 3)
+        return AFPERR_ParamErr;
+    uint16_t vol_id = rd16be(in + 1);
+    for (int i = 0; i < 16; i++) {
+        if (g_forks[i].in_use && g_forks[i].vol_id == vol_id && g_forks[i].f)
+            fflush(g_forks[i].f);
+    }
+    if (out_len)
+        *out_len = 0;
+    LOG(2, "AFP FPFlush: vol=0x%04X", vol_id);
+    return AFPERR_NoErr;
+}
+
+// FPFlushFork (AFP 0x0B) - Flush a single fork
+static uint32_t afp_cmd_flush_fork(const uint8_t *in, int in_len, uint8_t *out, int out_max, int *out_len) {
+    (void)out;
+    (void)out_max;
+    if (in_len < 3)
+        return AFPERR_ParamErr;
+    uint16_t fork_ref = rd16be(in + 1);
+    fork_t *fk = find_fork(fork_ref);
+    if (!fk)
+        return AFPERR_ParamErr;
+    if (fk->f)
+        fflush(fk->f);
+    if (out_len)
+        *out_len = 0;
+    LOG(2, "AFP FPFlushFork: ref=0x%04X", fork_ref);
+    return AFPERR_NoErr;
+}
+
+// Helper to parse vol/dir/bitmap/path and extract Finder Info if present
+static uint32_t afp_parse_set_parms(const uint8_t *in, int in_len, bool has_file_bm, bool has_dir_bm) {
+    int pos = 0;
+    pos++; // pad
+    if (pos + 2 > in_len)
+        return AFPERR_ParamErr;
+    uint16_t vol_id = rd16be(in + pos);
+    pos += 2;
+    if (pos + 4 > in_len)
+        return AFPERR_ParamErr;
+    uint32_t dir_id = rd32be(in + pos);
+    pos += 4;
+    uint16_t bitmap = 0;
+    if (has_file_bm && has_dir_bm) {
+        // FPSetFileDirParms format: FileBitmap(2) + DirBitmap(2)
+        if (pos + 4 > in_len)
+            return AFPERR_ParamErr;
+        uint16_t file_bm = rd16be(in + pos);
+        pos += 2;
+        uint16_t dir_bm = rd16be(in + pos);
+        pos += 2;
+        bitmap = file_bm | dir_bm; // union of both bitmaps
+    } else {
+        if (pos + 2 > in_len)
+            return AFPERR_ParamErr;
+        bitmap = rd16be(in + pos);
+        pos += 2;
+    }
+    uint8_t path_type = (pos < in_len) ? in[pos++] : 0;
+    (void)path_type;
+    char path[AFP_MAX_NAME];
+    if ((pos = afp_read_pstring(in, in_len, pos, path, sizeof(path))) < 0)
+        return AFPERR_ParamErr;
+
+    vol_t *vol = resolve_vol_by_id(vol_id);
+    if (!vol)
+        return AFPERR_ObjectNotFound;
+    catalog_entry_t *base = afp_catalog_resolve(vol, dir_id);
+    if (!base)
+        return AFPERR_DirNotFound;
+
+    char target_rel[AFP_MAX_REL_PATH];
+    if (!afp_normalize_relative_path(base->rel_path, path, target_rel, sizeof(target_rel)))
+        return AFPERR_ParamErr;
+    struct stat st;
+    if (!afp_stat_path(vol, target_rel, &st))
+        return AFPERR_ObjectNotFound;
+
+    // If Finder Info bit (5) is in bitmap, store it
+    if (bitmap & (1u << 5)) {
+        // Calculate offset to Finder Info in the param data
+        bool is_dir = S_ISDIR(st.st_mode);
+        int fi_offset = 0;
+        for (int b = 0; b < 5; b++) {
+            if (!(bitmap & (1u << b)))
+                continue;
+            if (!is_dir) {
+                switch (b) {
+                case 0:
+                    fi_offset += 2;
+                    break;
+                case 1:
+                    fi_offset += 4;
+                    break;
+                case 2:
+                    fi_offset += 4;
+                    break;
+                case 3:
+                    fi_offset += 4;
+                    break;
+                case 4:
+                    fi_offset += 4;
+                    break;
+                default:
+                    break;
+                }
+            } else {
+                switch (b) {
+                case 0:
+                    fi_offset += 2;
+                    break;
+                case 1:
+                    fi_offset += 4;
+                    break;
+                case 2:
+                    fi_offset += 4;
+                    break;
+                case 3:
+                    fi_offset += 4;
+                    break;
+                case 4:
+                    fi_offset += 4;
+                    break;
+                default:
+                    break;
+                }
+            }
+        }
+        if (pos + fi_offset + 32 <= in_len)
+            afp_set_finder_info(vol_id, target_rel, in + pos + fi_offset);
+    }
+
+    LOG(2, "AFP SetParms: vol=0x%04X dir=0x%08X bitmap=0x%04X path='%s'", vol_id, (unsigned)dir_id, bitmap,
+        target_rel[0] ? target_rel : "<root>");
+    return AFPERR_NoErr;
+}
+
+// FPSetFileParms (AFP 0x1E) - Set file parameters
+static uint32_t afp_cmd_set_file_parms(const uint8_t *in, int in_len, uint8_t *out, int out_max, int *out_len) {
+    (void)out;
+    (void)out_max;
+    if (out_len)
+        *out_len = 0;
+    return afp_parse_set_parms(in, in_len, false, false);
+}
+
+// FPSetDirParms (AFP 0x1D) - Set directory parameters
+static uint32_t afp_cmd_set_dir_parms(const uint8_t *in, int in_len, uint8_t *out, int out_max, int *out_len) {
+    (void)out;
+    (void)out_max;
+    if (out_len)
+        *out_len = 0;
+    return afp_parse_set_parms(in, in_len, false, false);
+}
+
+// FPSetFileDirParms (AFP 0x23) - Set file or directory parameters
+static uint32_t afp_cmd_set_file_dir_parms(const uint8_t *in, int in_len, uint8_t *out, int out_max, int *out_len) {
+    (void)out;
+    (void)out_max;
+    if (out_len)
+        *out_len = 0;
+    return afp_parse_set_parms(in, in_len, true, true);
+}
+
+// FPSetVolParms (AFP 0x20) - Set volume parameters (backup date)
+static uint32_t afp_cmd_set_vol_parms(const uint8_t *in, int in_len, uint8_t *out, int out_max, int *out_len) {
+    (void)out;
+    (void)out_max;
+    if (in_len < 5)
+        return AFPERR_ParamErr;
+    // Accept silently (backup date bit 4 only)
+    if (out_len)
+        *out_len = 0;
+    LOG(2, "AFP FPSetVolParms: accepted");
+    return AFPERR_NoErr;
+}
+
+// FPCloseDT (AFP 0x31) - Close desktop database reference
+static uint32_t afp_cmd_close_dt(const uint8_t *in, int in_len, uint8_t *out, int out_max, int *out_len) {
+    (void)out;
+    (void)out_max;
+    if (in_len < 3)
+        return AFPERR_ParamErr;
+    uint16_t dt_ref = rd16be(in + 1);
+    for (int i = 0; i < MAX_SHARES; i++) {
+        if (g_dt[i].in_use && g_dt[i].dt_ref == dt_ref) {
+            g_dt[i].in_use = false;
+            break;
+        }
+    }
+    if (out_len)
+        *out_len = 0;
+    LOG(2, "AFP FPCloseDT: ref=0x%04X", dt_ref);
+    return AFPERR_NoErr;
+}
+
+// FPGetIcon (AFP 0x33) - Get icon bitmap from desktop database
+static uint32_t afp_cmd_get_icon(const uint8_t *in, int in_len, uint8_t *out, int out_max, int *out_len) {
+    if (in_len < 14)
+        return AFPERR_ParamErr;
+    int pos = 0;
+    pos++; // pad
+    uint16_t dt_ref = rd16be(in + pos);
+    pos += 2;
+    (void)dt_ref;
+    uint32_t creator = rd32be(in + pos);
+    pos += 4;
+    uint32_t file_type = rd32be(in + pos);
+    pos += 4;
+    uint8_t icon_type = in[pos++];
+    uint16_t req_size = (pos + 2 <= in_len) ? rd16be(in + pos) : 0;
+    pos += 2;
+    (void)req_size;
+
+    // Search stored icons
+    for (int i = 0; i < ARRAY_LEN(g_dt_icons); i++) {
+        if (g_dt_icons[i].in_use && g_dt_icons[i].creator == creator && g_dt_icons[i].file_type == file_type &&
+            g_dt_icons[i].icon_type == icon_type) {
+            int sz = (int)g_dt_icons[i].icon_size;
+            if (sz > out_max)
+                sz = out_max;
+            memcpy(out, g_dt_icons[i].icon_data, sz);
+            if (out_len)
+                *out_len = sz;
+            return AFPERR_NoErr;
+        }
+    }
+    return AFPERR_ItemNotFound;
+}
+
+// FPGetIconInfo (AFP 0x34) - Enumerate icons by creator
+static uint32_t afp_cmd_get_icon_info(const uint8_t *in, int in_len, uint8_t *out, int out_max, int *out_len) {
+    if (in_len < 9 || out_max < 12)
+        return AFPERR_ParamErr;
+    int pos = 0;
+    pos++; // pad
+    uint16_t dt_ref = rd16be(in + pos);
+    pos += 2;
+    (void)dt_ref;
+    uint32_t creator = rd32be(in + pos);
+    pos += 4;
+    uint16_t icon_index = rd16be(in + pos);
+    pos += 2;
+
+    // Find the Nth icon with matching creator
+    int found = 0;
+    for (int i = 0; i < ARRAY_LEN(g_dt_icons); i++) {
+        if (g_dt_icons[i].in_use && g_dt_icons[i].creator == creator) {
+            found++;
+            if (found == (int)icon_index) {
+                // Reply: IconTag(4) + FileType(4) + IconType(1) + pad(1) + Size(2)
+                wr32be(out + 0, 0); // tag
+                wr32be(out + 4, g_dt_icons[i].file_type);
+                out[8] = g_dt_icons[i].icon_type;
+                out[9] = 0; // pad
+                wr16be(out + 10, g_dt_icons[i].icon_size);
+                if (out_len)
+                    *out_len = 12;
+                return AFPERR_NoErr;
+            }
+        }
+    }
+    return AFPERR_ItemNotFound;
+}
+
+// FPAddAPPL (AFP 0x35) - Add APPL mapping to desktop database
+static uint32_t afp_cmd_add_appl(const uint8_t *in, int in_len, uint8_t *out, int out_max, int *out_len) {
+    (void)out;
+    (void)out_max;
+    if (in_len < 11)
+        return AFPERR_ParamErr;
+    int pos = 0;
+    pos++; // pad
+    uint16_t dt_ref = rd16be(in + pos);
+    pos += 2;
+    uint32_t dir_id = rd32be(in + pos);
+    pos += 4;
+    (void)dir_id;
+    uint32_t creator = rd32be(in + pos);
+    pos += 4;
+    uint32_t appl_tag = (pos + 4 <= in_len) ? rd32be(in + pos) : 0;
+    pos += 4;
+
+    // Find vol from dt_ref
+    uint16_t vol_id = 0;
+    for (int i = 0; i < MAX_SHARES; i++) {
+        if (g_dt[i].in_use && g_dt[i].dt_ref == dt_ref) {
+            vol_id = g_dt[i].vol_id;
+            break;
+        }
+    }
+
+    // Find empty or existing slot
+    dt_appl_t *slot = NULL;
+    for (int i = 0; i < ARRAY_LEN(g_dt_appls); i++) {
+        if (g_dt_appls[i].in_use && g_dt_appls[i].vol_id == vol_id && g_dt_appls[i].creator == creator) {
+            slot = &g_dt_appls[i];
+            break;
+        }
+    }
+    if (!slot) {
+        for (int i = 0; i < ARRAY_LEN(g_dt_appls); i++) {
+            if (!g_dt_appls[i].in_use) {
+                slot = &g_dt_appls[i];
+                break;
+            }
+        }
+    }
+    if (!slot)
+        return AFPERR_MiscErr;
+
+    slot->in_use = true;
+    slot->vol_id = vol_id;
+    slot->creator = creator;
+    slot->appl_tag = appl_tag;
+    // Read path from remainder
+    uint8_t path_type = (pos < in_len) ? in[pos++] : 0;
+    (void)path_type;
+    char path_name[AFP_MAX_NAME];
+    afp_read_pstring(in, in_len, pos, path_name, sizeof(path_name));
+    strncpy(slot->path, path_name, sizeof(slot->path) - 1);
+
+    if (out_len)
+        *out_len = 0;
+    LOG(2, "AFP FPAddAPPL: creator=0x%08X", creator);
+    return AFPERR_NoErr;
+}
+
+// FPRemoveAPPL (AFP 0x36) - Remove APPL mapping
+static uint32_t afp_cmd_remove_appl(const uint8_t *in, int in_len, uint8_t *out, int out_max, int *out_len) {
+    (void)out;
+    (void)out_max;
+    if (in_len < 11)
+        return AFPERR_ParamErr;
+    int pos = 0;
+    pos++; // pad
+    uint16_t dt_ref = rd16be(in + pos);
+    pos += 2;
+    uint32_t dir_id = rd32be(in + pos);
+    pos += 4;
+    (void)dir_id;
+    uint32_t creator = rd32be(in + pos);
+    pos += 4;
+
+    uint16_t vol_id = 0;
+    for (int i = 0; i < MAX_SHARES; i++) {
+        if (g_dt[i].in_use && g_dt[i].dt_ref == dt_ref) {
+            vol_id = g_dt[i].vol_id;
+            break;
+        }
+    }
+    for (int i = 0; i < ARRAY_LEN(g_dt_appls); i++) {
+        if (g_dt_appls[i].in_use && g_dt_appls[i].vol_id == vol_id && g_dt_appls[i].creator == creator) {
+            memset(&g_dt_appls[i], 0, sizeof(g_dt_appls[i]));
+            break;
+        }
+    }
+    if (out_len)
+        *out_len = 0;
+    LOG(2, "AFP FPRemoveAPPL: creator=0x%08X", creator);
+    return AFPERR_NoErr;
+}
+
+// FPGetAPPL (AFP 0x37) - Get APPL mapping by creator and index
+static uint32_t afp_cmd_get_appl(const uint8_t *in, int in_len, uint8_t *out, int out_max, int *out_len) {
+    if (in_len < 9 || out_max < 6)
+        return AFPERR_ParamErr;
+    int pos = 0;
+    pos++; // pad
+    uint16_t dt_ref = rd16be(in + pos);
+    pos += 2;
+    uint32_t creator = rd32be(in + pos);
+    pos += 4;
+    uint16_t appl_index = rd16be(in + pos);
+    pos += 2;
+    uint16_t bitmap = (pos + 2 <= in_len) ? rd16be(in + pos) : 0;
+    pos += 2;
+
+    uint16_t vol_id = 0;
+    for (int i = 0; i < MAX_SHARES; i++) {
+        if (g_dt[i].in_use && g_dt[i].dt_ref == dt_ref) {
+            vol_id = g_dt[i].vol_id;
+            break;
+        }
+    }
+
+    int found = 0;
+    for (int i = 0; i < ARRAY_LEN(g_dt_appls); i++) {
+        if (g_dt_appls[i].in_use && g_dt_appls[i].vol_id == vol_id && g_dt_appls[i].creator == creator) {
+            found++;
+            if (found == (int)appl_index) {
+                // Reply: bitmap(2) + ApplTag(4) + file params
+                wr16be(out + 0, bitmap);
+                wr32be(out + 2, g_dt_appls[i].appl_tag);
+                if (out_len)
+                    *out_len = 6;
+                return AFPERR_NoErr;
+            }
+        }
+    }
+    return AFPERR_ItemNotFound;
+}
+
+// FPAddComment (AFP 0x38) - Add comment to desktop database
+static uint32_t afp_cmd_add_comment(const uint8_t *in, int in_len, uint8_t *out, int out_max, int *out_len) {
+    (void)out;
+    (void)out_max;
+    if (in_len < 7)
+        return AFPERR_ParamErr;
+    int pos = 0;
+    pos++; // pad
+    uint16_t dt_ref = rd16be(in + pos);
+    pos += 2;
+    uint32_t dir_id = rd32be(in + pos);
+    pos += 4;
+    uint8_t path_type = (pos < in_len) ? in[pos++] : 0;
+    (void)path_type;
+    char path_name[AFP_MAX_NAME];
+    if ((pos = afp_read_pstring(in, in_len, pos, path_name, sizeof(path_name))) < 0)
+        return AFPERR_ParamErr;
+
+    // Read the comment (Pascal string after the path)
+    char comment[200];
+    int comment_len = 0;
+    if (pos < in_len) {
+        comment_len = in[pos++];
+        if (comment_len > (int)sizeof(comment) - 1)
+            comment_len = (int)sizeof(comment) - 1;
+        if (pos + comment_len > in_len)
+            comment_len = in_len - pos;
+        if (comment_len > 0)
+            memcpy(comment, in + pos, comment_len);
+    }
+    comment[comment_len] = '\0';
+
+    uint16_t vol_id = 0;
+    for (int i = 0; i < MAX_SHARES; i++) {
+        if (g_dt[i].in_use && g_dt[i].dt_ref == dt_ref) {
+            vol_id = g_dt[i].vol_id;
+            break;
+        }
+    }
+
+    // Find or allocate slot
+    dt_comment_t *slot = NULL;
+    for (int i = 0; i < ARRAY_LEN(g_dt_comments); i++) {
+        if (g_dt_comments[i].in_use && g_dt_comments[i].vol_id == vol_id && g_dt_comments[i].dir_id == dir_id &&
+            strcmp(g_dt_comments[i].path, path_name) == 0) {
+            slot = &g_dt_comments[i];
+            break;
+        }
+    }
+    if (!slot) {
+        for (int i = 0; i < ARRAY_LEN(g_dt_comments); i++) {
+            if (!g_dt_comments[i].in_use) {
+                slot = &g_dt_comments[i];
+                break;
+            }
+        }
+    }
+    if (!slot)
+        return AFPERR_MiscErr;
+
+    slot->in_use = true;
+    slot->vol_id = vol_id;
+    slot->dir_id = dir_id;
+    strncpy(slot->path, path_name, sizeof(slot->path) - 1);
+    slot->comment_len = (uint8_t)comment_len;
+    memcpy(slot->comment, comment, comment_len);
+    slot->comment[comment_len] = '\0';
+
+    if (out_len)
+        *out_len = 0;
+    LOG(2, "AFP FPAddComment: path='%s'", path_name);
+    return AFPERR_NoErr;
+}
+
+// FPRemoveComment (AFP 0x39) - Remove comment from desktop database
+static uint32_t afp_cmd_remove_comment(const uint8_t *in, int in_len, uint8_t *out, int out_max, int *out_len) {
+    (void)out;
+    (void)out_max;
+    if (in_len < 7)
+        return AFPERR_ParamErr;
+    int pos = 0;
+    pos++; // pad
+    uint16_t dt_ref = rd16be(in + pos);
+    pos += 2;
+    uint32_t dir_id = rd32be(in + pos);
+    pos += 4;
+    uint8_t path_type = (pos < in_len) ? in[pos++] : 0;
+    (void)path_type;
+    char path_name[AFP_MAX_NAME];
+    afp_read_pstring(in, in_len, pos, path_name, sizeof(path_name));
+
+    uint16_t vol_id = 0;
+    for (int i = 0; i < MAX_SHARES; i++) {
+        if (g_dt[i].in_use && g_dt[i].dt_ref == dt_ref) {
+            vol_id = g_dt[i].vol_id;
+            break;
+        }
+    }
+    for (int i = 0; i < ARRAY_LEN(g_dt_comments); i++) {
+        if (g_dt_comments[i].in_use && g_dt_comments[i].vol_id == vol_id && g_dt_comments[i].dir_id == dir_id &&
+            strcmp(g_dt_comments[i].path, path_name) == 0) {
+            memset(&g_dt_comments[i], 0, sizeof(g_dt_comments[i]));
+            break;
+        }
+    }
+    if (out_len)
+        *out_len = 0;
+    LOG(2, "AFP FPRemoveComment: path='%s'", path_name);
+    return AFPERR_NoErr;
+}
+
+// FPGetComment (AFP 0x3A) - Get comment from desktop database
+static uint32_t afp_cmd_get_comment(const uint8_t *in, int in_len, uint8_t *out, int out_max, int *out_len) {
+    if (in_len < 7)
+        return AFPERR_ParamErr;
+    int pos = 0;
+    pos++; // pad
+    uint16_t dt_ref = rd16be(in + pos);
+    pos += 2;
+    uint32_t dir_id = rd32be(in + pos);
+    pos += 4;
+    uint8_t path_type = (pos < in_len) ? in[pos++] : 0;
+    (void)path_type;
+    char path_name[AFP_MAX_NAME];
+    afp_read_pstring(in, in_len, pos, path_name, sizeof(path_name));
+
+    uint16_t vol_id = 0;
+    for (int i = 0; i < MAX_SHARES; i++) {
+        if (g_dt[i].in_use && g_dt[i].dt_ref == dt_ref) {
+            vol_id = g_dt[i].vol_id;
+            break;
+        }
+    }
+    for (int i = 0; i < ARRAY_LEN(g_dt_comments); i++) {
+        if (g_dt_comments[i].in_use && g_dt_comments[i].vol_id == vol_id && g_dt_comments[i].dir_id == dir_id &&
+            strcmp(g_dt_comments[i].path, path_name) == 0) {
+            // Reply: Pascal string
+            int clen = (int)g_dt_comments[i].comment_len;
+            if (1 + clen > out_max)
+                clen = out_max - 1;
+            out[0] = (uint8_t)clen;
+            if (clen > 0)
+                memcpy(out + 1, g_dt_comments[i].comment, clen);
+            if (out_len)
+                *out_len = 1 + clen;
+            return AFPERR_NoErr;
+        }
+    }
+    return AFPERR_ItemNotFound;
+}
+
+// FPAddIcon (AFP 0xC0) - Add icon to desktop database (via ASP_WRITE)
+static uint32_t afp_cmd_add_icon(const uint8_t *in, int in_len, uint8_t *out, int out_max, int *out_len) {
+    (void)out;
+    (void)out_max;
+    // Params: pad(1) + DTRefNum(2) + Creator(4) + FileType(4) + IconType(1) + pad(1) + IconSize(2) = 15
+    if (in_len < 15)
+        return AFPERR_ParamErr;
+    int pos = 0;
+    pos++; // pad
+    uint16_t dt_ref = rd16be(in + pos);
+    pos += 2;
+    uint32_t creator = rd32be(in + pos);
+    pos += 4;
+    uint32_t file_type = rd32be(in + pos);
+    pos += 4;
+    uint8_t icon_type = in[pos++];
+    pos++; // pad
+    uint16_t icon_size = rd16be(in + pos);
+    pos += 2;
+
+    uint16_t vol_id = 0;
+    for (int i = 0; i < MAX_SHARES; i++) {
+        if (g_dt[i].in_use && g_dt[i].dt_ref == dt_ref) {
+            vol_id = g_dt[i].vol_id;
+            break;
+        }
+    }
+
+    // Icon bitmap data follows params
+    const uint8_t *icon_data = in + pos;
+    int icon_data_len = in_len - pos;
+    if (icon_data_len < 0)
+        icon_data_len = 0;
+    if (icon_size > (uint16_t)icon_data_len)
+        icon_size = (uint16_t)icon_data_len;
+    if (icon_size > sizeof(g_dt_icons[0].icon_data))
+        icon_size = sizeof(g_dt_icons[0].icon_data);
+
+    // Find or allocate slot
+    dt_icon_t *slot = NULL;
+    for (int i = 0; i < ARRAY_LEN(g_dt_icons); i++) {
+        if (g_dt_icons[i].in_use && g_dt_icons[i].vol_id == vol_id && g_dt_icons[i].creator == creator &&
+            g_dt_icons[i].file_type == file_type && g_dt_icons[i].icon_type == icon_type) {
+            slot = &g_dt_icons[i];
+            break;
+        }
+    }
+    if (!slot) {
+        for (int i = 0; i < ARRAY_LEN(g_dt_icons); i++) {
+            if (!g_dt_icons[i].in_use) {
+                slot = &g_dt_icons[i];
+                break;
+            }
+        }
+    }
+    if (!slot)
+        return AFPERR_MiscErr;
+
+    memset(slot, 0, sizeof(*slot));
+    slot->in_use = true;
+    slot->vol_id = vol_id;
+    slot->creator = creator;
+    slot->file_type = file_type;
+    slot->icon_type = icon_type;
+    slot->icon_size = icon_size;
+    if (icon_size > 0)
+        memcpy(slot->icon_data, icon_data, icon_size);
+
+    if (out_len)
+        *out_len = 0;
+    LOG(2, "AFP FPAddIcon: creator=0x%08X type=0x%08X icontype=%u size=%u", creator, file_type, icon_type, icon_size);
+    return AFPERR_NoErr;
+}
+
+// FPLogout (AFP 0x14) - Close session and all open forks
+static uint32_t afp_cmd_logout(const uint8_t *in, int in_len, uint8_t *out, int out_max, int *out_len) {
+    (void)in;
+    (void)in_len;
+    (void)out;
+    (void)out_max;
+    // Close all open forks
+    for (int i = 0; i < 16; i++) {
+        if (g_forks[i].in_use)
+            close_fork(&g_forks[i]);
+    }
+    if (out_len)
+        *out_len = 0;
+    LOG(1, "AFP FPLogout");
+    return AFPERR_NoErr;
+}
+
+// FPLoginCont (AFP 0x13) - Continue multi-step login (stub)
+static uint32_t afp_cmd_login_cont(const uint8_t *in, int in_len, uint8_t *out, int out_max, int *out_len) {
     (void)in;
     (void)in_len;
     (void)out;
     (void)out_max;
     if (out_len)
         *out_len = 0;
-    return AFPERR_VolLocked;
+    // No multi-step UAM supported
+    return AFPERR_ParamErr;
+}
+
+// FPByteRangeLock (AFP 0x01) - Lock/unlock byte range (single-user: always succeed)
+static uint32_t afp_cmd_byte_range_lock(const uint8_t *in, int in_len, uint8_t *out, int out_max, int *out_len) {
+    if (in_len < 11 || out_max < 4)
+        return AFPERR_ParamErr;
+    int pos = 0;
+    uint8_t flag = in[pos++]; // bit 0 = start/end, bit 7 = lock/unlock
+    (void)flag;
+    uint16_t fork_ref = rd16be(in + pos);
+    pos += 2;
+    uint32_t offset = rd32be(in + pos);
+    pos += 4;
+    uint32_t length = rd32be(in + pos);
+    pos += 4;
+    (void)length;
+
+    fork_t *fk = find_fork(fork_ref);
+    if (!fk)
+        return AFPERR_ParamErr;
+
+    // Single-user: always succeed; reply with RangeStart
+    wr32be(out, offset);
+    if (out_len)
+        *out_len = 4;
+    LOG(2, "AFP FPByteRangeLock: ref=0x%04X offset=%u len=%u", fork_ref, offset, length);
+    return AFPERR_NoErr;
+}
+
+// FPMapID (AFP 0x15) - Map user/group ID to name
+static uint32_t afp_cmd_map_id(const uint8_t *in, int in_len, uint8_t *out, int out_max, int *out_len) {
+    if (in_len < 5)
+        return AFPERR_ParamErr;
+    uint8_t subfunc = in[0];
+    uint32_t id = rd32be(in + 1);
+    const char *name;
+    if (id == 0) {
+        name = "";
+    } else if (subfunc == 1) {
+        name = "guest"; // user ID -> name
+    } else {
+        name = "staff"; // group ID -> name
+    }
+    uint8_t name_len = (uint8_t)strlen(name);
+    if (out_max < 1 + (int)name_len)
+        return AFPERR_ParamErr;
+    // Reply: Pascal string
+    out[0] = name_len;
+    if (name_len)
+        memcpy(out + 1, name, name_len);
+    if (out_len)
+        *out_len = 1 + (int)name_len;
+    LOG(2, "AFP FPMapID: subfunc=%u id=%u → '%s'", subfunc, id, name);
+    return AFPERR_NoErr;
+}
+
+// FPMapName (AFP 0x16) - Map name to user/group ID
+static uint32_t afp_cmd_map_name(const uint8_t *in, int in_len, uint8_t *out, int out_max, int *out_len) {
+    if (in_len < 1 || out_max < 4)
+        return AFPERR_ParamErr;
+    uint8_t subfunc = in[0];
+    (void)subfunc;
+    // All names map to ID 0
+    wr32be(out, 0);
+    if (out_len)
+        *out_len = 4;
+    LOG(2, "AFP FPMapName: subfunc=%u → id=0", subfunc);
+    return AFPERR_NoErr;
+}
+
+// FPGetUserInfo (AFP 0x25) - Get current user info
+static uint32_t afp_cmd_get_user_info(const uint8_t *in, int in_len, uint8_t *out, int out_max, int *out_len) {
+    if (in_len < 5 || out_max < 6)
+        return AFPERR_ParamErr;
+    uint8_t flag = in[0];
+    (void)flag;
+    uint32_t user_id = rd32be(in + 1);
+    (void)user_id;
+    uint16_t bitmap = (in_len >= 7) ? rd16be(in + 5) : 0x0003;
+    int p = 0;
+    // Reply: Bitmap(2) + UserID(4) + PrimaryGroupID(4) - based on bitmap
+    wr16be(out + p, bitmap);
+    p += 2;
+    if (bitmap & 0x0001) { // bit 0 = GetUserID
+        wr32be(out + p, 0);
+        p += 4;
+    }
+    if (bitmap & 0x0002) { // bit 1 = GetPrimaryGroupID
+        wr32be(out + p, 0);
+        p += 4;
+    }
+    if (out_len)
+        *out_len = p;
+    LOG(2, "AFP FPGetUserInfo: bitmap=0x%04X", bitmap);
+    return AFPERR_NoErr;
+}
+
+// FPWrite (AFP 0x21) - Write data to an open fork
+static uint32_t afp_cmd_write(const uint8_t *in, int in_len, uint8_t *out, int out_max, int *out_len) {
+    // Params: Flag(1) + OForkRefNum(2) + Offset(4) + ReqCount(4) = 11 bytes
+    if (in_len < 11)
+        return AFPERR_ParamErr;
+    int pos = 0;
+    uint8_t flag = in[pos++]; // bit 7 = EndRelative
+    bool from_end = (flag & 0x80) != 0;
+    uint16_t fork_ref = rd16be(in + pos);
+    pos += 2;
+    uint32_t offset = rd32be(in + pos);
+    pos += 4;
+    uint32_t req_count = rd32be(in + pos);
+    pos += 4;
+
+    fork_t *fk = find_fork(fork_ref);
+    if (!fk)
+        return AFPERR_ParamErr;
+
+    // Write payload follows the 11-byte param header
+    const uint8_t *write_data = in + 11;
+    int write_len = in_len - 11;
+    if (write_len < 0)
+        write_len = 0;
+    if ((uint32_t)write_len > req_count)
+        write_len = (int)req_count;
+
+    // Seek to position
+    if (from_end) {
+        fseek(fk->f, 0, SEEK_END);
+        long end_pos = ftell(fk->f);
+        fseek(fk->f, end_pos + (long)offset, SEEK_SET);
+    } else {
+        fseek(fk->f, (long)offset, SEEK_SET);
+    }
+
+    size_t written = 0;
+    if (write_len > 0)
+        written = fwrite(write_data, 1, (size_t)write_len, fk->f);
+
+    // Reply: LastWritten offset (4 bytes)
+    if (out_max < 4)
+        return AFPERR_ParamErr;
+    uint32_t last_written = offset + (uint32_t)written;
+    wr32be(out, last_written);
+    if (out_len)
+        *out_len = 4;
+    LOG(2, "AFP FPWrite: ref=0x%04X off=%u req=%u wrote=%zu", fork_ref, offset, req_count, written);
+    return AFPERR_NoErr;
+}
+
+// FPCreateDir (AFP 0x06) - Create a new directory
+static uint32_t afp_cmd_create_dir(const uint8_t *in, int in_len, uint8_t *out, int out_max, int *out_len) {
+    if (in_len < 8 || out_max < 4)
+        return AFPERR_ParamErr;
+    int pos = 0;
+    pos++; // pad
+    uint16_t vol_id = rd16be(in + pos);
+    pos += 2;
+    uint32_t dir_id = rd32be(in + pos);
+    pos += 4;
+    uint8_t path_type = (pos < in_len) ? in[pos++] : 0;
+    (void)path_type;
+    char path[AFP_MAX_NAME];
+    if ((pos = afp_read_pstring(in, in_len, pos, path, sizeof(path))) < 0)
+        return AFPERR_ParamErr;
+
+    vol_t *vol = resolve_vol_by_id(vol_id);
+    if (!vol)
+        return AFPERR_ObjectNotFound;
+    catalog_entry_t *base = afp_catalog_resolve(vol, dir_id);
+    if (!base)
+        return AFPERR_DirNotFound;
+
+    char target_rel[AFP_MAX_REL_PATH];
+    if (!afp_normalize_relative_path(base->rel_path, path, target_rel, sizeof(target_rel)))
+        return AFPERR_ParamErr;
+
+    char full[PATH_MAX];
+    if (!afp_full_path(vol, target_rel, full, sizeof(full)))
+        return AFPERR_ParamErr;
+
+    struct stat st;
+    if (stat(full, &st) == 0)
+        return AFPERR_ObjectExists;
+
+    if (mkdir(full, 0755) != 0)
+        return AFPERR_AccessDenied;
+
+    catalog_entry_t *entry = afp_catalog_insert(vol, target_rel, true);
+    if (!entry)
+        return AFPERR_MiscErr;
+
+    // Reply: NewDirID (4)
+    wr32be(out, entry->cnid);
+    if (out_len)
+        *out_len = 4;
+    LOG(1, "AFP FPCreateDir: vol=0x%04X path='%s' → cnid=0x%08X", vol_id, target_rel, entry->cnid);
+    return AFPERR_NoErr;
+}
+
+// FPCreateFile (AFP 0x07) - Create a new file
+static uint32_t afp_cmd_create_file(const uint8_t *in, int in_len, uint8_t *out, int out_max, int *out_len) {
+    (void)out;
+    (void)out_max;
+    if (in_len < 8)
+        return AFPERR_ParamErr;
+    int pos = 0;
+    uint8_t flag = in[pos++]; // bit 0 = soft/hard create
+    bool hard_create = (flag & 0x01) != 0;
+    uint16_t vol_id = rd16be(in + pos);
+    pos += 2;
+    uint32_t dir_id = rd32be(in + pos);
+    pos += 4;
+    uint8_t path_type = (pos < in_len) ? in[pos++] : 0;
+    (void)path_type;
+    char path[AFP_MAX_NAME];
+    if ((pos = afp_read_pstring(in, in_len, pos, path, sizeof(path))) < 0)
+        return AFPERR_ParamErr;
+
+    vol_t *vol = resolve_vol_by_id(vol_id);
+    if (!vol)
+        return AFPERR_ObjectNotFound;
+    catalog_entry_t *base = afp_catalog_resolve(vol, dir_id);
+    if (!base)
+        return AFPERR_DirNotFound;
+
+    char target_rel[AFP_MAX_REL_PATH];
+    if (!afp_normalize_relative_path(base->rel_path, path, target_rel, sizeof(target_rel)))
+        return AFPERR_ParamErr;
+
+    char full[PATH_MAX];
+    if (!afp_full_path(vol, target_rel, full, sizeof(full)))
+        return AFPERR_ParamErr;
+
+    struct stat st;
+    if (stat(full, &st) == 0) {
+        if (!hard_create)
+            return AFPERR_ObjectExists;
+        // Hard create: check if file is busy (open fork)
+        for (int i = 0; i < 16; i++) {
+            if (g_forks[i].in_use && strcmp(g_forks[i].path, full) == 0)
+                return AFPERR_FileBusy;
+        }
+        // Truncate existing file
+        FILE *f = fopen(full, "wb");
+        if (!f)
+            return AFPERR_AccessDenied;
+        fclose(f);
+    } else {
+        // Create new file
+        FILE *f = fopen(full, "wb");
+        if (!f)
+            return AFPERR_AccessDenied;
+        fclose(f);
+    }
+
+    // Ensure catalog entry for the file
+    catalog_entry_t *entry = afp_catalog_find_by_path(vol, target_rel);
+    if (!entry)
+        afp_catalog_insert(vol, target_rel, false);
+
+    if (out_len)
+        *out_len = 0;
+    LOG(1, "AFP FPCreateFile: vol=0x%04X path='%s' hard=%d", vol_id, target_rel, hard_create ? 1 : 0);
+    return AFPERR_NoErr;
+}
+
+// FPDelete (AFP 0x08) - Delete a file or directory
+static uint32_t afp_cmd_delete(const uint8_t *in, int in_len, uint8_t *out, int out_max, int *out_len) {
+    (void)out;
+    (void)out_max;
+    if (in_len < 8)
+        return AFPERR_ParamErr;
+    int pos = 0;
+    pos++; // pad
+    uint16_t vol_id = rd16be(in + pos);
+    pos += 2;
+    uint32_t dir_id = rd32be(in + pos);
+    pos += 4;
+    uint8_t path_type = (pos < in_len) ? in[pos++] : 0;
+    (void)path_type;
+    char path[AFP_MAX_NAME];
+    if ((pos = afp_read_pstring(in, in_len, pos, path, sizeof(path))) < 0)
+        return AFPERR_ParamErr;
+
+    vol_t *vol = resolve_vol_by_id(vol_id);
+    if (!vol)
+        return AFPERR_ObjectNotFound;
+    catalog_entry_t *base = afp_catalog_resolve(vol, dir_id);
+    if (!base)
+        return AFPERR_DirNotFound;
+
+    char target_rel[AFP_MAX_REL_PATH];
+    if (!afp_normalize_relative_path(base->rel_path, path, target_rel, sizeof(target_rel)))
+        return AFPERR_ParamErr;
+
+    char full[PATH_MAX];
+    if (!afp_full_path(vol, target_rel, full, sizeof(full)))
+        return AFPERR_ParamErr;
+
+    struct stat st;
+    if (stat(full, &st) != 0)
+        return AFPERR_ObjectNotFound;
+
+    if (S_ISDIR(st.st_mode)) {
+        // Check directory is empty
+        DIR *dir = opendir(full);
+        if (!dir)
+            return AFPERR_AccessDenied;
+        bool empty = true;
+        struct dirent *ent;
+        while ((ent = readdir(dir)) != NULL) {
+            if (strcmp(ent->d_name, ".") == 0 || strcmp(ent->d_name, "..") == 0)
+                continue;
+            empty = false;
+            break;
+        }
+        closedir(dir);
+        if (!empty)
+            return AFPERR_DirNotEmpty;
+        if (rmdir(full) != 0)
+            return AFPERR_AccessDenied;
+    } else {
+        // Check file is not open
+        for (int i = 0; i < 16; i++) {
+            if (g_forks[i].in_use && strcmp(g_forks[i].path, full) == 0)
+                return AFPERR_FileBusy;
+        }
+        if (unlink(full) != 0)
+            return AFPERR_AccessDenied;
+    }
+
+    if (out_len)
+        *out_len = 0;
+    LOG(1, "AFP FPDelete: vol=0x%04X path='%s'", vol_id, target_rel);
+    return AFPERR_NoErr;
+}
+
+// FPRename (AFP 0x1C) - Rename a file or directory
+static uint32_t afp_cmd_rename(const uint8_t *in, int in_len, uint8_t *out, int out_max, int *out_len) {
+    (void)out;
+    (void)out_max;
+    if (in_len < 8)
+        return AFPERR_ParamErr;
+    int pos = 0;
+    pos++; // pad
+    uint16_t vol_id = rd16be(in + pos);
+    pos += 2;
+    uint32_t dir_id = rd32be(in + pos);
+    pos += 4;
+    uint8_t path_type = (pos < in_len) ? in[pos++] : 0;
+    (void)path_type;
+    char old_name[AFP_MAX_NAME];
+    if ((pos = afp_read_pstring(in, in_len, pos, old_name, sizeof(old_name))) < 0)
+        return AFPERR_ParamErr;
+    uint8_t new_path_type = (pos < in_len) ? in[pos++] : 0;
+    (void)new_path_type;
+    char new_name[AFP_MAX_NAME];
+    if ((pos = afp_read_pstring(in, in_len, pos, new_name, sizeof(new_name))) < 0)
+        return AFPERR_ParamErr;
+
+    vol_t *vol = resolve_vol_by_id(vol_id);
+    if (!vol)
+        return AFPERR_ObjectNotFound;
+    catalog_entry_t *base = afp_catalog_resolve(vol, dir_id);
+    if (!base)
+        return AFPERR_DirNotFound;
+
+    // Build old full path
+    char old_rel[AFP_MAX_REL_PATH];
+    if (!afp_normalize_relative_path(base->rel_path, old_name, old_rel, sizeof(old_rel)))
+        return AFPERR_ParamErr;
+    char old_full[PATH_MAX];
+    if (!afp_full_path(vol, old_rel, old_full, sizeof(old_full)))
+        return AFPERR_ParamErr;
+
+    // Build new full path (same parent directory, new name)
+    char parent_rel[AFP_MAX_REL_PATH];
+    afp_extract_parent(old_rel, parent_rel, sizeof(parent_rel));
+    char new_rel[AFP_MAX_REL_PATH];
+    if (!afp_build_child_path(parent_rel, new_name, new_rel, sizeof(new_rel)))
+        return AFPERR_ParamErr;
+    char new_full[PATH_MAX];
+    if (!afp_full_path(vol, new_rel, new_full, sizeof(new_full)))
+        return AFPERR_ParamErr;
+
+    if (rename(old_full, new_full) != 0)
+        return AFPERR_CantRename;
+
+    if (out_len)
+        *out_len = 0;
+    LOG(1, "AFP FPRename: '%s' → '%s'", old_rel, new_rel);
+    return AFPERR_NoErr;
+}
+
+// FPMoveAndRename (AFP 0x17) - Move and/or rename a file or directory
+static uint32_t afp_cmd_move_and_rename(const uint8_t *in, int in_len, uint8_t *out, int out_max, int *out_len) {
+    (void)out;
+    (void)out_max;
+    if (in_len < 12)
+        return AFPERR_ParamErr;
+    int pos = 0;
+    pos++; // pad
+    uint16_t vol_id = rd16be(in + pos);
+    pos += 2;
+    uint32_t src_dir_id = rd32be(in + pos);
+    pos += 4;
+    uint32_t dst_dir_id = rd32be(in + pos);
+    pos += 4;
+    uint8_t path_type = (pos < in_len) ? in[pos++] : 0;
+    (void)path_type;
+    char src_path[AFP_MAX_NAME];
+    if ((pos = afp_read_pstring(in, in_len, pos, src_path, sizeof(src_path))) < 0)
+        return AFPERR_ParamErr;
+    uint8_t dst_path_type = (pos < in_len) ? in[pos++] : 0;
+    (void)dst_path_type;
+    char dst_path[AFP_MAX_NAME];
+    if ((pos = afp_read_pstring(in, in_len, pos, dst_path, sizeof(dst_path))) < 0)
+        return AFPERR_ParamErr;
+    // Optional new name
+    uint8_t new_name_type = (pos < in_len) ? in[pos++] : 0;
+    (void)new_name_type;
+    char new_name[AFP_MAX_NAME];
+    new_name[0] = '\0';
+    if (pos < in_len)
+        afp_read_pstring(in, in_len, pos, new_name, sizeof(new_name));
+
+    vol_t *vol = resolve_vol_by_id(vol_id);
+    if (!vol)
+        return AFPERR_ObjectNotFound;
+
+    // Resolve source
+    catalog_entry_t *src_base = afp_catalog_resolve(vol, src_dir_id);
+    if (!src_base)
+        return AFPERR_DirNotFound;
+    char src_rel[AFP_MAX_REL_PATH];
+    if (!afp_normalize_relative_path(src_base->rel_path, src_path, src_rel, sizeof(src_rel)))
+        return AFPERR_ParamErr;
+    char src_full[PATH_MAX];
+    if (!afp_full_path(vol, src_rel, src_full, sizeof(src_full)))
+        return AFPERR_ParamErr;
+
+    // Resolve destination directory
+    catalog_entry_t *dst_base = afp_catalog_resolve(vol, dst_dir_id);
+    if (!dst_base)
+        return AFPERR_DirNotFound;
+    char dst_dir_rel[AFP_MAX_REL_PATH];
+    if (!afp_normalize_relative_path(dst_base->rel_path, dst_path, dst_dir_rel, sizeof(dst_dir_rel)))
+        return AFPERR_ParamErr;
+
+    // Determine final name
+    const char *final_name = (new_name[0] != '\0') ? new_name : afp_last_component(src_rel);
+    if (!final_name)
+        return AFPERR_ParamErr;
+
+    char dst_rel[AFP_MAX_REL_PATH];
+    if (!afp_build_child_path(dst_dir_rel, final_name, dst_rel, sizeof(dst_rel)))
+        return AFPERR_ParamErr;
+    char dst_full[PATH_MAX];
+    if (!afp_full_path(vol, dst_rel, dst_full, sizeof(dst_full)))
+        return AFPERR_ParamErr;
+
+    if (rename(src_full, dst_full) != 0)
+        return AFPERR_CantMove;
+
+    if (out_len)
+        *out_len = 0;
+    LOG(1, "AFP FPMoveAndRename: '%s' → '%s'", src_rel, dst_rel);
+    return AFPERR_NoErr;
+}
+
+// FPCopyFile (AFP 0x05) - Copy a file
+static uint32_t afp_cmd_copy_file(const uint8_t *in, int in_len, uint8_t *out, int out_max, int *out_len) {
+    (void)out;
+    (void)out_max;
+    if (in_len < 14)
+        return AFPERR_ParamErr;
+    int pos = 0;
+    pos++; // pad
+    uint16_t src_vol = rd16be(in + pos);
+    pos += 2;
+    uint16_t dst_vol = rd16be(in + pos);
+    pos += 2;
+    uint32_t src_dir = rd32be(in + pos);
+    pos += 4;
+    uint32_t dst_dir = rd32be(in + pos);
+    pos += 4;
+    uint8_t path_type = (pos < in_len) ? in[pos++] : 0;
+    (void)path_type;
+    char src_name[AFP_MAX_NAME];
+    if ((pos = afp_read_pstring(in, in_len, pos, src_name, sizeof(src_name))) < 0)
+        return AFPERR_ParamErr;
+    uint8_t dst_path_type = (pos < in_len) ? in[pos++] : 0;
+    (void)dst_path_type;
+    char dst_name[AFP_MAX_NAME];
+    if ((pos = afp_read_pstring(in, in_len, pos, dst_name, sizeof(dst_name))) < 0)
+        return AFPERR_ParamErr;
+    // Optional new name
+    uint8_t new_name_type = (pos < in_len) ? in[pos++] : 0;
+    (void)new_name_type;
+    char new_name[AFP_MAX_NAME];
+    new_name[0] = '\0';
+    if (pos < in_len)
+        afp_read_pstring(in, in_len, pos, new_name, sizeof(new_name));
+
+    vol_t *svol = resolve_vol_by_id(src_vol);
+    if (!svol)
+        return AFPERR_ObjectNotFound;
+    vol_t *dvol = resolve_vol_by_id(dst_vol);
+    if (!dvol)
+        return AFPERR_ObjectNotFound;
+
+    // Resolve source
+    catalog_entry_t *src_base = afp_catalog_resolve(svol, src_dir);
+    if (!src_base)
+        return AFPERR_DirNotFound;
+    char src_rel[AFP_MAX_REL_PATH];
+    if (!afp_normalize_relative_path(src_base->rel_path, src_name, src_rel, sizeof(src_rel)))
+        return AFPERR_ParamErr;
+    char src_full[PATH_MAX];
+    if (!afp_full_path(svol, src_rel, src_full, sizeof(src_full)))
+        return AFPERR_ParamErr;
+
+    // Resolve destination
+    catalog_entry_t *dst_base = afp_catalog_resolve(dvol, dst_dir);
+    if (!dst_base)
+        return AFPERR_DirNotFound;
+    char dst_dir_rel[AFP_MAX_REL_PATH];
+    if (!afp_normalize_relative_path(dst_base->rel_path, dst_name, dst_dir_rel, sizeof(dst_dir_rel)))
+        return AFPERR_ParamErr;
+
+    const char *final_name = (new_name[0] != '\0') ? new_name : afp_last_component(src_rel);
+    if (!final_name)
+        return AFPERR_ParamErr;
+    char dst_rel[AFP_MAX_REL_PATH];
+    if (!afp_build_child_path(dst_dir_rel, final_name, dst_rel, sizeof(dst_rel)))
+        return AFPERR_ParamErr;
+    char dst_full[PATH_MAX];
+    if (!afp_full_path(dvol, dst_rel, dst_full, sizeof(dst_full)))
+        return AFPERR_ParamErr;
+
+    // Copy file data
+    FILE *fin = fopen(src_full, "rb");
+    if (!fin)
+        return AFPERR_ObjectNotFound;
+    FILE *fout = fopen(dst_full, "wb");
+    if (!fout) {
+        fclose(fin);
+        return AFPERR_AccessDenied;
+    }
+    uint8_t buf[4096];
+    size_t n;
+    while ((n = fread(buf, 1, sizeof(buf), fin)) > 0) {
+        if (fwrite(buf, 1, n, fout) != n) {
+            fclose(fin);
+            fclose(fout);
+            return AFPERR_DiskFull;
+        }
+    }
+    fclose(fin);
+    fclose(fout);
+
+    if (out_len)
+        *out_len = 0;
+    LOG(1, "AFP FPCopyFile: '%s' → '%s'", src_rel, dst_rel);
+    return AFPERR_NoErr;
+}
+
+// FPChangePassword (AFP 0x24) - Stub: not supported
+static uint32_t afp_cmd_change_password(const uint8_t *in, int in_len, uint8_t *out, int out_max, int *out_len) {
+    (void)in;
+    (void)in_len;
+    (void)out;
+    (void)out_max;
+    if (out_len)
+        *out_len = 0;
+    return AFPERR_CallNotSupported;
 }
 
 static uint32_t afp_cmd_enumerate(const uint8_t *in, int in_len, uint8_t *out, int out_max, int *out_len) {
@@ -1704,23 +3307,52 @@ static uint32_t afp_cmd_get_file_dir_parms(const uint8_t *in, int in_len, uint8_
 }
 
 static const afp_command_handler_t k_afp_command_handlers[] = {
-    {AFP_CopyFile,        "FPCopyFile",        afp_cmd_read_only_denied  },
-    {AFP_CreateDir,       "FPCreateDir",       afp_cmd_read_only_denied  },
-    {AFP_CreateFile,      "FPCreateFile",      afp_cmd_read_only_denied  },
-    {AFP_Delete,          "FPDelete",          afp_cmd_read_only_denied  },
+    {AFP_ByteRangeLock,   "FPByteRangeLock",   afp_cmd_byte_range_lock   },
+    {AFP_CloseVol,        "FPCloseVol",        afp_cmd_close_vol         },
+    {AFP_CloseDir,        "FPCloseDir",        afp_cmd_close_dir         },
+    {AFP_CloseFork,       "FPCloseFork",       afp_cmd_close_fork        },
+    {AFP_CopyFile,        "FPCopyFile",        afp_cmd_copy_file         },
+    {AFP_CreateDir,       "FPCreateDir",       afp_cmd_create_dir        },
+    {AFP_CreateFile,      "FPCreateFile",      afp_cmd_create_file       },
+    {AFP_Delete,          "FPDelete",          afp_cmd_delete            },
+    {AFP_Enumerate,       "FPEnumerate",       afp_cmd_enumerate         },
+    {AFP_Flush,           "FPFlush",           afp_cmd_flush             },
+    {AFP_FlushFork,       "FPFlushFork",       afp_cmd_flush_fork        },
+    {AFP_GetForkParms,    "FPGetForkParms",    afp_cmd_get_fork_parms    },
     {AFP_GetSrvrInfo,     "FPGetSrvrInfo",     afp_cmd_get_srvr_info     },
     {AFP_GetSrvrParms,    "FPGetSrvrParms",    afp_cmd_get_srvr_parms    },
     {AFP_GetVolParms,     "FPGetVolParms",     afp_cmd_get_vol_parms     },
-    {AFP_CloseVol,        "FPCloseVol",        afp_cmd_close_vol         },
     {AFP_Login,           "FPLogin",           afp_cmd_login             },
+    {AFP_LoginCont,       "FPLoginCont",       afp_cmd_login_cont        },
+    {AFP_Logout,          "FPLogout",          afp_cmd_logout            },
+    {AFP_MapID,           "FPMapID",           afp_cmd_map_id            },
+    {AFP_MapName,         "FPMapName",         afp_cmd_map_name          },
+    {AFP_MoveAndRename,   "FPMoveAndRename",   afp_cmd_move_and_rename   },
     {AFP_OpenVol,         "FPOpenVol",         afp_cmd_open_vol          },
-    {AFP_CloseDir,        "FPCloseDir",        afp_cmd_close_dir         },
     {AFP_OpenDir,         "FPOpenDir",         afp_cmd_open_dir          },
-    {AFP_OpenDT,          "FPOpenDT",          afp_cmd_open_dt           },
-    {AFP_MoveAndRename,   "FPMoveAndRename",   afp_cmd_read_only_denied  },
-    {AFP_Enumerate,       "FPEnumerate",       afp_cmd_enumerate         },
-    {AFP_Rename,          "FPRename",          afp_cmd_read_only_denied  },
+    {AFP_OpenFork,        "FPOpenFork",        afp_cmd_open_fork         },
+    {AFP_Read,            "FPRead",            afp_cmd_read              },
+    {AFP_Rename,          "FPRename",          afp_cmd_rename            },
+    {AFP_SetDirParms,     "FPSetDirParms",     afp_cmd_set_dir_parms     },
+    {AFP_SetFileParms,    "FPSetFileParms",    afp_cmd_set_file_parms    },
+    {AFP_SetForkParms,    "FPSetForkParms",    afp_cmd_set_fork_parms    },
+    {AFP_SetVolParms,     "FPSetVolParms",     afp_cmd_set_vol_parms     },
+    {AFP_Write,           "FPWrite",           afp_cmd_write             },
     {AFP_GetFileDirParms, "FPGetFileDirParms", afp_cmd_get_file_dir_parms},
+    {AFP_SetFileDirParms, "FPSetFileDirParms", afp_cmd_set_file_dir_parms},
+    {AFP_ChangePassword,  "FPChangePassword",  afp_cmd_change_password   },
+    {AFP_GetUserInfo,     "FPGetUserInfo",     afp_cmd_get_user_info     },
+    {AFP_OpenDT,          "FPOpenDT",          afp_cmd_open_dt           },
+    {AFP_CloseDT,         "FPCloseDT",         afp_cmd_close_dt          },
+    {AFP_GetIcon,         "FPGetIcon",         afp_cmd_get_icon          },
+    {AFP_GetIconInfo,     "FPGetIconInfo",     afp_cmd_get_icon_info     },
+    {AFP_AddAPPL,         "FPAddAPPL",         afp_cmd_add_appl          },
+    {AFP_RmvAPPL,         "FPRemoveAPPL",      afp_cmd_remove_appl       },
+    {AFP_GetAPPL,         "FPGetAPPL",         afp_cmd_get_appl          },
+    {AFP_AddComment,      "FPAddComment",      afp_cmd_add_comment       },
+    {AFP_RmvComment,      "FPRemoveComment",   afp_cmd_remove_comment    },
+    {AFP_GetComment,      "FPGetComment",      afp_cmd_get_comment       },
+    {AFP_AddIcon,         "FPAddIcon",         afp_cmd_add_icon          },
 };
 
 static const afp_command_handler_t *afp_find_handler(uint8_t opcode) {

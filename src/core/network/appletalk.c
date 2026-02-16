@@ -1786,6 +1786,25 @@ static void asp_in(const ddp_header_t *ddp, atp_packet_t *atp, void *ctx) {
                                         (afp_result == 0x00000000u) ? afp_len : 0);
         break;
     }
+    case ASP_WRITE: {
+        // ASP_WRITE: same as ASP_COMMAND but carries write data after AFP params
+        const uint8_t *cmd = atp->data;
+        int cmd_len = atp->data_len;
+        uint8_t opcode = (cmd_len > 0) ? cmd[0] : 0;
+        uint8_t afp_out[ATP_MAX_ATP_PAYLOAD];
+        int afp_len = 0;
+        uint32_t afp_result = afp_handle_command(opcode, (cmd_len > 0) ? (cmd + 1) : NULL,
+                                                 (cmd_len > 0) ? (cmd_len - 1) : 0, afp_out, sizeof(afp_out), &afp_len);
+        if (afp_result != 0x00000000u) {
+            afp_len = 0;
+        }
+        reply_user[0] = (uint8_t)((afp_result >> 24) & 0xFF);
+        reply_user[1] = (uint8_t)((afp_result >> 16) & 0xFF);
+        reply_user[2] = (uint8_t)((afp_result >> 8) & 0xFF);
+        reply_user[3] = (uint8_t)(afp_result & 0xFF);
+        atp_responder_send_simple(ddp, atp, reply_user, (afp_len > 0) ? afp_out : NULL, afp_len, false);
+        return;
+    }
     default: {
         asp_reply_len =
             asp_build_reply(asp_reply, sizeof(asp_reply), (func == 0xFF) ? 0 : func, sess_ref, req_ref, 0, NULL, 0);
