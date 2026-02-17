@@ -1409,6 +1409,7 @@ static void atp_release_timeout_cb(void *source, uint64_t data) {
     atp_xo_free(entry);
 }
 
+// Retransmit cached XO response packets matching the bitmap
 static void atp_xo_send_cached(atp_xo_entry_t *entry, const ddp_header_t *ddp, uint8_t bitmap) {
     if (!entry || !entry->response_ready)
         return;
@@ -1416,13 +1417,24 @@ static void atp_xo_send_cached(atp_xo_entry_t *entry, const ddp_header_t *ddp, u
     ddp_header_t reply;
     ddp_setup_reply(ddp, &reply);
     reply.type = DDP_ATP;
-    for (int i = 0; i < ATP_MAX_RESPONSE_FRAGMENTS; i++) {
-        atp_resp_packet_cache_t *slot = &entry->packets[i];
-        if (!slot->valid)
-            continue;
-        if (!(bitmap & (1u << slot->seq)))
-            continue;
-        ddp_send(&reply, slot->bytes, slot->len);
+    if (bitmap == 0x00) {
+        // bitmap=0x00: peer received all packets, resend the last (EOM) packet
+        for (int i = ATP_MAX_RESPONSE_FRAGMENTS - 1; i >= 0; i--) {
+            if (entry->packets[i].valid) {
+                ddp_send(&reply, entry->packets[i].bytes, entry->packets[i].len);
+                break;
+            }
+        }
+    } else {
+        // Normal: resend only the packets requested by the bitmap
+        for (int i = 0; i < ATP_MAX_RESPONSE_FRAGMENTS; i++) {
+            atp_resp_packet_cache_t *slot = &entry->packets[i];
+            if (!slot->valid)
+                continue;
+            if (!(bitmap & (1u << slot->seq)))
+                continue;
+            ddp_send(&reply, slot->bytes, slot->len);
+        }
     }
     atp_xo_schedule_release(entry);
 }
@@ -1452,9 +1464,8 @@ int atp_responder_send_packets(const ddp_header_t *request_ddp, const atp_packet
         if (desc->payload_len < 0 || desc->payload_len > (DDP_MAX_DATA_SIZE - 8))
             return -1;
         uint8_t buffer[DDP_MAX_DATA_SIZE];
+        // XO bit is only meaningful on TReq; do not set it on TResp
         uint8_t ctl = ATP_CONTROL_TRESP;
-        if (xo)
-            ctl |= ATP_CONTROL_XO;
         if (desc->sts)
             ctl |= ATP_CONTROL_STS;
         bool is_last = (i == packet_count - 1);

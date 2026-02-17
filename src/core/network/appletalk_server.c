@@ -672,7 +672,18 @@ static bool afp_populate_param_area(bool is_dir, vol_t *vol, const char *rel_pat
             wr32be(out + ptr, (uint32_t)st->st_size);
         }
         if ((ptr = afp_param_field_ptr(false, bm, pbase, 10)) >= 0) {
-            wr32be(out + ptr, 0);
+            // Resource fork length: check companion .rsrc file
+            uint32_t rsrc_len = 0;
+            if (vol && rel_path) {
+                char full[PATH_MAX], rsrc_path[PATH_MAX];
+                if (afp_full_path(vol, rel_path, full, sizeof(full))) {
+                    snprintf(rsrc_path, sizeof(rsrc_path), "%s.rsrc", full);
+                    struct stat rsrc_st;
+                    if (stat(rsrc_path, &rsrc_st) == 0)
+                        rsrc_len = (uint32_t)rsrc_st.st_size;
+                }
+            }
+            wr32be(out + ptr, rsrc_len);
         }
     } else {
         if ((ptr = afp_param_field_ptr(true, bm, pbase, 9)) >= 0) {
@@ -935,8 +946,21 @@ static fork_t *alloc_fork(uint16_t vol_id, const char *path, const char *rel_pat
             if (rel_path)
                 strncpy(g_forks[i].rel_path, rel_path, sizeof(g_forks[i].rel_path) - 1);
             if (is_resource) {
-                // Resource forks: open /dev/null as empty placeholder
-                g_forks[i].f = fopen("/dev/null", "rb");
+                // Resource forks: stored as companion .rsrc file
+                char rsrc_path[PATH_MAX];
+                snprintf(rsrc_path, sizeof(rsrc_path), "%s.rsrc", path);
+                bool want_write = (access_mode & 0x0002);
+                if (want_write) {
+                    // Try opening existing file for read/write, create if absent
+                    g_forks[i].f = fopen(rsrc_path, "r+b");
+                    if (!g_forks[i].f)
+                        g_forks[i].f = fopen(rsrc_path, "w+b");
+                } else {
+                    // Read-only; if file doesn't exist, resource fork is empty
+                    g_forks[i].f = fopen(rsrc_path, "rb");
+                    if (!g_forks[i].f)
+                        g_forks[i].f = fopen("/dev/null", "rb");
+                }
             } else {
                 // Data fork: "r+b" if write requested (bit 1), else "rb"
                 bool want_write = (access_mode & 0x0002);
@@ -1975,8 +1999,14 @@ static uint32_t afp_cmd_set_fork_parms(const uint8_t *in, int in_len, uint8_t *o
             ftruncate(fd, (off_t)new_len);
     }
     if (bitmap & (1u << 10)) {
-        // Resource fork length - skip (resource fork is /dev/null)
+        // Resource fork length: truncate the .rsrc companion file
+        if (pos + 4 > in_len)
+            return AFPERR_ParamErr;
+        uint32_t new_len = rd32be(in + pos);
         pos += 4;
+        int fd = fileno(fk->f);
+        if (fd >= 0)
+            ftruncate(fd, (off_t)new_len);
     }
     if (out_len)
         *out_len = 0;
@@ -2889,11 +2919,14 @@ static uint32_t afp_cmd_create_file(const uint8_t *in, int in_len, uint8_t *out,
             if (g_forks[i].in_use && strcmp(g_forks[i].path, full) == 0)
                 return AFPERR_FileBusy;
         }
-        // Truncate existing file
+        // Truncate existing file and remove companion resource fork
         FILE *f = fopen(full, "wb");
         if (!f)
             return AFPERR_AccessDenied;
         fclose(f);
+        char rsrc_path[PATH_MAX];
+        snprintf(rsrc_path, sizeof(rsrc_path), "%s.rsrc", full);
+        unlink(rsrc_path);
     } else {
         // Create new file
         FILE *f = fopen(full, "wb");
@@ -2977,6 +3010,10 @@ static uint32_t afp_cmd_delete(const uint8_t *in, int in_len, uint8_t *out, int 
         }
         if (unlink(full) != 0)
             return AFPERR_AccessDenied;
+        // Remove companion resource fork file if it exists
+        char rsrc_path[PATH_MAX];
+        snprintf(rsrc_path, sizeof(rsrc_path), "%s.rsrc", full);
+        unlink(rsrc_path);
     }
 
     if (out_len)
@@ -3036,6 +3073,12 @@ static uint32_t afp_cmd_rename(const uint8_t *in, int in_len, uint8_t *out, int 
 
     if (rename(old_full, new_full) != 0)
         return AFPERR_CantRename;
+
+    // Rename companion resource fork file if it exists
+    char old_rsrc[PATH_MAX], new_rsrc[PATH_MAX];
+    snprintf(old_rsrc, sizeof(old_rsrc), "%s.rsrc", old_full);
+    snprintf(new_rsrc, sizeof(new_rsrc), "%s.rsrc", new_full);
+    rename(old_rsrc, new_rsrc);
 
     if (out_len)
         *out_len = 0;
@@ -3112,6 +3155,12 @@ static uint32_t afp_cmd_move_and_rename(const uint8_t *in, int in_len, uint8_t *
 
     if (rename(src_full, dst_full) != 0)
         return AFPERR_CantMove;
+
+    // Move companion resource fork file if it exists
+    char src_rsrc[PATH_MAX], dst_rsrc[PATH_MAX];
+    snprintf(src_rsrc, sizeof(src_rsrc), "%s.rsrc", src_full);
+    snprintf(dst_rsrc, sizeof(dst_rsrc), "%s.rsrc", dst_full);
+    rename(src_rsrc, dst_rsrc);
 
     if (out_len)
         *out_len = 0;
@@ -3210,6 +3259,21 @@ static uint32_t afp_cmd_copy_file(const uint8_t *in, int in_len, uint8_t *out, i
     }
     fclose(fin);
     fclose(fout);
+
+    // Copy companion resource fork file if it exists
+    char src_rsrc[PATH_MAX], dst_rsrc[PATH_MAX];
+    snprintf(src_rsrc, sizeof(src_rsrc), "%s.rsrc", src_full);
+    snprintf(dst_rsrc, sizeof(dst_rsrc), "%s.rsrc", dst_full);
+    FILE *rfin = fopen(src_rsrc, "rb");
+    if (rfin) {
+        FILE *rfout = fopen(dst_rsrc, "wb");
+        if (rfout) {
+            while ((n = fread(buf, 1, sizeof(buf), rfin)) > 0)
+                fwrite(buf, 1, n, rfout);
+            fclose(rfout);
+        }
+        fclose(rfin);
+    }
 
     if (out_len)
         *out_len = 0;
