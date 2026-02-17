@@ -1888,8 +1888,8 @@ static uint32_t afp_cmd_read(const uint8_t *in, int in_len, uint8_t *out, int ou
         *out_len = (int)got;
     LOG(2, "AFP FPRead: ref=0x%04X off=%u req=%u got=%zu", fork_ref, offset, req_count, got);
 
-    // Return EOF if we reached the end
-    if (offset + (uint32_t)got >= (uint32_t)file_size)
+    // Return EOF only if the read was truncated by end-of-fork
+    if (got < req_count && offset + (uint32_t)got >= (uint32_t)file_size)
         return AFPERR_EOFErr;
     return AFPERR_NoErr;
 }
@@ -3603,12 +3603,10 @@ uint32_t afp_handle_command(uint8_t opcode, const uint8_t *in, int in_len, uint8
     }
     LOG(10, "AFP >> %s (0x%02X) in_len=%d", handler->name, opcode, in_len);
     uint32_t result = handler->handler(in, in_len, out, out_max, out_len);
-    if (result != AFPERR_NoErr && out_len)
-        *out_len = 0;
     int reply_len = (out_len ? *out_len : 0);
     if (result == AFPERR_NoErr)
         LOG(3, "AFP << %s OK reply=%d", handler->name, reply_len);
     else
-        LOG(3, "AFP << %s ERR=0x%08X", handler->name, result);
+        LOG(3, "AFP << %s ERR=0x%08X reply=%d", handler->name, result, reply_len);
     return result;
 }

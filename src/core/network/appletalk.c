@@ -1873,19 +1873,46 @@ static void asp_in(const ddp_header_t *ddp, atp_packet_t *atp, void *ctx) {
         uint8_t opcode = (cmd_len > 0) ? cmd[0] : 0;
         LOG(6, "ASP Command: session=0x%02X seq=0x%04X opcode=0x%02X len=%d", atp->user[1],
             (unsigned)((atp->user[2] << 8) | atp->user[3]), opcode, cmd_len);
-        uint8_t afp_out[ATP_MAX_ATP_PAYLOAD];
+        // Count consecutive set bits in bitmap to determine max response packets
+        int max_packets = 0;
+        for (uint8_t bm = atp->bitmap; bm & 1; bm >>= 1)
+            max_packets++;
+        if (max_packets < 1)
+            max_packets = 1;
+        if (max_packets > ATP_MAX_RESPONSE_FRAGMENTS)
+            max_packets = ATP_MAX_RESPONSE_FRAGMENTS;
+        int out_buf_size = max_packets * ATP_MAX_ATP_PAYLOAD;
+        uint8_t afp_out[ATP_MAX_RESPONSE_FRAGMENTS * ATP_MAX_ATP_PAYLOAD];
         int afp_len = 0;
         uint32_t afp_result = afp_handle_command(opcode, (cmd_len > 0) ? (cmd + 1) : NULL,
-                                                 (cmd_len > 0) ? (cmd_len - 1) : 0, afp_out, sizeof(afp_out), &afp_len);
-        if (afp_result != 0x00000000u) {
-            afp_len = 0;
-        }
+                                                 (cmd_len > 0) ? (cmd_len - 1) : 0, afp_out, out_buf_size, &afp_len);
         LOG(6, "ASP Command result: opcode=0x%02X result=0x%08X replyLen=%d", opcode, afp_result, afp_len);
         reply_user[0] = (uint8_t)((afp_result >> 24) & 0xFF);
         reply_user[1] = (uint8_t)((afp_result >> 16) & 0xFF);
         reply_user[2] = (uint8_t)((afp_result >> 8) & 0xFF);
         reply_user[3] = (uint8_t)(afp_result & 0xFF);
-        atp_responder_send_simple(ddp, atp, reply_user, (afp_len > 0) ? afp_out : NULL, afp_len, false);
+        if (afp_len <= ATP_MAX_ATP_PAYLOAD) {
+            atp_responder_send_simple(ddp, atp, reply_user, (afp_len > 0) ? afp_out : NULL, afp_len, false);
+        } else {
+            // Split reply across multiple ATP response packets
+            int num_packets = (afp_len + ATP_MAX_ATP_PAYLOAD - 1) / ATP_MAX_ATP_PAYLOAD;
+            if (num_packets > max_packets)
+                num_packets = max_packets;
+            atp_response_packet_desc_t descs[ATP_MAX_RESPONSE_FRAGMENTS];
+            int offset = 0;
+            for (int i = 0; i < num_packets; i++) {
+                int chunk = afp_len - offset;
+                if (chunk > ATP_MAX_ATP_PAYLOAD)
+                    chunk = ATP_MAX_ATP_PAYLOAD;
+                descs[i].payload = afp_out + offset;
+                descs[i].payload_len = chunk;
+                descs[i].user = reply_user;
+                descs[i].sts = false;
+                descs[i].eom = (i == num_packets - 1);
+                offset += chunk;
+            }
+            atp_responder_send_packets(ddp, atp, descs, (size_t)num_packets);
+        }
         return;
     }
     case ASP_GET_STAT: {
