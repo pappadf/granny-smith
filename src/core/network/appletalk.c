@@ -1620,6 +1620,7 @@ typedef struct {
     uint16_t sess_ref; // 16-bit session reference (internal)
     uint8_t wss; // workstation session socket (from OpenSess request)
     uint8_t sss; // server session socket (returned in reply)
+    uint8_t client_node; // LLAP node of the workstation
     uint16_t asp_version; // ASP version from OpenSess
 } asp_session_t;
 
@@ -1634,6 +1635,7 @@ static int alloc_session(void) {
             g_sessions[i].sess_ref = g_next_sess_ref++;
             g_sessions[i].wss = 0;
             g_sessions[i].sss = HOST_AFP_SOCKET; // default SSS
+            g_sessions[i].client_node = 0;
             g_sessions[i].asp_version = 0;
             return g_sessions[i].sess_ref;
         }
@@ -1656,6 +1658,14 @@ static asp_session_t *get_session(uint16_t ref) {
     return NULL;
 }
 
+// Look up session by the 1-byte session ID from ATP UserBytes[1]
+static asp_session_t *get_session_by_id(uint8_t session_id) {
+    for (int i = 0; i < MAX_ASP_SESS; i++)
+        if (g_sessions[i].in_use && (g_sessions[i].sess_ref & 0xFF) == session_id)
+            return &g_sessions[i];
+    return NULL;
+}
+
 // Build an ASP reply payload (to be wrapped inside ATP response)
 static int asp_build_reply(uint8_t *out, int out_max, uint8_t func, uint16_t sess_ref, uint16_t req_ref,
                            uint16_t result, const uint8_t *data, int data_len) {
@@ -1672,6 +1682,92 @@ static int asp_build_reply(uint8_t *out, int out_max, uint8_t func, uint16_t ses
         memcpy(&out[6], data, data_len);
     return 6 + data_len;
 }
+
+// ASP SPWrite: pending state for the WriteContinue two-transaction flow
+#define ASP_WRITE_QUANTUM (8 * ATP_MAX_ATP_PAYLOAD) // 4624 bytes max per WriteContinue
+
+typedef struct {
+    bool in_use;
+    // Saved original Write transaction context (for deferred response)
+    ddp_header_t orig_ddp;
+    atp_packet_t orig_atp;
+    uint8_t orig_atp_data[ATP_MAX_ATP_PAYLOAD]; // deep copy of ephemeral ATP data
+    // AFP command (opcode separated, params follow)
+    uint8_t afp_opcode;
+    uint8_t afp_params[ATP_MAX_ATP_PAYLOAD];
+    int afp_params_len;
+    // Write data accumulated from WriteContinue response
+    uint8_t write_buf[ASP_WRITE_QUANTUM];
+    int write_len;
+} asp_pending_write_t;
+
+static asp_pending_write_t g_pending_write;
+
+// Called for each ATP response fragment from the client's WriteContinueReply
+static void asp_wc_on_response(const atp_response_fragment_t *fragment, void *ctx) {
+    asp_pending_write_t *pw = (asp_pending_write_t *)ctx;
+    if (!pw || !pw->in_use || !fragment || !fragment->data)
+        return;
+    int avail = ASP_WRITE_QUANTUM - pw->write_len;
+    int copy = (fragment->data_len < avail) ? fragment->data_len : avail;
+    if (copy > 0) {
+        memcpy(pw->write_buf + pw->write_len, fragment->data, (size_t)copy);
+        pw->write_len += copy;
+    }
+}
+
+// Called when WriteContinue transaction completes: process write and reply
+static void asp_wc_on_complete(atp_request_handle_t *handle, atp_request_result_t result, void *ctx) {
+    (void)handle;
+    asp_pending_write_t *pw = (asp_pending_write_t *)ctx;
+    if (!pw || !pw->in_use) {
+        return;
+    }
+
+    uint32_t afp_result;
+    uint8_t afp_out[ATP_MAX_ATP_PAYLOAD];
+    int afp_len = 0;
+
+    if (result != ATP_REQUEST_RESULT_OK || pw->write_len <= 0) {
+        // WriteContinue failed or no data received
+        LOG(2, "ASP WriteContinue failed: result=%d write_len=%d", (int)result, pw->write_len);
+        afp_result = 0xFFFFEC6Au; // MiscErr
+    } else {
+        // Build combined buffer: AFP params (11 bytes for FPWrite) + write data
+        int combined_len = pw->afp_params_len + pw->write_len;
+        uint8_t *combined = (uint8_t *)malloc((size_t)combined_len);
+        if (!combined) {
+            afp_result = 0xFFFFEC6Au; // MiscErr
+        } else {
+            memcpy(combined, pw->afp_params, (size_t)pw->afp_params_len);
+            memcpy(combined + pw->afp_params_len, pw->write_buf, (size_t)pw->write_len);
+            afp_result =
+                afp_handle_command(pw->afp_opcode, combined, combined_len, afp_out, (int)sizeof(afp_out), &afp_len);
+            free(combined);
+        }
+    }
+
+    if (afp_result != 0x00000000u)
+        afp_len = 0;
+
+    LOG(6, "ASP Write complete: opcode=0x%02X result=0x%08X replyLen=%d dataLen=%d", pw->afp_opcode, afp_result,
+        afp_len, pw->write_len);
+
+    // Send deferred response to the original Write ATP transaction
+    uint8_t reply_user[4];
+    reply_user[0] = (uint8_t)((afp_result >> 24) & 0xFF);
+    reply_user[1] = (uint8_t)((afp_result >> 16) & 0xFF);
+    reply_user[2] = (uint8_t)((afp_result >> 8) & 0xFF);
+    reply_user[3] = (uint8_t)(afp_result & 0xFF);
+    atp_responder_send_simple(&pw->orig_ddp, &pw->orig_atp, reply_user, (afp_len > 0) ? afp_out : NULL, afp_len, false);
+
+    pw->in_use = false;
+}
+
+static const atp_request_callbacks_t g_asp_wc_callbacks = {
+    .on_response = asp_wc_on_response,
+    .on_complete = asp_wc_on_complete,
+};
 
 // ASP handler: builds replies via ATP responder helpers
 static void asp_in(const ddp_header_t *ddp, atp_packet_t *atp, void *ctx) {
@@ -1724,6 +1820,7 @@ static void asp_in(const ddp_header_t *ddp, atp_packet_t *atp, void *ctx) {
             if (s) {
                 s->wss = wss;
                 s->sss = sss;
+                s->client_node = ddp->llap.src;
                 s->asp_version = asp_ver;
             }
             session_id = (uint8_t)((uint16_t)new_ref & 0xFF);
@@ -1808,26 +1905,87 @@ static void asp_in(const ddp_header_t *ddp, atp_packet_t *atp, void *ctx) {
         break;
     }
     case ASP_WRITE: {
-        // ASP_WRITE: same as ASP_COMMAND but carries write data after AFP params
+        // ASP SPWrite: two-transaction protocol via WriteContinue
         const uint8_t *cmd = atp->data;
         int cmd_len = atp->data_len;
         uint8_t opcode = (cmd_len > 0) ? cmd[0] : 0;
-        LOG(6, "ASP Write: session=0x%02X seq=0x%04X opcode=0x%02X len=%d", atp->user[1],
+        uint8_t session_id = atp->user[1];
+        LOG(6, "ASP Write: session=0x%02X seq=0x%04X opcode=0x%02X len=%d", session_id,
             (unsigned)((atp->user[2] << 8) | atp->user[3]), opcode, cmd_len);
-        uint8_t afp_out[ATP_MAX_ATP_PAYLOAD];
-        int afp_len = 0;
-        uint32_t afp_result = afp_handle_command(opcode, (cmd_len > 0) ? (cmd + 1) : NULL,
-                                                 (cmd_len > 0) ? (cmd_len - 1) : 0, afp_out, sizeof(afp_out), &afp_len);
-        if (afp_result != 0x00000000u) {
-            afp_len = 0;
+
+        // Look up session for client addressing
+        asp_session_t *sess = get_session_by_id(session_id);
+        if (!sess) {
+            LOG(2, "ASP Write: unknown session 0x%02X", session_id);
+            uint32_t err = 0xFFFFEC62u; // SessClosed
+            reply_user[0] = (uint8_t)((err >> 24) & 0xFF);
+            reply_user[1] = (uint8_t)((err >> 16) & 0xFF);
+            reply_user[2] = (uint8_t)((err >> 8) & 0xFF);
+            reply_user[3] = (uint8_t)(err & 0xFF);
+            atp_responder_send_simple(ddp, atp, reply_user, NULL, 0, false);
+            return;
         }
-        LOG(6, "ASP Write result: opcode=0x%02X result=0x%08X replyLen=%d", opcode, afp_result, afp_len);
-        reply_user[0] = (uint8_t)((afp_result >> 24) & 0xFF);
-        reply_user[1] = (uint8_t)((afp_result >> 16) & 0xFF);
-        reply_user[2] = (uint8_t)((afp_result >> 8) & 0xFF);
-        reply_user[3] = (uint8_t)(afp_result & 0xFF);
-        atp_responder_send_simple(ddp, atp, reply_user, (afp_len > 0) ? afp_out : NULL, afp_len, false);
-        return;
+
+        if (g_pending_write.in_use) {
+            // Already processing a write; ignore duplicate (XO handles retransmit)
+            LOG(6, "ASP Write: already pending, ignoring");
+            return;
+        }
+
+        // Save context for deferred response
+        asp_pending_write_t *pw = &g_pending_write;
+        memset(pw, 0, sizeof(*pw));
+        pw->in_use = true;
+        pw->orig_ddp = *ddp;
+        pw->orig_atp = *atp;
+        // Deep-copy ATP data (ephemeral pointer into receive buffer)
+        if (atp->data && atp->data_len > 0) {
+            int dlen =
+                (atp->data_len > (int)sizeof(pw->orig_atp_data)) ? (int)sizeof(pw->orig_atp_data) : atp->data_len;
+            memcpy(pw->orig_atp_data, atp->data, (size_t)dlen);
+            pw->orig_atp.data = pw->orig_atp_data;
+            pw->orig_atp.data_len = dlen;
+        }
+        pw->afp_opcode = opcode;
+        if (cmd_len > 1) {
+            pw->afp_params_len = cmd_len - 1;
+            if (pw->afp_params_len > (int)sizeof(pw->afp_params))
+                pw->afp_params_len = (int)sizeof(pw->afp_params);
+            memcpy(pw->afp_params, cmd + 1, (size_t)pw->afp_params_len);
+        }
+
+        // Send WriteContinue ATP request to the client's WSS
+        uint16_t buf_size = ASP_WRITE_QUANTUM;
+        uint8_t wc_data[2];
+        wc_data[0] = (uint8_t)((buf_size >> 8) & 0xFF);
+        wc_data[1] = (uint8_t)(buf_size & 0xFF);
+
+        atp_request_params_t wc_params = {
+            .dest = {.net = 0, .node = sess->client_node, .socket = sess->wss},
+            .src_socket = HOST_AFP_SOCKET,
+            .bitmap = 0xFF, // request up to 8 response packets
+            .mode = ATP_TRANSACTION_XO,
+            .trel_timer_hint = 0,
+            .user = {ASP_WRITE_CONTINUE, session_id, atp->user[2], atp->user[3]},
+            .payload = wc_data,
+            .payload_len = 2,
+            .retry_timeout_ms = 5000,
+            .retry_limit = 10,
+        };
+
+        LOG(6, "ASP WriteContinue: node=%u wss=%u bufSize=%u", sess->client_node, sess->wss, buf_size);
+        atp_request_handle_t *wc_handle = atp_request_submit(&wc_params, &g_asp_wc_callbacks, pw);
+        if (!wc_handle) {
+            LOG(2, "ASP WriteContinue: failed to submit ATP request");
+            pw->in_use = false;
+            uint32_t err = 0xFFFFEC6Au; // MiscErr
+            reply_user[0] = (uint8_t)((err >> 24) & 0xFF);
+            reply_user[1] = (uint8_t)((err >> 16) & 0xFF);
+            reply_user[2] = (uint8_t)((err >> 8) & 0xFF);
+            reply_user[3] = (uint8_t)(err & 0xFF);
+            atp_responder_send_simple(ddp, atp, reply_user, NULL, 0, false);
+        }
+        return; // response deferred until WriteContinue completes
     }
     default: {
         LOG(3, "ASP unknown func=0x%02X sess=0x%04X req=0x%04X dataLen=%d", func, sess_ref, req_ref, atp->data_len);

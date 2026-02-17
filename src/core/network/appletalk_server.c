@@ -2020,7 +2020,7 @@ static uint32_t afp_cmd_flush_fork(const uint8_t *in, int in_len, uint8_t *out, 
 }
 
 // Helper to parse vol/dir/bitmap/path and extract Finder Info if present
-static uint32_t afp_parse_set_parms(const uint8_t *in, int in_len, bool has_file_bm, bool has_dir_bm) {
+static uint32_t afp_parse_set_parms(const uint8_t *in, int in_len) {
     int pos = 0;
     pos++; // pad
     if (pos + 2 > in_len)
@@ -2031,24 +2031,12 @@ static uint32_t afp_parse_set_parms(const uint8_t *in, int in_len, bool has_file
         return AFPERR_ParamErr;
     uint32_t dir_id = rd32be(in + pos);
     pos += 4;
-    uint16_t bitmap = 0;
-    if (has_file_bm && has_dir_bm) {
-        // FPSetFileDirParms format: FileBitmap(2) + DirBitmap(2)
-        if (pos + 4 > in_len)
-            return AFPERR_ParamErr;
-        uint16_t file_bm = rd16be(in + pos);
-        pos += 2;
-        uint16_t dir_bm = rd16be(in + pos);
-        pos += 2;
-        bitmap = file_bm | dir_bm; // union of both bitmaps
-        LOG(10, "AFP SetParms: vol=0x%04X dir=0x%08X fileBm=0x%04X dirBm=0x%04X", vol_id, dir_id, file_bm, dir_bm);
-    } else {
-        if (pos + 2 > in_len)
-            return AFPERR_ParamErr;
-        bitmap = rd16be(in + pos);
-        pos += 2;
-        LOG(10, "AFP SetParms: vol=0x%04X dir=0x%08X bitmap=0x%04X", vol_id, dir_id, bitmap);
-    }
+    // All FPSet*Parms commands use a single bitmap field
+    if (pos + 2 > in_len)
+        return AFPERR_ParamErr;
+    uint16_t bitmap = rd16be(in + pos);
+    pos += 2;
+    LOG(10, "AFP SetParms: vol=0x%04X dir=0x%08X bitmap=0x%04X", vol_id, dir_id, bitmap);
     uint8_t path_type = (pos < in_len) ? in[pos++] : 0;
     (void)path_type;
     char path[AFP_MAX_NAME];
@@ -2137,7 +2125,7 @@ static uint32_t afp_cmd_set_file_parms(const uint8_t *in, int in_len, uint8_t *o
     (void)out_max;
     if (out_len)
         *out_len = 0;
-    return afp_parse_set_parms(in, in_len, false, false);
+    return afp_parse_set_parms(in, in_len);
 }
 
 // FPSetDirParms (AFP 0x1D) - Set directory parameters
@@ -2146,16 +2134,16 @@ static uint32_t afp_cmd_set_dir_parms(const uint8_t *in, int in_len, uint8_t *ou
     (void)out_max;
     if (out_len)
         *out_len = 0;
-    return afp_parse_set_parms(in, in_len, false, false);
+    return afp_parse_set_parms(in, in_len);
 }
 
-// FPSetFileDirParms (AFP 0x23) - Set file or directory parameters
+// FPSetFileDirParms (AFP 0x23) - Set file or directory parameters (single bitmap per AFP spec)
 static uint32_t afp_cmd_set_file_dir_parms(const uint8_t *in, int in_len, uint8_t *out, int out_max, int *out_len) {
     (void)out;
     (void)out_max;
     if (out_len)
         *out_len = 0;
-    return afp_parse_set_parms(in, in_len, true, true);
+    return afp_parse_set_parms(in, in_len);
 }
 
 // FPSetVolParms (AFP 0x20) - Set volume parameters (backup date)
