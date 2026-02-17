@@ -4,6 +4,4 @@
 [submodule "third-party/single-step-tests"]
 	path = third-party/single-step-tests
 	url = https://github.com/SingleStepTests/m68000.git
-[submodule "local/gs-docs"]
-	path = local/gs-docs
-	url = https://github.com/pappadf/gs-docs.git
+
