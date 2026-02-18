@@ -2910,8 +2910,10 @@ static uint32_t afp_cmd_create_file(const uint8_t *in, int in_len, uint8_t *out,
     if (!afp_full_path(vol, target_rel, full, sizeof(full)))
         return AFPERR_ParamErr;
 
-    struct stat st;
-    if (stat(full, &st) == 0) {
+    // Use the catalog (not stat) to determine existence: .rsrc companion files
+    // exist on disk for resource fork storage but are not AFP-visible files.
+    catalog_entry_t *existing = afp_catalog_find_by_path(vol, target_rel);
+    if (existing && !existing->is_dir) {
         if (!hard_create)
             return AFPERR_ObjectExists;
         // Hard create: check if file is busy (open fork)
