@@ -1564,6 +1564,10 @@ static void atp_handle_response(const ddp_header_t *ddp, const atp_packet_t *atp
     if (req->pending_bitmap == 0) {
         atp_send_trel(req);
         atp_request_complete(req, ATP_REQUEST_RESULT_OK);
+    } else if (!duplicate) {
+        // Re-arm the retry timer on each valid response so it doesn't fire
+        // while the Mac is still actively sending response packets.
+        atp_arm_retry_timer(req);
     }
 }
 
