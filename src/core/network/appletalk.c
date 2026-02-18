@@ -1247,6 +1247,7 @@ static void atp_retry_request(atp_request_handle_t *req, bool consume_retry) {
     if (!req->infinite_retries && consume_retry) {
         if (req->retries_remaining == 0) {
             LOG(2, "ATP: retries exhausted for tid=0x%04X", req->tid);
+            atp_send_trel(req);
             atp_request_complete(req, ATP_REQUEST_RESULT_TIMEOUT);
             return;
         }
