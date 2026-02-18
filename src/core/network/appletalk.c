@@ -1016,7 +1016,7 @@ struct atp_request_handle {
     uint8_t payload[ATP_MAX_ATP_PAYLOAD];
     int payload_len;
     atalk_socket_addr_t dest;
-    uint32_t retry_timeout_ns;
+    uint64_t retry_timeout_ns;
     int retries_remaining;
     uint32_t timer_generation;
     atp_request_callbacks_t callbacks;
@@ -1177,6 +1177,12 @@ static atp_request_handle_t *atp_alloc_request_slot(void) {
 static void atp_request_complete(atp_request_handle_t *req, atp_request_result_t result) {
     if (!req || !req->in_use)
         return;
+    // Cancel any pending retry timer
+    if (g_scheduler) {
+        uint16_t index = (uint16_t)(req - g_atp_requests);
+        uint64_t data = atp_encode_event_data(index, req->timer_generation);
+        remove_event_by_data(g_scheduler, &atp_retry_timeout_cb, NULL, data);
+    }
     req->timer_generation++;
     req->in_use = false;
     if (req->callbacks.on_complete)
@@ -1235,8 +1241,12 @@ static void atp_arm_retry_timer(atp_request_handle_t *req) {
     if (!g_scheduler)
         return;
     uint16_t index = (uint16_t)(req - g_atp_requests);
+    // Cancel any existing retry event before scheduling a new one
+    uint64_t old_data = atp_encode_event_data(index, req->timer_generation);
+    remove_event_by_data(g_scheduler, &atp_retry_timeout_cb, NULL, old_data);
     req->timer_generation++;
     uint64_t data = atp_encode_event_data(index, req->timer_generation);
+    LOG(5, "ATP: arm retry timer tid=0x%04X timeout_ns=%" PRIu64, req->tid, req->retry_timeout_ns);
     scheduler_new_cpu_event(g_scheduler, &atp_retry_timeout_cb, &g_atp_retry_event_token, data, 0,
                             req->retry_timeout_ns);
 }
