@@ -31,8 +31,53 @@
 
 LOG_USE_CATEGORY_NAME("setup");
 
+// Emulator configuration: complete machine state
+struct config {
+
+    floppy_t *floppy;
+    sound_t *sound2;
+    mouse_t *mouse;
+    keyboard_t *keyboard;
+
+    via_t *new_via;
+    scc_t *new_scc;
+    scsi_t *new_scsi;
+    memory_map_t *mem_map;
+    memory_interface_t *mem_iface;
+
+    rtc_t *new_rtc;
+
+    cpu_t *new_cpu;
+    debug_t *debugger;
+
+    image_t *images[MAX_IMAGES];
+    int n_images;
+
+    struct scheduler *scheduler;
+
+    uint8_t *ram_vbuf;
+
+    uint32_t irq;
+};
+
 // Global emulator pointer (definition)
 config_t *global_emulator = NULL;
+
+// Config field accessors for opaque handle access
+image_t *config_get_image(config_t *cfg, int index) {
+    return cfg ? cfg->images[index] : NULL;
+}
+int config_get_n_images(config_t *cfg) {
+    return cfg ? cfg->n_images : 0;
+}
+
+// Add an image to the config's tracked image list
+void config_add_image(config_t *cfg, image_t *image) {
+    assert(cfg != NULL);
+    assert(cfg->n_images < MAX_IMAGES);
+    cfg->images[cfg->n_images] = image;
+    cfg->n_images++;
+}
 
 // Find an image object by its filename path
 image_t *setup_get_image_by_filename(const char *filename) {

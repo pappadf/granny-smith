@@ -72,7 +72,7 @@ extern double scheduler_time_ns(struct scheduler *restrict scheduler);
 // Execution control
 
 // Main loop iteration for real-time emulation with VBL-based timing
-void scheduler_main_loop(struct config *restrict config, double now_msecs);
+void scheduler_main_loop(config_t *restrict config, double now_msecs);
 
 // Run the scheduler for a specified number of instructions
 void scheduler_run_instructions(struct scheduler *restrict s, uint64_t n);

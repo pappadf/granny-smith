@@ -427,7 +427,7 @@ static void run_startup_command(const char *line) {
 }
 
 // Auto-attach SCSI drives from /persist/boot
-static void auto_attach_scsi_drives(struct config *cfg) {
+static void auto_attach_scsi_drives(config_t *cfg) {
     DIR *dir = opendir("/persist/boot");
     if (!dir) {
         return;

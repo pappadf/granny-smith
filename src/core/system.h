@@ -57,36 +57,14 @@ typedef struct floppy floppy_t;
 
 #define MAX_IMAGES 10
 
+// Opaque emulator configuration handle
 struct config;
 typedef struct config config_t;
 
-struct config {
-
-    floppy_t *floppy;
-    sound_t *sound2;
-    mouse_t *mouse;
-    keyboard_t *keyboard;
-
-    via_t *new_via;
-    scc_t *new_scc;
-    scsi_t *new_scsi;
-    memory_map_t *mem_map;
-    memory_interface_t *mem_iface;
-
-    rtc_t *new_rtc;
-
-    cpu_t *new_cpu;
-    debug_t *debugger;
-
-    image_t *images[MAX_IMAGES];
-    int n_images;
-
-    struct scheduler *scheduler;
-
-    uint8_t *ram_vbuf;
-
-    uint32_t irq;
-};
+// Config field accessors (opaque handle access)
+image_t *config_get_image(config_t *cfg, int index);
+int config_get_n_images(config_t *cfg);
+void config_add_image(config_t *cfg, image_t *image);
 
 extern void setup_init(void);
 extern config_t *setup_plus(checkpoint_t *checkpoint);
@@ -95,9 +73,9 @@ extern void mac_reset(config_t *restrict sim);
 
 extern config_t *global_emulator;
 
-void add_scsi_drive(struct config *restrict config, const char *filename, int scsi_id);
+void add_scsi_drive(config_t *restrict config, const char *filename, int scsi_id);
 
-void trigger_vbl(struct config *restrict config);
+void trigger_vbl(config_t *restrict config);
 
 // Teardown: dispose all modules in reverse init order and free config
 void setup_teardown(config_t *config);

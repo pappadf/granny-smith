@@ -242,18 +242,6 @@ int debug_break_and_trace(void) {
     return stop;
 }
 
-// Display memory contents in hexadecimal format
-static void cmd_display_memory(struct config *config, uint64_t addr, uint64_t nbytes) {
-    debug_t *debug = config->debugger;
-
-    for (int i = 0; i < nbytes; i += 16) {
-        printf("%08x: ", (int)(addr + i));
-        for (int j = 0; i + j < nbytes && j < 16; j += 2)
-            printf("%04x ", (int)cpu_get_uint16((uint32_t)addr + i + j));
-        printf("\n");
-    }
-}
-
 // Delete a breakpoint at the specified address
 // Returns true if breakpoint was found and deleted, false otherwise
 static bool delete_breakpoint(debug_t *debug, uint32_t addr) {
@@ -810,10 +798,6 @@ static uint64_t cmd_td(int argc, char *argv[]) {
     printf("   D7 = %08x    A7 = %08x\n", (int)cpu_get_dn(cpu, 7), (int)cpu_get_an(cpu, 7));
 
     return 0;
-}
-
-static void cmd_memmap(struct config *config) {
-    memory_map_print(config->mem_map);
 }
 
 static uint64_t cmd_step(int argc, char *argv[]) {

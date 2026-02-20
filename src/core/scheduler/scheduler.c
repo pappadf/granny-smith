@@ -962,11 +962,11 @@ void scheduler_run_usecs(struct scheduler *restrict s, uint64_t usecs) {
 }
 
 // Main loop iteration for real-time emulation with VBL-based timing
-void scheduler_main_loop(struct config *restrict config, double now_msecs) {
+void scheduler_main_loop(config_t *restrict config, double now_msecs) {
     GS_ASSERT(config != NULL);
-    GS_ASSERT(config->scheduler != NULL);
+    GS_ASSERT(system_scheduler() != NULL);
 
-    struct scheduler *s = config->scheduler;
+    struct scheduler *s = system_scheduler();
 
     CHECK_INVARIANTS(s);
     GS_ASSERT(!isnan(s->vbl_acc_error));

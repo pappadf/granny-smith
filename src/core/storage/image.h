@@ -16,6 +16,7 @@
 
 // === Forward Declarations ===
 struct config;
+typedef struct config config_t;
 
 // === Type Definitions ===
 enum image_type { image_other, image_fd_ss, image_fd_ds, image_fd_hd, image_hd };
@@ -65,10 +66,10 @@ size_t disk_size(image_t *disk);
 size_t image_save(image_t *image);
 
 // Add an image to the config for tracking
-void add_image(struct config *sim, image_t *image);
+void add_image(config_t *sim, image_t *image);
 
 // Tick all tracked images (drives storage consolidation)
-void image_tick_all(struct config *config);
+void image_tick_all(config_t *config);
 
 // Returns the full path+name used to open the image
 const char *image_get_filename(const image_t *image);
@@ -80,6 +81,6 @@ int image_create_empty(const char *filename, size_t size);
 int image_create_blank_floppy(const char *filename, bool overwrite);
 
 // Setup images from config
-extern void setup_images(struct config *config);
+extern void setup_images(config_t *config);
 
 #endif // IMAGE_H

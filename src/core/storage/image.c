@@ -466,18 +466,17 @@ static int image_seed_storage(image_t *image) {
 }
 
 // Add an image to the emulator's image list
-void add_image(struct config *sim, image_t *image) {
-    assert(sim->n_images < MAX_IMAGES);
-    sim->images[sim->n_images] = image;
-    sim->n_images++;
+void add_image(config_t *sim, image_t *image) {
+    config_add_image(sim, image);
 }
 
 // Tick all active images to process pending operations
-void image_tick_all(struct config *config) {
+void image_tick_all(config_t *config) {
     if (!config)
         return;
-    for (int i = 0; i < config->n_images; ++i) {
-        image_t *img = config->images[i];
+    int n = config_get_n_images(config);
+    for (int i = 0; i < n; ++i) {
+        image_t *img = config_get_image(config, i);
         if (!img || !img->storage)
             continue;
         int rc = storage_tick(img->storage);
@@ -487,16 +486,18 @@ void image_tick_all(struct config *config) {
     }
 }
 
-static void cmd_images(struct config *sim, const char *op) {
+static void cmd_images(config_t *sim, const char *op) {
     if (strcmp(op, "list") == 0) {
-        for (int i = 0; i < sim->n_images; i++) {
-            printf("%02d: %s\n", i, sim->images[i]->filename);
+        int n = config_get_n_images(sim);
+        for (int i = 0; i < n; i++) {
+            image_t *img = config_get_image(sim, i);
+            printf("%02d: %s\n", i, img->filename);
         }
     }
 }
 
-static void cmd_save(struct config *sim, uint64_t n) {
-    image_save(sim->images[n]);
+static void cmd_save(config_t *sim, uint64_t n) {
+    image_save(config_get_image(sim, n));
 }
 
 // Initialize image-related shell commands
