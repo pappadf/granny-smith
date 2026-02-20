@@ -29,10 +29,11 @@ endif
 
 # -- Directories --
 
-BUILD_DIR    := build/headless
-CORE_DIR     := src/core
-PLATFORM_DIR := src/platform/headless
-PEELER_DIR   := third-party/peeler
+BUILD_DIR     := build/headless
+CORE_DIR      := src/core
+MACHINES_DIR  := src/machines
+PLATFORM_DIR  := src/platform/headless
+PEELER_DIR    := third-party/peeler
 
 # -- Include paths --
 # Platform headers come first so platform.h overrides are picked up.
@@ -47,6 +48,7 @@ INCLUDES := -I$(PLATFORM_DIR) \
             -I$(CORE_DIR)/storage \
             -I$(CORE_DIR)/network \
             -I$(CORE_DIR)/shell \
+            -I$(MACHINES_DIR) \
             -I$(PEELER_DIR)/include \
             -I$(PEELER_DIR)/lib
 
@@ -62,7 +64,8 @@ CORE_SRC := $(wildcard $(CORE_DIR)/*.c) \
             $(wildcard $(CORE_DIR)/debug/*.c) \
             $(wildcard $(CORE_DIR)/storage/*.c) \
             $(wildcard $(CORE_DIR)/network/*.c) \
-            $(wildcard $(CORE_DIR)/shell/*.c)
+            $(wildcard $(CORE_DIR)/shell/*.c) \
+            $(wildcard $(MACHINES_DIR)/*.c)
 
 # Platform-specific sources
 PLATFORM_SRC := $(wildcard $(PLATFORM_DIR)/*.c)

@@ -43,6 +43,7 @@
 #include "checkpoint.h"
 #include "cpu.h"
 #include "keyboard.h"
+#include "machine.h"
 #include "mouse.h"
 #include "platform.h"
 #include "scheduler.h"
@@ -980,7 +981,7 @@ static int save_quick_checkpoint(const char *reason, bool verbose, bool rate_lim
 
     g_background_checkpoint_inflight = true;
     g_pending_checkpoint_seq = next_seq;
-    int rc = setup_plus_checkpoint(path, CHECKPOINT_KIND_QUICK);
+    int rc = system_checkpoint(path, CHECKPOINT_KIND_QUICK);
 
     // Calculate elapsed time for checkpoint save
     double checkpoint_elapsed_ms = emscripten_get_now() - checkpoint_start_time;
@@ -1349,7 +1350,7 @@ int main(int argc, char *argv[]) {
 
     shell_init();
     setup_init();
-    global_emulator = setup_plus(NULL); // NULL = setup from scratch, not from checkpoint
+    global_emulator = system_create(&machine_plus, NULL); // NULL = cold boot, not from checkpoint
 
     // Apply scheduler speed mode if provided
     scheduler_t *sched = system_scheduler();

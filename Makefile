@@ -56,12 +56,13 @@ endif
 
 # -- Directories --
 
-BUILD_DIR    := build
-OBJ_DIR      := $(BUILD_DIR)/wasm
-WEB_DIR      := app/web
-CORE_DIR     := src/core
-PLATFORM_DIR := src/platform/wasm
-PEELER_DIR   := third-party/peeler
+BUILD_DIR     := build
+OBJ_DIR       := $(BUILD_DIR)/wasm
+WEB_DIR       := app/web
+CORE_DIR      := src/core
+MACHINES_DIR  := src/machines
+PLATFORM_DIR  := src/platform/wasm
+PEELER_DIR    := third-party/peeler
 
 # -- Source discovery --
 # Wildcard patterns auto-discover new .c files in each subdirectory.
@@ -75,7 +76,8 @@ CORE_SRC := $(wildcard $(CORE_DIR)/*.c) \
             $(wildcard $(CORE_DIR)/debug/*.c) \
             $(wildcard $(CORE_DIR)/storage/*.c) \
             $(wildcard $(CORE_DIR)/network/*.c) \
-            $(wildcard $(CORE_DIR)/shell/*.c)
+            $(wildcard $(CORE_DIR)/shell/*.c) \
+            $(wildcard $(MACHINES_DIR)/*.c)
 
 # Platform-specific sources (WASM/Emscripten)
 PLATFORM_SRC := $(wildcard $(PLATFORM_DIR)/*.c)
@@ -125,6 +127,7 @@ INCLUDES := -I$(CORE_DIR) \
             -I$(CORE_DIR)/storage \
             -I$(CORE_DIR)/network \
             -I$(CORE_DIR)/shell \
+            -I$(MACHINES_DIR) \
             -I$(PLATFORM_DIR)
 
 # -- Compile flags (source -> object) --

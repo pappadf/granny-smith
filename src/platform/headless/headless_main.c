@@ -10,6 +10,7 @@
 #include "floppy.h"
 #include "image.h"
 #include "log.h"
+#include "machine.h"
 #include "memory.h"
 #include "scheduler.h"
 #include "scsi.h"
@@ -300,7 +301,7 @@ int main(int argc, char *argv[]) {
     register_cmd("quit", "General", "quit - exit the emulator", cmd_quit);
 
     setup_init();
-    global_emulator = setup_plus(NULL);
+    global_emulator = system_create(&machine_plus, NULL);
 
     if (!global_emulator) {
         fprintf(stderr, "Error: Failed to initialize emulator\n");
@@ -406,7 +407,7 @@ int main(int argc, char *argv[]) {
     if (!quiet)
         printf("\nShutting down...\n");
 
-    setup_teardown(global_emulator);
+    system_destroy(global_emulator);
     global_emulator = NULL;
 
     return g_script_exit_code;

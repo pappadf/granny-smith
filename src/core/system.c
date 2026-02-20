@@ -2,9 +2,12 @@
 // Copyright (c) pappadf
 
 // system.c
-// Main emulator orchestration: initialization, shutdown, and device coordination.
+// Generic emulator lifecycle: creation, destruction, checkpointing, and
+// shared device coordination. Machine-specific init/teardown logic lives in
+// the machine's own source file (e.g., src/machines/plus.c) and is invoked
+// through the hw_profile_t callback interface.
 
-#include "system.h"
+#include "system_config.h" // full config_t definition (includes system.h transitively)
 
 #include "appletalk.h"
 #include "build_id.h"
@@ -30,35 +33,6 @@
 #include <string.h>
 
 LOG_USE_CATEGORY_NAME("setup");
-
-// Emulator configuration: complete machine state
-struct config {
-
-    floppy_t *floppy;
-    sound_t *sound2;
-    mouse_t *mouse;
-    keyboard_t *keyboard;
-
-    via_t *new_via;
-    scc_t *new_scc;
-    scsi_t *new_scsi;
-    memory_map_t *mem_map;
-    memory_interface_t *mem_iface;
-
-    rtc_t *new_rtc;
-
-    cpu_t *new_cpu;
-    debug_t *debugger;
-
-    image_t *images[MAX_IMAGES];
-    int n_images;
-
-    struct scheduler *scheduler;
-
-    uint8_t *ram_vbuf;
-
-    uint32_t irq;
-};
 
 // Global emulator pointer (definition)
 config_t *global_emulator = NULL;
@@ -123,7 +97,7 @@ debug_t *system_debug(void) {
 
 // System-level CPU accessor: returns the current CPU object
 cpu_t *system_cpu(void) {
-    return global_emulator ? global_emulator->new_cpu : NULL;
+    return global_emulator ? global_emulator->cpu : NULL;
 }
 
 // System-level framebuffer accessor: returns pointer to video RAM buffer
@@ -134,6 +108,19 @@ uint8_t *system_framebuffer(void) {
 // Check if emulator is initialized and running
 bool system_is_initialized(void) {
     return global_emulator != NULL;
+}
+
+// Forward declarations for command handlers
+uint64_t cmd_attach_hd(int argc, char *argv[]);
+uint64_t cmd_new_fd(int argc, char *argv[]);
+uint64_t cmd_insert_fd(int argc, char *argv[]);
+uint64_t cmd_insert_disk(int argc, char *argv[]);
+
+// Trigger a vertical blanking interval event (delegates to machine callback)
+void trigger_vbl(struct config *restrict config) {
+    if (config && config->machine && config->machine->trigger_vbl) {
+        config->machine->trigger_vbl(config);
+    }
 }
 
 // new-fd [drive]
@@ -202,27 +189,6 @@ uint64_t cmd_new_fd(int argc, char *argv[]) {
     printf("new-fd: created %s and inserted into drive %d.\n", path, target);
     return 0;
 }
-// Forward declarations for command handlers
-uint64_t cmd_attach_hd(int argc, char *argv[]);
-uint64_t cmd_new_fd(int argc, char *argv[]);
-uint64_t cmd_insert_fd(int argc, char *argv[]);
-uint64_t cmd_insert_disk(int argc, char *argv[]);
-
-// Trigger a vertical blanking interval event
-void trigger_vbl(struct config *restrict config) {
-    struct scheduler *s = config->scheduler;
-
-    // Trigger the vertical blanking interrupt
-    via_input_c(config->new_via, 0, 0, 0);
-    via_input_c(config->new_via, 0, 0, 1);
-
-    // If we have a sound system, trigger the sound VBL
-    if (config->sound2) {
-        sound_vbl(config->sound2);
-    }
-
-    image_tick_all(config);
-}
 
 // Insert a disk image into the floppy drive
 uint64_t cmd_insert_disk(int argc, char *argv[]) {
@@ -262,20 +228,6 @@ uint64_t cmd_insert_disk(int argc, char *argv[]) {
     return 0;
 }
 
-// Switch between main and alternate video buffer addresses
-void video_use_buffer(bool main) {
-    uint32_t addr;
-
-    if (main) {
-        addr = 0x400000 - 0x5900;
-    } else {
-
-        addr = 0x400000 - 0x5900 - 0x8000;
-    }
-
-    global_emulator->ram_vbuf = ram_native_pointer(global_emulator->mem_map, addr);
-}
-
 // Initialize the setup system and register commands
 void setup_init() {
     printf("Granny Smith build %s\n", get_build_id());
@@ -285,7 +237,6 @@ void setup_init() {
     (void)log_register_category("appletalk");
 
     // Module-owned command registrations
-    // Note: appletalk_init moved to setup_plus after SCC creation
     image_init(NULL); // No cross-module commands registered here
 
     // Cross-module commands (image+floppy, scsi+image) registered here
@@ -302,205 +253,37 @@ void setup_init() {
     register_cmd("load-state", "Checkpointing", "Load machine state: load-state [<file>|probe]", &cmd_load_checkpoint);
 }
 
-// Forward declarations for Plus-specific callbacks
-static void plus_via_output(void *context, uint8_t port, uint8_t output);
-static void plus_via_shift_out(void *context, uint8_t byte);
-static void plus_via_irq(void *context, bool active);
-static void plus_scc_irq(void *context, bool active);
+// Create an emulator instance for the given machine profile.
+// Allocates config_t, wires the machine descriptor, and calls profile->init().
+config_t *system_create(const hw_profile_t *profile, checkpoint_t *checkpoint) {
+    assert(profile != NULL);
+    assert(profile->init != NULL);
 
-// Set up a Mac Plus emulator configuration
-config_t *setup_plus(checkpoint_t *checkpoint) {
+    config_t *cfg = malloc(sizeof(config_t));
+    if (!cfg)
+        return NULL;
+    memset(cfg, 0, sizeof(config_t));
 
-    config_t *sim;
+    cfg->machine = profile;
+    global_emulator = cfg;
 
-    sim = malloc(sizeof(config_t));
-    if (sim == NULL) {
-        return (NULL);
-    }
+    // Delegate all machine-specific initialisation to the profile
+    profile->init(cfg, checkpoint);
 
-    memset(sim, 0, sizeof(config_t));
-
-    global_emulator = sim;
-
-    sim->mem_map = memory_map_init(checkpoint);
-
-    sim->mem_iface = memory_map_interface(sim->mem_map);
-
-    sim->new_cpu = cpu_init(checkpoint);
-
-    sim->scheduler = scheduler_init(sim->new_cpu, checkpoint);
-
-    // Restore global interrupt state in the same order they were saved
-    // (right after scheduler, before RTC and the rest of devices).
-    if (checkpoint) {
-        system_read_checkpoint_data(checkpoint, &sim->irq, sizeof(sim->irq));
-    }
-
-    sim->new_rtc = rtc_init(sim->scheduler, checkpoint);
-
-    sim->new_scc = scc_init(sim->mem_map, sim->scheduler, plus_scc_irq, sim, checkpoint);
-
-    // Initialize AppleTalk with scheduler and SCC dependencies (registers shell commands)
-    appletalk_init(sim->scheduler, sim->new_scc, NULL);
-
-    // sim->video = mac_video_new(512, 342);
-
-    sim->sound2 = sound_init(sim->mem_map, checkpoint);
-
-    sim->new_via =
-        via_init(sim->mem_map, sim->scheduler, plus_via_output, plus_via_shift_out, plus_via_irq, sim, checkpoint);
-
-    rtc_set_via(sim->new_rtc, sim->new_via);
-
-    sim->mouse = mouse_init(sim->scheduler, sim->new_scc, sim->new_via, checkpoint);
-
-    // Restore image list from checkpoint before devices that may reference them
-    if (checkpoint) {
-        uint32_t count = 0;
-        system_read_checkpoint_data(checkpoint, &count, sizeof(count));
-        for (uint32_t i = 0; i < count; ++i) {
-            uint32_t len = 0;
-            system_read_checkpoint_data(checkpoint, &len, sizeof(len));
-            char *name = NULL;
-            if (len > 0) {
-                name = (char *)malloc(len);
-                if (!name) {
-                    char tmp;
-                    for (uint32_t k = 0; k < len; ++k)
-                        system_read_checkpoint_data(checkpoint, &tmp, 1);
-                } else {
-                    system_read_checkpoint_data(checkpoint, name, len);
-                }
-            }
-            char writable = 0;
-            system_read_checkpoint_data(checkpoint, &writable, sizeof(writable));
-            // Read raw image size (written by image_checkpoint)
-            uint64_t raw_size = 0;
-            system_read_checkpoint_data(checkpoint, &raw_size, sizeof(raw_size));
-            image_t *img = NULL;
-            if (name) {
-                // For consolidated checkpoints the embedded data is authoritative;
-                // always recreate the backing file so stale/missing/wrong-size
-                // files on disk are replaced with a clean image of the correct size.
-                if (raw_size > 0 && checkpoint_get_kind(checkpoint) == CHECKPOINT_KIND_CONSOLIDATED) {
-                    image_create_empty(name, (size_t)raw_size);
-                }
-                img = image_open(name, writable != 0);
-                if (!img) {
-                    printf("Error: image_open failed for %s while restoring checkpoint\n", name);
-                    checkpoint_set_error(checkpoint);
-                }
-            }
-            if (storage_restore_from_checkpoint(img ? img->storage : NULL, checkpoint) != GS_SUCCESS) {
-                printf("Error: storage_restore_from_checkpoint failed for %s\n", name ? name : "<unnamed>");
-                checkpoint_set_error(checkpoint);
-            }
-            if (img) {
-                add_image(sim, img);
-            }
-            if (name) {
-                free(name);
-            }
-        }
-    }
-
-    sim->new_scsi = scsi_init(sim->mem_map, checkpoint);
-
-    setup_images(sim);
-
-    sim->keyboard = keyboard_init(sim->scheduler, sim->new_scc, sim->new_via, checkpoint);
-
-    // Initialize floppy last to match checkpoint save order
-    sim->floppy = floppy_init(sim->mem_map, sim->scheduler, checkpoint);
-
-    // After floppy exists, if restoring from a checkpoint, re-drive VIA outputs
-    // so SEL and other external signals propagate to the floppy.
-    if (checkpoint) {
-        via_redrive_outputs(sim->new_via);
-    }
-
-    // sim->new_cpu->video = sim->video;
-
-    // On cold boot, default to main video buffer. When restoring from a checkpoint,
-    // VIA outputs will re-drive the selection, so don't override it here.
-    if (!checkpoint) {
-        video_use_buffer(1);
-    }
-
-    sim->debugger = debug_init();
-
-    scheduler_start(global_emulator->scheduler);
-
-    // Initialize IRQ/IPL only for cold boot. On checkpoint restore, devices
-    // (VIA, SCC) already re-assert their interrupts; don't clobber them.
-    if (!checkpoint) {
-        sim->irq = 0;
-        cpu_set_ipl(sim->new_cpu, 0);
-    }
-
-    return (sim);
+    return cfg;
 }
 
-// Tear down and free all emulator resources
-void setup_teardown(config_t *config) {
+// Destroy an emulator instance: call machine teardown and free all resources.
+void system_destroy(config_t *config) {
     if (!config)
         return;
 
-    // stop scheduler if running (best effort)
-    if (config->scheduler) {
-        scheduler_stop(config->scheduler);
+    // Delegate machine-specific teardown to the profile
+    if (config->machine && config->machine->teardown) {
+        config->machine->teardown(config);
     }
 
-    if (config->keyboard) {
-        keyboard_delete(config->keyboard);
-        config->keyboard = NULL;
-    }
-    if (config->new_scsi) {
-        scsi_delete(config->new_scsi);
-        config->new_scsi = NULL;
-    }
-    if (config->mouse) {
-        mouse_delete(config->mouse);
-        config->mouse = NULL;
-    }
-    if (config->new_via) {
-        via_delete(config->new_via);
-        config->new_via = NULL;
-    }
-    if (config->sound2) {
-        sound_delete(config->sound2);
-        config->sound2 = NULL;
-    }
-    if (config->new_scc) {
-        scc_delete(config->new_scc);
-        config->new_scc = NULL;
-    }
-    if (config->new_rtc) {
-        rtc_delete(config->new_rtc);
-        config->new_rtc = NULL;
-    }
-    if (config->scheduler) {
-        scheduler_delete(config->scheduler);
-        config->scheduler = NULL;
-    }
-    if (config->floppy) {
-        floppy_delete(config->floppy);
-        config->floppy = NULL;
-    }
-    if (config->new_cpu) {
-        cpu_delete(config->new_cpu);
-        config->new_cpu = NULL;
-    }
-    if (config->mem_map) {
-        memory_map_delete(config->mem_map);
-        config->mem_map = NULL;
-    }
-    if (config->debugger) {
-        debug_cleanup(config->debugger);
-        config->debugger = NULL;
-    }
-
-    // Free all tracked images
+    // Free all tracked images (managed at the system level)
     for (int i = 0; i < config->n_images; ++i) {
         if (config->images[i]) {
             image_close(config->images[i]);
@@ -514,78 +297,10 @@ void setup_teardown(config_t *config) {
 
 // Reset Mac hardware to initial state
 void mac_reset(config_t *restrict sim) {
-    scc_reset(sim->new_scc);
+    scc_reset(sim->scc);
 }
 
-// Plus-specific VIA output callback: routes port changes to floppy, video, sound, RTC
-static void plus_via_output(void *context, uint8_t port, uint8_t output) {
-    config_t *sim = (config_t *)context;
-
-    if (port == 0) {
-        floppy_set_sel_signal(sim->floppy, (output & 0x20) != 0);
-
-        video_use_buffer(output >> 6 & 1);
-
-        sound_use_buffer(sim->sound2, output >> 3 & 1);
-
-        sound_volume(sim->sound2, output & 7);
-    } else {
-        rtc_input(sim->new_rtc, output >> 2 & 1, output >> 1 & 1, output & 1);
-
-        sound_enable(sim->sound2, (output & 0x80) == 0);
-    }
-}
-
-// Plus-specific VIA shift-out callback: routes keyboard data
-static void plus_via_shift_out(void *context, uint8_t byte) {
-    config_t *sim = (config_t *)context;
-    keyboard_input(sim->keyboard, byte);
-}
-
-// Plus-specific interrupt routing: update CPU IPL from VIA or SCC IRQ changes
-static void plus_update_ipl(config_t *sim, int level, bool value) {
-    int old_irq = sim->irq;
-    int old_ipl = cpu_get_ipl(sim->new_cpu);
-    if (value)
-        sim->irq |= level;
-    else
-        sim->irq &= ~level;
-
-    // Guide to the Macintosh Family Hardware, chapter 3:
-    // The interrupt request line from the VIA goes to the PALs,
-    // which can assert an interrupt to the processor on line /IPL0.
-    // The PALs also monitor interrupt line /IPL1,
-    // and deassert /IPL0 whenever /IPL1 is asserted.
-
-    uint32_t new_ipl;
-    if (sim->irq > 1)
-        new_ipl = 2;
-    else if (sim->irq == 1)
-        new_ipl = 1;
-    else
-        new_ipl = 0;
-    cpu_set_ipl(sim->new_cpu, new_ipl);
-
-    LOG(1, "plus_update_ipl: level=%d value=%d irq:%d->%d ipl:%d->%d", level, value ? 1 : 0, old_irq, sim->irq, old_ipl,
-        new_ipl);
-
-    cpu_reschedule();
-}
-
-// Plus-specific VIA IRQ callback: VIA uses IPL level 1
-static void plus_via_irq(void *context, bool active) {
-    plus_update_ipl((config_t *)context, 1, active);
-}
-
-// Plus-specific SCC IRQ callback: SCC uses IPL level 2
-static void plus_scc_irq(void *context, bool active) {
-    plus_update_ipl((config_t *)context, 2, active);
-}
-
-// new-fd [drive]
-// Creates a new blank 800K double-sided floppy image in memory and inserts it
-// into the preferred drive if provided (0 or 1) or the first free drive.
-// Returns 0 on success, -1 on failure.
+// new-fd [drive] — insert-fd variant
 uint64_t cmd_insert_fd(int argc, char *argv[]) {
     if (argc < 2) {
         printf("Usage: insert-fd [--probe] <path-to-disk-image> [drive:0|1] [writable:0|1]\n");
@@ -739,7 +454,7 @@ void add_scsi_drive(struct config *restrict config, const char *filename, int sc
     add_image(config, img);
 
     // Attach to SCSI bus
-    scsi_add_device(config->new_scsi, scsi_id, disks[best].vendor, disks[best].product, img);
+    scsi_add_device(config->scsi, scsi_id, disks[best].vendor, disks[best].product, img);
 }
 
 // attach-hd <path-to-image> [scsi-id]
@@ -769,21 +484,21 @@ uint64_t cmd_attach_hd(int argc, char *argv[]) {
     return 0;
 }
 
-// Device checkpoint functions for saving state
-
-// Function to save complete machine state checkpoint
-// Returns GS_SUCCESS on success, GS_ERROR on failure
-int setup_plus_checkpoint(const char *filename, checkpoint_kind_t kind) {
+// Save current machine state to a checkpoint file.
+// Returns GS_SUCCESS on success, GS_ERROR on failure.
+int system_checkpoint(const char *filename, checkpoint_kind_t kind) {
     if (!global_emulator) {
         printf("Error: No emulator instance to checkpoint\n");
         return GS_ERROR;
     }
+    if (!global_emulator->machine || !global_emulator->machine->checkpoint_save) {
+        printf("Error: Machine has no checkpoint_save callback\n");
+        return GS_ERROR;
+    }
 
-    // Start timing the checkpoint save operation
     double start_time = host_time_ms();
 
-    // Quick checkpoints must store files as references (paths only), never content.
-    // Content embedding was a bug that added ~128 KB of ROM I/O per quick checkpoint.
+    // Quick checkpoints store files as references (paths only), never content.
     bool prev_files_mode = checkpoint_get_files_as_refs();
     if (kind == CHECKPOINT_KIND_QUICK) {
         checkpoint_set_files_as_refs(true);
@@ -795,30 +510,8 @@ int setup_plus_checkpoint(const char *filename, checkpoint_kind_t kind) {
         return GS_ERROR;
     }
 
-    // Save all device states
-    memory_map_checkpoint(global_emulator->mem_map, checkpoint);
-    cpu_checkpoint(global_emulator->new_cpu, checkpoint);
-    scheduler_checkpoint(global_emulator->scheduler, checkpoint);
-
-    // Save global interrupt state (irq) after scheduler/cpu
-    system_write_checkpoint_data(checkpoint, &global_emulator->irq, sizeof(global_emulator->irq));
-
-    rtc_checkpoint(global_emulator->new_rtc, checkpoint);
-    scc_checkpoint(global_emulator->new_scc, checkpoint);
-    sound_checkpoint(global_emulator->sound2, checkpoint);
-    via_checkpoint(global_emulator->new_via, checkpoint);
-    mouse_checkpoint(global_emulator->mouse, checkpoint);
-    // Checkpoint list of images (path + writable) before devices that reference them
-    {
-        uint32_t count = (uint32_t)global_emulator->n_images;
-        system_write_checkpoint_data(checkpoint, &count, sizeof(count));
-        for (uint32_t i = 0; i < count; ++i) {
-            image_checkpoint(global_emulator->images[i], checkpoint);
-        }
-    }
-    scsi_checkpoint(global_emulator->new_scsi, checkpoint);
-    keyboard_checkpoint(global_emulator->keyboard, checkpoint);
-    floppy_checkpoint(global_emulator->floppy, checkpoint);
+    // Delegate all state serialisation to the machine profile
+    global_emulator->machine->checkpoint_save(global_emulator, checkpoint);
 
     if (checkpoint_has_error(checkpoint)) {
         printf("Error: Failed to write checkpoint\n");
@@ -828,18 +521,15 @@ int setup_plus_checkpoint(const char *filename, checkpoint_kind_t kind) {
     }
 
     checkpoint_close(checkpoint);
-
-    // Restore previous files-as-refs mode
     checkpoint_set_files_as_refs(prev_files_mode);
 
-    // Calculate and print elapsed time
     double elapsed_ms = host_time_ms() - start_time;
     printf("Checkpoint saved to %s (%.2f ms)\n", filename, elapsed_ms);
     return GS_SUCCESS;
 }
 
-// Function to load machine state from checkpoint
-config_t *setup_plus_restore(const char *filename) {
+// Restore machine state from a checkpoint file.
+config_t *system_restore(const char *filename) {
     checkpoint_t *checkpoint = checkpoint_open_read(filename);
     if (!checkpoint) {
         printf("Error: Failed to open checkpoint file for reading: %s\n", filename);
@@ -847,20 +537,18 @@ config_t *setup_plus_restore(const char *filename) {
     }
 
     // Save the current global emulator so we can restore it on error.
-    // setup_plus() sets global_emulator internally (needed by subsystem lookups),
-    // but if the overall restore fails we must not leave a broken pointer.
     config_t *prev = global_emulator;
 
-    // Create new emulator instance from checkpoint
-    config_t *config = setup_plus(checkpoint);
+    // For now, always restore as Plus (M6 will add ROM-based machine selection).
+    extern const hw_profile_t machine_plus;
+    config_t *config = system_create(&machine_plus, checkpoint);
 
     if (checkpoint_has_error(checkpoint)) {
         printf("Error: Failed to read checkpoint\n");
         checkpoint_close(checkpoint);
-        // Restore the previous global_emulator so callers see the old, valid config
         global_emulator = prev;
         if (config)
-            setup_teardown(config);
+            system_destroy(config);
         return NULL;
     }
 
@@ -888,7 +576,7 @@ uint64_t cmd_save_checkpoint(int argc, char *argv[]) {
             return -1;
         }
     }
-    int result = setup_plus_checkpoint(filename, CHECKPOINT_KIND_CONSOLIDATED);
+    int result = system_checkpoint(filename, CHECKPOINT_KIND_CONSOLIDATED);
     checkpoint_set_files_as_refs(prev_mode); // restore previous setting
     return result;
 }
@@ -923,7 +611,7 @@ uint64_t cmd_load_checkpoint(int argc, char *argv[]) {
 
     const char *filename = argv[1];
     config_t *old_config = global_emulator;
-    config_t *new_config = setup_plus_restore(filename);
+    config_t *new_config = system_restore(filename);
     if (new_config) {
         // Replace global emulator with restored state
         global_emulator = new_config;
@@ -933,14 +621,13 @@ uint64_t cmd_load_checkpoint(int argc, char *argv[]) {
         // 2. global_emulator now points to new_config
         // 3. No part of the call stack holds direct references to old_config
         if (old_config) {
-            setup_teardown(old_config);
+            system_destroy(old_config);
         }
         // Force a one-shot screen redraw so the restored framebuffer appears
         extern void frontend_force_redraw(void);
         frontend_force_redraw();
 
         // Resume execution if checkpoint was saved while running
-        // (scheduler's running flag is restored from checkpoint)
         if (scheduler_is_running(new_config->scheduler)) {
             printf("Checkpoint was saved while running - resuming execution\n");
         }

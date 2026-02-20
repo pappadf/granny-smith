@@ -1,0 +1,4 @@
+# Fallback simple test (used when TEST_RUNNER is not available)
+# Just boot and quit to verify system_create works
+run 1000000
+quit

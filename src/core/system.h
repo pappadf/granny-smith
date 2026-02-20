@@ -55,6 +55,10 @@ typedef struct scsi scsi_t;
 struct floppy;
 typedef struct floppy floppy_t;
 
+// Forward declaration for hw_profile_t (defined in machine.h)
+struct hw_profile;
+typedef struct hw_profile hw_profile_t;
+
 #define MAX_IMAGES 10
 
 // Opaque emulator configuration handle
@@ -66,10 +70,18 @@ image_t *config_get_image(config_t *cfg, int index);
 int config_get_n_images(config_t *cfg);
 void config_add_image(config_t *cfg, image_t *image);
 
-extern void setup_init(void);
-extern config_t *setup_plus(checkpoint_t *checkpoint);
+// === Generic Machine Lifecycle ===
 
-extern void mac_reset(config_t *restrict sim);
+// One-time global initialisation: logging categories, image system, shell commands.
+extern void setup_init(void);
+
+// Create an emulator instance for the given machine profile.
+// If checkpoint is non-NULL, device state is restored from that checkpoint.
+// Sets global_emulator and returns the new config handle.
+extern config_t *system_create(const hw_profile_t *profile, checkpoint_t *checkpoint);
+
+// Destroy an emulator instance: call machine teardown and free all resources.
+extern void system_destroy(config_t *config);
 
 extern config_t *global_emulator;
 
@@ -77,18 +89,13 @@ void add_scsi_drive(config_t *restrict config, const char *filename, int scsi_id
 
 void trigger_vbl(config_t *restrict config);
 
-// Teardown: dispose all modules in reverse init order and free config
-void setup_teardown(config_t *config);
+// Save current machine state to a checkpoint file.
+// Returns GS_SUCCESS on success, GS_ERROR on failure.
+int system_checkpoint(const char *filename, checkpoint_kind_t kind);
 
-// Device checkpoint functions are declared in their respective module headers
-
-// Function to save complete machine state checkpoint
-// `kind` selects quick vs consolidated checkpointing behavior.
-// Returns GS_SUCCESS on success, GS_ERROR on failure
-int setup_plus_checkpoint(const char *filename, checkpoint_kind_t kind);
-
-// Function to load machine state from checkpoint
-config_t *setup_plus_restore(const char *filename);
+// Restore machine state from a checkpoint file.
+// Returns a new config on success, NULL on failure.
+config_t *system_restore(const char *filename);
 
 // Command handlers for checkpoint operations
 uint64_t cmd_save_checkpoint(int argc, char *argv[]);
@@ -119,5 +126,8 @@ uint8_t *system_framebuffer(void);
 
 // Check if emulator is initialized and running
 bool system_is_initialized(void);
+
+// Reset Mac hardware to initial state
+extern void mac_reset(config_t *restrict sim);
 
 #endif // SETUP_H
