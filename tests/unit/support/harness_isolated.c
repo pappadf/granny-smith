@@ -5,14 +5,14 @@
 #include <stdlib.h>
 
 // Initialize a minimal isolated test context
-test_context_t* test_harness_init(void) {
+test_context_t *test_harness_init(void) {
     test_context_t *ctx = calloc(1, sizeof(test_context_t));
-    if (!ctx) return NULL;
+    if (!ctx)
+        return NULL;
 
     // In isolated mode, all subsystem pointers remain NULL.
     // Tests using this harness rely entirely on stub implementations.
     ctx->memory = NULL;
-    ctx->mem_iface = NULL;
     ctx->cpu = NULL;
     ctx->framebuffer = NULL;
 
@@ -24,7 +24,8 @@ test_context_t* test_harness_init(void) {
 
 // Destroy the isolated test context
 void test_harness_destroy(test_context_t *ctx) {
-    if (!ctx) return;
+    if (!ctx)
+        return;
 
     // Clear active context if it points to us
     if (test_get_active_context() == ctx) {

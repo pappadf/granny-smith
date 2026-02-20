@@ -12,24 +12,20 @@ void test_set_active_context(test_context_t *ctx) {
 }
 
 // Get the currently active test context
-test_context_t* test_get_active_context(void) {
+test_context_t *test_get_active_context(void) {
     return g_active_context;
 }
 
 // Accessor implementations
 
-memory_map_t* test_get_memory(test_context_t *ctx) {
+memory_map_t *test_get_memory(test_context_t *ctx) {
     return ctx ? ctx->memory : NULL;
 }
 
-memory_interface_t* test_get_mem_iface(test_context_t *ctx) {
-    return ctx ? ctx->mem_iface : NULL;
-}
-
-cpu_t* test_get_cpu(test_context_t *ctx) {
+cpu_t *test_get_cpu(test_context_t *ctx) {
     return ctx ? ctx->cpu : NULL;
 }
 
-uint8_t* test_get_framebuffer(test_context_t *ctx) {
+uint8_t *test_get_framebuffer(test_context_t *ctx) {
     return ctx ? ctx->framebuffer : NULL;
 }

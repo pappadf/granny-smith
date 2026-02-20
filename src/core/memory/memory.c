@@ -24,20 +24,14 @@
 // Constants and Macros
 // ============================================================================
 
-#define RAM_SIZE (4 * 1024 * 1024)
-
-uint8_t *g_memory_base = NULL;
+// Plus ROM size used only for identification functions (rom_version / rom_file_version).
+// These functions are Plus-specific and will be replaced in M6 by the ROM identification module.
+#define PLUS_ROM_SIZE (128 * 1024)
 
 // Page table globals (defined here, declared extern in memory.h)
 page_entry_t *g_page_table = NULL;
 uint32_t g_address_mask = 0x00FFFFFFUL; // 24-bit default
-
-// Number of pages in current page table
-static int g_page_count = 0;
-
-#define ROM_SIZE      (128 * 1024) // 128K Mac Plus ROM
-#define MAX_ROM_SIZE  (256 * 1024) // Mac Plus could in theory be upgraded to 256K ROM
-#define ROM_ADDR_MASK 0x0003FFFFUL // Valid address bits when accessing the ROM
+int g_page_count = 0; // number of pages in current page table
 
 // ============================================================================
 // Type Definitions
@@ -66,13 +60,15 @@ typedef struct memory {
 
     mapping_t *map;
 
-    memory_interface_t memory_interface;
-
-    uint8_t *image;
+    uint8_t *image; // flat RAM+ROM buffer
 
     // Per-instance page table (points to g_page_table when active)
     page_entry_t *page_table;
     int page_count;
+
+    // Machine-parameterised sizes (set by memory_map_init)
+    uint32_t ram_size; // RAM region size in bytes
+    uint32_t rom_size; // ROM content size in bytes
 
     // Path to the ROM file loaded via cmd_load_rom (if any)
     char *rom_filename;
@@ -84,162 +80,6 @@ typedef struct memory {
     int version;
 
 } memory_map_t;
-
-// ============================================================================
-// Memory Interface
-// ============================================================================
-
-// Read an 8-bit value from memory at the specified address
-static uint8_t mem_read_uint8(void *rom, uint32_t addr) {
-    addr &= 0x00FFFFFFUL;
-
-    memory_map_t *m = (memory_map_t *)rom;
-
-    if (addr < TOP_OF_ROM)
-        return LOAD_BE8(m->image + addr);
-
-    mapping_t *map = m->map;
-
-    for (; map != NULL; map = map->next)
-        if (addr >= map->addr && addr < (map->addr + map->size))
-            return map->memory_interface.read_uint8(map->device, addr - map->addr);
-
-    return 0;
-}
-
-// Read a 16-bit value from memory at the specified address
-static uint16_t mem_read_uint16(void *rom, uint32_t addr) {
-    addr &= 0x00FFFFFFUL;
-
-    memory_map_t *m = (memory_map_t *)rom;
-
-    if (addr < TOP_OF_ROM)
-        return LOAD_BE16(m->image + addr);
-
-    mapping_t *map = m->map;
-
-    for (; map != NULL; map = map->next)
-        if (addr >= map->addr && addr < (map->addr + map->size))
-            return map->memory_interface.read_uint16(map->device, addr - map->addr);
-
-    return 0;
-}
-
-// Read a 32-bit value from memory at the specified address
-static uint32_t mem_read_uint32(void *rom, uint32_t addr) {
-    addr &= 0x00FFFFFFUL;
-
-    memory_map_t *m = (memory_map_t *)rom;
-
-    if (addr < TOP_OF_ROM)
-        return LOAD_BE32(m->image + addr);
-
-    mapping_t *map = m->map;
-
-    for (; map != NULL; map = map->next)
-        if (addr >= map->addr && addr < (map->addr + map->size))
-            return map->memory_interface.read_uint32(map->device, addr - map->addr);
-
-    return 0;
-}
-
-// Write an 8-bit value to memory at the specified address
-static void mem_write_uint8(void *rom, uint32_t addr, uint8_t value) {
-    addr &= 0x00FFFFFFUL;
-
-    memory_map_t *m = (memory_map_t *)rom;
-
-    if (addr < TOP_OF_RAM) {
-        STORE_BE8(m->image + addr, value);
-        return;
-    }
-
-    mapping_t *map = m->map;
-
-    for (; map != NULL; map = map->next)
-        if (addr >= map->addr && addr < (map->addr + map->size)) {
-            map->memory_interface.write_uint8(map->device, addr - map->addr, value);
-            return;
-        }
-
-    assert(0);
-}
-
-// Write a 16-bit value to memory at the specified address
-static void mem_write_uint16(void *rom, uint32_t addr, uint16_t value) {
-    addr &= 0x00FFFFFFUL;
-
-    memory_map_t *m = (memory_map_t *)rom;
-
-    if (addr < TOP_OF_RAM) {
-        STORE_BE16(m->image + addr, value);
-        return;
-    }
-
-    mapping_t *map = m->map;
-
-    for (; map != NULL; map = map->next)
-        if (addr >= map->addr && addr < (map->addr + map->size)) {
-            map->memory_interface.write_uint16(map->device, addr - map->addr, value);
-            return;
-        }
-
-    assert(0);
-}
-
-// Write a 32-bit value to memory at the specified address
-static void mem_write_uint32(void *rom, uint32_t addr, uint32_t value) {
-    addr &= 0x00FFFFFFUL;
-
-    memory_map_t *m = (memory_map_t *)rom;
-
-    if (addr < TOP_OF_RAM) {
-        STORE_BE32(m->image + addr, value);
-        return;
-    }
-
-    mapping_t *map = m->map;
-
-    for (; map != NULL; map = map->next)
-        if (addr >= map->addr && addr < (map->addr + map->size)) {
-            map->memory_interface.write_uint32(map->device, addr - map->addr, value);
-            return;
-        }
-
-    GS_ASSERT(0);
-}
-
-// Read memory at the given address with specified size (1, 2, or 4 bytes)
-uint32_t memory_read(unsigned int size, uint32_t addr) {
-    switch (size) {
-    case 1:
-        return mem_read_uint8(system_memory(), addr);
-    case 2:
-        return mem_read_uint16(system_memory(), addr);
-    case 4:
-        return mem_read_uint32(system_memory(), addr);
-    default:
-        assert(0);
-        return 0;
-    }
-}
-
-// Write memory at the given address with specified size (1, 2, or 4 bytes)
-void memory_write(unsigned int size, uint32_t addr, uint32_t value) {
-    switch (size) {
-    case 1:
-        mem_write_uint8(system_memory(), addr, (uint8_t)value);
-        break;
-    case 2:
-        mem_write_uint16(system_memory(), addr, (uint16_t)value);
-        break;
-    case 4:
-        mem_write_uint32(system_memory(), addr, (uint32_t)value);
-        break;
-    default:
-        assert(0);
-    }
-}
 
 // ============================================================================
 // Page Table Slow Paths
@@ -303,6 +143,38 @@ void memory_write_uint32_slow(uint32_t addr, uint32_t value) {
     memory_write_uint16(addr + 2, (uint16_t)(value & 0xFFFF));
 }
 
+// Read memory at the given address with specified size (1, 2, or 4 bytes)
+uint32_t memory_read(unsigned int size, uint32_t addr) {
+    switch (size) {
+    case 1:
+        return memory_read_uint8(addr);
+    case 2:
+        return memory_read_uint16(addr);
+    case 4:
+        return memory_read_uint32(addr);
+    default:
+        assert(0);
+        return 0;
+    }
+}
+
+// Write memory at the given address with specified size (1, 2, or 4 bytes)
+void memory_write(unsigned int size, uint32_t addr, uint32_t value) {
+    switch (size) {
+    case 1:
+        memory_write_uint8(addr, (uint8_t)value);
+        break;
+    case 2:
+        memory_write_uint16(addr, (uint16_t)value);
+        break;
+    case 4:
+        memory_write_uint32(addr, (uint32_t)value);
+        break;
+    default:
+        assert(0);
+    }
+}
+
 // ============================================================================
 // Static Helpers
 // ============================================================================
@@ -347,6 +219,7 @@ void memory_map_add(memory_map_t *mem, uint32_t addr, uint32_t size, const char 
     if (g_page_table) {
         uint32_t start_page = (addr & g_address_mask) >> PAGE_SHIFT;
         uint32_t end_page = ((addr + size - 1) & g_address_mask) >> PAGE_SHIFT;
+        assert((int)start_page < g_page_count && "device start address exceeds page table bounds");
         for (uint32_t p = start_page; p <= end_page && (int)p < g_page_count; p++) {
             g_page_table[p].host_base = NULL;
             // Point to the copied interface in the linked list node (stable pointer)
@@ -388,12 +261,13 @@ uint8_t *ram_native_pointer(memory_map_t *mem, uint32_t addr) {
 static void calculate_checksum(memory_map_t *rom) {
     int i;
 
-    uint16_t *image16 = (uint16_t *)(rom->image + TOP_OF_RAM);
-    uint32_t *image32 = (uint32_t *)(rom->image + TOP_OF_RAM);
+    // ROM content begins at ram_size offset in the flat buffer
+    uint16_t *image16 = (uint16_t *)(rom->image + rom->ram_size);
+    uint32_t *image32 = (uint32_t *)(rom->image + rom->ram_size);
 
     rom->checksum = 0;
 
-    for (i = 2; i < ROM_SIZE / 2; i++)
+    for (i = 2; i < (int)(rom->rom_size / 2); i++)
         rom->checksum += BE16(image16[i]);
 
     rom->checksum_valid = (rom->checksum == BE32(image32[0]));
@@ -415,14 +289,14 @@ static void calculate_checksum(memory_map_t *rom) {
     }
 }
 
-// Determine ROM version from raw ROM data by checking the checksum
+// Determine ROM version from raw ROM data by checking the checksum (Plus-specific)
 uint32_t rom_version(const uint8_t *data) {
     uint32_t checksum = 0;
 
     uint16_t *image16 = (uint16_t *)(data);
     uint32_t *image32 = (uint32_t *)(data);
 
-    for (int i = 2; i < ROM_SIZE / 2; i++)
+    for (int i = 2; i < PLUS_ROM_SIZE / 2; i++)
         checksum += BE16(image16[i]);
 
     if (checksum != BE32(image32[0]))
@@ -440,19 +314,19 @@ uint32_t rom_version(const uint8_t *data) {
     }
 }
 
-// Determine ROM version from a file path
+// Determine ROM version from a file path (Plus-specific)
 int rom_file_version(const char *path) {
-    uint8_t data[ROM_SIZE];
+    uint8_t data[PLUS_ROM_SIZE];
 
     FILE *f = fopen(path, "rb");
     if (!f)
         return false;
 
-    size_t n = fread(data, 1, ROM_SIZE, f);
+    size_t n = fread(data, 1, PLUS_ROM_SIZE, f);
 
     fclose(f);
 
-    if (n != ROM_SIZE)
+    if (n != PLUS_ROM_SIZE)
         return false;
 
     return rom_version(data);
@@ -496,31 +370,32 @@ uint64_t cmd_load_rom(int argc, char *argv[]) {
     }
 
     // Normal load mode
+    memory_map_t *mem = system_memory();
+    if (!mem) {
+        printf("Failed to load ROM: memory not initialized\n");
+        return -1;
+    }
+
     FILE *f = fopen(filename, "rb");
     if (!f) {
         printf("Failed to open ROM file: %s\n", filename);
         return -1;
     }
 
-    size_t n = fread(system_memory()->image + TOP_OF_RAM, 1, ROM_SIZE, f);
+    // ROM content goes at the ram_size offset in the flat buffer
+    size_t n = fread(mem->image + mem->ram_size, 1, mem->rom_size, f);
     fclose(f);
 
-    if (n != ROM_SIZE) {
+    if (n != mem->rom_size) {
         printf("Failed to read ROM file: %s\n", filename);
         return -1;
     }
 
-    calculate_checksum(system_memory());
-
-    for (uint32_t addr = TOP_OF_RAM + 2 * ROM_SIZE; addr < TOP_OF_ROM; addr += 2 * ROM_SIZE) {
-        printf("copying ROM from %08x to %08x\n", TOP_OF_RAM, addr);
-        memcpy(system_memory()->image + addr, system_memory()->image + TOP_OF_RAM, ROM_SIZE);
-    }
+    calculate_checksum(mem);
 
     printf("ROM loaded successfully from %s\n", filename);
 
     // Remember ROM filename for checkpointing
-    memory_map_t *mem = system_memory();
     if (mem->rom_filename) {
         free(mem->rom_filename);
         mem->rom_filename = NULL;
@@ -531,94 +406,108 @@ uint64_t cmd_load_rom(int argc, char *argv[]) {
 }
 
 // ============================================================================
-// Lifecycle: Constructor
+// Lifecycle: Page Table Population
 // ============================================================================
 
-// Populate page table entries for RAM and ROM from the flat image buffer
-static void populate_ram_rom_pages(uint8_t *image) {
-    if (!g_page_table || !image)
+// Populate page table entries for RAM (writable) and ROM (read-only) regions.
+// RAM pages cover [0, ram_size); ROM pages cover [rom_start_addr, rom_region_end)
+// with mirroring: guest ROM addresses wrap at rom_size within the host buffer.
+// Called from machine-specific layout callbacks (e.g. plus_memory_layout_init).
+void memory_populate_pages(memory_map_t *mem, uint32_t rom_start_addr, uint32_t rom_region_end) {
+    if (!g_page_table || !mem->image)
         return;
 
-    // RAM pages: 0x000000 – TOP_OF_RAM (writable, direct access)
-    uint32_t ram_pages = TOP_OF_RAM >> PAGE_SHIFT;
+    uint32_t ram_size = mem->ram_size;
+    uint32_t rom_size = mem->rom_size;
+
+    // RAM pages: 0x000000 – ram_size (writable, direct access)
+    uint32_t ram_pages = ram_size >> PAGE_SHIFT;
     for (uint32_t p = 0; p < ram_pages && (int)p < g_page_count; p++) {
-        g_page_table[p].host_base = image + (p << PAGE_SHIFT);
+        assert((p << PAGE_SHIFT) < ram_size && "RAM page index out of bounds");
+        g_page_table[p].host_base = mem->image + (p << PAGE_SHIFT);
         g_page_table[p].dev = NULL;
         g_page_table[p].dev_context = NULL;
         g_page_table[p].writable = true;
     }
 
-    // ROM pages: TOP_OF_RAM – TOP_OF_ROM (read-only, direct access)
-    uint32_t rom_start_page = TOP_OF_RAM >> PAGE_SHIFT;
-    uint32_t rom_end_page = TOP_OF_ROM >> PAGE_SHIFT;
+    // ROM pages: rom_start_addr – rom_region_end (read-only, mirrored)
+    // On Mac hardware, address line A17 (relative to ROM base) distinguishes ROM from I/O:
+    //   offset % (2*rom_size) in [0, rom_size)       → ROM content
+    //   offset % (2*rom_size) in [rom_size, 2*rom_size) → I/O / undefined (left unmapped)
+    // This produces ROM mirrors at every 2*rom_size (256 KB for the 128 KB Plus ROM),
+    // matching the old flat-buffer copy loop: addr += 2 * ROM_SIZE.
+    uint32_t rom_start_page = (rom_start_addr & g_address_mask) >> PAGE_SHIFT;
+    uint32_t rom_end_page = (rom_region_end & g_address_mask) >> PAGE_SHIFT;
+    uint32_t rom_pages = rom_size >> PAGE_SHIFT; // content pages per ROM copy
+    uint32_t mirror_stride = rom_pages * 2; // mirror cycle in pages (A17 stride)
+
+    // Protect against a zero-length ROM (degenerate case)
+    if (rom_pages == 0)
+        return;
+
     for (uint32_t p = rom_start_page; p < rom_end_page && (int)p < g_page_count; p++) {
-        g_page_table[p].host_base = image + (p << PAGE_SHIFT);
+        uint32_t offset_in_cycle = (p - rom_start_page) % mirror_stride;
+        if (offset_in_cycle >= rom_pages)
+            continue; // interleaved I/O / undefined range — leave page unmapped (returns 0)
+        g_page_table[p].host_base = mem->image + ram_size + (offset_in_cycle << PAGE_SHIFT);
         g_page_table[p].dev = NULL;
         g_page_table[p].dev_context = NULL;
         g_page_table[p].writable = false;
     }
 }
 
-memory_map_t *memory_map_init(checkpoint_t *checkpoint) {
+// ============================================================================
+// Lifecycle: Constructor
+// ============================================================================
+
+// Allocate and initialise a memory map for the given address space and RAM/ROM sizes.
+// The page table is allocated dynamically based on address_bits.
+// Machine-specific memory layout (page table population) is done by the machine's
+// memory_layout_init callback, not here.
+memory_map_t *memory_map_init(int address_bits, uint32_t ram_size, uint32_t rom_size, checkpoint_t *checkpoint) {
     memory_map_t *mem = (memory_map_t *)malloc(sizeof(memory_map_t));
 
     memset(mem, 0, sizeof(memory_map_t));
 
-    mem->memory_interface.read_uint8 = &mem_read_uint8;
-    mem->memory_interface.read_uint16 = &mem_read_uint16;
-    mem->memory_interface.read_uint32 = &mem_read_uint32;
+    // Store parameterised sizes for later use by layout, checkpoint, and cmd_load_rom
+    mem->ram_size = ram_size;
+    mem->rom_size = rom_size;
 
-    mem->memory_interface.write_uint8 = &mem_write_uint8;
-    mem->memory_interface.write_uint16 = &mem_write_uint16;
-    mem->memory_interface.write_uint32 = &mem_write_uint32;
+    // Allocate the flat RAM+ROM image (ram_size + rom_size bytes)
+    size_t image_size = (size_t)ram_size + (size_t)rom_size;
+    mem->image = malloc(image_size);
+    memset(mem->image, 0, image_size);
 
-    // Allocate the flat RAM+ROM image
-    g_memory_base = mem->image = malloc(TOP_OF_ROM);
-    memset(mem->image, 0, TOP_OF_ROM);
-
-    // Allocate page table for 24-bit address space
-    g_address_mask = 0x00FFFFFFUL;
-    g_page_count = 1 << (24 - PAGE_SHIFT); // 4096 pages
+    // Allocate page table sized for the given address space
+    if (address_bits == 32) {
+        g_address_mask = 0xFFFFFFFFUL; // full 32-bit
+        g_page_count = 1 << (32 - PAGE_SHIFT); // 1,048,576 pages
+    } else {
+        // Default to 24-bit (Macintosh Plus)
+        g_address_mask = 0x00FFFFFFUL;
+        g_page_count = 1 << (24 - PAGE_SHIFT); // 4,096 pages
+    }
     g_page_table = (page_entry_t *)calloc(g_page_count, sizeof(page_entry_t));
+    assert(g_page_table != NULL && "failed to allocate page table");
     mem->page_table = g_page_table;
     mem->page_count = g_page_count;
-
-    // Populate RAM and ROM pages
-    populate_ram_rom_pages(mem->image);
-
-    // Guide to the Macintosh Family Hardware, 2nd edition, page 122:
-    // At system startup, the operating system reads an address in the range $F0 0000 through $F7F FFF
-    // labeled "Phase Read" to determine whether the computer's high-frequency timing signals are correctly in phase
-
-    memory_interface_t phase_read;
-    memset(&phase_read, 0, sizeof(phase_read));
-
-    phase_read.read_uint8 = &phase_read_uint8;
-    phase_read.read_uint16 = &phase_read_uint16;
-    phase_read.read_uint32 = &phase_read_uint32;
-
-    memory_map_add(mem, 0x00F00000, 0x00080000, "Phase Read", &phase_read, NULL);
 
     register_cmd("load-rom", "ROM", "load-rom [--probe [filename]] – load or probe ROM", (void *)&cmd_load_rom);
 
     // Load from checkpoint if provided
     if (checkpoint) {
         // Restore RAM
-        system_read_checkpoint_data(checkpoint, mem->image, RAM_SIZE);
+        system_read_checkpoint_data(checkpoint, mem->image, ram_size);
         // Restore ROM (content or reference)
         char *restored_path = NULL;
-        size_t got = checkpoint_read_file(checkpoint, mem->image + TOP_OF_RAM, ROM_SIZE, &restored_path);
+        size_t got = checkpoint_read_file(checkpoint, mem->image + ram_size, rom_size, &restored_path);
         if (restored_path) {
             if (mem->rom_filename)
                 free(mem->rom_filename);
             mem->rom_filename = restored_path;
         }
         if (got > 0) {
-            // Mirror ROM across the ROM region like cmd_load_rom
             calculate_checksum(mem);
-            for (uint32_t addr = TOP_OF_RAM + 2 * ROM_SIZE; addr < TOP_OF_ROM; addr += 2 * ROM_SIZE) {
-                memcpy(mem->image + addr, mem->image + TOP_OF_RAM, ROM_SIZE);
-            }
         }
     }
 
@@ -656,7 +545,6 @@ void memory_map_delete(memory_map_t *mem) {
     if (mem->image) {
         free(mem->image);
         mem->image = NULL;
-        g_memory_base = NULL;
     }
     // Free ROM filename if present
     if (mem->rom_filename) {
@@ -676,7 +564,7 @@ void memory_map_checkpoint(memory_map_t *restrict mem, checkpoint_t *checkpoint)
         return;
 
     // Write RAM contents
-    system_write_checkpoint_data(checkpoint, mem->image, RAM_SIZE);
+    system_write_checkpoint_data(checkpoint, mem->image, mem->ram_size);
 
     // Write ROM: either inline contents (default) or by filename reference depending on save mode
     checkpoint_write_file(checkpoint, mem->rom_filename ? mem->rom_filename : "");
@@ -695,8 +583,4 @@ void memory_map_print(memory_map_t *restrict mem) {
         printf("0x%08x - 0x%08x: %s\n", map->addr, map->addr + map->size - 1, map->name);
         map = map->next;
     }
-}
-
-memory_interface_t *memory_map_interface(memory_map_t *restrict mem) {
-    return &mem->memory_interface;
 }

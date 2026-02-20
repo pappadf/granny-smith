@@ -65,7 +65,37 @@ This builds the WebAssembly version and starts a local server with the required 
 
 ## Development
 
-The easiest way to get up and running is by creating a GitHub Codespace based on the repository. From the granny-smith code page, click **Code** (the big green button) → **Codespaces** → **Create a Codespace on main**. It will take a minute or two, then you're up and running. To build: `make`. To run: `make run`.
+### Codespaces (Quick Start)
+
+The easiest way to get up and running is by creating a GitHub Codespace based on the repository. From the granny-smith code page, click **Code** (the big green button) → **Codespaces** → **Create a Codespace on main**. It will take a minute or two, then you're up and running.
+
+```bash
+make          # Build the WASM emulator
+make run      # Build and start the HTTP server on :8080
+```
+
+To pre-load boot media, pass paths (relative to the repo root) as `make` variables:
+
+```bash
+make run ROM=path/to/rom.bin HD0=path/to/hd.zip
+```
+
+Available options for the `run` target:
+
+| Variable | Description |
+|----------|-------------|
+| `ROM=path/to/rom.bin` | ROM image |
+| `FD0=path/to/floppy.img` | Floppy disk image |
+| `HD0=path/to/hd.zip` … `HD7=…` | Hard disk images (zip or raw) |
+| `SPEED=max\|realtime\|hardware` | Emulation speed |
+
+Example:
+
+```bash
+make run ROM=tests/data/roms/Plus_v3.rom HD0=tests/data/systems/hd.zip
+```
+
+### Local Development
 
 **Build and test instructions**: See [CONTRIBUTING.md](CONTRIBUTING.md)
 

@@ -72,36 +72,28 @@ const char *macos_atrap_name(uint16_t trap) {
 }
 
 uint8_t read_8bit_be(uint32_t addr) {
-    memory_map_t *mem = system_memory();
-    if (!mem)
+    if (!system_memory())
         return 0;
-    memory_interface_t *iface = memory_map_interface(mem);
-    return iface->read_uint8(mem, addr);
+    return memory_read_uint8(addr);
 }
 
 uint16_t read_16bit_be(uint32_t addr) {
-    memory_map_t *mem = system_memory();
-    if (!mem)
+    if (!system_memory())
         return 0;
-    memory_interface_t *iface = memory_map_interface(mem);
-    return iface->read_uint16(mem, addr);
+    return memory_read_uint16(addr);
 }
 
 uint32_t read_32bit_be(uint32_t addr) {
-    memory_map_t *mem = system_memory();
-    if (!mem)
+    if (!system_memory())
         return 0;
-    memory_interface_t *iface = memory_map_interface(mem);
-    return iface->read_uint32(mem, addr);
+    return memory_read_uint32(addr);
 }
 
 void read_bytes(uint32_t addr, uint8_t *buffer, size_t size) {
-    memory_map_t *mem = system_memory();
-    if (!mem)
+    if (!system_memory())
         return;
-    memory_interface_t *iface = memory_map_interface(mem);
     for (size_t i = 0; i < size; ++i) {
-        buffer[i] = iface->read_uint8(mem, addr + i);
+        buffer[i] = memory_read_uint8(addr + i);
     }
 }
 
@@ -350,25 +342,19 @@ void debug_mac_print_process_info(void) {
 
 // Memory read helpers
 static uint8_t read8(uint32_t addr) {
-    memory_map_t *mem = system_memory();
-    if (!mem)
+    if (!system_memory())
         return 0;
-    memory_interface_t *iface = memory_map_interface(mem);
-    return iface->read_uint8(mem, addr);
+    return memory_read_uint8(addr);
 }
 static uint16_t read16(uint32_t addr) {
-    memory_map_t *mem = system_memory();
-    if (!mem)
+    if (!system_memory())
         return 0;
-    memory_interface_t *iface = memory_map_interface(mem);
-    return iface->read_uint16(mem, addr);
+    return memory_read_uint16(addr);
 }
 static uint32_t read32(uint32_t addr) {
-    memory_map_t *mem = system_memory();
-    if (!mem)
+    if (!system_memory())
         return 0;
-    memory_interface_t *iface = memory_map_interface(mem);
-    return iface->read_uint32(mem, addr);
+    return memory_read_uint32(addr);
 }
 
 // Print target 68K backtrace by walking stack frames
@@ -392,12 +378,12 @@ void debug_mac_print_target_backtrace(void) {
             break; // end of chain
         // Standard 68K frame: [0]: previous A6, [4]: return address
         uint32_t prev_a6 = 0, ret = 0;
-        // Guard against invalid memory reads
-        if (a6 < 0x100 || a6 >= TOP_OF_RAM)
+        // Guard against invalid memory reads (use address mask to bound the check)
+        if (a6 < 0x100 || a6 > g_address_mask)
             break;
         prev_a6 = read32(a6 + 0);
         ret = read32(a6 + 4);
-        if (ret == 0 || ret >= TOP_OF_ROM + 0x200000)
+        if (ret == 0 || ret > g_address_mask)
             break;
         debugger_disasm(linebuf, ret);
         printf("#%d  %s\n", depth, linebuf);
@@ -452,12 +438,10 @@ uint64_t cmd_set_mouse(int argc, char *argv[]) {
     else if (y > 32767)
         y = 32767;
 
-    memory_map_t *mem_map = system_memory();
-    if (!mem_map) {
+    if (!system_memory()) {
         printf("Error: memory system not initialized.\n");
         return 0;
     }
-    memory_interface_t *mem = memory_map_interface(mem_map);
 
     // Low memory globals (Points are (v, h) = (y, x), big-endian shorts)
     uint32_t addr_MTemp = debug_mac_lookup_global_address("MTemp");
@@ -474,16 +458,16 @@ uint64_t cmd_set_mouse(int argc, char *argv[]) {
     uint16_t h = (uint16_t)(x & 0xFFFF);
 
     // Write new absolute position to MTemp (latest mouse value)
-    mem->write_uint16(mem_map, addr_MTemp, v); // v
-    mem->write_uint16(mem_map, addr_MTemp + 2, h); // h
+    memory_write_uint16(addr_MTemp, v); // v
+    memory_write_uint16(addr_MTemp + 2, h); // h
 
     // And to RawMouse (raw/unaccelerated mouse)
-    mem->write_uint16(mem_map, addr_RawMouse, v); // v
-    mem->write_uint16(mem_map, addr_RawMouse + 2, h); // h
+    memory_write_uint16(addr_RawMouse, v); // v
+    memory_write_uint16(addr_RawMouse + 2, h); // h
 
     // Signal to the ROM / cursor code that the cursor has moved.
     // Many examples treat this as a 16-bit "-1" (0xFFFF).
-    mem->write_uint16(mem_map, addr_CrsrNew, 0xFFFF);
+    memory_write_uint16(addr_CrsrNew, 0xFFFF);
 
     return 0;
 }
@@ -500,14 +484,12 @@ static void trace_mouse_tick(void *source, uint64_t data) {
     if (!trace_mouse_active)
         return; // Do not reschedule if stopped during callback
 
-    memory_map_t *mem_map = system_memory();
     scheduler_t *sched = system_scheduler();
-    if (!mem_map || !sched)
+    if (!system_memory() || !sched)
         return;
-    memory_interface_t *mem = memory_map_interface(mem_map);
     uint32_t addr_Mouse = debug_mac_lookup_global_address("Mouse");
-    uint16_t v_be = mem->read_uint16(mem_map, addr_Mouse);
-    uint16_t h_be = mem->read_uint16(mem_map, addr_Mouse + 2);
+    uint16_t v_be = memory_read_uint16(addr_Mouse);
+    uint16_t h_be = memory_read_uint16(addr_Mouse + 2);
     int16_t v = (int16_t)v_be;
     int16_t h = (int16_t)h_be;
     if (!trace_mouse_have_last || h != trace_mouse_last_h || v != trace_mouse_last_v) {

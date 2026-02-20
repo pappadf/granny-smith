@@ -13,10 +13,6 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-// === Constants ===
-#define TOP_OF_RAM 0x400000
-#define TOP_OF_ROM 0x580000
-
 // === Macros ===
 #define LOAD_BE8(p)  (*(const uint8_t *)(p))
 #define LOAD_BE16(p) (__builtin_bswap16(*(const uint16_t *)(p)))
@@ -41,7 +37,12 @@ typedef struct memory memory_map_t;
 
 // === Lifecycle (Constructor / Destructor / Checkpoint) ===
 
-extern memory_map_t *memory_map_init(checkpoint_t *checkpoint);
+// Initialise a memory map with parameterised address space and RAM/ROM sizes.
+// address_bits: 24 for Plus (16 MB), 32 for SE/30 (4 GB)
+// ram_size: RAM size in bytes (e.g. 0x400000 for Plus)
+// rom_size: ROM size in bytes (e.g. 0x020000 for Plus)
+// checkpoint: if non-NULL, restore RAM and ROM from checkpoint
+extern memory_map_t *memory_map_init(int address_bits, uint32_t ram_size, uint32_t rom_size, checkpoint_t *checkpoint);
 
 void memory_map_delete(memory_map_t *mem);
 
@@ -57,13 +58,17 @@ extern void memory_map_remove(memory_map_t *mem, uint32_t addr, uint32_t size, c
 
 extern void memory_map_print(memory_map_t *mem);
 
-extern memory_interface_t *memory_map_interface(memory_map_t *restrict mem);
-
 uint8_t *ram_native_pointer(memory_map_t *ram, uint32_t addr);
 
 uint32_t memory_read(unsigned int size, uint32_t addr);
 
 void memory_write(unsigned int size, uint32_t addr, uint32_t value);
+
+// Populate page table entries for RAM (writable) and ROM (read-only) regions.
+// ROM pages in [rom_start_addr, rom_region_end) are populated with page-table
+// mirroring: guest addresses wrap at rom_size so the ROM content repeats.
+// Called from machine-specific layout callbacks (e.g. plus_memory_layout_init).
+extern void memory_populate_pages(memory_map_t *mem, uint32_t rom_start_addr, uint32_t rom_region_end);
 
 // === Page Table ===
 
@@ -83,6 +88,7 @@ typedef struct page_entry {
 // Global page table and address mask (set by memory_map_init)
 extern page_entry_t *g_page_table;
 extern uint32_t g_address_mask; // 0x00FFFFFF for 24-bit, 0xFFFFFFFF for 32-bit
+extern int g_page_count; // total number of pages in the current page table
 
 // Slow-path handlers for cross-page or device I/O accesses
 uint16_t memory_read_uint16_slow(uint32_t addr);
@@ -91,9 +97,6 @@ void memory_write_uint16_slow(uint32_t addr, uint16_t value);
 void memory_write_uint32_slow(uint32_t addr, uint32_t value);
 
 // === Inline Accessors (page-table based) ===
-
-// Backward compatibility: g_memory_base is still set for test stubs
-extern uint8_t *g_memory_base;
 
 static inline uint8_t memory_read_uint8(uint32_t addr) {
     addr &= g_address_mask;

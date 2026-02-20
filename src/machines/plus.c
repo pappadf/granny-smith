@@ -61,11 +61,57 @@ static void plus_update_ipl(config_t *sim, int level, bool value);
 // Video buffer helper (Plus-specific address constants)
 // ============================================================
 
+// Plus RAM top: 4 MB, matching machine_plus.ram_size_default
+#define PLUS_RAM_TOP 0x400000UL
+// Plus ROM start in the 24-bit address space
+#define PLUS_ROM_START 0x400000UL
+// Plus ROM region end (1.5 MB window covers all ROM mirrors)
+#define PLUS_ROM_END 0x580000UL
+
 // Switch between main and alternate video buffer addresses for the Plus.
 // Main buffer is at top of RAM minus 0x5900; alternate is 0x8000 bytes lower.
 static void plus_use_video_buffer(config_t *cfg, bool main) {
-    uint32_t addr = main ? (0x400000 - 0x5900) : (0x400000 - 0x5900 - 0x8000);
+    uint32_t addr = main ? (PLUS_RAM_TOP - 0x5900) : (PLUS_RAM_TOP - 0x5900 - 0x8000);
     cfg->ram_vbuf = ram_native_pointer(cfg->mem_map, addr);
+}
+
+// ============================================================
+// Memory layout
+// ============================================================
+
+// Memory read placeholder for the Plus Phase Read area
+static uint8_t plus_phase_read_uint8(void *dev, uint32_t addr) {
+    (void)dev;
+    (void)addr;
+    return 0;
+}
+static uint16_t plus_phase_read_uint16(void *dev, uint32_t addr) {
+    (void)dev;
+    (void)addr;
+    return 0;
+}
+static uint32_t plus_phase_read_uint32(void *dev, uint32_t addr) {
+    (void)dev;
+    (void)addr;
+    return 0;
+}
+
+// Populate the Plus memory layout in the page table.
+// Called from plus_init() after memory_map_init() and cpu_init().
+// Guide to the Macintosh Family Hardware, 2nd edition, page 122:
+// At system startup, the OS reads an address in $F00000–$F7FFFF ("Phase Read")
+// to verify that high-frequency timing signals are in phase.
+static void plus_memory_layout_init(config_t *cfg) {
+    // Map RAM and ROM pages into the global page table
+    memory_populate_pages(cfg->mem_map, PLUS_ROM_START, PLUS_ROM_END);
+
+    // Register the Phase Read device for the Plus I/O region
+    memory_interface_t phase_read;
+    memset(&phase_read, 0, sizeof(phase_read));
+    phase_read.read_uint8 = &plus_phase_read_uint8;
+    phase_read.read_uint16 = &plus_phase_read_uint16;
+    phase_read.read_uint32 = &plus_phase_read_uint32;
+    memory_map_add(cfg->mem_map, 0x00F00000, 0x00080000, "Phase Read", &phase_read, NULL);
 }
 
 // ============================================================
@@ -81,8 +127,12 @@ static void plus_init(config_t *cfg, checkpoint_t *checkpoint) {
     memset(ps, 0, sizeof(plus_state_t));
     cfg->machine_context = ps;
 
-    cfg->mem_map = memory_map_init(checkpoint);
-    cfg->mem_iface = memory_map_interface(cfg->mem_map);
+    // Initialise parameterised memory: 24-bit address space, 4 MB RAM, 128 KB ROM
+    cfg->mem_map =
+        memory_map_init(cfg->machine->address_bits, cfg->machine->ram_size_default, cfg->machine->rom_size, checkpoint);
+
+    // Populate Plus-specific memory layout (RAM/ROM page table + Phase Read)
+    plus_memory_layout_init(cfg);
 
     cfg->cpu = cpu_init(checkpoint);
 
@@ -414,7 +464,7 @@ const hw_profile_t machine_plus = {
     .teardown = plus_teardown,
     .checkpoint_save = plus_checkpoint_save,
     .checkpoint_restore = NULL, // restore is handled by plus_init when checkpoint != NULL
-    .memory_layout_init = NULL, // Plus memory layout handled inside plus_init
+    .memory_layout_init = plus_memory_layout_init,
     .update_ipl = NULL, // internal: plus_update_ipl() called directly by VIA/SCC callbacks
     .trigger_vbl = plus_trigger_vbl,
 };

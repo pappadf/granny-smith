@@ -26,7 +26,6 @@ tests/
 │   ├── common.mk                 #   Shared build rules + harness selection
 │   ├── suites/                    #   All test suites
 │   │   ├── cpu/                   #     CPU single-step instruction tests
-│   │   ├── cputest/               #     CPU instruction dataset harness
 │   │   ├── disasm/                #     Disassembler corpus test
 │   │   └── storage/               #     Storage subsystem tests
 │   └── support/                   #   Shared infrastructure
@@ -99,7 +98,6 @@ int main(void) {
 ```bash
 make -C tests/unit run            # Build + run all
 make -C tests/unit list           # List discovered test names
-make -C tests/unit test-cputest   # Run a single test
 make -C tests/unit test-disasm    # Run disassembler test
 ```
 

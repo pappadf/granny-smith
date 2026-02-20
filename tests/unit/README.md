@@ -22,11 +22,6 @@ tests/unit/
     cpu/                #   CPU single-step instruction tests
       Makefile
       test.c
-    cputest/            #   CPU instruction dataset harness
-      Makefile
-      test.c
-      cputest.c
-      data/             #   Test data (.zip archives)
     disasm/             #   Disassembler corpus test
       Makefile
       test.c
@@ -177,7 +172,6 @@ failures loud & simple).
 |---------|--------------|-----|
 | Duplicate symbol from stub | Multiple stubs define same symbol | Check harness mode |
 | Undefined reference to Xsetup_* | CPU / checkpoint code pulled in without stubs | Use appropriate harness mode or add to EXTRA_SRCS |
-| Segfault in cputest | Dataset unzip or memory map init issue | Ensure dataset directory exists |
 | Missing header include errors | Wrong relative path | Recalculate `../../` depth; emulator sources live in `src/` |
 
 ## Philosophy

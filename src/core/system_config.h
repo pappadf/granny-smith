@@ -38,7 +38,6 @@ struct config {
     // Core CPU and memory subsystems
     cpu_t *cpu; // was: new_cpu
     memory_map_t *mem_map;
-    memory_interface_t *mem_iface;
 
     // VIA chips (via1 = primary; via2 = NULL on Plus)
     via_t *via1; // was: new_via

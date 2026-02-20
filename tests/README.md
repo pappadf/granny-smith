@@ -71,9 +71,7 @@ make test
 
 ```bash
 make -C tests/unit run           # Build + run all
-make -C tests/unit list          # List discovered test names
-make -C tests/unit test-cputest  # Run a single test
-```
+make -C tests/unit list          # List discovered test names```
 
 ### Integration tests (native headless emulator)
 

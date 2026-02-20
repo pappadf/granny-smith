@@ -59,11 +59,9 @@ struct logpoint {
 // ============================================================================
 
 static uint16_t cpu_get_uint16(uint32_t addr) {
-    memory_map_t *mem = system_memory();
-    if (!mem)
+    if (!system_memory())
         return 0;
-    memory_interface_t *iface = memory_map_interface(mem);
-    return iface->read_uint16(mem, addr);
+    return memory_read_uint16(addr);
 }
 
 // ============================================================================
