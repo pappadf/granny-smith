@@ -908,4 +908,919 @@
 #define OP_MOVE16_XXX_L_AN     OP(EXC_FTRAP())
 #define OP_FTRAP               OP(EXC_FTRAP())
 
+// ============================================================
+// 68030-specific instruction overrides
+// Re-define instruction macros that differ on the 68030.
+// ============================================================
+#ifdef CPU_DECODER_IS_68030
+
+// --- Bit-field helper functions (register and memory operands) ---
+
+// Extract bit field from a 32-bit register value.
+// Offset is treated modulo 32; field occupies bits (31-off)..(31-off-w+1).
+static inline uint32_t bf_extract_reg(uint32_t val, int32_t offset, uint32_t w) {
+    uint32_t o = (uint32_t)offset & 31u;
+    uint32_t rotated = o ? ((val << o) | (val >> (32u - o))) : val;
+    uint32_t mask = (w == 32u) ? 0xFFFFFFFFu : ((1u << w) - 1u);
+    return (rotated >> (32u - w)) & mask;
+}
+
+// Insert value into bit field of a 32-bit register.
+static inline uint32_t bf_insert_reg(uint32_t dst, int32_t offset, uint32_t w, uint32_t src) {
+    uint32_t o = (uint32_t)offset & 31u;
+    uint32_t mask = (w == 32u) ? 0xFFFFFFFFu : ((1u << w) - 1u);
+    uint32_t at_msb = (src & mask) << (32u - w); // value at MSB position
+    uint32_t pos_val = o ? ((at_msb >> o) | (at_msb << (32u - o))) : at_msb;
+    uint32_t field_mask = mask << (32u - w);
+    uint32_t pos_mask = o ? ((field_mask >> o) | (field_mask << (32u - o))) : field_mask;
+    return (dst & ~pos_mask) | (pos_val & pos_mask);
+}
+
+// Extract bit field from memory using READ8 macro.
+// bf_offset may be negative (or large); ea is the base effective address.
+#define BF_EXTRACT_MEM(ea, bf_offset, w, result)                                                                       \
+    do {                                                                                                               \
+        int32_t _bo = (bf_offset);                                                                                     \
+        uint32_t _w = (uint32_t)(w);                                                                                   \
+        uint32_t _ea = (uint32_t)(ea);                                                                                 \
+        /* Adjust for negative offset */                                                                               \
+        if (_bo < 0) {                                                                                                 \
+            int32_t _adj = ((-_bo + 7) >> 3) << 3;                                                                     \
+            _ea -= (uint32_t)(_adj >> 3);                                                                              \
+            _bo += _adj;                                                                                               \
+        }                                                                                                              \
+        uint32_t _byte_off = (uint32_t)_bo >> 3;                                                                       \
+        uint32_t _bit_in = (uint32_t)_bo & 7u;                                                                         \
+        uint32_t _n = (_bit_in + _w + 7u) >> 3;                                                                        \
+        uint64_t _data = 0;                                                                                            \
+        for (uint32_t _i = 0; _i < _n && _i < 5; _i++)                                                                 \
+            _data = (_data << 8) | (uint8_t)READ8(_ea + _byte_off + _i);                                               \
+        uint32_t _shift = _n * 8u - _bit_in - _w;                                                                      \
+        uint32_t _mask = (_w == 32u) ? 0xFFFFFFFFu : ((1u << _w) - 1u);                                                \
+        (result) = (uint32_t)((_data >> _shift) & _mask);                                                              \
+    } while (0)
+
+// Write bit field to memory using WRITE8 macro.
+#define BF_INSERT_MEM(ea, bf_offset, w, value)                                                                         \
+    do {                                                                                                               \
+        int32_t _bo = (bf_offset);                                                                                     \
+        uint32_t _w = (uint32_t)(w);                                                                                   \
+        uint32_t _ea = (uint32_t)(ea);                                                                                 \
+        uint32_t _val = (uint32_t)(value);                                                                             \
+        if (_bo < 0) {                                                                                                 \
+            int32_t _adj = ((-_bo + 7) >> 3) << 3;                                                                     \
+            _ea -= (uint32_t)(_adj >> 3);                                                                              \
+            _bo += _adj;                                                                                               \
+        }                                                                                                              \
+        uint32_t _byte_off = (uint32_t)_bo >> 3;                                                                       \
+        uint32_t _bit_in = (uint32_t)_bo & 7u;                                                                         \
+        uint32_t _n = (_bit_in + _w + 7u) >> 3;                                                                        \
+        uint8_t _bytes[5] = {0, 0, 0, 0, 0};                                                                           \
+        for (uint32_t _i = 0; _i < _n && _i < 5; _i++)                                                                 \
+            _bytes[_i] = (uint8_t)READ8(_ea + _byte_off + _i);                                                         \
+        uint64_t _data = 0;                                                                                            \
+        for (uint32_t _i = 0; _i < _n; _i++)                                                                           \
+            _data = (_data << 8) | _bytes[_i];                                                                         \
+        uint32_t _mask = (_w == 32u) ? 0xFFFFFFFFu : ((1u << _w) - 1u);                                                \
+        uint32_t _shift = _n * 8u - _bit_in - _w;                                                                      \
+        _data = (_data & ~((uint64_t)_mask << _shift)) | ((uint64_t)(_val & _mask) << _shift);                         \
+        for (uint32_t _i = 0; _i < _n && _i < 5; _i++)                                                                 \
+            WRITE8(_ea + _byte_off + _i, (uint8_t)(_data >> ((_n - 1u - _i) * 8u)));                                   \
+    } while (0)
+
+// Decode bit-field extension word: returns offset and width; sets CC_N from MSB.
+// Uses FETCH16() which advances PC.
+#define BF_DECODE_EXT(bf_off, bf_w)                                                                                    \
+    do {                                                                                                               \
+        uint16_t _ext = FETCH16();                                                                                     \
+        (bf_off) = (_ext & 0x0800) ? (int32_t)D((_ext >> 6) & 7) : (int32_t)((_ext >> 6) & 31u);                       \
+        (bf_w) = (_ext & 0x0020) ? (D(_ext & 7) & 31u) : (uint32_t)(_ext & 31u);                                       \
+        if ((bf_w) == 0u)                                                                                              \
+            (bf_w) = 32u;                                                                                              \
+    } while (0)
+
+// Bit field CC update: N = MSB of field, Z = (field == 0), V=C=0
+#define BF_UPDATE_CC(field, w)                                                                                         \
+    do {                                                                                                               \
+        CC_N = ((field) >> ((w) - 1u)) & 1u;                                                                           \
+        CC_Z = ((field) == 0u);                                                                                        \
+        CC_V = CC_C = 0;                                                                                               \
+    } while (0)
+
+// --- BFTST ---
+#undef OP_BFTST_DN
+#define OP_BFTST_DN                                                                                                    \
+    OP({                                                                                                               \
+        int32_t _off;                                                                                                  \
+        uint32_t _w;                                                                                                   \
+        BF_DECODE_EXT(_off, _w);                                                                                       \
+        uint32_t _f = bf_extract_reg(DY, _off, _w);                                                                    \
+        BF_UPDATE_CC(_f, _w);                                                                                          \
+    })
+
+#undef OP_BFTST_EA
+#define OP_BFTST_EA                                                                                                    \
+    OP({                                                                                                               \
+        int32_t _off;                                                                                                  \
+        uint32_t _w;                                                                                                   \
+        BF_DECODE_EXT(_off, _w);                                                                                       \
+        uint32_t _ea = CALCULATE_EA(1, EA_MODE, EA_REG, true);                                                         \
+        uint32_t _f;                                                                                                   \
+        BF_EXTRACT_MEM(_ea, _off, _w, _f);                                                                             \
+        BF_UPDATE_CC(_f, _w);                                                                                          \
+    })
+
+// --- BFEXTU ---
+#undef OP_BFEXTU_DN
+#define OP_BFEXTU_DN                                                                                                   \
+    OP({                                                                                                               \
+        uint16_t _ext = FETCH16();                                                                                     \
+        int32_t _off = (_ext & 0x0800) ? (int32_t)D((_ext >> 6) & 7) : (int32_t)((_ext >> 6) & 31u);                   \
+        uint32_t _w = (_ext & 0x0020) ? (D(_ext & 7) & 31u) : (uint32_t)(_ext & 31u);                                  \
+        if (!_w)                                                                                                       \
+            _w = 32u;                                                                                                  \
+        uint32_t _dn = (_ext >> 12) & 7u;                                                                              \
+        uint32_t _f = bf_extract_reg(DY, _off, _w);                                                                    \
+        BF_UPDATE_CC(_f, _w);                                                                                          \
+        D(_dn) = _f;                                                                                                   \
+    })
+
+#undef OP_BFEXTU_EA
+#define OP_BFEXTU_EA                                                                                                   \
+    OP({                                                                                                               \
+        uint16_t _ext = FETCH16();                                                                                     \
+        int32_t _off = (_ext & 0x0800) ? (int32_t)D((_ext >> 6) & 7) : (int32_t)((_ext >> 6) & 31u);                   \
+        uint32_t _w = (_ext & 0x0020) ? (D(_ext & 7) & 31u) : (uint32_t)(_ext & 31u);                                  \
+        if (!_w)                                                                                                       \
+            _w = 32u;                                                                                                  \
+        uint32_t _dn = (_ext >> 12) & 7u;                                                                              \
+        uint32_t _ea = CALCULATE_EA(1, EA_MODE, EA_REG, true);                                                         \
+        uint32_t _f;                                                                                                   \
+        BF_EXTRACT_MEM(_ea, _off, _w, _f);                                                                             \
+        BF_UPDATE_CC(_f, _w);                                                                                          \
+        D(_dn) = _f;                                                                                                   \
+    })
+
+// --- BFEXTS ---
+#undef OP_BFEXTS_DN
+#define OP_BFEXTS_DN                                                                                                   \
+    OP({                                                                                                               \
+        uint16_t _ext = FETCH16();                                                                                     \
+        int32_t _off = (_ext & 0x0800) ? (int32_t)D((_ext >> 6) & 7) : (int32_t)((_ext >> 6) & 31u);                   \
+        uint32_t _w = (_ext & 0x0020) ? (D(_ext & 7) & 31u) : (uint32_t)(_ext & 31u);                                  \
+        if (!_w)                                                                                                       \
+            _w = 32u;                                                                                                  \
+        uint32_t _dn = (_ext >> 12) & 7u;                                                                              \
+        uint32_t _f = bf_extract_reg(DY, _off, _w);                                                                    \
+        BF_UPDATE_CC(_f, _w);                                                                                          \
+        /* sign-extend field */                                                                                        \
+        D(_dn) = (_w < 32u) ? (uint32_t)((int32_t)(_f << (32u - _w)) >> (32u - _w)) : _f;                              \
+    })
+
+#undef OP_BFEXTS_EA
+#define OP_BFEXTS_EA                                                                                                   \
+    OP({                                                                                                               \
+        uint16_t _ext = FETCH16();                                                                                     \
+        int32_t _off = (_ext & 0x0800) ? (int32_t)D((_ext >> 6) & 7) : (int32_t)((_ext >> 6) & 31u);                   \
+        uint32_t _w = (_ext & 0x0020) ? (D(_ext & 7) & 31u) : (uint32_t)(_ext & 31u);                                  \
+        if (!_w)                                                                                                       \
+            _w = 32u;                                                                                                  \
+        uint32_t _dn = (_ext >> 12) & 7u;                                                                              \
+        uint32_t _ea = CALCULATE_EA(1, EA_MODE, EA_REG, true);                                                         \
+        uint32_t _f;                                                                                                   \
+        BF_EXTRACT_MEM(_ea, _off, _w, _f);                                                                             \
+        BF_UPDATE_CC(_f, _w);                                                                                          \
+        D(_dn) = (_w < 32u) ? (uint32_t)((int32_t)(_f << (32u - _w)) >> (32u - _w)) : _f;                              \
+    })
+
+// --- BFCHG ---
+#undef OP_BFCHG_DN
+#define OP_BFCHG_DN                                                                                                    \
+    OP({                                                                                                               \
+        int32_t _off;                                                                                                  \
+        uint32_t _w;                                                                                                   \
+        BF_DECODE_EXT(_off, _w);                                                                                       \
+        uint32_t _f = bf_extract_reg(DY, _off, _w);                                                                    \
+        BF_UPDATE_CC(_f, _w);                                                                                          \
+        DY = bf_insert_reg(DY, _off, _w, ~_f);                                                                         \
+    })
+
+#undef OP_BFCHG_EA
+#define OP_BFCHG_EA                                                                                                    \
+    OP({                                                                                                               \
+        int32_t _off;                                                                                                  \
+        uint32_t _w;                                                                                                   \
+        BF_DECODE_EXT(_off, _w);                                                                                       \
+        uint32_t _ea = CALCULATE_EA(1, EA_MODE, EA_REG, true);                                                         \
+        uint32_t _f;                                                                                                   \
+        BF_EXTRACT_MEM(_ea, _off, _w, _f);                                                                             \
+        BF_UPDATE_CC(_f, _w);                                                                                          \
+        BF_INSERT_MEM(_ea, _off, _w, ~_f);                                                                             \
+    })
+
+// --- BFCLR ---
+#undef OP_BFCLR_DN
+#define OP_BFCLR_DN                                                                                                    \
+    OP({                                                                                                               \
+        int32_t _off;                                                                                                  \
+        uint32_t _w;                                                                                                   \
+        BF_DECODE_EXT(_off, _w);                                                                                       \
+        uint32_t _f = bf_extract_reg(DY, _off, _w);                                                                    \
+        BF_UPDATE_CC(_f, _w);                                                                                          \
+        DY = bf_insert_reg(DY, _off, _w, 0u);                                                                          \
+    })
+
+#undef OP_BFCLR_EA
+#define OP_BFCLR_EA                                                                                                    \
+    OP({                                                                                                               \
+        int32_t _off;                                                                                                  \
+        uint32_t _w;                                                                                                   \
+        BF_DECODE_EXT(_off, _w);                                                                                       \
+        uint32_t _ea = CALCULATE_EA(1, EA_MODE, EA_REG, true);                                                         \
+        uint32_t _f;                                                                                                   \
+        BF_EXTRACT_MEM(_ea, _off, _w, _f);                                                                             \
+        BF_UPDATE_CC(_f, _w);                                                                                          \
+        BF_INSERT_MEM(_ea, _off, _w, 0u);                                                                              \
+    })
+
+// --- BFSET ---
+#undef OP_BFSET_DN
+#define OP_BFSET_DN                                                                                                    \
+    OP({                                                                                                               \
+        int32_t _off;                                                                                                  \
+        uint32_t _w;                                                                                                   \
+        BF_DECODE_EXT(_off, _w);                                                                                       \
+        uint32_t _f = bf_extract_reg(DY, _off, _w);                                                                    \
+        BF_UPDATE_CC(_f, _w);                                                                                          \
+        DY = bf_insert_reg(DY, _off, _w, 0xFFFFFFFFu);                                                                 \
+    })
+
+#undef OP_BFSET_EA
+#define OP_BFSET_EA                                                                                                    \
+    OP({                                                                                                               \
+        int32_t _off;                                                                                                  \
+        uint32_t _w;                                                                                                   \
+        BF_DECODE_EXT(_off, _w);                                                                                       \
+        uint32_t _ea = CALCULATE_EA(1, EA_MODE, EA_REG, true);                                                         \
+        uint32_t _f;                                                                                                   \
+        BF_EXTRACT_MEM(_ea, _off, _w, _f);                                                                             \
+        BF_UPDATE_CC(_f, _w);                                                                                          \
+        BF_INSERT_MEM(_ea, _off, _w, 0xFFFFFFFFu);                                                                     \
+    })
+
+// --- BFFFO: Bit Field Find First One ---
+#undef OP_BFFFO_DN
+#define OP_BFFFO_DN                                                                                                    \
+    OP({                                                                                                               \
+        uint16_t _ext = FETCH16();                                                                                     \
+        int32_t _off = (_ext & 0x0800) ? (int32_t)D((_ext >> 6) & 7) : (int32_t)((_ext >> 6) & 31u);                   \
+        uint32_t _w = (_ext & 0x0020) ? (D(_ext & 7) & 31u) : (uint32_t)(_ext & 31u);                                  \
+        if (!_w)                                                                                                       \
+            _w = 32u;                                                                                                  \
+        uint32_t _dn = (_ext >> 12) & 7u;                                                                              \
+        uint32_t _f = bf_extract_reg(DY, _off, _w);                                                                    \
+        BF_UPDATE_CC(_f, _w);                                                                                          \
+        uint32_t _pos = 0;                                                                                             \
+        if (_f != 0) {                                                                                                 \
+            for (_pos = 0; _pos < _w && !((_f >> (_w - 1u - _pos)) & 1u); _pos++) {                                    \
+            }                                                                                                          \
+        } else {                                                                                                       \
+            _pos = _w;                                                                                                 \
+        }                                                                                                              \
+        D(_dn) = (uint32_t)(_off & 31) + _pos;                                                                         \
+    })
+
+#undef OP_BFFFO_EA
+#define OP_BFFFO_EA                                                                                                    \
+    OP({                                                                                                               \
+        uint16_t _ext = FETCH16();                                                                                     \
+        int32_t _off = (_ext & 0x0800) ? (int32_t)D((_ext >> 6) & 7) : (int32_t)((_ext >> 6) & 31u);                   \
+        uint32_t _w = (_ext & 0x0020) ? (D(_ext & 7) & 31u) : (uint32_t)(_ext & 31u);                                  \
+        if (!_w)                                                                                                       \
+            _w = 32u;                                                                                                  \
+        uint32_t _dn = (_ext >> 12) & 7u;                                                                              \
+        uint32_t _ea = CALCULATE_EA(1, EA_MODE, EA_REG, true);                                                         \
+        uint32_t _f;                                                                                                   \
+        BF_EXTRACT_MEM(_ea, _off, _w, _f);                                                                             \
+        BF_UPDATE_CC(_f, _w);                                                                                          \
+        uint32_t _pos = 0;                                                                                             \
+        if (_f != 0) {                                                                                                 \
+            for (_pos = 0; _pos < _w && !((_f >> (_w - 1u - _pos)) & 1u); _pos++) {                                    \
+            }                                                                                                          \
+        } else {                                                                                                       \
+            _pos = _w;                                                                                                 \
+        }                                                                                                              \
+        D(_dn) = (uint32_t)_off + _pos;                                                                                \
+    })
+
+// --- BFINS: Bit Field Insert ---
+#undef OP_BFINS_DN
+#define OP_BFINS_DN                                                                                                    \
+    OP({                                                                                                               \
+        uint16_t _ext = FETCH16();                                                                                     \
+        int32_t _off = (_ext & 0x0800) ? (int32_t)D((_ext >> 6) & 7) : (int32_t)((_ext >> 6) & 31u);                   \
+        uint32_t _w = (_ext & 0x0020) ? (D(_ext & 7) & 31u) : (uint32_t)(_ext & 31u);                                  \
+        if (!_w)                                                                                                       \
+            _w = 32u;                                                                                                  \
+        uint32_t _dn = (_ext >> 12) & 7u;                                                                              \
+        uint32_t _src = D(_dn);                                                                                        \
+        uint32_t _mask = (_w == 32u) ? 0xFFFFFFFFu : ((1u << _w) - 1u);                                                \
+        uint32_t _f = _src & _mask;                                                                                    \
+        BF_UPDATE_CC(_f, _w);                                                                                          \
+        DY = bf_insert_reg(DY, _off, _w, _f);                                                                          \
+    })
+
+#undef OP_BFINS_EA
+#define OP_BFINS_EA                                                                                                    \
+    OP({                                                                                                               \
+        uint16_t _ext = FETCH16();                                                                                     \
+        int32_t _off = (_ext & 0x0800) ? (int32_t)D((_ext >> 6) & 7) : (int32_t)((_ext >> 6) & 31u);                   \
+        uint32_t _w = (_ext & 0x0020) ? (D(_ext & 7) & 31u) : (uint32_t)(_ext & 31u);                                  \
+        if (!_w)                                                                                                       \
+            _w = 32u;                                                                                                  \
+        uint32_t _dn = (_ext >> 12) & 7u;                                                                              \
+        uint32_t _mask = (_w == 32u) ? 0xFFFFFFFFu : ((1u << _w) - 1u);                                                \
+        uint32_t _f = D(_dn) & _mask;                                                                                  \
+        BF_UPDATE_CC(_f, _w);                                                                                          \
+        uint32_t _ea = CALCULATE_EA(1, EA_MODE, EA_REG, true);                                                         \
+        BF_INSERT_MEM(_ea, _off, _w, _f);                                                                              \
+    })
+
+// --- LINK.L (32-bit displacement) ---
+#undef OP_LINK_L_AN_DISP
+#define OP_LINK_L_AN_DISP                                                                                              \
+    OP({                                                                                                               \
+        uint32_t _a = AY;                                                                                              \
+        PUSH32(_a);                                                                                                    \
+        AY = SP;                                                                                                       \
+        SP += (int32_t)FETCH32();                                                                                      \
+    })
+
+// --- RTD: Return and Deallocate ---
+#undef OP_RTD_DISPLACEMENT
+#define OP_RTD_DISPLACEMENT                                                                                            \
+    OP({                                                                                                               \
+        POP32(PC);                                                                                                     \
+        int16_t _d = (int16_t)FETCH16();                                                                               \
+        SP += (int32_t)_d;                                                                                             \
+    })
+
+// --- TRAPcc: Trap on Condition ---
+#undef OP_TRAPCC
+#define OP_TRAPCC OP(if (CC) EXC_TRAPV())
+
+#undef OP_TRAPCC_W_DATA
+#define OP_TRAPCC_W_DATA                                                                                               \
+    OP({                                                                                                               \
+        (void)FETCH16();                                                                                               \
+        if (CC)                                                                                                        \
+            EXC_TRAPV();                                                                                               \
+    })
+
+#undef OP_TRAPCC_L_DATA
+#define OP_TRAPCC_L_DATA                                                                                               \
+    OP({                                                                                                               \
+        (void)FETCH32();                                                                                               \
+        if (CC)                                                                                                        \
+            EXC_TRAPV();                                                                                               \
+    })
+
+// --- CHK.L <ea>,Dn (32-bit bounds check) ---
+#undef OP_CHK_L_EA_DN
+#define OP_CHK_L_EA_DN                                                                                                 \
+    OP(                                                                                                                \
+        VALID_EA(ea_data); LOAD_EA_WITH_UPDATE(32, _bound); int32_t _dn = (int32_t)DX; int32_t _b = (int32_t)_bound;   \
+        if (_dn < 0) {                                                                                                 \
+            CC_N = 1;                                                                                                  \
+            EXC_CHK();                                                                                                 \
+        } else if (_dn > _b) {                                                                                         \
+            CC_N = 0;                                                                                                  \
+            EXC_CHK();                                                                                                 \
+        })
+
+// --- MOVEC: Move Control Register ---
+// MOVEC Rc,Rn: privileged, reads control register into general register
+#undef OP_MOVEC_RC_RN
+#define OP_MOVEC_RC_RN                                                                                                 \
+    OP(SUPER({                                                                                                         \
+        uint16_t _ext = FETCH16();                                                                                     \
+        uint32_t _da = (_ext >> 15) & 1u;                                                                              \
+        uint32_t _rn = (_ext >> 12) & 7u;                                                                              \
+        uint16_t _rc = _ext & 0x0FFFu;                                                                                 \
+        uint32_t _val = 0;                                                                                             \
+        switch (_rc) {                                                                                                 \
+        case 0x000:                                                                                                    \
+            _val = cpu->sfc;                                                                                           \
+            break;                                                                                                     \
+        case 0x001:                                                                                                    \
+            _val = cpu->dfc;                                                                                           \
+            break;                                                                                                     \
+        case 0x002:                                                                                                    \
+            _val = cpu->cacr;                                                                                          \
+            break;                                                                                                     \
+        case 0x800:                                                                                                    \
+            _val = IS_SUPERVISOR() ? cpu->usp : GET_USP();                                                             \
+            break;                                                                                                     \
+        case 0x801:                                                                                                    \
+            _val = cpu->vbr;                                                                                           \
+            break;                                                                                                     \
+        case 0x802:                                                                                                    \
+            _val = cpu->caar;                                                                                          \
+            break;                                                                                                     \
+        case 0x803:                                                                                                    \
+            _val = cpu->m ? A(7) : cpu->msp;                                                                           \
+            break;                                                                                                     \
+        case 0x804:                                                                                                    \
+            _val = cpu->m ? cpu->ssp : A(7);                                                                           \
+            break;                                                                                                     \
+        default:                                                                                                       \
+            EXC_ILLEGAL();                                                                                             \
+            continue;                                                                                                  \
+        }                                                                                                              \
+        if (_da)                                                                                                       \
+            A(_rn) = _val;                                                                                             \
+        else                                                                                                           \
+            D(_rn) = _val;                                                                                             \
+    }))
+
+// MOVEC Rn,Rc: privileged, writes general register to control register
+#undef OP_MOVEC_RN_RC
+#define OP_MOVEC_RN_RC                                                                                                 \
+    OP(SUPER({                                                                                                         \
+        uint16_t _ext = FETCH16();                                                                                     \
+        uint32_t _da = (_ext >> 15) & 1u;                                                                              \
+        uint32_t _rn = (_ext >> 12) & 7u;                                                                              \
+        uint16_t _rc = _ext & 0x0FFFu;                                                                                 \
+        uint32_t _val = _da ? A(_rn) : D(_rn);                                                                         \
+        switch (_rc) {                                                                                                 \
+        case 0x000:                                                                                                    \
+            cpu->sfc = _val & 7u;                                                                                      \
+            break;                                                                                                     \
+        case 0x001:                                                                                                    \
+            cpu->dfc = _val & 7u;                                                                                      \
+            break;                                                                                                     \
+        case 0x002:                                                                                                    \
+            cpu->cacr = _val;                                                                                          \
+            break; /* cache ops: no-op */                                                                              \
+        case 0x800:                                                                                                    \
+            SET_USP(_val);                                                                                             \
+            break;                                                                                                     \
+        case 0x801:                                                                                                    \
+            cpu->vbr = _val;                                                                                           \
+            break;                                                                                                     \
+        case 0x802:                                                                                                    \
+            cpu->caar = _val;                                                                                          \
+            break; /* cache addr: no-op */                                                                             \
+        case 0x803:                                                                                                    \
+            if (cpu->m)                                                                                                \
+                A(7) = _val;                                                                                           \
+            else                                                                                                       \
+                cpu->msp = _val;                                                                                       \
+            break;                                                                                                     \
+        case 0x804:                                                                                                    \
+            if (!cpu->m)                                                                                               \
+                A(7) = _val;                                                                                           \
+            else                                                                                                       \
+                cpu->ssp = _val;                                                                                       \
+            break;                                                                                                     \
+        default:                                                                                                       \
+            EXC_ILLEGAL();                                                                                             \
+            continue;                                                                                                  \
+        }                                                                                                              \
+    }))
+
+// --- MULS.L / DIVS.L: 32x32->64 multiply, 64/32 divide ---
+// MULS.L <ea>,Dh:Dl  (or MULU.L)
+// Extension word: 0000 Dh 1S 00 Dl  (S=1 for signed)
+// When Dh==Dl: only 32-bit result in Dl (Dh ignored per spec)
+#undef OP_MULS_L_EA_DH_DL
+#define OP_MULS_L_EA_DH_DL                                                                                             \
+    OP({                                                                                                               \
+        uint16_t _ext = FETCH16();                                                                                     \
+        uint32_t _dh = (_ext >> 12) & 7u;                                                                              \
+        uint32_t _dl = _ext & 7u;                                                                                      \
+        int _signed = (_ext >> 11) & 1;                                                                                \
+        VALID_EA(ea_data);                                                                                             \
+        LOAD_EA_WITH_UPDATE(32, _src);                                                                                 \
+        if (_signed) {                                                                                                 \
+            int64_t _res = (int64_t)(int32_t)D(_dl) * (int64_t)(int32_t)_src;                                          \
+            D(_dl) = (uint32_t)_res;                                                                                   \
+            if (_dh != _dl)                                                                                            \
+                D(_dh) = (uint32_t)((uint64_t)_res >> 32);                                                             \
+            CC_N = (_res < 0);                                                                                         \
+            CC_Z = (_res == 0);                                                                                        \
+            CC_V = CC_C = 0;                                                                                           \
+        } else {                                                                                                       \
+            uint64_t _res = (uint64_t)D(_dl) * (uint64_t)_src;                                                         \
+            D(_dl) = (uint32_t)_res;                                                                                   \
+            if (_dh != _dl)                                                                                            \
+                D(_dh) = (uint32_t)(_res >> 32);                                                                       \
+            CC_N = (_res >> 63);                                                                                       \
+            CC_Z = (_res == 0);                                                                                        \
+            CC_V = CC_C = 0;                                                                                           \
+        }                                                                                                              \
+    })
+
+// DIVS.L/DIVU.L <ea>,Dr:Dq  (64/32 or 32/32 divide)
+// Extension word: 0000 Dr 1S 00 Dq  (S=1 signed)
+// When Dr==Dq: 32/32 divide (quotient in Dq, no remainder stored)
+#undef OP_DIVS_L_EA_DR_DQ
+#define OP_DIVS_L_EA_DR_DQ                                                                                             \
+    OP({                                                                                                               \
+        uint16_t _ext = FETCH16();                                                                                     \
+        uint32_t _dr = (_ext >> 12) & 7u;                                                                              \
+        uint32_t _dq = _ext & 7u;                                                                                      \
+        int _signed = (_ext >> 11) & 1;                                                                                \
+        VALID_EA(ea_data);                                                                                             \
+        LOAD_EA_WITH_UPDATE(32, _divisor);                                                                             \
+        CLEAR_NZVC();                                                                                                  \
+        if (!_divisor) {                                                                                               \
+            EXC_DIVIDE_BY_ZERO();                                                                                      \
+        } else {                                                                                                       \
+            if (_signed) {                                                                                             \
+                int64_t _dividend =                                                                                    \
+                    (_dr == _dq) ? (int64_t)(int32_t)D(_dq) : (int64_t)(((uint64_t)D(_dr) << 32) | D(_dq));            \
+                int64_t _q = _dividend / (int32_t)_divisor;                                                            \
+                int64_t _r = _dividend % (int32_t)_divisor;                                                            \
+                if (_q > INT32_MAX || _q < INT32_MIN) {                                                                \
+                    CC_V = CC_N = 1;                                                                                   \
+                } else {                                                                                               \
+                    D(_dq) = (uint32_t)_q;                                                                             \
+                    if (_dr != _dq)                                                                                    \
+                        D(_dr) = (uint32_t)_r;                                                                         \
+                    CC_N = (_q < 0);                                                                                   \
+                    CC_Z = (_q == 0);                                                                                  \
+                }                                                                                                      \
+            } else {                                                                                                   \
+                uint64_t _dividend = (_dr == _dq) ? (uint64_t)D(_dq) : (((uint64_t)D(_dr) << 32) | D(_dq));            \
+                uint64_t _q = _dividend / (uint32_t)_divisor;                                                          \
+                uint64_t _r = _dividend % (uint32_t)_divisor;                                                          \
+                if (_q > UINT32_MAX) {                                                                                 \
+                    CC_V = CC_N = 1;                                                                                   \
+                } else {                                                                                               \
+                    D(_dq) = (uint32_t)_q;                                                                             \
+                    if (_dr != _dq)                                                                                    \
+                        D(_dr) = (uint32_t)_r;                                                                         \
+                    CC_N = (uint32_t)_q >> 31;                                                                         \
+                    CC_Z = (_q == 0);                                                                                  \
+                }                                                                                                      \
+            }                                                                                                          \
+        }                                                                                                              \
+    })
+
+// --- CAS: Compare And Swap (stub — atomic operations not needed for single-CPU) ---
+#undef OP_CAS_B_DC_DU_EA
+#define OP_CAS_B_DC_DU_EA                                                                                              \
+    OP({                                                                                                               \
+        uint16_t _ext = FETCH16();                                                                                     \
+        uint32_t _du = (_ext >> 6) & 7u;                                                                               \
+        uint32_t _dc = _ext & 7u;                                                                                      \
+        VALID_EA(ea_memory &ea_alterable);                                                                             \
+        uint8_t _mem = (uint8_t)READ_EA(8, opcode, false);                                                             \
+        uint8_t _cmp = (uint8_t)D(_dc);                                                                                \
+        uint8_t _res;                                                                                                  \
+        GENERIC_SUB(_cmp, _mem, _res);                                                                                 \
+        if (CC_Z) {                                                                                                    \
+            STORE_EA(8, (uint8_t)D(_du));                                                                              \
+        } else {                                                                                                       \
+            STORE_DN(8, _dc, _mem);                                                                                    \
+        }                                                                                                              \
+    })
+
+#undef OP_CAS_W_DC_DU_EA
+#define OP_CAS_W_DC_DU_EA                                                                                              \
+    OP({                                                                                                               \
+        uint16_t _ext = FETCH16();                                                                                     \
+        uint32_t _du = (_ext >> 6) & 7u;                                                                               \
+        uint32_t _dc = _ext & 7u;                                                                                      \
+        VALID_EA(ea_memory &ea_alterable);                                                                             \
+        uint16_t _mem = (uint16_t)READ_EA(16, opcode, false);                                                          \
+        uint16_t _cmp = (uint16_t)D(_dc);                                                                              \
+        uint16_t _res;                                                                                                 \
+        GENERIC_SUB(_cmp, _mem, _res);                                                                                 \
+        if (CC_Z) {                                                                                                    \
+            STORE_EA(16, (uint16_t)D(_du));                                                                            \
+        } else {                                                                                                       \
+            STORE_DN(16, _dc, _mem);                                                                                   \
+        }                                                                                                              \
+    })
+
+#undef OP_CAS_L_DC_DU_EA
+#define OP_CAS_L_DC_DU_EA                                                                                              \
+    OP({                                                                                                               \
+        uint16_t _ext = FETCH16();                                                                                     \
+        uint32_t _du = (_ext >> 6) & 7u;                                                                               \
+        uint32_t _dc = _ext & 7u;                                                                                      \
+        VALID_EA(ea_memory &ea_alterable);                                                                             \
+        uint32_t _mem = (uint32_t)READ_EA(32, opcode, false);                                                          \
+        uint32_t _cmp = D(_dc);                                                                                        \
+        uint32_t _res;                                                                                                 \
+        GENERIC_SUB(_cmp, _mem, _res);                                                                                 \
+        if (CC_Z) {                                                                                                    \
+            STORE_EA(32, D(_du));                                                                                      \
+        } else {                                                                                                       \
+            D(_dc) = _mem;                                                                                             \
+        }                                                                                                              \
+    })
+
+// CAS2: two-operand compare-and-swap (stub — single-CPU, no actual atomicity needed)
+#undef OP_CAS2_W_DC_DU_RN
+#define OP_CAS2_W_DC_DU_RN                                                                                             \
+    OP({                                                                                                               \
+        uint16_t _e1 = FETCH16();                                                                                      \
+        uint16_t _e2 = FETCH16();                                                                                      \
+        uint32_t _rn1 = (_e1 & 0x8000) ? A((_e1 >> 12) & 7) : D((_e1 >> 12) & 7);                                      \
+        uint32_t _rn2 = (_e2 & 0x8000) ? A((_e2 >> 12) & 7) : D((_e2 >> 12) & 7);                                      \
+        uint32_t _dc1 = _e1 & 7u;                                                                                      \
+        uint32_t _du1 = (_e1 >> 6) & 7u;                                                                               \
+        uint32_t _dc2 = _e2 & 7u;                                                                                      \
+        uint32_t _du2 = (_e2 >> 6) & 7u;                                                                               \
+        uint16_t _m1 = READ16(_rn1);                                                                                   \
+        uint16_t _m2 = READ16(_rn2);                                                                                   \
+        uint16_t _r1;                                                                                                  \
+        GENERIC_SUB((uint16_t)D(_dc1), _m1, _r1);                                                                      \
+        if (CC_Z) {                                                                                                    \
+            uint16_t _r2;                                                                                              \
+            GENERIC_SUB((uint16_t)D(_dc2), _m2, _r2);                                                                  \
+            if (CC_Z) {                                                                                                \
+                WRITE16(_rn1, (uint16_t)D(_du1));                                                                      \
+                WRITE16(_rn2, (uint16_t)D(_du2));                                                                      \
+            } else {                                                                                                   \
+                STORE_DN(16, _dc1, _m1);                                                                               \
+                STORE_DN(16, _dc2, _m2);                                                                               \
+            }                                                                                                          \
+        } else {                                                                                                       \
+            STORE_DN(16, _dc1, _m1);                                                                                   \
+            STORE_DN(16, _dc2, _m2);                                                                                   \
+        }                                                                                                              \
+    })
+
+#undef OP_CAS2_L_DC_DU_RN
+#define OP_CAS2_L_DC_DU_RN                                                                                             \
+    OP({                                                                                                               \
+        uint16_t _e1 = FETCH16();                                                                                      \
+        uint16_t _e2 = FETCH16();                                                                                      \
+        uint32_t _rn1 = (_e1 & 0x8000) ? A((_e1 >> 12) & 7) : D((_e1 >> 12) & 7);                                      \
+        uint32_t _rn2 = (_e2 & 0x8000) ? A((_e2 >> 12) & 7) : D((_e2 >> 12) & 7);                                      \
+        uint32_t _dc1 = _e1 & 7u;                                                                                      \
+        uint32_t _du1 = (_e1 >> 6) & 7u;                                                                               \
+        uint32_t _dc2 = _e2 & 7u;                                                                                      \
+        uint32_t _du2 = (_e2 >> 6) & 7u;                                                                               \
+        uint32_t _m1 = READ32(_rn1);                                                                                   \
+        uint32_t _m2 = READ32(_rn2);                                                                                   \
+        uint32_t _r1;                                                                                                  \
+        GENERIC_SUB(D(_dc1), _m1, _r1);                                                                                \
+        if (CC_Z) {                                                                                                    \
+            uint32_t _r2;                                                                                              \
+            GENERIC_SUB(D(_dc2), _m2, _r2);                                                                            \
+            if (CC_Z) {                                                                                                \
+                WRITE32(_rn1, D(_du1));                                                                                \
+                WRITE32(_rn2, D(_du2));                                                                                \
+            } else {                                                                                                   \
+                D(_dc1) = _m1;                                                                                         \
+                D(_dc2) = _m2;                                                                                         \
+            }                                                                                                          \
+        } else {                                                                                                       \
+            D(_dc1) = _m1;                                                                                             \
+            D(_dc2) = _m2;                                                                                             \
+        }                                                                                                              \
+    })
+
+// --- CHK2/CMP2: Compare with bounds ---
+// Extension word: Dn/An:Rn at bits 15:12, IS bit 11 (0=CMP2, 1=CHK2)
+// Compares Rn against lower bound at EA and upper bound at EA+size.
+#define CHK2_CMP2(bits)                                                                                                \
+    {                                                                                                                  \
+        uint16_t _ext = FETCH16();                                                                                     \
+        uint32_t _da = (_ext >> 15) & 1u;                                                                              \
+        uint32_t _rn = (_ext >> 12) & 7u;                                                                              \
+        int _is_chk2 = (_ext >> 11) & 1;                                                                               \
+        VALID_EA(ea_control);                                                                                          \
+        uint32_t _ea = GET_EA;                                                                                         \
+        uint32_t _lo, _hi, _val;                                                                                       \
+        if (bits == 8) {                                                                                               \
+            _lo = (uint32_t)(int32_t)(int8_t)READ8(_ea);                                                               \
+            _hi = (uint32_t)(int32_t)(int8_t)READ8(_ea + 1);                                                           \
+            _val = _da ? A(_rn) : (uint32_t)(int32_t)(int8_t)D(_rn);                                                   \
+        } else if (bits == 16) {                                                                                       \
+            _lo = (uint32_t)(int32_t)(int16_t)READ16(_ea);                                                             \
+            _hi = (uint32_t)(int32_t)(int16_t)READ16(_ea + 2);                                                         \
+            _val = _da ? A(_rn) : (uint32_t)(int32_t)(int16_t)D(_rn);                                                  \
+        } else {                                                                                                       \
+            _lo = READ32(_ea);                                                                                         \
+            _hi = READ32(_ea + 4);                                                                                     \
+            _val = _da ? A(_rn) : D(_rn);                                                                              \
+        }                                                                                                              \
+        CC_Z = (_val == _lo || _val == _hi);                                                                           \
+        CC_C = ((bits == 32) ? (_val < _lo || _val > _hi)                                                              \
+                             : ((int32_t)_val < (int32_t)_lo || (int32_t)_val > (int32_t)_hi));                        \
+        if (_is_chk2 && CC_C)                                                                                          \
+            EXC_CHK();                                                                                                 \
+    }
+
+#undef OP_CHK2_B_EA_DN
+#define OP_CHK2_B_EA_DN OP(CHK2_CMP2(8))
+#undef OP_CHK2_W_EA_DN
+#define OP_CHK2_W_EA_DN OP(CHK2_CMP2(16))
+#undef OP_CHK2_L_EA_DN
+#define OP_CHK2_L_EA_DN OP(CHK2_CMP2(32))
+
+// --- PACK/UNPK: BCD pack/unpack ---
+// PACK DY,DX,#adj: ((DY + adj) & 0xFF) → low byte nibbles → DX
+#undef OP_PACK_DY_DX
+#define OP_PACK_DY_DX                                                                                                  \
+    OP({                                                                                                               \
+        uint16_t _adj = FETCH16();                                                                                     \
+        uint16_t _src = (uint16_t)(DY + _adj);                                                                         \
+        STORE_DN(8, opcode >> 9 & 7, ((_src >> 4) & 0xF0) | ((_src) & 0x0F));                                          \
+    })
+
+// PACK -(AY),-(AX),#adj: from memory
+#undef OP_PACK_AY_AX
+#define OP_PACK_AY_AX                                                                                                  \
+    OP({                                                                                                               \
+        uint16_t _adj = FETCH16();                                                                                     \
+        A(EA_REG) -= 2;                                                                                                \
+        uint16_t _src = READ16(A(EA_REG));                                                                             \
+        _src = (uint16_t)(_src + _adj);                                                                                \
+        A(opcode >> 9 & 7) -= 1;                                                                                       \
+        WRITE8(A(opcode >> 9 & 7), (uint8_t)(((_src >> 4) & 0xF0) | ((_src) & 0x0F)));                                 \
+    })
+
+// UNPK DY,DX,#adj: separate two BCD nibbles, add adj
+#undef OP_UNPK_DY_DX
+#define OP_UNPK_DY_DX                                                                                                  \
+    OP({                                                                                                               \
+        uint16_t _adj = FETCH16();                                                                                     \
+        uint8_t _b = (uint8_t)DY;                                                                                      \
+        uint16_t _res = (uint16_t)((((_b >> 4) & 0xF) << 8) | ((_b) & 0xF)) + _adj;                                    \
+        STORE_DN(16, opcode >> 9 & 7, _res);                                                                           \
+    })
+
+// UNPK -(AY),-(AX),#adj: from/to memory
+#undef OP_UNPK_AY_AX
+#define OP_UNPK_AY_AX                                                                                                  \
+    OP({                                                                                                               \
+        uint16_t _adj = FETCH16();                                                                                     \
+        A(EA_REG) -= 1;                                                                                                \
+        uint8_t _b = READ8(A(EA_REG));                                                                                 \
+        uint16_t _res = (uint16_t)((((_b >> 4) & 0xF) << 8) | ((_b) & 0xF)) + _adj;                                    \
+        A(opcode >> 9 & 7) -= 2;                                                                                       \
+        WRITE16(A(opcode >> 9 & 7), _res);                                                                             \
+    })
+
+// --- MOVES: Move with Alternate Function Code (supervisor, stub) ---
+// MOVES reads/writes with SFC/DFC; since we don't have MMU translation,
+// treat as a normal privileged memory access.
+#undef OP_MOVES_B_RN_EA
+#define OP_MOVES_B_RN_EA                                                                                               \
+    OP(SUPER({                                                                                                         \
+        uint16_t _ext = FETCH16();                                                                                     \
+        uint32_t _da = (_ext >> 15) & 1u;                                                                              \
+        uint32_t _rn = (_ext >> 12) & 7u;                                                                              \
+        VALID_EA(ea_memory &ea_alterable);                                                                             \
+        uint32_t _ea = CALCULATE_EA(1, EA_MODE, EA_REG, true);                                                         \
+        WRITE8(_ea, (uint8_t)(_da ? A(_rn) : D(_rn)));                                                                 \
+    }))
+
+#undef OP_MOVES_W_RN_EA
+#define OP_MOVES_W_RN_EA                                                                                               \
+    OP(SUPER({                                                                                                         \
+        uint16_t _ext = FETCH16();                                                                                     \
+        uint32_t _da = (_ext >> 15) & 1u;                                                                              \
+        uint32_t _rn = (_ext >> 12) & 7u;                                                                              \
+        VALID_EA(ea_memory &ea_alterable);                                                                             \
+        uint32_t _ea = CALCULATE_EA(2, EA_MODE, EA_REG, true);                                                         \
+        WRITE16(_ea, (uint16_t)(_da ? A(_rn) : D(_rn)));                                                               \
+    }))
+
+#undef OP_MOVES_L_RN_EA
+#define OP_MOVES_L_RN_EA                                                                                               \
+    OP(SUPER({                                                                                                         \
+        uint16_t _ext = FETCH16();                                                                                     \
+        uint32_t _da = (_ext >> 15) & 1u;                                                                              \
+        uint32_t _rn = (_ext >> 12) & 7u;                                                                              \
+        VALID_EA(ea_memory &ea_alterable);                                                                             \
+        uint32_t _ea = CALCULATE_EA(4, EA_MODE, EA_REG, true);                                                         \
+        WRITE32(_ea, _da ? A(_rn) : D(_rn));                                                                           \
+    }))
+
+#undef OP_MOVES_B_EA_RN
+#define OP_MOVES_B_EA_RN                                                                                               \
+    OP(SUPER({                                                                                                         \
+        uint16_t _ext = FETCH16();                                                                                     \
+        uint32_t _da = (_ext >> 15) & 1u;                                                                              \
+        uint32_t _rn = (_ext >> 12) & 7u;                                                                              \
+        VALID_EA(ea_memory);                                                                                           \
+        uint32_t _ea = CALCULATE_EA(1, EA_MODE, EA_REG, true);                                                         \
+        if (_da)                                                                                                       \
+            A(_rn) = (int32_t)(int8_t)READ8(_ea);                                                                      \
+        else                                                                                                           \
+            STORE_DN(8, _rn, READ8(_ea));                                                                              \
+    }))
+
+#undef OP_MOVES_W_EA_RN
+#define OP_MOVES_W_EA_RN                                                                                               \
+    OP(SUPER({                                                                                                         \
+        uint16_t _ext = FETCH16();                                                                                     \
+        uint32_t _da = (_ext >> 15) & 1u;                                                                              \
+        uint32_t _rn = (_ext >> 12) & 7u;                                                                              \
+        VALID_EA(ea_memory);                                                                                           \
+        uint32_t _ea = CALCULATE_EA(2, EA_MODE, EA_REG, true);                                                         \
+        if (_da)                                                                                                       \
+            A(_rn) = (int32_t)(int16_t)READ16(_ea);                                                                    \
+        else                                                                                                           \
+            STORE_DN(16, _rn, READ16(_ea));                                                                            \
+    }))
+
+#undef OP_MOVES_L_EA_RN
+#define OP_MOVES_L_EA_RN                                                                                               \
+    OP(SUPER({                                                                                                         \
+        uint16_t _ext = FETCH16();                                                                                     \
+        uint32_t _da = (_ext >> 15) & 1u;                                                                              \
+        uint32_t _rn = (_ext >> 12) & 7u;                                                                              \
+        VALID_EA(ea_memory);                                                                                           \
+        uint32_t _ea = CALCULATE_EA(4, EA_MODE, EA_REG, true);                                                         \
+        if (_da)                                                                                                       \
+            A(_rn) = READ32(_ea);                                                                                      \
+        else                                                                                                           \
+            D(_rn) = READ32(_ea);                                                                                      \
+    }))
+
+// --- BKPT: Software Breakpoint (generate BKPT trap = vector 4 illegal instruction) ---
+#undef OP_BKPT_DATA
+#define OP_BKPT_DATA OP(EXC_ILLEGAL())
+
+// --- MOVE CCR,<ea>: read CCR byte into EA (not privileged) ---
+#undef OP_MOVE_B_CCR_EA
+#define OP_MOVE_B_CCR_EA OP(VALID_EA(ea_data &ea_alterable); STORE_EA(8, READ_CCR()))
+
+// --- MOVE SR,<ea>: privileged on 68030 (not on 68000) ---
+#undef OP_MOVE_W_SR_EA
+#define OP_MOVE_W_SR_EA OP(VALID_EA(ea_data &ea_alterable); SUPER(STORE_EA(16, GET_SR())))
+
+// --- RTE: Return from Exception (pop format/vector word on 68030) ---
+#undef OP_RTE
+#define OP_RTE                                                                                                         \
+    OP(SUPER({                                                                                                         \
+        uint16_t _sr;                                                                                                  \
+        POP16(_sr);                                                                                                    \
+        POP32(PC);                                                                                                     \
+        uint16_t _fmt;                                                                                                 \
+        POP16(_fmt);                                                                                                   \
+        SET_SR(_sr);                                                                                                   \
+        /* format $0: no additional words; other formats would need special handling */                                \
+    }))
+
+// --- MMU branch conditionals: stub as not-taken (MMU conditions always false) ---
+#undef OP_PBCC_W
+#define OP_PBCC_W OP(PC += 2) // skip branch displacement, never branch
+
+#undef OP_PBCC_L
+#define OP_PBCC_L OP(PC += 4) // skip long branch displacement, never branch
+
+// --- MMU PSAVE/PRESTORE: privileged stubs (consume EA extension words) ---
+#undef OP_PSAVE_EA
+#define OP_PSAVE_EA                                                                                                    \
+    OP(SUPER({                                                                                                         \
+        VALID_EA(ea_control &ea_alterable);                                                                            \
+        (void)GET_EA;                                                                                                  \
+    }))
+
+#undef OP_PRESTORE_EA
+#define OP_PRESTORE_EA                                                                                                 \
+    OP(SUPER({                                                                                                         \
+        VALID_EA(ea_control);                                                                                          \
+        (void)GET_EA;                                                                                                  \
+    }))
+
+// --- FTRAP default: CpID=0 → 68030 MMU stub, else F-line exception ---
+#undef OP_FTRAP
+#define OP_FTRAP                                                                                                       \
+    OP({                                                                                                               \
+        if (((opcode >> 9) & 7u) == 0u) {                                                                              \
+            /* CpID=0: 68030 MMU instruction (PMOVE/PFLUSH/PTEST) — consume ext word */                              \
+            (void)FETCH16();                                                                                           \
+        } else {                                                                                                       \
+            EXC_FTRAP();                                                                                               \
+        }                                                                                                              \
+    })
+
+// --- EXTB.L: override LEA to handle EXTB.L Dn (mode=0 EA) ---
+// EXTB.L Dn is encoded as opcode 0x49C0+Dn, which falls in the LEA A4 case.
+// When EA mode == 0 (register Dn), treat as EXTB.L; otherwise treat as LEA.
+#undef OP_LEA_EA_AN
+#define OP_LEA_EA_AN                                                                                                   \
+    OP(                                                                                                                \
+        if (EA_MODE == 0) {                                                                                            \
+            uint32_t _r = (uint32_t)(int32_t)(int8_t)DY;                                                               \
+            DY = _r;                                                                                                   \
+            UPDATE_NZ_CLEAR_CV(_r);                                                                                    \
+        } else {                                                                                                       \
+            VALID_EA(ea_control);                                                                                      \
+            AX = GET_EA;                                                                                               \
+        })
+
+#endif // CPU_DECODER_IS_68030
+
 #endif // CPU_OPS_H

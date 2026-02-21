@@ -23,7 +23,7 @@ The guiding principle for this project is to "keep it simple" — simple for eve
 - **Extensive automated testing** – unit tests, headless integration tests, and Playwright end-to-end tests
 - **Highly portable C99 core** – no special runtime requirements
 - **Simple CPU model** – no advanced JIT compiler or meta tools; we rely on the compiler and modern hardware to make it fast enough
-- **Compact and maintainable** – the entire CPU instruction decoder is under 550 lines and all opcode implementations fit in under 1,000 lines
+- **Compact and maintainable** – the entire CPU instruction decoder is under 550 lines and all opcode implementations fit in under 1,000 lines (new 68030/40 support excluded)
 - **Comprehensive documentation** – hardware documentation in Markdown format, easily accessible for both human developers and AI agents
 - **AI agent friendly** – repository organized to simplify work for coding agents
 

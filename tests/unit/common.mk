@@ -91,6 +91,7 @@ else ifeq ($(TEST_HARNESS),cpu)
                $(UNIT_ROOT)/support/stub_assert.c
   EMU_SRCS += $(EMU_ROOT)/core/cpu/cpu.c \
               $(EMU_ROOT)/core/cpu/cpu_68000.c \
+              $(EMU_ROOT)/core/cpu/cpu_68030.c \
               $(EMU_ROOT)/core/cpu/cpu_disasm.c \
               $(EMU_ROOT)/core/memory/memory.c
   COMMON_SRCS := $(HARNESS_SRCS) $(STUB_SRCS)

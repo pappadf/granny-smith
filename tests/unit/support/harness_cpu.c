@@ -28,7 +28,7 @@ test_context_t *test_harness_init(void) {
     test_set_active_context(ctx);
 
     // Initialize CPU (no checkpoint restore)
-    ctx->cpu = cpu_init(NULL);
+    ctx->cpu = cpu_init(CPU_MODEL_68000, NULL);
     if (!ctx->cpu) {
         memory_map_delete(ctx->memory);
         test_set_active_context(NULL);

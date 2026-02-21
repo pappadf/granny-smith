@@ -134,7 +134,7 @@ static void plus_init(config_t *cfg, checkpoint_t *checkpoint) {
     // Populate Plus-specific memory layout (RAM/ROM page table + Phase Read)
     plus_memory_layout_init(cfg);
 
-    cfg->cpu = cpu_init(checkpoint);
+    cfg->cpu = cpu_init(CPU_MODEL_68000, checkpoint);
 
     cfg->scheduler = scheduler_init(cfg->cpu, checkpoint);
 

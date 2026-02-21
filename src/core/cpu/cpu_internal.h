@@ -19,10 +19,6 @@
 #include <stdlib.h>
 #include <string.h>
 
-// CPU model identifiers
-#define CPU_MODEL_68000 68000
-#define CPU_MODEL_68030 68030
-
 // CPU internal state
 struct cpu {
 
@@ -49,6 +45,15 @@ struct cpu {
 
     // CPU model (CPU_MODEL_68000 or CPU_MODEL_68030)
     int cpu_model;
+
+    // 68030-specific control registers (zero/unused on 68000)
+    uint32_t vbr; // Vector Base Register
+    uint32_t cacr; // Cache Control Register
+    uint32_t caar; // Cache Address Register
+    uint32_t sfc; // Source Function Code
+    uint32_t dfc; // Destination Function Code
+    uint32_t msp; // Master Stack Pointer (M=1 supervisor stack)
+    uint32_t m; // M bit: 0=ISP active, 1=MSP active (supervisor only)
 
     // 68030-specific: MMU state pointer (NULL for 68000)
     void *mmu;
@@ -376,20 +381,38 @@ static inline bool conditional_test(cpu_t *restrict cpu, uint8_t test) {
     return 0;
 }
 
-// Raise a CPU exception by pushing state and loading exception vector
+// Raise a CPU exception by pushing state and loading exception vector.
+// On 68030, pushes a Format $0 frame (adds format/vector word) and uses VBR.
 static inline void exception(cpu_t *restrict cpu, uint32_t vector, uint32_t pc, uint16_t sr) {
     if (!cpu->supervisor) {
         cpu->usp = cpu->a[7];
-        cpu->a[7] = cpu->ssp;
+        cpu->a[7] = (cpu->m && cpu->cpu_model == CPU_MODEL_68030) ? cpu->msp : cpu->ssp;
         cpu->supervisor = 1;
+        cpu->m = 0; // exceptions always switch to ISP (M=0)
+    } else if (cpu->m && cpu->cpu_model == CPU_MODEL_68030) {
+        // In supervisor+master mode: switch to ISP for the exception frame
+        cpu->msp = cpu->a[7];
+        cpu->a[7] = cpu->ssp;
+        cpu->m = 0;
     }
 
-    cpu->a[7] -= 4;
-    memory_write_uint32(cpu->a[7], pc);
-    cpu->a[7] -= 2;
-    memory_write_uint16(cpu->a[7], sr);
-
-    cpu->pc = memory_read_uint32(vector);
+    if (cpu->cpu_model == CPU_MODEL_68030) {
+        // 68030 Format $0 frame: format/vector word, then PC, then SR
+        cpu->a[7] -= 2;
+        memory_write_uint16(cpu->a[7], (uint16_t)(vector & 0x0FFF)); // format $0
+        cpu->a[7] -= 4;
+        memory_write_uint32(cpu->a[7], pc);
+        cpu->a[7] -= 2;
+        memory_write_uint16(cpu->a[7], sr);
+        cpu->pc = memory_read_uint32(cpu->vbr + vector);
+    } else {
+        // 68000 frame: PC then SR (6 bytes, no format word)
+        cpu->a[7] -= 4;
+        memory_write_uint32(cpu->a[7], pc);
+        cpu->a[7] -= 2;
+        memory_write_uint16(cpu->a[7], sr);
+        cpu->pc = memory_read_uint32(vector);
+    }
 }
 
 // Check if a pending interrupt should be serviced
@@ -397,27 +420,56 @@ static inline void cpu_check_interrupt(cpu_t *restrict cpu) {
     if (cpu->ipl > cpu->interrupt_mask) {
         uint16_t sr = cpu_get_sr(cpu);
         cpu->interrupt_mask = cpu->ipl;
-        exception(cpu, 0x60 + 4 * cpu->ipl, cpu->pc, sr);
+        exception(cpu, 0x60 + 4 * cpu->ipl, cpu->pc, sr); // vector includes VBR on 68030
     }
 }
 
-// Update full status register including supervisor mode and interrupt mask
+// Update full status register including supervisor mode, M bit, and interrupt mask.
+// On 68030, handles ISP/MSP switching when M bit changes.
 static inline void write_sr(cpu_t *restrict cpu, uint16_t sr) {
-    bool supervisor = sr >> 13 & 1;
-    if (supervisor && !cpu->supervisor) {
-        cpu->usp = cpu->a[7];
-        cpu->a[7] = cpu->ssp;
-    } else if (!supervisor && cpu->supervisor) {
-        cpu->ssp = cpu->a[7];
-        cpu->a[7] = cpu->usp;
+    bool new_s = (sr >> 13) & 1;
+
+    if (cpu->cpu_model == CPU_MODEL_68030) {
+        bool new_m = (sr >> 12) & 1;
+        if (cpu->supervisor) {
+            // Save current A7 to the active supervisor stack register
+            if (cpu->m)
+                cpu->msp = cpu->a[7];
+            else
+                cpu->ssp = cpu->a[7];
+            if (new_s) {
+                // Staying in supervisor: load the newly-selected stack
+                if (new_m)
+                    cpu->a[7] = cpu->msp;
+                else
+                    cpu->a[7] = cpu->ssp;
+            } else {
+                cpu->a[7] = cpu->usp; // leaving supervisor
+            }
+        } else if (new_s) {
+            cpu->usp = cpu->a[7]; // save USP
+            if (new_m)
+                cpu->a[7] = cpu->msp;
+            else
+                cpu->a[7] = cpu->ssp;
+        }
+        cpu->m = new_m;
+        cpu->trace = ((sr >> 14) & 3); // T1 in bit 1, T0 in bit 0
+    } else {
+        // 68000: no M bit, no T0
+        if (new_s && !cpu->supervisor) {
+            cpu->usp = cpu->a[7];
+            cpu->a[7] = cpu->ssp;
+        } else if (!new_s && cpu->supervisor) {
+            cpu->ssp = cpu->a[7];
+            cpu->a[7] = cpu->usp;
+        }
+        cpu->trace = (sr >> 15) & 1; // only T1
     }
-    cpu->supervisor = sr >> 13 & 1;
 
-    cpu->trace = sr >> 15;
-    cpu->interrupt_mask = sr >> 8 & 7;
-
+    cpu->supervisor = new_s;
+    cpu->interrupt_mask = (sr >> 8) & 7;
     write_ccr(cpu, sr);
-
     cpu_check_interrupt(cpu);
 }
 

@@ -10,9 +10,9 @@
 #include "system.h"
 LOG_USE_CATEGORY_NAME("cpu");
 
-// Declare decoder functions (defined in cpu_68000.c and future cpu_68030.c)
+// Declare decoder functions (defined in cpu_68000.c and cpu_68030.c)
 void cpu_run_68000(cpu_t *restrict cpu, uint32_t *instructions);
-// void cpu_run_68030(cpu_t *restrict cpu, uint32_t *instructions);
+void cpu_run_68030(cpu_t *restrict cpu, uint32_t *instructions);
 
 // === Public Accessors ===
 
@@ -80,12 +80,20 @@ void cpu_set_ipl(cpu_t *restrict cpu, uint32_t value) {
     cpu->ipl = value;
 }
 
-// Get the complete status register (includes CCR and system byte)
+// Get the complete status register (includes CCR and system byte).
+// On 68030, includes M bit (bit 12) and T0 bit (bit 14).
 uint16_t cpu_get_sr(cpu_t *restrict cpu) {
     uint16_t sr = read_ccr(cpu);
 
-    if (cpu->trace)
-        sr |= 1 << 15;
+    if (cpu->cpu_model == CPU_MODEL_68030) {
+        sr |= (cpu->trace >> 1 & 1) << 15; // T1
+        sr |= (cpu->trace & 1) << 14; // T0
+        if (cpu->m)
+            sr |= 1 << 12;
+    } else {
+        if (cpu->trace)
+            sr |= 1 << 15; // T1 only
+    }
     if (cpu->supervisor)
         sr |= 1 << 13;
     sr |= cpu->interrupt_mask << 8;
@@ -100,8 +108,8 @@ void cpu_set_sr(cpu_t *restrict cpu, uint16_t sr) {
 
 // === Lifecycle ===
 
-// Create and initialize a CPU instance
-extern cpu_t *cpu_init(checkpoint_t *checkpoint) {
+// Create and initialize a CPU instance for the specified model.
+extern cpu_t *cpu_init(int cpu_model, checkpoint_t *checkpoint) {
 
     cpu_t *cpu = (cpu_t *)malloc(sizeof(cpu_t));
     if (!cpu)
@@ -114,10 +122,12 @@ extern cpu_t *cpu_init(checkpoint_t *checkpoint) {
         // Read contiguous plain-data portion of cpu_t (everything before the first pointer)
         system_read_checkpoint_data(checkpoint, cpu, sizeof(cpu_t));
     } else {
+        cpu->cpu_model = cpu_model;
         cpu->pc = 0x0040002a;
         cpu->a[7] = 0x4d1f8172;
         cpu->supervisor = 1;
         cpu->interrupt_mask = 7;
+        // 68030-specific registers default to zero (VBR=0, CACR=0, etc.)
     }
 
     return cpu;
@@ -142,6 +152,8 @@ void cpu_checkpoint(cpu_t *restrict cpu, checkpoint_t *checkpoint) {
 
 // Run the appropriate decoder for the CPU model
 void cpu_run_sprint(cpu_t *restrict cpu, uint32_t *instructions) {
-    // Currently only 68000 is implemented
-    cpu_run_68000(cpu, instructions);
+    if (cpu->cpu_model == CPU_MODEL_68030)
+        cpu_run_68030(cpu, instructions);
+    else
+        cpu_run_68000(cpu, instructions);
 }

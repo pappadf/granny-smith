@@ -16,6 +16,10 @@
 
 // === Constants ===
 
+// CPU model identifiers (also defined in cpu_internal.h for decoder use)
+#define CPU_MODEL_68000 68000
+#define CPU_MODEL_68030 68030
+
 // Condition Code Register (CCR) bit masks
 typedef enum {
     cpu_ccr_c = 1 << 0,
@@ -75,7 +79,7 @@ typedef struct cpu cpu_t;
 
 // === Lifecycle (Constructor / Destructor / Checkpoint) ===
 
-extern cpu_t *cpu_init(checkpoint_t *checkpoint);
+extern cpu_t *cpu_init(int cpu_model, checkpoint_t *checkpoint);
 
 void cpu_delete(cpu_t *cpu);
 
