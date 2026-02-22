@@ -60,6 +60,16 @@ void cpu_set_ssp(cpu_t *restrict cpu, uint32_t value) {
     cpu->ssp = value;
 }
 
+// Get the master stack pointer value (68030)
+uint32_t cpu_get_msp(cpu_t *restrict cpu) {
+    return cpu->msp;
+}
+
+// Set the master stack pointer value (68030)
+void cpu_set_msp(cpu_t *restrict cpu, uint32_t value) {
+    cpu->msp = value;
+}
+
 // Get the user stack pointer value
 uint32_t cpu_get_usp(cpu_t *restrict cpu) {
     return cpu->usp;
@@ -78,6 +88,16 @@ uint32_t cpu_get_ipl(cpu_t *restrict cpu) {
 // Set the interrupt priority level
 void cpu_set_ipl(cpu_t *restrict cpu, uint32_t value) {
     cpu->ipl = value;
+}
+
+// Get the vector base register (68010+)
+uint32_t cpu_get_vbr(cpu_t *restrict cpu) {
+    return cpu->vbr;
+}
+
+// Set the vector base register (68010+)
+void cpu_set_vbr(cpu_t *restrict cpu, uint32_t value) {
+    cpu->vbr = value;
 }
 
 // Get the complete status register (includes CCR and system byte).

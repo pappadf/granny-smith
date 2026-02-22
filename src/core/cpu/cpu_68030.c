@@ -74,9 +74,17 @@ LOG_USE_CATEGORY_NAME("cpu");
         uint32_t fetch = memory_read_uint32(cpu->pc);                                                                  \
         uint16_t opcode = fetch >> 16;                                                                                 \
         uint16_t ext_word = fetch & 0xFFFF;                                                                            \
+        cpu->instruction_pc = cpu->pc;                                                                                 \
         cpu->pc += 2;                                                                                                  \
+        uint32_t _saved_trace = cpu->trace;                                                                            \
         (*instructions)--;
 #define CPU_DECODER_EPILOGUE                                                                                           \
+    /* Trace exception: fire if T1 was set at instruction start AND still set now. */                                  \
+    /* For SR-modifying instructions, uses new T1 value (per M68000 PRM 6.3.10). */                                    \
+    /* For non-SR instructions, old==new since they don't change trace. */                                             \
+    if ((_saved_trace & 2) && (cpu->trace & 2)) {                                                                      \
+        exception(cpu, 0x024, cpu->pc, cpu_get_sr(cpu));                                                               \
+    }                                                                                                                  \
     }                                                                                                                  \
     cpu_check_interrupt(cpu);                                                                                          \
     assert(*instructions == 0)
