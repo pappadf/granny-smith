@@ -64,6 +64,96 @@ LOG_USE_CATEGORY_NAME("cpu");
 
 #include "cpu_ops.h"
 
+// MOVEC implementations — moved out of cpu_ops.h macros to reduce inline size.
+// Called from OP_MOVEC_RC_RN / OP_MOVEC_RN_RC after the privilege check in SUPER().
+// Returns 1 on success; calls illegal_instruction() and returns 0 on unknown control register.
+
+static int cpu_movec_rc_rn(cpu_t *cpu) {
+    uint16_t ext = fetch_16(cpu, true);
+    uint32_t da = (ext >> 15) & 1u;
+    uint32_t rn = (ext >> 12) & 7u;
+    uint16_t rc = ext & 0x0FFFu;
+    uint32_t val = 0;
+    switch (rc) {
+    case 0x000:
+        val = cpu->sfc;
+        break;
+    case 0x001:
+        val = cpu->dfc;
+        break;
+    case 0x002:
+        val = cpu->cacr;
+        break;
+    case 0x800:
+        val = cpu->usp;
+        break;
+    case 0x801:
+        val = cpu->vbr;
+        break;
+    case 0x802:
+        val = cpu->caar;
+        break;
+    case 0x803:
+        val = cpu->m ? cpu->a[7] : cpu->msp;
+        break;
+    case 0x804:
+        val = cpu->m ? cpu->ssp : cpu->a[7];
+        break;
+    default:
+        illegal_instruction(cpu);
+        return 0;
+    }
+    if (da)
+        cpu->a[rn] = val;
+    else
+        cpu->d[rn] = val;
+    return 1;
+}
+
+static int cpu_movec_rn_rc(cpu_t *cpu) {
+    uint16_t ext = fetch_16(cpu, true);
+    uint32_t da = (ext >> 15) & 1u;
+    uint32_t rn = (ext >> 12) & 7u;
+    uint16_t rc = ext & 0x0FFFu;
+    uint32_t val = da ? cpu->a[rn] : cpu->d[rn];
+    switch (rc) {
+    case 0x000:
+        cpu->sfc = val & 7u;
+        break;
+    case 0x001:
+        cpu->dfc = val & 7u;
+        break;
+    case 0x002:
+        cpu->cacr = val & 0x3313u;
+        break; /* 68030 CACR writable bits */
+    case 0x800:
+        cpu->usp = val;
+        break;
+    case 0x801:
+        cpu->vbr = val;
+        break;
+    case 0x802:
+        cpu->caar = val;
+        break; /* cache address register: no-op */
+    case 0x803:
+        if (cpu->m)
+            cpu->a[7] = val;
+        else
+            cpu->msp = val;
+        break;
+    case 0x804:
+        if (!cpu->m)
+            cpu->a[7] = val;
+        else
+            cpu->ssp = val;
+        break;
+    default:
+        illegal_instruction(cpu);
+        return 0;
+    }
+    return 1;
+}
+
 // Generate the cpu_run_68030 decoder function using the shared template
 #define CPU_DECODER_NAME        cpu_run_68030
 #define CPU_DECODER_ARGS        cpu_t *restrict cpu, uint32_t *instructions
