@@ -5,6 +5,7 @@
 // Implements the IWM (Integrated Woz Machine) floppy disk controller and GCR encoding/decoding for Granny Smith.
 
 #include "floppy.h"
+#include "iwm_swim.h"
 #include "log.h"
 #include "memory.h"
 #include "platform.h"
@@ -21,74 +22,8 @@
 
 LOG_USE_CATEGORY_NAME("floppy");
 
-// Time in nanoseconds that the drive reports /READY=1 (not ready) after motor turns on
-#define MOTOR_SPINUP_TIME_NS (400ULL * 1000000ULL) // 400 ms
-
-#define NUM_DRIVES 2
-#define NUM_TRACKS 80
-#define NUM_SIDES  2
-
-// IWM address offsets
-#define PHOL     0 // CAO off (0)
-#define PHOH     1 // CAO on (1)
-#define PH1L     2 // CA1 off (0)
-#define PH1H     3 // CA1 on (1)
-#define PH2L     4 // CA2 off (0)
-#define PH2H     5 // CA2 on (1)
-#define PH3L     6 // LSTRB off (low)
-#define PH3H     7 // LSTRB on (high)
-#define MTROFF   8 // disk enable off
-#define MTRON    9 // disk enable on
-#define INTDRIVE 10 // select internal drive
-#define EXTDRIVE 11 // select external drive
-#define Q6L      12 // Q6 off
-#define Q6H      13 // Q6 on
-#define Q7L      14 // Q7 off
-#define Q7H      15 // Q7 on
-
-// IWM state control line bits - packed into single byte for efficient checkpointing
-#define IWM_LINE_CA0    0x01
-#define IWM_LINE_CA1    0x02
-#define IWM_LINE_CA2    0x04
-#define IWM_LINE_LSTRB  0x08
-#define IWM_LINE_ENABLE 0x10
-#define IWM_LINE_SELECT 0x20
-#define IWM_LINE_Q6     0x40
-#define IWM_LINE_Q7     0x80
-
-// Helper macros to access IWM lines by name
-#define IWM_CA0(f)    (((f)->iwm_lines & IWM_LINE_CA0) != 0)
-#define IWM_CA1(f)    (((f)->iwm_lines & IWM_LINE_CA1) != 0)
-#define IWM_CA2(f)    (((f)->iwm_lines & IWM_LINE_CA2) != 0)
-#define IWM_LSTRB(f)  (((f)->iwm_lines & IWM_LINE_LSTRB) != 0)
-#define IWM_ENABLE(f) (((f)->iwm_lines & IWM_LINE_ENABLE) != 0)
-#define IWM_SELECT(f) (((f)->iwm_lines & IWM_LINE_SELECT) != 0)
-#define IWM_Q6(f)     (((f)->iwm_lines & IWM_LINE_Q6) != 0)
-#define IWM_Q7(f)     (((f)->iwm_lines & IWM_LINE_Q7) != 0)
-
-// Helper to get current drive index (0 or 1)
-#define DRIVE_INDEX(f) (IWM_SELECT(f) ? 1 : 0)
-
 // Size of plain-data portion for checkpointing (excludes pointers at end)
 #define FLOPPY_CHECKPOINT_SIZE offsetof(floppy_t, disk)
-
-// IWM mode register bits
-#define IWM_MODE_LATCH   0x01 // 1 = latch mode enabled
-#define IWM_MODE_ASYNC   0x02 // 1 = asynchronous handshake
-#define IWM_MODE_NOTIMER 0x04 // 1 = disable 1-second motor-off delay
-#define IWM_MODE_FAST    0x08 // 1 = fast mode (2µs/bit for 3.5")
-#define IWM_MODE_8MHZ    0x10 // 1 = 8 MHz clock (vs 7 MHz)
-#define IWM_MODE_TEST    0x20 // 1 = test mode
-
-// IWM status register bits
-#define IWM_STATUS_MODE   0x1F
-#define IWM_STATUS_ENABLE 0x20
-#define IWM_STATUS_SENSE  0x80
-
-// IWM handshake register bits
-#define IWM_HDSHK_RES      0x3F
-#define IWM_HDSHK_WRITE    0x40
-#define IWM_HDSHK_WB_EMTPY 0x80
 
 // GCR codeword table as described in [7]
 const uint8_t gcr_codewords[] = {0x96, 0x97, 0x9A, 0x9B, 0x9D, 0x9E, 0x9F, 0xA6, 0xA7, 0xAB, 0xAC, 0xAD, 0xAE,
@@ -96,29 +31,6 @@ const uint8_t gcr_codewords[] = {0x96, 0x97, 0x9A, 0x9B, 0x9D, 0x9E, 0x9F, 0xA6,
                                  0xBF, 0xCB, 0xCD, 0xCE, 0xCF, 0xD3, 0xD6, 0xD7, 0xD9, 0xDA, 0xDB, 0xDC, 0xDD,
                                  0xDE, 0xDF, 0xE5, 0xE6, 0xE7, 0xE9, 0xEA, 0xEB, 0xEC, 0xED, 0xEE, 0xEF, 0xF2,
                                  0xF3, 0xF4, 0xF5, 0xF6, 0xF7, 0xF9, 0xFA, 0xFB, 0xFC, 0xFD, 0xFE, 0xFF};
-
-struct floppy_track;
-typedef struct floppy_track floppy_track_t;
-
-// Represents a single disk track with GCR-encoded data
-struct floppy_track {
-    size_t size; // encoded track size
-    bool modified; // true if track has been written to
-    uint8_t *data; // pointer to encoded GCR data (excluded from checkpoint)
-};
-
-struct floppy_drive;
-typedef struct floppy_drive floppy_drive_t;
-
-// Represents a physical floppy drive with head position and motor state
-struct floppy_drive {
-    bool _dirtn; // step direction: 0=inward (higher tracks), 1=outward
-    bool _motoron; // motor signal (active low: true=off, false=on)
-    bool motor_spinning_up; // true during motor spin-up period
-    int track; // current head position (0-79)
-    int offset; // byte offset within current track
-    floppy_track_t tracks[NUM_SIDES][NUM_TRACKS]; // GCR encoded track data
-};
 
 // Represents the IWM floppy disk controller with drives and state
 struct floppy {
@@ -135,8 +47,12 @@ struct floppy {
     memory_interface_t memory_interface;
 };
 
+// ============================================================================
+// Shared Utility Functions (parameterized, used by both floppy.c and swim.c)
+// ============================================================================
+
 // Returns the approximate GCR-encoded length for a track
-static size_t track_length(int track) {
+size_t iwm_track_length(int track) {
     // just approximative numbers
     size_t length[] = {9320, 8559, 7780, 6994, 6224};
 
@@ -146,7 +62,7 @@ static size_t track_length(int track) {
 }
 
 // Returns the rotational speed (RPM) for a given track
-static int track_rpm(int track) {
+int iwm_track_rpm(int track) {
     static const int rpm[] = {394, 429, 472, 525, 590};
 
     GS_ASSERT(track < 80);
@@ -154,8 +70,36 @@ static int track_rpm(int track) {
     return rpm[track >> 4];
 }
 
+// Returns the number of sectors for a given track (varies by zone)
+int iwm_sectors_per_track(int track) {
+    return 12 - (track >> 4);
+}
+
+// Calculates the byte offset into a disk image for a given track and side
+size_t iwm_disk_image_offset(int track, int side, int num_sides) {
+    size_t offset = 0;
+
+    // Each track's worth of data contains num_sides sides worth of sectors
+    for (int t = 0; t < track; t++)
+        offset += (size_t)num_sides * iwm_sectors_per_track(t) * 512;
+
+    // Add side offset within this track (only for double-sided disks with side=1)
+    if (side && num_sides > 1)
+        offset += iwm_sectors_per_track(track) * 512;
+
+    return offset;
+}
+
+// Determines the number of sides based on disk image type
+int iwm_image_num_sides(image_t *img) {
+    if (!img)
+        return 2; // Default to double-sided if unknown
+    // Single-sided 400KB disk has type image_fd_ss
+    return (img->type == image_fd_ss) ? 1 : 2;
+}
+
 // Calculates TACH signal state (60 pulses per revolution) based on current time and motor speed
-static int tach_signal(floppy_t *floppy, floppy_drive_t *drive, const char **reason) {
+int iwm_tach_signal(struct scheduler *scheduler, floppy_drive_t *drive, const char **reason) {
     // TACH produces 60 pulses per revolution; motor not spinning = no pulses
     // _motoron is active-low: true = motor OFF, false = motor ON
     if (drive->_motoron) {
@@ -165,8 +109,8 @@ static int tach_signal(floppy_t *floppy, floppy_drive_t *drive, const char **rea
     }
 
     // Calculate revolution period in nanoseconds based on track RPM
-    double now_ns = scheduler_time_ns(floppy->scheduler);
-    int rpm = track_rpm(drive->track);
+    double now_ns = scheduler_time_ns(scheduler);
+    int rpm = iwm_track_rpm(drive->track);
     double ns_per_rev = (60.0 / rpm) * 1e9;
 
     // 60 pulses per revolution = 120 state changes (high/low) per revolution
@@ -177,53 +121,6 @@ static int tach_signal(floppy_t *floppy, floppy_drive_t *drive, const char **rea
     if (reason)
         *reason = "calculated";
     return (half_pulse_index % 2) == 0 ? 1 : 0;
-}
-
-// Returns pointer to the currently selected drive based on IWM SELECT line
-static floppy_drive_t *current_drive(floppy_t *floppy) {
-    return &floppy->drives[IWM_SELECT(floppy) ? 1 : 0];
-}
-
-// Returns the number of sectors for a given track (varies by zone)
-static inline int sectors_per_track(int track) {
-    return 12 - (track >> 4);
-}
-
-// Calculates the byte offset into a disk image for a given track and side
-static size_t disk_image_offset(int track, int side, int num_sides) {
-    size_t offset = 0;
-
-    // Each track's worth of data contains num_sides sides worth of sectors
-    for (int t = 0; t < track; t++)
-        offset += (size_t)num_sides * sectors_per_track(t) * 512;
-
-    // Add side offset within this track (only for double-sided disks with side=1)
-    if (side && num_sides > 1)
-        offset += sectors_per_track(track) * 512;
-
-    return offset;
-}
-
-// Determines the number of sides based on disk image type
-static int image_num_sides(image_t *img) {
-    if (!img)
-        return 2; // Default to double-sided if unknown
-    // Single-sided 400KB disk has type image_fd_ss
-    return (img->type == image_fd_ss) ? 1 : 2;
-}
-
-// Callback invoked when motor spin-up delay completes
-static void motor_spinup_callback(void *source, uint64_t data) {
-    floppy_t *floppy = (floppy_t *)source;
-    int drive_index = (int)data;
-
-    if (drive_index < 0 || drive_index >= NUM_DRIVES) {
-        LOG(1, "Drive %d: Invalid drive in spin-up callback", drive_index);
-        return;
-    }
-
-    floppy->drives[drive_index].motor_spinning_up = false;
-    LOG(3, "Drive %d: Motor spin-up complete, now ready", drive_index);
 }
 
 // GCR encoding/decoding helper macros
@@ -260,7 +157,7 @@ static void motor_spinup_callback(void *source, uint64_t data) {
     } while (0)
 
 // Encodes a sector to GCR format with header and data fields
-static uint8_t *encode_sector(uint8_t *dst, const uint8_t *tag, const uint8_t *data, int track, int sector, int side) {
+uint8_t *encode_sector(uint8_t *dst, const uint8_t *tag, const uint8_t *data, int track, int sector, int side) {
     GS_ASSERT(data != NULL);
 
     uint16_t ca = 0, cb = 0, cc = 0; // checksum registers
@@ -325,12 +222,12 @@ static uint8_t *encode_sector(uint8_t *dst, const uint8_t *tag, const uint8_t *d
 }
 
 // Encodes an entire track with interleaved sectors to GCR format
-void encode_track(uint8_t *dst, size_t track_length, int track, int side, const uint8_t *data) {
+void encode_track(uint8_t *dst, size_t trk_length, int track, int side, const uint8_t *data) {
     GS_ASSERT(data != NULL);
 
     int i;
-    int num_sectors = sectors_per_track(track);
-    uint8_t *end_of_track = dst + track_length;
+    int num_sectors = iwm_sectors_per_track(track);
+    uint8_t *end_of_track = dst + trk_length;
 
 #define NUM_SPEED_GROUPS 5
 
@@ -359,53 +256,48 @@ void encode_track(uint8_t *dst, size_t track_length, int track, int side, const 
         *dst++ = 0xFF; // sync bytes
 }
 
-// Returns a pointer to the GCR data for the currently selected track
-static uint8_t *track_data(floppy_t *floppy) {
-    floppy_drive_t *drive = current_drive(floppy);
-    int drv = DRIVE_INDEX(floppy);
-
+// Returns a pointer to the GCR data for the specified drive/image/side, encoding on demand
+uint8_t *iwm_track_data(floppy_drive_t *drive, image_t *img, int sel, struct scheduler *scheduler) {
     GS_ASSERT(drive->track < NUM_TRACKS);
 
-    floppy_track_t *track = &drive->tracks[floppy->sel][drive->track];
+    floppy_track_t *track = &drive->tracks[sel][drive->track];
 
     if (track->data == NULL) {
-        track->size = track_length(drive->track);
+        track->size = iwm_track_length(drive->track);
         track->data = malloc(track->size);
         if (!track->data) {
-            LOG(1, "Drive %d: Allocation failed track=%d side=%d", drv, drive->track, floppy->sel);
+            LOG(1, "Allocation failed track=%d side=%d", drive->track, sel);
             return NULL;
         }
 
-        image_t *img = floppy->disk[drv];
         GS_ASSERT(img != NULL);
-        int num_sides = image_num_sides(img);
-        size_t sector_count = (size_t)sectors_per_track(drive->track);
+        int num_sides = iwm_image_num_sides(img);
+        size_t sector_count = (size_t)iwm_sectors_per_track(drive->track);
         size_t track_bytes = sector_count * 512u;
-        size_t track_offset = disk_image_offset(drive->track, floppy->sel, 2);
+        size_t track_offset = iwm_disk_image_offset(drive->track, sel, 2);
         size_t disk_sz = disk_size(img);
 
         // Clamp to disk size for single-sided images
         if (track_offset + track_bytes > disk_sz) {
-            LOG(3, "floppy: track=%d side=%d offset=%zu exceeds disk_size=%zu, using side 0", drive->track, floppy->sel,
+            LOG(3, "floppy: track=%d side=%d offset=%zu exceeds disk_size=%zu, using side 0", drive->track, sel,
                 track_offset, disk_sz);
-            track_offset = disk_image_offset(drive->track, 0, num_sides);
+            track_offset = iwm_disk_image_offset(drive->track, 0, num_sides);
         }
-        LOG(6, "floppy: track_data track=%d side=%d offset=%zu bytes=%zu disk_size=%zu", drive->track, floppy->sel,
+        LOG(6, "floppy: track_data track=%d side=%d offset=%zu bytes=%zu disk_size=%zu", drive->track, sel,
             track_offset, track_bytes, disk_sz);
 
         uint8_t *sector_data = malloc(track_bytes);
         if (!sector_data) {
-            LOG(1, "Drive %d: Failed to allocate sector buffer for track=%d", drv, drive->track);
+            LOG(1, "Failed to allocate sector buffer for track=%d", drive->track);
             return NULL;
         }
         size_t read = disk_read_data(img, track_offset, sector_data, track_bytes);
         if (read != track_bytes) {
-            LOG(1, "Drive %d: disk_read_data truncated track=%d (expected=%zu got=%zu)", drv, drive->track, track_bytes,
-                read);
+            LOG(1, "disk_read_data truncated track=%d (expected=%zu got=%zu)", drive->track, track_bytes, read);
             free(sector_data);
             return NULL;
         }
-        encode_track(track->data, track->size, drive->track, floppy->sel, sector_data);
+        encode_track(track->data, track->size, drive->track, sel, sector_data);
         free(sector_data);
     }
 
@@ -531,9 +423,7 @@ static uint8_t *decode_sector(uint8_t *tag, uint8_t *data, uint8_t *src, int *tr
 }
 
 // Writes any modified GCR tracks back to the underlying disk image
-static void flush_modified_tracks(floppy_t *floppy, int drive_index) {
-    floppy_drive_t *drive = &floppy->drives[drive_index];
-    image_t *img = floppy->disk[drive_index];
+void iwm_flush_modified_tracks(floppy_drive_t *drive, image_t *img, int drive_index) {
     if (!img) {
         LOG(12, "Drive %d: Flush skipped - no disk present", drive_index);
         return;
@@ -561,7 +451,7 @@ static void flush_modified_tracks(floppy_t *floppy, int drive_index) {
 
             uint8_t *p = t->data;
             uint8_t *end = t->data + t->size;
-            int num_sides = image_num_sides(img);
+            int num_sides = iwm_image_num_sides(img);
             size_t disk_sz = disk_size(img);
 
             while (p + 730 < end) { // require enough space for a sector
@@ -576,9 +466,9 @@ static void flush_modified_tracks(floppy_t *floppy, int drive_index) {
                     if (hdr_track >= 0 && hdr_track < NUM_TRACKS && hdr_side >= 0 && hdr_side < NUM_SIDES) {
                         // Use original 2-side calculation, but for single-sided disks
                         // map side 1 writes to side 0 if offset would exceed disk size
-                        size_t off = disk_image_offset(hdr_track, hdr_side, 2) + (size_t)hdr_sector * 512u;
+                        size_t off = iwm_disk_image_offset(hdr_track, hdr_side, 2) + (size_t)hdr_sector * 512u;
                         if (off + 512 > disk_sz && num_sides == 1) {
-                            off = disk_image_offset(hdr_track, 0, 1) + (size_t)hdr_sector * 512u;
+                            off = iwm_disk_image_offset(hdr_track, 0, 1) + (size_t)hdr_sector * 512u;
                         }
                         if (off + 512 <= disk_size(img)) {
                             disk_write_data(img, off, buf, 512);
@@ -606,6 +496,18 @@ static void flush_modified_tracks(floppy_t *floppy, int drive_index) {
     if (any_flushed) {
         LOG(3, "Drive %d: Flush complete", drive_index);
     }
+}
+
+// ============================================================================
+// IWM-specific Static Functions (not shared with swim.c)
+// ============================================================================
+
+// Forward declaration for motor spin-up callback (used by disk_control)
+static void motor_spinup_callback(void *source, uint64_t data);
+
+// Returns pointer to the currently selected drive based on IWM SELECT line
+static floppy_drive_t *current_drive(floppy_t *floppy) {
+    return &floppy->drives[IWM_SELECT(floppy) ? 1 : 0];
 }
 
 // Returns the current disk status based on IWM CA lines and SEL signal
@@ -668,7 +570,7 @@ static int disk_status(floppy_t *floppy) {
     case 0x0B: // /TACH: 60 pulses per revolution
     {
         const char *tach_reason = NULL;
-        ret = tach_signal(floppy, drive, &tach_reason);
+        ret = iwm_tach_signal(floppy->scheduler, drive, &tach_reason);
         LOG(6, "Drive %d: Reading /TACH = %d (%s, track=%d)", drv, ret, tach_reason, drive->track);
         return ret;
     }
@@ -714,7 +616,7 @@ static void disk_control(floppy_t *floppy) {
             // EJECT (CA0=1, CA1=1, CA2=1)
             if (IWM_CA2(floppy)) {
                 LOG(1, "Drive %d: Eject requested", drv);
-                flush_modified_tracks(floppy, drv);
+                iwm_flush_modified_tracks(drive, floppy->disk[drv], drv);
                 memset(drive->tracks, 0, sizeof(drive->tracks));
                 floppy->disk[drv] = NULL;
                 LOG(1, "Drive %d: Ejected", drv);
@@ -760,6 +662,20 @@ static void disk_control(floppy_t *floppy) {
             LOG(4, "Drive %d: Direction = %s", drv, drive->_dirtn ? "outward" : "inward");
         }
     }
+}
+
+// Callback invoked when motor spin-up delay completes
+static void motor_spinup_callback(void *source, uint64_t data) {
+    floppy_t *floppy = (floppy_t *)source;
+    int drive_index = (int)data;
+
+    if (drive_index < 0 || drive_index >= NUM_DRIVES) {
+        LOG(1, "Drive %d: Invalid drive in spin-up callback", drive_index);
+        return;
+    }
+
+    floppy->drives[drive_index].motor_spinning_up = false;
+    LOG(3, "Drive %d: Motor spin-up complete, now ready", drive_index);
 }
 
 // Updates IWM state lines based on address offset (even=clear, odd=set)
@@ -833,13 +749,13 @@ uint8_t iwm_read(floppy_t *floppy, uint32_t offset) {
         }
 
         floppy_drive_t *drive = current_drive(floppy);
-        uint8_t *data = track_data(floppy);
+        uint8_t *data = iwm_track_data(drive, floppy->disk[drv], floppy->sel, floppy->scheduler);
         if (!data) {
             LOG(1, "Drive %d: Read failed - no track data", drv);
             return 0xFF;
         }
 
-        size_t trk_len = track_length(drive->track);
+        size_t trk_len = iwm_track_length(drive->track);
 
         // IWM latch mode: only bytes with MSB=1 are latched (valid GCR bytes)
         if (floppy->mode & IWM_MODE_LATCH) {
@@ -884,7 +800,7 @@ static void iwm_write(floppy_t *floppy, uint32_t offset, uint8_t byte) {
         // Write data to disk
         floppy_drive_t *drive = current_drive(floppy);
 
-        uint8_t *data = track_data(floppy);
+        uint8_t *data = iwm_track_data(drive, floppy->disk[drv], floppy->sel, floppy->scheduler);
         if (!data) {
             LOG(1, "Drive %d: Write failed - no track data", drv);
             return;
@@ -900,7 +816,7 @@ static void iwm_write(floppy_t *floppy, uint32_t offset, uint8_t byte) {
             LOG(5, "Drive %d: Track %d side %d marked dirty", drv, drive->track, floppy->sel);
         }
 
-        if (drive->offset == (int)track_length(drive->track))
+        if (drive->offset == (int)iwm_track_length(drive->track))
             drive->offset = 0;
     } else {
         // Write mode register
@@ -908,6 +824,10 @@ static void iwm_write(floppy_t *floppy, uint32_t offset, uint8_t byte) {
         LOG(4, "IWM: Mode register = 0x%02X", byte);
     }
 }
+
+// ============================================================================
+// Memory Interface (Mac Plus address decoding)
+// ============================================================================
 
 // Memory interface handler for 8-bit reads from IWM address space
 static uint8_t read_uint8(void *floppy, uint32_t addr) {
@@ -959,6 +879,10 @@ static void write_uint32(void *floppy, uint32_t addr, uint32_t value) {
     GS_ASSERT(0);
 }
 
+// ============================================================================
+// Public API
+// ============================================================================
+
 // Sets the VIA-driven SEL signal for head selection
 void floppy_set_sel_signal(floppy_t *floppy, bool sel) {
     if (!floppy) {
@@ -993,6 +917,10 @@ bool floppy_is_inserted(floppy_t *floppy, int drive) {
 
     return floppy->disk[drive] != NULL;
 }
+
+// ============================================================================
+// Lifecycle (Init / Delete / Checkpoint)
+// ============================================================================
 
 // Initializes the floppy controller and maps it to memory
 floppy_t *floppy_init(memory_map_t *map, struct scheduler *scheduler, checkpoint_t *checkpoint) {
