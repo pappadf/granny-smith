@@ -487,8 +487,9 @@ asc_t *asc_init(memory_map_t *map, scheduler_t *scheduler, checkpoint_t *checkpo
         .write_uint32 = asc_write_long,
     };
 
-    // Register the ASC in the memory map (machine will place at 0x50014000)
-    memory_map_add(map, 0, ASC_MAPPED_SIZE, "ASC", &asc->memory_interface, asc);
+    // Register with memory map if provided (NULL = machine handles registration)
+    if (map)
+        memory_map_add(map, 0, ASC_MAPPED_SIZE, "ASC", &asc->memory_interface, asc);
 
     // Restore plain-data state from checkpoint if provided
     if (checkpoint) {
@@ -503,11 +504,17 @@ asc_t *asc_init(memory_map_t *map, scheduler_t *scheduler, checkpoint_t *checkpo
 // Lifecycle: Destructor
 // ============================================================================
 
+// Return the ASC memory-mapped I/O interface for machine-level address decode
+const memory_interface_t *asc_get_memory_interface(asc_t *asc) {
+    return &asc->memory_interface;
+}
+
 // Frees all resources associated with an ASC instance
 void asc_delete(asc_t *asc) {
     if (!asc)
         return;
-    memory_map_remove(asc->map, 0, ASC_MAPPED_SIZE, "ASC", &asc->memory_interface, asc);
+    if (asc->map)
+        memory_map_remove(asc->map, 0, ASC_MAPPED_SIZE, "ASC", &asc->memory_interface, asc);
     free(asc);
 }
 

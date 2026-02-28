@@ -28,4 +28,7 @@ void scsi_checkpoint(scsi_t *restrict scsi, checkpoint_t *checkpoint);
 
 void scsi_add_device(scsi_t *restrict scsi, int scsi_id, const char *vendor, const char *product, image_t *image);
 
+// Get the memory-mapped I/O interface for machine-level address decode
+const memory_interface_t *scsi_get_memory_interface(scsi_t *scsi);
+
 #endif // SCSI_H

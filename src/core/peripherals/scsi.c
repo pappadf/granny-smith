@@ -626,7 +626,9 @@ scsi_t *scsi_init(memory_map_t *map, checkpoint_t *checkpoint) {
     scsi->memory_interface.write_uint16 = &write_uint16;
     scsi->memory_interface.write_uint32 = &write_uint32;
 
-    memory_map_add(map, 0x00500000, 0x00100000, "scsi", &scsi->memory_interface, scsi);
+    // Register with memory map if provided (NULL = machine handles registration)
+    if (map)
+        memory_map_add(map, 0x00500000, 0x00100000, "scsi", &scsi->memory_interface, scsi);
 
     scsi->bus.phase = scsi_bus_free;
 
@@ -676,6 +678,15 @@ scsi_t *scsi_init(memory_map_t *map, checkpoint_t *checkpoint) {
     }
 
     return scsi;
+}
+
+// ============================================================================
+// Accessors
+// ============================================================================
+
+// Return the SCSI memory-mapped I/O interface for machine-level address decode
+const memory_interface_t *scsi_get_memory_interface(scsi_t *scsi) {
+    return &scsi->memory_interface;
 }
 
 // ============================================================================

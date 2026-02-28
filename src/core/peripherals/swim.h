@@ -44,4 +44,7 @@ bool swim_is_inserted(swim_t *swim, int drive);
 // Sets the VIA-driven SEL signal for head selection (IWM mode compatibility)
 void swim_set_sel_signal(swim_t *swim, bool sel);
 
+// Get the memory-mapped I/O interface for machine-level address decode
+const memory_interface_t *swim_get_memory_interface(swim_t *swim);
+
 #endif // SWIM_H

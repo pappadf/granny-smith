@@ -47,4 +47,7 @@ void asc_set_via(asc_t *asc, via_t *via);
 // Called by the platform audio callback; drains FIFO or advances wavetable.
 void asc_render(asc_t *asc, int16_t *buffer, int nsamples);
 
+// Get the memory-mapped I/O interface for machine-level address decode
+const memory_interface_t *asc_get_memory_interface(asc_t *asc);
+
 #endif // ASC_H

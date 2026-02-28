@@ -1151,7 +1151,9 @@ swim_t *swim_init(memory_map_t *map, struct scheduler *scheduler, checkpoint_t *
     swim->memory_interface.write_uint16 = &swim_write_uint16;
     swim->memory_interface.write_uint32 = &swim_write_uint32;
 
-    memory_map_add(map, SWIM_BASE_ADDR, SWIM_MAP_SIZE, "swim", &swim->memory_interface, swim);
+    // Register with memory map if provided (NULL = machine handles registration)
+    if (map)
+        memory_map_add(map, SWIM_BASE_ADDR, SWIM_MAP_SIZE, "swim", &swim->memory_interface, swim);
 
     if (checkpoint) {
         LOG(3, "SWIM: Restoring from checkpoint");
@@ -1211,6 +1213,11 @@ swim_t *swim_init(memory_map_t *map, struct scheduler *scheduler, checkpoint_t *
     }
 
     return swim;
+}
+
+// Return the SWIM memory-mapped I/O interface for machine-level address decode
+const memory_interface_t *swim_get_memory_interface(swim_t *swim) {
+    return &swim->memory_interface;
 }
 
 // Frees all resources associated with the SWIM controller

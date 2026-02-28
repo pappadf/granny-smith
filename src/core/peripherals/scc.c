@@ -898,7 +898,9 @@ scc_t *scc_init(memory_map_t *map, struct scheduler *scheduler, scc_irq_fn irq_c
     scc->memory_interface.write_uint16 = &scc_write_uint16;
     scc->memory_interface.write_uint32 = &scc_write_uint32;
 
-    memory_map_add(map, 0x00800000, 0x00400000, "SCC", &scc->memory_interface, scc);
+    // Register with memory map if provided (NULL = machine handles registration)
+    if (map)
+        memory_map_add(map, 0x00800000, 0x00400000, "SCC", &scc->memory_interface, scc);
 
     scc_reset(scc);
 
@@ -925,6 +927,11 @@ scc_t *scc_init(memory_map_t *map, struct scheduler *scheduler, scc_irq_fn irq_c
     }
 
     return scc;
+}
+
+// Return the SCC memory-mapped I/O interface for machine-level address decode
+const memory_interface_t *scc_get_memory_interface(scc_t *scc) {
+    return &scc->memory_interface;
 }
 
 void scc_delete(scc_t *scc) {

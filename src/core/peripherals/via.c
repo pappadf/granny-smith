@@ -591,7 +591,9 @@ via_t *via_init(memory_map_t *restrict map, struct scheduler *scheduler, via_out
     scheduler_new_event_type(scheduler, "via", via, "t2", &t2_callback);
     scheduler_new_event_type(scheduler, "via", via, "sr", &sr_shift_complete_callback);
 
-    memory_map_add(map, 0x00E80000, 0x00080000, "via", &via->memory_interface, via);
+    // Register with memory map if provided (NULL = machine handles registration)
+    if (map)
+        memory_map_add(map, 0x00E80000, 0x00080000, "via", &via->memory_interface, via);
 
     // Load from checkpoint if provided
     if (checkpoint) {
@@ -609,6 +611,15 @@ via_t *via_init(memory_map_t *restrict map, struct scheduler *scheduler, via_out
     }
 
     return via;
+}
+
+// ============================================================================
+// Accessors
+// ============================================================================
+
+// Return the VIA's memory-mapped I/O interface for machine-level address decode
+const memory_interface_t *via_get_memory_interface(via_t *via) {
+    return &via->memory_interface;
 }
 
 // ============================================================================
