@@ -3,7 +3,7 @@
 
 // Handles drag-and-drop UI cue and the processDrop pipeline.
 import { isModuleReady } from './emulator.js';
-import { getFS, ensureDir, ensureDirs, writeBinary, romPath, persistSync } from './fs.js';
+import { getFS, ensureDir, ensureDirs, writeBinary, romPath, romsDir, romPathForChecksum, latestRomPath, persistSync } from './fs.js';
 import {
   sanitizeName, quotePath, tryExtractArchive, classifyMediaFile, findMediaInDirectory,
   bufferHasCheckpointSignature, fileHasCheckpointSignature
@@ -186,11 +186,26 @@ async function probeAndMountDiskImage(path, isDirectory, displayName) {
       toast(`Loading ROM: ${imagePath.split('/').pop()}`);
       try {
         const romData = FS.readFile(imagePath);
+
+        // Extract checksum from first 4 bytes (big-endian)
+        const dv = new DataView(romData.buffer, romData.byteOffset, romData.byteLength);
+        const checksum = dv.getUint32(0, false).toString(16).toUpperCase().padStart(8, '0');
+
+        // Persist to checksum-based path and latest
+        ensureDir(romsDir());
+        writeBinary(romPathForChecksum(checksum), romData);
+        writeBinary(latestRomPath(), romData);
+
+        // Also write to legacy path for backward compatibility
         writeBinary(romPath(), romData);
+
         await persistSync();
-        // Import loadRomAndMaybeRun lazily to avoid circular deps
-        const { loadRomAndMaybeRun } = await import('./url-media.js');
-        await loadRomAndMaybeRun();
+
+        // load-rom identifies the machine and creates it if needed
+        await window.runCommand(`load-rom ${latestRomPath()}`);
+        hideRomOverlay();
+        enableRunButton();
+        await window.runCommand('run');
         toast(`ROM loaded successfully`);
         setBackgroundMessage('Click \u25b6 to start emulation');
       } catch (err) {

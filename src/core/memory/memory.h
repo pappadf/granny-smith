@@ -60,6 +60,9 @@ extern void memory_map_print(memory_map_t *mem);
 
 uint8_t *ram_native_pointer(memory_map_t *ram, uint32_t addr);
 
+// Shell command handler for load-rom (registered by setup_init, used before machine exists)
+uint64_t cmd_load_rom(int argc, char *argv[]);
+
 uint32_t memory_read(unsigned int size, uint32_t addr);
 
 void memory_write(unsigned int size, uint32_t addr, uint32_t value);

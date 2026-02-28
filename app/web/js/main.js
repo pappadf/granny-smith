@@ -3,7 +3,7 @@
 
 // Orchestrator: startup sequence and module glue.
 // Zero business logic — only wires modules together in the correct order.
-import { BOOT_DIR, IMAGES_DIR } from './config.js';
+import { BOOT_DIR, ROMS_DIR, IMAGES_DIR } from './config.js';
 import { initEmulator, runCommand, isModuleReady, getModule, getRuntimePrompt, shellInterrupt, isRunning } from './emulator.js';
 import { initTerminal, writeLine, showPrompt, fitTerminal, handleInterrupt } from './terminal.js';
 import { initFS, ensureDir, ensureCheckpointDir, romExists } from './fs.js';
@@ -16,7 +16,12 @@ import { initMediaPersist } from './media-persist.js';
 const params = new URLSearchParams(location.search);
 
 // --- 1. Build WASM arguments from URL parameters ---
-const wasmArgs = ['--model=plus'];
+// No --model flag: machine type is determined by ROM identification at load time.
+// A ?model= URL parameter can override this for testing or future machine support.
+const wasmArgs = [];
+if (params.has('model')) {
+  wasmArgs.push(`--model=${params.get('model')}`);
+}
 if (params.has('speed')) {
   const sp = params.get('speed');
   if (['max', 'realtime', 'hardware'].includes(sp)) {
@@ -61,6 +66,7 @@ initDragDrop(canvas);
 // --- 7. Wait for FS sync, then load media ---
 await initialSync;
 ensureDir(BOOT_DIR);
+ensureDir(ROMS_DIR);
 ensureCheckpointDir();
 ensureDir(IMAGES_DIR);
 initMediaPersist();

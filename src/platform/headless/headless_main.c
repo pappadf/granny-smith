@@ -12,6 +12,7 @@
 #include "log.h"
 #include "machine.h"
 #include "memory.h"
+#include "rom.h"
 #include "scheduler.h"
 #include "scsi.h"
 #include "shell.h"
@@ -301,17 +302,18 @@ int main(int argc, char *argv[]) {
     register_cmd("quit", "General", "quit - exit the emulator", cmd_quit);
 
     setup_init();
-    global_emulator = system_create(&machine_plus, NULL);
 
-    if (!global_emulator) {
-        fprintf(stderr, "Error: Failed to initialize emulator\n");
-        return 1;
-    }
-
-    // Load ROM
+    // Use load-rom to identify the ROM and create the appropriate machine.
+    // load-rom reads the ROM file, determines the machine type from the checksum,
+    // calls system_create() internally, and loads the ROM into machine memory.
     char cmd[1024];
     snprintf(cmd, sizeof(cmd), "load-rom %s", rom_file);
     shell_dispatch(cmd);
+
+    if (!global_emulator) {
+        fprintf(stderr, "Error: Failed to initialize emulator (ROM identification failed)\n");
+        return 1;
+    }
 
     // Attach hard disk images
     for (int i = 0; i < hd_count; i++) {

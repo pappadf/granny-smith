@@ -3,7 +3,7 @@
 
 // Manages the IDBFS persistent filesystem layer.
 // Initialized with the Emscripten Module; all FS access goes through this module.
-import { BOOT_DIR, CHECKPOINT_DIR } from './config.js';
+import { BOOT_DIR, ROMS_DIR, CHECKPOINT_DIR } from './config.js';
 
 let FS = null;
 let IDBFS = null;
@@ -73,7 +73,13 @@ export function fileExists(p) {
 export function romPath() { return `${BOOT_DIR}/rom`; }
 export function floppySlotPath(idx) { return `${BOOT_DIR}/fd${idx}`; }
 export function hdSlotPath(idx) { return `${BOOT_DIR}/hd${idx}`; }
-export function romExists() { return fileExists(romPath()); }
+export function romExists() { return latestRomExists() || fileExists(romPath()); }
+
+// Checksum-based ROM storage paths
+export function romsDir() { return ROMS_DIR; }
+export function romPathForChecksum(checksum) { return `${ROMS_DIR}/${checksum.toUpperCase()}`; }
+export function latestRomPath() { return `${ROMS_DIR}/latest`; }
+export function latestRomExists() { return fileExists(latestRomPath()); }
 
 // Ensure the checkpoint directory tree exists.
 export function ensureCheckpointDir() {

@@ -16,6 +16,7 @@ export const CONFIG = {
 
 // Persistent boot directory layout
 export const BOOT_DIR = '/persist/boot';
+export const ROMS_DIR = '/persist/boot/roms';
 export const CHECKPOINT_DIR = '/persist/checkpoint';
 export const IMAGES_DIR = '/persist/images';
 

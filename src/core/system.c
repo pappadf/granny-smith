@@ -16,8 +16,10 @@
 #include "image.h"
 #include "keyboard.h"
 #include "log.h"
+#include "machine.h"
 #include "memory.h"
 #include "mouse.h"
+#include "rom.h"
 #include "rtc.h"
 #include "scc.h"
 #include "scheduler.h"
@@ -110,11 +112,55 @@ bool system_is_initialized(void) {
     return global_emulator != NULL;
 }
 
+// Return the model_id of the current machine, or NULL if none is active
+const char *system_machine_model_id(void) {
+    if (!global_emulator || !global_emulator->machine)
+        return NULL;
+    return global_emulator->machine->model_id;
+}
+
+// Ensure the correct machine is active for the given model_id.
+// Creates a new machine if none exists, or tears down and recreates if the
+// current machine's model_id doesn't match.  Returns 0 on success, -1 on error.
+int system_ensure_machine(const char *model_id) {
+    if (!model_id)
+        return -1;
+
+    const hw_profile_t *needed = machine_find(model_id);
+    if (!needed) {
+        printf("system_ensure_machine: unknown model '%s'\n", model_id);
+        return -1;
+    }
+
+    // Already have the right machine?
+    const char *current = system_machine_model_id();
+    if (current && strcmp(current, model_id) == 0)
+        return 0;
+
+    // Teardown existing machine if wrong type
+    if (global_emulator) {
+        printf("Switching machine from %s to %s\n", global_emulator->machine->model_id, model_id);
+        system_destroy(global_emulator);
+        global_emulator = NULL;
+    }
+
+    // Create the new machine
+    config_t *cfg = system_create(needed, NULL);
+    if (!cfg) {
+        printf("system_ensure_machine: failed to create %s\n", model_id);
+        return -1;
+    }
+
+    printf("Machine created: %s (%s)\n", needed->model_name, needed->model_id);
+    return 0;
+}
+
 // Forward declarations for command handlers
 uint64_t cmd_attach_hd(int argc, char *argv[]);
 uint64_t cmd_new_fd(int argc, char *argv[]);
 uint64_t cmd_insert_fd(int argc, char *argv[]);
 uint64_t cmd_insert_disk(int argc, char *argv[]);
+uint64_t cmd_machine(int argc, char *argv[]);
 
 // Trigger a vertical blanking interval event (delegates to machine callback)
 void trigger_vbl(struct config *restrict config) {
@@ -228,9 +274,57 @@ uint64_t cmd_insert_disk(int argc, char *argv[]) {
     return 0;
 }
 
+// Query or switch the active machine model.
+// machine          → print current machine info
+// machine <model>  → teardown current machine, create new one
+uint64_t cmd_machine(int argc, char *argv[]) {
+    if (argc < 2) {
+        // No args: print current machine info
+        if (!global_emulator || !global_emulator->machine) {
+            printf("No machine instantiated\n");
+            return 0;
+        }
+        const hw_profile_t *m = global_emulator->machine;
+        printf("Machine: %s (%s)\n", m->model_name, m->model_id);
+        printf("  CPU: 680%02d @ %.4f MHz\n", m->cpu_model / 1000, m->cpu_clock_hz / 1000000.0);
+        printf("  Address: %d-bit, RAM: %u KB, ROM: %u KB\n", m->address_bits, m->ram_size_default / 1024,
+               m->rom_size / 1024);
+        printf("  VIAs: %d, ADB: %s\n", m->via_count, m->has_adb ? "yes" : "no");
+        return 0;
+    }
+
+    // Look up the requested machine profile
+    const char *model_id = argv[1];
+    const hw_profile_t *profile = machine_find(model_id);
+    if (!profile) {
+        printf("machine: unknown model '%s'\n", model_id);
+        return -1;
+    }
+
+    // Teardown existing machine if one is active
+    if (global_emulator) {
+        system_destroy(global_emulator);
+        global_emulator = NULL;
+    }
+
+    // Create the new machine (cold boot)
+    config_t *cfg = system_create(profile, NULL);
+    if (!cfg) {
+        printf("machine: failed to create %s\n", model_id);
+        return -1;
+    }
+
+    printf("Machine created: %s (%s)\n", profile->model_name, profile->model_id);
+    return 0;
+}
+
 // Initialize the setup system and register commands
 void setup_init() {
     printf("Granny Smith build %s\n", get_build_id());
+
+    // Register built-in machine profiles so machine_find() can look them up
+    machine_register(&machine_plus);
+    machine_register(&machine_se30);
 
     // Ensure logging categories of interest appear in `log list` even before any messages are emitted.
     // shell_init() (called earlier) already invoked log_init(); categories default to level 0 (OFF).
@@ -247,10 +341,19 @@ void setup_init() {
                  "Insert a disk image: insert-fd [--probe] <path> [drive:0|1] [writable:0|1]", &cmd_insert_fd);
     register_cmd("attach-hd", "Configuration", "Attach (SCSI) hard disk image: attach-hd <path> [scsi-id]",
                  &cmd_attach_hd);
+    register_cmd("machine", "Configuration", "machine [<model>] – query or switch machine model", &cmd_machine);
+    register_cmd("load-rom", "ROM", "load-rom [--probe] <filename> – load and identify ROM", (void *)&cmd_load_rom);
 
     // Register checkpoint commands
     register_cmd("save-state", "Checkpointing", "Save machine state to checkpoint file", &cmd_save_checkpoint);
     register_cmd("load-state", "Checkpointing", "Load machine state: load-state [<file>|probe]", &cmd_load_checkpoint);
+}
+
+// Platform hook called after system_create completes.
+// The weak default is a no-op; the WASM platform overrides to install
+// the assertion callback (which requires the debug object to exist).
+__attribute__((weak)) void system_post_create(config_t *cfg) {
+    (void)cfg;
 }
 
 // Create an emulator instance for the given machine profile.
@@ -269,6 +372,9 @@ config_t *system_create(const hw_profile_t *profile, checkpoint_t *checkpoint) {
 
     // Delegate all machine-specific initialisation to the profile
     profile->init(cfg, checkpoint);
+
+    // Notify the platform (e.g., install assertion callback)
+    system_post_create(cfg);
 
     return cfg;
 }
@@ -539,9 +645,12 @@ config_t *system_restore(const char *filename) {
     // Save the current global emulator so we can restore it on error.
     config_t *prev = global_emulator;
 
-    // For now, always restore as Plus (M6 will add ROM-based machine selection).
-    extern const hw_profile_t machine_plus;
-    config_t *config = system_create(&machine_plus, checkpoint);
+    // Determine machine profile: use the current machine if one is active,
+    // otherwise default to Plus for backward compatibility with old checkpoints.
+    const hw_profile_t *profile = (prev && prev->machine) ? prev->machine : machine_find("plus");
+    if (!profile)
+        profile = &machine_plus;
+    config_t *config = system_create(profile, checkpoint);
 
     if (checkpoint_has_error(checkpoint)) {
         printf("Error: Failed to read checkpoint\n");

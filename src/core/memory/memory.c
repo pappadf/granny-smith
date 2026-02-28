@@ -12,6 +12,7 @@
 
 #include "common.h"
 #include "platform.h"
+#include "rom.h"
 #include "shell.h"
 #include "system.h"
 
@@ -24,9 +25,8 @@
 // Constants and Macros
 // ============================================================================
 
-// Plus ROM size used only for identification functions (rom_version / rom_file_version).
-// These functions are Plus-specific and will be replaced in M6 by the ROM identification module.
-#define PLUS_ROM_SIZE (128 * 1024)
+// (Plus-specific PLUS_ROM_SIZE and rom_version/rom_file_version removed in M6;
+//  ROM identification is now handled by rom.c)
 
 // Page table globals (defined here, declared extern in memory.h)
 page_entry_t *g_page_table = NULL;
@@ -289,54 +289,12 @@ static void calculate_checksum(memory_map_t *rom) {
     }
 }
 
-// Determine ROM version from raw ROM data by checking the checksum (Plus-specific)
-uint32_t rom_version(const uint8_t *data) {
-    uint32_t checksum = 0;
-
-    uint16_t *image16 = (uint16_t *)(data);
-    uint32_t *image32 = (uint32_t *)(data);
-
-    for (int i = 2; i < PLUS_ROM_SIZE / 2; i++)
-        checksum += BE16(image16[i]);
-
-    if (checksum != BE32(image32[0]))
-        return 0;
-
-    switch (BE32(image32[0])) {
-    case 0x4D1EEEE1: // version 1 (Lonely Hearts)
-        return 1;
-    case 0x4D1EEAE1: // version 2 (Lonely Heifers)
-        return 2;
-    case 0x4D1F8172: // version 3 (Loud Harmonicas)
-        return 3;
-    default:
-        return 0;
-    }
-}
-
-// Determine ROM version from a file path (Plus-specific)
-int rom_file_version(const char *path) {
-    uint8_t data[PLUS_ROM_SIZE];
-
-    FILE *f = fopen(path, "rb");
-    if (!f)
-        return false;
-
-    size_t n = fread(data, 1, PLUS_ROM_SIZE, f);
-
-    fclose(f);
-
-    if (n != PLUS_ROM_SIZE)
-        return false;
-
-    return rom_version(data);
-}
-
 // ============================================================================
 // Shell Commands
 // ============================================================================
 
-// Shell command to load a ROM file into memory
+// Shell command to load a ROM file into memory.
+// Enhanced for M6: identifies the ROM, creates/switches machine if needed.
 uint64_t cmd_load_rom(int argc, char *argv[]) {
     // Check for --probe option
     bool probe_mode = false;
@@ -359,49 +317,90 @@ uint64_t cmd_load_rom(int argc, char *argv[]) {
 
     const char *filename = argv[filename_arg];
 
-    // In probe mode, just check if file is a valid ROM
-    if (probe_mode) {
-        int version = rom_file_version(filename);
-        if (version > 0) {
-            return 0; // Valid ROM
-        } else {
-            return 1; // Not a valid ROM
-        }
-    }
-
-    // Normal load mode
-    memory_map_t *mem = system_memory();
-    if (!mem) {
-        printf("Failed to load ROM: memory not initialized\n");
-        return -1;
-    }
-
+    // Read the ROM file into a temporary buffer for identification
     FILE *f = fopen(filename, "rb");
     if (!f) {
-        printf("Failed to open ROM file: %s\n", filename);
-        return -1;
+        if (!probe_mode)
+            printf("Failed to open ROM file: %s\n", filename);
+        return probe_mode ? 1 : (uint64_t)-1;
     }
 
-    // ROM content goes at the ram_size offset in the flat buffer
-    size_t n = fread(mem->image + mem->ram_size, 1, mem->rom_size, f);
+    // Determine file size
+    fseek(f, 0, SEEK_END);
+    long file_size = ftell(f);
+    fseek(f, 0, SEEK_SET);
+
+    if (file_size <= 0) {
+        fclose(f);
+        if (!probe_mode)
+            printf("Failed to read ROM file: %s\n", filename);
+        return probe_mode ? 1 : (uint64_t)-1;
+    }
+
+    // Read entire file for identification
+    uint8_t *rom_data = malloc((size_t)file_size);
+    if (!rom_data) {
+        fclose(f);
+        if (!probe_mode)
+            printf("Failed to allocate memory for ROM\n");
+        return probe_mode ? 1 : (uint64_t)-1;
+    }
+    size_t n = fread(rom_data, 1, (size_t)file_size, f);
     fclose(f);
 
-    if (n != mem->rom_size) {
-        printf("Failed to read ROM file: %s\n", filename);
-        return -1;
+    if ((long)n != file_size) {
+        free(rom_data);
+        if (!probe_mode)
+            printf("Failed to read ROM file: %s\n", filename);
+        return probe_mode ? 1 : (uint64_t)-1;
     }
 
+    // Identify the ROM
+    uint32_t checksum = 0;
+    const rom_info_t *info = rom_identify_data(rom_data, (size_t)file_size, &checksum);
+
+    // Probe mode: return 0 if identified, 1 if not
+    if (probe_mode) {
+        free(rom_data);
+        return info ? 0 : 1;
+    }
+
+    if (info) {
+        printf("ROM: %s (checksum %08X)\n", info->model_name, checksum);
+    } else {
+        printf("ROM: unknown (checksum %08X, size %ld bytes)\n", checksum, file_size);
+        free(rom_data);
+        return (uint64_t)-1;
+    }
+
+    // Ensure the correct machine is active (creates or switches as needed)
+    if (system_ensure_machine(info->model_id) != 0) {
+        free(rom_data);
+        return (uint64_t)-1;
+    }
+
+    // Load ROM data into machine memory
+    memory_map_t *mem = system_memory();
+    if (!mem) {
+        printf("load-rom: memory not initialized\n");
+        free(rom_data);
+        return (uint64_t)-1;
+    }
+
+    // Copy ROM data into the flat buffer at ram_size offset
+    size_t copy_size = (size_t)file_size < mem->rom_size ? (size_t)file_size : mem->rom_size;
+    memcpy(mem->image + mem->ram_size, rom_data, copy_size);
+    free(rom_data);
+
+    // Update memory-level checksum state
     calculate_checksum(mem);
 
-    printf("ROM loaded successfully from %s\n", filename);
-
     // Remember ROM filename for checkpointing
-    if (mem->rom_filename) {
+    if (mem->rom_filename)
         free(mem->rom_filename);
-        mem->rom_filename = NULL;
-    }
     mem->rom_filename = strdup(filename);
 
+    printf("ROM loaded successfully from %s\n", filename);
     return 0;
 }
 
@@ -492,7 +491,8 @@ memory_map_t *memory_map_init(int address_bits, uint32_t ram_size, uint32_t rom_
     mem->page_table = g_page_table;
     mem->page_count = g_page_count;
 
-    register_cmd("load-rom", "ROM", "load-rom [--probe [filename]] – load or probe ROM", (void *)&cmd_load_rom);
+    // Note: load-rom command is registered once from setup_init() so it's
+    // available before any machine is created (deferred boot).
 
     // Load from checkpoint if provided
     if (checkpoint) {
