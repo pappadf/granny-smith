@@ -988,6 +988,11 @@
 #define OP_PSAVE_EA    OP(EXC_FTRAP())
 #define OP_PRESTORE_EA OP(EXC_FTRAP())
 #endif
+// CpID=0 type=0 general MMU instruction (PMOVE/PFLUSH/PTEST/PLOAD).
+// 68000: F-line exception. 68030: overridden to decode extension word.
+#ifndef CPU_DECODER_IS_68030
+#define OP_PMMU_GENERAL OP(EXC_FTRAP())
+#endif
 #define OP_FBCC_W_DISPLACEMENT OP(EXC_FTRAP())
 #define OP_FBCC_L_DISPLACEMENT OP(EXC_FTRAP())
 #define OP_FSAVE_EA            OP(EXC_FTRAP())
@@ -1773,6 +1778,12 @@ static inline uint32_t bf_insert_reg(uint32_t dst, int32_t offset, uint32_t w, u
         VALID_EA(ea_control);                                                                                          \
         (void)GET_EA;                                                                                                  \
     }))
+
+// --- CpID=0 type=0: 68030 MMU general instruction (PMOVE/PFLUSH/PTEST/PLOAD) ---
+// Decodes the extension word to determine the specific MMU operation.
+// All are privileged (supervisor-only).
+#undef OP_PMMU_GENERAL
+#define OP_PMMU_GENERAL OP(SUPER(cpu_pmmu_general(cpu, opcode)))
 
 // --- FTRAP default: CpID=0 → 68030 MMU stub (privileged), else F-line exception ---
 #define OP_FTRAP                                                                                                       \

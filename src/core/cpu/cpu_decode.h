@@ -484,6 +484,7 @@ CPU_DECODER_RETURN_TYPE CPU_DECODER_NAME(CPU_DECODER_ARGS) {
 
     case 0xF: // 1111.xxxx.xxxx.xxxx
         switch (((opcode) >> 6) & 0x3F) {
+        case 0x00: OP_PMMU_GENERAL; break;  // CpID=0, type=0: PMOVE/PFLUSH/PTEST/PLOAD
         case 0x02: if (((opcode) & 0x3F) < 0x10) { OP_PBCC_W; } else { OP_FTRAP; } break;
         case 0x03: if (((opcode) & 0x3F) < 0x10) { OP_PBCC_L; } else { OP_FTRAP; } break;
         case 0x04: OP_PSAVE_EA;     break;

@@ -654,6 +654,7 @@ static const char *disasm_cache_scope(unsigned c) {
 #define OP_MOVE16_XXX_L_AN_P   ASM("MOVE16\t$%08X,(%s)+", SRC_LONG, AY)
 #define OP_MOVE16_AN_XXX_L     ASM("MOVE16\t(%s),$%08X", AY, DST_LONG)
 #define OP_MOVE16_XXX_L_AN     ASM("MOVE16\t$%08X,(%s)", SRC_LONG, AY)
+#define OP_PMMU_GENERAL        ASM("PMMU") // generic disasm for PMOVE/PFLUSH/PTEST
 #define OP_FTRAP               OP_UNDEFINED
 
 #define CPU_DECODER_NAME        cpu_disasm

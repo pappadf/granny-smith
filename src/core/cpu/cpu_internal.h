@@ -551,11 +551,12 @@ static inline void cpu_check_interrupt(cpu_t *restrict cpu) {
 }
 
 // Update full status register including supervisor mode, M bit, and interrupt mask.
-// On 68030, handles ISP/MSP switching when M bit changes.
+// On 68030, handles ISP/MSP switching when M bit changes and updates SoA active pointers.
 static inline void write_sr(cpu_t *restrict cpu, uint16_t sr) {
     bool new_s = (sr >> 13) & 1;
 
     if (cpu->cpu_model == CPU_MODEL_68030) {
+        bool old_s = cpu->supervisor;
         bool new_m = (sr >> 12) & 1;
         if (cpu->supervisor) {
             // Save current A7 to the active supervisor stack register
@@ -581,6 +582,11 @@ static inline void write_sr(cpu_t *restrict cpu, uint16_t sr) {
         }
         cpu->m = new_m;
         cpu->trace = ((sr >> 14) & 3); // T1 in bit 1, T0 in bit 0
+        // Switch SoA active pointers when supervisor bit changes
+        if ((bool)new_s != old_s) {
+            g_active_read = new_s ? g_supervisor_read : g_user_read;
+            g_active_write = new_s ? g_supervisor_write : g_user_write;
+        }
     } else {
         // 68000: no M bit, no T0
         if (new_s && !cpu->supervisor) {

@@ -11,6 +11,7 @@
 #include "common.h"
 
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 
 // === Macros ===
@@ -93,73 +94,87 @@ extern page_entry_t *g_page_table;
 extern uint32_t g_address_mask; // 0x00FFFFFF for 24-bit, 0xFFFFFFFF for 32-bit
 extern int g_page_count; // total number of pages in the current page table
 
-// Slow-path handlers for cross-page or device I/O accesses
+// SoA (Struct-of-Arrays) fast-path page tables.
+// Each entry stores an adjusted host address: (uintptr_t)host_base - page_guest_base
+// so that (uint8_t *)(entry + masked_addr) yields the correct host pointer directly.
+// Zero entry = slow path (device I/O, unmapped, or MMU miss).
+extern uintptr_t *g_supervisor_read; // supervisor-mode read mapping
+extern uintptr_t *g_supervisor_write; // supervisor-mode write mapping (RAM only)
+extern uintptr_t *g_user_read; // user-mode read mapping
+extern uintptr_t *g_user_write; // user-mode write mapping
+
+// Active pointers switched per sprint based on SR.S bit
+extern uintptr_t *g_active_read;
+extern uintptr_t *g_active_write;
+
+// Slow-path handlers for device I/O, unmapped, or MMU TLB miss accesses
+uint8_t memory_read_uint8_slow(uint32_t addr);
 uint16_t memory_read_uint16_slow(uint32_t addr);
 uint32_t memory_read_uint32_slow(uint32_t addr);
+void memory_write_uint8_slow(uint32_t addr, uint8_t value);
 void memory_write_uint16_slow(uint32_t addr, uint16_t value);
 void memory_write_uint32_slow(uint32_t addr, uint32_t value);
 
-// === Inline Accessors (page-table based) ===
+// === Inline Accessors (SoA fast-path with adjusted-base trick) ===
+// Non-zero entry in g_active_read/write = adjusted host address.
+// Zero entry = slow path (device I/O, unmapped, or MMU TLB miss).
 
 static inline uint8_t memory_read_uint8(uint32_t addr) {
-    addr &= g_address_mask;
-    page_entry_t *pe = &g_page_table[addr >> PAGE_SHIFT];
-    if (__builtin_expect(pe->host_base != NULL, 1))
-        return LOAD_BE8(pe->host_base + (addr & PAGE_MASK));
-    if (pe->dev)
-        return pe->dev->read_uint8(pe->dev_context, addr - pe->base_addr);
-    return 0;
+    uint32_t masked = addr & g_address_mask;
+    uintptr_t base = g_active_read[masked >> PAGE_SHIFT];
+    if (__builtin_expect(base != 0, 1))
+        return LOAD_BE8((uint8_t *)(base + masked));
+    return memory_read_uint8_slow(masked);
 }
 
 static inline uint16_t memory_read_uint16(uint32_t addr) {
-    addr &= g_address_mask;
-    page_entry_t *pe = &g_page_table[addr >> PAGE_SHIFT];
-    // Fast path: same page and direct memory
-    if (__builtin_expect(pe->host_base != NULL && (addr & PAGE_MASK) <= MEM_PAGE_SIZE - 2, 1))
-        return LOAD_BE16(pe->host_base + (addr & PAGE_MASK));
-    return memory_read_uint16_slow(addr);
+    uint32_t masked = addr & g_address_mask;
+    uintptr_t base = g_active_read[masked >> PAGE_SHIFT];
+    // Fast path: non-zero entry and access doesn't cross page boundary
+    if (__builtin_expect(base != 0 && (masked & PAGE_MASK) <= MEM_PAGE_SIZE - 2, 1))
+        return LOAD_BE16((uint8_t *)(base + masked));
+    return memory_read_uint16_slow(masked);
 }
 
 static inline uint32_t memory_read_uint32(uint32_t addr) {
-    addr &= g_address_mask;
-    page_entry_t *pe = &g_page_table[addr >> PAGE_SHIFT];
-    // Fast path: same page and direct memory
-    if (__builtin_expect(pe->host_base != NULL && (addr & PAGE_MASK) <= MEM_PAGE_SIZE - 4, 1))
-        return LOAD_BE32(pe->host_base + (addr & PAGE_MASK));
-    return memory_read_uint32_slow(addr);
+    uint32_t masked = addr & g_address_mask;
+    uintptr_t base = g_active_read[masked >> PAGE_SHIFT];
+    // Fast path: non-zero entry and access doesn't cross page boundary
+    if (__builtin_expect(base != 0 && (masked & PAGE_MASK) <= MEM_PAGE_SIZE - 4, 1))
+        return LOAD_BE32((uint8_t *)(base + masked));
+    return memory_read_uint32_slow(masked);
 }
 
 static inline void memory_write_uint8(uint32_t addr, uint8_t value) {
-    addr &= g_address_mask;
-    page_entry_t *pe = &g_page_table[addr >> PAGE_SHIFT];
-    if (__builtin_expect(pe->host_base != NULL && pe->writable, 1)) {
-        STORE_BE8(pe->host_base + (addr & PAGE_MASK), value);
+    uint32_t masked = addr & g_address_mask;
+    uintptr_t base = g_active_write[masked >> PAGE_SHIFT];
+    if (__builtin_expect(base != 0, 1)) {
+        STORE_BE8((uint8_t *)(base + masked), value);
         return;
     }
-    if (pe->dev)
-        pe->dev->write_uint8(pe->dev_context, addr - pe->base_addr, value);
+    memory_write_uint8_slow(masked, value);
 }
 
 static inline void memory_write_uint16(uint32_t addr, uint16_t value) {
-    addr &= g_address_mask;
-    page_entry_t *pe = &g_page_table[addr >> PAGE_SHIFT];
-    // Fast path: same page and writable
-    if (__builtin_expect(pe->host_base != NULL && pe->writable && (addr & PAGE_MASK) <= MEM_PAGE_SIZE - 2, 1)) {
-        STORE_BE16(pe->host_base + (addr & PAGE_MASK), value);
+    uint32_t masked = addr & g_address_mask;
+    uintptr_t base = g_active_write[masked >> PAGE_SHIFT];
+    // Fast path: non-zero entry and access doesn't cross page boundary
+    if (__builtin_expect(base != 0 && (masked & PAGE_MASK) <= MEM_PAGE_SIZE - 2, 1)) {
+        STORE_BE16((uint8_t *)(base + masked), value);
         return;
     }
-    memory_write_uint16_slow(addr, value);
+    memory_write_uint16_slow(masked, value);
 }
 
 static inline void memory_write_uint32(uint32_t addr, uint32_t value) {
-    addr &= g_address_mask;
-    page_entry_t *pe = &g_page_table[addr >> PAGE_SHIFT];
-    // Fast path: same page and writable
-    if (__builtin_expect(pe->host_base != NULL && pe->writable && (addr & PAGE_MASK) <= MEM_PAGE_SIZE - 4, 1)) {
-        STORE_BE32(pe->host_base + (addr & PAGE_MASK), value);
+    uint32_t masked = addr & g_address_mask;
+    uintptr_t base = g_active_write[masked >> PAGE_SHIFT];
+    // Fast path: non-zero entry and access doesn't cross page boundary
+    if (__builtin_expect(base != 0 && (masked & PAGE_MASK) <= MEM_PAGE_SIZE - 4, 1)) {
+        STORE_BE32((uint8_t *)(base + masked), value);
         return;
     }
-    memory_write_uint32_slow(addr, value);
+    memory_write_uint32_slow(masked, value);
 }
 
 #endif // MEMORY_MAP_H

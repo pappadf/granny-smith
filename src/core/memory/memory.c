@@ -9,6 +9,7 @@
 // ============================================================================
 
 #include "memory.h"
+#include "mmu.h"
 
 #include "common.h"
 #include "platform.h"
@@ -32,6 +33,16 @@
 page_entry_t *g_page_table = NULL;
 uint32_t g_address_mask = 0x00FFFFFFUL; // 24-bit default
 int g_page_count = 0; // number of pages in current page table
+
+// SoA fast-path arrays (adjusted-base entries; zero = slow path)
+uintptr_t *g_supervisor_read = NULL;
+uintptr_t *g_supervisor_write = NULL;
+uintptr_t *g_user_read = NULL;
+uintptr_t *g_user_write = NULL;
+
+// Active pointers (switched per sprint based on SR.S bit)
+uintptr_t *g_active_read = NULL;
+uintptr_t *g_active_write = NULL;
 
 // ============================================================================
 // Type Definitions
@@ -84,6 +95,27 @@ typedef struct memory {
 // ============================================================================
 // Page Table Slow Paths
 // ============================================================================
+// The slow path is entered when the SoA fast-path entry is zero.
+// Addresses arriving here are already masked by g_address_mask.
+// Dispatch order: device I/O (via page_entry_t) → unmapped (return 0).
+// MMU TLB miss handling will be added when the MMU slow-path integration
+// is wired up (Step 3 of Milestone 7).
+
+// Slow path for 8-bit reads: device I/O, MMU TLB miss, or unmapped
+uint8_t memory_read_uint8_slow(uint32_t addr) {
+    page_entry_t *pe = &g_page_table[addr >> PAGE_SHIFT];
+    if (pe->dev)
+        return pe->dev->read_uint8(pe->dev_context, addr - pe->base_addr);
+    // MMU TLB miss: try to resolve via table walk and retry
+    if (g_mmu && g_mmu->enabled && !pe->host_base) {
+        if (mmu_handle_fault(g_mmu, addr, false, g_active_read == g_supervisor_read)) {
+            uintptr_t base = g_active_read[addr >> PAGE_SHIFT];
+            if (base != 0)
+                return LOAD_BE8((uint8_t *)(base + addr));
+        }
+    }
+    return 0;
+}
 
 // Slow path for 16-bit reads: cross-page or device I/O
 uint16_t memory_read_uint16_slow(uint32_t addr) {
@@ -95,7 +127,7 @@ uint16_t memory_read_uint16_slow(uint32_t addr) {
 
     // Cross-page or host memory at page boundary: split into two byte reads
     uint16_t hi = memory_read_uint8(addr);
-    uint16_t lo = memory_read_uint8(addr + 1);
+    uint16_t lo = memory_read_uint8((addr + 1) & g_address_mask);
     return (hi << 8) | lo;
 }
 
@@ -113,6 +145,25 @@ uint32_t memory_read_uint32_slow(uint32_t addr) {
     return (hi << 16) | lo;
 }
 
+// Slow path for 8-bit writes: device I/O, MMU TLB miss, or unmapped
+void memory_write_uint8_slow(uint32_t addr, uint8_t value) {
+    page_entry_t *pe = &g_page_table[addr >> PAGE_SHIFT];
+    if (pe->dev) {
+        pe->dev->write_uint8(pe->dev_context, addr - pe->base_addr, value);
+        return;
+    }
+    // MMU TLB miss: try to resolve via table walk and retry
+    if (g_mmu && g_mmu->enabled && !pe->host_base) {
+        if (mmu_handle_fault(g_mmu, addr, true, g_active_write == g_supervisor_write)) {
+            uintptr_t base = g_active_write[addr >> PAGE_SHIFT];
+            if (base != 0) {
+                STORE_BE8((uint8_t *)(base + addr), value);
+                return;
+            }
+        }
+    }
+}
+
 // Slow path for 16-bit writes: cross-page or device I/O
 void memory_write_uint16_slow(uint32_t addr, uint16_t value) {
     page_entry_t *pe = &g_page_table[addr >> PAGE_SHIFT];
@@ -125,7 +176,7 @@ void memory_write_uint16_slow(uint32_t addr, uint16_t value) {
 
     // Cross-page: split into two byte writes
     memory_write_uint8(addr, (uint8_t)(value >> 8));
-    memory_write_uint8(addr + 1, (uint8_t)(value & 0xFF));
+    memory_write_uint8((addr + 1) & g_address_mask, (uint8_t)(value & 0xFF));
 }
 
 // Slow path for 32-bit writes: cross-page or device I/O
@@ -221,12 +272,22 @@ void memory_map_add(memory_map_t *mem, uint32_t addr, uint32_t size, const char 
         uint32_t end_page = ((addr + size - 1) & g_address_mask) >> PAGE_SHIFT;
         assert((int)start_page < g_page_count && "device start address exceeds page table bounds");
         for (uint32_t p = start_page; p <= end_page && (int)p < g_page_count; p++) {
+            // AoS cold-path: register device handler
             g_page_table[p].host_base = NULL;
-            // Point to the copied interface in the linked list node (stable pointer)
             g_page_table[p].dev = &map->memory_interface;
             g_page_table[p].dev_context = device;
             g_page_table[p].base_addr = addr;
             g_page_table[p].writable = false;
+
+            // SoA fast-path: zero entries force slow path for device I/O
+            if (g_supervisor_read)
+                g_supervisor_read[p] = 0;
+            if (g_supervisor_write)
+                g_supervisor_write[p] = 0;
+            if (g_user_read)
+                g_user_read[p] = 0;
+            if (g_user_write)
+                g_user_write[p] = 0;
         }
     }
 }
@@ -423,10 +484,25 @@ void memory_populate_pages(memory_map_t *mem, uint32_t rom_start_addr, uint32_t 
     uint32_t ram_pages = ram_size >> PAGE_SHIFT;
     for (uint32_t p = 0; p < ram_pages && (int)p < g_page_count; p++) {
         assert((p << PAGE_SHIFT) < ram_size && "RAM page index out of bounds");
-        g_page_table[p].host_base = mem->image + (p << PAGE_SHIFT);
+        uint8_t *host_ptr = mem->image + (p << PAGE_SHIFT);
+        uint32_t guest_base = p << PAGE_SHIFT;
+        uintptr_t adjusted = (uintptr_t)host_ptr - guest_base;
+
+        // AoS cold-path entry (device dispatch)
+        g_page_table[p].host_base = host_ptr;
         g_page_table[p].dev = NULL;
         g_page_table[p].dev_context = NULL;
         g_page_table[p].writable = true;
+
+        // SoA fast-path entries: RAM is readable and writable by all
+        if (g_supervisor_read)
+            g_supervisor_read[p] = adjusted;
+        if (g_supervisor_write)
+            g_supervisor_write[p] = adjusted;
+        if (g_user_read)
+            g_user_read[p] = adjusted;
+        if (g_user_write)
+            g_user_write[p] = adjusted;
     }
 
     // ROM pages: rom_start_addr – rom_region_end (read-only, mirrored)
@@ -448,10 +524,21 @@ void memory_populate_pages(memory_map_t *mem, uint32_t rom_start_addr, uint32_t 
         uint32_t offset_in_cycle = (p - rom_start_page) % mirror_stride;
         if (offset_in_cycle >= rom_pages)
             continue; // interleaved I/O / undefined range — leave page unmapped (returns 0)
-        g_page_table[p].host_base = mem->image + ram_size + (offset_in_cycle << PAGE_SHIFT);
+        uint8_t *host_ptr = mem->image + ram_size + (offset_in_cycle << PAGE_SHIFT);
+        uint32_t guest_base = p << PAGE_SHIFT;
+        uintptr_t adjusted = (uintptr_t)host_ptr - guest_base;
+
+        // AoS cold-path entry
+        g_page_table[p].host_base = host_ptr;
         g_page_table[p].dev = NULL;
         g_page_table[p].dev_context = NULL;
         g_page_table[p].writable = false;
+
+        // SoA fast-path entries: ROM is read-only (write entries stay 0 → slow path)
+        if (g_supervisor_read)
+            g_supervisor_read[p] = adjusted;
+        if (g_user_read)
+            g_user_read[p] = adjusted;
     }
 }
 
@@ -486,10 +573,23 @@ memory_map_t *memory_map_init(int address_bits, uint32_t ram_size, uint32_t rom_
         g_address_mask = 0x00FFFFFFUL;
         g_page_count = 1 << (24 - PAGE_SHIFT); // 4,096 pages
     }
+
+    // AoS cold-path page table (device dispatch)
     g_page_table = (page_entry_t *)calloc(g_page_count, sizeof(page_entry_t));
     assert(g_page_table != NULL && "failed to allocate page table");
     mem->page_table = g_page_table;
     mem->page_count = g_page_count;
+
+    // SoA fast-path arrays (calloc → zero = slow path for all pages initially)
+    g_supervisor_read = (uintptr_t *)calloc(g_page_count, sizeof(uintptr_t));
+    g_supervisor_write = (uintptr_t *)calloc(g_page_count, sizeof(uintptr_t));
+    g_user_read = (uintptr_t *)calloc(g_page_count, sizeof(uintptr_t));
+    g_user_write = (uintptr_t *)calloc(g_page_count, sizeof(uintptr_t));
+    assert(g_supervisor_read && g_supervisor_write && g_user_read && g_user_write);
+
+    // Default active pointers: supervisor mode
+    g_active_read = g_supervisor_read;
+    g_active_write = g_supervisor_write;
 
     // Note: load-rom command is registered once from setup_init() so it's
     // available before any machine is created (deferred boot).
@@ -537,6 +637,18 @@ void memory_map_delete(memory_map_t *mem) {
         if (g_page_table == mem->page_table) {
             g_page_table = NULL;
             g_page_count = 0;
+
+            // Free SoA fast-path arrays
+            free(g_supervisor_read);
+            g_supervisor_read = NULL;
+            free(g_supervisor_write);
+            g_supervisor_write = NULL;
+            free(g_user_read);
+            g_user_read = NULL;
+            free(g_user_write);
+            g_user_write = NULL;
+            g_active_read = NULL;
+            g_active_write = NULL;
         }
         free(mem->page_table);
         mem->page_table = NULL;

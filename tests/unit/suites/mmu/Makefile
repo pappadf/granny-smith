@@ -1,8 +1,8 @@
-# Memory unit test
-# Tests parameterised memory_map_init() with 24-bit and 32-bit address spaces.
-# Uses real memory.c instead of stub_memory.c to test the actual implementation.
+# MMU unit test (Milestone 7)
+# Tests 68030 PMMU: SoA arrays, table walk, TLB invalidation, TT, PTEST.
+# Uses real memory.c and mmu.c.
 
-TEST_NAME := memory
+TEST_NAME := mmu
 
 UNIT_ROOT      := $(abspath ../../)
 WORKSPACE_ROOT := $(abspath $(UNIT_ROOT)/../..)
@@ -33,7 +33,7 @@ CFLAGS := $(BASE_CFLAGS) $(INCLUDE_FLAGS)
 LDFLAGS ?=
 LDFLAGS += -rdynamic
 
-# Real memory.c is included; stub_memory.c is excluded to avoid symbol conflicts
+# Real memory.c and mmu.c; exclude stub_memory.c to avoid symbol conflicts
 SRCS := $(CURDIR)/test.c \
         $(UNIT_ROOT)/support/harness_common.c \
         $(UNIT_ROOT)/support/harness_isolated.c \

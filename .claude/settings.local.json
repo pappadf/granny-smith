@@ -1,0 +1,15 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(make:*)",
+      "Bash(npx --prefix tests/e2e playwright test:*)",
+      "Bash(tee:*)",
+      "Bash(chmod:*)",
+      "Bash(/workspaces/granny-smith/tests/unit/build/cputest030:*)",
+      "Bash(python3:*)"
+    ],
+    "additionalDirectories": [
+      "/tmp"
+    ]
+  }
+}
