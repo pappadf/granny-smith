@@ -683,38 +683,51 @@ void via_input_sr(via_t *restrict via, uint8_t byte) {
 
 // Set control line input value (CA1, CA2, CB1, CB2)
 void via_input_c(via_t *restrict via, int port, int c, bool value) {
-    GS_ASSERT(port == 0); // no input for port B for now
+    GS_ASSERT(port == 0 || port == 1);
     GS_ASSERT(c == 0 || c == 1);
 
-    unsigned int old = via->ports[0].ctrl[c];
-    via->ports[0].ctrl[c] = value;
-
-    if (c == 0) {
+    if (port == 0 && c == 0) {
         // CA1 interrupt on active edge (PCR bit 0: 0=negative, 1=positive)
-        bool ca1_pos_edge = via->pcr & 0x01;
-        bool active_transition = ca1_pos_edge ? (!old && value) : (old && !value);
-
-        if (active_transition) {
+        unsigned int old = via->ports[0].ctrl[0];
+        via->ports[0].ctrl[0] = value;
+        bool pos_edge = via->pcr & 0x01;
+        bool active = pos_edge ? (!old && value) : (old && !value);
+        if (active)
             update_ifr(via, via->ifr | IFR_CA1);
-        }
-    } else {
+
+    } else if (port == 0 && c == 1) {
         // CA2 control mode (PCR bits 1-3)
-        uint8_t ca2_mode = (via->pcr >> 1) & 0x07;
-
-        // CA2 modes:
-        // 0-3: Input modes
-        //   bit 2 (0x04): 0=negative edge, 1=positive edge
-        // 4-7: Output modes (not handled here)
-
-        if (ca2_mode < 4) {
-            // Input mode - set CA2 interrupt flag on active edge
-            bool ca2_pos_edge = ca2_mode & 0x04;
-            bool active_transition = ca2_pos_edge ? (!old && value) : (old && !value);
-
-            if (active_transition) {
+        unsigned int old = via->ports[0].ctrl[1];
+        via->ports[0].ctrl[1] = value;
+        uint8_t mode = (via->pcr >> 1) & 0x07;
+        // Modes 0-3 are input; bit 2 selects positive edge
+        if (mode < 4) {
+            bool pos_edge = mode & 0x04;
+            bool active = pos_edge ? (!old && value) : (old && !value);
+            if (active)
                 update_ifr(via, via->ifr | IFR_CA2);
-            }
         }
-        // Output modes don't respond to input transitions
+
+    } else if (port == 1 && c == 0) {
+        // CB1 interrupt on active edge (PCR bit 4: 0=negative, 1=positive)
+        unsigned int old = via->ports[1].ctrl[0];
+        via->ports[1].ctrl[0] = value;
+        bool pos_edge = via->pcr & 0x10;
+        bool active = pos_edge ? (!old && value) : (old && !value);
+        if (active)
+            update_ifr(via, via->ifr | IFR_CB1);
+
+    } else {
+        // CB2 control mode (PCR bits 5-7)
+        unsigned int old = via->ports[1].ctrl[1];
+        via->ports[1].ctrl[1] = value;
+        uint8_t mode = (via->pcr >> 5) & 0x07;
+        // Modes 0-3 are input; bit 2 selects positive edge
+        if (mode < 4) {
+            bool pos_edge = mode & 0x04;
+            bool active = pos_edge ? (!old && value) : (old && !value);
+            if (active)
+                update_ifr(via, via->ifr | IFR_CB2);
+        }
     }
 }
