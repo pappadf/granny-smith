@@ -143,8 +143,9 @@ extern cpu_t *cpu_init(int cpu_model, checkpoint_t *checkpoint) {
         system_read_checkpoint_data(checkpoint, cpu, sizeof(cpu_t));
     } else {
         cpu->cpu_model = cpu_model;
-        cpu->pc = 0x0040002a;
-        cpu->a[7] = 0x4d1f8172;
+        // Initial PC and SSP will be loaded from reset vectors after ROM is loaded
+        cpu->pc = 0;
+        cpu->a[7] = 0;
         cpu->supervisor = 1;
         cpu->interrupt_mask = 7;
         // 68030-specific registers default to zero (VBR=0, CACR=0, etc.)

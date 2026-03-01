@@ -12,6 +12,7 @@
 #include "mmu.h"
 
 #include "common.h"
+#include "cpu.h"
 #include "platform.h"
 #include "rom.h"
 #include "shell.h"
@@ -107,7 +108,7 @@ uint8_t memory_read_uint8_slow(uint32_t addr) {
     if (pe->dev)
         return pe->dev->read_uint8(pe->dev_context, addr - pe->base_addr);
     // MMU TLB miss: try to resolve via table walk and retry
-    if (g_mmu && g_mmu->enabled && !pe->host_base) {
+    if (g_mmu && g_mmu->enabled) {
         if (mmu_handle_fault(g_mmu, addr, false, g_active_read == g_supervisor_read)) {
             uintptr_t base = g_active_read[addr >> PAGE_SHIFT];
             if (base != 0)
@@ -153,7 +154,7 @@ void memory_write_uint8_slow(uint32_t addr, uint8_t value) {
         return;
     }
     // MMU TLB miss: try to resolve via table walk and retry
-    if (g_mmu && g_mmu->enabled && !pe->host_base) {
+    if (g_mmu && g_mmu->enabled) {
         if (mmu_handle_fault(g_mmu, addr, true, g_active_write == g_supervisor_write)) {
             uintptr_t base = g_active_write[addr >> PAGE_SHIFT];
             if (base != 0) {
@@ -460,6 +461,19 @@ uint64_t cmd_load_rom(int argc, char *argv[]) {
     if (mem->rom_filename)
         free(mem->rom_filename);
     mem->rom_filename = strdup(filename);
+
+    // Reset CPU from ROM reset vectors (SSP at ROM offset 0, PC at ROM offset 4).
+    // Read directly from the ROM buffer since address 0 may map to RAM, not ROM
+    // (e.g. Plus has ROM at 0x400000, not overlaid at address 0).
+    cpu_t *cpu = system_cpu();
+    if (cpu && copy_size >= 8) {
+        uint8_t *rom_base = mem->image + mem->ram_size;
+        uint32_t initial_ssp = LOAD_BE32(rom_base);
+        uint32_t initial_pc = LOAD_BE32(rom_base + 4);
+        cpu_set_an(cpu, 7, initial_ssp);
+        cpu_set_pc(cpu, initial_pc);
+        printf("CPU reset: PC=%08X SSP=%08X\n", initial_pc, initial_ssp);
+    }
 
     printf("ROM loaded successfully from %s\n", filename);
     return 0;

@@ -78,6 +78,11 @@ typedef struct mmu_state {
     uint8_t *physical_rom; // base of physical ROM buffer
     uint32_t physical_rom_size; // size of ROM in bytes
     uint32_t rom_phys_base; // physical address where ROM is mapped
+
+    // Optional VRAM region (SE/30 built-in video at $FE000000)
+    uint8_t *physical_vram; // base of VRAM buffer (NULL if none)
+    uint32_t physical_vram_size; // size of VRAM in bytes
+    uint32_t vram_phys_base; // physical address where VRAM is mapped
 } mmu_state_t;
 
 // === Lifecycle ===
@@ -109,6 +114,9 @@ uint16_t mmu_test_address(mmu_state_t *mmu, uint32_t logical_addr, bool write, b
 // Check transparent translation registers (TT0/TT1).
 // Returns true if address matches a TT register (bypass table walk).
 bool mmu_check_tt(mmu_state_t *mmu, uint32_t addr, bool write, bool supervisor);
+
+// Register a VRAM region so table walks and TT matches can resolve it
+void mmu_register_vram(mmu_state_t *mmu, uint8_t *vram, uint32_t phys_base, uint32_t size);
 
 // Global MMU state pointer (set by machine init, NULL for 68000 machines)
 extern struct mmu_state *g_mmu;

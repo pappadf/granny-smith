@@ -18,13 +18,16 @@
 #include "shell.h"
 #include "system.h"
 
+#include <arpa/inet.h>
 #include <errno.h>
 #include <getopt.h>
+#include <netinet/in.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/select.h>
+#include <sys/socket.h>
 #include <termios.h>
 #include <unistd.h>
 
@@ -70,11 +73,15 @@ static void print_usage(const char *program) {
     printf("  --speed=MODE    Scheduler mode: max, realtime, hardware (default: realtime)\n");
     printf("  --cycles=N      Run for N CPU cycles then exit (for testing)\n");
     printf("  --quiet, -q     Suppress startup messages\n");
+    printf("  --daemon        Start in daemon mode (TCP socket interface for AI agents)\n");
+    printf("  --port=PORT     TCP port for daemon mode (default: 6800)\n");
     printf("\n");
     printf("Examples:\n");
     printf("  %s rom=plus.rom\n", program);
     printf("  %s rom=plus.rom hd=disk.img\n", program);
     printf("  %s rom=plus.rom fd=system.dsk script=boot.sh\n", program);
+    printf("  %s --daemon rom=SE30.rom\n", program);
+    printf("  %s --daemon --port=7000 rom=SE30.rom hd=disk.img\n", program);
 }
 
 // Global script exit code (set by commands like screenshot --match)
@@ -94,6 +101,172 @@ static uint64_t cmd_quit(int argc, char *argv[]) {
         scheduler_stop(sched);
     }
     return 0;
+}
+
+// ============================================================================
+// Daemon mode: TCP socket interface for AI agents
+// ============================================================================
+
+// Default daemon port (Motorola 68xx heritage)
+#define DAEMON_DEFAULT_PORT 6800
+
+// Daemon mode state
+static int g_daemon_mode = 0;
+static int g_daemon_port = DAEMON_DEFAULT_PORT;
+static int g_listen_fd = -1;
+static int g_client_fd = -1;
+static int g_saved_stdout = -1;
+static int g_saved_stderr = -1;
+
+// Redirect stdout/stderr to the client socket so printf output goes to the agent
+static void daemon_redirect_output(int client_fd) {
+    g_saved_stdout = dup(STDOUT_FILENO);
+    g_saved_stderr = dup(STDERR_FILENO);
+    dup2(client_fd, STDOUT_FILENO);
+    dup2(client_fd, STDERR_FILENO);
+}
+
+// Restore stdout/stderr to their original destinations
+static void daemon_restore_output(void) {
+    fflush(stdout);
+    fflush(stderr);
+    if (g_saved_stdout >= 0) {
+        dup2(g_saved_stdout, STDOUT_FILENO);
+        close(g_saved_stdout);
+        g_saved_stdout = -1;
+    }
+    if (g_saved_stderr >= 0) {
+        dup2(g_saved_stderr, STDERR_FILENO);
+        close(g_saved_stderr);
+        g_saved_stderr = -1;
+    }
+}
+
+// Create and bind the listening socket for daemon mode
+static int daemon_create_listener(int port) {
+    int fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (fd < 0) {
+        perror("daemon: socket");
+        return -1;
+    }
+
+    // Allow port reuse for quick restarts
+    int opt = 1;
+    setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
+
+    struct sockaddr_in addr;
+    memset(&addr, 0, sizeof(addr));
+    addr.sin_family = AF_INET;
+    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK); // bind to 127.0.0.1 only
+    addr.sin_port = htons(port);
+
+    if (bind(fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
+        perror("daemon: bind");
+        close(fd);
+        return -1;
+    }
+
+    if (listen(fd, 1) < 0) {
+        perror("daemon: listen");
+        close(fd);
+        return -1;
+    }
+
+    return fd;
+}
+
+// Handle a single client connection: read command, execute, write output, close
+static void daemon_handle_client(int client_fd) {
+    g_client_fd = client_fd;
+
+    // Read command from client (up to newline)
+    char buf[2048];
+    int total = 0;
+    while (total < (int)sizeof(buf) - 1) {
+        int n = read(client_fd, buf + total, sizeof(buf) - 1 - total);
+        if (n <= 0)
+            break;
+        total += n;
+        // Stop at first newline
+        if (memchr(buf, '\n', total))
+            break;
+    }
+
+    if (total <= 0) {
+        close(client_fd);
+        g_client_fd = -1;
+        return;
+    }
+
+    buf[total] = '\0';
+
+    // Strip trailing newline/carriage return
+    while (total > 0 && (buf[total - 1] == '\n' || buf[total - 1] == '\r'))
+        buf[--total] = '\0';
+
+    if (total == 0) {
+        close(client_fd);
+        g_client_fd = -1;
+        return;
+    }
+
+    // Redirect output to the client socket
+    daemon_redirect_output(client_fd);
+
+    // Execute the command
+    shell_dispatch(buf);
+
+    // If the scheduler is running after the command (e.g. "run"), keep pumping
+    // the main loop until execution stops (breakpoint, step complete, etc.)
+    scheduler_t *sched = system_scheduler();
+    while (sched && scheduler_is_running(sched) && !quit_requested) {
+        double now = host_time();
+        scheduler_main_loop(global_emulator, now * 1000.0);
+    }
+
+    // Flush and restore output before closing the connection
+    daemon_restore_output();
+
+    close(client_fd);
+    g_client_fd = -1;
+}
+
+// Main daemon loop: accept connections and handle them one at a time
+static void daemon_loop(void) {
+    fprintf(stderr, "Daemon listening on 127.0.0.1:%d\n", g_daemon_port);
+    fprintf(stderr, "Send commands with: echo \"command\" | nc localhost %d\n", g_daemon_port);
+
+    while (g_running && !quit_requested) {
+        // Use select() so we can check g_running periodically
+        fd_set fds;
+        struct timeval tv = {1, 0}; // 1 second timeout
+        FD_ZERO(&fds);
+        FD_SET(g_listen_fd, &fds);
+
+        int ready = select(g_listen_fd + 1, &fds, NULL, NULL, &tv);
+        if (ready < 0) {
+            if (errno == EINTR)
+                continue;
+            perror("daemon: select");
+            break;
+        }
+        if (ready == 0)
+            continue; // timeout, check g_running again
+
+        // Accept client connection
+        int client_fd = accept(g_listen_fd, NULL, NULL);
+        if (client_fd < 0) {
+            if (errno == EINTR)
+                continue;
+            perror("daemon: accept");
+            continue;
+        }
+
+        daemon_handle_client(client_fd);
+    }
+
+    close(g_listen_fd);
+    g_listen_fd = -1;
 }
 
 // Parse key=value argument, returns value or NULL if key doesn't match
@@ -163,8 +336,10 @@ static int stdin_has_data(void) {
     return select(STDIN_FILENO + 1, &fds, NULL, NULL, &tv) > 0;
 }
 
-// Shell prompt for headless mode
+// Shell prompt for headless mode (no-op in daemon mode)
 void print_prompt(void) {
+    if (g_daemon_mode)
+        return;
     printf("gs> ");
     fflush(stdout);
 }
@@ -214,6 +389,21 @@ int main(int argc, char *argv[]) {
 
         if (strcmp(arg, "--quiet") == 0 || strcmp(arg, "-q") == 0) {
             quiet = 1;
+            continue;
+        }
+
+        if (strcmp(arg, "--daemon") == 0) {
+            g_daemon_mode = 1;
+            quiet = 1; // suppress banner in daemon mode
+            continue;
+        }
+
+        if (strncmp(arg, "--port=", 7) == 0) {
+            g_daemon_port = atoi(arg + 7);
+            if (g_daemon_port <= 0 || g_daemon_port > 65535) {
+                fprintf(stderr, "Error: Invalid port number: %s\n", arg + 7);
+                return 1;
+            }
             continue;
         }
 
@@ -315,6 +505,14 @@ int main(int argc, char *argv[]) {
         return 1;
     }
 
+    // In daemon mode, stop the scheduler that se30_init/plus_init auto-started.
+    // The agent will explicitly send "run" or "s" commands to control execution.
+    if (g_daemon_mode) {
+        scheduler_t *s = system_scheduler();
+        if (s)
+            scheduler_stop(s);
+    }
+
     // Attach hard disk images
     for (int i = 0; i < hd_count; i++) {
         add_scsi_drive(global_emulator, hd_files[i], i);
@@ -357,6 +555,31 @@ int main(int argc, char *argv[]) {
     if (quit_requested) {
         g_running = 0;
     }
+
+    // ====================================================================
+    // Daemon mode: listen on TCP socket for commands from AI agents
+    // ====================================================================
+    if (g_daemon_mode) {
+        g_listen_fd = daemon_create_listener(g_daemon_port);
+        if (g_listen_fd < 0) {
+            fprintf(stderr, "Error: Failed to create daemon listener on port %d\n", g_daemon_port);
+            system_destroy(global_emulator);
+            global_emulator = NULL;
+            return 1;
+        }
+
+        // In daemon mode, do NOT auto-start the scheduler.
+        // The agent sends "run" or "s" commands to control execution.
+        daemon_loop();
+
+        system_destroy(global_emulator);
+        global_emulator = NULL;
+        return g_script_exit_code;
+    }
+
+    // ====================================================================
+    // Interactive mode: normal REPL on stdin/stdout
+    // ====================================================================
 
     // Start the emulator (only if not quitting)
     if (g_running) {

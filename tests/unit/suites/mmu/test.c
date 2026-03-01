@@ -121,6 +121,7 @@ TEST(test_tlb_invalidation) {
     ASSERT_TRUE(g_supervisor_write[0] != 0);
 
     mmu_state_t *mmu = mmu_init(ram_native_pointer(mem, 0), 0x400000, NULL, 0, 0);
+    mmu->enabled = true; // TLB invalidation only zeroes when MMU is enabled
     mmu_invalidate_tlb(mmu);
 
     // After invalidation, all entries should be zero

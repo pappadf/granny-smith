@@ -34,19 +34,27 @@ static uint32_t phys_read32(mmu_state_t *mmu, uint32_t phys_addr) {
     return 0; // unmapped physical address
 }
 
-// Resolve a physical address to a host pointer (RAM or ROM).
+// Resolve a physical address to a host pointer (RAM, ROM, or VRAM).
 // Returns NULL if the physical address is not backed by host memory.
 static uint8_t *phys_to_host(mmu_state_t *mmu, uint32_t phys_addr) {
     if (phys_addr < mmu->physical_ram_size)
         return mmu->physical_ram + phys_addr;
     if (mmu->physical_rom && phys_addr >= mmu->rom_phys_base && phys_addr < mmu->rom_phys_base + mmu->physical_rom_size)
         return mmu->physical_rom + (phys_addr - mmu->rom_phys_base);
+    if (mmu->physical_vram && phys_addr >= mmu->vram_phys_base &&
+        phys_addr < mmu->vram_phys_base + mmu->physical_vram_size)
+        return mmu->physical_vram + (phys_addr - mmu->vram_phys_base);
     return NULL;
 }
 
-// Check if physical address is in writable RAM (not ROM)
+// Check if physical address is in writable RAM or VRAM (not ROM)
 static bool phys_is_writable(mmu_state_t *mmu, uint32_t phys_addr) {
-    return phys_addr < mmu->physical_ram_size;
+    if (phys_addr < mmu->physical_ram_size)
+        return true;
+    if (mmu->physical_vram && phys_addr >= mmu->vram_phys_base &&
+        phys_addr < mmu->vram_phys_base + mmu->physical_vram_size)
+        return true;
+    return false;
 }
 
 // ============================================================================
@@ -275,10 +283,20 @@ void mmu_delete(mmu_state_t *mmu) {
     free(mmu);
 }
 
+// Register a VRAM region so table walks and TT matches can resolve it
+void mmu_register_vram(mmu_state_t *mmu, uint8_t *vram, uint32_t phys_base, uint32_t size) {
+    if (!mmu)
+        return;
+    mmu->physical_vram = vram;
+    mmu->vram_phys_base = phys_base;
+    mmu->physical_vram_size = size;
+}
+
 // Invalidate the entire software TLB by zeroing all four SoA arrays.
-// Subsequent accesses trigger lazy table walks via mmu_handle_fault().
+// When the MMU is enabled, subsequent accesses trigger lazy table walks
+// via mmu_handle_fault(). When disabled, repopulate SoA from the AoS
+// page table so physical identity mappings remain accessible.
 void mmu_invalidate_tlb(mmu_state_t *mmu) {
-    (void)mmu;
     size_t sz = (size_t)g_page_count * sizeof(uintptr_t);
     if (g_supervisor_read)
         memset(g_supervisor_read, 0, sz);
@@ -288,6 +306,28 @@ void mmu_invalidate_tlb(mmu_state_t *mmu) {
         memset(g_user_read, 0, sz);
     if (g_user_write)
         memset(g_user_write, 0, sz);
+
+    // When the MMU is disabled, repopulate SoA from the AoS cold-path table
+    // so that direct physical memory mappings (RAM, ROM, VRAM) remain usable.
+    if (!mmu || !mmu->enabled) {
+        for (int p = 0; p < g_page_count; p++) {
+            page_entry_t *pe = &g_page_table[p];
+            if (pe->host_base && !pe->dev) {
+                uint32_t guest_base = (uint32_t)p << PAGE_SHIFT;
+                uintptr_t adjusted = (uintptr_t)pe->host_base - guest_base;
+                if (g_supervisor_read)
+                    g_supervisor_read[p] = adjusted;
+                if (g_user_read)
+                    g_user_read[p] = adjusted;
+                if (pe->writable) {
+                    if (g_supervisor_write)
+                        g_supervisor_write[p] = adjusted;
+                    if (g_user_write)
+                        g_user_write[p] = adjusted;
+                }
+            }
+        }
+    }
 }
 
 // Handle a TLB miss: perform table walk or TT check, fill SoA entry.

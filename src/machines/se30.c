@@ -19,10 +19,12 @@
 #include "adb.h"
 #include "asc.h"
 #include "cpu.h"
+#include "cpu_internal.h" // for cpu->mmu field
 #include "debug.h"
 #include "image.h"
 #include "log.h"
 #include "memory.h"
+#include "mmu.h"
 #include "rtc.h"
 #include "scc.h"
 #include "scheduler.h"
@@ -80,6 +82,19 @@ LOG_USE_CATEGORY_NAME("se30");
 #define SE30_IRQ_SCC  (1 << 2) // IPL level 4
 #define SE30_IRQ_NMI  (1 << 3) // IPL level 7
 
+// SE/30 Video RAM: 64 KB at physical $FE000000 (NuBus slot E standard space)
+#define SE30_VRAM_BASE 0xFE000000UL
+#define SE30_VRAM_SIZE 0x00010000UL // 64 KB
+
+// SE/30 Video ROM: 8 KB, mapped at physical $FEFFE000 (top of slot E)
+// Byte lanes = $0F (all lanes), so data is contiguous at the top 8 KB
+#define SE30_VROM_BASE 0xFEFFE000UL
+#define SE30_VROM_SIZE 0x00002000UL // 8 KB
+
+// Framebuffer offsets within the 64 KB VRAM
+#define SE30_FB_PRIMARY_OFFSET   0x8040 // main screen buffer
+#define SE30_FB_ALTERNATE_OFFSET 0x0040 // alternate screen buffer
+
 // ============================================================
 // SE/30-specific state
 // ============================================================
@@ -94,6 +109,15 @@ typedef struct se30_state {
 
     // ROM overlay state (true = ROM mapped at $00000000)
     bool rom_overlay;
+
+    // Video RAM (64 KB, separate from main RAM)
+    uint8_t *vram;
+
+    // Video ROM (synthesised NuBus declaration ROM for slot E)
+    uint8_t vrom[SE30_VROM_SIZE];
+
+    // MMU state (NULL until se30_init creates it)
+    mmu_state_t *mmu;
 
     // Cached device interfaces for I/O dispatch
     const memory_interface_t *via1_iface;
@@ -126,6 +150,168 @@ static void se30_scc_irq(void *context, bool active);
 static void se30_update_ipl(config_t *cfg, int source, bool active);
 
 // ============================================================
+// VROM synthesis (NuBus declaration ROM for slot E)
+// ============================================================
+
+// Build a minimal but valid NuBus declaration ROM so the Slot Manager
+// discovers the built-in 512×342 monochrome display at slot E.
+static void se30_build_vrom(uint8_t *rom) {
+    memset(rom, 0, SE30_VROM_SIZE);
+
+    // --- sResource Directory at 0x0000 ---
+    // Board sResource (ID=1)
+    rom[0x00] = 0x01;
+    rom[0x03] = 0x0C; // offset → 0x000C
+
+    // Video sResource (ID=0x80)
+    rom[0x04] = 0x80;
+    rom[0x07] = 0x1C; // offset = 0x1C, target = 0x0004+0x1C = 0x0020
+
+    // End of directory
+    rom[0x08] = 0xFF;
+
+    // --- Board sResource at 0x000C ---
+    // sRsrcType(1) → type at 0x0034
+    rom[0x0C] = 0x01;
+    rom[0x0F] = 0x28; // offset = 0x28, target = 0x000C+0x28 = 0x0034
+
+    // sRsrcName(2) → name at 0x0044
+    rom[0x10] = 0x02;
+    rom[0x13] = 0x34; // offset = 0x34, target = 0x0010+0x34 = 0x0044
+
+    // BoardId(0x20) = 9 (SE/30 board ID)
+    rom[0x14] = 0x20;
+    rom[0x17] = 0x09;
+
+    // PrimaryInit(0x22) → sExec at 0x0070
+    rom[0x18] = 0x22;
+    rom[0x1B] = 0x58; // offset = 0x58, target = 0x0018+0x58 = 0x0070
+
+    // End
+    rom[0x1C] = 0xFF;
+
+    // --- Video sResource at 0x0020 ---
+    // sRsrcType(1) → type at 0x003C
+    rom[0x20] = 0x01;
+    rom[0x23] = 0x1C; // offset = 0x1C, target = 0x0020+0x1C = 0x003C
+
+    // sRsrcName(2) → name at 0x0054
+    rom[0x24] = 0x02;
+    rom[0x27] = 0x30; // offset = 0x30, target = 0x0024+0x30 = 0x0054
+
+    // minorBaseOS(0x0A) = 0 (VRAM at slot base)
+    rom[0x28] = 0x0A;
+
+    // minorLength(0x0B) = 0x010000 (64 KB)
+    rom[0x2C] = 0x0B;
+    rom[0x2D] = 0x01;
+
+    // End
+    rom[0x30] = 0xFF;
+
+    // --- Board type descriptor at 0x0034 (8 bytes) ---
+    // {catBoard(1), typeBoard(0), drSW(0), drHW(0)}
+    rom[0x35] = 0x01; // catBoard = 1
+
+    // --- Video type descriptor at 0x003C (8 bytes) ---
+    // {catDisplay(3), typeVideo(1), drSwApple(1), drHW(0)}
+    rom[0x3D] = 0x03; // catDisplay = 3
+    rom[0x3F] = 0x01; // typeVideo = 1
+    rom[0x41] = 0x01; // drSwApple = 1
+
+    // --- Board name at 0x0044 ---
+    memcpy(&rom[0x44], "Macintosh SE/30", 16); // includes null terminator
+
+    // --- Video name at 0x0054 ---
+    memcpy(&rom[0x54], "Display_Video_Apple_SE30", 25); // includes null
+
+    // --- PrimaryInit sExec block at 0x0070 ---
+    rom[0x70] = 0x02; // revision = 2
+    rom[0x71] = 0x03; // cpu = 3 (68020/68030)
+    rom[0x77] = 0x08; // code offset from sExec start = 8
+    rom[0x78] = 0x4E; // RTS high byte
+    rom[0x79] = 0x75; // RTS low byte
+
+    // --- Format Header at 0x1FEC (last 20 bytes of 8 KB ROM) ---
+    // fhDirOffset: directory at 0x0000, fhDirOffset at 0x1FEC
+    // offset = 0x0000 - 0x1FEC = -0x1FEC = 0xFFFFE014
+    rom[0x1FEC] = 0xFF;
+    rom[0x1FED] = 0xFF;
+    rom[0x1FEE] = 0xE0;
+    rom[0x1FEF] = 0x14;
+
+    // fhLength: 0x00002000 (8192)
+    rom[0x1FF2] = 0x20;
+
+    // fhCRC: computed below (leave as 0 for now at 0x1FF4-0x1FF7)
+
+    // fhROMRev: 1
+    rom[0x1FF8] = 0x01;
+
+    // fhFormat: 1 (AppleFormat)
+    rom[0x1FF9] = 0x01;
+
+    // fhTstPat: 0x5A932BC7
+    rom[0x1FFA] = 0x5A;
+    rom[0x1FFB] = 0x93;
+    rom[0x1FFC] = 0x2B;
+    rom[0x1FFD] = 0xC7;
+
+    // fhReserved: 0
+    // fhByteLanes: 0x0F (all four byte lanes, contiguous data)
+    rom[0x1FFF] = 0x0F;
+
+    // Compute CRC: ROL 1 + ADD for each byte, skipping the CRC field itself
+    uint32_t crc = 0;
+    for (int i = 0; i < (int)SE30_VROM_SIZE; i++) {
+        if (i >= 0x1FF4 && i < 0x1FF8)
+            continue; // skip CRC field
+        crc = ((crc << 1) | (crc >> 31)) + rom[i];
+    }
+
+    // Write CRC at 0x1FF4 (big-endian)
+    rom[0x1FF4] = (uint8_t)(crc >> 24);
+    rom[0x1FF5] = (uint8_t)(crc >> 16);
+    rom[0x1FF6] = (uint8_t)(crc >> 8);
+    rom[0x1FF7] = (uint8_t)(crc);
+}
+
+// ============================================================
+// SoA page helper
+// ============================================================
+
+// Populate both the AoS page_entry_t and the SoA fast-path arrays for one page.
+// For read-only pages (writable=false), write SoA entries stay zero (slow-path).
+static void se30_fill_page(uint32_t page_index, uint8_t *host_ptr, bool writable) {
+    if ((int)page_index >= g_page_count)
+        return;
+
+    // AoS cold-path entry
+    g_page_table[page_index].host_base = host_ptr;
+    g_page_table[page_index].dev = NULL;
+    g_page_table[page_index].dev_context = NULL;
+    g_page_table[page_index].writable = writable;
+
+    // Compute adjusted base for the SoA fast-path
+    uint32_t guest_base = page_index << PAGE_SHIFT;
+    uintptr_t adjusted = (uintptr_t)host_ptr - guest_base;
+
+    // All pages are readable by supervisor and user
+    if (g_supervisor_read)
+        g_supervisor_read[page_index] = adjusted;
+    if (g_user_read)
+        g_user_read[page_index] = adjusted;
+
+    // Only writable pages get write entries
+    if (writable) {
+        if (g_supervisor_write)
+            g_supervisor_write[page_index] = adjusted;
+        if (g_user_write)
+            g_user_write[page_index] = adjusted;
+    }
+}
+
+// ============================================================
 // ROM overlay
 // ============================================================
 
@@ -143,22 +329,17 @@ static void se30_set_rom_overlay(config_t *cfg, bool overlay) {
     uint32_t rom_start_page = SE30_ROM_START >> PAGE_SHIFT;
 
     if (overlay) {
-        // Map ROM at $00000000 (copy host_base from ROM region at $40000000)
+        // Map ROM at $00000000 (copy from ROM region at $40000000)
         for (uint32_t p = 0; p < rom_pages && (int)p < g_page_count; p++) {
-            g_page_table[p].host_base = g_page_table[rom_start_page + p].host_base;
-            g_page_table[p].dev = NULL;
-            g_page_table[p].dev_context = NULL;
-            g_page_table[p].writable = false;
+            uint8_t *host_ptr = g_page_table[rom_start_page + p].host_base;
+            se30_fill_page(p, host_ptr, false); // read-only
         }
         LOG(1, "ROM overlay enabled: ROM at $00000000");
     } else {
         // Map RAM back at $00000000
         uint8_t *ram_base = ram_native_pointer(cfg->mem_map, 0);
         for (uint32_t p = 0; p < rom_pages && (int)p < g_page_count; p++) {
-            g_page_table[p].host_base = ram_base + (p << PAGE_SHIFT);
-            g_page_table[p].dev = NULL;
-            g_page_table[p].dev_context = NULL;
-            g_page_table[p].writable = true;
+            se30_fill_page(p, ram_base + (p << PAGE_SHIFT), true); // writable
         }
         LOG(1, "ROM overlay disabled: RAM at $00000000");
     }
@@ -330,6 +511,8 @@ static void se30_io_write_uint32(void *ctx, uint32_t addr, uint32_t value) {
 // RAM: $00000000-$3FFFFFFF (actual size from profile, mirrored)
 // ROM: $40000000-$4FFFFFFF (256 KB mirrored across 256 MB)
 // I/O: $50000000-$5FFFFFFF (dispatcher with $20000 mirroring)
+// VRAM: $FE000000-$FE00FFFF (64 KB, writable)
+// VROM: $FEFFE000-$FEFFFFFF (8 KB, read-only, synthesised declaration ROM)
 // ROM overlay at $00000000 is active on reset.
 static void se30_memory_layout_init(config_t *cfg) {
     se30_state_t *se30 = se30_state(cfg);
@@ -342,12 +525,8 @@ static void se30_memory_layout_init(config_t *cfg) {
 
     // --- RAM pages: $00000000 - ram_size (writable, direct access) ---
     uint32_t ram_pages = ram_size >> PAGE_SHIFT;
-    for (uint32_t p = 0; p < ram_pages && (int)p < g_page_count; p++) {
-        g_page_table[p].host_base = ram_base + (p << PAGE_SHIFT);
-        g_page_table[p].dev = NULL;
-        g_page_table[p].dev_context = NULL;
-        g_page_table[p].writable = true;
-    }
+    for (uint32_t p = 0; p < ram_pages && (int)p < g_page_count; p++)
+        se30_fill_page(p, ram_base + (p << PAGE_SHIFT), true);
 
     // --- ROM pages: $40000000 - $4FFFFFFF (256 KB mirrored, read-only) ---
     uint32_t rom_pages = rom_size >> PAGE_SHIFT;
@@ -357,10 +536,7 @@ static void se30_memory_layout_init(config_t *cfg) {
     if (rom_pages > 0) {
         for (uint32_t p = rom_start_page; p < rom_end_page && (int)p < g_page_count; p++) {
             uint32_t offset_in_rom = (p - rom_start_page) % rom_pages;
-            g_page_table[p].host_base = rom_data + (offset_in_rom << PAGE_SHIFT);
-            g_page_table[p].dev = NULL;
-            g_page_table[p].dev_context = NULL;
-            g_page_table[p].writable = false;
+            se30_fill_page(p, rom_data + (offset_in_rom << PAGE_SHIFT), false);
         }
     }
 
@@ -373,6 +549,26 @@ static void se30_memory_layout_init(config_t *cfg) {
     se30->io_interface.write_uint32 = se30_io_write_uint32;
 
     memory_map_add(cfg->mem_map, SE30_IO_BASE, SE30_IO_SIZE, "SE/30 I/O", &se30->io_interface, cfg);
+
+    // --- VRAM: $FE000000 - $FE00FFFF (64 KB writable) ---
+    // Mirror the 64 KB across the 1 MB decode window $FE000000-$FE0FFFFF
+    if (se30->vram) {
+        uint32_t vram_pages = SE30_VRAM_SIZE >> PAGE_SHIFT; // 16 pages
+        uint32_t vram_start_page = SE30_VRAM_BASE >> PAGE_SHIFT;
+        uint32_t vram_mirror_end = (SE30_VRAM_BASE + 0x100000) >> PAGE_SHIFT; // 1 MB window
+        for (uint32_t p = vram_start_page; p < vram_mirror_end && (int)p < g_page_count; p++) {
+            uint32_t offset_in_vram = ((p - vram_start_page) % vram_pages) << PAGE_SHIFT;
+            se30_fill_page(p, se30->vram + offset_in_vram, true);
+        }
+    }
+
+    // --- VROM: $FEFFE000 - $FEFFFFFF (8 KB read-only) ---
+    {
+        uint32_t vrom_pages = SE30_VROM_SIZE >> PAGE_SHIFT; // 2 pages
+        uint32_t vrom_start_page = SE30_VROM_BASE >> PAGE_SHIFT;
+        for (uint32_t p = 0; p < vrom_pages && (int)(vrom_start_page + p) < g_page_count; p++)
+            se30_fill_page(vrom_start_page + p, se30->vrom + (p << PAGE_SHIFT), false);
+    }
 
     // --- ROM overlay: map ROM at $00000000 on reset ---
     se30->rom_overlay = false; // se30_set_rom_overlay will toggle it on
@@ -425,7 +621,9 @@ static void se30_via1_output(void *context, uint8_t port, uint8_t output) {
 
     if (port == 0) {
         // Port A outputs:
-        // Bit 6: alternate screen buffer
+        // Bit 6: alternate screen buffer (1 = alternate at VRAM+$0040, 0 = primary at VRAM+$8040)
+        bool alt_buf = (output & 0x40) != 0;
+        cfg->ram_vbuf = se30->vram + (alt_buf ? SE30_FB_ALTERNATE_OFFSET : SE30_FB_PRIMARY_OFFSET);
         // Bit 5: floppy head select → SWIM
         if (se30->swim)
             swim_set_sel_signal(se30->swim, (output & 0x20) != 0);
@@ -619,11 +817,44 @@ static void se30_init(config_t *cfg, checkpoint_t *checkpoint) {
     se30->asc_iface = asc_get_memory_interface(se30->asc);
     se30->swim_iface = swim_get_memory_interface(se30->swim);
 
-    // Populate SE/30 memory layout (RAM, ROM, I/O dispatcher, ROM overlay)
+    // ---- VRAM / VROM / MMU wiring ----
+
+    // Allocate 64 KB VRAM (framebuffer lives here, not in main RAM)
+    se30->vram = calloc(1, SE30_VRAM_SIZE);
+    assert(se30->vram != NULL);
+
+    // Build the synthesised NuBus declaration ROM for built-in video
+    se30_build_vrom(se30->vrom);
+
+    // Create the 68030 PMMU and make it globally reachable
+    uint8_t *ram_base = ram_native_pointer(cfg->mem_map, 0);
+    uint32_t ram_size = cfg->machine->ram_size_default;
+    uint8_t *rom_data = ram_native_pointer(cfg->mem_map, ram_size);
+    uint32_t rom_size = cfg->machine->rom_size;
+
+    se30->mmu = mmu_init(ram_base, ram_size, rom_data, rom_size, SE30_ROM_START);
+    assert(se30->mmu != NULL);
+    g_mmu = se30->mmu;
+    cfg->cpu->mmu = se30->mmu;
+
+    // Let the MMU resolve VRAM physical addresses during table walks
+    mmu_register_vram(se30->mmu, se30->vram, SE30_VRAM_BASE, SE30_VRAM_SIZE);
+
+    // Point the video subsystem at the primary framebuffer in VRAM
+    cfg->ram_vbuf = se30->vram + SE30_FB_PRIMARY_OFFSET;
+
+    // Populate SE/30 memory layout (RAM, ROM, VRAM, VROM, I/O, overlay)
     se30_memory_layout_init(cfg);
 
-    // Re-drive VIA outputs on checkpoint restore
+    // Re-drive VIA outputs on checkpoint restore (also restores alt-buffer state)
     if (checkpoint) {
+        // Restore VRAM contents
+        system_read_checkpoint_data(checkpoint, se30->vram, SE30_VRAM_SIZE);
+
+        // Re-assign MMU pointers that checkpoint_restore overwrote with stale addresses
+        g_mmu = se30->mmu;
+        cfg->cpu->mmu = se30->mmu;
+
         via_redrive_outputs(cfg->via1);
         via_redrive_outputs(cfg->via2);
     }
@@ -647,6 +878,14 @@ static void se30_teardown(config_t *cfg) {
     se30_state_t *se30 = se30_state(cfg);
 
     if (se30) {
+        if (se30->mmu) {
+            mmu_delete(se30->mmu); // also clears g_mmu if it matches
+            se30->mmu = NULL;
+        }
+        if (se30->vram) {
+            free(se30->vram);
+            se30->vram = NULL;
+        }
         if (se30->swim) {
             swim_delete(se30->swim);
             se30->swim = NULL;
@@ -737,6 +976,9 @@ static void se30_checkpoint_save(config_t *cfg, checkpoint_t *cp) {
     scsi_checkpoint(cfg->scsi, cp);
     asc_checkpoint(se30->asc, cp);
     swim_checkpoint(se30->swim, cp);
+
+    // Save VRAM contents (must match restore order in se30_init)
+    system_write_checkpoint_data(cp, se30->vram, SE30_VRAM_SIZE);
 }
 
 // ============================================================
