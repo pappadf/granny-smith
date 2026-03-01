@@ -77,7 +77,8 @@ typedef struct mmu_state {
     uint32_t physical_ram_size; // size of RAM in bytes
     uint8_t *physical_rom; // base of physical ROM buffer
     uint32_t physical_rom_size; // size of ROM in bytes
-    uint32_t rom_phys_base; // physical address where ROM is mapped
+    uint32_t rom_phys_base; // physical address where ROM region starts
+    uint32_t rom_region_end; // end of ROM mirror region (exclusive)
 
     // Optional VRAM region (SE/30 built-in video at $FE000000)
     uint8_t *physical_vram; // base of VRAM buffer (NULL if none)
@@ -87,9 +88,10 @@ typedef struct mmu_state {
 
 // === Lifecycle ===
 
-// Create MMU state with pointers to physical RAM/ROM
+// Create MMU state with pointers to physical RAM/ROM.
+// rom_region_end marks the end of the address range where ROM mirrors repeat.
 mmu_state_t *mmu_init(uint8_t *physical_ram, uint32_t ram_size, uint8_t *physical_rom, uint32_t rom_size,
-                      uint32_t rom_phys_base);
+                      uint32_t rom_phys_base, uint32_t rom_region_end);
 
 // Destroy MMU state
 void mmu_delete(mmu_state_t *mmu);

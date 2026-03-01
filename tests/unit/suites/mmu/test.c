@@ -98,7 +98,7 @@ TEST(test_mmu_init_delete) {
     memory_map_t *mem = memory_map_init(32, 0x400000, 0x040000, NULL);
     uint8_t *ram = ram_native_pointer(mem, 0);
 
-    mmu_state_t *mmu = mmu_init(ram, 0x400000, ram + 0x400000, 0x040000, 0x40000000);
+    mmu_state_t *mmu = mmu_init(ram, 0x400000, ram + 0x400000, 0x040000, 0x40000000, 0x50000000);
     ASSERT_TRUE(mmu != NULL);
     ASSERT_TRUE(!mmu->enabled);
     ASSERT_EQ_INT(0, (int)mmu->tc);
@@ -120,7 +120,7 @@ TEST(test_tlb_invalidation) {
     ASSERT_TRUE(g_supervisor_read[0] != 0);
     ASSERT_TRUE(g_supervisor_write[0] != 0);
 
-    mmu_state_t *mmu = mmu_init(ram_native_pointer(mem, 0), 0x400000, NULL, 0, 0);
+    mmu_state_t *mmu = mmu_init(ram_native_pointer(mem, 0), 0x400000, NULL, 0, 0, 0);
     mmu->enabled = true; // TLB invalidation only zeroes when MMU is enabled
     mmu_invalidate_tlb(mmu);
 
@@ -143,7 +143,7 @@ TEST(test_two_level_translation) {
     memory_populate_pages(mem, 0x40000000, 0x40080000);
 
     uint8_t *ram = ram_native_pointer(mem, 0);
-    mmu_state_t *mmu = mmu_init(ram, 0x400000, ram + 0x400000, 0x040000, 0x40000000);
+    mmu_state_t *mmu = mmu_init(ram, 0x400000, ram + 0x400000, 0x040000, 0x40000000, 0x50000000);
 
     // Build a simple two-level page table in RAM:
     // TC: IS=0, PS=4 (4KB pages), TIA=8, TIB=12, TIC=0, TID=0
@@ -214,7 +214,7 @@ TEST(test_two_level_translation) {
 TEST(test_invalid_descriptor_bus_error) {
     memory_map_t *mem = memory_map_init(32, 0x400000, 0x040000, NULL);
     uint8_t *ram = ram_native_pointer(mem, 0);
-    mmu_state_t *mmu = mmu_init(ram, 0x400000, NULL, 0, 0);
+    mmu_state_t *mmu = mmu_init(ram, 0x400000, NULL, 0, 0, 0);
 
     // TC: IS=0, PS=4, TIA=8, TIB=12
     uint32_t tc = (1u << 31) | (4u << 20) | (8u << 12) | (12u << 8);
@@ -250,7 +250,7 @@ TEST(test_transparent_translation) {
     memory_populate_pages(mem, 0x40000000, 0x40080000);
 
     uint8_t *ram = ram_native_pointer(mem, 0);
-    mmu_state_t *mmu = mmu_init(ram, 0x400000, NULL, 0, 0);
+    mmu_state_t *mmu = mmu_init(ram, 0x400000, NULL, 0, 0, 0);
 
     // Enable MMU but don't set up translation tables
     mmu->tc = (1u << 31) | (4u << 20) | (8u << 12) | (12u << 8);
@@ -301,7 +301,7 @@ TEST(test_transparent_translation) {
 TEST(test_write_protection) {
     memory_map_t *mem = memory_map_init(32, 0x400000, 0x040000, NULL);
     uint8_t *ram = ram_native_pointer(mem, 0);
-    mmu_state_t *mmu = mmu_init(ram, 0x400000, NULL, 0, 0);
+    mmu_state_t *mmu = mmu_init(ram, 0x400000, NULL, 0, 0, 0);
 
     // TC: IS=0, PS=4, TIA=8, TIB=12
     uint32_t tc = (1u << 31) | (4u << 20) | (8u << 12) | (12u << 8);
@@ -348,7 +348,7 @@ TEST(test_write_protection) {
 TEST(test_supervisor_only_pages) {
     memory_map_t *mem = memory_map_init(32, 0x400000, 0x040000, NULL);
     uint8_t *ram = ram_native_pointer(mem, 0);
-    mmu_state_t *mmu = mmu_init(ram, 0x400000, NULL, 0, 0);
+    mmu_state_t *mmu = mmu_init(ram, 0x400000, NULL, 0, 0, 0);
 
     // TC: IS=0, PS=4, TIA=8, TIB=12
     uint32_t tc = (1u << 31) | (4u << 20) | (8u << 12) | (12u << 8);

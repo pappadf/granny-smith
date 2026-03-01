@@ -74,6 +74,17 @@ echo "<command>" | nc -q 1 localhost 6800
 The daemon reads the command, executes it, writes all output to the socket,
 and closes the connection when the command finishes (or the emulator stops).
 
+**Every response ends with a status line** showing the disassembled instruction
+at the current PC (like the web shell prompt). For example:
+
+```
+$ echo "s" | nc -q 1 localhost 6800
+4083f61c  6000  BRA       *+$023A
+```
+
+This means the PC is now at `0x4083f61c` and the next instruction to execute
+is `BRA *+$023A`. This applies to all commands — `s`, `td`, `get pc`, `x`, etc.
+
 ### Capturing output
 
 ```bash
@@ -146,22 +157,29 @@ echo "$RESULT"
 
 ### Single-step the boot sequence
 
+Every command response includes the current PC and disassembled instruction,
+so just sending `s` repeatedly produces a trace:
+
 ```bash
 # Start daemon
 ./build/headless/gs-headless --daemon rom=tests/data/roms/SE30.rom &
 sleep 2
 
-# Check initial state
-echo "get pc" | nc -q 1 localhost 6800
-echo "td" | nc -q 1 localhost 6800
-
-# Step one instruction at a time
+# Step one instruction — output shows where PC is now
 echo "s" | nc -q 1 localhost 6800
-echo "get pc" | nc -q 1 localhost 6800
+# output: 40800090  4ef9  JMP       $4083F61C
 
-# Step 10 instructions
-echo "s 10" | nc -q 1 localhost 6800
+echo "s" | nc -q 1 localhost 6800
+# output: 4083f61c  6000  BRA       *+$023A
+
+echo "s" | nc -q 1 localhost 6800
+# output: 4083f858  46fc  MOVE      #$2700,SR
+
+# Step 10 instructions at once — shows final position
+echo "s 10" | nc -q 2 localhost 6800
 ```
+
+No need for separate `get pc` or `disasm` calls after stepping.
 
 ### Run to a breakpoint
 

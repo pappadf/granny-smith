@@ -358,10 +358,12 @@ static uint8_t se30_io_read_uint8(void *ctx, uint32_t addr) {
     // Mirror: take lower 17 bits of the offset from I/O base
     uint32_t offset = addr & SE30_IO_MIRROR;
 
+    // VIA chips are 8-bit devices on even byte lanes only;
+    // odd-address reads return bus float ($FF)
     if (offset < IO_VIA1_END)
-        return se30->via1_iface->read_uint8(cfg->via1, offset - IO_VIA1);
+        return (offset & 1) ? 0xFF : se30->via1_iface->read_uint8(cfg->via1, offset - IO_VIA1);
     if (offset < IO_VIA2_END)
-        return se30->via2_iface->read_uint8(cfg->via2, offset - IO_VIA2);
+        return (offset & 1) ? 0xFF : se30->via2_iface->read_uint8(cfg->via2, offset - IO_VIA2);
     if (offset < IO_SCC_END)
         return se30->scc_iface->read_uint8(cfg->scc, offset - IO_SCC);
     if (offset < IO_SCSI_DRQ_END) {
@@ -429,12 +431,16 @@ static void se30_io_write_uint8(void *ctx, uint32_t addr, uint8_t value) {
 
     uint32_t offset = addr & SE30_IO_MIRROR;
 
+    // VIA chips are 8-bit devices on even byte lanes only;
+    // odd-address writes are ignored (no device on that lane)
     if (offset < IO_VIA1_END) {
-        se30->via1_iface->write_uint8(cfg->via1, offset - IO_VIA1, value);
+        if (!(offset & 1))
+            se30->via1_iface->write_uint8(cfg->via1, offset - IO_VIA1, value);
         return;
     }
     if (offset < IO_VIA2_END) {
-        se30->via2_iface->write_uint8(cfg->via2, offset - IO_VIA2, value);
+        if (!(offset & 1))
+            se30->via2_iface->write_uint8(cfg->via2, offset - IO_VIA2, value);
         return;
     }
     if (offset < IO_SCC_END) {
@@ -832,7 +838,7 @@ static void se30_init(config_t *cfg, checkpoint_t *checkpoint) {
     uint8_t *rom_data = ram_native_pointer(cfg->mem_map, ram_size);
     uint32_t rom_size = cfg->machine->rom_size;
 
-    se30->mmu = mmu_init(ram_base, ram_size, rom_data, rom_size, SE30_ROM_START);
+    se30->mmu = mmu_init(ram_base, ram_size, rom_data, rom_size, SE30_ROM_START, SE30_ROM_END);
     assert(se30->mmu != NULL);
     g_mmu = se30->mmu;
     cfg->cpu->mmu = se30->mmu;

@@ -22,25 +22,30 @@ mmu_state_t *g_mmu = NULL;
 
 // Read a 32-bit big-endian value from physical RAM at the given address.
 // Used during table walks to fetch descriptors from the guest's page tables.
+// ROM region addresses are wrapped modulo rom_size to handle mirroring.
 static uint32_t phys_read32(mmu_state_t *mmu, uint32_t phys_addr) {
     if (phys_addr + 4 <= mmu->physical_ram_size) {
         return LOAD_BE32(mmu->physical_ram + phys_addr);
     }
-    // Check if address falls in ROM region
-    if (mmu->physical_rom && phys_addr >= mmu->rom_phys_base &&
-        phys_addr + 4 <= mmu->rom_phys_base + mmu->physical_rom_size) {
-        return LOAD_BE32(mmu->physical_rom + (phys_addr - mmu->rom_phys_base));
+    // Check if address falls in ROM mirror region and wrap to actual ROM data
+    if (mmu->physical_rom && phys_addr >= mmu->rom_phys_base && phys_addr < mmu->rom_region_end) {
+        uint32_t offset = (phys_addr - mmu->rom_phys_base) % mmu->physical_rom_size;
+        if (offset + 4 <= mmu->physical_rom_size)
+            return LOAD_BE32(mmu->physical_rom + offset);
     }
     return 0; // unmapped physical address
 }
 
 // Resolve a physical address to a host pointer (RAM, ROM, or VRAM).
 // Returns NULL if the physical address is not backed by host memory.
+// ROM addresses are wrapped modulo rom_size to handle mirroring.
 static uint8_t *phys_to_host(mmu_state_t *mmu, uint32_t phys_addr) {
     if (phys_addr < mmu->physical_ram_size)
         return mmu->physical_ram + phys_addr;
-    if (mmu->physical_rom && phys_addr >= mmu->rom_phys_base && phys_addr < mmu->rom_phys_base + mmu->physical_rom_size)
-        return mmu->physical_rom + (phys_addr - mmu->rom_phys_base);
+    if (mmu->physical_rom && phys_addr >= mmu->rom_phys_base && phys_addr < mmu->rom_region_end) {
+        uint32_t offset = (phys_addr - mmu->rom_phys_base) % mmu->physical_rom_size;
+        return mmu->physical_rom + offset;
+    }
     if (mmu->physical_vram && phys_addr >= mmu->vram_phys_base &&
         phys_addr < mmu->vram_phys_base + mmu->physical_vram_size)
         return mmu->physical_vram + (phys_addr - mmu->vram_phys_base);
@@ -51,6 +56,9 @@ static uint8_t *phys_to_host(mmu_state_t *mmu, uint32_t phys_addr) {
 static bool phys_is_writable(mmu_state_t *mmu, uint32_t phys_addr) {
     if (phys_addr < mmu->physical_ram_size)
         return true;
+    // ROM mirror region is read-only
+    if (mmu->physical_rom && phys_addr >= mmu->rom_phys_base && phys_addr < mmu->rom_region_end)
+        return false;
     if (mmu->physical_vram && phys_addr >= mmu->vram_phys_base &&
         phys_addr < mmu->vram_phys_base + mmu->physical_vram_size)
         return true;
@@ -259,7 +267,7 @@ static void mmu_fill_soa_entry(mmu_state_t *mmu, uint32_t logical_page, uint32_t
 
 // Create MMU state
 mmu_state_t *mmu_init(uint8_t *physical_ram, uint32_t ram_size, uint8_t *physical_rom, uint32_t rom_size,
-                      uint32_t rom_phys_base) {
+                      uint32_t rom_phys_base, uint32_t rom_region_end) {
     mmu_state_t *mmu = (mmu_state_t *)calloc(1, sizeof(mmu_state_t));
     if (!mmu)
         return NULL;
@@ -269,6 +277,7 @@ mmu_state_t *mmu_init(uint8_t *physical_ram, uint32_t ram_size, uint8_t *physica
     mmu->physical_rom = physical_rom;
     mmu->physical_rom_size = rom_size;
     mmu->rom_phys_base = rom_phys_base;
+    mmu->rom_region_end = rom_region_end;
     mmu->enabled = false;
 
     return mmu;

@@ -181,9 +181,9 @@ static void cpu_pmmu_general(cpu_t *cpu, uint16_t opcode) {
                     mmu->tc = val;
                     mmu->enabled = TC_ENABLE(val) != 0;
                     // Validate TC configuration: IS+PS+TIA+TIB+TIC+TID must equal 32
+                    // PS field (bits 23:20) holds the page size exponent directly (valid: 8–15)
                     if (mmu->enabled) {
-                        uint32_t sum =
-                            TC_IS(val) + (TC_PS(val) + 8) + TC_TIA(val) + TC_TIB(val) + TC_TIC(val) + TC_TID(val);
+                        uint32_t sum = TC_IS(val) + TC_PS(val) + TC_TIA(val) + TC_TIB(val) + TC_TIC(val) + TC_TID(val);
                         if (sum != 32) {
                             // MMU configuration exception (vector 56 = 0xE0)
                             exception(cpu, 0xE0, cpu->pc, cpu_get_sr(cpu));

@@ -7,6 +7,7 @@
 #include "platform.h"
 
 #include "cpu.h"
+#include "debug.h"
 #include "floppy.h"
 #include "image.h"
 #include "log.h"
@@ -224,6 +225,14 @@ static void daemon_handle_client(int client_fd) {
         scheduler_main_loop(global_emulator, now * 1000.0);
     }
 
+    // Emit current instruction as a status line (like the web shell prompt)
+    if (system_is_initialized()) {
+        char disasm_buf[100];
+        debugger_disasm_pc(disasm_buf);
+        if (disasm_buf[0] != '\0')
+            printf("%s\n", disasm_buf);
+    }
+
     // Flush and restore output before closing the connection
     daemon_restore_output();
 
@@ -336,11 +345,20 @@ static int stdin_has_data(void) {
     return select(STDIN_FILENO + 1, &fds, NULL, NULL, &tv) > 0;
 }
 
-// Shell prompt for headless mode (no-op in daemon mode)
+// Shell prompt — shows disassembled current instruction (like the web shell)
 void print_prompt(void) {
     if (g_daemon_mode)
         return;
-    printf("gs> ");
+    if (system_is_initialized()) {
+        char disasm_buf[100];
+        debugger_disasm_pc(disasm_buf);
+        if (disasm_buf[0] != '\0')
+            printf("%s > ", disasm_buf);
+        else
+            printf("gs> ");
+    } else {
+        printf("gs> ");
+    }
     fflush(stdout);
 }
 

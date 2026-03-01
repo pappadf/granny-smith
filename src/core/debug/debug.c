@@ -799,8 +799,6 @@ static uint64_t cmd_td(int argc, char *argv[]) {
 }
 
 static uint64_t cmd_step(int argc, char *argv[]) {
-    printf("cmd_step called with %d args\n", argc);
-
     if (argc > 2) {
         printf("Usage: s [n instructions]\n");
         return 0;
