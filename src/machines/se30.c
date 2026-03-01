@@ -521,6 +521,9 @@ static void se30_init(config_t *cfg, checkpoint_t *checkpoint) {
 
     cfg->scheduler = scheduler_init(cfg->cpu, checkpoint);
 
+    // Set SE/30 CPU clock frequency (15.6672 MHz = 2x Plus clock)
+    scheduler_set_frequency(cfg->scheduler, cfg->machine->cpu_clock_hz);
+
     // Restore global interrupt state after scheduler
     if (checkpoint)
         system_read_checkpoint_data(checkpoint, &cfg->irq, sizeof(cfg->irq));

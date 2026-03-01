@@ -1,0 +1,9 @@
+# Integration test: SE/30 Boot
+# Loads Universal ROM, boots SE/30 for 50M instructions, verifies no crash.
+# The ROM will enable the PMMU for 24-bit mode and probe hardware IDs.
+
+# Run 50M instructions to exercise ROM init (checksum, RAM test, PMMU, VIA probing)
+run 50000000
+
+# If we reach here, the ROM boot code ran without fatal bus errors or infinite loops
+quit

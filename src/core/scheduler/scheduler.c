@@ -781,7 +781,7 @@ uint64_t scheduler_cpu_cycles(struct scheduler *restrict scheduler) {
 // Get current emulated time in nanoseconds
 double scheduler_time_ns(struct scheduler *restrict scheduler) {
     uint64_t cycles = scheduler_cpu_cycles(scheduler);
-    return (double)cycles * (1e9 / MAC_CPU_FREQUENCY);
+    return (double)cycles * (1e9 / (double)scheduler->frequency);
 }
 
 // Get the total number of CPU instructions executed so far
@@ -829,6 +829,14 @@ void scheduler_set_mode(struct scheduler *restrict s, enum schedule_mode mode) {
     s->mode = mode;
     if (mode == schedule_real_time)
         s->vbl_acc_error = 0.0; // reset accumulated timing error
+}
+
+// Set the CPU clock frequency in Hz
+void scheduler_set_frequency(struct scheduler *restrict s, uint32_t frequency_hz) {
+    if (!s)
+        return;
+    GS_ASSERT(frequency_hz > 0);
+    s->frequency = frequency_hz;
 }
 
 // Run the scheduler for a specified number of instructions
