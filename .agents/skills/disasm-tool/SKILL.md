@@ -1,10 +1,9 @@
 ---
 name: disasm-tool
 description: >
-  Use when you need to disassemble 68000/68030 binary code from a ROM or other
-  binary file: viewing instructions at a given offset, understanding boot
-  sequences, analysing trap calls, or tracing branch destinations without
-  running the full emulator.
+  Standalone 68000/68030 disassembler for ROM images and binary files.
+  Covers CLI usage, address calculation, output format, and common
+  workflows for offline static analysis without the emulator.
 triggers:
   - disassemble a file
   - disassemble ROM
@@ -14,6 +13,12 @@ triggers:
   - decode instructions
   - rom analysis
   - binary analysis
+  - read ROM bytes
+  - what's at address
+  - hex dump
+  - trap lookup
+  - A-trap
+  - explore ROM
 ---
 
 # Granny Smith `disasm` Tool — Agent Skill
@@ -178,9 +183,34 @@ Works on any raw 68K binary (disk sector dumps, code resources, etc.):
 - Offset and length values accept both decimal (`144`) and hex (`0x90`) formats.
 - A-trap instructions (opcodes `0xA000`–`0xAFFF`) are automatically resolved to
   human-readable names (e.g., `_SwapMMUMode`, `_NewPtr`).
-- The branch destination annotation (`; -> $addr`) only appears for PC-relative
-  branch/jump instructions. Absolute `JMP $addr` and `JSR $addr` already show
-  the target in their operands.
+- PC-relative target annotations (`; -> $addr`) appear for all PC-relative operands
+  including branch instructions (Bcc, BRA, BSR, DBcc) as well as LEA, PEA, JSR,
+  and JMP that use PC-relative addressing modes.
+- PMMU instructions (PMOVE, PFLUSH, PFLUSHA, PLOAD, PTEST) are fully decoded with
+  register names (TC, SRP, CRP, TT0, TT1, MMUSR) and function code operands.
+- A summary line at the end shows the total number of instructions and bytes
+  disassembled.
 - The output format is identical to the emulator's built-in disassembler
   (`debugger_disasm()`), so disasm tool output can be compared directly with
   headless emulator single-step traces.
+
+## 8. Pitfalls
+
+- The disassembler processes bytes linearly — it cannot distinguish code from data.
+  If you disassemble a region containing inline data (e.g., lookup tables or string
+  literals embedded between subroutines), those bytes will be decoded as (nonsense)
+  instructions. Use `-n` or `-l` to limit output to known code regions.
+- The `-a` (address offset) flag only affects displayed addresses and branch target
+  annotations. It does not change which bytes are read from the file. Use `-o` to
+  control file position.
+- DBcc displacement zero (`*+$0000`) means the branch target is the DBcc instruction
+  itself — a common self-loop pattern (e.g., `DBF D0,*+$0000` for a busy-wait).
+
+## 9. Cross-References
+
+- **Headless emulator debugging**: See the `headless-debug` skill for interactive
+  debugging (single-step, breakpoints, memory examine) using the headless daemon.
+  The daemon's `disasm` command uses the same disassembler engine as this tool.
+- **Source code**: `src/core/cpu/cpu_disasm.c` is the disassembler core, included
+  by both this tool and the emulator. `src/core/cpu/cpu_decode.h` is the shared
+  instruction decoder template.

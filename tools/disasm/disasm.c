@@ -15,62 +15,21 @@
 #include <stdlib.h>
 #include <string.h>
 
-// Check if a mnemonic is a branch instruction that uses format_pc_displacement.
-// Returns true for Bcc, BRA, BSR (and .S/.W/.L variants), DBcc, FBcc, PBcc.
-static bool is_branch_mnemonic(const char *mnem) {
-    // strip trailing .S / .W / .L for comparison
-    char base[16];
-    int i;
-    for (i = 0; i < 15 && mnem[i] && mnem[i] != '.'; i++)
-        base[i] = mnem[i];
-    base[i] = '\0';
-
-    // DBcc: DB followed by condition code
-    if (base[0] == 'D' && base[1] == 'B')
-        return true;
-
-    // FBcc: FB followed by condition
-    if (base[0] == 'F' && base[1] == 'B')
-        return true;
-
-    // PBcc: PB followed by condition
-    if (base[0] == 'P' && base[1] == 'B')
-        return true;
-
-    // BRA, BSR
-    if (strcmp(base, "BRA") == 0 || strcmp(base, "BSR") == 0)
-        return true;
-
-    // Bcc: B followed by a 2-letter condition code
-    static const char *conds[] = {"HI", "LS", "CC", "CS", "NE", "EQ", "VC", "VS",
-                                  "PL", "MI", "GE", "LT", "GT", "LE", NULL};
-    if (base[0] == 'B') {
-        for (const char **c = conds; *c; c++) {
-            if (strcmp(base + 1, *c) == 0)
-                return true;
-        }
-    }
-
-    return false;
-}
-
-// Annotate operands with the absolute branch target address.
-// mnemonic: the instruction mnemonic (e.g. "BNE.S", "DBF", "JMP")
+// Annotate operands with the absolute target address for PC-relative references.
+// mnemonic: the instruction mnemonic (e.g. "BNE.S", "LEA", "JSR")
 // operands_text: the operand string (e.g. "*-$0006", "D0,*+$1234")
 // instr_addr: the virtual address of the instruction
 // Writes annotated operands into buf.
 static void annotate_branch_destination(char *buf, size_t buf_size, const char *mnemonic, const char *operands_text,
                                         uint32_t instr_addr) {
+    (void)mnemonic; // annotate all PC-relative operands
+
     // copy raw operands into output buffer first
     snprintf(buf, buf_size, "%s", operands_text);
 
     // find the asterisk indicating a PC-relative operand
     const char *star = strchr(operands_text, '*');
     if (!star)
-        return;
-
-    // only annotate actual branch mnemonics (not BTST, BCHG, etc.)
-    if (!is_branch_mnemonic(mnemonic))
         return;
 
     // parse sign and hex value after the asterisk
@@ -81,21 +40,12 @@ static void annotate_branch_destination(char *buf, size_t buf_size, const char *
     if (sign != '+' && sign != '-')
         return;
 
-    // the displacement text encodes (displacement + 2) relative to
-    // the instruction address.
+    // the displayed offset is relative to the instruction address
     uint32_t dest;
     if (sign == '+')
         dest = instr_addr + hex_val;
     else
         dest = instr_addr - hex_val;
-
-    // special case: DBcc always prints *+$HHHH with unsigned value =
-    // (uint16_t)raw_disp16 + 2.  The real displacement is sign-extended.
-    if (mnemonic[0] == 'D' && mnemonic[1] == 'B') {
-        uint16_t raw_disp = (uint16_t)(hex_val - 2);
-        int16_t signed_disp = (int16_t)raw_disp;
-        dest = instr_addr + 2 + (int32_t)signed_disp;
-    }
 
     // append annotation
     size_t cur_len = strlen(buf);
@@ -294,5 +244,10 @@ int main(int argc, char *argv[]) {
     }
 
     free(words);
+
+    // summary line
+    printf("; %u instruction%s disassembled, %u bytes\n", instr_count, instr_count == 1 ? "" : "s",
+           instr_count > 0 ? (pos * 2) : 0);
+
     return 0;
 }
