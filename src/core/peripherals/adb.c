@@ -31,6 +31,24 @@
 
 LOG_USE_CATEGORY_NAME("adb");
 
+// Delay (nanoseconds) before signalling shift-register completion after the OS
+// writes a command or Listen byte.  On real hardware the ADB transceiver clocks
+// 8 bits at ~38 µs each (~300 µs total).  We use a generous 800 µs to match the
+// approximate ADB attention-plus-command duration, ensuring the ROM's VBL handler
+// (which enables nested interrupts) has time to finish setting up ADB state
+// machine callback pointers before the completion interrupt fires (BUG-003).
+#define ADB_SHIFT_DELAY (800 * 1000)
+
+// Delay (nanoseconds) before delivering the next reply byte via the VIA shift
+// register.  On real hardware the ADB transceiver completes a full command–
+// response cycle in ~3 ms (800 µs attention + 800 µs command + stop-to-start
+// time + 800 µs response data).  We use 2.64 ms to match the deferred-delivery
+// timing in keyboard.c (RX_TO_TX_DELAY = 330 * 8 * 1000 ns).  The delay must
+// be long enough for the ROM's VBL handler (which enables interrupts mid-flight)
+// to finish setting up the ADB state machine callback pointers before the next
+// SR interrupt fires.
+#define ADB_BYTE_DELAY (330 * 8 * 1000)
+
 // Default ADB device addresses assigned at power-on
 #define KBD_DEFAULT_ADDR   2
 #define MOUSE_DEFAULT_ADDR 3
@@ -131,6 +149,8 @@ struct adb {
 
 static void adb_reset(adb_t *adb);
 static void adb_deliver_next_byte(adb_t *adb);
+static void adb_deliver_next_byte_deferred(void *source, uint64_t data);
+static void adb_shift_complete_deferred(void *source, uint64_t data);
 static void adb_decode_command(adb_t *adb, uint8_t cmd);
 
 // ============================================================================
@@ -408,6 +428,32 @@ static void adb_deliver_next_byte(adb_t *adb) {
     }
 }
 
+// Scheduler callback that delivers the next ADB reply byte after a realistic delay.
+// On real hardware the ADB transceiver takes ~200 µs to clock 8 bits via CB1.
+// Deferring the delivery ensures the current interrupt handler has time to finish
+// and RTE before the next SR interrupt fires; without this delay the ROM's ADB
+// state machine sees uninitialised callback pointers (BUG-003).
+static void adb_deliver_next_byte_deferred(void *source, uint64_t data) {
+    (void)data;
+    adb_t *adb = (adb_t *)source;
+    adb_deliver_next_byte(adb);
+}
+
+// Scheduler callback that signals shift-register completion after the ADB
+// transceiver finishes clocking a command or Listen byte.  On real hardware the
+// transceiver drives CB1 to clock 8 bits through the VIA shift register;
+// when complete, the resulting edge on CB1 sets IFR_SR.  We simulate this by
+// feeding the byte back through via_input_sr() after ADB_SHIFT_DELAY ns.
+static void adb_shift_complete_deferred(void *source, uint64_t data) {
+    (void)data;
+    adb_t *adb = (adb_t *)source;
+    // Feed back the current SR value to set IFR_SR; the VIA must be in shift-in
+    // mode (ACR mode 3) by now — the ROM switches from mode 7 to mode 3
+    // after writing SR.  The byte value does not matter; the ROM reads
+    // the actual command from memory, not from the shift register.
+    via_input_sr(adb->via, via_read_sr(adb->via));
+}
+
 // ============================================================================
 // Lifecycle: Constructor
 // ============================================================================
@@ -421,6 +467,12 @@ adb_t *adb_init(via_t *via, struct scheduler *scheduler, checkpoint_t *checkpoin
 
     adb->via = via;
     adb->scheduler = scheduler;
+
+    // Register the deferred delivery event type for checkpoint save/restore
+    scheduler_new_event_type(scheduler, "adb", adb, "deliver", &adb_deliver_next_byte_deferred);
+
+    // Register the shift-complete event type (command/Listen byte completion)
+    scheduler_new_event_type(scheduler, "adb", adb, "shift_done", &adb_shift_complete_deferred);
 
     // Set device register 3 defaults and clear all queues/deltas
     adb_reset(adb);
@@ -466,50 +518,84 @@ void adb_checkpoint(adb_t *restrict adb, checkpoint_t *checkpoint) {
 // VIA Callback Hooks
 // ============================================================================
 
-// Called by the machine's VIA shift-out callback when the OS finishes shifting a byte.
-// In the command phase the byte is decoded as an ADB command; in the Listen phase
-// subsequent bytes are accumulated as data.
+// Called by the machine's VIA shift-out callback when the VIA completes an
+// internal 80-cycle shift timer.  On the SE/30, VIA1 SR operates in mode 7
+// (shift out under external clock CB1), so the real shift timing is controlled
+// by the ADB transceiver, not the VIA's internal timer.  The ROM sometimes
+// writes SR during interrupt handling (e.g., to clear it) while ACR is still
+// in mode 7, which triggers spurious sr_shift_complete callbacks.
+//
+// To avoid decoding stale or spurious bytes, the ADB module reads VIA SR
+// directly at each port-B state transition (CMD, EVEN, ODD) instead of
+// relying on this callback.  This function is therefore intentionally a no-op.
 void adb_shift_byte(adb_t *adb, uint8_t byte) {
-    LOG(3, "adb_shift_byte: 0x%02X listen_active=%d", byte, adb->listen_active);
-
-    if (adb->listen_active) {
-        // OS is sending Listen data bytes; accumulate them
-        if (adb->listen_index < 2)
-            adb->listen_buf[adb->listen_index++] = byte;
-        if (adb->listen_index == 2) {
-            // Both bytes received; apply them and return to normal command processing
-            adb->listen_active = false;
-            apply_listen_data(adb);
-        }
-        return;
-    }
-
-    // Not in Listen mode: this byte is an ADB command
-    adb_decode_command(adb, byte);
+    (void)adb;
+    (void)byte;
 }
 
 // Called by the machine's VIA port-B output callback when the OS changes ST0/ST1.
-// In data states (1 or 2) the transceiver delivers the next reply byte.
-// In idle (3) the SRQ line is updated based on remaining pending data.
+//
+// On the SE/30 the VIA shift register operates in mode 7 (shift-out under
+// external clock driven by the ADB transceiver).  Rather than waiting for the
+// VIA's internal sr_shift_complete callback (which fires for every SR write,
+// even spurious ones during interrupt handling), we read VIA SR directly at
+// each CMD and Listen-data transition.  This matches real hardware where the
+// ADB transceiver controls shift timing via CB1 (BUG-004).
 void adb_port_b_output(adb_t *adb, uint8_t value) {
     int new_state = extract_state(value);
     adb->state = new_state;
 
-    LOG(3, "adb_port_b_output: port_b=0x%02X state=%d", value, new_state);
+    LOG(3, "adb_port_b_output: port_b=0x%02X new_state=%d reply_len=%d reply_idx=%d", value, new_state, adb->reply_len,
+        adb->reply_index);
 
     switch (new_state) {
     case ADB_STATE_CMD:
-        // A new command is starting; abort any partially received Listen data
+        // A new command is starting; abort any partially received Listen data.
+        // Read the command byte directly from the VIA shift register.  The ROM
+        // pre-loads SR (via adb_start_xfer) before writing port B to CMD, so
+        // the byte is already available.  We read it here instead of relying
+        // on the VIA's sr_shift_complete callback, because the ROM sometimes
+        // writes SR while ACR is still in mode 7 during interrupt handling,
+        // which would cause spurious sr_shift_complete firings (BUG-004).
         adb->listen_active = false;
         adb->listen_index = 0;
+        // Deassert vADBInt (set HIGH) at the start of every new command.
+        // The previous transaction's deliver_next_byte may have left vADBInt
+        // LOW to signal end-of-transfer; the ROM checks bit 3 during the CMD
+        // completion interrupt and takes different paths depending on its state.
+        // On real hardware the ADB transceiver deasserts vADBInt when it sees
+        // a new attention pulse from the host (BUG-004).
+        set_adb_int(adb, true);
+        adb_decode_command(adb, via_read_sr(adb->via));
+        // Schedule a deferred completion event that fires IFR_SR well after
+        // the VBL handler has finished setting up ADB state machine callbacks.
+        remove_event(adb->scheduler, &adb_shift_complete_deferred, adb);
+        scheduler_new_cpu_event(adb->scheduler, &adb_shift_complete_deferred, adb, 0, 0, ADB_SHIFT_DELAY);
         break;
 
     case ADB_STATE_EVEN:
     case ADB_STATE_ODD:
-        // Data phase: deliver the next reply byte (or dummy if transfer is done).
-        // Skip delivery when in Listen mode — the OS is shifting data OUT, not reading it.
-        if (!adb->listen_active)
-            adb_deliver_next_byte(adb);
+        if (adb->listen_active) {
+            // Listen data phase: read the data byte directly from VIA SR
+            // (same rationale as CMD — avoid spurious sr_shift_complete).
+            uint8_t byte = via_read_sr(adb->via);
+            if (adb->listen_index < 2)
+                adb->listen_buf[adb->listen_index++] = byte;
+            if (adb->listen_index == 2) {
+                adb->listen_active = false;
+                apply_listen_data(adb);
+            }
+            remove_event(adb->scheduler, &adb_shift_complete_deferred, adb);
+            scheduler_new_cpu_event(adb->scheduler, &adb_shift_complete_deferred, adb, 0, 0, ADB_SHIFT_DELAY);
+        } else {
+            // Reply phase: schedule delivery of the next reply byte after a
+            // realistic ADB bus delay.  The delivery is deferred so the current
+            // SR interrupt handler can finish and RTE before the next IFR_SR
+            // fires.  Without this delay the ROM's ADB state machine reads
+            // uninitialised callback pointers (BUG-003).
+            remove_event(adb->scheduler, &adb_deliver_next_byte_deferred, adb);
+            scheduler_new_cpu_event(adb->scheduler, &adb_deliver_next_byte_deferred, adb, 0, 0, ADB_BYTE_DELAY);
+        }
         break;
 
     case ADB_STATE_IDLE:

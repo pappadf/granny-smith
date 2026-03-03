@@ -477,9 +477,9 @@ static void write_mr(scsi_t *scsi, uint8_t val) {
 static uint8_t read_uint8(void *s, uint32_t addr) {
     scsi_t *scsi = (scsi_t *)s;
 
-    // [5]: read operations must be to even addresses; otherwise undefined
-    if (addr & 1)
-        return 0;
+    // [5]: on 68000, reads are to even addresses (UDS). On 68030 (SE/30,
+    // IIcx), the GLUE uses R/W directly and A0 is irrelevant for direction.
+    // Register select always uses A4-A6.
 
     // [5] : a0-a2  are connected to a4-a6 of the cpu bus
     switch (addr >> 4 & 7) {
@@ -532,8 +532,9 @@ static uint32_t read_uint32(void *scsi, uint32_t addr) {
 static void write_uint8(void *s, uint32_t addr, uint8_t value) {
     scsi_t *scsi = (scsi_t *)s;
 
-    // [5]: write operations must be to odd addresses; otherwise undefined
-    assert(addr & 1);
+    // [5]: on 68000, writes are to odd addresses (LDS). On 68030 (SE/30,
+    // IIcx), the GLUE uses R/W directly and A0 is irrelevant for direction.
+    // Register select always uses A4-A6.
 
     // [5] : a0-a2  are connected to a4-a6 of the cpu bus
     switch (addr >> 4 & 7) {

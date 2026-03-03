@@ -1,9 +1,9 @@
 ---
 name: headless-debug
 description: >
-  Use when you need to interactively debug the emulator: single-stepping
-  the CPU, setting breakpoints, examining registers or memory, or tracing
-  the boot sequence via the headless daemon's TCP shell.
+  Interactive debugging via the headless emulator's TCP shell. Covers
+  daemon startup, command protocol (step/run/breakpoint/memory examine),
+  register inspection, logging, and common debugging workflows.
 triggers:
   - single step
   - set a breakpoint
@@ -15,6 +15,13 @@ triggers:
   - step through
   - disassemble
   - gs-headless
+  - daemon
+  - TCP
+  - netcat
+  - check registers
+  - run to address
+  - examine low memory
+  - check global variable
 ---
 
 # Granny Smith Headless Daemon — Agent Skill
@@ -68,7 +75,7 @@ sleep 2
 Every command is a one-shot TCP transaction:
 
 ```bash
-echo "<command>" | nc -q 1 localhost 6800
+echo "<command>" | nc -w 2 localhost 6800
 ```
 
 The daemon reads the command, executes it, writes all output to the socket,
@@ -78,7 +85,7 @@ and closes the connection when the command finishes (or the emulator stops).
 at the current PC (like the web shell prompt). For example:
 
 ```
-$ echo "s" | nc -q 1 localhost 6800
+$ echo "s" | nc -w 2 localhost 6800
 4083f61c  6000  BRA       *+$023A
 ```
 
@@ -88,7 +95,7 @@ is `BRA *+$023A`. This applies to all commands — `s`, `td`, `get pc`, `x`, etc
 ### Capturing output
 
 ```bash
-RESULT=$(echo "td" | nc -q 1 localhost 6800)
+RESULT=$(echo "td" | nc -w 2 localhost 6800)
 echo "$RESULT"
 ```
 
@@ -166,17 +173,17 @@ so just sending `s` repeatedly produces a trace:
 sleep 2
 
 # Step one instruction — output shows where PC is now
-echo "s" | nc -q 1 localhost 6800
+echo "s" | nc -w 2 localhost 6800
 # output: 40800090  4ef9  JMP       $4083F61C
 
-echo "s" | nc -q 1 localhost 6800
+echo "s" | nc -w 2 localhost 6800
 # output: 4083f61c  6000  BRA       *+$023A
 
-echo "s" | nc -q 1 localhost 6800
+echo "s" | nc -w 2 localhost 6800
 # output: 4083f858  46fc  MOVE      #$2700,SR
 
 # Step 10 instructions at once — shows final position
-echo "s 10" | nc -q 2 localhost 6800
+echo "s 10" | nc -w 2 localhost 6800
 ```
 
 No need for separate `get pc` or `disasm` calls after stepping.
@@ -185,38 +192,69 @@ No need for separate `get pc` or `disasm` calls after stepping.
 
 ```bash
 # Set breakpoint
-echo "br 0x40802a14" | nc -q 1 localhost 6800
+echo "br 0x40802a14" | nc -w 2 localhost 6800
 
 # Run (connection stays open until breakpoint hit)
-echo "run" | nc -q 5 localhost 6800
+echo "run" | nc -w 10 localhost 6800
 
 # Check where we stopped
-echo "get pc" | nc -q 1 localhost 6800
-echo "td" | nc -q 1 localhost 6800
+echo "get pc" | nc -w 2 localhost 6800
+echo "td" | nc -w 2 localhost 6800
 ```
 
 ### Examine memory
 
 ```bash
 # Read 32 bytes at address 0
-echo "x 0 32" | nc -q 1 localhost 6800
+echo "x 0 32" | nc -w 2 localhost 6800
 
 # Disassemble 20 instructions from current PC
-PC=$(echo "get pc" | nc -q 1 localhost 6800 | sed 's/PC = //')
-echo "disasm $PC 20" | nc -q 1 localhost 6800
+PC=$(echo "get pc" | nc -w 2 localhost 6800 | sed 's/PC = //')
+echo "disasm $PC 20" | nc -w 2 localhost 6800
 ```
 
 ### Enable logging
 
 ```bash
-echo "log cpu 5" | nc -q 1 localhost 6800
-echo "log scsi 10" | nc -q 1 localhost 6800
+echo "log cpu 5" | nc -w 2 localhost 6800
+echo "log scsi 10" | nc -w 2 localhost 6800
 ```
 
 ## 6. Tips
 
-- Always use `nc -q 1` (or `nc -q 2` for stepping) to ensure `nc` exits after getting the response.
-- The daemon handles one connection at a time. Wait for each command to complete before sending the next.
-- For long-running commands (`run` without a limit), use `nc -q 5` or higher timeout, and send `stop` from another terminal if needed.
-- ROM files: `tests/data/roms/` contains available ROM images. Use `SE30.rom` for SE/30, `plus.rom` for Macintosh Plus.
+- Always use `nc -w 2` (timeout) instead of `nc -w 2` for reliable connection handling.
+  The `-w` flag sets a timeout for both connect and idle; `-q` only affects idle after EOF
+  on stdin, which can cause `nc` to exit before the daemon finishes writing its response.
+- The daemon handles one connection at a time. Wait for each command to complete
+  before sending the next.
+- For long-running commands (`run` without a limit), use `nc -w 10` or higher
+  timeout, and send `stop` from another terminal if needed.
+- Always `sleep 2` (or `sleep 3-4` for larger ROMs) after starting the daemon
+  before sending the first command. The daemon needs time to initialize.
+- ROM files: `tests/data/roms/` contains available ROM images. Use `SE30.rom`
+  for SE/30, `plus.rom` for Macintosh Plus.
 - Port 6800 is the default. Use `--port=PORT` to change it if there's a conflict.
+- The memory examine command is `x <addr> [nbytes]`, not `read` or `mem`.
+
+## 7. Pitfalls
+
+- **VIA timer interrupts don't fire during single-step.** The VIA timers are driven
+  by the scheduler, which only advances during `run`. If you need timer-dependent
+  code to execute, use `run <N>` instead of `s <N>`.
+- **Don't forget to kill the daemon.** Send `echo "quit" | nc -w 2 localhost 6800`
+  when done, or use `kill %1` if it was backgrounded. Orphaned daemons hold the port.
+- **Large step counts can be slow.** `s 100000` steps one instruction at a time
+  with output for each. Use `run 100000` for faster bulk execution (only the final
+  state is printed).
+- **Response may be empty if daemon isn't ready.** If `nc` returns nothing, the
+  daemon likely hasn't finished initialization. Increase the startup `sleep` delay.
+
+## 8. Cross-References
+
+- **Offline disassembly**: See the `disasm-tool` skill for disassembling ROM images
+  and binary files without running the emulator. Useful for static analysis of large
+  code regions before setting breakpoints.
+- **Logging & logpoints**: See docs/log.md for the full logging system reference.
+  Use `log <category> <level>` in the shell to enable runtime logging.
+- **Source code**: The headless platform lives in `src/platform/headless/`. The shell
+  command handler is in `src/core/shell/`.

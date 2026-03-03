@@ -17,7 +17,7 @@ else ifeq ($(MODE),sanitize)
 	CFLAGS_MODE := -g -O1 -fsanitize=address,undefined -fno-omit-frame-pointer
 	LDFLAGS_MODE := -fsanitize=address,undefined
 else
-	CFLAGS_MODE := -O2 -DNDEBUG
+	CFLAGS_MODE := -O2
 endif
 
 # -- Submodule guard --

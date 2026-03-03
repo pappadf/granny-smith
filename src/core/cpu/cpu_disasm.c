@@ -131,22 +131,25 @@ static const char *disasm_ea(int size, int mode, int reg, uint16_t **fetch_pos, 
             buf = tmp_buf_printf("$%08X", (int)((uint32_t)pos[0] << 16 | pos[1]));
             pos += 2;
             break;
-        case 2: // (d16,PC)
-            buf = tmp_buf_printf("*%s$%X", (int16_t)*pos >= 0 ? "+" : "-",
-                                 (int16_t)*pos >= 0 ? (int)(int16_t)*pos + 2 + 2 * ext_words : 0 - (int16_t)*pos);
+        case 2: { // (d16,PC)
+            int32_t pc_off = (int32_t)(int16_t)*pos + 2 + 2 * ext_words;
+            buf = tmp_buf_printf("*%s$%X", pc_off >= 0 ? "+" : "-", pc_off >= 0 ? (int)pc_off : (int)(0 - pc_off));
             pos++;
             break;
-        case 3: // (d8,PC,Xn)
+        }
+        case 3: { // (d8,PC,Xn)
+            int32_t pc_off8 = (int32_t)(int8_t)*pos + 2 + 2 * ext_words;
             if (*pos & 0x0800)
-                buf = tmp_buf_printf("*%s$%04X(%s.L*%d)", (int8_t)*pos >= 0 ? "+" : "-",
-                                     (int8_t)*pos >= 0 ? (int)(int8_t)*pos + 2 + 2 * ext_words : 0 - (int8_t)*pos,
+                buf = tmp_buf_printf("*%s$%04X(%s.L*%d)", pc_off8 >= 0 ? "+" : "-",
+                                     pc_off8 >= 0 ? (int)pc_off8 : (int)(0 - pc_off8),
                                      *pos & 0x8000 ? an[*pos >> 12 & 7] : dn[*pos >> 12 & 7], 1 << (*pos >> 9 & 3));
             else
-                buf = tmp_buf_printf("*%s$%04X(%s.W*%d)", (int8_t)*pos >= 0 ? "+" : "-",
-                                     (int8_t)*pos >= 0 ? (int)(int8_t)*pos + 2 + 2 * ext_words : 0 - (int8_t)*pos,
+                buf = tmp_buf_printf("*%s$%04X(%s.W*%d)", pc_off8 >= 0 ? "+" : "-",
+                                     pc_off8 >= 0 ? (int)pc_off8 : (int)(0 - pc_off8),
                                      *pos & 0x8000 ? an[*pos >> 12 & 7] : dn[*pos >> 12 & 7], 1 << (*pos >> 9 & 3));
             pos++;
             break;
+        }
         case 4: // #data
             if (size == 4) {
                 buf = tmp_buf_printf("#$%X", (int)((uint32_t)(pos[0]) << 16 | pos[1]));
@@ -256,6 +259,131 @@ static const char *disasm_fbcc(unsigned c) {
 static const char *disasm_caches(unsigned c) {
     static const char *caches[4] = {"NC", "DC", "IC", "DC/IC"};
     return caches[c & 3];
+}
+
+// format FC specifier from 5-bit PMMU encoding
+static const char *disasm_pmmu_fc(uint16_t fc5) {
+    if (fc5 & 0x10)
+        return tmp_buf_printf("#%d", (int)(fc5 & 7));
+    if (fc5 & 0x08)
+        return tmp_buf_printf("D%d", (int)(fc5 & 7));
+    if (fc5 == 0)
+        return "SFC";
+    if (fc5 == 1)
+        return "DFC";
+    return tmp_buf_printf("FC?$%02X", (int)fc5);
+}
+
+// disassemble CpID=0 type=0 MMU instruction (PMOVE/PFLUSH/PTEST/PLOAD)
+static void disasm_pmmu(uint16_t opcode, uint16_t ext, char *buf, uint16_t **fetch_src) {
+    uint32_t op_type = (ext >> 13) & 7u;
+    uint32_t ea_m = (opcode >> 3) & 7u;
+    uint32_t ea_r = opcode & 7u;
+
+    switch (op_type) {
+    case 0: { // PMOVE TT0/TT1
+        uint32_t preg = (ext >> 10) & 7u;
+        uint32_t rw = (ext >> 9) & 1u;
+        uint32_t fd = (ext >> 8) & 1u;
+        const char *mnem = fd ? "PMOVEFD" : "PMOVE";
+        const char *rname;
+        if (preg == 2)
+            rname = "TT0";
+        else if (preg == 3)
+            rname = "TT1";
+        else {
+            sprintf(buf, "PMMU");
+            *fetch_src += 1;
+            return;
+        }
+        const char *ea = disasm_ea(4, ea_m, ea_r, fetch_src, 1, (ea_control & ea_alterable));
+        if (rw)
+            sprintf(buf, "%s\t%s,%s", mnem, rname, ea);
+        else
+            sprintf(buf, "%s\t%s,%s", mnem, ea, rname);
+        break;
+    }
+    case 1: { // PFLUSH or PLOAD
+        uint32_t mode = (ext >> 10) & 7u;
+        if (mode == 0) {
+            // PLOAD
+            uint32_t rw = (ext >> 9) & 1u;
+            const char *fc = disasm_pmmu_fc(ext & 0x1F);
+            const char *ea = disasm_ea(4, ea_m, ea_r, fetch_src, 1, (ea_control & ea_alterable));
+            sprintf(buf, "%s\t%s,%s", rw ? "PLOADR" : "PLOADW", fc, ea);
+        } else if (mode == 1) {
+            // PFLUSHA
+            sprintf(buf, "PFLUSHA");
+            *fetch_src += 2;
+        } else if (mode == 4) {
+            // PFLUSH FC,#MASK (by FC only)
+            const char *fc = disasm_pmmu_fc(ext & 0x1F);
+            uint32_t mask = (ext >> 5) & 7u;
+            sprintf(buf, "PFLUSH\t%s,#%d", fc, (int)mask);
+            *fetch_src += 2;
+        } else if (mode == 6) {
+            // PFLUSH FC,#MASK,<ea> (by FC and EA)
+            const char *fc = disasm_pmmu_fc(ext & 0x1F);
+            uint32_t mask = (ext >> 5) & 7u;
+            const char *ea = disasm_ea(4, ea_m, ea_r, fetch_src, 1, (ea_control & ea_alterable));
+            sprintf(buf, "PFLUSH\t%s,#%d,%s", fc, (int)mask, ea);
+        } else {
+            sprintf(buf, "PMMU");
+            *fetch_src += 1;
+        }
+        break;
+    }
+    case 2: { // PMOVE TC/SRP/CRP
+        uint32_t preg = (ext >> 10) & 7u;
+        uint32_t rw = (ext >> 9) & 1u;
+        uint32_t fd = (ext >> 8) & 1u;
+        const char *mnem = fd ? "PMOVEFD" : "PMOVE";
+        const char *rname;
+        if (preg == 0)
+            rname = "TC";
+        else if (preg == 2)
+            rname = "SRP";
+        else if (preg == 3)
+            rname = "CRP";
+        else {
+            sprintf(buf, "PMMU");
+            *fetch_src += 1;
+            return;
+        }
+        const char *ea = disasm_ea(4, ea_m, ea_r, fetch_src, 1, (ea_control & ea_alterable));
+        if (rw)
+            sprintf(buf, "%s\t%s,%s", mnem, rname, ea);
+        else
+            sprintf(buf, "%s\t%s,%s", mnem, ea, rname);
+        break;
+    }
+    case 3: { // PMOVE MMUSR
+        uint32_t rw = (ext >> 9) & 1u;
+        const char *ea = disasm_ea(2, ea_m, ea_r, fetch_src, 1, (ea_control & ea_alterable));
+        if (rw)
+            sprintf(buf, "PMOVE\tMMUSR,%s", ea);
+        else
+            sprintf(buf, "PMOVE\t%s,MMUSR", ea);
+        break;
+    }
+    case 4: { // PTEST
+        uint32_t level = (ext >> 10) & 7u;
+        uint32_t rw = (ext >> 9) & 1u;
+        uint32_t a_field = (ext >> 8) & 1u;
+        uint32_t a_reg = (ext >> 5) & 7u;
+        const char *fc = disasm_pmmu_fc(ext & 0x1F);
+        const char *ea = disasm_ea(4, ea_m, ea_r, fetch_src, 1, (ea_control & ea_alterable));
+        if (a_field)
+            sprintf(buf, "%s\t%s,%s,#%d,A%d", rw ? "PTESTR" : "PTESTW", fc, ea, (int)level, (int)a_reg);
+        else
+            sprintf(buf, "%s\t%s,%s,#%d", rw ? "PTESTR" : "PTESTW", fc, ea, (int)level);
+        break;
+    }
+    default:
+        sprintf(buf, "PMMU");
+        *fetch_src += 1;
+        break;
+    }
 }
 
 static const char *disasm_cache_scope(unsigned c) {
@@ -459,7 +587,7 @@ static const char *disasm_cache_scope(unsigned c) {
 #define OP_CMPM_L_AY_AX       ASM("CMPM.L\t(%s)+,(%s)+", AY, AX);
 #define OP_CMPA_L_EA_AN       ASM("CMPA.L\t%s,%s", SRC_EA(4, 0, ea_any), AN);
 #define OP_CMPM_W_AY_AX       ASM("CMPM.W\t(%s)+,(%s)+", AY, AX);
-#define OP_DBCC_DN_LABEL      ASM("DB%s\t%s,*+$%X", CC, DY, (int)SRC_WORD + 2)
+#define OP_DBCC_DN_LABEL      ASM("DB%s\t%s,%s", CC, DY, PC_DISP)
 #define OP_DIVS_L_EA_DR_DQ    ASM("DIVS.L\t%s,%s:%s", SRC_EA(4, 1, ea_any), DR, DQ)
 #define OP_DIVS_W_EA_DN       ASM("DIVS.W\t%s,%s", SRC_EA(2, 0, ea_data), DN)
 #define OP_DIVU_W_EA_DN       ASM("DIVU.W\t%s,%s", SRC_EA(2, 0, ea_data), DN)
@@ -654,7 +782,7 @@ static const char *disasm_cache_scope(unsigned c) {
 #define OP_MOVE16_XXX_L_AN_P   ASM("MOVE16\t$%08X,(%s)+", SRC_LONG, AY)
 #define OP_MOVE16_AN_XXX_L     ASM("MOVE16\t(%s),$%08X", AY, DST_LONG)
 #define OP_MOVE16_XXX_L_AN     ASM("MOVE16\t$%08X,(%s)", SRC_LONG, AY)
-#define OP_PMMU_GENERAL        ASM("PMMU") // generic disasm for PMOVE/PFLUSH/PTEST
+#define OP_PMMU_GENERAL        disasm_pmmu(opcode, ext_word, buf, &fetch_pos_src)
 #define OP_FTRAP               OP_UNDEFINED
 
 #define CPU_DECODER_NAME        cpu_disasm

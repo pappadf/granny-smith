@@ -126,8 +126,9 @@ static void update_ifr(via_t *restrict via, uint8_t new_ifr) {
     // bit seven is the aggregate of all enabled bits
     new_ifr = new_ifr & 0x7F & via->ier ? new_ifr | 0x80 : new_ifr & 0x7F;
 
-    if ((via->ifr ^ new_ifr) & 0x80)
+    if ((via->ifr ^ new_ifr) & 0x80) {
         via->irq_cb(via->cb_context, new_ifr >> 7 & 1);
+    }
 
     via->ifr = new_ifr;
 }
@@ -178,13 +179,19 @@ static void sr_shift_complete_callback(void *source, uint64_t data) {
 
     via->sr_shift_pending = false;
 
-    LOG(2, "sr_shift_complete_callback: shift out complete, delivering byte 0x%02x", via->sr_shift_data);
-
     // Deliver the byte via the per-instance shift-out callback
     via->shift_cb(via->cb_context, via->sr_shift_data);
 
-    // Set the SR interrupt flag
-    update_ifr(via, via->ifr | IFR_SR);
+    // Set the SR interrupt flag — but NOT for mode 7 (external clock).
+    // In mode 7 the external device drives CB1; the real R6522 only sets
+    // IFR_SR when 8 bits have been clocked by CB1, not by an internal
+    // timer.  Emulated devices signal completion via via_input_sr() at
+    // the appropriate time.  For internal-clock modes (4-6) the 80-cycle
+    // timer IS the shift completion source, so IFR_SR is set here.
+    uint8_t sr_mode = (via->acr >> 2) & 7;
+    if (sr_mode != 7) {
+        update_ifr(via, via->ifr | IFR_SR);
+    }
 }
 
 // Timer 1 timeout callback - handles one-shot and free-running modes
@@ -312,9 +319,8 @@ static uint8_t via_read_uint8(void *v, uint32_t addr) {
         break;
 
     case ORA_IRA:
-        // Read Port A without clearing interrupt flags (no handshake side effects)
-        ret = (via->ports[PORT_A].output & via->ports[PORT_A].direction) |
-              (via->ports[PORT_A].input & ~via->ports[PORT_A].direction);
+        // Register 1: Read Port A WITH handshake — clears CA1/CA2 interrupt flags
+        ret = read_port(via, PORT_A);
         break;
 
     case DDRB:
@@ -379,7 +385,9 @@ static uint8_t via_read_uint8(void *v, uint32_t addr) {
         break;
 
     case ORA:
-        ret = read_port(via, PORT_A);
+        // Register 15: Read Port A WITHOUT handshake — no flag clearing
+        ret = (via->ports[PORT_A].output & via->ports[PORT_A].direction) |
+              (via->ports[PORT_A].input & ~via->ports[PORT_A].direction);
         break;
     default:
         GS_ASSERT(0);
@@ -467,13 +475,14 @@ static void via_write_uint8(void *v, uint32_t addr, uint8_t value) {
         via->sr = value;
         update_ifr(via, via->ifr & ~IFR_SR);
         if (via->acr & 0x10) { // shift out (bit 4 set means output mode)
-            LOG(2, "via SR write: value=0x%02x (shift out to keyboard, mode=%u)", value, (via->acr >> 2) & 7);
+            LOG(2, "via SR write: value=0x%02x (shift out, mode=%u)", value, (via->acr >> 2) & 7);
             // Store data and mark shift as pending - don't deliver until complete
             via->sr_shift_data = value;
             via->sr_shift_pending = true;
             // Cancel any existing shift event and schedule new one
             remove_event(via->scheduler, &sr_shift_complete_callback, via);
-            // Schedule completion after 8 clock cycles (8 VIA cycles = 8 * FREQ_FACTOR CPU cycles)
+            // 8 VIA clock cycles (= 80 CPU cycles) for internal clock modes;
+            // external-clock modes complete when the device drives CB1.
             scheduler_new_cpu_event(via->scheduler, &sr_shift_complete_callback, via, 0, 8 * FREQ_FACTOR, 0);
         } else {
             LOG(3, "via SR write: value=0x%02x (shift in mode, not sent)", value);
@@ -511,10 +520,17 @@ static void via_write_uint8(void *v, uint32_t addr, uint8_t value) {
         update_ifr(via, via->ifr);
         break;
 
-    case ORA:
+    case ORA_IRA:
+        // Register 1: Write Port A WITH handshake — clears CA1/CA2 interrupt flags
         via->ports[PORT_A].output = value;
         via->output_cb(via->cb_context, 0, via->ports[PORT_A].output & via->ports[PORT_A].direction);
         update_ifr(via, via->ifr & ~(IFR_CA1 | IFR_CA2));
+        break;
+
+    case ORA:
+        // Register 15: Write Port A WITHOUT handshake — no flag clearing
+        via->ports[PORT_A].output = value;
+        via->output_cb(via->cb_context, 0, via->ports[PORT_A].output & via->ports[PORT_A].direction);
         break;
 
     default:
@@ -660,6 +676,11 @@ void via_redrive_outputs(via_t *via) {
     via->output_cb(via->cb_context, PORT_B, via->ports[PORT_B].output & via->ports[PORT_B].direction);
 }
 
+// Read the current shift register value
+uint8_t via_read_sr(via_t *via) {
+    return via->sr;
+}
+
 // Set an input pin value on a VIA port
 void via_input(via_t *restrict via, int port, int pin, bool value) {
     GS_ASSERT(port < 2);
@@ -671,24 +692,37 @@ void via_input(via_t *restrict via, int port, int pin, bool value) {
         via->ports[port].input &= ~(1 << pin);
 }
 
-// Shift a byte into the VIA shift register (keyboard input)
+// Shift a byte into the VIA shift register, or signal shift-out completion.
+// Called by external devices (keyboard, ADB transceiver) to deliver a byte
+// (mode 3: shift-in under external clock) or to signal that the external
+// device has finished clocking all 8 bits of a shift-out (mode 7: shift-out
+// under external clock).  On real 6522 hardware, CB1 edges from the external
+// device set IFR_SR after 8 clocks regardless of shift direction.
 void via_input_sr(via_t *restrict via, uint8_t byte) {
-    if (via->acr & 0x10)
-        return; // if sr is in output mode...
+    uint8_t sr_mode = (via->acr >> 2) & 7;
 
-    // Check if VIA is configured for shift-in mode (external clock)
-    uint8_t sr_mode = (via->acr >> 2) & 3;
+    if (sr_mode == 7) {
+        // Mode 7: shift out under external clock.  The ADB transceiver (or
+        // other external device) has finished clocking all 8 bits via CB1.
+        // On real hardware this sets IFR_SR.  SR contents are unchanged
+        // (the shift-out byte was already delivered via sr_shift_complete_callback).
+        update_ifr(via, via->ifr | IFR_SR);
+        return;
+    }
+
+    if (via->acr & 0x10)
+        return; // modes 4-6: shift-out under internal clock — no external input
+
     if (sr_mode != 3) {
-        // VIA not yet configured for keyboard input - silently drop the byte
-        // This can happen during early boot or after reset before OS configures VIA
+        // VIA not configured for external-clock shift-in — silently drop the byte.
+        // This can happen during early boot or after reset before OS configures VIA.
         LOG(1, "via_input_sr: dropping byte 0x%02x - VIA SR not configured (mode=%u, ACR=0x%02x, expected mode 3)",
             byte, sr_mode, via->acr);
         return;
     }
 
+    // Mode 3: shift-in under external clock — store byte and flag interrupt
     via->sr = byte;
-
-    // we received data - flag the interrupt
     update_ifr(via, via->ifr | IFR_SR);
 }
 

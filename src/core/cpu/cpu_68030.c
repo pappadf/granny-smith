@@ -70,9 +70,10 @@ LOG_USE_CATEGORY_NAME("cpu");
 // ============================================================================
 // Decodes the extension word to determine the MMU operation.
 // Called from OP_PMMU_GENERAL (F-line CpID=0 type=0).
-// Extension word bits [15:13] select the operation:
-//   000 = PMOVE TT0/TT1, or PLOAD
-//   001 = PFLUSH
+// Extension word bits [15:13] select the operation (per M68000PRM / MC68030UM):
+//   000 = PMOVE TT0/TT1   (bits[12:10]: 010=TT0, 011=TT1)
+//   001 = PLOAD / PFLUSH  (bits[12:10]: 000=PLOAD, 001=PFLUSHA, 100=PFLUSH FC#mask,
+//                                       110=PFLUSH FC#mask+EA)
 //   010 = PMOVE (TC, SRP, CRP)
 //   011 = PMOVE (MMUSR)
 //   100 = PTEST
@@ -89,20 +90,9 @@ static void cpu_pmmu_general(cpu_t *cpu, uint16_t opcode) {
     switch (op_type) {
 
     case 0: {
-        // PMOVE TT0/TT1 or PLOAD
+        // PMOVE TT0/TT1 (bits[12:10]: 010=TT0, 011=TT1)
         uint32_t reg_select = (ext >> 10) & 7u;
         uint32_t rw = (ext >> 9) & 1u; // 0=ea→reg, 1=reg→ea
-
-        if (reg_select == 0 || reg_select == 1) {
-            // PLOAD (reg_select 0=PLOAD read, 1=PLOAD write)
-            // Force a table walk without faulting
-            if (mmu) {
-                uint32_t ea = calculate_ea(cpu, 4, ea_mode, ea_reg, true);
-                bool is_write = (reg_select == 1);
-                mmu_handle_fault(mmu, ea, is_write, cpu->supervisor != 0);
-            }
-            break;
-        }
 
         if (reg_select == 2) {
             // PMOVE TT0
@@ -145,19 +135,21 @@ static void cpu_pmmu_general(cpu_t *cpu, uint16_t opcode) {
     }
 
     case 1: {
-        // PFLUSH
+        // PLOAD or PFLUSH (bits[12:10] = mode)
         uint32_t flush_mode = (ext >> 10) & 7u;
-        if (mmu) {
-            if (flush_mode == 1) {
-                // PFLUSH by FC and EA — for now, invalidate everything
-                mmu_invalidate_tlb(mmu);
-            } else if (flush_mode == 4) {
-                // PFLUSHA — flush all
-                mmu_invalidate_tlb(mmu);
-            } else {
-                // Other modes: flush all as fallback
-                mmu_invalidate_tlb(mmu);
+        if (flush_mode == 0) {
+            // PLOAD — force a table walk and load the ATC entry
+            uint32_t rw = (ext >> 9) & 1u; // 0=PLOADW (write test), 1=PLOADR (read test)
+            if (mmu) {
+                uint32_t ea = calculate_ea(cpu, 4, ea_mode, ea_reg, true);
+                mmu_handle_fault(mmu, ea, rw == 0, cpu->supervisor != 0);
             }
+        } else if (mmu) {
+            // PFLUSH variants: invalidate ATC entries
+            // mode=001: PFLUSHA (flush all entries)
+            // mode=100: PFLUSH FC,#mask (flush by FC)
+            // mode=110: PFLUSH FC,#mask,<ea> (flush by FC and EA)
+            mmu_invalidate_tlb(mmu);
         }
         break;
     }

@@ -127,6 +127,9 @@ typedef struct se30_state {
     const memory_interface_t *asc_iface;
     const memory_interface_t *swim_iface;
 
+    // Previous VIA1 port B output value for filtering ADB ST transitions
+    uint8_t last_port_b;
+
     // I/O dispatcher registered at $50000000
     memory_interface_t io_interface;
 } se30_state_t;
@@ -637,8 +640,24 @@ static void se30_via1_output(void *context, uint8_t port, uint8_t output) {
         se30_set_rom_overlay(cfg, (output & 0x10) != 0);
         // Bit 3: alternate sound buffer (legacy, ignored for ASC)
         // Bits 0-2: sound volume (legacy, ignored for ASC)
+    } else {
+        // Port B outputs:
+        // Bits 4-5: ADB state lines (ST0/ST1) → ADB controller
+        // Only notify ADB when ST bits actually transition.  The ROM
+        // bit-bangs the RTC via port B bits 0-2 without intending to
+        // change ST; on real hardware the ADB transceiver ignores writes
+        // where the ST lines don't change electrically (BUG-004).
+        if (se30->adb) {
+            uint8_t st_mask = 0x30; // bits 5:4 = ST1:ST0
+            if ((output & st_mask) != (se30->last_port_b & st_mask))
+                adb_port_b_output(se30->adb, output);
+        }
+        se30->last_port_b = output;
+        // Bit 3: vADBInt (input — read-only, driven by ADB module)
+        // Bits 0-2: RTC chip select/clock/data
+        if (cfg->rtc)
+            rtc_input(cfg->rtc, (output >> 2) & 1, (output >> 1) & 1, output & 1);
     }
-    // Port B: no outputs on SE/30 VIA1 port B
 }
 
 // VIA1 shift-out callback: ADB byte data transfer
@@ -663,13 +682,9 @@ static void se30_via2_output(void *context, uint8_t port, uint8_t output) {
         // Port B outputs:
         // Bit 7: sound enable (master mute)
         // Bit 6: VSync IRQ enable
-        // Bits 4-5: ADB state (ST0/ST1) → ADB controller
-        if (se30->adb)
-            adb_port_b_output(se30->adb, output);
-        // Bit 3: ADB interrupt (input — read-only, not driven here)
-        // Bit 2: RTC chip select, Bit 1: RTC clock, Bit 0: RTC data
-        if (cfg->rtc)
-            rtc_input(cfg->rtc, (output >> 2) & 1, (output >> 1) & 1, output & 1);
+        // Bit 3: SE/30 ID bit (input — not driven here)
+        (void)se30;
+        (void)output;
     }
     // Port A: no outputs on SE/30 VIA2 port A (slot IRQ inputs)
 }
@@ -682,7 +697,8 @@ static void se30_via2_shift_out(void *context, uint8_t byte) {
 
 // VIA2 IRQ callback: VIA2 drives IPL level 2
 static void se30_via2_irq(void *context, bool active) {
-    se30_update_ipl((config_t *)context, SE30_IRQ_VIA2, active);
+    config_t *cfg = (config_t *)context;
+    se30_update_ipl(cfg, SE30_IRQ_VIA2, active);
 }
 
 // SCC IRQ callback: SCC drives IPL level 4
@@ -715,6 +731,9 @@ static void se30_init(config_t *cfg, checkpoint_t *checkpoint) {
     se30_state_t *se30 = calloc(1, sizeof(se30_state_t));
     assert(se30 != NULL);
     cfg->machine_context = se30;
+
+    // ADB bus starts in IDLE state (ST1:ST0 = 11, bits 5:4 = 0x30)
+    se30->last_port_b = 0x30;
 
     // Initialise parameterised memory: 32-bit address space, default RAM, 256 KB ROM
     cfg->mem_map =
@@ -757,8 +776,17 @@ static void se30_init(config_t *cfg, checkpoint_t *checkpoint) {
     // All VIA2 port A inputs should be 1 (NuBus slot IRQs are active-low, 1 = no IRQ)
     via_input(cfg->via2, 0, 3, 1);
 
-    // Initialise ADB controller (uses VIA2 for port B control: ST0/ST1, vADBInt)
-    se30->adb = adb_init(cfg->via2, cfg->scheduler, checkpoint);
+    // VIA2 PB6 (vSndJck) = 0: SE/30 always reports sound jack inserted
+    via_input(cfg->via2, 1, 6, 0);
+
+    // VIA2 control lines default to deasserted (HIGH) state.
+    // These are active-low signals; 1 = idle / no interrupt pending.
+    via_input_c(cfg->via2, 0, 0, 1); // CA1: NuBus slot IRQ (no IRQ)
+    via_input_c(cfg->via2, 0, 1, 1); // CA2: SCSI DRQ (no DMA request)
+    via_input_c(cfg->via2, 1, 1, 1); // CB2: SCSI IRQ (no SCSI interrupt)
+
+    // Initialise ADB controller (uses VIA1 for shift register and port B: ST0/ST1, vADBInt)
+    se30->adb = adb_init(cfg->via1, cfg->scheduler, checkpoint);
 
     // Restore image list from checkpoint before devices that reference them
     if (checkpoint) {

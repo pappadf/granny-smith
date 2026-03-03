@@ -53,6 +53,9 @@ extern void via_input_c(via_t *via, int port, int c, bool value);
 // Re-drive outputs after initialization of dependent devices (e.g., floppy)
 void via_redrive_outputs(via_t *via);
 
+// Read the current shift register value (used by ADB to capture command bytes)
+uint8_t via_read_sr(via_t *via);
+
 // Get the memory-mapped I/O interface for machine-level address decode
 const memory_interface_t *via_get_memory_interface(via_t *via);
 
