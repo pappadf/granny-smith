@@ -84,6 +84,17 @@ typedef struct mmu_state {
     uint8_t *physical_vram; // base of VRAM buffer (NULL if none)
     uint32_t physical_vram_size; // size of VRAM in bytes
     uint32_t vram_phys_base; // physical address where VRAM is mapped
+
+    // Optional VROM region (SE/30 video declaration ROM at $FEFFE000)
+    uint8_t *physical_vrom; // base of VROM buffer (NULL if none)
+    uint32_t physical_vrom_size; // size of VROM in bytes
+    uint32_t vrom_phys_base; // physical address where VROM is mapped
+
+    // Alternate physical addresses for page-table-mapped I/O access.
+    // On SE/30, logical $FExxxxxx identity-maps via TT to $FExxxxxx
+    // but the ROM's page table remaps it to $50Fxxxxx.
+    uint32_t vram_phys_alt; // alternate VRAM physical base (0 = none)
+    uint32_t vrom_phys_alt; // alternate VROM physical base (0 = none)
 } mmu_state_t;
 
 // === Lifecycle ===
@@ -119,6 +130,7 @@ bool mmu_check_tt(mmu_state_t *mmu, uint32_t addr, bool write, bool supervisor);
 
 // Register a VRAM region so table walks and TT matches can resolve it
 void mmu_register_vram(mmu_state_t *mmu, uint8_t *vram, uint32_t phys_base, uint32_t size);
+void mmu_register_vrom(mmu_state_t *mmu, uint8_t *vrom, uint32_t phys_base, uint32_t size);
 
 // Global MMU state pointer (set by machine init, NULL for 68000 machines)
 extern struct mmu_state *g_mmu;

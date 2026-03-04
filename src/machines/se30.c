@@ -82,14 +82,21 @@ LOG_USE_CATEGORY_NAME("se30");
 #define SE30_IRQ_SCC  (1 << 2) // IPL level 4
 #define SE30_IRQ_NMI  (1 << 3) // IPL level 7
 
-// SE/30 Video RAM: 64 KB at physical $FE000000 (NuBus slot E standard space)
+// SE/30 Video RAM: 64 KB at logical $FE000000 (NuBus slot E standard space)
 #define SE30_VRAM_BASE 0xFE000000UL
 #define SE30_VRAM_SIZE 0x00010000UL // 64 KB
 
-// SE/30 Video ROM: 8 KB, mapped at physical $FEFFE000 (top of slot E)
+// SE/30 Video ROM: 8 KB, mapped at logical $FEFFE000 (top of slot E)
 // Byte lanes = $0F (all lanes), so data is contiguous at the top 8 KB
 #define SE30_VROM_BASE 0xFEFFE000UL
 #define SE30_VROM_SIZE 0x00002000UL // 8 KB
+
+// ROM's MMU page table remaps NuBus slot $E to I/O space:
+// logical $FExxxxxx → physical $50Fxxxxx (I/O window for pseudoslot E)
+// These are the PHYSICAL addresses used after the MMU is enabled.
+#define SE30_VROM_PHYS     0xFEFFE000UL // NuBus slot $E declaration ROM physical address
+#define SE30_VRAM_PHYS_ALT 0x50F00000UL // page-table-mapped VRAM physical address
+#define SE30_VROM_PHYS_ALT 0x50FFE000UL // page-table-mapped VROM physical address
 
 // Framebuffer offsets within the 64 KB VRAM
 #define SE30_FB_PRIMARY_OFFSET   0x8040 // main screen buffer
@@ -161,84 +168,293 @@ static void se30_update_ipl(config_t *cfg, int source, bool active);
 static void se30_build_vrom(uint8_t *rom) {
     memset(rom, 0, SE30_VROM_SIZE);
 
-    // --- sResource Directory at 0x0000 ---
-    // Board sResource (ID=1)
+    // ---- sResource Directory at 0x0000 ----
+    // Board sResource (ID=1) at 0x0014
     rom[0x00] = 0x01;
-    rom[0x03] = 0x0C; // offset → 0x000C
+    rom[0x03] = 0x14; // offset → 0x0000+0x14 = 0x0014
 
-    // Video sResource (ID=0x80)
+    // Video sResource (ID=0x80) at 0x0040
     rom[0x04] = 0x80;
-    rom[0x07] = 0x1C; // offset = 0x1C, target = 0x0004+0x1C = 0x0020
+    rom[0x07] = 0x3C; // offset → 0x0004+0x3C = 0x0040
 
     // End of directory
     rom[0x08] = 0xFF;
 
-    // --- Board sResource at 0x000C ---
-    // sRsrcType(1) → type at 0x0034
-    rom[0x0C] = 0x01;
-    rom[0x0F] = 0x28; // offset = 0x28, target = 0x000C+0x28 = 0x0034
+    // ---- Board sResource at 0x0014 ----
+    // sRsrcType(1) → type at 0x00C0
+    rom[0x14] = 0x01;
+    rom[0x17] = 0xAC; // offset → 0x0014+0xAC = 0x00C0
 
-    // sRsrcName(2) → name at 0x0044
-    rom[0x10] = 0x02;
-    rom[0x13] = 0x34; // offset = 0x34, target = 0x0010+0x34 = 0x0044
+    // sRsrcName(2) → name at 0x00D0
+    rom[0x18] = 0x02;
+    rom[0x1B] = 0xB8; // offset → 0x0018+0xB8 = 0x00D0
 
-    // BoardId(0x20) = 9 (SE/30 board ID)
-    rom[0x14] = 0x20;
-    rom[0x17] = 0x09;
+    // BoardId(0x20) = 0x0C (SE/30 VROM board ID, matches real hardware)
+    rom[0x1C] = 0x20;
+    rom[0x1F] = 0x0C;
 
-    // PrimaryInit(0x22) → sExec at 0x0070
-    rom[0x18] = 0x22;
-    rom[0x1B] = 0x58; // offset = 0x58, target = 0x0018+0x58 = 0x0070
-
-    // End
-    rom[0x1C] = 0xFF;
-
-    // --- Video sResource at 0x0020 ---
-    // sRsrcType(1) → type at 0x003C
-    rom[0x20] = 0x01;
-    rom[0x23] = 0x1C; // offset = 0x1C, target = 0x0020+0x1C = 0x003C
-
-    // sRsrcName(2) → name at 0x0054
-    rom[0x24] = 0x02;
-    rom[0x27] = 0x30; // offset = 0x30, target = 0x0024+0x30 = 0x0054
-
-    // minorBaseOS(0x0A) = 0 (VRAM at slot base)
-    rom[0x28] = 0x0A;
-
-    // minorLength(0x0B) = 0x010000 (64 KB)
-    rom[0x2C] = 0x0B;
-    rom[0x2D] = 0x01;
+    // PrimaryInit(0x22) → sExec at 0x0100
+    rom[0x20] = 0x22;
+    rom[0x23] = 0xE0; // offset → 0x0020+0xE0 = 0x0100
 
     // End
-    rom[0x30] = 0xFF;
+    rom[0x24] = 0xFF;
 
-    // --- Board type descriptor at 0x0034 (8 bytes) ---
+    // ---- Video sResource at 0x0040 ----
+    // Entries MUST be in ascending ID order per NuBus declaration ROM spec.
+    // sRsrcType(1) → type at 0x00E0
+    rom[0x40] = 0x01;
+    rom[0x43] = 0xA0; // offset → 0x0040+0xA0 = 0x00E0
+
+    // sRsrcName(2) → name at 0x00F0
+    rom[0x44] = 0x02;
+    rom[0x47] = 0xAC; // offset → 0x0044+0xAC = 0x00F0
+
+    // sRsrcDrvrDir(4) → driver directory at 0x0200
+    rom[0x48] = 0x04;
+    rom[0x4A] = 0x01;
+    rom[0x4B] = 0xB8; // offset → 0x0048+0x1B8 = 0x0200
+
+    // sRsrcHWDevId(8) = 1 (immediate, matches real VROM)
+    rom[0x4C] = 0x08;
+    rom[0x4F] = 0x01;
+
+    // minorBaseOS(0x0A) → data at 0x017A (4-byte value = 0)
+    // NuBus format: 3-byte field is self-relative offset to a 4-byte data block
+    rom[0x50] = 0x0A;
+    rom[0x52] = 0x01;
+    rom[0x53] = 0x2A; // offset → 0x0050+0x012A = 0x017A
+
+    // minorLength(0x0B) → data at 0x017E (4-byte value = $10000)
+    rom[0x54] = 0x0B;
+    rom[0x56] = 0x01;
+    rom[0x57] = 0x2A; // offset → 0x0054+0x012A = 0x017E
+
+    // OneBitMode(0x80) → mode sResource at 0x0140
+    rom[0x58] = 0x80;
+    rom[0x5B] = 0xE8; // offset → 0x0058+0xE8 = 0x0140
+
+    // End
+    rom[0x5C] = 0xFF;
+
+    // ---- Board type descriptor at 0x00C0 (8 bytes) ----
     // {catBoard(1), typeBoard(0), drSW(0), drHW(0)}
-    rom[0x35] = 0x01; // catBoard = 1
+    rom[0xC1] = 0x01; // catBoard = 1
 
-    // --- Video type descriptor at 0x003C (8 bytes) ---
-    // {catDisplay(3), typeVideo(1), drSwApple(1), drHW(0)}
-    rom[0x3D] = 0x03; // catDisplay = 3
-    rom[0x3F] = 0x01; // typeVideo = 1
-    rom[0x41] = 0x01; // drSwApple = 1
+    // ---- Board name at 0x00D0 ----
+    memcpy(&rom[0xD0], "Macintosh SE/30", 16); // includes null terminator
 
-    // --- Board name at 0x0044 ---
-    memcpy(&rom[0x44], "Macintosh SE/30", 16); // includes null terminator
+    // ---- Video type descriptor at 0x00E0 (8 bytes) ----
+    // {catDisplay(3), typeVideo(1), drSwApple(1), drHW(9)}
+    rom[0xE1] = 0x03; // catDisplay = 3
+    rom[0xE3] = 0x01; // typeVideo = 1
+    rom[0xE5] = 0x01; // drSwApple = 1
+    rom[0xE7] = 0x09; // drHW = 9 (SE/30 built-in video, matches real VROM)
 
-    // --- Video name at 0x0054 ---
-    memcpy(&rom[0x54], "Display_Video_Apple_SE30", 25); // includes null
+    // ---- Video name at 0x00F0 (max 16 bytes to avoid overlapping sExec at 0x100) ----
+    memcpy(&rom[0xF0], "Built-in Video", 15); // 14 chars + null = 15 bytes
 
-    // --- PrimaryInit sExec block at 0x0070 ---
-    rom[0x70] = 0x02; // revision = 2
-    rom[0x71] = 0x03; // cpu = 3 (68020/68030)
-    rom[0x77] = 0x08; // code offset from sExec start = 8
-    rom[0x78] = 0x4E; // RTS high byte
-    rom[0x79] = 0x75; // RTS low byte
+    // ---- PrimaryInit sBlock at 0x0100 ----
+    // sBlock-wrapped sExec: the Slot Manager copies the sBlock to RAM before
+    // executing.  A raw sExec (no sBlock) is silently rejected by the Mac ROM.
+    //
+    // PrimaryInit writes default video monitor to extended PRAM[0x80-0x81].
+    //
+    // sBlock layout (30 bytes = $1E):
+    //   +0  sBlock size (long, includes this field)
+    //   +4  sExec revision (byte) = 2
+    //   +5  sExec cpu      (byte) = 2 (68020)
+    //   +6  reserved       (word) = 0
+    //   +8  codeOffset     (long) = 4 (bytes from this field to code)
+    //   +12 code (18 bytes)
+    rom[0x100] = 0x00;
+    rom[0x101] = 0x00; // sBlock size high
+    rom[0x102] = 0x00;
+    rom[0x103] = 0x1E; // sBlock size = 30
+    rom[0x104] = 0x02; // revision = 2
+    rom[0x105] = 0x02; // cpu = 2 (68020)
+    // bytes 0x106-0x107 reserved = 0
+    rom[0x10B] = 0x04; // code offset = 4
+    // 68K code at 0x010C:
+    //   LEA     data(PC),A0     ; A0 → inline data
+    //   MOVE.L  #$00800002,D0   ; offset=$80, count=2
+    //   _WriteXPRam             ; A052
+    //   MOVEQ   #0,D0           ; return noErr
+    //   RTS
+    //   data: DC.B $0E, $80     ; slot $E, spID $80
+    rom[0x10C] = 0x41;
+    rom[0x10D] = 0xFA; // LEA d16(PC),A0
+    rom[0x10E] = 0x00;
+    rom[0x10F] = 0x0E; // d16 = $000E → data at $011C
+    rom[0x110] = 0x20;
+    rom[0x111] = 0x3C; // MOVE.L #imm,D0
+    rom[0x112] = 0x00;
+    rom[0x113] = 0x80; // high word = $0080 (offset)
+    rom[0x114] = 0x00;
+    rom[0x115] = 0x02; // low word = $0002 (count)
+    rom[0x116] = 0xA0;
+    rom[0x117] = 0x52; // _WriteXPRam
+    rom[0x118] = 0x70;
+    rom[0x119] = 0x00; // MOVEQ #0,D0
+    rom[0x11A] = 0x4E;
+    rom[0x11B] = 0x75; // RTS
+    rom[0x11C] = 0x0E; // data: slot $E
+    rom[0x11D] = 0x80; // data: spID $80
 
-    // --- Format Header at 0x1FEC (last 20 bytes of 8 KB ROM) ---
-    // fhDirOffset: directory at 0x0000, fhDirOffset at 0x1FEC
-    // offset = 0x0000 - 0x1FEC = -0x1FEC = 0xFFFFE014
-    rom[0x1FEC] = 0xFF;
+    // ---- Mode sResource at 0x0140 (one-bit mode) ----
+    // mVidParams(1) → VPBlock at 0x0150
+    rom[0x140] = 0x01;
+    rom[0x143] = 0x10; // offset → 0x0140+0x10 = 0x0150
+
+    // mPageCnt(3) = 2 (two video pages, immediate value)
+    rom[0x144] = 0x03;
+    rom[0x147] = 0x02;
+
+    // mDevType(4) = 0 (bitmap device, immediate value)
+    rom[0x148] = 0x04;
+    // rom[0x14B] = 0x00; // already zero from memset
+
+    // End
+    rom[0x14C] = 0xFF;
+
+    // ---- VPBlock at 0x0150 (42 bytes) ----
+    // vpBaseOffset (4 bytes): framebuffer at $FE008040, slot-relative = 0x8040
+    rom[0x150] = 0x00;
+    rom[0x151] = 0x00;
+    rom[0x152] = 0x80;
+    rom[0x153] = 0x40;
+
+    // vpRowBytes (2 bytes): 64 bytes per scan line
+    rom[0x155] = 0x40;
+
+    // vpBounds: {top=0, left=0, bottom=342, right=512}
+    // top (2 bytes) = 0 at 0x156
+    // left (2 bytes) = 0 at 0x158
+    // bottom (2 bytes) = 342 = 0x0156
+    rom[0x15A] = 0x01;
+    rom[0x15B] = 0x56;
+    // right (2 bytes) = 512 = 0x0200
+    rom[0x15C] = 0x02;
+
+    // vpVersion (2 bytes) = 0 at 0x15E
+    // vpPackType (2 bytes) = 0 at 0x160
+    // vpPackSize (4 bytes) = 0 at 0x162
+
+    // vpHRes (4 bytes) = 72.0 dpi = 0x00480000
+    rom[0x166] = 0x00;
+    rom[0x167] = 0x48;
+
+    // vpVRes (4 bytes) = 72.0 dpi = 0x00480000
+    rom[0x16A] = 0x00;
+    rom[0x16B] = 0x48;
+
+    // vpPixelType (2 bytes) = 0 (chunky) at 0x16E
+    // vpPixelSize (2 bytes) = 1 (1 bit per pixel)
+    rom[0x171] = 0x01;
+    // vpCmpCount (2 bytes) = 1
+    rom[0x173] = 0x01;
+    // vpCmpSize (2 bytes) = 1
+    rom[0x175] = 0x01;
+    // vpPlaneBytes (4 bytes) = 0 at 0x176
+
+    // ---- minorBaseOS data at 0x017A (4 bytes) ----
+    // value = 0 (VRAM starts at slot base offset 0) — already zero from memset
+
+    // ---- minorLength data at 0x017E (4 bytes) ----
+    // value = $00010000 (64 KB framebuffer)
+    rom[0x017F] = 0x01;
+
+    // ---- Driver directory at 0x0200 ----
+    // sMacOS68020(2) → sBlock at 0x0220
+    rom[0x200] = 0x02;
+    rom[0x203] = 0x20; // offset → 0x0200+0x20 = 0x0220
+    // End
+    rom[0x204] = 0xFF;
+
+    // ---- sBlock-wrapped DRVR at 0x0220 ----
+    // sBlock size (4 bytes): DRVR is 106 bytes = 0x6A
+    rom[0x222] = 0x00;
+    rom[0x223] = 0x6A;
+
+    // DRVR header at 0x0224 (18 bytes)
+    // drvrFlags = $4C00 (dWritEnable | dNeedGoodBye | dNeedTime)
+    rom[0x224] = 0x4C;
+    // drvrDelay, drvrEMask, drvrMenu = 0 (already zero)
+    // drvrOpen → DRVR+$2C (noErr stub)
+    rom[0x22D] = 0x2C;
+    // drvrPrime = 0 (unused)
+    // drvrControl → DRVR+$30 (control handler with cscGrayPage)
+    rom[0x231] = 0x30;
+    // drvrStatus → DRVR+$2C (noErr stub)
+    rom[0x233] = 0x2C;
+    // drvrClose → DRVR+$2C (noErr stub)
+    rom[0x235] = 0x2C;
+
+    // Driver name (Pascal string): ".Display_Video_Apple_SE30" (25 chars)
+    rom[0x236] = 25;
+    memcpy(&rom[0x237], ".Display_Video_Apple_SE30", 25);
+
+    // ---- Open/Close/Status stub at DRVR+$2C = VROM 0x0250 ----
+    //   MOVEQ   #0,D0
+    //   RTS
+    rom[0x250] = 0x70;
+    rom[0x251] = 0x00; // MOVEQ #0,D0
+    rom[0x252] = 0x4E;
+    rom[0x253] = 0x75; // RTS
+
+    // ---- Control handler at DRVR+$30 = VROM 0x0254 ----
+    // Dispatches cscGrayPage (csCode=5) to fill VRAM with gray pattern.
+    // All other Control calls return noErr.
+    //
+    //   MOVE.W  $1A(A0),D0          ; read csCode from param block
+    //   CMPI.W  #5,D0               ; cscGrayPage?
+    //   BEQ.S   gray                ; → gray fill
+    //   MOVEQ   #0,D0               ; noErr
+    //   RTS
+    // gray:
+    //   MOVEM.L D2-D5/A1,-(SP)
+    //   MOVEA.L #$FE008040,A1       ; VRAM primary framebuffer
+    //   MOVE.L  #$AAAAAAAA,D5       ; gray pattern
+    //   MOVE.W  #$0155,D3           ; 342 rows - 1
+    // .row:
+    //   MOVE.W  #$000F,D2           ; 16 longs/row - 1
+    // .col:
+    //   MOVE.L  D5,(A1)+
+    //   DBRA    D2,.col
+    //   NOT.L   D5                   ; alternate pattern
+    //   DBRA    D3,.row
+    //   MOVEM.L (SP)+,D2-D5/A1
+    //   MOVEQ   #0,D0
+    //   RTS
+    static const uint8_t ctl_code[] = {
+        0x30, 0x28, 0x00, 0x1A, // MOVE.W $1A(A0),D0
+        0x0C, 0x40, 0x00, 0x05, // CMPI.W #5,D0
+        0x67, 0x04, // BEQ.S gray (+4)
+        0x70, 0x00, // MOVEQ #0,D0
+        0x4E, 0x75, // RTS
+        // gray:
+        0x48, 0xE7, 0x3C, 0x40, // MOVEM.L D2-D5/A1,-(SP)
+        0x22, 0x7C, 0xFE, 0x00, 0x80, 0x40, // MOVEA.L #$FE008040,A1
+        0x2A, 0x3C, 0xAA, 0xAA, 0xAA, 0xAA, // MOVE.L #$AAAAAAAA,D5
+        0x36, 0x3C, 0x01, 0x55, // MOVE.W #$0155,D3
+        // .row:
+        0x34, 0x3C, 0x00, 0x0F, // MOVE.W #$000F,D2
+        // .col:
+        0x22, 0xC5, // MOVE.L D5,(A1)+
+        0x51, 0xCA, 0xFF, 0xFC, // DBRA D2,.col
+        0x46, 0x85, // NOT.L D5
+        0x51, 0xCB, 0xFF, 0xF2, // DBRA D3,.row
+        0x4C, 0xDF, 0x02, 0x3C, // MOVEM.L (SP)+,D2-D5/A1
+        0x70, 0x00, // MOVEQ #0,D0
+        0x4E, 0x75 // RTS
+    };
+    memcpy(&rom[0x254], ctl_code, sizeof(ctl_code));
+
+    // ---- Format Header at 0x1FEC (last 20 bytes of 8 KB ROM) ----
+    // fhDirOffset: 24-bit signed backward offset from this field to directory.
+    // Directory at $FEFFE000, field at $FEFFFFEC → offset = -$1FEC = $FFE014 (24-bit).
+    // Upper byte must be zero; the Slot Manager sign-extends from 24 bits.
+    rom[0x1FEC] = 0x00;
     rom[0x1FED] = 0xFF;
     rom[0x1FEE] = 0xE0;
     rom[0x1FEF] = 0x14;
@@ -264,12 +480,13 @@ static void se30_build_vrom(uint8_t *rom) {
     // fhByteLanes: 0x0F (all four byte lanes, contiguous data)
     rom[0x1FFF] = 0x0F;
 
-    // Compute CRC: ROL 1 + ADD for each byte, skipping the CRC field itself
+    // Compute CRC: ROL 1 for every byte, ADD for non-CRC bytes.
+    // The Slot Manager always rotates, but only adds bytes outside the CRC field.
     uint32_t crc = 0;
     for (int i = 0; i < (int)SE30_VROM_SIZE; i++) {
-        if (i >= 0x1FF4 && i < 0x1FF8)
-            continue; // skip CRC field
-        crc = ((crc << 1) | (crc >> 31)) + rom[i];
+        crc = ((crc << 1) | (crc >> 31)); // ROL.L #1 (always)
+        if (i < 0x1FF4 || i >= 0x1FF8)
+            crc += rom[i]; // ADD only for non-CRC bytes
     }
 
     // Write CRC at 0x1FF4 (big-endian)
@@ -768,6 +985,16 @@ static void se30_init(config_t *cfg, checkpoint_t *checkpoint) {
     // Wire RTC 1-second tick to VIA1 CA2
     rtc_set_via(cfg->rtc, cfg->via1);
 
+    // Pre-initialise PRAM video default so _GetVideoDefault returns slot $E.
+    // PRAM offset $80 = spSlot (0x0E = slot E), $81 = spID (0x80 = video sResource).
+    // Lock these addresses so the ROM's sInitSlotPRAM cannot overwrite them.
+    if (!checkpoint) {
+        rtc_write_pram(cfg->rtc, 0x80, 0x0E);
+        rtc_write_pram(cfg->rtc, 0x81, 0x80);
+        rtc_lock_pram(cfg->rtc, 0x80);
+        rtc_lock_pram(cfg->rtc, 0x81);
+    }
+
     // Set hardware ID bits:
     // VIA1 PA6 = 1 (SE/30 identification) — already 1 in default port A input (0xF7)
     // VIA2 PB3 = 0 (SE/30 identification) — set explicitly
@@ -871,8 +1098,28 @@ static void se30_init(config_t *cfg, checkpoint_t *checkpoint) {
     g_mmu = se30->mmu;
     cfg->cpu->mmu = se30->mmu;
 
-    // Let the MMU resolve VRAM physical addresses during table walks
+    // Let the MMU resolve VRAM physical addresses during table walks.
+    // VRAM stays identity-mapped at its logical base for MMU resolution.
     mmu_register_vram(se30->mmu, se30->vram, SE30_VRAM_BASE, SE30_VRAM_SIZE);
+
+    // Let the MMU resolve VROM physical addresses during table walks.
+    // TT identity-maps NuBus addresses, so physical $FEFFE000 = logical $FEFFE000.
+    mmu_register_vrom(se30->mmu, se30->vrom, SE30_VROM_PHYS, SE30_VROM_SIZE);
+
+    // Emulate the GLUE chip's transparent NuBus slot address decoding.
+    // The SE/30 ROM never writes TT registers (confirmed by ROM binary scan);
+    // real hardware routes $F0-$FF to the NuBus bus controller, bypassing the
+    // PMMU entirely. Set TT1 so the MMU identity-maps NuBus slot space, which
+    // lets phys_to_host() resolve $FE000000 to the VRAM buffer.
+    // TT1: base=$F0, mask=$0F (match $F0-$FF), E=1, FC_MASK=7 (match all)
+    se30->mmu->tt1 = 0xF00F8007;
+
+    // Register alternate physical addresses for page-table-mapped access.
+    // After the ROM sets up MMU page tables, logical $FExxxxxx maps to
+    // physical $50Fxxxxx. Both VRAM and VROM must be accessible at their
+    // page-table-mapped physical addresses in addition to their TT addresses.
+    se30->mmu->vram_phys_alt = SE30_VRAM_PHYS_ALT;
+    se30->mmu->vrom_phys_alt = SE30_VROM_PHYS_ALT;
 
     // Point the video subsystem at the primary framebuffer in VRAM
     cfg->ram_vbuf = se30->vram + SE30_FB_PRIMARY_OFFSET;

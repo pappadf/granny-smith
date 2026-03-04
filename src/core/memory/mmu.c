@@ -49,6 +49,18 @@ static uint8_t *phys_to_host(mmu_state_t *mmu, uint32_t phys_addr) {
     if (mmu->physical_vram && phys_addr >= mmu->vram_phys_base &&
         phys_addr < mmu->vram_phys_base + mmu->physical_vram_size)
         return mmu->physical_vram + (phys_addr - mmu->vram_phys_base);
+    // VROM region (read-only video declaration ROM)
+    if (mmu->physical_vrom && phys_addr >= mmu->vrom_phys_base &&
+        phys_addr < mmu->vrom_phys_base + mmu->physical_vrom_size)
+        return mmu->physical_vrom + (phys_addr - mmu->vrom_phys_base);
+    // Alternate VRAM address (page-table-mapped I/O space)
+    if (mmu->vram_phys_alt && mmu->physical_vram && phys_addr >= mmu->vram_phys_alt &&
+        phys_addr < mmu->vram_phys_alt + mmu->physical_vram_size)
+        return mmu->physical_vram + (phys_addr - mmu->vram_phys_alt);
+    // Alternate VROM address (page-table-mapped I/O space)
+    if (mmu->vrom_phys_alt && mmu->physical_vrom && phys_addr >= mmu->vrom_phys_alt &&
+        phys_addr < mmu->vrom_phys_alt + mmu->physical_vrom_size)
+        return mmu->physical_vrom + (phys_addr - mmu->vrom_phys_alt);
     return NULL;
 }
 
@@ -62,6 +74,18 @@ static bool phys_is_writable(mmu_state_t *mmu, uint32_t phys_addr) {
     if (mmu->physical_vram && phys_addr >= mmu->vram_phys_base &&
         phys_addr < mmu->vram_phys_base + mmu->physical_vram_size)
         return true;
+    // VROM is read-only
+    if (mmu->physical_vrom && phys_addr >= mmu->vrom_phys_base &&
+        phys_addr < mmu->vrom_phys_base + mmu->physical_vrom_size)
+        return false;
+    // Alternate VRAM address is writable
+    if (mmu->vram_phys_alt && mmu->physical_vram && phys_addr >= mmu->vram_phys_alt &&
+        phys_addr < mmu->vram_phys_alt + mmu->physical_vram_size)
+        return true;
+    // Alternate VROM address is read-only
+    if (mmu->vrom_phys_alt && mmu->physical_vrom && phys_addr >= mmu->vrom_phys_alt &&
+        phys_addr < mmu->vrom_phys_alt + mmu->physical_vrom_size)
+        return false;
     return false;
 }
 
@@ -299,6 +323,15 @@ void mmu_register_vram(mmu_state_t *mmu, uint8_t *vram, uint32_t phys_base, uint
     mmu->physical_vram = vram;
     mmu->vram_phys_base = phys_base;
     mmu->physical_vram_size = size;
+}
+
+// Register a VROM region so table walks and TT matches can resolve it
+void mmu_register_vrom(mmu_state_t *mmu, uint8_t *vrom, uint32_t phys_base, uint32_t size) {
+    if (!mmu)
+        return;
+    mmu->physical_vrom = vrom;
+    mmu->vrom_phys_base = phys_base;
+    mmu->physical_vrom_size = size;
 }
 
 // Invalidate the entire software TLB by zeroing all four SoA arrays.

@@ -23,6 +23,7 @@
 
 // #define LOG(...) log_message(LOG_SCSI, 1, __VA_ARGS__)
 #define LOG(...)
+#define SCSI_TRACE(...)
 
 // register offsets/definitions based on [5]
 #define CDR   0 // current scsi data register
@@ -352,9 +353,17 @@ static void command_complete(scsi_t *scsi) {
     phase_status(scsi, STATUS_GOOD);
 }
 
-// Perform SCSI bus reset
+// Perform SCSI bus reset: release all bus signals and return to bus-free state.
+// On real hardware, a RST pulse forces all devices to release the bus and
+// return to their power-on state.  We reset the controller registers and
+// bus phase so the next arbitration/selection cycle starts cleanly.
 static void scsi_reset(scsi_t *scsi) {
-    // TBD
+    scsi->bus.phase = scsi_bus_free;
+    scsi->reg.csr = 0;
+    scsi->reg.bsr = 0;
+    scsi->reg.mr = 0;
+    scsi->reg.tcr = 0;
+    scsi->buf.size = 0;
 }
 
 // ============================================================================
@@ -366,9 +375,13 @@ static void write_icr(scsi_t *scsi, uint8_t val) {
     uint8_t bits_set = val & (val ^ scsi->reg.icr);
     uint8_t bits_cleared = ~val & (val ^ scsi->reg.icr);
 
+    SCSI_TRACE("write_icr: val=0x%02X old=0x%02X set=0x%02X clr=0x%02X phase=%d", val, scsi->reg.icr, bits_set,
+               bits_cleared, scsi->bus.phase);
+
     scsi->reg.icr = val;
 
     if (bits_set & ICR_RST) {
+        SCSI_TRACE("write_icr: RST asserted -> scsi_reset");
         scsi_reset(scsi);
         return;
     }
@@ -431,8 +444,10 @@ static void write_icr(scsi_t *scsi, uint8_t val) {
         scsi->reg.csr &= ~CSR_REQ;
     }
 
-    if (bits_set & ICR_SEL)
+    if (bits_set & ICR_SEL) {
+        SCSI_TRACE("write_icr: SEL asserted, phase=%d -> selection", scsi->bus.phase);
         phase_selection(scsi);
+    }
 }
 
 // Write to the mode register
@@ -445,6 +460,7 @@ static void write_mr(scsi_t *scsi, uint8_t val) {
     // The ARBITRATE bit is set to start the arbitration process
     if (bits_set & MR_ARBITRATE) {
 
+        SCSI_TRACE("write_mr: ARBITRATE set, phase=%d -> arbitration", scsi->bus.phase);
         phase_arbitration(scsi);
 
         // [1]: The results of the arbitration phase may be determined by reading the status bits LA and AIP
@@ -455,6 +471,11 @@ static void write_mr(scsi_t *scsi, uint8_t val) {
         scsi->reg.icr &= ~ICR_LA;
         scsi->reg.cdr = scsi->reg.odr;
         scsi->bus.initiator = platform_ntz32(scsi->reg.odr);
+
+        // Assert BSY on the bus after winning arbitration.  The NCR 5380
+        // drives BSY when it becomes bus master; the ROM polls CSR_BSY
+        // to detect arbitration completion.
+        scsi->reg.csr |= CSR_BSY;
     }
 
     if (bits_cleared & MR_DMA) {
