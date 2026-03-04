@@ -182,16 +182,14 @@ static void sr_shift_complete_callback(void *source, uint64_t data) {
     // Deliver the byte via the per-instance shift-out callback
     via->shift_cb(via->cb_context, via->sr_shift_data);
 
-    // Set the SR interrupt flag — but NOT for mode 7 (external clock).
-    // In mode 7 the external device drives CB1; the real R6522 only sets
-    // IFR_SR when 8 bits have been clocked by CB1, not by an internal
-    // timer.  Emulated devices signal completion via via_input_sr() at
-    // the appropriate time.  For internal-clock modes (4-6) the 80-cycle
-    // timer IS the shift completion source, so IFR_SR is set here.
-    uint8_t sr_mode = (via->acr >> 2) & 7;
-    if (sr_mode != 7) {
-        update_ifr(via, via->ifr | IFR_SR);
-    }
+    // Set the SR interrupt flag — but NOT for mode 7 (external clock) when
+    // the machine provides its own completion signal via via_input_sr().
+    // For Simple keyboard protocol (Mac Plus) the 80-cycle timer IS the
+    // shift completion source.  Keep setting IFR_SR for all modes so the
+    // Mac Plus ROM learns the shift-out finished and can switch to mode 3
+    // before the keyboard responds.  For ADB (SE/30) the device calls
+    // via_input_sr() in mode 7, which harmlessly re-asserts IFR_SR.
+    update_ifr(via, via->ifr | IFR_SR);
 }
 
 // Timer 1 timeout callback - handles one-shot and free-running modes
