@@ -10,6 +10,7 @@
 #include "platform.h"
 #include "shell.h"
 #include "system.h"
+#include "via.h"
 
 #include <assert.h>
 #include <limits.h>
@@ -63,9 +64,11 @@
 #define CSR_BSY 0x40
 #define CSR_RST 0x80
 
-// bus and status register
-#define BSR_PM 0x08
-#define BSR_DR 0x40
+// bus and status register (NCR 5380/53C80 BSR, read-only register 5)
+#define BSR_PM   0x08 // bit 3: phase match (bus phase matches TCR)
+#define BSR_INT  0x10 // bit 4: interrupt request active (/IRQ asserted)
+#define BSR_DR   0x40 // bit 6: DMA request (data ready for DMA transfer)
+#define BSR_EDMA 0x80 // bit 7: end of DMA
 
 // command opcodes from [6]
 #define CMD_TEST_UNIT_READY 0x00
@@ -155,6 +158,16 @@ struct scsi {
     /* Runtime-only pointers and interfaces last */
     memory_map_t *memory_map;
     memory_interface_t memory_interface;
+
+    // VIA2 for interrupt delivery (SE/30); NULL on Plus
+    via_t *via;
+
+    // Tracked output pin states (active-low: true = asserted = pin driven low)
+    bool irq_active;
+    bool drq_active;
+
+    // Internal end-of-DMA flag (phase changed while DMA active)
+    bool end_of_dma;
 };
 
 // ============================================================================
@@ -164,6 +177,49 @@ struct scsi {
 // Determine the length of a SCSI command based on its opcode
 static int cmd_size(uint8_t opcode) {
     return opcode < 0x20 ? 6 : 10;
+}
+
+// Compute BSR phase-match bit: true when bus phase matches TCR
+static bool scsi_phase_match(scsi_t *scsi) {
+    // TCR bits 2:0 = MSG, C/D, I/O  (written by initiator)
+    // CSR bits 4:2 = MSG, C/D, I/O  (actual bus signals)
+    return ((scsi->reg.csr >> 2) & 7) == (scsi->reg.tcr & 7);
+}
+
+// Drive VIA2 CB2 (SCSI /IRQ) based on current interrupt conditions.
+// The NCR 5380 asserts /IRQ on phase mismatch during DMA, end of DMA,
+// loss of BSY during DMA, or bus reset detection.
+static void scsi_update_irq(scsi_t *scsi) {
+    // Phase mismatch during DMA mode is the primary IRQ source
+    bool irq = false;
+    if (scsi->reg.mr & MR_DMA) {
+        if (!scsi_phase_match(scsi))
+            irq = true; // phase mismatch during DMA
+        if (scsi->end_of_dma)
+            irq = true; // end of DMA
+    }
+
+    if (irq == scsi->irq_active)
+        return;
+    scsi->irq_active = irq;
+
+    // Drive VIA2 CB2: active-low (0 = asserted)
+    if (scsi->via)
+        via_input_c(scsi->via, 1, 1, !irq);
+}
+
+// Drive VIA2 CA2 (SCSI /DRQ) based on DMA data readiness.
+// Asserted when DMA mode is enabled and data is available for transfer.
+static void scsi_update_drq(scsi_t *scsi) {
+    bool drq = (scsi->reg.bsr & BSR_DR) != 0;
+
+    if (drq == scsi->drq_active)
+        return;
+    scsi->drq_active = drq;
+
+    // Drive VIA2 CA2: active-low (0 = asserted)
+    if (scsi->via)
+        via_input_c(scsi->via, 0, 1, !drq);
 }
 
 // Pop the next byte from the SCSI buffer
@@ -180,6 +236,9 @@ static uint8_t next_byte(scsi_t *scsi) {
 static void phase_free(scsi_t *scsi) {
     scsi->bus.phase = scsi_bus_free;
     scsi->reg.csr = 0;
+    scsi->end_of_dma = false;
+    scsi_update_drq(scsi);
+    scsi_update_irq(scsi);
 }
 
 // Transition SCSI bus to arbitration phase
@@ -208,6 +267,7 @@ static void phase_command(scsi_t *scsi) {
     scsi->buf.max = MAX_CMD_SIZE;
     scsi->buf.size = 0;
     scsi->bus.phase = scsi_command;
+    scsi_update_irq(scsi);
 }
 
 // Transition SCSI bus to data-in phase (target to initiator)
@@ -217,6 +277,7 @@ static void phase_data_in(scsi_t *scsi, int bytes) {
     scsi->bus.phase = scsi_data_in;
     scsi->reg.csr = CSR_IO + CSR_REQ + CSR_BSY;
     scsi->buf.size = scsi->buf.max = bytes;
+    scsi_update_irq(scsi);
 }
 
 // Transition SCSI bus to data-out phase (initiator to target)
@@ -228,6 +289,7 @@ static void phase_data_out(scsi_t *scsi, int bytes) {
     scsi->reg.csr = CSR_REQ + CSR_BSY;
     scsi->buf.max = bytes;
     scsi->buf.size = 0;
+    scsi_update_irq(scsi);
 }
 
 // Transition SCSI bus to status phase
@@ -237,6 +299,10 @@ static void phase_status(scsi_t *scsi, uint8_t status) {
     scsi->bus.phase = scsi_status;
     scsi->reg.csr = CSR_IO + CSR_CD + CSR_REQ + CSR_BSY;
     scsi->reg.cdr = status;
+    // Signal end-of-DMA to the IRQ logic if DMA was active
+    if (scsi->reg.mr & MR_DMA)
+        scsi->end_of_dma = true;
+    scsi_update_irq(scsi);
 }
 
 // Transition SCSI bus to message-in phase
@@ -246,6 +312,7 @@ static void phase_message_in(scsi_t *scsi, uint8_t message) {
     scsi->bus.phase = scsi_message_in;
     scsi->reg.csr = CSR_IO + CSR_CD + CSR_MSG + CSR_REQ + CSR_BSY;
     scsi->reg.cdr = message;
+    scsi_update_irq(scsi);
 }
 
 // Execute a SCSI command after receiving it from the initiator
@@ -364,6 +431,9 @@ static void scsi_reset(scsi_t *scsi) {
     scsi->reg.mr = 0;
     scsi->reg.tcr = 0;
     scsi->buf.size = 0;
+    scsi->end_of_dma = false;
+    scsi_update_drq(scsi);
+    scsi_update_irq(scsi);
 }
 
 // ============================================================================
@@ -480,6 +550,9 @@ static void write_mr(scsi_t *scsi, uint8_t val) {
 
     if (bits_cleared & MR_DMA) {
         scsi->reg.bsr &= ~BSR_DR;
+        scsi->end_of_dma = false;
+        scsi_update_drq(scsi);
+        scsi_update_irq(scsi);
     } else if (bits_set & MR_DMA) {
 
         assert(scsi->bus.phase == scsi_data_in || scsi->bus.phase == scsi_data_out);
@@ -491,6 +564,9 @@ static void write_mr(scsi_t *scsi, uint8_t val) {
         // if we're writing out data, and there is room in the buffer - then assert request signal
         if (scsi->bus.phase == scsi_data_out && scsi->buf.size < scsi->buf.max)
             scsi->reg.bsr |= BSR_DR;
+
+        scsi_update_drq(scsi);
+        scsi_update_irq(scsi);
     }
 }
 
@@ -587,6 +663,8 @@ static void write_uint8(void *s, uint32_t addr, uint8_t value) {
         // and then jump directly to "status" by asserting C/D and I/O in TCR
         if (scsi->bus.phase == scsi_data_in && (value & 7) == 3)
             phase_status(scsi, STATUS_GOOD);
+        // TCR change affects phase match, which may trigger/clear IRQ
+        scsi_update_irq(scsi);
         break;
 
     case SER:
@@ -595,6 +673,7 @@ static void write_uint8(void *s, uint32_t addr, uint8_t value) {
 
     case DMA:
         scsi->reg.bsr |= BSR_DR;
+        scsi_update_drq(scsi);
         break;
 
     case TDMA:
@@ -709,6 +788,11 @@ scsi_t *scsi_init(memory_map_t *map, checkpoint_t *checkpoint) {
 // Return the SCSI memory-mapped I/O interface for machine-level address decode
 const memory_interface_t *scsi_get_memory_interface(scsi_t *scsi) {
     return &scsi->memory_interface;
+}
+
+// Connect SCSI interrupt outputs to VIA2 (CB2 = /IRQ, CA2 = /DRQ)
+void scsi_set_via(scsi_t *scsi, via_t *via) {
+    scsi->via = via;
 }
 
 // ============================================================================

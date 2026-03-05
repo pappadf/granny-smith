@@ -387,6 +387,7 @@ static int cpu_movec_rn_rc(cpu_t *cpu) {
     g_active_read = cpu->supervisor ? g_supervisor_read : g_user_read;                                                 \
     g_active_write = cpu->supervisor ? g_supervisor_write : g_user_write;                                              \
     cpu_check_interrupt(cpu);                                                                                          \
+    g_bus_error_instr_ptr = instructions; /* let memory slow paths force exit */                                       \
     while (*instructions > 0) {                                                                                        \
         uint32_t fetch = memory_read_uint32(cpu->pc);                                                                  \
         uint16_t opcode = fetch >> 16;                                                                                 \
@@ -402,6 +403,14 @@ static int cpu_movec_rn_rc(cpu_t *cpu) {
     if ((_saved_trace & 2) && (cpu->trace & 2)) {                                                                      \
         exception(cpu, 0x024, cpu->pc, cpu_get_sr(cpu));                                                               \
     }                                                                                                                  \
+    }                                                                                                                  \
+    /* Deferred bus error: handled outside the hot loop for zero overhead. */                                          \
+    /* The memory slow path set *instructions=0 to force the loop exit. */                                             \
+    if (__builtin_expect(g_bus_error_pending, 0)) {                                                                    \
+        g_bus_error_pending = 0;                                                                                       \
+        exception_bus_error(cpu, g_bus_error_address, g_bus_error_rw);                                                 \
+        g_active_read = cpu->supervisor ? g_supervisor_read : g_user_read;                                             \
+        g_active_write = cpu->supervisor ? g_supervisor_write : g_user_write;                                          \
     }                                                                                                                  \
     cpu_check_interrupt(cpu);                                                                                          \
     assert(*instructions == 0)

@@ -107,6 +107,15 @@ extern uintptr_t *g_user_write; // user-mode write mapping
 extern uintptr_t *g_active_read;
 extern uintptr_t *g_active_write;
 
+// Deferred bus error: slow paths signal unmapped MMU accesses by setting
+// the pending flag AND zeroing *g_bus_error_instr_ptr, which forces the
+// CPU decoder loop to exit after the current instruction completes.
+// The bus error exception is then processed outside the hot loop.
+extern uint32_t g_bus_error_pending; // 0=none, 1=pending
+extern uint32_t g_bus_error_address; // faulting logical address
+extern uint32_t g_bus_error_rw; // 1=read, 0=write
+extern uint32_t *g_bus_error_instr_ptr; // points to decoder's instruction counter
+
 // Slow-path handlers for device I/O, unmapped, or MMU TLB miss accesses
 uint8_t memory_read_uint8_slow(uint32_t addr);
 uint16_t memory_read_uint16_slow(uint32_t addr);

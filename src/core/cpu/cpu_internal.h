@@ -56,6 +56,11 @@ struct cpu {
     uint32_t m; // M bit: 0=ISP active, 1=MSP active (supervisor only)
     uint32_t instruction_pc; // address of current instruction (for Format $2 frames)
 
+    // 68030 deferred bus error: set by memory slow paths, checked after each instruction
+    uint32_t bus_error_pending; // 0=none, 1=pending
+    uint32_t bus_error_address; // faulting logical address
+    uint32_t bus_error_rw; // 1=read, 0=write
+
     // 68030-specific: MMU state pointer (NULL for 68000)
     void *mmu;
 };
@@ -539,6 +544,63 @@ static inline void exception(cpu_t *restrict cpu, uint32_t vector, uint32_t pc, 
         cpu->pc = memory_read_uint32(vector);
         cpu->trace = 0;
     }
+}
+
+// Raise a 68030 bus error with Format $A stack frame (short bus cycle fault).
+// Called when a deferred bus error is detected after instruction completion.
+// Since this is deferred (instruction already completed), saved_pc points to the
+// NEXT instruction so the handler's RTE skips the faulting instruction.
+static __attribute__((noinline, cold)) void exception_bus_error(cpu_t *restrict cpu, uint32_t fault_addr, uint32_t rw) {
+    uint16_t saved_sr = cpu_get_sr(cpu);
+    // Use cpu->pc (next instruction) since the faulting instruction already completed
+    uint32_t saved_pc = cpu->pc;
+
+    // Switch to supervisor mode / ISP
+    if (!cpu->supervisor) {
+        cpu->usp = cpu->a[7];
+        cpu->a[7] = (cpu->m && cpu->cpu_model == CPU_MODEL_68030) ? cpu->msp : cpu->ssp;
+        cpu->supervisor = 1;
+        cpu->m = 0;
+    } else if (cpu->m && cpu->cpu_model == CPU_MODEL_68030) {
+        cpu->msp = cpu->a[7];
+        cpu->a[7] = cpu->ssp;
+        cpu->m = 0;
+    }
+
+    // Push Format $A (short bus cycle fault) frame: 16 words = 32 bytes
+    // SSW for 68030: FC2-FC0 (bits 12-10), DF (bit 8), RW (bit 6), SIZE (bits 5-4)
+    uint16_t fc = cpu->supervisor ? 5 : 1; // supervisor data=5, user data=1
+    uint16_t ssw = ((fc & 7) << 10) // FC bits
+                   | (1 << 8) // DF: data cycle fault
+                   | ((rw ? 1 : 0) << 6) // RW: 1=read, 0=write
+                   | (0x01 << 4); // SIZE: 01=byte
+    cpu->a[7] -= 4;
+    memory_write_uint32(cpu->a[7], 0); // internal registers
+    cpu->a[7] -= 4;
+    memory_write_uint32(cpu->a[7], 0); // data output buffer
+    cpu->a[7] -= 4;
+    memory_write_uint32(cpu->a[7], 0); // internal registers
+    cpu->a[7] -= 4;
+    memory_write_uint32(cpu->a[7], fault_addr); // data cycle fault address
+    cpu->a[7] -= 2;
+    memory_write_uint16(cpu->a[7], 0); // instruction pipe stage B
+    cpu->a[7] -= 2;
+    memory_write_uint16(cpu->a[7], 0); // instruction pipe stage C
+    cpu->a[7] -= 2;
+    memory_write_uint16(cpu->a[7], ssw); // special status word
+    cpu->a[7] -= 2;
+    memory_write_uint16(cpu->a[7], 0); // internal register
+    // Format/vector word: format $A, vector offset $008 (bus error)
+    cpu->a[7] -= 2;
+    memory_write_uint16(cpu->a[7], (uint16_t)(0xA008));
+    cpu->a[7] -= 4;
+    memory_write_uint32(cpu->a[7], saved_pc);
+    cpu->a[7] -= 2;
+    memory_write_uint16(cpu->a[7], saved_sr);
+
+    // Load bus error vector
+    cpu->pc = memory_read_uint32(cpu->vbr + 0x008);
+    cpu->trace = 0;
 }
 
 // Check if a pending interrupt should be serviced

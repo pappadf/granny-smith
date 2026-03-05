@@ -384,6 +384,17 @@ bool mmu_handle_fault(mmu_state_t *mmu, uint32_t logical_addr, bool write, bool 
     if (mmu_check_tt(mmu, logical_addr, write, supervisor)) {
         // TT match: identity mapping (logical = physical)
         mmu_fill_soa_entry(mmu, emu_page, emu_page, false, false);
+        // If phys_to_host returned NULL (unmapped physical), the SoA entry
+        // stays zero.  For reads, only bus error within the configured NuBus
+        // expansion slot range (e.g. $F9-$FD on SE/30).  Outside that range,
+        // return 0 silently — the hardware doesn't bus error for internal
+        // pseudo-slots like slot $F.  Writes are always silently dropped.
+        if (!write) {
+            uint32_t page_index = emu_page >> PAGE_SHIFT;
+            if ((int)page_index < g_page_count && g_supervisor_read && g_supervisor_read[page_index] == 0 &&
+                logical_addr >= mmu->nubus_berr_start && logical_addr <= mmu->nubus_berr_end)
+                return false; // unmapped physical read in NuBus range → bus error
+        }
         return true;
     }
 
@@ -391,7 +402,9 @@ bool mmu_handle_fault(mmu_state_t *mmu, uint32_t logical_addr, bool write, bool 
     mmu_walk_result_t result = mmu_table_walk(mmu, logical_addr, write, supervisor);
 
     if (!result.valid)
-        return false; // invalid descriptor → caller should raise bus error
+        return true; // invalid descriptor — not mapped, but don't bus error;
+                     // hardware returns 0/garbage for unmapped addresses.
+                     // SoA entry stays 0, so slow path returns 0.
 
     // Check supervisor-only restriction
     if (result.supervisor_only && !supervisor)
@@ -406,6 +419,12 @@ bool mmu_handle_fault(mmu_state_t *mmu, uint32_t logical_addr, bool write, bool 
     // We need to map the emulator's 4KB page granularity.
     uint32_t phys_page = result.physical_addr & ~(uint32_t)PAGE_MASK;
     mmu_fill_soa_entry(mmu, emu_page, phys_page, result.supervisor_only, result.write_protected);
+
+    // If phys_to_host returned NULL (unmapped physical), the SoA entry
+    // stays zero.  Don't bus error here — the hardware memory controller
+    // typically returns 0 or garbage for unmapped physical addresses
+    // reached via page table (e.g. addresses beyond installed RAM).
+    // Bus errors for NuBus empty slots are handled by the TT path above.
 
     return true;
 }

@@ -1,9 +1,18 @@
 # Integration test: SE/30 Boot
-# Loads Universal ROM, boots SE/30 for 50M instructions, verifies no crash.
-# The ROM will enable the PMMU for 24-bit mode and probe hardware IDs.
+# Boots SE/30 to the floppy icon screen and verifies the display.
+# Uses TimeDBRA/TimeVIA/TimeSCCDB=1 overrides to accelerate SCSI timeout loops.
 
-# Run 50M instructions to exercise ROM init (checksum, RAM test, PMMU, VIA probing)
-run 50000000
+# Run 10M instructions to complete timer calibration
+run 10000000
 
-# If we reach here, the ROM boot code ran without fatal bus errors or infinite loops
+# Override timing globals to skip SCSI timeout spin loops
+set 0xDA6.w 1
+set 0xD00.w 1
+set 0xD8E.w 1
+
+# Run 100M more instructions to reach the floppy icon screen
+run 100000000
+
+# Verify the screen matches the floppy icon reference image
+screenshot --match floppy.png
 quit

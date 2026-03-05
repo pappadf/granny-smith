@@ -45,6 +45,13 @@ uintptr_t *g_user_write = NULL;
 uintptr_t *g_active_read = NULL;
 uintptr_t *g_active_write = NULL;
 
+// Deferred bus error signal: set by slow paths on unmapped MMU accesses.
+// Zeroing *g_bus_error_instr_ptr forces the decoder loop to exit early.
+uint32_t g_bus_error_pending = 0;
+uint32_t g_bus_error_address = 0;
+uint32_t g_bus_error_rw = 0;
+uint32_t *g_bus_error_instr_ptr = NULL;
+
 // ============================================================================
 // Type Definitions
 // ============================================================================
@@ -113,6 +120,16 @@ uint8_t memory_read_uint8_slow(uint32_t addr) {
             uintptr_t base = g_active_read[addr >> PAGE_SHIFT];
             if (base != 0)
                 return LOAD_BE8((uint8_t *)(base + addr));
+            // SoA still 0: unmapped physical but no fault (e.g. beyond RAM)
+        } else {
+            // MMU fault (TT-matched unmapped NuBus, permission, etc.)
+            if (!g_bus_error_pending) {
+                g_bus_error_pending = 1;
+                g_bus_error_address = addr;
+                g_bus_error_rw = 1; // read
+                if (g_bus_error_instr_ptr)
+                    *g_bus_error_instr_ptr = 0; // force decoder loop exit
+            }
         }
     }
     return 0;
@@ -160,6 +177,16 @@ void memory_write_uint8_slow(uint32_t addr, uint8_t value) {
             if (base != 0) {
                 STORE_BE8((uint8_t *)(base + addr), value);
                 return;
+            }
+            // SoA still 0: unmapped physical but no fault — drop write
+        } else {
+            // MMU fault (TT-matched unmapped NuBus, permission, etc.)
+            if (!g_bus_error_pending) {
+                g_bus_error_pending = 1;
+                g_bus_error_address = addr;
+                g_bus_error_rw = 0; // write
+                if (g_bus_error_instr_ptr)
+                    *g_bus_error_instr_ptr = 0; // force decoder loop exit
             }
         }
     }

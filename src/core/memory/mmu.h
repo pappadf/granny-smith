@@ -95,6 +95,12 @@ typedef struct mmu_state {
     // but the ROM's page table remaps it to $50Fxxxxx.
     uint32_t vram_phys_alt; // alternate VRAM physical base (0 = none)
     uint32_t vrom_phys_alt; // alternate VROM physical base (0 = none)
+
+    // NuBus bus error range: only unmapped reads in this physical address
+    // range generate bus errors.  Outside this range, unmapped TT-mapped
+    // reads return 0 silently (as the hardware does for non-NuBus slots).
+    uint32_t nubus_berr_start; // first address that can bus error (inclusive)
+    uint32_t nubus_berr_end; // last address that can bus error (inclusive)
 } mmu_state_t;
 
 // === Lifecycle ===
