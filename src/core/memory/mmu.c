@@ -402,9 +402,7 @@ bool mmu_handle_fault(mmu_state_t *mmu, uint32_t logical_addr, bool write, bool 
     mmu_walk_result_t result = mmu_table_walk(mmu, logical_addr, write, supervisor);
 
     if (!result.valid)
-        return true; // invalid descriptor — not mapped, but don't bus error;
-                     // hardware returns 0/garbage for unmapped addresses.
-                     // SoA entry stays 0, so slow path returns 0.
+        return false; // invalid descriptor → caller should raise bus error
 
     // Check supervisor-only restriction
     if (result.supervisor_only && !supervisor)
