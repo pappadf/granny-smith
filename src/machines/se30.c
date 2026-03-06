@@ -98,6 +98,10 @@ LOG_USE_CATEGORY_NAME("se30");
 #define SE30_VRAM_PHYS_ALT 0x50FE0000UL // page-table-mapped VRAM physical address
 #define SE30_VROM_PHYS_ALT 0x50FF8000UL // page-table-mapped VROM physical address
 
+// VROM selection: define SE30_FORCE_SYNTHETIC_VROM to always use the
+// synthesized fallback VROM, even when the real SE30_VROM.bin is present.
+#define SE30_FORCE_SYNTHETIC_VROM
+
 // Framebuffer offsets within the 64 KB VRAM
 #define SE30_FB_PRIMARY_OFFSET   0x8040 // main screen buffer
 #define SE30_FB_ALTERNATE_OFFSET 0x0040 // alternate screen buffer
@@ -186,7 +190,8 @@ static void se30_build_vrom_fallback(uint8_t *rom) {
     top[0x1C] = 0x20;
     top[0x1F] = 0x0C; // BoardId = $0C
     top[0x20] = 0x22;
-    top[0x23] = 0xE0; // PrimaryInit → 0x0100
+    top[0x22] = 0x02;
+    top[0x23] = 0xE0; // PrimaryInit → 0x0300
     top[0x24] = 0xFF;
 
     // ---- Video sResource at 0x0040 ----
@@ -214,19 +219,51 @@ static void se30_build_vrom_fallback(uint8_t *rom) {
     memcpy(&top[0xD0], "Macintosh SE/30", 16);
     top[0xE1] = 0x03;
     top[0xE3] = 0x01;
-    top[0xE5] = 0x01;
+    top[0xE5] = 0x01; // drSwApple = 1 (standard driver in declaration ROM)
     top[0xE7] = 0x09;
     memcpy(&top[0xF0], "Built-in Video", 15);
 
-    // ---- PrimaryInit sBlock at 0x0100 ----
-    top[0x103] = 0x1E; // sBlock size 30
-    top[0x104] = 0x02;
-    top[0x105] = 0x02; // rev=2, cpu=68020
-    top[0x10B] = 0x04; // code offset
-    // 68K: LEA data(PC),A0; MOVE.L #$00800002,D0; _WriteXPRam; MOVEQ #0,D0; RTS; data: $0E,$80
-    static const uint8_t primaryinit[] = {0x41, 0xFA, 0x00, 0x0E, 0x20, 0x3C, 0x00, 0x80, 0x00,
-                                          0x02, 0xA0, 0x52, 0x70, 0x00, 0x4E, 0x75, 0x0E, 0x80};
-    memcpy(&top[0x10C], primaryinit, sizeof(primaryinit));
+    // ---- PrimaryInit sBlock at 0x0300 ----
+    // Modeled on the real SE/30 VROM PrimaryInit: sets spResult=1 (video
+    // initialized), writes XPRAM default-video (slot $E, spID $80),
+    // configures VIA PA6/PB6 bits, fills both video buffers with gray.
+    top[0x303] = 0x80; // sBlock size 128
+    top[0x304] = 0x02;
+    top[0x305] = 0x02; // rev=2, cpu=68020
+    top[0x30B] = 0x04; // code offset
+    static const uint8_t primaryinit[] = {
+        0x31, 0x7C, 0x00, 0x01, 0x00, 0x02, // MOVE.W #1,spResult(A0)
+        0x41, 0xFA, 0x00, 0x6A, // LEA data(PC),A0
+        0x20, 0x3C, 0x00, 0x02, 0x00, 0x80, // MOVE.L #$00020080,D0 (2 bytes at XPRAM $80)
+        0xA0, 0x52, // _WriteXPRam
+        0x20, 0x78, 0x01, 0xD4, // MOVEA.L $01D4.W,A0 (VIA1 base)
+        0x08, 0xE8, 0x00, 0x06, 0x06, 0x00, // BSET #6,$600(A0) (DDRA)
+        0x08, 0xE8, 0x00, 0x06, 0x04, 0x00, // BSET #6,$400(A0) (DDRB)
+        0x08, 0xE8, 0x00, 0x06, 0x1E, 0x00, // BSET #6,$1E00(A0) (ORA, PA6=1)
+        0x08, 0xD0, 0x00, 0x06, // BSET #6,(A0) (ORB, PB6=1)
+        0x22, 0x7C, 0xFE, 0xE0, 0x00, 0x00, // MOVEA.L #$FEE00000,A1 (VRAM)
+        0x24, 0x49, // MOVEA.L A1,A2
+        0x2A, 0x3C, 0xAA, 0xAA, 0xAA, 0xAA, // MOVE.L #$AAAAAAAA,D5
+        0xD3, 0xFC, 0x00, 0x00, 0x80, 0x40, // ADDA.L #$8040,A1 (primary buf)
+        0x36, 0x3C, 0x01, 0x55, // MOVE.W #$155,D3 (342 rows)
+        0x34, 0x3C, 0x00, 0x0F, // MOVE.W #$F,D2 (16 longs/row)
+        0x22, 0xC5, // MOVE.L D5,(A1)+
+        0x51, 0xCA, 0xFF, 0xFC, // DBF D2,*-2
+        0x46, 0x85, // NOT.L D5
+        0x51, 0xCB, 0xFF, 0xF2, // DBF D3,*-14
+        0x22, 0x4A, // MOVEA.L A2,A1
+        0xD2, 0xFC, 0x00, 0x40, // ADDA.W #$40,A1 (alt buf)
+        0x36, 0x3C, 0x01, 0x55, // MOVE.W #$155,D3
+        0x34, 0x3C, 0x00, 0x0F, // MOVE.W #$F,D2
+        0x22, 0xC5, // MOVE.L D5,(A1)+
+        0x51, 0xCA, 0xFF, 0xFC, // DBF D2,*-2
+        0x46, 0x85, // NOT.L D5
+        0x51, 0xCB, 0xFF, 0xF2, // DBF D3,*-14
+        0x70, 0x00, // MOVEQ #0,D0
+        0x4E, 0x75, // RTS
+        0x0E, 0x80 // data: slot $E, spID $80
+    };
+    memcpy(&top[0x30C], primaryinit, sizeof(primaryinit));
 
     // ---- Mode sResource at 0x0140 ----
     top[0x140] = 0x01;
@@ -236,51 +273,91 @@ static void se30_build_vrom_fallback(uint8_t *rom) {
     top[0x148] = 0x04; // mDevType = 0
     top[0x14C] = 0xFF;
 
-    // ---- VPBlock at 0x0150 ----
-    top[0x152] = 0x80;
-    top[0x153] = 0x40; // vpBaseOffset = $8040
-    top[0x155] = 0x40; // vpRowBytes = 64
-    top[0x15A] = 0x01;
-    top[0x15B] = 0x56; // bottom = 342
-    top[0x15C] = 0x02; // right = 512
-    top[0x166] = 0x00;
-    top[0x167] = 0x48; // vpHRes = 72.0
+    // ---- VPBlock sBlock at 0x0150 ----
+    // sBlock: 4-byte size header followed by VPBlock data
+    // VPBlock fields: vpBaseOffset(4), vpRowBytes(2), vpBounds(8),
+    //   vpVersion(2), vpPackType(2), vpPackSize(4), vpHRes(4), vpVRes(4),
+    //   vpPixelType(2), vpPixelSize(2), vpCmpCount(2), vpCmpSize(2),
+    //   vpPlaneBytes(4) = 42 bytes total
+    top[0x153] = 0x2E; // sBlock size = 46 ($2E), matches real VROM
+    // VPBlock data at top+0x154: offsets relative to 0x154
+    top[0x156] = 0x80;
+    top[0x157] = 0x40; // +0: vpBaseOffset = $00008040
+    top[0x159] = 0x40; // +4: vpRowBytes = 64
+    // +6: vpBounds = {0, 0, 342, 512}
+    top[0x15E] = 0x01;
+    top[0x15F] = 0x56; // bottom = 342
+    top[0x160] = 0x02; // right high byte (512 = $0200)
+    // +22: vpHRes = 72.0 ($00480000)
     top[0x16A] = 0x00;
-    top[0x16B] = 0x48; // vpVRes = 72.0
-    top[0x171] = 0x01;
-    top[0x173] = 0x01;
-    top[0x175] = 0x01; // pixel/cmp sizes
+    top[0x16B] = 0x48;
+    // +26: vpVRes = 72.0
+    top[0x16E] = 0x00;
+    top[0x16F] = 0x48;
+    // +30: vpPixelType = 0 (indexed) — default
+    // +32: vpPixelSize = 1
+    top[0x175] = 0x01;
+    // +34: vpCmpCount = 1
+    top[0x177] = 0x01;
+    // +36: vpCmpSize = 1
+    top[0x179] = 0x01;
 
-    // ---- minorLength data at 0x017E = $00010000 ----
-    top[0x017F] = 0x01;
+    // ---- minorLength data at 0x017E = $0000D5C0 ----
+    // Match real VROM: video framebuffer region size
+    top[0x0180] = 0xD5;
+    top[0x0181] = 0xC0;
 
     // ---- Driver directory at 0x0200 ----
+    // With drSw=1, the ROM's video init expects a standard DRVR resource
+    // via SReadDrvrName (Slot Manager trap $16). The driver directory must
+    // contain ID=2 pointing to an sBlock with a valid DRVR.
     top[0x200] = 0x02;
-    top[0x203] = 0x20; // sMacOS68020 → 0x0220
+    top[0x203] = 0x20; // ID=2 DRVR → 0x0220
     top[0x204] = 0xFF;
 
-    // ---- sBlock-wrapped DRVR at 0x0220 ----
-    top[0x222] = 0x00;
-    top[0x223] = 0x6E; // sBlock size
-    top[0x224] = 0x4C; // drvrFlags
-    top[0x22D] = 0x2C; // drvrOpen
-    top[0x231] = 0x30; // drvrControl
-    top[0x233] = 0x2C; // drvrStatus
-    top[0x235] = 0x2C; // drvrClose
-    top[0x236] = 25;
-    memcpy(&top[0x237], ".Display_Video_Apple_SE30", 25);
+    // ---- DRVR sBlock at 0x0220 ----
+    // Minimal video driver: all routines return noErr.
+    // The ROM opens this driver to install a DCE for the video slot.
+    // DRVR layout (offsets relative to DRVR start, after 4-byte sBlock size):
+    //   +$00: drvrFlags    +$08: drvrOpen   +$0C: drvrCtl
+    //   +$0E: drvrStatus   +$10: drvrClose  +$12: drvrName (Pascal)
+    //   Name ".Display_Video_Apple_SE30" = 25 chars → +$12..+$2B (26 bytes)
+    //   Code starts at +$2C (even boundary after name)
+    static const uint8_t drvr_sblock[] = {
+        // sBlock size (4 bytes): total size of data after this field
+        0x00, 0x00, 0x00, 0x38, // 56 bytes ($38)
 
-    // ---- Stubs and control handler ----
-    top[0x250] = 0x70;
-    top[0x251] = 0x00;
-    top[0x252] = 0x4E;
-    top[0x253] = 0x75;
-    static const uint8_t ctl_code[] = {0x30, 0x28, 0x00, 0x1A, 0x0C, 0x40, 0x00, 0x05, 0x67, 0x04, 0x70, 0x00,
-                                       0x4E, 0x75, 0x48, 0xE7, 0x3C, 0x40, 0x22, 0x7C, 0xFE, 0x00, 0x80, 0x40,
-                                       0x2A, 0x3C, 0xAA, 0xAA, 0xAA, 0xAA, 0x36, 0x3C, 0x01, 0x55, 0x34, 0x3C,
-                                       0x00, 0x0F, 0x22, 0xC5, 0x51, 0xCA, 0xFF, 0xFC, 0x46, 0x85, 0x51, 0xCB,
-                                       0xFF, 0xF2, 0x4C, 0xDF, 0x02, 0x3C, 0x70, 0x00, 0x4E, 0x75};
-    memcpy(&top[0x254], ctl_code, sizeof(ctl_code));
+        // DRVR header (18 bytes: +$00..+$11)
+        0x4F, 0x00, // +$00 drvrFlags: $4F00
+        0x00, 0x01, // +$02 drvrDelay: 1 tick
+        0x00, 0x00, // +$04 drvrEMask: 0
+        0x00, 0x00, // +$06 drvrMenu: 0
+        0x00, 0x2C, // +$08 drvrOpen:   offset $2C
+        0x00, 0x00, // +$0A drvrPrime:  not used
+        0x00, 0x30, // +$0C drvrCtl:    offset $30
+        0x00, 0x34, // +$0E drvrStatus: offset $34
+        0x00, 0x2C, // +$10 drvrClose:  offset $2C (same as Open)
+
+        // drvrName: Pascal string ".Display_Video_Apple_SE30" (26 bytes: +$12..+$2B)
+        0x19, // length = 25
+        0x2E, 0x44, 0x69, 0x73, 0x70, 0x6C, 0x61, 0x79, // .Display
+        0x5F, 0x56, 0x69, 0x64, 0x65, 0x6F, 0x5F, // _Video_
+        0x41, 0x70, 0x70, 0x6C, 0x65, 0x5F, 0x53, 0x45, // Apple_SE
+        0x33, 0x30, // 30
+
+        // ---- Open/Close at +$2C: return noErr ----
+        0x70, 0x00, // MOVEQ #0,D0
+        0x4E, 0x75, // RTS
+
+        // ---- Control at +$30: return noErr for all csCodes ----
+        0x70, 0x00, // MOVEQ #0,D0
+        0x4E, 0x75, // RTS
+
+        // ---- Status at +$34: return noErr for all csCodes ----
+        0x70, 0x00, // MOVEQ #0,D0
+        0x4E, 0x75, // RTS
+    };
+    memcpy(&top[0x220], drvr_sblock, sizeof(drvr_sblock));
 
     // ---- Format Header at top+0x1FEC (last 20 bytes) ----
     top[0x1FEC] = 0x00;
@@ -311,8 +388,11 @@ static void se30_build_vrom_fallback(uint8_t *rom) {
 
 // Try to load the real SE/30 VROM from a file.
 // Falls back to synthesising a minimal VROM if the file is not found.
+// Define SE30_FORCE_SYNTHETIC_VROM to skip file search and always synthesize.
 static void se30_load_vrom(config_t *cfg, uint8_t *vrom_buf) {
     (void)cfg;
+
+#ifndef SE30_FORCE_SYNTHETIC_VROM
     // Search well-known paths for the real 32 KB VROM binary
     static const char *search_paths[] = {"tests/data/roms/SE30_VROM.bin", "SE30_VROM.bin", NULL};
 
@@ -327,8 +407,9 @@ static void se30_load_vrom(config_t *cfg, uint8_t *vrom_buf) {
             }
         }
     }
+#endif
 
-    LOG(1, "VROM file not found, using synthesized fallback");
+    LOG(1, "Using synthesized fallback VROM");
     se30_build_vrom_fallback(vrom_buf);
 }
 

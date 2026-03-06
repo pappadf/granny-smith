@@ -93,7 +93,7 @@ OUTPUT := $(BUILD_DIR)/gs-headless
 
 # -- Combined flags --
 
-CFLAGS  := $(CFLAGS_BASE) $(CFLAGS_MODE) $(INCLUDES)
+CFLAGS  := $(CFLAGS_BASE) $(CFLAGS_MODE) $(INCLUDES) $(EXTRA_CFLAGS)
 LDFLAGS := $(LDFLAGS_MODE) -lpthread -lm
 
 # -- Targets --
