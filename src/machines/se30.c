@@ -914,8 +914,9 @@ static void se30_init(config_t *cfg, checkpoint_t *checkpoint) {
 
     // Set hardware ID bits:
     // VIA1 PA6 = 1 (SE/30 identification) — already 1 in default port A input (0xF7)
-    // VIA2 PB3 = 0 (SE/30 identification) — set explicitly
-    via_input(cfg->via2, 1, 3, 0);
+    // VIA2 PB3 = 1 (SE/30 identification) — ROM early-boot detection reads PB3
+    // after clearing DDRB bit 3; PA6=1 + PB3=1 → BoxFlag=2 (SWIM floppy path)
+    via_input(cfg->via2, 1, 3, 1);
     // VIA2 PA3 = 1 — fix default port A input (0xF7 has bit 3 = 0)
     // All VIA2 port A inputs should be 1 (NuBus slot IRQs are active-low, 1 = no IRQ)
     via_input(cfg->via2, 0, 3, 1);
@@ -987,6 +988,7 @@ static void se30_init(config_t *cfg, checkpoint_t *checkpoint) {
 
     // Initialise SWIM floppy controller (NULL map: I/O dispatcher)
     se30->swim = swim_init(NULL, cfg->scheduler, checkpoint);
+    cfg->swim = se30->swim; // expose SWIM to generic floppy commands
 
     // Cache device memory interfaces for the I/O dispatcher
     se30->via1_iface = via_get_memory_interface(cfg->via1);

@@ -48,6 +48,7 @@ struct config {
     scsi_t *scsi; // was: new_scsi
     rtc_t *rtc; // was: new_rtc
     floppy_t *floppy; // primary floppy controller (IWM on Plus)
+    struct swim *swim; // SWIM floppy controller (SE/30); NULL for Plus
     mouse_t *mouse;
     keyboard_t *keyboard;
 

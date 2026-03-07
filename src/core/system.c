@@ -26,6 +26,7 @@
 #include "scsi.h"
 #include "shell.h"
 #include "sound.h"
+#include "swim.h"
 #include "via.h"
 
 #include <assert.h>
@@ -162,6 +163,23 @@ uint64_t cmd_insert_fd(int argc, char *argv[]);
 uint64_t cmd_insert_disk(int argc, char *argv[]);
 uint64_t cmd_machine(int argc, char *argv[]);
 
+// Helpers to abstract floppy insertion across IWM (Plus) and SWIM (SE/30)
+static bool sys_fd_is_inserted(config_t *cfg, int drive) {
+    if (cfg->swim)
+        return swim_is_inserted(cfg->swim, drive);
+    if (cfg->floppy)
+        return floppy_is_inserted(cfg->floppy, drive);
+    return true; // no controller → treat as occupied
+}
+
+static int sys_fd_insert(config_t *cfg, int drive, image_t *disk) {
+    if (cfg->swim)
+        return swim_insert(cfg->swim, drive, disk);
+    if (cfg->floppy)
+        return floppy_insert(cfg->floppy, drive, disk);
+    return -1;
+}
+
 // Trigger a vertical blanking interval event (delegates to machine callback)
 void trigger_vbl(struct config *restrict config) {
     if (config && config->machine && config->machine->trigger_vbl) {
@@ -196,8 +214,8 @@ uint64_t cmd_new_fd(int argc, char *argv[]) {
         return -1;
     }
 
-    bool d0_free = !floppy_is_inserted(config->floppy, 0);
-    bool d1_free = !floppy_is_inserted(config->floppy, 1);
+    bool d0_free = !sys_fd_is_inserted(config, 0);
+    bool d1_free = !sys_fd_is_inserted(config, 1);
 
     int target = -1;
     if (preferred != -1 && (preferred == 0 ? d0_free : d1_free)) {
@@ -231,7 +249,7 @@ uint64_t cmd_new_fd(int argc, char *argv[]) {
     // Track this image so checkpoints can restore by filename
     add_image(config, disk);
 
-    floppy_insert(config->floppy, target, disk);
+    sys_fd_insert(config, target, disk);
     printf("new-fd: created %s and inserted into drive %d.\n", path, target);
     return 0;
 }
@@ -260,11 +278,11 @@ uint64_t cmd_insert_disk(int argc, char *argv[]) {
     // Track this image so checkpoints can restore by filename
     add_image(config, disk);
 
-    if (!floppy_is_inserted(config->floppy, 0)) {
-        floppy_insert(config->floppy, 0, disk);
+    if (!sys_fd_is_inserted(config, 0)) {
+        sys_fd_insert(config, 0, disk);
         printf("Inserted disk into floppy drive 0.\n");
-    } else if (!floppy_is_inserted(config->floppy, 1)) {
-        floppy_insert(config->floppy, 1, disk);
+    } else if (!sys_fd_is_inserted(config, 1)) {
+        sys_fd_insert(config, 1, disk);
         printf("Inserted disk into floppy drive 1.\n");
     } else {
         printf("Both floppy drives are already occupied.\n");
@@ -492,8 +510,8 @@ uint64_t cmd_insert_fd(int argc, char *argv[]) {
         return -1;
     }
 
-    bool d0_free = !floppy_is_inserted(config->floppy, 0);
-    bool d1_free = !floppy_is_inserted(config->floppy, 1);
+    bool d0_free = !sys_fd_is_inserted(config, 0);
+    bool d1_free = !sys_fd_is_inserted(config, 1);
 
     int target = -1;
     if (preferred != -1 && (preferred == 0 ? d0_free : d1_free)) {
@@ -512,7 +530,7 @@ uint64_t cmd_insert_fd(int argc, char *argv[]) {
     // Track this image so checkpoints can restore by filename
     add_image(config, disk);
 
-    floppy_insert(config->floppy, target, disk);
+    sys_fd_insert(config, target, disk);
     printf("insert-fd: inserted %s into floppy drive %d.\n", path, target);
     return 0;
 }

@@ -88,6 +88,7 @@ typedef struct floppy_drive {
     bool motor_spinning_up; // true during motor spin-up period
     int track; // current head position (0-79)
     int offset; // byte offset within current track
+    int data_side; // latched head side for data I/O (immune to transient SEL toggles)
     floppy_track_t tracks[NUM_SIDES][NUM_TRACKS]; // GCR encoded track data
 } floppy_drive_t;
 

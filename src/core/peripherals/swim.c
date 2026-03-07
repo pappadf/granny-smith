@@ -105,10 +105,13 @@ struct swim {
     uint8_t iwm_mode; // IWM mode register
     bool sel; // VIA-driven SEL signal (IWM head select)
     floppy_drive_t drives[NUM_DRIVES]; // drive state machines
+    int cstin_delay[NUM_DRIVES]; // counts down to simulate disk insertion detection
 
     // SWIM mode tracking
     bool in_ism_mode; // true = ISM mode active
     uint8_t mode_switch_count; // 0-4: position in IWM->ISM 4-write sequence
+    uint8_t iwm_write_latch; // SWIM echoes last data bus byte on read when enable is off
+    bool iwm_latch_valid; // true after a write, cleared after read
 
     // ISM registers
     uint8_t ism_mode; // mode/status register (zeros/ones write)
@@ -406,9 +409,9 @@ static int swim_disk_status(swim_t *swim, int drv) {
         desc = "mfmDrv";
         ret = 1; // SWIM always has a SuperDrive (FDHD capable)
         break;
-    case 0x06: // /SIDES
+    case 0x06: // /SIDES: 1 = double-sided drive
         desc = "/SIDES";
-        ret = 1; // double-sided drive
+        ret = 1; // SuperDrive is always double-sided
         break;
     case 0x07: // /DRVIN
         desc = "/DRVIN";
@@ -416,7 +419,12 @@ static int swim_disk_status(swim_t *swim, int drv) {
         break;
     case 0x08: // /CSTIN: zero when disk in drive
         desc = "/CSTIN";
-        ret = (swim->disk[drv] == NULL);
+        if (swim->cstin_delay[drv] > 0) {
+            swim->cstin_delay[drv]--;
+            ret = 1; // report no disk during insertion delay
+        } else {
+            ret = (swim->disk[drv] == NULL);
+        }
         break;
     case 0x09: // /WRTPRT: zero when write protected
         desc = "/WRTPRT";
@@ -445,15 +453,9 @@ static int swim_disk_status(swim_t *swim, int drv) {
         desc = "/READY";
         ret = drive->motor_spinning_up ? 1 : 0;
         break;
-    case 0x0F: // NEWINTF / twoMeg: media type detection
-        desc = "NEWINTF/twoMeg";
-        // Return 1 for HD media (1.44MB disk), 0 for DD media
-        if (swim->disk[drv] != NULL) {
-            size_t sz = disk_size(swim->disk[drv]);
-            ret = (sz > 1000000) ? 1 : 0; // HD media if > ~1 MB
-        } else {
-            ret = 0;
-        }
+    case 0x0F: // NEWINTF: new interface (SuperDrive) detection
+        desc = "NEWINTF";
+        ret = 1; // SuperDrive always reports new interface capability
         break;
     default:
         ret = 0;
@@ -589,6 +591,7 @@ static void swim_ism_reset(swim_t *swim) {
 // Reads from the IWM register (SWIM in IWM mode)
 static uint8_t swim_iwm_read(swim_t *swim, uint32_t offset) {
     GS_ASSERT(offset < 16);
+
     swim_update_iwm_lines(swim, offset);
 
     int drv = DRIVE_INDEX(swim);
@@ -624,8 +627,11 @@ static uint8_t swim_iwm_read(swim_t *swim, uint32_t offset) {
         }
 
         if (!IWM_ENABLE(swim)) {
-            LOG(6, "Drive %d: Reading data (disabled) = 0xFF", drv);
-            return 0xFF;
+            // SWIM echo: return the last written data bus byte if latch is valid
+            uint8_t val = swim->iwm_latch_valid ? swim->iwm_write_latch : 0xFF;
+            swim->iwm_latch_valid = false;
+            LOG(6, "Drive %d: Reading data (disabled) echo = 0x%02X", drv, val);
+            return val;
         }
 
         if (swim->disk[drv] == NULL) {
@@ -634,7 +640,8 @@ static uint8_t swim_iwm_read(swim_t *swim, uint32_t offset) {
         }
 
         floppy_drive_t *drive = &swim->drives[drv];
-        uint8_t *data = iwm_track_data(drive, swim->disk[drv], swim->sel, swim->scheduler);
+        int side = swim->sel ? 1 : 0;
+        uint8_t *data = iwm_track_data(drive, swim->disk[drv], side, swim->scheduler);
         if (!data) {
             LOG(1, "Drive %d: Read failed - no track data", drv);
             return 0xFF;
@@ -649,7 +656,7 @@ static uint8_t swim_iwm_read(swim_t *swim, uint32_t offset) {
                 if (drive->offset >= (int)trk_len)
                     drive->offset = 0;
                 if (byte & 0x80) {
-                    LOG(8, "Drive %d: Reading data track=%d side=%d offset=%d = 0x%02X", drv, drive->track, swim->sel,
+                    LOG(8, "Drive %d: Reading data track=%d side=%d offset=%d = 0x%02X", drv, drive->track, side,
                         drive->offset, byte);
                     return byte;
                 }
@@ -662,8 +669,8 @@ static uint8_t swim_iwm_read(swim_t *swim, uint32_t offset) {
         uint8_t ret = data[drive->offset++];
         if (drive->offset >= (int)trk_len)
             drive->offset = 0;
-        LOG(8, "Drive %d: Reading data track=%d side=%d offset=%d = 0x%02X", drv, drive->track, swim->sel,
-            drive->offset, ret);
+        LOG(8, "Drive %d: Reading data track=%d side=%d offset=%d = 0x%02X", drv, drive->track, side, drive->offset,
+            ret);
         return ret;
     }
 
@@ -675,6 +682,10 @@ static uint8_t swim_iwm_read(swim_t *swim, uint32_t offset) {
 static void swim_iwm_write(swim_t *swim, uint32_t offset, uint8_t byte) {
     swim_update_iwm_lines(swim, offset);
 
+    // SWIM latches every data bus byte for echo detection (unlike plain IWM)
+    swim->iwm_write_latch = byte;
+    swim->iwm_latch_valid = true;
+
     if (!IWM_Q6(swim) || !IWM_Q7(swim))
         return;
 
@@ -683,20 +694,21 @@ static void swim_iwm_write(swim_t *swim, uint32_t offset, uint8_t byte) {
     if (IWM_ENABLE(swim)) {
         // Write data to disk
         floppy_drive_t *drive = &swim->drives[drv];
-        uint8_t *data = iwm_track_data(drive, swim->disk[drv], swim->sel, swim->scheduler);
+        int side = swim->sel ? 1 : 0;
+        uint8_t *data = iwm_track_data(drive, swim->disk[drv], side, swim->scheduler);
         if (!data) {
             LOG(1, "Drive %d: Write failed - no track data", drv);
             return;
         }
 
         data[drive->offset++] = byte;
-        LOG(8, "Drive %d: Writing data track=%d side=%d offset=%d = 0x%02X", drv, drive->track, swim->sel,
-            drive->offset - 1, byte);
+        LOG(8, "Drive %d: Writing data track=%d side=%d offset=%d = 0x%02X", drv, drive->track, side, drive->offset - 1,
+            byte);
 
-        floppy_track_t *trk = &drive->tracks[swim->sel][drive->track];
+        floppy_track_t *trk = &drive->tracks[side][drive->track];
         if (!trk->modified) {
             trk->modified = true;
-            LOG(5, "Drive %d: Track %d side %d marked dirty", drv, drive->track, swim->sel);
+            LOG(5, "Drive %d: Track %d side %d marked dirty", drv, drive->track, side);
         }
 
         if (drive->offset == (int)iwm_track_length(drive->track))
@@ -1093,6 +1105,10 @@ void swim_set_sel_signal(swim_t *swim, bool sel) {
     }
     LOG(6, "SEL signal: %s -> %s", swim->sel ? "high" : "low", sel ? "high" : "low");
     swim->sel = sel;
+
+    // Only update the current drive's data side when not actively reading/writing
+    if (!IWM_ENABLE(swim))
+        swim->drives[DRIVE_INDEX(swim)].data_side = sel;
 }
 
 // Inserts a disk image into the specified drive
@@ -1105,6 +1121,10 @@ int swim_insert(swim_t *swim, int drive, image_t *disk) {
     }
 
     swim->disk[drive] = disk;
+
+    // Simulate disk insertion delay: report /CSTIN=1 (no disk) for first
+    // few polls so the driver detects a HIGH-to-LOW transition
+    swim->cstin_delay[drive] = 2;
 
     swim->drives[DRIVE_INDEX(swim)].offset = 0;
     const char *name = disk ? image_get_filename(disk) : NULL;
