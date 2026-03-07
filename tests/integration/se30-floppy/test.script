@@ -1,0 +1,9 @@
+# Integration test: SE/30 Floppy Boot
+# Boots SE/30 from a System 7.1 floppy disk and verifies the display.
+
+# Run 4B instructions to reach the desktop
+run 4000000000
+
+# Verify the screen matches the reference image
+screenshot --match floppy.png
+quit
