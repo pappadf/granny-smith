@@ -1786,36 +1786,52 @@ static inline uint32_t bf_insert_reg(uint32_t dst, int32_t offset, uint32_t w, u
 // FSAVE <ea>: push a 4-byte null coprocessor state ($00000000) to the EA.
 // The null frame tells software "no FPU present / FPU idle."
 // Valid EAs: control alterable + predecrement -(An).
+// EA validity is checked before privilege: invalid EA → Line-F (no FPU),
+// valid EA in user mode → privilege violation.
 #define OP_FSAVE_EA                                                                                                    \
-    OP(SUPER({                                                                                                         \
-        VALID_EA(((ea_control) & (ea_alterable)) | (ea_min_an));                                                       \
-        if (EA_MODE == 4) {                                                                                            \
-            /* -(An): predecrement and write null frame */                                                             \
-            AY -= 4;                                                                                                   \
-            WRITE32(AY, 0x00000000);                                                                                   \
+    OP({                                                                                                               \
+        if (!((((ea_control) & (ea_alterable)) | (ea_min_an)) & (1u << (EA_MODE + (EA_MODE == 7 ? EA_REG : 0))))) {    \
+            /* Invalid EA for FSAVE: Line-F exception (no FPU) */                                                      \
+            EXC_FTRAP();                                                                                               \
         } else {                                                                                                       \
-            /* Other control-alterable EAs: compute address, write null frame */                                       \
-            uint32_t _ea = GET_EA;                                                                                     \
-            WRITE32(_ea, 0x00000000);                                                                                  \
+            SUPER({                                                                                                    \
+                if (EA_MODE == 4) {                                                                                    \
+                    /* -(An): predecrement and write null frame */                                                     \
+                    AY -= 4;                                                                                           \
+                    WRITE32(AY, 0x00000000);                                                                           \
+                } else {                                                                                               \
+                    /* Other control-alterable EAs: compute address, write null frame */                               \
+                    uint32_t _ea = GET_EA;                                                                             \
+                    WRITE32(_ea, 0x00000000);                                                                          \
+                }                                                                                                      \
+            });                                                                                                        \
         }                                                                                                              \
-    }))
+    })
 
 // FRESTORE <ea>: pop the coprocessor state frame from the EA.
 // With no FPU, read the first word; if null frame ($0000), consume 4 bytes total.
 // Valid EAs: control + postincrement (An)+.
+// EA validity is checked before privilege: invalid EA → Line-F (no FPU),
+// valid EA in user mode → privilege violation.
 #define OP_FRESTORE_EA                                                                                                 \
-    OP(SUPER({                                                                                                         \
-        VALID_EA((ea_control) | (ea_an_plus));                                                                         \
-        if (EA_MODE == 3) {                                                                                            \
-            /* (An)+: read null frame, postincrement by 4 */                                                           \
-            (void)READ32(AY);                                                                                          \
-            AY += 4;                                                                                                   \
+    OP({                                                                                                               \
+        if (!(((ea_control) | (ea_an_plus)) & (1u << (EA_MODE + (EA_MODE == 7 ? EA_REG : 0))))) {                      \
+            /* Invalid EA for FRESTORE: Line-F exception (no FPU) */                                                   \
+            EXC_FTRAP();                                                                                               \
         } else {                                                                                                       \
-            /* Other control EAs: compute address, read null frame */                                                  \
-            uint32_t _ea = GET_EA;                                                                                     \
-            (void)READ32(_ea);                                                                                         \
+            SUPER({                                                                                                    \
+                if (EA_MODE == 3) {                                                                                    \
+                    /* (An)+: read null frame, postincrement by 4 */                                                   \
+                    (void)READ32(AY);                                                                                  \
+                    AY += 4;                                                                                           \
+                } else {                                                                                               \
+                    /* Other control EAs: compute address, read null frame */                                          \
+                    uint32_t _ea = GET_EA;                                                                             \
+                    (void)READ32(_ea);                                                                                 \
+                }                                                                                                      \
+            });                                                                                                        \
         }                                                                                                              \
-    }))
+    })
 
 // --- FBcc.W/L: FPU conditional branch (no FPU → Line-F exception) ---
 // On a 68030 without FPU, FBcc generates a Line-F exception.

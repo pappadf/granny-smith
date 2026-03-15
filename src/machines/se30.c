@@ -100,7 +100,7 @@ LOG_USE_CATEGORY_NAME("se30");
 
 // VROM selection: define SE30_FORCE_SYNTHETIC_VROM to always use the
 // synthesized fallback VROM, even when the real SE30_VROM.bin is present.
-#define SE30_FORCE_SYNTHETIC_VROM
+// #define SE30_FORCE_SYNTHETIC_VROM
 
 // Framebuffer offsets within the 64 KB VRAM
 #define SE30_FB_PRIMARY_OFFSET   0x8040 // main screen buffer
@@ -390,8 +390,6 @@ static void se30_build_vrom_fallback(uint8_t *rom) {
 // Falls back to synthesising a minimal VROM if the file is not found.
 // Define SE30_FORCE_SYNTHETIC_VROM to skip file search and always synthesize.
 static void se30_load_vrom(config_t *cfg, uint8_t *vrom_buf) {
-    (void)cfg;
-
 #ifndef SE30_FORCE_SYNTHETIC_VROM
     // Search well-known paths for the real 32 KB VROM binary
     static const char *search_paths[] = {"tests/data/roms/SE30_VROM.bin", "SE30_VROM.bin", NULL};
@@ -407,6 +405,35 @@ static void se30_load_vrom(config_t *cfg, uint8_t *vrom_buf) {
             }
         }
     }
+
+    // Also search in the same directory as the ROM file
+    // Also search in the same directory as the ROM file.
+    // Use pending_rom_path since rom_filename isn't set yet during init.
+    const char *rom_path = memory_pending_rom_path();
+    if (!rom_path)
+        rom_path = memory_rom_filename(cfg->mem_map);
+    if (rom_path) {
+        const char *slash = strrchr(rom_path, '/');
+        if (slash) {
+            size_t dir_len = (size_t)(slash - rom_path + 1);
+            char vrom_path[512];
+            if (dir_len + sizeof("SE30_VROM.bin") <= sizeof(vrom_path)) {
+                memcpy(vrom_path, rom_path, dir_len);
+                memcpy(vrom_path + dir_len, "SE30_VROM.bin", sizeof("SE30_VROM.bin"));
+                FILE *f = fopen(vrom_path, "rb");
+                if (f) {
+                    size_t n = fread(vrom_buf, 1, SE30_VROM_SIZE, f);
+                    fclose(f);
+                    if (n == SE30_VROM_SIZE) {
+                        LOG(1, "Loaded real VROM from %s (%zu bytes)", vrom_path, n);
+                        return;
+                    }
+                }
+            }
+        }
+    }
+#else
+    (void)cfg;
 #endif
 
     LOG(1, "Using synthesized fallback VROM");
@@ -845,13 +872,85 @@ static void se30_scc_irq(void *context, bool active) {
 // ============================================================
 
 // Trigger vertical blanking interval for the SE/30.
-// VBL is signalled via VIA1 CA1 (same edge polarity as Plus).
+// On real hardware, VBL fires both VIA1 CA1 (system VBL at IPL 1) and
+// VIA2 CA1 (slot interrupt at IPL 2). The slot interrupt handler processes
+// slot VBL tasks and calls jCrsrTask for cursor drawing.
+//
+// We signal VIA1 CA1 for the system VBL path, then schedule a deferred
+// VIA2 CA1 pulse so the CPU can service the level-2 slot interrupt
+// after the level-1 handler lowers the SR mask.
+static void se30_vbl_slot_interrupt(void *context, uint64_t data);
+
 static void se30_trigger_vbl(config_t *cfg) {
-    // Assert then deassert VIA1 CA1 to signal VBL
+    se30_state_t *se30 = se30_state(cfg);
+
+    // VIA1 CA1: system VBL (Ticks counter, system VBL tasks)
     via_input_c(cfg->via1, 0, 0, 0);
     via_input_c(cfg->via1, 0, 0, 1);
 
+    // VIA2 CA1: slot $E video interrupt (slot VBL tasks, cursor update).
+    // Only fire when the ROM is fully ready:
+    //  1. VIA2 IER must have CA1 enabled (Slot Manager configured VIA2)
+    //  2. The slot E VBL queue must have at least one entry (the slot handler
+    //     at 0x408062B0 calls SysError $33 if the queue is empty).
+    // The ROM's slot dispatch table is at [$0D04]. Slot E (port A bit 5)
+    // maps to entry index 5 (offset 20). The queue head is at entry+2.
+    // All reads go through RAM directly to avoid MMU/SoA issues.
+    if (!se30->rom_overlay) {
+        uint8_t via2_ier = se30->via2_iface->read_uint8(cfg->via2, 0x1C00) & 0x7F;
+        if (via2_ier & 0x02) { // IER bit 1 = CA1 enabled
+            uint8_t *ram = ram_native_pointer(cfg->mem_map, 0);
+            // Read slot dispatch table base from [$0D04]
+            uint32_t slot_tbl = ((uint32_t)ram[0x0D04] << 24) | ((uint32_t)ram[0x0D05] << 16) |
+                                ((uint32_t)ram[0x0D06] << 8) | ram[0x0D07];
+            // Slot E entry: index 5 * 4 = offset 20
+            // VIA2 port A bit mapping: bit0=slot9, ..., bit5=slotE
+            uint32_t ea = slot_tbl + 20;
+            if (ea > 0 && ea < 0x10000) { // sanity: must be in low memory
+                uint32_t slot_entry = ((uint32_t)ram[ea] << 24) | ((uint32_t)ram[ea + 1] << 16) |
+                                      ((uint32_t)ram[ea + 2] << 8) | ram[ea + 3];
+                // Check VBL queue head at slot_entry + 2
+                ea = slot_entry + 2;
+                if (ea > 0 && ea < 0x10000) {
+                    uint32_t queue_head = ((uint32_t)ram[ea] << 24) | ((uint32_t)ram[ea + 1] << 16) |
+                                          ((uint32_t)ram[ea + 2] << 8) | ram[ea + 3];
+                    if (queue_head != 0) {
+                        // Schedule the slot interrupt pulse after a short delay
+                        scheduler_new_cpu_event(cfg->scheduler, &se30_vbl_slot_interrupt, cfg, 0, 0, 5000);
+                    }
+                }
+            }
+        }
+    }
+
     image_tick_all(cfg);
+}
+
+// Deferred callback: deasserts slot $E after the interrupt handler has read port A.
+static void se30_vbl_slot_deassert(void *context, uint64_t data) {
+    (void)data;
+    config_t *cfg = (config_t *)context;
+    via_input(cfg->via2, 0, 5, 1); // Deassert slot $E (active-high = idle)
+}
+
+// Deferred callback: fires VIA2 CA1 to trigger the slot interrupt handler.
+static void se30_vbl_slot_interrupt(void *context, uint64_t data) {
+    (void)data;
+    config_t *cfg = (config_t *)context;
+
+    // Assert slot $E on VIA2 port A bit 5 (active-low) so the
+    // level-2 handler can identify slot $E as the interrupt source.
+    via_input(cfg->via2, 0, 5, 0);
+
+    // Pulse VIA2 CA1 (negative edge triggers IFR_CA1)
+    via_input_c(cfg->via2, 0, 0, 0);
+    via_input_c(cfg->via2, 0, 0, 1);
+
+    // Schedule deassert after the handler reads port A.
+    // The level-2 exception entry + handler prologue + VIA2 IFR/IER reads +
+    // port A read + slot dispatch loop takes ~500+ CPU cycles, so allow 2000
+    // to ensure the handler has time to service the interrupt.
+    scheduler_new_cpu_event(cfg->scheduler, &se30_vbl_slot_deassert, cfg, 0, 0, 50000);
 }
 
 // ============================================================
@@ -932,6 +1031,7 @@ static void se30_init(config_t *cfg, checkpoint_t *checkpoint) {
 
     // Initialise ADB controller (uses VIA1 for shift register and port B: ST0/ST1, vADBInt)
     se30->adb = adb_init(cfg->via1, cfg->scheduler, checkpoint);
+    cfg->adb = se30->adb; // expose ADB to system-level input routing
 
     // Restore image list from checkpoint before devices that reference them
     if (checkpoint) {
@@ -1110,6 +1210,7 @@ static void se30_teardown(config_t *cfg) {
         if (se30->adb) {
             adb_delete(se30->adb);
             se30->adb = NULL;
+            cfg->adb = NULL;
         }
     }
 

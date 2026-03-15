@@ -511,12 +511,13 @@ static void via_write_uint8(void *v, uint32_t addr, uint8_t value) {
         update_ifr(via, via->ifr & ~value & 0x7f);
         break;
 
-    case IER:
+    case IER: {
         // if bit 7 is 0 - 1s will clear bits
         // if bit 7 is 1 - 1s will set bits
         via->ier = value & 0x80 ? via->ier | value : via->ier & ~value;
         update_ifr(via, via->ifr);
         break;
+    }
 
     case ORA_IRA:
         // Register 1: Write Port A WITH handshake — clears CA1/CA2 interrupt flags

@@ -346,6 +346,10 @@ uint8_t *ram_native_pointer(memory_map_t *mem, uint32_t addr) {
     return mem->image + addr;
 }
 
+const char *memory_rom_filename(memory_map_t *mem) {
+    return mem ? mem->rom_filename : NULL;
+}
+
 // Calculate and validate ROM checksum and identify ROM version
 static void calculate_checksum(memory_map_t *rom) {
     int i;
@@ -381,6 +385,13 @@ static void calculate_checksum(memory_map_t *rom) {
 // ============================================================================
 // Shell Commands
 // ============================================================================
+
+// Pending ROM path — set before machine init so VROM loading can find it.
+static char *s_pending_rom_path = NULL;
+
+const char *memory_pending_rom_path(void) {
+    return s_pending_rom_path;
+}
 
 // Shell command to load a ROM file into memory.
 // Enhanced for M6: identifies the ROM, creates/switches machine if needed.
@@ -461,6 +472,11 @@ uint64_t cmd_load_rom(int argc, char *argv[]) {
         free(rom_data);
         return (uint64_t)-1;
     }
+
+    // Store pending ROM path so machine init code (e.g. SE/30 VROM loader)
+    // can find related files next to the ROM.
+    free(s_pending_rom_path);
+    s_pending_rom_path = strdup(filename);
 
     // Ensure the correct machine is active (creates or switches as needed)
     if (system_ensure_machine(info->model_id) != 0) {

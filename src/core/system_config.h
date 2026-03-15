@@ -12,6 +12,7 @@
 #ifndef SYSTEM_CONFIG_H
 #define SYSTEM_CONFIG_H
 
+#include "adb.h"
 #include "checkpoint.h"
 #include "cpu.h"
 #include "debug.h"
@@ -51,6 +52,7 @@ struct config {
     struct swim *swim; // SWIM floppy controller (SE/30); NULL for Plus
     mouse_t *mouse;
     keyboard_t *keyboard;
+    adb_t *adb; // ADB controller (SE/30, IIcx); NULL for Plus
 
     debug_t *debugger;
 

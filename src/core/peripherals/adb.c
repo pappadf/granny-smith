@@ -193,14 +193,21 @@ static void kbd_queue_reset(adb_t *adb) {
     adb->kbd_queue.head = adb->kbd_queue.tail = 0;
 }
 
-// Encodes a mouse axis delta into ADB's 7-bit signed format (2's complement, -64..+63)
-static uint8_t encode_delta(int delta) {
-    // Clamp to the representable range before masking to 7 bits
-    if (delta > 63)
-        delta = 63;
-    if (delta < -64)
-        delta = -64;
-    return (uint8_t)(delta & 0x7F);
+// Clamps a mouse axis delta to ADB's 7-bit signed range (-64..+63) and returns
+// the clamped value. *remaining is set to the leftover delta not yet reported.
+static int clamp_delta(int delta, int *remaining) {
+    int clamped = delta;
+    if (clamped > 63)
+        clamped = 63;
+    if (clamped < -64)
+        clamped = -64;
+    *remaining = delta - clamped;
+    return clamped;
+}
+
+// Encodes a clamped delta into ADB's 7-bit signed format (2's complement)
+static uint8_t encode_delta(int clamped) {
+    return (uint8_t)(clamped & 0x7F);
 }
 
 // Drives the vADBInt line on VIA1 port B bit 3: high = idle/continue, low = SRQ/done
@@ -278,17 +285,24 @@ static void prepare_kbd_reply(adb_t *adb) {
     adb->reply_len = 2;
 }
 
-// Populates reply_buf with Mouse Register 0 data and resets accumulated deltas
+// Populates reply_buf with Mouse Register 0 data.
+// Only the portion of the delta that fits in 7-bit signed range is consumed;
+// the remainder stays in the accumulator for subsequent polls.
 static void prepare_mouse_reply(adb_t *adb) {
+    int remain_dy, remain_dx;
+    int dy = clamp_delta(adb->mouse_dy, &remain_dy);
+    int dx = clamp_delta(adb->mouse_dx, &remain_dx);
+
     // Byte 1: bit 7 = button (1=up, 0=down); bits 6-0 = signed Y delta
     uint8_t btn_bit = adb->mouse_button ? 0x00 : 0x80; // active-low button
-    adb->reply_buf[0] = btn_bit | encode_delta(adb->mouse_dy);
+    adb->reply_buf[0] = btn_bit | encode_delta(dy);
     // Byte 2: bit 7 = 1 (reserved for 2nd button, always 1 on single-button mouse)
-    adb->reply_buf[1] = 0x80 | encode_delta(adb->mouse_dx);
+    adb->reply_buf[1] = 0x80 | encode_delta(dx);
     adb->reply_len = 2;
-    // Clear accumulated deltas after delivering them
-    adb->mouse_dx = 0;
-    adb->mouse_dy = 0;
+
+    // Keep only the unconsumed remainder
+    adb->mouse_dy = remain_dy;
+    adb->mouse_dx = remain_dx;
 }
 
 // Populates reply_buf with Register 3 data (address + handler ID) for a device

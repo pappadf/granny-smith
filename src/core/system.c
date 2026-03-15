@@ -71,16 +71,22 @@ image_t *setup_get_image_by_filename(const char *filename) {
 
 // System-level mouse input wrapper: routes input to appropriate mouse device model
 void system_mouse_update(bool button, int dx, int dy) {
-    if (!global_emulator || !global_emulator->mouse)
+    if (!global_emulator)
         return;
-    mouse_update(global_emulator->mouse, button, dx, dy);
+    if (global_emulator->adb)
+        adb_mouse_event(global_emulator->adb, button, dx, dy);
+    else if (global_emulator->mouse)
+        mouse_update(global_emulator->mouse, button, dx, dy);
 }
 
 // System-level keyboard input wrapper: routes input to appropriate keyboard device model
 void system_keyboard_update(key_event_t event, int key) {
-    if (!global_emulator || !global_emulator->keyboard)
+    if (!global_emulator)
         return;
-    keyboard_update(global_emulator->keyboard, event, key);
+    if (global_emulator->adb)
+        adb_keyboard_event(global_emulator->adb, event, key);
+    else if (global_emulator->keyboard)
+        keyboard_update(global_emulator->keyboard, event, key);
 }
 
 // System-level scheduler accessor: returns the current scheduler object

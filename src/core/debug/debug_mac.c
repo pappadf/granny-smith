@@ -465,6 +465,16 @@ uint64_t cmd_set_mouse(int argc, char *argv[]) {
     memory_write_uint16(addr_RawMouse, v); // v
     memory_write_uint16(addr_RawMouse + 2, h); // h
 
+    // Also write to Mouse (processed cursor position) directly.
+    // On ADB machines (SE/30, IIcx) the cursor VBL task that normally copies
+    // MTemp → Mouse doesn't run (it uses the slot VBL path instead of the
+    // system VBL queue), so we must set Mouse explicitly.
+    uint32_t addr_Mouse = debug_mac_lookup_global_address("Mouse");
+    if (addr_Mouse) {
+        memory_write_uint16(addr_Mouse, v);
+        memory_write_uint16(addr_Mouse + 2, h);
+    }
+
     // Signal to the ROM / cursor code that the cursor has moved.
     // Many examples treat this as a 16-bit "-1" (0xFFFF).
     memory_write_uint16(addr_CrsrNew, 0xFFFF);

@@ -61,6 +61,12 @@ extern void memory_map_print(memory_map_t *mem);
 
 uint8_t *ram_native_pointer(memory_map_t *ram, uint32_t addr);
 
+// Return the filename of the currently loaded ROM, or NULL if none.
+const char *memory_rom_filename(memory_map_t *mem);
+
+// Return the ROM path being loaded (available during machine init).
+const char *memory_pending_rom_path(void);
+
 // Shell command handler for load-rom (registered by setup_init, used before machine exists)
 uint64_t cmd_load_rom(int argc, char *argv[]);
 
