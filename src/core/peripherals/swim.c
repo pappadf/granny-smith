@@ -92,6 +92,11 @@ static const uint8_t ISM_SWITCH_PATTERN[4] = {1, 0, 1, 1};
 // MFM sector buffer: enough for gap + sync + mark + header + CRC + gap + sync + mark + 512 data + CRC
 #define MFM_SECTOR_BUF_SIZE 768
 
+// Offset of the first data byte in the MFM sector buffer (just past $FB).
+// If buf_pos >= this value, no more mark bytes remain in the current sector
+// and we must advance to the next sector to simulate disk rotation.
+#define MFM_DATA_START_OFFSET 60
+
 // ============================================================================
 // SWIM State
 // ============================================================================
@@ -180,7 +185,9 @@ static bool ism_fifo_push(swim_t *swim, uint8_t byte, bool is_mark) {
     return false;
 }
 
-// Pops a byte from the ISM FIFO; returns 0xFF and sets overflow error on underrun
+// Pops a byte from the ISM FIFO; returns 0xFF and sets overflow error on underrun.
+// CRC is updated with the popped byte. Mark bytes reset CRC to match real SWIM
+// hardware which preloads CRC with 0xFFFF on each mark byte detection.
 static uint8_t ism_fifo_pop(swim_t *swim, bool *is_mark_out) {
     if (swim->ism_fifo_count == 0) {
         // Underrun: set error if not already set
@@ -192,7 +199,12 @@ static uint8_t ism_fifo_pop(swim_t *swim, bool *is_mark_out) {
     }
     uint8_t byte = swim->ism_fifo[0];
     bool is_mark = swim->ism_fifo_mark[0];
-    // Shift FIFO down
+    // SWIM resets CRC to FFFF on each mark byte, then accumulates it
+    if (is_mark)
+        swim->ism_crc = CRC_INIT;
+    // Update CRC with the byte being read by the ROM
+    swim->ism_crc = crc_ccitt_byte(swim->ism_crc, byte);
+    // Shift FIFO down: position 1 moves to position 0
     swim->ism_fifo[0] = swim->ism_fifo[1];
     swim->ism_fifo_mark[0] = swim->ism_fifo_mark[1];
     swim->ism_fifo_count--;
@@ -216,8 +228,8 @@ static void mfm_build_sector(swim_t *swim) {
 
     floppy_drive_t *drive = &swim->drives[drv];
     int track = drive->track;
-    // ISM mode: head select from mode register bit 5
-    int side = (swim->ism_mode & ISM_MODE_HDSEL) ? 1 : 0;
+    // Use the latched side value (set when ACTION transitions 0→1)
+    int side = swim->mfm_cur_side;
     int sector = swim->mfm_cur_sector; // 1-based
 
     // Determine sectors per track from disk size
@@ -275,10 +287,9 @@ static void mfm_build_sector(swim_t *swim) {
     buf[pos++] = (uint8_t)sector;
     buf[pos++] = 0x02; // 512 bytes/sector
 
-    // CRC over address mark ($A1x3) + $FE + 4 address bytes
+    // CRC over last mark byte + $FE + 4 address bytes
+    // SWIM resets CRC to FFFF on each mark, so only last A1 contributes
     uint16_t crc = CRC_INIT;
-    crc = crc_ccitt_byte(crc, 0xA1);
-    crc = crc_ccitt_byte(crc, 0xA1);
     crc = crc_ccitt_byte(crc, 0xA1);
     crc = crc_ccitt_byte(crc, 0xFE);
     crc = crc_ccitt_byte(crc, (uint8_t)track);
@@ -309,10 +320,9 @@ static void mfm_build_sector(swim_t *swim) {
     memcpy(&buf[pos], sector_data, 512);
     pos += 512;
 
-    // CRC over data mark + sector data
+    // CRC over last data mark byte + sector data
+    // SWIM resets CRC to FFFF on each mark, so only last A1 contributes
     crc = CRC_INIT;
-    crc = crc_ccitt_byte(crc, 0xA1);
-    crc = crc_ccitt_byte(crc, 0xA1);
     crc = crc_ccitt_byte(crc, 0xA1);
     crc = crc_ccitt_byte(crc, 0xFB);
     for (int i = 0; i < 512; i++)
@@ -333,7 +343,9 @@ static void mfm_build_sector(swim_t *swim) {
     LOG(4, "SWIM ISM: Built MFM sector T=%d S=%d Sec=%d (%d bytes)", track, side, sector, pos);
 }
 
-// Advances to the next MFM sector and builds its buffer
+// Advances to the next MFM sector and builds its buffer.
+// Wraps sector count within the current side; side selection is
+// controlled by the ROM via Mode register bit 5 (HDSEL).
 static void mfm_advance_sector(swim_t *swim) {
     int drv = (swim->ism_mode & ISM_MODE_DRIVE2) ? 1 : 0;
     image_t *img = swim->disk[drv];
@@ -342,7 +354,7 @@ static void mfm_advance_sector(swim_t *swim) {
 
     swim->mfm_cur_sector++;
     if (swim->mfm_cur_sector > sectors_per_track)
-        swim->mfm_cur_sector = 1; // wrap to sector 1
+        swim->mfm_cur_sector = 1;
 
     mfm_build_sector(swim);
 }
@@ -352,6 +364,8 @@ static void mfm_fill_fifo(swim_t *swim) {
     while (swim->ism_fifo_count < ISM_FIFO_SIZE && swim->mfm_buf_pos < swim->mfm_buf_len) {
         uint8_t byte = swim->mfm_sector_buf[swim->mfm_buf_pos];
         bool mark = swim->mfm_sector_mark[swim->mfm_buf_pos];
+        // CRC is updated on pop (ism_fifo_pop), not here, so that
+        // rHandshake refill pushes don't contaminate the CRC check
         ism_fifo_push(swim, byte, mark);
         swim->mfm_buf_pos++;
     }
@@ -367,6 +381,19 @@ static void mfm_fill_fifo(swim_t *swim) {
             swim->mfm_buf_pos++;
         }
     }
+}
+
+// Skips non-mark bytes at the start of the MFM sector buffer to simulate
+// the SWIM hardware's automatic mark search after ACTION is set
+static void mfm_skip_to_mark(swim_t *swim) {
+    uint16_t start = swim->mfm_buf_pos;
+    while (swim->mfm_buf_pos < swim->mfm_buf_len) {
+        if (swim->mfm_sector_mark[swim->mfm_buf_pos])
+            break;
+        swim->mfm_buf_pos++;
+    }
+    LOG(5, "ISM: mark search skipped %d bytes (pos %d -> %d, byte=0x%02X)", swim->mfm_buf_pos - start, start,
+        swim->mfm_buf_pos, (swim->mfm_buf_pos < swim->mfm_buf_len) ? swim->mfm_sector_buf[swim->mfm_buf_pos] : 0);
 }
 
 // ============================================================================
@@ -409,8 +436,8 @@ static int swim_disk_status(swim_t *swim, int drv) {
         desc = "mfmDrv";
         ret = 1; // SWIM always has a SuperDrive (FDHD capable)
         break;
-    case 0x06: // /SIDES: 1 = double-sided drive
-        desc = "/SIDES";
+    case 0x06: // SIDES: 1 = double-sided drive
+        desc = "SIDES";
         ret = 1; // SuperDrive is always double-sided
         break;
     case 0x07: // /DRVIN
@@ -453,9 +480,11 @@ static int swim_disk_status(swim_t *swim, int drv) {
         desc = "/READY";
         ret = drive->motor_spinning_up ? 1 : 0;
         break;
-    case 0x0F: // NEWINTF: new interface (SuperDrive) detection
+    case 0x0F: // NEWINTF: active-low, 0 = new interface (SuperDrive) present
         desc = "NEWINTF";
-        ret = 1; // SuperDrive always reports new interface capability
+        // Report new interface (0) only for HD disks that need the SuperDrive path;
+        // returning 0 for GCR disks triggers a ROM code path we don't fully emulate yet
+        ret = (swim->disk[drv] && swim->disk[drv]->type == image_fd_hd) ? 0 : 1;
         break;
     default:
         ret = 0;
@@ -579,6 +608,7 @@ static void swim_ism_reset(swim_t *swim) {
     swim->mfm_buf_len = 0;
     swim->mfm_buf_pos = 0;
     swim->mfm_cur_sector = 1;
+    swim->mfm_cur_side = 0;
 
     // Carry over IWM phase line states to ISM phase register
     swim->ism_phase = 0xF0 | // all outputs enabled
@@ -643,8 +673,10 @@ static uint8_t swim_iwm_read(swim_t *swim, uint32_t offset) {
         int side = swim->sel ? 1 : 0;
         uint8_t *data = iwm_track_data(drive, swim->disk[drv], side, swim->scheduler);
         if (!data) {
-            LOG(1, "Drive %d: Read failed - no track data", drv);
-            return 0xFF;
+            // HD/MFM disk in drive: return 0x00 so IWM GCR sync detection fails
+            // (0xFF would look like valid GCR sync and cause an infinite loop)
+            LOG(5, "Drive %d: No GCR track data (MFM disk)", drv);
+            return 0x00;
         }
 
         size_t trk_len = iwm_track_length(drive->track);
@@ -783,9 +815,9 @@ static uint8_t swim_ism_read(swim_t *swim, uint32_t offset) {
         uint8_t byte = ism_fifo_pop(swim, &is_mark);
         if (is_mark && !swim->ism_error)
             swim->ism_error |= ISM_ERR_MARK_IN_DATA; // mark read from data register
-        // Update CRC with byte
-        swim->ism_crc = crc_ccitt_byte(swim->ism_crc, byte);
         LOG(7, "ISM rData: 0x%02X (mark=%d, fifo=%d)", byte, is_mark, swim->ism_fifo_count);
+        if (swim->ism_mode & ISM_MODE_ACTION)
+            LOG(2, "ISM rData: 0x%02X mark=%d crc=0x%04X err=0x%02X", byte, is_mark, swim->ism_crc, swim->ism_error);
         return byte;
     }
     case 9: { // rMark: pop mark byte from FIFO (no error)
@@ -794,8 +826,9 @@ static uint8_t swim_ism_read(swim_t *swim, uint32_t offset) {
 
         bool is_mark = false;
         uint8_t byte = ism_fifo_pop(swim, &is_mark);
-        swim->ism_crc = crc_ccitt_byte(swim->ism_crc, byte);
         LOG(7, "ISM rMark: 0x%02X (mark=%d, fifo=%d)", byte, is_mark, swim->ism_fifo_count);
+        if (swim->ism_mode & ISM_MODE_ACTION)
+            LOG(2, "ISM rMark: 0x%02X mark=%d crc=0x%04X err=0x%02X", byte, is_mark, swim->ism_crc, swim->ism_error);
         return byte;
     }
     case 10: { // rError: return error register, then clear
@@ -831,9 +864,25 @@ static uint8_t swim_ism_read(swim_t *swim, uint32_t offset) {
         if (swim->ism_fifo_count > 0 && swim->ism_fifo_mark[0])
             hdshk |= ISM_HDSHK_MARK_BYTE;
 
-        // Bit 1: CRC non-zero
-        if (swim->ism_crc != 0)
-            hdshk |= ISM_HDSHK_CRC_NZ;
+        // Bit 1: CRC non-zero — real SWIM hardware computes CRC at the
+        // input side of the FIFO (bytes are CRC'd as they stream from
+        // the disk, before being queued). Our emulator computes CRC at
+        // pop time, so the running CRC lags behind. To compensate, we
+        // look ahead through queued FIFO bytes: if the CRC reaches zero
+        // at any step, report CRC_NZ=0 (valid CRC seen).
+        {
+            uint16_t crc = swim->ism_crc;
+            bool crc_ok = (crc == 0);
+            for (int i = 0; i < swim->ism_fifo_count && !crc_ok; i++) {
+                if (swim->ism_fifo_mark[i])
+                    crc = CRC_INIT;
+                crc = crc_ccitt_byte(crc, swim->ism_fifo[i]);
+                if (crc == 0)
+                    crc_ok = true;
+            }
+            if (!crc_ok)
+                hdshk |= ISM_HDSHK_CRC_NZ;
+        }
 
         // Bit 2: RDDATA (always 1 — no physical signal emulation)
         hdshk |= ISM_HDSHK_RDDATA;
@@ -852,7 +901,11 @@ static uint8_t swim_ism_read(swim_t *swim, uint32_t offset) {
 
         // Bits 6-7: FIFO status
         if (swim->ism_mode & ISM_MODE_WRITE) {
-            // Write mode: report space available
+            // Write mode: drain FIFO when ACTION is active to simulate
+            // the SWIM clocking out bytes to the disk media
+            if (swim->ism_mode & ISM_MODE_ACTION)
+                swim->ism_fifo_count = 0;
+            // Report space available
             int space = ISM_FIFO_SIZE - swim->ism_fifo_count;
             if (space >= 1)
                 hdshk |= ISM_HDSHK_DAT1BYTE;
@@ -870,6 +923,10 @@ static uint8_t swim_ism_read(swim_t *swim, uint32_t offset) {
         }
 
         LOG(7, "ISM rHandshake: 0x%02X (fifo=%d, err=0x%02X)", hdshk, swim->ism_fifo_count, swim->ism_error);
+        if (swim->ism_mode & ISM_MODE_ACTION)
+            LOG(2, "ISM rHdshk: 0x%02X mark=%d crc_nz=%d err=%d fifo=%d pos=%d/%d", hdshk,
+                !!(hdshk & ISM_HDSHK_MARK_BYTE), !!(hdshk & ISM_HDSHK_CRC_NZ), !!(hdshk & ISM_HDSHK_ERROR),
+                swim->ism_fifo_count, swim->mfm_buf_pos, swim->mfm_buf_len);
         return hdshk;
     }
     default:
@@ -937,7 +994,13 @@ static void swim_ism_write(swim_t *swim, uint32_t offset, uint8_t byte) {
         uint8_t old_mode = swim->ism_mode;
         swim->ism_mode &= ~byte;
         swim->ism_param_idx = 0; // any access to addr 6 resets param counter
-        LOG(6, "ISM wZeros: 0x%02X (mode: 0x%02X -> 0x%02X)", byte, old_mode, swim->ism_mode);
+        LOG(2, "ISM wZeros: 0x%02X (mode: 0x%02X -> 0x%02X) pos=%d/%d", byte, old_mode, swim->ism_mode,
+            swim->mfm_buf_pos, swim->mfm_buf_len);
+
+        // Log when ACTION is cleared (for debugging sector read progress)
+        if ((old_mode & ISM_MODE_ACTION) && !(swim->ism_mode & ISM_MODE_ACTION))
+            LOG(3, "ISM: ACTION cleared, buf consumed %d/%d sec=%d", swim->mfm_buf_pos, swim->mfm_buf_len,
+                swim->mfm_cur_sector);
 
         // If bit 6 was cleared: switch back to IWM mode
         if ((old_mode & ISM_MODE_ISM_IWM) && !(swim->ism_mode & ISM_MODE_ISM_IWM)) {
@@ -963,13 +1026,43 @@ static void swim_ism_write(swim_t *swim, uint32_t offset, uint8_t byte) {
             LOG(6, "ISM: FIFO cleared, CRC reset to 0x%04X", CRC_INIT);
         }
 
-        // If ACTION was just set for read mode, start MFM sector read
+        // If ACTION was just set for read mode, start/continue MFM sector read
         if ((swim->ism_mode & ISM_MODE_ACTION) && !(swim->ism_mode & ISM_MODE_WRITE)) {
             if (!(old_mode & ISM_MODE_ACTION)) {
-                swim->mfm_cur_sector = 1;
-                mfm_build_sector(swim);
+                // Save buffer's track/side before latching new values
+                uint8_t buf_side = swim->mfm_cur_side;
+                uint8_t buf_track = swim->mfm_cur_track;
+                // Latch head select: Setup bit 0 selects source
+                if (swim->ism_setup & ISM_SETUP_HDSEL_EN)
+                    swim->mfm_cur_side = (swim->ism_mode & ISM_MODE_HDSEL) ? 1 : 0;
+                else
+                    swim->mfm_cur_side = swim->sel ? 1 : 0;
+                LOG(3, "ISM: ACTION set, side=%d (sel=%d setup=0x%02X)", swim->mfm_cur_side, swim->sel,
+                    swim->ism_setup);
+                int drv_idx = (swim->ism_mode & ISM_MODE_DRIVE2) ? 1 : 0;
+                int cur_trk = swim->drives[drv_idx].track;
+                // Invalidate buffer only when side or track changed;
+                // otherwise continue from current position in the sector
+                // buffer (the ROM briefly clears ACTION between reading the
+                // address field and data field of the same sector)
+                if (swim->mfm_buf_len > 0 && (swim->mfm_cur_side != buf_side || cur_trk != buf_track)) {
+                    swim->mfm_buf_len = 0;
+                }
+                // Simulate disk rotation: if the buffer was consumed past
+                // the data mark, no more marks remain in this sector.
+                // Advance to the next sector so the ROM's mark search
+                // finds a fresh address mark (see hd-floppy-handover.md).
+                if (swim->mfm_buf_len > 0 && swim->mfm_buf_pos >= MFM_DATA_START_OFFSET) {
+                    mfm_advance_sector(swim);
+                }
+                // Build fresh sector if buffer is empty or exhausted
+                if (swim->mfm_buf_len == 0 || swim->mfm_buf_pos >= swim->mfm_buf_len) {
+                    mfm_build_sector(swim);
+                }
+                // Skip sync/gap bytes to next mark (SWIM auto mark search)
+                mfm_skip_to_mark(swim);
                 mfm_fill_fifo(swim);
-                LOG(5, "ISM: ACTION set for read, started MFM sector fill");
+                LOG(5, "ISM: ACTION set for read (pos=%d/%d)", swim->mfm_buf_pos, swim->mfm_buf_len);
             }
         }
         break;
@@ -977,7 +1070,8 @@ static void swim_ism_write(swim_t *swim, uint32_t offset, uint8_t byte) {
     case 7: { // wOnes: set specified bits in mode register
         uint8_t old_mode = swim->ism_mode;
         swim->ism_mode |= byte;
-        LOG(6, "ISM wOnes: 0x%02X (mode: 0x%02X -> 0x%02X)", byte, old_mode, swim->ism_mode);
+        LOG(2, "ISM wOnes: 0x%02X (mode: 0x%02X -> 0x%02X) pos=%d/%d", byte, old_mode, swim->ism_mode,
+            swim->mfm_buf_pos, swim->mfm_buf_len);
 
         // Handle Clear FIFO toggle (bit 0: 1->0 transition)
         if ((old_mode & ISM_MODE_CLEAR_FIFO) && !(swim->ism_mode & ISM_MODE_CLEAR_FIFO)) {
@@ -989,13 +1083,37 @@ static void swim_ism_write(swim_t *swim, uint32_t offset, uint8_t byte) {
             LOG(6, "ISM: FIFO cleared, CRC reset");
         }
 
-        // If ACTION was just set for read mode, start MFM sector read
+        // If ACTION was just set for read mode, start/continue MFM sector read
         if ((swim->ism_mode & ISM_MODE_ACTION) && !(swim->ism_mode & ISM_MODE_WRITE)) {
             if (!(old_mode & ISM_MODE_ACTION)) {
-                swim->mfm_cur_sector = 1;
-                mfm_build_sector(swim);
+                // Save buffer's track/side before latching new values
+                uint8_t buf_side = swim->mfm_cur_side;
+                uint8_t buf_track = swim->mfm_cur_track;
+                // Latch head select: Setup bit 0 selects source
+                if (swim->ism_setup & ISM_SETUP_HDSEL_EN)
+                    swim->mfm_cur_side = (swim->ism_mode & ISM_MODE_HDSEL) ? 1 : 0;
+                else
+                    swim->mfm_cur_side = swim->sel ? 1 : 0;
+                LOG(3, "ISM: ACTION set, side=%d (sel=%d setup=0x%02X)", swim->mfm_cur_side, swim->sel,
+                    swim->ism_setup);
+                int drv_idx = (swim->ism_mode & ISM_MODE_DRIVE2) ? 1 : 0;
+                int cur_trk = swim->drives[drv_idx].track;
+                // Invalidate buffer only when side or track changed
+                if (swim->mfm_buf_len > 0 && (swim->mfm_cur_side != buf_side || cur_trk != buf_track)) {
+                    swim->mfm_buf_len = 0;
+                }
+                // Simulate disk rotation (same logic as case 6)
+                if (swim->mfm_buf_len > 0 && swim->mfm_buf_pos >= MFM_DATA_START_OFFSET) {
+                    mfm_advance_sector(swim);
+                }
+                // Build fresh sector if buffer is empty or exhausted
+                if (swim->mfm_buf_len == 0 || swim->mfm_buf_pos >= swim->mfm_buf_len) {
+                    mfm_build_sector(swim);
+                }
+                // Skip sync/gap bytes to next mark (SWIM auto mark search)
+                mfm_skip_to_mark(swim);
                 mfm_fill_fifo(swim);
-                LOG(5, "ISM: ACTION set for read, started MFM sector fill");
+                LOG(5, "ISM: ACTION set for read (pos=%d/%d)", swim->mfm_buf_pos, swim->mfm_buf_len);
             }
         }
         break;
@@ -1103,7 +1221,11 @@ void swim_set_sel_signal(swim_t *swim, bool sel) {
         LOG(4, "SEL signal -> %s (deferred, no swim)", sel ? "high" : "low");
         return;
     }
-    LOG(6, "SEL signal: %s -> %s", swim->sel ? "high" : "low", sel ? "high" : "low");
+    if (sel != swim->sel)
+        LOG(3, "SEL signal changed: %s -> %s (ISM=%d Setup=0x%02X Mode=0x%02X)", swim->sel ? "high" : "low",
+            sel ? "high" : "low", swim->in_ism_mode, swim->ism_setup, swim->ism_mode);
+    else
+        LOG(6, "SEL signal: %s (no change)", sel ? "high" : "low");
     swim->sel = sel;
 
     // Only update the current drive's data side when not actively reading/writing
@@ -1162,6 +1284,7 @@ swim_t *swim_init(memory_map_t *map, struct scheduler *scheduler, checkpoint_t *
     swim->ism_phase = 0xF0;
     swim->ism_crc = CRC_INIT;
     swim->mfm_cur_sector = 1;
+    swim->mfm_cur_side = 0;
 
     // Set up memory interface
     swim->memory_interface.read_uint8 = &swim_read_uint8;

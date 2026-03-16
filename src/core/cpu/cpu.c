@@ -6,6 +6,7 @@
 
 #include "cpu_internal.h"
 
+#include "fpu.h"
 #include "log.h"
 #include "system.h"
 LOG_USE_CATEGORY_NAME("cpu");
@@ -151,6 +152,11 @@ extern cpu_t *cpu_init(int cpu_model, checkpoint_t *checkpoint) {
         // 68030-specific registers default to zero (VBR=0, CACR=0, etc.)
     }
 
+    // Allocate FPU state for 68030 model
+    if (cpu->cpu_model == CPU_MODEL_68030) {
+        cpu->fpu = fpu_init();
+    }
+
     return cpu;
 }
 
@@ -158,6 +164,10 @@ extern cpu_t *cpu_init(int cpu_model, checkpoint_t *checkpoint) {
 void cpu_delete(cpu_t *cpu) {
     if (!cpu)
         return;
+    if (cpu->fpu) {
+        fpu_free((fpu_state_t *)cpu->fpu);
+        cpu->fpu = NULL;
+    }
     free(cpu);
 }
 

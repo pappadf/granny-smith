@@ -11,6 +11,7 @@
 #define CPU_DECODER_IS_68030 1
 
 #include "cpu_internal.h"
+#include "fpu.h"
 #include "mmu.h"
 
 #include "log.h"

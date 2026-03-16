@@ -993,12 +993,14 @@
 #ifndef CPU_DECODER_IS_68030
 #define OP_PMMU_GENERAL OP(EXC_FTRAP())
 #endif
-// FPU branch/save/restore: 68030 overrides with no-FPU handling.
+// FPU branch/save/restore: 68030 overrides with FPU implementation.
 #ifndef CPU_DECODER_IS_68030
 #define OP_FBCC_W_DISPLACEMENT OP(EXC_FTRAP())
 #define OP_FBCC_L_DISPLACEMENT OP(EXC_FTRAP())
 #define OP_FSAVE_EA            OP(EXC_FTRAP())
 #define OP_FRESTORE_EA         OP(EXC_FTRAP())
+#define OP_FPU_GENERAL         OP(EXC_FTRAP())
+#define OP_FPU_SCCDBCC         OP(EXC_FTRAP())
 #endif
 #define OP_CINVL_CACHES_AN   OP(EXC_FTRAP())
 #define OP_CINVP_CACHES_AN   OP(EXC_FTRAP())
@@ -1782,72 +1784,14 @@ static inline uint32_t bf_insert_reg(uint32_t dst, int32_t offset, uint32_t w, u
         (void)GET_EA;                                                                                                  \
     }))
 
-// --- FPU FSAVE/FRESTORE: 68030 with no FPU pushes/pops a null idle frame ---
-// FSAVE <ea>: push a 4-byte null coprocessor state ($00000000) to the EA.
-// The null frame tells software "no FPU present / FPU idle."
-// Valid EAs: control alterable + predecrement -(An).
-// EA validity is checked before privilege: invalid EA → Line-F (no FPU),
-// valid EA in user mode → privilege violation.
-#define OP_FSAVE_EA                                                                                                    \
-    OP({                                                                                                               \
-        if (!((((ea_control) & (ea_alterable)) | (ea_min_an)) & (1u << (EA_MODE + (EA_MODE == 7 ? EA_REG : 0))))) {    \
-            /* Invalid EA for FSAVE: Line-F exception (no FPU) */                                                      \
-            EXC_FTRAP();                                                                                               \
-        } else {                                                                                                       \
-            SUPER({                                                                                                    \
-                if (EA_MODE == 4) {                                                                                    \
-                    /* -(An): predecrement and write null frame */                                                     \
-                    AY -= 4;                                                                                           \
-                    WRITE32(AY, 0x00000000);                                                                           \
-                } else {                                                                                               \
-                    /* Other control-alterable EAs: compute address, write null frame */                               \
-                    uint32_t _ea = GET_EA;                                                                             \
-                    WRITE32(_ea, 0x00000000);                                                                          \
-                }                                                                                                      \
-            });                                                                                                        \
-        }                                                                                                              \
-    })
-
-// FRESTORE <ea>: pop the coprocessor state frame from the EA.
-// With no FPU, read the first word; if null frame ($0000), consume 4 bytes total.
-// Valid EAs: control + postincrement (An)+.
-// EA validity is checked before privilege: invalid EA → Line-F (no FPU),
-// valid EA in user mode → privilege violation.
-#define OP_FRESTORE_EA                                                                                                 \
-    OP({                                                                                                               \
-        if (!(((ea_control) | (ea_an_plus)) & (1u << (EA_MODE + (EA_MODE == 7 ? EA_REG : 0))))) {                      \
-            /* Invalid EA for FRESTORE: Line-F exception (no FPU) */                                                   \
-            EXC_FTRAP();                                                                                               \
-        } else {                                                                                                       \
-            SUPER({                                                                                                    \
-                if (EA_MODE == 3) {                                                                                    \
-                    /* (An)+: read null frame, postincrement by 4 */                                                   \
-                    (void)READ32(AY);                                                                                  \
-                    AY += 4;                                                                                           \
-                } else {                                                                                               \
-                    /* Other control EAs: compute address, read null frame */                                          \
-                    uint32_t _ea = GET_EA;                                                                             \
-                    (void)READ32(_ea);                                                                                 \
-                }                                                                                                      \
-            });                                                                                                        \
-        }                                                                                                              \
-    })
-
-// --- FBcc.W/L: FPU conditional branch (no FPU → Line-F exception) ---
-// On a 68030 without FPU, FBcc generates a Line-F exception.
-// The displacement word(s) must be consumed so the exception PC in the
-// format $2 frame points past the entire instruction. This allows the
-// ROM handler to skip over the instruction on RTE.
-#define OP_FBCC_W_DISPLACEMENT                                                                                         \
-    OP({                                                                                                               \
-        (void)FETCH16();                                                                                               \
-        exception(cpu, 0x2C, cpu->pc, cpu_get_sr(cpu));                                                                \
-    })
-#define OP_FBCC_L_DISPLACEMENT                                                                                         \
-    OP({                                                                                                               \
-        (void)FETCH32();                                                                                               \
-        exception(cpu, 0x2C, cpu->pc, cpu_get_sr(cpu));                                                                \
-    })
+// --- FPU FSAVE/FRESTORE/FBcc: 68030 with no FPU → Line-F exception ---
+// Without a physical 68881/68882, the coprocessor interface has no responder.
+// All CpID=1 FPU instructions generate F-line exceptions, just like 68000.
+// f_trap() stacks PC pointing to the F-line instruction word (cpu->pc - 2).
+#define OP_FSAVE_EA            OP(EXC_FTRAP())
+#define OP_FRESTORE_EA         OP(EXC_FTRAP())
+#define OP_FBCC_W_DISPLACEMENT OP(EXC_FTRAP())
+#define OP_FBCC_L_DISPLACEMENT OP(EXC_FTRAP())
 
 // --- CpID=0 type=0: 68030 MMU general instruction (PMOVE/PFLUSH/PTEST/PLOAD) ---
 // Decodes the extension word to determine the specific MMU operation.
@@ -1890,6 +1834,127 @@ static inline uint32_t bf_insert_reg(uint32_t dst, int32_t offset, uint32_t w, u
             VALID_EA(ea_control);                                                                                      \
             AX = GET_EA;                                                                                               \
         })
+
+// ============================================================================
+// 68882 FPU instruction macros (CpID=1)
+// ============================================================================
+
+// General FPU operation (type=0): arithmetic, FMOVE, FMOVEM, FMOVECR
+#undef OP_FPU_GENERAL
+#define OP_FPU_GENERAL                                                                                                 \
+    OP({                                                                                                               \
+        if (!cpu->fpu) {                                                                                               \
+            EXC_FTRAP();                                                                                               \
+        } else {                                                                                                       \
+            uint16_t _ext = FETCH16();                                                                                 \
+            fpu_general_op(cpu, (fpu_state_t *)cpu->fpu, opcode, _ext);                                                \
+        }                                                                                                              \
+    })
+
+// FScc/FDBcc/FTRAPcc (type=1)
+#undef OP_FPU_SCCDBCC
+#define OP_FPU_SCCDBCC                                                                                                 \
+    OP({                                                                                                               \
+        if (!cpu->fpu) {                                                                                               \
+            EXC_FTRAP();                                                                                               \
+        } else {                                                                                                       \
+            fpu_state_t *_fpu = (fpu_state_t *)cpu->fpu;                                                               \
+            unsigned _mode = (opcode >> 3) & 7;                                                                        \
+            unsigned _reg = opcode & 7;                                                                                \
+            uint16_t _ext = FETCH16();                                                                                 \
+            unsigned _cond = _ext & 0x3F;                                                                              \
+            bool _cc = fpu_test_condition(_fpu, _cond);                                                                \
+            if (_mode == 1) {                                                                                          \
+                /* FDBcc: decrement Dn, branch if !cc && Dn != -1 */                                                   \
+                int16_t _disp = (int16_t)FETCH16();                                                                    \
+                if (!_cc) {                                                                                            \
+                    int16_t _cnt = (int16_t)(uint16_t)D(_reg) - 1;                                                     \
+                    D(_reg) = (D(_reg) & 0xFFFF0000u) | (uint16_t)_cnt;                                                \
+                    if (_cnt != -1)                                                                                    \
+                        PC = cpu->instruction_pc + 4 + (int32_t)_disp;                                                 \
+                }                                                                                                      \
+            } else if (_mode == 7 && _reg >= 2) {                                                                      \
+                /* FTRAPcc: optional immediate operand + trap if cc */                                                 \
+                if (_reg == 2)                                                                                         \
+                    (void)FETCH16();                                                                                   \
+                else if (_reg == 3)                                                                                    \
+                    (void)FETCH32();                                                                                   \
+                if (_cc)                                                                                               \
+                    EXC_TRAPV();                                                                                       \
+            } else {                                                                                                   \
+                /* FScc: set byte at EA to $FF if cc, $00 otherwise */                                                 \
+                WRITE_EA(8, _mode, _reg, _cc ? 0xFF : 0x00);                                                           \
+            }                                                                                                          \
+        }                                                                                                              \
+    })
+
+// FBcc.W: branch on FPU condition with 16-bit displacement
+#undef OP_FBCC_W_DISPLACEMENT
+#define OP_FBCC_W_DISPLACEMENT                                                                                         \
+    OP({                                                                                                               \
+        if (!cpu->fpu) {                                                                                               \
+            EXC_FTRAP();                                                                                               \
+        } else {                                                                                                       \
+            int16_t _disp = (int16_t)FETCH16();                                                                        \
+            unsigned _cond = opcode & 0x3F;                                                                            \
+            if (fpu_test_condition((fpu_state_t *)cpu->fpu, _cond))                                                    \
+                PC = cpu->instruction_pc + 2 + (int32_t)_disp;                                                         \
+        }                                                                                                              \
+    })
+
+// FBcc.L: branch on FPU condition with 32-bit displacement
+#undef OP_FBCC_L_DISPLACEMENT
+#define OP_FBCC_L_DISPLACEMENT                                                                                         \
+    OP({                                                                                                               \
+        if (!cpu->fpu) {                                                                                               \
+            EXC_FTRAP();                                                                                               \
+        } else {                                                                                                       \
+            int32_t _disp = (int32_t)FETCH32();                                                                        \
+            unsigned _cond = opcode & 0x3F;                                                                            \
+            if (fpu_test_condition((fpu_state_t *)cpu->fpu, _cond))                                                    \
+                PC = cpu->instruction_pc + 2 + _disp;                                                                  \
+        }                                                                                                              \
+    })
+
+// FSAVE: write null idle frame (supervisor only)
+#undef OP_FSAVE_EA
+#define OP_FSAVE_EA                                                                                                    \
+    OP({                                                                                                               \
+        if (!cpu->fpu) {                                                                                               \
+            EXC_FTRAP();                                                                                               \
+        } else                                                                                                         \
+            SUPER({                                                                                                    \
+                if (EA_MODE == 4) {                                                                                    \
+                    /* -(An) predecrement */                                                                           \
+                    AY -= 4;                                                                                           \
+                    WRITE32(AY, 0x00000000); /* null idle frame */                                                     \
+                } else {                                                                                               \
+                    uint32_t _ea = GET_EA;                                                                             \
+                    WRITE32(_ea, 0x00000000); /* null idle frame */                                                    \
+                }                                                                                                      \
+            })                                                                                                         \
+    })
+
+// FRESTORE: read state frame header, skip appropriate number of bytes
+#undef OP_FRESTORE_EA
+#define OP_FRESTORE_EA                                                                                                 \
+    OP({                                                                                                               \
+        if (!cpu->fpu) {                                                                                               \
+            EXC_FTRAP();                                                                                               \
+        } else                                                                                                         \
+            SUPER({                                                                                                    \
+                if (EA_MODE == 3) {                                                                                    \
+                    /* (An)+ postincrement */                                                                          \
+                    uint32_t _hdr = READ32(AY);                                                                        \
+                    uint32_t _sz = (_hdr >> 16) & 0xFF;                                                                \
+                    AY += (_sz == 0) ? 4 : (4 + (uint32_t)_sz);                                                        \
+                } else {                                                                                               \
+                    uint32_t _ea = GET_EA;                                                                             \
+                    uint32_t _hdr = READ32(_ea);                                                                       \
+                    (void)_hdr; /* accept and ignore non-null frames */                                                \
+                }                                                                                                      \
+            })                                                                                                         \
+    })
 
 #endif // CPU_DECODER_IS_68030
 

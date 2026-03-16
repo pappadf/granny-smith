@@ -58,7 +58,7 @@ INCLUDE_FLAGS := -I$(UNIT_ROOT)/support \
 
 CFLAGS  := $(BASE_CFLAGS) $(INCLUDE_FLAGS)
 LDFLAGS ?=
-LDFLAGS += -rdynamic
+LDFLAGS += -rdynamic -lm
 
 # -- Harness and stub configuration --
 
@@ -93,6 +93,7 @@ else ifeq ($(TEST_HARNESS),cpu)
               $(EMU_ROOT)/core/cpu/cpu_68000.c \
               $(EMU_ROOT)/core/cpu/cpu_68030.c \
               $(EMU_ROOT)/core/cpu/cpu_disasm.c \
+              $(EMU_ROOT)/core/cpu/fpu.c \
               $(EMU_ROOT)/core/memory/memory.c \
               $(EMU_ROOT)/core/memory/mmu.c
   COMMON_SRCS := $(HARNESS_SRCS) $(STUB_SRCS)

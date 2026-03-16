@@ -489,6 +489,8 @@ CPU_DECODER_RETURN_TYPE CPU_DECODER_NAME(CPU_DECODER_ARGS) {
         case 0x03: if (((opcode) & 0x3F) < 0x10) { OP_PBCC_L; } else { OP_FTRAP; } break;
         case 0x04: OP_PSAVE_EA;     break;
         case 0x05: OP_PRESTORE_EA;  break;
+        case 0x08: OP_FPU_GENERAL;  break;  // CpID=1, type=0: FPU arithmetic/move
+        case 0x09: OP_FPU_SCCDBCC;  break;  // CpID=1, type=1: FScc/FDBcc/FTRAPcc
         case 0x0A: if (((opcode) & 0x3F) < 0x20) { OP_FBCC_W_DISPLACEMENT; } else { OP_FTRAP; } break;
         case 0x0B: if (((opcode) & 0x3F) < 0x20) { OP_FBCC_L_DISPLACEMENT; } else { OP_FTRAP; } break;
         case 0x0C: OP_FSAVE_EA;     break;

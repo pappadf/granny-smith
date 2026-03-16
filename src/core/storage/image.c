@@ -132,6 +132,8 @@ static enum image_type classify_image(size_t raw_size) {
         return image_fd_ss;
     if (raw_size == 800 * 1024)
         return image_fd_ds;
+    if (raw_size == 1440 * 1024)
+        return image_fd_hd;
     return image_hd;
 }
 
@@ -162,6 +164,10 @@ static int detect_diskcopy(const char *path, size_t file_size, uint32_t *out_dat
     fclose(f);
     if (r != sizeof(header))
         return -1;
+    // Check magic signature at offset +82: must be 0x0100
+    uint16_t magic = ((uint16_t)header[0x52] << 8) | header[0x53];
+    if (magic != 0x0100)
+        return 0;
     uint32_t data_size = read_be32(header + 0x40);
     uint32_t tag_size = read_be32(header + 0x44);
     if (data_size == 0 || (data_size % STORAGE_BLOCK_SIZE) != 0)

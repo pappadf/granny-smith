@@ -4,8 +4,14 @@
 # Boot to Finder desktop
 run 200000000
 
+screenshot foobar1.png
+
 # Verify the screen matches the reference image
 screenshot --match floppy.png
+
+set-mouse 50 50
+
+run 100000000
 
 set-mouse 25 10
 run 1000000
@@ -17,6 +23,7 @@ mouse-button up
 
 run 100000000
 
-screenshot foobar.png
+
+screenshot foobar3.png
 
 quit

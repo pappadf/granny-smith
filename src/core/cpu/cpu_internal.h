@@ -63,6 +63,9 @@ struct cpu {
 
     // 68030-specific: MMU state pointer (NULL for 68000)
     void *mmu;
+
+    // 68030-specific: FPU state pointer (NULL for 68000 or if no FPU)
+    void *fpu;
 };
 
 // Read the condition code register from CPU flags
@@ -272,7 +275,7 @@ static inline uint32_t calculate_ea(cpu_t *restrict cpu, int size, int mode, int
             return ea;
         }
         default:
-            assert(0);
+            // Invalid EA mode 7 register (5-7): cannot occur in valid code
             return 0;
         }
     default:
@@ -567,36 +570,36 @@ static __attribute__((noinline, cold)) void exception_bus_error(cpu_t *restrict 
         cpu->m = 0;
     }
 
-    // Push Format $A (short bus cycle fault) frame: 16 words = 32 bytes
-    // SSW for 68030: FC2-FC0 (bits 12-10), DF (bit 8), RW (bit 6), SIZE (bits 5-4)
+    // Push 68030 Format $B (long bus cycle fault) frame: 46 words = 92 bytes.
+    // MC68030 SSW layout (bits 15-0):
+    //   15: FC  (stage C pipe fault)
+    //   14: FB  (stage B pipe fault)
+    //   13: RC  (rerun stage C)
+    //   12: RB  (rerun stage B)
+    //   11-9: reserved
+    //   8:  DF  (data fault — 1 when fault is on data cycle)
+    //   7:  RM  (read-modify-write on data cycle)
+    //   6:  RW  (1=read, 0=write)
+    //   5-4: SIZ (size: 00=long, 01=byte, 10=word, 11=line)
+    //   3-0: function code of faulting data cycle
     uint16_t fc = cpu->supervisor ? 5 : 1; // supervisor data=5, user data=1
-    uint16_t ssw = ((fc & 7) << 10) // FC bits
-                   | (1 << 8) // DF: data cycle fault
+    uint16_t ssw = (1 << 8) // DF: data cycle fault
                    | ((rw ? 1 : 0) << 6) // RW: 1=read, 0=write
-                   | (0x01 << 4); // SIZE: 01=byte
-    cpu->a[7] -= 4;
-    memory_write_uint32(cpu->a[7], 0); // internal registers
-    cpu->a[7] -= 4;
-    memory_write_uint32(cpu->a[7], 0); // data output buffer
-    cpu->a[7] -= 4;
-    memory_write_uint32(cpu->a[7], 0); // internal registers
-    cpu->a[7] -= 4;
-    memory_write_uint32(cpu->a[7], fault_addr); // data cycle fault address
-    cpu->a[7] -= 2;
-    memory_write_uint16(cpu->a[7], 0); // instruction pipe stage B
-    cpu->a[7] -= 2;
-    memory_write_uint16(cpu->a[7], 0); // instruction pipe stage C
-    cpu->a[7] -= 2;
-    memory_write_uint16(cpu->a[7], ssw); // special status word
-    cpu->a[7] -= 2;
-    memory_write_uint16(cpu->a[7], 0); // internal register
-    // Format/vector word: format $A, vector offset $008 (bus error)
-    cpu->a[7] -= 2;
-    memory_write_uint16(cpu->a[7], (uint16_t)(0xA008));
-    cpu->a[7] -= 4;
-    memory_write_uint32(cpu->a[7], saved_pc);
-    cpu->a[7] -= 2;
-    memory_write_uint16(cpu->a[7], saved_sr);
+                   | (0x01 << 4) // SIZ: 01=byte
+                   | (fc & 0x7); // function code in lower bits
+
+    // Allocate full 92-byte frame and zero internal fields
+    cpu->a[7] -= 92;
+    uint32_t frame = cpu->a[7];
+    // Zero the entire frame (internal registers are implementation-dependent)
+    for (int i = 0; i < 92; i += 4)
+        memory_write_uint32(frame + i, 0);
+    // Fill the defined fields
+    memory_write_uint16(frame + 0x00, saved_sr); // SR
+    memory_write_uint32(frame + 0x02, saved_pc); // PC
+    memory_write_uint16(frame + 0x06, 0xB008); // Format $B, vector $008 (bus error)
+    memory_write_uint16(frame + 0x0A, ssw); // Special Status Word
+    memory_write_uint32(frame + 0x10, fault_addr); // Data Cycle Fault Address
 
     // Load bus error vector
     cpu->pc = memory_read_uint32(cpu->vbr + 0x008);

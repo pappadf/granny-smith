@@ -256,8 +256,13 @@ void encode_track(uint8_t *dst, size_t trk_length, int track, int side, const ui
         *dst++ = 0xFF; // sync bytes
 }
 
-// Returns a pointer to the GCR data for the specified drive/image/side, encoding on demand
+// Returns a pointer to the GCR data for the specified drive/image/side, encoding on demand.
+// Returns NULL for HD (MFM) images — those must be read via the ISM path.
 uint8_t *iwm_track_data(floppy_drive_t *drive, image_t *img, int sel, struct scheduler *scheduler) {
+    // HD disks use MFM encoding, not GCR — reject them so the ROM
+    // falls through to the ISM (SWIM) read path
+    if (img->type == image_fd_hd)
+        return NULL;
     GS_ASSERT(drive->track < NUM_TRACKS);
 
     floppy_track_t *track = &drive->tracks[sel][drive->track];
