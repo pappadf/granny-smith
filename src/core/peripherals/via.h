@@ -56,6 +56,11 @@ void via_redrive_outputs(via_t *via);
 // Read the current shift register value (used by ADB to capture command bytes)
 uint8_t via_read_sr(via_t *via);
 
+// Cancel any pending shift-out completion callback.  Called by the ADB module
+// when it reads VIA SR directly (CMD/Listen transitions), so the generic
+// sr_shift_complete timer does not fire a spurious IFR_SR interrupt.
+void via_cancel_pending_shift(via_t *via);
+
 // Get the memory-mapped I/O interface for machine-level address decode
 const memory_interface_t *via_get_memory_interface(via_t *via);
 

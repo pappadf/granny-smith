@@ -182,18 +182,14 @@ static void sr_shift_complete_callback(void *source, uint64_t data) {
     // Deliver the byte via the per-instance shift-out callback
     via->shift_cb(via->cb_context, via->sr_shift_data);
 
-    // Set IFR_SR for internal-clock modes so the Mac Plus ROM learns the
-    // shift-out finished and can switch to mode 3 before the keyboard
-    // responds.  Skip mode 7 (external clock, used by ADB on the SE/30):
-    // the ADB transceiver controls shift timing via CB1 and signals
-    // completion through via_input_sr() at the correct bus delay.  Setting
-    // IFR_SR here for mode 7 would fire a spurious level-1 interrupt
-    // before the ADB transaction is ready, deadlocking the ROM's ADB
-    // state-machine polling loop (it runs at IPL 1 and waits for the real
-    // completion interrupt which can never be delivered).
-    uint8_t sr_mode = (via->acr >> 2) & 7;
-    if (sr_mode != 7)
-        update_ifr(via, via->ifr | IFR_SR);
+    // Signal shift completion to the ROM.  On the Mac Plus the ROM relies
+    // on IFR_SR from this callback (the 80-cycle timer IS the shift
+    // completion source) to know the command byte has been sent before
+    // switching to mode 3 for the keyboard response.  On the SE/30 the
+    // ADB module cancels this callback via via_cancel_pending_shift()
+    // before it fires, so IFR_SR is only set by the ADB transceiver's own
+    // timing (via_input_sr) and no spurious interrupt occurs.
+    update_ifr(via, via->ifr | IFR_SR);
 }
 
 // Timer 1 timeout callback - handles one-shot and free-running modes
@@ -682,6 +678,16 @@ void via_redrive_outputs(via_t *via) {
 // Read the current shift register value
 uint8_t via_read_sr(via_t *via) {
     return via->sr;
+}
+
+// Cancel any pending shift-out completion callback and clear the pending flag.
+// Called by the ADB module when it reads VIA SR directly at CMD/Listen
+// transitions, so the generic 80-cycle timer does not fire a spurious IFR_SR.
+void via_cancel_pending_shift(via_t *via) {
+    if (via->sr_shift_pending) {
+        via->sr_shift_pending = false;
+        remove_event(via->scheduler, &sr_shift_complete_callback, via);
+    }
 }
 
 // Set an input pin value on a VIA port

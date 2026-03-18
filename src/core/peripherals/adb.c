@@ -670,6 +670,9 @@ void adb_port_b_output(adb_t *adb, uint8_t value) {
         // which would cause spurious sr_shift_complete firings (BUG-004).
         adb->listen_active = false;
         adb->listen_index = 0;
+        // Cancel the VIA's generic shift-complete timer; ADB reads SR directly
+        // and controls completion timing via adb_shift_complete_deferred.
+        via_cancel_pending_shift(adb->via);
         // Deassert vADBInt (set HIGH) at the start of every new command.
         // The previous transaction's deliver_next_byte may have left vADBInt
         // LOW to signal end-of-transfer; the ROM checks bit 3 during the CMD
@@ -693,6 +696,7 @@ void adb_port_b_output(adb_t *adb, uint8_t value) {
         if (adb->listen_active) {
             // Listen data phase: read the data byte directly from VIA SR
             // (same rationale as CMD — avoid spurious sr_shift_complete).
+            via_cancel_pending_shift(adb->via);
             uint8_t byte = via_read_sr(adb->via);
             if (adb->listen_index < 2)
                 adb->listen_buf[adb->listen_index++] = byte;
