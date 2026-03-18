@@ -955,16 +955,6 @@ static void se30_init(config_t *cfg, checkpoint_t *checkpoint) {
     // Wire RTC 1-second tick to VIA1 CA2
     rtc_set_via(cfg->rtc, cfg->via1);
 
-    // Pre-initialise PRAM video default so _GetVideoDefault returns slot $E.
-    // PRAM offset $80 = spSlot (0x0E = slot E), $81 = spID (0x80 = video sResource).
-    // Lock these addresses so the ROM's sInitSlotPRAM cannot overwrite them.
-    if (!checkpoint) {
-        rtc_write_pram(cfg->rtc, 0x80, 0x0E);
-        rtc_write_pram(cfg->rtc, 0x81, 0x80);
-        rtc_lock_pram(cfg->rtc, 0x80);
-        rtc_lock_pram(cfg->rtc, 0x81);
-    }
-
     // Set hardware ID bits:
     // VIA1 PA6 = 1 (SE/30 identification) — already 1 in default port A input (0xF7)
     // VIA2 PB3 = 0 (SE/30 identification) — ROM reads PA6 and PB3 to identify the board:

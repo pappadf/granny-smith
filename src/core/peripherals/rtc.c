@@ -38,9 +38,6 @@ struct rtc {
     /* Pointers and non-POD members last */
     via_t *via;
     struct scheduler *scheduler;
-
-    // Per-address lock: non-zero means writes via the RTC protocol are ignored
-    uint8_t pram_readonly[256];
 };
 
 // diff between mac (1904) and unix (1970) epochs
@@ -198,9 +195,6 @@ static void write_ext(rtc_t *rtc, uint8_t cmd1, uint8_t cmd2, uint8_t value) {
     uint8_t address = addr_high | addr_low;
 
     LOG(3, "Extended write: cmd1=0x%02X cmd2=0x%02X addr=0x%02X value=0x%02X", cmd1, cmd2, address, value);
-    // Skip write if this address is locked (e.g., machine-level pre-init)
-    if (rtc->pram_readonly[address])
-        return;
     rtc->pram[address] = value;
 }
 
@@ -310,16 +304,6 @@ void rtc_set_via(rtc_t *restrict rtc, via_t *via) {
 // Read one byte from extended PRAM (0x00-0xFF)
 uint8_t rtc_read_pram(rtc_t *rtc, uint8_t address) {
     return rtc->pram[address];
-}
-
-// Write one byte to extended PRAM (0x00-0xFF)
-void rtc_write_pram(rtc_t *rtc, uint8_t address, uint8_t value) {
-    rtc->pram[address] = value;
-}
-
-// Lock a PRAM address so RTC-protocol writes are silently ignored
-void rtc_lock_pram(rtc_t *rtc, uint8_t address) {
-    rtc->pram_readonly[address] = 1;
 }
 
 rtc_t *rtc_init(struct scheduler *restrict scheduler, checkpoint_t *checkpoint) {
