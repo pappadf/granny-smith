@@ -182,14 +182,18 @@ static void sr_shift_complete_callback(void *source, uint64_t data) {
     // Deliver the byte via the per-instance shift-out callback
     via->shift_cb(via->cb_context, via->sr_shift_data);
 
-    // Set the SR interrupt flag — but NOT for mode 7 (external clock) when
-    // the machine provides its own completion signal via via_input_sr().
-    // For Simple keyboard protocol (Mac Plus) the 80-cycle timer IS the
-    // shift completion source.  Keep setting IFR_SR for all modes so the
-    // Mac Plus ROM learns the shift-out finished and can switch to mode 3
-    // before the keyboard responds.  For ADB (SE/30) the device calls
-    // via_input_sr() in mode 7, which harmlessly re-asserts IFR_SR.
-    update_ifr(via, via->ifr | IFR_SR);
+    // Set IFR_SR for internal-clock modes so the Mac Plus ROM learns the
+    // shift-out finished and can switch to mode 3 before the keyboard
+    // responds.  Skip mode 7 (external clock, used by ADB on the SE/30):
+    // the ADB transceiver controls shift timing via CB1 and signals
+    // completion through via_input_sr() at the correct bus delay.  Setting
+    // IFR_SR here for mode 7 would fire a spurious level-1 interrupt
+    // before the ADB transaction is ready, deadlocking the ROM's ADB
+    // state-machine polling loop (it runs at IPL 1 and waits for the real
+    // completion interrupt which can never be delivered).
+    uint8_t sr_mode = (via->acr >> 2) & 7;
+    if (sr_mode != 7)
+        update_ifr(via, via->ifr | IFR_SR);
 }
 
 // Timer 1 timeout callback - handles one-shot and free-running modes
@@ -705,6 +709,7 @@ void via_input_sr(via_t *restrict via, uint8_t byte) {
         // other external device) has finished clocking all 8 bits via CB1.
         // On real hardware this sets IFR_SR.  SR contents are unchanged
         // (the shift-out byte was already delivered via sr_shift_complete_callback).
+        LOG(3, "via_input_sr: mode 7 -> setting IFR_SR (byte=0x%02x, sr=0x%02x)", byte, via->sr);
         update_ifr(via, via->ifr | IFR_SR);
         return;
     }

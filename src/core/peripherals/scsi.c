@@ -583,9 +583,13 @@ static uint8_t read_uint8(void *s, uint32_t addr) {
     case CDR:
     case IDR: // unclear if we need to make a distinction between CDR/IDR
         if (scsi->bus.phase == scsi_data_in) {
-            if (scsi->buf.size != 0)
+            if (scsi->buf.size != 0) {
                 scsi->reg.cdr = next_byte(scsi);
-            else
+                // In DMA mode, deassert REQ after each byte to simulate
+                // the real NCR 5380 handshake gap between bytes
+                if (scsi->reg.mr & MR_DMA)
+                    scsi->reg.csr &= ~CSR_REQ;
+            } else
                 phase_status(scsi, STATUS_GOOD);
         }
         return scsi->reg.cdr;
@@ -603,7 +607,8 @@ static uint8_t read_uint8(void *s, uint32_t addr) {
         return scsi->reg.csr;
 
     case BSR:
-        return scsi->reg.bsr | BSR_PM;
+        // Phase match is computed dynamically from CSR vs TCR
+        return scsi->reg.bsr | (scsi_phase_match(scsi) ? BSR_PM : 0);
 
     case RESET:
         return 0xff;

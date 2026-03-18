@@ -53,4 +53,7 @@ void adb_keyboard_event(adb_t *adb, key_event_t event, int key);
 // Updates mouse movement and button state; accumulates deltas until next Talk R0
 void adb_mouse_event(adb_t *adb, bool button, int dx, int dy);
 
+// Injects mouse movement deltas without changing the current button state
+void adb_mouse_move(adb_t *adb, int dx, int dy);
+
 #endif // ADB_H

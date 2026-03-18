@@ -82,6 +82,13 @@ void system_mouse_update(bool button_down, int dx, int dy) {
     (void)dy;
 }
 
+// Mouse move stub for set-mouse debugger command
+bool system_mouse_move(int dx, int dy) {
+    (void)dx;
+    (void)dy;
+    return false;
+}
+
 // Machine management stub (used by cmd_load_rom in memory.c)
 int system_ensure_machine(const char *model_id) {
     (void)model_id;

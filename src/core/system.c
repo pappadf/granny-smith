@@ -79,6 +79,15 @@ void system_mouse_update(bool button, int dx, int dy) {
         mouse_update(global_emulator->mouse, button, dx, dy);
 }
 
+// Injects mouse movement deltas without changing button state (ADB path only).
+// Returns true if deltas were injected through ADB, false on non-ADB machines.
+bool system_mouse_move(int dx, int dy) {
+    if (!global_emulator || !global_emulator->adb)
+        return false;
+    adb_mouse_move(global_emulator->adb, dx, dy);
+    return true;
+}
+
 // System-level keyboard input wrapper: routes input to appropriate keyboard device model
 void system_keyboard_update(key_event_t event, int key) {
     if (!global_emulator)

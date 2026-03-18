@@ -810,8 +810,11 @@ static void se30_via1_output(void *context, uint8_t port, uint8_t output) {
         // where the ST lines don't change electrically (BUG-004).
         if (se30->adb) {
             uint8_t st_mask = 0x30; // bits 5:4 = ST1:ST0
-            if ((output & st_mask) != (se30->last_port_b & st_mask))
+            uint8_t old_st = se30->last_port_b & st_mask;
+            uint8_t new_st = output & st_mask;
+            if (new_st != old_st) {
                 adb_port_b_output(se30->adb, output);
+            }
         }
         se30->last_port_b = output;
         // Bit 3: vADBInt (input — read-only, driven by ADB module)
@@ -891,33 +894,31 @@ static void se30_trigger_vbl(config_t *cfg) {
     // VIA2 CA1: slot $E video interrupt (slot VBL tasks, cursor update).
     // Only fire when the ROM is fully ready:
     //  1. VIA2 IER must have CA1 enabled (Slot Manager configured VIA2)
-    //  2. The slot E VBL queue must have at least one entry (the slot handler
-    //     at 0x408062B0 calls SysError $33 if the queue is empty).
-    // The ROM's slot dispatch table is at [$0D04]. Slot E (port A bit 5)
-    // maps to entry index 5 (offset 20). The queue head is at entry+2.
+    //  2. The slot $E SIQ (Slot Interrupt Queue) entry must be installed.
+    //
+    // The ROM's VIA2 CA1 handler (VIA2DT at $0D74) dispatches to a
+    // patched handler that reads the SIQ via an indirect indexed access:
+    //   LEA ([SlotQDT, slot#*4, $40]), A1
+    // For slot $E (slot number $0E): offset = $0E*4 + $40 = $78.
+    // This is a different sub-table within SlotQDT than the VBL queue
+    // entries at the first 6 longwords (offsets 0-20).
+    // If the SIQ entry pointer is null, the handler calls SysError $33.
     // All reads go through RAM directly to avoid MMU/SoA issues.
     if (!se30->rom_overlay) {
         uint8_t via2_ier = se30->via2_iface->read_uint8(cfg->via2, 0x1C00) & 0x7F;
         if (via2_ier & 0x02) { // IER bit 1 = CA1 enabled
             uint8_t *ram = ram_native_pointer(cfg->mem_map, 0);
-            // Read slot dispatch table base from [$0D04]
+            // Read slot dispatch table base from SlotQDT [$0D04]
             uint32_t slot_tbl = ((uint32_t)ram[0x0D04] << 24) | ((uint32_t)ram[0x0D05] << 16) |
                                 ((uint32_t)ram[0x0D06] << 8) | ram[0x0D07];
-            // Slot E entry: index 5 * 4 = offset 20
-            // VIA2 port A bit mapping: bit0=slot9, ..., bit5=slotE
-            uint32_t ea = slot_tbl + 20;
+            // Slot $E SIQ entry: slot_number($0E) * 4 + $40 = offset $78
+            uint32_t ea = slot_tbl + 0x78;
             if (ea > 0 && ea < 0x10000) { // sanity: must be in low memory
-                uint32_t slot_entry = ((uint32_t)ram[ea] << 24) | ((uint32_t)ram[ea + 1] << 16) |
-                                      ((uint32_t)ram[ea + 2] << 8) | ram[ea + 3];
-                // Check VBL queue head at slot_entry + 2
-                ea = slot_entry + 2;
-                if (ea > 0 && ea < 0x10000) {
-                    uint32_t queue_head = ((uint32_t)ram[ea] << 24) | ((uint32_t)ram[ea + 1] << 16) |
-                                          ((uint32_t)ram[ea + 2] << 8) | ram[ea + 3];
-                    if (queue_head != 0) {
-                        // Schedule the slot interrupt pulse after a short delay
-                        scheduler_new_cpu_event(cfg->scheduler, &se30_vbl_slot_interrupt, cfg, 0, 0, 5000);
-                    }
+                uint32_t siq_entry = ((uint32_t)ram[ea] << 24) | ((uint32_t)ram[ea + 1] << 16) |
+                                     ((uint32_t)ram[ea + 2] << 8) | ram[ea + 3];
+                if (siq_entry != 0) {
+                    // Schedule the slot interrupt pulse after a short delay
+                    scheduler_new_cpu_event(cfg->scheduler, &se30_vbl_slot_interrupt, cfg, 0, 0, 5000);
                 }
             }
         }

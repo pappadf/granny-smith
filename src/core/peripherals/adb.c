@@ -49,6 +49,11 @@ LOG_USE_CATEGORY_NAME("adb");
 // SR interrupt fires.
 #define ADB_BYTE_DELAY (330 * 8 * 1000)
 
+// Auto-poll interval (nanoseconds).  The real ADB transceiver repeats the last
+// Talk R0 command approximately every 11 ms while in idle (state 3).  We use
+// 11 ms to match real hardware timing.
+#define ADB_AUTOPOLL_INTERVAL (11 * 1000 * 1000)
+
 // Default ADB device addresses assigned at power-on
 #define KBD_DEFAULT_ADDR   2
 #define MOUSE_DEFAULT_ADDR 3
@@ -79,15 +84,15 @@ LOG_USE_CATEGORY_NAME("adb");
 #define ADB_STATE_ODD  2 // Odd data byte
 #define ADB_STATE_IDLE 3 // Idle; transceiver may auto-poll every ~11 ms
 
+// Keyboard event queue size (ring buffer capacity)
+#define KBD_QUEUE_SIZE 128
+
 // Keyboard idle response: no key event
 #define KBD_NO_KEY 0xFF
 
 // Mouse idle response bytes: no movement, button up
 #define MOUSE_IDLE_B1 0x80 // bit 7 = 1 (button up), bits 6-0 = Y delta = 0
 #define MOUSE_IDLE_B2 0x80 // bit 7 = 1 (reserved), bits 6-0 = X delta = 0
-
-// Keyboard event queue capacity (generous to avoid dropping key-up events)
-#define KBD_QUEUE_SIZE 128
 
 // ============================================================================
 // Type Definitions (Private)
@@ -133,10 +138,21 @@ struct adb {
     int mouse_dx;
     int mouse_dy;
     bool mouse_button; // current button state (true = pressed)
+    bool mouse_data_pending; // set by adb_mouse_event, cleared after auto-poll delivery
 
     // Device register 3 state (address + handler ID) for keyboard and mouse
     adb_device_t kbd;
     adb_device_t mouse;
+
+    // Set after the end-of-transfer dummy byte is delivered; cleared when
+    // a new command is decoded.  Prevents the EVEN/ODD handler from scheduling
+    // spurious deliveries during the ROM's data replay phase (BUG-006d).
+    bool dummy_sent;
+
+    // Address of the last Talk R0 target device; used by the auto-poll mechanism
+    // to repeat the last command while in idle state, matching the real ADB
+    // transceiver's behaviour.
+    uint8_t last_poll_addr;
 
     // === Pointers last (not checkpointed) ===
     via_t *via;
@@ -151,6 +167,7 @@ static void adb_reset(adb_t *adb);
 static void adb_deliver_next_byte(adb_t *adb);
 static void adb_deliver_next_byte_deferred(void *source, uint64_t data);
 static void adb_shift_complete_deferred(void *source, uint64_t data);
+static void adb_autopoll_deferred(void *source, uint64_t data);
 static void adb_decode_command(adb_t *adb, uint8_t cmd);
 
 // ============================================================================
@@ -221,9 +238,10 @@ static int extract_state(uint8_t port_b_val) {
     return (port_b_val >> ADB_ST0_BIT) & 0x03;
 }
 
-// Returns true if there is mouse or keyboard data worth asserting SRQ for
+// Returns true if there is mouse or keyboard data worth reporting via auto-poll.
+// Mouse button held down counts as pending (the Mac needs to see it every poll).
 static bool has_pending_data(const adb_t *adb) {
-    return !kbd_queue_empty(adb) || adb->mouse_dx != 0 || adb->mouse_dy != 0;
+    return !kbd_queue_empty(adb) || adb->mouse_data_pending || adb->mouse_button;
 }
 
 // Resets all ADB devices to power-on defaults and clears all data queues
@@ -241,6 +259,8 @@ static void adb_reset(adb_t *adb) {
     adb->mouse_dx = 0;
     adb->mouse_dy = 0;
     adb->mouse_button = false;
+    adb->mouse_data_pending = false;
+    adb->last_poll_addr = MOUSE_DEFAULT_ADDR;
 
     adb->listen_active = false;
     adb->listen_index = 0;
@@ -303,6 +323,10 @@ static void prepare_mouse_reply(adb_t *adb) {
     // Keep only the unconsumed remainder
     adb->mouse_dy = remain_dy;
     adb->mouse_dx = remain_dx;
+
+    // Clear the pending flag if all deltas have been consumed
+    if (remain_dy == 0 && remain_dx == 0)
+        adb->mouse_data_pending = false;
 }
 
 // Populates reply_buf with Register 3 data (address + handler ID) for a device
@@ -383,12 +407,14 @@ static void adb_decode_command(adb_t *adb, uint8_t cmd) {
     uint8_t addr = (cmd >> 4) & 0x0F;
     uint8_t type = (cmd >> 2) & 0x03;
     uint8_t reg = cmd & 0x03;
+    static const char *type_names[] = {"SendReset", "Flush", "Listen", "Talk"};
 
-    LOG(2, "adb_decode_command: cmd=0x%02X addr=%d type=%d reg=%d", cmd, addr, type, reg);
+    LOG(2, "adb_decode_command: cmd=0x%02X (%s R%d) addr=%d", cmd, type_names[type], reg, addr);
 
     // Clear any previous reply and listen state before processing the new command
     adb->reply_len = 0;
     adb->reply_index = 0;
+    adb->dummy_sent = false;
 
     if (cmd == 0x00) {
         // SendReset (broadcast) resets all devices to their default addresses
@@ -418,6 +444,9 @@ static void adb_decode_command(adb_t *adb, uint8_t cmd) {
     case CMD_TYPE_TALK:
         // Build the reply buffer; bytes are delivered via output_cb state transitions
         prepare_talk_reply(adb, addr, reg);
+        // Track the last Talk R0 target for auto-poll (the transceiver repeats it)
+        if (reg == 0)
+            adb->last_poll_addr = addr;
         break;
     }
 }
@@ -427,7 +456,10 @@ static void adb_decode_command(adb_t *adb, uint8_t cmd) {
 // so the OS recognises end-of-transfer and exits its fetch loop.
 static void adb_deliver_next_byte(adb_t *adb) {
     if (adb->reply_index < adb->reply_len) {
-        // Real reply byte: keep vADBInt high so the OS continues fetching
+        // Real reply byte: keep vADBInt HIGH (deasserted) so the ROM's fetch
+        // loop continues.  The ROM's FDBShiftInt entry does BTST #3 on port B
+        // before jumping to the resume handler; bit3=HIGH (Z=0) means "no SRQ,
+        // normal data", while bit3=LOW (Z=1) signals SRQ/end-of-transfer.
         uint8_t byte = adb->reply_buf[adb->reply_index++];
         LOG(3, "adb_deliver_next_byte: byte[%d]=0x%02X (%d remaining)", adb->reply_index - 1, byte,
             adb->reply_len - adb->reply_index);
@@ -435,8 +467,10 @@ static void adb_deliver_next_byte(adb_t *adb) {
         via_input_sr(adb->via, byte);
     } else {
         // All reply bytes delivered (or reply_len=0 for "no device"):
-        // Send a dummy byte with vADBInt low to terminate the OS fetch loop
+        // Send a dummy byte with vADBInt LOW (asserted) to signal end-of-transfer.
+        // The ROM sees bit3=LOW → BEQ at fetch exit → completion handler.
         LOG(3, "adb_deliver_next_byte: dummy byte (end-of-transfer)");
+        adb->dummy_sent = true; // suppress further deliveries during replay
         set_adb_int(adb, false); // bit3=0 → stop fetching
         via_input_sr(adb->via, 0xFF);
     }
@@ -461,11 +495,71 @@ static void adb_deliver_next_byte_deferred(void *source, uint64_t data) {
 static void adb_shift_complete_deferred(void *source, uint64_t data) {
     (void)data;
     adb_t *adb = (adb_t *)source;
+    LOG(2, "adb_shift_complete_deferred: state=%d reply_len=%d reply_idx=%d", adb->state, adb->reply_len,
+        adb->reply_index);
     // Feed back the current SR value to set IFR_SR; the VIA must be in shift-in
     // mode (ACR mode 3) by now — the ROM switches from mode 7 to mode 3
     // after writing SR.  The byte value does not matter; the ROM reads
     // the actual command from memory, not from the shift register.
     via_input_sr(adb->via, via_read_sr(adb->via));
+}
+
+// Scheduler callback that implements the ADB transceiver's auto-poll behaviour.
+// In IDLE state the real transceiver repeats the last Talk R0 command every ~11 ms.
+// When a device has data, the transceiver clocks it in and fires IFR_SR with
+// bit3=HIGH so the ROM's FDBShiftInt handler can fetch the reply bytes via
+// EVEN/ODD transitions.  When no device responds, the transceiver stays quiet
+// and reschedules the next poll — the ROM remains waiting at ShiftIntResume.
+static void adb_autopoll_deferred(void *source, uint64_t data) {
+    (void)data;
+    adb_t *adb = (adb_t *)source;
+
+    LOG(1, "autopoll: entry state=%d pending=%d mouse_pending=%d mouse_btn=%d", adb->state, has_pending_data(adb),
+        adb->mouse_data_pending, adb->mouse_button);
+
+    // Stale event: state has moved on since this was scheduled
+    if (adb->state != ADB_STATE_IDLE)
+        return;
+
+    if (!has_pending_data(adb)) {
+        // No device has data: mimic the transceiver SRQ timeout.  The real
+        // transceiver gets no response and simply tries again after the next
+        // interval.  Don't fire IFR_SR — the ROM stays waiting.
+        LOG(3, "autopoll: no pending data, rescheduling");
+        scheduler_new_cpu_event(adb->scheduler, &adb_autopoll_deferred, adb, 0, 0, ADB_AUTOPOLL_INTERVAL);
+        return;
+    }
+
+    // Choose the device with pending data.  The real transceiver only repeats
+    // last_poll_addr, but we peek at which device actually has data so that
+    // keyboard events arriving between polls get delivered promptly.
+    uint8_t poll_addr = adb->last_poll_addr;
+    if (adb->mouse_data_pending || adb->mouse_button)
+        poll_addr = adb->mouse.address;
+    else if (!kbd_queue_empty(adb))
+        poll_addr = adb->kbd.address;
+
+    // Prepare Talk R0 reply for the selected device
+    prepare_talk_reply(adb, poll_addr, 0);
+
+    if (adb->reply_len > 0) {
+        // Device has data: signal the ROM by firing IFR_SR with bit3=HIGH.
+        // The ROM's FDBShiftInt entry checks BTST #3 on port B; bit3=HIGH
+        // means "service request / data available".  The resume handler then
+        // transitions port B through EVEN/ODD to read the actual reply bytes,
+        // which our existing EVEN/ODD handler delivers via adb_deliver_next_byte.
+        LOG(2, "autopoll: addr=%d has data, signalling ROM", poll_addr);
+        adb->reply_index = 0;
+        adb->dummy_sent = false;
+        set_adb_int(adb, true); // bit3=HIGH → data available
+        via_input_sr(adb->via, 0xFF); // fire IFR_SR to wake the ROM
+    } else {
+        // No device at this address: signal timeout with bit3=LOW.
+        // The ROM marks this as a NoReply and issues the next queued request.
+        LOG(3, "autopoll: addr=%d timeout, signalling ROM", poll_addr);
+        set_adb_int(adb, false); // bit3=LOW → no reply / SRQ
+        via_input_sr(adb->via, 0xFF); // fire IFR_SR for the timeout path
+    }
 }
 
 // ============================================================================
@@ -487,6 +581,9 @@ adb_t *adb_init(via_t *via, struct scheduler *scheduler, checkpoint_t *checkpoin
 
     // Register the shift-complete event type (command/Listen byte completion)
     scheduler_new_event_type(scheduler, "adb", adb, "shift_done", &adb_shift_complete_deferred);
+
+    // Register the auto-poll event type (IDLE-state Talk R0 repetition)
+    scheduler_new_event_type(scheduler, "adb", adb, "autopoll", &adb_autopoll_deferred);
 
     // Set device register 3 defaults and clear all queues/deltas
     adb_reset(adb);
@@ -581,9 +678,13 @@ void adb_port_b_output(adb_t *adb, uint8_t value) {
         // a new attention pulse from the host (BUG-004).
         set_adb_int(adb, true);
         adb_decode_command(adb, via_read_sr(adb->via));
-        // Schedule a deferred completion event that fires IFR_SR well after
-        // the VBL handler has finished setting up ADB state machine callbacks.
+        // Cancel any stale reply delivery or auto-poll from a previous
+        // transaction, then schedule a deferred completion event that fires
+        // IFR_SR well after the VBL handler has finished setting up ADB state
+        // machine callbacks.
+        remove_event(adb->scheduler, &adb_deliver_next_byte_deferred, adb);
         remove_event(adb->scheduler, &adb_shift_complete_deferred, adb);
+        remove_event(adb->scheduler, &adb_autopoll_deferred, adb);
         scheduler_new_cpu_event(adb->scheduler, &adb_shift_complete_deferred, adb, 0, 0, ADB_SHIFT_DELAY);
         break;
 
@@ -613,8 +714,13 @@ void adb_port_b_output(adb_t *adb, uint8_t value) {
         break;
 
     case ADB_STATE_IDLE:
-        // Transaction complete: update vADBInt to reflect whether more data is pending
+        // Transaction complete: cancel any stale auto-poll and schedule a new
+        // one.  The real ADB transceiver repeats the last Talk R0 command every
+        // ~11 ms while in IDLE state; the deferred callback prepares reply data
+        // and fires IFR_SR to restart the ROM's ADB state machine.
+        remove_event(adb->scheduler, &adb_autopoll_deferred, adb);
         set_adb_int(adb, !has_pending_data(adb));
+        scheduler_new_cpu_event(adb->scheduler, &adb_autopoll_deferred, adb, 0, 0, ADB_AUTOPOLL_INTERVAL);
         break;
     }
 }
@@ -656,9 +762,13 @@ void adb_keyboard_event(adb_t *adb, key_event_t event, int key) {
 
     kbd_enqueue(adb, byte);
 
-    // Pull SRQ low to prompt the OS to poll sooner when we are idle
-    if (adb->state == ADB_STATE_IDLE)
+    // Pull SRQ low to prompt the OS to poll sooner when we are idle.
+    // Reschedule the auto-poll to fire quickly so the ROM picks up the key event.
+    if (adb->state == ADB_STATE_IDLE) {
         set_adb_int(adb, false);
+        remove_event(adb->scheduler, &adb_autopoll_deferred, adb);
+        scheduler_new_cpu_event(adb->scheduler, &adb_autopoll_deferred, adb, 0, 0, ADB_SHIFT_DELAY);
+    }
 }
 
 // Records a host mouse event: updates accumulated deltas and current button state.
@@ -671,7 +781,21 @@ void adb_mouse_event(adb_t *adb, bool button, int dx, int dy) {
     adb->mouse_dx += dx;
     adb->mouse_dy += dy;
 
-    // Assert SRQ when idle and there is movement or a button-state change
-    if (adb->state == ADB_STATE_IDLE && (dx != 0 || dy != 0 || button_changed))
+    // Mark mouse as having unreported data
+    if (dx != 0 || dy != 0 || button_changed)
+        adb->mouse_data_pending = true;
+
+    // Assert SRQ when idle and there is movement or a button-state change.
+    // Reschedule the auto-poll to fire quickly so the ROM picks up the new data.
+    if (adb->state == ADB_STATE_IDLE && (dx != 0 || dy != 0 || button_changed)) {
         set_adb_int(adb, false);
+        remove_event(adb->scheduler, &adb_autopoll_deferred, adb);
+        scheduler_new_cpu_event(adb->scheduler, &adb_autopoll_deferred, adb, 0, 0, ADB_SHIFT_DELAY);
+    }
+}
+
+// Injects mouse movement deltas without changing the current button state.
+// Used by set-mouse to move the cursor through the ADB hardware path.
+void adb_mouse_move(adb_t *adb, int dx, int dy) {
+    adb_mouse_event(adb, adb->mouse_button, dx, dy);
 }
