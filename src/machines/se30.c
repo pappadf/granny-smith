@@ -875,53 +875,36 @@ static void se30_scc_irq(void *context, bool active) {
 // ============================================================
 
 // Trigger vertical blanking interval for the SE/30.
-// On real hardware, the GLUE chip drives both VIA1 CA1 (system VBL at
-// IPL 1) and VIA2 CA1 (slot $E interrupt at IPL 2) from the same
-// vertical blanking signal. VIA IER masking and the CPU SR interrupt
-// mask naturally prevent the interrupts from being serviced before the
-// ROM's Slot Manager has finished initialisation.
-//
-// VIA1 CA1 is pulsed immediately. VIA2 CA1 is deferred by a short
-// interval so the level-1 handler can complete before the level-2
-// slot interrupt fires.
-static void se30_vbl_slot_interrupt(void *context, uint64_t data);
+// On real hardware, the GLUE chip (344S0602) drives both VIA1 CA1
+// and VIA2 CA1 simultaneously from the same vertical blanking signal.
+// It also asserts slot $E on VIA2 port A bit 5 (active-low) so the
+// level-2 handler can identify the interrupt source. The CPU's
+// interrupt priority logic services level 2 (VIA2) before level 1
+// (VIA1). VIA IER masking and the CPU SR interrupt mask naturally
+// prevent servicing before the ROM's Slot Manager has initialised.
+static void se30_vbl_slot_deassert(void *context, uint64_t data);
 
 static void se30_trigger_vbl(config_t *cfg) {
-    // VIA1 CA1: system VBL (Ticks counter, system VBL tasks)
-    via_input_c(cfg->via1, 0, 0, 0);
-    via_input_c(cfg->via1, 0, 0, 1);
+    // Assert slot $E on VIA2 port A bit 5 (active-low)
+    via_input(cfg->via2, 0, 5, 0);
 
-    // VIA2 CA1: slot $E video interrupt (slot VBL tasks, cursor update)
-    scheduler_new_cpu_event(cfg->scheduler, &se30_vbl_slot_interrupt, cfg, 0, 0, 5000);
+    // Pulse both VIA CA1 lines simultaneously, as the GLUE chip does
+    via_input_c(cfg->via1, 0, 0, 0);
+    via_input_c(cfg->via2, 0, 0, 0);
+    via_input_c(cfg->via1, 0, 0, 1);
+    via_input_c(cfg->via2, 0, 0, 1);
+
+    // Deassert slot $E after the blanking interval ends
+    scheduler_new_cpu_event(cfg->scheduler, &se30_vbl_slot_deassert, cfg, 0, 0, 50000);
 
     image_tick_all(cfg);
 }
 
-// Deferred callback: deasserts slot $E after the interrupt handler has read port A.
+// Deferred callback: deasserts slot $E when the blanking interval ends.
 static void se30_vbl_slot_deassert(void *context, uint64_t data) {
     (void)data;
     config_t *cfg = (config_t *)context;
-    via_input(cfg->via2, 0, 5, 1); // Deassert slot $E (active-high = idle)
-}
-
-// Deferred callback: fires VIA2 CA1 to trigger the slot interrupt handler.
-static void se30_vbl_slot_interrupt(void *context, uint64_t data) {
-    (void)data;
-    config_t *cfg = (config_t *)context;
-
-    // Assert slot $E on VIA2 port A bit 5 (active-low) so the
-    // level-2 handler can identify slot $E as the interrupt source.
-    via_input(cfg->via2, 0, 5, 0);
-
-    // Pulse VIA2 CA1 (negative edge triggers IFR_CA1)
-    via_input_c(cfg->via2, 0, 0, 0);
-    via_input_c(cfg->via2, 0, 0, 1);
-
-    // Schedule deassert after the handler reads port A.
-    // The level-2 exception entry + handler prologue + VIA2 IFR/IER reads +
-    // port A read + slot dispatch loop takes ~500+ CPU cycles, so allow 2000
-    // to ensure the handler has time to service the interrupt.
-    scheduler_new_cpu_event(cfg->scheduler, &se30_vbl_slot_deassert, cfg, 0, 0, 50000);
+    via_input(cfg->via2, 0, 5, 1);
 }
 
 // ============================================================
