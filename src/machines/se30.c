@@ -99,7 +99,7 @@ LOG_USE_CATEGORY_NAME("se30");
 #define SE30_VROM_PHYS_ALT 0x50FF8000UL // page-table-mapped VROM physical address
 
 // VROM selection: define SE30_FORCE_SYNTHETIC_VROM to always use the
-// synthesized fallback VROM, even when the real SE30_VROM.bin is present.
+// synthesized fallback VROM, even when the real SE30.vrom is present.
 // #define SE30_FORCE_SYNTHETIC_VROM
 
 // Framebuffer offsets within the 64 KB VRAM
@@ -392,7 +392,7 @@ static void se30_build_vrom_fallback(uint8_t *rom) {
 static void se30_load_vrom(config_t *cfg, uint8_t *vrom_buf) {
 #ifndef SE30_FORCE_SYNTHETIC_VROM
     // Search well-known paths for the real 32 KB VROM binary
-    static const char *search_paths[] = {"tests/data/roms/SE30_VROM.bin", "SE30_VROM.bin", NULL};
+    static const char *search_paths[] = {"tests/data/roms/SE30.vrom", "SE30.vrom", NULL};
 
     for (const char **p = search_paths; *p; p++) {
         FILE *f = fopen(*p, "rb");
@@ -417,9 +417,9 @@ static void se30_load_vrom(config_t *cfg, uint8_t *vrom_buf) {
         if (slash) {
             size_t dir_len = (size_t)(slash - rom_path + 1);
             char vrom_path[512];
-            if (dir_len + sizeof("SE30_VROM.bin") <= sizeof(vrom_path)) {
+            if (dir_len + sizeof("SE30.vrom") <= sizeof(vrom_path)) {
                 memcpy(vrom_path, rom_path, dir_len);
-                memcpy(vrom_path + dir_len, "SE30_VROM.bin", sizeof("SE30_VROM.bin"));
+                memcpy(vrom_path + dir_len, "SE30.vrom", sizeof("SE30.vrom"));
                 FILE *f = fopen(vrom_path, "rb");
                 if (f) {
                     size_t n = fread(vrom_buf, 1, SE30_VROM_SIZE, f);
