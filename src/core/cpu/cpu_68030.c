@@ -389,22 +389,25 @@ static int cpu_movec_rn_rc(cpu_t *cpu) {
     g_active_write = cpu->supervisor ? g_supervisor_write : g_user_write;                                              \
     cpu_check_interrupt(cpu);                                                                                          \
     g_bus_error_instr_ptr = instructions; /* let memory slow paths force exit */                                       \
+    /* Capture trace state before execution; clamp to 1 instruction if T1 set */                                       \
+    uint32_t _saved_trace = cpu->trace;                                                                                \
+    if (__builtin_expect(_saved_trace & 2, 0))                                                                         \
+        if (*instructions > 1)                                                                                         \
+            *instructions = 1;                                                                                         \
     while (*instructions > 0) {                                                                                        \
         uint32_t fetch = memory_read_uint32(cpu->pc);                                                                  \
         uint16_t opcode = fetch >> 16;                                                                                 \
         uint16_t ext_word = fetch & 0xFFFF;                                                                            \
         cpu->instruction_pc = cpu->pc;                                                                                 \
         cpu->pc += 2;                                                                                                  \
-        uint32_t _saved_trace = cpu->trace;                                                                            \
         (*instructions)--;
 #define CPU_DECODER_EPILOGUE                                                                                           \
-    /* Trace exception: fire if T1 was set at instruction start AND still set now. */                                  \
+    }                                                                                                                  \
+    /* Trace exception: fire if T1 was set at sprint start AND still set now. */                                       \
+    /* Checked outside the hot loop for zero per-instruction overhead. */                                              \
     /* For SR-modifying instructions, uses new T1 value (per M68000 PRM 6.3.10). */                                    \
-    /* For non-SR instructions, old==new since they don't change trace. */                                             \
-    if ((_saved_trace & 2) && (cpu->trace & 2)) {                                                                      \
+    if (__builtin_expect((_saved_trace & 2) && (cpu->trace & 2), 0))                                                   \
         exception(cpu, 0x024, cpu->pc, cpu_get_sr(cpu));                                                               \
-    }                                                                                                                  \
-    }                                                                                                                  \
     /* Deferred bus error: handled outside the hot loop for zero overhead. */                                          \
     /* The memory slow path set *instructions=0 to force the loop exit. */                                             \
     if (__builtin_expect(g_bus_error_pending, 0)) {                                                                    \
