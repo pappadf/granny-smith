@@ -222,7 +222,7 @@ echo "log scsi 10" | nc -w 2 localhost 6800
 
 ## 6. Tips
 
-- Always use `nc -w 2` (timeout) instead of `nc -w 2` for reliable connection handling.
+- Always use `nc -w 2` (timeout) instead of `nc -q 2` for reliable connection handling.
   The `-w` flag sets a timeout for both connect and idle; `-q` only affects idle after EOF
   on stdin, which can cause `nc` to exit before the daemon finishes writing its response.
 - The daemon handles one connection at a time. Wait for each command to complete
