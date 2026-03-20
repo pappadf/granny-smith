@@ -17,6 +17,7 @@ else ifeq ($(MODE),sanitize)
 	CFLAGS_MODE := -g -O1 -fsanitize=address,undefined -fno-omit-frame-pointer
 	LDFLAGS_MODE := -fsanitize=address,undefined
 else
+	# No -DNDEBUG: keep assertions active in the headless test/debug tool
 	CFLAGS_MODE := -O2
 endif
 

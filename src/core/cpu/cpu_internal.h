@@ -582,7 +582,7 @@ static __attribute__((noinline, cold)) void exception_bus_error(cpu_t *restrict 
     //   6:  RW  (1=read, 0=write)
     //   5-4: SIZ (size: 00=long, 01=byte, 10=word, 11=line)
     //   3-0: function code of faulting data cycle
-    uint16_t fc = cpu->supervisor ? 5 : 1; // supervisor data=5, user data=1
+    uint16_t fc = (saved_sr & 0x2000) ? 5 : 1; // FC from original S bit: supervisor data=5, user data=1
     uint16_t ssw = (1 << 8) // DF: data cycle fault
                    | ((rw ? 1 : 0) << 6) // RW: 1=read, 0=write
                    | (0x01 << 4) // SIZ: 01=byte

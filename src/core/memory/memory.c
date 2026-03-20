@@ -105,9 +105,8 @@ typedef struct memory {
 // ============================================================================
 // The slow path is entered when the SoA fast-path entry is zero.
 // Addresses arriving here are already masked by g_address_mask.
-// Dispatch order: device I/O (via page_entry_t) → unmapped (return 0).
-// MMU TLB miss handling will be added when the MMU slow-path integration
-// is wired up (Step 3 of Milestone 7).
+// Dispatch order: device I/O (via page_entry_t) → MMU TLB handling via
+// mmu_handle_fault(...) and deferred bus error signaling → unmapped (return 0).
 
 // Slow path for 8-bit reads: device I/O, MMU TLB miss, or unmapped
 uint8_t memory_read_uint8_slow(uint32_t addr) {
