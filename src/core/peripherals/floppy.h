@@ -2,7 +2,8 @@
 // Copyright (c) pappadf
 
 // floppy.h
-// Public interface for the IWM floppy disk controller module.
+// Public interface for the unified floppy disk controller module.
+// Supports both IWM (Mac Plus) and SWIM (SE/30) controller types.
 
 #ifndef FLOPPY_H
 #define FLOPPY_H
@@ -15,14 +16,18 @@
 
 #include <stdbool.h>
 
+// === Controller Types ===
+#define FLOPPY_TYPE_IWM  0 // IWM-only (Mac Plus)
+#define FLOPPY_TYPE_SWIM 1 // SWIM dual-mode IWM+ISM (SE/30)
+
 // === Type Definitions ===
 // Opaque floppy controller type
 struct floppy;
 typedef struct floppy floppy_t;
 
 // === Lifecycle (Constructor / Destructor / Checkpoint) ===
-// Initializes the floppy controller and maps it to memory
-floppy_t *floppy_init(memory_map_t *map, struct scheduler *scheduler, checkpoint_t *checkpoint);
+// Initializes a floppy controller of the given type and maps it to memory
+floppy_t *floppy_init(int type, memory_map_t *map, struct scheduler *scheduler, checkpoint_t *checkpoint);
 // Frees all resources associated with the floppy controller
 void floppy_delete(floppy_t *floppy);
 // Saves the floppy controller state to a checkpoint
@@ -35,5 +40,7 @@ int floppy_insert(floppy_t *floppy, int drive, image_t *disk);
 bool floppy_is_inserted(floppy_t *floppy, int drive);
 // Sets the VIA-driven SEL signal for head selection
 void floppy_set_sel_signal(floppy_t *floppy, bool sel);
+// Get the memory-mapped I/O interface for machine-level address decode
+const memory_interface_t *floppy_get_memory_interface(floppy_t *floppy);
 
 #endif // FLOPPY_H

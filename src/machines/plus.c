@@ -214,7 +214,7 @@ static void plus_init(config_t *cfg, checkpoint_t *checkpoint) {
     cfg->keyboard = keyboard_init(cfg->scheduler, cfg->scc, cfg->via1, checkpoint);
 
     // Initialise floppy last to match checkpoint save order
-    cfg->floppy = floppy_init(cfg->mem_map, cfg->scheduler, checkpoint);
+    cfg->floppy = floppy_init(FLOPPY_TYPE_IWM, cfg->mem_map, cfg->scheduler, checkpoint);
 
     // After floppy exists, if restoring from a checkpoint, re-drive VIA outputs
     // so SEL and other external signals propagate to the floppy.

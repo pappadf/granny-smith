@@ -21,6 +21,7 @@
 #include "cpu.h"
 #include "cpu_internal.h" // for cpu->mmu field
 #include "debug.h"
+#include "floppy.h"
 #include "image.h"
 #include "log.h"
 #include "memory.h"
@@ -30,7 +31,6 @@
 #include "scheduler.h"
 #include "scsi.h"
 #include "shell.h"
-#include "swim.h"
 #include "via.h"
 
 #include <assert.h>
@@ -116,7 +116,7 @@ typedef struct se30_state {
     // SE/30-specific peripherals (not in config_t)
     adb_t *adb;
     asc_t *asc;
-    swim_t *swim;
+    floppy_t *floppy;
 
     // ROM overlay state (true = ROM mapped at $00000000)
     bool rom_overlay;
@@ -136,7 +136,7 @@ typedef struct se30_state {
     const memory_interface_t *scc_iface;
     const memory_interface_t *scsi_iface;
     const memory_interface_t *asc_iface;
-    const memory_interface_t *swim_iface;
+    const memory_interface_t *floppy_iface;
 
     // Previous VIA1 port B output value for filtering ADB ST transitions
     uint8_t last_port_b;
@@ -543,7 +543,7 @@ static uint8_t se30_io_read_uint8(void *ctx, uint32_t addr) {
     if (offset >= IO_ASC && offset < IO_ASC_END)
         return se30->asc_iface->read_uint8(se30->asc, offset - IO_ASC);
     if (offset >= IO_SWIM && offset < IO_SWIM_END)
-        return se30->swim_iface->read_uint8(se30->swim, offset - IO_SWIM);
+        return se30->floppy_iface->read_uint8(se30->floppy, offset - IO_SWIM);
 
     return 0; // unmapped I/O space
 }
@@ -630,7 +630,7 @@ static void se30_io_write_uint8(void *ctx, uint32_t addr, uint8_t value) {
         return;
     }
     if (offset >= IO_SWIM && offset < IO_SWIM_END) {
-        se30->swim_iface->write_uint8(se30->swim, offset - IO_SWIM, value);
+        se30->floppy_iface->write_uint8(se30->floppy, offset - IO_SWIM, value);
         return;
     }
     // unmapped — ignore
@@ -795,8 +795,8 @@ static void se30_via1_output(void *context, uint8_t port, uint8_t output) {
         bool main_buf = (output & 0x40) != 0;
         cfg->ram_vbuf = se30->vram + (main_buf ? SE30_FB_PRIMARY_OFFSET : SE30_FB_ALTERNATE_OFFSET);
         // Bit 5: floppy head select → SWIM
-        if (se30->swim)
-            swim_set_sel_signal(se30->swim, (output & 0x20) != 0);
+        if (se30->floppy)
+            floppy_set_sel_signal(se30->floppy, (output & 0x20) != 0);
         // Bit 4: ROM overlay control (1 = ROM at $00000000, 0 = RAM)
         se30_set_rom_overlay(cfg, (output & 0x10) != 0);
         // Bit 3: alternate sound buffer (legacy, ignored for ASC)
@@ -1031,8 +1031,8 @@ static void se30_init(config_t *cfg, checkpoint_t *checkpoint) {
     asc_set_via(se30->asc, cfg->via2);
 
     // Initialise SWIM floppy controller (NULL map: I/O dispatcher)
-    se30->swim = swim_init(NULL, cfg->scheduler, checkpoint);
-    cfg->swim = se30->swim; // expose SWIM to generic floppy commands
+    se30->floppy = floppy_init(FLOPPY_TYPE_SWIM, NULL, cfg->scheduler, checkpoint);
+    cfg->floppy = se30->floppy; // expose floppy to generic floppy commands
 
     // Cache device memory interfaces for the I/O dispatcher
     se30->via1_iface = via_get_memory_interface(cfg->via1);
@@ -1040,7 +1040,7 @@ static void se30_init(config_t *cfg, checkpoint_t *checkpoint) {
     se30->scc_iface = scc_get_memory_interface(cfg->scc);
     se30->scsi_iface = scsi_get_memory_interface(cfg->scsi);
     se30->asc_iface = asc_get_memory_interface(se30->asc);
-    se30->swim_iface = swim_get_memory_interface(se30->swim);
+    se30->floppy_iface = floppy_get_memory_interface(se30->floppy);
 
     // ---- VRAM / VROM / MMU wiring ----
 
@@ -1143,9 +1143,9 @@ static void se30_teardown(config_t *cfg) {
             free(se30->vrom);
             se30->vrom = NULL;
         }
-        if (se30->swim) {
-            swim_delete(se30->swim);
-            se30->swim = NULL;
+        if (se30->floppy) {
+            floppy_delete(se30->floppy);
+            se30->floppy = NULL;
         }
         if (se30->asc) {
             asc_delete(se30->asc);
@@ -1233,7 +1233,7 @@ static void se30_checkpoint_save(config_t *cfg, checkpoint_t *cp) {
 
     scsi_checkpoint(cfg->scsi, cp);
     asc_checkpoint(se30->asc, cp);
-    swim_checkpoint(se30->swim, cp);
+    floppy_checkpoint(se30->floppy, cp);
 
     // Save VRAM contents (must match restore order in se30_init)
     system_write_checkpoint_data(cp, se30->vram, SE30_VRAM_SIZE);

@@ -26,7 +26,6 @@
 #include "scsi.h"
 #include "shell.h"
 #include "sound.h"
-#include "swim.h"
 #include "via.h"
 
 #include <assert.h>
@@ -178,18 +177,14 @@ uint64_t cmd_insert_fd(int argc, char *argv[]);
 uint64_t cmd_insert_disk(int argc, char *argv[]);
 uint64_t cmd_machine(int argc, char *argv[]);
 
-// Helpers to abstract floppy insertion across IWM (Plus) and SWIM (SE/30)
+// Helpers to abstract floppy insertion
 static bool sys_fd_is_inserted(config_t *cfg, int drive) {
-    if (cfg->swim)
-        return swim_is_inserted(cfg->swim, drive);
     if (cfg->floppy)
         return floppy_is_inserted(cfg->floppy, drive);
     return true; // no controller → treat as occupied
 }
 
 static int sys_fd_insert(config_t *cfg, int drive, image_t *disk) {
-    if (cfg->swim)
-        return swim_insert(cfg->swim, drive, disk);
     if (cfg->floppy)
         return floppy_insert(cfg->floppy, drive, disk);
     return -1;
