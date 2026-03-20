@@ -36,7 +36,4 @@ void rtc_input(rtc_t *restrict rtc, bool disable, bool clock, bool pram);
 
 void rtc_set_via(rtc_t *restrict rtc, via_t *via);
 
-// Direct PRAM read (for machine-level inspection)
-uint8_t rtc_read_pram(rtc_t *rtc, uint8_t address);
-
 #endif // RTC_H

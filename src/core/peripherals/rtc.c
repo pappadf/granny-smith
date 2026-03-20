@@ -301,11 +301,6 @@ void rtc_set_via(rtc_t *restrict rtc, via_t *via) {
     rtc->via = via;
 }
 
-// Read one byte from extended PRAM (0x00-0xFF)
-uint8_t rtc_read_pram(rtc_t *rtc, uint8_t address) {
-    return rtc->pram[address];
-}
-
 rtc_t *rtc_init(struct scheduler *restrict scheduler, checkpoint_t *checkpoint) {
     rtc_t *rtc = (rtc_t *)malloc(sizeof(rtc_t));
     if (rtc == NULL)
