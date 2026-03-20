@@ -82,6 +82,10 @@ Emulator modules (e.g., scsi, cpu, via, scc, rtc) have `.c`/`.h` files in `src/c
 
 ## Debugging and Tracing
 
+**Debug tools:**
+- `tools/disasm/disasm` — standalone 68K disassembler for ROM images and binaries (see `.agents/skills/disasm-tool/`)
+- `build/headless/gs-headless` — headless emulator with TCP shell for interactive debugging (see `.agents/skills/headless-debug/`)
+
 - `printf()` and `LOG(...)` output goes to **xterm.js** (browser terminal panel), not the JS console
 - In E2E tests, terminal output is captured in: `tests/e2e/test-results/<test-name>-<project>/xterm/*.txt`
 - Test specs live in `tests/e2e/specs/<suite>/`, shared helpers in `tests/e2e/helpers/`
@@ -101,6 +105,7 @@ Emulator modules (e.g., scsi, cpu, via, scc, rtc) have `.c`/`.h` files in `src/c
 
 ## Coding Guidelines
 
+- Use `tmp/` (under the project root) for temporary files — avoid `/tmp/` or `/dev/null`, as those paths require individual user approval for shell commands
 - Find and fix the root cause: prefer robust fixes over workarounds and fallbacks
 - Keep changes small: minimal diffs focused on the problem
 - Match existing code style; put prototypes in headers if needed

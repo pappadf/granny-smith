@@ -11,6 +11,8 @@
 #define CPU_DECODER_IS_68030 1
 
 #include "cpu_internal.h"
+#include "fpu.h"
+#include "mmu.h"
 
 #include "log.h"
 #include "system.h"
@@ -64,19 +66,355 @@ LOG_USE_CATEGORY_NAME("cpu");
 
 #include "cpu_ops.h"
 
+// ============================================================================
+// 68030 MMU instruction dispatcher (PMOVE/PFLUSH/PTEST/PLOAD)
+// ============================================================================
+// Decodes the extension word to determine the MMU operation.
+// Called from OP_PMMU_GENERAL (F-line CpID=0 type=0).
+// Extension word bits [15:13] select the operation (per M68000PRM / MC68030UM):
+//   000 = PMOVE TT0/TT1   (bits[12:10]: 010=TT0, 011=TT1)
+//   001 = PLOAD / PFLUSH  (bits[12:10]: 000=PLOAD, 001=PFLUSHA, 100=PFLUSH FC#mask,
+//                                       110=PFLUSH FC#mask+EA)
+//   010 = PMOVE (TC, SRP, CRP)
+//   011 = PMOVE (MMUSR)
+//   100 = PTEST
+
+static void cpu_pmmu_general(cpu_t *cpu, uint16_t opcode) {
+    uint16_t ext = fetch_16(cpu, true);
+    mmu_state_t *mmu = (mmu_state_t *)cpu->mmu;
+    uint32_t op_type = (ext >> 13) & 7u;
+
+    // Compute EA from the opcode's lower 6 bits (modes that are valid for PMOVE)
+    uint32_t ea_mode = (opcode >> 3) & 7u;
+    uint32_t ea_reg = opcode & 7u;
+
+    switch (op_type) {
+
+    case 0: {
+        // PMOVE TT0/TT1 (bits[12:10]: 010=TT0, 011=TT1)
+        uint32_t reg_select = (ext >> 10) & 7u;
+        uint32_t rw = (ext >> 9) & 1u; // 0=ea→reg, 1=reg→ea
+
+        if (reg_select == 2) {
+            // PMOVE TT0
+            if (rw) {
+                // TT0 → EA
+                uint32_t ea = calculate_ea(cpu, 4, ea_mode, ea_reg, true);
+                memory_write_uint32(ea, mmu ? mmu->tt0 : 0);
+            } else {
+                // EA → TT0
+                uint32_t ea = calculate_ea(cpu, 4, ea_mode, ea_reg, true);
+                uint32_t val = memory_read_uint32(ea);
+                if (mmu) {
+                    mmu->tt0 = val;
+                    mmu_invalidate_tlb(mmu);
+                }
+            }
+            break;
+        }
+
+        if (reg_select == 3) {
+            // PMOVE TT1
+            if (rw) {
+                // TT1 → EA
+                uint32_t ea = calculate_ea(cpu, 4, ea_mode, ea_reg, true);
+                memory_write_uint32(ea, mmu ? mmu->tt1 : 0);
+            } else {
+                // EA → TT1
+                uint32_t ea = calculate_ea(cpu, 4, ea_mode, ea_reg, true);
+                uint32_t val = memory_read_uint32(ea);
+                if (mmu) {
+                    mmu->tt1 = val;
+                    mmu_invalidate_tlb(mmu);
+                }
+            }
+            break;
+        }
+
+        // Other reg_select values: undefined
+        break;
+    }
+
+    case 1: {
+        // PLOAD or PFLUSH (bits[12:10] = mode)
+        uint32_t flush_mode = (ext >> 10) & 7u;
+        if (flush_mode == 0) {
+            // PLOAD — force a table walk and load the ATC entry
+            uint32_t rw = (ext >> 9) & 1u; // 0=PLOADW (write test), 1=PLOADR (read test)
+            if (mmu) {
+                uint32_t ea = calculate_ea(cpu, 4, ea_mode, ea_reg, true);
+                mmu_handle_fault(mmu, ea, rw == 0, cpu->supervisor != 0);
+            }
+        } else if (mmu) {
+            // PFLUSH variants: invalidate ATC entries
+            // mode=001: PFLUSHA (flush all entries)
+            // mode=100: PFLUSH FC,#mask (flush by FC)
+            // mode=110: PFLUSH FC,#mask,<ea> (flush by FC and EA)
+            mmu_invalidate_tlb(mmu);
+        }
+        break;
+    }
+
+    case 2: {
+        // PMOVE (TC, SRP, CRP)
+        uint32_t reg_select = (ext >> 10) & 7u;
+        uint32_t rw = (ext >> 9) & 1u; // 0=ea→reg, 1=reg→ea
+
+        if (reg_select == 0) {
+            // TC (Translation Control) — 32-bit
+            if (rw) {
+                // TC → EA
+                uint32_t ea = calculate_ea(cpu, 4, ea_mode, ea_reg, true);
+                memory_write_uint32(ea, mmu ? mmu->tc : 0);
+            } else {
+                // EA → TC
+                uint32_t ea = calculate_ea(cpu, 4, ea_mode, ea_reg, true);
+                uint32_t val = memory_read_uint32(ea);
+                if (mmu) {
+                    mmu->tc = val;
+                    mmu->enabled = TC_ENABLE(val) != 0;
+                    // Validate TC configuration: IS+PS+TIA+TIB+TIC+TID must equal 32
+                    // PS field (bits 23:20) holds the page size exponent directly (valid: 8–15)
+                    if (mmu->enabled) {
+                        uint32_t sum = TC_IS(val) + TC_PS(val) + TC_TIA(val) + TC_TIB(val) + TC_TIC(val) + TC_TID(val);
+                        if (sum != 32) {
+                            // MMU configuration exception (vector 56 = 0xE0)
+                            exception(cpu, 0xE0, cpu->pc, cpu_get_sr(cpu));
+                            break;
+                        }
+                    }
+                    mmu_invalidate_tlb(mmu);
+                }
+            }
+            break;
+        }
+
+        if (reg_select == 2) {
+            // SRP (Supervisor Root Pointer) — 64-bit
+            if (rw) {
+                // SRP → EA
+                uint32_t ea = calculate_ea(cpu, 8, ea_mode, ea_reg, true);
+                uint32_t upper = (uint32_t)(mmu ? mmu->srp >> 32 : 0);
+                uint32_t lower = (uint32_t)(mmu ? mmu->srp & 0xFFFFFFFF : 0);
+                memory_write_uint32(ea, upper);
+                memory_write_uint32(ea + 4, lower);
+            } else {
+                // EA → SRP
+                uint32_t ea = calculate_ea(cpu, 8, ea_mode, ea_reg, true);
+                uint32_t upper = memory_read_uint32(ea);
+                uint32_t lower = memory_read_uint32(ea + 4);
+                if (mmu) {
+                    uint64_t val = ((uint64_t)upper << 32) | lower;
+                    // Validate DT field (bits 1:0 of upper word)
+                    if ((upper & 3) == DESC_DT_INVALID) {
+                        mmu->srp = val; // loaded before exception
+                        exception(cpu, 0xE0, cpu->pc, cpu_get_sr(cpu));
+                        break;
+                    }
+                    mmu->srp = val;
+                    mmu_invalidate_tlb(mmu);
+                }
+            }
+            break;
+        }
+
+        if (reg_select == 3) {
+            // CRP (CPU Root Pointer) — 64-bit
+            if (rw) {
+                // CRP → EA
+                uint32_t ea = calculate_ea(cpu, 8, ea_mode, ea_reg, true);
+                uint32_t upper = (uint32_t)(mmu ? mmu->crp >> 32 : 0);
+                uint32_t lower = (uint32_t)(mmu ? mmu->crp & 0xFFFFFFFF : 0);
+                memory_write_uint32(ea, upper);
+                memory_write_uint32(ea + 4, lower);
+            } else {
+                // EA → CRP
+                uint32_t ea = calculate_ea(cpu, 8, ea_mode, ea_reg, true);
+                uint32_t upper = memory_read_uint32(ea);
+                uint32_t lower = memory_read_uint32(ea + 4);
+                if (mmu) {
+                    uint64_t val = ((uint64_t)upper << 32) | lower;
+                    // Validate DT field (bits 1:0 of upper word)
+                    if ((upper & 3) == DESC_DT_INVALID) {
+                        mmu->crp = val; // loaded before exception
+                        exception(cpu, 0xE0, cpu->pc, cpu_get_sr(cpu));
+                        break;
+                    }
+                    mmu->crp = val;
+                    mmu_invalidate_tlb(mmu);
+                }
+            }
+            break;
+        }
+
+        // Other reg_select values: treat as no-op
+        break;
+    }
+
+    case 3: {
+        // PMOVE MMUSR — 16-bit
+        uint32_t rw = (ext >> 9) & 1u;
+        if (rw) {
+            // MMUSR → EA (read)
+            uint32_t ea = calculate_ea(cpu, 2, ea_mode, ea_reg, true);
+            memory_write_uint16(ea, mmu ? mmu->mmusr : 0);
+        } else {
+            // EA → MMUSR (write) — some systems allow writing MMUSR
+            uint32_t ea = calculate_ea(cpu, 2, ea_mode, ea_reg, true);
+            uint16_t val = memory_read_uint16(ea);
+            if (mmu)
+                mmu->mmusr = val;
+        }
+        break;
+    }
+
+    case 4: {
+        // PTEST
+        uint32_t rw = (ext >> 9) & 1u; // 0=read test, 1=write test
+        uint32_t ea = calculate_ea(cpu, 4, ea_mode, ea_reg, true);
+        if (mmu) {
+            uint16_t status = mmu_test_address(mmu, ea, rw != 0, cpu->supervisor != 0);
+            mmu->mmusr = status;
+            // If A-register field is specified (bits 8:5), store physical address
+            // in that register (only for level > 0). Simplified: skip for now.
+        }
+        break;
+    }
+
+    default:
+        // Reserved operation — ignore
+        break;
+    }
+}
+
+// ============================================================================
+
+// MOVEC implementations — moved out of cpu_ops.h macros to reduce inline size.
+// Called from OP_MOVEC_RC_RN / OP_MOVEC_RN_RC after the privilege check in SUPER().
+// Returns 1 on success; calls illegal_instruction() and returns 0 on unknown control register.
+
+static int cpu_movec_rc_rn(cpu_t *cpu) {
+    uint16_t ext = fetch_16(cpu, true);
+    uint32_t da = (ext >> 15) & 1u;
+    uint32_t rn = (ext >> 12) & 7u;
+    uint16_t rc = ext & 0x0FFFu;
+    uint32_t val = 0;
+    switch (rc) {
+    case 0x000:
+        val = cpu->sfc;
+        break;
+    case 0x001:
+        val = cpu->dfc;
+        break;
+    case 0x002:
+        val = cpu->cacr;
+        break;
+    case 0x800:
+        val = cpu->usp;
+        break;
+    case 0x801:
+        val = cpu->vbr;
+        break;
+    case 0x802:
+        val = cpu->caar;
+        break;
+    case 0x803:
+        val = cpu->m ? cpu->a[7] : cpu->msp;
+        break;
+    case 0x804:
+        val = cpu->m ? cpu->ssp : cpu->a[7];
+        break;
+    default:
+        illegal_instruction(cpu);
+        return 0;
+    }
+    if (da)
+        cpu->a[rn] = val;
+    else
+        cpu->d[rn] = val;
+    return 1;
+}
+
+static int cpu_movec_rn_rc(cpu_t *cpu) {
+    uint16_t ext = fetch_16(cpu, true);
+    uint32_t da = (ext >> 15) & 1u;
+    uint32_t rn = (ext >> 12) & 7u;
+    uint16_t rc = ext & 0x0FFFu;
+    uint32_t val = da ? cpu->a[rn] : cpu->d[rn];
+    switch (rc) {
+    case 0x000:
+        cpu->sfc = val & 7u;
+        break;
+    case 0x001:
+        cpu->dfc = val & 7u;
+        break;
+    case 0x002:
+        cpu->cacr = val & 0x3313u;
+        break; /* 68030 CACR writable bits */
+    case 0x800:
+        cpu->usp = val;
+        break;
+    case 0x801:
+        cpu->vbr = val;
+        break;
+    case 0x802:
+        cpu->caar = val;
+        break; /* cache address register: no-op */
+    case 0x803:
+        if (cpu->m)
+            cpu->a[7] = val;
+        else
+            cpu->msp = val;
+        break;
+    case 0x804:
+        if (!cpu->m)
+            cpu->a[7] = val;
+        else
+            cpu->ssp = val;
+        break;
+    default:
+        illegal_instruction(cpu);
+        return 0;
+    }
+    return 1;
+}
+
 // Generate the cpu_run_68030 decoder function using the shared template
 #define CPU_DECODER_NAME        cpu_run_68030
 #define CPU_DECODER_ARGS        cpu_t *restrict cpu, uint32_t *instructions
 #define CPU_DECODER_RETURN_TYPE void
 #define CPU_DECODER_PROLOGUE                                                                                           \
+    /* Set SoA active pointers based on current supervisor mode */                                                     \
+    g_active_read = cpu->supervisor ? g_supervisor_read : g_user_read;                                                 \
+    g_active_write = cpu->supervisor ? g_supervisor_write : g_user_write;                                              \
     cpu_check_interrupt(cpu);                                                                                          \
+    g_bus_error_instr_ptr = instructions; /* let memory slow paths force exit */                                       \
+    /* Capture trace state before execution; clamp to 1 instruction if T1 set */                                       \
+    uint32_t _saved_trace = cpu->trace;                                                                                \
+    if (__builtin_expect(_saved_trace & 2, 0))                                                                         \
+        if (*instructions > 1)                                                                                         \
+            *instructions = 1;                                                                                         \
     while (*instructions > 0) {                                                                                        \
         uint32_t fetch = memory_read_uint32(cpu->pc);                                                                  \
         uint16_t opcode = fetch >> 16;                                                                                 \
         uint16_t ext_word = fetch & 0xFFFF;                                                                            \
+        cpu->instruction_pc = cpu->pc;                                                                                 \
         cpu->pc += 2;                                                                                                  \
         (*instructions)--;
 #define CPU_DECODER_EPILOGUE                                                                                           \
+    }                                                                                                                  \
+    /* Trace exception: fire if T1 was set at sprint start AND still set now. */                                       \
+    /* Checked outside the hot loop for zero per-instruction overhead. */                                              \
+    /* For SR-modifying instructions, uses new T1 value (per M68000 PRM 6.3.10). */                                    \
+    if (__builtin_expect((_saved_trace & 2) && (cpu->trace & 2), 0))                                                   \
+        exception(cpu, 0x024, cpu->pc, cpu_get_sr(cpu));                                                               \
+    /* Deferred bus error: handled outside the hot loop for zero overhead. */                                          \
+    /* The memory slow path set *instructions=0 to force the loop exit. */                                             \
+    if (__builtin_expect(g_bus_error_pending, 0)) {                                                                    \
+        g_bus_error_pending = 0;                                                                                       \
+        exception_bus_error(cpu, g_bus_error_address, g_bus_error_rw);                                                 \
+        g_active_read = cpu->supervisor ? g_supervisor_read : g_user_read;                                             \
+        g_active_write = cpu->supervisor ? g_supervisor_write : g_user_write;                                          \
     }                                                                                                                  \
     cpu_check_interrupt(cpu);                                                                                          \
     assert(*instructions == 0)

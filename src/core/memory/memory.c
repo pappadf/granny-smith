@@ -9,9 +9,12 @@
 // ============================================================================
 
 #include "memory.h"
+#include "mmu.h"
 
 #include "common.h"
+#include "cpu.h"
 #include "platform.h"
+#include "rom.h"
 #include "shell.h"
 #include "system.h"
 
@@ -24,14 +27,30 @@
 // Constants and Macros
 // ============================================================================
 
-// Plus ROM size used only for identification functions (rom_version / rom_file_version).
-// These functions are Plus-specific and will be replaced in M6 by the ROM identification module.
-#define PLUS_ROM_SIZE (128 * 1024)
+// (Plus-specific PLUS_ROM_SIZE and rom_version/rom_file_version removed in M6;
+//  ROM identification is now handled by rom.c)
 
 // Page table globals (defined here, declared extern in memory.h)
 page_entry_t *g_page_table = NULL;
 uint32_t g_address_mask = 0x00FFFFFFUL; // 24-bit default
 int g_page_count = 0; // number of pages in current page table
+
+// SoA fast-path arrays (adjusted-base entries; zero = slow path)
+uintptr_t *g_supervisor_read = NULL;
+uintptr_t *g_supervisor_write = NULL;
+uintptr_t *g_user_read = NULL;
+uintptr_t *g_user_write = NULL;
+
+// Active pointers (switched per sprint based on SR.S bit)
+uintptr_t *g_active_read = NULL;
+uintptr_t *g_active_write = NULL;
+
+// Deferred bus error signal: set by slow paths on unmapped MMU accesses.
+// Zeroing *g_bus_error_instr_ptr forces the decoder loop to exit early.
+uint32_t g_bus_error_pending = 0;
+uint32_t g_bus_error_address = 0;
+uint32_t g_bus_error_rw = 0;
+uint32_t *g_bus_error_instr_ptr = NULL;
 
 // ============================================================================
 // Type Definitions
@@ -84,6 +103,36 @@ typedef struct memory {
 // ============================================================================
 // Page Table Slow Paths
 // ============================================================================
+// The slow path is entered when the SoA fast-path entry is zero.
+// Addresses arriving here are already masked by g_address_mask.
+// Dispatch order: device I/O (via page_entry_t) → MMU TLB handling via
+// mmu_handle_fault(...) and deferred bus error signaling → unmapped (return 0).
+
+// Slow path for 8-bit reads: device I/O, MMU TLB miss, or unmapped
+uint8_t memory_read_uint8_slow(uint32_t addr) {
+    page_entry_t *pe = &g_page_table[addr >> PAGE_SHIFT];
+    if (pe->dev)
+        return pe->dev->read_uint8(pe->dev_context, addr - pe->base_addr);
+    // MMU TLB miss: try to resolve via table walk and retry
+    if (g_mmu && g_mmu->enabled) {
+        if (mmu_handle_fault(g_mmu, addr, false, g_active_read == g_supervisor_read)) {
+            uintptr_t base = g_active_read[addr >> PAGE_SHIFT];
+            if (base != 0)
+                return LOAD_BE8((uint8_t *)(base + addr));
+            // SoA still 0: unmapped physical but no fault (e.g. beyond RAM)
+        } else {
+            // MMU fault (TT-matched unmapped NuBus, permission, etc.)
+            if (!g_bus_error_pending) {
+                g_bus_error_pending = 1;
+                g_bus_error_address = addr;
+                g_bus_error_rw = 1; // read
+                if (g_bus_error_instr_ptr)
+                    *g_bus_error_instr_ptr = 0; // force decoder loop exit
+            }
+        }
+    }
+    return 0;
+}
 
 // Slow path for 16-bit reads: cross-page or device I/O
 uint16_t memory_read_uint16_slow(uint32_t addr) {
@@ -95,7 +144,7 @@ uint16_t memory_read_uint16_slow(uint32_t addr) {
 
     // Cross-page or host memory at page boundary: split into two byte reads
     uint16_t hi = memory_read_uint8(addr);
-    uint16_t lo = memory_read_uint8(addr + 1);
+    uint16_t lo = memory_read_uint8((addr + 1) & g_address_mask);
     return (hi << 8) | lo;
 }
 
@@ -113,6 +162,35 @@ uint32_t memory_read_uint32_slow(uint32_t addr) {
     return (hi << 16) | lo;
 }
 
+// Slow path for 8-bit writes: device I/O, MMU TLB miss, or unmapped
+void memory_write_uint8_slow(uint32_t addr, uint8_t value) {
+    page_entry_t *pe = &g_page_table[addr >> PAGE_SHIFT];
+    if (pe->dev) {
+        pe->dev->write_uint8(pe->dev_context, addr - pe->base_addr, value);
+        return;
+    }
+    // MMU TLB miss: try to resolve via table walk and retry
+    if (g_mmu && g_mmu->enabled) {
+        if (mmu_handle_fault(g_mmu, addr, true, g_active_write == g_supervisor_write)) {
+            uintptr_t base = g_active_write[addr >> PAGE_SHIFT];
+            if (base != 0) {
+                STORE_BE8((uint8_t *)(base + addr), value);
+                return;
+            }
+            // SoA still 0: unmapped physical but no fault — drop write
+        } else {
+            // MMU fault (TT-matched unmapped NuBus, permission, etc.)
+            if (!g_bus_error_pending) {
+                g_bus_error_pending = 1;
+                g_bus_error_address = addr;
+                g_bus_error_rw = 0; // write
+                if (g_bus_error_instr_ptr)
+                    *g_bus_error_instr_ptr = 0; // force decoder loop exit
+            }
+        }
+    }
+}
+
 // Slow path for 16-bit writes: cross-page or device I/O
 void memory_write_uint16_slow(uint32_t addr, uint16_t value) {
     page_entry_t *pe = &g_page_table[addr >> PAGE_SHIFT];
@@ -125,7 +203,7 @@ void memory_write_uint16_slow(uint32_t addr, uint16_t value) {
 
     // Cross-page: split into two byte writes
     memory_write_uint8(addr, (uint8_t)(value >> 8));
-    memory_write_uint8(addr + 1, (uint8_t)(value & 0xFF));
+    memory_write_uint8((addr + 1) & g_address_mask, (uint8_t)(value & 0xFF));
 }
 
 // Slow path for 32-bit writes: cross-page or device I/O
@@ -221,12 +299,22 @@ void memory_map_add(memory_map_t *mem, uint32_t addr, uint32_t size, const char 
         uint32_t end_page = ((addr + size - 1) & g_address_mask) >> PAGE_SHIFT;
         assert((int)start_page < g_page_count && "device start address exceeds page table bounds");
         for (uint32_t p = start_page; p <= end_page && (int)p < g_page_count; p++) {
+            // AoS cold-path: register device handler
             g_page_table[p].host_base = NULL;
-            // Point to the copied interface in the linked list node (stable pointer)
             g_page_table[p].dev = &map->memory_interface;
             g_page_table[p].dev_context = device;
             g_page_table[p].base_addr = addr;
             g_page_table[p].writable = false;
+
+            // SoA fast-path: zero entries force slow path for device I/O
+            if (g_supervisor_read)
+                g_supervisor_read[p] = 0;
+            if (g_supervisor_write)
+                g_supervisor_write[p] = 0;
+            if (g_user_read)
+                g_user_read[p] = 0;
+            if (g_user_write)
+                g_user_write[p] = 0;
         }
     }
 }
@@ -255,6 +343,10 @@ void memory_map_remove(memory_map_t *memory_map, uint32_t addr, uint32_t size, c
 
 uint8_t *ram_native_pointer(memory_map_t *mem, uint32_t addr) {
     return mem->image + addr;
+}
+
+const char *memory_rom_filename(memory_map_t *mem) {
+    return mem ? mem->rom_filename : NULL;
 }
 
 // Calculate and validate ROM checksum and identify ROM version
@@ -289,54 +381,19 @@ static void calculate_checksum(memory_map_t *rom) {
     }
 }
 
-// Determine ROM version from raw ROM data by checking the checksum (Plus-specific)
-uint32_t rom_version(const uint8_t *data) {
-    uint32_t checksum = 0;
-
-    uint16_t *image16 = (uint16_t *)(data);
-    uint32_t *image32 = (uint32_t *)(data);
-
-    for (int i = 2; i < PLUS_ROM_SIZE / 2; i++)
-        checksum += BE16(image16[i]);
-
-    if (checksum != BE32(image32[0]))
-        return 0;
-
-    switch (BE32(image32[0])) {
-    case 0x4D1EEEE1: // version 1 (Lonely Hearts)
-        return 1;
-    case 0x4D1EEAE1: // version 2 (Lonely Heifers)
-        return 2;
-    case 0x4D1F8172: // version 3 (Loud Harmonicas)
-        return 3;
-    default:
-        return 0;
-    }
-}
-
-// Determine ROM version from a file path (Plus-specific)
-int rom_file_version(const char *path) {
-    uint8_t data[PLUS_ROM_SIZE];
-
-    FILE *f = fopen(path, "rb");
-    if (!f)
-        return false;
-
-    size_t n = fread(data, 1, PLUS_ROM_SIZE, f);
-
-    fclose(f);
-
-    if (n != PLUS_ROM_SIZE)
-        return false;
-
-    return rom_version(data);
-}
-
 // ============================================================================
 // Shell Commands
 // ============================================================================
 
-// Shell command to load a ROM file into memory
+// Pending ROM path — set before machine init so VROM loading can find it.
+static char *s_pending_rom_path = NULL;
+
+const char *memory_pending_rom_path(void) {
+    return s_pending_rom_path;
+}
+
+// Shell command to load a ROM file into memory.
+// Enhanced for M6: identifies the ROM, creates/switches machine if needed.
 uint64_t cmd_load_rom(int argc, char *argv[]) {
     // Check for --probe option
     bool probe_mode = false;
@@ -359,49 +416,108 @@ uint64_t cmd_load_rom(int argc, char *argv[]) {
 
     const char *filename = argv[filename_arg];
 
-    // In probe mode, just check if file is a valid ROM
-    if (probe_mode) {
-        int version = rom_file_version(filename);
-        if (version > 0) {
-            return 0; // Valid ROM
-        } else {
-            return 1; // Not a valid ROM
-        }
-    }
-
-    // Normal load mode
-    memory_map_t *mem = system_memory();
-    if (!mem) {
-        printf("Failed to load ROM: memory not initialized\n");
-        return -1;
-    }
-
+    // Read the ROM file into a temporary buffer for identification
     FILE *f = fopen(filename, "rb");
     if (!f) {
-        printf("Failed to open ROM file: %s\n", filename);
-        return -1;
+        if (!probe_mode)
+            printf("Failed to open ROM file: %s\n", filename);
+        return probe_mode ? 1 : (uint64_t)-1;
     }
 
-    // ROM content goes at the ram_size offset in the flat buffer
-    size_t n = fread(mem->image + mem->ram_size, 1, mem->rom_size, f);
+    // Determine file size
+    fseek(f, 0, SEEK_END);
+    long file_size = ftell(f);
+    fseek(f, 0, SEEK_SET);
+
+    if (file_size <= 0) {
+        fclose(f);
+        if (!probe_mode)
+            printf("Failed to read ROM file: %s\n", filename);
+        return probe_mode ? 1 : (uint64_t)-1;
+    }
+
+    // Read entire file for identification
+    uint8_t *rom_data = malloc((size_t)file_size);
+    if (!rom_data) {
+        fclose(f);
+        if (!probe_mode)
+            printf("Failed to allocate memory for ROM\n");
+        return probe_mode ? 1 : (uint64_t)-1;
+    }
+    size_t n = fread(rom_data, 1, (size_t)file_size, f);
     fclose(f);
 
-    if (n != mem->rom_size) {
-        printf("Failed to read ROM file: %s\n", filename);
-        return -1;
+    if ((long)n != file_size) {
+        free(rom_data);
+        if (!probe_mode)
+            printf("Failed to read ROM file: %s\n", filename);
+        return probe_mode ? 1 : (uint64_t)-1;
     }
 
+    // Identify the ROM
+    uint32_t checksum = 0;
+    const rom_info_t *info = rom_identify_data(rom_data, (size_t)file_size, &checksum);
+
+    // Probe mode: return 0 if identified, 1 if not
+    if (probe_mode) {
+        free(rom_data);
+        return info ? 0 : 1;
+    }
+
+    if (info) {
+        printf("ROM: %s (checksum %08X)\n", info->model_name, checksum);
+    } else {
+        printf("ROM: unknown (checksum %08X, size %ld bytes)\n", checksum, file_size);
+        free(rom_data);
+        return (uint64_t)-1;
+    }
+
+    // Store pending ROM path so machine init code (e.g. SE/30 VROM loader)
+    // can find related files next to the ROM.
+    free(s_pending_rom_path);
+    s_pending_rom_path = strdup(filename);
+
+    // Ensure the correct machine is active (creates or switches as needed)
+    if (system_ensure_machine(info->model_id) != 0) {
+        free(rom_data);
+        return (uint64_t)-1;
+    }
+
+    // Load ROM data into machine memory
+    memory_map_t *mem = system_memory();
+    if (!mem) {
+        printf("load-rom: memory not initialized\n");
+        free(rom_data);
+        return (uint64_t)-1;
+    }
+
+    // Copy ROM data into the flat buffer at ram_size offset
+    size_t copy_size = (size_t)file_size < mem->rom_size ? (size_t)file_size : mem->rom_size;
+    memcpy(mem->image + mem->ram_size, rom_data, copy_size);
+    free(rom_data);
+
+    // Update memory-level checksum state
     calculate_checksum(mem);
 
-    printf("ROM loaded successfully from %s\n", filename);
-
     // Remember ROM filename for checkpointing
-    if (mem->rom_filename) {
+    if (mem->rom_filename)
         free(mem->rom_filename);
-        mem->rom_filename = NULL;
-    }
     mem->rom_filename = strdup(filename);
 
+    // Reset CPU from ROM reset vectors (SSP at ROM offset 0, PC at ROM offset 4).
+    // Read directly from the ROM buffer since address 0 may map to RAM, not ROM
+    // (e.g. Plus has ROM at 0x400000, not overlaid at address 0).
+    cpu_t *cpu = system_cpu();
+    if (cpu && copy_size >= 8) {
+        uint8_t *rom_base = mem->image + mem->ram_size;
+        uint32_t initial_ssp = LOAD_BE32(rom_base);
+        uint32_t initial_pc = LOAD_BE32(rom_base + 4);
+        cpu_set_an(cpu, 7, initial_ssp);
+        cpu_set_pc(cpu, initial_pc);
+        printf("CPU reset: PC=%08X SSP=%08X\n", initial_pc, initial_ssp);
+    }
+
+    printf("ROM loaded successfully from %s\n", filename);
     return 0;
 }
 
@@ -424,10 +540,25 @@ void memory_populate_pages(memory_map_t *mem, uint32_t rom_start_addr, uint32_t 
     uint32_t ram_pages = ram_size >> PAGE_SHIFT;
     for (uint32_t p = 0; p < ram_pages && (int)p < g_page_count; p++) {
         assert((p << PAGE_SHIFT) < ram_size && "RAM page index out of bounds");
-        g_page_table[p].host_base = mem->image + (p << PAGE_SHIFT);
+        uint8_t *host_ptr = mem->image + (p << PAGE_SHIFT);
+        uint32_t guest_base = p << PAGE_SHIFT;
+        uintptr_t adjusted = (uintptr_t)host_ptr - guest_base;
+
+        // AoS cold-path entry (device dispatch)
+        g_page_table[p].host_base = host_ptr;
         g_page_table[p].dev = NULL;
         g_page_table[p].dev_context = NULL;
         g_page_table[p].writable = true;
+
+        // SoA fast-path entries: RAM is readable and writable by all
+        if (g_supervisor_read)
+            g_supervisor_read[p] = adjusted;
+        if (g_supervisor_write)
+            g_supervisor_write[p] = adjusted;
+        if (g_user_read)
+            g_user_read[p] = adjusted;
+        if (g_user_write)
+            g_user_write[p] = adjusted;
     }
 
     // ROM pages: rom_start_addr – rom_region_end (read-only, mirrored)
@@ -449,10 +580,21 @@ void memory_populate_pages(memory_map_t *mem, uint32_t rom_start_addr, uint32_t 
         uint32_t offset_in_cycle = (p - rom_start_page) % mirror_stride;
         if (offset_in_cycle >= rom_pages)
             continue; // interleaved I/O / undefined range — leave page unmapped (returns 0)
-        g_page_table[p].host_base = mem->image + ram_size + (offset_in_cycle << PAGE_SHIFT);
+        uint8_t *host_ptr = mem->image + ram_size + (offset_in_cycle << PAGE_SHIFT);
+        uint32_t guest_base = p << PAGE_SHIFT;
+        uintptr_t adjusted = (uintptr_t)host_ptr - guest_base;
+
+        // AoS cold-path entry
+        g_page_table[p].host_base = host_ptr;
         g_page_table[p].dev = NULL;
         g_page_table[p].dev_context = NULL;
         g_page_table[p].writable = false;
+
+        // SoA fast-path entries: ROM is read-only (write entries stay 0 → slow path)
+        if (g_supervisor_read)
+            g_supervisor_read[p] = adjusted;
+        if (g_user_read)
+            g_user_read[p] = adjusted;
     }
 }
 
@@ -487,12 +629,26 @@ memory_map_t *memory_map_init(int address_bits, uint32_t ram_size, uint32_t rom_
         g_address_mask = 0x00FFFFFFUL;
         g_page_count = 1 << (24 - PAGE_SHIFT); // 4,096 pages
     }
+
+    // AoS cold-path page table (device dispatch)
     g_page_table = (page_entry_t *)calloc(g_page_count, sizeof(page_entry_t));
     assert(g_page_table != NULL && "failed to allocate page table");
     mem->page_table = g_page_table;
     mem->page_count = g_page_count;
 
-    register_cmd("load-rom", "ROM", "load-rom [--probe [filename]] – load or probe ROM", (void *)&cmd_load_rom);
+    // SoA fast-path arrays (calloc → zero = slow path for all pages initially)
+    g_supervisor_read = (uintptr_t *)calloc(g_page_count, sizeof(uintptr_t));
+    g_supervisor_write = (uintptr_t *)calloc(g_page_count, sizeof(uintptr_t));
+    g_user_read = (uintptr_t *)calloc(g_page_count, sizeof(uintptr_t));
+    g_user_write = (uintptr_t *)calloc(g_page_count, sizeof(uintptr_t));
+    assert(g_supervisor_read && g_supervisor_write && g_user_read && g_user_write);
+
+    // Default active pointers: supervisor mode
+    g_active_read = g_supervisor_read;
+    g_active_write = g_supervisor_write;
+
+    // Note: load-rom command is registered once from setup_init() so it's
+    // available before any machine is created (deferred boot).
 
     // Load from checkpoint if provided
     if (checkpoint) {
@@ -537,6 +693,18 @@ void memory_map_delete(memory_map_t *mem) {
         if (g_page_table == mem->page_table) {
             g_page_table = NULL;
             g_page_count = 0;
+
+            // Free SoA fast-path arrays
+            free(g_supervisor_read);
+            g_supervisor_read = NULL;
+            free(g_supervisor_write);
+            g_supervisor_write = NULL;
+            free(g_user_read);
+            g_user_read = NULL;
+            free(g_user_write);
+            g_user_write = NULL;
+            g_active_read = NULL;
+            g_active_write = NULL;
         }
         free(mem->page_table);
         mem->page_table = NULL;

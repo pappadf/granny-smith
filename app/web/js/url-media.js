@@ -4,7 +4,7 @@
 // Handles URL parameter media provisioning: fetches images from URL params,
 // stores them in the persistent boot directory, and issues mount commands.
 import { BOOT_DIR } from './config.js';
-import { ensureDir, writeBinary, romPath, romExists, fileExists, hdSlotPath, getFS } from './fs.js';
+import { ensureDir, writeBinary, romPath, romExists, latestRomPath, latestRomExists, fileExists, hdSlotPath, getFS } from './fs.js';
 import { isModuleReady } from './emulator.js';
 import { toast, showRomOverlay, hideRomOverlay, enableRunButton } from './ui.js';
 import { sanitizeName } from './media.js';
@@ -44,9 +44,11 @@ let romLoaded = false;
 export function isRomLoaded() { return romLoaded; }
 
 // Load ROM from persistent storage and start the emulator.
+// Prefers the new checksum-based latest path, falls back to legacy path.
 export async function loadRomAndMaybeRun() {
   if (!romExists()) { showRomOverlay(); return; }
-  await window.runCommand(`load-rom ${romPath()}`);
+  const path = latestRomExists() ? latestRomPath() : romPath();
+  await window.runCommand(`load-rom ${path}`);
   romLoaded = true;
   hideRomOverlay();
   enableRunButton();
@@ -153,6 +155,9 @@ async function fetchAndStore(slot, url) {
 }
 
 // Process all URL-parameter media (rom, fd0..fdN, hd0..hdN).
+// Ordering: download all → load ROM (creates machine) → insert floppies → attach HDs → run.
+// With deferred boot, the machine doesn't exist until load-rom is called, so floppy
+// insertion must happen after ROM loading.
 export async function processUrlMedia(params) {
   const downloads = [];
   // ROM first (overwrite precedence rule)
@@ -162,12 +167,32 @@ export async function processUrlMedia(params) {
   // Hard disks
   for (const [k, v] of params.entries()) if (/^hd\d+$/.test(k)) downloads.push(fetchAndStore(k, v));
   await Promise.all(downloads);
-  // After downloads issue commands
-  for (const [k] of params.entries()) {
-    if (/^fd\d+$/.test(k)) {
-      await window.runCommand(`insert-fd ${BOOT_DIR}/${k} 0 1`);
+
+  if (params.has('rom')) {
+    // Load ROM first — this creates the machine via rom_identify + system_ensure_machine
+    if (!romExists()) { return; }
+    const path = latestRomExists() ? latestRomPath() : romPath();
+    await window.runCommand(`load-rom ${path}`);
+    romLoaded = true;
+    hideRomOverlay();
+    enableRunButton();
+
+    // Now that the machine exists, insert floppies
+    for (const [k] of params.entries()) {
+      if (/^fd\d+$/.test(k)) {
+        await window.runCommand(`insert-fd ${BOOT_DIR}/${k} 0 1`);
+      }
+    }
+
+    // Attach persistent HDs and start
+    await autoAttachPersistentHDs();
+    await window.runCommand('run');
+  } else {
+    // No ROM in URL params — insert floppies if machine already exists
+    for (const [k] of params.entries()) {
+      if (/^fd\d+$/.test(k)) {
+        await window.runCommand(`insert-fd ${BOOT_DIR}/${k} 0 1`);
+      }
     }
   }
-  // Hard disks must be attached prior to first run; defer to pre-run hook.
-  if (params.has('rom')) { await loadRomAndMaybeRun(); }
 }

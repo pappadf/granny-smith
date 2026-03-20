@@ -95,6 +95,9 @@ bool scheduler_is_running(struct scheduler *restrict s);
 // Set scheduler execution mode (max/realtime/hardware accuracy)
 void scheduler_set_mode(struct scheduler *restrict s, enum schedule_mode mode);
 
+// Set the CPU clock frequency in Hz (e.g. 7833600 for Plus, 15667200 for SE/30)
+void scheduler_set_frequency(struct scheduler *restrict s, uint32_t frequency_hz);
+
 // Get the total number of CPU instructions executed so far
 uint64_t cpu_instr_count(void);
 

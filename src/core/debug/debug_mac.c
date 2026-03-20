@@ -457,17 +457,36 @@ uint64_t cmd_set_mouse(int argc, char *argv[]) {
     uint16_t v = (uint16_t)(y & 0xFFFF);
     uint16_t h = (uint16_t)(x & 0xFFFF);
 
-    // Write new absolute position to MTemp (latest mouse value)
-    memory_write_uint16(addr_MTemp, v); // v
-    memory_write_uint16(addr_MTemp + 2, h); // h
+    // Read current cursor position from MTemp before modifying anything
+    int16_t cur_v = (int16_t)memory_read_uint16(addr_MTemp);
+    int16_t cur_h = (int16_t)memory_read_uint16(addr_MTemp + 2);
+    int dx = (int)x - (int)cur_h;
+    int dy = (int)y - (int)cur_v;
 
-    // And to RawMouse (raw/unaccelerated mouse)
-    memory_write_uint16(addr_RawMouse, v); // v
-    memory_write_uint16(addr_RawMouse + 2, h); // h
+    // On ADB machines (SE/30), inject movement deltas through the ADB hardware
+    // path so the ROM's ADB ISR naturally updates the cursor position.
+    // Direct global writes alone don't move the visible cursor on SE/30 because
+    // the cursor VBL task uses the slot VBL path, not the system VBL queue.
+    // We must NOT also write MTemp/RawMouse, or the ROM ISR would double-count.
+    bool injected = system_mouse_move(dx, dy);
 
-    // Signal to the ROM / cursor code that the cursor has moved.
-    // Many examples treat this as a 16-bit "-1" (0xFFFF).
-    memory_write_uint16(addr_CrsrNew, 0xFFFF);
+    if (!injected) {
+        // Non-ADB path (Mac Plus): write globals directly.
+        // The cursor VBL task copies MTemp → Mouse → screen cursor.
+        memory_write_uint16(addr_MTemp, v);
+        memory_write_uint16(addr_MTemp + 2, h);
+        memory_write_uint16(addr_RawMouse, v);
+        memory_write_uint16(addr_RawMouse + 2, h);
+
+        uint32_t addr_Mouse = debug_mac_lookup_global_address("Mouse");
+        if (addr_Mouse) {
+            memory_write_uint16(addr_Mouse, v);
+            memory_write_uint16(addr_Mouse + 2, h);
+        }
+
+        // Signal to the ROM / cursor code that the cursor has moved
+        memory_write_uint16(addr_CrsrNew, 0xFFFF);
+    }
 
     return 0;
 }

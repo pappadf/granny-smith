@@ -1,0 +1,14 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(make:*)",
+      "Bash(npx --prefix tests/e2e playwright test:*)",
+      "Bash(tee:*)",
+      "Bash(chmod:*)",
+      "Bash(python3:*)"
+    ],
+    "additionalDirectories": [
+      "tmp"
+    ]
+  }
+}

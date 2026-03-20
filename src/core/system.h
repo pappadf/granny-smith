@@ -107,6 +107,7 @@ image_t *setup_get_image_by_filename(const char *filename);
 // System-level input wrappers (route to appropriate device models)
 // Note: system_keyboard_update requires keyboard.h to be included for key_event_t
 void system_mouse_update(bool button, int dx, int dy);
+bool system_mouse_move(int dx, int dy);
 void system_keyboard_update(key_event_t event, int key);
 
 // System-level scheduler accessor: returns the current scheduler object
@@ -126,6 +127,14 @@ uint8_t *system_framebuffer(void);
 
 // Check if emulator is initialized and running
 bool system_is_initialized(void);
+
+// Return the model_id of the current machine, or NULL if none is active
+const char *system_machine_model_id(void);
+
+// Ensure the correct machine is active for the given model_id.
+// Creates a new machine if none exists, or tears down and recreates if the
+// current machine's model_id doesn't match.  Returns 0 on success, -1 on error.
+int system_ensure_machine(const char *model_id);
 
 // Reset Mac hardware to initial state
 extern void mac_reset(config_t *restrict sim);

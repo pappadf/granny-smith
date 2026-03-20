@@ -6,6 +6,7 @@
 
 #include "cpu_internal.h"
 
+#include "fpu.h"
 #include "log.h"
 #include "system.h"
 LOG_USE_CATEGORY_NAME("cpu");
@@ -60,6 +61,16 @@ void cpu_set_ssp(cpu_t *restrict cpu, uint32_t value) {
     cpu->ssp = value;
 }
 
+// Get the master stack pointer value (68030)
+uint32_t cpu_get_msp(cpu_t *restrict cpu) {
+    return cpu->msp;
+}
+
+// Set the master stack pointer value (68030)
+void cpu_set_msp(cpu_t *restrict cpu, uint32_t value) {
+    cpu->msp = value;
+}
+
 // Get the user stack pointer value
 uint32_t cpu_get_usp(cpu_t *restrict cpu) {
     return cpu->usp;
@@ -78,6 +89,16 @@ uint32_t cpu_get_ipl(cpu_t *restrict cpu) {
 // Set the interrupt priority level
 void cpu_set_ipl(cpu_t *restrict cpu, uint32_t value) {
     cpu->ipl = value;
+}
+
+// Get the vector base register (68010+)
+uint32_t cpu_get_vbr(cpu_t *restrict cpu) {
+    return cpu->vbr;
+}
+
+// Set the vector base register (68010+)
+void cpu_set_vbr(cpu_t *restrict cpu, uint32_t value) {
+    cpu->vbr = value;
 }
 
 // Get the complete status register (includes CCR and system byte).
@@ -123,11 +144,17 @@ extern cpu_t *cpu_init(int cpu_model, checkpoint_t *checkpoint) {
         system_read_checkpoint_data(checkpoint, cpu, sizeof(cpu_t));
     } else {
         cpu->cpu_model = cpu_model;
-        cpu->pc = 0x0040002a;
-        cpu->a[7] = 0x4d1f8172;
+        // Initial PC and SSP will be loaded from reset vectors after ROM is loaded
+        cpu->pc = 0;
+        cpu->a[7] = 0;
         cpu->supervisor = 1;
         cpu->interrupt_mask = 7;
         // 68030-specific registers default to zero (VBR=0, CACR=0, etc.)
+    }
+
+    // Allocate FPU state for 68030 model
+    if (cpu->cpu_model == CPU_MODEL_68030) {
+        cpu->fpu = fpu_init();
     }
 
     return cpu;
@@ -137,6 +164,10 @@ extern cpu_t *cpu_init(int cpu_model, checkpoint_t *checkpoint) {
 void cpu_delete(cpu_t *cpu) {
     if (!cpu)
         return;
+    if (cpu->fpu) {
+        fpu_free((fpu_state_t *)cpu->fpu);
+        cpu->fpu = NULL;
+    }
     free(cpu);
 }
 

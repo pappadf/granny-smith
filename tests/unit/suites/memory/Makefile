@@ -44,7 +44,9 @@ SRCS := $(CURDIR)/test.c \
         $(UNIT_ROOT)/support/stub_debugger.c \
         $(UNIT_ROOT)/support/stub_peripherals.c \
         $(UNIT_ROOT)/support/stub_assert.c \
-        $(EMU_ROOT)/core/memory/memory.c
+        $(UNIT_ROOT)/support/stub_cpu.c \
+        $(EMU_ROOT)/core/memory/memory.c \
+        $(EMU_ROOT)/core/memory/mmu.c
 
 ALL_SRCS := $(abspath $(SRCS))
 

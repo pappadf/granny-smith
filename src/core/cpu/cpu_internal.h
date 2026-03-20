@@ -54,9 +54,18 @@ struct cpu {
     uint32_t dfc; // Destination Function Code
     uint32_t msp; // Master Stack Pointer (M=1 supervisor stack)
     uint32_t m; // M bit: 0=ISP active, 1=MSP active (supervisor only)
+    uint32_t instruction_pc; // address of current instruction (for Format $2 frames)
+
+    // 68030 deferred bus error: set by memory slow paths, checked after each instruction
+    uint32_t bus_error_pending; // 0=none, 1=pending
+    uint32_t bus_error_address; // faulting logical address
+    uint32_t bus_error_rw; // 1=read, 0=write
 
     // 68030-specific: MMU state pointer (NULL for 68000)
     void *mmu;
+
+    // 68030-specific: FPU state pointer (NULL for 68000 or if no FPU)
+    void *fpu;
 };
 
 // Read the condition code register from CPU flags
@@ -107,7 +116,96 @@ static inline uint32_t ea_index_value(cpu_t *restrict cpu, uint16_t ext_word) {
     uint32_t v = (ext_word & 0x8000) ? cpu->a[(ext_word >> 12) & 7] : cpu->d[(ext_word >> 12) & 7];
     if ((ext_word & 0x0800) == 0) // word-sized index
         v = (int32_t)(int16_t)v; // sign extend
-    return v; // scale bits ignored (68000 semantics)
+    // Apply scale factor (68020+): bits 10-9 encode shift count 0-3
+    if (cpu->cpu_model >= CPU_MODEL_68030) {
+        int scale = (ext_word >> 9) & 3;
+        v <<= scale;
+    }
+    return v;
+}
+
+// 68020+ full extension word EA calculation (bit 8 = 1)
+static inline uint32_t calculate_ea_full(cpu_t *restrict cpu, uint16_t ext, uint32_t base_reg, bool increment) {
+    // The extension word (ext) was already fetched by the caller via fetch_16(cpu, increment).
+    // With increment=true, cpu->pc now points past the ext word (correct for BD/OD reads).
+    // With increment=false, cpu->pc still points AT the ext word (not yet advanced).
+    // Use a local 'pos' to sequence through BD and OD bytes correctly in both cases.
+    uint32_t pos = cpu->pc;
+    if (!increment)
+        pos += 2; // skip the ext word we already read without advancing cpu->pc
+    // Base register suppressed? (bit 7)
+    uint32_t base = (ext & 0x0080) ? 0 : base_reg;
+    // Index suppressed? (bit 6)
+    uint32_t index = (ext & 0x0040) ? 0 : ea_index_value(cpu, ext);
+    // Base displacement size (bits 5-4): 00=reserved, 01=null, 10=word, 11=long
+    int32_t bd = 0;
+    int bd_size = (ext >> 4) & 3;
+    if (bd_size == 2) {
+        bd = (int32_t)(int16_t)memory_read_uint16(pos);
+        pos += 2;
+    } else if (bd_size == 3) {
+        bd = (int32_t)memory_read_uint32(pos);
+        pos += 4;
+    }
+    // I/IS (bits 2-0 + bit 6): determine indirect mode
+    int iis = ext & 7;
+    uint32_t result;
+    if ((ext & 0x0040) == 0 && iis == 0) {
+        // No memory indirect: (bd,An,Xn)
+        result = base + index + (uint32_t)bd;
+    } else if (ext & 0x0040) {
+        // Index suppressed: memory indirect without index
+        uint32_t intermediate = base + (uint32_t)bd;
+        if (iis >= 1 && iis <= 3) {
+            // Memory indirect: ([bd,An])
+            intermediate = memory_read_uint32(intermediate);
+        }
+        // Outer displacement
+        int32_t od = 0;
+        if (iis == 2) {
+            od = (int32_t)(int16_t)memory_read_uint16(pos);
+            pos += 2;
+        } else if (iis == 3) {
+            od = (int32_t)memory_read_uint32(pos);
+            pos += 4;
+        }
+        result = intermediate + (uint32_t)od;
+    } else {
+        // Index not suppressed
+        if (iis >= 1 && iis <= 3) {
+            // Pre-indexed: ([bd,An,Xn],od)
+            uint32_t inner_addr = base + index + (uint32_t)bd;
+            uint32_t intermediate = memory_read_uint32(inner_addr);
+            int32_t od = 0;
+            if (iis == 2) {
+                od = (int32_t)(int16_t)memory_read_uint16(pos);
+                pos += 2;
+            } else if (iis == 3) {
+                od = (int32_t)memory_read_uint32(pos);
+                pos += 4;
+            }
+            result = intermediate + (uint32_t)od;
+        } else if (iis >= 5 && iis <= 7) {
+            // Post-indexed: ([bd,An],Xn,od)
+            uint32_t intermediate = memory_read_uint32(base + (uint32_t)bd);
+            int32_t od = 0;
+            if (iis == 6) {
+                od = (int32_t)(int16_t)memory_read_uint16(pos);
+                pos += 2;
+            } else if (iis == 7) {
+                od = (int32_t)memory_read_uint32(pos);
+                pos += 4;
+            }
+            result = intermediate + index + (uint32_t)od;
+        } else {
+            // iis=4 (reserved): treat as no-memory-indirect
+            result = base + index + (uint32_t)bd;
+        }
+    }
+    // Commit the new PC only if the caller wants increment
+    if (increment)
+        cpu->pc = pos;
+    return result;
 }
 
 // Calculate the effective address for an operand based on mode and register
@@ -134,9 +232,14 @@ static inline uint32_t calculate_ea(cpu_t *restrict cpu, int size, int mode, int
         int16_t disp = fetch_16(cpu, increment);
         return cpu->a[reg] + (int32_t)disp;
     }
-    case 6: // (d8,An,Xn)
+    case 6: // (d8,An,Xn) or 68020+ full extension word
     {
         uint16_t ext = fetch_16(cpu, increment);
+        if ((ext & 0x0100) && cpu->cpu_model >= CPU_MODEL_68030) {
+            // Full extension word (bit 8 = 1): 68020+ complex addressing
+            return calculate_ea_full(cpu, ext, cpu->a[reg], increment);
+        }
+        // Brief extension word: (d8,An,Xn) with optional scale on 68020+
         int32_t disp = (int32_t)(int8_t)(ext & 0xFF);
         return cpu->a[reg] + disp + ea_index_value(cpu, ext);
     }
@@ -152,10 +255,15 @@ static inline uint32_t calculate_ea(cpu_t *restrict cpu, int size, int mode, int
             int16_t disp = fetch_16(cpu, increment);
             return pc + (int32_t)disp;
         }
-        case 3: // (d8,PC,Xn)
+        case 3: // (d8,PC,Xn) or 68020+ full extension word
         {
             uint32_t pc = cpu->pc;
             uint16_t ext = fetch_16(cpu, increment);
+            if ((ext & 0x0100) && cpu->cpu_model >= CPU_MODEL_68030) {
+                // Full extension word (bit 8 = 1): 68020+ PC-relative complex addressing
+                return calculate_ea_full(cpu, ext, pc, increment);
+            }
+            // Brief extension word: (d8,PC,Xn) with optional scale on 68020+
             int32_t disp = (int32_t)(int8_t)(ext & 0xFF);
             return pc + disp + ea_index_value(cpu, ext);
         }
@@ -167,7 +275,7 @@ static inline uint32_t calculate_ea(cpu_t *restrict cpu, int size, int mode, int
             return ea;
         }
         default:
-            assert(0);
+            // Invalid EA mode 7 register (5-7): cannot occur in valid code
             return 0;
         }
     default:
@@ -274,14 +382,19 @@ static inline void movem_from_register(cpu_t *restrict cpu, uint16_t opcode, int
 
     if ((opcode & 0x38) == 0x20) // predecrement mode: -(An)
     {
-        uint32_t addr = cpu->a[opcode & 7];
+        int an = opcode & 7; // base address register number
+        uint32_t addr = cpu->a[an];
         for (i = 0; i < 8; i++)
             if (register_mask & (1 << i)) {
                 addr -= step;
+                // 68030 stores An-step when An is the predecrement base register
+                uint32_t val = cpu->a[7 - i];
+                if (cpu->cpu_model >= CPU_MODEL_68030 && (7 - i) == an)
+                    val -= step;
                 if (bits == 16)
-                    memory_write_uint16(addr, cpu->a[7 - i]);
+                    memory_write_uint16(addr, val);
                 else
-                    memory_write_uint32(addr, cpu->a[7 - i]);
+                    memory_write_uint32(addr, val);
             }
         for (i = 0; i < 8; i++)
             if (register_mask & (0x100 << i)) {
@@ -291,7 +404,7 @@ static inline void movem_from_register(cpu_t *restrict cpu, uint16_t opcode, int
                 else
                     memory_write_uint32(addr, cpu->d[7 - i]);
             }
-        cpu->a[opcode & 7] = addr;
+        cpu->a[an] = addr;
     } else {
         uint32_t ea = calculate_ea(cpu, 4, opcode >> 3 & 7, opcode & 7, true);
         for (i = 0; i < 8; i++)
@@ -320,7 +433,8 @@ static inline uint8_t abcd(cpu_t *restrict cpu, uint8_t xx, uint8_t yy) {
     uint8_t bc = (xx & yy) | ((xx | yy) & ~ss);
     uint8_t corr = (bc | dc) & 0x88;
     uint8_t rr = ss + corr - (corr >> 2);
-    cpu->overflow = ~ss & rr & 0x80;
+    // V is "undefined" per PRM; 68030+ clears it, 68000 computes from result (Spritesmind formula)
+    cpu->overflow = (cpu->cpu_model >= CPU_MODEL_68030) ? 0 : (~ss & rr & 0x80);
     cpu->extend = cpu->carry = (bc | (ss & ~rr)) & 0x80;
     cpu->negative = rr & 0x80;
     cpu->zero &= rr == 0;
@@ -332,7 +446,8 @@ static inline uint8_t sbcd(cpu_t *restrict cpu, uint8_t xx, uint8_t yy) {
     uint8_t dd = xx - yy - !!cpu->extend;
     uint8_t bc = ((~xx & yy) | ((~xx | yy) & dd)) & 0x88;
     uint8_t rr = dd - bc + (bc >> 2);
-    cpu->overflow = dd & ~rr & 0x80;
+    // V is "undefined" per PRM; 68030+ clears it, 68000 computes from result (Spritesmind formula)
+    cpu->overflow = (cpu->cpu_model >= CPU_MODEL_68030) ? 0 : (dd & ~rr & 0x80);
     cpu->extend = cpu->carry = (bc | (~dd & rr)) & 0x80;
     cpu->negative = rr & 0x80;
     cpu->zero &= rr == 0;
@@ -382,7 +497,9 @@ static inline bool conditional_test(cpu_t *restrict cpu, uint8_t test) {
 }
 
 // Raise a CPU exception by pushing state and loading exception vector.
-// On 68030, pushes a Format $0 frame (adds format/vector word) and uses VBR.
+// On 68030, determines frame format from vector number: vectors 5 (divide by
+// zero), 6 (CHK/CHK2), 7 (TRAPV/TRAPcc), and 9 (trace) use Format $2 (adds
+// instruction address); all others use Format $0. Uses VBR on 68030.
 static inline void exception(cpu_t *restrict cpu, uint32_t vector, uint32_t pc, uint16_t sr) {
     if (!cpu->supervisor) {
         cpu->usp = cpu->a[7];
@@ -397,14 +514,30 @@ static inline void exception(cpu_t *restrict cpu, uint32_t vector, uint32_t pc, 
     }
 
     if (cpu->cpu_model == CPU_MODEL_68030) {
-        // 68030 Format $0 frame: format/vector word, then PC, then SR
+        // Determine frame format from exception vector number
+        uint32_t vec_num = vector / 4;
+        int format = 0;
+        // Vectors 5,6,7,9 use Format $2 on 68020+
+        if (vec_num == 5 || vec_num == 6 || vec_num == 7 || vec_num == 9) {
+            format = 2;
+        }
+
+        if (format == 2) {
+            // Format $2: push instruction address (4 bytes) before format word
+            cpu->a[7] -= 4;
+            memory_write_uint32(cpu->a[7], cpu->instruction_pc);
+        }
+
+        // Format/vector word with format code in upper nibble
         cpu->a[7] -= 2;
-        memory_write_uint16(cpu->a[7], (uint16_t)(vector & 0x0FFF)); // format $0
+        memory_write_uint16(cpu->a[7], (uint16_t)((format << 12) | (vector & 0x0FFF)));
         cpu->a[7] -= 4;
         memory_write_uint32(cpu->a[7], pc);
         cpu->a[7] -= 2;
         memory_write_uint16(cpu->a[7], sr);
         cpu->pc = memory_read_uint32(cpu->vbr + vector);
+        // Exception processing clears T1/T0 per M68000 PRM
+        cpu->trace = 0;
     } else {
         // 68000 frame: PC then SR (6 bytes, no format word)
         cpu->a[7] -= 4;
@@ -412,7 +545,65 @@ static inline void exception(cpu_t *restrict cpu, uint32_t vector, uint32_t pc, 
         cpu->a[7] -= 2;
         memory_write_uint16(cpu->a[7], sr);
         cpu->pc = memory_read_uint32(vector);
+        cpu->trace = 0;
     }
+}
+
+// Raise a 68030 bus error with Format $A stack frame (short bus cycle fault).
+// Called when a deferred bus error is detected after instruction completion.
+// Since this is deferred (instruction already completed), saved_pc points to the
+// NEXT instruction so the handler's RTE skips the faulting instruction.
+static __attribute__((noinline, cold)) void exception_bus_error(cpu_t *restrict cpu, uint32_t fault_addr, uint32_t rw) {
+    uint16_t saved_sr = cpu_get_sr(cpu);
+    // Use cpu->pc (next instruction) since the faulting instruction already completed
+    uint32_t saved_pc = cpu->pc;
+
+    // Switch to supervisor mode / ISP
+    if (!cpu->supervisor) {
+        cpu->usp = cpu->a[7];
+        cpu->a[7] = (cpu->m && cpu->cpu_model == CPU_MODEL_68030) ? cpu->msp : cpu->ssp;
+        cpu->supervisor = 1;
+        cpu->m = 0;
+    } else if (cpu->m && cpu->cpu_model == CPU_MODEL_68030) {
+        cpu->msp = cpu->a[7];
+        cpu->a[7] = cpu->ssp;
+        cpu->m = 0;
+    }
+
+    // Push 68030 Format $B (long bus cycle fault) frame: 46 words = 92 bytes.
+    // MC68030 SSW layout (bits 15-0):
+    //   15: FC  (stage C pipe fault)
+    //   14: FB  (stage B pipe fault)
+    //   13: RC  (rerun stage C)
+    //   12: RB  (rerun stage B)
+    //   11-9: reserved
+    //   8:  DF  (data fault — 1 when fault is on data cycle)
+    //   7:  RM  (read-modify-write on data cycle)
+    //   6:  RW  (1=read, 0=write)
+    //   5-4: SIZ (size: 00=long, 01=byte, 10=word, 11=line)
+    //   3-0: function code of faulting data cycle
+    uint16_t fc = (saved_sr & 0x2000) ? 5 : 1; // FC from original S bit: supervisor data=5, user data=1
+    uint16_t ssw = (1 << 8) // DF: data cycle fault
+                   | ((rw ? 1 : 0) << 6) // RW: 1=read, 0=write
+                   | (0x01 << 4) // SIZ: 01=byte
+                   | (fc & 0x7); // function code in lower bits
+
+    // Allocate full 92-byte frame and zero internal fields
+    cpu->a[7] -= 92;
+    uint32_t frame = cpu->a[7];
+    // Zero the entire frame (internal registers are implementation-dependent)
+    for (int i = 0; i < 92; i += 4)
+        memory_write_uint32(frame + i, 0);
+    // Fill the defined fields
+    memory_write_uint16(frame + 0x00, saved_sr); // SR
+    memory_write_uint32(frame + 0x02, saved_pc); // PC
+    memory_write_uint16(frame + 0x06, 0xB008); // Format $B, vector $008 (bus error)
+    memory_write_uint16(frame + 0x0A, ssw); // Special Status Word
+    memory_write_uint32(frame + 0x10, fault_addr); // Data Cycle Fault Address
+
+    // Load bus error vector
+    cpu->pc = memory_read_uint32(cpu->vbr + 0x008);
+    cpu->trace = 0;
 }
 
 // Check if a pending interrupt should be serviced
@@ -425,11 +616,12 @@ static inline void cpu_check_interrupt(cpu_t *restrict cpu) {
 }
 
 // Update full status register including supervisor mode, M bit, and interrupt mask.
-// On 68030, handles ISP/MSP switching when M bit changes.
+// On 68030, handles ISP/MSP switching when M bit changes and updates SoA active pointers.
 static inline void write_sr(cpu_t *restrict cpu, uint16_t sr) {
     bool new_s = (sr >> 13) & 1;
 
     if (cpu->cpu_model == CPU_MODEL_68030) {
+        bool old_s = cpu->supervisor;
         bool new_m = (sr >> 12) & 1;
         if (cpu->supervisor) {
             // Save current A7 to the active supervisor stack register
@@ -455,6 +647,11 @@ static inline void write_sr(cpu_t *restrict cpu, uint16_t sr) {
         }
         cpu->m = new_m;
         cpu->trace = ((sr >> 14) & 3); // T1 in bit 1, T0 in bit 0
+        // Switch SoA active pointers when supervisor bit changes
+        if ((bool)new_s != old_s) {
+            g_active_read = new_s ? g_supervisor_read : g_user_read;
+            g_active_write = new_s ? g_supervisor_write : g_user_write;
+        }
     } else {
         // 68000: no M bit, no T0
         if (new_s && !cpu->supervisor) {
@@ -495,8 +692,59 @@ static inline void a_trap(cpu_t *restrict cpu) {
 static inline void f_trap(cpu_t *restrict cpu) {
     exception(cpu, 0x2C, cpu->pc - 2, cpu_get_sr(cpu));
 }
+
+// Advance cpu->pc past EA extension words (68030 exception path only).
+// Called when an invalid EA mode is detected, to ensure the exception PC
+// reflects the words that real hardware would have prefetched.
+// op_size is the operand size in bytes (only needed for #imm; 0 = default word).
+static inline void skip_ea_extension_words(cpu_t *restrict cpu, int mode, int reg, int op_size) {
+    if (mode == 5 || (mode == 7 && reg == 2)) {
+        // (d16,An) or (d16,PC): word displacement
+        cpu->pc += 2;
+    } else if (mode == 6 || (mode == 7 && reg == 3)) {
+        // (d8,An,Xn) or (d8,PC,Xn): brief or full extension word
+        uint16_t ext = memory_read_uint16(cpu->pc);
+        cpu->pc += 2;
+        if (ext & 0x0100) {
+            // Full extension word — skip base and outer displacements
+            int bd_size = (ext >> 4) & 3;
+            if (bd_size == 2)
+                cpu->pc += 2; // word BD
+            else if (bd_size == 3)
+                cpu->pc += 4; // long BD
+            int iis = ext & 7;
+            if (!(ext & 0x0040)) {
+                // Index not suppressed
+                if (iis == 2 || iis == 6)
+                    cpu->pc += 2; // word OD
+                else if (iis == 3 || iis == 7)
+                    cpu->pc += 4; // long OD
+            } else {
+                // Index suppressed
+                if (iis == 2)
+                    cpu->pc += 2; // word OD
+                else if (iis == 3)
+                    cpu->pc += 4; // long OD
+            }
+        }
+    } else if (mode == 7 && reg == 0) {
+        // (xxx).W: word absolute address
+        cpu->pc += 2;
+    } else if (mode == 7 && reg == 1) {
+        // (xxx).L: long absolute address
+        cpu->pc += 4;
+    } else if (mode == 7 && reg == 4) {
+        // #imm: byte/word = 1 word, long = 2 words
+        cpu->pc += (op_size <= 2) ? 2 : 4;
+    }
+    // Modes 0-4 (Dn, An, (An), (An)+, -(An)): no extension words
+}
+
+// Raise illegal instruction exception (vector 4).
+// Stacked PC points to the first word of the illegal instruction (per M68000 PRM).
 static inline void illegal_instruction(cpu_t *restrict cpu) {
-    exception(cpu, 0x010, cpu->pc - 2, cpu_get_sr(cpu));
+    uint32_t pc = (cpu->cpu_model >= CPU_MODEL_68030) ? cpu->instruction_pc : (cpu->pc - 2);
+    exception(cpu, 0x010, pc, cpu_get_sr(cpu));
 }
 
 #endif // CPU_INTERNAL_H

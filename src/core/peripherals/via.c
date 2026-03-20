@@ -126,8 +126,9 @@ static void update_ifr(via_t *restrict via, uint8_t new_ifr) {
     // bit seven is the aggregate of all enabled bits
     new_ifr = new_ifr & 0x7F & via->ier ? new_ifr | 0x80 : new_ifr & 0x7F;
 
-    if ((via->ifr ^ new_ifr) & 0x80)
+    if ((via->ifr ^ new_ifr) & 0x80) {
         via->irq_cb(via->cb_context, new_ifr >> 7 & 1);
+    }
 
     via->ifr = new_ifr;
 }
@@ -178,12 +179,16 @@ static void sr_shift_complete_callback(void *source, uint64_t data) {
 
     via->sr_shift_pending = false;
 
-    LOG(2, "sr_shift_complete_callback: shift out complete, delivering byte 0x%02x", via->sr_shift_data);
-
     // Deliver the byte via the per-instance shift-out callback
     via->shift_cb(via->cb_context, via->sr_shift_data);
 
-    // Set the SR interrupt flag
+    // Signal shift completion to the ROM.  On the Mac Plus the ROM relies
+    // on IFR_SR from this callback (the 80-cycle timer IS the shift
+    // completion source) to know the command byte has been sent before
+    // switching to mode 3 for the keyboard response.  On the SE/30 the
+    // ADB module cancels this callback via via_cancel_pending_shift()
+    // before it fires, so IFR_SR is only set by the ADB transceiver's own
+    // timing (via_input_sr) and no spurious interrupt occurs.
     update_ifr(via, via->ifr | IFR_SR);
 }
 
@@ -312,9 +317,8 @@ static uint8_t via_read_uint8(void *v, uint32_t addr) {
         break;
 
     case ORA_IRA:
-        // Read Port A without clearing interrupt flags (no handshake side effects)
-        ret = (via->ports[PORT_A].output & via->ports[PORT_A].direction) |
-              (via->ports[PORT_A].input & ~via->ports[PORT_A].direction);
+        // Register 1: Read Port A WITH handshake — clears CA1/CA2 interrupt flags
+        ret = read_port(via, PORT_A);
         break;
 
     case DDRB:
@@ -379,7 +383,9 @@ static uint8_t via_read_uint8(void *v, uint32_t addr) {
         break;
 
     case ORA:
-        ret = read_port(via, PORT_A);
+        // Register 15: Read Port A WITHOUT handshake — no flag clearing
+        ret = (via->ports[PORT_A].output & via->ports[PORT_A].direction) |
+              (via->ports[PORT_A].input & ~via->ports[PORT_A].direction);
         break;
     default:
         GS_ASSERT(0);
@@ -467,13 +473,14 @@ static void via_write_uint8(void *v, uint32_t addr, uint8_t value) {
         via->sr = value;
         update_ifr(via, via->ifr & ~IFR_SR);
         if (via->acr & 0x10) { // shift out (bit 4 set means output mode)
-            LOG(2, "via SR write: value=0x%02x (shift out to keyboard, mode=%u)", value, (via->acr >> 2) & 7);
+            LOG(2, "via SR write: value=0x%02x (shift out, mode=%u)", value, (via->acr >> 2) & 7);
             // Store data and mark shift as pending - don't deliver until complete
             via->sr_shift_data = value;
             via->sr_shift_pending = true;
             // Cancel any existing shift event and schedule new one
             remove_event(via->scheduler, &sr_shift_complete_callback, via);
-            // Schedule completion after 8 clock cycles (8 VIA cycles = 8 * FREQ_FACTOR CPU cycles)
+            // 8 VIA clock cycles (= 80 CPU cycles) for internal clock modes;
+            // external-clock modes complete when the device drives CB1.
             scheduler_new_cpu_event(via->scheduler, &sr_shift_complete_callback, via, 0, 8 * FREQ_FACTOR, 0);
         } else {
             LOG(3, "via SR write: value=0x%02x (shift in mode, not sent)", value);
@@ -504,17 +511,25 @@ static void via_write_uint8(void *v, uint32_t addr, uint8_t value) {
         update_ifr(via, via->ifr & ~value & 0x7f);
         break;
 
-    case IER:
+    case IER: {
         // if bit 7 is 0 - 1s will clear bits
         // if bit 7 is 1 - 1s will set bits
         via->ier = value & 0x80 ? via->ier | value : via->ier & ~value;
         update_ifr(via, via->ifr);
         break;
+    }
 
-    case ORA:
+    case ORA_IRA:
+        // Register 1: Write Port A WITH handshake — clears CA1/CA2 interrupt flags
         via->ports[PORT_A].output = value;
         via->output_cb(via->cb_context, 0, via->ports[PORT_A].output & via->ports[PORT_A].direction);
         update_ifr(via, via->ifr & ~(IFR_CA1 | IFR_CA2));
+        break;
+
+    case ORA:
+        // Register 15: Write Port A WITHOUT handshake — no flag clearing
+        via->ports[PORT_A].output = value;
+        via->output_cb(via->cb_context, 0, via->ports[PORT_A].output & via->ports[PORT_A].direction);
         break;
 
     default:
@@ -591,7 +606,9 @@ via_t *via_init(memory_map_t *restrict map, struct scheduler *scheduler, via_out
     scheduler_new_event_type(scheduler, "via", via, "t2", &t2_callback);
     scheduler_new_event_type(scheduler, "via", via, "sr", &sr_shift_complete_callback);
 
-    memory_map_add(map, 0x00E80000, 0x00080000, "via", &via->memory_interface, via);
+    // Register with memory map if provided (NULL = machine handles registration)
+    if (map)
+        memory_map_add(map, 0x00E80000, 0x00080000, "via", &via->memory_interface, via);
 
     // Load from checkpoint if provided
     if (checkpoint) {
@@ -609,6 +626,15 @@ via_t *via_init(memory_map_t *restrict map, struct scheduler *scheduler, via_out
     }
 
     return via;
+}
+
+// ============================================================================
+// Accessors
+// ============================================================================
+
+// Return the VIA's memory-mapped I/O interface for machine-level address decode
+const memory_interface_t *via_get_memory_interface(via_t *via) {
+    return &via->memory_interface;
 }
 
 // ============================================================================
@@ -649,6 +675,21 @@ void via_redrive_outputs(via_t *via) {
     via->output_cb(via->cb_context, PORT_B, via->ports[PORT_B].output & via->ports[PORT_B].direction);
 }
 
+// Read the current shift register value
+uint8_t via_read_sr(via_t *via) {
+    return via->sr;
+}
+
+// Cancel any pending shift-out completion callback and clear the pending flag.
+// Called by the ADB module when it reads VIA SR directly at CMD/Listen
+// transitions, so the generic 80-cycle timer does not fire a spurious IFR_SR.
+void via_cancel_pending_shift(via_t *via) {
+    if (via->sr_shift_pending) {
+        via->sr_shift_pending = false;
+        remove_event(via->scheduler, &sr_shift_complete_callback, via);
+    }
+}
+
 // Set an input pin value on a VIA port
 void via_input(via_t *restrict via, int port, int pin, bool value) {
     GS_ASSERT(port < 2);
@@ -660,61 +701,88 @@ void via_input(via_t *restrict via, int port, int pin, bool value) {
         via->ports[port].input &= ~(1 << pin);
 }
 
-// Shift a byte into the VIA shift register (keyboard input)
+// Shift a byte into the VIA shift register, or signal shift-out completion.
+// Called by external devices (keyboard, ADB transceiver) to deliver a byte
+// (mode 3: shift-in under external clock) or to signal that the external
+// device has finished clocking all 8 bits of a shift-out (mode 7: shift-out
+// under external clock).  On real 6522 hardware, CB1 edges from the external
+// device set IFR_SR after 8 clocks regardless of shift direction.
 void via_input_sr(via_t *restrict via, uint8_t byte) {
-    if (via->acr & 0x10)
-        return; // if sr is in output mode...
+    uint8_t sr_mode = (via->acr >> 2) & 7;
 
-    // Check if VIA is configured for shift-in mode (external clock)
-    uint8_t sr_mode = (via->acr >> 2) & 3;
+    if (sr_mode == 7) {
+        // Mode 7: shift out under external clock.  The ADB transceiver (or
+        // other external device) has finished clocking all 8 bits via CB1.
+        // On real hardware this sets IFR_SR.  SR contents are unchanged
+        // (the shift-out byte was already delivered via sr_shift_complete_callback).
+        LOG(3, "via_input_sr: mode 7 -> setting IFR_SR (byte=0x%02x, sr=0x%02x)", byte, via->sr);
+        update_ifr(via, via->ifr | IFR_SR);
+        return;
+    }
+
+    if (via->acr & 0x10)
+        return; // modes 4-6: shift-out under internal clock — no external input
+
     if (sr_mode != 3) {
-        // VIA not yet configured for keyboard input - silently drop the byte
-        // This can happen during early boot or after reset before OS configures VIA
+        // VIA not configured for external-clock shift-in — silently drop the byte.
+        // This can happen during early boot or after reset before OS configures VIA.
         LOG(1, "via_input_sr: dropping byte 0x%02x - VIA SR not configured (mode=%u, ACR=0x%02x, expected mode 3)",
             byte, sr_mode, via->acr);
         return;
     }
 
+    // Mode 3: shift-in under external clock — store byte and flag interrupt
     via->sr = byte;
-
-    // we received data - flag the interrupt
     update_ifr(via, via->ifr | IFR_SR);
 }
 
 // Set control line input value (CA1, CA2, CB1, CB2)
 void via_input_c(via_t *restrict via, int port, int c, bool value) {
-    GS_ASSERT(port == 0); // no input for port B for now
+    GS_ASSERT(port == 0 || port == 1);
     GS_ASSERT(c == 0 || c == 1);
 
-    unsigned int old = via->ports[0].ctrl[c];
-    via->ports[0].ctrl[c] = value;
-
-    if (c == 0) {
+    if (port == 0 && c == 0) {
         // CA1 interrupt on active edge (PCR bit 0: 0=negative, 1=positive)
-        bool ca1_pos_edge = via->pcr & 0x01;
-        bool active_transition = ca1_pos_edge ? (!old && value) : (old && !value);
-
-        if (active_transition) {
+        unsigned int old = via->ports[0].ctrl[0];
+        via->ports[0].ctrl[0] = value;
+        bool pos_edge = via->pcr & 0x01;
+        bool active = pos_edge ? (!old && value) : (old && !value);
+        if (active)
             update_ifr(via, via->ifr | IFR_CA1);
-        }
-    } else {
+
+    } else if (port == 0 && c == 1) {
         // CA2 control mode (PCR bits 1-3)
-        uint8_t ca2_mode = (via->pcr >> 1) & 0x07;
-
-        // CA2 modes:
-        // 0-3: Input modes
-        //   bit 2 (0x04): 0=negative edge, 1=positive edge
-        // 4-7: Output modes (not handled here)
-
-        if (ca2_mode < 4) {
-            // Input mode - set CA2 interrupt flag on active edge
-            bool ca2_pos_edge = ca2_mode & 0x04;
-            bool active_transition = ca2_pos_edge ? (!old && value) : (old && !value);
-
-            if (active_transition) {
+        unsigned int old = via->ports[0].ctrl[1];
+        via->ports[0].ctrl[1] = value;
+        uint8_t mode = (via->pcr >> 1) & 0x07;
+        // Modes 0-3 are input; bit 2 selects positive edge
+        if (mode < 4) {
+            bool pos_edge = mode & 0x04;
+            bool active = pos_edge ? (!old && value) : (old && !value);
+            if (active)
                 update_ifr(via, via->ifr | IFR_CA2);
-            }
         }
-        // Output modes don't respond to input transitions
+
+    } else if (port == 1 && c == 0) {
+        // CB1 interrupt on active edge (PCR bit 4: 0=negative, 1=positive)
+        unsigned int old = via->ports[1].ctrl[0];
+        via->ports[1].ctrl[0] = value;
+        bool pos_edge = via->pcr & 0x10;
+        bool active = pos_edge ? (!old && value) : (old && !value);
+        if (active)
+            update_ifr(via, via->ifr | IFR_CB1);
+
+    } else {
+        // CB2 control mode (PCR bits 5-7)
+        unsigned int old = via->ports[1].ctrl[1];
+        via->ports[1].ctrl[1] = value;
+        uint8_t mode = (via->pcr >> 5) & 0x07;
+        // Modes 0-3 are input; bit 2 selects positive edge
+        if (mode < 4) {
+            bool pos_edge = mode & 0x04;
+            bool active = pos_edge ? (!old && value) : (old && !value);
+            if (active)
+                update_ifr(via, via->ifr | IFR_CB2);
+        }
     }
 }

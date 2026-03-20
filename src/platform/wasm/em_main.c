@@ -56,6 +56,11 @@
 
 static void em_assertion_callback(const char *expr, const char *file, int line, const char *func);
 
+// Deferred speed mode: saved at parse time, applied in system_post_create()
+// when the machine (and scheduler) are created later via load-rom.
+static enum schedule_mode g_deferred_speed = schedule_real_time;
+static bool g_deferred_speed_set = false;
+
 // ============================================================================
 // Pointer-lock and Input Handling
 // ============================================================================
@@ -1350,29 +1355,47 @@ int main(int argc, char *argv[]) {
 
     shell_init();
     setup_init();
-    global_emulator = system_create(&machine_plus, NULL); // NULL = cold boot, not from checkpoint
 
-    // Apply scheduler speed mode if provided
-    scheduler_t *sched = system_scheduler();
-    if (speed_mode && sched) {
-        if (strcmp(speed_mode, "max") == 0) {
-            scheduler_set_mode(sched, schedule_max_speed);
-            printf("[C] Scheduler mode set via --speed=max\n");
-        } else if (strcmp(speed_mode, "realtime") == 0 || strcmp(speed_mode, "real") == 0) {
-            scheduler_set_mode(sched, schedule_real_time);
-            printf("[C] Scheduler mode set via --speed=realtime\n");
-        } else if (strcmp(speed_mode, "hardware") == 0 || strcmp(speed_mode, "hw") == 0 ||
-                   strcmp(speed_mode, "accuracy") == 0) {
-            scheduler_set_mode(sched, schedule_hw_accuracy);
-            printf("[C] Scheduler mode set via --speed=hardware\n");
+    // Deferred machine instantiation: global_emulator stays NULL until a ROM
+    // is loaded via the `load-rom` command, which identifies the machine type
+    // and creates it automatically.  If --model was provided, create it now
+    // for backward compatibility.
+    if (model) {
+        const hw_profile_t *profile = machine_find(model);
+        if (profile) {
+            global_emulator = system_create(profile, NULL);
+            printf("%s (%u KB RAM)\n", profile->model_name, profile->ram_size_default / 1024);
         } else {
-            printf("[C] Unknown --speed mode '%s' (valid: max|realtime|hardware)\n", speed_mode);
+            printf("Unknown model: %s\n", model);
         }
     }
 
-    printf("Macintosh Plus (4 MB RAM, 7.8 MHz)\n");
+    // Parse and save speed mode for deferred application.
+    // When the machine already exists (--model was given), apply immediately.
+    // Otherwise, system_post_create() will apply it when load-rom creates the machine.
+    if (speed_mode) {
+        if (strcmp(speed_mode, "max") == 0) {
+            g_deferred_speed = schedule_max_speed;
+            g_deferred_speed_set = true;
+        } else if (strcmp(speed_mode, "realtime") == 0 || strcmp(speed_mode, "real") == 0) {
+            g_deferred_speed = schedule_real_time;
+            g_deferred_speed_set = true;
+        } else if (strcmp(speed_mode, "hardware") == 0 || strcmp(speed_mode, "hw") == 0 ||
+                   strcmp(speed_mode, "accuracy") == 0) {
+            g_deferred_speed = schedule_hw_accuracy;
+            g_deferred_speed_set = true;
+        } else {
+            printf("[C] Unknown --speed mode '%s' (valid: max|realtime|hardware)\n", speed_mode);
+        }
 
-    // Initialize subsystems
+        scheduler_t *sched = system_scheduler();
+        if (sched && g_deferred_speed_set) {
+            scheduler_set_mode(sched, g_deferred_speed);
+            printf("[C] Scheduler mode set via --speed=%s\n", speed_mode);
+        }
+    }
+
+    // Initialize subsystems (safe without a machine — video and audio handle NULL)
     em_video_init();
     em_audio_init();
     setup_pointer_lock();
@@ -1389,11 +1412,8 @@ int main(int argc, char *argv[]) {
 
     install_background_checkpoint_handlers();
 
-    // Register platform-specific assertion callback
-    debug_t *debug = system_debug();
-    if (debug) {
-        debug->assertion_callback = em_assertion_callback;
-    }
+    // Assertion callback is installed automatically by system_post_create()
+    // whenever a machine is created (either here via --model or later via load-rom).
 
     emscripten_set_main_loop(tick, 0, 1); // Use RAF, simulate infinite loop
     return 0;
@@ -1436,6 +1456,36 @@ EM_JS(void, js_notify_assertion_failure, (const char *expr, const char *file, in
 // Platform-specific assertion callback implementation
 static void em_assertion_callback(const char *expr, const char *file, int line, const char *func) {
     js_notify_assertion_failure(expr, file, line, func);
+}
+
+// Platform hook: install assertion callback and apply deferred speed mode
+// after each system_create (including deferred creation via load-rom).
+void system_post_create(config_t *cfg) {
+    debug_t *debug = system_debug();
+    if (debug) {
+        debug->assertion_callback = em_assertion_callback;
+    }
+
+    // Apply deferred speed mode from --speed flag parsed at startup
+    if (g_deferred_speed_set) {
+        scheduler_t *sched = system_scheduler();
+        if (sched) {
+            scheduler_set_mode(sched, g_deferred_speed);
+            const char *name = "unknown";
+            switch (g_deferred_speed) {
+            case schedule_max_speed:
+                name = "max";
+                break;
+            case schedule_real_time:
+                name = "realtime";
+                break;
+            case schedule_hw_accuracy:
+                name = "hardware";
+                break;
+            }
+            printf("[C] Deferred scheduler mode applied: --speed=%s\n", name);
+        }
+    }
 }
 
 // ============================================================================

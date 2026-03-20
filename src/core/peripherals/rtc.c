@@ -158,14 +158,17 @@ static void write_cmd(rtc_t *rtc, uint8_t cmd, uint8_t pram) {
         // Pattern for addresses 0x10-0x13: z010aa01 where aa are address bits
         // Fixed bits: 6=0, 5=1, 4=0. Bit 3 is an address bit, not checked.
         // Mask: 0x70 (0111 0000) checks only bits 6-5-4
-        if ((cmd & 0x70) == 0x20)
-            rtc->pram[0x10 + ((cmd >> 2) & 0x03)] = pram;
+        if ((cmd & 0x70) == 0x20) {
+            uint8_t wa = 0x10 + ((cmd >> 2) & 0x03);
+            rtc->pram[wa] = pram;
+        }
         // Pattern for addresses 0x00-0x0F: z1aaaa01 where aaaa are address bits
         // Fixed bit: 6=1. Bits 5-2 are address bits, not checked.
         // Mask: 0x40 (0100 0000) checks only bit 6
-        else if ((cmd & 0x40) == 0x40)
-            rtc->pram[(cmd >> 2) & 0x0F] = pram;
-        else
+        else if ((cmd & 0x40) == 0x40) {
+            uint8_t wa = (cmd >> 2) & 0x0F;
+            rtc->pram[wa] = pram;
+        } else
             LOG(1, "Unknown write command: 0x%02X data=0x%02X", cmd, pram);
     }
 
@@ -181,6 +184,7 @@ static uint8_t read_ext(rtc_t *rtc, uint8_t cmd1, uint8_t cmd2) {
     uint8_t address = addr_high | addr_low;
 
     LOG(3, "Extended read: cmd1=0x%02X cmd2=0x%02X addr=0x%02X", cmd1, cmd2, address);
+    LOG(1, "Extended PRAM read: addr=0x%02X value=0x%02X", address, rtc->pram[address]);
     return rtc->pram[address];
 }
 

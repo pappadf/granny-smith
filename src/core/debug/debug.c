@@ -15,6 +15,7 @@
 #include "debug_mac.h"
 #include "log.h"
 #include "memory.h"
+#include "mmu.h"
 #include "scheduler.h"
 #include "shell.h"
 #include "system.h"
@@ -799,8 +800,6 @@ static uint64_t cmd_td(int argc, char *argv[]) {
 }
 
 static uint64_t cmd_step(int argc, char *argv[]) {
-    printf("cmd_step called with %d args\n", argc);
-
     if (argc > 2) {
         printf("Usage: s [n instructions]\n");
         return 0;
@@ -1075,6 +1074,25 @@ static uint64_t cmd_get(int argc, char *argv[]) {
         value = cpu_instr_count();
         printf("Instruction count = %llu\n", (unsigned long long)value);
         return value;
+    }
+
+    // MMU register dump
+    if (strcmp(target, "MMU") == 0) {
+        if (g_mmu) {
+            printf("MMU enabled=%d\n", g_mmu->enabled);
+            printf("TC  = 0x%08X  (E=%u SRE=%u IS=%u TIA=%u TIB=%u TIC=%u TID=%u)\n", g_mmu->tc, TC_ENABLE(g_mmu->tc),
+                   TC_SRE(g_mmu->tc), TC_IS(g_mmu->tc), TC_TIA(g_mmu->tc), TC_TIB(g_mmu->tc), TC_TIC(g_mmu->tc),
+                   TC_TID(g_mmu->tc));
+            printf("CRP = 0x%08X_%08X\n", (uint32_t)(g_mmu->crp >> 32), (uint32_t)(g_mmu->crp & 0xFFFFFFFF));
+            printf("SRP = 0x%08X_%08X\n", (uint32_t)(g_mmu->srp >> 32), (uint32_t)(g_mmu->srp & 0xFFFFFFFF));
+            printf("TT0 = 0x%08X  (E=%u base=0x%02X mask=0x%02X)\n", g_mmu->tt0, TT_ENABLE(g_mmu->tt0),
+                   TT_BASE(g_mmu->tt0), TT_MASK(g_mmu->tt0));
+            printf("TT1 = 0x%08X  (E=%u base=0x%02X mask=0x%02X)\n", g_mmu->tt1, TT_ENABLE(g_mmu->tt1),
+                   TT_BASE(g_mmu->tt1), TT_MASK(g_mmu->tt1));
+        } else {
+            printf("MMU not present\n");
+        }
+        return 0;
     }
 
     // Data registers (D0-D7)

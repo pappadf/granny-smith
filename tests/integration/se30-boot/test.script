@@ -1,0 +1,9 @@
+# Integration test: SE/30 Boot
+# Boots SE/30 to the floppy icon screen and verifies the display.
+
+# Run 100M more instructions to reach the floppy icon screen
+run 110000000
+
+# Verify the screen matches the floppy icon reference image
+screenshot --match floppy.png
+quit

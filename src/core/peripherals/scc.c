@@ -536,6 +536,9 @@ static void wr8(ch_t *c, uint8_t value) {
 
     // let's simplify - tx buffer immediately empty
     c->rr[0] |= RR0_TX_BUFFER_EMPTY;
+
+    // simplified model: character transmitted instantly, shift register idle
+    c->rr[1] |= 0x01; // RR1 bit 0 = All Sent
     LOG(4, "wr8 ch=%d value=0x%02X, wr1=0x%02X (TX int enable=%d), wr14=0x%02X (loopback=%d)", c->index, value,
         c->wr[1], !!(c->wr[1] & 0x02), c->wr[14], !!(c->wr[14] & 0x10));
 
@@ -868,6 +871,9 @@ static void reset_ch(scc_t *restrict scc, int ch) {
 
     // the transmit buffer is empty upon reset
     scc->ch[ch].rr[0] |= RR0_TX_BUFFER_EMPTY;
+
+    // shift register empty on reset — All Sent = 1 (Z8530 spec)
+    scc->ch[ch].rr[1] = 0x01;
 }
 
 void scc_reset(scc_t *restrict scc) {
@@ -898,7 +904,9 @@ scc_t *scc_init(memory_map_t *map, struct scheduler *scheduler, scc_irq_fn irq_c
     scc->memory_interface.write_uint16 = &scc_write_uint16;
     scc->memory_interface.write_uint32 = &scc_write_uint32;
 
-    memory_map_add(map, 0x00800000, 0x00400000, "SCC", &scc->memory_interface, scc);
+    // Register with memory map if provided (NULL = machine handles registration)
+    if (map)
+        memory_map_add(map, 0x00800000, 0x00400000, "SCC", &scc->memory_interface, scc);
 
     scc_reset(scc);
 
@@ -925,6 +933,11 @@ scc_t *scc_init(memory_map_t *map, struct scheduler *scheduler, scc_irq_fn irq_c
     }
 
     return scc;
+}
+
+// Return the SCC memory-mapped I/O interface for machine-level address decode
+const memory_interface_t *scc_get_memory_interface(scc_t *scc) {
+    return &scc->memory_interface;
 }
 
 void scc_delete(scc_t *scc) {

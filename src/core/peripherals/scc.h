@@ -47,4 +47,7 @@ void scc_dcd(scc_t *restrict scc, unsigned int ch, unsigned int dcd);
 
 int scc_sdlc_send(scc_t *restrict scc, uint8_t *buf, size_t len);
 
+// Get the memory-mapped I/O interface for machine-level address decode
+const memory_interface_t *scc_get_memory_interface(scc_t *scc);
+
 #endif // SCC_H

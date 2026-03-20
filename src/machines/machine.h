@@ -59,8 +59,9 @@ const hw_profile_t *machine_find(const char *model_id);
 // Registry: register a machine profile
 void machine_register(const hw_profile_t *profile);
 
-// Built-in machine profiles (defined in plus.c, iicx.c, etc.)
+// Built-in machine profiles (defined in plus.c, iicx.c, se30.c, etc.)
 extern const hw_profile_t machine_plus;
+extern const hw_profile_t machine_se30;
 // extern const hw_profile_t machine_iicx;  // TODO: IIcx stub
 
 #endif // MACHINE_H

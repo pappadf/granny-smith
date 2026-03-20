@@ -272,7 +272,7 @@ static bool init_test_memory(void) {
         return false;
     }
 
-    // Update the page table to point to our test buffer for all pages
+    // Update the page table and SoA arrays to point to our test buffer for all pages
     // This makes the full 24-bit address space accessible
     if (g_page_table) {
         for (int p = 0; p < (TEST_MEM_SIZE >> PAGE_SHIFT); p++) {
@@ -280,6 +280,16 @@ static bool init_test_memory(void) {
             g_page_table[p].dev = NULL;
             g_page_table[p].dev_context = NULL;
             g_page_table[p].writable = true;
+            // Update SoA fast-path arrays with adjusted base
+            uintptr_t adjusted = (uintptr_t)(test_memory_buffer + (p << PAGE_SHIFT)) - ((uint32_t)p << PAGE_SHIFT);
+            if (g_supervisor_read)
+                g_supervisor_read[p] = adjusted;
+            if (g_supervisor_write)
+                g_supervisor_write[p] = adjusted;
+            if (g_user_read)
+                g_user_read[p] = adjusted;
+            if (g_user_write)
+                g_user_write[p] = adjusted;
         }
     }
 

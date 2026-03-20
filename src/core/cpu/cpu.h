@@ -99,6 +99,8 @@ uint32_t cpu_get_pc(cpu_t *restrict cpu);
 
 uint32_t cpu_get_ssp(cpu_t *restrict cpu);
 
+uint32_t cpu_get_msp(cpu_t *restrict cpu);
+
 uint32_t cpu_get_usp(cpu_t *restrict cpu);
 
 uint16_t cpu_get_sr(cpu_t *restrict cpu);
@@ -111,6 +113,8 @@ void cpu_set_pc(cpu_t *restrict cpu, uint32_t value);
 
 void cpu_set_ssp(cpu_t *restrict cpu, uint32_t value);
 
+void cpu_set_msp(cpu_t *restrict cpu, uint32_t value);
+
 void cpu_set_usp(cpu_t *restrict cpu, uint32_t value);
 
 void cpu_set_sr(cpu_t *restrict cpu, uint16_t sr);
@@ -119,5 +123,10 @@ void cpu_set_sr(cpu_t *restrict cpu, uint16_t sr);
 uint32_t cpu_get_ipl(cpu_t *restrict cpu);
 
 void cpu_set_ipl(cpu_t *restrict cpu, uint32_t value);
+
+// Get/set vector base register (68010+)
+uint32_t cpu_get_vbr(cpu_t *restrict cpu);
+
+void cpu_set_vbr(cpu_t *restrict cpu, uint32_t value);
 
 #endif // CPU_H

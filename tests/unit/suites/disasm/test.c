@@ -1,8 +1,8 @@
 // Disassembler test - validates cpu_disasm() against a corpus of expected outputs.
 
 #include "cpu.h"
-#include "test_assert.h"
 #include "harness.h"
+#include "test_assert.h"
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -40,8 +40,10 @@ static int run_all(void) {
         if (!line[0])
             continue; // skip blank
         char *p = line;
-        while (*p == ' ' || *p == '\t') p++;
-        if (!*p) continue;
+        while (*p == ' ' || *p == '\t')
+            p++;
+        if (!*p)
+            continue;
 
         char *endp = NULL;
         long n_words_l = strtol(p, &endp, 10);
@@ -52,25 +54,45 @@ static int run_all(void) {
         }
         int n_words = (int)n_words_l;
         p = endp;
+// cpu_disasm may peek at extension words beyond what it claims to
+// consume, so unclaimed slots must use the same fill as gen.c used
+// when producing disasm.txt — otherwise edge-case opcodes diverge.
+#define DISASM_EXT_FILL 0x4E71
         uint16_t words[16];
-        memset(words, 0, sizeof(words));
+        for (int w = 0; w < 16; w++)
+            words[w] = DISASM_EXT_FILL;
         for (int i = 0; i < n_words; i++) {
-            while (*p == ' ' || *p == '\t') p++;
-            if (!*p) { fprintf(stderr, "[disasm] premature EOL l%d\n", line_no); fclose(f); return 0; }
+            while (*p == ' ' || *p == '\t')
+                p++;
+            if (!*p) {
+                fprintf(stderr, "[disasm] premature EOL l%d\n", line_no);
+                fclose(f);
+                return 0;
+            }
             char *wend = NULL;
             unsigned long wv = strtoul(p, &wend, 16);
-            if (p == wend || wv > 0xFFFFUL) { fprintf(stderr, "[disasm] bad word l%d\n", line_no); fclose(f); return 0; }
+            if (p == wend || wv > 0xFFFFUL) {
+                fprintf(stderr, "[disasm] bad word l%d\n", line_no);
+                fclose(f);
+                return 0;
+            }
             words[i] = (uint16_t)wv;
             p = wend;
         }
-        while (*p == ' ' || *p == '\t') p++;
-        if (!*p) { fprintf(stderr, "[disasm] missing asm l%d\n", line_no); fclose(f); return 0; }
+        while (*p == ' ' || *p == '\t')
+            p++;
+        if (!*p) {
+            fprintf(stderr, "[disasm] missing asm l%d\n", line_no);
+            fclose(f);
+            return 0;
+        }
         const char *expected = p;
         char got[512];
         memset(got, 0, sizeof(got));
         int used = cpu_disasm(words, got);
         if (used != n_words || strcmp(expected, got) != 0) {
-            fprintf(stderr, "[disasm] mismatch l%d n=%d used=%d\n  expected: %s\n  got     : %s\n", line_no, n_words, used, expected, got);
+            fprintf(stderr, "[disasm] mismatch l%d n=%d used=%d\n  expected: %s\n  got     : %s\n", line_no, n_words,
+                    used, expected, got);
             fclose(f);
             return 0;
         }
@@ -86,7 +108,9 @@ static int run_all(void) {
     return 1;
 }
 
-TEST(disasm_all) { ASSERT_TRUE(run_all()); }
+TEST(disasm_all) {
+    ASSERT_TRUE(run_all());
+}
 
 int main(void) {
     // Initialize test harness (creates CPU and memory for us)
@@ -95,9 +119,9 @@ int main(void) {
         fprintf(stderr, "Failed to initialize test harness\n");
         return 1;
     }
-    
+
     RUN(disasm_all);
-    
+
     test_harness_destroy(ctx);
     return 0;
 }

@@ -11,6 +11,7 @@
 #include "common.h"
 #include "image.h"
 #include "memory.h"
+#include "via.h"
 
 // === Type Definitions ===
 struct scsi;
@@ -27,5 +28,12 @@ void scsi_checkpoint(scsi_t *restrict scsi, checkpoint_t *checkpoint);
 // === Operations ===
 
 void scsi_add_device(scsi_t *restrict scsi, int scsi_id, const char *vendor, const char *product, image_t *image);
+
+// Get the memory-mapped I/O interface for machine-level address decode
+const memory_interface_t *scsi_get_memory_interface(scsi_t *scsi);
+
+// Connect SCSI interrupt outputs (IRQ, DRQ) to VIA2 for SE/30-style machines.
+// On machines without VIA2 (e.g. Plus), this is not called and SCSI is polled.
+void scsi_set_via(scsi_t *scsi, via_t *via);
 
 #endif // SCSI_H

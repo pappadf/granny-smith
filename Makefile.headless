@@ -17,7 +17,8 @@ else ifeq ($(MODE),sanitize)
 	CFLAGS_MODE := -g -O1 -fsanitize=address,undefined -fno-omit-frame-pointer
 	LDFLAGS_MODE := -fsanitize=address,undefined
 else
-	CFLAGS_MODE := -O2 -DNDEBUG
+	# No -DNDEBUG: keep assertions active in the headless test/debug tool
+	CFLAGS_MODE := -O2
 endif
 
 # -- Submodule guard --
@@ -93,7 +94,7 @@ OUTPUT := $(BUILD_DIR)/gs-headless
 
 # -- Combined flags --
 
-CFLAGS  := $(CFLAGS_BASE) $(CFLAGS_MODE) $(INCLUDES)
+CFLAGS  := $(CFLAGS_BASE) $(CFLAGS_MODE) $(INCLUDES) $(EXTRA_CFLAGS)
 LDFLAGS := $(LDFLAGS_MODE) -lpthread -lm
 
 # -- Targets --

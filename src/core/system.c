@@ -16,8 +16,10 @@
 #include "image.h"
 #include "keyboard.h"
 #include "log.h"
+#include "machine.h"
 #include "memory.h"
 #include "mouse.h"
+#include "rom.h"
 #include "rtc.h"
 #include "scc.h"
 #include "scheduler.h"
@@ -68,16 +70,31 @@ image_t *setup_get_image_by_filename(const char *filename) {
 
 // System-level mouse input wrapper: routes input to appropriate mouse device model
 void system_mouse_update(bool button, int dx, int dy) {
-    if (!global_emulator || !global_emulator->mouse)
+    if (!global_emulator)
         return;
-    mouse_update(global_emulator->mouse, button, dx, dy);
+    if (global_emulator->adb)
+        adb_mouse_event(global_emulator->adb, button, dx, dy);
+    else if (global_emulator->mouse)
+        mouse_update(global_emulator->mouse, button, dx, dy);
+}
+
+// Injects mouse movement deltas without changing button state (ADB path only).
+// Returns true if deltas were injected through ADB, false on non-ADB machines.
+bool system_mouse_move(int dx, int dy) {
+    if (!global_emulator || !global_emulator->adb)
+        return false;
+    adb_mouse_move(global_emulator->adb, dx, dy);
+    return true;
 }
 
 // System-level keyboard input wrapper: routes input to appropriate keyboard device model
 void system_keyboard_update(key_event_t event, int key) {
-    if (!global_emulator || !global_emulator->keyboard)
+    if (!global_emulator)
         return;
-    keyboard_update(global_emulator->keyboard, event, key);
+    if (global_emulator->adb)
+        adb_keyboard_event(global_emulator->adb, event, key);
+    else if (global_emulator->keyboard)
+        keyboard_update(global_emulator->keyboard, event, key);
 }
 
 // System-level scheduler accessor: returns the current scheduler object
@@ -110,11 +127,68 @@ bool system_is_initialized(void) {
     return global_emulator != NULL;
 }
 
+// Return the model_id of the current machine, or NULL if none is active
+const char *system_machine_model_id(void) {
+    if (!global_emulator || !global_emulator->machine)
+        return NULL;
+    return global_emulator->machine->model_id;
+}
+
+// Ensure the correct machine is active for the given model_id.
+// Creates a new machine if none exists, or tears down and recreates if the
+// current machine's model_id doesn't match.  Returns 0 on success, -1 on error.
+int system_ensure_machine(const char *model_id) {
+    if (!model_id)
+        return -1;
+
+    const hw_profile_t *needed = machine_find(model_id);
+    if (!needed) {
+        printf("system_ensure_machine: unknown model '%s'\n", model_id);
+        return -1;
+    }
+
+    // Already have the right machine?
+    const char *current = system_machine_model_id();
+    if (current && strcmp(current, model_id) == 0)
+        return 0;
+
+    // Teardown existing machine if wrong type
+    if (global_emulator) {
+        printf("Switching machine from %s to %s\n", global_emulator->machine->model_id, model_id);
+        system_destroy(global_emulator);
+        global_emulator = NULL;
+    }
+
+    // Create the new machine
+    config_t *cfg = system_create(needed, NULL);
+    if (!cfg) {
+        printf("system_ensure_machine: failed to create %s\n", model_id);
+        return -1;
+    }
+
+    printf("Machine created: %s (%s)\n", needed->model_name, needed->model_id);
+    return 0;
+}
+
 // Forward declarations for command handlers
 uint64_t cmd_attach_hd(int argc, char *argv[]);
 uint64_t cmd_new_fd(int argc, char *argv[]);
 uint64_t cmd_insert_fd(int argc, char *argv[]);
 uint64_t cmd_insert_disk(int argc, char *argv[]);
+uint64_t cmd_machine(int argc, char *argv[]);
+
+// Helpers to abstract floppy insertion
+static bool sys_fd_is_inserted(config_t *cfg, int drive) {
+    if (cfg->floppy)
+        return floppy_is_inserted(cfg->floppy, drive);
+    return true; // no controller → treat as occupied
+}
+
+static int sys_fd_insert(config_t *cfg, int drive, image_t *disk) {
+    if (cfg->floppy)
+        return floppy_insert(cfg->floppy, drive, disk);
+    return -1;
+}
 
 // Trigger a vertical blanking interval event (delegates to machine callback)
 void trigger_vbl(struct config *restrict config) {
@@ -150,8 +224,8 @@ uint64_t cmd_new_fd(int argc, char *argv[]) {
         return -1;
     }
 
-    bool d0_free = !floppy_is_inserted(config->floppy, 0);
-    bool d1_free = !floppy_is_inserted(config->floppy, 1);
+    bool d0_free = !sys_fd_is_inserted(config, 0);
+    bool d1_free = !sys_fd_is_inserted(config, 1);
 
     int target = -1;
     if (preferred != -1 && (preferred == 0 ? d0_free : d1_free)) {
@@ -185,7 +259,7 @@ uint64_t cmd_new_fd(int argc, char *argv[]) {
     // Track this image so checkpoints can restore by filename
     add_image(config, disk);
 
-    floppy_insert(config->floppy, target, disk);
+    sys_fd_insert(config, target, disk);
     printf("new-fd: created %s and inserted into drive %d.\n", path, target);
     return 0;
 }
@@ -214,11 +288,11 @@ uint64_t cmd_insert_disk(int argc, char *argv[]) {
     // Track this image so checkpoints can restore by filename
     add_image(config, disk);
 
-    if (!floppy_is_inserted(config->floppy, 0)) {
-        floppy_insert(config->floppy, 0, disk);
+    if (!sys_fd_is_inserted(config, 0)) {
+        sys_fd_insert(config, 0, disk);
         printf("Inserted disk into floppy drive 0.\n");
-    } else if (!floppy_is_inserted(config->floppy, 1)) {
-        floppy_insert(config->floppy, 1, disk);
+    } else if (!sys_fd_is_inserted(config, 1)) {
+        sys_fd_insert(config, 1, disk);
         printf("Inserted disk into floppy drive 1.\n");
     } else {
         printf("Both floppy drives are already occupied.\n");
@@ -228,9 +302,57 @@ uint64_t cmd_insert_disk(int argc, char *argv[]) {
     return 0;
 }
 
+// Query or switch the active machine model.
+// machine          → print current machine info
+// machine <model>  → teardown current machine, create new one
+uint64_t cmd_machine(int argc, char *argv[]) {
+    if (argc < 2) {
+        // No args: print current machine info
+        if (!global_emulator || !global_emulator->machine) {
+            printf("No machine instantiated\n");
+            return 0;
+        }
+        const hw_profile_t *m = global_emulator->machine;
+        printf("Machine: %s (%s)\n", m->model_name, m->model_id);
+        printf("  CPU: 680%02d @ %.4f MHz\n", m->cpu_model / 1000, m->cpu_clock_hz / 1000000.0);
+        printf("  Address: %d-bit, RAM: %u KB, ROM: %u KB\n", m->address_bits, m->ram_size_default / 1024,
+               m->rom_size / 1024);
+        printf("  VIAs: %d, ADB: %s\n", m->via_count, m->has_adb ? "yes" : "no");
+        return 0;
+    }
+
+    // Look up the requested machine profile
+    const char *model_id = argv[1];
+    const hw_profile_t *profile = machine_find(model_id);
+    if (!profile) {
+        printf("machine: unknown model '%s'\n", model_id);
+        return -1;
+    }
+
+    // Teardown existing machine if one is active
+    if (global_emulator) {
+        system_destroy(global_emulator);
+        global_emulator = NULL;
+    }
+
+    // Create the new machine (cold boot)
+    config_t *cfg = system_create(profile, NULL);
+    if (!cfg) {
+        printf("machine: failed to create %s\n", model_id);
+        return -1;
+    }
+
+    printf("Machine created: %s (%s)\n", profile->model_name, profile->model_id);
+    return 0;
+}
+
 // Initialize the setup system and register commands
 void setup_init() {
     printf("Granny Smith build %s\n", get_build_id());
+
+    // Register built-in machine profiles so machine_find() can look them up
+    machine_register(&machine_plus);
+    machine_register(&machine_se30);
 
     // Ensure logging categories of interest appear in `log list` even before any messages are emitted.
     // shell_init() (called earlier) already invoked log_init(); categories default to level 0 (OFF).
@@ -247,10 +369,19 @@ void setup_init() {
                  "Insert a disk image: insert-fd [--probe] <path> [drive:0|1] [writable:0|1]", &cmd_insert_fd);
     register_cmd("attach-hd", "Configuration", "Attach (SCSI) hard disk image: attach-hd <path> [scsi-id]",
                  &cmd_attach_hd);
+    register_cmd("machine", "Configuration", "machine [<model>] – query or switch machine model", &cmd_machine);
+    register_cmd("load-rom", "ROM", "load-rom [--probe] <filename> – load and identify ROM", (void *)&cmd_load_rom);
 
     // Register checkpoint commands
     register_cmd("save-state", "Checkpointing", "Save machine state to checkpoint file", &cmd_save_checkpoint);
     register_cmd("load-state", "Checkpointing", "Load machine state: load-state [<file>|probe]", &cmd_load_checkpoint);
+}
+
+// Platform hook called after system_create completes.
+// The weak default is a no-op; the WASM platform overrides to install
+// the assertion callback (which requires the debug object to exist).
+__attribute__((weak)) void system_post_create(config_t *cfg) {
+    (void)cfg;
 }
 
 // Create an emulator instance for the given machine profile.
@@ -269,6 +400,9 @@ config_t *system_create(const hw_profile_t *profile, checkpoint_t *checkpoint) {
 
     // Delegate all machine-specific initialisation to the profile
     profile->init(cfg, checkpoint);
+
+    // Notify the platform (e.g., install assertion callback)
+    system_post_create(cfg);
 
     return cfg;
 }
@@ -386,8 +520,8 @@ uint64_t cmd_insert_fd(int argc, char *argv[]) {
         return -1;
     }
 
-    bool d0_free = !floppy_is_inserted(config->floppy, 0);
-    bool d1_free = !floppy_is_inserted(config->floppy, 1);
+    bool d0_free = !sys_fd_is_inserted(config, 0);
+    bool d1_free = !sys_fd_is_inserted(config, 1);
 
     int target = -1;
     if (preferred != -1 && (preferred == 0 ? d0_free : d1_free)) {
@@ -406,7 +540,7 @@ uint64_t cmd_insert_fd(int argc, char *argv[]) {
     // Track this image so checkpoints can restore by filename
     add_image(config, disk);
 
-    floppy_insert(config->floppy, target, disk);
+    sys_fd_insert(config, target, disk);
     printf("insert-fd: inserted %s into floppy drive %d.\n", path, target);
     return 0;
 }
@@ -539,9 +673,12 @@ config_t *system_restore(const char *filename) {
     // Save the current global emulator so we can restore it on error.
     config_t *prev = global_emulator;
 
-    // For now, always restore as Plus (M6 will add ROM-based machine selection).
-    extern const hw_profile_t machine_plus;
-    config_t *config = system_create(&machine_plus, checkpoint);
+    // Determine machine profile: use the current machine if one is active,
+    // otherwise default to Plus for backward compatibility with old checkpoints.
+    const hw_profile_t *profile = (prev && prev->machine) ? prev->machine : machine_find("plus");
+    if (!profile)
+        profile = &machine_plus;
+    config_t *config = system_create(profile, checkpoint);
 
     if (checkpoint_has_error(checkpoint)) {
         printf("Error: Failed to read checkpoint\n");
