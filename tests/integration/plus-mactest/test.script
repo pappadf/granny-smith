@@ -1,0 +1,73 @@
+# Integration test: Plus MacTest
+# Boots Macintosh Plus from MacTest floppy, deselects unsupported tests,
+# runs the hardware test suite, and verifies each stage via screenshot match.
+
+# Boot to MacTest UI (~500M instructions at max speed)
+run 500000000
+screenshot --match mactest-booted.png
+
+# Deselect short RAM test: drag from (100, 10) to (100, 90)
+set-mouse 100 10
+run 5000000
+mouse-button down
+run 5000000
+set-mouse 100 90
+run 5000000
+mouse-button up
+run 5000000
+
+# Deselect logic board 2 test: drag from (100, 10) to (100, 75)
+set-mouse 100 10
+run 5000000
+mouse-button down
+run 5000000
+set-mouse 100 75
+run 5000000
+mouse-button up
+run 5000000
+
+# Deselect serial loopback test: drag from (100, 10) to (100, 125)
+set-mouse 100 10
+run 5000000
+mouse-button down
+run 5000000
+set-mouse 100 125
+run 5000000
+mouse-button up
+run 5000000
+
+# Deselect SCSI loopback test: drag from (100, 10) to (100, 140)
+set-mouse 100 10
+run 5000000
+mouse-button down
+run 5000000
+set-mouse 100 140
+run 5000000
+mouse-button up
+run 5000000
+
+# Switch to hardware accuracy for the test run
+schedule hw
+
+# Click START button at (340, 210)
+set-mouse 340 210
+run 5000000
+mouse-button down
+run 2000000
+mouse-button up
+
+# Logic test completes within ~1M hw instructions of clicking START
+run 2000000
+screenshot --match mactest-logic.png
+
+# Floppy test completes within ~7M hw instructions of logic match
+run 10000000
+screenshot --match mactest-floppy.png
+
+# Success screen within ~24M hw instructions of floppy match
+run 30000000
+screenshot --match mactest-success.png
+
+quit
+
+quit
