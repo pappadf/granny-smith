@@ -450,3 +450,51 @@ uint16_t mmu_test_address(mmu_state_t *mmu, uint32_t logical_addr, bool write, b
     mmu->mmusr = result.mmusr;
     return result.mmusr;
 }
+
+// Debug-only translation: resolve logical address to physical without side effects.
+// Returns the physical address, or logical_addr if translation fails.
+uint32_t mmu_translate_debug(mmu_state_t *mmu, uint32_t logical_addr) {
+    if (!mmu || !mmu->enabled)
+        return logical_addr;
+
+    // Check transparent translation first (identity mapping)
+    if (mmu_check_tt(mmu, logical_addr, false, true))
+        return logical_addr;
+
+    // Perform table walk (read-only, supervisor mode)
+    mmu_walk_result_t result = mmu_table_walk(mmu, logical_addr, false, true);
+
+    if (result.valid)
+        return result.physical_addr;
+
+    // Translation failed — return logical address as fallback
+    return logical_addr;
+}
+
+// Read a byte from physical memory for debug commands (P: prefix).
+// Returns 0 for unmapped physical addresses.
+uint8_t mmu_read_physical_uint8(mmu_state_t *mmu, uint32_t phys_addr) {
+    if (!mmu)
+        return 0;
+    uint8_t *host = phys_to_host(mmu, phys_addr);
+    if (!host)
+        return 0;
+    return *host;
+}
+
+// Read a 16-bit big-endian value from physical memory for debug commands.
+uint16_t mmu_read_physical_uint16(mmu_state_t *mmu, uint32_t phys_addr) {
+    if (!mmu)
+        return 0;
+    uint8_t *host = phys_to_host(mmu, phys_addr);
+    if (!host)
+        return 0;
+    return (uint16_t)(host[0] << 8 | host[1]);
+}
+
+// Read a 32-bit big-endian value from physical memory for debug commands.
+uint32_t mmu_read_physical_uint32(mmu_state_t *mmu, uint32_t phys_addr) {
+    if (!mmu)
+        return 0;
+    return phys_read32(mmu, phys_addr);
+}

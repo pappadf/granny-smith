@@ -10,6 +10,7 @@
 
 #include "debug.h"
 
+#include "addr_format.h"
 #include "common.h"
 #include "cpu.h"
 #include "debug_mac.h"
@@ -32,6 +33,7 @@
 struct breakpoint {
 
     uint32_t addr;
+    addr_space_t space; // logical or physical address space
 
     breakpoint_t *next;
 };
@@ -69,7 +71,7 @@ static uint16_t cpu_get_uint16(uint32_t addr) {
 // Operations
 // ============================================================================
 
-breakpoint_t *set_breakpoint(debug_t *debug, uint32_t addr) {
+breakpoint_t *set_breakpoint(debug_t *debug, uint32_t addr, addr_space_t space) {
 
     breakpoint_t *bp = malloc(sizeof(breakpoint_t));
 
@@ -77,6 +79,7 @@ breakpoint_t *set_breakpoint(debug_t *debug, uint32_t addr) {
         return NULL;
 
     bp->addr = addr;
+    bp->space = space;
 
     // add bp to a linked list
     bp->next = debug->breakpoints;
@@ -150,7 +153,10 @@ int debugger_disasm(char *buf, uint32_t addr) {
 
     int n = disasm(words, mnemonic, operands);
 
-    sprintf(buf, "%08x  %04x  %-10s%-12s", (int)addr, (int)words[0], mnemonic, operands);
+    // Format with address prefix
+    char addr_str[40];
+    format_address_pair(addr_str, sizeof(addr_str), addr);
+    sprintf(buf, "%s  %04x  %-10s%-12s", addr_str, (int)words[0], mnemonic, operands);
 
     return n;
 }
@@ -198,8 +204,22 @@ int debug_break_and_trace(void) {
         // Check for breakpoints at current PC
         breakpoint_t *bp = debug->breakpoints;
         while (bp != NULL) {
-            if (bp->addr == current_pc) {
-                printf("breakpoint hit at 0x%x\n", bp->addr);
+            bool hit = false;
+            if (bp->space == ADDR_LOGICAL) {
+                // Logical breakpoint: compare directly with PC
+                hit = (bp->addr == current_pc);
+            } else {
+                // Physical breakpoint: translate PC to physical and compare
+                bool is_identity, valid;
+                uint32_t phys_pc = debug_translate_address(current_pc, &is_identity, NULL, &valid);
+                hit = valid && (bp->addr == phys_pc);
+            }
+            if (hit) {
+                if (bp->space == ADDR_PHYSICAL) {
+                    printf("breakpoint hit at P:$%08X (PC=$%08X)\n", bp->addr, current_pc);
+                } else {
+                    printf("breakpoint hit at $%08X\n", bp->addr);
+                }
                 // Remember this PC to skip it next time we check
                 debug->last_breakpoint_pc = current_pc;
                 stop = true;
@@ -218,9 +238,9 @@ int debug_break_and_trace(void) {
             lp->hit_count++;
             // Log using the log framework with optional message
             if (lp->message) {
-                LOG_WITH(lp->category, lp->level, "logpoint 0x%x: %s", current_pc, lp->message);
+                LOG_WITH(lp->category, lp->level, "logpoint $%08X: %s", current_pc, lp->message);
             } else {
-                LOG_WITH(lp->category, lp->level, "logpoint hit at 0x%x (hit count: %u)", current_pc, lp->hit_count);
+                LOG_WITH(lp->category, lp->level, "logpoint hit at $%08X (hit count: %u)", current_pc, lp->hit_count);
             }
         }
         lp = lp->next;
@@ -241,14 +261,14 @@ int debug_break_and_trace(void) {
     return stop;
 }
 
-// Delete a breakpoint at the specified address
+// Delete a breakpoint at the specified address and space
 // Returns true if breakpoint was found and deleted, false otherwise
-static bool delete_breakpoint(debug_t *debug, uint32_t addr) {
+static bool delete_breakpoint(debug_t *debug, uint32_t addr, addr_space_t space) {
     breakpoint_t *prev = NULL;
     breakpoint_t *bp = debug->breakpoints;
 
     while (bp != NULL) {
-        if (bp->addr == addr) {
+        if (bp->addr == addr && bp->space == space) {
             // Found the breakpoint, remove it from the list
             if (prev == NULL) {
                 debug->breakpoints = bp->next;
@@ -292,7 +312,11 @@ static void list_breakpoints(debug_t *debug) {
 
     printf("Breakpoints:\n");
     while (bp != NULL) {
-        printf("  %d: 0x%08x\n", count, (unsigned int)bp->addr);
+        if (bp->space == ADDR_PHYSICAL) {
+            printf("  %d: P:$%08X\n", count, (unsigned int)bp->addr);
+        } else {
+            printf("  %d: $%08X\n", count, (unsigned int)bp->addr);
+        }
         bp = bp->next;
         count++;
     }
@@ -324,16 +348,24 @@ static uint64_t cmd_breakpoint(int argc, char *argv[]) {
             return 0;
         }
         // Delete specific breakpoint by address
-        char *endptr;
-        uint32_t addr = (uint32_t)strtoul(argv[2], &endptr, 0);
-        if (*endptr != '\0') {
+        uint32_t addr;
+        addr_space_t space;
+        if (!parse_address(argv[2], &addr, &space)) {
             printf("Invalid address: %s\n", argv[2]);
             return 0;
         }
-        if (delete_breakpoint(debug, addr)) {
-            printf("Deleted breakpoint at 0x%08x.\n", (unsigned int)addr);
+        if (delete_breakpoint(debug, addr, space)) {
+            if (space == ADDR_PHYSICAL) {
+                printf("Deleted breakpoint at P:$%08X.\n", (unsigned int)addr);
+            } else {
+                printf("Deleted breakpoint at $%08X.\n", (unsigned int)addr);
+            }
         } else {
-            printf("No breakpoint found at 0x%08x.\n", (unsigned int)addr);
+            if (space == ADDR_PHYSICAL) {
+                printf("No breakpoint found at P:$%08X.\n", (unsigned int)addr);
+            } else {
+                printf("No breakpoint found at $%08X.\n", (unsigned int)addr);
+            }
         }
         return 0;
     }
@@ -356,16 +388,20 @@ static uint64_t cmd_breakpoint(int argc, char *argv[]) {
         return 0;
     }
 
-    char *endptr;
-    uint32_t addr = (uint32_t)strtoul(argv[1], &endptr, 0);
-    if (*endptr != '\0') {
+    uint32_t addr;
+    addr_space_t space;
+    if (!parse_address(argv[1], &addr, &space)) {
         printf("Invalid address: %s\n", argv[1]);
         return 0;
     }
 
-    set_breakpoint(debug, addr);
+    set_breakpoint(debug, addr, space);
 
-    printf("Breakpoint set at 0x%08x.\n", (unsigned int)addr);
+    if (space == ADDR_PHYSICAL) {
+        printf("Breakpoint set at P:$%08X.\n", (unsigned int)addr);
+    } else {
+        printf("Breakpoint set at $%08X.\n", (unsigned int)addr);
+    }
 
     return 0;
 }
@@ -375,33 +411,39 @@ static uint64_t cmd_logpoint(int argc, char *argv[]) {
     if (argc < 2) {
         printf("Usage: logpoint <address|range> [message] [category=<name>] [level=<n>]\n");
         printf("  Address formats:\n");
-        printf("    0x400000         - single address\n");
-        printf("    0x400000-0x400100 - address range (start-end, inclusive)\n");
-        printf("    0x400000:0x100   - address range (start:length)\n");
+        printf("    $400000          - single address\n");
+        printf("    $400000-$400100  - address range (start-end, inclusive)\n");
+        printf("    $400000:$100     - address range (start:length)\n");
         printf("  Examples:\n");
-        printf("    logpoint 0x400000 \"Reset vector\"\n");
-        printf("    logpoint 0x400000-0x400100 \"ROM range\"\n");
-        printf("    logpoint 0x400000:0x100 category=cpu level=10\n");
+        printf("    logpoint $400000 \"Reset vector\"\n");
+        printf("    logpoint $400000-$400100 \"ROM range\"\n");
+        printf("    logpoint $400000:$100 category=cpu level=10\n");
         printf("  Defaults: category=logpoint, level=0\n");
         return 0;
     }
 
     // Parse address or address range (required)
-    char *endptr;
     uint32_t addr, end_addr;
-    char *range_sep = strchr(argv[1], '-');
-    char *length_sep = strchr(argv[1], ':');
+    addr_space_t space;
+
+    // Skip L:/P: prefix for separator search (colon in prefix would match length separator)
+    int prefix_len = 0;
+    if ((argv[1][0] == 'L' || argv[1][0] == 'l' || argv[1][0] == 'P' || argv[1][0] == 'p') && argv[1][1] == ':') {
+        prefix_len = 2;
+    }
+
+    char *range_sep = strchr(argv[1] + prefix_len, '-');
+    char *length_sep = strchr(argv[1] + prefix_len, ':');
 
     if (range_sep != NULL) {
         // Format: start-end (inclusive range)
         *range_sep = '\0';
-        addr = (uint32_t)strtoul(argv[1], &endptr, 0);
-        if (*endptr != '\0') {
+        if (!parse_address(argv[1], &addr, &space)) {
             printf("Invalid start address: %s\n", argv[1]);
             return 0;
         }
-        end_addr = (uint32_t)strtoul(range_sep + 1, &endptr, 0);
-        if (*endptr != '\0') {
+        addr_space_t end_space;
+        if (!parse_address(range_sep + 1, &end_addr, &end_space)) {
             printf("Invalid end address: %s\n", range_sep + 1);
             return 0;
         }
@@ -412,13 +454,14 @@ static uint64_t cmd_logpoint(int argc, char *argv[]) {
     } else if (length_sep != NULL) {
         // Format: start:length
         *length_sep = '\0';
-        addr = (uint32_t)strtoul(argv[1], &endptr, 0);
-        if (*endptr != '\0') {
+        if (!parse_address(argv[1], &addr, &space)) {
             printf("Invalid start address: %s\n", argv[1]);
             return 0;
         }
-        uint32_t length = (uint32_t)strtoul(length_sep + 1, &endptr, 0);
-        if (*endptr != '\0') {
+        // Parse length as a numeric value (reuse parse_address, ignore space)
+        addr_space_t len_space;
+        uint32_t length;
+        if (!parse_address(length_sep + 1, &length, &len_space)) {
             printf("Invalid length: %s\n", length_sep + 1);
             return 0;
         }
@@ -429,8 +472,7 @@ static uint64_t cmd_logpoint(int argc, char *argv[]) {
         end_addr = addr + length - 1; // inclusive end
     } else {
         // Single address
-        addr = (uint32_t)strtoul(argv[1], &endptr, 0);
-        if (*endptr != '\0') {
+        if (!parse_address(argv[1], &addr, &space)) {
             printf("Invalid address: %s\n", argv[1]);
             return 0;
         }
@@ -502,18 +544,18 @@ static uint64_t cmd_logpoint(int argc, char *argv[]) {
     if (addr == end_addr) {
         // Single address logpoint
         if (message) {
-            printf("logpoint set at 0x%08x: %s (category: %s, level: %d)\n", (unsigned int)addr, message, category_name,
+            printf("logpoint set at $%08X: %s (category: %s, level: %d)\n", (unsigned int)addr, message, category_name,
                    level);
         } else {
-            printf("logpoint set at 0x%08x (category: %s, level: %d)\n", (unsigned int)addr, category_name, level);
+            printf("logpoint set at $%08X (category: %s, level: %d)\n", (unsigned int)addr, category_name, level);
         }
     } else {
         // Range logpoint
         if (message) {
-            printf("logpoint set at 0x%08x-0x%08x: %s (category: %s, level: %d)\n", (unsigned int)addr,
+            printf("logpoint set at $%08X-$%08X: %s (category: %s, level: %d)\n", (unsigned int)addr,
                    (unsigned int)end_addr, message, category_name, level);
         } else {
-            printf("logpoint set at 0x%08x-0x%08x (category: %s, level: %d)\n", (unsigned int)addr,
+            printf("logpoint set at $%08X-$%08X (category: %s, level: %d)\n", (unsigned int)addr,
                    (unsigned int)end_addr, category_name, level);
         }
     }
@@ -787,14 +829,26 @@ static uint64_t cmd_td(int argc, char *argv[]) {
         return 0;
     }
 
-    printf("   D0 = %08x    A0 = %08x\n", (int)cpu_get_dn(cpu, 0), (int)cpu_get_an(cpu, 0));
-    printf("   D1 = %08x    A1 = %08x\n", (int)cpu_get_dn(cpu, 1), (int)cpu_get_an(cpu, 1));
-    printf("   D2 = %08x    A2 = %08x\n", (int)cpu_get_dn(cpu, 2), (int)cpu_get_an(cpu, 2));
-    printf("   D3 = %08x    A3 = %08x\n", (int)cpu_get_dn(cpu, 3), (int)cpu_get_an(cpu, 3));
-    printf("   D4 = %08x    A4 = %08x\n", (int)cpu_get_dn(cpu, 4), (int)cpu_get_an(cpu, 4));
-    printf("   D5 = %08x    A5 = %08x\n", (int)cpu_get_dn(cpu, 5), (int)cpu_get_an(cpu, 5));
-    printf("   D6 = %08x    A6 = %08x\n", (int)cpu_get_dn(cpu, 6), (int)cpu_get_an(cpu, 6));
-    printf("   D7 = %08x    A7 = %08x\n", (int)cpu_get_dn(cpu, 7), (int)cpu_get_an(cpu, 7));
+    // CPU/Addressing/MMU header line
+    bool is_24bit = (g_address_mask == 0x00FFFFFF);
+    if (g_mmu) {
+        printf("CPU: 68030  Addressing: %s  MMU: %s", is_24bit ? "24-bit" : "32-bit",
+               g_mmu->enabled ? "enabled" : "disabled");
+        if (g_mmu->enabled)
+            printf(" (TC=$%08X)", g_mmu->tc);
+        printf("\n");
+    } else {
+        printf("CPU: 68000  Addressing: %s  MMU: none\n", is_24bit ? "24-bit" : "32-bit");
+    }
+
+    printf("   D0 = $%08X    A0 = $%08X\n", (unsigned int)cpu_get_dn(cpu, 0), (unsigned int)cpu_get_an(cpu, 0));
+    printf("   D1 = $%08X    A1 = $%08X\n", (unsigned int)cpu_get_dn(cpu, 1), (unsigned int)cpu_get_an(cpu, 1));
+    printf("   D2 = $%08X    A2 = $%08X\n", (unsigned int)cpu_get_dn(cpu, 2), (unsigned int)cpu_get_an(cpu, 2));
+    printf("   D3 = $%08X    A3 = $%08X\n", (unsigned int)cpu_get_dn(cpu, 3), (unsigned int)cpu_get_an(cpu, 3));
+    printf("   D4 = $%08X    A4 = $%08X\n", (unsigned int)cpu_get_dn(cpu, 4), (unsigned int)cpu_get_an(cpu, 4));
+    printf("   D5 = $%08X    A5 = $%08X\n", (unsigned int)cpu_get_dn(cpu, 5), (unsigned int)cpu_get_an(cpu, 5));
+    printf("   D6 = $%08X    A6 = $%08X\n", (unsigned int)cpu_get_dn(cpu, 6), (unsigned int)cpu_get_an(cpu, 6));
+    printf("   D7 = $%08X    A7 = $%08X\n", (unsigned int)cpu_get_dn(cpu, 7), (unsigned int)cpu_get_an(cpu, 7));
 
     return 0;
 }
@@ -837,9 +891,8 @@ static uint64_t cmd_disasm(int argc, char *argv[]) {
         return 0;
     }
 
-    char *endptr;
-    addr = (uint32_t)strtoul(argv[1], &endptr, 0);
-    if (*endptr != '\0') {
+    addr_space_t space;
+    if (!parse_address(argv[1], &addr, &space)) {
         printf("Invalid address: %s\n", argv[1]);
         return 0;
     }
@@ -886,9 +939,13 @@ static uint64_t cmd_set(int argc, char *argv[]) {
     char target[64];
     str_to_upper(target, argv[1]);
 
-    // Parse the value
+    // Parse the value (support $ prefix for Motorola hex)
+    const char *val_str = argv[2];
+    if (*val_str == '$')
+        val_str++;
     char *endptr;
-    uint32_t value = (uint32_t)strtoul(argv[2], &endptr, 0);
+    uint32_t value = (uint32_t)strtoul(val_str, &endptr,
+                                       (*val_str == '0' && (*(val_str + 1) == 'x' || *(val_str + 1) == 'X')) ? 0 : 16);
     if (*endptr != '\0') {
         printf("Invalid value: %s\n", argv[2]);
         return 0;
@@ -898,7 +955,7 @@ static uint64_t cmd_set(int argc, char *argv[]) {
     if (target[0] == 'D' && target[1] >= '0' && target[1] <= '7' && target[2] == '\0') {
         int reg = target[1] - '0';
         cpu_set_dn(cpu, reg, value);
-        printf("D%d = 0x%08x\n", reg, value);
+        printf("D%d = $%08X\n", reg, value);
         return 0;
     }
 
@@ -906,42 +963,42 @@ static uint64_t cmd_set(int argc, char *argv[]) {
     if (target[0] == 'A' && target[1] >= '0' && target[1] <= '7' && target[2] == '\0') {
         int reg = target[1] - '0';
         cpu_set_an(cpu, reg, value);
-        printf("A%d = 0x%08x\n", reg, value);
+        printf("A%d = $%08X\n", reg, value);
         return 0;
     }
 
     // Program Counter
     if (strcmp(target, "PC") == 0) {
         cpu_set_pc(cpu, value);
-        printf("PC = 0x%08x\n", value);
+        printf("PC = $%08X\n", value);
         return 0;
     }
 
     // Stack Pointer (alias for A7)
     if (strcmp(target, "SP") == 0) {
         cpu_set_an(cpu, 7, value);
-        printf("SP = 0x%08x\n", value);
+        printf("SP = $%08X\n", value);
         return 0;
     }
 
     // Supervisor Stack Pointer
     if (strcmp(target, "SSP") == 0) {
         cpu_set_ssp(cpu, value);
-        printf("SSP = 0x%08x\n", value);
+        printf("SSP = $%08X\n", value);
         return 0;
     }
 
     // User Stack Pointer
     if (strcmp(target, "USP") == 0) {
         cpu_set_usp(cpu, value);
-        printf("USP = 0x%08x\n", value);
+        printf("USP = $%08X\n", value);
         return 0;
     }
 
     // Status Register
     if (strcmp(target, "SR") == 0) {
         cpu_set_sr(cpu, (uint16_t)value);
-        printf("SR = 0x%04x\n", (uint16_t)value);
+        printf("SR = $%04X\n", (uint16_t)value);
         return 0;
     }
 
@@ -950,7 +1007,7 @@ static uint64_t cmd_set(int argc, char *argv[]) {
         uint16_t sr = cpu_get_sr(cpu);
         sr = (sr & ~cpu_ccr_mask) | (value & cpu_ccr_mask);
         cpu_set_sr(cpu, sr);
-        printf("CCR = 0x%02x\n", (uint8_t)(value & cpu_ccr_mask));
+        printf("CCR = $%02X\n", (uint8_t)(value & cpu_ccr_mask));
         return 0;
     }
 
@@ -1016,24 +1073,25 @@ static uint64_t cmd_set(int argc, char *argv[]) {
         *size_spec = '\0';
         size_spec++;
 
-        // Parse the address from target
-        uint32_t addr = (uint32_t)strtoul(target, &endptr, 0);
-        if (*endptr != '\0') {
+        // Parse the address from target (supports $, 0x, and bare hex)
+        uint32_t addr;
+        addr_space_t space;
+        if (!parse_address(target, &addr, &space)) {
             printf("Invalid address: %s\n", target);
             return 0;
         }
 
         if (strcmp(size_spec, "B") == 0) {
             memory_write_uint8(addr, (uint8_t)value);
-            printf("[0x%08x].b = 0x%02x\n", addr, (uint8_t)value);
+            printf("[$%08X].b = $%02X\n", addr, (uint8_t)value);
             return 0;
         } else if (strcmp(size_spec, "W") == 0) {
             memory_write_uint16(addr, (uint16_t)value);
-            printf("[0x%08x].w = 0x%04x\n", addr, (uint16_t)value);
+            printf("[$%08X].w = $%04X\n", addr, (uint16_t)value);
             return 0;
         } else if (strcmp(size_spec, "L") == 0) {
             memory_write_uint32(addr, value);
-            printf("[0x%08x].l = 0x%08x\n", addr, value);
+            printf("[$%08X].l = $%08X\n", addr, value);
             return 0;
         } else {
             printf("Invalid size specifier: .%s (use .b, .w, or .l)\n", size_spec);
@@ -1080,14 +1138,14 @@ static uint64_t cmd_get(int argc, char *argv[]) {
     if (strcmp(target, "MMU") == 0) {
         if (g_mmu) {
             printf("MMU enabled=%d\n", g_mmu->enabled);
-            printf("TC  = 0x%08X  (E=%u SRE=%u IS=%u TIA=%u TIB=%u TIC=%u TID=%u)\n", g_mmu->tc, TC_ENABLE(g_mmu->tc),
+            printf("TC  = $%08X  (E=%u SRE=%u IS=%u TIA=%u TIB=%u TIC=%u TID=%u)\n", g_mmu->tc, TC_ENABLE(g_mmu->tc),
                    TC_SRE(g_mmu->tc), TC_IS(g_mmu->tc), TC_TIA(g_mmu->tc), TC_TIB(g_mmu->tc), TC_TIC(g_mmu->tc),
                    TC_TID(g_mmu->tc));
-            printf("CRP = 0x%08X_%08X\n", (uint32_t)(g_mmu->crp >> 32), (uint32_t)(g_mmu->crp & 0xFFFFFFFF));
-            printf("SRP = 0x%08X_%08X\n", (uint32_t)(g_mmu->srp >> 32), (uint32_t)(g_mmu->srp & 0xFFFFFFFF));
-            printf("TT0 = 0x%08X  (E=%u base=0x%02X mask=0x%02X)\n", g_mmu->tt0, TT_ENABLE(g_mmu->tt0),
+            printf("CRP = $%08X_%08X\n", (uint32_t)(g_mmu->crp >> 32), (uint32_t)(g_mmu->crp & 0xFFFFFFFF));
+            printf("SRP = $%08X_%08X\n", (uint32_t)(g_mmu->srp >> 32), (uint32_t)(g_mmu->srp & 0xFFFFFFFF));
+            printf("TT0 = $%08X  (E=%u base=$%02X mask=$%02X)\n", g_mmu->tt0, TT_ENABLE(g_mmu->tt0),
                    TT_BASE(g_mmu->tt0), TT_MASK(g_mmu->tt0));
-            printf("TT1 = 0x%08X  (E=%u base=0x%02X mask=0x%02X)\n", g_mmu->tt1, TT_ENABLE(g_mmu->tt1),
+            printf("TT1 = $%08X  (E=%u base=$%02X mask=$%02X)\n", g_mmu->tt1, TT_ENABLE(g_mmu->tt1),
                    TT_BASE(g_mmu->tt1), TT_MASK(g_mmu->tt1));
         } else {
             printf("MMU not present\n");
@@ -1099,7 +1157,7 @@ static uint64_t cmd_get(int argc, char *argv[]) {
     if (target[0] == 'D' && target[1] >= '0' && target[1] <= '7' && target[2] == '\0') {
         int reg = target[1] - '0';
         value = cpu_get_dn(cpu, reg);
-        printf("D%d = 0x%08x\n", reg, value);
+        printf("D%d = $%08X\n", reg, (unsigned int)value);
         return value;
     }
 
@@ -1107,42 +1165,42 @@ static uint64_t cmd_get(int argc, char *argv[]) {
     if (target[0] == 'A' && target[1] >= '0' && target[1] <= '7' && target[2] == '\0') {
         int reg = target[1] - '0';
         value = cpu_get_an(cpu, reg);
-        printf("A%d = 0x%08x\n", reg, value);
+        printf("A%d = $%08X\n", reg, (unsigned int)value);
         return value;
     }
 
     // Program Counter
     if (strcmp(target, "PC") == 0) {
         value = cpu_get_pc(cpu);
-        printf("PC = 0x%08x\n", value);
+        printf("PC = $%08X\n", (unsigned int)value);
         return value;
     }
 
     // Stack Pointer (alias for A7)
     if (strcmp(target, "SP") == 0) {
         value = cpu_get_an(cpu, 7);
-        printf("SP = 0x%08x\n", value);
+        printf("SP = $%08X\n", (unsigned int)value);
         return value;
     }
 
     // Supervisor Stack Pointer
     if (strcmp(target, "SSP") == 0) {
         value = cpu_get_ssp(cpu);
-        printf("SSP = 0x%08x\n", value);
+        printf("SSP = $%08X\n", (unsigned int)value);
         return value;
     }
 
     // User Stack Pointer
     if (strcmp(target, "USP") == 0) {
         value = cpu_get_usp(cpu);
-        printf("USP = 0x%08x\n", value);
+        printf("USP = $%08X\n", (unsigned int)value);
         return value;
     }
 
     // Status Register
     if (strcmp(target, "SR") == 0) {
         value = cpu_get_sr(cpu);
-        printf("SR = 0x%04x\n", (uint16_t)value);
+        printf("SR = $%04X\n", (uint16_t)value);
         return value;
     }
 
@@ -1150,7 +1208,7 @@ static uint64_t cmd_get(int argc, char *argv[]) {
     if (strcmp(target, "CCR") == 0) {
         uint16_t sr = cpu_get_sr(cpu);
         value = sr & cpu_ccr_mask;
-        printf("CCR = 0x%02x\n", (uint8_t)value);
+        printf("CCR = $%02X\n", (uint8_t)value);
         return value;
     }
 
@@ -1196,25 +1254,25 @@ static uint64_t cmd_get(int argc, char *argv[]) {
         *size_spec = '\0';
         size_spec++;
 
-        // Parse the address from target
-        char *endptr;
-        uint32_t addr = (uint32_t)strtoul(target, &endptr, 0);
-        if (*endptr != '\0') {
+        // Parse the address from target (supports $, 0x, and bare hex)
+        uint32_t addr;
+        addr_space_t space;
+        if (!parse_address(target, &addr, &space)) {
             printf("Invalid address: %s\n", target);
             return 0;
         }
 
         if (strcmp(size_spec, "B") == 0) {
             value = memory_read_uint8(addr);
-            printf("[0x%08x].b = 0x%02x\n", addr, (uint8_t)value);
+            printf("[$%08X].b = $%02X\n", addr, (uint8_t)value);
             return value;
         } else if (strcmp(size_spec, "W") == 0) {
             value = memory_read_uint16(addr);
-            printf("[0x%08x].w = 0x%04x\n", addr, (uint16_t)value);
+            printf("[$%08X].w = $%04X\n", addr, (uint16_t)value);
             return value;
         } else if (strcmp(size_spec, "L") == 0) {
             value = memory_read_uint32(addr);
-            printf("[0x%08x].l = 0x%08x\n", addr, value);
+            printf("[$%08X].l = $%08X\n", addr, (unsigned int)value);
             return value;
         } else {
             printf("Invalid size specifier: .%s (use .b, .w, or .l)\n", size_spec);
@@ -1240,9 +1298,9 @@ static uint64_t cmd_examine(int argc, char *argv[]) {
     }
 
     // Parse the address
-    char *endptr;
-    uint32_t addr = (uint32_t)strtoul(argv[1], &endptr, 0);
-    if (*endptr != '\0') {
+    uint32_t addr;
+    addr_space_t space;
+    if (!parse_address(argv[1], &addr, &space)) {
         printf("Invalid address: %s\n", argv[1]);
         return 0;
     }
@@ -1250,6 +1308,7 @@ static uint64_t cmd_examine(int argc, char *argv[]) {
     // Parse the number of bytes (default: 64, max: 512)
     uint32_t nbytes = 64;
     if (argc == 3) {
+        char *endptr;
         nbytes = (uint32_t)strtoul(argv[2], &endptr, 0);
         if (*endptr != '\0') {
             printf("Invalid byte count: %s\n", argv[2]);
@@ -1268,7 +1327,7 @@ static uint64_t cmd_examine(int argc, char *argv[]) {
     // Display memory in 16-byte rows
     for (uint32_t i = 0; i < nbytes; i += 16) {
         // Print address
-        printf("%08x  ", addr + i);
+        printf("$%08X  ", addr + i);
 
         // Print hex bytes
         for (uint32_t j = 0; j < 16; j++) {
@@ -1867,6 +1926,83 @@ write_error:
     return 0;
 }
 
+// Address display mode command: addrmode [auto|expanded|collapsed]
+static uint64_t cmd_addrmode(int argc, char *argv[]) {
+    if (argc < 2) {
+        // Show current mode
+        const char *mode_str;
+        switch (g_addr_display_mode) {
+        case ADDR_DISPLAY_AUTO:
+            mode_str = "auto";
+            break;
+        case ADDR_DISPLAY_EXPANDED:
+            mode_str = "expanded";
+            break;
+        case ADDR_DISPLAY_COLLAPSED:
+            mode_str = "collapsed";
+            break;
+        default:
+            mode_str = "unknown";
+            break;
+        }
+        printf("Address display: %s\n", mode_str);
+        return 0;
+    }
+
+    if (strcmp(argv[1], "auto") == 0) {
+        g_addr_display_mode = ADDR_DISPLAY_AUTO;
+        printf("Address display: auto (collapsed when MMU off, expanded when MMU on)\n");
+    } else if (strcmp(argv[1], "expanded") == 0) {
+        g_addr_display_mode = ADDR_DISPLAY_EXPANDED;
+        printf("Address display: expanded (always show L: and P:)\n");
+    } else if (strcmp(argv[1], "collapsed") == 0) {
+        g_addr_display_mode = ADDR_DISPLAY_COLLAPSED;
+        printf("Address display: collapsed (omit P: when L = P)\n");
+    } else {
+        printf("Usage: addrmode [auto|expanded|collapsed]\n");
+    }
+    return 0;
+}
+
+// Translate command: translate <address> — show MMU translation details
+static uint64_t cmd_translate(int argc, char *argv[]) {
+    if (argc < 2) {
+        printf("Usage: translate <address>  – show MMU translation for a logical address\n");
+        return 0;
+    }
+
+    uint32_t addr;
+    addr_space_t space;
+    if (!parse_address(argv[1], &addr, &space)) {
+        printf("Invalid address: %s\n", argv[1]);
+        return 0;
+    }
+
+    if (space == ADDR_PHYSICAL) {
+        printf("P:$%08X is already a physical address\n", addr);
+        return 0;
+    }
+
+    bool is_identity = true;
+    bool tt_hit = false;
+    bool valid = true;
+    uint32_t phys = debug_translate_address(addr, &is_identity, &tt_hit, &valid);
+
+    if (!g_mmu || !g_mmu->enabled) {
+        printf("L:$%08X -> P:$%08X  (no MMU)\n", addr, phys);
+        return 0;
+    }
+
+    if (tt_hit) {
+        printf("L:$%08X -> P:$%08X  (TT, transparent translation)\n", addr, phys);
+    } else if (!valid) {
+        printf("L:$%08X -> INVALID  (descriptor invalid)\n", addr);
+    } else {
+        printf("L:$%08X -> P:$%08X  (page table%s)\n", addr, phys, is_identity ? ", identity" : "");
+    }
+    return 0;
+}
+
 // ============================================================================
 // Lifecycle: Constructor
 // ============================================================================
@@ -1899,6 +2035,10 @@ debug_t *debug_init(void) {
     register_cmd("get", "Debugger", "get <register|address>  – get register, condition code, or memory value",
                  &cmd_get);
     register_cmd("x", "Debugger", "x <address> [n]  – examine raw memory in hex and ASCII format", &cmd_examine);
+    register_cmd("addrmode", "Debugger", "addrmode [auto|expanded|collapsed]  – set address display mode",
+                 &cmd_addrmode);
+    register_cmd("translate", "Debugger", "translate <address>  – show MMU translation for a logical address",
+                 &cmd_translate);
     register_cmd("screenshot", "Debugger", "screenshot <filename.png>  – save the emulated screen as a PNG file",
                  &cmd_screenshot);
 

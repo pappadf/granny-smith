@@ -134,6 +134,16 @@ uint16_t mmu_test_address(mmu_state_t *mmu, uint32_t logical_addr, bool write, b
 // Returns true if address matches a TT register (bypass table walk).
 bool mmu_check_tt(mmu_state_t *mmu, uint32_t addr, bool write, bool supervisor);
 
+// Debug-only translation: resolve logical address to physical without side effects.
+// Returns the physical address, or logical_addr if translation fails.
+uint32_t mmu_translate_debug(mmu_state_t *mmu, uint32_t logical_addr);
+
+// Physical memory read for debug commands (P: prefix).
+// Bypasses MMU translation and reads directly from physical RAM/ROM/VRAM.
+uint8_t mmu_read_physical_uint8(mmu_state_t *mmu, uint32_t phys_addr);
+uint16_t mmu_read_physical_uint16(mmu_state_t *mmu, uint32_t phys_addr);
+uint32_t mmu_read_physical_uint32(mmu_state_t *mmu, uint32_t phys_addr);
+
 // Register a VRAM region so table walks and TT matches can resolve it
 void mmu_register_vram(mmu_state_t *mmu, uint8_t *vram, uint32_t phys_base, uint32_t size);
 void mmu_register_vrom(mmu_state_t *mmu, uint8_t *vrom, uint32_t phys_base, uint32_t size);

@@ -8,6 +8,7 @@
 #define DEBUG_H
 
 // === Includes ===
+#include "addr_format.h"
 #include "common.h"
 
 #include <stdbool.h>
@@ -79,7 +80,7 @@ void debug_cleanup(debug_t *debug);
 
 // === Operations ===
 
-breakpoint_t *debugger_set_breakpoint(debug_t *debug, uint32_t addr);
+breakpoint_t *set_breakpoint(debug_t *debug, uint32_t addr, addr_space_t space);
 
 void debugger_disasm_pc(char *buf);
 

@@ -89,8 +89,12 @@ $ echo "s" | nc -w 2 localhost 6800
 4083f61c  6000  BRA       *+$023A
 ```
 
-This means the PC is now at `0x4083f61c` and the next instruction to execute
+This means the PC is now at `$4083F61C` and the next instruction to execute
 is `BRA *+$023A`. This applies to all commands — `s`, `td`, `get pc`, `x`, etc.
+
+All addresses use the Motorola `$` hex prefix (e.g., `$40800000`) with uppercase
+hex digits. Input accepts `$`, `0x`, or bare hex. Use `L:` or `P:` prefix for
+explicit logical/physical addressing (e.g., `br P:$00801656`).
 
 ### Capturing output
 
@@ -116,17 +120,20 @@ echo "$RESULT"
 
 | Command | Description |
 |---------|-------------|
-| `td` | Display all CPU registers (D0-D7, A0-A7) |
+| `td` | Display all CPU registers (D0-D7, A0-A7) with CPU/MMU header |
 | `get pc` | Get program counter |
 | `get sr` | Get status register |
+| `get mmu` | Dump MMU register state (TC, CRP, SRP, TT0, TT1) |
 | `get <reg>` | Get register value (d0-d7, a0-a7, pc, sr, ssp, usp) |
 | `set <reg> <val>` | Set register or memory |
-| `br <addr>` | Set breakpoint at address |
+| `br <addr>` | Set breakpoint at address (supports L:/P: prefix) |
 | `br del <addr>` | Delete breakpoint |
 | `br del all` | Delete all breakpoints |
 | `br` | List breakpoints |
 | `x <addr> [nbytes]` | Examine memory in hex/ASCII (default 64 bytes, max 512) |
 | `disasm <addr> [n]` | Disassemble n instructions at address |
+| `addrmode [mode]` | Set address display: auto, expanded, collapsed |
+| `translate <addr>` | Show MMU translation for an address |
 
 ### Machine Info
 
@@ -174,13 +181,13 @@ sleep 2
 
 # Step one instruction — output shows where PC is now
 echo "s" | nc -w 2 localhost 6800
-# output: 40800090  4ef9  JMP       $4083F61C
+# output: $40800090  4ef9  JMP       $4083F61C
 
 echo "s" | nc -w 2 localhost 6800
-# output: 4083f61c  6000  BRA       *+$023A
+# output: $4083F61C  6000  BRA       *+$023A
 
 echo "s" | nc -w 2 localhost 6800
-# output: 4083f858  46fc  MOVE      #$2700,SR
+# output: $4083F858  46fc  MOVE      #$2700,SR
 
 # Step 10 instructions at once — shows final position
 echo "s 10" | nc -w 2 localhost 6800

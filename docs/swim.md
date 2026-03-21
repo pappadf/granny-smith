@@ -1008,7 +1008,7 @@ then reading SENSE (IWM Status bit 7) or Handshake bit 3 (ISM mode).
 | 6 | 0-1-1-0 | /WRTPRT | 0 = write protected (alternate) |
 | 8 | 1-0-0-0 | RDDATA0 | Read data, lower head |
 | 9 | 1-0-0-1 | RDDATA1 | Read data, upper head |
-| 10 | 1-1-0-0 | SIDES | 0 = single-sided, 1 = double-sided |
+| 10 | 1-1-0-0 | SIDES | Drive capability: 0 = single-sided, 1 = double-sided |
 | 11 | 1-1-0-1 | /READY | 0 = drive ready |
 | 13 | 1-1-1-0 | /DRVIN | 0 = drive exists |
 | 14 | 1-1-1-1 | TACH | Tachometer (60 pulses/rev) |

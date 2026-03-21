@@ -343,8 +343,8 @@ test.describe('Debug Commands', () => {
     log('[debug] terminal output length: ' + terminalOutput.length);
     
     // Verify the output format
-    // Should contain lines starting with address in format: "00001000  "
-    expect(terminalOutput).toContain('00001000  ');
+    // Should contain lines starting with address in format: "$00001000  "
+    expect(terminalOutput).toContain('$00001000  ');
     
     // Verify hex bytes are present (48 65 6c 6c = "Hell")
     expect(terminalOutput).toMatch(/48 65 6c 6c/);
@@ -378,8 +378,8 @@ test.describe('Debug Commands', () => {
       }
     });
     
-    // Should show address starting with 00400000
-    expect(romOutput).toContain('00400000  ');
+    // Should show address starting with $00400000
+    expect(romOutput).toContain('$00400000  ');
     
     log('[debug] examine command test complete - memory display format verified');
   });
@@ -451,7 +451,7 @@ test.describe('Debug Commands', () => {
     log('[debug] verifying logpoint output in terminal');
     
     // Check that the logpoint message appears in the output
-    expect(terminalOutput).toContain('logpoint hit at 0x4007ba');
+    expect(terminalOutput).toContain('logpoint hit at $004007BA');
     expect(terminalOutput).toContain('hit count:');
     
     // Verify we stopped at the breakpoint, not the logpoint

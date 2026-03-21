@@ -140,12 +140,14 @@ int iwm_tach_signal(struct scheduler *scheduler, floppy_drive_t *drive, const ch
     } while (0)
 
 // Encodes a sector to GCR format with header and data fields
-static uint8_t *encode_sector(uint8_t *dst, const uint8_t *tag, const uint8_t *data, int track, int sector, int side) {
+static uint8_t *encode_sector(uint8_t *dst, const uint8_t *tag, const uint8_t *data, int track, int sector, int side,
+                              int num_sides) {
     GS_ASSERT(data != NULL);
 
     uint16_t ca = 0, cb = 0, cc = 0; // checksum registers
     uint8_t ba, bb, bc; // encoded bytes
-    uint8_t format = 0x22;
+    // 0x02 = single-sided GCR, 0x22 = double-sided GCR
+    uint8_t format = (num_sides > 1) ? 0x22 : 0x02;
 
     // Header sync field (5 bytes)
     for (int i = 0; i < 5; i++)
@@ -205,7 +207,7 @@ static uint8_t *encode_sector(uint8_t *dst, const uint8_t *tag, const uint8_t *d
 }
 
 // Encodes an entire track with interleaved sectors to GCR format
-static void encode_track(uint8_t *dst, size_t trk_length, int track, int side, const uint8_t *data) {
+static void encode_track(uint8_t *dst, size_t trk_length, int track, int side, const uint8_t *data, int num_sides) {
     GS_ASSERT(data != NULL);
 
     int i;
@@ -229,7 +231,7 @@ static void encode_track(uint8_t *dst, size_t trk_length, int track, int side, c
         int sector = interleave[track >> 4][i];
         GS_ASSERT(sector != -1);
 
-        dst = encode_sector(dst, tag, data + sector * 512, track, sector, side);
+        dst = encode_sector(dst, tag, data + sector * 512, track, sector, side, num_sides);
     }
 
     GS_ASSERT(dst < end_of_track);
@@ -262,7 +264,7 @@ uint8_t *iwm_track_data(floppy_drive_t *drive, image_t *img, int sel, struct sch
         int num_sides = iwm_image_num_sides(img);
         size_t sector_count = (size_t)iwm_sectors_per_track(drive->track);
         size_t track_bytes = sector_count * 512u;
-        size_t track_offset = iwm_disk_image_offset(drive->track, sel, 2);
+        size_t track_offset = iwm_disk_image_offset(drive->track, sel, num_sides);
         size_t disk_sz = disk_size(img);
 
         // Clamp to disk size for single-sided images
@@ -285,7 +287,7 @@ uint8_t *iwm_track_data(floppy_drive_t *drive, image_t *img, int sel, struct sch
             free(sector_data);
             return NULL;
         }
-        encode_track(track->data, track->size, drive->track, sel, sector_data);
+        encode_track(track->data, track->size, drive->track, sel, sector_data, num_sides);
         free(sector_data);
     }
 

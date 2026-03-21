@@ -103,7 +103,7 @@ Each line uses the same format as the emulator's built-in disassembler:
 <address>  <opcode>  <mnemonic>  <operands>  [; -> $<target>]
 ```
 
-- **address**: 8-digit lowercase hex virtual address
+- **address**: `$` prefix + 8-digit uppercase hex address (e.g., `$40802A14`)
 - **opcode**: 4-digit lowercase hex first instruction word only (matching emulator)
 - **mnemonic**: left-aligned in a 10-character field
 - **operands**: instruction operands
@@ -112,16 +112,16 @@ Each line uses the same format as the emulator's built-in disassembler:
   destination address
 
 The column layout matches the emulator's `debugger_disasm()` exactly:
-`"%08x  %04x  %-10s<operands>"`.
+`"$%08X  %04x  %-10s<operands>"`.
 
 ### Example Output
 
 ```
-40802a14  3e7c  MOVEA.W   #$2000,A7
-40802a18  7e00  MOVEQ     #$00,D7
-40802a1c  41fa  LEA       *-$218,A0
-40802a3c  660a  BNE.S     *+$000C       ; -> $40802A48
-40802a72  6600  BNE       *+$01CA       ; -> $40802C3C
+$40802A14  3e7c  MOVEA.W   #$2000,A7
+$40802A18  7e00  MOVEQ     #$00,D7
+$40802A1C  41fa  LEA       *-$218,A0
+$40802A3C  660a  BNE.S     *+$000C       ; -> $40802A48
+$40802A72  6600  BNE       *+$01CA       ; -> $40802C3C
 ```
 
 ## 5. Common Workflows
@@ -180,7 +180,8 @@ Works on any raw 68K binary (disk sector dumps, code resources, etc.):
 
 - The tool reads big-endian binary data natively — no byte-swapping needed for
   Motorola 68K ROM images.
-- Offset and length values accept both decimal (`144`) and hex (`0x90`) formats.
+- Offset and length values accept both decimal (`144`) and hex (`0x90` or `$90`) formats.
+  The `-a` address-offset flag also accepts `$` prefix: `-a $40800000`.
 - A-trap instructions (opcodes `0xA000`–`0xAFFF`) are automatically resolved to
   human-readable names (e.g., `_SwapMMUMode`, `_NewPtr`).
 - PC-relative target annotations (`; -> $addr`) appear for all PC-relative operands

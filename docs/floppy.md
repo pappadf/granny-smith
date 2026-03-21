@@ -267,7 +267,7 @@ which internal signal is driven onto `RD`:
 | 0   | 1   | 1   | 1   | /TACH              | Tachometer                     |
 | 1   | 0   | 0   | 0   | RDDATA0            | Read data, lower head          |
 | 1   | 0   | 0   | 1   | RDDATA1            | Read data, upper head          |
-| 1   | 1   | 0   | 0   | SIDES              | Single- or double-sided drive  |
+| 1   | 1   | 0   | 0   | SIDES              | Drive capability (not media)   |
 | 1   | 1   | 0   | 1   | /READY             | Disk ready for reading/writing |
 | 1   | 1   | 1   | 0   | /DRVIN             | = 0 when drive connected       |
 | 1   | 1   | 1   | 1   | NEWINTF            | implements ready handshake?    |
@@ -674,8 +674,12 @@ structured as follows:
 
 **Format field breakdown:**
 
-- Bit 5: 0 for single-sided
+- Bit 5: 0 for single-sided, 1 for double-sided
 - Bits 0–4: format interleave (2 for standard 2:1 interleave)
+
+Standard values: `$02` = single-sided 2:1 interleave, `$22` = double-sided 2:1
+interleave. The ROM uses this byte (not the SIDES drive sense register) to
+determine whether the disk is single-sided or double-sided.
 
 ### Data Sync Field
 

@@ -15,6 +15,13 @@
 #include <stdlib.h>
 #include <string.h>
 
+// Parse a number that may have $, 0x, or bare hex prefix
+static uint32_t parse_hex_arg(const char *s) {
+    if (s[0] == '$')
+        return (uint32_t)strtoul(s + 1, NULL, 16);
+    return (uint32_t)strtoul(s, NULL, 0);
+}
+
 // Annotate operands with the absolute target address for PC-relative references.
 // mnemonic: the instruction mnemonic (e.g. "BNE.S", "LEA", "JSR")
 // operands_text: the operand string (e.g. "*-$0006", "D0,*+$1234")
@@ -91,17 +98,17 @@ int main(int argc, char *argv[]) {
     while ((opt = getopt_long(argc, argv, "o:l:a:n:h", long_options, NULL)) != -1) {
         switch (opt) {
         case 'o':
-            offset = (uint32_t)strtoul(optarg, NULL, 0);
+            offset = parse_hex_arg(optarg);
             break;
         case 'l':
-            length = (uint32_t)strtoul(optarg, NULL, 0);
+            length = parse_hex_arg(optarg);
             length_set = true;
             break;
         case 'a':
-            address_offset = (uint32_t)strtoul(optarg, NULL, 0);
+            address_offset = parse_hex_arg(optarg);
             break;
         case 'n':
-            max_instructions = (uint32_t)strtoul(optarg, NULL, 0);
+            max_instructions = parse_hex_arg(optarg);
             break;
         case 'h':
             print_usage(argv[0]);
@@ -138,7 +145,7 @@ int main(int argc, char *argv[]) {
 
     // validate offset
     if (offset >= (uint32_t)file_size) {
-        fprintf(stderr, "Error: offset 0x%X exceeds file size (%ld bytes).\n", offset, file_size);
+        fprintf(stderr, "Error: offset $%08X exceeds file size (%ld bytes).\n", offset, file_size);
         fclose(fp);
         return 1;
     }
@@ -232,7 +239,7 @@ int main(int argc, char *argv[]) {
         // format exactly like the emulator: "%08x  %04x  %-10s%-12s"
         // then append the branch annotation (if any) after the base output
         char base_line[256];
-        sprintf(base_line, "%08x  %04x  %-10s%s", (int)addr, (int)words[pos], mnemonic, annotated_buf);
+        sprintf(base_line, "$%08X  %04x  %-10s%s", (unsigned int)addr, (int)words[pos], mnemonic, annotated_buf);
 
         printf("%s\n", base_line);
 
