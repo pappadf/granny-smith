@@ -147,6 +147,9 @@ static void plus_init(config_t *cfg, checkpoint_t *checkpoint) {
 
     cfg->scc = scc_init(cfg->mem_map, cfg->scheduler, plus_scc_irq, cfg, checkpoint);
 
+    // SCC PCLK = C8M (7.8336 MHz = CPU clock), RTxC = 3.6864 MHz
+    scc_set_clocks(cfg->scc, 7833600, 3686400);
+
     // Initialise AppleTalk with scheduler and SCC dependencies (registers shell commands)
     appletalk_init(cfg->scheduler, cfg->scc, NULL);
 

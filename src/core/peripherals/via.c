@@ -628,6 +628,15 @@ via_t *via_init(memory_map_t *restrict map, struct scheduler *scheduler, via_out
     return via;
 }
 
+// Re-register event types under a custom instance name (e.g. "via2")
+void via_set_instance_name(via_t *via, const char *name) {
+    if (!via || !via->scheduler || !name)
+        return;
+    scheduler_new_event_type(via->scheduler, name, via, "t1", &t1_callback);
+    scheduler_new_event_type(via->scheduler, name, via, "t2", &t2_callback);
+    scheduler_new_event_type(via->scheduler, name, via, "sr", &sr_shift_complete_callback);
+}
+
 // ============================================================================
 // Accessors
 // ============================================================================

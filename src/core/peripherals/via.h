@@ -37,6 +37,10 @@ typedef void (*via_irq_fn)(void *context, bool active);
 via_t *via_init(memory_map_t *map, struct scheduler *scheduler, via_output_fn output_cb, via_shift_out_fn shift_cb,
                 via_irq_fn irq_cb, void *cb_context, checkpoint_t *checkpoint);
 
+// Set a custom instance name for event type registration (e.g. "via1", "via2").
+// Must be called before scheduler_start() if using checkpoints on multi-VIA machines.
+void via_set_instance_name(via_t *via, const char *name);
+
 void via_delete(via_t *via);
 
 void via_checkpoint(via_t *restrict via, checkpoint_t *checkpoint);

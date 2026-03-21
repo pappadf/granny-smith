@@ -33,6 +33,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 
 LOG_USE_CATEGORY_NAME("setup");
 
@@ -508,9 +509,19 @@ uint64_t cmd_insert_fd(int argc, char *argv[]) {
         }
     }
 
+    printf("[DEBUG insert-fd] calling image_open('%s', writable=%d)\n", path, writable);
     image_t *disk = image_open(path, writable);
     if (!disk) {
         printf("insert-fd: failed to open disk image: %s\n", path);
+        // Extra: try stat and fopen directly for diagnostics
+        struct stat dbg_st;
+        printf("[DEBUG insert-fd] stat('%s') = %d\n", path, stat(path, &dbg_st));
+        if (stat(path, &dbg_st) == 0)
+            printf("[DEBUG insert-fd] stat size=%lld mode=%o\n", (long long)dbg_st.st_size, dbg_st.st_mode);
+        FILE *dbg_f = fopen(path, "rb");
+        printf("[DEBUG insert-fd] fopen('%s','rb') = %p\n", path, (void *)dbg_f);
+        if (dbg_f)
+            fclose(dbg_f);
         return -1;
     }
 

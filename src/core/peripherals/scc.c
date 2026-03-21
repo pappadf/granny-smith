@@ -119,6 +119,10 @@ struct scc {
     // Per-instance IRQ callback routing
     scc_irq_fn irq_cb;
     void *cb_context;
+
+    // BRG source clock frequencies (Hz); 0 = use CPU cycles directly
+    uint32_t pclk_hz;
+    uint32_t rtxc_hz;
 };
 
 #define SDLC_MODE(ch)  ((ch->wr[4] >> 4 & 3) == 2)
@@ -163,6 +167,26 @@ struct scc {
 // forward declarations
 static void reset_ch(scc_t *restrict scc, int ch);
 static void update_irqs(scc_t *scc);
+static void brg_start(ch_t *ch);
+static void brg_stop(ch_t *ch);
+
+// True when BRG zero-count scheduler events are needed: BRG enabled AND
+// zero-count interrupt enabled (WR15 bit 1 + WR1 bit 0).  The BRG is a
+// hardware clock generator — we only need scheduler overhead when software
+// is actually waiting for zero-count interrupts.
+static inline bool brg_needs_event(ch_t *ch) {
+    return ch->brg.enabled && (ch->wr[15] & WR15_ZERO_COUNT_IE) && (ch->wr[1] & WR1_EXT_INT);
+}
+
+// Compute the BRG period in nanoseconds for a given channel.
+// Returns 0 if source clock is not configured (fall back to CPU cycles).
+static uint64_t brg_period_ns(scc_t *scc, ch_t *ch) {
+    uint32_t src_hz = ch->brg.pclk_source ? scc->pclk_hz : scc->rtxc_hz;
+    if (src_hz == 0)
+        return 0;
+    // Period = (time_constant + 1) ticks of source clock, in nanoseconds
+    return (uint64_t)(ch->brg.time_constant + 1) * 1000000000ULL / src_hz;
+}
 
 // BRG zero-count callback (source=scc, data=channel index)
 static void brg_zero_count_callback(void *source, uint64_t data) {
@@ -182,15 +206,19 @@ static void brg_zero_count_callback(void *source, uint64_t data) {
         update_irqs(scc);
     }
 
-    // Reschedule next BRG event if still enabled
-    if (ch->brg.enabled && scc->scheduler) {
-        // Schedule next zero-count at time_constant + 1 cycles
-        scheduler_new_cpu_event(scc->scheduler, brg_zero_count_callback, scc, (uint64_t)ch->index,
-                                (ch->brg.time_constant + 1), 0);
+    // Reschedule next BRG event if zero-count interrupts are still wanted
+    if (brg_needs_event(ch) && scc->scheduler) {
+        uint64_t ns = brg_period_ns(scc, ch);
+        if (ns > 0)
+            scheduler_new_cpu_event(scc->scheduler, brg_zero_count_callback, scc, (uint64_t)ch->index, 0, ns);
+        else
+            scheduler_new_cpu_event(scc->scheduler, brg_zero_count_callback, scc, (uint64_t)ch->index,
+                                    (ch->brg.time_constant + 1), 0);
     }
 }
 
-// Start or restart the baud rate generator for a channel
+// Start or restart the baud rate generator for a channel.
+// Only schedules a scheduler event if zero-count interrupts are enabled.
 static void brg_start(ch_t *ch) {
     if (!ch->scc->scheduler) {
         LOG(2, "brg_start: ch=%d - no scheduler available", ch->index);
@@ -200,16 +228,21 @@ static void brg_start(ch_t *ch) {
     // Cancel any existing BRG event for this channel (matched by data=index)
     remove_event_by_data(ch->scc->scheduler, brg_zero_count_callback, ch->scc, (uint64_t)ch->index);
 
-    if (!ch->brg.enabled) {
-        LOG(4, "brg_start: ch=%d - BRG disabled, not scheduling", ch->index);
+    if (!brg_needs_event(ch)) {
+        LOG(4, "brg_start: ch=%d - BRG event not needed (enabled=%d, ZC_IE=%d, EXT_INT=%d)", ch->index, ch->brg.enabled,
+            !!(ch->wr[15] & WR15_ZERO_COUNT_IE), !!(ch->wr[1] & WR1_EXT_INT));
         return;
     }
 
     LOG(4, "brg_start: ch=%d time_constant=0x%04X counter=0x%04X", ch->index, ch->brg.time_constant, ch->brg.counter);
 
-    // Schedule BRG zero-count event (source=scc, data=channel index)
-    scheduler_new_cpu_event(ch->scc->scheduler, brg_zero_count_callback, ch->scc, (uint64_t)ch->index,
-                            (ch->brg.counter + 1), 0);
+    // Schedule BRG zero-count event using nanoseconds if clock is configured
+    uint64_t ns = brg_period_ns(ch->scc, ch);
+    if (ns > 0)
+        scheduler_new_cpu_event(ch->scc->scheduler, brg_zero_count_callback, ch->scc, (uint64_t)ch->index, 0, ns);
+    else
+        scheduler_new_cpu_event(ch->scc->scheduler, brg_zero_count_callback, ch->scc, (uint64_t)ch->index,
+                                (ch->brg.counter + 1), 0);
 }
 
 // Stop the baud rate generator for a channel
@@ -700,7 +733,14 @@ static void scc_write_uint8(void *s, uint32_t addr, uint8_t value) {
     case 0x01:
         // write register 1 - interrupt enables
         LOG(4, "wr1 ch=%d: value=0x%02X (TX int enable=%d, RX int=%d)", ch, value, !!(value & 0x02), (value >> 3) & 3);
-        scc->ch[ch].wr[1] = value;
+        {
+            bool prev_ext = !!(scc->ch[ch].wr[1] & WR1_EXT_INT);
+            scc->ch[ch].wr[1] = value;
+            bool now_ext = !!(value & WR1_EXT_INT);
+            // Start/stop BRG events if external interrupt enable changed
+            if (now_ext != prev_ext && scc->ch[ch].brg.enabled)
+                now_ext ? brg_start(&scc->ch[ch]) : brg_stop(&scc->ch[ch]);
+        }
         // if tx int enabled (bit 1) and buffer empty, fire interrupt immediately
         if ((value & 0x02) && (scc->ch[ch].rr[0] & RR0_TX_BUFFER_EMPTY)) {
             scc->ch[0].rr[3] |= (ch ? RR3_CHANNEL_B_TX : RR3_CHANNEL_A_TX);
@@ -776,9 +816,16 @@ static void scc_write_uint8(void *s, uint32_t addr, uint8_t value) {
         }
         break;
 
-    default:
+    default: {
+        // Special handling for WR15: start/stop BRG events on ZC_IE change
+        bool was_zc = (reg == 0x0F) && (scc->ch[ch].wr[15] & WR15_ZERO_COUNT_IE);
         scc->ch[ch].wr[reg] = value;
-        break;
+        if (reg == 0x0F) {
+            bool now_zc = !!(value & WR15_ZERO_COUNT_IE);
+            if (now_zc != was_zc && scc->ch[ch].brg.enabled)
+                now_zc ? brg_start(&scc->ch[ch]) : brg_stop(&scc->ch[ch]);
+        }
+    } break;
     }
 }
 
@@ -908,6 +955,9 @@ scc_t *scc_init(memory_map_t *map, struct scheduler *scheduler, scc_irq_fn irq_c
     if (map)
         memory_map_add(map, 0x00800000, 0x00400000, "SCC", &scc->memory_interface, scc);
 
+    scc->pclk_hz = 0;
+    scc->rtxc_hz = 0;
+
     scc_reset(scc);
 
     // Register BRG event type for checkpoint save/restore
@@ -933,6 +983,13 @@ scc_t *scc_init(memory_map_t *map, struct scheduler *scheduler, scc_irq_fn irq_c
     }
 
     return scc;
+}
+
+// Set BRG source clock frequencies
+void scc_set_clocks(scc_t *restrict scc, uint32_t pclk_hz, uint32_t rtxc_hz) {
+    GS_ASSERT(scc != NULL);
+    scc->pclk_hz = pclk_hz;
+    scc->rtxc_hz = rtxc_hz;
 }
 
 // Return the SCC memory-mapped I/O interface for machine-level address decode

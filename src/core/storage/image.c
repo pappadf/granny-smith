@@ -18,6 +18,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <unistd.h>
 
 #if defined(_WIN32)
 #include <direct.h>
@@ -41,6 +42,32 @@ static int file_write_cb(void *ctx, const void *data, size_t size);
 static bool storage_dir_contains_ranges(const char *path);
 static int image_seed_storage(image_t *image);
 static int base_stream_read_cb(void *ctx, void *data, size_t size);
+
+// Clear all files inside a directory (but keep the directory itself)
+static int clear_directory(const char *path) {
+    DIR *dir = opendir(path);
+    if (!dir)
+        return -1;
+    struct dirent *entry;
+    char filepath[512];
+    while ((entry = readdir(dir)) != NULL) {
+        if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0)
+            continue;
+        int n = snprintf(filepath, sizeof(filepath), "%s/%s", path, entry->d_name);
+        if (n < 0 || (size_t)n >= sizeof(filepath))
+            continue;
+        struct stat st;
+        if (stat(filepath, &st) == 0 && S_ISDIR(st.st_mode)) {
+            // Recurse into subdirectory, then remove it
+            clear_directory(filepath);
+            rmdir(filepath);
+        } else {
+            remove(filepath);
+        }
+    }
+    closedir(dir);
+    return 0;
+}
 
 // Get the raw size of a disk image in bytes
 size_t disk_size(image_t *disk) {
@@ -193,31 +220,45 @@ void image_close(image_t *image) {
 }
 
 image_t *image_open(const char *filename, bool writable) {
-    if (!filename || !*filename)
+    printf("[DEBUG image_open] filename='%s' writable=%d\n", filename ? filename : "(null)", writable);
+    if (!filename || !*filename) {
+        printf("[DEBUG image_open] FAIL: filename is null/empty\n");
         return NULL;
+    }
     bool final_writable = writable;
     if (final_writable) {
         FILE *test = fopen(filename, "r+b");
         if (!test) {
+            printf("[DEBUG image_open] r+b fopen failed, setting read-only\n");
             final_writable = false;
         } else {
             fclose(test);
         }
     }
     size_t file_size = 0;
-    if (read_file_size(filename, &file_size) != 0)
+    if (read_file_size(filename, &file_size) != 0) {
+        printf("[DEBUG image_open] FAIL: read_file_size failed (stat failed) for '%s'\n", filename);
         return NULL;
+    }
+    printf("[DEBUG image_open] file_size=%zu for '%s'\n", file_size, filename);
     uint32_t diskcopy_size = 0;
     int dc_probe = detect_diskcopy(filename, file_size, &diskcopy_size);
-    if (dc_probe < 0)
+    printf("[DEBUG image_open] detect_diskcopy=%d diskcopy_size=%u\n", dc_probe, diskcopy_size);
+    if (dc_probe < 0) {
+        printf("[DEBUG image_open] FAIL: detect_diskcopy returned %d\n", dc_probe);
         return NULL;
+    }
     bool is_diskcopy = (dc_probe > 0);
     size_t raw_size = is_diskcopy ? (size_t)diskcopy_size : file_size;
+    printf("[DEBUG image_open] is_diskcopy=%d raw_size=%zu\n", is_diskcopy, raw_size);
     image_t *image = (image_t *)calloc(1, sizeof(image_t));
-    if (!image)
+    if (!image) {
+        printf("[DEBUG image_open] FAIL: calloc\n");
         return NULL;
+    }
     image->filename = dup_string(filename);
     if (!image->filename) {
+        printf("[DEBUG image_open] FAIL: dup_string\n");
         image_close(image);
         return NULL;
     }
@@ -225,17 +266,22 @@ image_t *image_open(const char *filename, bool writable) {
     image->type = classify_image(raw_size);
     image->writable = final_writable;
     image->from_diskcopy = is_diskcopy;
+    printf("[DEBUG image_open] type=%d writable=%d block_check=%zu\n", image->type, image->writable,
+           image->raw_size % STORAGE_BLOCK_SIZE);
     if ((image->raw_size % STORAGE_BLOCK_SIZE) != 0) {
+        printf("[DEBUG image_open] FAIL: raw_size %% STORAGE_BLOCK_SIZE != 0\n");
         image_close(image);
         return NULL;
     }
     // Determine storage root: use GS_STORAGE_CACHE if set, else adjacent to image
     const char *cache_root = getenv("GS_STORAGE_CACHE");
+    printf("[DEBUG image_open] cache_root='%s'\n", cache_root ? cache_root : "(null)");
     if (cache_root && *cache_root) {
         // Redirect storage to cache directory
         // Resolve to absolute path to handle relative disk paths correctly
         char *abs_filename = realpath(filename, NULL);
         if (!abs_filename) {
+            printf("[DEBUG image_open] FAIL: realpath failed for '%s'\n", filename);
             LOG(1, "image_open: realpath failed for %s", filename);
             image_close(image);
             return NULL;
@@ -246,36 +292,57 @@ image_t *image_open(const char *filename, bool writable) {
         // Legacy: create .blocks/ directory adjacent to image file
         image->storage_root = str_printf("%s%s", filename, STORAGE_ROOT_SUFFIX);
     }
+    printf("[DEBUG image_open] storage_root='%s'\n", image->storage_root ? image->storage_root : "(null)");
     if (!image->storage_root) {
+        printf("[DEBUG image_open] FAIL: storage_root is null\n");
         image_close(image);
         return NULL;
     }
     // Create storage directory (with intermediate directories if using cache)
     int mkdir_rc = cache_root ? mkdir_recursive(image->storage_root) : mkdir_if_needed(image->storage_root);
+    printf("[DEBUG image_open] mkdir_rc=%d\n", mkdir_rc);
     if (mkdir_rc != 0) {
+        printf("[DEBUG image_open] FAIL: mkdir failed for '%s'\n", image->storage_root);
         LOG(1, "image_open: failed to create storage directory %s", image->storage_root);
         image_close(image);
         return NULL;
     }
     bool need_seed = !storage_dir_contains_ranges(image->storage_root);
+    printf("[DEBUG image_open] need_seed=%d\n", need_seed);
     storage_config_t config = {0};
     config.path_dir = image->storage_root;
     config.block_count = image->raw_size / STORAGE_BLOCK_SIZE;
     config.block_size = STORAGE_BLOCK_SIZE;
     config.consolidations_per_tick = 1;
     int err = storage_new(&config, &image->storage);
+    printf("[DEBUG image_open] storage_new=%d\n", err);
+    // If storage_new failed and the directory had existing data, clear stale
+    // storage (e.g. from a previous image with a different block count) and retry
+    if (err != GS_SUCCESS && !need_seed) {
+        printf("[DEBUG image_open] clearing stale storage and retrying\n");
+        LOG(1, "image_open: stale storage for %s, clearing and retrying", filename);
+        clear_directory(image->storage_root);
+        need_seed = true;
+        err = storage_new(&config, &image->storage);
+        printf("[DEBUG image_open] storage_new retry=%d\n", err);
+    }
     if (err != GS_SUCCESS) {
+        printf("[DEBUG image_open] FAIL: storage_new returned %d\n", err);
         LOG(1, "image_open: storage_new failed for %s (%d)", filename, err);
         image_close(image);
         return NULL;
     }
     if (need_seed) {
-        if (image_seed_storage(image) != 0) {
+        int seed_rc = image_seed_storage(image);
+        printf("[DEBUG image_open] seed_rc=%d\n", seed_rc);
+        if (seed_rc != 0) {
+            printf("[DEBUG image_open] FAIL: image_seed_storage returned %d\n", seed_rc);
             LOG(1, "image_open: failed to seed storage for %s", filename);
             image_close(image);
             return NULL;
         }
     }
+    printf("[DEBUG image_open] SUCCESS for '%s'\n", filename);
     return image;
 }
 

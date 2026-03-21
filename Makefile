@@ -209,7 +209,8 @@ copy-static: $(STATIC_HTML) $(STATIC_JS) $(STATIC_CSS)
 
 # -- Run --
 # Optional boot-media variables (paths relative to repo root):
-#   ROM=path/to/rom.bin   FD0=path/to/floppy.img
+#   ROM=path/to/rom.bin   VROM=path/to/vrom.bin
+#   FD0=path/to/floppy.img  FD1=path/to/floppy2.img
 #   HD0=path/to/hd.zip    HD1=...  (up to HD7)
 #   SPEED=max|realtime|hardware
 
@@ -218,8 +219,14 @@ RUN_PARAMS :=
 ifdef ROM
 RUN_PARAMS += rom=/$(ROM)
 endif
+ifdef VROM
+RUN_PARAMS += vrom=/$(VROM)
+endif
 ifdef FD0
 RUN_PARAMS += fd0=/$(FD0)
+endif
+ifdef FD1
+RUN_PARAMS += fd1=/$(FD1)
 endif
 ifdef HD0
 RUN_PARAMS += hd0=/$(HD0)

@@ -37,6 +37,10 @@ void scc_checkpoint(scc_t *restrict scc, checkpoint_t *checkpoint);
 
 void scc_clock(scc_t *restrict scc, int n);
 
+// Set the BRG source clock frequencies (Hz) for accurate baud-rate timing.
+// pclk_hz: PCLK input (e.g. 7833600 for C8M); rtxc_hz: RTxC input (e.g. 3686400).
+void scc_set_clocks(scc_t *restrict scc, uint32_t pclk_hz, uint32_t rtxc_hz);
+
 void scc_reset(scc_t *restrict scc);
 
 void scc_set_dcd_a(scc_t *restrict scc, unsigned char val);

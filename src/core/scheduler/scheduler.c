@@ -607,10 +607,10 @@ void scheduler_checkpoint(struct scheduler *restrict scheduler, checkpoint_t *ch
         events_to_save[i].timestamp = e->timestamp;
         events_to_save[i].data = e->data;
 
-        // Look up names by callback (source pointers are runtime-specific)
+        // Look up names by source+callback pair
         bool found = false;
         for (int j = 0; j < scheduler->num_event_types; j++) {
-            if (scheduler->event_types[j].callback == e->callback) {
+            if (scheduler->event_types[j].callback == e->callback && scheduler->event_types[j].source == e->source) {
                 memcpy(events_to_save[i].source_name, scheduler->event_types[j].source_name,
                        sizeof(events_to_save[i].source_name));
                 memcpy(events_to_save[i].event_name, scheduler->event_types[j].event_name,
@@ -691,10 +691,16 @@ void scheduler_new_event_type(struct scheduler *restrict scheduler, const char *
     GS_ASSERT(callback != NULL);
     GS_ASSERT(scheduler->num_event_types < MAX_EVENT_TYPES);
 
-    // Skip if already registered (one type per callback function)
+    // Update names if already registered (match on both callback AND source to allow
+    // the same callback with different source pointers, e.g. VIA1 vs VIA2)
     for (int i = 0; i < scheduler->num_event_types; i++) {
-        if (scheduler->event_types[i].callback == callback)
+        if (scheduler->event_types[i].callback == callback && scheduler->event_types[i].source == source) {
+            // Update names (allows via_set_instance_name to relabel entries)
+            strncpy(scheduler->event_types[i].source_name, source_name,
+                    sizeof(scheduler->event_types[i].source_name) - 1);
+            strncpy(scheduler->event_types[i].event_name, event_name, sizeof(scheduler->event_types[i].event_name) - 1);
             return;
+        }
     }
 
     event_type_t *et = &scheduler->event_types[scheduler->num_event_types];

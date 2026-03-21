@@ -934,6 +934,9 @@ static void se30_init(config_t *cfg, checkpoint_t *checkpoint) {
     // Set SE/30 CPU clock frequency (15.6672 MHz = 2x Plus clock)
     scheduler_set_frequency(cfg->scheduler, cfg->machine->cpu_clock_hz);
 
+    // Register VBL slot deassert event type for checkpoint save/restore
+    scheduler_new_event_type(cfg->scheduler, "se30", cfg, "vbl_slot_deassert", &se30_vbl_slot_deassert);
+
     // Restore global interrupt state after scheduler
     if (checkpoint)
         system_read_checkpoint_data(checkpoint, &cfg->irq, sizeof(cfg->irq));
@@ -944,13 +947,18 @@ static void se30_init(config_t *cfg, checkpoint_t *checkpoint) {
     // Initialise SCC (NULL map: SE/30 I/O dispatcher handles addressing)
     cfg->scc = scc_init(NULL, cfg->scheduler, se30_scc_irq, cfg, checkpoint);
 
+    // SCC PCLK = C8M (7.8336 MHz), RTxC = 3.6864 MHz baud-rate crystal
+    scc_set_clocks(cfg->scc, 7833600, 3686400);
+
     // Initialise VIA1 (NULL map: I/O dispatcher handles addressing)
     // VIA1: system events — VBL, ADB data (shift register), timers
     cfg->via1 = via_init(NULL, cfg->scheduler, se30_via1_output, se30_via1_shift_out, se30_via1_irq, cfg, checkpoint);
+    via_set_instance_name(cfg->via1, "via1");
 
     // Initialise VIA2 (NULL map: I/O dispatcher handles addressing)
     // VIA2: expansion — NuBus/PDS slots, SCSI, ASC interrupts, ADB control, RTC
     cfg->via2 = via_init(NULL, cfg->scheduler, se30_via2_output, se30_via2_shift_out, se30_via2_irq, cfg, checkpoint);
+    via_set_instance_name(cfg->via2, "via2");
 
     // Wire RTC 1-second tick to VIA1 CA2
     rtc_set_via(cfg->rtc, cfg->via1);
