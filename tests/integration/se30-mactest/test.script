@@ -1,0 +1,19 @@
+# Integration test: SE/30 MacTest Boot
+# Boots SE/30 from MacTest SE/30 floppy disk (800K DiskCopy),
+# dismisses the splash screen, and verifies the main test UI appears.
+
+# Boot past Happy Mac through splash screens
+run 490000000
+
+# Click to dismiss the "MacTest SE/30 Version F1.0" splash
+mouse-button down
+run 2000000
+mouse-button up
+
+# Let the main test UI render
+run 30000000
+
+# Verify the MacTest main UI is displayed
+screenshot --match mactest-ui.png
+
+quit

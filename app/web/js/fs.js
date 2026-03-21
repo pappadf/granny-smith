@@ -69,6 +69,16 @@ export function fileExists(p) {
   try { FS.stat(p); return true; } catch (_) { return false; }
 }
 
+// Remove all files inside a directory (ignores missing or empty directories).
+export function clearDirContents(dirPath) {
+  try {
+    for (const name of FS.readdir(dirPath)) {
+      if (name === '.' || name === '..') continue;
+      try { FS.unlink(`${dirPath}/${name}`); } catch (_) {}
+    }
+  } catch (_) {}
+}
+
 // Convenience path helpers
 export function romPath() { return `${BOOT_DIR}/rom`; }
 export function floppySlotPath(idx) { return `${BOOT_DIR}/fd${idx}`; }

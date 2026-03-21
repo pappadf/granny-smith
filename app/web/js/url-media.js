@@ -4,7 +4,7 @@
 // Handles URL parameter media provisioning: fetches images from URL params,
 // stores them in the persistent boot directory, and issues mount commands.
 import { BOOT_DIR } from './config.js';
-import { ensureDir, writeBinary, romPath, romExists, latestRomPath, latestRomExists, fileExists, hdSlotPath, getFS, persistSync } from './fs.js';
+import { ensureDir, writeBinary, romPath, romExists, latestRomPath, latestRomExists, fileExists, hdSlotPath, getFS, persistSync, clearDirContents } from './fs.js';
 import { isModuleReady } from './emulator.js';
 import { toast, showRomOverlay, hideRomOverlay, enableRunButton } from './ui.js';
 import { sanitizeName } from './media.js';
@@ -72,6 +72,9 @@ async function fetchAndStore(slot, url) {
     const isPeelerArch = /\.(sit|hqx|cpt|bin|sea)(_|$)/i.test(fileName);
     const path = `${BOOT_DIR}/${slot}`;
     console.log(`[url-media] ${slot}: fileName=${fileName} isZip=${isZip} isPeeler=${isPeelerArch} destPath=${path}`);
+
+    // Clear stale block storage so image_open will re-seed from the fresh download
+    clearDirContents(`${path}.blocks`);
 
     if (isZip) {
       try {
