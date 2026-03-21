@@ -24,13 +24,13 @@
 // Constants and Macros
 // ============================================================================
 
-#define MAC_VBL_FREQUENCY     60.15 // 60 vertical blanking interrupts per second
-#define MAC_VBL_PERIOD        (1.0 / MAC_VBL_FREQUENCY) // period of one VBL in seconds
-#define CYCLES_PER_INSTR_HW   12 // cycles per instruction for hardware accuracy mode
-#define CYCLES_PER_INSTR_FAST 4 // cycles per instruction for realtime and max speed modes
-#define MAC_CPU_FREQUENCY     7833600.0
-#define MAX_EVENT_TYPES       32
-#define MAX_SANE_EVENTS       10000 // upper bound for event queue length sanity checks
+#define MAC_VBL_FREQUENCY             60.15 // 60 vertical blanking interrupts per second
+#define MAC_VBL_PERIOD                (1.0 / MAC_VBL_FREQUENCY) // period of one VBL in seconds
+#define CYCLES_PER_INSTR_HW_DEFAULT   12 // default cycles per instruction for hardware accuracy mode
+#define CYCLES_PER_INSTR_FAST_DEFAULT 4 // default cycles per instruction for realtime and max speed modes
+#define MAC_CPU_FREQUENCY             7833600.0
+#define MAX_EVENT_TYPES               32
+#define MAX_SANE_EVENTS               10000 // upper bound for event queue length sanity checks
 
 #define MIN(a, b) ((a) < (b) ? (a) : (b))
 
@@ -74,6 +74,10 @@ struct scheduler {
     double host_secs_per_vbl; // smoothed host seconds per VBL
     double host_secs_per_loop; // smoothed host seconds per main loop iteration
 
+    // Per-machine cycles-per-instruction tuning
+    uint32_t cpi_hw; // cycles per instruction for hardware accuracy mode
+    uint32_t cpi_fast; // cycles per instruction for realtime and max speed modes
+
     // Event type registry for checkpointing
     event_type_t event_types[MAX_EVENT_TYPES];
     int num_event_types;
@@ -110,11 +114,11 @@ static inline uint32_t avg_cycles_per_instr(struct scheduler *s) {
     GS_ASSERT(s != NULL);
     switch (s->mode) {
     case schedule_hw_accuracy:
-        return CYCLES_PER_INSTR_HW;
+        return s->cpi_hw;
     case schedule_real_time:
     case schedule_max_speed:
     default:
-        return CYCLES_PER_INSTR_FAST;
+        return s->cpi_fast;
     }
 }
 
@@ -497,6 +501,8 @@ struct scheduler *scheduler_init(struct cpu *cpu, checkpoint_t *checkpoint) {
     s->host_secs_per_vbl = NAN;
     s->host_secs_per_loop = 1.0 / 60.0;
     s->frequency = 7833600;
+    s->cpi_hw = CYCLES_PER_INSTR_HW_DEFAULT;
+    s->cpi_fast = CYCLES_PER_INSTR_FAST_DEFAULT;
     s->num_event_types = 0;
     memset(s->event_types, 0, sizeof(s->event_types));
 
@@ -517,7 +523,7 @@ struct scheduler *scheduler_init(struct cpu *cpu, checkpoint_t *checkpoint) {
 
         // Reconstruct instruction count from restored cycle counter.
         // Must use restored mode's CPI since global scheduler pointer is not yet updated.
-        uint32_t restored_cpi = (s->mode == schedule_hw_accuracy) ? CYCLES_PER_INSTR_HW : CYCLES_PER_INSTR_FAST;
+        uint32_t restored_cpi = (s->mode == schedule_hw_accuracy) ? s->cpi_hw : s->cpi_fast;
         s->total_instructions = s->cpu_cycles / restored_cpi;
         s->sprint_total = 0;
         s->sprint_burndown = 0;
@@ -843,6 +849,16 @@ void scheduler_set_frequency(struct scheduler *restrict s, uint32_t frequency_hz
         return;
     GS_ASSERT(frequency_hz > 0);
     s->frequency = frequency_hz;
+}
+
+// Set per-machine cycles-per-instruction for each scheduler mode
+void scheduler_set_cpi(struct scheduler *restrict s, uint32_t cpi_hw, uint32_t cpi_fast) {
+    if (!s)
+        return;
+    GS_ASSERT(cpi_hw > 0);
+    GS_ASSERT(cpi_fast > 0);
+    s->cpi_hw = cpi_hw;
+    s->cpi_fast = cpi_fast;
 }
 
 // Run the scheduler for a specified number of instructions
