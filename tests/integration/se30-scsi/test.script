@@ -2,7 +2,7 @@
 # This script boots the SE/30 emulator from a SCSI hard disk and verifies it reaches the desktop
 
 # Boot with VBL-based timing (~120M instructions for full boot)
-run 120000000
+run 60000000
 
 # Compare screen against reference desktop image
 screenshot --match desktop.png

@@ -2,24 +2,24 @@
 # Boots SE/30 from a System 7.1 floppy disk and verifies the display.
 
 # Boot to Finder desktop
-run 800000000
+run 535000000
 
 # Verify the screen matches the reference image
 screenshot --match finder.png
 
 set-mouse 50 50
 
-run 400000000
+run 5000000
 
 set-mouse 25 10
-run 4000000
+run 2000000
 mouse-button down
 run 4000000
 set-mouse 25 30
-run 4000000
+run 2000000
 mouse-button up
 
-run 400000000
+run 45000000
 
 screenshot --match about.png
 
