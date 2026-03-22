@@ -16,4 +16,13 @@ run 30000000
 # Verify the MacTest main UI is displayed
 screenshot --match mactest-ui.png
 
+# Move mouse to a new position and verify it moves on screen
+set-mouse 400 200
+run 5000000
+screenshot --match mactest-mouse.png
+
+# Let MacTest continue running without crashing
+run 50000000
+screenshot --match mactest-stable.png
+
 quit

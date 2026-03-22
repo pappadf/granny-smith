@@ -515,7 +515,15 @@ static void fpu_movem_control(cpu_t *cpu, fpu_state_t *fpu, uint16_t opcode, uin
 
     if ((ext >> 13) & 1) {
         // Control registers → EA (save)
-        if (ea_mode == 4) {
+        if (ea_mode == 0) {
+            // Dn — single register only
+            if (regsel & 4)
+                cpu->d[ea_reg] = fpu->fpcr;
+            if (regsel & 2)
+                cpu->d[ea_reg] = fpu->fpsr;
+            if (regsel & 1)
+                cpu->d[ea_reg] = fpu->fpiar;
+        } else if (ea_mode == 4) {
             // -(An) predecrement
             uint32_t addr = cpu->a[ea_reg];
             // Write in reverse order: FPIAR, FPSR, FPCR
