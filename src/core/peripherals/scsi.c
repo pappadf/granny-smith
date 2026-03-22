@@ -248,9 +248,9 @@ static void phase_arbitration(scsi_t *scsi) {
     scsi->bus.phase = scsi_arbitration;
 }
 
-// Transition SCSI bus to selection phase
+// Transition SCSI bus to selection phase (from arbitration or bus-free for non-arbitrated selection)
 static void phase_selection(scsi_t *scsi) {
-    assert(scsi->bus.phase == scsi_arbitration);
+    assert(scsi->bus.phase == scsi_arbitration || scsi->bus.phase == scsi_bus_free);
 
     scsi->bus.phase = scsi_selection;
 }
