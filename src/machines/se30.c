@@ -387,10 +387,8 @@ static void se30_build_vrom_fallback(uint8_t *rom) {
 }
 
 // Try to load the real SE/30 VROM from a file.
-// Falls back to synthesising a minimal VROM if the file is not found.
-// Define SE30_FORCE_SYNTHETIC_VROM to skip file search and always synthesize.
-static void se30_load_vrom(config_t *cfg, uint8_t *vrom_buf) {
-#ifndef SE30_FORCE_SYNTHETIC_VROM
+// Returns true if a real VROM was loaded, false if not found.
+static bool se30_load_vrom(config_t *cfg, uint8_t *vrom_buf) {
     // Search well-known paths for the real 32 KB VROM binary
     static const char *search_paths[] = {"tests/data/roms/SE30.vrom", "SE30.vrom", NULL};
 
@@ -401,12 +399,11 @@ static void se30_load_vrom(config_t *cfg, uint8_t *vrom_buf) {
             fclose(f);
             if (n == SE30_VROM_SIZE) {
                 LOG(1, "Loaded real VROM from %s (%zu bytes)", *p, n);
-                return;
+                return true;
             }
         }
     }
 
-    // Also search in the same directory as the ROM file
     // Also search in the same directory as the ROM file.
     // Use pending_rom_path since rom_filename isn't set yet during init.
     const char *rom_path = memory_pending_rom_path();
@@ -426,18 +423,17 @@ static void se30_load_vrom(config_t *cfg, uint8_t *vrom_buf) {
                     fclose(f);
                     if (n == SE30_VROM_SIZE) {
                         LOG(1, "Loaded real VROM from %s (%zu bytes)", vrom_path, n);
-                        return;
+                        return true;
                     }
                 }
             }
         }
     }
-#else
-    (void)cfg;
-#endif
 
-    LOG(1, "Using synthesized fallback VROM");
-    se30_build_vrom_fallback(vrom_buf);
+    LOG(0, "FATAL: Real VROM (SE30.vrom) not found. "
+           "The SE/30 requires a real Video ROM for proper VBL interrupt setup. "
+           "Place SE30.vrom next to the ROM file or in tests/data/roms/.");
+    return false;
 }
 
 // ============================================================
@@ -1062,7 +1058,12 @@ static void se30_init(config_t *cfg, checkpoint_t *checkpoint) {
     // Load the real SE/30 video declaration ROM from disk
     se30->vrom = calloc(1, SE30_VROM_SIZE);
     assert(se30->vrom != NULL);
-    se30_load_vrom(cfg, se30->vrom);
+    if (!se30_load_vrom(cfg, se30->vrom)) {
+        fprintf(stderr, "Error: SE/30 Video ROM (SE30.vrom) not found.\n"
+                        "The SE/30 emulator requires a real VROM file for proper operation.\n"
+                        "Place SE30.vrom next to the ROM file or in tests/data/roms/.\n");
+        exit(1);
+    }
 
     // Create the 68030 PMMU and make it globally reachable
     uint8_t *ram_base = ram_native_pointer(cfg->mem_map, 0);

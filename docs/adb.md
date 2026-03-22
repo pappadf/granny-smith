@@ -650,12 +650,20 @@ The emulator implements this via `adb_autopoll_deferred`, a scheduler callback:
    it cancels any stale auto-poll and schedules a new one at 11 ms.
 2. **Checks for pending data**: Mouse deltas, keyboard queue entries, or a held
    mouse button all count as pending.
-3. **Signals the ROM**: Prepares a Talk R0 reply for the device with data, then
-   fires IFR_SR with bit3=HIGH. The ROM's `FDBShiftInt` picks up from
-   `ShiftIntResume` and fetches bytes via EVEN/ODD transitions.
-4. **Silent reschedule**: If no device has data, reschedules at 11 ms without
+3. **Polls `last_poll_addr`**: Always repeats the last Talk R0 target issued by
+   the ROM (tracked in `last_poll_addr`). The emulator does NOT choose which
+   device to poll — this matches real transceiver behaviour.
+4. **Has-data path**: If `last_poll_addr` device has pending data, prepares a
+   Talk R0 reply and fires IFR_SR with bit3=HIGH and a 0xFF wake-up byte in SR.
+   The ROM's `FDBShiftInt` picks up from `ShiftIntResume` and fetches actual
+   reply bytes via EVEN/ODD transitions (starting from `reply_index` 0).
+5. **SRQ path**: If `last_poll_addr` device has no data but another device does,
+   fires IFR_SR with bit3=LOW (SRQ). The ROM's SRQ handler then sends explicit
+   Talk R0 commands to each registered device slot. Idle devices return no-reply
+   (timeout), so the scan advances until it finds the device with data.
+6. **Silent reschedule**: If no device has data, reschedules at 11 ms without
    firing IFR_SR — the ROM stays waiting.
-5. **Fast reschedule on input**: `adb_keyboard_event` and `adb_mouse_event`
+7. **Fast reschedule on input**: `adb_keyboard_event` and `adb_mouse_event`
    reschedule the auto-poll with a short delay (`ADB_SHIFT_DELAY`) so new
    input is picked up promptly rather than waiting for the next 11 ms tick.
 
@@ -745,15 +753,20 @@ overwriting the ROM's SR writes and corrupting the data stream.
 
 ### Null Responses
 
-| Device | No-data response |
-|--------|-----------------|
-| Keyboard (no keys pending) | `0xFF 0xFF` (2 bytes, reply_len=2) |
-| Mouse (no movement, button up) | `0x80 0x80` (2 bytes, reply_len=2) |
-| Unknown/absent address | dummy byte only (reply_len=0, bit 3 = LOW immediately) |
+| Device | Has pending data | Response |
+|--------|-----------------|----------|
+| Keyboard (keys queued) | yes | 2-byte register 0 data (reply_len=2) |
+| Mouse (movement/button change) | yes | 2-byte register 0 data (reply_len=2) |
+| Keyboard (no keys pending) | no | no-reply (reply_len=0, bit 3 = LOW immediately) |
+| Mouse (no movement, button up) | no | no-reply (reply_len=0, bit 3 = LOW immediately) |
+| Unknown/absent address | — | no-reply (reply_len=0, bit 3 = LOW immediately) |
 
-Note: keyboard and mouse **always** return 2-byte replies, even with no pending
-data. The "idle" responses (`0xFF 0xFF` and `0x80 0x80`) are valid data that the
-ROM processes normally. Only unknown addresses produce no-reply (reply_len=0).
+On real ADB hardware, a device with no pending data does **not** drive the bus in
+response to Talk R0 — the transceiver sees a timeout. The emulator matches this:
+`prepare_talk_reply()` checks `device_has_pending_data()` and returns a no-reply
+(timeout) for idle devices. This is critical for the ROM's SRQ scan, which polls
+each registered device with explicit Talk R0 commands after detecting an SRQ.
+Idle devices must timeout so the scan advances to the device with actual data.
 
 ### Timing Constraints
 
@@ -801,6 +814,22 @@ idle state; this fires IFR_SR to restart the ROM's ADB state machine. Fix:
 implemented `adb_autopoll_deferred`, a scheduler callback that prepares a Talk R0
 reply and fires IFR_SR when a device has pending data. See
 `docs/adb-debug-handover.md` for the full investigation history.
+
+**BUG-008** (fixed): Mouse pointer froze on SE/30 after MacTest installed a
+custom ADB mouse handler via `_SetADBInfo`. Two sub-issues:
+
+(a) *Autopoll device override*: `adb_autopoll_deferred` chose which device to
+poll based on pending data, overriding `last_poll_addr`. The ROM keeps a
+device-handler pointer at `$134(ADBBase)` that corresponds to `last_poll_addr`;
+overriding the target caused the ROM to dispatch mouse data to the keyboard
+handler, which discarded it. Fix: always poll `last_poll_addr`; signal SRQ
+(bit3=LOW) when a different device has data so the ROM's SRQ handler discovers it.
+
+(b) *Talk R0 idle response*: `prepare_talk_reply` always returned 2-byte data for
+known devices, even with nothing pending (keyboard: `FF FF`, mouse: `80 80`).
+On real ADB, idle devices do not respond (bus timeout). This prevented the ROM's
+SRQ scan from advancing past idle devices to the one with actual data. Fix: added
+`device_has_pending_data()` check; idle devices now return no-reply (timeout).
 
 ## Source References
 

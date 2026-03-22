@@ -244,6 +244,17 @@ static bool has_pending_data(const adb_t *adb) {
     return !kbd_queue_empty(adb) || adb->mouse_data_pending || adb->mouse_button;
 }
 
+// Returns true if the device at the given ADB address has unreported data.
+// On real hardware, a device with no pending data simply doesn't respond to
+// Talk R0 — the transceiver sees a timeout and stays quiet.
+static bool device_has_pending_data(const adb_t *adb, uint8_t addr) {
+    if (addr == adb->kbd.address)
+        return !kbd_queue_empty(adb);
+    if (addr == adb->mouse.address)
+        return adb->mouse_data_pending || adb->mouse_button;
+    return false;
+}
+
 // Resets all ADB devices to power-on defaults and clears all data queues
 static void adb_reset(adb_t *adb) {
     LOG(2, "adb_reset: resetting all devices to defaults");
@@ -350,7 +361,15 @@ static void prepare_talk_reply(adb_t *adb, uint8_t addr, uint8_t reg) {
     adb->reply_index = 0;
 
     if (reg == 0) {
-        if (addr == adb->kbd.address) {
+        // On real ADB hardware, a device with no new data does not drive the
+        // bus in response to Talk R0 — the transceiver sees a timeout.  This
+        // is critical for the ROM's SRQ scan: after SRQ, the ROM polls each
+        // registered device in turn; only the device with pending data should
+        // respond.  Idle devices must timeout so the scan advances.
+        if (!device_has_pending_data(adb, addr)) {
+            LOG(2, "talk R0 addr=%d: no pending data (timeout)", addr);
+            prepare_no_device_reply(adb);
+        } else if (addr == adb->kbd.address) {
             prepare_kbd_reply(adb);
             LOG(2, "talk R0 kbd: [%02X %02X]", adb->reply_buf[0], adb->reply_buf[1]);
         } else if (addr == adb->mouse.address) {
@@ -510,6 +529,19 @@ static void adb_shift_complete_deferred(void *source, uint64_t data) {
 // bit3=HIGH so the ROM's FDBShiftInt handler can fetch the reply bytes via
 // EVEN/ODD transitions.  When no device responds, the transceiver stays quiet
 // and reschedules the next poll — the ROM remains waiting at ShiftIntResume.
+//
+// Important: the real transceiver always repeats the LAST Talk R0 command
+// issued by the ROM (tracked in last_poll_addr).  It does NOT choose which
+// device to poll.  If a non-active device has data, the transceiver signals
+// SRQ (bit3=LOW) during the idle response so the ROM's SRQ handler can
+// discover and poll the correct device.  Overriding the poll address broke
+// the SE/30 ROM's ADB state machine because the ROM's device-handler pointer
+// at $134(ADBBase) was set for last_poll_addr, not for the device we chose.
+//
+// The SR byte written during autopoll serves only as a wake-up: the ROM's
+// FDBShiftInt ISR uses IFR_SR to enter the handler but does not process the
+// SR value as data.  Actual reply bytes are read via EVEN/ODD port-B state
+// transitions, so reply_index must be 0 when the autopoll fires.
 static void adb_autopoll_deferred(void *source, uint64_t data) {
     (void)data;
     adb_t *adb = (adb_t *)source;
@@ -522,43 +554,39 @@ static void adb_autopoll_deferred(void *source, uint64_t data) {
         return;
 
     if (!has_pending_data(adb)) {
-        // No device has data: mimic the transceiver SRQ timeout.  The real
-        // transceiver gets no response and simply tries again after the next
-        // interval.  Don't fire IFR_SR — the ROM stays waiting.
+        // No device has data: the real transceiver gets no response and stays
+        // quiet.  Don't fire IFR_SR — the ROM remains waiting.
         LOG(3, "autopoll: no pending data, rescheduling");
         scheduler_new_cpu_event(adb->scheduler, &adb_autopoll_deferred, adb, 0, 0, ADB_AUTOPOLL_INTERVAL);
         return;
     }
 
-    // Choose the device with pending data.  The real transceiver only repeats
-    // last_poll_addr, but we peek at which device actually has data so that
-    // keyboard events arriving between polls get delivered promptly.
+    // Always repeat the last Talk R0 target, matching real transceiver behaviour.
     uint8_t poll_addr = adb->last_poll_addr;
-    if (adb->mouse_data_pending || adb->mouse_button)
-        poll_addr = adb->mouse.address;
-    else if (!kbd_queue_empty(adb))
-        poll_addr = adb->kbd.address;
+    bool polled_device_has_data = device_has_pending_data(adb, poll_addr);
 
-    // Prepare Talk R0 reply for the selected device
-    prepare_talk_reply(adb, poll_addr, 0);
-
-    if (adb->reply_len > 0) {
-        // Device has data: signal the ROM by firing IFR_SR with bit3=HIGH.
-        // The ROM's FDBShiftInt entry checks BTST #3 on port B; bit3=HIGH
-        // means "service request / data available".  The resume handler then
-        // transitions port B through EVEN/ODD to read the actual reply bytes,
-        // which our existing EVEN/ODD handler delivers via adb_deliver_next_byte.
+    if (polled_device_has_data) {
+        // Last-polled device has data: prepare reply and fire IFR_SR with
+        // bit3=HIGH so the ROM's FDBShiftInt handler enters the data path.
+        // The ROM's exit/idle handler calls the device handler at $134(ADBBase),
+        // which was set up for last_poll_addr — so it matches correctly.
+        // The SR byte (0xFF) is a wake-up only; actual data is delivered via
+        // EVEN/ODD transitions starting from reply_index 0.
+        prepare_talk_reply(adb, poll_addr, 0);
         LOG(2, "autopoll: addr=%d has data, signalling ROM", poll_addr);
         adb->reply_index = 0;
         adb->dummy_sent = false;
         set_adb_int(adb, true); // bit3=HIGH → data available
-        via_input_sr(adb->via, 0xFF); // fire IFR_SR to wake the ROM
+        via_input_sr(adb->via, 0xFF); // wake-up byte fires IFR_SR
     } else {
-        // No device at this address: signal timeout with bit3=LOW.
-        // The ROM marks this as a NoReply and issues the next queued request.
-        LOG(3, "autopoll: addr=%d timeout, signalling ROM", poll_addr);
-        set_adb_int(adb, false); // bit3=LOW → no reply / SRQ
-        via_input_sr(adb->via, 0xFF); // fire IFR_SR for the timeout path
+        // Last-polled device has no data, but another device does (SRQ case).
+        // Signal SRQ (bit3=LOW) to prompt the ROM's SRQ handler to poll other
+        // devices and discover which one needs attention.
+        LOG(2, "autopoll: addr=%d no data, SRQ for other device", poll_addr);
+        adb->reply_len = 0;
+        adb->reply_index = 0;
+        set_adb_int(adb, false); // bit3=LOW → SRQ from another device
+        via_input_sr(adb->via, 0xFF); // fire IFR_SR for the SRQ path
     }
 }
 
