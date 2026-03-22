@@ -143,6 +143,7 @@ test-%: $(HEADLESS_BIN) FORCE
 		echo "ERROR: ROM not found: $$ROM_PATH"; \
 		exit 1; \
 	fi; \
+	rm -rf "$(abspath $(STORAGE_CACHE))"; \
 	TEST_TMPDIR=$$(mktemp -d); \
 	TEST_RESULTS_DIR="$(abspath $(TEST_RESULTS_BASE))/$*"; \
 	mkdir -p "$$TEST_RESULTS_DIR"; \
@@ -218,6 +219,7 @@ test-valgrind-%: $(HEADLESS_BIN) FORCE
 		echo "ERROR: ROM not found: $$ROM_PATH"; \
 		exit 1; \
 	fi; \
+	rm -rf "$(abspath $(STORAGE_CACHE))"; \
 	TEST_TMPDIR=$$(mktemp -d); \
 	TEST_RESULTS_DIR="$(abspath $(TEST_RESULTS_BASE))/$*"; \
 	mkdir -p "$$TEST_RESULTS_DIR"; \
