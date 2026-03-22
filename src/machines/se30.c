@@ -1264,7 +1264,7 @@ const hw_profile_t machine_se30 = {
     .cpu_model = 68030,
     .cpu_clock_hz = 15667200,
     .mmu_present = true,
-    .fpu_present = false, // optional 68882, not emulated yet
+    .fpu_present = true, // 68882 FPU standard on SE/30
 
     // 32-bit address space
     .address_bits = 32,
