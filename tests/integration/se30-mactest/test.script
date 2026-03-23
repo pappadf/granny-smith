@@ -1,28 +1,39 @@
 # Integration test: SE/30 MacTest Boot
 # Boots SE/30 from MacTest SE/30 floppy disk (800K DiskCopy),
-# dismisses the splash screen, and verifies the main test UI appears.
 
 # Boot past Happy Mac through splash screens
 run 490000000
+run 90000000
+run 2000000
+run 190000000
 
-# Click to dismiss the "MacTest SE/30 Version F1.0" splash
+screenshot --match scsi-warning.png
+
+# Click "OK" re. the scsi warning
+set-mouse 95 295 --global
+run 20000000
 mouse-button down
 run 2000000
 mouse-button up
+run 20000000
 
-# Let the main test UI render
-run 30000000
+# We should be back on the main screen now
+screenshot --match main.png
 
-# Verify the MacTest main UI is displayed
-screenshot --match mactest-ui.png
+# Start the test
+set-mouse 100 115 --global
+run 2000000
+mouse-button down
+run 2000000
+mouse-button up
+run 20000000
 
-# Move mouse to a new position and verify it moves on screen
-set-mouse 400 200
-run 5000000
-screenshot --match mactest-mouse.png
+# We should be running the VIA tests now
+screenshot --match via.png
 
-# Let MacTest continue running without crashing
-run 50000000
-screenshot --match mactest-stable.png
+# Run enough to let the test finish
+run 200000000
+
+screenshot --match loopback-missing.png
 
 quit

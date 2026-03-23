@@ -2,7 +2,7 @@
 # Boots SE/30 from a System 7.1 floppy disk and verifies the display.
 
 # Boot to Finder desktop
-run 535000000
+run 800000000
 
 # Verify the screen matches the reference image
 screenshot --match finder.png

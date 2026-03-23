@@ -64,9 +64,8 @@ static const char *via_reg_names[] = {"ORB/IRB", "ORA/IRA", "DDRB", "DDRA", "T1C
 
 #define MAC_CPU_CLOCK 7833600
 
-#define FREQ_FACTOR 10 // fix
-
-// VIA timers are decremented every 1.2766us (= 783,336Hz), i.e. 1/10 of the Mac Plus CPU frequency
+// Default timer frequency divisor: CPU clock / freq_factor = VIA φ2 clock (~783 kHz)
+#define DEFAULT_FREQ_FACTOR 10
 
 // ============================================================================
 // Type Definitions (Private)
@@ -110,15 +109,18 @@ struct via {
     via_shift_out_fn shift_cb;
     via_irq_fn irq_cb;
     void *cb_context;
+
+    // CPU-to-VIA clock divisor: CPU_clock / freq_factor ≈ 783 kHz VIA φ2 clock
+    uint8_t freq_factor;
 };
 
 // ============================================================================
 // Static Helpers
 // ============================================================================
 
-// Convert CPU cycles to VIA timer cycles (1/10 ratio)
-uint64_t cpu_to_via_cycles(uint64_t scheduler_cpu_cycles) {
-    return scheduler_cpu_cycles / FREQ_FACTOR;
+// Convert CPU cycles to VIA timer cycles using per-instance divisor
+static uint64_t cpu_to_via_cycles(via_t *via, uint64_t scheduler_cpu_cycles) {
+    return scheduler_cpu_cycles / via->freq_factor;
 }
 
 // Update the interrupt flag register and invoke IRQ callback if aggregate changes
@@ -145,7 +147,7 @@ static uint16_t read_timer(via_t *restrict via, int timer) {
     // after timeout.
     uint64_t now = scheduler_cpu_cycles(via->scheduler);
     GS_ASSERT(now >= via->timers[timer].start_timestamp);
-    uint64_t delta = cpu_to_via_cycles(now - via->timers[timer].start_timestamp);
+    uint64_t delta = cpu_to_via_cycles(via, now - via->timers[timer].start_timestamp);
 
     // Cast to uint16_t handles wraparound naturally (e.g., 0 - 100 = 0xFF9C)
     return (uint16_t)(via->timers[timer].start_value - delta);
@@ -164,7 +166,7 @@ static void arm_timer(via_t *restrict via, int timer, uint16_t counter, event_ca
     via->timers[timer].expired = false; // reset expired flag on arm
 
     // timer interrupt fires when the counter wraps around, i.e. delay is counter + 1
-    scheduler_new_cpu_event(via->scheduler, cb, via, 0, (counter + 1) * FREQ_FACTOR, 0);
+    scheduler_new_cpu_event(via->scheduler, cb, via, 0, (counter + 1) * via->freq_factor, 0);
 }
 
 // Shift register completion callback - fires after 8 clock cycles
@@ -481,7 +483,7 @@ static void via_write_uint8(void *v, uint32_t addr, uint8_t value) {
             remove_event(via->scheduler, &sr_shift_complete_callback, via);
             // 8 VIA clock cycles (= 80 CPU cycles) for internal clock modes;
             // external-clock modes complete when the device drives CB1.
-            scheduler_new_cpu_event(via->scheduler, &sr_shift_complete_callback, via, 0, 8 * FREQ_FACTOR, 0);
+            scheduler_new_cpu_event(via->scheduler, &sr_shift_complete_callback, via, 0, 8 * via->freq_factor, 0);
         } else {
             LOG(3, "via SR write: value=0x%02x (shift in mode, not sent)", value);
         }
@@ -574,7 +576,7 @@ static void via_write_uint32(void *via, uint32_t addr, uint32_t value) {
 // ============================================================================
 
 // Initialize a new VIA instance with callbacks and optional checkpoint restoration
-via_t *via_init(memory_map_t *restrict map, struct scheduler *scheduler, via_output_fn output_cb,
+via_t *via_init(memory_map_t *restrict map, struct scheduler *scheduler, uint8_t freq_factor, via_output_fn output_cb,
                 via_shift_out_fn shift_cb, via_irq_fn irq_cb, void *cb_context, checkpoint_t *checkpoint) {
     via_t *via = (via_t *)malloc(sizeof(via_t));
     if (via == NULL)
@@ -583,6 +585,7 @@ via_t *via_init(memory_map_t *restrict map, struct scheduler *scheduler, via_out
     memset(via, 0, sizeof(via_t));
 
     via->scheduler = scheduler;
+    via->freq_factor = freq_factor ? freq_factor : DEFAULT_FREQ_FACTOR;
 
     // Store per-instance callback routing
     via->output_cb = output_cb;

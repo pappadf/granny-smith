@@ -156,7 +156,7 @@ static void plus_init(config_t *cfg, checkpoint_t *checkpoint) {
     ps->sound = sound_init(cfg->mem_map, checkpoint);
 
     cfg->via1 =
-        via_init(cfg->mem_map, cfg->scheduler, plus_via_output, plus_via_shift_out, plus_via_irq, cfg, checkpoint);
+        via_init(cfg->mem_map, cfg->scheduler, 10, plus_via_output, plus_via_shift_out, plus_via_irq, cfg, checkpoint);
 
     rtc_set_via(cfg->rtc, cfg->via1);
 

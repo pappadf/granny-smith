@@ -30,12 +30,13 @@ typedef void (*via_irq_fn)(void *context, bool active);
 // === Lifecycle (Constructor / Destructor / Checkpoint) ===
 
 // Create a VIA instance with per-instance callback routing.
+// freq_factor: CPU-to-VIA clock divisor (e.g. 10 for Plus at 7.8 MHz, 20 for SE/30 at 15.7 MHz)
 // output_cb: called when a port output value changes
 // shift_cb: called when the shift register completes a shift-out
 // irq_cb: called when the aggregate interrupt line changes state
 // cb_context: opaque pointer passed to all three callbacks
-via_t *via_init(memory_map_t *map, struct scheduler *scheduler, via_output_fn output_cb, via_shift_out_fn shift_cb,
-                via_irq_fn irq_cb, void *cb_context, checkpoint_t *checkpoint);
+via_t *via_init(memory_map_t *map, struct scheduler *scheduler, uint8_t freq_factor, via_output_fn output_cb,
+                via_shift_out_fn shift_cb, via_irq_fn irq_cb, void *cb_context, checkpoint_t *checkpoint);
 
 // Set a custom instance name for event type registration (e.g. "via1", "via2").
 // Must be called before scheduler_start() if using checkpoints on multi-VIA machines.
