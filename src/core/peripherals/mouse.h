@@ -33,4 +33,7 @@ void mouse_checkpoint(mouse_t *restrict mouse, checkpoint_t *checkpoint);
 
 void mouse_update(mouse_t *restrict mouse, bool button, int dx, int dy);
 
+// Injects movement deltas without changing the current button state
+void mouse_move(mouse_t *restrict mouse, int dx, int dy);
+
 #endif // MOUSE_H

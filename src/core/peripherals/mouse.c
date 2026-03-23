@@ -122,6 +122,20 @@ extern void mouse_update(mouse_t *restrict m, bool button, int dx, int dy) {
     schedule_axis(m, dy, false, now_cycles);
 }
 
+// Injects movement deltas without changing the current button state.
+// Used by set-mouse --hw to move the cursor through quadrature without affecting button.
+void mouse_move(mouse_t *restrict m, int dx, int dy) {
+    // Apply simple scaling to damp extreme host motion
+    dx = scale(dx);
+    dy = scale(dy);
+
+    uint64_t now_cycles = scheduler_cpu_cycles(m->scheduler);
+
+    // Schedule independent sequences for X and Y preserving per-axis timing
+    schedule_axis(m, dx, true, now_cycles);
+    schedule_axis(m, dy, false, now_cycles);
+}
+
 // Allocates and initializes a mouse instance with default timing state
 mouse_t *mouse_init(struct scheduler *scheduler, scc_t *scc, via_t *restrict via, checkpoint_t *checkpoint) {
     mouse_t *mouse = (mouse_t *)malloc(sizeof(mouse_t));

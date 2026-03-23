@@ -108,6 +108,7 @@ image_t *setup_get_image_by_filename(const char *filename);
 // Note: system_keyboard_update requires keyboard.h to be included for key_event_t
 void system_mouse_update(bool button, int dx, int dy);
 bool system_mouse_move(int dx, int dy);
+bool system_mouse_move_adb(int dx, int dy);
 void system_keyboard_update(key_event_t event, int key);
 
 // System-level scheduler accessor: returns the current scheduler object

@@ -324,10 +324,18 @@ void debug_mac_init(void) {
     register_cmd("pi", "Debugger", "Print process information", &cmd_process_info);
 
     // Mouse automation commands for E2E testing
-    register_cmd("set-mouse", "Testing", "set-mouse x y  – set mouse position (h=x, v=y)", cmd_set_mouse);
+    register_cmd("set-mouse", "Testing",
+                 "set-mouse [--global|--hw] x y  – set/move mouse position\n"
+                 "  (default): absolute coords, best method per platform\n"
+                 "  --global:  absolute coords via low-memory globals\n"
+                 "  --hw:      relative deltas via hardware (ADB/quadrature)",
+                 cmd_set_mouse);
     register_cmd("trace-mouse", "Testing", "trace-mouse start|stop  – log mouse position once per second",
                  cmd_trace_mouse);
-    register_cmd("mouse-button", "Testing", "mouse-button [up|down]  – inject mouse button up/down event",
+    register_cmd("mouse-button", "Testing",
+                 "mouse-button [--global|--hw] up|down  – inject mouse button event\n"
+                 "  --global: writes MBState directly (no event posting)\n"
+                 "  --hw (default): routes through hardware (ADB/VIA)",
                  cmd_mouse_button);
 }
 
@@ -405,87 +413,153 @@ void debug_mac_print_process_info_header(void) {
 // ────────────────────────────────────────────────────────────────────────────
 
 // Command implementation placed after init to keep file order simple
+
+// Parses an optional --global or --hw flag from argv[1].
+// Returns the index of the first non-flag argument (1 if no flag, 2 if flag found).
+// Sets *mode to 'g' for --global, 'h' for --hw, 'd' for default (no flag).
+static int parse_mode_flag(int argc, char *argv[], char *mode) {
+    *mode = 'd'; // default
+    if (argc >= 2) {
+        if (strcmp(argv[1], "--global") == 0) {
+            *mode = 'g';
+            return 2;
+        }
+        if (strcmp(argv[1], "--hw") == 0) {
+            *mode = 'h';
+            return 2;
+        }
+    }
+    return 1; // no flag consumed
+}
+
+// Writes absolute cursor position to Mac low-memory globals (MTemp, RawMouse, Mouse, CrsrNew).
+// This is the classic technique used by ChromiVNC/MiniVNC and Basilisk II.
+// Note: on SE/30 (and other NuBus-capable Macs), this updates the position globals
+// but may not redraw the cursor image on screen until the next slot VBL fires.
+static void set_mouse_global(long x, long y) {
+    uint32_t addr_MTemp = debug_mac_lookup_global_address("MTemp");
+    uint32_t addr_RawMouse = debug_mac_lookup_global_address("RawMouse");
+    uint32_t addr_Mouse = debug_mac_lookup_global_address("Mouse");
+    uint32_t addr_CrsrNew = debug_mac_lookup_global_address("CrsrNew");
+    uint32_t addr_CrsrCouple = debug_mac_lookup_global_address("CrsrCouple");
+
+    if (!addr_MTemp || !addr_RawMouse || !addr_CrsrNew) {
+        printf("Error: could not resolve mouse-related globals.\n");
+        return;
+    }
+
+    uint16_t v = (uint16_t)(y & 0xFFFF); // vertical in high word
+    uint16_t h = (uint16_t)(x & 0xFFFF); // horizontal in low word
+
+    // Write new position to MTemp and RawMouse (the interrupt-level inputs)
+    memory_write_uint16(addr_MTemp, v);
+    memory_write_uint16(addr_MTemp + 2, h);
+    memory_write_uint16(addr_RawMouse, v);
+    memory_write_uint16(addr_RawMouse + 2, h);
+
+    // Also write Mouse directly so GetMouse returns the correct value immediately
+    if (addr_Mouse) {
+        memory_write_uint16(addr_Mouse, v);
+        memory_write_uint16(addr_Mouse + 2, h);
+    }
+
+    // Signal the cursor VBL task: copy CrsrCouple → CrsrNew (standard technique)
+    if (addr_CrsrCouple) {
+        uint8_t couple = memory_read_uint8(addr_CrsrCouple);
+        memory_write_uint8(addr_CrsrNew, couple);
+    } else {
+        memory_write_uint8(addr_CrsrNew, 0xFF);
+    }
+}
+
+// Injects relative mouse movement through the hardware path (ADB or quadrature).
+// Preserves the current button state on both ADB and non-ADB machines.
+static void set_mouse_hw(long dx, long dy) {
+    bool injected = system_mouse_move((int)dx, (int)dy);
+    if (!injected)
+        printf("Error: no mouse device available for hardware injection.\n");
+}
+
+// Default set-mouse: absolute coordinates, platform-dependent strategy.
+// ADB (SE/30): computes deltas from current position and injects via ADB hardware.
+// Non-ADB (Plus): writes globals directly.
+static void set_mouse_default(long x, long y) {
+    uint32_t addr_MTemp = debug_mac_lookup_global_address("MTemp");
+    if (!addr_MTemp) {
+        printf("Error: could not resolve MTemp.\n");
+        return;
+    }
+
+    // Read current cursor position from MTemp
+    int16_t cur_v = (int16_t)memory_read_uint16(addr_MTemp);
+    int16_t cur_h = (int16_t)memory_read_uint16(addr_MTemp + 2);
+    int dx = (int)x - (int)cur_h;
+    int dy = (int)y - (int)cur_v;
+
+    // On ADB machines, inject deltas through ADB so the ROM ISR naturally
+    // updates the cursor position (including the screen cursor image).
+    // Non-ADB machines (Plus) fall through to global writes.
+    bool injected = system_mouse_move_adb(dx, dy);
+    if (!injected) {
+        set_mouse_global(x, y);
+    }
+}
+
 uint64_t cmd_set_mouse(int argc, char *argv[]) {
-    if (argc < 3) {
-        printf("Usage: set-mouse x y\n");
+    char mode;
+    int arg_start = parse_mode_flag(argc, argv, &mode);
+
+    if (argc - arg_start < 2) {
+        printf("Usage: set-mouse [--global|--hw] x y\n"
+               "  (default)  absolute coords, best method per platform\n"
+               "  --global   absolute coords via low-memory globals\n"
+               "  --hw       relative deltas via hardware (ADB/quadrature)\n");
         return 0;
     }
 
-    // Parse x
+    // Parse first coordinate
     char *endp = NULL;
-    long x = strtol(argv[1], &endp, 0);
+    long a = strtol(argv[arg_start], &endp, 0);
     if (*endp != '\0') {
-        printf("Invalid x coordinate: %s\n", argv[1]);
+        printf("Invalid coordinate: %s\n", argv[arg_start]);
         return 0;
     }
 
-    // Parse y
+    // Parse second coordinate
     endp = NULL;
-    long y = strtol(argv[2], &endp, 0);
+    long b = strtol(argv[arg_start + 1], &endp, 0);
     if (*endp != '\0') {
-        printf("Invalid y coordinate: %s\n", argv[2]);
+        printf("Invalid coordinate: %s\n", argv[arg_start + 1]);
         return 0;
     }
-
-    // Clamp to 16-bit signed range like classic Mac Point (short)
-    if (x < -32768)
-        x = -32768;
-    else if (x > 32767)
-        x = 32767;
-
-    if (y < -32768)
-        y = -32768;
-    else if (y > 32767)
-        y = 32767;
 
     if (!system_memory()) {
         printf("Error: memory system not initialized.\n");
         return 0;
     }
 
-    // Low memory globals (Points are (v, h) = (y, x), big-endian shorts)
-    uint32_t addr_MTemp = debug_mac_lookup_global_address("MTemp");
-    uint32_t addr_RawMouse = debug_mac_lookup_global_address("RawMouse");
-    uint32_t addr_CrsrNew = debug_mac_lookup_global_address("CrsrNew");
-
-    // Basic sanity check in case lookup failed (optional, but nice to have)
-    if (!addr_MTemp || !addr_RawMouse || !addr_CrsrNew) {
-        printf("Error: could not resolve one or more mouse-related globals.\n");
-        return 0;
+    // Clamp to 16-bit signed range (Mac Point) for absolute modes
+    if (mode != 'h') {
+        if (a < -32768)
+            a = -32768;
+        else if (a > 32767)
+            a = 32767;
+        if (b < -32768)
+            b = -32768;
+        else if (b > 32767)
+            b = 32767;
     }
 
-    uint16_t v = (uint16_t)(y & 0xFFFF);
-    uint16_t h = (uint16_t)(x & 0xFFFF);
-
-    // Read current cursor position from MTemp before modifying anything
-    int16_t cur_v = (int16_t)memory_read_uint16(addr_MTemp);
-    int16_t cur_h = (int16_t)memory_read_uint16(addr_MTemp + 2);
-    int dx = (int)x - (int)cur_h;
-    int dy = (int)y - (int)cur_v;
-
-    // On ADB machines (SE/30), inject movement deltas through the ADB hardware
-    // path so the ROM's ADB ISR naturally updates the cursor position.
-    // Direct global writes alone don't move the visible cursor on SE/30 because
-    // the cursor VBL task uses the slot VBL path, not the system VBL queue.
-    // We must NOT also write MTemp/RawMouse, or the ROM ISR would double-count.
-    bool injected = system_mouse_move(dx, dy);
-
-    if (!injected) {
-        // Non-ADB path (Mac Plus): write globals directly.
-        // The cursor VBL task copies MTemp → Mouse → screen cursor.
-        memory_write_uint16(addr_MTemp, v);
-        memory_write_uint16(addr_MTemp + 2, h);
-        memory_write_uint16(addr_RawMouse, v);
-        memory_write_uint16(addr_RawMouse + 2, h);
-
-        uint32_t addr_Mouse = debug_mac_lookup_global_address("Mouse");
-        if (addr_Mouse) {
-            memory_write_uint16(addr_Mouse, v);
-            memory_write_uint16(addr_Mouse + 2, h);
-        }
-
-        // Signal to the ROM / cursor code that the cursor has moved
-        memory_write_uint16(addr_CrsrNew, 0xFFFF);
+    switch (mode) {
+    case 'g':
+        set_mouse_global(a, b);
+        break;
+    case 'h':
+        set_mouse_hw(a, b);
+        break;
+    default:
+        set_mouse_default(a, b);
+        break;
     }
 
     return 0;
@@ -567,27 +641,64 @@ uint64_t cmd_trace_mouse(int argc, char *argv[]) {
 }
 
 // ---- mouse-button implementation ----
-// Usage: mouse-button [up|down]
-// Injects a mouse button state change into the emulated hardware by calling system_mouse_update
-// with zero movement. The VIA PB3 line is active-low (0 = pressed) inside the mouse implementation.
+// Injects a mouse button state change.
+// --hw (default): routes through hardware emulation (ADB or VIA PB3), which causes
+//   the ROM's device handler to write MBState and post mouseDown/mouseUp events.
+// --global: writes MBState directly.  On Mac Plus, sets MBTicks to a future value
+//   to prevent the VIA interrupt from overwriting MBState (the debounce hack).
+//   No event is posted, so event-driven code won't see the click — use --hw for that.
+
+// Writes button state directly to MBState, with MBTicks hack for Mac Plus safety.
+static void mouse_button_global(bool button_down) {
+    uint32_t addr_MBState = debug_mac_lookup_global_address("MBState");
+    uint32_t addr_MBTicks = debug_mac_lookup_global_address("MBTicks");
+    uint32_t addr_Ticks = debug_mac_lookup_global_address("Ticks");
+
+    if (!addr_MBState) {
+        printf("Error: could not resolve MBState.\n");
+        return;
+    }
+
+    // MBState bit 7: 0 = button down, 0x80 = button up
+    memory_write_uint8(addr_MBState, button_down ? 0x00 : 0x80);
+
+    // MBTicks hack: set MBTicks to a far-future value to prevent the VIA
+    // interrupt from overwriting MBState.  Required on Mac Plus where the
+    // VIA ISR continuously polls the physical button.  Safe on ADB machines
+    // too (the field is unused there).
+    if (addr_MBTicks && addr_Ticks) {
+        uint32_t ticks = memory_read_uint32(addr_Ticks);
+        memory_write_uint32(addr_MBTicks, ticks + 100);
+    }
+}
+
 uint64_t cmd_mouse_button(int argc, char *argv[]) {
-    if (argc < 2) {
-        printf("Usage: mouse-button [up|down]\n");
+    char mode;
+    int arg_start = parse_mode_flag(argc, argv, &mode);
+
+    if (argc - arg_start < 1) {
+        printf("Usage: mouse-button [--global|--hw] up|down\n");
         return 0;
     }
 
     bool button_down;
-    if (strcmp(argv[1], "down") == 0) {
+    if (strcmp(argv[arg_start], "down") == 0) {
         button_down = true;
-    } else if (strcmp(argv[1], "up") == 0) {
+    } else if (strcmp(argv[arg_start], "up") == 0) {
         button_down = false;
     } else {
-        printf("Usage: mouse-button [up|down]\n");
+        printf("Usage: mouse-button [--global|--hw] up|down\n");
         return 0;
     }
 
-    // Apply the button change with no movement deltas
-    system_mouse_update(button_down, 0, 0);
-    printf("mouse-button: %s\n", button_down ? "down" : "up");
+    if (mode == 'g') {
+        // --global: write MBState directly
+        mouse_button_global(button_down);
+    } else {
+        // --hw or default: route through hardware emulation (ADB or VIA PB3)
+        system_mouse_update(button_down, 0, 0);
+    }
+
+    printf("mouse-button: %s (%s)\n", button_down ? "down" : "up", mode == 'g' ? "global" : "hw");
     return 0;
 }

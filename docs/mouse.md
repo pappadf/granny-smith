@@ -607,3 +607,35 @@ The Macintosh Plus mouse is a sophisticated input device that relies on the coor
 
 The design elegantly reuses the serial communications controller's DCD interrupt capability for mouse tracking, while using simple GPIO lines for direction detection and button state. This architecture was replaced by the unified ADB (Apple Desktop Bus) starting with the Macintosh SE.
 
+---
+
+## Shell Commands for Mouse Automation
+
+The emulator provides two shell commands for programmatic mouse control, used
+primarily in integration and E2E tests.  Each command supports two explicit
+injection modes — **global** (manipulate Mac OS low-memory globals) and **hw**
+(emulate real hardware input) — plus a platform-aware default.
+
+### set-mouse
+
+```
+set-mouse [--global|--hw] x y
+```
+
+| Mode | Coordinates | Mechanism |
+|------|-------------|-----------|
+| *(default)* | absolute (x, y) | ADB machines: computes deltas from current position and injects through ADB hardware path. Non-ADB (Plus): writes low-memory globals directly. |
+| `--global` | absolute (x, y) | Writes MTemp ($0828), RawMouse ($082C), Mouse ($0830), and sets CrsrNew ($08CE) = CrsrCouple ($08CF). Works on all platforms; on ADB machines the cursor image may not repaint until the next VBL fires. |
+| `--hw` | relative (dx, dy) | Injects deltas through the hardware emulation: ADB `adb_mouse_move` on SE/30, quadrature via SCC/VIA on Mac Plus. The ROM's interrupt handler applies acceleration, so the resulting screen movement may differ from the raw delta. |
+
+### mouse-button
+
+```
+mouse-button [--global|--hw] up|down
+```
+
+| Mode | Mechanism |
+|------|-----------|
+| *(default)* / `--hw` | Routes through hardware emulation (ADB or VIA PB3). The ROM's device handler writes MBState and posts mouseDown/mouseUp events in the Mac event queue. |
+| `--global` | Writes MBState ($0172) directly: 0x00 = down, 0x80 = up. On Mac Plus, sets MBTicks ($016E) to a future value to prevent the VIA interrupt from overwriting MBState (the MBTicks debounce hack). No mouseDown/mouseUp event is posted, so event-driven code will not see the click. |
+

@@ -79,9 +79,29 @@ void system_mouse_update(bool button, int dx, int dy) {
         mouse_update(global_emulator->mouse, button, dx, dy);
 }
 
-// Injects mouse movement deltas without changing button state (ADB path only).
-// Returns true if deltas were injected through ADB, false on non-ADB machines.
+// Injects mouse movement deltas without changing button state.
+// Routes to the appropriate hardware path (ADB or quadrature).
+// Returns true if deltas were injected, false if no mouse device is available.
 bool system_mouse_move(int dx, int dy) {
+    if (!global_emulator)
+        return false;
+    if (global_emulator->adb) {
+        adb_mouse_move(global_emulator->adb, dx, dy);
+        return true;
+    }
+    if (global_emulator->mouse) {
+        mouse_move(global_emulator->mouse, dx, dy);
+        return true;
+    }
+    return false;
+}
+
+// Injects mouse movement deltas through ADB only (no button change).
+// Returns true if injected through ADB, false on non-ADB machines.
+// Used by the default set-mouse path to preserve the original behavior where
+// ADB machines use delta injection and non-ADB machines fall through to
+// direct global writes.
+bool system_mouse_move_adb(int dx, int dy) {
     if (!global_emulator || !global_emulator->adb)
         return false;
     adb_mouse_move(global_emulator->adb, dx, dy);
