@@ -82,8 +82,14 @@ void system_mouse_update(bool button_down, int dx, int dy) {
     (void)dy;
 }
 
-// Mouse move stub for set-mouse debugger command
+// Mouse move stubs for set-mouse debugger command
 bool system_mouse_move(int dx, int dy) {
+    (void)dx;
+    (void)dy;
+    return false;
+}
+
+bool system_mouse_move_adb(int dx, int dy) {
     (void)dx;
     (void)dy;
     return false;
