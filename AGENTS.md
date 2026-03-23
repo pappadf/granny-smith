@@ -80,6 +80,8 @@ Emulator modules (e.g., scsi, cpu, via, scc, rtc) have `.c`/`.h` files in `src/c
 - B) **Never pipe Playwright output** through `tail`, `grep`, or similar filters (e.g., `npx ... | tail -10`). Tests can take minutes to run. Instead, run the test once and save all output to a file (e.g., `npx ... 2>&1 | tee output.log`), then filter the saved output as needed without re-running.
 - C) **Video recording is disabled by default** to save CPU (avoids ffmpeg overhead). Enable with `PWTEST_VIDEO=1` when debugging test failures.
 
+**CI is kept green.** Never assume a test failure is pre-existing — treat every failure as caused by your changes until proven otherwise.
+
 ## Debugging and Tracing
 
 **Debug tools:**
