@@ -54,4 +54,10 @@ int scc_sdlc_send(scc_t *restrict scc, uint8_t *buf, size_t len);
 // Get the memory-mapped I/O interface for machine-level address decode
 const memory_interface_t *scc_get_memory_interface(scc_t *scc);
 
+// Enable/disable external loopback (port A TX → port B RX, port B TX → port A RX)
+void scc_set_external_loopback(scc_t *scc, bool enabled);
+
+// Query external loopback state
+bool scc_get_external_loopback(scc_t *scc);
+
 #endif // SCC_H

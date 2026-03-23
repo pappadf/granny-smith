@@ -367,6 +367,30 @@ uint64_t cmd_machine(int argc, char *argv[]) {
     return 0;
 }
 
+// Enable/disable/query SCC external loopback (cable between port A and port B)
+static uint64_t cmd_scc_loopback(int argc, char *argv[]) {
+    if (!global_emulator || !global_emulator->scc) {
+        printf("No SCC available\n");
+        return (uint64_t)-1;
+    }
+    if (argc < 2) {
+        // query
+        printf("scc-loopback: %s\n", scc_get_external_loopback(global_emulator->scc) ? "on" : "off");
+        return 0;
+    }
+    if (strcmp(argv[1], "on") == 0) {
+        scc_set_external_loopback(global_emulator->scc, true);
+        printf("SCC external loopback enabled\n");
+    } else if (strcmp(argv[1], "off") == 0) {
+        scc_set_external_loopback(global_emulator->scc, false);
+        printf("SCC external loopback disabled\n");
+    } else {
+        printf("Usage: scc-loopback [on|off]\n");
+        return (uint64_t)-1;
+    }
+    return 0;
+}
+
 // Initialize the setup system and register commands
 void setup_init() {
     printf("Granny Smith build %s\n", get_build_id());
@@ -391,6 +415,8 @@ void setup_init() {
     register_cmd("attach-hd", "Configuration", "Attach (SCSI) hard disk image: attach-hd <path> [scsi-id]",
                  &cmd_attach_hd);
     register_cmd("machine", "Configuration", "machine [<model>] – query or switch machine model", &cmd_machine);
+    register_cmd("scc-loopback", "Configuration",
+                 "scc-loopback [on|off] – enable/disable external loopback between serial ports", &cmd_scc_loopback);
     register_cmd("load-rom", "ROM", "load-rom [--probe] <filename> – load and identify ROM", (void *)&cmd_load_rom);
 
     // Register checkpoint commands

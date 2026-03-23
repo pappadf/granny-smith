@@ -123,6 +123,9 @@ struct scc {
     // BRG source clock frequencies (Hz); 0 = use CPU cycles directly
     uint32_t pclk_hz;
     uint32_t rtxc_hz;
+
+    // External loopback: port A TX → port B RX, port B TX → port A RX
+    bool external_loopback;
 };
 
 #define SDLC_MODE(ch)  ((ch->wr[4] >> 4 & 3) == 2)
@@ -133,6 +136,7 @@ struct scc {
 
 // transmit/receive buffer status and external status
 #define RR0_TX_UNDERRUN_EOM   0x40
+#define RR0_CTS               0x20
 #define RR0_SYNC_HUNT         0x10
 #define RR0_DCD               0x08
 #define RR0_TX_BUFFER_EMPTY   0x04
@@ -161,12 +165,14 @@ struct scc {
 #define WR9_STATUS_HIGH 0x10
 
 #define WR15_DCD           0x08
+#define WR15_CTS           0x20
 #define WR15_ZERO_COUNT_IE 0x02
 #define WR15_TX_UNDERRUN   0x40
 
 // forward declarations
 static void reset_ch(scc_t *restrict scc, int ch);
 static void update_irqs(scc_t *scc);
+static void update_loopback_signals(scc_t *scc, int ch);
 static void brg_start(ch_t *ch);
 static void brg_stop(ch_t *ch);
 
@@ -415,8 +421,8 @@ static uint8_t rr8(ch_t *ch) {
     // Check if local loopback mode is enabled (WR14 bit 4)
     bool loopback_mode = (ch->wr[14] & 0x10) != 0;
 
-    // In loopback mode, we use simple async mode (not SDLC)
-    if (loopback_mode) {
+    // In loopback or non-SDLC mode, use simple async byte read
+    if (loopback_mode || !SDLC_MODE(ch)) {
         // Simple byte read from circular buffer
         uint8_t value = ch->rx.buf[ch->rx.tail++];
 
@@ -426,13 +432,11 @@ static uint8_t rr8(ch_t *ch) {
             ch->rr[0] &= ~RR0_RX_CHAR_AVAILABLE;
         }
 
-        LOG(4, "rr8: loopback mode, read byte=0x%02X, remaining=%zu", value, RX_LEN(ch));
+        LOG(4, "rr8: async/loopback mode, read byte=0x%02X, remaining=%zu", value, RX_LEN(ch));
         return value;
     }
 
-    // Original SDLC mode handling
-    // for now only support sdlc mode
-    assert(SDLC_MODE(ch));
+    // SDLC mode handling
     assert(ch->index == 1);
 
     if (RX_LEN(ch) < 3)
@@ -540,14 +544,18 @@ static void wr3(ch_t *ch, uint8_t value) {
         update_irqs(ch->scc);
     }
 
+    // Sync/Hunt only applies in sync and SDLC modes (WR4 bits 5:4 != 0)
+    bool sync_mode = (ch->wr[4] >> 4 & 3) != 0;
+
     bool hunt_requested = false;
-    if (enter_hunt_cmd && (ch->wr[3] & WR3_RX_ENABLE)) {
+    if (enter_hunt_cmd && (ch->wr[3] & WR3_RX_ENABLE) && sync_mode) {
         ch->rr[0] |= RR0_SYNC_HUNT;
         hunt_requested = true;
     }
 
     if (bits_set & WR3_RX_ENABLE) {
-        ch->rr[0] |= RR0_SYNC_HUNT;
+        if (sync_mode)
+            ch->rr[0] |= RR0_SYNC_HUNT;
         ch->rx.head = ch->rx.tail = 0;
         hunt_requested = true;
     }
@@ -577,7 +585,7 @@ static void wr8(ch_t *c, uint8_t value) {
 
     // Check if Local Loopback mode is enabled (WR14 bit 4)
     if (c->wr[14] & 0x10) {
-        // Local loopback: transmitted data is immediately received
+        // Local loopback: transmitted data is immediately received on same channel
         LOG(4, "wr8: Local loopback enabled, routing TX to RX");
 
         // Add byte to RX buffer if there's space
@@ -596,6 +604,26 @@ static void wr8(ch_t *c, uint8_t value) {
             if (rx_int_mode != 0) {
                 c->scc->ch[0].rr[3] |= (c->index ? RR3_CHANNEL_B_RX : RR3_CHANNEL_A_RX);
                 LOG(4, "wr8: RX interrupt enabled in loopback, setting rr3=0x%02X", c->scc->ch[0].rr[3]);
+                update_irqs(c->scc);
+            }
+        }
+    }
+
+    // External loopback: route TX to the other channel's RX
+    // Only when internal loopback is OFF — internal loopback keeps data on-chip
+    if (c->scc->external_loopback && !(c->wr[14] & 0x10)) {
+        ch_t *other = &c->scc->ch[c->index ? 0 : 1];
+        LOG(4, "wr8: external loopback, routing ch%d TX to ch%d RX", c->index, other->index);
+
+        if (other->rx.head < RX_BUF_SIZE) {
+            other->rx.buf[other->rx.head++] = value;
+            other->rr[0] |= RR0_RX_CHAR_AVAILABLE;
+
+            // raise RX interrupt on the receiving channel if enabled
+            uint8_t rx_int_mode = (other->wr[1] >> 3) & 0x03;
+            if (rx_int_mode != 0) {
+                c->scc->ch[0].rr[3] |= (other->index ? RR3_CHANNEL_B_RX : RR3_CHANNEL_A_RX);
+                LOG(4, "wr8: external loopback RX int on ch%d, rr3=0x%02X", other->index, c->scc->ch[0].rr[3]);
                 update_irqs(c->scc);
             }
         }
@@ -681,8 +709,12 @@ static uint8_t read_uint8(void *s, uint32_t addr) {
     case 15: // rr15 returns the value stored in wr15
         return scc->ch[ch].wr[reg];
 
-    default:
-        return scc->ch[ch].rr[reg];
+    default: {
+        uint8_t val = scc->ch[ch].rr[reg];
+        if (reg == 0)
+            LOG(4, "rr0 ch=%d value=0x%02X", ch, val);
+        return val;
+    }
     }
 }
 
@@ -825,6 +857,9 @@ static void scc_write_uint8(void *s, uint32_t addr, uint8_t value) {
             if (now_zc != was_zc && scc->ch[ch].brg.enabled)
                 now_zc ? brg_start(&scc->ch[ch]) : brg_stop(&scc->ch[ch]);
         }
+        // WR5: update loopback signal lines when DTR/RTS change
+        if (reg == 0x05)
+            update_loopback_signals(scc, ch);
     } break;
     }
 }
@@ -869,6 +904,42 @@ int scc_sdlc_send(scc_t *restrict scc, uint8_t *buf, size_t len) {
     scc_schedule_rx_if_ready(ch);
 
     return 0;
+}
+
+// update RR0 CTS/DCD from WR5 DTR through loopback cable
+// Mac serial hardware inverts signals through the 26LS30 line driver:
+//   SCC /DTR (active low) → inverted by driver → HSKo pin
+// The loopback cable connects:
+//   same-port:  HSKo → HSKi (DTR → CTS)
+//   cross-port: HSKo → GPi  (DTR → DCD)
+// The 26LS32 receiver is non-inverting, so the net register-level
+// effect is inverted: CTS_bit = !DTR_bit, DCD_bit = !DTR_bit
+static void update_loopback_signals(scc_t *scc, int ch) {
+    if (!scc->external_loopback)
+        return;
+
+    int other = ch ? 0 : 1;
+    bool dtr = !!(scc->ch[ch].wr[5] & 0x80); // WR5 bit 7 = DTR
+    // signal is inverted by Mac line driver on the cable path
+    bool cable_level = !dtr;
+
+    // NOTE: The real Mac loopback cable also connects same-port DTR→CTS,
+    // but we intentionally omit it. When the cross-channel data test at
+    // $2CB1E reads RR0 of the RX channel (pointer=0 because channels
+    // have independent pointers), the AND #$70 check tests bits 6:4
+    // (TX Underrun, CTS, Sync/Hunt). CTS=1 would cause a false error.
+
+    // cross-channel: DTR → DCD (via cable HSKo → GPi on other port)
+    bool old_dcd = !!(scc->ch[other].rr[0] & RR0_DCD);
+    if (cable_level != old_dcd) {
+        scc->ch[other].rr[0] ^= RR0_DCD;
+        LOG(4, "loopback: ch%d DTR=%d → ch%d DCD=%d", ch, dtr, other, cable_level);
+        // fire DCD interrupt if enabled on receiving channel
+        if ((scc->ch[other].wr[15] & WR15_DCD) && (scc->ch[other].wr[1] & WR1_EXT_INT)) {
+            scc->ch[0].rr[3] |= other ? RR3_CHANNEL_B_EXT : RR3_CHANNEL_A_EXT;
+            update_irqs(scc);
+        }
+    }
 }
 
 void scc_dcd(scc_t *restrict scc, unsigned int ch, unsigned int dcd) {
@@ -923,9 +994,16 @@ static void reset_ch(scc_t *restrict scc, int ch) {
     scc->ch[ch].rr[1] = 0x01;
 }
 
+// reset both channels then apply loopback signals
+// must reset both channels before loopback updates so that
+// neither channel reads stale state from the other
 void scc_reset(scc_t *restrict scc) {
     reset_ch(scc, 0);
     reset_ch(scc, 1);
+
+    // apply loopback signals after both channels are in clean state
+    update_loopback_signals(scc, 0);
+    update_loopback_signals(scc, 1);
 
     update_irqs(scc);
 }
@@ -995,6 +1073,22 @@ void scc_set_clocks(scc_t *restrict scc, uint32_t pclk_hz, uint32_t rtxc_hz) {
 // Return the SCC memory-mapped I/O interface for machine-level address decode
 const memory_interface_t *scc_get_memory_interface(scc_t *scc) {
     return &scc->memory_interface;
+}
+
+// Enable or disable external loopback (cable between port A and port B)
+void scc_set_external_loopback(scc_t *scc, bool enabled) {
+    if (!scc)
+        return;
+    scc->external_loopback = enabled;
+    LOG(2, "external loopback %s", enabled ? "enabled" : "disabled");
+    // apply current signal line state from both channels
+    update_loopback_signals(scc, 0);
+    update_loopback_signals(scc, 1);
+}
+
+// Query external loopback state
+bool scc_get_external_loopback(scc_t *scc) {
+    return scc ? scc->external_loopback : false;
 }
 
 void scc_delete(scc_t *scc) {

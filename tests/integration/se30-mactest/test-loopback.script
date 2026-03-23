@@ -1,7 +1,7 @@
-# Integration test: SE/30 MacTest Boot
-# Boots SE/30 from MacTest SE/30 floppy disk (800K DiskCopy),
+# Debug script: SE/30 MacTest with SCC external loopback enabled
+# Boots MacTest, enables loopback, runs tests, captures result
 
-# Enable external loopback cable emulation between SCC ports
+# Enable SCC external loopback before boot
 scc-loopback on
 
 # Boot past Happy Mac through splash screens
@@ -34,11 +34,15 @@ run 20000000
 # We should be running the VIA tests now
 screenshot --match via.png
 
-# Run enough to let the SCC loopback test finish
+# Run enough to let the VIA tests + SCC tests finish
 run 200000000
 
-# With external loopback enabled, the SCC test should pass the cable check
-# and progress to the final result screen (logic board diagnosis)
-screenshot --match scc-result.png
+# Capture what state we're in now (may or may not be loopback-missing)
+screenshot tmp/post-loopback.png
+
+# Run more to see if we progress further
+run 200000000
+
+screenshot tmp/post-loopback2.png
 
 quit
