@@ -105,6 +105,9 @@ struct ch {
         bool pclk_source; // WR14 bit 1 (0=RTxC, 1=PCLK)
     } brg;
 
+    // previous DTR state for same-port CTS mirroring (loopback cable)
+    bool loopback_prev_dtr;
+
     scc_t *scc;
 };
 
@@ -909,9 +912,9 @@ int scc_sdlc_send(scc_t *restrict scc, uint8_t *buf, size_t len) {
 // update RR0 CTS/DCD from WR5 DTR through loopback cable
 // Mac serial hardware inverts signals through the 26LS30 line driver:
 //   SCC /DTR (active low) → inverted by driver → HSKo pin
-// The loopback cable connects:
-//   same-port:  HSKo → HSKi (DTR → CTS)
-//   cross-port: HSKo → GPi  (DTR → DCD)
+// The external loopback cable connects Port A ↔ Port B:
+//   cross-port: HSKo → HSKi (DTR → CTS on other port)
+//   cross-port: HSKo → GPi  (DTR → DCD on other port)
 // The 26LS32 receiver is non-inverting, so the net register-level
 // effect is inverted: CTS_bit = !DTR_bit, DCD_bit = !DTR_bit
 static void update_loopback_signals(scc_t *scc, int ch) {
@@ -923,13 +926,7 @@ static void update_loopback_signals(scc_t *scc, int ch) {
     // signal is inverted by Mac line driver on the cable path
     bool cable_level = !dtr;
 
-    // NOTE: The real Mac loopback cable also connects same-port DTR→CTS,
-    // but we intentionally omit it. When the cross-channel data test at
-    // $2CB1E reads RR0 of the RX channel (pointer=0 because channels
-    // have independent pointers), the AND #$70 check tests bits 6:4
-    // (TX Underrun, CTS, Sync/Hunt). CTS=1 would cause a false error.
-
-    // cross-channel: DTR → DCD (via cable HSKo → GPi on other port)
+    // cross-port: DTR → DCD (via cable HSKo → GPi on other port)
     bool old_dcd = !!(scc->ch[other].rr[0] & RR0_DCD);
     if (cable_level != old_dcd) {
         scc->ch[other].rr[0] ^= RR0_DCD;
@@ -938,6 +935,27 @@ static void update_loopback_signals(scc_t *scc, int ch) {
         if ((scc->ch[other].wr[15] & WR15_DCD) && (scc->ch[other].wr[1] & WR1_EXT_INT)) {
             scc->ch[0].rr[3] |= other ? RR3_CHANNEL_B_EXT : RR3_CHANNEL_A_EXT;
             update_irqs(scc);
+        }
+    }
+
+    // cross-port: DTR → CTS (via cable HSKo → HSKi on other port)
+    // Only update CTS when DTR actually changes from its previous value.
+    // After a hardware reset both DTR and CTS are 0; the MacTest init table
+    // writes WR5=$6A (DTR=0, same as reset), so the other port's CTS stays
+    // 0 and the cross-channel data test at $2CB1E passes AND #$70 on RR0.
+    // When the CTS signal test at $2CCC0 toggles DTR (0→1→0), the change
+    // is detected and the OTHER port's CTS mirrors correctly.
+    if (dtr != scc->ch[ch].loopback_prev_dtr) {
+        scc->ch[ch].loopback_prev_dtr = dtr;
+        bool old_cts = !!(scc->ch[other].rr[0] & RR0_CTS);
+        if (cable_level != old_cts) {
+            scc->ch[other].rr[0] ^= RR0_CTS;
+            LOG(4, "loopback: ch%d DTR=%d → ch%d CTS=%d", ch, dtr, other, cable_level);
+            // fire CTS interrupt if enabled on receiving channel
+            if ((scc->ch[other].wr[15] & WR15_CTS) && (scc->ch[other].wr[1] & WR1_EXT_INT)) {
+                scc->ch[0].rr[3] |= other ? RR3_CHANNEL_B_EXT : RR3_CHANNEL_A_EXT;
+                update_irqs(scc);
+            }
         }
     }
 }
@@ -1081,6 +1099,9 @@ void scc_set_external_loopback(scc_t *scc, bool enabled) {
         return;
     scc->external_loopback = enabled;
     LOG(2, "external loopback %s", enabled ? "enabled" : "disabled");
+    // snapshot current DTR so CTS mirroring waits for first real change
+    for (int i = 0; i < 2; i++)
+        scc->ch[i].loopback_prev_dtr = !!(scc->ch[i].wr[5] & 0x80);
     // apply current signal line state from both channels
     update_loopback_signals(scc, 0);
     update_loopback_signals(scc, 1);
