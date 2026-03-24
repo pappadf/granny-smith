@@ -1706,6 +1706,7 @@ static inline uint32_t bf_insert_reg(uint32_t dst, int32_t offset, uint32_t w, u
             unsigned _reg = opcode & 7;                                                                                \
             uint16_t _ext = FETCH16();                                                                                 \
             unsigned _cond = _ext & 0x3F;                                                                              \
+            _fpu->fpiar = cpu->instruction_pc;                                                                         \
             bool _cc = fpu_test_condition(_fpu, _cond);                                                                \
             if (_mode == 1) {                                                                                          \
                 /* FDBcc: decrement Dn, branch if !cc && Dn != -1 */                                                   \
@@ -1728,6 +1729,8 @@ static inline uint32_t bf_insert_reg(uint32_t dst, int32_t offset, uint32_t w, u
                 /* FScc: set byte at EA to $FF if cc, $00 otherwise */                                                 \
                 WRITE_EA(8, _mode, _reg, _cc ? 0xFF : 0x00);                                                           \
             }                                                                                                          \
+            /* Check for BSUN exception after instruction completes */                                                 \
+            fpu_check_exceptions(cpu, _fpu);                                                                           \
         }                                                                                                              \
     })
 
@@ -1738,10 +1741,18 @@ static inline uint32_t bf_insert_reg(uint32_t dst, int32_t offset, uint32_t w, u
         if (!cpu->fpu) {                                                                                               \
             EXC_FTRAP();                                                                                               \
         } else {                                                                                                       \
+            fpu_state_t *_fpu = (fpu_state_t *)cpu->fpu;                                                               \
             int16_t _disp = (int16_t)FETCH16();                                                                        \
             unsigned _cond = opcode & 0x3F;                                                                            \
-            if (fpu_test_condition((fpu_state_t *)cpu->fpu, _cond))                                                    \
+            _fpu->fpiar = cpu->instruction_pc;                                                                         \
+            bool _cc = fpu_test_condition(_fpu, _cond);                                                                \
+            /* If BSUN enabled and fired, take exception instead of branch */                                          \
+            if ((_fpu->fpsr & FPEXC_BSUN) && (_fpu->fpcr & FPEXC_BSUN)) {                                              \
+                _fpu->fpsr |= FPACC_IOP;                                                                               \
+                fpu_check_exceptions(cpu, _fpu);                                                                       \
+            } else if (_cc) {                                                                                          \
                 PC = cpu->instruction_pc + 2 + (int32_t)_disp;                                                         \
+            }                                                                                                          \
         }                                                                                                              \
     })
 
@@ -1752,14 +1763,22 @@ static inline uint32_t bf_insert_reg(uint32_t dst, int32_t offset, uint32_t w, u
         if (!cpu->fpu) {                                                                                               \
             EXC_FTRAP();                                                                                               \
         } else {                                                                                                       \
+            fpu_state_t *_fpu = (fpu_state_t *)cpu->fpu;                                                               \
             int32_t _disp = (int32_t)FETCH32();                                                                        \
             unsigned _cond = opcode & 0x3F;                                                                            \
-            if (fpu_test_condition((fpu_state_t *)cpu->fpu, _cond))                                                    \
+            _fpu->fpiar = cpu->instruction_pc;                                                                         \
+            bool _cc = fpu_test_condition(_fpu, _cond);                                                                \
+            /* If BSUN enabled and fired, take exception instead of branch */                                          \
+            if ((_fpu->fpsr & FPEXC_BSUN) && (_fpu->fpcr & FPEXC_BSUN)) {                                              \
+                _fpu->fpsr |= FPACC_IOP;                                                                               \
+                fpu_check_exceptions(cpu, _fpu);                                                                       \
+            } else if (_cc) {                                                                                          \
                 PC = cpu->instruction_pc + 2 + _disp;                                                                  \
+            }                                                                                                          \
         }                                                                                                              \
     })
 
-// FSAVE: write null idle frame (supervisor only)
+// FSAVE: write idle or null state frame (supervisor only)
 #undef OP_FSAVE_EA
 #define OP_FSAVE_EA                                                                                                    \
     OP({                                                                                                               \
@@ -1767,18 +1786,20 @@ static inline uint32_t bf_insert_reg(uint32_t dst, int32_t offset, uint32_t w, u
             EXC_FTRAP();                                                                                               \
         } else                                                                                                         \
             SUPER({                                                                                                    \
+                fpu_state_t *_fpu = (fpu_state_t *)cpu->fpu;                                                           \
                 if (EA_MODE == 4) {                                                                                    \
-                    /* -(An) predecrement */                                                                           \
-                    AY -= 4;                                                                                           \
-                    WRITE32(AY, 0x00000000); /* null idle frame */                                                     \
+                    /* -(An) predecrement: compute frame size, then write */                                           \
+                    int _sz = _fpu->initialized ? (4 + 0x18) : 4;                                                      \
+                    AY -= (uint32_t)_sz;                                                                               \
+                    fpu_fsave(_fpu, AY);                                                                               \
                 } else {                                                                                               \
                     uint32_t _ea = GET_EA;                                                                             \
-                    WRITE32(_ea, 0x00000000); /* null idle frame */                                                    \
+                    fpu_fsave(_fpu, _ea);                                                                              \
                 }                                                                                                      \
             })                                                                                                         \
     })
 
-// FRESTORE: read state frame header, skip appropriate number of bytes
+// FRESTORE: restore FPU state from frame (supervisor only)
 #undef OP_FRESTORE_EA
 #define OP_FRESTORE_EA                                                                                                 \
     OP({                                                                                                               \
@@ -1786,15 +1807,14 @@ static inline uint32_t bf_insert_reg(uint32_t dst, int32_t offset, uint32_t w, u
             EXC_FTRAP();                                                                                               \
         } else                                                                                                         \
             SUPER({                                                                                                    \
+                fpu_state_t *_fpu = (fpu_state_t *)cpu->fpu;                                                           \
                 if (EA_MODE == 3) {                                                                                    \
                     /* (An)+ postincrement */                                                                          \
-                    uint32_t _hdr = READ32(AY);                                                                        \
-                    uint32_t _sz = (_hdr >> 16) & 0xFF;                                                                \
-                    AY += (_sz == 0) ? 4 : (4 + (uint32_t)_sz);                                                        \
+                    int _sz = fpu_frestore(_fpu, AY);                                                                  \
+                    AY += (uint32_t)_sz;                                                                               \
                 } else {                                                                                               \
                     uint32_t _ea = GET_EA;                                                                             \
-                    uint32_t _hdr = READ32(_ea);                                                                       \
-                    (void)_hdr; /* accept and ignore non-null frames */                                                \
+                    fpu_frestore(_fpu, _ea);                                                                           \
                 }                                                                                                      \
             })                                                                                                         \
     })

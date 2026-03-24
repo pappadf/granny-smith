@@ -517,8 +517,8 @@ static inline void exception(cpu_t *restrict cpu, uint32_t vector, uint32_t pc, 
         // Determine frame format from exception vector number
         uint32_t vec_num = vector / 4;
         int format = 0;
-        // Vectors 5,6,7,9 use Format $2 on 68020+
-        if (vec_num == 5 || vec_num == 6 || vec_num == 7 || vec_num == 9) {
+        // Vectors 5,6,7,9 and FPU exceptions (48-54) use Format $2 on 68020+
+        if (vec_num == 5 || vec_num == 6 || vec_num == 7 || vec_num == 9 || (vec_num >= 48 && vec_num <= 54)) {
             format = 2;
         }
 
