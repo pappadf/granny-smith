@@ -376,7 +376,11 @@ static void asc_write_byte(void *device, uint32_t addr, uint8_t data) {
     }
 
     case REG_FIFO_IRQ:
-        // Read-only; writes ignored
+        // Writable for hardware diagnostics; the diagnostic ROM writes test
+        // patterns and reads them back to verify register accessibility.
+        LOG(3, "write fifo_irq_status = 0x%02X", data);
+        asc->fifo_irq_status = data;
+        asc_update_irq(asc);
         break;
 
     case REG_WAVE_CONTROL:

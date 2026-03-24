@@ -326,7 +326,7 @@ so the CPU can load waveform data into precise positions:
 | `0x801` | `ascMode` | byte | R/W | MODE — `0` = off, `1` = FIFO, `2` = wavetable |
 | `0x802` | `ascChipControl` | byte | R/W | CONTROL — bit 0: PWM/analog select; bit 1: stereo enable; bit 7: processing time exceeded flag |
 | `0x803` | `ascFifoControl` | byte | R/W | FIFO MODE — bit 7: FIFO clear toggle; bit 1: non-ROM companding enable; bit 0: ROM companding enable |
-| `0x804` | `ascFifoInt` | byte | R | FIFO IRQ STATUS — **read-clears** all interrupt flags (see §6.3) |
+| `0x804` | `ascFifoInt` | byte | R/W | FIFO IRQ STATUS — **read-clears** all interrupt flags; writes accepted (see §6.3) |
 | `0x805` | `ascWaveOneShot` | byte | R/W | WAVETABLE CTRL — bits 0–3 trigger playback of voices 0–3 |
 | `0x806` | `ascVolControl` | byte | R/W | VOLUME — bits 5–7: 3-bit volume level (0–7) for PWM / Sony control; bits 0–4: Sony analog control lines |
 | `0x807` | `ascClockRate` | byte | R/W | CLOCK RATE — `0` = 22.257 kHz, `2` = 22.050 kHz, `3` = 44.100 kHz |
@@ -591,6 +591,13 @@ VIAClearSoundInts:
 flags.** The ROM always performs a bare read (`tst.b ascFifoInt(aX)`) purely
 for this side-effect clear, discarding the value. An emulator must clear the
 register contents on every CPU read.
+
+**Write behavior:** The register also accepts writes. Written values are
+stored and are visible on the next read (which then clears them as usual).
+The Apple MacTest SE/30 diagnostic exploits this: it writes test patterns
+(`$01`, `$02`, `$04`, `$08`) to `ascFifoInt` and reads them back to verify
+register accessibility. An emulator that silently ignores writes will fail
+this hardware test with error code `$0104`.
 
 ### 6.4 Half-Empty Interrupt Semantics
 
@@ -1015,11 +1022,18 @@ After power-on or reset:
 | `ascPlayRecB` | `0` | Play mode |
 | `ascWaveOneShot` | `0` | No voices triggered |
 
-### 13.2 ascFifoInt Auto-Clear
+### 13.2 ascFifoInt Auto-Clear and Write-Through
 
 Every CPU read of offset `0x804` must clear the register to `$00`. Setting
 the register from `$00` to any non-zero value (internally, when a threshold
 is crossed) should re-assert VIA2 CB1 if VIA2 IER has CB1 enabled.
+
+CPU writes to `ascFifoInt` must also be accepted and stored — the register
+is **not** read-only. The MacTest SE/30 hardware diagnostic writes each
+FIFO IRQ bit individually and verifies readback. After a CPU write, the
+VIA2 CB1 interrupt line should be updated to reflect the new register
+contents (asserted if any flag is non-zero, deasserted if all flags are
+zero).
 
 ### 13.3 FIFO Pointer Reset
 
