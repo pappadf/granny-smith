@@ -10,7 +10,9 @@ implementation.
 Primary sources:
 - *Guide to the Macintosh Family Hardware* (2nd Edition, 1990)
 - *Macintosh Hardware Overview* (Rev 2.0, February 1991)
-- System 7.1 ROM source code (reverse-engineered)
+- Macintosh ROM source code (reverse-engineered)
+- Macintosh OS source code (startup self-tests, Sound Manager primitives,
+  MMU switching logic)
 - Doug Brown's empirical hardware testing on real Mac IIci hardware (2011)
 - Linux kernel `mac_asc.h` / `macboing.c`
 - NetBSD `ascreg.h`
@@ -297,7 +299,7 @@ flashes the menu bar instead.
 
 All offsets are relative to the ASC base address (`0x50F14000` on
 SE/30/IIx/IIcx). Register names in the "Apple equate" column are from
-Apple's internal System 7.1 ROM source code.
+Apple's internal ROM source code.
 
 ### 4.1 SRAM / Buffer Region
 
@@ -413,7 +415,7 @@ producing 1,024-byte circular queues. The CPU does not need to track
 specific addresses within the FIFO — any write to the channel's address
 range enqueues a byte.
 
-The System 7.1 source code defines `ascFifoLeft = 0x000` and
+The ROM source defines `ascFifoLeft = 0x000` and
 `ascFifoRight = 0x200`. The `0x200` value corresponds to the wavetable
 voice stride (each voice buffer is 512 bytes), not a FIFO boundary; the
 Sound Manager writes to these addresses out of convention, but the hardware
@@ -565,7 +567,7 @@ VIA2 is a 6522-compatible chip. Bit 4 of the IER/IFR corresponds to CB1.
 | Disable | VIA2 IER | `$10` = `(0<<7)\|(1<<4)` | Set bit 4, direction = disable |
 | Clear | VIA2 IFR | `$90` or `$10` | Clear the CB1 flag |
 
-From the System 7.1 source:
+From the ROM source:
 
 ```asm
 VIAEnableSoundInts:
@@ -599,10 +601,44 @@ The Apple MacTest SE/30 diagnostic exploits this: it writes test patterns
 register accessibility. An emulator that silently ignores writes will fail
 this hardware test with error code `$0104`.
 
+**Write-back re-generation:** Writing a non-zero value to the register also
+re-asserts VIA2 CB1. The OS MMU switching code exploits this during the
+24-to-32-bit mode switch: it reads `ascFifoInt` (which clears the
+register), checks if a sound interrupt was pending, and if so writes the
+value back with `or.b d1,(a0)` to re-generate the interrupt to VIA2 CB1.
+An emulator must call `asc_update_irq()` (or equivalent) after writes to
+this register, not only after hardware-generated status changes.
+
+**Full/overflow bits (1 and 3):** These bits are set when the CPU writes to
+a FIFO that is already at capacity (1,024 bytes). The written byte is
+discarded. The full/overflow bit latches and remains set until the register
+is read (which clears all bits). The MacTest SE/30 diagnostic verifies this:
+sub-test 3 at `$352BC` writes 4,112 bytes (257 × MOVEM.L of 16 bytes) to
+the 1,024-byte FIFO A and then checks that bit 1 is set. Writing this bit
+also asserts VIA2 CB1, which the diagnostic verifies separately.
+
+The ROM POST sound test further confirms this: it writes 2,000 bytes to
+the 1,024-byte FIFO while checking for a full/overflow interrupt after
+every write. The POST error codes distinguish:
+- `$0008` — Chan B Full Int did not occur (play mode)
+- `$0002` — Chan A Full Int did not occur (play mode)
+
+In **record mode**, the same bits indicate the record FIFO is full. The
+POST handler polls bit 1 of `ascFifoInt` to detect when the record FIFO
+reaches capacity, and error `$08002` means the full flag did not go active
+in record mode.
+
 ### 6.4 Half-Empty Interrupt Semantics
 
 The half-empty interrupt threshold is at **512 bytes** — exactly half of the
 1,024-byte FIFO depth.
+
+**Naming convention:** Apple's own source code calls bits 0 and 2 the
+*"Half Full Int"* (i.e., the FIFO level has reached the half-full point
+going downward), while this document uses the term *"half-empty"* to
+emphasize the refill-request semantics. Both refer to the same 512-byte
+threshold crossing. The ROM POST error codes use the Apple convention:
+`$0001` = *"Chan A Half Full Int did not occur"*.
 
 **On the original discrete ASC** (SE/30, IIx, IIcx, IIci), the half-empty
 bit uses **latch-on-transition** semantics:
@@ -760,8 +796,8 @@ VIA2 interrupt.
 
 ### 8.4 POST Self-Test Register Writes
 
-The POST self-test in the ROM (`USTNonCritTsts.a`) performs these writes on
-any non-Batman ASC, confirming the full write-accessible register set:
+The ROM POST self-test performs these writes on any non-Batman ASC,
+confirming the full write-accessible register set:
 
 ```asm
 ; Reset (SndInitASC subroutine):
@@ -1078,6 +1114,33 @@ The startup chime and Chimes of Death use `ascMode = 2`. For a minimum
 viable emulator, wavetable mode can be implemented after FIFO mode is
 working, since the Sound Manager never uses wavetable mode for normal
 application audio.
+
+### 13.9 FIFO Overflow Detection
+
+An emulator must set `ascFifoInt` bits 1 (channel A) or 3 (channel B) when
+the CPU writes to a FIFO that is already at capacity (1,024 bytes). The
+overflow bit should latch (stay set until the register is read) and must
+also assert VIA2 CB1 to generate an interrupt. Bytes written beyond capacity
+are discarded. The MacTest SE/30 diagnostic (`$352BC`) depends on this: it
+fills FIFO A with 4,112 bytes and verifies that bit 1 is set and that VIA2
+IFR bit 4 (CB1) has been asserted.
+
+The ROM POST sound test validates this in both channels. It writes bytes
+to the FIFO in a loop with interrupts enabled, checking the overflow bit
+in the VIA2 interrupt handler after each write. After overflow, the test
+shifts the expected-interrupt mask right by one bit (e.g., `$08` → `$04`
+for channel B) and waits for the half-empty interrupt to fire as the ASC
+drains the FIFO — confirming both overflow and half-empty behavior in
+sequence.
+
+### 13.10 FIFO Drain in Headless / Non-Audio Contexts
+
+In a headless or test environment where no audio callback consumes FIFO
+data, the emulator must still drain the FIFO at the configured sample rate
+(~22,257 Hz for `ascClockRate = 0`). Without draining, the half-empty
+interrupt threshold can never be reached, and diagnostic code that polls for
+the half-empty bit will time out. A scheduler-based callback that pops one
+sample per channel at the appropriate rate satisfies this requirement.
 
 ---
 

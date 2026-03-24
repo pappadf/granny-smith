@@ -85,15 +85,18 @@ LOG_USE_CATEGORY_NAME("asc");
 #define ASC_MAPPED_SIZE 0x830
 
 // FIFO IRQ status bit positions
-#define FIFO_IRQ_A_HALF 0x01 // channel A half-empty
-#define FIFO_IRQ_A_FULL 0x02 // channel A completely empty
-#define FIFO_IRQ_B_HALF 0x04 // channel B half-empty
-#define FIFO_IRQ_B_FULL 0x08 // channel B completely empty
+#define FIFO_IRQ_A_HALF 0x01 // channel A half-empty (drained below 512 bytes)
+#define FIFO_IRQ_A_FULL 0x02 // channel A full / overflow
+#define FIFO_IRQ_B_HALF 0x04 // channel B half-empty (drained below 512 bytes)
+#define FIFO_IRQ_B_FULL 0x08 // channel B full / overflow
 
 // ASC operating modes
 #define MODE_OFF       0
 #define MODE_FIFO      1
 #define MODE_WAVETABLE 2
+
+// Nanoseconds per FIFO drain sample (~22,257 Hz default ASC sample rate)
+#define ASC_SAMPLE_PERIOD_NS 44929ULL
 
 // ============================================================================
 // Type Definitions (Private)
@@ -152,6 +155,9 @@ static uint16_t asc_read_word(void *device, uint32_t addr);
 static void asc_write_word(void *device, uint32_t addr, uint16_t data);
 static uint32_t asc_read_long(void *device, uint32_t addr);
 static void asc_write_long(void *device, uint32_t addr, uint32_t data);
+static void asc_fifo_drain_callback(void *source, uint64_t data);
+static void asc_schedule_fifo_drain(asc_t *asc);
+static void asc_cancel_fifo_drain(asc_t *asc);
 
 // ============================================================================
 // Static Helpers
@@ -185,7 +191,13 @@ static void fifo_clear(asc_t *asc) {
 // all writes feed the circular buffer sequentially.
 static void fifo_push(asc_t *asc, int ch, uint8_t byte) {
     if (asc->fifo_count[ch] >= FIFO_SIZE) {
-        LOG(1, "fifo_push: channel %d overflow, dropping byte", ch);
+        // FIFO overflow: set the full/overflow bit in FIFO_IRQ (§6.3 in docs)
+        uint8_t full_bit = (ch == 0) ? FIFO_IRQ_A_FULL : FIFO_IRQ_B_FULL;
+        if (!(asc->fifo_irq_status & full_bit)) {
+            LOG(1, "fifo_push: channel %d overflow, setting full IRQ", ch);
+            asc->fifo_irq_status |= full_bit;
+            asc_update_irq(asc);
+        }
         return;
     }
     uint16_t base = (ch == 0) ? CH_A_BASE : CH_B_BASE;
@@ -209,25 +221,21 @@ static uint8_t fifo_pop(asc_t *asc, int ch) {
     return byte;
 }
 
-// Checks FIFO fill levels and latches interrupt flags on downward threshold crossing.
+// Checks FIFO fill levels and latches half-empty IRQ on downward threshold crossing.
 // On the original ASC, the half-empty bit only fires when the FIFO has been filled
 // past the halfway point and then drains back down below it (latch-on-transition).
+// The full/overflow bit is set separately in fifo_push() on write overflow.
 static void fifo_check_irq(asc_t *asc) {
     uint8_t new_flags = 0;
 
     for (int ch = 0; ch < 2; ch++) {
         uint8_t half_bit = (ch == 0) ? FIFO_IRQ_A_HALF : FIFO_IRQ_B_HALF;
-        uint8_t full_bit = (ch == 0) ? FIFO_IRQ_A_FULL : FIFO_IRQ_B_FULL;
 
         // Half-empty: latch-on-transition — only fire when crossing below threshold
         if (asc->fifo_above_half[ch] && asc->fifo_count[ch] < FIFO_HALF_THRESHOLD) {
             new_flags |= half_bit;
             asc->fifo_above_half[ch] = false; // reset until refilled past threshold
         }
-
-        // Completely empty
-        if (asc->fifo_count[ch] == 0)
-            new_flags |= full_bit;
     }
 
     // Only update if new flags appeared (avoid re-triggering on already-set bits)
@@ -236,6 +244,43 @@ static void fifo_check_irq(asc_t *asc) {
         asc->fifo_irq_status |= rising;
         asc_update_irq(asc);
     }
+}
+
+// Scheduler callback: drains one sample from each active FIFO channel.
+// Simulates the ASC's internal DAC consuming samples at ~22,257 Hz.
+// This ensures FIFO IRQ thresholds fire correctly even without a platform
+// audio callback (e.g., in headless mode).
+static void asc_fifo_drain_callback(void *source, uint64_t data) {
+    asc_t *asc = (asc_t *)source;
+    (void)data;
+
+    // Only drain if still in FIFO mode
+    if (asc->mode != MODE_FIFO)
+        return;
+
+    // Pop one sample per channel (same as asc_render does per frame)
+    fifo_pop(asc, 0);
+    fifo_pop(asc, 1);
+
+    // Check for half-empty threshold crossing
+    fifo_check_irq(asc);
+
+    // Re-schedule for the next sample period
+    asc_schedule_fifo_drain(asc);
+}
+
+// Schedules the next FIFO drain event at the ASC sample rate
+static void asc_schedule_fifo_drain(asc_t *asc) {
+    if (!asc->scheduler)
+        return;
+    scheduler_new_cpu_event(asc->scheduler, &asc_fifo_drain_callback, asc, 0, 0, ASC_SAMPLE_PERIOD_NS);
+}
+
+// Cancels any pending FIFO drain event
+static void asc_cancel_fifo_drain(asc_t *asc) {
+    if (!asc->scheduler)
+        return;
+    remove_event(asc->scheduler, &asc_fifo_drain_callback, asc);
 }
 
 // Writes one byte to a wavetable phase or increment register (big-endian, byte-at-a-time)
@@ -355,10 +400,17 @@ static void asc_write_byte(void *device, uint32_t addr, uint8_t data) {
         LOG(3, "write to read-only VERSION register ignored");
         break;
 
-    case REG_MODE:
+    case REG_MODE: {
+        uint8_t old_mode = asc->mode;
         LOG(2, "mode = %d", data);
         asc->mode = data;
+        // Start or stop scheduler-based FIFO drain when entering/leaving FIFO mode
+        if (data == MODE_FIFO && old_mode != MODE_FIFO)
+            asc_schedule_fifo_drain(asc);
+        else if (data != MODE_FIFO && old_mode == MODE_FIFO)
+            asc_cancel_fifo_drain(asc);
         break;
+    }
 
     case REG_CONTROL:
         LOG(3, "control = 0x%02X (stereo=%d)", data, (data >> 1) & 1);
@@ -500,6 +552,14 @@ asc_t *asc_init(memory_map_t *map, scheduler_t *scheduler, checkpoint_t *checkpo
         size_t data_size = offsetof(asc_t, memory_interface);
         system_read_checkpoint_data(checkpoint, asc, data_size);
     }
+
+    // Register the FIFO drain event type for checkpoint save/restore
+    if (scheduler)
+        scheduler_new_event_type(scheduler, "asc", asc, "fifo_drain", &asc_fifo_drain_callback);
+
+    // If restoring from a checkpoint in FIFO mode, restart the drain event
+    if (asc->mode == MODE_FIFO)
+        asc_schedule_fifo_drain(asc);
 
     return asc;
 }
