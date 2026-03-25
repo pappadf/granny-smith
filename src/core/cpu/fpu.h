@@ -166,4 +166,70 @@ float80_reg_t fpu_pack(fpu_state_t *fpu, fpu_unpacked_t val);
 // Unpack: float80_reg_t → fpu_unpacked_t (lossless)
 fpu_unpacked_t fpu_unpack(float80_reg_t reg);
 
+// ============================================================================
+// Soft-float arithmetic (used by transcendental functions)
+// ============================================================================
+
+// Add two unpacked values with full sign/special-case handling
+fpu_unpacked_t fpu_op_add(fpu_state_t *fpu, fpu_unpacked_t a, fpu_unpacked_t b);
+
+// Subtract: a - b
+fpu_unpacked_t fpu_op_sub(fpu_state_t *fpu, fpu_unpacked_t a, fpu_unpacked_t b);
+
+// Multiply
+fpu_unpacked_t fpu_op_mul(fpu_state_t *fpu, fpu_unpacked_t a, fpu_unpacked_t b);
+
+// Divide: a / b
+fpu_unpacked_t fpu_op_div(fpu_state_t *fpu, fpu_unpacked_t a, fpu_unpacked_t b);
+
+// Normalize mantissa (shift left until J-bit set)
+void fpu_normalize(fpu_unpacked_t *v);
+
+// ROM constant (pi, e, ln2, log10(2), etc.) by FMOVECR offset
+fpu_unpacked_t fpu_rom_constant(unsigned offset);
+
+// ============================================================================
+// Transcendental functions (implemented in fpu_transc.c)
+// ============================================================================
+
+// FLOGN: natural logarithm (opcode 0x14)
+fpu_unpacked_t fpu_op_logn(fpu_state_t *fpu, fpu_unpacked_t src, float80_reg_t raw);
+
+// FLOG10: base-10 logarithm (opcode 0x15)
+fpu_unpacked_t fpu_op_log10(fpu_state_t *fpu, fpu_unpacked_t src, float80_reg_t raw);
+
+// FLOG2: base-2 logarithm (opcode 0x16)
+fpu_unpacked_t fpu_op_log2(fpu_state_t *fpu, fpu_unpacked_t src, float80_reg_t raw);
+
+// FLOGNP1: log(1+X) (opcode 0x06)
+fpu_unpacked_t fpu_op_lognp1(fpu_state_t *fpu, fpu_unpacked_t src, float80_reg_t raw);
+
+// FETOX: e^X (opcode 0x10)
+fpu_unpacked_t fpu_op_etox(fpu_state_t *fpu, fpu_unpacked_t src, float80_reg_t raw);
+
+// FETOXM1: e^X - 1 (opcode 0x08)
+fpu_unpacked_t fpu_op_etoxm1(fpu_state_t *fpu, fpu_unpacked_t src, float80_reg_t raw);
+
+// FTWOTOX: 2^X (opcode 0x11)
+fpu_unpacked_t fpu_op_twotox(fpu_state_t *fpu, fpu_unpacked_t src, float80_reg_t raw);
+
+// FTENTOX: 10^X (opcode 0x12)
+fpu_unpacked_t fpu_op_tentox(fpu_state_t *fpu, fpu_unpacked_t src, float80_reg_t raw);
+
+// FATAN: arctangent (opcode 0x0A)
+fpu_unpacked_t fpu_op_atan(fpu_state_t *fpu, fpu_unpacked_t src, float80_reg_t raw);
+
+// FSIN: sine (opcode 0x0E)
+fpu_unpacked_t fpu_op_sin(fpu_state_t *fpu, fpu_unpacked_t src, float80_reg_t raw);
+
+// FCOS: cosine (opcode 0x1D)
+fpu_unpacked_t fpu_op_cos(fpu_state_t *fpu, fpu_unpacked_t src, float80_reg_t raw);
+
+// FSINCOS: simultaneous sin+cos (opcodes 0x30-0x37)
+// Returns sin(X); stores cos(X) into fpu->fp[cos_reg]
+fpu_unpacked_t fpu_op_sincos(fpu_state_t *fpu, fpu_unpacked_t src, float80_reg_t raw, int cos_reg);
+
+// FTAN: tangent (opcode 0x0F)
+fpu_unpacked_t fpu_op_tan(fpu_state_t *fpu, fpu_unpacked_t src, float80_reg_t raw);
+
 #endif // FPU_H

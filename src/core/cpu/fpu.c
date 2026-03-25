@@ -199,7 +199,7 @@ fpu_unpacked_t fpu_unpack(float80_reg_t reg) {
 }
 
 // Normalize: shift mantissa left until bit 63 of mantissa_hi is set
-static void fpu_normalize(fpu_unpacked_t *v) {
+void fpu_normalize(fpu_unpacked_t *v) {
     if (v->mantissa_hi == 0 && v->mantissa_lo == 0) {
         v->exponent = FPU_EXP_ZERO;
         return;
@@ -867,7 +867,7 @@ static int8_t fpu_to_int8(fpu_state_t *fpu, float80_reg_t val) {
 // SM = mantissa sign, SE = exponent sign
 // YY: 0=normal; non-zero + all-zero mantissa → infinity; non-zero + non-zero mantissa → NaN
 //
-// Reference: MC68882 User's Manual, FPSP decbin.S / bindec.S
+// Reference: MC68882 User's Manual, Motorola FPSP
 
 // Extract a 4-bit BCD digit from a 32-bit word at nibble position (0=MSN, 7=LSN)
 static inline unsigned bcd_nibble(uint32_t word, int pos) {
@@ -875,9 +875,6 @@ static inline unsigned bcd_nibble(uint32_t word, int pos) {
 }
 
 // Forward declaration (used by packed decimal conversion)
-static fpu_unpacked_t fpu_rom_constant(unsigned offset);
-static fpu_unpacked_t fpu_op_mul(fpu_state_t *fpu, fpu_unpacked_t a, fpu_unpacked_t b);
-static fpu_unpacked_t fpu_op_div(fpu_state_t *fpu, fpu_unpacked_t a, fpu_unpacked_t b);
 
 // Compute 10^|n| as fpu_unpacked_t using the FMOVECR power-of-10 table.
 // Decomposes n into sum of powers of 2, multiplying corresponding table entries.
@@ -1177,7 +1174,7 @@ static void fpu_to_packed(fpu_state_t *fpu, float80_reg_t val, int k_factor, uin
 // ROM constant table: unpacked with extra precision for correct rounding
 // Transcendental and large-power constants include mantissa_lo for sub-64-bit
 // precision, so fpu_pack can round per FPCR mode.
-static fpu_unpacked_t fpu_rom_constant(unsigned offset) {
+fpu_unpacked_t fpu_rom_constant(unsigned offset) {
     fpu_unpacked_t r = {0, FPU_EXP_ZERO, 0, 0};
     switch (offset) {
     // Transcendental constants (inexact: mantissa_hi truncated, _lo has extra bits)
@@ -1733,7 +1730,7 @@ static int cmp128(uint64_t a_hi, uint64_t a_lo, uint64_t b_hi, uint64_t b_lo) {
 }
 
 // Core add operation (handles signs)
-static fpu_unpacked_t fpu_op_add(fpu_state_t *fpu, fpu_unpacked_t a, fpu_unpacked_t b) {
+fpu_unpacked_t fpu_op_add(fpu_state_t *fpu, fpu_unpacked_t a, fpu_unpacked_t b) {
     // Handle special cases
     bool a_nan = (a.exponent == FPU_EXP_INF && a.mantissa_hi != 0);
     bool b_nan = (b.exponent == FPU_EXP_INF && b.mantissa_hi != 0);
@@ -1795,13 +1792,13 @@ static fpu_unpacked_t fpu_op_add(fpu_state_t *fpu, fpu_unpacked_t a, fpu_unpacke
 }
 
 // Subtract: a - b = a + (-b)
-static fpu_unpacked_t fpu_op_sub(fpu_state_t *fpu, fpu_unpacked_t a, fpu_unpacked_t b) {
+fpu_unpacked_t fpu_op_sub(fpu_state_t *fpu, fpu_unpacked_t a, fpu_unpacked_t b) {
     b.sign = !b.sign;
     return fpu_op_add(fpu, a, b);
 }
 
 // Multiply
-static fpu_unpacked_t fpu_op_mul(fpu_state_t *fpu, fpu_unpacked_t a, fpu_unpacked_t b) {
+fpu_unpacked_t fpu_op_mul(fpu_state_t *fpu, fpu_unpacked_t a, fpu_unpacked_t b) {
     bool a_nan = (a.exponent == FPU_EXP_INF && a.mantissa_hi != 0);
     bool b_nan = (b.exponent == FPU_EXP_INF && b.mantissa_hi != 0);
     if (a_nan || b_nan)
@@ -1865,7 +1862,7 @@ static fpu_unpacked_t fpu_op_mul(fpu_state_t *fpu, fpu_unpacked_t a, fpu_unpacke
 }
 
 // Divide: a / b
-static fpu_unpacked_t fpu_op_div(fpu_state_t *fpu, fpu_unpacked_t a, fpu_unpacked_t b) {
+fpu_unpacked_t fpu_op_div(fpu_state_t *fpu, fpu_unpacked_t a, fpu_unpacked_t b) {
     bool a_nan = (a.exponent == FPU_EXP_INF && a.mantissa_hi != 0);
     bool b_nan = (b.exponent == FPU_EXP_INF && b.mantissa_hi != 0);
     if (a_nan || b_nan)
@@ -2560,6 +2557,108 @@ static void fpu_execute_op(fpu_state_t *fpu, unsigned op, float80_reg_t src, uns
     case 0x3A:
         fpu_update_cc(fpu, src);
         return;
+
+        // === Transcendental functions (fpu_transc.c) ===
+
+    case 0x14: // FLOGN: natural logarithm
+        a = fpu_unpack(src);
+        result = fpu_op_logn(fpu, a, src);
+        fpu->fp[dst] = fpu_pack(fpu, result);
+        fpu_update_cc(fpu, fpu->fp[dst]);
+        return;
+
+    case 0x15: // FLOG10: base-10 logarithm
+        a = fpu_unpack(src);
+        result = fpu_op_log10(fpu, a, src);
+        fpu->fp[dst] = fpu_pack(fpu, result);
+        fpu_update_cc(fpu, fpu->fp[dst]);
+        return;
+
+    case 0x16: // FLOG2: base-2 logarithm
+        a = fpu_unpack(src);
+        result = fpu_op_log2(fpu, a, src);
+        fpu->fp[dst] = fpu_pack(fpu, result);
+        fpu_update_cc(fpu, fpu->fp[dst]);
+        return;
+
+    case 0x06: // FLOGNP1: log(1+X)
+        a = fpu_unpack(src);
+        result = fpu_op_lognp1(fpu, a, src);
+        fpu->fp[dst] = fpu_pack(fpu, result);
+        fpu_update_cc(fpu, fpu->fp[dst]);
+        return;
+
+    case 0x10: // FETOX: e^X
+        a = fpu_unpack(src);
+        result = fpu_op_etox(fpu, a, src);
+        fpu->fp[dst] = fpu_pack(fpu, result);
+        fpu_update_cc(fpu, fpu->fp[dst]);
+        return;
+
+    case 0x08: // FETOXM1: e^X - 1
+        a = fpu_unpack(src);
+        result = fpu_op_etoxm1(fpu, a, src);
+        fpu->fp[dst] = fpu_pack(fpu, result);
+        fpu_update_cc(fpu, fpu->fp[dst]);
+        return;
+
+    case 0x11: // FTWOTOX: 2^X
+        a = fpu_unpack(src);
+        result = fpu_op_twotox(fpu, a, src);
+        fpu->fp[dst] = fpu_pack(fpu, result);
+        fpu_update_cc(fpu, fpu->fp[dst]);
+        return;
+
+    case 0x12: // FTENTOX: 10^X
+        a = fpu_unpack(src);
+        result = fpu_op_tentox(fpu, a, src);
+        fpu->fp[dst] = fpu_pack(fpu, result);
+        fpu_update_cc(fpu, fpu->fp[dst]);
+        return;
+
+    case 0x0A: // FATAN: arctangent
+        a = fpu_unpack(src);
+        result = fpu_op_atan(fpu, a, src);
+        fpu->fp[dst] = fpu_pack(fpu, result);
+        fpu_update_cc(fpu, fpu->fp[dst]);
+        return;
+
+    case 0x0E: // FSIN: sine
+        a = fpu_unpack(src);
+        result = fpu_op_sin(fpu, a, src);
+        fpu->fp[dst] = fpu_pack(fpu, result);
+        fpu_update_cc(fpu, fpu->fp[dst]);
+        return;
+
+    case 0x0F: // FTAN: tangent
+        a = fpu_unpack(src);
+        result = fpu_op_tan(fpu, a, src);
+        fpu->fp[dst] = fpu_pack(fpu, result);
+        fpu_update_cc(fpu, fpu->fp[dst]);
+        return;
+
+    case 0x1D: // FCOS: cosine
+        a = fpu_unpack(src);
+        result = fpu_op_cos(fpu, a, src);
+        fpu->fp[dst] = fpu_pack(fpu, result);
+        fpu_update_cc(fpu, fpu->fp[dst]);
+        return;
+
+    case 0x30:
+    case 0x31:
+    case 0x32:
+    case 0x33: // FSINCOS
+    case 0x34:
+    case 0x35:
+    case 0x36:
+    case 0x37: {
+        int cos_reg = op & 7;
+        a = fpu_unpack(src);
+        result = fpu_op_sincos(fpu, a, src, cos_reg);
+        fpu->fp[dst] = fpu_pack(fpu, result);
+        fpu_update_cc(fpu, fpu->fp[dst]);
+        return;
+    }
 
     default:
         // Unimplemented operation
