@@ -1433,13 +1433,13 @@ static bool fpu_movem_data_ea_valid(unsigned ea_mode, unsigned ea_reg, unsigned 
 static bool fpu_movem_data(cpu_t *cpu, fpu_state_t *fpu, uint16_t opcode, uint16_t ext) {
     unsigned ea_mode = (opcode >> 3) & 7;
     unsigned ea_reg = opcode & 7;
-    unsigned dir = (ext >> 13) & 1; // 0=reg->mem (save), 1=mem->reg (restore)
+    unsigned dir = (ext >> 12) & 1; // bit 12: 0=reg->mem (save), 1=mem->reg (restore)
 
     // Validate EA mode before decoding register list
     if (!fpu_movem_data_ea_valid(ea_mode, ea_reg, dir))
         return false;
 
-    unsigned mode_d = (ext >> 12) & 1; // 0=static list, 1=dynamic (Dn)
+    unsigned mode_d = (ext >> 13) & 1; // bit 13: 0=static list, 1=dynamic (Dn)
     uint8_t reglist;
 
     // Get register list: static from ext word, or dynamic from Dn
