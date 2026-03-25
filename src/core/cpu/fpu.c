@@ -523,21 +523,21 @@ bool fpu_test_condition(fpu_state_t *fpu, unsigned predicate) {
     case 0x06:
         return !(nan_bit || z); // OGL/GL
     case 0x07:
-        return !nan_bit; // OR/GLE
+        return !nan_bit || z; // OR/GLE — hardware: Z overrides NAN for "ordered" check
     case 0x08:
         return nan_bit; // UN/NGLE
     case 0x09:
         return nan_bit || z; // UEQ/NGL
     case 0x0A:
-        return nan_bit || !(n || z); // UGT/NLE
+        return nan_bit || !(n || z); // UGT/NGE
     case 0x0B:
         return nan_bit || z || !n; // UGE/NLT
     case 0x0C:
-        return nan_bit || (n && !z); // ULT/NGE
+        return nan_bit || (n && !z); // ULT/NGT
     case 0x0D:
-        return nan_bit || z || n; // ULE/NGT
+        return nan_bit || z || n; // ULE/NLE
     case 0x0E:
-        return !z; // NE/SNEQ
+        return !z || nan_bit; // NE/SNE — hardware: NAN implies not-equal
     case 0x0F:
         return true; // T/ST
     }
@@ -1946,7 +1946,7 @@ fpu_unpacked_t fpu_op_div(fpu_state_t *fpu, fpu_unpacked_t a, fpu_unpacked_t b) 
 }
 
 // Square root
-static fpu_unpacked_t fpu_op_sqrt(fpu_state_t *fpu, fpu_unpacked_t a) {
+fpu_unpacked_t fpu_op_sqrt(fpu_state_t *fpu, fpu_unpacked_t a) {
     // Handle specials
     if (a.exponent == FPU_EXP_INF && a.mantissa_hi != 0) {
         // NaN: propagate (make quiet)
@@ -2659,6 +2659,48 @@ static void fpu_execute_op(fpu_state_t *fpu, unsigned op, float80_reg_t src, uns
         fpu_update_cc(fpu, fpu->fp[dst]);
         return;
     }
+
+    case 0x02: // FSINH: hyperbolic sine
+        a = fpu_unpack(src);
+        result = fpu_op_sinh(fpu, a, src);
+        fpu->fp[dst] = fpu_pack(fpu, result);
+        fpu_update_cc(fpu, fpu->fp[dst]);
+        return;
+
+    case 0x19: // FCOSH: hyperbolic cosine
+        a = fpu_unpack(src);
+        result = fpu_op_cosh(fpu, a, src);
+        fpu->fp[dst] = fpu_pack(fpu, result);
+        fpu_update_cc(fpu, fpu->fp[dst]);
+        return;
+
+    case 0x09: // FTANH: hyperbolic tangent
+        a = fpu_unpack(src);
+        result = fpu_op_tanh(fpu, a, src);
+        fpu->fp[dst] = fpu_pack(fpu, result);
+        fpu_update_cc(fpu, fpu->fp[dst]);
+        return;
+
+    case 0x0C: // FASIN: arcsine
+        a = fpu_unpack(src);
+        result = fpu_op_asin(fpu, a, src);
+        fpu->fp[dst] = fpu_pack(fpu, result);
+        fpu_update_cc(fpu, fpu->fp[dst]);
+        return;
+
+    case 0x1C: // FACOS: arccosine
+        a = fpu_unpack(src);
+        result = fpu_op_acos(fpu, a, src);
+        fpu->fp[dst] = fpu_pack(fpu, result);
+        fpu_update_cc(fpu, fpu->fp[dst]);
+        return;
+
+    case 0x0D: // FATANH: inverse hyperbolic tangent
+        a = fpu_unpack(src);
+        result = fpu_op_atanh(fpu, a, src);
+        fpu->fp[dst] = fpu_pack(fpu, result);
+        fpu_update_cc(fpu, fpu->fp[dst]);
+        return;
 
     default:
         // Unimplemented operation

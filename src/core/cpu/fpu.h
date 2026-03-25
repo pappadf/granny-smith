@@ -185,6 +185,9 @@ fpu_unpacked_t fpu_op_div(fpu_state_t *fpu, fpu_unpacked_t a, fpu_unpacked_t b);
 // Normalize mantissa (shift left until J-bit set)
 void fpu_normalize(fpu_unpacked_t *v);
 
+// Square root
+fpu_unpacked_t fpu_op_sqrt(fpu_state_t *fpu, fpu_unpacked_t a);
+
 // ROM constant (pi, e, ln2, log10(2), etc.) by FMOVECR offset
 fpu_unpacked_t fpu_rom_constant(unsigned offset);
 
@@ -231,5 +234,23 @@ fpu_unpacked_t fpu_op_sincos(fpu_state_t *fpu, fpu_unpacked_t src, float80_reg_t
 
 // FTAN: tangent (opcode 0x0F)
 fpu_unpacked_t fpu_op_tan(fpu_state_t *fpu, fpu_unpacked_t src, float80_reg_t raw);
+
+// FSINH: hyperbolic sine (opcode 0x02)
+fpu_unpacked_t fpu_op_sinh(fpu_state_t *fpu, fpu_unpacked_t src, float80_reg_t raw);
+
+// FCOSH: hyperbolic cosine (opcode 0x19)
+fpu_unpacked_t fpu_op_cosh(fpu_state_t *fpu, fpu_unpacked_t src, float80_reg_t raw);
+
+// FTANH: hyperbolic tangent (opcode 0x09)
+fpu_unpacked_t fpu_op_tanh(fpu_state_t *fpu, fpu_unpacked_t src, float80_reg_t raw);
+
+// FASIN: arcsine (opcode 0x0C)
+fpu_unpacked_t fpu_op_asin(fpu_state_t *fpu, fpu_unpacked_t src, float80_reg_t raw);
+
+// FACOS: arccosine (opcode 0x1C)
+fpu_unpacked_t fpu_op_acos(fpu_state_t *fpu, fpu_unpacked_t src, float80_reg_t raw);
+
+// FATANH: inverse hyperbolic tangent (opcode 0x0D)
+fpu_unpacked_t fpu_op_atanh(fpu_state_t *fpu, fpu_unpacked_t src, float80_reg_t raw);
 
 #endif // FPU_H
