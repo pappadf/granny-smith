@@ -2828,3 +2828,714 @@ fpu_unpacked_t fpu_op_tan(fpu_state_t *fpu, fpu_unpacked_t src, float80_reg_t ra
         return fp0;
     }
 }
+
+// ============================================================================
+// FSINH — hyperbolic sine (opcode 0x02)
+// ============================================================================
+// Algorithm from Motorola FPSP:
+//
+// 1. If |X| > 16380*log2, go to SINHBIG.
+// 2. (|X| <= 16380*log2)
+//    y = |X|, z = expm1(y)
+//    sinh(X) = sign(X) * (1/2) * (z + z/(1+z))
+// 3. If |X| > 16480*log2, overflow.
+// 4. (16380*log2 < |X| <= 16480*log2)
+//    sinh(X) = sign(X) * exp(|X| - 16381*log2) * 2^16380
+//
+// T1 = 16381*LOG2_LEAD (double)  = 0x40C62D38_D3D64634
+// T2 = 16381*LOG2_TRAIL (double) = 0x3D6F90AE_B1E75CC7
+
+fpu_unpacked_t fpu_op_sinh(fpu_state_t *fpu, fpu_unpacked_t src, float80_reg_t raw) {
+    // NaN: propagate, converting SNaN to QNaN
+    if (src.exponent == FPU_EXP_INF && src.mantissa_hi != 0) {
+        if (!(src.mantissa_hi & 0x4000000000000000ULL))
+            fpu->fpsr |= FPEXC_SNAN;
+        src.mantissa_hi |= 0x4000000000000000ULL;
+        return src;
+    }
+
+    // Infinity: sinh(+inf) = +inf, sinh(-inf) = -inf
+    if (src.exponent == FPU_EXP_INF)
+        return src;
+
+    // Zero: sinh(0) = 0, preserve sign (exact)
+    if (src.exponent == FPU_EXP_ZERO)
+        return src;
+
+    // Denorm: sinh(X) = X for denormalized input
+    uint16_t biased_exp = FP80_EXP(raw);
+    if (biased_exp == 0 && src.mantissa_hi != 0) {
+        fpu->fpsr |= FPEXC_UNFL | FPEXC_INEX2;
+        return src;
+    }
+
+    // Normalize unnormalized extended inputs
+    if (biased_exp != 0 && biased_exp != 0x7FFF && !(src.mantissa_hi & 0x8000000000000000ULL))
+        fpu_normalize(&src);
+
+    // Build compact form (sign stripped) for range checks
+    bool input_sign = src.sign;
+    uint16_t bexp = (uint16_t)(src.exponent + FPU_EXP_BIAS);
+    uint32_t compact = ((uint32_t)bexp << 16) | (uint32_t)(src.mantissa_hi >> 48);
+
+    // SINHBIG boundary: 16380*log2 compact = 0x400CB167
+    if (compact > 0x400CB167u) {
+        // 16480*log2 compact = 0x400CB2B3
+        if (compact > 0x400CB2B3u) {
+            // Guaranteed overflow
+            fpu->fpsr |= FPEXC_OVFL | FPEXC_INEX2;
+            fpu_unpacked_t inf = {input_sign, FPU_EXP_INF, 0, 0};
+            return inf;
+        }
+
+        // 16380*log2 < |X| <= 16480*log2
+        // sinh(X) = sign(X) * exp(|X| - 16381*log2) * 2^16380
+        uint32_t saved_fpcr = fpu->fpcr;
+        fpu->fpcr = 0;
+
+        // Y = |X|
+        fpu_unpacked_t fp0 = src;
+        fp0.sign = false;
+
+        // T1 = 16381*LOG2_LEAD, T2 = 16381*LOG2_TRAIL (IEEE doubles)
+        fpu_unpacked_t t1 = fpsp_dbl(0x40C62D38, 0xD3D64634);
+        fpu_unpacked_t t2 = fpsp_dbl(0x3D6F90AE, 0xB1E75CC7);
+
+        // fp0 = |X| - T1
+        fp0 = fp_rnd64(fpu_op_sub(fpu, fp0, t1));
+        // fp0 = fp0 - T2 = |X| - 16381*log2 (accurate)
+        fp0 = fp_rnd64(fpu_op_sub(fpu, fp0, t2));
+
+        // exp(fp0)
+        float80_reg_t fp0_raw = fpu_pack(fpu, fp0);
+        fpu_unpacked_t fp0_u = fpu_unpack(fp0_raw);
+        fpu_unpacked_t exp_val = fpu_op_etox(fpu, fp0_u, fp0_raw);
+        exp_val = fp_rnd64(exp_val);
+
+        // sgnFact = sign(X) * 2^16380: extended { sign|0x7FFB, 0x8000..., 0 }
+        fpu_unpacked_t sgn_fact = {input_sign, 16380, 0x8000000000000000ULL, 0};
+
+        // Final multiply with user FPCR
+        fpu->fpcr = saved_fpcr;
+        fpu_unpacked_t result = fpu_op_mul(fpu, exp_val, sgn_fact);
+        fpu->fpsr |= FPEXC_INEX2;
+        return result;
+    }
+
+    // Normal case: |X| <= 16380*log2
+    // z = expm1(|X|), sinh(X) = sign(X) * (1/2) * (z + z/(1+z))
+    uint32_t saved_fpcr = fpu->fpcr;
+    fpu->fpcr = 0;
+
+    // Y = |X|
+    fpu_unpacked_t fp0 = src;
+    fp0.sign = false;
+
+    // z = expm1(Y)
+    float80_reg_t fp0_raw = fpu_pack(fpu, fp0);
+    fpu_unpacked_t fp0_u = fpu_unpack(fp0_raw);
+    fpu_unpacked_t z = fpu_op_etoxm1(fpu, fp0_u, fp0_raw);
+    z = fp_rnd64(z);
+
+    // fp1 = 1 + z
+    fpu_unpacked_t one = fpsp_sgl(0x3F800000);
+    fpu_unpacked_t fp1 = fp_rnd64(fpu_op_add(fpu, z, one));
+
+    // fp0 = z / (1+z)
+    fp0 = fp_rnd64(fpu_op_div(fpu, z, fp1));
+
+    // fp0 = z + z/(1+z)
+    fp0 = fp_rnd64(fpu_op_add(fpu, z, fp0));
+
+    // half = sign(X) * 0.5: single 0x3F000000 with input sign
+    fpu_unpacked_t half_sgn = fpsp_sgl(0x3F000000);
+    half_sgn.sign = input_sign;
+
+    // Final multiply with user FPCR
+    fpu->fpcr = saved_fpcr;
+    fpu_unpacked_t result = fpu_op_mul(fpu, fp0, half_sgn);
+    fpu->fpsr |= FPEXC_INEX2;
+    return result;
+}
+
+// ============================================================================
+// FCOSH — hyperbolic cosine (opcode 0x19)
+// ============================================================================
+// Algorithm from Motorola FPSP:
+//
+// 1. If |X| > 16380*log2, go to COSHBIG.
+// 2. (|X| <= 16380*log2) z = exp(|X|),
+//    cosh(X) = (1/2)*z + 1/(2*z).
+// 3. If |X| > 16480*log2, overflow.
+// 4. (16380*log2 < |X| <= 16480*log2)
+//    cosh(X) = exp(|X| - 16381*log2) * 2^16380.
+// 5. Denormalized: cosh(X) = 1.0 (with inexact).
+
+fpu_unpacked_t fpu_op_cosh(fpu_state_t *fpu, fpu_unpacked_t src, float80_reg_t raw) {
+    // NaN: propagate, converting SNaN to QNaN
+    if (src.exponent == FPU_EXP_INF && src.mantissa_hi != 0) {
+        if (!(src.mantissa_hi & 0x4000000000000000ULL))
+            fpu->fpsr |= FPEXC_SNAN;
+        src.mantissa_hi |= 0x4000000000000000ULL;
+        return src;
+    }
+
+    // Infinity: cosh(+inf) = cosh(-inf) = +inf
+    if (src.exponent == FPU_EXP_INF)
+        return (fpu_unpacked_t){false, FPU_EXP_INF, 0, 0};
+
+    // Zero: cosh(0) = 1.0 (exact)
+    if (src.exponent == FPU_EXP_ZERO)
+        return (fpu_unpacked_t){false, 0, 0x8000000000000000ULL, 0};
+
+    // Denorm: cosh(X) = 1 (with inexact)
+    uint16_t biased_exp = FP80_EXP(raw);
+    if (biased_exp == 0 && src.mantissa_hi != 0) {
+        // FPSP: fmove.s #1.0 then fadd.s #smallest_single for inexact
+        fpu->fpsr |= FPEXC_INEX2;
+        return (fpu_unpacked_t){false, 0, 0x8000000000000000ULL, 0};
+    }
+
+    // Normalize unnormalized extended inputs
+    if (biased_exp != 0 && biased_exp != 0x7FFF && !(src.mantissa_hi & 0x8000000000000000ULL))
+        fpu_normalize(&src);
+
+    // Build compact form (sign stripped) for range checks
+    uint16_t bexp = (uint16_t)(src.exponent + FPU_EXP_BIAS);
+    uint32_t compact = ((uint32_t)bexp << 16) | (uint32_t)(src.mantissa_hi >> 48);
+
+    // COSHBIG boundary: 16380*log2 compact = 0x400CB167
+    if (compact > 0x400CB167u) {
+        // 16480*log2 compact = 0x400CB2B3
+        if (compact > 0x400CB2B3u) {
+            // Guaranteed overflow
+            fpu->fpsr |= FPEXC_OVFL | FPEXC_INEX2;
+            return (fpu_unpacked_t){false, FPU_EXP_INF, 0, 0};
+        }
+
+        // 16380*log2 < |X| <= 16480*log2
+        // cosh(X) = exp(|X| - 16381*log2) * 2^16380
+        uint32_t saved_fpcr = fpu->fpcr;
+        fpu->fpcr = 0;
+
+        // Y = |X|
+        fpu_unpacked_t fp0 = src;
+        fp0.sign = false;
+
+        // T1 = 16381*LOG2_LEAD, T2 = 16381*LOG2_TRAIL
+        fpu_unpacked_t t1 = fpsp_dbl(0x40C62D38, 0xD3D64634);
+        fpu_unpacked_t t2 = fpsp_dbl(0x3D6F90AE, 0xB1E75CC7);
+
+        // fp0 = |X| - T1
+        fp0 = fp_rnd64(fpu_op_sub(fpu, fp0, t1));
+        // fp0 = fp0 - T2 = |X| - 16381*log2
+        fp0 = fp_rnd64(fpu_op_sub(fpu, fp0, t2));
+
+        // exp(fp0)
+        float80_reg_t fp0_raw = fpu_pack(fpu, fp0);
+        fpu_unpacked_t fp0_u = fpu_unpack(fp0_raw);
+        fpu_unpacked_t exp_val = fpu_op_etox(fpu, fp0_u, fp0_raw);
+        exp_val = fp_rnd64(exp_val);
+
+        // TWO16380 = 2^16380: extended { 0x7FFB, 0x8000..., 0 }
+        fpu_unpacked_t two16380 = {false, 16380, 0x8000000000000000ULL, 0};
+
+        // Final multiply with user FPCR
+        fpu->fpcr = saved_fpcr;
+        fpu_unpacked_t result = fpu_op_mul(fpu, exp_val, two16380);
+        fpu->fpsr |= FPEXC_INEX2;
+        return result;
+    }
+
+    // Normal case: |X| <= 16380*log2
+    // z = exp(|X|), cosh(X) = (1/2)*z + 1/(2*z)
+    uint32_t saved_fpcr = fpu->fpcr;
+    fpu->fpcr = 0;
+
+    // Y = |X|
+    fpu_unpacked_t fp0 = src;
+    fp0.sign = false;
+
+    // z = exp(Y)
+    float80_reg_t fp0_raw = fpu_pack(fpu, fp0);
+    fpu_unpacked_t fp0_u = fpu_unpack(fp0_raw);
+    fpu_unpacked_t z = fpu_op_etox(fpu, fp0_u, fp0_raw);
+    z = fp_rnd64(z);
+
+    // fp0 = (1/2)*z
+    fpu_unpacked_t half = fpsp_sgl(0x3F000000);
+    fp0 = fp_rnd64(fpu_op_mul(fpu, z, half));
+
+    // fp1 = (1/4) / fp0 → 1/(2*z) = (1/4) / ((1/2)*z)
+    fpu_unpacked_t quarter = fpsp_sgl(0x3E800000);
+    fpu_unpacked_t fp1 = fp_rnd64(fpu_op_div(fpu, quarter, fp0));
+
+    // Final add with user FPCR
+    fpu->fpcr = saved_fpcr;
+    fpu_unpacked_t result = fpu_op_add(fpu, fp0, fp1);
+    fpu->fpsr |= FPEXC_INEX2;
+    return result;
+}
+
+// ============================================================================
+// FTANH — hyperbolic tangent (opcode 0x09)
+// ============================================================================
+// Algorithm from Motorola FPSP:
+//
+// Bounds: BOUNDS1 = { 0x3FD78000, 0x3FFFDDCE } → 2^(-40), (5/2)*log2
+//
+// 1. If 2^(-40) < |X| < (5/2)*log2 (usual case):
+//    y = 2*|X|, z = expm1(y), tanh(X) = sign(X) * z/(z+2)
+// 2. If |X| < 2^(-40): tanh(X) = X (identity)
+// 3. If (5/2)*log2 <= |X| < 50*log2:
+//    y = 2*|X|, z = exp(y), tanh(X) = sgn - sgn*2/(z+1)
+// 4. If |X| >= 50*log2: tanh(X) = sgn - sgn*tiny (≈ ±1 with inexact)
+// 5. Denormalized: tanh(X) = X
+
+fpu_unpacked_t fpu_op_tanh(fpu_state_t *fpu, fpu_unpacked_t src, float80_reg_t raw) {
+    // NaN: propagate, converting SNaN to QNaN
+    if (src.exponent == FPU_EXP_INF && src.mantissa_hi != 0) {
+        if (!(src.mantissa_hi & 0x4000000000000000ULL))
+            fpu->fpsr |= FPEXC_SNAN;
+        src.mantissa_hi |= 0x4000000000000000ULL;
+        return src;
+    }
+
+    // Infinity: tanh(+inf) = +1, tanh(-inf) = -1
+    if (src.exponent == FPU_EXP_INF) {
+        return (fpu_unpacked_t){src.sign, 0, 0x8000000000000000ULL, 0};
+    }
+
+    // Zero: tanh(0) = 0, preserve sign (exact)
+    if (src.exponent == FPU_EXP_ZERO)
+        return src;
+
+    // Denorm: tanh(X) = X
+    uint16_t biased_exp = FP80_EXP(raw);
+    if (biased_exp == 0 && src.mantissa_hi != 0) {
+        fpu->fpsr |= FPEXC_UNFL | FPEXC_INEX2;
+        return src;
+    }
+
+    // Normalize unnormalized extended inputs
+    if (biased_exp != 0 && biased_exp != 0x7FFF && !(src.mantissa_hi & 0x8000000000000000ULL))
+        fpu_normalize(&src);
+
+    bool input_sign = src.sign;
+
+    // Build compact form (sign stripped) for range checks
+    uint16_t bexp = (uint16_t)(src.exponent + FPU_EXP_BIAS);
+    uint32_t compact = ((uint32_t)bexp << 16) | (uint32_t)(src.mantissa_hi >> 48);
+
+    // BOUNDS1: 2^(-40) = 0x3FD78000, (5/2)*log2 = 0x3FFFDDCE
+    if (compact > 0x3FD78000u && compact < 0x3FFFDDCEu) {
+        // Usual case: 2^(-40) < |X| < (5/2)*log2
+        // y = 2*|X|, z = expm1(y), tanh(X) = sign(X) * z/(z+2)
+        uint32_t saved_fpcr = fpu->fpcr;
+        fpu->fpcr = 0;
+
+        // Y = 2*|X| — double the exponent
+        fpu_unpacked_t fp0 = src;
+        fp0.sign = false;
+        fp0.exponent += 1;
+
+        // z = expm1(Y)
+        float80_reg_t fp0_raw = fpu_pack(fpu, fp0);
+        fpu_unpacked_t fp0_u = fpu_unpack(fp0_raw);
+        fpu_unpacked_t z = fpu_op_etoxm1(fpu, fp0_u, fp0_raw);
+        z = fp_rnd64(z);
+
+        // fp1 = z + 2
+        fpu_unpacked_t two = fpsp_sgl(0x40000000);
+        fpu_unpacked_t fp1 = fp_rnd64(fpu_op_add(fpu, z, two));
+
+        // Apply sign to fp1 → V (the FPSP does eor of sign into V)
+        fp1.sign = fp1.sign ^ input_sign;
+
+        // Final divide with user FPCR
+        fpu->fpcr = saved_fpcr;
+        fp0 = fpu_op_div(fpu, z, fp1);
+        fpu->fpsr |= FPEXC_INEX2;
+        return fp0;
+    }
+
+    // |X| <= 2^(-40) or |X| >= (5/2)*log2.
+    // Check for tiny: |X| < 1 (compact < 0x3FFF8000)
+    if (compact < 0x3FFF8000u) {
+        // TANHSM: |X| < 2^(-40), tanh(X) = X
+        fpu->fpsr |= FPEXC_INEX2;
+        return src;
+    }
+
+    // |X| >= (5/2)*log2. Check for huge: |X| >= 50*log2 (compact > 0x40048AA1)
+    if (compact > 0x40048AA1u) {
+        // TANHHUGE: tanh(X) ≈ ±1
+        // sgn - sgn*tiny: returns ±1 with inexact
+        // sgn = sign(X) * 1.0 in single format
+        fpu_unpacked_t sgn = fpsp_sgl(0x3F800000);
+        sgn.sign = input_sign;
+        // eps = -sign(X) * 2^(-126) in single format
+        fpu_unpacked_t eps = fpsp_sgl(0x00800000);
+        eps.sign = !input_sign;
+
+        // Final add with user FPCR
+        fpu_unpacked_t result = fpu_op_add(fpu, sgn, eps);
+        fpu->fpsr |= FPEXC_INEX2;
+        return result;
+    }
+
+    // (5/2)*log2 <= |X| < 50*log2
+    // tanh(X) = sgn - sgn*2/(exp(2|X|)+1)
+    uint32_t saved_fpcr = fpu->fpcr;
+    fpu->fpcr = 0;
+
+    // Y = 2*|X|
+    fpu_unpacked_t fp0 = src;
+    fp0.sign = false;
+    fp0.exponent += 1;
+
+    // z = exp(Y)
+    float80_reg_t fp0_raw = fpu_pack(fpu, fp0);
+    fpu_unpacked_t fp0_u = fpu_unpack(fp0_raw);
+    fpu_unpacked_t z = fpu_op_etox(fpu, fp0_u, fp0_raw);
+    z = fp_rnd64(z);
+
+    // fp0 = exp(Y) + 1
+    fpu_unpacked_t one = fpsp_sgl(0x3F800000);
+    fp0 = fp_rnd64(fpu_op_add(fpu, z, one));
+
+    // fp1 = -sign(X)*2 in single → 0xC0000000 xor'd with sign bit
+    // FPSP: d0 = SGN, eor #0xC0000000 → -SIGN(X)*2
+    fpu_unpacked_t neg_sgn_2 = fpsp_sgl(0xC0000000); // -2.0
+    neg_sgn_2.sign = neg_sgn_2.sign ^ input_sign; // -sign(X)*2
+
+    // fp1 = -sign(X)*2 / (exp(Y)+1)
+    fpu_unpacked_t fp1 = fp_rnd64(fpu_op_div(fpu, neg_sgn_2, fp0));
+
+    // sgn = sign(X) * 1.0
+    fpu_unpacked_t sgn = fpsp_sgl(0x3F800000);
+    sgn.sign = input_sign;
+
+    // Final add with user FPCR
+    fpu->fpcr = saved_fpcr;
+    fpu_unpacked_t result = fpu_op_add(fpu, sgn, fp1);
+    fpu->fpsr |= FPEXC_INEX2;
+    return result;
+}
+
+// ============================================================================
+// FASIN — arcsine (opcode 0x0C)
+// ============================================================================
+// Algorithm from Motorola FPSP:
+//
+// 1. If |X| >= 1:
+//    a. |X| = 1 → asin(X) = sign(X) * pi/2
+//    b. |X| > 1 → OPERR (invalid operation)
+// 2. (|X| < 1) asin(X) = atan( X / sqrt((1-X)(1+X)) )
+// 3. Denormalized: asin(X) = X
+
+fpu_unpacked_t fpu_op_asin(fpu_state_t *fpu, fpu_unpacked_t src, float80_reg_t raw) {
+    // NaN: propagate, converting SNaN to QNaN
+    if (src.exponent == FPU_EXP_INF && src.mantissa_hi != 0) {
+        if (!(src.mantissa_hi & 0x4000000000000000ULL))
+            fpu->fpsr |= FPEXC_SNAN;
+        src.mantissa_hi |= 0x4000000000000000ULL;
+        return src;
+    }
+
+    // Infinity: asin(inf) → OPERR
+    if (src.exponent == FPU_EXP_INF) {
+        fpu->fpsr |= FPEXC_OPERR;
+        return (fpu_unpacked_t){false, FPU_EXP_INF, 0xFFFFFFFFFFFFFFFFULL, 0};
+    }
+
+    // Zero: asin(0) = 0, preserve sign (exact)
+    if (src.exponent == FPU_EXP_ZERO)
+        return src;
+
+    // Denorm: asin(X) = X
+    uint16_t biased_exp = FP80_EXP(raw);
+    if (biased_exp == 0 && src.mantissa_hi != 0) {
+        fpu->fpsr |= FPEXC_UNFL | FPEXC_INEX2;
+        return src;
+    }
+
+    // Normalize unnormalized extended inputs
+    if (biased_exp != 0 && biased_exp != 0x7FFF && !(src.mantissa_hi & 0x8000000000000000ULL))
+        fpu_normalize(&src);
+
+    // Build compact form (sign stripped) for range checks
+    // |X| >= 1 means biased_exp >= 0x3FFF and mantissa_hi >= 0x8000...
+    uint16_t bexp = (uint16_t)(src.exponent + FPU_EXP_BIAS);
+    uint32_t compact = ((uint32_t)bexp << 16) | (uint32_t)(src.mantissa_hi >> 48);
+
+    // 1.0 compact = 0x3FFF8000
+    if (compact >= 0x3FFF8000u) {
+        // |X| >= 1. Check if exactly 1.0
+        fpu_unpacked_t abs_src = src;
+        abs_src.sign = false;
+        fpu_unpacked_t one = {false, 0, 0x8000000000000000ULL, 0};
+
+        // fabs(X) == 1.0?
+        if (abs_src.exponent == 0 && abs_src.mantissa_hi == 0x8000000000000000ULL && abs_src.mantissa_lo == 0) {
+            // |X| = 1, asin(X) = sign(X) * pi/2
+            // PIBY2 from FPSP: 0x3FFF0000, 0xC90FDAA2, 0x2168C235
+            fpu_unpacked_t piby2 = fpsp_ext(0x3FFF0000, 0xC90FDAA2, 0x2168C235);
+
+            // Multiply by sign(X): sgn = ±1.0 in single format
+            fpu_unpacked_t sgn = fpsp_sgl(0x3F800000);
+            sgn.sign = src.sign;
+
+            fpu_unpacked_t result = fpu_op_mul(fpu, piby2, sgn);
+            fpu->fpsr |= FPEXC_INEX2;
+            return result;
+        }
+
+        // |X| > 1 → OPERR
+        fpu->fpsr |= FPEXC_OPERR;
+        return (fpu_unpacked_t){false, FPU_EXP_INF, 0xFFFFFFFFFFFFFFFFULL, 0};
+    }
+
+    // Normal case: |X| < 1
+    // asin(X) = atan( X / sqrt((1-X)(1+X)) )
+    uint32_t saved_fpcr = fpu->fpcr;
+    fpu->fpcr = 0;
+
+    // fp1 = 1 - X
+    fpu_unpacked_t one = {false, 0, 0x8000000000000000ULL, 0};
+    fpu_unpacked_t fp1 = fp_rnd64(fpu_op_sub(fpu, one, src));
+
+    // fp2 = 1 + X
+    fpu_unpacked_t fp2 = fp_rnd64(fpu_op_add(fpu, one, src));
+
+    // fp1 = (1+X)(1-X)
+    fp1 = fp_rnd64(fpu_op_mul(fpu, fp2, fp1));
+
+    // fp1 = sqrt((1-X)(1+X))
+    fp1 = fp_rnd64(fpu_op_sqrt(fpu, fp1));
+
+    // fp0 = X / sqrt(...)
+    fpu_unpacked_t fp0 = fp_rnd64(fpu_op_div(fpu, src, fp1));
+
+    // atan(fp0) — pack to float80 then call fpu_op_atan
+    float80_reg_t fp0_raw = fpu_pack(fpu, fp0);
+    fpu_unpacked_t fp0_u = fpu_unpack(fp0_raw);
+
+    // Restore FPCR for atan (atan restores FPCR internally)
+    fpu->fpcr = saved_fpcr;
+    fpu_unpacked_t result = fpu_op_atan(fpu, fp0_u, fp0_raw);
+    fpu->fpsr |= FPEXC_INEX2;
+    return result;
+}
+
+// ============================================================================
+// FACOS — arccosine (opcode 0x1C)
+// ============================================================================
+// Algorithm from Motorola FPSP:
+//
+// 1. If |X| >= 1:
+//    a. X = +1 → acos(1) = 0 (exact)
+//    b. X = -1 → acos(-1) = pi (with inexact)
+//    c. |X| > 1 → OPERR
+// 2. (|X| < 1) acos(X) = 2 * atan( sqrt((1-X)/(1+X)) )
+// 3. Denormalized: acos(X) = pi/2 (with inexact)
+
+fpu_unpacked_t fpu_op_acos(fpu_state_t *fpu, fpu_unpacked_t src, float80_reg_t raw) {
+    // NaN: propagate, converting SNaN to QNaN
+    if (src.exponent == FPU_EXP_INF && src.mantissa_hi != 0) {
+        if (!(src.mantissa_hi & 0x4000000000000000ULL))
+            fpu->fpsr |= FPEXC_SNAN;
+        src.mantissa_hi |= 0x4000000000000000ULL;
+        return src;
+    }
+
+    // Infinity: acos(inf) → OPERR
+    if (src.exponent == FPU_EXP_INF) {
+        fpu->fpsr |= FPEXC_OPERR;
+        return (fpu_unpacked_t){false, FPU_EXP_INF, 0xFFFFFFFFFFFFFFFFULL, 0};
+    }
+
+    // Zero: acos(0) = pi/2 (with inexact)
+    if (src.exponent == FPU_EXP_ZERO) {
+        fpu_unpacked_t piby2 = fpsp_ext(0x3FFF0000, 0xC90FDAA2, 0x2168C235);
+        fpu->fpsr |= FPEXC_INEX2;
+        return piby2;
+    }
+
+    // Denorm: acos(X) = pi/2
+    uint16_t biased_exp = FP80_EXP(raw);
+    if (biased_exp == 0 && src.mantissa_hi != 0) {
+        fpu_unpacked_t piby2 = fpsp_ext(0x3FFF0000, 0xC90FDAA2, 0x2168C235);
+        fpu->fpsr |= FPEXC_INEX2;
+        return piby2;
+    }
+
+    // Normalize unnormalized extended inputs
+    if (biased_exp != 0 && biased_exp != 0x7FFF && !(src.mantissa_hi & 0x8000000000000000ULL))
+        fpu_normalize(&src);
+
+    // Build compact form (sign stripped) for range checks
+    uint16_t bexp = (uint16_t)(src.exponent + FPU_EXP_BIAS);
+    uint32_t compact = ((uint32_t)bexp << 16) | (uint32_t)(src.mantissa_hi >> 48);
+
+    // 1.0 compact = 0x3FFF8000
+    if (compact >= 0x3FFF8000u) {
+        // |X| >= 1. Check if exactly 1.0
+        fpu_unpacked_t abs_src = src;
+        abs_src.sign = false;
+
+        if (abs_src.exponent == 0 && abs_src.mantissa_hi == 0x8000000000000000ULL && abs_src.mantissa_lo == 0) {
+            if (!src.sign) {
+                // X = +1: acos(+1) = +0 (exact)
+                return (fpu_unpacked_t){false, FPU_EXP_ZERO, 0, 0};
+            } else {
+                // X = -1: acos(-1) = pi (with inexact)
+                // PI from FPSP: 0x40000000, 0xC90FDAA2, 0x2168C235
+                fpu_unpacked_t pi = fpsp_ext(0x40000000, 0xC90FDAA2, 0x2168C235);
+                // The FPSP adds a tiny value to pi to force inexact
+                fpu_unpacked_t tiny = fpsp_sgl(0x00800000);
+                fpu_unpacked_t result = fpu_op_add(fpu, pi, tiny);
+                fpu->fpsr |= FPEXC_INEX2;
+                return result;
+            }
+        }
+
+        // |X| > 1 → OPERR
+        fpu->fpsr |= FPEXC_OPERR;
+        return (fpu_unpacked_t){false, FPU_EXP_INF, 0xFFFFFFFFFFFFFFFFULL, 0};
+    }
+
+    // Normal case: |X| < 1
+    // acos(X) = 2 * atan( sqrt((1-X)/(1+X)) )
+    uint32_t saved_fpcr = fpu->fpcr;
+    fpu->fpcr = 0;
+
+    // fp1 = 1 + X
+    fpu_unpacked_t one = {false, 0, 0x8000000000000000ULL, 0};
+    fpu_unpacked_t fp1 = fp_rnd64(fpu_op_add(fpu, one, src));
+
+    // fp0 = -X
+    fpu_unpacked_t neg_x = src;
+    neg_x.sign = !neg_x.sign;
+
+    // fp0 = 1 - X = 1 + (-X)
+    fpu_unpacked_t fp0 = fp_rnd64(fpu_op_add(fpu, one, neg_x));
+
+    // fp0 = (1-X) / (1+X)
+    fp0 = fp_rnd64(fpu_op_div(fpu, fp0, fp1));
+
+    // fp0 = sqrt((1-X)/(1+X))
+    fp0 = fp_rnd64(fpu_op_sqrt(fpu, fp0));
+
+    // atan(fp0) — the FPSP calls satan with FPCR cleared
+    float80_reg_t fp0_raw = fpu_pack(fpu, fp0);
+    fpu_unpacked_t fp0_u = fpu_unpack(fp0_raw);
+    fpu_unpacked_t atan_val = fpu_op_atan(fpu, fp0_u, fp0_raw);
+    atan_val = fp_rnd64(atan_val);
+
+    // result = 2 * atan(...)
+    // FPSP: faddx fp0,fp0 with user's FPCR
+    fpu->fpcr = saved_fpcr;
+    fpu_unpacked_t result = fpu_op_add(fpu, atan_val, atan_val);
+    fpu->fpsr |= FPEXC_INEX2;
+    return result;
+}
+
+// FATANH: inverse hyperbolic tangent (opcode 0x0D)
+// FPSP algorithm: z = 2|X|/(1-|X|), atanh(X) = sign(X) * (1/2) * lognp1(z)
+fpu_unpacked_t fpu_op_atanh(fpu_state_t *fpu, fpu_unpacked_t src, float80_reg_t raw) {
+    // NaN: propagate, converting SNaN to QNaN
+    if (src.exponent == FPU_EXP_INF && src.mantissa_hi != 0) {
+        if (!(src.mantissa_hi & 0x4000000000000000ULL))
+            fpu->fpsr |= FPEXC_SNAN;
+        src.mantissa_hi |= 0x4000000000000000ULL;
+        return src;
+    }
+
+    // Infinity: |X| > 1, generate OPERR
+    if (src.exponent == FPU_EXP_INF) {
+        fpu->fpsr |= FPEXC_OPERR;
+        fpu_unpacked_t nan = {false, FPU_EXP_INF, 0xFFFFFFFFFFFFFFFFULL, 0};
+        return nan;
+    }
+
+    // Zero: atanh(0) = 0, preserve sign (exact)
+    if (src.exponent == FPU_EXP_ZERO)
+        return src;
+
+    // Denorm: atanh(X) = X for denormalized input
+    uint16_t biased_exp = FP80_EXP(raw);
+    if (biased_exp == 0 && src.mantissa_hi != 0) {
+        fpu->fpsr |= FPEXC_UNFL | FPEXC_INEX2;
+        return src;
+    }
+
+    // Normalize unnormalized extended inputs
+    if (biased_exp != 0 && biased_exp != 0x7FFF && !(src.mantissa_hi & 0x8000000000000000ULL))
+        fpu_normalize(&src);
+
+    bool input_sign = src.sign;
+
+    // |X| for comparison: take fabsx
+    fpu_unpacked_t abs_x = src;
+    abs_x.sign = false;
+
+    // Compare |X| to 1.0
+    fpu_unpacked_t one = fpsp_sgl(0x3F800000);
+
+    // Build compact for range check: biased_exp << 16 | top mantissa bits
+    uint16_t bexp = (uint16_t)(abs_x.exponent + FPU_EXP_BIAS);
+    uint32_t compact = ((uint32_t)bexp << 16) | (uint32_t)(abs_x.mantissa_hi >> 48);
+
+    // 1.0 in compact: 0x3FFF8000
+    if (compact >= 0x3FFF8000u) {
+        // |X| >= 1: check if exactly 1.0
+        if (compact == 0x3FFF8000u && abs_x.mantissa_lo == 0 && (abs_x.mantissa_hi & 0x0000FFFFFFFFFFFFULL) == 0) {
+            // |X| = 1: generate divide-by-zero, return ±infinity
+            fpu->fpsr |= FPEXC_DZ;
+            fpu_unpacked_t inf = {input_sign, FPU_EXP_INF, 0, 0};
+            return inf;
+        }
+        // |X| > 1: generate OPERR
+        fpu->fpsr |= FPEXC_OPERR;
+        fpu_unpacked_t nan = {false, FPU_EXP_INF, 0xFFFFFFFFFFFFFFFFULL, 0};
+        return nan;
+    }
+
+    // Normal case: |X| < 1
+    // z = 2|X| / (1 - |X|), atanh(X) = sign(X) * (1/2) * lognp1(z)
+    uint32_t saved_fpcr = fpu->fpcr;
+    fpu->fpcr = 0;
+
+    // fp0 = |X|
+    fpu_unpacked_t fp0 = abs_x;
+
+    // fp1 = -|X|
+    fpu_unpacked_t fp1 = abs_x;
+    fp1.sign = true;
+
+    // fp0 = 2|X|
+    fp0 = fp_rnd64(fpu_op_add(fpu, fp0, fp0));
+
+    // fp1 = 1 - |X|
+    fp1 = fp_rnd64(fpu_op_add(fpu, fp1, one));
+
+    // fp0 = 2|X| / (1 - |X|)
+    fp0 = fp_rnd64(fpu_op_div(fpu, fp0, fp1));
+
+    // lognp1(z)
+    float80_reg_t fp0_raw = fpu_pack(fpu, fp0);
+    fpu_unpacked_t fp0_u = fpu_unpack(fp0_raw);
+    fpu_unpacked_t lp1 = fpu_op_lognp1(fpu, fp0_u, fp0_raw);
+    lp1 = fp_rnd64(lp1);
+
+    // half = sign(X) * 0.5
+    fpu_unpacked_t half_sgn = fpsp_sgl(0x3F000000);
+    half_sgn.sign = input_sign;
+
+    // Final multiply with user FPCR: atanh(X) = sign(X) * (1/2) * lognp1(z)
+    fpu->fpcr = saved_fpcr;
+    fpu_unpacked_t result = fpu_op_mul(fpu, lp1, half_sgn);
+    fpu->fpsr |= FPEXC_INEX2;
+    return result;
+}
