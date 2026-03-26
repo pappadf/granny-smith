@@ -253,7 +253,7 @@ static const char *disasm_fbcc(unsigned c) {
                                    "UGE", "ULT", "ULE",  "NE",  "T",   "SF",  "SEQ", "GT",  "GE",   "LT",  "LE",
                                    "GL",  "GLE", "NGLE", "NGL", "NLE", "NLT", "NGE", "NGT", "SNEQ", "ST"};
 
-    return fbcc[c & 0x3F];
+    return fbcc[c & 0x1F];
 }
 
 static const char *disasm_caches(unsigned c) {
@@ -839,184 +839,194 @@ static void disasm_fpu_sccdbcc(uint16_t opcode, uint16_t ext, char *buf, uint16_
     do {                                                                                                               \
         goto illegal;                                                                                                  \
     } while (0)
-#define OP_ILLEGAL             ASM("ILLEGAL")
-#define OP_JMP_EA              ASM("JMP\t%s", DST_EA(4, 0, ea_control))
-#define OP_JSR_EA              ASM("JSR\t%s", DST_EA(4, 0, ea_control))
-#define OP_LEA_EA_AN           ASM("LEA\t%s,%s", SRC_EA(4, 0, ea_any), AN)
-#define OP_LINK                ASM("LINK\t%s,#$%X", AY, DST_WORD)
-#define OP_LINK_L_AN_DISP      ASM("LINK.L\t%s,#$%08X", AY, SRC_LONG)
-#define OP_LSL_B_DATA_DY       ASM("LSL.B\t#$%X,%s", (int)IMM, DY);
-#define OP_LSL_B_DX_DY         ASM("LSL.B\t%s,%s", DX, DY);
-#define OP_LSL_L_DATA_DY       ASM("LSL.L\t#$%X,%s", (int)IMM, DY);
-#define OP_LSL_L_DX_DY         ASM("LSL.L\t%s,%s", DX, DY);
-#define OP_LSL_W_DATA_DY       ASM("LSL.W\t#$%X,%s", (int)IMM, DY);
-#define OP_LSL_W_DX_DY         ASM("LSL.W\t%s,%s", DX, DY);
-#define OP_LSL_W_EA            ASM("LSL.W\t%s", DST_EA(2, 0, (ea_memory & ea_alterable)));
-#define OP_LSR_B_DATA_DY       ASM("LSR.B\t#$%X,%s", (int)IMM, DY);
-#define OP_LSR_B_DX_DY         ASM("LSR.B\t%s,%s", DX, DY);
-#define OP_LSR_L_DATA_DY       ASM("LSR.L\t#$%X,%s", (int)IMM, DY);
-#define OP_LSR_L_DX_DY         ASM("LSR.L\t%s,%s", DX, DY);
-#define OP_LSR_W_DATA_DY       ASM("LSR.W\t#$%X,%s", (int)IMM, DY);
-#define OP_LSR_W_DX_DY         ASM("LSR.W\t%s,%s", DX, DY);
-#define OP_LSR_W_EA            ASM("LSR.W\t%s", DST_EA(2, 0, (ea_memory & ea_alterable)));
-#define OP_MOVE_AN_USP         ASM("MOVE\t%s,USP", AY)
-#define OP_MOVE_B_CCR_EA       ASM("MOVE\tCCR,%s", DST_EA(2, 0, (ea_data & ea_alterable)));
-#define OP_MOVE_B_EA_CCR       ASM("MOVE\t%s,CCR", SRC_EA(2, 0, ea_any));
-#define OP_MOVE_B_EA_EA        ASM("MOVE.B\t%s,%s", SRC_EA(1, 0, ea_any), MOVE_DST(1))
-#define OP_MOVE_EA_SR          ASM("MOVE\t%s,SR", SRC_EA(2, 0, ea_any))
-#define OP_MOVE_L_EA_EA        ASM("MOVE.L\t%s,%s", SRC_EA(4, 0, ea_any), MOVE_DST(4))
-#define OP_MOVE_USP_AN         ASM("MOVE\tUSP,%s", AY)
-#define OP_MOVE_W_EA_EA        ASM("MOVE.W\t%s,%s", SRC_EA(2, 0, ea_any), MOVE_DST(2))
-#define OP_MOVEA_L_EA_AN       ASM("MOVEA.L\t%s,%s", SRC_EA(4, 0, ea_any), AN);
-#define OP_MOVEA_W_EA_AN       ASM("MOVEA.W\t%s,%s", SRC_EA(2, 0, ea_any), AN)
-#define OP_MOVE_W_SR_EA        ASM("MOVE\tSR,%s", DST_EA(2, 0, (ea_data & ea_alterable)))
-#define OP_MOVEC_RC_RN         ASM("MOVEC\t%s,%s", RC, RN)
-#define OP_MOVEC_RN_RC         ASM("MOVEC\t%s,%s", RN, RC)
-#define OP_MOVEM_L_EA_LIST     ASM("MOVEM.L\t%s,%s", SRC_EA(4, 1, ea_control | ea_an_plus), LIST)
-#define OP_MOVEM_L_LIST_EA     ASM("MOVEM.L\t%s,%s", LIST, DST_EA(4, 1, (ea_control & ea_alterable) | ea_min_an))
-#define OP_MOVEM_W_EA_LIST     ASM("MOVEM.W\t%s,%s", SRC_EA(2, 1, ea_control | ea_an_plus), LIST)
-#define OP_MOVEM_W_LIST_EA     ASM("MOVEM.W\t%s,%s", LIST, DST_EA(2, 1, (ea_control & ea_alterable) | ea_min_an))
-#define OP_MOVEP_L_D16AY_DX    ASM("MOVEP.L\t$%04X(%s),%s", SRC_WORD, AY, DX)
-#define OP_MOVEP_L_DX_D16AY    ASM("MOVEP.L\t%s,$%04X(%s)", DX, SRC_WORD, AY)
-#define OP_MOVEP_W_D16AY_DX    ASM("MOVEP.W\t$%04X(%s),%s", SRC_WORD, AY, DX)
-#define OP_MOVEP_W_DX_D16AY    ASM("MOVEP.W\t%s,$%04X(%s)", DX, SRC_WORD, AY)
-#define OP_MOVEQ_L_DATA_DN     ASM("MOVEQ\t#$%02X,%s", (int)(uint8_t)(opcode & 0xFF), DN)
-#define OP_MOVES_B_EA_RN       ASM("MOVES.B\t%s,%s", SRC_EA(1, 1, (ea_memory & ea_alterable)), RN)
-#define OP_MOVES_B_RN_EA       ASM("MOVES.B\t%s,%s", RN, DST_EA(1, 1, (ea_memory & ea_alterable)))
-#define OP_MOVES_L_EA_RN       ASM("MOVES.L\t%s,%s", SRC_EA(4, 1, (ea_memory & ea_alterable)), RN)
-#define OP_MOVES_L_RN_EA       ASM("MOVES.L\t%s,%s", RN, DST_EA(4, 1, (ea_memory & ea_alterable)))
-#define OP_MOVES_W_EA_RN       ASM("MOVES.W\t%s,%s", SRC_EA(2, 1, (ea_memory & ea_alterable)), RN)
-#define OP_MOVES_W_RN_EA       ASM("MOVES.W\t%s,%s", RN, DST_EA(2, 1, (ea_memory & ea_alterable)))
-#define OP_MULS_L_EA_DH_DL     ASM("MULS.L\t%s,%s:%s", SRC_EA(4, 1, ea_any), DH, DL)
-#define OP_MULS_W_EA_DN        ASM("MULS.W\t%s,%s", SRC_EA(2, 0, ea_any), DN)
-#define OP_MULU_W_EA_DN        ASM("MULU.W\t%s,%s", SRC_EA(2, 0, ea_data), DN)
-#define OP_NBCD_B_EA           ASM("NBCD\t%s", DST_EA(1, 0, (ea_data & ea_alterable)))
-#define OP_NEG_B_EA            ASM("NEG.B\t%s", DST_EA(1, 0, (ea_data & ea_alterable)))
-#define OP_NEG_L_EA            ASM("NEG.L\t%s", DST_EA(4, 0, (ea_data & ea_alterable)))
-#define OP_NEG_W_EA            ASM("NEG.W\t%s", DST_EA(2, 0, (ea_data & ea_alterable)))
-#define OP_NEGX_B_EA           ASM("NEGX.B\t%s", DST_EA(1, 0, (ea_data & ea_alterable)))
-#define OP_NEGX_L_EA           ASM("NEGX.L\t%s", DST_EA(4, 0, (ea_data & ea_alterable)))
-#define OP_NEGX_W_EA           ASM("NEGX.W\t%s", DST_EA(2, 0, (ea_data & ea_alterable)))
-#define OP_NOP                 ASM("NOP")
-#define OP_NOT_B_EA            ASM("NOT.B\t%s", DST_EA(1, 0, (ea_data & ea_alterable)))
-#define OP_NOT_L_EA            ASM("NOT.L\t%s", DST_EA(4, 0, (ea_data & ea_alterable)))
-#define OP_NOT_W_EA            ASM("NOT.W\t%s", DST_EA(2, 0, (ea_data & ea_alterable)))
-#define OP_OR_B_DN_EA          ASM("OR.B\t%s,%s", DN, DST_EA(1, 0, (ea_memory & ea_alterable)))
-#define OP_OR_B_EA_DN          ASM("OR.B\t%s,%s", SRC_EA(2, 0, ea_data), DN)
-#define OP_OR_L_DN_EA          ASM("OR.L\t%s,%s", DN, DST_EA(4, 0, (ea_memory & ea_alterable)))
-#define OP_OR_L_EA_DN          ASM("OR.L\t%s,%s", SRC_EA(4, 0, ea_data), DN)
-#define OP_OR_W_DN_EA          ASM("OR.W\t%s,%s", DN, DST_EA(2, 0, (ea_memory & ea_alterable)))
-#define OP_OR_W_EA_DN          ASM("OR.W\t%s,%s", SRC_EA(2, 0, ea_data), DN)
-#define OP_ORI_B_DATA_CCR      ASM("ORI.B\t#$%04X,CCR", SRC_WORD)
-#define OP_ORI_B_DATA_EA       ASM("ORI.B\t#$%X,%s", SRC_WORD, DST_EA(1, 1, (ea_data & ea_alterable)))
-#define OP_ORI_L_DATA_EA       ASM("ORI.L\t#$%08X,%s", SRC_LONG, DST_EA(4, 2, (ea_data & ea_alterable)))
-#define OP_ORI_W_DATA_EA       ASM("ORI.W\t#$%04X,%s", SRC_WORD, DST_EA(2, 1, (ea_data & ea_alterable)))
-#define OP_ORI_W_DATA_SR       ASM("ORI.W\t#$%04X,SR", SRC_WORD)
-#define OP_PEA_EA              ASM("PEA\t%s", DST_EA(4, 0, ea_control))
-#define OP_RESET               ASM("RESET")
-#define OP_ROL_B_DATA_DY       ASM("ROL.B\t#$%X,%s", (int)IMM, DY);
-#define OP_ROL_B_DX_DY         ASM("ROL.B\t%s,%s", DX, DY);
-#define OP_ROL_L_DATA_DY       ASM("ROL.L\t#$%X,%s", (int)IMM, DY);
-#define OP_ROL_L_DX_DY         ASM("ROL.L\t%s,%s", DX, DY);
-#define OP_ROL_W_DATA_DY       ASM("ROL.W\t#$%X,%s", (int)IMM, DY);
-#define OP_ROL_W_DX_DY         ASM("ROL.W\t%s,%s", DX, DY);
-#define OP_ROL_W_EA            ASM("ROL.W\t%s", DST_EA(2, 0, (ea_memory & ea_alterable)));
-#define OP_ROR_B_DATA_DY       ASM("ROR.B\t#$%X,%s", (int)IMM, DY);
-#define OP_ROR_B_DX_DY         ASM("ROR.B\t%s,%s", DX, DY);
-#define OP_ROR_L_DATA_DY       ASM("ROR.L\t#$%X,%s", (int)IMM, DY);
-#define OP_ROR_L_DX_DY         ASM("ROR.L\t%s,%s", DX, DY);
-#define OP_ROR_W_DATA_DY       ASM("ROR.W\t#$%X,%s", (int)IMM, DY);
-#define OP_ROR_W_DX_DY         ASM("ROR.W\t%s,%s", DX, DY);
-#define OP_ROR_W_EA            ASM("ROR.W\t%s", DST_EA(2, 0, (ea_memory & ea_alterable)));
-#define OP_ROXL_B_DATA_DY      ASM("ROXL.B\t#$%X,%s", (int)(IMM), DY);
-#define OP_ROXL_B_DX_DY        ASM("ROXL.B\t%s,%s", DX, DY);
-#define OP_ROXL_L_DATA_DY      ASM("ROXL.L\t#$%X,%s", (int)(IMM), DY);
-#define OP_ROXL_L_DX_DY        ASM("ROXL.L\t%s,%s", DX, DY);
-#define OP_ROXL_W_DATA_DY      ASM("ROXL.W\t#$%X,%s", (int)(IMM), DY);
-#define OP_ROXL_W_DX_DY        ASM("ROXL.W\t%s,%s", DX, DY);
-#define OP_ROXL_W_EA           ASM("ROXL.W\t%s", DST_EA(2, 0, (ea_memory & ea_alterable)));
-#define OP_ROXR_B_DATA_DY      ASM("ROXR.B\t#$%X,%s", (int)(IMM), DY);
-#define OP_ROXR_B_DX_DY        ASM("ROXR.B\t%s,%s", DX, DY);
-#define OP_ROXR_L_DATA_DY      ASM("ROXR.L\t#$%X,%s", (int)(IMM), DY);
-#define OP_ROXR_L_DX_DY        ASM("ROXR.L\t%s,%s", DX, DY);
-#define OP_ROXR_W_DATA_DY      ASM("ROXR.W\t#$%X,%s", (int)(IMM), DY);
-#define OP_ROXR_W_DX_DY        ASM("ROXR.W\t%s,%s", DX, DY);
-#define OP_ROXR_W_EA           ASM("ROXR.W\t%s", DST_EA(2, 0, (ea_memory & ea_alterable)));
-#define OP_RTD_DISPLACEMENT    ASM("RTD\t#$%X", DST_WORD)
-#define OP_RTE                 ASM("RTE")
-#define OP_RTM_RN              ASM("RTM\t%s", opcode & 8 ? AY : DY)
-#define OP_RTR                 ASM("RTR")
-#define OP_RTS                 ASM("RTS")
-#define OP_SBCD_AX_AY          ASM("SBCD\t-(%s),-(%s)", AY, AX)
-#define OP_SBCD_DX_DY          ASM("SBCD\t%s,%s", DY, DX)
-#define OP_PACK_DY_DX          ASM("PACK\t%s,%s,#$%04X", DY, DX, SRC_WORD)
-#define OP_PACK_AY_AX          ASM("PACK\t-(%s),-(%s),#$%04X", AY, AX, SRC_WORD)
-#define OP_UNPK_DY_DX          ASM("UNPK\t%s,%s,#$%04X", DY, DX, SRC_WORD)
-#define OP_UNPK_AY_AX          ASM("UNPK\t-(%s),-(%s),#$%04X", AY, AX, SRC_WORD)
-#define OP_SCC_EA              ASM("S%s\t%s", CC, DST_EA(1, 0, (ea_data & ea_alterable)));
-#define OP_STOP_DATA           ASM("STOP\t#$%X", SRC_WORD)
-#define OP_SUB_B_DN_EA         ASM("SUB.B\t%s,%s", DN, DST_EA(1, 0, (ea_memory & ea_alterable)));
-#define OP_SUB_B_EA_DN         ASM("SUB.B\t%s,%s", SRC_EA(1, 0, ea_any & ~ea_an), DN);
-#define OP_SUB_L_DN_EA         ASM("SUB.L\t%s,%s", DN, DST_EA(4, 0, (ea_memory & ea_alterable)));
-#define OP_SUB_L_EA_DN         ASM("SUB.L\t%s,%s", SRC_EA(4, 0, ea_any), DN);
-#define OP_SUB_W_DN_EA         ASM("SUB.W\t%s,%s", DN, DST_EA(2, 0, (ea_memory & ea_alterable)));
-#define OP_SUB_W_EA_DN         ASM("SUB.W\t%s,%s", SRC_EA(2, 0, ea_any), DN);
-#define OP_SUBA_L_EA_AN        ASM("SUBA.L\t%s,%s", SRC_EA(4, 0, ea_any), AN);
-#define OP_SUBA_W_EA_AN        ASM("SUBA.W\t%s,%s", SRC_EA(2, 0, ea_any), AN);
-#define OP_SUBI_B_DATA_EA      ASM("SUBI.B\t#$%X,%s", SRC_WORD, DST_EA(1, 1, (ea_data & ea_alterable)));
-#define OP_SUBI_L_DATA_EA      ASM("SUBI.L\t#$%08X,%s", SRC_LONG, DST_EA(4, 2, (ea_data & ea_alterable)));
-#define OP_SUBI_W_DATA_EA      ASM("SUBI.W\t#$%04X,%s", SRC_WORD, DST_EA(2, 1, (ea_data & ea_alterable)));
-#define OP_SUBQ_B_DATA_EA      ASM("SUBQ.B\t#$%X,%s", (int)IMM, DST_EA(1, 0, ea_alterable & ~ea_an))
-#define OP_SUBQ_L_DATA_AN      ASM("SUBQ.L\t#$%X,%s", (int)IMM, AY)
-#define OP_SUBQ_L_DATA_EA      ASM("SUBQ.L\t#$%X,%s", (int)IMM, DST_EA(4, 0, ea_alterable & ~ea_an))
-#define OP_SUBQ_W_DATA_AN      ASM("SUBQ.W\t#$%X,%s", (int)IMM, AY)
-#define OP_SUBQ_W_DATA_EA      ASM("SUBQ.W\t#$%X,%s", (int)IMM, DST_EA(2, 0, ea_alterable & ~ea_an))
-#define OP_SUBX_B_AX_AY        ASM("SUBX.B\t-(%s),-(%s)", AY, AX);
-#define OP_SUBX_B_DX_DY        ASM("SUBX.B\t%s,%s", DY, DX);
-#define OP_SUBX_L_AX_AY        ASM("SUBX.L\t-(%s),-(%s)", AY, AX);
-#define OP_SUBX_L_DX_DY        ASM("SUBX.L\t%s,%s", DY, DX);
-#define OP_SUBX_W_AX_AY        ASM("SUBX.W\t-(%s),-(%s)", AY, AX);
-#define OP_SUBX_W_DX_DY        ASM("SUBX.W\t%s,%s", DY, DX);
-#define OP_SWAP_DN             ASM("SWAP\t%s", DY)
-#define OP_TAS_B_EA            ASM("TAS\t%s", DST_EA(1, 0, ea_any))
-#define OP_TRAP_VECTOR         ASM("TRAP\t#$%X", (int)(opcode & 0xF))
-#define OP_TRAPV               ASM("TRAPV")
-#define OP_TRAPCC              ASM("T%s", CC)
-#define OP_TRAPCC_W_DATA       ASM("TP%s.W\t#$%X", CC, (int)SRC_WORD)
-#define OP_TRAPCC_L_DATA       ASM("TP%s.L\t#$%08X", CC, (int)SRC_LONG)
-#define OP_TST_B_EA            ASM("TST.B\t%s", DST_EA(1, 0, ea_any))
-#define OP_TST_L_EA            ASM("TST.L\t%s", DST_EA(4, 0, ea_any))
-#define OP_TST_W_EA            ASM("TST.W\t%s", DST_EA(2, 0, ea_any))
-#define OP_UNLK                ASM("UNLK\t%s", AY)
-#define OP_PBCC_W              ASM("PB%s\t%s", PBCC, PC_DISP)
-#define OP_PBCC_L              ASM("PB%s.L\t%s", PBCC, LONG_PC_DISP)
-#define OP_PSAVE_EA            ASM("PSAVE\t%s", DST_EA(4, 0, (ea_control | ea_min_an) & ea_alterable))
-#define OP_PRESTORE_EA         ASM("PRESTORE\t%s", DST_EA(4, 0, (ea_control | ea_an_plus)))
-#define OP_FBCC_W_DISPLACEMENT ASM("FB%s\t%s", FBCC, PC_DISP)
-#define OP_FBCC_L_DISPLACEMENT ASM("FB%s.L\t%s", FBCC, LONG_PC_DISP)
-#define OP_FSAVE_EA            ASM("FSAVE\t%s", DST_EA(4, 0, (ea_control | ea_min_an) & ea_alterable))
-#define OP_FRESTORE_EA         ASM("FRESTORE\t%s", DST_EA(4, 0, (ea_control | ea_an_plus)))
-#define OP_FPU_GENERAL         disasm_fpu_general(opcode, ext_word, buf, &fetch_pos_src)
-#define OP_FPU_SCCDBCC         disasm_fpu_sccdbcc(opcode, ext_word, buf, &fetch_pos_src)
-#define OP_CINVL_CACHES_AN     ASM("CINVL\t%s,(%s)", CACHES, AY)
-#define OP_CINVP_CACHES_AN     ASM("CINVP\t%s,(%s)", CACHES, AY)
-#define OP_CINVA_CACHES        ASM("CINVA\t%s", CACHES)
-#define OP_CPUSHL_CACHES_AN    ASM("CPUSHL\t%s,(%s)", CACHES, AY)
-#define OP_CPUSHP_CACHES_AN    ASM("CPUSHP\t%s,(%s)", CACHES, AY)
-#define OP_CPUSHA_CACHES       ASM("CPUSHA\t%s", CACHES)
-#define OP_PFLUSH_AN           ASM("PFLUSH\t(%s)", AY)
-#define OP_PFLUSHN_AN          ASM("PFLUSHN\t(%s)", AY)
-#define OP_PFLUSHA             ASM("PFLUSHA")
-#define OP_PFLUSHAN            ASM("PFLUSHAN")
-#define OP_PTESTR_AN           ASM("PTESTR\t(%s)", AY)
-#define OP_PTESTW_AN           ASM("PTESTW\t(%s)", AY)
-#define OP_MOVE16_AX_AY        ASM("MOVE16\t(%s)+,(%s)+", AY, AX)
-#define OP_MOVE16_AN_P_XXX_L   ASM("MOVE16\t(%s)+,$%08X", AY, DST_LONG)
-#define OP_MOVE16_XXX_L_AN_P   ASM("MOVE16\t$%08X,(%s)+", SRC_LONG, AY)
-#define OP_MOVE16_AN_XXX_L     ASM("MOVE16\t(%s),$%08X", AY, DST_LONG)
-#define OP_MOVE16_XXX_L_AN     ASM("MOVE16\t$%08X,(%s)", SRC_LONG, AY)
-#define OP_PMMU_GENERAL        disasm_pmmu(opcode, ext_word, buf, &fetch_pos_src)
-#define OP_FTRAP               OP_UNDEFINED
+#define OP_ILLEGAL          ASM("ILLEGAL")
+#define OP_JMP_EA           ASM("JMP\t%s", DST_EA(4, 0, ea_control))
+#define OP_JSR_EA           ASM("JSR\t%s", DST_EA(4, 0, ea_control))
+#define OP_LEA_EA_AN        ASM("LEA\t%s,%s", SRC_EA(4, 0, ea_any), AN)
+#define OP_LINK             ASM("LINK\t%s,#$%X", AY, DST_WORD)
+#define OP_LINK_L_AN_DISP   ASM("LINK.L\t%s,#$%08X", AY, SRC_LONG)
+#define OP_LSL_B_DATA_DY    ASM("LSL.B\t#$%X,%s", (int)IMM, DY);
+#define OP_LSL_B_DX_DY      ASM("LSL.B\t%s,%s", DX, DY);
+#define OP_LSL_L_DATA_DY    ASM("LSL.L\t#$%X,%s", (int)IMM, DY);
+#define OP_LSL_L_DX_DY      ASM("LSL.L\t%s,%s", DX, DY);
+#define OP_LSL_W_DATA_DY    ASM("LSL.W\t#$%X,%s", (int)IMM, DY);
+#define OP_LSL_W_DX_DY      ASM("LSL.W\t%s,%s", DX, DY);
+#define OP_LSL_W_EA         ASM("LSL.W\t%s", DST_EA(2, 0, (ea_memory & ea_alterable)));
+#define OP_LSR_B_DATA_DY    ASM("LSR.B\t#$%X,%s", (int)IMM, DY);
+#define OP_LSR_B_DX_DY      ASM("LSR.B\t%s,%s", DX, DY);
+#define OP_LSR_L_DATA_DY    ASM("LSR.L\t#$%X,%s", (int)IMM, DY);
+#define OP_LSR_L_DX_DY      ASM("LSR.L\t%s,%s", DX, DY);
+#define OP_LSR_W_DATA_DY    ASM("LSR.W\t#$%X,%s", (int)IMM, DY);
+#define OP_LSR_W_DX_DY      ASM("LSR.W\t%s,%s", DX, DY);
+#define OP_LSR_W_EA         ASM("LSR.W\t%s", DST_EA(2, 0, (ea_memory & ea_alterable)));
+#define OP_MOVE_AN_USP      ASM("MOVE\t%s,USP", AY)
+#define OP_MOVE_B_CCR_EA    ASM("MOVE\tCCR,%s", DST_EA(2, 0, (ea_data & ea_alterable)));
+#define OP_MOVE_B_EA_CCR    ASM("MOVE\t%s,CCR", SRC_EA(2, 0, ea_any));
+#define OP_MOVE_B_EA_EA     ASM("MOVE.B\t%s,%s", SRC_EA(1, 0, ea_any), MOVE_DST(1))
+#define OP_MOVE_EA_SR       ASM("MOVE\t%s,SR", SRC_EA(2, 0, ea_any))
+#define OP_MOVE_L_EA_EA     ASM("MOVE.L\t%s,%s", SRC_EA(4, 0, ea_any), MOVE_DST(4))
+#define OP_MOVE_USP_AN      ASM("MOVE\tUSP,%s", AY)
+#define OP_MOVE_W_EA_EA     ASM("MOVE.W\t%s,%s", SRC_EA(2, 0, ea_any), MOVE_DST(2))
+#define OP_MOVEA_L_EA_AN    ASM("MOVEA.L\t%s,%s", SRC_EA(4, 0, ea_any), AN);
+#define OP_MOVEA_W_EA_AN    ASM("MOVEA.W\t%s,%s", SRC_EA(2, 0, ea_any), AN)
+#define OP_MOVE_W_SR_EA     ASM("MOVE\tSR,%s", DST_EA(2, 0, (ea_data & ea_alterable)))
+#define OP_MOVEC_RC_RN      ASM("MOVEC\t%s,%s", RC, RN)
+#define OP_MOVEC_RN_RC      ASM("MOVEC\t%s,%s", RN, RC)
+#define OP_MOVEM_L_EA_LIST  ASM("MOVEM.L\t%s,%s", SRC_EA(4, 1, ea_control | ea_an_plus), LIST)
+#define OP_MOVEM_L_LIST_EA  ASM("MOVEM.L\t%s,%s", LIST, DST_EA(4, 1, (ea_control & ea_alterable) | ea_min_an))
+#define OP_MOVEM_W_EA_LIST  ASM("MOVEM.W\t%s,%s", SRC_EA(2, 1, ea_control | ea_an_plus), LIST)
+#define OP_MOVEM_W_LIST_EA  ASM("MOVEM.W\t%s,%s", LIST, DST_EA(2, 1, (ea_control & ea_alterable) | ea_min_an))
+#define OP_MOVEP_L_D16AY_DX ASM("MOVEP.L\t$%04X(%s),%s", SRC_WORD, AY, DX)
+#define OP_MOVEP_L_DX_D16AY ASM("MOVEP.L\t%s,$%04X(%s)", DX, SRC_WORD, AY)
+#define OP_MOVEP_W_D16AY_DX ASM("MOVEP.W\t$%04X(%s),%s", SRC_WORD, AY, DX)
+#define OP_MOVEP_W_DX_D16AY ASM("MOVEP.W\t%s,$%04X(%s)", DX, SRC_WORD, AY)
+#define OP_MOVEQ_L_DATA_DN  ASM("MOVEQ\t#$%02X,%s", (int)(uint8_t)(opcode & 0xFF), DN)
+#define OP_MOVES_B_EA_RN    ASM("MOVES.B\t%s,%s", SRC_EA(1, 1, (ea_memory & ea_alterable)), RN)
+#define OP_MOVES_B_RN_EA    ASM("MOVES.B\t%s,%s", RN, DST_EA(1, 1, (ea_memory & ea_alterable)))
+#define OP_MOVES_L_EA_RN    ASM("MOVES.L\t%s,%s", SRC_EA(4, 1, (ea_memory & ea_alterable)), RN)
+#define OP_MOVES_L_RN_EA    ASM("MOVES.L\t%s,%s", RN, DST_EA(4, 1, (ea_memory & ea_alterable)))
+#define OP_MOVES_W_EA_RN    ASM("MOVES.W\t%s,%s", SRC_EA(2, 1, (ea_memory & ea_alterable)), RN)
+#define OP_MOVES_W_RN_EA    ASM("MOVES.W\t%s,%s", RN, DST_EA(2, 1, (ea_memory & ea_alterable)))
+#define OP_MULS_L_EA_DH_DL  ASM("MULS.L\t%s,%s:%s", SRC_EA(4, 1, ea_any), DH, DL)
+#define OP_MULS_W_EA_DN     ASM("MULS.W\t%s,%s", SRC_EA(2, 0, ea_any), DN)
+#define OP_MULU_W_EA_DN     ASM("MULU.W\t%s,%s", SRC_EA(2, 0, ea_data), DN)
+#define OP_NBCD_B_EA        ASM("NBCD\t%s", DST_EA(1, 0, (ea_data & ea_alterable)))
+#define OP_NEG_B_EA         ASM("NEG.B\t%s", DST_EA(1, 0, (ea_data & ea_alterable)))
+#define OP_NEG_L_EA         ASM("NEG.L\t%s", DST_EA(4, 0, (ea_data & ea_alterable)))
+#define OP_NEG_W_EA         ASM("NEG.W\t%s", DST_EA(2, 0, (ea_data & ea_alterable)))
+#define OP_NEGX_B_EA        ASM("NEGX.B\t%s", DST_EA(1, 0, (ea_data & ea_alterable)))
+#define OP_NEGX_L_EA        ASM("NEGX.L\t%s", DST_EA(4, 0, (ea_data & ea_alterable)))
+#define OP_NEGX_W_EA        ASM("NEGX.W\t%s", DST_EA(2, 0, (ea_data & ea_alterable)))
+#define OP_NOP              ASM("NOP")
+#define OP_NOT_B_EA         ASM("NOT.B\t%s", DST_EA(1, 0, (ea_data & ea_alterable)))
+#define OP_NOT_L_EA         ASM("NOT.L\t%s", DST_EA(4, 0, (ea_data & ea_alterable)))
+#define OP_NOT_W_EA         ASM("NOT.W\t%s", DST_EA(2, 0, (ea_data & ea_alterable)))
+#define OP_OR_B_DN_EA       ASM("OR.B\t%s,%s", DN, DST_EA(1, 0, (ea_memory & ea_alterable)))
+#define OP_OR_B_EA_DN       ASM("OR.B\t%s,%s", SRC_EA(2, 0, ea_data), DN)
+#define OP_OR_L_DN_EA       ASM("OR.L\t%s,%s", DN, DST_EA(4, 0, (ea_memory & ea_alterable)))
+#define OP_OR_L_EA_DN       ASM("OR.L\t%s,%s", SRC_EA(4, 0, ea_data), DN)
+#define OP_OR_W_DN_EA       ASM("OR.W\t%s,%s", DN, DST_EA(2, 0, (ea_memory & ea_alterable)))
+#define OP_OR_W_EA_DN       ASM("OR.W\t%s,%s", SRC_EA(2, 0, ea_data), DN)
+#define OP_ORI_B_DATA_CCR   ASM("ORI.B\t#$%04X,CCR", SRC_WORD)
+#define OP_ORI_B_DATA_EA    ASM("ORI.B\t#$%X,%s", SRC_WORD, DST_EA(1, 1, (ea_data & ea_alterable)))
+#define OP_ORI_L_DATA_EA    ASM("ORI.L\t#$%08X,%s", SRC_LONG, DST_EA(4, 2, (ea_data & ea_alterable)))
+#define OP_ORI_W_DATA_EA    ASM("ORI.W\t#$%04X,%s", SRC_WORD, DST_EA(2, 1, (ea_data & ea_alterable)))
+#define OP_ORI_W_DATA_SR    ASM("ORI.W\t#$%04X,SR", SRC_WORD)
+#define OP_PEA_EA           ASM("PEA\t%s", DST_EA(4, 0, ea_control))
+#define OP_RESET            ASM("RESET")
+#define OP_ROL_B_DATA_DY    ASM("ROL.B\t#$%X,%s", (int)IMM, DY);
+#define OP_ROL_B_DX_DY      ASM("ROL.B\t%s,%s", DX, DY);
+#define OP_ROL_L_DATA_DY    ASM("ROL.L\t#$%X,%s", (int)IMM, DY);
+#define OP_ROL_L_DX_DY      ASM("ROL.L\t%s,%s", DX, DY);
+#define OP_ROL_W_DATA_DY    ASM("ROL.W\t#$%X,%s", (int)IMM, DY);
+#define OP_ROL_W_DX_DY      ASM("ROL.W\t%s,%s", DX, DY);
+#define OP_ROL_W_EA         ASM("ROL.W\t%s", DST_EA(2, 0, (ea_memory & ea_alterable)));
+#define OP_ROR_B_DATA_DY    ASM("ROR.B\t#$%X,%s", (int)IMM, DY);
+#define OP_ROR_B_DX_DY      ASM("ROR.B\t%s,%s", DX, DY);
+#define OP_ROR_L_DATA_DY    ASM("ROR.L\t#$%X,%s", (int)IMM, DY);
+#define OP_ROR_L_DX_DY      ASM("ROR.L\t%s,%s", DX, DY);
+#define OP_ROR_W_DATA_DY    ASM("ROR.W\t#$%X,%s", (int)IMM, DY);
+#define OP_ROR_W_DX_DY      ASM("ROR.W\t%s,%s", DX, DY);
+#define OP_ROR_W_EA         ASM("ROR.W\t%s", DST_EA(2, 0, (ea_memory & ea_alterable)));
+#define OP_ROXL_B_DATA_DY   ASM("ROXL.B\t#$%X,%s", (int)(IMM), DY);
+#define OP_ROXL_B_DX_DY     ASM("ROXL.B\t%s,%s", DX, DY);
+#define OP_ROXL_L_DATA_DY   ASM("ROXL.L\t#$%X,%s", (int)(IMM), DY);
+#define OP_ROXL_L_DX_DY     ASM("ROXL.L\t%s,%s", DX, DY);
+#define OP_ROXL_W_DATA_DY   ASM("ROXL.W\t#$%X,%s", (int)(IMM), DY);
+#define OP_ROXL_W_DX_DY     ASM("ROXL.W\t%s,%s", DX, DY);
+#define OP_ROXL_W_EA        ASM("ROXL.W\t%s", DST_EA(2, 0, (ea_memory & ea_alterable)));
+#define OP_ROXR_B_DATA_DY   ASM("ROXR.B\t#$%X,%s", (int)(IMM), DY);
+#define OP_ROXR_B_DX_DY     ASM("ROXR.B\t%s,%s", DX, DY);
+#define OP_ROXR_L_DATA_DY   ASM("ROXR.L\t#$%X,%s", (int)(IMM), DY);
+#define OP_ROXR_L_DX_DY     ASM("ROXR.L\t%s,%s", DX, DY);
+#define OP_ROXR_W_DATA_DY   ASM("ROXR.W\t#$%X,%s", (int)(IMM), DY);
+#define OP_ROXR_W_DX_DY     ASM("ROXR.W\t%s,%s", DX, DY);
+#define OP_ROXR_W_EA        ASM("ROXR.W\t%s", DST_EA(2, 0, (ea_memory & ea_alterable)));
+#define OP_RTD_DISPLACEMENT ASM("RTD\t#$%X", DST_WORD)
+#define OP_RTE              ASM("RTE")
+#define OP_RTM_RN           ASM("RTM\t%s", opcode & 8 ? AY : DY)
+#define OP_RTR              ASM("RTR")
+#define OP_RTS              ASM("RTS")
+#define OP_SBCD_AX_AY       ASM("SBCD\t-(%s),-(%s)", AY, AX)
+#define OP_SBCD_DX_DY       ASM("SBCD\t%s,%s", DY, DX)
+#define OP_PACK_DY_DX       ASM("PACK\t%s,%s,#$%04X", DY, DX, SRC_WORD)
+#define OP_PACK_AY_AX       ASM("PACK\t-(%s),-(%s),#$%04X", AY, AX, SRC_WORD)
+#define OP_UNPK_DY_DX       ASM("UNPK\t%s,%s,#$%04X", DY, DX, SRC_WORD)
+#define OP_UNPK_AY_AX       ASM("UNPK\t-(%s),-(%s),#$%04X", AY, AX, SRC_WORD)
+#define OP_SCC_EA           ASM("S%s\t%s", CC, DST_EA(1, 0, (ea_data & ea_alterable)));
+#define OP_STOP_DATA        ASM("STOP\t#$%X", SRC_WORD)
+#define OP_SUB_B_DN_EA      ASM("SUB.B\t%s,%s", DN, DST_EA(1, 0, (ea_memory & ea_alterable)));
+#define OP_SUB_B_EA_DN      ASM("SUB.B\t%s,%s", SRC_EA(1, 0, ea_any & ~ea_an), DN);
+#define OP_SUB_L_DN_EA      ASM("SUB.L\t%s,%s", DN, DST_EA(4, 0, (ea_memory & ea_alterable)));
+#define OP_SUB_L_EA_DN      ASM("SUB.L\t%s,%s", SRC_EA(4, 0, ea_any), DN);
+#define OP_SUB_W_DN_EA      ASM("SUB.W\t%s,%s", DN, DST_EA(2, 0, (ea_memory & ea_alterable)));
+#define OP_SUB_W_EA_DN      ASM("SUB.W\t%s,%s", SRC_EA(2, 0, ea_any), DN);
+#define OP_SUBA_L_EA_AN     ASM("SUBA.L\t%s,%s", SRC_EA(4, 0, ea_any), AN);
+#define OP_SUBA_W_EA_AN     ASM("SUBA.W\t%s,%s", SRC_EA(2, 0, ea_any), AN);
+#define OP_SUBI_B_DATA_EA   ASM("SUBI.B\t#$%X,%s", SRC_WORD, DST_EA(1, 1, (ea_data & ea_alterable)));
+#define OP_SUBI_L_DATA_EA   ASM("SUBI.L\t#$%08X,%s", SRC_LONG, DST_EA(4, 2, (ea_data & ea_alterable)));
+#define OP_SUBI_W_DATA_EA   ASM("SUBI.W\t#$%04X,%s", SRC_WORD, DST_EA(2, 1, (ea_data & ea_alterable)));
+#define OP_SUBQ_B_DATA_EA   ASM("SUBQ.B\t#$%X,%s", (int)IMM, DST_EA(1, 0, ea_alterable & ~ea_an))
+#define OP_SUBQ_L_DATA_AN   ASM("SUBQ.L\t#$%X,%s", (int)IMM, AY)
+#define OP_SUBQ_L_DATA_EA   ASM("SUBQ.L\t#$%X,%s", (int)IMM, DST_EA(4, 0, ea_alterable & ~ea_an))
+#define OP_SUBQ_W_DATA_AN   ASM("SUBQ.W\t#$%X,%s", (int)IMM, AY)
+#define OP_SUBQ_W_DATA_EA   ASM("SUBQ.W\t#$%X,%s", (int)IMM, DST_EA(2, 0, ea_alterable & ~ea_an))
+#define OP_SUBX_B_AX_AY     ASM("SUBX.B\t-(%s),-(%s)", AY, AX);
+#define OP_SUBX_B_DX_DY     ASM("SUBX.B\t%s,%s", DY, DX);
+#define OP_SUBX_L_AX_AY     ASM("SUBX.L\t-(%s),-(%s)", AY, AX);
+#define OP_SUBX_L_DX_DY     ASM("SUBX.L\t%s,%s", DY, DX);
+#define OP_SUBX_W_AX_AY     ASM("SUBX.W\t-(%s),-(%s)", AY, AX);
+#define OP_SUBX_W_DX_DY     ASM("SUBX.W\t%s,%s", DY, DX);
+#define OP_SWAP_DN          ASM("SWAP\t%s", DY)
+#define OP_TAS_B_EA         ASM("TAS\t%s", DST_EA(1, 0, ea_any))
+#define OP_TRAP_VECTOR      ASM("TRAP\t#$%X", (int)(opcode & 0xF))
+#define OP_TRAPV            ASM("TRAPV")
+#define OP_TRAPCC           ASM("T%s", CC)
+#define OP_TRAPCC_W_DATA    ASM("TP%s.W\t#$%X", CC, (int)SRC_WORD)
+#define OP_TRAPCC_L_DATA    ASM("TP%s.L\t#$%08X", CC, (int)SRC_LONG)
+#define OP_TST_B_EA         ASM("TST.B\t%s", DST_EA(1, 0, ea_any))
+#define OP_TST_L_EA         ASM("TST.L\t%s", DST_EA(4, 0, ea_any))
+#define OP_TST_W_EA         ASM("TST.W\t%s", DST_EA(2, 0, ea_any))
+#define OP_UNLK             ASM("UNLK\t%s", AY)
+#define OP_PBCC_W           ASM("PB%s\t%s", PBCC, PC_DISP)
+#define OP_PBCC_L           ASM("PB%s.L\t%s", PBCC, LONG_PC_DISP)
+#define OP_PSAVE_EA         ASM("PSAVE\t%s", DST_EA(4, 0, (ea_control | ea_min_an) & ea_alterable))
+#define OP_PRESTORE_EA      ASM("PRESTORE\t%s", DST_EA(4, 0, (ea_control | ea_an_plus)))
+#define OP_FBCC_W_DISPLACEMENT                                                                                         \
+    do {                                                                                                               \
+        if (opcode & 0x20)                                                                                             \
+            goto illegal;                                                                                              \
+        ASM("FB%s\t%s", FBCC, PC_DISP);                                                                                \
+    } while (0)
+#define OP_FBCC_L_DISPLACEMENT                                                                                         \
+    do {                                                                                                               \
+        if (opcode & 0x20)                                                                                             \
+            goto illegal;                                                                                              \
+        ASM("FB%s.L\t%s", FBCC, LONG_PC_DISP);                                                                         \
+    } while (0)
+#define OP_FSAVE_EA          ASM("FSAVE\t%s", DST_EA(4, 0, (ea_control | ea_min_an) & ea_alterable))
+#define OP_FRESTORE_EA       ASM("FRESTORE\t%s", DST_EA(4, 0, (ea_control | ea_an_plus)))
+#define OP_FPU_GENERAL       disasm_fpu_general(opcode, ext_word, buf, &fetch_pos_src)
+#define OP_FPU_SCCDBCC       disasm_fpu_sccdbcc(opcode, ext_word, buf, &fetch_pos_src)
+#define OP_CINVL_CACHES_AN   ASM("CINVL\t%s,(%s)", CACHES, AY)
+#define OP_CINVP_CACHES_AN   ASM("CINVP\t%s,(%s)", CACHES, AY)
+#define OP_CINVA_CACHES      ASM("CINVA\t%s", CACHES)
+#define OP_CPUSHL_CACHES_AN  ASM("CPUSHL\t%s,(%s)", CACHES, AY)
+#define OP_CPUSHP_CACHES_AN  ASM("CPUSHP\t%s,(%s)", CACHES, AY)
+#define OP_CPUSHA_CACHES     ASM("CPUSHA\t%s", CACHES)
+#define OP_PFLUSH_AN         ASM("PFLUSH\t(%s)", AY)
+#define OP_PFLUSHN_AN        ASM("PFLUSHN\t(%s)", AY)
+#define OP_PFLUSHA           ASM("PFLUSHA")
+#define OP_PFLUSHAN          ASM("PFLUSHAN")
+#define OP_PTESTR_AN         ASM("PTESTR\t(%s)", AY)
+#define OP_PTESTW_AN         ASM("PTESTW\t(%s)", AY)
+#define OP_MOVE16_AX_AY      ASM("MOVE16\t(%s)+,(%s)+", AY, AX)
+#define OP_MOVE16_AN_P_XXX_L ASM("MOVE16\t(%s)+,$%08X", AY, DST_LONG)
+#define OP_MOVE16_XXX_L_AN_P ASM("MOVE16\t$%08X,(%s)+", SRC_LONG, AY)
+#define OP_MOVE16_AN_XXX_L   ASM("MOVE16\t(%s),$%08X", AY, DST_LONG)
+#define OP_MOVE16_XXX_L_AN   ASM("MOVE16\t$%08X,(%s)", SRC_LONG, AY)
+#define OP_PMMU_GENERAL      disasm_pmmu(opcode, ext_word, buf, &fetch_pos_src)
+#define OP_FTRAP             OP_UNDEFINED
 
 #define CPU_DECODER_NAME        cpu_disasm
 #define CPU_DECODER_RETURN_TYPE int
