@@ -733,8 +733,45 @@ static uint32_t fpu_to_single(fpu_state_t *fpu, float80_reg_t val) {
         return ((uint32_t)sign << 31) | 0x7F7FFFFF; // max finite single
     }
     if (sgl_exp <= 0) {
-        fpu->fpsr |= FPEXC_UNFL;
-        // Denormal single or zero (simplified: flush to zero)
+        fpu->fpsr |= FPEXC_UNFL | FPEXC_INEX2;
+        // Denormal or total underflow: shift mantissa for denormal range
+        int shift_amount = 1 - sgl_exp; // how much to shift right from 24-bit mant
+        if (shift_amount < 24) {
+            // Denormal: shift mantissa right to produce subnormal single
+            uint64_t full_mant = (uint64_t)mant24 << 40; // restore full precision
+            uint64_t shifted = full_mant >> shift_amount;
+            uint32_t denorm_mant = (uint32_t)(shifted >> 40);
+            uint64_t lost_bits = (shifted & 0xFFFFFFFFFFULL) | (full_mant & ((1ULL << shift_amount) - 1) ? 1 : 0);
+            if (lost_bits) {
+                unsigned rmode = (fpu->fpcr >> 4) & 3;
+                bool round_up = false;
+                uint64_t half = 1ULL << 39;
+                switch (rmode) {
+                case 0:
+                    if (lost_bits > half || (lost_bits == half && (denorm_mant & 1)))
+                        round_up = true;
+                    break;
+                case 1:
+                    break;
+                case 2:
+                    if (sign)
+                        round_up = true;
+                    break;
+                case 3:
+                    if (!sign)
+                        round_up = true;
+                    break;
+                }
+                if (round_up)
+                    denorm_mant++;
+            }
+            return ((uint32_t)sign << 31) | denorm_mant;
+        }
+        // Total underflow: entire mantissa lost; apply rounding mode
+        unsigned rmode = (fpu->fpcr >> 4) & 3;
+        bool round_up = (rmode == 2 && sign) || (rmode == 3 && !sign);
+        if (round_up)
+            return ((uint32_t)sign << 31) | 0x00000001; // minimum denormal
         return (uint32_t)sign << 31;
     }
     // Extract 23-bit fraction (drop implicit bit)
@@ -840,7 +877,49 @@ static uint64_t fpu_to_double(fpu_state_t *fpu, float80_reg_t val) {
         return ((uint64_t)sign << 63) | 0x7FEFFFFFFFFFFFFFULL; // max finite double
     }
     if (dbl_exp <= 0) {
-        fpu->fpsr |= FPEXC_UNFL;
+        fpu->fpsr |= FPEXC_UNFL | FPEXC_INEX2;
+        // Denormal or total underflow: shift mantissa for denormal range
+        int shift_amount = 1 - dbl_exp; // how much to shift right from 53-bit mant
+        if (shift_amount < 53) {
+            // Denormal: shift mantissa right to produce subnormal double
+            uint64_t shifted_mant = mant53 >> shift_amount;
+            // Collect lost bits for rounding
+            uint64_t lost_mask = (shift_amount < 64) ? ((1ULL << shift_amount) - 1) : ~0ULL;
+            uint64_t lost_bits = mant53 & lost_mask;
+            // Also include original frac_bits that were already truncated
+            if (frac_bits)
+                lost_bits |= 1;
+            if (lost_bits) {
+                unsigned rmode = (fpu->fpcr >> 4) & 3;
+                bool round_up = false;
+                uint64_t half = (shift_amount > 0 && shift_amount < 64) ? (1ULL << (shift_amount - 1)) : 0;
+                switch (rmode) {
+                case 0:
+                    if (lost_bits > half || (lost_bits == half && (shifted_mant & 1)))
+                        round_up = true;
+                    break;
+                case 1:
+                    break;
+                case 2:
+                    if (sign)
+                        round_up = true;
+                    break;
+                case 3:
+                    if (!sign)
+                        round_up = true;
+                    break;
+                }
+                if (round_up)
+                    shifted_mant++;
+            }
+            uint64_t frac = shifted_mant & 0x000FFFFFFFFFFFFFULL;
+            return ((uint64_t)sign << 63) | frac;
+        }
+        // Total underflow: entire mantissa lost; apply rounding mode
+        unsigned rmode = (fpu->fpcr >> 4) & 3;
+        bool round_up = (rmode == 2 && sign) || (rmode == 3 && !sign);
+        if (round_up)
+            return ((uint64_t)sign << 63) | 0x0000000000000001ULL; // minimum denormal
         return (uint64_t)sign << 63;
     }
     // Extract 52-bit fraction (drop implicit bit)
@@ -894,8 +973,28 @@ static int32_t fpu_to_int32(fpu_state_t *fpu, float80_reg_t val) {
         return sign ? INT32_MIN : INT32_MAX;
     }
     if (true_exp < 0) {
-        // Value is between -1 and 1 exclusive; result is 0 with INEX
+        // Value is between -1 and 1 exclusive; apply rounding mode
         fpu->fpsr |= FPEXC_INEX2;
+        unsigned rmode = (fpu->fpcr >> 4) & 3;
+        switch (rmode) {
+        case 0: { // round to nearest: round to ±1 if |value| > 0.5
+            // true_exp == -1 means 0.5 <= |value| < 1.0
+            if (true_exp == -1) {
+                // Check if value > 0.5: mantissa must have bits beyond MSB
+                uint64_t frac_bits = val.mantissa & 0x7FFFFFFFFFFFFFFFULL;
+                if (frac_bits > 0)
+                    return sign ? -1 : 1;
+                // Exactly 0.5: round to nearest even = 0
+            }
+            return 0;
+        }
+        case 1: // round to zero
+            return 0;
+        case 2: // round toward -inf
+            return sign ? -1 : 0;
+        case 3: // round toward +inf
+            return sign ? 0 : 1;
+        }
         return 0;
     }
 
@@ -1490,8 +1589,23 @@ static void fpu_store_ea(cpu_t *cpu, fpu_state_t *fpu, uint16_t opcode, float80_
         break;
     }
     case 2: { // Extended (12 bytes)
+        // For FMOVE.X to memory, the 68882 normalizes abnormal representations
+        // (pseudo-denormals, unnormals) through the internal pipeline, applying
+        // FPCR precision/rounding. Normal values are written directly.
+        float80_reg_t store_val = val;
+        uint16_t bexp = FP80_EXP(val);
+        bool j_bit = (val.mantissa >> 63) & 1;
+        bool is_abnormal = false;
+        if (bexp == 0 && j_bit) {
+            is_abnormal = true; // pseudo-denormal
+        } else if (bexp != 0 && bexp != 0x7FFF && !j_bit && val.mantissa != 0) {
+            is_abnormal = true; // unnormal
+        }
+        if (is_abnormal) {
+            store_val = fpu_pack(fpu, fpu_unpack(val));
+        }
         uint32_t w0, w1, w2;
-        fpu_to_extended(val, &w0, &w1, &w2);
+        fpu_to_extended(store_val, &w0, &w1, &w2);
         uint32_t ea = calculate_ea(cpu, 12, ea_mode, ea_reg, true);
         memory_write_uint32(ea, w0);
         memory_write_uint32(ea + 4, w1);
@@ -2133,7 +2247,10 @@ fpu_unpacked_t fpu_op_sqrt(fpu_state_t *fpu, fpu_unpacked_t a) {
 
     // Check if result is exact; encode remainder for correct rounding.
     // The true sqrt lies between q and q+1. The rounding "halfway" point
-    // corresponds to remainder == q (since (q+0.5)² = q²+q+0.25 ≈ q²+q).
+    // corresponds to sqrt(S) = q + 0.5, i.e. S = q² + q + 0.25.
+    // Since S is always integer, this can never be exact:
+    //   remainder = q   → sqrt < q+0.5 (just below halfway)
+    //   remainder = q+1 → sqrt > q+0.5 (just above halfway)
     __uint128_t q_sq = q128 * q128;
     __uint128_t remainder = target - q_sq;
 
@@ -2147,11 +2264,8 @@ fpu_unpacked_t fpu_op_sqrt(fpu_state_t *fpu, fpu_unpacked_t a) {
     } else if (remainder > q128) {
         // Above halfway: encode > 0.5 ULP for round-up
         r.mantissa_lo = 0xC000000000000000ULL;
-    } else if (remainder == q128) {
-        // Exactly halfway: tie
-        r.mantissa_lo = 0x8000000000000000ULL;
     } else {
-        // Below halfway: sticky bit only
+        // Below halfway (includes remainder == q): sticky bit only
         r.mantissa_lo = 1;
     }
 
