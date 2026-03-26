@@ -724,7 +724,7 @@ static uint32_t fpu_to_single(fpu_state_t *fpu, float80_reg_t val) {
 
     int32_t sgl_exp = true_exp + 127;
     if (sgl_exp >= 0xFF) {
-        fpu->fpsr |= FPEXC_OVFL | FPEXC_INEX2;
+        fpu->fpsr |= FPEXC_OVFL;
         // Rounding mode determines overflow result
         unsigned rmode = (fpu->fpcr >> 4) & 3;
         bool to_inf = (rmode == 0) || (rmode == 2 && sign) || (rmode == 3 && !sign);
@@ -831,7 +831,7 @@ static uint64_t fpu_to_double(fpu_state_t *fpu, float80_reg_t val) {
 
     int32_t dbl_exp = true_exp + 1023;
     if (dbl_exp >= 0x7FF) {
-        fpu->fpsr |= FPEXC_OVFL | FPEXC_INEX2;
+        fpu->fpsr |= FPEXC_OVFL;
         // Rounding mode determines overflow result
         unsigned rmode = (fpu->fpcr >> 4) & 3;
         bool to_inf = (rmode == 0) || (rmode == 2 && sign) || (rmode == 3 && !sign);
@@ -2987,10 +2987,16 @@ void fpu_general_op(cpu_t *cpu, fpu_state_t *fpu, uint16_t opcode, uint16_t ext_
             if (op <= 0x0E || op == 0x30 || op == 0x31 || op >= 0x38)
                 fpu->fpsr |= FPEXC_INEX2;
         } else {
-            // Multi-word formats (extended/packed/double) with register EA:
-            // the 68882 protocol can't transfer >4 bytes from Dn/An, so trap
+            // An direct (mode 1) is never valid for FPU data operations
             unsigned ea_mode = (opcode >> 3) & 7;
-            if ((src_spec == 2 || src_spec == 3 || src_spec == 5 || src_spec == 7) && (ea_mode == 0 || ea_mode == 1)) {
+            if (ea_mode == 1) {
+                cpu->pc = cpu->instruction_pc + 2;
+                f_trap(cpu);
+                return;
+            }
+            // Multi-word formats (extended/packed/double) with Dn:
+            // the 68882 protocol can't transfer >4 bytes from Dn, so trap
+            if ((src_spec == 2 || src_spec == 3 || src_spec == 5 || src_spec == 7) && ea_mode == 0) {
                 cpu->pc = cpu->instruction_pc + 2;
                 f_trap(cpu);
                 return;
@@ -3005,9 +3011,15 @@ void fpu_general_op(cpu_t *cpu, fpu_state_t *fpu, uint16_t opcode, uint16_t ext_
     {
         unsigned format = src_spec;
         unsigned src_fpn = dst_reg;
-        // Multi-word formats with register EA: trap
+        // An direct (mode 1) is never valid for FPU store operations
         unsigned ea_mode_w = (opcode >> 3) & 7;
-        if ((format == 2 || format == 3 || format == 5 || format == 7) && (ea_mode_w == 0 || ea_mode_w == 1)) {
+        if (ea_mode_w == 1) {
+            cpu->pc = cpu->instruction_pc + 2;
+            f_trap(cpu);
+            return;
+        }
+        // Multi-word formats with Dn: can't transfer >4 bytes, so trap
+        if ((format == 2 || format == 3 || format == 5 || format == 7) && ea_mode_w == 0) {
             cpu->pc = cpu->instruction_pc + 2;
             f_trap(cpu);
             return;
