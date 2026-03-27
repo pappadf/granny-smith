@@ -94,6 +94,7 @@ else ifeq ($(TEST_HARNESS),cpu)
               $(EMU_ROOT)/core/cpu/cpu_68030.c \
               $(EMU_ROOT)/core/cpu/cpu_disasm.c \
               $(EMU_ROOT)/core/cpu/fpu.c \
+              $(EMU_ROOT)/core/cpu/fpu_transc.c \
               $(EMU_ROOT)/core/memory/memory.c \
               $(EMU_ROOT)/core/memory/mmu.c
   COMMON_SRCS := $(HARNESS_SRCS) $(STUB_SRCS)

@@ -17,12 +17,24 @@ $(TESTS):
 	@echo "[MAKE] $@"; $(MAKE) -C $@ all
 
 run: $(TESTS)
-	@set -e; \
+	@failed=""; passed=0; total=0; \
 	for d in $(TESTS); do \
+	  total=$$((total + 1)); \
 	  echo "[RUN ] $$d"; \
-	  $(MAKE) -C $$d run || { echo "[FAIL] $$d"; exit 1; }; \
+	  if $(MAKE) -C $$d run; then \
+	    passed=$$((passed + 1)); \
+	  else \
+	    echo "[FAIL] $$d"; \
+	    failed="$$failed $$d"; \
+	  fi; \
 	done; \
-	echo "All $(words $(TESTS)) tests passed";
+	echo ""; \
+	if [ -z "$$failed" ]; then \
+	  echo "All $$total tests passed"; \
+	else \
+	  echo "$$passed/$$total passed, FAILED:$$failed"; \
+	  exit 1; \
+	fi
 
 # Run a single test suite: make test-<name>
 test-%:
