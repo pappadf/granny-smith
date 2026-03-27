@@ -123,6 +123,7 @@ typedef struct fpu_state {
     uint32_t fpcr; // FPU control register
     uint32_t fpsr; // FPU status register
     uint32_t fpiar; // FPU instruction address register
+    uint32_t pre_exc_mask; // bitmask of exception bits already fired as pre-instruction
     bool initialized; // true once any FPU operation has executed (for FSAVE)
 } fpu_state_t;
 
@@ -148,8 +149,14 @@ bool fpu_test_condition(fpu_state_t *fpu, unsigned predicate);
 // Returns true if an exception was vectored, false otherwise.
 bool fpu_check_exceptions(cpu_t *cpu, fpu_state_t *fpu);
 
+// Pre-instruction exception check (MC68882UM §6.1.4): fires before
+// FPU instructions if any enabled exception is pending. The 'conditional'
+// flag should be true for FBcc/FScc/FDBcc/FTRAPcc — these instructions
+// always trigger the check even for UNFL without INEX2.
+bool fpu_pre_instruction_check(cpu_t *cpu, fpu_state_t *fpu, bool conditional);
+
 // FSAVE: write state frame to memory at addr. Returns frame size in bytes.
-// Writes idle frame (28 bytes) if FPU has been used, null frame (4 bytes) otherwise.
+#define FSAVE_IDLE_SIZE 0x84 // payload bytes for idle frame (includes programmer model)
 int fpu_fsave(fpu_state_t *fpu, uint32_t addr);
 
 // FRESTORE: read state frame from memory at addr. Returns frame size in bytes.

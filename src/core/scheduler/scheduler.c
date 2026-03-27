@@ -408,8 +408,29 @@ static uint64_t cmd_schedule(int argc, char *argv[]) {
                avg_cycles_per_instr(s));
         return 0;
     }
+
+    // Handle 'schedule cpi <N>' sub-command
+    if (argc == 3 && strcmp(argv[1], "cpi") == 0) {
+        unsigned long val = strtoul(argv[2], NULL, 0);
+        if (val == 0 || val > 255) {
+            printf("cpi must be between 1 and 255\n");
+            return 0;
+        }
+        uint32_t v = (uint32_t)val;
+        switch (s->mode) {
+        case schedule_hw_accuracy:
+            scheduler_set_cpi(s, v, s->cpi_fast);
+            break;
+        default:
+            scheduler_set_cpi(s, s->cpi_hw, v);
+            break;
+        }
+        printf("cycles/instr set to: %u (for current mode: %s)\n", v, mode_str);
+        return 0;
+    }
+
     if (argc != 2) {
-        printf("usage: schedule [max|real|hw]\n");
+        printf("usage: schedule [max|real|hw|cpi <N>]\n");
         return 0;
     }
 
@@ -421,7 +442,7 @@ static uint64_t cmd_schedule(int argc, char *argv[]) {
     } else if (strcmp(argv[1], "hw") == 0) {
         s->mode = schedule_hw_accuracy;
     } else {
-        printf("unknown mode '%s' (valid: max, real, hw)\n", argv[1]);
+        printf("unknown mode '%s' (valid: max, real, hw, cpi <N>)\n", argv[1]);
         return 0;
     }
 

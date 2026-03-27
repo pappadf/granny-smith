@@ -492,8 +492,14 @@ static void write_icr(scsi_t *scsi, uint8_t val) {
                 phase_status(scsi, STATUS_GOOD);
             else
                 scsi->reg.csr |= CSR_REQ;
-        } else
-            assert(0);
+        } else if (scsi->bus.phase == scsi_data_out) {
+            // programmed I/O: check if transfer complete
+            if (scsi->buf.size == scsi->buf.max)
+                command_complete(scsi);
+            else
+                scsi->reg.csr |= CSR_REQ;
+        }
+        // ACK cleared on bus_free is harmless (e.g. SCSI diagnostics)
     }
 
     // if ACK is asserted
@@ -507,8 +513,14 @@ static void write_icr(scsi_t *scsi, uint8_t val) {
             ;
         else if (scsi->bus.phase == scsi_message_in)
             ;
-        else
-            assert(0);
+        else if (scsi->bus.phase == scsi_data_in)
+            ; // byte already read via IDR
+        else if (scsi->bus.phase == scsi_data_out) {
+            // programmed I/O: save ODR byte to buffer
+            assert(scsi->buf.size < scsi->buf.max);
+            scsi->buf.data[scsi->buf.size++] = scsi->reg.odr;
+        }
+        // ACK on bus_free is harmless (e.g. SCSI diagnostics)
 
         // clear REQ
         scsi->reg.csr &= ~CSR_REQ;

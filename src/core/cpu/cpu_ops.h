@@ -1745,6 +1745,9 @@ static inline uint32_t bf_insert_reg(uint32_t dst, int32_t offset, uint32_t w, u
             int16_t _disp = (int16_t)FETCH16();                                                                        \
             unsigned _cond = opcode & 0x3F;                                                                            \
             _fpu->fpiar = cpu->instruction_pc;                                                                         \
+            /* Pre-instruction exception check (MC68882UM §6.1.4) */                                                  \
+            if (fpu_pre_instruction_check(cpu, _fpu, true))                                                            \
+                break;                                                                                                 \
             bool _cc = fpu_test_condition(_fpu, _cond);                                                                \
             /* If BSUN enabled and fired, take exception instead of branch */                                          \
             if ((_fpu->fpsr & FPEXC_BSUN) && (_fpu->fpcr & FPEXC_BSUN)) {                                              \
@@ -1789,7 +1792,7 @@ static inline uint32_t bf_insert_reg(uint32_t dst, int32_t offset, uint32_t w, u
                 fpu_state_t *_fpu = (fpu_state_t *)cpu->fpu;                                                           \
                 if (EA_MODE == 4) {                                                                                    \
                     /* -(An) predecrement: compute frame size, then write */                                           \
-                    int _sz = _fpu->initialized ? (4 + 0x18) : 4;                                                      \
+                    int _sz = _fpu->initialized ? (4 + FSAVE_IDLE_SIZE) : 4;                                           \
                     AY -= (uint32_t)_sz;                                                                               \
                     fpu_fsave(_fpu, AY);                                                                               \
                 } else {                                                                                               \

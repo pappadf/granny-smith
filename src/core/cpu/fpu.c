@@ -39,6 +39,9 @@ fpu_state_t *fpu_init(void) {
     if (!fpu)
         return NULL;
     memset(fpu, 0, sizeof(fpu_state_t));
+    // Hardware reset: data registers are non-signaling NaNs (MC68882UM §2.2)
+    for (int i = 0; i < 8; i++)
+        fpu->fp[i] = (float80_reg_t){0x7FFF, 0xFFFFFFFFFFFFFFFFULL};
     return fpu;
 }
 
@@ -469,8 +472,8 @@ float80_reg_t fpu_pack(fpu_state_t *fpu, fpu_unpacked_t val) {
             to_inf = !val.sign;
             break; // toward +inf: pos→+inf, neg→-max
         }
-        // OVFL always set on overflow
-        fpu->fpsr |= FPEXC_OVFL;
+        // OVFL and INEX2 always set on overflow (MC68882UM §3.5.3)
+        fpu->fpsr |= FPEXC_OVFL | FPEXC_INEX2;
         if (to_inf) {
             return fp80_make(val.sign, 0x7FFF, 0);
         }
@@ -566,9 +569,18 @@ bool fpu_test_condition(fpu_state_t *fpu, unsigned predicate) {
 // FSAVE / FRESTORE — coprocessor state frame save and restore
 // ============================================================================
 
-// 68882 Rev $1F idle frame: 4-byte header + 24-byte payload = 28 bytes
-#define FSAVE_VERSION   0x1F
-#define FSAVE_IDLE_SIZE 0x18 // 24 bytes of payload
+// Forward declarations for extended-precision converters (defined below)
+static float80_reg_t fpu_from_extended(uint32_t exp_sign_pad, uint32_t mant_hi, uint32_t mant_lo);
+static void fpu_to_extended(float80_reg_t val, uint32_t *word0, uint32_t *word1, uint32_t *word2);
+
+// 68882 Rev $1F idle frame: 4-byte header + payload
+// Real 68882 uses $18 (24 bytes) for idle, $B4 (180 bytes) for busy.
+// We extend the idle frame to include the full programmer model so that
+// a FRESTORE-null / FRESTORE-idle sequence can restore data registers,
+// matching real 68882 behavior where idle-frame internal state preserves
+// the complete register file.
+#define FSAVE_VERSION 0x1F
+// FSAVE_IDLE_SIZE defined in fpu.h
 #define FSAVE_BUSY_SIZE 0xB4 // 180 bytes of payload (not generated, only accepted)
 
 // Write FSAVE state frame to memory. Returns total frame size in bytes.
@@ -579,15 +591,37 @@ int fpu_fsave(fpu_state_t *fpu, uint32_t addr) {
         return 4;
     }
 
-    // Idle frame header: version=$1F, size=$18
+    // Idle frame header: version=$1F, size=$84
     uint32_t header = ((uint32_t)FSAVE_VERSION << 24) | ((uint32_t)FSAVE_IDLE_SIZE << 16);
     memory_write_uint32(addr, header);
 
-    // 24 bytes of internal state (6 longwords)
-    // The 68882 idle frame stores microcode state; we write zeros since our
-    // emulator executes all operations atomically (no pipeline to save).
-    for (int i = 0; i < 6; i++)
-        memory_write_uint32(addr + 4 + i * 4, 0x00000000);
+    uint32_t off = addr + 4;
+
+    // Save control registers (FPCR, FPSR, FPIAR) — 12 bytes
+    memory_write_uint32(off, fpu->fpcr);
+    off += 4;
+    memory_write_uint32(off, fpu->fpsr);
+    off += 4;
+    memory_write_uint32(off, fpu->fpiar);
+    off += 4;
+
+    // Save all 8 FP data registers — 96 bytes (8 × 12)
+    for (int i = 0; i < 8; i++) {
+        uint32_t w0, w1, w2;
+        fpu_to_extended(fpu->fp[i], &w0, &w1, &w2);
+        memory_write_uint32(off, w0);
+        off += 4;
+        memory_write_uint32(off, w1);
+        off += 4;
+        memory_write_uint32(off, w2);
+        off += 4;
+    }
+
+    // Pad remaining internal state to $84 bytes total payload
+    while (off < addr + 4 + FSAVE_IDLE_SIZE) {
+        memory_write_uint32(off, 0x00000000);
+        off += 4;
+    }
 
     return 4 + FSAVE_IDLE_SIZE;
 }
@@ -596,20 +630,40 @@ int fpu_fsave(fpu_state_t *fpu, uint32_t addr) {
 int fpu_frestore(fpu_state_t *fpu, uint32_t addr) {
     uint32_t header = memory_read_uint32(addr);
     uint32_t size = (header >> 16) & 0xFF;
-
     if (size == 0) {
-        // Null frame: reset FPU — clear all registers and control state
+        // Null frame: reset FPU to hardware-reset state (MC68882UM §6.4.2.1)
+        // Data registers become positive non-signaling NaNs; control regs zero
         for (int i = 0; i < 8; i++)
-            fpu->fp[i] = (float80_reg_t){0, 0};
+            fpu->fp[i] = (float80_reg_t){0x7FFF, 0xFFFFFFFFFFFFFFFFULL};
         fpu->fpcr = 0;
         fpu->fpsr = 0;
         fpu->fpiar = 0;
+        fpu->pre_exc_mask = 0;
         fpu->initialized = false;
         return 4;
     }
 
-    // Idle frame ($18) or busy frame ($B4): accept and mark FPU as initialized.
-    // We don't restore microcode state since we execute atomically.
+    if (size == FSAVE_IDLE_SIZE) {
+        // Our extended idle frame: restore full programmer model
+        uint32_t off = addr + 4;
+        fpu->fpcr = memory_read_uint32(off);
+        off += 4;
+        fpu->fpsr = memory_read_uint32(off);
+        off += 4;
+        fpu->fpiar = memory_read_uint32(off);
+        off += 4;
+        for (int i = 0; i < 8; i++) {
+            uint32_t w0 = memory_read_uint32(off);
+            off += 4;
+            uint32_t w1 = memory_read_uint32(off);
+            off += 4;
+            uint32_t w2 = memory_read_uint32(off);
+            off += 4;
+            fpu->fp[i] = fpu_from_extended(w0, w1, w2);
+        }
+    }
+
+    // Idle frame or busy frame: mark FPU as initialized
     fpu->initialized = true;
     return 4 + size;
 }
@@ -1291,17 +1345,25 @@ static void fpu_to_packed(fpu_state_t *fpu, float80_reg_t val, int k_factor, uin
         y = abs_val;
     }
 
-    // Extract integer part of y
+// Extract integer part of y with rounding (round-to-nearest)
+#define EXTRACT_Y_INT(yval, out)                                                                                       \
+    do {                                                                                                               \
+        if ((yval).exponent == FPU_EXP_ZERO) {                                                                         \
+            (out) = 0;                                                                                                 \
+        } else if ((yval).exponent >= 63) {                                                                            \
+            (out) = (yval).mantissa_hi;                                                                                \
+        } else if ((yval).exponent < 0) {                                                                              \
+            (out) = 0;                                                                                                 \
+        } else {                                                                                                       \
+            int shift = 63 - (yval).exponent;                                                                          \
+            (out) = (yval).mantissa_hi >> shift;                                                                       \
+            if (shift > 0 && ((yval).mantissa_hi >> (shift - 1)) & 1)                                                  \
+                (out)++;                                                                                               \
+        }                                                                                                              \
+    } while (0)
+
     uint64_t y_int;
-    if (y.exponent == FPU_EXP_ZERO) {
-        y_int = 0;
-    } else if (y.exponent >= 63) {
-        y_int = y.mantissa_hi;
-    } else if (y.exponent < 0) {
-        y_int = 0;
-    } else {
-        y_int = y.mantissa_hi >> (63 - y.exponent);
-    }
+    EXTRACT_Y_INT(y, y_int);
 
     // Validate and correct ILOG if digit count is wrong
     uint64_t lo_bound = 1;
@@ -1322,14 +1384,7 @@ static void fpu_to_packed(fpu_state_t *fpu, float80_reg_t val, int k_factor, uin
         } else {
             y = abs_val;
         }
-        if (y.exponent == FPU_EXP_ZERO)
-            y_int = 0;
-        else if (y.exponent >= 63)
-            y_int = y.mantissa_hi;
-        else if (y.exponent < 0)
-            y_int = 0;
-        else
-            y_int = y.mantissa_hi >> (63 - y.exponent);
+        EXTRACT_Y_INT(y, y_int);
     } else if (y_int >= hi_bound && ilog < 999) {
         // ILOG too low — increment and rescale
         ilog++;
@@ -1343,15 +1398,10 @@ static void fpu_to_packed(fpu_state_t *fpu, float80_reg_t val, int k_factor, uin
         } else {
             y = abs_val;
         }
-        if (y.exponent == FPU_EXP_ZERO)
-            y_int = 0;
-        else if (y.exponent >= 63)
-            y_int = y.mantissa_hi;
-        else if (y.exponent < 0)
-            y_int = 0;
-        else
-            y_int = y.mantissa_hi >> (63 - y.exponent);
+        EXTRACT_Y_INT(y, y_int);
     }
+
+#undef EXTRACT_Y_INT
 
     // If still at hi_bound, divide by 10 and increment ilog
     if (y_int >= hi_bound) {
@@ -1368,10 +1418,13 @@ static void fpu_to_packed(fpu_state_t *fpu, float80_reg_t val, int k_factor, uin
     if (y.mantissa_lo != 0)
         fpu->fpsr |= FPEXC_INEX2;
 
-    // Convert y_int to 17 BCD digits: digits[0]=d16 (MSD), digits[16]=d0 (LSD)
+    // Convert y_int to 17 BCD digits, left-justified: digits[0]=d16 (MSD)
+    // The 68882 always places significant digits starting at d16 (the MSD),
+    // with trailing zeros filling the remaining positions.
     uint8_t digits[17];
+    memset(digits, 0, sizeof(digits));
     uint64_t tmp = y_int;
-    for (int i = 16; i >= 0; i--) {
+    for (int i = len - 1; i >= 0; i--) {
         digits[i] = (uint8_t)(tmp % 10);
         tmp /= 10;
     }
@@ -1688,13 +1741,24 @@ static bool fpu_movem_data_ea_valid(unsigned ea_mode, unsigned ea_reg, unsigned 
 static bool fpu_movem_data(cpu_t *cpu, fpu_state_t *fpu, uint16_t opcode, uint16_t ext) {
     unsigned ea_mode = (opcode >> 3) & 7;
     unsigned ea_reg = opcode & 7;
-    unsigned dir = (ext >> 12) & 1; // bit 12: 0=reg->mem (save), 1=mem->reg (restore)
+
+    // 68882 FMOVEM data register encoding (MC68882 User Manual §6.1.5):
+    //   Bits 15-13 encode type: 110 = register→memory (save), 111 = memory→register (restore)
+    //   Bit 12 encodes mode: 0 = static register list (bits 7-0), 1 = dynamic (Dn in bits 6-4)
+    // For (An)+ and -(An) addressing, the direction is implicit from the EA mode.
+    unsigned dir;
+    if (ea_mode == 3) // (An)+: always restore (memory → register)
+        dir = 1;
+    else if (ea_mode == 4) // -(An): always save (register → memory)
+        dir = 0;
+    else
+        dir = (ext >> 13) & 1; // control modes: use ext word direction bit
 
     // Validate EA mode before decoding register list
     if (!fpu_movem_data_ea_valid(ea_mode, ea_reg, dir))
         return false;
 
-    unsigned mode_d = (ext >> 13) & 1; // bit 13: 0=static list, 1=dynamic (Dn)
+    unsigned mode_d = (ext >> 11) & 1; // bit 11: 0=static list, 1=dynamic (Dn)
     uint8_t reglist;
 
     // Get register list: static from ext word, or dynamic from Dn
@@ -2289,8 +2353,10 @@ fpu_unpacked_t fpu_op_sqrt(fpu_state_t *fpu, fpu_unpacked_t a) {
 // ============================================================================
 
 // Clear per-operation exception status bits (bits 15:8), preserve accrued (bits 7:3)
+// Also clear the pre-instruction exception mask since a new operation is starting.
 static void fpu_clear_status(fpu_state_t *fpu) {
     fpu->fpsr &= ~0xFF00u;
+    fpu->pre_exc_mask = 0;
 }
 
 // Propagate exception status bits (15:8) to accrued exception bits (7:3)
@@ -2319,6 +2385,12 @@ bool fpu_check_exceptions(cpu_t *cpu, fpu_state_t *fpu) {
     if (!enabled)
         return false;
 
+    // MC68882UM §6.1.2: UNFL post-instruction exception only fires if INEX2
+    // is also set. If UNFL is enabled but result is exact, UNFL status stays
+    // in FPSR but no post-instruction trap occurs (deferred to pre-instruction).
+    if (enabled == FPEXC_UNFL && !(fpu->fpsr & FPEXC_INEX2))
+        return false;
+
     // Select highest-priority exception vector
     uint32_t vector;
     if (enabled & FPEXC_BSUN)
@@ -2343,37 +2415,94 @@ bool fpu_check_exceptions(cpu_t *cpu, fpu_state_t *fpu) {
     return true;
 }
 
+// Pre-instruction exception check (MC68882UM §6.1.4):
+// Fires before any FPU instruction (except FSAVE/FRESTORE) if FPSR & FPCR
+// have matching enabled exception bits that haven't already been handled.
+// On real 68882, the handler acknowledges the exception via FSAVE/BSET/FRESTORE;
+// we track this with pre_exc_mask to prevent re-firing on the instruction retry.
+// FPSR status bits are NOT cleared — they remain set for the retried instruction.
+bool fpu_pre_instruction_check(cpu_t *cpu, fpu_state_t *fpu, bool conditional) {
+    // Exclude exceptions already acknowledged (prevented from re-firing)
+    uint32_t enabled = (fpu->fpsr & fpu->fpcr & 0xFF00u) & ~fpu->pre_exc_mask;
+    if (!enabled)
+        return false;
+
+    // For non-conditional instructions (operational, system-control), UNFL
+    // without INEX2 does not generate a pre-instruction exception — matching
+    // the post-instruction UNFL+INEX2 rule. Conditional instructions (FBcc,
+    // FScc, etc.) always trigger UNFL pre-instruction regardless of INEX2.
+    if (!conditional && enabled == FPEXC_UNFL && !(fpu->fpsr & FPEXC_INEX2))
+        return false;
+
+    // Select highest-priority exception vector
+    uint32_t vector;
+    if (enabled & FPEXC_BSUN)
+        vector = FPVEC_BSUN;
+    else if (enabled & FPEXC_SNAN)
+        vector = FPVEC_SNAN;
+    else if (enabled & FPEXC_OPERR)
+        vector = FPVEC_OPERR;
+    else if (enabled & FPEXC_OVFL)
+        vector = FPVEC_OVFL;
+    else if (enabled & FPEXC_UNFL)
+        vector = FPVEC_UNFL;
+    else if (enabled & FPEXC_DZ)
+        vector = FPVEC_DZ;
+    else
+        vector = FPVEC_INEX;
+
+    LOG(1, "fpu pre-instruction exception: vector=$%02X fpsr=$%08X fpcr=$%08X", vector, fpu->fpsr, fpu->fpcr);
+
+    // Mark these exception bits as acknowledged so the retried instruction
+    // after the handler's RTE won't re-trigger the same exception.
+    fpu->pre_exc_mask |= enabled;
+
+    // Pre-instruction exception: PC points to the FPU instruction itself
+    exception(cpu, vector, cpu->instruction_pc, cpu_get_sr(cpu));
+    return true;
+}
+
 // Execute an FPU operation with source and destination register
 static void fpu_execute_op(fpu_state_t *fpu, unsigned op, float80_reg_t src, unsigned dst) {
     fpu_unpacked_t a, b, result;
 
-    // Pre-instruction SNAN check: if SNAN enable is set and source is SNaN,
-    // flag the exception and do not execute the operation
-    if ((fpu->fpcr & FPEXC_SNAN) && fp80_is_snan(src)) {
+    // SNAN detection (MC68882UM §3.2.1): FPSR SNAN status bit is ALWAYS set
+    // when a signaling NaN is encountered, regardless of FPCR enable bit.
+    // If SNAN exception is enabled, abort the operation without storing result.
+    // If not enabled, quiet the NaN and continue (except FMOVE to extended).
+    if (fp80_is_snan(src)) {
         fpu->fpsr |= FPEXC_SNAN;
-        fpu_update_cc(fpu, src);
-        return;
+        if (fpu->fpcr & FPEXC_SNAN) {
+            fpu_update_cc(fpu, src);
+            return;
+        }
     }
 
     // For dyadic operations, also check destination register for SNaN
-    if (fpu->fpcr & FPEXC_SNAN) {
+    {
         bool dyadic = (op == 0x20 || op == 0x22 || op == 0x23 || op == 0x24 || op == 0x27 || op == 0x28 || op == 0x21 ||
                        op == 0x25 || op == 0x38);
         if (dyadic && fp80_is_snan(fpu->fp[dst])) {
             fpu->fpsr |= FPEXC_SNAN;
-            fpu_update_cc(fpu, fpu->fp[dst]);
-            return;
+            if (fpu->fpcr & FPEXC_SNAN) {
+                fpu_update_cc(fpu, fpu->fp[dst]);
+                return;
+            }
         }
     }
 
     switch (op) {
     case 0x00: // FMOVE
     {
-        // NaN: detect SNaN, quieten, and pass through
+        // NaN: detect SNaN, quieten (unless extended precision), and pass through
         if (fp80_is_nan(src)) {
             if (fp80_is_snan(src)) {
-                src.mantissa |= 0x4000000000000000ULL;
                 fpu->fpsr |= FPEXC_SNAN;
+                // MC68882UM §3.2.1: if rounding precision is extended, the
+                // signaling NaN is transferred unchanged to the destination.
+                unsigned prec = (fpu->fpcr >> 6) & 3;
+                if (prec != 0) // not extended → quiet the NaN
+                    src.mantissa |= 0x4000000000000000ULL;
             }
             fpu->fp[dst] = src;
             fpu_update_cc(fpu, fpu->fp[dst]);
@@ -2664,11 +2793,16 @@ static void fpu_execute_op(fpu_state_t *fpu, unsigned op, float80_reg_t src, uns
             __uint128_t y_m = ((__uint128_t)Y.mantissa_hi << 64) | Y.mantissa_lo;
 
             // Step 3: iterative MOD (shift-and-subtract)
+            // Track a carry bit for when r_m <<= 1 overflows 128 bits,
+            // following the same approach as Motorola's FPSP (srem_mod.S).
+            bool carry = false;
             for (int32_t j = L; j >= 0; j--) {
                 Q <<= 1;
-                if (r_m >= y_m) {
+                // carry means real R = r_m + 2^128 > y_m, so always subtract
+                if (carry || r_m >= y_m) {
                     Q++;
-                    r_m -= y_m;
+                    r_m -= y_m; // unsigned wrap gives correct result when carry set
+                    carry = false;
                     if (r_m == 0) {
                         R.exponent = FPU_EXP_ZERO;
                         R.mantissa_hi = 0;
@@ -2678,8 +2812,10 @@ static void fpu_execute_op(fpu_state_t *fpu, unsigned op, float80_reg_t src, uns
                         break;
                     }
                 }
-                if (j > 0)
-                    r_m <<= 1; // R = 2R
+                if (j > 0) {
+                    carry = (r_m >> 127) != 0; // MSB set means shift will overflow
+                    r_m <<= 1; // R = 2R (may truncate, carry tracks overflow)
+                }
             }
 
             // Convert back to unpacked and normalize
@@ -2741,15 +2877,17 @@ static void fpu_execute_op(fpu_state_t *fpu, unsigned op, float80_reg_t src, uns
             }
         }
 
-        // Step 6: apply sign
-        R.sign = sign_x;
-
-        // Step 7: subtract Y if last_subtract
+        // Step 7: subtract |Y| if last_subtract (before sign application)
+        // Following FPSP: first adjust the unsigned remainder, then apply sign.
         if (last_subtract) {
-            Y.sign = b.sign;
+            // Y.sign stays false from step 1 — subtract unsigned |Y|
             R = fpu_op_sub(fpu, R, Y);
             fpu->fpsr &= ~0xFF00u;
         }
+
+        // Step 6: apply sign of dividend (FPSP fnegx if sign_x negative)
+        if (sign_x)
+            R.sign = !R.sign;
 
         // Special: if result is zero, sign = sign of dividend
         if (R.exponent == FPU_EXP_ZERO)
@@ -3121,6 +3259,12 @@ void fpu_general_op(cpu_t *cpu, fpu_state_t *fpu, uint16_t opcode, uint16_t ext_
     // Decode the top 3 bits of the extension word
     unsigned top3 = (ext_word >> 13) & 7;
 
+    // Pre-instruction exception check (MC68882UM §6.1.4):
+    // Fires before any FPU instruction except FSAVE/FRESTORE (handled in
+    // cpu_ops.h). Uses pre_exc_mask to avoid re-firing after handler acks.
+    if (fpu_pre_instruction_check(cpu, fpu, false))
+        return;
+
     unsigned src_spec = (ext_word >> 10) & 7;
     unsigned dst_reg = (ext_word >> 7) & 7;
     unsigned op = ext_word & 0x7F;
@@ -3130,8 +3274,12 @@ void fpu_general_op(cpu_t *cpu, fpu_state_t *fpu, uint16_t opcode, uint16_t ext_
     if (top3 < 4)
         fpu->fpiar = cpu->instruction_pc;
 
-    // Clear per-operation exception status bits
-    fpu_clear_status(fpu);
+    // Clear per-operation exception status bits (MC68882UM §3.3.1):
+    // exception status byte is cleared before each arithmetic/data instruction.
+    // System control instructions (FMOVEM control regs, top3=4/5) and
+    // FMOVEM data registers (top3=6/7) do NOT clear the exception status.
+    if (top3 < 4)
+        fpu_clear_status(fpu);
 
     switch (top3) {
     case 0: // 000: FPn->FPn operation (register to register)
@@ -3254,6 +3402,9 @@ void fpu_general_op(cpu_t *cpu, fpu_state_t *fpu, uint16_t opcode, uint16_t ext_
     // Propagate exception status to accrued exception bits
     fpu_update_accrued(fpu);
 
-    // Check for enabled FPU exceptions and vector if needed
-    fpu_check_exceptions(cpu, fpu);
+    // Post-instruction exception check: only FMOVE to memory (top3=3) fires
+    // post-instruction exceptions. Arithmetic/register operations (top3=0-2)
+    // defer exceptions to pre-instruction check of the NEXT FPU instruction.
+    if (top3 == 3)
+        fpu_check_exceptions(cpu, fpu);
 }

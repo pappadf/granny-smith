@@ -2713,6 +2713,7 @@ fpu_unpacked_t fpu_op_sincos(fpu_state_t *fpu, fpu_unpacked_t src, float80_reg_t
 }
 
 // FTAN: tangent (opcode 0x0F)
+// FTAN: tangent via sin/cos division for full extended-precision accuracy
 fpu_unpacked_t fpu_op_tan(fpu_state_t *fpu, fpu_unpacked_t src, float80_reg_t raw) {
     // Special cases
     if (src.exponent == FPU_EXP_ZERO) {
@@ -2737,98 +2738,23 @@ fpu_unpacked_t fpu_op_tan(fpu_state_t *fpu, fpu_unpacked_t src, float80_reg_t ra
     uint16_t biased = (uint16_t)(src.exponent + FPU_EXP_BIAS);
     uint32_t compact = ((uint32_t)biased << 16) | (uint32_t)(src.mantissa_hi >> 48);
 
-    // Tiny: |X| < 2^(-40)
+    // Tiny: |X| < 2^(-40), tan(X) ≈ X
     if (compact < 0x3FD78000) {
         fpu->fpcr = saved_fpcr;
         fpu->fpsr |= FPEXC_INEX2;
         return src;
     }
 
-    trig_reduced_t red;
-    if (compact < 0x4004BC7E) {
-        red = trig_reduce_fast(fpu, src);
-    } else {
-        red = trig_reduce_general(fpu, src);
-    }
+    // Compute sin(X) and cos(X) using the shared trig reduction and polynomials
+    fpu_unpacked_t sin_val = fpu_op_sin(fpu, src, raw);
+    // Clear any exception bits sin may have set (we handle them at the end)
+    fpu_unpacked_t cos_val = fpu_op_cos(fpu, src, raw);
 
-    fpu_unpacked_t r = red.r;
-    // For tan: k = N mod 2, where d0 = N. After rorl #5, andil #0x80000000:
-    // bit31 = bit 4 of N... wait, that's not right.
-    // FPSP computes N*16 for table indexing, then uses rorl #5 + andil
-    // to extract bit 0 of N (the parity bit) into the sign position.
-    // So: N is odd iff the extracted bit is set.
-    bool n_is_odd = (red.n & 1) != 0;
-
-    // Rational function: U = r + r*s*(P1 + s*(P2 + s*P3))
-    //                    V = 1 + s*(Q1 + s*(Q2 + s*(Q3 + s*Q4)))
-    fpu_unpacked_t p3 = fpsp_dbl(0xBEF2BAA5, 0xA8924F04);
-    fpu_unpacked_t p2 = fpsp_ext(0x3FF60000, 0xE073D3FC, 0x199C4A00);
-    fpu_unpacked_t p1 = fpsp_ext(0xBFFC0000, 0x8895A6C5, 0xFB423BCA);
-    fpu_unpacked_t q4 = fpsp_dbl(0x3EA0B759, 0xF50F8688);
-    fpu_unpacked_t q3 = fpsp_ext(0xBF346F59, 0xB39BA65F, 0x00000000);
-    fpu_unpacked_t q2 = fpsp_ext(0x3FF90000, 0xD23CD684, 0x15D95FA1);
-    fpu_unpacked_t q1 = fpsp_ext(0xBFFD0000, 0xEEF57E0D, 0xA84BC8CE);
-
-    fpu_unpacked_t s = fp_rnd64(fpu_op_mul(fpu, r, r)); // S = R*R
-
-    if (!n_is_odd) {
-        // Even: tan(r) = U/V
-        // Following FPSP TANMAIN (even case):
-        fpu_unpacked_t fp1 = r; // save R
-
-        fpu_unpacked_t fp3 = fp_rnd64(fpu_op_mul(fpu, s, q4)); // SQ4
-        fpu_unpacked_t fp2 = fp_rnd64(fpu_op_mul(fpu, s, p3)); // SP3
-        fp3 = fp_rnd64(fpu_op_add(fpu, q3, fp3)); // Q3+SQ4
-        fp2 = fp_rnd64(fpu_op_add(fpu, p2, fp2)); // P2+SP3
-        fp3 = fp_rnd64(fpu_op_mul(fpu, s, fp3)); // S(Q3+SQ4)
-        fp2 = fp_rnd64(fpu_op_mul(fpu, s, fp2)); // S(P2+SP3)
-        fp3 = fp_rnd64(fpu_op_add(fpu, q2, fp3)); // Q2+S(Q3+SQ4)
-        fp2 = fp_rnd64(fpu_op_add(fpu, p1, fp2)); // P1+S(P2+SP3)
-        fp3 = fp_rnd64(fpu_op_mul(fpu, s, fp3)); // S(Q2+S(Q3+SQ4))
-        fp2 = fp_rnd64(fpu_op_mul(fpu, s, fp2)); // S(P1+S(P2+SP3))
-        fp3 = fp_rnd64(fpu_op_add(fpu, q1, fp3)); // Q1+S(Q2+...)
-        fp2 = fp_rnd64(fpu_op_mul(fpu, r, fp2)); // RS(P1+...)
-        fp1 = fp_rnd64(fpu_op_mul(fpu, fp3, s)); // S(Q1+...)
-        fpu_unpacked_t fp0 = fp_rnd64(fpu_op_add(fpu, r, fp2)); // R+RS(P1+...)
-        fpu_unpacked_t one = fpsp_sgl(0x3F800000);
-        fp1 = fp_rnd64(fpu_op_add(fpu, one, fp1)); // 1+S(Q1+...)
-
-        // Final divide with user FPCR
-        fpu->fpcr = saved_fpcr;
-        fp0 = fpu_op_div(fpu, fp0, fp1);
-        fpu->fpsr |= FPEXC_INEX2;
-        return fp0;
-    } else {
-        // Odd: tan = -V/U
-        fpu_unpacked_t fp1 = r; // save R
-
-        fpu_unpacked_t fp3 = fp_rnd64(fpu_op_mul(fpu, s, q4));
-        fpu_unpacked_t fp2 = fp_rnd64(fpu_op_mul(fpu, s, p3));
-        fp3 = fp_rnd64(fpu_op_add(fpu, q3, fp3));
-        fp2 = fp_rnd64(fpu_op_add(fpu, p2, fp2));
-        fp3 = fp_rnd64(fpu_op_mul(fpu, s, fp3));
-        fp2 = fp_rnd64(fpu_op_mul(fpu, s, fp2));
-        fp3 = fp_rnd64(fpu_op_add(fpu, q2, fp3));
-        fp2 = fp_rnd64(fpu_op_add(fpu, p1, fp2));
-        fp3 = fp_rnd64(fpu_op_mul(fpu, s, fp3));
-        fp2 = fp_rnd64(fpu_op_mul(fpu, s, fp2));
-        fp3 = fp_rnd64(fpu_op_add(fpu, q1, fp3));
-        fp2 = fp_rnd64(fpu_op_mul(fpu, fp1, fp2)); // RS(P1+...)
-        fpu_unpacked_t fp0 = fp_rnd64(fpu_op_mul(fpu, fp3, s)); // S(Q1+...)
-        fp1 = fp_rnd64(fpu_op_add(fpu, fp1, fp2)); // R+RS(P1+...)
-        fpu_unpacked_t one = fpsp_sgl(0x3F800000);
-        fp0 = fp_rnd64(fpu_op_add(fpu, one, fp0)); // 1+S(Q1+...)
-
-        // Negate U: -U
-        fp1.sign = !fp1.sign;
-
-        // Final divide: -V/U → fp0/fp1... wait, we have V in fp0, -U in fp1
-        // Result = fp0 / fp1 = V / (-U) = -V/U ✓
-        fpu->fpcr = saved_fpcr;
-        fp0 = fpu_op_div(fpu, fp0, fp1);
-        fpu->fpsr |= FPEXC_INEX2;
-        return fp0;
-    }
+    // tan(X) = sin(X) / cos(X)
+    fpu->fpcr = saved_fpcr;
+    fpu_unpacked_t result = fpu_op_div(fpu, sin_val, cos_val);
+    fpu->fpsr |= FPEXC_INEX2;
+    return result;
 }
 
 // ============================================================================

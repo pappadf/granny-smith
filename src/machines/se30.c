@@ -930,8 +930,8 @@ static void se30_init(config_t *cfg, checkpoint_t *checkpoint) {
     // Set SE/30 CPU clock frequency (15.6672 MHz = 2x Plus clock)
     scheduler_set_frequency(cfg->scheduler, cfg->machine->cpu_clock_hz);
 
-    // SE/30 68030: 4 cycles/instr (hw accuracy), 1 cycle/instr (fast)
-    scheduler_set_cpi(cfg->scheduler, 4, 1);
+    // SE/30 68030: 4 cycles/instr (hw accuracy), 4 cycle/instr (fast)
+    scheduler_set_cpi(cfg->scheduler, 4, 4);
 
     // Register VBL slot deassert event type for checkpoint save/restore
     scheduler_new_event_type(cfg->scheduler, "se30", cfg, "vbl_slot_deassert", &se30_vbl_slot_deassert);
