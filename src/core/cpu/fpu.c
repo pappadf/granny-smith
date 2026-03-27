@@ -453,7 +453,6 @@ float80_reg_t fpu_pack(fpu_state_t *fpu, fpu_unpacked_t val) {
 
     // Check for overflow
     if (val.exponent > max_exp) {
-        fpu->fpsr |= FPEXC_OVFL;
         // Rounding mode determines overflow result
         bool to_inf = false;
         switch (rmode) {
@@ -470,6 +469,8 @@ float80_reg_t fpu_pack(fpu_state_t *fpu, fpu_unpacked_t val) {
             to_inf = !val.sign;
             break; // toward +inf: pos→+inf, neg→-max
         }
+        // OVFL always set on overflow
+        fpu->fpsr |= FPEXC_OVFL;
         if (to_inf) {
             return fp80_make(val.sign, 0x7FFF, 0);
         }
@@ -1186,6 +1187,8 @@ static float80_reg_t fpu_from_packed(fpu_state_t *fpu, uint32_t w0, uint32_t w1,
     val.exponent = 63 - lz; // true binary exponent for integer value
 
     // Scale by 10^adj_exp
+    // Save FPSR: intermediate ops must not leak INEX2 into caller
+    uint32_t saved_fpsr = fpu->fpsr;
     if (adj_exp != 0) {
         // Use extended precision, round-to-nearest for intermediate computation
         uint32_t saved_fpcr = fpu->fpcr;
@@ -1200,11 +1203,15 @@ static float80_reg_t fpu_from_packed(fpu_state_t *fpu, uint32_t w0, uint32_t w1,
         fpu->fpcr = saved_fpcr;
     }
 
-    // Decimal input conversion may be inexact (INEX1, not INEX2)
-    if (val.mantissa_lo != 0)
+    // Decimal input conversion: convert any INEX2 from packing to INEX1
+    // The 68882 signals input conversion inexactness as INEX1, not INEX2
+    uint32_t pre_fpsr = fpu->fpsr;
+    float80_reg_t packed = fpu_pack(fpu, val);
+    bool pack_inexact = (fpu->fpsr & FPEXC_INEX2) != 0;
+    fpu->fpsr = pre_fpsr;
+    if (pack_inexact)
         fpu->fpsr |= FPEXC_INEX1;
-
-    return fpu_pack(fpu, val);
+    return packed;
 }
 
 // Convert float80_reg_t to 12-byte packed BCD with k-factor
@@ -1415,6 +1422,10 @@ fpu_unpacked_t fpu_rom_constant(unsigned offset) {
         r.mantissa_hi = 0xC90FDAA22168C234ULL;
         r.mantissa_lo = 0xC4C6628B80DC1CD1ULL;
         break; // pi
+    case 0x01:
+        r.exponent = 2;
+        r.mantissa_hi = 0xFE00068200000000ULL;
+        break; // undocumented 68882 ROM offset 0x01
     case 0x0B:
         r.exponent = -2;
         r.mantissa_hi = 0x9A209A84FBCFF798ULL;
@@ -2583,10 +2594,9 @@ static void fpu_execute_op(fpu_state_t *fpu, unsigned op, float80_reg_t src, uns
             // Zero: result is zero (preserve sign)
             fpu->fp[dst] = FP80_SIGN(src) ? FP80_NEG_ZERO : FP80_ZERO;
         } else {
-            // Normal: set exponent to 0 (biased = 16383), keep mantissa+sign
-            uv.exponent = 0;
-            uv.mantissa_lo = 0;
-            fpu->fp[dst] = fpu_pack(fpu, uv);
+            // Normal: set biased exponent to 3FFF, keep raw mantissa+sign
+            // Preserves unnormalized mantissa bits (no normalization shift)
+            fpu->fp[dst] = fp80_make(FP80_SIGN(src), 0x3FFF, src.mantissa);
         }
         fpu_update_cc(fpu, fpu->fp[dst]);
         return;
@@ -2628,79 +2638,128 @@ static void fpu_execute_op(fpu_state_t *fpu, unsigned op, float80_reg_t src, uns
         bool b_inf = (b.exponent == FPU_EXP_INF);
         if (a_zero || b_inf) {
             // 0 rem x = 0, x rem inf = x
-            fpu->fp[dst] = (a_zero) ? fpu_pack(fpu, a) : fpu_pack(fpu, a);
-            // Set quotient to 0
-            fpu->fpsr = (fpu->fpsr & ~0x00FF0000u);
+            fpu->fp[dst] = fpu_pack(fpu, a);
+            // Set quotient to 0 with correct sign (sign of dividend XOR divisor)
+            unsigned q_sign_bit = (a.sign ^ b.sign) ? 0x80u : 0;
+            fpu->fpsr = (fpu->fpsr & ~0x00FF0000u) | ((uint32_t)q_sign_bit << 16);
             fpu_update_cc(fpu, fpu->fp[dst]);
             return;
         }
-        // Normal: compute quotient q = trunc(a/b) or round(a/b)
-        fpu_unpacked_t quot = fpu_op_div(fpu, a, b);
-        // Clear any exceptions from the intermediate division
-        fpu->fpsr &= ~0xFF00u;
-        // Round quotient to integer
-        int32_t q_int;
-        if (quot.exponent == FPU_EXP_ZERO) {
-            q_int = 0;
-        } else if (quot.exponent < 0) {
-            if (op == 0x25) {
-                // FREM: round to nearest
-                if (quot.exponent == -1 && quot.mantissa_hi > 0x8000000000000000ULL)
-                    q_int = 1;
-                else if (quot.exponent == -1 && quot.mantissa_hi == 0x8000000000000000ULL && quot.mantissa_lo != 0)
-                    q_int = 1;
+        // FPSP iterative shift-and-subtract algorithm for FMOD/FREM
+        // Step 1: strip signs
+        bool sign_x = a.sign;
+        bool sign_q = a.sign ^ b.sign;
+        fpu_unpacked_t R = a;
+        R.sign = false;
+        fpu_unpacked_t Y = b;
+        Y.sign = false;
+
+        // Step 2: L = expo(X) - expo(Y), iterate to compute Q and R
+        int32_t L = R.exponent - Y.exponent;
+        uint32_t Q = 0;
+
+        if (L >= 0) {
+            // Work with 128-bit integer mantissas at the same exponent
+            __uint128_t r_m = ((__uint128_t)R.mantissa_hi << 64) | R.mantissa_lo;
+            __uint128_t y_m = ((__uint128_t)Y.mantissa_hi << 64) | Y.mantissa_lo;
+
+            // Step 3: iterative MOD (shift-and-subtract)
+            for (int32_t j = L; j >= 0; j--) {
+                Q <<= 1;
+                if (r_m >= y_m) {
+                    Q++;
+                    r_m -= y_m;
+                    if (r_m == 0) {
+                        R.exponent = FPU_EXP_ZERO;
+                        R.mantissa_hi = 0;
+                        R.mantissa_lo = 0;
+                        // Account for remaining j iterations (each would Q <<= 1)
+                        Q <<= j;
+                        break;
+                    }
+                }
+                if (j > 0)
+                    r_m <<= 1; // R = 2R
+            }
+
+            // Convert back to unpacked and normalize
+            if (R.exponent != FPU_EXP_ZERO) {
+                R.mantissa_hi = (uint64_t)(r_m >> 64);
+                R.mantissa_lo = (uint64_t)r_m;
+                R.exponent = Y.exponent;
+                if (R.mantissa_hi == 0 && R.mantissa_lo == 0) {
+                    R.exponent = FPU_EXP_ZERO;
+                } else {
+                    // Normalize
+                    if (R.mantissa_hi == 0) {
+                        R.mantissa_hi = R.mantissa_lo;
+                        R.mantissa_lo = 0;
+                        R.exponent -= 64;
+                    }
+                    int lz = clz64(R.mantissa_hi);
+                    if (lz > 0) {
+                        R.mantissa_hi = (R.mantissa_hi << lz) | (R.mantissa_lo >> (64 - lz));
+                        R.mantissa_lo <<= lz;
+                        R.exponent -= lz;
+                    }
+                }
+            }
+        }
+        // else: L < 0 means |X| < |Y|, R = X, Q = 0
+
+        // Step 5: FREM adjustment (round quotient to nearest)
+        bool last_subtract = false;
+        if (op == 0x25 && R.exponent != FPU_EXP_ZERO) {
+            // Compare R with Y/2. Y/2 = Y with exponent decremented by 1.
+            int cmp;
+            int32_t yhalf_exp = Y.exponent - 1;
+            if (R.exponent > yhalf_exp)
+                cmp = 1;
+            else if (R.exponent < yhalf_exp)
+                cmp = -1;
+            else {
+                // Same exponent: compare mantissas directly
+                if (R.mantissa_hi > Y.mantissa_hi)
+                    cmp = 1;
+                else if (R.mantissa_hi < Y.mantissa_hi)
+                    cmp = -1;
+                else if (R.mantissa_lo > Y.mantissa_lo)
+                    cmp = 1;
+                else if (R.mantissa_lo < Y.mantissa_lo)
+                    cmp = -1;
                 else
-                    q_int = 0;
-            } else {
-                // FMOD: truncate toward zero
-                q_int = 0;
+                    cmp = 0;
             }
-        } else if (quot.exponent >= 31) {
-            // Very large quotient — use host double as fallback for quotient only
-            double dq = ldexp((double)quot.mantissa_hi, quot.exponent - 63);
-            if (op == 0x25)
-                q_int = (int32_t)round(dq);
-            else
-                q_int = (int32_t)dq;
-        } else {
-            // Extract integer part of quotient
-            int shift = 63 - quot.exponent;
-            uint64_t int_part = quot.mantissa_hi >> shift;
-            if (op == 0x25) {
-                // FREM: round to nearest
-                uint64_t frac_mask = (1ULL << shift) - 1;
-                uint64_t frac = quot.mantissa_hi & frac_mask;
-                uint64_t half = 1ULL << (shift - 1);
-                if (frac > half || (frac == half && quot.mantissa_lo != 0))
-                    int_part++;
-                else if (frac == half && quot.mantissa_lo == 0 && (int_part & 1))
-                    int_part++; // ties to even
+            if (cmp > 0) {
+                // R > Y/2: adjust
+                last_subtract = true;
+                Q++;
+            } else if (cmp == 0 && (Q & 1)) {
+                // R == Y/2 and Q is odd: round to even
+                last_subtract = true;
+                Q++;
             }
-            // FMOD: truncate (just use int_part as-is)
-            q_int = (int32_t)int_part;
         }
-        // result = a - q * b
-        bool result_sign = a.sign;
-        if (q_int == 0) {
-            result = a;
-        } else {
-            fpu_unpacked_t q_fp = fpu_unpack(fpu_from_int32(q_int));
-            q_fp.sign = false; // magnitude only
-            fpu_unpacked_t product = fpu_op_mul(fpu, q_fp, b);
-            fpu->fpsr &= ~0xFF00u; // clear intermediate exceptions
-            product.sign = a.sign; // match dividend sign for subtraction
-            result = fpu_op_sub(fpu, a, product);
-            fpu->fpsr &= ~0xFF00u; // clear intermediate exceptions
+
+        // Step 6: apply sign
+        R.sign = sign_x;
+
+        // Step 7: subtract Y if last_subtract
+        if (last_subtract) {
+            Y.sign = b.sign;
+            R = fpu_op_sub(fpu, R, Y);
+            fpu->fpsr &= ~0xFF00u;
         }
-        result.sign = result_sign;
+
         // Special: if result is zero, sign = sign of dividend
-        if (result.exponent == FPU_EXP_ZERO)
-            result.sign = a.sign;
-        // Set FPSR quotient byte: sign + 7-bit quotient
-        unsigned q_abs = (unsigned)((q_int < 0) ? -q_int : q_int) & 0x7F;
-        unsigned q_sign = (a.sign ^ b.sign) ? 0x80u : 0;
-        fpu->fpsr = (fpu->fpsr & ~0x00FF0000u) | ((uint32_t)(q_sign | q_abs) << 16);
-        fpu->fp[dst] = fpu_pack(fpu, result);
+        if (R.exponent == FPU_EXP_ZERO)
+            R.sign = sign_x;
+
+        // Step 8: set quotient byte
+        unsigned q_abs = Q & 0x7F;
+        unsigned q_sign_val = sign_q ? 0x80u : 0;
+        fpu->fpsr = (fpu->fpsr & ~0x00FF0000u) | ((uint32_t)(q_sign_val | q_abs) << 16);
+        fpu->fp[dst] = fpu_pack(fpu, R);
         fpu_update_cc(fpu, fpu->fp[dst]);
         return;
     }
@@ -2939,6 +2998,9 @@ static void fpu_execute_op(fpu_state_t *fpu, unsigned op, float80_reg_t src, uns
         a = fpu_unpack(src);
         result = fpu_op_twotox(fpu, a, src);
         fpu->fp[dst] = fpu_pack(fpu, result);
+        // 68882 suppresses INEX2 when result exceeds extended range
+        if ((fpu->fpsr & FPEXC_OVFL) && (result.exponent == FPU_EXP_INF || result.exponent > FPU_EXP_BIAS))
+            fpu->fpsr &= ~FPEXC_INEX2;
         fpu_update_cc(fpu, fpu->fp[dst]);
         return;
 
@@ -2946,6 +3008,9 @@ static void fpu_execute_op(fpu_state_t *fpu, unsigned op, float80_reg_t src, uns
         a = fpu_unpack(src);
         result = fpu_op_tentox(fpu, a, src);
         fpu->fp[dst] = fpu_pack(fpu, result);
+        // 68882 suppresses INEX2 when result exceeds extended range
+        if ((fpu->fpsr & FPEXC_OVFL) && (result.exponent == FPU_EXP_INF || result.exponent > FPU_EXP_BIAS))
+            fpu->fpsr &= ~FPEXC_INEX2;
         fpu_update_cc(fpu, fpu->fp[dst]);
         return;
 
@@ -3082,7 +3147,7 @@ void fpu_general_op(cpu_t *cpu, fpu_state_t *fpu, uint16_t opcode, uint16_t ext_
         fpu->fp[dst_reg] = fpu_pack(fpu, val);
         fpu_update_cc(fpu, fpu->fp[dst_reg]);
         // Transcendental and large-power constants are inexact in extended
-        if (op <= 0x0E || op == 0x30 || op == 0x31 || op >= 0x38)
+        if (op == 0x00 || (op >= 0x0B && op <= 0x0E) || op == 0x30 || op == 0x31 || op >= 0x38)
             fpu->fpsr |= FPEXC_INEX2;
         break;
     }
@@ -3098,7 +3163,7 @@ void fpu_general_op(cpu_t *cpu, fpu_state_t *fpu, uint16_t opcode, uint16_t ext_
             fpu->fp[dst_reg] = fpu_pack(fpu, val);
             fpu_update_cc(fpu, fpu->fp[dst_reg]);
             // Transcendental and large-power constants are inexact in extended
-            if (op <= 0x0E || op == 0x30 || op == 0x31 || op >= 0x38)
+            if (op == 0x00 || (op >= 0x0B && op <= 0x0E) || op == 0x30 || op == 0x31 || op >= 0x38)
                 fpu->fpsr |= FPEXC_INEX2;
         } else {
             // An direct (mode 1) is never valid for FPU data operations

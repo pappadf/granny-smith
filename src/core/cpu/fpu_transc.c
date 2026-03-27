@@ -466,9 +466,10 @@ fpu_unpacked_t fpu_op_lognp1(fpu_state_t *fpu, fpu_unpacked_t src, float80_reg_t
     }
 
     // Tiny: |X| <= LTHOLD (2^-102) → log(1+X) ≈ X with INEX2
-    // Covers zero (FPU_EXP_ZERO = -32768) and denormals (very negative exponent)
+    // Covers denormals (very negative exponent); zero is exact (no INEX2)
     if (src.exponent < -102) {
-        fpu->fpsr |= FPEXC_INEX2;
+        if (src.exponent != FPU_EXP_ZERO)
+            fpu->fpsr |= FPEXC_INEX2;
         return src;
     }
 
@@ -819,13 +820,12 @@ fpu_unpacked_t fpu_op_etox(fpu_state_t *fpu, fpu_unpacked_t src, float80_reg_t r
     if (compact > 0x400CB27Cu) {
         fpu->fpcr = saved_fpcr;
         if (src.sign) {
-            // e^(large negative) → underflow toward +0
-            fpu->fpsr |= FPEXC_UNFL | FPEXC_INEX2;
-            return (fpu_unpacked_t){false, FPU_EXP_ZERO, 0, 0};
+            // e^(large negative) → extreme underflow; let fpu_pack round
+            return (fpu_unpacked_t){false, -32767, 0x8000000000000000ULL, 0};
         } else {
-            // e^(large positive) → overflow toward +inf
-            fpu->fpsr |= FPEXC_OVFL | FPEXC_INEX2;
-            return (fpu_unpacked_t){false, FPU_EXP_INF, 0, 0};
+            // e^(large positive) → overflow; let fpu_pack apply rounding
+            fpu->fpsr |= FPEXC_INEX2;
+            return (fpu_unpacked_t){false, 16384, 0xFFFFFFFFFFFFFFFFULL, 0};
         }
     }
 
@@ -1294,11 +1294,11 @@ fpu_unpacked_t fpu_op_twotox(fpu_state_t *fpu, fpu_unpacked_t src, float80_reg_t
     // Big: |X| > 16480
     if (compact > 0x400D80C0u) {
         if (src.sign) {
-            fpu->fpsr |= FPEXC_UNFL | FPEXC_INEX2;
-            return (fpu_unpacked_t){false, FPU_EXP_ZERO, 0, 0};
+            // 2^(large negative) → extreme underflow; let fpu_pack round
+            return (fpu_unpacked_t){false, -32767, 0x8000000000000000ULL, 0};
         } else {
-            fpu->fpsr |= FPEXC_OVFL | FPEXC_INEX2;
-            return (fpu_unpacked_t){false, FPU_EXP_INF, 0, 0};
+            // Overflow; let fpu_pack apply rounding
+            return (fpu_unpacked_t){false, 16384, 0xFFFFFFFFFFFFFFFFULL, 0};
         }
     }
 
@@ -1339,9 +1339,10 @@ fpu_unpacked_t fpu_op_twotox(fpu_state_t *fpu, fpu_unpacked_t src, float80_reg_t
     // Polynomial + reconstruction via shared expr
     fpu_unpacked_t result = stwotox_expr(fpu, fp0, j, l);
 
-    // Restore FPCR, set inexact
+    // Restore FPCR, set inexact (but not when result overflows to infinity)
     fpu->fpcr = saved_fpcr;
-    fpu->fpsr |= FPEXC_INEX2;
+    if (result.exponent <= 16383)
+        fpu->fpsr |= FPEXC_INEX2;
     return result;
 }
 
@@ -1395,11 +1396,11 @@ fpu_unpacked_t fpu_op_tentox(fpu_state_t *fpu, fpu_unpacked_t src, float80_reg_t
     // Big: |X| > 16480*log2/log10 (≈4963)
     if (compact > 0x400B9B07u) {
         if (src.sign) {
-            fpu->fpsr |= FPEXC_UNFL | FPEXC_INEX2;
-            return (fpu_unpacked_t){false, FPU_EXP_ZERO, 0, 0};
+            // 10^(large negative) → extreme underflow; let fpu_pack round
+            return (fpu_unpacked_t){false, -32767, 0x8000000000000000ULL, 0};
         } else {
-            fpu->fpsr |= FPEXC_OVFL | FPEXC_INEX2;
-            return (fpu_unpacked_t){false, FPU_EXP_INF, 0, 0};
+            // Overflow; let fpu_pack apply rounding
+            return (fpu_unpacked_t){false, 16384, 0xFFFFFFFFFFFFFFFFULL, 0};
         }
     }
 
@@ -1444,9 +1445,10 @@ fpu_unpacked_t fpu_op_tentox(fpu_state_t *fpu, fpu_unpacked_t src, float80_reg_t
     // Polynomial + reconstruction via shared expr
     fpu_unpacked_t result = stwotox_expr(fpu, fp0, j, l);
 
-    // Restore FPCR, set inexact
+    // Restore FPCR, set inexact (but not when result overflows to infinity)
     fpu->fpcr = saved_fpcr;
-    fpu->fpsr |= FPEXC_INEX2;
+    if (result.exponent <= 16383)
+        fpu->fpsr |= FPEXC_INEX2;
     return result;
 }
 
@@ -2882,10 +2884,9 @@ fpu_unpacked_t fpu_op_sinh(fpu_state_t *fpu, fpu_unpacked_t src, float80_reg_t r
     if (compact > 0x400CB167u) {
         // 16480*log2 compact = 0x400CB2B3
         if (compact > 0x400CB2B3u) {
-            // Guaranteed overflow
-            fpu->fpsr |= FPEXC_OVFL | FPEXC_INEX2;
-            fpu_unpacked_t inf = {input_sign, FPU_EXP_INF, 0, 0};
-            return inf;
+            // Guaranteed overflow; let fpu_pack apply rounding
+            fpu->fpsr |= FPEXC_INEX2;
+            return (fpu_unpacked_t){input_sign, 16384, 0xFFFFFFFFFFFFFFFFULL, 0};
         }
 
         // 16380*log2 < |X| <= 16480*log2
@@ -3008,9 +3009,9 @@ fpu_unpacked_t fpu_op_cosh(fpu_state_t *fpu, fpu_unpacked_t src, float80_reg_t r
     if (compact > 0x400CB167u) {
         // 16480*log2 compact = 0x400CB2B3
         if (compact > 0x400CB2B3u) {
-            // Guaranteed overflow
-            fpu->fpsr |= FPEXC_OVFL | FPEXC_INEX2;
-            return (fpu_unpacked_t){false, FPU_EXP_INF, 0, 0};
+            // Guaranteed overflow; let fpu_pack apply rounding
+            fpu->fpsr |= FPEXC_INEX2;
+            return (fpu_unpacked_t){false, 16384, 0xFFFFFFFFFFFFFFFFULL, 0};
         }
 
         // 16380*log2 < |X| <= 16480*log2
@@ -3390,13 +3391,9 @@ fpu_unpacked_t fpu_op_acos(fpu_state_t *fpu, fpu_unpacked_t src, float80_reg_t r
                 return (fpu_unpacked_t){false, FPU_EXP_ZERO, 0, 0};
             } else {
                 // X = -1: acos(-1) = pi (with inexact)
-                // PI from FPSP: 0x40000000, 0xC90FDAA2, 0x2168C235
                 fpu_unpacked_t pi = fpsp_ext(0x40000000, 0xC90FDAA2, 0x2168C235);
-                // The FPSP adds a tiny value to pi to force inexact
-                fpu_unpacked_t tiny = fpsp_sgl(0x00800000);
-                fpu_unpacked_t result = fpu_op_add(fpu, pi, tiny);
                 fpu->fpsr |= FPEXC_INEX2;
-                return result;
+                return pi;
             }
         }
 
