@@ -472,8 +472,8 @@ float80_reg_t fpu_pack(fpu_state_t *fpu, fpu_unpacked_t val) {
             to_inf = !val.sign;
             break; // toward +inf: pos→+inf, neg→-max
         }
-        // OVFL and INEX2 always set on overflow (MC68882UM §3.5.3)
-        fpu->fpsr |= FPEXC_OVFL | FPEXC_INEX2;
+        // OVFL always set on overflow; INEX2 already set above if rounding lost bits
+        fpu->fpsr |= FPEXC_OVFL;
         if (to_inf) {
             return fp80_make(val.sign, 0x7FFF, 0);
         }
@@ -2494,15 +2494,11 @@ static void fpu_execute_op(fpu_state_t *fpu, unsigned op, float80_reg_t src, uns
     switch (op) {
     case 0x00: // FMOVE
     {
-        // NaN: detect SNaN, quieten (unless extended precision), and pass through
+        // NaN: detect SNaN, quieten, and pass through
         if (fp80_is_nan(src)) {
             if (fp80_is_snan(src)) {
                 fpu->fpsr |= FPEXC_SNAN;
-                // MC68882UM §3.2.1: if rounding precision is extended, the
-                // signaling NaN is transferred unchanged to the destination.
-                unsigned prec = (fpu->fpcr >> 6) & 3;
-                if (prec != 0) // not extended → quiet the NaN
-                    src.mantissa |= 0x4000000000000000ULL;
+                src.mantissa |= 0x4000000000000000ULL;
             }
             fpu->fp[dst] = src;
             fpu_update_cc(fpu, fpu->fp[dst]);

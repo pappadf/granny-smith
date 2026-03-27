@@ -1,96 +1,13 @@
 # Integration test: SE/30 MacTest Boot
 # Boots SE/30 from MacTest SE/30 floppy disk (800K DiskCopy),
+# IMPORTANT: DON'T ADD LONGPOINTS TOO EARLY IN THE SCRIPT
+# AS THEY HAVE A SIGNIFICANT PERFORMANCE IMPACT
 
 # Enable external loopback cable emulation between SCC ports
 scc-loopback on
 
-# ---- Logpoints: test dispatcher (RUN_ALL_TESTS at $23B3C) ----
-log logpoint 10
-
-# Test entry points (dispatcher calls these wrappers)
-logpoint $24062 ">>> TEST 1: DO_MOUSE (VIA timers)"
-logpoint $2419E ">>> TEST 2: DO_SOUND (SCC loopback)"
-logpoint $24112 ">>> TEST 3: DRAW_TES (display pattern)"
-logpoint $242B6 ">>> TEST 4: DO_SCC_T (SCC baud-rate clock)"
-logpoint $2431C ">>> TEST 5: DO_CLOCK (RTC/PRAM)"
-logpoint $2438A ">>> TEST 6: DO_FPU_T (FPU 68882)"
-logpoint $2441C ">>> TEST 7: DO_PMMU_ (PMMU 68030)"
-logpoint $37F28 ">>> TEST 8: ASC_SOUND (sound chip)"
-logpoint $23EB2 ">>> TEST 9: MONITORT (monitor)"
-logpoint $23F8A ">>> TEST 10: DO_KEYBO (keyboard)"
-logpoint $23D48 ">>> TEST 11: MAIN (ROM test)"
-logpoint $23E1E ">>> TEST 12: DO_VIDCA (video card)"
-logpoint $24496 ">>> TEST 13: DO_SCSI_ (SCSI)"
-
-# Dispatcher loop control
-logpoint $23D2E "--- ALL_DONE: loop iteration complete"
-
-# ---- Logpoints: SCC_TEST_MAIN ($2419E) sub-test calls ----
-logpoint $241DA "  SCC sub-test 1: internal loopback SDLC (JSR $5DA)"
-logpoint $241E2 "  SCC sub-test 2: DCD interrupt timing (JSR $5D2)"
-logpoint $241F2 "  SCC sub-test 3: combined loopback async (JSR $5F2)"
-logpoint $24202 "  SCC result check after sub-tests 1-3"
-logpoint $24208 "  SCC FAIL: showing 'loopback cable missing' dialog"
-logpoint $24210 "  SCC sub-test 4: report result (JSR $5E2)"
-logpoint $24218 "  SCC result check after report"
-logpoint $2421E "  SCC FAIL: showing error-detail dialog (retry path)"
-logpoint $24276 "  SCC sub-test 5: final test / async cross-ch (JSR $5EA)"
-logpoint $24286 "  SCC final result check"
-logpoint $2428C "  SCC FAIL: showing 'loopback cable missing' (final)"
-logpoint $24294 "  SCC cleanup and exit (PASS path)"
-logpoint $242AC "  SCC_TEST_MAIN RTS"
-
-# ---- Logpoints: SCC segment functions ----
-logpoint $2CA94 "    scc_prologue"
-logpoint $2CAA2 "    scc_epilogue"
-logpoint $2CAB8 "    scc_hw_init"
-logpoint $2CB1E "    cross_ch_data_test entry"
-logpoint $2CBA0 "    cross_ch_data_test done"
-logpoint $2CBA4 "    combined_loopback_test entry"
-logpoint $2CC06 "    external_cable_test entry"
-logpoint $2CC7E "    async_cross_ch_phase entry"
-logpoint $2CCC0 "    cts_signal_test entry"
-logpoint $2CCF6 "    cts_signal_test RTS"
-logpoint $2CD70 "    internal_loopback_sdlc entry"
-logpoint $2CDBA "    dcd_interrupt_test entry"
-
-# ---- Logpoints: SCC error codes ----
-logpoint $2CB4E "    DATA ERROR 1: TX buffer not empty timeout"
-logpoint $2CB68 "    DATA ERROR 2: RX timeout (first wait)"
-logpoint $2CB7A "    DATA ERROR 3: RX timeout (second wait)"
-logpoint $2CB86 "    DATA ERROR 4: data mismatch"
-logpoint $2CB98 "    DATA ERROR 5: error flags set"
-logpoint $2CCD8 "    CTS ERROR 1: DTR=1 but CTS=1 (expected 0)"
-logpoint $2CCF2 "    CTS ERROR 2: DTR=0 but CTS=0 (expected 1)"
-
-# ---- Logpoints: show_error_dialog (catches ALL test failures) ----
-# $293C6 = show_error_dialog function entry (resolved from A5+$482 jump table)
-logpoint $293C6 "!!! SHOW_ERROR_DIALOG called (some test FAILED)"
-
-# ---- Logpoints: DRAW_TES internals ($24112) ----
-logpoint $2413A "  DRAW_TES: draw_run (actual test begins)"
-logpoint $24182 "  DRAW_TES: draw_ok (no error)"
-logpoint $24192 "  DRAW_TES: draw_exit (RTS)"
-
-# ---- Logpoints: DO_SCC_T internals ($242B6) ----
-logpoint $242E2 "  DO_SCC_T: scc_run (calling WAITCLKT)"
-logpoint $242FA "  DO_SCC_T: scc_ok (no error)"
-logpoint $2430A "  DO_SCC_T: scc_exit (RTS)"
-
-# ---- Logpoints: DO_CLOCK internals ($2431C) ----
-logpoint $24348 "  DO_CLOCK: clk_run (calling RTC test)"
-logpoint $24368 "  DO_CLOCK: clk_ok (no error)"
-logpoint $24378 "  DO_CLOCK: clk_exit (RTS)"
-
-# ---- Logpoints: DO_MOUSE (VIA tests) ----
-logpoint $240AA "  VIA tests PASS"
-logpoint $2409A "  VIA test error path"
-
 # Boot past Happy Mac through splash screens
-run 490000000
-run 90000000
-run 2000000
-run 190000000
+run 720000000
 
 screenshot --match scsi-warning.png
 
@@ -106,21 +23,47 @@ run 20000000
 screenshot --match main.png
 
 # Start the test
-set-mouse 100 115 --global
-run 2000000
+set-mouse 100 121 --global
+run 20000000
 mouse-button down
 run 2000000
 mouse-button up
 run 20000000
 
+screenshot foo1.png
 # We should be running the VIA tests now
 screenshot --match via.png
 
-# Run enough to let the SCC loopback test and DRAW_TES finish
-run 200000000
+# IMPORTANT: DON'T ADD LONGPOINTS TOO EARLY IN THE SCRIPT
+# AS THEY HAVE A SIGNIFICANT PERFORMANCE IMPACT
 
-# With external loopback enabled, the SCC test should pass the cable check
-# and progress to the final result screen (logic board diagnosis)
-screenshot --match scc-result.png
+# ---- Logpoints: test wrapper entry + exit points ----
+log logpoint 10
+
+logpoint $24062 ">>> TEST 1: DO_VIA_T (VIA timers) ENTER"
+logpoint $2419E ">>> TEST 2: DO_SCC_T (SCC loopback) ENTER"
+logpoint $242AC "<<< TEST 2: DO_SCC_T EXIT (RTS)"
+logpoint $24112 ">>> TEST 3: DO_SOUND (ASC sound hardware) ENTER"
+logpoint $2417A "!!! TEST 3: DO_SOUND error path (PEA error string)"
+logpoint $24194 "<<< TEST 3: DO_SOUND EXIT (RTS)"
+logpoint $242B6 ">>> TEST 4: DO_CLOCK (clock / baud-rate) ENTER"
+logpoint $2431C ">>> TEST 5: DO_FPU_T (68882 FPU) ENTER"
+logpoint $2438A ">>> TEST 6: DO_PMMU_ (68030 PMMU) ENTER"
+logpoint $2441C ">>> TEST 7: DO_SCSI_ (SCSI) ENTER"
+logpoint $24496 ">>> TEST 13: TEST_MEM (memory) ENTER"
+
+# Logpoint at SHOW_ERROR_DIALOG entry
+logpoint $293C6 "*** SHOW_ERROR_DIALOG entered ***"
+
+# Run up to the scsi subtest.
+# The SCSI sub-tests fail due to incomplete SCSI emulation.
+br $2441C
+run 800000000
+
+# run a bit into the scsi test to make sure that screen is updated
+run 10000000
+
+# screen should say that scsi test is running
+screenshot --match scsi.png
 
 quit
