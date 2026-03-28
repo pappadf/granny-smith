@@ -717,9 +717,16 @@ The ADB controller is driven primarily by the port B output callback:
      (or dummy) via `adb_deliver_next_byte_deferred`. A `dummy_sent` guard
      suppresses scheduling during the ROM's data replay phase (see below).
 
-   - **State 3 (IDLE)**: Update vADBInt (bit 3) to reflect whether any device
-     has pending data. Cancel any stale auto-poll event and schedule a new
-     `adb_autopoll_deferred` callback at `ADB_AUTOPOLL_INTERVAL` (~11 ms).
+   - **State 3 (IDLE)**: Cancel stale `adb_shift_complete_deferred` and
+     `adb_deliver_next_byte_deferred` events from the previous transaction.
+     This is necessary because the ROM may transition CMD→IDLE without
+     fetching reply data (aborted Talk during SRQ scan), leaving stale
+     events that would fire spuriously. Detect aborted Talks (reply prepared
+     but never fetched) and re-mark `mouse_data_pending` so the next
+     auto-poll can retry delivery. Update vADBInt (bit 3) to reflect
+     whether any device has pending data. Cancel any stale auto-poll event
+     and schedule a new `adb_autopoll_deferred` callback at
+     `ADB_AUTOPOLL_INTERVAL` (~11 ms).
 
 ### Port B Change Filtering
 
@@ -777,10 +784,12 @@ Idle devices must timeout so the scan advances to the device with actual data.
   port B handler. This ensures the ISR has finished and RTE'd before the next
   IFR_SR fires. Without this delay, the ROM reads uninitialised `ShiftIntResume`
   pointers.
-- Do NOT cancel `adb_shift_complete_deferred` in the IDLE handler. The CMD
-  handler schedules it, and the ROM needs the resulting IFR_SR to fire the
-  completion interrupt. Cancelling it prevents the ROM from clearing the "ADB
-  busy" flag at `$15D(A3)` bit 5, hanging the machine.
+- Cancel `adb_shift_complete_deferred` and `adb_deliver_next_byte_deferred`
+  in the IDLE handler. When the ROM transitions CMD→IDLE without fetching
+  reply data (aborted Talk during SRQ scan), these stale events would fire
+  spuriously and confuse the ROM's ADB state machine. The CMD handler's
+  shift-complete fires IFR_SR before IDLE is reached in normal transactions,
+  so cancelling on IDLE entry is safe and only catches the orphaned case.
 
 ### Checkpointable State
 
@@ -814,6 +823,26 @@ idle state; this fires IFR_SR to restart the ROM's ADB state machine. Fix:
 implemented `adb_autopoll_deferred`, a scheduler callback that prepares a Talk R0
 reply and fires IFR_SR when a device has pending data. See
 `docs/adb-debug-handover.md` for the full investigation history.
+
+**BUG-009** (fixed): Mouse button release (`mouse-button up`) was lost on
+SE/30 when delivered through the ADB hardware path. Two sub-issues:
+
+(a) *Stale events from aborted Talk*: When the ROM transitions CMD→IDLE
+without fetching reply data (aborting a Talk during its SRQ scan), pending
+`adb_shift_complete_deferred` and `adb_deliver_next_byte_deferred` events
+fired spuriously, confusing the ROM's ADB state machine and preventing
+subsequent auto-polls from delivering data.
+
+(b) *Lost data on aborted Talk*: During the ROM's SRQ scan, an explicit Talk R0
+caused `prepare_mouse_reply()` to fill the reply buffer and clear
+`mouse_data_pending`. If the ROM then aborted the Talk (CMD→IDLE without
+reading data), the button-up event was lost — `mouse_data_pending` was false
+and no future auto-poll would deliver it.
+
+Fix: Cancel stale `shift_complete` and `deliver_next_byte` events on IDLE
+entry. Detect aborted Talks (reply prepared but `reply_index == 0` and
+`!dummy_sent`) and re-mark `mouse_data_pending = true` so the next auto-poll
+retries delivery.
 
 **BUG-008** (fixed): Mouse pointer froze on SE/30 after MacTest installed a
 custom ADB mouse handler via `_SetADBInfo`. Two sub-issues:

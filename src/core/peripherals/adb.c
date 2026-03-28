@@ -746,10 +746,28 @@ void adb_port_b_output(adb_t *adb, uint8_t value) {
         break;
 
     case ADB_STATE_IDLE:
-        // Transaction complete: cancel any stale auto-poll and schedule a new
-        // one.  The real ADB transceiver repeats the last Talk R0 command every
-        // ~11 ms while in IDLE state; the deferred callback prepares reply data
-        // and fires IFR_SR to restart the ROM's ADB state machine.
+        // Transaction complete: cancel any stale events from the previous
+        // transaction and schedule a new auto-poll.  The real ADB transceiver
+        // repeats the last Talk R0 command every ~11 ms while in IDLE state.
+        //
+        // Cancel stale shift-complete and byte-delivery events from a previous
+        // CMD or EVEN/ODD phase.  If the ROM transitions CMD→IDLE without
+        // fetching reply data (aborted Talk during SRQ scan), a pending
+        // shift_complete_deferred would fire spuriously and confuse the ROM's
+        // ADB state machine, preventing subsequent auto-polls from working.
+        remove_event(adb->scheduler, &adb_shift_complete_deferred, adb);
+        remove_event(adb->scheduler, &adb_deliver_next_byte_deferred, adb);
+        //
+        // Detect aborted Talk: if a reply was prepared (reply_len > 0) but no
+        // bytes were fetched by the ROM (reply_index == 0 and no dummy sent),
+        // the ROM went CMD→IDLE without reading the data.  This happens during
+        // the SE/30 ROM's SRQ scan when timing doesn't match the ROM's
+        // expectations.  Re-mark mouse data as pending so the next auto-poll
+        // can deliver it.  Without this, a button-up event can be lost forever.
+        if (adb->reply_len > 0 && adb->reply_index == 0 && !adb->dummy_sent) {
+            LOG(2, "IDLE: aborted Talk detected (reply_len=%d), re-marking pending", adb->reply_len);
+            adb->mouse_data_pending = true;
+        }
         remove_event(adb->scheduler, &adb_autopoll_deferred, adb);
         set_adb_int(adb, !has_pending_data(adb));
         scheduler_new_cpu_event(adb->scheduler, &adb_autopoll_deferred, adb, 0, 0, ADB_AUTOPOLL_INTERVAL);
