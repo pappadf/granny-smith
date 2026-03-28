@@ -35,6 +35,104 @@ struct cmd_node {
 
 static struct cmd_node *cmd_head = NULL;
 
+/* --- alias table (IMP-201) ------------------------------------------------ */
+// Static alias table: maps alternative names to primary command names
+struct alias_entry {
+    const char *alias;
+    const char *target;
+};
+
+static const struct alias_entry alias_table[] = {
+    {"regs",       "td"        }, // intuitive name for register dump
+    {"step",       "s"         }, // standard debugger name
+    {"si",         "s"         }, // gdb step-into convention
+    {"break",      "br"        }, // standard debugger name
+    {"bp",         "br"        }, // common abbreviation
+    {"b",          "br"        }, // gdb convention
+    {"speed",      "schedule"  }, // more intuitive than "schedule"
+    {"examine",    "x"         }, // discoverable alias
+    {"mem",        "x"         }, // discoverable alias
+    {"proc-info",  "pi"        }, // self-documenting
+    {"process",    "pi"        }, // alternative discoverable alias
+    {"dis",        "disasm"    }, // short form
+    {"u",          "disasm"    }, // MacsBug convention
+    {"xlat",       "translate" }, // short form for MMU translation
+    {"reg",        "reg"       }, // handled by dedicated cmd_reg
+    {"fpregs",     "fpregs"    }, // FPU register dump
+    {"fpd",        "fpregs"    }, // alias for fpregs
+    {"run-to",     "run-to"    }, // handled by dedicated cmd_run_to
+    {"tbreak",     "tbreak"    }, // temporary breakpoint
+    {"tbr",        "tbreak"    }, // alias for tbreak
+    {"step-over",  "so"        }, // alias for step-over
+    {"next",       "so"        }, // gdb convention for step-over
+    {"finish",     "fin"       }, // alias for finish
+    {"fin",        "fin"       }, // handled by dedicated cmd_fin
+    {"get-global", "get-global"}, // Mac global lookup
+    {"x-global",   "x-global"  }, // Mac global examine
+    {NULL,         NULL        }
+};
+
+// Look up alias; returns target command name or NULL
+static const char *find_alias(const char *name) {
+    for (int i = 0; alias_table[i].alias != NULL; i++) {
+        if (strcmp(alias_table[i].alias, name) == 0)
+            return alias_table[i].target;
+    }
+    return NULL;
+}
+
+/* --- "did you mean?" suggestion (IMP-202) --------------------------------- */
+// Simple edit distance (Levenshtein) for short strings
+static int edit_distance(const char *a, const char *b) {
+    int la = strlen(a), lb = strlen(b);
+    if (la > 20 || lb > 20)
+        return 99; // skip long strings
+    int dp[21][21];
+    for (int i = 0; i <= la; i++)
+        dp[i][0] = i;
+    for (int j = 0; j <= lb; j++)
+        dp[0][j] = j;
+    for (int i = 1; i <= la; i++) {
+        for (int j = 1; j <= lb; j++) {
+            int cost = (tolower((unsigned char)a[i - 1]) != tolower((unsigned char)b[j - 1])) ? 1 : 0;
+            int del = dp[i - 1][j] + 1;
+            int ins = dp[i][j - 1] + 1;
+            int sub = dp[i - 1][j - 1] + cost;
+            dp[i][j] = del < ins ? (del < sub ? del : sub) : (ins < sub ? ins : sub);
+        }
+    }
+    return dp[la][lb];
+}
+
+// Suggest closest matching command or alias for an unknown command name
+static void suggest_command(const char *name) {
+    const char *best = NULL;
+    int best_dist = 4; // max distance threshold for suggestions
+
+    // Search registered commands
+    for (struct cmd_node *c = cmd_head; c; c = c->next) {
+        int d = edit_distance(name, c->name);
+        if (d < best_dist) {
+            best_dist = d;
+            best = c->name;
+        }
+    }
+
+    // Search alias table
+    for (int i = 0; alias_table[i].alias != NULL; i++) {
+        int d = edit_distance(name, alias_table[i].alias);
+        if (d < best_dist) {
+            best_dist = d;
+            best = alias_table[i].alias;
+        }
+    }
+
+    if (best)
+        fprintf(stderr, "Unknown command \"%s\". Did you mean \"%s\"?\n", name, best);
+    else
+        fprintf(stderr, "Unknown command \"%s\". Type \"help\" for a list of commands.\n", name);
+}
+
 /* --- command registry ----------------------------------------------------- */
 static struct cmd_node *find_cmd(const char *name, struct cmd_node **prev_out) {
     struct cmd_node *prev = NULL, *cur = cmd_head;
@@ -180,23 +278,98 @@ static int tokenize(char *line, char *argv[], int max) {
 }
 
 /* --- built-in commands ---------------------------------------------------- */
+
+// Fixed display order for help categories (IMP-307)
+static const char *help_category_order[] = {"Debugger",      "Scheduler", "Testing", "Configuration",
+                                            "Checkpointing", "ROM",       "Logging", "Filesystem",
+                                            "Archive",       "General",   NULL};
+
+// Print commands in a given category
+static void help_print_category(const char *cat) {
+    int printed = 0;
+    for (struct cmd_node *c = cmd_head; c; c = c->next) {
+        if (strcmp(c->category, cat) == 0) {
+            if (!printed) {
+                printf("\n%s:\n", cat);
+                printed = 1;
+            }
+            printf("  %-14s %s\n", c->name, c->synopsis);
+        }
+    }
+}
+
+// Print aliases that point to a given target command
+static void help_print_aliases(const char *target) {
+    int first = 1;
+    for (int i = 0; alias_table[i].alias != NULL; i++) {
+        if (strcmp(alias_table[i].target, target) == 0 && strcmp(alias_table[i].alias, target) != 0) {
+            if (first) {
+                printf("  Aliases: ");
+                first = 0;
+            } else {
+                printf(", ");
+            }
+            printf("%s", alias_table[i].alias);
+        }
+    }
+    if (!first)
+        printf("\n");
+}
+
 static uint64_t cmd_help(int argc, char *argv[]) {
     if (argc == 1) {
-        const char *cat = NULL;
-        for (struct cmd_node *c = cmd_head; c; c = c->next) {
-            if (cat == NULL || strcmp(cat, c->category) != 0) {
-                cat = c->category;
-                printf("\n%s:\n", cat);
+        // Print all commands grouped by category in fixed order (IMP-307)
+        int seen_cats[64] = {0};
+        int n_seen = 0;
+
+        // Print categories in defined order
+        for (int i = 0; help_category_order[i]; i++) {
+            help_print_category(help_category_order[i]);
+            // Mark as seen
+            if (n_seen < 64) {
+                seen_cats[n_seen++] = i; // just track count
             }
-            printf("  %-10s %s\n", c->name, c->synopsis);
+        }
+
+        // Print any remaining categories not in the fixed order
+        for (struct cmd_node *c = cmd_head; c; c = c->next) {
+            int found = 0;
+            for (int i = 0; help_category_order[i]; i++) {
+                if (strcmp(c->category, help_category_order[i]) == 0) {
+                    found = 1;
+                    break;
+                }
+            }
+            if (!found) {
+                // Check if we already printed this category
+                int already = 0;
+                for (struct cmd_node *prev = cmd_head; prev != c; prev = prev->next) {
+                    if (strcmp(prev->category, c->category) == 0) {
+                        already = 1;
+                        break;
+                    }
+                }
+                if (!already)
+                    help_print_category(c->category);
+            }
         }
     } else {
+        // Per-command help (IMP-203)
         for (int i = 1; i < argc; ++i) {
+            // Check direct command first
             struct cmd_node *c = find_cmd(argv[i], NULL);
-            if (c)
+            if (!c) {
+                // Check alias table
+                const char *target = find_alias(argv[i]);
+                if (target)
+                    c = find_cmd(target, NULL);
+            }
+            if (c) {
                 printf("%s — %s\n", c->name, c->synopsis);
-            else
-                printf("unknown command \"%s\"\n", argv[i]);
+                help_print_aliases(c->name);
+            } else {
+                printf("Unknown command \"%s\"\n", argv[i]);
+            }
         }
     }
     return 0;
@@ -393,7 +566,14 @@ uint64_t shell_dispatch(char *line) {
         return 0;
     struct cmd_node *c = find_cmd(argv[0], NULL);
     if (!c) {
-        fprintf(stderr, "unknown command \"%s\"\n", argv[0]);
+        // Check alias table (IMP-201)
+        const char *target = find_alias(argv[0]);
+        if (target)
+            c = find_cmd(target, NULL);
+    }
+    if (!c) {
+        // Suggest closest match (IMP-202)
+        suggest_command(argv[0]);
         return 0;
     }
 

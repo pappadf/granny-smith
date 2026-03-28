@@ -4,7 +4,9 @@
 
 #include "addr_format.h"
 
+#include "cpu.h"
 #include "mmu.h"
+#include "system.h"
 
 #include <ctype.h>
 #include <stdio.h>
@@ -13,6 +15,54 @@
 
 // Default display mode: auto (collapsed unless MMU is active)
 addr_display_mode_t g_addr_display_mode = ADDR_DISPLAY_AUTO;
+
+// Try to resolve a name as a CPU register, returning its value (IMP-407)
+// Returns true if name matched a register, false otherwise.
+static bool resolve_register_address(const char *name, uint32_t *value) {
+    cpu_t *cpu = system_cpu();
+    if (!cpu)
+        return false;
+
+    // Case-insensitive comparisons
+    char lower[8];
+    size_t len = strlen(name);
+    if (len == 0 || len > 7)
+        return false;
+    for (size_t i = 0; i <= len; i++)
+        lower[i] = tolower((unsigned char)name[i]);
+
+    // PC, SP
+    if (strcmp(lower, "pc") == 0) {
+        *value = cpu_get_pc(cpu);
+        return true;
+    }
+    if (strcmp(lower, "sp") == 0) {
+        *value = cpu_get_an(cpu, 7);
+        return true;
+    }
+    if (strcmp(lower, "ssp") == 0) {
+        *value = cpu_get_ssp(cpu);
+        return true;
+    }
+    if (strcmp(lower, "usp") == 0) {
+        *value = cpu_get_usp(cpu);
+        return true;
+    }
+
+    // D0-D7
+    if (lower[0] == 'd' && lower[1] >= '0' && lower[1] <= '7' && lower[2] == '\0') {
+        *value = cpu_get_dn(cpu, lower[1] - '0');
+        return true;
+    }
+
+    // A0-A7
+    if (lower[0] == 'a' && lower[1] >= '0' && lower[1] <= '7' && lower[2] == '\0') {
+        *value = cpu_get_an(cpu, lower[1] - '0');
+        return true;
+    }
+
+    return false;
+}
 
 // Parse an address string with optional L:/P: prefix and $/0x notation.
 // Bare numbers without prefix are parsed as hexadecimal.
@@ -39,9 +89,13 @@ bool parse_address(const char *str, uint32_t *addr_out, addr_space_t *space_out)
     if (*str == '\0')
         return false;
 
-    // Check for $ prefix (Motorola hex)
+    // Check for $ prefix — try register name first, then hex (IMP-407)
     if (*str == '$') {
         str++;
+        // Try to resolve as register name (pc, sp, a0-a7, d0-d7, ssp, usp)
+        if (resolve_register_address(str, addr_out))
+            return true;
+        // Fall through to hex parsing
         char *endptr;
         *addr_out = (uint32_t)strtoul(str, &endptr, 16);
         return *endptr == '\0';

@@ -82,6 +82,8 @@ void debug_cleanup(debug_t *debug);
 
 breakpoint_t *set_breakpoint(debug_t *debug, uint32_t addr, addr_space_t space);
 
+bool delete_breakpoint(debug_t *debug, uint32_t addr, addr_space_t space);
+
 void debugger_disasm_pc(char *buf);
 
 int debugger_disasm(char *buf, uint32_t addr);
@@ -95,5 +97,11 @@ void debug_trace_capture_log(const char *line);
 int debug_trace_is_active(void);
 
 bool debug_active(debug_t *debug);
+
+// Check if prompt/status line is enabled (IMP-308)
+int debug_prompt_enabled(void);
+
+// Check and auto-delete temporary breakpoints (IMP-601)
+void debug_check_tbreak(debug_t *debug, uint32_t pc);
 
 #endif // DEBUG_H

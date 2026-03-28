@@ -374,8 +374,10 @@ static uint64_t cmd_scc_loopback(int argc, char *argv[]) {
         return (uint64_t)-1;
     }
     if (argc < 2) {
-        // query
-        printf("scc-loopback: %s\n", scc_get_external_loopback(global_emulator->scc) ? "on" : "off");
+        // query — print current state with hint (IMP-207)
+        const char *state = scc_get_external_loopback(global_emulator->scc) ? "on" : "off";
+        printf("scc-loopback: %s\n", state);
+        printf("  (Use \"scc-loopback on\" or \"scc-loopback off\" to change.)\n");
         return 0;
     }
     if (strcmp(argv[1], "on") == 0) {
@@ -398,8 +400,10 @@ static uint64_t cmd_scsi_loopback(int argc, char *argv[]) {
         return (uint64_t)-1;
     }
     if (argc < 2) {
-        // query
-        printf("scsi-loopback: %s\n", scsi_get_loopback(global_emulator->scsi) ? "on" : "off");
+        // query — print current state with hint (IMP-207)
+        const char *state = scsi_get_loopback(global_emulator->scsi) ? "on" : "off";
+        printf("scsi-loopback: %s\n", state);
+        printf("  (Use \"scsi-loopback on\" or \"scsi-loopback off\" to change.)\n");
         return 0;
     }
     if (strcmp(argv[1], "on") == 0) {
@@ -431,11 +435,12 @@ void setup_init() {
     image_init(NULL); // No cross-module commands registered here
 
     // Cross-module commands (image+floppy, scsi+image) registered here
-    register_cmd("insert-disk", "Configuration", "Insert a disk image", &cmd_insert_disk);
+    register_cmd("insert-disk", "Configuration", "insert-disk <path> — auto-detect and insert a floppy disk image",
+                 &cmd_insert_disk);
     register_cmd("new-fd", "Configuration", "Create blank 800K floppy file and insert: new-fd <path> [drive:0|1]",
                  &cmd_new_fd);
     register_cmd("insert-fd", "Configuration",
-                 "Insert a disk image: insert-fd [--probe] <path> [drive:0|1] [writable:0|1]", &cmd_insert_fd);
+                 "insert-fd [--probe] <path> [drive:0|1] [writable:0|1] — insert floppy with options", &cmd_insert_fd);
     register_cmd("attach-hd", "Configuration", "Attach (SCSI) hard disk image: attach-hd <path> [scsi-id]",
                  &cmd_attach_hd);
     register_cmd("machine", "Configuration", "machine [<model>] – query or switch machine model", &cmd_machine);

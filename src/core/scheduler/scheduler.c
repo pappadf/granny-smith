@@ -455,9 +455,13 @@ static uint64_t cmd_status(int argc, char *argv[]) {
     (void)argc;
     (void)argv;
     scheduler_t *s = system_scheduler();
-    if (!s)
+    if (!s) {
+        printf("idle\n");
         return 0;
-    return scheduler_is_running(s) ? 1 : 0;
+    }
+    int running = scheduler_is_running(s);
+    printf("%s\n", running ? "running" : "idle");
+    return running ? 1 : 0;
 }
 
 // Shell command to print a readable view of the event queue

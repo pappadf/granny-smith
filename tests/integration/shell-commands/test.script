@@ -1,0 +1,39 @@
+# Integration test: Shell Commands
+# Exercises new debug shell commands without running heavy emulation.
+# Note: commands like "get" and "get-global" return register/memory values
+# as their exit code, so we avoid them here to keep the script exit code 0.
+
+# Run a few instructions to initialize state
+run 100
+
+# Test: td shows register dump (with PC, SR, USP, SSP lines)
+td
+
+# Test: regs alias works (same as td)
+regs
+
+# Test: disasm defaults to PC when no address given
+disasm
+
+# Test: disasm with count only
+disasm 5
+
+# Test: help for specific command
+help td
+
+# Test: fpregs command
+fpregs
+
+# Test: prompt off suppresses status line
+prompt off
+
+# Test: prompt on re-enables it
+prompt on
+
+# Test: logpoint list (should be empty)
+logpoint
+
+# Test: mac-state (returns 0)
+mac-state
+
+quit

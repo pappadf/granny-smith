@@ -59,6 +59,62 @@ static void sigterm_handler(int sig) {
         scheduler_stop(sched);
 }
 
+// PID file path for daemon mode (IMP-103)
+static char g_pid_path[256] = {0};
+
+// Build PID file path for the given port
+static void pid_file_path(int port, char *buf, size_t len) {
+    snprintf(buf, len, "/tmp/gs-headless-%d.pid", port);
+}
+
+// Write PID file for daemon mode
+static void write_pid_file(int port) {
+    pid_file_path(port, g_pid_path, sizeof(g_pid_path));
+    FILE *f = fopen(g_pid_path, "w");
+    if (f) {
+        fprintf(f, "%d\n", getpid());
+        fclose(f);
+    }
+}
+
+// Remove PID file on exit
+static void remove_pid_file(void) {
+    if (g_pid_path[0])
+        unlink(g_pid_path);
+}
+
+// Kill existing daemon on the given port (IMP-103)
+static int kill_existing_daemon(int port) {
+    char path[256];
+    pid_file_path(port, path, sizeof(path));
+    FILE *f = fopen(path, "r");
+    if (!f)
+        return 0; // no PID file, nothing to kill
+    int pid = 0;
+    if (fscanf(f, "%d", &pid) != 1 || pid <= 0) {
+        fclose(f);
+        unlink(path);
+        return 0;
+    }
+    fclose(f);
+    // Check if process exists
+    if (kill(pid, 0) != 0) {
+        unlink(path); // stale PID file
+        return 0;
+    }
+    // Send SIGTERM
+    fprintf(stderr, "Killing existing daemon (PID %d) on port %d\n", pid, port);
+    kill(pid, SIGTERM);
+    // Wait briefly for it to exit
+    for (int i = 0; i < 20; i++) {
+        usleep(100000); // 100ms
+        if (kill(pid, 0) != 0)
+            break;
+    }
+    unlink(path);
+    return 1;
+}
+
 // Print usage information
 static void print_usage(const char *program) {
     printf("Usage: %s rom=<file> [hd=<file>] [fd=<file>] [script=<file>]\n", program);
@@ -76,6 +132,8 @@ static void print_usage(const char *program) {
     printf("  --quiet, -q     Suppress startup messages\n");
     printf("  --daemon        Start in daemon mode (TCP socket interface for AI agents)\n");
     printf("  --port=PORT     TCP port for daemon mode (default: 6800)\n");
+    printf("  --kill          Kill existing daemon on same port before starting\n");
+    printf("  --script-stdin  Read script commands from stdin instead of a file\n");
     printf("\n");
     printf("Examples:\n");
     printf("  %s rom=plus.rom\n", program);
@@ -102,6 +160,18 @@ static uint64_t cmd_quit(int argc, char *argv[]) {
         scheduler_stop(sched);
     }
     return 0;
+}
+
+// Forward declaration for run_script_file
+static int run_script_file(const char *filename);
+
+// Script command — execute a script file inline (IMP-802)
+static uint64_t cmd_script(int argc, char *argv[]) {
+    if (argc < 2) {
+        printf("Usage: script <path>\n");
+        return (uint64_t)-1;
+    }
+    return (uint64_t)run_script_file(argv[1]);
 }
 
 // ============================================================================
@@ -162,7 +232,7 @@ static int daemon_create_listener(int port) {
     addr.sin_port = htons(port);
 
     if (bind(fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
-        perror("daemon: bind");
+        fprintf(stderr, "Error: port %d already in use. Use --port=N to specify a different port.\n", port);
         close(fd);
         return -1;
     }
@@ -176,11 +246,12 @@ static int daemon_create_listener(int port) {
     return fd;
 }
 
-// Handle a single client connection: read command, execute, write output, close
+// Handle a single client connection: read commands, execute, write output, close
+// Supports multiple newline-delimited commands per connection (IMP-104)
 static void daemon_handle_client(int client_fd) {
     g_client_fd = client_fd;
 
-    // Read command from client (up to newline)
+    // Read all available data from client (may contain multiple commands)
     char buf[2048];
     int total = 0;
     while (total < (int)sizeof(buf) - 1) {
@@ -188,9 +259,16 @@ static void daemon_handle_client(int client_fd) {
         if (n <= 0)
             break;
         total += n;
-        // Stop at first newline
-        if (memchr(buf, '\n', total))
-            break;
+        // Stop if we've seen at least one newline and no more data pending
+        if (memchr(buf, '\n', total)) {
+            // Check if more data is available
+            fd_set fds;
+            struct timeval tv = {0, 1000}; // 1ms
+            FD_ZERO(&fds);
+            FD_SET(client_fd, &fds);
+            if (select(client_fd + 1, &fds, NULL, NULL, &tv) <= 0)
+                break;
+        }
     }
 
     if (total <= 0) {
@@ -201,36 +279,45 @@ static void daemon_handle_client(int client_fd) {
 
     buf[total] = '\0';
 
-    // Strip trailing newline/carriage return
-    while (total > 0 && (buf[total - 1] == '\n' || buf[total - 1] == '\r'))
-        buf[--total] = '\0';
-
-    if (total == 0) {
-        close(client_fd);
-        g_client_fd = -1;
-        return;
-    }
-
     // Redirect output to the client socket
     daemon_redirect_output(client_fd);
 
-    // Execute the command
-    shell_dispatch(buf);
+    // Process each newline-delimited command (IMP-104)
+    char *line = buf;
+    while (line && *line && !quit_requested) {
+        // Find end of current command
+        char *eol = strchr(line, '\n');
+        if (eol)
+            *eol = '\0';
 
-    // If the scheduler is running after the command (e.g. "run"), keep pumping
-    // the main loop until execution stops (breakpoint, step complete, etc.)
-    scheduler_t *sched = system_scheduler();
-    while (sched && scheduler_is_running(sched) && !quit_requested) {
-        double now = host_time();
-        scheduler_main_loop(global_emulator, now * 1000.0);
-    }
+        // Strip trailing carriage return
+        size_t len = strlen(line);
+        while (len > 0 && line[len - 1] == '\r')
+            line[--len] = '\0';
 
-    // Emit current instruction as a status line (like the web shell prompt)
-    if (system_is_initialized()) {
-        char disasm_buf[100];
-        debugger_disasm_pc(disasm_buf);
-        if (disasm_buf[0] != '\0')
-            printf("%s\n", disasm_buf);
+        // Skip empty lines
+        if (len > 0) {
+            // Execute the command
+            shell_dispatch(line);
+
+            // If the scheduler is running after the command, pump until done
+            scheduler_t *sched = system_scheduler();
+            while (sched && scheduler_is_running(sched) && !quit_requested) {
+                double now = host_time();
+                scheduler_main_loop(global_emulator, now * 1000.0);
+            }
+
+            // Emit current instruction as a status line (IMP-308)
+            if (system_is_initialized() && debug_prompt_enabled()) {
+                char disasm_buf[100];
+                debugger_disasm_pc(disasm_buf);
+                if (disasm_buf[0] != '\0')
+                    printf("%s\n", disasm_buf);
+            }
+        }
+
+        // Move to next command
+        line = eol ? eol + 1 : NULL;
     }
 
     // Flush and restore output before closing the connection
@@ -244,6 +331,10 @@ static void daemon_handle_client(int client_fd) {
 static void daemon_loop(void) {
     fprintf(stderr, "Daemon listening on 127.0.0.1:%d\n", g_daemon_port);
     fprintf(stderr, "Send commands with: echo \"command\" | nc localhost %d\n", g_daemon_port);
+
+    // Emit READY signal so callers can block-read instead of sleeping (IMP-101)
+    printf("READY\n");
+    fflush(stdout);
 
     while (g_running && !quit_requested) {
         // Use select() so we can check g_running periodically
@@ -309,6 +400,21 @@ static int run_script_file(const char *filename) {
         if (len == 0 || line[0] == '#')
             continue;
 
+        // Handle include directive (IMP-804)
+        if (strncmp(line, "include ", 8) == 0) {
+            const char *inc_path = line + 8;
+            // Skip leading whitespace
+            while (*inc_path == ' ' || *inc_path == '\t')
+                inc_path++;
+            if (*inc_path) {
+                printf("> include %s\n", inc_path);
+                run_script_file(inc_path);
+                if (quit_requested)
+                    break;
+                continue;
+            }
+        }
+
         // Execute the command and capture return code
         printf("> %s\n", line);
         int result = shell_dispatch(line);
@@ -333,6 +439,54 @@ static int run_script_file(const char *filename) {
     }
 
     fclose(f);
+    return 0;
+}
+
+// Run commands from stdin (IMP-803)
+static int run_script_stdin(void) {
+    char line[1024];
+    char last_cmd[1024] = {0};
+    while (fgets(line, sizeof(line), stdin)) {
+        // Strip trailing newline
+        size_t len = strlen(line);
+        while (len > 0 && (line[len - 1] == '\n' || line[len - 1] == '\r'))
+            line[--len] = '\0';
+
+        // Skip comments
+        if (line[0] == '#')
+            continue;
+
+        // Empty line repeats last command (IMP-806)
+        if (len == 0) {
+            if (last_cmd[0] == '\0')
+                continue;
+            strncpy(line, last_cmd, sizeof(line) - 1);
+            line[sizeof(line) - 1] = '\0';
+        } else {
+            strncpy(last_cmd, line, sizeof(last_cmd) - 1);
+            last_cmd[sizeof(last_cmd) - 1] = '\0';
+        }
+
+        // Execute the command and capture return code
+        printf("> %s\n", line);
+        int result = shell_dispatch(line);
+
+        // Non-zero return code indicates error
+        if (result != 0) {
+            g_script_exit_code = result;
+        }
+
+        // Pump scheduler if command started it
+        scheduler_t *sched = system_scheduler();
+        while (sched && scheduler_is_running(sched) && !quit_requested) {
+            double now = host_time();
+            scheduler_main_loop(global_emulator, now * 1000.0);
+        }
+
+        // Check if quit was requested
+        if (quit_requested)
+            break;
+    }
     return 0;
 }
 
@@ -394,6 +548,8 @@ int main(int argc, char *argv[]) {
     const char *speed_mode = "realtime";
     uint64_t max_cycles = 0;
     int quiet = 0;
+    int script_stdin = 0;
+    int kill_daemon = 0;
 
     // Parse arguments
     for (int i = 1; i < argc; i++) {
@@ -413,6 +569,16 @@ int main(int argc, char *argv[]) {
         if (strcmp(arg, "--daemon") == 0) {
             g_daemon_mode = 1;
             quiet = 1; // suppress banner in daemon mode
+            continue;
+        }
+
+        if (strcmp(arg, "--script-stdin") == 0) {
+            script_stdin = 1;
+            continue;
+        }
+
+        if (strcmp(arg, "--kill") == 0) {
+            kill_daemon = 1;
             continue;
         }
 
@@ -483,6 +649,11 @@ int main(int argc, char *argv[]) {
     }
     fclose(f);
 
+    // Line-buffer stdout when output is redirected or piped (IMP-107)
+    if (script_file || !isatty(STDOUT_FILENO)) {
+        setvbuf(stdout, NULL, _IOLBF, 0);
+    }
+
     // Setup signal handlers
     signal(SIGINT, sigint_handler);
     signal(SIGTERM, sigterm_handler);
@@ -506,8 +677,9 @@ int main(int argc, char *argv[]) {
     // Initialize shell and emulator
     shell_init();
 
-    // Register headless-specific quit command
-    register_cmd("quit", "General", "quit - exit the emulator", cmd_quit);
+    // Register headless-specific commands
+    register_cmd("quit", "General", "quit — exit the emulator", cmd_quit);
+    register_cmd("script", "General", "script <path> — execute a script file", cmd_script);
 
     setup_init();
 
@@ -569,6 +741,11 @@ int main(int argc, char *argv[]) {
         run_script_file(script_file);
     }
 
+    // Run commands from stdin if --script-stdin (IMP-803)
+    if (script_stdin) {
+        run_script_stdin();
+    }
+
     // Check if quit was requested during script execution
     if (quit_requested) {
         g_running = 0;
@@ -578,6 +755,10 @@ int main(int argc, char *argv[]) {
     // Daemon mode: listen on TCP socket for commands from AI agents
     // ====================================================================
     if (g_daemon_mode) {
+        // Kill existing daemon on same port if --kill was specified (IMP-103)
+        if (kill_daemon)
+            kill_existing_daemon(g_daemon_port);
+
         g_listen_fd = daemon_create_listener(g_daemon_port);
         if (g_listen_fd < 0) {
             fprintf(stderr, "Error: Failed to create daemon listener on port %d\n", g_daemon_port);
@@ -585,6 +766,11 @@ int main(int argc, char *argv[]) {
             global_emulator = NULL;
             return 1;
         }
+
+        // Write PID file and register cleanup (IMP-103)
+        write_pid_file(g_daemon_port);
+        atexit(remove_pid_file);
+        fprintf(stderr, "Daemon PID: %d\n", getpid());
 
         // In daemon mode, do NOT auto-start the scheduler.
         // The agent sends "run" or "s" commands to control execution.
