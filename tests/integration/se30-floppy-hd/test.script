@@ -9,14 +9,16 @@ run 1000000000
 screenshot --match finder.png
 
 # Bring up the "About..." window
-set-mouse 25 10
+set-mouse 25 10 --global
 run 4000000
 mouse-button down
-run 8000000
-set-mouse 25 30
-run 4000000
+run 20000000
+set-mouse 25 30 --global
+run 40000000
 mouse-button up
-run 90000000
+run 100000000
+
+screenshot foo.png
 
 screenshot --match about.png
 
