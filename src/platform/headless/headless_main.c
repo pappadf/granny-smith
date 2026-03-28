@@ -246,6 +246,30 @@ static int daemon_create_listener(int port) {
     return fd;
 }
 
+// Pump the scheduler until it stops, emitting periodic heartbeat lines (IMP-105).
+// In daemon mode the heartbeat prevents nc -w timeouts; in script/stdin modes it
+// lets callers follow progress. Emits once per second with instruction count.
+static void pump_scheduler_with_heartbeat(void) {
+    scheduler_t *sched = system_scheduler();
+    double last_heartbeat = host_time();
+    uint64_t start_instr = cpu_instr_count();
+
+    while (sched && scheduler_is_running(sched) && !quit_requested) {
+        double now = host_time();
+        scheduler_main_loop(global_emulator, now * 1000.0);
+
+        // Heartbeat: once per second, print progress
+        now = host_time();
+        if (now - last_heartbeat >= 1.0) {
+            uint64_t current = cpu_instr_count();
+            printf("# running... %llu instructions (+%llu since start)\n", (unsigned long long)current,
+                   (unsigned long long)(current - start_instr));
+            fflush(stdout);
+            last_heartbeat = now;
+        }
+    }
+}
+
 // Handle a single client connection: read commands, execute, write output, close
 // Supports multiple newline-delimited commands per connection (IMP-104)
 static void daemon_handle_client(int client_fd) {
@@ -301,11 +325,8 @@ static void daemon_handle_client(int client_fd) {
             shell_dispatch(line);
 
             // If the scheduler is running after the command, pump until done
-            scheduler_t *sched = system_scheduler();
-            while (sched && scheduler_is_running(sched) && !quit_requested) {
-                double now = host_time();
-                scheduler_main_loop(global_emulator, now * 1000.0);
-            }
+            // with periodic heartbeat to prevent TCP client timeouts (IMP-105)
+            pump_scheduler_with_heartbeat();
 
             // Emit current instruction as a status line (IMP-308)
             if (system_is_initialized() && debug_prompt_enabled()) {
@@ -425,12 +446,8 @@ static int run_script_file(const char *filename) {
         }
 
         // If the command started the scheduler (e.g., "run"), pump the main loop
-        // until execution stops. This mimics em_main.c's behavior.
-        scheduler_t *sched = system_scheduler();
-        while (sched && scheduler_is_running(sched) && !quit_requested) {
-            double now = host_time();
-            scheduler_main_loop(global_emulator, now * 1000.0); // Convert seconds to milliseconds
-        }
+        // until execution stops, with periodic heartbeat output (IMP-105).
+        pump_scheduler_with_heartbeat();
 
         // Check if quit was requested
         if (quit_requested) {
@@ -476,12 +493,8 @@ static int run_script_stdin(void) {
             g_script_exit_code = result;
         }
 
-        // Pump scheduler if command started it
-        scheduler_t *sched = system_scheduler();
-        while (sched && scheduler_is_running(sched) && !quit_requested) {
-            double now = host_time();
-            scheduler_main_loop(global_emulator, now * 1000.0);
-        }
+        // Pump scheduler if command started it, with heartbeat (IMP-105)
+        pump_scheduler_with_heartbeat();
 
         // Check if quit was requested
         if (quit_requested)

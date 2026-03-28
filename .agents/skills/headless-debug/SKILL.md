@@ -284,7 +284,10 @@ No need for separate `get pc` or `disasm` calls after stepping.
 # Set breakpoint
 echo "br 0x40802a14" | nc -w 2 localhost 6800
 
-# Run (connection stays open until breakpoint hit)
+# Run (connection stays open until breakpoint hit).
+# The daemon prints heartbeat lines once per second during execution:
+#   # running... 54000000 instructions (+54000000 since start)
+# These keep the connection alive and let you monitor progress.
 echo "run" | nc -w 10 localhost 6800
 
 # Check where we stopped
@@ -355,8 +358,12 @@ echo "log scsi 10" | nc -w 2 localhost 6800
   on stdin, which can cause `nc` to exit before the daemon finishes writing its response.
 - The daemon handles one connection at a time, but supports multiple commands per
   connection (batch mode). Send multi-command batches for efficiency.
-- For long-running commands (`run` without a limit), use `nc -w 10` or higher
-  timeout, and send `stop` from another terminal if needed.
+- During long-running `run` commands, the daemon emits a **heartbeat** line once
+  per second: `# running... 54000000 instructions (+54000000 since start)`.
+  This keeps `nc -w` connections alive and lets you monitor progress. Heartbeat
+  lines start with `#` so they can be filtered with `grep -v '^#'` if needed.
+  For very long runs, use a generous `nc -w` timeout (e.g., `-w 300`) or send
+  `stop` from another terminal if needed.
 - The daemon prints `READY` to stdout after initialization. Block-read for this
   instead of using `sleep` for more reliable startup.
 - ROM files: `tests/data/roms/` contains available ROM images. Use `SE30.rom`
