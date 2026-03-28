@@ -414,22 +414,25 @@ void debug_mac_print_process_info_header(void) {
 
 // Command implementation placed after init to keep file order simple
 
-// Parses an optional --global or --hw flag from argv[1].
-// Returns the index of the first non-flag argument (1 if no flag, 2 if flag found).
+// Scans argv for an optional --global or --hw flag at any position.
+// Removes the flag from argv (shifts subsequent args down) and adjusts argc.
 // Sets *mode to 'g' for --global, 'h' for --hw, 'd' for default (no flag).
-static int parse_mode_flag(int argc, char *argv[], char *mode) {
+static void parse_mode_flag(int *argc, char *argv[], char *mode) {
     *mode = 'd'; // default
-    if (argc >= 2) {
-        if (strcmp(argv[1], "--global") == 0) {
+    for (int i = 1; i < *argc; i++) {
+        if (strcmp(argv[i], "--global") == 0) {
             *mode = 'g';
-            return 2;
-        }
-        if (strcmp(argv[1], "--hw") == 0) {
+        } else if (strcmp(argv[i], "--hw") == 0) {
             *mode = 'h';
-            return 2;
+        } else {
+            continue;
         }
+        // shift remaining args down to remove the flag
+        for (int j = i; j < *argc - 1; j++)
+            argv[j] = argv[j + 1];
+        (*argc)--;
+        return;
     }
-    return 1; // no flag consumed
 }
 
 // Writes absolute cursor position to Mac low-memory globals (MTemp, RawMouse, Mouse, CrsrNew).
@@ -507,9 +510,9 @@ static void set_mouse_default(long x, long y) {
 
 uint64_t cmd_set_mouse(int argc, char *argv[]) {
     char mode;
-    int arg_start = parse_mode_flag(argc, argv, &mode);
+    parse_mode_flag(&argc, argv, &mode);
 
-    if (argc - arg_start < 2) {
+    if (argc < 3) {
         printf("Usage: set-mouse [--global|--hw] x y\n"
                "  (default)  absolute coords, best method per platform\n"
                "  --global   absolute coords via low-memory globals\n"
@@ -519,17 +522,17 @@ uint64_t cmd_set_mouse(int argc, char *argv[]) {
 
     // Parse first coordinate
     char *endp = NULL;
-    long a = strtol(argv[arg_start], &endp, 0);
+    long a = strtol(argv[1], &endp, 0);
     if (*endp != '\0') {
-        printf("Invalid coordinate: %s\n", argv[arg_start]);
+        printf("Invalid coordinate: %s\n", argv[1]);
         return 0;
     }
 
     // Parse second coordinate
     endp = NULL;
-    long b = strtol(argv[arg_start + 1], &endp, 0);
+    long b = strtol(argv[2], &endp, 0);
     if (*endp != '\0') {
-        printf("Invalid coordinate: %s\n", argv[arg_start + 1]);
+        printf("Invalid coordinate: %s\n", argv[2]);
         return 0;
     }
 
@@ -674,17 +677,17 @@ static void mouse_button_global(bool button_down) {
 
 uint64_t cmd_mouse_button(int argc, char *argv[]) {
     char mode;
-    int arg_start = parse_mode_flag(argc, argv, &mode);
+    parse_mode_flag(&argc, argv, &mode);
 
-    if (argc - arg_start < 1) {
+    if (argc < 2) {
         printf("Usage: mouse-button [--global|--hw] up|down\n");
         return 0;
     }
 
     bool button_down;
-    if (strcmp(argv[arg_start], "down") == 0) {
+    if (strcmp(argv[1], "down") == 0) {
         button_down = true;
-    } else if (strcmp(argv[arg_start], "up") == 0) {
+    } else if (strcmp(argv[1], "up") == 0) {
         button_down = false;
     } else {
         printf("Usage: mouse-button [--global|--hw] up|down\n");

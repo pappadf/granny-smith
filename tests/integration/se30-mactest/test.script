@@ -6,20 +6,15 @@
 # Enable external loopback cable emulation between SCC ports
 scc-loopback on
 
+# Enable SCSI loopback test card before boot.
+# MacTest detects the card during startup and skips the SCSI warning dialog.
+scsi-loopback on
+
 # Boot past Happy Mac through splash screens
 run 720000000
 
-screenshot --match scsi-warning.png
-
-# Click "OK" re. the scsi warning
-set-mouse 95 295 --global
-run 20000000
-mouse-button down
-run 2000000
-mouse-button up
-run 20000000
-
-# We should be back on the main screen now
+# With scsi-loopback enabled, MacTest sees the test card and goes
+# directly to the main screen (no SCSI warning dialog).
 screenshot --match main.png
 
 # Start the test
@@ -59,10 +54,7 @@ logpoint $293C6 "*** SHOW_ERROR_DIALOG entered ***"
 br $2441C
 run 800000000
 
-# Enable SCSI loopback test card just before the SCSI diagnostic runs.
-# Must NOT be enabled during boot — the reflected signals confuse the
-# SCSI Manager's normal device scanning.
-scsi-loopback on
+# SCSI loopback is already enabled from boot — no need to enable it here.
 
 # Run the SCSI test to completion
 run 10000000
