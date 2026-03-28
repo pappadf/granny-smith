@@ -24,7 +24,11 @@
 
 // #define LOG(...) log_message(LOG_SCSI, 1, __VA_ARGS__)
 #define LOG(...)
-#define SCSI_TRACE(...)
+// SCSI loopback trace — enable selectively for debugging
+#define SCSI_TRACE(...)                                                                                                \
+    do {                                                                                                               \
+        (void)0;                                                                                                       \
+    } while (0)
 
 // register offsets/definitions based on [5]
 #define CDR   0 // current scsi data register
@@ -42,6 +46,8 @@
 #define RESET 7 // reset parity/interrupt
 
 // initiator command register
+#define ICR_DB  0x01 // assert data bus
+#define ICR_ATN 0x02 // assert ATN
 #define ICR_SEL 0x04
 #define ICR_BSY 0x08
 #define ICR_ACK 0x10
@@ -52,11 +58,13 @@
 // mode register
 #define MR_ARBITRATE 0x01
 #define MR_DMA       0x02
+#define MR_TARGET    0x40 // target mode
 
 // target command register
 #define TCR_CD 0x02
 
 // current scsi bus status register
+#define CSR_SEL 0x02
 #define CSR_IO  0x04
 #define CSR_CD  0x08
 #define CSR_MSG 0x10
@@ -65,6 +73,8 @@
 #define CSR_RST 0x80
 
 // bus and status register (NCR 5380/53C80 BSR, read-only register 5)
+#define BSR_ACK  0x01 // bit 0: ACK sensed on bus
+#define BSR_ATN  0x02 // bit 1: ATN sensed on bus
 #define BSR_PM   0x08 // bit 3: phase match (bus phase matches TCR)
 #define BSR_INT  0x10 // bit 4: interrupt request active (/IRQ asserted)
 #define BSR_DR   0x40 // bit 6: DMA request (data ready for DMA transfer)
@@ -168,6 +178,15 @@ struct scsi {
 
     // Internal end-of-DMA flag (phase changed while DMA active)
     bool end_of_dma;
+
+    // Loopback mode: simulate passive SCSI terminator (test card)
+    bool loopback;
+
+    // CDR pipeline delay: the NCR 5380's bus drivers take 2 register-write
+    // cycles to propagate, so CDR reads the bus state from before the
+    // second-to-last register write.  Modeled as a 3-element ring buffer.
+    uint8_t cdr_pipeline[3];
+    int cdr_idx;
 };
 
 // ============================================================================
@@ -179,11 +198,53 @@ static int cmd_size(uint8_t opcode) {
     return opcode < 0x20 ? 6 : 10;
 }
 
+// Compute the CDR value from the current loopback state.
+// On the Apple Loopback Test Card, control signal pins are wired to specific
+// data bus pins.  CDR also reflects ODR when the data bus driver is active.
+static uint8_t compute_loopback_cdr(scsi_t *scsi) {
+    uint8_t val = 0;
+    // ODR driven onto data bus when DB asserted or in target mode
+    if ((scsi->reg.icr & ICR_DB) || (scsi->reg.mr & MR_TARGET))
+        val |= scsi->reg.odr;
+    // Loopback card wiring: ICR control signal → data bus pin
+    if (scsi->reg.icr & ICR_ATN)
+        val |= 0x40; // ATN → DB6
+    if (scsi->reg.icr & ICR_ACK)
+        val |= 0x20; // ACK → DB5
+    if (scsi->reg.icr & ICR_BSY)
+        val |= 0x04; // BSY → DB2
+    if (scsi->reg.icr & ICR_SEL)
+        val |= 0x10; // SEL → DB4
+    // Target mode: TCR signals → data bus pins
+    if (scsi->reg.mr & MR_TARGET) {
+        if (scsi->reg.tcr & 0x01)
+            val |= 0x80; // I/O → DB7
+        if (scsi->reg.tcr & 0x02)
+            val |= 0x02; // C/D → DB1
+        if (scsi->reg.tcr & 0x04)
+            val |= 0x08; // MSG → DB3
+        if (scsi->reg.tcr & 0x08)
+            val |= 0x01; // REQ → DB0
+    }
+    return val;
+}
+
 // Compute BSR phase-match bit: true when bus phase matches TCR
 static bool scsi_phase_match(scsi_t *scsi) {
     // TCR bits 2:0 = MSG, C/D, I/O  (written by initiator)
     // CSR bits 4:2 = MSG, C/D, I/O  (actual bus signals)
-    return ((scsi->reg.csr >> 2) & 7) == (scsi->reg.tcr & 7);
+    // In loopback mode, CSR is computed dynamically from ICR/TCR — use
+    // the live bus signals rather than the stored csr register.
+    uint8_t csr = scsi->reg.csr;
+    if (scsi->loopback && (scsi->reg.mr & MR_TARGET)) {
+        if (scsi->reg.tcr & 0x01)
+            csr |= CSR_IO;
+        if (scsi->reg.tcr & 0x02)
+            csr |= CSR_CD;
+        if (scsi->reg.tcr & 0x04)
+            csr |= CSR_MSG;
+    }
+    return ((csr >> 2) & 7) == (scsi->reg.tcr & 7);
 }
 
 // Drive VIA2 CB2 (SCSI /IRQ) based on current interrupt conditions.
@@ -424,14 +485,23 @@ static void command_complete(scsi_t *scsi) {
 // On real hardware, a RST pulse forces all devices to release the bus and
 // return to their power-on state.  We reset the controller registers and
 // bus phase so the next arbitration/selection cycle starts cleanly.
+// Per the NCR 5380 Design Manual, RST clears all registers and logic
+// *except* the IRQ interrupt latch and the ASSERT RST bit in ICR.
 static void scsi_reset(scsi_t *scsi) {
     scsi->bus.phase = scsi_bus_free;
     scsi->reg.csr = 0;
     scsi->reg.bsr = 0;
     scsi->reg.mr = 0;
     scsi->reg.tcr = 0;
+    scsi->reg.odr = 0;
+    scsi->reg.cdr = 0;
     scsi->buf.size = 0;
     scsi->end_of_dma = false;
+    // RST generates a non-maskable interrupt that survives the reset
+    scsi->reg.bsr |= BSR_INT;
+    // Flush the CDR pipeline so post-reset reads return $00
+    scsi->cdr_pipeline[0] = scsi->cdr_pipeline[1] = scsi->cdr_pipeline[2] = 0;
+    scsi->cdr_idx = 0;
     scsi_update_drq(scsi);
     scsi_update_irq(scsi);
 }
@@ -449,6 +519,24 @@ static void write_icr(scsi_t *scsi, uint8_t val) {
                bits_cleared, scsi->bus.phase);
 
     scsi->reg.icr = val;
+
+    // In loopback mode (passive terminator), skip bus state-machine
+    // transitions — the diagnostic is testing register I/O, not device
+    // interaction.  RST still resets the chip.
+    // Per the NCR 5380 Design Manual, asserting RST holds the chip in
+    // continuous reset (all registers cleared except IRQ and the RST bit
+    // itself).  When RST is deasserted the chip emerges from reset with
+    // all registers cleared — including the ICR output latch.
+    if (scsi->loopback) {
+        if (bits_set & ICR_RST)
+            scsi_reset(scsi);
+        if (bits_cleared & ICR_RST) {
+            // RST deassertion: final chip reset, ICR latch cleared
+            scsi_reset(scsi);
+            scsi->reg.icr = 0;
+        }
+        return;
+    }
 
     if (bits_set & ICR_RST) {
         SCSI_TRACE("write_icr: RST asserted -> scsi_reset");
@@ -539,6 +627,10 @@ static void write_mr(scsi_t *scsi, uint8_t val) {
 
     scsi->reg.mr = val;
 
+    // In loopback mode, just store the register — no arbitration or DMA
+    if (scsi->loopback)
+        return;
+
     // The ARBITRATE bit is set to start the arbitration process
     if (bits_set & MR_ARBITRATE) {
 
@@ -594,6 +686,15 @@ static uint8_t read_uint8(void *s, uint32_t addr) {
     switch (addr >> 4 & 7) {
     case CDR:
     case IDR: // unclear if we need to make a distinction between CDR/IDR
+        // Loopback: the CDR exhibits a 2-write pipeline delay — it reads
+        // the bus state from before the second-to-last register write.
+        // This models the NCR 5380's internal propagation delay: bus
+        // driver outputs update 2 register-write cycles after the write.
+        if (scsi->loopback) {
+            uint8_t val = scsi->cdr_pipeline[(scsi->cdr_idx + 1) % 3];
+            SCSI_TRACE("  SCSI RD CDR -> 0x%02X (pipeline)", val);
+            return val;
+        }
         if (scsi->bus.phase == scsi_data_in) {
             if (scsi->buf.size != 0) {
                 scsi->reg.cdr = next_byte(scsi);
@@ -607,22 +708,66 @@ static uint8_t read_uint8(void *s, uint32_t addr) {
         return scsi->reg.cdr;
 
     case ICR:
+        SCSI_TRACE("  SCSI RD ICR -> 0x%02X", scsi->reg.icr);
         return scsi->reg.icr;
 
     case MR:
+        SCSI_TRACE("  SCSI RD MR -> 0x%02X", scsi->reg.mr);
         return scsi->reg.mr;
 
     case TCR:
+        SCSI_TRACE("  SCSI RD TCR -> 0x%02X", scsi->reg.tcr);
         return scsi->reg.tcr;
 
     case CSR:
+        // Loopback: CSR reflects initiator-driven signals from ICR and
+        // target-driven signals from TCR, as they appear on the bus
+        if (scsi->loopback) {
+            uint8_t val = scsi->reg.csr;
+            // ICR-driven control signals reflected on the bus
+            if (scsi->reg.icr & ICR_BSY)
+                val |= CSR_BSY;
+            if (scsi->reg.icr & ICR_SEL)
+                val |= CSR_SEL;
+            if (scsi->reg.icr & ICR_RST)
+                val |= CSR_RST;
+            // Target mode: TCR drives I/O, C/D, MSG, REQ onto the bus
+            if (scsi->reg.mr & MR_TARGET) {
+                if (scsi->reg.tcr & 0x01)
+                    val |= CSR_IO;
+                if (scsi->reg.tcr & 0x02)
+                    val |= CSR_CD;
+                if (scsi->reg.tcr & 0x04)
+                    val |= CSR_MSG;
+                if (scsi->reg.tcr & 0x08)
+                    val |= CSR_REQ;
+            }
+            SCSI_TRACE("  SCSI RD CSR -> 0x%02X (icr=0x%02X tcr=0x%02X mr=0x%02X)", val, scsi->reg.icr, scsi->reg.tcr,
+                       scsi->reg.mr);
+            return val;
+        }
         return scsi->reg.csr;
 
     case BSR:
         // Phase match is computed dynamically from CSR vs TCR
+        if (scsi->loopback) {
+            uint8_t val = scsi->reg.bsr;
+            // ICR-driven signals readable via BSR
+            if (scsi->reg.icr & ICR_ACK)
+                val |= BSR_ACK;
+            if (scsi->reg.icr & ICR_ATN)
+                val |= BSR_ATN;
+            val |= (scsi_phase_match(scsi) ? BSR_PM : 0);
+            SCSI_TRACE("  SCSI RD BSR -> 0x%02X (icr=0x%02X bsr_stored=0x%02X pm=%d)", val, scsi->reg.icr,
+                       scsi->reg.bsr, scsi_phase_match(scsi));
+            return val;
+        }
         return scsi->reg.bsr | (scsi_phase_match(scsi) ? BSR_PM : 0);
 
     case RESET:
+        // Reading the Reset Parity/Interrupt register clears BSR bits
+        // 5 (parity error), 4 (IRQ), and 2 (busy error)
+        scsi->reg.bsr &= ~(0x04 | BSR_INT | 0x20);
         return 0xff;
     }
 
@@ -645,6 +790,17 @@ static uint32_t read_uint32(void *scsi, uint32_t addr) {
 // Write a byte to SCSI controller register
 static void write_uint8(void *s, uint32_t addr, uint8_t value) {
     scsi_t *scsi = (scsi_t *)s;
+
+    if (scsi->loopback) {
+        // Advance CDR pipeline: capture current bus state BEFORE this write
+        // takes effect.  The NCR 5380 bus drivers update 2 write-cycles
+        // after the register write, so CDR reads lag by 2 writes.
+        scsi->cdr_pipeline[scsi->cdr_idx] = compute_loopback_cdr(scsi);
+        scsi->cdr_idx = (scsi->cdr_idx + 1) % 3;
+
+        static const char *regnames[] = {"ODR", "ICR", "MR", "TCR", "SER", "DMA", "TDMA", "IDMA"};
+        SCSI_TRACE("  SCSI WR %s (reg %d) = 0x%02X", regnames[addr >> 4 & 7], (int)(addr >> 4 & 7), value);
+    }
 
     // [5]: on 68000, writes are to odd addresses (LDS). On 68030 (SE/30,
     // IIcx), the GLUE uses R/W directly and A0 is irrelevant for direction.
@@ -810,6 +966,16 @@ const memory_interface_t *scsi_get_memory_interface(scsi_t *scsi) {
 // Connect SCSI interrupt outputs to VIA2 (CB2 = /IRQ, CA2 = /DRQ)
 void scsi_set_via(scsi_t *scsi, via_t *via) {
     scsi->via = via;
+}
+
+// Enable or disable loopback mode (passive SCSI terminator / test card)
+void scsi_set_loopback(scsi_t *scsi, bool enable) {
+    scsi->loopback = enable;
+}
+
+// Query whether loopback mode is active
+bool scsi_get_loopback(scsi_t *scsi) {
+    return scsi->loopback;
 }
 
 // ============================================================================

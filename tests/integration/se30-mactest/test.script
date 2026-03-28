@@ -55,15 +55,19 @@ logpoint $24496 ">>> TEST 13: TEST_MEM (memory) ENTER"
 # Logpoint at SHOW_ERROR_DIALOG entry
 logpoint $293C6 "*** SHOW_ERROR_DIALOG entered ***"
 
-# Run up to the scsi subtest.
-# The SCSI sub-tests fail due to incomplete SCSI emulation.
+# Run up to the SCSI subtest entry.
 br $2441C
 run 800000000
 
-# run a bit into the scsi test to make sure that screen is updated
+# Enable SCSI loopback test card just before the SCSI diagnostic runs.
+# Must NOT be enabled during boot — the reflected signals confuse the
+# SCSI Manager's normal device scanning.
+scsi-loopback on
+
+# Run the SCSI test to completion
 run 10000000
 
-# screen should say that scsi test is running
+# Screen should say that the SCSI test succeeded
 screenshot --match scsi.png
 
 quit

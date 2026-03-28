@@ -391,6 +391,30 @@ static uint64_t cmd_scc_loopback(int argc, char *argv[]) {
     return 0;
 }
 
+// Enable/disable/query SCSI loopback test card (passive bus terminator)
+static uint64_t cmd_scsi_loopback(int argc, char *argv[]) {
+    if (!global_emulator || !global_emulator->scsi) {
+        printf("No SCSI controller available\n");
+        return (uint64_t)-1;
+    }
+    if (argc < 2) {
+        // query
+        printf("scsi-loopback: %s\n", scsi_get_loopback(global_emulator->scsi) ? "on" : "off");
+        return 0;
+    }
+    if (strcmp(argv[1], "on") == 0) {
+        scsi_set_loopback(global_emulator->scsi, true);
+        printf("SCSI loopback test card enabled\n");
+    } else if (strcmp(argv[1], "off") == 0) {
+        scsi_set_loopback(global_emulator->scsi, false);
+        printf("SCSI loopback test card disabled\n");
+    } else {
+        printf("Usage: scsi-loopback [on|off]\n");
+        return (uint64_t)-1;
+    }
+    return 0;
+}
+
 // Initialize the setup system and register commands
 void setup_init() {
     printf("Granny Smith build %s\n", get_build_id());
@@ -417,6 +441,8 @@ void setup_init() {
     register_cmd("machine", "Configuration", "machine [<model>] – query or switch machine model", &cmd_machine);
     register_cmd("scc-loopback", "Configuration",
                  "scc-loopback [on|off] – enable/disable external loopback between serial ports", &cmd_scc_loopback);
+    register_cmd("scsi-loopback", "Configuration", "scsi-loopback [on|off] – enable/disable SCSI loopback test card",
+                 &cmd_scsi_loopback);
     register_cmd("load-rom", "ROM", "load-rom [--probe] <filename> – load and identify ROM", (void *)&cmd_load_rom);
 
     // Register checkpoint commands

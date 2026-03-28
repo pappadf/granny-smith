@@ -36,4 +36,12 @@ const memory_interface_t *scsi_get_memory_interface(scsi_t *scsi);
 // On machines without VIA2 (e.g. Plus), this is not called and SCSI is polled.
 void scsi_set_via(scsi_t *scsi, via_t *via);
 
+// Enable/disable SCSI loopback test card (passive bus terminator).
+// When enabled, initiator-driven signals are reflected back through
+// status registers, emulating a connected SCSI diagnostic card.
+void scsi_set_loopback(scsi_t *scsi, bool enable);
+
+// Query whether SCSI loopback mode is active
+bool scsi_get_loopback(scsi_t *scsi);
+
 #endif // SCSI_H
