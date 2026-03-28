@@ -218,23 +218,36 @@ void trigger_vbl(struct config *restrict config) {
     }
 }
 
-// new-fd [drive]
-// Creates a new blank 800K double-sided floppy image in memory and inserts it
-// into the preferred drive if provided (0 or 1) or the first free drive.
+// new-fd [--hd] [drive]
+// Creates a new blank floppy image (800K default, 1440K with --hd) and inserts
+// it into the preferred drive if provided (0 or 1) or the first free drive.
 // Returns 0 on success, -1 on failure.
 uint64_t cmd_new_fd(int argc, char *argv[]) {
     if (argc < 2) {
-        printf("Usage: new-fd <path-to-new-disk> [drive:0|1]\n");
+        printf("Usage: new-fd [--hd] <path-to-new-disk> [drive:0|1]\n");
         return -1;
     }
 
-    const char *path = argv[1];
+    // Parse optional --hd flag for 1.4MB high-density floppy
+    bool high_density = false;
+    int path_arg = 1;
+    if (argc >= 3 && strcmp(argv[1], "--hd") == 0) {
+        high_density = true;
+        path_arg = 2;
+    }
+
+    if (path_arg >= argc) {
+        printf("Usage: new-fd [--hd] <path-to-new-disk> [drive:0|1]\n");
+        return -1;
+    }
+
+    const char *path = argv[path_arg];
     int preferred = -1;
-    if (argc >= 3) {
-        if (argv[2][0] == '0' || argv[2][0] == '1')
-            preferred = argv[2][0] - '0';
+    if (path_arg + 1 < argc) {
+        if (argv[path_arg + 1][0] == '0' || argv[path_arg + 1][0] == '1')
+            preferred = argv[path_arg + 1][0] - '0';
         else {
-            printf("new-fd: invalid drive '%s' (expected 0 or 1)\n", argv[2]);
+            printf("new-fd: invalid drive '%s' (expected 0 or 1)\n", argv[path_arg + 1]);
             return -1;
         }
     }
@@ -262,7 +275,7 @@ uint64_t cmd_new_fd(int argc, char *argv[]) {
         return -1;
     }
 
-    int rc = image_create_blank_floppy(path, false);
+    int rc = image_create_blank_floppy(path, false, high_density);
     if (rc != 0) {
         if (rc == -2)
             printf("new-fd: file already exists: %s (won't overwrite)\n", path);
@@ -281,7 +294,7 @@ uint64_t cmd_new_fd(int argc, char *argv[]) {
     add_image(config, disk);
 
     sys_fd_insert(config, target, disk);
-    printf("new-fd: created %s and inserted into drive %d.\n", path, target);
+    printf("new-fd: created %s (%s) and inserted into drive %d.\n", path, high_density ? "1440K" : "800K", target);
     return 0;
 }
 
@@ -437,7 +450,7 @@ void setup_init() {
     // Cross-module commands (image+floppy, scsi+image) registered here
     register_cmd("insert-disk", "Configuration", "insert-disk <path> — auto-detect and insert a floppy disk image",
                  &cmd_insert_disk);
-    register_cmd("new-fd", "Configuration", "Create blank 800K floppy file and insert: new-fd <path> [drive:0|1]",
+    register_cmd("new-fd", "Configuration", "Create blank floppy and insert: new-fd [--hd] <path> [drive:0|1]",
                  &cmd_new_fd);
     register_cmd("insert-fd", "Configuration",
                  "insert-fd [--probe] <path> [drive:0|1] [writable:0|1] — insert floppy with options", &cmd_insert_fd);

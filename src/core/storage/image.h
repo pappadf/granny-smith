@@ -77,8 +77,8 @@ const char *image_get_filename(const image_t *image);
 // Create an empty disk image file of the specified size (for checkpoint restore)
 int image_create_empty(const char *filename, size_t size);
 
-// Create a new blank 800K double-sided floppy image file
-int image_create_blank_floppy(const char *filename, bool overwrite);
+// Create a new blank floppy image file (800K or 1440K)
+int image_create_blank_floppy(const char *filename, bool overwrite, bool high_density);
 
 // Setup images from config
 extern void setup_images(config_t *config);

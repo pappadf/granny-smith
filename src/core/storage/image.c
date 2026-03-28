@@ -391,7 +391,7 @@ int image_create_empty(const char *filename, size_t size) {
     return 0;
 }
 
-int image_create_blank_floppy(const char *filename, bool overwrite) {
+int image_create_blank_floppy(const char *filename, bool overwrite, bool high_density) {
     if (!filename || !*filename)
         return -1;
     if (!overwrite) {
@@ -404,7 +404,8 @@ int image_create_blank_floppy(const char *filename, bool overwrite) {
     FILE *f = fopen(filename, "wb");
     if (!f)
         return -1;
-    const size_t total = 819200;
+    // 800K (819200) for DD, 1440K (1474560) for HD SuperDrive
+    const size_t total = high_density ? 1440 * 1024 : 800 * 1024;
     uint8_t zeros[4096];
     memset(zeros, 0, sizeof(zeros));
     size_t remaining = total;
