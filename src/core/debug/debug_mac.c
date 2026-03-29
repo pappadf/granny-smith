@@ -11,10 +11,12 @@
 #include "mouse.h"
 #include "scheduler.h"
 #include "shell.h"
+#include "system.h"
 
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 
 // Global variable info (defined in mac_globals_data.c)
 extern struct {
@@ -319,6 +321,7 @@ uint64_t cmd_process_info(int argc, char *argv[]) {
 uint64_t cmd_set_mouse(int argc, char *argv[]);
 uint64_t cmd_trace_mouse(int argc, char *argv[]);
 uint64_t cmd_mouse_button(int argc, char *argv[]);
+uint64_t cmd_key(int argc, char *argv[]);
 
 void debug_mac_init(void) {
     register_cmd("pi", "Debugger", "Print process information", &cmd_process_info);
@@ -337,6 +340,11 @@ void debug_mac_init(void) {
                  "  --global: writes MBState directly (no event posting)\n"
                  "  --hw (default): routes through hardware (ADB/VIA)",
                  cmd_mouse_button);
+    register_cmd("key", "Testing",
+                 "key <name|0xNN>  – inject a key press+release via ADB/keyboard\n"
+                 "  Named keys: return, space, escape, tab, delete, up, down, left, right\n"
+                 "  Or hex ADB keycode: key 0x24",
+                 cmd_key);
 }
 
 // Helper to print process info programmatically (used by assertion handler)
@@ -703,5 +711,68 @@ uint64_t cmd_mouse_button(int argc, char *argv[]) {
     }
 
     printf("mouse-button: %s (%s)\n", button_down ? "down" : "up", mode == 'g' ? "global" : "hw");
+    return 0;
+}
+
+// Resolves a key name to an ADB virtual keycode, or -1 if unknown
+static int resolve_key_name(const char *name) {
+    // Named keys (case-insensitive comparison via manual lowering)
+    if (!strcasecmp(name, "return") || !strcasecmp(name, "enter"))
+        return 0x24;
+    if (!strcasecmp(name, "space"))
+        return 0x31;
+    if (!strcasecmp(name, "escape") || !strcasecmp(name, "esc"))
+        return 0x35;
+    if (!strcasecmp(name, "tab"))
+        return 0x30;
+    if (!strcasecmp(name, "delete") || !strcasecmp(name, "backspace"))
+        return 0x33;
+    if (!strcasecmp(name, "up"))
+        return 0x7E;
+    if (!strcasecmp(name, "down"))
+        return 0x7D;
+    if (!strcasecmp(name, "left"))
+        return 0x7B;
+    if (!strcasecmp(name, "right"))
+        return 0x7C;
+    if (!strcasecmp(name, "command") || !strcasecmp(name, "cmd"))
+        return 0x37;
+    if (!strcasecmp(name, "shift"))
+        return 0x38;
+    if (!strcasecmp(name, "option") || !strcasecmp(name, "alt"))
+        return 0x3A;
+    if (!strcasecmp(name, "control") || !strcasecmp(name, "ctrl"))
+        return 0x36;
+
+    // Hex keycode (e.g., 0x24)
+    if (name[0] == '0' && (name[1] == 'x' || name[1] == 'X')) {
+        char *endp = NULL;
+        long val = strtol(name, &endp, 16);
+        if (*endp == '\0' && val >= 0 && val <= 0x7F)
+            return (int)val;
+    }
+
+    return -1;
+}
+
+// Injects a key press followed by a key release via the keyboard subsystem
+uint64_t cmd_key(int argc, char *argv[]) {
+    if (argc < 2) {
+        printf("Usage: key <name|0xNN>\n"
+               "  Named: return, space, escape, tab, delete, up, down, left, right\n"
+               "  Hex:   key 0x24  (ADB virtual keycode)\n");
+        return 0;
+    }
+
+    int keycode = resolve_key_name(argv[1]);
+    if (keycode < 0) {
+        printf("Unknown key: %s\n", argv[1]);
+        return 0;
+    }
+
+    // Inject key-down then key-up through the keyboard subsystem
+    system_keyboard_update(key_down, keycode);
+    system_keyboard_update(key_up, keycode);
+    printf("key: 0x%02X (%s)\n", keycode, argv[1]);
     return 0;
 }

@@ -123,6 +123,8 @@ static void print_usage(const char *program) {
     printf("  rom=<file>      ROM image file (required)\n");
     printf("  hd=<file>       Hard disk image file (optional, can specify multiple)\n");
     printf("  fd=<file>       Floppy disk image file (optional, can specify multiple)\n");
+    printf("  fd0=<file>      Floppy disk image for drive 0 (internal)\n");
+    printf("  fd1=<file>      Floppy disk image for drive 1 (external)\n");
     printf("  script=<file>   Shell script file to execute at startup (optional)\n");
     printf("\n");
     printf("Options:\n");
@@ -557,6 +559,7 @@ int main(int argc, char *argv[]) {
     int hd_count = 0;
     const char *fd_files[2] = {NULL};
     int fd_count = 0;
+    const char *fd_explicit[2] = {NULL}; // fd0= and fd1= explicit drive assignments
     const char *script_file = NULL;
     const char *speed_mode = "realtime";
     uint64_t max_cycles = 0;
@@ -625,6 +628,16 @@ int main(int argc, char *argv[]) {
             } else {
                 fprintf(stderr, "Warning: Too many HD images, ignoring: %s\n", value);
             }
+            continue;
+        }
+
+        if ((value = parse_arg(arg, "fd0")) != NULL) {
+            fd_explicit[0] = value;
+            continue;
+        }
+
+        if ((value = parse_arg(arg, "fd1")) != NULL) {
+            fd_explicit[1] = value;
             continue;
         }
 
@@ -723,7 +736,21 @@ int main(int argc, char *argv[]) {
             printf("Attached HD[%d]: %s\n", i, hd_files[i]);
     }
 
-    // Insert floppy disk images via shell command
+    // Insert explicit fd0=/fd1= floppy images into their designated drives
+    for (int i = 0; i < 2; i++) {
+        if (!fd_explicit[i])
+            continue;
+        snprintf(cmd, sizeof(cmd), "insert-fd %s %d 1", fd_explicit[i], i);
+        int rc = shell_dispatch(cmd);
+        if (rc == 0) {
+            if (!quiet)
+                printf("Inserted FD[%d]: %s\n", i, fd_explicit[i]);
+        } else {
+            fprintf(stderr, "Warning: Cannot open floppy image for drive %d: %s\n", i, fd_explicit[i]);
+        }
+    }
+
+    // Insert sequential fd= floppy images into first available drives
     for (int i = 0; i < fd_count; i++) {
         snprintf(cmd, sizeof(cmd), "insert-disk %s", fd_files[i]);
         int rc = shell_dispatch(cmd);

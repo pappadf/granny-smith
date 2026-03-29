@@ -8,4 +8,8 @@ TEST_DESC := Boots SE/30 with MacTest SE/30 floppy, dismisses splash, verifies t
 TEST_ROM := roms/SE30.rom
 
 # MacTest SE/30 floppy disk image (800K DiskCopy)
-TEST_ARGS := fd=$(TEST_DATA)/apps/MacTest-SE30.image
+# Boot from drive 1 (external) so drive 0 (internal) is free for floppy test 8
+TEST_ARGS := fd1=$(TEST_DATA)/apps/MacTest-SE30.image
+
+# Ensure tmp dir exists and clean up leftover temp files from previous runs
+TEST_SETUP := mkdir -p se30-mactest/tmp && rm -f se30-mactest/tmp/blank800.dsk

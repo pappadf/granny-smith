@@ -62,4 +62,35 @@ run 10000000
 # Screen should say that the SCSI test succeeded
 screenshot --match scsi.png
 
+# ---- Test 8: Floppy drive test ----
+# After SCSI, we reach test 8 (floppy). MacTest shows a modal dialog:
+# "Insert a blank, unprotected 800K floppy into the internal drive"
+# with an OK button. We insert a blank 800K floppy, then click OK.
+#
+# Boot disk is in drive 1 (external), so drive 0 (internal) is free.
+# This avoids disk-swapping prompts after the blank floppy is inserted.
+
+# Run until the floppy dialog appears
+run 200000000
+
+# Insert a blank 800K floppy into drive 0 (internal, free since boot disk is in drive 1)
+new-fd tmp/blank800.dsk 0
+
+# Give cycles for the floppy insertion to be recognized
+run 20000000
+
+# Position cursor on the OK button using --global (direct MTemp/RawMouse write).
+# Uses the same pattern as the Commencer button click above.
+set-mouse 370 172 --global
+run 20000000
+
+# Click the OK button (hw mode posts a real mouseDown/mouseUp OS event)
+mouse-button down
+run 2000000
+mouse-button up
+run 100000000
+
+# Screenshot to check dialog dismissal
+screenshot floppy-after-click.png
+
 quit
