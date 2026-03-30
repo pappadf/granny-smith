@@ -322,6 +322,7 @@ uint64_t cmd_set_mouse(int argc, char *argv[]);
 uint64_t cmd_trace_mouse(int argc, char *argv[]);
 uint64_t cmd_mouse_button(int argc, char *argv[]);
 uint64_t cmd_key(int argc, char *argv[]);
+uint64_t cmd_post_event(int argc, char *argv[]);
 
 void debug_mac_init(void) {
     register_cmd("pi", "Debugger", "Print process information", &cmd_process_info);
@@ -345,6 +346,11 @@ void debug_mac_init(void) {
                  "  Named keys: return, space, escape, tab, delete, up, down, left, right\n"
                  "  Or hex ADB keycode: key 0x24",
                  cmd_key);
+    register_cmd("post-event", "Testing",
+                 "post-event <what> <message>  – post a Mac OS event\n"
+                 "  what:    event code (1=mouseDown, 7=diskEvt, etc.)\n"
+                 "  message: event message (for diskEvt: drive number 1 or 2)",
+                 cmd_post_event);
 }
 
 // Helper to print process info programmatically (used by assertion handler)
@@ -441,6 +447,79 @@ static void parse_mode_flag(int *argc, char *argv[], char *mode) {
         (*argc)--;
         return;
     }
+}
+
+// ---- MTemp guard ----
+// The SE/30 ROM's ADB mouse handler reads deltas from a shared buffer at
+// ADBBase+$164/$165.  Stale data from keyboard auto-poll can contaminate this
+// buffer, causing the handler to apply phantom deltas to MTemp even when no
+// real mouse movement occurred.  This corrupts the position set by --global
+// mode and causes clicks to miss their target (TrackControl reads the drifted
+// Mouse position during the button-hold tracking loop).
+//
+// The guard is a periodic scheduler event that restores MTemp (and RawMouse,
+// Mouse) to the target position whenever drift is detected.  It runs at ~1 kHz
+// (every 1 ms of emulated time), which is fast enough to correct MTemp before
+// the next VBL (~16 ms) copies it to Mouse.  Activated by set-mouse --global,
+// deactivated by the next set-mouse call or mouse-button up.
+
+#define MOUSE_GUARD_INTERVAL_NS (1 * 1000 * 1000) // 1 ms
+
+static bool mouse_guard_active = false;
+static int16_t mouse_guard_h = 0; // target horizontal (x)
+static int16_t mouse_guard_v = 0; // target vertical (y)
+static bool mouse_guard_registered = false;
+
+static void mouse_guard_tick(void *source, uint64_t data) {
+    (void)source;
+    (void)data;
+    if (!mouse_guard_active)
+        return;
+
+    // Check if MTemp has drifted from the target position
+    int16_t cur_v = (int16_t)memory_read_uint16(0x0828);
+    int16_t cur_h = (int16_t)memory_read_uint16(0x082A);
+
+    if (cur_v != mouse_guard_v || cur_h != mouse_guard_h) {
+        // Restore all position globals to the target
+        memory_write_uint16(0x0828, (uint16_t)mouse_guard_v); // MTemp.v
+        memory_write_uint16(0x082A, (uint16_t)mouse_guard_h); // MTemp.h
+        memory_write_uint16(0x082C, (uint16_t)mouse_guard_v); // RawMouse.v
+        memory_write_uint16(0x082E, (uint16_t)mouse_guard_h); // RawMouse.h
+        memory_write_uint16(0x0830, (uint16_t)mouse_guard_v); // Mouse.v
+        memory_write_uint16(0x0832, (uint16_t)mouse_guard_h); // Mouse.h
+    }
+
+    // Reschedule
+    scheduler_t *sched = system_scheduler();
+    if (sched)
+        scheduler_new_cpu_event(sched, &mouse_guard_tick, NULL, 0, 0, MOUSE_GUARD_INTERVAL_NS);
+}
+
+static void mouse_guard_start(int16_t h, int16_t v) {
+    scheduler_t *sched = system_scheduler();
+    if (!sched)
+        return;
+
+    if (!mouse_guard_registered) {
+        scheduler_new_event_type(sched, "test", NULL, "mouse_guard", &mouse_guard_tick);
+        mouse_guard_registered = true;
+    }
+
+    mouse_guard_h = h;
+    mouse_guard_v = v;
+    mouse_guard_active = true;
+
+    // Remove any existing guard event and schedule a fresh one
+    remove_event(sched, &mouse_guard_tick, NULL);
+    scheduler_new_cpu_event(sched, &mouse_guard_tick, NULL, 0, 0, MOUSE_GUARD_INTERVAL_NS);
+}
+
+static void mouse_guard_stop(void) {
+    mouse_guard_active = false;
+    scheduler_t *sched = system_scheduler();
+    if (sched)
+        remove_event(sched, &mouse_guard_tick, NULL);
 }
 
 // Writes absolute cursor position to Mac low-memory globals (MTemp, RawMouse, Mouse, CrsrNew).
@@ -564,11 +643,18 @@ uint64_t cmd_set_mouse(int argc, char *argv[]) {
     switch (mode) {
     case 'g':
         set_mouse_global(a, b);
+        // Activate the MTemp guard to protect against phantom ADB deltas.
+        // The guard keeps MTemp pinned to (a, b) until the next set-mouse
+        // or mouse-button up, preventing stale ADB buffer data from
+        // shifting the cursor during button-hold tracking loops.
+        mouse_guard_start((int16_t)a, (int16_t)b);
         break;
     case 'h':
+        mouse_guard_stop();
         set_mouse_hw(a, b);
         break;
     default:
+        mouse_guard_stop();
         set_mouse_default(a, b);
         break;
     }
@@ -774,5 +860,104 @@ uint64_t cmd_key(int argc, char *argv[]) {
     system_keyboard_update(key_down, keycode);
     system_keyboard_update(key_up, keycode);
     printf("key: 0x%02X (%s)\n", keycode, argv[1]);
+    return 0;
+}
+
+// ---- post-event implementation ----
+// Posts a Mac OS event by writing directly into the Event Manager queue.
+//
+// The Event Manager queue (EvQHdr at $014A) is a linked list of EvQEl elements.
+// Each EvQEl is 22 bytes:
+//   +0: qLink       (long)  — next element pointer (or 0 for tail)
+//   +4: qType       (word)  — element type (5 = OS event)
+//   +6: evtQWhat    (word)  — event code
+//   +8: evtQMessage (long)  — event message
+//   +12: evtQWhen   (long)  — Ticks at event time
+//   +16: evtQWhere  (long)  — Point (v<<16 | h) from Mouse
+//   +20: evtQModifiers (word) — modifier key state
+//
+// The event buffer is a pre-allocated pool starting after the system globals.
+// We scan the pool for a free element (qType == 0) and link it at the tail.
+
+uint64_t cmd_post_event(int argc, char *argv[]) {
+    if (argc < 3) {
+        printf("Usage: post-event <what> <message>\n"
+               "  Common event codes: 1=mouseDown, 2=mouseUp, 7=diskEvt\n"
+               "  For diskEvt, message = drive number (1=internal, 2=external)\n");
+        return 0;
+    }
+
+    if (!system_memory()) {
+        printf("Error: memory system not initialized.\n");
+        return 0;
+    }
+
+    char *endp = NULL;
+    long what = strtol(argv[1], &endp, 0);
+    if (*endp != '\0') {
+        printf("Invalid event code: %s\n", argv[1]);
+        return 0;
+    }
+
+    endp = NULL;
+    long message = strtol(argv[2], &endp, 0);
+    if (*endp != '\0') {
+        printf("Invalid message: %s\n", argv[2]);
+        return 0;
+    }
+
+    // Read current queue state
+    // EvQHdr at $014A: QFlags(2) + QHead(4) + QTail(4)
+    uint32_t q_head = memory_read_uint32(0x014C);
+    uint32_t q_tail = memory_read_uint32(0x0150);
+    uint32_t ticks = memory_read_uint32(0x016A);
+    uint16_t mouse_v = memory_read_uint16(0x0830);
+    uint16_t mouse_h = memory_read_uint16(0x0832);
+
+    // Find a free EvQEl by scanning from the start of the event buffer.
+    // The event buffer typically starts right after the system globals.
+    // We scan a reasonable range for a free element (qType == 0).
+    // Each EvQEl is 22 bytes.  The pool is typically 20 elements.
+    uint32_t pool_start = q_head ? q_head : q_tail;
+    if (!pool_start) {
+        // Empty queue — try a common event buffer base
+        pool_start = 0x0160;
+    }
+
+    // Walk back from the first known element to find the pool start.
+    // Actually, we can just scan a range near the known elements.
+    // The event pool is usually in the range $0160-$0300.
+    uint32_t free_el = 0;
+    for (uint32_t addr = 0x015C; addr < 0x0400; addr += 22) {
+        uint16_t qtype = memory_read_uint16(addr + 4);
+        if (qtype == 0) {
+            free_el = addr;
+            break;
+        }
+    }
+
+    if (free_el == 0) {
+        printf("post-event: no free event buffer element found.\n");
+        return 0;
+    }
+
+    // Fill in the event record
+    memory_write_uint32(free_el + 0, 0); // qLink = nil
+    memory_write_uint16(free_el + 4, 5); // qType = 5 (OS event)
+    memory_write_uint16(free_el + 6, (uint16_t)(what & 0xFFFF)); // evtQWhat
+    memory_write_uint32(free_el + 8, (uint32_t)message); // evtQMessage
+    memory_write_uint32(free_el + 12, ticks); // evtQWhen
+    memory_write_uint32(free_el + 16, ((uint32_t)mouse_v << 16) | mouse_h); // evtQWhere
+    memory_write_uint16(free_el + 20, 0); // evtQModifiers
+
+    // Link into the queue at the tail
+    if (q_tail != 0) {
+        memory_write_uint32(q_tail, free_el); // old tail's qLink → new element
+    } else {
+        memory_write_uint32(0x014C, free_el); // QHead = new element (was empty)
+    }
+    memory_write_uint32(0x0150, free_el); // QTail = new element
+
+    printf("post-event: what=%ld message=$%lX at el=$%08X\n", what, message, free_el);
     return 0;
 }
