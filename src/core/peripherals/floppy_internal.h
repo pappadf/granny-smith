@@ -37,19 +37,15 @@
 // Time in nanoseconds for motor spin-up (400 ms)
 #define MOTOR_SPINUP_TIME_NS (400ULL * 1000000ULL)
 
-// Number of /STEP status reads that return 0 (active) after each step.
-// Models the ~12 ms step motor settle pulse.  MacTest's floppy test reads
-// /STEP once after each step command and expects 0 (step in progress).
-// The normal ROM boot path polls /STEP until it returns 1 (settled); a
-// small count ensures the pulse is visible but doesn't significantly
-// delay boot seeks.
-// Number of floppy_disk_status() calls that return /STEP=0 after each step.
-// The ROM's /STEP check does 2+ IWM reads that each call floppy_disk_status.
-// MacTest's check at $3AC14 expects /STEP=0 (step in progress) — it verifies
-// the step mechanism actually fired.  The normal boot path polls /STEP until
-// it returns 1 (settled), so extra reads just add a few iterations to the
-// poll loop.  Value 10 provides margin for both paths.
-#define STEP_SETTLE_READS 10
+// Step motor settle time in nanoseconds.  After each step command, /STEP
+// reads as 0 (active) until a scheduler event fires after this period.
+// On real hardware the settle is ~12 ms, but the emulator's averaged CPI
+// model means the ROM's fixed-iteration poll timeout (~2800 instructions
+// on Plus, ~3600 on SE/30) expires before 12 ms of emulated time at low
+// CPI values.  10 µs is long enough for MacTest's post-step /STEP check
+// to see 0 (step in progress) while settling well within the ROM's
+// timeout at any CPI.
+#define STEP_SETTLE_TIME_NS (10ULL * 1000ULL)
 
 // ============================================================================
 // IWM State Control Line Bits
@@ -170,7 +166,7 @@ typedef struct floppy_drive {
     bool _dirtn; // step direction: 0=inward (higher tracks), 1=outward
     bool _motoron; // motor signal (active low: true=off, false=on)
     bool motor_spinning_up; // true during motor spin-up period
-    int step_settle_count; // counts down on /STEP reads; >0 = step in progress
+    int step_settle_count; // >0 while step is settling; cleared by scheduler event
     int track; // current head position (0-79)
     int offset; // byte offset within current track
     int data_side; // latched head side for data I/O

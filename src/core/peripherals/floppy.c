@@ -28,6 +28,9 @@ LOG_USE_CATEGORY_NAME("floppy");
 // Shared IWM Core Functions (used by both IWM and SWIM code paths)
 // ============================================================================
 
+// Forward declaration for step settle scheduler callback
+static void floppy_step_settle_callback(void *src, uint64_t data);
+
 // Returns pointer to the currently selected drive based on IWM SELECT line
 static floppy_drive_t *current_drive(floppy_t *floppy) {
     return &floppy->drives[IWM_SELECT(floppy) ? 1 : 0];
@@ -51,12 +54,8 @@ int floppy_disk_status(floppy_t *floppy, int drv) {
         break;
     case 0x01: // /STEP: zero during step settle period
         desc = "/STEP";
-        if (drive->step_settle_count > 0) {
-            drive->step_settle_count--;
-            ret = 0; // step in progress
-        } else {
-            ret = 1; // step complete
-        }
+        // Event-based: step_settle_count is cleared by scheduler callback
+        ret = (drive->step_settle_count > 0) ? 0 : 1;
         break;
     case 0x02: // /MOTORON: active-low — returns 0 when motor is ON
         desc = "/MOTORON";
@@ -184,10 +183,10 @@ void floppy_disk_control(floppy_t *floppy) {
                         drive->track++;
                 }
                 drive->offset = 0;
-                // /STEP reads as 0 (active) for the next few reads, then
-                // returns to 1 (settled).  This models the ~12ms step motor
-                // settle pulse that MacTest checks to verify the drive works.
-                drive->step_settle_count = STEP_SETTLE_READS;
+                drive->step_settle_count = 1;
+                remove_event_by_data(floppy->scheduler, floppy_step_settle_callback, floppy, (uint64_t)drv);
+                scheduler_new_cpu_event(floppy->scheduler, floppy_step_settle_callback, floppy, (uint64_t)drv, 0,
+                                        STEP_SETTLE_TIME_NS);
                 LOG(3, "Drive %d: Step to track %d (%s)", drv, drive->track, drive->_dirtn ? "outward" : "inward");
             }
         }
@@ -232,21 +231,43 @@ void floppy_motor_spinup_callback(void *source, uint64_t data) {
     LOG(3, "Drive %d: Motor spin-up complete, now ready", drive_index);
 }
 
+// Callback invoked when step settle period completes
+static void floppy_step_settle_callback(void *source, uint64_t data) {
+    floppy_t *floppy = (floppy_t *)source;
+    int drive_index = (int)data;
+
+    if (drive_index < 0 || drive_index >= NUM_DRIVES) {
+        LOG(1, "Drive %d: Invalid drive in step settle callback", drive_index);
+        return;
+    }
+
+    // /STEP now returns 1 (settled)
+    floppy->drives[drive_index].step_settle_count = 0;
+    LOG(5, "Drive %d: Step settle complete", drive_index);
+}
+
 // Updates IWM state lines based on address offset (even=clear, odd=set)
 void floppy_update_iwm_lines(floppy_t *floppy, int offset) {
     // Map offset pair to bit mask: offset/2 gives line index (0-7)
     static const uint8_t line_masks[] = {IWM_LINE_CA0,    IWM_LINE_CA1,    IWM_LINE_CA2, IWM_LINE_LSTRB,
                                          IWM_LINE_ENABLE, IWM_LINE_SELECT, IWM_LINE_Q6,  IWM_LINE_Q7};
 
+    uint8_t prev = floppy->iwm_lines;
     uint8_t mask = line_masks[offset >> 1];
     if (offset & 1)
         floppy->iwm_lines |= mask; // odd offset = set line
     else
         floppy->iwm_lines &= ~mask; // even offset = clear line
 
-    LOG(7, "IWM line: offset=%d", offset);
+    LOG(7, "IWM line: offset=%d prev=0x%02X now=0x%02X", offset, prev, floppy->iwm_lines);
 
-    if (IWM_LSTRB(floppy))
+    // Fire disk control only on LSTRB rising edge (0→1 transition).
+    // On real IWM hardware, commands are latched on the LSTRB strobe,
+    // not when CA lines change while LSTRB is already high.  This
+    // prevents status reads (which set CA lines) from re-triggering
+    // the command that happens to share the same CA pattern.
+    bool lstrb_rose = IWM_LSTRB(floppy) && !(prev & IWM_LINE_LSTRB);
+    if (lstrb_rose)
         floppy_disk_control(floppy);
 }
 
@@ -461,6 +482,7 @@ floppy_t *floppy_init(int type, memory_map_t *map, struct scheduler *scheduler, 
         scheduler_new_event_type(scheduler, "floppy", floppy, "motor_spinup", &floppy_motor_spinup_callback);
         floppy_iwm_setup(floppy, map);
     }
+    scheduler_new_event_type(scheduler, "floppy", floppy, "step_settle", &floppy_step_settle_callback);
 
     if (checkpoint) {
         LOG(3, "Floppy: Restoring from checkpoint");

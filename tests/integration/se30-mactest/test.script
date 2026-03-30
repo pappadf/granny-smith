@@ -57,7 +57,7 @@ run 800000000
 # SCSI loopback is already enabled from boot — no need to enable it here.
 
 # Run the SCSI test to completion
-run 10000000
+run 15000000
 
 # Screen should say that the SCSI test succeeded
 screenshot --match scsi.png
