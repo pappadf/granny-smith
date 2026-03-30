@@ -75,6 +75,13 @@ void remove_event_by_data(scheduler_t *sched, event_callback_t callback, void *s
     (void)data;
 }
 
+// Keyboard stub for key injection command
+typedef enum { key_up, key_down } key_event_t;
+void system_keyboard_update(key_event_t event, int key) {
+    (void)event;
+    (void)key;
+}
+
 // Mouse stub for automation command
 void system_mouse_update(bool button_down, int dx, int dy) {
     (void)button_down;
