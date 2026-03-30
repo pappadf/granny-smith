@@ -45,17 +45,22 @@ int floppy_disk_status(floppy_t *floppy, int drv) {
     const char *desc = "unknown";
 
     switch (key) {
-    case 0x00: // /DIRTN
+    case 0x00: // /DIRTN: active-low — returns 0 when stepping inward
         desc = "/DIRTN";
-        ret = !drive->_dirtn;
+        ret = drive->_dirtn; // _dirtn: false=inward → 0, true=outward → 1
         break;
-    case 0x01: // /STEP
+    case 0x01: // /STEP: zero during step settle period
         desc = "/STEP";
-        ret = 1;
+        if (drive->step_settle_count > 0) {
+            drive->step_settle_count--;
+            ret = 0; // step in progress
+        } else {
+            ret = 1; // step complete
+        }
         break;
-    case 0x02: // /MOTORON: when low, motor is turned on
+    case 0x02: // /MOTORON: active-low — returns 0 when motor is ON
         desc = "/MOTORON";
-        ret = !drive->_motoron;
+        ret = drive->_motoron; // _motoron: false=on → 0, true=off → 1
         break;
     case 0x03: // EJECT
         desc = "EJECT";
@@ -179,6 +184,10 @@ void floppy_disk_control(floppy_t *floppy) {
                         drive->track++;
                 }
                 drive->offset = 0;
+                // /STEP reads as 0 (active) for the next few reads, then
+                // returns to 1 (settled).  This models the ~12ms step motor
+                // settle pulse that MacTest checks to verify the drive works.
+                drive->step_settle_count = STEP_SETTLE_READS;
                 LOG(3, "Drive %d: Step to track %d (%s)", drv, drive->track, drive->_dirtn ? "outward" : "inward");
             }
         }
@@ -406,7 +415,7 @@ int floppy_insert(floppy_t *floppy, int drive, image_t *disk) {
 
     // SWIM: simulate disk insertion delay
     if (floppy->type == FLOPPY_TYPE_SWIM)
-        floppy->cstin_delay[drive] = 2;
+        floppy->cstin_delay[drive] = 0;
 
     current_drive(floppy)->offset = 0;
     const char *name = disk ? image_get_filename(disk) : NULL;

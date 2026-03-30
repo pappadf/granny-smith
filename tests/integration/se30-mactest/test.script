@@ -63,34 +63,59 @@ run 10000000
 screenshot --match scsi.png
 
 # ---- Test 8: Floppy drive test ----
-# After SCSI, we reach test 8 (floppy). MacTest shows a modal dialog:
-# "Insert a blank, unprotected 800K floppy into the internal drive"
-# with an OK button. We insert a blank 800K floppy, then click OK.
+# After SCSI, MacTest runs the floppy test (TEST_PERFO via $6A2(A5) → $37F28).
+# It ejects the boot disk from drive 0 during a head-seek test, then shows a
+# dialog: "Insert a blank, unprotected 800K floppy into the internal drive."
 #
-# Boot disk is in drive 1 (external), so drive 0 (internal) is free.
-# This avoids disk-swapping prompts after the blank floppy is inserted.
+# The floppy test calls WAITFORL ($383E8) which shows ALRT $898 ("Insert
+# blank 800K floppy into internal drive") via JSR $592(A5) at $3846E.
+# After the user clicks OK, the status re-check is at $3849C.
+#
+# We must insert the blank floppy AFTER the alert returns (click OK) but
+# BEFORE the status check.  Using a breakpoint at $3849C ensures the blank
+# disk is in the drive when CSTIN is read.  If we insert too early, the ROM's
+# .Sony VBL task auto-mounts, fails (blank=unreadable), and ejects the disk.
 
-# Run until the floppy dialog appears
+# Run until the floppy dialog appears (boot disk is ejected during this phase)
 run 200000000
 
-# Insert a blank 800K floppy into drive 0 (internal, free since boot disk is in drive 1)
+# Click the OK button on the "insert floppy" dialog
+set-mouse 370 185 --global
+run 5000000
+mouse-button down
+run 5000000
+mouse-button up
+
+# Break at the status re-check inside WAITFORL ($3849C = JSR read_disk_status)
+br $3849C
+run 50000000
+
+# Insert the blank floppy NOW — alert has returned, status check is imminent
 new-fd tmp/blank800.dsk 0
 
-# Give cycles for the floppy insertion to be recognized
-run 20000000
+# Continue: WAITFORL reads disk status and finds the freshly inserted floppy.
+# MacTest formats/tests the blank floppy, then asks to re-insert the boot disk.
+run 200000000
 
-# Position cursor on the OK button using --global (direct MTemp/RawMouse write).
-# Uses the same pattern as the Commencer button click above.
-set-mouse 370 172 --global
-run 20000000
+# Verify floppy test progressed: should see "Insérez le disque: MacTest SE/30"
+screenshot foo.png
+screenshot --match floppy-reinsert.png
 
-# Click the OK button (hw mode posts a real mouseDown/mouseUp OS event)
-mouse-button down
-run 2000000
-mouse-button up
-run 100000000
+# Re-insert the MacTest boot disk into drive 0.
+# The disk-request dialog is a Mac OS system dialog that auto-dismisses when
+# the volume is mounted.  The .Sony VBL task has stopped polling, so we post
+# a synthetic diskEvt (event code 7, Mac drive 1) to trigger the mount.
+insert-fd ../../data/apps/MacTest-SE30.image 0
+post-event 7 1
+run 200000000
 
-# Screenshot to check dialog dismissal
+# MacTest shows floppy test result (error expected: blank floppy = "bad media").
+# This is MacTest's custom error dialog (via $482(A5)).  Dismiss with Return key.
 screenshot floppy-after-click.png
+key return
+run 200000000
+
+# MacTest should loop back to "Commencer" or continue with TEST_MEM
+screenshot floppy-final.png
 
 quit
