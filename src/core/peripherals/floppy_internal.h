@@ -47,6 +47,10 @@
 // timeout at any CPI.
 #define STEP_SETTLE_TIME_NS (10ULL * 1000ULL)
 
+// Motor speed settle time after stepping across a speed-zone boundary.
+// /READY deasserts until the motor reaches the new target RPM.
+#define SPEED_SETTLE_TIME_NS (1ULL * 1000000ULL)
+
 // ============================================================================
 // IWM State Control Line Bits
 // ============================================================================
@@ -166,6 +170,7 @@ typedef struct floppy_drive {
     bool _dirtn; // step direction: 0=inward (higher tracks), 1=outward
     bool _motoron; // motor signal (active low: true=off, false=on)
     bool motor_spinning_up; // true during motor spin-up period
+    bool speed_settling; // true while motor adjusts RPM after zone change
     int step_settle_count; // >0 while step is settling; cleared by scheduler event
     int track; // current head position (0-79)
     int offset; // byte offset within current track

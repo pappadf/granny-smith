@@ -28,8 +28,9 @@ LOG_USE_CATEGORY_NAME("floppy");
 // Shared IWM Core Functions (used by both IWM and SWIM code paths)
 // ============================================================================
 
-// Forward declaration for step settle scheduler callback
+// Forward declarations for scheduler callbacks
 static void floppy_step_settle_callback(void *src, uint64_t data);
+static void floppy_speed_settle_callback(void *src, uint64_t data);
 
 // Returns pointer to the currently selected drive based on IWM SELECT line
 static floppy_drive_t *current_drive(floppy_t *floppy) {
@@ -125,7 +126,7 @@ int floppy_disk_status(floppy_t *floppy, int drv) {
         break;
     case 0x0E: // /READY: zero when ready
         desc = "/READY";
-        ret = drive->motor_spinning_up ? 1 : 0;
+        ret = (drive->motor_spinning_up || drive->speed_settling) ? 1 : 0;
         break;
     case 0x0F: // NEWINTF
         desc = "NEWINTF";
@@ -174,6 +175,7 @@ void floppy_disk_control(floppy_t *floppy) {
         } else {
             // STEP (CA0=1, CA1=0, CA2=0)
             if (!IWM_CA2(floppy)) {
+                int old_rpm = iwm_track_rpm(drive->track);
                 // _dirtn: 0=inward (higher tracks), 1=outward (lower tracks)
                 if (drive->_dirtn) {
                     if (drive->track > 0)
@@ -187,6 +189,13 @@ void floppy_disk_control(floppy_t *floppy) {
                 remove_event_by_data(floppy->scheduler, floppy_step_settle_callback, floppy, (uint64_t)drv);
                 scheduler_new_cpu_event(floppy->scheduler, floppy_step_settle_callback, floppy, (uint64_t)drv, 0,
                                         STEP_SETTLE_TIME_NS);
+                // Zone-crossing step: motor must change RPM, /READY deasserts
+                if (old_rpm != iwm_track_rpm(drive->track)) {
+                    drive->speed_settling = true;
+                    remove_event_by_data(floppy->scheduler, floppy_speed_settle_callback, floppy, (uint64_t)drv);
+                    scheduler_new_cpu_event(floppy->scheduler, floppy_speed_settle_callback, floppy, (uint64_t)drv, 0,
+                                            SPEED_SETTLE_TIME_NS);
+                }
                 LOG(3, "Drive %d: Step to track %d (%s)", drv, drive->track, drive->_dirtn ? "outward" : "inward");
             }
         }
@@ -244,6 +253,18 @@ static void floppy_step_settle_callback(void *source, uint64_t data) {
     // /STEP now returns 1 (settled)
     floppy->drives[drive_index].step_settle_count = 0;
     LOG(5, "Drive %d: Step settle complete", drive_index);
+}
+
+// Callback invoked when motor speed settle period completes after a zone change
+static void floppy_speed_settle_callback(void *source, uint64_t data) {
+    floppy_t *floppy = (floppy_t *)source;
+    int drive_index = (int)data;
+
+    if (drive_index < 0 || drive_index >= NUM_DRIVES)
+        return;
+
+    floppy->drives[drive_index].speed_settling = false;
+    LOG(5, "Drive %d: Speed settle complete", drive_index);
 }
 
 // Updates IWM state lines based on address offset (even=clear, odd=set)
@@ -483,6 +504,7 @@ floppy_t *floppy_init(int type, memory_map_t *map, struct scheduler *scheduler, 
         floppy_iwm_setup(floppy, map);
     }
     scheduler_new_event_type(scheduler, "floppy", floppy, "step_settle", &floppy_step_settle_callback);
+    scheduler_new_event_type(scheduler, "floppy", floppy, "speed_settle", &floppy_speed_settle_callback);
 
     if (checkpoint) {
         LOG(3, "Floppy: Restoring from checkpoint");
