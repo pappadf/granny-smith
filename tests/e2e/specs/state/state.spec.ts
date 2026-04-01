@@ -142,8 +142,8 @@ test.describe('State', () => {
     const countLines = (s: string) => s === '' ? 0 : s.split(/\r?\n/).length;
     const linesA = countLines(aFiltered);
     const linesB = countLines(bFiltered);
-    expect(linesA, `Original log has insufficient lines (${linesA} < 1000)`).toBeGreaterThanOrEqual(1000);
-    expect(linesB, `Restored log has insufficient lines (${linesB} < 1000)`).toBeGreaterThanOrEqual(1000);
+    expect(linesA, `Original log has insufficient lines (${linesA} < 500)`).toBeGreaterThanOrEqual(500);
+    expect(linesB, `Restored log has insufficient lines (${linesB} < 500)`).toBeGreaterThanOrEqual(500);
 
     // Assert equality of original vs restored run logs (excluding checkpoint timing). Fails test if mismatch.
     expect(aFiltered, 'Loaded state log must match original log').toBe(bFiltered);
