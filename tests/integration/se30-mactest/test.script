@@ -109,13 +109,7 @@ insert-fd ../../data/apps/MacTest-SE30.image 0
 post-event 7 1
 run 200000000
 
-# MacTest shows floppy test result (error expected: blank floppy = "bad media").
-# This is MacTest's custom error dialog (via $482(A5)).  Dismiss with Return key.
-screenshot floppy-after-click.png
-key return
-run 200000000
-
-# MacTest should loop back to "Commencer" or continue with TEST_MEM
-screenshot floppy-final.png
+# MacTest shows floppy test result = error
+screenshot --match floppy-error.png
 
 quit
