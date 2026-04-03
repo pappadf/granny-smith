@@ -509,6 +509,17 @@ static void se30_set_rom_overlay(config_t *cfg, bool overlay) {
 // I/O dispatcher
 // ============================================================
 
+// I/O bus cycle penalties: extra CPU clocks per byte beyond the CPI baseline.
+// The GLUE ASIC holds DSACK during I/O accesses, stalling the 68030.
+// VIA penalty dominates due to E-clock synchronization (~19-23 avg vs 4 for RAM).
+// Set to 0 to disable penalties (preserves existing timing behaviour).
+// See local/gs-docs/notes/SE30-timing.md for derivation.
+#define SE30_VIA_IO_PENALTY  0 // VIA E-clock sync: ~19-23 avg, minus ~4 baseline
+#define SE30_SCC_IO_PENALTY  0 // SCC with own 3.672 MHz PCLK: ~6 total, minus ~4
+#define SE30_SCSI_IO_PENALTY 0 // NCR 5380: ~6 total, minus ~4
+#define SE30_ASC_IO_PENALTY  0 // Apple Sound Chip: ~6 total, minus ~4
+#define SE30_SWIM_IO_PENALTY 0 // Floppy controller: ~6 total, minus ~4
+
 // Read a byte from the SE/30 I/O space.
 // Masks address with $1FFFF for GLUE mirroring, then dispatches to device.
 static uint8_t se30_io_read_uint8(void *ctx, uint32_t addr) {
@@ -520,26 +531,40 @@ static uint8_t se30_io_read_uint8(void *ctx, uint32_t addr) {
 
     // VIA chips are 8-bit devices on even byte lanes only;
     // odd-address reads return bus float ($FF)
-    if (offset < IO_VIA1_END)
+    if (offset < IO_VIA1_END) {
+        memory_io_penalty(SE30_VIA_IO_PENALTY);
         return (offset & 1) ? 0xFF : se30->via1_iface->read_uint8(cfg->via1, offset - IO_VIA1);
-    if (offset < IO_VIA2_END)
+    }
+    if (offset < IO_VIA2_END) {
+        memory_io_penalty(SE30_VIA_IO_PENALTY);
         return (offset & 1) ? 0xFF : se30->via2_iface->read_uint8(cfg->via2, offset - IO_VIA2);
-    if (offset < IO_SCC_END)
+    }
+    if (offset < IO_SCC_END) {
+        memory_io_penalty(SE30_SCC_IO_PENALTY);
         return se30->scc_iface->read_uint8(cfg->scc, offset - IO_SCC);
+    }
     if (offset < IO_SCSI_DRQ_END) {
         // Pseudo-DMA: 8-bit read from SCSI data register with DRQ
+        memory_io_penalty(SE30_SCSI_IO_PENALTY);
         return se30->scsi_iface->read_uint8(cfg->scsi, 0);
     }
-    if (offset >= IO_SCSI_REG && offset < IO_SCSI_REG_END)
+    if (offset >= IO_SCSI_REG && offset < IO_SCSI_REG_END) {
+        memory_io_penalty(SE30_SCSI_IO_PENALTY);
         return se30->scsi_iface->read_uint8(cfg->scsi, offset - IO_SCSI_REG);
+    }
     if (offset >= IO_SCSI_BLIND && offset < IO_SCSI_BLIND_END) {
         // Blind pseudo-DMA: 8-bit read without DRQ check
+        memory_io_penalty(SE30_SCSI_IO_PENALTY);
         return se30->scsi_iface->read_uint8(cfg->scsi, 0);
     }
-    if (offset >= IO_ASC && offset < IO_ASC_END)
+    if (offset >= IO_ASC && offset < IO_ASC_END) {
+        memory_io_penalty(SE30_ASC_IO_PENALTY);
         return se30->asc_iface->read_uint8(se30->asc, offset - IO_ASC);
-    if (offset >= IO_SWIM && offset < IO_SWIM_END)
+    }
+    if (offset >= IO_SWIM && offset < IO_SWIM_END) {
+        memory_io_penalty(SE30_SWIM_IO_PENALTY);
         return se30->floppy_iface->read_uint8(se30->floppy, offset - IO_SWIM);
+    }
 
     return 0; // unmapped I/O space
 }
@@ -563,6 +588,7 @@ static uint32_t se30_io_read_uint32(void *ctx, uint32_t addr) {
 
     // SCSI pseudo-DMA: coalesce 4 byte reads from data register
     if (offset >= IO_SCSI_DRQ && offset < IO_SCSI_DRQ_END) {
+        memory_io_penalty(SE30_SCSI_IO_PENALTY * 4); // 4 sequential 8-bit bus cycles
         uint8_t b0 = se30->scsi_iface->read_uint8(cfg->scsi, 0);
         uint8_t b1 = se30->scsi_iface->read_uint8(cfg->scsi, 0);
         uint8_t b2 = se30->scsi_iface->read_uint8(cfg->scsi, 0);
@@ -571,6 +597,7 @@ static uint32_t se30_io_read_uint32(void *ctx, uint32_t addr) {
     }
     // Blind pseudo-DMA: same coalescing without DRQ check
     if (offset >= IO_SCSI_BLIND && offset < IO_SCSI_BLIND_END) {
+        memory_io_penalty(SE30_SCSI_IO_PENALTY * 4); // 4 sequential 8-bit bus cycles
         uint8_t b0 = se30->scsi_iface->read_uint8(cfg->scsi, 0);
         uint8_t b1 = se30->scsi_iface->read_uint8(cfg->scsi, 0);
         uint8_t b2 = se30->scsi_iface->read_uint8(cfg->scsi, 0);
@@ -594,38 +621,46 @@ static void se30_io_write_uint8(void *ctx, uint32_t addr, uint8_t value) {
     // VIA chips are 8-bit devices on even byte lanes only;
     // odd-address writes are ignored (no device on that lane)
     if (offset < IO_VIA1_END) {
+        memory_io_penalty(SE30_VIA_IO_PENALTY);
         if (!(offset & 1))
             se30->via1_iface->write_uint8(cfg->via1, offset - IO_VIA1, value);
         return;
     }
     if (offset < IO_VIA2_END) {
+        memory_io_penalty(SE30_VIA_IO_PENALTY);
         if (!(offset & 1))
             se30->via2_iface->write_uint8(cfg->via2, offset - IO_VIA2, value);
         return;
     }
     if (offset < IO_SCC_END) {
+        memory_io_penalty(SE30_SCC_IO_PENALTY);
         se30->scc_iface->write_uint8(cfg->scc, offset - IO_SCC, value);
         return;
     }
     if (offset < IO_SCSI_DRQ_END) {
         // Pseudo-DMA: 8-bit write to SCSI data register (DMA mode: bit 0x200 + odd)
+        memory_io_penalty(SE30_SCSI_IO_PENALTY);
         se30->scsi_iface->write_uint8(cfg->scsi, 0x201, value);
         return;
     }
     if (offset >= IO_SCSI_REG && offset < IO_SCSI_REG_END) {
+        memory_io_penalty(SE30_SCSI_IO_PENALTY);
         se30->scsi_iface->write_uint8(cfg->scsi, offset - IO_SCSI_REG, value);
         return;
     }
     if (offset >= IO_SCSI_BLIND && offset < IO_SCSI_BLIND_END) {
         // Blind pseudo-DMA write
+        memory_io_penalty(SE30_SCSI_IO_PENALTY);
         se30->scsi_iface->write_uint8(cfg->scsi, 0x201, value);
         return;
     }
     if (offset >= IO_ASC && offset < IO_ASC_END) {
+        memory_io_penalty(SE30_ASC_IO_PENALTY);
         se30->asc_iface->write_uint8(se30->asc, offset - IO_ASC, value);
         return;
     }
     if (offset >= IO_SWIM && offset < IO_SWIM_END) {
+        memory_io_penalty(SE30_SWIM_IO_PENALTY);
         se30->floppy_iface->write_uint8(se30->floppy, offset - IO_SWIM, value);
         return;
     }
@@ -649,6 +684,7 @@ static void se30_io_write_uint32(void *ctx, uint32_t addr, uint32_t value) {
 
     // SCSI pseudo-DMA: split longword into 4 byte writes (DMA mode)
     if (offset >= IO_SCSI_DRQ && offset < IO_SCSI_DRQ_END) {
+        memory_io_penalty(SE30_SCSI_IO_PENALTY * 4); // 4 sequential 8-bit bus cycles
         se30->scsi_iface->write_uint8(cfg->scsi, 0x201, (uint8_t)(value >> 24));
         se30->scsi_iface->write_uint8(cfg->scsi, 0x201, (uint8_t)(value >> 16));
         se30->scsi_iface->write_uint8(cfg->scsi, 0x201, (uint8_t)(value >> 8));
@@ -657,6 +693,7 @@ static void se30_io_write_uint32(void *ctx, uint32_t addr, uint32_t value) {
     }
     // Blind pseudo-DMA write
     if (offset >= IO_SCSI_BLIND && offset < IO_SCSI_BLIND_END) {
+        memory_io_penalty(SE30_SCSI_IO_PENALTY * 4); // 4 sequential 8-bit bus cycles
         se30->scsi_iface->write_uint8(cfg->scsi, 0x201, (uint8_t)(value >> 24));
         se30->scsi_iface->write_uint8(cfg->scsi, 0x201, (uint8_t)(value >> 16));
         se30->scsi_iface->write_uint8(cfg->scsi, 0x201, (uint8_t)(value >> 8));

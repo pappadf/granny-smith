@@ -122,6 +122,31 @@ extern uint32_t g_bus_error_address; // faulting logical address
 extern uint32_t g_bus_error_rw; // 1=read, 0=write
 extern uint32_t *g_bus_error_instr_ptr; // points to decoder's instruction counter
 
+// I/O cycle penalty: tracks extra bus wait-state cycles for I/O accesses.
+// Penalty cycles are converted to phantom instructions that burn sprint burndown,
+// causing I/O-heavy sprints to end sooner and keeping event timing accurate.
+// g_io_cpi == 0 disables the mechanism entirely (e.g. max_speed mode).
+extern uint32_t g_io_penalty_remainder; // sub-CPI fraction carried across sprints
+extern uint32_t g_io_phantom_instructions; // phantom instructions consumed this sprint
+extern uint32_t g_io_cpi; // current CPI for conversion (0 = disabled)
+extern uint32_t *g_sprint_burndown_ptr; // points to sprint_burndown during sprint
+
+// Apply an I/O bus cycle penalty (extra_cycles beyond the CPI baseline).
+// Called from machine I/O dispatchers (e.g. SE/30) in the slow path only.
+static inline void memory_io_penalty(uint32_t extra_cycles) {
+    if (__builtin_expect(g_io_cpi == 0, 0))
+        return; // penalties disabled
+    g_io_penalty_remainder += extra_cycles;
+    uint32_t burn = g_io_penalty_remainder / g_io_cpi;
+    if (__builtin_expect(burn > 0, 1)) {
+        g_io_penalty_remainder -= burn * g_io_cpi;
+        g_io_phantom_instructions += burn;
+        uint32_t *bp = g_sprint_burndown_ptr;
+        if (bp)
+            *bp = (*bp > burn) ? (*bp - burn) : 0;
+    }
+}
+
 // Slow-path handlers for device I/O, unmapped, or MMU TLB miss accesses
 uint8_t memory_read_uint8_slow(uint32_t addr);
 uint16_t memory_read_uint16_slow(uint32_t addr);

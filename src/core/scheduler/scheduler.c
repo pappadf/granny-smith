@@ -11,6 +11,7 @@
 #include "scheduler.h"
 
 #include "cpu.h"
+#include "memory.h"
 #include "shell.h"
 #include "system.h"
 
@@ -929,22 +930,32 @@ void scheduler_run_instructions(struct scheduler *restrict s, uint64_t n) {
         if (debugger_active)
             instr_to_exec = 1;
 
-        // Execute sprint
+        // Execute sprint — expose burndown pointer and CPI for I/O penalty mechanism
         s->sprint_total = instr_to_exec;
         s->sprint_burndown = instr_to_exec;
+        g_sprint_burndown_ptr = &s->sprint_burndown;
+        g_io_cpi = avg_cycles_per_instr(s);
+        g_io_phantom_instructions = 0;
+        // Note: g_io_penalty_remainder is NOT reset — it carries across sprints
         cpu_run_sprint(cpu, &s->sprint_burndown);
+        g_sprint_burndown_ptr = NULL; // no longer valid outside sprint
 
-        // Account for executed instructions and cycles
-        uint32_t executed_instr = s->sprint_total;
+        // Account for executed instructions and cycles.
+        // sprint_total includes both real instructions and phantom instructions
+        // (burned by I/O penalties).  Phantom instructions represent bus stall
+        // time: (real + phantom) * CPI = real_cycles + penalty_cycles.
+        uint32_t executed_slots = s->sprint_total;
+        uint32_t phantom = g_io_phantom_instructions;
+        g_io_phantom_instructions = 0;
         s->sprint_total = 0;
-        uint32_t executed_cycles = executed_instr * avg_cycles_per_instr(s);
+        uint32_t executed_cycles = executed_slots * avg_cycles_per_instr(s);
 
         // Overshoot check: allow up to one instruction of overshoot
         if (s->cpu_events != NULL) {
             GS_ASSERT(executed_cycles <= cycles_to_execute + avg_cycles_per_instr(s));
         }
 
-        s->total_instructions += executed_instr;
+        s->total_instructions += executed_slots - phantom;
         remaining_cycles -= executed_cycles;
         s->cpu_cycles += executed_cycles;
 
