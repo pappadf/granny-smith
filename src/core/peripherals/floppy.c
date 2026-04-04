@@ -84,7 +84,10 @@ int floppy_disk_status(floppy_t *floppy, int drv) {
             int bit_idx = (int)(now_ns / 2040.0) & 7; // ~2µs per flux cell
             ret = (data[byte_pos] >> bit_idx) & 1;
         } else {
-            ret = 0; // no disk or no track data
+            // HD (MFM) disk: no GCR track data, simulate time-varying flux
+            double now_ns = scheduler_time_ns(floppy->scheduler);
+            int bit_idx = (int)(now_ns / 2040.0) & 7;
+            ret = (bit_idx < 4) ? 1 : 0;
         }
         desc = "RDDATA side0";
         break;
@@ -128,31 +131,34 @@ int floppy_disk_status(floppy_t *floppy, int drv) {
         desc = "/TKO";
         ret = (drive->track != 0);
         break;
-    case 0x0B: // /TACH (GCR: 60 pulses/rev) or INDEX (ISM: ~2/rev at 300 RPM)
+    case 0x0B: // /TACH (GCR: 60 pulses/rev) or INDEX (ISM mode)
     {
         // In ISM mode, register 0111 switches from the high-frequency FG
         // tach signal (60 pulses/rev) to a low-frequency INDEX signal.
-        // The SuperDrive produces 2 INDEX pulses per revolution at 300 RPM,
-        // giving a 100ms period per cycle.  The INDEX pulse is a short HIGH
-        // spike (~2ms) from the inductive sensor detecting the hub mark,
-        // followed by a long LOW phase (~98ms).
         //
+        // INDEX pulse count depends on disk type:
+        //   800K (GCR):  2 pulses/rev → 100ms cycle → MEASURE_SPEED ≈ 78,300 ticks
+        //   1.4MB (HD):  1 pulse/rev  → 200ms cycle → HD_MEASURE_SPEED ≈ 157,000 ticks
+        //
+        // The INDEX pulse is a short HIGH spike (~2ms) from the inductive
+        // sensor detecting the hub mark, followed by a long LOW phase.
         // The asymmetric duty cycle is critical: MacTest's MEASURE_SPEED
         // function uses VIA T2 overflow counting during the LOW phase.
-        // T2 overflows at 65536 ticks (~83.7ms).  The LOW phase must exceed
-        // 83.7ms to produce exactly one overflow (D5=1), yielding a result
-        // of D5*65536 + timer_delta ≈ 78300, within bounds [77125, 79475].
         bool ism_mode =
             (floppy->type == FLOPPY_TYPE_SWIM && floppy->in_ism_mode && (floppy->ism_mode & ISM_MODE_MOTOR_ON));
         if (ism_mode) {
             double now_ns = scheduler_time_ns(floppy->scheduler);
             double ns_per_rev = (60.0 / 300) * 1e9; // 200ms at 300 RPM
-            double ns_per_cycle = ns_per_rev / 2.0; // 100ms per INDEX cycle
+            // HD disks: 1 INDEX pulse per revolution (200ms cycle)
+            // 800K disks: 2 INDEX pulses per revolution (100ms cycle)
+            image_t *img = floppy->disk[drv];
+            bool is_hd = (img && img->type == image_fd_hd);
+            double ns_per_cycle = is_hd ? ns_per_rev : (ns_per_rev / 2.0);
             double index_high_ns = 2.0 * 1e6; // 2ms HIGH pulse
             double pos_in_rev = fmod(now_ns, ns_per_rev);
             double pos_in_cycle = fmod(pos_in_rev, ns_per_cycle);
             ret = (pos_in_cycle < index_high_ns) ? 1 : 0;
-            desc = "INDEX(HD)";
+            desc = is_hd ? "INDEX(HD)" : "INDEX(800K)";
         } else {
             const char *tach_reason = NULL;
             ret = iwm_tach_signal(floppy->scheduler, drive, &tach_reason);
@@ -173,7 +179,10 @@ int floppy_disk_status(floppy_t *floppy, int drv) {
             int bit_idx = (int)(now_ns / 2040.0) & 7;
             ret = (data[byte_pos] >> bit_idx) & 1;
         } else {
-            ret = 0;
+            // HD (MFM) disk: simulate time-varying flux
+            double now_ns = scheduler_time_ns(floppy->scheduler);
+            int bit_idx = (int)(now_ns / 2040.0) & 7;
+            ret = (bit_idx < 4) ? 1 : 0;
         }
         desc = "RDDATA side1";
         break;

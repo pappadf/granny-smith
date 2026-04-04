@@ -171,14 +171,54 @@ logpoint $39160 ">>> WFL2: step 6 → success exit"
 logpoint $391DA ">>> WFL2: common success exit"
 
 # Continue Phase 2: steps 4-6
-# Steps 1-4 pass. Step 5 (READ_SECTOR_CHECK) is the current frontier.
-# Step 5 writes $6D via ISM FIFO, reads back via ISM FIFO, compares.
-# The ISM write path drains FIFO without persisting to disk image,
-# so the read returns MFM-generated data instead of $6D → mismatch.
-# Error $5303 = data comparison failure at sector 3.
+# All 6 steps now pass (ISM write capture fix for step 5).
 run 1500000000
 
-# Capture the current state.
+# Logpoints for DISPATCH case 3 (HD test) steps
+logpoint $39164 ">>> CASE3: entry (HD test)"
+logpoint $3916A ">>> CASE3: step 1 LEADP"
+logpoint $39174 ">>> CASE3: step 2 CHECK_DRIVE_STATUS"
+logpoint $39186 ">>> CASE3: step 3 HD_MEASURE_SPEED"
+logpoint $3919C ">>> CASE3: step 4 CHECK_DISK_PARAMS (18 spt)"
+logpoint $391AE ">>> CASE3: step 5 HD_READ_SECTOR_CHECK"
+logpoint $391B8 ">>> CASE3: ERROR EXIT"
+logpoint $391BE ">>> CASE3: SUCCESS → FINALIZE"
+
+# ---- Phase 3: HD (1.4MB) floppy test ----
+# After Phase 2 passes, PERFO returns to TEST_PERFO Section B.
+# TEST_PERFO calls LEADISK ($38506) which shows "insert 1.4MB floppy" dialog.
+# Break at LEADISK's status re-check ($385C4) to insert the HD floppy.
+
+# Wait for the LEADISK dialog to appear
+run 200000000
+
+# Click OK on the "insert 1.4MB floppy" dialog (first time dismisses it,
+# LEADISK fails conditions with no disk → retries with second dialog)
+set-mouse 370 185 --global
+run 5000000
+mouse-button down
+run 2000000
+mouse-button up
+run 20000000
+
+# Break at LEADISK's status re-check ($385C4) to insert the HD floppy.
+# Click OK on the retry dialog, then wait for the breakpoint.
+br $385C4
+set-mouse 370 185 --global
+run 5000000
+mouse-button down
+run 2000000
+mouse-button up
+run 50000000
+
+# Insert blank HD floppy at the status re-check breakpoint
+new-fd --hd tmp/blankHD.dsk 0
+br del $385C4
+
+# Run Phase 3 (DISPATCH mode=3)
+run 1500000000
+
+# Capture the current state
 screenshot floppy-final-result.png
 
 quit
