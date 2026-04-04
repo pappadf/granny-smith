@@ -514,11 +514,11 @@ static void se30_set_rom_overlay(config_t *cfg, bool overlay) {
 // VIA penalty dominates due to E-clock synchronization (~19-23 avg vs 4 for RAM).
 // Set to 0 to disable penalties (preserves existing timing behaviour).
 // See local/gs-docs/notes/SE30-timing.md for derivation.
-#define SE30_VIA_IO_PENALTY  0 // VIA E-clock sync: ~19-23 avg, minus ~4 baseline
-#define SE30_SCC_IO_PENALTY  0 // SCC with own 3.672 MHz PCLK: ~6 total, minus ~4
-#define SE30_SCSI_IO_PENALTY 0 // NCR 5380: ~6 total, minus ~4
-#define SE30_ASC_IO_PENALTY  0 // Apple Sound Chip: ~6 total, minus ~4
-#define SE30_SWIM_IO_PENALTY 0 // Floppy controller: ~6 total, minus ~4
+#define SE30_VIA_IO_PENALTY  16 // VIA E-clock sync: ~19-23 avg, minus ~4 baseline
+#define SE30_SCC_IO_PENALTY  2 // SCC with own 3.672 MHz PCLK: ~6 total, minus ~4
+#define SE30_SCSI_IO_PENALTY 2 // NCR 5380: ~6 total, minus ~4
+#define SE30_ASC_IO_PENALTY  2 // Apple Sound Chip: ~6 total, minus ~4
+#define SE30_SWIM_IO_PENALTY 2 // Floppy controller: ~6 total, minus ~4
 
 // Read a byte from the SE/30 I/O space.
 // Masks address with $1FFFF for GLUE mirroring, then dispatches to device.

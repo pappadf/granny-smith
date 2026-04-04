@@ -37,7 +37,10 @@ static floppy_drive_t *current_drive(floppy_t *floppy) {
     return &floppy->drives[IWM_SELECT(floppy) ? 1 : 0];
 }
 
-// Returns the current disk status based on IWM CA lines and SEL signal
+// Returns the current disk status based on IWM CA lines and SEL signal.
+// The VIA-based SEL signal is part of the sense-line address, not drive
+// selection.  The caller may pass a SEL-derived drive index, but the status
+// should reflect the active drive (the one with a disk and motor on).
 int floppy_disk_status(floppy_t *floppy, int drv) {
     floppy_drive_t *drive = &floppy->drives[drv];
 
@@ -67,9 +70,25 @@ int floppy_disk_status(floppy_t *floppy, int drv) {
         ret = 0;
         break;
     case 0x04: // RDDATA: data from side 0
+    {
+        // Return the current data bit from the read head.  On real hardware,
+        // the SENSE line reflects raw GCR/MFM flux data as the disk spins
+        // continuously.  Derive the byte position from scheduler time to
+        // simulate disk rotation (the head sees different data over time).
+        uint8_t *data = iwm_track_data(drive, floppy->disk[drv], 0, floppy->scheduler);
+        if (data) {
+            size_t trk_len = iwm_track_length(drive->track);
+            double now_ns = scheduler_time_ns(floppy->scheduler);
+            double ns_per_byte = 16340.0; // ~16.3µs per GCR byte at 489.6 kbit/s
+            int byte_pos = (int)(now_ns / ns_per_byte) % (int)trk_len;
+            int bit_idx = (int)(now_ns / 2040.0) & 7; // ~2µs per flux cell
+            ret = (data[byte_pos] >> bit_idx) & 1;
+        } else {
+            ret = 0; // no disk or no track data
+        }
         desc = "RDDATA side0";
-        ret = 1;
         break;
+    }
     case 0x05: // IWM: reserved; SWIM: mfmDrv (SuperDrive present)
         if (floppy->type == FLOPPY_TYPE_SWIM) {
             desc = "mfmDrv";
@@ -109,20 +128,62 @@ int floppy_disk_status(floppy_t *floppy, int drv) {
         desc = "/TKO";
         ret = (drive->track != 0);
         break;
-    case 0x0B: // /TACH: 60 pulses per revolution
+    case 0x0B: // /TACH (GCR: 60 pulses/rev) or INDEX (ISM: ~2/rev at 300 RPM)
     {
-        const char *tach_reason = NULL;
-        ret = iwm_tach_signal(floppy->scheduler, drive, &tach_reason);
-        LOG(6, "Drive %d: Reading /TACH = %d (%s, track=%d)", drv, ret, tach_reason, drive->track);
+        // In ISM mode, register 0111 switches from the high-frequency FG
+        // tach signal (60 pulses/rev) to a low-frequency INDEX signal.
+        // The SuperDrive produces 2 INDEX pulses per revolution at 300 RPM,
+        // giving a 100ms period per cycle.  The INDEX pulse is a short HIGH
+        // spike (~2ms) from the inductive sensor detecting the hub mark,
+        // followed by a long LOW phase (~98ms).
+        //
+        // The asymmetric duty cycle is critical: MacTest's MEASURE_SPEED
+        // function uses VIA T2 overflow counting during the LOW phase.
+        // T2 overflows at 65536 ticks (~83.7ms).  The LOW phase must exceed
+        // 83.7ms to produce exactly one overflow (D5=1), yielding a result
+        // of D5*65536 + timer_delta ≈ 78300, within bounds [77125, 79475].
+        bool ism_mode =
+            (floppy->type == FLOPPY_TYPE_SWIM && floppy->in_ism_mode && (floppy->ism_mode & ISM_MODE_MOTOR_ON));
+        if (ism_mode) {
+            double now_ns = scheduler_time_ns(floppy->scheduler);
+            double ns_per_rev = (60.0 / 300) * 1e9; // 200ms at 300 RPM
+            double ns_per_cycle = ns_per_rev / 2.0; // 100ms per INDEX cycle
+            double index_high_ns = 2.0 * 1e6; // 2ms HIGH pulse
+            double pos_in_rev = fmod(now_ns, ns_per_rev);
+            double pos_in_cycle = fmod(pos_in_rev, ns_per_cycle);
+            ret = (pos_in_cycle < index_high_ns) ? 1 : 0;
+            desc = "INDEX(HD)";
+        } else {
+            const char *tach_reason = NULL;
+            ret = iwm_tach_signal(floppy->scheduler, drive, &tach_reason);
+            desc = "/TACH";
+        }
+        LOG(6, "Drive %d: Reading %s = %d (ism=%d ism_mode=0x%02X in_ism=%d track=%d)", drv, desc, ret, ism_mode,
+            floppy->ism_mode, floppy->in_ism_mode, drive->track);
         return ret;
     }
     case 0x0C: // RDDATA: data from side 1
+    {
+        uint8_t *data = iwm_track_data(drive, floppy->disk[drv], 1, floppy->scheduler);
+        if (data) {
+            size_t trk_len = iwm_track_length(drive->track);
+            double now_ns = scheduler_time_ns(floppy->scheduler);
+            double ns_per_byte = 16340.0;
+            int byte_pos = (int)(now_ns / ns_per_byte) % (int)trk_len;
+            int bit_idx = (int)(now_ns / 2040.0) & 7;
+            ret = (data[byte_pos] >> bit_idx) & 1;
+        } else {
+            ret = 0;
+        }
         desc = "RDDATA side1";
-        ret = 1;
         break;
-    case 0x0D: // reserved (switch to GCR mode)
-        desc = "reserved (SEL+CA2+CA0)";
-        ret = 0;
+    }
+    case 0x0D: // /DRVEXIST: 1 when physical drive present (ISM mode only)
+        desc = "/DRVEXIST";
+        // MacTest's CHECK_DRIVE_STATUS reads this twice: once with the SWIM
+        // in ISM mode (expects 1 = drive exists) and once in IWM compat mode
+        // (expects 0).  Return 1 only in ISM mode.
+        ret = (floppy->type == FLOPPY_TYPE_SWIM && floppy->in_ism_mode) ? 1 : 0;
         break;
     case 0x0E: // /READY: zero when ready
         desc = "/READY";
@@ -195,6 +256,8 @@ void floppy_disk_control(floppy_t *floppy) {
                     remove_event_by_data(floppy->scheduler, floppy_speed_settle_callback, floppy, (uint64_t)drv);
                     scheduler_new_cpu_event(floppy->scheduler, floppy_speed_settle_callback, floppy, (uint64_t)drv, 0,
                                             SPEED_SETTLE_TIME_NS);
+                    LOG(1, "Drive %d: Step track %d→%d ZONE CHANGE (%d→%d RPM), speed_settling=1", drv,
+                        drive->track + (drive->_dirtn ? 1 : -1), drive->track, old_rpm, iwm_track_rpm(drive->track));
                 }
                 LOG(3, "Drive %d: Step to track %d (%s)", drv, drive->track, drive->_dirtn ? "outward" : "inward");
             }

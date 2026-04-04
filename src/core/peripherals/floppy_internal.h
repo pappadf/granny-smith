@@ -49,7 +49,7 @@
 
 // Motor speed settle time after stepping across a speed-zone boundary.
 // /READY deasserts until the motor reaches the new target RPM.
-#define SPEED_SETTLE_TIME_NS (1ULL * 1000000ULL)
+#define SPEED_SETTLE_TIME_NS (5ULL * 1000000ULL)
 
 // ============================================================================
 // IWM State Control Line Bits
@@ -230,6 +230,12 @@ struct floppy {
     uint8_t mfm_cur_track; // current track for MFM read
     uint8_t mfm_cur_side; // current side for MFM read
     bool mfm_sector_mark[MFM_SECTOR_BUF_SIZE]; // per-byte mark flags
+
+    // ISM write capture state (persists sector writes to disk image)
+    uint8_t ism_write_buf[512]; // captured sector data payload
+    uint16_t ism_write_pos; // bytes captured so far (0-512)
+    uint8_t ism_write_state; // 0=scanning for data mark, 1=capturing data
+    uint8_t ism_write_a1_count; // consecutive $A1 mark bytes seen
 
     // === Pointers (not checkpointed) ===
     image_t *disk[NUM_DRIVES]; // disk image pointers

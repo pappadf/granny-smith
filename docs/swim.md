@@ -34,7 +34,7 @@
 18. [Write Operations](#write-operations) — GCR writes, MFM writes, CRC insertion,
     pre-compensation
 19. [Timing Specifications](#timing-specifications) — Step, settle, eject, spin-up,
-    data rates
+    data rates, tachometer/INDEX dual-mode signal
 20. [Reset State](#reset-state) — Power-on defaults for all registers
 21. [Error Register](#error-register) — Error conditions, latching behavior
 22. [SWIM Detection](#swim-detection) — Software detection of IWM vs SWIM
@@ -466,6 +466,30 @@ The ISM register addresses correspond to IWM state bits as follows:
 | 14 | L7=0 |
 | 15 | L7=1 |
 
+### IWM Status Register Access in ISM Mode
+
+While in ISM mode, software can still read the **IWM status register** by
+accessing register address 14 with the IWM Q6/Q7 line state set to Q6=1, Q7=0.
+This backward-compatible path is used by MacTest and ROM diagnostic code to read
+drive sense registers (TACH/INDEX, /DRVEXIST, /CSTIN, etc.) while the SWIM is in
+ISM mode.
+
+The access path is:
+
+1. Software touches ISM address 13 (L6 set) and address 14 (L7 clear)
+2. This puts the internal Q6/Q7 lines in the Q6=1, Q7=0 state
+3. Any subsequent read from ISM addresses dispatches through the **IWM status
+   register** path, returning bit 7 = SENSE (the drive status register selected
+   by CA0/CA1/CA2/SEL)
+
+The SWIM chip's internal crossbar enables this: the Q6/Q7 state machine is shared
+between the IWM and ISM cores, and the Q6=1/Q7=0 combination always routes to the
+IWM status readback path regardless of which core is active.
+
+This is particularly important for the TACH/INDEX signal: MacTest's MEASURE_SPEED
+function enters ISM mode (via SWIM_ENABLE), then reads the INDEX signal by polling
+IWM status bit 7 through this backward-compatible path.
+
 ### Data Register (rData / wData) [Address 0/8]
 
 **Read (ACTION=1):** Returns the next byte from the FIFO. If the byte is a mark
@@ -613,6 +637,13 @@ Read-only status register for real-time transfer coordination.
 **Bit 7 is the primary polling target** for data transfer loops. Software polls
 this bit (BPL loop on the byte) waiting for it to go high before reading or
 writing data.
+
+**Bit 3 (SENSE)** reflects the instantaneous state of the drive's SENSE/RD line
+for whichever drive register is currently addressed by the CA0/CA1/CA2/SEL
+lines. This is the ISM-mode equivalent of IWM Status register bit 7. In MacTest
+and other diagnostic software, this bit is used to poll the TACH/INDEX signal
+(register 0111) during speed measurements. The CA lines must be configured for
+the desired sense key before reading this bit.
 
 **Bit 1 (CRC Error)** is valid on the second CRC byte. After reading a complete
 field including both CRC bytes, this bit indicates whether the CRC matched (1=OK,
@@ -1011,8 +1042,14 @@ then reading SENSE (IWM Status bit 7) or Handshake bit 3 (ISM mode).
 | 10 | 1-1-0-0 | SIDES | Drive capability: 0 = single-sided, 1 = double-sided |
 | 11 | 1-1-0-1 | /READY | 0 = drive ready |
 | 13 | 1-1-1-0 | /DRVIN | 0 = drive exists |
-| 14 | 1-1-1-1 | TACH | Tachometer (60 pulses/rev) |
+| 14 | 1-1-1-1 | TACH/INDEX | See [Tachometer / INDEX Signal](#tachometer--index-signal) |
 | 15 | — | NEWINTF | New interface / twoMeg sense |
+
+**Register 0111 (TACH/INDEX) dual-mode behavior:** This register changes its
+function depending on the drive's operating mode. In GCR mode, it reports the
+high-frequency FG tachometer signal (60 pulses/revolution). In ISM mode with
+motor on, it reports a low-frequency INDEX signal (2 pulses/revolution). See
+[Tachometer / INDEX Signal](#tachometer--index-signal) for full details.
 
 ### Control Commands (Write)
 
@@ -1106,6 +1143,26 @@ the drive for head selection.
 
 ## Motor and Speed Control
 
+### SuperDrive Spindle Motor Architecture
+
+The SuperDrive (Sony MP-F75W) uses a **4-pole brushless DC pancake motor** with
+the following sensing elements:
+
+| Component | Function |
+|-----------|----------|
+| 3 Hall-effect sensors | 6-step commutation (120° spacing) |
+| FG (frequency generator) winding | 60-pulse/revolution tachometer for speed control |
+| Inductive index sensor | 1 index pulse/revolution for sector positioning |
+
+The FG winding is a zig-zag trace on the motor PCB, underneath the rotor magnet.
+The rotor carries a ring magnet with 4 alternating N-S poles (2 pole pairs). The
+FG winding produces 60 electrical pulses per mechanical revolution.
+
+The motor controller IC (internal to the drive) uses the FG signal for closed-loop
+speed regulation. In GCR mode (variable speed), the controller adjusts RPM based
+on the PWM speed signal from the host. In MFM mode (fixed 300 RPM), the
+controller locks to 300 RPM regardless of the PWM input.
+
 ### GCR Mode: Variable Speed (CLV)
 
 For GCR disks (400K/800K), the drive operates in **Constant Linear Velocity**
@@ -1136,6 +1193,10 @@ speed for the current zone.
 For MFM disks (720K/1440K), the drive operates at a constant **300 RPM**. No
 speed changes are needed when seeking across tracks. The data rate is a constant
 **500 kbit/s** for 1440K and **250 kbit/s** for 720K.
+
+In MFM mode (or more precisely: when the SWIM is in ISM mode with motor on),
+drive register 0111 switches from the 60-pulse FG tachometer to the INDEX signal.
+See [Tachometer / INDEX Signal](#tachometer--index-signal) for timing details.
 
 ### Motor-Off Timer
 
@@ -1645,23 +1706,113 @@ The pre-compensation amount is approximately 125 nanoseconds for standard MFM at
 | MFM 720K | 250 kbit/s | 31,250 bytes/s | 32.0 µs |
 | MFM 1440K | 500 kbit/s | 62,500 bytes/s | 16.0 µs |
 
-### Tachometer
+### Tachometer / INDEX Signal
 
-The drive provides a TACH signal: **60 pulses per revolution**, 50% duty cycle
-±10%, pulse period accuracy ±0.2%.
+Drive register 0111 (`CA0=1, CA1=1, SEL=1`, sense key `$0B`) is a **dual-mode
+signal** that changes its function depending on whether the SWIM is in IWM
+(GCR) mode or ISM mode with motor on.
 
-At 300 RPM (MFM): 60 pulses / (300/60 sec) = 60 pulses per 200 ms = 1 pulse per
-3.33 ms.
+#### GCR Mode: 60-Pulse FG Tachometer
+
+In IWM/GCR mode, the register outputs the **frequency generator (FG) winding**
+signal from the SuperDrive's brushless DC spindle motor: **60 pulses per
+revolution**, ~50% duty cycle ±10%, pulse period accuracy ±0.2%.
+
+This high-frequency signal is used by the ROM's `P_Sony_MakeSpdTbl` routines to
+measure motor speed and generate speed correction values for each GCR speed zone.
+
+| Zone | Tracks | RPM | TACH half-period | ROM speed bounds (decimal) |
+|------|--------|-----|------------------|---------------------------|
+| 0 | 0–15 | 394 | ~1.27 ms | 4,405 – 4,585 |
+| 1 | 16–31 | 429 | ~1.17 ms | 4,806 – 5,002 |
+| 2 | 32–47 | 472 | ~1.06 ms | 5,287 – 5,503 |
+| 3 | 48–63 | 525 | ~0.95 ms | 5,874 – 6,114 |
+| 4 | 64–79 | 590 | ~0.85 ms | 6,608 – 6,878 |
+
+(Speed bounds from the Floppy Emu firmware, credited to Apple/Sony docs.)
+
+**Flutter note:** The 128K/512K ROM's `P_Sony_MakeSpdTbl` has a divide-by-zero
+bug that crashes (Sad Mac 0F0004) if two successive speed measurements return
+identical values. A ~0.25% amplitude flutter at ~640 ms period is standard
+defensive practice in emulators. Later ROMs (SE/30 etc.) may not have this bug
+but flutter remains realistic behavior.
+
+#### ISM Mode: INDEX Signal (2 Pulses per Revolution)
+
+When the SWIM is in ISM mode with `ISM_MODE_MOTOR_ON` set, the same register
+switches to a **low-frequency INDEX signal**. This was discovered by Steve
+Chamberlin (Floppy Emu / Big Mess o' Wires) through logic analyzer traces of a
+Macintosh LC formatting a 1440K floppy disk, and independently corroborated by
+the System 7.1 source code (`SonyMFM.a` `mDoFormat` routine).
+
+The SuperDrive produces **2 INDEX pulses per revolution** at a fixed 300 RPM,
+giving a **100 ms period** per complete pulse cycle.
+
+**Asymmetric duty cycle:** The INDEX pulse is a short HIGH spike (~2 ms) produced
+by the inductive sensor detecting the hub index mark on the disk, followed by a
+long LOW phase (~98 ms). The asymmetry is critical for the MacTest diagnostic's
+MEASURE_SPEED function (see below).
+
+**Signal characteristics:**
+
+| Parameter | Value |
+|-----------|-------|
+| Pulses per revolution | 2 |
+| Motor speed | 300 RPM (fixed) |
+| Revolution period | 200 ms |
+| Pulse cycle period | 100 ms |
+| HIGH (index mark) | ~2 ms |
+| LOW (between marks) | ~98 ms |
+
+#### SWIM Passes the Signal Unmodified
+
+The SWIM chip does **not** gate, divide, or filter the TACH/INDEX signal. The
+drive's RD output for register 0111 connects to the IWM/SWIM's SENSE input, which
+appears as bit 7 of the IWM status register (in IWM mode) or bit 3 of the ISM
+handshake register (in ISM mode). The CPU reads the **instantaneous raw state**
+of the signal. All timing, counting, and speed calculation is performed entirely
+in software by the CPU, typically using VIA Timer 2.
+
+#### INDEX Signal Speed Measurement
+
+The MacTest SE/30 diagnostic at `$392C0` (MEASURE_SPEED) measures the INDEX
+signal period using VIA T2 overflow counting. The result is a 32-bit composite
+value: `D5 * 65536 + timer_delta`, where D5 counts VIA T2 wraps (one wrap =
+65,536 VIA ticks = ~83.7 ms at 783 kHz) and timer_delta is the remaining elapsed
+VIA ticks.
+
+The measurement algorithm:
+
+1. Align to falling edge (wait for INDEX=0)
+2. Reset VIA T2
+3. Poll INDEX with timer edge detection until INDEX=1 (rising edge):
+   - During the ~98 ms LOW phase, VIA T2 wraps once (at ~83.7 ms), so D5=1
+4. Wait for INDEX=0 (falling edge): ~2 ms HIGH pulse
+5. Read timer: total elapsed ~100 ms = ~78,336 VIA ticks
+6. Result = 1 × 65536 + 12,800 = 78,336
+
+The MacTest bounds for this measurement are **[77,125 – 79,475]**, corresponding
+to 100 ms ±1.5% (standard floppy speed tolerance). The calculated midpoint value
+of **78,336** (at exactly 300 RPM) sits almost exactly at the center.
+
+**Why the asymmetric duty cycle matters:** The D5 wrap counter only increments
+during the wait-for-INDEX=1 loop (the LOW phase). For D5 to reach 1, the LOW
+phase must exceed 65,536 VIA ticks (~83.7 ms). A symmetric 50/50 duty cycle
+(50 ms each) would produce D5=0 and a result of only ~39,168 — far below the
+expected bounds. The ~98 ms LOW phase of the real INDEX signal ensures exactly
+one timer wrap.
 
 ### Drive Specifications
 
 | Parameter | Value |
 |-----------|-------|
-| Motor speed range | 390–605 RPM (GCR variable) / 300 RPM (MFM constant) |
+| Motor speed range | 394–590 RPM (GCR variable) / 300 RPM (MFM constant) |
 | Total tracks | 80 (numbered 0–79) |
 | Track pitch | — |
 | Flux transition timing | 1.89–6.36 µs (GCR) |
-| Index pulse | 1 per revolution |
+| FG tach signal (GCR) | 60 pulses/revolution, ~50% duty cycle |
+| INDEX signal (MFM) | 2 pulses/revolution, ~2% duty cycle (~2 ms HIGH) |
+| Motor type | 4-pole brushless DC with FG winding + 3 Hall sensors |
 
 ---
 
@@ -1896,6 +2047,41 @@ set.
 Due to first-error-wins latching, if multiple error conditions occur
 simultaneously or in rapid succession, only the first one is captured. All
 subsequent errors are silently lost until the register is read and cleared.
+
+### TACH/INDEX Register Dual-Mode Behavior
+
+Drive register 0111 (sense key `$0B`) is the most poorly documented register in
+the SuperDrive interface. Its behavior changes based on the SWIM's operating mode:
+
+- **IWM mode:** Reports the FG tachometer — 60 high-frequency pulses per
+  revolution, used for GCR speed zone measurement
+- **ISM mode (motor on):** Reports the INDEX signal — 2 low-frequency pulses per
+  revolution with asymmetric duty cycle (~2 ms HIGH, ~98 ms LOW)
+
+The mode switch happens at the drive level: when the SWIM enters ISM mode and
+asserts motor on, the drive's internal multiplexer routes the INDEX sensor output
+to register 0111 instead of the FG tach output. The SWIM chip itself passes the
+signal through unchanged.
+
+This dual-mode behavior is the source of significant confusion in emulation. The
+GCR speed bounds (~4,400–6,900) and MFM speed bounds (77,125–79,475) use
+completely different measurement regimes on the same register address.
+
+**Key constraints for emulation:**
+
+1. The INDEX LOW phase must exceed ~83.7 ms (65,536 VIA ticks at 783 kHz) to
+   trigger exactly one VIA T2 overflow in the MacTest MEASURE_SPEED algorithm
+2. A symmetric 50/50 duty cycle produces incorrect results — the real signal is
+   highly asymmetric
+3. The signal must be based on `scheduler_time_ns()` (CPU-cycle-derived time) to
+   stay synchronized with VIA T2 timer reads, which also use CPU cycles
+
+### /DRVEXIST ISM-Mode Behavior
+
+Drive register `$0D` (/DRVEXIST) also has mode-dependent behavior. In ISM mode,
+it returns 1 (drive present). In IWM compatibility mode, it returns 0. The MacTest
+`CHECK_DRIVE_STATUS` function validates this by reading the register twice: once
+in ISM mode (expects 1) and once after switching to IWM mode (expects 0).
 
 ### Copy Protection
 

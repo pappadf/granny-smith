@@ -266,6 +266,59 @@ static void mfm_skip_to_mark(floppy_t *floppy) {
 }
 
 // ============================================================================
+// ISM Write Capture — persists sector data written via wData to disk image
+// ============================================================================
+
+// Resets the ISM write capture state machine
+static void ism_write_capture_reset(floppy_t *floppy) {
+    floppy->ism_write_state = 0;
+    floppy->ism_write_pos = 0;
+    floppy->ism_write_a1_count = 0;
+}
+
+// Flushes captured sector data to the disk image
+static void ism_write_capture_flush(floppy_t *floppy) {
+    if (floppy->ism_write_pos != 512) {
+        LOG(2, "ISM write: incomplete sector (%d bytes), not flushing", floppy->ism_write_pos);
+        return;
+    }
+
+    int drv = (floppy->ism_mode & ISM_MODE_DRIVE2) ? 1 : 0;
+    image_t *img = floppy->disk[drv];
+    if (!img) {
+        LOG(2, "ISM write: no disk in drive %d", drv);
+        return;
+    }
+
+    int track = floppy->mfm_cur_track;
+    int side = floppy->mfm_cur_side;
+    int sector = floppy->mfm_cur_sector; // 1-based
+
+    // Determine sectors per track from disk size
+    size_t disk_sz = disk_size(img);
+    int sectors_per_track = (disk_sz > 1000000) ? 18 : 9;
+
+    if (sector < 1 || sector > sectors_per_track) {
+        LOG(2, "ISM write: invalid sector %d (max %d)", sector, sectors_per_track);
+        return;
+    }
+
+    // MFM layout: block = (track * 2 + side) * sectors_per_track + (sector - 1)
+    size_t block = (size_t)(track * 2 + side) * sectors_per_track + (sector - 1);
+    size_t offset = block * 512;
+    if (offset + 512 > disk_sz) {
+        LOG(2, "ISM write: offset %zu + 512 > disk size %zu", offset, disk_sz);
+        return;
+    }
+
+    size_t written = disk_write_data(img, offset, floppy->ism_write_buf, 512);
+    LOG(3, "ISM write: flushed T=%d S=%d Sec=%d (%zu bytes written)", track, side, sector, written);
+
+    // Invalidate MFM read buffer so subsequent reads pick up the new data
+    floppy->mfm_buf_len = 0;
+}
+
+// ============================================================================
 // SWIM IWM-Mode Read/Write (with mode-switch detection and echo behavior)
 // ============================================================================
 
@@ -445,6 +498,7 @@ static void swim_ism_reset(floppy_t *floppy) {
     floppy->mfm_buf_pos = 0;
     floppy->mfm_cur_sector = 1;
     floppy->mfm_cur_side = 0;
+    ism_write_capture_reset(floppy);
 
     // Carry over IWM phase line states to ISM phase register
     floppy->ism_phase = 0xF0 | // all outputs enabled
@@ -666,6 +720,27 @@ static void swim_ism_write(floppy_t *floppy, uint32_t offset, uint8_t byte) {
                 floppy->ism_error |= ISM_ERR_OVERRUN;
         }
         floppy->ism_crc = crc_ccitt_byte(floppy->ism_crc, byte);
+        // Capture sector data during WRITE+ACTION
+        if ((floppy->ism_mode & (ISM_MODE_WRITE | ISM_MODE_ACTION)) == (ISM_MODE_WRITE | ISM_MODE_ACTION)) {
+            if (floppy->ism_write_state == 0) {
+                // Scanning: check for data address mark ($FB) after $A1 marks
+                if (floppy->ism_write_a1_count >= 3 && byte == 0xFB) {
+                    floppy->ism_write_state = 1;
+                    floppy->ism_write_pos = 0;
+                    LOG(4, "ISM write: data mark found, capturing sector data");
+                }
+                floppy->ism_write_a1_count = 0; // non-mark byte resets count
+            } else if (floppy->ism_write_state == 1) {
+                // Capturing: store data bytes
+                if (floppy->ism_write_pos < 512) {
+                    floppy->ism_write_buf[floppy->ism_write_pos++] = byte;
+                    if (floppy->ism_write_pos == 512) {
+                        ism_write_capture_flush(floppy);
+                        ism_write_capture_reset(floppy);
+                    }
+                }
+            }
+        }
         LOG(7, "ISM wData: 0x%02X (fifo=%d)", byte, floppy->ism_fifo_count);
         break;
 
@@ -675,6 +750,13 @@ static void swim_ism_write(floppy_t *floppy, uint32_t offset, uint8_t byte) {
                 floppy->ism_error |= ISM_ERR_OVERRUN;
         }
         floppy->ism_crc = crc_ccitt_byte(floppy->ism_crc, byte);
+        // Track $A1 mark bytes for write capture state machine
+        if ((floppy->ism_mode & (ISM_MODE_WRITE | ISM_MODE_ACTION)) == (ISM_MODE_WRITE | ISM_MODE_ACTION)) {
+            if (byte == 0xA1)
+                floppy->ism_write_a1_count++;
+            else
+                floppy->ism_write_a1_count = 0;
+        }
         LOG(7, "ISM wMark: 0x%02X (fifo=%d)", byte, floppy->ism_fifo_count);
         break;
 
@@ -716,6 +798,11 @@ static void swim_ism_write(floppy_t *floppy, uint32_t offset, uint8_t byte) {
         LOG(2, "ISM wZeros: 0x%02X (mode: 0x%02X -> 0x%02X) pos=%d/%d", byte, old_mode, floppy->ism_mode,
             floppy->mfm_buf_pos, floppy->mfm_buf_len);
 
+        // Reset write capture when WRITE or ACTION is cleared
+        if ((old_mode & (ISM_MODE_WRITE | ISM_MODE_ACTION)) &&
+            ((old_mode ^ floppy->ism_mode) & (ISM_MODE_WRITE | ISM_MODE_ACTION)))
+            ism_write_capture_reset(floppy);
+
         // Log when ACTION is cleared
         if ((old_mode & ISM_MODE_ACTION) && !(floppy->ism_mode & ISM_MODE_ACTION))
             LOG(3, "ISM: ACTION cleared, buf consumed %d/%d sec=%d", floppy->mfm_buf_pos, floppy->mfm_buf_len,
@@ -745,6 +832,10 @@ static void swim_ism_write(floppy_t *floppy, uint32_t offset, uint8_t byte) {
         LOG(2, "ISM wOnes: 0x%02X (mode: 0x%02X -> 0x%02X) pos=%d/%d", byte, old_mode, floppy->ism_mode,
             floppy->mfm_buf_pos, floppy->mfm_buf_len);
 
+        // Reset write capture when WRITE transitions on
+        if (!(old_mode & ISM_MODE_WRITE) && (floppy->ism_mode & ISM_MODE_WRITE))
+            ism_write_capture_reset(floppy);
+
         swim_handle_fifo_clear(floppy, old_mode);
         swim_handle_action_set(floppy, old_mode);
         break;
@@ -763,7 +854,29 @@ static void swim_ism_write(floppy_t *floppy, uint32_t offset, uint8_t byte) {
 static uint8_t swim_read(floppy_t *floppy, uint32_t offset) {
     GS_ASSERT(offset < 16);
 
+    // Track Q6/Q7 line state even in ISM mode, so the IWM status register
+    // compatibility check below can detect Q6=1, Q7=0.  Only update Q6/Q7
+    // (offsets 12-15) to avoid side effects from CA/ENABLE/SELECT changes.
+    if (floppy->in_ism_mode && offset >= 12) {
+        // Offsets 12-15 map to Q6_OFF/Q6_ON/Q7_OFF/Q7_ON
+        static const uint8_t masks[] = {IWM_LINE_Q6, IWM_LINE_Q6, IWM_LINE_Q7, IWM_LINE_Q7};
+        uint8_t mask = masks[offset - 12];
+        if (offset & 1)
+            floppy->iwm_lines |= mask;
+        else
+            floppy->iwm_lines &= ~mask;
+    }
+
     if (floppy->in_ism_mode) {
+        // The SWIM's IWM status register (Q6=1, Q7=0) remains accessible
+        // even in ISM mode for backward compatibility.  MacTest's CHECK_SENSE
+        // reads the IWM status register to poll TACH/sense lines while the
+        // SWIM is in ISM mode.  Without this, the read returns the ISM mode
+        // register (rStatus) instead of the actual SENSE bit, breaking
+        // speed measurement and other sense-line diagnostics.
+        if (IWM_Q6(floppy) && !IWM_Q7(floppy)) {
+            return swim_iwm_read(floppy, offset);
+        }
         if (offset < 8) {
             LOG(7, "ISM: Read from write-only address %d", offset);
             return 0;

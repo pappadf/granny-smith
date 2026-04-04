@@ -450,7 +450,40 @@ void iwm_flush_modified_tracks(floppy_drive_t *drive, image_t *img, int drive_in
 
             while (p + 730 < end) { // require enough space for a sector
                 if (p[0] == 0xD5 && p[1] == 0xAA && p[2] == 0x96) {
-                    // Found a header; decode this sector to temp buffers
+                    // Validate header checksum before attempting full decode.
+                    // MacTest writes test patterns that may corrupt the data
+                    // field while leaving headers intact; skip those sectors.
+                    uint8_t h_trk = decode_gcr(p[3]);
+                    uint8_t h_sec = decode_gcr(p[4]);
+                    uint8_t h_sid = decode_gcr(p[5]);
+                    uint8_t h_fmt = decode_gcr(p[6]);
+                    uint8_t h_chk = decode_gcr(p[7]);
+                    if (h_chk != (h_trk ^ h_sec ^ h_sid ^ h_fmt)) {
+                        p++;
+                        continue; // header checksum bad → skip
+                    }
+                    // Find data field marks (D5 AA AD) within next 100 bytes
+                    uint8_t *dscan = p + 8;
+                    uint8_t *dlimit = dscan + 100;
+                    if (dlimit > end)
+                        dlimit = end;
+                    while (dscan + 2 < dlimit && (dscan[0] != 0xD5 || dscan[1] != 0xAA || dscan[2] != 0xAD))
+                        dscan++;
+                    if (dscan + 2 >= dlimit || dscan[0] != 0xD5) {
+                        p++;
+                        continue; // no data field → skip
+                    }
+                    // Verify sector number in data field matches header
+                    if (decode_gcr(dscan[3]) != h_sec) {
+                        LOG(4,
+                            "Drive %d: Skip corrupt sector track=%d side=%d sector=%d "
+                            "(data field mismatch)",
+                            drive_index, (h_sid << 6 & 0x40) | (h_trk & 0x3F), h_sid >> 5 & 1, h_sec);
+                        p++;
+                        continue;
+                    }
+
+                    // Found a valid header; decode this sector to temp buffers
                     uint8_t tag[12];
                     uint8_t buf[512];
                     int hdr_track = 0, hdr_side = 0, hdr_sector = 0;

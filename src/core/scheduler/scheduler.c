@@ -955,7 +955,7 @@ void scheduler_run_instructions(struct scheduler *restrict s, uint64_t n) {
             GS_ASSERT(executed_cycles <= cycles_to_execute + avg_cycles_per_instr(s));
         }
 
-        s->total_instructions += executed_slots - phantom;
+        s->total_instructions += (executed_slots > phantom) ? (executed_slots - phantom) : 0;
         remaining_cycles -= executed_cycles;
         s->cpu_cycles += executed_cycles;
 
