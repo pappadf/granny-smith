@@ -118,6 +118,13 @@ void system_keyboard_update(key_event_t event, int key) {
         keyboard_update(global_emulator->keyboard, event, key);
 }
 
+// Hardware RESET line: calls the machine's reset handler to reinitialize
+// peripherals.  On SE/30: VIA1 re-enables ROM overlay, MMU disabled.
+void system_hardware_reset(void) {
+    if (global_emulator && global_emulator->machine && global_emulator->machine->reset)
+        global_emulator->machine->reset(global_emulator);
+}
+
 // System-level scheduler accessor: returns the current scheduler object
 scheduler_t *system_scheduler(void) {
     return global_emulator ? global_emulator->scheduler : NULL;

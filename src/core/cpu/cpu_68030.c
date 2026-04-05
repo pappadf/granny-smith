@@ -379,11 +379,42 @@ static int cpu_movec_rn_rc(cpu_t *cpu) {
     return 1;
 }
 
+// Hardware reset: emulates the RESET line being asserted by the GLU after a
+// double bus error halt.  The sequence matches real hardware:
+//   1. RESET asserts → peripherals reset (VIA re-enables ROM overlay at $0)
+//   2. CPU reads SSP from $00000000 (ROM via overlay) and PC from $00000004
+//   3. SR = $2700, VBR = 0, caches/MMU cleared
+static __attribute__((noinline, cold)) void cpu_hardware_reset(cpu_t *restrict cpu) {
+    LOG(1, "Hardware reset (double bus error → HALT → GLU RESET)");
+
+    // Step 1: Assert RESET line → machine-specific peripheral reset.
+    // On SE/30: VIA1 re-enables ROM overlay (ROM visible at $0), MMU disabled.
+    // This MUST happen before the CPU reads vectors from $0.
+    system_hardware_reset();
+
+    // Step 2: CPU hardware reset sequence (MC68030 User's Manual §5.2.1)
+    cpu->supervisor = 1;
+    cpu->interrupt_mask = 7;
+    cpu->trace = 0;
+    cpu->vbr = 0;
+    cpu->cacr = 0;
+    cpu->ssp = memory_read_uint32(0x00000000); // SSP from vector 0 (ROM via overlay)
+    cpu->a[7] = cpu->ssp;
+    cpu->pc = memory_read_uint32(0x00000004); // PC from vector 1 (ROM via overlay)
+}
+
 // Generate the cpu_run_68030 decoder function using the shared template
 #define CPU_DECODER_NAME        cpu_run_68030
 #define CPU_DECODER_ARGS        cpu_t *restrict cpu, uint32_t *instructions
 #define CPU_DECODER_RETURN_TYPE void
 #define CPU_DECODER_PROLOGUE                                                                                           \
+    /* Double bus error recovery: CPU halted → GLU asserts RESET line.                                               \
+     * RESET resets peripherals (VIA overlay re-enabled: ROM at $0),                                                   \
+     * then CPU loads SSP from $0 and PC from $4, SR=$2700, VBR=0. */                                                  \
+    if (__builtin_expect(cpu->halted, 0)) {                                                                            \
+        cpu->halted = 0;                                                                                               \
+        cpu_hardware_reset(cpu);                                                                                       \
+    }                                                                                                                  \
     /* Set SoA active pointers based on current supervisor mode */                                                     \
     g_active_read = cpu->supervisor ? g_supervisor_read : g_user_read;                                                 \
     g_active_write = cpu->supervisor ? g_supervisor_write : g_user_write;                                              \

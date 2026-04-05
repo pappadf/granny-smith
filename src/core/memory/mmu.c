@@ -290,14 +290,15 @@ static void mmu_fill_soa_entry(mmu_state_t *mmu, uint32_t logical_page, uint32_t
 // ============================================================================
 
 // Create MMU state
-mmu_state_t *mmu_init(uint8_t *physical_ram, uint32_t ram_size, uint8_t *physical_rom, uint32_t rom_size,
-                      uint32_t rom_phys_base, uint32_t rom_region_end) {
+mmu_state_t *mmu_init(uint8_t *physical_ram, uint32_t ram_size, uint32_t ram_size_max, uint8_t *physical_rom,
+                      uint32_t rom_size, uint32_t rom_phys_base, uint32_t rom_region_end) {
     mmu_state_t *mmu = (mmu_state_t *)calloc(1, sizeof(mmu_state_t));
     if (!mmu)
         return NULL;
 
     mmu->physical_ram = physical_ram;
     mmu->physical_ram_size = ram_size;
+    mmu->ram_size_max = ram_size_max;
     mmu->physical_rom = physical_rom;
     mmu->physical_rom_size = rom_size;
     mmu->rom_phys_base = rom_phys_base;
@@ -419,10 +420,29 @@ bool mmu_handle_fault(mmu_state_t *mmu, uint32_t logical_addr, bool write, bool 
     mmu_fill_soa_entry(mmu, emu_page, phys_page, result.supervisor_only, result.write_protected);
 
     // If phys_to_host returned NULL (unmapped physical), the SoA entry
-    // stays zero.  Don't bus error here — the hardware memory controller
-    // typically returns 0 or garbage for unmapped physical addresses
-    // reached via page table (e.g. addresses beyond installed RAM).
-    // Bus errors for NuBus empty slots are handled by the TT path above.
+    // stays zero.  On real hardware, the physical bus access would fail
+    // (no device responds) and generate a bus error.
+    //
+    // However, Mac OS legitimately probes RAM expansion addresses (e.g.
+    // $00F80000, $80000000) via page table entries and expects to read
+    // $FF without faulting.  Only bus error for physical addresses that
+    // are clearly garbage — outside all known hardware regions.  The gap
+    // $60000000-$EFFFFFFF has no hardware on any 68k Mac.
+    uint32_t page_index = emu_page >> PAGE_SHIFT;
+    if ((int)page_index < g_page_count) {
+        uintptr_t *active = write ? g_active_write : g_active_read;
+        if (active && active[page_index] == 0) {
+            // On real hardware, unmapped physical addresses cause bus errors.
+            // However, our deferred bus error mechanism is incompatible with
+            // the ROM's bail-out handler for data probes (the probe instruction
+            // completes before the bus error fires, breaking the expected flow).
+            // So we only bus error for addresses far beyond any hardware range.
+            // For closer ranges (e.g., $006DB000 from corrupted page tables),
+            // the f_trap handler detects unmapped instruction fetches separately.
+            if (phys_page >= mmu->ram_size_max && phys_page < mmu->rom_phys_base)
+                return false;
+        }
+    }
 
     return true;
 }

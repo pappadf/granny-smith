@@ -74,7 +74,8 @@ typedef struct mmu_state {
 
     // Host-side state for table walks
     uint8_t *physical_ram; // base of physical RAM buffer
-    uint32_t physical_ram_size; // size of RAM in bytes
+    uint32_t physical_ram_size; // size of installed RAM in bytes
+    uint32_t ram_size_max; // max RAM the controller supports (e.g. 128MB on SE/30)
     uint8_t *physical_rom; // base of physical ROM buffer
     uint32_t physical_rom_size; // size of ROM in bytes
     uint32_t rom_phys_base; // physical address where ROM region starts
@@ -106,9 +107,10 @@ typedef struct mmu_state {
 // === Lifecycle ===
 
 // Create MMU state with pointers to physical RAM/ROM.
+// ram_size_max is the maximum RAM the memory controller supports (bus error above this).
 // rom_region_end marks the end of the address range where ROM mirrors repeat.
-mmu_state_t *mmu_init(uint8_t *physical_ram, uint32_t ram_size, uint8_t *physical_rom, uint32_t rom_size,
-                      uint32_t rom_phys_base, uint32_t rom_region_end);
+mmu_state_t *mmu_init(uint8_t *physical_ram, uint32_t ram_size, uint32_t ram_size_max, uint8_t *physical_rom,
+                      uint32_t rom_size, uint32_t rom_phys_base, uint32_t rom_region_end);
 
 // Destroy MMU state
 void mmu_delete(mmu_state_t *mmu);

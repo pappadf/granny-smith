@@ -46,6 +46,17 @@ struct cpu {
     // CPU model (CPU_MODEL_68000 or CPU_MODEL_68030)
     int cpu_model;
 
+    // CPU halted (double bus error on 68030, double bus fault on 68000).
+    // On real hardware, the CPU asserts the HALT pin and stops executing.
+    // The machine's GLU/PAL detects HALT and asserts RESET.
+    uint32_t halted;
+
+    // Last bus error PC: used to detect double bus error (same instruction
+    // faulting twice = format $B retry failed).  On real 68030, RTE from a
+    // bus error retries the faulting instruction; if the retry faults, the
+    // CPU halts.  We detect this by comparing the faulting PC.
+    uint32_t last_bus_error_pc;
+
     // 68030-specific control registers (zero/unused on 68000)
     uint32_t vbr; // Vector Base Register
     uint32_t cacr; // Cache Control Register
@@ -554,8 +565,25 @@ static inline void exception(cpu_t *restrict cpu, uint32_t vector, uint32_t pc, 
 // Since this is deferred (instruction already completed), saved_pc points to the
 // NEXT instruction so the handler's RTE skips the faulting instruction.
 static __attribute__((noinline, cold)) void exception_bus_error(cpu_t *restrict cpu, uint32_t fault_addr, uint32_t rw) {
+    // Double bus error detection: on the real 68030, RTE from a bus error
+    // (format $B) retries the faulting instruction.  If the retry faults at
+    // the same PC, the CPU halts (MC68030UM §8.3.3).  We detect this by
+    // comparing the faulting PC with the last bus error's saved PC.
+    // The faulting instruction's address (before PC was advanced by the decoder)
+    uint32_t faulting_pc = cpu->instruction_pc;
+    if (cpu->last_bus_error_pc != 0 && cpu->last_bus_error_pc == faulting_pc) {
+        cpu->halted = 1;
+        cpu->last_bus_error_pc = 0;
+        g_bus_error_pending = 0;
+        if (g_bus_error_instr_ptr)
+            *g_bus_error_instr_ptr = 0;
+        return;
+    }
+    cpu->last_bus_error_pc = faulting_pc;
+
     uint16_t saved_sr = cpu_get_sr(cpu);
-    // Use cpu->pc (next instruction) since the faulting instruction already completed
+    // Use cpu->pc (next instruction) since the faulting instruction already completed.
+    // For instruction fetch bus errors (via f_trap), the caller adjusts PC first.
     uint32_t saved_pc = cpu->pc;
 
     // Switch to supervisor mode / ISP
@@ -571,39 +599,29 @@ static __attribute__((noinline, cold)) void exception_bus_error(cpu_t *restrict 
     }
 
     // Push 68030 Format $B (long bus cycle fault) frame: 46 words = 92 bytes.
-    // MC68030 SSW layout (bits 15-0):
-    //   15: FC  (stage C pipe fault)
-    //   14: FB  (stage B pipe fault)
-    //   13: RC  (rerun stage C)
-    //   12: RB  (rerun stage B)
-    //   11-9: reserved
-    //   8:  DF  (data fault — 1 when fault is on data cycle)
-    //   7:  RM  (read-modify-write on data cycle)
-    //   6:  RW  (1=read, 0=write)
-    //   5-4: SIZ (size: 00=long, 01=byte, 10=word, 11=line)
-    //   3-0: function code of faulting data cycle
-    uint16_t fc = (saved_sr & 0x2000) ? 5 : 1; // FC from original S bit: supervisor data=5, user data=1
-    uint16_t ssw = (1 << 8) // DF: data cycle fault
-                   | ((rw ? 1 : 0) << 6) // RW: 1=read, 0=write
-                   | (0x01 << 4) // SIZ: 01=byte
-                   | (fc & 0x7); // function code in lower bits
+    uint16_t fc = (saved_sr & 0x2000) ? 5 : 1;
+    uint16_t ssw = (1 << 8) | ((rw ? 1 : 0) << 6) | (0x01 << 4) | (fc & 0x7);
 
-    // Allocate full 92-byte frame and zero internal fields
     cpu->a[7] -= 92;
     uint32_t frame = cpu->a[7];
-    // Zero the entire frame (internal registers are implementation-dependent)
     for (int i = 0; i < 92; i += 4)
         memory_write_uint32(frame + i, 0);
-    // Fill the defined fields
-    memory_write_uint16(frame + 0x00, saved_sr); // SR
-    memory_write_uint32(frame + 0x02, saved_pc); // PC
-    memory_write_uint16(frame + 0x06, 0xB008); // Format $B, vector $008 (bus error)
-    memory_write_uint16(frame + 0x0A, ssw); // Special Status Word
-    memory_write_uint32(frame + 0x10, fault_addr); // Data Cycle Fault Address
+    memory_write_uint16(frame + 0x00, saved_sr);
+    memory_write_uint32(frame + 0x02, saved_pc);
+    memory_write_uint16(frame + 0x06, 0xB008);
+    memory_write_uint16(frame + 0x0A, ssw);
+    memory_write_uint32(frame + 0x10, fault_addr);
 
-    // Load bus error vector
     cpu->pc = memory_read_uint32(cpu->vbr + 0x008);
     cpu->trace = 0;
+
+    // Clear last_bus_error_pc for "skip" scenarios (normal data bus errors where
+    // saved_pc = next instruction).  Keep it for "retry" scenarios (f_trap
+    // converted instruction fetch bus errors where saved_pc = faulting address).
+    // This prevents false double-bus-error detection when the same instruction
+    // causes bus errors in a loop (e.g., ROM RAM sizing probes).
+    if (saved_pc != faulting_pc)
+        cpu->last_bus_error_pc = 0;
 }
 
 // Check if a pending interrupt should be serviced
@@ -690,6 +708,28 @@ static inline void a_trap(cpu_t *restrict cpu) {
     exception(cpu, 0x28, cpu->pc - 2, cpu_get_sr(cpu));
 }
 static inline void f_trap(cpu_t *restrict cpu) {
+    // Check for spurious F-line from unmapped instruction fetch.
+    // When the MMU page table is corrupted, instruction fetches to garbage
+    // addresses return $FF (unmapped physical) which decodes as $FFFF = F-line.
+    // On real hardware, the fetch would bus error (no device at the physical
+    // address).  Detect this by checking:
+    //   1. Bus error already pending from the fetch, OR
+    //   2. The instruction page has no SoA read entry (unmapped after MMU walk)
+    // Convert to a bus error with retry semantics → double bus error → halt.
+    if (__builtin_expect(g_bus_error_pending, 0) && g_bus_error_address == cpu->instruction_pc) {
+        g_bus_error_pending = 0;
+        cpu->pc = cpu->instruction_pc;
+        exception_bus_error(cpu, cpu->instruction_pc, 1);
+        return;
+    }
+    uint32_t fetch_page = cpu->instruction_pc >> PAGE_SHIFT;
+    if (__builtin_expect(g_active_read && (int)fetch_page < g_page_count && g_active_read[fetch_page] == 0, 0)) {
+        // Instruction page has no SoA entry — fetch returned $FF from unmapped
+        // physical memory.  Treat as bus error (matching real hardware behavior).
+        cpu->pc = cpu->instruction_pc;
+        exception_bus_error(cpu, cpu->instruction_pc, 1);
+        return;
+    }
     exception(cpu, 0x2C, cpu->pc - 2, cpu_get_sr(cpu));
 }
 

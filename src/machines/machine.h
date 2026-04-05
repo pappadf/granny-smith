@@ -39,6 +39,7 @@ typedef struct hw_profile {
 
     // Callbacks: machine-specific setup/teardown
     void (*init)(struct config *cfg, checkpoint_t *cp);
+    void (*reset)(struct config *cfg); // hardware RESET line: re-init VIAs, overlay, MMU
     void (*teardown)(struct config *cfg);
     void (*checkpoint_save)(struct config *cfg, checkpoint_t *cp);
     void (*checkpoint_restore)(struct config *cfg, checkpoint_t *cp);

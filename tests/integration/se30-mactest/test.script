@@ -71,11 +71,24 @@ run 100000000
 screenshot --match floppy-test-success.png
 
 # Insert the original application disk
-insert-fd ../../data/apps/MacTest-SE30.image 0
+insert-fd ../../data/apps/MacTest-SE30.image 0 1
 
-run 10000000000
+# Stop the mouse guard before the RAM test — it writes to RAM every 1ms,
+# corrupting test patterns and causing verify failures.
+set-mouse 0 0
 
-screenshot --match still-in-ram-test.png
+# Switch to max speed for the destructive RAM test (avoid realtime throttle).
+# The test fills + verifies all 4 MB with multiple patterns (~4 min at 16 MHz).
+# After all passes, the test code returns through the destroyed stack, triggers
+# a double bus error, and the GLU resets the machine automatically.
+# Budget: ~5B for the test + ~1B for the reboot + ~200M for MacTest reload.
+schedule max
+run 7000000000
+
+# After the reboot, MacTest should have reloaded from the floppy and reached
+# its main screen.  It reads the PRAM flag set before the test and knows the
+# memory test passed.
+screenshot --match main-after-reboot.png
 
 screenshot foo.png
 

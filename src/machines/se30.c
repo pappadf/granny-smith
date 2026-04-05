@@ -506,6 +506,32 @@ static void se30_set_rom_overlay(config_t *cfg, bool overlay) {
 }
 
 // ============================================================
+// Hardware reset (RESET line asserted)
+// ============================================================
+
+// Called when the RESET line is asserted (e.g., double bus error → HALT → GLU
+// asserts RESET).  Resets peripherals to their power-on state:
+//   - VIA1: ROM overlay re-enabled (ROM visible at $0 for reset vector fetch)
+//   - MMU: disabled, TLB invalidated (page table may be corrupted)
+// This runs BEFORE the CPU reads SSP/PC from $0/$4.
+static void se30_reset(config_t *cfg) {
+    se30_state_t *se30 = se30_state(cfg);
+
+    // VIA1 reset: re-enable ROM overlay (VIA1 port A bit 4 goes high on reset)
+    se30->rom_overlay = false; // force toggle
+    se30_set_rom_overlay(cfg, true);
+
+    // MMU reset: disable translation and flush TLB
+    if (se30->mmu) {
+        se30->mmu->enabled = false;
+        se30->mmu->tc = 0;
+        mmu_invalidate_tlb(se30->mmu);
+    }
+
+    LOG(1, "SE/30 RESET: ROM overlay active, MMU disabled");
+}
+
+// ============================================================
 // I/O dispatcher
 // ============================================================
 
@@ -1111,7 +1137,8 @@ static void se30_init(config_t *cfg, checkpoint_t *checkpoint) {
     uint8_t *rom_data = ram_native_pointer(cfg->mem_map, ram_size);
     uint32_t rom_size = cfg->machine->rom_size;
 
-    se30->mmu = mmu_init(ram_base, ram_size, rom_data, rom_size, SE30_ROM_START, SE30_ROM_END);
+    se30->mmu =
+        mmu_init(ram_base, ram_size, cfg->machine->ram_size_max, rom_data, rom_size, SE30_ROM_START, SE30_ROM_END);
     assert(se30->mmu != NULL);
     g_mmu = se30->mmu;
     cfg->cpu->mmu = se30->mmu;
@@ -1320,6 +1347,7 @@ const hw_profile_t machine_se30 = {
 
     // Lifecycle callbacks
     .init = se30_init,
+    .reset = se30_reset,
     .teardown = se30_teardown,
     .checkpoint_save = se30_checkpoint_save,
     .checkpoint_restore = NULL, // restore handled by se30_init when checkpoint != NULL

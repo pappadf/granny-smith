@@ -111,6 +111,12 @@ bool system_mouse_move(int dx, int dy);
 bool system_mouse_move_adb(int dx, int dy);
 void system_keyboard_update(key_event_t event, int key);
 
+// Hardware RESET line: calls the machine's reset handler to reinitialize
+// peripherals (VIA overlay, MMU, etc.).  Called by the CPU on double bus error
+// (HALT → GLU RESET) BEFORE the CPU reads SSP/PC from $0/$4.
+// Weak: unit tests that don't link system.c get a no-op stub.
+__attribute__((weak)) void system_hardware_reset(void);
+
 // System-level scheduler accessor: returns the current scheduler object
 scheduler_t *system_scheduler(void);
 

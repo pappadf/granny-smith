@@ -128,9 +128,9 @@ uint8_t memory_read_uint8_slow(uint32_t addr) {
             uintptr_t base = g_active_read[addr >> PAGE_SHIFT];
             if (base != 0)
                 return LOAD_BE8((uint8_t *)(base + addr));
-            // SoA still 0: unmapped physical but no fault (e.g. beyond RAM)
+            // SoA still 0: unmapped physical but no fault (e.g. TT-matched pseudo-slot)
         } else {
-            // MMU fault (TT-matched unmapped NuBus, permission, etc.)
+            // MMU fault (invalid descriptor, unmapped physical, permission, etc.)
             if (!g_bus_error_pending) {
                 g_bus_error_pending = 1;
                 g_bus_error_address = addr;
@@ -192,7 +192,7 @@ void memory_write_uint8_slow(uint32_t addr, uint8_t value) {
             }
             // SoA still 0: unmapped physical but no fault — drop write
         } else {
-            // MMU fault (TT-matched unmapped NuBus, permission, etc.)
+            // MMU fault (invalid descriptor, unmapped physical, permission, etc.)
             if (!g_bus_error_pending) {
                 g_bus_error_pending = 1;
                 g_bus_error_address = addr;
