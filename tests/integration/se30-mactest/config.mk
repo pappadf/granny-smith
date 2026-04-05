@@ -14,4 +14,4 @@ TEST_ROM := roms/SE30.rom
 TEST_ARGS := fd0=$(TEST_DATA)/apps/MacTest-SE30.image
 
 # Ensure tmp dir exists and clean up leftover temp files from previous runs
-TEST_SETUP := mkdir -p se30-mactest/tmp && rm -f se30-mactest/tmp/blank800.dsk
+TEST_SETUP := mkdir -p se30-mactest/tmp && rm -f se30-mactest/tmp/blank800.dsk se30-mactest/tmp/blankHD.dsk

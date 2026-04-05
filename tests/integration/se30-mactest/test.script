@@ -11,73 +11,32 @@ scc-loopback on
 scsi-loopback on
 
 # Boot past Happy Mac through splash screens
-run 720000000
+run 200000000
 
-# With scsi-loopback enabled, MacTest sees the test card and goes
-# directly to the main screen (no SCSI warning dialog).
+# Match the MacTest main screen
 screenshot --match main.png
 
 # Start the test
 set-mouse 100 121 --global
-run 20000000
+run 5000000
 mouse-button down
-run 2000000
+run 5000000
 mouse-button up
 run 20000000
 
-screenshot foo1.png
 # We should be running the VIA tests now
 screenshot --match via.png
 
-# IMPORTANT: DON'T ADD LONGPOINTS TOO EARLY IN THE SCRIPT
-# AS THEY HAVE A SIGNIFICANT PERFORMANCE IMPACT
+run 150000000
 
-# ---- Logpoints: test wrapper entry + exit points ----
-log logpoint 10
+# The test now asks us to insert a 800K floppy
+screenshot --match insert-800k-floppy.png
 
-logpoint $24062 ">>> TEST 1: DO_VIA_T (VIA timers) ENTER"
-logpoint $2419E ">>> TEST 2: DO_SCC_T (SCC loopback) ENTER"
-logpoint $242AC "<<< TEST 2: DO_SCC_T EXIT (RTS)"
-logpoint $24112 ">>> TEST 3: DO_SOUND (ASC sound hardware) ENTER"
-logpoint $2417A "!!! TEST 3: DO_SOUND error path (PEA error string)"
-logpoint $24194 "<<< TEST 3: DO_SOUND EXIT (RTS)"
-logpoint $242B6 ">>> TEST 4: DO_CLOCK (clock / baud-rate) ENTER"
-logpoint $2431C ">>> TEST 5: DO_FPU_T (68882 FPU) ENTER"
-logpoint $2438A ">>> TEST 6: DO_PMMU_ (68030 PMMU) ENTER"
-logpoint $2441C ">>> TEST 7: DO_SCSI_ (SCSI) ENTER"
-logpoint $24496 ">>> TEST 13: TEST_MEM (memory) ENTER"
+# Insert 800K floppy
+new-fd tmp/blank800.dsk 0
 
-# Logpoint at SHOW_ERROR_DIALOG entry
-logpoint $293C6 "*** SHOW_ERROR_DIALOG entered ***"
-
-# Run up to the SCSI subtest entry.
-br $2441C
-run 800000000
-
-# SCSI loopback is already enabled from boot — no need to enable it here.
-
-# Run the SCSI test to completion
-run 15000000
-
-# Screen should say that the SCSI test succeeded
-screenshot --match scsi.png
-
-# ---- Test 8: Floppy drive test ----
-# After SCSI, MacTest runs the floppy test (TEST_PERFO via $6A2(A5) → $37F28).
-# It ejects the boot disk from drive 0 during a head-seek test, then shows a
-# dialog: "Insert a blank, unprotected 800K floppy into the internal drive."
-#
-# The floppy test calls WAITFORL ($383E8) which shows ALRT $898 ("Insert
-# blank 800K floppy into internal drive") via JSR $592(A5) at $3846E.
-# After the user clicks OK, the status re-check is at $3849C.
-#
-# We must insert the blank floppy AFTER the alert returns (click OK) but
-# BEFORE the status check.  Using a breakpoint at $3849C ensures the blank
-# disk is in the drive when CSTIN is read.  If we insert too early, the ROM's
-# .Sony VBL task auto-mounts, fails (blank=unreadable), and ejects the disk.
-
-# Run until the floppy dialog appears (boot disk is ejected during this phase)
-run 200000000
+# Let it run a short bit - detect the floppy
+run 10000000
 
 # Click the OK button on the "insert floppy" dialog
 set-mouse 370 185 --global
@@ -86,139 +45,38 @@ mouse-button down
 run 5000000
 mouse-button up
 
-# Break at the status re-check inside WAITFORL ($3849C = JSR read_disk_status)
-br $3849C
-run 50000000
+run 250000000
 
-# Insert the blank floppy NOW — alert has returned, status check is imminent
-new-fd tmp/blank800.dsk 0
-br del $3849C
+# The test now asks us to insert a 1.4MB floppy
+screenshot --match insert-1.4mb-floppy.png
 
-# Continue: WAITFORL reads disk status and finds the freshly inserted floppy.
-# MacTest formats/tests the blank floppy (format, write, read, verify, TACH
-# timing, speed-zone /READY checks).  This takes ~2.5B instructions.
-# After completion, MacTest ejects the blank disk and asks to re-insert
-# the boot disk via WAITFORL ($38FD4).
-#
-# IMPORTANT: The re-insert must happen while WAITFORL is polling, not after
-# it returns.  We use the same $3849C breakpoint (inside WAITFORL's status
-# re-check) that Phase 1 used for the blank disk insertion.
+# Reset MBState: the mouse guard from the 800K set-mouse --global kept the
+# cursor pinned at the OK button position during the 250M-cycle run above.
+# Intermediate dialogs (Phase 2 boot-disk-reinsert, error dialogs) were
+# auto-clicked by the guard + stale MBState, leaving MBState stuck at 0x00.
+# Force it back to 0x80 (button up) before our click.
+mouse-button --global up
 
-# ---- Logpoints: floppy test progress tracking ----
-# Phase 1: blank disk subtests
-logpoint $3A3C6 ">>> SUB_TEST_5: track index passed"
-logpoint $3A3D0 ">>> SUB_TEST_5: ALL 8 TRACKS PASSED"
+# Insert 1.4MB HD floppy and click immediately (before .Sony VBL auto-mounts)
+new-fd --hd tmp/blankHD.dsk 0
+set-mouse 370 185 --global
+run 5000000
+mouse-button down
+run 5000000
+mouse-button up
 
-# Floppy wrapper flow (see MacTest-SE30.asm)
-logpoint $386AE ">>> WRAPPER: Phase-1 subtests complete, checking flags"
-logpoint $386B6 ">>> WRAPPER: mfmDrv set, calling SWIM validation"
-logpoint $386C2 ">>> WRAPPER: Phase-2 entry (boot disk reinsert)"
-logpoint $386DA ">>> WRAPPER: Phase-2 calling WAITFORL(type=2)"
-logpoint $386E4 ">>> WRAPPER: Phase-2 WAITFORL returned, checking result"
-logpoint $38706 ">>> WRAPPER: Phase-2 showing error code"
-logpoint $3870A ">>> WRAPPER: Phase-2 clean return"
+run 100000000
 
-# WAITFORL case 2 steps (see MacTest-SE30.asm)
-logpoint $390F8 ">>> WFL2: case 2 entry"
-logpoint $39110 ">>> WFL2: step 2 drive-check result"
-logpoint $3911C ">>> WFL2: step 3 SUB_TEST_6 entry"
-# SUB_TEST_6 inner loop (see MacTest-SE30.asm $39592)
-logpoint $39602 ">>> ST6: SEEK_AND_MEASURE call"
-logpoint $39614 ">>> ST6: seek result BEQ"
-logpoint $39618 ">>> ST6: seek OK, measuring speed"
-logpoint $39624 ">>> ST6: MEASURE_SPEED returned (SUBQ)"
-logpoint $39626 ">>> ST6: ADDQ A7 after SUBQ"
-logpoint $39628 ">>> ST6: BNE check"
-logpoint $3962A ">>> ST6: MEASURE_SPEED timeout → error"
-logpoint $3962C ">>> ST6: bounds check (value at -$4(A6))"
-logpoint $39642 ">>> ST6: FAIL error 3500+idx"
-logpoint $3964C ">>> ST6: track PASS, next"
-logpoint $39664 ">>> ST6: ALL 10 PASSED"
-logpoint $39124 ">>> WFL2: step 3 result"
-logpoint $391B8 ">>> WFL2: ERROR EXIT"
+# Screen should now say that floppy tests succeeded and prompt us to re-insert app disk
+screenshot --match floppy-test-success.png
 
-# Error dialog
-logpoint $293C6 "*** SHOW_ERROR_DIALOG ***"
-
-# Run the floppy test.  Phase 1 takes ~1.5B instructions.
-# With all fixes, the test progresses past SUB_TEST_5 and into Phase 2.
-# Phase 2 ejects the blank disk (step 1), checks drive (step 2), then
-# needs the boot disk for the seek/verify step (step 3).
-#
-# Break at $39116 = right after step 2 passes, before step 3 starts.
-# This is inside WAITFORL case 2, between CHECK_DRIVE_STATUS and the
-# seek/verify loop.  At this point the blank disk has been ejected and
-# we can insert the boot disk.
-br $39116
-run 1500000000
-
-# Verify the floppy test is still running (not showing error)
-screenshot --match floppy-testing.png
-
-# Insert the MacTest boot disk into drive 0 (blank disk was ejected)
+# Insert the original application disk
 insert-fd ../../data/apps/MacTest-SE30.image 0
 
-# Continue Phase 2 step 3 (seek/verify across all speed zones)
-br del $39116
+run 10000000000
 
-# Logpoints for WAITFORL case 2 steps 4-6
-logpoint $3912A ">>> WFL2: step 4 entry (CHECK_DISK_PARAMS)"
-logpoint $3913C ">>> WFL2: step 4 result check"
-logpoint $39142 ">>> WFL2: step 5 entry (READ_SECTOR_CHECK)"
-logpoint $39150 ">>> WFL2: step 5 result check"
-logpoint $39156 ">>> WFL2: step 6 entry (FINALIZE)"
-logpoint $39160 ">>> WFL2: step 6 → success exit"
-logpoint $391DA ">>> WFL2: common success exit"
+screenshot --match still-in-ram-test.png
 
-# Continue Phase 2: steps 4-6
-# All 6 steps now pass (ISM write capture fix for step 5).
-run 1500000000
-
-# Logpoints for DISPATCH case 3 (HD test) steps
-logpoint $39164 ">>> CASE3: entry (HD test)"
-logpoint $3916A ">>> CASE3: step 1 LEADP"
-logpoint $39174 ">>> CASE3: step 2 CHECK_DRIVE_STATUS"
-logpoint $39186 ">>> CASE3: step 3 HD_MEASURE_SPEED"
-logpoint $3919C ">>> CASE3: step 4 CHECK_DISK_PARAMS (18 spt)"
-logpoint $391AE ">>> CASE3: step 5 HD_READ_SECTOR_CHECK"
-logpoint $391B8 ">>> CASE3: ERROR EXIT"
-logpoint $391BE ">>> CASE3: SUCCESS → FINALIZE"
-
-# ---- Phase 3: HD (1.4MB) floppy test ----
-# After Phase 2 passes, PERFO returns to TEST_PERFO Section B.
-# TEST_PERFO calls LEADISK ($38506) which shows "insert 1.4MB floppy" dialog.
-# Break at LEADISK's status re-check ($385C4) to insert the HD floppy.
-
-# Wait for the LEADISK dialog to appear
-run 200000000
-
-# Click OK on the "insert 1.4MB floppy" dialog (first time dismisses it,
-# LEADISK fails conditions with no disk → retries with second dialog)
-set-mouse 370 185 --global
-run 5000000
-mouse-button down
-run 2000000
-mouse-button up
-run 20000000
-
-# Break at LEADISK's status re-check ($385C4) to insert the HD floppy.
-# Click OK on the retry dialog, then wait for the breakpoint.
-br $385C4
-set-mouse 370 185 --global
-run 5000000
-mouse-button down
-run 2000000
-mouse-button up
-run 50000000
-
-# Insert blank HD floppy at the status re-check breakpoint
-new-fd --hd tmp/blankHD.dsk 0
-br del $385C4
-
-# Run Phase 3 (DISPATCH mode=3)
-run 1500000000
-
-# Capture the current state
-screenshot floppy-final-result.png
+screenshot foo.png
 
 quit

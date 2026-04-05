@@ -115,7 +115,7 @@ typedef struct memory {
 // The slow path is entered when the SoA fast-path entry is zero.
 // Addresses arriving here are already masked by g_address_mask.
 // Dispatch order: device I/O (via page_entry_t) → MMU TLB handling via
-// mmu_handle_fault(...) and deferred bus error signaling → unmapped (return 0).
+// mmu_handle_fault(...) and deferred bus error signaling → unmapped (return $FF).
 
 // Slow path for 8-bit reads: device I/O, MMU TLB miss, or unmapped
 uint8_t memory_read_uint8_slow(uint32_t addr) {
@@ -140,7 +140,11 @@ uint8_t memory_read_uint8_slow(uint32_t addr) {
             }
         }
     }
-    return 0;
+    // Unmapped physical memory returns $FF (floating bus, pull-up resistors).
+    // This matches real 68k Mac hardware behavior and is critical for:
+    //   - ROM RAM sizing (write pattern / read-back $FF → detects boundary)
+    //   - ROM POST memory test (pattern mismatch → knows address is invalid)
+    return 0xFF;
 }
 
 // Slow path for 16-bit reads: cross-page or device I/O
