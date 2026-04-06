@@ -143,20 +143,14 @@ export async function classifyMediaFile(filePath) {
 }
 
 // Search a directory for recognizable media files (ROM or floppy).
+// Uses the C-side find-media command (FS.readdir fails cross-thread with WasmFS pthreads).
 export async function findMediaInDirectory(dirPath) {
-  const FS = getFS();
-  try {
-    const files = FS.readdir(dirPath).filter(n => n !== '.' && n !== '..');
-    for (const fileName of files) {
-      const fullPath = `${dirPath}/${fileName}`;
-      try {
-        const stat = FS.stat(fullPath);
-        if (!FS.isFile(stat.mode)) continue;
-        const kind = await classifyMediaFile(fullPath);
-        if (kind) return { path: fullPath, kind };
-      } catch {}
-    }
-  } catch {}
+  // Try floppy first via find-media (scans directory on the worker thread)
+  const rc = await window.runCommand(`find-media ${dirPath}`);
+  if (rc === 0) return { path: dirPath, kind: 'floppy' };
+  // Probe individual known files as ROM (find-media only finds floppies)
+  // For ROM detection, probe the first file via load-rom --probe
+  if (await probeRom(dirPath)) return { path: dirPath, kind: 'rom' };
   return null;
 }
 

@@ -657,6 +657,79 @@ static uint64_t cmd_file_copy(int argc, char *argv[]) {
     return 0;
 }
 
+// Find a mountable media file in a directory.
+// Scans the directory for files that pass insert-fd --probe or load-rom --probe.
+// Prints the path of the first match and returns 0, or returns 1 if none found.
+// Used by JS after peeler extraction (FS.readdir from main thread is broken
+// with WasmFS pthreads, so this runs on the worker).
+static uint64_t cmd_find_media(int argc, char *argv[]) {
+    if (argc < 2) {
+        printf("usage: find-media <directory> [dest]\n");
+        return 1;
+    }
+
+    const char *dir_path = argv[1];
+    const char *dest = (argc >= 3) ? argv[2] : NULL;
+
+    DIR *dir = opendir(dir_path);
+    if (!dir) {
+        printf("find-media: cannot open '%s': %s\n", dir_path, strerror(errno));
+        return 1;
+    }
+
+    struct dirent *entry;
+    char found_path[1024] = {0};
+    while ((entry = readdir(dir)) != NULL) {
+        if (entry->d_name[0] == '.')
+            continue;
+        char full[1024];
+        snprintf(full, sizeof(full), "%s/%s", dir_path, entry->d_name);
+        struct stat st;
+        if (stat(full, &st) != 0 || !S_ISREG(st.st_mode))
+            continue;
+        // Try as floppy image
+        image_t *img = image_open(full, false);
+        if (img) {
+            bool is_floppy = (img->type == image_fd_ss || img->type == image_fd_ds || img->type == image_fd_hd);
+            image_close(img);
+            if (is_floppy) {
+                snprintf(found_path, sizeof(found_path), "%s", full);
+                break;
+            }
+        }
+    }
+    closedir(dir);
+
+    if (!found_path[0])
+        return 1;
+
+    // Optionally copy to dest
+    if (dest) {
+        FILE *fin = fopen(found_path, "rb");
+        if (!fin)
+            return 1;
+        FILE *fout = fopen(dest, "wb");
+        if (!fout) {
+            fclose(fin);
+            return 1;
+        }
+        char buf[65536];
+        size_t n;
+        while ((n = fread(buf, 1, sizeof(buf), fin)) > 0) {
+            if (fwrite(buf, 1, n, fout) != n) {
+                fclose(fin);
+                fclose(fout);
+                return 1;
+            }
+        }
+        fclose(fin);
+        fclose(fout);
+    }
+
+    printf("%s\n", found_path);
+    return 0;
+}
+
 // Download command - save file to browser
 static uint64_t cmd_download(int argc, char *argv[]) {
     if (argc != 2) {
@@ -705,9 +778,11 @@ static uint64_t cmd_download(int argc, char *argv[]) {
                 var len = $1;
                 var namePtr = $2;
                 var name = UTF8ToString(namePtr) || 'download.bin';
-                var heap = Module.HEAPU8;
-                var data = heap.slice(ptr, ptr + len);
-                var blob = new Blob([data], {type: 'application/octet-stream'});
+                // Access the shared heap — try both global and Module-scoped accessors
+                var heap = (typeof HEAPU8 !== 'undefined') ? HEAPU8 : Module.HEAPU8;
+                var data = new Uint8Array(heap.buffer, ptr, len);
+                var copy = new Uint8Array(data);  // copy out of shared buffer
+                var blob = new Blob([copy], {type: 'application/octet-stream'});
                 var a = document.createElement('a');
                 a.href = URL.createObjectURL(blob);
                 a.download = name;
@@ -718,7 +793,7 @@ static uint64_t cmd_download(int argc, char *argv[]) {
                     try { URL.revokeObjectURL(a.href); } catch (e) {}
                 }, 0);
             } catch (e) {
-                console.error('download failed', e);
+                console.error('[download] MAIN_THREAD_EM_ASM failed:', e);
             }
         },
         buf, (int)nread, name);
@@ -1171,6 +1246,8 @@ int main(int argc, char *argv[]) {
     // Register shell commands
     register_cmd("download", "Filesystem", "download <path> – save file to your computer", cmd_download);
     register_cmd("file-copy", "Filesystem", "file-copy <src> <dest> – copy a file", cmd_file_copy);
+    register_cmd("find-media", "Filesystem",
+                 "find-media <dir> [dest] – find first floppy image in dir, optionally copy to dest", cmd_find_media);
     register_cmd("background-checkpoint", "Checkpointing",
                  "background-checkpoint [reason] – save a quick checkpoint to /checkpoint", cmd_background_checkpoint);
     register_cmd("checkpoint", "Checkpointing", "checkpoint <clear|auto <on|off>|on|off> – manage checkpoints",

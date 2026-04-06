@@ -101,7 +101,6 @@ async function fetchAndStore(slot, url) {
       const isPeelerArch = /\.(sit|hqx|cpt|bin|sea)(_|$)/i.test(fileName);
 
       if (isPeelerArch && isModuleReady()) {
-        ensureDir('/tmp');
         const tempPath = `/tmp/${slot}_download`;
         writeBinary(tempPath, buf);
 
@@ -110,34 +109,16 @@ async function fetchAndStore(slot, url) {
 
           if (probeResult === 0) {
             const extractDir = `/tmp/${slot}_unpacked`;
-            ensureDir(extractDir);
             toast(`Extracting ${fileName}...`);
 
+            // Extract on the worker (peeler creates the output dir)
             const extractResult = await window.runCommand(`peeler -o ${extractDir} ${tempPath}`);
             if (extractResult === 0) {
-              toast(`Extracted ${fileName}`);
-
-              const files = FS.readdir(extractDir).filter(n => n !== '.' && n !== '..');
-              let foundImage = null;
-              for (const f of files) {
-                const fullPath = `${extractDir}/${f}`;
-                try {
-                  const stat = FS.stat(fullPath);
-                  if (FS.isFile(stat.mode)) {
-                    const qp = (p) => `"${p.replace(/"/g, '\\"')}"`;
-                    const probeImg = await window.runCommand(`insert-fd --probe ${qp(fullPath)}`);
-                    if (probeImg === 0) {
-                      foundImage = fullPath;
-                      break;
-                    }
-                  }
-                } catch (_) {}
-              }
-
-              if (foundImage) {
-                const imgData = FS.readFile(foundImage);
-                writeBinary(tmpPath, imgData);
-                toast(`${slot} downloaded (extracted:${foundImage.split('/').pop()})`);
+              // Scan extracted directory on the worker (FS.readdir fails cross-thread).
+              // find-media scans for floppy images and copies the first match to tmpPath.
+              const findResult = await window.runCommand(`find-media ${extractDir} ${tmpPath}`);
+              if (findResult === 0) {
+                toast(`${slot} downloaded (extracted from archive)`);
               } else {
                 writeBinary(tmpPath, buf);
                 toast(`${slot} downloaded (archive extracted but no disk image found)`);
