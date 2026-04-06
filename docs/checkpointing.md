@@ -7,54 +7,34 @@ Checkpointing allows the emulator to save its entire state to persistent storage
 
 There are two main types of checkpoints:
 
-- **Quick checkpoint:** Automatically triggered by the emulator at regular intervals or in response to events (such as a browser page reload or closure). Quick checkpoints are optimized for speed and may skip serializing state already present in persistent storage (e.g., disk image blocks), relying on the underlying file system to persist those changes. This enables fast, frequent state saves without redundant data.
+- **Quick checkpoint:** Automatically triggered by the emulator at regular intervals or in response to events (such as a browser tab becoming hidden). Quick checkpoints are optimized for speed and may skip serializing state already present in persistent storage (e.g., disk image blocks in the delta file), relying on OPFS auto-persistence. This enables fast, frequent state saves without redundant data.
 
 - **Consolidated checkpoint:** Explicitly created by the user to export the complete machine state into a single file or stream. In this mode, *all* emulator state—including data normally left in persistent storage—is fully serialized. Consolidated checkpoints are slower to create but provide a complete, portable snapshot suitable for backup, transfer, or archival.
 
 Supporting both checkpoint types balances performance and reliability, enabling robust state persistence for both automated recovery and user-driven export.
 
 
-## Background Checkpoint Completion Tracking
+## Background Checkpoints
 
-Background checkpoints (quick checkpoints saved automatically) use a marker-based system to ensure only fully-persisted checkpoints are loaded after a page reload:
+Background checkpoints (quick checkpoints saved automatically) are written directly to OPFS-backed storage. With OPFS + pthreads, every `fclose()` is immediately durable — no async sync step or marker protocol is needed.
 
 ### File Naming Convention
 
 Checkpoint files use a 7-digit sequence number:
-- `0000001.checkpoint` - The actual checkpoint data
-- `0000001.pending` - Marker indicating checkpoint write is in progress
-- `0000001.complete` - Marker indicating checkpoint is fully persisted to IndexedDB
+- `0000001.checkpoint` - The checkpoint data (durable on write)
 
 ### Checkpoint Save Flow
 
-1. **Create `.pending` marker** before writing any checkpoint data
-2. **Write checkpoint data** to the `.checkpoint` file
-3. **Trigger IndexedDB sync** and wait for completion callback
-4. **On sync success:**
-   - Remove `.pending` marker
-   - Create `.complete` marker
-   - Clean up older checkpoint files (seq < current)
-5. **On sync failure:**
-   - Leave `.pending` marker in place
-   - Do NOT create `.complete` marker
+1. **Write checkpoint data** to the `.checkpoint` file (synchronous, auto-persisted by OPFS)
+2. **Clean up older checkpoints** (remove files with sequence numbers < current)
 
 ### Checkpoint Load Flow (on page load)
 
-1. **Clean up incomplete checkpoints:**
-   - Remove any `.checkpoint` files without corresponding `.complete` markers
-   - Remove orphaned `.pending` markers
-2. **List only complete checkpoints** (those with both `.checkpoint` AND `.complete`)
-3. **Offer the latest complete checkpoint** to the user
-4. **Clean up older checkpoints** after user selection
+1. **Scan for `.checkpoint` files** and find the highest sequence number
+2. **Validate build ID** to reject checkpoints from incompatible builds
+3. **Offer the latest checkpoint** to the user (continue or start fresh)
 
-### Page Reload Safety
-
-The marker system handles page reload edge cases:
-- If reload interrupts during checkpoint write: `.pending` exists but no `.complete`
-- If reload interrupts during sync: `.pending` exists but no `.complete`
-- If reload after sync but before cleanup: Both markers exist; considered complete
-
-Incomplete checkpoints are automatically cleaned up on next page load.
+No marker files are needed because OPFS writes are durable the moment the file is closed. There is no window where a partially-written checkpoint could be mistaken for a valid one — `system_checkpoint` writes the complete file or not at all.
 
 
 ## Checkpointing Design
@@ -77,54 +57,56 @@ Incomplete checkpoints are automatically cleaned up on next page load.
 
 - **File format & signature:**
   - Two on-disk formats are used:
-    - **v2 (`GSCHKPT2`)** — Used for consolidated (full-export) checkpoints. Per-block RLE compression with file/line metadata for diagnostics. Data blocks ≥ 64 bytes are RLE-compressed individually.
+    - **v2 (`GSCHKPT2`)** — Used for consolidated (full-export) checkpoints. Per-block RLE compression with file/line metadata for diagnostics. Data blocks >= 64 bytes are RLE-compressed individually.
     - **v3 (`GSCHKPT3`)** — Used for quick (background auto-save) checkpoints. All data is accumulated into a pre-allocated memory buffer, then the entire buffer is RLE-compressed in a single pass and written to disk in one `fwrite` call. No per-block metadata (filenames, line numbers) is stored.
   - The v3 format structure: `GSCHKPT3` (8 bytes) + uncompressed_size (8 bytes) + compressed_size (8 bytes) + RLE-compressed payload.
-  - File references in v3 quick checkpoints: files at persistent paths (`/persist/`) are stored as path-only references; files at volatile paths are embedded with content to survive page reload.
   - The reader auto-detects the format by inspecting the 8-byte magic signature.
 
 
 ## Image Persistence for Quick Checkpoints
 
-Quick checkpoints assume that disk image backing files and their `.blocks/` directories already exist in persistent storage at restore time. In the browser, images uploaded via drag-and-drop or test injection initially land in volatile MEMFS (`/tmp/`), which is wiped on page reload. The `media-persist.js` module fixes this by automatically copying volatile images to IDBFS before the C core opens them.
+Quick checkpoints assume that disk image backing files and their delta/journal files exist in persistent storage at restore time. In the browser, images uploaded via drag-and-drop initially land in volatile `/tmp/` (memory-backed), which is wiped on page reload. The C-side `image_persist_volatile()` function fixes this by copying volatile images to OPFS before the storage engine opens them.
 
 ### How It Works
 
-When an `insert-fd` or `attach-hd` command targets a volatile path (`/tmp/` or `/fd/`), the JS-side command preprocessor (registered in `emulator.js`):
+When an `insert-fd` or `attach-hd` command targets a volatile path (`/tmp/` or `/fd/`), `image_persist_volatile()` (called from the worker thread where OPFS is accessible):
 
 1. Reads the image file from volatile storage.
-2. Computes a content hash (FNV-1a over first 64 KB + total file size) → 8-char hex.
-3. Copies the file to `/persist/images/<hash>.img` (skipped if the hash file already exists).
-4. Triggers an IDBFS sync to ensure the copy reaches IndexedDB.
-5. Rewrites the mount command to use the persistent path.
+2. Computes a content hash (FNV-1a over first 64 KB + total file size) -> 8-char hex.
+3. Copies the file to `/images/<hash>.img` (skipped if the hash file already exists).
+4. Returns the persistent path.
 
-The C core then opens the image at its persistent location, and the storage engine creates `.blocks/` adjacent to it under `/persist/images/`. All subsequent quick checkpoints reference this persistent path. After a page reload, the image and its `.blocks/` directory are available from IDBFS and the checkpoint restores successfully.
+The command then opens the image at its persistent location. The storage engine creates `.delta` and `.journal` files adjacent to it under `/images/` — all on OPFS, surviving page reloads. Quick checkpoints reference the persistent path, so checkpoint restore succeeds after reload.
 
 ### Content-Addressed Naming
 
-Images under `/persist/images/` are named by their content hash (`<hash>.img`). This provides:
+Images under `/images/` are named by their content hash (`<hash>.img`). This provides:
 
 - **Deduplication:** The same image mounted multiple times is stored only once.
 - **Skip-if-present:** If the hash file exists, the copy is skipped entirely — no wasted I/O.
 - **No name collisions:** Different images with the same original filename get unique hashes.
 
-Images loaded via URL parameters (`url-media.js`) already land in `/persist/boot/` and are not affected by this mechanism — `isVolatile()` returns false for persistent paths.
+Images loaded via URL parameters (`url-media.js`) land in `/boot/` and are not affected by this mechanism.
 
 ### Filesystem Layout
 
 ```
-/persist/
-├── boot/
-│   ├── rom           # ROM binary
-│   ├── fd0           # Boot floppy (URL-parameter path)
-│   └── hd0           # Boot HD (URL-parameter path)
-├── images/
-│   ├── a3f7c012.img         # Content-addressed persisted image
-│   ├── a3f7c012.img.blocks/ # Storage engine directory
-│   └── ...
-└── checkpoint/
-    ├── 0000042.checkpoint
-    └── 0000042.complete
+/                              Memory (default WasmFS root)
+├── boot/                       OPFS (persistent)
+│   ├── roms/
+│   │   ├── <CHECKSUM>         ROM by checksum
+│   │   └── latest             Active ROM
+│   ├── fd0, fd1, ...          Boot floppy slots
+│   └── hd0, hd1, ...          Boot HD slots
+├── images/                     OPFS (persistent)
+│   ├── <hash>.img             Content-addressed disk images
+│   ├── <hash>.img.delta       Delta files (modifications)
+│   └── <hash>.img.journal     Preimage journals
+├── checkpoint/                 OPFS (persistent)
+│   └── 0000042.checkpoint     Quick checkpoint data
+└── tmp/                        Memory (volatile scratch)
+    ├── upload/                 File upload staging
+    └── extract/                Archive extraction
 ```
 
 
@@ -147,17 +129,16 @@ Images loaded via URL parameters (`url-media.js`) already land in `/persist/boot
 
 - **Cross-subsystem state:**
   - If a command or state spans multiple subsystems (e.g., floppy + image paths), keep the serialization logic in `system.c` or at an appropriate orchestration layer to avoid tight coupling inside a device subsystem.
-  - For example, the floppy controller snapshot saves controller/drive position, but does not reopen disk images; image association is handled at a higher level.
 
 - Disk images and storage backends
   - `image_checkpoint` writes the on-disk filename, writable flag, raw image size (`raw_size`), and then delegates to `storage_checkpoint`.
-  - `storage_checkpoint` inspects `checkpoint_get_kind(checkpoint)` to decide whether to write only metadata (quick checkpoints) or stream the entire backing store (consolidated checkpoints).
-  - During restore of a **consolidated checkpoint**, `system.c` unconditionally recreates each backing file from `raw_size` before opening it. This guarantees the file matches the checkpoint regardless of whether it was missing (e.g. MEMFS cleared after page reload), stale, or the wrong size. The subsequent `storage_restore_from_checkpoint` call then populates all storage blocks from the embedded data.
-  - During restore of a **quick checkpoint**, backing files are expected to already exist with correct data in persistent storage. `storage_restore_from_checkpoint` applies the rollback journal on top of the existing base data.
+  - `storage_checkpoint` inspects `checkpoint_get_kind(checkpoint)` to decide whether to write only the bitmap (quick checkpoints) or stream the entire delta (consolidated checkpoints).
+  - During restore of a **consolidated checkpoint**, `system.c` unconditionally recreates each backing file from `raw_size` before opening it. The subsequent `storage_restore_from_checkpoint` call populates all delta blocks from the embedded data.
+  - During restore of a **quick checkpoint**, backing files and their deltas are expected to already exist in OPFS with correct data. `storage_restore_from_checkpoint` reads the bitmap from the checkpoint stream and sets it as the current state. The delta's block data is already correct (OPFS auto-persisted every write).
 
 - Error handling
   - `checkpoint_has_error(cp)` can be checked after a subsystem's read/write; `setup_plus_*` reports and aborts on failure.
-  - subsystem should return early on `NULL` or errored checkpoint handles.
+  - Subsystems should return early on `NULL` or errored checkpoint handles.
 
 - Compatibility considerations
   - The size+file+line header helps detect struct layout drift; if a struct changes, the reader emits a helpful diagnostic indicating the write-site.
