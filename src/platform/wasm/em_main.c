@@ -34,6 +34,7 @@
 
 #ifdef __EMSCRIPTEN__
 #include <emscripten/stack.h>
+#include <emscripten/wasmfs.h>
 #else
 #if defined(__linux__) || defined(__APPLE__)
 #include <execinfo.h>
@@ -380,18 +381,14 @@ static int checkpoint_tick_counter = 0;
 static bool checkpoint_auto_enabled = true; // Can be disabled for tests
 static double last_time = 0;
 static double ticks_per_second = 0;
-static int last_is_running = -1;
 
 // Shell prompt helper
 static void build_prompt_text(char *dest, size_t dest_len) {
     if (!dest || dest_len == 0)
         return;
     dest[0] = '\0';
-    const char *fallback = "mini> ";
-    if (!system_is_initialized()) {
-        snprintf(dest, dest_len, "%s", fallback);
+    if (!system_is_initialized())
         return;
-    }
     debugger_disasm_pc(dest);
     size_t used = strnlen(dest, dest_len - 1);
     if (used >= dest_len - 3)
@@ -411,8 +408,73 @@ EMSCRIPTEN_KEEPALIVE const char *shell_emit_prompt(void) {
     return prompt;
 }
 
+// ============================================================================
+// Shared-heap Command Queue
+// ============================================================================
+//
+// With PROXY_TO_PTHREAD, Module on the main thread and Module on the worker
+// are separate JS objects.  We cannot share a JS queue between them.  Instead,
+// use C globals in the WASM heap (backed by SharedArrayBuffer) which ARE
+// visible from both threads.
+//
+// Protocol:
+//   1. JS writes the command string into g_cmd_buffer, sets g_cmd_pending=1
+//   2. Worker's shell_poll() sees g_cmd_pending, executes the command,
+//      writes g_cmd_result, sets g_cmd_done=1, clears g_cmd_pending
+//   3. JS polls g_cmd_done with setTimeout, reads g_cmd_result, resolves Promise
+
+#define CMD_BUF_SIZE 4096
+
+static char g_cmd_buffer[CMD_BUF_SIZE];
+static volatile int32_t g_cmd_pending = 0;
+static volatile int32_t g_cmd_done = 0;
+static volatile int32_t g_cmd_result = 0;
+
+// Shared prompt buffer — updated by the worker after each command so JS
+// on the main thread can read the current prompt without a cross-thread call.
+#define PROMPT_BUF_SIZE 256
+static char g_prompt_buffer[PROMPT_BUF_SIZE];
+
+// Shared running-state flag — updated every tick by the worker so JS can
+// poll it without a cross-thread EM_ASM callback.
+static volatile int32_t g_shared_is_running = 0;
+
+// Exported getters so JS can find these addresses in the shared heap
+EMSCRIPTEN_KEEPALIVE char *get_cmd_buffer(void) {
+    return g_cmd_buffer;
+}
+EMSCRIPTEN_KEEPALIVE volatile int32_t *get_cmd_pending_ptr(void) {
+    return &g_cmd_pending;
+}
+EMSCRIPTEN_KEEPALIVE volatile int32_t *get_cmd_done_ptr(void) {
+    return &g_cmd_done;
+}
+EMSCRIPTEN_KEEPALIVE volatile int32_t *get_cmd_result_ptr(void) {
+    return &g_cmd_result;
+}
+EMSCRIPTEN_KEEPALIVE char *get_prompt_buffer(void) {
+    return g_prompt_buffer;
+}
+EMSCRIPTEN_KEEPALIVE volatile int32_t *get_is_running_ptr(void) {
+    return &g_shared_is_running;
+}
+
 int shell_poll(void) {
-    return 0;
+    if (!g_cmd_pending)
+        return 0;
+
+    // Execute the command on the worker thread (OPFS accessible)
+    uint64_t result = handle_command(g_cmd_buffer);
+
+    // Refresh the prompt on the worker (where system state is fully visible)
+    build_prompt_text(g_prompt_buffer, PROMPT_BUF_SIZE);
+
+    // Store result and signal completion
+    g_cmd_result = (int32_t)result;
+    g_cmd_pending = 0;
+    g_cmd_done = 1;
+
+    return 1;
 }
 
 // Startup command runner
@@ -432,9 +494,9 @@ static void run_startup_command(const char *line) {
     free(buffer);
 }
 
-// Auto-attach SCSI drives from /persist/boot
+// Auto-attach SCSI drives from /boot
 static void auto_attach_scsi_drives(config_t *cfg) {
-    DIR *dir = opendir("/persist/boot");
+    DIR *dir = opendir("/boot");
     if (!dir) {
         return;
     }
@@ -448,7 +510,7 @@ static void auto_attach_scsi_drives(config_t *cfg) {
         while ((entry = readdir(dir)) != NULL) {
             if (strcmp(entry->d_name, expected) == 0) {
                 char filename[256];
-                snprintf(filename, sizeof(filename), "/persist/boot/%s", expected);
+                snprintf(filename, sizeof(filename), "/boot/%s", expected);
                 add_scsi_drive(cfg, filename, i - 1);
                 break;
             }
@@ -505,32 +567,15 @@ void em_main_tick(void) {
         }
     } else {
         assert(!sched || !scheduler_is_running(sched));
-
-        // Only poll shell periodically when idle to reduce CPU usage
-        if (tick_counter % SHELL_POLL_INTERVAL == 0) {
-            shell_poll();
-        }
     }
 
-    // Notify JS when run state changes
-    {
-        int cur_is_running = (sched && scheduler_is_running(sched)) ? 1 : 0;
-        if (cur_is_running != last_is_running) {
-            last_is_running = cur_is_running;
-            // clang-format off
-            EM_ASM(
-                {
-                    try {
-                        if (Module && Module.onRunStateChange)
-                            Module.onRunStateChange(!!$0);
-                    } catch (e) {
-                        console.warn('onRunStateChange callback error', e);
-                    }
-                },
-                cur_is_running);
-            // clang-format on
-        }
-    }
+    // Poll for pending shell commands every tick.  This must run regardless
+    // of running state so that drag-and-drop media inserts, checkpoint
+    // commands, etc. execute while the emulator is running.
+    shell_poll();
+
+    // Update shared running-state flag (read by JS via HEAP32)
+    g_shared_is_running = (sched && scheduler_is_running(sched)) ? 1 : 0;
 }
 
 // Exposed tick wrapper for Emscripten main loop
@@ -572,103 +617,43 @@ void em_main_interrupt(void) {
 // Filesystem Commands
 // ============================================================================
 
-// Track pending sync operations
-static volatile int g_sync_pending = 0;
-
-// Callback from JS when sync completes
-EMSCRIPTEN_KEEPALIVE void sync_complete(int err) {
-    g_sync_pending = 0;
-    if (err) {
-        printf("[sync] completed with error\n");
-    }
-}
-
-// Blocking sync: persist memfs changes to IndexedDB, wait for completion
-// clang-format off
-EM_ASYNC_JS(int, sync_and_wait, (), {
-    if (typeof FS === 'undefined' || !FS.syncfs)
-        return 0;
-    return await new Promise(function(resolve) {
-        FS.syncfs(
-            false, function(err) {
-                if (err) {
-                    console.error('[sync] Error:', err);
-                    resolve(-1);
-                } else {
-                    resolve(0);
-                }
-            });
-    });
-});
-// clang-format on
-
-// Blocking sync: load IndexedDB contents into memfs, wait for completion
-// clang-format off
-EM_ASYNC_JS(int, sync_from_persist_and_wait, (), {
-    if (typeof FS === 'undefined' || !FS.syncfs)
-        return 0;
-    return await new Promise(function(resolve) {
-        FS.syncfs(
-            true, function(err) {
-                if (err) {
-                    console.error('[sync] Error:', err);
-                    resolve(-1);
-                } else {
-                    resolve(0);
-                }
-            });
-    });
-});
-// clang-format on
-
-// Sync command - sync persistent filesystem
-// Usage: sync [wait|status|from-persist [wait]]
-//   sync               - trigger a filesystem sync (non-blocking)
-//   sync wait          - sync and block until complete
-//   sync from-persist  - load from IndexedDB (non-blocking)
-//   sync from-persist wait - load from IndexedDB and block until complete
-//   sync status        - return 1 if sync pending, 0 if complete
-static uint64_t cmd_sync(int argc, char *argv[]) {
-    // Check for status query
-    if (argc >= 2 && strcmp(argv[1], "status") == 0) {
-        int pending = g_sync_pending;
-        printf("Sync status: %s\n", pending ? "pending" : "complete");
-        return (uint64_t)pending;
+// File copy command - copies a file from one path to another.
+// Used by JS frontend to stage files from /tmp/ (memory) to OPFS paths.
+static uint64_t cmd_file_copy(int argc, char *argv[]) {
+    if (argc != 3) {
+        printf("usage: file-copy <src> <dest>\n");
+        return 1;
     }
 
-    // Check for from-persist variant
-    if (argc >= 2 && strcmp(argv[1], "from-persist") == 0) {
-        bool wait = (argc >= 3 && strcmp(argv[2], "wait") == 0);
-        if (wait) {
-            printf("Syncing from persistent storage (blocking)...\n");
-            int rc = sync_from_persist_and_wait();
-            printf("Sync from persist %s.\n", rc == 0 ? "complete" : "failed");
-            return (uint64_t)rc;
+    const char *src = argv[1];
+    const char *dest = argv[2];
+
+    FILE *fin = fopen(src, "rb");
+    if (!fin) {
+        printf("file-copy: cannot open '%s': %s\n", src, strerror(errno));
+        return 1;
+    }
+
+    FILE *fout = fopen(dest, "wb");
+    if (!fout) {
+        fclose(fin);
+        printf("file-copy: cannot create '%s': %s\n", dest, strerror(errno));
+        return 1;
+    }
+
+    char buf[65536];
+    size_t n;
+    while ((n = fread(buf, 1, sizeof(buf), fin)) > 0) {
+        if (fwrite(buf, 1, n, fout) != n) {
+            printf("file-copy: write error: %s\n", strerror(errno));
+            fclose(fin);
+            fclose(fout);
+            return 1;
         }
-        // Non-blocking from-persist
-        printf("Syncing from persistent storage...\n");
-        // clang-format off
-        EM_ASM({ FS.syncfs(true, function(err) { Module._sync_complete(err ? 1 : 0); }); });
-        // clang-format on
-        printf("Sync from persist requested.\n");
-        return 0;
     }
 
-    // Check for blocking wait
-    if (argc >= 2 && strcmp(argv[1], "wait") == 0) {
-        printf("Syncing persistent filesystem (blocking)...\n");
-        int rc = sync_and_wait();
-        printf("Sync %s.\n", rc == 0 ? "complete" : "failed");
-        return (uint64_t)rc;
-    }
-
-    // Default: non-blocking sync (existing behavior)
-    g_sync_pending = 1;
-    printf("Syncing persistent filesystem...\n");
-    // clang-format off
-    EM_ASM({ FS.syncfs(false, function(err) { Module._sync_complete(err ? 1 : 0); }); });
-    // clang-format on
-    printf("Sync requested.\n");
+    fclose(fin);
+    fclose(fout);
     return 0;
 }
 
@@ -690,19 +675,38 @@ static uint64_t cmd_download(int argc, char *argv[]) {
         return 0;
     }
 
-    // Perform the download on the JS side
+    // Read file on the worker thread (OPFS accessible here)
+    FILE *f = fopen(path, "rb");
+    if (!f) {
+        printf("download: cannot open '%s': %s\n", path, strerror(errno));
+        return 0;
+    }
+    size_t file_size = (size_t)st.st_size;
+    uint8_t *buf = (uint8_t *)malloc(file_size);
+    if (!buf) {
+        fclose(f);
+        printf("download: out of memory (%zu bytes)\n", file_size);
+        return 0;
+    }
+    size_t nread = fread(buf, 1, file_size, f);
+    fclose(f);
+
+    // Extract filename from path
+    const char *name = strrchr(path, '/');
+    name = name ? name + 1 : path;
+
+    // Trigger browser download on the main thread (DOM access required).
+    // The worker is blocked in MAIN_THREAD_EM_ASM, so buf is valid.
     // clang-format off
-    EM_ASM(
+    MAIN_THREAD_EM_ASM(
         {
             try {
-                var path = UTF8ToString($0);
-                var FS = Module && Module.FS;
-                if (!FS) {
-                    console.error('FS not available');
-                    return;
-                }
-                var data = FS.readFile(path);
-                var name = path.split('/').filter(Boolean).pop() || 'download.bin';
+                var ptr = $0;
+                var len = $1;
+                var namePtr = $2;
+                var name = UTF8ToString(namePtr) || 'download.bin';
+                var heap = Module.HEAPU8;
+                var data = heap.slice(ptr, ptr + len);
                 var blob = new Blob([data], {type: 'application/octet-stream'});
                 var a = document.createElement('a');
                 a.href = URL.createObjectURL(blob);
@@ -717,9 +721,10 @@ static uint64_t cmd_download(int argc, char *argv[]) {
                 console.error('download failed', e);
             }
         },
-        path);
+        buf, (int)nread, name);
     // clang-format on
 
+    free(buf);
     printf("download: requested '%s'\n", path);
     return 0;
 }
@@ -728,7 +733,7 @@ static uint64_t cmd_download(int argc, char *argv[]) {
 // Background Checkpoint System
 // ============================================================================
 
-#define BACKGROUND_CHECKPOINT_DIR             "/persist/checkpoint"
+#define BACKGROUND_CHECKPOINT_DIR             "/checkpoint"
 #define BACKGROUND_CHECKPOINT_SUFFIX          ".checkpoint"
 #define BACKGROUND_CHECKPOINT_PENDING_SUFFIX  ".pending"
 #define BACKGROUND_CHECKPOINT_COMPLETE_SUFFIX ".complete"
@@ -738,15 +743,10 @@ static uint64_t cmd_download(int argc, char *argv[]) {
 
 static double g_last_background_checkpoint_ms = 0.0;
 static bool g_background_handlers_installed = false;
-static bool g_background_checkpoint_inflight = false;
-static uint64_t g_pending_checkpoint_seq = 0; // Sequence number of checkpoint awaiting sync confirmation
 
 // Ensure checkpoint directory exists
 static int ensure_checkpoint_directory(void) {
-    if (mkdir("/persist", 0777) != 0 && errno != EEXIST) {
-        if (errno != EISDIR)
-            return GS_ERROR;
-    }
+    // /checkpoint is an OPFS-backed mount created in main().
     struct stat st;
     if (stat(BACKGROUND_CHECKPOINT_DIR, &st) == 0) {
         return S_ISDIR(st.st_mode) ? GS_SUCCESS : GS_ERROR;
@@ -758,7 +758,9 @@ static int ensure_checkpoint_directory(void) {
     return GS_SUCCESS;
 }
 
-// Scan checkpoint directory for highest sequence number (considering only complete checkpoints)
+// Scan checkpoint directory for highest sequence number.
+// With OPFS auto-persistence, writes are durable on fclose — no .complete
+// markers needed.  Just find the highest-numbered .checkpoint file.
 static int scan_checkpoint_directory(uint64_t *out_max) {
     if (ensure_checkpoint_directory() != GS_SUCCESS)
         return GS_ERROR;
@@ -768,32 +770,11 @@ static int scan_checkpoint_directory(uint64_t *out_max) {
     uint64_t max_seq = 0;
     struct dirent *entry;
     const size_t suffix_len = strlen(BACKGROUND_CHECKPOINT_SUFFIX);
-    const size_t complete_suffix_len = strlen(BACKGROUND_CHECKPOINT_COMPLETE_SUFFIX);
     while ((entry = readdir(dir)) != NULL) {
         const char *name = entry->d_name;
         if (!name || name[0] == '.')
             continue;
         size_t len = strlen(name);
-        // Look for .complete marker files to find confirmed checkpoints
-        if (len > complete_suffix_len &&
-            strcmp(name + len - complete_suffix_len, BACKGROUND_CHECKPOINT_COMPLETE_SUFFIX) == 0) {
-            // Extract sequence number from marker filename (NNNNNNN.complete)
-            bool numeric = true;
-            size_t num_len = len - complete_suffix_len;
-            for (size_t i = 0; i < num_len; ++i) {
-                if (name[i] < '0' || name[i] > '9') {
-                    numeric = false;
-                    break;
-                }
-            }
-            if (!numeric)
-                continue;
-            uint64_t value = strtoull(name, NULL, 10);
-            if (value > max_seq)
-                max_seq = value;
-            continue;
-        }
-        // Also check raw checkpoint files (for backward compatibility during transition)
         if (len <= suffix_len)
             continue;
         if (strcmp(name + len - suffix_len, BACKGROUND_CHECKPOINT_SUFFIX) != 0)
@@ -824,20 +805,6 @@ static int build_checkpoint_path(uint64_t seq, char *out_path, size_t out_len) {
     return (written > 0 && (size_t)written < out_len) ? GS_SUCCESS : GS_ERROR;
 }
 
-// Build .pending marker path from sequence number
-static int build_pending_path(uint64_t seq, char *out_path, size_t out_len) {
-    int written = snprintf(out_path, out_len, "%s/%0*llu%s", BACKGROUND_CHECKPOINT_DIR, BACKGROUND_CHECKPOINT_DIGITS,
-                           (unsigned long long)seq, BACKGROUND_CHECKPOINT_PENDING_SUFFIX);
-    return (written > 0 && (size_t)written < out_len) ? GS_SUCCESS : GS_ERROR;
-}
-
-// Build .complete marker path from sequence number
-static int build_complete_path(uint64_t seq, char *out_path, size_t out_len) {
-    int written = snprintf(out_path, out_len, "%s/%0*llu%s", BACKGROUND_CHECKPOINT_DIR, BACKGROUND_CHECKPOINT_DIGITS,
-                           (unsigned long long)seq, BACKGROUND_CHECKPOINT_COMPLETE_SUFFIX);
-    return (written > 0 && (size_t)written < out_len) ? GS_SUCCESS : GS_ERROR;
-}
-
 // Find the path to the latest valid (complete) background checkpoint.
 // Overrides the weak default in system.c for the WASM platform.
 // Returns a static buffer with the path, or NULL if none found.
@@ -858,78 +825,9 @@ const char *find_valid_checkpoint_path(void) {
     return path_buf;
 }
 
-// Write a small marker file to indicate checkpoint state
-static int write_marker_file(const char *path) {
-    FILE *f = fopen(path, "w");
-    if (!f)
-        return GS_ERROR;
-    // Write a small marker with timestamp for debugging
-    fprintf(f, "%llu\n", (unsigned long long)emscripten_get_now());
-    fclose(f);
-    return GS_SUCCESS;
-}
-
-// Remove a marker file (silent on failure)
-static void remove_marker_file(const char *path) {
-    unlink(path);
-}
-
-// Trigger checkpoint sync to IDBFS with completion callback
-// Trigger async sync to persist marker files (called from checkpoint_sync_complete)
-static void trigger_marker_sync(uint64_t seq) {
-    // clang-format off
-    EM_ASM(
-        {
-            try {
-                if (typeof FS !== 'undefined' && FS && FS.syncfs) {
-                    var seqNum = $0;
-                    FS.syncfs(
-                        false, function(err) {
-                            if (err) {
-                                console.error('[bg-checkpoint] marker sync failed for seq ' + seqNum, err);
-                            } else {
-                                console.log('[bg-checkpoint] checkpoint ' + seqNum + ' fully persisted');
-                            }
-                        });
-                }
-            } catch (e) {
-                console.error('[bg-checkpoint] marker sync exception', e);
-            }
-        },
-        (int)seq);
-    // clang-format on
-}
-
-// Trigger async sync of checkpoint file to IndexedDB
-static void trigger_checkpoint_sync(uint64_t seq) {
-    // clang-format off
-    EM_ASM(
-        {
-            try {
-                if (typeof FS !== 'undefined' && FS && FS.syncfs) {
-                    var seqNum = $0;
-                    FS.syncfs(
-                        false, function(err) {
-                            if (err) {
-                                console.error('[bg-checkpoint] sync failed for seq ' + seqNum, err);
-                            } else {
-                                console.log('[bg-checkpoint] sync complete for seq ' + seqNum);
-                            }
-                            // Notify C side - it will write markers and trigger another sync
-                            if (typeof Module._checkpoint_sync_complete === 'function') {
-                                Module._checkpoint_sync_complete(BigInt(seqNum), err ? 1 : 0);
-                            }
-                        });
-                }
-            } catch (e) {
-                console.error('[bg-checkpoint] sync exception', e);
-            }
-        },
-        (int)seq);
-    // clang-format on
-}
-
-// Save a quick checkpoint
+// Save a quick checkpoint.
+// With OPFS + pthreads, all writes are synchronous and auto-persistent.
+// No async sync dance needed — write checkpoint, write marker, clean up, done.
 static int save_quick_checkpoint(const char *reason, bool verbose, bool rate_limit) {
     scheduler_t *sched = system_scheduler();
     if (!sched)
@@ -947,8 +845,6 @@ static int save_quick_checkpoint(const char *reason, bool verbose, bool rate_lim
             return GS_SUCCESS;
     }
 
-    if (g_background_checkpoint_inflight)
-        return GS_ERROR;
     if (ensure_checkpoint_directory() != GS_SUCCESS)
         return GS_ERROR;
 
@@ -958,18 +854,8 @@ static int save_quick_checkpoint(const char *reason, bool verbose, bool rate_lim
 
     uint64_t next_seq = max_seq + 1;
     char path[BACKGROUND_CHECKPOINT_PATH_MAX];
-    char pending_path[BACKGROUND_CHECKPOINT_PATH_MAX];
     if (build_checkpoint_path(next_seq, path, sizeof(path)) != GS_SUCCESS)
         return GS_ERROR;
-    if (build_pending_path(next_seq, pending_path, sizeof(pending_path)) != GS_SUCCESS)
-        return GS_ERROR;
-
-    // Create .pending marker BEFORE writing checkpoint data
-    // This signals that a checkpoint write is in progress
-    if (write_marker_file(pending_path) != GS_SUCCESS) {
-        printf("[checkpoint] failed to create pending marker\n");
-        return GS_ERROR;
-    }
 
     // Record running state before stopping - this will be saved in the checkpoint
     bool was_running = scheduler_is_running(sched);
@@ -981,193 +867,60 @@ static int save_quick_checkpoint(const char *reason, bool verbose, bool rate_lim
     if (was_running && sched)
         scheduler_set_running(sched, true);
 
-    // Start timing the checkpoint save operation
     double checkpoint_start_time = emscripten_get_now();
 
-    g_background_checkpoint_inflight = true;
-    g_pending_checkpoint_seq = next_seq;
+    // With OPFS, the checkpoint file is durable on fclose — no markers needed.
     int rc = system_checkpoint(path, CHECKPOINT_KIND_QUICK);
 
-    // Calculate elapsed time for checkpoint save
     double checkpoint_elapsed_ms = emscripten_get_now() - checkpoint_start_time;
-
-    // Note: running state is already set correctly from the pre-checkpoint restore
 
     if (rc == GS_SUCCESS) {
         g_last_background_checkpoint_ms = now;
+
         if (verbose) {
-            printf("[checkpoint] quick checkpoint saved to %s (%s, %.2f ms), awaiting sync\n", path,
-                   reason ? reason : "background", checkpoint_elapsed_ms);
+            printf("Checkpoint saved to %s (%.2f ms)\n", path, checkpoint_elapsed_ms);
         }
-        // Trigger async sync - completion callback will mark as complete and clean up
-        trigger_checkpoint_sync(next_seq);
-        // Note: g_background_checkpoint_inflight stays true until sync completes
+
+        // Clean up old checkpoints (keep only the latest)
+        DIR *dir = opendir(BACKGROUND_CHECKPOINT_DIR);
+        if (dir) {
+            struct dirent *entry;
+            const size_t sfx_len = strlen(BACKGROUND_CHECKPOINT_SUFFIX);
+            while ((entry = readdir(dir)) != NULL) {
+                const char *name = entry->d_name;
+                if (!name || name[0] == '.')
+                    continue;
+                size_t len = strlen(name);
+                uint64_t file_seq = strtoull(name, NULL, 10);
+                if (file_seq == 0 || file_seq >= next_seq)
+                    continue;
+                // Remove any old checkpoint-related file
+                if ((len > sfx_len && strcmp(name + len - sfx_len, BACKGROUND_CHECKPOINT_SUFFIX) == 0) ||
+                    strstr(name, ".complete") || strstr(name, ".pending")) {
+                    char old_path[BACKGROUND_CHECKPOINT_PATH_MAX];
+                    snprintf(old_path, sizeof(old_path), "%s/%s", BACKGROUND_CHECKPOINT_DIR, name);
+                    unlink(old_path);
+                }
+            }
+            closedir(dir);
+        }
     } else {
         if (verbose) {
             printf("[checkpoint] quick checkpoint failed (%s)\n", reason ? reason : "background");
         }
-        // Clean up pending marker on failure
-        remove_marker_file(pending_path);
-        g_background_checkpoint_inflight = false;
-        g_pending_checkpoint_seq = 0;
     }
     return rc;
-}
-
-// Callback when IndexedDB sync completes (called from JS)
-// Writes completion marker, cleans up old checkpoints, triggers marker sync
-EMSCRIPTEN_KEEPALIVE void checkpoint_sync_complete(uint64_t seq, int error) {
-    char pending_path[BACKGROUND_CHECKPOINT_PATH_MAX];
-    char complete_path[BACKGROUND_CHECKPOINT_PATH_MAX];
-    char checkpoint_path[BACKGROUND_CHECKPOINT_PATH_MAX];
-
-    if (build_pending_path(seq, pending_path, sizeof(pending_path)) != GS_SUCCESS ||
-        build_complete_path(seq, complete_path, sizeof(complete_path)) != GS_SUCCESS ||
-        build_checkpoint_path(seq, checkpoint_path, sizeof(checkpoint_path)) != GS_SUCCESS) {
-        g_background_checkpoint_inflight = false;
-        g_pending_checkpoint_seq = 0;
-        return;
-    }
-
-    if (error) {
-        printf("[checkpoint] sync failed for seq %llu, checkpoint incomplete\n", (unsigned long long)seq);
-        // Leave .pending marker in place to indicate incomplete checkpoint
-        g_background_checkpoint_inflight = false;
-        g_pending_checkpoint_seq = 0;
-        return;
-    }
-
-    // Sync succeeded - write completion marker and clean up
-    // Remove .pending marker first
-    remove_marker_file(pending_path);
-
-    // Write .complete marker
-    if (write_marker_file(complete_path) != GS_SUCCESS) {
-        printf("[checkpoint] failed to create complete marker for seq %llu\n", (unsigned long long)seq);
-        g_background_checkpoint_inflight = false;
-        g_pending_checkpoint_seq = 0;
-        return;
-    }
-
-    printf("[checkpoint] checkpoint %llu marked complete\n", (unsigned long long)seq);
-
-    // Clean up old checkpoints (keep only this one)
-    DIR *dir = opendir(BACKGROUND_CHECKPOINT_DIR);
-    if (dir) {
-        struct dirent *entry;
-        const size_t complete_suffix_len = strlen(BACKGROUND_CHECKPOINT_COMPLETE_SUFFIX);
-        const size_t checkpoint_suffix_len = strlen(BACKGROUND_CHECKPOINT_SUFFIX);
-        const size_t pending_suffix_len = strlen(BACKGROUND_CHECKPOINT_PENDING_SUFFIX);
-
-        while ((entry = readdir(dir)) != NULL) {
-            const char *name = entry->d_name;
-            if (!name || name[0] == '.')
-                continue;
-
-            size_t len = strlen(name);
-            uint64_t file_seq = 0;
-            bool is_checkpoint = false;
-            bool is_complete = false;
-            bool is_pending = false;
-
-            // Check for .complete marker
-            if (len > complete_suffix_len &&
-                strcmp(name + len - complete_suffix_len, BACKGROUND_CHECKPOINT_COMPLETE_SUFFIX) == 0) {
-                is_complete = true;
-                file_seq = strtoull(name, NULL, 10);
-            }
-            // Check for .pending marker
-            else if (len > pending_suffix_len &&
-                     strcmp(name + len - pending_suffix_len, BACKGROUND_CHECKPOINT_PENDING_SUFFIX) == 0) {
-                is_pending = true;
-                file_seq = strtoull(name, NULL, 10);
-            }
-            // Check for .checkpoint file
-            else if (len > checkpoint_suffix_len &&
-                     strcmp(name + len - checkpoint_suffix_len, BACKGROUND_CHECKPOINT_SUFFIX) == 0) {
-                is_checkpoint = true;
-                file_seq = strtoull(name, NULL, 10);
-            }
-
-            if (file_seq == 0)
-                continue;
-
-            // Delete old files (seq < current)
-            if (file_seq < seq) {
-                char old_path[BACKGROUND_CHECKPOINT_PATH_MAX];
-                snprintf(old_path, sizeof(old_path), "%s/%s", BACKGROUND_CHECKPOINT_DIR, name);
-                if (unlink(old_path) == 0) {
-                    printf("[checkpoint] cleaned up old %s\n", name);
-                }
-            }
-        }
-        closedir(dir);
-    }
-
-    // Reset inflight state
-    if (g_pending_checkpoint_seq == seq) {
-        g_background_checkpoint_inflight = false;
-        g_pending_checkpoint_seq = 0;
-    }
-
-    // Trigger another sync to persist the .complete marker and cleanup
-    trigger_marker_sync(seq);
 }
 
 // Request background checkpoint (with rate limiting)
 static void maybe_request_background_checkpoint(const char *reason, bool rate_limit) {
     int rc = save_quick_checkpoint(reason, false, rate_limit);
-    // clang-format off
-    EM_ASM({ Module.__gsLastBackgroundCheckpointRC = $0; }, rc);
-    // clang-format on
     if (rc != GS_SUCCESS) {
         printf("[checkpoint] background checkpoint failed (%s)\n", reason ? reason : "background");
     }
 }
 
-// Install pagehide hook (JS)
-// clang-format off
-EM_JS(void, install_pagehide_hook, (), {
-    if (typeof Module === 'undefined')
-        return;
-    if (Module.__gsBackgroundPagehideHookInstalled)
-        return;
-    Module.__gsBackgroundPagehideHookInstalled = true;
-
-    function invoke_checkpoint_from_js() {
-        try {
-            console.log('[bg-checkpoint] pagehide hook invoked');
-        } catch (_) {
-        }
-        if (typeof Module === 'undefined')
-            return;
-        if (typeof Module._background_checkpoint_from_js === 'function') {
-            Module._background_checkpoint_from_js();
-            try {
-                console.log('[bg-checkpoint] rc:', Module.__gsLastBackgroundCheckpointRC);
-            } catch (_) {
-            }
-            return;
-        }
-        if (typeof Module.cwrap === 'function') {
-            Module._background_checkpoint_from_js = Module.cwrap("background_checkpoint_from_js", "void", []);
-            Module._background_checkpoint_from_js();
-            try {
-                console.log('[bg-checkpoint] rc:', Module.__gsLastBackgroundCheckpointRC);
-            } catch (_) {
-            }
-        }
-    }
-
-    addEventListener('pagehide', invoke_checkpoint_from_js);
-    document.addEventListener('visibilitychange', function() {
-        if (document.hidden)
-            invoke_checkpoint_from_js();
-    });
-});
-// clang-format on
-
-// Checkpoint from JS callback
+// Checkpoint from JS callback (exported for pagehide/visibility hooks)
 EMSCRIPTEN_KEEPALIVE void background_checkpoint_from_js(void) {
     maybe_request_background_checkpoint("pagehide", true);
 }
@@ -1196,7 +949,6 @@ static void install_background_checkpoint_handlers(void) {
         return;
     emscripten_set_visibilitychange_callback((void *)"visibilitychange", EM_FALSE, background_visibility_callback);
     emscripten_set_beforeunload_callback((void *)"beforeunload", background_beforeunload_callback);
-    install_pagehide_hook();
     g_background_handlers_installed = true;
 }
 
@@ -1319,6 +1071,22 @@ extern void em_audio_register_commands(void);
 int main(int argc, char *argv[]) {
     signal(SIGINT, sigint_handler);
 
+    // Mount OPFS-backed directories for persistent storage.
+    // With PROXY_TO_PTHREAD, main() runs on a worker thread where
+    // wasmfs_create_opfs_backend() can safely block.
+    backend_t opfs = wasmfs_create_opfs_backend();
+    wasmfs_create_directory("/boot", 0777, opfs);
+    wasmfs_create_directory("/images", 0777, opfs);
+    wasmfs_create_directory("/checkpoint", 0777, opfs);
+
+    // Volatile scratch space on memory backend (visible from all threads).
+    // Pre-create subdirectories that JS needs (FS.mkdir from the main thread
+    // fails cross-thread under WasmFS pthreads).
+    backend_t membk = wasmfs_create_memory_backend();
+    wasmfs_create_directory("/tmp", 0777, membk);
+    mkdir("/tmp/upload", 0777);
+    mkdir("/tmp/extract", 0777);
+
     // Define the supported options
     static struct option long_options[] = {
         {"model", required_argument, 0, 'm'},
@@ -1401,11 +1169,10 @@ int main(int argc, char *argv[]) {
     setup_pointer_lock();
 
     // Register shell commands
-    register_cmd("sync", "Filesystem", "sync [wait|from-persist [wait]|status] – sync persistent filesystem", cmd_sync);
     register_cmd("download", "Filesystem", "download <path> – save file to your computer", cmd_download);
+    register_cmd("file-copy", "Filesystem", "file-copy <src> <dest> – copy a file", cmd_file_copy);
     register_cmd("background-checkpoint", "Checkpointing",
-                 "background-checkpoint [reason] – save a quick checkpoint to /persist/checkpoint",
-                 cmd_background_checkpoint);
+                 "background-checkpoint [reason] – save a quick checkpoint to /checkpoint", cmd_background_checkpoint);
     register_cmd("checkpoint", "Checkpointing", "checkpoint <clear|auto <on|off>|on|off> – manage checkpoints",
                  cmd_checkpoint);
     em_audio_register_commands();
@@ -1433,29 +1200,30 @@ uint64_t em_handle_command(const char *input_line) {
 // Assertion Notification for JavaScript
 // ============================================================================
 
-// JavaScript callback to notify the browser that an assertion has failed
-// This allows Playwright tests to immediately detect and fail on assertions
-// clang-format off
-EM_JS(void, js_notify_assertion_failure, (const char *expr, const char *file, int line, const char *func), {
-    const exprStr = expr ? UTF8ToString(expr) : "";
-    const fileStr = file ? UTF8ToString(file) : "<unknown>";
-    const funcStr = func ? UTF8ToString(func) : "<unknown>";
-
-    // Call global handler if registered
-    if (typeof window !== 'undefined' && typeof window.__gsAssertionHandler === 'function') {
-        try {
-            window.__gsAssertionHandler(
-                {expr: exprStr, file: fileStr, line: line, func: funcStr, timestamp: Date.now()});
-        } catch (e) {
-            // Handler may throw to stop execution - this is expected
-        }
-    }
-});
-// clang-format on
-
-// Platform-specific assertion callback implementation
+// Platform-specific assertion callback implementation.
+// Notifies the browser (Playwright tests) that an assertion has failed.
+// Must run on main thread (accesses window.__gsAssertionHandler).
 static void em_assertion_callback(const char *expr, const char *file, int line, const char *func) {
-    js_notify_assertion_failure(expr, file, line, func);
+    // clang-format off
+    MAIN_THREAD_EM_ASM(
+        {
+            var exprStr = $0 ? UTF8ToString($0) : "";
+            var fileStr = $1 ? UTF8ToString($1) : "<unknown>";
+            var lineNum = $2;
+            var funcStr = $3 ? UTF8ToString($3) : "<unknown>";
+
+            // Call global handler if registered
+            if (typeof window !== 'undefined' && typeof window.__gsAssertionHandler === 'function') {
+                try {
+                    window.__gsAssertionHandler(
+                        {expr: exprStr, file: fileStr, line: lineNum, func: funcStr, timestamp: Date.now()});
+                } catch (e) {
+                    // Handler may throw to stop execution - this is expected
+                }
+            }
+        },
+        expr, file, line, func);
+    // clang-format on
 }
 
 // Platform hook: install assertion callback and apply deferred speed mode

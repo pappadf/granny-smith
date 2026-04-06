@@ -7,7 +7,7 @@ import { CONFIG } from './config.js';
 // Private state
 let xterm = null;
 let fitAddon = null;
-const DEFAULT_PROMPT = 'mini> ';
+const DEFAULT_PROMPT = '';
 const inputState = {
   prompt: DEFAULT_PROMPT,
   buffer: '',
@@ -29,15 +29,8 @@ const clearLine = () => { xterm.write('\r'); xterm.write('\x1b[2K'); };
 
 // Refresh the prompt string from the runtime (if available)
 function refreshPrompt() {
-  let promptValue = DEFAULT_PROMPT;
   const value = _getPrompt();
-  if (value && value.length) {
-    promptValue = value;
-  }
-  if (!promptValue.endsWith(' ')) {
-    promptValue = `${promptValue} `;
-  }
-  inputState.prompt = promptValue;
+  inputState.prompt = (value && value.length) ? value : '';
 }
 
 // Re-draw the current input line (prompt + buffer + cursor position)

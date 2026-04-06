@@ -3,8 +3,12 @@
 
 // Handles URL parameter media provisioning: fetches images from URL params,
 // stores them in the persistent boot directory, and issues mount commands.
+//
+// With OPFS + pthreads, files written via FS.writeFile to /tmp/ (memory
+// backend, cross-thread safe) are then copied to OPFS paths by C-side
+// commands.  No explicit sync step needed.
 import { BOOT_DIR } from './config.js';
-import { ensureDir, writeBinary, romPath, romExists, latestRomPath, latestRomExists, fileExists, hdSlotPath, getFS, persistSync, clearDirContents } from './fs.js';
+import { ensureDir, writeBinary, romPath, romExists, latestRomPath, latestRomExists, fileExists, hdSlotPath, getFS } from './fs.js';
 import { isModuleReady } from './emulator.js';
 import { toast, showRomOverlay, hideRomOverlay, enableRunButton } from './ui.js';
 import { sanitizeName } from './media.js';
@@ -26,13 +30,12 @@ function allocateHdSlot() {
 }
 
 // Auto-attach any hdN files present in the persistent boot directory before run.
+// attach-hd gracefully fails for non-existent files, so just try each slot.
 async function autoAttachPersistentHDs() {
   try {
     for (let i = 0; i < 8; i++) {
       const p = hdSlotPath(i);
-      if (fileExists(p)) {
-        await window.runCommand(`attach-hd ${p} ${i}`);
-      }
+      await window.runCommand(`attach-hd ${p} ${i}`);
     }
   } catch (e) { console.warn('autoAttachPersistentHDs failed', e); }
 }
@@ -57,6 +60,8 @@ export async function loadRomAndMaybeRun() {
 }
 
 // Fetch and store a media file from a URL into the boot directory.
+// Stage to /tmp/ first (memory backend, cross-thread safe), then
+// the C-side command copies to the OPFS-backed boot path.
 async function fetchAndStore(slot, url) {
   const FS = getFS();
   try {
@@ -69,12 +74,11 @@ async function fetchAndStore(slot, url) {
     const ct = res.headers.get('Content-Type') || '';
     const fileName = url.split('/').pop().split('?')[0] || slot;
     const isZip = /\.zip($|[?#])/i.test(url) || /zip/i.test(ct);
-    const isPeelerArch = /\.(sit|hqx|cpt|bin|sea)(_|$)/i.test(fileName);
     const path = `${BOOT_DIR}/${slot}`;
-    console.log(`[url-media] ${slot}: fileName=${fileName} isZip=${isZip} isPeeler=${isPeelerArch} destPath=${path}`);
+    console.log(`[url-media] ${slot}: fileName=${fileName} isZip=${isZip} destPath=${path}`);
 
-    // Clear stale block storage so image_open will re-seed from the fresh download
-    clearDirContents(`${path}.blocks`);
+    // Stage to /tmp/ first, then write to persistent OPFS path via C command
+    const tmpPath = `/tmp/url_${slot}`;
 
     if (isZip) {
       try {
@@ -85,7 +89,7 @@ async function fetchAndStore(slot, url) {
         if (fileNames.length > 1) console.warn('[zip] multiple files present, using first', fileNames);
         const primary = fileNames[0];
         const inner = await zip.files[primary].async('uint8array');
-        writeBinary(path, inner);
+        writeBinary(tmpPath, inner);
         toast(`${slot} downloaded (zip:${primary})`);
       } catch (zErr) {
         console.error('Download failed (zip extract)', slot, zErr);
@@ -132,38 +136,35 @@ async function fetchAndStore(slot, url) {
 
               if (foundImage) {
                 const imgData = FS.readFile(foundImage);
-                writeBinary(path, imgData);
+                writeBinary(tmpPath, imgData);
                 toast(`${slot} downloaded (extracted:${foundImage.split('/').pop()})`);
               } else {
-                writeBinary(path, buf);
+                writeBinary(tmpPath, buf);
                 toast(`${slot} downloaded (archive extracted but no disk image found)`);
               }
             } else {
-              writeBinary(path, buf);
+              writeBinary(tmpPath, buf);
               toast(`${slot} downloaded (extraction failed, using original)`);
             }
           } else {
-            writeBinary(path, buf);
+            writeBinary(tmpPath, buf);
             toast(`${slot} downloaded`);
           }
         } catch (err) {
           console.warn('Peeler processing failed, storing original', err);
-          writeBinary(path, buf);
+          writeBinary(tmpPath, buf);
           toast(`${slot} downloaded`);
         }
       } else {
-        console.log(`[url-media] ${slot}: writing ${buf.length} bytes to ${path} (plain binary)`);
-        writeBinary(path, buf);
-        // Verify the file was actually written
-        try {
-          const st = FS.stat(path);
-          console.log(`[url-media] ${slot}: VERIFIED file exists at ${path}, size=${st.size}`);
-        } catch (verr) {
-          console.error(`[url-media] ${slot}: VERIFY FAILED - file NOT found at ${path} after writeBinary!`, verr);
-        }
+        console.log(`[url-media] ${slot}: writing ${buf.length} bytes to ${tmpPath} (plain binary)`);
+        writeBinary(tmpPath, buf);
         toast(`${slot} downloaded`);
       }
     }
+
+    // Copy from /tmp/ staging to persistent OPFS path via C-side file copy.
+    // The worker thread can access both /tmp/ (memory) and /boot/ (OPFS).
+    await window.runCommand(`file-copy ${tmpPath} ${path}`);
   } catch (e) {
     console.error(`[url-media] Download FAILED for ${slot}:`, e);
     toast(`${slot} failed`);
@@ -189,33 +190,10 @@ export async function processUrlMedia(params) {
   await Promise.all(downloads);
   console.log(`[url-media] all downloads complete`);
 
-  // Flush downloads to IndexedDB so a stale pull-sync cannot discard them
-  if (downloads.length) {
-    console.log(`[url-media] calling persistSync...`);
-    await persistSync();
-    console.log(`[url-media] persistSync done`);
-  }
-
-  // List all files in BOOT_DIR for debugging
-  try {
-    const FS = getFS();
-    const files = FS.readdir(BOOT_DIR).filter(n => n !== '.' && n !== '..');
-    console.log(`[url-media] files in ${BOOT_DIR}:`, files);
-    for (const f of files) {
-      try {
-        const st = FS.stat(`${BOOT_DIR}/${f}`);
-        console.log(`[url-media]   ${f}: size=${st.size} mode=${st.mode.toString(8)}`);
-      } catch (_) {}
-    }
-  } catch (e) {
-    console.error(`[url-media] failed to list ${BOOT_DIR}:`, e);
-  }
-
   if (params.has('rom')) {
     // Load ROM first — this creates the machine via rom_identify + system_ensure_machine
-    if (!romExists()) { console.error('[url-media] romExists() returned false!'); return; }
-    const path = latestRomExists() ? latestRomPath() : romPath();
-    console.log(`[url-media] loading ROM from: ${path} (latestRomExists=${latestRomExists()}, romPath=${romPath()}, latestRomPath=${latestRomPath()})`);
+    const path = `${BOOT_DIR}/rom`;
+    console.log(`[url-media] loading ROM from: ${path}`);
     await window.runCommand(`load-rom ${path}`);
     romLoaded = true;
     hideRomOverlay();
@@ -226,14 +204,6 @@ export async function processUrlMedia(params) {
       if (/^fd\d+$/.test(k)) {
         const fdPath = `${BOOT_DIR}/${k}`;
         console.log(`[url-media] inserting floppy: ${fdPath}`);
-        // Check file exists right before insert
-        try {
-          const FS = getFS();
-          const st = FS.stat(fdPath);
-          console.log(`[url-media] pre-insert check: ${fdPath} exists, size=${st.size}`);
-        } catch (e) {
-          console.error(`[url-media] pre-insert check FAILED: ${fdPath} NOT FOUND!`, e);
-        }
         const rc = await window.runCommand(`insert-fd ${fdPath} 0 1`);
         console.log(`[url-media] insert-fd result: ${rc}`);
       }

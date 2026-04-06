@@ -554,18 +554,24 @@ uint64_t cmd_insert_fd(int argc, char *argv[]) {
 
     const char *path = argv[path_idx];
 
+    // Persist volatile images (/tmp/, /fd/) to OPFS so they survive page reload
+    char *persistent_path = image_persist_volatile(path);
+    if (persistent_path)
+        path = persistent_path;
+
     // Probe mode: check if file is a valid floppy image
     if (probe_only) {
         image_t *disk = image_open(path, false);
         if (!disk) {
-            printf("%s: NOT a valid floppy image\n", path);
+            printf("%s: NOT a supported format\n", path);
+            free(persistent_path);
             return 1;
         }
 
-        // Check if it's actually a floppy (not a hard disk)
         if (disk->type != image_fd_ss && disk->type != image_fd_ds && disk->type != image_fd_hd) {
             printf("%s: Valid disk image but not a floppy (size: %zu bytes)\n", path, disk->raw_size);
             image_close(disk);
+            free(persistent_path);
             return 1;
         }
 
@@ -579,6 +585,7 @@ uint64_t cmd_insert_fd(int argc, char *argv[]) {
 
         printf("%s: Valid floppy image (%s)\n", path, type_str);
         image_close(disk);
+        free(persistent_path);
         return 0;
     }
 
@@ -589,11 +596,11 @@ uint64_t cmd_insert_fd(int argc, char *argv[]) {
             preferred = argv[path_idx + 1][0] - '0';
         } else {
             printf("insert-fd: invalid drive '%s' (expected 0 or 1)\n", argv[path_idx + 1]);
+            free(persistent_path);
             return -1;
         }
     }
 
-    // Optional writable flag (default: false/read-only)
     bool writable = false;
     if (argc >= path_idx + 3) {
         if (argv[path_idx + 2][0] == '0') {
@@ -602,29 +609,22 @@ uint64_t cmd_insert_fd(int argc, char *argv[]) {
             writable = true;
         } else {
             printf("insert-fd: invalid writable flag '%s' (expected 0 or 1)\n", argv[path_idx + 2]);
+            free(persistent_path);
             return -1;
         }
     }
 
-    printf("[DEBUG insert-fd] calling image_open('%s', writable=%d)\n", path, writable);
     image_t *disk = image_open(path, writable);
     if (!disk) {
         printf("insert-fd: failed to open disk image: %s\n", path);
-        // Extra: try stat and fopen directly for diagnostics
-        struct stat dbg_st;
-        printf("[DEBUG insert-fd] stat('%s') = %d\n", path, stat(path, &dbg_st));
-        if (stat(path, &dbg_st) == 0)
-            printf("[DEBUG insert-fd] stat size=%lld mode=%o\n", (long long)dbg_st.st_size, dbg_st.st_mode);
-        FILE *dbg_f = fopen(path, "rb");
-        printf("[DEBUG insert-fd] fopen('%s','rb') = %p\n", path, (void *)dbg_f);
-        if (dbg_f)
-            fclose(dbg_f);
+        free(persistent_path);
         return -1;
     }
 
     config_t *config = global_emulator;
     if (!config) {
         printf("insert-fd: emulator config not initialized.\n");
+        free(persistent_path);
         return -1;
     }
 
@@ -642,14 +642,14 @@ uint64_t cmd_insert_fd(int argc, char *argv[]) {
 
     if (target == -1) {
         printf("insert-fd: both floppy drives are already occupied.\n");
+        free(persistent_path);
         return -1;
     }
 
-    // Track this image so checkpoints can restore by filename
     add_image(config, disk);
-
     sys_fd_insert(config, target, disk);
     printf("insert-fd: inserted %s into floppy drive %d.\n", path, target);
+    free(persistent_path);
     return 0;
 }
 
@@ -669,9 +669,15 @@ void add_scsi_drive(struct config *restrict config, const char *filename, int sc
     };
     const int num_disks = sizeof(disks) / sizeof(disks[0]);
 
+    // Persist volatile images to OPFS
+    char *persistent_path = image_persist_volatile(filename);
+    if (persistent_path)
+        filename = persistent_path;
+
     image_t *img = image_open(filename, true);
     if (!img) {
         printf("Failed to open image: %s\n", filename);
+        free(persistent_path);
         return;
     }
 
@@ -685,18 +691,15 @@ void add_scsi_drive(struct config *restrict config, const char *filename, int sc
             break;
         }
     }
-    // If no larger found, use the largest
     if (best == -1)
         best = num_disks - 1;
 
     printf("Attaching SCSI drive: %s as %s %s (size: %zu bytes, SCSI ID: %d)\n", filename, disks[best].vendor,
            disks[best].product, sz, scsi_id);
 
-    // Add to config's image list
     add_image(config, img);
-
-    // Attach to SCSI bus
     scsi_add_device(config->scsi, scsi_id, disks[best].vendor, disks[best].product, img);
+    free(persistent_path);
 }
 
 // attach-hd <path-to-image> [scsi-id]

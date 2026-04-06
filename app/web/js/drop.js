@@ -3,7 +3,7 @@
 
 // Handles drag-and-drop UI cue and the processDrop pipeline.
 import { isModuleReady } from './emulator.js';
-import { getFS, ensureDir, ensureDirs, writeBinary, romPath, romsDir, romPathForChecksum, latestRomPath, persistSync } from './fs.js';
+import { getFS, ensureDir, ensureDirs, writeBinary, romPath, romsDir, romPathForChecksum, latestRomPath } from './fs.js';
 import {
   sanitizeName, quotePath, tryExtractArchive, classifyMediaFile, findMediaInDirectory,
   bufferHasCheckpointSignature, fileHasCheckpointSignature
@@ -198,8 +198,6 @@ async function probeAndMountDiskImage(path, isDirectory, displayName) {
 
         // Also write to legacy path for backward compatibility
         writeBinary(romPath(), romData);
-
-        await persistSync();
 
         // load-rom identifies the machine and creates it if needed
         await window.runCommand(`load-rom ${latestRomPath()}`);

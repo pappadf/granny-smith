@@ -25,7 +25,8 @@ enum image_type { image_other, image_fd_ss, image_fd_ds, image_fd_hd, image_hd }
 struct image {
     storage_t *storage; // Backing storage engine instance
     char *filename; // Original filename provided by the user
-    char *storage_root; // Directory that holds range files for this disk
+    char *delta_path; // Path to delta file (<filename>.delta)
+    char *journal_path; // Path to preimage journal (<filename>.journal)
     size_t raw_size; // Logical size of the image in bytes
     bool writable; // True when the caller requested write access
     enum image_type type; // Detected image type (floppy, hd, ...)
@@ -79,6 +80,11 @@ int image_create_empty(const char *filename, size_t size);
 
 // Create a new blank floppy image file (800K or 1440K)
 int image_create_blank_floppy(const char *filename, bool overwrite, bool high_density);
+
+// If `path` is volatile (/tmp/ or /fd/), copy the file to /images/<hash>.img
+// and return the persistent path (caller must free).  If already persistent,
+// returns a copy of the original path.  Returns NULL on error.
+char *image_persist_volatile(const char *path);
 
 // Setup images from config
 extern void setup_images(config_t *config);

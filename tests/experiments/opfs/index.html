@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"><title>OPFS Experiments</title></head>
+<body>
+<pre id="log"></pre>
+<script type="module">
+const logEl = document.getElementById('log');
+const output = [];
+
+function log(msg) {
+  output.push(msg);
+  logEl.textContent = output.join('\n');
+  console.log(msg);
+}
+
+// Boot the WASM module
+const { default: createModule } = await import('./main.mjs');
+const Module = await createModule({
+  print: log,
+  printErr: log,
+});
+
+// Expose for Playwright
+window.__opfs = {
+  Module,
+  output,
+  async runExperiment(name) {
+    const rc = await Module.ccall('run_experiment', 'number', ['string'], [name], { async: true });
+    return rc;
+  },
+  // JS-side FS API experiment (experiment for open question #1)
+  async testJsFsApi() {
+    const FS = Module.FS;
+    const results = {};
+
+    // mkdir
+    try { FS.mkdir('/opfs/js_test'); results.mkdir = 'ok'; }
+    catch (e) { results.mkdir = 'FAIL: ' + e.message; }
+
+    // writeFile
+    try {
+      FS.writeFile('/js_test/hello.txt', new TextEncoder().encode('hello from js'));
+      results.writeFile = 'ok';
+    } catch (e) { results.writeFile = 'FAIL: ' + e.message; }
+
+    // readFile
+    try {
+      const data = FS.readFile('/js_test/hello.txt');
+      const text = new TextDecoder().decode(data);
+      results.readFile = text === 'hello from js' ? 'ok' : 'FAIL: got "' + text + '"';
+    } catch (e) { results.readFile = 'FAIL: ' + e.message; }
+
+    // stat
+    try {
+      const st = FS.stat('/js_test/hello.txt');
+      results.stat = (st && typeof st.size === 'number') ? 'ok (size=' + st.size + ')' : 'FAIL: no size';
+    } catch (e) { results.stat = 'FAIL: ' + e.message; }
+
+    // readdir
+    try {
+      const entries = FS.readdir('/opfs/js_test');
+      results.readdir = entries.includes('hello.txt') ? 'ok' : 'FAIL: ' + JSON.stringify(entries);
+    } catch (e) { results.readdir = 'FAIL: ' + e.message; }
+
+    // isFile / isDir (check if these exist)
+    try {
+      const st = FS.stat('/js_test/hello.txt');
+      if (typeof FS.isFile === 'function') {
+        results.isFile = FS.isFile(st.mode) ? 'ok' : 'FAIL: not a file';
+      } else {
+        results.isFile = 'NOT_AVAILABLE';
+      }
+      const dst = FS.stat('/opfs/js_test');
+      if (typeof FS.isDir === 'function') {
+        results.isDir = FS.isDir(dst.mode) ? 'ok' : 'FAIL: not a dir';
+      } else {
+        results.isDir = 'NOT_AVAILABLE';
+      }
+    } catch (e) { results.isFile = 'FAIL: ' + e.message; results.isDir = 'FAIL: ' + e.message; }
+
+    // unlink
+    try { FS.unlink('/js_test/hello.txt'); results.unlink = 'ok'; }
+    catch (e) { results.unlink = 'FAIL: ' + e.message; }
+
+    // rmdir
+    try { FS.rmdir('/opfs/js_test'); results.rmdir = 'ok'; }
+    catch (e) { results.rmdir = 'FAIL: ' + e.message; }
+
+    log('[js_fs_api] Results: ' + JSON.stringify(results));
+    return results;
+  },
+
+  // Storage quota experiment (experiment for open question #4 supplement)
+  async checkStorageEstimate() {
+    if (!navigator.storage?.estimate) return { available: false };
+    const est = await navigator.storage.estimate();
+    return { usage: est.usage, quota: est.quota, available: true };
+  },
+
+  // ccall sync test — call C function that does OPFS I/O, without async:true
+  testSyncCcall() {
+    try {
+      const rc = Module.ccall('run_experiment', 'number', ['string'], ['filesystem_setup']);
+      return { ok: true, rc, mode: 'sync' };
+    } catch (e) {
+      return { ok: false, error: e.message, mode: 'sync' };
+    }
+  },
+  // ccall async test — with async:true
+  async testAsyncCcall() {
+    try {
+      const rc = await Module.ccall('run_experiment', 'number', ['string'], ['filesystem_setup'], { async: true });
+      return { ok: true, rc, mode: 'async' };
+    } catch (e) {
+      return { ok: false, error: e.message, mode: 'async' };
+    }
+  }
+};
+
+log('Module ready. Use window.__opfs.runExperiment(name) to run experiments.');
+window.__opfsReady = true;
+</script>
+</body>
+</html>

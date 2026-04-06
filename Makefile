@@ -135,6 +135,7 @@ INCLUDES := -I$(CORE_DIR) \
 # header changes trigger the correct recompilations.
 
 CFLAGS := -MMD -MP $(MODE_CFLAGS) \
+          -pthread \
           $(PEELER_INCLUDES) $(INCLUDES) $(EXTRA_CFLAGS)
 
 # -- Link flags (objects -> final binary) --
@@ -142,15 +143,19 @@ CFLAGS := -MMD -MP $(MODE_CFLAGS) \
 LDFLAGS := $(MODE_CFLAGS) \
            -s MODULARIZE=1 \
            -s EXPORT_NAME="createModule" \
-           -s FORCE_FILESYSTEM \
-           -s ASYNCIFY \
-           -s EXPORTED_RUNTIME_METHODS=['FS','cwrap','ccall'] \
-           -s EXPORTED_FUNCTIONS="['_main','_shell_init','_em_handle_command','_shell_interrupt','_checkpoint_sync_complete']" \
-           -s ASYNCIFY_STACK_SIZE=10MB \
+           -sWASMFS \
+           -sFORCE_FILESYSTEM \
+           -lopfs.js \
+           -pthread \
+           -sPROXY_TO_PTHREAD \
+           -sOFFSCREENCANVAS_SUPPORT \
+           -sOFFSCREEN_FRAMEBUFFER \
+           -sOFFSCREENCANVASES_TO_PTHREAD='\#screen' \
+           -s EXPORTED_RUNTIME_METHODS=['FS','cwrap','ccall','stringToUTF8','UTF8ToString','HEAP32'] \
+           -s EXPORTED_FUNCTIONS="['_main','_shell_init','_em_handle_command','_shell_interrupt','_shell_emit_prompt','_background_checkpoint_from_js','_get_cmd_buffer','_get_cmd_pending_ptr','_get_cmd_done_ptr','_get_cmd_result_ptr','_get_prompt_buffer','_get_is_running_ptr']" \
            -s STACK_SIZE=5MB \
            -s ALLOW_MEMORY_GROWTH=1 \
-           -s USE_WEBGL2=1 \
-           -lidbfs.js
+           -s USE_WEBGL2=1
 
 # -- Static web assets --
 

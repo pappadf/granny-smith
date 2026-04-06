@@ -6,12 +6,11 @@
 import { BOOT_DIR, ROMS_DIR, IMAGES_DIR } from './config.js';
 import { initEmulator, runCommand, isModuleReady, getModule, getRuntimePrompt, shellInterrupt, isRunning } from './emulator.js';
 import { initTerminal, writeLine, showPrompt, fitTerminal, handleInterrupt } from './terminal.js';
-import { initFS, ensureDir, ensureCheckpointDir, romExists } from './fs.js';
+import { initFS, romExists } from './fs.js';
 import { initDragDrop } from './drop.js';
 import { processUrlMedia, loadRomAndMaybeRun, isRomLoaded } from './url-media.js';
 import { initUI, toast, showRomOverlay, hideRomOverlay, enableRunButton, setBackgroundMessage } from './ui.js';
 import { maybeOfferBackgroundCheckpoint } from './checkpoint.js';
-import { initMediaPersist } from './media-persist.js';
 
 const params = new URLSearchParams(location.search);
 
@@ -41,16 +40,18 @@ initTerminal(document.getElementById('terminal'), {
 });
 
 // --- 3. Boot emulator ---
+// With PROXY_TO_PTHREAD, main() runs on a worker thread and mounts OPFS
+// directories (/boot, /images, /checkpoint) before shell_init().
 const canvas = document.getElementById('screen');
 await initEmulator(canvas, wasmArgs, writeLine);
+
+// Capture FS reference for /tmp/ operations
+initFS(getModule());
 
 // Show initial prompt now that the shell is ready
 showPrompt(true);
 
-// --- 4. Persistent filesystem ---
-const initialSync = initFS(getModule());
-
-// --- 5. UI chrome ---
+// --- 4. UI chrome ---
 initUI({
   canvas,
   panel: document.getElementById('terminal-panel'),
@@ -60,16 +61,12 @@ initUI({
   screenToolbar: document.getElementById('screen-toolbar'),
 });
 
-// --- 6. Drag & drop ---
+// --- 5. Drag & drop ---
 initDragDrop(canvas);
 
-// --- 7. Wait for FS sync, then load media ---
-await initialSync;
-ensureDir(BOOT_DIR);
-ensureDir(ROMS_DIR);
-ensureCheckpointDir();
-ensureDir(IMAGES_DIR);
-initMediaPersist();
+// --- 6. Load media ---
+// OPFS directories are already available (mounted by C-side main()).
+// No initial sync needed — OPFS is always up to date.
 
 let romLoaded = false;
 const resumedFromCheckpoint = await maybeOfferBackgroundCheckpoint();
@@ -90,7 +87,6 @@ if (resumedFromCheckpoint) {
   }
 }
 
-// Signal that the full boot sequence (FS init, checkpoint polling, media
-// provisioning) is complete.  Tests wait for this before issuing commands
-// to avoid races with the checkpoint-poll FS.syncfs(true) pull-sync.
+// Signal that the full boot sequence is complete.
+// Tests wait for this before issuing commands.
 window.__gsBootReady = true;
