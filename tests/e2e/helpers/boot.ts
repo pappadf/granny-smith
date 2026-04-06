@@ -46,7 +46,13 @@ export async function bootWithMedia(page: Page, romRel: string, fd0Rel?: string,
 	await page.waitForFunction(() => {
 		return typeof (window as any).__gsTestShim?.getTerminalSnapshot === 'function';
 	}, { timeout: 10000 });
-	
+
+	// Clear stale checkpoints from OPFS (persist between tests)
+	await page.evaluate(async () => {
+		const shim = (window as any).__gsTestShim;
+		if (typeof shim?.clearCheckpoints === 'function') await shim.clearCheckpoints();
+	});
+
 	// Then wait for ROM loading to complete (checks command log for load-rom)
 	await page.waitForFunction(() => {
 		try {
@@ -56,7 +62,7 @@ export async function bootWithMedia(page: Page, romRel: string, fd0Rel?: string,
 			return false;
 		}
 	}, { timeout: 15000 });
-} 
+}
 
 /**
  * Prepare boot by uploading media directly into the in-page filesystem (via the
