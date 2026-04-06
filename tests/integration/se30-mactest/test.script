@@ -90,6 +90,4 @@ run 7000000000
 # memory test passed.
 screenshot --match main-after-reboot.png
 
-screenshot foo.png
-
 quit
