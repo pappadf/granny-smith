@@ -229,6 +229,12 @@ test.describe('State', () => {
     await page.locator('[data-checkpoint-continue]').click();
     await matchScreenFast(page, 'test-4-desktop', { initialWaitMs: 2_000, waitBeforeUpdateMs: 30_000, timeoutMs: 30_000 });
 
+    // Navigate the first tab away so its WASM module is torn down and OPFS
+    // SyncAccessHandle locks on delta/journal files are released.  Without
+    // this, the new tab cannot open the same files (exclusive locking).
+    log('[state-test4] navigating first tab away to release OPFS handles');
+    await page.goto('about:blank');
+
     log('[state-test4] opening new tab to reuse checkpoint');
     const newTab = await page.context().newPage();
     await installTestShim(newTab);

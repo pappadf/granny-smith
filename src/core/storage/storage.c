@@ -456,10 +456,10 @@ int storage_apply_rollback(storage_t *storage) {
 
     // Truncate journal
     if (storage->journal_fp) {
-        fclose(storage->journal_fp);
-        // Reopen with "w+b" to truncate, then reopen as "a+b"
-        // (ftruncate may not be available on all platforms)
-        storage->journal_fp = NULL;
+        int fd = fileno(storage->journal_fp);
+        if (fd >= 0)
+            ftruncate(fd, 0);
+        fseek(storage->journal_fp, 0, SEEK_SET);
     }
     storage->journal_count = 0;
 
@@ -579,16 +579,24 @@ int storage_restore_from_checkpoint(storage_t *storage, checkpoint_t *checkpoint
         return storage_load_state(storage, &ctx, checkpoint_storage_read_cb);
     }
 
-    // Quick: read bitmap, set as current, clear journal
+    // Quick checkpoint: the delta may have been modified AFTER the checkpoint
+    // was saved (the emulator kept running).  The journal has preimages for
+    // those post-checkpoint overwrites.  Replay the journal first to restore
+    // the delta to its committed (= checkpoint-time) state before applying
+    // the checkpoint's bitmap.
+    if (storage->journal_count > 0)
+        storage_apply_rollback(storage);
+
+    // Now read the checkpoint bitmap and set it as current
     system_read_checkpoint_data(checkpoint, storage->bitmap, storage->bitmap_bytes);
     if (checkpoint_has_error(checkpoint))
         return GS_ERROR;
 
-    // Commit immediately (delta data is correct — OPFS auto-persisted writes)
+    // Commit: the delta data now matches this bitmap
     memcpy(storage->committed_bitmap, storage->bitmap, storage->bitmap_bytes);
     delta_flush_bitmaps(storage);
 
-    // Truncate journal (no longer needed — we trust the delta data)
+    // Truncate journal
     if (storage->journal_fp) {
         int fd = fileno(storage->journal_fp);
         if (fd >= 0)
