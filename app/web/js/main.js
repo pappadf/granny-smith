@@ -74,6 +74,8 @@ if (resumedFromCheckpoint) {
   if (isRomLoaded()) {
     enableRunButton();
   }
+} else if (params.has('noui')) {
+  // Headless/test mode: skip all dialogs, let the test harness drive commands.
 } else {
   // Normal startup: scan OPFS for persisted ROMs
   let romChecksums = await scanForPersistedRoms();

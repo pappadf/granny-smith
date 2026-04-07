@@ -90,8 +90,9 @@ export async function bootWithUploadedMedia(
 	const fd0 = resolveOptional(fd0Rel, 'fd0');
 	const hdZip = resolveOptional(hd0ZipRel, 'HD zip');
 
-	// Navigate to the app (no media URL params).
-	await page.goto(navigatePath);
+	// Navigate to the app with ?noui to skip ROM upload / config dialogs.
+	const sep = navigatePath.includes('?') ? '&' : '?';
+	await page.goto(`${navigatePath}${sep}noui`);
 
 	// Wait for shim and command bridge. injectMedia now uses drop events (no __Module.FS needed).
 	await page.waitForFunction(() => {

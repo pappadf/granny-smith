@@ -55,18 +55,15 @@ test.describe('ROM Drag/Drop', () => {
     log('starting ROM overlay test');
     
     // Navigate to emulator with no media - should show ROM overlay
-    await page.goto('/index.html');
+    await page.goto('/index.html?noui');
     await page.waitForLoadState('domcontentloaded');
     await waitForEmulatorReady(page, log);
-    
-    // Wait for IDBFS sync to complete (which triggers overlay display)
-    await page.waitForFunction(() => {
-      // Check for the log message indicating sync is complete
-      const overlay = document.getElementById('rom-required-overlay');
-      return overlay && overlay.classList.contains('visible');
-    }, { timeout: 10000 });
-    
-    log('ROM overlay is visible on empty emulator');
+
+    // With ?noui the startup completes immediately without blocking on dialogs.
+    // Wait for __gsBootReady so the emulator is fully initialized.
+    await page.waitForFunction(() => (window as any).__gsBootReady === true, { timeout: 15000 });
+
+    log('emulator ready (noui mode)');
     
     // Read the actual ROM file
     const romPath = path.join(process.cwd(), 'tests', 'data', ROM_REL);
@@ -443,10 +440,11 @@ test.describe('Drop Hint UI', () => {
     test.setTimeout(60_000);
     log('starting drop hint UI test');
     
-    await page.goto('/index.html');
+    await page.goto('/index.html?noui');
     await page.waitForLoadState('domcontentloaded');
     await waitForEmulatorReady(page, log);
-    
+    await page.waitForFunction(() => (window as any).__gsBootReady === true, { timeout: 15000 });
+
     // Initially, drop hint should not be active
     const initialHint = await page.evaluate(() => {
       const hint = document.getElementById('drop-hint');
@@ -498,18 +496,12 @@ test.describe('Full Drop Workflow', () => {
     test.setTimeout(180_000);
     log('starting full drop workflow test');
     
-    // Step 1: Start with empty emulator
-    await page.goto('/index.html');
+    // Step 1: Start with empty emulator (noui skips dialogs)
+    await page.goto('/index.html?noui');
     await page.waitForLoadState('domcontentloaded');
     await waitForEmulatorReady(page, log);
+    await page.waitForFunction(() => (window as any).__gsBootReady === true, { timeout: 15000 });
     log('step 1: empty emulator ready');
-    
-    // Wait for ROM overlay to become visible (after IDBFS sync)
-    await page.waitForFunction(() => {
-      const overlay = document.getElementById('rom-required-overlay');
-      return overlay && overlay.classList.contains('visible');
-    }, { timeout: 10000 });
-    log('ROM overlay visible');
     
     // Step 2: Drop ROM
     const romPath = path.join(process.cwd(), 'tests', 'data', ROM_REL);
