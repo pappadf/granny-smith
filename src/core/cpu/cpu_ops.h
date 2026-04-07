@@ -1702,6 +1702,7 @@ static inline uint32_t bf_insert_reg(uint32_t dst, int32_t offset, uint32_t w, u
             EXC_FTRAP();                                                                                               \
         } else {                                                                                                       \
             fpu_state_t *_fpu = (fpu_state_t *)cpu->fpu;                                                               \
+            _fpu->initialized = true;                                                                                  \
             unsigned _mode = (opcode >> 3) & 7;                                                                        \
             unsigned _reg = opcode & 7;                                                                                \
             uint16_t _ext = FETCH16();                                                                                 \
@@ -1742,6 +1743,7 @@ static inline uint32_t bf_insert_reg(uint32_t dst, int32_t offset, uint32_t w, u
             EXC_FTRAP();                                                                                               \
         } else {                                                                                                       \
             fpu_state_t *_fpu = (fpu_state_t *)cpu->fpu;                                                               \
+            _fpu->initialized = true;                                                                                  \
             int16_t _disp = (int16_t)FETCH16();                                                                        \
             unsigned _cond = opcode & 0x3F;                                                                            \
             _fpu->fpiar = cpu->instruction_pc;                                                                         \
@@ -1767,6 +1769,7 @@ static inline uint32_t bf_insert_reg(uint32_t dst, int32_t offset, uint32_t w, u
             EXC_FTRAP();                                                                                               \
         } else {                                                                                                       \
             fpu_state_t *_fpu = (fpu_state_t *)cpu->fpu;                                                               \
+            _fpu->initialized = true;                                                                                  \
             int32_t _disp = (int32_t)FETCH32();                                                                        \
             unsigned _cond = opcode & 0x3F;                                                                            \
             _fpu->fpiar = cpu->instruction_pc;                                                                         \

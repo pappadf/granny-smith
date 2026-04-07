@@ -573,55 +573,74 @@ bool fpu_test_condition(fpu_state_t *fpu, unsigned predicate) {
 static float80_reg_t fpu_from_extended(uint32_t exp_sign_pad, uint32_t mant_hi, uint32_t mant_lo);
 static void fpu_to_extended(float80_reg_t val, uint32_t *word0, uint32_t *word1, uint32_t *word2);
 
-// 68882 Rev $1F idle frame: 4-byte header + payload
-// Real 68882 uses $18 (24 bytes) for idle, $B4 (180 bytes) for busy.
-// We extend the idle frame to include the full programmer model so that
-// a FRESTORE-null / FRESTORE-idle sequence can restore data registers,
-// matching real 68882 behavior where idle-frame internal state preserves
-// the complete register file.
+// MC68882 FSAVE/FRESTORE state frame constants (MC68882UM §6.4.2, Table 6-6)
+//
+// Format word layout: [version:8][size:8][reserved:16]
+//   version = $1F for MC68882 initial production
+//   size    = payload bytes (excluding format word itself)
+//
+// MC68882 idle frame layout (Figure 6-5, 56 bytes payload):
+//   +$00: Format word ($1F380000)
+//   +$04: Command/Condition register (4 bytes)
+//   +$08: CU internal registers (32 bytes)
+//   +$28: Exceptional operand (12 bytes, extended precision)
+//   +$34: Operand register (4 bytes)
+//   +$38: BIU flags (4 bytes)
+//
+// We store emulator-specific state in the CU internal registers area:
+//   +$08: pre_exc_mask (4 bytes) — which exceptions already fired pre-instruction
+
 #define FSAVE_VERSION 0x1F
-// FSAVE_IDLE_SIZE defined in fpu.h
-#define FSAVE_BUSY_SIZE 0xB4 // 180 bytes of payload (not generated, only accepted)
+// FSAVE_IDLE_SIZE defined in fpu.h ($38 = 56 bytes)
+#define FSAVE_BUSY_SIZE 0xD4 // MC68882 busy frame: 212 bytes payload (not generated)
+
+// BIU flags bit definitions
+#define BIU_EXC_PEND (1u << 0) // exception pending
 
 // Write FSAVE state frame to memory. Returns total frame size in bytes.
 int fpu_fsave(fpu_state_t *fpu, uint32_t addr) {
     if (!fpu->initialized) {
-        // Null frame: FPU has not been used since reset
+        // Null frame: FPU has not been used since reset (§6.4.2.1)
         memory_write_uint32(addr, 0x00000000);
         return 4;
     }
 
-    // Idle frame header: version=$1F, size=$84
+    // +$00: Format word — version=$1F, size=$38 (MC68882 idle)
     uint32_t header = ((uint32_t)FSAVE_VERSION << 24) | ((uint32_t)FSAVE_IDLE_SIZE << 16);
     memory_write_uint32(addr, header);
 
-    uint32_t off = addr + 4;
+    // +$04: Command/Condition register (internal, reserved bits — zero for idle)
+    memory_write_uint32(addr + 0x04, 0x00000000);
 
-    // Save control registers (FPCR, FPSR, FPIAR) — 12 bytes
-    memory_write_uint32(off, fpu->fpcr);
-    off += 4;
-    memory_write_uint32(off, fpu->fpsr);
-    off += 4;
-    memory_write_uint32(off, fpu->fpiar);
-    off += 4;
-
-    // Save all 8 FP data registers — 96 bytes (8 × 12)
-    for (int i = 0; i < 8; i++) {
-        uint32_t w0, w1, w2;
-        fpu_to_extended(fpu->fp[i], &w0, &w1, &w2);
-        memory_write_uint32(off, w0);
-        off += 4;
-        memory_write_uint32(off, w1);
-        off += 4;
-        memory_write_uint32(off, w2);
-        off += 4;
-    }
-
-    // Pad remaining internal state to $84 bytes total payload
-    while (off < addr + 4 + FSAVE_IDLE_SIZE) {
+    // +$08: CU internal registers (32 bytes)
+    // Store pre_exc_mask at the start; remainder is zero
+    memory_write_uint32(addr + 0x08, fpu->pre_exc_mask);
+    for (uint32_t off = addr + 0x0C; off < addr + 0x28; off += 4)
         memory_write_uint32(off, 0x00000000);
-        off += 4;
-    }
+
+    // +$28: Exceptional operand (12 bytes, extended precision)
+    // Store the last exceptional operand for exception handler use
+    uint32_t w0, w1, w2;
+    fpu_to_extended(fpu->exceptional_operand, &w0, &w1, &w2);
+    memory_write_uint32(addr + 0x28, w0);
+    memory_write_uint32(addr + 0x2C, w1);
+    memory_write_uint32(addr + 0x30, w2);
+
+    // +$34: Operand register (internal — zero for idle)
+    memory_write_uint32(addr + 0x34, 0x00000000);
+
+    // +$38: BIU flags
+    uint32_t biu = 0;
+    uint32_t exc = fpu->fpsr & 0xFF00; // exception status bits
+    uint32_t ena = fpu->fpcr & 0xFF00; // exception enable bits
+    if (exc & ena)
+        biu |= BIU_EXC_PEND;
+    memory_write_uint32(addr + 0x38, biu);
+
+    // After FSAVE, the FPU transitions to null state (§6.4.3.2)
+    // The programmer model is NOT affected — it remains valid for FMOVEM
+    fpu->initialized = false;
+    fpu->pre_exc_mask = 0;
 
     return 4 + FSAVE_IDLE_SIZE;
 }
@@ -630,40 +649,34 @@ int fpu_fsave(fpu_state_t *fpu, uint32_t addr) {
 int fpu_frestore(fpu_state_t *fpu, uint32_t addr) {
     uint32_t header = memory_read_uint32(addr);
     uint32_t size = (header >> 16) & 0xFF;
+
     if (size == 0) {
-        // Null frame: reset FPU to hardware-reset state (MC68882UM §6.4.2.1)
-        // Data registers become positive non-signaling NaNs; control regs zero
+        // Null frame: reset FPU to hardware-reset state (§6.4.2.1)
+        // Data registers become non-signaling NANs; control regs zero
         for (int i = 0; i < 8; i++)
             fpu->fp[i] = (float80_reg_t){0x7FFF, 0xFFFFFFFFFFFFFFFFULL};
         fpu->fpcr = 0;
         fpu->fpsr = 0;
         fpu->fpiar = 0;
         fpu->pre_exc_mask = 0;
+        fpu->exceptional_operand = FP80_ZERO;
         fpu->initialized = false;
         return 4;
     }
 
     if (size == FSAVE_IDLE_SIZE) {
-        // Our extended idle frame: restore full programmer model
-        uint32_t off = addr + 4;
-        fpu->fpcr = memory_read_uint32(off);
-        off += 4;
-        fpu->fpsr = memory_read_uint32(off);
-        off += 4;
-        fpu->fpiar = memory_read_uint32(off);
-        off += 4;
-        for (int i = 0; i < 8; i++) {
-            uint32_t w0 = memory_read_uint32(off);
-            off += 4;
-            uint32_t w1 = memory_read_uint32(off);
-            off += 4;
-            uint32_t w2 = memory_read_uint32(off);
-            off += 4;
-            fpu->fp[i] = fpu_from_extended(w0, w1, w2);
-        }
+        // MC68882 idle frame ($38 = 56 bytes payload)
+        // Restore emulator state from CU internal registers area
+        fpu->pre_exc_mask = memory_read_uint32(addr + 0x08);
+
+        // Restore exceptional operand
+        uint32_t w0 = memory_read_uint32(addr + 0x28);
+        uint32_t w1 = memory_read_uint32(addr + 0x2C);
+        uint32_t w2 = memory_read_uint32(addr + 0x30);
+        fpu->exceptional_operand = fpu_from_extended(w0, w1, w2);
     }
 
-    // Idle frame or busy frame: mark FPU as initialized
+    // Idle or busy frame: mark FPU as initialized
     fpu->initialized = true;
     return 4 + size;
 }

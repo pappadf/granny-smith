@@ -125,6 +125,7 @@ typedef struct fpu_state {
     uint32_t fpiar; // FPU instruction address register
     uint32_t pre_exc_mask; // bitmask of exception bits already fired as pre-instruction
     bool initialized; // true once any FPU operation has executed (for FSAVE)
+    float80_reg_t exceptional_operand; // last operand that caused an FPU exception
 } fpu_state_t;
 
 // ============================================================================
@@ -156,7 +157,8 @@ bool fpu_check_exceptions(cpu_t *cpu, fpu_state_t *fpu);
 bool fpu_pre_instruction_check(cpu_t *cpu, fpu_state_t *fpu, bool conditional);
 
 // FSAVE: write state frame to memory at addr. Returns frame size in bytes.
-#define FSAVE_IDLE_SIZE 0x84 // payload bytes for idle frame (includes programmer model)
+// MC68882 idle frame: 56 bytes payload (§6.4.2.2, Figure 6-5)
+#define FSAVE_IDLE_SIZE 0x38
 int fpu_fsave(fpu_state_t *fpu, uint32_t addr);
 
 // FRESTORE: read state frame from memory at addr. Returns frame size in bytes.
