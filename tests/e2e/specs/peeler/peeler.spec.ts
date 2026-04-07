@@ -81,9 +81,9 @@ test.describe('Peeler', () => {
     expect(positiveResult).toBe(0);
     log('[probe] positive case passed - archive recognized');
 
-    log('[probe] testing negative case - unsupported file format (using ROM from /persist/boot/rom)');
-    // Test negative case: Use the ROM file from /persist/boot/rom (no need to upload)
-    const negativeResult = await runCommand(page, 'peeler --probe /persist/boot/rom');
+    log('[probe] testing negative case - unsupported file format (using ROM from /tmp/rom)');
+    // Test negative case: Use the ROM file uploaded to /tmp/rom by the test shim
+    const negativeResult = await runCommand(page, 'peeler --probe /tmp/rom');
     
     expect(negativeResult).toBe(1);
     log('[probe] negative case passed - ROM file not recognized');

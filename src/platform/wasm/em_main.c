@@ -58,7 +58,7 @@
 static void em_assertion_callback(const char *expr, const char *file, int line, const char *func);
 
 // Deferred speed mode: saved at parse time, applied in system_post_create()
-// when the machine (and scheduler) are created later via load-rom.
+// when the machine (and scheduler) are created later via rom --load.
 static enum schedule_mode g_deferred_speed = schedule_real_time;
 static bool g_deferred_speed_set = false;
 
@@ -494,31 +494,6 @@ static void run_startup_command(const char *line) {
     free(buffer);
 }
 
-// Auto-attach SCSI drives from /boot
-static void auto_attach_scsi_drives(config_t *cfg) {
-    DIR *dir = opendir("/boot");
-    if (!dir) {
-        return;
-    }
-
-    struct dirent *entry;
-    for (int i = 1; i <= 7; ++i) {
-        char expected[16];
-        snprintf(expected, sizeof(expected), "hd%d.img", i);
-
-        rewinddir(dir);
-        while ((entry = readdir(dir)) != NULL) {
-            if (strcmp(entry->d_name, expected) == 0) {
-                char filename[256];
-                snprintf(filename, sizeof(filename), "/boot/%s", expected);
-                add_scsi_drive(cfg, filename, i - 1);
-                break;
-            }
-        }
-    }
-    closedir(dir);
-}
-
 // Main tick function called by the Emscripten main loop
 void em_main_tick(void) {
     tick_counter++;
@@ -658,7 +633,7 @@ static uint64_t cmd_file_copy(int argc, char *argv[]) {
 }
 
 // Find a mountable media file in a directory.
-// Scans the directory for files that pass insert-fd --probe or load-rom --probe.
+// Scans the directory for files that pass insert-fd --probe or rom --probe.
 // Prints the path of the first match and returns 0, or returns 1 if none found.
 // Used by JS after peeler extraction (FS.readdir from main thread is broken
 // with WasmFS pthreads, so this runs on the worker).
@@ -808,7 +783,7 @@ static uint64_t cmd_download(int argc, char *argv[]) {
 // Background Checkpoint System
 // ============================================================================
 
-#define BACKGROUND_CHECKPOINT_DIR             "/checkpoint"
+#define BACKGROUND_CHECKPOINT_DIR             "/opfs/checkpoints"
 #define BACKGROUND_CHECKPOINT_SUFFIX          ".checkpoint"
 #define BACKGROUND_CHECKPOINT_PENDING_SUFFIX  ".pending"
 #define BACKGROUND_CHECKPOINT_COMPLETE_SUFFIX ".complete"
@@ -821,7 +796,7 @@ static bool g_background_handlers_installed = false;
 
 // Ensure checkpoint directory exists
 static int ensure_checkpoint_directory(void) {
-    // /checkpoint is an OPFS-backed mount created in main().
+    // /opfs/checkpoints is created inside the OPFS mount in main().
     struct stat st;
     if (stat(BACKGROUND_CHECKPOINT_DIR, &st) == 0) {
         return S_ISDIR(st.st_mode) ? GS_SUCCESS : GS_ERROR;
@@ -938,7 +913,7 @@ static int save_quick_checkpoint(const char *reason, bool verbose, bool rate_lim
         scheduler_stop(sched);
 
     // Temporarily restore running flag so checkpoint captures the pre-stop state
-    // This allows load-state to auto-resume if the checkpoint was saved while running
+    // This allows checkpoint --load to auto-resume if the checkpoint was saved while running
     if (was_running && sched)
         scheduler_set_running(sched, true);
 
@@ -1081,6 +1056,46 @@ static uint64_t cmd_checkpoint(int argc, char *argv[]) {
 
     const char *action = argv[1];
 
+    // checkpoint --save <path> [content|refs] — save machine state
+    if (strcmp(action, "--save") == 0) {
+        // Shift argv so cmd_save_checkpoint sees the path as argv[1]
+        return cmd_save_checkpoint(argc - 1, argv + 1);
+    }
+
+    // checkpoint --load [<path>] — load machine state (auto-loads latest if no path)
+    if (strcmp(action, "--load") == 0) {
+        return cmd_load_checkpoint(argc - 1, argv + 1);
+    }
+
+    // checkpoint --validate <path> — check if path contains a valid checkpoint
+    if (strcmp(action, "--validate") == 0) {
+        if (argc < 3) {
+            printf("Usage: checkpoint --validate <path>\n");
+            return 1;
+        }
+        const char *path = argv[2];
+        FILE *f = fopen(path, "rb");
+        if (!f)
+            return 1;
+        char magic[9] = {0};
+        size_t n = fread(magic, 1, 8, f);
+        fclose(f);
+        if (n < 8)
+            return 1;
+        if (memcmp(magic, "GSCHKPT2", 8) == 0 || memcmp(magic, "GSCHKPT3", 8) == 0) {
+            printf("valid\n");
+            return 0;
+        }
+        printf("invalid\n");
+        return 1;
+    }
+
+    // checkpoint --probe — check if any valid checkpoint exists (returns 0/1)
+    if (strcmp(action, "--probe") == 0) {
+        const char *path = find_valid_checkpoint_path();
+        return (path != NULL) ? 0 : 1;
+    }
+
     // checkpoint clear - remove all checkpoint files
     if (strcmp(action, "clear") == 0) {
         int removed = clear_checkpoint_files();
@@ -1121,7 +1136,7 @@ static uint64_t cmd_checkpoint(int argc, char *argv[]) {
         return 0;
     }
 
-    printf("Usage: checkpoint <clear|auto <on|off>|on|off>\n");
+    printf("Usage: checkpoint --save <path> | --load [<path>] | --validate <path> | --probe | clear | auto <on|off>\n");
     return 1;
 }
 
@@ -1146,17 +1161,26 @@ extern void em_audio_register_commands(void);
 int main(int argc, char *argv[]) {
     signal(SIGINT, sigint_handler);
 
-    // Mount OPFS-backed directories for persistent storage.
-    // With PROXY_TO_PTHREAD, main() runs on a worker thread where
-    // wasmfs_create_opfs_backend() can safely block.
+    // Single OPFS mount at /opfs — everything under it persists.
+    // The root stays memory-backed (wasmfs_create_opfs_backend() cannot run
+    // during global constructors on the main thread; see wasmfs-opfs-root-limitation.md).
+    // The web app creates its directory structure under /opfs; users can also
+    // create arbitrary paths under /opfs for their own persistent storage.
     backend_t opfs = wasmfs_create_opfs_backend();
-    wasmfs_create_directory("/boot", 0777, opfs);
-    wasmfs_create_directory("/images", 0777, opfs);
-    wasmfs_create_directory("/checkpoint", 0777, opfs);
+    wasmfs_create_directory("/opfs", 0777, opfs);
+
+    // Web app directory structure (regular mkdir inside the OPFS mount).
+    mkdir("/opfs/images", 0777);
+    mkdir("/opfs/images/rom", 0777);
+    mkdir("/opfs/images/vrom", 0777);
+    mkdir("/opfs/images/fd", 0777);
+    mkdir("/opfs/images/fdhd", 0777);
+    mkdir("/opfs/images/hd", 0777);
+    mkdir("/opfs/images/cd", 0777);
+    mkdir("/opfs/checkpoints", 0777);
+    mkdir("/opfs/upload", 0777);
 
     // Volatile scratch space on memory backend (visible from all threads).
-    // Pre-create subdirectories that JS needs (FS.mkdir from the main thread
-    // fails cross-thread under WasmFS pthreads).
     backend_t membk = wasmfs_create_memory_backend();
     wasmfs_create_directory("/tmp", 0777, membk);
     mkdir("/tmp/upload", 0777);
@@ -1200,7 +1224,7 @@ int main(int argc, char *argv[]) {
     setup_init();
 
     // Deferred machine instantiation: global_emulator stays NULL until a ROM
-    // is loaded via the `load-rom` command, which identifies the machine type
+    // is loaded via the `rom --load` command, which identifies the machine type
     // and creates it automatically.  If --model was provided, create it now
     // for backward compatibility.
     if (model) {
@@ -1215,7 +1239,7 @@ int main(int argc, char *argv[]) {
 
     // Parse and save speed mode for deferred application.
     // When the machine already exists (--model was given), apply immediately.
-    // Otherwise, system_post_create() will apply it when load-rom creates the machine.
+    // Otherwise, system_post_create() will apply it when rom --load creates the machine.
     if (speed_mode) {
         if (strcmp(speed_mode, "max") == 0) {
             g_deferred_speed = schedule_max_speed;
@@ -1250,14 +1274,15 @@ int main(int argc, char *argv[]) {
                  "find-media <dir> [dest] – find first floppy image in dir, optionally copy to dest", cmd_find_media);
     register_cmd("background-checkpoint", "Checkpointing",
                  "background-checkpoint [reason] – save a quick checkpoint to /checkpoint", cmd_background_checkpoint);
-    register_cmd("checkpoint", "Checkpointing", "checkpoint <clear|auto <on|off>|on|off> – manage checkpoints",
+    register_cmd("checkpoint", "Checkpointing",
+                 "checkpoint --save <path> | --load [<path>] | --validate <path> | --probe | clear | auto <on|off>",
                  cmd_checkpoint);
     em_audio_register_commands();
 
     install_background_checkpoint_handlers();
 
     // Assertion callback is installed automatically by system_post_create()
-    // whenever a machine is created (either here via --model or later via load-rom).
+    // whenever a machine is created (either here via --model or later via rom --load).
 
     emscripten_set_main_loop(tick, 0, 1); // Use RAF, simulate infinite loop
     return 0;
@@ -1304,7 +1329,7 @@ static void em_assertion_callback(const char *expr, const char *file, int line, 
 }
 
 // Platform hook: install assertion callback and apply deferred speed mode
-// after each system_create (including deferred creation via load-rom).
+// after each system_create (including deferred creation via rom --load).
 void system_post_create(config_t *cfg) {
     debug_t *debug = system_debug();
     if (debug) {

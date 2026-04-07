@@ -8,7 +8,7 @@ import {
   isRunning, setRunning, isModuleReady, getModule, onRunStateChange
 } from './emulator.js';
 import { handleInterrupt, fitTerminal, showPrompt, setActive, isActive } from './terminal.js';
-import { fileExists, hdSlotPath } from './fs.js';
+import { fileExists } from './fs.js';
 
 // --- Status / Toast ---
 
@@ -240,10 +240,10 @@ export function initUI({ canvas, panel, toggle, termBody, canvasWrapper, screenT
     const tempPath = makeTempStatePath();
     const tempName = tempPath.split('/').pop();
     try {
-      // save-state runs synchronously via the command mutex;
+      // checkpoint --save runs synchronously via the command mutex;
       // no need to pause — the checkpoint captures the scheduler's
       // running flag so the saved state preserves run/pause state.
-      await window.runCommand(`save-state ${tempPath}`);
+      await window.runCommand(`checkpoint --save ${tempPath}`);
       await window.runCommand(`download ${tempPath}`);
       toast(`State saved (${tempName})`);
     } catch (err) {

@@ -84,7 +84,7 @@ test.describe('ROM Drag/Drop', () => {
     // Verify the ROM was loaded and emulator started
     const romLoaded = await page.evaluate(() => {
       const commandLog = (window as any).__commandLog || [];
-      return commandLog.some((cmd: string) => cmd.includes('load-rom'));
+      return commandLog.some((cmd: string) => cmd.includes('rom --load'));
     });
     
     expect(romLoaded).toBe(true);
@@ -238,7 +238,7 @@ test.describe('Checkpoint Drag/Drop', () => {
     log(`reference instruction count = ${savedInstr}`);
     
     // Save a real checkpoint (RLE-compressed, should be very small)
-    const saveResult = await runCommand(page, 'save-state /tmp/early-checkpoint.bin refs');
+    const saveResult = await runCommand(page, 'checkpoint --save /tmp/early-checkpoint.bin refs');
     expect(saveResult).toBe(0);
     log('early-boot checkpoint saved');
     
@@ -278,11 +278,11 @@ test.describe('Checkpoint Drag/Drop', () => {
     expect(dropResult).toBe(true);
     log('drop event dispatched for real checkpoint file');
     
-    // Wait for the drop handler to detect the checkpoint and run load-state
+    // Wait for the drop handler to detect the checkpoint and run checkpoint --load
     await page.waitForTimeout(5000);
     
     // Verify the machine state was actually restored by checking the instruction count
-    // The drop handler calls load-state which recreates the machine at the saved state
+    // The drop handler calls checkpoint --load which recreates the machine at the saved state
     const restoredInstr = await runCommand(page, 'get instr');
     log(`restored instruction count = ${restoredInstr}`);
     expect(restoredInstr).toBe(savedInstr);

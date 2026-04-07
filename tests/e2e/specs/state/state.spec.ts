@@ -16,7 +16,7 @@ import * as path from 'path';
 test.describe('State', () => {
 
   // Save and immedately load back state, verify that boot continues after load.
-  // This is basically a sanity test of save-state / load-state functionality.
+  // This is basically a sanity test of checkpoint --save / checkpoint --load functionality.
   // In this case we test checkpointing when booting from hard disk image.
   test('test 1: save and load back state', async ({ page, log }) => {
 
@@ -35,10 +35,10 @@ test.describe('State', () => {
     await matchScreenFast(page, 'test-1-booting', { initialWaitMs: 2_000, waitBeforeUpdateMs: 30_000, timeoutMs: 30_000 });
 
     log('[state-test1] saving state');
-    await runCommand(page, 'save-state foo');
+    await runCommand(page, 'checkpoint --save foo');
 
     log('[state-test1] loading back state');
-    await runCommand(page, 'load-state foo');
+    await runCommand(page, 'checkpoint --load foo');
 
     log('[state-test1] resuming from loaded state');
     await runCommand(page, 'run');
@@ -71,7 +71,7 @@ test.describe('State', () => {
     await matchScreenFast(page, 'test-2-screen-1', { initialWaitMs: 2_000, waitBeforeUpdateMs: 30_000, timeoutMs: 30_000 });
 
     log('[state-test2] saving state');
-    await runCommand(page, 'save-state foo');
+    await runCommand(page, 'checkpoint --save foo');
 
     // ======================================================================
     // Iteration 1:
@@ -97,7 +97,7 @@ test.describe('State', () => {
     // Iteration 2: Restore saved state
 
     log('[state-test2] loading state');
-    await runCommand(page, 'load-state foo');
+    await runCommand(page, 'checkpoint --load foo');
 
     log('[state-test2] iteration 2: start logging to file');
     await runCommand(page, 'log floppy level=5 file=/tmp/floppy-log-loaded.txt stdout=off ts=on');
@@ -279,7 +279,7 @@ test.describe('State', () => {
       await waitForCompleteCheckpoint(page);
 
       // Verify a valid checkpoint exists after save
-      const probeResult = await runCommand(page, 'load-state probe');
+      const probeResult = await runCommand(page, 'checkpoint --probe');
       log(`[state-test5] checkpoint ${i}: probe=${probeResult}`);
       expect(probeResult, `Valid checkpoint should exist after save ${i}`).toBe(0);
     }
@@ -296,7 +296,7 @@ test.describe('State', () => {
     await waitForSync(page);
 
     // Verify a valid checkpoint exists
-    const finalProbe = await runCommand(page, 'load-state probe');
+    const finalProbe = await runCommand(page, 'checkpoint --probe');
     log(`[state-test5] final checkpoint probe: ${finalProbe}`);
     expect(finalProbe, 'Valid checkpoint should exist after final save').toBe(0);
     
@@ -334,7 +334,7 @@ test.describe('State', () => {
       await waitForPrompt(page);
       
       // Verify a valid checkpoint exists after reload cycle
-      const cycleProbe = await runCommand(page, 'load-state probe');
+      const cycleProbe = await runCommand(page, 'checkpoint --probe');
       log(`[state-test5] reload cycle ${i}: probe=${cycleProbe}`);
       expect(cycleProbe, `Valid checkpoint should exist after reload ${i}`).toBe(0);
     }
@@ -416,7 +416,7 @@ test.describe('State', () => {
     // Create an on-demand checkpoint with inline content (self-contained),
     // then download it via the browser so we have the bytes for drag-drop later.
     log('[state-test7] saving on-demand checkpoint (content mode)');
-    await runCommand(page, 'save-state /tmp/on-demand-checkpoint content');
+    await runCommand(page, 'checkpoint --save /tmp/on-demand-checkpoint content');
 
     log('[state-test7] downloading checkpoint via browser');
     const downloadPromise = page.waitForEvent('download', { timeout: 30_000 });
@@ -496,14 +496,14 @@ test.describe('State', () => {
     }
 
     // Restore the checkpoint by dropping it onto the canvas (simulates real drag-drop).
-    // The drop handler detects the checkpoint magic signature and calls load-state.
+    // The drop handler detects the checkpoint magic signature and calls checkpoint --load.
     log('[state-test7] restoring checkpoint via drag-drop');
     const dropResult = await dispatchDropEvent(
       page, '#screen', 'on-demand-checkpoint.bin', checkpointBytes
     );
     expect(dropResult, 'drop event should dispatch successfully').toBe(true);
 
-    // Wait for the drop handler to process the checkpoint and load-state to complete
+    // Wait for the drop handler to process the checkpoint and checkpoint --load to complete
     await page.waitForTimeout(5_000);
     await waitForPrompt(page);
 
@@ -596,7 +596,7 @@ test.describe('State', () => {
 
     // --- Phase 2: create on-demand checkpoint and download it ---
     log('[state-test8] saving on-demand checkpoint (content mode)');
-    await runCommand(page, 'save-state /tmp/on-demand-checkpoint content');
+    await runCommand(page, 'checkpoint --save /tmp/on-demand-checkpoint content');
 
     log('[state-test8] downloading checkpoint via browser');
     const downloadPromise = page.waitForEvent('download', { timeout: 30_000 });
@@ -679,7 +679,7 @@ test.describe('State', () => {
     );
     expect(dropResult, 'drop event should dispatch successfully').toBe(true);
 
-    // Wait for the drop handler to process the checkpoint and load-state to complete
+    // Wait for the drop handler to process the checkpoint and checkpoint --load to complete
     await page.waitForTimeout(5_000);
     await waitForPrompt(page);
 

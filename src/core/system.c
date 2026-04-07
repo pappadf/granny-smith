@@ -468,11 +468,8 @@ void setup_init() {
                  "scc-loopback [on|off] – enable/disable external loopback between serial ports", &cmd_scc_loopback);
     register_cmd("scsi-loopback", "Configuration", "scsi-loopback [on|off] – enable/disable SCSI loopback test card",
                  &cmd_scsi_loopback);
-    register_cmd("load-rom", "ROM", "load-rom [--probe] <filename> – load and identify ROM", (void *)&cmd_load_rom);
-
-    // Register checkpoint commands
-    register_cmd("save-state", "Checkpointing", "Save machine state to checkpoint file", &cmd_save_checkpoint);
-    register_cmd("load-state", "Checkpointing", "Load machine state: load-state [<file>|probe]", &cmd_load_checkpoint);
+    register_cmd("rom", "ROM", "rom --load <path> | --checksum <path> | --probe [<path>]", (void *)&cmd_rom);
+    register_cmd("vrom", "ROM", "vrom --load <path> | --checksum <path> | --probe [<path>]", (void *)&cmd_vrom);
 }
 
 // Platform hook called after system_create completes.
@@ -808,7 +805,7 @@ config_t *system_restore(const char *filename) {
 // Command handlers for checkpoint operations
 uint64_t cmd_save_checkpoint(int argc, char *argv[]) {
     if (argc < 2) {
-        printf("Usage: save-state <filename> [content|refs]\n");
+        printf("Usage: checkpoint --save <filename> [content|refs]\n");
         return -1;
     }
     const char *filename = argv[1];
@@ -820,7 +817,7 @@ uint64_t cmd_save_checkpoint(int argc, char *argv[]) {
         } else if (strcmp(mode, "content") == 0 || strcmp(mode, "inline") == 0) {
             checkpoint_set_files_as_refs(false);
         } else {
-            printf("save-state: unknown mode '%s' (use 'content' or 'refs')\n", mode);
+            printf("checkpoint --save: unknown mode '%s' (use 'content' or 'refs')\n", mode);
             return -1;
         }
     }
@@ -837,7 +834,7 @@ __attribute__((weak)) const char *find_valid_checkpoint_path(void) {
 }
 
 // Shell command to load a saved checkpoint from file
-// Also supports "load-state probe" to check for a valid background checkpoint
+// Also supports "checkpoint --probe" to check for a valid background checkpoint
 uint64_t cmd_load_checkpoint(int argc, char *argv[]) {
     // Handle probe subcommand: return 0 if valid checkpoint exists, 1 otherwise
     if (argc >= 2 && strcmp(argv[1], "probe") == 0) {

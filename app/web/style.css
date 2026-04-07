@@ -45,14 +45,37 @@ body {
 
 /* Persistent ROM-required overlay (visible only when no ROM is present) */
 #rom-required-overlay {
-  position:absolute; inset:0; display:none; align-items:center; justify-content:center;
-  background:rgba(255,255,255,0.92); color:var(--color-muted); font-weight:500; font-size:1rem;
-  text-align:center; padding:1.5rem; letter-spacing:0.01em;
-  /* Allow drag/drop to work even when overlay is visible by letting events
-     fall through to the underlying canvas + window handlers. */
-  pointer-events:none;
+  position:absolute; inset:0; display:none; flex-direction:column;
+  align-items:center; justify-content:center;
+  background:rgba(255,255,255,0.95); color:var(--color-text); font-weight:500; font-size:1rem;
+  text-align:center; padding:2rem; letter-spacing:0.01em; gap:0.75rem;
 }
 #rom-required-overlay.visible { display:flex; }
+#rom-required-overlay p { margin:0; }
+#rom-required-overlay .rom-overlay-hint { font-size:0.85rem; color:var(--color-muted); }
+.primary-btn {
+  padding:0.5rem 1.5rem; font-size:0.95rem; font-weight:600;
+  color:#fff; background:var(--color-focus); border:none; border-radius:var(--radius-md);
+  cursor:pointer; transition: background 0.15s;
+}
+.primary-btn:hover { background:#0550ae; }
+
+/* --- ROM Upload Dialog --- */
+.rom-upload-modal { text-align:center; }
+.rom-upload-modal .modal__message { color:var(--color-muted); margin:0 0 0.5rem 0; }
+.rom-upload-hint { font-size:0.82rem; color:var(--color-muted); }
+.rom-upload-error { font-size:0.85rem; color:#d1242f; }
+
+/* --- Machine Configuration Dialog --- */
+.config-modal { min-width:340px; max-width:420px; }
+.config-rows { display:flex; flex-direction:column; gap:0.6rem; margin:1rem 0; }
+.config-row { display:flex; align-items:center; justify-content:space-between; gap:0.75rem; }
+.config-label { font-weight:500; font-size:0.9rem; white-space:nowrap; min-width:120px; }
+.config-select {
+  flex:1; padding:0.35rem 0.5rem; font-size:0.9rem;
+  border:1px solid var(--color-border); border-radius:var(--radius-sm);
+  background:var(--color-btn-bg); color:var(--color-text);
+}
 
 /* Drag & drop hint overlay (shown only while dragging) */
 #drop-hint { position:absolute; top:0; left:0; width:100%; height:100%; pointer-events:none;
@@ -137,16 +160,21 @@ canvas { display:block; width:1024px; height:684px; image-rendering:pixelated; i
 }
 .modal[aria-hidden="false"] { display: flex; }
 
-/* Settings modal specific */
-#settings-modal {
+/* Modal backdrop (dark overlay behind dialog) */
+#settings-modal,
+#config-dialog,
+#checkpoint-dialog,
+#upload-dialog,
+#rom-upload-dialog {
   background: rgba(0,0,0,0.35);
 }
-#settings-modal .modal__content {
+.modal .modal__content {
   background: var(--color-bg-alt);
   border: 1px solid var(--color-border);
   padding: 1rem 1.25rem;
   border-radius: 8px;
-  width: 360px;
+  min-width: 320px;
+  max-width: 440px;
   box-shadow: 0 6px 24px rgba(0,0,0,0.12);
 }
 #settings-modal .modal__title {

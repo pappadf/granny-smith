@@ -52,8 +52,10 @@ No marker files are needed because OPFS writes are durable the moment the file i
   - Each subsystem declares its checkpoint function in its own header, alongside `*_init` and `delete_*`. The central `system.h` does not list all subsystem checkpoint prototypes; consumers include the relevant subsystem headers as needed.
 
 - **Save/Load commands:**
-  - `save-state <file>`: Iterates all subsystems and writes a complete machine snapshot to the specified file.
-  - `load-state <file>`: Constructs a new `config_t` by calling `setup_plus(checkpoint)`, restoring each subsystem from the stream.
+  - `checkpoint --save <file>`: Iterates all subsystems and writes a complete machine snapshot to the specified file.
+  - `checkpoint --load <file>`: Constructs a new `config_t` by calling `setup_plus(checkpoint)`, restoring each subsystem from the stream.
+  - `checkpoint --validate <path>`: Checks if the file contains a valid checkpoint (magic bytes).
+  - `checkpoint --probe`: Returns 0 if a valid checkpoint exists in `/opfs/checkpoints/`.
 
 - **File format & signature:**
   - Two on-disk formats are used:
@@ -65,49 +67,55 @@ No marker files are needed because OPFS writes are durable the moment the file i
 
 ## Image Persistence for Quick Checkpoints
 
-Quick checkpoints assume that disk image backing files and their delta/journal files exist in persistent storage at restore time. In the browser, images uploaded via drag-and-drop initially land in volatile `/tmp/` (memory-backed), which is wiped on page reload. The C-side `image_persist_volatile()` function fixes this by copying volatile images to OPFS before the storage engine opens them.
+Quick checkpoints assume that disk image backing files and their delta/journal files exist in persistent storage at restore time. In the browser, images uploaded via drag-and-drop initially land in volatile `/tmp/` (memory-backed), which is wiped on page reload. The C-side `image_persist_volatile()` function fixes this by copying volatile images to the OPFS-backed `/opfs/images/` directory before the storage engine opens them.
 
 ### How It Works
 
-When an `insert-fd` or `attach-hd` command targets a volatile path (`/tmp/` or `/fd/`), `image_persist_volatile()` (called from the worker thread where OPFS is accessible):
+When an `insert-fd` or `attach-hd` command targets a volatile path (`/tmp/`), `image_persist_volatile()` (called from the worker thread where OPFS is accessible):
 
 1. Reads the image file from volatile storage.
 2. Computes a content hash (FNV-1a over first 64 KB + total file size) -> 8-char hex.
-3. Copies the file to `/images/<hash>.img` (skipped if the hash file already exists).
+3. Copies the file to `/opfs/images/<hash>.img` (skipped if the hash file already exists).
 4. Returns the persistent path.
 
-The command then opens the image at its persistent location. The storage engine creates `.delta` and `.journal` files adjacent to it under `/images/` — all on OPFS, surviving page reloads. Quick checkpoints reference the persistent path, so checkpoint restore succeeds after reload.
+The command then opens the image at its persistent location. The storage engine creates `.delta` and `.journal` files adjacent to it under `/opfs/images/` — all on OPFS, surviving page reloads. Quick checkpoints reference the persistent path, so checkpoint restore succeeds after reload.
 
 ### Content-Addressed Naming
 
-Images under `/images/` are named by their content hash (`<hash>.img`). This provides:
+Images under `/opfs/images/` are named by their content hash (`<hash>.img`). This provides:
 
 - **Deduplication:** The same image mounted multiple times is stored only once.
 - **Skip-if-present:** If the hash file exists, the copy is skipped entirely — no wasted I/O.
 - **No name collisions:** Different images with the same original filename get unique hashes.
 
-Images loaded via URL parameters (`url-media.js`) land in `/boot/` and are not affected by this mechanism.
+Images loaded via URL parameters (`url-media.js`) land in `/opfs/images/` subdirectories and use the same persistence mechanism.
 
 ### Filesystem Layout
 
 ```
 /                              Memory (default WasmFS root)
-├── boot/                       OPFS (persistent)
-│   ├── roms/
-│   │   ├── <CHECKSUM>         ROM by checksum
-│   │   └── latest             Active ROM
-│   ├── fd0, fd1, ...          Boot floppy slots
-│   └── hd0, hd1, ...          Boot HD slots
-├── images/                     OPFS (persistent)
-│   ├── <hash>.img             Content-addressed disk images
-│   ├── <hash>.img.delta       Delta files (modifications)
-│   └── <hash>.img.journal     Preimage journals
-├── checkpoint/                 OPFS (persistent)
-│   └── 0000042.checkpoint     Quick checkpoint data
-└── tmp/                        Memory (volatile scratch)
+├── opfs/                       Single OPFS mount (everything here persists)
+│   ├── images/
+│   │   ├── rom/               ROM images (named by checksum)
+│   │   ├── vrom/              Video ROM images
+│   │   ├── fd/                400K/800K floppy images
+│   │   ├── fdhd/              1.4MB HD floppy images
+│   │   ├── hd/                SCSI hard disk images
+│   │   ├── cd/                CD-ROM images
+│   │   ├── <hash>.img         Content-addressed disk images (FNV-1a hash)
+│   │   ├── <hash>.img.delta   Delta files (modifications)
+│   │   └── <hash>.img.journal Preimage journals
+│   ├── checkpoints/
+│   │   └── 0000042.checkpoint
+│   ├── upload/
+│   └── (user can create anything here)
+└── tmp/                        Memory mount (volatile)
     ├── upload/                 File upload staging
     └── extract/                Archive extraction
 ```
+
+A single OPFS mount at `/opfs` is created in C `main()`.
+Subdirectories inside `/opfs/images` are created via `mkdir()` on the worker thread.
 
 
 ### Details and Best Practices

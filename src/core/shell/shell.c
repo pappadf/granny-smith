@@ -452,16 +452,55 @@ static uint64_t cmd_ls(int argc, char *argv[]) {
     return 0;
 }
 
+// Resolve a path against current_dir into an absolute canonical path.
+// Handles leading /, .., and . components.  Result written to out (must be >= outlen).
+static void resolve_path(const char *input, char *out, size_t outlen) {
+    char buf[256];
+    if (input[0] == '/') {
+        snprintf(buf, sizeof(buf), "%s", input);
+    } else {
+        snprintf(buf, sizeof(buf), "%s/%s", current_dir, input);
+    }
+    // Split into components and resolve . / ..
+    const char *components[64];
+    int depth = 0;
+    char *saveptr = NULL;
+    char *token = strtok_r(buf, "/", &saveptr);
+    while (token) {
+        if (strcmp(token, ".") == 0) {
+            // skip
+        } else if (strcmp(token, "..") == 0) {
+            if (depth > 0)
+                depth--;
+        } else {
+            components[depth++] = token;
+        }
+        token = strtok_r(NULL, "/", &saveptr);
+    }
+    // Build result
+    if (depth == 0) {
+        snprintf(out, outlen, "/");
+    } else {
+        out[0] = '\0';
+        for (int i = 0; i < depth; i++) {
+            size_t len = strlen(out);
+            snprintf(out + len, outlen - len, "/%s", components[i]);
+        }
+    }
+}
+
 static uint64_t cmd_cd(int argc, char *argv[]) {
     if (argc != 2) {
         printf("usage: cd <directory>\n");
         return 0;
     }
-    if (chdir(argv[1]) == 0) {
-        if (getcwd(current_dir, sizeof(current_dir)))
-            printf("Changed directory to %s\n", current_dir);
-        else
-            printf("cd: error getting current directory\n");
+    // Resolve the target path before chdir (getcwd is broken on OPFS mounts)
+    char resolved[256];
+    resolve_path(argv[1], resolved, sizeof(resolved));
+
+    if (chdir(resolved) == 0) {
+        snprintf(current_dir, sizeof(current_dir), "%s", resolved);
+        printf("Changed directory to %s\n", current_dir);
     } else {
         printf("cd: cannot change to '%s': %s\n", argv[1], strerror(errno));
     }

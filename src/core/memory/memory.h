@@ -67,8 +67,12 @@ const char *memory_rom_filename(memory_map_t *mem);
 // Return the ROM path being loaded (available during machine init).
 const char *memory_pending_rom_path(void);
 
-// Shell command handler for load-rom (registered by setup_init, used before machine exists)
-uint64_t cmd_load_rom(int argc, char *argv[]);
+// Return the VROM path set via "rom --load-vrom" (available during machine init).
+const char *memory_pending_vrom_path(void);
+
+// Shell command handlers for ROM operations (registered by setup_init)
+uint64_t cmd_rom(int argc, char *argv[]);
+uint64_t cmd_vrom(int argc, char *argv[]);
 
 uint32_t memory_read(unsigned int size, uint32_t addr);
 

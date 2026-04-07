@@ -53,11 +53,11 @@ export async function bootWithMedia(page: Page, romRel: string, fd0Rel?: string,
 		if (typeof shim?.clearCheckpoints === 'function') await shim.clearCheckpoints();
 	});
 
-	// Then wait for ROM loading to complete (checks command log for load-rom)
+	// Then wait for ROM loading to complete (checks command log for rom --load)
 	await page.waitForFunction(() => {
 		try {
 			const commandLog = (window as any).__commandLog || [];
-			return commandLog.some((cmd: string) => cmd.includes('load-rom'));
+			return commandLog.some((cmd: string) => cmd.includes('rom --load'));
 		} catch (e) {
 			return false;
 		}
@@ -70,7 +70,7 @@ export async function bootWithMedia(page: Page, romRel: string, fd0Rel?: string,
  *
  * Differences from bootWithMedia:
  *  - uploads ROM/FD/HD bytes into /tmp inside the page (no URL params, no fetch)
- *  - issues load-rom / attach-hd / insert-fd commands but DOES NOT run
+ *  - issues rom --load / attach-hd / insert-fd commands but DOES NOT run
  *  - leaves starting the emulator (sending 'run') to the caller/test
  */
 export async function bootWithUploadedMedia(
@@ -155,7 +155,7 @@ export async function bootWithUploadedMedia(
 	// Issue boot-time commands but DO NOT run
 	await page.evaluate(({ hasFd, hasHd, hdSlot, fdWritable }) => {
 		const send = (window as any).runCommand;
-		send('load-rom /tmp/rom');
+		send('rom --load /tmp/rom');
 		if (hasFd) send(`insert-fd /tmp/fd0 0 ${fdWritable ? 1 : 0}`);
 		if (hasHd) send(`attach-hd /tmp/hd${hdSlot} ${hdSlot}`);
 	}, { hasFd: Boolean(fd0), hasHd: Boolean(hdZip), hdSlot, fdWritable });

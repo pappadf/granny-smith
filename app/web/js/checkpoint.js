@@ -10,9 +10,9 @@ import { toast, hideRomOverlay } from './ui.js';
 // Probe for a background checkpoint and offer resume if found.
 // Returns true if the user resumed from a checkpoint.
 export async function maybeOfferBackgroundCheckpoint() {
-  // Probe for a valid checkpoint via the C-side load-state probe command.
+  // Probe for a valid checkpoint via the C-side checkpoint --probe command.
   // With OPFS, the filesystem is always up to date — no sync needed.
-  let hasCheckpoint = (await window.runCommand('load-state probe')) === 0;
+  let hasCheckpoint = (await window.runCommand('checkpoint --probe')) === 0;
 
   if (!hasCheckpoint) return false;
 
@@ -26,7 +26,7 @@ export async function maybeOfferBackgroundCheckpoint() {
 
   hideRomOverlay();
   // Auto-load the latest valid checkpoint (no filename needed)
-  const rc = await window.runCommand('load-state');
+  const rc = await window.runCommand('checkpoint --load');
   if (rc !== 0) return false;
 
   // The checkpoint preserves the scheduler's running flag.  Quick

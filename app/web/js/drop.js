@@ -3,7 +3,7 @@
 
 // Handles drag-and-drop UI cue and the processDrop pipeline.
 import { isModuleReady } from './emulator.js';
-import { getFS, ensureDir, ensureDirs, writeBinary, romPath, romsDir, romPathForChecksum, latestRomPath } from './fs.js';
+import { getFS, ensureDir, ensureDirs, writeBinary, romsDir, romPathForChecksum } from './fs.js';
 import {
   sanitizeName, quotePath, tryExtractArchive, classifyMediaFile, findMediaInDirectory,
   bufferHasCheckpointSignature, fileHasCheckpointSignature
@@ -23,18 +23,18 @@ function makeCheckpointTmpPath(displayName) {
 async function loadCheckpointFromPath(path, displayName) {
   const label = displayName || path;
   if (!isModuleReady()) {
-    toast(`Checkpoint stored at ${path}; emulator still starting (run load-state manually once ready)`);
+    toast(`Checkpoint stored at ${path}; emulator still starting (run checkpoint --load manually once ready)`);
     return false;
   }
   // Import setRunning late to avoid circular init issues
   const { setRunning } = await import('./emulator.js');
 
   try {
-    // load-state replaces the entire emulator state (including scheduler);
+    // checkpoint --load replaces the entire emulator state (including scheduler);
     // no need to pause first.  The restored scheduler's running flag
     // determines whether execution continues or stays paused.
     toast(`Loading ${label}…`);
-    await window.runCommand(`load-state ${path}`);
+    await window.runCommand(`checkpoint --load ${path}`);
 
     // Sync JS-side running flag with the restored scheduler state
     const running = (await window.runCommand('status')) === 1;
@@ -49,7 +49,7 @@ async function loadCheckpointFromPath(path, displayName) {
   }
 }
 
-// Persist a checkpoint buffer to /tmp and trigger load-state
+// Persist a checkpoint buffer to /tmp and trigger checkpoint --load
 async function importCheckpointBuffer(buf, displayName) {
   if (!bufferHasCheckpointSignature(buf)) return false;
   ensureDir('/tmp');
@@ -185,22 +185,28 @@ async function probeAndMountDiskImage(path, isDirectory, displayName) {
     if (kind === 'rom') {
       toast(`Loading ROM: ${imagePath.split('/').pop()}`);
       try {
-        const romData = FS.readFile(imagePath);
+        // Use rom --checksum to validate and get the checksum
+        const checksumResult = await window.runCommand(`rom --checksum ${quotePath(imagePath)}`);
+        if (checksumResult !== 0) {
+          toast('Not a valid ROM image');
+          return;
+        }
 
-        // Extract checksum from first 4 bytes (big-endian)
+        // Load the ROM directly from the /tmp path (already validated above)
+        const loadRc = await window.runCommand(`rom --load ${quotePath(imagePath)}`);
+        if (loadRc !== 0) {
+          toast('Failed to load ROM');
+          return;
+        }
+
+        // Best-effort persist to /rom/<checksum>
+        const romData = FS.readFile(imagePath);
         const dv = new DataView(romData.buffer, romData.byteOffset, romData.byteLength);
         const checksum = dv.getUint32(0, false).toString(16).toUpperCase().padStart(8, '0');
+        const tmpCopy = `/tmp/rom_${checksum}`;
+        writeBinary(tmpCopy, romData);
+        await window.runCommand(`file-copy ${tmpCopy} ${romPathForChecksum(checksum)}`);
 
-        // Persist to checksum-based path and latest
-        ensureDir(romsDir());
-        writeBinary(romPathForChecksum(checksum), romData);
-        writeBinary(latestRomPath(), romData);
-
-        // Also write to legacy path for backward compatibility
-        writeBinary(romPath(), romData);
-
-        // load-rom identifies the machine and creates it if needed
-        await window.runCommand(`load-rom ${latestRomPath()}`);
         hideRomOverlay();
         enableRunButton();
         await window.runCommand('run');

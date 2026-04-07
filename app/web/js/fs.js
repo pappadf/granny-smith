@@ -3,13 +3,13 @@
 
 // Filesystem helpers for the WasmFS + OPFS backend.
 //
-// With PROXY_TO_PTHREAD, the OPFS-backed mounts (/boot, /images, /checkpoint)
+// With PROXY_TO_PTHREAD, the OPFS-backed mounts (/images, /checkpoints, /upload)
 // are only accessible from the worker thread.  JS on the main thread can use
 // FS.writeFile/FS.unlink on /tmp/ (memory backend), but mkdir/readFile/stat/
 // readdir/rmdir fail cross-thread for OPFS paths.
 //
 // Persistent file operations should go through C-side shell commands.
-import { BOOT_DIR, ROMS_DIR, CHECKPOINT_DIR } from './config.js';
+import { ROMS_DIR, CHECKPOINT_DIR } from './config.js';
 
 let FS = null;
 
@@ -65,30 +65,45 @@ export function clearDirContents(dirPath) {
   } catch (_) {}
 }
 
-// Convenience path helpers
-export function romPath() { return `${BOOT_DIR}/rom`; }
-export function floppySlotPath(idx) { return `${BOOT_DIR}/fd${idx}`; }
-export function hdSlotPath(idx) { return `${BOOT_DIR}/hd${idx}`; }
+// List files in an OPFS directory via the browser's async OPFS API.
+// dirPath must be under /opfs/ (e.g. '/opfs/images/fd').
+// Returns an array of { name, kind } where kind is 'file' or 'directory'.
+export async function listDir(dirPath) {
+  try {
+    // Strip the /opfs/ prefix to get the OPFS-relative path
+    const relPath = dirPath.replace(/^\/opfs\/?/, '');
+    let dir = await navigator.storage.getDirectory();
+    if (relPath) {
+      for (const part of relPath.split('/')) {
+        dir = await dir.getDirectoryHandle(part);
+      }
+    }
+    const entries = [];
+    for await (const [name, handle] of dir.entries()) {
+      entries.push({ name, kind: handle.kind });
+    }
+    return entries;
+  } catch (_) {
+    return [];
+  }
+}
 
-// ROM existence checks — route through C-side commands since /boot is OPFS
+// ROM existence checks — route through C-side commands since /images is OPFS
 export async function romExistsAsync() {
-  return (await window.runCommand('load-rom --probe')) === 0;
+  return (await window.runCommand('rom --probe')) === 0;
 }
 // Synchronous fallback (unreliable for OPFS paths — prefer romExistsAsync)
 export function romExists() {
-  // This uses stat which may fail cross-thread for OPFS.
-  // Callers should migrate to romExistsAsync where possible.
-  return fileExists(`${ROMS_DIR}/latest`) || fileExists(`${BOOT_DIR}/rom`);
+  // This is unreliable for OPFS. Callers should migrate to romExistsAsync.
+  return false;
 }
 
 // Checksum-based ROM storage paths
 export function romsDir() { return ROMS_DIR; }
 export function romPathForChecksum(checksum) { return `${ROMS_DIR}/${checksum.toUpperCase()}`; }
-export function latestRomPath() { return `${ROMS_DIR}/latest`; }
-export function latestRomExists() { return fileExists(latestRomPath()); }
 
 // Ensure the checkpoint directory tree exists.
 export function ensureCheckpointDir() {
-  // /checkpoint is an OPFS mount — it exists from main().
+  // /checkpoints is an OPFS mount — it exists from main().
   // Nothing to do here.
 }

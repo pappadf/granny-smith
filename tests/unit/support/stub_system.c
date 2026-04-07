@@ -102,13 +102,13 @@ bool system_mouse_move_adb(int dx, int dy) {
     return false;
 }
 
-// Machine management stub (used by cmd_load_rom in memory.c)
+// Machine management stub (used by cmd_rom in memory.c)
 int system_ensure_machine(const char *model_id) {
     (void)model_id;
     return -1; // no machine in unit tests
 }
 
-// ROM identification stub (used by cmd_load_rom in memory.c)
+// ROM identification stub (used by cmd_rom in memory.c)
 typedef struct rom_info rom_info_t;
 const rom_info_t *rom_identify_data(const uint8_t *data, size_t size, uint32_t *out_checksum) {
     (void)data;

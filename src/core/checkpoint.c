@@ -718,10 +718,9 @@ void checkpoint_write_file_loc(checkpoint_t *checkpoint, const char *path, const
         if (name_len) {
             buf_append(checkpoint, path, name_len);
         }
-        // Persistent paths (OPFS-backed mounts) survive page reload; volatile paths do not.
-        // Under WasmFS + OPFS: /boot/, /images/, /checkpoint/ are persistent.
-        bool persistent = (path && (strncmp(path, "/boot/", 6) == 0 || strncmp(path, "/images/", 8) == 0 ||
-                                    strncmp(path, "/checkpoint/", 12) == 0));
+        // Paths under /opfs/ are persistent (OPFS-backed). Everything else
+        // (including /tmp/) is volatile.
+        bool persistent = (path && strncmp(path, "/opfs/", 6) == 0);
         uint8_t has_content = (!persistent && path && path[0]) ? 1 : 0;
         buf_append(checkpoint, &has_content, 1);
         if (has_content) {

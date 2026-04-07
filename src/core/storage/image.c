@@ -216,8 +216,10 @@ image_t *image_open(const char *filename, bool writable) {
 
     // Get file size and detect format
     size_t file_size = 0;
-    if (read_file_size(filename, &file_size) != 0)
+    if (read_file_size(filename, &file_size) != 0) {
+        printf("image_open: cannot read file size: %s\n", filename);
         return NULL;
+    }
 
     uint32_t diskcopy_size = 0;
     int dc_probe = detect_diskcopy(filename, file_size, &diskcopy_size);
@@ -259,7 +261,7 @@ image_t *image_open(const char *filename, bool writable) {
 
     int err = storage_new(&config, &image->storage);
     if (err != GS_SUCCESS) {
-        LOG(1, "image_open: storage_new failed for %s (%d)", filename, err);
+        printf("image_open: storage engine failed for %s (error %d)\n", filename, err);
         image_close(image);
         return NULL;
     }
@@ -395,7 +397,8 @@ int image_create_blank_floppy(const char *filename, bool overwrite, bool high_de
 // ============================================================================
 
 static bool path_is_volatile(const char *path) {
-    return (strncmp(path, "/tmp/", 5) == 0 || strncmp(path, "/fd/", 4) == 0);
+    // Paths under /opfs/ are persistent (OPFS-backed). Everything else is volatile.
+    return !(path && strncmp(path, "/opfs/", 6) == 0);
 }
 
 // FNV-1a hash over the first 64 KB of data plus total file size → 8-char hex.
@@ -444,7 +447,7 @@ char *image_persist_volatile(const char *path) {
 
     // Hash the file for content-addressed naming
     uint32_t hash = fnv1a_image_hash(src, file_size);
-    char *dest_path = str_printf("/images/%08x.img", hash);
+    char *dest_path = str_printf("/opfs/images/%08x.img", hash);
     if (!dest_path) {
         fclose(src);
         return NULL;
@@ -458,7 +461,7 @@ char *image_persist_volatile(const char *path) {
     }
 
     // Ensure /images/ directory exists
-    mkdir_if_needed("/images");
+    mkdir_if_needed("/opfs/images");
 
     // Copy file
     FILE *dst = fopen(dest_path, "wb");
