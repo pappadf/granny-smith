@@ -2,7 +2,7 @@
 
 # Load the checkpoint saved in step 1 (restores to 50M instruction point with floppy)
 # Loaded from current working directory (test-results/checkpoint2/)
-load-state checkpoint.gs
+checkpoint --load checkpoint.gs
 
 # Run 50M more instructions (should reach desktop just like step 1 would)
 run 100000000

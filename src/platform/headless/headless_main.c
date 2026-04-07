@@ -164,6 +164,23 @@ static uint64_t cmd_quit(int argc, char *argv[]) {
     return 0;
 }
 
+// Headless checkpoint command — delegates to core save/load functions.
+static uint64_t cmd_headless_checkpoint(int argc, char *argv[]) {
+    if (argc < 2) {
+        printf("Usage: checkpoint --save <path> | --load [<path>]\n");
+        return 0;
+    }
+    const char *action = argv[1];
+    if (strcmp(action, "--save") == 0) {
+        return cmd_save_checkpoint(argc - 1, argv + 1);
+    }
+    if (strcmp(action, "--load") == 0) {
+        return cmd_load_checkpoint(argc - 1, argv + 1);
+    }
+    printf("Usage: checkpoint --save <path> | --load [<path>]\n");
+    return 1;
+}
+
 // Forward declaration for run_script_file
 static int run_script_file(const char *filename);
 
@@ -706,6 +723,7 @@ int main(int argc, char *argv[]) {
     // Register headless-specific commands
     register_cmd("quit", "General", "quit — exit the emulator", cmd_quit);
     register_cmd("script", "General", "script <path> — execute a script file", cmd_script);
+    register_cmd("checkpoint", "Checkpointing", "checkpoint --save <path> | --load [<path>]", cmd_headless_checkpoint);
 
     setup_init();
 
