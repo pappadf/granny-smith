@@ -90,7 +90,7 @@ export async function waitForSync(page: Page, timeoutMs = 10_000): Promise<void>
 
 /**
  * Wait for at least one complete checkpoint to exist.
- * Uses `load-state probe` which returns 0 when a valid (complete) checkpoint
+ * Uses `checkpoint --probe` which returns 0 when a valid (complete) checkpoint
  * is found in the checkpoint directory.
  */
 export async function waitForCompleteCheckpoint(page: Page, timeoutMs = 15_000): Promise<void> {
@@ -98,7 +98,7 @@ export async function waitForCompleteCheckpoint(page: Page, timeoutMs = 15_000):
   const startTime = Date.now();
 
   while (true) {
-    const result = await runCommand(page, 'load-state probe');
+    const result = await runCommand(page, 'checkpoint --probe');
     if (result === 0) return;
 
     if (Date.now() - startTime > timeoutMs) {

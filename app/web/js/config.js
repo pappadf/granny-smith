@@ -14,11 +14,15 @@ export const CONFIG = {
   TOAST_DURATION_MS: 5000,
 };
 
-// Persistent boot directory layout
-export const BOOT_DIR = '/persist/boot';
-export const ROMS_DIR = '/persist/boot/roms';
-export const CHECKPOINT_DIR = '/persist/checkpoint';
-export const IMAGES_DIR = '/persist/images';
+// Persistent directory layout (single OPFS mount at /opfs)
+export const ROMS_DIR = '/opfs/images/rom';
+export const VROMS_DIR = '/opfs/images/vrom';
+export const FD_DIR = '/opfs/images/fd';
+export const FDHD_DIR = '/opfs/images/fdhd';
+export const HD_DIR = '/opfs/images/hd';
+export const CD_DIR = '/opfs/images/cd';
+export const CHECKPOINT_DIR = '/opfs/checkpoints';
+export const UPLOAD_DIR = '/opfs/upload';
 
 // Checkpoint file signatures: v2 (per-block RLE) and v3 (whole-file RLE)
 export const CHECKPOINT_MAGIC_V2 = 'GSCHKPT2';

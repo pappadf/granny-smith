@@ -9,7 +9,7 @@ import { matchScreenFast } from '../../helpers/screen';
 
 test.describe('Granny Smith UI basic', () => {
   test('loads index and exposes test hooks', async ({ page }) => {
-    await page.goto('/index.html');
+    await page.goto('/index.html?noui');
     await expect(page.locator('.screen-toolbar')).toBeVisible();
     await expect(page.locator('#btn-run')).toBeVisible();
     
@@ -19,7 +19,7 @@ test.describe('Granny Smith UI basic', () => {
   });
 
   test('command logging via runCommand', async ({ page }) => {
-    await page.goto('/index.html');
+    await page.goto('/index.html?noui');
     // Wait for command bridge (async module load)
     await page.waitForFunction(() => typeof (window as any).runCommand === 'function');
     await page.evaluate(() => (window as any).__gsTest?.clearLog());
@@ -29,7 +29,7 @@ test.describe('Granny Smith UI basic', () => {
   });
 
   test('zoom out eventually reduces effective scale', async ({ page }) => {
-    await page.goto('/index.html');
+    await page.goto('/index.html?noui');
     const zoomInput = page.locator('#zoom-level');
     // Wait for JS module to initialize zoom from HTML default (100%) to configured (200%)
     await expect(zoomInput).toHaveValue('200%', { timeout: 15000 });
@@ -44,7 +44,7 @@ test.describe('Granny Smith UI basic', () => {
   });
 
   test('zoom steps 10% down 200->100 (width 1024->512) then up 100->300 (width 512->1536)', async ({ page }) => {
-    await page.goto('/index.html');
+    await page.goto('/index.html?noui');
     const zoomInput = page.locator('#zoom-level');
     const canvas = page.locator('#screen');
     async function canvasWidth(){

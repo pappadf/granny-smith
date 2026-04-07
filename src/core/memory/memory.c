@@ -98,7 +98,7 @@ typedef struct memory {
     uint32_t ram_size; // RAM region size in bytes
     uint32_t rom_size; // ROM content size in bytes
 
-    // Path to the ROM file loaded via cmd_load_rom (if any)
+    // Path to the ROM file loaded via cmd_rom (if any)
     char *rom_filename;
 
     uint32_t checksum;
@@ -405,82 +405,64 @@ const char *memory_pending_rom_path(void) {
     return s_pending_rom_path;
 }
 
-// Shell command to load a ROM file into memory.
-// Enhanced for M6: identifies the ROM, creates/switches machine if needed.
-uint64_t cmd_load_rom(int argc, char *argv[]) {
-    // Check for --probe option
-    bool probe_mode = false;
-    int filename_arg = 1;
+// Pending VROM path — set via "rom --load-vrom" before machine init.
+static char *s_pending_vrom_path = NULL;
 
-    if (argc >= 2 && strcmp(argv[1], "--probe") == 0) {
-        probe_mode = true;
-        filename_arg = 2;
-    }
+const char *memory_pending_vrom_path(void) {
+    return s_pending_vrom_path;
+}
 
-    if (argc < filename_arg + 1) {
-        if (probe_mode) {
-            // No filename given with --probe: check if a ROM is currently loaded
-            memory_map_t *mem = system_memory();
-            return (mem && mem->rom_filename) ? 0 : 1;
-        }
-        printf("Usage: load-rom [--probe] <filename>\n");
-        return 0;
-    }
-
-    const char *filename = argv[filename_arg];
-
-    // Read the ROM file into a temporary buffer for identification
+// Helper: read a ROM file into a buffer, returning size via out_size.
+// Returns NULL on failure; caller must free the returned buffer.
+static uint8_t *read_rom_file(const char *filename, size_t *out_size, bool quiet) {
     FILE *f = fopen(filename, "rb");
     if (!f) {
-        if (!probe_mode)
+        if (!quiet)
             printf("Failed to open ROM file: %s\n", filename);
-        return probe_mode ? 1 : (uint64_t)-1;
+        return NULL;
     }
-
-    // Determine file size
     fseek(f, 0, SEEK_END);
     long file_size = ftell(f);
     fseek(f, 0, SEEK_SET);
-
     if (file_size <= 0) {
         fclose(f);
-        if (!probe_mode)
+        if (!quiet)
             printf("Failed to read ROM file: %s\n", filename);
-        return probe_mode ? 1 : (uint64_t)-1;
+        return NULL;
     }
-
-    // Read entire file for identification
     uint8_t *rom_data = malloc((size_t)file_size);
     if (!rom_data) {
         fclose(f);
-        if (!probe_mode)
+        if (!quiet)
             printf("Failed to allocate memory for ROM\n");
-        return probe_mode ? 1 : (uint64_t)-1;
+        return NULL;
     }
     size_t n = fread(rom_data, 1, (size_t)file_size, f);
     fclose(f);
-
     if ((long)n != file_size) {
         free(rom_data);
-        if (!probe_mode)
+        if (!quiet)
             printf("Failed to read ROM file: %s\n", filename);
-        return probe_mode ? 1 : (uint64_t)-1;
+        return NULL;
     }
+    *out_size = (size_t)file_size;
+    return rom_data;
+}
 
-    // Identify the ROM
+// rom --load <path>: Load a ROM file, identify the machine, and reset CPU.
+static uint64_t cmd_rom_load(const char *filename) {
+    size_t file_size = 0;
+    uint8_t *rom_data = read_rom_file(filename, &file_size, false);
+    if (!rom_data)
+        return (uint64_t)-1;
+
     uint32_t checksum = 0;
-    const rom_info_t *info = rom_identify_data(rom_data, (size_t)file_size, &checksum);
-
-    // Probe mode: return 0 if identified, 1 if not
-    if (probe_mode) {
-        free(rom_data);
-        return info ? 0 : 1;
-    }
+    const rom_info_t *info = rom_identify_data(rom_data, file_size, &checksum);
 
     if (info) {
         printf("ROM: %s (checksum %08X)\n", info->model_name, checksum);
     } else {
-        printf("ROM: unknown (checksum %08X, size %ld bytes)\n", checksum, file_size);
+        printf("ROM: unknown (checksum %08X, size %zu bytes)\n", checksum, file_size);
         free(rom_data);
         return (uint64_t)-1;
     }
@@ -499,13 +481,13 @@ uint64_t cmd_load_rom(int argc, char *argv[]) {
     // Load ROM data into machine memory
     memory_map_t *mem = system_memory();
     if (!mem) {
-        printf("load-rom: memory not initialized\n");
+        printf("rom: memory not initialized\n");
         free(rom_data);
         return (uint64_t)-1;
     }
 
     // Copy ROM data into the flat buffer at ram_size offset
-    size_t copy_size = (size_t)file_size < mem->rom_size ? (size_t)file_size : mem->rom_size;
+    size_t copy_size = file_size < mem->rom_size ? file_size : mem->rom_size;
     memcpy(mem->image + mem->ram_size, rom_data, copy_size);
     free(rom_data);
 
@@ -532,6 +514,138 @@ uint64_t cmd_load_rom(int argc, char *argv[]) {
 
     printf("ROM loaded successfully from %s\n", filename);
     return 0;
+}
+
+// rom --checksum <path>: Validate and print checksum, or print "0" if invalid.
+static uint64_t cmd_rom_checksum(const char *filename) {
+    size_t file_size = 0;
+    uint8_t *rom_data = read_rom_file(filename, &file_size, true);
+    if (!rom_data) {
+        printf("0\n");
+        return 1;
+    }
+
+    uint32_t checksum = 0;
+    const rom_info_t *info = rom_identify_data(rom_data, file_size, &checksum);
+    free(rom_data);
+
+    if (info) {
+        printf("%08X\n", checksum);
+        return 0;
+    }
+    printf("0\n");
+    return 1;
+}
+
+// rom --probe [<path>]: Check if a ROM file or current ROM is valid.
+static uint64_t cmd_rom_probe(int argc, char *argv[], int filename_arg) {
+    if (argc < filename_arg + 1) {
+        // No filename: check if a ROM is currently loaded
+        memory_map_t *mem = system_memory();
+        return (mem && mem->rom_filename) ? 0 : 1;
+    }
+    const char *filename = argv[filename_arg];
+    size_t file_size = 0;
+    uint8_t *rom_data = read_rom_file(filename, &file_size, true);
+    if (!rom_data)
+        return 1;
+    uint32_t checksum = 0;
+    const rom_info_t *info = rom_identify_data(rom_data, file_size, &checksum);
+    free(rom_data);
+    return info ? 0 : 1;
+}
+
+// Shell command: ROM operations.
+//   rom --load <path>       Load and identify ROM, create machine, reset CPU
+//   rom --checksum <path>   Print checksum hex if valid, "0" if not
+//   rom --probe [<path>]    Return 0 if valid ROM, 1 if not (no output)
+uint64_t cmd_rom(int argc, char *argv[]) {
+    if (argc < 2) {
+        printf("Usage: rom --load <path> | --checksum <path> | --probe [<path>]\n");
+        return 0;
+    }
+
+    const char *action = argv[1];
+
+    if (strcmp(action, "--load") == 0) {
+        if (argc < 3) {
+            printf("Usage: rom --load <path>\n");
+            return (uint64_t)-1;
+        }
+        return cmd_rom_load(argv[2]);
+    }
+
+    if (strcmp(action, "--checksum") == 0) {
+        if (argc < 3) {
+            printf("Usage: rom --checksum <path>\n");
+            return (uint64_t)-1;
+        }
+        return cmd_rom_checksum(argv[2]);
+    }
+
+    if (strcmp(action, "--probe") == 0) {
+        return cmd_rom_probe(argc, argv, 2);
+    }
+
+    printf("Usage: rom --load <path> | --checksum <path> | --probe [<path>]\n");
+    return (uint64_t)-1;
+}
+
+// Shell command: Video ROM operations.
+//   vrom --load <path>      Set VROM path for next machine init (SE/30)
+//   vrom --checksum <path>  Validate VROM file size (must be 32 KB)
+//   vrom --probe [<path>]   Return 0 if valid VROM, 1 if not
+uint64_t cmd_vrom(int argc, char *argv[]) {
+    if (argc < 2) {
+        printf("Usage: vrom --load <path> | --checksum <path> | --probe [<path>]\n");
+        return 0;
+    }
+
+    const char *action = argv[1];
+
+    if (strcmp(action, "--load") == 0) {
+        if (argc < 3) {
+            printf("Usage: vrom --load <path>\n");
+            return (uint64_t)-1;
+        }
+        free(s_pending_vrom_path);
+        s_pending_vrom_path = strdup(argv[2]);
+        printf("VROM path set: %s\n", s_pending_vrom_path);
+        return 0;
+    }
+
+    if (strcmp(action, "--checksum") == 0 || strcmp(action, "--probe") == 0) {
+        bool probe = strcmp(action, "--probe") == 0;
+        if (argc < 3) {
+            if (probe) {
+                // No path: check if a VROM path is set
+                return s_pending_vrom_path ? 0 : 1;
+            }
+            printf("Usage: vrom --checksum <path>\n");
+            return (uint64_t)-1;
+        }
+        // Validate: must be exactly 32 KB
+        FILE *f = fopen(argv[2], "rb");
+        if (!f) {
+            if (!probe)
+                printf("0\n");
+            return 1;
+        }
+        fseek(f, 0, SEEK_END);
+        long size = ftell(f);
+        fclose(f);
+        if (size == 32 * 1024) {
+            if (!probe)
+                printf("VROM OK (%ld bytes)\n", size);
+            return 0;
+        }
+        if (!probe)
+            printf("0\n");
+        return 1;
+    }
+
+    printf("Usage: vrom --load <path> | --checksum <path> | --probe [<path>]\n");
+    return (uint64_t)-1;
 }
 
 // ============================================================================
@@ -624,7 +738,7 @@ memory_map_t *memory_map_init(int address_bits, uint32_t ram_size, uint32_t rom_
 
     memset(mem, 0, sizeof(memory_map_t));
 
-    // Store parameterised sizes for later use by layout, checkpoint, and cmd_load_rom
+    // Store parameterised sizes for later use by layout, checkpoint, and cmd_rom
     mem->ram_size = ram_size;
     mem->rom_size = rom_size;
 
@@ -660,7 +774,7 @@ memory_map_t *memory_map_init(int address_bits, uint32_t ram_size, uint32_t rom_
     g_active_read = g_supervisor_read;
     g_active_write = g_supervisor_write;
 
-    // Note: load-rom command is registered once from setup_init() so it's
+    // Note: rom command is registered once from setup_init() so it's
     // available before any machine is created (deferred boot).
 
     // Load from checkpoint if provided

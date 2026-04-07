@@ -11,7 +11,7 @@ run 100000000
 
 # Save machine state to checkpoint file
 # Saved to current working directory (test-results/checkpoint2/)
-save-state checkpoint.gs
+checkpoint --save checkpoint.gs
 
 # Save screenshot for debugging
 screenshot screenshot-step1.png

@@ -118,7 +118,7 @@ export async function tryExtractArchive(filePath, displayName, data) {
 // Probe if a file is a valid ROM.
 export async function probeRom(filePath) {
   try {
-    const result = await window.runCommand(`load-rom --probe ${quotePath(filePath)}`);
+    const result = await window.runCommand(`rom --probe ${quotePath(filePath)}`);
     return result === 0;
   } catch {
     return false;
@@ -143,20 +143,12 @@ export async function classifyMediaFile(filePath) {
 }
 
 // Search a directory for recognizable media files (ROM or floppy).
+// Uses the C-side find-media command (FS.readdir fails cross-thread with WasmFS pthreads).
+// find-media copies the found image to a staging path so we have a concrete file to mount.
 export async function findMediaInDirectory(dirPath) {
-  const FS = getFS();
-  try {
-    const files = FS.readdir(dirPath).filter(n => n !== '.' && n !== '..');
-    for (const fileName of files) {
-      const fullPath = `${dirPath}/${fileName}`;
-      try {
-        const stat = FS.stat(fullPath);
-        if (!FS.isFile(stat.mode)) continue;
-        const kind = await classifyMediaFile(fullPath);
-        if (kind) return { path: fullPath, kind };
-      } catch {}
-    }
-  } catch {}
+  const destPath = `${dirPath}/_found_media.img`;
+  const rc = await window.runCommand(`find-media ${dirPath} ${destPath}`);
+  if (rc === 0) return { path: destPath, kind: 'floppy' };
   return null;
 }
 

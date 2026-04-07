@@ -4,6 +4,9 @@ import http.server, socketserver, sys, os, argparse
 
 class Handler(http.server.SimpleHTTPRequestHandler):
     def end_headers(self):
+        # Required for SharedArrayBuffer (pthreads) and OPFS SyncAccessHandle
+        self.send_header('Cross-Origin-Opener-Policy', 'same-origin')
+        self.send_header('Cross-Origin-Embedder-Policy', 'require-corp')
         super().end_headers()
 
 def main():

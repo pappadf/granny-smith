@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"><title>OPFS Pthreads Experiments</title></head>
+<body>
+<pre id="log"></pre>
+<script type="module">
+const logEl = document.getElementById('log');
+const output = [];
+
+function log(msg) {
+  output.push(msg);
+  logEl.textContent = output.join('\n');
+  console.log(msg);
+}
+
+// Parse ?run=experiment_name from URL
+const params = new URLSearchParams(location.search);
+const runArg = params.get('run');
+const wasmArgs = runArg ? ['--run=' + runArg] : [];
+
+const { default: createModule } = await import('./main_pt.mjs');
+const Module = await createModule({
+  arguments: wasmArgs,
+  print: log,
+  printErr: log,
+});
+
+window.__opfs = {
+  Module,
+  output,
+  async runExperiment(name) {
+    const rc = await Module.ccall('run_experiment', 'number', ['string'], [name], { async: true });
+    return rc;
+  },
+  // JS FS API test (from main thread, cross-thread to worker)
+  async testJsFsApi() {
+    const FS = Module.FS;
+    if (!FS) return { error: 'Module.FS not available' };
+    const results = {};
+
+    try { FS.mkdir('/opfs/js_test'); results.mkdir = 'ok'; }
+    catch (e) { results.mkdir = 'FAIL: ' + e.message; }
+
+    try {
+      FS.writeFile('/opfs/js_test/hello.txt', new TextEncoder().encode('hello from js'));
+      results.writeFile = 'ok';
+    } catch (e) { results.writeFile = 'FAIL: ' + e.message; }
+
+    try {
+      const data = FS.readFile('/opfs/js_test/hello.txt');
+      const text = new TextDecoder().decode(data);
+      results.readFile = text === 'hello from js' ? 'ok' : 'FAIL: got "' + text + '"';
+    } catch (e) { results.readFile = 'FAIL: ' + e.message; }
+
+    try {
+      const st = FS.stat('/opfs/js_test/hello.txt');
+      results.stat = (st && typeof st.size === 'number') ? 'ok (size=' + st.size + ')' : 'FAIL: no size';
+    } catch (e) { results.stat = 'FAIL: ' + e.message; }
+
+    try {
+      const entries = FS.readdir('/opfs/js_test');
+      results.readdir = entries.includes('hello.txt') ? 'ok' : 'FAIL: ' + JSON.stringify(entries);
+    } catch (e) { results.readdir = 'FAIL: ' + e.message; }
+
+    try { FS.unlink('/opfs/js_test/hello.txt'); results.unlink = 'ok'; }
+    catch (e) { results.unlink = 'FAIL: ' + e.message; }
+
+    try { FS.rmdir('/opfs/js_test'); results.rmdir = 'ok'; }
+    catch (e) { results.rmdir = 'FAIL: ' + e.message; }
+
+    log('[js_fs_api] Results: ' + JSON.stringify(results));
+    return results;
+  },
+};
+
+log('Module ready (pthreads). Use window.__opfs.runExperiment(name).');
+window.__opfsReady = true;
+</script>
+</body>
+</html>

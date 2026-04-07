@@ -3,6 +3,12 @@
 
 // em_audio.c
 // Audio subsystem for Emscripten platform - implements WebAudio streaming via AudioWorklet with ring buffer
+//
+// With PROXY_TO_PTHREAD, the emulator runs on a worker thread.  AudioContext
+// and AudioWorklet are main-thread-only APIs, so all WebAudio calls must be
+// proxied to the main thread.  We define EM_JS functions for the JS code
+// and use emscripten_sync_run_in_main_runtime_thread() to ensure they
+// execute on the main thread.
 
 // ============================================================================
 // Includes
@@ -12,6 +18,7 @@
 
 #include <emscripten.h>
 #include <emscripten/emscripten.h>
+#include <emscripten/threading.h>
 #include <math.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -25,12 +32,11 @@
 // ============================================================================
 
 // WebAudio (AudioWorklet) bridge — low-jitter streaming via MessagePort.
-// No SharedArrayBuffer or cross-origin isolation (COOP/COEP) required.
 // Audio format input: 8-bit unsigned mono at ~22.2545 kHz.
 
 // Initialize the WebAudio subsystem and create AudioWorklet
 // clang-format off
-EM_JS(void, mplus_audio_init, (), {
+EM_JS(void, mplus_audio_init_js, (), {
     // Check if already initialized
     if (Module.mPlusAudio && Module.mPlusAudio.initialized)
         return;
@@ -116,7 +122,7 @@ EM_JS(void, mplus_audio_init, (), {
         "  }",
         "}",
         "registerProcessor('mplus-worklet',MPlusProcessor);"
-    ].join("\\n");
+    ].join("\n");
 
     // Create worklet from blob URL
     var blobURL = URL.createObjectURL(new Blob([workletCode], {type: 'application/javascript'}));
@@ -147,7 +153,7 @@ EM_JS(void, mplus_audio_init, (), {
 });
 
 // Resume audio context if suspended
-EM_JS(void, mplus_audio_resume, (), {
+EM_JS(void, mplus_audio_resume_js, (), {
     try {
         const mp = Module.mPlusAudio;
         if (mp && mp.ctx && mp.ctx.state === 'suspended')
@@ -157,11 +163,11 @@ EM_JS(void, mplus_audio_resume, (), {
 });
 
 // Push audio data to worklet via MessagePort
-EM_JS(void, mplus_audio_push, (uint32_t ptr, int len, int volume), {
+EM_JS(void, mplus_audio_push_js, (uint32_t ptr, int len, int volume), {
     var mp = Module.mPlusAudio;
     if (!mp || !mp.ctx || !mp.node || len <= 0)
         return;
-    mplus_audio_resume();
+    mplus_audio_resume_js();
 
     var heap = (typeof HEAPU8 !== 'undefined') ? HEAPU8 : Module.HEAPU8;
     if (!heap)
@@ -189,6 +195,38 @@ EM_JS(void, mplus_audio_push, (uint32_t ptr, int len, int volume), {
     );
 });
 // clang-format on
+
+// ============================================================================
+// Main-thread Proxy Wrappers
+// ============================================================================
+
+// These wrappers ensure audio EM_JS functions execute on the main thread
+// (where AudioContext and AudioWorklet are available), even though the
+// emulator runs on a worker thread via PROXY_TO_PTHREAD.
+
+static void mplus_audio_init(void) {
+    if (emscripten_is_main_browser_thread()) {
+        mplus_audio_init_js();
+    } else {
+        emscripten_sync_run_in_main_runtime_thread(EM_FUNC_SIG_V, mplus_audio_init_js);
+    }
+}
+
+static void mplus_audio_resume(void) {
+    if (emscripten_is_main_browser_thread()) {
+        mplus_audio_resume_js();
+    } else {
+        emscripten_sync_run_in_main_runtime_thread(EM_FUNC_SIG_V, mplus_audio_resume_js);
+    }
+}
+
+static void mplus_audio_push(uint32_t ptr, int len, int volume) {
+    if (emscripten_is_main_browser_thread()) {
+        mplus_audio_push_js(ptr, len, volume);
+    } else {
+        emscripten_sync_run_in_main_runtime_thread(EM_FUNC_SIG_VIII, mplus_audio_push_js, ptr, len, volume);
+    }
+}
 
 // ============================================================================
 // Operations (Public API)

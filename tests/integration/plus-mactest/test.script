@@ -4,7 +4,6 @@
 
 # Boot to MacTest UI
 run 50000000
-screenshot foo1.png
 screenshot --match mactest-booted.png
 
 # Deselect short RAM test: drag from (100, 10) to (100, 90)

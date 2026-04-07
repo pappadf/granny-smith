@@ -105,6 +105,17 @@ export async function installTestShim(page: Page) {
 					});
 				};
 
+				// clearCheckpoints uses the shell command (runs on worker where OPFS is accessible)
+				(window as any).__gsTestShim.clearCheckpoints = (window as any).__gsTestShim.clearCheckpoints || async function() {
+					if (typeof (window as any).runCommand !== 'function') return;
+					try {
+						await (window as any).runCommand('checkpoint clear');
+						console.log('[test-shim] checkpoints cleared');
+					} catch (e) {
+						console.warn('[test-shim] clearCheckpoints failed', e);
+					}
+				};
+
 				(window as any).__gsTestShim.getTerminalSnapshot = (window as any).__gsTestShim.getTerminalSnapshot || function(maxLines = 600) {
 					// Require that we have captured a real xterm instance. If not,
 					// fail hard so the test surfaces a clear error instead of

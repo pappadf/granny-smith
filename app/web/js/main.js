@@ -3,21 +3,18 @@
 
 // Orchestrator: startup sequence and module glue.
 // Zero business logic — only wires modules together in the correct order.
-import { BOOT_DIR, ROMS_DIR, IMAGES_DIR } from './config.js';
 import { initEmulator, runCommand, isModuleReady, getModule, getRuntimePrompt, shellInterrupt, isRunning } from './emulator.js';
 import { initTerminal, writeLine, showPrompt, fitTerminal, handleInterrupt } from './terminal.js';
-import { initFS, ensureDir, ensureCheckpointDir, romExists } from './fs.js';
+import { initFS } from './fs.js';
 import { initDragDrop } from './drop.js';
-import { processUrlMedia, loadRomAndMaybeRun, isRomLoaded } from './url-media.js';
-import { initUI, toast, showRomOverlay, hideRomOverlay, enableRunButton, setBackgroundMessage } from './ui.js';
+import { processUrlMedia, isRomLoaded } from './url-media.js';
+import { initUI, toast, enableRunButton, setBackgroundMessage } from './ui.js';
 import { maybeOfferBackgroundCheckpoint } from './checkpoint.js';
-import { initMediaPersist } from './media-persist.js';
+import { scanForPersistedRoms, showRomUploadDialog, showConfigDialog, bootFromConfig } from './config-dialog.js';
 
 const params = new URLSearchParams(location.search);
 
 // --- 1. Build WASM arguments from URL parameters ---
-// No --model flag: machine type is determined by ROM identification at load time.
-// A ?model= URL parameter can override this for testing or future machine support.
 const wasmArgs = [];
 if (params.has('model')) {
   wasmArgs.push(`--model=${params.get('model')}`);
@@ -41,16 +38,18 @@ initTerminal(document.getElementById('terminal'), {
 });
 
 // --- 3. Boot emulator ---
+// With PROXY_TO_PTHREAD, main() runs on a worker thread and mounts OPFS
+// directories (/rom, /fd, /hd, /checkpoints, etc.) before shell_init().
 const canvas = document.getElementById('screen');
 await initEmulator(canvas, wasmArgs, writeLine);
+
+// Capture FS reference for /tmp/ operations
+initFS(getModule());
 
 // Show initial prompt now that the shell is ready
 showPrompt(true);
 
-// --- 4. Persistent filesystem ---
-const initialSync = initFS(getModule());
-
-// --- 5. UI chrome ---
+// --- 4. UI chrome ---
 initUI({
   canvas,
   panel: document.getElementById('terminal-panel'),
@@ -60,37 +59,44 @@ initUI({
   screenToolbar: document.getElementById('screen-toolbar'),
 });
 
-// --- 6. Drag & drop ---
+// --- 5. Drag & drop ---
 initDragDrop(canvas);
 
-// --- 7. Wait for FS sync, then load media ---
-await initialSync;
-ensureDir(BOOT_DIR);
-ensureDir(ROMS_DIR);
-ensureCheckpointDir();
-ensureDir(IMAGES_DIR);
-initMediaPersist();
+// --- 6. Load media ---
+// OPFS directories are already available (mounted by C-side main()).
 
-let romLoaded = false;
 const resumedFromCheckpoint = await maybeOfferBackgroundCheckpoint();
 if (resumedFromCheckpoint) {
   enableRunButton();
-} else {
-  if (!params.has('rom') && !romExists()) {
-    showRomOverlay();
-    setBackgroundMessage('Drag & drop a ROM file to get started');
-  }
+} else if (params.has('rom')) {
+  // URL params specify media — download and auto-boot (skip dialogs)
   await processUrlMedia(params);
-  romLoaded = isRomLoaded();
-  if (!romLoaded && romExists()) await loadRomAndMaybeRun();
-  // Enable run button if a ROM was loaded by any path
-  if (romLoaded || isRomLoaded()) {
+  if (isRomLoaded()) {
     enableRunButton();
-    setBackgroundMessage('Click \u25b6 to start emulation');
+  }
+} else if (params.has('noui')) {
+  // Headless/test mode: skip all dialogs, let the test harness drive commands.
+} else {
+  // Normal startup: scan OPFS for persisted ROMs
+  let romChecksums = await scanForPersistedRoms();
+  let tmpRomPath = null;
+
+  // If no ROMs found, show the ROM upload dialog
+  if (romChecksums.length === 0) {
+    const result = await showRomUploadDialog();
+    if (result) {
+      romChecksums = [result.checksum];
+      tmpRomPath = result.tmpPath; // fallback if OPFS persist failed
+    }
+  }
+
+  if (romChecksums.length > 0) {
+    // Show machine configuration dialog
+    const config = await showConfigDialog(romChecksums);
+    await bootFromConfig(config, tmpRomPath);
   }
 }
 
-// Signal that the full boot sequence (FS init, checkpoint polling, media
-// provisioning) is complete.  Tests wait for this before issuing commands
-// to avoid races with the checkpoint-poll FS.syncfs(true) pull-sync.
+// Signal that the full boot sequence is complete.
+// Tests wait for this before issuing commands.
 window.__gsBootReady = true;

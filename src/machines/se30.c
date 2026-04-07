@@ -389,7 +389,24 @@ static void se30_build_vrom_fallback(uint8_t *rom) {
 // Try to load the real SE/30 VROM from a file.
 // Returns true if a real VROM was loaded, false if not found.
 static bool se30_load_vrom(config_t *cfg, uint8_t *vrom_buf) {
-    // Search well-known paths for the real 32 KB VROM binary
+    // Check explicit VROM path first (set via "rom --load-vrom <path>")
+    const char *explicit_path = memory_pending_vrom_path();
+    if (explicit_path) {
+        FILE *f = fopen(explicit_path, "rb");
+        if (f) {
+            size_t n = fread(vrom_buf, 1, SE30_VROM_SIZE, f);
+            fclose(f);
+            if (n == SE30_VROM_SIZE) {
+                LOG(1, "Loaded real VROM from %s (%zu bytes)", explicit_path, n);
+                return true;
+            }
+            LOG(0, "VROM file %s exists but wrong size (%zu, expected %zu)", explicit_path, n, (size_t)SE30_VROM_SIZE);
+        } else {
+            LOG(0, "VROM file %s not found", explicit_path);
+        }
+    }
+
+    // Fallback: search well-known paths for the real 32 KB VROM binary
     static const char *search_paths[] = {"tests/data/roms/SE30.vrom", "SE30.vrom", NULL};
 
     for (const char **p = search_paths; *p; p++) {

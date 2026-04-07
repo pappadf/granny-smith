@@ -224,7 +224,9 @@ echo "$RESULT"
 
 | Command | Description |
 |---------|-------------|
-| `load-rom <file>` | Load a ROM image |
+| `rom --load <file>` | Load a ROM image |
+| `rom --checksum <file>` | Validate and print ROM checksum |
+| `rom --probe [<file>]` | Check if ROM is valid (returns 0/1) |
 | `attach-hd <file> [id]` | Attach SCSI hard disk |
 | `insert-disk <file>` | Auto-detect and insert a floppy disk image |
 | `insert-fd <file> [drive:0\|1] [writable:0\|1]` | Insert floppy with options |

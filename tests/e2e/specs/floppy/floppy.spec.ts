@@ -81,8 +81,8 @@ test.describe('Floppy', () => {
 
     log('[insert-fd probe] testing negative case - ROM file (wrong size)');
     // Test negative case: ROM file should not be recognized as floppy (returns 1 for failure)
-    // Use the ROM file already loaded in memfs at /persist/boot/rom
-    const romResult = await runCommand(page, 'insert-fd --probe /persist/boot/rom');
+    // Use the ROM file already loaded in memfs at /tmp/rom
+    const romResult = await runCommand(page, 'insert-fd --probe /tmp/rom');
 
     expect(romResult).toBe(1);
     log('[insert-fd probe] negative case passed - ROM file not recognized as floppy');

@@ -3,6 +3,10 @@
 
 // image.c
 // Disk image handling: open, read/write, and format detection for floppy and hard disk images.
+//
+// Each image is backed by a delta-file storage engine.  The original image file
+// is opened read-only as the "base"; all modifications go to a .delta file.
+// A .journal file provides crash recovery.
 
 #include "image.h"
 
@@ -11,7 +15,6 @@
 #include "system.h"
 
 #include <assert.h>
-#include <dirent.h>
 #include <errno.h>
 #include <stdarg.h>
 #include <stdio.h>
@@ -26,55 +29,11 @@
 
 LOG_USE_CATEGORY_NAME("image")
 
-#define STORAGE_ROOT_SUFFIX  ".blocks"
 #define DISKCOPY_HEADER_SIZE 0x54
 
-static char *dup_string(const char *src);
-static char *str_printf(const char *fmt, ...);
-static int mkdir_if_needed(const char *path);
-static int ensure_storage_layout(image_t *image);
-static enum image_type classify_image(size_t raw_size);
-static int read_file_size(const char *path, size_t *out_size);
-static uint32_t read_be32(const uint8_t *ptr);
-static int detect_diskcopy(const char *path, size_t file_size, uint32_t *out_data_size);
-void image_close(image_t *image);
-static int file_write_cb(void *ctx, const void *data, size_t size);
-static bool storage_dir_contains_ranges(const char *path);
-static int image_seed_storage(image_t *image);
-static int base_stream_read_cb(void *ctx, void *data, size_t size);
-
-// Clear all files inside a directory (but keep the directory itself)
-static int clear_directory(const char *path) {
-    DIR *dir = opendir(path);
-    if (!dir)
-        return -1;
-    struct dirent *entry;
-    char filepath[512];
-    while ((entry = readdir(dir)) != NULL) {
-        if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0)
-            continue;
-        int n = snprintf(filepath, sizeof(filepath), "%s/%s", path, entry->d_name);
-        if (n < 0 || (size_t)n >= sizeof(filepath))
-            continue;
-        struct stat st;
-        if (stat(filepath, &st) == 0 && S_ISDIR(st.st_mode)) {
-            // Recurse into subdirectory, then remove it
-            clear_directory(filepath);
-            rmdir(filepath);
-        } else {
-            remove(filepath);
-        }
-    }
-    closedir(dir);
-    return 0;
-}
-
-// Get the raw size of a disk image in bytes
-size_t disk_size(image_t *disk) {
-    if (!disk)
-        return 0;
-    return disk->raw_size;
-}
+// ============================================================================
+// String / path helpers
+// ============================================================================
 
 static char *dup_string(const char *src) {
     if (!src)
@@ -116,9 +75,8 @@ static int mkdir_if_needed(const char *path) {
 #else
     int rc = mkdir(path, 0777);
 #endif
-    if (rc == 0 || errno == EEXIST) {
+    if (rc == 0 || errno == EEXIST)
         return 0;
-    }
     return -1;
 }
 
@@ -130,7 +88,6 @@ static int mkdir_recursive(const char *path) {
     if (!tmp)
         return -1;
     size_t len = strlen(tmp);
-    // Remove trailing slash if present
     if (len > 0 && tmp[len - 1] == '/')
         tmp[len - 1] = '\0';
     for (char *p = tmp + 1; *p; p++) {
@@ -148,11 +105,27 @@ static int mkdir_recursive(const char *path) {
     return rc;
 }
 
-static int ensure_storage_layout(image_t *image) {
-    if (!image)
+// Ensure all parent directories of a file path exist
+static int ensure_parent_dirs(const char *filepath) {
+    if (!filepath || !*filepath)
         return -1;
-    return mkdir_if_needed(image->storage_root);
+    char *tmp = dup_string(filepath);
+    if (!tmp)
+        return -1;
+    char *last_sep = strrchr(tmp, '/');
+    if (!last_sep || last_sep == tmp) {
+        free(tmp);
+        return 0;
+    }
+    *last_sep = '\0';
+    int rc = mkdir_recursive(tmp);
+    free(tmp);
+    return rc;
 }
+
+// ============================================================================
+// Format detection
+// ============================================================================
 
 static enum image_type classify_image(size_t raw_size) {
     if (raw_size == 400 * 1024)
@@ -191,7 +164,6 @@ static int detect_diskcopy(const char *path, size_t file_size, uint32_t *out_dat
     fclose(f);
     if (r != sizeof(header))
         return -1;
-    // Check magic signature at offset +82: must be 0x0100
     uint16_t magic = ((uint16_t)header[0x52] << 8) | header[0x53];
     if (magic != 0x0100)
         return 0;
@@ -207,169 +179,167 @@ static int detect_diskcopy(const char *path, size_t file_size, uint32_t *out_dat
     return 1;
 }
 
-// Close and free an image, releasing all associated resources
+// ============================================================================
+// Image lifecycle
+// ============================================================================
+
+size_t disk_size(image_t *disk) {
+    if (!disk)
+        return 0;
+    return disk->raw_size;
+}
+
 void image_close(image_t *image) {
     if (!image)
         return;
-    if (image->storage) {
+    if (image->storage)
         storage_delete(image->storage);
-    }
     free(image->filename);
-    free(image->storage_root);
+    free(image->delta_path);
+    free(image->journal_path);
     free(image);
 }
 
 image_t *image_open(const char *filename, bool writable) {
-    printf("[DEBUG image_open] filename='%s' writable=%d\n", filename ? filename : "(null)", writable);
-    if (!filename || !*filename) {
-        printf("[DEBUG image_open] FAIL: filename is null/empty\n");
+    if (!filename || !*filename)
         return NULL;
-    }
+
+    // Check write access
     bool final_writable = writable;
     if (final_writable) {
         FILE *test = fopen(filename, "r+b");
-        if (!test) {
-            printf("[DEBUG image_open] r+b fopen failed, setting read-only\n");
+        if (!test)
             final_writable = false;
-        } else {
+        else
             fclose(test);
-        }
     }
+
+    // Get file size and detect format
     size_t file_size = 0;
     if (read_file_size(filename, &file_size) != 0) {
-        printf("[DEBUG image_open] FAIL: read_file_size failed (stat failed) for '%s'\n", filename);
+        printf("image_open: cannot read file size: %s\n", filename);
         return NULL;
     }
-    printf("[DEBUG image_open] file_size=%zu for '%s'\n", file_size, filename);
+
     uint32_t diskcopy_size = 0;
     int dc_probe = detect_diskcopy(filename, file_size, &diskcopy_size);
-    printf("[DEBUG image_open] detect_diskcopy=%d diskcopy_size=%u\n", dc_probe, diskcopy_size);
-    if (dc_probe < 0) {
-        printf("[DEBUG image_open] FAIL: detect_diskcopy returned %d\n", dc_probe);
+    if (dc_probe < 0)
         return NULL;
-    }
     bool is_diskcopy = (dc_probe > 0);
     size_t raw_size = is_diskcopy ? (size_t)diskcopy_size : file_size;
-    printf("[DEBUG image_open] is_diskcopy=%d raw_size=%zu\n", is_diskcopy, raw_size);
+
+    if ((raw_size % STORAGE_BLOCK_SIZE) != 0)
+        return NULL;
+
+    // Allocate image
     image_t *image = (image_t *)calloc(1, sizeof(image_t));
-    if (!image) {
-        printf("[DEBUG image_open] FAIL: calloc\n");
+    if (!image)
         return NULL;
-    }
+
     image->filename = dup_string(filename);
-    if (!image->filename) {
-        printf("[DEBUG image_open] FAIL: dup_string\n");
-        image_close(image);
-        return NULL;
-    }
     image->raw_size = raw_size;
     image->type = classify_image(raw_size);
     image->writable = final_writable;
     image->from_diskcopy = is_diskcopy;
-    printf("[DEBUG image_open] type=%d writable=%d block_check=%zu\n", image->type, image->writable,
-           image->raw_size % STORAGE_BLOCK_SIZE);
-    if ((image->raw_size % STORAGE_BLOCK_SIZE) != 0) {
-        printf("[DEBUG image_open] FAIL: raw_size %% STORAGE_BLOCK_SIZE != 0\n");
+
+    // Build delta and journal paths adjacent to the image file
+    image->delta_path = str_printf("%s.delta", filename);
+    image->journal_path = str_printf("%s.journal", filename);
+    if (!image->filename || !image->delta_path || !image->journal_path) {
         image_close(image);
         return NULL;
     }
-    // Determine storage root: use GS_STORAGE_CACHE if set, else adjacent to image
-    const char *cache_root = getenv("GS_STORAGE_CACHE");
-    printf("[DEBUG image_open] cache_root='%s'\n", cache_root ? cache_root : "(null)");
-    if (cache_root && *cache_root) {
-        // Redirect storage to cache directory
-        // Resolve to absolute path to handle relative disk paths correctly
-        char *abs_filename = realpath(filename, NULL);
-        if (!abs_filename) {
-            printf("[DEBUG image_open] FAIL: realpath failed for '%s'\n", filename);
-            LOG(1, "image_open: realpath failed for %s", filename);
-            image_close(image);
-            return NULL;
-        }
-        image->storage_root = str_printf("%s%s%s", cache_root, abs_filename, STORAGE_ROOT_SUFFIX);
-        free(abs_filename);
-    } else {
-        // Legacy: create .blocks/ directory adjacent to image file
-        image->storage_root = str_printf("%s%s", filename, STORAGE_ROOT_SUFFIX);
-    }
-    printf("[DEBUG image_open] storage_root='%s'\n", image->storage_root ? image->storage_root : "(null)");
-    if (!image->storage_root) {
-        printf("[DEBUG image_open] FAIL: storage_root is null\n");
-        image_close(image);
-        return NULL;
-    }
-    // Create storage directory (with intermediate directories if using cache)
-    int mkdir_rc = cache_root ? mkdir_recursive(image->storage_root) : mkdir_if_needed(image->storage_root);
-    printf("[DEBUG image_open] mkdir_rc=%d\n", mkdir_rc);
-    if (mkdir_rc != 0) {
-        printf("[DEBUG image_open] FAIL: mkdir failed for '%s'\n", image->storage_root);
-        LOG(1, "image_open: failed to create storage directory %s", image->storage_root);
-        image_close(image);
-        return NULL;
-    }
-    bool need_seed = !storage_dir_contains_ranges(image->storage_root);
-    printf("[DEBUG image_open] need_seed=%d\n", need_seed);
+
+    // Create storage engine with delta model
     storage_config_t config = {0};
-    config.path_dir = image->storage_root;
-    config.block_count = image->raw_size / STORAGE_BLOCK_SIZE;
+    config.base_path = filename;
+    config.delta_path = image->delta_path;
+    config.journal_path = image->journal_path;
+    config.block_count = raw_size / STORAGE_BLOCK_SIZE;
     config.block_size = STORAGE_BLOCK_SIZE;
-    config.consolidations_per_tick = 1;
+    config.base_data_offset = is_diskcopy ? DISKCOPY_HEADER_SIZE : 0;
+
     int err = storage_new(&config, &image->storage);
-    printf("[DEBUG image_open] storage_new=%d\n", err);
-    // If storage_new failed and the directory had existing data, clear stale
-    // storage (e.g. from a previous image with a different block count) and retry
-    if (err != GS_SUCCESS && !need_seed) {
-        printf("[DEBUG image_open] clearing stale storage and retrying\n");
-        LOG(1, "image_open: stale storage for %s, clearing and retrying", filename);
-        clear_directory(image->storage_root);
-        need_seed = true;
-        err = storage_new(&config, &image->storage);
-        printf("[DEBUG image_open] storage_new retry=%d\n", err);
-    }
     if (err != GS_SUCCESS) {
-        printf("[DEBUG image_open] FAIL: storage_new returned %d\n", err);
-        LOG(1, "image_open: storage_new failed for %s (%d)", filename, err);
+        printf("image_open: storage engine failed for %s (error %d)\n", filename, err);
         image_close(image);
         return NULL;
     }
-    if (need_seed) {
-        int seed_rc = image_seed_storage(image);
-        printf("[DEBUG image_open] seed_rc=%d\n", seed_rc);
-        if (seed_rc != 0) {
-            printf("[DEBUG image_open] FAIL: image_seed_storage returned %d\n", seed_rc);
-            LOG(1, "image_open: failed to seed storage for %s", filename);
-            image_close(image);
-            return NULL;
-        }
-    }
-    printf("[DEBUG image_open] SUCCESS for '%s'\n", filename);
+
     return image;
 }
 
-// Ensure all parent directories of a file path exist (like mkdir -p for parents)
-static int ensure_parent_dirs(const char *filepath) {
-    if (!filepath || !*filepath)
-        return -1;
-    char *tmp = dup_string(filepath);
-    if (!tmp)
-        return -1;
-    // Find last slash to isolate parent directory
-    char *last_sep = strrchr(tmp, '/');
-    if (!last_sep || last_sep == tmp) {
-        free(tmp);
-        return 0; // no parent or root-level — nothing to create
+// ============================================================================
+// Image I/O
+// ============================================================================
+
+size_t disk_read_data(image_t *disk, size_t offset, uint8_t *buf, size_t size) {
+    if (!disk || !disk->storage || !buf || size == 0)
+        return 0;
+    GS_ASSERT((offset % STORAGE_BLOCK_SIZE) == 0);
+    GS_ASSERT((size % STORAGE_BLOCK_SIZE) == 0);
+    GS_ASSERT(offset + size <= disk->raw_size);
+    size_t transferred = 0;
+    while (transferred < size) {
+        int rc = storage_read_block(disk->storage, offset + transferred, buf + transferred);
+        GS_ASSERTF(rc == GS_SUCCESS, "storage_read_block failed (%d)", rc);
+        if (rc != GS_SUCCESS)
+            break;
+        transferred += STORAGE_BLOCK_SIZE;
     }
-    *last_sep = '\0';
-    int rc = mkdir_recursive(tmp);
-    free(tmp);
-    return rc;
+    return transferred;
 }
 
-// Create an empty disk image file of the specified size
+size_t disk_write_data(image_t *disk, size_t offset, uint8_t *buf, size_t size) {
+    if (!disk || !disk->storage || !buf || size == 0)
+        return 0;
+    GS_ASSERT((offset % STORAGE_BLOCK_SIZE) == 0);
+    GS_ASSERT((size % STORAGE_BLOCK_SIZE) == 0);
+    GS_ASSERT(offset + size <= disk->raw_size);
+    size_t transferred = 0;
+    while (transferred < size) {
+        int rc = storage_write_block(disk->storage, offset + transferred, buf + transferred);
+        GS_ASSERTF(rc == GS_SUCCESS, "storage_write_block failed (%d)", rc);
+        if (rc != GS_SUCCESS)
+            break;
+        transferred += STORAGE_BLOCK_SIZE;
+    }
+    return transferred;
+}
+
+// ============================================================================
+// Image save / export
+// ============================================================================
+
+static int file_write_cb(void *ctx, const void *data, size_t size) {
+    FILE *f = (FILE *)ctx;
+    size_t wrote = fwrite(data, 1, size, f);
+    return (wrote == size) ? 0 : -1;
+}
+
+size_t image_save(image_t *image) {
+    if (!image || !image->storage || !image->filename)
+        return (size_t)-1;
+    if (image->from_diskcopy) {
+        LOG(1, "image_save: exporting DiskCopy images is not supported (%s)", image->filename);
+        return (size_t)-1;
+    }
+    FILE *f = fopen(image->filename, "wb");
+    if (!f)
+        return (size_t)-1;
+    storage_checkpoint(image->storage, NULL);
+    int rc = storage_save_state(image->storage, f, file_write_cb);
+    fclose(f);
+    return (rc == GS_SUCCESS) ? 0 : (size_t)-1;
+}
+
+// ============================================================================
+// Image creation
+// ============================================================================
+
 int image_create_empty(const char *filename, size_t size) {
     if (!filename || !*filename || size == 0)
         return -1;
-    // Create parent directories if they don't exist (e.g. after page reload)
     ensure_parent_dirs(filename);
     FILE *f = fopen(filename, "wb");
     if (!f)
@@ -404,7 +374,6 @@ int image_create_blank_floppy(const char *filename, bool overwrite, bool high_de
     FILE *f = fopen(filename, "wb");
     if (!f)
         return -1;
-    // 800K (819200) for DD, 1440K (1474560) for HD SuperDrive
     const size_t total = high_density ? 1440 * 1024 : 800 * 1024;
     uint8_t zeros[4096];
     memset(zeros, 0, sizeof(zeros));
@@ -423,128 +392,124 @@ int image_create_blank_floppy(const char *filename, bool overwrite, bool high_de
     return 0;
 }
 
-// Read data from a disk image at the specified offset
-size_t disk_read_data(image_t *disk, size_t offset, uint8_t *buf, size_t size) {
-    if (!disk || !disk->storage || !buf || size == 0)
-        return 0;
-    GS_ASSERT((offset % STORAGE_BLOCK_SIZE) == 0);
-    GS_ASSERT((size % STORAGE_BLOCK_SIZE) == 0);
-    GS_ASSERT(offset + size <= disk->raw_size);
-    size_t transferred = 0;
-    while (transferred < size) {
-        int rc = storage_read_block(disk->storage, offset + transferred, buf + transferred);
-        GS_ASSERTF(rc == GS_SUCCESS, "storage_read_block failed (%d)", rc);
-        if (rc != GS_SUCCESS)
+// ============================================================================
+// Volatile → persistent image copy
+// ============================================================================
+
+static bool path_is_volatile(const char *path) {
+    // Paths under /opfs/ are persistent (OPFS-backed). Everything else is volatile.
+    return !(path && strncmp(path, "/opfs/", 6) == 0);
+}
+
+// FNV-1a hash over the first 64 KB of data plus total file size → 8-char hex.
+static uint32_t fnv1a_image_hash(FILE *f, size_t file_size) {
+    uint32_t h = 0x811c9dc5u;
+    uint8_t buf[4096];
+    size_t remaining = file_size < 65536 ? file_size : 65536;
+
+    fseek(f, 0, SEEK_SET);
+    while (remaining > 0) {
+        size_t chunk = remaining > sizeof(buf) ? sizeof(buf) : remaining;
+        size_t got = fread(buf, 1, chunk, f);
+        if (got == 0)
             break;
-        transferred += STORAGE_BLOCK_SIZE;
+        for (size_t i = 0; i < got; i++) {
+            h ^= buf[i];
+            h *= 0x01000193u;
+        }
+        remaining -= got;
     }
-    return transferred;
+    // Mix in file size
+    h ^= (uint32_t)file_size;
+    h *= 0x01000193u;
+    return h;
 }
 
-// Write data to a disk image at the specified offset
-size_t disk_write_data(image_t *disk, size_t offset, uint8_t *buf, size_t size) {
-    if (!disk || !disk->storage || !buf || size == 0)
-        return 0;
-    GS_ASSERT((offset % STORAGE_BLOCK_SIZE) == 0);
-    GS_ASSERT((size % STORAGE_BLOCK_SIZE) == 0);
-    GS_ASSERT(offset + size <= disk->raw_size);
-    size_t transferred = 0;
-    while (transferred < size) {
-        int rc = storage_write_block(disk->storage, offset + transferred, buf + transferred);
-        GS_ASSERTF(rc == GS_SUCCESS, "storage_write_block failed (%d)", rc);
-        if (rc != GS_SUCCESS)
+char *image_persist_volatile(const char *path) {
+    if (!path || !*path)
+        return NULL;
+
+    // Already persistent — return a copy
+    if (!path_is_volatile(path))
+        return dup_string(path);
+
+    FILE *src = fopen(path, "rb");
+    if (!src)
+        return NULL;
+
+    // Get file size
+    fseek(src, 0, SEEK_END);
+    size_t file_size = (size_t)ftell(src);
+    if (file_size == 0) {
+        fclose(src);
+        return NULL;
+    }
+
+    // Hash the file for content-addressed naming
+    uint32_t hash = fnv1a_image_hash(src, file_size);
+    char *dest_path = str_printf("/opfs/images/%08x.img", hash);
+    if (!dest_path) {
+        fclose(src);
+        return NULL;
+    }
+
+    // Skip copy if destination already exists with the same size
+    struct stat st;
+    if (stat(dest_path, &st) == 0 && (size_t)st.st_size == file_size) {
+        fclose(src);
+        return dest_path;
+    }
+
+    // Ensure /images/ directory exists
+    mkdir_if_needed("/opfs/images");
+
+    // Copy file
+    FILE *dst = fopen(dest_path, "wb");
+    if (!dst) {
+        fclose(src);
+        free(dest_path);
+        return NULL;
+    }
+
+    fseek(src, 0, SEEK_SET);
+    uint8_t buf[4096];
+    size_t remaining = file_size;
+    bool ok = true;
+    while (remaining > 0) {
+        size_t chunk = remaining > sizeof(buf) ? sizeof(buf) : remaining;
+        size_t got = fread(buf, 1, chunk, src);
+        if (got != chunk) {
+            ok = false;
             break;
-        transferred += STORAGE_BLOCK_SIZE;
-    }
-    return transferred;
-}
-
-// Save an image to its underlying file
-size_t image_save(image_t *image) {
-    if (!image || !image->storage || !image->filename)
-        return (size_t)-1;
-    if (image->from_diskcopy) {
-        LOG(1, "image_save: exporting DiskCopy images is not supported (%s)", image->filename);
-        return (size_t)-1;
-    }
-    FILE *f = fopen(image->filename, "wb");
-    if (!f)
-        return (size_t)-1;
-    storage_checkpoint(image->storage, NULL);
-    int rc = storage_save_state(image->storage, f, file_write_cb);
-    fclose(f);
-    return (rc == GS_SUCCESS) ? 0 : (size_t)-1;
-}
-
-static int file_write_cb(void *ctx, const void *data, size_t size) {
-    FILE *f = (FILE *)ctx;
-    size_t wrote = fwrite(data, 1, size, f);
-    return (wrote == size) ? 0 : -1;
-}
-
-typedef struct {
-    FILE *file;
-    size_t remaining;
-} base_stream_ctx_t;
-
-static int base_stream_read_cb(void *ctx, void *data, size_t size) {
-    base_stream_ctx_t *stream = (base_stream_ctx_t *)ctx;
-    if (!stream || !stream->file || stream->remaining < size) {
-        return 0;
-    }
-    size_t read = fread(data, 1, size, stream->file);
-    if (read != size) {
-        return 0;
-    }
-    stream->remaining -= size;
-    return (int)read;
-}
-
-static bool storage_dir_contains_ranges(const char *path) {
-    DIR *dir = opendir(path);
-    if (!dir) {
-        return false;
-    }
-    struct dirent *entry = NULL;
-    while ((entry = readdir(dir)) != NULL) {
-        if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0) {
-            continue;
         }
-        size_t len = strlen(entry->d_name);
-        if (len >= 4 && strcmp(entry->d_name + (len - 4), ".dat") == 0) {
-            closedir(dir);
-            return true;
+        if (fwrite(buf, 1, got, dst) != got) {
+            ok = false;
+            break;
         }
+        remaining -= got;
     }
-    closedir(dir);
-    return false;
+
+    fclose(src);
+    fclose(dst);
+
+    if (!ok) {
+        remove(dest_path);
+        free(dest_path);
+        return NULL;
+    }
+
+    printf("[persist] copied %s -> %s (%zu bytes)\n", path, dest_path, file_size);
+    return dest_path;
 }
 
-static int image_seed_storage(image_t *image) {
-    if (!image || !image->storage || !image->filename) {
-        return -1;
-    }
-    FILE *f = fopen(image->filename, "rb");
-    if (!f) {
-        return -1;
-    }
-    size_t skip = image->from_diskcopy ? DISKCOPY_HEADER_SIZE : 0;
-    if (fseek(f, (long)skip, SEEK_SET) != 0) {
-        fclose(f);
-        return -1;
-    }
-    base_stream_ctx_t ctx = {.file = f, .remaining = image->raw_size};
-    int rc = storage_load_state(image->storage, &ctx, base_stream_read_cb);
-    fclose(f);
-    return (rc == GS_SUCCESS) ? 0 : -1;
-}
+// ============================================================================
+// Tracking / module lifecycle
+// ============================================================================
 
-// Add an image to the emulator's image list
 void add_image(config_t *sim, image_t *image) {
     config_add_image(sim, image);
 }
 
-// Tick all active images to process pending operations
 void image_tick_all(config_t *config) {
     if (!config)
         return;
@@ -553,47 +518,28 @@ void image_tick_all(config_t *config) {
         image_t *img = config_get_image(config, i);
         if (!img || !img->storage)
             continue;
-        int rc = storage_tick(img->storage);
-        if (rc != GS_SUCCESS) {
-            LOG(1, "storage_tick failed for %s (%d)", image_get_filename(img), rc);
-        }
+        storage_tick(img->storage);
     }
-}
-
-static void cmd_images(config_t *sim, const char *op) {
-    if (strcmp(op, "list") == 0) {
-        int n = config_get_n_images(sim);
-        for (int i = 0; i < n; i++) {
-            image_t *img = config_get_image(sim, i);
-            printf("%02d: %s\n", i, img->filename);
-        }
-    }
-}
-
-static void cmd_save(config_t *sim, uint64_t n) {
-    image_save(config_get_image(sim, n));
-}
-
-// Initialize image-related shell commands
-void setup_images(struct config *config) {
-    // Placeholder for future image-specific shell commands
-}
-
-// Image module init currently does not register cross-module commands.
-void image_init(checkpoint_t *checkpoint) {
-    (void)checkpoint;
-}
-
-// Clean up image module (currently no persistent state)
-void image_delete(void) {
-    // No persistent global state to clean up
 }
 
 const char *image_get_filename(const image_t *image) {
     return image ? image->filename : NULL;
 }
 
-// Save image reference to a checkpoint (filename, size, writable, storage data)
+void image_init(checkpoint_t *checkpoint) {
+    (void)checkpoint;
+}
+
+void image_delete(void) {}
+
+void setup_images(struct config *config) {
+    (void)config;
+}
+
+// ============================================================================
+// Checkpointing
+// ============================================================================
+
 void image_checkpoint(const image_t *image, checkpoint_t *checkpoint) {
     if (!image || !checkpoint)
         return;
@@ -604,14 +550,15 @@ void image_checkpoint(const image_t *image, checkpoint_t *checkpoint) {
         len = (uint32_t)n;
     }
     system_write_checkpoint_data(checkpoint, &len, sizeof(len));
-    if (len) {
+    if (len)
         system_write_checkpoint_data(checkpoint, name, len);
-    }
-    char writable = (char)(image->writable ? 1 : 0);
-    system_write_checkpoint_data(checkpoint, &writable, sizeof(writable));
-    // Write raw image size so restore can recreate the file if missing
+
+    char writable_flag = (char)(image->writable ? 1 : 0);
+    system_write_checkpoint_data(checkpoint, &writable_flag, sizeof(writable_flag));
+
     uint64_t raw_size = (uint64_t)image->raw_size;
     system_write_checkpoint_data(checkpoint, &raw_size, sizeof(raw_size));
+
     if (image->storage) {
         int rc = storage_checkpoint(image->storage, checkpoint);
         if (rc != GS_SUCCESS) {

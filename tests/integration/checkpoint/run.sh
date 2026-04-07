@@ -27,7 +27,7 @@ echo "Checkpoint will be saved to: $CHECKPOINT_FILE"
 cat > "$TEST_TMPDIR/step1.script" << INNER_EOF
 # Step 1: Boot from floppy and save checkpoint
 run 50000000
-save-state $CHECKPOINT_FILE
+checkpoint --save $CHECKPOINT_FILE
 quit
 INNER_EOF
 
@@ -50,7 +50,7 @@ echo "Step 2: Boot from SCSI HD, load checkpoint, run 50M more, verify desktop"
 cat > "$TEST_TMPDIR/step2.script" << INNER_EOF
 # Step 2: Boot from SCSI HD, load checkpoint, continue to desktop
 run 100000000
-load-state $CHECKPOINT_FILE
+checkpoint --load $CHECKPOINT_FILE
 # Run 50M more instructions (should reach desktop just like step 1 would)
 run 50000000
 # Save screenshot for debugging, then verify

@@ -2,12 +2,21 @@
 // Copyright (c) pappadf
 
 // storage.h
-// Public API for the directory-of-blocks storage engine.
+// Public API for the delta-file storage engine.
+//
+// Each disk image is backed by three files:
+//   base   — the original image, opened read-only, never modified
+//   delta  — header (magic + bitmaps) + block data area for modified blocks
+//   journal — append-only preimage log for crash recovery
+//
+// Reads check a bitmap: bit set → read from delta, bit clear → read from base.
+// Writes go to the delta; the bitmap is updated in memory and flushed at
+// checkpoint time.  A preimage journal captures old data before overwriting
+// committed blocks, enabling crash recovery without a full sync step.
 
 #ifndef STORAGE_H
 #define STORAGE_H
 
-// === Includes ===
 #include <stddef.h>
 #include <stdint.h>
 
@@ -17,73 +26,82 @@
 extern "C" {
 #endif
 
-// === Constants ===
-
-// Fixed block size in bytes. All offsets must be aligned to this value.
+// Fixed block size in bytes.  All offsets must be aligned to this value.
 #define STORAGE_BLOCK_SIZE 512
-
-// === Type Definitions ===
 
 // Opaque handle to a storage instance.
 typedef struct storage_t storage_t;
 
 // Configuration passed to storage_new().
-// The engine persists every logical block as a standalone file inside
-// `path_dir`. `block_count` defines the logical size of the disk in 512-byte
-// blocks. `consolidations_per_tick` controls how many range merges may run
-// during each storage_tick() call (set to <= 0 to disable automatic merges).
 typedef struct {
-    const char *path_dir; // Directory that owns all .dat files.
-    uint64_t block_count; // Number of 512-byte logical blocks.
-    uint32_t block_size; // Must be 512 today; reserved for future use.
-    int consolidations_per_tick; // Max merge operations per tick.
+    const char *base_path; // Path to original image (read-only)
+    const char *delta_path; // Path to delta file (read-write, created if missing)
+    const char *journal_path; // Path to preimage journal (created if missing)
+    uint64_t block_count; // Number of 512-byte logical blocks
+    uint32_t block_size; // Must be 512
+    size_t base_data_offset; // Byte offset to data in base file (e.g. DiskCopy header)
 } storage_config_t;
 
-// Callback signature used by storage_save_state().
+// Callback signatures for streaming block data.
 typedef int (*storage_write_callback_t)(void *context, const void *data, size_t size);
-
-// Callback signature used by storage_load_state().
 typedef int (*storage_read_callback_t)(void *context, void *data, size_t size);
 
-// === Lifecycle (Constructor / Destructor / Checkpoint) ===
+// === Lifecycle ===
 
-// Creates or opens a directory-backed storage instance.
+// Creates or opens a delta-file storage instance.
+// If the delta file exists, reads its header and bitmaps.
+// If the journal is non-empty, it is loaded (but NOT replayed automatically —
+// call storage_apply_rollback() to replay before normal use if no checkpoint
+// will be loaded).
 int storage_new(const storage_config_t *config, storage_t **out_storage);
 
-// Releases all memory associated with a storage instance.
+// Releases all resources (closes file handles, frees memory).
 int storage_delete(storage_t *storage);
 
-// Serializes storage state into a checkpoint stream.
-// When checkpoint is NULL, this behaves like a flush no-op for compatibility.
+// === Checkpointing ===
+
+// Serializes storage metadata into a checkpoint stream.
+// Quick checkpoints: writes the current bitmap.
+// Consolidated checkpoints: streams all block data via storage_save_state().
+// When checkpoint is NULL, behaves as a flush (clears rollback).
 int storage_checkpoint(storage_t *storage, checkpoint_t *checkpoint);
 
-// Restores storage state previously serialized via storage_checkpoint().
+// Restores storage state from a checkpoint stream.
+// Quick checkpoints: reads bitmap, sets as current, clears journal.
+// Consolidated checkpoints: loads all block data via storage_load_state().
 // If storage is NULL, the serialized data is consumed and discarded.
 int storage_restore_from_checkpoint(storage_t *storage, checkpoint_t *checkpoint);
 
-// === Operations ===
+// === Block I/O ===
 
-// Reads one 512-byte block at the provided byte offset.
+// Reads one 512-byte block at the given byte offset.
 int storage_read_block(storage_t *storage, size_t offset, void *buffer);
 
-// Writes one 512-byte block at the provided byte offset.
+// Writes one 512-byte block at the given byte offset.
 int storage_write_block(storage_t *storage, size_t offset, const void *buffer);
 
-// Drives incremental maintenance tasks like consolidation.
-int storage_tick(storage_t *storage);
+// === Rollback ===
 
-// Replays pending rollback preimages so the on-disk data matches the
-// last committed checkpoint.
+// Replays the preimage journal: restores committed blocks in the delta,
+// sets current bitmap = committed bitmap, truncates journal.
 int storage_apply_rollback(storage_t *storage);
 
-// Deletes all rollback preimages and treats current data as committed.
+// Marks current state as committed: copies current bitmap to committed,
+// flushes both bitmaps to delta header, truncates journal.
 int storage_clear_rollback(storage_t *storage);
 
-// Streams the entire logical disk as a flat sequence of blocks.
+// === Streaming (consolidated checkpoints / export) ===
+
+// Streams the entire logical disk (block_count blocks) to write_cb.
 int storage_save_state(storage_t *storage, void *context, storage_write_callback_t write_cb);
 
-// Replaces all on-disk data with the blocks provided by read_cb().
+// Replaces all storage data from read_cb, sets all bitmap bits, commits.
 int storage_load_state(storage_t *storage, void *context, storage_read_callback_t read_cb);
+
+// === Maintenance ===
+
+// No-op (consolidation is not needed with the delta model).
+int storage_tick(storage_t *storage);
 
 #ifdef __cplusplus
 }
