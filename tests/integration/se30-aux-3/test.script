@@ -1,0 +1,11 @@
+# Integration test: SE/30 A/UX 3.0.1 Boot
+# Boots SE/30 from the A/UX 3.0.1 Installation Boot Disk
+# and verifies the boot screen appears.
+
+# Boot from A/UX Installation Boot Disk
+run 1000000000
+
+# Verify the screen matches the boot reference image
+screenshot --match boot.png
+
+quit
