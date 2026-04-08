@@ -652,12 +652,18 @@ int fpu_frestore(fpu_state_t *fpu, uint32_t addr) {
 
     if (size == 0) {
         // Null frame: reset FPU to hardware-reset state (§6.4.2.1)
-        // Data registers become non-signaling NANs; control regs zero
-        for (int i = 0; i < 8; i++)
-            fpu->fp[i] = (float80_reg_t){0x7FFF, 0xFFFFFFFFFFFFFFFFULL};
-        fpu->fpcr = 0;
-        fpu->fpsr = 0;
-        fpu->fpiar = 0;
+        // When already in null state (e.g. after FSAVE), the programmer model
+        // was preserved by FSAVE and there is no pending operation to abort —
+        // only clear internal bookkeeping.  A full reset (data regs → NaN,
+        // control regs → 0) is only needed when aborting from an initialized
+        // (idle/busy) state.
+        if (fpu->initialized) {
+            for (int i = 0; i < 8; i++)
+                fpu->fp[i] = (float80_reg_t){0x7FFF, 0xFFFFFFFFFFFFFFFFULL};
+            fpu->fpcr = 0;
+            fpu->fpsr = 0;
+            fpu->fpiar = 0;
+        }
         fpu->pre_exc_mask = 0;
         fpu->exceptional_operand = FP80_ZERO;
         fpu->initialized = false;
