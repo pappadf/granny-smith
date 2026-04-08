@@ -42,6 +42,8 @@
 #endif
 
 #include "checkpoint.h"
+#include "cmd_json.h"
+#include "cmd_types.h"
 #include "cpu.h"
 #include "keyboard.h"
 #include "machine.h"
@@ -439,6 +441,10 @@ static char g_prompt_buffer[PROMPT_BUF_SIZE];
 // poll it without a cross-thread EM_ASM callback.
 static volatile int32_t g_shared_is_running = 0;
 
+// JSON result buffer for structured command results (shared heap, 16KB)
+#define CMD_JSON_BUF_SIZE 16384
+static char g_cmd_json_buffer[CMD_JSON_BUF_SIZE];
+
 // Exported getters so JS can find these addresses in the shared heap
 EMSCRIPTEN_KEEPALIVE char *get_cmd_buffer(void) {
     return g_cmd_buffer;
@@ -458,23 +464,86 @@ EMSCRIPTEN_KEEPALIVE char *get_prompt_buffer(void) {
 EMSCRIPTEN_KEEPALIVE volatile int32_t *get_is_running_ptr(void) {
     return &g_shared_is_running;
 }
+EMSCRIPTEN_KEEPALIVE char *get_cmd_json_buffer(void) {
+    return g_cmd_json_buffer;
+}
 
 int shell_poll(void) {
     if (!g_cmd_pending)
         return 0;
 
-    // Execute the command on the worker thread (OPFS accessible)
-    uint64_t result = handle_command(g_cmd_buffer);
+    // Make a mutable copy — tokenize() modifies the buffer in-place
+    char cmd_copy[CMD_BUF_SIZE];
+    size_t len = strnlen(g_cmd_buffer, CMD_BUF_SIZE - 1);
+    memcpy(cmd_copy, g_cmd_buffer, len);
+    cmd_copy[len] = '\0';
+
+    // Strip trailing newlines/carriage returns
+    while (len > 0 && (cmd_copy[len - 1] == '\n' || cmd_copy[len - 1] == '\r'))
+        cmd_copy[--len] = '\0';
+
+    // Execute the command via the dispatcher in interactive mode.
+    // Interactive mode sends output to stdout (xterm.js) as before.
+    // The structured result is captured for JSON serialization.
+    struct cmd_result cmd_res;
+    memset(&cmd_res, 0, sizeof(cmd_res));
+
+    dispatch_command(cmd_copy, INVOKE_INTERACTIVE, &cmd_res);
+
+    // Serialize the structured result to JSON for JS consumption
+    cmd_result_to_json(&cmd_res, g_cmd_json_buffer, CMD_JSON_BUF_SIZE);
 
     // Refresh the prompt on the worker (where system state is fully visible)
     build_prompt_text(g_prompt_buffer, PROMPT_BUF_SIZE);
 
-    // Store result and signal completion
-    g_cmd_result = (int32_t)result;
+    // Extract integer result
+    int32_t result = 0;
+    if (cmd_res.type == RES_INT)
+        result = (int32_t)cmd_res.as_int;
+    else if (cmd_res.type == RES_BOOL)
+        result = cmd_res.as_bool;
+    else if (cmd_res.type == RES_ERR)
+        result = -1;
+
+    g_cmd_result = result;
     g_cmd_pending = 0;
     g_cmd_done = 1;
 
     return 1;
+}
+
+// ============================================================================
+// Tab Completion
+// ============================================================================
+
+// Shared completion result buffer (JSON array of strings)
+#define COMPLETION_BUF_SIZE 4096
+static char g_completion_buffer[COMPLETION_BUF_SIZE];
+
+// Export the completion buffer pointer
+EMSCRIPTEN_KEEPALIVE char *get_completion_buffer(void) {
+    return g_completion_buffer;
+}
+
+// Run tab completion and write results as JSON array to the completion buffer.
+// Called from JS when user presses Tab.
+EMSCRIPTEN_KEEPALIVE int em_tab_complete(const char *line, int cursor_pos) {
+    struct completion comp;
+    memset(&comp, 0, sizeof(comp));
+
+    shell_tab_complete(line, cursor_pos, &comp);
+
+    // Serialize completions as JSON array
+    int off = 0;
+    off += snprintf(g_completion_buffer + off, COMPLETION_BUF_SIZE - off, "[");
+    for (int i = 0; i < comp.count && off < COMPLETION_BUF_SIZE - 10; i++) {
+        if (i > 0)
+            off += snprintf(g_completion_buffer + off, COMPLETION_BUF_SIZE - off, ",");
+        off += snprintf(g_completion_buffer + off, COMPLETION_BUF_SIZE - off, "\"%s\"", comp.items[i]);
+    }
+    snprintf(g_completion_buffer + off, COMPLETION_BUF_SIZE - off, "]");
+
+    return comp.count;
 }
 
 // Startup command runner

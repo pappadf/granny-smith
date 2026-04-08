@@ -6,6 +6,7 @@
 
 #include "debug_mac.h"
 
+#include "cmd_types.h"
 #include "cpu.h"
 #include "memory.h"
 #include "mouse.h"
@@ -324,33 +325,161 @@ uint64_t cmd_mouse_button(int argc, char *argv[]);
 uint64_t cmd_key(int argc, char *argv[]);
 uint64_t cmd_post_event(int argc, char *argv[]);
 
-void debug_mac_init(void) {
-    register_cmd("pi", "Debugger", "Print process information", &cmd_process_info);
+// ============================================================================
+// V2 Mouse command (unified: move/down/up/click/trace)
+// ============================================================================
 
-    // Mouse automation commands for E2E testing
-    register_cmd("set-mouse", "Testing",
-                 "set-mouse [--global|--hw] x y  – set/move mouse position\n"
-                 "  (default): absolute coords, best method per platform\n"
-                 "  --global:  absolute coords via low-memory globals\n"
-                 "  --hw:      relative deltas via hardware (ADB/quadrature)",
-                 cmd_set_mouse);
-    register_cmd("trace-mouse", "Testing", "trace-mouse start|stop  – log mouse position once per second",
-                 cmd_trace_mouse);
-    register_cmd("mouse-button", "Testing",
-                 "mouse-button [--global|--hw] up|down  – inject mouse button event\n"
-                 "  --global: writes MBState directly (no event posting)\n"
-                 "  --hw (default): routes through hardware (ADB/VIA)",
+static void cmd_mouse_handler(struct cmd_context *ctx, struct cmd_result *res) {
+    const char *subcmd = ctx->subcmd;
+    if (!subcmd) {
+        cmd_err(res, "usage: mouse <move|down|up|click|trace> [args...]");
+        return;
+    }
+
+    if (strcmp(subcmd, "move") == 0) {
+        // Delegate to set-mouse
+        // Check for --hw flag in raw_argv
+        int has_hw = 0;
+        for (int i = 0; i < ctx->raw_argc; i++) {
+            if (strcmp(ctx->raw_argv[i], "--hw") == 0) {
+                has_hw = 1;
+                break;
+            }
+        }
+        if (ctx->args[0].present && ctx->args[1].present) {
+            char buf[128];
+            if (has_hw)
+                snprintf(buf, sizeof(buf), "set-mouse --hw %lld %lld", (long long)ctx->args[0].as_int,
+                         (long long)ctx->args[1].as_int);
+            else
+                snprintf(buf, sizeof(buf), "set-mouse %lld %lld", (long long)ctx->args[0].as_int,
+                         (long long)ctx->args[1].as_int);
+            shell_dispatch(buf);
+            cmd_ok(res);
+        } else {
+            cmd_err(res, "usage: mouse move <x> <y>");
+        }
+        return;
+    }
+
+    if (strcmp(subcmd, "down") == 0) {
+        shell_dispatch("mouse-button down");
+        cmd_ok(res);
+        return;
+    }
+
+    if (strcmp(subcmd, "up") == 0) {
+        shell_dispatch("mouse-button up");
+        cmd_ok(res);
+        return;
+    }
+
+    if (strcmp(subcmd, "click") == 0) {
+        // Optional position args
+        if (ctx->args[0].present && ctx->args[1].present) {
+            char buf[128];
+            snprintf(buf, sizeof(buf), "set-mouse %lld %lld", (long long)ctx->args[0].as_int,
+                     (long long)ctx->args[1].as_int);
+            shell_dispatch(buf);
+        }
+        shell_dispatch("mouse-button down");
+        shell_dispatch("mouse-button up");
+        cmd_ok(res);
+        return;
+    }
+
+    if (strcmp(subcmd, "trace") == 0) {
+        if (ctx->args[0].present) {
+            char buf[64];
+            snprintf(buf, sizeof(buf), "trace-mouse %s", ctx->args[0].as_str);
+            shell_dispatch(buf);
+            cmd_ok(res);
+        } else {
+            cmd_err(res, "usage: mouse trace <start|stop>");
+        }
+        return;
+    }
+
+    cmd_err(res, "unknown mouse subcommand: %s", subcmd);
+}
+
+// --- key ---
+static void cmd_key_handler(struct cmd_context *ctx, struct cmd_result *res) {
+    uint64_t r = cmd_key(ctx->raw_argc, ctx->raw_argv);
+    cmd_int(res, (int64_t)r);
+}
+
+// --- post-event ---
+static void cmd_post_event_handler(struct cmd_context *ctx, struct cmd_result *res) {
+    uint64_t r = cmd_post_event(ctx->raw_argc, ctx->raw_argv);
+    cmd_int(res, (int64_t)r);
+}
+
+// ============================================================================
+// Registration tables
+// ============================================================================
+
+// mouse subcommands
+static const struct arg_spec mouse_move_args[] = {
+    {"x", ARG_INT, "x position"},
+    {"y", ARG_INT, "y position"},
+};
+static const char *mouse_trace_values[] = {"start", "stop", NULL};
+static const struct arg_spec mouse_trace_args[] = {
+    {"action", ARG_ENUM, "start or stop tracing", mouse_trace_values},
+};
+static const struct subcmd_spec mouse_subcmds[] = {
+    {"move",  NULL, mouse_move_args,  2, "move to position"            },
+    {"down",  NULL, NULL,             0, "press button"                },
+    {"up",    NULL, NULL,             0, "release button"              },
+    {"click", NULL, mouse_move_args,  2, "move + click (args optional)"},
+    {"trace", NULL, mouse_trace_args, 1, "log position periodically"   },
+};
+
+// key args
+static const struct arg_spec key_args[] = {
+    {"key", ARG_STRING, "key name or 0xNN ADB keycode"},
+};
+
+// post-event args
+static const struct arg_spec post_event_args[] = {
+    {"what",    ARG_INT, "event code"   },
+    {"message", ARG_INT, "event message"},
+};
+
+void debug_mac_init(void) {
+    // Keep simple command registrations for internal delegation
+    register_cmd("pi", "Debugger", "Print process information", &cmd_process_info);
+    register_cmd("set-mouse", "Testing", "set-mouse [--global|--hw] x y  – set/move mouse position", cmd_set_mouse);
+    register_cmd("trace-mouse", "Testing", "trace-mouse start|stop  – log mouse position", cmd_trace_mouse);
+    register_cmd("mouse-button", "Testing", "mouse-button [--global|--hw] up|down  – inject mouse button event",
                  cmd_mouse_button);
-    register_cmd("key", "Testing",
-                 "key <name|0xNN>  – inject a key press+release via ADB/keyboard\n"
-                 "  Named keys: return, space, escape, tab, delete, up, down, left, right\n"
-                 "  Or hex ADB keycode: key 0x24",
-                 cmd_key);
-    register_cmd("post-event", "Testing",
-                 "post-event <what> <message>  – post a Mac OS event\n"
-                 "  what:    event code (1=mouseDown, 7=diskEvt, etc.)\n"
-                 "  message: event message (for diskEvt: drive number 1 or 2)",
-                 cmd_post_event);
+
+    // Unified commands
+    register_command(&(struct cmd_reg){
+        .name = "mouse",
+        .category = "Input",
+        .synopsis = "Mouse control (move/down/up/click/trace)",
+        .fn = cmd_mouse_handler,
+        .subcmds = mouse_subcmds,
+        .n_subcmds = 5,
+    });
+    register_command(&(struct cmd_reg){
+        .name = "key",
+        .category = "Input",
+        .synopsis = "Inject keyboard input",
+        .fn = cmd_key_handler,
+        .args = key_args,
+        .nargs = 1,
+    });
+    register_command(&(struct cmd_reg){
+        .name = "post-event",
+        .category = "Input",
+        .synopsis = "Post raw Mac OS event",
+        .fn = cmd_post_event_handler,
+        .args = post_event_args,
+        .nargs = 2,
+    });
 }
 
 // Helper to print process info programmatically (used by assertion handler)

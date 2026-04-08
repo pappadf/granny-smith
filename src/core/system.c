@@ -11,6 +11,7 @@
 
 #include "appletalk.h"
 #include "build_id.h"
+#include "cmd_types.h"
 #include "cpu.h"
 #include "floppy.h"
 #include "image.h"
@@ -493,6 +494,191 @@ static uint64_t cmd_scsi_loopback(int argc, char *argv[]) {
     return 0;
 }
 
+// ============================================================================
+// Command handlers for disk, scsi, scc, setup, rom, vrom
+// ============================================================================
+
+// --- disk (unified: insert/create/eject/probe) ---
+static void cmd_disk_handler(struct cmd_context *ctx, struct cmd_result *res) {
+    const char *subcmd = ctx->subcmd;
+    if (!subcmd) {
+        cmd_err(res, "usage: disk <insert|create|probe> <path>");
+        return;
+    }
+
+    if (strcmp(subcmd, "insert") == 0) {
+        if (!ctx->args[0].present) {
+            cmd_err(res, "usage: disk insert <path>");
+            return;
+        }
+        char buf[512];
+        snprintf(buf, sizeof(buf), "insert-disk %s", ctx->args[0].as_str);
+        uint64_t r = shell_dispatch(buf);
+        cmd_int(res, (int64_t)r);
+        return;
+    }
+    if (strcmp(subcmd, "create") == 0) {
+        // Check for --hd flag
+        int has_hd = 0;
+        for (int i = 0; i < ctx->raw_argc; i++) {
+            if (strcmp(ctx->raw_argv[i], "--hd") == 0) {
+                has_hd = 1;
+                break;
+            }
+        }
+        if (!ctx->args[0].present) {
+            cmd_err(res, "usage: disk create [--hd] <path>");
+            return;
+        }
+        char buf[512];
+        if (has_hd)
+            snprintf(buf, sizeof(buf), "new-fd --hd %s", ctx->args[0].as_str);
+        else
+            snprintf(buf, sizeof(buf), "new-fd %s", ctx->args[0].as_str);
+        uint64_t r = shell_dispatch(buf);
+        cmd_int(res, (int64_t)r);
+        return;
+    }
+    if (strcmp(subcmd, "probe") == 0) {
+        if (!ctx->args[0].present) {
+            cmd_err(res, "usage: disk probe <path>");
+            return;
+        }
+        char buf[512];
+        snprintf(buf, sizeof(buf), "insert-fd --probe %s", ctx->args[0].as_str);
+        uint64_t r = shell_dispatch(buf);
+        cmd_int(res, (int64_t)r);
+        return;
+    }
+    if (strcmp(subcmd, "eject") == 0) {
+        cmd_printf(ctx, "disk eject: not yet implemented\n");
+        cmd_ok(res);
+        return;
+    }
+    cmd_err(res, "unknown disk subcommand: %s", subcmd);
+}
+
+// --- scsi (unified: attach/loopback) ---
+static void cmd_scsi_handler(struct cmd_context *ctx, struct cmd_result *res) {
+    const char *subcmd = ctx->subcmd;
+    if (!subcmd) {
+        cmd_err(res, "usage: scsi <attach|loopback> [args...]");
+        return;
+    }
+
+    if (strcmp(subcmd, "attach") == 0) {
+        if (!ctx->args[0].present) {
+            cmd_err(res, "usage: scsi attach <path> [id]");
+            return;
+        }
+        char buf[512];
+        if (ctx->args[1].present)
+            snprintf(buf, sizeof(buf), "attach-hd %s %lld", ctx->args[0].as_str, (long long)ctx->args[1].as_int);
+        else
+            snprintf(buf, sizeof(buf), "attach-hd %s", ctx->args[0].as_str);
+        uint64_t r = shell_dispatch(buf);
+        cmd_int(res, (int64_t)r);
+        return;
+    }
+    if (strcmp(subcmd, "loopback") == 0) {
+        if (ctx->args[0].present) {
+            char buf[64];
+            snprintf(buf, sizeof(buf), "scsi-loopback %s", ctx->args[0].as_str);
+            uint64_t r = shell_dispatch(buf);
+            cmd_int(res, (int64_t)r);
+        } else {
+            uint64_t r = shell_dispatch("scsi-loopback");
+            cmd_int(res, (int64_t)r);
+        }
+        return;
+    }
+    cmd_err(res, "unknown scsi subcommand: %s", subcmd);
+}
+
+// --- scc (unified) ---
+static void cmd_scc_handler(struct cmd_context *ctx, struct cmd_result *res) {
+    const char *subcmd = ctx->subcmd;
+    if (!subcmd) {
+        cmd_err(res, "usage: scc loopback [on|off]");
+        return;
+    }
+
+    if (strcmp(subcmd, "loopback") == 0) {
+        if (ctx->args[0].present) {
+            char buf[64];
+            snprintf(buf, sizeof(buf), "scc-loopback %s", ctx->args[0].as_str);
+            uint64_t r = shell_dispatch(buf);
+            cmd_int(res, (int64_t)r);
+        } else {
+            uint64_t r = shell_dispatch("scc-loopback");
+            cmd_int(res, (int64_t)r);
+        }
+        return;
+    }
+    cmd_err(res, "unknown scc subcommand: %s", subcmd);
+}
+
+// --- setup ---
+static void cmd_set_handlerup(struct cmd_context *ctx, struct cmd_result *res) {
+    uint64_t r = cmd_setup(ctx->raw_argc, ctx->raw_argv);
+    cmd_int(res, (int64_t)r);
+}
+
+// --- rom ---
+static void cmd_rom_handler(struct cmd_context *ctx, struct cmd_result *res) {
+    uint64_t r = cmd_rom(ctx->raw_argc, ctx->raw_argv);
+    cmd_int(res, (int64_t)r);
+}
+
+// --- vrom ---
+static void cmd_vrom_handler(struct cmd_context *ctx, struct cmd_result *res) {
+    uint64_t r = cmd_vrom(ctx->raw_argc, ctx->raw_argv);
+    cmd_int(res, (int64_t)r);
+}
+
+// Registration tables
+
+// disk subcommands
+static const struct arg_spec disk_path_args[] = {
+    {"path",  ARG_PATH,               "disk image path"},
+    {"drive", ARG_INT | ARG_OPTIONAL, "drive number"   },
+};
+static const struct subcmd_spec disk_subcmds[] = {
+    {"insert", NULL, disk_path_args, 1, "auto-detect and insert"    },
+    {"create", NULL, disk_path_args, 1, "create blank floppy"       },
+    {"probe",  NULL, disk_path_args, 1, "validate without inserting"},
+    {"eject",  NULL, NULL,           0, "eject disk (future)"       },
+};
+
+// scsi subcommands
+static const struct arg_spec scsi_attach_args[] = {
+    {"path", ARG_PATH,               "hard disk image path"},
+    {"id",   ARG_INT | ARG_OPTIONAL, "SCSI ID"             },
+};
+static const char *loopback_values[] = {"on", "off", NULL};
+static const struct arg_spec loopback_args[] = {
+    {"state", ARG_ENUM | ARG_OPTIONAL, "on or off", loopback_values},
+};
+static const struct subcmd_spec scsi_subcmds[] = {
+    {"attach",   NULL, scsi_attach_args, 2, "attach hard disk image"},
+    {"loopback", NULL, loopback_args,    1, "passive terminator"    },
+};
+
+// scc subcommands
+static const struct subcmd_spec scc_subcmds[] = {
+    {"loopback", NULL, loopback_args, 1, "external loopback on/off"},
+};
+
+// setup args
+static const struct arg_spec setup_args[] = {
+    {"options", ARG_REST | ARG_OPTIONAL, "setup options (--model, --ram)"},
+};
+
+// rom/vrom args
+static const struct arg_spec rom_args[] = {
+    {"options", ARG_REST | ARG_OPTIONAL, "rom options (--load, --checksum, --probe)"},
+};
+
 // Initialize the setup system and register commands
 void setup_init() {
     printf("Granny Smith build %s\n", get_build_id());
@@ -508,7 +694,7 @@ void setup_init() {
     // Module-owned command registrations
     image_init(NULL); // No cross-module commands registered here
 
-    // Cross-module commands (image+floppy, scsi+image) registered here
+    // Simple commands (used for internal delegation from unified commands)
     register_cmd("insert-disk", "Configuration", "insert-disk <path> — auto-detect and insert a floppy disk image",
                  &cmd_insert_disk);
     register_cmd("new-fd", "Configuration", "Create blank floppy and insert: new-fd [--hd] <path> [drive:0|1]",
@@ -517,14 +703,60 @@ void setup_init() {
                  "insert-fd [--probe] <path> [drive:0|1] [writable:0|1] — insert floppy with options", &cmd_insert_fd);
     register_cmd("attach-hd", "Configuration", "Attach (SCSI) hard disk image: attach-hd <path> [scsi-id]",
                  &cmd_attach_hd);
-    register_cmd("setup", "Configuration", "setup [--model <model>] [--ram <kb>] – configure and create machine",
-                 &cmd_setup);
-    register_cmd("scc-loopback", "Configuration",
-                 "scc-loopback [on|off] – enable/disable external loopback between serial ports", &cmd_scc_loopback);
-    register_cmd("scsi-loopback", "Configuration", "scsi-loopback [on|off] – enable/disable SCSI loopback test card",
+    register_cmd("scc-loopback", "Configuration", "scc-loopback [on|off] – enable/disable external loopback",
+                 &cmd_scc_loopback);
+    register_cmd("scsi-loopback", "Configuration", "scsi-loopback [on|off] – enable/disable SCSI loopback",
                  &cmd_scsi_loopback);
-    register_cmd("rom", "ROM", "rom --load <path> | --checksum <path> | --probe [<path>]", (void *)&cmd_rom);
-    register_cmd("vrom", "ROM", "vrom --load <path> | --checksum <path> | --probe [<path>]", (void *)&cmd_vrom);
+
+    // Unified commands
+    register_command(&(struct cmd_reg){
+        .name = "disk",
+        .category = "Media",
+        .synopsis = "Manage floppy disks (insert/create/eject)",
+        .fn = cmd_disk_handler,
+        .subcmds = disk_subcmds,
+        .n_subcmds = 4,
+    });
+    register_command(&(struct cmd_reg){
+        .name = "scsi",
+        .category = "Media",
+        .synopsis = "Manage SCSI devices (attach/loopback)",
+        .fn = cmd_scsi_handler,
+        .subcmds = scsi_subcmds,
+        .n_subcmds = 2,
+    });
+    register_command(&(struct cmd_reg){
+        .name = "setup",
+        .category = "Configuration",
+        .synopsis = "Query or configure machine model",
+        .fn = cmd_set_handlerup,
+        .args = setup_args,
+        .nargs = 1,
+    });
+    register_command(&(struct cmd_reg){
+        .name = "rom",
+        .category = "Media",
+        .synopsis = "Load or probe ROM image",
+        .fn = cmd_rom_handler,
+        .args = rom_args,
+        .nargs = 1,
+    });
+    register_command(&(struct cmd_reg){
+        .name = "vrom",
+        .category = "Media",
+        .synopsis = "Load or probe VROM image",
+        .fn = cmd_vrom_handler,
+        .args = rom_args,
+        .nargs = 1,
+    });
+    register_command(&(struct cmd_reg){
+        .name = "scc",
+        .category = "Configuration",
+        .synopsis = "SCC serial port configuration",
+        .fn = cmd_scc_handler,
+        .subcmds = scc_subcmds,
+        .n_subcmds = 1,
+    });
 }
 
 // Platform hook called after system_create completes.

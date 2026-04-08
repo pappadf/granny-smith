@@ -10,23 +10,48 @@
 #define SHELL_H
 
 // === Includes ===
+#include "cmd_types.h"
 #include "system.h"
 
-// === Type Definitions ===
-typedef uint64_t (*cmd_fn)(int argc, char *argv[]);
+// === Registration ===
 
-// === Operations ===
+// Register a command with full declarative metadata (args, subcommands, etc.)
+int register_command(const struct cmd_reg *reg);
 
-int register_cmd(const char *name, const char *category, const char *synopsis, cmd_fn fn);
+// Register a simple command (classic argc/argv signature, no declarative args).
+// Convenience wrapper — creates a cmd_reg with simple_fn set.
+int register_cmd(const char *name, const char *category, const char *synopsis, cmd_fn_simple fn);
 
+// Unregister a command by name
 int unregister_cmd(const char *name);
+
+// === Dispatch ===
+
+// Dispatch a command line with the given invocation mode.
+// INVOKE_INTERACTIVE: output goes to stdout/stderr.
+// INVOKE_PROGRAMMATIC: output is captured into res->output.
+void dispatch_command(char *line, enum invoke_mode mode, struct cmd_result *res);
+
+// Dispatch a command line interactively. Returns an integer result for callers
+// that don't need the full cmd_result (e.g., headless script runner).
+uint64_t shell_dispatch(char *line);
+
+// Handle command input from the platform layer (makes a mutable copy, dispatches)
+uint64_t handle_command(const char *input_line);
+
+// === Shell Lifecycle ===
 
 int shell_init(void);
 
-uint64_t shell_dispatch(char *line);
-
-uint64_t handle_command(const char *input_line);
-
 void shell_interrupt(void);
+
+// === JSON Bridge ===
+
+// Get the JSON result buffer pointer (for WASM bridge)
+char *get_cmd_json_result(void);
+
+// === Tab Completion ===
+
+void shell_tab_complete(const char *line, int cursor_pos, struct completion *out);
 
 #endif // SHELL_H

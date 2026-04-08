@@ -6,6 +6,11 @@
 
 #include "shell.h"
 
+#include "cmd_complete.h"
+#include "cmd_io.h"
+#include "cmd_json.h"
+#include "cmd_parse.h"
+#include "cmd_types.h"
 #include "log.h"
 #include "peeler_shell.h"
 
@@ -23,70 +28,90 @@
 
 static int shell_initialized = 0;
 
-/* --- command interface --------------------------------------------------- */
+// JSON result buffer for WASM bridge (16KB)
+#define CMD_JSON_BUF_SIZE 16384
+static char g_cmd_json_buffer[CMD_JSON_BUF_SIZE];
 
-struct cmd_node {
-    char *name;
-    char *category;
-    char *synopsis;
-    cmd_fn fn;
-    struct cmd_node *next;
+/* --- command registry ---------------------------------------------------- */
+
+// Single unified command registry node
+struct cmd_reg_node {
+    struct cmd_reg reg;
+    struct cmd_reg_node *next;
 };
 
-static struct cmd_node *cmd_head = NULL;
+// Head of the command registry (exported for the completion engine)
+struct cmd_reg_node *cmd_head = NULL;
 
-/* --- alias table (IMP-201) ------------------------------------------------ */
-// Static alias table: maps alternative names to primary command names
-struct alias_entry {
-    const char *alias;
-    const char *target;
-};
-
-static const struct alias_entry alias_table[] = {
-    {"regs",       "td"        }, // intuitive name for register dump
-    {"step",       "s"         }, // standard debugger name
-    {"si",         "s"         }, // gdb step-into convention
-    {"break",      "br"        }, // standard debugger name
-    {"bp",         "br"        }, // common abbreviation
-    {"b",          "br"        }, // gdb convention
-    {"speed",      "schedule"  }, // more intuitive than "schedule"
-    {"examine",    "x"         }, // discoverable alias
-    {"mem",        "x"         }, // discoverable alias
-    {"proc-info",  "pi"        }, // self-documenting
-    {"process",    "pi"        }, // alternative discoverable alias
-    {"dis",        "disasm"    }, // short form
-    {"u",          "disasm"    }, // MacsBug convention
-    {"xlat",       "translate" }, // short form for MMU translation
-    {"reg",        "reg"       }, // handled by dedicated cmd_reg
-    {"fpregs",     "fpregs"    }, // FPU register dump
-    {"fpd",        "fpregs"    }, // alias for fpregs
-    {"run-to",     "run-to"    }, // handled by dedicated cmd_run_to
-    {"tbreak",     "tbreak"    }, // temporary breakpoint
-    {"tbr",        "tbreak"    }, // alias for tbreak
-    {"step-over",  "so"        }, // alias for step-over
-    {"next",       "so"        }, // gdb convention for step-over
-    {"finish",     "fin"       }, // alias for finish
-    {"fin",        "fin"       }, // handled by dedicated cmd_fin
-    {"get-global", "get-global"}, // Mac global lookup
-    {"x-global",   "x-global"  }, // Mac global examine
-    {NULL,         NULL        }
-};
-
-// Look up alias; returns target command name or NULL
-static const char *find_alias(const char *name) {
-    for (int i = 0; alias_table[i].alias != NULL; i++) {
-        if (strcmp(alias_table[i].alias, name) == 0)
-            return alias_table[i].target;
+// Find a command by name or alias
+static struct cmd_reg_node *find_cmd(const char *name) {
+    for (struct cmd_reg_node *n = cmd_head; n; n = n->next) {
+        if (strcasecmp(n->reg.name, name) == 0)
+            return n;
+        if (n->reg.aliases) {
+            for (const char **a = n->reg.aliases; *a; a++) {
+                if (strcasecmp(*a, name) == 0)
+                    return n;
+            }
+        }
     }
     return NULL;
 }
 
-/* --- "did you mean?" suggestion (IMP-202) --------------------------------- */
+// Register a command with full declarative metadata
+int register_command(const struct cmd_reg *reg) {
+    if (!reg || !reg->name || (!reg->fn && !reg->simple_fn))
+        return -1;
+    if (find_cmd(reg->name))
+        return -1; // already registered
+
+    struct cmd_reg_node *node = malloc(sizeof(struct cmd_reg_node));
+    if (!node)
+        return -1;
+
+    node->reg = *reg; // shallow copy (all strings are static)
+    node->next = cmd_head;
+    cmd_head = node;
+    return 0;
+}
+
+// Register a simple command (classic argc/argv signature)
+int register_cmd(const char *name, const char *category, const char *synopsis, cmd_fn_simple fn) {
+    if (find_cmd(name))
+        return -1;
+    return register_command(&(struct cmd_reg){
+        .name = name,
+        .category = category,
+        .synopsis = synopsis,
+        .simple_fn = fn,
+    });
+}
+
+// Unregister a command by name
+int unregister_cmd(const char *name) {
+    struct cmd_reg_node *prev = NULL, *cur = cmd_head;
+    while (cur) {
+        if (strcmp(cur->reg.name, name) == 0) {
+            if (prev)
+                prev->next = cur->next;
+            else
+                cmd_head = cur->next;
+            free(cur);
+            return 0;
+        }
+        prev = cur;
+        cur = cur->next;
+    }
+    return -1;
+}
+
+/* --- "did you mean?" suggestion ------------------------------------------ */
+
 // Simple edit distance (Levenshtein) for short strings
 static int edit_distance(const char *a, const char *b) {
     int la = strlen(a), lb = strlen(b);
     if (la > 20 || lb > 20)
-        return 99; // skip long strings
+        return 99;
     int dp[21][21];
     for (int i = 0; i <= la; i++)
         dp[i][0] = i;
@@ -107,23 +132,22 @@ static int edit_distance(const char *a, const char *b) {
 // Suggest closest matching command or alias for an unknown command name
 static void suggest_command(const char *name) {
     const char *best = NULL;
-    int best_dist = 4; // max distance threshold for suggestions
+    int best_dist = 4; // max distance threshold
 
-    // Search registered commands
-    for (struct cmd_node *c = cmd_head; c; c = c->next) {
-        int d = edit_distance(name, c->name);
+    for (struct cmd_reg_node *n = cmd_head; n; n = n->next) {
+        int d = edit_distance(name, n->reg.name);
         if (d < best_dist) {
             best_dist = d;
-            best = c->name;
+            best = n->reg.name;
         }
-    }
-
-    // Search alias table
-    for (int i = 0; alias_table[i].alias != NULL; i++) {
-        int d = edit_distance(name, alias_table[i].alias);
-        if (d < best_dist) {
-            best_dist = d;
-            best = alias_table[i].alias;
+        if (n->reg.aliases) {
+            for (const char **a = n->reg.aliases; *a; a++) {
+                d = edit_distance(name, *a);
+                if (d < best_dist) {
+                    best_dist = d;
+                    best = *a;
+                }
+            }
         }
     }
 
@@ -133,65 +157,16 @@ static void suggest_command(const char *name) {
         fprintf(stderr, "Unknown command \"%s\". Type \"help\" for a list of commands.\n", name);
 }
 
-/* --- command registry ----------------------------------------------------- */
-static struct cmd_node *find_cmd(const char *name, struct cmd_node **prev_out) {
-    struct cmd_node *prev = NULL, *cur = cmd_head;
-    while (cur) {
-        if (strcmp(cur->name, name) == 0) {
-            if (prev_out)
-                *prev_out = prev;
-            return cur;
-        }
-        prev = cur;
-        cur = cur->next;
-    }
-    return NULL;
-}
-
-int register_cmd(const char *name, const char *category, const char *synopsis, cmd_fn fn) {
-    if (find_cmd(name, NULL))
-        return -1; /* already exists */
-    struct cmd_node *n = malloc(sizeof *n);
-    if (!n)
-        return -1;
-    n->name = strdup(name);
-    n->category = strdup(category);
-    n->synopsis = strdup(synopsis);
-    n->fn = fn;
-    n->next = cmd_head; /* insert at head */
-    cmd_head = n;
-    return 0;
-}
-
-int unregister_cmd(const char *name) {
-    struct cmd_node *prev, *cur = find_cmd(name, &prev);
-    if (!cur)
-        return -1;
-    if (prev)
-        prev->next = cur->next;
-    else
-        cmd_head = cur->next;
-    free(cur->name);
-    free(cur->category);
-    free(cur->synopsis);
-    free(cur);
-    return 0;
-}
-
-/* --- tokenizer (unchanged) ------------------------------------------------ */
+/* --- tokenizer ----------------------------------------------------------- */
 #define MAXTOK 32
 static int tokenize(char *line, char *argv[], int max) {
-    // Enhanced tokenizer with support for: \-escapes, ASCII '"' and '\'' quotes,
-    // and UTF-8 curly quotes U+201C/U+201D as quote delimiters.
-    // Curly quotes are removed from the output similar to ASCII quotes.
-
+    // Tokenizer with support for: \-escapes, ASCII and UTF-8 curly quotes.
     int argc = 0;
     int esc = 0;
     enum { Q_NONE = 0, Q_DQUOTE, Q_SQUOTE, Q_CURLY } qstate = Q_NONE;
 
     char *p = line;
     while (*p) {
-        // skip leading whitespace when not in a token
         while (*p && isspace((unsigned char)*p))
             p++;
         if (!*p)
@@ -199,7 +174,7 @@ static int tokenize(char *line, char *argv[], int max) {
         if (argc == max)
             return -1;
 
-        argv[argc++] = p; // token starts here (we will compact in place)
+        argv[argc++] = p;
         char *dst = p;
 
         for (;;) {
@@ -210,25 +185,23 @@ static int tokenize(char *line, char *argv[], int max) {
             }
 
             if (esc) {
-                // Copy char literally and clear escape
                 *dst++ = *p++;
                 esc = 0;
                 continue;
             }
 
-            // Detect UTF-8 curly quotes (E2 80 9C/9D)
+            // UTF-8 curly quotes (E2 80 9C/9D)
             if ((unsigned char)p[0] == 0xE2 && (unsigned char)p[1] == 0x80 &&
                 ((unsigned char)p[2] == 0x9C || (unsigned char)p[2] == 0x9D)) {
-                if (qstate == Q_NONE) {
-                    qstate = Q_CURLY; // open
-                } else if (qstate == Q_CURLY) {
-                    qstate = Q_NONE; // close
-                } else {
-                    // inside other quote type: treat as data
+                if (qstate == Q_NONE)
+                    qstate = Q_CURLY;
+                else if (qstate == Q_CURLY)
+                    qstate = Q_NONE;
+                else {
                     *dst++ = *p++;
                     continue;
                 }
-                p += 3; // consume the curly quote bytes (not copied)
+                p += 3;
                 continue;
             }
 
@@ -243,9 +216,8 @@ static int tokenize(char *line, char *argv[], int max) {
                     qstate = Q_DQUOTE;
                 else if (qstate == Q_DQUOTE)
                     qstate = Q_NONE;
-                else {
+                else
                     *dst++ = *p;
-                }
                 p++;
                 continue;
             }
@@ -255,22 +227,18 @@ static int tokenize(char *line, char *argv[], int max) {
                     qstate = Q_SQUOTE;
                 else if (qstate == Q_SQUOTE)
                     qstate = Q_NONE;
-                else {
+                else
                     *dst++ = *p;
-                }
                 p++;
                 continue;
             }
 
             if (qstate == Q_NONE && isspace((unsigned char)*p)) {
-                // end of token on unquoted whitespace
                 *dst = '\0';
-                // advance p past the space so outer loop can skip further spaces
                 p++;
                 break;
             }
 
-            // normal char
             *dst++ = *p++;
         }
     }
@@ -279,96 +247,121 @@ static int tokenize(char *line, char *argv[], int max) {
 
 /* --- built-in commands ---------------------------------------------------- */
 
-// Fixed display order for help categories (IMP-307)
-static const char *help_category_order[] = {"Debugger",      "Scheduler", "Testing", "Configuration",
-                                            "Checkpointing", "ROM",       "Logging", "Filesystem",
-                                            "Archive",       "General",   NULL};
+// Help category display order
+static const char *help_category_order[] = {"Execution",  "Breakpoints", "Inspection",    "Tracing",       "Display",
+                                            "Input",      "Media",       "Configuration", "Checkpointing", "Scheduler",
+                                            "Filesystem", "Archive",     "Testing",       "Logging",       "AppleTalk",
+                                            "General",    NULL};
 
 // Print commands in a given category
 static void help_print_category(const char *cat) {
     int printed = 0;
-    for (struct cmd_node *c = cmd_head; c; c = c->next) {
-        if (strcmp(c->category, cat) == 0) {
+    for (struct cmd_reg_node *n = cmd_head; n; n = n->next) {
+        if (strcmp(n->reg.category, cat) == 0) {
             if (!printed) {
                 printf("\n%s:\n", cat);
                 printed = 1;
             }
-            printf("  %-14s %s\n", c->name, c->synopsis);
+            printf("  %-14s %s\n", n->reg.name, n->reg.synopsis);
         }
     }
-}
-
-// Print aliases that point to a given target command
-static void help_print_aliases(const char *target) {
-    int first = 1;
-    for (int i = 0; alias_table[i].alias != NULL; i++) {
-        if (strcmp(alias_table[i].target, target) == 0 && strcmp(alias_table[i].alias, target) != 0) {
-            if (first) {
-                printf("  Aliases: ");
-                first = 0;
-            } else {
-                printf(", ");
-            }
-            printf("%s", alias_table[i].alias);
-        }
-    }
-    if (!first)
-        printf("\n");
 }
 
 static uint64_t cmd_help(int argc, char *argv[]) {
     if (argc == 1) {
-        // Print all commands grouped by category in fixed order (IMP-307)
-        int seen_cats[64] = {0};
-        int n_seen = 0;
-
         // Print categories in defined order
-        for (int i = 0; help_category_order[i]; i++) {
+        for (int i = 0; help_category_order[i]; i++)
             help_print_category(help_category_order[i]);
-            // Mark as seen
-            if (n_seen < 64) {
-                seen_cats[n_seen++] = i; // just track count
-            }
-        }
 
         // Print any remaining categories not in the fixed order
-        for (struct cmd_node *c = cmd_head; c; c = c->next) {
+        for (struct cmd_reg_node *n = cmd_head; n; n = n->next) {
             int found = 0;
             for (int i = 0; help_category_order[i]; i++) {
-                if (strcmp(c->category, help_category_order[i]) == 0) {
+                if (strcmp(n->reg.category, help_category_order[i]) == 0) {
                     found = 1;
                     break;
                 }
             }
             if (!found) {
-                // Check if we already printed this category
                 int already = 0;
-                for (struct cmd_node *prev = cmd_head; prev != c; prev = prev->next) {
-                    if (strcmp(prev->category, c->category) == 0) {
+                for (struct cmd_reg_node *prev = cmd_head; prev != n; prev = prev->next) {
+                    if (strcmp(prev->reg.category, n->reg.category) == 0) {
                         already = 1;
                         break;
                     }
                 }
                 if (!already)
-                    help_print_category(c->category);
+                    help_print_category(n->reg.category);
             }
         }
     } else {
-        // Per-command help (IMP-203)
+        // Per-command help
         for (int i = 1; i < argc; ++i) {
-            // Check direct command first
-            struct cmd_node *c = find_cmd(argv[i], NULL);
+            struct cmd_reg_node *c = find_cmd(argv[i]);
             if (!c) {
-                // Check alias table
-                const char *target = find_alias(argv[i]);
-                if (target)
-                    c = find_cmd(target, NULL);
-            }
-            if (c) {
-                printf("%s — %s\n", c->name, c->synopsis);
-                help_print_aliases(c->name);
-            } else {
                 printf("Unknown command \"%s\"\n", argv[i]);
+                continue;
+            }
+
+            printf("%s — %s\n", c->reg.name, c->reg.synopsis);
+
+            // Print subcommands if any
+            if (c->reg.subcmds && c->reg.n_subcmds > 0) {
+                printf("\n");
+                for (int j = 0; j < c->reg.n_subcmds; j++) {
+                    const struct subcmd_spec *sc = &c->reg.subcmds[j];
+                    if (!sc->name) {
+                        if (sc->nargs > 0) {
+                            printf("  %s", c->reg.name);
+                            for (int k = 0; k < sc->nargs; k++) {
+                                if (ARG_IS_OPTIONAL(sc->args[k].type))
+                                    printf(" [%s]", sc->args[k].name);
+                                else
+                                    printf(" <%s>", sc->args[k].name);
+                            }
+                            if (sc->description)
+                                printf("   %s", sc->description);
+                            printf("\n");
+                        }
+                    } else {
+                        printf("  %s %s", c->reg.name, sc->name);
+                        if (sc->aliases) {
+                            printf(" (");
+                            for (const char **a = sc->aliases; *a; a++) {
+                                if (a != sc->aliases)
+                                    printf(", ");
+                                printf("%s", *a);
+                            }
+                            printf(")");
+                        }
+                        for (int k = 0; k < sc->nargs; k++) {
+                            if (ARG_IS_OPTIONAL(sc->args[k].type))
+                                printf(" [%s]", sc->args[k].name);
+                            else
+                                printf(" <%s>", sc->args[k].name);
+                        }
+                        if (sc->description)
+                            printf("   %s", sc->description);
+                        printf("\n");
+                    }
+                }
+            } else if (c->reg.args && c->reg.nargs > 0) {
+                printf("\n  %s", c->reg.name);
+                for (int k = 0; k < c->reg.nargs; k++) {
+                    if (ARG_IS_OPTIONAL(c->reg.args[k].type))
+                        printf(" [%s]", c->reg.args[k].name);
+                    else
+                        printf(" <%s>", c->reg.args[k].name);
+                }
+                printf("\n");
+            }
+
+            // Print aliases
+            if (c->reg.aliases) {
+                printf("  Aliases:");
+                for (const char **a = c->reg.aliases; *a; a++)
+                    printf(" %s", *a);
+                printf("\n");
             }
         }
     }
@@ -394,7 +387,6 @@ static uint64_t cmd_time(int argc, char *argv[]) {
     return 0;
 }
 
-/* Control commands to add/remove the demo command */
 static uint64_t cmd_add(int argc, char *argv[]) {
     if (argc != 2) {
         puts("usage: add time");
@@ -426,15 +418,14 @@ static uint64_t cmd_remove(int argc, char *argv[]) {
 }
 
 /* --- file system commands ------------------------------------------------ */
-static char current_dir[256] = "/"; // Track current working directory
+static char current_dir[256] = "/";
 
 static uint64_t cmd_ls(int argc, char *argv[]) {
-    /* Always output one entry per line (ls -1 style). Ignore option-looking args. */
     const char *path = current_dir;
     if (argc > 1) {
         for (int i = 1; i < argc; ++i) {
             if (argv[i][0] == '-' && argv[i][1] != '\0')
-                continue; /* skip pseudo options */
+                continue;
             path = argv[i];
             break;
         }
@@ -445,39 +436,32 @@ static uint64_t cmd_ls(int argc, char *argv[]) {
         return 0;
     }
     struct dirent *entry;
-    while ((entry = readdir(dir)) != NULL) {
+    while ((entry = readdir(dir)) != NULL)
         printf("%s\n", entry->d_name);
-    }
     closedir(dir);
     return 0;
 }
 
-// Resolve a path against current_dir into an absolute canonical path.
-// Handles leading /, .., and . components.  Result written to out (must be >= outlen).
 static void resolve_path(const char *input, char *out, size_t outlen) {
     char buf[256];
-    if (input[0] == '/') {
+    if (input[0] == '/')
         snprintf(buf, sizeof(buf), "%s", input);
-    } else {
+    else
         snprintf(buf, sizeof(buf), "%s/%s", current_dir, input);
-    }
-    // Split into components and resolve . / ..
+
     const char *components[64];
     int depth = 0;
     char *saveptr = NULL;
     char *token = strtok_r(buf, "/", &saveptr);
     while (token) {
-        if (strcmp(token, ".") == 0) {
-            // skip
+        if (strcmp(token, ".") == 0) { /* skip */
         } else if (strcmp(token, "..") == 0) {
             if (depth > 0)
                 depth--;
-        } else {
+        } else
             components[depth++] = token;
-        }
         token = strtok_r(NULL, "/", &saveptr);
     }
-    // Build result
     if (depth == 0) {
         snprintf(out, outlen, "/");
     } else {
@@ -494,10 +478,8 @@ static uint64_t cmd_cd(int argc, char *argv[]) {
         printf("usage: cd <directory>\n");
         return 0;
     }
-    // Resolve the target path before chdir (getcwd is broken on OPFS mounts)
     char resolved[256];
     resolve_path(argv[1], resolved, sizeof(resolved));
-
     if (chdir(resolved) == 0) {
         snprintf(current_dir, sizeof(current_dir), "%s", resolved);
         printf("Changed directory to %s\n", current_dir);
@@ -512,11 +494,10 @@ static uint64_t cmd_mkdir(int argc, char *argv[]) {
         printf("usage: mkdir <directory>\n");
         return 0;
     }
-    if (mkdir(argv[1], 0777) == 0) {
+    if (mkdir(argv[1], 0777) == 0)
         printf("Directory '%s' created\n", argv[1]);
-    } else {
+    else
         printf("mkdir: cannot create directory '%s': %s\n", argv[1], strerror(errno));
-    }
     return 0;
 }
 
@@ -525,15 +506,13 @@ static uint64_t cmd_mv(int argc, char *argv[]) {
         printf("usage: mv <source> <destination>\n");
         return 0;
     }
-    if (rename(argv[1], argv[2]) == 0) {
+    if (rename(argv[1], argv[2]) == 0)
         printf("Moved '%s' to '%s'\n", argv[1], argv[2]);
-    } else {
+    else
         printf("mv: cannot move '%s' to '%s': %s\n", argv[1], argv[2], strerror(errno));
-    }
     return 0;
 }
 
-// Output file contents to stdout
 static uint64_t cmd_cat(int argc, char *argv[]) {
     if (argc < 2) {
         printf("usage: cat <path>\n");
@@ -552,7 +531,6 @@ static uint64_t cmd_cat(int argc, char *argv[]) {
     return 0;
 }
 
-// Test if path exists (return 0 = exists, 1 = not found)
 static uint64_t cmd_exists(int argc, char *argv[]) {
     if (argc < 2) {
         printf("usage: exists <path>\n");
@@ -562,7 +540,6 @@ static uint64_t cmd_exists(int argc, char *argv[]) {
     return (stat(argv[1], &st) == 0) ? 0 : 1;
 }
 
-// Return file size in bytes (returns 0 on error)
 static uint64_t cmd_size(int argc, char *argv[]) {
     if (argc < 2) {
         printf("usage: size <path>\n");
@@ -576,7 +553,6 @@ static uint64_t cmd_size(int argc, char *argv[]) {
     return (uint64_t)st.st_size;
 }
 
-// Remove a file
 static uint64_t cmd_rm(int argc, char *argv[]) {
     if (argc < 2) {
         printf("usage: rm <path>\n");
@@ -589,11 +565,61 @@ static uint64_t cmd_rm(int argc, char *argv[]) {
     return 0;
 }
 
-/* --- dispatcher ----------------------------------------------------------- */
-uint64_t shell_dispatch(char *line) {
-    if (!shell_initialized) {
-        return -1;
+/* --- dispatcher ---------------------------------------------------------- */
+
+// Execute a command through a cmd_reg_node (handles both fn and simple_fn)
+static void execute_cmd(struct cmd_reg_node *node, int argc, char **argv, enum invoke_mode mode,
+                        struct cmd_result *res) {
+    if (node->reg.fn) {
+        // Full command handler with parsed args
+        struct cmd_io io;
+        init_cmd_io(&io, mode);
+
+        struct cmd_context ctx;
+        memset(&ctx, 0, sizeof(ctx));
+        ctx.out = io.out_stream;
+        ctx.err = io.err_stream;
+
+        if (cmd_parse_args(argc, argv, &node->reg, &ctx, res))
+            node->reg.fn(&ctx, res);
+
+        finalize_cmd_io(&io, res);
+    } else if (node->reg.simple_fn) {
+        // Simple (argc, argv) → uint64_t handler
+        uint64_t retval = node->reg.simple_fn(argc, argv);
+        res->type = RES_INT;
+        res->as_int = (int64_t)retval;
     }
+}
+
+// Dispatch a command line with the given invocation mode
+void dispatch_command(char *line, enum invoke_mode mode, struct cmd_result *res) {
+    memset(res, 0, sizeof(*res));
+    res->type = RES_OK;
+
+    if (!shell_initialized) {
+        cmd_err(res, "shell not initialized");
+        return;
+    }
+
+    char *argv[MAXTOK];
+    int argc = tokenize(line, argv, MAXTOK);
+    if (argc <= 0)
+        return;
+
+    struct cmd_reg_node *c = find_cmd(argv[0]);
+    if (c) {
+        execute_cmd(c, argc, argv, mode, res);
+        return;
+    }
+
+    cmd_err(res, "unknown command: %s", argv[0]);
+}
+
+// Dispatch interactively and return integer result
+uint64_t shell_dispatch(char *line) {
+    if (!shell_initialized)
+        return -1;
 
     char *argv[MAXTOK];
     int argc = tokenize(line, argv, MAXTOK);
@@ -603,20 +629,27 @@ uint64_t shell_dispatch(char *line) {
     }
     if (argc == 0)
         return 0;
-    struct cmd_node *c = find_cmd(argv[0], NULL);
+
+    struct cmd_reg_node *c = find_cmd(argv[0]);
     if (!c) {
-        // Check alias table (IMP-201)
-        const char *target = find_alias(argv[0]);
-        if (target)
-            c = find_cmd(target, NULL);
-    }
-    if (!c) {
-        // Suggest closest match (IMP-202)
         suggest_command(argv[0]);
         return 0;
     }
 
-    return c->fn(argc, argv);
+    struct cmd_result res;
+    memset(&res, 0, sizeof(res));
+    execute_cmd(c, argc, argv, INVOKE_INTERACTIVE, &res);
+
+    if (res.type == RES_INT)
+        return (uint64_t)res.as_int;
+    if (res.type == RES_BOOL)
+        return (uint64_t)res.as_bool;
+    if (res.type == RES_ERR) {
+        if (res.as_str)
+            fprintf(stderr, "%s\n", res.as_str);
+        return (uint64_t)-1;
+    }
+    return 0;
 }
 
 // Handle command input from platform layer
@@ -625,9 +658,8 @@ uint64_t handle_command(const char *input_line) {
         return -1;
 
     size_t len = strlen(input_line);
-    while (len > 0 && (input_line[len - 1] == '\n' || input_line[len - 1] == '\r')) {
+    while (len > 0 && (input_line[len - 1] == '\n' || input_line[len - 1] == '\r'))
         len--;
-    }
 
     char *mutable_line = (char *)malloc(len + 1);
     if (!mutable_line)
@@ -642,17 +674,24 @@ uint64_t handle_command(const char *input_line) {
     return result;
 }
 
-/* --- main ----------------------------------------------------------------- */
+// Get the JSON result buffer pointer
+char *get_cmd_json_result(void) {
+    return g_cmd_json_buffer;
+}
+
+// Tab completion entry point
+void shell_tab_complete(const char *line, int cursor_pos, struct completion *out) {
+    shell_complete(line, cursor_pos, out);
+}
+
+/* --- shell init ---------------------------------------------------------- */
 int shell_init(void) {
     if (shell_initialized)
         return 0;
-    // Initialize logging; registers the `log` shell command
-    log_init();
 
-    // Initialize peeler; registers the `peeler` shell command
+    log_init();
     peeler_shell_init();
 
-    /* register built-ins */
     register_cmd("help", "General", "help [cmd]", cmd_help);
     register_cmd("echo", "General", "echo ARG...", cmd_echo);
     register_cmd("add", "General", "add time", cmd_add);
