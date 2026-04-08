@@ -2178,15 +2178,6 @@ static void cmd_print_handler(struct cmd_context *ctx, struct cmd_result *res) {
     cmd_err(res, "unknown target: %s", ctx->raw_argv[1]);
 }
 
-// --- set ---
-static void cmd_set_handler(struct cmd_context *ctx, struct cmd_result *res) {
-    // Delegate to the existing cmd_set for now (it handles all the cases)
-    // Delegates to the existing implementation for now; the registration
-    // can be incrementally migrated.
-    uint64_t r = cmd_set(ctx->raw_argc, ctx->raw_argv);
-    cmd_int(res, (int64_t)r);
-}
-
 // --- examine ---
 static void cmd_examine_handler(struct cmd_context *ctx, struct cmd_result *res) {
     uint32_t addr;
@@ -2387,16 +2378,6 @@ static void cmd_stop_handler(struct cmd_context *ctx, struct cmd_result *res) {
     cmd_ok(res);
 }
 
-// --- advance (replaces run-until) ---
-static void cmd_advance_handler(struct cmd_context *ctx, struct cmd_result *res) {
-    // Delegate to the existing cmd_run_until implementation
-    uint64_t r = cmd_run_until(ctx->raw_argc, ctx->raw_argv);
-    if (r == 0)
-        cmd_bool(res, true);
-    else
-        cmd_bool(res, false);
-}
-
 // --- break (replaces br) ---
 static void cmd_break_handler(struct cmd_context *ctx, struct cmd_result *res) {
     debug_t *debug = system_debug();
@@ -2577,36 +2558,6 @@ static void cmd_info_handler(struct cmd_context *ctx, struct cmd_result *res) {
     }
 
     cmd_err(res, "unknown info subcommand: %s", subcmd);
-}
-
-// --- translate ---
-static void cmd_translate_handler(struct cmd_context *ctx, struct cmd_result *res) {
-    uint64_t r = cmd_translate(ctx->raw_argc, ctx->raw_argv);
-    cmd_int(res, (int64_t)r);
-}
-
-// --- addrmode ---
-static void cmd_addrmode_handler(struct cmd_context *ctx, struct cmd_result *res) {
-    uint64_t r = cmd_addrmode(ctx->raw_argc, ctx->raw_argv);
-    cmd_int(res, (int64_t)r);
-}
-
-// --- prompt ---
-static void cmd_prompt_handler(struct cmd_context *ctx, struct cmd_result *res) {
-    uint64_t r = cmd_prompt(ctx->raw_argc, ctx->raw_argv);
-    cmd_int(res, (int64_t)r);
-}
-
-// --- screenshot ---
-static void cmd_screenshot_handler(struct cmd_context *ctx, struct cmd_result *res) {
-    uint64_t r = cmd_screenshot(ctx->raw_argc, ctx->raw_argv);
-    cmd_int(res, (int64_t)r);
-}
-
-// --- trace ---
-static void cmd_trace_handler(struct cmd_context *ctx, struct cmd_result *res) {
-    uint64_t r = cmd_trace(ctx->raw_argc, ctx->raw_argv);
-    cmd_int(res, (int64_t)r);
 }
 
 // ============================================================================
@@ -2847,7 +2798,7 @@ debug_t *debug_init(void) {
         .name = "advance",
         .category = "Execution",
         .synopsis = "Run until memory condition is met",
-        .fn = cmd_advance_handler,
+        .simple_fn = cmd_run_until,
         .args = advance_args,
         .nargs = 3,
     });
@@ -2876,7 +2827,7 @@ debug_t *debug_init(void) {
         .aliases = watch_aliases,
         .category = "Breakpoints",
         .synopsis = "Set memory watchpoint",
-        .fn = cmd_advance_handler,
+        .simple_fn = cmd_run_until,
         .args = advance_args,
         .nargs = 3,
     });
@@ -2922,7 +2873,7 @@ debug_t *debug_init(void) {
         .name = "set",
         .category = "Inspection",
         .synopsis = "Set register, flag, or memory value",
-        .fn = cmd_set_handler,
+        .simple_fn = cmd_set,
         .args = set_cmd_args,
         .nargs = 2,
     });
@@ -2941,7 +2892,7 @@ debug_t *debug_init(void) {
         .name = "trace",
         .category = "Tracing",
         .synopsis = "Control instruction tracing (start/stop/show)",
-        .fn = cmd_trace_handler,
+        .simple_fn = cmd_trace,
         .args = trace_start_args,
         .nargs = 2,
     });
@@ -2951,7 +2902,7 @@ debug_t *debug_init(void) {
         .name = "translate",
         .category = "Display",
         .synopsis = "Show MMU address translation",
-        .fn = cmd_translate_handler,
+        .simple_fn = cmd_translate,
         .args = translate_args,
         .nargs = 1,
     });
@@ -2959,7 +2910,7 @@ debug_t *debug_init(void) {
         .name = "addrmode",
         .category = "Display",
         .synopsis = "Set address display format",
-        .fn = cmd_addrmode_handler,
+        .simple_fn = cmd_addrmode,
         .args = addrmode_args,
         .nargs = 1,
     });
@@ -2967,7 +2918,7 @@ debug_t *debug_init(void) {
         .name = "prompt",
         .category = "Display",
         .synopsis = "Toggle PC disassembly after steps",
-        .fn = cmd_prompt_handler,
+        .simple_fn = cmd_prompt,
         .args = prompt_args,
         .nargs = 1,
     });
@@ -2975,7 +2926,7 @@ debug_t *debug_init(void) {
         .name = "screenshot",
         .category = "Display",
         .synopsis = "Save screen snapshot or compute checksum",
-        .fn = cmd_screenshot_handler,
+        .simple_fn = cmd_screenshot,
         .subcmds = screenshot_subcmds,
         .n_subcmds = 4,
     });

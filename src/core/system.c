@@ -618,24 +618,6 @@ static void cmd_scc_handler(struct cmd_context *ctx, struct cmd_result *res) {
     cmd_err(res, "unknown scc subcommand: %s", subcmd);
 }
 
-// --- setup ---
-static void cmd_set_handlerup(struct cmd_context *ctx, struct cmd_result *res) {
-    uint64_t r = cmd_setup(ctx->raw_argc, ctx->raw_argv);
-    cmd_int(res, (int64_t)r);
-}
-
-// --- rom ---
-static void cmd_rom_handler(struct cmd_context *ctx, struct cmd_result *res) {
-    uint64_t r = cmd_rom(ctx->raw_argc, ctx->raw_argv);
-    cmd_int(res, (int64_t)r);
-}
-
-// --- vrom ---
-static void cmd_vrom_handler(struct cmd_context *ctx, struct cmd_result *res) {
-    uint64_t r = cmd_vrom(ctx->raw_argc, ctx->raw_argv);
-    cmd_int(res, (int64_t)r);
-}
-
 // Registration tables
 
 // disk subcommands
@@ -729,7 +711,7 @@ void setup_init() {
         .name = "setup",
         .category = "Configuration",
         .synopsis = "Query or configure machine model",
-        .fn = cmd_set_handlerup,
+        .simple_fn = cmd_setup,
         .args = setup_args,
         .nargs = 1,
     });
@@ -737,7 +719,7 @@ void setup_init() {
         .name = "rom",
         .category = "Media",
         .synopsis = "Load or probe ROM image",
-        .fn = cmd_rom_handler,
+        .simple_fn = cmd_rom,
         .args = rom_args,
         .nargs = 1,
     });
@@ -745,7 +727,7 @@ void setup_init() {
         .name = "vrom",
         .category = "Media",
         .synopsis = "Load or probe VROM image",
-        .fn = cmd_vrom_handler,
+        .simple_fn = cmd_vrom,
         .args = rom_args,
         .nargs = 1,
     });

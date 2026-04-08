@@ -403,18 +403,6 @@ static void cmd_mouse_handler(struct cmd_context *ctx, struct cmd_result *res) {
     cmd_err(res, "unknown mouse subcommand: %s", subcmd);
 }
 
-// --- key ---
-static void cmd_key_handler(struct cmd_context *ctx, struct cmd_result *res) {
-    uint64_t r = cmd_key(ctx->raw_argc, ctx->raw_argv);
-    cmd_int(res, (int64_t)r);
-}
-
-// --- post-event ---
-static void cmd_post_event_handler(struct cmd_context *ctx, struct cmd_result *res) {
-    uint64_t r = cmd_post_event(ctx->raw_argc, ctx->raw_argv);
-    cmd_int(res, (int64_t)r);
-}
-
 // ============================================================================
 // Registration tables
 // ============================================================================
@@ -468,7 +456,7 @@ void debug_mac_init(void) {
         .name = "key",
         .category = "Input",
         .synopsis = "Inject keyboard input",
-        .fn = cmd_key_handler,
+        .simple_fn = cmd_key,
         .args = key_args,
         .nargs = 1,
     });
@@ -476,7 +464,7 @@ void debug_mac_init(void) {
         .name = "post-event",
         .category = "Input",
         .synopsis = "Post raw Mac OS event",
-        .fn = cmd_post_event_handler,
+        .simple_fn = cmd_post_event,
         .args = post_event_args,
         .nargs = 2,
     });
