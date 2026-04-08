@@ -104,7 +104,7 @@ sleep 2
 ### Example — Script from stdin (no file needed)
 
 ```bash
-printf 'br $2B868\nrun\ntd\nquit\n' | ./build/headless/gs-headless rom=SE30.rom --script-stdin
+printf 'break $2B868\nrun\ninfo regs\nquit\n' | ./build/headless/gs-headless rom=SE30.rom --script-stdin
 ```
 
 ## 3. Sending Commands
@@ -124,7 +124,7 @@ Multiple newline-delimited commands can be sent in a single TCP connection.
 They execute in order, with output flushed between commands:
 
 ```bash
-printf "s\ntd\nget pc\n" | nc -w 5 localhost 6800
+printf "step\ninfo regs\nprint \$pc\n" | nc -w 5 localhost 6800
 ```
 
 This is faster than separate connections and ensures commands execute
@@ -135,113 +135,141 @@ at the current PC (like the web shell prompt). Use `prompt off` to suppress
 this status line for cleaner script output:
 
 ```bash
-printf "prompt off\ns\ntd\n" | nc -w 5 localhost 6800
+printf "prompt off\nstep\ninfo regs\n" | nc -w 5 localhost 6800
 ```
 
 ```
-$ echo "s" | nc -w 2 localhost 6800
+$ echo "step" | nc -w 2 localhost 6800
 4083f61c  6000  BRA       *+$023A
 ```
 
 This means the PC is now at `$4083F61C` and the next instruction to execute
-is `BRA *+$023A`. This applies to all commands — `s`, `td`, `get pc`, `x`, etc.
+is `BRA *+$023A`. This applies to all commands — `step`, `info regs`, `print $pc`, `examine`, etc.
 
 All addresses use the Motorola `$` hex prefix (e.g., `$40800000`) with uppercase
 hex digits. Input accepts `$`, `0x`, or bare hex. Use `L:` or `P:` prefix for
-explicit logical/physical addressing (e.g., `br P:$00801656`).
+explicit logical/physical addressing (e.g., `break P:$00801656`).
 
 ### Capturing output
 
 ```bash
-RESULT=$(echo "td" | nc -w 2 localhost 6800)
+RESULT=$(echo "info regs" | nc -w 2 localhost 6800)
 echo "$RESULT"
 ```
 
 ## 4. Command Reference
 
+Commands follow GDB/LLDB naming conventions. The `$` prefix resolves registers
+(`$pc`, `$d0`) and Mac globals (`$Ticks`, `$MBState`) uniformly.
+
 ### Execution Control
 
-| Command | Description |
-|---------|-------------|
-| `run` | Start execution (keep connection open until stopped) |
-| `run <N>` | Run exactly N instructions then stop |
-| `s` / `step` / `si` | Single-step one instruction |
-| `s <N>` | Step N instructions |
-| `so` / `step-over` / `next` | Step over (set tbreak at next instruction, then run) |
-| `fin` / `finish` | Run until current subroutine returns |
-| `run-to <addr>` | Run to address (temporary breakpoint, auto-removed on hit) |
-| `run-until <addr>.b\|.w\|.l <op> <val>` | Run until memory condition is met |
-| `stop` | Stop execution |
-| `status` | Print `running` or `idle` |
+| Command | Alias(es) | Description |
+|---------|-----------|-------------|
+| `continue [N]` | `c` | Resume execution (optionally for N instructions) |
+| `run [N]` | — | Start execution (optionally stop after N instructions) |
+| `step [N]` | `s`, `si` | Step one (or N) instructions |
+| `next` | `n`, `ni` | Step over subroutine call |
+| `finish` | `fin` | Run until current subroutine returns |
+| `until <addr>` | `u` | Run until address is reached |
+| `stop` | `halt` | Stop execution immediately |
+| `advance <addr>.size <op> <val>` | — | Run until memory condition is met |
 
-### Debugger
+### Breakpoints and Watchpoints
 
-| Command | Description |
-|---------|-------------|
-| `td` / `regs` | Display CPU registers (D0-D7, A0-A7, PC, SR, USP, SSP) |
-| `fpregs` / `fpd` | Display FPU registers (FP0-FP7, FPCR, FPSR, FPIAR) |
-| `reg <name>` | Get a register value |
-| `reg <name> <val>` | Set a register value |
-| `get <reg>` | Get register value (d0-d7, a0-a7, pc, sr, ssp, usp, fp0-fp7, fpcr, fpsr, fpiar, tc, crp, srp, tt0, tt1, msp) |
-| `set <reg> <val>` | Set register or memory (values are hex by default) |
-| `br <addr>` / `break` / `bp` / `b` | Set breakpoint at address |
-| `br del <addr>` | Delete breakpoint |
-| `br del all` | Delete all breakpoints |
-| `br` | List breakpoints |
-| `tbreak <addr>` / `tbr` | Set temporary breakpoint (auto-deleted on hit) |
-| `x <addr> [nbytes]` / `examine` / `mem` | Examine memory in hex/ASCII (default 64 bytes, max 512) |
-| `disasm [addr] [n]` / `dis` / `u` | Disassemble n instructions (defaults to PC if no address) |
-| `addrmode [mode]` | Set address display: auto, expanded, collapsed |
-| `translate <addr>` / `xlat` | Show MMU translation for an address |
-| `prompt [on\|off]` | Toggle trailing PC disassembly status line |
+| Command | Alias(es) | Description |
+|---------|-----------|-------------|
+| `break <addr>` | `b` | Set breakpoint |
+| `break set <addr>` | — | Set breakpoint (explicit) |
+| `break del <addr\|all>` | — | Delete breakpoint(s) |
+| `break list` | — | List all breakpoints |
+| `break clear` | — | Delete all breakpoints |
+| `tbreak <addr>` | `tb` | Set temporary breakpoint (auto-deletes on hit) |
+| `watch <addr>.size <op> <val>` | `w` | Set memory watchpoint |
+| `logpoint set <addr> [msg]` | `lp` | Set logpoint |
+| `logpoint del <addr\|all>` | — | Delete logpoint(s) |
+| `logpoint list` | — | List all logpoints |
 
-### Mac-Level Debugging
+### Inspection
 
-| Command | Description |
-|---------|-------------|
-| `get-global <name>` | Read a Mac low-memory global by name (e.g., MBState, Ticks) |
-| `x-global <name> [n]` | Examine memory at a Mac global address |
-| `mac-state` | Show Mac OS state summary (mouse, cursor, ticks, ADB) |
+| Command | Alias(es) | Description |
+|---------|-----------|-------------|
+| `print <target>` | `p` | Print register, Mac global, or memory value |
+| `examine <addr> [n]` | `x` | Examine raw memory (hex + ASCII, default 64 bytes) |
+| `disasm [addr] [n]` | `dis`, `d` | Disassemble instructions (default: from PC) |
+| `set <target> <value>` | — | Set register, flag, or memory value |
 
-### Breakpoints & Logpoints
+**`print` examples:**
+```
+p $d0              # CPU register
+p $pc              # program counter
+p $Ticks           # Mac global (reads value at address 0x016A)
+p $MBState         # Mac global
+p $0400.w          # memory word at address 0x400
+```
 
-| Command | Description |
-|---------|-------------|
-| `logpoint <addr> [msg] [category=<cat>] [level=<n>]` | Set a logpoint |
-| `logpoint` | List all logpoints |
-| `logpoint del <addr>` | Delete a logpoint at address |
-| `logpoint del all` | Delete all logpoints |
+### Info Subcommands
 
-### Machine Info
+| Command | Alias | Description |
+|---------|-------|-------------|
+| `info regs` | `info r`, `i r` | CPU register dump (D0-D7, A0-A7, PC, SR, USP, SSP) |
+| `info fpregs` | `info fp` | FPU register dump (FP0-FP7, FPCR, FPSR, FPIAR) |
+| `info mmu` | — | MMU register dump (TC, CRP, SRP, TT0, TT1) |
+| `info break` | `info b` | List all breakpoints |
+| `info logpoint` | `info lp` | List all logpoints |
+| `info mac` | — | Mac OS state summary (mouse, cursor, ticks) |
+| `info process` | `info proc` | Current application info |
+| `info events` | — | Scheduler event queue |
+| `info schedule` | — | Scheduler mode and CPI |
 
-| Command | Description |
-|---------|-------------|
-| `machine` | Show current machine model and specs |
-| `schedule` / `speed` | Show/set scheduler mode (max, real, hw) |
-| `events` | Show pending CPU event queue |
-
-### Disk & ROM
-
-| Command | Description |
-|---------|-------------|
-| `rom --load <file>` | Load a ROM image |
-| `rom --checksum <file>` | Validate and print ROM checksum |
-| `rom --probe [<file>]` | Check if ROM is valid (returns 0/1) |
-| `attach-hd <file> [id]` | Attach SCSI hard disk |
-| `insert-disk <file>` | Auto-detect and insert a floppy disk image |
-| `insert-fd <file> [drive:0\|1] [writable:0\|1]` | Insert floppy with options |
-
-### Logging
+### Tracing and Logging
 
 | Command | Description |
 |---------|-------------|
-| `log <category> <level>` | Enable logging for a category |
-| `log <category> <level> file=<path>` | Redirect log output to a file |
-| `logpoint <addr> [msg]` | Set a logpoint at an address |
-| `logpoint <addr> [msg] category=<name> level=<n>` | Set logpoint with category and level |
 | `trace start [file]` | Start instruction tracing (optionally to a file) |
 | `trace stop` | Stop tracing |
 | `trace show [file]` | Show trace buffer (optionally save to file) |
+| `log <category> <level>` | Enable logging for a category |
+| `log <category> <level> file=<path>` | Redirect log output to a file |
+
+### Display
+
+| Command | Description |
+|---------|-------------|
+| `translate <addr>` | Show MMU address translation |
+| `addrmode [auto\|expanded\|collapsed]` | Set address display format |
+| `prompt [on\|off]` | Toggle trailing PC disassembly status line |
+| `screenshot save <file.png>` | Save emulated screen as PNG |
+| `screenshot checksum [t l b r]` | Compute screen checksum |
+| `screenshot match <ref.png>` | Compare screen with reference PNG |
+
+### Input
+
+| Command | Description |
+|---------|-------------|
+| `key <name\|0xNN>` | Inject keyboard input |
+| `mouse move <x> <y>` | Move mouse to position |
+| `mouse down` / `mouse up` | Press/release mouse button |
+| `mouse click [x y]` | Click (optional move + press + release) |
+| `mouse trace start\|stop` | Log mouse position periodically |
+| `post-event <what> <message>` | Post raw Mac OS event |
+
+### Media and Configuration
+
+| Command | Description |
+|---------|-------------|
+| `disk insert <path>` | Auto-detect and insert a floppy disk image |
+| `disk create [--hd] <path>` | Create blank floppy |
+| `scsi attach <path> [id]` | Attach SCSI hard disk image |
+| `scsi loopback [on\|off]` | SCSI loopback test card |
+| `scc loopback [on\|off]` | SCC serial port loopback |
+| `rom --load <file>` | Load a ROM image |
+| `rom --checksum <file>` | Validate and print ROM checksum |
+| `rom --probe [<file>]` | Check if ROM is valid |
+| `setup [--model M] [--ram N]` | Configure machine model |
+| `schedule [max\|real\|hw]` | Show/set scheduler mode |
+| `status` | Print `running` or `idle` |
+| `events` | Show pending CPU event queue |
 
 ### System
 
@@ -257,50 +285,44 @@ echo "$RESULT"
 ### Single-step the boot sequence
 
 Every command response includes the current PC and disassembled instruction,
-so just sending `s` repeatedly produces a trace:
+so just sending `step` repeatedly produces a trace:
 
 ```bash
 # Start daemon
-./build/headless/gs-headless --daemon rom=tests/data/roms/SE30.rom &
+./build/headless/gs-headless --daemon --speed=max rom=tests/data/roms/SE30.rom &
 sleep 2
 
 # Step one instruction — output shows where PC is now
-echo "s" | nc -w 2 localhost 6800
+echo "step" | nc -w 2 localhost 6800
 # output: $40800090  4ef9  JMP       $4083F61C
 
-echo "s" | nc -w 2 localhost 6800
+echo "step" | nc -w 2 localhost 6800
 # output: $4083F61C  6000  BRA       *+$023A
 
-echo "s" | nc -w 2 localhost 6800
-# output: $4083F858  46fc  MOVE      #$2700,SR
-
 # Step 10 instructions at once — shows final position
-echo "s 10" | nc -w 2 localhost 6800
+echo "step 10" | nc -w 2 localhost 6800
 ```
 
-No need for separate `get pc` or `disasm` calls after stepping.
+No need for separate `print $pc` or `disasm` calls after stepping.
 
 ### Run to a breakpoint
 
 ```bash
 # Set breakpoint
-echo "br 0x40802a14" | nc -w 2 localhost 6800
+echo "break 0x40802a14" | nc -w 2 localhost 6800
 
-# Run (connection stays open until breakpoint hit).
-# The daemon prints heartbeat lines once per second during execution:
-#   # running... 54000000 instructions (+54000000 since start)
-# These keep the connection alive and let you monitor progress.
+# Run (connection stays open until breakpoint hit)
 echo "run" | nc -w 10 localhost 6800
 
 # Check where we stopped
-echo "td" | nc -w 2 localhost 6800
+echo "info regs" | nc -w 2 localhost 6800
 ```
 
-Or use `run-to` which sets a temporary breakpoint that auto-deletes:
+Or use `until` which sets a temporary breakpoint that auto-deletes:
 
 ```bash
-echo "run-to 0x40802a14" | nc -w 10 localhost 6800
-echo "td" | nc -w 2 localhost 6800
+echo "until 0x40802a14" | nc -w 10 localhost 6800
+echo "info regs" | nc -w 2 localhost 6800
 ```
 
 ### Examine memory
@@ -309,39 +331,34 @@ echo "td" | nc -w 2 localhost 6800
 # Read 32 bytes at address 0
 echo "x 0 32" | nc -w 2 localhost 6800
 
-# Disassemble 20 instructions from current PC (no need to get PC first)
+# Disassemble 20 instructions from current PC
 echo "disasm 20" | nc -w 2 localhost 6800
 
-# Use register names as addresses
-echo "x $sp 64" | nc -w 2 localhost 6800
-echo "disasm $pc 20" | nc -w 2 localhost 6800
+# Use register names and Mac globals as addresses
+echo "x \$sp 64" | nc -w 2 localhost 6800
+echo "disasm \$pc 20" | nc -w 2 localhost 6800
+echo "x \$Mouse 16" | nc -w 2 localhost 6800
 ```
 
 ### Inspect Mac globals
 
 ```bash
-echo "get-global MBState" | nc -w 2 localhost 6800
-echo "mac-state" | nc -w 2 localhost 6800
+echo "print \$MBState" | nc -w 2 localhost 6800
+echo "info mac" | nc -w 2 localhost 6800
 ```
 
 ### FPU register inspection
 
 ```bash
-echo "fpregs" | nc -w 2 localhost 6800
-echo "get fp0" | nc -w 2 localhost 6800
-echo "get fpcr" | nc -w 2 localhost 6800
+echo "info fpregs" | nc -w 2 localhost 6800
+echo "print \$fpcr" | nc -w 2 localhost 6800
 ```
 
 ### Instruction tracing to a file
 
 ```bash
-# Start tracing to a file
 echo "trace start /tmp/trace.log" | nc -w 2 localhost 6800
-
-# Run some instructions
 echo "run 10000" | nc -w 10 localhost 6800
-
-# Stop tracing and review
 echo "trace stop" | nc -w 2 localhost 6800
 cat /tmp/trace.log
 ```
@@ -372,32 +389,32 @@ echo "log scsi 10" | nc -w 2 localhost 6800
   for SE/30, `plus.rom` for Macintosh Plus.
 - Port 6800 is the default. Use `--port=PORT` to change it if there's a conflict.
   Use `--kill` to automatically kill any existing daemon on the same port.
-- The memory examine command is `x <addr> [nbytes]`, not `read` or `mem`.
-  (But `examine` and `mem` work as aliases.)
 - Use `--speed=max` for debugging sessions — it avoids real-time delays and makes
   breakpoint-heavy workflows much faster.
-- **Toggle commands** like `scc-loopback` and `scsi-loopback` without arguments
+- **Toggle commands** like `scc loopback` and `scsi loopback` without arguments
   only query the current state — they do NOT enable the feature. Always pass `on`
-  or `off` explicitly: `scc-loopback on`.
+  or `off` explicitly: `scc loopback on`.
 - **Paths are relative to the daemon's CWD** (typically the repo root).
   Use absolute paths for reliability.
 - **Output buffering**: When piping daemon output through filters, stdout is
   line-buffered in script mode. If output appears delayed, the daemon uses
   `setvbuf(stdout, NULL, _IOLBF, 0)` when running scripts.
-- The `s` command works correctly at breakpoints — there is a `last_breakpoint_pc`
+- The `step` command works correctly at breakpoints — there is a `last_breakpoint_pc`
   skip mechanism that prevents re-triggering the breakpoint on the first step.
 - `set` values are hex by default (Motorola convention): `set d0 42` sets D0 to
   $42 (66 decimal). Use `0d` prefix for decimal: `set d0 0d66`.
+- `$`-prefix resolves both registers and Mac globals uniformly: `print $pc`,
+  `x $Ticks 4`, `break $a5`.
 
 ## 7. Pitfalls
 
 - **VIA timer interrupts don't fire during single-step.** The VIA timers are driven
   by the scheduler, which only advances during `run`. If you need timer-dependent
-  code to execute, use `run <N>` instead of `s <N>`.
+  code to execute, use `run <N>` instead of `step <N>`.
 - **Don't forget to kill the daemon.** Send `echo "quit" | nc -w 2 localhost 6800`
   when done, or use `kill %1` if it was backgrounded. Orphaned daemons hold the port.
   PID files are written to `/tmp/gs-headless-<port>.pid` for cleanup.
-- **Large step counts can be slow.** `s 100000` steps one instruction at a time
+- **Large step counts can be slow.** `step 100000` steps one instruction at a time
   with output for each. Use `run 100000` for faster bulk execution (only the final
   state is printed).
 - **Response may be empty if daemon isn't ready.** If `nc` returns nothing, the
@@ -407,28 +424,7 @@ echo "log scsi 10" | nc -w 2 localhost 6800
   assertion, the daemon process terminates without sending an error to the TCP
   client. Check if the daemon is still running with `kill -0 <pid>`.
 
-## 8. Command Aliases
-
-Many commands have intuitive aliases. Use `help` to see all available commands,
-or `help <cmd>` for details on any specific command including its aliases.
-
-| Alias | Target |
-|-------|--------|
-| `regs` | `td` |
-| `step`, `si` | `s` |
-| `break`, `bp`, `b` | `br` |
-| `speed` | `schedule` |
-| `examine`, `mem` | `x` |
-| `proc-info`, `process` | `pi` |
-| `dis`, `u` | `disasm` |
-| `xlat` | `translate` |
-| `step-over`, `next` | `so` |
-| `finish` | `fin` |
-| `fpd` | `fpregs` |
-| `tbr` | `tbreak` |
-| `backtrace` | `bt` |
-
-## 9. Boot Preamble Recipes
+## 8. Boot Preamble Recipes
 
 Common boot sequences for integration test scripts:
 
@@ -440,7 +436,7 @@ screenshot --match desktop.png
 
 ### SE/30 boot with floppy and HD
 ```
-insert-disk /path/to/system.dsk
+disk insert /path/to/system.dsk
 run 800000000
 screenshot --match desktop.png
 ```
@@ -449,12 +445,12 @@ screenshot --match desktop.png
 Scripts support `include` directives to avoid copy-pasting boot sequences:
 ```
 include tests/integration/se30-mactest/boot-preamble.script
-br $2B868
+break $2B868
 run
-td
+info regs
 ```
 
-## 10. Cross-References
+## 9. Cross-References
 
 - **Offline disassembly**: See the `disasm-tool` skill for disassembling ROM images
   and binary files without running the emulator. Useful for static analysis of large
@@ -463,4 +459,5 @@ td
   Use `log <category> <level>` in the shell to enable runtime logging. Use
   `log <category> <level> file=<path>` to redirect log output to a file.
 - **Source code**: The headless platform lives in `src/platform/headless/`. The shell
-  command handler is in `src/core/shell/`. Debug commands are in `src/core/debug/`.
+  command framework is in `src/core/shell/`. Debug command handlers are in
+  `src/core/debug/`.
