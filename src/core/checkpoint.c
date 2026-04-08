@@ -148,9 +148,22 @@ struct checkpoint {
 // Append raw bytes to the accumulation buffer, return true on success
 static bool buf_append(checkpoint_t *cp, const void *data, size_t len) {
     if (cp->buf_used + len > cp->buf_cap) {
-        printf("Error: Quick checkpoint buffer overflow (%zu + %zu > %zu)\n", cp->buf_used, len, cp->buf_cap);
-        cp->error = true;
-        return false;
+        // Grow the buffer to fit (double or exact fit, whichever is larger)
+        size_t needed = cp->buf_used + len;
+        size_t new_cap = cp->buf_cap * 2;
+        if (new_cap < needed)
+            new_cap = needed;
+        uint8_t *new_buf = (uint8_t *)realloc(cp->buf, new_cap);
+        if (!new_buf) {
+            printf("Error: Quick checkpoint buffer realloc failed (%zu bytes)\n", new_cap);
+            cp->error = true;
+            return false;
+        }
+        cp->buf = new_buf;
+        cp->buf_cap = new_cap;
+        // Update the static pointer so it stays valid for future checkpoints
+        if (!cp->buf_owned)
+            g_quick_write_buf = new_buf;
     }
     memcpy(cp->buf + cp->buf_used, data, len);
     cp->buf_used += len;

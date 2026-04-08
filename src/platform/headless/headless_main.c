@@ -121,6 +121,7 @@ static void print_usage(const char *program) {
     printf("\n");
     printf("Arguments:\n");
     printf("  rom=<file>      ROM image file (required)\n");
+    printf("  ram=<kb>        RAM size in kilobytes (default: machine-specific)\n");
     printf("  hd=<file>       Hard disk image file (optional, can specify multiple)\n");
     printf("  fd=<file>       Floppy disk image file (optional, can specify multiple)\n");
     printf("  fd0=<file>      Floppy disk image for drive 0 (internal)\n");
@@ -580,6 +581,7 @@ int main(int argc, char *argv[]) {
     const char *script_file = NULL;
     const char *speed_mode = "realtime";
     uint64_t max_cycles = 0;
+    uint32_t ram_kb = 0;
     int quiet = 0;
     int script_stdin = 0;
     int kill_daemon = 0;
@@ -667,6 +669,11 @@ int main(int argc, char *argv[]) {
             continue;
         }
 
+        if ((value = parse_arg(arg, "ram")) != NULL) {
+            ram_kb = (uint32_t)strtoul(value, NULL, 10);
+            continue;
+        }
+
         if ((value = parse_arg(arg, "script")) != NULL) {
             script_file = value;
             continue;
@@ -705,6 +712,8 @@ int main(int argc, char *argv[]) {
         printf("Granny Smith - Headless Macintosh Emulator\n");
         printf("==========================================\n");
         printf("ROM:    %s\n", rom_file);
+        if (ram_kb > 0)
+            printf("RAM:    %u KB\n", ram_kb);
         for (int i = 0; i < hd_count; i++)
             printf("HD[%d]:  %s\n", i, hd_files[i]);
         for (int i = 0; i < fd_count; i++)
@@ -726,6 +735,10 @@ int main(int argc, char *argv[]) {
     register_cmd("checkpoint", "Checkpointing", "checkpoint --save <path> | --load [<path>]", cmd_headless_checkpoint);
 
     setup_init();
+
+    // Set pending RAM override before machine creation (if specified)
+    if (ram_kb > 0)
+        system_set_pending_ram_kb(ram_kb);
 
     // Use rom --load to identify the ROM and create the appropriate machine.
     // rom --load reads the ROM file, determines the machine type from the checksum,

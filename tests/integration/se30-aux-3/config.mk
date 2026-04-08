@@ -7,5 +7,5 @@ TEST_DESC := Boots SE/30 with Universal ROM from A/UX 3.0.1 Installation Boot Di
 # Universal ROM shared by SE/30, IIcx, IIx (checksum 0x97221136)
 TEST_ROM := roms/SE30.rom
 
-# Boot from A/UX 3.0.1 Installation Boot Disk (floppy image)
-TEST_ARGS := fd=$(TEST_DATA)/aux/aux_3.0.1/AUX_Installation_Boot_Disk.img
+# 16 MB RAM required for A/UX boot, boot from A/UX 3.0.1 Installation Boot Disk
+TEST_ARGS := ram=16384 fd=$(TEST_DATA)/aux/aux_3.0.1/AUX_Installation_Boot_Disk.img

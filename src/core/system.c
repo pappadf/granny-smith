@@ -40,6 +40,17 @@ LOG_USE_CATEGORY_NAME("setup");
 // Global emulator pointer (definition)
 config_t *global_emulator = NULL;
 
+// Pending RAM override (KB). Set by `setup --ram` or headless `ram=` arg.
+// Consumed by system_create(); 0 means use machine default.
+static uint32_t g_pending_ram_kb = 0;
+
+void system_set_pending_ram_kb(uint32_t kb) {
+    g_pending_ram_kb = kb;
+}
+uint32_t system_get_pending_ram_kb(void) {
+    return g_pending_ram_kb;
+}
+
 // Config field accessors for opaque handle access
 image_t *config_get_image(config_t *cfg, int index) {
     return cfg ? cfg->images[index] : NULL;
@@ -203,7 +214,7 @@ uint64_t cmd_attach_hd(int argc, char *argv[]);
 uint64_t cmd_new_fd(int argc, char *argv[]);
 uint64_t cmd_insert_fd(int argc, char *argv[]);
 uint64_t cmd_insert_disk(int argc, char *argv[]);
-uint64_t cmd_machine(int argc, char *argv[]);
+uint64_t cmd_setup(int argc, char *argv[]);
 
 // Helpers to abstract floppy insertion
 static bool sys_fd_is_inserted(config_t *cfg, int drive) {
@@ -343,10 +354,10 @@ uint64_t cmd_insert_disk(int argc, char *argv[]) {
     return 0;
 }
 
-// Query or switch the active machine model.
-// machine          → print current machine info
-// machine <model>  → teardown current machine, create new one
-uint64_t cmd_machine(int argc, char *argv[]) {
+// Query or configure the active machine.
+// setup                              → print current machine info
+// setup --model <model> [--ram <kb>] → teardown current machine, create new one
+uint64_t cmd_setup(int argc, char *argv[]) {
     if (argc < 2) {
         // No args: print current machine info
         if (!global_emulator || !global_emulator->machine) {
@@ -356,18 +367,61 @@ uint64_t cmd_machine(int argc, char *argv[]) {
         const hw_profile_t *m = global_emulator->machine;
         printf("Machine: %s (%s)\n", m->model_name, m->model_id);
         printf("  CPU: 680%02d @ %.4f MHz\n", m->cpu_model / 1000, m->cpu_clock_hz / 1000000.0);
-        printf("  Address: %d-bit, RAM: %u KB, ROM: %u KB\n", m->address_bits, m->ram_size_default / 1024,
+        printf("  Address: %d-bit, RAM: %u KB, ROM: %u KB\n", m->address_bits, global_emulator->ram_size / 1024,
                m->rom_size / 1024);
         printf("  VIAs: %d, ADB: %s\n", m->via_count, m->has_adb ? "yes" : "no");
         return 0;
     }
 
+    // Parse --model and --ram options
+    const char *model_id = NULL;
+    uint32_t ram_kb = 0;
+    int i = 1;
+    while (i < argc) {
+        if (strcmp(argv[i], "--model") == 0) {
+            if (++i >= argc) {
+                printf("setup: --model requires an argument\n");
+                return -1;
+            }
+            model_id = argv[i];
+        } else if (strcmp(argv[i], "--ram") == 0) {
+            if (++i >= argc) {
+                printf("setup: --ram requires an argument (size in KB)\n");
+                return -1;
+            }
+            ram_kb = (uint32_t)strtoul(argv[i], NULL, 10);
+            if (ram_kb == 0) {
+                printf("setup: invalid RAM size '%s'\n", argv[i]);
+                return -1;
+            }
+        } else {
+            printf("setup: unknown option '%s'\n", argv[i]);
+            printf("Usage: setup [--model <model>] [--ram <kb>]\n");
+            return -1;
+        }
+        i++;
+    }
+
+    if (!model_id) {
+        printf("Usage: setup [--model <model>] [--ram <kb>]\n");
+        return -1;
+    }
+
     // Look up the requested machine profile
-    const char *model_id = argv[1];
     const hw_profile_t *profile = machine_find(model_id);
     if (!profile) {
-        printf("machine: unknown model '%s'\n", model_id);
+        printf("setup: unknown model '%s'\n", model_id);
         return -1;
+    }
+
+    // Validate RAM against machine limits
+    if (ram_kb > 0) {
+        uint32_t max_kb = profile->ram_size_max / 1024;
+        if (ram_kb > max_kb) {
+            printf("setup: RAM %u KB exceeds maximum %u KB for %s\n", ram_kb, max_kb, profile->model_name);
+            return -1;
+        }
+        g_pending_ram_kb = ram_kb;
     }
 
     // Teardown existing machine if one is active
@@ -379,11 +433,11 @@ uint64_t cmd_machine(int argc, char *argv[]) {
     // Create the new machine (cold boot)
     config_t *cfg = system_create(profile, NULL);
     if (!cfg) {
-        printf("machine: failed to create %s\n", model_id);
+        printf("setup: failed to create %s\n", model_id);
         return -1;
     }
 
-    printf("Machine created: %s (%s)\n", profile->model_name, profile->model_id);
+    printf("Machine created: %s (%s), RAM: %u KB\n", profile->model_name, profile->model_id, cfg->ram_size / 1024);
     return 0;
 }
 
@@ -463,7 +517,8 @@ void setup_init() {
                  "insert-fd [--probe] <path> [drive:0|1] [writable:0|1] — insert floppy with options", &cmd_insert_fd);
     register_cmd("attach-hd", "Configuration", "Attach (SCSI) hard disk image: attach-hd <path> [scsi-id]",
                  &cmd_attach_hd);
-    register_cmd("machine", "Configuration", "machine [<model>] – query or switch machine model", &cmd_machine);
+    register_cmd("setup", "Configuration", "setup [--model <model>] [--ram <kb>] – configure and create machine",
+                 &cmd_setup);
     register_cmd("scc-loopback", "Configuration",
                  "scc-loopback [on|off] – enable/disable external loopback between serial ports", &cmd_scc_loopback);
     register_cmd("scsi-loopback", "Configuration", "scsi-loopback [on|off] – enable/disable SCSI loopback test card",
@@ -492,6 +547,16 @@ config_t *system_create(const hw_profile_t *profile, checkpoint_t *checkpoint) {
 
     cfg->machine = profile;
     global_emulator = cfg;
+
+    // Compute RAM size: use pending override if set, otherwise machine default
+    if (g_pending_ram_kb > 0) {
+        cfg->ram_size = g_pending_ram_kb * 1024;
+        if (cfg->ram_size > profile->ram_size_max)
+            cfg->ram_size = profile->ram_size_max;
+        g_pending_ram_kb = 0; // consume the override
+    } else {
+        cfg->ram_size = profile->ram_size_default;
+    }
 
     // Delegate all machine-specific initialisation to the profile
     profile->init(cfg, checkpoint);

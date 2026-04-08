@@ -763,16 +763,44 @@ static void se30_io_write_uint32(void *ctx, uint32_t addr, uint32_t value) {
 static void se30_memory_layout_init(config_t *cfg) {
     se30_state_t *se30 = se30_state(cfg);
 
-    uint32_t ram_size = cfg->machine->ram_size_default;
+    uint32_t ram_size = cfg->ram_size;
     uint32_t rom_size = cfg->machine->rom_size;
     uint8_t *ram_base = ram_native_pointer(cfg->mem_map, 0);
     // ROM data is stored immediately after RAM in the flat buffer
     uint8_t *rom_data = ram_native_pointer(cfg->mem_map, ram_size);
 
-    // --- RAM pages: $00000000 - ram_size (writable, direct access) ---
+    // --- RAM pages: $00000000 - ram_size (writable, with SIMM aliasing) ---
+    //
+    // Physical RAM is mapped directly at $0.  An additional mirror of the full
+    // RAM image is placed immediately above, at ram_size .. 2*ram_size-1.
+    // This emulates the real SE/30 SIMM address-line wrapping: SIMMs ignore
+    // address bits above their capacity, so the byte at <ram_size> is the same
+    // physical cell as the byte at 0.  The ROM's ram_address_test writes to
+    // the top-of-RAM address and checks whether the pattern appears at a lower
+    // alias; without this mirror, the write falls into unmapped space and the
+    // test fails with a spurious address-bus error.
+    //
+    // The ROM's address test table uses BMI rows (alias=$FFFFFFFF) for 1, 4,
+    // and 16 MB — these expect NO aliasing at the boundary.  All other sizes
+    // (2, 5, 8, 32, 64 … MB) use non-BMI rows that expect the top-of-RAM
+    // write to alias back to a lower address.  We map one extra mirror for
+    // non-BMI sizes so the alias check succeeds.
     uint32_t ram_pages = ram_size >> PAGE_SHIFT;
-    for (uint32_t p = 0; p < ram_pages && (int)p < g_page_count; p++)
-        se30_fill_page(p, ram_base + (p << PAGE_SHIFT), true);
+
+    // Determine whether SIMM aliasing is needed.  The ROM's ram_address_test
+    // table has two kinds of entries: "BMI" rows (alias = $FFFFFFFF) that
+    // expect NO aliasing, and "non-BMI" rows (alias = an address) that
+    // expect the top-of-RAM write to alias back.  BMI rows correspond to
+    // the GLUE's standard bank sizes (1, 4, 16, 64 MB); non-BMI rows cover
+    // intermediate totals (2, 5, 8, 32 … MB).  We only need a mirror for
+    // sizes whose top-of-RAM entry is non-BMI.
+    // BMI rows in the ROM table: 1 MB ($100000), 4 MB ($400000), 16 MB ($1000000).
+    // All other sizes (including 64 MB) use non-BMI rows that expect aliasing.
+    bool standard_bank = (ram_size == 1 * 1024 * 1024 || ram_size == 4 * 1024 * 1024 || ram_size == 16 * 1024 * 1024);
+    uint32_t map_end_page = standard_bank ? ram_pages : (ram_pages * 2);
+
+    for (uint32_t p = 0; p < map_end_page && (int)p < g_page_count; p++)
+        se30_fill_page(p, ram_base + ((p % ram_pages) << PAGE_SHIFT), true);
 
     // --- ROM pages: $40000000 - $4FFFFFFF (256 KB mirrored, read-only) ---
     uint32_t rom_pages = rom_size >> PAGE_SHIFT;
@@ -998,9 +1026,8 @@ static void se30_init(config_t *cfg, checkpoint_t *checkpoint) {
     // ADB bus starts in IDLE state (ST1:ST0 = 11, bits 5:4 = 0x30)
     se30->last_port_b = 0x30;
 
-    // Initialise parameterised memory: 32-bit address space, default RAM, 256 KB ROM
-    cfg->mem_map =
-        memory_map_init(cfg->machine->address_bits, cfg->machine->ram_size_default, cfg->machine->rom_size, checkpoint);
+    // Initialise parameterised memory: 32-bit address space, configured RAM, 256 KB ROM
+    cfg->mem_map = memory_map_init(cfg->machine->address_bits, cfg->ram_size, cfg->machine->rom_size, checkpoint);
 
     // Initialise CPU (68030)
     cfg->cpu = cpu_init(CPU_MODEL_68030, checkpoint);
@@ -1150,7 +1177,7 @@ static void se30_init(config_t *cfg, checkpoint_t *checkpoint) {
 
     // Create the 68030 PMMU and make it globally reachable
     uint8_t *ram_base = ram_native_pointer(cfg->mem_map, 0);
-    uint32_t ram_size = cfg->machine->ram_size_default;
+    uint32_t ram_size = cfg->ram_size;
     uint8_t *rom_data = ram_native_pointer(cfg->mem_map, ram_size);
     uint32_t rom_size = cfg->machine->rom_size;
 

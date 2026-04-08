@@ -143,6 +143,10 @@ const char *system_machine_model_id(void);
 // current machine's model_id doesn't match.  Returns 0 on success, -1 on error.
 int system_ensure_machine(const char *model_id);
 
+// Pending RAM override for next system_create() call (KB, 0 = use default)
+void system_set_pending_ram_kb(uint32_t kb);
+uint32_t system_get_pending_ram_kb(void);
+
 // Reset Mac hardware to initial state
 extern void mac_reset(config_t *restrict sim);
 

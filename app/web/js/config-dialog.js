@@ -419,7 +419,7 @@ export async function showConfigDialog(romChecksums) {
 // Execute the boot sequence from config dialog selections.
 // tmpRomPath is a fallback if the persisted ROM can't be found.
 export async function bootFromConfig(config, tmpRomPath) {
-  const { model, romChecksum, vromPath, floppies, hdImages, cdImage } = config;
+  const { model, romChecksum, ram, vromPath, floppies, hdImages, cdImage } = config;
 
   // Set VROM path before rom --load, because rom --load triggers machine
   // creation which needs the VROM during SE/30 init.
@@ -427,8 +427,15 @@ export async function bootFromConfig(config, tmpRomPath) {
     await window.runCommand(`vrom --load ${vromPath}`);
   }
 
+  // Create machine with selected model and RAM before ROM load.
+  // rom --load will see the correct machine is already active and skip recreation.
+  if (model) {
+    const ramKB = Math.round((ram || 4) * 1024);
+    await window.runCommand(`setup --model ${model} --ram ${ramKB}`);
+  }
+
   // Load ROM — try persisted OPFS path first, fall back to /tmp.
-  // rom --load identifies the ROM and creates the correct machine automatically.
+  // rom --load identifies the ROM and loads it into the existing machine.
   if (romChecksum) {
     const persistedPath = romPathForChecksum(romChecksum);
     let rc = await window.runCommand(`rom --load ${persistedPath}`);

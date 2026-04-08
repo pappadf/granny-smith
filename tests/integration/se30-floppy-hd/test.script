@@ -2,8 +2,8 @@
 # Boots SE/30 from a 1.44MB HD MFM floppy disk (System 7.0.1)
 # and verifies that the Finder desktop appears.
 
-# Boot to Finder desktop
-run 1000000000
+# Boot to Finder desktop (8MB RAM needs more cycles for memory test)
+run 2000000000
 
 # Verify the screen matches the Finder desktop reference image
 screenshot --match finder.png

@@ -34,6 +34,7 @@
 // visible externally; this definition adds the fields for internal use.
 struct config {
     const hw_profile_t *machine; // active machine profile (set by system_create)
+    uint32_t ram_size; // actual RAM size in bytes (from setup --ram or machine default)
     void *machine_context; // machine-specific state (e.g., plus_state_t)
 
     // Core CPU and memory subsystems

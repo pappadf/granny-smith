@@ -127,9 +127,8 @@ static void plus_init(config_t *cfg, checkpoint_t *checkpoint) {
     memset(ps, 0, sizeof(plus_state_t));
     cfg->machine_context = ps;
 
-    // Initialise parameterised memory: 24-bit address space, 4 MB RAM, 128 KB ROM
-    cfg->mem_map =
-        memory_map_init(cfg->machine->address_bits, cfg->machine->ram_size_default, cfg->machine->rom_size, checkpoint);
+    // Initialise parameterised memory: 24-bit address space, configured RAM, 128 KB ROM
+    cfg->mem_map = memory_map_init(cfg->machine->address_bits, cfg->ram_size, cfg->machine->rom_size, checkpoint);
 
     // Populate Plus-specific memory layout (RAM/ROM page table + Phase Read)
     plus_memory_layout_init(cfg);

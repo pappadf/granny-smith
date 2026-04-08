@@ -8,4 +8,4 @@ TEST_DESC := Boots SE/30 with Universal ROM from 1.44MB HD floppy and verifies F
 TEST_ROM := roms/SE30.rom
 
 # Boot from 1.44MB HD MFM floppy (System 7.0.1)
-TEST_ARGS := fd=$(TEST_DATA)/systems/System_7_0_1.image
+TEST_ARGS := ram=8192 fd=$(TEST_DATA)/systems/System_7_0_1.image
