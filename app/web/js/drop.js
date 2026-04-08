@@ -185,15 +185,15 @@ async function probeAndMountDiskImage(path, isDirectory, displayName) {
     if (kind === 'rom') {
       toast(`Loading ROM: ${imagePath.split('/').pop()}`);
       try {
-        // Use rom --checksum to validate and get the checksum
-        const checksumResult = await window.runCommand(`rom --checksum ${quotePath(imagePath)}`);
+        // Use rom checksum to validate and get the checksum
+        const checksumResult = await window.runCommand(`rom checksum ${quotePath(imagePath)}`);
         if (checksumResult !== 0) {
           toast('Not a valid ROM image');
           return;
         }
 
         // Load the ROM directly from the /tmp path (already validated above)
-        const loadRc = await window.runCommand(`rom --load ${quotePath(imagePath)}`);
+        const loadRc = await window.runCommand(`rom load ${quotePath(imagePath)}`);
         if (loadRc !== 0) {
           toast('Failed to load ROM');
           return;

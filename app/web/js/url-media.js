@@ -38,8 +38,8 @@ export async function loadRomAndMaybeRun() {
   if (lsResult !== 0) { showRomOverlay(); return; }
 
   // The ls command printed filenames to stdout; we can't easily capture them.
-  // Instead, try to load using rom --probe to check if a ROM is loaded
-  const probeResult = await window.runCommand('rom --probe');
+  // Instead, try to load using rom probe to check if a ROM is loaded
+  const probeResult = await window.runCommand('rom probe');
   if (probeResult === 0) {
     // ROM already loaded (from a previous session or checkpoint)
     romLoaded = true;
@@ -174,7 +174,7 @@ export async function processUrlMedia(params) {
     // The ROM was stored under /images/rom/<filename>; use the tmp path directly
     const tmpPath = '/tmp/url_rom';
     console.log(`[url-media] loading ROM from: ${tmpPath}`);
-    await window.runCommand(`rom --load ${tmpPath}`);
+    await window.runCommand(`rom load ${tmpPath}`);
     romLoaded = true;
     hideRomOverlay();
     enableRunButton();

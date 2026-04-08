@@ -81,7 +81,7 @@ test.describe('ROM Drag/Drop', () => {
     // Verify the ROM was loaded and emulator started
     const romLoaded = await page.evaluate(() => {
       const commandLog = (window as any).__commandLog || [];
-      return commandLog.some((cmd: string) => cmd.includes('rom --load'));
+      return commandLog.some((cmd: string) => cmd.includes('rom load'));
     });
     
     expect(romLoaded).toBe(true);

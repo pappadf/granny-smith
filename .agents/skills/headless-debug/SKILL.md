@@ -258,14 +258,14 @@ p $0400.w          # memory word at address 0x400
 
 | Command | Description |
 |---------|-------------|
-| `disk insert <path>` | Auto-detect and insert a floppy disk image |
-| `disk create [--hd] <path>` | Create blank floppy |
-| `scsi attach <path> [id]` | Attach SCSI hard disk image |
-| `scsi loopback [on\|off]` | SCSI loopback test card |
+| `fd insert <path>` | Auto-detect and insert a floppy disk image |
+| `fd create [--hd] <path>` | Create blank floppy |
+| `hd attach <path> [id]` | Attach SCSI hard disk image |
+| `hd loopback [on\|off]` | SCSI loopback test card |
 | `scc loopback [on\|off]` | SCC serial port loopback |
-| `rom --load <file>` | Load a ROM image |
-| `rom --checksum <file>` | Validate and print ROM checksum |
-| `rom --probe [<file>]` | Check if ROM is valid |
+| `rom load <file>` | Load a ROM image |
+| `rom checksum <file>` | Validate and print ROM checksum |
+| `rom probe [<file>]` | Check if ROM is valid |
 | `setup [--model M] [--ram N]` | Configure machine model |
 | `schedule [max\|real\|hw]` | Show/set scheduler mode |
 | `status` | Print `running` or `idle` |
@@ -391,7 +391,7 @@ echo "log scsi 10" | nc -w 2 localhost 6800
   Use `--kill` to automatically kill any existing daemon on the same port.
 - Use `--speed=max` for debugging sessions — it avoids real-time delays and makes
   breakpoint-heavy workflows much faster.
-- **Toggle commands** like `scc loopback` and `scsi loopback` without arguments
+- **Toggle commands** like `scc loopback` and `hd loopback` without arguments
   only query the current state — they do NOT enable the feature. Always pass `on`
   or `off` explicitly: `scc loopback on`.
 - **Paths are relative to the daemon's CWD** (typically the repo root).
@@ -436,7 +436,7 @@ screenshot --match desktop.png
 
 ### SE/30 boot with floppy and HD
 ```
-disk insert /path/to/system.dsk
+fd insert /path/to/system.dsk
 run 800000000
 screenshot --match desktop.png
 ```

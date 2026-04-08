@@ -32,7 +32,7 @@ The emulator uses Emscripten's `PROXY_TO_PTHREAD` mode. The C `main()` runs on a
 - **Share**: Copies `location.href` to the clipboard.
 
 ### Drag-and-Drop
-- **ROM files**: Validated via `rom --checksum`, stored in `/opfs/images/rom/<checksum>`. Emulator auto-runs.
+- **ROM files**: Validated via `rom checksum`, stored in `/opfs/images/rom/<checksum>`. Emulator auto-runs.
 - **Floppy images**: Staged to `/tmp/upload/`, probed via `insert-fd --probe`, then inserted. The C-side `image_persist_volatile()` automatically copies the file to `/opfs/images/<hash>.img` (OPFS) before opening.
 - **Hard-disk images**: Same persistence flow via `attach-hd`.
 - **Checkpoint files**: Detected via `GSCHKPT` magic. Copied to `/tmp/` and loaded via `checkpoint --load`.
@@ -128,7 +128,7 @@ When `insert-fd` or `attach-hd` receives a volatile path (`/tmp/`), the C-side `
 
 ### URL Media Fetching
 - `processUrlMedia` iterates URLSearchParams in three passes (ROM, `fdN`, `hdN`). Each `fetchAndStore(slot, url)` downloads the payload, optionally unzips, and writes it into the appropriate `/opfs/images/` subdirectory via `file-copy`.
-- After downloads, floppies are hot-inserted through `insert-fd`, while ROM triggers `rom --load`.
+- After downloads, floppies are hot-inserted through `insert-fd`, while ROM triggers `rom load`.
 
 ### COOP/COEP Headers
 SharedArrayBuffer (required for pthreads) needs Cross-Origin-Opener-Policy and Cross-Origin-Embedder-Policy headers. The dev server (`make run`) sends these automatically.

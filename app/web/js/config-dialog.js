@@ -20,7 +20,7 @@ export async function scanForPersistedRoms() {
   const found = [];
   for (const cs of Object.keys(ROM_DATABASE)) {
     const path = romPathForChecksum(cs);
-    const rc = await window.runCommand(`rom --probe ${path}`);
+    const rc = await window.runCommand(`rom probe ${path}`);
     if (rc === 0) {
       found.push(cs);
     }
@@ -75,7 +75,7 @@ export function showRomUploadDialog() {
       writeBinary(tmpPath, data);
 
       // Validate
-      const rc = await window.runCommand(`rom --checksum ${tmpPath}`);
+      const rc = await window.runCommand(`rom checksum ${tmpPath}`);
       if (rc !== 0) {
         errorSpan.textContent = 'Not a valid Macintosh ROM image. Please try another file.';
         errorSpan.hidden = false;
@@ -341,7 +341,7 @@ export async function showConfigDialog(romChecksums) {
           const tmpPath = `/tmp/upload_rom_${Date.now()}`;
           writeBinary(tmpPath, data);
 
-          const rc = await window.runCommand(`rom --checksum ${tmpPath}`);
+          const rc = await window.runCommand(`rom checksum ${tmpPath}`);
           if (rc !== 0) {
             toast('Not a valid ROM image');
             return res(null);
@@ -421,26 +421,26 @@ export async function showConfigDialog(romChecksums) {
 export async function bootFromConfig(config, tmpRomPath) {
   const { model, romChecksum, ram, vromPath, floppies, hdImages, cdImage } = config;
 
-  // Set VROM path before rom --load, because rom --load triggers machine
+  // Set VROM path before rom load, because rom load triggers machine
   // creation which needs the VROM during SE/30 init.
   if (vromPath) {
-    await window.runCommand(`vrom --load ${vromPath}`);
+    await window.runCommand(`vrom load ${vromPath}`);
   }
 
   // Create machine with selected model and RAM before ROM load.
-  // rom --load will see the correct machine is already active and skip recreation.
+  // rom load will see the correct machine is already active and skip recreation.
   if (model) {
     const ramKB = Math.round((ram || 4) * 1024);
     await window.runCommand(`setup --model ${model} --ram ${ramKB}`);
   }
 
   // Load ROM — try persisted OPFS path first, fall back to /tmp.
-  // rom --load identifies the ROM and loads it into the existing machine.
+  // rom load identifies the ROM and loads it into the existing machine.
   if (romChecksum) {
     const persistedPath = romPathForChecksum(romChecksum);
-    let rc = await window.runCommand(`rom --load ${persistedPath}`);
+    let rc = await window.runCommand(`rom load ${persistedPath}`);
     if (rc !== 0 && tmpRomPath) {
-      rc = await window.runCommand(`rom --load ${tmpRomPath}`);
+      rc = await window.runCommand(`rom load ${tmpRomPath}`);
     }
     if (rc !== 0) {
       toast('Failed to load ROM');

@@ -60,7 +60,7 @@
 static void em_assertion_callback(const char *expr, const char *file, int line, const char *func);
 
 // Deferred speed mode: saved at parse time, applied in system_post_create()
-// when the machine (and scheduler) are created later via rom --load.
+// when the machine (and scheduler) are created later via rom load.
 static enum schedule_mode g_deferred_speed = schedule_real_time;
 static bool g_deferred_speed_set = false;
 
@@ -702,7 +702,7 @@ static uint64_t cmd_file_copy(int argc, char *argv[]) {
 }
 
 // Find a mountable media file in a directory.
-// Scans the directory for files that pass insert-fd --probe or rom --probe.
+// Scans the directory for files that pass insert-fd --probe or rom probe.
 // Prints the path of the first match and returns 0, or returns 1 if none found.
 // Used by JS after peeler extraction (FS.readdir from main thread is broken
 // with WasmFS pthreads, so this runs on the worker).
@@ -1293,7 +1293,7 @@ int main(int argc, char *argv[]) {
     setup_init();
 
     // Deferred machine instantiation: global_emulator stays NULL until a ROM
-    // is loaded via the `rom --load` command, which identifies the machine type
+    // is loaded via the `rom load` command, which identifies the machine type
     // and creates it automatically.  If --model was provided, create it now
     // for backward compatibility.
     if (model) {
@@ -1308,7 +1308,7 @@ int main(int argc, char *argv[]) {
 
     // Parse and save speed mode for deferred application.
     // When the machine already exists (--model was given), apply immediately.
-    // Otherwise, system_post_create() will apply it when rom --load creates the machine.
+    // Otherwise, system_post_create() will apply it when rom load creates the machine.
     if (speed_mode) {
         if (strcmp(speed_mode, "max") == 0) {
             g_deferred_speed = schedule_max_speed;
@@ -1351,7 +1351,7 @@ int main(int argc, char *argv[]) {
     install_background_checkpoint_handlers();
 
     // Assertion callback is installed automatically by system_post_create()
-    // whenever a machine is created (either here via --model or later via rom --load).
+    // whenever a machine is created (either here via --model or later via rom load).
 
     emscripten_set_main_loop(tick, 0, 1); // Use RAF, simulate infinite loop
     return 0;
@@ -1398,7 +1398,7 @@ static void em_assertion_callback(const char *expr, const char *file, int line, 
 }
 
 // Platform hook: install assertion callback and apply deferred speed mode
-// after each system_create (including deferred creation via rom --load).
+// after each system_create (including deferred creation via rom load).
 void system_post_create(config_t *cfg) {
     debug_t *debug = system_debug();
     if (debug) {

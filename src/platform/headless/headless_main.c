@@ -740,11 +740,11 @@ int main(int argc, char *argv[]) {
     if (ram_kb > 0)
         system_set_pending_ram_kb(ram_kb);
 
-    // Use rom --load to identify the ROM and create the appropriate machine.
-    // rom --load reads the ROM file, determines the machine type from the checksum,
+    // Use rom load to identify the ROM and create the appropriate machine.
+    // rom load reads the ROM file, determines the machine type from the checksum,
     // calls system_create() internally, and loads the ROM into machine memory.
     char cmd[1024];
-    snprintf(cmd, sizeof(cmd), "rom --load %s", rom_file);
+    snprintf(cmd, sizeof(cmd), "rom load %s", rom_file);
     shell_dispatch(cmd);
 
     if (!global_emulator) {

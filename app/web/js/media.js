@@ -118,7 +118,7 @@ export async function tryExtractArchive(filePath, displayName, data) {
 // Probe if a file is a valid ROM.
 export async function probeRom(filePath) {
   try {
-    const result = await window.runCommand(`rom --probe ${quotePath(filePath)}`);
+    const result = await window.runCommand(`rom probe ${quotePath(filePath)}`);
     return result === 0;
   } catch {
     return false;
