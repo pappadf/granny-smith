@@ -3,7 +3,7 @@
 
 // Orchestrator: startup sequence and module glue.
 // Zero business logic — only wires modules together in the correct order.
-import { initEmulator, runCommand, isModuleReady, getModule, getRuntimePrompt, shellInterrupt, isRunning } from './emulator.js';
+import { initEmulator, runCommand, isModuleReady, getModule, getRuntimePrompt, shellInterrupt, isRunning, tabComplete } from './emulator.js';
 import { initTerminal, writeLine, showPrompt, fitTerminal, handleInterrupt } from './terminal.js';
 import { initFS } from './fs.js';
 import { initDragDrop } from './drop.js';
@@ -35,6 +35,7 @@ initTerminal(document.getElementById('terminal'), {
   isReady: () => isModuleReady(),
   isRunning: () => isRunning(),
   getPrompt: () => getRuntimePrompt(),
+  tabComplete: (line, cursorPos) => tabComplete(line, cursorPos),
 });
 
 // --- 3. Boot emulator ---

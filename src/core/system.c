@@ -11,6 +11,7 @@
 
 #include "appletalk.h"
 #include "build_id.h"
+#include "cmd_types.h"
 #include "cpu.h"
 #include "floppy.h"
 #include "image.h"
@@ -493,6 +494,406 @@ static uint64_t cmd_scsi_loopback(int argc, char *argv[]) {
     return 0;
 }
 
+// ============================================================================
+// Command handlers for disk, scsi, scc, setup, rom, vrom
+// ============================================================================
+
+// --- disk (unified: insert/create/eject/probe) ---
+static void cmd_fd_handler(struct cmd_context *ctx, struct cmd_result *res) {
+    const char *subcmd = ctx->subcmd;
+    if (!subcmd) {
+        cmd_err(res, "usage: fd <insert|create|probe|validate> <path>");
+        return;
+    }
+
+    if (strcmp(subcmd, "insert") == 0) {
+        if (!ctx->args[0].present) {
+            cmd_err(res, "usage: fd insert <path>");
+            return;
+        }
+        char buf[512];
+        snprintf(buf, sizeof(buf), "insert-disk %s", ctx->args[0].as_str);
+        uint64_t r = shell_dispatch(buf);
+        cmd_int(res, (int64_t)r);
+        return;
+    }
+    if (strcmp(subcmd, "create") == 0) {
+        // Check for --hd flag
+        int has_hd = 0;
+        for (int i = 0; i < ctx->raw_argc; i++) {
+            if (strcmp(ctx->raw_argv[i], "--hd") == 0) {
+                has_hd = 1;
+                break;
+            }
+        }
+        if (!ctx->args[0].present) {
+            cmd_err(res, "usage: fd create [--hd] <path>");
+            return;
+        }
+        char buf[512];
+        if (has_hd)
+            snprintf(buf, sizeof(buf), "new-fd --hd %s", ctx->args[0].as_str);
+        else
+            snprintf(buf, sizeof(buf), "new-fd %s", ctx->args[0].as_str);
+        uint64_t r = shell_dispatch(buf);
+        cmd_int(res, (int64_t)r);
+        return;
+    }
+    if (strcmp(subcmd, "probe") == 0) {
+        if (!ctx->args[0].present) {
+            cmd_err(res, "usage: fd probe <path>");
+            return;
+        }
+        char buf[512];
+        snprintf(buf, sizeof(buf), "insert-fd --probe %s", ctx->args[0].as_str);
+        uint64_t r = shell_dispatch(buf);
+        cmd_int(res, (int64_t)r);
+        return;
+    }
+    if (strcmp(subcmd, "validate") == 0) {
+        if (!ctx->args[0].present) {
+            cmd_err(res, "usage: fd validate <path>");
+            return;
+        }
+        const char *path = ctx->args[0].as_str;
+        image_t *img = image_open(path, false);
+        if (!img) {
+            cmd_printf(ctx, "invalid floppy image: cannot open %s\n", path);
+            cmd_bool(res, false);
+            return;
+        }
+        const char *desc = NULL;
+        switch (img->type) {
+        case image_fd_ss:
+            desc = img->from_diskcopy ? "400K floppy (single-sided, DiskCopy 4.2)" : "400K floppy (single-sided, raw)";
+            break;
+        case image_fd_ds:
+            desc = img->from_diskcopy ? "800K floppy (double-sided, DiskCopy 4.2)" : "800K floppy (double-sided, raw)";
+            break;
+        case image_fd_hd:
+            desc =
+                img->from_diskcopy ? "1.4MB floppy (high-density, DiskCopy 4.2)" : "1.4MB floppy (high-density, raw)";
+            break;
+        default:
+            break;
+        }
+        if (desc) {
+            cmd_printf(ctx, "valid %s\n", desc);
+            cmd_bool(res, true);
+        } else {
+            cmd_printf(ctx, "invalid floppy image: not a floppy (%zu bytes)\n", img->raw_size);
+            cmd_bool(res, false);
+        }
+        image_close(img);
+        return;
+    }
+    if (strcmp(subcmd, "eject") == 0) {
+        cmd_printf(ctx, "fd eject: not yet implemented\n");
+        cmd_ok(res);
+        return;
+    }
+    cmd_err(res, "unknown fd subcommand: %s", subcmd);
+}
+
+// --- scsi (unified: attach/loopback) ---
+static void cmd_hd_handler(struct cmd_context *ctx, struct cmd_result *res) {
+    const char *subcmd = ctx->subcmd;
+    if (!subcmd) {
+        cmd_err(res, "usage: hd <attach|loopback|validate> [args...]");
+        return;
+    }
+
+    if (strcmp(subcmd, "attach") == 0) {
+        if (!ctx->args[0].present) {
+            cmd_err(res, "usage: hd attach <path> [id]");
+            return;
+        }
+        char buf[512];
+        if (ctx->args[1].present)
+            snprintf(buf, sizeof(buf), "attach-hd %s %lld", ctx->args[0].as_str, (long long)ctx->args[1].as_int);
+        else
+            snprintf(buf, sizeof(buf), "attach-hd %s", ctx->args[0].as_str);
+        uint64_t r = shell_dispatch(buf);
+        cmd_int(res, (int64_t)r);
+        return;
+    }
+    if (strcmp(subcmd, "loopback") == 0) {
+        if (ctx->args[0].present) {
+            char buf[64];
+            snprintf(buf, sizeof(buf), "scsi-loopback %s", ctx->args[0].as_str);
+            uint64_t r = shell_dispatch(buf);
+            cmd_int(res, (int64_t)r);
+        } else {
+            uint64_t r = shell_dispatch("scsi-loopback");
+            cmd_int(res, (int64_t)r);
+        }
+        return;
+    }
+    if (strcmp(subcmd, "validate") == 0) {
+        if (!ctx->args[0].present) {
+            cmd_err(res, "usage: hd validate <path>");
+            return;
+        }
+        const char *path = ctx->args[0].as_str;
+        image_t *img = image_open(path, false);
+        if (!img) {
+            cmd_printf(ctx, "invalid SCSI HD image: cannot open %s\n", path);
+            cmd_bool(res, false);
+            return;
+        }
+        // Reject floppy-sized images
+        if (img->type == image_fd_ss || img->type == image_fd_ds || img->type == image_fd_hd) {
+            cmd_printf(ctx, "invalid SCSI HD image: size matches floppy (%zu bytes), use fd validate\n", img->raw_size);
+            image_close(img);
+            cmd_bool(res, false);
+            return;
+        }
+        // Match against known drive models
+        struct disk_info {
+            const char *vendor;
+            const char *product;
+            size_t size;
+        } disks[] = {
+            {"SEAGATE",  "ST225N",   21411840 },
+            {"MINISCRB", "8425S",    21307392 },
+            {"CONNER",   "CP3040",   42881664 },
+            {"QUANTUM",  "PRODRIVE", 81222144 },
+            {"QUANTUM",  "LPS170S",  177270240},
+        };
+        size_t sz = img->raw_size;
+        int best = -1;
+        for (int i = 0; i < (int)(sizeof(disks) / sizeof(disks[0])); i++) {
+            if (sz <= disks[i].size) {
+                best = i;
+                break;
+            }
+        }
+        if (best == -1)
+            best = (int)(sizeof(disks) / sizeof(disks[0])) - 1;
+        if (sz == disks[best].size)
+            cmd_printf(ctx, "valid SCSI HD image: %zu bytes, matches %s %s\n", sz, disks[best].vendor,
+                       disks[best].product);
+        else
+            cmd_printf(ctx, "valid SCSI HD image: %zu bytes, nearest model %s %s\n", sz, disks[best].vendor,
+                       disks[best].product);
+        image_close(img);
+        cmd_bool(res, true);
+        return;
+    }
+    cmd_err(res, "unknown hd subcommand: %s", subcmd);
+}
+
+// --- scc (unified) ---
+static void cmd_scc_handler(struct cmd_context *ctx, struct cmd_result *res) {
+    const char *subcmd = ctx->subcmd;
+    if (!subcmd) {
+        cmd_err(res, "usage: scc loopback [on|off]");
+        return;
+    }
+
+    if (strcmp(subcmd, "loopback") == 0) {
+        if (ctx->args[0].present) {
+            char buf[64];
+            snprintf(buf, sizeof(buf), "scc-loopback %s", ctx->args[0].as_str);
+            uint64_t r = shell_dispatch(buf);
+            cmd_int(res, (int64_t)r);
+        } else {
+            uint64_t r = shell_dispatch("scc-loopback");
+            cmd_int(res, (int64_t)r);
+        }
+        return;
+    }
+    cmd_err(res, "unknown scc subcommand: %s", subcmd);
+}
+
+// --- rom (subcommand style: load/probe/checksum/validate) ---
+static void cmd_rom_handler(struct cmd_context *ctx, struct cmd_result *res) {
+    const char *subcmd = ctx->subcmd;
+
+    // load/probe/checksum delegate to the simple handler
+    if (subcmd && (strcmp(subcmd, "load") == 0 || strcmp(subcmd, "probe") == 0 || strcmp(subcmd, "checksum") == 0)) {
+        char *argv[4] = {NULL};
+        int argc = 0;
+        argv[argc++] = "rom";
+        argv[argc++] = (char *)subcmd;
+        if (ctx->args[0].present)
+            argv[argc++] = (char *)ctx->args[0].as_str;
+        uint64_t r = cmd_rom(argc, argv);
+        cmd_int(res, (int64_t)r);
+        return;
+    }
+
+    if (!subcmd) {
+        cmd_err(res, "usage: rom <load|probe|checksum|validate> <path>");
+        return;
+    }
+
+    if (strcmp(subcmd, "validate") == 0) {
+        if (!ctx->args[0].present) {
+            cmd_err(res, "usage: rom validate <path>");
+            return;
+        }
+        const char *path = ctx->args[0].as_str;
+
+        // Read file
+        struct stat st;
+        if (stat(path, &st) != 0) {
+            cmd_printf(ctx, "invalid ROM: file not found: %s\n", path);
+            cmd_bool(res, false);
+            return;
+        }
+        size_t size = (size_t)st.st_size;
+        if (size != 128 * 1024 && size != 256 * 1024) {
+            cmd_printf(ctx, "invalid ROM: unrecognised size (%zu bytes, expected 128K or 256K)\n", size);
+            cmd_bool(res, false);
+            return;
+        }
+
+        FILE *f = fopen(path, "rb");
+        if (!f) {
+            cmd_printf(ctx, "invalid ROM: cannot open %s\n", path);
+            cmd_bool(res, false);
+            return;
+        }
+        uint8_t *data = malloc(size);
+        if (!data) {
+            fclose(f);
+            cmd_err(res, "out of memory");
+            return;
+        }
+        if (fread(data, 1, size, f) != size) {
+            cmd_printf(ctx, "invalid ROM: read error\n");
+            free(data);
+            fclose(f);
+            cmd_bool(res, false);
+            return;
+        }
+        fclose(f);
+
+        uint32_t checksum = 0;
+        const rom_info_t *info = rom_identify_data(data, size, &checksum);
+        bool valid = rom_validate(data, size);
+        free(data);
+
+        if (valid && info) {
+            cmd_printf(ctx, "valid ROM: %s (checksum 0x%08X)\n", info->model_name, checksum);
+        } else if (valid) {
+            cmd_printf(ctx, "valid ROM: unknown (%zu KB, checksum 0x%08X)\n", size / 1024, checksum);
+        } else {
+            cmd_printf(ctx, "invalid ROM: checksum mismatch (stored 0x%08X)\n", checksum);
+        }
+        cmd_bool(res, valid);
+        return;
+    }
+
+    cmd_err(res, "unknown rom subcommand: %s", subcmd);
+}
+
+// --- vrom (subcommand style: load/probe/checksum/validate) ---
+static void cmd_vrom_handler(struct cmd_context *ctx, struct cmd_result *res) {
+    const char *subcmd = ctx->subcmd;
+
+    // load/probe/checksum delegate to the simple handler
+    if (subcmd && (strcmp(subcmd, "load") == 0 || strcmp(subcmd, "probe") == 0 || strcmp(subcmd, "checksum") == 0)) {
+        char *argv[4] = {NULL};
+        int argc = 0;
+        argv[argc++] = "vrom";
+        argv[argc++] = (char *)subcmd;
+        if (ctx->args[0].present)
+            argv[argc++] = (char *)ctx->args[0].as_str;
+        uint64_t r = cmd_vrom(argc, argv);
+        cmd_int(res, (int64_t)r);
+        return;
+    }
+
+    if (!subcmd) {
+        cmd_err(res, "usage: vrom <load|probe|checksum|validate> <path>");
+        return;
+    }
+
+    if (strcmp(subcmd, "validate") == 0) {
+        if (!ctx->args[0].present) {
+            cmd_err(res, "usage: vrom validate <path>");
+            return;
+        }
+        const char *path = ctx->args[0].as_str;
+
+        struct stat st;
+        if (stat(path, &st) != 0) {
+            cmd_printf(ctx, "invalid VROM: file not found: %s\n", path);
+            cmd_bool(res, false);
+            return;
+        }
+        if ((size_t)st.st_size != 32 * 1024) {
+            cmd_printf(ctx, "invalid VROM: wrong size (%lld bytes, expected 32768)\n", (long long)st.st_size);
+            cmd_bool(res, false);
+            return;
+        }
+        cmd_printf(ctx, "valid VROM: 32 KB\n");
+        cmd_bool(res, true);
+        return;
+    }
+
+    cmd_err(res, "unknown vrom subcommand: %s", subcmd);
+}
+
+// Registration tables
+
+// disk subcommands
+static const struct arg_spec fd_path_args[] = {
+    {"path",  ARG_PATH,               "disk image path"},
+    {"drive", ARG_INT | ARG_OPTIONAL, "drive number"   },
+};
+static const struct subcmd_spec fd_subcmds[] = {
+    {"insert",   NULL, fd_path_args, 1, "auto-detect and insert"            },
+    {"create",   NULL, fd_path_args, 1, "create blank floppy"               },
+    {"probe",    NULL, fd_path_args, 1, "validate without inserting"        },
+    {"validate", NULL, fd_path_args, 1, "validate a floppy image (detailed)"},
+    {"eject",    NULL, NULL,         0, "eject disk (future)"               },
+};
+
+// scsi subcommands
+static const struct arg_spec hd_attach_args[] = {
+    {"path", ARG_PATH,               "hard disk image path"},
+    {"id",   ARG_INT | ARG_OPTIONAL, "SCSI ID"             },
+};
+static const char *loopback_values[] = {"on", "off", NULL};
+static const struct arg_spec loopback_args[] = {
+    {"state", ARG_ENUM | ARG_OPTIONAL, "on or off", loopback_values},
+};
+static const struct subcmd_spec hd_subcmds[] = {
+    {"attach",   NULL, hd_attach_args, 2, "attach hard disk image"    },
+    {"loopback", NULL, loopback_args,  1, "passive terminator"        },
+    {"validate", NULL, hd_attach_args, 1, "validate a hard disk image"},
+};
+
+// scc subcommands
+static const struct subcmd_spec scc_subcmds[] = {
+    {"loopback", NULL, loopback_args, 1, "external loopback on/off"},
+};
+
+// setup args
+static const struct arg_spec setup_args[] = {
+    {"options", ARG_REST | ARG_OPTIONAL, "setup options (--model, --ram)"},
+};
+
+// rom/vrom subcommands
+static const struct arg_spec rom_path_args[] = {
+    {"path", ARG_PATH | ARG_OPTIONAL, "ROM image path"},
+};
+static const struct subcmd_spec rom_subcmds[] = {
+    {"load",     NULL, rom_path_args, 1, "load a ROM image"                   },
+    {"probe",    NULL, rom_path_args, 1, "check if ROM is valid (returns 0/1)"},
+    {"checksum", NULL, rom_path_args, 1, "compute and print checksum"         },
+    {"validate", NULL, rom_path_args, 1, "validate ROM with detailed output"  },
+};
+static const struct subcmd_spec vrom_subcmds[] = {
+    {"load",     NULL, rom_path_args, 1, "load a VROM image"                   },
+    {"probe",    NULL, rom_path_args, 1, "check if VROM is valid (returns 0/1)"},
+    {"checksum", NULL, rom_path_args, 1, "validate VROM file size"             },
+    {"validate", NULL, rom_path_args, 1, "validate VROM with detailed output"  },
+};
+
 // Initialize the setup system and register commands
 void setup_init() {
     printf("Granny Smith build %s\n", get_build_id());
@@ -508,7 +909,7 @@ void setup_init() {
     // Module-owned command registrations
     image_init(NULL); // No cross-module commands registered here
 
-    // Cross-module commands (image+floppy, scsi+image) registered here
+    // Simple commands (used for internal delegation from unified commands)
     register_cmd("insert-disk", "Configuration", "insert-disk <path> — auto-detect and insert a floppy disk image",
                  &cmd_insert_disk);
     register_cmd("new-fd", "Configuration", "Create blank floppy and insert: new-fd [--hd] <path> [drive:0|1]",
@@ -517,14 +918,60 @@ void setup_init() {
                  "insert-fd [--probe] <path> [drive:0|1] [writable:0|1] — insert floppy with options", &cmd_insert_fd);
     register_cmd("attach-hd", "Configuration", "Attach (SCSI) hard disk image: attach-hd <path> [scsi-id]",
                  &cmd_attach_hd);
-    register_cmd("setup", "Configuration", "setup [--model <model>] [--ram <kb>] – configure and create machine",
-                 &cmd_setup);
-    register_cmd("scc-loopback", "Configuration",
-                 "scc-loopback [on|off] – enable/disable external loopback between serial ports", &cmd_scc_loopback);
-    register_cmd("scsi-loopback", "Configuration", "scsi-loopback [on|off] – enable/disable SCSI loopback test card",
+    register_cmd("scc-loopback", "Configuration", "scc-loopback [on|off] – enable/disable external loopback",
+                 &cmd_scc_loopback);
+    register_cmd("scsi-loopback", "Configuration", "scsi-loopback [on|off] – enable/disable SCSI loopback",
                  &cmd_scsi_loopback);
-    register_cmd("rom", "ROM", "rom --load <path> | --checksum <path> | --probe [<path>]", (void *)&cmd_rom);
-    register_cmd("vrom", "ROM", "vrom --load <path> | --checksum <path> | --probe [<path>]", (void *)&cmd_vrom);
+
+    // Unified commands
+    register_command(&(struct cmd_reg){
+        .name = "fd",
+        .category = "Media",
+        .synopsis = "Manage floppy disks (insert/create/validate/eject)",
+        .fn = cmd_fd_handler,
+        .subcmds = fd_subcmds,
+        .n_subcmds = 5,
+    });
+    register_command(&(struct cmd_reg){
+        .name = "hd",
+        .category = "Media",
+        .synopsis = "Manage SCSI hard disks (attach/loopback/validate)",
+        .fn = cmd_hd_handler,
+        .subcmds = hd_subcmds,
+        .n_subcmds = 3,
+    });
+    register_command(&(struct cmd_reg){
+        .name = "setup",
+        .category = "Configuration",
+        .synopsis = "Query or configure machine model",
+        .simple_fn = cmd_setup,
+        .args = setup_args,
+        .nargs = 1,
+    });
+    register_command(&(struct cmd_reg){
+        .name = "rom",
+        .category = "Media",
+        .synopsis = "Load, probe, or validate ROM image",
+        .fn = cmd_rom_handler,
+        .subcmds = rom_subcmds,
+        .n_subcmds = 4,
+    });
+    register_command(&(struct cmd_reg){
+        .name = "vrom",
+        .category = "Media",
+        .synopsis = "Load, probe, or validate VROM image",
+        .fn = cmd_vrom_handler,
+        .subcmds = vrom_subcmds,
+        .n_subcmds = 4,
+    });
+    register_command(&(struct cmd_reg){
+        .name = "scc",
+        .category = "Configuration",
+        .synopsis = "SCC serial port configuration",
+        .fn = cmd_scc_handler,
+        .subcmds = scc_subcmds,
+        .n_subcmds = 1,
+    });
 }
 
 // Platform hook called after system_create completes.

@@ -80,7 +80,7 @@ Key subsystems (modules) include:
 - **SCSI subsystem** (`scsi`) — SCSI bus and device emulation
 - **Disk image handling** (`image`) — Disk image management and storage backends
 - **AppleTalk integration** (`appletalk`) — Networking and AppleShare support
-- **Shell and CLI** (`shell`) — Command-line interface and scripting
+- **Shell and CLI** (`shell`) — Command framework, dispatch, tab completion, and scripting
 - **Debugger** (`debug`, `debug_mac`) — Debugging and diagnostics tools
 
 Each module is responsible for its own initialization, teardown, and (where
@@ -105,7 +105,15 @@ consistent pattern to maximize encapsulation, maintainability, and testability:
 
 - **Command registration:**
   - Module-specific shell commands are registered within the module’s
-    constructor using `register_cmd`.
+    constructor.
+  - Commands with declarative argument specs, subcommands, and aliases use
+    `register_command()` with a `cmd_reg` struct.
+  - Simple commands (classic `argc`/`argv` signature) use `register_cmd()`
+    as a convenience wrapper.
+  - Both forms register into a single unified command registry. The
+    dispatcher handles argument parsing, `$`-prefix symbol resolution, and
+    structured result generation automatically for `register_command()`
+    commands. Simple commands are wrapped transparently.
   - Commands that span multiple modules are registered centrally in `system.c`
     to avoid cross-module coupling.
 
@@ -116,6 +124,45 @@ consistent pattern to maximize encapsulation, maintainability, and testability:
     `system_write_checkpoint_data` to efficiently load and save contiguous POD
     (plain old data) regions, serializing any dynamic buffers separately.
   -
+
+### Shell Command Framework
+
+The emulator exposes its functionality through a unified shell command framework
+implemented in `src/core/shell/`. Commands follow GDB/LLDB naming conventions
+and support declarative argument specifications, `$`-prefix symbol resolution,
+structured results, and tab completion.
+
+**Command types:** Commands use one of two handler signatures:
+
+- **Full handlers** (`cmd_fn`) receive a `cmd_context` with parsed, typed
+  arguments and write to `cmd_result`. These support declarative arg specs,
+  subcommands with aliases, and `$`-prefix symbol resolution (registers and
+  Mac globals).
+- **Simple handlers** (`cmd_fn_simple`) use the classic `(int argc, char *argv[])
+  → uint64_t` signature. They are wrapped transparently by the dispatcher.
+
+Both types register into the same command registry and are dispatched uniformly.
+
+**Key framework components** (`src/core/shell/`):
+
+- `cmd_types.h` — All type definitions: `arg_spec`, `cmd_context`, `cmd_result`,
+  `cmd_reg`, `subcmd_spec`, `completion`
+- `cmd_parse.c` — Argument parser: tokenized argv → typed `arg_value[]` using
+  `arg_spec` declarations, with `$`-prefix symbol resolution
+- `cmd_symbol.c` — Unified symbol resolver for CPU registers (D0–D7, A0–A7, PC,
+  SR, flags), FPU registers, MMU registers, and 471 Mac low-memory globals
+- `cmd_io.c` — I/O stream routing: interactive mode passes through to
+  stdout/stderr; programmatic mode captures into buffers
+- `cmd_complete.c` — Metadata-driven tab completion engine
+- `cmd_json.c` — JSON serializer for `cmd_result` (used by the WASM bridge)
+
+**Result types:** Commands return structured results (`cmd_result`) with a type
+tag (`RES_OK`, `RES_INT`, `RES_STR`, `RES_BOOL`, `RES_ERR`). The WASM bridge
+serializes these as JSON for JavaScript callers via `runCommandJSON()`.
+
+**Command categories:** Commands are organized into: Execution, Breakpoints,
+Inspection, Tracing, Display, Input, Media, Configuration, Filesystem, and
+General.
 
 ### Orchestration and System Wiring
 
@@ -285,7 +332,8 @@ The repository is organized as follows:
     - **debug/** — Debugger, logging, and diagnostics
     - **storage/** — Disk image and storage backends
     - **network/** — AppleTalk and networking modules
-    - **shell/** — CLI and shell integration
+    - **shell/** — Command framework (types, parser, symbol resolver, I/O
+      capture, completion, JSON bridge, dispatcher)
   - **machines/** — Machine profile definitions
     - _machine.h/c_ — Profile struct and registry
     - _plus.c_ — Macintosh Plus hardware profile

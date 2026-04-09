@@ -11,6 +11,8 @@
 #include "debug.h"
 
 #include "addr_format.h"
+#include "cmd_symbol.h"
+#include "cmd_types.h"
 #include "common.h"
 #include "cpu.h"
 #include "cpu_internal.h"
@@ -329,90 +331,6 @@ static void list_breakpoints(debug_t *debug) {
         bp = bp->next;
         count++;
     }
-}
-
-// ============================================================================
-// Shell Commands
-// ============================================================================
-
-static uint64_t cmd_breakpoint(int argc, char *argv[]) {
-    debug_t *debug = system_debug();
-
-    // No arguments: list all breakpoints
-    if (argc == 1) {
-        list_breakpoints(debug);
-        return 0;
-    }
-
-    // Check for delete commands
-    if (strcmp(argv[1], "del") == 0 || strcmp(argv[1], "delete") == 0) {
-        if (argc < 3) {
-            printf("Usage: br del <address|all>\n");
-            return 0;
-        }
-        // Delete all breakpoints
-        if (strcmp(argv[2], "all") == 0) {
-            int count = delete_all_breakpoints(debug);
-            printf("Deleted %d breakpoint(s).\n", count);
-            return 0;
-        }
-        // Delete specific breakpoint by address
-        uint32_t addr;
-        addr_space_t space;
-        if (!parse_address(argv[2], &addr, &space)) {
-            printf("Invalid address: %s\n", argv[2]);
-            return 0;
-        }
-        if (delete_breakpoint(debug, addr, space)) {
-            if (space == ADDR_PHYSICAL) {
-                printf("Deleted breakpoint at P:$%08X.\n", (unsigned int)addr);
-            } else {
-                printf("Deleted breakpoint at $%08X.\n", (unsigned int)addr);
-            }
-        } else {
-            if (space == ADDR_PHYSICAL) {
-                printf("No breakpoint found at P:$%08X.\n", (unsigned int)addr);
-            } else {
-                printf("No breakpoint found at $%08X.\n", (unsigned int)addr);
-            }
-        }
-        return 0;
-    }
-
-    // Clear all breakpoints (alias for "br del all")
-    if (strcmp(argv[1], "clear") == 0) {
-        int count = delete_all_breakpoints(debug);
-        printf("Deleted %d breakpoint(s).\n", count);
-        return 0;
-    }
-
-    // Otherwise, treat as setting a breakpoint at address
-    if (argc != 2) {
-        printf("Usage: br [address|del <address|all>|clear]\n");
-        printf("  br              – list all breakpoints\n");
-        printf("  br <address>    – set a breakpoint at address\n");
-        printf("  br del <addr>   – delete breakpoint at address\n");
-        printf("  br del all      – delete all breakpoints\n");
-        printf("  br clear        – delete all breakpoints\n");
-        return 0;
-    }
-
-    uint32_t addr;
-    addr_space_t space;
-    if (!parse_address(argv[1], &addr, &space)) {
-        printf("Invalid address: %s\n", argv[1]);
-        return 0;
-    }
-
-    set_breakpoint(debug, addr, space);
-
-    if (space == ADDR_PHYSICAL) {
-        printf("Breakpoint set at P:$%08X.\n", (unsigned int)addr);
-    } else {
-        printf("Breakpoint set at $%08X.\n", (unsigned int)addr);
-    }
-
-    return 0;
 }
 
 // Set a logpoint at an address with category and level
@@ -899,83 +817,6 @@ static uint64_t cmd_td(int argc, char *argv[]) {
     return 0;
 }
 
-static uint64_t cmd_step(int argc, char *argv[]) {
-    if (argc > 2) {
-        printf("Usage: s [n instructions]\n");
-        return 0;
-    }
-
-    int n = 1;
-    if (argc == 2) {
-        n = atoi(argv[1]);
-        if (n <= 0) {
-            printf("Invalid number of instructions\n");
-            return 0;
-        }
-    }
-
-    scheduler_t *sched = system_scheduler();
-    if (!sched) {
-        printf("Scheduler not available\n");
-        return 0;
-    }
-
-    scheduler_run_instructions(sched, n);
-
-    // Explicitly stop the scheduler after single-stepping
-    scheduler_stop(sched);
-
-    return 0;
-}
-
-static uint64_t cmd_disasm(int argc, char *argv[]) {
-    uint32_t addr;
-    int n = 10; // default number of instructions
-
-    cpu_t *cpu = system_cpu();
-    if (!cpu) {
-        printf("CPU not available\n");
-        return 0;
-    }
-
-    if (argc < 2) {
-        // Default to current PC (IMP-408)
-        addr = cpu_get_pc(cpu);
-    } else if (argc == 2) {
-        // Single arg: if < 256, treat as count from PC; otherwise as address (IMP-408)
-        char *endptr;
-        unsigned long val = strtoul(argv[1], &endptr, 10);
-        if (*endptr == '\0' && val > 0 && val < 256) {
-            addr = cpu_get_pc(cpu);
-            n = (int)val;
-        } else {
-            addr_space_t space;
-            if (!parse_address(argv[1], &addr, &space)) {
-                printf("Invalid address: %s\n", argv[1]);
-                return 0;
-            }
-        }
-    } else {
-        addr_space_t space;
-        if (!parse_address(argv[1], &addr, &space)) {
-            printf("Invalid address: %s\n", argv[1]);
-            return 0;
-        }
-        n = atoi(argv[2]);
-        if (n <= 0)
-            n = 10;
-    }
-
-    for (int i = 0; i < n; i++) {
-        char buf[100];
-        int instr_len = debugger_disasm(buf, addr);
-        printf("%s\n", buf);
-        addr += 2 * instr_len;
-    }
-
-    return 0;
-}
-
 // Helper function to convert string to uppercase (for case-insensitive comparisons)
 static void str_to_upper(char *dest, const char *src) {
     while (*src) {
@@ -1241,370 +1082,6 @@ static uint64_t cmd_set(int argc, char *argv[]) {
     printf("  Condition codes: C, V, Z, N, X\n");
     printf("  Memory: <address>.b|.w|.l <value>\n");
     printf("  Values are hex by default (42 = $42). Use 0d prefix for decimal (0d66).\n");
-    return 0;
-}
-
-// Get command - read and return register or memory value
-static uint64_t cmd_get(int argc, char *argv[]) {
-    if (argc != 2) {
-        printf("Usage: get <register|address|instr>\n");
-        printf("  Registers: D0-D7, A0-A7, PC, SP, SSP, USP, SR, CCR\n");
-        printf("  Condition codes: C, V, Z, N, X\n");
-        printf("  Memory: <address>.b|.w|.l\n");
-        printf("  Instruction count: instr\n");
-        return 0;
-    }
-
-    cpu_t *cpu = system_cpu();
-    if (!cpu) {
-        printf("CPU not available\n");
-        return 0;
-    }
-    char target[64];
-    str_to_upper(target, argv[1]);
-    uint64_t value = 0;
-
-    // Instruction count
-    if (strcmp(target, "INSTR") == 0) {
-        value = cpu_instr_count();
-        printf("Instruction count = %llu\n", (unsigned long long)value);
-        return value;
-    }
-
-    // MMU register dump
-    if (strcmp(target, "MMU") == 0) {
-        if (g_mmu) {
-            printf("MMU enabled=%d\n", g_mmu->enabled);
-            printf("TC  = $%08X  (E=%u SRE=%u IS=%u TIA=%u TIB=%u TIC=%u TID=%u)\n", g_mmu->tc, TC_ENABLE(g_mmu->tc),
-                   TC_SRE(g_mmu->tc), TC_IS(g_mmu->tc), TC_TIA(g_mmu->tc), TC_TIB(g_mmu->tc), TC_TIC(g_mmu->tc),
-                   TC_TID(g_mmu->tc));
-            printf("CRP = $%08X_%08X\n", (uint32_t)(g_mmu->crp >> 32), (uint32_t)(g_mmu->crp & 0xFFFFFFFF));
-            printf("SRP = $%08X_%08X\n", (uint32_t)(g_mmu->srp >> 32), (uint32_t)(g_mmu->srp & 0xFFFFFFFF));
-            printf("TT0 = $%08X  (E=%u base=$%02X mask=$%02X)\n", g_mmu->tt0, TT_ENABLE(g_mmu->tt0),
-                   TT_BASE(g_mmu->tt0), TT_MASK(g_mmu->tt0));
-            printf("TT1 = $%08X  (E=%u base=$%02X mask=$%02X)\n", g_mmu->tt1, TT_ENABLE(g_mmu->tt1),
-                   TT_BASE(g_mmu->tt1), TT_MASK(g_mmu->tt1));
-        } else {
-            printf("MMU not present\n");
-        }
-        return 0;
-    }
-
-    // Data registers (D0-D7)
-    if (target[0] == 'D' && target[1] >= '0' && target[1] <= '7' && target[2] == '\0') {
-        int reg = target[1] - '0';
-        value = cpu_get_dn(cpu, reg);
-        printf("D%d = $%08X\n", reg, (unsigned int)value);
-        return value;
-    }
-
-    // Address registers (A0-A7)
-    if (target[0] == 'A' && target[1] >= '0' && target[1] <= '7' && target[2] == '\0') {
-        int reg = target[1] - '0';
-        value = cpu_get_an(cpu, reg);
-        printf("A%d = $%08X\n", reg, (unsigned int)value);
-        return value;
-    }
-
-    // Program Counter
-    if (strcmp(target, "PC") == 0) {
-        value = cpu_get_pc(cpu);
-        printf("PC = $%08X\n", (unsigned int)value);
-        return value;
-    }
-
-    // Stack Pointer (alias for A7)
-    if (strcmp(target, "SP") == 0) {
-        value = cpu_get_an(cpu, 7);
-        printf("SP = $%08X\n", (unsigned int)value);
-        return value;
-    }
-
-    // Supervisor Stack Pointer
-    if (strcmp(target, "SSP") == 0) {
-        value = cpu_get_ssp(cpu);
-        printf("SSP = $%08X\n", (unsigned int)value);
-        return value;
-    }
-
-    // User Stack Pointer
-    if (strcmp(target, "USP") == 0) {
-        value = cpu_get_usp(cpu);
-        printf("USP = $%08X\n", (unsigned int)value);
-        return value;
-    }
-
-    // Status Register
-    if (strcmp(target, "SR") == 0) {
-        value = cpu_get_sr(cpu);
-        uint16_t sr = (uint16_t)value;
-        int s_bit = (sr >> 13) & 1;
-        int im = (sr >> 8) & 7;
-        int t_bit = (sr >> 15) & 1;
-        int x = (sr & cpu_ccr_x) ? 1 : 0;
-        int n = (sr & cpu_ccr_n) ? 1 : 0;
-        int z = (sr & cpu_ccr_z) ? 1 : 0;
-        int v = (sr & cpu_ccr_v) ? 1 : 0;
-        int cc = (sr & cpu_ccr_c) ? 1 : 0;
-        printf("SR = $%04X  (S=%d, IM=%d, T=%d, XNZVC=%d%d%d%d%d)\n", sr, s_bit, im, t_bit, x, n, z, v, cc);
-        return value;
-    }
-
-    // Condition Code Register
-    if (strcmp(target, "CCR") == 0) {
-        uint16_t sr = cpu_get_sr(cpu);
-        value = sr & cpu_ccr_mask;
-        printf("CCR = $%02X\n", (uint8_t)value);
-        return value;
-    }
-
-    // Individual condition code flags
-    if (strcmp(target, "C") == 0) {
-        uint16_t sr = cpu_get_sr(cpu);
-        value = (sr & cpu_ccr_c) ? 1 : 0;
-        printf("C = %d\n", value);
-        return value;
-    }
-
-    if (strcmp(target, "V") == 0) {
-        uint16_t sr = cpu_get_sr(cpu);
-        value = (sr & cpu_ccr_v) ? 1 : 0;
-        printf("V = %d\n", value);
-        return value;
-    }
-
-    if (strcmp(target, "Z") == 0) {
-        uint16_t sr = cpu_get_sr(cpu);
-        value = (sr & cpu_ccr_z) ? 1 : 0;
-        printf("Z = %d\n", value);
-        return value;
-    }
-
-    if (strcmp(target, "N") == 0) {
-        uint16_t sr = cpu_get_sr(cpu);
-        value = (sr & cpu_ccr_n) ? 1 : 0;
-        printf("N = %d\n", value);
-        return value;
-    }
-
-    if (strcmp(target, "X") == 0) {
-        uint16_t sr = cpu_get_sr(cpu);
-        value = (sr & cpu_ccr_x) ? 1 : 0;
-        printf("X = %d\n", value);
-        return value;
-    }
-
-    // Master Stack Pointer (68030 only, IMP-406)
-    if (strcmp(target, "MSP") == 0) {
-        if (cpu->cpu_model != CPU_MODEL_68030) {
-            printf("MSP is only available on 68030\n");
-            return 0;
-        }
-        value = cpu->msp;
-        printf("MSP = $%08X\n", (unsigned int)value);
-        return value;
-    }
-
-    // FPU data registers FP0-FP7 (IMP-403)
-    if (target[0] == 'F' && target[1] == 'P' && target[2] >= '0' && target[2] <= '7' && target[3] == '\0') {
-        fpu_state_t *fpu = (fpu_state_t *)cpu->fpu;
-        if (!fpu) {
-            printf("FPU not available\n");
-            return 0;
-        }
-        int reg = target[2] - '0';
-        float80_reg_t fp = fpu->fp[reg];
-        printf("FP%d = $%04X.%016llX\n", reg, fp.exponent, (unsigned long long)fp.mantissa);
-        return 0;
-    }
-
-    // FPU control registers (IMP-403)
-    if (strcmp(target, "FPCR") == 0) {
-        fpu_state_t *fpu = (fpu_state_t *)cpu->fpu;
-        if (!fpu) {
-            printf("FPU not available\n");
-            return 0;
-        }
-        value = fpu->fpcr;
-        printf("FPCR = $%08X\n", (unsigned int)value);
-        return value;
-    }
-    if (strcmp(target, "FPSR") == 0) {
-        fpu_state_t *fpu = (fpu_state_t *)cpu->fpu;
-        if (!fpu) {
-            printf("FPU not available\n");
-            return 0;
-        }
-        value = fpu->fpsr;
-        printf("FPSR = $%08X\n", (unsigned int)value);
-        return value;
-    }
-    if (strcmp(target, "FPIAR") == 0) {
-        fpu_state_t *fpu = (fpu_state_t *)cpu->fpu;
-        if (!fpu) {
-            printf("FPU not available\n");
-            return 0;
-        }
-        value = fpu->fpiar;
-        printf("FPIAR = $%08X\n", (unsigned int)value);
-        return value;
-    }
-
-    // Individual MMU registers (IMP-404)
-    if (strcmp(target, "TC") == 0) {
-        if (!g_mmu) {
-            printf("MMU not present\n");
-            return 0;
-        }
-        value = g_mmu->tc;
-        printf("TC = $%08X\n", (unsigned int)value);
-        return value;
-    }
-    if (strcmp(target, "CRP") == 0) {
-        if (!g_mmu) {
-            printf("MMU not present\n");
-            return 0;
-        }
-        printf("CRP = $%08X_%08X\n", (uint32_t)(g_mmu->crp >> 32), (uint32_t)(g_mmu->crp & 0xFFFFFFFF));
-        return 0;
-    }
-    if (strcmp(target, "SRP") == 0) {
-        if (!g_mmu) {
-            printf("MMU not present\n");
-            return 0;
-        }
-        printf("SRP = $%08X_%08X\n", (uint32_t)(g_mmu->srp >> 32), (uint32_t)(g_mmu->srp & 0xFFFFFFFF));
-        return 0;
-    }
-    if (strcmp(target, "TT0") == 0) {
-        if (!g_mmu) {
-            printf("MMU not present\n");
-            return 0;
-        }
-        value = g_mmu->tt0;
-        printf("TT0 = $%08X\n", (unsigned int)value);
-        return value;
-    }
-    if (strcmp(target, "TT1") == 0) {
-        if (!g_mmu) {
-            printf("MMU not present\n");
-            return 0;
-        }
-        value = g_mmu->tt1;
-        printf("TT1 = $%08X\n", (unsigned int)value);
-        return value;
-    }
-
-    // Memory addresses with size specifiers (.b, .w, .l)
-    char *size_spec = strchr(target, '.');
-    if (size_spec != NULL) {
-        *size_spec = '\0';
-        size_spec++;
-
-        // Parse the address from target (supports $, 0x, and bare hex)
-        uint32_t addr;
-        addr_space_t space;
-        if (!parse_address(target, &addr, &space)) {
-            printf("Invalid address: %s\n", target);
-            return 0;
-        }
-
-        if (strcmp(size_spec, "B") == 0) {
-            value = memory_read_uint8(addr);
-            printf("[$%08X].b = $%02X\n", addr, (uint8_t)value);
-            return value;
-        } else if (strcmp(size_spec, "W") == 0) {
-            value = memory_read_uint16(addr);
-            printf("[$%08X].w = $%04X\n", addr, (uint16_t)value);
-            return value;
-        } else if (strcmp(size_spec, "L") == 0) {
-            value = memory_read_uint32(addr);
-            printf("[$%08X].l = $%08X\n", addr, (unsigned int)value);
-            return value;
-        } else {
-            printf("Invalid size specifier: .%s (use .b, .w, or .l)\n", size_spec);
-            return 0;
-        }
-    }
-
-    printf("Unknown target: %s\n", target);
-    printf("Usage: get <register|address>\n");
-    printf("  Registers: D0-D7, A0-A7, PC, SP, SSP, USP, SR, CCR\n");
-    printf("  FPU: FP0-FP7, FPCR, FPSR, FPIAR\n");
-    printf("  MMU: MMU, TC, CRP, SRP, TT0, TT1   68030: MSP\n");
-    printf("  Condition codes: C, V, Z, N, X\n");
-    printf("  Memory: <address>.b|.w|.l\n");
-    printf("  Address formats: $hex, 0xhex, L:$hex (logical), P:$hex (physical)\n");
-    return 0;
-}
-
-// Examine command - display raw memory in hex and ASCII
-static uint64_t cmd_examine(int argc, char *argv[]) {
-    if (argc < 2 || argc > 3) {
-        printf("Usage: x <address> [n]\n");
-        printf("  Display memory at address in hex and ASCII format\n");
-        printf("  n = number of bytes to display (default: 64, max: 512)\n");
-        return 0;
-    }
-
-    // Parse the address
-    uint32_t addr;
-    addr_space_t space;
-    if (!parse_address(argv[1], &addr, &space)) {
-        printf("Invalid address: %s\n", argv[1]);
-        return 0;
-    }
-
-    // Parse the number of bytes (default: 64, max: 512)
-    uint32_t nbytes = 64;
-    if (argc == 3) {
-        char *endptr;
-        nbytes = (uint32_t)strtoul(argv[2], &endptr, 0);
-        if (*endptr != '\0') {
-            printf("Invalid byte count: %s\n", argv[2]);
-            return 0;
-        }
-        if (nbytes == 0) {
-            printf("Byte count must be greater than 0\n");
-            return 0;
-        }
-        if (nbytes > 512) {
-            printf("Byte count exceeds maximum (512)\n");
-            nbytes = 512;
-        }
-    }
-
-    // Display memory in 16-byte rows
-    for (uint32_t i = 0; i < nbytes; i += 16) {
-        // Print address
-        printf("$%08X  ", addr + i);
-
-        // Print hex bytes
-        for (uint32_t j = 0; j < 16; j++) {
-            if (i + j < nbytes) {
-                uint8_t byte = memory_read_uint8(addr + i + j);
-                printf("%02x ", byte);
-            } else {
-                printf("   ");
-            }
-        }
-
-        // Print ASCII representation
-        printf(" ");
-        for (uint32_t j = 0; j < 16; j++) {
-            if (i + j < nbytes) {
-                uint8_t byte = memory_read_uint8(addr + i + j);
-                // Print printable ASCII characters, otherwise print '.'
-                if (byte >= 0x20 && byte <= 0x7e) {
-                    printf("%c", byte);
-                } else {
-                    printf(".");
-                }
-            }
-        }
-        printf("\n");
-    }
-
     return 0;
 }
 
@@ -2254,29 +1731,6 @@ static uint64_t cmd_translate(int argc, char *argv[]) {
 }
 
 // ============================================================================
-// Combined register get/set command (IMP-204)
-// ============================================================================
-
-// reg <name>       — read register
-// reg <name> <val> — write register
-static uint64_t cmd_reg(int argc, char *argv[]) {
-    if (argc == 2) {
-        // Delegate to get
-        char *get_argv[2] = {"get", argv[1]};
-        return cmd_get(2, get_argv);
-    } else if (argc == 3) {
-        // Delegate to set
-        char *set_argv[3] = {"set", argv[1], argv[2]};
-        return cmd_set(3, set_argv);
-    } else {
-        printf("Usage: reg <register> [value]\n");
-        printf("  1 argument: read register (like 'get')\n");
-        printf("  2 arguments: write register (like 'set')\n");
-        return 0;
-    }
-}
-
-// ============================================================================
 // FPU register dump (IMP-402)
 // ============================================================================
 
@@ -2413,143 +1867,6 @@ void debug_check_tbreak(debug_t *debug, uint32_t pc) {
     }
 }
 
-static uint64_t cmd_tbreak(int argc, char *argv[]) {
-    if (argc < 2) {
-        printf("Usage: tbreak <address>  — set a temporary breakpoint (auto-deleted on hit)\n");
-        return 0;
-    }
-    uint32_t addr;
-    addr_space_t space;
-    if (!parse_address(argv[1], &addr, &space)) {
-        printf("Invalid address: %s\n", argv[1]);
-        return 0;
-    }
-    debug_t *debug = system_debug();
-    if (!debug) {
-        printf("Debug not available\n");
-        return 0;
-    }
-    set_temporary_breakpoint(debug, addr, space);
-    printf("Temporary breakpoint at $%08X\n", addr);
-    return 0;
-}
-
-// ============================================================================
-// run-to command (IMP-503)
-// ============================================================================
-
-static uint64_t cmd_run_to(int argc, char *argv[]) {
-    if (argc < 2) {
-        printf("Usage: run-to <address> [max-cycles]\n");
-        return 0;
-    }
-    uint32_t addr;
-    addr_space_t space;
-    if (!parse_address(argv[1], &addr, &space)) {
-        printf("Invalid address: %s\n", argv[1]);
-        return 0;
-    }
-    debug_t *debug = system_debug();
-    if (!debug) {
-        printf("Debug not available\n");
-        return 0;
-    }
-
-    // Set temporary breakpoint
-    set_temporary_breakpoint(debug, addr, space);
-
-    // Delegate to run command (with optional cycle limit)
-    if (argc >= 3) {
-        char *run_argv[2] = {"run", argv[2]};
-        // Find and call the run command
-        shell_dispatch("run");
-    } else {
-        shell_dispatch("run");
-    }
-    return 0;
-}
-
-// ============================================================================
-// step-over / so command (IMP-501)
-// ============================================================================
-
-static uint64_t cmd_step_over(int argc, char *argv[]) {
-    (void)argc;
-    (void)argv;
-
-    cpu_t *cpu = system_cpu();
-    if (!cpu) {
-        printf("CPU not available\n");
-        return 0;
-    }
-
-    // Disassemble current instruction to get its length
-    uint32_t pc = cpu_get_pc(cpu);
-    char buf[100];
-    int instr_words = debugger_disasm(buf, pc);
-
-    // Read the opcode to check if it's a subroutine call (JSR/BSR)
-    uint16_t opcode = memory_read_uint16(pc);
-    int is_call = 0;
-
-    // BSR (0110 0001 xxxx xxxx = $61xx)
-    if ((opcode & 0xFF00) == 0x6100)
-        is_call = 1;
-    // JSR (0100 1110 10xx xxxx = $4E80-$4EBF)
-    if ((opcode & 0xFFC0) == 0x4E80)
-        is_call = 1;
-
-    if (is_call) {
-        // Set temporary breakpoint at return address and run
-        uint32_t return_addr = pc + 2 * instr_words;
-        debug_t *debug = system_debug();
-        if (debug) {
-            set_temporary_breakpoint(debug, return_addr, ADDR_LOGICAL);
-            scheduler_t *sched = system_scheduler();
-            if (sched)
-                scheduler_start(sched);
-        }
-    } else {
-        // Not a call — just single-step
-        scheduler_t *sched = system_scheduler();
-        if (sched)
-            scheduler_run_instructions(sched, 1);
-    }
-    return 0;
-}
-
-// ============================================================================
-// finish / fin command (IMP-502)
-// ============================================================================
-
-static uint64_t cmd_finish(int argc, char *argv[]) {
-    (void)argc;
-    (void)argv;
-
-    cpu_t *cpu = system_cpu();
-    if (!cpu) {
-        printf("CPU not available\n");
-        return 0;
-    }
-
-    // Read return address from (SP)
-    uint32_t sp = cpu_get_an(cpu, 7);
-    uint32_t return_addr = memory_read_uint32(sp);
-
-    debug_t *debug = system_debug();
-    if (!debug) {
-        printf("Debug not available\n");
-        return 0;
-    }
-
-    printf("Running until return to $%08X\n", return_addr);
-    set_temporary_breakpoint(debug, return_addr, ADDR_LOGICAL);
-    scheduler_t *sched = system_scheduler();
-    if (sched)
-        scheduler_start(sched);
-    return 0;
-}
-
 // ============================================================================
 // Logpoint management (IMP-604)
 // ============================================================================
@@ -2603,50 +1920,6 @@ static void delete_all_logpoints(debug_t *debug) {
         lp = next;
     }
     debug->logpoints = NULL;
-}
-
-// ============================================================================
-// Named Mac globals (IMP-701)
-// ============================================================================
-
-// get-global <name> — look up and display a Mac low-memory global
-static uint64_t cmd_get_global(int argc, char *argv[]) {
-    if (argc < 2) {
-        printf("Usage: get-global <name>  — read a Mac low-memory global by name\n");
-        return 0;
-    }
-    uint32_t addr = debug_mac_lookup_global_address(argv[1]);
-    if (addr == 0) {
-        printf("Unknown global: %s\n", argv[1]);
-        return 0;
-    }
-    // Read as long by default
-    uint32_t val = memory_read_uint32(addr);
-    printf("%s ($%06X) = $%08X\n", argv[1], addr, val);
-    return val;
-}
-
-// x-global <name> [nbytes] — examine memory at a Mac global's address
-static uint64_t cmd_x_global(int argc, char *argv[]) {
-    if (argc < 2) {
-        printf("Usage: x-global <name> [nbytes]  — examine memory at a Mac global's address\n");
-        return 0;
-    }
-    uint32_t addr = debug_mac_lookup_global_address(argv[1]);
-    if (addr == 0) {
-        printf("Unknown global: %s\n", argv[1]);
-        return 0;
-    }
-    // Build x command args
-    char addr_str[20];
-    snprintf(addr_str, sizeof(addr_str), "$%X", addr);
-    if (argc >= 3) {
-        char *x_argv[3] = {"x", addr_str, argv[2]};
-        return cmd_examine(3, x_argv);
-    } else {
-        char *x_argv[2] = {"x", addr_str};
-        return cmd_examine(2, x_argv);
-    }
 }
 
 // ============================================================================
@@ -2827,6 +2100,650 @@ static uint64_t cmd_mac_state(int argc, char *argv[]) {
 // Lifecycle: Constructor
 // ============================================================================
 
+// ============================================================================
+// Command Handlers
+// ============================================================================
+
+// --- print (replaces get, get-global, reg read) ---
+static void cmd_print_handler(struct cmd_context *ctx, struct cmd_result *res) {
+    // If no arg provided, delegate to raw_argv for backward compat
+    if (!ctx->args[0].present) {
+        cmd_err(res, "usage: print <register|global|address.size>");
+        return;
+    }
+
+    struct resolved_symbol *sym = &ctx->args[0].as_sym;
+
+    if (sym->kind == SYM_REGISTER) {
+        // Special handling for FP data registers
+        cpu_t *cpu = system_cpu();
+        if (cpu && cpu->fpu && sym->size == 10) {
+            fpu_state_t *fpu = (fpu_state_t *)cpu->fpu;
+            // Extract register number from name
+            int reg = -1;
+            if (sym->name[0] == 'F' && sym->name[1] == 'P' && sym->name[2] >= '0' && sym->name[2] <= '7')
+                reg = sym->name[2] - '0';
+            if (reg >= 0) {
+                float80_reg_t fp = fpu->fp[reg];
+                cmd_printf(ctx, "%s = $%04X.%016llX\n", sym->name, fp.exponent, (unsigned long long)fp.mantissa);
+                cmd_ok(res);
+                return;
+            }
+        }
+        // Special handling for SR (show decoded flags)
+        if (strcmp(sym->name, "SR") == 0) {
+            uint16_t sr = (uint16_t)sym->value;
+            int s_bit = (sr >> 13) & 1;
+            int im = (sr >> 8) & 7;
+            int t_bit = (sr >> 15) & 1;
+            int x = (sr & 0x0010) ? 1 : 0, n = (sr & 0x0008) ? 1 : 0;
+            int z = (sr & 0x0004) ? 1 : 0, v = (sr & 0x0002) ? 1 : 0;
+            int cc = (sr & 0x0001) ? 1 : 0;
+            cmd_printf(ctx, "SR = $%04X  (S=%d, IM=%d, T=%d, XNZVC=%d%d%d%d%d)\n", sr, s_bit, im, t_bit, x, n, z, v,
+                       cc);
+            cmd_int(res, sym->value);
+            return;
+        }
+        // CRP/SRP (64-bit MMU registers)
+        if (strcmp(sym->name, "CRP") == 0 && g_mmu) {
+            cmd_printf(ctx, "CRP = $%08X_%08X\n", (uint32_t)(g_mmu->crp >> 32), (uint32_t)(g_mmu->crp & 0xFFFFFFFF));
+            cmd_ok(res);
+            return;
+        }
+        if (strcmp(sym->name, "SRP") == 0 && g_mmu) {
+            cmd_printf(ctx, "SRP = $%08X_%08X\n", (uint32_t)(g_mmu->srp >> 32), (uint32_t)(g_mmu->srp & 0xFFFFFFFF));
+            cmd_ok(res);
+            return;
+        }
+
+        cmd_printf(ctx, "%s = $%0*X\n", sym->name, sym->size * 2, sym->value);
+        cmd_int(res, sym->value);
+        return;
+    }
+
+    if (sym->kind == SYM_MAC_GLOBAL) {
+        cmd_printf(ctx, "%s ($%06X) = $%0*X\n", sym->name, sym->address, sym->size * 2, sym->value);
+        cmd_int(res, sym->value);
+        return;
+    }
+
+    // Special targets that aren't symbols
+    const char *target_name = ctx->raw_argc >= 2 ? ctx->raw_argv[1] : NULL;
+    if (target_name && (strcasecmp(target_name, "instr") == 0 || strcasecmp(target_name, "$instr") == 0)) {
+        uint64_t count = cpu_instr_count();
+        cmd_printf(ctx, "Instruction count = %llu\n", (unsigned long long)count);
+        cmd_int(res, (int64_t)count);
+        return;
+    }
+
+    // SYM_UNKNOWN: try as address.size (already resolved by parser)
+    if (sym->address != 0 || sym->size != 0) {
+        cmd_printf(ctx, "[$%08X].%c = $%0*X\n", sym->address, sym->size == 1 ? 'b' : (sym->size == 2 ? 'w' : 'l'),
+                   sym->size * 2, sym->value);
+        cmd_int(res, sym->value);
+        return;
+    }
+
+    cmd_err(res, "unknown target: %s", ctx->raw_argv[1]);
+}
+
+// --- examine ---
+static void cmd_examine_handler(struct cmd_context *ctx, struct cmd_result *res) {
+    uint32_t addr;
+    if (ctx->args[0].present) {
+        addr = ctx->args[0].as_addr;
+    } else {
+        cmd_err(res, "usage: examine <address> [count]");
+        return;
+    }
+
+    uint32_t nbytes = 64;
+    if (ctx->args[1].present)
+        nbytes = (uint32_t)ctx->args[1].as_int;
+    if (nbytes == 0) {
+        cmd_err(res, "byte count must be > 0");
+        return;
+    }
+    if (nbytes > 512)
+        nbytes = 512;
+
+    for (uint32_t i = 0; i < nbytes; i += 16) {
+        cmd_printf(ctx, "$%08X  ", addr + i);
+        for (uint32_t j = 0; j < 16; j++) {
+            if (i + j < nbytes)
+                cmd_printf(ctx, "%02x ", memory_read_uint8(addr + i + j));
+            else
+                cmd_printf(ctx, "   ");
+        }
+        cmd_printf(ctx, " ");
+        for (uint32_t j = 0; j < 16; j++) {
+            if (i + j < nbytes) {
+                uint8_t byte = memory_read_uint8(addr + i + j);
+                cmd_printf(ctx, "%c", (byte >= 0x20 && byte <= 0x7e) ? byte : '.');
+            }
+        }
+        cmd_printf(ctx, "\n");
+    }
+    cmd_ok(res);
+}
+
+// --- disasm ---
+static void cmd_disasm_handler(struct cmd_context *ctx, struct cmd_result *res) {
+    cpu_t *cpu = system_cpu();
+    if (!cpu) {
+        cmd_err(res, "CPU not available");
+        return;
+    }
+
+    uint32_t addr = ctx->args[0].present ? ctx->args[0].as_addr : cpu_get_pc(cpu);
+    int count = ctx->args[1].present ? (int)ctx->args[1].as_int : 16;
+    if (count <= 0)
+        count = 16;
+
+    for (int i = 0; i < count; i++) {
+        char buf[100];
+        int instr_len = debugger_disasm(buf, addr);
+        cmd_printf(ctx, "%s\n", buf);
+        addr += 2 * instr_len;
+    }
+    cmd_ok(res);
+}
+
+// --- continue (replaces run) ---
+static void cmd_continue_handler(struct cmd_context *ctx, struct cmd_result *res) {
+    scheduler_t *sched = system_scheduler();
+    if (!sched) {
+        cmd_err(res, "scheduler not available");
+        return;
+    }
+
+    if (ctx->args[0].present) {
+        // Counted execution: run exactly N instructions synchronously
+        int64_t n = ctx->args[0].as_int;
+        if (n <= 0) {
+            cmd_err(res, "invalid instruction count");
+            return;
+        }
+        scheduler_run_instructions(sched, (uint64_t)n);
+    } else {
+        // Unlimited execution: start async and return
+        scheduler_start(sched);
+    }
+    cmd_ok(res);
+}
+
+// --- step ---
+static void cmd_step_handler(struct cmd_context *ctx, struct cmd_result *res) {
+    scheduler_t *sched = system_scheduler();
+    if (!sched) {
+        cmd_err(res, "scheduler not available");
+        return;
+    }
+
+    int n = ctx->args[0].present ? (int)ctx->args[0].as_int : 1;
+    if (n <= 0) {
+        cmd_err(res, "invalid instruction count");
+        return;
+    }
+
+    scheduler_run_instructions(sched, n);
+    scheduler_stop(sched);
+    cmd_ok(res);
+}
+
+// --- next (replaces so/step-over) ---
+static void cmd_next_handler(struct cmd_context *ctx, struct cmd_result *res) {
+    (void)ctx;
+    cpu_t *cpu = system_cpu();
+    if (!cpu) {
+        cmd_err(res, "CPU not available");
+        return;
+    }
+
+    uint32_t pc = cpu_get_pc(cpu);
+    char buf[100];
+    int instr_words = debugger_disasm(buf, pc);
+
+    uint16_t opcode = memory_read_uint16(pc);
+    int is_call = 0;
+    if ((opcode & 0xFF00) == 0x6100)
+        is_call = 1; // BSR
+    if ((opcode & 0xFFC0) == 0x4E80)
+        is_call = 1; // JSR
+
+    if (is_call) {
+        uint32_t return_addr = pc + 2 * instr_words;
+        debug_t *debug = system_debug();
+        if (debug) {
+            set_temporary_breakpoint(debug, return_addr, ADDR_LOGICAL);
+            scheduler_t *sched = system_scheduler();
+            if (sched)
+                scheduler_start(sched);
+        }
+    } else {
+        scheduler_t *sched = system_scheduler();
+        if (sched)
+            scheduler_run_instructions(sched, 1);
+    }
+    cmd_ok(res);
+}
+
+// --- finish ---
+static void cmd_finish_handler(struct cmd_context *ctx, struct cmd_result *res) {
+    (void)ctx;
+    cpu_t *cpu = system_cpu();
+    if (!cpu) {
+        cmd_err(res, "CPU not available");
+        return;
+    }
+
+    uint32_t sp = cpu_get_an(cpu, 7);
+    uint32_t return_addr = memory_read_uint32(sp);
+
+    debug_t *debug = system_debug();
+    if (!debug) {
+        cmd_err(res, "debug not available");
+        return;
+    }
+
+    cmd_printf(ctx, "Running until return to $%08X\n", return_addr);
+    set_temporary_breakpoint(debug, return_addr, ADDR_LOGICAL);
+    scheduler_t *sched = system_scheduler();
+    if (sched)
+        scheduler_start(sched);
+    cmd_ok(res);
+}
+
+// --- until (replaces run-to) ---
+static void cmd_until_handler(struct cmd_context *ctx, struct cmd_result *res) {
+    if (!ctx->args[0].present) {
+        cmd_err(res, "usage: until <address>");
+        return;
+    }
+    uint32_t addr = ctx->args[0].as_addr;
+
+    debug_t *debug = system_debug();
+    if (!debug) {
+        cmd_err(res, "debug not available");
+        return;
+    }
+
+    set_temporary_breakpoint(debug, addr, ADDR_LOGICAL);
+    scheduler_t *sched = system_scheduler();
+    if (sched)
+        scheduler_start(sched);
+    cmd_ok(res);
+}
+
+// --- stop ---
+static void cmd_stop_handler(struct cmd_context *ctx, struct cmd_result *res) {
+    (void)ctx;
+    scheduler_t *sched = system_scheduler();
+    if (!sched) {
+        cmd_err(res, "scheduler not available");
+        return;
+    }
+    scheduler_stop(sched);
+    cmd_ok(res);
+}
+
+// --- break (replaces br) ---
+static void cmd_break_handler(struct cmd_context *ctx, struct cmd_result *res) {
+    debug_t *debug = system_debug();
+    if (!debug) {
+        cmd_err(res, "debug not available");
+        return;
+    }
+
+    const char *subcmd = ctx->subcmd;
+
+    // Default or "set": set breakpoint at address
+    if (subcmd == NULL || strcmp(subcmd, "set") == 0) {
+        if (!ctx->args[0].present) {
+            cmd_err(res, "usage: break <address>");
+            return;
+        }
+        uint32_t addr = ctx->args[0].as_addr;
+        set_breakpoint(debug, addr, ADDR_LOGICAL);
+        cmd_printf(ctx, "Breakpoint set at $%08X.\n", addr);
+        cmd_ok(res);
+        return;
+    }
+
+    if (strcmp(subcmd, "del") == 0) {
+        if (ctx->args[0].present) {
+            // Check if the token is "all"
+            if (ctx->raw_argc >= 3 && strcasecmp(ctx->raw_argv[2], "all") == 0) {
+                int count = delete_all_breakpoints(debug);
+                cmd_printf(ctx, "Deleted %d breakpoint(s).\n", count);
+            } else {
+                uint32_t addr = ctx->args[0].as_addr;
+                if (delete_breakpoint(debug, addr, ADDR_LOGICAL))
+                    cmd_printf(ctx, "Deleted breakpoint at $%08X.\n", addr);
+                else
+                    cmd_printf(ctx, "No breakpoint found at $%08X.\n", addr);
+            }
+        } else {
+            cmd_err(res, "usage: break del <address|all>");
+            return;
+        }
+        cmd_ok(res);
+        return;
+    }
+
+    if (strcmp(subcmd, "list") == 0) {
+        list_breakpoints(debug);
+        cmd_ok(res);
+        return;
+    }
+
+    if (strcmp(subcmd, "clear") == 0) {
+        int count = delete_all_breakpoints(debug);
+        cmd_printf(ctx, "Deleted %d breakpoint(s).\n", count);
+        cmd_ok(res);
+        return;
+    }
+
+    cmd_err(res, "unknown subcommand: %s", subcmd);
+}
+
+// --- tbreak ---
+static void cmd_tbreak_handler(struct cmd_context *ctx, struct cmd_result *res) {
+    if (!ctx->args[0].present) {
+        cmd_err(res, "usage: tbreak <address>");
+        return;
+    }
+    uint32_t addr = ctx->args[0].as_addr;
+    debug_t *debug = system_debug();
+    if (!debug) {
+        cmd_err(res, "debug not available");
+        return;
+    }
+    set_temporary_breakpoint(debug, addr, ADDR_LOGICAL);
+    cmd_printf(ctx, "Temporary breakpoint at $%08X\n", addr);
+    cmd_ok(res);
+}
+
+// --- logpoint ---
+static void cmd_logpoint_handler(struct cmd_context *ctx, struct cmd_result *res) {
+    // Handle bare invocation (no args) as list
+    if (ctx->raw_argc <= 1 || (ctx->subcmd && strcmp(ctx->subcmd, "list") == 0)) {
+        debug_t *debug = system_debug();
+        if (debug)
+            list_logpoints(debug);
+        cmd_ok(res);
+        return;
+    }
+    if (ctx->subcmd && strcmp(ctx->subcmd, "clear") == 0) {
+        debug_t *debug = system_debug();
+        if (debug) {
+            delete_all_logpoints(debug);
+            cmd_printf(ctx, "All logpoints deleted\n");
+        }
+        cmd_ok(res);
+        return;
+    }
+    // Delegate to existing implementation for set/del (complex logpoint parsing)
+    uint64_t r = cmd_logpoint(ctx->raw_argc, ctx->raw_argv);
+    cmd_int(res, (int64_t)r);
+}
+
+// --- info (subcommand hub) ---
+static void cmd_info_handler(struct cmd_context *ctx, struct cmd_result *res) {
+    const char *subcmd = ctx->subcmd;
+    if (!subcmd) {
+        cmd_err(res, "usage: info <regs|fpregs|mmu|break|logpoint|mac|process|events|schedule>");
+        return;
+    }
+
+    if (strcmp(subcmd, "regs") == 0) {
+        // Delegate to existing td implementation
+        cmd_td(0, NULL);
+        cmd_ok(res);
+        return;
+    }
+
+    if (strcmp(subcmd, "fpregs") == 0) {
+        cmd_fpregs(0, NULL);
+        cmd_ok(res);
+        return;
+    }
+
+    if (strcmp(subcmd, "mmu") == 0) {
+        if (g_mmu) {
+            cmd_printf(ctx, "MMU enabled=%d\n", g_mmu->enabled);
+            cmd_printf(ctx, "TC  = $%08X\n", g_mmu->tc);
+            cmd_printf(ctx, "CRP = $%08X_%08X\n", (uint32_t)(g_mmu->crp >> 32), (uint32_t)(g_mmu->crp & 0xFFFFFFFF));
+            cmd_printf(ctx, "SRP = $%08X_%08X\n", (uint32_t)(g_mmu->srp >> 32), (uint32_t)(g_mmu->srp & 0xFFFFFFFF));
+            cmd_printf(ctx, "TT0 = $%08X\n", g_mmu->tt0);
+            cmd_printf(ctx, "TT1 = $%08X\n", g_mmu->tt1);
+        } else {
+            cmd_printf(ctx, "MMU not present\n");
+        }
+        cmd_ok(res);
+        return;
+    }
+
+    if (strcmp(subcmd, "break") == 0) {
+        debug_t *debug = system_debug();
+        if (debug)
+            list_breakpoints(debug);
+        cmd_ok(res);
+        return;
+    }
+
+    if (strcmp(subcmd, "logpoint") == 0) {
+        debug_t *debug = system_debug();
+        if (debug)
+            list_logpoints(debug);
+        cmd_ok(res);
+        return;
+    }
+
+    if (strcmp(subcmd, "mac") == 0) {
+        cmd_mac_state(0, NULL);
+        cmd_ok(res);
+        return;
+    }
+
+    if (strcmp(subcmd, "process") == 0) {
+        extern uint64_t cmd_process_info(int argc, char *argv[]);
+        cmd_process_info(0, NULL);
+        cmd_ok(res);
+        return;
+    }
+
+    if (strcmp(subcmd, "events") == 0) {
+        // Dispatch the existing events command
+        shell_dispatch("events");
+        cmd_ok(res);
+        return;
+    }
+
+    if (strcmp(subcmd, "schedule") == 0) {
+        shell_dispatch("schedule");
+        cmd_ok(res);
+        return;
+    }
+
+    cmd_err(res, "unknown info subcommand: %s", subcmd);
+}
+
+// ============================================================================
+// Command Registration Tables
+// ============================================================================
+
+// --- print ---
+static const char *print_aliases[] = {"p", NULL};
+static const struct arg_spec print_args[] = {
+    {"target", ARG_SYMBOL, "register, Mac global, or address.size"},
+};
+
+// --- set ---
+static const struct arg_spec set_cmd_args[] = {
+    {"target", ARG_STRING, "register, flag, or address.size"},
+    {"value",  ARG_STRING, "value to set"                   },
+};
+
+// --- examine ---
+static const char *examine_aliases[] = {"x", NULL};
+static const struct arg_spec examine_args[] = {
+    {"address", ARG_ADDR,               "start address"                         },
+    {"count",   ARG_INT | ARG_OPTIONAL, "bytes to display (default 64, max 512)"},
+};
+
+// --- disasm ---
+static const char *disasm_aliases[] = {"dis", "d", NULL};
+static const struct arg_spec disasm_args[] = {
+    {"address", ARG_ADDR | ARG_OPTIONAL, "start address (default: $pc)"       },
+    {"count",   ARG_INT | ARG_OPTIONAL,  "number of instructions (default 16)"},
+};
+
+// --- continue ---
+// Note: "run" is kept as a separate simple command in scheduler.c.
+// "run" to the scheduler's cmd_run.
+static const char *continue_aliases[] = {"c", NULL};
+static const struct arg_spec continue_args[] = {
+    {"count", ARG_INT | ARG_OPTIONAL, "max instructions to execute"},
+};
+
+// --- step ---
+static const char *step_aliases[] = {"s", "si", NULL};
+static const struct arg_spec step_args[] = {
+    {"count", ARG_INT | ARG_OPTIONAL, "number of instructions (default 1)"},
+};
+
+// --- next ---
+static const char *next_aliases[] = {"n", "ni", NULL};
+
+// --- finish ---
+static const char *finish_aliases[] = {"fin", NULL};
+
+// --- until ---
+static const char *until_aliases[] = {"u", NULL};
+static const struct arg_spec until_args[] = {
+    {"address", ARG_ADDR, "target address"},
+};
+
+// --- stop ---
+static const char *stop_aliases[] = {"halt", NULL};
+
+// --- advance ---
+static const struct arg_spec advance_args[] = {
+    {"address", ARG_STRING, "address.size"                              },
+    {"op",      ARG_STRING, "comparison operator (==, !=, <, >, <=, >=)"},
+    {"value",   ARG_STRING, "expected value"                            },
+};
+
+// --- break ---
+static const char *break_aliases[] = {"b", "br", NULL};
+static const struct arg_spec break_set_args[] = {
+    {"address", ARG_ADDR, "breakpoint address"},
+};
+static const struct arg_spec break_del_args[] = {
+    {"address", ARG_ADDR | ARG_OPTIONAL, "address (or 'all')"},
+};
+static const struct subcmd_spec break_subcmds[] = {
+    {NULL,    NULL, break_set_args, 1, "set breakpoint at address"},
+    {"set",   NULL, break_set_args, 1, "set breakpoint at address"},
+    {"list",  NULL, NULL,           0, "list all breakpoints"     },
+    {"del",   NULL, break_del_args, 1, "delete breakpoint(s)"     },
+    {"clear", NULL, NULL,           0, "delete all breakpoints"   },
+};
+
+// --- tbreak ---
+static const char *tbreak_aliases[] = {"tb", NULL};
+static const struct arg_spec tbreak_args[] = {
+    {"address", ARG_ADDR, "breakpoint address"},
+};
+
+// --- watch (alias for advance) ---
+static const char *watch_aliases[] = {"w", NULL};
+
+// --- logpoint ---
+static const char *logpoint_aliases[] = {"lp", NULL};
+static const struct arg_spec lp_set_args[] = {
+    {"address", ARG_STRING,              "address or range"},
+    {"message", ARG_REST | ARG_OPTIONAL, "log message"     },
+};
+static const struct arg_spec lp_del_args[] = {
+    {"address", ARG_STRING, "address or 'all'"},
+};
+static const struct subcmd_spec logpoint_subcmds[] = {
+    {NULL,    NULL, lp_set_args, 2, "set logpoint"        },
+    {"set",   NULL, lp_set_args, 2, "set logpoint"        },
+    {"del",   NULL, lp_del_args, 1, "delete logpoint(s)"  },
+    {"list",  NULL, NULL,        0, "list all logpoints"  },
+    {"clear", NULL, NULL,        0, "delete all logpoints"},
+};
+
+// --- info ---
+static const char *info_aliases[] = {"i", NULL};
+static const char *info_regs_aliases[] = {"r", NULL};
+static const char *info_fpregs_aliases[] = {"fp", NULL};
+static const char *info_break_aliases[] = {"b", NULL};
+static const char *info_logpoint_aliases[] = {"lp", NULL};
+static const char *info_process_aliases[] = {"proc", NULL};
+static const struct subcmd_spec info_subcmds[] = {
+    {"regs",     info_regs_aliases,     NULL, 0, "CPU register dump"       },
+    {"fpregs",   info_fpregs_aliases,   NULL, 0, "FPU register dump"       },
+    {"mmu",      NULL,                  NULL, 0, "MMU register dump"       },
+    {"break",    info_break_aliases,    NULL, 0, "list all breakpoints"    },
+    {"logpoint", info_logpoint_aliases, NULL, 0, "list all logpoints"      },
+    {"mac",      NULL,                  NULL, 0, "Mac OS state summary"    },
+    {"process",  info_process_aliases,  NULL, 0, "current application info"},
+    {"events",   NULL,                  NULL, 0, "scheduler event queue"   },
+    {"schedule", NULL,                  NULL, 0, "scheduler mode and CPI"  },
+};
+
+// --- translate ---
+static const struct arg_spec translate_args[] = {
+    {"address", ARG_ADDR, "logical address to translate"},
+};
+
+// --- addrmode ---
+static const char *addrmode_values[] = {"auto", "expanded", "collapsed", NULL};
+static const struct arg_spec addrmode_args[] = {
+    {"mode", ARG_ENUM | ARG_OPTIONAL, "display mode", addrmode_values},
+};
+
+// --- prompt ---
+static const char *prompt_values[] = {"on", "off", NULL};
+static const struct arg_spec prompt_args[] = {
+    {"state", ARG_ENUM | ARG_OPTIONAL, "on or off", prompt_values},
+};
+
+// --- screenshot ---
+static const struct arg_spec screenshot_save_args[] = {
+    {"filename", ARG_PATH, "output PNG filename"},
+};
+static const struct arg_spec screenshot_checksum_args[] = {
+    {"top",    ARG_INT | ARG_OPTIONAL, "region top"   },
+    {"left",   ARG_INT | ARG_OPTIONAL, "region left"  },
+    {"bottom", ARG_INT | ARG_OPTIONAL, "region bottom"},
+    {"right",  ARG_INT | ARG_OPTIONAL, "region right" },
+};
+static const struct arg_spec screenshot_match_args[] = {
+    {"reference", ARG_PATH, "reference PNG file"},
+};
+static const struct subcmd_spec screenshot_subcmds[] = {
+    {NULL,       NULL, screenshot_save_args,     1, "save screen as PNG"        },
+    {"save",     NULL, screenshot_save_args,     1, "save screen as PNG"        },
+    {"checksum", NULL, screenshot_checksum_args, 4, "compute screen checksum"   },
+    {"match",    NULL, screenshot_match_args,    1, "compare with reference PNG"},
+};
+
+// --- trace ---
+static const char *trace_action_values[] = {"start", "stop", NULL};
+static const struct arg_spec trace_start_args[] = {
+    {"action", ARG_STRING,              "start, stop, or show"    },
+    {"file",   ARG_PATH | ARG_OPTIONAL, "output filename for show"},
+};
+
+// ============================================================================
+// Lifecycle: Constructor
+// ============================================================================
+
 debug_t *debug_init(void) {
     debug_t *debug = (debug_t *)malloc(sizeof(debug_t));
     if (!debug) {
@@ -2835,44 +2752,193 @@ debug_t *debug_init(void) {
     // Zero-initialize all fields to match behavior when struct was embedded
     memset(debug, 0, sizeof(debug_t));
 
-    // Register commands
-    register_cmd("s", "Debugger", "s [n]  — step through the next, or through a specified number of instructions",
-                 &cmd_step);
-    register_cmd("br", "Debugger", "br [address|del <address|all>|clear]  — manage breakpoints", &cmd_breakpoint);
-    register_cmd("logpoint", "Debugger", "logpoint [address|range|del <addr|all>]  — manage logpoints", &cmd_logpoint);
-    register_cmd("td", "Debugger", "td  — display CPU registers (D0-D7, A0-A7, PC, SR, USP, SSP)", &cmd_td);
-    register_cmd("trace", "Debugger", "trace <start|stop|show [filename]>  — control instruction tracing", &cmd_trace);
-    register_cmd("disasm", "Debugger", "disasm [address] [n]  — disassemble n instructions (default: from PC)",
-                 &cmd_disasm);
-    register_cmd("set", "Debugger", "set <register|address> <value>  — set register, condition code, or memory value",
-                 &cmd_set);
-    register_cmd("get", "Debugger", "get <register|address>  — get register, condition code, or memory value",
-                 &cmd_get);
-    register_cmd("x", "Debugger", "x <address> [n]  — examine raw memory in hex and ASCII format", &cmd_examine);
-    register_cmd("addrmode", "Debugger", "addrmode [auto|expanded|collapsed]  — set address display mode",
-                 &cmd_addrmode);
-    register_cmd("translate", "Debugger", "translate <address>  — show MMU translation for a logical address",
-                 &cmd_translate);
-    register_cmd("screenshot", "Debugger", "screenshot <filename.png>  — save the emulated screen as a PNG file",
-                 &cmd_screenshot);
+    // Command registrations
 
-    // New commands
-    register_cmd("reg", "Debugger", "reg <register> [value]  — get or set a register", &cmd_reg);
-    register_cmd("fpregs", "Debugger", "fpregs  — display FPU registers (FP0-FP7, FPCR, FPSR, FPIAR)", &cmd_fpregs);
-    register_cmd("prompt", "Debugger", "prompt [on|off]  — toggle trailing PC disassembly line", &cmd_prompt);
-    register_cmd("tbreak", "Debugger", "tbreak <address>  — set a temporary breakpoint (auto-deleted on hit)",
-                 &cmd_tbreak);
-    register_cmd("run-to", "Debugger", "run-to <address>  — run until address is reached (temporary breakpoint)",
-                 &cmd_run_to);
-    register_cmd("so", "Debugger", "so  — step over (step past JSR/BSR without entering)", &cmd_step_over);
-    register_cmd("fin", "Debugger", "fin  — run until current subroutine returns", &cmd_finish);
-    register_cmd("run-until", "Debugger", "run-until <addr>.b|.w|.l <op> <value>  — run until memory condition met",
-                 &cmd_run_until);
-    register_cmd("get-global", "Debugger", "get-global <name>  — read a Mac low-memory global by name",
-                 &cmd_get_global);
-    register_cmd("x-global", "Debugger", "x-global <name> [nbytes]  — examine memory at a Mac global", &cmd_x_global);
-    register_cmd("mac-state", "Debugger", "mac-state  — show Mac OS state summary (mouse, cursor, ticks)",
-                 &cmd_mac_state);
+    // Execution control
+    register_command(&(struct cmd_reg){
+        .name = "continue",
+        .aliases = continue_aliases,
+        .category = "Execution",
+        .synopsis = "Resume execution",
+        .fn = cmd_continue_handler,
+        .args = continue_args,
+        .nargs = 1,
+    });
+    register_command(&(struct cmd_reg){
+        .name = "step",
+        .aliases = step_aliases,
+        .category = "Execution",
+        .synopsis = "Step one (or N) instructions",
+        .fn = cmd_step_handler,
+        .args = step_args,
+        .nargs = 1,
+    });
+    register_command(&(struct cmd_reg){
+        .name = "next",
+        .aliases = next_aliases,
+        .category = "Execution",
+        .synopsis = "Step over subroutine call",
+        .fn = cmd_next_handler,
+    });
+    register_command(&(struct cmd_reg){
+        .name = "finish",
+        .aliases = finish_aliases,
+        .category = "Execution",
+        .synopsis = "Run until current subroutine returns",
+        .fn = cmd_finish_handler,
+    });
+    register_command(&(struct cmd_reg){
+        .name = "until",
+        .aliases = until_aliases,
+        .category = "Execution",
+        .synopsis = "Run until address is reached",
+        .fn = cmd_until_handler,
+        .args = until_args,
+        .nargs = 1,
+    });
+    register_command(&(struct cmd_reg){
+        .name = "stop",
+        .aliases = stop_aliases,
+        .category = "Execution",
+        .synopsis = "Stop execution immediately",
+        .fn = cmd_stop_handler,
+    });
+    register_command(&(struct cmd_reg){
+        .name = "advance",
+        .category = "Execution",
+        .synopsis = "Run until memory condition is met",
+        .simple_fn = cmd_run_until,
+        .args = advance_args,
+        .nargs = 3,
+    });
+
+    // Breakpoints and watchpoints
+    register_command(&(struct cmd_reg){
+        .name = "break",
+        .aliases = break_aliases,
+        .category = "Breakpoints",
+        .synopsis = "Manage breakpoints (set/del/list/clear)",
+        .fn = cmd_break_handler,
+        .subcmds = break_subcmds,
+        .n_subcmds = 5,
+    });
+    register_command(&(struct cmd_reg){
+        .name = "tbreak",
+        .aliases = tbreak_aliases,
+        .category = "Breakpoints",
+        .synopsis = "Set temporary breakpoint (auto-deletes on hit)",
+        .fn = cmd_tbreak_handler,
+        .args = tbreak_args,
+        .nargs = 1,
+    });
+    register_command(&(struct cmd_reg){
+        .name = "watch",
+        .aliases = watch_aliases,
+        .category = "Breakpoints",
+        .synopsis = "Set memory watchpoint",
+        .simple_fn = cmd_run_until,
+        .args = advance_args,
+        .nargs = 3,
+    });
+    register_command(&(struct cmd_reg){
+        .name = "logpoint",
+        .aliases = logpoint_aliases,
+        .category = "Breakpoints",
+        .synopsis = "Manage logpoints (set/del/list/clear)",
+        .fn = cmd_logpoint_handler,
+        .subcmds = logpoint_subcmds,
+        .n_subcmds = 5,
+    });
+
+    // Inspection
+    register_command(&(struct cmd_reg){
+        .name = "print",
+        .aliases = print_aliases,
+        .category = "Inspection",
+        .synopsis = "Print a register, global, or memory value",
+        .fn = cmd_print_handler,
+        .args = print_args,
+        .nargs = 1,
+    });
+    register_command(&(struct cmd_reg){
+        .name = "examine",
+        .aliases = examine_aliases,
+        .category = "Inspection",
+        .synopsis = "Examine raw memory (hex + ASCII)",
+        .fn = cmd_examine_handler,
+        .args = examine_args,
+        .nargs = 2,
+    });
+    register_command(&(struct cmd_reg){
+        .name = "disasm",
+        .aliases = disasm_aliases,
+        .category = "Inspection",
+        .synopsis = "Disassemble instructions",
+        .fn = cmd_disasm_handler,
+        .args = disasm_args,
+        .nargs = 2,
+    });
+    register_command(&(struct cmd_reg){
+        .name = "set",
+        .category = "Inspection",
+        .synopsis = "Set register, flag, or memory value",
+        .simple_fn = cmd_set,
+        .args = set_cmd_args,
+        .nargs = 2,
+    });
+    register_command(&(struct cmd_reg){
+        .name = "info",
+        .aliases = info_aliases,
+        .category = "Inspection",
+        .synopsis = "Show state (regs, fpregs, mmu, break, mac, process, events)",
+        .fn = cmd_info_handler,
+        .subcmds = info_subcmds,
+        .n_subcmds = 9,
+    });
+
+    // Tracing
+    register_command(&(struct cmd_reg){
+        .name = "trace",
+        .category = "Tracing",
+        .synopsis = "Control instruction tracing (start/stop/show)",
+        .simple_fn = cmd_trace,
+        .args = trace_start_args,
+        .nargs = 2,
+    });
+
+    // Display
+    register_command(&(struct cmd_reg){
+        .name = "translate",
+        .category = "Display",
+        .synopsis = "Show MMU address translation",
+        .simple_fn = cmd_translate,
+        .args = translate_args,
+        .nargs = 1,
+    });
+    register_command(&(struct cmd_reg){
+        .name = "addrmode",
+        .category = "Display",
+        .synopsis = "Set address display format",
+        .simple_fn = cmd_addrmode,
+        .args = addrmode_args,
+        .nargs = 1,
+    });
+    register_command(&(struct cmd_reg){
+        .name = "prompt",
+        .category = "Display",
+        .synopsis = "Toggle PC disassembly after steps",
+        .simple_fn = cmd_prompt,
+        .args = prompt_args,
+        .nargs = 1,
+    });
+    register_command(&(struct cmd_reg){
+        .name = "screenshot",
+        .category = "Display",
+        .synopsis = "Save screen snapshot or compute checksum",
+        .simple_fn = cmd_screenshot,
+        .subcmds = screenshot_subcmds,
+        .n_subcmds = 4,
+    });
 
     debug_mac_init();
     return debug;

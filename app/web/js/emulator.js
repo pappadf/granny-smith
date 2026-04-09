@@ -25,6 +25,7 @@ let cmdDonePtr = 0;
 let cmdResultPtr = 0;
 let promptBufPtr = 0;
 let isRunningPtr = 0;
+let cmdJsonBufPtr = 0; // JSON result buffer
 
 // Serialization: only one command in flight at a time
 let cmdInFlight = false;
@@ -82,9 +83,9 @@ async function executeShellCommand(cmd) {
     const result = await new Promise(resolve => {
       function check() {
         if (Module.HEAP32[cmdDonePtr >> 2]) {
-          const r = Module.HEAP32[cmdResultPtr >> 2];
+          const intResult = Module.HEAP32[cmdResultPtr >> 2];
           Module.HEAP32[cmdDonePtr >> 2] = 0;
-          resolve(r);
+          resolve(intResult);
         } else {
           setTimeout(check, 1);
         }
@@ -121,13 +122,15 @@ export async function initEmulator(canvas, wasmArgs, printFn) {
   cmdResultPtr = Module._get_cmd_result_ptr();
   promptBufPtr = Module._get_prompt_buffer();
   isRunningPtr = Module._get_is_running_ptr();
+  cmdJsonBufPtr = Module._get_cmd_json_buffer();
 
   // Expose Module on window for test shim access to FS
   window.__Module = Module;
 
-  // Expose command bridge on window for backward compat and E2E tests.
+  // Expose command bridge on window for E2E tests.
   window.runCommand = (cmd) => executeShellCommand(cmd);
-  window.queueCommand = window.runCommand; // backward-compat alias
+  window.queueCommand = window.runCommand;
+  window.runCommandJSON = (cmd) => runCommandJSON(cmd); // structured results
 
   // With PROXY_TO_PTHREAD, shell_init is called from main() on the worker.
   // No need to ccall it from JS.
@@ -175,8 +178,27 @@ export function setRunning(running) {
 // --- Command API (string-based) ---
 
 // Execute a command string via the worker-side command queue.
+// Returns the integer result.
 export function runCommand(cmd) {
   return executeShellCommand(cmd);
+}
+
+// Execute a command and return the structured JSON result.
+// Returns an object with status, type, value, output, and stderr fields.
+export async function runCommandJSON(cmd) {
+  await executeShellCommand(cmd);
+  // Read the JSON result from the shared buffer
+  if (cmdJsonBufPtr) {
+    try {
+      const jsonStr = Module.UTF8ToString(cmdJsonBufPtr);
+      if (jsonStr && jsonStr.length > 0) {
+        return JSON.parse(jsonStr);
+      }
+    } catch (e) {
+      // Fall back
+    }
+  }
+  return null;
 }
 
 // Send shell interrupt (Ctrl-C) to the emulator.
@@ -184,4 +206,33 @@ export function runCommand(cmd) {
 export async function shellInterrupt() {
   if (!Module) return;
   Module._shell_interrupt();
+}
+
+// Tab completion: call the WASM completion engine and return an array of matches.
+// Uses ccall to marshal the call to the worker thread (PROXY_TO_PTHREAD).
+// Note: With PROXY_TO_PTHREAD, ccall with async:false blocks until the worker responds.
+let completionBufPtr = 0;
+
+export function tabComplete(line, cursorPos) {
+  if (!Module || !moduleReady) return null;
+
+  // Resolve the completion buffer pointer on first use
+  if (!completionBufPtr) {
+    try { completionBufPtr = Module._get_completion_buffer(); } catch (e) { return null; }
+  }
+  if (!completionBufPtr) return null;
+
+  try {
+    // Use ccall to invoke em_tab_complete on the worker thread
+    const count = Module.ccall('em_tab_complete', 'number',
+      ['string', 'number'], [line, cursorPos]);
+
+    if (count === 0) return [];
+
+    // Read the JSON result from the completion buffer (shared heap)
+    const jsonStr = Module.UTF8ToString(completionBufPtr);
+    return JSON.parse(jsonStr);
+  } catch (e) {
+    return null;
+  }
 }

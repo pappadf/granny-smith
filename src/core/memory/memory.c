@@ -405,7 +405,7 @@ const char *memory_pending_rom_path(void) {
     return s_pending_rom_path;
 }
 
-// Pending VROM path — set via "rom --load-vrom" before machine init.
+// Pending VROM path — set via "rom load-vrom" before machine init.
 static char *s_pending_vrom_path = NULL;
 
 const char *memory_pending_vrom_path(void) {
@@ -449,7 +449,7 @@ static uint8_t *read_rom_file(const char *filename, size_t *out_size, bool quiet
     return rom_data;
 }
 
-// rom --load <path>: Load a ROM file, identify the machine, and reset CPU.
+// rom load <path>: Load a ROM file, identify the machine, and reset CPU.
 static uint64_t cmd_rom_load(const char *filename) {
     size_t file_size = 0;
     uint8_t *rom_data = read_rom_file(filename, &file_size, false);
@@ -516,7 +516,7 @@ static uint64_t cmd_rom_load(const char *filename) {
     return 0;
 }
 
-// rom --checksum <path>: Validate and print checksum, or print "0" if invalid.
+// rom checksum <path>: Validate and print checksum, or print "0" if invalid.
 static uint64_t cmd_rom_checksum(const char *filename) {
     size_t file_size = 0;
     uint8_t *rom_data = read_rom_file(filename, &file_size, true);
@@ -537,7 +537,7 @@ static uint64_t cmd_rom_checksum(const char *filename) {
     return 1;
 }
 
-// rom --probe [<path>]: Check if a ROM file or current ROM is valid.
+// rom probe [<path>]: Check if a ROM file or current ROM is valid.
 static uint64_t cmd_rom_probe(int argc, char *argv[], int filename_arg) {
     if (argc < filename_arg + 1) {
         // No filename: check if a ROM is currently loaded
@@ -556,56 +556,56 @@ static uint64_t cmd_rom_probe(int argc, char *argv[], int filename_arg) {
 }
 
 // Shell command: ROM operations.
-//   rom --load <path>       Load and identify ROM, create machine, reset CPU
-//   rom --checksum <path>   Print checksum hex if valid, "0" if not
-//   rom --probe [<path>]    Return 0 if valid ROM, 1 if not (no output)
+//   rom load <path>       Load and identify ROM, create machine, reset CPU
+//   rom checksum <path>   Print checksum hex if valid, "0" if not
+//   rom probe [<path>]    Return 0 if valid ROM, 1 if not (no output)
 uint64_t cmd_rom(int argc, char *argv[]) {
     if (argc < 2) {
-        printf("Usage: rom --load <path> | --checksum <path> | --probe [<path>]\n");
+        printf("Usage: rom load <path> | --checksum <path> | --probe [<path>]\n");
         return 0;
     }
 
     const char *action = argv[1];
 
-    if (strcmp(action, "--load") == 0) {
+    if (strcmp(action, "load") == 0) {
         if (argc < 3) {
-            printf("Usage: rom --load <path>\n");
+            printf("Usage: rom load <path>\n");
             return (uint64_t)-1;
         }
         return cmd_rom_load(argv[2]);
     }
 
-    if (strcmp(action, "--checksum") == 0) {
+    if (strcmp(action, "checksum") == 0) {
         if (argc < 3) {
-            printf("Usage: rom --checksum <path>\n");
+            printf("Usage: rom checksum <path>\n");
             return (uint64_t)-1;
         }
         return cmd_rom_checksum(argv[2]);
     }
 
-    if (strcmp(action, "--probe") == 0) {
+    if (strcmp(action, "probe") == 0) {
         return cmd_rom_probe(argc, argv, 2);
     }
 
-    printf("Usage: rom --load <path> | --checksum <path> | --probe [<path>]\n");
+    printf("Usage: rom load <path> | --checksum <path> | --probe [<path>]\n");
     return (uint64_t)-1;
 }
 
 // Shell command: Video ROM operations.
-//   vrom --load <path>      Set VROM path for next machine init (SE/30)
-//   vrom --checksum <path>  Validate VROM file size (must be 32 KB)
-//   vrom --probe [<path>]   Return 0 if valid VROM, 1 if not
+//   vrom load <path>      Set VROM path for next machine init (SE/30)
+//   vrom checksum <path>  Validate VROM file size (must be 32 KB)
+//   vrom probe [<path>]   Return 0 if valid VROM, 1 if not
 uint64_t cmd_vrom(int argc, char *argv[]) {
     if (argc < 2) {
-        printf("Usage: vrom --load <path> | --checksum <path> | --probe [<path>]\n");
+        printf("Usage: vrom load <path> | --checksum <path> | --probe [<path>]\n");
         return 0;
     }
 
     const char *action = argv[1];
 
-    if (strcmp(action, "--load") == 0) {
+    if (strcmp(action, "load") == 0) {
         if (argc < 3) {
-            printf("Usage: vrom --load <path>\n");
+            printf("Usage: vrom load <path>\n");
             return (uint64_t)-1;
         }
         free(s_pending_vrom_path);
@@ -614,14 +614,14 @@ uint64_t cmd_vrom(int argc, char *argv[]) {
         return 0;
     }
 
-    if (strcmp(action, "--checksum") == 0 || strcmp(action, "--probe") == 0) {
-        bool probe = strcmp(action, "--probe") == 0;
+    if (strcmp(action, "checksum") == 0 || strcmp(action, "probe") == 0) {
+        bool probe = strcmp(action, "probe") == 0;
         if (argc < 3) {
             if (probe) {
                 // No path: check if a VROM path is set
                 return s_pending_vrom_path ? 0 : 1;
             }
-            printf("Usage: vrom --checksum <path>\n");
+            printf("Usage: vrom checksum <path>\n");
             return (uint64_t)-1;
         }
         // Validate: must be exactly 32 KB
@@ -644,7 +644,7 @@ uint64_t cmd_vrom(int argc, char *argv[]) {
         return 1;
     }
 
-    printf("Usage: vrom --load <path> | --checksum <path> | --probe [<path>]\n");
+    printf("Usage: vrom load <path> | --checksum <path> | --probe [<path>]\n");
     return (uint64_t)-1;
 }
 

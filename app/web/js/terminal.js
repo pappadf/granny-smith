@@ -23,6 +23,7 @@ let _onInterrupt = null; // async () => { ... }
 let _isReady = () => false;
 let _isRunning = () => false;
 let _getPrompt = () => null; // returns prompt string or null
+let _tabComplete = null; // (line, cursorPos) => string[] | null
 
 // Clear the current line on the terminal
 const clearLine = () => { xterm.write('\r'); xterm.write('\x1b[2K'); };
@@ -119,6 +120,59 @@ async function submitLine() {
   }
 }
 
+// Handle Tab completion
+function handleTab() {
+  if (!_tabComplete || !inputState.active) return;
+
+  const completions = _tabComplete(inputState.buffer, inputState.cursor);
+  if (!completions || completions.length === 0) return;
+
+  // Find the word being completed (last token up to cursor)
+  const beforeCursor = inputState.buffer.slice(0, inputState.cursor);
+  const lastSpace = beforeCursor.lastIndexOf(' ');
+  const partial = beforeCursor.slice(lastSpace + 1);
+  const prefix = beforeCursor.slice(0, lastSpace + 1);
+
+  if (completions.length === 1) {
+    // Single match: complete inline
+    const completed = completions[0];
+    inputState.buffer = prefix + completed + inputState.buffer.slice(inputState.cursor);
+    inputState.cursor = prefix.length + completed.length;
+    // Add trailing space
+    if (inputState.cursor === inputState.buffer.length) {
+      inputState.buffer += ' ';
+      inputState.cursor++;
+    }
+    renderInput();
+  } else {
+    // Multiple matches: find common prefix and show options
+    let common = completions[0];
+    for (let i = 1; i < completions.length; i++) {
+      let j = 0;
+      while (j < common.length && j < completions[i].length &&
+             common[j].toLowerCase() === completions[i][j].toLowerCase()) j++;
+      common = common.slice(0, j);
+    }
+
+    if (common.length > partial.length) {
+      // Extend to common prefix
+      inputState.buffer = prefix + common + inputState.buffer.slice(inputState.cursor);
+      inputState.cursor = prefix.length + common.length;
+      renderInput();
+    } else {
+      // Show all completions
+      xterm.write('\r\n');
+      const cols = Math.floor(xterm.cols / 20) || 1;
+      for (let i = 0; i < completions.length; i++) {
+        const padded = completions[i].padEnd(19);
+        xterm.write(padded + ((i + 1) % cols === 0 ? '\r\n' : ' '));
+      }
+      if (completions.length % cols !== 0) xterm.write('\r\n');
+      renderInput();
+    }
+  }
+}
+
 // Handle Ctrl-C / interrupt
 export async function handleInterrupt() {
   if (inputState.active) {
@@ -155,12 +209,13 @@ export function fitTerminal() {
 }
 
 // Initialize the terminal in the given container element.
-export function initTerminal(containerEl, { onSubmit, onInterrupt, isReady, isRunning, getPrompt }) {
+export function initTerminal(containerEl, { onSubmit, onInterrupt, isReady, isRunning, getPrompt, tabComplete }) {
   _onSubmit = onSubmit;
   _onInterrupt = onInterrupt;
   _isReady = isReady;
   _isRunning = isRunning;
   _getPrompt = getPrompt;
+  _tabComplete = tabComplete || null;
 
   const TerminalCtor = window.Terminal;
   const FitAddonCtor = window.FitAddon?.FitAddon || window.FitAddon;
@@ -196,6 +251,11 @@ export function initTerminal(containerEl, { onSubmit, onInterrupt, isReady, isRu
 
     if (!inputState.active) return;
 
+    if (ev.key === 'Tab') {
+      ev.preventDefault();
+      handleTab();
+      return;
+    }
     if (ev.key === 'Enter') {
       ev.preventDefault();
       await submitLine();

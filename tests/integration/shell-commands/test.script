@@ -1,28 +1,26 @@
 # Integration test: Shell Commands
-# Exercises new debug shell commands without running heavy emulation.
-# Note: commands like "get" and "get-global" return register/memory values
-# as their exit code, so we avoid them here to keep the script exit code 0.
+# Exercises v2 command framework with GDB-style naming.
 
 # Run a few instructions to initialize state
 run 100
 
-# Test: td shows register dump (with PC, SR, USP, SSP lines)
-td
+# Test: info regs shows register dump (replaces td)
+info regs
 
-# Test: regs alias works (same as td)
-regs
+# Test: info r alias works
+info r
 
 # Test: disasm defaults to PC when no address given
 disasm
 
-# Test: disasm with count only
-disasm 5
+# Test: disasm with count only (alias 'd')
+d 5
 
-# Test: help for specific command
-help td
+# Test: help for specific command (v2 name)
+help info
 
-# Test: fpregs command
-fpregs
+# Test: info fpregs (replaces fpregs command)
+info fpregs
 
 # Test: prompt off suppresses status line
 prompt off
@@ -31,9 +29,9 @@ prompt off
 prompt on
 
 # Test: logpoint list (should be empty)
-logpoint
+logpoint list
 
-# Test: mac-state (returns 0)
-mac-state
+# Test: info mac (replaces mac-state)
+info mac
 
 quit

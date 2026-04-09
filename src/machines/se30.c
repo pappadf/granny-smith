@@ -389,7 +389,7 @@ static void se30_build_vrom_fallback(uint8_t *rom) {
 // Try to load the real SE/30 VROM from a file.
 // Returns true if a real VROM was loaded, false if not found.
 static bool se30_load_vrom(config_t *cfg, uint8_t *vrom_buf) {
-    // Check explicit VROM path first (set via "rom --load-vrom <path>")
+    // Check explicit VROM path first (set via "rom load-vrom <path>")
     const char *explicit_path = memory_pending_vrom_path();
     if (explicit_path) {
         FILE *f = fopen(explicit_path, "rb");
