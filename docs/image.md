@@ -27,7 +27,7 @@ No seeding step is needed — unmodified blocks are read directly from the base 
 
 **Volatile image persistence** — `image_persist_volatile(const char *path)`
 
-When a disk image resides in volatile storage (`/tmp/` or `/fd/`), this function copies it to `/images/<hash>.img` (OPFS-backed, content-addressed via FNV-1a hash). This runs on the worker thread where OPFS is accessible. The `insert-fd` and `attach-hd` commands call this automatically before opening the image. Returns a persistent path that the caller must free.
+When a disk image resides in volatile storage (`/tmp/` or `/fd/`), this function copies it to `/images/<hash>.img` (OPFS-backed, content-addressed via FNV-1a hash). This runs on the worker thread where OPFS is accessible. The `fd insert` and `hd attach` commands call this automatically before opening the image. Returns a persistent path that the caller must free.
 
 **Reading/Writing image data**
 - **`disk_read_data(image_t *disk, size_t offset, uint8_t *buf, size_t size)`** and **`disk_write_data(...)`** enforce 512-byte alignment and forward to `storage_read_block` / `storage_write_block` in a loop.

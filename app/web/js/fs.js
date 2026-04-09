@@ -107,3 +107,54 @@ export function ensureCheckpointDir() {
   // /checkpoints is an OPFS mount — it exists from main().
   // Nothing to do here.
 }
+
+// Write a File/Blob directly to OPFS (bypasses /tmp, no WASM heap pressure).
+// opfsPath must start with /opfs/ (e.g. '/opfs/upload/image.dsk').
+export async function writeToOPFS(opfsPath, fileOrBlob) {
+  const relPath = opfsPath.replace(/^\/opfs\/?/, '');
+  const parts = relPath.split('/');
+  const fileName = parts.pop();
+
+  // Navigate to the parent directory, creating intermediate dirs as needed
+  let dir = await navigator.storage.getDirectory();
+  for (const part of parts) {
+    dir = await dir.getDirectoryHandle(part, { create: true });
+  }
+
+  // Write the file — streams from File object, never touches WASM heap
+  const fileHandle = await dir.getFileHandle(fileName, { create: true });
+  const writable = await fileHandle.createWritable();
+  await writable.write(fileOrBlob);
+  await writable.close();
+}
+
+// Remove a file or directory from OPFS (best-effort, non-fatal).
+export async function removeFromOPFS(opfsPath) {
+  try {
+    const relPath = opfsPath.replace(/^\/opfs\/?/, '');
+    const parts = relPath.split('/');
+    const name = parts.pop();
+    let dir = await navigator.storage.getDirectory();
+    for (const part of parts) {
+      dir = await dir.getDirectoryHandle(part);
+    }
+    await dir.removeEntry(name, { recursive: true });
+  } catch (_) {
+    // Best-effort — file may already be gone
+  }
+}
+
+// Clear all contents of an OPFS directory (best-effort).
+// Used at startup to clean up stale staging files from previous sessions.
+export async function clearOPFSDir(opfsDirPath) {
+  try {
+    const relPath = opfsDirPath.replace(/^\/opfs\/?/, '');
+    let dir = await navigator.storage.getDirectory();
+    for (const part of relPath.split('/')) {
+      dir = await dir.getDirectoryHandle(part);
+    }
+    for await (const [name] of dir.entries()) {
+      await dir.removeEntry(name, { recursive: true });
+    }
+  } catch (_) {}
+}

@@ -9,6 +9,9 @@ import { MACHINE_DEFS } from './machine-defs.js';
 import { romPathForChecksum, listDir } from './fs.js';
 import { toast, hideRomOverlay, enableRunButton, setBackgroundMessage } from './ui.js';
 import { setRunning } from './emulator.js';
+import { MEDIA_TYPES } from './media-types.js';
+import { runUploadPipeline } from './upload-pipeline.js';
+import { quotePath } from './media.js';
 
 // ---------------------------------------------------------------------------
 // OPFS ROM scanning — probe known checksums to find persisted ROMs
@@ -242,7 +245,7 @@ export async function showConfigDialog(romChecksums) {
               const newIds = [...newModels.keys()];
               modelIds.length = 0;
               modelIds.push(...newIds);
-              buildRows(newIds.includes(sel._prevValue) ? sel._prevValue : newIds[0]);
+              buildRows(newIds.includes(sel._prevValue) ? sel._prevValue : newIds[0]).then(updateStartButton);
             } else {
               sel.value = sel._prevValue || modelIds[0];
             }
@@ -250,7 +253,7 @@ export async function showConfigDialog(romChecksums) {
           return;
         }
         sel._prevValue = sel.value;
-        buildRows(sel.value);
+        buildRows(sel.value).then(updateStartButton);
       });
       sel._prevValue = selectedId;
       return sel;
@@ -276,7 +279,10 @@ export async function showConfigDialog(romChecksums) {
     function buildMediaSelect(id, options, persistDir) {
       const sel = buildSelect(id, options);
       sel.addEventListener('change', () => {
-        if (sel.value !== '__upload__') return;
+        if (sel.value !== '__upload__') {
+          updateStartButton();
+          return;
+        }
         triggerMediaUpload(persistDir).then(result => {
           if (result) {
             const newOpt = document.createElement('option');
@@ -292,75 +298,72 @@ export async function showConfigDialog(romChecksums) {
           } else {
             sel.value = '';
           }
+          updateStartButton();
         });
       });
       return sel;
     }
 
-    // Upload a media file and persist it to the given OPFS directory.
-    // Returns { path, name } where path is the persisted OPFS path.
+    // Determine the media type descriptor for a given persist directory.
+    // FDHD_DIR is a sub-type of fd (high-density floppies), so match it too.
+    function mediaTypeForDir(persistDir) {
+      if (persistDir === FDHD_DIR) return MEDIA_TYPES.fd;
+      return Object.values(MEDIA_TYPES).find(mt => mt.persistDir === persistDir)
+        || MEDIA_TYPES.hd;
+    }
+
+    // Upload a media file via the unified pipeline.
+    // Returns { path, name } on success, null on failure.
     async function triggerMediaUpload(persistDir) {
-      return new Promise((res) => {
+      const mediaType = mediaTypeForDir(persistDir);
+      return new Promise((resolve) => {
         const input = document.createElement('input');
         input.type = 'file';
         input.addEventListener('change', async () => {
           const file = input.files?.[0];
-          if (!file) return res(null);
-          const data = new Uint8Array(await file.arrayBuffer());
-          const { writeBinary, ensureDir } = await import('./fs.js');
-          const { sanitizeName } = await import('./media.js');
-          const safeName = sanitizeName(file.name) || 'image.img';
-
-          // Stage to /tmp first (memory backend, cross-thread safe)
-          const tmpPath = `/tmp/${safeName}`;
-          ensureDir('/tmp');
-          writeBinary(tmpPath, data);
-
-          // Persist to OPFS via file-copy (runs on worker where OPFS is accessible)
-          const persistPath = `${persistDir}/${safeName}`;
-          const rc = await window.runCommand(`file-copy ${tmpPath} ${persistPath}`);
-          const finalPath = (rc === 0) ? persistPath : tmpPath;
-
-          toast(`${file.name} uploaded`);
-          res({ path: finalPath, name: file.name });
+          if (!file) return resolve(null);
+          const result = await runUploadPipeline(file, mediaType);
+          resolve(result);
         });
         input.click();
       });
     }
 
+    // Upload a ROM via the unified pipeline. Returns checksum or null.
     async function triggerRomUpload() {
-      return new Promise((res) => {
+      return new Promise((resolve) => {
         const input = document.createElement('input');
         input.type = 'file';
         input.addEventListener('change', async () => {
           const file = input.files?.[0];
-          if (!file) return res(null);
-
-          const data = new Uint8Array(await file.arrayBuffer());
-          const { writeBinary } = await import('./fs.js');
-          const tmpPath = `/tmp/upload_rom_${Date.now()}`;
-          writeBinary(tmpPath, data);
-
-          const rc = await window.runCommand(`rom checksum ${tmpPath}`);
-          if (rc !== 0) {
-            toast('Not a valid ROM image');
-            return res(null);
-          }
-
-          const dv = new DataView(data.buffer, data.byteOffset, data.byteLength);
-          const checksum = dv.getUint32(0, false).toString(16).toUpperCase().padStart(8, '0');
-
-          await window.runCommand(`file-copy ${tmpPath} ${romPathForChecksum(checksum)}`);
-          toast(`ROM uploaded: ${checksum}`);
-          res(checksum);
+          if (!file) return resolve(null);
+          const result = await runUploadPipeline(file, MEDIA_TYPES.rom);
+          resolve(result ? result.info?.checksum : null);
         });
         input.click();
       });
+    }
+
+    // Enable/disable Start based on required selections (e.g. VROM for SE/30).
+    function updateStartButton() {
+      const startBtn = dlg.querySelector('#config-start-btn');
+      if (!startBtn) return;
+      const modelSel = dlg.querySelector('#config-model');
+      const currentModel = modelSel?.value || initialModel;
+      const def = MACHINE_DEFS[currentModel];
+      let canStart = true;
+      if (def?.hasVrom) {
+        const vromSel = dlg.querySelector('#config-vrom');
+        const val = vromSel?.value;
+        if (!val || val === '__upload__') canStart = false;
+      }
+      startBtn.disabled = !canStart;
     }
 
     // Initialize with first available model — await OPFS scans before showing
     const initialModel = modelIds[0] || 'plus';
     await buildRows(initialModel);
+    updateStartButton();
 
     // Start button handler
     const startBtn = dlg.querySelector('#config-start-btn');
@@ -424,7 +427,7 @@ export async function bootFromConfig(config, tmpRomPath) {
   // Set VROM path before rom load, because rom load triggers machine
   // creation which needs the VROM during SE/30 init.
   if (vromPath) {
-    await window.runCommand(`vrom load ${vromPath}`);
+    await window.runCommand(`vrom load ${quotePath(vromPath)}`);
   }
 
   // Create machine with selected model and RAM before ROM load.
@@ -438,9 +441,9 @@ export async function bootFromConfig(config, tmpRomPath) {
   // rom load identifies the ROM and loads it into the existing machine.
   if (romChecksum) {
     const persistedPath = romPathForChecksum(romChecksum);
-    let rc = await window.runCommand(`rom load ${persistedPath}`);
+    let rc = await window.runCommand(`rom load ${quotePath(persistedPath)}`);
     if (rc !== 0 && tmpRomPath) {
-      rc = await window.runCommand(`rom load ${tmpRomPath}`);
+      rc = await window.runCommand(`rom load ${quotePath(tmpRomPath)}`);
     }
     if (rc !== 0) {
       toast('Failed to load ROM');
@@ -451,20 +454,20 @@ export async function bootFromConfig(config, tmpRomPath) {
   // Mount floppies
   if (floppies) {
     for (let i = 0; i < floppies.length; i++) {
-      await window.runCommand(`insert-fd ${floppies[i]} ${i} 1`);
+      await window.runCommand(`fd insert ${quotePath(floppies[i])} ${i} true`);
     }
   }
 
   // Attach SCSI hard disks
   if (hdImages) {
     for (const { path, id } of hdImages) {
-      await window.runCommand(`attach-hd ${path} ${id}`);
+      await window.runCommand(`hd attach ${quotePath(path)} ${id}`);
     }
   }
 
   // Attach CD-ROM
   if (cdImage) {
-    await window.runCommand(`attach-hd ${cdImage} 3`);
+    await window.runCommand(`cdrom attach ${quotePath(cdImage)}`);
   }
 
   hideRomOverlay();

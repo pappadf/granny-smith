@@ -392,7 +392,7 @@ test.describe('Unknown File Drag/Drop', () => {
     
     // Verify the file was NOT mounted as a disk (probe should fail)
     const probeResult = await page.evaluate(async () => {
-      const result = await (window as any).runCommand('insert-fd --probe "/tmp/upload/readme.txt"');
+      const result = await (window as any).runCommand('fd probe "/tmp/upload/readme.txt"');
       return result;
     });
     

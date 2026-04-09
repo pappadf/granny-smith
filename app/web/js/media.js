@@ -62,14 +62,14 @@ export async function extractZipToDir(data, extractDir) {
 // Extract a peeler-supported archive to a directory.
 export async function extractPeelerToDir(archivePath, extractDir) {
   ensureDir(extractDir);
-  const result = await window.runCommand(`peeler -o ${extractDir} ${archivePath}`);
+  const result = await window.runCommand(`peeler -o ${quotePath(extractDir)} ${quotePath(archivePath)}`);
   return result === 0;
 }
 
 // Probe if a file is a peeler-supported archive.
 export async function probePeelerArchive(filePath) {
   try {
-    const result = await window.runCommand(`peeler --probe ${filePath}`);
+    const result = await window.runCommand(`peeler --probe ${quotePath(filePath)}`);
     return result === 0;
   } catch {
     return false;
@@ -128,7 +128,7 @@ export async function probeRom(filePath) {
 // Probe if a file is a valid floppy disk image.
 export async function probeFloppy(filePath) {
   try {
-    const result = await window.runCommand(`insert-fd --probe ${quotePath(filePath)}`);
+    const result = await window.runCommand(`fd probe ${quotePath(filePath)}`);
     return result === 0;
   } catch {
     return false;

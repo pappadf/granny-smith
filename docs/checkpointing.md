@@ -71,7 +71,7 @@ Quick checkpoints assume that disk image backing files and their delta/journal f
 
 ### How It Works
 
-When an `insert-fd` or `attach-hd` command targets a volatile path (`/tmp/`), `image_persist_volatile()` (called from the worker thread where OPFS is accessible):
+When an `fd insert` or `hd attach` command targets a volatile path (`/tmp/`), `image_persist_volatile()` (called from the worker thread where OPFS is accessible):
 
 1. Reads the image file from volatile storage.
 2. Computes a content hash (FNV-1a over first 64 KB + total file size) -> 8-char hex.

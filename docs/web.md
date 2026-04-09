@@ -33,14 +33,14 @@ The emulator uses Emscripten's `PROXY_TO_PTHREAD` mode. The C `main()` runs on a
 
 ### Drag-and-Drop
 - **ROM files**: Validated via `rom checksum`, stored in `/opfs/images/rom/<checksum>`. Emulator auto-runs.
-- **Floppy images**: Staged to `/tmp/upload/`, probed via `insert-fd --probe`, then inserted. The C-side `image_persist_volatile()` automatically copies the file to `/opfs/images/<hash>.img` (OPFS) before opening.
-- **Hard-disk images**: Same persistence flow via `attach-hd`.
+- **Floppy images**: Staged to `/tmp/upload/`, probed via `fd probe`, then inserted. The C-side `image_persist_volatile()` automatically copies the file to `/opfs/images/<hash>.img` (OPFS) before opening.
+- **Hard-disk images**: Same persistence flow via `hd attach`.
 - **Checkpoint files**: Detected via `GSCHKPT` magic. Copied to `/tmp/` and loaded via `checkpoint --load`.
 - **ZIP/SIT/HQX archives**: Extracted via JSZip or peeler, then probed for media.
 
 ### URL Parameters
 - `rom=<url>`: Downloaded and stored in `/opfs/images/rom/`.
-- `fdN=<url>` (e.g., `fd0`, `fd1`): Downloaded into `/opfs/images/fd/` and inserted via `insert-fd`.
+- `fdN=<url>` (e.g., `fd0`, `fd1`): Downloaded into `/opfs/images/fd/` and inserted via `fd insert`.
 - `hdN=<url>`: Downloaded into `/opfs/images/hd/`. Auto-attached before the first run.
 - `vrom=<url>`: Downloaded into `/opfs/images/vrom/` (SE/30 video ROM).
 - `speed=max|realtime|hardware`: Passed to the wasm module as `--speed=`.
@@ -117,18 +117,18 @@ A single OPFS mount at `/opfs` is created in C `main()` via `wasmfs_create_opfs_
 7. User clicks "Start" → load ROM, mount selected media, run.
 
 ### Image Persistence
-When `insert-fd` or `attach-hd` receives a volatile path (`/tmp/`), the C-side `image_persist_volatile()` copies the file to `/opfs/images/<hash>.img` (content-addressed, FNV-1a hash) before the storage engine opens it. This ensures delta and journal files are also on OPFS. The persistent path is stored in checkpoints for restore.
+When `fd insert` or `hd attach` receives a volatile path (`/tmp/`), the C-side `image_persist_volatile()` copies the file to `/opfs/images/<hash>.img` (content-addressed, FNV-1a hash) before the storage engine opens it. This ensures delta and journal files are also on OPFS. The persistent path is stored in checkpoints for restore.
 
 ### Drag-and-Drop Flow
 1. `processDrop` gathers files via `extractAllDroppedFiles` (supports directories via `webkitGetAsEntry`).
 2. Single files are checked for checkpoint signature first.
 3. Files are written to `/tmp/upload/` via `FS.writeFile` (memory backend, accessible from main thread).
 4. `probeAndMountDiskImage` sends probe commands through the command queue to the worker.
-5. The worker's `insert-fd` / `attach-hd` handler persists volatile images to OPFS automatically.
+5. The worker's `fd insert` / `hd attach` handler persists volatile images to OPFS automatically.
 
 ### URL Media Fetching
 - `processUrlMedia` iterates URLSearchParams in three passes (ROM, `fdN`, `hdN`). Each `fetchAndStore(slot, url)` downloads the payload, optionally unzips, and writes it into the appropriate `/opfs/images/` subdirectory via `file-copy`.
-- After downloads, floppies are hot-inserted through `insert-fd`, while ROM triggers `rom load`.
+- After downloads, floppies are hot-inserted through `fd insert`, while ROM triggers `rom load`.
 
 ### COOP/COEP Headers
 SharedArrayBuffer (required for pthreads) needs Cross-Origin-Opener-Policy and Cross-Origin-Embedder-Policy headers. The dev server (`make run`) sends these automatically.

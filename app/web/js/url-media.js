@@ -184,8 +184,8 @@ export async function processUrlMedia(params) {
       if (/^fd\d+$/.test(k)) {
         const fdPath = `/tmp/url_${k}`;
         console.log(`[url-media] inserting floppy: ${fdPath}`);
-        const rc = await window.runCommand(`insert-fd ${fdPath} 0 1`);
-        console.log(`[url-media] insert-fd result: ${rc}`);
+        const rc = await window.runCommand(`fd insert ${fdPath} 0 true`);
+        console.log(`[url-media] fd insert result: ${rc}`);
       }
     }
 
@@ -194,7 +194,7 @@ export async function processUrlMedia(params) {
       if (/^hd\d+$/.test(k)) {
         const hdPath = `/tmp/url_${k}`;
         const id = parseInt(k.replace('hd', ''), 10);
-        await window.runCommand(`attach-hd ${hdPath} ${id}`);
+        await window.runCommand(`hd attach ${hdPath} ${id}`);
       }
     }
 
@@ -203,7 +203,7 @@ export async function processUrlMedia(params) {
     // No ROM in URL params — insert floppies if machine already exists
     for (const [k] of params.entries()) {
       if (/^fd\d+$/.test(k)) {
-        await window.runCommand(`insert-fd /tmp/url_${k} 0 1`);
+        await window.runCommand(`fd insert /tmp/url_${k} 0 true`);
       }
     }
   }

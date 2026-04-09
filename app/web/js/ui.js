@@ -98,7 +98,7 @@ export async function insertFloppyWithResume(path) {
     await waitForRunState(false, 1200);
     await sleep(40);
   }
-  await window.runCommand(`insert-fd ${path} 0 1`);
+  await window.runCommand(`fd insert ${path} 0 true`);
   if (wasRunning) {
     await sleep(30);
     await window.runCommand('run');

@@ -11,6 +11,8 @@ import { processUrlMedia, isRomLoaded } from './url-media.js';
 import { initUI, toast, enableRunButton, setBackgroundMessage } from './ui.js';
 import { maybeOfferBackgroundCheckpoint } from './checkpoint.js';
 import { scanForPersistedRoms, showRomUploadDialog, showConfigDialog, bootFromConfig } from './config-dialog.js';
+import { UPLOAD_DIR } from './config.js';
+import { clearOPFSDir } from './fs.js';
 
 const params = new URLSearchParams(location.search);
 
@@ -78,7 +80,10 @@ if (resumedFromCheckpoint) {
 } else if (params.has('noui')) {
   // Headless/test mode: skip all dialogs, let the test harness drive commands.
 } else {
-  // Normal startup: scan OPFS for persisted ROMs
+  // Normal startup: clean up stale staging files from previous sessions
+  await clearOPFSDir(UPLOAD_DIR);
+
+  // Scan OPFS for persisted ROMs
   let romChecksums = await scanForPersistedRoms();
   let tmpRomPath = null;
 

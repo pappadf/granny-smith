@@ -218,7 +218,7 @@ async function probeAndMountDiskImage(path, isDirectory, displayName) {
       }
     } else if (kind === 'floppy') {
       toast(`Mounting disk image: ${imagePath.split('/').pop()}`);
-      const mountResult = await window.runCommand(`insert-fd ${quotePath(imagePath)} 0 1`);
+      const mountResult = await window.runCommand(`fd insert ${quotePath(imagePath)} 0 true`);
       if (mountResult === 0) {
         toast(`Disk image mounted successfully`);
       } else {

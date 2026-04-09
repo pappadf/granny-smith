@@ -415,8 +415,8 @@ on the Z53C80, or that the disassembled mask value needs re-verification.
 
 ### 7.1 Loopback Mode Activation
 
-Loopback mode is enabled via the shell command `scsi-loopback on` and disabled
-with `scsi-loopback off`.  The command `scsi-loopback` (with no argument) queries
+Loopback mode is enabled via the shell command `hd loopback on` and disabled
+with `hd loopback off`.  The command `hd loopback` (with no argument) queries
 the current state.
 
 Loopback must be enabled *after* the SCSI Manager completes its device scan

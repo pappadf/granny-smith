@@ -210,11 +210,7 @@ int system_ensure_machine(const char *model_id) {
     return 0;
 }
 
-// Forward declarations for command handlers
-uint64_t cmd_attach_hd(int argc, char *argv[]);
-uint64_t cmd_new_fd(int argc, char *argv[]);
-uint64_t cmd_insert_fd(int argc, char *argv[]);
-uint64_t cmd_insert_disk(int argc, char *argv[]);
+// Forward declaration for setup command handler
 uint64_t cmd_setup(int argc, char *argv[]);
 
 // Helpers to abstract floppy insertion
@@ -235,124 +231,6 @@ void trigger_vbl(struct config *restrict config) {
     if (config && config->machine && config->machine->trigger_vbl) {
         config->machine->trigger_vbl(config);
     }
-}
-
-// new-fd [--hd] [drive]
-// Creates a new blank floppy image (800K default, 1440K with --hd) and inserts
-// it into the preferred drive if provided (0 or 1) or the first free drive.
-// Returns 0 on success, -1 on failure.
-uint64_t cmd_new_fd(int argc, char *argv[]) {
-    if (argc < 2) {
-        printf("Usage: new-fd [--hd] <path-to-new-disk> [drive:0|1]\n");
-        return -1;
-    }
-
-    // Parse optional --hd flag for 1.4MB high-density floppy
-    bool high_density = false;
-    int path_arg = 1;
-    if (argc >= 3 && strcmp(argv[1], "--hd") == 0) {
-        high_density = true;
-        path_arg = 2;
-    }
-
-    if (path_arg >= argc) {
-        printf("Usage: new-fd [--hd] <path-to-new-disk> [drive:0|1]\n");
-        return -1;
-    }
-
-    const char *path = argv[path_arg];
-    int preferred = -1;
-    if (path_arg + 1 < argc) {
-        if (argv[path_arg + 1][0] == '0' || argv[path_arg + 1][0] == '1')
-            preferred = argv[path_arg + 1][0] - '0';
-        else {
-            printf("new-fd: invalid drive '%s' (expected 0 or 1)\n", argv[path_arg + 1]);
-            return -1;
-        }
-    }
-
-    config_t *config = global_emulator;
-    if (!config) {
-        printf("new-fd: emulator config not initialized.\n");
-        return -1;
-    }
-
-    bool d0_free = !sys_fd_is_inserted(config, 0);
-    bool d1_free = !sys_fd_is_inserted(config, 1);
-
-    int target = -1;
-    if (preferred != -1 && (preferred == 0 ? d0_free : d1_free)) {
-        target = preferred;
-    } else if (d0_free) {
-        target = 0;
-    } else if (d1_free) {
-        target = 1;
-    }
-
-    if (target == -1) {
-        printf("new-fd: both floppy drives are already occupied.\n");
-        return -1;
-    }
-
-    int rc = image_create_blank_floppy(path, false, high_density);
-    if (rc != 0) {
-        if (rc == -2)
-            printf("new-fd: file already exists: %s (won't overwrite)\n", path);
-        else
-            printf("new-fd: failed to create blank floppy file: %s\n", path);
-        return -1;
-    }
-
-    image_t *disk = image_open(path, true);
-    if (!disk) {
-        printf("new-fd: failed to open newly created image: %s\n", path);
-        return -1;
-    }
-
-    // Track this image so checkpoints can restore by filename
-    add_image(config, disk);
-
-    sys_fd_insert(config, target, disk);
-    printf("new-fd: created %s (%s) and inserted into drive %d.\n", path, high_density ? "1440K" : "800K", target);
-    return 0;
-}
-
-// Insert a disk image into the floppy drive
-uint64_t cmd_insert_disk(int argc, char *argv[]) {
-    if (argc < 2) {
-        printf("Usage: insert-disk <path-to-disk-image>\n");
-        return -1;
-    }
-
-    const char *path = argv[1];
-    image_t *disk = image_open(path, true);
-
-    if (!disk) {
-        printf("Failed to open disk image: %s\n", path);
-        return -1;
-    }
-
-    config_t *config = global_emulator;
-    if (!config) {
-        printf("Emulator config not initialized.\n");
-        return -1;
-    }
-
-    // Track this image so checkpoints can restore by filename
-    add_image(config, disk);
-
-    if (!sys_fd_is_inserted(config, 0)) {
-        sys_fd_insert(config, 0, disk);
-        printf("Inserted disk into floppy drive 0.\n");
-    } else if (!sys_fd_is_inserted(config, 1)) {
-        sys_fd_insert(config, 1, disk);
-        printf("Inserted disk into floppy drive 1.\n");
-    } else {
-        printf("Both floppy drives are already occupied.\n");
-        return -1;
-    }
-
-    return 0;
 }
 
 // Query or configure the active machine.
@@ -442,54 +320,207 @@ uint64_t cmd_setup(int argc, char *argv[]) {
     return 0;
 }
 
-// Enable/disable/query SCC external loopback (cable between port A and port B)
-static uint64_t cmd_scc_loopback(int argc, char *argv[]) {
+// ============================================================================
+// Static helpers for inlined command logic (shared by unified handlers)
+// ============================================================================
+
+// Insert a floppy disk image into the first free (or preferred) drive.
+// writable: 1=writable, 0=read-only, -1=default (writable).
+// preferred: drive number (0 or 1), or -1 for auto-select.
+static int do_insert_fd(const char *path, int preferred, int writable_flag) {
+    bool writable = (writable_flag != 0); // default to writable unless explicitly 0
+
+    // Persist volatile images (/tmp/, /fd/) to OPFS so they survive page reload
+    char *persistent_path = image_persist_volatile(path);
+    if (persistent_path)
+        path = persistent_path;
+
+    image_t *disk = image_open(path, writable);
+    if (!disk) {
+        printf("fd insert: failed to open disk image: %s\n", path);
+        free(persistent_path);
+        return -1;
+    }
+
+    config_t *config = global_emulator;
+    if (!config) {
+        printf("fd insert: emulator config not initialized.\n");
+        free(persistent_path);
+        return -1;
+    }
+
+    bool d0_free = !sys_fd_is_inserted(config, 0);
+    bool d1_free = !sys_fd_is_inserted(config, 1);
+
+    int target = -1;
+    if (preferred != -1 && (preferred == 0 ? d0_free : d1_free)) {
+        target = preferred;
+    } else if (d0_free) {
+        target = 0;
+    } else if (d1_free) {
+        target = 1;
+    }
+
+    if (target == -1) {
+        printf("fd insert: both floppy drives are already occupied.\n");
+        free(persistent_path);
+        return -1;
+    }
+
+    add_image(config, disk);
+    sys_fd_insert(config, target, disk);
+    printf("fd insert: inserted %s into floppy drive %d.\n", path, target);
+    free(persistent_path);
+    return 0;
+}
+
+// Probe a file to check if it's a valid floppy image (without inserting).
+// Returns 0 if valid floppy, 1 if not.
+static int do_probe_fd(const char *path) {
+    // Persist volatile images (/tmp/, /fd/) to OPFS so they survive page reload
+    char *persistent_path = image_persist_volatile(path);
+    if (persistent_path)
+        path = persistent_path;
+
+    image_t *disk = image_open(path, false);
+    if (!disk) {
+        printf("%s: NOT a supported format\n", path);
+        free(persistent_path);
+        return 1;
+    }
+
+    if (disk->type != image_fd_ss && disk->type != image_fd_ds && disk->type != image_fd_hd) {
+        printf("%s: Valid disk image but not a floppy (size: %zu bytes)\n", path, disk->raw_size);
+        image_close(disk);
+        free(persistent_path);
+        return 1;
+    }
+
+    const char *type_str = "unknown";
+    if (disk->type == image_fd_ss)
+        type_str = "single-sided 400KB";
+    else if (disk->type == image_fd_ds)
+        type_str = "double-sided 800KB";
+    else if (disk->type == image_fd_hd)
+        type_str = "high-density 1440KB";
+
+    printf("%s: Valid floppy image (%s)\n", path, type_str);
+    image_close(disk);
+    free(persistent_path);
+    return 0;
+}
+
+// Create a new blank floppy image and insert it.
+// Returns 0 on success, -1 on failure.
+static int do_create_fd(const char *path, bool high_density, int preferred) {
+    config_t *config = global_emulator;
+    if (!config) {
+        printf("fd create: emulator config not initialized.\n");
+        return -1;
+    }
+
+    bool d0_free = !sys_fd_is_inserted(config, 0);
+    bool d1_free = !sys_fd_is_inserted(config, 1);
+
+    int target = -1;
+    if (preferred != -1 && (preferred == 0 ? d0_free : d1_free)) {
+        target = preferred;
+    } else if (d0_free) {
+        target = 0;
+    } else if (d1_free) {
+        target = 1;
+    }
+
+    if (target == -1) {
+        printf("fd create: both floppy drives are already occupied.\n");
+        return -1;
+    }
+
+    int rc = image_create_blank_floppy(path, false, high_density);
+    if (rc != 0) {
+        if (rc == -2)
+            printf("fd create: file already exists: %s (won't overwrite)\n", path);
+        else
+            printf("fd create: failed to create blank floppy file: %s\n", path);
+        return -1;
+    }
+
+    image_t *disk = image_open(path, true);
+    if (!disk) {
+        printf("fd create: failed to open newly created image: %s\n", path);
+        return -1;
+    }
+
+    add_image(config, disk);
+    sys_fd_insert(config, target, disk);
+    printf("fd create: created %s (%s) and inserted into drive %d.\n", path, high_density ? "1440K" : "800K", target);
+    return 0;
+}
+
+// Attach a SCSI hard disk image. Delegates to add_scsi_drive().
+// Returns 0 on success, -1 on error.
+static int do_attach_hd(const char *path, int scsi_id) {
+    if (scsi_id < 0 || scsi_id > 7) {
+        printf("hd attach: invalid SCSI ID %d (expected 0..7)\n", scsi_id);
+        return -1;
+    }
+    config_t *config = global_emulator;
+    if (!config) {
+        printf("hd attach: emulator not initialized.\n");
+        return -1;
+    }
+    add_scsi_drive(config, path, scsi_id);
+    return 0;
+}
+
+// Enable/disable/query SCC external loopback.
+// state: "on", "off", or NULL (query). Returns 0 on success, -1 on error.
+static int do_scc_loopback(const char *state) {
     if (!global_emulator || !global_emulator->scc) {
         printf("No SCC available\n");
-        return (uint64_t)-1;
+        return -1;
     }
-    if (argc < 2) {
-        // query — print current state with hint (IMP-207)
-        const char *state = scc_get_external_loopback(global_emulator->scc) ? "on" : "off";
-        printf("scc-loopback: %s\n", state);
-        printf("  (Use \"scc-loopback on\" or \"scc-loopback off\" to change.)\n");
+    if (!state) {
+        const char *s = scc_get_external_loopback(global_emulator->scc) ? "on" : "off";
+        printf("scc-loopback: %s\n", s);
+        printf("  (Use \"scc loopback on\" or \"scc loopback off\" to change.)\n");
         return 0;
     }
-    if (strcmp(argv[1], "on") == 0) {
+    if (strcmp(state, "on") == 0) {
         scc_set_external_loopback(global_emulator->scc, true);
         printf("SCC external loopback enabled\n");
-    } else if (strcmp(argv[1], "off") == 0) {
+    } else if (strcmp(state, "off") == 0) {
         scc_set_external_loopback(global_emulator->scc, false);
         printf("SCC external loopback disabled\n");
     } else {
-        printf("Usage: scc-loopback [on|off]\n");
-        return (uint64_t)-1;
+        printf("Usage: scc loopback [on|off]\n");
+        return -1;
     }
     return 0;
 }
 
-// Enable/disable/query SCSI loopback test card (passive bus terminator)
-static uint64_t cmd_scsi_loopback(int argc, char *argv[]) {
+// Enable/disable/query SCSI loopback test card.
+// state: "on", "off", or NULL (query). Returns 0 on success, -1 on error.
+static int do_scsi_loopback(const char *state) {
     if (!global_emulator || !global_emulator->scsi) {
         printf("No SCSI controller available\n");
-        return (uint64_t)-1;
+        return -1;
     }
-    if (argc < 2) {
-        // query — print current state with hint (IMP-207)
-        const char *state = scsi_get_loopback(global_emulator->scsi) ? "on" : "off";
-        printf("scsi-loopback: %s\n", state);
-        printf("  (Use \"scsi-loopback on\" or \"scsi-loopback off\" to change.)\n");
+    if (!state) {
+        const char *s = scsi_get_loopback(global_emulator->scsi) ? "on" : "off";
+        printf("scsi-loopback: %s\n", s);
+        printf("  (Use \"hd loopback on\" or \"hd loopback off\" to change.)\n");
         return 0;
     }
-    if (strcmp(argv[1], "on") == 0) {
+    if (strcmp(state, "on") == 0) {
         scsi_set_loopback(global_emulator->scsi, true);
         printf("SCSI loopback test card enabled\n");
-    } else if (strcmp(argv[1], "off") == 0) {
+    } else if (strcmp(state, "off") == 0) {
         scsi_set_loopback(global_emulator->scsi, false);
         printf("SCSI loopback test card disabled\n");
     } else {
-        printf("Usage: scsi-loopback [on|off]\n");
-        return (uint64_t)-1;
+        printf("Usage: hd loopback [on|off]\n");
+        return -1;
     }
     return 0;
 }
@@ -508,35 +539,38 @@ static void cmd_fd_handler(struct cmd_context *ctx, struct cmd_result *res) {
 
     if (strcmp(subcmd, "insert") == 0) {
         if (!ctx->args[0].present) {
-            cmd_err(res, "usage: fd insert <path>");
+            cmd_err(res, "usage: fd insert <path> [drive] [writable]");
             return;
         }
-        char buf[512];
-        snprintf(buf, sizeof(buf), "insert-disk %s", ctx->args[0].as_str);
-        uint64_t r = shell_dispatch(buf);
-        cmd_int(res, (int64_t)r);
+        int preferred = ctx->args[1].present ? (int)ctx->args[1].as_int : -1;
+        // Default to writable (matches legacy insert-disk behavior)
+        int writable = ctx->args[2].present ? (ctx->args[2].as_bool ? 1 : 0) : 1;
+        int rc = do_insert_fd(ctx->args[0].as_str, preferred, writable);
+        cmd_int(res, (int64_t)rc);
         return;
     }
     if (strcmp(subcmd, "create") == 0) {
-        // Check for --hd flag
-        int has_hd = 0;
-        for (int i = 0; i < ctx->raw_argc; i++) {
+        // Manual arg parsing: fd create [--hd] <path> [drive]
+        // The --hd flag confuses the positional arg parser, so parse raw_argv.
+        bool has_hd = false;
+        const char *path = NULL;
+        int preferred = -1;
+        for (int i = 2; i < ctx->raw_argc; i++) {
             if (strcmp(ctx->raw_argv[i], "--hd") == 0) {
-                has_hd = 1;
-                break;
+                has_hd = true;
+            } else if (!path) {
+                path = ctx->raw_argv[i];
+            } else {
+                // Drive number
+                preferred = ctx->raw_argv[i][0] - '0';
             }
         }
-        if (!ctx->args[0].present) {
-            cmd_err(res, "usage: fd create [--hd] <path>");
+        if (!path) {
+            cmd_err(res, "usage: fd create [--hd] <path> [drive]");
             return;
         }
-        char buf[512];
-        if (has_hd)
-            snprintf(buf, sizeof(buf), "new-fd --hd %s", ctx->args[0].as_str);
-        else
-            snprintf(buf, sizeof(buf), "new-fd %s", ctx->args[0].as_str);
-        uint64_t r = shell_dispatch(buf);
-        cmd_int(res, (int64_t)r);
+        int rc = do_create_fd(path, has_hd, preferred);
+        cmd_int(res, (int64_t)rc);
         return;
     }
     if (strcmp(subcmd, "probe") == 0) {
@@ -544,10 +578,8 @@ static void cmd_fd_handler(struct cmd_context *ctx, struct cmd_result *res) {
             cmd_err(res, "usage: fd probe <path>");
             return;
         }
-        char buf[512];
-        snprintf(buf, sizeof(buf), "insert-fd --probe %s", ctx->args[0].as_str);
-        uint64_t r = shell_dispatch(buf);
-        cmd_int(res, (int64_t)r);
+        int rc = do_probe_fd(ctx->args[0].as_str);
+        cmd_int(res, (int64_t)rc);
         return;
     }
     if (strcmp(subcmd, "validate") == 0) {
@@ -608,25 +640,15 @@ static void cmd_hd_handler(struct cmd_context *ctx, struct cmd_result *res) {
             cmd_err(res, "usage: hd attach <path> [id]");
             return;
         }
-        char buf[512];
-        if (ctx->args[1].present)
-            snprintf(buf, sizeof(buf), "attach-hd %s %lld", ctx->args[0].as_str, (long long)ctx->args[1].as_int);
-        else
-            snprintf(buf, sizeof(buf), "attach-hd %s", ctx->args[0].as_str);
-        uint64_t r = shell_dispatch(buf);
-        cmd_int(res, (int64_t)r);
+        int id = ctx->args[1].present ? (int)ctx->args[1].as_int : 0;
+        int rc = do_attach_hd(ctx->args[0].as_str, id);
+        cmd_int(res, (int64_t)rc);
         return;
     }
     if (strcmp(subcmd, "loopback") == 0) {
-        if (ctx->args[0].present) {
-            char buf[64];
-            snprintf(buf, sizeof(buf), "scsi-loopback %s", ctx->args[0].as_str);
-            uint64_t r = shell_dispatch(buf);
-            cmd_int(res, (int64_t)r);
-        } else {
-            uint64_t r = shell_dispatch("scsi-loopback");
-            cmd_int(res, (int64_t)r);
-        }
+        const char *state = ctx->args[0].present ? ctx->args[0].as_str : NULL;
+        int rc = do_scsi_loopback(state);
+        cmd_int(res, (int64_t)rc);
         return;
     }
     if (strcmp(subcmd, "validate") == 0) {
@@ -692,15 +714,9 @@ static void cmd_scc_handler(struct cmd_context *ctx, struct cmd_result *res) {
     }
 
     if (strcmp(subcmd, "loopback") == 0) {
-        if (ctx->args[0].present) {
-            char buf[64];
-            snprintf(buf, sizeof(buf), "scc-loopback %s", ctx->args[0].as_str);
-            uint64_t r = shell_dispatch(buf);
-            cmd_int(res, (int64_t)r);
-        } else {
-            uint64_t r = shell_dispatch("scc-loopback");
-            cmd_int(res, (int64_t)r);
-        }
+        const char *state = ctx->args[0].present ? ctx->args[0].as_str : NULL;
+        int rc = do_scc_loopback(state);
+        cmd_int(res, (int64_t)rc);
         return;
     }
     cmd_err(res, "unknown scc subcommand: %s", subcmd);
@@ -837,19 +853,80 @@ static void cmd_vrom_handler(struct cmd_context *ctx, struct cmd_result *res) {
     cmd_err(res, "unknown vrom subcommand: %s", subcmd);
 }
 
+// --- cdrom (unified: validate/attach) ---
+static void cmd_cdrom_handler(struct cmd_context *ctx, struct cmd_result *res) {
+    const char *subcmd = ctx->subcmd;
+    if (!subcmd) {
+        cmd_err(res, "usage: cdrom <validate|attach> [args...]");
+        return;
+    }
+
+    if (strcmp(subcmd, "validate") == 0) {
+        if (!ctx->args[0].present) {
+            cmd_err(res, "usage: cdrom validate <path>");
+            return;
+        }
+        const char *path = ctx->args[0].as_str;
+        image_t *img = image_open(path, false);
+        if (!img) {
+            cmd_printf(ctx, "invalid CD-ROM image: cannot open %s\n", path);
+            cmd_bool(res, false);
+            return;
+        }
+        // Reject floppy-sized images
+        if (img->type == image_fd_ss || img->type == image_fd_ds || img->type == image_fd_hd) {
+            cmd_printf(ctx, "invalid CD-ROM image: floppy-sized (%zu bytes)\n", img->raw_size);
+            image_close(img);
+            cmd_bool(res, false);
+            return;
+        }
+        // Placeholder: accept any non-floppy image that can be opened.
+        // TODO: Add ISO 9660 ("CD001" at offset 32769) and HFS (0x4244 at
+        // offset 1024) signature checks when full CD-ROM support lands.
+        cmd_printf(ctx, "valid CD-ROM image: %zu bytes\n", img->raw_size);
+        image_close(img);
+        cmd_bool(res, true);
+        return;
+    }
+
+    if (strcmp(subcmd, "attach") == 0) {
+        if (!ctx->args[0].present) {
+            cmd_err(res, "usage: cdrom attach <path> [scsi-id]");
+            return;
+        }
+        // CD-ROM is a read-only SCSI device. Default SCSI ID = 3.
+        int id = ctx->args[1].present ? (int)ctx->args[1].as_int : 3;
+        config_t *config = global_emulator;
+        if (!config) {
+            cmd_err(res, "cdrom attach: emulator not initialized");
+            return;
+        }
+        add_scsi_drive(config, ctx->args[0].as_str, id);
+        cmd_int(res, 0);
+        return;
+    }
+
+    cmd_err(res, "unknown cdrom subcommand: %s", subcmd);
+}
+
 // Registration tables
 
 // disk subcommands
 static const struct arg_spec fd_path_args[] = {
-    {"path",  ARG_PATH,               "disk image path"},
-    {"drive", ARG_INT | ARG_OPTIONAL, "drive number"   },
+    {"path",     ARG_PATH,                "disk image path"},
+    {"drive",    ARG_INT | ARG_OPTIONAL,  "drive number"   },
+    {"writable", ARG_BOOL | ARG_OPTIONAL, "writable"       },
+};
+// fd create uses ARG_REST to handle --hd flag mixed with positional args
+static const struct arg_spec fd_create_args[] = {
+    {"args", ARG_REST, "[--hd] <path> [drive]"},
 };
 static const struct subcmd_spec fd_subcmds[] = {
-    {"insert",   NULL, fd_path_args, 1, "auto-detect and insert"            },
-    {"create",   NULL, fd_path_args, 1, "create blank floppy"               },
-    {"probe",    NULL, fd_path_args, 1, "validate without inserting"        },
-    {"validate", NULL, fd_path_args, 1, "validate a floppy image (detailed)"},
-    {"eject",    NULL, NULL,         0, "eject disk (future)"               },
+    {"insert",   NULL, fd_path_args,   3, "auto-detect and insert"            },
+    {"create",   NULL, fd_create_args, 1, "create blank floppy"               },
+    {"probe",    NULL, fd_path_args,   1, "validate without inserting"        },
+    {"validate", NULL, fd_path_args,   1, "validate a floppy image (detailed)"},
+    {"eject",    NULL, NULL,           0, "eject disk (future)"               },
 };
 
 // scsi subcommands
@@ -894,6 +971,19 @@ static const struct subcmd_spec vrom_subcmds[] = {
     {"validate", NULL, rom_path_args, 1, "validate VROM with detailed output"  },
 };
 
+// cdrom subcommands
+static const struct arg_spec cdrom_path_args[] = {
+    {"path", ARG_PATH, "CD-ROM image path"},
+};
+static const struct arg_spec cdrom_attach_args[] = {
+    {"path", ARG_PATH,               "CD-ROM image path"  },
+    {"id",   ARG_INT | ARG_OPTIONAL, "SCSI ID (default 3)"},
+};
+static const struct subcmd_spec cdrom_subcmds[] = {
+    {"validate", NULL, cdrom_path_args,   1, "validate CD-ROM image"    },
+    {"attach",   NULL, cdrom_attach_args, 2, "attach CD-ROM to SCSI bus"},
+};
+
 // Initialize the setup system and register commands
 void setup_init() {
     printf("Granny Smith build %s\n", get_build_id());
@@ -908,20 +998,6 @@ void setup_init() {
 
     // Module-owned command registrations
     image_init(NULL); // No cross-module commands registered here
-
-    // Simple commands (used for internal delegation from unified commands)
-    register_cmd("insert-disk", "Configuration", "insert-disk <path> — auto-detect and insert a floppy disk image",
-                 &cmd_insert_disk);
-    register_cmd("new-fd", "Configuration", "Create blank floppy and insert: new-fd [--hd] <path> [drive:0|1]",
-                 &cmd_new_fd);
-    register_cmd("insert-fd", "Configuration",
-                 "insert-fd [--probe] <path> [drive:0|1] [writable:0|1] — insert floppy with options", &cmd_insert_fd);
-    register_cmd("attach-hd", "Configuration", "Attach (SCSI) hard disk image: attach-hd <path> [scsi-id]",
-                 &cmd_attach_hd);
-    register_cmd("scc-loopback", "Configuration", "scc-loopback [on|off] – enable/disable external loopback",
-                 &cmd_scc_loopback);
-    register_cmd("scsi-loopback", "Configuration", "scsi-loopback [on|off] – enable/disable SCSI loopback",
-                 &cmd_scsi_loopback);
 
     // Unified commands
     register_command(&(struct cmd_reg){
@@ -971,6 +1047,14 @@ void setup_init() {
         .fn = cmd_scc_handler,
         .subcmds = scc_subcmds,
         .n_subcmds = 1,
+    });
+    register_command(&(struct cmd_reg){
+        .name = "cdrom",
+        .category = "Media",
+        .synopsis = "Manage CD-ROM images (validate/attach)",
+        .fn = cmd_cdrom_handler,
+        .subcmds = cdrom_subcmds,
+        .n_subcmds = 2,
     });
 }
 
@@ -1041,127 +1125,6 @@ void mac_reset(config_t *restrict sim) {
     scc_reset(sim->scc);
 }
 
-// new-fd [drive] — insert-fd variant
-uint64_t cmd_insert_fd(int argc, char *argv[]) {
-    if (argc < 2) {
-        printf("Usage: insert-fd [--probe] <path-to-disk-image> [drive:0|1] [writable:0|1]\n");
-        printf("  --probe    Test if file is a valid floppy image without inserting\n");
-        return -1;
-    }
-
-    // Check for --probe option
-    bool probe_only = false;
-    int path_idx = 1;
-    if (argc >= 2 && (strcmp(argv[1], "--probe") == 0 || strcmp(argv[1], "-p") == 0)) {
-        probe_only = true;
-        path_idx = 2;
-        if (argc < 3) {
-            printf("Usage: insert-fd --probe <path-to-disk-image>\n");
-            return -1;
-        }
-    }
-
-    const char *path = argv[path_idx];
-
-    // Persist volatile images (/tmp/, /fd/) to OPFS so they survive page reload
-    char *persistent_path = image_persist_volatile(path);
-    if (persistent_path)
-        path = persistent_path;
-
-    // Probe mode: check if file is a valid floppy image
-    if (probe_only) {
-        image_t *disk = image_open(path, false);
-        if (!disk) {
-            printf("%s: NOT a supported format\n", path);
-            free(persistent_path);
-            return 1;
-        }
-
-        if (disk->type != image_fd_ss && disk->type != image_fd_ds && disk->type != image_fd_hd) {
-            printf("%s: Valid disk image but not a floppy (size: %zu bytes)\n", path, disk->raw_size);
-            image_close(disk);
-            free(persistent_path);
-            return 1;
-        }
-
-        const char *type_str = "unknown";
-        if (disk->type == image_fd_ss)
-            type_str = "single-sided 400KB";
-        else if (disk->type == image_fd_ds)
-            type_str = "double-sided 800KB";
-        else if (disk->type == image_fd_hd)
-            type_str = "high-density 1440KB";
-
-        printf("%s: Valid floppy image (%s)\n", path, type_str);
-        image_close(disk);
-        free(persistent_path);
-        return 0;
-    }
-
-    // Normal insertion mode
-    int preferred = -1;
-    if (argc >= path_idx + 2) {
-        if (argv[path_idx + 1][0] == '0' || argv[path_idx + 1][0] == '1') {
-            preferred = argv[path_idx + 1][0] - '0';
-        } else {
-            printf("insert-fd: invalid drive '%s' (expected 0 or 1)\n", argv[path_idx + 1]);
-            free(persistent_path);
-            return -1;
-        }
-    }
-
-    bool writable = false;
-    if (argc >= path_idx + 3) {
-        if (argv[path_idx + 2][0] == '0') {
-            writable = false;
-        } else if (argv[path_idx + 2][0] == '1') {
-            writable = true;
-        } else {
-            printf("insert-fd: invalid writable flag '%s' (expected 0 or 1)\n", argv[path_idx + 2]);
-            free(persistent_path);
-            return -1;
-        }
-    }
-
-    image_t *disk = image_open(path, writable);
-    if (!disk) {
-        printf("insert-fd: failed to open disk image: %s\n", path);
-        free(persistent_path);
-        return -1;
-    }
-
-    config_t *config = global_emulator;
-    if (!config) {
-        printf("insert-fd: emulator config not initialized.\n");
-        free(persistent_path);
-        return -1;
-    }
-
-    bool d0_free = !sys_fd_is_inserted(config, 0);
-    bool d1_free = !sys_fd_is_inserted(config, 1);
-
-    int target = -1;
-    if (preferred != -1 && (preferred == 0 ? d0_free : d1_free)) {
-        target = preferred;
-    } else if (d0_free) {
-        target = 0;
-    } else if (d1_free) {
-        target = 1;
-    }
-
-    if (target == -1) {
-        printf("insert-fd: both floppy drives are already occupied.\n");
-        free(persistent_path);
-        return -1;
-    }
-
-    add_image(config, disk);
-    sys_fd_insert(config, target, disk);
-    printf("insert-fd: inserted %s into floppy drive %d.\n", path, target);
-    free(persistent_path);
-    return 0;
-}
-
 // Add a SCSI drive to the configuration
 void add_scsi_drive(struct config *restrict config, const char *filename, int scsi_id) {
     // Disk table: Model, Vendor, Product, Size
@@ -1209,33 +1172,6 @@ void add_scsi_drive(struct config *restrict config, const char *filename, int sc
     add_image(config, img);
     scsi_add_device(config->scsi, scsi_id, disks[best].vendor, disks[best].product, img);
     free(persistent_path);
-}
-
-// attach-hd <path-to-image> [scsi-id]
-// Opens the image and attaches it as a SCSI device using add_scsi_drive().
-// Optional scsi-id defaults to 0. Returns 0 on success, -1 on error.
-uint64_t cmd_attach_hd(int argc, char *argv[]) {
-    if (argc < 2) {
-        printf("Usage: attach-hd <path-to-image> [scsi-id]\n");
-        return -1;
-    }
-    const char *path = argv[1];
-    int scsi_id = 0;
-    if (argc >= 3) {
-        scsi_id = argv[2][0] - '0';
-        if (scsi_id < 0 || scsi_id > 7) {
-            printf("attach-hd: invalid scsi id '%s' (expected 0..7)\n", argv[2]);
-            return -1;
-        }
-    }
-    config_t *config = global_emulator;
-    if (!config) {
-        printf("attach-hd: emulator config not initialized.\n");
-        return -1;
-    }
-    // add_scsi_drive handles image_open + scsi_add_device logic.
-    add_scsi_drive(config, path, scsi_id);
-    return 0;
 }
 
 // Save current machine state to a checkpoint file.

@@ -771,7 +771,7 @@ int main(int argc, char *argv[]) {
     for (int i = 0; i < 2; i++) {
         if (!fd_explicit[i])
             continue;
-        snprintf(cmd, sizeof(cmd), "insert-fd %s %d 1", fd_explicit[i], i);
+        snprintf(cmd, sizeof(cmd), "fd insert %s %d true", fd_explicit[i], i);
         int rc = shell_dispatch(cmd);
         if (rc == 0) {
             if (!quiet)
@@ -783,7 +783,7 @@ int main(int argc, char *argv[]) {
 
     // Insert sequential fd= floppy images into first available drives
     for (int i = 0; i < fd_count; i++) {
-        snprintf(cmd, sizeof(cmd), "insert-disk %s", fd_files[i]);
+        snprintf(cmd, sizeof(cmd), "fd insert %s", fd_files[i]);
         int rc = shell_dispatch(cmd);
         if (rc == 0) {
             if (!quiet)

@@ -28,7 +28,7 @@ test.describe('Floppy', () => {
     await matchScreenFast(page, 'floppy-1', { initialWaitMs: 2000, waitBeforeUpdateMs: 60_000, timeoutMs: 60_000 });
 
     // Create a new empty floppy via command.
-    await runCommand(page, 'new-fd /tmp/my-empty-fd');
+    await runCommand(page, 'fd create /tmp/my-empty-fd');
 
     // Progressively interact with the UI per steps provided.
     // Note: With proper TACH timing for motor speed measurement, disk operations take longer
@@ -58,42 +58,42 @@ test.describe('Floppy', () => {
 
   });
 
-  test('insert-fd probe command', async ({ page, log }) => {
+  test('fd probe command', async ({ page, log }) => {
     test.setTimeout(60_000);
 
-    log('[insert-fd probe] setting up ROM (emulator not running)');
+    log('[fd probe] setting up ROM (emulator not running)');
     await bootWithUploadedMedia(page, ROM_REL, undefined, undefined, { hideOverlay: true });
 
     await runCommand(page, 'schedule max');
 
-    log('[insert-fd probe] creating valid floppy image');
+    log('[fd probe] creating valid floppy image');
 
     // Create a valid 800KB floppy image
-    await runCommand(page, 'new-fd /tmp/valid-floppy.dsk');
+    await runCommand(page, 'fd create /tmp/valid-floppy.dsk');
     await page.waitForTimeout(500);
 
-    log('[insert-fd probe] testing positive case - valid floppy image');
+    log('[fd probe] testing positive case - valid floppy image');
     // Test positive case: valid floppy should be recognized (returns 0 for success)
-    const positiveResult = await runCommand(page, 'insert-fd --probe /tmp/valid-floppy.dsk');
+    const positiveResult = await runCommand(page, 'fd probe /tmp/valid-floppy.dsk');
 
     expect(positiveResult).toBe(0);
-    log('[insert-fd probe] positive case passed - floppy recognized');
+    log('[fd probe] positive case passed - floppy recognized');
 
-    log('[insert-fd probe] testing negative case - ROM file (wrong size)');
+    log('[fd probe] testing negative case - ROM file (wrong size)');
     // Test negative case: ROM file should not be recognized as floppy (returns 1 for failure)
     // Use the ROM file already loaded in memfs at /tmp/rom
-    const romResult = await runCommand(page, 'insert-fd --probe /tmp/rom');
+    const romResult = await runCommand(page, 'fd probe /tmp/rom');
 
     expect(romResult).toBe(1);
-    log('[insert-fd probe] negative case passed - ROM file not recognized as floppy');
+    log('[fd probe] negative case passed - ROM file not recognized as floppy');
 
-    log('[insert-fd probe] testing non-existent file');
+    log('[fd probe] testing non-existent file');
     // Test non-existent file (returns 1 for failure)
-    const nonExistentResult = await runCommand(page, 'insert-fd --probe /tmp/does-not-exist.dsk');
+    const nonExistentResult = await runCommand(page, 'fd probe /tmp/does-not-exist.dsk');
 
     expect(nonExistentResult).toBe(1);
-    log('[insert-fd probe] negative case passed - non-existent file handled');
+    log('[fd probe] negative case passed - non-existent file handled');
 
-    log('[insert-fd probe] test complete');
+    log('[fd probe] test complete');
   });
 });

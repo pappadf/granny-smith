@@ -70,7 +70,7 @@ export async function bootWithMedia(page: Page, romRel: string, fd0Rel?: string,
  *
  * Differences from bootWithMedia:
  *  - uploads ROM/FD/HD bytes into /tmp inside the page (no URL params, no fetch)
- *  - issues rom load / attach-hd / insert-fd commands but DOES NOT run
+ *  - issues rom load / hd attach / fd insert commands but DOES NOT run
  *  - leaves starting the emulator (sending 'run') to the caller/test
  */
 export async function bootWithUploadedMedia(
@@ -157,8 +157,8 @@ export async function bootWithUploadedMedia(
 	await page.evaluate(({ hasFd, hasHd, hdSlot, fdWritable }) => {
 		const send = (window as any).runCommand;
 		send('rom load /tmp/rom');
-		if (hasFd) send(`insert-fd /tmp/fd0 0 ${fdWritable ? 1 : 0}`);
-		if (hasHd) send(`attach-hd /tmp/hd${hdSlot} ${hdSlot}`);
+		if (hasFd) send(`fd insert /tmp/fd0 0 ${fdWritable ? 'true' : 'false'}`);
+		if (hasHd) send(`hd attach /tmp/hd${hdSlot} ${hdSlot}`);
 	}, { hasFd: Boolean(fd0), hasHd: Boolean(hdZip), hdSlot, fdWritable });
 }
 

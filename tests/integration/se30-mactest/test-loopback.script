@@ -2,7 +2,7 @@
 # Boots MacTest, enables loopback, runs tests, captures result
 
 # Enable SCC external loopback before boot
-scc-loopback on
+scc loopback on
 
 # Boot past Happy Mac through splash screens
 run 490000000

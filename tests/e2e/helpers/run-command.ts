@@ -11,7 +11,7 @@ import type { Page } from '@playwright/test';
  *
  * Usage: 
  * ```
- * const exitCode = await runCommand(page, 'insert-fd --probe /tmp/file.dsk');
+ * const exitCode = await runCommand(page, 'fd probe /tmp/file.dsk');
  * expect(exitCode).toBe(0); // success
  * ```
  */

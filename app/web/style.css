@@ -59,6 +59,7 @@ body {
   cursor:pointer; transition: background 0.15s;
 }
 .primary-btn:hover { background:#0550ae; }
+.primary-btn:disabled { opacity:0.4; cursor:default; pointer-events:none; }
 
 /* --- ROM Upload Dialog --- */
 .rom-upload-modal { text-align:center; }

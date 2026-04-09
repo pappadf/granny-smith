@@ -702,7 +702,7 @@ static uint64_t cmd_file_copy(int argc, char *argv[]) {
 }
 
 // Find a mountable media file in a directory.
-// Scans the directory for files that pass insert-fd --probe or rom probe.
+// Scans the directory for files that pass floppy image validation (fd probe).
 // Prints the path of the first match and returns 0, or returns 1 if none found.
 // Used by JS after peeler extraction (FS.readdir from main thread is broken
 // with WasmFS pthreads, so this runs on the worker).
