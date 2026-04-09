@@ -28,7 +28,7 @@ test.describe('Debug Commands', () => {
     log('[debug] getting initial instruction count');
     
     // Get the initial instruction count via shell command
-    const initialCount = await runCommand(page, 'get instr');
+    const initialCount = await runCommand(page, 'print instr');
     
     log(`[debug] initial instruction count: ${initialCount}`);
     
@@ -39,7 +39,7 @@ test.describe('Debug Commands', () => {
     
     // Get the new instruction count via shell command
     log('[debug] getting instruction count after step');
-    const newCount = await runCommand(page, 'get instr');
+    const newCount = await runCommand(page, 'print instr');
     
     log(`[debug] new instruction count: ${newCount}`);
     
@@ -71,7 +71,7 @@ test.describe('Debug Commands', () => {
     log('[debug] getting initial instruction count');
     
     // Get the initial instruction count via shell command
-    const initialCount = await runCommand(page, 'get instr');
+    const initialCount = await runCommand(page, 'print instr');
     
     log(`[debug] initial instruction count: ${initialCount}`);
     
@@ -83,7 +83,7 @@ test.describe('Debug Commands', () => {
     
     // Get the new instruction count via shell command
     log('[debug] getting instruction count after stepping');
-    const newCount = await runCommand(page, 'get instr');
+    const newCount = await runCommand(page, 'print instr');
     
     log(`[debug] new instruction count: ${newCount}`);
     
@@ -209,89 +209,90 @@ test.describe('Debug Commands', () => {
     log('[debug] testing: set d5 0x12345678 then get d5');
     await runCommand(page, 'set d5 0x12345678');
     await page.waitForTimeout(100);
-    let exitCode = await runCommand(page, 'get d5');
+    let exitCode = await runCommand(page, 'print $d5');
     expect(exitCode >>> 0).toBe(0x12345678);
     
     // Test 2: Set and get address register A3
     log('[debug] testing: set a3 0x87654321 then get a3');
     await runCommand(page, 'set a3 0x87654321');
     await page.waitForTimeout(100);
-    exitCode = await runCommand(page, 'get a3');
+    exitCode = await runCommand(page, 'print $a3');
     expect(exitCode >>> 0).toBe(0x87654321);
     
     // Test 3: Set and get program counter (PC)
     log('[debug] testing: set pc 0x400000 then get pc');
     await runCommand(page, 'set pc 0x400000');
     await page.waitForTimeout(100);
-    exitCode = await runCommand(page, 'get pc');
+    exitCode = await runCommand(page, 'print $pc');
     expect(exitCode >>> 0).toBe(0x400000);
     
     // Test 4: Set and get status register (SR)
     log('[debug] testing: set sr 0x2700 then get sr');
     await runCommand(page, 'set sr 0x2700');
     await page.waitForTimeout(100);
-    exitCode = await runCommand(page, 'get sr');
+    exitCode = await runCommand(page, 'print $sr');
     expect(exitCode >>> 0).toBe(0x2700);
     
     // Test 5: Set and get CCR
     log('[debug] testing: set ccr 0x1f then get ccr');
     await runCommand(page, 'set ccr 0x1f');
     await page.waitForTimeout(100);
-    exitCode = await runCommand(page, 'get ccr');
+    exitCode = await runCommand(page, 'print $ccr');
     expect(exitCode >>> 0).toBe(0x1f);
     
     // Test 6: Set and get individual condition code (Z flag)
     log('[debug] testing: set z 1 then get z');
     await runCommand(page, 'set z 1');
     await page.waitForTimeout(100);
-    exitCode = await runCommand(page, 'get z');
+    exitCode = await runCommand(page, 'print $z');
     expect(exitCode >>> 0).toBe(1);
     
     log('[debug] testing: set z 0 then get z');
     await runCommand(page, 'set z 0');
     await page.waitForTimeout(100);
-    exitCode = await runCommand(page, 'get z');
+    exitCode = await runCommand(page, 'print $z');
     expect(exitCode >>> 0).toBe(0);
     
     // Test 7: Set and get memory byte
     log('[debug] testing: set 0x1000.b 0x42 then get 0x1000.b');
     await runCommand(page, 'set 0x1000.b 0x42');
     await page.waitForTimeout(100);
-    exitCode = await runCommand(page, 'get 0x1000.b');
+    exitCode = await runCommand(page, 'print 0x1000.b');
     expect(exitCode >>> 0).toBe(0x42);
     
     // Test 8: Set and get memory word
     log('[debug] testing: set 0x2000.w 0x1234 then get 0x2000.w');
     await runCommand(page, 'set 0x2000.w 0x1234');
     await page.waitForTimeout(100);
-    exitCode = await runCommand(page, 'get 0x2000.w');
+    exitCode = await runCommand(page, 'print 0x2000.w');
     expect(exitCode >>> 0).toBe(0x1234);
     
     // Test 9: Set and get memory long
     log('[debug] testing: set 0x3000.l 0xdeadbeef then get 0x3000.l');
     await runCommand(page, 'set 0x3000.l 0xdeadbeef');
     await page.waitForTimeout(100);
-    exitCode = await runCommand(page, 'get 0x3000.l');
+    exitCode = await runCommand(page, 'print 0x3000.l');
     expect(exitCode >>> 0).toBe(0xdeadbeef);
     
     // Test 10: Case insensitive - lowercase register names
     log('[debug] testing case insensitivity: set d7 0xffffffff then get d7');
     await runCommand(page, 'set d7 0xffffffff');
     await page.waitForTimeout(100);
-    exitCode = await runCommand(page, 'get d7');
+    exitCode = await runCommand(page, 'print $d7');
     expect(exitCode >>> 0).toBe(0xffffffff);
     
     // Test 11: SP (alias for A7)
     log('[debug] testing: set sp 0x10000 then get sp');
     await runCommand(page, 'set sp 0x10000');
     await page.waitForTimeout(100);
-    exitCode = await runCommand(page, 'get sp');
+    exitCode = await runCommand(page, 'print $sp');
     expect(exitCode >>> 0).toBe(0x10000);
     
-    // Test 12: Invalid usage - should fail gracefully
-    log('[debug] testing invalid usage: get (no arguments)');
-    exitCode = await runCommand(page, 'get');
-    expect(exitCode >>> 0).toBe(0); // Command returns 0 on usage errors
+    // Test 12: Invalid usage - should fail gracefully (returns error)
+    log('[debug] testing invalid usage: print (no arguments)');
+    exitCode = await runCommand(page, 'print');
+    // print with no args returns an error (RES_ERR → -1 as uint32 is 0xFFFFFFFF)
+    expect(exitCode).not.toBe(0);
     await page.waitForTimeout(100);
     
     log('[debug] get command test complete - all variations tested successfully');
@@ -394,7 +395,7 @@ test.describe('Debug Commands', () => {
 
     await waitForPrompt(page);
 
-    let pc = await runCommand(page, 'get pc');
+    let pc = await runCommand(page, 'print $pc');
     expect(pc >>> 0).toBe(0x004007ba);
 
     await runCommand(page, 'br 0x004007bc');
@@ -403,7 +404,7 @@ test.describe('Debug Commands', () => {
 
     await waitForPrompt(page);
 
-    pc = await runCommand(page, 'get pc');
+    pc = await runCommand(page, 'print $pc');
     expect(pc >>> 0).toBe(0x004007bc);
   });
 
@@ -455,7 +456,7 @@ test.describe('Debug Commands', () => {
     expect(terminalOutput).toContain('hit count:');
     
     // Verify we stopped at the breakpoint, not the logpoint
-    const pc = await runCommand(page, 'get pc');
+    const pc = await runCommand(page, 'print $pc');
     expect(pc >>> 0).toBe(0x004007c0);
     
     log('[debug] logpoint test complete - verified logging without stopping execution');

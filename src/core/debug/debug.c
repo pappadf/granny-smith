@@ -2167,6 +2167,15 @@ static void cmd_print_handler(struct cmd_context *ctx, struct cmd_result *res) {
         return;
     }
 
+    // Special targets that aren't symbols
+    const char *target_name = ctx->raw_argc >= 2 ? ctx->raw_argv[1] : NULL;
+    if (target_name && (strcasecmp(target_name, "instr") == 0 || strcasecmp(target_name, "$instr") == 0)) {
+        uint64_t count = cpu_instr_count();
+        cmd_printf(ctx, "Instruction count = %llu\n", (unsigned long long)count);
+        cmd_int(res, (int64_t)count);
+        return;
+    }
+
     // SYM_UNKNOWN: try as address.size (already resolved by parser)
     if (sym->address != 0 || sym->size != 0) {
         cmd_printf(ctx, "[$%08X].%c = $%0*X\n", sym->address, sym->size == 1 ? 'b' : (sym->size == 2 ? 'w' : 'l'),
@@ -2627,7 +2636,7 @@ static const struct arg_spec advance_args[] = {
 };
 
 // --- break ---
-static const char *break_aliases[] = {"b", NULL};
+static const char *break_aliases[] = {"b", "br", NULL};
 static const struct arg_spec break_set_args[] = {
     {"address", ARG_ADDR, "breakpoint address"},
 };

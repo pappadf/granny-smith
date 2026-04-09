@@ -197,10 +197,10 @@ static bool parse_one_arg(const char *token, const struct arg_spec *spec, struct
             }
         }
 
-        // Unresolved
+        // Unresolved — still succeed so the handler can inspect raw_argv
         val->as_sym.kind = SYM_UNKNOWN;
         val->as_sym.name = token;
-        return false;
+        return true;
     }
 
     case ARG_ENUM: {

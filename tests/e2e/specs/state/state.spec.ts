@@ -161,7 +161,7 @@ test.describe('State', () => {
     await runCommand(page, 'run 15000000');
     await waitForPrompt(page);
 
-    const before = await runCommand(page, 'get instr');
+    const before = await runCommand(page, 'print instr');
     log(`[state-test3] instruction counter before checkpoint: ${before}`);
 
     log('[state-test3] forcing background checkpoint');
@@ -184,13 +184,13 @@ test.describe('State', () => {
     // So it should restore to paused state - wait for prompt
     await waitForPrompt(page);
     
-    const restored = await runCommand(page, 'get instr');
+    const restored = await runCommand(page, 'print instr');
     expect(restored, 'Restored instruction counter').toBe(before);
 
     // Resume execution and verify instruction counter increases
     await runCommand(page, 'run 1000000');
     await waitForPrompt(page);
-    const after = await runCommand(page, 'get instr');
+    const after = await runCommand(page, 'print instr');
     expect(after, 'Instruction counter should increase after restore').toBeGreaterThan(before);
   });
 
@@ -286,7 +286,7 @@ test.describe('State', () => {
 
     // Phase 2: Verify instruction counter accumulates correctly
     log('[state-test5] phase 2: verifying state integrity');
-    const instrBefore = await runCommand(page, 'get instr');
+    const instrBefore = await runCommand(page, 'print instr');
     log(`[state-test5] instruction count before reload: ${instrBefore}`);
     
     // Force final checkpoint and sync
@@ -310,7 +310,7 @@ test.describe('State', () => {
     await waitForPrompt(page);
     
     // Verify instruction counter matches what we saved
-    const instrAfter = await runCommand(page, 'get instr');
+    const instrAfter = await runCommand(page, 'print instr');
     log(`[state-test5] instruction count after restore: ${instrAfter}`);
     
     expect(instrAfter).toBeGreaterThan(0);

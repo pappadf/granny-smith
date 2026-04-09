@@ -231,7 +231,7 @@ test.describe('Checkpoint Drag/Drop', () => {
     log('stepped 2000 instructions');
     
     // Record the instruction count as our reference state
-    const savedInstr = await runCommand(page, 'get instr');
+    const savedInstr = await runCommand(page, 'print instr');
     log(`reference instruction count = ${savedInstr}`);
     
     // Save a real checkpoint (RLE-compressed, should be very small)
@@ -261,7 +261,7 @@ test.describe('Checkpoint Drag/Drop', () => {
     
     // Step 1000 more instructions so the machine is now in a DIFFERENT state
     await runCommand(page, 's 1000');
-    const alteredInstr = await runCommand(page, 'get instr');
+    const alteredInstr = await runCommand(page, 'print instr');
     log(`altered instruction count = ${alteredInstr}`);
     expect(alteredInstr).not.toBe(savedInstr);
     
@@ -280,7 +280,7 @@ test.describe('Checkpoint Drag/Drop', () => {
     
     // Verify the machine state was actually restored by checking the instruction count
     // The drop handler calls checkpoint --load which recreates the machine at the saved state
-    const restoredInstr = await runCommand(page, 'get instr');
+    const restoredInstr = await runCommand(page, 'print instr');
     log(`restored instruction count = ${restoredInstr}`);
     expect(restoredInstr).toBe(savedInstr);
     log('checkpoint restored successfully: instruction count matches saved state');

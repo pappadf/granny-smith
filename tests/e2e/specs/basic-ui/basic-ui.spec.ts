@@ -93,7 +93,7 @@ test.describe('Granny Smith UI basic', () => {
           return (await (window as any).runCommand('status')) === 0;
         } catch { return false; }
       }, { timeout: 5000 });
-      const raw = await page.evaluate(() => (window as any).runCommand('get instr'));
+      const raw = await page.evaluate(() => (window as any).runCommand('print instr'));
       return typeof raw === 'bigint' ? Number(raw) : Number(raw);
     }
 
