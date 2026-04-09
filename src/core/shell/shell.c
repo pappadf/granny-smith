@@ -613,7 +613,10 @@ void dispatch_command(char *line, enum invoke_mode mode, struct cmd_result *res)
         return;
     }
 
-    cmd_err(res, "unknown command: %s", argv[0]);
+    // Unknown command: print suggestion, but return OK (exit code 0)
+    // to match the convention that unknown commands are not fatal errors.
+    suggest_command(argv[0]);
+    res->type = RES_OK;
 }
 
 // Dispatch interactively and return integer result
