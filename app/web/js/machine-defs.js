@@ -25,14 +25,4 @@ export const MACHINE_DEFS = {
     scsiSlots: ['SCSI HD0', 'SCSI HD1'],
     hasCdrom: true,
   },
-  iicx: {
-    displayName: 'Macintosh IIcx',
-    hasVrom: false,
-    ramOptions: [1, 2, 4, 8, 16, 32, 64, 128],
-    defaultRam: 8,
-    floppyDirs: ['fd', 'fdhd'],
-    floppySlots: ['Internal FD0', 'External FD1'],
-    scsiSlots: ['SCSI HD0', 'SCSI HD1'],
-    hasCdrom: true,
-  },
 };

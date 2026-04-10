@@ -9,7 +9,7 @@ export const ROM_DATABASE = {
   '4D1EEEE1': { models: ['plus'], name: 'Macintosh Plus (Rev 1, Lonely Hearts)', size: 128 * 1024 },
   '4D1EEAE1': { models: ['plus'], name: 'Macintosh Plus (Rev 2, Lonely Heifers)', size: 128 * 1024 },
   '4D1F8172': { models: ['plus'], name: 'Macintosh Plus (Rev 3, Loud Harmonicas)', size: 128 * 1024 },
-  '97221136': { models: ['se30', 'iicx'], name: 'Macintosh SE/30 (Universal ROM)', size: 256 * 1024 },
+  '97221136': { models: ['se30'], name: 'Macintosh SE/30 (Universal ROM)', size: 256 * 1024 },
 };
 
 // Given a list of ROM checksums present on disk, derive the set of

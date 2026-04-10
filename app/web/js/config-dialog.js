@@ -50,11 +50,10 @@ export function showRomUploadDialog() {
       dlg.innerHTML = `
         <div class="modal__content rom-upload-modal">
           <h2 class="modal__title">Welcome to Granny Smith</h2>
-          <p class="modal__message">Upload a Macintosh ROM image to get started.</p>
-          <div class="modal__actions" style="flex-direction:column; align-items:center; gap:0.5rem;">
+          <p class="modal__message">Upload a Macintosh Plus or SE/30 ROM file to get started.</p>
+          <div class="modal__actions">
             <button class="primary-btn" id="rom-upload-select-btn">Select ROM File...</button>
             <input id="rom-upload-file-input" type="file" style="display:none" />
-            <span class="rom-upload-hint">or drag & drop a ROM file onto the screen</span>
             <span class="rom-upload-error" id="rom-upload-error" hidden></span>
           </div>
         </div>
