@@ -189,13 +189,10 @@ test.describe('Config Dialog', () => {
     // Click Start
     await page.click('#config-start-btn');
 
-    // Wait for config dialog to close
-    await page.waitForFunction(() => {
-      const cfgDlg = document.getElementById('config-dialog');
-      return !cfgDlg || cfgDlg.getAttribute('aria-hidden') === 'true';
-    }, { timeout: 10_000 });
+    // Wait for full boot sequence to complete (bootFromConfig + __gsBootReady)
+    await page.waitForFunction(() => (window as any).__gsBootReady === true, { timeout: 60_000 });
 
-    log('config dialog closed, verifying boot commands');
+    log('boot sequence complete, verifying boot commands');
 
     // Verify rom load was issued
     const commandLog = await page.evaluate(() => {
