@@ -4,7 +4,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 **Granny Smith** is a browser-first 68000 Macintosh emulator.
-> **[Try Granny Smith instantly in your browser!](https://pappadf.github.io/gs-pages/latest/)**  
+> **[Try Granny Smith instantly in your browser!](https://pappadf.github.io/gs-pages/v0.1.0/)**  
 > _For best results, use a Chromium-based browser (Chrome, Edge, etc.). Safari has known issues._
 
 ![AppleTalk mounted filesystem](tests/e2e/specs/appletalk/appletalk-7-mounted.png)
@@ -31,7 +31,7 @@ The guiding principle for this project is to "keep it simple" — simple for eve
 
 To run Granny Smith you need a Macintosh Plus ROM image and a bootable system disk image. Both are loaded by drag-and-drop in the browser — no other configuration required.
 
-1. **[Open Granny Smith](https://pappadf.github.io/gs-pages/latest/)** in any modern browser
+1. **[Open Granny Smith](https://pappadf.github.io/gs-pages/v0.1.0/)** in any modern browser
 2. Drag a **Macintosh Plus ROM** file onto the emulator window
 3. Drag a **bootable disk image** (e.g., a System 6 `.dsk` file) onto the window
 4. The emulator boots automatically — your session is saved continuously in the background
