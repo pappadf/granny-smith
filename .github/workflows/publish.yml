@@ -63,7 +63,7 @@ jobs:
 
           # Files to deploy (everything in build/ except intermediate objects
           # and headless binaries)
-          DEPLOY_FILES="index.html main.mjs main.wasm style.css js"
+          DEPLOY_FILES="index.html main.mjs main.wasm style.css js coi-serviceworker.js"
 
           # --- Versioned folder ---
           mkdir -p "deploy/$VERSION"

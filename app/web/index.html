@@ -126,6 +126,39 @@
     </div>
   </template>
 
+  <!-- Cross-origin isolation service worker (enables SharedArrayBuffer on
+       static hosts like GitHub Pages that cannot set COOP/COEP headers). -->
+  <script>
+    // Register the COI service worker.  When the SW was not yet controlling
+    // this page we reload once so the injected headers take effect before any
+    // WASM/pthread code runs.
+    if ("serviceWorker" in navigator) {
+      // If the page is NOT yet cross-origin-isolated and is served over
+      // HTTPS (service workers require secure context), install the shim.
+      // On localhost the dev server already sends the real headers, so the
+      // SW is unnecessary (and could interfere with cache-busting).
+      const isLocalhost = ["localhost", "127.0.0.1", ""].includes(location.hostname);
+      if (!crossOriginIsolated && !isLocalhost) {
+        navigator.serviceWorker.register("./coi-serviceworker.js").then(
+          (reg) => {
+            // If a SW is already active and controlling us, we're good.
+            // Otherwise, wait for it to activate and reload.
+            if (reg.active && navigator.serviceWorker.controller) return;
+            const awaitState = (worker) => {
+              worker.addEventListener("statechange", () => {
+                if (worker.state === "activated") location.reload();
+              });
+            };
+            if (reg.installing) awaitState(reg.installing);
+            else if (reg.waiting) awaitState(reg.waiting);
+            else if (reg.active) location.reload();
+          },
+          (err) => console.warn("COI service worker registration failed:", err)
+        );
+      }
+    }
+  </script>
+
   <!-- xterm.js and fit addon from CDN -->
   <script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.js" crossorigin="anonymous"></script>
   <script src="https://cdn.jsdelivr.net/npm/xterm-addon-fit@0.8.0/lib/xterm-addon-fit.js" crossorigin="anonymous"></script>
