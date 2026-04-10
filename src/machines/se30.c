@@ -1237,6 +1237,18 @@ static void se30_init(config_t *cfg, checkpoint_t *checkpoint) {
         // Restore VROM from checkpoint (content for consolidated, file ref for quick)
         checkpoint_read_file(checkpoint, se30->vrom, SE30_VROM_SIZE, NULL);
 
+        // Restore MMU guest registers (must match save order in se30_checkpoint_save)
+        system_read_checkpoint_data(checkpoint, &se30->mmu->tc, sizeof(se30->mmu->tc));
+        system_read_checkpoint_data(checkpoint, &se30->mmu->crp, sizeof(se30->mmu->crp));
+        system_read_checkpoint_data(checkpoint, &se30->mmu->srp, sizeof(se30->mmu->srp));
+        system_read_checkpoint_data(checkpoint, &se30->mmu->tt0, sizeof(se30->mmu->tt0));
+        system_read_checkpoint_data(checkpoint, &se30->mmu->tt1, sizeof(se30->mmu->tt1));
+        system_read_checkpoint_data(checkpoint, &se30->mmu->mmusr, sizeof(se30->mmu->mmusr));
+        system_read_checkpoint_data(checkpoint, &se30->mmu->enabled, sizeof(se30->mmu->enabled));
+
+        // Flush TLB so page table walks use the restored CRP/SRP/TC
+        mmu_invalidate_tlb(se30->mmu);
+
         // Re-assign MMU pointers that checkpoint_restore overwrote with stale addresses
         g_mmu = se30->mmu;
         cfg->cpu->mmu = se30->mmu;
@@ -1377,6 +1389,15 @@ static void se30_checkpoint_save(config_t *cfg, checkpoint_t *cp) {
 
     // Save VROM (content embedded in consolidated checkpoints, path reference in quick)
     checkpoint_write_file(cp, se30->vrom_path ? se30->vrom_path : "");
+
+    // Save MMU guest registers (TC, CRP, SRP, TT0, TT1, MMUSR, enabled flag)
+    system_write_checkpoint_data(cp, &se30->mmu->tc, sizeof(se30->mmu->tc));
+    system_write_checkpoint_data(cp, &se30->mmu->crp, sizeof(se30->mmu->crp));
+    system_write_checkpoint_data(cp, &se30->mmu->srp, sizeof(se30->mmu->srp));
+    system_write_checkpoint_data(cp, &se30->mmu->tt0, sizeof(se30->mmu->tt0));
+    system_write_checkpoint_data(cp, &se30->mmu->tt1, sizeof(se30->mmu->tt1));
+    system_write_checkpoint_data(cp, &se30->mmu->mmusr, sizeof(se30->mmu->mmusr));
+    system_write_checkpoint_data(cp, &se30->mmu->enabled, sizeof(se30->mmu->enabled));
 }
 
 // ============================================================

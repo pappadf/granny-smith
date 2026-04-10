@@ -1194,9 +1194,10 @@ int system_checkpoint(const char *filename, checkpoint_kind_t kind) {
         checkpoint_set_files_as_refs(true);
     }
 
-    // Pass the machine model ID so it's stored in the checkpoint header
+    // Pass the machine model ID and RAM size so they're stored in the checkpoint header
     const char *model_id = global_emulator->machine->model_id;
-    checkpoint_t *checkpoint = checkpoint_open_write(filename, kind, model_id);
+    uint32_t ram_size_kb = global_emulator->ram_size / 1024;
+    checkpoint_t *checkpoint = checkpoint_open_write(filename, kind, model_id, ram_size_kb);
     if (!checkpoint) {
         printf("Error: Failed to open checkpoint file for writing: %s\n", filename);
         return GS_ERROR;
@@ -1241,6 +1242,13 @@ config_t *system_restore(const char *filename) {
         profile = (prev && prev->machine) ? prev->machine : machine_find("plus");
     if (!profile)
         profile = &machine_plus;
+
+    // Restore the RAM size from the checkpoint so system_create uses the
+    // correct size instead of the machine default.
+    uint32_t saved_ram_kb = checkpoint_get_ram_size_kb(checkpoint);
+    if (saved_ram_kb > 0)
+        system_set_pending_ram_kb(saved_ram_kb);
+
     config_t *config = system_create(profile, checkpoint);
 
     if (checkpoint_has_error(checkpoint)) {

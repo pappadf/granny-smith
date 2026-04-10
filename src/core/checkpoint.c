@@ -146,6 +146,8 @@ struct checkpoint {
     bool buf_owned; // true when buf was malloc'd and must be freed
     // Machine model ID stored in checkpoint header (e.g. "plus", "se30")
     char model_id[MODEL_ID_LEN];
+    // RAM size in KB stored in checkpoint header (0 = use machine default)
+    uint32_t ram_size_kb;
 };
 
 // === v3 buffer helpers ===
@@ -463,13 +465,14 @@ checkpoint_t *checkpoint_open_read(const char *filename) {
         return NULL;
     }
 
-    // Initialize buffer and model ID fields
+    // Initialize buffer, model ID, and RAM size fields
     cp->buf = NULL;
     cp->buf_cap = 0;
     cp->buf_used = 0;
     cp->buf_pos = 0;
     cp->buf_owned = false;
     memset(cp->model_id, 0, MODEL_ID_LEN);
+    cp->ram_size_kb = 0;
 
     // Read magic signature to detect format version
     char magic[CHECKPOINT_MAGIC_LEN];
@@ -510,6 +513,14 @@ checkpoint_t *checkpoint_open_read(const char *filename) {
             return NULL;
         }
         cp->model_id[MODEL_ID_LEN - 1] = '\0';
+        // Read RAM size in KB (uint32_t, fixed 4 bytes)
+        got = fread(&cp->ram_size_kb, 1, sizeof(cp->ram_size_kb), cp->file);
+        if (got != sizeof(cp->ram_size_kb)) {
+            printf("Error: Failed to read RAM size from %s\n", filename);
+            fclose(cp->file);
+            free(cp);
+            return NULL;
+        }
         uint64_t uncompressed_size = 0, compressed_size = 0;
         got = fread(&uncompressed_size, 1, sizeof(uncompressed_size), cp->file);
         if (got != sizeof(uncompressed_size)) {
@@ -603,6 +614,14 @@ checkpoint_t *checkpoint_open_read(const char *filename) {
             return NULL;
         }
         cp->model_id[MODEL_ID_LEN - 1] = '\0';
+        // Read RAM size in KB (uint32_t, fixed 4 bytes)
+        got = fread(&cp->ram_size_kb, 1, sizeof(cp->ram_size_kb), cp->file);
+        if (got != sizeof(cp->ram_size_kb)) {
+            printf("Error: Failed to read RAM size from %s\n", filename);
+            fclose(cp->file);
+            free(cp);
+            return NULL;
+        }
         cp->kind = CHECKPOINT_KIND_CONSOLIDATED;
     } else {
         printf("Error: %s is not a valid Granny Smith checkpoint (bad signature)\n", filename);
@@ -617,7 +636,8 @@ checkpoint_t *checkpoint_open_read(const char *filename) {
 }
 
 // Open a checkpoint file for writing
-checkpoint_t *checkpoint_open_write(const char *filename, checkpoint_kind_t kind, const char *model_id) {
+checkpoint_t *checkpoint_open_write(const char *filename, checkpoint_kind_t kind, const char *model_id,
+                                    uint32_t ram_size_kb) {
     checkpoint_t *cp = (checkpoint_t *)malloc(sizeof(struct checkpoint));
     if (!cp)
         return NULL;
@@ -636,6 +656,9 @@ checkpoint_t *checkpoint_open_write(const char *filename, checkpoint_kind_t kind
     memset(cp->model_id, 0, MODEL_ID_LEN);
     if (model_id)
         strncpy(cp->model_id, model_id, MODEL_ID_LEN - 1);
+
+    // Store RAM size in KB
+    cp->ram_size_kb = ram_size_kb;
 
     // Initialize buffer fields
     cp->buf = NULL;
@@ -681,6 +704,13 @@ checkpoint_t *checkpoint_open_write(const char *filename, checkpoint_kind_t kind
             free(cp);
             return NULL;
         }
+        // Write RAM size in KB (uint32_t, fixed 4 bytes)
+        if (fwrite(&cp->ram_size_kb, 1, sizeof(cp->ram_size_kb), cp->file) != sizeof(cp->ram_size_kb)) {
+            printf("Error: Failed to write RAM size to %s\n", filename);
+            fclose(cp->file);
+            free(cp);
+            return NULL;
+        }
     }
 
     return cp;
@@ -700,6 +730,13 @@ const char *checkpoint_get_model_id(checkpoint_t *checkpoint) {
     return checkpoint->model_id;
 }
 
+// Get the RAM size (in KB) stored in the checkpoint header (0 = use machine default)
+uint32_t checkpoint_get_ram_size_kb(checkpoint_t *checkpoint) {
+    if (!checkpoint)
+        return 0;
+    return checkpoint->ram_size_kb;
+}
+
 // Close a checkpoint and free its resources
 void checkpoint_close(checkpoint_t *checkpoint) {
     if (!checkpoint)
@@ -708,10 +745,11 @@ void checkpoint_close(checkpoint_t *checkpoint) {
     // v3 quick write: write buffer directly (RLE temporarily disabled for testing)
     if (checkpoint->is_writing && checkpoint->buf && !checkpoint->error) {
         size_t raw_size = checkpoint->buf_used;
-        // Write v3 header: magic + build ID + model ID + uncompressed_size + compressed_size
+        // Write v3 header: magic + build ID + model ID + ram_size_kb + uncompressed_size + compressed_size
         fwrite(CHECKPOINT_MAGIC_V3, 1, CHECKPOINT_MAGIC_LEN, checkpoint->file);
         fwrite(get_build_id(), 1, BUILD_ID_LEN, checkpoint->file);
         fwrite(checkpoint->model_id, 1, MODEL_ID_LEN, checkpoint->file);
+        fwrite(&checkpoint->ram_size_kb, 1, sizeof(checkpoint->ram_size_kb), checkpoint->file);
         uint64_t uc = (uint64_t)raw_size;
         fwrite(&uc, 1, sizeof(uc), checkpoint->file);
         uint64_t cs = (uint64_t)raw_size; // "compressed" size = raw size (no compression)
