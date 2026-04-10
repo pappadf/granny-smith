@@ -1194,7 +1194,9 @@ int system_checkpoint(const char *filename, checkpoint_kind_t kind) {
         checkpoint_set_files_as_refs(true);
     }
 
-    checkpoint_t *checkpoint = checkpoint_open_write(filename, kind);
+    // Pass the machine model ID so it's stored in the checkpoint header
+    const char *model_id = global_emulator->machine->model_id;
+    checkpoint_t *checkpoint = checkpoint_open_write(filename, kind, model_id);
     if (!checkpoint) {
         printf("Error: Failed to open checkpoint file for writing: %s\n", filename);
         return GS_ERROR;
@@ -1229,9 +1231,14 @@ config_t *system_restore(const char *filename) {
     // Save the current global emulator so we can restore it on error.
     config_t *prev = global_emulator;
 
-    // Determine machine profile: use the current machine if one is active,
-    // otherwise default to Plus for backward compatibility with old checkpoints.
-    const hw_profile_t *profile = (prev && prev->machine) ? prev->machine : machine_find("plus");
+    // Determine machine profile from the checkpoint header, falling back to
+    // the current machine or Plus for backward compatibility.
+    const hw_profile_t *profile = NULL;
+    const char *saved_model_id = checkpoint_get_model_id(checkpoint);
+    if (saved_model_id && saved_model_id[0])
+        profile = machine_find(saved_model_id);
+    if (!profile)
+        profile = (prev && prev->machine) ? prev->machine : machine_find("plus");
     if (!profile)
         profile = &machine_plus;
     config_t *config = system_create(profile, checkpoint);

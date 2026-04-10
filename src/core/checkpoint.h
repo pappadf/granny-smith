@@ -24,8 +24,8 @@ typedef enum {
 // Opens a checkpoint file for reading
 checkpoint_t *checkpoint_open_read(const char *filename);
 
-// Opens a checkpoint file for writing with the specified kind
-checkpoint_t *checkpoint_open_write(const char *filename, checkpoint_kind_t kind);
+// Opens a checkpoint file for writing with the specified kind and machine model ID
+checkpoint_t *checkpoint_open_write(const char *filename, checkpoint_kind_t kind, const char *model_id);
 
 // Closes a checkpoint file and frees resources
 void checkpoint_close(checkpoint_t *checkpoint);
@@ -38,6 +38,9 @@ void checkpoint_set_error(checkpoint_t *checkpoint);
 
 // Returns the kind of an open checkpoint
 checkpoint_kind_t checkpoint_get_kind(checkpoint_t *checkpoint);
+
+// Returns the machine model ID stored in the checkpoint header (e.g. "plus", "se30")
+const char *checkpoint_get_model_id(checkpoint_t *checkpoint);
 
 // === Block I/O (with file:line metadata for diagnostics) ===
 

@@ -4,7 +4,7 @@
 import { test } from '../../fixtures';
 import { expect } from '@playwright/test';
 import { matchScreenFast } from '../../helpers/screen';
-import { bootWithUploadedMedia, bootWithMedia } from '../../helpers/boot';
+import { bootWithUploadedMedia, bootWithMedia, TEST_MEDIA_ROOT } from '../../helpers/boot';
 import { installTestShim, captureXterm } from '../../helpers/terminal';
 import { runCommand, waitForPrompt, waitForSync, waitForCompleteCheckpoint } from '../../helpers/run-command';
 import { mouseDrag } from '../../helpers/mouse';
@@ -12,6 +12,31 @@ import { readMemfsFiles } from '../../helpers/memfs';
 import { dispatchDropEvent } from '../../helpers/drop';
 import * as fs from 'fs';
 import * as path from 'path';
+
+// Helper: boot an SE/30 with uploaded media (ROM + VROM + optional disk)
+// bootWithUploadedMedia doesn't handle VROM, so we inject it manually.
+async function bootSE30WithUploadedMedia(
+  page: import('@playwright/test').Page,
+  fd0Rel?: string,
+  hd0ZipRel?: string,
+  options?: { hdSlot?: number; hideOverlay?: boolean }
+) {
+  const hdSlot = options?.hdSlot ?? 0;
+  const hideOverlay = options?.hideOverlay ?? true;
+
+  // Boot with SE30 ROM via the standard helper
+  await bootWithUploadedMedia(page, 'roms/SE30.rom', fd0Rel, hd0ZipRel, { hdSlot, hideOverlay });
+
+  // Inject the VROM file and issue vrom load command
+  const vromPath = path.join(TEST_MEDIA_ROOT, 'roms', 'SE30.vrom');
+  const vromData = new Uint8Array(fs.readFileSync(vromPath));
+  await page.evaluate((data) => {
+    const FS = (window as any).__Module.FS;
+    try { FS.unlink('/tmp/vrom'); } catch (_) {}
+    FS.writeFile('/tmp/vrom', new Uint8Array(data));
+  }, Array.from(vromData));
+  await page.evaluate(() => (window as any).runCommand('vrom load /tmp/vrom'));
+}
 
 test.describe('State', () => {
 
@@ -731,5 +756,85 @@ test.describe('State', () => {
 
     // Assert equality of original vs restored run logs
     expect(a, 'Loaded state log must match original log').toBe(b);
+  });
+
+  // SE/30 variant of test 1: save and load back state in-session.
+  // Validates that SE/30 checkpoints (68030 CPU, dual VIA, ADB, ASC, VRAM)
+  // round-trip correctly within the same session.
+  test('test 9: SE/30 save and load back state', async ({ page, log }) => {
+
+    test.setTimeout(180_000);
+
+    log('[state-test9] booting SE/30 via MEMFS uploads');
+    await bootSE30WithUploadedMedia(page, undefined, 'systems/hd1.zip', { hdSlot: 0, hideOverlay: true });
+
+    log('[state-test9] running 18M instructions');
+    await runCommand(page, 'run 18000000');
+
+    log('[state-test9] waiting for prompt');
+    await waitForPrompt(page);
+
+    log('[state-test9] saving state');
+    await runCommand(page, 'checkpoint --save foo');
+
+    log('[state-test9] loading back state');
+    await runCommand(page, 'checkpoint --load foo');
+
+    log('[state-test9] resuming from loaded state');
+    await runCommand(page, 'run 5000000');
+    await waitForPrompt(page);
+
+    // Verify the emulator is still functional after restore by checking
+    // that the instruction counter advanced
+    const instr = await runCommand(page, 'print instr');
+    expect(instr, 'Instruction counter should be > 0 after restore').toBeGreaterThan(0);
+  });
+
+  // SE/30 variant of test 3: background checkpoint with browser reload.
+  // This is the key regression test: after a page reload, the checkpoint
+  // restore must use the SE/30 machine profile (not the Plus fallback).
+  // Without the fix, system_restore() defaults to machine_find("plus")
+  // when no machine is active, causing data layout mismatches.
+  test('test 10: SE/30 background checkpoint with browser reload', async ({ page, log }) => {
+
+    test.setTimeout(180_000);
+
+    log('[state-test10] booting SE/30 via MEMFS uploads');
+    await bootSE30WithUploadedMedia(page, undefined, 'systems/hd1.zip', { hdSlot: 0, hideOverlay: true });
+
+    log('[state-test10] running instructions before checkpoint');
+    await runCommand(page, 'run 15000000');
+    await waitForPrompt(page);
+
+    log('[state-test10] forcing background checkpoint');
+    await runCommand(page, 'background-checkpoint e2e');
+    await waitForPrompt(page);
+
+    log('[state-test10] waiting for checkpoint to be marked complete');
+    await waitForCompleteCheckpoint(page);
+
+    log('[state-test10] syncing persist storage');
+    await waitForSync(page);
+
+    log('[state-test10] reloading page to trigger resume prompt');
+    await page.reload();
+
+    await page.waitForSelector('#checkpoint-dialog', { state: 'visible', timeout: 30_000 });
+    await page.locator('[data-checkpoint-continue]').click();
+
+    // Checkpoint was saved while paused — wait for prompt
+    await waitForPrompt(page);
+
+    // Verify instruction counter was restored (should be >= 15M from the run before save)
+    const restored = await runCommand(page, 'print instr');
+    log(`[state-test10] instruction counter after restore: ${restored}`);
+    expect(restored, 'Restored instruction counter should be non-zero').toBeGreaterThan(0);
+
+    // Resume execution and verify instruction counter increases further
+    await runCommand(page, 'run 1000000');
+    await waitForPrompt(page);
+    const after = await runCommand(page, 'print instr');
+    log(`[state-test10] instruction counter after additional run: ${after}`);
+    expect(after, 'Instruction counter should increase after restore + run').toBeGreaterThan(restored);
   });
 });

@@ -28,6 +28,9 @@ static const char CHECKPOINT_MAGIC_V3[] = "GSCHKPT3";
 // Blocks >= this size use RLE compression (v2 only)
 #define RLE_THRESHOLD 64
 
+// Fixed-size model ID field in checkpoint headers (null-padded)
+#define MODEL_ID_LEN 16
+
 // Pre-allocated buffer capacity for quick checkpoint accumulation (~8 MB)
 // Must exceed 4 MB RAM + ROM content + peripheral state + per-block headers.
 #define QUICK_BUF_CAPACITY (8 * 1024 * 1024)
@@ -141,6 +144,8 @@ struct checkpoint {
     size_t buf_used; // bytes stored (write) or total decompressed size (read)
     size_t buf_pos; // read cursor position (read only)
     bool buf_owned; // true when buf was malloc'd and must be freed
+    // Machine model ID stored in checkpoint header (e.g. "plus", "se30")
+    char model_id[MODEL_ID_LEN];
 };
 
 // === v3 buffer helpers ===
@@ -458,12 +463,13 @@ checkpoint_t *checkpoint_open_read(const char *filename) {
         return NULL;
     }
 
-    // Initialize buffer fields
+    // Initialize buffer and model ID fields
     cp->buf = NULL;
     cp->buf_cap = 0;
     cp->buf_used = 0;
     cp->buf_pos = 0;
     cp->buf_owned = false;
+    memset(cp->model_id, 0, MODEL_ID_LEN);
 
     // Read magic signature to detect format version
     char magic[CHECKPOINT_MAGIC_LEN];
@@ -476,7 +482,7 @@ checkpoint_t *checkpoint_open_read(const char *filename) {
     }
 
     if (memcmp(magic, CHECKPOINT_MAGIC_V3, CHECKPOINT_MAGIC_LEN) == 0) {
-        // v3 quick format: read build ID, then sizes, decompress entire payload into buffer
+        // v3 quick format: read build ID, model ID, then sizes, decompress entire payload into buffer
         char file_build_id[BUILD_ID_LEN + 1];
         got = fread(file_build_id, 1, BUILD_ID_LEN, cp->file);
         if (got != BUILD_ID_LEN) {
@@ -495,6 +501,15 @@ checkpoint_t *checkpoint_open_read(const char *filename) {
             free(cp);
             return NULL;
         }
+        // Read machine model ID (fixed-size, null-padded)
+        got = fread(cp->model_id, 1, MODEL_ID_LEN, cp->file);
+        if (got != MODEL_ID_LEN) {
+            printf("Error: Failed to read model ID from %s\n", filename);
+            fclose(cp->file);
+            free(cp);
+            return NULL;
+        }
+        cp->model_id[MODEL_ID_LEN - 1] = '\0';
         uint64_t uncompressed_size = 0, compressed_size = 0;
         got = fread(&uncompressed_size, 1, sizeof(uncompressed_size), cp->file);
         if (got != sizeof(uncompressed_size)) {
@@ -560,7 +575,7 @@ checkpoint_t *checkpoint_open_read(const char *filename) {
         cp->file = NULL;
         cp->kind = CHECKPOINT_KIND_QUICK;
     } else if (memcmp(magic, CHECKPOINT_MAGIC_V2, CHECKPOINT_MAGIC_LEN) == 0) {
-        // v2 consolidated format: read build ID, then per-block streaming from file
+        // v2 consolidated format: read build ID, model ID, then per-block streaming from file
         char file_build_id[BUILD_ID_LEN + 1];
         got = fread(file_build_id, 1, BUILD_ID_LEN, cp->file);
         if (got != BUILD_ID_LEN) {
@@ -579,6 +594,15 @@ checkpoint_t *checkpoint_open_read(const char *filename) {
             free(cp);
             return NULL;
         }
+        // Read machine model ID (fixed-size, null-padded)
+        got = fread(cp->model_id, 1, MODEL_ID_LEN, cp->file);
+        if (got != MODEL_ID_LEN) {
+            printf("Error: Failed to read model ID from %s\n", filename);
+            fclose(cp->file);
+            free(cp);
+            return NULL;
+        }
+        cp->model_id[MODEL_ID_LEN - 1] = '\0';
         cp->kind = CHECKPOINT_KIND_CONSOLIDATED;
     } else {
         printf("Error: %s is not a valid Granny Smith checkpoint (bad signature)\n", filename);
@@ -593,7 +617,7 @@ checkpoint_t *checkpoint_open_read(const char *filename) {
 }
 
 // Open a checkpoint file for writing
-checkpoint_t *checkpoint_open_write(const char *filename, checkpoint_kind_t kind) {
+checkpoint_t *checkpoint_open_write(const char *filename, checkpoint_kind_t kind, const char *model_id) {
     checkpoint_t *cp = (checkpoint_t *)malloc(sizeof(struct checkpoint));
     if (!cp)
         return NULL;
@@ -607,6 +631,11 @@ checkpoint_t *checkpoint_open_write(const char *filename, checkpoint_kind_t kind
     cp->is_writing = true;
     cp->error = false;
     cp->kind = kind;
+
+    // Store model ID in the checkpoint handle (null-padded to MODEL_ID_LEN)
+    memset(cp->model_id, 0, MODEL_ID_LEN);
+    if (model_id)
+        strncpy(cp->model_id, model_id, MODEL_ID_LEN - 1);
 
     // Initialize buffer fields
     cp->buf = NULL;
@@ -631,7 +660,7 @@ checkpoint_t *checkpoint_open_write(const char *filename, checkpoint_kind_t kind
         cp->buf_used = 0;
         cp->buf_owned = false; // static buffer, not freed on close
     } else {
-        // v2 consolidated: write magic + build ID immediately, data streamed per-block
+        // v2 consolidated: write magic + build ID + model ID immediately, data streamed per-block
         if (fwrite(CHECKPOINT_MAGIC_V2, 1, CHECKPOINT_MAGIC_LEN, cp->file) != CHECKPOINT_MAGIC_LEN) {
             printf("Error: Failed to write checkpoint signature to %s\n", filename);
             fclose(cp->file);
@@ -641,6 +670,13 @@ checkpoint_t *checkpoint_open_write(const char *filename, checkpoint_kind_t kind
         // Write build ID right after the magic signature
         if (fwrite(get_build_id(), 1, BUILD_ID_LEN, cp->file) != BUILD_ID_LEN) {
             printf("Error: Failed to write build ID to %s\n", filename);
+            fclose(cp->file);
+            free(cp);
+            return NULL;
+        }
+        // Write machine model ID (fixed-size, null-padded)
+        if (fwrite(cp->model_id, 1, MODEL_ID_LEN, cp->file) != MODEL_ID_LEN) {
+            printf("Error: Failed to write model ID to %s\n", filename);
             fclose(cp->file);
             free(cp);
             return NULL;
@@ -657,6 +693,13 @@ checkpoint_kind_t checkpoint_get_kind(checkpoint_t *checkpoint) {
     return checkpoint->kind;
 }
 
+// Get the machine model ID stored in the checkpoint header
+const char *checkpoint_get_model_id(checkpoint_t *checkpoint) {
+    if (!checkpoint)
+        return "";
+    return checkpoint->model_id;
+}
+
 // Close a checkpoint and free its resources
 void checkpoint_close(checkpoint_t *checkpoint) {
     if (!checkpoint)
@@ -665,9 +708,10 @@ void checkpoint_close(checkpoint_t *checkpoint) {
     // v3 quick write: write buffer directly (RLE temporarily disabled for testing)
     if (checkpoint->is_writing && checkpoint->buf && !checkpoint->error) {
         size_t raw_size = checkpoint->buf_used;
-        // Write v3 header: magic + build ID + uncompressed_size + compressed_size
+        // Write v3 header: magic + build ID + model ID + uncompressed_size + compressed_size
         fwrite(CHECKPOINT_MAGIC_V3, 1, CHECKPOINT_MAGIC_LEN, checkpoint->file);
         fwrite(get_build_id(), 1, BUILD_ID_LEN, checkpoint->file);
+        fwrite(checkpoint->model_id, 1, MODEL_ID_LEN, checkpoint->file);
         uint64_t uc = (uint64_t)raw_size;
         fwrite(&uc, 1, sizeof(uc), checkpoint->file);
         uint64_t cs = (uint64_t)raw_size; // "compressed" size = raw size (no compression)

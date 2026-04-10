@@ -126,6 +126,7 @@ typedef struct se30_state {
 
     // Video ROM (real SE/30 declaration ROM for slot E, loaded from file)
     uint8_t *vrom;
+    char *vrom_path; // path the VROM was loaded from (for checkpoint serialization)
 
     // MMU state (NULL until se30_init creates it)
     mmu_state_t *mmu;
@@ -386,38 +387,46 @@ static void se30_build_vrom_fallback(uint8_t *rom) {
     top[0x1FF7] = (uint8_t)(crc);
 }
 
+// Try to load the VROM from a single path. Returns true on success.
+static bool try_load_vrom(const char *path, uint8_t *vrom_buf) {
+    FILE *f = fopen(path, "rb");
+    if (!f)
+        return false;
+    size_t n = fread(vrom_buf, 1, SE30_VROM_SIZE, f);
+    fclose(f);
+    if (n == SE30_VROM_SIZE) {
+        LOG(1, "Loaded real VROM from %s (%zu bytes)", path, n);
+        return true;
+    }
+    return false;
+}
+
 // Try to load the real SE/30 VROM from a file.
+// On success, stores the loaded path in se30->vrom_path for checkpoint serialization.
 // Returns true if a real VROM was loaded, false if not found.
 static bool se30_load_vrom(config_t *cfg, uint8_t *vrom_buf) {
-    // Check explicit VROM path first (set via "rom load-vrom <path>")
+    se30_state_t *se30 = se30_state(cfg);
+
+    // Check explicit VROM path first (set via "vrom load <path>")
     const char *explicit_path = memory_pending_vrom_path();
     if (explicit_path) {
-        FILE *f = fopen(explicit_path, "rb");
-        if (f) {
-            size_t n = fread(vrom_buf, 1, SE30_VROM_SIZE, f);
-            fclose(f);
-            if (n == SE30_VROM_SIZE) {
-                LOG(1, "Loaded real VROM from %s (%zu bytes)", explicit_path, n);
-                return true;
-            }
-            LOG(0, "VROM file %s exists but wrong size (%zu, expected %zu)", explicit_path, n, (size_t)SE30_VROM_SIZE);
-        } else {
-            LOG(0, "VROM file %s not found", explicit_path);
+        if (try_load_vrom(explicit_path, vrom_buf)) {
+            free(se30->vrom_path);
+            se30->vrom_path = strdup(explicit_path);
+            return true;
         }
+        LOG(0, "VROM file %s not found or wrong size", explicit_path);
     }
 
     // Fallback: search well-known paths for the real 32 KB VROM binary
-    static const char *search_paths[] = {"tests/data/roms/SE30.vrom", "SE30.vrom", NULL};
+    static const char *search_paths[] = {"/opfs/images/vrom/SE30.vrom", // OPFS-persisted VROM (survives page reloads)
+                                         "tests/data/roms/SE30.vrom", "SE30.vrom", NULL};
 
     for (const char **p = search_paths; *p; p++) {
-        FILE *f = fopen(*p, "rb");
-        if (f) {
-            size_t n = fread(vrom_buf, 1, SE30_VROM_SIZE, f);
-            fclose(f);
-            if (n == SE30_VROM_SIZE) {
-                LOG(1, "Loaded real VROM from %s (%zu bytes)", *p, n);
-                return true;
-            }
+        if (try_load_vrom(*p, vrom_buf)) {
+            free(se30->vrom_path);
+            se30->vrom_path = strdup(*p);
+            return true;
         }
     }
 
@@ -434,14 +443,10 @@ static bool se30_load_vrom(config_t *cfg, uint8_t *vrom_buf) {
             if (dir_len + sizeof("SE30.vrom") <= sizeof(vrom_path)) {
                 memcpy(vrom_path, rom_path, dir_len);
                 memcpy(vrom_path + dir_len, "SE30.vrom", sizeof("SE30.vrom"));
-                FILE *f = fopen(vrom_path, "rb");
-                if (f) {
-                    size_t n = fread(vrom_buf, 1, SE30_VROM_SIZE, f);
-                    fclose(f);
-                    if (n == SE30_VROM_SIZE) {
-                        LOG(1, "Loaded real VROM from %s (%zu bytes)", vrom_path, n);
-                        return true;
-                    }
+                if (try_load_vrom(vrom_path, vrom_buf)) {
+                    free(se30->vrom_path);
+                    se30->vrom_path = strdup(vrom_path);
+                    return true;
                 }
             }
         }
@@ -1165,10 +1170,12 @@ static void se30_init(config_t *cfg, checkpoint_t *checkpoint) {
     se30->vram = calloc(1, SE30_VRAM_SIZE);
     assert(se30->vram != NULL);
 
-    // Load the real SE/30 video declaration ROM from disk
+    // Load the real SE/30 video declaration ROM from disk.
+    // When restoring from a checkpoint, the VROM will be overwritten from
+    // the checkpoint data, so a missing file is not fatal in that case.
     se30->vrom = calloc(1, SE30_VROM_SIZE);
     assert(se30->vrom != NULL);
-    if (!se30_load_vrom(cfg, se30->vrom)) {
+    if (!se30_load_vrom(cfg, se30->vrom) && !checkpoint) {
         fprintf(stderr, "Error: SE/30 Video ROM (SE30.vrom) not found.\n"
                         "The SE/30 emulator requires a real VROM file for proper operation.\n"
                         "Place SE30.vrom next to the ROM file or in tests/data/roms/.\n");
@@ -1227,6 +1234,9 @@ static void se30_init(config_t *cfg, checkpoint_t *checkpoint) {
         // Restore VRAM contents
         system_read_checkpoint_data(checkpoint, se30->vram, SE30_VRAM_SIZE);
 
+        // Restore VROM from checkpoint (content for consolidated, file ref for quick)
+        checkpoint_read_file(checkpoint, se30->vrom, SE30_VROM_SIZE, NULL);
+
         // Re-assign MMU pointers that checkpoint_restore overwrote with stale addresses
         g_mmu = se30->mmu;
         cfg->cpu->mmu = se30->mmu;
@@ -1265,6 +1275,10 @@ static void se30_teardown(config_t *cfg) {
         if (se30->vrom) {
             free(se30->vrom);
             se30->vrom = NULL;
+        }
+        if (se30->vrom_path) {
+            free(se30->vrom_path);
+            se30->vrom_path = NULL;
         }
         if (se30->floppy) {
             floppy_delete(se30->floppy);
@@ -1360,6 +1374,9 @@ static void se30_checkpoint_save(config_t *cfg, checkpoint_t *cp) {
 
     // Save VRAM contents (must match restore order in se30_init)
     system_write_checkpoint_data(cp, se30->vram, SE30_VRAM_SIZE);
+
+    // Save VROM (content embedded in consolidated checkpoints, path reference in quick)
+    checkpoint_write_file(cp, se30->vrom_path ? se30->vrom_path : "");
 }
 
 // ============================================================
