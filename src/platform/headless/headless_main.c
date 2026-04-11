@@ -117,12 +117,13 @@ static int kill_existing_daemon(int port) {
 
 // Print usage information
 static void print_usage(const char *program) {
-    printf("Usage: %s rom=<file> [hd=<file>] [fd=<file>] [script=<file>]\n", program);
+    printf("Usage: %s rom=<file> [hd=<file>] [cdrom=<file>] [fd=<file>] [script=<file>]\n", program);
     printf("\n");
     printf("Arguments:\n");
     printf("  rom=<file>      ROM image file (required)\n");
     printf("  ram=<kb>        RAM size in kilobytes (default: machine-specific)\n");
     printf("  hd=<file>       Hard disk image file (optional, can specify multiple)\n");
+    printf("  cdrom=<file>    CD-ROM image file (optional, SCSI ID 3+)\n");
     printf("  fd=<file>       Floppy disk image file (optional, can specify multiple)\n");
     printf("  fd0=<file>      Floppy disk image for drive 0 (internal)\n");
     printf("  fd1=<file>      Floppy disk image for drive 1 (external)\n");
@@ -575,6 +576,8 @@ int main(int argc, char *argv[]) {
     const char *rom_file = NULL;
     const char *hd_files[8] = {NULL};
     int hd_count = 0;
+    const char *cdrom_files[8] = {NULL}; // cdrom=<file> arguments
+    int cdrom_count = 0;
     const char *fd_files[2] = {NULL};
     int fd_count = 0;
     const char *fd_explicit[2] = {NULL}; // fd0= and fd1= explicit drive assignments
@@ -650,6 +653,15 @@ int main(int argc, char *argv[]) {
             continue;
         }
 
+        if ((value = parse_arg(arg, "cdrom")) != NULL) {
+            if (cdrom_count < 8) {
+                cdrom_files[cdrom_count++] = value;
+            } else {
+                fprintf(stderr, "Warning: Too many CD-ROM images, ignoring: %s\n", value);
+            }
+            continue;
+        }
+
         if ((value = parse_arg(arg, "fd0")) != NULL) {
             fd_explicit[0] = value;
             continue;
@@ -716,6 +728,8 @@ int main(int argc, char *argv[]) {
             printf("RAM:    %u KB\n", ram_kb);
         for (int i = 0; i < hd_count; i++)
             printf("HD[%d]:  %s\n", i, hd_files[i]);
+        for (int i = 0; i < cdrom_count; i++)
+            printf("CD[%d]:  %s\n", i, cdrom_files[i]);
         for (int i = 0; i < fd_count; i++)
             printf("FD[%d]:  %s\n", i, fd_files[i]);
         if (script_file)
@@ -765,6 +779,19 @@ int main(int argc, char *argv[]) {
         add_scsi_drive(global_emulator, hd_files[i], i);
         if (!quiet)
             printf("Attached HD[%d]: %s\n", i, hd_files[i]);
+    }
+
+    // Attach CD-ROM images (default SCSI ID starts at 3)
+    for (int i = 0; i < cdrom_count; i++) {
+        int cdrom_id = 3 + i; // default SCSI IDs 3, 4, 5, ...
+        snprintf(cmd, sizeof(cmd), "cdrom attach %s %d", cdrom_files[i], cdrom_id);
+        int rc = shell_dispatch(cmd);
+        if (rc == 0) {
+            if (!quiet)
+                printf("Attached CD-ROM[%d]: %s (SCSI ID %d)\n", i, cdrom_files[i], cdrom_id);
+        } else {
+            fprintf(stderr, "Warning: Cannot attach CD-ROM image: %s\n", cdrom_files[i]);
+        }
     }
 
     // Insert explicit fd0=/fd1= floppy images into their designated drives

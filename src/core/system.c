@@ -25,6 +25,7 @@
 #include "scc.h"
 #include "scheduler.h"
 #include "scsi.h"
+#include "scsi_internal.h"
 #include "shell.h"
 #include "sound.h"
 #include "via.h"
@@ -40,6 +41,9 @@ LOG_USE_CATEGORY_NAME("setup");
 
 // Global emulator pointer (definition)
 config_t *global_emulator = NULL;
+
+// Forward declarations for SCSI device attachment functions
+static void add_scsi_cdrom(struct config *restrict config, const char *filename, int scsi_id);
 
 // Pending RAM override (KB). Set by `setup --ram` or headless `ram=` arg.
 // Consumed by system_create(); 0 means use machine default.
@@ -853,11 +857,11 @@ static void cmd_vrom_handler(struct cmd_context *ctx, struct cmd_result *res) {
     cmd_err(res, "unknown vrom subcommand: %s", subcmd);
 }
 
-// --- cdrom (unified: validate/attach) ---
+// --- cdrom (unified: validate/attach/eject/info) ---
 static void cmd_cdrom_handler(struct cmd_context *ctx, struct cmd_result *res) {
     const char *subcmd = ctx->subcmd;
     if (!subcmd) {
-        cmd_err(res, "usage: cdrom <validate|attach> [args...]");
+        cmd_err(res, "usage: cdrom <validate|attach|eject|info> [args...]");
         return;
     }
 
@@ -880,10 +884,57 @@ static void cmd_cdrom_handler(struct cmd_context *ctx, struct cmd_result *res) {
             cmd_bool(res, false);
             return;
         }
-        // Placeholder: accept any non-floppy image that can be opened.
-        // TODO: Add ISO 9660 ("CD001" at offset 32769) and HFS (0x4244 at
-        // offset 1024) signature checks when full CD-ROM support lands.
-        cmd_printf(ctx, "valid CD-ROM image: %zu bytes\n", img->raw_size);
+
+        // Signature checks use disk_read_data which requires 512-byte aligned
+        // reads, so we read whole sectors and extract bytes within them.
+        bool is_iso = false;
+        bool is_hfs = false;
+        bool is_apm = false;
+        size_t sz = disk_size(img);
+        uint8_t sector[512];
+
+        // Check for ISO 9660 signature ("CD001" at offset 32769 = sector 64, byte 1)
+        if (sz >= 33280) { // need sector 64 + sector 65
+            disk_read_data(img, 32768, sector, 512);
+            if (memcmp(sector + 1, "CD001", 5) == 0)
+                is_iso = true;
+        }
+
+        // Check for HFS signature (0x4244 at offset 1024 = sector 2, byte 0)
+        if (sz >= 1536) {
+            disk_read_data(img, 1024, sector, 512);
+            if (sector[0] == 0x42 && sector[1] == 0x44)
+                is_hfs = true;
+        }
+
+        // Check for Apple Partition Map (DDM 0x4552 at sector 0, PM 0x504D at sector 1)
+        if (sz >= 1024) {
+            disk_read_data(img, 0, sector, 512);
+            bool has_ddm = (sector[0] == 0x45 && sector[1] == 0x52);
+            disk_read_data(img, 512, sector, 512);
+            bool has_pm = (sector[0] == 0x50 && sector[1] == 0x4D);
+            if (has_ddm && has_pm)
+                is_apm = true;
+        }
+
+        // Format size for display
+        double size_mb = (double)sz / (1024.0 * 1024.0);
+
+        if (is_iso && is_hfs)
+            cmd_printf(ctx, "valid CD-ROM image: %.1f MB, ISO 9660 + HFS hybrid\n", size_mb);
+        else if (is_iso)
+            cmd_printf(ctx, "valid CD-ROM image: %.1f MB, ISO 9660\n", size_mb);
+        else if (is_hfs)
+            cmd_printf(ctx, "valid CD-ROM image: %.1f MB, HFS\n", size_mb);
+        else if (is_apm)
+            cmd_printf(ctx, "valid CD-ROM image: %.1f MB, Apple Partition Map\n", size_mb);
+        else {
+            cmd_printf(ctx, "invalid CD-ROM image: no ISO 9660, HFS, or Apple Partition Map detected\n");
+            image_close(img);
+            cmd_bool(res, false);
+            return;
+        }
+
         image_close(img);
         cmd_bool(res, true);
         return;
@@ -901,8 +952,66 @@ static void cmd_cdrom_handler(struct cmd_context *ctx, struct cmd_result *res) {
             cmd_err(res, "cdrom attach: emulator not initialized");
             return;
         }
-        add_scsi_drive(config, ctx->args[0].as_str, id);
+        add_scsi_cdrom(config, ctx->args[0].as_str, id);
         cmd_int(res, 0);
+        return;
+    }
+
+    if (strcmp(subcmd, "eject") == 0) {
+        int id = ctx->args[0].present ? (int)ctx->args[0].as_int : 3;
+        config_t *config = global_emulator;
+        if (!config || !config->scsi) {
+            cmd_err(res, "cdrom eject: emulator not initialized");
+            return;
+        }
+        if (id < 0 || id > 6) {
+            cmd_err(res, "cdrom eject: invalid SCSI ID %d (expected 0..6)", id);
+            return;
+        }
+        // Use START/STOP UNIT eject path: clear medium, set UNIT ATTENTION
+        // Access scsi internals via the internal header
+        scsi_t *scsi = config->scsi;
+        if (!scsi->devices[id].image && !scsi->devices[id].medium_present) {
+            cmd_printf(ctx, "cdrom eject: no disc in SCSI ID %d\n", id);
+            cmd_ok(res);
+            return;
+        }
+        scsi->devices[id].medium_present = false;
+        scsi->devices[id].image = NULL;
+        scsi->devices[id].unit_attention = true;
+        scsi_set_sense(scsi, id, SENSE_UNIT_ATTENTION, ASC_MEDIUM_NOT_PRESENT, 0x00);
+        cmd_printf(ctx, "cdrom eject: ejected disc from SCSI ID %d\n", id);
+        cmd_ok(res);
+        return;
+    }
+
+    if (strcmp(subcmd, "info") == 0) {
+        int id = ctx->args[0].present ? (int)ctx->args[0].as_int : 3;
+        config_t *config = global_emulator;
+        if (!config || !config->scsi) {
+            cmd_err(res, "cdrom info: emulator not initialized");
+            return;
+        }
+        if (id < 0 || id > 6) {
+            cmd_err(res, "cdrom info: invalid SCSI ID %d (expected 0..6)", id);
+            return;
+        }
+        scsi_t *scsi = config->scsi;
+        if (scsi->devices[id].type != scsi_dev_cdrom) {
+            cmd_printf(ctx, "cdrom info: SCSI ID %d is not a CD-ROM device\n", id);
+            cmd_ok(res);
+            return;
+        }
+        if (!scsi->devices[id].medium_present || !scsi->devices[id].image) {
+            cmd_printf(ctx, "cdrom info: SCSI ID %d — no disc\n", id);
+            cmd_ok(res);
+            return;
+        }
+        const char *fname = image_get_filename(scsi->devices[id].image);
+        size_t sz = disk_size(scsi->devices[id].image);
+        double size_mb = (double)sz / (1024.0 * 1024.0);
+        cmd_printf(ctx, "cdrom info: SCSI ID %d — %.1f MB — %s\n", id, size_mb, fname ? fname : "(unknown)");
+        cmd_ok(res);
         return;
     }
 
@@ -979,9 +1088,14 @@ static const struct arg_spec cdrom_attach_args[] = {
     {"path", ARG_PATH,               "CD-ROM image path"  },
     {"id",   ARG_INT | ARG_OPTIONAL, "SCSI ID (default 3)"},
 };
+static const struct arg_spec cdrom_id_args[] = {
+    {"id", ARG_INT | ARG_OPTIONAL, "SCSI ID (default 3)"},
+};
 static const struct subcmd_spec cdrom_subcmds[] = {
     {"validate", NULL, cdrom_path_args,   1, "validate CD-ROM image"    },
     {"attach",   NULL, cdrom_attach_args, 2, "attach CD-ROM to SCSI bus"},
+    {"eject",    NULL, cdrom_id_args,     1, "eject CD-ROM"             },
+    {"info",     NULL, cdrom_id_args,     1, "show attached CD-ROM info"},
 };
 
 // Initialize the setup system and register commands
@@ -1051,10 +1165,10 @@ void setup_init() {
     register_command(&(struct cmd_reg){
         .name = "cdrom",
         .category = "Media",
-        .synopsis = "Manage CD-ROM images (validate/attach)",
+        .synopsis = "Manage CD-ROM images (validate/attach/eject/info)",
         .fn = cmd_cdrom_handler,
         .subcmds = cdrom_subcmds,
-        .n_subcmds = 2,
+        .n_subcmds = 4,
     });
 }
 
@@ -1125,7 +1239,7 @@ void mac_reset(config_t *restrict sim) {
     scc_reset(sim->scc);
 }
 
-// Add a SCSI drive to the configuration
+// Add a SCSI hard disk to the configuration
 void add_scsi_drive(struct config *restrict config, const char *filename, int scsi_id) {
     // Disk table: Model, Vendor, Product, Size
     struct disk_info {
@@ -1170,7 +1284,33 @@ void add_scsi_drive(struct config *restrict config, const char *filename, int sc
            disks[best].product, sz, scsi_id);
 
     add_image(config, img);
-    scsi_add_device(config->scsi, scsi_id, disks[best].vendor, disks[best].product, img);
+    scsi_add_device(config->scsi, scsi_id, disks[best].vendor, disks[best].product, "1.0", img, scsi_dev_hd, 512,
+                    false);
+    free(persistent_path);
+}
+
+// Add a SCSI CD-ROM to the configuration (AppleCD SC Plus / Sony CDU-8002)
+static void add_scsi_cdrom(struct config *restrict config, const char *filename, int scsi_id) {
+    // Persist volatile images to OPFS
+    char *persistent_path = image_persist_volatile(filename);
+    if (persistent_path)
+        filename = persistent_path;
+
+    // CD-ROM images are always opened read-only
+    image_t *img = image_open(filename, false);
+    if (!img) {
+        printf("Failed to open CD-ROM image: %s\n", filename);
+        free(persistent_path);
+        return;
+    }
+
+    img->type = image_cdrom;
+
+    printf("Attaching SCSI CD-ROM: %s as SONY CD-ROM CDU-8002 (size: %zu bytes, SCSI ID: %d)\n", filename,
+           disk_size(img), scsi_id);
+
+    add_image(config, img);
+    scsi_add_device(config->scsi, scsi_id, "SONY", "CD-ROM CDU-8002", "1.8g", img, scsi_dev_cdrom, 2048, true);
     free(persistent_path);
 }
 

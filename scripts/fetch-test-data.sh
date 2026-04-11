@@ -141,6 +141,17 @@ fi
 # Configure git to use credential helper that reads from environment
 export GIT_TERMINAL_PROMPT=0
 
+# Ensure git-lfs is available (the test data repo uses LFS for large images)
+if ! command -v git-lfs &>/dev/null && ! git lfs version &>/dev/null 2>&1; then
+    log_info "Installing git-lfs..."
+    if command -v apt-get &>/dev/null; then
+        sudo apt-get update -qq && sudo apt-get install -y -qq git-lfs 2>/dev/null || true
+    fi
+fi
+if git lfs version &>/dev/null 2>&1; then
+    git lfs install --skip-repo >/dev/null 2>&1 || true
+fi
+
 log_info "Fetching test data from private repository..."
 
 # Construct authenticated clone URL (token will be stripped from repo config after clone)
@@ -160,18 +171,41 @@ trap cleanup EXIT
 # Clone to temp directory first, then copy contents (preserving local README)
 log_info "Cloning test data repository..."
 
-if git clone --quiet "$AUTH_CLONE_URL" "$TEMP_CLONE_DIR" 2>/dev/null; then
+# Use GIT_LFS_SKIP_SMUDGE=1 to defer LFS downloads, then selectively pull.
+# This avoids downloading LFS objects we don't need and allows caching.
+if GIT_LFS_SKIP_SMUDGE=1 git clone --quiet --depth 1 "$AUTH_CLONE_URL" "$TEMP_CLONE_DIR" 2>/dev/null; then
+
+    # Pull LFS objects. If GS_LFS_CACHE is set (by CI), use it to avoid
+    # re-downloading on every run. Only pull files the tests actually need.
+    if git lfs version &>/dev/null 2>&1; then
+        log_info "Fetching LFS objects..."
+        cd "$TEMP_CLONE_DIR"
+
+        # If a shared LFS cache directory is provided, symlink it in so
+        # git-lfs can reuse previously downloaded objects.
+        if [[ -n "${GS_LFS_CACHE:-}" ]]; then
+            mkdir -p "$GS_LFS_CACHE"
+            rm -rf "$TEMP_CLONE_DIR/.git/lfs"
+            ln -s "$GS_LFS_CACHE" "$TEMP_CLONE_DIR/.git/lfs"
+        fi
+
+        git lfs pull 2>/dev/null || log_warn "git lfs pull failed (some LFS files may be stubs)"
+        cd "$REPO_ROOT"
+    else
+        log_warn "git-lfs not available; large files will be LFS pointer stubs"
+    fi
+
     log_info "Copying test data files..."
-    
+
     # Ensure data directory exists
     mkdir -p "$DATA_DIR"
-    
+
     # Preserve local README if it exists
     LOCAL_README=""
     if [[ -f "$DATA_DIR/README.md" ]]; then
         LOCAL_README=$(cat "$DATA_DIR/README.md")
     fi
-    
+
     # Copy data directories (roms, systems, apps) - exclude .git and README
     for dir in "$TEMP_CLONE_DIR"/*/; do
         if [[ -d "$dir" ]] && [[ "$(basename "$dir")" != ".git" ]]; then
@@ -179,7 +213,7 @@ if git clone --quiet "$AUTH_CLONE_URL" "$TEMP_CLONE_DIR" 2>/dev/null; then
             cp -r "$dir" "$DATA_DIR/"
         fi
     done
-    
+
     # Restore local README if it existed, otherwise don't overwrite
     if [[ -n "$LOCAL_README" ]]; then
         echo "$LOCAL_README" > "$DATA_DIR/README.md"
@@ -187,7 +221,7 @@ if git clone --quiet "$AUTH_CLONE_URL" "$TEMP_CLONE_DIR" 2>/dev/null; then
         # Copy README from private repo only if no local one exists
         cp "$TEMP_CLONE_DIR/README.md" "$DATA_DIR/README.md" 2>/dev/null || true
     fi
-    
+
     log_success "Test data cloned successfully"
 else
     log_error "Failed to clone test data repository"

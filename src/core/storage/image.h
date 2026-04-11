@@ -19,7 +19,7 @@ struct config;
 typedef struct config config_t;
 
 // === Type Definitions ===
-enum image_type { image_other, image_fd_ss, image_fd_ds, image_fd_hd, image_hd };
+enum image_type { image_other, image_fd_ss, image_fd_ds, image_fd_hd, image_hd, image_cdrom };
 
 // Image structure (exposed for performance-critical access in floppy controller)
 struct image {

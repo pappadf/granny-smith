@@ -1,0 +1,30 @@
+# Integration test: SE/30 CD-ROM
+# Boots SE/30 from a 1.44MB floppy (System 7.0.1) with a SCSI CD-ROM
+# device attached via cdrom= CLI argument.
+# Verifies Finder desktop, exercises cdrom commands (info/eject).
+
+# Boot to Finder desktop (8MB RAM needs more cycles for memory test)
+run 2000000000
+
+# Verify the screen matches the Finder desktop reference image.
+# The CD-ROM is on the bus but System 7.0.1 floppy does not include
+# the Apple CD-ROM extension, so no disc icon appears — this proves
+# the CD-ROM device does not break normal boot.
+screenshot --match finder.png
+
+# Verify cdrom info reports the attached disc
+cdrom info 3
+
+# Eject the disc
+cdrom eject 3
+
+# Verify cdrom info shows no disc after eject
+cdrom info 3
+
+# Run briefly to let the OS process the SCSI bus change
+run 100000000
+
+# Verify the desktop is still stable after CD-ROM eject
+screenshot --match finder.png
+
+quit

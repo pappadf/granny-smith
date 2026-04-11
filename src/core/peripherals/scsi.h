@@ -25,9 +25,13 @@ void scsi_delete(scsi_t *scsi);
 
 void scsi_checkpoint(scsi_t *restrict scsi, checkpoint_t *checkpoint);
 
+// === Device Types ===
+enum scsi_device_type;
+
 // === Operations ===
 
-void scsi_add_device(scsi_t *restrict scsi, int scsi_id, const char *vendor, const char *product, image_t *image);
+void scsi_add_device(scsi_t *restrict scsi, int scsi_id, const char *vendor, const char *product, const char *revision,
+                     image_t *image, enum scsi_device_type type, uint16_t block_size, bool read_only);
 
 // Get the memory-mapped I/O interface for machine-level address decode
 const memory_interface_t *scsi_get_memory_interface(scsi_t *scsi);

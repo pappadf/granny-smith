@@ -8,9 +8,9 @@
 
 #include "scsi.h"
 #include "platform.h"
+#include "scsi_internal.h"
 #include "shell.h"
 #include "system.h"
-#include "via.h"
 
 #include <assert.h>
 #include <limits.h>
@@ -29,165 +29,6 @@
     do {                                                                                                               \
         (void)0;                                                                                                       \
     } while (0)
-
-// register offsets/definitions based on [5]
-#define CDR   0 // current scsi data register
-#define ODR   0 // output data register
-#define ICR   1 // initiator command register
-#define MR    2 // mode register
-#define TCR   3 // target command register
-#define CSR   4 // current scsi bus status register
-#define SER   4 // select enable register
-#define BSR   5 // bus and status register
-#define DMA   5 // start dma send
-#define TDMA  6 // sart dma target receive
-#define IDR   6 // input data register
-#define IDMA  7 // start dma initiator receive
-#define RESET 7 // reset parity/interrupt
-
-// initiator command register
-#define ICR_DB  0x01 // assert data bus
-#define ICR_ATN 0x02 // assert ATN
-#define ICR_SEL 0x04
-#define ICR_BSY 0x08
-#define ICR_ACK 0x10
-#define ICR_LA  0x20
-#define ICR_AIP 0x40
-#define ICR_RST 0x80
-
-// mode register
-#define MR_ARBITRATE 0x01
-#define MR_DMA       0x02
-#define MR_TARGET    0x40 // target mode
-
-// target command register
-#define TCR_CD 0x02
-
-// current scsi bus status register
-#define CSR_SEL 0x02
-#define CSR_IO  0x04
-#define CSR_CD  0x08
-#define CSR_MSG 0x10
-#define CSR_REQ 0x20
-#define CSR_BSY 0x40
-#define CSR_RST 0x80
-
-// bus and status register (NCR 5380/53C80 BSR, read-only register 5)
-#define BSR_ACK  0x01 // bit 0: ACK sensed on bus
-#define BSR_ATN  0x02 // bit 1: ATN sensed on bus
-#define BSR_PM   0x08 // bit 3: phase match (bus phase matches TCR)
-#define BSR_INT  0x10 // bit 4: interrupt request active (/IRQ asserted)
-#define BSR_DR   0x40 // bit 6: DMA request (data ready for DMA transfer)
-#define BSR_EDMA 0x80 // bit 7: end of DMA
-
-// command opcodes from [6]
-#define CMD_TEST_UNIT_READY 0x00
-#define CMD_FORMAT_UNIT     0x04
-#define CMD_READ            0x08
-#define CMD_WRITE           0x0A
-#define CMD_INQUIRY         0x12
-#define CMD_MODE_SELECT     0x15
-#define CMD_READ_CAPACITY   0x25
-
-// messages
-#define MSG_CMD_COMPLETE 0x00
-
-// status codes
-#define STATUS_GOOD 0x00
-
-#define BLOCK_SIZE   512
-#define BUF_LIMIT    (BLOCK_SIZE * 256)
-#define MAX_CMD_SIZE 10
-
-// ============================================================================
-// Type Definitions
-// ============================================================================
-
-// bus phases
-typedef enum scsi_phase {
-    scsi_bus_free = 0,
-    scsi_arbitration,
-    scsi_selection,
-    scsi_reselection,
-    scsi_command,
-    scsi_data_in,
-    scsi_data_out,
-    scsi_status,
-    scsi_message_in,
-    scsi_message_out
-} scsi_phase_t;
-
-struct scsi {
-
-    /* Plain POD fields first (no pointers) */
-    struct {
-        scsi_phase_t phase;
-        int initiator;
-        int target;
-    } bus;
-
-    struct {
-        uint8_t cdr;
-        uint8_t odr;
-        uint8_t icr;
-        uint8_t mr;
-        uint8_t tcr;
-        uint8_t csr;
-        uint8_t ser;
-        uint8_t bsr;
-    } reg;
-
-    struct { // information about current/pending command
-        uint8_t opcode; // opode
-        int lun; // logical unit number
-        int lba; // logical block address
-        int tl; // transfer length
-    } cmd;
-
-    /*
-     * First pointer-containing member: devices array (vendor/product
-     * strings are plain-data but each device contains an image pointer
-     * which is runtime-only). We serialize vendor/product separately.
-     */
-    struct {
-        unsigned char vendor_id[8 + 1];
-        unsigned char product_id[16 + 1];
-        image_t *image;
-    } devices[8];
-
-    /* Buffer metadata and pointer (data is a pointer, so placed after POD fields)
-     * Note: max/size are part of the non-pointer metadata but the struct contains
-     * a pointer, so buf is placed after the POD region and handled separately.
-     */
-    struct { // buffer to hold incoming/outgoing data
-        uint8_t *data; // byte array
-        size_t max; // max size
-        size_t size; // current size
-    } buf;
-
-    /* Runtime-only pointers and interfaces last */
-    memory_map_t *memory_map;
-    memory_interface_t memory_interface;
-
-    // VIA2 for interrupt delivery (SE/30); NULL on Plus
-    via_t *via;
-
-    // Tracked output pin states (active-low: true = asserted = pin driven low)
-    bool irq_active;
-    bool drq_active;
-
-    // Internal end-of-DMA flag (phase changed while DMA active)
-    bool end_of_dma;
-
-    // Loopback mode: simulate passive SCSI terminator (test card)
-    bool loopback;
-
-    // CDR pipeline delay: the NCR 5380's bus drivers take 2 register-write
-    // cycles to propagate, so CDR reads the bus state from before the
-    // second-to-last register write.  Modeled as a 3-element ring buffer.
-    uint8_t cdr_pipeline[3];
-    int cdr_idx;
-};
 
 // ============================================================================
 // Static Helpers
@@ -332,7 +173,7 @@ static void phase_command(scsi_t *scsi) {
 }
 
 // Transition SCSI bus to data-in phase (target to initiator)
-static void phase_data_in(scsi_t *scsi, int bytes) {
+void phase_data_in(scsi_t *scsi, int bytes) {
     assert(scsi->bus.phase == scsi_command);
 
     scsi->bus.phase = scsi_data_in;
@@ -342,7 +183,7 @@ static void phase_data_in(scsi_t *scsi, int bytes) {
 }
 
 // Transition SCSI bus to data-out phase (initiator to target)
-static void phase_data_out(scsi_t *scsi, int bytes) {
+void phase_data_out(scsi_t *scsi, int bytes) {
     assert(scsi->bus.phase == scsi_command);
     assert(bytes <= BUF_LIMIT);
 
@@ -354,7 +195,7 @@ static void phase_data_out(scsi_t *scsi, int bytes) {
 }
 
 // Transition SCSI bus to status phase
-static void phase_status(scsi_t *scsi, uint8_t status) {
+void phase_status(scsi_t *scsi, uint8_t status) {
     assert(scsi->bus.phase == scsi_command || scsi->bus.phase == scsi_data_in || scsi->bus.phase == scsi_data_out);
 
     scsi->bus.phase = scsi_status;
@@ -367,7 +208,7 @@ static void phase_status(scsi_t *scsi, uint8_t status) {
 }
 
 // Transition SCSI bus to message-in phase
-static void phase_message_in(scsi_t *scsi, uint8_t message) {
+void phase_message_in(scsi_t *scsi, uint8_t message) {
     assert(scsi->bus.phase == scsi_status);
 
     scsi->bus.phase = scsi_message_in;
@@ -376,24 +217,67 @@ static void phase_message_in(scsi_t *scsi, uint8_t message) {
     scsi_update_irq(scsi);
 }
 
+// Set sense data for a device
+void scsi_set_sense(scsi_t *scsi, int target, uint8_t key, uint8_t asc, uint8_t ascq) {
+    scsi->devices[target & 7].sense.key = key;
+    scsi->devices[target & 7].sense.asc = asc;
+    scsi->devices[target & 7].sense.ascq = ascq;
+}
+
+// Return CHECK CONDITION, setting sense data on the current target
+void scsi_check_condition(scsi_t *scsi, uint8_t sense_key, uint8_t asc, uint8_t ascq) {
+    scsi_set_sense(scsi, scsi->bus.target, sense_key, asc, ascq);
+    phase_status(scsi, STATUS_CHECK_CONDITION);
+}
+
 // Execute a SCSI command after receiving it from the initiator
 static void run_cmd(scsi_t *scsi) {
     scsi->cmd.opcode = scsi->buf.data[0];
+    int target = scsi->bus.target & 7;
+
+    // Check for pending UNIT ATTENTION on first non-exempt command
+    // INQUIRY and REQUEST SENSE are exempt per SCSI spec
+    if (scsi->devices[target].unit_attention && scsi->cmd.opcode != CMD_INQUIRY &&
+        scsi->cmd.opcode != CMD_REQUEST_SENSE) {
+        scsi->devices[target].unit_attention = false;
+        scsi_check_condition(scsi, SENSE_UNIT_ATTENTION, ASC_NOT_READY_TO_READY, 0x00);
+        return;
+    }
 
     switch (scsi->cmd.opcode) {
 
     case CMD_TEST_UNIT_READY:
         LOG("command: TEST UNIT READY");
+        // Check if medium is present for CD-ROM
+        if (scsi->devices[target].type == scsi_dev_cdrom && !scsi->devices[target].medium_present) {
+            scsi_check_condition(scsi, SENSE_NOT_READY, ASC_MEDIUM_NOT_PRESENT, 0x00);
+        } else {
+            phase_status(scsi, STATUS_GOOD);
+        }
+        break;
+
+    case CMD_REZERO_UNIT:
+        LOG("command: REZERO UNIT");
+        // Seek to block 0 — no-op in emulation
         phase_status(scsi, STATUS_GOOD);
+        break;
+
+    case CMD_REQUEST_SENSE:
+        scsi_cdrom_request_sense(scsi);
         break;
 
     case CMD_FORMAT_UNIT:
         LOG("command: FORMAT UNIT");
-        phase_status(scsi, STATUS_GOOD);
+        // Reject FORMAT on read-only devices
+        if (scsi->devices[target].read_only) {
+            scsi_check_condition(scsi, SENSE_DATA_PROTECT, ASC_WRITE_PROTECTED, 0x00);
+        } else {
+            phase_status(scsi, STATUS_GOOD);
+        }
         break;
 
     case CMD_READ:
-    case CMD_WRITE:
+    case CMD_WRITE: {
 
         scsi->cmd.lun = scsi->buf.data[1] >> 5;
         scsi->cmd.lba = scsi->buf.data[1] << 16 & 0x1FFFFF | scsi->buf.data[2] << 8 | scsi->buf.data[3];
@@ -401,78 +285,262 @@ static void run_cmd(scsi_t *scsi) {
 
         assert((scsi->buf.data[5] & 0x3) == 0); // FLAG = LINK = 0
         assert(scsi->cmd.lun == 0);
-        assert(scsi->cmd.tl * BLOCK_SIZE <= BUF_LIMIT);
+
+        uint16_t blk_sz = scsi->devices[target].block_size;
+
+        // Reject writes on read-only devices (CD-ROM, etc.)
+        if (scsi->cmd.opcode == CMD_WRITE && scsi->devices[target].read_only) {
+            scsi_check_condition(scsi, SENSE_DATA_PROTECT, ASC_WRITE_PROTECTED, 0x00);
+            break;
+        }
+
+        assert(scsi->cmd.tl * blk_sz <= BUF_LIMIT);
 
         if (scsi->cmd.opcode == CMD_WRITE) {
-            phase_data_out(scsi, 512 * scsi->cmd.tl);
+            phase_data_out(scsi, blk_sz * scsi->cmd.tl);
         } else {
-            phase_data_in(scsi, scsi->cmd.tl * BLOCK_SIZE);
-            size_t n = disk_read_data(scsi->devices[scsi->bus.target & 7].image, scsi->cmd.lba * 512, scsi->buf.data,
-                                      scsi->cmd.tl * 512);
-            assert(n == scsi->cmd.tl * 512);
+            phase_data_in(scsi, scsi->cmd.tl * blk_sz);
+            size_t byte_off = (size_t)scsi->cmd.lba * blk_sz;
+            size_t byte_cnt = (size_t)scsi->cmd.tl * blk_sz;
+            size_t n = disk_read_data(scsi->devices[target].image, byte_off, scsi->buf.data, byte_cnt);
+            assert(n == byte_cnt);
         }
+        break;
+    }
+
+    case CMD_READ_10:
+    case CMD_WRITE_10: {
+        // 10-byte CDB: LBA in bytes 2-5, transfer length in bytes 7-8
+        scsi->cmd.lba =
+            (scsi->buf.data[2] << 24) | (scsi->buf.data[3] << 16) | (scsi->buf.data[4] << 8) | scsi->buf.data[5];
+        scsi->cmd.tl = (scsi->buf.data[7] << 8) | scsi->buf.data[8];
+
+        uint16_t blk_sz = scsi->devices[target].block_size;
+
+        // Reject writes on read-only devices
+        if (scsi->cmd.opcode == CMD_WRITE_10 && scsi->devices[target].read_only) {
+            scsi_check_condition(scsi, SENSE_DATA_PROTECT, ASC_WRITE_PROTECTED, 0x00);
+            break;
+        }
+
+        if (scsi->cmd.tl == 0) {
+            // Transfer length 0: no data transfer, just return good status
+            phase_status(scsi, STATUS_GOOD);
+            break;
+        }
+
+        assert(scsi->cmd.tl * blk_sz <= BUF_LIMIT);
+
+        if (scsi->cmd.opcode == CMD_WRITE_10) {
+            phase_data_out(scsi, blk_sz * scsi->cmd.tl);
+        } else {
+            phase_data_in(scsi, scsi->cmd.tl * blk_sz);
+            size_t byte_off = (size_t)scsi->cmd.lba * blk_sz;
+            size_t byte_cnt = (size_t)scsi->cmd.tl * blk_sz;
+            size_t n = disk_read_data(scsi->devices[target].image, byte_off, scsi->buf.data, byte_cnt);
+            assert(n == byte_cnt);
+        }
+        break;
+    }
+
+    case CMD_SEEK_6:
+    case CMD_SEEK_10:
+        // Seek to LBA — no-op (no seek latency to emulate)
+        LOG("command: SEEK");
+        phase_status(scsi, STATUS_GOOD);
         break;
 
     case CMD_INQUIRY:
 
         assert(scsi->buf.data != NULL);
-        assert(scsi->devices[scsi->bus.target & 7].image != NULL);
+        assert(scsi->devices[target].image != NULL);
 
         // [6]: byte 4 is the "allocation length"
-        phase_data_in(scsi, scsi->cmd.tl = scsi->buf.data[4]);
+        scsi->cmd.tl = scsi->buf.data[4];
+        if (scsi->cmd.tl == 0)
+            scsi->cmd.tl = 36; // default allocation length
+        phase_data_in(scsi, scsi->cmd.tl);
 
         memset(scsi->buf.data, 0, scsi->cmd.tl);
 
-        // SCSI 1 [6] left most of the inquiry data as vendor specific,
-        // but SCSI 2 [7] at least defined the first 36 bytes
-        if (scsi->cmd.tl >= 36) {
-            memcpy(scsi->buf.data + 8, scsi->devices[scsi->bus.target & 7].vendor_id, 8);
-            memcpy(scsi->buf.data + 16, scsi->devices[scsi->bus.target & 7].product_id, 16);
+        if (scsi->devices[target].type == scsi_dev_cdrom) {
+            // CD-ROM INQUIRY: device type 0x05, removable media
+            scsi->buf.data[0] = 0x05; // CD-ROM device type
+            scsi->buf.data[1] = 0x80; // removable media bit (RMB)
+            scsi->buf.data[2] = 0x01; // SCSI-1 (ANSI version)
+            scsi->buf.data[3] = 0x01; // response data format: CCS
+            scsi->buf.data[4] = 0x31; // additional length: 49 bytes
+            // Bytes 5-7: zero
+            if (scsi->cmd.tl >= 36) {
+                memcpy(scsi->buf.data + 8, scsi->devices[target].vendor_id, 8);
+                memcpy(scsi->buf.data + 16, scsi->devices[target].product_id, 16);
+                memcpy(scsi->buf.data + 32, scsi->devices[target].revision, 4);
+            }
+        } else {
+            // Hard disk INQUIRY: device type 0x00
+            if (scsi->cmd.tl >= 36) {
+                memcpy(scsi->buf.data + 8, scsi->devices[target].vendor_id, 8);
+                memcpy(scsi->buf.data + 16, scsi->devices[target].product_id, 16);
+                memcpy(scsi->buf.data + 32, scsi->devices[target].revision, 4);
+            }
+            // [7]: additional length = n - 4
+            scsi->buf.data[4] = scsi->cmd.tl - 4;
         }
-
-        // [7]: additional length = n - 1
-        scsi->buf.data[4] = scsi->cmd.tl - 4;
 
         break;
 
     case CMD_MODE_SELECT:
-        phase_data_out(scsi, scsi->buf.data[4]);
+        // Dispatch MODE SELECT to CD-ROM handler if applicable
+        if (scsi->devices[target].type == scsi_dev_cdrom) {
+            // Accept the data phase, then CD-ROM handler processes it
+            int param_len = scsi->buf.data[4];
+            if (param_len > 0)
+                phase_data_out(scsi, param_len);
+            else
+                phase_status(scsi, STATUS_GOOD);
+        } else {
+            phase_data_out(scsi, scsi->buf.data[4]);
+        }
         break;
 
-    case CMD_READ_CAPACITY:
+    case CMD_MODE_SENSE:
+        // MODE SENSE(6): dispatch based on device type
+        if (scsi->devices[target].type == scsi_dev_cdrom) {
+            scsi_cdrom_mode_sense(scsi);
+        } else {
+            // HD: return minimal mode sense header with block descriptor
+            phase_data_in(scsi, 12);
+            memset(scsi->buf.data, 0, 12);
+            scsi->buf.data[0] = 11; // mode data length (excluding itself)
+            scsi->buf.data[3] = 8; // block descriptor length
+            // Block descriptor: 512-byte blocks
+            uint32_t blocks = (uint32_t)(disk_size(scsi->devices[target].image) / 512);
+            scsi->buf.data[4] = 0; // density code
+            scsi->buf.data[5] = (blocks >> 16) & 0xFF;
+            scsi->buf.data[6] = (blocks >> 8) & 0xFF;
+            scsi->buf.data[7] = blocks & 0xFF;
+            // Block length = 512 (bytes 9-11)
+            scsi->buf.data[9] = 0x00;
+            scsi->buf.data[10] = 0x02;
+            scsi->buf.data[11] = 0x00;
+        }
+        break;
+
+    case CMD_START_STOP_UNIT:
+        if (scsi->devices[target].type == scsi_dev_cdrom)
+            scsi_cdrom_start_stop_unit(scsi);
+        else
+            phase_status(scsi, STATUS_GOOD);
+        break;
+
+    case CMD_PREVENT_ALLOW:
+        if (scsi->devices[target].type == scsi_dev_cdrom)
+            scsi_cdrom_prevent_allow(scsi);
+        else
+            phase_status(scsi, STATUS_GOOD);
+        break;
+
+    case CMD_READ_CAPACITY: {
 
         assert((scsi->buf.data[8] & 1) == 0); // PMI = 0
 
-        image_t *image = scsi->devices[scsi->bus.target & 7].image;
-        size_t size = disk_size(image) / BLOCK_SIZE;
+        image_t *image = scsi->devices[target].image;
+        uint16_t blk_sz = scsi->devices[target].block_size;
+        size_t sz = disk_size(image) / blk_sz;
 
         phase_data_in(scsi, 8);
-        *(uint32_t *)(scsi->buf.data) = BE32((uint32_t)size - 1);
-        *(uint32_t *)(scsi->buf.data + 4) = BE32(BLOCK_SIZE);
+        *(uint32_t *)(scsi->buf.data) = BE32((uint32_t)sz - 1);
+        *(uint32_t *)(scsi->buf.data + 4) = BE32((uint32_t)blk_sz);
 
+        break;
+    }
+
+    case CMD_VERIFY:
+        // Verify data on disc — no-op (always succeeds)
+        LOG("command: VERIFY");
+        phase_status(scsi, STATUS_GOOD);
+        break;
+
+    case CMD_READ_TOC:
+        if (scsi->devices[target].type == scsi_dev_cdrom)
+            scsi_cdrom_read_toc(scsi);
+        else
+            scsi_check_condition(scsi, SENSE_ILLEGAL_REQUEST, ASC_INVALID_OPCODE, 0x00);
+        break;
+
+    case CMD_READ_SUB_CHANNEL:
+        if (scsi->devices[target].type == scsi_dev_cdrom)
+            scsi_cdrom_read_sub_channel(scsi);
+        else
+            scsi_check_condition(scsi, SENSE_ILLEGAL_REQUEST, ASC_INVALID_OPCODE, 0x00);
+        break;
+
+    case CMD_READ_HEADER:
+        if (scsi->devices[target].type == scsi_dev_cdrom)
+            scsi_cdrom_read_header(scsi);
+        else
+            scsi_check_condition(scsi, SENSE_ILLEGAL_REQUEST, ASC_INVALID_OPCODE, 0x00);
+        break;
+
+    // Audio commands — stub: data-only disc, no audio support
+    case CMD_PLAY_AUDIO_10:
+    case CMD_PLAY_AUDIO_MSF:
+    case CMD_PAUSE_RESUME:
+        scsi_check_condition(scsi, SENSE_ILLEGAL_REQUEST, ASC_INCOMPATIBLE_MEDIUM, 0x00);
+        break;
+
+    // Sony vendor commands — data-only disc, return ILLEGAL REQUEST
+    case CMD_SONY_READ_TOC:
+        // Sony READ TOC: delegate to SCSI-2 READ TOC for CD-ROM
+        if (scsi->devices[target].type == scsi_dev_cdrom)
+            scsi_cdrom_read_toc(scsi);
+        else
+            scsi_check_condition(scsi, SENSE_ILLEGAL_REQUEST, ASC_INVALID_OPCODE, 0x00);
+        break;
+
+    case CMD_SONY_PLAYBACK_STATUS:
+    case CMD_SONY_PAUSE:
+    case CMD_SONY_PLAY_TRACK:
+    case CMD_SONY_PLAY_MSF:
+    case CMD_SONY_PLAY_AUDIO:
+    case CMD_SONY_PLAYBACK_CTRL:
+        // Audio vendor commands on data-only disc
+        scsi_check_condition(scsi, SENSE_ILLEGAL_REQUEST, ASC_INCOMPATIBLE_MEDIUM, 0x00);
         break;
 
     default:
-        assert(0);
+        // Unknown command: return CHECK CONDITION with ILLEGAL REQUEST
+        scsi_check_condition(scsi, SENSE_ILLEGAL_REQUEST, ASC_INVALID_OPCODE, 0x00);
         break;
     }
 }
 
 // Finalize a SCSI command after data transfer is complete
 static void command_complete(scsi_t *scsi) {
+    int target = scsi->bus.target & 7;
+    uint16_t blk_sz = scsi->devices[target].block_size;
+
     switch (scsi->cmd.opcode) {
 
-    case 0x0A: // write6
-    {
-        assert(scsi->cmd.tl * 512 == scsi->buf.size);
-        size_t device_bytes = disk_size(scsi->devices[scsi->bus.target & 7].image);
-        assert(((size_t)scsi->cmd.lba + scsi->cmd.tl) * BLOCK_SIZE <= device_bytes);
+    case CMD_WRITE:
+    case CMD_WRITE_10: {
+        assert(scsi->cmd.tl * blk_sz == scsi->buf.size);
+        size_t device_bytes = disk_size(scsi->devices[target].image);
+        assert(((size_t)scsi->cmd.lba + scsi->cmd.tl) * blk_sz <= device_bytes);
 
-        disk_write_data(scsi->devices[scsi->bus.target & 7].image, scsi->cmd.lba * 512, scsi->buf.data,
-                        scsi->cmd.tl * 512);
+        disk_write_data(scsi->devices[target].image, (size_t)scsi->cmd.lba * blk_sz, scsi->buf.data,
+                        (size_t)scsi->cmd.tl * blk_sz);
 
         scsi->buf.max = scsi->buf.size = 0;
     } break;
+
+    case CMD_MODE_SELECT:
+        // Process MODE SELECT data for CD-ROM (block size switching, etc.)
+        if (scsi->devices[target].type == scsi_dev_cdrom) {
+            scsi_cdrom_mode_select(scsi);
+            return; // scsi_cdrom_mode_select calls phase_status itself
+        }
+        break;
 
     default:
         break;
@@ -659,7 +727,12 @@ static void write_mr(scsi_t *scsi, uint8_t val) {
         scsi_update_irq(scsi);
     } else if (bits_set & MR_DMA) {
 
-        assert(scsi->bus.phase == scsi_data_in || scsi->bus.phase == scsi_data_out);
+        // DMA mode can be set during data_in/data_out (normal) or during
+        // status/message_in (if command returned CHECK CONDITION before the
+        // driver expected a data phase — the NCR 5380 signals this as a
+        // phase mismatch IRQ so the driver can recover).
+        assert(scsi->bus.phase == scsi_data_in || scsi->bus.phase == scsi_data_out || scsi->bus.phase == scsi_status ||
+               scsi->bus.phase == scsi_message_in);
 
         // if we're reading in data, and there is more in the buffer - then assert request signal
         if (scsi->bus.phase == scsi_data_in && scsi->buf.size != 0)
@@ -874,14 +947,29 @@ static void write_uint32(void *scsi, uint32_t addr, uint32_t value) {
 // ============================================================================
 
 // Add a SCSI device to the bus at the specified SCSI ID
-void scsi_add_device(scsi_t *restrict scsi, int scsi_id, const char *vendor, const char *product, image_t *image) {
+void scsi_add_device(scsi_t *restrict scsi, int scsi_id, const char *vendor, const char *product, const char *revision,
+                     image_t *image, enum scsi_device_type type, uint16_t block_size, bool read_only) {
     assert(scsi_id < 7);
 
     scsi->devices[scsi_id].image = image;
+    scsi->devices[scsi_id].type = type;
+    scsi->devices[scsi_id].block_size = block_size;
+    scsi->devices[scsi_id].read_only = read_only;
+    scsi->devices[scsi_id].medium_present = (image != NULL);
+    scsi->devices[scsi_id].prevent_removal = false;
+    memset(&scsi->devices[scsi_id].sense, 0, sizeof(scsi->devices[scsi_id].sense));
 
     // Cast unsigned char[] to char* to avoid warnings
     sprintf((char *)scsi->devices[scsi_id].vendor_id, "%8s", vendor);
     sprintf((char *)scsi->devices[scsi_id].product_id, "%16s", product);
+    if (revision)
+        snprintf((char *)scsi->devices[scsi_id].revision, sizeof(scsi->devices[scsi_id].revision), "%s", revision);
+    else
+        memset(scsi->devices[scsi_id].revision, ' ', 4);
+
+    // CD-ROM attach triggers UNIT ATTENTION (media changed)
+    if (type == scsi_dev_cdrom && image != NULL)
+        scsi->devices[scsi_id].unit_attention = true;
 }
 
 // Initialize the SCSI controller and optionally restore from checkpoint
@@ -915,21 +1003,39 @@ scsi_t *scsi_init(memory_map_t *map, checkpoint_t *checkpoint) {
         size_t data_size = offsetof(scsi_t, devices);
         system_read_checkpoint_data(checkpoint, scsi, data_size);
 
-        // Restore device vendor/product strings and image filename; resolve image by name
+        // Restore device vendor/product strings, extended fields, and image filename
         for (int i = 0; i < 8; i++) {
             // vendor_id and product_id are fixed-size arrays inside devices[i]
             system_read_checkpoint_data(checkpoint, scsi->devices[i].vendor_id, sizeof(scsi->devices[i].vendor_id));
             system_read_checkpoint_data(checkpoint, scsi->devices[i].product_id, sizeof(scsi->devices[i].product_id));
+
+            // Extended fields: revision, type, block_size, read_only, unit_attention
+            system_read_checkpoint_data(checkpoint, scsi->devices[i].revision, sizeof(scsi->devices[i].revision));
+            system_read_checkpoint_data(checkpoint, &scsi->devices[i].type, sizeof(scsi->devices[i].type));
+            system_read_checkpoint_data(checkpoint, &scsi->devices[i].block_size, sizeof(scsi->devices[i].block_size));
+            system_read_checkpoint_data(checkpoint, &scsi->devices[i].read_only, sizeof(scsi->devices[i].read_only));
+            system_read_checkpoint_data(checkpoint, &scsi->devices[i].unit_attention,
+                                        sizeof(scsi->devices[i].unit_attention));
+
+            // Backward compat: default HD values for old checkpoints missing these fields
+            if (scsi->devices[i].block_size == 0)
+                scsi->devices[i].block_size = 512;
+            if (scsi->devices[i].type == scsi_dev_none && scsi->devices[i].vendor_id[0] != 0)
+                scsi->devices[i].type = scsi_dev_hd;
+
             uint32_t len = 0;
             system_read_checkpoint_data(checkpoint, &len, sizeof(len));
             scsi->devices[i].image = NULL;
+            scsi->devices[i].medium_present = false;
             if (len > 0) {
                 char *name = (char *)malloc(len);
                 if (name) {
                     system_read_checkpoint_data(checkpoint, name, len);
                     image_t *img = setup_get_image_by_filename(name);
-                    if (img)
+                    if (img) {
                         scsi->devices[i].image = img;
+                        scsi->devices[i].medium_present = true;
+                    }
                     free(name);
                 } else {
                     // consume bytes to keep stream aligned
@@ -1006,10 +1112,19 @@ void scsi_checkpoint(scsi_t *restrict scsi, checkpoint_t *checkpoint) {
     size_t data_size = offsetof(scsi_t, devices);
     system_write_checkpoint_data(checkpoint, scsi, data_size);
 
-    // Save vendor/product strings and per-device image filename (len=0 means no image)
+    // Save vendor/product strings, extended fields, and per-device image filename
     for (int i = 0; i < 8; i++) {
         system_write_checkpoint_data(checkpoint, scsi->devices[i].vendor_id, sizeof(scsi->devices[i].vendor_id));
         system_write_checkpoint_data(checkpoint, scsi->devices[i].product_id, sizeof(scsi->devices[i].product_id));
+
+        // Extended fields: revision, type, block_size, read_only, unit_attention
+        system_write_checkpoint_data(checkpoint, scsi->devices[i].revision, sizeof(scsi->devices[i].revision));
+        system_write_checkpoint_data(checkpoint, &scsi->devices[i].type, sizeof(scsi->devices[i].type));
+        system_write_checkpoint_data(checkpoint, &scsi->devices[i].block_size, sizeof(scsi->devices[i].block_size));
+        system_write_checkpoint_data(checkpoint, &scsi->devices[i].read_only, sizeof(scsi->devices[i].read_only));
+        system_write_checkpoint_data(checkpoint, &scsi->devices[i].unit_attention,
+                                     sizeof(scsi->devices[i].unit_attention));
+
         const char *name = scsi->devices[i].image ? image_get_filename(scsi->devices[i].image) : NULL;
         uint32_t len = 0;
         if (name && *name)
