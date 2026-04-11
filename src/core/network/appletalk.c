@@ -99,7 +99,10 @@ static void llap_send(const llap_header_t *llap, const uint8_t *data, size_t len
 void llap_in(uint8_t *buf, size_t len) {
     llap_header_t header;
 
-    assert(len >= LLAP_HEADER_SIZE);
+    // Short/malformed packets can arrive from the SCC during A/UX
+    // initialization — silently discard them.
+    if (len < LLAP_HEADER_SIZE)
+        return;
 
     header.dst = buf[0];
     header.src = buf[1];
@@ -149,11 +152,13 @@ void llap_in(uint8_t *buf, size_t len) {
         break;
 
     case LLAP_DDP_EXTENDED:
-        assert(0);
+        LOG(5, "LLAP DDP_EXTENDED (unsupported) src=%02X dst=%02X len=%zu", (unsigned)header.src, (unsigned)header.dst,
+            len);
         break;
 
     default:
-        assert(0);
+        LOG(5, "LLAP unknown type=%02X src=%02X dst=%02X", (unsigned)header.type, (unsigned)header.src,
+            (unsigned)header.dst);
         break;
     }
 }

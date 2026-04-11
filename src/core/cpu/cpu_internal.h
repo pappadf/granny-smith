@@ -12,6 +12,7 @@
 
 #include "cpu.h"
 #include "memory.h"
+#include "mmu.h"
 
 #include <assert.h>
 #include <stdbool.h>
@@ -558,6 +559,67 @@ static inline void exception(cpu_t *restrict cpu, uint32_t vector, uint32_t pc, 
         cpu->pc = memory_read_uint32(vector);
         cpu->trace = 0;
     }
+}
+
+// Bus error with retry semantics for MMU-enabled OS kernels (A/UX).
+// Saves faulting PC (instruction_pc) so the handler's RTE restarts the
+// instruction after mapping the page.  The instruction has already completed
+// with garbage data, but the restarted execution overwrites all results.
+// Detects double bus error if the frame push or vector read faults.
+static __attribute__((noinline, cold)) void exception_bus_error_retry(cpu_t *restrict cpu, uint32_t fault_addr,
+                                                                      uint32_t rw) {
+    uint32_t faulting_pc = cpu->instruction_pc;
+
+    uint16_t saved_sr = cpu_get_sr(cpu);
+    uint32_t saved_pc = faulting_pc; // retry: RTE restarts the instruction
+
+    // Switch to supervisor mode / ISP
+    if (!cpu->supervisor) {
+        cpu->usp = cpu->a[7];
+        cpu->a[7] = (cpu->m && cpu->cpu_model == CPU_MODEL_68030) ? cpu->msp : cpu->ssp;
+        cpu->supervisor = 1;
+        cpu->m = 0;
+    } else if (cpu->m && cpu->cpu_model == CPU_MODEL_68030) {
+        cpu->msp = cpu->a[7];
+        cpu->a[7] = cpu->ssp;
+        cpu->m = 0;
+    }
+
+    // Push 68030 Format $B (long bus cycle fault) frame: 46 words = 92 bytes.
+    uint16_t fc = (saved_sr & 0x2000) ? 5 : 1;
+    uint16_t ssw = (1 << 8) | ((rw ? 1 : 0) << 6) | (0x01 << 4) | (fc & 0x7);
+
+    cpu->a[7] -= 92;
+    uint32_t frame = cpu->a[7];
+    for (int i = 0; i < 92; i += 4)
+        memory_write_uint32(frame + i, 0);
+    memory_write_uint16(frame + 0x00, saved_sr);
+    memory_write_uint32(frame + 0x02, saved_pc);
+    memory_write_uint16(frame + 0x06, 0xB008);
+    memory_write_uint16(frame + 0x0A, ssw);
+    memory_write_uint32(frame + 0x10, fault_addr);
+
+    // Detect double bus error during frame push or field writes
+    if (g_bus_error_pending) {
+        cpu->halted = 1;
+        g_bus_error_pending = 0;
+        if (g_bus_error_instr_ptr)
+            *g_bus_error_instr_ptr = 0;
+        return;
+    }
+
+    cpu->pc = memory_read_uint32(cpu->vbr + 0x008);
+
+    // Detect double bus error during vector read
+    if (g_bus_error_pending) {
+        cpu->halted = 1;
+        g_bus_error_pending = 0;
+        if (g_bus_error_instr_ptr)
+            *g_bus_error_instr_ptr = 0;
+        return;
+    }
+
+    cpu->trace = 0;
 }
 
 // Raise a 68030 bus error with Format $A stack frame (short bus cycle fault).

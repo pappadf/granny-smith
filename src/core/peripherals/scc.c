@@ -481,7 +481,10 @@ static void wr0(ch_t *ch, uint8_t value) {
     switch (value >> 6 & 3) {
 
     case 0: // null code
-    case 2: // reset tx crc
+        break;
+
+    case 1: // reset rx CRC checker
+    case 2: // reset tx CRC generator
         break;
 
     case 3: // reset tx underrrun
@@ -489,9 +492,6 @@ static void wr0(ch_t *ch, uint8_t value) {
         // Instead simulating an underrun a little later, we can simply fake it here and now.
         tx_underrun(ch);
         break;
-
-    default:
-        assert(0);
     }
 
     // decode bit 5 to 3
@@ -524,8 +524,12 @@ static void wr0(ch_t *ch, uint8_t value) {
         ch->rr[1] &= 0x0F;
         break;
 
-    default:
-        assert(0);
+    case 7: // reset highest IUS (interrupt under service)
+        // Clears the highest-priority interrupt under service, allowing
+        // lower-priority interrupts to be acknowledged.  Used by A/UX
+        // for proper interrupt daisy-chain handling on the Z8530.
+        update_irqs(ch->scc);
+        break;
     }
 }
 

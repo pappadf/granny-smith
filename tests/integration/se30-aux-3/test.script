@@ -1,13 +1,29 @@
 # Integration test: SE/30 A/UX 3.0.1 Boot
 # Boots SE/30 from the A/UX 3.0.1 Installation Boot Disk
 # with the A/UX 3.0.1 Install CD-ROM and SCSI HD attached.
-# The installer finds the CD and loads far enough to show
-# loading screen
+#
+# Boot timeline (approximate instruction counts):
+#   @0-28M     ROM boot, SCSI bus scans, find HD (ID 0) + CD-ROM (ID 3)
+#   @42-58M    A/UX bootstrap probing, second + third bus scans
+#   @58-96M    CD-ROM reads to load kernel, HD writes
+#   @97M       Screen: "A/UX Installation — Loading..." with progress bar
+#   @107M      Screen: "A/UX Installation — Launching..."
+#   @108M      A/UX kernel entry at $0001F008 (LINK A6,#$FCF8)
+#   @108-112M  Kernel VM initialization (bus errors = page faults)
+#   @112M      Screen goes gray (kernel owns framebuffer)
 
-# Boot from A/UX Installation Boot Disk (with CD-ROM and HD attached)
+# Phase 1: Fast boot through ROM + bootstrap (no breakpoints needed)
 run 100000000
 
-# Verify the A/UX loading screen appears
+# Verify the A/UX loading screen appeared
 screenshot --match loading.png
+
+# Phase 2: Set breakpoint at the A/UX kernel entry point and run to it.
+# $0001F008 is the first instruction of the kernel init function
+# (LINK A6,#$FCF8 — creates a 776-byte stack frame).
+# This gives a deterministic, reproducible starting point for kernel
+# debugging that doesn't depend on exact instruction counts.
+break $0001F008
+run
 
 quit

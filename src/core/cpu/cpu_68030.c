@@ -443,7 +443,10 @@ static __attribute__((noinline, cold)) void cpu_hardware_reset(cpu_t *restrict c
     /* The memory slow path set *instructions=0 to force the loop exit. */                                             \
     if (__builtin_expect(g_bus_error_pending, 0)) {                                                                    \
         g_bus_error_pending = 0;                                                                                       \
-        exception_bus_error(cpu, g_bus_error_address, g_bus_error_rw);                                                 \
+        if (g_mmu && g_mmu->enabled && cpu->vbr != 0)                                                                  \
+            exception_bus_error_retry(cpu, g_bus_error_address, g_bus_error_rw);                                       \
+        else                                                                                                           \
+            exception_bus_error(cpu, g_bus_error_address, g_bus_error_rw);                                             \
         g_active_read = cpu->supervisor ? g_supervisor_read : g_user_read;                                             \
         g_active_write = cpu->supervisor ? g_supervisor_write : g_user_write;                                          \
     }                                                                                                                  \
