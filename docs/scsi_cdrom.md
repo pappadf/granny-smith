@@ -26,7 +26,9 @@ The INQUIRY response is 36 bytes minimum (53 bytes with the additional length re
 | 5-7 | Reserved/Flags | `0x00` | |
 | 8-15 | Vendor Identification | `"    SONY"` | 8 bytes, right-aligned (left-padded with spaces) |
 | 16-31 | Product Identification | `"CD-ROM CDU-8002 "` | 16 bytes, space-padded right |
-| 32-35 | Product Revision Level | `"1.8g"` | |
+| 32-35 | Product Revision Level | `"1.8g"` | See below |
+
+**Firmware revision format:** The revision string encodes production status in byte 32 (3 = production, 2 = beta, 1 = engineering), a period in byte 33, and major/minor revision in bytes 34-35. The CDU-8001 (AppleCD SC) carried `"3.2i"`. Linux kernel `scsi_devinfo.c` references `"1.8g"` for the CDU-8002; a preserved AppleCD 150 firmware dump (also CDU-8002 mechanism) shows `"v1.89"`. Different production runs and Apple product variants may carry different revision strings.
 
 **Right-alignment:** Apple drives use right-aligned (left-padded) vendor strings. The existing `scsi_add_device()` function applies this via `sprintf("%8s", vendor)`.
 
@@ -606,6 +608,16 @@ The sense buffer is populated when a command terminates with CHECK CONDITION sta
 | `0x53` | `0x02` | Medium Removal Prevented | Eject while locked |
 | `0x64` | `0x00` | Illegal Mode for This Track | Data command on audio track (or vice versa) |
 
+**Additional CDU-8002-specific ASCs** (documented in Sony CDU-541 manual, not yet implemented but reserved for future use):
+
+| ASC | ASCQ | Meaning | Context |
+|-----|------|---------|--------|
+| `0x04` | `0x00` | Logical Unit Not Ready | TOC read in progress |
+| `0x57` | `0x00` | Unable to Recover TOC | TOC unreadable |
+| `0x63` | `0x00` | End of User Area Encountered on This Track | Read past track boundary |
+| `0xB9` | `0x00` | Audio Play Operation Aborted | Audio address not valid |
+| `0x4E` | `0x00` | Overlapped Commands Attempted | Command while previous still executing |
+
 ### 6.4 UNIT ATTENTION
 
 UNIT ATTENTION is a per-initiator condition. It is set on:
@@ -711,7 +723,11 @@ The `cdrom validate` shell command checks for:
 
 4. **Size range:** Typical CD-ROM images are 100 MB to 700 MB. Images outside this range produce a warning but are not rejected.
 
-### 8.4 Read-Only Enforcement
+### 8.4 Unsupported Disc Formats
+
+The real CDU-8002 does **not** support Photo CD, CD-ROM XA, multisession, or CD-i — these features arrived with the later AppleCD 300 series. The emulator does not need to handle these formats. If a future version adds format detection, images of these types should be rejected with a diagnostic message.
+
+### 8.5 Read-Only Enforcement
 
 CD-ROM images are always opened read-only (`writable = false` in `image_open()`). The storage engine creates delta and journal file paths but never writes to them. SCSI WRITE commands to the CD-ROM device return CHECK CONDITION with DATA PROTECT sense key.
 
@@ -723,7 +739,9 @@ CD-ROM images are always opened read-only (`writable = false` in `image_open()`)
 
 | Version | Era | Vendor Check | Notes |
 |---------|-----|-------------|-------|
-| AppleCD SC Setup 2.0.1-3.2 | System 6 | INQUIRY whitelist only | Supports CDU-8001, CDU-8002 |
+| AppleCD SC Setup 2.0.1 | System 6 | INQUIRY whitelist only | Added Foreign File Access for ISO 9660, High Sierra, CD-Audio |
+| AppleCD SC Setup 3.0.1 | System 6 | INQUIRY whitelist only | **Required** for Mac IIci, IIfx, Portable (IOP architecture) |
+| AppleCD SC Setup 3.2 | System 6 | INQUIRY whitelist only | Shipped with SC Plus; supports System 6.0.7, 6.0.8, 7.0 |
 | CD-ROM Setup 4.0-4.0.5 | System 7.0+ | INQUIRY whitelist | Added AppleCD 300 support |
 | Apple CD-ROM 5.0-5.0.4 | System 7.1+ | INQUIRY whitelist + page 0x30 | Added 4x support |
 | Apple CD-ROM 5.3.1 | Mac OS 7.6 | **No vendor check** | Universal driver, works with any SCSI CD-ROM |
@@ -760,7 +778,9 @@ A/UX versions 2.0 through 3.1.1 support CD-ROM. A/UX 3.0+ boots into System 7.0.
 
 The CDU-8002 supports CD boot on 68030/68040 Macs (Quadra series, LC III, etc.). The following Macs **cannot** boot from CD: Mac Plus, SE, Classic, Mac II, IIx, IIcx, SE/30, Portable.
 
-Requirements for a bootable CD: HFS filesystem, Apple boot driver on disc, compatible System Folder, single-session closed disc. Boot is triggered by holding the C key at startup.
+Requirements for a bootable CD: HFS filesystem, Apple boot driver on disc, compatible System Folder, single-session closed disc. Boot is triggered by holding the C key at startup (or Cmd-Opt-Shift-Delete to skip the internal drive).
+
+**Driver hazard for 68000 Macs:** Apple CD/DVD Driver 1.4+ causes Sad Mac errors on 68000-based machines. Boot CDs targeting the Mac Plus, SE, or Classic should include Apple CD-ROM extension 5.3.1 or 5.3.2 instead.
 
 ---
 

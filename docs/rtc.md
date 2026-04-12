@@ -1,14 +1,56 @@
-# Macintosh Plus Real-Time Clock (RTC) and Parameter RAM
+# Macintosh Real-Time Clock (RTC) and Parameter RAM
 
 ## Overview
 
-The Macintosh Plus uses a battery-backed Real-Time Clock (RTC) chip (Apple part
-number **343-0042-B**) that provides both timekeeping functionality and
-non-volatile parameter RAM (PRAM) storage. This document describes the low-level
-hardware interface and protocol for emulator implementers.
+Classic Macintosh computers use a battery-backed Real-Time Clock (RTC) chip that
+provides both timekeeping functionality and non-volatile parameter RAM (PRAM)
+storage. This document describes the low-level hardware interface and protocol
+for emulator implementers.
 
-**Note:** Earlier Macintosh models used a smaller NVRAM chip with part number
-343-0040.
+All three emulated machines — Macintosh Plus, SE/30, and IIcx — share the same
+custom Apple RTC silicon (die number **0042**), communicate through an identical
+3-wire serial protocol bit-banged via VIA1 Port B bits 0–2, and each contain
+**256 bytes** of battery-backed PRAM. The only differences are the physical IC
+package, the VIA1 memory-mapped base address, and the serial clock speed driven
+by the host CPU.
+
+## Chip Identity
+
+The RTC/PRAM is a **fully custom Apple ASIC** — no off-the-shelf equivalent
+exists and no formal datasheet was ever published. Apple internally designated
+the die as **0042**. It appears under several part number variants depending on
+manufacturing batch and package:
+
+| Machine              | Part Number(s)   | Package | Battery               |
+| -------------------- | ---------------- | ------- | --------------------- |
+| **Macintosh Plus**   | 344-0042-A       | DIP-8   | 4.5 V PX21 alkaline   |
+| **Macintosh SE/30**  | 343-0042-B       | DIP-8   | 3.6 V ½ AA lithium    |
+| **Macintosh IIcx**   | 344S0042-B       | PLCC-20 | 3.6 V ½ AA lithium    |
+
+The **343- vs. 344- prefix** indicates different suppliers or fabrication
+processes, not a functional difference. The **-A / -B suffix** denotes die
+revisions or production batches. The **S** in "344S0042" likely indicates CMOS
+fabrication. All variants are functionally identical: same register set, same
+protocol, same 256 bytes of PRAM.
+
+The DIP-8 pinout, reconstructed from schematics and ATtiny85 replacement
+projects, is:
+
+| Pin | Function                                      |
+| --- | --------------------------------------------- |
+| 1   | TEST / N.C.                                   |
+| 2   | XTAL1 (32.768 kHz crystal input)              |
+| 3   | XTAL2 (32.768 kHz crystal output)             |
+| 4   | GND                                           |
+| 5   | CE — Chip Enable / Select (active low)        |
+| 6   | D — Bidirectional serial data                 |
+| 7   | SK — Serial clock (input from host)           |
+| 8   | VCC (from battery or PSU via protection diodes)|
+
+An earlier chip, the **344-0040**, was used in the Mac 128K and 512K and
+contained only **20 bytes** of PRAM. The 0042 replaced it starting with the Mac
+512Ke and Mac Plus, expanding to 256 bytes while remaining backward-compatible
+with the 20-byte command set.
 
 ## References
 
@@ -17,21 +59,41 @@ hardware interface and protocol for emulator implementers.
 3. Inside Macintosh - Operating System Utilities (1994) chapter 7
 4. A/UX Toolbox: Macintosh ROM Interface
 5. RTC/PRAM mechanism in Linux m68k kernel (arch/m68k/mac/misc.c)
+6. MAME, Mini vMac, and PCE emulator source code
+7. ATtiny85 replacement projects: MacRTC.c (Andrew Makousky),
+   attinyrtc / attinyrtcmodule (Phil Greenland)
+8. Open-source KiCad SE/30 motherboard schematic reproduction
+9. Logic analyzer captures at quantulum.co.uk
 
 ## Hardware Interface
 
 ### VIA Port B Connections
 
-The RTC is accessed through three pins on VIA1 (6522 VIA) Port B:
+The RTC is accessed through three pins on VIA1 (6522 VIA) Port B. This
+assignment is identical across the Plus, SE/30, and IIcx. The IIcx has a second
+VIA (VIA2), but the RTC connects exclusively to VIA1.
 
-| VIA Pin | Bit | Signal   | Direction     | Description                           |
-| ------- | --- | -------- | ------------- | ------------------------------------- |
-| PB0     | 0   | vRTCData | Bidirectional | Serial data line                      |
-| PB1     | 1   | vRTCClk  | Output        | Serial clock signal                   |
-| PB2     | 2   | vRTCEnb  | Output        | Chip enable (active low: 0 = enabled) |
+| VIA1 Port B Bit | Signal     | Direction        | RTC Chip Pin |
+| ---------------- | ---------- | ---------------- | ------------ |
+| Bit 0            | vRTCData   | Bidirectional    | Pin 6 (D)    |
+| Bit 1            | vRTCClk    | Output (host→RTC)| Pin 7 (SK)   |
+| Bit 2            | vRTCEnb    | Output (active low)| Pin 5 (CE) |
 
-**VIA1 Base Address:** Defined in the system's decoder info, typically accessed
-via the `VIA` low-memory global.
+The remaining Port B bits serve different functions depending on the model. On
+the Plus, bits 3–7 handle mouse input and sound enable. On the SE/30 and IIcx,
+bits 3–5 handle ADB (Apple Desktop Bus) and bits 6–7 handle other system
+functions. The RTC bits 0–2 never change.
+
+### VIA1 Base Addresses
+
+VIA1 base addresses differ by model:
+
+| Machine          | VIA1 Base Address | Notes                              |
+| ---------------- | ----------------- | ---------------------------------- |
+| **Macintosh Plus**| 0xEFE1FE         | 68000-era memory map               |
+| **SE/30, IIcx**  | 0x50000000        | Mac II–class I/O base              |
+
+Registers are spaced at 0x200-byte intervals on SE/30 and IIcx.
 
 **Register Offsets from VIA Base:**
 
@@ -42,24 +104,40 @@ via the `VIA` low-memory global.
 
 ### Basic Protocol
 
-The RTC uses a **synchronous serial bit-banging protocol**:
+The RTC uses a **custom synchronous serial interface** — not SPI, not I²C,
+though it resembles both. Three signal lines carry all communication: chip
+enable (CE, active low), a bidirectional data line (D), and a host-driven clock
+(SK). All transfers are initiated by the host. Data is clocked **MSB first**.
+The RTC samples incoming data on the **rising edge** of SK. During reads, the
+RTC drives data onto the line on the **falling edge** of SK, allowing the host
+to sample it on the subsequent rising edge.
+
+**Regular command (works on both 20-byte and 256-byte chips):**
 
 1. **Chip Enable:** Clear bit 2 of VIA Port B (vRTCEnb = 0) to enable the chip
-2. **Data Transfer:** Send/receive 8 bits via vRTCData (bit 0), clocking each
-   bit with vRTCClk (bit 1)
-3. **Chip Disable:** Set bit 2 of VIA Port B (vRTCEnb = 1) to disable the chip
+2. **Data Transfer:** Host clocks out an 8-bit command/address byte
+3. Host clocks out (write) or RTC clocks out (read) an 8-bit data byte
+4. **Chip Disable:** Set bit 2 of VIA Port B (vRTCEnb = 1) to disable the chip
 
 **Important:** All RTC operations must be performed with **interrupts masked at
 level 7** ($0700) to prevent timing issues.
 
+The RTC chip itself is purely a clock-follower and operates at whatever speed
+the host drives. On the Mac Plus with its **8 MHz 68000**, the bit-bang loop
+runs slowly enough that each serial clock cycle is ~50–1000 µs, yielding a
+serial clock frequency of roughly **1–20 kHz**. On the SE/30 and IIcx with
+their **16 MHz 68030**, the same loop executes much faster, producing a serial
+clock of approximately **250 kHz** — about 12× faster.
+
 ### Bit Transmission (Write)
 
-For each bit to be transmitted (MSB first):
+For each bit to be transmitted (MSB first), the host sets DDRB bit 0 to output
+mode, then:
 
 ```
-1. Load bit into vRTCData (bit 0 of Port B)
-2. Clear vRTCClk (bit 1 = 0) - clock low
-3. Set vRTCClk (bit 1 = 1) - clock high (data latched on rising edge)
+1. Drive vRTCClk low
+2. Set vRTCData to the bit value
+3. Drive vRTCClk high (data latched on rising edge)
 ```
 
 The actual implementation uses a rotate-and-extend technique:
@@ -75,34 +153,31 @@ BSET    #vRTCClk,vBufB(A2)  ; Clock high
 
 ### Bit Reception (Read)
 
-For each bit to be received (MSB first):
+The host switches DDRB bit 0 to input mode (0), releasing the data line. For
+each of 8 data bits (MSB first):
 
 ```
-1. Set vRTCData direction to INPUT in vDirB
-2. Clear vRTCClk (bit 1 = 0) - clock low
-3. Set vRTCClk (bit 1 = 1) - clock high
-4. Read bit from vRTCData (bit 0 of Port B)
-5. Shift bit into result register
-6. Restore vRTCData direction to OUTPUT when done
+1. Drive vRTCClk high
+2. Drive vRTCClk low (RTC places next bit on falling edge)
+3. Read bit from vRTCData (bit 0 of Port B)
+4. Shift bit into result register
 ```
+
+Restore vRTCData direction to OUTPUT when done.
 
 ## Command Format
 
 ### Standard Commands (8-bit)
 
-Commands are 8 bits with the following format:
+The command byte format is:
 
 ```
-Bit 7: R/W (1 = Read, 0 = Write)
-Bits 6-5: Register group selector
-Bits 4-2: Address bits (specific register)
-Bits 1-0: Function bits
+Bit:  7      6    5    4    3    2    1    0
+    [R/W]  [A4] [A3] [A2] [A1] [A0] [ 1] [ 0]
 ```
 
-**Common command patterns:**
-
-- Bits 6-3 = `0111` (0x38): Extended write command prefix
-- Bits 6-3 = `1011` (0xB8): Extended read command prefix
+**Bit 7** selects read (1) or write (0). **Bits 6–2** form a 5-bit register
+address (0x00–0x1F). **Bits 1–0** are always fixed as binary `10`.
 
 **Command pattern matching:**
 
@@ -113,51 +188,40 @@ Bits 1-0: Function bits
 
 ### Extended Commands (16-bit)
 
-For accessing the full PRAM space (including bytes beyond the original 20),
-extended commands use a two-byte sequence:
+On the 256-byte chip, regular command addresses 0x0E and 0x0F trigger extended
+mode. The extended transaction adds a second command byte, creating a 16-bit
+command followed by an 8-bit data byte:
 
-**First byte format (bits 6-3 = `0011` for extended):**
+1. Host asserts CE low
+2. Host clocks out first command byte (8 bits)
+3. Host clocks out second command byte (8 bits)
+4. Data byte clocked in or out (8 bits)
+5. Host de-asserts CE high
 
-```
-Read:  1011 1xxx (0xB8 + address_bits[7:5])
-Write: 0011 1xxx (0x38 + address_bits[7:5])
-```
-
-**Second byte format:** Contains additional addressing information.
-
-### PRAM Address Encoding
-
-To read/write a PRAM byte at address `N` (0-255):
-
-**For WRITE:**
+The two command bytes encode the full 8-bit XPRAM address:
 
 ```
-1. Calculate command word:
-   address_word = N << 3          ; Shift address left 3 bits [oooo o765 4321 0ooo]
-   address_word = ROR.B #1        ; Rotate right by 1 [oooo o765 o432 10oo]
-   address_word = ROR.W #8        ; Rotate word right by 8 [o432 10oo oooo o765]
-   command_word = address_word | 0x0038  ; Add write bits [o432 10oo ooii i765]
-
-2. If bits 6-3 = 0x3 (extended): Send first byte, then second byte
-3. Send data byte
+First byte:   [R/W] [0] [0] [1] [1] [A7] [A6] [A5]
+Second byte:  [ x ] [A4][A3][A2][A1][A0] [ x ] [ x ]
 ```
 
-**For READ:**
+Bits 6–3 of the first byte are fixed as `0011`, which the chip recognizes as
+the extended command prefix (this corresponds to address 0x0E or 0x0F in the
+regular 5-bit address space). The **upper 3 bits** (A7–A5) of the XPRAM address
+occupy bits 2–0 of the first byte. The **lower 5 bits** (A4–A0) occupy bits 6–2
+of the second byte. The read/write flag remains in bit 7 of the first byte.
 
-```
-1. Calculate command word (same as write but OR with 0x00B8):
-   address_word = N << 3
-   address_word = ROR.B #1
-   address_word = ROR.W #8
-   command_word = address_word | 0x00B8  ; Add read bits [o432 10oo ioii i765]
-
-2. If bits 6-3 = 0xB (extended): Send first byte, then second byte
-3. Read data byte
-```
+The 20 bytes of traditional PRAM accessible via regular commands map to the same
+addresses via extended commands, providing full backward compatibility.
 
 ## Special Commands
 
-### Write Protection Control
+### Write Protection
+
+The **write-protect register** at address 0x0D is write-only. Setting bit 7 to
+1 enables writes to all other registers; setting it to 0 locks them. The Mac ROM
+disables write-protect before modifying the clock or PRAM, then re-enables
+protection afterward.
 
 **Disable Write Protection (required before writing):**
 
@@ -179,10 +243,27 @@ Command: 0x31 0x00  (write zero to test register)
 
 ## RTC Registers
 
+### Full Register Map
+
+The RTC's internal register space, addressed via the 5-bit regular command
+address, contains four functional regions:
+
+| Address   | Contents                          | Notes                                 |
+| --------- | --------------------------------- | ------------------------------------- |
+| 0x00–0x03 | **Seconds counter** (32-bit)      | Byte 0 = LSB, seconds since Jan 1 1904|
+| 0x04–0x07 | Seconds counter (mirror)          | Same 32-bit counter, may be read-only |
+| 0x08–0x0B | PRAM group 1 (4 bytes)            | "Low" traditional PRAM                |
+| 0x0C      | Test register                     | Factory use only (write-only)         |
+| 0x0D      | **Write-protect register**        | Bit 7: 0 = protected, 1 = writes OK  |
+| 0x0E–0x0F | Extended command prefix           | Triggers XPRAM addressing             |
+| 0x10–0x1F | PRAM group 2 (16 bytes)           | "High" traditional PRAM               |
+
 ### Time Registers
 
 The RTC stores time as seconds since January 1, 1904 (Mac epoch), in a 32-bit
-value split across 4 registers.
+value driven by the external **32.768 kHz watch crystal**. The maximum value
+(0xFFFFFFFF) corresponds to **February 6, 2040, 6:28:15 AM** — the "year 2040
+problem" for classic Macs.
 
 **Command Pattern:** `z00*0001`, `z00*0101`, `z00*1001`, `z00*1101` where:
 
@@ -214,9 +295,10 @@ comparing.
 
 ### PRAM Layout
 
-The original Mac Plus RTC provides 20 bytes of PRAM (addresses 0x00-0x13),
-though extended addressing allows access to 256 bytes. The complete PRAM memory
-map is as follows:
+The original RTC chip provides 20 bytes of traditional PRAM (4 at 0x08–0x0B
+plus 16 at 0x10–0x1F), while extended addressing allows access to the full 256
+bytes. These 20 bytes are copied to low memory at addresses **$1F8–$20B** during
+boot as the `SysParmType` record.
 
 #### Standard PRAM (0x00-0x13)
 
@@ -327,7 +409,17 @@ system-reserved._
 ### Clock Speed
 
 The VIA runs at **783,360 Hz** (783.36 kHz). The RTC protocol is not highly
-timing-sensitive, but consistent timing should be maintained.
+timing-sensitive — the chip is purely a clock-follower and operates at whatever
+speed the host drives.
+
+| Machine          | CPU         | Serial Clock Speed | Notes                 |
+| ---------------- | ----------- | ------------------ | --------------------- |
+| **Macintosh Plus**| 8 MHz 68000 | ~1–20 kHz         | ~50–1000 µs per cycle |
+| **SE/30, IIcx**  | 16 MHz 68030| ~250 kHz           | ~12× faster than Plus |
+
+This speed difference is significant for replacement chips (e.g., ATtiny85
+microcontrollers at 8 MHz can handle the Plus's slow clock but fail on the
+SE/30's faster clock without being overclocked to 16 MHz).
 
 ### Requirements
 
@@ -349,6 +441,12 @@ ORI     #$0700,SR                ; Mask all interrupts
 ; ... perform RTC operation ...
 MOVE    D2,SR                    ; Restore SR
 ```
+
+## 1-Second Interrupt
+
+The RTC generates a **1-second interrupt** signal connected to VIA1, which the
+operating system uses to increment its software clock. This mechanism is
+identical across all three machines.
 
 ## Implementation Notes for Emulators
 
