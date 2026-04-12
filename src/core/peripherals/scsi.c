@@ -378,13 +378,16 @@ static void run_cmd(scsi_t *scsi) {
             }
         } else {
             // Hard disk INQUIRY: device type 0x00
+            scsi->buf.data[0] = 0x00; // direct-access device
+            scsi->buf.data[1] = 0x00; // non-removable media
+            scsi->buf.data[2] = 0x01; // SCSI-1 (ANSI version)
+            scsi->buf.data[3] = 0x01; // response data format: CCS
+            scsi->buf.data[4] = 0x31; // additional length: 49 bytes
             if (scsi->cmd.tl >= 36) {
                 memcpy(scsi->buf.data + 8, scsi->devices[target].vendor_id, 8);
                 memcpy(scsi->buf.data + 16, scsi->devices[target].product_id, 16);
                 memcpy(scsi->buf.data + 32, scsi->devices[target].revision, 4);
             }
-            // [7]: additional length = n - 4
-            scsi->buf.data[4] = scsi->cmd.tl - 4;
         }
 
         break;
