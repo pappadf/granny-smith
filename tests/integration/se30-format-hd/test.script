@@ -1,0 +1,54 @@
+# Integration test: SE/30 Format Blank HD
+# Creates a blank 80 MB SCSI HD via hd create, attaches it,
+# boots System 7.0.1 from floppy, opens Apple HD SC Setup,
+# and verifies the drive is recognized.
+#
+# Timing notes (from working e2e mouseDoubleClick):
+#   - e2e uses 100ms hold + 100ms gap = ~1.6M cycles each at 16MHz
+#   - 5M cycles between set-mouse --global and first click for VBL propagation
+#   - Double-click: down 1.6M up 1.6M down 1.6M up — total ~300ms
+
+# Create a blank 80 MB hard disk image (exact HD80SC size, zero-filled)
+hd create ${WORK_DIR}/blank80.img 81222144
+# Attach the blank image as SCSI ID 6 (default)
+hd attach ${WORK_DIR}/blank80.img
+
+# Boot to Finder desktop (SE/30 with 8 MB RAM)
+run 80000000
+
+screenshot --match desktop.png
+
+# Double click the "Disk Tools" icon to open the floppy
+set-mouse 480 55 --global
+run 5000000
+mouse-button down
+run 1000000
+mouse-button up
+run 1000000
+mouse-button down
+run 1000000
+mouse-button up
+
+# Run a bit so that the floppy has time to open
+run 50000000
+
+screenshot --match floppy.png
+
+# Double-click Apple HD SC Setup icon in the Disk Tools window
+set-mouse 167 83 --global
+run 5000000
+mouse-button down
+run 1000000
+mouse-button up
+run 1000000
+mouse-button down
+run 1000000
+mouse-button up
+
+# Run a bit so that the Apple HD SC Setup app opens
+run 50000000
+
+screenshot --match failure.png
+
+quit
+

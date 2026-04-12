@@ -13,6 +13,7 @@
 #include "cmd_types.h"
 #include "log.h"
 #include "peeler_shell.h"
+#include "shell_var.h"
 
 #include <ctype.h>
 #include <dirent.h>
@@ -602,14 +603,19 @@ void dispatch_command(char *line, enum invoke_mode mode, struct cmd_result *res)
         return;
     }
 
+    // expand ${VAR} references before tokenizing
+    char *expanded = shell_var_expand(line);
+    char *to_parse = expanded ? expanded : line;
+
     char *argv[MAXTOK];
-    int argc = tokenize(line, argv, MAXTOK);
+    int argc = tokenize(to_parse, argv, MAXTOK);
     if (argc <= 0)
         return;
 
     struct cmd_reg_node *c = find_cmd(argv[0]);
     if (c) {
         execute_cmd(c, argc, argv, mode, res);
+        free(expanded);
         return;
     }
 
@@ -617,6 +623,7 @@ void dispatch_command(char *line, enum invoke_mode mode, struct cmd_result *res)
     // to match the convention that unknown commands are not fatal errors.
     suggest_command(argv[0]);
     res->type = RES_OK;
+    free(expanded);
 }
 
 // Dispatch interactively and return integer result
@@ -624,24 +631,33 @@ uint64_t shell_dispatch(char *line) {
     if (!shell_initialized)
         return -1;
 
+    // expand ${VAR} references before tokenizing
+    char *expanded = shell_var_expand(line);
+    char *to_parse = expanded ? expanded : line;
+
     char *argv[MAXTOK];
-    int argc = tokenize(line, argv, MAXTOK);
+    int argc = tokenize(to_parse, argv, MAXTOK);
     if (argc < 0) {
         fputs("too many arguments\n", stderr);
+        free(expanded);
         return 0;
     }
-    if (argc == 0)
+    if (argc == 0) {
+        free(expanded);
         return 0;
+    }
 
     struct cmd_reg_node *c = find_cmd(argv[0]);
     if (!c) {
         suggest_command(argv[0]);
+        free(expanded);
         return 0;
     }
 
     struct cmd_result res;
     memset(&res, 0, sizeof(res));
     execute_cmd(c, argc, argv, INVOKE_INTERACTIVE, &res);
+    free(expanded);
 
     if (res.type == RES_INT)
         return (uint64_t)res.as_int;
@@ -694,6 +710,7 @@ int shell_init(void) {
 
     log_init();
     peeler_shell_init();
+    shell_var_init();
 
     register_cmd("help", "General", "help [cmd]", cmd_help);
     register_cmd("echo", "General", "echo ARG...", cmd_echo);

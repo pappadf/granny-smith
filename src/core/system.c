@@ -461,6 +461,70 @@ static int do_create_fd(const char *path, bool high_density, int preferred) {
     return 0;
 }
 
+// Parse a size string with optional K or M suffix.
+// Returns the size in bytes, or 0 on parse error.
+static size_t parse_size_string(const char *str) {
+    if (!str || !*str)
+        return 0;
+    char *end = NULL;
+    unsigned long long val = strtoull(str, &end, 10);
+    if (end == str || val == 0)
+        return 0;
+    if (*end == 'K' || *end == 'k') {
+        val *= 1024;
+        end++;
+    } else if (*end == 'M' || *end == 'm') {
+        val *= 1024 * 1024;
+        end++;
+    }
+    // reject trailing garbage
+    if (*end != '\0')
+        return 0;
+    return (size_t)val;
+}
+
+// Size limits for hd create
+#define HD_CREATE_MAX_SIZE (2ULL * 1024 * 1024 * 1024) // 2 GiB
+
+// Floppy sizes that should be rejected
+#define FLOPPY_400K  409600
+#define FLOPPY_800K  819200
+#define FLOPPY_1440K 1474560
+
+// Create a new blank hard disk image at the given path.
+// Returns 0 on success, -1 on failure.
+static int do_create_hd(const char *path, const char *size_str) {
+    size_t size = parse_size_string(size_str);
+    if (size == 0) {
+        printf("hd create: invalid size: %s\n", size_str);
+        printf("  Use a number with optional K or M suffix (e.g. 20M, 512K, 21411840)\n");
+        return -1;
+    }
+    if (size > HD_CREATE_MAX_SIZE) {
+        printf("hd create: size %zu exceeds maximum (2 GiB)\n", size);
+        return -1;
+    }
+    // reject floppy-sized images
+    if (size == FLOPPY_400K || size == FLOPPY_800K || size == FLOPPY_1440K) {
+        printf("hd create: size %zu matches a floppy format, use fd create instead\n", size);
+        return -1;
+    }
+    // refuse to overwrite existing files
+    FILE *exist = fopen(path, "rb");
+    if (exist) {
+        fclose(exist);
+        printf("hd create: file already exists: %s (won't overwrite)\n", path);
+        return -1;
+    }
+    int rc = image_create_empty(path, size);
+    if (rc != 0) {
+        printf("hd create: failed to create image: %s\n", path);
+        return -1;
+    }
+    printf("hd create: created %s (%zu bytes)\n", path, size);
+    return 0;
+}
+
 // Attach a SCSI hard disk image. Delegates to add_scsi_drive().
 // Returns 0 on success, -1 on error.
 static int do_attach_hd(const char *path, int scsi_id) {
@@ -635,10 +699,19 @@ static void cmd_fd_handler(struct cmd_context *ctx, struct cmd_result *res) {
 static void cmd_hd_handler(struct cmd_context *ctx, struct cmd_result *res) {
     const char *subcmd = ctx->subcmd;
     if (!subcmd) {
-        cmd_err(res, "usage: hd <attach|loopback|validate> [args...]");
+        cmd_err(res, "usage: hd <create|attach|loopback|validate> [args...]");
         return;
     }
 
+    if (strcmp(subcmd, "create") == 0) {
+        if (!ctx->args[0].present || !ctx->args[1].present) {
+            cmd_err(res, "usage: hd create <path> <size>");
+            return;
+        }
+        int rc = do_create_hd(ctx->args[0].as_str, ctx->args[1].as_str);
+        cmd_int(res, (int64_t)rc);
+        return;
+    }
     if (strcmp(subcmd, "attach") == 0) {
         if (!ctx->args[0].present) {
             cmd_err(res, "usage: hd attach <path> [id]");
@@ -1047,10 +1120,15 @@ static const char *loopback_values[] = {"on", "off", NULL};
 static const struct arg_spec loopback_args[] = {
     {"state", ARG_ENUM | ARG_OPTIONAL, "on or off", loopback_values},
 };
+static const struct arg_spec hd_create_args[] = {
+    {"path", ARG_PATH,   "image file path"                 },
+    {"size", ARG_STRING, "size with optional K or M suffix"},
+};
 static const struct subcmd_spec hd_subcmds[] = {
-    {"attach",   NULL, hd_attach_args, 2, "attach hard disk image"    },
-    {"loopback", NULL, loopback_args,  1, "passive terminator"        },
-    {"validate", NULL, hd_attach_args, 1, "validate a hard disk image"},
+    {"create",   NULL, hd_create_args, 2, "create a blank hard disk image"},
+    {"attach",   NULL, hd_attach_args, 2, "attach hard disk image"        },
+    {"loopback", NULL, loopback_args,  1, "passive terminator"            },
+    {"validate", NULL, hd_attach_args, 1, "validate a hard disk image"    },
 };
 
 // scc subcommands

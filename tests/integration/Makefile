@@ -18,6 +18,7 @@ HEADLESS_BIN := $(ROOT_DIR)/build/headless/gs-headless
 TEST_DATA := $(ROOT_DIR)/tests/data
 STORAGE_CACHE := $(ROOT_DIR)/build/storage-cache
 TEST_RESULTS_BASE := $(ROOT_DIR)/tests/integration/test-results
+WORK_DIR_BASE := $(ROOT_DIR)/build/integration
 FETCH_SCRIPT := $(ROOT_DIR)/scripts/fetch-test-data.sh
 
 # Valgrind configuration for memcheck
@@ -146,10 +147,12 @@ test-%: $(HEADLESS_BIN) FORCE
 	rm -rf "$(abspath $(STORAGE_CACHE))"; \
 	TEST_TMPDIR=$$(mktemp -d); \
 	TEST_RESULTS_DIR="$(abspath $(TEST_RESULTS_BASE))/$*"; \
-	mkdir -p "$$TEST_RESULTS_DIR"; \
+	WORK_DIR="$(abspath $(WORK_DIR_BASE))/$*"; \
+	rm -rf "$$WORK_DIR"; \
+	mkdir -p "$$TEST_RESULTS_DIR" "$$WORK_DIR"; \
 	trap "rm -rf $$TEST_TMPDIR" EXIT; \
 	if [ -n "$$TEST_SETUP" ]; then \
-		SETUP_CMD=$$(echo "$$TEST_SETUP" | sed "s|\$$(TEST_DATA)|$$ABS_TEST_DATA|g" | sed "s|\$$(TEST_TMPDIR)|$$TEST_TMPDIR|g" | sed "s|\$$(TEST_RESULTS_DIR)|$$TEST_RESULTS_DIR|g"); \
+		SETUP_CMD=$$(echo "$$TEST_SETUP" | sed "s|\$$(TEST_DATA)|$$ABS_TEST_DATA|g" | sed "s|\$$(TEST_TMPDIR)|$$TEST_TMPDIR|g" | sed "s|\$$(TEST_RESULTS_DIR)|$$TEST_RESULTS_DIR|g" | sed "s|\$$(WORK_DIR)|$$WORK_DIR|g"); \
 		echo "Setup: $$SETUP_CMD"; \
 		eval "$$SETUP_CMD" || { echo "=== FAIL: $* (setup) ==="; exit 1; }; \
 	fi; \
@@ -158,6 +161,7 @@ test-%: $(HEADLESS_BIN) FORCE
 		cd $* && HEADLESS_BIN=$(abspath $(HEADLESS_BIN)) ROM_PATH="$$ROM_PATH" \
 			TEST_DATA="$$ABS_TEST_DATA" TEST_TMPDIR="$$TEST_TMPDIR" \
 			TEST_RESULTS_DIR="$$TEST_RESULTS_DIR" \
+			WORK_DIR="$$WORK_DIR" \
 			STORAGE_CACHE=$(abspath $(STORAGE_CACHE)) \
 			bash "$$TEST_RUNNER" || { echo "=== FAIL: $* ==="; exit 1; }; \
 	else \
@@ -165,13 +169,14 @@ test-%: $(HEADLESS_BIN) FORCE
 			rom="$$ROM_PATH" \
 			$$EXPANDED_ARGS \
 			script=test.script \
+			--var WORK_DIR="$$WORK_DIR" \
 			--speed=max || { echo "=== FAIL: $* ==="; exit 1; }; \
 	fi; \
 	echo "=== PASS: $* ==="
 
 # Clean integration test artifacts (headless binary is cleaned by top-level make)
 clean:
-	rm -rf $(TEST_RESULTS_BASE) $(STORAGE_CACHE)
+	rm -rf $(TEST_RESULTS_BASE) $(WORK_DIR_BASE) $(STORAGE_CACHE)
 
 # Run all integration tests under Valgrind memcheck
 test-valgrind: $(HEADLESS_BIN)
@@ -222,10 +227,12 @@ test-valgrind-%: $(HEADLESS_BIN) FORCE
 	rm -rf "$(abspath $(STORAGE_CACHE))"; \
 	TEST_TMPDIR=$$(mktemp -d); \
 	TEST_RESULTS_DIR="$(abspath $(TEST_RESULTS_BASE))/$*"; \
-	mkdir -p "$$TEST_RESULTS_DIR"; \
+	WORK_DIR="$(abspath $(WORK_DIR_BASE))/$*"; \
+	rm -rf "$$WORK_DIR"; \
+	mkdir -p "$$TEST_RESULTS_DIR" "$$WORK_DIR"; \
 	trap "rm -rf $$TEST_TMPDIR" EXIT; \
 	if [ -n "$$TEST_SETUP" ]; then \
-		SETUP_CMD=$$(echo "$$TEST_SETUP" | sed "s|\$$(TEST_DATA)|$$ABS_TEST_DATA|g" | sed "s|\$$(TEST_TMPDIR)|$$TEST_TMPDIR|g" | sed "s|\$$(TEST_RESULTS_DIR)|$$TEST_RESULTS_DIR|g"); \
+		SETUP_CMD=$$(echo "$$TEST_SETUP" | sed "s|\$$(TEST_DATA)|$$ABS_TEST_DATA|g" | sed "s|\$$(TEST_TMPDIR)|$$TEST_TMPDIR|g" | sed "s|\$$(TEST_RESULTS_DIR)|$$TEST_RESULTS_DIR|g" | sed "s|\$$(WORK_DIR)|$$WORK_DIR|g"); \
 		echo "Setup: $$SETUP_CMD"; \
 		eval "$$SETUP_CMD" || { echo "=== FAIL: $* (setup) ==="; exit 1; }; \
 	fi; \
@@ -234,6 +241,7 @@ test-valgrind-%: $(HEADLESS_BIN) FORCE
 		cd $* && HEADLESS_BIN="$(VALGRIND) $(VALGRIND_FLAGS) $(abspath $(HEADLESS_BIN))" ROM_PATH="$$ROM_PATH" \
 			TEST_DATA="$$ABS_TEST_DATA" TEST_TMPDIR="$$TEST_TMPDIR" \
 			TEST_RESULTS_DIR="$$TEST_RESULTS_DIR" \
+			WORK_DIR="$$WORK_DIR" \
 			STORAGE_CACHE=$(abspath $(STORAGE_CACHE)) \
 			bash "$$TEST_RUNNER" || { echo "=== FAIL (valgrind): $* ==="; exit 1; }; \
 	else \
@@ -241,6 +249,7 @@ test-valgrind-%: $(HEADLESS_BIN) FORCE
 			rom="$$ROM_PATH" \
 			$$EXPANDED_ARGS \
 			script=test.script \
+			--var WORK_DIR="$$WORK_DIR" \
 			--speed=max || { echo "=== FAIL (valgrind): $* ==="; exit 1; }; \
 	fi; \
 	echo "=== PASS (valgrind): $* ==="

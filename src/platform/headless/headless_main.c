@@ -17,6 +17,7 @@
 #include "scheduler.h"
 #include "scsi.h"
 #include "shell.h"
+#include "shell_var.h"
 #include "system.h"
 
 #include <arpa/inet.h>
@@ -138,6 +139,7 @@ static void print_usage(const char *program) {
     printf("  --port=PORT     TCP port for daemon mode (default: 6800)\n");
     printf("  --kill          Kill existing daemon on same port before starting\n");
     printf("  --script-stdin  Read script commands from stdin instead of a file\n");
+    printf("  --var NAME=VAL  Set a shell variable (can be repeated)\n");
     printf("\n");
     printf("Examples:\n");
     printf("  %s rom=plus.rom\n", program);
@@ -588,6 +590,8 @@ int main(int argc, char *argv[]) {
     int quiet = 0;
     int script_stdin = 0;
     int kill_daemon = 0;
+    const char *var_defs[64] = {NULL}; // --var NAME=VALUE definitions
+    int var_count = 0;
 
     // Parse arguments
     for (int i = 1; i < argc; i++) {
@@ -636,6 +640,26 @@ int main(int argc, char *argv[]) {
 
         if (strncmp(arg, "--cycles=", 9) == 0) {
             max_cycles = strtoull(arg + 9, NULL, 10);
+            continue;
+        }
+
+        // --var NAME=VALUE: set a shell variable before script execution
+        if (strncmp(arg, "--var", 5) == 0) {
+            const char *def = NULL;
+            if (arg[5] == '=') {
+                def = arg + 6;
+            } else if (arg[5] == '\0' && i + 1 < argc) {
+                def = argv[++i];
+            }
+            if (!def || !strchr(def, '=')) {
+                fprintf(stderr, "Error: --var requires NAME=VALUE\n");
+                return 1;
+            }
+            if (var_count < 64) {
+                var_defs[var_count++] = def;
+            } else {
+                fprintf(stderr, "Warning: Too many --var definitions, ignoring: %s\n", def);
+            }
             continue;
         }
 
@@ -742,6 +766,19 @@ int main(int argc, char *argv[]) {
 
     // Initialize shell and emulator
     shell_init();
+
+    // Apply --var definitions (after shell_init which calls shell_var_init)
+    for (int i = 0; i < var_count; i++) {
+        // Split NAME=VALUE at first '='
+        char buf[256];
+        strncpy(buf, var_defs[i], sizeof(buf) - 1);
+        buf[sizeof(buf) - 1] = '\0';
+        char *eq = strchr(buf, '=');
+        if (eq) {
+            *eq = '\0';
+            shell_var_set(buf, eq + 1);
+        }
+    }
 
     // Register headless-specific commands
     register_cmd("quit", "General", "quit — exit the emulator", cmd_quit);
