@@ -323,38 +323,58 @@ export async function showConfigDialog(romChecksums) {
     }
 
     // Show a dialog prompting the user for a hard disk image size.
+    // Queries the emulator for available drive models dynamically.
     // Returns { path, name } on success, or null if cancelled.
     function showHdSizeDialog() {
-      return new Promise((resolve) => {
+      return new Promise(async (resolve) => {
+        // query available drive models from the emulator
+        let models = [];
+        try {
+          const result = await window.runCommandJSON('hd models --json');
+          if (result && result.output) {
+            models = JSON.parse(result.output);
+          }
+        } catch (e) {
+          // fallback: empty means dialog will show an error
+        }
+        if (!models.length) {
+          resolve(null);
+          return;
+        }
+
         let dlg = document.getElementById('hd-size-dialog');
-        if (!dlg) {
-          dlg = document.createElement('div');
-          dlg.id = 'hd-size-dialog';
-          dlg.className = 'modal';
-          dlg.setAttribute('role', 'dialog');
-          dlg.setAttribute('aria-modal', 'true');
-          dlg.setAttribute('aria-hidden', 'true');
-          dlg.innerHTML = `
+        // always rebuild the dialog to reflect current models
+        if (dlg) dlg.remove();
+        dlg = document.createElement('div');
+        dlg.id = 'hd-size-dialog';
+        dlg.className = 'modal';
+        dlg.setAttribute('role', 'dialog');
+        dlg.setAttribute('aria-modal', 'true');
+        dlg.setAttribute('aria-hidden', 'true');
+
+        // deduplicate models by label, keeping the largest size per label
+        const byLabel = new Map();
+        for (const m of models) {
+          if (!byLabel.has(m.label) || m.size > byLabel.get(m.label).size)
+            byLabel.set(m.label, m);
+        }
+        const uniqueModels = [...byLabel.values()];
+
+        // build radio buttons from model list
+        const radios = uniqueModels.map((m, i) => {
+          const mb = Math.round(m.size / (1000 * 1000));
+          return `<label class="hd-size-option">
+              <input type="radio" name="hd-size" value="${m.size}" ${i === 0 ? 'checked' : ''} />
+              <span>${mb} MB (${m.label})</span>
+            </label>`;
+        }).join('\n');
+
+        dlg.innerHTML = `
             <div class="modal__content hd-size-modal">
               <h2 class="modal__title">Create Blank Hard Disk</h2>
               <p class="modal__message">Choose a size for the new hard disk image.</p>
               <div class="hd-size-options">
-                <label class="hd-size-option">
-                  <input type="radio" name="hd-size" value="21411840" checked />
-                  <span>20 MB (HD20SC)</span>
-                </label>
-                <label class="hd-size-option">
-                  <input type="radio" name="hd-size" value="42881664" />
-                  <span>40 MB (HD40SC)</span>
-                </label>
-                <label class="hd-size-option">
-                  <input type="radio" name="hd-size" value="81222144" />
-                  <span>80 MB (HD80SC)</span>
-                </label>
-                <label class="hd-size-option">
-                  <input type="radio" name="hd-size" value="177270240" />
-                  <span>160 MB (HD160SC)</span>
-                </label>
+                ${radios}
               </div>
               <span class="hd-size-error" id="hd-size-error" hidden></span>
               <div class="modal__actions">
@@ -363,17 +383,12 @@ export async function showConfigDialog(romChecksums) {
               </div>
             </div>
           `;
-          document.body.appendChild(dlg);
-        }
+        document.body.appendChild(dlg);
 
         const errorSpan = dlg.querySelector('#hd-size-error');
         const createBtn = dlg.querySelector('#hd-size-create-btn');
         const cancelBtn = dlg.querySelector('#hd-size-cancel-btn');
         errorSpan.hidden = true;
-
-        // Reset radio to first option (20 MB)
-        const radios = dlg.querySelectorAll('input[name="hd-size"]');
-        radios[0].checked = true;
 
         dlg.setAttribute('aria-hidden', 'false');
 

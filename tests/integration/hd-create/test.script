@@ -1,0 +1,22 @@
+# Integration test: HD Create and Models
+# Exercises hd create with model-aware size parsing and hd models listing.
+
+# Test: hd models lists known drive models
+hd models
+
+# Test: hd create with a model name
+hd create ${WORK_DIR}/test_model.img HD20SC
+
+# Test: hd create with a human-friendly size (mb suffix)
+hd create ${WORK_DIR}/test_40mb.img 40mb
+
+# Test: hd create with exact byte count (backward compatible)
+hd create ${WORK_DIR}/test_exact.img 21411840
+
+# Test: hd create with binary suffix (backward compatible)
+hd create ${WORK_DIR}/test_20M.img 20M
+
+# Test: hd models --json returns JSON output
+hd models --json
+
+quit

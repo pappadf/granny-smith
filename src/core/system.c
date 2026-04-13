@@ -13,6 +13,7 @@
 #include "build_id.h"
 #include "cmd_types.h"
 #include "cpu.h"
+#include "drive_catalog.h"
 #include "floppy.h"
 #include "image.h"
 #include "keyboard.h"
@@ -461,28 +462,6 @@ static int do_create_fd(const char *path, bool high_density, int preferred) {
     return 0;
 }
 
-// Parse a size string with optional K or M suffix.
-// Returns the size in bytes, or 0 on parse error.
-static size_t parse_size_string(const char *str) {
-    if (!str || !*str)
-        return 0;
-    char *end = NULL;
-    unsigned long long val = strtoull(str, &end, 10);
-    if (end == str || val == 0)
-        return 0;
-    if (*end == 'K' || *end == 'k') {
-        val *= 1024;
-        end++;
-    } else if (*end == 'M' || *end == 'm') {
-        val *= 1024 * 1024;
-        end++;
-    }
-    // reject trailing garbage
-    if (*end != '\0')
-        return 0;
-    return (size_t)val;
-}
-
 // Size limits for hd create
 #define HD_CREATE_MAX_SIZE (2ULL * 1024 * 1024 * 1024) // 2 GiB
 
@@ -494,10 +473,12 @@ static size_t parse_size_string(const char *str) {
 // Create a new blank hard disk image at the given path.
 // Returns 0 on success, -1 on failure.
 static int do_create_hd(const char *path, const char *size_str) {
-    size_t size = parse_size_string(size_str);
+    size_t size = drive_catalog_parse_size(size_str);
     if (size == 0) {
         printf("hd create: invalid size: %s\n", size_str);
-        printf("  Use a number with optional K or M suffix (e.g. 20M, 512K, 21411840)\n");
+        printf("  Use a drive model (e.g. HD20SC), human size (e.g. 40mb),\n");
+        printf("  or exact bytes/suffix (e.g. 20M, 512K, 21411840)\n");
+        printf("  Run 'hd models' to see available drive sizes.\n");
         return -1;
     }
     if (size > HD_CREATE_MAX_SIZE) {
@@ -747,36 +728,40 @@ static void cmd_hd_handler(struct cmd_context *ctx, struct cmd_result *res) {
             cmd_bool(res, false);
             return;
         }
-        // Match against known drive models
-        struct disk_info {
-            const char *vendor;
-            const char *product;
-            size_t size;
-        } disks[] = {
-            {" SEAGATE", "ST225N",   21411840 },
-            {"MINISCRB", "8425S",    21307392 },
-            {"CONNER",   "CP3040",   42881664 },
-            {"QUANTUM",  "PRODRIVE", 81222144 },
-            {"QUANTUM",  "LPS170S",  177270240},
-        };
+        // Match against known drive models via catalog
         size_t sz = img->raw_size;
-        int best = -1;
-        for (int i = 0; i < (int)(sizeof(disks) / sizeof(disks[0])); i++) {
-            if (sz <= disks[i].size) {
-                best = i;
-                break;
-            }
-        }
-        if (best == -1)
-            best = (int)(sizeof(disks) / sizeof(disks[0])) - 1;
-        if (sz == disks[best].size)
-            cmd_printf(ctx, "valid SCSI HD image: %zu bytes, matches %s %s\n", sz, disks[best].vendor,
-                       disks[best].product);
+        const struct drive_model *best = drive_catalog_find_closest(sz);
+        if (sz == best->size)
+            cmd_printf(ctx, "valid SCSI HD image: %zu bytes, matches %s %s\n", sz, best->vendor, best->product);
         else
-            cmd_printf(ctx, "valid SCSI HD image: %zu bytes, nearest model %s %s\n", sz, disks[best].vendor,
-                       disks[best].product);
+            cmd_printf(ctx, "valid SCSI HD image: %zu bytes, nearest model %s %s\n", sz, best->vendor, best->product);
         image_close(img);
         cmd_bool(res, true);
+        return;
+    }
+    if (strcmp(subcmd, "models") == 0) {
+        // list known drive models as human-readable table or JSON
+        const char *fmt = ctx->args[0].present ? ctx->args[0].as_str : NULL;
+        int json = fmt && strcmp(fmt, "--json") == 0;
+        int count = drive_catalog_count();
+        if (json) {
+            cmd_printf(ctx, "[");
+            for (int i = 0; i < count; i++) {
+                const struct drive_model *m = drive_catalog_get(i);
+                cmd_printf(ctx, "%s{\"label\":\"%s\",\"vendor\":\"%s\",\"product\":\"%s\",\"size\":%zu}", i ? "," : "",
+                           m->label, m->vendor, m->product, m->size);
+            }
+            cmd_printf(ctx, "]\n");
+        } else {
+            cmd_printf(ctx, "%-10s %-10s %-10s %12s\n", "Label", "Vendor", "Product", "Size");
+            for (int i = 0; i < count; i++) {
+                const struct drive_model *m = drive_catalog_get(i);
+                // compute approximate MB for display
+                unsigned mb = (unsigned)(m->size / (1000 * 1000));
+                cmd_printf(ctx, "%-10s %-10s %-10s %12zu  (%u MB)\n", m->label, m->vendor, m->product, m->size, mb);
+            }
+        }
+        cmd_ok(res);
         return;
     }
     cmd_err(res, "unknown hd subcommand: %s", subcmd);
@@ -1121,14 +1106,18 @@ static const struct arg_spec loopback_args[] = {
     {"state", ARG_ENUM | ARG_OPTIONAL, "on or off", loopback_values},
 };
 static const struct arg_spec hd_create_args[] = {
-    {"path", ARG_PATH,   "image file path"                 },
-    {"size", ARG_STRING, "size with optional K or M suffix"},
+    {"path", ARG_PATH,   "image file path"                             },
+    {"size", ARG_STRING, "size: model (HD20SC), human (40mb), or bytes"},
+};
+static const struct arg_spec hd_models_args[] = {
+    {"format", ARG_STRING | ARG_OPTIONAL, "--json for machine-readable output"},
 };
 static const struct subcmd_spec hd_subcmds[] = {
-    {"create",   NULL, hd_create_args, 2, "create a blank hard disk image"},
-    {"attach",   NULL, hd_attach_args, 2, "attach hard disk image"        },
-    {"loopback", NULL, loopback_args,  1, "passive terminator"            },
-    {"validate", NULL, hd_attach_args, 1, "validate a hard disk image"    },
+    {"create",   NULL, hd_create_args, 2, "create a blank hard disk image"   },
+    {"attach",   NULL, hd_attach_args, 2, "attach hard disk image"           },
+    {"loopback", NULL, loopback_args,  1, "passive terminator"               },
+    {"validate", NULL, hd_attach_args, 1, "validate a hard disk image"       },
+    {"models",   NULL, hd_models_args, 1, "list known drive models and sizes"},
 };
 
 // scc subcommands
@@ -1203,10 +1192,10 @@ void setup_init() {
     register_command(&(struct cmd_reg){
         .name = "hd",
         .category = "Media",
-        .synopsis = "Manage SCSI hard disks (attach/loopback/validate)",
+        .synopsis = "Manage SCSI hard disks (create/attach/models/validate)",
         .fn = cmd_hd_handler,
         .subcmds = hd_subcmds,
-        .n_subcmds = 4,
+        .n_subcmds = 5,
     });
     register_command(&(struct cmd_reg){
         .name = "setup",
@@ -1319,20 +1308,6 @@ void mac_reset(config_t *restrict sim) {
 
 // Add a SCSI hard disk to the configuration
 void add_scsi_drive(struct config *restrict config, const char *filename, int scsi_id) {
-    // Disk table: Model, Vendor, Product, Size
-    struct disk_info {
-        const char *vendor;
-        const char *product;
-        size_t size;
-    } disks[] = {
-        {" SEAGATE", "ST225N",   21411840 }, // HD20SC
-        {"MINISCRB", "8425S",    21307392 }, // Miniscribe 8425S
-        {"CONNER",   "CP3040",   42881664 }, // HD40SC
-        {"QUANTUM",  "PRODRIVE", 81222144 }, // HD80SC
-        {"QUANTUM",  "LPS170S",  177270240}  // HD160SC
-    };
-    const int num_disks = sizeof(disks) / sizeof(disks[0]);
-
     // Persist volatile images to OPFS
     char *persistent_path = image_persist_volatile(filename);
     if (persistent_path)
@@ -1347,23 +1322,14 @@ void add_scsi_drive(struct config *restrict config, const char *filename, int sc
 
     size_t sz = disk_size(img);
 
-    // Find the closest exact or next-larger match
-    int best = -1;
-    for (int i = 0; i < num_disks; ++i) {
-        if (sz <= disks[i].size) {
-            best = i;
-            break;
-        }
-    }
-    if (best == -1)
-        best = num_disks - 1;
+    // Find the closest drive model from the catalog
+    const struct drive_model *best = drive_catalog_find_closest(sz);
 
-    printf("Attaching SCSI drive: %s as %s %s (size: %zu bytes, SCSI ID: %d)\n", filename, disks[best].vendor,
-           disks[best].product, sz, scsi_id);
+    printf("Attaching SCSI drive: %s as %s %s (size: %zu bytes, SCSI ID: %d)\n", filename, best->vendor, best->product,
+           sz, scsi_id);
 
     add_image(config, img);
-    scsi_add_device(config->scsi, scsi_id, disks[best].vendor, disks[best].product, "1.0", img, scsi_dev_hd, 512,
-                    false);
+    scsi_add_device(config->scsi, scsi_id, best->vendor, best->product, "1.0", img, scsi_dev_hd, 512, false);
     free(persistent_path);
 }
 
