@@ -145,13 +145,17 @@ export async function showConfigDialog(romChecksums) {
     }
 
     // Build options list from persisted files in a directory + upload option.
-    function mediaOptions(files, dir) {
+    // If allowCreate is true, a "Create blank image..." option is also added.
+    function mediaOptions(files, dir, allowCreate = false) {
       const opts = [{ value: '', label: '(none)' }];
       for (const name of files) {
         opts.push({ value: `${dir}/${name}`, label: name });
       }
       opts.push({ value: '__divider__', label: '───────────', disabled: true });
       opts.push({ value: '__upload__', label: 'Upload image...' });
+      if (allowCreate) {
+        opts.push({ value: '__create__', label: 'Create blank image...' });
+      }
       return opts;
     }
 
@@ -205,7 +209,7 @@ export async function showConfigDialog(romChecksums) {
 
       // SCSI HD rows
       for (let i = 0; i < def.scsiSlots.length; i++) {
-        addRow(`${def.scsiSlots[i]}:`, buildMediaSelect(`config-hd${i}`, mediaOptions(hdFiles, HD_DIR), HD_DIR));
+        addRow(`${def.scsiSlots[i]}:`, buildMediaSelect(`config-hd${i}`, mediaOptions(hdFiles, HD_DIR, true), HD_DIR));
       }
 
       // CD-ROM row
@@ -273,34 +277,145 @@ export async function showConfigDialog(romChecksums) {
       return sel;
     }
 
-    // Build a media dropdown with an "Upload image..." option.
+    // Build a media dropdown with "Upload image..." and optionally "Create blank image..." options.
     // persistDir is the OPFS directory to persist uploaded files to (e.g. /images/fd).
     function buildMediaSelect(id, options, persistDir) {
       const sel = buildSelect(id, options);
+      // Insert a newly created/uploaded image option before the divider.
+      function addImageOption(path, name) {
+        const newOpt = document.createElement('option');
+        newOpt.value = path;
+        newOpt.textContent = name;
+        const divider = sel.querySelector('option[value="__divider__"]');
+        if (divider) {
+          sel.insertBefore(newOpt, divider);
+        } else {
+          sel.insertBefore(newOpt, sel.lastChild);
+        }
+        sel.value = path;
+      }
       sel.addEventListener('change', () => {
-        if (sel.value !== '__upload__') {
-          updateStartButton();
+        if (sel.value === '__upload__') {
+          triggerMediaUpload(persistDir).then(result => {
+            if (result) {
+              addImageOption(result.path, result.name);
+            } else {
+              sel.value = '';
+            }
+            updateStartButton();
+          });
           return;
         }
-        triggerMediaUpload(persistDir).then(result => {
-          if (result) {
-            const newOpt = document.createElement('option');
-            newOpt.value = result.path;
-            newOpt.textContent = result.name;
-            const divider = sel.querySelector('option[value="__divider__"]');
-            if (divider) {
-              sel.insertBefore(newOpt, divider);
+        if (sel.value === '__create__') {
+          showHdSizeDialog().then(result => {
+            if (result) {
+              addImageOption(result.path, result.name);
             } else {
-              sel.insertBefore(newOpt, sel.lastChild);
+              sel.value = '';
             }
-            sel.value = result.path;
-          } else {
-            sel.value = '';
-          }
-          updateStartButton();
-        });
+            updateStartButton();
+          });
+          return;
+        }
+        updateStartButton();
       });
       return sel;
+    }
+
+    // Show a dialog prompting the user for a hard disk image size.
+    // Returns { path, name } on success, or null if cancelled.
+    function showHdSizeDialog() {
+      return new Promise((resolve) => {
+        let dlg = document.getElementById('hd-size-dialog');
+        if (!dlg) {
+          dlg = document.createElement('div');
+          dlg.id = 'hd-size-dialog';
+          dlg.className = 'modal';
+          dlg.setAttribute('role', 'dialog');
+          dlg.setAttribute('aria-modal', 'true');
+          dlg.setAttribute('aria-hidden', 'true');
+          dlg.innerHTML = `
+            <div class="modal__content hd-size-modal">
+              <h2 class="modal__title">Create Blank Hard Disk</h2>
+              <p class="modal__message">Choose a size for the new hard disk image.</p>
+              <div class="hd-size-options">
+                <label class="hd-size-option">
+                  <input type="radio" name="hd-size" value="21411840" checked />
+                  <span>20 MB (HD20SC)</span>
+                </label>
+                <label class="hd-size-option">
+                  <input type="radio" name="hd-size" value="42881664" />
+                  <span>40 MB (HD40SC)</span>
+                </label>
+                <label class="hd-size-option">
+                  <input type="radio" name="hd-size" value="81222144" />
+                  <span>80 MB (HD80SC)</span>
+                </label>
+                <label class="hd-size-option">
+                  <input type="radio" name="hd-size" value="177270240" />
+                  <span>160 MB (HD160SC)</span>
+                </label>
+              </div>
+              <span class="hd-size-error" id="hd-size-error" hidden></span>
+              <div class="modal__actions">
+                <button class="secondary-btn" id="hd-size-cancel-btn">Cancel</button>
+                <button class="primary-btn" id="hd-size-create-btn">Create</button>
+              </div>
+            </div>
+          `;
+          document.body.appendChild(dlg);
+        }
+
+        const errorSpan = dlg.querySelector('#hd-size-error');
+        const createBtn = dlg.querySelector('#hd-size-create-btn');
+        const cancelBtn = dlg.querySelector('#hd-size-cancel-btn');
+        errorSpan.hidden = true;
+
+        // Reset radio to first option (20 MB)
+        const radios = dlg.querySelectorAll('input[name="hd-size"]');
+        radios[0].checked = true;
+
+        dlg.setAttribute('aria-hidden', 'false');
+
+        let closed = false;
+        const close = (result) => {
+          if (closed) return;
+          closed = true;
+          dlg.setAttribute('aria-hidden', 'true');
+          resolve(result);
+        };
+
+        // Cancel on backdrop click or Escape
+        const onBackdrop = (e) => { if (e.target === dlg) close(null); };
+        const onKey = (e) => { if (e.key === 'Escape') close(null); };
+        dlg.addEventListener('click', onBackdrop);
+        document.addEventListener('keydown', onKey);
+
+        cancelBtn.addEventListener('click', () => close(null), { once: true });
+        createBtn.addEventListener('click', async () => {
+          const selected = dlg.querySelector('input[name="hd-size"]:checked');
+          const sizeBytes = parseInt(selected.value, 10);
+          errorSpan.hidden = true;
+
+          // Human-readable label for filename
+          const sizeMB = Math.round(sizeBytes / (1024 * 1024));
+
+          // Generate a unique filename
+          const name = `blank_${sizeMB}MB_${Date.now()}.img`;
+          const path = `${HD_DIR}/${name}`;
+
+          const rc = await window.runCommand(`hd create ${quotePath(path)} ${sizeBytes}`);
+          if (rc !== 0) {
+            errorSpan.textContent = 'Failed to create disk image.';
+            errorSpan.hidden = false;
+            return;
+          }
+
+          dlg.removeEventListener('click', onBackdrop);
+          document.removeEventListener('keydown', onKey);
+          close({ path, name });
+        }, { once: true });
+      });
     }
 
     // Determine the media type descriptor for a given persist directory.

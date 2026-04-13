@@ -60,6 +60,12 @@ body {
 }
 .primary-btn:hover { background:#0550ae; }
 .primary-btn:disabled { opacity:0.4; cursor:default; pointer-events:none; }
+.secondary-btn {
+  padding:0.5rem 1.5rem; font-size:0.95rem; font-weight:600;
+  color:var(--color-text); background:var(--color-btn-bg); border:1px solid var(--color-border);
+  border-radius:var(--radius-md); cursor:pointer; transition: background 0.15s;
+}
+.secondary-btn:hover { background:var(--color-bg-alt); }
 
 /* --- ROM Upload Dialog --- */
 .rom-upload-modal { text-align:center; min-width:320px; }
@@ -69,6 +75,20 @@ body {
   display:flex; flex-direction:column; align-items:center; gap:0.75rem;
 }
 .rom-upload-error { font-size:0.85rem; color:#d1242f; }
+
+/* --- HD Size Dialog --- */
+.hd-size-modal { text-align:center; min-width:320px; }
+.hd-size-modal .modal__title { margin:0 0 0.5rem 0; font-size:1.25rem; font-weight:600; }
+.hd-size-modal .modal__message { color:var(--color-muted); margin:0 0 1rem 0; font-size:0.95rem; }
+.hd-size-options { display:flex; flex-direction:column; gap:0.5rem; text-align:left; margin-bottom:1rem; }
+.hd-size-option { display:flex; align-items:center; gap:0.5rem; font-size:0.9rem; cursor:pointer; }
+.hd-size-custom-field {
+  width:5rem; padding:0.25rem 0.4rem; font-size:0.9rem;
+  border:1px solid var(--color-border); border-radius:var(--radius-sm);
+  background:var(--color-btn-bg); color:var(--color-text);
+}
+.hd-size-error { font-size:0.85rem; color:#d1242f; display:block; margin-bottom:0.75rem; }
+.hd-size-modal .modal__actions { display:flex; justify-content:center; gap:0.75rem; }
 
 /* --- Machine Configuration Dialog --- */
 .config-modal { min-width:340px; max-width:420px; }
