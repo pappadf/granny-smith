@@ -15,6 +15,8 @@
 # Phase 1: Fast boot through ROM + bootstrap (no breakpoints needed)
 run 100000000
 
+screenshot foo.png
+
 # Verify the A/UX loading screen appeared
 screenshot --match loading.png
 

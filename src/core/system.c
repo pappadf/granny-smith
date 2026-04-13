@@ -753,7 +753,7 @@ static void cmd_hd_handler(struct cmd_context *ctx, struct cmd_result *res) {
             const char *product;
             size_t size;
         } disks[] = {
-            {"SEAGATE",  "ST225N",   21411840 },
+            {" SEAGATE", "ST225N",   21411840 },
             {"MINISCRB", "8425S",    21307392 },
             {"CONNER",   "CP3040",   42881664 },
             {"QUANTUM",  "PRODRIVE", 81222144 },
@@ -1206,7 +1206,7 @@ void setup_init() {
         .synopsis = "Manage SCSI hard disks (attach/loopback/validate)",
         .fn = cmd_hd_handler,
         .subcmds = hd_subcmds,
-        .n_subcmds = 3,
+        .n_subcmds = 4,
     });
     register_command(&(struct cmd_reg){
         .name = "setup",
@@ -1325,7 +1325,7 @@ void add_scsi_drive(struct config *restrict config, const char *filename, int sc
         const char *product;
         size_t size;
     } disks[] = {
-        {"SEAGATE",  "ST225N",   21411840 }, // HD20SC
+        {" SEAGATE", "ST225N",   21411840 }, // HD20SC
         {"MINISCRB", "8425S",    21307392 }, // Miniscribe 8425S
         {"CONNER",   "CP3040",   42881664 }, // HD40SC
         {"QUANTUM",  "PRODRIVE", 81222144 }, // HD80SC

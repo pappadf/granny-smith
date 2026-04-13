@@ -48,7 +48,8 @@ mouse-button up
 # Run a bit so that the Apple HD SC Setup app opens
 run 50000000
 
-screenshot --match failure.png
+# Verify Apple HD SC Setup recognizes the blank drive
+screenshot --match ready.png
 
 quit
 

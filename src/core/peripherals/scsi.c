@@ -406,28 +406,54 @@ static void run_cmd(scsi_t *scsi) {
         }
         break;
 
-    case CMD_MODE_SENSE:
+    case CMD_MODE_SENSE: {
         // MODE SENSE(6): dispatch based on device type
         if (scsi->devices[target].type == scsi_dev_cdrom) {
             scsi_cdrom_mode_sense(scsi);
         } else {
-            // HD: return minimal mode sense header with block descriptor
-            phase_data_in(scsi, 12);
-            memset(scsi->buf.data, 0, 12);
-            scsi->buf.data[0] = 11; // mode data length (excluding itself)
-            scsi->buf.data[3] = 8; // block descriptor length
-            // Block descriptor: 512-byte blocks
+            // HD MODE SENSE(6): CDB byte 2 bits 5:0 = page code
+            uint8_t page_code = scsi->buf.data[2] & 0x3F;
             uint32_t blocks = (uint32_t)(disk_size(scsi->devices[target].image) / 512);
-            scsi->buf.data[4] = 0; // density code
-            scsi->buf.data[5] = (blocks >> 16) & 0xFF;
-            scsi->buf.data[6] = (blocks >> 8) & 0xFF;
-            scsi->buf.data[7] = blocks & 0xFF;
-            // Block length = 512 (bytes 9-11)
-            scsi->buf.data[9] = 0x00;
-            scsi->buf.data[10] = 0x02;
-            scsi->buf.data[11] = 0x00;
+
+            if (page_code == 0x30) {
+                // Vendor-specific page 0x30: Apple drive identification
+                // Apple HD SC Setup checks this page for "APPLE COMPUTER, INC."
+                static const char apple_id[] = "APPLE COMPUTER, INC.";
+                int page_len = 2 + (int)sizeof(apple_id) - 1; // page header + string (no NUL)
+                int total = 4 + 8 + page_len; // header + block descriptor + page
+                phase_data_in(scsi, total);
+                memset(scsi->buf.data, 0, total);
+                scsi->buf.data[0] = (uint8_t)(total - 1); // mode data length
+                scsi->buf.data[3] = 8; // block descriptor length
+                // Block descriptor: 512-byte blocks
+                scsi->buf.data[5] = (blocks >> 16) & 0xFF;
+                scsi->buf.data[6] = (blocks >> 8) & 0xFF;
+                scsi->buf.data[7] = blocks & 0xFF;
+                scsi->buf.data[9] = 0x00;
+                scsi->buf.data[10] = 0x02;
+                scsi->buf.data[11] = 0x00;
+                // Page 0x30 header
+                scsi->buf.data[12] = 0x30; // page code
+                scsi->buf.data[13] = (uint8_t)(sizeof(apple_id) - 1); // page length
+                // "APPLE COMPUTER, INC." payload
+                memcpy(scsi->buf.data + 14, apple_id, sizeof(apple_id) - 1);
+            } else {
+                // Default: return minimal mode sense header with block descriptor
+                phase_data_in(scsi, 12);
+                memset(scsi->buf.data, 0, 12);
+                scsi->buf.data[0] = 11; // mode data length (excluding itself)
+                scsi->buf.data[3] = 8; // block descriptor length
+                // Block descriptor: 512-byte blocks
+                scsi->buf.data[5] = (blocks >> 16) & 0xFF;
+                scsi->buf.data[6] = (blocks >> 8) & 0xFF;
+                scsi->buf.data[7] = blocks & 0xFF;
+                scsi->buf.data[9] = 0x00;
+                scsi->buf.data[10] = 0x02;
+                scsi->buf.data[11] = 0x00;
+            }
         }
         break;
+    }
 
     case CMD_START_STOP_UNIT:
         if (scsi->devices[target].type == scsi_dev_cdrom)
@@ -962,9 +988,9 @@ void scsi_add_device(scsi_t *restrict scsi, int scsi_id, const char *vendor, con
     scsi->devices[scsi_id].prevent_removal = false;
     memset(&scsi->devices[scsi_id].sense, 0, sizeof(scsi->devices[scsi_id].sense));
 
-    // Cast unsigned char[] to char* to avoid warnings
-    sprintf((char *)scsi->devices[scsi_id].vendor_id, "%8s", vendor);
-    sprintf((char *)scsi->devices[scsi_id].product_id, "%16s", product);
+    // Left-justify and space-pad per SCSI spec (vendor=8, product=16 bytes)
+    snprintf((char *)scsi->devices[scsi_id].vendor_id, 9, "%-8s", vendor);
+    snprintf((char *)scsi->devices[scsi_id].product_id, 17, "%-16s", product);
     if (revision)
         snprintf((char *)scsi->devices[scsi_id].revision, sizeof(scsi->devices[scsi_id].revision), "%s", revision);
     else
