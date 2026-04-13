@@ -28,6 +28,13 @@ self.addEventListener("fetch", (e) => {
   e.respondWith(
     fetch(e.request)
       .then((response) => {
+        // Opaque or redirect responses have status 0 which is outside the
+        // valid range for the Response constructor.  Return them unchanged
+        // (e.g. Codespace auth redirects).
+        if (response.status === 0) {
+          return response;
+        }
+
         // Clone so we can modify headers
         const newHeaders = new Headers(response.headers);
         newHeaders.set("Cross-Origin-Embedder-Policy", "credentialless");
@@ -39,5 +46,7 @@ self.addEventListener("fetch", (e) => {
           headers: newHeaders,
         });
       })
+      .catch((e) => new Response("Service worker fetch failed: " + e.message,
+        { status: 502, headers: { "Content-Type": "text/plain" } }))
   );
 });

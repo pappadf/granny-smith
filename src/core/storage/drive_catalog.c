@@ -12,13 +12,15 @@
 #include <string.h>
 #include <strings.h>
 
-// Known SCSI hard disk models, sorted by size ascending
+// Known SCSI hard disk models, sorted by size ascending.
+// Sizes must be multiples of 512 (SCSI block size) so that
+// image_create_empty/image_open produce valid block-aligned images.
 static const struct drive_model catalog[] = {
     {"HD20SC",  "MINISCRB", "8425S",    21307392 },
     {"HD20SC",  " SEAGATE", "ST225N",   21411840 },
-    {"HD40SC",  "CONNER",   "CP3040",   42881664 },
+    {"HD40SC",  "CONNER",   "CP3040",   42881536 },
     {"HD80SC",  "QUANTUM",  "PRODRIVE", 81222144 },
-    {"HD160SC", "QUANTUM",  "LPS170S",  177270240},
+    {"HD160SC", "QUANTUM",  "LPS170S",  177269760},
 };
 
 // number of entries in the catalog

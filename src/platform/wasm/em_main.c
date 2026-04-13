@@ -482,13 +482,20 @@ int shell_poll(void) {
     while (len > 0 && (cmd_copy[len - 1] == '\n' || cmd_copy[len - 1] == '\r'))
         cmd_copy[--len] = '\0';
 
-    // Execute the command via the dispatcher in interactive mode.
-    // Interactive mode sends output to stdout (xterm.js) as before.
-    // The structured result is captured for JSON serialization.
+    // Execute in programmatic mode so cmd_printf output is captured into
+    // buffers (needed by runCommandJSON on the JS side).  After dispatch we
+    // echo the captured output to stdout/stderr so it still appears in the
+    // xterm.js terminal for interactive users.
     struct cmd_result cmd_res;
     memset(&cmd_res, 0, sizeof(cmd_res));
 
-    dispatch_command(cmd_copy, INVOKE_INTERACTIVE, &cmd_res);
+    dispatch_command(cmd_copy, INVOKE_PROGRAMMATIC, &cmd_res);
+
+    // Echo captured output to the terminal
+    if (cmd_res.output && cmd_res.output_len > 0)
+        fwrite(cmd_res.output, 1, cmd_res.output_len, stdout);
+    if (cmd_res.error_output && cmd_res.error_len > 0)
+        fwrite(cmd_res.error_output, 1, cmd_res.error_len, stderr);
 
     // Serialize the structured result to JSON for JS consumption
     cmd_result_to_json(&cmd_res, g_cmd_json_buffer, CMD_JSON_BUF_SIZE);

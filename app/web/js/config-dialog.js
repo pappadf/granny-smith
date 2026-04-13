@@ -362,7 +362,9 @@ export async function showConfigDialog(romChecksums) {
 
         // build radio buttons from model list
         const radios = uniqueModels.map((m, i) => {
-          const mb = Math.round(m.size / (1000 * 1000));
+          // extract the nominal MB from the label (e.g. "HD20SC" → 20)
+          const match = m.label.match(/(\d+)/);
+          const mb = match ? parseInt(match[1], 10) : Math.round(m.size / (1000 * 1000));
           return `<label class="hd-size-option">
               <input type="radio" name="hd-size" value="${m.size}" ${i === 0 ? 'checked' : ''} />
               <span>${mb} MB (${m.label})</span>

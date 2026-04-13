@@ -9,7 +9,8 @@
 #   - Double-click: down 1.6M up 1.6M down 1.6M up — total ~300ms
 
 # Create a blank 80 MB hard disk image (exact HD80SC size, zero-filled)
-hd create ${WORK_DIR}/blank80.img 81222144
+hd create ${WORK_DIR}/blank80.img HD160SC
+
 # Attach the blank image as SCSI ID 6 (default)
 hd attach ${WORK_DIR}/blank80.img
 
