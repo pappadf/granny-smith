@@ -17,6 +17,34 @@
 mmu_state_t *g_mmu = NULL;
 
 // ============================================================================
+// TLB population tracking (for fast invalidation)
+// ============================================================================
+
+// Instead of zeroing all 1M+ page entries on every TLB invalidation (32 MB of
+// memset on a 32-bit address space), track which pages have been populated and
+// only zero those.  Typical working sets are ~2000-3000 pages (8-12 MB of RAM
+// + ROM + VRAM), reducing invalidation cost from O(address_space) to O(working_set).
+#define TLB_TRACK_MAX 8192 // max tracked pages before fallback to full memset
+
+static uint32_t g_tlb_track[TLB_TRACK_MAX]; // populated page indices
+static int g_tlb_track_count = 0; // entries in tracking list
+// Start in overflow mode so the first invalidation (after memory_init
+// populates entries without tracking) does a full memset.  Subsequent
+// invalidations use the fast tracked path.
+static bool g_tlb_track_overflow = true;
+
+// Record that a page index has been populated in the SoA TLB arrays
+static inline void tlb_track_page(uint32_t page_index) {
+    if (g_tlb_track_overflow)
+        return; // already in fallback mode
+    if (g_tlb_track_count >= TLB_TRACK_MAX) {
+        g_tlb_track_overflow = true;
+        return;
+    }
+    g_tlb_track[g_tlb_track_count++] = page_index;
+}
+
+// ============================================================================
 // Helpers: physical memory access during table walks
 // ============================================================================
 
@@ -268,6 +296,9 @@ static void mmu_fill_soa_entry(mmu_state_t *mmu, uint32_t logical_page, uint32_t
     // but we want (uintptr_t)(base + logical_addr) to yield the host address.
     uintptr_t adjusted = (uintptr_t)host_ptr - logical_page;
 
+    // Track this page for fast invalidation
+    tlb_track_page(page_index);
+
     // Supervisor read: always populated for valid pages
     if (g_supervisor_read)
         g_supervisor_read[page_index] = adjusted;
@@ -335,20 +366,39 @@ void mmu_register_vrom(mmu_state_t *mmu, uint8_t *vrom, uint32_t phys_base, uint
     mmu->physical_vrom_size = size;
 }
 
-// Invalidate the entire software TLB by zeroing all four SoA arrays.
-// When the MMU is enabled, subsequent accesses trigger lazy table walks
-// via mmu_handle_fault(). When disabled, repopulate SoA from the AoS
-// page table so physical identity mappings remain accessible.
+// Invalidate the software TLB.  Uses the tracking list to zero only
+// populated entries — typically ~2000-3000 pages vs 1M+ for a full memset.
+// Falls back to full memset if the tracking list overflowed.
 void mmu_invalidate_tlb(mmu_state_t *mmu) {
-    size_t sz = (size_t)g_page_count * sizeof(uintptr_t);
-    if (g_supervisor_read)
-        memset(g_supervisor_read, 0, sz);
-    if (g_supervisor_write)
-        memset(g_supervisor_write, 0, sz);
-    if (g_user_read)
-        memset(g_user_read, 0, sz);
-    if (g_user_write)
-        memset(g_user_write, 0, sz);
+    if (g_tlb_track_overflow) {
+        // Tracking overflowed — fall back to zeroing everything
+        size_t sz = (size_t)g_page_count * sizeof(uintptr_t);
+        if (g_supervisor_read)
+            memset(g_supervisor_read, 0, sz);
+        if (g_supervisor_write)
+            memset(g_supervisor_write, 0, sz);
+        if (g_user_read)
+            memset(g_user_read, 0, sz);
+        if (g_user_write)
+            memset(g_user_write, 0, sz);
+    } else {
+        // Fast path: zero only pages that were actually populated
+        for (int i = 0; i < g_tlb_track_count; i++) {
+            uint32_t p = g_tlb_track[i];
+            if (g_supervisor_read)
+                g_supervisor_read[p] = 0;
+            if (g_supervisor_write)
+                g_supervisor_write[p] = 0;
+            if (g_user_read)
+                g_user_read[p] = 0;
+            if (g_user_write)
+                g_user_write[p] = 0;
+        }
+    }
+
+    // Reset tracking state
+    g_tlb_track_count = 0;
+    g_tlb_track_overflow = false;
 
     // When the MMU is disabled, repopulate SoA from the AoS cold-path table
     // so that direct physical memory mappings (RAM, ROM, VRAM) remain usable.
@@ -358,6 +408,8 @@ void mmu_invalidate_tlb(mmu_state_t *mmu) {
             if (pe->host_base && !pe->dev) {
                 uint32_t guest_base = (uint32_t)p << PAGE_SHIFT;
                 uintptr_t adjusted = (uintptr_t)pe->host_base - guest_base;
+                // Track each page we populate
+                tlb_track_page(p);
                 if (g_supervisor_read)
                     g_supervisor_read[p] = adjusted;
                 if (g_user_read)
