@@ -421,28 +421,7 @@ static uint64_t cmd_remove(int argc, char *argv[]) {
 /* --- file system commands ------------------------------------------------ */
 static char current_dir[256] = "/";
 
-static uint64_t cmd_ls(int argc, char *argv[]) {
-    const char *path = current_dir;
-    if (argc > 1) {
-        for (int i = 1; i < argc; ++i) {
-            if (argv[i][0] == '-' && argv[i][1] != '\0')
-                continue;
-            path = argv[i];
-            break;
-        }
-    }
-    DIR *dir = opendir(path);
-    if (!dir) {
-        printf("ls: cannot open directory '%s': %s\n", path, strerror(errno));
-        return 0;
-    }
-    struct dirent *entry;
-    while ((entry = readdir(dir)) != NULL)
-        printf("%s\n", entry->d_name);
-    closedir(dir);
-    return 0;
-}
-
+// Normalize a path (absolute or relative to current_dir), resolving . and ..
 static void resolve_path(const char *input, char *out, size_t outlen) {
     char buf[256];
     if (input[0] == '/')
@@ -474,97 +453,118 @@ static void resolve_path(const char *input, char *out, size_t outlen) {
     }
 }
 
-static uint64_t cmd_cd(int argc, char *argv[]) {
-    if (argc != 2) {
-        printf("usage: cd <directory>\n");
-        return 0;
+// ls [dir] — list directory contents; defaults to current_dir
+static void cmd_ls(struct cmd_context *ctx, struct cmd_result *res) {
+    const char *path = ctx->args[0].present ? ctx->args[0].as_str : current_dir;
+    DIR *dir = opendir(path);
+    if (!dir) {
+        cmd_printf(ctx, "ls: cannot open directory '%s': %s\n", path, strerror(errno));
+        cmd_ok(res);
+        return;
     }
+    struct dirent *entry;
+    while ((entry = readdir(dir)) != NULL)
+        cmd_printf(ctx, "%s\n", entry->d_name);
+    closedir(dir);
+    cmd_ok(res);
+}
+
+// cd <dir> — change current directory (updates both process cwd and current_dir)
+static void cmd_cd(struct cmd_context *ctx, struct cmd_result *res) {
+    const char *input = ctx->args[0].as_str;
     char resolved[256];
-    resolve_path(argv[1], resolved, sizeof(resolved));
+    resolve_path(input, resolved, sizeof(resolved));
     if (chdir(resolved) == 0) {
         snprintf(current_dir, sizeof(current_dir), "%s", resolved);
-        printf("Changed directory to %s\n", current_dir);
+        cmd_printf(ctx, "Changed directory to %s\n", current_dir);
     } else {
-        printf("cd: cannot change to '%s': %s\n", argv[1], strerror(errno));
+        cmd_printf(ctx, "cd: cannot change to '%s': %s\n", input, strerror(errno));
     }
-    return 0;
+    cmd_ok(res);
 }
 
-static uint64_t cmd_mkdir(int argc, char *argv[]) {
-    if (argc != 2) {
-        printf("usage: mkdir <directory>\n");
-        return 0;
-    }
-    if (mkdir(argv[1], 0777) == 0)
-        printf("Directory '%s' created\n", argv[1]);
+// mkdir <dir> — create a directory
+static void cmd_mkdir(struct cmd_context *ctx, struct cmd_result *res) {
+    const char *dir = ctx->args[0].as_str;
+    if (mkdir(dir, 0777) == 0)
+        cmd_printf(ctx, "Directory '%s' created\n", dir);
     else
-        printf("mkdir: cannot create directory '%s': %s\n", argv[1], strerror(errno));
-    return 0;
+        cmd_printf(ctx, "mkdir: cannot create directory '%s': %s\n", dir, strerror(errno));
+    cmd_ok(res);
 }
 
-static uint64_t cmd_mv(int argc, char *argv[]) {
-    if (argc != 3) {
-        printf("usage: mv <source> <destination>\n");
-        return 0;
-    }
-    if (rename(argv[1], argv[2]) == 0)
-        printf("Moved '%s' to '%s'\n", argv[1], argv[2]);
+// mv <src> <dst> — rename/move a file or directory
+static void cmd_mv(struct cmd_context *ctx, struct cmd_result *res) {
+    const char *src = ctx->args[0].as_str;
+    const char *dst = ctx->args[1].as_str;
+    if (rename(src, dst) == 0)
+        cmd_printf(ctx, "Moved '%s' to '%s'\n", src, dst);
     else
-        printf("mv: cannot move '%s' to '%s': %s\n", argv[1], argv[2], strerror(errno));
-    return 0;
+        cmd_printf(ctx, "mv: cannot move '%s' to '%s': %s\n", src, dst, strerror(errno));
+    cmd_ok(res);
 }
 
-static uint64_t cmd_cat(int argc, char *argv[]) {
-    if (argc < 2) {
-        printf("usage: cat <path>\n");
-        return 1;
-    }
-    FILE *f = fopen(argv[1], "rb");
+// cat <path> — stream file contents to the command output
+static void cmd_cat(struct cmd_context *ctx, struct cmd_result *res) {
+    const char *path = ctx->args[0].as_str;
+    FILE *f = fopen(path, "rb");
     if (!f) {
-        printf("cat: cannot open '%s': %s\n", argv[1], strerror(errno));
-        return 1;
+        cmd_printf(ctx, "cat: cannot open '%s': %s\n", path, strerror(errno));
+        cmd_int(res, 1);
+        return;
     }
     char buf[4096];
     size_t n;
     while ((n = fread(buf, 1, sizeof(buf), f)) > 0)
-        fwrite(buf, 1, n, stdout);
+        fwrite(buf, 1, n, ctx->out);
     fclose(f);
-    return 0;
+    cmd_int(res, 0);
 }
 
-static uint64_t cmd_exists(int argc, char *argv[]) {
-    if (argc < 2) {
-        printf("usage: exists <path>\n");
-        return 1;
-    }
+// exists <path> — exit code 0 if the path exists, 1 otherwise
+static void cmd_exists(struct cmd_context *ctx, struct cmd_result *res) {
+    const char *path = ctx->args[0].as_str;
     struct stat st;
-    return (stat(argv[1], &st) == 0) ? 0 : 1;
+    cmd_int(res, (stat(path, &st) == 0) ? 0 : 1);
 }
 
-static uint64_t cmd_size(int argc, char *argv[]) {
-    if (argc < 2) {
-        printf("usage: size <path>\n");
-        return 0;
-    }
+// size <path> — return file size in bytes (0 on stat failure)
+static void cmd_size(struct cmd_context *ctx, struct cmd_result *res) {
+    const char *path = ctx->args[0].as_str;
     struct stat st;
-    if (stat(argv[1], &st) != 0) {
-        printf("size: cannot stat '%s': %s\n", argv[1], strerror(errno));
-        return 0;
+    if (stat(path, &st) != 0) {
+        cmd_printf(ctx, "size: cannot stat '%s': %s\n", path, strerror(errno));
+        cmd_int(res, 0);
+        return;
     }
-    return (uint64_t)st.st_size;
+    cmd_int(res, (int64_t)st.st_size);
 }
 
-static uint64_t cmd_rm(int argc, char *argv[]) {
-    if (argc < 2) {
-        printf("usage: rm <path>\n");
-        return 1;
+// rm <path> — unlink a file
+static void cmd_rm(struct cmd_context *ctx, struct cmd_result *res) {
+    const char *path = ctx->args[0].as_str;
+    if (unlink(path) != 0) {
+        cmd_printf(ctx, "rm: cannot remove '%s': %s\n", path, strerror(errno));
+        cmd_int(res, 1);
+        return;
     }
-    if (unlink(argv[1]) != 0) {
-        printf("rm: cannot remove '%s': %s\n", argv[1], strerror(errno));
-        return 1;
-    }
-    return 0;
+    cmd_int(res, 0);
 }
+
+// Argument specs for filesystem commands (ARG_PATH drives tab completion)
+static const struct arg_spec fs_ls_args[] = {
+    {"dir", ARG_PATH | ARG_OPTIONAL, "directory to list"},
+};
+static const struct arg_spec fs_dir_args[] = {
+    {"dir", ARG_PATH, "directory"},
+};
+static const struct arg_spec fs_mv_args[] = {
+    {"src", ARG_PATH, "source path"     },
+    {"dst", ARG_PATH, "destination path"},
+};
+static const struct arg_spec fs_path_args[] = {
+    {"path", ARG_PATH, "file path"},
+};
 
 /* --- dispatcher ---------------------------------------------------------- */
 
@@ -716,14 +716,70 @@ int shell_init(void) {
     register_cmd("echo", "General", "echo ARG...", cmd_echo);
     register_cmd("add", "General", "add time", cmd_add);
     register_cmd("remove", "General", "remove time", cmd_remove);
-    register_cmd("ls", "Filesystem", "ls [dir] - list directory contents", cmd_ls);
-    register_cmd("cd", "Filesystem", "cd <dir> - change current directory", cmd_cd);
-    register_cmd("mkdir", "Filesystem", "mkdir <dir> - create directory", cmd_mkdir);
-    register_cmd("mv", "Filesystem", "mv <src> <dst> - move/rename file or directory", cmd_mv);
-    register_cmd("cat", "Filesystem", "cat <path> - output file contents", cmd_cat);
-    register_cmd("exists", "Filesystem", "exists <path> - test if path exists (exit code)", cmd_exists);
-    register_cmd("size", "Filesystem", "size <path> - return file size in bytes", cmd_size);
-    register_cmd("rm", "Filesystem", "rm <path> - remove file", cmd_rm);
+    register_command(&(struct cmd_reg){
+        .name = "ls",
+        .category = "Filesystem",
+        .synopsis = "ls [dir] - list directory contents",
+        .fn = cmd_ls,
+        .args = fs_ls_args,
+        .nargs = 1,
+    });
+    register_command(&(struct cmd_reg){
+        .name = "cd",
+        .category = "Filesystem",
+        .synopsis = "cd <dir> - change current directory",
+        .fn = cmd_cd,
+        .args = fs_dir_args,
+        .nargs = 1,
+    });
+    register_command(&(struct cmd_reg){
+        .name = "mkdir",
+        .category = "Filesystem",
+        .synopsis = "mkdir <dir> - create directory",
+        .fn = cmd_mkdir,
+        .args = fs_dir_args,
+        .nargs = 1,
+    });
+    register_command(&(struct cmd_reg){
+        .name = "mv",
+        .category = "Filesystem",
+        .synopsis = "mv <src> <dst> - move/rename file or directory",
+        .fn = cmd_mv,
+        .args = fs_mv_args,
+        .nargs = 2,
+    });
+    register_command(&(struct cmd_reg){
+        .name = "cat",
+        .category = "Filesystem",
+        .synopsis = "cat <path> - output file contents",
+        .fn = cmd_cat,
+        .args = fs_path_args,
+        .nargs = 1,
+    });
+    register_command(&(struct cmd_reg){
+        .name = "exists",
+        .category = "Filesystem",
+        .synopsis = "exists <path> - test if path exists (exit code)",
+        .fn = cmd_exists,
+        .args = fs_path_args,
+        .nargs = 1,
+    });
+    register_command(&(struct cmd_reg){
+        .name = "size",
+        .category = "Filesystem",
+        .synopsis = "size <path> - return file size in bytes",
+        .fn = cmd_size,
+        .args = fs_path_args,
+        .nargs = 1,
+    });
+    register_command(&(struct cmd_reg){
+        .name = "rm",
+        .category = "Filesystem",
+        .synopsis = "rm <path> - remove file",
+        .fn = cmd_rm,
+        .args = fs_path_args,
+        .nargs = 1,
+    });
 
     shell_initialized = 1;
     return 0;
