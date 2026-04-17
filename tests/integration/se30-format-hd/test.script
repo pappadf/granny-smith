@@ -52,5 +52,82 @@ run 50000000
 # Verify Apple HD SC Setup recognizes the blank drive
 screenshot --match ready.png
 
+# Click "Initialize"
+set-mouse 167 115 --global
+run 5000000
+mouse-button down
+run 1000000
+mouse-button up
+run 5000000
+
+set-mouse 360 190 --global
+run 5000000
+mouse-button down
+run 1000000
+mouse-button up
+
+run 500000000
+
+# Click ok re. name
+set-mouse 200 180 --global
+run 5000000
+mouse-button down
+run 1000000
+mouse-button up
+run 50000000
+
+# Click "partition"
+set-mouse 200 175 --global
+run 5000000
+mouse-button down
+run 1000000
+mouse-button up
+run 5000000
+
+# Click partition choice
+set-mouse 200 160 --global
+run 5000000
+mouse-button down
+run 1000000
+mouse-button up
+run 5000000
+
+# click ok
+set-mouse 390 235 --global
+run 5000000
+mouse-button down
+run 1000000
+mouse-button up
+run 5000000
+
+# click ok (extra verification)
+set-mouse 310 175 --global
+run 5000000
+mouse-button down
+run 1000000
+mouse-button up
+run 50000000
+
+set-mouse 167 230 --global
+run 5000000
+mouse-button down
+run 1000000
+mouse-button up
+run 5000000
+
+set-mouse 250 10 --global
+run 5000000
+mouse-button down
+run 1000000
+set-mouse 250 140 --global
+run 5000000
+mouse-button up
+run 50000000
+
+screenshot foo.png
+
+# Download (export) the formatted HD image to a flat file
+hd download ${WORK_DIR}/blank80.img ${WORK_DIR}/downloaded.img
+
 quit
 

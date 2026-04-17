@@ -333,6 +333,29 @@ size_t image_save(image_t *image) {
     return (rc == GS_SUCCESS) ? 0 : (size_t)-1;
 }
 
+// Export the full disk content (base + delta) to a new file at dest_path.
+int image_export_to(image_t *image, const char *dest_path) {
+    if (!image || !image->storage || !dest_path || !*dest_path)
+        return -1;
+    // Refuse to overwrite existing files
+    FILE *exist = fopen(dest_path, "rb");
+    if (exist) {
+        fclose(exist);
+        return -1;
+    }
+    ensure_parent_dirs(dest_path);
+    FILE *f = fopen(dest_path, "wb");
+    if (!f)
+        return -1;
+    int rc = storage_save_state(image->storage, f, file_write_cb);
+    fclose(f);
+    if (rc != GS_SUCCESS) {
+        remove(dest_path);
+        return -1;
+    }
+    return 0;
+}
+
 // ============================================================================
 // Image creation
 // ============================================================================
