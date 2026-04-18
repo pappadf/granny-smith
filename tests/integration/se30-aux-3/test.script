@@ -1,31 +1,24 @@
-# Integration test: SE/30 A/UX 3.0.1 Boot
-# Boots SE/30 from the A/UX 3.0.1 Installation Boot Disk
-# with the A/UX 3.0.1 Install CD-ROM and SCSI HD attached.
+# SE/30 A/UX 3.0.1 Boot (retail SE floppy).
 #
-# Boot timeline (approximate instruction counts):
-#   @0-28M     ROM boot, SCSI bus scans, find HD (ID 0) + CD-ROM (ID 3)
-#   @42-58M    A/UX bootstrap probing, second + third bus scans
-#   @58-96M    CD-ROM reads to load kernel, HD writes
-#   @97M       Screen: "A/UX Installation — Loading..." with progress bar
-#   @107M      Screen: "A/UX Installation — Launching..."
-#   @108M      A/UX kernel entry at $0001F008 (LINK A6,#$FCF8)
-#   @108-112M  Kernel VM initialization (bus errors = page faults)
-#   @112M      Screen goes gray (kernel owns framebuffer)
+# Intermediate state: the retail boot disk gets the SE/30 past the WGS95
+# enabler block (Welcome screen, A/UX Installation "Loading...", then
+# "Launching...") before the kernel hits a fatal double bus error at
+# virtual $007FEA5D (VBR=$00050000) around instruction 156,973,380.
+# After that the CPU halts, the GLU asserts RESET, and the boot sequence
+# restarts indefinitely.  See local/gs-docs/notes/09-aux3-retail-se-floppy-dbe.md
+# for the full analysis.
+#
+# The authoritative progress signal is whether the CPU re-enters the ROM
+# RAM-sizing entry at $40802A14 more than once.  The breakpoint there
+# fires exactly once during a cold boot, and once more per reset cycle.
 
-# Phase 1: Fast boot through ROM + bootstrap (no breakpoints needed)
-run 100000000
+break $40802A14
+run 10000000
+info regs
 
-screenshot foo.png
-
-# Verify the A/UX loading screen appeared
-screenshot --match loading.png
-
-# Phase 2: Set breakpoint at the A/UX kernel entry point and run to it.
-# $0001F008 is the first instruction of the kernel init function
-# (LINK A6,#$FCF8 — creates a 776-byte stack frame).
-# This gives a deterministic, reproducible starting point for kernel
-# debugging that doesn't depend on exact instruction counts.
-break $0001F008
-run
+# The crash is observed around ~157 M instructions.  200 M is a
+# comfortable budget to reach it without over-running.
+run 200000000
+info regs
 
 quit
