@@ -68,15 +68,177 @@ static const char *format_pc_displacement(int32_t disp) {
 }
 
 static const char *tmp_buf_printf(const char *fmt, ...) {
-    enum { N = 160 };
-    static char b[4][N]; // small ring to survive nested calls
+    // A single MOVE with two 68020+ full-extension-word operands can keep
+    // ~8 intermediates live at once (bd/od/idx/final for each side) before
+    // the outer sprintf consumes them. 16 slots leaves comfortable margin.
+    enum { N = 160, SLOTS = 16 };
+    static char b[SLOTS][N];
     static unsigned idx;
-    char *s = b[idx++ & 3];
+    char *s = b[idx++ & (SLOTS - 1)];
     va_list ap;
     va_start(ap, fmt);
     vsnprintf(s, N, fmt, ap);
     va_end(ap);
     return s;
+}
+
+// Count how many 16-bit words a 68020+ full extension word consumes
+// (including the extension word itself). Returns 1 for a brief extension.
+static int full_ext_word_count(uint16_t ext) {
+    if ((ext & 0x0100) == 0)
+        return 1; // brief
+    int n = 1;
+    int bd_size = (ext >> 4) & 3;
+    if (bd_size == 2)
+        n += 1; // word BD
+    else if (bd_size == 3)
+        n += 2; // long BD
+    // Outer displacement size lives in the low 2 bits of I/IS (for both
+    // IS=0 and IS=1 encodings): 10 = word, 11 = long.
+    int od_sel = ext & 3;
+    if (od_sel == 2)
+        n += 1;
+    else if (od_sel == 3)
+        n += 2;
+    return n;
+}
+
+// Format a signed displacement as "$X" / "-$X" (no leading zeroes).
+static const char *format_hex_signed(int32_t v) {
+    if (v >= 0)
+        return tmp_buf_printf("$%X", (int)v);
+    return tmp_buf_printf("-$%X", (int)(-v));
+}
+
+// Render a 68020+ full extension word EA (mode 6 or mode 7/3).
+// `pos` points at the extension word; on return it points past any BD/OD
+// words consumed. `base_label` is "An" for mode 6 or "PC" for mode 7/3.
+// Returns "<illegal>" for the reserved encodings (BD size 0, IS=1 with
+// iis >= 4, or iis == 4 when IS=0).
+static const char *disasm_ea_full(uint16_t **pos_ptr, const char *base_label) {
+    uint16_t *pos = *pos_ptr;
+    uint16_t ext = *pos++;
+
+    int bd_size = (ext >> 4) & 3;
+    if (bd_size == 0)
+        return "<illegal>"; // reserved
+
+    bool bs = (ext & 0x0080) != 0;
+    bool is = (ext & 0x0040) != 0;
+    int iis = ext & 7;
+
+    if (is) {
+        if (iis >= 4)
+            return "<illegal>";
+    } else {
+        if (iis == 4)
+            return "<illegal>";
+    }
+
+    // Base displacement
+    int32_t bd = 0;
+    bool has_bd = (bd_size >= 2);
+    if (bd_size == 2) {
+        bd = (int32_t)(int16_t)*pos++;
+    } else if (bd_size == 3) {
+        bd = (int32_t)((uint32_t)pos[0] << 16 | pos[1]);
+        pos += 2;
+    }
+
+    // Memory-indirect mode / outer displacement
+    // iis (with IS=0): 0=no indirect, 1-3=pre-indexed, 5-7=post-indexed
+    // iis (with IS=1): 0=no indirect, 1-3=indirect (no index)
+    int indirect = 0; // 0 = none, 1 = pre-indexed / indirect-no-index, 2 = post-indexed
+    int od_size = 0; // 0 = none, 2 = word, 3 = long
+    if (iis == 0) {
+        indirect = 0;
+    } else if (is) {
+        indirect = 1;
+        od_size = iis & 3;
+    } else if (iis <= 3) {
+        indirect = 1;
+        od_size = iis & 3;
+    } else { // iis 5..7
+        indirect = 2;
+        od_size = iis & 3;
+    }
+
+    int32_t od = 0;
+    bool has_od = (od_size >= 2);
+    if (od_size == 2) {
+        od = (int32_t)(int16_t)*pos++;
+    } else if (od_size == 3) {
+        od = (int32_t)((uint32_t)pos[0] << 16 | pos[1]);
+        pos += 2;
+    }
+
+    *pos_ptr = pos;
+
+    // Strings for each field
+    const char *base_str = bs ? NULL : base_label;
+
+    const char *idx_str = NULL;
+    if (!is) {
+        const char *xreg = (ext & 0x8000) ? an[(ext >> 12) & 7] : dn[(ext >> 12) & 7];
+        const char *sz = (ext & 0x0800) ? "L" : "W";
+        int scale = 1 << ((ext >> 9) & 3);
+        idx_str = tmp_buf_printf("%s.%s*%d", xreg, sz, scale);
+    }
+
+    const char *bd_str = has_bd ? format_hex_signed(bd) : NULL;
+    const char *od_str = has_od ? format_hex_signed(od) : NULL;
+
+    // Assemble. Empty fields are omitted with commas preserved so the
+    // result is always parseable back to a unique encoding.
+    if (indirect == 0) {
+        // non-indirect: bd(base,index)
+        if (!base_str && !idx_str) {
+            // Both suppressed -- just the BD (absolute-like)
+            return bd_str ? bd_str : "$0";
+        }
+        if (!idx_str) {
+            // (bd,An) with IS=1
+            if (bd_str)
+                return tmp_buf_printf("%s(%s)", bd_str, base_str);
+            return tmp_buf_printf("(%s)", base_str);
+        }
+        if (!base_str) {
+            // bd(,Xn) with BS=1
+            if (bd_str)
+                return tmp_buf_printf("%s(,%s)", bd_str, idx_str);
+            return tmp_buf_printf("(,%s)", idx_str);
+        }
+        // bd(An,Xn)
+        if (bd_str)
+            return tmp_buf_printf("%s(%s,%s)", bd_str, base_str, idx_str);
+        return tmp_buf_printf("(%s,%s)", base_str, idx_str);
+    }
+
+    // Build the inner "[bd,base,index]" or "[bd,base]" bracketed part
+    // and the post-bracket "index,od" tail, with commas preserved for
+    // suppressed fields.
+    const char *empty_bd = bd_str ? bd_str : "";
+    const char *empty_base = base_str ? base_str : "";
+    const char *empty_idx = idx_str ? idx_str : "";
+    const char *empty_od = od_str ? od_str : "";
+
+    if (indirect == 1) {
+        // pre-indexed (index inside brackets) -- or indirect-no-index if IS=1
+        if (is) {
+            // ([bd,An],od)
+            if (has_od)
+                return tmp_buf_printf("([%s,%s],%s)", empty_bd, empty_base, empty_od);
+            return tmp_buf_printf("([%s,%s])", empty_bd, empty_base);
+        }
+        if (has_od)
+            return tmp_buf_printf("([%s,%s,%s],%s)", empty_bd, empty_base, empty_idx, empty_od);
+        return tmp_buf_printf("([%s,%s,%s])", empty_bd, empty_base, empty_idx);
+    }
+
+    // indirect == 2: post-indexed ([bd,base],index,od)
+    if (has_od)
+        return tmp_buf_printf("([%s,%s],%s,%s)", empty_bd, empty_base, empty_idx, empty_od);
+    return tmp_buf_printf("([%s,%s],%s)", empty_bd, empty_base, empty_idx);
 }
 
 static const char *disasm_ea(int size, int mode, int reg, uint16_t **fetch_pos, int ext_words,
@@ -110,16 +272,20 @@ static const char *disasm_ea(int size, int mode, int reg, uint16_t **fetch_pos, 
                              (int16_t)*pos >= 0 ? (int)(int16_t)*pos : 0 - (int16_t)*pos, (int)(reg));
         pos += 1;
         break;
-    case 6: // (d8,An,Xn)
-        if (*pos & 0x0800)
-            buf = tmp_buf_printf("%s$%X(%s,%s.L*%d)", (int8_t)*pos >= 0 ? "" : "-",
-                                 (int8_t)*pos >= 0 ? (int)(int8_t)*pos : 0 - (int8_t)*pos, an[reg],
-                                 *pos & 0x8000 ? an[*pos >> 12 & 7] : dn[*pos >> 12 & 7], 1 << (*pos >> 9 & 3));
-        else
-            buf = tmp_buf_printf("%s$%X(%s,%s.W*%d)", (int8_t)*pos >= 0 ? "" : "-",
-                                 (int8_t)*pos >= 0 ? (int)(int8_t)*pos : 0 - (int8_t)*pos, an[reg],
-                                 *pos & 0x8000 ? an[*pos >> 12 & 7] : dn[*pos >> 12 & 7], 1 << (*pos >> 9 & 3));
-        pos++;
+    case 6: // (d8,An,Xn) brief, or 68020+ full extension word
+        if (*pos & 0x0100) {
+            buf = disasm_ea_full(&pos, an[reg]);
+        } else {
+            if (*pos & 0x0800)
+                buf = tmp_buf_printf("%s$%X(%s,%s.L*%d)", (int8_t)*pos >= 0 ? "" : "-",
+                                     (int8_t)*pos >= 0 ? (int)(int8_t)*pos : 0 - (int8_t)*pos, an[reg],
+                                     *pos & 0x8000 ? an[*pos >> 12 & 7] : dn[*pos >> 12 & 7], 1 << (*pos >> 9 & 3));
+            else
+                buf = tmp_buf_printf("%s$%X(%s,%s.W*%d)", (int8_t)*pos >= 0 ? "" : "-",
+                                     (int8_t)*pos >= 0 ? (int)(int8_t)*pos : 0 - (int8_t)*pos, an[reg],
+                                     *pos & 0x8000 ? an[*pos >> 12 & 7] : dn[*pos >> 12 & 7], 1 << (*pos >> 9 & 3));
+            pos++;
+        }
         break;
     case 0x7:
         switch (reg) {
@@ -137,17 +303,21 @@ static const char *disasm_ea(int size, int mode, int reg, uint16_t **fetch_pos, 
             pos++;
             break;
         }
-        case 3: { // (d8,PC,Xn)
-            int32_t pc_off8 = (int32_t)(int8_t)*pos + 2 + 2 * ext_words;
-            if (*pos & 0x0800)
-                buf = tmp_buf_printf("*%s$%04X(%s.L*%d)", pc_off8 >= 0 ? "+" : "-",
-                                     pc_off8 >= 0 ? (int)pc_off8 : (int)(0 - pc_off8),
-                                     *pos & 0x8000 ? an[*pos >> 12 & 7] : dn[*pos >> 12 & 7], 1 << (*pos >> 9 & 3));
-            else
-                buf = tmp_buf_printf("*%s$%04X(%s.W*%d)", pc_off8 >= 0 ? "+" : "-",
-                                     pc_off8 >= 0 ? (int)pc_off8 : (int)(0 - pc_off8),
-                                     *pos & 0x8000 ? an[*pos >> 12 & 7] : dn[*pos >> 12 & 7], 1 << (*pos >> 9 & 3));
-            pos++;
+        case 3: { // (d8,PC,Xn) brief, or 68020+ full extension word
+            if (*pos & 0x0100) {
+                buf = disasm_ea_full(&pos, "PC");
+            } else {
+                int32_t pc_off8 = (int32_t)(int8_t)*pos + 2 + 2 * ext_words;
+                if (*pos & 0x0800)
+                    buf = tmp_buf_printf("*%s$%04X(%s.L*%d)", pc_off8 >= 0 ? "+" : "-",
+                                         pc_off8 >= 0 ? (int)pc_off8 : (int)(0 - pc_off8),
+                                         *pos & 0x8000 ? an[*pos >> 12 & 7] : dn[*pos >> 12 & 7], 1 << (*pos >> 9 & 3));
+                else
+                    buf = tmp_buf_printf("*%s$%04X(%s.W*%d)", pc_off8 >= 0 ? "+" : "-",
+                                         pc_off8 >= 0 ? (int)pc_off8 : (int)(0 - pc_off8),
+                                         *pos & 0x8000 ? an[*pos >> 12 & 7] : dn[*pos >> 12 & 7], 1 << (*pos >> 9 & 3));
+                pos++;
+            }
             break;
         }
         case 4: // #data
@@ -172,7 +342,11 @@ static const char *disasm_ea(int size, int mode, int reg, uint16_t **fetch_pos, 
     return buf;
 }
 
-static int ea_words(int mode, int reg, int size) {
+// `first_ext` must be the extension word at the position the EA's own
+// extension words would begin (used to distinguish brief vs full format
+// for mode 6 / mode 7 reg 3). Callers that cannot be at mode 6 / mode 7
+// reg 3 may pass 0.
+static int ea_words(int mode, int reg, int size, uint16_t first_ext) {
     switch (mode) {
     case 0: // Dn
     case 1: // An
@@ -181,8 +355,9 @@ static int ea_words(int mode, int reg, int size) {
     case 4: // -(An)
         return 0;
     case 5: // (d16,An)
-    case 6: // (d8,An,Xn)
         return 1;
+    case 6: // (d8,An,Xn) or full extension word
+        return full_ext_word_count(first_ext);
     case 0x7:
         switch (reg) {
         case 0: // (xxx).W
@@ -191,8 +366,8 @@ static int ea_words(int mode, int reg, int size) {
             return 2;
         case 2: // (d16,PC)
             return 1;
-        case 3: // (d8,PC,Xn)
-            return 1;
+        case 3: // (d8,PC,Xn) or full extension word
+            return full_ext_word_count(first_ext);
         case 4: // #data
             return size > 2 ? 2 : 1;
         }
@@ -685,7 +860,7 @@ static void disasm_fpu_sccdbcc(uint16_t opcode, uint16_t ext, char *buf, uint16_
 #define DQ dn[ext_word >> 12 & 7]
 #define DL dn[ext_word >> 12 & 7]
 
-#define SRC_EXT_WORDS(size) ea_words(opcode >> 3 & 7, opcode & 7, size)
+#define SRC_EXT_WORDS(size) ea_words(opcode >> 3 & 7, opcode & 7, size, ext_word)
 
 #define SHORT_PC_DISP format_pc_displacement((int8_t)(opcode & 0xFF) + 2)
 #define LONG_PC_DISP  format_pc_displacement(disasm_fetch_32(&fetch_pos_src, 0) + 2)

@@ -577,15 +577,18 @@ static uint8_t se30_io_read_uint8(void *ctx, uint32_t addr) {
     // Mirror: take lower 17 bits of the offset from I/O base
     uint32_t offset = addr & SE30_IO_MIRROR;
 
-    // VIA chips are 8-bit devices on even byte lanes only;
-    // odd-address reads return bus float ($FF)
+    // 6522 is an 8-bit port on lane 0 (D31..D24); 68030 dynamic bus sizing
+    // routes byte accesses through this lane regardless of A0/A1, and the
+    // chip's RS0..RS3 lines decode only A9..A12, so any byte in the 8 KB
+    // decode window aliases to the same register. Mask A0 before handing
+    // the offset to the 6522 core. See local/gs-docs/notes/SE30-via.md.
     if (offset < IO_VIA1_END) {
         memory_io_penalty(SE30_VIA_IO_PENALTY);
-        return (offset & 1) ? 0xFF : se30->via1_iface->read_uint8(cfg->via1, offset - IO_VIA1);
+        return se30->via1_iface->read_uint8(cfg->via1, (offset - IO_VIA1) & ~1u);
     }
     if (offset < IO_VIA2_END) {
         memory_io_penalty(SE30_VIA_IO_PENALTY);
-        return (offset & 1) ? 0xFF : se30->via2_iface->read_uint8(cfg->via2, offset - IO_VIA2);
+        return se30->via2_iface->read_uint8(cfg->via2, (offset - IO_VIA2) & ~1u);
     }
     if (offset < IO_SCC_END) {
         memory_io_penalty(SE30_SCC_IO_PENALTY);
@@ -666,18 +669,18 @@ static void se30_io_write_uint8(void *ctx, uint32_t addr, uint8_t value) {
 
     uint32_t offset = addr & SE30_IO_MIRROR;
 
-    // VIA chips are 8-bit devices on even byte lanes only;
-    // odd-address writes are ignored (no device on that lane)
+    // See the read path for the full rationale: 6522 RS lines decode only
+    // A9..A12, and 68030 dynamic bus sizing routes byte writes through the
+    // 8-bit port's fixed lane regardless of A0/A1, so odd-byte writes land
+    // on the same register as their even-byte counterpart.
     if (offset < IO_VIA1_END) {
         memory_io_penalty(SE30_VIA_IO_PENALTY);
-        if (!(offset & 1))
-            se30->via1_iface->write_uint8(cfg->via1, offset - IO_VIA1, value);
+        se30->via1_iface->write_uint8(cfg->via1, (offset - IO_VIA1) & ~1u, value);
         return;
     }
     if (offset < IO_VIA2_END) {
         memory_io_penalty(SE30_VIA_IO_PENALTY);
-        if (!(offset & 1))
-            se30->via2_iface->write_uint8(cfg->via2, offset - IO_VIA2, value);
+        se30->via2_iface->write_uint8(cfg->via2, (offset - IO_VIA2) & ~1u, value);
         return;
     }
     if (offset < IO_SCC_END) {
