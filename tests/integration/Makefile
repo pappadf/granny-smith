@@ -150,7 +150,8 @@ test-%: $(HEADLESS_BIN) FORCE
 	WORK_DIR="$(abspath $(WORK_DIR_BASE))/$*"; \
 	rm -rf "$$WORK_DIR"; \
 	mkdir -p "$$TEST_RESULTS_DIR" "$$WORK_DIR"; \
-	trap "rm -rf $$TEST_TMPDIR" EXIT; \
+	find "$$ABS_TEST_DATA" \( -name '*.delta' -o -name '*.journal' \) -delete 2>/dev/null; \
+	trap "rm -rf $$TEST_TMPDIR; find '$$ABS_TEST_DATA' \( -name '*.delta' -o -name '*.journal' \) -delete 2>/dev/null" EXIT; \
 	if [ -n "$$TEST_SETUP" ]; then \
 		SETUP_CMD=$$(echo "$$TEST_SETUP" | sed "s|\$$(TEST_DATA)|$$ABS_TEST_DATA|g" | sed "s|\$$(TEST_TMPDIR)|$$TEST_TMPDIR|g" | sed "s|\$$(TEST_RESULTS_DIR)|$$TEST_RESULTS_DIR|g" | sed "s|\$$(WORK_DIR)|$$WORK_DIR|g"); \
 		echo "Setup: $$SETUP_CMD"; \
@@ -230,7 +231,8 @@ test-valgrind-%: $(HEADLESS_BIN) FORCE
 	WORK_DIR="$(abspath $(WORK_DIR_BASE))/$*"; \
 	rm -rf "$$WORK_DIR"; \
 	mkdir -p "$$TEST_RESULTS_DIR" "$$WORK_DIR"; \
-	trap "rm -rf $$TEST_TMPDIR" EXIT; \
+	find "$$ABS_TEST_DATA" \( -name '*.delta' -o -name '*.journal' \) -delete 2>/dev/null; \
+	trap "rm -rf $$TEST_TMPDIR; find '$$ABS_TEST_DATA' \( -name '*.delta' -o -name '*.journal' \) -delete 2>/dev/null" EXIT; \
 	if [ -n "$$TEST_SETUP" ]; then \
 		SETUP_CMD=$$(echo "$$TEST_SETUP" | sed "s|\$$(TEST_DATA)|$$ABS_TEST_DATA|g" | sed "s|\$$(TEST_TMPDIR)|$$TEST_TMPDIR|g" | sed "s|\$$(TEST_RESULTS_DIR)|$$TEST_RESULTS_DIR|g" | sed "s|\$$(WORK_DIR)|$$WORK_DIR|g"); \
 		echo "Setup: $$SETUP_CMD"; \
