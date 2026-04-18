@@ -101,9 +101,19 @@ Emulator modules (e.g., scsi, cpu, via, scc, rtc) have `.c`/`.h` files in `src/c
 - Redirect to file: `log cpu 10 file=/tmp/cpu.log`
 
 **Logpoints (`src/debug.c`):**
-- Logpoints emit a log message when the CPU executes a specific address or range, without stopping
+- PC logpoints emit a log message when the CPU executes a specific address or range, without stopping
 - Set via shell: `logpoint <addr> [message] [category=<name>] [level=<n>]`
-- The default category is `logpoint`; enable it to see output: `log logpoint 10`
+- The default category is `logpoint` for PC logpoints; enable it with `log logpoint 10`
+- Memory logpoints fire on **read** or **write** accesses without halting:
+  - `logpoint --write <addr>[.b|.w|.l] [msg]` — log every write
+  - `logpoint --read <addr>[.b|.w|.l] [msg]` — log every read
+  - `logpoint --rw <addr>[.b|.w|.l] [msg]` — log either direction
+  - Default category is `memory` (enable with `log memory 1`)
+  - Messages may reference `$pc`, `$value`, `$instruction_pc`, `$cpu.d0..d7`, `$cpu.a0..a7`, `$addr`
+  - Implemented without slowing the fast path: covered pages are zeroed in the
+    SoA arrays so only logged pages take the slow-path penalty (see `docs/memory.md`)
+- Bus-error / exception trace ring is always on; dump with `info exceptions [N]`,
+  stream live with `log exceptions 1`
 
 **In Playwright E2E tests:** Use `await runCommand(page, 'log <category> <level>')` or `await runCommand(page, 'logpoint ...')` to enable logging or set logpoints programmatically.
 

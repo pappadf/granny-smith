@@ -120,6 +120,39 @@ to physical addresses. The page table serves as the translation layer:
 
 The MMU interface is defined in `src/core/memory/mmu.h` (currently a stub).
 
+## Memory Logpoints (Fast-Path-Preserving Watchpoints)
+
+The shell command `logpoint --write|--read <addr>` installs a memory watchpoint
+that streams a log line on every access without halting execution. The
+implementation must not slow down unrelated accesses, so the design is:
+
+- A per-page reference-count array `g_mem_logpoint_page_count[]` (one byte per
+  4 KB page) tracks how many memory logpoints currently cover each page.
+  Allocated alongside the SoA arrays; zeroed when no memory logpoints are set.
+- When a logpoint is installed, every page it covers has its reference count
+  incremented and **its SoA fast-path entries (`g_supervisor_read`,
+  `g_supervisor_write`, `g_user_read`, `g_user_write`) zeroed**. Subsequent
+  accesses to those pages take the slow path.
+- `mmu_fill_soa_entry()` (called from MMU TLB misses) checks the same refcount
+  and skips the fill, so the page stays slow-path even after the MMU re-walks.
+- The slow-path functions detect this case (`pe->host_base != NULL` and the
+  refcount is non-zero), perform the access directly via `pe->host_base`, then
+  invoke the registered logpoint hook. The hook lives in `debug.c` and walks
+  the logpoint list to emit matching events through the standard `LOG_WITH`
+  pipeline.
+- When a logpoint is removed, `memory_logpoint_uninstall()` decrements the
+  refcount; if it reaches zero, the SoA entry is rebuilt from the cold-path
+  page entry (or left zero so the next access re-fills via MMU).
+
+The fast-path inline accessors in `memory.h` are unchanged — there are no extra
+branches or memory loads on the hot path. Only pages with active logpoints
+incur the slow-path cost.
+
+Hooks and helpers:
+- `g_mem_logpoint_page_count` — per-page refcount (in `memory.h`)
+- `g_mem_logpoint_hook` — function pointer set by debug.c (`debug_memory_logpoint_hook`)
+- `memory_logpoint_install(start_page, end_page)` / `..._uninstall(...)` — page refcount helpers
+
 ## Key Files
 
 | File | Purpose |

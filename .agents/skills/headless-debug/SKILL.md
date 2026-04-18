@@ -56,6 +56,8 @@ The binary is produced at `build/headless/gs-headless`.
 - `--kill` — kill any existing daemon on the same port before starting
 - `--script-stdin` — read script commands from stdin instead of a file
 - `--quiet`, `-q` — suppress startup messages
+- `--no-prompt` — disable the trailing PC-disassembly status line for **all** subsequent
+  client connections (avoids having to send `prompt off` at the start of every script)
 
 **Important:** The emulator does NOT auto-run in daemon mode. It waits for commands.
 
@@ -179,16 +181,43 @@ Commands follow GDB/LLDB naming conventions. The `$` prefix resolves registers
 
 | Command | Alias(es) | Description |
 |---------|-----------|-------------|
-| `break <addr>` | `b` | Set breakpoint |
-| `break set <addr>` | — | Set breakpoint (explicit) |
-| `break del <addr\|all>` | — | Delete breakpoint(s) |
-| `break list` | — | List all breakpoints |
+| `break <addr> [if <cond>]` | `b` | Set breakpoint, optionally conditional |
+| `break set <addr> [if <cond>]` | — | Set breakpoint (explicit) |
+| `break del <#id\|addr\|all>` | — | Delete by ID (`#0`), address, or all |
+| `break list` | — | List all breakpoints (with `#id` prefix and condition) |
 | `break clear` | — | Delete all breakpoints |
 | `tbreak <addr>` | `tb` | Set temporary breakpoint (auto-deletes on hit) |
-| `watch <addr>.size <op> <val>` | `w` | Set memory watchpoint |
-| `logpoint set <addr> [msg]` | `lp` | Set logpoint |
-| `logpoint del <addr\|all>` | — | Delete logpoint(s) |
-| `logpoint list` | — | List all logpoints |
+| `watch <addr>.size <op> <val>` | `w` | Set memory watchpoint (halts on match) |
+| `logpoint set <addr> [msg]` | `lp` | PC logpoint — log on instruction execution |
+| `logpoint set --write <addr>[.b\|.w\|.l] [msg]` | — | Memory write logpoint (no halt) |
+| `logpoint set --read <addr>[.b\|.w\|.l] [msg]` | — | Memory read logpoint (no halt) |
+| `logpoint set --rw <addr>[.b\|.w\|.l] [msg]` | — | Memory read+write logpoint |
+| `logpoint del <#id\|addr\|all>` | — | Delete by ID, address, or all |
+| `logpoint list` | — | List all logpoints (with `#id` and kind) |
+| `logpoint clear` | — | Delete all logpoints |
+
+**Conditional breakpoints.** The optional `if <expr>` clause is evaluated each
+hit and the breakpoint only fires when the expression is true. Supported:
+`mmu.enabled`, `!mmu.enabled`, `cpu.supervisor`, `!cpu.supervisor`, comparisons
+of `cpu.d0..d7`, `cpu.a0..a7`, `$tc`, `$sr`, `$vbr` against hex literals
+(`==`, `!=`, `<`, `>`, `<=`, `>=`). Examples:
+```
+break $54232 if mmu.enabled
+break $40802A14 if cpu.d0 == $1
+```
+
+**Memory logpoints (read/write watchers without halt).** Unlike `watch`, these
+don't stop execution — they stream a log line each access. The fast path is
+**unaffected**: only pages with active logpoints route through the slow path.
+Messages may reference `$pc`, `$value`, `$instruction_pc`, `$cpu.d0..d7`,
+`$cpu.a0..a7`, `$addr`. Examples:
+```
+logpoint --write $00104000.l "cleared by pc=$pc value=$value"
+logpoint --read  $00100000-$00100FFF "page-table read pc=$pc"
+log memory 1                            # enable streaming for the default category
+```
+The default log category for memory logpoints is `memory` (PC logpoints use
+`logpoint`); set with `category=<name> level=<n>` if you want a custom one.
 
 ### Inspection
 
@@ -215,12 +244,20 @@ p $0400.w          # memory word at address 0x400
 | `info regs` | `info r`, `i r` | CPU register dump (D0-D7, A0-A7, PC, SR, USP, SSP) |
 | `info fpregs` | `info fp` | FPU register dump (FP0-FP7, FPCR, FPSR, FPIAR) |
 | `info mmu` | — | MMU register dump (TC, CRP, SRP, TT0, TT1) |
-| `info break` | `info b` | List all breakpoints |
-| `info logpoint` | `info lp` | List all logpoints |
+| `info mmu-descriptors <addr> [n]` | — | Decode `n` PMMU descriptors (DT, page/table flags, phys/next) |
+| `info break` | `info b` | List all breakpoints (with `#id` and condition) |
+| `info logpoint` | `info lp` | List all logpoints (with `#id` and kind) |
 | `info mac` | — | Mac OS state summary (mouse, cursor, ticks) |
 | `info process` | `info proc` | Current application info |
 | `info events` | — | Scheduler event queue |
 | `info schedule` | — | Scheduler mode and CPI |
+| `info exceptions [n]` | — | Dump the last `n` (default 32, max 256) CPU exception trace ring entries |
+
+**Exception trace ring.** Every bus error / format-frame exception is recorded
+in a 256-entry ring buffer with `ts`, `faulting_pc`, `saved_pc`, `fault_addr`,
+`rw`, `vbr`, `sr`, `format_frame`, `double_fault_kind`. The ring is always on;
+toggle live streaming with `log exceptions 1` (or `0`). Use this instead of
+patching `cpu_internal.h` with `fprintf` when chasing MMU/bus-error bugs.
 
 ### Tracing and Logging
 
@@ -236,10 +273,11 @@ p $0400.w          # memory word at address 0x400
 
 | Command | Description |
 |---------|-------------|
-| `translate <addr>` | Show MMU address translation |
+| `translate <addr>` | Show MMU address translation (logical → physical) |
+| `translate --reverse <phys>` | Find logical pages mapping to a physical address |
 | `addrmode [auto\|expanded\|collapsed]` | Set address display format |
-| `prompt [on\|off]` | Toggle trailing PC disassembly status line |
-| `screenshot save <file.png>` | Save emulated screen as PNG |
+| `prompt [on\|off]` | Toggle trailing PC disassembly status line (per-connection) |
+| `screenshot save <file.png>` | Save emulated screen as PNG (path **must** end in `.png`) |
 | `screenshot checksum [t l b r]` | Compute screen checksum |
 | `screenshot match <ref.png>` | Compare screen with reference PNG |
 | `screenshot match-or-save <ref.png> [actual.png]` | Compare with reference; save actual on mismatch |
@@ -271,6 +309,7 @@ p $0400.w          # memory word at address 0x400
 | `schedule [max\|real\|hw]` | Show/set scheduler mode |
 | `status` | Print `running` or `idle` |
 | `events` | Show pending CPU event queue |
+| `run-screenshots <per> <prefix> <total>` | Run `total` instructions, saving a PNG every `per` instructions (e.g. `run-screenshots 35000000 phase 595000000` produces `phase1-35M.png` ... `phase17-595M.png`) |
 
 ### System
 
@@ -382,8 +421,13 @@ echo "log scsi 10" | nc -w 2 localhost 6800
   per second: `# running... 54000000 instructions (+54000000 since start)`.
   This keeps `nc -w` connections alive and lets you monitor progress. Heartbeat
   lines start with `#` so they can be filtered with `grep -v '^#'` if needed.
-  For very long runs, use a generous `nc -w` timeout (e.g., `-w 300`) or send
-  `stop` from another terminal if needed.
+- **Stop preempts a run.** While a `run` is in flight, sending **any** command on
+  a fresh connection (typically `stop`) breaks the scheduler out of its loop so
+  the next dispatch reads the new command. You no longer have to wait for the
+  current run to finish before regaining control.
+- **Disconnect cancels the run.** If the driving client disconnects mid-run
+  (e.g. `nc -w` timed out), the daemon detects EOF on the socket and stops the
+  scheduler instead of burning the rest of the budget into a dead connection.
 - The daemon prints `READY` to stdout after initialization. Block-read for this
   instead of using `sleep` for more reliable startup.
 - ROM files: `tests/data/roms/` contains available ROM images. Use `SE30.rom`

@@ -264,3 +264,25 @@ Notes:
 - Pick consistent ranges within a module to make it intuitive (e.g., keep all hexdumps at 9, packet summaries at 3).
 - Avoid expensive formatting in low levels (1–3) to keep common logging lightweight.
 - Prefer `LOG_WOULD_LOG` style checks or `LOG(...)` itself to guard expensive computations.
+
+## Built-in debug categories
+
+Two pre-defined categories pair with debug shell commands and feed into the
+standard log pipeline:
+
+- **`logpoint`** — emitted by PC logpoints (`logpoint set <addr> [msg]`).
+  Default level 0 (silent). Enable with `log logpoint 1` to see each hit.
+- **`memory`** — emitted by memory read/write logpoints
+  (`logpoint --write|--read <addr> [msg]`). Each event reports `addr`, `size`,
+  `value`, `pc`, and optionally a substituted user message that may reference
+  `$pc`, `$value`, `$instruction_pc`, `$cpu.d0..d7`, `$cpu.a0..a7`, `$addr`.
+  See `docs/memory.md` for the fast-path-preserving mechanism that backs these.
+- **`exceptions`** — emitted by the CPU exception trace ring
+  (`info exceptions` dumps the ring; `log exceptions 1` streams every event).
+  Each line includes vector, frame format, faulting/stacked PC, fault address,
+  R/W direction, SR, VBR, and a marker for double-fault detection. Replaces
+  ad-hoc `fprintf` instrumentation in `cpu_internal.h` for MMU/bus-error
+  debugging sessions.
+
+These categories are auto-registered the first time their feature is used; they
+also appear in `log` with no arguments once registered.
