@@ -357,29 +357,18 @@ TEST(test_supervisor_only_pages) {
     uint32_t level_b_base = 0x11000;
     uint64_t crp = ((uint64_t)DESC_DT_TABLE8 << 32) | level_a_base;
 
-    // Level-A entry 0 (long format, 8 bytes): table descriptor
-    store_be32(ram + level_a_base, level_b_base | DESC_DT_TABLE4);
-    store_be32(ram + level_a_base + 4, 0); // unused upper word
+    // CRP DT=3 → level-A entries are 8-byte long format.
+    // Long table descriptor layout (per 68030 PMMU):
+    //   bytes 0-3 (upper word): LIMIT | flags | DT
+    //   bytes 4-7 (lower word): TABLE/PAGE ADDRESS
+    // Level-A entry 0: long table descriptor pointing to level-B, DT=3 makes
+    // level-B entries also 8-byte long format.
+    store_be32(ram + level_a_base, DESC_DT_TABLE8);
+    store_be32(ram + level_a_base + 4, level_b_base);
 
-    // Level-B entry 0 (short format): page with S bit
-    // In long-format descriptors, S bit is at bit 8. For short descriptors
-    // accessed via a long-format root, the S bit isn't directly in the descriptor.
-    // For this test, use long-format table root so the walk uses long_desc=true
-    // at the first level, then short at level B.
-    // Actually, for the 68030, S bit is only valid in long-format page descriptors.
-    // Let's use a simpler approach: the fill function checks supervisor_only flag
-    // which comes from the walk result.
-
-    // Level-B entry 0: supervisor-only page (using long format page descriptor)
-    // Since root DT=3 (long desc), level-A entries are 8 bytes
-    // Level-A entry 0 as long: table pointer with DT=2 at byte 0
-    store_be32(ram + level_a_base, level_b_base | DESC_DT_TABLE8);
-    store_be32(ram + level_a_base + 4, 0);
-
-    // Level-B entries are now 8-byte (long) format
-    // Long page descriptor: S bit at bit 8 of first longword
-    store_be32(ram + level_b_base, 0x00000000 | DESC_DT_PAGE | (1u << 8));
-    store_be32(ram + level_b_base + 4, 0);
+    // Level-B entry 0: long page descriptor, S bit set at bit 8 of upper word
+    store_be32(ram + level_b_base, DESC_DT_PAGE | (1u << 8));
+    store_be32(ram + level_b_base + 4, 0x00000000); // physical page 0
 
     mmu->tc = tc;
     mmu->crp = crp;

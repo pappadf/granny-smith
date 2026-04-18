@@ -53,6 +53,7 @@ typedef struct page_entry page_entry_t;
 // Result of a table walk
 typedef struct mmu_walk_result {
     uint32_t physical_addr; // resolved physical page address
+    uint32_t page_size_bits; // log2 of effective page size (e.g. 12 = 4KB, 25 = 32MB)
     bool valid; // true if walk succeeded
     bool supervisor_only; // S bit from descriptor
     bool write_protected; // W bit from descriptor

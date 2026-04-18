@@ -223,13 +223,17 @@ static mmu_walk_result_t mmu_table_walk(mmu_state_t *mmu, uint32_t logical_addr,
         bit_pos -= index_bits;
         uint32_t index = (logical_addr >> bit_pos) & ((1u << index_bits) - 1);
 
-        // Fetch descriptor from physical memory
+        // Fetch descriptor from physical memory.
+        // Short format: all fields (DT, flags, address) live in one 32-bit word.
+        // Long format: upper 32 bits hold LIMIT/flags/DT; lower 32 bits hold
+        // the table or page physical address.
         uint32_t desc_addr = table_addr + index * (long_desc ? 8 : 4);
-        uint32_t desc = phys_read32(mmu, desc_addr);
+        uint32_t desc_hi = phys_read32(mmu, desc_addr);
+        uint32_t desc_lo = long_desc ? phys_read32(mmu, desc_addr + 4) : desc_hi;
         levels_walked++;
 
-        // Check descriptor type
-        uint32_t dt = desc & 3;
+        // DT is always in bits 1:0 of the first (upper, for long) word
+        uint32_t dt = desc_hi & 3;
 
         if (dt == DESC_DT_INVALID) {
             // Invalid descriptor → bus error
@@ -242,15 +246,17 @@ static mmu_walk_result_t mmu_table_walk(mmu_state_t *mmu, uint32_t logical_addr,
             // Page descriptor (early termination) — translation complete
             // The remaining address bits below bit_pos form the page offset
             uint32_t page_mask = (1u << bit_pos) - 1;
-            uint32_t phys_base = desc & ~page_mask & 0xFFFFFFFC;
+            // Short: address in same word as flags; Long: address in lower word.
+            uint32_t phys_base = desc_lo & ~page_mask & 0xFFFFFFFC;
 
             result.physical_addr = phys_base | (logical_addr & page_mask);
+            result.page_size_bits = bit_pos;
             result.valid = true;
-            result.write_protected = (desc >> 2) & 1; // W bit
-            result.modified = (desc >> 4) & 1; // M bit
-            // S bit: only in long-format descriptors (bit 8)
+            result.write_protected = (desc_hi >> 2) & 1; // W bit
+            result.modified = (desc_hi >> 4) & 1; // M bit
+            // S bit: only in long-format descriptors (bit 8 of upper word)
             if (long_desc)
-                result.supervisor_only = (desc >> 8) & 1;
+                result.supervisor_only = (desc_hi >> 8) & 1;
 
             // Build MMUSR
             if (result.write_protected)
@@ -263,8 +269,9 @@ static mmu_walk_result_t mmu_table_walk(mmu_state_t *mmu, uint32_t logical_addr,
             return result;
         }
 
-        // Table descriptor (short=DT2, long=DT3) — follow to next level
-        table_addr = desc & 0xFFFFFFFC;
+        // Table descriptor (short=DT2, long=DT3) — follow to next level.
+        // Short: table address in same word; Long: table address in lower word.
+        table_addr = desc_lo & 0xFFFFFFFC;
         long_desc = (dt == DESC_DT_TABLE8);
     }
 
@@ -470,6 +477,28 @@ bool mmu_handle_fault(mmu_state_t *mmu, uint32_t logical_addr, bool write, bool 
     // We need to map the emulator's 4KB page granularity.
     uint32_t phys_page = result.physical_addr & ~(uint32_t)PAGE_MASK;
     mmu_fill_soa_entry(mmu, emu_page, phys_page, result.supervisor_only, result.write_protected);
+
+    // When the descriptor covers more than one emulator 4KB page (e.g. an
+    // early-termination page descriptor at level A with 32 MB coverage), the
+    // real 68030 ATC caches a single entry for the whole range and never
+    // re-walks.  Mirror that by filling every 4KB SoA entry in the covered
+    // logical range — otherwise the guest can clear the page-table root and
+    // still execute correctly on real HW, but our emulator will re-walk the
+    // next 4KB page and (correctly) find the now-invalid root.  Observed in
+    // A/UX 3.0.1 boot where the kernel clears $104000 immediately after
+    // PMOVE TC while relying on ATC residency.
+    uint32_t ps_bits = result.page_size_bits;
+    if (ps_bits > PAGE_SHIFT) {
+        uint32_t coverage = 1u << ps_bits;
+        uint32_t range_start = logical_addr & ~(coverage - 1);
+        uint32_t phys_base = result.physical_addr & ~(coverage - 1);
+        for (uint32_t off = 0; off < coverage; off += (1u << PAGE_SHIFT)) {
+            uint32_t lp = range_start + off;
+            if (lp == emu_page)
+                continue; // already filled above
+            mmu_fill_soa_entry(mmu, lp, phys_base + off, result.supervisor_only, result.write_protected);
+        }
+    }
 
     // If phys_to_host returned NULL (unmapped physical), the SoA entry
     // stays zero.  On real hardware, the physical bus access would fail
