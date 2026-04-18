@@ -105,7 +105,7 @@ function encodePng(png: PNG): Buffer { return PNG.sync.write(png); }
 
 /**
  * Calculate a simple checksum of a PNG image, matching the emulator's
- * `screenshot --checksum` command. This allows fast screen comparison by polling
+ * `screenshot checksum` command. This allows fast screen comparison by polling
  * the checksum instead of transferring full PNG images.
  * 
  * The checksum is calculated on the packed 1-bit framebuffer representation:
@@ -166,7 +166,7 @@ export function calculateScreenChecksum(png: Buffer | PNG, region?: MatchRegion)
  * @param region Optional region bounds (top, left, bottom, right)
  */
 export async function getScreenChecksum(page: Page, region?: MatchRegion): Promise<number> {
-	let cmd = 'screenshot --checksum';
+	let cmd = 'screenshot checksum';
 	if (region) {
 		cmd += ` ${region.top} ${region.left} ${region.bottom} ${region.right}`;
 	}

@@ -24,6 +24,7 @@
 #include <errno.h>
 #include <getopt.h>
 #include <netinet/in.h>
+#include <poll.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -140,6 +141,7 @@ static void print_usage(const char *program) {
     printf("  --kill          Kill existing daemon on same port before starting\n");
     printf("  --script-stdin  Read script commands from stdin instead of a file\n");
     printf("  --var NAME=VAL  Set a shell variable (can be repeated)\n");
+    printf("  --no-prompt     Disable the prompt status line for all connections\n");
     printf("\n");
     printf("Examples:\n");
     printf("  %s rom=plus.rom\n", program);
@@ -188,6 +190,9 @@ static uint64_t cmd_headless_checkpoint(int argc, char *argv[]) {
 // Forward declaration for run_script_file
 static int run_script_file(const char *filename);
 
+// Forward decl — used by cmd_run_screenshots below
+static void pump_scheduler_with_heartbeat(void);
+
 // Script command — execute a script file inline (IMP-802)
 static uint64_t cmd_script(int argc, char *argv[]) {
     if (argc < 2) {
@@ -195,6 +200,44 @@ static uint64_t cmd_script(int argc, char *argv[]) {
         return (uint64_t)-1;
     }
     return (uint64_t)run_script_file(argv[1]);
+}
+
+// run-screenshots N <prefix> <count>
+//   Run <count> instructions total, taking a screenshot every N instructions
+//   into files named <prefix>-<step>M.png (step is the cumulative instruction
+//   count in millions, rounded to the nearest million).  Matches the naming
+//   convention used under tests/integration/se30-aux-3/ (phase1-35M.png ...).
+//   <count> is required so the run is bounded.
+static uint64_t cmd_run_screenshots(int argc, char *argv[]) {
+    if (argc < 4) {
+        printf("Usage: run-screenshots <per-step> <prefix> <total>\n");
+        printf("  Example: run-screenshots 35000000 phase 595000000\n");
+        return (uint64_t)-1;
+    }
+    uint64_t step = strtoull(argv[1], NULL, 0);
+    const char *prefix = argv[2];
+    uint64_t total = strtoull(argv[3], NULL, 0);
+    if (step == 0 || total == 0 || step > total) {
+        printf("run-screenshots: invalid per-step or total\n");
+        return (uint64_t)-1;
+    }
+    int phase = 1;
+    for (uint64_t done = 0; done < total && !quit_requested; done += step) {
+        uint64_t remaining = total - done;
+        uint64_t this_step = (remaining < step) ? remaining : step;
+        char cmd[64];
+        snprintf(cmd, sizeof(cmd), "run %llu", (unsigned long long)this_step);
+        shell_dispatch(cmd);
+        pump_scheduler_with_heartbeat();
+        if (quit_requested)
+            break;
+        uint64_t millions = (done + this_step) / 1000000;
+        char path[512];
+        snprintf(path, sizeof(path), "%s%d-%lluM.png", prefix, phase++, (unsigned long long)millions);
+        snprintf(cmd, sizeof(cmd), "screenshot save %s", path);
+        shell_dispatch(cmd);
+    }
+    return 0;
 }
 
 // ============================================================================
@@ -269,9 +312,37 @@ static int daemon_create_listener(int port) {
     return fd;
 }
 
+// Check if the current daemon client has disconnected or sent new data.
+// Returns: 0 = still alive, nothing pending
+//          1 = new data pending (new command issued — e.g. "stop")
+//         -1 = client disconnected
+static int daemon_client_poll(int client_fd) {
+    if (client_fd < 0)
+        return 0;
+    struct pollfd pfd = {.fd = client_fd, .events = POLLIN, .revents = 0};
+    if (poll(&pfd, 1, 0) <= 0)
+        return 0;
+    if (pfd.revents & (POLLHUP | POLLERR | POLLNVAL))
+        return -1;
+    if (pfd.revents & POLLIN) {
+        // Peek without consuming — if it's EOF (recv returns 0), client closed
+        char peek;
+        ssize_t n = recv(client_fd, &peek, 1, MSG_PEEK | MSG_DONTWAIT);
+        if (n == 0)
+            return -1;
+        if (n > 0)
+            return 1;
+    }
+    return 0;
+}
+
 // Pump the scheduler until it stops, emitting periodic heartbeat lines (IMP-105).
 // In daemon mode the heartbeat prevents nc -w timeouts; in script/stdin modes it
 // lets callers follow progress. Emits once per second with instruction count.
+// Also: if the daemon client disconnects mid-run, stop the scheduler — a dead
+// client has no way to see the result, and letting it run billions more
+// instructions is wasteful.  If the client sends any data mid-run (e.g. a
+// "stop" command), stop immediately so the next dispatch reads it.
 static void pump_scheduler_with_heartbeat(void) {
     scheduler_t *sched = system_scheduler();
     double last_heartbeat = host_time();
@@ -289,6 +360,23 @@ static void pump_scheduler_with_heartbeat(void) {
                    (unsigned long long)(current - start_instr));
             fflush(stdout);
             last_heartbeat = now;
+        }
+
+        // Daemon mode: check if the client disconnected or sent new data
+        if (g_daemon_mode && g_client_fd >= 0) {
+            int s = daemon_client_poll(g_client_fd);
+            if (s < 0) {
+                // Client gone — cancel the run rather than execute billions more
+                fprintf(stderr, "# client disconnected, stopping run\n");
+                scheduler_stop(sched);
+                break;
+            }
+            if (s > 0) {
+                // New data arrived (likely "stop") — break out so the caller
+                // reads and dispatches it.  We don't process the data here.
+                scheduler_stop(sched);
+                break;
+            }
         }
     }
 }
@@ -590,6 +678,7 @@ int main(int argc, char *argv[]) {
     int quiet = 0;
     int script_stdin = 0;
     int kill_daemon = 0;
+    int no_prompt = 0;
     const char *var_defs[64] = {NULL}; // --var NAME=VALUE definitions
     int var_count = 0;
 
@@ -621,6 +710,11 @@ int main(int argc, char *argv[]) {
 
         if (strcmp(arg, "--kill") == 0) {
             kill_daemon = 1;
+            continue;
+        }
+
+        if (strcmp(arg, "--no-prompt") == 0) {
+            no_prompt = 1;
             continue;
         }
 
@@ -783,9 +877,15 @@ int main(int argc, char *argv[]) {
     // Register headless-specific commands
     register_cmd("quit", "General", "quit — exit the emulator", cmd_quit);
     register_cmd("script", "General", "script <path> — execute a script file", cmd_script);
+    register_cmd("run-screenshots", "Scheduler",
+                 "run-screenshots <per-step> <prefix> <total> — run taking periodic screenshots", cmd_run_screenshots);
     register_cmd("checkpoint", "Checkpointing", "checkpoint --save <path> | --load [<path>]", cmd_headless_checkpoint);
 
     setup_init();
+
+    // Apply --no-prompt default so every client connection inherits it
+    if (no_prompt)
+        debug_set_prompt_default(0);
 
     // Set pending RAM override before machine creation (if specified)
     if (ram_kb > 0)

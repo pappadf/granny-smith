@@ -23,6 +23,17 @@ typedef struct breakpoint breakpoint_t;
 struct logpoint;
 typedef struct logpoint logpoint_t;
 
+// Logpoint kind.  PC logpoints fire when the CPU executes at an address range
+// (cheap; checked in the debug step hook).  Memory logpoints fire on reads or
+// writes to a physical/logical address range (forces the page through the
+// memory slow path).
+enum logpoint_kind {
+    LP_KIND_PC = 0, // fire on PC match
+    LP_KIND_WRITE = 1, // fire on memory write
+    LP_KIND_READ = 2, // fire on memory read
+    LP_KIND_RW = 3, // fire on read or write
+};
+
 struct config;
 typedef struct config config_t;
 
@@ -101,7 +112,33 @@ bool debug_active(debug_t *debug);
 // Check if prompt/status line is enabled (IMP-308)
 int debug_prompt_enabled(void);
 
+// Set the default for prompt (used by --no-prompt CLI flag so that every
+// subsequent shell connection inherits the setting without having to send
+// "prompt off" first).
+void debug_set_prompt_default(int enabled);
+
 // Check and auto-delete temporary breakpoints (IMP-601)
 void debug_check_tbreak(debug_t *debug, uint32_t pc);
+
+// === Exception trace ring ===
+// Records every CPU bus error / exception as a ring buffer entry.  The
+// bus-error code paths in cpu_internal.h call exc_trace_record().  Enable
+// streaming with `log exceptions 1`, dump the ring with `info exceptions`.
+typedef struct exc_trace_entry {
+    uint64_t ts; // CPU instruction count at the exception
+    uint32_t faulting_pc; // cpu->instruction_pc when the fault occurred
+    uint32_t saved_pc; // PC stacked (differs from faulting_pc on retry vs skip)
+    uint32_t fault_addr; // faulting address written to stack frame
+    uint32_t vbr;
+    uint32_t vector; // exception vector (0x008 = bus error, etc.)
+    uint16_t sr;
+    uint16_t format_frame; // 0xA/0xB/0x0/0x2
+    uint8_t rw; // 1=read, 0=write
+    uint8_t double_fault_kind; // 0 = none, 1 = retry double-fault detected
+} exc_trace_entry_t;
+
+// Record one exception event (called from cpu_internal.h exception paths)
+void exc_trace_record(uint32_t vector, uint32_t faulting_pc, uint32_t saved_pc, uint32_t fault_addr, uint32_t rw,
+                      uint32_t vbr, uint16_t sr, uint16_t format_frame, int double_fault_kind);
 
 #endif // DEBUG_H

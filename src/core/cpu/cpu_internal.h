@@ -11,6 +11,7 @@
 #define CPU_INTERNAL_H
 
 #include "cpu.h"
+#include "debug.h"
 #include "memory.h"
 #include "mmu.h"
 
@@ -605,6 +606,7 @@ static __attribute__((noinline, cold)) void exception_bus_error_retry(cpu_t *res
         g_bus_error_pending = 0;
         if (g_bus_error_instr_ptr)
             *g_bus_error_instr_ptr = 0;
+        exc_trace_record(0x008, faulting_pc, saved_pc, fault_addr, rw, cpu->vbr, saved_sr, 0xB, 1);
         return;
     }
 
@@ -616,10 +618,12 @@ static __attribute__((noinline, cold)) void exception_bus_error_retry(cpu_t *res
         g_bus_error_pending = 0;
         if (g_bus_error_instr_ptr)
             *g_bus_error_instr_ptr = 0;
+        exc_trace_record(0x008, faulting_pc, saved_pc, fault_addr, rw, cpu->vbr, saved_sr, 0xB, 2);
         return;
     }
 
     cpu->trace = 0;
+    exc_trace_record(0x008, faulting_pc, saved_pc, fault_addr, rw, cpu->vbr, saved_sr, 0xB, 0);
 }
 
 // Raise a 68030 bus error with Format $A stack frame (short bus cycle fault).
@@ -639,6 +643,7 @@ static __attribute__((noinline, cold)) void exception_bus_error(cpu_t *restrict 
         g_bus_error_pending = 0;
         if (g_bus_error_instr_ptr)
             *g_bus_error_instr_ptr = 0;
+        exc_trace_record(0x008, faulting_pc, cpu->pc, fault_addr, rw, cpu->vbr, cpu_get_sr(cpu), 0xB, 1);
         return;
     }
     cpu->last_bus_error_pc = faulting_pc;
@@ -684,6 +689,8 @@ static __attribute__((noinline, cold)) void exception_bus_error(cpu_t *restrict 
     // causes bus errors in a loop (e.g., ROM RAM sizing probes).
     if (saved_pc != faulting_pc)
         cpu->last_bus_error_pc = 0;
+
+    exc_trace_record(0x008, faulting_pc, saved_pc, fault_addr, rw, cpu->vbr, saved_sr, 0xB, 0);
 }
 
 // Check if a pending interrupt should be serviced

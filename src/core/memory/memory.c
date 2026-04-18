@@ -61,6 +61,11 @@ uint32_t g_io_phantom_instructions = 0; // phantom instructions consumed this sp
 uint32_t g_io_cpi = 0; // current CPI for penalty conversion (0 = disabled)
 uint32_t *g_sprint_burndown_ptr = NULL; // points to scheduler's sprint_burndown during sprint
 
+// Memory logpoint support: non-zero entries force the page through the slow
+// path even when the underlying page is plain RAM/ROM.  See memory.h.
+uint8_t *g_mem_logpoint_page_count = NULL;
+memory_logpoint_hook_t g_mem_logpoint_hook = NULL;
+
 // ============================================================================
 // Type Definitions
 // ============================================================================
@@ -119,7 +124,16 @@ typedef struct memory {
 
 // Slow path for 8-bit reads: device I/O, MMU TLB miss, or unmapped
 uint8_t memory_read_uint8_slow(uint32_t addr) {
-    page_entry_t *pe = &g_page_table[addr >> PAGE_SHIFT];
+    uint32_t page = addr >> PAGE_SHIFT;
+    page_entry_t *pe = &g_page_table[page];
+    // Memory logpoint: page is forced to slow path but backed by RAM/ROM.
+    // Read directly from host_base, then notify the logpoint hook.
+    if (g_mem_logpoint_page_count && g_mem_logpoint_page_count[page] && pe->host_base) {
+        uint8_t v = LOAD_BE8(pe->host_base + (addr & PAGE_MASK));
+        if (g_mem_logpoint_hook)
+            g_mem_logpoint_hook(addr, 1, v, false);
+        return v;
+    }
     if (pe->dev)
         return pe->dev->read_uint8(pe->dev_context, addr - pe->base_addr);
     // MMU TLB miss: try to resolve via table walk and retry
@@ -128,7 +142,15 @@ uint8_t memory_read_uint8_slow(uint32_t addr) {
             uintptr_t base = g_active_read[addr >> PAGE_SHIFT];
             if (base != 0)
                 return LOAD_BE8((uint8_t *)(base + addr));
-            // SoA still 0: unmapped physical but no fault (e.g. TT-matched pseudo-slot)
+            // SoA still 0: either unmapped physical (no fault, e.g. TT-matched
+            // pseudo-slot) or a logpoint page where fill was suppressed.  Fall
+            // through to the logpoint check / $FF return below.
+            if (g_mem_logpoint_page_count && g_mem_logpoint_page_count[page] && pe->host_base) {
+                uint8_t v = LOAD_BE8(pe->host_base + (addr & PAGE_MASK));
+                if (g_mem_logpoint_hook)
+                    g_mem_logpoint_hook(addr, 1, v, false);
+                return v;
+            }
         } else {
             // MMU fault (invalid descriptor, unmapped physical, permission, etc.)
             if (!g_bus_error_pending) {
@@ -149,7 +171,17 @@ uint8_t memory_read_uint8_slow(uint32_t addr) {
 
 // Slow path for 16-bit reads: cross-page or device I/O
 uint16_t memory_read_uint16_slow(uint32_t addr) {
-    page_entry_t *pe = &g_page_table[addr >> PAGE_SHIFT];
+    uint32_t page = addr >> PAGE_SHIFT;
+    page_entry_t *pe = &g_page_table[page];
+
+    // Memory logpoint: forced slow path on RAM/ROM page
+    if (g_mem_logpoint_page_count && g_mem_logpoint_page_count[page] && pe->host_base &&
+        (addr & PAGE_MASK) <= MEM_PAGE_SIZE - 2) {
+        uint16_t v = LOAD_BE16(pe->host_base + (addr & PAGE_MASK));
+        if (g_mem_logpoint_hook)
+            g_mem_logpoint_hook(addr, 2, v, false);
+        return v;
+    }
 
     // Device I/O (single page, not crossing boundary)
     if (pe->dev && (addr & PAGE_MASK) <= MEM_PAGE_SIZE - 2)
@@ -163,7 +195,17 @@ uint16_t memory_read_uint16_slow(uint32_t addr) {
 
 // Slow path for 32-bit reads: cross-page or device I/O
 uint32_t memory_read_uint32_slow(uint32_t addr) {
-    page_entry_t *pe = &g_page_table[addr >> PAGE_SHIFT];
+    uint32_t page = addr >> PAGE_SHIFT;
+    page_entry_t *pe = &g_page_table[page];
+
+    // Memory logpoint: forced slow path on RAM/ROM page
+    if (g_mem_logpoint_page_count && g_mem_logpoint_page_count[page] && pe->host_base &&
+        (addr & PAGE_MASK) <= MEM_PAGE_SIZE - 4) {
+        uint32_t v = LOAD_BE32(pe->host_base + (addr & PAGE_MASK));
+        if (g_mem_logpoint_hook)
+            g_mem_logpoint_hook(addr, 4, v, false);
+        return v;
+    }
 
     // Device I/O (single page, not crossing boundary)
     if (pe->dev && (addr & PAGE_MASK) <= MEM_PAGE_SIZE - 4)
@@ -177,7 +219,15 @@ uint32_t memory_read_uint32_slow(uint32_t addr) {
 
 // Slow path for 8-bit writes: device I/O, MMU TLB miss, or unmapped
 void memory_write_uint8_slow(uint32_t addr, uint8_t value) {
-    page_entry_t *pe = &g_page_table[addr >> PAGE_SHIFT];
+    uint32_t page = addr >> PAGE_SHIFT;
+    page_entry_t *pe = &g_page_table[page];
+    // Memory logpoint: forced slow path for RAM write on logged page
+    if (g_mem_logpoint_page_count && g_mem_logpoint_page_count[page] && pe->host_base && pe->writable) {
+        STORE_BE8(pe->host_base + (addr & PAGE_MASK), value);
+        if (g_mem_logpoint_hook)
+            g_mem_logpoint_hook(addr, 1, value, true);
+        return;
+    }
     if (pe->dev) {
         pe->dev->write_uint8(pe->dev_context, addr - pe->base_addr, value);
         return;
@@ -190,7 +240,14 @@ void memory_write_uint8_slow(uint32_t addr, uint8_t value) {
                 STORE_BE8((uint8_t *)(base + addr), value);
                 return;
             }
-            // SoA still 0: unmapped physical but no fault — drop write
+            // SoA still 0: either unmapped or suppressed for logpoint
+            if (g_mem_logpoint_page_count && g_mem_logpoint_page_count[page] && pe->host_base && pe->writable) {
+                STORE_BE8(pe->host_base + (addr & PAGE_MASK), value);
+                if (g_mem_logpoint_hook)
+                    g_mem_logpoint_hook(addr, 1, value, true);
+                return;
+            }
+            // Unmapped physical but no fault — drop write
         } else {
             // MMU fault (invalid descriptor, unmapped physical, permission, etc.)
             if (!g_bus_error_pending) {
@@ -206,7 +263,17 @@ void memory_write_uint8_slow(uint32_t addr, uint8_t value) {
 
 // Slow path for 16-bit writes: cross-page or device I/O
 void memory_write_uint16_slow(uint32_t addr, uint16_t value) {
-    page_entry_t *pe = &g_page_table[addr >> PAGE_SHIFT];
+    uint32_t page = addr >> PAGE_SHIFT;
+    page_entry_t *pe = &g_page_table[page];
+
+    // Memory logpoint: forced slow path for RAM write on logged page
+    if (g_mem_logpoint_page_count && g_mem_logpoint_page_count[page] && pe->host_base && pe->writable &&
+        (addr & PAGE_MASK) <= MEM_PAGE_SIZE - 2) {
+        STORE_BE16(pe->host_base + (addr & PAGE_MASK), value);
+        if (g_mem_logpoint_hook)
+            g_mem_logpoint_hook(addr, 2, value, true);
+        return;
+    }
 
     // Device I/O (single page, not crossing boundary)
     if (pe->dev && (addr & PAGE_MASK) <= MEM_PAGE_SIZE - 2) {
@@ -221,7 +288,17 @@ void memory_write_uint16_slow(uint32_t addr, uint16_t value) {
 
 // Slow path for 32-bit writes: cross-page or device I/O
 void memory_write_uint32_slow(uint32_t addr, uint32_t value) {
-    page_entry_t *pe = &g_page_table[addr >> PAGE_SHIFT];
+    uint32_t page = addr >> PAGE_SHIFT;
+    page_entry_t *pe = &g_page_table[page];
+
+    // Memory logpoint: forced slow path for RAM write on logged page
+    if (g_mem_logpoint_page_count && g_mem_logpoint_page_count[page] && pe->host_base && pe->writable &&
+        (addr & PAGE_MASK) <= MEM_PAGE_SIZE - 4) {
+        STORE_BE32(pe->host_base + (addr & PAGE_MASK), value);
+        if (g_mem_logpoint_hook)
+            g_mem_logpoint_hook(addr, 4, value, true);
+        return;
+    }
 
     // Device I/O (single page, not crossing boundary)
     if (pe->dev && (addr & PAGE_MASK) <= MEM_PAGE_SIZE - 4) {
@@ -263,6 +340,68 @@ void memory_write(unsigned int size, uint32_t addr, uint32_t value) {
         break;
     default:
         assert(0);
+    }
+}
+
+// ============================================================================
+// Memory Logpoint Helpers
+// ============================================================================
+
+// Rebuild SoA entries for a single page from the cold-path page_entry_t.
+// Called when a page's logpoint refcount returns to zero, so the fast path
+// can resume direct access.  For MMU-mapped pages, the TLB fill will happen
+// lazily on the next access (we simply leave the SoA entry zero).
+static void rebuild_soa_page(uint32_t p) {
+    if ((int)p >= g_page_count)
+        return;
+    page_entry_t *pe = &g_page_table[p];
+    // MMU-mapped pages rebuild themselves via mmu_handle_fault on next access.
+    // Only plain RAM/ROM pages (host_base != NULL, no MMU) rebuild here when
+    // the MMU is disabled — otherwise the MMU owns the SoA entry.
+    if (g_mmu && g_mmu->enabled)
+        return; // let the TLB re-fill via the slow path
+    if (!pe->host_base)
+        return; // device/unmapped page: leave SoA at 0
+    uint32_t guest_base = p << PAGE_SHIFT;
+    uintptr_t adjusted = (uintptr_t)pe->host_base - guest_base;
+    if (g_supervisor_read)
+        g_supervisor_read[p] = adjusted;
+    if (g_user_read)
+        g_user_read[p] = adjusted;
+    if (pe->writable) {
+        if (g_supervisor_write)
+            g_supervisor_write[p] = adjusted;
+        if (g_user_write)
+            g_user_write[p] = adjusted;
+    }
+}
+
+void memory_logpoint_install(uint32_t start_page, uint32_t end_page) {
+    if (!g_mem_logpoint_page_count)
+        return;
+    for (uint32_t p = start_page; p <= end_page && (int)p < g_page_count; p++) {
+        if (g_mem_logpoint_page_count[p] < 0xFF)
+            g_mem_logpoint_page_count[p]++;
+        // Zero the SoA entries to force slow path for this page
+        if (g_supervisor_read)
+            g_supervisor_read[p] = 0;
+        if (g_supervisor_write)
+            g_supervisor_write[p] = 0;
+        if (g_user_read)
+            g_user_read[p] = 0;
+        if (g_user_write)
+            g_user_write[p] = 0;
+    }
+}
+
+void memory_logpoint_uninstall(uint32_t start_page, uint32_t end_page) {
+    if (!g_mem_logpoint_page_count)
+        return;
+    for (uint32_t p = start_page; p <= end_page && (int)p < g_page_count; p++) {
+        if (g_mem_logpoint_page_count[p])
+            g_mem_logpoint_page_count[p]--;
+        if (g_mem_logpoint_page_count[p] == 0)
+            rebuild_soa_page(p);
     }
 }
 
@@ -770,6 +909,10 @@ memory_map_t *memory_map_init(int address_bits, uint32_t ram_size, uint32_t rom_
     g_user_write = (uintptr_t *)calloc(g_page_count, sizeof(uintptr_t));
     assert(g_supervisor_read && g_supervisor_write && g_user_read && g_user_write);
 
+    // Memory logpoint reference-count array (zero = no logpoint on that page)
+    g_mem_logpoint_page_count = (uint8_t *)calloc(g_page_count, sizeof(uint8_t));
+    assert(g_mem_logpoint_page_count);
+
     // Default active pointers: supervisor mode
     g_active_read = g_supervisor_read;
     g_active_write = g_supervisor_write;
@@ -832,6 +975,10 @@ void memory_map_delete(memory_map_t *mem) {
             g_user_write = NULL;
             g_active_read = NULL;
             g_active_write = NULL;
+
+            // Free logpoint page-count array
+            free(g_mem_logpoint_page_count);
+            g_mem_logpoint_page_count = NULL;
         }
         free(mem->page_table);
         mem->page_table = NULL;

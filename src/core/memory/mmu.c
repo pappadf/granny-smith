@@ -299,6 +299,15 @@ static void mmu_fill_soa_entry(mmu_state_t *mmu, uint32_t logical_page, uint32_t
     if ((int)page_index >= g_page_count)
         return;
 
+    // Memory logpoint: if this logical page has a logpoint installed, the SoA
+    // must stay zero so every access routes through the slow path where the
+    // logpoint check runs.  The next access will re-enter this code via
+    // mmu_handle_fault, but the entry will again be suppressed — at the
+    // steady-state cost of one extra call per access, which is the whole
+    // point of a watchpoint.
+    if (g_mem_logpoint_page_count && g_mem_logpoint_page_count[page_index])
+        return;
+
     // Compute adjusted base: host_ptr points to start of physical page,
     // but we want (uintptr_t)(base + logical_addr) to yield the host address.
     uintptr_t adjusted = (uintptr_t)host_ptr - logical_page;
