@@ -24,7 +24,7 @@ TEST_ROM := roms/SE30.rom
 # $(TEST_TMPDIR) — any other make variable will be passed through to the
 # shell untouched and will resolve to empty.  Keep paths fully inlined, and
 # on a single line (extractor is `grep -m1 '^TEST_SETUP'`).
-TEST_SETUP := cp "$(TEST_DATA)/aux/aux_3.0.1/Installation Boot Disk SE.image" "$(TEST_TMPDIR)/boot.image" && ln -s "$(TEST_DATA)/aux/aux_3.0.1/APPLE_AUX_3-0-1_RETAIL.iso" "$(TEST_TMPDIR)/install.iso" && cp "$(TEST_DATA)/../../local/downloaded.img" "$(TEST_TMPDIR)/hd.img"
+TEST_SETUP := cp "$(TEST_DATA)/aux/aux_3.0.1/Installation Boot Disk SE.image" "$(TEST_TMPDIR)/boot.image" && ln -s "$(TEST_DATA)/aux/aux_3.0.1/APPLE_AUX_3-0-1_RETAIL.iso" "$(TEST_TMPDIR)/install.iso" && cp "$(TEST_DATA)/aux/hd-with-aux-partition.img" "$(TEST_TMPDIR)/hd.img"
 
 # 16 MB RAM required for A/UX boot.
 TEST_ARGS := ram=16384 fd=$(TEST_TMPDIR)/boot.image hd=$(TEST_TMPDIR)/hd.img cdrom=$(TEST_TMPDIR)/install.iso
