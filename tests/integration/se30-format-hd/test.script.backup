@@ -9,7 +9,7 @@
 #   - Double-click: down 1.6M up 1.6M down 1.6M up — total ~300ms
 
 # Create a blank 80 MB hard disk image (exact HD80SC size, zero-filled)
-hd create ${WORK_DIR}/blank80.img HD20SC
+hd create ${WORK_DIR}/blank80.img HD160SC
 
 # Attach the blank image as SCSI ID 6 (default)
 hd attach ${WORK_DIR}/blank80.img
@@ -76,7 +76,38 @@ run 1000000
 mouse-button up
 run 50000000
 
-# quit app
+# Click "partition"
+set-mouse 200 175 --global
+run 5000000
+mouse-button down
+run 1000000
+mouse-button up
+run 5000000
+
+# Click partition choice
+set-mouse 200 160 --global
+run 5000000
+mouse-button down
+run 1000000
+mouse-button up
+run 5000000
+
+# click ok
+set-mouse 390 235 --global
+run 5000000
+mouse-button down
+run 1000000
+mouse-button up
+run 5000000
+
+# click ok (extra verification)
+set-mouse 310 175 --global
+run 5000000
+mouse-button down
+run 1000000
+mouse-button up
+run 50000000
+
 set-mouse 167 230 --global
 run 5000000
 mouse-button down
@@ -84,7 +115,6 @@ run 1000000
 mouse-button up
 run 5000000
 
-# Shutdown computer
 set-mouse 250 10 --global
 run 5000000
 mouse-button down
@@ -94,7 +124,7 @@ run 5000000
 mouse-button up
 run 50000000
 
-screenshot --match shutdown.png
+screenshot foo.png
 
 # Download (export) the formatted HD image to a flat file
 hd download ${WORK_DIR}/blank80.img ${WORK_DIR}/downloaded.img
