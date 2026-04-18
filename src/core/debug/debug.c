@@ -3082,7 +3082,7 @@ static void info_mmu_walk_impl(struct cmd_context *ctx, uint32_t logical_addr) {
     }
 
     bool long_desc = (root_dt == DESC_DT_TABLE8);
-    uint32_t table_addr = root_lower & 0xFFFFFFFCu;
+    uint32_t table_addr = root_lower & 0xFFFFFFF0u;
     uint32_t bit_pos = 32 - is;
     static const char *level_names[] = {"A", "B", "C", "D"};
 
@@ -3124,7 +3124,10 @@ static void info_mmu_walk_impl(struct cmd_context *ctx, uint32_t logical_addr) {
             return;
         }
         // Table descriptor (DT=TABLE4 or TABLE8): descend to next level.
-        uint32_t next = desc_lo & 0xFFFFFFFCu;
+        // Short-format table descriptors carry WP (bit 2) and U (bit 3) in
+        // the low nibble, so strip bits 3:0 (mask $FFFFFFF0) rather than
+        // bits 1:0 ($FFFFFFFC) which would mistake WP for an address bit.
+        uint32_t next = desc_lo & 0xFFFFFFF0u;
         cmd_printf(ctx, "  next_table=$%08X\n", next);
         table_addr = next;
         long_desc = (dt == DESC_DT_TABLE8);
