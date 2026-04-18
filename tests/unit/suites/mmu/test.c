@@ -208,6 +208,66 @@ TEST(test_two_level_translation) {
 }
 
 // ============================================================================
+// Test: Short-format table descriptor with WP bit set
+// ============================================================================
+// Regression test for a mask-off-by-one bug: short-format table descriptors
+// carry WP in bit 2 and U in bit 3.  If the table-address mask is 0xFFFFFFFC
+// (masking only bits 1:0 for DT) instead of 0xFFFFFFF0, a descriptor with
+// WP=1 will shift the table base by 4 bytes — one entry — silently
+// producing wrong physical addresses for every lookup through that table.
+// Observed in the wild: A/UX 3.0.1 retail kernel's level-B descriptor has
+// WP=1, causing all level-C lookups to pick up entry N+1 instead of N.
+
+TEST(test_short_table_descriptor_with_wp_bit) {
+    memory_map_t *mem = memory_map_init(32, 0x400000, 0x040000, NULL);
+    uint8_t *ram = ram_native_pointer(mem, 0);
+    mmu_state_t *mmu = mmu_init(ram, 0x400000, 0x8000000, NULL, 0, 0, 0);
+
+    // Two-level walk with 4KB pages: 8 bits level-A, 12 bits level-B.
+    uint32_t tc = (1u << 31) | (4u << 20) | (8u << 12) | (12u << 8);
+
+    // Level-A table sits at 0x10000; level-B table sits at 0x20000.
+    uint32_t level_a_base = 0x10000;
+    uint32_t level_b_base = 0x20000;
+
+    // CRP points to level-A, short-format table descriptor (DT=2).
+    uint64_t crp = ((uint64_t)DESC_DT_TABLE4 << 32) | level_a_base;
+
+    // Level-A entry 0 points at level-B with WP bit SET (bit 2).  The correct
+    // walk must still compute the table address as level_b_base, not
+    // level_b_base + 4.
+    store_be32(ram + level_a_base, level_b_base | (1u << 2) | DESC_DT_TABLE4);
+
+    // Level-B entry 0: maps logical 0x00000000 -> physical 0x00080000.
+    // Level-B entry 1: maps logical 0x00001000 -> physical 0x00090000.
+    // If the walk picks up the wrong table base (off by 4), it will read
+    // entry 1 instead of entry 0 and resolve 0x00000000 -> 0x00090000.
+    store_be32(ram + level_b_base + 0, 0x00080000 | DESC_DT_PAGE);
+    store_be32(ram + level_b_base + 4, 0x00090000 | DESC_DT_PAGE);
+
+    mmu->tc = tc;
+    mmu->crp = crp;
+    mmu->enabled = true;
+    mmu_invalidate_tlb(mmu);
+
+    // PTEST: logical 0x00000000 must resolve through entry 0, not entry 1.
+    uint16_t mmusr = mmu_test_address(mmu, 0x00000000, false, true);
+    ASSERT_TRUE((mmusr & MMUSR_I) == 0);
+
+    // Use mmu_translate_debug to verify the resolved physical address —
+    // the bug manifests as a 0x10000 jump in the physical address.
+    extern uint32_t mmu_translate_debug(mmu_state_t * m, uint32_t logical);
+    uint32_t phys = mmu_translate_debug(mmu, 0x00000000);
+    ASSERT_EQ_INT(0x00080000, (int)phys);
+
+    // Also confirm entry 1 still resolves correctly (walks to entry 1).
+    phys = mmu_translate_debug(mmu, 0x00001000);
+    ASSERT_EQ_INT(0x00090000, (int)phys);
+
+    cleanup(mem, mmu);
+}
+
+// ============================================================================
 // Test: Bus error on invalid descriptor
 // ============================================================================
 
@@ -433,6 +493,7 @@ int main(void) {
     RUN(test_mmu_init_delete);
     RUN(test_tlb_invalidation);
     RUN(test_two_level_translation);
+    RUN(test_short_table_descriptor_with_wp_bit);
     RUN(test_invalid_descriptor_bus_error);
     RUN(test_transparent_translation);
     RUN(test_write_protection);

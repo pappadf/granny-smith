@@ -206,8 +206,13 @@ static mmu_walk_result_t mmu_table_walk(mmu_state_t *mmu, uint32_t logical_addr,
     // Descriptor size from root DT: 2=short (4 bytes), 3=long (8 bytes)
     bool long_desc = (root_dt == DESC_DT_TABLE8);
 
-    // Table base address from root pointer (lower 32 bits, bits 31:2)
-    uint32_t table_addr = root_lower & 0xFFFFFFFC;
+    // Table base address from root pointer (lower 32 bits, bits 31:4).
+    // 68030 PMMU requires descriptor tables to be 16-byte aligned; bits 3:0
+    // are reserved in the root and carry the WP (bit 2) and U (bit 3) flags
+    // in nested short-format table descriptors.  Masking only bits 1:0 would
+    // pick up WP as an address bit and shift the table base by 4 bytes — one
+    // entry's worth — breaking every subsequent lookup by one index.
+    uint32_t table_addr = root_lower & 0xFFFFFFF0;
 
     // Current bit position in logical address (start after IS bits)
     uint32_t bit_pos = 32 - is;
@@ -270,8 +275,10 @@ static mmu_walk_result_t mmu_table_walk(mmu_state_t *mmu, uint32_t logical_addr,
         }
 
         // Table descriptor (short=DT2, long=DT3) — follow to next level.
-        // Short: table address in same word; Long: table address in lower word.
-        table_addr = desc_lo & 0xFFFFFFFC;
+        // Short: bits 31:4 hold TA; bit 3=U, bit 2=WP, bits 1:0=DT.
+        // Long:  bits 31:4 of the lower word hold TA; bits 3:0 must be zero.
+        // Either way mask with 0xFFFFFFF0 to strip the flag nibble.
+        table_addr = desc_lo & 0xFFFFFFF0;
         long_desc = (dt == DESC_DT_TABLE8);
     }
 
