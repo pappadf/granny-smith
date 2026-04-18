@@ -6,7 +6,7 @@
 run 2000000000
 
 # Verify the screen matches the Finder desktop reference image
-screenshot --match finder.png
+screenshot match finder.png
 
 # Bring up the "About..." window
 set-mouse 25 10 --global
@@ -18,6 +18,6 @@ run 40000000
 mouse-button up
 run 100000000
 
-screenshot --match about.png
+screenshot match about.png
 
 quit

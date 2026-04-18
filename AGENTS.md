@@ -56,6 +56,8 @@ Emulator modules (e.g., scsi, cpu, via, scc, rtc) have `.c`/`.h` files in `src/c
 **Run tests:**
 - Unit tests (CPU): `make -C tests/unit run` (~1–5 min) — uses `third-party/single-step-tests`
 - Integration tests: `make integration-test` (~1–2 min) — builds headless emulator, runs tests in `tests/integration/`
+- Single integration test: `make integration-test-<name>` (e.g., `make integration-test-se30-format-hd`)
+- List available integration tests: `make -C tests/integration list`
 - E2E/UI tests (Playwright): 
   ```bash
   npx --prefix tests/e2e playwright test --config=tests/e2e/playwright.config.ts

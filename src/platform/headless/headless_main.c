@@ -149,7 +149,7 @@ static void print_usage(const char *program) {
     printf("  %s --daemon --port=7000 rom=SE30.rom hd=disk.img\n", program);
 }
 
-// Global script exit code (set by commands like screenshot --match)
+// Global script exit code (set by commands like screenshot match)
 static int g_script_exit_code = 0;
 
 // Quit flag for headless mode - set by quit command
@@ -463,7 +463,7 @@ static int run_script_file(const char *filename) {
         printf("> %s\n", line);
         int result = shell_dispatch(line);
 
-        // Non-zero return code indicates error (e.g., screenshot --match mismatch)
+        // Non-zero return code indicates error (e.g., screenshot match mismatch)
         if (result != 0) {
             g_script_exit_code = result;
         }

@@ -1459,69 +1459,9 @@ static int match_framebuffer_with_png(const uint8_t *fb, const char *filename) {
     return match ? 0 : 1;
 }
 
-// Save the current emulated screen as a PNG file, or compute checksum
-static uint64_t cmd_screenshot(int argc, char *argv[]) {
-    // Check framebuffer availability first
-    const uint8_t *fb = system_framebuffer();
-    if (!fb) {
-        printf("Error: Framebuffer not available.\n");
-        return 0;
-    }
-
-    // Handle --checksum / -c flag with optional region (top left bottom right)
-    if (argc >= 2 && (strcmp(argv[1], "--checksum") == 0 || strcmp(argv[1], "-c") == 0)) {
-        uint32_t checksum;
-        if (argc >= 6) {
-            // Region specified: screenshot --checksum top left bottom right
-            int top = atoi(argv[2]);
-            int left = atoi(argv[3]);
-            int bottom = atoi(argv[4]);
-            int right = atoi(argv[5]);
-            // Validate bounds
-            if (top < 0 || left < 0 || bottom <= top || right <= left || bottom > SCREEN_HEIGHT ||
-                right > SCREEN_WIDTH) {
-                printf("Error: Invalid region bounds (0,0)-(512,342)\n");
-                return 0;
-            }
-            checksum = framebuffer_region_checksum(fb, top, left, bottom, right);
-            printf("Region checksum (%d,%d)-(%d,%d): 0x%08x\n", top, left, bottom, right, checksum);
-        } else {
-            // Full screen checksum
-            checksum = framebuffer_checksum(fb);
-            printf("Screen checksum: 0x%08x\n", checksum);
-        }
-        return checksum;
-    }
-
-    // Handle --match / -m flag to compare screen with reference PNG
-    if (argc >= 3 && (strcmp(argv[1], "--match") == 0 || strcmp(argv[1], "-m") == 0)) {
-        const char *ref_filename = argv[2];
-        int result = match_framebuffer_with_png(fb, ref_filename);
-        if (result < 0) {
-            printf("MATCH FAILED: Error loading reference image.\n");
-            return 2; // Error
-        } else if (result == 0) {
-            printf("MATCH OK: Screen matches '%s'.\n", ref_filename);
-            return 0; // Match
-        } else {
-            printf("MATCH FAILED: Screen does not match '%s'.\n", ref_filename);
-            return 1; // Mismatch
-        }
-    }
-
-    if (argc < 2) {
-        printf("Usage: screenshot <filename.png>\n");
-        printf("       screenshot --checksum|-c [top left bottom right]\n");
-        printf("       screenshot --match|-m <reference.png>\n");
-        printf("  Save the current emulated screen (512x342) as a PNG file,\n");
-        printf("  compute a checksum for fast screen comparison,\n");
-        printf("  or compare screen with a reference PNG file.\n");
-        printf("  Optional region bounds for checksum (default: full screen).\n");
-        return 0;
-    }
-
-    const char *filename = argv[1];
-
+// Save framebuffer as PNG to the given file path
+// Returns 0 on success, -1 on error
+static int save_framebuffer_as_png(const uint8_t *fb, const char *filename) {
     // Initialize CRC table
     init_crc32_table();
 
@@ -1529,7 +1469,7 @@ static uint64_t cmd_screenshot(int argc, char *argv[]) {
     FILE *fp = fopen(filename, "wb");
     if (!fp) {
         printf("Error: Cannot open file '%s' for writing.\n", filename);
-        return 0;
+        return -1;
     }
 
     // PNG signature
@@ -1558,7 +1498,7 @@ static uint64_t cmd_screenshot(int argc, char *argv[]) {
     if (!raw_data) {
         printf("Error: Out of memory.\n");
         fclose(fp);
-        return 0;
+        return -1;
     }
 
     // Convert 1-bit packed framebuffer to RGBA
@@ -1596,7 +1536,7 @@ static uint64_t cmd_screenshot(int argc, char *argv[]) {
         printf("Error: Out of memory.\n");
         free(raw_data);
         fclose(fp);
-        return 0;
+        return -1;
     }
 
     size_t zpos = 0;
@@ -1650,7 +1590,119 @@ static uint64_t cmd_screenshot(int argc, char *argv[]) {
 write_error:
     printf("Error: Failed to write to file '%s'.\n", filename);
     fclose(fp);
-    return 0;
+    return -1;
+}
+
+// Screenshot handler - save, checksum, match, or match-or-save
+static void cmd_screenshot_handler(struct cmd_context *ctx, struct cmd_result *res) {
+    // Check framebuffer availability first
+    const uint8_t *fb = system_framebuffer();
+    if (!fb) {
+        cmd_err(res, "Framebuffer not available");
+        return;
+    }
+
+    const char *subcmd = ctx->subcmd;
+
+    // Default or "save": save screen as PNG file
+    if (subcmd == NULL || strcmp(subcmd, "save") == 0) {
+        if (!ctx->args[0].present) {
+            cmd_err(res, "usage: screenshot [save] <filename.png>");
+            return;
+        }
+        const char *filename = ctx->args[0].as_str;
+        if (save_framebuffer_as_png(fb, filename) < 0) {
+            cmd_err(res, "Failed to save screenshot to '%s'", filename);
+            return;
+        }
+        cmd_ok(res);
+        return;
+    }
+
+    // "checksum": compute screen checksum with optional region
+    if (strcmp(subcmd, "checksum") == 0) {
+        uint32_t checksum;
+        if (ctx->args[0].present && ctx->args[1].present && ctx->args[2].present && ctx->args[3].present) {
+            // Region specified: screenshot checksum top left bottom right
+            int top = (int)ctx->args[0].as_int;
+            int left = (int)ctx->args[1].as_int;
+            int bottom = (int)ctx->args[2].as_int;
+            int right = (int)ctx->args[3].as_int;
+            // Validate bounds
+            if (top < 0 || left < 0 || bottom <= top || right <= left || bottom > SCREEN_HEIGHT ||
+                right > SCREEN_WIDTH) {
+                cmd_err(res, "Invalid region bounds (0,0)-(%d,%d)", SCREEN_WIDTH, SCREEN_HEIGHT);
+                return;
+            }
+            checksum = framebuffer_region_checksum(fb, top, left, bottom, right);
+            cmd_printf(ctx, "Region checksum (%d,%d)-(%d,%d): 0x%08x\n", top, left, bottom, right, checksum);
+        } else {
+            // Full screen checksum
+            checksum = framebuffer_checksum(fb);
+            cmd_printf(ctx, "Screen checksum: 0x%08x\n", checksum);
+        }
+        cmd_int(res, checksum);
+        return;
+    }
+
+    // "match": compare screen with reference PNG
+    if (strcmp(subcmd, "match") == 0) {
+        if (!ctx->args[0].present) {
+            cmd_err(res, "usage: screenshot match <reference.png>");
+            return;
+        }
+        const char *ref_filename = ctx->args[0].as_str;
+        int result = match_framebuffer_with_png(fb, ref_filename);
+        if (result < 0) {
+            cmd_printf(ctx, "MATCH FAILED: Error loading reference image.\n");
+            cmd_int(res, 2);
+            return;
+        } else if (result == 0) {
+            cmd_printf(ctx, "MATCH OK: Screen matches '%s'.\n", ref_filename);
+            cmd_int(res, 0);
+            return;
+        } else {
+            cmd_printf(ctx, "MATCH FAILED: Screen does not match '%s'.\n", ref_filename);
+            cmd_int(res, 1);
+            return;
+        }
+    }
+
+    // "match-or-save": compare with reference, save actual on mismatch
+    if (strcmp(subcmd, "match-or-save") == 0) {
+        if (!ctx->args[0].present) {
+            cmd_err(res, "usage: screenshot match-or-save <reference.png> [actual.png]");
+            return;
+        }
+        const char *ref_filename = ctx->args[0].as_str;
+        int result = match_framebuffer_with_png(fb, ref_filename);
+        if (result < 0) {
+            cmd_printf(ctx, "MATCH FAILED: Error loading reference image.\n");
+            // Save actual screenshot if output path provided
+            if (ctx->args[1].present) {
+                save_framebuffer_as_png(fb, ctx->args[1].as_str);
+            }
+            cmd_int(res, 2);
+            return;
+        } else if (result == 0) {
+            cmd_printf(ctx, "MATCH OK: Screen matches '%s'.\n", ref_filename);
+            cmd_int(res, 0);
+            return;
+        } else {
+            // Mismatch: save actual screenshot if output path provided
+            if (ctx->args[1].present) {
+                save_framebuffer_as_png(fb, ctx->args[1].as_str);
+                cmd_printf(ctx, "MATCH FAILED: Screen does not match '%s'. Saved actual to '%s'.\n", ref_filename,
+                           ctx->args[1].as_str);
+            } else {
+                cmd_printf(ctx, "MATCH FAILED: Screen does not match '%s'.\n", ref_filename);
+            }
+            cmd_int(res, 1);
+            return;
+        }
+    }
+
+    cmd_err(res, "unknown subcommand: %s", subcmd);
 }
 
 // Address display mode command: addrmode [auto|expanded|collapsed]
@@ -2726,11 +2778,16 @@ static const struct arg_spec screenshot_checksum_args[] = {
 static const struct arg_spec screenshot_match_args[] = {
     {"reference", ARG_PATH, "reference PNG file"},
 };
+static const struct arg_spec screenshot_match_or_save_args[] = {
+    {"reference", ARG_PATH,                "reference PNG file"     },
+    {"actual",    ARG_PATH | ARG_OPTIONAL, "save actual on mismatch"},
+};
 static const struct subcmd_spec screenshot_subcmds[] = {
-    {NULL,       NULL, screenshot_save_args,     1, "save screen as PNG"        },
-    {"save",     NULL, screenshot_save_args,     1, "save screen as PNG"        },
-    {"checksum", NULL, screenshot_checksum_args, 4, "compute screen checksum"   },
-    {"match",    NULL, screenshot_match_args,    1, "compare with reference PNG"},
+    {NULL,            NULL, screenshot_save_args,          1, "save screen as PNG"                      },
+    {"save",          NULL, screenshot_save_args,          1, "save screen as PNG"                      },
+    {"checksum",      NULL, screenshot_checksum_args,      4, "compute screen checksum"                 },
+    {"match",         NULL, screenshot_match_args,         1, "compare with reference PNG"              },
+    {"match-or-save", NULL, screenshot_match_or_save_args, 2, "compare with reference, save on mismatch"},
 };
 
 // --- trace ---
@@ -2935,9 +2992,9 @@ debug_t *debug_init(void) {
         .name = "screenshot",
         .category = "Display",
         .synopsis = "Save screen snapshot or compute checksum",
-        .simple_fn = cmd_screenshot,
+        .fn = cmd_screenshot_handler,
         .subcmds = screenshot_subcmds,
-        .n_subcmds = 4,
+        .n_subcmds = 5,
     });
 
     debug_mac_init();

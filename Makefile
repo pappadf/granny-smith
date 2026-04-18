@@ -296,6 +296,10 @@ unit-test:
 integration-test:
 	$(MAKE) -C tests/integration test
 
+# Run a single integration test by name
+integration-test-%:
+	$(MAKE) -C tests/integration test-$*
+
 # Run integration tests under Valgrind memcheck
 integration-test-valgrind:
 	$(MAKE) -C tests/integration test-valgrind
@@ -332,6 +336,7 @@ help:
 	@echo "  test                       Run unit + integration tests"
 	@echo "  unit-test                  Build and run all unit tests"
 	@echo "  integration-test           Build headless; run integration tests"
+	@echo "  integration-test-<name>    Run single integration test (e.g. se30-format-hd)"
 	@echo "  integration-test-valgrind  Integration tests under Valgrind"
 	@echo "  e2e-test                   Run Playwright end-to-end tests"
 	@echo ""

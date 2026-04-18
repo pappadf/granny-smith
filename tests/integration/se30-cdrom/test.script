@@ -10,7 +10,7 @@ run 2000000000
 # The CD-ROM is on the bus but System 7.0.1 floppy does not include
 # the Apple CD-ROM extension, so no disc icon appears — this proves
 # the CD-ROM device does not break normal boot.
-screenshot --match finder.png
+screenshot match finder.png
 
 # Verify cdrom info reports the attached disc
 cdrom info 3
@@ -25,6 +25,6 @@ cdrom info 3
 run 100000000
 
 # Verify the desktop is still stable after CD-ROM eject
-screenshot --match finder.png
+screenshot match finder.png
 
 quit

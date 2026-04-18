@@ -4,7 +4,7 @@
 
 # Boot to MacTest UI
 run 50000000
-screenshot --match mactest-booted.png
+screenshot match mactest-booted.png
 
 # Deselect short RAM test: drag from (100, 10) to (100, 90)
 set-mouse 100 10
@@ -58,14 +58,14 @@ mouse-button up
 
 # Logic test completes within ~1M hw instructions of clicking START
 run 2000000
-screenshot --match mactest-logic.png
+screenshot match mactest-logic.png
 
 # Floppy test completes within ~7M hw instructions of logic match
 run 8000000
-screenshot --match mactest-floppy.png
+screenshot match mactest-floppy.png
 
 # Success screen within ~24M hw instructions of floppy match
 run 25000000
-screenshot --match mactest-success.png
+screenshot match mactest-success.png
 
 quit

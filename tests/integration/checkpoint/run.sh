@@ -54,7 +54,7 @@ checkpoint --load $CHECKPOINT_FILE
 # Run 50M more instructions (should reach desktop just like step 1 would)
 run 50000000
 # Save screenshot for debugging, then verify
-screenshot --match desktop.png
+screenshot match desktop.png
 quit
 INNER_EOF
 

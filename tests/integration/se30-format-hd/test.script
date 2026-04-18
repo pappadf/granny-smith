@@ -17,7 +17,7 @@ hd attach ${WORK_DIR}/blank80.img
 # Boot to Finder desktop (SE/30 with 8 MB RAM)
 run 80000000
 
-screenshot --match desktop.png
+screenshot match desktop.png
 
 # Double click the "Disk Tools" icon to open the floppy
 set-mouse 480 55 --global
@@ -33,7 +33,7 @@ mouse-button up
 # Run a bit so that the floppy has time to open
 run 50000000
 
-screenshot --match floppy.png
+screenshot match floppy.png
 
 # Double-click Apple HD SC Setup icon in the Disk Tools window
 set-mouse 167 83 --global
@@ -50,7 +50,7 @@ mouse-button up
 run 50000000
 
 # Verify Apple HD SC Setup recognizes the blank drive
-screenshot --match ready.png
+screenshot match ready.png
 
 # Click "Initialize"
 set-mouse 167 115 --global
@@ -94,7 +94,7 @@ run 5000000
 mouse-button up
 run 50000000
 
-screenshot --match shutdown.png
+screenshot match shutdown.png
 
 # Download (export) the formatted HD image to a flat file
 hd download ${WORK_DIR}/blank80.img ${WORK_DIR}/downloaded.img

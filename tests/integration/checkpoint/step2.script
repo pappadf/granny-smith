@@ -13,6 +13,6 @@ checkpoint --load checkpoint
 run 70000000
 
 # Match against the boot test's desktop reference
-screenshot --match desktop.png
+screenshot match desktop.png
 
 quit

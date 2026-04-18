@@ -10,7 +10,7 @@ run 90000000
 run 2000000
 run 190000000
 
-screenshot --match scsi-warning.png
+screenshot match scsi-warning.png
 
 # Click "OK" re. the scsi warning
 set-mouse 95 295 --global
@@ -21,7 +21,7 @@ mouse-button up
 run 20000000
 
 # We should be back on the main screen now
-screenshot --match main.png
+screenshot match main.png
 
 # Start the test
 set-mouse 100 115 --global
@@ -32,7 +32,7 @@ mouse-button up
 run 20000000
 
 # We should be running the VIA tests now
-screenshot --match via.png
+screenshot match via.png
 
 # Run enough to let the VIA tests + SCC tests finish
 run 200000000

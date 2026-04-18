@@ -242,6 +242,7 @@ p $0400.w          # memory word at address 0x400
 | `screenshot save <file.png>` | Save emulated screen as PNG |
 | `screenshot checksum [t l b r]` | Compute screen checksum |
 | `screenshot match <ref.png>` | Compare screen with reference PNG |
+| `screenshot match-or-save <ref.png> [actual.png]` | Compare with reference; save actual on mismatch |
 
 ### Input
 
@@ -431,15 +432,28 @@ Common boot sequences for integration test scripts:
 ### SE/30 boot to desktop (with HD)
 ```
 run 120000000
-screenshot --match desktop.png
+screenshot match desktop.png
 ```
 
 ### SE/30 boot with floppy and HD
 ```
 fd insert /path/to/system.dsk
 run 800000000
-screenshot --match desktop.png
+screenshot match desktop.png
 ```
+
+### Screenshot in test scripts
+
+In integration test `.script` files, use shell variables for paths:
+```
+screenshot save ${WORK_DIR}/debug.png       # save to test's work directory
+screenshot match expected.png               # match against reference in test dir
+screenshot match-or-save ref.png actual.png # save actual on mismatch for diffing
+screenshot checksum                         # print checksum for comparison
+```
+
+Available variables: `${WORK_DIR}` (build output dir), `${TEST_DIR}` (test source dir).
+Note: `${RESULTS_DIR}` is NOT available in test scripts.
 
 ### Script include for shared preambles
 Scripts support `include` directives to avoid copy-pasting boot sequences:

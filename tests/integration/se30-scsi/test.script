@@ -5,7 +5,7 @@
 run 120000000
 
 # Compare screen against reference desktop image
-screenshot --match desktop.png
+screenshot match desktop.png
 
-# Exit with success (screenshot --match sets exit code)
+# Exit with success (screenshot match sets exit code)
 quit

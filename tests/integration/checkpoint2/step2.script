@@ -8,7 +8,7 @@ checkpoint --load checkpoint.gs
 run 100000000
 
 #
-screenshot --match ../../checkpoint2/desktop.png
+screenshot match ../../checkpoint2/desktop.png
 
 run 100000000
 

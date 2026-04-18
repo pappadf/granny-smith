@@ -14,7 +14,7 @@ hd loopback on
 run 200000000
 
 # Match the MacTest main screen
-screenshot --match main.png
+screenshot match main.png
 
 # Start the test
 set-mouse 100 121 --global
@@ -25,12 +25,12 @@ mouse-button up
 run 20000000
 
 # We should be running the VIA tests now
-screenshot --match via.png
+screenshot match via.png
 
 run 150000000
 
 # The test now asks us to insert a 800K floppy
-screenshot --match insert-800k-floppy.png
+screenshot match insert-800k-floppy.png
 
 # Insert 800K floppy
 fd create ${WORK_DIR}/blank800.dsk 0
@@ -48,7 +48,7 @@ mouse-button up
 run 250000000
 
 # The test now asks us to insert a 1.4MB floppy
-screenshot --match insert-1.4mb-floppy.png
+screenshot match insert-1.4mb-floppy.png
 
 # Reset MBState: the mouse guard from the 800K set-mouse --global kept the
 # cursor pinned at the OK button position during the 250M-cycle run above.
@@ -68,7 +68,7 @@ mouse-button up
 run 100000000
 
 # Screen should now say that floppy tests succeeded and prompt us to re-insert app disk
-screenshot --match floppy-test-success.png
+screenshot match floppy-test-success.png
 
 # Insert the original application disk
 fd insert ../../data/apps/MacTest-SE30.image 0 true
@@ -88,6 +88,6 @@ run 7000000000
 # After the reboot, MacTest should have reloaded from the floppy and reached
 # its main screen.  It reads the PRAM flag set before the test and knows the
 # memory test passed.
-screenshot --match main-after-reboot.png
+screenshot match main-after-reboot.png
 
 quit
