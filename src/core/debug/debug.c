@@ -3038,6 +3038,221 @@ static void cmd_logpoint_handler(struct cmd_context *ctx, struct cmd_result *res
     cmd_ok(res);
 }
 
+// Walk the 68030 PMMU table tree for a single logical address, printing
+// each level's descriptor.  Duplicates the logic of mmu.c:mmu_table_walk
+// deliberately — the verbose traversal is a debug concern kept out of the
+// hot path.  Uses CRP (supervisor=true) to match typical kernel accesses.
+static void info_mmu_walk_impl(struct cmd_context *ctx, uint32_t logical_addr) {
+    if (!g_mmu) {
+        cmd_printf(ctx, "MMU not present\n");
+        return;
+    }
+    if (!g_mmu->enabled) {
+        cmd_printf(ctx, "MMU disabled — logical == physical == $%08X\n", logical_addr);
+        return;
+    }
+
+    // Transparent translation match short-circuits the table walk.
+    if (mmu_check_tt(g_mmu, logical_addr, false, true)) {
+        cmd_printf(ctx, "L:$%08X hits transparent translation (identity)\n", logical_addr);
+        cmd_printf(ctx, "  TT0 = $%08X%s\n", g_mmu->tt0, TT_ENABLE(g_mmu->tt0) ? "" : " (disabled)");
+        cmd_printf(ctx, "  TT1 = $%08X%s\n", g_mmu->tt1, TT_ENABLE(g_mmu->tt1) ? "" : " (disabled)");
+        cmd_printf(ctx, "=> L:$%08X -> P:$%08X\n", logical_addr, logical_addr);
+        return;
+    }
+
+    uint32_t tc = g_mmu->tc;
+    uint32_t is = TC_IS(tc);
+    uint32_t ti[4] = {TC_TIA(tc), TC_TIB(tc), TC_TIC(tc), TC_TID(tc)};
+    uint32_t ps = TC_PS(tc);
+    cmd_printf(ctx, "TC=$%08X  IS=%u TIA=%u TIB=%u TIC=%u TID=%u PS=%u (%u-byte page)\n", tc, is, ti[0], ti[1], ti[2],
+               ti[3], ps, 1u << ps);
+
+    // Root pointer: CRP for user/default, SRP for supervisor when TC.SRE=1.
+    // Debug walks always use supervisor root if SRE — the kernel's own view.
+    uint64_t root = (TC_SRE(tc)) ? g_mmu->srp : g_mmu->crp;
+    uint32_t root_upper = (uint32_t)(root >> 32);
+    uint32_t root_lower = (uint32_t)(root & 0xFFFFFFFFu);
+    uint32_t root_dt = root_upper & 3;
+    const char *root_name = TC_SRE(tc) ? "SRP" : "CRP";
+    cmd_printf(ctx, "%s = $%08X_%08X  root-DT=%u\n", root_name, root_upper, root_lower, root_dt);
+    if (root_dt == DESC_DT_INVALID) {
+        cmd_printf(ctx, "  root descriptor invalid — walk aborts\n");
+        return;
+    }
+
+    bool long_desc = (root_dt == DESC_DT_TABLE8);
+    uint32_t table_addr = root_lower & 0xFFFFFFFCu;
+    uint32_t bit_pos = 32 - is;
+    static const char *level_names[] = {"A", "B", "C", "D"};
+
+    for (int level = 0; level < 4; level++) {
+        uint32_t index_bits = ti[level];
+        if (index_bits == 0)
+            continue;
+        bit_pos -= index_bits;
+        uint32_t index = (logical_addr >> bit_pos) & ((1u << index_bits) - 1);
+        uint32_t desc_addr = table_addr + index * (long_desc ? 8u : 4u);
+        uint32_t desc_hi = mmu_read_physical_uint32(g_mmu, desc_addr);
+        uint32_t desc_lo = long_desc ? mmu_read_physical_uint32(g_mmu, desc_addr + 4) : desc_hi;
+        uint32_t dt = desc_hi & 3;
+        const char *dt_name = (dt == 0) ? "INVALID" : (dt == 1) ? "PAGE" : (dt == 2) ? "TABLE4" : "TABLE8";
+
+        if (long_desc)
+            cmd_printf(ctx, "  L%s idx=$%X (%u bits)  desc@$%08X = $%08X_%08X  DT=%u(%s)", level_names[level], index,
+                       index_bits, desc_addr, desc_hi, desc_lo, dt, dt_name);
+        else
+            cmd_printf(ctx, "  L%s idx=$%X (%u bits)  desc@$%08X = $%08X  DT=%u(%s)", level_names[level], index,
+                       index_bits, desc_addr, desc_hi, dt, dt_name);
+
+        if (dt == DESC_DT_INVALID) {
+            cmd_printf(ctx, "  — walk terminates (page fault)\n");
+            return;
+        }
+        if (dt == DESC_DT_PAGE) {
+            uint32_t page_mask = (1u << bit_pos) - 1;
+            uint32_t phys_base = desc_lo & ~page_mask & 0xFFFFFFFCu;
+            uint32_t phys = phys_base | (logical_addr & page_mask);
+            int wp = (desc_hi >> 2) & 1;
+            int u = (desc_hi >> 3) & 1;
+            int m = (desc_hi >> 4) & 1;
+            int ci = (desc_hi >> 6) & 1;
+            int s = long_desc ? ((desc_hi >> 8) & 1) : 0;
+            cmd_printf(ctx, "  page_base=$%08X  [U=%d WP=%d M=%d CI=%d%s]  coverage=%u bytes\n", phys_base, u, wp, m,
+                       ci, long_desc ? (s ? " S=1" : " S=0") : "", 1u << bit_pos);
+            cmd_printf(ctx, "=> L:$%08X -> P:$%08X\n", logical_addr, phys);
+            return;
+        }
+        // Table descriptor (DT=TABLE4 or TABLE8): descend to next level.
+        uint32_t next = desc_lo & 0xFFFFFFFCu;
+        cmd_printf(ctx, "  next_table=$%08X\n", next);
+        table_addr = next;
+        long_desc = (dt == DESC_DT_TABLE8);
+    }
+    cmd_printf(ctx, "  walk exhausted levels without a page descriptor\n");
+}
+
+// Scan a logical address range and print contiguous mapped runs.
+// Side-effect-free w.r.t. the software TLB (mmu_translate_debug doesn't touch
+// SoA entries); saves/restores mmu->mmusr so PTEST state remains undisturbed.
+static void info_mmu_map_impl(struct cmd_context *ctx, uint32_t start, uint32_t end) {
+    if (!g_mmu) {
+        cmd_printf(ctx, "MMU not present\n");
+        return;
+    }
+    if (!g_mmu->enabled) {
+        cmd_printf(ctx, "MMU disabled — logical == physical (identity)\n");
+        return;
+    }
+    if (end < start) {
+        cmd_printf(ctx, "end ($%08X) must be >= start ($%08X)\n", end, start);
+        return;
+    }
+
+    uint32_t page_size = 1u << PAGE_SHIFT;
+    uint16_t saved_mmusr = g_mmu->mmusr;
+
+    // Run state: when in_run, (run_start, run_phys_start, run_flags) describe
+    // the contiguous mapping we're currently accumulating.
+    bool in_run = false;
+    uint32_t run_start = 0;
+    uint32_t run_phys_start = 0;
+    uint32_t last_logical = 0;
+    uint32_t last_phys = 0;
+    uint16_t run_flags = 0;
+    const char *run_kind = "";
+    int runs_printed = 0;
+    const int run_limit = 512;
+
+    // Align start down to page boundary; scan inclusive of end.
+    uint32_t addr = start & ~(uint32_t)PAGE_MASK;
+    uint64_t scan_end = (uint64_t)end;
+    for (uint64_t a = addr; a <= scan_end; a += page_size) {
+        uint32_t logical = (uint32_t)a;
+
+        // Determine mapping status: TT match | valid walk | invalid.
+        bool mapped = false;
+        bool tt = false;
+        uint32_t phys = logical;
+        uint16_t flags = 0;
+        if (mmu_check_tt(g_mmu, logical, false, true)) {
+            mapped = true;
+            tt = true;
+            phys = logical;
+        } else {
+            uint16_t mmusr = mmu_test_address(g_mmu, logical, false, true);
+            if (!(mmusr & MMUSR_I)) {
+                mapped = true;
+                phys = mmu_translate_debug(g_mmu, logical);
+                flags = mmusr & (MMUSR_W | MMUSR_S | MMUSR_M);
+            }
+        }
+
+        const char *kind = tt ? "TT" : "PT";
+
+        if (mapped) {
+            if (!in_run) {
+                in_run = true;
+                run_start = logical;
+                run_phys_start = phys;
+                run_flags = flags;
+                run_kind = kind;
+            } else {
+                // Continuity: physical must advance by one page and flags must match.
+                bool contiguous = (phys == last_phys + page_size) && (flags == run_flags) && (kind == run_kind);
+                if (!contiguous) {
+                    // Close previous run, start fresh.
+                    cmd_printf(ctx, "  L:$%08X-$%08X -> P:$%08X-$%08X  (%u KB, %s%s%s%s)\n", run_start,
+                               last_logical + page_size - 1, run_phys_start, last_phys + page_size - 1,
+                               (last_logical - run_start + page_size) >> 10, run_kind,
+                               (run_flags & MMUSR_W) ? " WP" : "", (run_flags & MMUSR_S) ? " S" : "",
+                               (run_flags & MMUSR_M) ? " M" : "");
+                    if (++runs_printed >= run_limit) {
+                        cmd_printf(ctx, "  ... (stopped at %d runs)\n", run_limit);
+                        in_run = false;
+                        break;
+                    }
+                    run_start = logical;
+                    run_phys_start = phys;
+                    run_flags = flags;
+                    run_kind = kind;
+                }
+            }
+            last_logical = logical;
+            last_phys = phys;
+        } else if (in_run) {
+            // Hit invalid: close current run.
+            cmd_printf(ctx, "  L:$%08X-$%08X -> P:$%08X-$%08X  (%u KB, %s%s%s%s)\n", run_start,
+                       last_logical + page_size - 1, run_phys_start, last_phys + page_size - 1,
+                       (last_logical - run_start + page_size) >> 10, run_kind, (run_flags & MMUSR_W) ? " WP" : "",
+                       (run_flags & MMUSR_S) ? " S" : "", (run_flags & MMUSR_M) ? " M" : "");
+            if (++runs_printed >= run_limit) {
+                cmd_printf(ctx, "  ... (stopped at %d runs)\n", run_limit);
+                in_run = false;
+                break;
+            }
+            in_run = false;
+        }
+
+        // Guard against 32-bit wrap on the last page.
+        if (logical == 0xFFFFF000u)
+            break;
+    }
+
+    // Flush the final run if still open.
+    if (in_run) {
+        cmd_printf(ctx, "  L:$%08X-$%08X -> P:$%08X-$%08X  (%u KB, %s%s%s%s)\n", run_start,
+                   last_logical + page_size - 1, run_phys_start, last_phys + page_size - 1,
+                   (last_logical - run_start + page_size) >> 10, run_kind, (run_flags & MMUSR_W) ? " WP" : "",
+                   (run_flags & MMUSR_S) ? " S" : "", (run_flags & MMUSR_M) ? " M" : "");
+        runs_printed++;
+    }
+    if (runs_printed == 0)
+        cmd_printf(ctx, "  (no mapped pages in L:$%08X-$%08X)\n", start, end);
+
+    g_mmu->mmusr = saved_mmusr;
+}
+
 // --- info (subcommand hub) ---
 static void cmd_info_handler(struct cmd_context *ctx, struct cmd_result *res) {
     const char *subcmd = ctx->subcmd;
@@ -3119,6 +3334,24 @@ static void cmd_info_handler(struct cmd_context *ctx, struct cmd_result *res) {
     if (strcmp(subcmd, "exceptions") == 0) {
         int n = ctx->args[0].present ? (int)ctx->args[0].as_int : 32;
         exc_trace_dump(n);
+        cmd_ok(res);
+        return;
+    }
+
+    if (strcmp(subcmd, "mmu-walk") == 0) {
+        if (!ctx->args[0].present) {
+            cmd_err(res, "usage: info mmu-walk <logical-address>");
+            return;
+        }
+        info_mmu_walk_impl(ctx, ctx->args[0].as_addr);
+        cmd_ok(res);
+        return;
+    }
+
+    if (strcmp(subcmd, "mmu-map") == 0) {
+        uint32_t start = ctx->args[0].present ? ctx->args[0].as_addr : 0x00000000u;
+        uint32_t end = ctx->args[1].present ? ctx->args[1].as_addr : 0x1FFFFFFFu;
+        info_mmu_map_impl(ctx, start, end);
         cmd_ok(res);
         return;
     }
@@ -3289,18 +3522,27 @@ static const struct arg_spec info_mmu_desc_args[] = {
     {"address", ARG_ADDR,               "descriptor table address"         },
     {"count",   ARG_INT | ARG_OPTIONAL, "number of descriptors (default 4)"},
 };
+static const struct arg_spec info_mmu_walk_args[] = {
+    {"address", ARG_ADDR, "logical address to walk"},
+};
+static const struct arg_spec info_mmu_map_args[] = {
+    {"start", ARG_ADDR | ARG_OPTIONAL, "scan start address (default $00000000)"         },
+    {"end",   ARG_ADDR | ARG_OPTIONAL, "scan end address (inclusive, default $1FFFFFFF)"},
+};
 static const struct subcmd_spec info_subcmds[] = {
-    {"regs",            info_regs_aliases,     NULL,               0, "CPU register dump"                },
-    {"fpregs",          info_fpregs_aliases,   NULL,               0, "FPU register dump"                },
-    {"mmu",             NULL,                  NULL,               0, "MMU register dump"                },
-    {"mmu-descriptors", NULL,                  info_mmu_desc_args, 2, "decode MMU descriptors at address"},
-    {"break",           info_break_aliases,    NULL,               0, "list all breakpoints"             },
-    {"logpoint",        info_logpoint_aliases, NULL,               0, "list all logpoints"               },
-    {"mac",             NULL,                  NULL,               0, "Mac OS state summary"             },
-    {"process",         info_process_aliases,  NULL,               0, "current application info"         },
-    {"events",          NULL,                  NULL,               0, "scheduler event queue"            },
-    {"schedule",        NULL,                  NULL,               0, "scheduler mode and CPI"           },
-    {"exceptions",      NULL,                  info_exc_args,      1, "dump CPU exception trace ring"    },
+    {"regs",            info_regs_aliases,     NULL,               0, "CPU register dump"                    },
+    {"fpregs",          info_fpregs_aliases,   NULL,               0, "FPU register dump"                    },
+    {"mmu",             NULL,                  NULL,               0, "MMU register dump"                    },
+    {"mmu-descriptors", NULL,                  info_mmu_desc_args, 2, "decode MMU descriptors at address"    },
+    {"mmu-walk",        NULL,                  info_mmu_walk_args, 1, "walk MMU tables for a logical address"},
+    {"mmu-map",         NULL,                  info_mmu_map_args,  2, "list mapped logical ranges"           },
+    {"break",           info_break_aliases,    NULL,               0, "list all breakpoints"                 },
+    {"logpoint",        info_logpoint_aliases, NULL,               0, "list all logpoints"                   },
+    {"mac",             NULL,                  NULL,               0, "Mac OS state summary"                 },
+    {"process",         info_process_aliases,  NULL,               0, "current application info"             },
+    {"events",          NULL,                  NULL,               0, "scheduler event queue"                },
+    {"schedule",        NULL,                  NULL,               0, "scheduler mode and CPI"               },
+    {"exceptions",      NULL,                  info_exc_args,      1, "dump CPU exception trace ring"        },
 };
 
 // --- translate ---
@@ -3503,10 +3745,10 @@ debug_t *debug_init(void) {
         .name = "info",
         .aliases = info_aliases,
         .category = "Inspection",
-        .synopsis = "Show state (regs, fpregs, mmu, break, mac, process, events, exceptions)",
+        .synopsis = "Show state (regs, fpregs, mmu, mmu-walk, mmu-map, break, mac, process, events, exceptions)",
         .fn = cmd_info_handler,
         .subcmds = info_subcmds,
-        .n_subcmds = 11,
+        .n_subcmds = 13,
     });
 
     // Tracing
