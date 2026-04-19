@@ -598,6 +598,7 @@ static void scsi_reset(scsi_t *scsi) {
     scsi->reg.cdr = 0;
     scsi->buf.size = 0;
     scsi->end_of_dma = false;
+    scsi->pending_status = false;
     // RST generates a non-maskable interrupt that survives the reset
     scsi->reg.bsr |= BSR_INT;
     // Flush the CDR pipeline so post-reset reads return $00
@@ -786,9 +787,32 @@ static void write_mr(scsi_t *scsi, uint8_t val) {
     }
 }
 
+// Commit a pending DIN -> status transition set by a previous CDR read.
+// See the comment on scsi->pending_status in scsi_internal.h.
+static void commit_pending_status(scsi_t *scsi) {
+    if (!scsi->pending_status)
+        return;
+    uint8_t code = scsi->pending_status_code;
+    scsi->pending_status = false;
+    // Only transition if the bus is still in a phase where status makes
+    // sense.  A reset or other transition may have invalidated the
+    // pending flag before we got a chance to commit.
+    if (scsi->bus.phase != scsi_data_in && scsi->bus.phase != scsi_data_out && scsi->bus.phase != scsi_command)
+        return;
+    phase_status(scsi, code);
+}
+
 // Read a byte from SCSI controller register
 static uint8_t read_uint8(void *s, uint32_t addr) {
     scsi_t *scsi = (scsi_t *)s;
+
+    // A prior CDR read consumed the last DIN byte and armed a deferred
+    // phase transition.  Any *other* register access means the driver has
+    // moved past observing the DIN-complete state, so advance now.  CDR
+    // reads are handled specifically below so the driver can distinguish
+    // "one extra read in DIN phase" from "inspecting a different register".
+    if (scsi->pending_status && (addr >> 4 & 7) != CDR && (addr >> 4 & 7) != IDR)
+        commit_pending_status(scsi);
 
     // [5]: on 68000, reads are to even addresses (UDS). On 68030 (SE/30,
     // IIcx), the GLUE uses R/W directly and A0 is irrelevant for direction.
@@ -807,13 +831,31 @@ static uint8_t read_uint8(void *s, uint32_t addr) {
             SCSI_TRACE("  SCSI RD CDR -> 0x%02X (pipeline)", val);
             return val;
         }
+        // A pending DIN -> status transition from the previous CDR read
+        // is committed here if the driver reads CDR again (it's polling /
+        // one past the buffer); an empty-buffer CDR read will then fall
+        // through to the "buf.size == 0 && data_in" case below.
+        if (scsi->pending_status)
+            commit_pending_status(scsi);
         if (scsi->bus.phase == scsi_data_in) {
             if (scsi->buf.size != 0) {
                 scsi->reg.cdr = next_byte(scsi);
                 // In DMA mode, deassert REQ after each byte to simulate
                 // the real NCR 5380 handshake gap between bytes
-                if (scsi->reg.mr & MR_DMA)
+                if (scsi->reg.mr & MR_DMA) {
                     scsi->reg.csr &= ~CSR_REQ;
+                    // Last data byte: defer the DIN -> status transition
+                    // until the next register access so the driver observes
+                    // REQ=0 in DIN phase (transfer complete) before seeing
+                    // the status-phase bits change.  Without this the A/UX
+                    // retail SCSI manager treats the overlapping transition
+                    // as SST_MORE and fails every INQUIRY probe.
+                    if (scsi->buf.size == 0) {
+                        scsi->pending_status = true;
+                        scsi->pending_status_code = STATUS_GOOD;
+                        return scsi->reg.cdr;
+                    }
+                }
             } else
                 phase_status(scsi, STATUS_GOOD);
         } else if (scsi->bus.phase == scsi_status && (scsi->reg.mr & MR_DMA)) {
@@ -910,6 +952,11 @@ static uint32_t read_uint32(void *scsi, uint32_t addr) {
 // Write a byte to SCSI controller register
 static void write_uint8(void *s, uint32_t addr, uint8_t value) {
     scsi_t *scsi = (scsi_t *)s;
+
+    // Any register write also commits a pending DIN -> status transition
+    // from the last data byte read.  See read_uint8 for context.
+    if (scsi->pending_status)
+        commit_pending_status(scsi);
 
     if (scsi->loopback) {
         // Advance CDR pipeline: capture current bus state BEFORE this write
