@@ -219,6 +219,17 @@ log memory 1                            # enable streaming for the default categ
 The default log category for memory logpoints is `memory` (PC logpoints use
 `logpoint`); set with `category=<name> level=<n>` if you want a custom one.
 
+**Logical vs physical address space.** Memory logpoints accept the same `L:`
+(default) / `P:` prefix as breakpoints. A logical-space logpoint watches the
+logical page at install time **and** the physical page the MMU currently
+maps it to — so accesses via any alias of that physical page still fire.
+A physical-space logpoint watches only the physical page and catches every
+alias (useful for kernel data reached via multiple virtual mappings).
+```
+logpoint --write P:$00040000.b "kernel heap overwrite pc=$pc"
+logpoint --write L:$1200D0C3.b "req+$27 write"   # also catches aliases
+```
+
 ### Inspection
 
 | Command | Alias(es) | Description |

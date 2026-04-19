@@ -314,6 +314,12 @@ static void mmu_fill_soa_entry(mmu_state_t *mmu, uint32_t logical_page, uint32_t
     // point of a watchpoint.
     if (g_mem_logpoint_page_count && g_mem_logpoint_page_count[page_index])
         return;
+    // Same rule for physical-space logpoints: if the physical page being
+    // mapped is watched, suppress the fill.  This catches aliased mappings
+    // (same physical page reached via multiple logical addresses), which a
+    // purely logical-space logpoint misses.
+    if (g_mem_logpoint_phys_page_count && g_mem_logpoint_phys_page_count[physical_page >> PAGE_SHIFT])
+        return;
 
     // Compute adjusted base: host_ptr points to start of physical page,
     // but we want (uintptr_t)(base + logical_addr) to yield the host address.
@@ -566,6 +572,18 @@ uint16_t mmu_test_address(mmu_state_t *mmu, uint32_t logical_addr, bool write, b
 
     mmu->mmusr = result.mmusr;
     return result.mmusr;
+}
+
+// Public wrappers around the file-local phys_to_host / phys_is_writable.
+uint8_t *mmu_phys_to_host(mmu_state_t *mmu, uint32_t phys_addr) {
+    if (!mmu)
+        return NULL;
+    return phys_to_host(mmu, phys_addr);
+}
+bool mmu_phys_is_writable(mmu_state_t *mmu, uint32_t phys_addr) {
+    if (!mmu)
+        return false;
+    return phys_is_writable(mmu, phys_addr);
 }
 
 // Debug-only translation: resolve logical address to physical without side effects.

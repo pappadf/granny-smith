@@ -52,6 +52,7 @@ struct logpoint {
 
     uint32_t addr; // start address of range
     uint32_t end_addr; // end address of range (inclusive), same as addr for single address
+    addr_space_t space; // logical or physical (memory logpoints only; PC is always logical)
 
     // Kind: PC logpoints fire in the step hook; memory logpoints fire from
     // the memory slow path via g_mem_logpoint_hook.
@@ -66,6 +67,12 @@ struct logpoint {
 
     // Hit counter for this logpoint
     uint32_t hit_count;
+
+    // For logical-space memory logpoints, the physical page range bumped at
+    // install time (to catch current aliases).  end_phys_page < start_phys_page
+    // means "no physical range was installed" (e.g. MMU off, or P:-space lp).
+    uint32_t start_phys_page;
+    uint32_t end_phys_page;
 
     logpoint_t *next;
 };
@@ -198,11 +205,16 @@ logpoint_t *set_logpoint(debug_t *debug, uint32_t addr, uint32_t end_addr, log_c
 
     lp->addr = addr;
     lp->end_addr = end_addr;
+    lp->space = ADDR_LOGICAL;
     lp->kind = LP_KIND_PC;
     lp->category = category;
     lp->level = level;
     lp->hit_count = 0;
     lp->message = NULL;
+    // PC logpoints don't touch the memory-logpoint page refcounts, so leave
+    // the physical range marked "empty" (end < start).
+    lp->start_phys_page = 1;
+    lp->end_phys_page = 0;
 
     // add lp to a linked list
     lp->next = debug->logpoints;
@@ -215,25 +227,56 @@ logpoint_t *set_logpoint(debug_t *debug, uint32_t addr, uint32_t end_addr, log_c
 
 // Install a memory-access logpoint (write/read/rw).  Forces the covered pages
 // through the memory slow path so the hook can observe every access.  No
-// impact on the fast path for other pages.
-logpoint_t *set_memory_logpoint(debug_t *debug, uint32_t addr, uint32_t end_addr, int kind, log_category_t *category,
-                                int level) {
+// impact on the fast path for other pages.  When space == ADDR_LOGICAL the
+// current MMU mapping is also consulted and the corresponding physical pages
+// are watched, so an access via an alias of the same physical page still
+// fires the hook.  When space == ADDR_PHYSICAL only the physical watch is
+// installed (no logical-page watch) — the caller observes every alias.
+logpoint_t *set_memory_logpoint(debug_t *debug, uint32_t addr, uint32_t end_addr, addr_space_t space, int kind,
+                                log_category_t *category, int level) {
     logpoint_t *lp = malloc(sizeof(logpoint_t));
     if (!lp)
         return NULL;
     lp->addr = addr;
     lp->end_addr = end_addr;
+    lp->space = space;
     lp->kind = kind;
     lp->category = category;
     lp->level = level;
     lp->hit_count = 0;
     lp->message = NULL;
+    // Mark "no physical range installed" until we do so below.
+    lp->start_phys_page = 1;
+    lp->end_phys_page = 0;
     lp->next = debug->logpoints;
     debug->logpoints = lp;
     debug->active = true;
+
     uint32_t start_page = addr >> PAGE_SHIFT;
     uint32_t end_page = end_addr >> PAGE_SHIFT;
-    memory_logpoint_install(start_page, end_page);
+
+    if (space == ADDR_LOGICAL) {
+        memory_logpoint_install(start_page, end_page);
+        // Also watch the physical pages the current MMU mapping points at —
+        // catches aliases (same physical reached via different logical addrs).
+        if (g_mmu && g_mmu->enabled) {
+            uint32_t phys_start = mmu_translate_debug(g_mmu, addr) >> PAGE_SHIFT;
+            uint32_t phys_end = mmu_translate_debug(g_mmu, end_addr) >> PAGE_SHIFT;
+            if (phys_end < phys_start) {
+                uint32_t tmp = phys_start;
+                phys_start = phys_end;
+                phys_end = tmp;
+            }
+            memory_logpoint_install_phys(phys_start, phys_end);
+            lp->start_phys_page = phys_start;
+            lp->end_phys_page = phys_end;
+        }
+    } else {
+        // Physical-space logpoint: only the physical array is bumped.
+        memory_logpoint_install_phys(start_page, end_page);
+        lp->start_phys_page = start_page;
+        lp->end_phys_page = end_page;
+    }
     return lp;
 }
 
@@ -377,6 +420,8 @@ static void debug_memory_logpoint_hook(uint32_t addr, unsigned size, uint32_t va
     debug_t *debug = system_debug();
     if (!debug)
         return;
+    uint32_t phys_addr = addr;
+    bool phys_computed = false;
     for (logpoint_t *lp = debug->logpoints; lp; lp = lp->next) {
         if (lp->kind == LP_KIND_PC)
             continue;
@@ -384,9 +429,20 @@ static void debug_memory_logpoint_hook(uint32_t addr, unsigned size, uint32_t va
                           (!is_write && lp->kind == LP_KIND_READ);
         if (!match_kind)
             continue;
-        // Accept any overlap of [addr, addr+size-1] with [lp->addr, lp->end_addr]
-        uint32_t a_end = addr + size - 1;
-        if (a_end < lp->addr || addr > lp->end_addr)
+        // Check the access against the logpoint's address range — using the
+        // physical address for P:-space logpoints, logical for L:-space.
+        uint32_t cmp_addr;
+        if (lp->space == ADDR_PHYSICAL) {
+            if (!phys_computed) {
+                phys_addr = (g_mmu && g_mmu->enabled) ? mmu_translate_debug(g_mmu, addr) : addr;
+                phys_computed = true;
+            }
+            cmp_addr = phys_addr;
+        } else {
+            cmp_addr = addr;
+        }
+        uint32_t a_end = cmp_addr + size - 1;
+        if (a_end < lp->addr || cmp_addr > lp->end_addr)
             continue;
         lp->hit_count++;
         char formatted[256];
@@ -655,8 +711,11 @@ static void list_breakpoints(debug_t *debug) {
 // Parse an address token, optionally followed by ".b"/".w"/".l" size.  Also
 // honors the "start-end" and "start:length" forms used by PC-range logpoints.
 // Returns false on invalid input.  *size_out is 0 when no size suffix was
-// given (caller applies default).
-static bool parse_logpoint_target(const char *in, uint32_t *addr_out, uint32_t *end_addr_out, unsigned *size_out) {
+// given (caller applies default).  *space_out receives the parsed address
+// space (ADDR_LOGICAL by default, ADDR_PHYSICAL when the input had a P:
+// prefix).
+static bool parse_logpoint_target(const char *in, uint32_t *addr_out, uint32_t *end_addr_out, unsigned *size_out,
+                                  addr_space_t *space_out) {
     char buf[64];
     strncpy(buf, in, sizeof(buf) - 1);
     buf[sizeof(buf) - 1] = '\0';
@@ -683,13 +742,14 @@ static bool parse_logpoint_target(const char *in, uint32_t *addr_out, uint32_t *
 
     char *range_sep = strchr(buf + prefix_len, '-');
     char *length_sep = strchr(buf + prefix_len, ':');
-    addr_space_t sp;
+    addr_space_t sp = ADDR_LOGICAL;
 
     if (range_sep) {
         *range_sep = '\0';
         if (!parse_address(buf, addr_out, &sp))
             return false;
-        if (!parse_address(range_sep + 1, end_addr_out, &sp))
+        addr_space_t sp2;
+        if (!parse_address(range_sep + 1, end_addr_out, &sp2))
             return false;
         if (*end_addr_out < *addr_out)
             return false;
@@ -698,7 +758,8 @@ static bool parse_logpoint_target(const char *in, uint32_t *addr_out, uint32_t *
         if (!parse_address(buf, addr_out, &sp))
             return false;
         uint32_t len;
-        if (!parse_address(length_sep + 1, &len, &sp))
+        addr_space_t sp2;
+        if (!parse_address(length_sep + 1, &len, &sp2))
             return false;
         if (len == 0)
             return false;
@@ -708,6 +769,7 @@ static bool parse_logpoint_target(const char *in, uint32_t *addr_out, uint32_t *
             return false;
         *end_addr_out = *addr_out;
     }
+    *space_out = sp;
     return true;
 }
 
@@ -2228,9 +2290,15 @@ static void list_logpoints(debug_t *debug) {
 // Helper: free one logpoint node, releasing memory-logpoint page refcounts too
 static void free_logpoint(logpoint_t *lp) {
     if (lp->kind != LP_KIND_PC) {
-        uint32_t start_page = lp->addr >> PAGE_SHIFT;
-        uint32_t end_page = lp->end_addr >> PAGE_SHIFT;
-        memory_logpoint_uninstall(start_page, end_page);
+        if (lp->space == ADDR_LOGICAL) {
+            uint32_t start_page = lp->addr >> PAGE_SHIFT;
+            uint32_t end_page = lp->end_addr >> PAGE_SHIFT;
+            memory_logpoint_uninstall(start_page, end_page);
+        }
+        // Physical range tracked separately; populated for both LOGICAL
+        // (when MMU was enabled at install) and PHYSICAL logpoints.
+        if (lp->end_phys_page >= lp->start_phys_page)
+            memory_logpoint_uninstall_phys(lp->start_phys_page, lp->end_phys_page);
     }
     if (lp->message)
         free(lp->message);
@@ -2964,7 +3032,8 @@ static void cmd_logpoint_handler(struct cmd_context *ctx, struct cmd_result *res
 
     uint32_t addr, end_addr;
     unsigned size = 0;
-    if (!parse_logpoint_target(ctx->raw_argv[addr_arg], &addr, &end_addr, &size)) {
+    addr_space_t space = ADDR_LOGICAL;
+    if (!parse_logpoint_target(ctx->raw_argv[addr_arg], &addr, &end_addr, &size, &space)) {
         cmd_err(res, "Invalid address: %s", ctx->raw_argv[addr_arg]);
         return;
     }
@@ -3021,7 +3090,7 @@ static void cmd_logpoint_handler(struct cmd_context *ctx, struct cmd_result *res
     if (kind == LP_KIND_PC)
         lp = set_logpoint(debug, addr, end_addr, category, level);
     else
-        lp = set_memory_logpoint(debug, addr, end_addr, kind, category, level);
+        lp = set_memory_logpoint(debug, addr, end_addr, space, kind, category, level);
     if (!lp) {
         cmd_err(res, "Failed to set logpoint");
         return;

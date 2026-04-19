@@ -171,6 +171,12 @@ void memory_write_uint32_slow(uint32_t addr, uint32_t value);
 // page tables in memory_map_init.
 extern uint8_t *g_mem_logpoint_page_count;
 
+// Per-physical-page memory-logpoint reference count.  Non-zero entries mean
+// "any logical alias mapping to this physical page must stay on the slow
+// path so the logpoint fires regardless of which alias the CPU uses."
+// Indexed by physical page number.  mmu_fill_soa_entry consults both arrays.
+extern uint8_t *g_mem_logpoint_phys_page_count;
+
 // Hook invoked by the slow path on logpoint pages.  is_write=true on writes.
 // Installed by debug.c.  NULL means no hook (skip check).
 typedef void (*memory_logpoint_hook_t)(uint32_t addr, unsigned size, uint32_t value, bool is_write);
@@ -182,6 +188,13 @@ extern memory_logpoint_hook_t g_mem_logpoint_hook;
 // it returns to zero they are restored from the page table.
 void memory_logpoint_install(uint32_t start_page, uint32_t end_page);
 void memory_logpoint_uninstall(uint32_t start_page, uint32_t end_page);
+
+// Same as install/uninstall above, but for physical pages.  On install, every
+// currently-populated SoA entry is invalidated so that new accesses re-walk
+// the MMU and get suppressed by mmu_fill_soa_entry's physical-page check.
+// On uninstall, the SoA stays empty and will refill lazily on next access.
+void memory_logpoint_install_phys(uint32_t start_page, uint32_t end_page);
+void memory_logpoint_uninstall_phys(uint32_t start_page, uint32_t end_page);
 
 // === Inline Accessors (SoA fast-path with adjusted-base trick) ===
 // Non-zero entry in g_active_read/write = adjusted host address.

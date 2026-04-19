@@ -147,6 +147,13 @@ uint8_t mmu_read_physical_uint8(mmu_state_t *mmu, uint32_t phys_addr);
 uint16_t mmu_read_physical_uint16(mmu_state_t *mmu, uint32_t phys_addr);
 uint32_t mmu_read_physical_uint32(mmu_state_t *mmu, uint32_t phys_addr);
 
+// Resolve a physical address to a host pointer, or NULL if not host-backed
+// (RAM/ROM/VRAM/VROM only — I/O regions return NULL).  Used by the memory
+// slow path when a physical-space logpoint suppressed the SoA fill.
+uint8_t *mmu_phys_to_host(mmu_state_t *mmu, uint32_t phys_addr);
+// True when the physical address is backed by writable host memory.
+bool mmu_phys_is_writable(mmu_state_t *mmu, uint32_t phys_addr);
+
 // Register a VRAM region so table walks and TT matches can resolve it
 void mmu_register_vram(mmu_state_t *mmu, uint8_t *vram, uint32_t phys_base, uint32_t size);
 void mmu_register_vrom(mmu_state_t *mmu, uint8_t *vrom, uint32_t phys_base, uint32_t size);
