@@ -201,9 +201,13 @@ void phase_status(scsi_t *scsi, uint8_t status) {
     scsi->bus.phase = scsi_status;
     scsi->reg.csr = CSR_IO + CSR_CD + CSR_REQ + CSR_BSY;
     scsi->reg.cdr = status;
-    // Signal end-of-DMA to the IRQ logic if DMA was active
-    if (scsi->reg.mr & MR_DMA)
+    // If DMA is active, signal end-of-DMA for IRQ and assert BSR_DR so
+    // pseudo-DMA reads of the status byte complete (A/UX's scsicomplete
+    // waits for SBS_DMA before reading SDMA_ADDR).
+    if (scsi->reg.mr & MR_DMA) {
         scsi->end_of_dma = true;
+        scsi->reg.bsr |= BSR_DR;
+    }
     scsi_update_irq(scsi);
 }
 
@@ -646,8 +650,12 @@ static void write_icr(scsi_t *scsi, uint8_t val) {
 
         assert(scsi->bus.phase == scsi_selection);
 
-        // let's assume that we have an identified initiator id
-        assert(scsi->bus.initiator < 8);
+        // Non-arbitrated selection: A/UX's SCSI driver (and Apple's SCSI Manager
+        // on real hardware) drives SEL without first setting MR_ARBITRATE, so
+        // bus.initiator was never captured.  Mac hosts are wired to ID 7, so
+        // default to 7 when arbitration was skipped.
+        if (scsi->bus.initiator >= 8)
+            scsi->bus.initiator = 7;
 
         // ODR will contain the "OR" of target and initiator ID
         scsi->bus.target = platform_ntz32(scsi->reg.odr & ~(1 << scsi->bus.initiator));
@@ -756,19 +764,21 @@ static void write_mr(scsi_t *scsi, uint8_t val) {
         scsi_update_irq(scsi);
     } else if (bits_set & MR_DMA) {
 
-        // DMA mode can be set during data_in/data_out (normal) or during
+        // DMA mode can be set during data_in/data_out (normal), during
         // status/message_in (if command returned CHECK CONDITION before the
         // driver expected a data phase — the NCR 5380 signals this as a
-        // phase mismatch IRQ so the driver can recover).
-        assert(scsi->bus.phase == scsi_data_in || scsi->bus.phase == scsi_data_out || scsi->bus.phase == scsi_status ||
-               scsi->bus.phase == scsi_message_in);
+        // phase mismatch IRQ so the driver can recover), or during command
+        // (A/UX's SCSI driver uses pseudo-DMA to push command bytes).
+        assert(scsi->bus.phase == scsi_command || scsi->bus.phase == scsi_data_in || scsi->bus.phase == scsi_data_out ||
+               scsi->bus.phase == scsi_status || scsi->bus.phase == scsi_message_in);
 
         // if we're reading in data, and there is more in the buffer - then assert request signal
         if (scsi->bus.phase == scsi_data_in && scsi->buf.size != 0)
             scsi->reg.bsr |= BSR_DR;
 
-        // if we're writing out data, and there is room in the buffer - then assert request signal
-        if (scsi->bus.phase == scsi_data_out && scsi->buf.size < scsi->buf.max)
+        // if we're writing out data (command bytes or data-out), and there is
+        // room in the buffer, assert request signal
+        if ((scsi->bus.phase == scsi_data_out || scsi->bus.phase == scsi_command) && scsi->buf.size < scsi->buf.max)
             scsi->reg.bsr |= BSR_DR;
 
         scsi_update_drq(scsi);
@@ -806,6 +816,14 @@ static uint8_t read_uint8(void *s, uint32_t addr) {
                     scsi->reg.csr &= ~CSR_REQ;
             } else
                 phase_status(scsi, STATUS_GOOD);
+        } else if (scsi->bus.phase == scsi_status && (scsi->reg.mr & MR_DMA)) {
+            // Pseudo-DMA status read completes the handshake — advance to
+            // message-in so the next driver step can read CMD_COMPLETE.
+            // (A/UX's DMA path reads status via SDMA_ADDR and then reads
+            //  the message byte directly via CDR with ACK cycling.)
+            uint8_t status_byte = scsi->reg.cdr;
+            phase_message_in(scsi, MSG_CMD_COMPLETE);
+            return status_byte;
         }
         return scsi->reg.cdr;
 
@@ -913,13 +931,22 @@ static void write_uint8(void *s, uint32_t addr, uint8_t value) {
     case ODR:
         if (addr & 0x200) {
 
-            assert(scsi->bus.phase == scsi_data_out);
-            assert(scsi->buf.size < scsi->buf.max);
+            // Pseudo-DMA ODR alias: if the target expects a byte in the
+            // current phase (command or data-out), push into the buffer.
+            // In other phases, the write just latches into ODR — real
+            // NCR 5380 doesn't gate ODR writes on phase.
+            scsi->reg.odr = value;
+            if (scsi->bus.phase == scsi_data_out || scsi->bus.phase == scsi_command) {
+                assert(scsi->buf.size < scsi->buf.max);
+                scsi->buf.data[scsi->buf.size++] = value;
 
-            scsi->buf.data[scsi->buf.size++] = value;
-
-            if (scsi->buf.size == scsi->buf.max)
-                command_complete(scsi);
+                if (scsi->bus.phase == scsi_command) {
+                    // Once we have all the command bytes, execute the command
+                    if (scsi->buf.size == cmd_size(scsi->buf.data[0]))
+                        run_cmd(scsi);
+                } else if (scsi->buf.size == scsi->buf.max)
+                    command_complete(scsi);
+            }
         } else
             scsi->reg.odr = value;
         break;
