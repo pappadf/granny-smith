@@ -643,7 +643,11 @@ static void wr8(ch_t *c, uint8_t value) {
         update_irqs(c->scc);
     }
     int prev_len = c->tx.len;
-    assert(c->tx.len < TX_BUF_SIZE);
+    // Drop on overflow rather than asserting — a guest that streams output
+    // faster than anyone consumes it (e.g. A/UX panic printf in tight loop)
+    // would otherwise crash the emulator.
+    if (c->tx.len >= TX_BUF_SIZE)
+        return;
     c->tx.buf[c->tx.len++] = value;
     if (prev_len == 0)
         LOG(6, "scc:tx start first=0x%02X", value);
