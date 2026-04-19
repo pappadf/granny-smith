@@ -179,7 +179,9 @@ void phase_data_in(scsi_t *scsi, int bytes) {
     scsi->bus.phase = scsi_data_in;
     scsi->reg.csr = CSR_IO + CSR_REQ + CSR_BSY;
     scsi->buf.size = scsi->buf.max = bytes;
-    scsi_update_irq(scsi);
+    // Skip scsi_update_irq: prevents spurious phase-mismatch IRQ when
+    // run_cmd fires during pseudo-DMA ODR write with MR_DMA still set
+    // for command phase.
 }
 
 // Transition SCSI bus to data-out phase (initiator to target)
@@ -191,23 +193,48 @@ void phase_data_out(scsi_t *scsi, int bytes) {
     scsi->reg.csr = CSR_REQ + CSR_BSY;
     scsi->buf.max = bytes;
     scsi->buf.size = 0;
+    // Same rationale as phase_data_in.
+}
+
+// Transition SCSI bus to message-out phase (initiator to target).
+// SCSI targets enter this phase when the initiator asserts ATN,
+// allowing the initiator to send messages such as IDENTIFY or ABORT.
+static void phase_message_out(scsi_t *scsi) {
+    scsi->bus.saved_phase = scsi->bus.phase;
+    scsi->bus.phase = scsi_message_out;
+    // MSG + C/D + REQ + BSY, no I/O (direction is initiator → target)
+    scsi->reg.csr = CSR_MSG + CSR_CD + CSR_REQ + CSR_BSY;
     scsi_update_irq(scsi);
 }
 
 // Transition SCSI bus to status phase
 void phase_status(scsi_t *scsi, uint8_t status) {
-    assert(scsi->bus.phase == scsi_command || scsi->bus.phase == scsi_data_in || scsi->bus.phase == scsi_data_out);
+    assert(scsi->bus.phase == scsi_command || scsi->bus.phase == scsi_data_in || scsi->bus.phase == scsi_data_out ||
+           scsi->bus.phase == scsi_message_out);
+
+    bool was_data_in = (scsi->bus.phase == scsi_data_in);
 
     scsi->bus.phase = scsi_status;
     scsi->reg.csr = CSR_IO + CSR_CD + CSR_REQ + CSR_BSY;
     scsi->reg.cdr = status;
-    // If DMA is active, signal end-of-DMA for IRQ and assert BSR_DR so
-    // pseudo-DMA reads of the status byte complete (A/UX's scsicomplete
-    // waits for SBS_DMA before reading SDMA_ADDR).
-    if (scsi->reg.mr & MR_DMA) {
+    // Signal end-of-DMA to the IRQ logic if DMA was active
+    if (scsi->reg.mr & MR_DMA)
         scsi->end_of_dma = true;
-        scsi->reg.bsr |= BSR_DR;
+
+    // When transitioning from data-in with DMA active, skip scsi_update_irq.
+    // On real NCR 5380 hardware the target changes bus phase only AFTER
+    // the final ACK handshake completes — the phase-mismatch IRQ fires
+    // asynchronously, not during the register read that returns the last
+    // data byte.  A/UX's pseudo-DMA loop (scsiin) runs at IPL 0 and
+    // would service the IRQ immediately, causing a nested scsidintr that
+    // stamps SST_MORE.  Mac OS runs its pseudo-DMA at IPL >= 2, so the
+    // IRQ is masked and harmlessly deferred; skipping it has no effect.
+    // The host clears MR_DMA next (write_mr), which fires scsi_update_irq
+    // with DMA off — the correct post-transfer notification.
+    if (was_data_in && (scsi->reg.mr & MR_DMA)) {
+        return;
     }
+
     scsi_update_irq(scsi);
 }
 
@@ -598,7 +625,6 @@ static void scsi_reset(scsi_t *scsi) {
     scsi->reg.cdr = 0;
     scsi->buf.size = 0;
     scsi->end_of_dma = false;
-    scsi->pending_status = false;
     // RST generates a non-maskable interrupt that survives the reset
     scsi->reg.bsr |= BSR_INT;
     // Flush the CDR pipeline so post-reset reads return $00
@@ -681,7 +707,28 @@ static void write_icr(scsi_t *scsi, uint8_t val) {
             phase_message_in(scsi, MSG_CMD_COMPLETE);
         else if (scsi->bus.phase == scsi_message_in)
             phase_free(scsi);
-        else if (scsi->bus.phase == scsi_data_in) {
+        else if (scsi->bus.phase == scsi_message_out) {
+            // Process the message byte received from the initiator.
+            uint8_t msg = scsi->reg.odr;
+            SCSI_TRACE("write_icr: MESSAGE OUT byte=0x%02X", msg);
+            if (msg >= 0x80) {
+                // IDENTIFY: LUN in bits 0-2, disconnect privilege in bit 6.
+                // After IDENTIFY, resume the original phase's completion —
+                // if we came from data_in/data_out with transfer done, go
+                // to status; otherwise return to command phase.
+                if (scsi->buf.size == 0 &&
+                    (scsi->bus.saved_phase == scsi_data_in || scsi->bus.saved_phase == scsi_data_out))
+                    phase_status(scsi, STATUS_GOOD);
+                else
+                    phase_status(scsi, STATUS_GOOD);
+            } else if (msg == 0x06 || msg == 0x0C) {
+                // ABORT or BUS DEVICE RESET: go bus free
+                phase_free(scsi);
+            } else {
+                // Unhandled message — complete with GOOD status
+                phase_status(scsi, STATUS_GOOD);
+            }
+        } else if (scsi->bus.phase == scsi_data_in) {
             if (scsi->buf.size == 0)
                 phase_status(scsi, STATUS_GOOD);
             else
@@ -707,6 +754,8 @@ static void write_icr(scsi_t *scsi, uint8_t val) {
             ;
         else if (scsi->bus.phase == scsi_message_in)
             ;
+        else if (scsi->bus.phase == scsi_message_out)
+            ; // message byte already latched in ODR
         else if (scsi->bus.phase == scsi_data_in)
             ; // byte already read via IDR
         else if (scsi->bus.phase == scsi_data_out) {
@@ -723,6 +772,21 @@ static void write_icr(scsi_t *scsi, uint8_t val) {
     if (bits_set & ICR_SEL) {
         SCSI_TRACE("write_icr: SEL asserted, phase=%d -> selection", scsi->bus.phase);
         phase_selection(scsi);
+    }
+
+    // ATN asserted: the initiator requests MESSAGE OUT phase.
+    // On real hardware the target notices ATN during the next REQ/ACK
+    // handshake and transitions at the first opportunity.  In the
+    // emulator, if REQ is not currently asserted (data exhausted or
+    // between handshakes) and the bus is in an information-transfer
+    // phase, transition immediately — the target has no pending byte
+    // to deliver first.
+    if ((bits_set & ICR_ATN) && !(scsi->reg.csr & CSR_REQ)) {
+        if (scsi->bus.phase == scsi_data_in || scsi->bus.phase == scsi_data_out || scsi->bus.phase == scsi_status ||
+            scsi->bus.phase == scsi_message_in) {
+            SCSI_TRACE("write_icr: ATN asserted, phase=%d -> message_out", scsi->bus.phase);
+            phase_message_out(scsi);
+        }
     }
 }
 
@@ -787,32 +851,9 @@ static void write_mr(scsi_t *scsi, uint8_t val) {
     }
 }
 
-// Commit a pending DIN -> status transition set by a previous CDR read.
-// See the comment on scsi->pending_status in scsi_internal.h.
-static void commit_pending_status(scsi_t *scsi) {
-    if (!scsi->pending_status)
-        return;
-    uint8_t code = scsi->pending_status_code;
-    scsi->pending_status = false;
-    // Only transition if the bus is still in a phase where status makes
-    // sense.  A reset or other transition may have invalidated the
-    // pending flag before we got a chance to commit.
-    if (scsi->bus.phase != scsi_data_in && scsi->bus.phase != scsi_data_out && scsi->bus.phase != scsi_command)
-        return;
-    phase_status(scsi, code);
-}
-
 // Read a byte from SCSI controller register
 static uint8_t read_uint8(void *s, uint32_t addr) {
     scsi_t *scsi = (scsi_t *)s;
-
-    // A prior CDR read consumed the last DIN byte and armed a deferred
-    // phase transition.  Any *other* register access means the driver has
-    // moved past observing the DIN-complete state, so advance now.  CDR
-    // reads are handled specifically below so the driver can distinguish
-    // "one extra read in DIN phase" from "inspecting a different register".
-    if (scsi->pending_status && (addr >> 4 & 7) != CDR && (addr >> 4 & 7) != IDR)
-        commit_pending_status(scsi);
 
     // [5]: on 68000, reads are to even addresses (UDS). On 68030 (SE/30,
     // IIcx), the GLUE uses R/W directly and A0 is irrelevant for direction.
@@ -831,12 +872,6 @@ static uint8_t read_uint8(void *s, uint32_t addr) {
             SCSI_TRACE("  SCSI RD CDR -> 0x%02X (pipeline)", val);
             return val;
         }
-        // A pending DIN -> status transition from the previous CDR read
-        // is committed here if the driver reads CDR again (it's polling /
-        // one past the buffer); an empty-buffer CDR read will then fall
-        // through to the "buf.size == 0 && data_in" case below.
-        if (scsi->pending_status)
-            commit_pending_status(scsi);
         if (scsi->bus.phase == scsi_data_in) {
             if (scsi->buf.size != 0) {
                 scsi->reg.cdr = next_byte(scsi);
@@ -844,28 +879,9 @@ static uint8_t read_uint8(void *s, uint32_t addr) {
                 // the real NCR 5380 handshake gap between bytes
                 if (scsi->reg.mr & MR_DMA) {
                     scsi->reg.csr &= ~CSR_REQ;
-                    // Last data byte: defer the DIN -> status transition
-                    // until the next register access so the driver observes
-                    // REQ=0 in DIN phase (transfer complete) before seeing
-                    // the status-phase bits change.  Without this the A/UX
-                    // retail SCSI manager treats the overlapping transition
-                    // as SST_MORE and fails every INQUIRY probe.
-                    if (scsi->buf.size == 0) {
-                        scsi->pending_status = true;
-                        scsi->pending_status_code = STATUS_GOOD;
-                        return scsi->reg.cdr;
-                    }
                 }
             } else
                 phase_status(scsi, STATUS_GOOD);
-        } else if (scsi->bus.phase == scsi_status && (scsi->reg.mr & MR_DMA)) {
-            // Pseudo-DMA status read completes the handshake — advance to
-            // message-in so the next driver step can read CMD_COMPLETE.
-            // (A/UX's DMA path reads status via SDMA_ADDR and then reads
-            //  the message byte directly via CDR with ACK cycling.)
-            uint8_t status_byte = scsi->reg.cdr;
-            phase_message_in(scsi, MSG_CMD_COMPLETE);
-            return status_byte;
         }
         return scsi->reg.cdr;
 
@@ -952,11 +968,6 @@ static uint32_t read_uint32(void *scsi, uint32_t addr) {
 // Write a byte to SCSI controller register
 static void write_uint8(void *s, uint32_t addr, uint8_t value) {
     scsi_t *scsi = (scsi_t *)s;
-
-    // Any register write also commits a pending DIN -> status transition
-    // from the last data byte read.  See read_uint8 for context.
-    if (scsi->pending_status)
-        commit_pending_status(scsi);
 
     if (scsi->loopback) {
         // Advance CDR pipeline: capture current bus state BEFORE this write

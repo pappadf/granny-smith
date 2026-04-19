@@ -166,6 +166,7 @@ struct scsi {
     /* Plain POD fields first (no pointers) */
     struct {
         scsi_phase_t phase;
+        scsi_phase_t saved_phase; // phase before MESSAGE OUT (for return)
         int initiator;
         int target;
     } bus;
@@ -234,16 +235,6 @@ struct scsi {
 
     // Internal end-of-DMA flag (phase changed while DMA active)
     bool end_of_dma;
-
-    // Deferred DIN -> status transition.  After the last data-in byte is
-    // consumed in DMA mode, the bus should transition to the status phase.
-    // Doing that inside the same register access hides the post-transfer
-    // REQ=0 window from the driver: A/UX's SCSI manager interprets "phase
-    // changed before we observed REQ deassert" as SST_MORE (more data
-    // pending).  Defer the phase transition until the *next* register
-    // access so the driver sees a clean DIN-complete state first.
-    bool pending_status;
-    uint8_t pending_status_code;
 
     // Loopback mode: simulate passive SCSI terminator (test card)
     bool loopback;
