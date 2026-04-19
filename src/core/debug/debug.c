@@ -443,7 +443,7 @@ static int disasm(uint16_t *instr, char *mnemonic, char *operands) {
 // Disassemble instruction at addr, write to buf, return instruction length in words
 int debugger_disasm(char *buf, uint32_t addr) {
     uint16_t words[16];
-    char mnemonic[32], operands[32];
+    char mnemonic[32], operands[80];
 
     int i;
     for (i = 0; i < 16; i++)
