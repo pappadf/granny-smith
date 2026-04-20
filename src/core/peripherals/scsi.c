@@ -139,6 +139,7 @@ static void phase_free(scsi_t *scsi) {
     scsi->bus.phase = scsi_bus_free;
     scsi->reg.csr = 0;
     scsi->end_of_dma = false;
+    scsi->deferred_free = false;
     scsi_update_drq(scsi);
     scsi_update_irq(scsi);
 }
@@ -825,6 +826,23 @@ static void write_mr(scsi_t *scsi, uint8_t val) {
     if (bits_cleared & MR_DMA) {
         scsi->reg.bsr &= ~BSR_DR;
         scsi->end_of_dma = false;
+        // If data-in transfer completed (buffer drained) while DMA was
+        // active, transition to status now.  The bus stayed in data_in
+        // during DMA so the pseudo-DMA loop could see a clean BSR
+        // (DRQ=0 / phase-mismatch=0 on read), but the actual phase
+        // change is deferred until the host clears MR_DMA.  This
+        // preserves Mac OS compatibility: Mac OS clears MR_DMA after
+        // its byte-counting pseudo-DMA loop and expects the bus to
+        // transition to status at that point (via TCR write or here).
+        if (scsi->bus.phase == scsi_data_in && scsi->buf.size == 0) {
+            phase_status(scsi, STATUS_GOOD);
+            // Mark deferred status: A/UX re-enables MR_DMA in its
+            // status handler to pseudo-DMA-read the status byte.
+            // The flag gates BSR_DR assertion and the CDR-read
+            // status→message_in transition so Mac OS (which uses
+            // ICR ACK, not pseudo-DMA) is unaffected.
+            scsi->deferred_free = true;
+        }
         scsi_update_drq(scsi);
         scsi_update_irq(scsi);
     } else if (bits_set & MR_DMA) {
@@ -844,6 +862,12 @@ static void write_mr(scsi_t *scsi, uint8_t val) {
         // if we're writing out data (command bytes or data-out), and there is
         // room in the buffer, assert request signal
         if ((scsi->bus.phase == scsi_data_out || scsi->bus.phase == scsi_command) && scsi->buf.size < scsi->buf.max)
+            scsi->reg.bsr |= BSR_DR;
+
+        // Deferred status: the status byte is pending in CDR after a
+        // write_mr-initiated data_in→status transition.  Assert BSR_DR
+        // so A/UX's SPH_STAT handler can detect and read it via DMA.
+        if (scsi->bus.phase == scsi_status && scsi->deferred_free)
             scsi->reg.bsr |= BSR_DR;
 
         scsi_update_drq(scsi);
@@ -882,6 +906,14 @@ static uint8_t read_uint8(void *s, uint32_t addr) {
                 }
             } else
                 phase_status(scsi, STATUS_GOOD);
+        } else if (scsi->bus.phase == scsi_status && (scsi->reg.mr & MR_DMA) && scsi->deferred_free) {
+            // Status byte consumed via pseudo-DMA read.  On real
+            // hardware the ACK handshake causes the target to
+            // transition to message_in with COMMAND COMPLETE.
+            uint8_t val = scsi->reg.cdr;
+            scsi->deferred_free = false;
+            phase_message_in(scsi, MSG_CMD_COMPLETE);
+            return val;
         }
         return scsi->reg.cdr;
 

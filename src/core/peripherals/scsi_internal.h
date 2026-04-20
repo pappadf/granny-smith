@@ -236,6 +236,14 @@ struct scsi {
     // Internal end-of-DMA flag (phase changed while DMA active)
     bool end_of_dma;
 
+    // Deferred status: set when write_mr transitions data_in→status after
+    // DMA completes.  Gates BSR_DR assertion on the next MR_DMA set
+    // (so A/UX's SPH_STAT can detect the status byte) and the CDR-read
+    // status→message_in transition (so SPH_MIN completes the transaction).
+    // Mac OS uses ICR ACK for status/message_in, so this flag — only set
+    // on the write_mr path — keeps Mac OS flows unaffected.
+    bool deferred_free;
+
     // Loopback mode: simulate passive SCSI terminator (test card)
     bool loopback;
 
