@@ -7,12 +7,6 @@ and the **Mac Plus** (pre-ADB, quadrature mouse).  For Mac Plus hardware
 details (SCC quadrature encoding, VIA signals, connector pinout), see
 [mouse.md](mouse.md).
 
-**Supersedes:** `local/gs-docs/notes/mouse-control.md`, `more-about-mouse.md`,
-`mouse-workflow.md`, `handover-set-mouse-determinism.md`,
-`why-set-mouse-global-fails.md`, `solution-precise-mouse-injection.md`,
-`mouse-injection-investigation-2026-03-28.md`, `mouse-definitive-2026-03-29.md`,
-and `handover-2026-03-29.md` (mouse-related sections).
-
 ---
 
 ## Table of Contents

@@ -561,7 +561,6 @@ static void se30_reset(config_t *cfg) {
 // The GLUE ASIC holds DSACK during I/O accesses, stalling the 68030.
 // VIA penalty dominates due to E-clock synchronization (~19-23 avg vs 4 for RAM).
 // Set to 0 to disable penalties (preserves existing timing behaviour).
-// See local/gs-docs/notes/SE30-timing.md for derivation.
 #define SE30_VIA_IO_PENALTY  16 // VIA E-clock sync: ~19-23 avg, minus ~4 baseline
 #define SE30_SCC_IO_PENALTY  2 // SCC with own 3.672 MHz PCLK: ~6 total, minus ~4
 #define SE30_SCSI_IO_PENALTY 2 // NCR 5380: ~6 total, minus ~4
@@ -581,7 +580,7 @@ static uint8_t se30_io_read_uint8(void *ctx, uint32_t addr) {
     // routes byte accesses through this lane regardless of A0/A1, and the
     // chip's RS0..RS3 lines decode only A9..A12, so any byte in the 8 KB
     // decode window aliases to the same register. Mask A0 before handing
-    // the offset to the 6522 core. See local/gs-docs/notes/SE30-via.md.
+    // the offset to the 6522 core.
     if (offset < IO_VIA1_END) {
         memory_io_penalty(SE30_VIA_IO_PENALTY);
         return se30->via1_iface->read_uint8(cfg->via1, (offset - IO_VIA1) & ~1u);

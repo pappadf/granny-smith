@@ -1,712 +1,697 @@
-# Macintosh Plus SCSI Subsystem Documentation
+# SCSI in the Macintosh Family
 
-This document provides a comprehensive description of the SCSI subsystem of the Apple Macintosh Plus (1986). It integrates information about the host bus integration, the NCR 5380/53C80 host controller, the SCSI bus, and connected devices. It is designed to serve as a reference for emulator development and includes register-level detail, bus phases, protocol semantics, and device command handling.
+This document describes the SCSI subsystem at the Macintosh-system level:
+how the bus is wired, how pseudo-DMA is implemented on each machine,
+and how classic Mac OS and A/UX drive the NCR 5380 so differently that
+a single emulator must model both flows correctly.  Chip-internal
+register-level details live in [ncr_5380.md](ncr_5380.md); SCSI
+protocol / command-set details are at the end of this file.
 
----
+Status of our emulator:
 
-## 1. Host Integration
-
-### 1.1 Memory-Mapped Addressing
-
-* The Macintosh Plus integrates the **NCR 5380 SCSI controller** into the second 4 MB address block of the 68000 CPU memory map.
-* SCSI registers appear at base address `$580000` with decoding to support mirrored access and pseudo-registers for DMA.
-* Address formation:
-
-  * Bits encode read/write (`n`), DMA acknowledge (`d`), and register number (`r`).
-  * Formula: `$580drn`.
-* **Mirroring**: Registers repeat across the block due to partial decoding; emulator must replicate mirroring.
-* **Access granularity**:
-
-  * Reads must occur at **even addresses**, writes at **odd addresses**.
-  * Illegal access patterns (e.g., word or longword) generate **bus errors** on real hardware.
-
-### 1.2 Read/Write Side Effects
-
-* Many registers clear interrupt or status latches on read (e.g., CSR, BSR, Reset/Parity)【12†source】.
-* Correct emulation requires modeling of these **read-to-clear semantics**.
-
-### 1.3 Cycle Accuracy
-
-* Accesses to the SCSI chip may stall the 68000 by inserting wait states if READY is deasserted【10†source】.
-* For high-fidelity emulation, timing windows (BUS FREE, ARBITRATION DELAY, SELECTION timeout, etc.) must be observed【14†source】.
-
-### 1.4 Endianness and Alignment
-
-* The 5380 is an **8-bit peripheral**; all accesses are byte-oriented.
-* The 68000 big-endian alignment must be respected: registers map only to the **even or odd halves** of the data bus.
+* **Macintosh Plus** — polled SCSI, `/DTACK`-stalled pseudo-DMA.
+* **Macintosh SE/30** — fully interrupt-driven SCSI via VIA2.
+  Both Mac OS ROM driver and A/UX 3.0.1 kernel boot from SCSI in the
+  emulator.
+* **Macintosh IIcx** — same wiring as SE/30 (VIA2 CB2/CA2), identical
+  SCSI driver on both machines.
 
 ---
 
-## 2. Host Controller: NCR 5380
+## 1. The SCSI-1 bus
 
-The NCR 5380 provides a minimal but flexible host adapter, exposing direct SCSI line control and DMA facilities. 
+The Macintosh uses a single-ended, asynchronous SCSI-1 bus:
 
-### Programmed I/O vs. DMA Modes in the 5380
+* 8 data lines DB[0..7] + 1 parity line DBP, open-collector / wired-OR.
+* 9 control lines: BSY, SEL, C/D, I/O, MSG, REQ, ACK, ATN, RST.
+* Apple's external connector is a DB-25; the internal ribbon on
+  machines with internal drives is the standard 50-pin IDC header.
+* No terminator power is provided by the Plus; later machines supply
+  it through a terminator-power diode.
+* Bus speed is asynchronous — in practice 1.5–3 MB/s depending on
+  cable length and target firmware.
 
-The NCR 5380 provided a spectrum of data transfer methodologies, ranging from complete CPU management to semi-autonomous operations.
+### 1.1 Bus phases
 
-**Programmed I/O (PIO):** In this fundamental mode, the host CPU is responsible for every aspect of the data transfer. This includes directly managing the SCSI bus handshake by polling status registers and manually asserting the /REQ (Request) and /ACK (Acknowledge) signals by writing to the chip's control registers. While this offers granular control, it fully occupies the CPU, making it inefficient for large data transfers.
+In strict order for a normal transaction:
 
-**DMA Mode**: The 5380 provides a "DMA Mode," which can be enabled by setting a specific bit in its Mode Register. When active, the chip's internal state machine automatically handles the high-frequency /REQ//ACK handshaking on the SCSI bus. This significantly reduces the burden on the host CPU. However, the term "DMA Mode" in the context of the 5380 is ambiguous, as the chip itself does not perform memory access. It merely provides signals to facilitate DMA by an external controller.   
+`BUS FREE → ARBITRATION → SELECTION → {COMMAND → [DATA IN | DATA OUT] →
+STATUS → MESSAGE IN} → BUS FREE`
 
-**"Pseudo DMA"**: This term describes a specific implementation technique where the 5380 is placed in its hardware-handshaking DMA mode, but the host CPU (not a dedicated DMA controller) is responsible for moving each byte of data between system memory and the chip's data register. The CPU determines when the chip is ready for the next byte by polling a status bit or monitoring a hardware signal. This hybrid approach, which offloads the SCSI bus handshake but still uses the CPU for data movement, is the foundation of the classic MacOS "blind transfer" method.
+plus two exceptional phases:
 
-### Pseudo DMA in MacOS
+* **MESSAGE OUT** — initiator asserts ATN to send a message
+  (IDENTIFY, ABORT, BUS DEVICE RESET, queue tags).
+* **RESELECTION** — a disconnected target reconnects the initiator.
 
-The process worked as follows: The SCSI Manager would initiate a blind transfer by entering a tight software loop that repeatedly executed a MOVE instruction to read from or write to the memory-mapped address of the NCR 5380's data register. The custom logic on the Macintosh motherboard connected the SCSI controller's "data ready" status to the CPU's /DTACK line. When the CPU executed a MOVE instruction to access the SCSI chip, the bus cycle would begin. If the SCSI controller was not yet ready for the data transfer (for example, it was still waiting for the /REQ//ACK handshake to complete on the SCSI bus), the motherboard logic would withhold the /DTACK signal from the CPU.
+Each information-transfer phase is a stream of single-byte REQ/ACK
+handshakes.  The target drives MSG/C/D/I/O to encode which phase is
+active; the initiator's TCR encodes which phase it *expects*.  The
+5380 computes **phase match** (BSR.PM) combinationally from these two.
 
-A 68000-family processor is designed to pause, or enter "wait states," whenever /DTACK is not asserted during a bus cycle. This effectively freezes the CPU—and the software loop—at the hardware level until the SCSI controller signals its readiness by allowing /DTACK to be asserted. Once /DTACK is received, the bus cycle completes, the byte is transferred, and the CPU immediately proceeds to the next iteration of the loop to transfer the next byte.
+### 1.2 SCSI IDs
 
-This created an exceptionally efficient transfer method. The software was "blind" because it contained no polling logic, but the system was not. The CPU was synchronized to the peripheral at the hardware bus cycle level, eliminating the overhead of a software polling loop. While this achieved very high speeds for a single-tasking system, its reliance on tight timing made it brittle. On later machines like the Macintosh SE and II, additional hardware support was added to make this /DTACK handshake more robust, but on the original Macintosh Plus, it remained a delicate, timing-dependent balance.   
+IDs 0–7; 7 is highest priority and is reserved for the host on every
+Apple Macintosh.  Peripherals default to ID 0 (internal HD) and 3
+(CD-ROM); the external DB-25 chain covers 1, 2, 4, 5, 6.
 
-### Interrupt-driven Model in AUX
+### 1.3 Arbitration vs. non-arbitrated selection
 
-The core principle of a multitasking UNIX kernel is that no single process should be able to monopolize the CPU or halt the entire system while waiting for a slow operation like I/O. The CPU-stalling /DTACK method used by classic MacOS was therefore architecturally unacceptable for A/UX. Instead, A/UX implemented a conventional and robust interrupt-driven model, using the specific hardware signals provided by the NCR 5380 for this purpose.
-
-The 5380 controller provides both a DRQ (DMA Request) signal to indicate that it is ready to transfer a byte of data and an IRQ (Interrupt Request) signal to alert the CPU. Technical notes for the Macintosh II hardware explicitly mention a memory-mapped region for "SCSI (pseudo-DMA w/DRQ on II)," confirming that the DRQ signal was wired to be accessible by the system for I/O control. In the A/UX model, the DRQ signal would be configured to trigger a hardware interrupt. This allows the CPU to initiate a SCSI transfer, then immediately switch to executing another process. When the SCSI controller is ready for data, the DRQ-triggered interrupt forces the CPU to pause its current task, execute a small, fast Interrupt Service Routine (ISR) to handle the data transfer, and then resume its previous work. This asynchronous model is the foundation of efficient multitasking I/O.
-
-
-### Macintosh Plus
-
-The IRQ and DRQ interrupt signals do not generate CPU interrupts in the Macintosh Plus. Software must poll the SCSI controller's Bus and Status register to determine whether a SCSI interrupt is pending.
-
-
-
-Its registers control all initiator and target signals, with specific side effects (read-to-clear latches, arbitration tracking, REQ/ACK edge sampling). For emulation, faithfully implement:
-
-* Each register’s bitfields and dual read/write semantics.
-* Automatic arbitration (AIP/LA) and interrupt latch behavior.
-* Strict read/write address alignment rules.
-* Pseudo-DMA mappings unique to Macintosh Plus.
-
----
-
-## 2.1 Register Map and Addressing
-
-The 5380 exposes **eight logical registers** addressed through A2–A0 with read/write strobes. The Macintosh Plus maps these into the `$580000` region of the 68000 memory map, with mirroring and special cases for DMA acknowledges【41†Inside\_Macintosh†L250-L255】.
-
-| A2 A1 A0 | Access | Register Name                 |
-| -------- | ------ | ----------------------------- |
-| 000      | R      | Current SCSI Data (CSR)       |
-| 000      | W      | Output Data Register (ODR)    |
-| 001      | R/W    | Initiator Command (ICR)       |
-| 010      | R/W    | Mode Register (MR)            |
-| 011      | R/W    | Target Command (TCR)          |
-| 100      | R      | Current Bus Status (CBSR)     |
-| 100      | W      | Select Enable Register (SER)  |
-| 101      | R      | Bus and Status Register (BSR) |
-| 101      | W      | Start DMA Send                |
-| 110      | R      | Input Data Register (IDR)     |
-| 110      | W      | Start DMA Target Receive      |
-| 111      | R      | Reset Parity / Interrupt      |
-| 111      | W      | Start DMA Initiator Receive   |
-
-Reads must be on **even addresses**, writes on **odd addresses**; otherwise a bus error occurs【41†Inside\_Macintosh†L252-L253】.
+The real bus spec requires every initiator to arbitrate.  Because
+Apple machines are single-initiator, every Mac SCSI driver we've seen
+skips the arbitrate step and performs **non-arbitrated selection**:
+write the target ID to ODR, assert `ICR.SEL`, `ICR.DATA`, then drop
+BSY.  The 5380 is perfectly willing to do this — see
+[ncr_5380.md §5.2](ncr_5380.md).
 
 ---
 
-## 2.2 Data Registers
+## 2. Host integration — shared mechanism
 
-### 2.2.1 Current SCSI Data Register (CSR, addr=0, R-only)
+All 5380-based Macs use a common trick for data transfer: the chip's
+**DMA MODE** (`MR.DMA=1`) offloads the REQ/ACK handshake, but the CPU
+itself is still responsible for moving each byte between memory and
+the chip.  This is commonly called **pseudo-DMA**.
 
-* Transparent view of DB\[7:0] lines on the bus.
-* Used for monitoring arbitration or checking incoming bytes.
-* Parity may be checked if enabled.
-* Not latched: reflects current state【42†NCR5380†L10-L11】.
+Two different strategies appear across the family:
 
-### 2.2.2 Output Data Register (ODR, addr=0, W-only)
+* **Plus**: a single memory-mapped alias for CDR; bus cycles stall via
+  `/DTACK` until the chip is ready.  No IRQ wiring.
+* **SE/30 / IIcx**: two aliases (DRQ-synchronised and blind) plus
+  SCSI IRQ and DRQ routed into VIA2 as edge-triggered interrupt
+  sources.
 
-* Drives data onto DB\[7:0] when acting as initiator or target.
-* Also used during arbitration to present host ID.
-* When written with DACK asserted, supports DMA output【42†NCR5380†L10-L11】.
+The chip doesn't know or care which it is — it just sees register
+accesses arrive and raises DRQ.
 
-### 2.2.3 Input Data Register (IDR, addr=6, R-only)
+### 2.1 Pseudo-DMA byte moves
 
-* Latches data from bus during DMA input (REQ/ACK edges).
-* Parity optionally checked when loaded.
-* Can be read under programmed I/O or DMA with DACK【42†NCR5380†L11-L12】.
+During a pseudo-DMA read (target → initiator) the host:
 
----
+1. Issues a read at the pseudo-DMA alias address.
+2. Bus cycle hits the glue logic.  Glue routes the read to the 5380's
+   CDR register *and* drives an internal `DACK` so the chip treats it
+   as a DMA cycle — the chip returns the latched byte and pulses ACK
+   to the target.
+3. If the chip isn't ready (`BSR.DR=0`), glue holds `/DTACK` high
+   (Plus) or simply returns whatever CDR happens to contain (SE/30
+   blind path).  In the DRQ path on SE/30, `/DTACK` assertion is also
+   gated on DRQ.
 
-## 2.3 Initiator Command Register (ICR, addr=1, R/W)
+Writes work symmetrically: the host writes to an alias; glue routes
+the byte to ODR and asserts DACK.
 
-This register controls key initiator signals and reflects arbitration state【42†NCR5380†L11-L12】.
+### 2.2 Where the CPU waits
 
-* **Read bits:**
+The CPU has to know *when* the next byte is ready:
 
-  * Bit 7: Assert RST (status)
-  * Bit 6: Arbitration in Progress (AIP)
-  * Bit 5: Lost Arbitration (LA)
-  * Bits 4–0: reflect asserted lines (ACK, BSY, SEL, ATN, DATA)
-
-* **Write bits:**
-
-  * Bit 7: ASSERT RST → drives RST onto SCSI bus.
-  * Bit 6: TEST MODE → disables outputs for diagnostics.
-  * Bit 5: DIFF ENBL (unused on 5380; 5381 only).
-  * Bit 4: ASSERT ACK
-  * Bit 3: ASSERT BSY
-  * Bit 2: ASSERT SEL
-  * Bit 1: ASSERT ATN
-  * Bit 0: ASSERT DATA (drives ODR value).
-
-Special semantics:
-
-* Setting **ASSERT RST** forces internal reset (except this bit).
-* AIP/LA bits automatically update during arbitration.
-
----
-
-## 2.4 Mode Register (MR, addr=2, R/W)
-
-Controls global operation modes【42†NCR5380†L13-L14】.
-
-* Bit 7: DMA Mode Enable (enables DRQ/DACK transfer).
-* Bit 6: Target Mode Enable.
-* Bit 5: Parity Check Enable.
-* Bit 4: Parity Enable (generation on output).
-* Bit 3: Arbitration Enable.
-* Bit 2: Reserved.
-* Bit 1: Monitor Bus Mode (forces CSR continuous sample).
-* Bit 0: Block Mode (affects DMA burst behavior).
+* **Plus**: doesn't know.  It relies on `/DTACK` to freeze the CPU
+  mid-instruction until DRQ asserts.
+* **SE/30 DRQ path (`$06000`)**: same as Plus — `/DTACK` stalling.
+* **SE/30 blind path (`$12000`)**: glue always completes the cycle.
+  Either the target is known to be ready (because the host has already
+  polled BSR) or the byte is irrelevant because the chip is in DRQ-less
+  status phase.  This path is what A/UX's `SPH_STAT` uses to fetch the
+  status byte via pseudo-DMA.
+* **SE/30 register path (`$10000`)**: direct register read, no DACK.
+  Used for control registers (ICR/MR/TCR/CSR/BSR).
 
 ---
 
-## 2.5 Target Command Register (TCR, addr=3, R/W)
+## 3. Host integration — Macintosh Plus
 
-Asserts phase lines during target role【42†NCR5380†L14-L15】.
+### 3.1 Memory map
 
-* Bit 2: Assert MSG
-* Bit 1: Assert C/D
-* Bit 0: Assert I/O
-* Bits 7–3: reserved.
+| Address range         | Function                                     |
+| --------------------- | -------------------------------------------- |
+| `$580000–$5FFFFF`     | NCR 5380 registers, mirrored across 512 KB   |
+| Mirror reads          | Must be on **even** CPU addresses (UDS)      |
+| Mirror writes         | Must be on **odd** CPU addresses (LDS)       |
+| `$5800drn`            | Address formation: R/W, DMA, register-number |
 
-These three lines define the **current bus phase** (together with REQ/ACK).
+Our emulator registers the SCSI memory interface at `0x00500000`
+spanning 1 MB (see [scsi.c `scsi_init`](../src/core/peripherals/scsi.c)),
+covering both the `$500000` reserved block and the `$580000` SCSI
+window.
 
----
+Bit semantics of the address LSBs:
 
-## 2.6 Current Bus Status Register (CBSR, addr=4, R-only)
+* A4–A6 select which of the eight chip registers is accessed.
+* A9 (the "DMA" alias bit) distinguishes a regular register access
+  from a DACK-ing pseudo-DMA access.  `$580200` is ODR with DACK
+  asserted; `$580000` is ODR with DACK off.
+* Word or longword accesses fault with a bus error on real hardware.
 
-Read-only snapshot of SCSI signals【42†NCR5380†L15-L16】.
+### 3.2 No IRQ, no DRQ
 
-* Bit mapping directly mirrors ATN, BSY, SEL, ACK, RST, MSG, C/D, I/O.
-* Polled to detect bus transitions.
+On the Plus, **neither IRQ nor DRQ is wired into the 68000's IPL
+lines** or into the VIA.  The chip's IRQ latch is observable only by
+explicit polling of `BSR.INT`.  Mac OS copes by running the entire
+transfer synchronously — the CPU stays inside the SCSI Manager from
+command issue until message-in.
 
----
+### 3.3 `/DTACK` pseudo-DMA
 
-## 2.7 Select Enable Register (SER, addr=4, W-only)
+The Macintosh Plus glue logic implements the classic trick: it
+**with­holds `/DTACK`** on pseudo-DMA addresses until the chip raises
+DRQ.  The 68000 enters wait states mid-instruction; when DRQ finally
+asserts, `/DTACK` goes low, the MOVE completes, and the next
+iteration of the host's blind-transfer loop fires immediately.
 
-Defines which target IDs the chip will respond to during reselection【42†NCR5380†L15-L16】.
+The loop therefore contains **no polling** — every MOVE is a
+byte-transfer that stalls until the byte is ready.  The whole
+transfer is clocked at chip speed, not at CPU speed.
 
-* Writing a bit mask enables recognition of that ID on SEL.
-* Example: setting bit 7 allows recognition as host ID 7.
+Drawbacks:
 
----
+* The CPU is unavailable during the transfer.  A slow disk can starve
+  VBL interrupts for hundreds of microseconds.
+* `/DTACK` timing is very tight; later machines added dedicated
+  handshake hardware partly to relax this.
 
-## 2.8 Bus and Status Register (BSR, addr=5, R-only)
+### 3.4 What the emulator implements
 
-Provides latched status and interrupt sources【42†NCR5380†L15-L16】.
-
-* Bits:
-
-  * Phase Match / Mismatch.
-  * Interrupt pending.
-  * Arbitration lost.
-  * End of Process (EOP).
-* Must be cleared by reading Reset/Parity register.
-
----
-
-## 2.9 DMA Registers (Pseudo)
-
-### 2.9.1 Start DMA Send (addr=5, W-only)
-
-* Arms the DMA engine for sending data from host to SCSI bus.
-* Writing triggers DMA request cycle【42†NCR5380†L16-L17】.
-
-### 2.9.2 Start DMA Target Receive (addr=6, W-only)
-
-* Prepares to receive data from initiator into IDR.
-
-### 2.9.3 Start DMA Initiator Receive (addr=7, W-only)
-
-* Prepares to receive data from target into IDR.
-
----
-
-## 2.10 Reset Parity / Interrupt Register (addr=7, R-only)
-
-* Reading clears latched parity error and interrupt pending conditions【42†NCR5380†L17-L18】.
-* Also acknowledges completion of many events.
+* Full register model at `$500000–$5FFFFF`.
+* `phase_data_in` / `phase_data_out` that stuff the buffer with
+  exactly the expected number of bytes, so blind reads always
+  succeed.
+* No `/DTACK` modelling — pseudo-DMA aliases return bytes
+  synchronously.  For a single-initiator Plus this is indistinguishable
+  from real hardware unless a timing-sensitive diagnostic is run.
 
 ---
 
-## 2.11 Interrupt Semantics
+## 4. Host integration — Macintosh SE/30 (and IIcx)
 
-* Events generating IRQ (not wired on Mac Plus, but emulated):
+### 4.1 Memory map
 
-  * REQ transition (phase change)
-  * Parity error
-  * Arbitration lost
-  * End of DMA process
-  * Bus reset detected【42†NCR5380†L18-L22】
-* IRQ is level-active until cleared by Reset/Parity read.
+Within the SE/30 I/O decode, the SCSI chip occupies four sub-ranges
+(see [src/machines/se30.c](../src/machines/se30.c)):
 
----
+| Offset from I/O base     | Function                                        |
+| ------------------------ | ----------------------------------------------- |
+| `$06000–$07FFF`          | Pseudo-DMA **with DRQ handshaking**             |
+| `$08000–$0FFFF`          | (reserved — decoded but unused)                 |
+| `$10000–$11FFF`          | Direct register access (register-select in A4–A6)|
+| `$12000–$13FFF`          | Pseudo-DMA **blind** (no DRQ check)             |
 
-## 2.12 Operational Notes
+All four map through the chip's `read_uint8` / `write_uint8`.  The
+emulator does *not* need to distinguish blind-vs-DRQ: our chip model
+asserts `BSR.DR` only when the bus phase matches TCR (see
+[ncr_5380.md §3.3](ncr_5380.md)), which is the real signal behind the
+glue logic's DRQ wait.
 
-* **Read side effects:** reading BSR or Reset register clears latched conditions.
-* **Write semantics:** many registers are write-only; reads return undefined values.
-* **DMA:** pseudo-DMA via CPU accesses to special mirrored addresses asserts DACK automatically on Macintosh Plus【41†Inside\_Macintosh†L252-L253】.
+The absolute SCSI base on the SE/30 I/O page is `$50010000`.
 
----
+### 4.2 IRQ and DRQ wiring to VIA2
 
-## 3. SCSI Bus
+The SE/30 routes both 5380 interrupt outputs into VIA2:
 
-### 3.1 Electrical Characteristics
+* **IRQ** → VIA2 **CB2** (active-low).  Fires on phase mismatch
+  during DMA, end of DMA, bus reset, parity error.  VIA2 raises the
+  SCSI bit of its IFR; the SE/30's IPL glue promotes that to IPL 2
+  (plus IPL 1 from the VIA itself → level 2 effective).
+* **DRQ** → VIA2 **CA2** (active-low).  Fires whenever the chip
+  asserts DRQ.  The SCSI DRQ interrupt is masked in most drivers; its
+  main use is debugging / polling.
 
-* Open-collector, active-low signaling with **wired-OR resolution**【12†source】.
-* Data: **DB\[0–7] + DBP (odd parity)**.
-* Control: BSY, SEL, ATN, ACK, REQ, MSG, C/D, I/O, RST.
-* Single-ended (Mac Plus DB-25 connector) vs standard 50-pin ribbon.
-* No terminator power provided by Mac Plus.
+See `scsi_update_irq()` and `scsi_update_drq()` in
+[scsi.c](../src/core/peripherals/scsi.c) for the emulator plumbing.
+Both signals are driven "active-low" through `via_input_c()`.
 
-### 3.2 Bus Phases【14†source】
+### 4.3 Three distinct access paths
 
-1. **BUS FREE** – no device drives BSY or SEL.
-2. **ARBITRATION** – initiators assert BSY+ID; highest ID wins.
-3. **SELECTION** – initiator asserts SEL+target ID.
-4. **RESELECTION** – target reconnects initiator.
-5. **COMMAND** – initiator → target CDB.
-6. **DATA IN/OUT** – bulk transfer with REQ/ACK.
-7. **STATUS** – target sends completion byte.
-8. **MESSAGE IN/OUT** – exchange of protocol messages.
+Classic Mac OS and A/UX each prefer a different SE/30 pseudo-DMA
+alias:
 
-### 3.3 Arbitration
-
-* Priority: ID7 highest, ID0 lowest【14†source】.
-* Bus settle and arbitration delay timers (\~2.4 µs in SCSI-1, 2.2 µs earlier).
-* Lost arbitration detected by ICR.LA bit.
-
-### 3.4 Handshake Protocol (REQ/ACK)
-
-* Target drives REQ, initiator responds with ACK.
-* One byte transferred per REQ/ACK handshake【14†source】.
-* Setup/hold requirements define minimum period; asynchronous only on 5380.
-
-### 3.5 Error Conditions
-
-* Parity error detected if odd parity not met.
-* Illegal phase combinations trigger Bus+Status mismatch interrupt【12†source】.
+* **Mac OS (ROM SCSI Manager)** — uses `$06000` with DRQ handshaking
+  for bulk data.  Status and message-in are read via register access
+  at `$10000` with ICR/ACK handshaking (`MR.DMA=0`).
+* **A/UX retail 3.0.1 kernel** — uses `$12000` blind for data phases
+  *and* status phase.  The kernel programs TCR to the expected phase
+  before setting `MR.DMA=1`; the chip's phase-match gate enforces
+  correctness.
 
 ---
 
-## 4. SCSI Devices and Command Set & Data Structures
+## 5. How classic Mac OS uses SCSI
 
-This chapter specifies the exact wire-level formats for SCSI commands, data, status, and messages required to implement a correct Macintosh Plus–era emulator. Unless noted, multi-byte numeric fields are **big-endian** (most significant byte first) and lengths are in **bytes**. The 5380/53C80 transports data **asynchronously**; synchronous/wide options may be rejected by targets or the emulator.
+The Apple ROM SCSI Manager was written for the Plus but extended to
+drive later chips with roughly the same state machine.  Key properties:
 
-### Historical Disk Models
+* **Synchronous.**  The caller (File Manager, a device driver, a
+  utility like Apple HD SC Setup) blocks until the command completes.
+* **Arbitration is skipped.**  See §1.3.
+* **Pseudo-DMA for data phases only.**  Command, status, and message-in
+  are all driven by programmed I/O through ICR (`ACK` toggling).
+* **Byte-exact transfers.**  The Manager knows the expected byte count
+  from the CDB and writes exactly that many MOVE instructions in the
+  pseudo-DMA loop.  No implicit "drain until phase changes" logic.
 
-Apple's original SCSI hard drives used in the Macintosh Plus era were typically rebranded drives from various manufacturers. The following table documents some of the specific models and their characteristics:
+### 5.1 Typical INQUIRY transaction
 
-| Apple Model | Vendor     | Model       | Cylinders | Sectors/Track | Heads | Total Blocks |
-|-------------|------------|-------------|-----------|---------------|-------|--------------|
-| HD20SC      | Seagate    | ST225N      | 615       | 17            | 4     | 41820        |
-| HD20SC      | Miniscribe | M8425S      | 612       | 17            | 4     | —            |
-| HD40SC      | Conner     | CP2040A     | 1026      | 40            | 2     | —            |
-| HD80SC      | Quantum    | Q280        | 823       | 32            | 6     | —            |
-| HD160SC     | CDC        | Vren V HH   | —         | —             | —     | —            |
+1. **Selection.**  Write target ID to ODR; `ICR = DATA|BSY|SEL`; clear
+   BSY; chip enters SELECTION, target drives BSY; chip enters COMMAND.
+2. **Command bytes.**  For each of 6 bytes: `TCR=COMMAND(0x02)`; write
+   ODR; toggle `ICR.ACK` (assert, then clear).  `run_cmd` fires after
+   the 6th ACK-clear.
+3. **Data in.**  `TCR=DATA_IN(0x01)`; set `MR.DMA=1`; read 36 bytes
+   from `$06000` — each read transfers one byte via pseudo-DMA.  After
+   the 36th byte the buffer is empty; phase stays in DATA_IN until the
+   host clears `MR.DMA`.
+4. **Status.**  Clear `MR.DMA`.  The emulator transitions the bus to
+   STATUS automatically (see `write_mr` in
+   [scsi.c](../src/core/peripherals/scsi.c)).  `TCR=STATUS(0x03)`;
+   host toggles `ICR.ACK` to consume the status byte via CDR.
+5. **Message in.**  Falling edge of ACK in STATUS phase transitions
+   to MESSAGE_IN with `COMMAND COMPLETE`.  Host toggles ACK again.
+6. **Bus free.**  Falling edge of ACK in MESSAGE_IN returns to
+   BUS_FREE.
 
-These specifications reflect the physical geometry reported by the drives, though modern emulation typically abstracts away cylinder-head-sector (CHS) addressing in favor of logical block addressing (LBA).
+### 5.2 Surprise CHECK CONDITION
 
-### 4.2 Command Descriptor Blocks (CDBs)
+A command with no data phase (TEST UNIT READY, SEEK, PREVENT/ALLOW)
+can return **CHECK CONDITION** (`0x02`) from the target.  On real
+hardware the bus goes COMMAND → STATUS directly.
+
+Mac OS's Manager, however, has already programmed `TCR=DATA_IN` in
+anticipation of data and enabled DMA for some of these flows.  The
+result on real hardware: `MR.DMA=1` with bus in STATUS but TCR in
+DATA_IN ⇒ **phase mismatch IRQ** fires; DRQ never asserts.  The
+Manager services the IRQ, reads BSR, sees PM=0, and recovers by
+re-programming TCR to STATUS and reading the byte.
+
+The emulator **must** reproduce this: the phase-match gate on
+`BSR.DR` and the CDR-read auto-transition is what makes the
+`se30-format-hd` integration test work.
+
+### 5.3 Apple HD SC Setup bus scan
+
+On launch, the utility iterates SCSI IDs 0..6 issuing a minimal probe
+(TEST UNIT READY / INQUIRY combination) on each.  The scan is
+entirely synchronous and in the failing case hangs forever with a
+watch cursor — exactly the failure mode we hit in early SCSI commits
+before the phase-match gate was in place.
+
+---
+
+## 6. How A/UX uses SCSI
+
+A/UX 3.0.1's retail kernel bundles a completely different SCSI
+driver.  It is **interrupt-driven** and built around two abstractions:
+
+* `scsitask` — the kernel task that dispatches SCSI requests.
+* A state machine keyed on `stp->state` (`ST_WAIT`, `ST_CMD`,
+  `ST_READ`, `ST_WRAP`, `ST_STAT`, `ST_MIN`, …) that runs one
+  transition per scsitask iteration.
+
+Each state has a handler; the names follow the `SPH_*` convention
+(`SPH_SEL`, `SPH_CMD`, `SPH_STAT`, `SPH_MIN`, etc.).  The handlers
+use **pseudo-DMA for every phase**, including status and message-in.
+
+### 6.1 Why it matters for the emulator
+
+A/UX enables `MR.DMA=1` in phases where Mac OS never does — in
+particular, STATUS and MESSAGE IN.  Two specific flows:
+
+**`SPH_STAT` (status-byte read):**
+
+1. Bus is in STATUS phase (set by the target when it's done with the
+   data phase, or — in our emulator — by the `write_mr(MR_DMA=0)`
+   hook when the data buffer has drained).
+2. Handler writes `TCR=0x03`.
+3. Handler sets `MR.DMA=1` via `BSET #1, MODE`.
+4. Handler polls `BSR & 0x48`:
+   * `0x08` (PM=1, DR=0) — still waiting.
+   * `0x48` (PM=1, DR=1) — status byte available.
+5. Handler reads CDR through the blind pseudo-DMA port at `$12000`.
+   The emulator's `read_uint8` CDR branch, when phase match holds,
+   returns the byte *and* transitions the bus to MESSAGE IN.
+6. Handler reads the reset-parity register (`$70(A2)`) to
+   acknowledge the DMA cycle.
+
+A watchdog counter (`unjam`) guards the poll loop and trips an
+`SST_TIMEOUT` if BSR never settles.  This was the origin of most of
+the A/UX-investigation notes: our emulator's earlier failure to
+assert `BSR_DR` in the status phase caused the watchdog to fire and
+the kernel to stamp `SST_TIMEOUT` into `req->ret`, which then
+cascaded into "no root file system".
+
+**`SPH_MIN` (message-in read):**
+
+Essentially the same flow: `TCR=0x07`, `MR.DMA=1`, poll BSR, read
+CDR via blind pseudo-DMA.  The host treats receiving
+`COMMAND COMPLETE` (`0x00`) as the end of the transaction and lets
+the bus go free by clearing BSY.
+
+### 6.2 Autoconfig probe
+
+At kernel init, A/UX's `autoconfig_disks()` (`$100080B0`) issues an
+INQUIRY followed by a TEST UNIT READY on every SCSI ID.  The
+per-probe callback `probe_complete()` writes the detected device
+type into `disk_slots[id]` only when **both** `$26(req)` and
+`$27(req)` are zero (clean success).  A timeout, phase mismatch, or
+short read leaves `$27(req)` non-zero and the slot stays
+unpopulated — which is why the chip-model quirks above matter for
+A/UX boot.
+
+Once `disk_slots[]` is populated, `vfs_mountroot()` (`$10032BC2`)
+walks the fs-types table and calls each type's `probe_root()`
+against the rootdev at `$11003544` (hardcoded `$1B06` = SCSI major,
+ID 3, slice 6 — the CD-ROM).  A successful match returns via the
+`RTS` at `$10032CFC`, which is the assertion target of the
+`se30-aux-3` integration test.
+
+
+### 6.3 Why A/UX never uses `/DTACK` stalling
+
+A/UX runs preemptively scheduled user tasks on top of a real kernel;
+freezing the CPU mid-instruction for hundreds of microseconds would
+destroy interactive latency.  The entire SCSI driver is IRQ-driven
+*and* short-lived: each ISR completes one state transition and then
+exits.  The main loop polls BSR only after `MR.DMA=1` has been set
+and only until the first DR-asserted sample — the pseudo-DMA
+transfer itself happens at bus speed because the blind-read path
+succeeds immediately once DR is observed.
+
+---
+
+## 7. Plus vs. SE/30 vs. A/UX — side-by-side
+
+| Aspect                      | Mac Plus + Mac OS           | SE/30 + Mac OS                      | SE/30 + A/UX                              |
+| --------------------------- | --------------------------- | ----------------------------------- | ----------------------------------------- |
+| SCSI base                   | `$580000` (24-bit)          | `$50010000` within I/O page         | same as SE/30 + Mac OS                    |
+| Pseudo-DMA aliases          | one, `/DTACK`-stalled       | DRQ path `$06000` + blind `$12000`  | blind `$12000`                            |
+| IRQ wiring                  | not wired                   | VIA2 CB2                            | VIA2 CB2                                  |
+| DRQ wiring                  | drives `/DTACK` glue only   | VIA2 CA2                            | VIA2 CA2                                  |
+| Driver posture              | polled, synchronous         | polled, synchronous                 | interrupt-driven, task-based              |
+| Data phase                  | pseudo-DMA                  | pseudo-DMA (DRQ path)               | pseudo-DMA (blind)                        |
+| Status phase                | ICR/ACK (no DMA)            | ICR/ACK (no DMA)                    | `MR.DMA=1`, pseudo-DMA blind read         |
+| Message-in phase            | ICR/ACK                     | ICR/ACK                             | `MR.DMA=1`, pseudo-DMA blind read         |
+| Arbitration                 | skipped (non-arbitrated)    | skipped                             | skipped                                   |
+| Assumed host ID             | 7                           | 7                                   | 7 (but kernel says `host_id=7` in table)  |
+| Surprise CHECK_CONDITION    | phase-mismatch IRQ recovery | same                                | watchdog (`unjam`) path                   |
+
+---
+
+## 8. SCSI command set reference
+
+The rest of this document covers the SCSI-1 / SCSI-2 command subset
+that Apple's 5380-era machines actually exercise.  The emulator's
+direct-access device (hard disk) and CD-ROM models implement the
+**Minimal Compliance Matrix** at the end of §8.10.
+
+### 8.1 Historical disk models
+
+Apple's original SCSI hard drives in the Plus era were typically
+rebranded drives from various manufacturers:
+
+| Apple Model | Vendor     | Model     | Cylinders | Sectors/Track | Heads | Total Blocks |
+| ----------- | ---------- | --------- | --------- | ------------- | ----- | ------------ |
+| HD20SC      | Seagate    | ST225N    | 615       | 17            | 4     | 41 820       |
+| HD20SC      | Miniscribe | M8425S    | 612       | 17            | 4     | —            |
+| HD40SC      | Conner     | CP2040A   | 1026      | 40            | 2     | —            |
+| HD80SC      | Quantum    | Q280      | 823       | 32            | 6     | —            |
+| HD160SC     | CDC        | Vren V HH | —         | —             | —     | —            |
+
+Modern emulation abstracts away CHS addressing in favour of LBA.
+
+### 8.2 Command Descriptor Blocks (CDBs)
 
 SCSI groups opcodes by CDB length:
 
-* **Group 0 (6‑byte)**: opcodes `0x00–0x1F` (most core SCSI‑1 commands).
-* **Group 1 (10‑byte)**: opcodes `0x20–0x5F` (READ(10), WRITE(10), READ CAPACITY(10), VERIFY(10), etc.).
-* **Group 5 (12‑byte)**: opcodes `0xA0–0xBF` (READ(12), WRITE(12) and some optical/other).
+* **Group 0 (6-byte)** — opcodes `0x00–0x1F`; most core SCSI-1
+  commands.
+* **Group 1 (10-byte)** — opcodes `0x20–0x5F`; READ(10), WRITE(10),
+  READ CAPACITY(10), VERIFY(10), etc.
+* **Group 5 (12-byte)** — opcodes `0xA0–0xBF`; READ(12), WRITE(12),
+  some optical/other.
 
-#### 4.2.1 Common 6‑byte (Group 0) CDB layout
+#### Common 6-byte (Group 0) layout
 
 | Byte | Bits | Meaning                                                                     |
 | ---- | ---- | --------------------------------------------------------------------------- |
-| 0    | 7..0 | **Operation Code**                                                          |
-| 1    | 7..5 | **LUN** (legacy addressing)                                                 |
-| 1    | 4..0 | **High 5 bits** of LBA (for READ/WRITE/VERIFY) or command-specific          |
-| 2    | 7..0 | **Middle 8 bits** of LBA                                                    |
-| 3    | 7..0 | **Low 8 bits** of LBA                                                       |
-| 4    | 7..0 | **Transfer Length** (0 means 256 blocks for READ/WRITE) or parameter length |
-| 5    | 7..0 | **Control** (usually 0)                                                     |
+| 0    | 7..0 | Operation Code                                                              |
+| 1    | 7..5 | LUN (legacy addressing)                                                     |
+| 1    | 4..0 | High 5 bits of LBA (READ/WRITE/VERIFY) or command-specific                  |
+| 2    | 7..0 | Middle 8 bits of LBA                                                        |
+| 3    | 7..0 | Low 8 bits of LBA                                                           |
+| 4    | 7..0 | Transfer Length (0 = 256 blocks for READ/WRITE) or parameter length         |
+| 5    | 7..0 | Control (usually 0)                                                         |
 
-> Notes: Some Group 0 commands do not carry LBA fields (e.g., TEST UNIT READY, INQUIRY). For those, bytes 1–4 are command-specific.
+> Some Group 0 commands (TEST UNIT READY, INQUIRY) don't carry LBA;
+> bytes 1–4 are command-specific.
 
-#### 4.2.2 Common 10‑byte (Group 1) CDB layout
+#### Common 10-byte (Group 1) layout
 
 | Byte | Meaning                                                                |
 | ---- | ---------------------------------------------------------------------- |
 | 0    | Operation Code                                                         |
 | 1    | Flags (RelAddr, FUA, DPO, etc.; device-type specific) + LUN (obsolete) |
-| 2–5  | **Logical Block Address (LBA)**                                        |
+| 2–5  | Logical Block Address (LBA)                                            |
 | 6    | Group Number (upper LBA bits in some older devices)                    |
-| 7–8  | **Transfer Length** (number of blocks)                                 |
+| 7–8  | Transfer Length (number of blocks)                                     |
 | 9    | Control                                                                |
 
-#### 4.2.3 Common 12‑byte (Group 5) CDB layout
-
-| Byte | Meaning                |
-| ---- | ---------------------- |
-| 0    | Operation Code         |
-| 1    | Flags + LUN (obsolete) |
-| 2–5  | **LBA**                |
-| 6–9  | **Transfer Length**    |
-| 10   | Reserved/flags         |
-| 11   | Control                |
-
-### 4.3 Status Byte (target → initiator)
+### 8.3 Status byte (target → initiator)
 
 |   Code | Name                     | Meaning                                                      |
 | -----: | ------------------------ | ------------------------------------------------------------ |
 | `0x00` | **GOOD**                 | Command completed successfully                               |
-| `0x02` | **CHECK CONDITION**      | Sense data available; initiator must issue **REQUEST SENSE** |
+| `0x02` | **CHECK CONDITION**      | Sense data available; initiator must issue REQUEST SENSE     |
 | `0x08` | **BUSY**                 | Target/LUN busy; retry later                                 |
-| `0x18` | **RESERVATION CONFLICT** | Access denied due to another initiator’s reservation         |
-| `0x28` | **QUEUE FULL** (SCSI‑2)  | Target queue depth exceeded (if tagged queuing)              |
+| `0x18` | **RESERVATION CONFLICT** | Access denied due to another initiator's reservation         |
+| `0x28` | **QUEUE FULL** (SCSI-2)  | Target queue depth exceeded (if tagged queuing)              |
 
-> The emulator should terminate each command with STATUS then **MESSAGE IN: COMMAND COMPLETE (0x00)** unless an exception occurs.
+> The emulator should terminate each command with STATUS then
+> MESSAGE IN: COMMAND COMPLETE (`0x00`) unless an exception occurs.
 
-### 4.4 Message System (selection of common messages)
+### 8.4 Message system (common subset)
 
-**Single‑byte messages (Message In unless noted):**
+**Single-byte messages (Message In unless noted):**
 
-* `0x00` **COMMAND COMPLETE**
-* `0x02` **SAVE DATA POINTER**
-* `0x03` **RESTORE POINTERS**
-* `0x04` **DISCONNECT**
-* `0x06` **MESSAGE REJECT**
-* `0x07` **NO OPERATION**
-* `0x08` **MESSAGE PARITY ERROR**
-* `0x0C` **BUS DEVICE RESET**
-* `0x0D` **ABORT**
-* `0x5A` **INITIATOR DETECTED ERROR** (Message Out)
+* `0x00` COMMAND COMPLETE
+* `0x02` SAVE DATA POINTER
+* `0x03` RESTORE POINTERS
+* `0x04` DISCONNECT
+* `0x06` MESSAGE REJECT
+* `0x07` NO OPERATION
+* `0x08` MESSAGE PARITY ERROR
+* `0x0C` BUS DEVICE RESET
+* `0x0D` ABORT
+* `0x5A` INITIATOR DETECTED ERROR (Message Out)
 
-**IDENTIFY (Message Out)**: `0x80 | lun | (disconnect bit)`; bit7=1, bits2..0=LUN, bit6=1 if disconnects allowed.
+**IDENTIFY (Message Out):** `0x80 | lun | (disconnect<<6)`.
 
 **Extended Messages:**
 
-* `0x01, 0x03, 0x01, <period>, <offset>` — **SYNCHRONOUS DATA TRANSFER REQUEST (SDTR)**
-* `0x01, 0x02, 0x03, <width>` — **WIDE DATA TRANSFER REQUEST (WDTR)** (reject in Mac Plus async implementation)
+* `0x01, 0x03, 0x01, <period>, <offset>` — SYNCHRONOUS DATA TRANSFER
+  REQUEST (SDTR)
+* `0x01, 0x02, 0x03, <width>` — WIDE DATA TRANSFER REQUEST (WDTR)
 
-> A 5380‑based Mac Plus implementation typically stays **asynchronous 8‑bit**. It should **MESSAGE REJECT** SDTR/WDTR unless you choose to emulate optional negotiation.
+> A 5380-based Mac implementation stays asynchronous 8-bit.  Reject
+> SDTR/WDTR unless explicitly emulating negotiation.
 
----
+### 8.5 Mandatory commands (direct-access disks)
 
-## 4.5 Mandatory & Common SCSI Commands (direct‑access devices)
+Below, **CDB** shows byte-accurate layouts and **Data** shows exact
+payloads.  Multi-byte numeric fields are big-endian.
 
-Below, **CDB** shows byte‑accurate layouts and **Data** shows exact payloads. If a field/flag is marked “(opt)”, older SCSI‑1 devices may ignore it. Multi‑byte numeric fields are big‑endian.
+#### TEST UNIT READY — `0x00` (6)
 
-### 4.5.1 TEST UNIT READY — `0x00` (6)
+* CDB: `00 | (lun<<5) | 00 | 00 | 00 | 00`
+* Phases: COMMAND → STATUS → MESSAGE IN.
+* Status: GOOD if ready; CHECK CONDITION with sense NOT READY when
+  spun down / media absent.
 
-**Purpose:** Poll ready state; no data phase.
+#### REQUEST SENSE — `0x03` (6)
 
-**CDB:** `00 | (lun<<5) | 00 | 00 | 00 | 00`
+* CDB: `03 | (lun<<5) | 00 | 00 | alloc_len | control`
+* Fixed-format response (response code `0x70` current or `0x71`
+  deferred):
 
-**Phases:** COMMAND → STATUS → MESSAGE IN.
+|  Byte | Field                                                             |
+| ----: | ----------------------------------------------------------------- |
+|     0 | Response Code                                                     |
+|     1 | Obsolete                                                          |
+|     2 | Sense Key (4-bit)                                                 |
+|   3–6 | Information (vendor/command-specific or LBA for certain errors)   |
+|     7 | Additional Sense Length (n)                                       |
+|  8–11 | Command-specific information                                      |
+|    12 | ASC                                                               |
+|    13 | ASCQ                                                              |
+|    14 | Field Replaceable Unit (FRU) (opt)                                |
+| 15–17 | Sense-key-specific (opt)                                          |
+|  18.. | Additional bytes as reported by byte 7                            |
 
-**Status:** `GOOD` if ready; `CHECK CONDITION` with Sense Key **NOT READY** when spun down/media absent.
+Common sense keys: NO SENSE (`0x0`), RECOVERED (`0x1`), NOT READY
+(`0x2`), MEDIUM ERROR (`0x3`), HARDWARE ERROR (`0x4`), ILLEGAL
+REQUEST (`0x5`), UNIT ATTENTION (`0x6`), DATA PROTECT (`0x7`),
+ABORTED COMMAND (`0xB`).
 
----
+#### INQUIRY — `0x12` (6)
 
-### 4.5.2 REQUEST SENSE — `0x03` (6)
+* CDB: `12 | (lun<<5)|evpd | page_code | 00 | alloc_len | control`
+* Standard data (EVPD=0):
 
-**Purpose:** Fetch **fixed‑format sense data** after `CHECK CONDITION`.
+|  Byte | Field                                              |
+| ----: | -------------------------------------------------- |
+|     0 | Peripheral Qualifier (3) / Device Type (5)         |
+|     1 | RMB (bit 7) removable                              |
+|     2 | Version (`0x02` = SCSI-2)                          |
+|     3 | Response Data Format                               |
+|     4 | Additional Length (n)                              |
+|   5–7 | Flags (CmdQue etc.)                                |
+|  8–15 | Vendor Identification (8 ASCII, space-padded)      |
+| 16–31 | Product Identification (16 ASCII, space-padded)    |
+| 32–35 | Product Revision Level (4 ASCII)                   |
+|  36.. | Optional SCSI-2+ fields                            |
 
-**CDB:**
+#### MODE SENSE(6) — `0x1A` / MODE SELECT(6) — `0x15`
 
-* Byte0 `0x03`
-* Byte1 `(lun<<5)`
-* Byte2 `0x00`
-* Byte3 `0x00`
-* Byte4 **Allocation Length** (suggest 0x12 (18) or 0x1B (27) for SCSI‑2)
-* Byte5 `Control`
+Both carry a 6-byte header: mode data length, medium type,
+device-specific parameter, block-descriptor length.  Block
+descriptors are 8 bytes each for direct-access devices: density,
+number-of-blocks(3), reserved, block-length(3).
 
-**Data (Fixed format, response code 0x70/0x71):**
+Pages of interest:
 
-|  Byte | Field                                                           |
-| ----: | --------------------------------------------------------------- |
-|     0 | Response Code (`0x70` current, `0x71` deferred)                 |
-|     1 | Obsolete                                                        |
-|     2 | **Sense Key** (4‑bit)                                           |
-|   3–6 | Information (vendor/command‑specific or LBA for certain errors) |
-|     7 | Additional Sense Length (n)                                     |
-|  8–11 | Command‑specific information                                    |
-|    12 | **ASC**                                                         |
-|    13 | **ASCQ**                                                        |
-|    14 | Field Replaceable Unit (FRU) (opt)                              |
-| 15–17 | Sense‑key specific (sksv + cd\_bp) (opt)                        |
-|  18.. | Additional bytes as reported by byte7                           |
+* `0x01` Read-Write Error Recovery
+* `0x02` Disconnect/Reconnect
+* `0x03` Format Device
+* `0x04` Rigid Disk Geometry
+* `0x08` Caching
+* `0x30` Apple vendor-specific (Apple HD SC Setup's "APPLE COMPUTER, INC."
+  drive identification — the emulator returns this to pass Setup's
+  identity check; see `CMD_MODE_SENSE` in
+  [scsi.c](../src/core/peripherals/scsi.c)).
 
-**Common Sense Keys:** NO SENSE(0x0), RECOVERED(0x1), NOT READY(0x2), MEDIUM ERROR(0x3), HARDWARE ERROR(0x4), ILLEGAL REQUEST(0x5), UNIT ATTENTION(0x6), DATA PROTECT(0x7), BLANK CHECK(0x8), ABORTED COMMAND(0xB). Populate **ASC/ASCQ** (e.g., 0x3A/0x00 = Medium Not Present; 0x28/0x00 = Not Ready to Ready Change; 0x20/0x00 = Invalid Command; 0x24/0x00 = Invalid Field in CDB).
+#### READ(6)/WRITE(6) — `0x08` / `0x0A`
 
----
+* Group 0 layout.  21-bit LBA, 8-bit Transfer Length (`0` → 256
+  blocks).
+* Phases: COMMAND → DATA IN/OUT → STATUS → MESSAGE IN.
 
-### 4.5.3 INQUIRY — `0x12` (6)
+#### READ(10)/WRITE(10) — `0x28` / `0x2A`
 
-**Purpose:** Return device identity & capability.
+* Group 1 layout.  32-bit LBA, 16-bit Transfer Length.
 
-**CDB:**
+#### READ CAPACITY(10) — `0x25`
 
-* Byte0 `0x12`
-* Byte1 `(lun<<5) | (evpd<<0)` where **EVPD**=1 returns Vital Product Data page
-* Byte2 **Page Code** (when EVPD=1; else 0)
-* Byte3 `0x00`
-* Byte4 **Allocation Length** (max bytes host accepts)
-* Byte5 `Control`
+* CDB: `25 00 00 00 00 00 00 00 00 00`
+* Data (8 bytes): last_lba (4, BE), block_length (4, BE).
 
-**Data (Standard, EVPD=0):**
+#### START STOP UNIT — `0x1B`
 
-|  Byte | Field                                                                        |
-| ----: | ---------------------------------------------------------------------------- |
-|     0 | Peripheral Qualifier/Device Type (lower 5 bits type 0x00=Direct‑access disk) |
-|     1 | RMB (bit7) Removable                                                         |
-|     2 | Version (e.g., 0x02 = SCSI‑2)                                                |
-|     3 | Response Data Format (lower nibble), flags                                   |
-|     4 | **Additional Length** (n = remaining bytes)                                  |
-|   5–7 | Flags (CmdQue, etc.)                                                         |
-|  8–15 | **Vendor Identification** (8 ASCII)                                          |
-| 16–31 | **Product Identification** (16 ASCII)                                        |
-| 32–35 | **Product Revision Level** (4 ASCII)                                         |
-|  36.. | (SCSI‑2+) optional fields                                                    |
+* CDB: `1B | immed | 00 | 00 | LoEj|Start | control`
 
-**Data (EVPD):**
+#### PREVENT/ALLOW MEDIUM REMOVAL — `0x1E`
 
-* Page `0x00` — Supported VPD pages
-* Page `0x80` — Unit Serial Number
-* Page `0x83` — Device Identification descriptors (ASCII/WWN/etc.)
+* CDB: `1E 00 00 00 prevent 00`
 
----
+#### VERIFY(10) — `0x2F`
 
-### 4.5.4 MODE SENSE(6) — `0x1A` (6) and MODE SENSE(10) — `0x5A` (10)
+Like READ(10) but no data transfer.  Emulator returns GOOD if the
+LBA range is in-bounds.
 
-**Purpose:** Read current/changeable/default/saved **Mode Pages** and optional **Block Descriptors**.
+#### FORMAT UNIT — `0x04`
 
-**CDB(6):** `1A | (dbd<<3)|(pc<<6)|(lun<<5) | Page Code | Subpage | 0 | Allocation Length | Control`
+Low-level format / defect map.  Emulator accepts as a no-op on
+writable devices; rejects with DATA PROTECT on read-only media.
 
-* **PC** (page control): 0=current, 1=changeable, 2=default, 3=saved
-* **DBD**: 1 = **Disable Block Descriptors** (skip the block descriptors section)
+### 8.6 CD-ROM extensions
 
-**Response header (6‑byte form):**
+The emulator's CD-ROM handler (`scsi_cdrom.c`) layers the following on
+top of the direct-access set:
 
-| Byte | Field                                                                                                                        |
-| ---: | ---------------------------------------------------------------------------------------------------------------------------- |
-|    0 | **Mode Data Length** (excluding this byte)                                                                                   |
-|    1 | Medium Type                                                                                                                  |
-|    2 | Device‑Specific Parameter (bit7=WP for disks)                                                                                |
-|    3 | Block Descriptor Length (m)                                                                                                  |
-|  4.. | **Block Descriptors** (m bytes; 8 per descriptor for Direct‑access): Density, Number of Blocks(3), Reserved, Block Length(3) |
-|   .. | **Mode Pages**: sequence of pages (see below)                                                                                |
+* `CMD_READ_TOC` (`0x43`)
+* `CMD_READ_SUB_CHANNEL` (`0x42`)
+* `CMD_READ_HEADER` (`0x44`)
+* Audio commands (`0x45`, `0x47`, `0x4B`) — rejected with ILLEGAL
+  REQUEST for data-only discs
+* Sony vendor commands (`0xC1`..`0xC9`) — CDU-8002 proprietary; `0xC1`
+  maps to `READ TOC`, rest are rejected
 
-**Common Mode Pages (Direct‑access):**
+CD-ROM INQUIRY returns type `0x05` with the RMB bit set.  The MODE
+SENSE for CD-ROM uses the CD-specific page set.
 
-* `0x01` **Read‑Write Error Recovery** — retry, correction flags
-* `0x02` **Disconnect/Reconnect** — BUS IN/OUT disconnect thresholds, bus inactivity timer
-* `0x03` **Format Device** — sectors/track, interleave, track skew, cylinder skew
-* `0x04` **Rigid Disk Geometry** — cylinders, heads, rpm
-* `0x08` **Caching** — enable write cache, prefetch parameters
-* `0x0A` **Control** — DQue, QErr, Busy timeout behavior, Task set mgmt
+### 8.7 Sense, Unit Attention, and error policy
 
-Each page begins with: `Page Code (7 bits) | PS (bit7)`, `Page Length`, followed by page‑specific bytes.
+1. Target ends command with CHECK CONDITION.
+2. Initiator issues REQUEST SENSE on the same I_T_L nexus.
+3. Emulator returns fixed-format sense.
 
----
+Common conditions modelled:
 
-### 4.5.5 MODE SELECT(6) — `0x15` (6) and MODE SELECT(10) — `0x55` (10)
+* **UNIT ATTENTION** on power-on, media change, or parameters changed.
+  * Power on/Reset: ASC/ASCQ `0x29/0x00`
+  * Media change: `0x28/0x00` (ready change) or `0x3A/0x00` (not
+    present)
+  * Parameters changed: `0x2A/0x01` or `0x2A/0x09`
+* **ILLEGAL REQUEST** `0x20/0x00` (invalid opcode), `0x24/0x00` (bad
+  field), `0x25/0x00` (LUN not supported).
+* **DATA PROTECT** `0x27/0x00` on write to read-only media.
 
-**Purpose:** Write mode pages (and optionally block descriptors). Often requires Unit Attention clearing and may be restricted (write‑protected, invalid fields).
+The emulator keeps a per-device sense structure that is cleared by a
+successful REQUEST SENSE.  Auto-sense is not a SCSI-1 feature; hosts
+must issue REQUEST SENSE explicitly.
 
-**CDB(6):** `15 | (sp<<4)|(pf<<4)|(lun<<5) | 00 | 00 | Parameter List Length | Control`
+### 8.8 Data transfer semantics
 
-* **PF** (Page Format) must be 1 for SCSI‑2 style pages
-* **SP** (Save Pages) requests saving parameters in NVRAM if supported
+* **Block length**: 512 for HD, 2048 for CD-ROM (switchable via MODE
+  SELECT).
+* **Residuals**: on host-supplied length mismatch, prefer CHECK
+  CONDITION/ABORTED COMMAND (`0x0B/0x00`).
+* **REQ/ACK**: exactly one handshake per byte in the payload.
 
-**Parameter List:** same format as MODE SENSE header + descriptors + pages. Emulator must validate **changeable** bits (from PC=1 page) and reject invalid fields with `CHECK CONDITION` / `ILLEGAL REQUEST` (ASC/ASCQ `0x26/0x00` invalid field in parameter list).
+### 8.9 Tagged command queuing (optional, SCSI-2)
 
----
+Message Out queue tags:
 
-### 4.5.6 READ(6) — `0x08` / WRITE(6) — `0x0A`
+* `0x20, tag` — SIMPLE QUEUE TAG
+* `0x21, tag` — ORDERED QUEUE TAG
+* `0x22, tag` — HEAD OF QUEUE TAG
 
-**Purpose:** Transfer logical blocks.
+A Mac-authentic emulator **disables** tagged queuing and responds
+with MESSAGE REJECT to these — classic Mac drivers don't emit them.
 
-**CDB:** per Group 0 layout: LBA is 21 bits across bytes 1–3; **Transfer Length** byte (0 → 256 blocks).
+### 8.10 Minimal compliance matrix
 
-**Phases:**
+* Implement **INQUIRY, TEST UNIT READY, REQUEST SENSE,
+  READ/WRITE(6|10), READ CAPACITY(10), MODE SENSE(6), MODE SELECT(6)**.
+* Implement **START STOP UNIT** (no-op acceptable) and
+  **PREVENT/ALLOW MEDIUM REMOVAL** (image lock).
+* Implement **UNIT ATTENTION**, **LUN not supported**, **Illegal
+  Request** paths.
+* CD-ROM: add **READ TOC**, **READ SUB-CHANNEL**, **READ HEADER**,
+  and reject audio commands with ILLEGAL REQUEST + INCOMPATIBLE
+  MEDIUM (`0x30/0x00`).
+* Optional: **REASSIGN BLOCKS**, **FORMAT UNIT**, **VERIFY(10)**,
+  **Tagged Queuing**.
 
-* READ: COMMAND → **DATA IN** (length = blocks × block\_size) → STATUS → MESSAGE IN.
-* WRITE: COMMAND → **DATA OUT** → STATUS → MESSAGE IN.
+### 8.11 Worked transaction examples
 
-**Errors:**
+**READ(6) of 2 blocks @ LBA 0x012345 (block size 512):**
 
-* LBA beyond last block: `CHECK CONDITION` **ILLEGAL REQUEST** (ASC/ASCQ `0x21/0x00` LBA out of range).
-* If **DATA PROTECT** (write protect): `DATA PROTECT` (0x07) with `0x27/0x00`.
+1. COMMAND: `08 | 0x01 | 0x23 | 0x45 | 0x02 | 0x00`
+2. DATA IN: 1024 bytes over 1024 REQ/ACK handshakes
+3. STATUS: `0x00` (GOOD)
+4. MESSAGE IN: `0x00` (COMMAND COMPLETE)
 
----
+**READ CAPACITY(10):**
 
-### 4.5.7 READ(10) — `0x28` / WRITE(10) — `0x2A`
+1. COMMAND: `25 00 00 00 00 00 00 00 00 00`
+2. DATA IN (8 bytes): last_lba (MSB…LSB) | block_len (MSB…LSB)
+3. STATUS GOOD → COMMAND COMPLETE.
 
-**Purpose:** Same as 6‑byte but with 32‑bit LBA and 16‑bit transfer length.
+**Failing WRITE(10) to write-protected medium:**
 
-**CDB(READ(10)) bytes:** `28, flags, LBA[31..24], LBA[23..16], LBA[15..8], LBA[7..0], group, xferLen[15..8], xferLen[7..0], control`.
+* Emulator detects WP → CHECK CONDITION, stages sense DATA PROTECT,
+  ASC/ASCQ `0x27/0x00`.
+* Initiator issues REQUEST SENSE; emulator returns the fixed sense
+  payload.
 
-**Behavior:** If `Transfer Length` = 0 → no data (some devices interpret as no-op). Prefer explicit non‑zero.
-
----
-
-### 4.5.8 READ CAPACITY(10) — `0x25`
-
-**Purpose:** Report media geometry for block I/O.
-
-**CDB:** `25 00 00 00 00 00 00 00 00 00`
-
-**Data (8 bytes):**
-
-* **\[0–3]**: **Last Logical Block Address** (LBA of final block)
-* **\[4–7]**: **Block Length in bytes**
-
-> Capacity in blocks = last\_lba + 1. If image size changes hot, set Unit Attention (ASC/ASCQ `0x2A/0x09` parameters changed). For disks > 2TB you’d need READ CAPACITY(16) (SCSI‑3+), not applicable to Mac Plus era.
-
----
-
-### 4.5.9 START STOP UNIT — `0x1B`
-
-Controls spindle or load/unload (for removable).
-
-**CDB:** `1B | (immed<<0) | 00 | 00 | (LoEj<<1)|(Start) | Control`
-
-* `Start=1` spin up; `0` spin down
-* `LoEj` load/eject for removable
-
-**Emulation:** optionally simulate spin‑up delay; on not‑ready return `NOT READY` with `ASC/ASCQ 0x04/0x02` (becoming ready) until spun up.
-
----
-
-### 4.5.10 PREVENT/ALLOW MEDIUM REMOVAL — `0x1E`
-
-**CDB:** `1E 00 00 00 (Prevent=1?0x01:0x00) 00`
-
-**Semantics:** If Prevent=1, reject eject operations with `ILLEGAL REQUEST`/`0x53/0x02` (medium removal prevented). Emulator maps to image lock.
-
----
-
-### 4.5.11 RESERVE — `0x16` / RELEASE — `0x17`
-
-**Purpose:** Simple (pre‑SCSI‑3) reservations per LUN or extent.
-
-**CDB(RESERVE(6))**: `16 | (3rdParty<<5)|(lun<<5) | 00 | 00 | ParamListLen | 00`
-
-* Most Mac Plus setups are single‑initiator; it’s acceptable to implement **no‑op** behavior, or honor basic “RESERVATION CONFLICT” for other initiators on multi‑initiator buses.
-
----
-
-### 4.5.12 VERIFY(10) — `0x2F`
-
-Verifies data on media without transfer; may be used by some utilities.
-
-**CDB:** like READ(10) with op `0x2F`. If mismatch detection isn’t implemented, return `GOOD` (or support byte‑by‑byte compare with optional BYTCHK bit where present).
-
----
-
-### 4.5.13 FORMAT UNIT — `0x04`
-
-Low‑level format / defect map; rarely issued by classic Mac OS to fixed disks in the field (typically vendor tools). It carries a **Parameter List** describing defect lists and interleave.
-
-**CDB:** `04 | DefectListFmt | Vendor | InterleaveMSB | InterleaveLSB | Control`
-
-**Parameter List (when PF):** Header + optional defect list. For emulator, accept and ignore formatting parameters but **reinitialize** image (zero‑fill) if desired; otherwise reject with `ILLEGAL REQUEST` if Write‑Protect.
-
----
-
-## 4.6 Sense, Unit Attention, and Error Policy
-
-### 4.6.1 CHECK CONDITION flow
-
-1. Target ends command with **CHECK CONDITION**.
-2. Initiator issues **REQUEST SENSE** (same nexus) to retrieve sense data.
-3. Emulator returns fixed‑format sense per 4.4.2.
-
-### 4.6.2 Common conditions to model
-
-* **UNIT ATTENTION** on power‑on/reset, media change, or parameters changed.
-
-  * Examples:
-
-    * Power on/Reset: ASC/ASCQ `0x29/0x00` (Power On, Reset, or Bus Device Reset occurred)
-    * Media change: `0x28/0x00` (Not ready to ready change) or `0x3A/0x00` (Medium not present)
-    * Mode parameters changed: `0x2A/0x01` or `0x2A/0x09`
-* **ILLEGAL REQUEST** `0x20/0x00` (invalid command) for unsupported opcodes; `0x24/0x00` (invalid field in CDB) for bad flags; `0x25/0x00` (LUN not supported) if LUN≠0 and not implemented.
-* **DATA PROTECT** for write when write‑protected (ASC/ASCQ `0x27/0x00`).
-* **MEDIUM ERROR/HARDWARE ERROR** for injected faults.
-
-### 4.6.3 Per‑LUN Sense Buffer
-
-Maintain a per‑LUN sense structure. **Auto Sense** is not present in SCSI‑1; initiator must issue REQUEST SENSE explicitly (classic Mac drivers do this).
-
----
-
-## 4.7 Data Transfer Semantics
-
-* **Block length**: default 512; expose via READ CAPACITY and Mode pages. Enforce consistent lengths across READ/WRITE.
-* **Residuals**: If host supplies fewer/more data bytes than expected, prefer to set `CHECK CONDITION/ABORTED COMMAND` (`0x0B/0x00`) or short‑transfer with appropriate status if your bus engine supports it. Classic 5380 paths are byte‑exact via REQ/ACK.
-* **REQ/ACK**: one byte per handshake; for emulator, generate N handshakes for the exact payload length.
-
----
-
-## 4.8 Tagged Command Queuing (Optional, SCSI‑2)
-
-If enabled, targets can accept multiple outstanding commands per LUN per initiator. Queue tag messages (Message Out):
-
-* **SIMPLE QUEUE TAG** `0x20, tag`
-* **ORDERED QUEUE TAG** `0x21, tag`
-* **HEAD OF QUEUE TAG** `0x22, tag`
-
-For a Mac Plus–authentic emulator, you may **disable** tagged queuing and respond with `MESSAGE REJECT` to queue tag messages. If implemented, each active command must carry an **l\_T\_L\_Q nexus** keyed by the (initiator, target, LUN, tag).
-
----
-
-## 4.9 Worked Transaction Examples
-
-### 4.9.1 Standard READ(6) of 2 blocks @ LBA 0x012345 (block size 512)
-
-1. **COMMAND** (6 bytes): `08 | 0x01 | 0x23 | 0x45 | 0x02 | 0x00`
-2. **DATA IN**: 1024 bytes (2×512) over 1024 REQ/ACK handshakes.
-3. **STATUS**: `0x00` (GOOD)
-4. **MESSAGE IN**: `0x00` (COMMAND COMPLETE)
-
-### 4.9.2 READ CAPACITY(10)
-
-1. **COMMAND**: `25 00 00 00 00 00 00 00 00 00`
-2. **DATA IN** (8 bytes): `[last_lba (MSB..LSB)] [block_len (MSB..LSB)]`
-3. **STATUS** GOOD → **COMMAND COMPLETE**.
-
-### 4.9.3 Failing WRITE(10) to write‑protected medium
-
-* Emulator detects WP → end with `CHECK CONDITION` and stage Sense: **DATA PROTECT**, ASC/ASCQ `0x27/0x00`.
-* Initiator issues REQUEST SENSE; emulator returns fixed sense conveying the error.
-
----
-
-## 4.10 Emulator Implementation Notes
-
-* **Opcode table**: Build a dispatch by opcode → handler; validate CDB length and fields.
-* **LUN decode**: For Group 0, extract `(cdb[1]>>5)&0x7`; for Group 1/5, LUN bits are obsolete—use IDENTIFY when present; most Mac stacks assume LUN 0.
-* **Capacity**: Compute `last_lba = (image_size / block_size) - 1` (if zero‑length, report 0 and block size).
-* **Sense default**: On power‑on, queue **UNIT ATTENTION** for each LUN until it is reported once to each initiator.
-* **Mode pages**: Provide reasonable defaults; MODE SENSE(PC=1) should expose only changeable bits. MODE SELECT must mask and reject illegal bits.
-* **Timing**: Although byte‑accurate timing is optional, enforce protocol order: COMMAND → (optional DATA) → STATUS → MESSAGE.
-* **Parity**: You may simulate parity as always correct; if parity error injection is enabled, set sense `MISCOMPARE`/`PARITY ERROR` with appropriate ASC/ASCQ.
-
----
-
-## 4.11 Quick Reference: Direct‑Access Opcodes Used by Classic Mac OS
+### 8.12 Direct-access opcodes used by classic Mac OS
 
 | Opcode | CDB Len | Name                                      |
 | -----: | :-----: | ----------------------------------------- |
@@ -716,7 +701,7 @@ For a Mac Plus–authentic emulator, you may **disable** tagged queuing and resp
 | `0x07` |    6    | REASSIGN BLOCKS                           |
 | `0x08` |    6    | READ(6)                                   |
 | `0x0A` |    6    | WRITE(6)                                  |
-| `0x0B` |    6    | SEEK(6) (often ignored by modern devices) |
+| `0x0B` |    6    | SEEK(6) (often ignored)                   |
 | `0x12` |    6    | INQUIRY                                   |
 | `0x15` |    6    | MODE SELECT(6)                            |
 | `0x16` |    6    | RESERVE(6)                                |
@@ -724,20 +709,9 @@ For a Mac Plus–authentic emulator, you may **disable** tagged queuing and resp
 | `0x1A` |    6    | MODE SENSE(6)                             |
 | `0x1B` |    6    | START STOP UNIT                           |
 | `0x1E` |    6    | PREVENT/ALLOW MEDIUM REMOVAL              |
-| `0x25` |    10   | READ CAPACITY(10)                         |
-| `0x28` |    10   | READ(10)                                  |
-| `0x2A` |    10   | WRITE(10)                                 |
-| `0x2F` |    10   | VERIFY(10)                                |
-| `0xA8` |    12   | READ(12) (optional)                       |
-| `0xAA` |    12   | WRITE(12) (optional)                      |
-
----
-
-### 4.12 Minimal Compliance Matrix for Emulator Targets
-
-* Implement **INQUIRY, TEST UNIT READY, REQUEST SENSE, READ/WRITE(6 or 10), READ CAPACITY(10), MODE SENSE(6), MODE SELECT(6)**.
-* Implement **START STOP UNIT** (no‑op acceptable) and **PREVENT/ALLOW** (map to image lock).
-* Implement **UNIT ATTENTION**, **LUN not supported**, **Illegal Request** paths.
-* Optional: **REASSIGN BLOCKS**, **FORMAT UNIT**, **VERIFY(10)**, **Tagged Queuing**.
-
-This chapter gives all structures needed to parse/construct SCSI transactions in the emulator. For full device‑type coverage (tape/CD‑ROM/etc.), replicate the pattern above with their device‑specific CDBs and data formats.
+| `0x25` |   10    | READ CAPACITY(10)                         |
+| `0x28` |   10    | READ(10)                                  |
+| `0x2A` |   10    | WRITE(10)                                 |
+| `0x2F` |   10    | VERIFY(10)                                |
+| `0xA8` |   12    | READ(12) (optional)                       |
+| `0xAA` |   12    | WRITE(12) (optional)                      |

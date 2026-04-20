@@ -4,8 +4,7 @@
 # the CD-ROM as the root filesystem.  The test passes iff the kernel
 # reaches the RTS of vfs_mountroot() at $10032CFC, which is only reached
 # when probe_root / real_mount / VFS_ROOT all succeed; any failure panics
-# via $10020454 instead.  See test.script and
-# local/gs-docs/notes/32-aux3-bsr-dr-deferred-free-fix.md.
+# via $10020454 instead.
 
 TEST_NAME := SE/30 A/UX 3.0.1 Boot (retail SE)
 TEST_DESC := Boot SE/30 from retail A/UX 3.0.1 SE floppy + CD; mount root from CD-ROM

@@ -9,10 +9,6 @@
 #      CD-ROM's rootdev,
 #   2. real_mount() returned 0 (successful mount),
 #   3. VFS_ROOT() returned 0 (root vnode populated).
-#
-# See local/gs-docs/notes/32-aux3-bsr-dr-deferred-free-fix.md for the SCSI
-# BSR_DR / deferred_free fix in src/core/peripherals/scsi.c that made this
-# reachable.
 
 # 1) Set a breakpoint at the mount-success address.
 break $10032CFC
@@ -46,10 +42,6 @@ quit
 # A/UX. Launching..." boot screen at that exact point and compare it to
 # the reference PNG.  Any failure path (panic, reset loop, different stop
 # address) produces a different screen and fails the match.
-#
-# See local/gs-docs/notes/32-aux3-bsr-dr-deferred-free-fix.md for the SCSI
-# BSR_DR / deferred_free fix in src/core/peripherals/scsi.c that made this
-# reachable.
 
 # Success breakpoint: vfs_mountroot RTS (only reached on full mount success).
 break $10032CFC

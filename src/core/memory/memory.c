@@ -55,7 +55,7 @@ uint32_t *g_bus_error_instr_ptr = NULL;
 // I/O cycle penalty state: tracks extra bus wait-state cycles for I/O accesses.
 // Penalty cycles are converted to "phantom instructions" that consume sprint
 // burndown slots, causing sprints with I/O to end sooner and keeping event
-// timing accurate.  See local/gs-docs/notes/SE30-IO-timing-design.md.
+// timing accurate.
 uint32_t g_io_penalty_remainder = 0; // sub-CPI fraction carried across sprints
 uint32_t g_io_phantom_instructions = 0; // phantom instructions consumed this sprint
 uint32_t g_io_cpi = 0; // current CPI for penalty conversion (0 = disabled)

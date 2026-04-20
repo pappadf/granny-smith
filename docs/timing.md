@@ -375,7 +375,3 @@ magnitude is bounded by CPI-1 and the impact of losing it is negligible.
   strategy
 - `docs/memory.md` — Memory subsystem architecture, fast/slow path, MMU
   integration
-- `local/gs-docs/notes/SE30-timing.md` — SE/30 bus timing measurements and
-  wait-state analysis
-- `local/gs-docs/notes/SE30-IO-timing-design.md` — Original design proposal
-  for the I/O penalty mechanism
