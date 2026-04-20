@@ -2613,6 +2613,116 @@ static void cmd_print_handler(struct cmd_context *ctx, struct cmd_result *res) {
     cmd_err(res, "unknown target: %s", ctx->raw_argv[1]);
 }
 
+// --- assert ---
+// Compare a symbol (register or Mac global) against an expected value and fail
+// the running script when they differ.  Useful for scripted integration tests.
+// Usage: assert <target> <op> <value>
+//   target : register (e.g. pc, d0, sr) or Mac global name
+//   op     : == != < > <= >=
+//   value  : numeric literal ($hex, 0xhex, or decimal) or another symbol
+static void cmd_assert_handler(struct cmd_context *ctx, struct cmd_result *res) {
+    // Require all three positional arguments.
+    if (!ctx->args[0].present || !ctx->args[1].present || !ctx->args[2].present) {
+        cmd_err(res, "usage: assert <target> <op> <value>  (op: == != < > <= >=)");
+        return;
+    }
+
+    // LHS: resolved symbol (register or Mac global), parsed by ARG_SYMBOL.
+    struct resolved_symbol *sym = &ctx->args[0].as_sym;
+    if (sym->kind == SYM_UNKNOWN) {
+        cmd_err(res, "assert: unknown target '%s'", ctx->raw_argv[1]);
+        return;
+    }
+    uint64_t lhs = (uint64_t)sym->value;
+
+    // Operator: one of == != < > <= >=
+    const char *op = ctx->args[1].as_str;
+    int op_type = -1;
+    if (strcmp(op, "==") == 0)
+        op_type = 0;
+    else if (strcmp(op, "!=") == 0)
+        op_type = 1;
+    else if (strcmp(op, "<") == 0)
+        op_type = 2;
+    else if (strcmp(op, ">") == 0)
+        op_type = 3;
+    else if (strcmp(op, "<=") == 0)
+        op_type = 4;
+    else if (strcmp(op, ">=") == 0)
+        op_type = 5;
+    else {
+        cmd_err(res, "assert: invalid operator '%s' (expected == != < > <= >=)", op);
+        return;
+    }
+
+    // RHS: accept either a numeric literal or another resolvable symbol.
+    const char *rhs_str = ctx->args[2].as_str;
+    uint64_t rhs = 0;
+    struct resolved_symbol rhs_sym;
+    if (resolve_symbol(rhs_str[0] == '$' ? rhs_str + 1 : rhs_str, &rhs_sym) && rhs_sym.kind != SYM_UNKNOWN) {
+        rhs = (uint64_t)rhs_sym.value;
+    } else {
+        // Numeric literal: strip leading '$' (hex) or accept 0x / decimal.
+        const char *s = rhs_str;
+        int base = 16; // default to hex (matches shell convention for addresses)
+        if (*s == '$') {
+            s++;
+        } else if (s[0] == '0' && (s[1] == 'x' || s[1] == 'X')) {
+            s += 2;
+        } else {
+            // Pure decimal only if it has no hex-only digits; otherwise assume hex.
+            base = 10;
+            for (const char *p = s; *p; p++) {
+                if ((*p >= 'a' && *p <= 'f') || (*p >= 'A' && *p <= 'F')) {
+                    base = 16;
+                    break;
+                }
+            }
+        }
+        char *endp = NULL;
+        rhs = strtoull(s, &endp, base);
+        if (!endp || *endp != '\0') {
+            cmd_err(res, "assert: invalid value '%s'", rhs_str);
+            return;
+        }
+    }
+
+    // Evaluate the comparison.
+    int met = 0;
+    switch (op_type) {
+    case 0:
+        met = (lhs == rhs);
+        break;
+    case 1:
+        met = (lhs != rhs);
+        break;
+    case 2:
+        met = ((int64_t)lhs < (int64_t)rhs);
+        break;
+    case 3:
+        met = ((int64_t)lhs > (int64_t)rhs);
+        break;
+    case 4:
+        met = ((int64_t)lhs <= (int64_t)rhs);
+        break;
+    case 5:
+        met = ((int64_t)lhs >= (int64_t)rhs);
+        break;
+    }
+
+    // Report result; non-zero cmd_int on failure so script exit code reflects it.
+    if (met) {
+        cmd_printf(ctx, "ASSERT OK: %s = $%08llX %s $%08llX\n", sym->name, (unsigned long long)lhs, op,
+                   (unsigned long long)rhs);
+        cmd_int(res, 0);
+    } else {
+        cmd_printf(ctx, "ASSERT FAILED: %s = $%08llX, expected %s $%08llX\n", sym->name, (unsigned long long)lhs, op,
+                   (unsigned long long)rhs);
+        cmd_err(res, "assert failed: %s = $%08llX %s $%08llX is false", sym->name, (unsigned long long)lhs, op,
+                (unsigned long long)rhs);
+    }
+}
+
 // --- examine ---
 static void cmd_examine_handler(struct cmd_context *ctx, struct cmd_result *res) {
     uint32_t addr;
@@ -3477,6 +3587,13 @@ static const struct arg_spec print_args[] = {
     {"target", ARG_SYMBOL, "register, Mac global, or address.size"},
 };
 
+// --- assert ---
+static const struct arg_spec assert_args[] = {
+    {"target", ARG_SYMBOL, "register or Mac global to test"       },
+    {"op",     ARG_STRING, "comparison operator (== != < > <= >=)"},
+    {"value",  ARG_STRING, "expected value (numeric or symbol)"   },
+};
+
 // --- set ---
 static const struct arg_spec set_cmd_args[] = {
     {"target", ARG_STRING, "register, flag, or address.size"},
@@ -3786,6 +3903,14 @@ debug_t *debug_init(void) {
         .fn = cmd_print_handler,
         .args = print_args,
         .nargs = 1,
+    });
+    register_command(&(struct cmd_reg){
+        .name = "assert",
+        .category = "Inspection",
+        .synopsis = "Assert that a register/global matches an expected value (fails script on mismatch)",
+        .fn = cmd_assert_handler,
+        .args = assert_args,
+        .nargs = 3,
     });
     register_command(&(struct cmd_reg){
         .name = "examine",

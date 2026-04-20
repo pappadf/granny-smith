@@ -1,15 +1,14 @@
 # Integration test configuration: SE/30 A/UX 3.0.1 Boot (retail SE dist)
-# Verifies that the SE/30 boots from the A/UX 3.0.1 retail Installation Boot
-# Disk (SE) with the retail Install CD attached.
-#
-# The WGS95 distribution previously used here shipped only a "System Enabler
-# 040" that does not list the SE/30 — so the boot floppy's secondary bootstrap
-# skipped every INIT on the SE/30 (see notes/07-aux3-enabler-root-cause.md).
-# This retail variant ships an "SE"-labelled boot floppy which should support
-# the SE/30 natively.  Images live in tests/data/aux/aux_3.0.1/.
+# Verifies that the SE/30 boots the A/UX 3.0.1 retail Installation Boot
+# Disk (SE) with the retail Install CD attached, and successfully mounts
+# the CD-ROM as the root filesystem.  The test passes iff the kernel
+# reaches the RTS of vfs_mountroot() at $10032CFC, which is only reached
+# when probe_root / real_mount / VFS_ROOT all succeed; any failure panics
+# via $10020454 instead.  See test.script and
+# local/gs-docs/notes/32-aux3-bsr-dr-deferred-free-fix.md.
 
 TEST_NAME := SE/30 A/UX 3.0.1 Boot (retail SE)
-TEST_DESC := Boot SE/30 from retail A/UX 3.0.1 SE Installation floppy + Install CD
+TEST_DESC := Boot SE/30 from retail A/UX 3.0.1 SE floppy + CD; mount root from CD-ROM
 
 # Universal ROM shared by SE/30, IIcx, IIx (checksum 0x97221136)
 TEST_ROM := roms/SE30.rom
