@@ -7,6 +7,7 @@
 #define _CRT_SECURE_NO_WARNINGS 1
 
 #include "scsi.h"
+#include "log.h"
 #include "platform.h"
 #include "scsi_internal.h"
 #include "shell.h"
@@ -22,8 +23,7 @@
 // Constants and Macros
 // ============================================================================
 
-// #define LOG(...) log_message(LOG_SCSI, 1, __VA_ARGS__)
-#define LOG(...)
+LOG_USE_CATEGORY_NAME("scsi");
 // SCSI loopback trace — enable selectively for debugging
 #define SCSI_TRACE(...)                                                                                                \
     do {                                                                                                               \
@@ -279,7 +279,7 @@ static void run_cmd(scsi_t *scsi) {
     switch (scsi->cmd.opcode) {
 
     case CMD_TEST_UNIT_READY:
-        LOG("command: TEST UNIT READY");
+        LOG(1, "command: TEST UNIT READY");
         // Check if medium is present for CD-ROM
         if (scsi->devices[target].type == scsi_dev_cdrom && !scsi->devices[target].medium_present) {
             scsi_check_condition(scsi, SENSE_NOT_READY, ASC_MEDIUM_NOT_PRESENT, 0x00);
@@ -289,7 +289,7 @@ static void run_cmd(scsi_t *scsi) {
         break;
 
     case CMD_REZERO_UNIT:
-        LOG("command: REZERO UNIT");
+        LOG(1, "command: REZERO UNIT");
         // Seek to block 0 — no-op in emulation
         phase_status(scsi, STATUS_GOOD);
         break;
@@ -299,7 +299,7 @@ static void run_cmd(scsi_t *scsi) {
         break;
 
     case CMD_FORMAT_UNIT:
-        LOG("command: FORMAT UNIT");
+        LOG(1, "command: FORMAT UNIT");
         // Reject FORMAT on read-only devices
         if (scsi->devices[target].read_only) {
             scsi_check_condition(scsi, SENSE_DATA_PROTECT, ASC_WRITE_PROTECTED, 0x00);
@@ -320,6 +320,10 @@ static void run_cmd(scsi_t *scsi) {
 
         uint16_t blk_sz = scsi->devices[target].block_size;
 
+        LOG(1, "SCSI %s target=%d lba=%u tl=%u blk_sz=%u raw_size=%zu",
+            scsi->cmd.opcode == CMD_WRITE ? "WRITE" : "READ", target, scsi->cmd.lba, scsi->cmd.tl, blk_sz,
+            scsi->devices[target].image ? scsi->devices[target].image->raw_size : 0);
+
         // Reject writes on read-only devices (CD-ROM, etc.)
         if (scsi->cmd.opcode == CMD_WRITE && scsi->devices[target].read_only) {
             scsi_check_condition(scsi, SENSE_DATA_PROTECT, ASC_WRITE_PROTECTED, 0x00);
@@ -334,6 +338,13 @@ static void run_cmd(scsi_t *scsi) {
             phase_data_in(scsi, scsi->cmd.tl * blk_sz);
             size_t byte_off = (size_t)scsi->cmd.lba * blk_sz;
             size_t byte_cnt = (size_t)scsi->cmd.tl * blk_sz;
+            // bounds check: reject out-of-range reads
+            if (byte_off + byte_cnt > scsi->devices[target].image->raw_size) {
+                LOG(1, "SCSI READ out of range: target=%d lba=%u byte_off=%zu byte_cnt=%zu raw_size=%zu", target,
+                    scsi->cmd.lba, byte_off, byte_cnt, scsi->devices[target].image->raw_size);
+                scsi_check_condition(scsi, SENSE_ILLEGAL_REQUEST, ASC_LBA_OUT_OF_RANGE, 0x00);
+                break;
+            }
             size_t n = disk_read_data(scsi->devices[target].image, byte_off, scsi->buf.data, byte_cnt);
             assert(n == byte_cnt);
         }
@@ -369,6 +380,13 @@ static void run_cmd(scsi_t *scsi) {
             phase_data_in(scsi, scsi->cmd.tl * blk_sz);
             size_t byte_off = (size_t)scsi->cmd.lba * blk_sz;
             size_t byte_cnt = (size_t)scsi->cmd.tl * blk_sz;
+            // bounds check: reject out-of-range reads
+            if (byte_off + byte_cnt > scsi->devices[target].image->raw_size) {
+                LOG(1, "SCSI READ_10 out of range: target=%d lba=%u byte_off=%zu byte_cnt=%zu raw_size=%zu", target,
+                    scsi->cmd.lba, byte_off, byte_cnt, scsi->devices[target].image->raw_size);
+                scsi_check_condition(scsi, SENSE_ILLEGAL_REQUEST, ASC_LBA_OUT_OF_RANGE, 0x00);
+                break;
+            }
             size_t n = disk_read_data(scsi->devices[target].image, byte_off, scsi->buf.data, byte_cnt);
             assert(n == byte_cnt);
         }
@@ -378,7 +396,7 @@ static void run_cmd(scsi_t *scsi) {
     case CMD_SEEK_6:
     case CMD_SEEK_10:
         // Seek to LBA — no-op (no seek latency to emulate)
-        LOG("command: SEEK");
+        LOG(1, "command: SEEK");
         phase_status(scsi, STATUS_GOOD);
         break;
 
@@ -518,7 +536,7 @@ static void run_cmd(scsi_t *scsi) {
 
     case CMD_VERIFY:
         // Verify data on disc — no-op (always succeeds)
-        LOG("command: VERIFY");
+        LOG(1, "command: VERIFY");
         phase_status(scsi, STATUS_GOOD);
         break;
 
@@ -864,10 +882,13 @@ static void write_mr(scsi_t *scsi, uint8_t val) {
         if ((scsi->bus.phase == scsi_data_out || scsi->bus.phase == scsi_command) && scsi->buf.size < scsi->buf.max)
             scsi->reg.bsr |= BSR_DR;
 
-        // Deferred status: the status byte is pending in CDR after a
-        // write_mr-initiated data_in→status transition.  Assert BSR_DR
-        // so A/UX's SPH_STAT handler can detect and read it via DMA.
-        if (scsi->bus.phase == scsi_status && scsi->deferred_free)
+        // Status byte ready: the bus is in status phase and A/UX is enabling
+        // DMA to read the status byte.  Assert BSR_DR unconditionally here.
+        // This covers both the deferred_free path (data_in→status transition)
+        // and commands with no data phase (TEST UNIT READY, INQUIRY, etc.)
+        // that go directly to status.  Mac OS never sets MR_DMA during status
+        // phase, so this condition is exclusive to A/UX.
+        if (scsi->bus.phase == scsi_status)
             scsi->reg.bsr |= BSR_DR;
 
         scsi_update_drq(scsi);
@@ -906,10 +927,13 @@ static uint8_t read_uint8(void *s, uint32_t addr) {
                 }
             } else
                 phase_status(scsi, STATUS_GOOD);
-        } else if (scsi->bus.phase == scsi_status && (scsi->reg.mr & MR_DMA) && scsi->deferred_free) {
-            // Status byte consumed via pseudo-DMA read.  On real
-            // hardware the ACK handshake causes the target to
-            // transition to message_in with COMMAND COMPLETE.
+        } else if (scsi->bus.phase == scsi_status && (scsi->reg.mr & MR_DMA)) {
+            // Status byte consumed via pseudo-DMA read.  On real hardware
+            // the ACK handshake causes the target to transition to message_in
+            // with COMMAND COMPLETE.  Covers both the deferred_free path
+            // (data_in→status) and direct-to-status commands (no data phase).
+            // Mac OS uses ICR/ACK to read status (MR_DMA=0), so this branch
+            // is exclusive to A/UX.
             uint8_t val = scsi->reg.cdr;
             scsi->deferred_free = false;
             phase_message_in(scsi, MSG_CMD_COMPLETE);
