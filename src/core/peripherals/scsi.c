@@ -139,7 +139,6 @@ static void phase_free(scsi_t *scsi) {
     scsi->bus.phase = scsi_bus_free;
     scsi->reg.csr = 0;
     scsi->end_of_dma = false;
-    scsi->deferred_free = false;
     scsi_update_drq(scsi);
     scsi_update_irq(scsi);
 }
@@ -852,15 +851,8 @@ static void write_mr(scsi_t *scsi, uint8_t val) {
         // preserves Mac OS compatibility: Mac OS clears MR_DMA after
         // its byte-counting pseudo-DMA loop and expects the bus to
         // transition to status at that point (via TCR write or here).
-        if (scsi->bus.phase == scsi_data_in && scsi->buf.size == 0) {
+        if (scsi->bus.phase == scsi_data_in && scsi->buf.size == 0)
             phase_status(scsi, STATUS_GOOD);
-            // Mark deferred status: A/UX re-enables MR_DMA in its
-            // status handler to pseudo-DMA-read the status byte.
-            // The flag gates BSR_DR assertion and the CDR-read
-            // status→message_in transition so Mac OS (which uses
-            // ICR ACK, not pseudo-DMA) is unaffected.
-            scsi->deferred_free = true;
-        }
         scsi_update_drq(scsi);
         scsi_update_irq(scsi);
     } else if (bits_set & MR_DMA) {
@@ -882,13 +874,16 @@ static void write_mr(scsi_t *scsi, uint8_t val) {
         if ((scsi->bus.phase == scsi_data_out || scsi->bus.phase == scsi_command) && scsi->buf.size < scsi->buf.max)
             scsi->reg.bsr |= BSR_DR;
 
-        // Status byte ready: the bus is in status phase and A/UX is enabling
-        // DMA to read the status byte.  Assert BSR_DR unconditionally here.
-        // This covers both the deferred_free path (data_in→status transition)
-        // and commands with no data phase (TEST UNIT READY, INQUIRY, etc.)
-        // that go directly to status.  Mac OS never sets MR_DMA during status
-        // phase, so this condition is exclusive to A/UX.
-        if (scsi->bus.phase == scsi_status)
+        // Status byte ready: A/UX's SPH_STAT reads the status byte via
+        // pseudo-DMA.  On real NCR 5380 hardware, DRQ only asserts when
+        // bus phase matches TCR — so A/UX programs TCR=status (0x03)
+        // before enabling DMA, and phase_match is true.  Mac OS, if it
+        // accidentally enables DMA while the bus is in status phase (e.g.
+        // after a surprise CHECK CONDITION from a no-data command), has
+        // TCR=data_in (0x01); phase_match is false, DRQ does not assert,
+        // and the chip instead raises a phase-mismatch IRQ so the driver
+        // can recover.
+        if (scsi->bus.phase == scsi_status && scsi_phase_match(scsi))
             scsi->reg.bsr |= BSR_DR;
 
         scsi_update_drq(scsi);
@@ -927,15 +922,18 @@ static uint8_t read_uint8(void *s, uint32_t addr) {
                 }
             } else
                 phase_status(scsi, STATUS_GOOD);
-        } else if (scsi->bus.phase == scsi_status && (scsi->reg.mr & MR_DMA)) {
-            // Status byte consumed via pseudo-DMA read.  On real hardware
-            // the ACK handshake causes the target to transition to message_in
-            // with COMMAND COMPLETE.  Covers both the deferred_free path
-            // (data_in→status) and direct-to-status commands (no data phase).
-            // Mac OS uses ICR/ACK to read status (MR_DMA=0), so this branch
-            // is exclusive to A/UX.
+        } else if (scsi->bus.phase == scsi_status && (scsi->reg.mr & MR_DMA) && scsi_phase_match(scsi)) {
+            // Status byte consumed via pseudo-DMA read.  Only valid when
+            // DRQ is asserted (phase_match true) — on real hardware the
+            // pseudo-DMA ACK handshake only fires when the chip has
+            // raised DRQ, which requires phase_match.  The ACK then
+            // advances the target to message_in with COMMAND COMPLETE.
+            // A/UX's SPH_STAT reaches this branch; Mac OS uses ICR/ACK
+            // for status reads (MR_DMA=0) and never hits it.  A Mac OS
+            // DMA-mode read during a surprise status phase is blocked by
+            // the phase_match gate so the driver can recover via the
+            // phase-mismatch IRQ.
             uint8_t val = scsi->reg.cdr;
-            scsi->deferred_free = false;
             phase_message_in(scsi, MSG_CMD_COMPLETE);
             return val;
         }
