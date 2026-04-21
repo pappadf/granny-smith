@@ -31,24 +31,12 @@ jobs:
         with:
           submodules: recursive
 
-      # Install git-lfs (needed for large test data files like CD-ROM images)
-      - name: Install git-lfs
+      # Install p7zip (needed to extract large binary archives like CD-ROM images)
+      - name: Install p7zip
         run: |
-          if ! git lfs version >/dev/null 2>&1; then
-            apt-get update -qq && apt-get install -y -qq git-lfs
+          if ! command -v 7z >/dev/null 2>&1; then
+            apt-get update -qq && apt-get install -y -qq p7zip-full
           fi
-          git lfs install --skip-repo
-
-      # Restore cached LFS objects to avoid re-downloading large files on every run.
-      # The cache key is static — LFS objects are content-addressed, so stale entries
-      # are harmless and new objects are fetched on cache miss.
-      - name: Restore LFS cache
-        if: env.GS_TEST_DATA_TOKEN != ''
-        uses: actions/cache@v4
-        with:
-          path: /tmp/gs-lfs-cache
-          key: lfs-test-data-v1
-          restore-keys: lfs-test-data-
 
       # Fetch proprietary test data (only works for internal builds with token access)
       - name: Fetch test data
@@ -64,7 +52,6 @@ jobs:
           fi
         env:
           GS_TEST_DATA_TOKEN: ${{ secrets.GS_TEST_DATA_TOKEN }}
-          GS_LFS_CACHE: /tmp/gs-lfs-cache
 
       - name: Verify emcc presence
         shell: bash

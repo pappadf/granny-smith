@@ -141,15 +141,17 @@ fi
 # Configure git to use credential helper that reads from environment
 export GIT_TERMINAL_PROMPT=0
 
-# Ensure git-lfs is available (the test data repo uses LFS for large images)
-if ! command -v git-lfs &>/dev/null && ! git lfs version &>/dev/null 2>&1; then
-    log_info "Installing git-lfs..."
-    if command -v apt-get &>/dev/null; then
-        sudo apt-get update -qq && sudo apt-get install -y -qq git-lfs 2>/dev/null || true
-    fi
-fi
+# Suppress git-lfs smudge globally so the clone never stalls waiting for LFS objects.
 if git lfs version &>/dev/null 2>&1; then
     git lfs install --skip-repo >/dev/null 2>&1 || true
+fi
+
+# Ensure 7z is available (used to extract large binary archives)
+if ! command -v 7z &>/dev/null; then
+    log_info "Installing p7zip-full..."
+    if command -v apt-get &>/dev/null; then
+        sudo apt-get update -qq && sudo apt-get install -y -qq p7zip-full 2>/dev/null || true
+    fi
 fi
 
 log_info "Fetching test data from private repository..."
@@ -171,29 +173,9 @@ trap cleanup EXIT
 # Clone to temp directory first, then copy contents (preserving local README)
 log_info "Cloning test data repository..."
 
-# Use GIT_LFS_SKIP_SMUDGE=1 to defer LFS downloads, then selectively pull.
-# This avoids downloading LFS objects we don't need and allows caching.
+# Clone with GIT_LFS_SKIP_SMUDGE=1 to skip LFS pointer resolution entirely;
+# large binaries are stored as .7z archives and extracted below.
 if GIT_LFS_SKIP_SMUDGE=1 git clone --quiet --depth 1 "$AUTH_CLONE_URL" "$TEMP_CLONE_DIR" 2>/dev/null; then
-
-    # Pull LFS objects. If GS_LFS_CACHE is set (by CI), use it to avoid
-    # re-downloading on every run. Only pull files the tests actually need.
-    if git lfs version &>/dev/null 2>&1; then
-        log_info "Fetching LFS objects..."
-        cd "$TEMP_CLONE_DIR"
-
-        # If a shared LFS cache directory is provided, symlink it in so
-        # git-lfs can reuse previously downloaded objects.
-        if [[ -n "${GS_LFS_CACHE:-}" ]]; then
-            mkdir -p "$GS_LFS_CACHE"
-            rm -rf "$TEMP_CLONE_DIR/.git/lfs"
-            ln -s "$GS_LFS_CACHE" "$TEMP_CLONE_DIR/.git/lfs"
-        fi
-
-        git lfs pull 2>/dev/null || log_warn "git lfs pull failed (some LFS files may be stubs)"
-        cd "$REPO_ROOT"
-    else
-        log_warn "git-lfs not available; large files will be LFS pointer stubs"
-    fi
 
     log_info "Copying test data files..."
 
@@ -220,6 +202,18 @@ if GIT_LFS_SKIP_SMUDGE=1 git clone --quiet --depth 1 "$AUTH_CLONE_URL" "$TEMP_CL
     elif [[ ! -f "$DATA_DIR/README.md" ]]; then
         # Copy README from private repo only if no local one exists
         cp "$TEMP_CLONE_DIR/README.md" "$DATA_DIR/README.md" 2>/dev/null || true
+    fi
+
+    # Extract any .7z archives in the data directory (large binaries not stored in LFS).
+    # Each archive produces a file with the same base name in the same directory.
+    if command -v 7z &>/dev/null; then
+        while IFS= read -r -d '' archive; do
+            dir="$(dirname "$archive")"
+            log_info "Extracting $(basename "$archive")..."
+            7z e -y -o"$dir" "$archive" >/dev/null
+        done < <(find "$DATA_DIR" -name '*.7z' -print0)
+    else
+        log_warn "7z not available; .7z archives will not be extracted (tests requiring them will fail)"
     fi
 
     log_success "Test data cloned successfully"
