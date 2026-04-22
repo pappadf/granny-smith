@@ -156,16 +156,20 @@ fi
 
 log_info "Fetching test data from private repository..."
 
-# Construct authenticated clone URL (token will be stripped from repo config after clone)
-AUTH_CLONE_URL="https://x-access-token:${TOKEN}@github.com/${REPO}.git"
-# Plain URL for display/config (no token)
+# Plain URL with no embedded credentials. The token is passed via an
+# ephemeral Authorization header (http.extraheader) so it never appears
+# in process argv, /proc/<pid>/cmdline, or the cloned repo's .git/config.
 CLONE_URL="https://github.com/${REPO}.git"
+# Base64-encode "x-access-token:<token>" for HTTP Basic auth.
+AUTH_HEADER_VALUE="$(printf 'x-access-token:%s' "$TOKEN" | base64 -w0 2>/dev/null || printf 'x-access-token:%s' "$TOKEN" | base64 | tr -d '\n')"
 
 # Temporary directory for cloning
 TEMP_CLONE_DIR=$(mktemp -d)
 
 # Clean up function
 cleanup() {
+    # Scrub the auth header value from memory before exit.
+    AUTH_HEADER_VALUE=""
     rm -rf "$TEMP_CLONE_DIR" 2>/dev/null || true
 }
 trap cleanup EXIT
@@ -175,7 +179,10 @@ log_info "Cloning test data repository..."
 
 # Clone with GIT_LFS_SKIP_SMUDGE=1 to skip LFS pointer resolution entirely;
 # large binaries are stored as .7z archives and extracted below.
-if GIT_LFS_SKIP_SMUDGE=1 git clone --quiet --depth 1 "$AUTH_CLONE_URL" "$TEMP_CLONE_DIR" 2>/dev/null; then
+# -c http.extraheader=... keeps the token off the command line and out of config.
+if GIT_LFS_SKIP_SMUDGE=1 git \
+        -c "http.https://github.com/.extraheader=AUTHORIZATION: Basic ${AUTH_HEADER_VALUE}" \
+        clone --quiet --depth 1 "$CLONE_URL" "$TEMP_CLONE_DIR" 2>/dev/null; then
 
     log_info "Copying test data files..."
 

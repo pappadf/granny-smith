@@ -19,13 +19,11 @@ jobs:
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
-    
-    # Expose whether test data is available as an output for conditional steps
-    env:
-      # Only set the token for internal builds (not forks/external PRs)
-      # Secrets are not available to forks, so this will be empty for external PRs
-      GS_TEST_DATA_TOKEN: ${{ secrets.GS_TEST_DATA_TOKEN }}
-    
+
+    # NOTE: GS_TEST_DATA_TOKEN is scoped to the single step that needs it
+    # (see "Fetch test data" below) to minimize exposure to other steps/actions.
+    # Secrets are not available to fork PRs, so external PRs see an empty value.
+
     steps:
       - uses: actions/checkout@v6
         with:
@@ -43,8 +41,10 @@ jobs:
         id: fetch-data
         run: |
           if [ -n "$GS_TEST_DATA_TOKEN" ]; then
-            echo "has_test_data=true" >> $GITHUB_OUTPUT
             ./scripts/fetch-test-data.sh
+            # Only mark test data as available once fetch actually succeeds,
+            # otherwise gated steps below would run without data and fail confusingly.
+            echo "has_test_data=true" >> $GITHUB_OUTPUT
           else
             echo "has_test_data=false" >> $GITHUB_OUTPUT
             echo "::notice::Test data not available (external contributor or missing secret)"
