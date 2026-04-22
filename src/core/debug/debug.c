@@ -3784,6 +3784,24 @@ static const struct arg_spec trace_start_args[] = {
     {"file",   ARG_PATH | ARG_OPTIONAL, "output filename for show"},
 };
 
+// --- find ---
+// Handler parses raw_argv directly: "bytes" consumes a variable number of hex
+// tokens, and the trailing range/"all" slot is positional but optional.  The
+// arg specs below are loose so the framework doesn't reject legitimate forms.
+void cmd_find_handler(struct cmd_context *ctx, struct cmd_result *res);
+static const char *find_aliases[] = {"f", NULL};
+static const struct arg_spec find_str_args[] = {
+    {"text", ARG_STRING,              "literal ASCII/UTF-8 text to search for"},
+    {"rest", ARG_REST | ARG_OPTIONAL, "[range] [all]"                         },
+};
+static const struct arg_spec find_bytes_args[] = {
+    {"bytes", ARG_REST, "2-digit hex tokens, optional [range] [all]"},
+};
+static const struct subcmd_spec find_subcmds[] = {
+    {"str",   NULL, find_str_args,   2, "find ASCII/UTF-8 text"             },
+    {"bytes", NULL, find_bytes_args, 1, "find a byte sequence (2-digit hex)"},
+};
+
 // ============================================================================
 // Lifecycle: Constructor
 // ============================================================================
@@ -3990,6 +4008,15 @@ debug_t *debug_init(void) {
         .fn = cmd_screenshot_handler,
         .subcmds = screenshot_subcmds,
         .n_subcmds = 5,
+    });
+    register_command(&(struct cmd_reg){
+        .name = "find",
+        .aliases = find_aliases,
+        .category = "Inspection",
+        .synopsis = "Search memory for a string or byte sequence (find str|bytes)",
+        .fn = cmd_find_handler,
+        .subcmds = find_subcmds,
+        .n_subcmds = 2,
     });
 
     debug_mac_init();

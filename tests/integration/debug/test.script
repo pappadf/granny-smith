@@ -1,0 +1,53 @@
+# Integration test: Debug tooling (PR1 of proposal-debug-tooling.md)
+# Exercises the new "find" command across its sub-commands, argument
+# forms, and error paths.  The runner (run.sh) captures this script's
+# output and greps for expected markers.
+
+# === find: basic help + usage diagnostics ===============================
+
+help find
+find
+find str
+find bytes
+
+# Bogus sub-command should produce a clear error.
+find bogus
+
+# === find str: ASCII search =============================================
+
+# "Apple" appears in the Plus ROM (which is mirrored at 0x400000).
+# Restrict the scan to the primary mirror so the expected hit count is stable.
+find str "Apple" $400000..$440000
+
+# `all` token uncaps the hit limit (exercises the 'all' parser path).
+find str "Apple" $400000..$440000 all
+
+# "<start> <count>" form: scan exactly 0x40000 bytes from 0x400000.
+find str "Apple" $400000 0x40000
+
+# Empty pattern should be rejected.
+find str "" $400000..$440000
+
+# === find bytes: hex-byte-sequence search ===============================
+
+# Search for NOP (4E 71) in the mapped address range.
+find bytes 4E 71 $400000..$440000
+
+# Longer pattern with range.
+find bytes 4E B9 $400000..$440000
+
+# Non-hex token should be rejected (ZZ is not a valid hex byte).
+find bytes ZZ
+
+# Hex mixed with range on the same line (whitespace-delimited).
+find bytes 4E 71 $400000..$440000 all
+
+# === Error paths: bad range forms =======================================
+
+# Missing right side of ..
+find str "Apple" $400000..
+
+# Backwards range.
+find str "Apple" $500000..$400000
+
+quit
