@@ -62,14 +62,21 @@ LOG_USE_CATEGORY_NAME("cpu");
 #define CPU_DECODER_NAME        cpu_run_68000
 #define CPU_DECODER_ARGS        cpu_t *restrict cpu, uint32_t *instructions
 #define CPU_DECODER_RETURN_TYPE void
+/* Decrement *instructions BEFORE the fetch: any memory_io_penalty triggered by
+ * the fetch or the instruction body saturates *instructions at zero, and doing
+ * the decrement first guarantees we don't wrap a penalty-zeroed counter to
+ * UINT32_MAX on the trailing (*instructions)--.  See scheduler.c:
+ * reconcile_sprint — the old fetch→decrement order would trip the
+ * sprint_burndown <= sprint_total invariant on any SE/30 sprint that ended its
+ * last instruction on a slow I/O access. */
 #define CPU_DECODER_PROLOGUE                                                                                           \
     cpu_check_interrupt(cpu);                                                                                          \
     while (*instructions > 0) {                                                                                        \
+        (*instructions)--;                                                                                             \
         uint32_t fetch = memory_read_uint32(cpu->pc);                                                                  \
         uint16_t opcode = fetch >> 16;                                                                                 \
         uint16_t ext_word = fetch & 0xFFFF;                                                                            \
-        cpu->pc += 2;                                                                                                  \
-        (*instructions)--;
+        cpu->pc += 2;
 #define CPU_DECODER_EPILOGUE                                                                                           \
     }                                                                                                                  \
     cpu_check_interrupt(cpu);                                                                                          \
