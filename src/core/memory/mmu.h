@@ -54,6 +54,7 @@ typedef struct page_entry page_entry_t;
 typedef struct mmu_walk_result {
     uint32_t physical_addr; // resolved physical page address
     uint32_t page_size_bits; // log2 of effective page size (e.g. 12 = 4KB, 25 = 32MB)
+    uint32_t descriptor_addr; // physical address of the last descriptor examined (for PTEST's A-reg output)
     bool valid; // true if walk succeeded
     bool supervisor_only; // S bit from descriptor
     bool write_protected; // W bit from descriptor
@@ -131,7 +132,10 @@ bool mmu_handle_fault(mmu_state_t *mmu, uint32_t logical_addr, bool write, bool 
 
 // Test address translation without faulting (PTEST instruction).
 // Performs table walk and returns MMUSR value.
-uint16_t mmu_test_address(mmu_state_t *mmu, uint32_t logical_addr, bool write, bool supervisor);
+// If desc_addr_out is non-NULL, also returns the physical address of the last
+// descriptor examined (what PTEST's optional A-reg output requires).
+uint16_t mmu_test_address(mmu_state_t *mmu, uint32_t logical_addr, bool write, bool supervisor,
+                          uint32_t *desc_addr_out);
 
 // Check transparent translation registers (TT0/TT1).
 // Returns true if address matches a TT register (bypass table walk).

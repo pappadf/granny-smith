@@ -3362,7 +3362,7 @@ static void info_mmu_map_impl(struct cmd_context *ctx, uint32_t start, uint32_t 
             tt = true;
             phys = logical;
         } else {
-            uint16_t mmusr = mmu_test_address(g_mmu, logical, false, true);
+            uint16_t mmusr = mmu_test_address(g_mmu, logical, false, true, NULL);
             if (!(mmusr & MMUSR_I)) {
                 mapped = true;
                 phys = mmu_translate_debug(g_mmu, logical);

@@ -270,13 +270,28 @@ static void cpu_pmmu_general(cpu_t *cpu, uint16_t opcode) {
 
     case 4: {
         // PTEST
-        uint32_t rw = (ext >> 9) & 1u; // 0=read test, 1=write test
+        // Extension word bit 9 is the PTEST RW flag: per MC68030UM, 0 = PTESTW
+        // (simulate a write access), 1 = PTESTR (simulate a read access).  Our
+        // mmu_test_address takes `write` meaning "test as write", so map the
+        // bit directly (rw==0 → write=true).
+        uint32_t rw_bit = (ext >> 9) & 1u;
+        bool write = (rw_bit == 0);
+        uint32_t a_field = (ext >> 8) & 1u; // 1 = write descriptor addr to An
+        uint32_t a_reg = (ext >> 5) & 7u;
         uint32_t ea = calculate_ea(cpu, 4, ea_mode, ea_reg, true);
         if (mmu) {
-            uint16_t status = mmu_test_address(mmu, ea, rw != 0, cpu->supervisor != 0);
+            uint32_t desc_addr = 0;
+            uint16_t status = mmu_test_address(mmu, ea, write, cpu->supervisor != 0, &desc_addr);
             mmu->mmusr = status;
-            // If A-register field is specified (bits 8:5), store physical address
-            // in that register (only for level > 0). Simplified: skip for now.
+            // A-reg output: per MC68030UM, when the A-reg field is specified,
+            // the CPU writes the physical address of the last descriptor
+            // examined during the walk into the selected A-register.  The aux
+            // kernel's soft-walk helper uses `PTESTW ...,An` to read the PTE
+            // it just tested — without this, the helper sees a stale An and
+            // then reads nonsense memory, propagating an EFAULT up through
+            // uiomove/readi into the shlib loader as errno=ENOEXEC.
+            if (a_field)
+                cpu->a[a_reg] = desc_addr;
         }
         break;
     }

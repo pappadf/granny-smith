@@ -155,7 +155,7 @@ uint32_t debug_translate_address(uint32_t logical_addr, bool *is_identity, bool 
     }
 
     // Perform table walk (read-only, supervisor mode for debug access)
-    uint16_t mmusr = mmu_test_address(g_mmu, logical_addr, false, true);
+    uint16_t mmusr = mmu_test_address(g_mmu, logical_addr, false, true, NULL);
 
     if (mmusr & MMUSR_I) {
         // Invalid descriptor

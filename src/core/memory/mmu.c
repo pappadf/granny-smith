@@ -235,6 +235,7 @@ static mmu_walk_result_t mmu_table_walk(mmu_state_t *mmu, uint32_t logical_addr,
         uint32_t desc_addr = table_addr + index * (long_desc ? 8 : 4);
         uint32_t desc_hi = phys_read32(mmu, desc_addr);
         uint32_t desc_lo = long_desc ? phys_read32(mmu, desc_addr + 4) : desc_hi;
+        result.descriptor_addr = desc_addr; // track for PTEST's A-reg output
         levels_walked++;
 
         // DT is always in bits 1:0 of the first (upper, for long) word
@@ -572,7 +573,10 @@ bool mmu_handle_fault(mmu_state_t *mmu, uint32_t logical_addr, bool write, bool 
 }
 
 // PTEST: test address translation without faulting
-uint16_t mmu_test_address(mmu_state_t *mmu, uint32_t logical_addr, bool write, bool supervisor) {
+uint16_t mmu_test_address(mmu_state_t *mmu, uint32_t logical_addr, bool write, bool supervisor,
+                          uint32_t *desc_addr_out) {
+    if (desc_addr_out)
+        *desc_addr_out = 0;
     if (!mmu)
         return MMUSR_I;
 
@@ -592,6 +596,8 @@ uint16_t mmu_test_address(mmu_state_t *mmu, uint32_t logical_addr, bool write, b
     mmu_walk_result_t result = mmu_table_walk(mmu, logical_addr, write, supervisor);
 
     mmu->mmusr = result.mmusr;
+    if (desc_addr_out)
+        *desc_addr_out = result.descriptor_addr;
     return result.mmusr;
 }
 
