@@ -1,7 +1,7 @@
-# Integration test: Debug tooling (PR1 of proposal-debug-tooling.md)
-# Exercises the new "find" command across its sub-commands, argument
-# forms, and error paths.  The runner (run.sh) captures this script's
-# output and greps for expected markers.
+# Integration test: Debug tooling (PR1 + PR2 of proposal-debug-tooling.md)
+# Exercises the "find" command across all sub-commands (str, bytes, word,
+# long), argument forms, and error paths.  The runner (run.sh) captures
+# this script's output and greps for expected markers.
 
 # === find: basic help + usage diagnostics ===============================
 
@@ -9,6 +9,8 @@ help find
 find
 find str
 find bytes
+find word
+find long
 
 # Bogus sub-command should produce a clear error.
 find bogus
@@ -41,6 +43,36 @@ find bytes ZZ
 
 # Hex mixed with range on the same line (whitespace-delimited).
 find bytes 4E 71 $400000..$440000 all
+
+# === find word: 16-bit big-endian value search ==========================
+
+# "Apple" begins with bytes 41 70 ('A','p'), so word $4170 hits
+# wherever "Apple" starts — same location the str test already asserts.
+find word $4170 $400000..$440000
+
+# 0x-prefixed value is accepted too (same result as above).
+find word 0x4170 $400000..$440000
+
+# Bare-hex form (no prefix) is parsed as hex.
+find word 4170 $400000..$440000
+
+# Values exceeding 16 bits must be rejected — not silently truncated.
+find word $10000 $400000..$440000
+
+# Non-numeric value should produce a clear error.
+find word zzz $400000..$440000
+
+# === find long: 32-bit big-endian value search ==========================
+
+# First four bytes of "Apple" = 41 70 70 6C; long $4170706C hits
+# at the same address as the str match.
+find long $4170706C $400000..$440000
+
+# `all` token uncaps the hit limit for the long variant too.
+find long $4170706C $400000..$440000 all
+
+# "<start> <count>" range form works for long as well.
+find long $4170706C $400000 0x40000
 
 # === Error paths: bad range forms =======================================
 

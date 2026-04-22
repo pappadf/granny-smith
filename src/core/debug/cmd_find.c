@@ -2,14 +2,15 @@
 // Copyright (c) pappadf
 
 // cmd_find.c
-// "find" shell command: memory search (proposal-debug-tooling.md §3.1, PR1).
-// Sub-commands implemented in this PR:
+// "find" shell command: memory search (proposal-debug-tooling.md §3.1).
+// Sub-commands:
 //   find str   <text>    [range] [all]   - ASCII/UTF-8 literal search
 //   find bytes <hex...>  [range] [all]   - byte-sequence search (2-digit hex tokens)
+//   find word  <value>   [range] [all]   - 16-bit value search (68K big-endian)
+//   find long  <value>   [range] [all]   - 32-bit value search (68K big-endian)
 // Range forms: "<start>..<end>" (half-open) or "<start> <count>".
 // Omitted range → whole address space (bounded by g_address_mask).
 // A trailing "all" token removes the default FIND_DEFAULT_LIMIT hit cap.
-// `word` / `long` variants will land in PR2 with the byte-order helper.
 
 #include "addr_format.h"
 #include "cmd_types.h"
@@ -186,6 +187,14 @@ static void format_label(char *buf, size_t bufsz, const char *subcmd, const uint
         if (o < bufsz - 1)
             buf[o++] = '"';
         buf[o] = '\0';
+    } else if (strcmp(subcmd, "word") == 0 && plen == 2) {
+        // Print the matched value as a single $XXXX literal (reconstruct from big-endian bytes).
+        uint16_t v = (uint16_t)(((uint16_t)pat[0] << 8) | pat[1]);
+        snprintf(buf, bufsz, "$%04X", v);
+    } else if (strcmp(subcmd, "long") == 0 && plen == 4) {
+        // Print the matched value as a single $XXXXXXXX literal (reconstruct from big-endian bytes).
+        uint32_t v = ((uint32_t)pat[0] << 24) | ((uint32_t)pat[1] << 16) | ((uint32_t)pat[2] << 8) | pat[3];
+        snprintf(buf, bufsz, "$%08X", v);
     } else {
         size_t o = 0;
         size_t show = plen < 8 ? plen : 8;
@@ -201,7 +210,7 @@ static void format_label(char *buf, size_t bufsz, const char *subcmd, const uint
 void cmd_find_handler(struct cmd_context *ctx, struct cmd_result *res) {
     const char *subcmd = ctx->subcmd;
     if (subcmd == NULL) {
-        cmd_err(res, "usage: find {str|bytes} <pattern> [range] [all]");
+        cmd_err(res, "usage: find {str|bytes|word|long} <pattern> [range] [all]");
         return;
     }
 
@@ -250,8 +259,38 @@ void cmd_find_handler(struct cmd_context *ctx, struct cmd_result *res) {
             return;
         }
         tail_idx = i;
+    } else if (strcmp(subcmd, "word") == 0 || strcmp(subcmd, "long") == 0) {
+        // Numeric value → big-endian byte pattern (68K memory is big-endian).
+        if (ctx->raw_argc < 3) {
+            cmd_err(res, "usage: find %s <value> [range] [all]", subcmd);
+            return;
+        }
+        // Reuse parse_address for $/0x/bare-hex parsing; the space qualifier is ignored here.
+        uint32_t value;
+        addr_space_t sp;
+        if (!parse_address(ctx->raw_argv[2], &value, &sp)) {
+            cmd_err(res, "find %s: invalid value '%s'", subcmd, ctx->raw_argv[2]);
+            return;
+        }
+        if (strcmp(subcmd, "word") == 0) {
+            // Reject values that don't fit in 16 bits so a typo can't silently truncate.
+            if (value > 0xFFFFu) {
+                cmd_err(res, "find word: value $%X exceeds 16 bits", value);
+                return;
+            }
+            pattern[0] = (uint8_t)(value >> 8);
+            pattern[1] = (uint8_t)value;
+            plen = 2;
+        } else {
+            pattern[0] = (uint8_t)(value >> 24);
+            pattern[1] = (uint8_t)(value >> 16);
+            pattern[2] = (uint8_t)(value >> 8);
+            pattern[3] = (uint8_t)value;
+            plen = 4;
+        }
+        tail_idx = 3;
     } else {
-        cmd_err(res, "find: unknown sub-command '%s' (expected str or bytes)", subcmd);
+        cmd_err(res, "find: unknown sub-command '%s' (expected str, bytes, word, or long)", subcmd);
         return;
     }
 

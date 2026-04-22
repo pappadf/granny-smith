@@ -3797,9 +3797,16 @@ static const struct arg_spec find_str_args[] = {
 static const struct arg_spec find_bytes_args[] = {
     {"bytes", ARG_REST, "2-digit hex tokens, optional [range] [all]"},
 };
+// find word / find long share the same shape: one numeric value then optional [range] [all].
+static const struct arg_spec find_value_args[] = {
+    {"value", ARG_STRING,              "numeric value ($hex, 0xhex, or bare hex)"},
+    {"rest",  ARG_REST | ARG_OPTIONAL, "[range] [all]"                           },
+};
 static const struct subcmd_spec find_subcmds[] = {
     {"str",   NULL, find_str_args,   2, "find ASCII/UTF-8 text"             },
     {"bytes", NULL, find_bytes_args, 1, "find a byte sequence (2-digit hex)"},
+    {"word",  NULL, find_value_args, 2, "find a 16-bit big-endian value"    },
+    {"long",  NULL, find_value_args, 2, "find a 32-bit big-endian value"    },
 };
 
 // ============================================================================
@@ -4013,10 +4020,10 @@ debug_t *debug_init(void) {
         .name = "find",
         .aliases = find_aliases,
         .category = "Inspection",
-        .synopsis = "Search memory for a string or byte sequence (find str|bytes)",
+        .synopsis = "Search memory for a string, byte sequence, or numeric value (find str|bytes|word|long)",
         .fn = cmd_find_handler,
         .subcmds = find_subcmds,
-        .n_subcmds = 2,
+        .n_subcmds = 4,
     });
 
     debug_mac_init();
