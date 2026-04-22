@@ -519,6 +519,11 @@ static inline void exception(cpu_t *restrict cpu, uint32_t vector, uint32_t pc, 
         cpu->a[7] = (cpu->m && cpu->cpu_model == CPU_MODEL_68030) ? cpu->msp : cpu->ssp;
         cpu->supervisor = 1;
         cpu->m = 0; // exceptions always switch to ISP (M=0)
+        // Mode transition: point the active SoA at the supervisor tables so
+        // the upcoming frame push (on SSP) and vector fetch walk the
+        // supervisor MMU view, not the user one that was in effect.
+        g_active_read = g_supervisor_read;
+        g_active_write = g_supervisor_write;
     } else if (cpu->m && cpu->cpu_model == CPU_MODEL_68030) {
         // In supervisor+master mode: switch to ISP for the exception frame
         cpu->msp = cpu->a[7];
@@ -580,6 +585,10 @@ static __attribute__((noinline, cold)) void exception_bus_error_retry(cpu_t *res
         cpu->a[7] = (cpu->m && cpu->cpu_model == CPU_MODEL_68030) ? cpu->msp : cpu->ssp;
         cpu->supervisor = 1;
         cpu->m = 0;
+        // Mode transition: repoint active SoA at the supervisor tables so
+        // the frame push and vector fetch below walk the supervisor MMU view.
+        g_active_read = g_supervisor_read;
+        g_active_write = g_supervisor_write;
     } else if (cpu->m && cpu->cpu_model == CPU_MODEL_68030) {
         cpu->msp = cpu->a[7];
         cpu->a[7] = cpu->ssp;
@@ -587,8 +596,13 @@ static __attribute__((noinline, cold)) void exception_bus_error_retry(cpu_t *res
     }
 
     // Push 68030 Format $B (long bus cycle fault) frame: 46 words = 92 bytes.
-    uint16_t fc = (saved_sr & 0x2000) ? 5 : 1;
-    uint16_t ssw = (1 << 8) | ((rw ? 1 : 0) << 6) | (0x01 << 4) | (fc & 0x7);
+    // FC comes from g_bus_error_fc (set by the slow path when raising the
+    // fault) so the frame reflects the FC the access was actually issued
+    // with — vital for MOVES from kernel mode with DFC=1 (A/UX copyin/
+    // copyout): the kernel's page-fault arbiter uses SSW[2:0] to decide
+    // whether the fault was against the user or kernel address space.
+    uint16_t fc = (uint16_t)(g_bus_error_fc & 0x7);
+    uint16_t ssw = (1 << 8) | ((rw ? 1 : 0) << 6) | (0x01 << 4) | fc;
 
     cpu->a[7] -= 92;
     uint32_t frame = cpu->a[7];
@@ -659,6 +673,10 @@ static __attribute__((noinline, cold)) void exception_bus_error(cpu_t *restrict 
         cpu->a[7] = (cpu->m && cpu->cpu_model == CPU_MODEL_68030) ? cpu->msp : cpu->ssp;
         cpu->supervisor = 1;
         cpu->m = 0;
+        // Mode transition: repoint active SoA at the supervisor tables so
+        // the frame push and vector fetch below walk the supervisor MMU view.
+        g_active_read = g_supervisor_read;
+        g_active_write = g_supervisor_write;
     } else if (cpu->m && cpu->cpu_model == CPU_MODEL_68030) {
         cpu->msp = cpu->a[7];
         cpu->a[7] = cpu->ssp;
@@ -666,8 +684,13 @@ static __attribute__((noinline, cold)) void exception_bus_error(cpu_t *restrict 
     }
 
     // Push 68030 Format $B (long bus cycle fault) frame: 46 words = 92 bytes.
-    uint16_t fc = (saved_sr & 0x2000) ? 5 : 1;
-    uint16_t ssw = (1 << 8) | ((rw ? 1 : 0) << 6) | (0x01 << 4) | (fc & 0x7);
+    // FC comes from g_bus_error_fc (set by the slow path when raising the
+    // fault) so the frame reflects the FC the access was actually issued
+    // with — vital for MOVES from kernel mode with DFC=1 (A/UX copyin/
+    // copyout): the kernel's page-fault arbiter uses SSW[2:0] to decide
+    // whether the fault was against the user or kernel address space.
+    uint16_t fc = (uint16_t)(g_bus_error_fc & 0x7);
+    uint16_t ssw = (1 << 8) | ((rw ? 1 : 0) << 6) | (0x01 << 4) | fc;
 
     cpu->a[7] -= 92;
     uint32_t frame = cpu->a[7];

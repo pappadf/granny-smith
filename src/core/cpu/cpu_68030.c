@@ -443,7 +443,13 @@ static __attribute__((noinline, cold)) void cpu_hardware_reset(cpu_t *restrict c
     /* The memory slow path set *instructions=0 to force the loop exit. */                                             \
     if (__builtin_expect(g_bus_error_pending, 0)) {                                                                    \
         g_bus_error_pending = 0;                                                                                       \
-        if (g_mmu && g_mmu->enabled && cpu->vbr != 0)                                                                  \
+        /* PMMU table-walk failures use Format $B (retry) so the kernel's                                              \
+         * fault handler restarts the instruction after fixing the PTE.                                                \
+         * Plain bus timeouts (unmapped physical in NuBus-probe range) use                                             \
+         * Format $A (skip) so ROM probes advance past the bad access.                                                 \
+         * g_bus_error_is_pmmu is set by mmu_handle_fault based on which                                               \
+         * code path produced the false return. */                                                                     \
+        if (g_mmu && g_mmu->enabled && g_bus_error_is_pmmu)                                                            \
             exception_bus_error_retry(cpu, g_bus_error_address, g_bus_error_rw);                                       \
         else                                                                                                           \
             exception_bus_error(cpu, g_bus_error_address, g_bus_error_rw);                                             \

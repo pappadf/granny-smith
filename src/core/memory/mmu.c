@@ -294,8 +294,13 @@ static mmu_walk_result_t mmu_table_walk(mmu_state_t *mmu, uint32_t logical_addr,
 // ============================================================================
 
 // Fill the SoA arrays for a single page based on walk result and permissions.
+// The `supervisor` flag is the FC class used for the walk (true=super, false=user).
+// When TC.SRE=1 (separate supervisor/user roots), the super and user MMU tables
+// may map the same logical page to different physical pages, so we only
+// populate the SoA matching the walk's FC.  When SRE=0, a single walk
+// produces the mapping for both FCs so we populate both tables.
 static void mmu_fill_soa_entry(mmu_state_t *mmu, uint32_t logical_page, uint32_t physical_page, bool supervisor_only,
-                               bool write_protected) {
+                               bool write_protected, bool supervisor) {
     // Get host pointer for the physical page
     uint8_t *host_ptr = phys_to_host(mmu, physical_page);
     if (!host_ptr)
@@ -328,16 +333,21 @@ static void mmu_fill_soa_entry(mmu_state_t *mmu, uint32_t logical_page, uint32_t
     // Track this page for fast invalidation
     tlb_track_page(page_index);
 
-    // Supervisor read: always populated for valid pages
-    if (g_supervisor_read)
-        g_supervisor_read[page_index] = adjusted;
+    // When SRE=0 both FCs share the CRP walk; fill both SoAs.  When SRE=1 only
+    // fill the SoA that matches the walk's FC so a stale super entry does not
+    // leak into the user table (and vice-versa) with the wrong physical page.
+    bool sre_split = TC_SRE(mmu->tc) != 0;
+    bool fill_super = !sre_split || supervisor;
+    bool fill_user = (!sre_split || !supervisor) && !supervisor_only;
 
-    // Supervisor write: only if not write-protected and physical RAM
-    if (g_supervisor_write && !write_protected && host_writable)
-        g_supervisor_write[page_index] = adjusted;
+    if (fill_super) {
+        if (g_supervisor_read)
+            g_supervisor_read[page_index] = adjusted;
+        if (g_supervisor_write && !write_protected && host_writable)
+            g_supervisor_write[page_index] = adjusted;
+    }
 
-    // User access: only if not supervisor-only
-    if (!supervisor_only) {
+    if (fill_user) {
         if (g_user_read)
             g_user_read[page_index] = adjusted;
         if (g_user_write && !write_protected && host_writable)
@@ -465,7 +475,7 @@ bool mmu_handle_fault(mmu_state_t *mmu, uint32_t logical_addr, bool write, bool 
     // Check transparent translation first
     if (mmu_check_tt(mmu, logical_addr, write, supervisor)) {
         // TT match: identity mapping (logical = physical)
-        mmu_fill_soa_entry(mmu, emu_page, emu_page, false, false);
+        mmu_fill_soa_entry(mmu, emu_page, emu_page, false, false, supervisor);
         // If phys_to_host returned NULL (unmapped physical), the SoA entry
         // stays zero.  For reads, only bus error within the configured NuBus
         // expansion slot range (e.g. $F9-$FD on SE/30).  Outside that range,
@@ -474,8 +484,12 @@ bool mmu_handle_fault(mmu_state_t *mmu, uint32_t logical_addr, bool write, bool 
         if (!write) {
             uint32_t page_index = emu_page >> PAGE_SHIFT;
             if ((int)page_index < g_page_count && g_supervisor_read && g_supervisor_read[page_index] == 0 &&
-                logical_addr >= mmu->nubus_berr_start && logical_addr <= mmu->nubus_berr_end)
-                return false; // unmapped physical read in NuBus range → bus error
+                logical_addr >= mmu->nubus_berr_start && logical_addr <= mmu->nubus_berr_end) {
+                // TT + unmapped physical = plain bus timeout; ROM handlers
+                // expect skip semantics (Format $A).
+                g_bus_error_is_pmmu = 0;
+                return false;
+            }
         }
         return true;
     }
@@ -483,22 +497,29 @@ bool mmu_handle_fault(mmu_state_t *mmu, uint32_t logical_addr, bool write, bool 
     // Perform table walk
     mmu_walk_result_t result = mmu_table_walk(mmu, logical_addr, write, supervisor);
 
-    if (!result.valid)
-        return false; // invalid descriptor → caller should raise bus error
+    if (!result.valid) {
+        // Invalid descriptor: PMMU walk fault, retry semantics (Format $B)
+        g_bus_error_is_pmmu = 1;
+        return false;
+    }
 
     // Check supervisor-only restriction
-    if (result.supervisor_only && !supervisor)
+    if (result.supervisor_only && !supervisor) {
+        g_bus_error_is_pmmu = 1;
         return false; // user accessing supervisor page → bus error
+    }
 
     // Check write protection
-    if (result.write_protected && write)
+    if (result.write_protected && write) {
+        g_bus_error_is_pmmu = 1;
         return false; // write to write-protected page → bus error
+    }
 
     // Fill the SoA entry for this emulator page.
     // The physical address from the walk gives us the physical page base.
     // We need to map the emulator's 4KB page granularity.
     uint32_t phys_page = result.physical_addr & ~(uint32_t)PAGE_MASK;
-    mmu_fill_soa_entry(mmu, emu_page, phys_page, result.supervisor_only, result.write_protected);
+    mmu_fill_soa_entry(mmu, emu_page, phys_page, result.supervisor_only, result.write_protected, supervisor);
 
     // When the descriptor covers more than one emulator 4KB page (e.g. an
     // early-termination page descriptor at level A with 32 MB coverage), the
@@ -518,7 +539,7 @@ bool mmu_handle_fault(mmu_state_t *mmu, uint32_t logical_addr, bool write, bool 
             uint32_t lp = range_start + off;
             if (lp == emu_page)
                 continue; // already filled above
-            mmu_fill_soa_entry(mmu, lp, phys_base + off, result.supervisor_only, result.write_protected);
+            mmu_fill_soa_entry(mmu, lp, phys_base + off, result.supervisor_only, result.write_protected, supervisor);
         }
     }
 

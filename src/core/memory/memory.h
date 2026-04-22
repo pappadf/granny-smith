@@ -124,6 +124,8 @@ extern uintptr_t *g_active_write;
 extern uint32_t g_bus_error_pending; // 0=none, 1=pending
 extern uint32_t g_bus_error_address; // faulting logical address
 extern uint32_t g_bus_error_rw; // 1=read, 0=write
+extern uint32_t g_bus_error_fc; // FC of the faulting access (1=user-data, 5=super-data)
+extern uint32_t g_bus_error_is_pmmu; // 1=PMMU descriptor fault (retry), 0=bus timeout (skip)
 extern uint32_t *g_bus_error_instr_ptr; // points to decoder's instruction counter
 
 // I/O cycle penalty: tracks extra bus wait-state cycles for I/O accesses.

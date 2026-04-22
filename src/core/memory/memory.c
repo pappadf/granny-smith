@@ -50,6 +50,19 @@ uintptr_t *g_active_write = NULL;
 uint32_t g_bus_error_pending = 0;
 uint32_t g_bus_error_address = 0;
 uint32_t g_bus_error_rw = 0;
+// FC value (SSW[2:0]) of the faulting access.  Set alongside g_bus_error_pending
+// so exception frame reflects the FC the access was issued with — critical for
+// MOVES in a kernel that points DFC/SFC at user-data while in supervisor mode
+// (A/UX's copyin/copyout/copyinstr path).  If the frame's FC bits say
+// supervisor-data for what was really a user-data probe, the kernel's
+// page-fault arbiter will treat it as a kernel fault and skip demand-fill.
+uint32_t g_bus_error_fc = 5;
+// 1 if the fault came from a PMMU descriptor failure (invalid/perm/write-
+// protect) and the handler is expected to fix-up the PTE and retry; 0 if the
+// fault was a plain bus timeout (unmapped physical in a NuBus slot range)
+// where the handler expects skip-instruction semantics (e.g. Mac ROM RAM
+// and slot probes).  Selects Format $B vs Format $A dispatch.
+uint32_t g_bus_error_is_pmmu = 0;
 uint32_t *g_bus_error_instr_ptr = NULL;
 
 // I/O cycle penalty state: tracks extra bus wait-state cycles for I/O accesses.
@@ -194,6 +207,7 @@ uint8_t memory_read_uint8_slow(uint32_t addr) {
                 g_bus_error_pending = 1;
                 g_bus_error_address = addr;
                 g_bus_error_rw = 1; // read
+                g_bus_error_fc = (g_active_read == g_supervisor_read) ? 5 : 1;
                 if (g_bus_error_instr_ptr)
                     *g_bus_error_instr_ptr = 0; // force decoder loop exit
             }
@@ -297,6 +311,7 @@ void memory_write_uint8_slow(uint32_t addr, uint8_t value) {
                 g_bus_error_pending = 1;
                 g_bus_error_address = addr;
                 g_bus_error_rw = 0; // write
+                g_bus_error_fc = (g_active_write == g_supervisor_write) ? 5 : 1;
                 if (g_bus_error_instr_ptr)
                     *g_bus_error_instr_ptr = 0; // force decoder loop exit
             }

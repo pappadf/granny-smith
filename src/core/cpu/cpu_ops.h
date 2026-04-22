@@ -1520,9 +1520,48 @@ static inline uint32_t bf_insert_reg(uint32_t dst, int32_t offset, uint32_t w, u
         WRITE16(A(opcode >> 9 & 7), _res);                                                                             \
     })
 
-// --- MOVES: Move with Alternate Function Code (supervisor, stub) ---
-// MOVES reads/writes with SFC/DFC; since we don't have MMU translation,
-// treat as a normal privileged memory access.
+// --- MOVES: Move with Alternate Function Code ---
+// Reads/writes a single operand using the FC in SFC (for EA→Rn reads) or DFC
+// (for Rn→EA writes) instead of the CPU's current FC.  A/UX kernels set
+// SFC=DFC=1 (user data) and then use MOVES from supervisor mode to touch
+// user pages (copyin/copyout/copyinstr).  We honor this by temporarily
+// pointing g_active_read / g_active_write at the user SoA tables when the
+// FC bit 2 is clear (1/2 = user data/program), and at the supervisor tables
+// when bit 2 is set (5/6 = supervisor data/program).  The hot-loop epilogue
+// re-establishes g_active_read/write based on cpu->supervisor, so any bus
+// error raised by the swapped access still finds the correct tables when
+// the handler resumes.
+//
+// For autoincrement/autodecrement EA modes, CALCULATE_EA is invoked with
+// increment=false so the address register is NOT updated before the memory
+// access — otherwise a page-fault retry would re-run CALCULATE_EA and
+// increment/decrement the register a second time, writing 4 bytes off from
+// the intended address.  After the memory access succeeds we commit the
+// register update manually.  A deferred bus error aborts before the commit,
+// leaving the register at its pre-instruction value so the retry places the
+// write at the correct address.
+#define MOVES_ALT_READ(FC)  ((((FC)) & 4u) ? g_supervisor_read : g_user_read)
+#define MOVES_ALT_WRITE(FC) ((((FC)) & 4u) ? g_supervisor_write : g_user_write)
+
+#define MOVES_EA_WITH_RETRY_SAFE(SIZE, VAR)                                                                            \
+    uint32_t VAR;                                                                                                      \
+    bool _moves_autoinc = false, _moves_autodec = false;                                                               \
+    if (EA_MODE == 3) { /* (An)+ */                                                                                    \
+        VAR = A(EA_REG);                                                                                               \
+        _moves_autoinc = true;                                                                                         \
+    } else if (EA_MODE == 4) { /* -(An) */                                                                             \
+        VAR = A(EA_REG) - ((EA_REG == 7 && (SIZE) == 1) ? 2 : (SIZE));                                                 \
+        _moves_autodec = true;                                                                                         \
+    } else {                                                                                                           \
+        VAR = CALCULATE_EA((SIZE), EA_MODE, EA_REG, true);                                                             \
+    }
+
+#define MOVES_COMMIT_EA(SIZE)                                                                                          \
+    if (_moves_autoinc)                                                                                                \
+        A(EA_REG) += (EA_REG == 7 && (SIZE) == 1) ? 2 : (SIZE);                                                        \
+    else if (_moves_autodec)                                                                                           \
+        A(EA_REG) -= (EA_REG == 7 && (SIZE) == 1) ? 2 : (SIZE);
+
 #define OP_MOVES_B_RN_EA                                                                                               \
     OP({                                                                                                               \
         VALID_EA(ea_memory &ea_alterable);                                                                             \
@@ -1530,8 +1569,14 @@ static inline uint32_t bf_insert_reg(uint32_t dst, int32_t offset, uint32_t w, u
             uint16_t _ext = FETCH16();                                                                                 \
             uint32_t _da = (_ext >> 15) & 1u;                                                                          \
             uint32_t _rn = (_ext >> 12) & 7u;                                                                          \
-            uint32_t _ea = CALCULATE_EA(1, EA_MODE, EA_REG, true);                                                     \
+            MOVES_EA_WITH_RETRY_SAFE(1, _ea);                                                                          \
+            uintptr_t *_saved = g_active_write;                                                                        \
+            g_active_write = MOVES_ALT_WRITE(cpu->dfc);                                                                \
             WRITE8(_ea, (uint8_t)(_da ? A(_rn) : D(_rn)));                                                             \
+            g_active_write = _saved;                                                                                   \
+            if (!g_bus_error_pending) {                                                                                \
+                MOVES_COMMIT_EA(1);                                                                                    \
+            }                                                                                                          \
         });                                                                                                            \
     })
 
@@ -1542,8 +1587,14 @@ static inline uint32_t bf_insert_reg(uint32_t dst, int32_t offset, uint32_t w, u
             uint16_t _ext = FETCH16();                                                                                 \
             uint32_t _da = (_ext >> 15) & 1u;                                                                          \
             uint32_t _rn = (_ext >> 12) & 7u;                                                                          \
-            uint32_t _ea = CALCULATE_EA(2, EA_MODE, EA_REG, true);                                                     \
+            MOVES_EA_WITH_RETRY_SAFE(2, _ea);                                                                          \
+            uintptr_t *_saved = g_active_write;                                                                        \
+            g_active_write = MOVES_ALT_WRITE(cpu->dfc);                                                                \
             WRITE16(_ea, (uint16_t)(_da ? A(_rn) : D(_rn)));                                                           \
+            g_active_write = _saved;                                                                                   \
+            if (!g_bus_error_pending) {                                                                                \
+                MOVES_COMMIT_EA(2);                                                                                    \
+            }                                                                                                          \
         });                                                                                                            \
     })
 
@@ -1554,8 +1605,14 @@ static inline uint32_t bf_insert_reg(uint32_t dst, int32_t offset, uint32_t w, u
             uint16_t _ext = FETCH16();                                                                                 \
             uint32_t _da = (_ext >> 15) & 1u;                                                                          \
             uint32_t _rn = (_ext >> 12) & 7u;                                                                          \
-            uint32_t _ea = CALCULATE_EA(4, EA_MODE, EA_REG, true);                                                     \
+            MOVES_EA_WITH_RETRY_SAFE(4, _ea);                                                                          \
+            uintptr_t *_saved = g_active_write;                                                                        \
+            g_active_write = MOVES_ALT_WRITE(cpu->dfc);                                                                \
             WRITE32(_ea, _da ? A(_rn) : D(_rn));                                                                       \
+            g_active_write = _saved;                                                                                   \
+            if (!g_bus_error_pending) {                                                                                \
+                MOVES_COMMIT_EA(4);                                                                                    \
+            }                                                                                                          \
         });                                                                                                            \
     })
 
@@ -1566,11 +1623,18 @@ static inline uint32_t bf_insert_reg(uint32_t dst, int32_t offset, uint32_t w, u
             uint16_t _ext = FETCH16();                                                                                 \
             uint32_t _da = (_ext >> 15) & 1u;                                                                          \
             uint32_t _rn = (_ext >> 12) & 7u;                                                                          \
-            uint32_t _ea = CALCULATE_EA(1, EA_MODE, EA_REG, true);                                                     \
-            if (_da)                                                                                                   \
-                A(_rn) = (int32_t)(int8_t)READ8(_ea);                                                                  \
-            else                                                                                                       \
-                STORE_DN(8, _rn, READ8(_ea));                                                                          \
+            MOVES_EA_WITH_RETRY_SAFE(1, _ea);                                                                          \
+            uintptr_t *_saved = g_active_read;                                                                         \
+            g_active_read = MOVES_ALT_READ(cpu->sfc);                                                                  \
+            uint8_t _v = READ8(_ea);                                                                                   \
+            g_active_read = _saved;                                                                                    \
+            if (!g_bus_error_pending) {                                                                                \
+                MOVES_COMMIT_EA(1);                                                                                    \
+                if (_da)                                                                                               \
+                    A(_rn) = (int32_t)(int8_t)_v;                                                                      \
+                else                                                                                                   \
+                    STORE_DN(8, _rn, _v);                                                                              \
+            }                                                                                                          \
         });                                                                                                            \
     })
 
@@ -1581,11 +1645,18 @@ static inline uint32_t bf_insert_reg(uint32_t dst, int32_t offset, uint32_t w, u
             uint16_t _ext = FETCH16();                                                                                 \
             uint32_t _da = (_ext >> 15) & 1u;                                                                          \
             uint32_t _rn = (_ext >> 12) & 7u;                                                                          \
-            uint32_t _ea = CALCULATE_EA(2, EA_MODE, EA_REG, true);                                                     \
-            if (_da)                                                                                                   \
-                A(_rn) = (int32_t)(int16_t)READ16(_ea);                                                                \
-            else                                                                                                       \
-                STORE_DN(16, _rn, READ16(_ea));                                                                        \
+            MOVES_EA_WITH_RETRY_SAFE(2, _ea);                                                                          \
+            uintptr_t *_saved = g_active_read;                                                                         \
+            g_active_read = MOVES_ALT_READ(cpu->sfc);                                                                  \
+            uint16_t _v = READ16(_ea);                                                                                 \
+            g_active_read = _saved;                                                                                    \
+            if (!g_bus_error_pending) {                                                                                \
+                MOVES_COMMIT_EA(2);                                                                                    \
+                if (_da)                                                                                               \
+                    A(_rn) = (int32_t)(int16_t)_v;                                                                     \
+                else                                                                                                   \
+                    STORE_DN(16, _rn, _v);                                                                             \
+            }                                                                                                          \
         });                                                                                                            \
     })
 
@@ -1596,11 +1667,18 @@ static inline uint32_t bf_insert_reg(uint32_t dst, int32_t offset, uint32_t w, u
             uint16_t _ext = FETCH16();                                                                                 \
             uint32_t _da = (_ext >> 15) & 1u;                                                                          \
             uint32_t _rn = (_ext >> 12) & 7u;                                                                          \
-            uint32_t _ea = CALCULATE_EA(4, EA_MODE, EA_REG, true);                                                     \
-            if (_da)                                                                                                   \
-                A(_rn) = READ32(_ea);                                                                                  \
-            else                                                                                                       \
-                D(_rn) = READ32(_ea);                                                                                  \
+            MOVES_EA_WITH_RETRY_SAFE(4, _ea);                                                                          \
+            uintptr_t *_saved = g_active_read;                                                                         \
+            g_active_read = MOVES_ALT_READ(cpu->sfc);                                                                  \
+            uint32_t _v = READ32(_ea);                                                                                 \
+            g_active_read = _saved;                                                                                    \
+            if (!g_bus_error_pending) {                                                                                \
+                MOVES_COMMIT_EA(4);                                                                                    \
+                if (_da)                                                                                               \
+                    A(_rn) = _v;                                                                                       \
+                else                                                                                                   \
+                    D(_rn) = _v;                                                                                       \
+            }                                                                                                          \
         });                                                                                                            \
     })
 
