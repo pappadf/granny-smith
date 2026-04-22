@@ -440,20 +440,21 @@ static __attribute__((noinline, cold)) void cpu_hardware_reset(cpu_t *restrict c
     if (__builtin_expect(_saved_trace & 2, 0))                                                                         \
         if (*instructions > 1)                                                                                         \
             *instructions = 1;                                                                                         \
-    /* Decrement *instructions BEFORE the fetch: any memory_io_penalty                                                 \
-     * triggered by the fetch or the instruction body saturates *instructions                                          \
-     * at zero, and doing the decrement first guarantees we don't wrap a                                               \
-     * penalty-zeroed counter to UINT32_MAX on the trailing (*instructions)--.                                         \
-     * See scheduler.c:reconcile_sprint — the old fetch→decrement order would                                      \
-     * trip the sprint_burndown <= sprint_total invariant on any SE/30 sprint                                          \
-     * that ended its last instruction on a slow I/O access. */                                                        \
+    /* Saturating decrement on the trailing (*instructions)--: memory_io_penalty                                       \
+     * can clamp *instructions to 0 during the fetch (when the I/O penalty                                             \
+     * equals or exceeds the remaining burndown), and an unconditional                                                 \
+     * decrement would wrap to UINT32_MAX, breaking the                                                                \
+     * sprint_burndown <= sprint_total invariant in scheduler.c:                                                       \
+     * reconcile_sprint on any SE/30 sprint that ended its last instruction                                            \
+     * on a slow I/O access. */                                                                                        \
     while (*instructions > 0) {                                                                                        \
-        (*instructions)--;                                                                                             \
         uint32_t fetch = memory_read_uint32(cpu->pc);                                                                  \
         uint16_t opcode = fetch >> 16;                                                                                 \
         uint16_t ext_word = fetch & 0xFFFF;                                                                            \
         cpu->instruction_pc = cpu->pc;                                                                                 \
-        cpu->pc += 2;
+        cpu->pc += 2;                                                                                                  \
+        if (*instructions > 0)                                                                                         \
+            (*instructions)--;
 #define CPU_DECODER_EPILOGUE                                                                                           \
     }                                                                                                                  \
     /* Trace exception: fire if T1 was set at sprint start AND still set now. */                                       \

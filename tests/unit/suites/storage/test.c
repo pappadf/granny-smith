@@ -4,6 +4,7 @@
 #include "test_assert.h"
 
 #include <dirent.h>
+#include <errno.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -48,7 +49,19 @@ static void cleanup_dir(const char *path) {
 
 static void setup_sandbox(void) {
     cleanup_dir(SANDBOX_DIR);
-    ASSERT_TRUE(mkdir(SANDBOX_DIR, 0777) == 0);
+    if (mkdir(SANDBOX_DIR, 0777) != 0) {
+        /* Tolerate EEXIST: a stale sandbox left by an interrupted prior run
+         * (where cleanup_dir couldn't remove the directory) is fine as long
+         * as it's a directory we can write into.  Per-test files use fixed
+         * names and get overwritten unconditionally, so stale contents at
+         * this point don't affect subsequent test logic. */
+        int saved_errno = errno;
+        struct stat st;
+        if (saved_errno != EEXIST || stat(SANDBOX_DIR, &st) != 0 || !S_ISDIR(st.st_mode)) {
+            fprintf(stderr, "setup_sandbox: mkdir(%s) failed: %s\n", SANDBOX_DIR, strerror(saved_errno));
+            ASSERT_TRUE(0);
+        }
+    }
 }
 
 static void teardown_sandbox(void) {

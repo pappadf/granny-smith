@@ -194,7 +194,7 @@ TEST(test_two_level_translation) {
     ASSERT_TRUE(g_supervisor_read[0] != 0);
 
     // Test PTEST for logical address 0x00001000
-    uint16_t mmusr = mmu_test_address(mmu, 0x00001000, false, true);
+    uint16_t mmusr = mmu_test_address(mmu, 0x00001000, false, true, NULL);
     // Should be valid (no I bit)
     ASSERT_TRUE((mmusr & MMUSR_I) == 0);
 
@@ -251,7 +251,7 @@ TEST(test_short_table_descriptor_with_wp_bit) {
     mmu_invalidate_tlb(mmu);
 
     // PTEST: logical 0x00000000 must resolve through entry 0, not entry 1.
-    uint16_t mmusr = mmu_test_address(mmu, 0x00000000, false, true);
+    uint16_t mmusr = mmu_test_address(mmu, 0x00000000, false, true, NULL);
     ASSERT_TRUE((mmusr & MMUSR_I) == 0);
 
     // Use mmu_translate_debug to verify the resolved physical address —
@@ -295,7 +295,7 @@ TEST(test_invalid_descriptor_bus_error) {
     ASSERT_TRUE(!ok);
 
     // PTEST should report invalid
-    uint16_t mmusr = mmu_test_address(mmu, 0x00000000, false, true);
+    uint16_t mmusr = mmu_test_address(mmu, 0x00000000, false, true, NULL);
     ASSERT_TRUE((mmusr & MMUSR_I) != 0);
 
     cleanup(mem, mmu);
@@ -348,7 +348,7 @@ TEST(test_transparent_translation) {
     ASSERT_TRUE(g_supervisor_read[1] != 0);
 
     // PTEST should report transparent translation
-    uint16_t mmusr = mmu_test_address(mmu, 0x00002000, false, true);
+    uint16_t mmusr = mmu_test_address(mmu, 0x00002000, false, true, NULL);
     ASSERT_TRUE((mmusr & MMUSR_T) != 0);
 
     cleanup(mem, mmu);
@@ -395,7 +395,7 @@ TEST(test_write_protection) {
     ASSERT_TRUE(!ok);
 
     // PTEST should report W bit
-    uint16_t mmusr = mmu_test_address(mmu, 0x00000000, false, true);
+    uint16_t mmusr = mmu_test_address(mmu, 0x00000000, false, true, NULL);
     ASSERT_TRUE((mmusr & MMUSR_W) != 0);
 
     cleanup(mem, mmu);

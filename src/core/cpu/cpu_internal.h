@@ -616,10 +616,6 @@ static __attribute__((noinline, cold)) void exception_bus_error_retry(cpu_t *res
 
     // Detect double bus error during frame push or field writes
     if (g_bus_error_pending) {
-        fprintf(stderr,
-                "DOUBLE-BUS-ERROR-A: inner=bus-error-retry frame-push faulting_pc=$%08X saved_pc=$%08X "
-                "fault=$%08X rw=%u sr=$%04X vbr=$%08X\n",
-                faulting_pc, saved_pc, fault_addr, rw, saved_sr, cpu->vbr);
         cpu->halted = 1;
         g_bus_error_pending = 0;
         if (g_bus_error_instr_ptr)
@@ -632,10 +628,6 @@ static __attribute__((noinline, cold)) void exception_bus_error_retry(cpu_t *res
 
     // Detect double bus error during vector read
     if (g_bus_error_pending) {
-        fprintf(stderr,
-                "DOUBLE-BUS-ERROR-B: inner=bus-error-retry vector-fetch faulting_pc=$%08X saved_pc=$%08X "
-                "fault=$%08X rw=%u vbr=$%08X\n",
-                faulting_pc, saved_pc, fault_addr, rw, cpu->vbr);
         cpu->halted = 1;
         g_bus_error_pending = 0;
         if (g_bus_error_instr_ptr)
@@ -657,13 +649,13 @@ static __attribute__((noinline, cold)) void exception_bus_error(cpu_t *restrict 
     // (format $B) retries the faulting instruction.  If the retry faults at
     // the same PC, the CPU halts (MC68030UM §8.3.3).  We detect this by
     // comparing the faulting PC with the last bus error's saved PC.
+    // For Format $A (skip) bus errors we clear last_bus_error_pc at the
+    // end of the handler if saved_pc != faulting_pc — so same-PC halt
+    // only triggers on instruction-fetch faults (saved_pc == faulting_pc
+    // via f_trap), where a tight fetch loop genuinely makes no progress.
     // The faulting instruction's address (before PC was advanced by the decoder)
     uint32_t faulting_pc = cpu->instruction_pc;
     if (cpu->last_bus_error_pc != 0 && cpu->last_bus_error_pc == faulting_pc) {
-        fprintf(stderr,
-                "DOUBLE-BUS-ERROR-C: inner=bus-error-skip same-PC faulting_pc=$%08X fault=$%08X rw=%u "
-                "cpu.pc=$%08X cpu.a7=$%08X sr=$%04X last_be=$%08X\n",
-                faulting_pc, fault_addr, rw, cpu->pc, cpu->a[7], cpu_get_sr(cpu), cpu->last_bus_error_pc);
         cpu->halted = 1;
         cpu->last_bus_error_pc = 0;
         g_bus_error_pending = 0;
