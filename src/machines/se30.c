@@ -1209,8 +1209,15 @@ static void se30_init(config_t *cfg, checkpoint_t *checkpoint) {
     // real hardware routes $F0-$FF to the NuBus bus controller, bypassing the
     // PMMU entirely. Set TT1 so the MMU identity-maps NuBus slot space, which
     // lets phys_to_host() resolve $FE000000 to the VRAM buffer.
-    // TT1: base=$F0, mask=$0F (match $F0-$FF), E=1, FC_MASK=7 (match all)
-    se30->mmu->tt1 = 0xF00F8007;
+    //
+    // TT1 is restricted to supervisor FCs (FC_BASE=4 FC_MASK=3 → FC=4..7) so
+    // user-mode accesses in $F0000000-$FFFFFFFF fall through to the CRP walk.
+    // A/UX 3.0.1 retail places USRSTACK at $FFFFFFE0 (top of 32-bit VA) and
+    // maps it to real RAM via the user CRP; a user-FC-matching TT1 would
+    // short-circuit that walk and silently drop stack pushes (identity phys
+    // $FFFFFxxx is unmapped RAM).
+    // TT1: base=$F0, mask=$0F (match $F0-$FF), E=1, FC_BASE=4 FC_MASK=3
+    se30->mmu->tt1 = 0xF00F8043;
 
     // Register alternate physical addresses for page-table-mapped access.
     // After the ROM sets up MMU page tables, logical $FExxxxxx maps to
