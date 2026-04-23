@@ -237,6 +237,10 @@ logpoint --write L:$1200D0C3.b "req+$27 write"   # also catches aliases
 | `print <target>` | `p` | Print register, Mac global, or memory value |
 | `examine <addr> [n]` | `x` | Examine raw memory (hex + ASCII, default 64 bytes) |
 | `disasm [addr] [n]` | `dis`, `d` | Disassemble instructions (default: from PC) |
+| `find str <text> [range] [all]` | `f` | Search memory for ASCII/UTF-8 text |
+| `find bytes <hex…> [range] [all]` | `f` | Search memory for a byte sequence (2-digit hex tokens) |
+| `find word <value> [range] [all]` | `f` | Search for a 16-bit big-endian value |
+| `find long <value> [range] [all]` | `f` | Search for a 32-bit big-endian value |
 | `set <target> <value>` | — | Set register, flag, or memory value |
 
 **`print` examples:**
@@ -247,6 +251,23 @@ p $Ticks           # Mac global (reads value at address 0x016A)
 p $MBState         # Mac global
 p $0400.w          # memory word at address 0x400
 ```
+
+**`find` examples:**
+```
+find str "loadshlibs" $11000000..$11100000   # ASCII search in a range
+find bytes 4E B9 10 01 61 96                 # JSR encoding — whole address space
+find word $4170 $400000..$440000             # 16-bit BE value (matches "Ap" in ASCII)
+find long $4170706C $400000..$440000         # 32-bit BE value (matches "Appl")
+find str "Apple" $400000 0x40000             # "<start> <count>" range form
+find str "Apple" $400000..$500000 all        # drop the default 16-hit cap
+```
+
+- Range forms: `<start>..<end>` (half-open) or `<start> <count>`. Omitted range = full address space.
+- First 16 hits are printed by default; append `all` to uncap.
+- `find word` / `find long` use the 68K's native big-endian byte order.
+- Each hit line is `$ADDR  <label>`, where the label is the reconstructed literal
+  (quoted text for `str`, `$XXXX` / `$XXXXXXXX` for `word`/`long`, or hex bytes for `bytes`) —
+  greppable from scripted drivers.
 
 ### Info Subcommands
 
