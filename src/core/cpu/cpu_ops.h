@@ -1702,17 +1702,37 @@ static inline uint32_t bf_insert_reg(uint32_t dst, int32_t offset, uint32_t w, u
 #define OP_PBCC_W OP(PC += 2) // skip branch displacement, never branch
 #define OP_PBCC_L OP(PC += 4) // skip long branch displacement, never branch
 
-// --- MMU PSAVE/PRESTORE: privileged stubs (consume EA extension words) ---
+// --- MMU PSAVE / PRESTORE: save/restore PMMU internal state ---
+//
+// On real MC68030 hardware PSAVE/PRESTORE are not supported (they F-trap);
+// they are MC68851 PMMU instructions that survived into the shared CpID=0
+// opcode space. Most 68030 OSes (including A/UX 3.0.1) save/restore the
+// externally-visible MMU registers (TC, SRP, CRP, TT0, TT1) via PMOVE and
+// never execute PSAVE/PRESTORE on the 030. Implementing them as no-ops
+// used to work but creates a silent correctness hazard the moment any
+// code path does reach them.
+//
+// Since the emulator's MMU is always in a synchronous idle state between
+// instructions (no mid-table-walk abort to preserve), PSAVE writes a 4-byte
+// null-idle frame (V=0, LEN=0) — the MC68851 "null frame" format — and
+// PRESTORE reads it back and drops it. Both address EAs are fully updated
+// for predecrement/postincrement per the real instructions' operand modes.
+//
+// EA modes accepted:
+//   PSAVE:    control alterable + predecrement   ((ea_control|ea_min_an) & ea_alterable)
+//   PRESTORE: control            + postincrement   (ea_control|ea_an_plus)
 #define OP_PSAVE_EA                                                                                                    \
     OP(SUPER({                                                                                                         \
-        VALID_EA(ea_control &ea_alterable);                                                                            \
-        (void)GET_EA;                                                                                                  \
+        VALID_EA((ea_control | ea_min_an) & ea_alterable);                                                             \
+        uint32_t _ea = GET_EA;                                                                                         \
+        WRITE32(_ea, 0);                                                                                               \
     }))
 
 #define OP_PRESTORE_EA                                                                                                 \
     OP(SUPER({                                                                                                         \
-        VALID_EA(ea_control);                                                                                          \
-        (void)GET_EA;                                                                                                  \
+        VALID_EA(ea_control | ea_an_plus);                                                                             \
+        uint32_t _ea = GET_EA;                                                                                         \
+        (void)READ32(_ea);                                                                                             \
     }))
 
 // --- CpID=0 type=0: 68030 MMU general instruction (PMOVE/PFLUSH/PTEST/PLOAD) ---
