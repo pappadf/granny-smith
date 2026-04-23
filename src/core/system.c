@@ -16,6 +16,7 @@
 #include "drive_catalog.h"
 #include "floppy.h"
 #include "image.h"
+#include "image_vfs.h"
 #include "keyboard.h"
 #include "log.h"
 #include "machine.h"
@@ -1227,6 +1228,29 @@ static const struct subcmd_spec cdrom_subcmds[] = {
     {"info",     NULL, cdrom_id_args,     1, "show attached CD-ROM info"},
 };
 
+// image subcommands — inspect disk image contents without attaching to
+// a SCSI bus.  Phase 1: partmap + probe work; list + unmount are stubs.
+static const struct arg_spec image_partmap_args[] = {
+    {"path",   ARG_PATH,                  "image file path"                   },
+    {"format", ARG_STRING | ARG_OPTIONAL, "--json for machine-readable output"},
+};
+static const struct arg_spec image_probe_args[] = {
+    {"path", ARG_PATH, "image file path"},
+};
+static const struct arg_spec image_list_args[] = {
+    {"format", ARG_STRING | ARG_OPTIONAL, "--json for machine-readable output"},
+};
+static const struct arg_spec image_unmount_args[] = {
+    {"path", ARG_PATH, "image file path"},
+};
+static const struct subcmd_spec image_subcmds[] = {
+    {"partmap", NULL, image_partmap_args, 2, "parse and print partition map"                   },
+    {"probe",   NULL, image_probe_args,   1, "print detected format without descent"           },
+    {"list",    NULL, image_list_args,    1, "show currently-cached auto-mounts (Phase 2 stub)"},
+    {"unmount", NULL, image_unmount_args, 1, "force-close a cached auto-mount (Phase 2 stub)"  },
+};
+extern void cmd_image_handler(struct cmd_context *ctx, struct cmd_result *res);
+
 // Initialize the setup system and register commands
 void setup_init() {
     printf("Granny Smith build %s\n", get_build_id());
@@ -1297,6 +1321,14 @@ void setup_init() {
         .synopsis = "Manage CD-ROM images (validate/attach/eject/info)",
         .fn = cmd_cdrom_handler,
         .subcmds = cdrom_subcmds,
+        .n_subcmds = 4,
+    });
+    register_command(&(struct cmd_reg){
+        .name = "image",
+        .category = "Media",
+        .synopsis = "Inspect disk image contents (partmap/probe/list/unmount)",
+        .fn = cmd_image_handler,
+        .subcmds = image_subcmds,
         .n_subcmds = 4,
     });
 }
@@ -1392,6 +1424,9 @@ void add_scsi_drive(struct config *restrict config, const char *filename, int sc
 
     add_image(config, img);
     scsi_add_device(config->scsi, scsi_id, best->vendor, best->product, "1.0", img, scsi_dev_hd, 512, false);
+    // Block the VFS auto-mount cache from serving reads on the same file
+    // while the emulator holds writable handles against it (§2.9).
+    image_vfs_notify_attached(filename);
     free(persistent_path);
 }
 
@@ -1417,6 +1452,7 @@ static void add_scsi_cdrom(struct config *restrict config, const char *filename,
 
     add_image(config, img);
     scsi_add_device(config->scsi, scsi_id, "SONY", "CD-ROM CDU-8002", "1.8g", img, scsi_dev_cdrom, 2048, true);
+    image_vfs_notify_attached(filename);
     free(persistent_path);
 }
 

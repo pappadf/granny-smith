@@ -1,0 +1,44 @@
+# Integration test: Phase 2 image-VFS descent into an HFS floppy.
+# Runner cd's into this directory; paths are relative.
+
+# Probe the image: expected to surface as a bare HFS volume.
+image probe ../../data/systems/System_6_0_8.dsk
+
+# Root of the synthesised partition layer (one entry since no APM).
+ls ../../data/systems/System_6_0_8.dsk
+
+# HFS root directory.  Expected entries (System 6.0.8 floppy) include
+# "System Folder" and "TeachText".
+ls ../../data/systems/System_6_0_8.dsk/partition1
+
+# Descend one level inside a folder with a space in its name.
+ls ../../data/systems/System_6_0_8.dsk/partition1/System\ Folder
+
+# Reserved /finf fork sub-path.  Confirm it exists as a virtual file.
+# (size returns the file size as exit code, which would flag the test
+# runner as failed — use exists for the presence check instead.)
+exists ../../data/systems/System_6_0_8.dsk/partition1/System\ Folder/Finder/finf
+exists ../../data/systems/System_6_0_8.dsk/partition1/System\ Folder/Finder/rsrc
+
+# Writes into an image path must be structurally refused (EROFS).
+# mkdir (unlike rm) returns OK even on error — it prints the message and
+# yields exit code 0, so the test runner doesn't abort on this line.
+mkdir ../../data/systems/System_6_0_8.dsk/partition1/newdir
+
+# Recursive cp out of the image into WORK_DIR (host path provided by runner).
+cp -r ../../data/systems/System_6_0_8.dsk/partition1/System\ Folder ${WORK_DIR}/dump
+ls ${WORK_DIR}/dump
+
+# Auto-mount cache visible to the user.
+image list
+
+# Attaching to SCSI must flip the mount to conflicted; subsequent VFS ops
+# return EBUSY.
+hd attach ../../data/systems/System_6_0_8.dsk 2
+ls ../../data/systems/System_6_0_8.dsk/partition1
+
+# Force-unmount releases the cache entry.
+image unmount ../../data/systems/System_6_0_8.dsk
+image list
+
+quit

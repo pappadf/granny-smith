@@ -14,6 +14,7 @@
 #include "log.h"
 #include "peeler_shell.h"
 #include "shell_var.h"
+#include "vfs.h"
 
 #include <ctype.h>
 #include <dirent.h>
@@ -419,77 +420,83 @@ static uint64_t cmd_remove(int argc, char *argv[]) {
 }
 
 /* --- file system commands ------------------------------------------------ */
-static char current_dir[256] = "/";
-
-// Normalize a path (absolute or relative to current_dir), resolving . and ..
-static void resolve_path(const char *input, char *out, size_t outlen) {
-    char buf[256];
-    if (input[0] == '/')
-        snprintf(buf, sizeof(buf), "%s", input);
-    else
-        snprintf(buf, sizeof(buf), "%s/%s", current_dir, input);
-
-    const char *components[64];
-    int depth = 0;
-    char *saveptr = NULL;
-    char *token = strtok_r(buf, "/", &saveptr);
-    while (token) {
-        if (strcmp(token, ".") == 0) { /* skip */
-        } else if (strcmp(token, "..") == 0) {
-            if (depth > 0)
-                depth--;
-        } else
-            components[depth++] = token;
-        token = strtok_r(NULL, "/", &saveptr);
-    }
-    if (depth == 0) {
-        snprintf(out, outlen, "/");
-    } else {
-        out[0] = '\0';
-        for (int i = 0; i < depth; i++) {
-            size_t len = strlen(out);
-            snprintf(out + len, outlen - len, "/%s", components[i]);
-        }
-    }
-}
+// FS commands route through the VFS layer (src/core/vfs/).  In Phase 1
+// there is only one backend (host), so behaviour is byte-identical to the
+// pre-refactor libc calls.  Phase 2 adds an image backend plus an
+// auto-mount resolver; the call sites here do not change.
 
 // ls [dir] — list directory contents; defaults to current_dir
 static void cmd_ls(struct cmd_context *ctx, struct cmd_result *res) {
-    const char *path = ctx->args[0].present ? ctx->args[0].as_str : current_dir;
-    DIR *dir = opendir(path);
-    if (!dir) {
-        cmd_printf(ctx, "ls: cannot open directory '%s': %s\n", path, strerror(errno));
+    const char *path = ctx->args[0].present ? ctx->args[0].as_str : vfs_get_cwd();
+    vfs_dir_t *dir = NULL;
+    const vfs_backend_t *be = NULL;
+    int rc = vfs_opendir(path, &dir, &be);
+    if (rc < 0) {
+        cmd_printf(ctx, "ls: cannot open directory '%s': %s\n", path, strerror(-rc));
         cmd_ok(res);
         return;
     }
-    struct dirent *entry;
-    while ((entry = readdir(dir)) != NULL)
-        cmd_printf(ctx, "%s\n", entry->d_name);
-    closedir(dir);
+    vfs_dirent_t entry;
+    int r;
+    while ((r = be->readdir(dir, &entry)) > 0)
+        cmd_printf(ctx, "%s\n", entry.name);
+    be->closedir(dir);
     cmd_ok(res);
 }
 
-// cd <dir> — change current directory (updates both process cwd and current_dir)
+// cd <dir> — change current directory.  Honours the "bare image path =
+// descend" rule (§2.9) so `cd foo.img` enters the partition-list root.
+// The logical cwd is tracked in the VFS layer; we only call libc chdir()
+// when the destination is a host path (image paths have no real host
+// cwd, so subsequent relative paths re-resolve via normalise_path).
 static void cmd_cd(struct cmd_context *ctx, struct cmd_result *res) {
     const char *input = ctx->args[0].as_str;
-    char resolved[256];
-    resolve_path(input, resolved, sizeof(resolved));
-    if (chdir(resolved) == 0) {
-        snprintf(current_dir, sizeof(current_dir), "%s", resolved);
-        cmd_printf(ctx, "Changed directory to %s\n", current_dir);
-    } else {
-        cmd_printf(ctx, "cd: cannot change to '%s': %s\n", input, strerror(errno));
+    char resolved[VFS_PATH_MAX];
+    const vfs_backend_t *be = NULL;
+    void *bctx = NULL;
+    const char *tail = NULL;
+    int rc = vfs_resolve_descend(input, resolved, sizeof(resolved), &be, &bctx, &tail);
+    if (rc < 0) {
+        cmd_printf(ctx, "cd: cannot change to '%s': %s\n", input, strerror(-rc));
+        cmd_ok(res);
+        return;
     }
+    vfs_stat_t st = {0};
+    rc = be->stat(bctx, tail, &st);
+    if (rc < 0) {
+        cmd_printf(ctx, "cd: cannot change to '%s': %s\n", input, strerror(-rc));
+        cmd_ok(res);
+        return;
+    }
+    if (!(st.mode & VFS_MODE_DIR)) {
+        cmd_printf(ctx, "cd: not a directory: %s\n", input);
+        cmd_ok(res);
+        return;
+    }
+    // For host-backed directories keep the process cwd in sync so libc
+    // calls elsewhere (e.g. non-VFS consumers) see the same working dir.
+    // Image-backed paths have no host equivalent, so skip chdir() and
+    // rely on the logical cwd tracked by the VFS layer.
+    if (strcmp(be->scheme, "host") == 0) {
+        if (chdir(resolved) != 0) {
+            cmd_printf(ctx, "cd: cannot change to '%s': %s\n", input, strerror(errno));
+            cmd_ok(res);
+            return;
+        }
+    }
+    vfs_set_cwd(resolved);
+    cmd_printf(ctx, "Changed directory to %s\n", vfs_get_cwd());
     cmd_ok(res);
 }
 
 // mkdir <dir> — create a directory
 static void cmd_mkdir(struct cmd_context *ctx, struct cmd_result *res) {
     const char *dir = ctx->args[0].as_str;
-    if (mkdir(dir, 0777) == 0)
+    int rc = vfs_mkdir(dir);
+    if (rc == 0)
         cmd_printf(ctx, "Directory '%s' created\n", dir);
     else
-        cmd_printf(ctx, "mkdir: cannot create directory '%s': %s\n", dir, strerror(errno));
+        cmd_printf(ctx, "mkdir: cannot create directory '%s': %s\n", dir, strerror(-rc));
     cmd_ok(res);
 }
 
@@ -497,54 +504,72 @@ static void cmd_mkdir(struct cmd_context *ctx, struct cmd_result *res) {
 static void cmd_mv(struct cmd_context *ctx, struct cmd_result *res) {
     const char *src = ctx->args[0].as_str;
     const char *dst = ctx->args[1].as_str;
-    if (rename(src, dst) == 0)
+    int rc = vfs_rename(src, dst);
+    if (rc == 0)
         cmd_printf(ctx, "Moved '%s' to '%s'\n", src, dst);
     else
-        cmd_printf(ctx, "mv: cannot move '%s' to '%s': %s\n", src, dst, strerror(errno));
+        cmd_printf(ctx, "mv: cannot move '%s' to '%s': %s\n", src, dst, strerror(-rc));
     cmd_ok(res);
 }
 
 // cat <path> — stream file contents to the command output
 static void cmd_cat(struct cmd_context *ctx, struct cmd_result *res) {
     const char *path = ctx->args[0].as_str;
-    FILE *f = fopen(path, "rb");
-    if (!f) {
-        cmd_printf(ctx, "cat: cannot open '%s': %s\n", path, strerror(errno));
+    vfs_file_t *f = NULL;
+    const vfs_backend_t *be = NULL;
+    int rc = vfs_open(path, &f, &be);
+    if (rc < 0) {
+        cmd_printf(ctx, "cat: cannot open '%s': %s\n", path, strerror(-rc));
         cmd_int(res, 1);
         return;
     }
-    char buf[4096];
-    size_t n;
-    while ((n = fread(buf, 1, sizeof(buf), f)) > 0)
+    // Stream bytes in 4KB chunks; pread handles the offset tracking.
+    uint8_t buf[4096];
+    uint64_t off = 0;
+    for (;;) {
+        size_t n = 0;
+        rc = be->read(f, off, buf, sizeof(buf), &n);
+        if (rc < 0) {
+            cmd_printf(ctx, "cat: read error on '%s': %s\n", path, strerror(-rc));
+            be->close(f);
+            cmd_int(res, 1);
+            return;
+        }
+        if (n == 0)
+            break;
         fwrite(buf, 1, n, ctx->out);
-    fclose(f);
+        off += n;
+    }
+    be->close(f);
     cmd_int(res, 0);
 }
 
 // exists <path> — exit code 0 if the path exists, 1 otherwise
 static void cmd_exists(struct cmd_context *ctx, struct cmd_result *res) {
     const char *path = ctx->args[0].as_str;
-    struct stat st;
-    cmd_int(res, (stat(path, &st) == 0) ? 0 : 1);
+    vfs_stat_t st;
+    cmd_int(res, (vfs_stat(path, &st) == 0) ? 0 : 1);
 }
 
 // size <path> — return file size in bytes (0 on stat failure)
 static void cmd_size(struct cmd_context *ctx, struct cmd_result *res) {
     const char *path = ctx->args[0].as_str;
-    struct stat st;
-    if (stat(path, &st) != 0) {
-        cmd_printf(ctx, "size: cannot stat '%s': %s\n", path, strerror(errno));
+    vfs_stat_t st = {0};
+    int rc = vfs_stat(path, &st);
+    if (rc < 0) {
+        cmd_printf(ctx, "size: cannot stat '%s': %s\n", path, strerror(-rc));
         cmd_int(res, 0);
         return;
     }
-    cmd_int(res, (int64_t)st.st_size);
+    cmd_int(res, (int64_t)st.size);
 }
 
 // rm <path> — unlink a file
 static void cmd_rm(struct cmd_context *ctx, struct cmd_result *res) {
     const char *path = ctx->args[0].as_str;
-    if (unlink(path) != 0) {
-        cmd_printf(ctx, "rm: cannot remove '%s': %s\n", path, strerror(errno));
+    int rc = vfs_unlink(path);
+    if (rc < 0) {
+        cmd_printf(ctx, "rm: cannot remove '%s': %s\n", path, strerror(-rc));
         cmd_int(res, 1);
         return;
     }
@@ -780,6 +805,8 @@ int shell_init(void) {
         .args = fs_path_args,
         .nargs = 1,
     });
+    extern void cmd_cp_register(void);
+    cmd_cp_register();
 
     shell_initialized = 1;
     return 0;

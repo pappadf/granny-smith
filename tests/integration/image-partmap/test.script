@@ -1,0 +1,18 @@
+# Integration test: image partmap + probe against an APM-formatted image.
+# The runner cd's into this directory before executing, so paths are
+# relative to tests/integration/image-partmap/.
+
+# Human-readable partition map.
+image partmap ../../data/aux/hd-with-aux-partition.img
+
+# Format probe — exercises the APM sniff path.
+image probe ../../data/aux/hd-with-aux-partition.img
+
+# JSON output path (catches formatter regressions).
+image partmap ../../data/aux/hd-with-aux-partition.img --json
+
+# Phase 2 stubs — must return an error but not crash.
+image list
+image unmount ../../data/aux/hd-with-aux-partition.img
+
+quit
