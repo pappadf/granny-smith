@@ -514,6 +514,15 @@ static inline bool conditional_test(cpu_t *restrict cpu, uint8_t test) {
 // zero), 6 (CHK/CHK2), 7 (TRAPV/TRAPcc), and 9 (trace) use Format $2 (adds
 // instruction address); all others use Format $0. Uses VBR on 68030.
 static inline void exception(cpu_t *restrict cpu, uint32_t vector, uint32_t pc, uint16_t sr) {
+    // Trace all exceptions (bus errors have their own dedicated path with richer info;
+    // this records generic exceptions — illegal instruction, privilege violation,
+    // trace, TRAPs, FPU, interrupts, etc. — that otherwise go untracked).
+    if (vector != 0x008) {
+        extern void exc_trace_record(uint32_t vector, uint32_t faulting_pc, uint32_t saved_pc, uint32_t fault_addr,
+                                     uint32_t rw, uint32_t vbr, uint16_t sr, uint16_t format_frame,
+                                     int double_fault_kind);
+        exc_trace_record(vector, cpu->instruction_pc, pc, 0, 0, cpu->vbr, sr, 0, 0);
+    }
     if (!cpu->supervisor) {
         cpu->usp = cpu->a[7];
         cpu->a[7] = (cpu->m && cpu->cpu_model == CPU_MODEL_68030) ? cpu->msp : cpu->ssp;

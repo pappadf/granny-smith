@@ -594,12 +594,14 @@ int debug_break_and_trace(void) {
     logpoint_t *lp = debug->logpoints;
     while (lp != NULL) {
         // Check if current_pc is within the logpoint's address range
-        if (current_pc >= lp->addr && current_pc <= lp->end_addr) {
+        if (lp->kind == LP_KIND_PC && current_pc >= lp->addr && current_pc <= lp->end_addr) {
             // Increment hit counter
             lp->hit_count++;
-            // Log using the log framework with optional message
+            // Log using the log framework with optional message (with $cpu.dN / $cpu.aN substitution)
             if (lp->message) {
-                LOG_WITH(lp->category, lp->level, "logpoint $%08X: %s", current_pc, lp->message);
+                char formatted[256];
+                format_logpoint_message(formatted, sizeof(formatted), lp->message, current_pc, 0, 0);
+                LOG_WITH(lp->category, lp->level, "logpoint $%08X: %s", current_pc, formatted);
             } else {
                 LOG_WITH(lp->category, lp->level, "logpoint hit at $%08X (hit count: %u)", current_pc, lp->hit_count);
             }
@@ -3221,39 +3223,13 @@ static void cmd_logpoint_handler(struct cmd_context *ctx, struct cmd_result *res
 // each level's descriptor.  Duplicates the logic of mmu.c:mmu_table_walk
 // deliberately — the verbose traversal is a debug concern kept out of the
 // hot path.  Uses CRP (supervisor=true) to match typical kernel accesses.
-static void info_mmu_walk_impl(struct cmd_context *ctx, uint32_t logical_addr) {
-    if (!g_mmu) {
-        cmd_printf(ctx, "MMU not present\n");
-        return;
-    }
-    if (!g_mmu->enabled) {
-        cmd_printf(ctx, "MMU disabled — logical == physical == $%08X\n", logical_addr);
-        return;
-    }
-
-    // Transparent translation match short-circuits the table walk.
-    if (mmu_check_tt(g_mmu, logical_addr, false, true)) {
-        cmd_printf(ctx, "L:$%08X hits transparent translation (identity)\n", logical_addr);
-        cmd_printf(ctx, "  TT0 = $%08X%s\n", g_mmu->tt0, TT_ENABLE(g_mmu->tt0) ? "" : " (disabled)");
-        cmd_printf(ctx, "  TT1 = $%08X%s\n", g_mmu->tt1, TT_ENABLE(g_mmu->tt1) ? "" : " (disabled)");
-        cmd_printf(ctx, "=> L:$%08X -> P:$%08X\n", logical_addr, logical_addr);
-        return;
-    }
-
+static void info_mmu_walk_one(struct cmd_context *ctx, uint32_t logical_addr, uint64_t root, const char *root_name) {
     uint32_t tc = g_mmu->tc;
     uint32_t is = TC_IS(tc);
     uint32_t ti[4] = {TC_TIA(tc), TC_TIB(tc), TC_TIC(tc), TC_TID(tc)};
-    uint32_t ps = TC_PS(tc);
-    cmd_printf(ctx, "TC=$%08X  IS=%u TIA=%u TIB=%u TIC=%u TID=%u PS=%u (%u-byte page)\n", tc, is, ti[0], ti[1], ti[2],
-               ti[3], ps, 1u << ps);
-
-    // Root pointer: CRP for user/default, SRP for supervisor when TC.SRE=1.
-    // Debug walks always use supervisor root if SRE — the kernel's own view.
-    uint64_t root = (TC_SRE(tc)) ? g_mmu->srp : g_mmu->crp;
     uint32_t root_upper = (uint32_t)(root >> 32);
     uint32_t root_lower = (uint32_t)(root & 0xFFFFFFFFu);
     uint32_t root_dt = root_upper & 3;
-    const char *root_name = TC_SRE(tc) ? "SRP" : "CRP";
     cmd_printf(ctx, "%s = $%08X_%08X  root-DT=%u\n", root_name, root_upper, root_lower, root_dt);
     if (root_dt == DESC_DT_INVALID) {
         cmd_printf(ctx, "  root descriptor invalid — walk aborts\n");
@@ -3299,7 +3275,7 @@ static void info_mmu_walk_impl(struct cmd_context *ctx, uint32_t logical_addr) {
             int s = long_desc ? ((desc_hi >> 8) & 1) : 0;
             cmd_printf(ctx, "  page_base=$%08X  [U=%d WP=%d M=%d CI=%d%s]  coverage=%u bytes\n", phys_base, u, wp, m,
                        ci, long_desc ? (s ? " S=1" : " S=0") : "", 1u << bit_pos);
-            cmd_printf(ctx, "=> L:$%08X -> P:$%08X\n", logical_addr, phys);
+            cmd_printf(ctx, "=> %s: L:$%08X -> P:$%08X\n", root_name, logical_addr, phys);
             return;
         }
         // Table descriptor (DT=TABLE4 or TABLE8): descend to next level.
@@ -3312,6 +3288,45 @@ static void info_mmu_walk_impl(struct cmd_context *ctx, uint32_t logical_addr) {
         long_desc = (dt == DESC_DT_TABLE8);
     }
     cmd_printf(ctx, "  walk exhausted levels without a page descriptor\n");
+}
+
+static void info_mmu_walk_impl(struct cmd_context *ctx, uint32_t logical_addr) {
+    if (!g_mmu) {
+        cmd_printf(ctx, "MMU not present\n");
+        return;
+    }
+    if (!g_mmu->enabled) {
+        cmd_printf(ctx, "MMU disabled — logical == physical == $%08X\n", logical_addr);
+        return;
+    }
+
+    // Transparent translation match short-circuits the table walk.
+    if (mmu_check_tt(g_mmu, logical_addr, false, true)) {
+        cmd_printf(ctx, "L:$%08X hits transparent translation (identity)\n", logical_addr);
+        cmd_printf(ctx, "  TT0 = $%08X%s\n", g_mmu->tt0, TT_ENABLE(g_mmu->tt0) ? "" : " (disabled)");
+        cmd_printf(ctx, "  TT1 = $%08X%s\n", g_mmu->tt1, TT_ENABLE(g_mmu->tt1) ? "" : " (disabled)");
+        cmd_printf(ctx, "=> L:$%08X -> P:$%08X\n", logical_addr, logical_addr);
+        return;
+    }
+
+    uint32_t tc = g_mmu->tc;
+    uint32_t is = TC_IS(tc);
+    uint32_t ti[4] = {TC_TIA(tc), TC_TIB(tc), TC_TIC(tc), TC_TID(tc)};
+    uint32_t ps = TC_PS(tc);
+    cmd_printf(ctx, "TC=$%08X  IS=%u TIA=%u TIB=%u TIC=%u TID=%u PS=%u (%u-byte page)\n", tc, is, ti[0], ti[1], ti[2],
+               ti[3], ps, 1u << ps);
+
+    // When SRE is set the kernel has separate supervisor/user root tables;
+    // show BOTH so a user-VA walk isn't silently resolved via the kernel's
+    // identity-mapped SRP.
+    if (TC_SRE(tc)) {
+        cmd_printf(ctx, "-- SRP (supervisor root) --\n");
+        info_mmu_walk_one(ctx, logical_addr, g_mmu->srp, "SRP");
+        cmd_printf(ctx, "-- CRP (user/cpu root) --\n");
+        info_mmu_walk_one(ctx, logical_addr, g_mmu->crp, "CRP");
+    } else {
+        info_mmu_walk_one(ctx, logical_addr, g_mmu->crp, "CRP");
+    }
 }
 
 // Scan a logical address range and print contiguous mapped runs.

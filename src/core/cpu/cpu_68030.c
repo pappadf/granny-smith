@@ -278,10 +278,34 @@ static void cpu_pmmu_general(cpu_t *cpu, uint16_t opcode) {
         bool write = (rw_bit == 0);
         uint32_t a_field = (ext >> 8) & 1u; // 1 = write descriptor addr to An
         uint32_t a_reg = (ext >> 5) & 7u;
+        // FC specifier in extension word bits 4:0 (per MC68030UM § 7.4.30):
+        //   1xxxx → immediate FC = bits 2:0
+        //   01xxx → FC from data register Dn where n = bits 2:0
+        //   00000 → FC from SFC register
+        //   00001 → FC from DFC register
+        // The aux kernel's soft-walk helper issues `PTESTW D0,(A0),#7,A0`
+        // with D0 = user-data FC (1), and relies on PTEST walking the CRP
+        // (user root) not the SRP (supervisor root).  Walking the wrong
+        // root returns the supervisor 32-MB identity descriptor and makes
+        // the shlib loader write libc1_s bytes to supervisor-mapped
+        // phys (which is not where user pages actually live).
+        uint32_t fc_spec = ext & 0x1Fu;
+        uint32_t fc;
+        if (fc_spec & 0x10u)
+            fc = fc_spec & 7u; // immediate FC
+        else if (fc_spec & 0x08u)
+            fc = cpu->d[fc_spec & 7u] & 7u; // Dn low 3 bits
+        else if (fc_spec == 0)
+            fc = cpu->sfc;
+        else if (fc_spec == 1)
+            fc = cpu->dfc;
+        else
+            fc = cpu->supervisor != 0 ? 5u : 1u; // undefined encoding — fall back
+        bool fc_supervisor = (fc & 4u) != 0; // FC bit 2 = supervisor
         uint32_t ea = calculate_ea(cpu, 4, ea_mode, ea_reg, true);
         if (mmu) {
             uint32_t desc_addr = 0;
-            uint16_t status = mmu_test_address(mmu, ea, write, cpu->supervisor != 0, &desc_addr);
+            uint16_t status = mmu_test_address(mmu, ea, write, fc_supervisor, &desc_addr);
             mmu->mmusr = status;
             // A-reg output: per MC68030UM, when the A-reg field is specified,
             // the CPU writes the physical address of the last descriptor
@@ -452,6 +476,18 @@ static __attribute__((noinline, cold)) void cpu_hardware_reset(cpu_t *restrict c
         uint16_t opcode = fetch >> 16;                                                                                 \
         uint16_t ext_word = fetch & 0xFFFF;                                                                            \
         cpu->instruction_pc = cpu->pc;                                                                                 \
+        /* Double-fault tracking: a bus error on an instruction fetch leaves                                           \
+         * last_bus_error_pc set so a retry at the SAME PC can be detected as                                          \
+         * a true double fault.  The value must be cleared once the CPU has                                            \
+         * moved past that PC in USER MODE — otherwise a different process                                           \
+         * that later faults at the same VA (e.g. two execs of /etc/init,                                              \
+         * both with crt0 at $148) is falsely flagged as a double fault.                                               \
+         * Only clear in user mode: kernel-side instructions between the                                               \
+         * first fault and the RTE retry must NOT clear the tracking, or                                               \
+         * legitimate kernel-side double faults (and user retries that                                                 \
+         * fault again at the same PC) would be missed. */                                                             \
+        if (__builtin_expect(cpu->last_bus_error_pc != 0 && !cpu->supervisor && cpu->last_bus_error_pc != cpu->pc, 0)) \
+            cpu->last_bus_error_pc = 0;                                                                                \
         cpu->pc += 2;                                                                                                  \
         if (*instructions > 0)                                                                                         \
             (*instructions)--;
