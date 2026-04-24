@@ -337,13 +337,23 @@ static inline uint32_t read_ea_32(cpu_t *restrict cpu, uint16_t opcode, bool inc
 }
 
 // Write an 8-bit value to the effective address specified by mode and register
+// Write EA helpers must leave An unchanged if the memory write faults, so
+// the Format $B RTE retry re-executes with the original (An)+ / -(An) base.
+// MC68030UM §8 specifies that on retry all instruction-visible state is
+// restored to pre-instruction values.  Our calculate_ea pre-increments /
+// pre-decrements An for modes 3/4; we snapshot An on entry and roll it back
+// in the slow path if the write faults.  See also movem_from_register.
 static inline void write_ea_8(cpu_t *restrict cpu, uint16_t mode, uint16_t reg, uint8_t value) {
     if (mode == 0)
         cpu->d[reg] = (cpu->d[reg] & 0xFFFFFF00) | value;
     else if (mode == 1)
         cpu->a[reg] = (cpu->a[reg] & 0xFFFFFF00) | value;
-    else
+    else {
+        uint32_t saved_an = (mode == 3 || mode == 4) ? cpu->a[reg] : 0;
         memory_write_uint8(calculate_ea(cpu, 1, mode, reg, true), value);
+        if (__builtin_expect(g_bus_error_pending, 0) && (mode == 3 || mode == 4))
+            cpu->a[reg] = saved_an;
+    }
 }
 
 // Write a 16-bit value to the effective address specified by mode and register
@@ -352,8 +362,12 @@ static inline void write_ea_16(cpu_t *restrict cpu, uint16_t mode, uint16_t reg,
         cpu->d[reg] = (cpu->d[reg] & 0xFFFF0000) | value;
     else if (mode == 1)
         cpu->a[reg] = (cpu->a[reg] & 0xFFFF0000) | value;
-    else
+    else {
+        uint32_t saved_an = (mode == 3 || mode == 4) ? cpu->a[reg] : 0;
         memory_write_uint16(calculate_ea(cpu, 2, mode, reg, true), value);
+        if (__builtin_expect(g_bus_error_pending, 0) && (mode == 3 || mode == 4))
+            cpu->a[reg] = saved_an;
+    }
 }
 
 // Write a 32-bit value to the effective address specified by mode and register
@@ -362,8 +376,12 @@ static inline void write_ea_32(cpu_t *restrict cpu, uint16_t mode, uint16_t reg,
         cpu->d[reg] = value;
     else if (mode == 1)
         cpu->a[reg] = value;
-    else
+    else {
+        uint32_t saved_an = (mode == 3 || mode == 4) ? cpu->a[reg] : 0;
         memory_write_uint32(calculate_ea(cpu, 4, mode, reg, true), value);
+        if (__builtin_expect(g_bus_error_pending, 0) && (mode == 3 || mode == 4))
+            cpu->a[reg] = saved_an;
+    }
 }
 
 // Execute MOVEM instruction: load multiple registers from memory.
