@@ -366,31 +366,64 @@ static inline void write_ea_32(cpu_t *restrict cpu, uint16_t mode, uint16_t reg,
         memory_write_uint32(calculate_ea(cpu, 4, mode, reg, true), value);
 }
 
-// Execute MOVEM instruction: load multiple registers from memory
+// Execute MOVEM instruction: load multiple registers from memory.
+//
+// If any access faults, `g_bus_error_pending` is set by the memory slow path
+// and the instruction will be retried via exception_bus_error_retry (Format $B
+// frame).  The retry re-executes from scratch, so we must abort cleanly and
+// leave the architectural state (Dn/An, including An for post-increment mode)
+// unchanged — otherwise the retry restarts with already-incremented registers.
 static inline void movem_to_register(cpu_t *restrict cpu, uint16_t opcode, int bits) {
     int i;
     uint16_t register_mask = fetch_16(cpu, true);
+    if (__builtin_expect(g_bus_error_pending, 0))
+        return; // opcode-fetch fault: bail before touching memory or registers
     uint32_t ea = calculate_ea(cpu, 4, opcode >> 3 & 7, opcode & 7, true);
 
+    // Stage register updates so a mid-instruction bus error leaves Dn/An
+    // untouched; real hardware restarts MOVEM from scratch via RTE fmt=$B.
+    uint32_t new_d[8], new_a[8];
+    uint8_t d_set = 0, a_set = 0;
     for (i = 0; i < 8; i++)
         if (register_mask & (1 << i)) {
-            cpu->d[i] = bits == 16 ? (int32_t)(int16_t)memory_read_uint16(ea) : memory_read_uint32(ea);
+            uint32_t v = bits == 16 ? (int32_t)(int16_t)memory_read_uint16(ea) : memory_read_uint32(ea);
             ea += bits >> 3;
+            if (g_bus_error_pending)
+                return;
+            new_d[i] = v;
+            d_set |= (uint8_t)(1 << i);
         }
     for (i = 0; i < 8; i++)
         if (register_mask & (0x100 << i)) {
-            cpu->a[i] = bits == 16 ? (int32_t)(int16_t)memory_read_uint16(ea) : memory_read_uint32(ea);
+            uint32_t v = bits == 16 ? (int32_t)(int16_t)memory_read_uint16(ea) : memory_read_uint32(ea);
             ea += bits >> 3;
+            if (g_bus_error_pending)
+                return;
+            new_a[i] = v;
+            a_set |= (uint8_t)(1 << i);
         }
+
+    for (i = 0; i < 8; i++)
+        if (d_set & (1 << i))
+            cpu->d[i] = new_d[i];
+    for (i = 0; i < 8; i++)
+        if (a_set & (1 << i))
+            cpu->a[i] = new_a[i];
 
     if ((opcode & 0x38) == 0x18) // post-increment mode updates address register after MOVEM
         cpu->a[opcode & 7] = ea;
 }
 
-// Execute MOVEM instruction: store multiple registers to memory
+// Execute MOVEM instruction: store multiple registers to memory.
+//
+// Same retry-safety concern as movem_to_register: on a mid-instruction bus
+// error the faulting instruction is restarted (Format $B), so An (for
+// predecrement mode) must not be updated until all writes have succeeded.
 static inline void movem_from_register(cpu_t *restrict cpu, uint16_t opcode, int bits) {
     int i;
     uint16_t register_mask = fetch_16(cpu, true);
+    if (__builtin_expect(g_bus_error_pending, 0))
+        return; // opcode-fetch fault: bail before touching memory or registers
     int step = bits >> 3; // 2 for 16-bit, 4 for 32-bit
 
     if ((opcode & 0x38) == 0x20) // predecrement mode: -(An)
@@ -408,6 +441,8 @@ static inline void movem_from_register(cpu_t *restrict cpu, uint16_t opcode, int
                     memory_write_uint16(addr, val);
                 else
                     memory_write_uint32(addr, val);
+                if (g_bus_error_pending)
+                    return; // leave cpu->a[an] unchanged so RTE-retry sees the original An
             }
         for (i = 0; i < 8; i++)
             if (register_mask & (0x100 << i)) {
@@ -416,6 +451,8 @@ static inline void movem_from_register(cpu_t *restrict cpu, uint16_t opcode, int
                     memory_write_uint16(addr, cpu->d[7 - i]);
                 else
                     memory_write_uint32(addr, cpu->d[7 - i]);
+                if (g_bus_error_pending)
+                    return;
             }
         cpu->a[an] = addr;
     } else {
@@ -427,6 +464,8 @@ static inline void movem_from_register(cpu_t *restrict cpu, uint16_t opcode, int
                 else
                     memory_write_uint32(ea, cpu->d[i]);
                 ea += step;
+                if (g_bus_error_pending)
+                    return;
             }
         for (i = 0; i < 8; i++)
             if (register_mask & (0x100 << i)) {
@@ -435,6 +474,8 @@ static inline void movem_from_register(cpu_t *restrict cpu, uint16_t opcode, int
                 else
                     memory_write_uint32(ea, cpu->a[i]);
                 ea += step;
+                if (g_bus_error_pending)
+                    return;
             }
     }
 }
