@@ -260,8 +260,8 @@ logpoint_t *set_memory_logpoint(debug_t *debug, uint32_t addr, uint32_t end_addr
         // Also watch the physical pages the current MMU mapping points at —
         // catches aliases (same physical reached via different logical addrs).
         if (g_mmu && g_mmu->enabled) {
-            uint32_t phys_start = mmu_translate_debug(g_mmu, addr) >> PAGE_SHIFT;
-            uint32_t phys_end = mmu_translate_debug(g_mmu, end_addr) >> PAGE_SHIFT;
+            uint32_t phys_start = mmu_translate_debug(g_mmu, addr, true) >> PAGE_SHIFT;
+            uint32_t phys_end = mmu_translate_debug(g_mmu, end_addr, true) >> PAGE_SHIFT;
             if (phys_end < phys_start) {
                 uint32_t tmp = phys_start;
                 phys_start = phys_end;
@@ -434,7 +434,8 @@ static void debug_memory_logpoint_hook(uint32_t addr, unsigned size, uint32_t va
         uint32_t cmp_addr;
         if (lp->space == ADDR_PHYSICAL) {
             if (!phys_computed) {
-                phys_addr = (g_mmu && g_mmu->enabled) ? mmu_translate_debug(g_mmu, addr) : addr;
+                bool supervisor = (g_active_write == g_supervisor_write);
+                phys_addr = (g_mmu && g_mmu->enabled) ? mmu_translate_debug(g_mmu, addr, supervisor) : addr;
                 phys_computed = true;
             }
             cmp_addr = phys_addr;
@@ -2067,7 +2068,7 @@ static uint64_t cmd_translate(int argc, char *argv[]) {
         // using mmu_translate_debug — slower but correct.
         for (int p = 0; p < g_page_count; p++) {
             uint32_t logical_page = (uint32_t)p << PAGE_SHIFT;
-            uint32_t phys = mmu_translate_debug(g_mmu, logical_page);
+            uint32_t phys = mmu_translate_debug(g_mmu, logical_page, true);
             if ((phys & ~(uint32_t)PAGE_MASK) == target_page) {
                 printf("  L:$%08X -> P:$%08X\n", logical_page, phys);
                 if (++found >= 64) {
@@ -3380,7 +3381,7 @@ static void info_mmu_map_impl(struct cmd_context *ctx, uint32_t start, uint32_t 
             uint16_t mmusr = mmu_test_address(g_mmu, logical, false, true, NULL);
             if (!(mmusr & MMUSR_I)) {
                 mapped = true;
-                phys = mmu_translate_debug(g_mmu, logical);
+                phys = mmu_translate_debug(g_mmu, logical, true);
                 flags = mmusr & (MMUSR_W | MMUSR_S | MMUSR_M);
             }
         }

@@ -256,12 +256,12 @@ TEST(test_short_table_descriptor_with_wp_bit) {
 
     // Use mmu_translate_debug to verify the resolved physical address —
     // the bug manifests as a 0x10000 jump in the physical address.
-    extern uint32_t mmu_translate_debug(mmu_state_t * m, uint32_t logical);
-    uint32_t phys = mmu_translate_debug(mmu, 0x00000000);
+    extern uint32_t mmu_translate_debug(mmu_state_t * m, uint32_t logical, bool supervisor);
+    uint32_t phys = mmu_translate_debug(mmu, 0x00000000, true);
     ASSERT_EQ_INT(0x00080000, (int)phys);
 
     // Also confirm entry 1 still resolves correctly (walks to entry 1).
-    phys = mmu_translate_debug(mmu, 0x00001000);
+    phys = mmu_translate_debug(mmu, 0x00001000, true);
     ASSERT_EQ_INT(0x00090000, (int)phys);
 
     cleanup(mem, mmu);

@@ -143,7 +143,7 @@ bool mmu_check_tt(mmu_state_t *mmu, uint32_t addr, bool write, bool supervisor);
 
 // Debug-only translation: resolve logical address to physical without side effects.
 // Returns the physical address, or logical_addr if translation fails.
-uint32_t mmu_translate_debug(mmu_state_t *mmu, uint32_t logical_addr);
+uint32_t mmu_translate_debug(mmu_state_t *mmu, uint32_t logical_addr, bool supervisor);
 
 // Physical memory read for debug commands (P: prefix).
 // Bypasses MMU translation and reads directly from physical RAM/ROM/VRAM.

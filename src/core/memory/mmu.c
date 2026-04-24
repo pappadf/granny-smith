@@ -301,7 +301,7 @@ static mmu_walk_result_t mmu_table_walk(mmu_state_t *mmu, uint32_t logical_addr,
 // populate the SoA matching the walk's FC.  When SRE=0, a single walk
 // produces the mapping for both FCs so we populate both tables.
 static void mmu_fill_soa_entry(mmu_state_t *mmu, uint32_t logical_page, uint32_t physical_page, bool supervisor_only,
-                               bool write_protected, bool supervisor) {
+                               bool write_protected, bool supervisor, bool tt_match) {
     // Get host pointer for the physical page
     uint8_t *host_ptr = phys_to_host(mmu, physical_page);
     if (!host_ptr)
@@ -334,12 +334,19 @@ static void mmu_fill_soa_entry(mmu_state_t *mmu, uint32_t logical_page, uint32_t
     // Track this page for fast invalidation
     tlb_track_page(page_index);
 
-    // When SRE=0 both FCs share the CRP walk; fill both SoAs.  When SRE=1 only
-    // fill the SoA that matches the walk's FC so a stale super entry does not
-    // leak into the user table (and vice-versa) with the wrong physical page.
+    // Fill rules:
+    //   TT match: TT registers are FC-specific (supervisor-only or user-only),
+    //     so fill ONLY the SoA matching the walk's FC.  Filling both would
+    //     leak the supervisor TT identity into the user SoA, where the same
+    //     VA actually maps to a different PA via the (C)RP.
+    //   Table walk under SRE=0: super and user share CRP, so fill both SoAs.
+    //   Table walk under SRE=1: super uses SRP, user uses CRP — they may map
+    //     the same VA to different PAs, so only fill the matching SoA.
     bool sre_split = TC_SRE(mmu->tc) != 0;
-    bool fill_super = !sre_split || supervisor;
-    bool fill_user = (!sre_split || !supervisor) && !supervisor_only;
+    bool fill_super = tt_match ? supervisor : (!sre_split || supervisor);
+    bool fill_user = tt_match ? !supervisor : ((!sre_split || !supervisor) && !supervisor_only);
+    if (!tt_match && supervisor_only)
+        fill_user = false;
 
     if (fill_super) {
         if (g_supervisor_read)
@@ -476,7 +483,7 @@ bool mmu_handle_fault(mmu_state_t *mmu, uint32_t logical_addr, bool write, bool 
     // Check transparent translation first
     if (mmu_check_tt(mmu, logical_addr, write, supervisor)) {
         // TT match: identity mapping (logical = physical)
-        mmu_fill_soa_entry(mmu, emu_page, emu_page, false, false, supervisor);
+        mmu_fill_soa_entry(mmu, emu_page, emu_page, false, false, supervisor, true);
         // If phys_to_host returned NULL (unmapped physical), the SoA entry
         // stays zero.  For reads, only bus error within the configured NuBus
         // expansion slot range (e.g. $F9-$FD on SE/30).  Outside that range,
@@ -520,7 +527,7 @@ bool mmu_handle_fault(mmu_state_t *mmu, uint32_t logical_addr, bool write, bool 
     // The physical address from the walk gives us the physical page base.
     // We need to map the emulator's 4KB page granularity.
     uint32_t phys_page = result.physical_addr & ~(uint32_t)PAGE_MASK;
-    mmu_fill_soa_entry(mmu, emu_page, phys_page, result.supervisor_only, result.write_protected, supervisor);
+    mmu_fill_soa_entry(mmu, emu_page, phys_page, result.supervisor_only, result.write_protected, supervisor, false);
 
     // When the descriptor covers more than one emulator 4KB page (e.g. an
     // early-termination page descriptor at level A with 32 MB coverage), the
@@ -540,7 +547,8 @@ bool mmu_handle_fault(mmu_state_t *mmu, uint32_t logical_addr, bool write, bool 
             uint32_t lp = range_start + off;
             if (lp == emu_page)
                 continue; // already filled above
-            mmu_fill_soa_entry(mmu, lp, phys_base + off, result.supervisor_only, result.write_protected, supervisor);
+            mmu_fill_soa_entry(mmu, lp, phys_base + off, result.supervisor_only, result.write_protected, supervisor,
+                               false);
         }
     }
 
@@ -615,21 +623,18 @@ bool mmu_phys_is_writable(mmu_state_t *mmu, uint32_t phys_addr) {
 
 // Debug-only translation: resolve logical address to physical without side effects.
 // Returns the physical address, or logical_addr if translation fails.
-uint32_t mmu_translate_debug(mmu_state_t *mmu, uint32_t logical_addr) {
+uint32_t mmu_translate_debug(mmu_state_t *mmu, uint32_t logical_addr, bool supervisor) {
     if (!mmu || !mmu->enabled)
         return logical_addr;
 
-    // Check transparent translation first (identity mapping)
-    if (mmu_check_tt(mmu, logical_addr, false, true))
+    if (mmu_check_tt(mmu, logical_addr, false, supervisor))
         return logical_addr;
 
-    // Perform table walk (read-only, supervisor mode)
-    mmu_walk_result_t result = mmu_table_walk(mmu, logical_addr, false, true);
+    mmu_walk_result_t result = mmu_table_walk(mmu, logical_addr, false, supervisor);
 
     if (result.valid)
         return result.physical_addr;
 
-    // Translation failed — return logical address as fallback
     return logical_addr;
 }
 

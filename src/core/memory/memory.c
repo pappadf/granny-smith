@@ -147,7 +147,8 @@ static bool logpoint_lookup(uint32_t addr, uint8_t **host_out, bool *writable_ou
     uint32_t phys_addr = addr;
 
     if (g_mmu && g_mmu->enabled) {
-        phys_addr = mmu_translate_debug(g_mmu, addr);
+        bool supervisor = (g_active_write == g_supervisor_write);
+        phys_addr = mmu_translate_debug(g_mmu, addr, supervisor);
         if (g_mem_logpoint_phys_page_count && g_mem_logpoint_phys_page_count[phys_addr >> PAGE_SHIFT])
             phys_watched = true;
     }

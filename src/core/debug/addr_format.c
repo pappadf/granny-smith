@@ -176,7 +176,7 @@ uint32_t debug_translate_address(uint32_t logical_addr, bool *is_identity, bool 
     // indirectly by reading the physical_addr from a walk result.
     // For now, re-walk to extract physical address.
     // Note: mmu_table_walk is static in mmu.c, so we use mmu_translate_debug.
-    uint32_t phys_addr = mmu_translate_debug(g_mmu, logical_addr);
+    uint32_t phys_addr = mmu_translate_debug(g_mmu, logical_addr, true);
 
     if (is_identity)
         *is_identity = (phys_addr == logical_addr);
