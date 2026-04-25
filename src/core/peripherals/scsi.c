@@ -441,19 +441,16 @@ static void run_cmd(scsi_t *scsi) {
 
         break;
 
-    case CMD_MODE_SELECT:
-        // Dispatch MODE SELECT to CD-ROM handler if applicable
-        if (scsi->devices[target].type == scsi_dev_cdrom) {
-            // Accept the data phase, then CD-ROM handler processes it
-            int param_len = scsi->buf.data[4];
-            if (param_len > 0)
-                phase_data_out(scsi, param_len);
-            else
-                phase_status(scsi, STATUS_GOOD);
-        } else {
-            phase_data_out(scsi, scsi->buf.data[4]);
-        }
+    case CMD_MODE_SELECT: {
+        // MODE SELECT(6) byte 4 is the parameter list length.  Zero means
+        // no data phase — A/UX's HD driver issues this as a no-op probe.
+        int param_len = scsi->buf.data[4];
+        if (param_len == 0)
+            phase_status(scsi, STATUS_GOOD);
+        else
+            phase_data_out(scsi, param_len);
         break;
+    }
 
     case CMD_MODE_SENSE: {
         // MODE SENSE(6): dispatch based on device type
