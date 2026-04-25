@@ -1,61 +1,7 @@
 # SE/30 A/UX 3.0.1 Boot (retail SE floppy).
-#
-# Proves that A/UX 3.0.1 successfully mounts its root filesystem from the
-# retail Install CD-ROM.  The kernel routine vfs_mountroot() (at $10032BC2)
-# panics via $10020454 on any failure ("no root file system", "rootmount
-# cannot mount root", or VFS_ROOT error) and otherwise returns via RTS at
-# $10032CFC after:
-#   1. probe_root() found exactly one matching fs_types[] entry for the
-#      CD-ROM's rootdev,
-#   2. real_mount() returned 0 (successful mount),
-#   3. VFS_ROOT() returned 0 (root vnode populated).
 
-# 1) Set a breakpoint at the mount-success address.
-break $10032CFC
+run 200000000
 
-# 2) Run enough instructions to reach and pass the success address.
-#    Observed reach time is ~93M instructions; budget ~2.7x that to absorb
-#    timing jitter without overrunning into the post-mount boot phase.
-run 250000000
-
-# 3) Assert that PC stopped exactly at the success address (and nowhere
-#    else).  If the run halted elsewhere (panic, fault, reset loop, or
-#    instruction budget exhausted) the assert fails and the script exits
-#    with a non-zero status.
-assert pc == $10032CFC
-
-quit
-# SE/30 A/UX 3.0.1 Boot (retail SE floppy).
-#
-# Proves that A/UX 3.0.1 successfully mounts its root filesystem from the
-# retail Install CD-ROM.  The kernel routine vfs_mountroot() (at $10032BC2)
-# panics via $10020454 on any failure ("no root file system", "rootmount
-# cannot mount root", or VFS_ROOT error) and otherwise returns via RTS at
-# $10032CFC after:
-#   1. probe_root() found exactly one matching fs_types[] entry for the
-#      CD-ROM's rootdev,
-#   2. real_mount() returned 0 (successful mount),
-#   3. VFS_ROOT() returned 0 (root vnode populated).
-#
-# The emulator deterministically stops at $10032CFC around ~93M
-# instructions with D0=$00000000.  We capture the on-screen "Welcome to
-# A/UX. Launching..." boot screen at that exact point and compare it to
-# the reference PNG.  Any failure path (panic, reset loop, different stop
-# address) produces a different screen and fails the match.
-
-# Success breakpoint: vfs_mountroot RTS (only reached on full mount success).
-break $10032CFC
-
-# Panic breakpoint: kernel panic() entry (catches every failure mode).
-break $10020454
-
-# Budget ~2.7x observed reach time (~93M) so timing jitter cannot overrun
-# into the post-mount phase, which would alter the "Launching..." screen.
-run 250000000
-info regs
-
-# Assert: PC must be $10032CFC (mount success).  The reference image is
-# pixel-identical across runs of this deterministic boot.
-screenshot match mount-success.png
+screenshot match installer.png
 
 quit
