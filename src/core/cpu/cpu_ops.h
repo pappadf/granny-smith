@@ -581,16 +581,26 @@
     LOAD_EA_WITH_UPDATE(size, dst);                                                                                    \
     CC_Z = !(dst & mask);
 
+// MOVE src,dst: snapshot source An and roll back on any bus error so the
+// Format-$B RTE retry restarts with pre-instruction An values.  Without this,
+// a dest-side page fault on (An)+,(An)+ leaks +size into the source An on
+// retry — seen in A/UX libc1_s memcpy crossing virgin user pages.
 #define MOVE(size)                                                                                                     \
     VALID_EA(ea_any - ea_an);                                                                                          \
+    uint32_t _move_src_an_save = (EA_MODE == 3 || EA_MODE == 4) ? cpu->a[EA_REG] : 0;                                  \
     LOAD_EA_WITH_UPDATE(size, src);                                                                                    \
     WRITE_EA(size, opcode >> 6 & 7, opcode >> 9 & 7, src);                                                             \
+    if (__builtin_expect(g_bus_error_pending, 0) && (EA_MODE == 3 || EA_MODE == 4))                                    \
+        cpu->a[EA_REG] = _move_src_an_save;                                                                            \
     UPDATE_NZ_CLEAR_CV(src);
 
 #define MOVEx(size)                                                                                                    \
     VALID_EA(ea_any);                                                                                                  \
+    uint32_t _move_src_an_save = (EA_MODE == 3 || EA_MODE == 4) ? cpu->a[EA_REG] : 0;                                  \
     LOAD_EA_WITH_UPDATE(size, src);                                                                                    \
     WRITE_EA(size, opcode >> 6 & 7, opcode >> 9 & 7, src);                                                             \
+    if (__builtin_expect(g_bus_error_pending, 0) && (EA_MODE == 3 || EA_MODE == 4))                                    \
+        cpu->a[EA_REG] = _move_src_an_save;                                                                            \
     UPDATE_NZ_CLEAR_CV(src);
 
 #define MOVEA(size)                                                                                                    \
