@@ -374,6 +374,51 @@ and only until the first DR-asserted sample — the pseudo-DMA
 transfer itself happens at bus speed because the blind-read path
 succeeds immediately once DR is observed.
 
+### 6.4 The BLIND-write "primer" byte
+
+The retail A/UX 3.0.1 SE/30 SCSI driver emits an unhandshaken byte
+write to the BLIND pseudo-DMA port at the **start** of each
+data-out phase, immediately before its byte loop.  The trigger
+instruction is at PC `$1004B888` (and three other call sites
+within `scsiout`):
+
+```
+$1004B884  BEQ.W    *+$0C                ; skip on IIfx
+$1004B888  CLR.B    ([$5B20E,])          ; primer write to $50012000
+```
+
+`[$5B20E] = $50012000` on SE/30 — the BLIND pseudo-DMA region.  Real
+NCR 5380 hardware tolerates this: the chip latches ODR on every
+write but only transmits to the bus when the target asserts REQ;
+the byte loop's first real `MOVE.B (A2)+,([$5B20E,])` overwrites
+the primer's `$00` in ODR before REQ fires, so the primer is
+invisible to the target (datasheet §6.8.1, §10.2).
+
+Why does the kernel emit this primer?  It's almost certainly a
+defensive quirk — possibly a leftover from an early-revision NCR
+chip or a workaround for a glue-logic race.  A/UX gates it on
+"non-IIfx" via the `[$5ABBA] != $0B` test at `$1004B884`, so on
+SE/30 it always fires.  Either way, it must be silently absorbed
+by the chip emulation.
+
+Our emulator models this with a **PC-discriminated primer slot**
+in [scsi.c](../src/core/peripherals/scsi.c) `write_uint8`: the
+first ODR-alias write of each `data_out` phase is held (not pushed
+to `buf.data`) until the second write arrives.  If the held byte
+is `$00` and the second write comes from a **different PC** than
+the held byte, the held byte was a kernel primer and is discarded;
+otherwise it is real data and is pushed ahead of the second.  PC
+discrimination distinguishes A/UX's distinct-PC primer pattern
+(CLR.B at `$1004B888` followed by the byte-loop body at
+`$10049760+`) from MacOS's tight-loop pseudo-DMA writes (all bytes
+at one PC).
+
+Visible symptom that this fixes: A/UX 3.0.1 Easy Install dialog
+now shows `(SCSI device 0 on bus 1) Untitled` instead of
+`☐Untitled`.  See
+[notes/60-aux3-volname-root-cause.md](../local/gs-docs/notes/60-aux3-volname-root-cause.md)
+for the full investigation history.
+
 ---
 
 ## 7. Plus vs. SE/30 vs. A/UX — side-by-side

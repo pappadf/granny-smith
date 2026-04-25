@@ -236,6 +236,46 @@ struct scsi {
     // Internal end-of-DMA flag (phase changed while DMA active)
     bool end_of_dma;
 
+    // BLIND/DMA-write priming gate (NCR 5380 §6.8.1 / §10.2 / DCD-3 SE/30
+    // SCSI map): on real hardware, a pseudo-DMA send transfer doesn't
+    // begin until the host writes the "Start DMA Send" register (port 5).
+    // ODR-alias writes that occur AFTER MR.DMA is enabled but BEFORE
+    // Start DMA Send is written are absorbed by the chip's data register
+    // but never reach the SCSI bus.  A/UX's SCSI driver exploits this by
+    // issuing a `CLR.B ([$5B20E,])` primer write to the BLIND pseudo-DMA
+    // region (PC $1004B888 in the retail kernel) before the byte loop,
+    // assuming the chip will discard it.  We model this by gating the
+    // ODR-alias buf push on `dma_write_armed`, which is cleared on
+    // MR.DMA enable and set on Start DMA Send (case DMA in write_uint8).
+    // See docs/ncr_5380.md §3.3 / §3.6.
+    bool dma_write_armed;
+
+    // Primer-slot gate for the data_out phase.  On real NCR 5380 hardware
+    // an ODR-alias write that lands BEFORE the target asserts REQ is
+    // overwritten by the next write — only the most-recent ODR value is
+    // transmitted on REQ.  A/UX's SCSI driver exploits this by issuing a
+    // `CLR.B ([$5B20E,])` primer write to the BLIND/DRQ pseudo-DMA
+    // region (retail-kernel PC $1004B888) immediately before the byte
+    // loop, assuming the chip will discard the $00.  Our emulator pushes
+    // every ODR-alias write into buf.data instantly, so without a gate
+    // the primer lands at buf[0] and shifts the entire 8 KB transfer
+    // by +1 (manifests as `☐Untitled` in the A/UX 3.0.1 Easy Install
+    // dialog — see notes/60-aux3-volname-root-cause.md).
+    //
+    // The MacOS Installer also writes data_out in pseudo-DMA mode but
+    // does NOT issue a primer; its first byte is real data.  The
+    // distinguishing signal is the PC: A/UX's primer is a CLR.B at a
+    // distinct kernel PC, while the byte-loop body is at unrelated PCs;
+    // MacOS writes all bytes from one tight loop.  We detect the primer
+    // by holding the first data_out byte in a slot and deciding on the
+    // second write: if the held byte is $00 and the second byte comes
+    // from a different PC, the held byte was a primer and is discarded;
+    // otherwise it is a legitimate first data byte and is pushed
+    // ahead of the second.
+    uint8_t primer_byte; // value of the held first byte
+    uint32_t primer_pc; // PC at which the held byte was written
+    bool primer_held; // true while a held first byte awaits decision
+
     // Loopback mode: simulate passive SCSI terminator (test card)
     bool loopback;
 

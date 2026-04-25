@@ -193,6 +193,8 @@ void phase_data_out(scsi_t *scsi, int bytes) {
     scsi->reg.csr = CSR_REQ + CSR_BSY;
     scsi->buf.max = bytes;
     scsi->buf.size = 0;
+    // Arm the primer-slot gate.  See scsi_internal.h `primer_held` etc.
+    scsi->primer_held = false;
     // Same rationale as phase_data_in.
 }
 
@@ -640,6 +642,8 @@ static void scsi_reset(scsi_t *scsi) {
     scsi->reg.cdr = 0;
     scsi->buf.size = 0;
     scsi->end_of_dma = false;
+    scsi->dma_write_armed = false;
+    scsi->primer_held = false;
     // RST generates a non-maskable interrupt that survives the reset
     scsi->reg.bsr |= BSR_INT;
     // Flush the CDR pipeline so post-reset reads return $00
@@ -840,6 +844,7 @@ static void write_mr(scsi_t *scsi, uint8_t val) {
     if (bits_cleared & MR_DMA) {
         scsi->reg.bsr &= ~BSR_DR;
         scsi->end_of_dma = false;
+        scsi->dma_write_armed = false;
         // If data-in transfer completed (buffer drained) while DMA was
         // active, transition to status now.  The bus stayed in data_in
         // during DMA so the pseudo-DMA loop could see a clean BSR
@@ -853,6 +858,11 @@ static void write_mr(scsi_t *scsi, uint8_t val) {
         scsi_update_drq(scsi);
         scsi_update_irq(scsi);
     } else if (bits_set & MR_DMA) {
+        // MR.DMA just set — disarm the BLIND-write primer gate.  The host
+        // arms the gate later by writing "Start DMA Send" (port 5).  Until
+        // then, any ODR-alias writes are primer/setup writes that real
+        // hardware would not transmit to the SCSI bus.
+        scsi->dma_write_armed = false;
 
         // DMA mode can be set during data_in/data_out (normal), during
         // status/message_in (if command returned CHECK CONDITION before the
@@ -1039,13 +1049,53 @@ static void write_uint8(void *s, uint32_t addr, uint8_t value) {
     switch (addr >> 4 & 7) {
     case ODR:
         if (addr & 0x200) {
-
             // Pseudo-DMA ODR alias: if the target expects a byte in the
             // current phase (command or data-out), push into the buffer.
             // In other phases, the write just latches into ODR — real
             // NCR 5380 doesn't gate ODR writes on phase.
             scsi->reg.odr = value;
             if (scsi->bus.phase == scsi_data_out || scsi->bus.phase == scsi_command) {
+                // BLIND/DMA-write priming gate: when MR.DMA is active, only
+                // consume the byte if the host has armed the transfer by
+                // writing the "Start DMA Send" register (port 5, case DMA).
+                // Real NCR 5380 hardware latches ODR on every write but only
+                // transmits to the SCSI bus once the host has issued Start
+                // DMA Send and the target has asserted REQ.  Pre-Start
+                // writes — like A/UX's `CLR.B ([$5B20E,])` primer at PC
+                // $1004B888 — are absorbed by the chip but never reach the
+                // bus, so they must not land in our buf.data either.
+                // When MR.DMA is OFF (Mac OS PIO command-byte path uses
+                // ICR/ACK rather than pseudo-DMA), we always consume — the
+                // ICR.ACK assertion provides the handshake.
+                if ((scsi->reg.mr & MR_DMA) && !scsi->dma_write_armed)
+                    break;
+                // Primer-slot gate (data_out only): hold the first byte
+                // and decide on the second.  If the held byte is $00 and
+                // the second byte comes from a different PC, the held
+                // byte is a kernel primer (A/UX's CLR.B at $1004B888) —
+                // discard it and push only the second.  Otherwise the
+                // held byte is real data — push held + push current.
+                // See notes/60-aux3-volname-root-cause.md and
+                // scsi_internal.h `primer_held`.
+                if (scsi->bus.phase == scsi_data_out) {
+                    cpu_t *cpu = system_cpu();
+                    uint32_t pc = cpu ? cpu_get_pc(cpu) : 0;
+                    if (!scsi->primer_held && scsi->buf.size == 0) {
+                        scsi->primer_byte = value;
+                        scsi->primer_pc = pc;
+                        scsi->primer_held = true;
+                        break;
+                    }
+                    if (scsi->primer_held) {
+                        scsi->primer_held = false;
+                        bool is_primer = (scsi->primer_byte == 0x00 && scsi->primer_pc != pc);
+                        if (!is_primer) {
+                            assert(scsi->buf.size < scsi->buf.max);
+                            scsi->buf.data[scsi->buf.size++] = scsi->primer_byte;
+                        }
+                        // fall through to push current byte
+                    }
+                }
                 assert(scsi->buf.size < scsi->buf.max);
                 scsi->buf.data[scsi->buf.size++] = value;
 
@@ -1084,6 +1134,10 @@ static void write_uint8(void *s, uint32_t addr, uint8_t value) {
 
     case DMA:
         scsi->reg.bsr |= BSR_DR;
+        // Start DMA Send (NCR 5380 §6.8.1): the host writes this register
+        // to begin a pseudo-DMA send — until then, ODR-alias writes are
+        // primer/setup writes that do not transfer.  Arm the gate.
+        scsi->dma_write_armed = true;
         scsi_update_drq(scsi);
         break;
 
