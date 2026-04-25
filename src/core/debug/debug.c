@@ -74,6 +74,13 @@ struct logpoint {
     uint32_t start_phys_page;
     uint32_t end_phys_page;
 
+    // Optional value filter for memory logpoints: when value_filter_active is
+    // true, the hook fires only if the access value equals value_filter.
+    // Useful for needle-in-haystack searches (e.g. "find the write of
+    // 0x4244E607 to this page") where most accesses on a hot page are noise.
+    bool value_filter_active;
+    uint32_t value_filter;
+
     logpoint_t *next;
 };
 
@@ -215,6 +222,8 @@ logpoint_t *set_logpoint(debug_t *debug, uint32_t addr, uint32_t end_addr, log_c
     // the physical range marked "empty" (end < start).
     lp->start_phys_page = 1;
     lp->end_phys_page = 0;
+    lp->value_filter_active = false;
+    lp->value_filter = 0;
 
     // add lp to a linked list
     lp->next = debug->logpoints;
@@ -248,6 +257,8 @@ logpoint_t *set_memory_logpoint(debug_t *debug, uint32_t addr, uint32_t end_addr
     // Mark "no physical range installed" until we do so below.
     lp->start_phys_page = 1;
     lp->end_phys_page = 0;
+    lp->value_filter_active = false;
+    lp->value_filter = 0;
     lp->next = debug->logpoints;
     debug->logpoints = lp;
     debug->active = true;
@@ -445,6 +456,16 @@ static void debug_memory_logpoint_hook(uint32_t addr, unsigned size, uint32_t va
         uint32_t a_end = cmp_addr + size - 1;
         if (a_end < lp->addr || cmp_addr > lp->end_addr)
             continue;
+        // Optional value filter: skip non-matching values silently.  The
+        // compare uses the size-truncated value to match the bus access width
+        // (e.g. .b filter on 0x42 fires on byte writes of 0x42, but a 4-byte
+        // write of 0x4244E607 has byte-extracted view that we don't compute
+        // here — match the full transaction width instead).
+        if (lp->value_filter_active) {
+            uint32_t mask = (size >= 4) ? 0xFFFFFFFFu : ((1u << (size * 8)) - 1u);
+            if ((value & mask) != (lp->value_filter & mask))
+                continue;
+        }
         lp->hit_count++;
         char formatted[256];
         if (lp->message) {
@@ -3179,6 +3200,10 @@ static void cmd_logpoint_handler(struct cmd_context *ctx, struct cmd_result *res
                     cmd_err(res, "Invalid level: %s", value);
                     return;
                 }
+            } else if (strcmp(key, "value") == 0) {
+                // Already parsed above; restore '=' and continue.
+                *equals = '=';
+                continue;
             } else {
                 cmd_err(res, "Unknown parameter: %s", key);
                 return;
@@ -3189,6 +3214,32 @@ static void cmd_logpoint_handler(struct cmd_context *ctx, struct cmd_result *res
             cmd_err(res, "Unexpected argument: %s", a);
             return;
         }
+    }
+
+    // Pre-scan for value=$X filter (memory logpoints only)
+    bool have_value_filter = false;
+    uint32_t value_filter = 0;
+    for (int i = arg_idx; i < ctx->raw_argc; i++) {
+        if (i == addr_arg)
+            continue;
+        char *a = ctx->raw_argv[i];
+        if (strncmp(a, "value=", 6) == 0) {
+            const char *vstr = a + 6;
+            if (*vstr == '$')
+                vstr++;
+            char *endp = NULL;
+            unsigned long v = strtoul(vstr, &endp, 16);
+            if (!endp || *endp != '\0') {
+                cmd_err(res, "Invalid value=: %s", a + 6);
+                return;
+            }
+            value_filter = (uint32_t)v;
+            have_value_filter = true;
+        }
+    }
+    if (have_value_filter && kind == LP_KIND_PC) {
+        cmd_err(res, "value= filter is only supported on memory logpoints");
+        return;
     }
 
     log_category_t *category = log_get_category(category_name);
@@ -3210,13 +3261,18 @@ static void cmd_logpoint_handler(struct cmd_context *ctx, struct cmd_result *res
     }
     if (message)
         lp->message = strdup(message);
+    if (have_value_filter) {
+        lp->value_filter_active = true;
+        lp->value_filter = value_filter;
+    }
 
     const char *kstr = lp_kind_label(kind);
     if (addr == end_addr)
-        cmd_printf(ctx, "logpoint %s set at $%08X (category: %s, level: %d)\n", kstr, addr, category_name, level);
+        cmd_printf(ctx, "logpoint %s set at $%08X (category: %s, level: %d)%s\n", kstr, addr, category_name, level,
+                   have_value_filter ? " [value-filtered]" : "");
     else
-        cmd_printf(ctx, "logpoint %s set at $%08X-$%08X (category: %s, level: %d)\n", kstr, addr, end_addr,
-                   category_name, level);
+        cmd_printf(ctx, "logpoint %s set at $%08X-$%08X (category: %s, level: %d)%s\n", kstr, addr, end_addr,
+                   category_name, level, have_value_filter ? " [value-filtered]" : "");
     cmd_ok(res);
 }
 
@@ -3590,6 +3646,83 @@ static void cmd_info_handler(struct cmd_context *ctx, struct cmd_result *res) {
         return;
     }
 
+    if (strcmp(subcmd, "phys-bytes") == 0) {
+        if (!ctx->args[0].present) {
+            cmd_err(res, "usage: info phys-bytes <phys-address> [count]");
+            return;
+        }
+        uint32_t addr = ctx->args[0].as_addr;
+        int count = ctx->args[1].present ? (int)ctx->args[1].as_int : 16;
+        if (count <= 0)
+            count = 16;
+        if (count > 256)
+            count = 256;
+        for (int i = 0; i < count; i += 16) {
+            cmd_printf(ctx, "P:$%08X  ", addr + i);
+            int row = (count - i < 16) ? (count - i) : 16;
+            for (int j = 0; j < row; j++) {
+                uint8_t b = g_mmu ? mmu_read_physical_uint8(g_mmu, addr + i + j) : 0;
+                cmd_printf(ctx, "%02x ", b);
+            }
+            cmd_printf(ctx, "\n");
+        }
+        cmd_ok(res);
+        return;
+    }
+
+    if (strcmp(subcmd, "soa") == 0) {
+        if (!ctx->args[0].present) {
+            cmd_err(res, "usage: info soa <logical-address>");
+            return;
+        }
+        uint32_t addr = ctx->args[0].as_addr;
+        uint32_t page = (addr & ~(uint32_t)PAGE_MASK) >> PAGE_SHIFT;
+        cmd_printf(ctx, "SoA for VA $%08X (page idx $%X):\n", addr & ~(uint32_t)PAGE_MASK, page);
+        // Decode each SoA entry: entry = host_ptr - logical_page; so host_ptr = entry + logical_page
+        // physical = host_ptr - mmu->physical_ram (assuming RAM mapping).
+        uintptr_t lp = (uintptr_t)(addr & ~(uint32_t)PAGE_MASK);
+        for (int k = 0; k < 4; k++) {
+            const char *name[] = {"super_read", "super_write", "user_read", "user_write"};
+            uintptr_t *arr = NULL;
+            switch (k) {
+            case 0:
+                arr = g_supervisor_read;
+                break;
+            case 1:
+                arr = g_supervisor_write;
+                break;
+            case 2:
+                arr = g_user_read;
+                break;
+            case 3:
+                arr = g_user_write;
+                break;
+            }
+            if (!arr) {
+                cmd_printf(ctx, "  %s: <NULL array>\n", name[k]);
+                continue;
+            }
+            uintptr_t entry = arr[page];
+            if (entry == 0) {
+                cmd_printf(ctx, "  %-12s: 0 (slow path)\n", name[k]);
+            } else {
+                uintptr_t host_page_ptr = entry + lp;
+                // Try to find matching physical page by checking RAM range
+                uintptr_t ram_base = (uintptr_t)g_mmu->physical_ram;
+                if (host_page_ptr >= ram_base && host_page_ptr < ram_base + g_mmu->physical_ram_size) {
+                    uint32_t phys = (uint32_t)(host_page_ptr - ram_base);
+                    cmd_printf(ctx, "  %-12s: entry=$%016lX  host=$%016lX  PA=$%08X\n", name[k], (unsigned long)entry,
+                               (unsigned long)host_page_ptr, phys);
+                } else {
+                    cmd_printf(ctx, "  %-12s: entry=$%016lX  host=$%016lX  (non-RAM)\n", name[k], (unsigned long)entry,
+                               (unsigned long)host_page_ptr);
+                }
+            }
+        }
+        cmd_ok(res);
+        return;
+    }
+
     cmd_err(res, "unknown info subcommand: %s", subcmd);
 }
 
@@ -3734,20 +3867,29 @@ static const struct arg_spec info_mmu_map_args[] = {
     {"start", ARG_ADDR | ARG_OPTIONAL, "scan start address (default $00000000)"         },
     {"end",   ARG_ADDR | ARG_OPTIONAL, "scan end address (inclusive, default $1FFFFFFF)"},
 };
+static const struct arg_spec info_phys_bytes_args[] = {
+    {"address", ARG_ADDR,               "physical address"          },
+    {"count",   ARG_INT | ARG_OPTIONAL, "bytes to dump (default 16)"},
+};
+static const struct arg_spec info_soa_args[] = {
+    {"address", ARG_ADDR, "logical address (page granularity)"},
+};
 static const struct subcmd_spec info_subcmds[] = {
-    {"regs",            info_regs_aliases,     NULL,               0, "CPU register dump"                    },
-    {"fpregs",          info_fpregs_aliases,   NULL,               0, "FPU register dump"                    },
-    {"mmu",             NULL,                  NULL,               0, "MMU register dump"                    },
-    {"mmu-descriptors", NULL,                  info_mmu_desc_args, 2, "decode MMU descriptors at address"    },
-    {"mmu-walk",        NULL,                  info_mmu_walk_args, 1, "walk MMU tables for a logical address"},
-    {"mmu-map",         NULL,                  info_mmu_map_args,  2, "list mapped logical ranges"           },
-    {"break",           info_break_aliases,    NULL,               0, "list all breakpoints"                 },
-    {"logpoint",        info_logpoint_aliases, NULL,               0, "list all logpoints"                   },
-    {"mac",             NULL,                  NULL,               0, "Mac OS state summary"                 },
-    {"process",         info_process_aliases,  NULL,               0, "current application info"             },
-    {"events",          NULL,                  NULL,               0, "scheduler event queue"                },
-    {"schedule",        NULL,                  NULL,               0, "scheduler mode and CPI"               },
-    {"exceptions",      NULL,                  info_exc_args,      1, "dump CPU exception trace ring"        },
+    {"regs",            info_regs_aliases,     NULL,                 0, "CPU register dump"                    },
+    {"fpregs",          info_fpregs_aliases,   NULL,                 0, "FPU register dump"                    },
+    {"mmu",             NULL,                  NULL,                 0, "MMU register dump"                    },
+    {"mmu-descriptors", NULL,                  info_mmu_desc_args,   2, "decode MMU descriptors at address"    },
+    {"mmu-walk",        NULL,                  info_mmu_walk_args,   1, "walk MMU tables for a logical address"},
+    {"mmu-map",         NULL,                  info_mmu_map_args,    2, "list mapped logical ranges"           },
+    {"phys-bytes",      NULL,                  info_phys_bytes_args, 2, "dump bytes from physical address"     },
+    {"soa",             NULL,                  info_soa_args,        1, "show SoA TLB entries for a VA"        },
+    {"break",           info_break_aliases,    NULL,                 0, "list all breakpoints"                 },
+    {"logpoint",        info_logpoint_aliases, NULL,                 0, "list all logpoints"                   },
+    {"mac",             NULL,                  NULL,                 0, "Mac OS state summary"                 },
+    {"process",         info_process_aliases,  NULL,                 0, "current application info"             },
+    {"events",          NULL,                  NULL,                 0, "scheduler event queue"                },
+    {"schedule",        NULL,                  NULL,                 0, "scheduler mode and CPI"               },
+    {"exceptions",      NULL,                  info_exc_args,        1, "dump CPU exception trace ring"        },
 };
 
 // --- translate ---
