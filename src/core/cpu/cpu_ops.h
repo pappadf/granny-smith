@@ -631,12 +631,27 @@
 #define GET_EA       CALCULATE_EA(4, EA_MODE, EA_REG, true)
 #define EA_D16_AN(x) uint32_t x = CALCULATE_EA(2, 5, EA_REG, true)
 
+// Push a longword onto the stack with bus-error retry safety.
+//
+// A naive `SP -= 4; WRITE32(SP, x)` leaks the SP decrement on a write fault
+// retry: the kernel's Format-$B frame restarts the instruction, but SP has
+// already moved, so the retried push decrements SP a second time and lands
+// the value 4 bytes lower than intended.  Symptom seen in A/UX 3.0.1 user
+// code crossing a virgin user-stack page: BSR/JSR/PEA on the boundary saves
+// its longword 4 bytes off, and the matching RTS/MOVEM-pop later pops from
+// the wrong slot — random data interpreted as a return PC → vector-4 SIGILL.
+//
+// Fix: write to (SP-4) first; only commit the SP update if the write didn't
+// raise a deferred bus error.  Sibling of the MOVEM (65d3ff4), write_ea
+// (959728c), and MOVE src-An (82fb501) restart-safety fixes.
 #define PUSH(x)                                                                                                        \
-    SP -= 4;                                                                                                           \
-    WRITE32(SP, (x));
+    WRITE32(SP - 4, (x));                                                                                              \
+    if (__builtin_expect(!g_bus_error_pending, 1))                                                                     \
+        SP -= 4;
 #define PUSH32(x)                                                                                                      \
-    SP -= 4;                                                                                                           \
-    WRITE32(SP, (x));
+    WRITE32(SP - 4, (x));                                                                                              \
+    if (__builtin_expect(!g_bus_error_pending, 1))                                                                     \
+        SP -= 4;
 
 #define POP16(x)                                                                                                       \
     x = READ16(SP);                                                                                                    \
