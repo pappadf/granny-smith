@@ -80,6 +80,27 @@ uint8_t *g_mem_logpoint_page_count = NULL;
 uint8_t *g_mem_logpoint_phys_page_count = NULL;
 memory_logpoint_hook_t g_mem_logpoint_hook = NULL;
 
+// Value-trap support: catches a specific (PA, size, value) write on the fast
+// path.  Disabled when g_value_trap_active == 0 (the common case).
+uint32_t g_value_trap_active = 0;
+uint32_t g_value_trap_pa = 0;
+uint32_t g_value_trap_value = 0;
+uint32_t g_value_trap_size = 0;
+value_trap_hook_t g_value_trap_hook = NULL;
+
+void value_trap_check(uint32_t logical_addr, uint32_t value, unsigned size) {
+    // Compute physical address.  Translate via active SoA mode (super or user).
+    uint32_t phys_addr = logical_addr;
+    if (g_mmu && g_mmu->enabled) {
+        bool supervisor = (g_active_write == g_supervisor_write);
+        phys_addr = mmu_translate_debug(g_mmu, logical_addr, supervisor);
+    }
+    if (phys_addr != g_value_trap_pa)
+        return;
+    if (g_value_trap_hook)
+        g_value_trap_hook(logical_addr, phys_addr, value, size);
+}
+
 // ============================================================================
 // Type Definitions
 // ============================================================================
@@ -262,12 +283,24 @@ uint32_t memory_read_uint32_slow(uint32_t addr) {
     }
 
     // Device I/O (single page, not crossing boundary)
-    if (pe->dev && (addr & PAGE_MASK) <= MEM_PAGE_SIZE - 4)
-        return pe->dev->read_uint32(pe->dev_context, addr - pe->base_addr);
+    if (pe->dev && (addr & PAGE_MASK) <= MEM_PAGE_SIZE - 4) {
+        uint32_t v = pe->dev->read_uint32(pe->dev_context, addr - pe->base_addr);
+        if (g_value_trap_active && addr == 0x50006000 && (v == 0x4244E607 || v == 0x004244E6)) {
+            fprintf(stderr, "[mem.read_uint32_slow MATCH] addr=$%08X dev_returned=$%08X\n", addr, v);
+        }
+        return v;
+    }
 
     // Cross-page: split into two 16-bit reads
     uint32_t hi = memory_read_uint16(addr);
     uint32_t lo = memory_read_uint16(addr + 2);
+    if (g_value_trap_active && addr == 0x50006000) {
+        static int t = 0;
+        if (t < 8) {
+            fprintf(stderr, "[mem.read_uint32_slow CROSS-PAGE] addr=$%08X hi=$%04X lo=$%04X\n", addr, hi, lo);
+            t++;
+        }
+    }
     return (hi << 16) | lo;
 }
 

@@ -184,6 +184,24 @@ extern uint8_t *g_mem_logpoint_phys_page_count;
 typedef void (*memory_logpoint_hook_t)(uint32_t addr, unsigned size, uint32_t value, bool is_write);
 extern memory_logpoint_hook_t g_mem_logpoint_hook;
 
+// === Value Trap (fast-path needle search) ===
+// Catches writes of a specific (PA, size, value) combination without forcing
+// the page to slow path.  Controlled by `value-trap` shell command.  When
+// disabled (value_trap_active=0), the inline check is one cmovne and one
+// branch-not-taken — sub-1% overhead on the fast path.  When fired, the hook
+// is called with the access details; the hook can then disarm itself or stop.
+// Multiple writes across an instruction may all match; the hook is called for
+// each.  Use to find rare needles in haystacks (e.g. "the write that placed
+// these 4 specific bytes at this physical address").
+extern uint32_t g_value_trap_active; // 0 = disabled, nonzero = enabled
+extern uint32_t g_value_trap_pa; // physical address to match
+extern uint32_t g_value_trap_value; // value to match
+extern uint32_t g_value_trap_size; // 1, 2, or 4 (byte/word/long)
+typedef void (*value_trap_hook_t)(uint32_t logical_addr, uint32_t phys_addr, uint32_t value, unsigned size);
+extern value_trap_hook_t g_value_trap_hook;
+// Called by the fast path when the value matches; resolves PA and invokes hook.
+void value_trap_check(uint32_t logical_addr, uint32_t value, unsigned size);
+
 // Force/unforce the slow path for a page range (caller in debug.c).
 // Each page in [start_page, end_page] (inclusive) has its reference count
 // adjusted; if the count becomes non-zero the SoA entries are zeroed, and if
@@ -231,6 +249,9 @@ static inline uint32_t memory_read_uint32(uint32_t addr) {
 static inline void memory_write_uint8(uint32_t addr, uint8_t value) {
     uint32_t masked = addr & g_address_mask;
     uintptr_t base = g_active_write[masked >> PAGE_SHIFT];
+    if (__builtin_expect(g_value_trap_active && g_value_trap_size == 1 && (uint8_t)value == (uint8_t)g_value_trap_value,
+                         0))
+        value_trap_check(masked, value, 1);
     if (__builtin_expect(base != 0, 1)) {
         STORE_BE8((uint8_t *)(base + masked), value);
         return;
@@ -241,6 +262,9 @@ static inline void memory_write_uint8(uint32_t addr, uint8_t value) {
 static inline void memory_write_uint16(uint32_t addr, uint16_t value) {
     uint32_t masked = addr & g_address_mask;
     uintptr_t base = g_active_write[masked >> PAGE_SHIFT];
+    if (__builtin_expect(
+            g_value_trap_active && g_value_trap_size == 2 && (uint16_t)value == (uint16_t)g_value_trap_value, 0))
+        value_trap_check(masked, value, 2);
     // Fast path: non-zero entry and access doesn't cross page boundary
     if (__builtin_expect(base != 0 && (masked & PAGE_MASK) <= MEM_PAGE_SIZE - 2, 1)) {
         STORE_BE16((uint8_t *)(base + masked), value);
@@ -252,6 +276,8 @@ static inline void memory_write_uint16(uint32_t addr, uint16_t value) {
 static inline void memory_write_uint32(uint32_t addr, uint32_t value) {
     uint32_t masked = addr & g_address_mask;
     uintptr_t base = g_active_write[masked >> PAGE_SHIFT];
+    if (__builtin_expect(g_value_trap_active && g_value_trap_size == 4 && value == g_value_trap_value, 0))
+        value_trap_check(masked, value, 4);
     // Fast path: non-zero entry and access doesn't cross page boundary
     if (__builtin_expect(base != 0 && (masked & PAGE_MASK) <= MEM_PAGE_SIZE - 4, 1)) {
         STORE_BE32((uint8_t *)(base + masked), value);

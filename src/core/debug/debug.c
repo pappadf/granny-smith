@@ -485,6 +485,23 @@ static void debug_memory_logpoint_hook(uint32_t addr, unsigned size, uint32_t va
     }
 }
 
+// Hook fired by the value-trap fast-path check when (PA, size, value) match.
+// Logs a single line with PC, logical addr, physical addr, and value.  The
+// hook keeps firing until disarmed via `value-trap off`.
+static void debug_value_trap_hook(uint32_t logical_addr, uint32_t phys_addr, uint32_t value, unsigned size) {
+    cpu_t *cpu = system_cpu();
+    uint32_t pc = cpu ? cpu_get_pc(cpu) : 0;
+    bool supervisor = cpu ? (cpu->supervisor != 0) : false;
+    log_category_t *cat = log_get_category("logpoint");
+    if (cpu) {
+        LOG_WITH(cat, 1,
+                 "value-trap WRITE pa=$%08X va=$%08X size=%u value=$%0*X pc=$%08X mode=%c "
+                 "a0=$%08X a1=$%08X a2=$%08X a3=$%08X a5=$%08X d2=$%08X",
+                 phys_addr, logical_addr, size, (int)(size * 2), value, pc, supervisor ? 'S' : 'U', cpu->a[0],
+                 cpu->a[1], cpu->a[2], cpu->a[3], cpu->a[5], cpu->d[2]);
+    }
+}
+
 extern int cpu_disasm(uint16_t *instr, char *buf);
 extern int disasm_68000(uint16_t *instr, char *buf);
 
@@ -3276,6 +3293,60 @@ static void cmd_logpoint_handler(struct cmd_context *ctx, struct cmd_result *res
     cmd_ok(res);
 }
 
+// `value-trap` — fast-path needle search.  Catches a specific (PA, size, value)
+// write without forcing the page through the slow path (no per-page slowdown).
+//   value-trap <PA> <size> <value>    — arm
+//   value-trap off                    — disarm
+//   value-trap                        — show status
+// Size must be 1, 2, or 4.  PA is the literal physical address to match (no L:
+// translation).  Value is the bytes the access carries (BE for >1-byte sizes).
+static void cmd_value_trap_handler(struct cmd_context *ctx, struct cmd_result *res) {
+    if (ctx->raw_argc <= 1) {
+        if (g_value_trap_active)
+            cmd_printf(ctx, "value-trap ARMED: pa=$%08X size=%u value=$%0*X (hits=%u)\n", g_value_trap_pa,
+                       g_value_trap_size, (int)(g_value_trap_size * 2), g_value_trap_value, 0);
+        else
+            cmd_printf(ctx, "value-trap disarmed\n");
+        cmd_ok(res);
+        return;
+    }
+    if (strcasecmp(ctx->raw_argv[1], "off") == 0) {
+        g_value_trap_active = 0;
+        g_value_trap_hook = NULL;
+        cmd_printf(ctx, "value-trap disarmed\n");
+        cmd_ok(res);
+        return;
+    }
+    if (ctx->raw_argc < 4) {
+        cmd_err(res, "usage: value-trap <PA> <size:1|2|4> <value> | value-trap off");
+        return;
+    }
+    uint32_t pa, size, value;
+    addr_space_t sp;
+    if (!parse_address(ctx->raw_argv[1], &pa, &sp)) {
+        cmd_err(res, "invalid PA: %s", ctx->raw_argv[1]);
+        return;
+    }
+    char *endp;
+    size = (uint32_t)strtoul(ctx->raw_argv[2], &endp, 0);
+    if (*endp != '\0' || (size != 1 && size != 2 && size != 4)) {
+        cmd_err(res, "size must be 1, 2, or 4");
+        return;
+    }
+    addr_space_t vsp;
+    if (!parse_address(ctx->raw_argv[3], &value, &vsp)) {
+        cmd_err(res, "invalid value: %s", ctx->raw_argv[3]);
+        return;
+    }
+    g_value_trap_pa = pa;
+    g_value_trap_size = size;
+    g_value_trap_value = value;
+    g_value_trap_hook = debug_value_trap_hook;
+    g_value_trap_active = 1;
+    cmd_printf(ctx, "value-trap armed: pa=$%08X size=%u value=$%0*X\n", pa, size, (int)(size * 2), value);
+    cmd_ok(res);
+}
+
 // Walk the 68030 PMMU table tree for a single logical address, printing
 // each level's descriptor.  Duplicates the logic of mmu.c:mmu_table_walk
 // deliberately — the verbose traversal is a debug concern kept out of the
@@ -4075,6 +4146,12 @@ debug_t *debug_init(void) {
         .fn = cmd_logpoint_handler,
         .subcmds = logpoint_subcmds,
         .n_subcmds = 5,
+    });
+    register_command(&(struct cmd_reg){
+        .name = "value-trap",
+        .category = "Breakpoints",
+        .synopsis = "Catch a specific (PA, size, value) write on the fast path (no per-page slowdown)",
+        .fn = cmd_value_trap_handler,
     });
 
     // Inspection
