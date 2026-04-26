@@ -1266,11 +1266,16 @@ static inline uint32_t bf_insert_reg(uint32_t dst, int32_t offset, uint32_t w, u
 // --- CAS: Compare And Swap (stub -- atomic operations not needed for single-CPU) ---
 // CAS(bits): shared body for byte/word/long variants.
 // Uses token-pasting (READ##bits, WRITE##bits) and UINT(bits) to parameterise by size.
+// Restart-safety: CALCULATE_EA(...,true) post-increments / pre-decrements An
+// for (An)+ and -(An) modes before the read/write that may fault.  Snapshot
+// An up-front and roll back on bus error so the Format-$B retry restarts
+// with pre-instruction values.
 #define CAS(bits)                                                                                                      \
     VALID_EA((ea_memory & ea_alterable));                                                                              \
     uint16_t _ext = FETCH16();                                                                                         \
     uint32_t _du = (_ext >> 6) & 7u;                                                                                   \
     uint32_t _dc = _ext & 7u;                                                                                          \
+    uint32_t _cas_an_save = (EA_MODE == 3 || EA_MODE == 4) ? cpu->a[EA_REG] : 0;                                       \
     uint32_t _addr = CALCULATE_EA((bits) / 8, EA_MODE, EA_REG, true);                                                  \
     UINT(bits) _mem = (UINT(bits))READ##bits(_addr);                                                                   \
     UINT(bits) _cmp = (UINT(bits))D(_dc);                                                                              \
@@ -1280,7 +1285,9 @@ static inline uint32_t bf_insert_reg(uint32_t dst, int32_t offset, uint32_t w, u
         WRITE##bits(_addr, (UINT(bits))D(_du));                                                                        \
     } else {                                                                                                           \
         STORE_DN(bits, _dc, _mem);                                                                                     \
-    }
+    }                                                                                                                  \
+    if (__builtin_expect(g_bus_error_pending, 0) && (EA_MODE == 3 || EA_MODE == 4))                                    \
+        cpu->a[EA_REG] = _cas_an_save;
 
 #define OP_CAS_B_DC_DU_EA OP({CAS(8)})
 #define OP_CAS_W_DC_DU_EA OP({CAS(16)})
