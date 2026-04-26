@@ -147,6 +147,7 @@ struct scc {
 
 // special receive condition status
 #define RR1_END_OF_FRAME 0x80
+#define RR1_RX_OVERRUN   0x20
 
 // interrupt pending register (only in ch a - always 0 in ch b)
 #define RR3_CHANNEL_B_EXT 0x01
@@ -613,6 +614,10 @@ static void wr8(ch_t *c, uint8_t value) {
                 LOG(4, "wr8: RX interrupt enabled in loopback, setting rr3=0x%02X", c->scc->ch[0].rr[3]);
                 update_irqs(c->scc);
             }
+        } else {
+            // RX FIFO full — Z8530 latches Rx Overrun in RR1 bit 5 and drops
+            // the byte (the previously buffered byte stays put, per datasheet).
+            c->rr[1] |= RR1_RX_OVERRUN;
         }
     }
 
@@ -633,6 +638,9 @@ static void wr8(ch_t *c, uint8_t value) {
                 LOG(4, "wr8: external loopback RX int on ch%d, rr3=0x%02X", other->index, c->scc->ch[0].rr[3]);
                 update_irqs(c->scc);
             }
+        } else {
+            // Receiving channel's RX FIFO full — latch overrun status there.
+            other->rr[1] |= RR1_RX_OVERRUN;
         }
     }
 
