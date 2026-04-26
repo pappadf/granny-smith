@@ -142,8 +142,27 @@ static void cpu_pmmu_general(cpu_t *cpu, uint16_t opcode) {
             // PLOAD — force a table walk and load the ATC entry
             uint32_t rw = (ext >> 9) & 1u; // 0=PLOADW (write test), 1=PLOADR (read test)
             if (mmu) {
+                // FC specifier in extension word bits 4:0 (per MC68030UM § 7.4.27),
+                // same encoding as PTEST: 1xxxx → immediate FC = bits 2:0,
+                // 01xxx → FC from data register Dn, 00000 → SFC, 00001 → DFC.
+                // Walking the wrong root (always cpu->supervisor) would load the
+                // ATC with a translation from the supervisor-side root for a
+                // user-FC PLOAD.
+                uint32_t fc_spec = ext & 0x1Fu;
+                uint32_t fc;
+                if (fc_spec & 0x10u)
+                    fc = fc_spec & 7u; // immediate FC
+                else if (fc_spec & 0x08u)
+                    fc = cpu->d[fc_spec & 7u] & 7u; // Dn low 3 bits
+                else if (fc_spec == 0)
+                    fc = cpu->sfc;
+                else if (fc_spec == 1)
+                    fc = cpu->dfc;
+                else
+                    fc = cpu->supervisor != 0 ? 5u : 1u; // undefined encoding — fall back
+                bool fc_supervisor = (fc & 4u) != 0;
                 uint32_t ea = calculate_ea(cpu, 4, ea_mode, ea_reg, true);
-                mmu_handle_fault(mmu, ea, rw == 0, cpu->supervisor != 0);
+                mmu_handle_fault(mmu, ea, rw == 0, fc_supervisor);
             }
         } else if (mmu) {
             // PFLUSH variants: invalidate ATC entries
