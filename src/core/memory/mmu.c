@@ -16,6 +16,11 @@
 // Global MMU state pointer (NULL for 68000 machines)
 mmu_state_t *g_mmu = NULL;
 
+// Last CRP observed while the CPU was in user mode.  Updated by the
+// supervisor→user transition in cpu_internal.h.  0 until first user-mode
+// entry.  Cleared when the MMU is destroyed.
+uint64_t g_last_user_crp = 0;
+
 // ============================================================================
 // TLB population tracking (for fast invalidation)
 // ============================================================================
@@ -390,8 +395,12 @@ mmu_state_t *mmu_init(uint8_t *physical_ram, uint32_t ram_size, uint32_t ram_siz
 void mmu_delete(mmu_state_t *mmu) {
     if (!mmu)
         return;
-    if (g_mmu == mmu)
+    if (g_mmu == mmu) {
         g_mmu = NULL;
+        // Clear the user-CRP snapshot so a fresh machine doesn't inherit
+        // a stale CRP from the previous instance.
+        g_last_user_crp = 0;
+    }
     free(mmu);
 }
 
@@ -636,6 +645,39 @@ uint32_t mmu_translate_debug(mmu_state_t *mmu, uint32_t logical_addr, bool super
         return result.physical_addr;
 
     return logical_addr;
+}
+
+// Translate against an explicit CRP root (e.g. a snapshot of MAE's CRP).
+// Side-effect-free: temporarily swaps `mmu->crp`, performs a user-mode walk,
+// restores the original CRP.  TT checks are skipped for the page offset only
+// after the walk to keep the result page-faithful to the supplied CRP.
+bool mmu_translate_with_crp(mmu_state_t *mmu, uint32_t logical_addr, uint64_t crp_root, uint32_t *pa_out) {
+    if (!mmu || !pa_out)
+        return false;
+    // Without a known CRP we cannot reach the target address space.
+    if (crp_root == 0)
+        return false;
+    // If the MMU is disabled, every address is identity-mapped.
+    if (!mmu->enabled) {
+        *pa_out = logical_addr;
+        return true;
+    }
+    // TT registers do not depend on the CRP, so an early TT match is
+    // valid for the supplied address space too.
+    if (mmu_check_tt(mmu, logical_addr, false, /*supervisor=*/false)) {
+        *pa_out = logical_addr;
+        return true;
+    }
+    // Swap CRP, walk in user mode, restore.  The walk reads guest tables
+    // via phys_to_host but does not touch the SoA arrays.
+    uint64_t saved_crp = mmu->crp;
+    mmu->crp = crp_root;
+    mmu_walk_result_t result = mmu_table_walk(mmu, logical_addr, false, /*supervisor=*/false);
+    mmu->crp = saved_crp;
+    if (!result.valid)
+        return false;
+    *pa_out = result.physical_addr;
+    return true;
 }
 
 // Read a byte from physical memory for debug commands (P: prefix).

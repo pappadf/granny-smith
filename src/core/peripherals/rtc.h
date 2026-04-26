@@ -36,4 +36,8 @@ void rtc_input(rtc_t *restrict rtc, bool disable, bool clock, bool pram);
 
 void rtc_set_via(rtc_t *restrict rtc, via_t *via);
 
+// Override the wall clock with an absolute Mac-epoch (1904) seconds value.
+// Used by the `set-time` script command to make boot deterministic.
+void rtc_set_seconds(rtc_t *restrict rtc, uint32_t mac_seconds);
+
 #endif // RTC_H

@@ -301,6 +301,13 @@ void rtc_set_via(rtc_t *restrict rtc, via_t *via) {
     rtc->via = via;
 }
 
+void rtc_set_seconds(rtc_t *restrict rtc, uint32_t mac_seconds) {
+    if (!rtc)
+        return;
+    rtc->seconds = mac_seconds;
+    LOG(1, "rtc_set_seconds: seconds=%u", rtc->seconds);
+}
+
 rtc_t *rtc_init(struct scheduler *restrict scheduler, checkpoint_t *checkpoint) {
     rtc_t *rtc = (rtc_t *)malloc(sizeof(rtc_t));
     if (rtc == NULL)

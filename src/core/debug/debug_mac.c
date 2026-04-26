@@ -11,6 +11,7 @@
 #include "memory.h"
 #include "mmu.h"
 #include "mouse.h"
+#include "rtc.h"
 #include "scheduler.h"
 #include "shell.h"
 #include "system.h"
@@ -19,6 +20,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
+#include <time.h>
 
 // Global variable info (defined in mac_globals_data.c)
 extern struct {
@@ -325,6 +327,7 @@ uint64_t cmd_trace_mouse(int argc, char *argv[]);
 uint64_t cmd_mouse_button(int argc, char *argv[]);
 uint64_t cmd_key(int argc, char *argv[]);
 uint64_t cmd_post_event(int argc, char *argv[]);
+uint64_t cmd_set_time(int argc, char *argv[]);
 
 // ============================================================================
 // V2 Mouse command (unified: move/down/up/click/trace)
@@ -444,6 +447,8 @@ void debug_mac_init(void) {
     register_cmd("trace-mouse", "Testing", "trace-mouse start|stop  – log mouse position", cmd_trace_mouse);
     register_cmd("mouse-button", "Testing", "mouse-button [--global|--hw] up|down  – inject mouse button event",
                  cmd_mouse_button);
+    register_cmd("set-time", "Testing",
+                 "set-time <unix-epoch|YYYY-MM-DDTHH:MM:SS>  – override RTC for deterministic boot", cmd_set_time);
 
     // Unified commands
     register_command(&(struct cmd_reg){
@@ -709,43 +714,128 @@ static void set_mouse_hw(long dx, long dy) {
         printf("Error: no mouse device available for hardware injection.\n");
 }
 
-// Set mouse position under A/UX 3.0 MacOS-compat (MAE).
+// Translate `va` against the cached MAE user CRP and write `value` to the
+// resolved physical address as a 16-bit big-endian word, bypassing the
+// SoA fast path entirely.  Returns true on success; false if the CRP
+// snapshot is empty or the page isn't mapped in MAE's address space.
+static bool aux_write_uint16(uint32_t va, uint16_t value) {
+    uint32_t pa = 0;
+    if (!mmu_translate_with_crp(g_mmu, va, g_last_user_crp, &pa))
+        return false;
+    return mmu_write_physical_uint16(g_mmu, pa, value);
+}
+
+// Same as aux_write_uint16 but for a single byte (used for CrsrNew).
+static bool aux_write_uint8(uint32_t va, uint8_t value) {
+    uint32_t pa = 0;
+    if (!mmu_translate_with_crp(g_mmu, va, g_last_user_crp, &pa))
+        return false;
+    return mmu_write_physical_uint8(g_mmu, pa, value);
+}
+
+// Same as aux_write_uint16 but for an 8-bit read (used to sample CrsrCouple).
+// Returns false (and leaves *out untouched) if the page isn't mapped.
+static bool aux_read_uint8(uint32_t va, uint8_t *out) {
+    uint32_t pa = 0;
+    if (!mmu_translate_with_crp(g_mmu, va, g_last_user_crp, &pa))
+        return false;
+    *out = mmu_read_physical_uint8(g_mmu, pa);
+    return true;
+}
+
+// Set mouse position under A/UX 3.0 Mac OS compatibility (MAE).
 //
-// A/UX runs Mac OS apps under the Macintosh Application Environment, which
-// emulates the Mac OS Toolbox in a userspace process.  The standard Toolbox
-// globals (MTemp at $0828, RawMouse at $082C, Mouse at $0830) live in *MAE
-// user* virtual address space — NOT in A/UX kernel low memory at the same
-// VAs, which holds Unix kernel data instead.  MAE's modal-dialog hit-tester
-// reads its own MTemp/Mouse to decide which control was clicked.
+// A/UX runs Mac OS apps under the Macintosh Application Environment, a
+// per-process user-mode Toolbox emulator.  Each MAE process sees the
+// standard Toolbox globals (MTemp $0828, RawMouse $082C, Mouse $0830,
+// CrsrNew $08CE, CrsrCouple $08CF) in its own user virtual address
+// space.  At the same VAs in supervisor mode A/UX has unrelated kernel
+// data — so any write that rides the active SoA is correct only if the
+// CPU happens to be in user mode at the instant of the write.
 //
-// Compared to `--global`, this mode differs only in that it does NOT
-// install the 1ms `mouse_guard_tick`.  The guard re-pins MTemp every
-// emulated millisecond regardless of which CPU mode (and thus which
-// address space) is active — under A/UX that means it stomps A/UX kernel
-// low memory whenever the CPU happens to be in supervisor mode at the
-// tick boundary, corrupting kernel data and making the cursor flaky on
-// subsequent set-mouse calls.
+// `--global` ignores that distinction: it writes via the active SoA and
+// then installs a 1ms guard tick that re-writes the same VAs forever.
+// Under A/UX the guard fires while supervisor is active and corrupts the
+// kernel's $0828 region.  Forbidden under A/UX.
 //
-// `--aux` writes once through `g_active_write` and stops.  The write
-// targets whichever address space is currently active:
-//   - If the CPU is in user mode (MAE app running), the write hits MAE's
-//     MTemp.  Click hit-tests via MAE's modal loop see the new position.
-//   - If supervisor mode, the write hits A/UX kernel data — usually
-//     harmless because the user mostly stays in user mode at the moments
-//     when set-mouse is called from a test script (right before
-//     mouse-button injection, which itself triggers user-mode wakeup).
+// `--aux` translates each VA against the *cached MAE CRP*
+// (`g_last_user_crp`, snapshotted by cpu_internal.h on every
+// supervisor→user transition) and writes directly to the resolved
+// physical address via `mmu_write_physical_uint16`.  Three consequences:
 //
-// In practice, the absence of the recurring 1ms guard avoids the
-// continuous corruption that breaks the second-and-later set-mouse calls
-// under `--global`.
+//   1. The write reaches MAE's MTemp regardless of whether the CPU is
+//      currently in supervisor or user mode — the translation uses MAE's
+//      page tables, not the active CPU mode.
+//   2. The kernel's $0828 region is never touched; A/UX kernel data is
+//      safe.
+//   3. No 1ms guard tick is installed.  The Toolbox globals are written
+//      exactly once per `set-mouse --aux` call, so there is no recurring
+//      race against MAE's own cursor updates.
+//
+// If no user-mode entry has been observed yet (`g_last_user_crp == 0`),
+// or the snapshot CRP doesn't map a page for one of the target VAs, the
+// write is reported as failed and silently skipped — better than landing
+// on the wrong page.
 static void set_mouse_aux(long x, long y) {
-    // Use the same low-memory write path as --global, but without
-    // installing the guard tick.  set_mouse_global writes MTemp,
-    // RawMouse, Mouse, and signals CrsrNew — exactly what MAE expects.
-    set_mouse_global(x, y);
-    printf("set-mouse --aux: wrote MTemp/RawMouse/Mouse = (h=%d, v=%d) "
-           "(no guard tick)\n",
-           (int)x, (int)y);
+    uint32_t addr_MTemp = debug_mac_lookup_global_address("MTemp");
+    uint32_t addr_RawMouse = debug_mac_lookup_global_address("RawMouse");
+    uint32_t addr_Mouse = debug_mac_lookup_global_address("Mouse");
+    uint32_t addr_CrsrNew = debug_mac_lookup_global_address("CrsrNew");
+    uint32_t addr_CrsrCouple = debug_mac_lookup_global_address("CrsrCouple");
+
+    if (!addr_MTemp || !addr_RawMouse || !addr_CrsrNew) {
+        printf("Error: could not resolve mouse-related globals.\n");
+        return;
+    }
+    if (!g_mmu || !g_mmu->enabled) {
+        printf("set-mouse --aux: MMU not enabled; falling back to active-SoA write.\n");
+        set_mouse_global(x, y);
+        return;
+    }
+    if (g_last_user_crp == 0) {
+        printf("set-mouse --aux: no user-mode CRP observed yet; run the guest into user mode first.\n");
+        return;
+    }
+
+    uint16_t v = (uint16_t)(y & 0xFFFF); // vertical word
+    uint16_t h = (uint16_t)(x & 0xFFFF); // horizontal word
+
+    // Write Toolbox position globals into MAE's address space.  Each
+    // write is independent so a partial mapping reports cleanly.
+    int ok = 0;
+    int total = 0;
+    total++;
+    if (aux_write_uint16(addr_MTemp, v))
+        ok++;
+    total++;
+    if (aux_write_uint16(addr_MTemp + 2, h))
+        ok++;
+    total++;
+    if (aux_write_uint16(addr_RawMouse, v))
+        ok++;
+    total++;
+    if (aux_write_uint16(addr_RawMouse + 2, h))
+        ok++;
+    if (addr_Mouse) {
+        total++;
+        if (aux_write_uint16(addr_Mouse, v))
+            ok++;
+        total++;
+        if (aux_write_uint16(addr_Mouse + 2, h))
+            ok++;
+    }
+
+    // Signal MAE's cursor VBL task: copy CrsrCouple → CrsrNew (standard
+    // technique used by --global too).
+    uint8_t couple = 0xFF;
+    if (addr_CrsrCouple)
+        (void)aux_read_uint8(addr_CrsrCouple, &couple);
+    total++;
+    if (aux_write_uint8(addr_CrsrNew, couple))
+        ok++;
+
+    printf("set-mouse --aux: wrote MTemp/RawMouse/Mouse = (h=%d, v=%d) via MAE CRP $%08X (%d/%d writes ok)\n", (int)x,
+           (int)y, (uint32_t)(g_last_user_crp & 0xFFFFFFFF), ok, total);
 }
 
 // Default set-mouse: absolute coordinates, platform-dependent strategy.
@@ -781,10 +871,11 @@ uint64_t cmd_set_mouse(int argc, char *argv[]) {
         printf("Usage: set-mouse [--global|--hw|--aux] x y\n"
                "  (default)  absolute coords, best method per platform\n"
                "  --global   absolute coords via Mac OS Toolbox globals\n"
-               "             (Mac OS guests; racy under A/UX)\n"
+               "             (Mac OS guests; corrupts A/UX kernel — do not use)\n"
                "  --hw       relative deltas via hardware (ADB/quadrature)\n"
-               "  --aux      absolute coords via user CRP -> PA write of\n"
-               "             MTemp/RawMouse/Mouse (A/UX MAE; no guard tick)\n");
+               "  --aux      absolute coords resolved through the cached MAE\n"
+               "             user CRP, written directly to physical pages\n"
+               "             (A/UX MAE; safe across CPU mode changes)\n");
         return 0;
     }
 
@@ -837,12 +928,13 @@ uint64_t cmd_set_mouse(int argc, char *argv[]) {
         set_mouse_hw(a, b);
         break;
     case 'a':
-        // --aux: write MTemp through the active SoA (one-shot) and pin it
-        // with a user-mode-only guard.  The guard skips ticks that fire
-        // while the CPU is in supervisor mode, so it doesn't corrupt
-        // A/UX kernel data at PA $0828.
+        // --aux: translate MTemp/RawMouse/Mouse through the cached MAE
+        // user CRP and write the resolved physical pages directly,
+        // bypassing the active-SoA path.  No guard tick — the writes
+        // hit MAE's address space exactly once and stay put because no
+        // recurring tick is racing them.
+        mouse_guard_stop();
         set_mouse_aux(a, b);
-        mouse_guard_start((int16_t)a, (int16_t)b, /*user_only=*/true);
         break;
     default:
         mouse_guard_stop();
@@ -1150,5 +1242,63 @@ uint64_t cmd_post_event(int argc, char *argv[]) {
     memory_write_uint32(0x0150, free_el); // QTail = new element
 
     printf("post-event: what=%ld message=$%lX at el=$%08X\n", what, message, free_el);
+    return 0;
+}
+
+// ---- set-time implementation ----
+// Override the RTC with a fixed value so each test run boots from the same
+// wall-clock, removing one source of nondeterminism (timestamps, fsck mount-
+// time comparisons, kernel PRNG seeds derived from time-of-day, etc.).
+//
+// Accepts either:
+//   - a Unix epoch integer (seconds since 1970-01-01 UTC), e.g. 1745654400
+//   - an ISO-8601 string YYYY-MM-DDTHH:MM:SS interpreted as UTC,
+//     e.g. 2026-04-26T21:30:36
+//
+// The Mac stores RTC as seconds since 1904 in *local* time (no DST). For
+// determinism we treat the user's input as UTC and store it directly into
+// the Mac clock — guests will display it in whatever their PRAM timezone
+// claims, but the value (and therefore screenshots) are now reproducible.
+#define MAC_TO_UNIX_EPOCH_OFFSET 2082844800u
+
+uint64_t cmd_set_time(int argc, char *argv[]) {
+    if (argc < 2) {
+        printf("Usage: set-time <unix-epoch|YYYY-MM-DDTHH:MM:SS>\n");
+        return 0;
+    }
+
+    rtc_t *rtc = system_rtc();
+    if (!rtc) {
+        printf("Error: RTC not initialized.\n");
+        return 0;
+    }
+
+    int64_t unix_epoch = 0;
+    char *endp = NULL;
+    long long parsed = strtoll(argv[1], &endp, 10);
+    if (endp != argv[1] && *endp == '\0') {
+        unix_epoch = (int64_t)parsed;
+    } else {
+        struct tm tm = {0};
+        if (!strptime(argv[1], "%Y-%m-%dT%H:%M:%S", &tm)) {
+            printf("Invalid time: %s (expected unix epoch or YYYY-MM-DDTHH:MM:SS)\n", argv[1]);
+            return 0;
+        }
+        time_t t = timegm(&tm);
+        if (t == (time_t)-1) {
+            printf("Invalid time: %s\n", argv[1]);
+            return 0;
+        }
+        unix_epoch = (int64_t)t;
+    }
+
+    if (unix_epoch < 0) {
+        printf("set-time: epoch must be non-negative (got %lld)\n", (long long)unix_epoch);
+        return 0;
+    }
+
+    uint32_t mac_seconds = (uint32_t)(unix_epoch + MAC_TO_UNIX_EPOCH_OFFSET);
+    rtc_set_seconds(rtc, mac_seconds);
+    printf("set-time: unix=%lld mac=%u (%s)\n", (long long)unix_epoch, mac_seconds, argv[1]);
     return 0;
 }

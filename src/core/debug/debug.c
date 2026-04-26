@@ -316,9 +316,141 @@ logpoint_t *set_memory_logpoint(debug_t *debug, uint32_t addr, uint32_t end_addr
     return lp;
 }
 
+// Parse an optional "+HEX" offset suffix from `src` (already consumed up to
+// `pos`).  Returns the offset value (0 if no suffix), or UINT32_MAX if the
+// suffix is malformed (caller should treat as failure).
+static uint32_t parse_lp_offset(const char *src, size_t len, size_t pos) {
+    if (pos >= len)
+        return 0;
+    if (src[pos] != '+')
+        return UINT32_MAX;
+    pos++;
+    if (pos >= len)
+        return UINT32_MAX;
+    uint32_t v = 0;
+    for (; pos < len; pos++) {
+        char c = src[pos];
+        int d;
+        if (c >= '0' && c <= '9')
+            d = c - '0';
+        else if (c >= 'a' && c <= 'f')
+            d = 10 + (c - 'a');
+        else if (c >= 'A' && c <= 'F')
+            d = 10 + (c - 'A');
+        else
+            return UINT32_MAX;
+        v = (v << 4) | (uint32_t)d;
+    }
+    return v;
+}
+
+// Resolve a "source" sub-token to a 32-bit address.  Accepts:
+//   "cpu.aN[+HEX]" / "cpu.dN[+HEX]" — register file with optional hex offset
+//   "xHEX[+HEX]"                    — hex literal address with optional offset
+// Returns false if not recognized or offset is malformed.
+static bool resolve_lp_addr(const char *src, size_t len, cpu_t *cpu, uint32_t *out_addr) {
+    if (len >= 6 && memcmp(src, "cpu.a", 5) == 0 && src[5] >= '0' && src[5] <= '7') {
+        uint32_t offs = parse_lp_offset(src, len, 6);
+        if (offs == UINT32_MAX && len > 6)
+            return false;
+        if (len > 6 && offs == UINT32_MAX)
+            return false;
+        if (len == 6)
+            offs = 0;
+        *out_addr = (cpu ? cpu->a[src[5] - '0'] : 0) + offs;
+        return true;
+    }
+    if (len >= 6 && memcmp(src, "cpu.d", 5) == 0 && src[5] >= '0' && src[5] <= '7') {
+        uint32_t offs = parse_lp_offset(src, len, 6);
+        if (len > 6 && offs == UINT32_MAX)
+            return false;
+        if (len == 6)
+            offs = 0;
+        *out_addr = (cpu ? cpu->d[src[5] - '0'] : 0) + offs;
+        return true;
+    }
+    if (len >= 2 && src[0] == 'x') {
+        // Parse hex digits up to '+' (offset) or end of token.
+        uint32_t v = 0;
+        size_t i = 1;
+        for (; i < len; i++) {
+            char c = src[i];
+            int d;
+            if (c >= '0' && c <= '9')
+                d = c - '0';
+            else if (c >= 'a' && c <= 'f')
+                d = 10 + (c - 'a');
+            else if (c >= 'A' && c <= 'F')
+                d = 10 + (c - 'A');
+            else if (c == '+')
+                break;
+            else
+                return false;
+            v = (v << 4) | (uint32_t)d;
+        }
+        uint32_t offs = parse_lp_offset(src, len, i);
+        if (i < len && offs == UINT32_MAX)
+            return false;
+        if (i == len)
+            offs = 0;
+        *out_addr = v + offs;
+        return true;
+    }
+    return false;
+}
+
+// Read a single byte from the guest's user-mode address space, regardless of
+// the CPU's current S bit.  Used by the logpoint formatter when a logpoint
+// fires in supervisor mode (e.g., kernel syscall entry) but wants to inspect
+// userspace pointers.  Falls back to the active context if the MMU isn't
+// enabled or no separate user mapping exists.
+static uint8_t lp_read_user_uint8(uint32_t addr) {
+    if (g_mmu && g_mmu->enabled) {
+        uint32_t phys = mmu_translate_debug(g_mmu, addr, /*supervisor=*/false);
+        return mmu_read_physical_uint8(g_mmu, phys);
+    }
+    return memory_read_uint8(addr);
+}
+static uint32_t lp_read_user_uint32(uint32_t addr) {
+    if (g_mmu && g_mmu->enabled) {
+        uint32_t phys = mmu_translate_debug(g_mmu, addr, /*supervisor=*/false);
+        return mmu_read_physical_uint32(g_mmu, phys);
+    }
+    return memory_read_uint32(addr);
+}
+
+// Append a C-string read from guest memory at `addr` to val[], escaping non-
+// printable bytes and stopping at NUL or after `max_chars` bytes.  Reads via
+// the user MMU context so kernel-side logpoints can inspect userspace strings.
+static void append_guest_cstring(char *val, size_t valsz, uint32_t addr, size_t max_chars) {
+    size_t out = 0;
+    if (out < valsz)
+        val[out++] = '"';
+    for (size_t i = 0; i < max_chars && out + 4 < valsz; i++) {
+        uint8_t b = lp_read_user_uint8(addr + (uint32_t)i);
+        if (b == 0)
+            break;
+        if (b >= 0x20 && b <= 0x7E) {
+            val[out++] = (char)b;
+        } else {
+            int n = snprintf(val + out, valsz - out, "\\x%02X", b);
+            if (n < 0)
+                break;
+            out += (size_t)n;
+        }
+    }
+    if (out + 1 < valsz)
+        val[out++] = '"';
+    val[out] = '\0';
+}
+
 // Expand a logpoint message, substituting $pc, $value, $instruction_pc,
-// register names (cpu.d0, cpu.a0, ...).  Simple replacement, not a full
-// expression language.  Writes up to buf_size-1 chars into buf.
+// register names (cpu.d0, cpu.a0, ...), and memory dereferences:
+//   $mem.b.<src> / $mem.w.<src> / $mem.l.<src>      — raw value at addr
+//   $str.<src>                                     — C string at addr
+//   $str.deref.<src>                               — read long at <src>, then C string at that pointer
+// where <src> is "cpu.aN", "cpu.dN", or "xHEX".  Simple replacement, not a
+// full expression language.  Writes up to buf_size-1 chars into buf.
 static void format_logpoint_message(char *buf, size_t buf_size, const char *msg, uint32_t addr, uint32_t value,
                                     unsigned size) {
     if (!msg) {
@@ -332,13 +464,13 @@ static void format_logpoint_message(char *buf, size_t buf_size, const char *msg,
             buf[out++] = *p++;
             continue;
         }
-        // match "$name"
+        // match "$name"  ('+' allowed for src+offset notation in $mem/$str ops)
         p++;
         const char *name = p;
-        while (*p && (isalnum((unsigned char)*p) || *p == '_' || *p == '.'))
+        while (*p && (isalnum((unsigned char)*p) || *p == '_' || *p == '.' || *p == '+'))
             p++;
         size_t nlen = (size_t)(p - name);
-        char tok[32];
+        char tok[64];
         if (nlen >= sizeof(tok)) {
             // too long, just copy as-is
             if (out + nlen + 2 < buf_size) {
@@ -350,7 +482,7 @@ static void format_logpoint_message(char *buf, size_t buf_size, const char *msg,
         }
         memcpy(tok, name, nlen);
         tok[nlen] = '\0';
-        char val[32];
+        char val[160];
         val[0] = '\0';
         if (strcmp(tok, "value") == 0) {
             int w = (size == 1) ? 2 : (size == 2) ? 4 : 8;
@@ -365,6 +497,49 @@ static void format_logpoint_message(char *buf, size_t buf_size, const char *msg,
             snprintf(val, sizeof(val), "$%08X", cpu ? cpu->d[tok[5] - '0'] : 0);
         } else if (strncmp(tok, "cpu.a", 5) == 0 && nlen == 6 && tok[5] >= '0' && tok[5] <= '7') {
             snprintf(val, sizeof(val), "$%08X", cpu ? cpu->a[tok[5] - '0'] : 0);
+        } else if (nlen > 6 && memcmp(tok, "mem.", 4) == 0 && tok[5] == '.' &&
+                   (tok[4] == 'b' || tok[4] == 'w' || tok[4] == 'l')) {
+            // $mem.{b,w,l}.<src>
+            uint32_t a = 0;
+            if (resolve_lp_addr(tok + 6, nlen - 6, cpu, &a)) {
+                if (tok[4] == 'b')
+                    snprintf(val, sizeof(val), "$%02X", memory_read_uint8(a));
+                else if (tok[4] == 'w')
+                    snprintf(val, sizeof(val), "$%04X", memory_read_uint16(a));
+                else
+                    snprintf(val, sizeof(val), "$%08X", memory_read_uint32(a));
+            } else {
+                snprintf(val, sizeof(val), "<bad-src>");
+            }
+        } else if (nlen > 11 && memcmp(tok, "str.deref2.", 11) == 0) {
+            // $str.deref2.<src> — read long at <src>, then long at that pointer, then C string at **<src>.
+            // The first read uses the supervisor/active context (kernel u_arg slot is kernel-mapped),
+            // subsequent reads chase user-space pointers via the user MMU.
+            uint32_t a = 0;
+            if (resolve_lp_addr(tok + 11, nlen - 11, cpu, &a)) {
+                uint32_t p1 = memory_read_uint32(a);
+                uint32_t p2 = lp_read_user_uint32(p1);
+                append_guest_cstring(val, sizeof(val), p2, 96);
+            } else {
+                snprintf(val, sizeof(val), "<bad-src>");
+            }
+        } else if (nlen > 10 && memcmp(tok, "str.deref.", 10) == 0) {
+            // $str.deref.<src> — read long at <src> (kernel/active context), then C string via user MMU.
+            uint32_t a = 0;
+            if (resolve_lp_addr(tok + 10, nlen - 10, cpu, &a)) {
+                uint32_t ptr = memory_read_uint32(a);
+                append_guest_cstring(val, sizeof(val), ptr, 96);
+            } else {
+                snprintf(val, sizeof(val), "<bad-src>");
+            }
+        } else if (nlen > 4 && memcmp(tok, "str.", 4) == 0) {
+            // $str.<src>
+            uint32_t a = 0;
+            if (resolve_lp_addr(tok + 4, nlen - 4, cpu, &a)) {
+                append_guest_cstring(val, sizeof(val), a, 96);
+            } else {
+                snprintf(val, sizeof(val), "<bad-src>");
+            }
         } else {
             // unknown: re-emit literally
             if (out + nlen + 2 < buf_size) {

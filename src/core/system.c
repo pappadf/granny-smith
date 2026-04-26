@@ -163,6 +163,11 @@ cpu_t *system_cpu(void) {
     return global_emulator ? global_emulator->cpu : NULL;
 }
 
+// System-level RTC accessor: returns the current RTC object
+rtc_t *system_rtc(void) {
+    return global_emulator ? global_emulator->rtc : NULL;
+}
+
 // System-level framebuffer accessor: returns pointer to video RAM buffer
 uint8_t *system_framebuffer(void) {
     return global_emulator ? global_emulator->ram_vbuf : NULL;

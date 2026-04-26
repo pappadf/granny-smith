@@ -833,6 +833,13 @@ static inline void write_sr(cpu_t *restrict cpu, uint16_t sr) {
         if ((bool)new_s != old_s) {
             g_active_read = new_s ? g_supervisor_read : g_user_read;
             g_active_write = new_s ? g_supervisor_write : g_user_write;
+            // On supervisor→user, snapshot the CRP that the kernel just
+            // loaded for the about-to-run user process.  A/UX swaps CRP
+            // per context switch, so this pins the most recently
+            // scheduled user process (typically the foreground MAE app)
+            // for `set-mouse --aux` to translate Toolbox globals into.
+            if (!new_s && g_mmu)
+                g_last_user_crp = g_mmu->crp;
         }
     } else {
         // 68000: no M bit, no T0

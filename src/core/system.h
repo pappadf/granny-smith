@@ -129,6 +129,9 @@ debug_t *system_debug(void);
 // System-level CPU accessor: returns the current CPU object
 cpu_t *system_cpu(void);
 
+// System-level RTC accessor: returns the current RTC object (or NULL)
+rtc_t *system_rtc(void);
+
 // System-level framebuffer accessor: returns pointer to video RAM buffer
 uint8_t *system_framebuffer(void);
 

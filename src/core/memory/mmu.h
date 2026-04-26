@@ -145,6 +145,15 @@ bool mmu_check_tt(mmu_state_t *mmu, uint32_t addr, bool write, bool supervisor);
 // Returns the physical address, or logical_addr if translation fails.
 uint32_t mmu_translate_debug(mmu_state_t *mmu, uint32_t logical_addr, bool supervisor);
 
+// Translate `logical_addr` against an arbitrary CRP root rather than the
+// current `mmu->crp`.  Used by the test harness to reach a known
+// user-process address space (e.g. MAE under A/UX) regardless of which
+// process is currently scheduled.  Returns true on success and writes the
+// physical address to `*pa_out`; false on translation failure or if
+// `crp_root == 0`.  Side-effect-free: temporarily swaps and restores
+// `mmu->crp` around the walk; SoA tables are not touched.
+bool mmu_translate_with_crp(mmu_state_t *mmu, uint32_t logical_addr, uint64_t crp_root, uint32_t *pa_out);
+
 // Physical memory read for debug commands (P: prefix).
 // Bypasses MMU translation and reads directly from physical RAM/ROM/VRAM.
 uint8_t mmu_read_physical_uint8(mmu_state_t *mmu, uint32_t phys_addr);
@@ -172,5 +181,14 @@ void mmu_register_vrom(mmu_state_t *mmu, uint8_t *vrom, uint32_t phys_base, uint
 
 // Global MMU state pointer (set by machine init, NULL for 68000 machines)
 extern struct mmu_state *g_mmu;
+
+// Last CRP observed while the CPU was in user mode.  Snapshotted by the
+// supervisor→user transition in cpu_internal.h's set_sr path.  A/UX swaps
+// CRP per process, so this value pins the user process that was most
+// recently on the CPU — used by `set-mouse --aux` to translate MAE
+// Toolbox globals (MTemp/RawMouse/Mouse) into MAE's address space even
+// when the CPU is currently in supervisor mode.  0 if no user-mode entry
+// has been observed yet.
+extern uint64_t g_last_user_crp;
 
 #endif // MMU_H
