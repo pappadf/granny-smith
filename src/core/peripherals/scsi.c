@@ -404,7 +404,10 @@ static void run_cmd(scsi_t *scsi) {
     case CMD_INQUIRY:
 
         assert(scsi->buf.data != NULL);
-        assert(scsi->devices[target].image != NULL);
+        // INQUIRY must respond regardless of media presence — per SCSI-2 the
+        // response is built from the static vendor/product/revision fields and
+        // device type, not from the backing image.  Asserting on image != NULL
+        // would crash any future probe of a present-but-empty target.
 
         // [6]: byte 4 is the "allocation length"
         scsi->cmd.tl = scsi->buf.data[4];
@@ -519,8 +522,10 @@ static void run_cmd(scsi_t *scsi) {
 
     case CMD_READ_CAPACITY: {
 
-        assert((scsi->buf.data[8] & 1) == 0); // PMI = 0
-
+        // PMI=1 (byte 8 bit 0) asks for the last block before a performance
+        // discontinuity; for a flat disk image that's the device's last LBA,
+        // identical to PMI=0.  Don't assert on guest-supplied PMI — a
+        // well-formed initiator may legitimately set it.
         image_t *image = scsi->devices[target].image;
         uint16_t blk_sz = scsi->devices[target].block_size;
         size_t sz = disk_size(image) / blk_sz;
