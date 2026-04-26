@@ -190,9 +190,13 @@ static void kbd_enqueue(adb_t *adb, uint8_t byte) {
     adb->kbd_queue.head = head;
 }
 
-// Dequeues one byte from the keyboard ring buffer (caller must check not empty)
+// Dequeues one byte from the keyboard ring buffer; returns KBD_NO_KEY ($FF)
+// when empty.  No assert: a guest that polls the keyboard register without
+// first checking host availability would otherwise crash the emulator (same
+// assert-on-guest-action class as ef003fe in scc.c).
 static uint8_t kbd_dequeue(adb_t *adb) {
-    assert(adb->kbd_queue.tail != adb->kbd_queue.head);
+    if (adb->kbd_queue.tail == adb->kbd_queue.head)
+        return KBD_NO_KEY;
     uint8_t byte = adb->kbd_queue.buf[adb->kbd_queue.tail];
     adb->kbd_queue.tail++;
     if (adb->kbd_queue.tail == KBD_QUEUE_SIZE)
