@@ -328,9 +328,18 @@
     UINT(32) res;                                                                                                      \
     GENERIC_SUB(AN, (uint32_t)(int32_t)(INT(bits))src, res);
 
+// CMPM (Ay)+,(Ax)+: both reads post-increment their An, so a fault on either
+// access leaks the increment(s) into the Format-$B retry.  Snapshot both Ay
+// and Ax up-front and restore on bus error so the retry restarts clean.
 #define CMPM_AY_AX(bits)                                                                                               \
+    uint32_t _cmpm_ay_save = cpu->a[EA_REG];                                                                           \
+    uint32_t _cmpm_ax_save = cpu->a[(opcode >> 9) & 7];                                                                \
     LOAD_AN_POSTINC(bits, src, EA_REG);                                                                                \
     LOAD_AN_POSTINC(bits, dst, opcode >> 9 & 7);                                                                       \
+    if (__builtin_expect(g_bus_error_pending, 0)) {                                                                    \
+        cpu->a[EA_REG] = _cmpm_ay_save;                                                                                \
+        cpu->a[(opcode >> 9) & 7] = _cmpm_ax_save;                                                                     \
+    }                                                                                                                  \
     UINT(bits) res;                                                                                                    \
     GENERIC_SUB(dst, src, res);
 
