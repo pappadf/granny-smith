@@ -105,6 +105,8 @@ uint32_t cpu_get_usp(cpu_t *restrict cpu);
 
 uint16_t cpu_get_sr(cpu_t *restrict cpu);
 
+bool cpu_is_supervisor(cpu_t *restrict cpu);
+
 void cpu_set_an(cpu_t *restrict cpu, int n, uint32_t value);
 
 void cpu_set_dn(cpu_t *restrict cpu, int n, uint32_t value);

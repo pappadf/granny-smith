@@ -3522,6 +3522,14 @@ static void info_mmu_map_impl(struct cmd_context *ctx, uint32_t start, uint32_t 
     uint32_t page_size = 1u << PAGE_SHIFT;
     uint16_t saved_mmusr = g_mmu->mmusr;
 
+    // Walk via the current CPU mode rather than hardcoded supervisor so that
+    // under TC.SRE=1 a user-space `info mmu-map` from a user-mode breakpoint
+    // shows the user mappings, not the kernel's identity-mapped supervisor
+    // view.  Use `info mmu-walk` (already SRE-aware) to inspect the other
+    // side from the current mode.
+    cpu_t *cpu = system_cpu();
+    bool supervisor = cpu ? (cpu->supervisor != 0) : true;
+
     // Run state: when in_run, (run_start, run_phys_start, run_flags) describe
     // the contiguous mapping we're currently accumulating.
     bool in_run = false;
@@ -3545,15 +3553,15 @@ static void info_mmu_map_impl(struct cmd_context *ctx, uint32_t start, uint32_t 
         bool tt = false;
         uint32_t phys = logical;
         uint16_t flags = 0;
-        if (mmu_check_tt(g_mmu, logical, false, true)) {
+        if (mmu_check_tt(g_mmu, logical, false, supervisor)) {
             mapped = true;
             tt = true;
             phys = logical;
         } else {
-            uint16_t mmusr = mmu_test_address(g_mmu, logical, false, true, NULL);
+            uint16_t mmusr = mmu_test_address(g_mmu, logical, false, supervisor, NULL);
             if (!(mmusr & MMUSR_I)) {
                 mapped = true;
-                phys = mmu_translate_debug(g_mmu, logical, true);
+                phys = mmu_translate_debug(g_mmu, logical, supervisor);
                 flags = mmusr & (MMUSR_W | MMUSR_S | MMUSR_M);
             }
         }

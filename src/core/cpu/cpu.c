@@ -127,6 +127,11 @@ void cpu_set_sr(cpu_t *restrict cpu, uint16_t sr) {
     write_sr(cpu, sr);
 }
 
+// Whether the CPU is currently in supervisor mode.
+bool cpu_is_supervisor(cpu_t *restrict cpu) {
+    return cpu->supervisor != 0;
+}
+
 // === Lifecycle ===
 
 // Create and initialize a CPU instance for the specified model.

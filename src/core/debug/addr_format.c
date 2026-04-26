@@ -146,16 +146,23 @@ uint32_t debug_translate_address(uint32_t logical_addr, bool *is_identity, bool 
     if (!g_mmu || !g_mmu->enabled)
         return logical_addr;
 
+    // Translate via the current CPU mode rather than hardcoded supervisor so
+    // that under TC.SRE=1 (separate user/supervisor roots) addresses dumped
+    // while user code is running resolve through CRP, not SRP.  Also affects
+    // breakpoint physical-page matching via the debug_check_pc_break caller.
+    cpu_t *cpu = system_cpu();
+    bool supervisor = cpu ? cpu_is_supervisor(cpu) : true;
+
     // Check transparent translation first
-    if (mmu_check_tt(g_mmu, logical_addr, false, true)) {
+    if (mmu_check_tt(g_mmu, logical_addr, false, supervisor)) {
         if (tt_hit)
             *tt_hit = true;
         // TT = identity mapping
         return logical_addr;
     }
 
-    // Perform table walk (read-only, supervisor mode for debug access)
-    uint16_t mmusr = mmu_test_address(g_mmu, logical_addr, false, true, NULL);
+    // Perform table walk (read-only)
+    uint16_t mmusr = mmu_test_address(g_mmu, logical_addr, false, supervisor, NULL);
 
     if (mmusr & MMUSR_I) {
         // Invalid descriptor
@@ -176,7 +183,7 @@ uint32_t debug_translate_address(uint32_t logical_addr, bool *is_identity, bool 
     // indirectly by reading the physical_addr from a walk result.
     // For now, re-walk to extract physical address.
     // Note: mmu_table_walk is static in mmu.c, so we use mmu_translate_debug.
-    uint32_t phys_addr = mmu_translate_debug(g_mmu, logical_addr, true);
+    uint32_t phys_addr = mmu_translate_debug(g_mmu, logical_addr, supervisor);
 
     if (is_identity)
         *is_identity = (phys_addr == logical_addr);
