@@ -441,8 +441,8 @@ static void daemon_handle_client(int client_fd) {
 
             // Emit current instruction as a status line (IMP-308)
             if (system_is_initialized() && debug_prompt_enabled()) {
-                char disasm_buf[100];
-                debugger_disasm_pc(disasm_buf);
+                char disasm_buf[160];
+                debugger_disasm_pc(disasm_buf, sizeof(disasm_buf));
                 if (disasm_buf[0] != '\0')
                     printf("%s\n", disasm_buf);
             }
@@ -628,8 +628,8 @@ void print_prompt(void) {
     if (g_daemon_mode)
         return;
     if (system_is_initialized()) {
-        char disasm_buf[100];
-        debugger_disasm_pc(disasm_buf);
+        char disasm_buf[160];
+        debugger_disasm_pc(disasm_buf, sizeof(disasm_buf));
         if (disasm_buf[0] != '\0')
             printf("%s > ", disasm_buf);
         else

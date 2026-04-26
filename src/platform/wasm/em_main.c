@@ -391,7 +391,8 @@ static void build_prompt_text(char *dest, size_t dest_len) {
     dest[0] = '\0';
     if (!system_is_initialized())
         return;
-    debugger_disasm_pc(dest);
+    // Reserve 3 bytes for " > " suffix + 1 for terminator.
+    debugger_disasm_pc(dest, dest_len > 3 ? dest_len - 3 : 1);
     size_t used = strnlen(dest, dest_len - 1);
     if (used >= dest_len - 3)
         used = dest_len - 4;

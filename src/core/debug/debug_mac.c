@@ -509,8 +509,8 @@ void debug_mac_print_target_backtrace(void) {
 
     // Frame-walk using A6 as frame pointer, printing return addresses
     uint32_t pc = cpu_get_pc(cpu);
-    char linebuf[128];
-    debugger_disasm(linebuf, pc);
+    char linebuf[160];
+    debugger_disasm(linebuf, sizeof(linebuf), pc);
     printf("#0  %s\n", linebuf);
 
     uint32_t a6 = cpu_get_an(cpu, 6);
@@ -526,7 +526,7 @@ void debug_mac_print_target_backtrace(void) {
         ret = read32(a6 + 4);
         if (ret == 0 || ret > g_address_mask)
             break;
-        debugger_disasm(linebuf, ret);
+        debugger_disasm(linebuf, sizeof(linebuf), ret);
         printf("#%d  %s\n", depth, linebuf);
         if (prev_a6 == a6)
             break; // prevent loops

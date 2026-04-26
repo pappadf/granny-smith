@@ -12,6 +12,7 @@
 #include "common.h"
 
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 
 // === Forward Declarations ===
@@ -95,9 +96,9 @@ breakpoint_t *set_breakpoint(debug_t *debug, uint32_t addr, addr_space_t space);
 
 bool delete_breakpoint(debug_t *debug, uint32_t addr, addr_space_t space);
 
-void debugger_disasm_pc(char *buf);
+void debugger_disasm_pc(char *buf, size_t buf_size);
 
-int debugger_disasm(char *buf, uint32_t addr);
+int debugger_disasm(char *buf, size_t buf_size, uint32_t addr);
 
 int debug_break_and_trace(void);
 

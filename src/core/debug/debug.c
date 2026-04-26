@@ -561,7 +561,7 @@ static int disasm(uint16_t *instr, char *mnemonic, char *operands) {
 }
 
 // Disassemble instruction at addr, write to buf, return instruction length in words
-int debugger_disasm(char *buf, uint32_t addr) {
+int debugger_disasm(char *buf, size_t buf_size, uint32_t addr) {
     uint16_t words[16];
     char mnemonic[32], operands[80];
 
@@ -571,22 +571,30 @@ int debugger_disasm(char *buf, uint32_t addr) {
 
     int n = disasm(words, mnemonic, operands);
 
-    // Format with address prefix
+    // Format with address prefix.  Use snprintf to bound output: addr_str is
+    // up to 39 chars, mnemonic up to 31, operands up to 79 — worst case
+    // ~160 bytes, larger than the 100-byte caller buffers historically used.
+    // dc19792 enlarged the inner operands buffer but missed callers; this
+    // bounds the final write so a complex full-extension-word instruction
+    // can't overflow.
     char addr_str[40];
     format_address_pair(addr_str, sizeof(addr_str), addr);
-    sprintf(buf, "%s  %04x  %-10s%-12s", addr_str, (int)words[0], mnemonic, operands);
+    if (buf_size > 0)
+        snprintf(buf, buf_size, "%s  %04x  %-10s%-12s", addr_str, (int)words[0], mnemonic, operands);
 
     return n;
 }
 
-// Disassemble instruction at current PC, write to buf
-void debugger_disasm_pc(char *buf) {
+// Disassemble instruction at current PC, write to buf (bounded by buf_size)
+void debugger_disasm_pc(char *buf, size_t buf_size) {
+    if (!buf || buf_size == 0)
+        return;
     cpu_t *cpu = system_cpu();
     if (!cpu) {
         buf[0] = '\0';
         return;
     }
-    debugger_disasm(buf, cpu_get_pc(cpu));
+    debugger_disasm(buf, buf_size, cpu_get_pc(cpu));
 }
 
 static void cmd_d(uint32_t n) {
@@ -598,8 +606,8 @@ static void cmd_d(uint32_t n) {
     debug_t *debug = system_debug();
 
     for (unsigned int i = 0; i < n; i++) {
-        char buf[100];
-        pc += 2 * debugger_disasm(buf, pc);
+        char buf[160];
+        pc += 2 * debugger_disasm(buf, sizeof(buf), pc);
         printf("%s\n", buf);
     }
 }
@@ -979,8 +987,8 @@ static int trace_output_entries(debug_t *debug, FILE *fp) {
 
         if (entry->type == TRACE_ENTRY_PC) {
             // Disassemble and output the instruction
-            char buf[100];
-            debugger_disasm(buf, entry->value);
+            char buf[160];
+            debugger_disasm(buf, sizeof(buf), entry->value);
             if (fp) {
                 fprintf(fp, "%s\n", buf);
             } else {
@@ -1089,8 +1097,8 @@ static uint64_t cmd_trace(int argc, char *argv[]) {
 
                 int count = 0;
                 for (int i = debug->trace_tail; i != debug->trace_head; i = (i + 1) % debug->trace_buffer_size) {
-                    char buf[100];
-                    debugger_disasm(buf, debug->trace_buffer[i]);
+                    char buf[160];
+                    debugger_disasm(buf, sizeof(buf), debug->trace_buffer[i]);
                     fprintf(fp, "%s\n", buf);
                     count++;
                 }
@@ -1099,8 +1107,8 @@ static uint64_t cmd_trace(int argc, char *argv[]) {
                 printf("Trace saved to '%s' (%d entries)\n", filename, count);
             } else {
                 for (int i = debug->trace_tail; i != debug->trace_head; i = (i + 1) % debug->trace_buffer_size) {
-                    char buf[100];
-                    debugger_disasm(buf, debug->trace_buffer[i]);
+                    char buf[160];
+                    debugger_disasm(buf, sizeof(buf), debug->trace_buffer[i]);
                     printf("%s\n", buf);
                 }
             }
@@ -2901,8 +2909,8 @@ static void cmd_disasm_handler(struct cmd_context *ctx, struct cmd_result *res) 
         count = 16;
 
     for (int i = 0; i < count; i++) {
-        char buf[100];
-        int instr_len = debugger_disasm(buf, addr);
+        char buf[160];
+        int instr_len = debugger_disasm(buf, sizeof(buf), addr);
         cmd_printf(ctx, "%s\n", buf);
         addr += 2 * instr_len;
     }
@@ -2961,8 +2969,8 @@ static void cmd_next_handler(struct cmd_context *ctx, struct cmd_result *res) {
     }
 
     uint32_t pc = cpu_get_pc(cpu);
-    char buf[100];
-    int instr_words = debugger_disasm(buf, pc);
+    char buf[160];
+    int instr_words = debugger_disasm(buf, sizeof(buf), pc);
 
     uint16_t opcode = memory_read_uint16(pc);
     int is_call = 0;
@@ -4437,8 +4445,8 @@ void debug_print_target_trace(void) {
 
     int i;
     for (i = dbg->trace_tail; i != dbg->trace_head; i = (i + 1) % dbg->trace_buffer_size) {
-        char buf[128];
-        debugger_disasm(buf, dbg->trace_buffer[i]);
+        char buf[160];
+        debugger_disasm(buf, sizeof(buf), dbg->trace_buffer[i]);
         printf("%s\n", buf);
     }
 }
