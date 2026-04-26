@@ -1546,16 +1546,24 @@ static inline uint32_t bf_insert_reg(uint32_t dst, int32_t offset, uint32_t w, u
         STORE_DN(8, opcode >> 9 & 7, ((_src >> 4) & 0xF0) | ((_src) & 0x0F));                                          \
     })
 
-// PACK -(AY),-(AX),#adj: from memory
+// PACK -(AY),-(AX),#adj: from memory.  Each predec mutates An before the
+// access that may fault; snapshot both An and roll back on bus error so the
+// Format-$B retry restarts with pre-instruction values.
 #define OP_PACK_AY_AX                                                                                                  \
     OP({                                                                                                               \
         uint16_t _adj = FETCH16();                                                                                     \
+        int _dx = opcode >> 9 & 7;                                                                                     \
+        uint32_t _pack_ay_save = cpu->a[EA_REG];                                                                       \
+        uint32_t _pack_ax_save = cpu->a[_dx];                                                                          \
         A(EA_REG) -= 2;                                                                                                \
         uint16_t _src = READ16(A(EA_REG));                                                                             \
         _src = (uint16_t)(_src + _adj);                                                                                \
-        int _dx = opcode >> 9 & 7;                                                                                     \
         A(_dx) -= (_dx == 7) ? 2 : 1; /* A7 byte predec keeps stack word-aligned */                                    \
         WRITE8(A(_dx), (uint8_t)(((_src >> 4) & 0xF0) | ((_src) & 0x0F)));                                             \
+        if (__builtin_expect(g_bus_error_pending, 0)) {                                                                \
+            cpu->a[EA_REG] = _pack_ay_save;                                                                            \
+            cpu->a[_dx] = _pack_ax_save;                                                                               \
+        }                                                                                                              \
     })
 
 // UNPK DY,DX,#adj: separate two BCD nibbles, add adj
@@ -1567,16 +1575,24 @@ static inline uint32_t bf_insert_reg(uint32_t dst, int32_t offset, uint32_t w, u
         STORE_DN(16, opcode >> 9 & 7, _res);                                                                           \
     })
 
-// UNPK -(AY),-(AX),#adj: from/to memory
+// UNPK -(AY),-(AX),#adj: from/to memory.  Same restart-safety concern as
+// OP_PACK_AY_AX — snapshot both An and roll back on bus error.
 #define OP_UNPK_AY_AX                                                                                                  \
     OP({                                                                                                               \
         uint16_t _adj = FETCH16();                                                                                     \
         int _sy = EA_REG;                                                                                              \
+        int _dx = opcode >> 9 & 7;                                                                                     \
+        uint32_t _unpk_ay_save = cpu->a[_sy];                                                                          \
+        uint32_t _unpk_ax_save = cpu->a[_dx];                                                                          \
         A(_sy) -= (_sy == 7) ? 2 : 1; /* A7 byte predec keeps stack word-aligned */                                    \
         uint8_t _b = READ8(A(_sy));                                                                                    \
         uint16_t _res = (uint16_t)((((_b >> 4) & 0xF) << 8) | ((_b) & 0xF)) + _adj;                                    \
-        A(opcode >> 9 & 7) -= 2;                                                                                       \
-        WRITE16(A(opcode >> 9 & 7), _res);                                                                             \
+        A(_dx) -= 2;                                                                                                   \
+        WRITE16(A(_dx), _res);                                                                                         \
+        if (__builtin_expect(g_bus_error_pending, 0)) {                                                                \
+            cpu->a[_sy] = _unpk_ay_save;                                                                               \
+            cpu->a[_dx] = _unpk_ax_save;                                                                               \
+        }                                                                                                              \
     })
 
 // --- MOVES: Move with Alternate Function Code ---
