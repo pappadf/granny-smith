@@ -270,9 +270,14 @@ logpoint_t *set_memory_logpoint(debug_t *debug, uint32_t addr, uint32_t end_addr
         memory_logpoint_install(start_page, end_page);
         // Also watch the physical pages the current MMU mapping points at —
         // catches aliases (same physical reached via different logical addrs).
+        // Translate via the current CPU mode rather than hardcoded supervisor
+        // so that under TC.SRE=1 (separate user/supervisor roots) a logpoint
+        // installed while user code is running watches the user mapping.
         if (g_mmu && g_mmu->enabled) {
-            uint32_t phys_start = mmu_translate_debug(g_mmu, addr, true) >> PAGE_SHIFT;
-            uint32_t phys_end = mmu_translate_debug(g_mmu, end_addr, true) >> PAGE_SHIFT;
+            cpu_t *cpu = system_cpu();
+            bool supervisor = cpu ? (cpu->supervisor != 0) : true;
+            uint32_t phys_start = mmu_translate_debug(g_mmu, addr, supervisor) >> PAGE_SHIFT;
+            uint32_t phys_end = mmu_translate_debug(g_mmu, end_addr, supervisor) >> PAGE_SHIFT;
             if (phys_end < phys_start) {
                 uint32_t tmp = phys_start;
                 phys_start = phys_end;
@@ -2133,17 +2138,28 @@ static uint64_t cmd_translate(int argc, char *argv[]) {
         // To translate back we rely on mmu_translate_debug since SoA lookups
         // reveal only host pointers.  Walk the address space in page strides
         // using mmu_translate_debug — slower but correct.
-        for (int p = 0; p < g_page_count; p++) {
-            uint32_t logical_page = (uint32_t)p << PAGE_SHIFT;
-            uint32_t phys = mmu_translate_debug(g_mmu, logical_page, true);
-            if ((phys & ~(uint32_t)PAGE_MASK) == target_page) {
-                printf("  L:$%08X -> P:$%08X\n", logical_page, phys);
-                if (++found >= 64) {
-                    printf("  ... (stopped at 64 matches)\n");
-                    break;
+        // Under TC.SRE=1 the user and supervisor sides have separate roots;
+        // scan both so user mappings aren't invisible.  When SRE=0 the two
+        // sides share CRP, so a single pass suffices.
+        bool sre_split = TC_SRE(g_mmu->tc) != 0;
+        for (int side = 0; side < (sre_split ? 2 : 1); side++) {
+            bool supervisor = (side == 0);
+            for (int p = 0; p < g_page_count; p++) {
+                uint32_t logical_page = (uint32_t)p << PAGE_SHIFT;
+                uint32_t phys = mmu_translate_debug(g_mmu, logical_page, supervisor);
+                if ((phys & ~(uint32_t)PAGE_MASK) == target_page) {
+                    if (sre_split)
+                        printf("  L:$%08X -> P:$%08X (%s)\n", logical_page, phys, supervisor ? "S" : "U");
+                    else
+                        printf("  L:$%08X -> P:$%08X\n", logical_page, phys);
+                    if (++found >= 64) {
+                        printf("  ... (stopped at 64 matches)\n");
+                        goto reverse_done;
+                    }
                 }
             }
         }
+    reverse_done:;
         if (found == 0)
             printf("No logical page maps to P:$%08X\n", addr);
         return 0;
