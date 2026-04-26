@@ -665,3 +665,39 @@ uint32_t mmu_read_physical_uint32(mmu_state_t *mmu, uint32_t phys_addr) {
         return 0;
     return phys_read32(mmu, phys_addr);
 }
+
+// Write helpers: literal physical writes, bypassing the CPU SoA / TLB.  Used
+// by debug commands (`set-phys`) and by harness code that needs to poke a
+// kernel-allocated structure regardless of which CPU mode happens to be
+// active.  Only RAM and VRAM are writable; ROM/VROM regions silently no-op
+// (matching the read helpers' behaviour for unmapped pages).
+//
+// Returns true on success (physical address mapped to writable host memory),
+// false otherwise.
+bool mmu_write_physical_uint8(mmu_state_t *mmu, uint32_t phys_addr, uint8_t value) {
+    if (!mmu)
+        return false;
+    uint8_t *host = phys_to_host(mmu, phys_addr);
+    if (!host)
+        return false;
+    // Reject ROM/VROM (they're mapped via phys_to_host but not writable).
+    if (mmu->physical_rom && phys_addr >= mmu->rom_phys_base && phys_addr < mmu->rom_region_end)
+        return false;
+    if (mmu->physical_vrom && phys_addr >= mmu->vrom_phys_base &&
+        phys_addr < mmu->vrom_phys_base + mmu->physical_vrom_size)
+        return false;
+    *host = value;
+    return true;
+}
+
+bool mmu_write_physical_uint16(mmu_state_t *mmu, uint32_t phys_addr, uint16_t value) {
+    if (!mmu_write_physical_uint8(mmu, phys_addr, (uint8_t)(value >> 8)))
+        return false;
+    return mmu_write_physical_uint8(mmu, phys_addr + 1, (uint8_t)value);
+}
+
+bool mmu_write_physical_uint32(mmu_state_t *mmu, uint32_t phys_addr, uint32_t value) {
+    if (!mmu_write_physical_uint16(mmu, phys_addr, (uint16_t)(value >> 16)))
+        return false;
+    return mmu_write_physical_uint16(mmu, phys_addr + 2, (uint16_t)value);
+}

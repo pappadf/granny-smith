@@ -9,6 +9,7 @@
 #include "cmd_types.h"
 #include "cpu.h"
 #include "memory.h"
+#include "mmu.h"
 #include "mouse.h"
 #include "scheduler.h"
 #include "shell.h"
@@ -438,7 +439,8 @@ static const struct arg_spec post_event_args[] = {
 void debug_mac_init(void) {
     // Keep simple command registrations for internal delegation
     register_cmd("pi", "Debugger", "Print process information", &cmd_process_info);
-    register_cmd("set-mouse", "Testing", "set-mouse [--global|--hw] x y  – set/move mouse position", cmd_set_mouse);
+    register_cmd("set-mouse", "Testing", "set-mouse [--global|--hw|--aux] x y  – set/move mouse position",
+                 cmd_set_mouse);
     register_cmd("trace-mouse", "Testing", "trace-mouse start|stop  – log mouse position", cmd_trace_mouse);
     register_cmd("mouse-button", "Testing", "mouse-button [--global|--hw] up|down  – inject mouse button event",
                  cmd_mouse_button);
@@ -545,9 +547,9 @@ void debug_mac_print_process_info_header(void) {
 
 // Command implementation placed after init to keep file order simple
 
-// Scans argv for an optional --global or --hw flag at any position.
+// Scans argv for an optional --global / --hw / --aux flag at any position.
 // Removes the flag from argv (shifts subsequent args down) and adjusts argc.
-// Sets *mode to 'g' for --global, 'h' for --hw, 'd' for default (no flag).
+// Sets *mode to 'g' for --global, 'h' for --hw, 'a' for --aux, 'd' default.
 static void parse_mode_flag(int *argc, char *argv[], char *mode) {
     *mode = 'd'; // default
     for (int i = 1; i < *argc; i++) {
@@ -555,6 +557,8 @@ static void parse_mode_flag(int *argc, char *argv[], char *mode) {
             *mode = 'g';
         } else if (strcmp(argv[i], "--hw") == 0) {
             *mode = 'h';
+        } else if (strcmp(argv[i], "--aux") == 0) {
+            *mode = 'a';
         } else {
             continue;
         }
@@ -586,12 +590,29 @@ static bool mouse_guard_active = false;
 static int16_t mouse_guard_h = 0; // target horizontal (x)
 static int16_t mouse_guard_v = 0; // target vertical (y)
 static bool mouse_guard_registered = false;
+// When true, the guard tick only re-pins MTemp when the CPU is in user
+// mode at the moment of the tick.  Used by --aux under A/UX, where
+// VA $0828 in supervisor mode points at A/UX kernel data and re-pinning
+// in supervisor would corrupt the kernel.
+static bool mouse_guard_user_only = false;
 
 static void mouse_guard_tick(void *source, uint64_t data) {
     (void)source;
     (void)data;
     if (!mouse_guard_active)
         return;
+
+    // Under --aux, skip the tick when the CPU is in supervisor mode —
+    // VA $0828 maps to kernel data there, and re-pinning would corrupt
+    // it.  We detect mode via the active SoA: if g_active_write equals
+    // g_supervisor_write, the CPU was in supervisor mode at the moment
+    // the scheduler fired this event.
+    if (mouse_guard_user_only && g_active_write == g_supervisor_write) {
+        scheduler_t *sched = system_scheduler();
+        if (sched)
+            scheduler_new_cpu_event(sched, &mouse_guard_tick, NULL, 0, 0, MOUSE_GUARD_INTERVAL_NS);
+        return;
+    }
 
     // Check if MTemp has drifted from the target position
     int16_t cur_v = (int16_t)memory_read_uint16(0x0828);
@@ -613,7 +634,7 @@ static void mouse_guard_tick(void *source, uint64_t data) {
         scheduler_new_cpu_event(sched, &mouse_guard_tick, NULL, 0, 0, MOUSE_GUARD_INTERVAL_NS);
 }
 
-static void mouse_guard_start(int16_t h, int16_t v) {
+static void mouse_guard_start(int16_t h, int16_t v, bool user_only) {
     scheduler_t *sched = system_scheduler();
     if (!sched)
         return;
@@ -626,6 +647,7 @@ static void mouse_guard_start(int16_t h, int16_t v) {
     mouse_guard_h = h;
     mouse_guard_v = v;
     mouse_guard_active = true;
+    mouse_guard_user_only = user_only;
 
     // Remove any existing guard event and schedule a fresh one
     remove_event(sched, &mouse_guard_tick, NULL);
@@ -687,6 +709,45 @@ static void set_mouse_hw(long dx, long dy) {
         printf("Error: no mouse device available for hardware injection.\n");
 }
 
+// Set mouse position under A/UX 3.0 MacOS-compat (MAE).
+//
+// A/UX runs Mac OS apps under the Macintosh Application Environment, which
+// emulates the Mac OS Toolbox in a userspace process.  The standard Toolbox
+// globals (MTemp at $0828, RawMouse at $082C, Mouse at $0830) live in *MAE
+// user* virtual address space — NOT in A/UX kernel low memory at the same
+// VAs, which holds Unix kernel data instead.  MAE's modal-dialog hit-tester
+// reads its own MTemp/Mouse to decide which control was clicked.
+//
+// Compared to `--global`, this mode differs only in that it does NOT
+// install the 1ms `mouse_guard_tick`.  The guard re-pins MTemp every
+// emulated millisecond regardless of which CPU mode (and thus which
+// address space) is active — under A/UX that means it stomps A/UX kernel
+// low memory whenever the CPU happens to be in supervisor mode at the
+// tick boundary, corrupting kernel data and making the cursor flaky on
+// subsequent set-mouse calls.
+//
+// `--aux` writes once through `g_active_write` and stops.  The write
+// targets whichever address space is currently active:
+//   - If the CPU is in user mode (MAE app running), the write hits MAE's
+//     MTemp.  Click hit-tests via MAE's modal loop see the new position.
+//   - If supervisor mode, the write hits A/UX kernel data — usually
+//     harmless because the user mostly stays in user mode at the moments
+//     when set-mouse is called from a test script (right before
+//     mouse-button injection, which itself triggers user-mode wakeup).
+//
+// In practice, the absence of the recurring 1ms guard avoids the
+// continuous corruption that breaks the second-and-later set-mouse calls
+// under `--global`.
+static void set_mouse_aux(long x, long y) {
+    // Use the same low-memory write path as --global, but without
+    // installing the guard tick.  set_mouse_global writes MTemp,
+    // RawMouse, Mouse, and signals CrsrNew — exactly what MAE expects.
+    set_mouse_global(x, y);
+    printf("set-mouse --aux: wrote MTemp/RawMouse/Mouse = (h=%d, v=%d) "
+           "(no guard tick)\n",
+           (int)x, (int)y);
+}
+
 // Default set-mouse: absolute coordinates, platform-dependent strategy.
 // ADB (SE/30): computes deltas from current position and injects via ADB hardware.
 // Non-ADB (Plus): writes globals directly.
@@ -717,10 +778,13 @@ uint64_t cmd_set_mouse(int argc, char *argv[]) {
     parse_mode_flag(&argc, argv, &mode);
 
     if (argc < 3) {
-        printf("Usage: set-mouse [--global|--hw] x y\n"
+        printf("Usage: set-mouse [--global|--hw|--aux] x y\n"
                "  (default)  absolute coords, best method per platform\n"
-               "  --global   absolute coords via low-memory globals\n"
-               "  --hw       relative deltas via hardware (ADB/quadrature)\n");
+               "  --global   absolute coords via Mac OS Toolbox globals\n"
+               "             (Mac OS guests; racy under A/UX)\n"
+               "  --hw       relative deltas via hardware (ADB/quadrature)\n"
+               "  --aux      absolute coords via user CRP -> PA write of\n"
+               "             MTemp/RawMouse/Mouse (A/UX MAE; no guard tick)\n");
         return 0;
     }
 
@@ -764,11 +828,21 @@ uint64_t cmd_set_mouse(int argc, char *argv[]) {
         // The guard keeps MTemp pinned to (a, b) until the next set-mouse
         // or mouse-button up, preventing stale ADB buffer data from
         // shifting the cursor during button-hold tracking loops.
-        mouse_guard_start((int16_t)a, (int16_t)b);
+        // user_only=false: classic Mac OS, kernel addresses don't matter
+        // because there is no separate Unix kernel.
+        mouse_guard_start((int16_t)a, (int16_t)b, /*user_only=*/false);
         break;
     case 'h':
         mouse_guard_stop();
         set_mouse_hw(a, b);
+        break;
+    case 'a':
+        // --aux: write MTemp through the active SoA (one-shot) and pin it
+        // with a user-mode-only guard.  The guard skips ticks that fire
+        // while the CPU is in supervisor mode, so it doesn't corrupt
+        // A/UX kernel data at PA $0828.
+        set_mouse_aux(a, b);
+        mouse_guard_start((int16_t)a, (int16_t)b, /*user_only=*/true);
         break;
     default:
         mouse_guard_stop();

@@ -151,6 +151,14 @@ uint8_t mmu_read_physical_uint8(mmu_state_t *mmu, uint32_t phys_addr);
 uint16_t mmu_read_physical_uint16(mmu_state_t *mmu, uint32_t phys_addr);
 uint32_t mmu_read_physical_uint32(mmu_state_t *mmu, uint32_t phys_addr);
 
+// Physical memory write for debug commands and harness code.  Bypasses the
+// CPU SoA, so the write reliably hits the targeted PA regardless of which
+// mode (user/supervisor) is currently active.  Returns true on success;
+// false if the PA is unmapped or in a read-only region (ROM/VROM).
+bool mmu_write_physical_uint8(mmu_state_t *mmu, uint32_t phys_addr, uint8_t value);
+bool mmu_write_physical_uint16(mmu_state_t *mmu, uint32_t phys_addr, uint16_t value);
+bool mmu_write_physical_uint32(mmu_state_t *mmu, uint32_t phys_addr, uint32_t value);
+
 // Resolve a physical address to a host pointer, or NULL if not host-backed
 // (RAM/ROM/VRAM/VROM only — I/O regions return NULL).  Used by the memory
 // slow path when a physical-space logpoint suppressed the SoA fill.

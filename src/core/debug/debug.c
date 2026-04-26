@@ -1351,11 +1351,40 @@ static uint64_t cmd_set(int argc, char *argv[]) {
         *size_spec = '\0';
         size_spec++;
 
-        // Parse the address from target (supports $, 0x, and bare hex)
+        // Parse the address from target (supports $, 0x, and bare hex,
+        // plus L: / P: prefixes for logical/physical address space).
         uint32_t addr;
         addr_space_t space;
         if (!parse_address(target, &addr, &space)) {
             printf("Invalid address: %s\n", target);
+            return 0;
+        }
+
+        // Physical writes go through mmu_write_physical_*, which bypasses
+        // the CPU SoA so the write reliably hits the targeted PA regardless
+        // of whichever mode (user/supervisor) is currently active.  This is
+        // what you want when poking a kernel-allocated structure that's
+        // only mapped in one address space.
+        if (space == ADDR_PHYSICAL) {
+            bool ok = false;
+            if (strcmp(size_spec, "B") == 0) {
+                ok = mmu_write_physical_uint8(g_mmu, addr, (uint8_t)value);
+                if (ok)
+                    printf("P:[$%08X].b = $%02X\n", addr, (uint8_t)value);
+            } else if (strcmp(size_spec, "W") == 0) {
+                ok = mmu_write_physical_uint16(g_mmu, addr, (uint16_t)value);
+                if (ok)
+                    printf("P:[$%08X].w = $%04X\n", addr, (uint16_t)value);
+            } else if (strcmp(size_spec, "L") == 0) {
+                ok = mmu_write_physical_uint32(g_mmu, addr, value);
+                if (ok)
+                    printf("P:[$%08X].l = $%08X\n", addr, value);
+            } else {
+                printf("Invalid size specifier: .%s (use .b, .w, or .l)\n", size_spec);
+                return 0;
+            }
+            if (!ok)
+                printf("Physical write failed (PA $%08X unmapped or read-only)\n", addr);
             return 0;
         }
 
