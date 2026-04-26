@@ -308,13 +308,22 @@
     SUBX(dst, src, res);                                                                                               \
     STORE_DN(bits, opcode >> 9 & 7, res);
 
-// SUBX.[BWL] -(Ax),-(Ay)
+// SUBX.[BWL] -(Ay),-(Ax): each predec decrements An before its read, and the
+// final store writes to the (already-decremented) Ax.  A fault on either read
+// or the write would leak the decrement(s) into the Format-$B retry, so
+// snapshot both An up-front and roll back on bus error.
 #define SUBX_AX_AY(bits)                                                                                               \
+    uint32_t _subx_ay_save = cpu->a[EA_REG];                                                                           \
+    uint32_t _subx_ax_save = cpu->a[(opcode >> 9) & 7];                                                                \
     LOAD_AN_PREDEC(bits, src, EA_REG);                                                                                 \
     LOAD_AN_PREDEC(bits, dst, opcode >> 9 & 7);                                                                        \
     UINT(bits) res;                                                                                                    \
     SUBX(dst, src, res);                                                                                               \
-    STORE_AT_AN(bits, opcode >> 9 & 7, res);
+    STORE_AT_AN(bits, opcode >> 9 & 7, res);                                                                           \
+    if (__builtin_expect(g_bus_error_pending, 0)) {                                                                    \
+        cpu->a[EA_REG] = _subx_ay_save;                                                                                \
+        cpu->a[(opcode >> 9) & 7] = _subx_ax_save;                                                                     \
+    }
 
 #define CMP_EA_DN(bits, mode)                                                                                          \
     VALID_EA(mode);                                                                                                    \
@@ -398,12 +407,19 @@
     ADDX(dst, src, res);                                                                                               \
     STORE_DN(bits, opcode >> 9 & 7, res);
 
+// ADDX.[BWL] -(Ay),-(Ax): same restart-safety concern as SUBX_AX_AY.
 #define ADDX_AX_AY(bits)                                                                                               \
+    uint32_t _addx_ay_save = cpu->a[EA_REG];                                                                           \
+    uint32_t _addx_ax_save = cpu->a[(opcode >> 9) & 7];                                                                \
     LOAD_AN_PREDEC(bits, src, EA_REG);                                                                                 \
     LOAD_AN_PREDEC(bits, dst, opcode >> 9 & 7);                                                                        \
     UINT(bits) res;                                                                                                    \
     ADDX(dst, src, res);                                                                                               \
-    STORE_AT_AN(bits, opcode >> 9 & 7, res);
+    STORE_AT_AN(bits, opcode >> 9 & 7, res);                                                                           \
+    if (__builtin_expect(g_bus_error_pending, 0)) {                                                                    \
+        cpu->a[EA_REG] = _addx_ay_save;                                                                                \
+        cpu->a[(opcode >> 9) & 7] = _addx_ax_save;                                                                     \
+    }
 
 #define NEGX(bits)                                                                                                     \
     LOAD_EA(bits, dst, (ea_data & ea_alterable));                                                                      \
@@ -423,11 +439,20 @@
     CC_C = CC_X = (dst > 0);                                                                                           \
     CC_V = (dst & res) >> (bits - 1) & 1;
 
+// ABCD/SBCD -(Ay),-(Ax): same restart-safety concern as SUBX_AX_AY — both
+// predec reads and the final store can fault, leaking An decrements into the
+// retry.  Snapshot both An and roll back on bus error.
 #define XBCD_AY_AX(op)                                                                                                 \
+    uint32_t _xbcd_ay_save = cpu->a[EA_REG];                                                                           \
+    uint32_t _xbcd_ax_save = cpu->a[(opcode >> 9) & 7];                                                                \
     LOAD_AN8_PREDEC(src, EA_REG);                                                                                      \
     LOAD_AN8_PREDEC(dst, opcode >> 9 & 7);                                                                             \
     uint8_t res = op(dst, src);                                                                                        \
-    STORE_AT_AN(8, opcode >> 9 & 7, res);
+    STORE_AT_AN(8, opcode >> 9 & 7, res);                                                                              \
+    if (__builtin_expect(g_bus_error_pending, 0)) {                                                                    \
+        cpu->a[EA_REG] = _xbcd_ay_save;                                                                                \
+        cpu->a[(opcode >> 9) & 7] = _xbcd_ax_save;                                                                     \
+    }
 
 #define XBCD_DY_DX(op) STORE_DN(8, opcode >> 9 & 7, op(DX, DY));
 
