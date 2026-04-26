@@ -218,10 +218,30 @@ logpoint_t *set_logpoint(debug_t *debug, uint32_t addr, uint32_t end_addr, log_c
     lp->level = level;
     lp->hit_count = 0;
     lp->message = NULL;
-    // PC logpoints don't touch the memory-logpoint page refcounts, so leave
-    // the physical range marked "empty" (end < start).
+    // PC logpoints don't touch the memory-logpoint page refcounts (those are
+    // for the memory slow-path hook), but we DO record the install-time
+    // physical page range so the per-instruction check can fire when the
+    // same physical instruction is executed via an aliased VA — same fix as
+    // de9bde3 for memory logpoints.  When MMU is off or translation fails,
+    // leave the range "empty" (end < start) and fall back to logical match.
     lp->start_phys_page = 1;
     lp->end_phys_page = 0;
+    if (g_mmu && g_mmu->enabled) {
+        bool is_identity, valid;
+        uint32_t phys_start = debug_translate_address(addr, &is_identity, NULL, &valid);
+        if (valid) {
+            uint32_t phys_end = debug_translate_address(end_addr, &is_identity, NULL, &valid);
+            if (valid) {
+                lp->start_phys_page = phys_start >> PAGE_SHIFT;
+                lp->end_phys_page = phys_end >> PAGE_SHIFT;
+                if (lp->end_phys_page < lp->start_phys_page) {
+                    uint32_t tmp = lp->start_phys_page;
+                    lp->start_phys_page = lp->end_phys_page;
+                    lp->end_phys_page = tmp;
+                }
+            }
+        }
+    }
     lp->value_filter_active = false;
     lp->value_filter = 0;
 
@@ -634,20 +654,38 @@ int debug_break_and_trace(void) {
         }
     }
 
-    // Check for logpoints at current PC (these don't stop execution)
+    // Check for logpoints at current PC (these don't stop execution).
+    // Match on either logical PC (install-time VA) or physical page (catches
+    // the same physical instruction reached via a different VA — e.g. user
+    // and supervisor mappings of shared kernel code).
     logpoint_t *lp = debug->logpoints;
+    uint32_t phys_pc_page = 0;
+    bool phys_pc_resolved = false;
+    bool phys_pc_valid = false;
     while (lp != NULL) {
-        // Check if current_pc is within the logpoint's address range
-        if (lp->kind == LP_KIND_PC && current_pc >= lp->addr && current_pc <= lp->end_addr) {
-            // Increment hit counter
-            lp->hit_count++;
-            // Log using the log framework with optional message (with $cpu.dN / $cpu.aN substitution)
-            if (lp->message) {
-                char formatted[256];
-                format_logpoint_message(formatted, sizeof(formatted), lp->message, current_pc, 0, 0);
-                LOG_WITH(lp->category, lp->level, "logpoint $%08X: %s", current_pc, formatted);
-            } else {
-                LOG_WITH(lp->category, lp->level, "logpoint hit at $%08X (hit count: %u)", current_pc, lp->hit_count);
+        if (lp->kind == LP_KIND_PC) {
+            bool hit = (current_pc >= lp->addr && current_pc <= lp->end_addr);
+            if (!hit && lp->start_phys_page <= lp->end_phys_page) {
+                // Lazy-translate once across all logpoints with a phys range.
+                if (!phys_pc_resolved) {
+                    bool is_identity;
+                    uint32_t phys_pc = debug_translate_address(current_pc, &is_identity, NULL, &phys_pc_valid);
+                    phys_pc_page = phys_pc >> PAGE_SHIFT;
+                    phys_pc_resolved = true;
+                }
+                if (phys_pc_valid && phys_pc_page >= lp->start_phys_page && phys_pc_page <= lp->end_phys_page)
+                    hit = true;
+            }
+            if (hit) {
+                lp->hit_count++;
+                if (lp->message) {
+                    char formatted[256];
+                    format_logpoint_message(formatted, sizeof(formatted), lp->message, current_pc, 0, 0);
+                    LOG_WITH(lp->category, lp->level, "logpoint $%08X: %s", current_pc, formatted);
+                } else {
+                    LOG_WITH(lp->category, lp->level, "logpoint hit at $%08X (hit count: %u)", current_pc,
+                             lp->hit_count);
+                }
             }
         }
         lp = lp->next;
