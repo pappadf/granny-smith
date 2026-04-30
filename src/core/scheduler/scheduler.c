@@ -345,13 +345,23 @@ static void scheduler_vbl_tick(void *source, uint64_t data) {
     scheduler_new_cpu_event(s, scheduler_vbl_tick, cfg, 0, cycles_per_vbl, 0);
 }
 
+// Public: register the VBL event type only.  Required on the checkpoint
+// restore path: scheduler_start() resolves saved 'scheduler.vbl_tick' events
+// against the registered types, so the type must exist before deferred restore
+// runs — but no fresh event should be scheduled (the saved one will be).
+void scheduler_register_vbl_type(struct scheduler *restrict s, config_t *config) {
+    GS_ASSERT(s != NULL);
+    GS_ASSERT(config != NULL);
+    scheduler_new_event_type(s, "scheduler", config, "vbl_tick", scheduler_vbl_tick);
+}
+
 // Public: register the VBL recurring event for this machine.  Call once during
 // machine init, after scheduler_set_frequency() has been called.
 void scheduler_start_vbl(struct scheduler *restrict s, config_t *config) {
     GS_ASSERT(s != NULL);
     GS_ASSERT(config != NULL);
     GS_ASSERT(s->frequency > 0);
-    scheduler_new_event_type(s, "scheduler", config, "vbl_tick", scheduler_vbl_tick);
+    scheduler_register_vbl_type(s, config);
     // If already scheduled (e.g. checkpoint restore), do nothing.
     if (has_event(s, scheduler_vbl_tick))
         return;
@@ -612,9 +622,10 @@ struct scheduler *scheduler_init(struct cpu *cpu, checkpoint_t *checkpoint) {
 
     scheduler_new_event_type(s, "Scheduler", s, "run_stop", run_stop_event);
     // Note: scheduler_vbl_tick uses config_t* as source, so its source is
-    // not knowable here.  The machine init registers the event type itself
-    // via scheduler_start_vbl() (which calls scheduler_new_event_type with
-    // the live config).
+    // not knowable here.  Machine init calls scheduler_register_vbl_type()
+    // (so checkpoint restore can resolve a saved vbl_tick event), and the
+    // headless platform additionally calls scheduler_start_vbl() on cold
+    // boot to schedule the recurring event.
 
     return s;
 }

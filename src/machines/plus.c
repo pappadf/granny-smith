@@ -232,6 +232,12 @@ static void plus_init(config_t *cfg, checkpoint_t *checkpoint) {
 
     cfg->debugger = debug_init();
 
+    // Register the cycle-driven VBL event type so scheduler_start() can resolve
+    // a saved 'scheduler.vbl_tick' from the checkpoint.  The headless platform
+    // schedules the actual event via scheduler_start_vbl() on cold boot; on
+    // checkpoint restore the saved event is reinserted by scheduler_start().
+    scheduler_register_vbl_type(cfg->scheduler, cfg);
+
     scheduler_start(cfg->scheduler);
 
     // Initialise IRQ/IPL only for cold boot; on restore, devices already re-assert.

@@ -93,6 +93,13 @@ void scheduler_run_until_idle(struct scheduler *restrict s);
 // in scheduler_main_loop().
 void scheduler_start_vbl(struct scheduler *restrict s, config_t *config);
 
+// Register the cycle-driven VBL event TYPE without scheduling a fresh event.
+// Required on the checkpoint-restore path so scheduler_start can resolve a
+// saved 'scheduler.vbl_tick' event back to a live callback pointer.  Safe to
+// call on platforms (e.g. WASM) that never schedule a vbl_tick — registering
+// an unused type is harmless.
+void scheduler_register_vbl_type(struct scheduler *restrict s, config_t *config);
+
 // Complete deferred checkpoint restore after all devices have registered event types
 void scheduler_start(struct scheduler *restrict s);
 
