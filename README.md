@@ -7,7 +7,7 @@
 > **[Try Granny Smith instantly in your browser!](https://pappadf.github.io/gs-pages/latest/)**  
 > _For best results, use a Chromium-based browser (Chrome, Edge, etc.). Safari has known issues._
 
-![AppleTalk mounted filesystem](tests/e2e/specs/appletalk/appletalk-7-mounted.png)
+![A/UX 3.0.1 CommandShell on SE/30](tests/integration/se30-aux3-boot/shell.png)
 
 The guiding principle for this project is to "keep it simple" — simple for everyone to run classic Macintosh software as well as simple to develop and maintain the emulator itself.
 
