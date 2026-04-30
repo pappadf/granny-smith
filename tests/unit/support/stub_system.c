@@ -9,6 +9,7 @@
 // Forward declarations
 typedef struct scheduler scheduler_t;
 typedef struct debug debug_t;
+typedef struct rtc rtc_t;
 typedef void (*event_callback_t)(void *source, uint64_t data);
 
 // System accessor stubs that use the harness context
@@ -29,6 +30,11 @@ scheduler_t *system_scheduler(void) {
 
 debug_t *system_debug(void) {
     // No debugger in test harness
+    return NULL;
+}
+
+rtc_t *system_rtc(void) {
+    // No RTC in test harness — cmd_set_time guards on NULL and exits cleanly
     return NULL;
 }
 
