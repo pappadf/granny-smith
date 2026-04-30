@@ -281,10 +281,12 @@ cpu_cycles += executed_cycles;
 ## Scheduler Modes
 
 The scheduler supports three execution modes that affect how host wall-clock
-time maps to emulated time:
+time maps to emulated time. The modes are only relevant to the WASM target —
+the headless target ignores host time entirely (see "Target-Specific Pacing"
+below).
 
-| Mode | CPI | Behaviour |
-|------|-----|-----------|
+| Mode | CPI | Behaviour (WASM target) |
+|------|-----|-------------------------|
 | `schedule_max_speed` | `cpi_fast` | Execute as many VBLs as fit in ~50% of host loop period |
 | `schedule_real_time` | `cpi_fast` | One-to-one VBL mapping when host loop is close to VBL period |
 | `schedule_hw_accuracy` | `cpi_hw` | Accumulate elapsed host time, execute proportional VBLs |
@@ -292,22 +294,48 @@ time maps to emulated time:
 All three modes use the same sprint and event machinery. The mode only affects:
 
 1. Which CPI value is used for the instruction-to-cycle conversion
-2. How many VBL intervals are executed per host loop iteration
+2. How many VBL intervals are executed per host loop iteration (WASM target)
 3. Whether I/O penalties are active (configurable per machine)
 
-### VBL-Driven Execution
+## Target-Specific Pacing
 
-The main loop (`scheduler_main_loop()`) is called by the platform frontend at
-the host's display refresh rate (~60 Hz). Each call:
+The two platform targets pace execution differently because they have
+different goals.
+
+### WASM target: host-clock-driven, real-time pacing
+
+`scheduler_main_loop()` is called from the WASM platform frontend once per
+`requestAnimationFrame` (~60 Hz). Each call:
 
 1. Measures elapsed host time since the last call
 2. Determines how many VBL intervals to execute based on the current mode
-3. For each VBL: triggers the VBL event, then runs the scheduler for one
-   VBL period (~16.63 ms) worth of instructions
+3. For each VBL: calls `trigger_vbl()` (which pulses VIA CA1 etc.), then
+   runs the scheduler for one VBL period (~16.63 ms) of guest time
 
-This keeps the emulated machine roughly synchronized with the host display
-refresh rate in real-time mode, while allowing uncapped execution in max-speed
-mode.
+This keeps the emulated machine synced to the browser's render rhythm. It is
+**not** byte-deterministic — VBL count tracks host load — and that is
+intentional for an interactive emulator.
+
+### Headless target: cycle-driven, run as fast as possible
+
+The headless platform calls `scheduler_start_vbl(scheduler, config)` once
+after machine setup, registering a recurring `scheduler_vbl_tick` event on
+the cycle queue at `frequency / MAC_VBL_FREQUENCY` cycles in the future. The
+callback calls `trigger_vbl()` and reschedules itself. VBL is then just
+another event on the same priority queue as VIA timers and SCC completions.
+
+Execution is driven by `scheduler_run_until_idle()`, which pumps
+`scheduler_run_instructions` chunks until `s->running` goes false (typically
+when `run_stop_event` from a `run N` shell command fires). No `host_time()`
+is called on the headless execution path.
+
+Property: because every input to guest execution is a function of cumulative
+cycles, the headless target is byte-deterministic. Two scripts that produce
+the same final cycle count produce identical guest state — including
+identical screenshots — regardless of script shape (`run 200M` vs four
+`run 50M` calls) or where read-only commands like `screenshot` are inserted.
+
+See `docs/scheduler.md` §10 for the full design.
 
 ## Clock Frequencies
 

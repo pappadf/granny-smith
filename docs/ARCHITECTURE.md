@@ -244,41 +244,26 @@ can access what they need without depending on internal struct layout.
 
 ## Scheduler and Timing Model
 
-The scheduler is the core component responsible for managing emulated time and
-synchronizing it with real-world (host) time. It tracks clock cycles, schedules
-time-based events, and ensures that the emulator's internal timing model matches
-the intended behavior of the original hardware.
+The scheduler is the core component responsible for managing emulated time. It
+tracks clock cycles, schedules time-based events on a single priority queue,
+and runs the CPU in event-bounded sprints. See `docs/scheduler.md` for the
+detailed design and `docs/timing.md` for the practical timing rules.
 
-The scheduler supports three distinct modes, each defining a different
-relationship between emulated time and host time:
+There are three execution modes (`schedule_max_speed`, `schedule_real_time`,
+`schedule_hw_accuracy`) that control the cycles-per-instruction (CPI) ratio
+and, on the WASM target, how many emulated VBL intervals run per host frame.
 
-**Fast mode:**
+VBL injection is **per target**:
 
-- Emulation runs as quickly as possible, with no attempt to synchronize with
-  real time.
-- Emulated time and host time are fully decoupled.
-- Hardware events (such as VBL interrupts) may occur much more frequently than
-  on real hardware, and instructions may execute in fewer cycles per event.
-- This mode is useful for performance testing or fast-forwarding through
-  uninteresting periods.
+- **Headless** registers a recurring cycle-driven `scheduler_vbl_tick` event
+  during platform init so VBL is just another event on the queue. The
+  execution loop runs as fast as possible with no host-time input. Result:
+  byte-deterministic — same script always produces the same output.
+- **WASM** drives VBL from `scheduler_main_loop`, which runs on the browser's
+  render rhythm and injects VBL pulses at host-clock cadence. Result: paced
+  to the user's display refresh, not byte-deterministic by design.
 
-**Strict mode:**
-
-- Emulated time is advanced according to the timing characteristics of the
-  original hardware, regardless of host performance.
-- Host and emulated time remain decoupled, but the emulator carefully models
-  instruction timing and event scheduling to match real hardware as closely as
-  possible.
-- This mode is ideal for accuracy and compatibility testing, ensuring that
-  software behaves as it would on a real Macintosh.
-
-**Live mode:**
-
-- Emulated time is actively synchronized with host wall-clock time.
-- The scheduler aligns VBL interrupts and other periodic events with the host's
-  display refresh or system clock, pacing the emulation to match real time.
-- This mode provides the most authentic user experience, with the emulator
-  "perceiving" and responding to real time as the original machine would.
+See `docs/scheduler.md` §10 for the per-target design.
 
 ## Checkpointing
 

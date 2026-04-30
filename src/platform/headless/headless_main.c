@@ -348,12 +348,19 @@ static void pump_scheduler_with_heartbeat(void) {
     double last_heartbeat = host_time();
     uint64_t start_instr = cpu_instr_count();
 
+    // Run instructions in fixed-size bursts so we can yield between bursts
+    // for the heartbeat and daemon-poll logic.  The burst size is large
+    // enough to amortise the per-burst overhead but small enough that the
+    // heartbeat fires at ~1 Hz on typical hosts.  Burst size is in
+    // instructions; chunk granularity does not affect determinism because
+    // scheduler_run_instructions clamps each sprint to the next event.
+    const uint64_t HEARTBEAT_BURST_INSTR = 2000000; // ~2 MIPS → ~1 burst/sec @ slow paths
+
     while (sched && scheduler_is_running(sched) && !quit_requested) {
-        double now = host_time();
-        scheduler_main_loop(global_emulator, now * 1000.0);
+        scheduler_run_instructions(sched, HEARTBEAT_BURST_INSTR);
 
         // Heartbeat: once per second, print progress
-        now = host_time();
+        double now = host_time();
         if (now - last_heartbeat >= 1.0) {
             uint64_t current = cpu_instr_count();
             printf("# running... %llu instructions (+%llu since start)\n", (unsigned long long)current,
@@ -903,6 +910,16 @@ int main(int argc, char *argv[]) {
         return 1;
     }
 
+    // Headless target: VBL is driven by a recurring cycle event so timing is a
+    // pure function of cumulative cycles, not host wall-clock.  The WASM target
+    // does not call this — its scheduler_main_loop injects VBL on host rhythm
+    // to stay synced with the browser's render loop.  See docs/scheduler.md §10.
+    {
+        scheduler_t *s = system_scheduler();
+        if (s)
+            scheduler_start_vbl(s, global_emulator);
+    }
+
     // In daemon mode, stop the scheduler that se30_init/plus_init auto-started.
     // The agent will explicitly send "run" or "s" commands to control execution.
     if (g_daemon_mode) {
@@ -1050,7 +1067,10 @@ int main(int argc, char *argv[]) {
         // Run emulation if scheduler is active
         scheduler_t *loop_sched = system_scheduler();
         if (loop_sched && scheduler_is_running(loop_sched)) {
-            scheduler_main_loop(global_emulator, now * 1000.0); // Convert seconds to milliseconds
+            // Headless: run as fast as possible until run_stop_event fires
+            // or scheduler_stop is called.  No host-time pacing.
+            (void)now;
+            scheduler_run_until_idle(loop_sched);
         } else {
             // Poll for shell input when idle
             shell_poll();

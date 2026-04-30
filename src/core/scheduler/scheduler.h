@@ -80,6 +80,19 @@ void scheduler_run_instructions(struct scheduler *restrict s, uint64_t n);
 // Run the scheduler for a specified number of microseconds
 void scheduler_run_usecs(struct scheduler *restrict s, uint64_t usecs);
 
+// Run the scheduler as fast as possible until s->running becomes false
+// (i.e. until run_stop_event fires or the event queue empties).  Used by
+// the headless platform — no host-time pacing, no VBL injection beyond
+// the cycle-driven recurring VBL event.
+void scheduler_run_until_idle(struct scheduler *restrict s);
+
+// Register a recurring cycle-driven VBL event that fires at the Mac VBL
+// frequency (~60 Hz of guest time) and pulses the machine's VBL line.
+// Must be called once during machine init, after the scheduler frequency
+// is set.  Replaces the host-time-driven trigger_vbl() that was previously
+// in scheduler_main_loop().
+void scheduler_start_vbl(struct scheduler *restrict s, config_t *config);
+
 // Complete deferred checkpoint restore after all devices have registered event types
 void scheduler_start(struct scheduler *restrict s);
 
