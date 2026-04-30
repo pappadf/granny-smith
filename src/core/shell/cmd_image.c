@@ -96,7 +96,7 @@ static void cmd_image_partmap(struct cmd_context *ctx, struct cmd_result *res) {
     const char *fmt = ctx->args[1].present ? ctx->args[1].as_str : NULL;
     bool json = fmt && strcmp(fmt, "--json") == 0;
 
-    image_t *img = image_open(path, false);
+    image_t *img = image_open_readonly(path);
     if (!img) {
         cmd_err(res, "cannot open image '%s'", path);
         return;
@@ -128,7 +128,7 @@ static void cmd_image_probe(struct cmd_context *ctx, struct cmd_result *res) {
     }
     const char *path = ctx->args[0].as_str;
 
-    image_t *img = image_open(path, false);
+    image_t *img = image_open_readonly(path);
     if (!img) {
         cmd_err(res, "cannot open image '%s'", path);
         return;

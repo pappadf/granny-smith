@@ -13,6 +13,7 @@ import { maybeOfferBackgroundCheckpoint } from './checkpoint.js';
 import { scanForPersistedRoms, showRomUploadDialog, showConfigDialog, bootFromConfig } from './config-dialog.js';
 import { UPLOAD_DIR } from './config.js';
 import { clearOPFSDir } from './fs.js';
+import { getOrCreateMachine } from './checkpoint-machine.js';
 
 const params = new URLSearchParams(location.search);
 
@@ -48,6 +49,16 @@ await initEmulator(canvas, wasmArgs, writeLine);
 
 // Capture FS reference for /tmp/ operations
 initFS(getModule());
+
+// Activate the per-machine checkpoint directory before anything else opens
+// images.  Once set, /opfs/checkpoints/<id>-<created>/ becomes the home of
+// state.checkpoint, image deltas, and the manifest (§3.3).  Awaiting here
+// preserves command ordering: every later runCommand in the boot path sees
+// the machine identity already registered.
+{
+  const machine = getOrCreateMachine();
+  await runCommand(`checkpoint --machine ${machine.id} ${machine.created}`);
+}
 
 // Show initial prompt now that the shell is ready
 showPrompt(true);

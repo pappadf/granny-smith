@@ -297,6 +297,21 @@ By supporting both quick and consolidated checkpointing, the emulator balances
 performance and reliability, providing robust state persistence for both
 automated recovery and user-driven export scenarios.
 
+### Per-machine state directory
+
+Each machine owns a directory under `/opfs/checkpoints/<machine_id>-<created>/`
+that is treated as one atomic unit. The quick checkpoint (`state.checkpoint`),
+all writable image deltas and journals (`<id>.delta`, `<id>.journal`), and a
+small informational `manifest.json` live together there. `/opfs/images/` holds
+strictly read-only base content; nothing writable lands there any more.
+
+`<machine_id>` is a 16-hex-char opaque token in `localStorage`; it rotates only
+on explicit "new machine" actions and is pushed to the C side once per process
+via `checkpoint --machine <id> <created>`. A startup sweep deletes any sibling
+machine directories whose name does not match. See [`docs/checkpointing.md`](checkpointing.md)
+for the full design and [`docs/image.md`](image.md) for the image-layer API
+that backs it.
+
 ## Repository Layout
 
 The repository is organized as follows:
@@ -315,7 +330,9 @@ The repository is organized as follows:
     - **peripherals/** — VIA, SCC, SCSI, floppy, RTC, keyboard, mouse, sound
     - **scheduler/** — Event scheduling and timing
     - **debug/** — Debugger, logging, and diagnostics
-    - **storage/** — Disk image and storage backends
+    - **storage/** — Disk image, delta-file storage backend, and the
+      `checkpoint_machine` module that owns the per-machine state directory
+      (`/opfs/checkpoints/<machine_id>-<created>/`)
     - **network/** — AppleTalk and networking modules
     - **shell/** — Command framework (types, parser, symbol resolver, I/O
       capture, completion, JSON bridge, dispatcher)

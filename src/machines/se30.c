@@ -18,6 +18,7 @@
 
 #include "adb.h"
 #include "asc.h"
+#include "checkpoint_machine.h"
 #include "cpu.h"
 #include "cpu_internal.h" // for cpu->mmu field
 #include "debug.h"
@@ -1128,11 +1129,33 @@ static void se30_init(config_t *cfg, checkpoint_t *checkpoint) {
             system_read_checkpoint_data(checkpoint, &writable, sizeof(writable));
             uint64_t raw_size = 0;
             system_read_checkpoint_data(checkpoint, &raw_size, sizeof(raw_size));
+            uint32_t instance_len = 0;
+            system_read_checkpoint_data(checkpoint, &instance_len, sizeof(instance_len));
+            char *instance_path = NULL;
+            if (instance_len > 0) {
+                instance_path = (char *)malloc(instance_len);
+                if (instance_path)
+                    system_read_checkpoint_data(checkpoint, instance_path, instance_len);
+                else {
+                    char tmp;
+                    for (uint32_t k = 0; k < instance_len; ++k)
+                        system_read_checkpoint_data(checkpoint, &tmp, 1);
+                }
+            }
             image_t *img = NULL;
             if (name) {
-                if (raw_size > 0 && checkpoint_get_kind(checkpoint) == CHECKPOINT_KIND_CONSOLIDATED)
+                bool consolidated = checkpoint_get_kind(checkpoint) == CHECKPOINT_KIND_CONSOLIDATED;
+                if (raw_size > 0 && consolidated)
                     image_create_empty(name, (size_t)raw_size);
-                img = image_open(name, writable != 0);
+                if (writable && consolidated) {
+                    img = image_create(name, checkpoint_machine_dir());
+                } else if (writable && instance_path && instance_path[0]) {
+                    img = image_open(name, instance_path);
+                } else if (writable) {
+                    img = image_create(name, checkpoint_machine_dir());
+                } else {
+                    img = image_open_readonly(name);
+                }
                 if (!img) {
                     printf("Error: image_open failed for %s while restoring checkpoint\n", name);
                     checkpoint_set_error(checkpoint);
@@ -1146,6 +1169,8 @@ static void se30_init(config_t *cfg, checkpoint_t *checkpoint) {
                 add_image(cfg, img);
             if (name)
                 free(name);
+            if (instance_path)
+                free(instance_path);
         }
     }
 

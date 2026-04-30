@@ -12,6 +12,7 @@
 #include "system_config.h" // full config_t definition
 
 #include "appletalk.h"
+#include "checkpoint_machine.h"
 #include "cpu.h"
 #include "debug.h"
 #include "floppy.h"
@@ -184,13 +185,41 @@ static void plus_init(config_t *cfg, checkpoint_t *checkpoint) {
             // Read raw image size (written by image_checkpoint)
             uint64_t raw_size = 0;
             system_read_checkpoint_data(checkpoint, &raw_size, sizeof(raw_size));
+            // Read instance path (added by image_checkpoint, §2.8)
+            uint32_t instance_len = 0;
+            system_read_checkpoint_data(checkpoint, &instance_len, sizeof(instance_len));
+            char *instance_path = NULL;
+            if (instance_len > 0) {
+                instance_path = (char *)malloc(instance_len);
+                if (instance_path)
+                    system_read_checkpoint_data(checkpoint, instance_path, instance_len);
+                else {
+                    char tmp;
+                    for (uint32_t k = 0; k < instance_len; ++k)
+                        system_read_checkpoint_data(checkpoint, &tmp, 1);
+                }
+            }
             image_t *img = NULL;
             if (name) {
+                bool consolidated = checkpoint_get_kind(checkpoint) == CHECKPOINT_KIND_CONSOLIDATED;
                 // For consolidated checkpoints the embedded data is authoritative
-                if (raw_size > 0 && checkpoint_get_kind(checkpoint) == CHECKPOINT_KIND_CONSOLIDATED) {
+                if (raw_size > 0 && consolidated)
                     image_create_empty(name, (size_t)raw_size);
+                if (writable && consolidated) {
+                    // Fresh writable instance — embedded blocks will fill it.
+                    img = image_create(name, checkpoint_machine_dir());
+                } else if (writable && instance_path && instance_path[0]) {
+                    // Quick checkpoint: reopen the same delta files referenced
+                    // by the saved instance_path.
+                    img = image_open(name, instance_path);
+                } else if (writable) {
+                    // Old checkpoint without instance_path — fall back to a
+                    // fresh instance.  This degrades on quick checkpoints (the
+                    // bitmap will not match) but avoids hard failure.
+                    img = image_create(name, checkpoint_machine_dir());
+                } else {
+                    img = image_open_readonly(name);
                 }
-                img = image_open(name, writable != 0);
                 if (!img) {
                     printf("Error: image_open failed for %s while restoring checkpoint\n", name);
                     checkpoint_set_error(checkpoint);
@@ -205,6 +234,9 @@ static void plus_init(config_t *cfg, checkpoint_t *checkpoint) {
             }
             if (name) {
                 free(name);
+            }
+            if (instance_path) {
+                free(instance_path);
             }
         }
     }

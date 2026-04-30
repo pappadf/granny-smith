@@ -6,6 +6,7 @@
 
 #include "platform.h"
 
+#include "checkpoint_machine.h"
 #include "cpu.h"
 #include "debug.h"
 #include "floppy.h"
@@ -142,6 +143,7 @@ static void print_usage(const char *program) {
     printf("  --script-stdin  Read script commands from stdin instead of a file\n");
     printf("  --var NAME=VAL  Set a shell variable (can be repeated)\n");
     printf("  --no-prompt     Disable the prompt status line for all connections\n");
+    printf("  --checkpoint-dir=DIR  Directory to host writable image deltas (default: alongside base image)\n");
     printf("\n");
     printf("Examples:\n");
     printf("  %s rom=plus.rom\n", program);
@@ -686,6 +688,7 @@ int main(int argc, char *argv[]) {
     int script_stdin = 0;
     int kill_daemon = 0;
     int no_prompt = 0;
+    const char *checkpoint_dir = NULL; // explicit --checkpoint-dir=
     const char *var_defs[64] = {NULL}; // --var NAME=VALUE definitions
     int var_count = 0;
 
@@ -741,6 +744,11 @@ int main(int argc, char *argv[]) {
 
         if (strncmp(arg, "--cycles=", 9) == 0) {
             max_cycles = strtoull(arg + 9, NULL, 10);
+            continue;
+        }
+
+        if (strncmp(arg, "--checkpoint-dir=", 17) == 0) {
+            checkpoint_dir = arg + 17;
             continue;
         }
 
@@ -893,6 +901,16 @@ int main(int argc, char *argv[]) {
     // Apply --no-prompt default so every client connection inherits it
     if (no_prompt)
         debug_set_prompt_default(0);
+
+    // If a --checkpoint-dir was given, point the machine layer at it
+    // verbatim so writable image deltas land there.  No id/timestamp
+    // suffix — headless callers manage the directory themselves.
+    if (checkpoint_dir && *checkpoint_dir) {
+        if (checkpoint_machine_set_dir(checkpoint_dir) != 0) {
+            fprintf(stderr, "Error: cannot create --checkpoint-dir %s: %s\n", checkpoint_dir, strerror(errno));
+            return 1;
+        }
+    }
 
     // Set pending RAM override before machine creation (if specified)
     if (ram_kb > 0)

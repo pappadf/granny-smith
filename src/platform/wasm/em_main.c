@@ -42,6 +42,7 @@
 #endif
 
 #include "checkpoint.h"
+#include "checkpoint_machine.h"
 #include "cmd_json.h"
 #include "cmd_types.h"
 #include "cpu.h"
@@ -740,7 +741,7 @@ static uint64_t cmd_find_media(int argc, char *argv[]) {
         if (stat(full, &st) != 0 || !S_ISREG(st.st_mode))
             continue;
         // Try as floppy image
-        image_t *img = image_open(full, false);
+        image_t *img = image_open_readonly(full);
         if (img) {
             bool is_floppy = (img->type == image_fd_ss || img->type == image_fd_ds || img->type == image_fd_hd);
             image_close(img);
@@ -859,90 +860,34 @@ static uint64_t cmd_download(int argc, char *argv[]) {
 // ============================================================================
 // Background Checkpoint System
 // ============================================================================
+// Per-machine layout (proposal-checkpoint-storage-isolation.md):
+//   /opfs/checkpoints/<machine_id>-<created>/state.checkpoint      (current)
+//   /opfs/checkpoints/<machine_id>-<created>/state.checkpoint.tmp  (in-flight)
+// One file per machine; tmp+rename is the atomic swap.
 
-#define BACKGROUND_CHECKPOINT_DIR             "/opfs/checkpoints"
-#define BACKGROUND_CHECKPOINT_SUFFIX          ".checkpoint"
-#define BACKGROUND_CHECKPOINT_PENDING_SUFFIX  ".pending"
-#define BACKGROUND_CHECKPOINT_COMPLETE_SUFFIX ".complete"
-#define BACKGROUND_CHECKPOINT_DIGITS          7
 #define BACKGROUND_CHECKPOINT_PATH_MAX        512
 #define BACKGROUND_CHECKPOINT_MIN_INTERVAL_MS 750.0
 
 static double g_last_background_checkpoint_ms = 0.0;
 static bool g_background_handlers_installed = false;
 
-// Ensure checkpoint directory exists
-static int ensure_checkpoint_directory(void) {
-    // /opfs/checkpoints is created inside the OPFS mount in main().
-    struct stat st;
-    if (stat(BACKGROUND_CHECKPOINT_DIR, &st) == 0) {
-        return S_ISDIR(st.st_mode) ? GS_SUCCESS : GS_ERROR;
-    }
-    if (errno != ENOENT && errno != 0)
-        return GS_ERROR;
-    if (mkdir(BACKGROUND_CHECKPOINT_DIR, 0777) != 0 && errno != EEXIST)
-        return GS_ERROR;
-    return GS_SUCCESS;
-}
-
-// Scan checkpoint directory for highest sequence number.
-// With OPFS auto-persistence, writes are durable on fclose — no .complete
-// markers needed.  Just find the highest-numbered .checkpoint file.
-static int scan_checkpoint_directory(uint64_t *out_max) {
-    if (ensure_checkpoint_directory() != GS_SUCCESS)
-        return GS_ERROR;
-    DIR *dir = opendir(BACKGROUND_CHECKPOINT_DIR);
+// Build "<machine_dir>/state.checkpoint" into out_path.  Returns GS_SUCCESS
+// when the machine dir is set and the path fits.
+static int build_state_checkpoint_path(char *out_path, size_t out_len) {
+    const char *dir = checkpoint_machine_dir();
     if (!dir)
         return GS_ERROR;
-    uint64_t max_seq = 0;
-    struct dirent *entry;
-    const size_t suffix_len = strlen(BACKGROUND_CHECKPOINT_SUFFIX);
-    while ((entry = readdir(dir)) != NULL) {
-        const char *name = entry->d_name;
-        if (!name || name[0] == '.')
-            continue;
-        size_t len = strlen(name);
-        if (len <= suffix_len)
-            continue;
-        if (strcmp(name + len - suffix_len, BACKGROUND_CHECKPOINT_SUFFIX) != 0)
-            continue;
-        bool numeric = true;
-        for (size_t i = 0; i < len - suffix_len; ++i) {
-            if (name[i] < '0' || name[i] > '9') {
-                numeric = false;
-                break;
-            }
-        }
-        if (!numeric)
-            continue;
-        uint64_t value = strtoull(name, NULL, 10);
-        if (value > max_seq)
-            max_seq = value;
-    }
-    closedir(dir);
-    if (out_max)
-        *out_max = max_seq;
-    return GS_SUCCESS;
-}
-
-// Build checkpoint path from sequence number
-static int build_checkpoint_path(uint64_t seq, char *out_path, size_t out_len) {
-    int written = snprintf(out_path, out_len, "%s/%0*llu%s", BACKGROUND_CHECKPOINT_DIR, BACKGROUND_CHECKPOINT_DIGITS,
-                           (unsigned long long)seq, BACKGROUND_CHECKPOINT_SUFFIX);
+    int written = snprintf(out_path, out_len, "%s/state.checkpoint", dir);
     return (written > 0 && (size_t)written < out_len) ? GS_SUCCESS : GS_ERROR;
 }
 
-// Find the path to the latest valid (complete) background checkpoint.
+// Find the path to the current valid background checkpoint.
 // Overrides the weak default in system.c for the WASM platform.
 // Returns a static buffer with the path, or NULL if none found.
 const char *find_valid_checkpoint_path(void) {
     static char path_buf[BACKGROUND_CHECKPOINT_PATH_MAX];
-    uint64_t max_seq = 0;
-    if (scan_checkpoint_directory(&max_seq) != GS_SUCCESS || max_seq == 0)
+    if (build_state_checkpoint_path(path_buf, sizeof(path_buf)) != GS_SUCCESS)
         return NULL;
-    if (build_checkpoint_path(max_seq, path_buf, sizeof(path_buf)) != GS_SUCCESS)
-        return NULL;
-    // Verify the checkpoint file actually exists
     struct stat st;
     if (stat(path_buf, &st) != 0)
         return NULL;
@@ -952,9 +897,7 @@ const char *find_valid_checkpoint_path(void) {
     return path_buf;
 }
 
-// Save a quick checkpoint.
-// With OPFS + pthreads, all writes are synchronous and auto-persistent.
-// No async sync dance needed — write checkpoint, write marker, clean up, done.
+// Save a quick checkpoint via tmp+rename inside the per-machine directory.
 static int save_quick_checkpoint(const char *reason, bool verbose, bool rate_limit) {
     scheduler_t *sched = system_scheduler();
     if (!sched)
@@ -964,6 +907,13 @@ static int save_quick_checkpoint(const char *reason, bool verbose, bool rate_lim
     if (!scheduler_is_running(sched) && cpu_instr_count() == 0)
         return GS_SUCCESS;
 
+    // No machine identity yet → nothing to save under.
+    if (!checkpoint_machine_dir()) {
+        if (verbose)
+            printf("[checkpoint] no machine directory set, skipping quick checkpoint\n");
+        return GS_SUCCESS;
+    }
+
     double now = emscripten_get_now();
 
     if (rate_limit && g_last_background_checkpoint_ms > 0.0) {
@@ -972,16 +922,12 @@ static int save_quick_checkpoint(const char *reason, bool verbose, bool rate_lim
             return GS_SUCCESS;
     }
 
-    if (ensure_checkpoint_directory() != GS_SUCCESS)
+    char final_path[BACKGROUND_CHECKPOINT_PATH_MAX];
+    char tmp_path[BACKGROUND_CHECKPOINT_PATH_MAX];
+    if (build_state_checkpoint_path(final_path, sizeof(final_path)) != GS_SUCCESS)
         return GS_ERROR;
-
-    uint64_t max_seq = 0;
-    if (scan_checkpoint_directory(&max_seq) != GS_SUCCESS)
-        return GS_ERROR;
-
-    uint64_t next_seq = max_seq + 1;
-    char path[BACKGROUND_CHECKPOINT_PATH_MAX];
-    if (build_checkpoint_path(next_seq, path, sizeof(path)) != GS_SUCCESS)
+    int wn = snprintf(tmp_path, sizeof(tmp_path), "%s.tmp", final_path);
+    if (wn <= 0 || (size_t)wn >= sizeof(tmp_path))
         return GS_ERROR;
 
     // Record running state before stopping - this will be saved in the checkpoint
@@ -990,51 +936,32 @@ static int save_quick_checkpoint(const char *reason, bool verbose, bool rate_lim
         scheduler_stop(sched);
 
     // Temporarily restore running flag so checkpoint captures the pre-stop state
-    // This allows checkpoint --load to auto-resume if the checkpoint was saved while running
     if (was_running && sched)
         scheduler_set_running(sched, true);
 
     double checkpoint_start_time = emscripten_get_now();
 
-    // With OPFS, the checkpoint file is durable on fclose — no markers needed.
-    int rc = system_checkpoint(path, CHECKPOINT_KIND_QUICK);
+    // Drop any stale tmp from a crashed prior run.
+    unlink(tmp_path);
+    int rc = system_checkpoint(tmp_path, CHECKPOINT_KIND_QUICK);
+    if (rc == GS_SUCCESS) {
+        if (rename(tmp_path, final_path) != 0) {
+            printf("[checkpoint] rename %s -> %s failed: %s\n", tmp_path, final_path, strerror(errno));
+            unlink(tmp_path);
+            rc = GS_ERROR;
+        }
+    } else {
+        unlink(tmp_path);
+    }
 
     double checkpoint_elapsed_ms = emscripten_get_now() - checkpoint_start_time;
 
     if (rc == GS_SUCCESS) {
         g_last_background_checkpoint_ms = now;
-
-        if (verbose) {
-            printf("Checkpoint saved to %s (%.2f ms)\n", path, checkpoint_elapsed_ms);
-        }
-
-        // Clean up old checkpoints (keep only the latest)
-        DIR *dir = opendir(BACKGROUND_CHECKPOINT_DIR);
-        if (dir) {
-            struct dirent *entry;
-            const size_t sfx_len = strlen(BACKGROUND_CHECKPOINT_SUFFIX);
-            while ((entry = readdir(dir)) != NULL) {
-                const char *name = entry->d_name;
-                if (!name || name[0] == '.')
-                    continue;
-                size_t len = strlen(name);
-                uint64_t file_seq = strtoull(name, NULL, 10);
-                if (file_seq == 0 || file_seq >= next_seq)
-                    continue;
-                // Remove any old checkpoint-related file
-                if ((len > sfx_len && strcmp(name + len - sfx_len, BACKGROUND_CHECKPOINT_SUFFIX) == 0) ||
-                    strstr(name, ".complete") || strstr(name, ".pending")) {
-                    char old_path[BACKGROUND_CHECKPOINT_PATH_MAX];
-                    snprintf(old_path, sizeof(old_path), "%s/%s", BACKGROUND_CHECKPOINT_DIR, name);
-                    unlink(old_path);
-                }
-            }
-            closedir(dir);
-        }
-    } else {
-        if (verbose) {
-            printf("[checkpoint] quick checkpoint failed (%s)\n", reason ? reason : "background");
-        }
+        if (verbose)
+            printf("Checkpoint saved to %s (%.2f ms)\n", final_path, checkpoint_elapsed_ms);
+    } else if (verbose) {
+        printf("[checkpoint] quick checkpoint failed (%s)\n", reason ? reason : "background");
     }
     return rc;
 }
@@ -1086,35 +1013,36 @@ static uint64_t cmd_background_checkpoint(int argc, char *argv[]) {
     return (rc == GS_SUCCESS) ? 0 : -1;
 }
 
-// Clear all checkpoint files from the checkpoint directory
+// Clear checkpoint files inside the current machine directory.  Drops
+// state.checkpoint, any leftover *.tmp, and (defensive) any legacy
+// sequence-numbered *.checkpoint / *.pending / *.complete files.  The
+// machine directory itself is left in place.
 static int clear_checkpoint_files(void) {
-    DIR *dir = opendir(BACKGROUND_CHECKPOINT_DIR);
+    const char *dir_path = checkpoint_machine_dir();
+    if (!dir_path)
+        return 0;
+    DIR *dir = opendir(dir_path);
     if (!dir)
-        return 0; // Nothing to clear
-
+        return 0;
     struct dirent *entry;
     int removed = 0;
     char path[BACKGROUND_CHECKPOINT_PATH_MAX];
-
     while ((entry = readdir(dir)) != NULL) {
         const char *name = entry->d_name;
         if (!name || name[0] == '.')
             continue;
-
         size_t len = strlen(name);
-        // Remove files ending in .checkpoint, .complete, or .pending
-        bool is_checkpoint =
-            len > strlen(BACKGROUND_CHECKPOINT_SUFFIX) &&
-            strcmp(name + len - strlen(BACKGROUND_CHECKPOINT_SUFFIX), BACKGROUND_CHECKPOINT_SUFFIX) == 0;
-        bool is_complete = len > strlen(BACKGROUND_CHECKPOINT_COMPLETE_SUFFIX) &&
-                           strcmp(name + len - strlen(BACKGROUND_CHECKPOINT_COMPLETE_SUFFIX),
-                                  BACKGROUND_CHECKPOINT_COMPLETE_SUFFIX) == 0;
-        bool is_pending = len > strlen(BACKGROUND_CHECKPOINT_PENDING_SUFFIX) &&
-                          strcmp(name + len - strlen(BACKGROUND_CHECKPOINT_PENDING_SUFFIX),
-                                 BACKGROUND_CHECKPOINT_PENDING_SUFFIX) == 0;
-
-        if (is_checkpoint || is_complete || is_pending) {
-            snprintf(path, sizeof(path), "%s/%s", BACKGROUND_CHECKPOINT_DIR, name);
+        bool match = false;
+        if (strcmp(name, "state.checkpoint") == 0)
+            match = true;
+        else if (len >= 4 && strcmp(name + len - 4, ".tmp") == 0)
+            match = true;
+        else if (len >= 11 && strcmp(name + len - 11, ".checkpoint") == 0)
+            match = true; // legacy
+        else if (strstr(name, ".complete") || strstr(name, ".pending"))
+            match = true; // legacy
+        if (match) {
+            snprintf(path, sizeof(path), "%s/%s", dir_path, name);
             if (unlink(path) == 0)
                 removed++;
         }
@@ -1132,6 +1060,24 @@ static uint64_t cmd_checkpoint(int argc, char *argv[]) {
     }
 
     const char *action = argv[1];
+
+    // checkpoint --machine <id> <created> — set the active machine identity
+    // (must be the first checkpoint command run, before any image is opened).
+    if (strcmp(action, "--machine") == 0) {
+        if (argc < 4) {
+            printf("Usage: checkpoint --machine <id> <created>\n");
+            return 1;
+        }
+        int rc = checkpoint_machine_set(argv[2], argv[3]);
+        if (rc != 0) {
+            printf("checkpoint --machine: failed to set %s-%s\n", argv[2], argv[3]);
+            return 1;
+        }
+        // Sweep stale machine directories left over from older sessions.
+        checkpoint_machine_sweep_others();
+        printf("Machine directory: %s\n", checkpoint_machine_dir());
+        return 0;
+    }
 
     // checkpoint --save <path> [content|refs] — save machine state
     if (strcmp(action, "--save") == 0) {
@@ -1213,7 +1159,9 @@ static uint64_t cmd_checkpoint(int argc, char *argv[]) {
         return 0;
     }
 
-    printf("Usage: checkpoint --save <path> | --load [<path>] | --validate <path> | --probe | clear | auto <on|off>\n");
+    printf(
+        "Usage: checkpoint --machine <id> <created> | --save <path> | --load [<path>] | --validate <path> | --probe | "
+        "clear | auto <on|off>\n");
     return 1;
 }
 

@@ -11,6 +11,7 @@
 
 #include "appletalk.h"
 #include "build_id.h"
+#include "checkpoint_machine.h"
 #include "cmd_types.h"
 #include "cpu.h"
 #include "drive_catalog.h"
@@ -56,6 +57,17 @@ void system_set_pending_ram_kb(uint32_t kb) {
 }
 uint32_t system_get_pending_ram_kb(void) {
     return g_pending_ram_kb;
+}
+
+// Pick the delta directory for a fresh writable mount.  Default is the
+// active machine directory (so deltas live alongside state.checkpoint and
+// the manifest, §2.1).  For volatile bases under /tmp/ — typically test
+// artifacts uploaded to memfs — fall back to NULL so image_create places
+// deltas adjacent to the base, preserving memfs-only I/O performance.
+static const char *pick_delta_dir(const char *path) {
+    if (path && strncmp(path, "/tmp/", 5) == 0)
+        return NULL;
+    return checkpoint_machine_dir();
 }
 
 // Config field accessors for opaque handle access
@@ -346,7 +358,7 @@ static int do_insert_fd(const char *path, int preferred, int writable_flag) {
     if (persistent_path)
         path = persistent_path;
 
-    image_t *disk = image_open(path, writable);
+    image_t *disk = writable ? image_create(path, pick_delta_dir(path)) : image_open_readonly(path);
     if (!disk) {
         printf("fd insert: failed to open disk image: %s\n", path);
         free(persistent_path);
@@ -393,7 +405,7 @@ static int do_probe_fd(const char *path) {
     if (persistent_path)
         path = persistent_path;
 
-    image_t *disk = image_open(path, false);
+    image_t *disk = image_open_readonly(path);
     if (!disk) {
         printf("%s: NOT a supported format\n", path);
         free(persistent_path);
@@ -456,7 +468,7 @@ static int do_create_fd(const char *path, bool high_density, int preferred) {
         return -1;
     }
 
-    image_t *disk = image_open(path, true);
+    image_t *disk = image_create(path, pick_delta_dir(path));
     if (!disk) {
         printf("fd create: failed to open newly created image: %s\n", path);
         return -1;
@@ -544,7 +556,7 @@ static int do_download_hd(const char *src_path, const char *dest_path) {
         return 0;
     }
     // Fall back to opening a fresh image (for detached / offline images)
-    image_t *img = image_open(src_path, false);
+    image_t *img = image_open_readonly(src_path);
     if (!img) {
         printf("hd download: cannot open image: %s\n", src_path);
         return -1;
@@ -691,7 +703,7 @@ static void cmd_fd_handler(struct cmd_context *ctx, struct cmd_result *res) {
             return;
         }
         const char *path = ctx->args[0].as_str;
-        image_t *img = image_open(path, false);
+        image_t *img = image_open_readonly(path);
         if (!img) {
             cmd_printf(ctx, "invalid floppy image: cannot open %s\n", path);
             cmd_bool(res, false);
@@ -769,7 +781,7 @@ static void cmd_hd_handler(struct cmd_context *ctx, struct cmd_result *res) {
             return;
         }
         const char *path = ctx->args[0].as_str;
-        image_t *img = image_open(path, false);
+        image_t *img = image_open_readonly(path);
         if (!img) {
             cmd_printf(ctx, "invalid SCSI HD image: cannot open %s\n", path);
             cmd_bool(res, false);
@@ -992,7 +1004,7 @@ static void cmd_cdrom_handler(struct cmd_context *ctx, struct cmd_result *res) {
             return;
         }
         const char *path = ctx->args[0].as_str;
-        image_t *img = image_open(path, false);
+        image_t *img = image_open_readonly(path);
         if (!img) {
             cmd_printf(ctx, "invalid CD-ROM image: cannot open %s\n", path);
             cmd_bool(res, false);
@@ -1375,6 +1387,12 @@ config_t *system_create(const hw_profile_t *profile, checkpoint_t *checkpoint) {
     // Notify the platform (e.g., install assertion callback)
     system_post_create(cfg);
 
+    // Cold boot: stamp out a manifest documenting what was set up.  Skipped
+    // on checkpoint restore — the manifest is fixed at original creation
+    // time and is purely informational (§2.7).  Failure is non-fatal.
+    if (!checkpoint && checkpoint_machine_dir())
+        checkpoint_machine_write_manifest();
+
     return cfg;
 }
 
@@ -1412,7 +1430,7 @@ void add_scsi_drive(struct config *restrict config, const char *filename, int sc
     if (persistent_path)
         filename = persistent_path;
 
-    image_t *img = image_open(filename, true);
+    image_t *img = image_create(filename, pick_delta_dir(filename));
     if (!img) {
         printf("Failed to open image: %s\n", filename);
         free(persistent_path);
@@ -1443,7 +1461,7 @@ static void add_scsi_cdrom(struct config *restrict config, const char *filename,
         filename = persistent_path;
 
     // CD-ROM images are always opened read-only
-    image_t *img = image_open(filename, false);
+    image_t *img = image_open_readonly(filename);
     if (!img) {
         printf("Failed to open CD-ROM image: %s\n", filename);
         free(persistent_path);

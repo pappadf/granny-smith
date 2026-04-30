@@ -224,7 +224,7 @@ int image_vfs_acquire_mount(const char *host_path_in, image_mount_t **out_mount)
     if (!m)
         return -ENOSPC;
 
-    image_t *img = image_open(host_path, false);
+    image_t *img = image_open_readonly(host_path);
     if (!img)
         return -ENOENT;
 
