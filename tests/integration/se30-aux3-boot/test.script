@@ -1,0 +1,51 @@
+# SE/30 A/UX 3.0.1 HD Boot.
+#
+# Boots the SE/30 from a pre-installed A/UX 3.0.1 HD image and runs long
+# enough to clear the early kernel boot phase.
+
+# Pin the wall clock so screenshot comparisons are reproducible. This
+# specific seed used to panic with "Sorry, a system error occurred."
+# before the se30 slot-deassert fix (commit db03c13). Booting cleanly
+# at this seed proves the fix.
+set-time 2026-04-26T21:30:36
+
+run 300000000
+
+# enter user "root"
+key 0x0F
+key 0x1F
+key 0x1F
+key 0x11
+key return
+
+# enter empty password
+key return
+
+run 100000000
+
+screenshot match desktop.png
+
+# select "CommandShell" via Special menu
+set-mouse 20 10 --aux
+run 10000000
+mouse-button down
+run 10000000
+set-mouse 20 110 --aux
+run 10000000
+mouse-button up
+run 10000000
+
+# The command shell should now be open
+screenshot match shell.png
+
+# enter command "ls"
+key 0x25
+key 0x01
+key return
+
+run 10000000
+
+# The shell should have run `ls` and printed a directory listing
+screenshot match ls.png
+
+quit
