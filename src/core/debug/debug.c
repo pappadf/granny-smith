@@ -4479,7 +4479,7 @@ debug_t *debug_init(void) {
         .synopsis = "Show state (regs, fpregs, mmu, mmu-walk, mmu-map, break, mac, process, events, exceptions)",
         .fn = cmd_info_handler,
         .subcmds = info_subcmds,
-        .n_subcmds = 13,
+        .n_subcmds = 15,
     });
 
     // Tracing
