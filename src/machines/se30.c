@@ -1005,8 +1005,13 @@ static void se30_trigger_vbl(config_t *cfg) {
     via_input_c(cfg->via1, 0, 0, 1);
     via_input_c(cfg->via2, 0, 0, 1);
 
-    // Deassert slot $E after the blanking interval ends
-    scheduler_new_cpu_event(cfg->scheduler, &se30_vbl_slot_deassert, cfg, 0, 0, 50000);
+    // Deassert slot $E after the vertical blanking interval ends.
+    // 15700 cycles ≈ 1 ms at 15.6672 MHz — matches the SE/30 video
+    // blanking duration. With deassert=50000 the slot stayed asserted
+    // long enough for a second CA1 pulse to deliver into Mac OS's
+    // empty-queue panic path during the MAE→A/UX kernel handoff window
+    // for some RTC values; see local/gs-docs/notes/71-aux3-irq-races-mmu-handoff.md.
+    scheduler_new_cpu_event(cfg->scheduler, &se30_vbl_slot_deassert, cfg, 0, 0, 15700);
 
     image_tick_all(cfg);
 }
