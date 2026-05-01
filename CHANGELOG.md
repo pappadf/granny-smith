@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v0.3.0] — 2026-05-01
+
+### Added
+- **A/UX 3.0.1 boot and install on SE/30** — boots from a pre-installed HD image, and runs the retail Easy Install from boot floppy + CD-ROM end-to-end
+- CD-ROM emulation (AppleCD SC Plus / Sony CDU-8002)
+- Tab completion and a richer headless debugger (find, logpoint value filters, MMU/SoA inspection)
+
+### Fixed
+- 68030 PMMU and CPU bus-error retry semantics across `MOVEM`/`MOVE`/`PUSH`/`CAS`/etc., so demand-paged faults restart cleanly
+- NCR 5380 SCSI: non-arbitrated pseudo-DMA, ATN/MESSAGE OUT, and status-phase handling needed by the A/UX kernel
+- Numerous smaller MMU, SCC, ADB, IWM, scheduler, and disassembler issues uncovered while bringing up A/UX
+
 ## [v0.2.1] — 2026-04-11
 
 ### Fixed
