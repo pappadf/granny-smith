@@ -3,120 +3,69 @@
 [![CI](https://github.com/pappadf/granny-smith/actions/workflows/tests.yml/badge.svg)](https://github.com/pappadf/granny-smith/actions/workflows/tests.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-**Granny Smith** is a browser-first 68000/68030 Macintosh emulator.
-> **[Try Granny Smith instantly in your browser!](https://pappadf.github.io/gs-pages/latest/)**  
-> _For best results, use a Chromium-based browser (Chrome, Edge, etc.). Safari has known issues._
+**Granny Smith** is a browser-first 68000/68030 Macintosh emulator capable of running classic Mac OS (System 2 through System 7) and A/UX.
+
+> **See it →** &nbsp;[Screenshot gallery of A/UX, MacTest, and more](GALLERY.md)
+> _Captured by automated integration tests — what you see is what the emulator actually produces._
+
+> **Try it →** &nbsp;[Open Granny Smith in your browser](https://pappadf.github.io/gs-pages/latest/)
+> _Best experience on Chromium-based browsers (Chrome, Edge). Safari and Firefox have known issues — see below._
 
 ![A/UX 3.0.1 CommandShell on SE/30](tests/integration/se30-aux3-boot/shell.png)
 
-The guiding principle for this project is to "keep it simple" — simple for everyone to run classic Macintosh software as well as simple to develop and maintain the emulator itself.
+The guiding principle of this project is **"keep it simple"** — simple for users to run classic Macintosh software, and simple to develop and maintain.
 
 ## Simple for Users
 
-- **Run in the browser** – no installation needed
-- **Continuous background checkpointing** – reload or close the browser without losing your running session
-- **Mount disk images by drag-and-drop** – even if they're compressed in `*.sit.hqx` format
-- **Access the browser/host filesystem** through a built-in AFP file server
+- **Runs in the browser** — no installation required
+- **Continuous background checkpointing** — close or reload the tab without losing your session
+- **Drag-and-drop disk images** — even compressed `*.sit.hqx` archives are handled transparently
+- **Built-in AFP file server** — bridge the browser/host filesystem into the guest OS
 
 ## Simple for Developers
 
-- **Extensive automated testing** – unit tests, headless integration tests, and Playwright end-to-end tests
-- **Highly portable C99 core** – no special runtime requirements
-- **Simple CPU model** – no advanced JIT compiler or meta tools; we rely on the compiler and modern hardware to make it fast enough
-- **Compact and maintainable** – the entire CPU instruction decoder is under 550 lines; the 68000 opcode implementations fit in under 1,000 lines (new 68030 support excluded)
-- **Comprehensive documentation** – hardware documentation in Markdown format, easily accessible for both human developers and AI agents
-- **AI agent friendly** – repository organized to simplify work for coding agents
+- **Extensive automated testing** — unit tests, headless integration tests, and Playwright end-to-end tests
+- **Highly portable C99 core** — no special runtime requirements
+- **Simple CPU model** — no JIT compiler or meta tools; we rely on the compiler and modern hardware for performance
+- **Compact and maintainable** — the entire CPU instruction decoder is under 550 lines; the 68000 opcode implementations fit in under 1,000 lines (68030 support excluded)
+- **Comprehensive documentation** — hardware documentation in Markdown, accessible to both human developers and AI agents
+- **AI-agent friendly** — repository organized to simplify work for coding agents
 
 ## Getting Started
 
-To run Granny Smith you need a Macintosh ROM image and a bootable system disk image.
+You will need a Macintosh ROM image and a bootable system disk image.
 
 1. **[Open Granny Smith](https://pappadf.github.io/gs-pages/latest/)** in any modern browser
-2. Upload a **Macintosh Plus or SE/30 ROM** file when prompted by the configuration dialog
-3. Select a machine model and drag a **bootable disk image** onto the window
-4. The emulator boots automatically — your session is saved continuously in the background
+2. On first launch, upload a **Macintosh Plus, SE/30, or compatible ROM** — it is persisted in the browser's OPFS storage, so you only need to do this once
+3. In the **Machine Configuration** dialog, pick a model (Plus, SE/30, …), choose RAM, and attach disk images to the floppy / SCSI / CD slots
+4. Click **Boot** — your session is checkpointed continuously in the background, so closing or reloading the tab won't lose state
+5. Once running, you can drag-and-drop additional disk images directly onto the screen to insert them at runtime
 
-Disk images can be raw (`.dsk`, `.img`), compressed (`.sit.hqx`), or packaged in `.zip` archives. The emulator decompresses them on the fly via the bundled [peeler](third-party/peeler) library.
+Disk images can be raw (`.dsk`, `.img`), compressed (`.sit.hqx`), or packaged in `.zip` archives. They are decompressed transparently via the bundled [peeler](third-party/peeler) library.
 
-### Running Locally
-
-If you want to build and run Granny Smith locally for development:
-
-```bash
-make run               # Build and start HTTP server on :8080
-```
-
-This builds the WebAssembly version and starts a local server with the required COOP/COEP headers. See [CONTRIBUTING.md](CONTRIBUTING.md) for detailed build instructions.
+For build, test, and contribution instructions, see [CONTRIBUTING.md](CONTRIBUTING.md). Architecture and design docs live in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md), and coding guidelines in [AGENTS.md](AGENTS.md).
 
 ## Current Status
 
 ### What Works
 
-- Macintosh Plus (68000) and SE/30 (68030) fully emulated (no ROM patching)
+- Macintosh Plus (68000) and SE/30 (68030) fully emulated, with no ROM patching
 - Machine configuration dialog with model selection and RAM sizing
-- Accurate enough timing (MacTest hardware test suite runs without errors on both models)
-- Mounting of compressed disk images (e.g., `*.sit.hqx`, `*.zip`) via the [peeler](third-party/peeler) library
-- Background checkpointing and on-demand checkpointing/restore
-- Browser filesystem accessible as an AFP share with authentication, browsing, and file read/write
+- Accurate-enough timing — the MacTest hardware test suite passes on both models
+- Booting **classic Mac OS** — verified end-to-end across System 2 through System 7
+- Booting **A/UX 3.0.1**
+- Installing **A/UX 3.0.1** from floppy + CD
+- Mounting of compressed disk images (`*.sit.hqx`, `*.zip`) via the [peeler](third-party/peeler) library
+- Background checkpointing and on-demand checkpoint/restore
+- Browser filesystem exposed as an AFP share with authentication, browsing, and file read/write
 
 ### Known Limitations
 
-- LaserWriter emulation incomplete – printer is identified but print jobs don't finish correctly
-- AFP file content access not yet implemented (just mounting/browsing)
-
-## Development
-
-### Codespaces (Quick Start)
-
-The easiest way to get up and running is by creating a GitHub Codespace based on the repository. From the granny-smith code page, click **Code** (the big green button) → **Codespaces** → **Create a Codespace on main**. It will take a minute or two, then you're up and running.
-
-```bash
-make          # Build the WASM emulator
-make run      # Build and start the HTTP server on :8080
-```
-
-To pre-load boot media, pass paths (relative to the repo root) as `make` variables:
-
-```bash
-make run ROM=path/to/rom.bin HD0=path/to/hd.zip
-```
-
-Available options for the `run` target:
-
-| Variable | Description |
-|----------|-------------|
-| `ROM=path/to/rom.bin` | ROM image |
-| `FD0=path/to/floppy.img` | Floppy disk image |
-| `HD0=path/to/hd.zip` … `HD7=…` | Hard disk images (zip or raw) |
-| `SPEED=max\|realtime\|hardware` | Emulation speed |
-
-Example:
-
-```bash
-make run ROM=tests/data/roms/Plus_v3.rom HD0=tests/data/systems/hd.zip
-```
-
-### Local Development
-
-**Build and test instructions**: See [CONTRIBUTING.md](CONTRIBUTING.md)
-
-**Architecture and design docs**: See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
-
-**Coding guidelines**: See [AGENTS.md](AGENTS.md)
-
-| Area | Directory |
-|------|-----------|
-| Browser frontend | [app/web/](app/web/) |
-| CPU core | [src/core/cpu/](src/core/cpu/) |
-| Peripherals | [src/core/peripherals/](src/core/peripherals/) |
-| Machine definitions | [src/machines/](src/machines/) |
-| Hardware documentation | [docs/](docs/) |
-
-## Roadmap
-
-- Finalize LaserWriter emulation
-- Add an Electron build target (just placeholder today)
-- Bootstrap A/UX
+- **Safari** — known rendering and audio issues; not currently supported
+- **Firefox** — works partially; some compatibility problems remain
+- **A/UX runtime** — occasional residual errors during sessions
+- **LaserWriter** — printer is identified, but print jobs don't complete correctly
+- **AFP** — file content access not yet implemented (mounting and browsing only)
 
 ## Acknowledgments
 
@@ -132,5 +81,3 @@ All trademarks referenced in this project are the property of their respective o
 ## License
 
 [MIT](LICENSE)
-
-
