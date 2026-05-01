@@ -50,16 +50,6 @@ await initEmulator(canvas, wasmArgs, writeLine);
 // Capture FS reference for /tmp/ operations
 initFS(getModule());
 
-// Activate the per-machine checkpoint directory before anything else opens
-// images.  Once set, /opfs/checkpoints/<id>-<created>/ becomes the home of
-// state.checkpoint, image deltas, and the manifest (§3.3).  Awaiting here
-// preserves command ordering: every later runCommand in the boot path sees
-// the machine identity already registered.
-{
-  const machine = getOrCreateMachine();
-  await runCommand(`checkpoint --machine ${machine.id} ${machine.created}`);
-}
-
 // Show initial prompt now that the shell is ready
 showPrompt(true);
 
@@ -78,6 +68,16 @@ initDragDrop(canvas);
 
 // --- 6. Load media ---
 // OPFS directories are already available (mounted by C-side main()).
+
+// Activate the per-machine checkpoint directory before anything that opens
+// images runs.  Awaiting here preserves command ordering: every later
+// runCommand (starting with `checkpoint --probe` below) sees the machine
+// identity already registered.  Done after initUI so the click handlers on
+// the terminal toggle / canvas are wired before this awaits.
+{
+  const machine = getOrCreateMachine();
+  await runCommand(`checkpoint --machine ${machine.id} ${machine.created}`);
+}
 
 const resumedFromCheckpoint = await maybeOfferBackgroundCheckpoint();
 if (resumedFromCheckpoint) {
