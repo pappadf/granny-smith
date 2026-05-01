@@ -107,6 +107,21 @@ typedef struct class_desc {
     void *(*instance_data)(struct object *o); // optional, for casts
 } class_desc_t;
 
+// === Root object =============================================================
+//
+// The object tree has one root per process, named "emu". Unqualified
+// paths resolve against it (so `cpu.pc` means `emu.cpu.pc`). The root
+// is created on first access and persists for the process lifetime;
+// machine setup attaches subsystem objects to it, and machine teardown
+// detaches them. The root itself is never destroyed.
+
+struct object *object_root(void);
+
+// Free the root and any attached children. Used by tests and at
+// process exit. After this returns, object_root() will lazily create
+// a fresh, empty root on the next call.
+void object_root_reset(void);
+
 // === Object lifetime =========================================================
 
 // Construct an opaque object instance. instance_data is the back-pointer

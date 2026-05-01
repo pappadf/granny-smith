@@ -1,0 +1,23 @@
+# Run a few thousand instructions so PC has actually moved.
+run 50000
+
+# Object-model resolver smoke checks. The output must contain the
+# expected JSON-like shape for each path. (The harness greps stdout
+# downstream of these lines.)
+eval machine.model_id
+eval machine.model_name
+eval machine.cpu_clock_hz
+eval cpu.pc
+eval cpu.d0
+eval cpu.a7
+eval memory.ram_size
+eval memory.rom_size
+
+# Bare object reads return a {"object":...} record.
+eval cpu
+eval scheduler
+
+# Unknown paths fail cleanly with an error JSON.
+eval ghost.path
+
+quit

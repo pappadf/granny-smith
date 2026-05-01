@@ -16,6 +16,7 @@
 #include "cpu.h"
 #include "drive_catalog.h"
 #include "floppy.h"
+#include "gs_classes.h"
 #include "image.h"
 #include "image_vfs.h"
 #include "keyboard.h"
@@ -1384,6 +1385,11 @@ config_t *system_create(const hw_profile_t *profile, checkpoint_t *checkpoint) {
     // Delegate all machine-specific initialisation to the profile
     profile->init(cfg, checkpoint);
 
+    // Stand up the object-model root (M2): attaches stub classes for
+    // cpu/memory/scheduler/machine/shell/storage so `eval` can read
+    // runtime state. The legacy shell remains primary.
+    gs_classes_install(cfg);
+
     // Notify the platform (e.g., install assertion callback)
     system_post_create(cfg);
 
@@ -1400,6 +1406,10 @@ config_t *system_create(const hw_profile_t *profile, checkpoint_t *checkpoint) {
 void system_destroy(config_t *config) {
     if (!config)
         return;
+
+    // Tear down the object-model root before machine teardown so stub
+    // getters cannot dereference half-freed subsystem state.
+    gs_classes_uninstall();
 
     // Delegate machine-specific teardown to the profile
     if (config->machine && config->machine->teardown) {

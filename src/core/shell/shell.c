@@ -807,6 +807,8 @@ int shell_init(void) {
     });
     extern void cmd_cp_register(void);
     cmd_cp_register();
+    extern void cmd_eval_register(void);
+    cmd_eval_register();
 
     shell_initialized = 1;
     return 0;

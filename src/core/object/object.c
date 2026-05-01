@@ -29,6 +29,42 @@ struct object {
     struct object *next_sibling;
 };
 
+// Root class: namespace-only object — every member is a child added at
+// runtime via object_attach. M2 does not register attributes or methods
+// on the root yet; that lands in M8 (top-level functions).
+static const class_desc_t emu_root_class = {
+    .name = "emu",
+    .members = NULL,
+    .n_members = 0,
+};
+
+static struct object *g_root = NULL;
+
+struct object *object_root(void) {
+    if (!g_root)
+        g_root = object_new(&emu_root_class, NULL, "emu");
+    return g_root;
+}
+
+void object_root_reset(void) {
+    if (!g_root)
+        return;
+    // Detach every child first so children's parent pointers are cleared
+    // before we free the root. Callers own the children themselves.
+    while (1) {
+        struct object *c = NULL;
+        for (struct object *it = g_root->first_child; it; it = it->next_sibling) {
+            c = it;
+            break;
+        }
+        if (!c)
+            break;
+        object_detach(c);
+    }
+    free(g_root);
+    g_root = NULL;
+}
+
 struct object *object_new(const class_desc_t *cls, void *instance_data, const char *name) {
     if (!cls)
         return NULL;
@@ -285,54 +321,72 @@ node_t node_child(node_t n, const char *segment) {
     if (!n.obj)
         return bad;
 
-    // If `n` currently points at a member (attribute or method), there
-    // is no further path to descend. (Children-of-children are produced
-    // by re-entering with a fresh object node.)
+    // Attribute / method nodes are leaves — no further descent.
     if (n.member && n.member->kind != M_CHILD)
         return bad;
 
-    // The "current object" we descend from is either n.obj directly, or
-    // the indexed child this node references.
-    struct object *here = n.obj;
-    if (n.member && n.member->kind == M_CHILD && n.member->child.indexed) {
-        if (!n.member->child.get)
-            return bad;
-        struct object *child = n.member->child.get(n.obj, n.index);
-        if (!child)
-            return bad;
-        here = child;
-    } else if (n.member && n.member->kind == M_CHILD && !n.member->child.indexed) {
-        // Named child member — descend into its target.
-        struct object *child = NULL;
-        if (n.member->child.lookup)
-            child = n.member->child.lookup(n.obj, n.member->name);
-        if (!child)
-            child = find_attached_child(n.obj, n.member->name);
-        if (!child)
-            return bad;
-        here = child;
-    }
-
-    // Pure-integer segment → indexed child of the current here. We need
-    // a CHILD member of here's class that is indexed; conventionally
-    // there is at most one (the collection's own indexed member). For
-    // M1 we take the first indexed child member found. (Real classes
-    // typically have one such, e.g. scsi.devices.)
+    // Probe for a pure-integer segment up front. Integer segments can
+    // either *select an index* on a pending indexed-child member
+    // (`devices[0]`, `devices.0`) or *enter* the first indexed-child
+    // member of the current object (`bucket.0` shorthand for
+    // `bucket.<first-indexed>.0`). They look the same syntactically.
+    bool is_int = false;
+    long long ival = 0;
     {
         char *endp = NULL;
         long v = strtol(segment, &endp, 0);
         if (endp && endp != segment && *endp == '\0') {
-            const class_desc_t *cls = object_class(here);
-            if (!cls)
-                return bad;
-            for (size_t i = 0; i < cls->n_members; i++) {
-                const member_t *m = &cls->members[i];
-                if (m->kind == M_CHILD && m->child.indexed) {
-                    return (node_t){.obj = here, .member = m, .index = (int)v};
-                }
-            }
-            return bad;
+            is_int = true;
+            ival = v;
         }
+    }
+
+    // Case 1: `n` is sitting on an indexed-child member with no index
+    // chosen yet. An integer segment supplies that index. This is what
+    // makes both `bucket.devices[0]` and `bucket.devices.0` work.
+    if (n.member && n.member->kind == M_CHILD && n.member->child.indexed && n.index < 0 && is_int)
+        return (node_t){.obj = n.obj, .member = n.member, .index = (int)ival};
+
+    // Determine the "current object" we descend from. If `n` already
+    // points at a fully-resolved child slot or a named-child member,
+    // descend into the target object first, then resolve the segment
+    // against that target.
+    struct object *here = n.obj;
+    if (n.member && n.member->kind == M_CHILD) {
+        if (n.member->child.indexed) {
+            if (n.index < 0)
+                return bad; // case 1 above already handled int segments
+            if (!n.member->child.get)
+                return bad;
+            struct object *child = n.member->child.get(n.obj, n.index);
+            if (!child)
+                return bad;
+            here = child;
+        } else {
+            struct object *child = NULL;
+            if (n.member->child.lookup)
+                child = n.member->child.lookup(n.obj, n.member->name);
+            if (!child)
+                child = find_attached_child(n.obj, n.member->name);
+            if (!child)
+                return bad;
+            here = child;
+        }
+    }
+
+    // Integer segment now means "first indexed-child member of `here`."
+    // Conventionally a class declares at most one such member (e.g.
+    // `scsi.devices`), so taking the first match matches user intent.
+    if (is_int) {
+        const class_desc_t *cls = object_class(here);
+        if (!cls)
+            return bad;
+        for (size_t i = 0; i < cls->n_members; i++) {
+            const member_t *m = &cls->members[i];
+            if (m->kind == M_CHILD && m->child.indexed)
+                return (node_t){.obj = here, .member = m, .index = (int)ival};
+        }
+        return bad;
     }
 
     // Identifier segment → named member of here's class.
@@ -341,9 +395,9 @@ node_t node_child(node_t n, const char *segment) {
     if (m)
         return (node_t){.obj = here, .member = m, .index = -1};
 
-    // Identifier may also name a statically-attached child object that
-    // the class did not predeclare as a member (rare, but allowed for
-    // root-style aggregations).
+    // Identifier may also name a statically-attached child object the
+    // class did not predeclare as a member (the root uses this — its
+    // children are added via object_attach at runtime).
     struct object *child = find_attached_child(here, segment);
     if (child)
         return (node_t){.obj = child, .member = NULL, .index = -1};
