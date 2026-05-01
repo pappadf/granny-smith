@@ -77,6 +77,7 @@ CORE_SRC := $(wildcard $(CORE_DIR)/*.c) \
             $(wildcard $(CORE_DIR)/storage/*.c) \
             $(wildcard $(CORE_DIR)/network/*.c) \
             $(wildcard $(CORE_DIR)/shell/*.c) \
+            $(wildcard $(CORE_DIR)/object/*.c) \
             $(wildcard $(CORE_DIR)/vfs/*.c) \
             $(wildcard $(MACHINES_DIR)/*.c)
 
@@ -128,6 +129,7 @@ INCLUDES := -I$(CORE_DIR) \
             -I$(CORE_DIR)/storage \
             -I$(CORE_DIR)/network \
             -I$(CORE_DIR)/shell \
+            -I$(CORE_DIR)/object \
             -I$(CORE_DIR)/vfs \
             -I$(MACHINES_DIR) \
             -I$(PLATFORM_DIR)

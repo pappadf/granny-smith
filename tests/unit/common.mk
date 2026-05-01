@@ -51,6 +51,7 @@ INCLUDE_FLAGS := -I$(UNIT_ROOT)/support \
                  -I$(EMU_ROOT)/core/storage \
                  -I$(EMU_ROOT)/core/network \
                  -I$(EMU_ROOT)/core/shell \
+                 -I$(EMU_ROOT)/core/object \
                  -I$(EMU_ROOT)/core/vfs \
                  -I$(EMU_ROOT)/platform/wasm \
                  -DUNIT_TEST_PLATFORM_OVERRIDE \
