@@ -71,13 +71,18 @@ initDragDrop(canvas);
 
 // Activate the per-machine checkpoint directory before anything that opens
 // images runs.  Awaiting here preserves command ordering: every later
-// gsEval (starting with `checkpoint_probe` in maybeOfferBackgroundCheckpoint
-// below) sees the machine identity already registered.  Done after initUI
-// so the click handlers on the terminal toggle / canvas are wired before
-// this awaits.
+// runCommand (starting with `checkpoint --probe` below) sees the machine
+// identity already registered.  Done after initUI so the click handlers on
+// the terminal toggle / canvas are wired before this awaits.
+//
+// Uses runCommand instead of gsEval here because this fires during the
+// boot window between Module-ready and the worker's main loop becoming
+// active, where ccall-based gsEval requests are not yet served — the
+// runCommand path naturally waits via the cmd_pending flag the main loop
+// polls. M10c re-evaluates this once the e2e helper migration lands.
 {
   const machine = getOrCreateMachine();
-  await window.gsEval('register_machine', [machine.id, String(machine.created)]);
+  await runCommand(`checkpoint --machine ${machine.id} ${machine.created}`);
 }
 
 const resumedFromCheckpoint = await maybeOfferBackgroundCheckpoint();
