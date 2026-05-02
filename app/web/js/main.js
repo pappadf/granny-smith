@@ -14,6 +14,7 @@ import { scanForPersistedRoms, showRomUploadDialog, showConfigDialog, bootFromCo
 import { UPLOAD_DIR } from './config.js';
 import { clearOPFSDir } from './fs.js';
 import { getOrCreateMachine } from './checkpoint-machine.js';
+import { initInspector } from './inspector.js';
 
 const params = new URLSearchParams(location.search);
 
@@ -65,6 +66,9 @@ initUI({
 
 // --- 5. Drag & drop ---
 initDragDrop(canvas);
+
+// --- 5b. Object inspector panel (M11) ---
+initInspector();
 
 // --- 6. Load media ---
 // OPFS directories are already available (mounted by C-side main()).
