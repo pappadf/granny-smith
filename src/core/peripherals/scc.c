@@ -1128,6 +1128,34 @@ bool scc_get_external_loopback(scc_t *scc) {
     return scc ? scc->external_loopback : false;
 }
 
+// === M7a — read-only views for the object model =============================
+
+uint32_t scc_get_pclk_hz(const scc_t *scc) {
+    return scc ? scc->pclk_hz : 0;
+}
+uint32_t scc_get_rtxc_hz(const scc_t *scc) {
+    return scc ? scc->rtxc_hz : 0;
+}
+
+bool scc_channel_dcd(const scc_t *scc, unsigned int ch) {
+    if (!scc || ch > 1)
+        return false;
+    return (scc->ch[ch].rr[0] & RR0_DCD) != 0;
+}
+
+bool scc_channel_tx_empty(const scc_t *scc, unsigned int ch) {
+    if (!scc || ch > 1)
+        return true;
+    return scc->ch[ch].tx.len == 0;
+}
+
+unsigned scc_channel_rx_pending(const scc_t *scc, unsigned int ch) {
+    if (!scc || ch > 1)
+        return 0;
+    const ch_t *c = &scc->ch[ch];
+    return (unsigned)(c->rx.head - c->rx.tail);
+}
+
 void scc_delete(scc_t *scc) {
     if (!scc)
         return;

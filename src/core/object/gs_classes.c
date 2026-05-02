@@ -33,6 +33,7 @@
 #include "machine.h"
 #include "memory.h"
 #include "object.h"
+#include "scc.h"
 #include "scheduler.h"
 #include "system.h"
 #include "system_config.h"
@@ -1346,6 +1347,185 @@ static const class_desc_t debugger_class = {
     .n_members = 0,
 };
 
+// === M7a — SCC peripheral class =============================================
+//
+// Replaces the bespoke `scc loopback` command (proposal §5.4). The
+// `scc` root object has a writable `loopback` attribute, an immutable
+// view of the BRG source clocks, a `reset()` method, and per-channel
+// children `a` / `b` (proposal goal: "scc class with loopback, reset,
+// channel children a/b").
+//
+// instance_data is config_t* throughout; we recover scc_t* via cfg->scc.
+// Channel objects identify themselves through user_data on each member
+// — channel index is encoded as the member's user_data pointer (0 = A,
+// 1 = B), so a single getter per attribute can serve both children
+// (mirrors the trick the auto-populated `mac` class uses).
+
+static scc_t *scc_from(struct object *self) {
+    config_t *cfg = (config_t *)object_data(self);
+    return cfg ? cfg->scc : NULL;
+}
+
+// `loopback` is the writable head attribute — get/set wrap the C API.
+static value_t scc_attr_loopback_get(struct object *self, const member_t *m) {
+    (void)m;
+    scc_t *scc = scc_from(self);
+    return val_bool(scc ? scc_get_external_loopback(scc) : false);
+}
+
+static value_t scc_attr_loopback_set(struct object *self, const member_t *m, value_t in) {
+    (void)m;
+    scc_t *scc = scc_from(self);
+    if (!scc) {
+        value_free(&in);
+        return val_err("scc not available");
+    }
+    bool b = val_as_bool(&in);
+    value_free(&in);
+    scc_set_external_loopback(scc, b);
+    return val_none();
+}
+
+static value_t scc_attr_pclk_hz(struct object *self, const member_t *m) {
+    (void)m;
+    scc_t *scc = scc_from(self);
+    return val_uint(4, scc ? scc_get_pclk_hz(scc) : 0);
+}
+
+static value_t scc_attr_rtxc_hz(struct object *self, const member_t *m) {
+    (void)m;
+    scc_t *scc = scc_from(self);
+    return val_uint(4, scc ? scc_get_rtxc_hz(scc) : 0);
+}
+
+static value_t scc_method_reset(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)m;
+    (void)argc;
+    (void)argv;
+    scc_t *scc = scc_from(self);
+    if (!scc)
+        return val_err("scc not available");
+    scc_reset(scc);
+    return val_none();
+}
+
+// --- Channel attributes -----------------------------------------------------
+//
+// One getter per logical attribute, dispatched by `m->attr.user_data`
+// holding the channel index (cast through uintptr_t). Three small
+// channel attrs exposed for now — the proposal lists "loopback,
+// reset, channel children a/b" without enumerating channel members,
+// so we expose the three things existing code already encapsulates
+// (`scc_channel_*`). Heavier per-channel views (BRG, baud, sync mode)
+// can land later once a real consumer needs them.
+
+static unsigned channel_index_from_member(const member_t *m) {
+    return (unsigned)(uintptr_t)m->attr.user_data;
+}
+
+static value_t scc_ch_attr_index(struct object *self, const member_t *m) {
+    (void)self;
+    return val_int((int)channel_index_from_member(m));
+}
+
+static value_t scc_ch_attr_dcd(struct object *self, const member_t *m) {
+    scc_t *scc = scc_from(self);
+    return val_bool(scc_channel_dcd(scc, channel_index_from_member(m)));
+}
+
+static value_t scc_ch_attr_tx_empty(struct object *self, const member_t *m) {
+    scc_t *scc = scc_from(self);
+    return val_bool(scc_channel_tx_empty(scc, channel_index_from_member(m)));
+}
+
+static value_t scc_ch_attr_rx_pending(struct object *self, const member_t *m) {
+    scc_t *scc = scc_from(self);
+    return val_uint(4, scc_channel_rx_pending(scc, channel_index_from_member(m)));
+}
+
+// Two member tables — one per channel — because the user_data slot
+// has to encode the channel index statically. (Trying to share a
+// single table across both channels would need per-instance member
+// data, which the substrate intentionally avoids.)
+
+static const member_t scc_ch_a_members[] = {
+    {.kind = M_ATTR,
+     .name = "index",
+     .flags = VAL_RO,
+     .attr = {.type = V_INT, .get = scc_ch_attr_index, .set = NULL, .user_data = (void *)(uintptr_t)0}      },
+    {.kind = M_ATTR,
+     .name = "dcd",
+     .flags = VAL_RO,
+     .attr = {.type = V_BOOL, .get = scc_ch_attr_dcd, .set = NULL, .user_data = (void *)(uintptr_t)0}       },
+    {.kind = M_ATTR,
+     .name = "tx_empty",
+     .flags = VAL_RO,
+     .attr = {.type = V_BOOL, .get = scc_ch_attr_tx_empty, .set = NULL, .user_data = (void *)(uintptr_t)0}  },
+    {.kind = M_ATTR,
+     .name = "rx_pending",
+     .flags = VAL_RO,
+     .attr = {.type = V_UINT, .get = scc_ch_attr_rx_pending, .set = NULL, .user_data = (void *)(uintptr_t)0}},
+};
+
+static const member_t scc_ch_b_members[] = {
+    {.kind = M_ATTR,
+     .name = "index",
+     .flags = VAL_RO,
+     .attr = {.type = V_INT, .get = scc_ch_attr_index, .set = NULL, .user_data = (void *)(uintptr_t)1}      },
+    {.kind = M_ATTR,
+     .name = "dcd",
+     .flags = VAL_RO,
+     .attr = {.type = V_BOOL, .get = scc_ch_attr_dcd, .set = NULL, .user_data = (void *)(uintptr_t)1}       },
+    {.kind = M_ATTR,
+     .name = "tx_empty",
+     .flags = VAL_RO,
+     .attr = {.type = V_BOOL, .get = scc_ch_attr_tx_empty, .set = NULL, .user_data = (void *)(uintptr_t)1}  },
+    {.kind = M_ATTR,
+     .name = "rx_pending",
+     .flags = VAL_RO,
+     .attr = {.type = V_UINT, .get = scc_ch_attr_rx_pending, .set = NULL, .user_data = (void *)(uintptr_t)1}},
+};
+
+static const class_desc_t scc_channel_a_class = {
+    .name = "scc_channel",
+    .members = scc_ch_a_members,
+    .n_members = sizeof(scc_ch_a_members) / sizeof(scc_ch_a_members[0]),
+};
+static const class_desc_t scc_channel_b_class = {
+    .name = "scc_channel",
+    .members = scc_ch_b_members,
+    .n_members = sizeof(scc_ch_b_members) / sizeof(scc_ch_b_members[0]),
+};
+
+static const member_t scc_members[] = {
+    {.kind = M_ATTR,
+     .name = "loopback",
+     .doc = "External loopback (port A TX → port B RX, port B TX → port A RX)",
+     .flags = 0,
+     .attr = {.type = V_BOOL, .get = scc_attr_loopback_get, .set = scc_attr_loopback_set}},
+    {.kind = M_ATTR,
+     .name = "pclk_hz",
+     .doc = "PCLK source frequency (Hz)",
+     .flags = VAL_RO,
+     .attr = {.type = V_UINT, .get = scc_attr_pclk_hz, .set = NULL}                      },
+    {.kind = M_ATTR,
+     .name = "rtxc_hz",
+     .doc = "RTxC source frequency (Hz)",
+     .flags = VAL_RO,
+     .attr = {.type = V_UINT, .get = scc_attr_rtxc_hz, .set = NULL}                      },
+    {.kind = M_METHOD,
+     .name = "reset",
+     .doc = "Reset the SCC (both channels)",
+     .flags = 0,
+     .method = {.args = NULL, .nargs = 0, .result = V_NONE, .fn = scc_method_reset}      },
+};
+
+static const class_desc_t scc_class = {
+    .name = "scc",
+    .members = scc_members,
+    .n_members = sizeof(scc_members) / sizeof(scc_members[0]),
+};
+
 // === Built-in alias registration ============================================
 //
 // Register at install time. Order matters only insofar as built-ins
@@ -1462,6 +1642,17 @@ void gs_classes_install(struct config *cfg) {
         attach_stub(debugger_obj, &bp_collection_class, cfg, "breakpoints");
         attach_stub(debugger_obj, &lp_collection_class, cfg, "logpoints");
         attach_stub(debugger_obj, &watches_collection_class, cfg, "watches");
+    }
+
+    // M7a — scc with channel children. Plus has no SCC-less profile;
+    // SE/30 / IIcx ditto. Attach unconditionally — getters tolerate
+    // a NULL scc_t* via the early-return check in each accessor.
+    if (cfg && cfg->scc) {
+        struct object *scc_obj = attach_stub(NULL, &scc_class, cfg, "scc");
+        if (scc_obj) {
+            attach_stub(scc_obj, &scc_channel_a_class, cfg, "a");
+            attach_stub(scc_obj, &scc_channel_b_class, cfg, "b");
+        }
     }
 
     // Built-in aliases. Register CPU always, FPU only when present,

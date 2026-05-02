@@ -1,0 +1,35 @@
+# M7a integration: `scc` object class.
+# The new `scc.*` paths and the legacy `scc loopback` command must
+# share the same backing state — flipping one and reading via the
+# other is the strongest test that the object surface is a real
+# view, not a separate bag of fields.
+
+run 50000
+
+# Defaults.
+eval scc
+eval scc.loopback
+eval scc.pclk_hz
+eval scc.rtxc_hz
+
+# Channel children both resolve and report their own index.
+eval scc.a
+eval scc.b
+eval scc.a.index
+eval scc.b.index
+eval scc.a.dcd
+eval scc.b.dcd
+eval scc.a.tx_empty
+eval scc.b.rx_pending
+
+# Flip via the legacy command, observe via the new attr.
+scc loopback on
+eval scc.loopback
+scc loopback off
+eval scc.loopback
+
+# Reset method runs to completion (no return value to assert beyond
+# the absence of an error in the JSON output).
+echo $(scc.reset())
+
+quit
