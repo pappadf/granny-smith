@@ -17,6 +17,7 @@
 
 // === Forward Declarations ===
 struct cpu;
+struct object;
 
 struct breakpoint;
 typedef struct breakpoint breakpoint_t;
@@ -62,6 +63,10 @@ struct debug {
     breakpoint_t *breakpoints;
     uint32_t last_breakpoint_pc; // Track last breakpoint PC hit to skip it once when resuming
     logpoint_t *logpoints;
+    // Sparse stable id counters (proposal §2.1). Incremented on every
+    // add; never reset, never recycled. The first allocated id is 0.
+    int next_breakpoint_id;
+    int next_logpoint_id;
     // Trace buffer for PC entries
     uint32_t *trace_buffer;
     uint32_t trace_buffer_size;
@@ -95,6 +100,65 @@ void debug_cleanup(debug_t *debug);
 breakpoint_t *set_breakpoint(debug_t *debug, uint32_t addr, addr_space_t space);
 
 bool delete_breakpoint(debug_t *debug, uint32_t addr, addr_space_t space);
+
+// === M6: object-model accessors ============================================
+//
+// debugger.{breakpoints,logpoints}.add(...) / .N.remove() and the
+// per-entry attribute getters live in src/core/object/debug_classes.c.
+// They reach into the debug_t lists via these accessors so the
+// debug.c internals stay private (struct breakpoint / struct logpoint
+// definitions live in debug.c).
+//
+// Identity: every breakpoint and logpoint carries a sparse stable id
+// (proposal §2.1 — never recycled, max-id-ever + 1 on add). The id is
+// what the indexed-child callbacks expose as the "index" segment.
+
+// Allocate a fresh sparse id. Caller assigns it to its entry struct
+// before linking it into the list. Pure helper, no side effects beyond
+// bumping the counter.
+int debug_alloc_breakpoint_id(debug_t *debug);
+int debug_alloc_logpoint_id(debug_t *debug);
+
+// Look up an entry by sparse id. Returns NULL if no live entry has
+// this id. Used by indexed-child get(parent, index).
+breakpoint_t *debug_breakpoint_by_id(debug_t *debug, int id);
+logpoint_t *debug_logpoint_by_id(debug_t *debug, int id);
+
+// Walk the live entries in id order. count() returns the live entry
+// count; next(prev) returns the smallest id strictly greater than prev,
+// or -1 if no more entries (prev = -1 returns the smallest live id).
+int debug_breakpoint_count(debug_t *debug);
+int debug_breakpoint_next_id(debug_t *debug, int prev_id);
+int debug_logpoint_count(debug_t *debug);
+int debug_logpoint_next_id(debug_t *debug, int prev_id);
+
+// Remove by sparse id. Returns true if an entry was removed. Frees the
+// entry's attached object_t (which fires invalidators) before freeing
+// the entry struct.
+bool debug_remove_breakpoint(debug_t *debug, int id);
+bool debug_remove_logpoint(debug_t *debug, int id);
+
+// Per-entry attribute getters (read-only at this stage; setters arrive
+// alongside writable conditions / messages in a future milestone).
+uint32_t breakpoint_get_addr(const breakpoint_t *bp);
+int breakpoint_get_space(const breakpoint_t *bp); // 0 = LOGICAL, 1 = PHYSICAL
+const char *breakpoint_get_condition(const breakpoint_t *bp); // NULL if none
+uint32_t breakpoint_get_hit_count(const breakpoint_t *bp);
+int breakpoint_get_id(const breakpoint_t *bp);
+struct object *breakpoint_get_entry_object(const breakpoint_t *bp);
+// Replace the condition string. NULL clears it. Takes ownership semantics
+// via strdup; caller's buffer is not retained.
+void breakpoint_set_condition(breakpoint_t *bp, const char *expr);
+
+uint32_t logpoint_get_addr(const logpoint_t *lp);
+uint32_t logpoint_get_end_addr(const logpoint_t *lp);
+int logpoint_get_kind(const logpoint_t *lp); // enum logpoint_kind
+int logpoint_get_level(const logpoint_t *lp);
+const char *logpoint_get_category_name(const logpoint_t *lp);
+const char *logpoint_get_message(const logpoint_t *lp);
+uint32_t logpoint_get_hit_count(const logpoint_t *lp);
+int logpoint_get_id(const logpoint_t *lp);
+struct object *logpoint_get_entry_object(const logpoint_t *lp);
 
 void debugger_disasm_pc(char *buf, size_t buf_size);
 

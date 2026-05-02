@@ -54,6 +54,21 @@ void gs_classes_uninstall(void);
 void gs_lp_context_begin(uint32_t addr, uint32_t value, unsigned size);
 void gs_lp_context_end(void);
 
+// === M6 — debugger entry-object factories ===================================
+//
+// Each breakpoint / logpoint owns a per-entry object_t* exposed under
+// debugger.breakpoints[id] / debugger.logpoints[id] (proposal §5.3,
+// §9). debug.c calls these factories once per entry at set-time;
+// object_delete fires the per-entry invalidator hooks (object.h) when
+// the entry is removed. NULL is a valid return — object resolution
+// falls back to "empty slot" semantics.
+
+struct breakpoint;
+struct logpoint;
+
+struct object *gs_classes_make_breakpoint_object(struct breakpoint *bp);
+struct object *gs_classes_make_logpoint_object(struct logpoint *lp);
+
 #ifdef __cplusplus
 }
 #endif

@@ -28,6 +28,7 @@
 #include "alias.h"
 #include "cpu.h"
 #include "cpu_internal.h"
+#include "debug.h"
 #include "fpu.h"
 #include "machine.h"
 #include "memory.h"
@@ -922,6 +923,429 @@ static const class_desc_t math_class_desc = {
     .n_members = sizeof(math_members) / sizeof(math_members[0]),
 };
 
+// === M6 — debugger object tree ==============================================
+//
+// `debugger.breakpoints` / `debugger.logpoints` are indexed children
+// with sparse stable indices. Each entry is its own object_t whose
+// instance_data is the underlying breakpoint_t / logpoint_t. The entry
+// classes carry the per-entry attributes (addr, condition, hit_count,
+// …) and a `remove()` method.
+//
+// `debugger.watches` is a placeholder: the legacy shell `watch` command
+// is currently a synonym for `run-until` (one-shot, no persistent
+// storage) so there are no entries to enumerate. Exposing the empty
+// collection keeps the path resolvable for forward-compat without
+// inventing new state for M6.
+
+// --- breakpoint entry class -------------------------------------------------
+
+static breakpoint_t *bp_from(struct object *self) {
+    return (breakpoint_t *)object_data(self);
+}
+
+static value_t bp_attr_addr(struct object *self, const member_t *m) {
+    (void)m;
+    breakpoint_t *bp = bp_from(self);
+    if (!bp)
+        return val_err("breakpoint detached");
+    value_t v = val_uint(4, breakpoint_get_addr(bp));
+    v.flags |= VAL_HEX;
+    return v;
+}
+
+static value_t bp_attr_space(struct object *self, const member_t *m) {
+    (void)m;
+    breakpoint_t *bp = bp_from(self);
+    if (!bp)
+        return val_err("breakpoint detached");
+    static const char *const names[] = {"logical", "physical"};
+    int idx = breakpoint_get_space(bp);
+    return val_enum(idx, names, 2);
+}
+
+static value_t bp_attr_condition(struct object *self, const member_t *m) {
+    (void)m;
+    breakpoint_t *bp = bp_from(self);
+    if (!bp)
+        return val_err("breakpoint detached");
+    const char *c = breakpoint_get_condition(bp);
+    return val_str(c ? c : "");
+}
+
+static value_t bp_attr_condition_set(struct object *self, const member_t *m, value_t in) {
+    (void)m;
+    breakpoint_t *bp = bp_from(self);
+    if (!bp) {
+        value_free(&in);
+        return val_err("breakpoint detached");
+    }
+    if (in.kind != V_STRING && in.kind != V_NONE) {
+        value_free(&in);
+        return val_err("condition must be a string");
+    }
+    breakpoint_set_condition(bp, (in.kind == V_STRING) ? in.s : NULL);
+    value_free(&in);
+    return val_none();
+}
+
+static value_t bp_attr_hit_count(struct object *self, const member_t *m) {
+    (void)m;
+    breakpoint_t *bp = bp_from(self);
+    if (!bp)
+        return val_err("breakpoint detached");
+    return val_uint(4, breakpoint_get_hit_count(bp));
+}
+
+static value_t bp_attr_id(struct object *self, const member_t *m) {
+    (void)m;
+    breakpoint_t *bp = bp_from(self);
+    if (!bp)
+        return val_err("breakpoint detached");
+    return val_int(breakpoint_get_id(bp));
+}
+
+static value_t bp_method_remove(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)m;
+    (void)argc;
+    (void)argv;
+    breakpoint_t *bp = bp_from(self);
+    if (!bp)
+        return val_err("breakpoint already removed");
+    debug_t *debug = system_debug();
+    if (!debug)
+        return val_err("debugger not initialised");
+    int id = breakpoint_get_id(bp);
+    if (!debug_remove_breakpoint(debug, id))
+        return val_err("breakpoint #%d not found", id);
+    return val_none();
+}
+
+static const member_t bp_entry_members[] = {
+    {.kind = M_ATTR,
+     .name = "addr",
+     .flags = VAL_RO | VAL_HEX,
+     .attr = {.type = V_UINT, .get = bp_attr_addr, .set = NULL}},
+    {.kind = M_ATTR, .name = "space", .flags = VAL_RO, .attr = {.type = V_ENUM, .get = bp_attr_space, .set = NULL}},
+    {.kind = M_ATTR,
+     .name = "condition",
+     .flags = 0,
+     .attr = {.type = V_STRING, .get = bp_attr_condition, .set = bp_attr_condition_set}},
+    {.kind = M_ATTR,
+     .name = "hit_count",
+     .flags = VAL_RO,
+     .attr = {.type = V_UINT, .get = bp_attr_hit_count, .set = NULL}},
+    {.kind = M_ATTR, .name = "id", .flags = VAL_RO, .attr = {.type = V_INT, .get = bp_attr_id, .set = NULL}},
+    {.kind = M_METHOD,
+     .name = "remove",
+     .doc = "Remove this breakpoint",
+     .flags = 0,
+     .method = {.args = NULL, .nargs = 0, .result = V_NONE, .fn = bp_method_remove}},
+};
+
+static const class_desc_t breakpoint_entry_class = {
+    .name = "breakpoint",
+    .members = bp_entry_members,
+    .n_members = sizeof(bp_entry_members) / sizeof(bp_entry_members[0]),
+};
+
+struct object *gs_classes_make_breakpoint_object(struct breakpoint *bp) {
+    if (!bp)
+        return NULL;
+    return object_new(&breakpoint_entry_class, bp, NULL);
+}
+
+// --- logpoint entry class ---------------------------------------------------
+
+static logpoint_t *lp_from(struct object *self) {
+    return (logpoint_t *)object_data(self);
+}
+
+static value_t lpe_attr_addr(struct object *self, const member_t *m) {
+    (void)m;
+    logpoint_t *lp = lp_from(self);
+    if (!lp)
+        return val_err("logpoint detached");
+    value_t v = val_uint(4, logpoint_get_addr(lp));
+    v.flags |= VAL_HEX;
+    return v;
+}
+static value_t lpe_attr_end_addr(struct object *self, const member_t *m) {
+    (void)m;
+    logpoint_t *lp = lp_from(self);
+    if (!lp)
+        return val_err("logpoint detached");
+    value_t v = val_uint(4, logpoint_get_end_addr(lp));
+    v.flags |= VAL_HEX;
+    return v;
+}
+static value_t lpe_attr_kind(struct object *self, const member_t *m) {
+    (void)m;
+    logpoint_t *lp = lp_from(self);
+    if (!lp)
+        return val_err("logpoint detached");
+    static const char *const names[] = {"pc", "write", "read", "rw"};
+    int idx = logpoint_get_kind(lp);
+    if (idx < 0 || idx > 3)
+        idx = 0;
+    return val_enum(idx, names, 4);
+}
+static value_t lpe_attr_level(struct object *self, const member_t *m) {
+    (void)m;
+    logpoint_t *lp = lp_from(self);
+    if (!lp)
+        return val_err("logpoint detached");
+    return val_int(logpoint_get_level(lp));
+}
+static value_t lpe_attr_category(struct object *self, const member_t *m) {
+    (void)m;
+    logpoint_t *lp = lp_from(self);
+    if (!lp)
+        return val_err("logpoint detached");
+    const char *n = logpoint_get_category_name(lp);
+    return val_str(n ? n : "");
+}
+static value_t lpe_attr_message(struct object *self, const member_t *m) {
+    (void)m;
+    logpoint_t *lp = lp_from(self);
+    if (!lp)
+        return val_err("logpoint detached");
+    const char *s = logpoint_get_message(lp);
+    return val_str(s ? s : "");
+}
+static value_t lpe_attr_hit_count(struct object *self, const member_t *m) {
+    (void)m;
+    logpoint_t *lp = lp_from(self);
+    if (!lp)
+        return val_err("logpoint detached");
+    return val_uint(4, logpoint_get_hit_count(lp));
+}
+static value_t lpe_attr_id(struct object *self, const member_t *m) {
+    (void)m;
+    logpoint_t *lp = lp_from(self);
+    if (!lp)
+        return val_err("logpoint detached");
+    return val_int(logpoint_get_id(lp));
+}
+static value_t lpe_method_remove(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)m;
+    (void)argc;
+    (void)argv;
+    logpoint_t *lp = lp_from(self);
+    if (!lp)
+        return val_err("logpoint already removed");
+    debug_t *debug = system_debug();
+    if (!debug)
+        return val_err("debugger not initialised");
+    int id = logpoint_get_id(lp);
+    if (!debug_remove_logpoint(debug, id))
+        return val_err("logpoint #%d not found", id);
+    return val_none();
+}
+
+static const member_t lp_entry_members[] = {
+    {.kind = M_ATTR,
+     .name = "addr",
+     .flags = VAL_RO | VAL_HEX,
+     .attr = {.type = V_UINT, .get = lpe_attr_addr, .set = NULL}},
+    {.kind = M_ATTR,
+     .name = "end_addr",
+     .flags = VAL_RO | VAL_HEX,
+     .attr = {.type = V_UINT, .get = lpe_attr_end_addr, .set = NULL}},
+    {.kind = M_ATTR, .name = "kind", .flags = VAL_RO, .attr = {.type = V_ENUM, .get = lpe_attr_kind, .set = NULL}},
+    {.kind = M_ATTR, .name = "level", .flags = VAL_RO, .attr = {.type = V_INT, .get = lpe_attr_level, .set = NULL}},
+    {.kind = M_ATTR,
+     .name = "category",
+     .flags = VAL_RO,
+     .attr = {.type = V_STRING, .get = lpe_attr_category, .set = NULL}},
+    {.kind = M_ATTR,
+     .name = "message",
+     .flags = VAL_RO,
+     .attr = {.type = V_STRING, .get = lpe_attr_message, .set = NULL}},
+    {.kind = M_ATTR,
+     .name = "hit_count",
+     .flags = VAL_RO,
+     .attr = {.type = V_UINT, .get = lpe_attr_hit_count, .set = NULL}},
+    {.kind = M_ATTR, .name = "id", .flags = VAL_RO, .attr = {.type = V_INT, .get = lpe_attr_id, .set = NULL}},
+    {.kind = M_METHOD,
+     .name = "remove",
+     .doc = "Remove this logpoint",
+     .flags = 0,
+     .method = {.args = NULL, .nargs = 0, .result = V_NONE, .fn = lpe_method_remove}},
+};
+
+static const class_desc_t logpoint_entry_class = {
+    .name = "logpoint",
+    .members = lp_entry_members,
+    .n_members = sizeof(lp_entry_members) / sizeof(lp_entry_members[0]),
+};
+
+struct object *gs_classes_make_logpoint_object(struct logpoint *lp) {
+    if (!lp)
+        return NULL;
+    return object_new(&logpoint_entry_class, lp, NULL);
+}
+
+// --- collection objects -----------------------------------------------------
+//
+// `debugger.breakpoints` is a real object_t* attached to `debugger` at
+// install time. Its instance_data is config_t* so the same debug_from()
+// helper recovers debug_t* whether you're holding the debugger node or
+// one of its children. The collection class declares:
+//   - method members (add, clear) for the legacy mutation API;
+//   - one indexed M_CHILD member that exposes per-entry objects, so
+//     `debugger.breakpoints.0` and `[0]` both resolve via the integer-
+//     segment rule in node_child (object.c).
+
+static debug_t *debug_from(struct object *self) {
+    config_t *cfg = (config_t *)object_data(self);
+    return cfg ? cfg->debugger : NULL;
+}
+
+// Forward-declared because the indexed-child member descriptors below
+// need it but the entry classes are already defined above.
+static struct object *bp_entries_get(struct object *self, int index);
+static int bp_entries_count(struct object *self);
+static int bp_entries_next(struct object *self, int prev_index);
+static struct object *lp_entries_get(struct object *self, int index);
+static int lp_entries_count(struct object *self);
+static int lp_entries_next(struct object *self, int prev_index);
+
+static struct object *bp_entries_get(struct object *self, int index) {
+    breakpoint_t *bp = debug_breakpoint_by_id(debug_from(self), index);
+    return bp ? breakpoint_get_entry_object(bp) : NULL;
+}
+static int bp_entries_count(struct object *self) {
+    return debug_breakpoint_count(debug_from(self));
+}
+static int bp_entries_next(struct object *self, int prev_index) {
+    return debug_breakpoint_next_id(debug_from(self), prev_index);
+}
+
+static struct object *lp_entries_get(struct object *self, int index) {
+    logpoint_t *lp = debug_logpoint_by_id(debug_from(self), index);
+    return lp ? logpoint_get_entry_object(lp) : NULL;
+}
+static int lp_entries_count(struct object *self) {
+    return debug_logpoint_count(debug_from(self));
+}
+static int lp_entries_next(struct object *self, int prev_index) {
+    return debug_logpoint_next_id(debug_from(self), prev_index);
+}
+
+static value_t bp_method_add(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)m;
+    debug_t *debug = debug_from(self);
+    if (!debug)
+        return val_err("debugger not initialised");
+    if (argc < 1)
+        return val_err("breakpoints.add: expected (addr, [condition])");
+    bool ok = true;
+    uint64_t addr = val_as_u64(&argv[0], &ok);
+    if (!ok)
+        return val_err("breakpoints.add: addr is not numeric");
+    breakpoint_t *bp = set_breakpoint(debug, (uint32_t)addr, ADDR_LOGICAL);
+    if (!bp)
+        return val_err("breakpoints.add: allocation failed");
+    if (argc >= 2 && argv[1].kind == V_STRING && argv[1].s && *argv[1].s)
+        breakpoint_set_condition(bp, argv[1].s);
+    return val_obj(breakpoint_get_entry_object(bp));
+}
+
+static value_t bp_method_clear(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)m;
+    (void)argc;
+    (void)argv;
+    debug_t *debug = debug_from(self);
+    if (!debug)
+        return val_err("debugger not initialised");
+    int id;
+    while ((id = debug_breakpoint_next_id(debug, -1)) >= 0)
+        debug_remove_breakpoint(debug, id);
+    return val_none();
+}
+
+static value_t lp_method_clear(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)m;
+    (void)argc;
+    (void)argv;
+    debug_t *debug = debug_from(self);
+    if (!debug)
+        return val_err("debugger not initialised");
+    int id;
+    while ((id = debug_logpoint_next_id(debug, -1)) >= 0)
+        debug_remove_logpoint(debug, id);
+    return val_none();
+}
+
+static const arg_decl_t bp_add_args[] = {
+    {.name = "addr",      .kind = V_UINT,   .flags = VAL_HEX,          .doc = "logical address"          },
+    {.name = "condition", .kind = V_STRING, .flags = OBJ_ARG_OPTIONAL, .doc = "optional condition string"},
+};
+
+static const member_t bp_collection_members[] = {
+    {.kind = M_METHOD,
+     .name = "add",
+     .doc = "Add a logical-space breakpoint",
+     .method = {.args = bp_add_args, .nargs = 2, .result = V_OBJECT, .fn = bp_method_add}},
+    {.kind = M_METHOD,
+     .name = "clear",
+     .doc = "Remove every breakpoint",
+     .method = {.args = NULL, .nargs = 0, .result = V_NONE, .fn = bp_method_clear}},
+    {.kind = M_CHILD,
+     .name = "entries",
+     .child = {.cls = &breakpoint_entry_class,
+               .indexed = true,
+               .get = bp_entries_get,
+               .count = bp_entries_count,
+               .next = bp_entries_next,
+               .lookup = NULL}},
+};
+
+static const class_desc_t bp_collection_class = {
+    .name = "breakpoints",
+    .members = bp_collection_members,
+    .n_members = sizeof(bp_collection_members) / sizeof(bp_collection_members[0]),
+};
+
+static const member_t lp_collection_members[] = {
+    {.kind = M_METHOD,
+     .name = "clear",
+     .doc = "Remove every logpoint",
+     .method = {.args = NULL, .nargs = 0, .result = V_NONE, .fn = lp_method_clear}},
+    {.kind = M_CHILD,
+     .name = "entries",
+     .child = {.cls = &logpoint_entry_class,
+               .indexed = true,
+               .get = lp_entries_get,
+               .count = lp_entries_count,
+               .next = lp_entries_next,
+               .lookup = NULL}},
+};
+
+static const class_desc_t lp_collection_class = {
+    .name = "logpoints",
+    .members = lp_collection_members,
+    .n_members = sizeof(lp_collection_members) / sizeof(lp_collection_members[0]),
+};
+
+// Watches: empty placeholder. The legacy `watch` shell command is a
+// synonym for `run-until` (one-shot, no persistent watch storage), so
+// there is nothing to enumerate. The collection exists for path
+// resolvability and forward-compat with the proposal's §5.3 listing.
+static const class_desc_t watches_collection_class = {
+    .name = "watches",
+    .members = NULL,
+    .n_members = 0,
+};
+
+// `debugger` itself: namespace-only. breakpoints / logpoints / watches
+// are attached as named children at install time.
+static const class_desc_t debugger_class = {
+    .name = "debugger",
+    .members = NULL,
+    .n_members = 0,
+};
+
 // === Built-in alias registration ============================================
 //
 // Register at install time. Order matters only insofar as built-ins
@@ -983,7 +1407,7 @@ static void register_mac_aliases(void) {
 
 // === Install / uninstall ====================================================
 
-#define MAX_STUBS 16
+#define MAX_STUBS 24
 static struct object *g_stubs[MAX_STUBS];
 static int g_stub_count = 0;
 
@@ -1031,6 +1455,14 @@ void gs_classes_install(struct config *cfg) {
     // cpu.fpu child object — only when the active CPU model has an FPU.
     if (cpu_obj && cfg && cfg->cpu && cfg->cpu->fpu)
         attach_stub(cpu_obj, &fpu_class, cfg, "fpu");
+
+    // M6 — debugger object with breakpoints/logpoints/watches collections.
+    struct object *debugger_obj = attach_stub(NULL, &debugger_class, cfg, "debugger");
+    if (debugger_obj) {
+        attach_stub(debugger_obj, &bp_collection_class, cfg, "breakpoints");
+        attach_stub(debugger_obj, &lp_collection_class, cfg, "logpoints");
+        attach_stub(debugger_obj, &watches_collection_class, cfg, "watches");
+    }
 
     // Built-in aliases. Register CPU always, FPU only when present,
     // mac always (the table is size-driven and machine-independent).

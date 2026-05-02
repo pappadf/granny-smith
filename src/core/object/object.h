@@ -214,6 +214,33 @@ bool object_is_reserved_word(const char *name);
 // Diagnostic messages are written to err_buf (may be NULL).
 bool object_validate_name(const char *name, char *err_buf, size_t err_size);
 
+// === Per-object invalidation hooks ==========================================
+//
+// Hot-path consumers that hold a pre-resolved node_t (proposal §9 — held
+// breakpoint conditions, watch paths, …) need to be told when "their"
+// node has gone away. The framework lets each object carry a small list
+// of weak-reference callbacks; the entry's owner fires them on remove
+// (via object_fire_invalidators) and listeners null their cached node.
+//
+// Invariants:
+//  - register/unregister are O(N_listeners). N is small (≤ tens) in
+//    practice, so a linear scan is fine.
+//  - object_fire_invalidators runs every registered callback once, in
+//    registration order, then clears the list. Idempotent on subsequent
+//    calls (the list is empty after the first fire).
+//  - object_delete fires invalidators automatically, then frees the
+//    object — listeners may still be alive, but their cached node_t is
+//    now invalid. The framework gives them the chance to react.
+//
+// The (cb, ud) pair identifies a listener for unregister; matching is
+// done by exact pointer equality on both fields.
+
+typedef void (*node_invalidate_fn)(void *ud);
+
+void object_register_invalidator(struct object *o, node_invalidate_fn cb, void *ud);
+void object_unregister_invalidator(struct object *o, node_invalidate_fn cb, void *ud);
+void object_fire_invalidators(struct object *o);
+
 // Verify class definition at registration time: every member name must
 // be a valid identifier, must not collide with a reserved word, and
 // must be unique within the class. Returns true on success; on failure

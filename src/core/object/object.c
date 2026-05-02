@@ -20,6 +20,15 @@
 // (≤ tens). Indexed children are not stored here — they are produced on
 // demand by the class's member descriptor callbacks.
 
+// Listener for object_fire_invalidators. Stored as a small linked list
+// off the object; size is bounded by the number of hot-path consumers
+// that hold pre-resolved nodes targeting this object (≤ tens in practice).
+struct invalidator {
+    node_invalidate_fn cb;
+    void *ud;
+    struct invalidator *next;
+};
+
 struct object {
     const class_desc_t *cls;
     void *instance_data;
@@ -27,6 +36,7 @@ struct object {
     struct object *parent;
     struct object *first_child;
     struct object *next_sibling;
+    struct invalidator *invalidators; // weak-ref callbacks for held nodes
 };
 
 // Root class: namespace-only object — every member is a child added at
@@ -80,9 +90,57 @@ struct object *object_new(const class_desc_t *cls, void *instance_data, const ch
 void object_delete(struct object *o) {
     if (!o)
         return;
+    // Fire invalidators before tearing down — listeners must drop their
+    // cached node_t while the object is still inspectable, but they
+    // must not dereference it after this returns.
+    object_fire_invalidators(o);
     if (o->parent)
         object_detach(o);
     free(o);
+}
+
+void object_register_invalidator(struct object *o, node_invalidate_fn cb, void *ud) {
+    if (!o || !cb)
+        return;
+    struct invalidator *inv = (struct invalidator *)calloc(1, sizeof(*inv));
+    if (!inv)
+        return;
+    inv->cb = cb;
+    inv->ud = ud;
+    // Append to keep firing order = registration order.
+    struct invalidator **link = &o->invalidators;
+    while (*link)
+        link = &(*link)->next;
+    *link = inv;
+}
+
+void object_unregister_invalidator(struct object *o, node_invalidate_fn cb, void *ud) {
+    if (!o || !cb)
+        return;
+    struct invalidator **link = &o->invalidators;
+    while (*link) {
+        if ((*link)->cb == cb && (*link)->ud == ud) {
+            struct invalidator *dead = *link;
+            *link = dead->next;
+            free(dead);
+            return;
+        }
+        link = &(*link)->next;
+    }
+}
+
+void object_fire_invalidators(struct object *o) {
+    if (!o)
+        return;
+    struct invalidator *list = o->invalidators;
+    o->invalidators = NULL; // clear first so callbacks can re-register safely
+    while (list) {
+        struct invalidator *next = list->next;
+        if (list->cb)
+            list->cb(list->ud);
+        free(list);
+        list = next;
+    }
 }
 
 void object_attach(struct object *parent, struct object *child) {

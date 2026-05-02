@@ -49,6 +49,15 @@ struct breakpoint {
     // fires when the expression evaluates to true.  NULL = always fire.
     char *condition;
 
+    // Hit counter — exposed via debugger.breakpoints[N].hit_count (M6).
+    uint32_t hit_count;
+
+    // M6 — sparse stable id (proposal §2.1) and the per-entry object_t
+    // that backs `debugger.breakpoints[id]`. The object is owned by
+    // this breakpoint; freeing it fires invalidators on any held nodes.
+    int id;
+    struct object *entry_object;
+
     breakpoint_t *next;
 };
 
@@ -86,6 +95,11 @@ struct logpoint {
     bool value_filter_active;
     uint32_t value_filter;
 
+    // M6 — sparse stable id and the per-entry object_t. Same shape as
+    // breakpoint above; see proposal §2.1.
+    int id;
+    struct object *entry_object;
+
     logpoint_t *next;
 };
 
@@ -105,7 +119,7 @@ static uint16_t cpu_get_uint16(uint32_t addr) {
 
 breakpoint_t *set_breakpoint(debug_t *debug, uint32_t addr, addr_space_t space) {
 
-    breakpoint_t *bp = malloc(sizeof(breakpoint_t));
+    breakpoint_t *bp = calloc(1, sizeof(breakpoint_t));
 
     if (bp == NULL)
         return NULL;
@@ -113,6 +127,11 @@ breakpoint_t *set_breakpoint(debug_t *debug, uint32_t addr, addr_space_t space) 
     bp->addr = addr;
     bp->space = space;
     bp->condition = NULL;
+    bp->hit_count = 0;
+    bp->id = debug->next_breakpoint_id++;
+    // The entry object is created lazily by gs_classes the first time
+    // someone resolves debugger.breakpoints[id]; we just hold the slot.
+    bp->entry_object = gs_classes_make_breakpoint_object(bp);
 
     // add bp to a linked list
     bp->next = debug->breakpoints;
@@ -249,6 +268,8 @@ logpoint_t *set_logpoint(debug_t *debug, uint32_t addr, uint32_t end_addr, log_c
     }
     lp->value_filter_active = false;
     lp->value_filter = 0;
+    lp->id = debug->next_logpoint_id++;
+    lp->entry_object = gs_classes_make_logpoint_object(lp);
 
     // add lp to a linked list
     lp->next = debug->logpoints;
@@ -284,6 +305,8 @@ logpoint_t *set_memory_logpoint(debug_t *debug, uint32_t addr, uint32_t end_addr
     lp->end_phys_page = 0;
     lp->value_filter_active = false;
     lp->value_filter = 0;
+    lp->id = debug->next_logpoint_id++;
+    lp->entry_object = gs_classes_make_logpoint_object(lp);
     lp->next = debug->logpoints;
     debug->logpoints = lp;
     debug->active = true;
@@ -701,6 +724,7 @@ int debug_break_and_trace(void) {
                     bp = bp->next;
                     continue;
                 }
+                bp->hit_count++;
                 if (bp->space == ADDR_PHYSICAL) {
                     printf("breakpoint hit at P:$%08X (PC=$%08X)\n", bp->addr, current_pc);
                 } else {
@@ -769,6 +793,21 @@ int debug_break_and_trace(void) {
     return stop;
 }
 
+// Helper: free one breakpoint, releasing its per-entry object_t (which
+// fires invalidators on any held node_t). Used by every code path that
+// removes a breakpoint so the invalidation discipline is uniform.
+static void free_breakpoint(breakpoint_t *bp) {
+    if (!bp)
+        return;
+    if (bp->entry_object) {
+        object_delete(bp->entry_object);
+        bp->entry_object = NULL;
+    }
+    if (bp->condition)
+        free(bp->condition);
+    free(bp);
+}
+
 // Delete a breakpoint at the specified address and space
 // Returns true if breakpoint was found and deleted, false otherwise
 bool delete_breakpoint(debug_t *debug, uint32_t addr, addr_space_t space) {
@@ -783,9 +822,7 @@ bool delete_breakpoint(debug_t *debug, uint32_t addr, addr_space_t space) {
             } else {
                 prev->next = bp->next;
             }
-            if (bp->condition)
-                free(bp->condition);
-            free(bp);
+            free_breakpoint(bp);
             return true;
         }
         prev = bp;
@@ -794,21 +831,19 @@ bool delete_breakpoint(debug_t *debug, uint32_t addr, addr_space_t space) {
     return false;
 }
 
-// Delete breakpoint by id (index in the list)
+// Delete breakpoint by sparse stable id (proposal §2.1). Walks the list
+// matching `bp->id` rather than the position-in-list — positions shift
+// when other entries are removed, ids do not.
 static bool delete_breakpoint_by_id(debug_t *debug, int id) {
     breakpoint_t **pp = &debug->breakpoints;
-    int i = 0;
     while (*pp) {
-        if (i == id) {
+        if ((*pp)->id == id) {
             breakpoint_t *bp = *pp;
             *pp = bp->next;
-            if (bp->condition)
-                free(bp->condition);
-            free(bp);
+            free_breakpoint(bp);
             return true;
         }
         pp = &(*pp)->next;
-        i++;
     }
     return false;
 }
@@ -821,9 +856,7 @@ static int delete_all_breakpoints(debug_t *debug) {
 
     while (bp != NULL) {
         breakpoint_t *next = bp->next;
-        if (bp->condition)
-            free(bp->condition);
-        free(bp);
+        free_breakpoint(bp);
         bp = next;
         count++;
     }
@@ -2487,6 +2520,10 @@ static void free_logpoint(logpoint_t *lp) {
         if (lp->end_phys_page >= lp->start_phys_page)
             memory_logpoint_uninstall_phys(lp->start_phys_page, lp->end_phys_page);
     }
+    if (lp->entry_object) {
+        object_delete(lp->entry_object);
+        lp->entry_object = NULL;
+    }
     if (lp->message)
         free(lp->message);
     free(lp);
@@ -2507,19 +2544,18 @@ static int delete_logpoint(debug_t *debug, uint32_t addr) {
     return -1; // not found
 }
 
-// Delete logpoint by id (index in the list)
+// Delete logpoint by sparse stable id (proposal §2.1). Same shape as
+// delete_breakpoint_by_id — match `lp->id`, not list position.
 static int delete_logpoint_by_id(debug_t *debug, int id) {
     logpoint_t **pp = &debug->logpoints;
-    int i = 0;
     while (*pp) {
-        if (i == id) {
+        if ((*pp)->id == id) {
             logpoint_t *lp = *pp;
             *pp = lp->next;
             free_logpoint(lp);
             return 0;
         }
         pp = &(*pp)->next;
-        i++;
     }
     return -1;
 }
@@ -4254,6 +4290,156 @@ static const struct subcmd_spec find_subcmds[] = {
     {"word",  NULL, find_value_args, 2, "find a 16-bit big-endian value"    },
     {"long",  NULL, find_value_args, 2, "find a 32-bit big-endian value"    },
 };
+
+// ============================================================================
+// M6 — object-model accessors and id-based collection helpers
+// ============================================================================
+//
+// These implement the `debugger.{breakpoints,logpoints}` indexed-child
+// surface declared in debug.h. Walks are O(N) over the linked list;
+// fanout is bounded by user-set entries (~tens) so this is fine.
+
+int debug_alloc_breakpoint_id(debug_t *debug) {
+    return debug ? debug->next_breakpoint_id++ : -1;
+}
+int debug_alloc_logpoint_id(debug_t *debug) {
+    return debug ? debug->next_logpoint_id++ : -1;
+}
+
+breakpoint_t *debug_breakpoint_by_id(debug_t *debug, int id) {
+    if (!debug)
+        return NULL;
+    for (breakpoint_t *bp = debug->breakpoints; bp; bp = bp->next)
+        if (bp->id == id)
+            return bp;
+    return NULL;
+}
+
+logpoint_t *debug_logpoint_by_id(debug_t *debug, int id) {
+    if (!debug)
+        return NULL;
+    for (logpoint_t *lp = debug->logpoints; lp; lp = lp->next)
+        if (lp->id == id)
+            return lp;
+    return NULL;
+}
+
+int debug_breakpoint_count(debug_t *debug) {
+    int n = 0;
+    if (!debug)
+        return 0;
+    for (breakpoint_t *bp = debug->breakpoints; bp; bp = bp->next)
+        n++;
+    return n;
+}
+
+int debug_logpoint_count(debug_t *debug) {
+    int n = 0;
+    if (!debug)
+        return 0;
+    for (logpoint_t *lp = debug->logpoints; lp; lp = lp->next)
+        n++;
+    return n;
+}
+
+// next(prev) — return the smallest live id strictly greater than `prev`
+// (or any live id if `prev<0`). Linear scan because the list is in
+// add-order, not id order: callers iterating via next() get a stable
+// ascending sequence even when entries were removed and re-added.
+int debug_breakpoint_next_id(debug_t *debug, int prev_id) {
+    if (!debug)
+        return -1;
+    int best = -1;
+    for (breakpoint_t *bp = debug->breakpoints; bp; bp = bp->next) {
+        if (bp->id <= prev_id)
+            continue;
+        if (best < 0 || bp->id < best)
+            best = bp->id;
+    }
+    return best;
+}
+
+int debug_logpoint_next_id(debug_t *debug, int prev_id) {
+    if (!debug)
+        return -1;
+    int best = -1;
+    for (logpoint_t *lp = debug->logpoints; lp; lp = lp->next) {
+        if (lp->id <= prev_id)
+            continue;
+        if (best < 0 || lp->id < best)
+            best = lp->id;
+    }
+    return best;
+}
+
+bool debug_remove_breakpoint(debug_t *debug, int id) {
+    if (!debug)
+        return false;
+    return delete_breakpoint_by_id(debug, id);
+}
+
+bool debug_remove_logpoint(debug_t *debug, int id) {
+    if (!debug)
+        return false;
+    return delete_logpoint_by_id(debug, id) == 0;
+}
+
+uint32_t breakpoint_get_addr(const breakpoint_t *bp) {
+    return bp ? bp->addr : 0;
+}
+int breakpoint_get_space(const breakpoint_t *bp) {
+    return bp ? (bp->space == ADDR_PHYSICAL ? 1 : 0) : 0;
+}
+const char *breakpoint_get_condition(const breakpoint_t *bp) {
+    return bp ? bp->condition : NULL;
+}
+uint32_t breakpoint_get_hit_count(const breakpoint_t *bp) {
+    return bp ? bp->hit_count : 0;
+}
+int breakpoint_get_id(const breakpoint_t *bp) {
+    return bp ? bp->id : -1;
+}
+struct object *breakpoint_get_entry_object(const breakpoint_t *bp) {
+    return bp ? bp->entry_object : NULL;
+}
+void breakpoint_set_condition(breakpoint_t *bp, const char *expr) {
+    if (!bp)
+        return;
+    char *copy = (expr && *expr) ? strdup(expr) : NULL;
+    if (bp->condition)
+        free(bp->condition);
+    bp->condition = copy;
+}
+
+uint32_t logpoint_get_addr(const logpoint_t *lp) {
+    return lp ? lp->addr : 0;
+}
+uint32_t logpoint_get_end_addr(const logpoint_t *lp) {
+    return lp ? lp->end_addr : 0;
+}
+int logpoint_get_kind(const logpoint_t *lp) {
+    return lp ? lp->kind : 0;
+}
+int logpoint_get_level(const logpoint_t *lp) {
+    return lp ? lp->level : 0;
+}
+const char *logpoint_get_category_name(const logpoint_t *lp) {
+    if (!lp || !lp->category)
+        return NULL;
+    return log_category_name(lp->category);
+}
+const char *logpoint_get_message(const logpoint_t *lp) {
+    return lp ? lp->message : NULL;
+}
+uint32_t logpoint_get_hit_count(const logpoint_t *lp) {
+    return lp ? lp->hit_count : 0;
+}
+int logpoint_get_id(const logpoint_t *lp) {
+    return lp ? lp->id : -1;
+}
+struct object *logpoint_get_entry_object(const logpoint_t *lp) {
+    return lp ? lp->entry_object : NULL;
+}
 
 // ============================================================================
 // Lifecycle: Constructor
