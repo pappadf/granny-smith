@@ -45,6 +45,12 @@ int shell_init(void);
 
 void shell_interrupt(void);
 
+// Borrowed pointer into the shared-memory shell-initialized flag.
+// JS uses this to gate gsEval calls during the boot window, where
+// ccall can otherwise fire before the worker has finished shell_init()
+// and seen gs_classes_install_root().
+volatile int32_t *gs_shell_ready_ptr(void);
+
 // === JSON Bridge ===
 
 // Get the JSON result buffer pointer (for WASM bridge)

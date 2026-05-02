@@ -50,6 +50,7 @@
 #include "system.h"
 #include "system_config.h"
 #include "value.h"
+#include "vfs.h"
 #include "via.h"
 
 // instance_data on these stubs is config_t*. The lifetime is bounded
@@ -2974,11 +2975,62 @@ static const class_desc_t storage_images_collection_class = {
     .n_members = sizeof(storage_images_collection_members) / sizeof(storage_images_collection_members[0]),
 };
 
+// `storage.list_dir(path)` — list directory entries via the VFS as a
+// V_LIST<V_STRING>. Powers the M10b/c migration of url-media.js's
+// legacy `ls $ROMS_DIR` (whose stdout-only output had no typed
+// successor until now).
+static value_t storage_method_list_dir(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)self;
+    (void)m;
+    if (argc < 1 || argv[0].kind != V_STRING || !argv[0].s)
+        return val_err("storage.list_dir: expected (path)");
+    vfs_dir_t *d = NULL;
+    const vfs_backend_t *be = NULL;
+    int rc = vfs_opendir(argv[0].s, &d, &be);
+    if (rc < 0 || !d || !be)
+        return val_list(NULL, 0); // empty list (treat unreadable dirs as no entries)
+    size_t cap = 16, n = 0;
+    value_t *items = (value_t *)calloc(cap, sizeof(value_t));
+    if (!items) {
+        be->closedir(d);
+        return val_err("storage.list_dir: out of memory");
+    }
+    vfs_dirent_t ent;
+    while (be->readdir(d, &ent) > 0) {
+        if (ent.name[0] == '.' && (ent.name[1] == '\0' || (ent.name[1] == '.' && ent.name[2] == '\0')))
+            continue;
+        if (n >= cap) {
+            size_t new_cap = cap * 2;
+            value_t *nb = (value_t *)realloc(items, new_cap * sizeof(value_t));
+            if (!nb) {
+                for (size_t i = 0; i < n; i++)
+                    value_free(&items[i]);
+                free(items);
+                be->closedir(d);
+                return val_err("storage.list_dir: out of memory");
+            }
+            items = nb;
+            cap = new_cap;
+        }
+        items[n++] = val_str(ent.name);
+    }
+    be->closedir(d);
+    return val_list(items, n);
+}
+
+static const arg_decl_t storage_list_dir_args[] = {
+    {.name = "path", .kind = V_STRING, .doc = "Directory path"},
+};
+
 static const member_t storage_members[] = {
     {.kind = M_METHOD,
      .name = "import",
      .doc = "Persist a host file under /images/ (deferred — see proposal §5.7)",
-     .method = {.args = storage_import_args, .nargs = 2, .result = V_STRING, .fn = storage_method_import}},
+     .method = {.args = storage_import_args, .nargs = 2, .result = V_STRING, .fn = storage_method_import}  },
+    {.kind = M_METHOD,
+     .name = "list_dir",
+     .doc = "List directory entries (V_LIST of V_STRING names)",
+     .method = {.args = storage_list_dir_args, .nargs = 1, .result = V_LIST, .fn = storage_method_list_dir}},
 };
 
 static const class_desc_t storage_class_real = {
@@ -3549,6 +3601,25 @@ static value_t method_root_register_machine(struct object *self, const member_t 
     if (n < 0 || (size_t)n >= sizeof(line))
         return val_err("register_machine: arguments too long");
     return val_bool(shell_dispatch(line) == 0);
+}
+
+// `auto_checkpoint` attribute (V_BOOL, rw) — exposes the WASM
+// background-checkpoint loop's enabled flag. Headless's weak defaults
+// stub out (no auto-checkpoint there), so reads return false and
+// writes are silently ignored on that platform.
+static value_t attr_auto_checkpoint_get(struct object *self, const member_t *m) {
+    (void)self;
+    (void)m;
+    return val_bool(gs_checkpoint_auto_get());
+}
+
+static value_t attr_auto_checkpoint_set(struct object *self, const member_t *m, value_t in) {
+    (void)self;
+    (void)m;
+    bool b = val_as_bool(&in);
+    value_free(&in);
+    gs_checkpoint_auto_set(b);
+    return val_none();
 }
 
 // `running()` — true if the scheduler is currently running. Mirrors
@@ -4275,6 +4346,10 @@ static const member_t emu_root_members[] = {
      .name = "running",
      .doc = "True if the scheduler is currently running",
      .method = {.args = NULL, .nargs = 0, .result = V_BOOL, .fn = method_root_running}                               },
+    {.kind = M_ATTR,
+     .name = "auto_checkpoint",
+     .doc = "Enable/disable the background auto-checkpoint loop (WASM-only)",
+     .attr = {.type = V_BOOL, .get = attr_auto_checkpoint_get, .set = attr_auto_checkpoint_set}                      },
     // Drag-drop boot helpers (M10b — drop area).
     {.kind = M_METHOD,
      .name = "rom_checksum",
@@ -4405,10 +4480,37 @@ static void register_mac_aliases(void) {
 }
 
 // === Install / uninstall ====================================================
+//
+// Lifecycle quirk we keep tripping over: `system_create()` calls
+// `gs_classes_install(cfg)` and `system_destroy()` calls
+// `gs_classes_uninstall()`. On `checkpoint --load`, `cmd_load_checkpoint`
+// runs them in this order:
+//
+//     new = system_restore(...);        // -> system_create -> gs_classes_install(new)
+//     global_emulator = new;
+//     system_destroy(old);              // -> gs_classes_uninstall()
+//
+// If `gs_classes_install` returned early when stubs already existed (the
+// historical "idempotent" guard), the install for `new` was a no-op
+// because `old`'s stubs were still in place. The subsequent
+// `gs_classes_uninstall` then tore everything down, leaving the object
+// root with no children and the namespace-only default class — every
+// subsequent gsEval('running' / 'cpu.pc' / ...) returned
+// `{"error":"path '...' did not resolve"}`. Pre-M10c that bug was
+// invisible because the e2e helper polled `runCommand('status')`, which
+// goes through the legacy shell registry rather than the object tree;
+// M10c's switch to `gsEval('running')` exposed it.
+//
+// We now track which cfg the stubs belong to. Install is idempotent for
+// the *same* cfg but uninstalls and reinstalls when the cfg changes.
+// Uninstall only fires from `system_destroy(cfg)` when the stubs are
+// still associated with `cfg` — so destroying the old config after a
+// load is a no-op as long as the new install ran first.
 
 #define MAX_STUBS 40
 static struct object *g_stubs[MAX_STUBS];
 static int g_stub_count = 0;
+static struct config *g_installed_cfg = NULL;
 
 static struct object *attach_stub(struct object *parent, const class_desc_t *cls, void *data, const char *name) {
     if (g_stub_count >= MAX_STUBS)
@@ -4434,8 +4536,18 @@ void gs_classes_install_root(void) {
 }
 
 void gs_classes_install(struct config *cfg) {
+    // Idempotent for the SAME cfg — second-call from a redundant init
+    // path keeps the existing stubs.
+    if (g_stub_count > 0 && g_installed_cfg == cfg)
+        return;
+    // Different cfg (typically: checkpoint --load just produced a new
+    // config). Tear down the old stubs before attaching new ones, so
+    // child objects don't dangle pointers into freed config state and
+    // the eventual `system_destroy(old_cfg)` call below doesn't end up
+    // wiping the freshly installed root.
     if (g_stub_count > 0)
-        return; // idempotent
+        gs_classes_uninstall();
+    g_installed_cfg = cfg;
 
     // Top-level methods. Already installed by shell_init via
     // gs_classes_install_root; the call is repeated here so paths that
@@ -4645,4 +4757,15 @@ void gs_classes_uninstall(void) {
     object_root_set_class(NULL);
     alias_reset();
     free_mac_class();
+    g_installed_cfg = NULL;
+}
+
+// Conditional uninstall used by `system_destroy(cfg)`: only tears down
+// when the stubs are still associated with `cfg`. After
+// `checkpoint --load`, the order is `system_create(new)` → install(new)
+// → `system_destroy(old)`; without this gate the destroy would wipe the
+// freshly installed `new` root.
+void gs_classes_uninstall_if(struct config *cfg) {
+    if (g_installed_cfg == cfg)
+        gs_classes_uninstall();
 }

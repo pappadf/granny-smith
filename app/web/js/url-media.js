@@ -32,16 +32,11 @@ export function isRomLoaded() { return romLoaded; }
 // Load ROM from persistent storage and start the emulator.
 // Lists ROMs in /images/rom/ and loads the first one found.
 export async function loadRomAndMaybeRun() {
-  // List ROMs via ls command (OPFS accessible only from worker). The ls
-  // command currently has no typed-return wrapper — its stdout-only
-  // output stays on the legacy bridge until a future `storage.list`
-  // method lands.
-  const lsResult = await window.runCommand(`ls ${ROMS_DIR}`);
-  // If ls returns non-zero or no output, no ROM available
-  if (lsResult !== 0) { showRomOverlay(); return; }
+  // List ROMs via storage.list_dir (returns V_LIST<V_STRING>).
+  const entries = await window.gsEval('storage.list_dir', [ROMS_DIR]);
+  if (!Array.isArray(entries) || entries.length === 0) { showRomOverlay(); return; }
 
-  // The ls command printed filenames to stdout; we can't easily capture them.
-  // Instead, try rom_probe with no args to check if a ROM is loaded.
+  // Try rom_probe with no args to check if a ROM is loaded.
   if ((await window.gsEval('rom_probe')) === true) {
     // ROM already loaded (from a previous session or checkpoint)
     romLoaded = true;

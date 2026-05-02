@@ -324,16 +324,9 @@ export function initUI({ canvas, panel, toggle, termBody, canvasWrapper, screenT
 
   document.getElementById('btn-settings').addEventListener('click', async () => {
     settingsModal.setAttribute('aria-hidden', 'false');
-    // The legacy `checkpoint` no-arg query prints "Current state: on/off"
-    // to stdout — there is no typed wrapper for it yet, so this single
-    // call stays on the runCommand bridge until a future
-    // `auto_checkpoint` attribute lands.
     try {
-      const output = await window.runCommand('checkpoint');
-      if (output && output.includes('Current state:')) {
-        const isOn = output.includes('Current state: on');
-        checkpointToggle.checked = isOn;
-      }
+      const isOn = (await window.gsEval('auto_checkpoint')) === true;
+      checkpointToggle.checked = isOn;
     } catch (e) {
       console.warn('Failed to query checkpoint state:', e);
     }
@@ -345,11 +338,8 @@ export function initUI({ canvas, panel, toggle, termBody, canvasWrapper, screenT
 
   checkpointToggle.addEventListener('change', async (e) => {
     const enabled = e.target.checked;
-    // Pairs with the no-arg query above; same reason for staying on
-    // runCommand for now.
-    const command = `checkpoint ${enabled ? 'on' : 'off'}`;
     try {
-      await window.runCommand(command);
+      await window.gsEval('auto_checkpoint', [enabled]);
       console.log(`Background checkpointing ${enabled ? 'enabled' : 'disabled'}`);
     } catch (err) {
       console.error('Failed to toggle checkpoint:', err);

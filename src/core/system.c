@@ -1358,6 +1358,18 @@ __attribute__((weak)) void system_post_create(config_t *cfg) {
     (void)cfg;
 }
 
+// Background-checkpoint auto state. WASM-only at the moment — the
+// headless build has no auto-checkpoint loop, so the weak defaults
+// just stub out; em_main.c overrides them to read/write the live
+// `checkpoint_auto_enabled` flag.
+__attribute__((weak)) bool gs_checkpoint_auto_get(void) {
+    return false;
+}
+
+__attribute__((weak)) void gs_checkpoint_auto_set(bool enabled) {
+    (void)enabled;
+}
+
 // Create an emulator instance for the given machine profile.
 // Allocates config_t, wires the machine descriptor, and calls profile->init().
 config_t *system_create(const hw_profile_t *profile, checkpoint_t *checkpoint) {
@@ -1408,8 +1420,11 @@ void system_destroy(config_t *config) {
         return;
 
     // Tear down the object-model root before machine teardown so stub
-    // getters cannot dereference half-freed subsystem state.
-    gs_classes_uninstall();
+    // getters cannot dereference half-freed subsystem state.  Use the
+    // _if variant so the destroy of an already-replaced config (e.g.,
+    // after `checkpoint --load` ran system_create(new) before us) does
+    // NOT wipe the just-installed new-cfg stubs.
+    gs_classes_uninstall_if(config);
 
     // Delegate machine-specific teardown to the profile
     if (config->machine && config->machine->teardown) {

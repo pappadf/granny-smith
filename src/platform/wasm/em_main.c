@@ -414,19 +414,66 @@ EMSCRIPTEN_KEEPALIVE const char *shell_emit_prompt(void) {
 }
 
 // ============================================================================
-// Shared-heap Command Queue
+// Shared-heap Command Queue (and gs_eval queue)
 // ============================================================================
 //
-// With PROXY_TO_PTHREAD, Module on the main thread and Module on the worker
-// are separate JS objects.  We cannot share a JS queue between them.  Instead,
-// use C globals in the WASM heap (backed by SharedArrayBuffer) which ARE
-// visible from both threads.
+// THREADING MODEL — read this before changing anything in this section.
 //
-// Protocol:
-//   1. JS writes the command string into g_cmd_buffer, sets g_cmd_pending=1
-//   2. Worker's shell_poll() sees g_cmd_pending, executes the command,
-//      writes g_cmd_result, sets g_cmd_done=1, clears g_cmd_pending
-//   3. JS polls g_cmd_done with setTimeout, reads g_cmd_result, resolves Promise
+// We build with -sPROXY_TO_PTHREAD, which spawns a worker pthread and runs
+// `main()` (and therefore `shell_init()`, `system_create()`,
+// `emscripten_set_main_loop(em_main_tick, ...)`) on that worker. The worker
+// owns every piece of emulator state: scheduler, machine, devices, RAM,
+// OPFS file handles. The JS main thread keeps its own Module instance for
+// canvas + DOM + xterm, but it does NOT own emulator state.
+//
+// IMPORTANT: with PROXY_TO_PTHREAD, exported Wasm functions are ALSO
+// callable directly from the main JS thread via `Module.ccall(...)`. Such
+// a call does NOT proxy to the worker — it executes the Wasm code on the
+// main thread, with the main thread's pthread context, while the worker
+// is concurrently running `em_main_tick`. Only functions that Emscripten
+// emits into `proxiedFunctionTable` (a small set of built-in callbacks
+// like pointerlock / mouse / visibility) get auto-proxied. None of our
+// `_em_*` exports are in that table.
+//
+// Calling shell-touching code from the main thread is therefore unsafe:
+//   - It races the worker for scheduler / machine / device state
+//   - WASMFS / OPFS handles opened on the worker pthread are not
+//     guaranteed to behave correctly from another thread
+//   - Mutexes inside the runtime can deadlock or stall for many seconds
+//
+// Real-world fallout from violating this rule (M10c regression, 2026-05-02):
+// `Module.ccall('em_gs_eval', ...)` was used for the typed object-model
+// bridge (`gsEval` / `gsInspect`) and ran shell_dispatch() on the main
+// thread.  E2E tests using checkpoint --save / --load via gsEval saw
+// 60–90 s per call, post-load `run` not advancing the emulator, and
+// "browser closed" crashes. Probes (pthread_self() inside shell_poll vs.
+// inside em_gs_eval) confirmed two distinct thread IDs.
+//
+// THE RULE
+// --------
+// JS → C must always go through one of the SAB queues below. JS writes
+// the request into shared globals, sets a pending flag, and polls a done
+// flag. The worker's `shell_poll()` (called from `em_main_tick`) drains
+// the queue and writes the result. ccall on `_em_*` exports is forbidden.
+//
+//
+// Queue 1 — Free-form shell command (`g_cmd_*`)
+//   Protocol:
+//     1. JS writes the command string into g_cmd_buffer
+//     2. JS clears g_cmd_done, sets g_cmd_pending = 1
+//     3. shell_poll() sees g_cmd_pending, calls dispatch_command(),
+//        writes g_cmd_result + g_cmd_json_buffer, sets g_cmd_done = 1,
+//        clears g_cmd_pending
+//     4. JS polls g_cmd_done (setTimeout 1ms), reads result, resolves
+//
+// Queue 2 — Typed object-model bridge (`g_gs_*`)
+//   Same shape as queue 1 but carries (path, args_json) tuples instead
+//   of a shell line. g_gs_pending = 1 means gs_eval, 2 means gs_inspect.
+//   Result is JSON in g_gs_eval_buffer.
+//
+// Both queues are drained by the same shell_poll() call and JS-side
+// serialization (cmdInFlight in emulator.js) ensures only one is in
+// flight at a time, so ordering is well-defined.
 
 #define CMD_BUF_SIZE 4096
 
@@ -434,6 +481,18 @@ static char g_cmd_buffer[CMD_BUF_SIZE];
 static volatile int32_t g_cmd_pending = 0;
 static volatile int32_t g_cmd_done = 0;
 static volatile int32_t g_cmd_result = 0;
+
+// gs_eval queue (path + args_json in, JSON result out via g_gs_eval_buffer).
+// g_gs_pending values: 0 = idle, 1 = gs_eval, 2 = gs_inspect.
+#define GS_PATH_BUF_SIZE 1024
+#define GS_ARGS_BUF_SIZE 8192
+#define GS_EVAL_BUF_SIZE 16384
+static char g_gs_path_buffer[GS_PATH_BUF_SIZE];
+static char g_gs_args_buffer[GS_ARGS_BUF_SIZE];
+static char g_gs_eval_buffer[GS_EVAL_BUF_SIZE];
+static volatile int32_t g_gs_pending = 0;
+static volatile int32_t g_gs_done = 0;
+static volatile int32_t g_gs_result = 0;
 
 // Shared prompt buffer — updated by the worker after each command so JS
 // on the main thread can read the current prompt without a cross-thread call.
@@ -467,11 +526,52 @@ EMSCRIPTEN_KEEPALIVE char *get_prompt_buffer(void) {
 EMSCRIPTEN_KEEPALIVE volatile int32_t *get_is_running_ptr(void) {
     return &g_shared_is_running;
 }
+EMSCRIPTEN_KEEPALIVE volatile int32_t *get_shell_ready_ptr(void) {
+    return gs_shell_ready_ptr();
+}
 EMSCRIPTEN_KEEPALIVE char *get_cmd_json_buffer(void) {
     return g_cmd_json_buffer;
 }
 
+// gs_eval queue accessors (see "Threading model" comment block above for
+// why this exists — JS must NOT call ccall on _em_gs_eval directly).
+EMSCRIPTEN_KEEPALIVE char *get_gs_path_buffer(void) {
+    return g_gs_path_buffer;
+}
+EMSCRIPTEN_KEEPALIVE char *get_gs_args_buffer(void) {
+    return g_gs_args_buffer;
+}
+EMSCRIPTEN_KEEPALIVE volatile int32_t *get_gs_pending_ptr(void) {
+    return &g_gs_pending;
+}
+EMSCRIPTEN_KEEPALIVE volatile int32_t *get_gs_done_ptr(void) {
+    return &g_gs_done;
+}
+EMSCRIPTEN_KEEPALIVE volatile int32_t *get_gs_result_ptr(void) {
+    return &g_gs_result;
+}
+
 int shell_poll(void) {
+    // Drain the gs_eval queue first. Both queues are protected by the
+    // same JS-side cmdInFlight lock so only one of (g_cmd_pending,
+    // g_gs_pending) can be set at a time; the order checked here only
+    // matters as a tiebreaker for that brief window before JS releases
+    // the lock.
+    if (g_gs_pending) {
+        int kind = g_gs_pending;
+        int rc;
+        if (kind == 2) {
+            rc = gs_inspect(g_gs_path_buffer, g_gs_eval_buffer, GS_EVAL_BUF_SIZE);
+        } else {
+            const char *args = (g_gs_args_buffer[0] != '\0') ? g_gs_args_buffer : NULL;
+            rc = gs_eval(g_gs_path_buffer, args, g_gs_eval_buffer, GS_EVAL_BUF_SIZE);
+        }
+        g_gs_result = rc;
+        g_gs_pending = 0;
+        g_gs_done = 1;
+        return 1;
+    }
+
     if (!g_cmd_pending)
         return 0;
 
@@ -536,29 +636,18 @@ EMSCRIPTEN_KEEPALIVE char *get_completion_buffer(void) {
 }
 
 // ============================================================================
-// Object-model bridge (M10a)
+// Object-model bridge result buffer
 // ============================================================================
-
-// JSON result buffer for gs_eval / gs_inspect, kept distinct from
-// g_cmd_json_buffer so a long-running runCommand result doesn't get clobbered
-// by an interleaved attribute read.
-#define GS_EVAL_BUF_SIZE 16384
-static char g_gs_eval_buffer[GS_EVAL_BUF_SIZE];
+// (The actual gs_eval queue state and processing live alongside the cmd
+// queue further up — see the "Threading model" comment block. There used
+// to be `em_gs_eval` / `em_gs_inspect` exports JS called via ccall; they
+// were removed because ccall on those from the main thread does NOT
+// proxy to the worker. JS now writes (path, args_json) into
+// g_gs_path_buffer / g_gs_args_buffer, sets g_gs_pending, and the
+// worker's shell_poll() runs gs_eval there.)
 
 EMSCRIPTEN_KEEPALIVE char *get_gs_eval_buffer(void) {
     return g_gs_eval_buffer;
-}
-
-// Returns 0 on success, negative on error. Either way the JSON-encoded
-// value (or {"error":"..."} on failure) is written to g_gs_eval_buffer.
-// args_json may be NULL or an empty string for a bare attribute read /
-// zero-arg method call.
-EMSCRIPTEN_KEEPALIVE int em_gs_eval(const char *path, const char *args_json) {
-    return gs_eval(path, args_json, g_gs_eval_buffer, GS_EVAL_BUF_SIZE);
-}
-
-EMSCRIPTEN_KEEPALIVE int em_gs_inspect(const char *path) {
-    return gs_inspect(path, g_gs_eval_buffer, GS_EVAL_BUF_SIZE);
 }
 
 // Run tab completion and write results as JSON array to the completion buffer.
@@ -1378,6 +1467,19 @@ static void em_assertion_callback(const char *expr, const char *file, int line, 
         },
         expr, file, line, func);
     // clang-format on
+}
+
+// Background auto-checkpoint accessors — override the weak defaults in
+// system.c so gs_classes' `auto_checkpoint` attribute reads/writes the
+// live flag.
+bool gs_checkpoint_auto_get(void) {
+    return checkpoint_auto_enabled;
+}
+
+void gs_checkpoint_auto_set(bool enabled) {
+    checkpoint_auto_enabled = enabled;
+    if (!enabled)
+        checkpoint_tick_counter = 0;
 }
 
 // Platform hook: install assertion callback and apply deferred speed mode

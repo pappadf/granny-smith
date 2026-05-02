@@ -42,6 +42,12 @@ void gs_classes_install_root(void);
 // call when nothing is installed.
 void gs_classes_uninstall(void);
 
+// Conditional uninstall: only tears down when the stubs are still
+// associated with `cfg`. Used by `system_destroy(old_cfg)` after a
+// `checkpoint --load` has already swapped in stubs for the new cfg.
+// See the comment above the install/uninstall block in gs_classes.c.
+void gs_classes_uninstall_if(struct config *cfg);
+
 // === lp (logpoint) synthetic class ==========================================
 //
 // `lp` exposes the per-fire context to ${...} interpolation in

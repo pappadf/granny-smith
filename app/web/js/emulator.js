@@ -3,14 +3,39 @@
 
 // Boots the WASM Module and exposes the command API and run-state management.
 //
-// With PROXY_TO_PTHREAD, the emulator's main() runs on a worker thread.
-// JS ccall runs on the main thread where the OPFS mount is not visible.
-// Commands are dispatched via a shared-heap command buffer: JS writes the
-// command string into the WASM heap (SharedArrayBuffer), sets a pending flag,
-// and the worker's shell_poll() dequeues and executes each tick.
+// THREADING — read this before adding any new JS → C call site.
 //
-// Run-state is also communicated via a shared-heap flag (g_shared_is_running)
-// that the worker updates every tick.  JS polls it to keep the UI in sync.
+// We build with -sPROXY_TO_PTHREAD. main() / shell_init() / system_create()
+// / emscripten_set_main_loop() all run on a *worker* pthread; that worker
+// owns every piece of emulator state (scheduler, machine, devices, OPFS
+// file handles). The JS main thread only handles canvas / DOM / xterm.
+//
+// `Module.ccall(...)` from this thread does NOT auto-proxy to the worker.
+// Unless an export is in Emscripten's `proxiedFunctionTable` (only the
+// built-in pointerlock / mouse / key / visibility / webgl callbacks are),
+// ccall executes the Wasm code on the main thread, racing the worker.
+//
+// We learned this the hard way: M10c routed `gsEval` through ccall on
+// `_em_gs_eval` and the resulting cross-thread access to scheduler /
+// device / OPFS state caused 60–90 s checkpoint save/load latency, the
+// post-load `run` failing to advance the emulator, and "browser closed"
+// crashes in CI. Probes (pthread_self() inside shell_poll vs. inside
+// em_gs_eval) confirmed two distinct thread IDs.
+//
+// THE RULE: every JS → C request goes through one of the SAB-backed
+// queues whose pointers are resolved below. JS writes into the input
+// buffer, sets the pending flag, polls the done flag. The worker's
+// `shell_poll()` (called from `em_main_tick`) drains both queues. There
+// are currently two queues:
+//   - cmd (free-form shell line)            — `g_cmd_*`     in em_main.c
+//   - gs_eval (typed object-model bridge)   — `g_gs_*`      in em_main.c
+// Both are serialized through the same JS-side `cmdInFlight` lock so
+// only one is in flight at a time and ordering is well defined.
+//
+// (`em_tab_complete` is still a direct ccall today — same threading
+// hazard, but tab completion is a synchronous read-only operation and
+// has not surfaced as a problem. If it ever does, route it through a
+// third SAB queue with the same shape.)
 import { CONFIG } from './config.js';
 
 // Module-level state (owned exclusively by this module)
@@ -26,7 +51,21 @@ let cmdResultPtr = 0;
 let promptBufPtr = 0;
 let isRunningPtr = 0;
 
-// Serialization: only one command in flight at a time
+// Shared-heap gs_eval queue pointers (resolved after Module init)
+let gsPathBufPtr = 0;
+let gsArgsBufPtr = 0;
+let gsPendingPtr = 0;
+let gsDonePtr = 0;
+let gsResultPtr = 0;
+let gsEvalBufPtr = 0;
+
+// Buffer sizes mirror em_main.c. Keep in sync there.
+const GS_PATH_BUF_SIZE = 1024;
+const GS_ARGS_BUF_SIZE = 8192;
+
+// Serialization: only one command (legacy or gs_eval) in flight at a time.
+// shell_poll() drains both queues but the C-side pre-condition is that
+// only one is set at a time, so this lock covers both bridges.
 let cmdInFlight = false;
 let cmdWaiters = [];
 
@@ -121,6 +160,13 @@ export async function initEmulator(canvas, wasmArgs, printFn) {
   cmdResultPtr = Module._get_cmd_result_ptr();
   promptBufPtr = Module._get_prompt_buffer();
   isRunningPtr = Module._get_is_running_ptr();
+
+  gsPathBufPtr = Module._get_gs_path_buffer();
+  gsArgsBufPtr = Module._get_gs_args_buffer();
+  gsPendingPtr = Module._get_gs_pending_ptr();
+  gsDonePtr = Module._get_gs_done_ptr();
+  gsResultPtr = Module._get_gs_result_ptr();
+  gsEvalBufPtr = Module._get_gs_eval_buffer();
 
   // Expose Module on window for test shim access to FS
   window.__Module = Module;
@@ -233,47 +279,95 @@ export function tabComplete(line, cursorPos) {
   }
 }
 
-// Object-model bridge (M10a).
+// ----------------------------------------------------------------------------
+// Object-model bridge (M10a, repaired in M10e to run on the worker pthread).
+// ----------------------------------------------------------------------------
+//
 //   gsEval(path)            → attribute read or zero-arg method call
 //   gsEval(path, [v0, v1])  → method call, or attribute write when path
 //                             is an attribute and the array has one entry
 //   gsInspect(path)         → same JSON shape as gsEval; will diverge into
 //                             a recursive subtree shape with M11
+//
 // args may be undefined / null / an array of primitive values (number,
 // string, boolean, null). The C side parses the JSON-encoded array.
-let gsEvalBufPtr = 0;
+//
+// IMPORTANT: this routes through the SAB-backed gs_eval queue (g_gs_*),
+// not via `Module.ccall('em_gs_eval', ...)`. ccall on _em_gs_eval would
+// run the body on this (main) thread instead of the worker pthread that
+// owns scheduler / device / OPFS state — see the "Threading" comment at
+// the top of this file. The previous ccall-based implementation (M10a)
+// was the cause of the M10c CI regression.
 
 function readGsEvalResult() {
-  if (!gsEvalBufPtr) {
-    try { gsEvalBufPtr = Module._get_gs_eval_buffer(); } catch (e) { return null; }
-  }
   if (!gsEvalBufPtr) return null;
   const jsonStr = Module.UTF8ToString(gsEvalBufPtr);
   if (!jsonStr) return null;
   try { return JSON.parse(jsonStr); } catch (e) { return jsonStr; }
 }
 
-// Wait for any pending legacy runCommand to drain before issuing a
-// gsEval ccall. Without this, ccall slips ahead of cmd_pending entries
-// the worker hasn't consumed yet — bootWithUploadedMedia in the e2e
-// suite fires `send('rom load …')` without awaiting, then the next
-// `runCommand(page, 'run …')` (which translates to gsEval after M10c)
-// can hit the worker before the ROM is loaded. Locally the worker is
-// fast enough to mask this; CI surfaces it as state-test boot
-// timeouts. Serialization here matches executeShellCommand's queue.
-async function waitForLegacyQueue() {
+// Wait for the worker's shell_init() to complete before issuing the
+// first gs_eval request. With PROXY_TO_PTHREAD, createModule resolves
+// while the worker is still inside main() / shell_init() — setting
+// g_gs_pending during that window would have shell_poll dispatch
+// against the empty default root class and return {error: "..."}. The
+// shared-memory flag is flipped to 1 at the end of shell_init().
+let shellReadyPtr = 0;
+async function waitForShellReady() {
+  if (!shellReadyPtr) {
+    try { shellReadyPtr = Module._get_shell_ready_ptr(); } catch (e) { return; }
+  }
+  if (!shellReadyPtr) return;
+  if (Module.HEAP32[shellReadyPtr >> 2]) return;
+  for (let i = 0; i < 200; i++) {
+    if (Module.HEAP32[shellReadyPtr >> 2]) return;
+    await new Promise((r) => setTimeout(r, 10));
+  }
+}
+
+// Drive a single gs_eval / gs_inspect request through the SAB queue.
+// kind: 1 = gs_eval (uses both path + argsJson), 2 = gs_inspect (path only).
+async function executeGsRequest(path, argsJson, kind) {
+  // Same in-flight lock as executeShellCommand: shell_poll() drains both
+  // queues but the C-side pre-condition is that only one of (cmd_pending,
+  // gs_pending) is set at a time, so we serialize JS-side.
   while (cmdInFlight) {
     await new Promise(r => cmdWaiters.push(r));
+  }
+  cmdInFlight = true;
+  try {
+    Module.stringToUTF8(String(path || ''), gsPathBufPtr, GS_PATH_BUF_SIZE);
+    Module.stringToUTF8(argsJson || '', gsArgsBufPtr, GS_ARGS_BUF_SIZE);
+
+    Module.HEAP32[gsDonePtr >> 2] = 0;
+    Module.HEAP32[gsPendingPtr >> 2] = kind;
+
+    await new Promise(resolve => {
+      function check() {
+        if (Module.HEAP32[gsDonePtr >> 2]) {
+          Module.HEAP32[gsDonePtr >> 2] = 0;
+          resolve();
+        } else {
+          setTimeout(check, 1);
+        }
+      }
+      check();
+    });
+
+    return readGsEvalResult();
+  } finally {
+    cmdInFlight = false;
+    const waiters = cmdWaiters.splice(0);
+    waiters.forEach(r => r());
   }
 }
 
 export async function gsEval(path, args) {
   if (!Module || !moduleReady) return null;
-  await waitForLegacyQueue();
+  await waitForShellReady();
   const argsJson = (args === undefined || args === null) ? '' : JSON.stringify(args);
   try {
-    Module.ccall('em_gs_eval', 'number', ['string', 'string'], [String(path || ''), argsJson]);
-    return readGsEvalResult();
+    return await executeGsRequest(String(path || ''), argsJson, 1);
   } catch (e) {
     return null;
   }
@@ -281,10 +375,9 @@ export async function gsEval(path, args) {
 
 export async function gsInspect(path) {
   if (!Module || !moduleReady) return null;
-  await waitForLegacyQueue();
+  await waitForShellReady();
   try {
-    Module.ccall('em_gs_inspect', 'number', ['string'], [String(path || '')]);
-    return readGsEvalResult();
+    return await executeGsRequest(String(path || ''), '', 2);
   } catch (e) {
     return null;
   }

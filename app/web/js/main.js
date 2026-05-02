@@ -74,16 +74,17 @@ initInspector();
 // OPFS directories are already available (mounted by C-side main()).
 
 // Activate the per-machine checkpoint directory before anything that opens
-// images runs.  Awaiting here preserves command ordering: every later
-// runCommand (starting with `checkpoint --probe` below) sees the machine
-// identity already registered.  Done after initUI so the click handlers on
-// the terminal toggle / canvas are wired before this awaits.
+// images runs.
 //
-// Uses runCommand instead of gsEval here because this fires during the
-// boot window between Module-ready and the worker's main loop becoming
-// active, where ccall-based gsEval requests are not yet served — the
-// runCommand path naturally waits via the cmd_pending flag the main loop
-// polls. M10c re-evaluates this once the e2e helper migration lands.
+// Stays on runCommand instead of gsEval: this fires during the boot
+// window where OPFS may already contain a stale checkpoint from an
+// earlier session. The legacy bridge happens to interleave the
+// checkpoint-machine call with the OPFS sync the way local tests
+// expect; switching to gsEval (even with a shell-ready gate) reorders
+// it enough that maybeOfferBackgroundCheckpoint sees the stale
+// checkpoint and shows the resume dialog, blocking UI clicks. M10e-2
+// will move this once the boot ordering is rewired around the
+// inspector's stop-event model.
 {
   const machine = getOrCreateMachine();
   await runCommand(`checkpoint --machine ${machine.id} ${machine.created}`);

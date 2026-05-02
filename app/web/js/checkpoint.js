@@ -10,12 +10,12 @@ import { toast, hideRomOverlay } from './ui.js';
 // Probe for a background checkpoint and offer resume if found.
 // Returns true if the user resumed from a checkpoint.
 //
-// Uses runCommand rather than gsEval because this fires during the boot
-// window between Module-ready and the worker's main loop becoming
-// active, where ccall-based gsEval requests are not yet served.
-// runCommand naturally waits via the cmd_pending flag the main loop
-// polls. The matching root methods (checkpoint_probe / _clear / _load /
-// `running`) are still registered for the post-boot callers (drop.js).
+// Stays on runCommand for the same boot-window reason as main.js's
+// register_machine call: switching to gsEval reorders this against
+// OPFS state in a way that causes the resume dialog to fire on stale
+// checkpoints from a previous session and block UI tests. The
+// matching root methods (checkpoint_probe / _clear / _load / running)
+// are still registered for post-boot callers (drop.js).
 export async function maybeOfferBackgroundCheckpoint() {
   let hasCheckpoint = (await window.runCommand('checkpoint --probe')) === 0;
 
@@ -23,14 +23,12 @@ export async function maybeOfferBackgroundCheckpoint() {
 
   const accept = await showCheckpointPrompt();
   if (!accept) {
-    // User declined: clear all checkpoint files
     await window.runCommand('checkpoint clear');
     toast('Starting fresh (checkpoint discarded)');
     return false;
   }
 
   hideRomOverlay();
-  // Auto-load the latest valid checkpoint (no filename needed)
   const rc = await window.runCommand('checkpoint --load');
   if (rc !== 0) return false;
 

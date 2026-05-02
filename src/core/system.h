@@ -153,4 +153,10 @@ uint32_t system_get_pending_ram_kb(void);
 // Reset Mac hardware to initial state
 extern void mac_reset(config_t *restrict sim);
 
+// Background auto-checkpoint state. WASM platform overrides the weak
+// defaults in em_main.c to read/write the live flag; the headless
+// build has no auto-checkpoint loop and the defaults stub out.
+bool gs_checkpoint_auto_get(void);
+void gs_checkpoint_auto_set(bool enabled);
+
 #endif // SETUP_H

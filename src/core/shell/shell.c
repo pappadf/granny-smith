@@ -35,7 +35,18 @@
 #include <sys/types.h>
 #include <unistd.h>
 
-static int shell_initialized = 0;
+// Volatile so the shared-memory pointer exposed to JS sees the real
+// flag flip — avoids the optimiser caching the constant `0` it sees
+// at init time and confusing the JS-side gsEval ready check.
+static volatile int32_t shell_initialized = 0;
+
+// Borrowed pointer into the shared-memory shell-initialized flag. JS
+// polls this on first gsEval call before issuing the ccall — without
+// it, calls fired during the boot window between Module-ready and the
+// worker leaving shell_init() see the stale empty root class.
+volatile int32_t *gs_shell_ready_ptr(void) {
+    return &shell_initialized;
+}
 
 // JSON result buffer for WASM bridge (16KB)
 #define CMD_JSON_BUF_SIZE 16384
