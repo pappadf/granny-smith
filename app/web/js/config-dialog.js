@@ -23,8 +23,7 @@ export async function scanForPersistedRoms() {
   const found = [];
   for (const cs of Object.keys(ROM_DATABASE)) {
     const path = romPathForChecksum(cs);
-    const rc = await window.runCommand(`rom probe ${path}`);
-    if (rc === 0) {
+    if ((await window.gsEval('rom_probe', [path])) === true) {
       found.push(cs);
     }
   }
@@ -76,21 +75,18 @@ export function showRomUploadDialog() {
       const tmpPath = `/tmp/upload_rom_${Date.now()}`;
       writeBinary(tmpPath, data);
 
-      // Validate
-      const rc = await window.runCommand(`rom checksum ${tmpPath}`);
-      if (rc !== 0) {
+      // Validate via rom_checksum: returns the hex string for a valid
+      // ROM, empty when the file isn't recognised.
+      const checksum = await window.gsEval('rom_checksum', [tmpPath]);
+      if (typeof checksum !== 'string' || !checksum) {
         errorSpan.textContent = 'Not a valid Macintosh ROM image. Please try another file.';
         errorSpan.hidden = false;
         fileInput.value = '';
         return;
       }
 
-      // Extract checksum from header
-      const dv = new DataView(data.buffer, data.byteOffset, data.byteLength);
-      const checksum = dv.getUint32(0, false).toString(16).toUpperCase().padStart(8, '0');
-
       // Persist to /rom/<checksum> (best-effort)
-      await window.runCommand(`file-copy ${tmpPath} ${romPathForChecksum(checksum)}`);
+      await window.gsEval('cp', [tmpPath, romPathForChecksum(checksum)]);
 
       dlg.setAttribute('aria-hidden', 'true');
       fileInput.value = '';
@@ -421,8 +417,7 @@ export async function showConfigDialog(romChecksums) {
           const name = `blank_${sizeMB}MB_${Date.now()}.img`;
           const path = `${HD_DIR}/${name}`;
 
-          const rc = await window.runCommand(`hd create ${quotePath(path)} ${sizeBytes}`);
-          if (rc !== 0) {
+          if ((await window.gsEval('hd_create', [path, String(sizeBytes)])) !== true) {
             errorSpan.textContent = 'Failed to create disk image.';
             errorSpan.hidden = false;
             return;
@@ -558,25 +553,25 @@ export async function bootFromConfig(config, tmpRomPath) {
   // Set VROM path before rom load, because rom load triggers machine
   // creation which needs the VROM during SE/30 init.
   if (vromPath) {
-    await window.runCommand(`vrom load ${quotePath(vromPath)}`);
+    await window.gsEval('vrom_load', [vromPath]);
   }
 
   // Create machine with selected model and RAM before ROM load.
   // rom load will see the correct machine is already active and skip recreation.
   if (model) {
     const ramKB = Math.round((ram || 4) * 1024);
-    await window.runCommand(`setup --model ${model} --ram ${ramKB}`);
+    await window.gsEval('setup_machine', [model, ramKB]);
   }
 
   // Load ROM — try persisted OPFS path first, fall back to /tmp.
   // rom load identifies the ROM and loads it into the existing machine.
   if (romChecksum) {
     const persistedPath = romPathForChecksum(romChecksum);
-    let rc = await window.runCommand(`rom load ${quotePath(persistedPath)}`);
-    if (rc !== 0 && tmpRomPath) {
-      rc = await window.runCommand(`rom load ${quotePath(tmpRomPath)}`);
+    let ok = (await window.gsEval('rom_load', [persistedPath])) === true;
+    if (!ok && tmpRomPath) {
+      ok = (await window.gsEval('rom_load', [tmpRomPath])) === true;
     }
-    if (rc !== 0) {
+    if (!ok) {
       toast('Failed to load ROM');
       return;
     }
@@ -585,26 +580,26 @@ export async function bootFromConfig(config, tmpRomPath) {
   // Mount floppies
   if (floppies) {
     for (let i = 0; i < floppies.length; i++) {
-      await window.runCommand(`fd insert ${quotePath(floppies[i])} ${i} true`);
+      await window.gsEval('fd_insert', [floppies[i], i, true]);
     }
   }
 
   // Attach SCSI hard disks
   if (hdImages) {
     for (const { path, id } of hdImages) {
-      await window.runCommand(`hd attach ${quotePath(path)} ${id}`);
+      await window.gsEval('hd_attach', [path, id]);
     }
   }
 
   // Attach CD-ROM
   if (cdImage) {
-    await window.runCommand(`cdrom attach ${quotePath(cdImage)}`);
+    await window.gsEval('cdrom_attach', [cdImage]);
   }
 
   hideRomOverlay();
   enableRunButton();
   setBackgroundMessage('Click \u25b6 to start emulation');
 
-  await window.runCommand('run');
+  await window.gsEval('run');
   setRunning(true);
 }

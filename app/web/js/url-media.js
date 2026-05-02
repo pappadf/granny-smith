@@ -32,20 +32,22 @@ export function isRomLoaded() { return romLoaded; }
 // Load ROM from persistent storage and start the emulator.
 // Lists ROMs in /images/rom/ and loads the first one found.
 export async function loadRomAndMaybeRun() {
-  // List ROMs via ls command (OPFS accessible only from worker)
+  // List ROMs via ls command (OPFS accessible only from worker). The ls
+  // command currently has no typed-return wrapper — its stdout-only
+  // output stays on the legacy bridge until a future `storage.list`
+  // method lands.
   const lsResult = await window.runCommand(`ls ${ROMS_DIR}`);
   // If ls returns non-zero or no output, no ROM available
   if (lsResult !== 0) { showRomOverlay(); return; }
 
   // The ls command printed filenames to stdout; we can't easily capture them.
-  // Instead, try to load using rom probe to check if a ROM is loaded
-  const probeResult = await window.runCommand('rom probe');
-  if (probeResult === 0) {
+  // Instead, try rom_probe with no args to check if a ROM is loaded.
+  if ((await window.gsEval('rom_probe')) === true) {
     // ROM already loaded (from a previous session or checkpoint)
     romLoaded = true;
     hideRomOverlay();
     enableRunButton();
-    await window.runCommand('run');
+    await window.gsEval('run');
     return;
   }
 
@@ -109,16 +111,12 @@ async function fetchAndStore(slot, url) {
         writeBinary(tempPath, buf);
 
         try {
-          const probeResult = await window.runCommand(`peeler --probe ${tempPath}`);
-
-          if (probeResult === 0) {
+          if ((await window.gsEval('peeler_probe', [tempPath])) === true) {
             const extractDir = `/tmp/${slot}_unpacked`;
             toast(`Extracting ${fileName}...`);
 
-            const extractResult = await window.runCommand(`peeler -o ${extractDir} ${tempPath}`);
-            if (extractResult === 0) {
-              const findResult = await window.runCommand(`find-media ${extractDir} ${tmpPath}`);
-              if (findResult === 0) {
+            if ((await window.gsEval('peeler', [tempPath, extractDir])) === true) {
+              if ((await window.gsEval('find_media', [extractDir, tmpPath])) === true) {
                 toast(`${slot} downloaded (extracted from archive)`);
               } else {
                 writeBinary(tmpPath, buf);
@@ -144,8 +142,8 @@ async function fetchAndStore(slot, url) {
       }
     }
 
-    // Copy from /tmp/ staging to persistent OPFS path via C-side file copy.
-    await window.runCommand(`file-copy ${tmpPath} ${path}`);
+    // Copy from /tmp/ staging to persistent OPFS path.
+    await window.gsEval('cp', [tmpPath, path]);
   } catch (e) {
     console.error(`[url-media] Download FAILED for ${slot}:`, e);
     toast(`${slot} failed`);
@@ -174,7 +172,7 @@ export async function processUrlMedia(params) {
     // The ROM was stored under /images/rom/<filename>; use the tmp path directly
     const tmpPath = '/tmp/url_rom';
     console.log(`[url-media] loading ROM from: ${tmpPath}`);
-    await window.runCommand(`rom load ${tmpPath}`);
+    await window.gsEval('rom_load', [tmpPath]);
     romLoaded = true;
     hideRomOverlay();
     enableRunButton();
@@ -184,8 +182,8 @@ export async function processUrlMedia(params) {
       if (/^fd\d+$/.test(k)) {
         const fdPath = `/tmp/url_${k}`;
         console.log(`[url-media] inserting floppy: ${fdPath}`);
-        const rc = await window.runCommand(`fd insert ${fdPath} 0 true`);
-        console.log(`[url-media] fd insert result: ${rc}`);
+        const ok = await window.gsEval('fd_insert', [fdPath, 0, true]);
+        console.log(`[url-media] fd insert result: ${ok}`);
       }
     }
 
@@ -194,16 +192,16 @@ export async function processUrlMedia(params) {
       if (/^hd\d+$/.test(k)) {
         const hdPath = `/tmp/url_${k}`;
         const id = parseInt(k.replace('hd', ''), 10);
-        await window.runCommand(`hd attach ${hdPath} ${id}`);
+        await window.gsEval('hd_attach', [hdPath, id]);
       }
     }
 
-    await window.runCommand('run');
+    await window.gsEval('run');
   } else {
     // No ROM in URL params — insert floppies if machine already exists
     for (const [k] of params.entries()) {
       if (/^fd\d+$/.test(k)) {
-        await window.runCommand(`fd insert /tmp/url_${k} 0 true`);
+        await window.gsEval('fd_insert', [`/tmp/url_${k}`, 0, true]);
       }
     }
   }

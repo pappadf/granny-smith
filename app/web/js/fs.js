@@ -90,7 +90,7 @@ export async function listDir(dirPath) {
 
 // ROM existence checks — route through C-side commands since /images is OPFS
 export async function romExistsAsync() {
-  return (await window.runCommand('rom probe')) === 0;
+  return (await window.gsEval('rom_probe')) === true;
 }
 // Synchronous fallback (unreliable for OPFS paths — prefer romExistsAsync)
 export function romExists() {

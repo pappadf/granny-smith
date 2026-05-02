@@ -3387,6 +3387,12 @@ static int64_t dispatch_subcmd_path_rc(const char *cmd, const char *sub, int arg
 static value_t method_root_rom_probe(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)self;
     (void)m;
+    // No-arg form: probe the currently loaded ROM.
+    if (argc < 1 || argv[0].kind != V_STRING || !argv[0].s || !*argv[0].s) {
+        char line[16];
+        snprintf(line, sizeof(line), "rom probe");
+        return val_bool(shell_dispatch(line) == 0);
+    }
     int64_t rc = dispatch_subcmd_path_rc("rom", "probe", argc, argv);
     if (rc == -2)
         return val_err("rom_probe: expected (path)");
@@ -3659,6 +3665,164 @@ static value_t method_root_run(struct object *self, const member_t *m, int argc,
     return val_bool(shell_dispatch(line) == 0);
 }
 
+// === Boot/setup root methods (M10b — url-media + config-dialog area) =======
+
+// `vrom_load(path)` — set the video-ROM path for the next machine init.
+static value_t method_root_vrom_load(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)self;
+    (void)m;
+    if (argc < 1 || argv[0].kind != V_STRING)
+        return val_err("vrom_load: expected (path)");
+    char line[1024];
+    int n = snprintf(line, sizeof(line), "vrom load \"%s\"", argv[0].s ? argv[0].s : "");
+    if (n < 0 || (size_t)n >= sizeof(line))
+        return val_err("vrom_load: argument too long");
+    return val_bool(shell_dispatch(line) == 0);
+}
+
+// `hd_attach(path, id)` — attach a hard-disk image at the given SCSI id.
+static value_t method_root_hd_attach(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)self;
+    (void)m;
+    if (argc < 2 || argv[0].kind != V_STRING)
+        return val_err("hd_attach: expected (path, id)");
+    bool ok = false;
+    int64_t id = (int64_t)val_as_i64(&argv[1], &ok);
+    if (!ok && argv[1].kind == V_UINT)
+        id = (int64_t)argv[1].u;
+    char line[1024];
+    int n = snprintf(line, sizeof(line), "hd attach \"%s\" %lld", argv[0].s ? argv[0].s : "", (long long)id);
+    if (n < 0 || (size_t)n >= sizeof(line))
+        return val_err("hd_attach: arguments too long");
+    return val_bool(shell_dispatch(line) == 0);
+}
+
+// `cdrom_attach(path)` — attach a CD-ROM image to the system.
+static value_t method_root_cdrom_attach(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)self;
+    (void)m;
+    if (argc < 1 || argv[0].kind != V_STRING)
+        return val_err("cdrom_attach: expected (path)");
+    char line[1024];
+    int n = snprintf(line, sizeof(line), "cdrom attach \"%s\"", argv[0].s ? argv[0].s : "");
+    if (n < 0 || (size_t)n >= sizeof(line))
+        return val_err("cdrom_attach: argument too long");
+    return val_bool(shell_dispatch(line) == 0);
+}
+
+// `hd_validate(path)` — true if the file passes legacy `hd validate`
+// (cmd_bool 1 = valid).
+static value_t method_root_hd_validate(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)self;
+    (void)m;
+    if (argc < 1 || argv[0].kind != V_STRING)
+        return val_err("hd_validate: expected (path)");
+    char line[1024];
+    int n = snprintf(line, sizeof(line), "hd validate \"%s\"", argv[0].s ? argv[0].s : "");
+    if (n < 0 || (size_t)n >= sizeof(line))
+        return val_err("hd_validate: argument too long");
+    return val_bool(shell_dispatch(line) == 1);
+}
+
+// `cdrom_validate(path)` — true if the file passes legacy `cdrom
+// validate` (cmd_bool 1 = valid).
+static value_t method_root_cdrom_validate(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)self;
+    (void)m;
+    if (argc < 1 || argv[0].kind != V_STRING)
+        return val_err("cdrom_validate: expected (path)");
+    char line[1024];
+    int n = snprintf(line, sizeof(line), "cdrom validate \"%s\"", argv[0].s ? argv[0].s : "");
+    if (n < 0 || (size_t)n >= sizeof(line))
+        return val_err("cdrom_validate: argument too long");
+    return val_bool(shell_dispatch(line) == 1);
+}
+
+// `fd_validate(path)` — return the floppy density tag ("400K", "800K",
+// "1.4MB", …) when the file is a recognised floppy image, or empty
+// string otherwise. The legacy `fd validate` command prints the
+// density to stdout and uses cmd_bool, so this wrapper opens the
+// image directly via image_open_readonly to extract the type and
+// avoid stdout-parsing.
+static value_t method_root_fd_validate(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)self;
+    (void)m;
+    if (argc < 1 || argv[0].kind != V_STRING)
+        return val_err("fd_validate: expected (path)");
+    image_t *img = image_open_readonly(argv[0].s ? argv[0].s : "");
+    if (!img)
+        return val_str("");
+    const char *density = "";
+    switch (img->type) {
+    case image_fd_ss:
+        density = "400K";
+        break;
+    case image_fd_ds:
+        density = "800K";
+        break;
+    case image_fd_hd:
+        density = "1.4MB";
+        break;
+    default:
+        density = "";
+        break;
+    }
+    image_close(img);
+    return val_str(density);
+}
+
+// `setup_machine(model, ram_kb)` — run the legacy `setup --model X
+// --ram Y` command that primes the next `rom load` for a specific
+// machine profile. Renamed in the gsEval surface so the top-level
+// namespace doesn't grow a generic `setup` verb.
+static value_t method_root_setup_machine(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)self;
+    (void)m;
+    if (argc < 1 || argv[0].kind != V_STRING)
+        return val_err("setup_machine: expected (model, [ram_kb])");
+    bool ok = false;
+    int64_t ram = (argc >= 2) ? (int64_t)val_as_i64(&argv[1], &ok) : 0;
+    if (!ok && argc >= 2 && argv[1].kind == V_UINT)
+        ram = (int64_t)argv[1].u;
+    char line[256];
+    int n;
+    if (argc >= 2)
+        n = snprintf(line, sizeof(line), "setup --model %s --ram %lld", argv[0].s ? argv[0].s : "", (long long)ram);
+    else
+        n = snprintf(line, sizeof(line), "setup --model %s", argv[0].s ? argv[0].s : "");
+    if (n < 0 || (size_t)n >= sizeof(line))
+        return val_err("setup_machine: arguments too long");
+    return val_bool(shell_dispatch(line) == 0);
+}
+
+// `schedule(mode)` — set the scheduler mode (max / realtime / hardware).
+static value_t method_root_schedule(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)self;
+    (void)m;
+    if (argc < 1 || argv[0].kind != V_STRING)
+        return val_err("schedule: expected (mode)");
+    char line[64];
+    int n = snprintf(line, sizeof(line), "schedule %s", argv[0].s ? argv[0].s : "");
+    if (n < 0 || (size_t)n >= sizeof(line))
+        return val_err("schedule: argument too long");
+    return val_bool(shell_dispatch(line) == 0);
+}
+
+// `download(path)` — trigger a browser file download via the legacy
+// `download` command (WASM-only; the headless build has no equivalent
+// platform plumbing).
+static value_t method_root_download(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)self;
+    (void)m;
+    if (argc < 1 || argv[0].kind != V_STRING)
+        return val_err("download: expected (path)");
+    char line[1024];
+    int n = snprintf(line, sizeof(line), "download \"%s\"", argv[0].s ? argv[0].s : "");
+    if (n < 0 || (size_t)n >= sizeof(line))
+        return val_err("download: argument too long");
+    return val_bool(shell_dispatch(line) == 0);
+}
+
 static const arg_decl_t root_cp_args[] = {
     {.name = "src", .kind = V_STRING, .doc = "Source path"},
     {.name = "dst", .kind = V_STRING, .doc = "Destination path"},
@@ -3680,6 +3844,23 @@ static const arg_decl_t root_hd_download_args[] = {
 };
 static const arg_decl_t root_path_arg[] = {
     {.name = "path", .kind = V_STRING, .doc = "File path"},
+};
+static const arg_decl_t root_path_arg_optional[] = {
+    {.name = "path",
+     .kind = V_STRING,
+     .flags = OBJ_ARG_OPTIONAL,
+     .doc = "File path; empty falls back to the currently-loaded ROM"},
+};
+static const arg_decl_t root_hd_attach_args[] = {
+    {.name = "path", .kind = V_STRING, .doc = "HD image path"         },
+    {.name = "id",   .kind = V_INT,    .doc = "SCSI bus index (0–6)"},
+};
+static const arg_decl_t root_setup_machine_args[] = {
+    {.name = "model", .kind = V_STRING, .doc = "Machine model id (plus / se30 / iicx)"},
+    {.name = "ram_kb", .kind = V_UINT, .flags = OBJ_ARG_OPTIONAL, .doc = "RAM size in KB"},
+};
+static const arg_decl_t root_schedule_args[] = {
+    {.name = "mode", .kind = V_STRING, .doc = "Scheduler mode (max | realtime | hardware)"},
 };
 static const arg_decl_t root_find_media_args[] = {
     {.name = "dir", .kind = V_STRING, .doc = "Directory to scan"},
@@ -3772,8 +3953,8 @@ static const member_t emu_root_members[] = {
      .method = {.args = root_hd_download_args, .nargs = 1, .result = V_NONE, .fn = method_root_hd_download}          },
     {.kind = M_METHOD,
      .name = "rom_probe",
-     .doc = "True if a file is a recognised ROM image",
-     .method = {.args = root_path_arg, .nargs = 1, .result = V_BOOL, .fn = method_root_rom_probe}                    },
+     .doc = "True if a file is a recognised ROM image (no arg = is a ROM loaded?)",
+     .method = {.args = root_path_arg_optional, .nargs = 1, .result = V_BOOL, .fn = method_root_rom_probe}           },
     {.kind = M_METHOD,
      .name = "rom_validate",
      .doc = "Verify a ROM file's checksum and recognised model",
@@ -3856,6 +4037,43 @@ static const member_t emu_root_members[] = {
      .name = "run",
      .doc = "Start the scheduler (optionally for a cycle budget)",
      .method = {.args = root_run_args, .nargs = 1, .result = V_BOOL, .fn = method_root_run}                          },
+    // url-media + config-dialog + ui boot helpers (M10b — finish line).
+    {.kind = M_METHOD,
+     .name = "vrom_load",
+     .doc = "Set the video-ROM path for the next machine init",
+     .method = {.args = root_path_arg, .nargs = 1, .result = V_BOOL, .fn = method_root_vrom_load}                    },
+    {.kind = M_METHOD,
+     .name = "hd_attach",
+     .doc = "Attach a hard-disk image at the given SCSI id",
+     .method = {.args = root_hd_attach_args, .nargs = 2, .result = V_BOOL, .fn = method_root_hd_attach}              },
+    {.kind = M_METHOD,
+     .name = "hd_validate",
+     .doc = "True if the file is a recognised hard-disk image",
+     .method = {.args = root_path_arg, .nargs = 1, .result = V_BOOL, .fn = method_root_hd_validate}                  },
+    {.kind = M_METHOD,
+     .name = "cdrom_validate",
+     .doc = "True if the file is a recognised CD-ROM image",
+     .method = {.args = root_path_arg, .nargs = 1, .result = V_BOOL, .fn = method_root_cdrom_validate}               },
+    {.kind = M_METHOD,
+     .name = "fd_validate",
+     .doc = "Floppy density tag (\"400K\" / \"800K\" / \"1.4MB\") or empty if unrecognised",
+     .method = {.args = root_path_arg, .nargs = 1, .result = V_STRING, .fn = method_root_fd_validate}                },
+    {.kind = M_METHOD,
+     .name = "setup_machine",
+     .doc = "Prime the next `rom_load` for a specific machine model",
+     .method = {.args = root_setup_machine_args, .nargs = 2, .result = V_BOOL, .fn = method_root_setup_machine}      },
+    {.kind = M_METHOD,
+     .name = "schedule",
+     .doc = "Set the scheduler mode (max / realtime / hardware)",
+     .method = {.args = root_schedule_args, .nargs = 1, .result = V_BOOL, .fn = method_root_schedule}                },
+    {.kind = M_METHOD,
+     .name = "download",
+     .doc = "Trigger a browser file download (WASM-only)",
+     .method = {.args = root_path_arg, .nargs = 1, .result = V_BOOL, .fn = method_root_download}                     },
+    {.kind = M_METHOD,
+     .name = "cdrom_attach",
+     .doc = "Attach a CD-ROM image to the SCSI bus",
+     .method = {.args = root_path_arg, .nargs = 1, .result = V_BOOL, .fn = method_root_cdrom_attach}                 },
 };
 
 static const class_desc_t emu_root_class_real = {

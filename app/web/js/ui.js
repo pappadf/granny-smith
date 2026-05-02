@@ -98,10 +98,10 @@ export async function insertFloppyWithResume(path) {
     await waitForRunState(false, 1200);
     await sleep(40);
   }
-  await window.runCommand(`fd insert ${path} 0 true`);
+  await window.gsEval('fd_insert', [path, 0, true]);
   if (wasRunning) {
     await sleep(30);
-    await window.runCommand('run');
+    await window.gsEval('run');
     setRunning(true);
   }
 }
@@ -216,7 +216,7 @@ export function initUI({ canvas, panel, toggle, termBody, canvasWrapper, screenT
       setRunning(false);
       toast('interrupt (Ctrl-C)');
     } else {
-      await window.runCommand('run');
+      await window.gsEval('run');
       setRunning(true);
       toast('run');
     }
@@ -243,8 +243,8 @@ export function initUI({ canvas, panel, toggle, termBody, canvasWrapper, screenT
       // checkpoint --save runs synchronously via the command mutex;
       // no need to pause — the checkpoint captures the scheduler's
       // running flag so the saved state preserves run/pause state.
-      await window.runCommand(`checkpoint --save ${tempPath}`);
-      await window.runCommand(`download ${tempPath}`);
+      await window.gsEval('checkpoint_save', [tempPath]);
+      await window.gsEval('download', [tempPath]);
       toast(`State saved (${tempName})`);
     } catch (err) {
       console.error('State download failed', err);
@@ -275,7 +275,7 @@ export function initUI({ canvas, panel, toggle, termBody, canvasWrapper, screenT
   }
 
   async function setScheduleMode(mode) {
-    await window.runCommand(`schedule ${mode}`);
+    await window.gsEval('schedule', [mode]);
     updateScheduleSwitcherUI(mode);
   }
 
@@ -324,6 +324,10 @@ export function initUI({ canvas, panel, toggle, termBody, canvasWrapper, screenT
 
   document.getElementById('btn-settings').addEventListener('click', async () => {
     settingsModal.setAttribute('aria-hidden', 'false');
+    // The legacy `checkpoint` no-arg query prints "Current state: on/off"
+    // to stdout — there is no typed wrapper for it yet, so this single
+    // call stays on the runCommand bridge until a future
+    // `auto_checkpoint` attribute lands.
     try {
       const output = await window.runCommand('checkpoint');
       if (output && output.includes('Current state:')) {
@@ -341,6 +345,8 @@ export function initUI({ canvas, panel, toggle, termBody, canvasWrapper, screenT
 
   checkpointToggle.addEventListener('change', async (e) => {
     const enabled = e.target.checked;
+    // Pairs with the no-arg query above; same reason for staying on
+    // runCommand for now.
     const command = `checkpoint ${enabled ? 'on' : 'off'}`;
     try {
       await window.runCommand(command);
