@@ -1,35 +1,45 @@
 # Run a few thousand instructions so PC has actually moved.
 run 50000
 
-# Object-model resolver smoke checks. The output must contain the
-# expected JSON-like shape for each path. (The harness greps stdout
-# downstream of these lines.)
+# Object-model resolver smoke checks. Each bare path reads through the
+# new shell-form grammar (proposal §4.1) and the value is printed to
+# stdout — the harness greps for the expected markers downstream. The
+# legacy `eval <path>` form still works (it lives on as a JSON-printer
+# until M10e); we mix both forms here to exercise each.
+machine.model_id
+machine.model_name
+machine.cpu_clock_hz
+cpu.pc
+cpu.d0
+cpu.a7
+memory.ram_size
+memory.rom_size
+
+# Bare object reads return an object reference.
+cpu
+scheduler
+
+# Unknown paths fall through to the legacy "Did you mean?" path and
+# do not raise.
+ghost.path
+
+# M3 mac globals — auto-populated from mac_globals_data.c.
+mac.MBState
+mac.Ticks
+mac.ROMBase
+cpu.ccr
+cpu.sp
+
+# Setter form — write through node_set, then read back. Use a writable
+# attribute (sound.enabled, V_BOOL) so the path-equals dispatch round-
+# trips cleanly.
+sound.enabled = false
+sound.enabled
+sound.enabled = true
+sound.enabled
+
+# Legacy `eval` continues to work in parallel for the JSON shape.
 eval machine.model_id
-eval machine.model_name
-eval machine.cpu_clock_hz
 eval cpu.pc
-eval cpu.d0
-eval cpu.a7
-eval memory.ram_size
-eval memory.rom_size
-
-# Bare object reads return a {"object":...} record.
-eval cpu
-eval scheduler
-
-# Unknown paths fail cleanly with an error JSON.
-eval ghost.path
-
-# M3 paths — the new mac class is auto-populated from
-# mac_globals_data.c, so these resolve as V_UINT (size 1/2/4) or
-# V_BYTES (other sizes). Parity vs. the legacy `$NAME` resolver is
-# covered by the existing shell-commands integration tests (which
-# still exercise `$pc` etc. via `info regs`) plus the alias unit
-# suite — the alias table now backs both paths.
-eval mac.MBState
-eval mac.Ticks
-eval mac.ROMBase
-eval cpu.ccr
-eval cpu.sp
 
 quit

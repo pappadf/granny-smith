@@ -15,10 +15,13 @@
 #include "expr.h"
 #include "log.h"
 #include "object.h"
+#include "parse.h"
 #include "peeler_shell.h"
 #include "shell_var.h"
 #include "value.h"
 #include "vfs.h"
+
+#include <inttypes.h>
 
 #include <ctype.h>
 #include <dirent.h>
@@ -881,6 +884,152 @@ void dispatch_command(char *line, enum invoke_mode mode, struct cmd_result *res)
     free(expanded);
 }
 
+// === New shell-form grammar dispatch (proposal §4.1) =======================
+//
+// Falls between the legacy command lookup and the "unknown command"
+// suggestion: if argv[0] resolves as a path against the object root,
+// dispatch as one of:
+//   - bare path (argc == 1)            → node_get + print
+//   - path = value (argv[1] == "=")    → node_set with parsed argv[2]
+//   - path arg arg arg (M_METHOD)      → node_call with parsed args
+// Returns true if the line was handled (caller should not fall through
+// to suggest_command), false otherwise.
+
+static void format_value_print(const value_t *v) {
+    if (!v)
+        return;
+    switch (v->kind) {
+    case V_NONE:
+        break;
+    case V_BOOL:
+        printf("%s\n", v->b ? "true" : "false");
+        break;
+    case V_INT:
+        printf("%" PRId64 "\n", v->i);
+        break;
+    case V_UINT:
+        if (v->flags & VAL_HEX)
+            printf("0x%" PRIx64 "\n", v->u);
+        else
+            printf("%" PRIu64 "\n", v->u);
+        break;
+    case V_FLOAT:
+        printf("%g\n", v->f);
+        break;
+    case V_STRING:
+        printf("%s\n", v->s ? v->s : "");
+        break;
+    case V_BYTES:
+        printf("0x");
+        for (size_t i = 0; i < v->bytes.n; i++)
+            printf("%02x", v->bytes.p[i]);
+        printf("\n");
+        break;
+    case V_ENUM:
+        if (v->enm.table && (size_t)v->enm.idx < v->enm.n_table && v->enm.table[v->enm.idx])
+            printf("%s\n", v->enm.table[v->enm.idx]);
+        else
+            printf("enum:%d\n", v->enm.idx);
+        break;
+    case V_LIST:
+        printf("<list:%zu>\n", v->list.len);
+        break;
+    case V_OBJECT: {
+        const class_desc_t *cls = v->obj ? object_class(v->obj) : NULL;
+        const char *cls_name = (cls && cls->name) ? cls->name : "object";
+        const char *o_name = v->obj ? object_name(v->obj) : NULL;
+        printf("<%s:%s>\n", cls_name, o_name ? o_name : "");
+        break;
+    }
+    case V_ERROR:
+        fprintf(stderr, "%s\n", v->err ? v->err : "(error)");
+        break;
+    }
+}
+
+// Returns 0 if handled successfully, -1 if handled with error, or 1 if
+// not a path (caller continues with the unknown-command path).
+static int try_path_dispatch(int argc, char **argv) {
+    if (argc < 1)
+        return 1;
+    // Quick rejection: a path either contains '.' / '[' or matches a
+    // root member name. The cheaper test (look for '.' or '[') covers
+    // the common case and lets the legacy registry win on names like
+    // `run` that ARE root methods but whose legacy command aliases
+    // matter for back-compat with scripts.
+    bool dotted = strchr(argv[0], '.') || strchr(argv[0], '[');
+    node_t n = object_resolve(object_root(), argv[0]);
+    if (!node_valid(n) || (!dotted && (!n.member || n.member->kind != M_METHOD)))
+        return 1;
+
+    // Setter form: `path = value`.
+    if (argc >= 3 && strcmp(argv[1], "=") == 0) {
+        if (!n.member || n.member->kind != M_ATTR) {
+            fprintf(stderr, "'%s' is not a settable attribute\n", argv[0]);
+            return -1;
+        }
+        value_t v = parse_literal_full(argv[2], NULL, 0);
+        if (val_is_error(&v)) {
+            fprintf(stderr, "set %s: %s\n", argv[0], v.err ? v.err : "parse error");
+            value_free(&v);
+            return -1;
+        }
+        value_t result = node_set(n, v);
+        if (val_is_error(&result)) {
+            fprintf(stderr, "set %s: %s\n", argv[0], result.err ? result.err : "failed");
+            value_free(&result);
+            return -1;
+        }
+        value_free(&result);
+        return 0;
+    }
+
+    // Method call form: `path arg arg arg ...`.
+    if (n.member && n.member->kind == M_METHOD) {
+        int call_argc = argc - 1;
+        value_t *vals = call_argc > 0 ? (value_t *)calloc((size_t)call_argc, sizeof(value_t)) : NULL;
+        for (int i = 0; i < call_argc; i++) {
+            vals[i] = parse_literal_full(argv[i + 1], NULL, 0);
+            if (val_is_error(&vals[i])) {
+                // Fall back to treating the token as a string literal —
+                // mirrors the way most legacy commands accept a bare
+                // word as a path/name.
+                value_free(&vals[i]);
+                vals[i] = val_str(argv[i + 1]);
+            }
+        }
+        value_t result = node_call(n, call_argc, vals);
+        for (int i = 0; i < call_argc; i++)
+            value_free(&vals[i]);
+        free(vals);
+        if (val_is_error(&result)) {
+            fprintf(stderr, "%s: %s\n", argv[0], result.err ? result.err : "call failed");
+            value_free(&result);
+            return -1;
+        }
+        format_value_print(&result);
+        value_free(&result);
+        return 0;
+    }
+
+    // Bare path read.
+    if (argc == 1) {
+        value_t v = node_get(n);
+        if (val_is_error(&v)) {
+            fprintf(stderr, "%s: %s\n", argv[0], v.err ? v.err : "read failed");
+            value_free(&v);
+            return -1;
+        }
+        format_value_print(&v);
+        value_free(&v);
+        return 0;
+    }
+
+    // Anything else (path with extra tokens that isn't a setter or a
+    // method call) is ambiguous — let the legacy code path handle it.
+    return 1;
+}
+
 // Dispatch interactively and return integer result
 uint64_t shell_dispatch(char *line) {
     if (!shell_initialized)
@@ -911,6 +1060,15 @@ uint64_t shell_dispatch(char *line) {
 
     struct cmd_reg_node *c = find_cmd(argv[0]);
     if (!c) {
+        // No legacy-registry hit — try the new shell-form grammar
+        // (proposal §4.1): bare path read, `path = value` setter, or
+        // `path arg arg arg` method call.
+        int pd = try_path_dispatch(argc, argv);
+        if (pd <= 0) {
+            free_replacements(MAXTOK, replaced);
+            free(expanded);
+            return pd == 0 ? 0 : (uint64_t)-1;
+        }
         suggest_command(argv[0]);
         free_replacements(MAXTOK, replaced);
         free(expanded);
