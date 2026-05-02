@@ -20,4 +20,9 @@ eval storage.images[0].raw_size
 eval storage.images[1].filename
 eval storage.images[1].type
 
+# storage.import — copy a small file to a chosen destination via the
+# legacy `cp` route, then verify storage.import without dst_path
+# falls back to the content-hash naming under /opfs/images/.
+echo $(storage.import("../../data/roms/Plus_v3.rom", "/tmp/imported_rom.bin"))
+
 quit
