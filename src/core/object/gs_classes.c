@@ -38,6 +38,7 @@
 #include "machine.h"
 #include "memory.h"
 #include "object.h"
+#include "rom.h"
 #include "rtc.h"
 #include "scc.h"
 #include "scheduler.h"
@@ -3553,6 +3554,111 @@ static value_t method_root_running(struct object *self, const member_t *m, int a
     return val_bool(s ? scheduler_is_running(s) : false);
 }
 
+// === ROM / disk-mount / scheduler root methods (M10b — drop area) ==========
+
+// `rom_checksum(path)` — return the 8-char hex checksum of a ROM file,
+// or empty string when the file doesn't validate. Mirrors the legacy
+// `rom checksum` command's printed output as a typed return value, so
+// JS can avoid runCommandJSON + stdout-parsing.
+static value_t method_root_rom_checksum(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)self;
+    (void)m;
+    if (argc < 1 || argv[0].kind != V_STRING || !argv[0].s)
+        return val_err("rom_checksum: expected (path)");
+    FILE *f = fopen(argv[0].s, "rb");
+    if (!f)
+        return val_str("");
+    if (fseek(f, 0, SEEK_END) != 0) {
+        fclose(f);
+        return val_str("");
+    }
+    long sz = ftell(f);
+    if (sz <= 0 || sz > 2 * 1024 * 1024) {
+        fclose(f);
+        return val_str("");
+    }
+    if (fseek(f, 0, SEEK_SET) != 0) {
+        fclose(f);
+        return val_str("");
+    }
+    uint8_t *buf = (uint8_t *)malloc((size_t)sz);
+    if (!buf) {
+        fclose(f);
+        return val_str("");
+    }
+    size_t got = fread(buf, 1, (size_t)sz, f);
+    fclose(f);
+    if (got != (size_t)sz) {
+        free(buf);
+        return val_str("");
+    }
+    uint32_t cksum = 0;
+    const rom_info_t *info = rom_identify_data(buf, (size_t)sz, &cksum);
+    free(buf);
+    if (!info)
+        return val_str("");
+    char hex[16];
+    snprintf(hex, sizeof(hex), "%08X", cksum);
+    return val_str(hex);
+}
+
+static value_t method_root_rom_load(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)self;
+    (void)m;
+    if (argc < 1 || argv[0].kind != V_STRING)
+        return val_err("rom_load: expected (path)");
+    char line[1024];
+    int n = snprintf(line, sizeof(line), "rom load \"%s\"", argv[0].s ? argv[0].s : "");
+    if (n < 0 || (size_t)n >= sizeof(line))
+        return val_err("rom_load: argument too long");
+    return val_bool(shell_dispatch(line) == 0);
+}
+
+// `fd_insert(path, slot, writable)` — mount a floppy image into one of
+// the 1–2 floppy drives. Returns true on successful insert.
+static value_t method_root_fd_insert(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)self;
+    (void)m;
+    if (argc < 2 || argv[0].kind != V_STRING)
+        return val_err("fd_insert: expected (path, slot, [writable])");
+    int64_t slot = 0;
+    bool ok = false;
+    slot = (int64_t)val_as_i64(&argv[1], &ok);
+    if (!ok && argv[1].kind == V_UINT)
+        slot = (int64_t)argv[1].u;
+    bool writable = false;
+    if (argc >= 3)
+        writable = val_as_bool(&argv[2]);
+    char line[1024];
+    int n = snprintf(line, sizeof(line), "fd insert \"%s\" %lld %s", argv[0].s ? argv[0].s : "", (long long)slot,
+                     writable ? "true" : "false");
+    if (n < 0 || (size_t)n >= sizeof(line))
+        return val_err("fd_insert: arguments too long");
+    return val_bool(shell_dispatch(line) == 0);
+}
+
+// `run([cycles])` — start the scheduler. With no argument, runs
+// indefinitely (until paused / exception). With a cycle count, runs
+// for that many CPU cycles and pauses.
+static value_t method_root_run(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)self;
+    (void)m;
+    char line[64];
+    int n;
+    if (argc >= 1) {
+        bool ok = false;
+        int64_t cycles = (int64_t)val_as_i64(&argv[0], &ok);
+        if (!ok && argv[0].kind == V_UINT)
+            cycles = (int64_t)argv[0].u;
+        n = snprintf(line, sizeof(line), "run %lld", (long long)cycles);
+    } else {
+        n = snprintf(line, sizeof(line), "run");
+    }
+    if (n < 0 || (size_t)n >= sizeof(line))
+        return val_err("run: argument too long");
+    return val_bool(shell_dispatch(line) == 0);
+}
+
 static const arg_decl_t root_cp_args[] = {
     {.name = "src", .kind = V_STRING, .doc = "Source path"},
     {.name = "dst", .kind = V_STRING, .doc = "Destination path"},
@@ -3592,6 +3698,14 @@ static const arg_decl_t root_checkpoint_save_args[] = {
 static const arg_decl_t root_register_machine_args[] = {
     {.name = "id",      .kind = V_STRING, .doc = "Machine identity (UUID-like)"},
     {.name = "created", .kind = V_STRING, .doc = "Creation timestamp"          },
+};
+static const arg_decl_t root_fd_insert_args[] = {
+    {.name = "path", .kind = V_STRING, .doc = "Floppy image path"},
+    {.name = "slot", .kind = V_INT, .doc = "Drive index (0 = upper, 1 = lower)"},
+    {.name = "writable", .kind = V_BOOL, .flags = OBJ_ARG_OPTIONAL, .doc = "Mount writable (default false)"},
+};
+static const arg_decl_t root_run_args[] = {
+    {.name = "cycles", .kind = V_UINT, .flags = OBJ_ARG_OPTIONAL, .doc = "Optional cycle budget; 0 = run until paused"},
 };
 
 static const arg_decl_t root_path_args[] = {
@@ -3725,6 +3839,23 @@ static const member_t emu_root_members[] = {
      .name = "running",
      .doc = "True if the scheduler is currently running",
      .method = {.args = NULL, .nargs = 0, .result = V_BOOL, .fn = method_root_running}                               },
+    // Drag-drop boot helpers (M10b — drop area).
+    {.kind = M_METHOD,
+     .name = "rom_checksum",
+     .doc = "Return the 8-char hex checksum of a ROM file (empty on invalid)",
+     .method = {.args = root_path_arg, .nargs = 1, .result = V_STRING, .fn = method_root_rom_checksum}               },
+    {.kind = M_METHOD,
+     .name = "rom_load",
+     .doc = "Load a ROM file and create the matching machine",
+     .method = {.args = root_path_arg, .nargs = 1, .result = V_BOOL, .fn = method_root_rom_load}                     },
+    {.kind = M_METHOD,
+     .name = "fd_insert",
+     .doc = "Insert a floppy image into a drive slot",
+     .method = {.args = root_fd_insert_args, .nargs = 3, .result = V_BOOL, .fn = method_root_fd_insert}              },
+    {.kind = M_METHOD,
+     .name = "run",
+     .doc = "Start the scheduler (optionally for a cycle budget)",
+     .method = {.args = root_run_args, .nargs = 1, .result = V_BOOL, .fn = method_root_run}                          },
 };
 
 static const class_desc_t emu_root_class_real = {

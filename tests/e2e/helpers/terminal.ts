@@ -172,6 +172,45 @@ export async function installTestShim(page: Page) {
 								// Backward-compat alias
 								(window as any).queueCommand = _runCommand;
 
+								// Wrap gsEval too: M10b migrates many `runCommand("foo bar baz")`
+								// calls to `gsEval("foo", [bar, baz])`, and test-shim consumers
+								// reach for __commandLog with the legacy shell-form string. Synthesise
+								// that string here so existing assertions keep working without
+								// teaching every spec the new API. Method name is normalised
+								// to its legacy spelling (`rom_load` → `rom load`).
+								const _logGsEval = (path: string, args: any[]) => {
+									try {
+										const norm = String(path || '').replace(/_/g, ' ');
+										const argStr = (args || [])
+											.map((a) => (typeof a === 'string' ? `"${a}"` : String(a)))
+											.join(' ');
+										logCommand(argStr ? `${norm} ${argStr}` : norm);
+									} catch {}
+								};
+								let _gsEval: any = (window as any).gsEval;
+								if (typeof _gsEval === 'function') {
+									const real = _gsEval;
+									_gsEval = (path: string, args: any[]) => { _logGsEval(path, args); return real(path, args); };
+								} else {
+									_gsEval = (path: string, args: any[]) => { _logGsEval(path, args); };
+								}
+								try {
+									Object.defineProperty(window, 'gsEval', {
+										configurable: true,
+										get() { return _gsEval; },
+										set(v) {
+											if (typeof v === 'function') {
+												const real = v;
+												_gsEval = (path: string, args: any[]) => { _logGsEval(path, args); return real(path, args); };
+											} else {
+												_gsEval = (path: string, args: any[]) => { _logGsEval(path, args); };
+											}
+										}
+									});
+								} catch {
+									(window as any).gsEval = _gsEval;
+								}
+
 						// Provide a minimal __gsTest facade for tests that expect it while
 						// delegating implementation to the shimbed functions.
 						if (typeof (window as any).__gsTest === 'undefined') {
