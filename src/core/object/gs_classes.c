@@ -3472,6 +3472,87 @@ static value_t method_root_quit(struct object *self, const member_t *m, int argc
     return val_none();
 }
 
+// === Checkpoint root methods (M10b — checkpoint area) ======================
+//
+// Thin V_BOOL wrappers around the legacy `checkpoint <subcmd>` form.
+// `running()` exposes scheduler_is_running so JS can replace
+// `runCommand('status') === 1` with a direct boolean read.
+
+static value_t method_root_checkpoint_probe(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)self;
+    (void)m;
+    (void)argc;
+    (void)argv;
+    char line[24];
+    snprintf(line, sizeof(line), "checkpoint --probe");
+    return val_bool(shell_dispatch(line) == 0);
+}
+
+static value_t method_root_checkpoint_clear(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)self;
+    (void)m;
+    (void)argc;
+    (void)argv;
+    char line[24];
+    snprintf(line, sizeof(line), "checkpoint clear");
+    return val_bool(shell_dispatch(line) == 0);
+}
+
+static value_t method_root_checkpoint_load(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)self;
+    (void)m;
+    char line[1024];
+    int n;
+    if (argc >= 1 && argv[0].kind == V_STRING && argv[0].s && *argv[0].s)
+        n = snprintf(line, sizeof(line), "checkpoint --load \"%s\"", argv[0].s);
+    else
+        n = snprintf(line, sizeof(line), "checkpoint --load");
+    if (n < 0 || (size_t)n >= sizeof(line))
+        return val_err("checkpoint_load: argument too long");
+    return val_bool(shell_dispatch(line) == 0);
+}
+
+static value_t method_root_checkpoint_save(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)self;
+    (void)m;
+    if (argc < 1 || argv[0].kind != V_STRING)
+        return val_err("checkpoint_save: expected (path, [mode])");
+    char line[1024];
+    int n;
+    const char *path = argv[0].s ? argv[0].s : "";
+    if (argc >= 2 && argv[1].kind == V_STRING && argv[1].s && *argv[1].s)
+        n = snprintf(line, sizeof(line), "checkpoint --save \"%s\" %s", path, argv[1].s);
+    else
+        n = snprintf(line, sizeof(line), "checkpoint --save \"%s\"", path);
+    if (n < 0 || (size_t)n >= sizeof(line))
+        return val_err("checkpoint_save: arguments too long");
+    return val_bool(shell_dispatch(line) == 0);
+}
+
+static value_t method_root_register_machine(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)self;
+    (void)m;
+    if (argc < 2 || argv[0].kind != V_STRING || argv[1].kind != V_STRING)
+        return val_err("register_machine: expected (id, created)");
+    char line[256];
+    int n = snprintf(line, sizeof(line), "checkpoint --machine \"%s\" \"%s\"", argv[0].s ? argv[0].s : "",
+                     argv[1].s ? argv[1].s : "");
+    if (n < 0 || (size_t)n >= sizeof(line))
+        return val_err("register_machine: arguments too long");
+    return val_bool(shell_dispatch(line) == 0);
+}
+
+// `running()` — true if the scheduler is currently running. Mirrors
+// the legacy `status` command's int return (cmd_int 1 = running).
+static value_t method_root_running(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)self;
+    (void)m;
+    (void)argc;
+    (void)argv;
+    scheduler_t *s = system_scheduler();
+    return val_bool(s ? scheduler_is_running(s) : false);
+}
+
 static const arg_decl_t root_cp_args[] = {
     {.name = "src", .kind = V_STRING, .doc = "Source path"},
     {.name = "dst", .kind = V_STRING, .doc = "Destination path"},
@@ -3498,6 +3579,20 @@ static const arg_decl_t root_find_media_args[] = {
     {.name = "dir", .kind = V_STRING, .doc = "Directory to scan"},
     {.name = "dst", .kind = V_STRING, .flags = OBJ_ARG_OPTIONAL, .doc = "Optional path to copy match into"},
 };
+static const arg_decl_t root_checkpoint_load_args[] = {
+    {.name = "path",
+     .kind = V_STRING,
+     .flags = OBJ_ARG_OPTIONAL,
+     .doc = "Checkpoint path; empty auto-loads the latest"},
+};
+static const arg_decl_t root_checkpoint_save_args[] = {
+    {.name = "path", .kind = V_STRING, .doc = "Checkpoint output path"},
+    {.name = "mode", .kind = V_STRING, .flags = OBJ_ARG_OPTIONAL, .doc = "Optional 'content' or 'refs' mode"},
+};
+static const arg_decl_t root_register_machine_args[] = {
+    {.name = "id",      .kind = V_STRING, .doc = "Machine identity (UUID-like)"},
+    {.name = "created", .kind = V_STRING, .doc = "Creation timestamp"          },
+};
 
 static const arg_decl_t root_path_args[] = {
     {.name = "path", .kind = V_STRING, .flags = OBJ_ARG_OPTIONAL, .doc = "Object path; empty resolves to the root"},
@@ -3516,27 +3611,27 @@ static const member_t emu_root_members[] = {
     {.kind = M_METHOD,
      .name = "objects",
      .doc = "List child object names at the given path (or root)",
-     .method = {.args = root_path_args, .nargs = 1, .result = V_LIST, .fn = method_root_objects}           },
+     .method = {.args = root_path_args, .nargs = 1, .result = V_LIST, .fn = method_root_objects}                     },
     {.kind = M_METHOD,
      .name = "attributes",
      .doc = "List attribute names of the resolved object's class",
-     .method = {.args = root_path_args, .nargs = 1, .result = V_LIST, .fn = method_root_attributes}        },
+     .method = {.args = root_path_args, .nargs = 1, .result = V_LIST, .fn = method_root_attributes}                  },
     {.kind = M_METHOD,
      .name = "methods",
      .doc = "List method names of the resolved object's class",
-     .method = {.args = root_path_args, .nargs = 1, .result = V_LIST, .fn = method_root_methods}           },
+     .method = {.args = root_path_args, .nargs = 1, .result = V_LIST, .fn = method_root_methods}                     },
     {.kind = M_METHOD,
      .name = "help",
      .doc = "Return the doc string of a resolved member (or class name)",
-     .method = {.args = root_help_args, .nargs = 1, .result = V_STRING, .fn = method_root_help}            },
+     .method = {.args = root_help_args, .nargs = 1, .result = V_STRING, .fn = method_root_help}                      },
     {.kind = M_METHOD,
      .name = "time",
      .doc = "Wall-clock seconds since the Unix epoch",
-     .method = {.args = NULL, .nargs = 0, .result = V_UINT, .fn = method_root_time}                        },
+     .method = {.args = NULL, .nargs = 0, .result = V_UINT, .fn = method_root_time}                                  },
     {.kind = M_METHOD,
      .name = "print",
      .doc = "Format a value as a string for display",
-     .method = {.args = root_print_args, .nargs = 1, .result = V_STRING, .fn = method_root_print}          },
+     .method = {.args = root_print_args, .nargs = 1, .result = V_STRING, .fn = method_root_print}                    },
     // Legacy-command wrappers (M8 slice 4 — proposal §5.10).
     // Side-effect wrappers return V_BOOL (true on dispatch success) so
     // the M10b migrators can branch on the result without re-deriving
@@ -3544,67 +3639,92 @@ static const member_t emu_root_members[] = {
     {.kind = M_METHOD,
      .name = "cp",
      .doc = "Copy a file or directory (alias for storage.import / legacy `cp`)",
-     .method = {.args = root_cp_args, .nargs = 3, .result = V_BOOL, .fn = method_root_cp}                  },
+     .method = {.args = root_cp_args, .nargs = 3, .result = V_BOOL, .fn = method_root_cp}                            },
     {.kind = M_METHOD,
      .name = "peeler",
      .doc = "Extract a Mac archive (.sit/.cpt/.hqx/.bin)",
-     .method = {.args = root_peeler_args, .nargs = 2, .result = V_BOOL, .fn = method_root_peeler}          },
+     .method = {.args = root_peeler_args, .nargs = 2, .result = V_BOOL, .fn = method_root_peeler}                    },
     {.kind = M_METHOD,
      .name = "peeler_probe",
      .doc = "True if a file is a peeler-supported archive",
-     .method = {.args = root_path_arg, .nargs = 1, .result = V_BOOL, .fn = method_root_peeler_probe}       },
+     .method = {.args = root_path_arg, .nargs = 1, .result = V_BOOL, .fn = method_root_peeler_probe}                 },
     {.kind = M_METHOD,
      .name = "hd_create",
      .doc = "Create a blank SCSI hard-disk image",
-     .method = {.args = root_hd_create_args, .nargs = 2, .result = V_BOOL, .fn = method_root_hd_create}    },
+     .method = {.args = root_hd_create_args, .nargs = 2, .result = V_BOOL, .fn = method_root_hd_create}              },
     {.kind = M_METHOD,
      .name = "hd_download",
      .doc = "Download an HD image (deferred — needs platform plumbing)",
-     .method = {.args = root_hd_download_args, .nargs = 1, .result = V_NONE, .fn = method_root_hd_download}},
+     .method = {.args = root_hd_download_args, .nargs = 1, .result = V_NONE, .fn = method_root_hd_download}          },
     {.kind = M_METHOD,
      .name = "rom_probe",
      .doc = "True if a file is a recognised ROM image",
-     .method = {.args = root_path_arg, .nargs = 1, .result = V_BOOL, .fn = method_root_rom_probe}          },
+     .method = {.args = root_path_arg, .nargs = 1, .result = V_BOOL, .fn = method_root_rom_probe}                    },
     {.kind = M_METHOD,
      .name = "rom_validate",
      .doc = "Verify a ROM file's checksum and recognised model",
-     .method = {.args = root_path_arg, .nargs = 1, .result = V_BOOL, .fn = method_root_rom_validate}       },
+     .method = {.args = root_path_arg, .nargs = 1, .result = V_BOOL, .fn = method_root_rom_validate}                 },
     {.kind = M_METHOD,
      .name = "vrom_probe",
      .doc = "True if a file is a recognised video-ROM image",
-     .method = {.args = root_path_arg, .nargs = 1, .result = V_BOOL, .fn = method_root_vrom_probe}         },
+     .method = {.args = root_path_arg, .nargs = 1, .result = V_BOOL, .fn = method_root_vrom_probe}                   },
     {.kind = M_METHOD,
      .name = "vrom_validate",
      .doc = "Verify a video-ROM file's signature",
-     .method = {.args = root_path_arg, .nargs = 1, .result = V_BOOL, .fn = method_root_vrom_validate}      },
+     .method = {.args = root_path_arg, .nargs = 1, .result = V_BOOL, .fn = method_root_vrom_validate}                },
     {.kind = M_METHOD,
      .name = "fd_probe",
      .doc = "True if a file is a recognised floppy-disk image",
-     .method = {.args = root_path_arg, .nargs = 1, .result = V_BOOL, .fn = method_root_fd_probe}           },
+     .method = {.args = root_path_arg, .nargs = 1, .result = V_BOOL, .fn = method_root_fd_probe}                     },
     {.kind = M_METHOD,
      .name = "find_media",
      .doc = "Search a directory for a floppy image; copy to dst if given",
-     .method = {.args = root_find_media_args, .nargs = 2, .result = V_BOOL, .fn = method_root_find_media}  },
+     .method = {.args = root_find_media_args, .nargs = 2, .result = V_BOOL, .fn = method_root_find_media}            },
     {.kind = M_METHOD,
      .name = "partmap",
      .doc = "Parse and print the Apple Partition Map of a disk image",
-     .method = {.args = root_path_arg, .nargs = 1, .result = V_BOOL, .fn = method_root_partmap}            },
+     .method = {.args = root_path_arg, .nargs = 1, .result = V_BOOL, .fn = method_root_partmap}                      },
     {.kind = M_METHOD,
      .name = "probe",
      .doc = "Probe an image for its format (HFS / ISO / APM / ...)",
-     .method = {.args = root_path_arg, .nargs = 1, .result = V_BOOL, .fn = method_root_probe}              },
+     .method = {.args = root_path_arg, .nargs = 1, .result = V_BOOL, .fn = method_root_probe}                        },
     {.kind = M_METHOD,
      .name = "list_partitions",
      .doc = "List partitions cached for a mounted image",
-     .method = {.args = root_path_arg, .nargs = 1, .result = V_BOOL, .fn = method_root_list_partitions}    },
+     .method = {.args = root_path_arg, .nargs = 1, .result = V_BOOL, .fn = method_root_list_partitions}              },
     {.kind = M_METHOD,
      .name = "unmount",
      .doc = "Force-close a cached auto-mount of an image",
-     .method = {.args = root_path_arg, .nargs = 1, .result = V_BOOL, .fn = method_root_unmount}            },
+     .method = {.args = root_path_arg, .nargs = 1, .result = V_BOOL, .fn = method_root_unmount}                      },
     {.kind = M_METHOD,
      .name = "quit",
      .doc = "Exit the emulator (asks the legacy quit command to end the run)",
-     .method = {.args = NULL, .nargs = 0, .result = V_NONE, .fn = method_root_quit}                        },
+     .method = {.args = NULL, .nargs = 0, .result = V_NONE, .fn = method_root_quit}                                  },
+    // Checkpoint / runtime-state wrappers (M10b — checkpoint area).
+    {.kind = M_METHOD,
+     .name = "checkpoint_probe",
+     .doc = "True if a valid checkpoint exists for the active machine",
+     .method = {.args = NULL, .nargs = 0, .result = V_BOOL, .fn = method_root_checkpoint_probe}                      },
+    {.kind = M_METHOD,
+     .name = "checkpoint_clear",
+     .doc = "Remove all checkpoint files for the active machine",
+     .method = {.args = NULL, .nargs = 0, .result = V_BOOL, .fn = method_root_checkpoint_clear}                      },
+    {.kind = M_METHOD,
+     .name = "checkpoint_load",
+     .doc = "Load a checkpoint (auto-loads latest when path is omitted)",
+     .method = {.args = root_checkpoint_load_args, .nargs = 1, .result = V_BOOL, .fn = method_root_checkpoint_load}  },
+    {.kind = M_METHOD,
+     .name = "checkpoint_save",
+     .doc = "Save the current machine state to a checkpoint file",
+     .method = {.args = root_checkpoint_save_args, .nargs = 2, .result = V_BOOL, .fn = method_root_checkpoint_save}  },
+    {.kind = M_METHOD,
+     .name = "register_machine",
+     .doc = "Register the active machine identity (must precede any image open)",
+     .method = {.args = root_register_machine_args, .nargs = 2, .result = V_BOOL, .fn = method_root_register_machine}},
+    {.kind = M_METHOD,
+     .name = "running",
+     .doc = "True if the scheduler is currently running",
+     .method = {.args = NULL, .nargs = 0, .result = V_BOOL, .fn = method_root_running}                               },
 };
 
 static const class_desc_t emu_root_class_real = {

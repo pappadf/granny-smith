@@ -71,12 +71,13 @@ initDragDrop(canvas);
 
 // Activate the per-machine checkpoint directory before anything that opens
 // images runs.  Awaiting here preserves command ordering: every later
-// runCommand (starting with `checkpoint --probe` below) sees the machine
-// identity already registered.  Done after initUI so the click handlers on
-// the terminal toggle / canvas are wired before this awaits.
+// gsEval (starting with `checkpoint_probe` in maybeOfferBackgroundCheckpoint
+// below) sees the machine identity already registered.  Done after initUI
+// so the click handlers on the terminal toggle / canvas are wired before
+// this awaits.
 {
   const machine = getOrCreateMachine();
-  await runCommand(`checkpoint --machine ${machine.id} ${machine.created}`);
+  await window.gsEval('register_machine', [machine.id, String(machine.created)]);
 }
 
 const resumedFromCheckpoint = await maybeOfferBackgroundCheckpoint();
