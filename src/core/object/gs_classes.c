@@ -32,6 +32,7 @@
 #include "cpu_internal.h"
 #include "debug.h"
 #include "debug_mac.h"
+#include "drive_catalog.h"
 #include "floppy.h"
 #include "fpu.h"
 #include "image.h"
@@ -3697,6 +3698,38 @@ static value_t method_root_hd_attach(struct object *self, const member_t *m, int
     return val_bool(shell_dispatch(line) == 0);
 }
 
+// `hd_models()` — return the known SCSI HD model catalog as a single
+// JSON-encoded V_STRING (array of `{label, vendor, product, size}`).
+// The web frontend's "create disk" dialog reads this list to populate
+// its drive picker; returning the JSON inline retires the last
+// `runCommandJSON("hd models --json")` caller in app/web/js.
+static value_t method_root_hd_models(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)self;
+    (void)m;
+    (void)argc;
+    (void)argv;
+    int count = drive_catalog_count();
+    size_t cap = 64 + (size_t)count * 128;
+    char *buf = (char *)malloc(cap);
+    if (!buf)
+        return val_err("hd_models: out of memory");
+    size_t pos = 0;
+    pos += (size_t)snprintf(buf + pos, cap - pos, "[");
+    for (int i = 0; i < count && pos + 256 < cap; i++) {
+        const struct drive_model *md = drive_catalog_get(i);
+        if (!md)
+            continue;
+        pos += (size_t)snprintf(buf + pos, cap - pos,
+                                "%s{\"label\":\"%s\",\"vendor\":\"%s\",\"product\":\"%s\",\"size\":%zu}", i ? "," : "",
+                                md->label, md->vendor, md->product, md->size);
+    }
+    if (pos + 1 < cap)
+        pos += (size_t)snprintf(buf + pos, cap - pos, "]");
+    value_t v = val_str(buf);
+    free(buf);
+    return v;
+}
+
 // `cdrom_attach(path)` — attach a CD-ROM image to the system.
 static value_t method_root_cdrom_attach(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)self;
@@ -4074,6 +4107,10 @@ static const member_t emu_root_members[] = {
      .name = "cdrom_attach",
      .doc = "Attach a CD-ROM image to the SCSI bus",
      .method = {.args = root_path_arg, .nargs = 1, .result = V_BOOL, .fn = method_root_cdrom_attach}                 },
+    {.kind = M_METHOD,
+     .name = "hd_models",
+     .doc = "Return the known SCSI HD model catalog as a JSON array string",
+     .method = {.args = NULL, .nargs = 0, .result = V_STRING, .fn = method_root_hd_models}                           },
 };
 
 static const class_desc_t emu_root_class_real = {

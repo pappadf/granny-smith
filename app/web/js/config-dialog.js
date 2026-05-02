@@ -326,9 +326,9 @@ export async function showConfigDialog(romChecksums) {
         // query available drive models from the emulator
         let models = [];
         try {
-          const result = await window.runCommandJSON('hd models --json');
-          if (result && result.output) {
-            models = JSON.parse(result.output);
+          const json = await window.gsEval('hd_models');
+          if (typeof json === 'string') {
+            models = JSON.parse(json);
           }
         } catch (e) {
           // fallback: empty means dialog will show an error

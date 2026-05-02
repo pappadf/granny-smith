@@ -25,7 +25,6 @@ let cmdDonePtr = 0;
 let cmdResultPtr = 0;
 let promptBufPtr = 0;
 let isRunningPtr = 0;
-let cmdJsonBufPtr = 0; // JSON result buffer
 
 // Serialization: only one command in flight at a time
 let cmdInFlight = false;
@@ -122,15 +121,17 @@ export async function initEmulator(canvas, wasmArgs, printFn) {
   cmdResultPtr = Module._get_cmd_result_ptr();
   promptBufPtr = Module._get_prompt_buffer();
   isRunningPtr = Module._get_is_running_ptr();
-  cmdJsonBufPtr = Module._get_cmd_json_buffer();
 
   // Expose Module on window for test shim access to FS
   window.__Module = Module;
 
-  // Expose command bridge on window for E2E tests.
+  // Expose the typed object-model bridge on window. After M10b/c the JS
+  // app callers all use `gsEval`; `window.runCommand` only stays around
+  // as the terminal-input bridge and the small set of pre-main-loop
+  // boot calls (main.js / checkpoint.js) where ccall ordering is still
+  // unsafe — both flagged in their call sites.
   window.runCommand = (cmd) => executeShellCommand(cmd);
   window.queueCommand = window.runCommand;
-  window.runCommandJSON = (cmd) => runCommandJSON(cmd); // structured results
   window.tabComplete = (line, cursorPos) => tabComplete(line, cursorPos);
   window.gsEval = (path, args) => gsEval(path, args);
   window.gsInspect = (path) => gsInspect(path);
@@ -180,29 +181,21 @@ export function setRunning(running) {
 
 // --- Command API (string-based) ---
 
-// Execute a command string via the worker-side command queue.
-// Returns the integer result.
+// Execute a shell line via the worker-side command queue. Returns the
+// integer result. After M10b–M10d this is only used for:
+//   - terminal user input (free-form shell text the user types)
+//   - the two pre-main-loop boot calls in main.js / checkpoint.js
+//     where ccall ordering is still unsafe
+// Everything else goes through gsEval.
 export function runCommand(cmd) {
   return executeShellCommand(cmd);
 }
 
-// Execute a command and return the structured JSON result.
-// Returns an object with status, type, value, output, and stderr fields.
-export async function runCommandJSON(cmd) {
-  await executeShellCommand(cmd);
-  // Read the JSON result from the shared buffer
-  if (cmdJsonBufPtr) {
-    try {
-      const jsonStr = Module.UTF8ToString(cmdJsonBufPtr);
-      if (jsonStr && jsonStr.length > 0) {
-        return JSON.parse(jsonStr);
-      }
-    } catch (e) {
-      // Fall back
-    }
-  }
-  return null;
-}
+// (M10e) Removed `runCommandJSON`: the only caller in app/web/js was
+// config-dialog.js's "hd models --json" lookup, now backed by the
+// typed `hd_models()` root method. If a future need for structured
+// results re-emerges, expose it through the gsEval surface — not as a
+// runCommand variant.
 
 // Send shell interrupt (Ctrl-C) to the emulator.
 // shell_interrupt just sets a flag — safe to call from any thread.
