@@ -24,6 +24,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #include "alias.h"
 #include "appletalk.h"
@@ -2949,6 +2950,254 @@ static const class_desc_t storage_class_real = {
     .n_members = sizeof(storage_members) / sizeof(storage_members[0]),
 };
 
+// === M8 (slice 3) — top-level root methods ==================================
+//
+// Registers the introspection-and-utility subset of proposal §5.10's
+// root methods: `objects`, `attributes`, `methods`, `help`, `print`,
+// and `time`. These are the ones with no dependency on legacy command
+// internals — wrappers for `cp`, `peeler`, `hd_*`, `rom_*`, `vrom_*`,
+// `partmap`, `probe`, `list_partitions`, `unmount`, `let`, `quit`,
+// `source`, `hd_create`, `hd_download` defer to a follow-up
+// substrate-and-shell sub-commit (the `quit` / `source` ones in
+// particular need shell-state plumbing).
+//
+// All five introspection methods accept an optional path string; an
+// empty / missing path resolves to the root itself.
+
+static struct object *resolve_target(const value_t *path_arg) {
+    const char *path = (path_arg && path_arg->kind == V_STRING && path_arg->s) ? path_arg->s : "";
+    node_t n = object_resolve(object_root(), path);
+    if (!node_valid(n))
+        return NULL;
+    // For attribute / method nodes we report on the parent object's
+    // class. For object-typed nodes (M_CHILD or named children) we
+    // descend to the target object.
+    if (!n.member)
+        return n.obj;
+    if (n.member->kind != M_CHILD)
+        return n.obj;
+    if (n.member->child.indexed) {
+        if (n.index < 0 || !n.member->child.get)
+            return n.obj;
+        struct object *c = n.member->child.get(n.obj, n.index);
+        return c ? c : n.obj;
+    }
+    if (n.member->child.lookup) {
+        struct object *c = n.member->child.lookup(n.obj, n.member->name);
+        if (c)
+            return c;
+    }
+    return n.obj;
+}
+
+// Append `name` as a V_STRING into a growing items array. Returns
+// false on allocation failure (caller falls through to V_LIST with
+// what's been accumulated).
+typedef struct {
+    value_t *items;
+    size_t len;
+    size_t cap;
+} string_list_acc_t;
+
+static bool string_list_push(string_list_acc_t *acc, const char *name) {
+    if (!name)
+        return true;
+    if (acc->len + 1 > acc->cap) {
+        size_t cap = acc->cap ? acc->cap * 2 : 16;
+        value_t *t = (value_t *)realloc(acc->items, cap * sizeof(value_t));
+        if (!t)
+            return false;
+        acc->items = t;
+        acc->cap = cap;
+    }
+    acc->items[acc->len++] = val_str(name);
+    return true;
+}
+
+// Walks the class member table, pushing names of members matching
+// `kind`. Plus, for kind == M_CHILD, also enumerates runtime-attached
+// named children (object_each_attached).
+typedef struct {
+    string_list_acc_t *acc;
+    member_kind_t kind; // 0 (M_ATTR base) means "any"
+} class_walker_t;
+
+static void each_attached_collect(struct object *parent, struct object *child, void *ud) {
+    (void)parent;
+    string_list_acc_t *acc = (string_list_acc_t *)ud;
+    string_list_push(acc, object_name(child));
+}
+
+static value_t method_root_objects(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)self;
+    (void)m;
+    struct object *target = resolve_target(argc >= 1 ? &argv[0] : NULL);
+    if (!target)
+        return val_err("objects: path did not resolve");
+    string_list_acc_t acc = {0};
+    const class_desc_t *cls = object_class(target);
+    if (cls) {
+        for (size_t i = 0; i < cls->n_members; i++)
+            if (cls->members[i].kind == M_CHILD)
+                string_list_push(&acc, cls->members[i].name);
+    }
+    object_each_attached(target, each_attached_collect, &acc);
+    return val_list(acc.items, acc.len);
+}
+
+static value_t method_root_attributes(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)self;
+    (void)m;
+    struct object *target = resolve_target(argc >= 1 ? &argv[0] : NULL);
+    if (!target)
+        return val_err("attributes: path did not resolve");
+    string_list_acc_t acc = {0};
+    const class_desc_t *cls = object_class(target);
+    if (cls) {
+        for (size_t i = 0; i < cls->n_members; i++)
+            if (cls->members[i].kind == M_ATTR)
+                string_list_push(&acc, cls->members[i].name);
+    }
+    return val_list(acc.items, acc.len);
+}
+
+static value_t method_root_methods(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)self;
+    (void)m;
+    struct object *target = resolve_target(argc >= 1 ? &argv[0] : NULL);
+    if (!target)
+        return val_err("methods: path did not resolve");
+    string_list_acc_t acc = {0};
+    const class_desc_t *cls = object_class(target);
+    if (cls) {
+        for (size_t i = 0; i < cls->n_members; i++)
+            if (cls->members[i].kind == M_METHOD)
+                string_list_push(&acc, cls->members[i].name);
+    }
+    return val_list(acc.items, acc.len);
+}
+
+// `help(path?)` — return the doc string of the resolved member. For
+// object-typed nodes, returns the class name (no separate "class doc"
+// field exists in the substrate yet).
+static value_t method_root_help(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)self;
+    (void)m;
+    const char *path = (argc >= 1 && argv[0].kind == V_STRING && argv[0].s) ? argv[0].s : "";
+    node_t n = object_resolve(object_root(), path);
+    if (!node_valid(n))
+        return val_err("help: path did not resolve");
+    if (n.member && n.member->doc)
+        return val_str(n.member->doc);
+    if (n.member)
+        return val_str(n.member->name ? n.member->name : "");
+    const class_desc_t *cls = object_class(n.obj);
+    return val_str(cls && cls->name ? cls->name : "");
+}
+
+// `time()` — wall-clock seconds since the Unix epoch. Useful for
+// timestamping log lines from scripts; deterministic test runs use
+// `rtc.time =` (M7b) instead.
+static value_t method_root_time(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)self;
+    (void)m;
+    (void)argc;
+    (void)argv;
+    return val_uint(8, (uint64_t)time(NULL));
+}
+
+// `print(value)` — formats a value as a string. The implementation
+// just round-trips through V_STRING for now: numerics → decimal/hex
+// per flags, strings stay strings, others get a class-shaped tag.
+// This matches the proposal's §5.10 listing without committing to a
+// rich formatter (which lands with M9 / M10).
+static value_t method_root_print(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)self;
+    (void)m;
+    if (argc < 1)
+        return val_str("");
+    const value_t *v = &argv[0];
+    char buf[256];
+    switch (v->kind) {
+    case V_NONE:
+        return val_str("");
+    case V_BOOL:
+        return val_str(v->b ? "true" : "false");
+    case V_INT:
+        snprintf(buf, sizeof(buf), "%lld", (long long)v->i);
+        return val_str(buf);
+    case V_UINT:
+        if (v->flags & VAL_HEX)
+            snprintf(buf, sizeof(buf), "0x%llx", (unsigned long long)v->u);
+        else
+            snprintf(buf, sizeof(buf), "%llu", (unsigned long long)v->u);
+        return val_str(buf);
+    case V_FLOAT:
+        snprintf(buf, sizeof(buf), "%g", v->f);
+        return val_str(buf);
+    case V_STRING:
+        return val_str(v->s ? v->s : "");
+    case V_ENUM:
+        if (v->enm.table && (size_t)v->enm.idx < v->enm.n_table && v->enm.table[v->enm.idx])
+            return val_str(v->enm.table[v->enm.idx]);
+        snprintf(buf, sizeof(buf), "<enum:%d>", v->enm.idx);
+        return val_str(buf);
+    case V_OBJECT: {
+        const class_desc_t *cls = v->obj ? object_class(v->obj) : NULL;
+        snprintf(buf, sizeof(buf), "<object:%s>", cls && cls->name ? cls->name : "?");
+        return val_str(buf);
+    }
+    default:
+        return val_str("<value>");
+    }
+}
+
+static const arg_decl_t root_path_args[] = {
+    {.name = "path", .kind = V_STRING, .flags = OBJ_ARG_OPTIONAL, .doc = "Object path; empty resolves to the root"},
+};
+static const arg_decl_t root_help_args[] = {
+    {.name = "path",
+     .kind = V_STRING,
+     .flags = OBJ_ARG_OPTIONAL,
+     .doc = "Path to a member or object; empty resolves to the root"},
+};
+static const arg_decl_t root_print_args[] = {
+    {.name = "value", .kind = V_NONE, .doc = "Value to format"},
+};
+
+static const member_t emu_root_members[] = {
+    {.kind = M_METHOD,
+     .name = "objects",
+     .doc = "List child object names at the given path (or root)",
+     .method = {.args = root_path_args, .nargs = 1, .result = V_LIST, .fn = method_root_objects}   },
+    {.kind = M_METHOD,
+     .name = "attributes",
+     .doc = "List attribute names of the resolved object's class",
+     .method = {.args = root_path_args, .nargs = 1, .result = V_LIST, .fn = method_root_attributes}},
+    {.kind = M_METHOD,
+     .name = "methods",
+     .doc = "List method names of the resolved object's class",
+     .method = {.args = root_path_args, .nargs = 1, .result = V_LIST, .fn = method_root_methods}   },
+    {.kind = M_METHOD,
+     .name = "help",
+     .doc = "Return the doc string of a resolved member (or class name)",
+     .method = {.args = root_help_args, .nargs = 1, .result = V_STRING, .fn = method_root_help}    },
+    {.kind = M_METHOD,
+     .name = "time",
+     .doc = "Wall-clock seconds since the Unix epoch",
+     .method = {.args = NULL, .nargs = 0, .result = V_UINT, .fn = method_root_time}                },
+    {.kind = M_METHOD,
+     .name = "print",
+     .doc = "Format a value as a string for display",
+     .method = {.args = root_print_args, .nargs = 1, .result = V_STRING, .fn = method_root_print}  },
+};
+
+static const class_desc_t emu_root_class_real = {
+    .name = "emu",
+    .members = emu_root_members,
+    .n_members = sizeof(emu_root_members) / sizeof(emu_root_members[0]),
+};
+
 // === Built-in alias registration ============================================
 //
 // Register at install time. Order matters only insofar as built-ins
@@ -3033,6 +3282,9 @@ static struct object *attach_stub(struct object *parent, const class_desc_t *cls
 void gs_classes_install(struct config *cfg) {
     if (g_stub_count > 0)
         return; // idempotent
+
+    // M8 (slice 3) — register top-level methods on the root.
+    object_root_set_class(&emu_root_class_real);
 
     struct object *cpu_obj = attach_stub(NULL, &cpu_class, cfg, "cpu");
     struct object *mem_obj = attach_stub(NULL, &memory_class, cfg, "memory");
@@ -3232,6 +3484,9 @@ void gs_classes_uninstall(void) {
         g_storage_image_data[i].cfg = NULL;
         g_storage_image_data[i].slot = 0;
     }
+    // M8 (slice 3) — restore the namespace-only root class so a fresh
+    // object_root() call after uninstall doesn't surface stale members.
+    object_root_set_class(NULL);
     alias_reset();
     free_mac_class();
 }

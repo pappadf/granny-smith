@@ -1,0 +1,43 @@
+# M8 (slice 3) integration: top-level root methods.
+# `objects(path)` lists children at the resolved path (or root when
+# path is omitted). `attributes(path)` and `methods(path)` enumerate
+# the resolved class. `help(path)` returns a doc string. `print(v)`
+# formats a value as a string. `time()` returns wall-clock seconds.
+
+run 50000
+
+# objects() at the root: should include cpu / memory / scsi / floppy /
+# debugger / network / input / storage etc. The legacy harness checks
+# stdout for substring matches so we only need the names to appear
+# somewhere in the JSON list output.
+echo $(objects())
+
+# objects("cpu") drills in. cpu has no child objects on Plus (no FPU
+# without --fpu), so the list is empty — but it must resolve cleanly.
+echo $(objects("cpu"))
+
+# attributes("cpu") names the per-register getters.
+echo $(attributes("cpu"))
+
+# methods("cpu") is currently empty (cpu has only attributes), so the
+# call is a path-resolves-cleanly test.
+echo $(methods("cpu"))
+
+# methods("rtc") includes pram_read, pram_write.
+echo $(methods("rtc"))
+
+# help() on a member returns its doc string.
+echo $(help("cpu.pc"))
+echo $(help("rtc.time"))
+echo $(help("input.mouse.move"))
+
+# print() round-trips through value formatting.
+echo $(print(42))
+echo $(print("hello"))
+echo $(print(true))
+
+# time() is just monotonic-ish; we don't pin a value, only that the
+# call resolves.
+echo $(time())
+
+quit

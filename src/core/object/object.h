@@ -133,6 +133,18 @@ struct object *object_root(void);
 // a fresh, empty root on the next call.
 void object_root_reset(void);
 
+// Swap the root's class descriptor. Used by gs_classes_install to
+// register the top-level root methods (proposal §5.10) while keeping
+// the substrate's lazy-creation contract for object_root() — the
+// initial namespace-only class lives in object.c so M1/M2 callers
+// don't depend on gs_classes registration order. After this call the
+// resolver finds members declared on `cls` directly on the root, in
+// addition to any runtime-attached children.
+//
+// Pass NULL to revert to the namespace-only default (used by
+// object_root_reset paths in tests).
+void object_root_set_class(const class_desc_t *cls);
+
 // === Object lifetime =========================================================
 
 // Construct an opaque object instance. instance_data is the back-pointer

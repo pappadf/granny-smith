@@ -39,10 +39,10 @@ struct object {
     struct invalidator *invalidators; // weak-ref callbacks for held nodes
 };
 
-// Root class: namespace-only object — every member is a child added at
-// runtime via object_attach. M2 does not register attributes or methods
-// on the root yet; that lands in M8 (top-level functions).
-static const class_desc_t emu_root_class = {
+// Root class: namespace-only by default (M1/M2). gs_classes_install
+// swaps in a richer class via object_root_set_class() to register the
+// top-level methods (M8 slice 3 — proposal §5.10).
+static const class_desc_t emu_root_class_default = {
     .name = "emu",
     .members = NULL,
     .n_members = 0,
@@ -52,8 +52,15 @@ static struct object *g_root = NULL;
 
 struct object *object_root(void) {
     if (!g_root)
-        g_root = object_new(&emu_root_class, NULL, "emu");
+        g_root = object_new(&emu_root_class_default, NULL, "emu");
     return g_root;
+}
+
+void object_root_set_class(const class_desc_t *cls) {
+    struct object *root = object_root();
+    if (!root)
+        return;
+    root->cls = cls ? cls : &emu_root_class_default;
 }
 
 void object_root_reset(void) {
