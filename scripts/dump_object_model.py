@@ -1,0 +1,175 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+# Copyright (c) pappadf
+
+"""Generate docs/object-model-reference.md from the live emulator tree.
+
+Runs the headless emulator with a Plus ROM, calls the `dump_tree()` root
+method (M12), parses the JSON output, and renders a stable markdown
+reference. Intended to be run from the repo root:
+
+    python3 scripts/dump_object_model.py [--rom PATH] [--out PATH]
+
+The default output path is `docs/object-model-reference.md`, which is
+checked in so reviewers can see drift.
+"""
+
+import argparse
+import json
+import os
+import re
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+DEFAULT_HEADLESS = REPO_ROOT / "build" / "headless" / "gs-headless"
+DEFAULT_ROM = REPO_ROOT / "tests" / "data" / "roms" / "Plus_v3.rom"
+DEFAULT_OUT = REPO_ROOT / "docs" / "object-model-reference.md"
+
+
+def run_dump(headless: Path, rom: Path) -> dict:
+    """Run gs-headless with a one-off script and capture dump_tree() output."""
+    with tempfile.NamedTemporaryFile("w", suffix=".script", delete=False) as f:
+        # `run 1` boots the machine far enough that gs_classes_install
+        # has populated cpu/memory/scc/scsi/etc. children. Without it
+        # dump_tree only sees the root methods.
+        f.write("run 1\n")
+        f.write("echo $(dump_tree())\n")
+        f.write("quit\n")
+        script_path = Path(f.name)
+    try:
+        result = subprocess.run(
+            [str(headless), f"rom={rom}", f"script={script_path}", "--speed=max"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    finally:
+        script_path.unlink(missing_ok=True)
+    if result.returncode != 0:
+        sys.stderr.write(result.stderr)
+        sys.exit(f"gs-headless failed (rc={result.returncode})")
+    # The script prints `> echo $(dump_tree())` followed by the JSON
+    # payload on its own line. Pull the longest brace-balanced line.
+    json_line = None
+    for line in result.stdout.splitlines():
+        s = line.strip()
+        if s.startswith("{") and s.endswith("}"):
+            if json_line is None or len(s) > len(json_line):
+                json_line = s
+    if not json_line:
+        sys.stderr.write(result.stdout)
+        sys.exit("could not find dump_tree() JSON in headless output")
+    return json.loads(json_line)
+
+
+# --- Markdown rendering ----------------------------------------------------
+
+def fmt_arg(arg: dict) -> str:
+    name = arg.get("name", "")
+    kind = arg.get("kind", "?")
+    optional = arg.get("optional", False)
+    decoration = "?" if optional else ""
+    return f"`{name}{decoration}: {kind}`"
+
+
+def render_member(m: dict, lines: list) -> None:
+    name = m.get("name", "?")
+    kind = m.get("kind", "?")
+    doc = m.get("doc", "")
+    if kind == "attr":
+        ty = m.get("type", "?")
+        rw = "rw" if m.get("writable") else "ro"
+        lines.append(f"- **{name}** *(attr, {ty}, {rw})* — {doc}" if doc else f"- **{name}** *(attr, {ty}, {rw})*")
+    elif kind == "method":
+        result = m.get("result", "?")
+        args = m.get("args", []) or []
+        sig = ", ".join(fmt_arg(a) for a in args)
+        head = f"`{name}({sig})` → `{result}`"
+        lines.append(f"- **{head}** — {doc}" if doc else f"- **{head}**")
+    elif kind == "child":
+        cls = m.get("class") or "(see below)"
+        idx = " (indexed)" if m.get("indexed") else ""
+        lines.append(f"- **{name}** *(child{idx} → {cls})* — {doc}" if doc else f"- **{name}** *(child{idx} → {cls})*")
+    else:
+        lines.append(f"- **{name}** *({kind})* — {doc}" if doc else f"- **{name}** *({kind})*")
+
+
+def render_object(obj: dict, lines: list, depth: int = 0) -> None:
+    path = obj.get("path") or "(root)"
+    cls = obj.get("class", "?")
+    members = obj.get("members", []) or []
+    children = obj.get("children", []) or []
+    heading = "##" + "#" * min(depth, 4)
+    lines.append("")
+    lines.append(f"{heading} `{path}` *(class {cls})*")
+    if members:
+        # Group by kind for readability.
+        attrs = [m for m in members if m.get("kind") == "attr"]
+        methods = [m for m in members if m.get("kind") == "method"]
+        kids = [m for m in members if m.get("kind") == "child"]
+        if attrs:
+            lines.append("")
+            lines.append("**Attributes**")
+            for m in attrs:
+                render_member(m, lines)
+        if methods:
+            lines.append("")
+            lines.append("**Methods**")
+            for m in methods:
+                render_member(m, lines)
+        if kids:
+            lines.append("")
+            lines.append("**Class children**")
+            for m in kids:
+                render_member(m, lines)
+    for c in children:
+        render_object(c, lines, depth + 1)
+
+
+def render(tree: dict) -> str:
+    lines: list = []
+    lines.append("# Object Model Reference")
+    lines.append("")
+    lines.append("> Auto-generated by `scripts/dump_object_model.py` from the live")
+    lines.append("> headless emulator. Do not edit by hand — re-run the script after")
+    lines.append("> any change to a class table or root method.")
+    lines.append("")
+    lines.append("Each section names a node in the tree by its dotted path. Members")
+    lines.append("are grouped by kind: attributes (read-only or read-write), methods")
+    lines.append("(with their arg list and return type), and child objects.")
+    render_object(tree, lines)
+    lines.append("")
+    return "\n".join(lines)
+
+
+# --- Entry point -----------------------------------------------------------
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument("--headless", default=str(DEFAULT_HEADLESS), help="Path to gs-headless binary")
+    ap.add_argument("--rom", default=str(DEFAULT_ROM), help="ROM path")
+    ap.add_argument("--out", default=str(DEFAULT_OUT), help="Output markdown path")
+    args = ap.parse_args()
+
+    headless = Path(args.headless)
+    rom = Path(args.rom)
+    out = Path(args.out)
+
+    if not headless.exists():
+        sys.exit(f"gs-headless not found at {headless} — run `make -f Makefile.headless` first")
+    if not rom.exists():
+        sys.exit(f"ROM not found at {rom}")
+
+    tree = run_dump(headless, rom)
+    md = render(tree)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(md)
+    print(f"wrote {out} ({len(md):,} bytes)")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

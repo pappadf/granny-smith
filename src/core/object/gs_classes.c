@@ -21,6 +21,7 @@
 #include "gs_classes.h"
 
 #include <ctype.h>
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -3698,6 +3699,227 @@ static value_t method_root_hd_attach(struct object *self, const member_t *m, int
     return val_bool(shell_dispatch(line) == 0);
 }
 
+// === dump_tree (M12 — auto-generated docs) =================================
+//
+// Walk the live object tree and emit one JSON description of every
+// reachable node. The frontend doesn't consume this — it powers
+// scripts/dump_object_model.py, which renders docs/object-model-
+// reference.md. Doing the walk in C keeps the format stable across
+// model changes; the python only formats markdown.
+
+struct dump_buf {
+    char *buf;
+    size_t cap;
+    size_t pos;
+    bool overflow;
+};
+
+static void dump_append(struct dump_buf *b, const char *s) {
+    if (!s || b->overflow)
+        return;
+    size_t n = strlen(s);
+    if (b->pos + n + 1 > b->cap) {
+        size_t new_cap = b->cap ? b->cap * 2 : 4096;
+        while (new_cap < b->pos + n + 1)
+            new_cap *= 2;
+        char *nb = (char *)realloc(b->buf, new_cap);
+        if (!nb) {
+            b->overflow = true;
+            return;
+        }
+        b->buf = nb;
+        b->cap = new_cap;
+    }
+    memcpy(b->buf + b->pos, s, n);
+    b->pos += n;
+    b->buf[b->pos] = '\0';
+}
+
+static void dump_appendf(struct dump_buf *b, const char *fmt, ...) {
+    char tmp[256];
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(tmp, sizeof(tmp), fmt, ap);
+    va_end(ap);
+    dump_append(b, tmp);
+}
+
+static void dump_append_jstring(struct dump_buf *b, const char *s) {
+    dump_append(b, "\"");
+    if (s) {
+        for (const char *p = s; *p; p++) {
+            unsigned char c = (unsigned char)*p;
+            switch (c) {
+            case '"':
+                dump_append(b, "\\\"");
+                break;
+            case '\\':
+                dump_append(b, "\\\\");
+                break;
+            case '\n':
+                dump_append(b, "\\n");
+                break;
+            case '\r':
+                dump_append(b, "\\r");
+                break;
+            case '\t':
+                dump_append(b, "\\t");
+                break;
+            default:
+                if (c < 0x20)
+                    dump_appendf(b, "\\u%04x", c);
+                else {
+                    char ch[2] = {(char)c, '\0'};
+                    dump_append(b, ch);
+                }
+            }
+        }
+    }
+    dump_append(b, "\"");
+}
+
+static const char *value_kind_name(value_kind_t k) {
+    switch (k) {
+    case V_NONE:
+        return "none";
+    case V_BOOL:
+        return "bool";
+    case V_INT:
+        return "int";
+    case V_UINT:
+        return "uint";
+    case V_FLOAT:
+        return "float";
+    case V_STRING:
+        return "string";
+    case V_BYTES:
+        return "bytes";
+    case V_ENUM:
+        return "enum";
+    case V_LIST:
+        return "list";
+    case V_OBJECT:
+        return "object";
+    case V_ERROR:
+        return "error";
+    }
+    return "?";
+}
+
+static void dump_object_recursive(struct dump_buf *b, struct object *o, const char *path);
+
+struct dump_child_acc {
+    struct dump_buf *b;
+    const char *path;
+    bool first;
+};
+
+static void dump_attached_cb(struct object *parent, struct object *child, void *ud) {
+    (void)parent;
+    struct dump_child_acc *acc = (struct dump_child_acc *)ud;
+    const char *name = object_name(child);
+    if (!name)
+        return;
+    if (!acc->first)
+        dump_append(acc->b, ",");
+    acc->first = false;
+    char child_path[256];
+    if (acc->path && *acc->path)
+        snprintf(child_path, sizeof(child_path), "%s.%s", acc->path, name);
+    else
+        snprintf(child_path, sizeof(child_path), "%s", name);
+    dump_object_recursive(acc->b, child, child_path);
+}
+
+static void dump_object_recursive(struct dump_buf *b, struct object *o, const char *path) {
+    if (!o)
+        return;
+    const class_desc_t *cls = object_class(o);
+    dump_append(b, "{\"path\":");
+    dump_append_jstring(b, path ? path : "");
+    dump_append(b, ",\"class\":");
+    dump_append_jstring(b, (cls && cls->name) ? cls->name : "");
+    dump_append(b, ",\"members\":[");
+    bool first_m = true;
+    if (cls && cls->members) {
+        for (size_t i = 0; i < cls->n_members; i++) {
+            const member_t *mem = &cls->members[i];
+            if (!mem->name)
+                continue;
+            if (!first_m)
+                dump_append(b, ",");
+            first_m = false;
+            dump_append(b, "{\"name\":");
+            dump_append_jstring(b, mem->name);
+            dump_append(b, ",\"kind\":");
+            switch (mem->kind) {
+            case M_ATTR:
+                dump_append(b, "\"attr\",\"type\":");
+                dump_append_jstring(b, value_kind_name(mem->attr.type));
+                dump_append(b, ",\"writable\":");
+                dump_append(b, mem->attr.set ? "true" : "false");
+                break;
+            case M_METHOD: {
+                dump_append(b, "\"method\",\"result\":");
+                dump_append_jstring(b, value_kind_name(mem->method.result));
+                dump_append(b, ",\"args\":[");
+                for (int a = 0; a < mem->method.nargs; a++) {
+                    if (a)
+                        dump_append(b, ",");
+                    const arg_decl_t *ad = &mem->method.args[a];
+                    dump_append(b, "{\"name\":");
+                    dump_append_jstring(b, ad->name ? ad->name : "");
+                    dump_append(b, ",\"kind\":");
+                    dump_append_jstring(b, value_kind_name(ad->kind));
+                    dump_append(b, ",\"optional\":");
+                    dump_append(b, (ad->flags & OBJ_ARG_OPTIONAL) ? "true" : "false");
+                    if (ad->doc) {
+                        dump_append(b, ",\"doc\":");
+                        dump_append_jstring(b, ad->doc);
+                    }
+                    dump_append(b, "}");
+                }
+                dump_append(b, "]");
+                break;
+            }
+            case M_CHILD:
+                dump_append(b, "\"child\",\"indexed\":");
+                dump_append(b, mem->child.indexed ? "true" : "false");
+                if (mem->child.cls && mem->child.cls->name) {
+                    dump_append(b, ",\"class\":");
+                    dump_append_jstring(b, mem->child.cls->name);
+                }
+                break;
+            }
+            if (mem->doc) {
+                dump_append(b, ",\"doc\":");
+                dump_append_jstring(b, mem->doc);
+            }
+            dump_append(b, "}");
+        }
+    }
+    dump_append(b, "],\"children\":[");
+    struct dump_child_acc acc = {.b = b, .path = path, .first = true};
+    object_each_attached(o, dump_attached_cb, &acc);
+    dump_append(b, "]}");
+}
+
+static value_t method_root_dump_tree(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)self;
+    (void)m;
+    (void)argc;
+    (void)argv;
+    struct dump_buf b = {.buf = NULL, .cap = 0, .pos = 0, .overflow = false};
+    dump_object_recursive(&b, object_root(), "");
+    if (b.overflow || !b.buf) {
+        free(b.buf);
+        return val_err("dump_tree: out of memory");
+    }
+    value_t v = val_str(b.buf);
+    free(b.buf);
+    return v;
+}
+
 // `hd_models()` — return the known SCSI HD model catalog as a single
 // JSON-encoded V_STRING (array of `{label, vendor, product, size}`).
 // The web frontend's "create disk" dialog reads this list to populate
@@ -4111,6 +4333,10 @@ static const member_t emu_root_members[] = {
      .name = "hd_models",
      .doc = "Return the known SCSI HD model catalog as a JSON array string",
      .method = {.args = NULL, .nargs = 0, .result = V_STRING, .fn = method_root_hd_models}                           },
+    {.kind = M_METHOD,
+     .name = "dump_tree",
+     .doc = "Walk the live object tree and return one JSON description of every node",
+     .method = {.args = NULL, .nargs = 0, .result = V_STRING, .fn = method_root_dump_tree}                           },
 };
 
 static const class_desc_t emu_root_class_real = {
