@@ -132,6 +132,8 @@ export async function initEmulator(canvas, wasmArgs, printFn) {
   window.queueCommand = window.runCommand;
   window.runCommandJSON = (cmd) => runCommandJSON(cmd); // structured results
   window.tabComplete = (line, cursorPos) => tabComplete(line, cursorPos);
+  window.gsEval = (path, args) => gsEval(path, args);
+  window.gsInspect = (path) => gsInspect(path);
 
   // With PROXY_TO_PTHREAD, shell_init is called from main() on the worker.
   // No need to ccall it from JS.
@@ -233,6 +235,47 @@ export function tabComplete(line, cursorPos) {
     // Read the JSON result from the completion buffer (shared heap)
     const jsonStr = Module.UTF8ToString(completionBufPtr);
     return JSON.parse(jsonStr);
+  } catch (e) {
+    return null;
+  }
+}
+
+// Object-model bridge (M10a).
+//   gsEval(path)            → attribute read or zero-arg method call
+//   gsEval(path, [v0, v1])  → method call, or attribute write when path
+//                             is an attribute and the array has one entry
+//   gsInspect(path)         → same JSON shape as gsEval; will diverge into
+//                             a recursive subtree shape with M11
+// args may be undefined / null / an array of primitive values (number,
+// string, boolean, null). The C side parses the JSON-encoded array.
+let gsEvalBufPtr = 0;
+
+function readGsEvalResult() {
+  if (!gsEvalBufPtr) {
+    try { gsEvalBufPtr = Module._get_gs_eval_buffer(); } catch (e) { return null; }
+  }
+  if (!gsEvalBufPtr) return null;
+  const jsonStr = Module.UTF8ToString(gsEvalBufPtr);
+  if (!jsonStr) return null;
+  try { return JSON.parse(jsonStr); } catch (e) { return jsonStr; }
+}
+
+export function gsEval(path, args) {
+  if (!Module || !moduleReady) return null;
+  const argsJson = (args === undefined || args === null) ? '' : JSON.stringify(args);
+  try {
+    Module.ccall('em_gs_eval', 'number', ['string', 'string'], [String(path || ''), argsJson]);
+    return readGsEvalResult();
+  } catch (e) {
+    return null;
+  }
+}
+
+export function gsInspect(path) {
+  if (!Module || !moduleReady) return null;
+  try {
+    Module.ccall('em_gs_inspect', 'number', ['string'], [String(path || '')]);
+    return readGsEvalResult();
   } catch (e) {
     return null;
   }

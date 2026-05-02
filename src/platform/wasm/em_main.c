@@ -46,6 +46,7 @@
 #include "cmd_json.h"
 #include "cmd_types.h"
 #include "cpu.h"
+#include "gs_api.h"
 #include "keyboard.h"
 #include "machine.h"
 #include "mouse.h"
@@ -532,6 +533,32 @@ static char g_completion_buffer[COMPLETION_BUF_SIZE];
 // Export the completion buffer pointer
 EMSCRIPTEN_KEEPALIVE char *get_completion_buffer(void) {
     return g_completion_buffer;
+}
+
+// ============================================================================
+// Object-model bridge (M10a)
+// ============================================================================
+
+// JSON result buffer for gs_eval / gs_inspect, kept distinct from
+// g_cmd_json_buffer so a long-running runCommand result doesn't get clobbered
+// by an interleaved attribute read.
+#define GS_EVAL_BUF_SIZE 16384
+static char g_gs_eval_buffer[GS_EVAL_BUF_SIZE];
+
+EMSCRIPTEN_KEEPALIVE char *get_gs_eval_buffer(void) {
+    return g_gs_eval_buffer;
+}
+
+// Returns 0 on success, negative on error. Either way the JSON-encoded
+// value (or {"error":"..."} on failure) is written to g_gs_eval_buffer.
+// args_json may be NULL or an empty string for a bare attribute read /
+// zero-arg method call.
+EMSCRIPTEN_KEEPALIVE int em_gs_eval(const char *path, const char *args_json) {
+    return gs_eval(path, args_json, g_gs_eval_buffer, GS_EVAL_BUF_SIZE);
+}
+
+EMSCRIPTEN_KEEPALIVE int em_gs_inspect(const char *path) {
+    return gs_inspect(path, g_gs_eval_buffer, GS_EVAL_BUF_SIZE);
 }
 
 // Run tab completion and write results as JSON array to the completion buffer.
