@@ -1,0 +1,23 @@
+# M8 (slice 2) integration: `storage` object class.
+# Plus boots with one SCSI HD (hd1.img) and one floppy (System 6.0.8).
+# storage.images should enumerate at least these two entries.
+
+run 50000
+
+# Tree shape.
+eval storage
+eval storage.images
+
+# First image: HD attached at boot.
+eval storage.images[0]
+eval storage.images[0].index
+eval storage.images[0].filename
+eval storage.images[0].type
+eval storage.images[0].writable
+eval storage.images[0].raw_size
+
+# Second image: the System 6 floppy.
+eval storage.images[1].filename
+eval storage.images[1].type
+
+quit

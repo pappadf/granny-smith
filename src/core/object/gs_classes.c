@@ -2773,6 +2773,182 @@ static const class_desc_t input_class = {
     .n_members = 0,
 };
 
+// === M8 (slice 2) — storage object with images indexed children ============
+//
+// Replaces the M2 `storage` stub with a real class. `storage.images`
+// enumerates the cfg->images[] entries. Slot index in the indexed
+// child matches the slot in cfg->images[]; n_images is dense from
+// 0..n_images-1, so the collection's count() returns cfg->n_images
+// and next(prev) advances to prev+1 until n_images.
+//
+// `storage.import(host_path, dst_path)` is reserved per proposal §5.7
+// but stubbed with a deferral error — image_persist_volatile + the
+// surrounding plumbing land in a follow-up M8 sub-commit.
+
+typedef struct {
+    config_t *cfg;
+    int slot;
+} storage_image_data_t;
+
+static storage_image_data_t g_storage_image_data[MAX_IMAGES];
+static struct object *g_storage_image_objs[MAX_IMAGES];
+
+static image_t *storage_image_at(struct object *self) {
+    storage_image_data_t *d = (storage_image_data_t *)object_data(self);
+    if (!d || !d->cfg)
+        return NULL;
+    if (d->slot < 0 || d->slot >= d->cfg->n_images)
+        return NULL;
+    return d->cfg->images[d->slot];
+}
+
+static value_t storage_image_attr_index(struct object *self, const member_t *m) {
+    (void)m;
+    storage_image_data_t *d = (storage_image_data_t *)object_data(self);
+    return val_int(d ? d->slot : -1);
+}
+static value_t storage_image_attr_filename(struct object *self, const member_t *m) {
+    (void)m;
+    image_t *img = storage_image_at(self);
+    const char *s = img ? image_get_filename(img) : NULL;
+    return val_str(s ? s : "");
+}
+static value_t storage_image_attr_path(struct object *self, const member_t *m) {
+    (void)m;
+    image_t *img = storage_image_at(self);
+    const char *s = img ? image_path(img) : NULL;
+    return val_str(s ? s : "");
+}
+static value_t storage_image_attr_raw_size(struct object *self, const member_t *m) {
+    (void)m;
+    image_t *img = storage_image_at(self);
+    return val_uint(8, img ? (uint64_t)img->raw_size : 0);
+}
+static value_t storage_image_attr_writable(struct object *self, const member_t *m) {
+    (void)m;
+    image_t *img = storage_image_at(self);
+    return val_bool(img ? img->writable : false);
+}
+
+static const char *const STORAGE_IMAGE_TYPE_NAMES[] = {
+    "other", "fd_ss", "fd_ds", "fd_hd", "hd", "cdrom",
+};
+
+static value_t storage_image_attr_type(struct object *self, const member_t *m) {
+    (void)m;
+    image_t *img = storage_image_at(self);
+    int t = img ? (int)img->type : 0;
+    int max = (int)(sizeof(STORAGE_IMAGE_TYPE_NAMES) / sizeof(STORAGE_IMAGE_TYPE_NAMES[0]));
+    if (t < 0 || t >= max)
+        t = 0;
+    return val_enum(t, STORAGE_IMAGE_TYPE_NAMES, (size_t)max);
+}
+
+static const member_t storage_image_members[] = {
+    {.kind = M_ATTR,
+     .name = "index",
+     .flags = VAL_RO,
+     .attr = {.type = V_INT, .get = storage_image_attr_index, .set = NULL}      },
+    {.kind = M_ATTR,
+     .name = "filename",
+     .flags = VAL_RO,
+     .attr = {.type = V_STRING, .get = storage_image_attr_filename, .set = NULL}},
+    {.kind = M_ATTR,
+     .name = "path",
+     .flags = VAL_RO,
+     .attr = {.type = V_STRING, .get = storage_image_attr_path, .set = NULL}    },
+    {.kind = M_ATTR,
+     .name = "raw_size",
+     .flags = VAL_RO,
+     .attr = {.type = V_UINT, .get = storage_image_attr_raw_size, .set = NULL}  },
+    {.kind = M_ATTR,
+     .name = "writable",
+     .flags = VAL_RO,
+     .attr = {.type = V_BOOL, .get = storage_image_attr_writable, .set = NULL}  },
+    {.kind = M_ATTR,
+     .name = "type",
+     .flags = VAL_RO,
+     .attr = {.type = V_ENUM, .get = storage_image_attr_type, .set = NULL}      },
+};
+
+static const class_desc_t storage_image_class = {
+    .name = "image",
+    .members = storage_image_members,
+    .n_members = sizeof(storage_image_members) / sizeof(storage_image_members[0]),
+};
+
+static struct object *storage_images_get(struct object *self, int index) {
+    config_t *cfg = (config_t *)object_data(self);
+    if (!cfg || index < 0 || index >= MAX_IMAGES)
+        return NULL;
+    if (index >= cfg->n_images || !cfg->images[index])
+        return NULL;
+    return g_storage_image_objs[index];
+}
+static int storage_images_count(struct object *self) {
+    config_t *cfg = (config_t *)object_data(self);
+    if (!cfg)
+        return 0;
+    int n = 0;
+    for (int i = 0; i < cfg->n_images; i++)
+        if (cfg->images[i])
+            n++;
+    return n;
+}
+static int storage_images_next(struct object *self, int prev_index) {
+    config_t *cfg = (config_t *)object_data(self);
+    if (!cfg)
+        return -1;
+    for (int i = prev_index + 1; i < cfg->n_images; i++)
+        if (cfg->images[i])
+            return i;
+    return -1;
+}
+
+static value_t storage_method_import(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)self;
+    (void)m;
+    (void)argc;
+    (void)argv;
+    return val_err("storage.import(): deferred — image-persist plumbing lands in a "
+                   "later M8 sub-commit");
+}
+
+static const arg_decl_t storage_import_args[] = {
+    {.name = "host_path", .kind = V_STRING, .doc = "Host path to read"           },
+    {.name = "dst_path",  .kind = V_STRING, .doc = "Destination path under MEMFS"},
+};
+
+static const member_t storage_images_collection_members[] = {
+    {.kind = M_CHILD,
+     .name = "entries",
+     .child = {.cls = &storage_image_class,
+               .indexed = true,
+               .get = storage_images_get,
+               .count = storage_images_count,
+               .next = storage_images_next,
+               .lookup = NULL}},
+};
+
+static const class_desc_t storage_images_collection_class = {
+    .name = "storage_images",
+    .members = storage_images_collection_members,
+    .n_members = sizeof(storage_images_collection_members) / sizeof(storage_images_collection_members[0]),
+};
+
+static const member_t storage_members[] = {
+    {.kind = M_METHOD,
+     .name = "import",
+     .doc = "Persist a host file under /images/ (deferred — see proposal §5.7)",
+     .method = {.args = storage_import_args, .nargs = 2, .result = V_STRING, .fn = storage_method_import}},
+};
+
+static const class_desc_t storage_class_real = {
+    .name = "storage",
+    .members = storage_members,
+    .n_members = sizeof(storage_members) / sizeof(storage_members[0]),
+};
+
 // === Built-in alias registration ============================================
 //
 // Register at install time. Order matters only insofar as built-ins
@@ -2863,7 +3039,19 @@ void gs_classes_install(struct config *cfg) {
     /* scheduler */ attach_stub(NULL, &scheduler_class_desc, cfg, "scheduler");
     /* machine */ attach_stub(NULL, &machine_class, cfg, "machine");
     struct object *shell_obj = attach_stub(NULL, &shell_class_desc, cfg, "shell");
-    /* storage */ attach_stub(NULL, &storage_class_desc, cfg, "storage");
+    // M8 (slice 2) — `storage` graduates from M2 stub to real class.
+    // The collection of pre-allocated image entry objects below is
+    // attached on demand via the indexed-child get() callback; only
+    // the storage object itself and its `images` child go in g_stubs.
+    struct object *storage_obj = attach_stub(NULL, &storage_class_real, cfg, "storage");
+    if (storage_obj) {
+        attach_stub(storage_obj, &storage_images_collection_class, cfg, "images");
+        for (int i = 0; i < MAX_IMAGES; i++) {
+            g_storage_image_data[i].cfg = cfg;
+            g_storage_image_data[i].slot = i;
+            g_storage_image_objs[i] = object_new(&storage_image_class, &g_storage_image_data[i], NULL);
+        }
+    }
     /* math    */ attach_stub(NULL, &math_class_desc, cfg, "math");
     /* lp      */ attach_stub(NULL, &lp_class_desc, cfg, "lp");
 
@@ -3034,6 +3222,15 @@ void gs_classes_uninstall(void) {
             g_atalk_share_objs[i] = NULL;
         }
         g_atalk_share_data[i].slot = 0;
+    }
+    // M8 (slice 2) — storage image entry objects.
+    for (int i = 0; i < MAX_IMAGES; i++) {
+        if (g_storage_image_objs[i]) {
+            object_delete(g_storage_image_objs[i]);
+            g_storage_image_objs[i] = NULL;
+        }
+        g_storage_image_data[i].cfg = NULL;
+        g_storage_image_data[i].slot = 0;
     }
     alias_reset();
     free_mac_class();
