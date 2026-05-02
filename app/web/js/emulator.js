@@ -131,6 +131,7 @@ export async function initEmulator(canvas, wasmArgs, printFn) {
   window.runCommand = (cmd) => executeShellCommand(cmd);
   window.queueCommand = window.runCommand;
   window.runCommandJSON = (cmd) => runCommandJSON(cmd); // structured results
+  window.tabComplete = (line, cursorPos) => tabComplete(line, cursorPos);
 
   // With PROXY_TO_PTHREAD, shell_init is called from main() on the worker.
   // No need to ccall it from JS.
