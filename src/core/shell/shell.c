@@ -1049,6 +1049,11 @@ int shell_init(void) {
     extern void cmd_eval_register(void);
     cmd_eval_register();
 
+    // Install the top-level object-root methods (cp, peeler, rom_probe,
+    // …) so JS callers (`gsEval`) can use them before any machine boots.
+    extern void gs_classes_install_root(void);
+    gs_classes_install_root();
+
     shell_initialized = 1;
     return 0;
 }

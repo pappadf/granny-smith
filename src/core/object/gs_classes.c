@@ -3244,7 +3244,14 @@ static bool append_literal(char *out, size_t cap, size_t *pos, const char *s) {
 // some paths, …) so a uniform success-vs-error read on it is wrong.
 // Commands that fail print to stderr; the caller reads that out of
 // band, just like at the shell.
-static int dispatch_with_string_args(const char *cmd, int argc, const value_t *argv) {
+// Build a shell-form line "<cmd> <arg> <arg>..." (each arg double-quoted)
+// and dispatch it. Returns -1 on a build error (non-string arg, line too
+// long), otherwise the legacy command's int return cast through uint64_t.
+// Caller decides how to interpret the value — most legacy commands use
+// 0 = success, but some return cmd_bool (1 = success). The two helpers
+// below codify each convention so the migration can stop carrying the
+// inconsistency.
+static int64_t dispatch_with_string_args(const char *cmd, int argc, const value_t *argv) {
     char line[1024];
     size_t pos = 0;
     line[0] = '\0';
@@ -3258,33 +3265,84 @@ static int dispatch_with_string_args(const char *cmd, int argc, const value_t *a
         if (!append_quoted(line, sizeof(line), &pos, argv[i].s ? argv[i].s : ""))
             return -1;
     }
-    (void)shell_dispatch(line);
-    return 0;
+    return (int64_t)shell_dispatch(line);
 }
 
 // `cp(src, dst, [flags])` — top-level alias for `storage.import` per
 // proposal §5.10 ("preserve UNIX muscle memory"). Routes through the
 // legacy `cp` command directly to keep -r/-R handling in one place.
+// Returns true on success, false on dispatch / copy failure.
 static value_t method_root_cp(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)self;
     (void)m;
     if (argc < 2)
         return val_err("cp: expected (src, dst, [flags])");
-    if (dispatch_with_string_args("cp", argc, argv) != 0)
+    int64_t rc = dispatch_with_string_args("cp", argc, argv);
+    if (rc < 0)
         return val_err("cp: dispatch failed (command line too long?)");
-    return val_none();
+    return val_bool(rc == 0);
 }
 
-// `peeler(path)` — extract a Mac archive (.sit/.cpt/.hqx/.bin) using
-// the existing `peeler` shell command.
+// `peeler(path, [out_dir])` — extract a Mac archive
+// (.sit/.cpt/.hqx/.bin) via the legacy `peeler` shell command.
+// Returns true on successful extraction. Note: legacy peeler takes the
+// output directory via `-o <dir>` (not as a positional arg), so this
+// wrapper builds the line by hand rather than going through
+// dispatch_with_string_args.
 static value_t method_root_peeler(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)self;
     (void)m;
-    if (argc < 1)
+    if (argc < 1 || argv[0].kind != V_STRING)
         return val_err("peeler: expected (path, [out_dir])");
-    if (dispatch_with_string_args("peeler", argc, argv) != 0)
-        return val_err("peeler: dispatch failed");
-    return val_none();
+    const char *path = argv[0].s ? argv[0].s : "";
+    const char *out_dir = (argc >= 2 && argv[1].kind == V_STRING && argv[1].s && *argv[1].s) ? argv[1].s : NULL;
+    char line[1024];
+    int n = out_dir ? snprintf(line, sizeof(line), "peeler -o \"%s\" \"%s\"", out_dir, path)
+                    : snprintf(line, sizeof(line), "peeler \"%s\"", path);
+    if (n < 0 || (size_t)n >= sizeof(line))
+        return val_err("peeler: arguments too long");
+    return val_bool(shell_dispatch(line) == 0);
+}
+
+// `peeler_probe(path)` — true if the given file is a peeler-supported
+// archive (`peeler --probe` returns 0 on success).
+static value_t method_root_peeler_probe(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)self;
+    (void)m;
+    if (argc < 1 || argv[0].kind != V_STRING)
+        return val_err("peeler_probe: expected (path)");
+    char line[512];
+    int n = snprintf(line, sizeof(line), "peeler --probe \"%s\"", argv[0].s ? argv[0].s : "");
+    if (n < 0 || (size_t)n >= sizeof(line))
+        return val_err("peeler_probe: argument too long");
+    return val_bool(shell_dispatch(line) == 0);
+}
+
+// `fd_probe(path)` — true if the file passes legacy `fd probe`.
+static value_t method_root_fd_probe(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)self;
+    (void)m;
+    if (argc < 1 || argv[0].kind != V_STRING)
+        return val_err("fd_probe: expected (path)");
+    char line[512];
+    int n = snprintf(line, sizeof(line), "fd probe \"%s\"", argv[0].s ? argv[0].s : "");
+    if (n < 0 || (size_t)n >= sizeof(line))
+        return val_err("fd_probe: argument too long");
+    return val_bool(shell_dispatch(line) == 0);
+}
+
+// `find_media(dir, [dst])` — search a directory for a recognised
+// floppy image; if `dst` is given, the image is copied there. Returns
+// true if a match was found.
+static value_t method_root_find_media(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)self;
+    (void)m;
+    if (argc < 1 || argv[0].kind != V_STRING)
+        return val_err("find_media: expected (dir, [dst])");
+    int64_t rc = dispatch_with_string_args("find-media", argc, argv);
+    if (rc < 0)
+        return val_err("find_media: dispatch failed");
+    return val_bool(rc == 0);
 }
 
 // `hd_create(path, size)` — wraps `hd create <path> <size>`.
@@ -3297,8 +3355,7 @@ static value_t method_root_hd_create(struct object *self, const member_t *m, int
     int n = snprintf(line, sizeof(line), "hd create \"%s\" \"%s\"", argv[0].s, argv[1].s);
     if (n < 0 || (size_t)n >= sizeof(line))
         return val_err("hd_create: arguments too long");
-    (void)shell_dispatch(line);
-    return val_none();
+    return val_bool(shell_dispatch(line) == 0);
 }
 
 // `hd_download(...)` is reserved per proposal §5.10 but its underlying
@@ -3313,64 +3370,93 @@ static value_t method_root_hd_download(struct object *self, const member_t *m, i
 }
 
 // rom_* / vrom_* — wrap the `rom probe|validate` / `vrom probe|validate`
-// subcommand forms. Each takes a single path argument. The legacy
-// command's int return is intentionally ignored (see comment on
-// dispatch_with_string_args above).
-static value_t dispatch_subcmd_path(const char *cmd, const char *sub, int argc, const value_t *argv,
-                                    const char *err_prefix) {
+// subcommand forms. Each takes a single path argument. Two helpers
+// codify the two legacy return conventions: cmd_int (0 = success) for
+// the *_probe family and cmd_bool (1 = valid) for the *_validate family.
+static int64_t dispatch_subcmd_path_rc(const char *cmd, const char *sub, int argc, const value_t *argv) {
     if (argc < 1 || argv[0].kind != V_STRING)
-        return val_err("%s: expected (path)", err_prefix);
+        return -2; // signal "bad arg" distinct from dispatch failure
     char line[512];
     int n = snprintf(line, sizeof(line), "%s %s \"%s\"", cmd, sub, argv[0].s);
     if (n < 0 || (size_t)n >= sizeof(line))
-        return val_err("%s: argument too long", err_prefix);
-    (void)shell_dispatch(line);
-    return val_none();
+        return -1;
+    return (int64_t)shell_dispatch(line);
 }
 
 static value_t method_root_rom_probe(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)self;
     (void)m;
-    return dispatch_subcmd_path("rom", "probe", argc, argv, "rom_probe");
+    int64_t rc = dispatch_subcmd_path_rc("rom", "probe", argc, argv);
+    if (rc == -2)
+        return val_err("rom_probe: expected (path)");
+    if (rc == -1)
+        return val_err("rom_probe: argument too long");
+    return val_bool(rc == 0);
 }
 static value_t method_root_rom_validate(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)self;
     (void)m;
-    return dispatch_subcmd_path("rom", "validate", argc, argv, "rom_validate");
+    int64_t rc = dispatch_subcmd_path_rc("rom", "validate", argc, argv);
+    if (rc == -2)
+        return val_err("rom_validate: expected (path)");
+    if (rc == -1)
+        return val_err("rom_validate: argument too long");
+    // cmd_bool semantics: 1 = valid.
+    return val_bool(rc == 1);
 }
 static value_t method_root_vrom_probe(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)self;
     (void)m;
-    return dispatch_subcmd_path("vrom", "probe", argc, argv, "vrom_probe");
+    int64_t rc = dispatch_subcmd_path_rc("vrom", "probe", argc, argv);
+    if (rc == -2)
+        return val_err("vrom_probe: expected (path)");
+    if (rc == -1)
+        return val_err("vrom_probe: argument too long");
+    return val_bool(rc == 0);
 }
 static value_t method_root_vrom_validate(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)self;
     (void)m;
-    return dispatch_subcmd_path("vrom", "validate", argc, argv, "vrom_validate");
+    int64_t rc = dispatch_subcmd_path_rc("vrom", "validate", argc, argv);
+    if (rc == -2)
+        return val_err("vrom_validate: expected (path)");
+    if (rc == -1)
+        return val_err("vrom_validate: argument too long");
+    return val_bool(rc == 1);
 }
 
 // image_* — wraps the `image partmap|probe|list|unmount` subcommands
 // per proposal §5.10's "Legacy `image foo` subcommand machinery
-// becomes shims that flatten to top-level method calls".
+// becomes shims that flatten to top-level method calls". These four
+// commands print info to stdout and return cmd_int; we expose the
+// success bit so callers can branch on it.
+static value_t image_subcmd_bool(const char *sub, int argc, const value_t *argv, const char *err_prefix) {
+    int64_t rc = dispatch_subcmd_path_rc("image", sub, argc, argv);
+    if (rc == -2)
+        return val_err("%s: expected (path)", err_prefix);
+    if (rc == -1)
+        return val_err("%s: argument too long", err_prefix);
+    return val_bool(rc == 0);
+}
 static value_t method_root_partmap(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)self;
     (void)m;
-    return dispatch_subcmd_path("image", "partmap", argc, argv, "partmap");
+    return image_subcmd_bool("partmap", argc, argv, "partmap");
 }
 static value_t method_root_probe(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)self;
     (void)m;
-    return dispatch_subcmd_path("image", "probe", argc, argv, "probe");
+    return image_subcmd_bool("probe", argc, argv, "probe");
 }
 static value_t method_root_list_partitions(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)self;
     (void)m;
-    return dispatch_subcmd_path("image", "list", argc, argv, "list_partitions");
+    return image_subcmd_bool("list", argc, argv, "list_partitions");
 }
 static value_t method_root_unmount(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)self;
     (void)m;
-    return dispatch_subcmd_path("image", "unmount", argc, argv, "unmount");
+    return image_subcmd_bool("unmount", argc, argv, "unmount");
 }
 
 // `quit()` — dispatches the legacy `quit` command. The headless main
@@ -3407,6 +3493,10 @@ static const arg_decl_t root_hd_download_args[] = {
 };
 static const arg_decl_t root_path_arg[] = {
     {.name = "path", .kind = V_STRING, .doc = "File path"},
+};
+static const arg_decl_t root_find_media_args[] = {
+    {.name = "dir", .kind = V_STRING, .doc = "Directory to scan"},
+    {.name = "dst", .kind = V_STRING, .flags = OBJ_ARG_OPTIONAL, .doc = "Optional path to copy match into"},
 };
 
 static const arg_decl_t root_path_args[] = {
@@ -3448,54 +3538,69 @@ static const member_t emu_root_members[] = {
      .doc = "Format a value as a string for display",
      .method = {.args = root_print_args, .nargs = 1, .result = V_STRING, .fn = method_root_print}          },
     // Legacy-command wrappers (M8 slice 4 — proposal §5.10).
+    // Side-effect wrappers return V_BOOL (true on dispatch success) so
+    // the M10b migrators can branch on the result without re-deriving
+    // the legacy command's int / cmd_bool convention.
     {.kind = M_METHOD,
      .name = "cp",
      .doc = "Copy a file or directory (alias for storage.import / legacy `cp`)",
-     .method = {.args = root_cp_args, .nargs = 3, .result = V_NONE, .fn = method_root_cp}                  },
+     .method = {.args = root_cp_args, .nargs = 3, .result = V_BOOL, .fn = method_root_cp}                  },
     {.kind = M_METHOD,
      .name = "peeler",
      .doc = "Extract a Mac archive (.sit/.cpt/.hqx/.bin)",
-     .method = {.args = root_peeler_args, .nargs = 2, .result = V_NONE, .fn = method_root_peeler}          },
+     .method = {.args = root_peeler_args, .nargs = 2, .result = V_BOOL, .fn = method_root_peeler}          },
+    {.kind = M_METHOD,
+     .name = "peeler_probe",
+     .doc = "True if a file is a peeler-supported archive",
+     .method = {.args = root_path_arg, .nargs = 1, .result = V_BOOL, .fn = method_root_peeler_probe}       },
     {.kind = M_METHOD,
      .name = "hd_create",
      .doc = "Create a blank SCSI hard-disk image",
-     .method = {.args = root_hd_create_args, .nargs = 2, .result = V_NONE, .fn = method_root_hd_create}    },
+     .method = {.args = root_hd_create_args, .nargs = 2, .result = V_BOOL, .fn = method_root_hd_create}    },
     {.kind = M_METHOD,
      .name = "hd_download",
      .doc = "Download an HD image (deferred — needs platform plumbing)",
      .method = {.args = root_hd_download_args, .nargs = 1, .result = V_NONE, .fn = method_root_hd_download}},
     {.kind = M_METHOD,
      .name = "rom_probe",
-     .doc = "Print metadata from a ROM file",
-     .method = {.args = root_path_arg, .nargs = 1, .result = V_NONE, .fn = method_root_rom_probe}          },
+     .doc = "True if a file is a recognised ROM image",
+     .method = {.args = root_path_arg, .nargs = 1, .result = V_BOOL, .fn = method_root_rom_probe}          },
     {.kind = M_METHOD,
      .name = "rom_validate",
      .doc = "Verify a ROM file's checksum and recognised model",
-     .method = {.args = root_path_arg, .nargs = 1, .result = V_NONE, .fn = method_root_rom_validate}       },
+     .method = {.args = root_path_arg, .nargs = 1, .result = V_BOOL, .fn = method_root_rom_validate}       },
     {.kind = M_METHOD,
      .name = "vrom_probe",
-     .doc = "Print metadata from a video-ROM file",
-     .method = {.args = root_path_arg, .nargs = 1, .result = V_NONE, .fn = method_root_vrom_probe}         },
+     .doc = "True if a file is a recognised video-ROM image",
+     .method = {.args = root_path_arg, .nargs = 1, .result = V_BOOL, .fn = method_root_vrom_probe}         },
     {.kind = M_METHOD,
      .name = "vrom_validate",
      .doc = "Verify a video-ROM file's signature",
-     .method = {.args = root_path_arg, .nargs = 1, .result = V_NONE, .fn = method_root_vrom_validate}      },
+     .method = {.args = root_path_arg, .nargs = 1, .result = V_BOOL, .fn = method_root_vrom_validate}      },
+    {.kind = M_METHOD,
+     .name = "fd_probe",
+     .doc = "True if a file is a recognised floppy-disk image",
+     .method = {.args = root_path_arg, .nargs = 1, .result = V_BOOL, .fn = method_root_fd_probe}           },
+    {.kind = M_METHOD,
+     .name = "find_media",
+     .doc = "Search a directory for a floppy image; copy to dst if given",
+     .method = {.args = root_find_media_args, .nargs = 2, .result = V_BOOL, .fn = method_root_find_media}  },
     {.kind = M_METHOD,
      .name = "partmap",
      .doc = "Parse and print the Apple Partition Map of a disk image",
-     .method = {.args = root_path_arg, .nargs = 1, .result = V_NONE, .fn = method_root_partmap}            },
+     .method = {.args = root_path_arg, .nargs = 1, .result = V_BOOL, .fn = method_root_partmap}            },
     {.kind = M_METHOD,
      .name = "probe",
      .doc = "Probe an image for its format (HFS / ISO / APM / ...)",
-     .method = {.args = root_path_arg, .nargs = 1, .result = V_NONE, .fn = method_root_probe}              },
+     .method = {.args = root_path_arg, .nargs = 1, .result = V_BOOL, .fn = method_root_probe}              },
     {.kind = M_METHOD,
      .name = "list_partitions",
      .doc = "List partitions cached for a mounted image",
-     .method = {.args = root_path_arg, .nargs = 1, .result = V_NONE, .fn = method_root_list_partitions}    },
+     .method = {.args = root_path_arg, .nargs = 1, .result = V_BOOL, .fn = method_root_list_partitions}    },
     {.kind = M_METHOD,
      .name = "unmount",
      .doc = "Force-close a cached auto-mount of an image",
-     .method = {.args = root_path_arg, .nargs = 1, .result = V_NONE, .fn = method_root_unmount}            },
+     .method = {.args = root_path_arg, .nargs = 1, .result = V_BOOL, .fn = method_root_unmount}            },
     {.kind = M_METHOD,
      .name = "quit",
      .doc = "Exit the emulator (asks the legacy quit command to end the run)",
@@ -3589,12 +3694,21 @@ static struct object *attach_stub(struct object *parent, const class_desc_t *cls
     return o;
 }
 
+void gs_classes_install_root(void) {
+    // Registers the top-level method table on the object root. Safe to
+    // call repeatedly — object_root_set_class is idempotent for the
+    // same class pointer.
+    object_root_set_class(&emu_root_class_real);
+}
+
 void gs_classes_install(struct config *cfg) {
     if (g_stub_count > 0)
         return; // idempotent
 
-    // M8 (slice 3) — register top-level methods on the root.
-    object_root_set_class(&emu_root_class_real);
+    // Top-level methods. Already installed by shell_init via
+    // gs_classes_install_root; the call is repeated here so paths that
+    // skip shell_init still get the methods.
+    gs_classes_install_root();
 
     struct object *cpu_obj = attach_stub(NULL, &cpu_class, cfg, "cpu");
     struct object *mem_obj = attach_stub(NULL, &memory_class, cfg, "memory");

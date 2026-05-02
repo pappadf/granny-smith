@@ -32,6 +32,12 @@ struct object;
 // system_create() and gs_classes_uninstall() runs from system_destroy().
 void gs_classes_install(struct config *cfg);
 
+// Install just the root class — the top-level methods (cp, peeler,
+// rom_probe, …) that don't depend on a booted machine. Called early
+// from shell_init() so JS tooling can call gsEval('rom_probe', …)
+// before any machine is created. Safe to call multiple times.
+void gs_classes_install_root(void);
+
 // Detach and free every stub object the install path created. Safe to
 // call when nothing is installed.
 void gs_classes_uninstall(void);

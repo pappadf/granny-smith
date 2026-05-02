@@ -6,7 +6,7 @@
 // parameterized by the media type descriptor from media-types.js.
 
 import { UPLOAD_DIR } from './config.js';
-import { sanitizeName, quotePath, isZipFile, isPeelerArchive, probePeelerArchive,
+import { sanitizeName, isZipFile, isPeelerArchive, probePeelerArchive,
          extractZipToDir, extractPeelerToDir } from './media.js';
 import { writeToOPFS, removeFromOPFS, listDir } from './fs.js';
 import { toast } from './ui.js';
@@ -113,8 +113,8 @@ async function persistAndCleanup(sourcePath, fileName, mediaType, info) {
   const targetDir = info?.persistDir || mediaType.persistDir;
   const finalPath = `${targetDir}/${finalName}`;
 
-  const rc = await window.runCommand(`file-copy ${quotePath(sourcePath)} ${quotePath(finalPath)}`);
-  if (rc !== 0) {
+  const ok = await window.gsEval('cp', [sourcePath, finalPath]);
+  if (ok !== true) {
     console.error(`upload-pipeline: failed to persist ${sourcePath} -> ${finalPath}`);
     toast(`Failed to save ${fileName}`);
     return null;

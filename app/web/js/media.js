@@ -62,15 +62,13 @@ export async function extractZipToDir(data, extractDir) {
 // Extract a peeler-supported archive to a directory.
 export async function extractPeelerToDir(archivePath, extractDir) {
   ensureDir(extractDir);
-  const result = await window.runCommand(`peeler -o ${quotePath(extractDir)} ${quotePath(archivePath)}`);
-  return result === 0;
+  return (await window.gsEval('peeler', [archivePath, extractDir])) === true;
 }
 
 // Probe if a file is a peeler-supported archive.
 export async function probePeelerArchive(filePath) {
   try {
-    const result = await window.runCommand(`peeler --probe ${quotePath(filePath)}`);
-    return result === 0;
+    return (await window.gsEval('peeler_probe', [filePath])) === true;
   } catch {
     return false;
   }
@@ -118,8 +116,7 @@ export async function tryExtractArchive(filePath, displayName, data) {
 // Probe if a file is a valid ROM.
 export async function probeRom(filePath) {
   try {
-    const result = await window.runCommand(`rom probe ${quotePath(filePath)}`);
-    return result === 0;
+    return (await window.gsEval('rom_probe', [filePath])) === true;
   } catch {
     return false;
   }
@@ -128,8 +125,7 @@ export async function probeRom(filePath) {
 // Probe if a file is a valid floppy disk image.
 export async function probeFloppy(filePath) {
   try {
-    const result = await window.runCommand(`fd probe ${quotePath(filePath)}`);
-    return result === 0;
+    return (await window.gsEval('fd_probe', [filePath])) === true;
   } catch {
     return false;
   }
@@ -143,12 +139,13 @@ export async function classifyMediaFile(filePath) {
 }
 
 // Search a directory for recognizable media files (ROM or floppy).
-// Uses the C-side find-media command (FS.readdir fails cross-thread with WasmFS pthreads).
-// find-media copies the found image to a staging path so we have a concrete file to mount.
+// Uses the C-side find_media root method (FS.readdir fails cross-thread
+// with WasmFS pthreads). find_media copies the found image to dst so
+// we have a concrete file to mount.
 export async function findMediaInDirectory(dirPath) {
   const destPath = `${dirPath}/_found_media.img`;
-  const rc = await window.runCommand(`find-media ${dirPath} ${destPath}`);
-  if (rc === 0) return { path: destPath, kind: 'floppy' };
+  const found = await window.gsEval('find_media', [dirPath, destPath]);
+  if (found === true) return { path: destPath, kind: 'floppy' };
   return null;
 }
 
