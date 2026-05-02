@@ -38,6 +38,7 @@
 #include "scc.h"
 #include "scheduler.h"
 #include "scsi.h"
+#include "sound.h"
 #include "system.h"
 #include "system_config.h"
 #include "value.h"
@@ -2349,6 +2350,106 @@ static const class_desc_t floppy_drives_collection_class = {
     .n_members = 1,
 };
 
+// === M7f — sound peripheral class ===========================================
+//
+// Plus's PWM sound module per proposal §5.4: `sound.enabled`,
+// `sound.sample_rate`, `sound.volume` attributes plus `mute(bool)`
+// method. SE/30 / IIcx use the Apple Sound Chip and don't populate
+// `cfg->sound`; the object is only attached when the field is set.
+
+static sound_t *sound_from(struct object *self) {
+    config_t *cfg = (config_t *)object_data(self);
+    return cfg ? cfg->sound : NULL;
+}
+
+static value_t sound_attr_enabled_get(struct object *self, const member_t *m) {
+    (void)m;
+    return val_bool(sound_get_enabled(sound_from(self)));
+}
+static value_t sound_attr_enabled_set(struct object *self, const member_t *m, value_t in) {
+    (void)m;
+    sound_t *sound = sound_from(self);
+    if (!sound) {
+        value_free(&in);
+        return val_err("sound not available");
+    }
+    bool b = val_as_bool(&in);
+    value_free(&in);
+    sound_enable(sound, b);
+    return val_none();
+}
+
+static value_t sound_attr_volume_get(struct object *self, const member_t *m) {
+    (void)m;
+    return val_uint(1, sound_get_volume(sound_from(self)));
+}
+static value_t sound_attr_volume_set(struct object *self, const member_t *m, value_t in) {
+    (void)m;
+    sound_t *sound = sound_from(self);
+    if (!sound) {
+        value_free(&in);
+        return val_err("sound not available");
+    }
+    bool ok = true;
+    uint64_t v = val_as_u64(&in, &ok);
+    value_free(&in);
+    if (!ok)
+        return val_err("sound.volume: value is not numeric");
+    if (v >= 8)
+        return val_err("sound.volume: must be 0..7 (got %llu)", (unsigned long long)v);
+    sound_volume(sound, (unsigned)v);
+    return val_none();
+}
+
+static value_t sound_attr_sample_rate(struct object *self, const member_t *m) {
+    (void)m;
+    return val_uint(4, sound_get_sample_rate(sound_from(self)));
+}
+
+static value_t sound_method_mute(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)m;
+    sound_t *sound = sound_from(self);
+    if (!sound)
+        return val_err("sound not available");
+    if (argc < 1)
+        return val_err("sound.mute: expected (muted)");
+    bool muted = val_as_bool(&argv[0]);
+    sound_mute(sound, muted);
+    return val_none();
+}
+
+static const arg_decl_t sound_mute_args[] = {
+    {.name = "muted", .kind = V_BOOL, .doc = "true to mute, false to unmute"},
+};
+
+static const member_t sound_members[] = {
+    {.kind = M_ATTR,
+     .name = "enabled",
+     .doc = "Sound output gate (writable mirror of mute)",
+     .flags = 0,
+     .attr = {.type = V_BOOL, .get = sound_attr_enabled_get, .set = sound_attr_enabled_set}},
+    {.kind = M_ATTR,
+     .name = "volume",
+     .doc = "Output level (0..7)",
+     .flags = 0,
+     .attr = {.type = V_UINT, .get = sound_attr_volume_get, .set = sound_attr_volume_set}},
+    {.kind = M_ATTR,
+     .name = "sample_rate",
+     .doc = "Output sample rate in Hz",
+     .flags = VAL_RO,
+     .attr = {.type = V_UINT, .get = sound_attr_sample_rate, .set = NULL}},
+    {.kind = M_METHOD,
+     .name = "mute",
+     .doc = "Mute or unmute the sound output",
+     .method = {.args = sound_mute_args, .nargs = 1, .result = V_NONE, .fn = sound_method_mute}},
+};
+
+static const class_desc_t sound_class = {
+    .name = "sound",
+    .members = sound_members,
+    .n_members = sizeof(sound_members) / sizeof(sound_members[0]),
+};
+
 // === Built-in alias registration ============================================
 //
 // Register at install time. Order matters only insofar as built-ins
@@ -2531,6 +2632,11 @@ void gs_classes_install(struct config *cfg) {
             }
         }
     }
+
+    // M7f — sound (Plus PWM only; SE/30 / IIcx use ASC and leave
+    // cfg->sound NULL).
+    if (cfg && cfg->sound)
+        attach_stub(NULL, &sound_class, cfg, "sound");
 
     // Built-in aliases. Register CPU always, FPU only when present,
     // mac always (the table is size-driven and machine-independent).

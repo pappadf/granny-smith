@@ -43,4 +43,18 @@ void sound_vbl(sound_t *restrict sound);
 
 void validate_sound(sound_t *restrict sound);
 
+// === M7f — object-model accessors ===========================================
+//
+// Read-only views over the sound subsystem used by the `sound` object
+// class. `mute(bool)` is a thin wrapper over sound_enable so users
+// don't have to remember the inverted semantics ("mute true" → enabled
+// false). `sample_rate` is the legacy 22.255 kHz PWM rate hardcoded in
+// the platform layer; we expose it as an attribute for parity with the
+// proposal §5.4 listing.
+
+bool sound_get_enabled(const sound_t *sound);
+unsigned sound_get_volume(const sound_t *sound);
+unsigned sound_get_sample_rate(const sound_t *sound);
+void sound_mute(sound_t *sound, bool muted);
+
 #endif // SOUND_H

@@ -26,6 +26,7 @@
 #include "scc.h"
 #include "scheduler.h"
 #include "scsi.h"
+#include "sound.h"
 #include "system.h"
 #include "via.h"
 
@@ -50,6 +51,7 @@ struct config {
     scsi_t *scsi; // was: new_scsi
     rtc_t *rtc; // was: new_rtc
     floppy_t *floppy; // floppy controller: IWM (Plus) or SWIM (SE/30)
+    sound_t *sound; // PWM sound (Plus); NULL on SE/30 / IIcx (which use ASC)
     mouse_t *mouse;
     keyboard_t *keyboard;
     adb_t *adb; // ADB controller (SE/30, IIcx); NULL for Plus

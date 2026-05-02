@@ -57,6 +57,26 @@ void sound_enable(sound_t *sound, bool enabled) {
     sound->enabled = enabled;
 }
 
+// === M7f — read-only views and mute helper ==================================
+
+bool sound_get_enabled(const sound_t *sound) {
+    return sound ? sound->enabled : false;
+}
+unsigned sound_get_volume(const sound_t *sound) {
+    return sound ? sound->volume : 0;
+}
+unsigned sound_get_sample_rate(const sound_t *sound) {
+    // Plus PWM sound runs at 22.255 kHz (1 buffer / VBL × BUF_SIZE).
+    // The rate is fixed by the hardware/host platform layer.
+    (void)sound;
+    return sound ? 22255u : 0u;
+}
+void sound_mute(sound_t *sound, bool muted) {
+    if (!sound)
+        return;
+    sound_enable(sound, !muted);
+}
+
 // Processes sound buffer during vertical blank interval
 void sound_vbl(sound_t *restrict sound) {
     if (!sound->enabled)
