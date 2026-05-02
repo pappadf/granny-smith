@@ -20,7 +20,7 @@ test.describe('gsEval bridge', () => {
   });
 
   test('attribute read returns the current value as JSON', async ({ page }) => {
-    const pc = await page.evaluate(() => (window as any).gsEval('cpu.pc'));
+    const pc = await page.evaluate(async () => await (window as any).gsEval('cpu.pc'));
     // Plus boots with cpu.pc inside ROM space; the value formats as a
     // hex string per VAL_HEX (gs_api JSON serializer rule).
     expect(typeof pc).toBe('string');
@@ -29,12 +29,13 @@ test.describe('gsEval bridge', () => {
 
   test('attribute write round-trips through node_set', async ({ page }) => {
     // sound.enabled is a writable V_BOOL mirror of the mute gate.
-    const round = await page.evaluate(() => {
-      const before = (window as any).gsEval('sound.enabled');
-      const w = (window as any).gsEval('sound.enabled', [!before]);
-      const after = (window as any).gsEval('sound.enabled');
+    const round = await page.evaluate(async () => {
+      const ge = (window as any).gsEval;
+      const before = await ge('sound.enabled');
+      const w = await ge('sound.enabled', [!before]);
+      const after = await ge('sound.enabled');
       // Restore the original so the next test isn't perturbed.
-      (window as any).gsEval('sound.enabled', [before]);
+      await ge('sound.enabled', [before]);
       return { before, w, after };
     });
     // Setter returns V_NONE (formatted as null); reader returns the new bool.
@@ -46,12 +47,12 @@ test.describe('gsEval bridge', () => {
   test('zero-arg method call dispatches via node_call', async ({ page }) => {
     // `time()` is a root method (M8 slice 3). Result is a positive
     // monotonic-ish wall-clock number; we only assert it parses.
-    const t = await page.evaluate(() => (window as any).gsEval('time'));
+    const t = await page.evaluate(async () => await (window as any).gsEval('time'));
     expect(typeof t === 'number' || typeof t === 'string').toBeTruthy();
   });
 
   test('unresolvable path returns an error object', async ({ page }) => {
-    const r = await page.evaluate(() => (window as any).gsEval('not.a.thing'));
+    const r = await page.evaluate(async () => await (window as any).gsEval('not.a.thing'));
     expect(r).toEqual({ error: expect.stringContaining('did not resolve') });
   });
 

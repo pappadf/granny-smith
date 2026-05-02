@@ -253,8 +253,23 @@ function readGsEvalResult() {
   try { return JSON.parse(jsonStr); } catch (e) { return jsonStr; }
 }
 
-export function gsEval(path, args) {
+// Wait for any pending legacy runCommand to drain before issuing a
+// gsEval ccall. Without this, ccall slips ahead of cmd_pending entries
+// the worker hasn't consumed yet — bootWithUploadedMedia in the e2e
+// suite fires `send('rom load …')` without awaiting, then the next
+// `runCommand(page, 'run …')` (which translates to gsEval after M10c)
+// can hit the worker before the ROM is loaded. Locally the worker is
+// fast enough to mask this; CI surfaces it as state-test boot
+// timeouts. Serialization here matches executeShellCommand's queue.
+async function waitForLegacyQueue() {
+  while (cmdInFlight) {
+    await new Promise(r => cmdWaiters.push(r));
+  }
+}
+
+export async function gsEval(path, args) {
   if (!Module || !moduleReady) return null;
+  await waitForLegacyQueue();
   const argsJson = (args === undefined || args === null) ? '' : JSON.stringify(args);
   try {
     Module.ccall('em_gs_eval', 'number', ['string', 'string'], [String(path || ''), argsJson]);
@@ -264,8 +279,9 @@ export function gsEval(path, args) {
   }
 }
 
-export function gsInspect(path) {
+export async function gsInspect(path) {
   if (!Module || !moduleReady) return null;
+  await waitForLegacyQueue();
   try {
     Module.ccall('em_gs_inspect', 'number', ['string'], [String(path || '')]);
     return readGsEvalResult();
