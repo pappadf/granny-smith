@@ -137,10 +137,14 @@ char *shell_var_expand(const char *input) {
                             memcpy(buf + out, val, vlen);
                             out += vlen;
                         }
+                        p = end + 1;
+                        continue;
                     }
-                    // undefined vars expand to empty string
-                    p = end + 1;
-                    continue;
+                    // Unknown name — leave the ${...} text intact so
+                    // downstream consumers (the object-model
+                    // string-interpolator inside logpoint messages,
+                    // assert messages, etc.) can handle it. Pre-M5
+                    // behavior dropped unresolved names silently.
                 }
             }
         }

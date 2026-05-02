@@ -1282,6 +1282,168 @@ static void format_value_default(const value_t *v, char **buf, size_t *len, size
         buf_append(buf, len, cap, tmp, (size_t)n);
 }
 
+// Format a value with an optional spec (proposal §4.2.1).
+// `spec` may be NULL or empty (native formatter), or one of:
+//   d              force decimal
+//   x / X          force lowercase / uppercase hex (no `$` prefix)
+//   s              force string (rejects non-string kinds)
+//   [0]<W>d        width-padded decimal
+//   [0]<W>x|X      width-padded hex
+//   %<printf>      printf-style escape hatch (e.g. %-10s, %5d)
+static void format_value_with_spec(const value_t *v, const char *spec, char **buf, size_t *len, size_t *cap) {
+    if (!spec || !*spec) {
+        format_value_default(v, buf, len, cap);
+        return;
+    }
+
+    char tmp[160];
+    int n = 0;
+
+    // %<printf> escape hatch.
+    if (spec[0] == '%') {
+        const char *fmt_inner = spec; // includes leading '%'
+        // Build a printf-compatible format string. The spec arrives
+        // without the trailing conversion expectation, so we just hand
+        // the user's exact format to snprintf with the value bound to
+        // its declared kind. Coerce numerically for d/x/u/i; pass the
+        // string body for s; everything else falls back to default.
+        char endc = '\0';
+        for (size_t i = 1; spec[i]; i++)
+            endc = spec[i];
+        switch (endc) {
+        case 'd':
+        case 'i': {
+            bool ok = false;
+            int64_t iv = val_as_i64(v, &ok);
+            if (!ok)
+                iv = 0;
+            n = snprintf(tmp, sizeof(tmp), fmt_inner, (long long)iv);
+            break;
+        }
+        case 'u':
+        case 'x':
+        case 'X':
+        case 'o': {
+            bool ok = false;
+            uint64_t uv = val_as_u64(v, &ok);
+            if (!ok)
+                uv = 0;
+            n = snprintf(tmp, sizeof(tmp), fmt_inner, (unsigned long long)uv);
+            break;
+        }
+        case 'f':
+        case 'e':
+        case 'g':
+        case 'E':
+        case 'G': {
+            bool ok = false;
+            double dv = val_as_f64(v, &ok);
+            if (!ok)
+                dv = 0.0;
+            n = snprintf(tmp, sizeof(tmp), fmt_inner, dv);
+            break;
+        }
+        case 's':
+            n = snprintf(tmp, sizeof(tmp), fmt_inner, v->kind == V_STRING ? (v->s ? v->s : "") : "");
+            break;
+        default:
+            format_value_default(v, buf, len, cap);
+            return;
+        }
+        if (n > 0)
+            buf_append(buf, len, cap, tmp, (size_t)n);
+        return;
+    }
+
+    // Width-prefixed forms: optional '0' then digits then conversion.
+    char conv = spec[strlen(spec) - 1];
+    bool zero_pad = (spec[0] == '0');
+    int width = 0;
+    for (const char *q = spec + (zero_pad ? 1 : 0); *q && *q != conv; q++) {
+        if (*q >= '0' && *q <= '9')
+            width = width * 10 + (*q - '0');
+    }
+
+    switch (conv) {
+    case 'd': {
+        bool ok = false;
+        int64_t iv = val_as_i64(v, &ok);
+        if (!ok) {
+            format_value_default(v, buf, len, cap);
+            return;
+        }
+        if (zero_pad && width > 0)
+            n = snprintf(tmp, sizeof(tmp), "%0*lld", width, (long long)iv);
+        else if (width > 0)
+            n = snprintf(tmp, sizeof(tmp), "%*lld", width, (long long)iv);
+        else
+            n = snprintf(tmp, sizeof(tmp), "%lld", (long long)iv);
+        break;
+    }
+    case 'x':
+    case 'X': {
+        bool ok = false;
+        uint64_t uv = val_as_u64(v, &ok);
+        if (!ok) {
+            format_value_default(v, buf, len, cap);
+            return;
+        }
+        const char *fmt = (conv == 'X') ? (zero_pad && width > 0 ? "%0*llX" : (width > 0 ? "%*llX" : "%llX"))
+                                        : (zero_pad && width > 0 ? "%0*llx" : (width > 0 ? "%*llx" : "%llx"));
+        if (width > 0)
+            n = snprintf(tmp, sizeof(tmp), fmt, width, (unsigned long long)uv);
+        else
+            n = snprintf(tmp, sizeof(tmp), fmt, (unsigned long long)uv);
+        break;
+    }
+    case 's':
+        if (v->kind == V_STRING) {
+            buf_append(buf, len, cap, v->s ? v->s : "", v->s ? strlen(v->s) : 0);
+            return;
+        }
+        format_value_default(v, buf, len, cap);
+        return;
+    default:
+        format_value_default(v, buf, len, cap);
+        return;
+    }
+    if (n > 0)
+        buf_append(buf, len, cap, tmp, (size_t)n);
+}
+
+// Split body at the rightmost top-level ':' that introduces a format
+// spec. Returns the offset of the ':' or -1 if none. Top-level means:
+// outside any nested parens, brackets, or string literals inside the
+// expression body.
+static int find_format_colon(const char *body, size_t blen) {
+    int depth = 0;
+    bool in_str = false;
+    int last = -1;
+    for (size_t i = 0; i < blen; i++) {
+        char c = body[i];
+        if (in_str) {
+            if (c == '\\' && i + 1 < blen) {
+                i++;
+                continue;
+            }
+            if (c == '"')
+                in_str = false;
+            continue;
+        }
+        if (c == '"') {
+            in_str = true;
+            continue;
+        }
+        if (c == '(' || c == '[' || c == '{')
+            depth++;
+        else if (c == ')' || c == ']' || c == '}')
+            depth--;
+        else if (c == ':' && depth == 0)
+            last = (int)i;
+    }
+    return last;
+}
+
 value_t expr_interpolate_string(const char *src, const expr_ctx_t *ctx) {
     if (!src)
         return val_str("");
@@ -1318,25 +1480,39 @@ value_t expr_interpolate_string(const char *src, const expr_ctx_t *ctx) {
                 free(out);
                 return val_err("unterminated ${ in string");
             }
-            // Copy body to a NUL-terminated temporary.
+            // Split off optional `:fmt` trailer at top level.
             size_t blen = (size_t)(q - body_start);
-            char *body = (char *)malloc(blen + 1);
+            int colon = find_format_colon(body_start, blen);
+            size_t expr_len = (colon >= 0) ? (size_t)colon : blen;
+            const char *fmt_spec = (colon >= 0) ? body_start + colon + 1 : NULL;
+            size_t fmt_len = (colon >= 0) ? blen - (size_t)colon - 1 : 0;
+
+            char *body = (char *)malloc(expr_len + 1);
             if (!body) {
                 free(out);
                 return val_err("oom");
             }
-            memcpy(body, body_start, blen);
-            body[blen] = '\0';
+            memcpy(body, body_start, expr_len);
+            body[expr_len] = '\0';
+
+            char *spec = NULL;
+            if (fmt_spec) {
+                spec = (char *)malloc(fmt_len + 1);
+                if (!spec) {
+                    free(body);
+                    free(out);
+                    return val_err("oom");
+                }
+                memcpy(spec, fmt_spec, fmt_len);
+                spec[fmt_len] = '\0';
+            }
+
             value_t v = expr_eval(body, ctx);
             free(body);
-            if (val_is_error(&v)) {
-                // Splice <error: ...> into the string for visibility.
-                format_value_default(&v, &out, &len, &cap);
-                value_free(&v);
-            } else {
-                format_value_default(&v, &out, &len, &cap);
-                value_free(&v);
-            }
+
+            format_value_with_spec(&v, spec, &out, &len, &cap);
+            free(spec);
+            value_free(&v);
             p = q + 1;
         } else {
             buf_append(&out, &len, &cap, p, 1);

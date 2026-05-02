@@ -209,11 +209,14 @@ break $40802A14 if cpu.d0 == $1
 **Memory logpoints (read/write watchers without halt).** Unlike `watch`, these
 don't stop execution — they stream a log line each access. The fast path is
 **unaffected**: only pages with active logpoints route through the slow path.
-Messages may reference `$pc`, `$value`, `$instruction_pc`, `$cpu.d0..d7`,
-`$cpu.a0..a7`, `$addr`. Examples:
+Messages use `${...}` interpolation (proposal §4.2.1, §5.3) to splice values
+from the object tree. Common references:
+`${cpu.pc}`, `${cpu.dN}`, `${cpu.aN}`, `${lp.value}`, `${lp.addr}`,
+`${lp.size}`, `${lp.instruction_pc}`. Format specs: `:d` decimal, `:x`/`:X`
+hex, `:08x` zero-padded width-8 hex, `:s` string. Examples:
 ```
-logpoint --write $00104000.l "cleared by pc=$pc value=$value"
-logpoint --read  $00100000-$00100FFF "page-table read pc=$pc"
+logpoint --write $00104000.l "cleared pc=${cpu.pc} value=${lp.value:08x}"
+logpoint --read  $00100000-$00100FFF "page-table read pc=${cpu.pc}"
 log memory 1                            # enable streaming for the default category
 ```
 The default log category for memory logpoints is `memory` (PC logpoints use
@@ -226,7 +229,7 @@ maps it to — so accesses via any alias of that physical page still fire.
 A physical-space logpoint watches only the physical page and catches every
 alias (useful for kernel data reached via multiple virtual mappings).
 ```
-logpoint --write P:$00040000.b "kernel heap overwrite pc=$pc"
+logpoint --write P:$00040000.b "kernel heap overwrite pc=${cpu.pc}"
 logpoint --write L:$1200D0C3.b "req+$27 write"   # also catches aliases
 ```
 

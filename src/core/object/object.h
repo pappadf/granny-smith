@@ -32,14 +32,18 @@ struct class_desc;
 
 // === Method argument declaration =============================================
 
-#define ARG_OPTIONAL 0x0001u // trailing optional argument
-#define ARG_REST     0x0002u // slurp all remaining arguments into a V_LIST
+// Note: prefixed `OBJ_ARG_*` to avoid collision with the legacy
+// shell's `ARG_OPTIONAL` / `ARG_REST` macros defined in cmd_types.h
+// (different values, different namespace). Translation units that
+// include both headers must keep these distinct.
+#define OBJ_ARG_OPTIONAL 0x0001u // trailing optional argument
+#define OBJ_ARG_REST     0x0002u // slurp all remaining arguments into a V_LIST
 
 // One declared parameter on a method. Mirrors proposal §3.
 typedef struct arg_decl {
     const char *name;
     value_kind_t kind;
-    unsigned flags; // ARG_OPTIONAL | ARG_REST | VAL_HEX | ...
+    unsigned flags; // OBJ_ARG_OPTIONAL | OBJ_ARG_REST | VAL_HEX | ...
     const char *const *enum_values; // NULL-terminated table for V_ENUM
     const char *doc;
 } arg_decl_t;

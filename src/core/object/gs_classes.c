@@ -301,15 +301,141 @@ static value_t attr_mem_rom_size(struct object *self, const member_t *m) {
     return val_uint(4, (cfg && cfg->machine) ? cfg->machine->rom_size : 0u);
 }
 
+// === memory.peek child class ================================================
+//
+// Three methods (b/w/l) that read sized values from guest memory at a
+// caller-supplied address. Used by ${...} interpolation in logpoint
+// messages (proposal §5.3) and any expression that needs a peek.
+
+static value_t method_mem_peek_b(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)self;
+    (void)m;
+    if (argc < 1)
+        return val_err("memory.peek.b: expected addr");
+    bool ok = false;
+    uint64_t a = val_as_u64(&argv[0], &ok);
+    if (!ok)
+        return val_err("memory.peek.b: addr must be numeric");
+    value_t v = val_uint(1, memory_read_uint8((uint32_t)a));
+    v.flags |= VAL_HEX;
+    return v;
+}
+static value_t method_mem_peek_w(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)self;
+    (void)m;
+    if (argc < 1)
+        return val_err("memory.peek.w: expected addr");
+    bool ok = false;
+    uint64_t a = val_as_u64(&argv[0], &ok);
+    if (!ok)
+        return val_err("memory.peek.w: addr must be numeric");
+    value_t v = val_uint(2, memory_read_uint16((uint32_t)a));
+    v.flags |= VAL_HEX;
+    return v;
+}
+static value_t method_mem_peek_l(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)self;
+    (void)m;
+    if (argc < 1)
+        return val_err("memory.peek.l: expected addr");
+    bool ok = false;
+    uint64_t a = val_as_u64(&argv[0], &ok);
+    if (!ok)
+        return val_err("memory.peek.l: addr must be numeric");
+    value_t v = val_uint(4, memory_read_uint32((uint32_t)a));
+    v.flags |= VAL_HEX;
+    return v;
+}
+
+static const arg_decl_t mem_peek_args[] = {
+    {.name = "addr", .kind = V_UINT, .flags = VAL_HEX, .doc = "guest memory address"},
+};
+
+static const member_t mem_peek_members[] = {
+    {.kind = M_METHOD,
+     .name = "b",
+     .doc = "Read 1 byte at addr",
+     .method = {.args = mem_peek_args, .nargs = 1, .result = V_UINT, .fn = method_mem_peek_b}},
+    {.kind = M_METHOD,
+     .name = "w",
+     .doc = "Read 2 bytes (big-endian word) at addr",
+     .method = {.args = mem_peek_args, .nargs = 1, .result = V_UINT, .fn = method_mem_peek_w}},
+    {.kind = M_METHOD,
+     .name = "l",
+     .doc = "Read 4 bytes (big-endian long) at addr",
+     .method = {.args = mem_peek_args, .nargs = 1, .result = V_UINT, .fn = method_mem_peek_l}},
+};
+
+static const class_desc_t mem_peek_class = {
+    .name = "peek",
+    .members = mem_peek_members,
+    .n_members = sizeof(mem_peek_members) / sizeof(mem_peek_members[0]),
+};
+
+// === memory.read_cstring ====================================================
+//
+// Read a NUL-terminated string from guest memory at addr, escaping
+// non-printable bytes. Used to migrate the legacy `$str.<src>`
+// vocabulary onto the unified ${...} interpolator.
+
+static value_t method_mem_read_cstring(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)self;
+    (void)m;
+    if (argc < 1)
+        return val_err("memory.read_cstring: expected addr");
+    bool ok = false;
+    uint64_t addr_u = val_as_u64(&argv[0], &ok);
+    if (!ok)
+        return val_err("memory.read_cstring: addr must be numeric");
+    uint32_t addr = (uint32_t)addr_u;
+    int max_chars = 96;
+    if (argc >= 2) {
+        bool ok2 = false;
+        int64_t mc = val_as_i64(&argv[1], &ok2);
+        if (ok2 && mc > 0 && mc <= 4096)
+            max_chars = (int)mc;
+    }
+    char buf[8192];
+    size_t out = 0;
+    if (out < sizeof(buf))
+        buf[out++] = '"';
+    for (int i = 0; i < max_chars && out + 4 < sizeof(buf); i++) {
+        uint8_t b = memory_read_uint8(addr + (uint32_t)i);
+        if (b == 0)
+            break;
+        if (b >= 0x20 && b <= 0x7E) {
+            buf[out++] = (char)b;
+        } else {
+            int n = snprintf(buf + out, sizeof(buf) - out, "\\x%02X", b);
+            if (n < 0)
+                break;
+            out += (size_t)n;
+        }
+    }
+    if (out + 1 < sizeof(buf))
+        buf[out++] = '"';
+    buf[out] = '\0';
+    return val_str(buf);
+}
+
+static const arg_decl_t mem_read_cstring_args[] = {
+    {.name = "addr",      .kind = V_UINT, .flags = VAL_HEX,          .doc = "guest memory address"          },
+    {.name = "max_chars", .kind = V_INT,  .flags = OBJ_ARG_OPTIONAL, .doc = "max chars to read (default 96)"},
+};
+
 static const member_t memory_members[] = {
     {.kind = M_ATTR,
      .name = "ram_size",
      .flags = VAL_RO,
-     .attr = {.type = V_UINT, .get = attr_mem_ram_size, .set = NULL}},
+     .attr = {.type = V_UINT, .get = attr_mem_ram_size, .set = NULL}                                         },
     {.kind = M_ATTR,
      .name = "rom_size",
      .flags = VAL_RO,
-     .attr = {.type = V_UINT, .get = attr_mem_rom_size, .set = NULL}},
+     .attr = {.type = V_UINT, .get = attr_mem_rom_size, .set = NULL}                                         },
+    {.kind = M_METHOD,
+     .name = "read_cstring",
+     .doc = "Read a quoted, escape-encoded C string at addr",
+     .method = {.args = mem_read_cstring_args, .nargs = 2, .result = V_STRING, .fn = method_mem_read_cstring}},
 };
 
 static const class_desc_t memory_class = {
@@ -570,6 +696,107 @@ static const class_desc_t scheduler_class_desc = {.name = "scheduler", .members 
 static const class_desc_t shell_class_desc = {.name = "shell", .members = NULL, .n_members = 0};
 static const class_desc_t storage_class_desc = {.name = "storage", .members = NULL, .n_members = 0};
 
+// === lp synthetic class (logpoint fire context) =============================
+//
+// Per-fire context is tracked in a static struct that debug.c flips
+// on/off around expr_interpolate_string. While `active` is true, the
+// lp class getters read from the struct; outside that window they
+// return V_ERROR (proposal §5.3 — "lp.value resolves to V_ERROR
+// outside that context").
+
+static struct {
+    bool active;
+    uint32_t addr;
+    uint32_t value;
+    unsigned size;
+} g_lp;
+
+void gs_lp_context_begin(uint32_t addr, uint32_t value, unsigned size) {
+    g_lp.active = true;
+    g_lp.addr = addr;
+    g_lp.value = value;
+    g_lp.size = size;
+}
+
+void gs_lp_context_end(void) {
+    g_lp.active = false;
+}
+
+static value_t attr_lp_value(struct object *self, const member_t *m) {
+    (void)self;
+    (void)m;
+    if (!g_lp.active)
+        return val_err("lp.value: only valid inside a logpoint message");
+    int w = (g_lp.size == 1) ? 1 : (g_lp.size == 2) ? 2 : 4;
+    uint64_t mask = (g_lp.size >= 4) ? 0xFFFFFFFFu : ((1u << (g_lp.size * 8)) - 1u);
+    value_t v = val_uint((uint8_t)w, g_lp.value & mask);
+    v.flags |= VAL_HEX;
+    return v;
+}
+static value_t attr_lp_addr(struct object *self, const member_t *m) {
+    (void)self;
+    (void)m;
+    if (!g_lp.active)
+        return val_err("lp.addr: only valid inside a logpoint message");
+    value_t v = val_uint(4, g_lp.addr);
+    v.flags |= VAL_HEX;
+    return v;
+}
+static value_t attr_lp_size(struct object *self, const member_t *m) {
+    (void)self;
+    (void)m;
+    if (!g_lp.active)
+        return val_err("lp.size: only valid inside a logpoint message");
+    return val_uint(1, g_lp.size);
+}
+static value_t attr_lp_pc(struct object *self, const member_t *m) {
+    (void)self;
+    (void)m;
+    if (!g_lp.active)
+        return val_err("lp.pc: only valid inside a logpoint message");
+    config_t *cfg = (config_t *)object_data(self);
+    if (!cfg || !cfg->cpu)
+        return val_err("lp.pc: cpu not initialised");
+    value_t v = val_uint(4, cpu_get_pc(cfg->cpu));
+    v.flags |= VAL_HEX;
+    return v;
+}
+static value_t attr_lp_instruction_pc(struct object *self, const member_t *m) {
+    (void)self;
+    (void)m;
+    if (!g_lp.active)
+        return val_err("lp.instruction_pc: only valid inside a logpoint message");
+    config_t *cfg = (config_t *)object_data(self);
+    if (!cfg || !cfg->cpu)
+        return val_err("lp.instruction_pc: cpu not initialised");
+    value_t v = val_uint(4, cfg->cpu->instruction_pc);
+    v.flags |= VAL_HEX;
+    return v;
+}
+
+static const member_t lp_members[] = {
+    {.kind = M_ATTR,
+     .name = "value",
+     .flags = VAL_RO | VAL_HEX,
+     .attr = {.type = V_UINT, .get = attr_lp_value, .set = NULL}                                                          },
+    {.kind = M_ATTR,
+     .name = "addr",
+     .flags = VAL_RO | VAL_HEX,
+     .attr = {.type = V_UINT, .get = attr_lp_addr, .set = NULL}                                                           },
+    {.kind = M_ATTR, .name = "size", .flags = VAL_RO,           .attr = {.type = V_UINT, .get = attr_lp_size, .set = NULL}},
+    {.kind = M_ATTR, .name = "pc",   .flags = VAL_RO | VAL_HEX, .attr = {.type = V_UINT, .get = attr_lp_pc, .set = NULL}  },
+    {.kind = M_ATTR,
+     .name = "instruction_pc",
+     .flags = VAL_RO | VAL_HEX,
+     .attr = {.type = V_UINT, .get = attr_lp_instruction_pc, .set = NULL}                                                 },
+};
+
+static const class_desc_t lp_class_desc = {
+    .name = "lp",
+    .members = lp_members,
+    .n_members = sizeof(lp_members) / sizeof(lp_members[0]),
+};
+
 // === math object ============================================================
 //
 // Minimal numerics needed to write predicates inside `$(...)`. See
@@ -781,12 +1008,17 @@ void gs_classes_install(struct config *cfg) {
         return; // idempotent
 
     struct object *cpu_obj = attach_stub(NULL, &cpu_class, cfg, "cpu");
-    /* memory */ attach_stub(NULL, &memory_class, cfg, "memory");
+    struct object *mem_obj = attach_stub(NULL, &memory_class, cfg, "memory");
     /* scheduler */ attach_stub(NULL, &scheduler_class_desc, cfg, "scheduler");
     /* machine */ attach_stub(NULL, &machine_class, cfg, "machine");
     struct object *shell_obj = attach_stub(NULL, &shell_class_desc, cfg, "shell");
     /* storage */ attach_stub(NULL, &storage_class_desc, cfg, "storage");
     /* math    */ attach_stub(NULL, &math_class_desc, cfg, "math");
+    /* lp      */ attach_stub(NULL, &lp_class_desc, cfg, "lp");
+
+    // memory.peek child object — methods b/w/l for sized reads.
+    if (mem_obj)
+        attach_stub(mem_obj, &mem_peek_class, cfg, "peek");
 
     // mac is always attached — readers tolerate uninitialised RAM.
     if (build_mac_class() == 0)

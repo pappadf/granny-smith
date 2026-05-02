@@ -301,6 +301,82 @@ TEST(test_interpolate_unterminated) {
     value_free(&v);
 }
 
+// === M5 format specs (proposal §4.2.1) ====================================
+
+TEST(test_interp_spec_decimal) {
+    expr_ctx_t ctx = {0};
+    value_t v = expr_interpolate_string("n=${42:d}", &ctx);
+    ASSERT_TRUE(strcmp(v.s, "n=42") == 0);
+    value_free(&v);
+}
+
+TEST(test_interp_spec_hex_lower) {
+    expr_ctx_t ctx = {0};
+    value_t v = expr_interpolate_string("x=${255:x}", &ctx);
+    ASSERT_TRUE(strcmp(v.s, "x=ff") == 0);
+    value_free(&v);
+}
+
+TEST(test_interp_spec_hex_upper) {
+    expr_ctx_t ctx = {0};
+    value_t v = expr_interpolate_string("X=${255:X}", &ctx);
+    ASSERT_TRUE(strcmp(v.s, "X=FF") == 0);
+    value_free(&v);
+}
+
+TEST(test_interp_spec_zero_padded_hex) {
+    expr_ctx_t ctx = {0};
+    value_t v = expr_interpolate_string("a=${0x4002b4:08x}", &ctx);
+    ASSERT_TRUE(strcmp(v.s, "a=004002b4") == 0);
+    value_free(&v);
+}
+
+TEST(test_interp_spec_zero_padded_decimal) {
+    expr_ctx_t ctx = {0};
+    value_t v = expr_interpolate_string("n=${42:05d}", &ctx);
+    ASSERT_TRUE(strcmp(v.s, "n=00042") == 0);
+    value_free(&v);
+}
+
+TEST(test_interp_spec_string) {
+    expr_ctx_t ctx = {0};
+    value_t v = expr_interpolate_string("s=${\"hi\":s}", &ctx);
+    ASSERT_TRUE(strcmp(v.s, "s=hi") == 0);
+    value_free(&v);
+}
+
+TEST(test_interp_spec_printf_escape_hatch) {
+    expr_ctx_t ctx = {0};
+    value_t v = expr_interpolate_string("n=${5:%-3d}|", &ctx);
+    // %-3d → "5  " (left-justified, width 3)
+    ASSERT_TRUE(strcmp(v.s, "n=5  |") == 0);
+    value_free(&v);
+}
+
+TEST(test_interp_spec_default_when_no_spec) {
+    expr_ctx_t ctx = {0};
+    // No spec — uses native formatter. UInt without VAL_HEX → decimal.
+    value_t v = expr_interpolate_string("v=${42}", &ctx);
+    ASSERT_TRUE(strcmp(v.s, "v=42") == 0);
+    value_free(&v);
+}
+
+TEST(test_interp_multiple_chunks) {
+    expr_ctx_t ctx = {0};
+    value_t v = expr_interpolate_string("${1+1}+${2*3}=${1+1+2*3}", &ctx);
+    ASSERT_TRUE(strcmp(v.s, "2+6=8") == 0);
+    value_free(&v);
+}
+
+TEST(test_interp_colon_inside_string_doesnt_split_spec) {
+    expr_ctx_t ctx = {0};
+    // The colon inside the string literal must not be mistaken for a
+    // format-spec separator (proposal §4.2.1 — split at top-level colon).
+    value_t v = expr_interpolate_string("${\"a:b\"}", &ctx);
+    ASSERT_TRUE(strcmp(v.s, "a:b") == 0);
+    value_free(&v);
+}
+
 int main(void) {
     RUN(test_literal_addition);
     RUN(test_operator_precedence);
@@ -326,5 +402,15 @@ int main(void) {
     RUN(test_interpolate_simple);
     RUN(test_interpolate_no_braces_passthrough);
     RUN(test_interpolate_unterminated);
+    RUN(test_interp_spec_decimal);
+    RUN(test_interp_spec_hex_lower);
+    RUN(test_interp_spec_hex_upper);
+    RUN(test_interp_spec_zero_padded_hex);
+    RUN(test_interp_spec_zero_padded_decimal);
+    RUN(test_interp_spec_string);
+    RUN(test_interp_spec_printf_escape_hatch);
+    RUN(test_interp_spec_default_when_no_spec);
+    RUN(test_interp_multiple_chunks);
+    RUN(test_interp_colon_inside_string_doesnt_split_spec);
     return 0;
 }

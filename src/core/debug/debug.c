@@ -11,19 +11,24 @@
 #include "debug.h"
 
 #include "addr_format.h"
+#include "alias.h"
 #include "cmd_symbol.h"
 #include "cmd_types.h"
 #include "common.h"
 #include "cpu.h"
 #include "cpu_internal.h"
 #include "debug_mac.h"
+#include "expr.h"
 #include "fpu.h"
+#include "gs_classes.h"
 #include "log.h"
 #include "memory.h"
 #include "mmu.h"
+#include "object.h"
 #include "scheduler.h"
 #include "shell.h"
 #include "system.h"
+#include "value.h"
 
 #include <ctype.h>
 #include <stdarg.h>
@@ -344,60 +349,9 @@ static uint32_t parse_lp_offset(const char *src, size_t len, size_t pos) {
     return v;
 }
 
-// Resolve a "source" sub-token to a 32-bit address.  Accepts:
-//   "cpu.aN[+HEX]" / "cpu.dN[+HEX]" — register file with optional hex offset
-//   "xHEX[+HEX]"                    — hex literal address with optional offset
-// Returns false if not recognized or offset is malformed.
-static bool resolve_lp_addr(const char *src, size_t len, cpu_t *cpu, uint32_t *out_addr) {
-    if (len >= 6 && memcmp(src, "cpu.a", 5) == 0 && src[5] >= '0' && src[5] <= '7') {
-        uint32_t offs = parse_lp_offset(src, len, 6);
-        if (offs == UINT32_MAX && len > 6)
-            return false;
-        if (len > 6 && offs == UINT32_MAX)
-            return false;
-        if (len == 6)
-            offs = 0;
-        *out_addr = (cpu ? cpu->a[src[5] - '0'] : 0) + offs;
-        return true;
-    }
-    if (len >= 6 && memcmp(src, "cpu.d", 5) == 0 && src[5] >= '0' && src[5] <= '7') {
-        uint32_t offs = parse_lp_offset(src, len, 6);
-        if (len > 6 && offs == UINT32_MAX)
-            return false;
-        if (len == 6)
-            offs = 0;
-        *out_addr = (cpu ? cpu->d[src[5] - '0'] : 0) + offs;
-        return true;
-    }
-    if (len >= 2 && src[0] == 'x') {
-        // Parse hex digits up to '+' (offset) or end of token.
-        uint32_t v = 0;
-        size_t i = 1;
-        for (; i < len; i++) {
-            char c = src[i];
-            int d;
-            if (c >= '0' && c <= '9')
-                d = c - '0';
-            else if (c >= 'a' && c <= 'f')
-                d = 10 + (c - 'a');
-            else if (c >= 'A' && c <= 'F')
-                d = 10 + (c - 'A');
-            else if (c == '+')
-                break;
-            else
-                return false;
-            v = (v << 4) | (uint32_t)d;
-        }
-        uint32_t offs = parse_lp_offset(src, len, i);
-        if (i < len && offs == UINT32_MAX)
-            return false;
-        if (i == len)
-            offs = 0;
-        *out_addr = v + offs;
-        return true;
-    }
-    return false;
-}
+// (resolve_lp_addr deleted in M5 — the bespoke logpoint vocabulary is
+// retired in favour of the unified ${...} interpolator. See
+// proposal-module-object-model.md §5.3.)
 
 // Read a single byte from the guest's user-mode address space, regardless of
 // the CPU's current S bit.  Used by the logpoint formatter when a logpoint
@@ -444,118 +398,44 @@ static void append_guest_cstring(char *val, size_t valsz, uint32_t addr, size_t 
     val[out] = '\0';
 }
 
-// Expand a logpoint message, substituting $pc, $value, $instruction_pc,
-// register names (cpu.d0, cpu.a0, ...), and memory dereferences:
-//   $mem.b.<src> / $mem.w.<src> / $mem.l.<src>      — raw value at addr
-//   $str.<src>                                     — C string at addr
-//   $str.deref.<src>                               — read long at <src>, then C string at that pointer
-// where <src> is "cpu.aN", "cpu.dN", or "xHEX".  Simple replacement, not a
-// full expression language.  Writes up to buf_size-1 chars into buf.
+// Adapter for expr_alias_fn — alias_lookup's signature differs because
+// it also returns the alias kind via an out-pointer.
+static const char *alias_lookup_for_expr(void *ud, const char *name) {
+    (void)ud;
+    return alias_lookup(name, NULL);
+}
+
+// Expand a logpoint message via the unified ${...} interpolator
+// (proposal §4.2.1, §5.3). Sets up the `lp` synthetic context with
+// addr/value/size, then calls expr_interpolate_string against the
+// object root with the alias resolver bound. Outside ${...} the
+// message is literal — a bare `$` is just a dollar sign.
+//
+// Old vocabulary (`$pc`, `$value`, `$mem.l.<src>`, `$str.<src>`) was
+// deleted in M5; user messages must use ${cpu.pc}, ${lp.value},
+// ${memory.peek.l(<addr>)}, ${memory.read_cstring(<addr>)} instead.
 static void format_logpoint_message(char *buf, size_t buf_size, const char *msg, uint32_t addr, uint32_t value,
                                     unsigned size) {
     if (!msg) {
         buf[0] = '\0';
         return;
     }
-    cpu_t *cpu = system_cpu();
-    size_t out = 0;
-    for (const char *p = msg; *p && out + 32 < buf_size;) {
-        if (*p != '$') {
-            buf[out++] = *p++;
-            continue;
-        }
-        // match "$name"  ('+' allowed for src+offset notation in $mem/$str ops)
-        p++;
-        const char *name = p;
-        while (*p && (isalnum((unsigned char)*p) || *p == '_' || *p == '.' || *p == '+'))
-            p++;
-        size_t nlen = (size_t)(p - name);
-        char tok[64];
-        if (nlen >= sizeof(tok)) {
-            // too long, just copy as-is
-            if (out + nlen + 2 < buf_size) {
-                buf[out++] = '$';
-                memcpy(buf + out, name, nlen);
-                out += nlen;
-            }
-            continue;
-        }
-        memcpy(tok, name, nlen);
-        tok[nlen] = '\0';
-        char val[160];
-        val[0] = '\0';
-        if (strcmp(tok, "value") == 0) {
-            int w = (size == 1) ? 2 : (size == 2) ? 4 : 8;
-            snprintf(val, sizeof(val), "$%0*X", w, value);
-        } else if (strcmp(tok, "addr") == 0 || strcmp(tok, "address") == 0) {
-            snprintf(val, sizeof(val), "$%08X", addr);
-        } else if (strcmp(tok, "pc") == 0) {
-            snprintf(val, sizeof(val), "$%08X", cpu ? cpu_get_pc(cpu) : 0);
-        } else if (strcmp(tok, "instruction_pc") == 0) {
-            snprintf(val, sizeof(val), "$%08X", cpu ? cpu->instruction_pc : 0);
-        } else if (strncmp(tok, "cpu.d", 5) == 0 && nlen == 6 && tok[5] >= '0' && tok[5] <= '7') {
-            snprintf(val, sizeof(val), "$%08X", cpu ? cpu->d[tok[5] - '0'] : 0);
-        } else if (strncmp(tok, "cpu.a", 5) == 0 && nlen == 6 && tok[5] >= '0' && tok[5] <= '7') {
-            snprintf(val, sizeof(val), "$%08X", cpu ? cpu->a[tok[5] - '0'] : 0);
-        } else if (nlen > 6 && memcmp(tok, "mem.", 4) == 0 && tok[5] == '.' &&
-                   (tok[4] == 'b' || tok[4] == 'w' || tok[4] == 'l')) {
-            // $mem.{b,w,l}.<src>
-            uint32_t a = 0;
-            if (resolve_lp_addr(tok + 6, nlen - 6, cpu, &a)) {
-                if (tok[4] == 'b')
-                    snprintf(val, sizeof(val), "$%02X", memory_read_uint8(a));
-                else if (tok[4] == 'w')
-                    snprintf(val, sizeof(val), "$%04X", memory_read_uint16(a));
-                else
-                    snprintf(val, sizeof(val), "$%08X", memory_read_uint32(a));
-            } else {
-                snprintf(val, sizeof(val), "<bad-src>");
-            }
-        } else if (nlen > 11 && memcmp(tok, "str.deref2.", 11) == 0) {
-            // $str.deref2.<src> — read long at <src>, then long at that pointer, then C string at **<src>.
-            // The first read uses the supervisor/active context (kernel u_arg slot is kernel-mapped),
-            // subsequent reads chase user-space pointers via the user MMU.
-            uint32_t a = 0;
-            if (resolve_lp_addr(tok + 11, nlen - 11, cpu, &a)) {
-                uint32_t p1 = memory_read_uint32(a);
-                uint32_t p2 = lp_read_user_uint32(p1);
-                append_guest_cstring(val, sizeof(val), p2, 96);
-            } else {
-                snprintf(val, sizeof(val), "<bad-src>");
-            }
-        } else if (nlen > 10 && memcmp(tok, "str.deref.", 10) == 0) {
-            // $str.deref.<src> — read long at <src> (kernel/active context), then C string via user MMU.
-            uint32_t a = 0;
-            if (resolve_lp_addr(tok + 10, nlen - 10, cpu, &a)) {
-                uint32_t ptr = memory_read_uint32(a);
-                append_guest_cstring(val, sizeof(val), ptr, 96);
-            } else {
-                snprintf(val, sizeof(val), "<bad-src>");
-            }
-        } else if (nlen > 4 && memcmp(tok, "str.", 4) == 0) {
-            // $str.<src>
-            uint32_t a = 0;
-            if (resolve_lp_addr(tok + 4, nlen - 4, cpu, &a)) {
-                append_guest_cstring(val, sizeof(val), a, 96);
-            } else {
-                snprintf(val, sizeof(val), "<bad-src>");
-            }
-        } else {
-            // unknown: re-emit literally
-            if (out + nlen + 2 < buf_size) {
-                buf[out++] = '$';
-                memcpy(buf + out, tok, nlen);
-                out += nlen;
-            }
-            continue;
-        }
-        size_t vl = strlen(val);
-        if (out + vl < buf_size) {
-            memcpy(buf + out, val, vl);
-            out += vl;
-        }
-    }
-    buf[out] = '\0';
+    gs_lp_context_begin(addr, value, size);
+    expr_ctx_t ctx = {
+        .root = object_root(),
+        .alias = alias_lookup_for_expr,
+        .alias_ud = NULL,
+    };
+    value_t v = expr_interpolate_string(msg, &ctx);
+    gs_lp_context_end();
+
+    const char *s = (v.kind == V_STRING && v.s) ? v.s : "";
+    size_t n = strlen(s);
+    if (n >= buf_size)
+        n = buf_size - 1;
+    memcpy(buf, s, n);
+    buf[n] = '\0';
+    value_free(&v);
 }
 
 // ============================================================================
@@ -3516,11 +3396,26 @@ static void cmd_logpoint_handler(struct cmd_context *ctx, struct cmd_result *res
         char *a = ctx->raw_argv[i];
         if (a[0] == '-' && a[1] == '-')
             continue; // kind flag, already handled
+        // Tokens of the form `<known-key>=<value>` are recognised as
+        // named parameters. Anything else — including a message like
+        // "pc=${cpu.pc}" that happens to contain `=` — is treated as
+        // the message body. M5 broadened message vocabulary to use
+        // ${...} interpolation, which naturally contains `key=value`
+        // text patterns that pre-existing logic would have mis-parsed.
         char *equals = strchr(a, '=');
+        bool is_named = false;
+        const char *key = NULL, *value = NULL;
         if (equals) {
-            *equals = '\0';
-            const char *key = a;
-            const char *value = equals + 1;
+            size_t klen = (size_t)(equals - a);
+            if ((klen == 8 && memcmp(a, "category", 8) == 0) || (klen == 5 && memcmp(a, "level", 5) == 0) ||
+                (klen == 5 && memcmp(a, "value", 5) == 0)) {
+                is_named = true;
+                *equals = '\0';
+                key = a;
+                value = equals + 1;
+            }
+        }
+        if (is_named) {
             if (strcmp(key, "category") == 0)
                 category_name = value;
             else if (strcmp(key, "level") == 0) {
@@ -3533,9 +3428,6 @@ static void cmd_logpoint_handler(struct cmd_context *ctx, struct cmd_result *res
                 // Already parsed above; restore '=' and continue.
                 *equals = '=';
                 continue;
-            } else {
-                cmd_err(res, "Unknown parameter: %s", key);
-                return;
             }
         } else if (!message) {
             message = a;
@@ -4228,8 +4120,8 @@ static const char *logpoint_aliases[] = {"lp", NULL};
 // options, and substitutions in the message).  The spec below is loose so the
 // framework doesn't reject legitimate combinations.
 static const struct arg_spec lp_set_args[] = {
-    {"target",  ARG_STRING | ARG_OPTIONAL, "[--write|--read] <address[.b|.w|.l]>"           },
-    {"message", ARG_REST | ARG_OPTIONAL,   "log message (supports $pc, $value, $cpu.d0 ...)"},
+    {"target",  ARG_STRING | ARG_OPTIONAL, "[--write|--read] <address[.b|.w|.l]>"                             },
+    {"message", ARG_REST | ARG_OPTIONAL,   "log message (${cpu.pc}, ${lp.value}, ${lp.addr}, ${...:08x}, ...)"},
 };
 static const struct arg_spec lp_del_args[] = {
     {"target", ARG_STRING, "#id, address, or 'all'"},
