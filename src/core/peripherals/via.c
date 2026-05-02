@@ -649,6 +649,42 @@ const memory_interface_t *via_get_memory_interface(via_t *via) {
     return &via->memory_interface;
 }
 
+// === M7c — read-only views for the object model =============================
+
+uint8_t via_get_ifr(const via_t *via) {
+    return via ? via->ifr : 0;
+}
+uint8_t via_get_ier(const via_t *via) {
+    return via ? via->ier : 0;
+}
+uint8_t via_get_acr(const via_t *via) {
+    return via ? via->acr : 0;
+}
+uint8_t via_get_pcr(const via_t *via) {
+    return via ? via->pcr : 0;
+}
+uint8_t via_get_sr(const via_t *via) {
+    return via ? via->sr : 0;
+}
+uint8_t via_port_output(const via_t *via, unsigned which) {
+    return (via && which < 2) ? via->ports[which].output : 0;
+}
+uint8_t via_port_input(const via_t *via, unsigned which) {
+    return (via && which < 2) ? via->ports[which].input : 0;
+}
+uint8_t via_port_direction(const via_t *via, unsigned which) {
+    return (via && which < 2) ? via->ports[which].direction : 0;
+}
+uint16_t via_timer_counter(const via_t *via, unsigned which) {
+    return (via && which < 2) ? via->timers[which].counter : 0;
+}
+uint16_t via_timer_latch(const via_t *via, unsigned which) {
+    return (via && which < 2) ? via->timers[which].latch : 0;
+}
+uint8_t via_get_freq_factor(const via_t *via) {
+    return via ? via->freq_factor : 0;
+}
+
 // ============================================================================
 // Lifecycle: Destructor
 // ============================================================================

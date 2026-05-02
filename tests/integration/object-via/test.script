@@ -1,0 +1,41 @@
+# M7c integration: `via1` / `via2` object classes.
+# SE/30 has both. The script just walks the tree and reads each
+# attribute — the exact register values depend on boot timing, so
+# we don't pin them, but each path must resolve to a numeric/JSON
+# value with no error JSON.
+
+run 100000
+
+# via1 attributes.
+eval via1
+eval via1.ifr
+eval via1.ier
+eval via1.acr
+eval via1.pcr
+eval via1.sr
+eval via1.freq_factor
+
+# via1 port children.
+eval via1.port_a
+eval via1.port_a.output
+eval via1.port_a.input
+eval via1.port_a.direction
+eval via1.port_b.output
+eval via1.port_b.input
+eval via1.port_b.direction
+
+# via2 — only present on SE/30 / IIcx, which is what this test boots.
+eval via2
+eval via2.ifr
+eval via2.ier
+eval via2.acr
+eval via2.port_a.output
+eval via2.port_b.direction
+
+# Sanity: via1 and via2 are independent — different freq_factor
+# (Plus VIA divisor is 10, SE/30 is 20; via2 tracks its parent VIA's
+# divisor, which is the same on Universal ROM machines).
+eval via1.freq_factor
+eval via2.freq_factor
+
+quit

@@ -39,6 +39,7 @@
 #include "system.h"
 #include "system_config.h"
 #include "value.h"
+#include "via.h"
 
 // instance_data on these stubs is config_t*. The lifetime is bounded
 // by gs_classes_install / gs_classes_uninstall — same scope as the
@@ -1657,6 +1658,172 @@ static const class_desc_t rtc_class = {
     .n_members = sizeof(rtc_members) / sizeof(rtc_members[0]),
 };
 
+// === M7c — VIA peripheral class (via1 / via2) ===============================
+//
+// Plus has a single `via1`; SE/30 and IIcx add `via2`. Both share the
+// same `via_class` member table — `via2` is just a second instance
+// attached at install time when present (proposal §5.4 lists "via1
+// and via2 (the SE/30 second VIA)").
+//
+// instance_data on the via object is a void* slot encoding which VIA
+// to read: 0 → cfg->via1, 1 → cfg->via2. We keep config_t* as the
+// data pointer for parity with other classes and resolve the
+// pointer through user_data on each member. (Two member tables, one
+// per instance, keep the dispatch branch-free in the getter.)
+
+static via_t *via_instance_from(struct object *self, const member_t *m) {
+    config_t *cfg = (config_t *)object_data(self);
+    if (!cfg)
+        return NULL;
+    unsigned which = (unsigned)(uintptr_t)m->attr.user_data;
+    if (which == 0)
+        return cfg->via1;
+    return cfg->via2;
+}
+#define VIA_BYTE_GETTER(NAME, ACC)                                                                                     \
+    static value_t via_attr_##NAME(struct object *self, const member_t *m) {                                           \
+        via_t *via = via_instance_from(self, m);                                                                       \
+        value_t v = val_uint(1, ACC(via));                                                                             \
+        v.flags |= VAL_HEX;                                                                                            \
+        return v;                                                                                                      \
+    }
+
+VIA_BYTE_GETTER(ifr, via_get_ifr)
+VIA_BYTE_GETTER(ier, via_get_ier)
+VIA_BYTE_GETTER(acr, via_get_acr)
+VIA_BYTE_GETTER(pcr, via_get_pcr)
+VIA_BYTE_GETTER(sr, via_get_sr)
+
+static value_t via_attr_freq_factor(struct object *self, const member_t *m) {
+    via_t *via = via_instance_from(self, m);
+    return val_uint(1, via_get_freq_factor(via));
+}
+
+// Port child: instance_data on the parent VIA carries the VIA index;
+// instance_data on the port child encodes (via_index << 1) | port_index
+// so a single getter handles all four (via1/A, via1/B, via2/A, via2/B).
+
+static via_t *via_for_port(struct object *self, const member_t *m, unsigned *port_out) {
+    config_t *cfg = (config_t *)object_data(self);
+    unsigned tag = (unsigned)(uintptr_t)m->attr.user_data;
+    *port_out = tag & 1;
+    unsigned which = (tag >> 1) & 1;
+    if (!cfg)
+        return NULL;
+    return which == 0 ? cfg->via1 : cfg->via2;
+}
+
+static value_t via_port_attr_output(struct object *self, const member_t *m) {
+    unsigned port = 0;
+    via_t *via = via_for_port(self, m, &port);
+    value_t v = val_uint(1, via_port_output(via, port));
+    v.flags |= VAL_HEX;
+    return v;
+}
+static value_t via_port_attr_input(struct object *self, const member_t *m) {
+    unsigned port = 0;
+    via_t *via = via_for_port(self, m, &port);
+    value_t v = val_uint(1, via_port_input(via, port));
+    v.flags |= VAL_HEX;
+    return v;
+}
+static value_t via_port_attr_direction(struct object *self, const member_t *m) {
+    unsigned port = 0;
+    via_t *via = via_for_port(self, m, &port);
+    value_t v = val_uint(1, via_port_direction(via, port));
+    v.flags |= VAL_HEX;
+    return v;
+}
+
+// One member table per (via_index, port_index) — four total, but the
+// repetition is tiny because each is only three fields.
+#define VIA_PORT_MEMBERS(VAR, TAG)                                                                                     \
+    static const member_t VAR[] = {                                                                                    \
+        {.kind = M_ATTR,                                                                                               \
+         .name = "output",                                                                                             \
+         .flags = VAL_RO | VAL_HEX,                                                                                    \
+         .attr = {.type = V_UINT, .get = via_port_attr_output, .set = NULL, .user_data = (void *)(uintptr_t)(TAG)}},   \
+        {.kind = M_ATTR,                                                                                               \
+         .name = "input",                                                                                              \
+         .flags = VAL_RO | VAL_HEX,                                                                                    \
+         .attr = {.type = V_UINT, .get = via_port_attr_input, .set = NULL, .user_data = (void *)(uintptr_t)(TAG)} },    \
+        {.kind = M_ATTR,                                                                                               \
+         .name = "direction",                                                                                          \
+         .flags = VAL_RO | VAL_HEX,                                                                                    \
+         .attr =                                                                                                       \
+             {.type = V_UINT, .get = via_port_attr_direction, .set = NULL, .user_data = (void *)(uintptr_t)(TAG)} },    \
+    }
+
+// clang-format off — macro expands to definitions; no trailing semicolons.
+VIA_PORT_MEMBERS(via1_port_a_members, 0); // (0<<1)|0 = via1, port A
+VIA_PORT_MEMBERS(via1_port_b_members, 1); // (0<<1)|1 = via1, port B
+VIA_PORT_MEMBERS(via2_port_a_members, 2); // (1<<1)|0 = via2, port A
+VIA_PORT_MEMBERS(via2_port_b_members, 3); // (1<<1)|1 = via2, port B
+// clang-format on
+
+static const class_desc_t via1_port_a_class = {.name = "via_port",
+                                               .members = via1_port_a_members,
+                                               .n_members =
+                                                   sizeof(via1_port_a_members) / sizeof(via1_port_a_members[0])};
+static const class_desc_t via1_port_b_class = {.name = "via_port",
+                                               .members = via1_port_b_members,
+                                               .n_members =
+                                                   sizeof(via1_port_b_members) / sizeof(via1_port_b_members[0])};
+static const class_desc_t via2_port_a_class = {.name = "via_port",
+                                               .members = via2_port_a_members,
+                                               .n_members =
+                                                   sizeof(via2_port_a_members) / sizeof(via2_port_a_members[0])};
+static const class_desc_t via2_port_b_class = {.name = "via_port",
+                                               .members = via2_port_b_members,
+                                               .n_members =
+                                                   sizeof(via2_port_b_members) / sizeof(via2_port_b_members[0])};
+
+// Status-register member tables for via1 and via2. Same shape, only
+// differ by the user_data tag identifying which instance to read.
+#define VIA_REG_MEMBERS(VAR, TAG)                                                                                      \
+    static const member_t VAR[] = {                                                                                    \
+        {.kind = M_ATTR,                                                                                               \
+         .name = "ifr",                                                                                                \
+         .flags = VAL_RO | VAL_HEX,                                                                                    \
+         .attr = {.type = V_UINT, .get = via_attr_ifr, .set = NULL, .user_data = (void *)(uintptr_t)(TAG)}        },           \
+        {.kind = M_ATTR,                                                                                               \
+         .name = "ier",                                                                                                \
+         .flags = VAL_RO | VAL_HEX,                                                                                    \
+         .attr = {.type = V_UINT, .get = via_attr_ier, .set = NULL, .user_data = (void *)(uintptr_t)(TAG)}        },           \
+        {.kind = M_ATTR,                                                                                               \
+         .name = "acr",                                                                                                \
+         .flags = VAL_RO | VAL_HEX,                                                                                    \
+         .attr = {.type = V_UINT, .get = via_attr_acr, .set = NULL, .user_data = (void *)(uintptr_t)(TAG)}        },           \
+        {.kind = M_ATTR,                                                                                               \
+         .name = "pcr",                                                                                                \
+         .flags = VAL_RO | VAL_HEX,                                                                                    \
+         .attr = {.type = V_UINT, .get = via_attr_pcr, .set = NULL, .user_data = (void *)(uintptr_t)(TAG)}        },           \
+        {.kind = M_ATTR,                                                                                               \
+         .name = "sr",                                                                                                 \
+         .flags = VAL_RO | VAL_HEX,                                                                                    \
+         .attr = {.type = V_UINT, .get = via_attr_sr, .set = NULL, .user_data = (void *)(uintptr_t)(TAG)}         },            \
+        {.kind = M_ATTR,                                                                                               \
+         .name = "freq_factor",                                                                                        \
+         .flags = VAL_RO,                                                                                              \
+         .attr = {.type = V_UINT, .get = via_attr_freq_factor, .set = NULL, .user_data = (void *)(uintptr_t)(TAG)}},   \
+    }
+
+// clang-format off
+VIA_REG_MEMBERS(via1_members, 0);
+VIA_REG_MEMBERS(via2_members, 1);
+// clang-format on
+
+static const class_desc_t via1_class = {
+    .name = "via",
+    .members = via1_members,
+    .n_members = sizeof(via1_members) / sizeof(via1_members[0]),
+};
+static const class_desc_t via2_class = {
+    .name = "via",
+    .members = via2_members,
+    .n_members = sizeof(via2_members) / sizeof(via2_members[0]),
+};
+
 // === Built-in alias registration ============================================
 //
 // Register at install time. Order matters only insofar as built-ins
@@ -1718,7 +1885,7 @@ static void register_mac_aliases(void) {
 
 // === Install / uninstall ====================================================
 
-#define MAX_STUBS 24
+#define MAX_STUBS 32
 static struct object *g_stubs[MAX_STUBS];
 static int g_stub_count = 0;
 
@@ -1789,6 +1956,23 @@ void gs_classes_install(struct config *cfg) {
     // M7b — rtc.
     if (cfg && cfg->rtc)
         attach_stub(NULL, &rtc_class, cfg, "rtc");
+
+    // M7c — via1 (always present) and via2 (SE/30, IIcx). Each VIA's
+    // port_a / port_b are attached as named children of the VIA object.
+    if (cfg && cfg->via1) {
+        struct object *via1_obj = attach_stub(NULL, &via1_class, cfg, "via1");
+        if (via1_obj) {
+            attach_stub(via1_obj, &via1_port_a_class, cfg, "port_a");
+            attach_stub(via1_obj, &via1_port_b_class, cfg, "port_b");
+        }
+    }
+    if (cfg && cfg->via2) {
+        struct object *via2_obj = attach_stub(NULL, &via2_class, cfg, "via2");
+        if (via2_obj) {
+            attach_stub(via2_obj, &via2_port_a_class, cfg, "port_a");
+            attach_stub(via2_obj, &via2_port_b_class, cfg, "port_b");
+        }
+    }
 
     // Built-in aliases. Register CPU always, FPU only when present,
     // mac always (the table is size-driven and machine-independent).

@@ -69,4 +69,27 @@ void via_cancel_pending_shift(via_t *via);
 // Get the memory-mapped I/O interface for machine-level address decode
 const memory_interface_t *via_get_memory_interface(via_t *via);
 
+// === M7c — object-model accessors ===========================================
+//
+// Read-only views over the VIA register file used by the `via1` /
+// `via2` object classes. Port `which` is 0 (A) or 1 (B); timer
+// `which` is 0 (T1) or 1 (T2). All accessors return 0 / false when
+// `via` is NULL or the index is out of range, so the object getters
+// can ignore those edge cases.
+
+uint8_t via_get_ifr(const via_t *via);
+uint8_t via_get_ier(const via_t *via);
+uint8_t via_get_acr(const via_t *via);
+uint8_t via_get_pcr(const via_t *via);
+uint8_t via_get_sr(const via_t *via);
+
+uint8_t via_port_output(const via_t *via, unsigned which);
+uint8_t via_port_input(const via_t *via, unsigned which);
+uint8_t via_port_direction(const via_t *via, unsigned which);
+
+uint16_t via_timer_counter(const via_t *via, unsigned which);
+uint16_t via_timer_latch(const via_t *via, unsigned which);
+
+uint8_t via_get_freq_factor(const via_t *via);
+
 #endif // VIA_H
