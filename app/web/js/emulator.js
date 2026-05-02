@@ -171,11 +171,10 @@ export async function initEmulator(canvas, wasmArgs, printFn) {
   // Expose Module on window for test shim access to FS
   window.__Module = Module;
 
-  // Expose the typed object-model bridge on window. After M10b/c the JS
-  // app callers all use `gsEval`; `window.runCommand` only stays around
-  // as the terminal-input bridge and the small set of pre-main-loop
-  // boot calls (main.js / checkpoint.js) where ccall ordering is still
-  // unsafe — both flagged in their call sites.
+  // Expose both bridges on window. App callers use `gsEval` for typed
+  // object-model access; `runCommand` stays as the free-form shell line
+  // bridge — currently only used by the terminal input handler and the
+  // few callers that don't have a typed wrapper yet.
   window.runCommand = (cmd) => executeShellCommand(cmd);
   window.queueCommand = window.runCommand;
   window.tabComplete = (line, cursorPos) => tabComplete(line, cursorPos);
@@ -228,20 +227,11 @@ export function setRunning(running) {
 // --- Command API (string-based) ---
 
 // Execute a shell line via the worker-side command queue. Returns the
-// integer result. After M10b–M10d this is only used for:
-//   - terminal user input (free-form shell text the user types)
-//   - the two pre-main-loop boot calls in main.js / checkpoint.js
-//     where ccall ordering is still unsafe
-// Everything else goes through gsEval.
+// integer result. Used for the terminal input handler and any caller
+// that needs free-form shell text; everything else should use gsEval.
 export function runCommand(cmd) {
   return executeShellCommand(cmd);
 }
-
-// (M10e) Removed `runCommandJSON`: the only caller in app/web/js was
-// config-dialog.js's "hd models --json" lookup, now backed by the
-// typed `hd_models()` root method. If a future need for structured
-// results re-emerges, expose it through the gsEval surface — not as a
-// runCommand variant.
 
 // Send shell interrupt (Ctrl-C) to the emulator.
 // shell_interrupt just sets a flag — safe to call from any thread.
@@ -280,24 +270,22 @@ export function tabComplete(line, cursorPos) {
 }
 
 // ----------------------------------------------------------------------------
-// Object-model bridge (M10a, repaired in M10e to run on the worker pthread).
+// Object-model bridge.
 // ----------------------------------------------------------------------------
 //
 //   gsEval(path)            → attribute read or zero-arg method call
 //   gsEval(path, [v0, v1])  → method call, or attribute write when path
 //                             is an attribute and the array has one entry
-//   gsInspect(path)         → same JSON shape as gsEval; will diverge into
-//                             a recursive subtree shape with M11
+//   gsInspect(path)         → same JSON shape as gsEval; recursive
+//                             subtree expansion is in progress (M11+)
 //
 // args may be undefined / null / an array of primitive values (number,
 // string, boolean, null). The C side parses the JSON-encoded array.
 //
-// IMPORTANT: this routes through the SAB-backed gs_eval queue (g_gs_*),
-// not via `Module.ccall('em_gs_eval', ...)`. ccall on _em_gs_eval would
-// run the body on this (main) thread instead of the worker pthread that
-// owns scheduler / device / OPFS state — see the "Threading" comment at
-// the top of this file. The previous ccall-based implementation (M10a)
-// was the cause of the M10c CI regression.
+// Routes through the SAB-backed gs_eval queue (g_gs_*) so the body runs
+// on the worker pthread that owns scheduler / device / OPFS state. Do
+// NOT add a direct `Module.ccall('em_gs_eval', ...)` — see the
+// threading-model comment at the top of this file for why.
 
 function readGsEvalResult() {
   if (!gsEvalBufPtr) return null;

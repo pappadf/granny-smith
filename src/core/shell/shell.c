@@ -13,6 +13,7 @@
 #include "cmd_parse.h"
 #include "cmd_types.h"
 #include "expr.h"
+#include "gs_thread.h"
 #include "log.h"
 #include "object.h"
 #include "parse.h"
@@ -1046,6 +1047,9 @@ uint64_t shell_dispatch(char *line) {
     if (!shell_initialized)
         return -1;
 
+    // Thread-affinity guard (compiled out in release). See gs_thread.h.
+    gs_thread_assert_worker("shell_dispatch");
+
     // expand ${VAR} references before tokenizing
     char *expanded = shell_var_expand(line);
     char *to_parse = expanded ? expanded : line;
@@ -1222,6 +1226,11 @@ int shell_init(void) {
     // …) so JS callers (`gsEval`) can use them before any machine boots.
     extern void gs_classes_install_root(void);
     gs_classes_install_root();
+
+    // Latch the worker pthread for the thread-affinity guard. From now
+    // on (under MODE=debug/sanitize) any call into shell_dispatch() or
+    // gs_eval() from a different thread aborts with GS_ASSERTF.
+    gs_thread_record_worker();
 
     shell_initialized = 1;
     return 0;

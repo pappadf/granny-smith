@@ -108,10 +108,12 @@ OUTPUT := $(BUILD_DIR)/main.mjs
 MODE ?= release
 
 ifeq ($(MODE),debug)
-	# -Og avoids excessive WASM locals that can exceed browser limits
-	MODE_CFLAGS := -Og -g
+	# -Og avoids excessive WASM locals that can exceed browser limits.
+	# -DGS_DEBUG enables thread-affinity assertions (see gs_thread.h)
+	# and any other invariants gated behind that flag.
+	MODE_CFLAGS := -Og -g -DGS_DEBUG
 else ifeq ($(MODE),sanitize)
-	MODE_CFLAGS := -O1 -g -fsanitize=address,undefined -sSTACK_OVERFLOW_CHECK=2
+	MODE_CFLAGS := -O1 -g -DGS_DEBUG -fsanitize=address,undefined -sSTACK_OVERFLOW_CHECK=2
 else
 	MODE_CFLAGS := -O2
 endif

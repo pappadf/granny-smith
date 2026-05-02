@@ -4481,31 +4481,31 @@ static void register_mac_aliases(void) {
 
 // === Install / uninstall ====================================================
 //
-// Lifecycle quirk we keep tripping over: `system_create()` calls
-// `gs_classes_install(cfg)` and `system_destroy()` calls
-// `gs_classes_uninstall()`. On `checkpoint --load`, `cmd_load_checkpoint`
-// runs them in this order:
+// Lifecycle invariant: stubs are tied to a specific `cfg` pointer. Two
+// patterns both have to work:
 //
-//     new = system_restore(...);        // -> system_create -> gs_classes_install(new)
-//     global_emulator = new;
-//     system_destroy(old);              // -> gs_classes_uninstall()
+//   1. Cold boot
+//        system_create(new) -> gs_classes_install(new)
+//        ... later ...
+//        system_destroy(new) -> gs_classes_uninstall_if(new)
 //
-// If `gs_classes_install` returned early when stubs already existed (the
-// historical "idempotent" guard), the install for `new` was a no-op
-// because `old`'s stubs were still in place. The subsequent
-// `gs_classes_uninstall` then tore everything down, leaving the object
-// root with no children and the namespace-only default class — every
-// subsequent gsEval('running' / 'cpu.pc' / ...) returned
-// `{"error":"path '...' did not resolve"}`. Pre-M10c that bug was
-// invisible because the e2e helper polled `runCommand('status')`, which
-// goes through the legacy shell registry rather than the object tree;
-// M10c's switch to `gsEval('running')` exposed it.
+//   2. checkpoint --load (cmd_load_checkpoint)
+//        new = system_restore(...);     // system_create(new) -> install(new)
+//        global_emulator = new;
+//        system_destroy(old)            // uninstall_if(old) -- no-op
 //
-// We now track which cfg the stubs belong to. Install is idempotent for
-// the *same* cfg but uninstalls and reinstalls when the cfg changes.
-// Uninstall only fires from `system_destroy(cfg)` when the stubs are
-// still associated with `cfg` — so destroying the old config after a
-// load is a no-op as long as the new install ran first.
+// The danger is pattern 2 with a naive idempotent install: if install
+// short-circuits when stubs already exist, the install for `new` is a
+// no-op (old's stubs are still attached), and the subsequent
+// destroy(old) wipes everything — leaving the object root empty and
+// every gsEval('cpu.pc' / 'running' / …) returning
+// `{"error":"path '...' did not resolve"}`.
+//
+// The fix: track which cfg the stubs were installed for. Install is
+// idempotent only for the *same* cfg and otherwise uninstalls before
+// reinstalling. `gs_classes_uninstall_if(cfg)` (called from
+// system_destroy) only tears down when the stubs are still associated
+// with `cfg` — so destroying the old config after a load is a no-op.
 
 #define MAX_STUBS 40
 static struct object *g_stubs[MAX_STUBS];

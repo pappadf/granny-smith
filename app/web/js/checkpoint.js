@@ -9,34 +9,27 @@ import { toast, hideRomOverlay } from './ui.js';
 
 // Probe for a background checkpoint and offer resume if found.
 // Returns true if the user resumed from a checkpoint.
-//
-// Stays on runCommand for the same boot-window reason as main.js's
-// register_machine call: switching to gsEval reorders this against
-// OPFS state in a way that causes the resume dialog to fire on stale
-// checkpoints from a previous session and block UI tests. The
-// matching root methods (checkpoint_probe / _clear / _load / running)
-// are still registered for post-boot callers (drop.js).
 export async function maybeOfferBackgroundCheckpoint() {
-  let hasCheckpoint = (await window.runCommand('checkpoint --probe')) === 0;
+  const hasCheckpoint = (await window.gsEval('checkpoint_probe')) === true;
 
   if (!hasCheckpoint) return false;
 
   const accept = await showCheckpointPrompt();
   if (!accept) {
-    await window.runCommand('checkpoint clear');
+    await window.gsEval('checkpoint_clear');
     toast('Starting fresh (checkpoint discarded)');
     return false;
   }
 
   hideRomOverlay();
-  const rc = await window.runCommand('checkpoint --load');
-  if (rc !== 0) return false;
+  const ok = (await window.gsEval('checkpoint_load')) === true;
+  if (!ok) return false;
 
   // The checkpoint preserves the scheduler's running flag.  Quick
   // checkpoints (captured while running) auto-resume; consolidated ones
   // (captured while paused) restore to paused.  Sync the JS-side flag
   // with the actual scheduler state so the UI stays consistent.
-  const running = (await window.runCommand('status')) === 1;
+  const running = (await window.gsEval('running')) === true;
   setRunning(running);
   toast(running ? 'Resumed from saved checkpoint' : 'Restored checkpoint (paused)');
   return true;

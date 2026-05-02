@@ -3,7 +3,7 @@
 
 // Orchestrator: startup sequence and module glue.
 // Zero business logic — only wires modules together in the correct order.
-import { initEmulator, runCommand, isModuleReady, getModule, getRuntimePrompt, shellInterrupt, isRunning, tabComplete } from './emulator.js';
+import { initEmulator, runCommand, gsEval, isModuleReady, getModule, getRuntimePrompt, shellInterrupt, isRunning, tabComplete } from './emulator.js';
 import { initTerminal, writeLine, showPrompt, fitTerminal, handleInterrupt } from './terminal.js';
 import { initFS } from './fs.js';
 import { initDragDrop } from './drop.js';
@@ -73,21 +73,13 @@ initInspector();
 // --- 6. Load media ---
 // OPFS directories are already available (mounted by C-side main()).
 
-// Activate the per-machine checkpoint directory before anything that opens
-// images runs.
-//
-// Stays on runCommand instead of gsEval: this fires during the boot
-// window where OPFS may already contain a stale checkpoint from an
-// earlier session. The legacy bridge happens to interleave the
-// checkpoint-machine call with the OPFS sync the way local tests
-// expect; switching to gsEval (even with a shell-ready gate) reorders
-// it enough that maybeOfferBackgroundCheckpoint sees the stale
-// checkpoint and shows the resume dialog, blocking UI clicks. M10e-2
-// will move this once the boot ordering is rewired around the
-// inspector's stop-event model.
+// Activate the per-machine checkpoint directory before anything that
+// opens images runs. Awaiting here preserves command ordering: every
+// later request (starting with `checkpoint --probe` below) sees the
+// machine identity already registered.
 {
   const machine = getOrCreateMachine();
-  await runCommand(`checkpoint --machine ${machine.id} ${machine.created}`);
+  await gsEval('register_machine', [machine.id, machine.created]);
 }
 
 const resumedFromCheckpoint = await maybeOfferBackgroundCheckpoint();
