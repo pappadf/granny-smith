@@ -17,14 +17,17 @@ eval network.appletalk.printer.enabled
 eval network.appletalk.printer.name
 
 # Add a share via the new method, observe it via the legacy command.
-echo $(network.appletalk.shares.add("docs", "/workspaces/granny-smith/tests"))
+# Use /tmp because atalk_share_add stat()s the directory; /tmp exists
+# both in the dev container (/workspaces/granny-smith) and in CI
+# (/__w/granny-smith/granny-smith) so the path is portable.
+echo $(network.appletalk.shares.add("docs", "/tmp"))
 atalk-share-list
 eval network.appletalk.shares[0].name
 eval network.appletalk.shares[0].path
 eval network.appletalk.shares[0].vol_id
 
 # Add via the legacy command, observe via the new tree.
-atalk-share-add demo /workspaces/granny-smith/scripts
+atalk-share-add demo /tmp
 eval network.appletalk.shares[1].name
 
 # Remove via the new tree's per-entry method, verify legacy list reflects it.
