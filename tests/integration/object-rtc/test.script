@@ -1,0 +1,33 @@
+# M7b integration: `rtc` object class.
+# Both the legacy `set-time` command and the new `rtc.time` attribute
+# read/write the same state — flipping one and reading via the other
+# is the strongest test of view-vs-state separation. PRAM access goes
+# through pram_read / pram_write methods (the legacy shell parser
+# doesn't have `=` so attr assignment lands with the M9 cutover).
+
+run 50000
+
+# Read-only views.
+eval rtc
+eval rtc.read_only
+
+# Set the time via the legacy command — expects unix epoch.
+# 1969-12-31T23:59:59 UTC is unix epoch -1; pick a positive value.
+# 0 unix → 1970-01-01T00:00:00 UTC → 2082844800 mac seconds.
+set-time 0
+eval rtc.time
+
+# Set a different time, observe again.
+set-time 1000000
+eval rtc.time
+
+# PRAM read of a known address. Mac PRAM is initialised by the boot
+# code, so the contents depend on how far through boot we are. We
+# write a sentinel and read it back via the same path.
+echo $(rtc.pram_write(0x80, 0xAB))
+echo $(rtc.pram_read(0x80))
+
+# Read the full PRAM snapshot — output is "0x..." hex string.
+eval rtc.pram
+
+quit

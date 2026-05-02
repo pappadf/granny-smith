@@ -308,6 +308,26 @@ void rtc_set_seconds(rtc_t *restrict rtc, uint32_t mac_seconds) {
     LOG(1, "rtc_set_seconds: seconds=%u", rtc->seconds);
 }
 
+// === M7b — object-model views ===============================================
+
+uint32_t rtc_get_seconds(const rtc_t *rtc) {
+    return rtc ? rtc->seconds : 0;
+}
+bool rtc_get_read_only(const rtc_t *rtc) {
+    return rtc ? (rtc->read_only != 0) : false;
+}
+uint8_t rtc_pram_read(const rtc_t *rtc, uint8_t addr) {
+    return rtc ? rtc->pram[addr] : 0;
+}
+bool rtc_pram_write(rtc_t *rtc, uint8_t addr, uint8_t value) {
+    if (!rtc)
+        return false;
+    if (rtc->read_only)
+        return false; // honor the write-protect bit, same as the chip path
+    rtc->pram[addr] = value;
+    return true;
+}
+
 rtc_t *rtc_init(struct scheduler *restrict scheduler, checkpoint_t *checkpoint) {
     rtc_t *rtc = (rtc_t *)malloc(sizeof(rtc_t));
     if (rtc == NULL)

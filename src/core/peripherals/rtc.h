@@ -40,4 +40,17 @@ void rtc_set_via(rtc_t *restrict rtc, via_t *via);
 // Used by the `set-time` script command to make boot deterministic.
 void rtc_set_seconds(rtc_t *restrict rtc, uint32_t mac_seconds);
 
+// === M7b — object-model accessors ===========================================
+//
+// Read-only views and a controlled PRAM-write helper for the `rtc`
+// object class. The PRAM read/write helpers honor the write-protect
+// bit the same way the chip-level command stream does, so writes via
+// the new path can't bypass software's read-only setting.
+
+uint32_t rtc_get_seconds(const rtc_t *rtc);
+bool rtc_get_read_only(const rtc_t *rtc);
+uint8_t rtc_pram_read(const rtc_t *rtc, uint8_t addr);
+// Returns true on success, false if the byte was rejected (read-only).
+bool rtc_pram_write(rtc_t *rtc, uint8_t addr, uint8_t value);
+
 #endif // RTC_H

@@ -33,6 +33,7 @@
 #include "machine.h"
 #include "memory.h"
 #include "object.h"
+#include "rtc.h"
 #include "scc.h"
 #include "scheduler.h"
 #include "system.h"
@@ -1526,6 +1527,136 @@ static const class_desc_t scc_class = {
     .n_members = sizeof(scc_members) / sizeof(scc_members[0]),
 };
 
+// === M7b — RTC peripheral class =============================================
+//
+// `rtc.time` is the writable head (Mac-epoch seconds, 1904); it
+// replaces `set-time` as the canonical entry point — the legacy
+// command remains and `rtc.time = N` is the new equivalent. PRAM is
+// exposed two ways: a read-only V_BYTES snapshot of all 256 bytes
+// (`rtc.pram`) and per-byte read/write methods (`pram_read(addr)`,
+// `pram_write(addr, value)`). Per-byte writes honor the write-protect
+// bit the same way the chip-level command stream does — bypassing it
+// from the shell would let test scripts mask kernel bugs.
+
+static rtc_t *rtc_from(struct object *self) {
+    config_t *cfg = (config_t *)object_data(self);
+    return cfg ? cfg->rtc : NULL;
+}
+
+static value_t rtc_attr_time_get(struct object *self, const member_t *m) {
+    (void)m;
+    rtc_t *rtc = rtc_from(self);
+    return val_uint(4, rtc ? rtc_get_seconds(rtc) : 0);
+}
+
+static value_t rtc_attr_time_set(struct object *self, const member_t *m, value_t in) {
+    (void)m;
+    rtc_t *rtc = rtc_from(self);
+    if (!rtc) {
+        value_free(&in);
+        return val_err("rtc not available");
+    }
+    bool ok = true;
+    uint64_t s = val_as_u64(&in, &ok);
+    value_free(&in);
+    if (!ok)
+        return val_err("rtc.time: value is not numeric");
+    rtc_set_seconds(rtc, (uint32_t)s);
+    return val_none();
+}
+
+static value_t rtc_attr_read_only(struct object *self, const member_t *m) {
+    (void)m;
+    rtc_t *rtc = rtc_from(self);
+    return val_bool(rtc ? rtc_get_read_only(rtc) : false);
+}
+
+static value_t rtc_attr_pram(struct object *self, const member_t *m) {
+    (void)m;
+    rtc_t *rtc = rtc_from(self);
+    if (!rtc)
+        return val_err("rtc not available");
+    uint8_t buf[256];
+    for (int i = 0; i < 256; i++)
+        buf[i] = rtc_pram_read(rtc, (uint8_t)i);
+    return val_bytes(buf, sizeof(buf));
+}
+
+static value_t rtc_method_pram_read(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)m;
+    rtc_t *rtc = rtc_from(self);
+    if (!rtc)
+        return val_err("rtc not available");
+    if (argc < 1)
+        return val_err("rtc.pram_read: expected (addr)");
+    bool ok = true;
+    uint64_t addr = val_as_u64(&argv[0], &ok);
+    if (!ok || addr > 0xFF)
+        return val_err("rtc.pram_read: addr must be 0..255");
+    value_t v = val_uint(1, rtc_pram_read(rtc, (uint8_t)addr));
+    v.flags |= VAL_HEX;
+    return v;
+}
+
+static value_t rtc_method_pram_write(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)m;
+    rtc_t *rtc = rtc_from(self);
+    if (!rtc)
+        return val_err("rtc not available");
+    if (argc < 2)
+        return val_err("rtc.pram_write: expected (addr, value)");
+    bool ok1 = true, ok2 = true;
+    uint64_t addr = val_as_u64(&argv[0], &ok1);
+    uint64_t value = val_as_u64(&argv[1], &ok2);
+    if (!ok1 || !ok2)
+        return val_err("rtc.pram_write: arguments must be numeric");
+    if (addr > 0xFF || value > 0xFF)
+        return val_err("rtc.pram_write: addr and value must be 0..255");
+    if (!rtc_pram_write(rtc, (uint8_t)addr, (uint8_t)value))
+        return val_err("rtc.pram_write: PRAM is write-protected");
+    return val_none();
+}
+
+static const arg_decl_t rtc_pram_read_args[] = {
+    {.name = "addr", .kind = V_UINT, .flags = VAL_HEX, .doc = "PRAM offset (0..255)"},
+};
+static const arg_decl_t rtc_pram_write_args[] = {
+    {.name = "addr",  .kind = V_UINT, .flags = VAL_HEX, .doc = "PRAM offset (0..255)"},
+    {.name = "value", .kind = V_UINT, .flags = VAL_HEX, .doc = "byte to write"       },
+};
+
+static const member_t rtc_members[] = {
+    {.kind = M_ATTR,
+     .name = "time",
+     .doc = "Mac-epoch seconds (1904-based); writable",
+     .flags = 0,
+     .attr = {.type = V_UINT, .get = rtc_attr_time_get, .set = rtc_attr_time_set}},
+    {.kind = M_ATTR,
+     .name = "read_only",
+     .doc = "Write-protect bit",
+     .flags = VAL_RO,
+     .attr = {.type = V_BOOL, .get = rtc_attr_read_only, .set = NULL}},
+    {.kind = M_ATTR,
+     .name = "pram",
+     .doc = "256-byte PRAM snapshot",
+     .flags = VAL_RO,
+     .attr = {.type = V_BYTES, .get = rtc_attr_pram, .set = NULL}},
+    {.kind = M_METHOD,
+     .name = "pram_read",
+     .doc = "Read one PRAM byte",
+     .method = {.args = rtc_pram_read_args, .nargs = 1, .result = V_UINT, .fn = rtc_method_pram_read}},
+    {.kind = M_METHOD,
+     .name = "pram_write",
+     .doc = "Write one PRAM byte (honors the write-protect bit)",
+     .method = {.args = rtc_pram_write_args, .nargs = 2, .result = V_NONE, .fn = rtc_method_pram_write}},
+};
+
+static const class_desc_t rtc_class = {
+    .name = "rtc",
+    .members = rtc_members,
+    .n_members = sizeof(rtc_members) / sizeof(rtc_members[0]),
+};
+
 // === Built-in alias registration ============================================
 //
 // Register at install time. Order matters only insofar as built-ins
@@ -1654,6 +1785,10 @@ void gs_classes_install(struct config *cfg) {
             attach_stub(scc_obj, &scc_channel_b_class, cfg, "b");
         }
     }
+
+    // M7b — rtc.
+    if (cfg && cfg->rtc)
+        attach_stub(NULL, &rtc_class, cfg, "rtc");
 
     // Built-in aliases. Register CPU always, FPU only when present,
     // mac always (the table is size-driven and machine-independent).
