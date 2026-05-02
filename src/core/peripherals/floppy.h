@@ -43,4 +43,23 @@ void floppy_set_sel_signal(floppy_t *floppy, bool sel);
 // Get the memory-mapped I/O interface for machine-level address decode
 const memory_interface_t *floppy_get_memory_interface(floppy_t *floppy);
 
+// === M7e — object-model accessors ===========================================
+//
+// Read-only views over the floppy controller and its two drive slots
+// used by `floppy` / `floppy.drives` object classes. Drive index is
+// 0 (internal) or 1 (external). Out-of-range indices return zero /
+// false / NULL so the object getters can stay branch-free.
+
+int floppy_get_type(const floppy_t *floppy); // FLOPPY_TYPE_IWM | FLOPPY_TYPE_SWIM
+bool floppy_get_sel(const floppy_t *floppy); // VIA-driven head-select signal
+
+int floppy_drive_track(const floppy_t *floppy, unsigned drive);
+int floppy_drive_side(const floppy_t *floppy, unsigned drive);
+bool floppy_drive_motor_on(const floppy_t *floppy, unsigned drive);
+const char *floppy_drive_disk_path(const floppy_t *floppy, unsigned drive);
+// Eject the disk in the given drive — clears the controller's image
+// pointer, drops the cached track buffers. Returns true if a disk was
+// removed, false if the drive was already empty / index invalid.
+bool floppy_drive_eject(floppy_t *floppy, unsigned drive);
+
 #endif // FLOPPY_H

@@ -29,6 +29,7 @@
 #include "cpu.h"
 #include "cpu_internal.h"
 #include "debug.h"
+#include "floppy.h"
 #include "fpu.h"
 #include "machine.h"
 #include "memory.h"
@@ -2126,6 +2127,228 @@ static const class_desc_t scsi_class = {
     .n_members = sizeof(scsi_members) / sizeof(scsi_members[0]),
 };
 
+// === M7e — floppy peripheral class ==========================================
+//
+// `floppy` is the unified IWM/SWIM controller. Both Plus (IWM-only)
+// and SE/30 (SWIM dual-mode) attach a floppy_t at machine init, so
+// the object is always present when cfg->floppy is non-NULL.
+//
+// Drive layout matches the proposal: `floppy.drives[0]` is the
+// internal drive, `floppy.drives[1]` is external. Indexed children
+// are dense (always exactly 2 slots) — index sparseness only matters
+// for collections that grow (breakpoints, scsi.devices); the floppy
+// drive count is a hardware constant.
+
+static floppy_t *floppy_from(struct object *self) {
+    config_t *cfg = (config_t *)object_data(self);
+    return cfg ? cfg->floppy : NULL;
+}
+
+static const char *const FLOPPY_TYPE_NAMES[] = {"iwm", "swim"};
+
+static value_t floppy_attr_type(struct object *self, const member_t *m) {
+    (void)m;
+    floppy_t *floppy = floppy_from(self);
+    int t = floppy ? floppy_get_type(floppy) : 0;
+    if (t < 0 || t > 1)
+        t = 0;
+    return val_enum(t, FLOPPY_TYPE_NAMES, 2);
+}
+
+static value_t floppy_attr_sel(struct object *self, const member_t *m) {
+    (void)m;
+    return val_bool(floppy_get_sel(floppy_from(self)));
+}
+
+static const member_t floppy_members[] = {
+    {.kind = M_ATTR,
+     .name = "type",
+     .doc = "Controller type: iwm (Plus) or swim (SE/30)",
+     .flags = VAL_RO,
+     .attr = {.type = V_ENUM, .get = floppy_attr_type, .set = NULL}},
+    {.kind = M_ATTR,
+     .name = "sel",
+     .doc = "VIA-driven head-select signal",
+     .flags = VAL_RO,
+     .attr = {.type = V_BOOL, .get = floppy_attr_sel, .set = NULL} },
+};
+
+static const class_desc_t floppy_class = {
+    .name = "floppy",
+    .members = floppy_members,
+    .n_members = sizeof(floppy_members) / sizeof(floppy_members[0]),
+};
+
+// --- Per-drive entry class -------------------------------------------------
+
+typedef struct {
+    config_t *cfg;
+    int slot;
+} floppy_drive_data_t;
+
+static floppy_t *floppy_drive_floppy(struct object *self, unsigned *slot_out) {
+    floppy_drive_data_t *dd = (floppy_drive_data_t *)object_data(self);
+    if (!dd || !dd->cfg) {
+        *slot_out = 0;
+        return NULL;
+    }
+    *slot_out = (unsigned)dd->slot;
+    return dd->cfg->floppy;
+}
+
+static value_t floppy_drive_attr_index(struct object *self, const member_t *m) {
+    (void)m;
+    unsigned slot = 0;
+    (void)floppy_drive_floppy(self, &slot);
+    return val_int((int)slot);
+}
+
+static value_t floppy_drive_attr_present(struct object *self, const member_t *m) {
+    (void)m;
+    unsigned slot = 0;
+    floppy_t *floppy = floppy_drive_floppy(self, &slot);
+    return val_bool(floppy && floppy_is_inserted(floppy, (int)slot));
+}
+
+static value_t floppy_drive_attr_track(struct object *self, const member_t *m) {
+    (void)m;
+    unsigned slot = 0;
+    floppy_t *floppy = floppy_drive_floppy(self, &slot);
+    return val_int(floppy_drive_track(floppy, slot));
+}
+
+static value_t floppy_drive_attr_side(struct object *self, const member_t *m) {
+    (void)m;
+    unsigned slot = 0;
+    floppy_t *floppy = floppy_drive_floppy(self, &slot);
+    return val_int(floppy_drive_side(floppy, slot));
+}
+
+static value_t floppy_drive_attr_motor_on(struct object *self, const member_t *m) {
+    (void)m;
+    unsigned slot = 0;
+    floppy_t *floppy = floppy_drive_floppy(self, &slot);
+    return val_bool(floppy_drive_motor_on(floppy, slot));
+}
+
+static value_t floppy_drive_attr_disk(struct object *self, const member_t *m) {
+    (void)m;
+    unsigned slot = 0;
+    floppy_t *floppy = floppy_drive_floppy(self, &slot);
+    const char *p = floppy_drive_disk_path(floppy, slot);
+    return val_str(p ? p : "");
+}
+
+static value_t floppy_drive_method_eject(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)m;
+    (void)argc;
+    (void)argv;
+    unsigned slot = 0;
+    floppy_t *floppy = floppy_drive_floppy(self, &slot);
+    if (!floppy)
+        return val_err("floppy not available");
+    if (!floppy_drive_eject(floppy, slot))
+        return val_err("drive %u: no disk inserted", slot);
+    return val_none();
+}
+
+// `insert(path)` is deferred — image loading and floppy_insert
+// require the M8 storage rollout to converge cleanly. For M7e the
+// method is a stub returning V_ERROR, mirroring the scsi.devices
+// eject/insert deferral. Paths still resolve.
+static value_t floppy_drive_method_insert(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)self;
+    (void)m;
+    (void)argc;
+    (void)argv;
+    return val_err("floppy.drives.N.insert(): deferred — see M8 plan");
+}
+
+static const arg_decl_t floppy_drive_insert_args[] = {
+    {.name = "path", .kind = V_STRING, .doc = "Host path or storage URI of the image to mount"},
+};
+
+static const member_t floppy_drive_members[] = {
+    {.kind = M_ATTR,
+     .name = "index",
+     .flags = VAL_RO,
+     .attr = {.type = V_INT, .get = floppy_drive_attr_index, .set = NULL}},
+    {.kind = M_ATTR,
+     .name = "present",
+     .flags = VAL_RO,
+     .attr = {.type = V_BOOL, .get = floppy_drive_attr_present, .set = NULL}},
+    {.kind = M_ATTR,
+     .name = "track",
+     .flags = VAL_RO,
+     .attr = {.type = V_INT, .get = floppy_drive_attr_track, .set = NULL}},
+    {.kind = M_ATTR,
+     .name = "side",
+     .flags = VAL_RO,
+     .attr = {.type = V_INT, .get = floppy_drive_attr_side, .set = NULL}},
+    {.kind = M_ATTR,
+     .name = "motor_on",
+     .flags = VAL_RO,
+     .attr = {.type = V_BOOL, .get = floppy_drive_attr_motor_on, .set = NULL}},
+    {.kind = M_ATTR,
+     .name = "disk",
+     .doc = "Path to currently inserted image (empty when no disk)",
+     .flags = VAL_RO,
+     .attr = {.type = V_STRING, .get = floppy_drive_attr_disk, .set = NULL}},
+    {.kind = M_METHOD,
+     .name = "eject",
+     .doc = "Remove the inserted disk",
+     .method = {.args = NULL, .nargs = 0, .result = V_NONE, .fn = floppy_drive_method_eject}},
+    {.kind = M_METHOD,
+     .name = "insert",
+     .doc = "Insert a disk image; deferred until M8",
+     .method = {.args = floppy_drive_insert_args, .nargs = 1, .result = V_NONE, .fn = floppy_drive_method_insert}},
+};
+
+static const class_desc_t floppy_drive_class = {
+    .name = "floppy_drive",
+    .members = floppy_drive_members,
+    .n_members = sizeof(floppy_drive_members) / sizeof(floppy_drive_members[0]),
+};
+
+// --- Drives collection: indexed children -----------------------------------
+
+static floppy_drive_data_t g_floppy_drive_data[2];
+static struct object *g_floppy_drive_objs[2];
+
+static struct object *floppy_drives_get(struct object *self, int index) {
+    config_t *cfg = (config_t *)object_data(self);
+    if (!cfg || !cfg->floppy || index < 0 || index > 1)
+        return NULL;
+    return g_floppy_drive_objs[index];
+}
+static int floppy_drives_count(struct object *self) {
+    config_t *cfg = (config_t *)object_data(self);
+    return (cfg && cfg->floppy) ? 2 : 0;
+}
+static int floppy_drives_next(struct object *self, int prev_index) {
+    config_t *cfg = (config_t *)object_data(self);
+    if (!cfg || !cfg->floppy)
+        return -1;
+    int next = prev_index + 1;
+    return next < 2 ? next : -1;
+}
+
+static const member_t floppy_drives_collection_members[] = {
+    {.kind = M_CHILD,
+     .name = "entries",
+     .child = {.cls = &floppy_drive_class,
+               .indexed = true,
+               .get = floppy_drives_get,
+               .count = floppy_drives_count,
+               .next = floppy_drives_next,
+               .lookup = NULL}},
+};
+static const class_desc_t floppy_drives_collection_class = {
+    .name = "floppy_drives",
+    .members = floppy_drives_collection_members,
+    .n_members = 1,
+};
+
 // === Built-in alias registration ============================================
 //
 // Register at install time. Order matters only insofar as built-ins
@@ -2294,6 +2517,21 @@ void gs_classes_install(struct config *cfg) {
         }
     }
 
+    // M7e — floppy controller with two drive entries (internal/external).
+    // Same per-entry-object pattern as scsi; the drive count is fixed
+    // hardware so the collection always reports 2.
+    if (cfg && cfg->floppy) {
+        struct object *floppy_obj = attach_stub(NULL, &floppy_class, cfg, "floppy");
+        if (floppy_obj) {
+            attach_stub(floppy_obj, &floppy_drives_collection_class, cfg, "drives");
+            for (int i = 0; i < 2; i++) {
+                g_floppy_drive_data[i].cfg = cfg;
+                g_floppy_drive_data[i].slot = i;
+                g_floppy_drive_objs[i] = object_new(&floppy_drive_class, &g_floppy_drive_data[i], NULL);
+            }
+        }
+    }
+
     // Built-in aliases. Register CPU always, FPU only when present,
     // mac always (the table is size-driven and machine-independent).
     register_cpu_aliases();
@@ -2322,6 +2560,15 @@ void gs_classes_uninstall(void) {
         }
         g_scsi_dev_data[i].cfg = NULL;
         g_scsi_dev_data[i].slot = 0;
+    }
+    // M7e — same for floppy drive entry objects.
+    for (int i = 0; i < 2; i++) {
+        if (g_floppy_drive_objs[i]) {
+            object_delete(g_floppy_drive_objs[i]);
+            g_floppy_drive_objs[i] = NULL;
+        }
+        g_floppy_drive_data[i].cfg = NULL;
+        g_floppy_drive_data[i].slot = 0;
     }
     alias_reset();
     free_mac_class();

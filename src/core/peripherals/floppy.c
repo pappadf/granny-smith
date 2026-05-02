@@ -550,6 +550,50 @@ const memory_interface_t *floppy_get_memory_interface(floppy_t *floppy) {
     return &floppy->memory_interface;
 }
 
+// === M7e — read-only views for the object model =============================
+
+int floppy_get_type(const floppy_t *floppy) {
+    return floppy ? floppy->type : 0;
+}
+bool floppy_get_sel(const floppy_t *floppy) {
+    return floppy ? floppy->sel : false;
+}
+int floppy_drive_track(const floppy_t *floppy, unsigned drive) {
+    if (!floppy || drive >= NUM_DRIVES)
+        return 0;
+    return floppy->drives[drive].track;
+}
+int floppy_drive_side(const floppy_t *floppy, unsigned drive) {
+    if (!floppy || drive >= NUM_DRIVES)
+        return 0;
+    return floppy->drives[drive].data_side;
+}
+bool floppy_drive_motor_on(const floppy_t *floppy, unsigned drive) {
+    if (!floppy || drive >= NUM_DRIVES)
+        return false;
+    // _motoron is active-low: false = motor running.
+    return !floppy->drives[drive]._motoron;
+}
+const char *floppy_drive_disk_path(const floppy_t *floppy, unsigned drive) {
+    if (!floppy || drive >= NUM_DRIVES || !floppy->disk[drive])
+        return NULL;
+    return image_path(floppy->disk[drive]);
+}
+
+bool floppy_drive_eject(floppy_t *floppy, unsigned drive) {
+    if (!floppy || drive >= NUM_DRIVES || !floppy->disk[drive])
+        return false;
+    // Mirror the in-controller eject flow (see the IWM CA0/1/2=1 path
+    // around line 240): flush modified tracks first while the image is
+    // still valid, drop the cached GCR buffers, then null the slot.
+    // The image_t* itself is owned by cfg->images and freed at system
+    // teardown; calling image_close here would double-free.
+    iwm_flush_modified_tracks(&floppy->drives[drive], floppy->disk[drive], (int)drive);
+    memset(floppy->drives[drive].tracks, 0, sizeof(floppy->drives[drive].tracks));
+    floppy->disk[drive] = NULL;
+    return true;
+}
+
 // ============================================================================
 // Lifecycle (Init / Delete / Checkpoint)
 // ============================================================================
