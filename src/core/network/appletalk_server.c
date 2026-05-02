@@ -253,6 +253,32 @@ int atalk_share_list(void) {
     return 0;
 }
 
+// === M8 — read-only views =================================================
+
+int atalk_share_max(void) {
+    return MAX_SHARES;
+}
+bool atalk_share_in_use(int slot) {
+    if (slot < 0 || slot >= MAX_SHARES)
+        return false;
+    return g_shares[slot].in_use;
+}
+const char *atalk_share_name(int slot) {
+    if (!atalk_share_in_use(slot))
+        return NULL;
+    return g_shares[slot].name;
+}
+const char *atalk_share_path(int slot) {
+    if (!atalk_share_in_use(slot))
+        return NULL;
+    return g_shares[slot].path;
+}
+unsigned atalk_share_vol_id(int slot) {
+    if (!atalk_share_in_use(slot))
+        return 0;
+    return (unsigned)g_shares[slot].vol_id;
+}
+
 // Exported for appletalk.c (NBP advertisement name)
 static char g_afp_server_object[33] = AFP_ENTITY_OBJECT;
 static atalk_nbp_entry_t *g_afp_nbp_entry;

@@ -26,9 +26,11 @@
 #include <string.h>
 
 #include "alias.h"
+#include "appletalk.h"
 #include "cpu.h"
 #include "cpu_internal.h"
 #include "debug.h"
+#include "debug_mac.h"
 #include "floppy.h"
 #include "fpu.h"
 #include "machine.h"
@@ -2450,6 +2452,327 @@ static const class_desc_t sound_class = {
     .n_members = sizeof(sound_members) / sizeof(sound_members[0]),
 };
 
+// === M8 — network.appletalk + input.mouse ===================================
+//
+// First slice of M8 (proposal §5.8 / §5.9). Adds:
+//
+//   network.appletalk.shares — indexed children, sparse stable indices.
+//                              Each share exposes name / path / vol_id;
+//                              add(name, path) / remove(name) live on
+//                              the collection class.
+//   network.appletalk.printer — `enabled` (R/O bool), `name` (R/O str
+//                              — empty when disabled). Methods
+//                              `enable(name?)` / `disable()`.
+//   input.mouse — methods move(x, y), click(down), trace(enabled).
+//                 Wraps debug_mac_set_mouse / system_mouse_update /
+//                 debug_mac_set_trace_mouse so the legacy `set-mouse`
+//                 / `mouse-button` / `trace-mouse` commands continue
+//                 to work alongside.
+//
+// Storage and the top-level introspection root methods land in a
+// follow-up M8 sub-commit; the underlying plumbing for storage.import
+// needs the M8 storage rollout the proposal describes in more detail.
+
+// --- network.appletalk.shares.* indexed entries ----------------------------
+
+// Per-share entry data. Indexed by slot (0..MAX_SHARES-1); the
+// collection's get() consults atalk_share_in_use() and returns
+// the corresponding pre-allocated object so shares with `in_use=false`
+// are holes in the collection.
+typedef struct {
+    int slot;
+} atalk_share_data_t;
+
+static atalk_share_data_t g_atalk_share_data[8];
+static struct object *g_atalk_share_objs[8];
+
+static int atalk_share_data_slot(struct object *self) {
+    atalk_share_data_t *d = (atalk_share_data_t *)object_data(self);
+    return d ? d->slot : -1;
+}
+
+static value_t atalk_share_attr_name(struct object *self, const member_t *m) {
+    (void)m;
+    const char *s = atalk_share_name(atalk_share_data_slot(self));
+    return val_str(s ? s : "");
+}
+static value_t atalk_share_attr_path(struct object *self, const member_t *m) {
+    (void)m;
+    const char *s = atalk_share_path(atalk_share_data_slot(self));
+    return val_str(s ? s : "");
+}
+static value_t atalk_share_attr_vol_id(struct object *self, const member_t *m) {
+    (void)m;
+    return val_uint(2, atalk_share_vol_id(atalk_share_data_slot(self)));
+}
+
+static value_t atalk_share_method_remove(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)m;
+    (void)argc;
+    (void)argv;
+    const char *name = atalk_share_name(atalk_share_data_slot(self));
+    if (!name)
+        return val_err("share already removed");
+    if (atalk_share_remove(name) != 0)
+        return val_err("atalk_share_remove failed");
+    return val_none();
+}
+
+static const member_t atalk_share_members[] = {
+    {.kind = M_ATTR,
+     .name = "name",
+     .flags = VAL_RO,
+     .attr = {.type = V_STRING, .get = atalk_share_attr_name, .set = NULL}                  },
+    {.kind = M_ATTR,
+     .name = "path",
+     .flags = VAL_RO,
+     .attr = {.type = V_STRING, .get = atalk_share_attr_path, .set = NULL}                  },
+    {.kind = M_ATTR,
+     .name = "vol_id",
+     .flags = VAL_RO,
+     .attr = {.type = V_UINT, .get = atalk_share_attr_vol_id, .set = NULL}                  },
+    {.kind = M_METHOD,
+     .name = "remove",
+     .doc = "Remove this AppleShare volume",
+     .method = {.args = NULL, .nargs = 0, .result = V_NONE, .fn = atalk_share_method_remove}},
+};
+
+static const class_desc_t atalk_share_class = {
+    .name = "atalk_share",
+    .members = atalk_share_members,
+    .n_members = sizeof(atalk_share_members) / sizeof(atalk_share_members[0]),
+};
+
+// --- shares collection -----------------------------------------------------
+
+static struct object *atalk_shares_get(struct object *self, int index) {
+    (void)self;
+    if (index < 0 || index >= 8)
+        return NULL;
+    if (!atalk_share_in_use(index))
+        return NULL;
+    return g_atalk_share_objs[index];
+}
+static int atalk_shares_count(struct object *self) {
+    (void)self;
+    int n = 0;
+    int max = atalk_share_max();
+    for (int i = 0; i < max && i < 8; i++)
+        if (atalk_share_in_use(i))
+            n++;
+    return n;
+}
+static int atalk_shares_next(struct object *self, int prev_index) {
+    (void)self;
+    int max = atalk_share_max();
+    for (int i = prev_index + 1; i < max && i < 8; i++)
+        if (atalk_share_in_use(i))
+            return i;
+    return -1;
+}
+
+static value_t atalk_shares_method_add(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)self;
+    (void)m;
+    if (argc < 2 || argv[0].kind != V_STRING || argv[1].kind != V_STRING)
+        return val_err("appletalk.shares.add: expected (name, path)");
+    if (atalk_share_add(argv[0].s, argv[1].s) != 0)
+        return val_err("atalk_share_add failed (see log)");
+    return val_none();
+}
+
+static value_t atalk_shares_method_remove(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)self;
+    (void)m;
+    if (argc < 1 || argv[0].kind != V_STRING)
+        return val_err("appletalk.shares.remove: expected (name)");
+    if (atalk_share_remove(argv[0].s) != 0)
+        return val_err("atalk_share_remove failed (no such share?)");
+    return val_none();
+}
+
+static const arg_decl_t atalk_shares_add_args[] = {
+    {.name = "name", .kind = V_STRING, .doc = "Volume name (max 32 chars)"          },
+    {.name = "path", .kind = V_STRING, .doc = "Host path to a directory under MEMFS"},
+};
+static const arg_decl_t atalk_shares_remove_args[] = {
+    {.name = "name", .kind = V_STRING, .doc = "Volume name to remove"},
+};
+
+static const member_t atalk_shares_collection_members[] = {
+    {.kind = M_METHOD,
+     .name = "add",
+     .doc = "Add an AppleShare volume",
+     .method = {.args = atalk_shares_add_args, .nargs = 2, .result = V_NONE, .fn = atalk_shares_method_add}},
+    {.kind = M_METHOD,
+     .name = "remove",
+     .doc = "Remove an AppleShare volume by name",
+     .method = {.args = atalk_shares_remove_args, .nargs = 1, .result = V_NONE, .fn = atalk_shares_method_remove}},
+    {.kind = M_CHILD,
+     .name = "entries",
+     .child = {.cls = &atalk_share_class,
+               .indexed = true,
+               .get = atalk_shares_get,
+               .count = atalk_shares_count,
+               .next = atalk_shares_next,
+               .lookup = NULL}},
+};
+
+static const class_desc_t atalk_shares_collection_class = {
+    .name = "atalk_shares",
+    .members = atalk_shares_collection_members,
+    .n_members = sizeof(atalk_shares_collection_members) / sizeof(atalk_shares_collection_members[0]),
+};
+
+// --- network.appletalk.printer --------------------------------------------
+
+static value_t atalk_printer_attr_enabled(struct object *self, const member_t *m) {
+    (void)self;
+    (void)m;
+    return val_bool(atalk_printer_is_enabled());
+}
+static value_t atalk_printer_attr_name(struct object *self, const member_t *m) {
+    (void)self;
+    (void)m;
+    const char *n = atalk_printer_object_name();
+    return val_str(n ? n : "");
+}
+
+static value_t atalk_printer_method_enable(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)self;
+    (void)m;
+    const char *name = (argc >= 1 && argv[0].kind == V_STRING && argv[0].s && *argv[0].s) ? argv[0].s : NULL;
+    if (atalk_printer_enable(name) != 0)
+        return val_err("atalk_printer_enable failed");
+    return val_none();
+}
+static value_t atalk_printer_method_disable(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)self;
+    (void)m;
+    (void)argc;
+    (void)argv;
+    if (atalk_printer_disable() != 0)
+        return val_err("atalk_printer_disable failed");
+    return val_none();
+}
+
+static const arg_decl_t atalk_printer_enable_args[] = {
+    {.name = "name", .kind = V_STRING, .flags = OBJ_ARG_OPTIONAL, .doc = "Optional NBP entity name override"},
+};
+
+static const member_t atalk_printer_members[] = {
+    {.kind = M_ATTR,
+     .name = "enabled",
+     .flags = VAL_RO,
+     .attr = {.type = V_BOOL, .get = atalk_printer_attr_enabled, .set = NULL}                                      },
+    {.kind = M_ATTR,
+     .name = "name",
+     .flags = VAL_RO,
+     .attr = {.type = V_STRING, .get = atalk_printer_attr_name, .set = NULL}                                       },
+    {.kind = M_METHOD,
+     .name = "enable",
+     .doc = "Advertise the LaserWriter via NBP",
+     .method = {.args = atalk_printer_enable_args, .nargs = 1, .result = V_NONE, .fn = atalk_printer_method_enable}},
+    {.kind = M_METHOD,
+     .name = "disable",
+     .doc = "Stop advertising the LaserWriter",
+     .method = {.args = NULL, .nargs = 0, .result = V_NONE, .fn = atalk_printer_method_disable}                    },
+};
+
+static const class_desc_t atalk_printer_class = {
+    .name = "atalk_printer",
+    .members = atalk_printer_members,
+    .n_members = sizeof(atalk_printer_members) / sizeof(atalk_printer_members[0]),
+};
+
+// --- network.appletalk + network ------------------------------------------
+
+static const class_desc_t atalk_class = {
+    .name = "appletalk",
+    .members = NULL,
+    .n_members = 0,
+};
+
+static const class_desc_t network_class = {
+    .name = "network",
+    .members = NULL,
+    .n_members = 0,
+};
+
+// --- input.mouse ----------------------------------------------------------
+
+static value_t input_mouse_method_move(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)self;
+    (void)m;
+    if (argc < 2)
+        return val_err("input.mouse.move: expected (x, y)");
+    bool okx = true, oky = true;
+    int64_t x = val_as_i64(&argv[0], &okx);
+    int64_t y = val_as_i64(&argv[1], &oky);
+    if (!okx || !oky)
+        return val_err("input.mouse.move: x and y must be integers");
+    debug_mac_set_mouse((long)x, (long)y);
+    return val_none();
+}
+
+static value_t input_mouse_method_click(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)self;
+    (void)m;
+    bool down = (argc >= 1) ? val_as_bool(&argv[0]) : true;
+    // Routes through the per-platform mouse path (ADB or quadrature) —
+    // same as legacy `mouse-button down|up` without --global.
+    extern void system_mouse_update(bool button, int dx, int dy);
+    system_mouse_update(down, 0, 0);
+    return val_none();
+}
+
+static value_t input_mouse_method_trace(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)self;
+    (void)m;
+    if (argc < 1)
+        return val_err("input.mouse.trace: expected (enabled)");
+    debug_mac_set_trace_mouse(val_as_bool(&argv[0]));
+    return val_none();
+}
+
+static const arg_decl_t input_mouse_move_args[] = {
+    {.name = "x", .kind = V_INT, .doc = "Target X coordinate"},
+    {.name = "y", .kind = V_INT, .doc = "Target Y coordinate"},
+};
+static const arg_decl_t input_mouse_click_args[] = {
+    {.name = "down", .kind = V_BOOL, .flags = OBJ_ARG_OPTIONAL, .doc = "true = press, false = release (default true)"},
+};
+static const arg_decl_t input_mouse_trace_args[] = {
+    {.name = "enabled", .kind = V_BOOL, .doc = "true = log mouse position once per second"},
+};
+
+static const member_t input_mouse_members[] = {
+    {.kind = M_METHOD,
+     .name = "move",
+     .doc = "Set mouse position (per-platform default route)",
+     .method = {.args = input_mouse_move_args, .nargs = 2, .result = V_NONE, .fn = input_mouse_method_move}  },
+    {.kind = M_METHOD,
+     .name = "click",
+     .doc = "Press or release the mouse button via the hardware path",
+     .method = {.args = input_mouse_click_args, .nargs = 1, .result = V_NONE, .fn = input_mouse_method_click}},
+    {.kind = M_METHOD,
+     .name = "trace",
+     .doc = "Toggle the 1 Hz mouse-position trace logger",
+     .method = {.args = input_mouse_trace_args, .nargs = 1, .result = V_NONE, .fn = input_mouse_method_trace}},
+};
+
+static const class_desc_t input_mouse_class = {
+    .name = "mouse",
+    .members = input_mouse_members,
+    .n_members = sizeof(input_mouse_members) / sizeof(input_mouse_members[0]),
+};
+
+static const class_desc_t input_class = {
+    .name = "input",
+    .members = NULL,
+    .n_members = 0,
+};
+
 // === Built-in alias registration ============================================
 //
 // Register at install time. Order matters only insofar as built-ins
@@ -2511,7 +2834,7 @@ static void register_mac_aliases(void) {
 
 // === Install / uninstall ====================================================
 
-#define MAX_STUBS 32
+#define MAX_STUBS 40
 static struct object *g_stubs[MAX_STUBS];
 static int g_stub_count = 0;
 
@@ -2638,6 +2961,34 @@ void gs_classes_install(struct config *cfg) {
     if (cfg && cfg->sound)
         attach_stub(NULL, &sound_class, cfg, "sound");
 
+    // M8 — network.appletalk + input.mouse. AppleTalk is installed
+    // unconditionally by appletalk_init() at machine boot, so the
+    // tree is always reachable. Share entry objects are pre-allocated
+    // here and freed at uninstall (same per-slot pattern as scsi /
+    // floppy entry objects).
+    {
+        struct object *network_obj = attach_stub(NULL, &network_class, cfg, "network");
+        if (network_obj) {
+            struct object *atalk_obj = attach_stub(network_obj, &atalk_class, cfg, "appletalk");
+            if (atalk_obj) {
+                attach_stub(atalk_obj, &atalk_shares_collection_class, cfg, "shares");
+                attach_stub(atalk_obj, &atalk_printer_class, cfg, "printer");
+                int max = atalk_share_max();
+                if (max > 8)
+                    max = 8;
+                for (int i = 0; i < max; i++) {
+                    g_atalk_share_data[i].slot = i;
+                    g_atalk_share_objs[i] = object_new(&atalk_share_class, &g_atalk_share_data[i], NULL);
+                }
+            }
+        }
+    }
+    {
+        struct object *input_obj = attach_stub(NULL, &input_class, cfg, "input");
+        if (input_obj)
+            attach_stub(input_obj, &input_mouse_class, cfg, "mouse");
+    }
+
     // Built-in aliases. Register CPU always, FPU only when present,
     // mac always (the table is size-driven and machine-independent).
     register_cpu_aliases();
@@ -2675,6 +3026,14 @@ void gs_classes_uninstall(void) {
         }
         g_floppy_drive_data[i].cfg = NULL;
         g_floppy_drive_data[i].slot = 0;
+    }
+    // M8 — appletalk share entry objects.
+    for (int i = 0; i < 8; i++) {
+        if (g_atalk_share_objs[i]) {
+            object_delete(g_atalk_share_objs[i]);
+            g_atalk_share_objs[i] = NULL;
+        }
+        g_atalk_share_data[i].slot = 0;
     }
     alias_reset();
     free_mac_class();

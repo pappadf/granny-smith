@@ -28,6 +28,25 @@ int atalk_share_remove(const char *name);
 
 int atalk_share_list(void);
 
+// === M8 — object-model accessors ============================================
+//
+// Read-only views over the share table used by the
+// `network.appletalk.shares` indexed-child class. Slot index is in
+// [0, atalk_share_max()). Slots with `in_use == false` show up as
+// holes in the indexed collection (see object proposal §2.1).
+
+int atalk_share_max(void); // upper bound on slot index (currently 8)
+bool atalk_share_in_use(int slot);
+const char *atalk_share_name(int slot); // NULL if slot is empty
+const char *atalk_share_path(int slot); // NULL if slot is empty
+unsigned atalk_share_vol_id(int slot); // 0 if slot is empty
+
+// Printer state — true while atalk_printer_enable last succeeded and
+// before atalk_printer_disable. Used by `network.appletalk.printer.
+// enabled` (read-only attribute).
+bool atalk_printer_is_enabled(void);
+const char *atalk_printer_object_name(void); // NULL when disabled
+
 const char *atalk_server_object_name(void);
 
 // === NBP (Name Binding Protocol) ===

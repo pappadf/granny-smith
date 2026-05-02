@@ -1020,6 +1020,50 @@ uint64_t cmd_trace_mouse(int argc, char *argv[]) {
     return 0;
 }
 
+// === M8 — public mouse / trace control =====================================
+//
+// Thin wrappers around the file-private helpers used by the legacy
+// `set-mouse` / `trace-mouse` commands. The `input.mouse` object class
+// calls these so both the legacy shell path and the new tree path
+// share the same backing logic.
+
+void debug_mac_set_mouse(long x, long y) {
+    if (x < -32768)
+        x = -32768;
+    else if (x > 32767)
+        x = 32767;
+    if (y < -32768)
+        y = -32768;
+    else if (y > 32767)
+        y = 32767;
+    mouse_guard_stop();
+    set_mouse_default(x, y);
+}
+
+void debug_mac_set_trace_mouse(bool enabled) {
+    scheduler_t *sched = system_scheduler();
+    if (!sched)
+        return;
+    static bool registered = false;
+    if (!registered) {
+        scheduler_new_event_type(sched, "test", NULL, "trace_mouse", &trace_mouse_tick);
+        registered = true;
+    }
+    if (enabled) {
+        if (trace_mouse_active)
+            return;
+        trace_mouse_active = 1;
+        trace_mouse_have_last = 0;
+        remove_event(sched, &trace_mouse_tick, NULL);
+        scheduler_new_cpu_event(sched, &trace_mouse_tick, NULL, 0, 0, 1000000000ULL);
+    } else {
+        if (!trace_mouse_active)
+            return;
+        trace_mouse_active = 0;
+        remove_event(sched, &trace_mouse_tick, NULL);
+    }
+}
+
 // ---- mouse-button implementation ----
 // Injects a mouse button state change.
 // --hw (default): routes through hardware emulation (ADB or VIA PB3), which causes

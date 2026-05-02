@@ -1,0 +1,49 @@
+# M8 integration: network.appletalk + input.mouse top-level objects.
+# Both are exercised through the new tree paths and through the legacy
+# command shims to verify they share state.
+
+run 50000
+
+# Tree shape.
+eval network
+eval network.appletalk
+eval network.appletalk.shares
+eval network.appletalk.printer
+eval input
+eval input.mouse
+
+# Initially the shares table is empty and the printer is disabled.
+eval network.appletalk.printer.enabled
+eval network.appletalk.printer.name
+
+# Add a share via the new method, observe it via the legacy command.
+echo $(network.appletalk.shares.add("docs", "/workspaces/granny-smith/tests"))
+atalk-share-list
+eval network.appletalk.shares[0].name
+eval network.appletalk.shares[0].path
+eval network.appletalk.shares[0].vol_id
+
+# Add via the legacy command, observe via the new tree.
+atalk-share-add demo /workspaces/granny-smith/scripts
+eval network.appletalk.shares[1].name
+
+# Remove via the new tree's per-entry method, verify legacy list reflects it.
+echo $(network.appletalk.shares[0].remove())
+atalk-share-list
+
+# Printer enable/disable via the new methods.
+echo $(network.appletalk.printer.enable("Test LaserWriter"))
+eval network.appletalk.printer.enabled
+eval network.appletalk.printer.name
+echo $(network.appletalk.printer.disable())
+eval network.appletalk.printer.enabled
+
+# Mouse methods. Plus is a non-ADB machine with no MAE, so move()
+# falls through to the global write path via set_mouse_default.
+echo $(input.mouse.move(100, 200))
+echo $(input.mouse.click(true))
+echo $(input.mouse.click(false))
+echo $(input.mouse.trace(true))
+echo $(input.mouse.trace(false))
+
+quit
