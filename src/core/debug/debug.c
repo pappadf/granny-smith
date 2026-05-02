@@ -2927,19 +2927,65 @@ static void cmd_print_handler(struct cmd_context *ctx, struct cmd_result *res) {
 //   target : register (e.g. pc, d0, sr) or Mac global name
 //   op     : == != < > <= >=
 //   value  : numeric literal ($hex, 0xhex, or decimal) or another symbol
+// Truthiness for the new predicate form. The shell's $(...) expansion
+// has already converted the result to a string before reaching us; we
+// match the proposal §2.5 truthiness rules on that string.
+static bool predicate_is_truthy(const char *s) {
+    if (!s || !*s)
+        return false;
+    if (strcmp(s, "false") == 0 || strcmp(s, "0") == 0)
+        return false;
+    if (strcmp(s, "<error") == 0)
+        return false; // formatted error tail
+    if (strncmp(s, "<error:", 7) == 0)
+        return false;
+    return true;
+}
+
 static void cmd_assert_handler(struct cmd_context *ctx, struct cmd_result *res) {
-    // Require all three positional arguments.
+    // raw_argc includes argv[0] (the command name "assert"). The new
+    // predicate form is 2 or 3 tokens; the legacy form is 4.
+    int n = ctx->raw_argc;
+    if (n < 2) {
+        cmd_err(res, "usage: assert <predicate> [message]   |   assert <target> <op> <value>");
+        return;
+    }
+
+    // New predicate form: `assert <predicate>` or `assert <predicate> "msg"`.
+    if (n == 2 || n == 3) {
+        const char *pred = ctx->raw_argv[1];
+        const char *msg = (n == 3) ? ctx->raw_argv[2] : NULL;
+        bool ok = predicate_is_truthy(pred);
+        if (ok) {
+            cmd_printf(ctx, "ASSERT OK: %s\n", pred);
+            cmd_int(res, 0);
+            return;
+        }
+        if (msg && *msg)
+            cmd_printf(ctx, "ASSERT FAILED: %s\n", msg);
+        else
+            cmd_printf(ctx, "ASSERT FAILED: %s\n", pred);
+        cmd_err(res, "assert failed: %s", msg && *msg ? msg : pred);
+        return;
+    }
+
+    // Legacy form (4 tokens): assert <target> <op> <value>
     if (!ctx->args[0].present || !ctx->args[1].present || !ctx->args[2].present) {
         cmd_err(res, "usage: assert <target> <op> <value>  (op: == != < > <= >=)");
         return;
     }
 
-    // LHS: resolved symbol (register or Mac global), parsed by ARG_SYMBOL.
-    struct resolved_symbol *sym = &ctx->args[0].as_sym;
-    if (sym->kind == SYM_UNKNOWN) {
-        cmd_err(res, "assert: unknown target '%s'", ctx->raw_argv[1]);
+    // Legacy LHS: resolve the target as a $-symbol manually since
+    // ARG_STRING (used by the new form) keeps it raw.
+    const char *target_raw = ctx->raw_argv[1];
+    struct resolved_symbol target_sym;
+    memset(&target_sym, 0, sizeof(target_sym));
+    if (!resolve_symbol(target_raw[0] == '$' ? target_raw + 1 : target_raw, &target_sym) ||
+        target_sym.kind == SYM_UNKNOWN) {
+        cmd_err(res, "assert: unknown target '%s'", target_raw);
         return;
     }
+    struct resolved_symbol *sym = &target_sym;
     uint64_t lhs = (uint64_t)sym->value;
 
     // Operator: one of == != < > <= >=
@@ -4082,10 +4128,15 @@ static const struct arg_spec print_args[] = {
 };
 
 // --- assert ---
+// Two surface forms (proposal-shell-expressions.md §3.4):
+//   assert <predicate> [message]          (new: arg1 is a $(...) result)
+//   assert <target> <op> <value>          (legacy: arg1 is a $-symbol)
+// Args are flagged optional so the handler can dispatch by raw_argc —
+// new form arrives as 1–2 positional args, legacy form as 3.
 static const struct arg_spec assert_args[] = {
-    {"target", ARG_SYMBOL, "register or Mac global to test"       },
-    {"op",     ARG_STRING, "comparison operator (== != < > <= >=)"},
-    {"value",  ARG_STRING, "expected value (numeric or symbol)"   },
+    {"target", ARG_STRING | ARG_OPTIONAL, "predicate (truthy/falsy) or $-symbol"   },
+    {"op",     ARG_STRING | ARG_OPTIONAL, "comparison operator (legacy form)"      },
+    {"value",  ARG_STRING | ARG_OPTIONAL, "expected value (legacy) / message (new)"},
 };
 
 // --- set ---

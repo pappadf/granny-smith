@@ -570,6 +570,131 @@ static const class_desc_t scheduler_class_desc = {.name = "scheduler", .members 
 static const class_desc_t shell_class_desc = {.name = "shell", .members = NULL, .n_members = 0};
 static const class_desc_t storage_class_desc = {.name = "storage", .members = NULL, .n_members = 0};
 
+// === math object ============================================================
+//
+// Minimal numerics needed to write predicates inside `$(...)`. See
+// proposal-shell-expressions.md §6 — close/abs/min/max are the
+// concrete asks; everything else (sin/cos/log/...) defers until a
+// real test wants it.
+
+static double v_to_double(const value_t *v, bool *ok) {
+    return val_as_f64(v, ok);
+}
+
+static value_t method_math_close(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)self;
+    (void)m;
+    if (argc < 3)
+        return val_err("math.close: expected (a, b, eps)");
+    bool ok = true;
+    double a = v_to_double(&argv[0], &ok);
+    if (!ok)
+        return val_err("math.close: a is not numeric");
+    double b = v_to_double(&argv[1], &ok);
+    if (!ok)
+        return val_err("math.close: b is not numeric");
+    double eps = v_to_double(&argv[2], &ok);
+    if (!ok)
+        return val_err("math.close: eps is not numeric");
+    double d = a - b;
+    if (d < 0)
+        d = -d;
+    return val_bool(d <= eps);
+}
+
+static value_t method_math_abs(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)self;
+    (void)m;
+    if (argc < 1)
+        return val_err("math.abs: expected (x)");
+    if (argv[0].kind == V_INT)
+        return val_int(argv[0].i < 0 ? -argv[0].i : argv[0].i);
+    if (argv[0].kind == V_UINT)
+        return val_uint(0, argv[0].u);
+    bool ok = true;
+    double x = v_to_double(&argv[0], &ok);
+    if (!ok)
+        return val_err("math.abs: not numeric");
+    return val_float(x < 0 ? -x : x);
+}
+
+static value_t method_math_min(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)self;
+    (void)m;
+    if (argc < 2)
+        return val_err("math.min: expected (a, b)");
+    bool ok = true;
+    double a = v_to_double(&argv[0], &ok);
+    if (!ok)
+        return val_err("math.min: a is not numeric");
+    double b = v_to_double(&argv[1], &ok);
+    if (!ok)
+        return val_err("math.min: b is not numeric");
+    // Preserve int-likeness when both inputs are ints.
+    if (argv[0].kind == V_INT && argv[1].kind == V_INT)
+        return val_int(argv[0].i < argv[1].i ? argv[0].i : argv[1].i);
+    if (argv[0].kind == V_UINT && argv[1].kind == V_UINT)
+        return val_uint(0, argv[0].u < argv[1].u ? argv[0].u : argv[1].u);
+    return val_float(a < b ? a : b);
+}
+
+static value_t method_math_max(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)self;
+    (void)m;
+    if (argc < 2)
+        return val_err("math.max: expected (a, b)");
+    bool ok = true;
+    double a = v_to_double(&argv[0], &ok);
+    if (!ok)
+        return val_err("math.max: a is not numeric");
+    double b = v_to_double(&argv[1], &ok);
+    if (!ok)
+        return val_err("math.max: b is not numeric");
+    if (argv[0].kind == V_INT && argv[1].kind == V_INT)
+        return val_int(argv[0].i > argv[1].i ? argv[0].i : argv[1].i);
+    if (argv[0].kind == V_UINT && argv[1].kind == V_UINT)
+        return val_uint(0, argv[0].u > argv[1].u ? argv[0].u : argv[1].u);
+    return val_float(a > b ? a : b);
+}
+
+static const arg_decl_t math_close_args[] = {
+    {.name = "a",   .kind = V_FLOAT, .doc = "first value" },
+    {.name = "b",   .kind = V_FLOAT, .doc = "second value"},
+    {.name = "eps", .kind = V_FLOAT, .doc = "tolerance"   },
+};
+static const arg_decl_t math_unary_args[] = {
+    {.name = "x", .kind = V_FLOAT, .doc = "input"},
+};
+static const arg_decl_t math_binary_args[] = {
+    {.name = "a", .kind = V_FLOAT, .doc = "first" },
+    {.name = "b", .kind = V_FLOAT, .doc = "second"},
+};
+
+static const member_t math_members[] = {
+    {.kind = M_METHOD,
+     .name = "close",
+     .doc = "True if |a - b| <= eps",
+     .method = {.args = math_close_args, .nargs = 3, .result = V_BOOL, .fn = method_math_close}},
+    {.kind = M_METHOD,
+     .name = "abs",
+     .doc = "Absolute value",
+     .method = {.args = math_unary_args, .nargs = 1, .result = V_FLOAT, .fn = method_math_abs} },
+    {.kind = M_METHOD,
+     .name = "min",
+     .doc = "Smaller of two numerics",
+     .method = {.args = math_binary_args, .nargs = 2, .result = V_FLOAT, .fn = method_math_min}},
+    {.kind = M_METHOD,
+     .name = "max",
+     .doc = "Larger of two numerics",
+     .method = {.args = math_binary_args, .nargs = 2, .result = V_FLOAT, .fn = method_math_max}},
+};
+
+static const class_desc_t math_class_desc = {
+    .name = "math",
+    .members = math_members,
+    .n_members = sizeof(math_members) / sizeof(math_members[0]),
+};
+
 // === Built-in alias registration ============================================
 //
 // Register at install time. Order matters only insofar as built-ins
@@ -661,6 +786,7 @@ void gs_classes_install(struct config *cfg) {
     /* machine */ attach_stub(NULL, &machine_class, cfg, "machine");
     struct object *shell_obj = attach_stub(NULL, &shell_class_desc, cfg, "shell");
     /* storage */ attach_stub(NULL, &storage_class_desc, cfg, "storage");
+    /* math    */ attach_stub(NULL, &math_class_desc, cfg, "math");
 
     // mac is always attached — readers tolerate uninitialised RAM.
     if (build_mac_class() == 0)
