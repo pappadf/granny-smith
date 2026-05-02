@@ -16,8 +16,9 @@
 // === Toy class A: named-attributes only ====================================
 
 static int g_a_pc_value = 0;
-static value_t a_get_pc(struct object *self) {
+static value_t a_get_pc(struct object *self, const member_t *m) {
     (void)self;
+    (void)m;
     return val_uint(4, (uint64_t)g_a_pc_value);
 }
 
@@ -74,7 +75,8 @@ static int bucket_next(struct object *self, int prev_index) {
 typedef struct {
     int id;
 } device_t;
-static value_t dev_get_id(struct object *self) {
+static value_t dev_get_id(struct object *self, const member_t *m) {
+    (void)m;
     device_t *d = (device_t *)object_data(self);
     return val_int(d ? d->id : -1);
 }

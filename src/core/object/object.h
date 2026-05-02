@@ -45,10 +45,16 @@ typedef struct arg_decl {
 } arg_decl_t;
 
 // === Function pointer types ==================================================
+//
+// Attribute getters/setters and method callbacks all receive their own
+// member descriptor so dispatchers shared across many members (e.g. the
+// 471-entry `mac` class with one getter for every global) can recover
+// per-member context from `m->user_data`.
 
-typedef value_t (*attr_get_fn)(struct object *self);
-typedef value_t (*attr_set_fn)(struct object *self, value_t in);
-typedef value_t (*method_fn)(struct object *self, int argc, const value_t *argv);
+struct member;
+typedef value_t (*attr_get_fn)(struct object *self, const struct member *m);
+typedef value_t (*attr_set_fn)(struct object *self, const struct member *m, value_t in);
+typedef value_t (*method_fn)(struct object *self, const struct member *m, int argc, const value_t *argv);
 typedef struct object *(*child_get_fn)(struct object *self, int index);
 typedef int (*child_count_fn)(struct object *self);
 typedef int (*child_next_fn)(struct object *self, int prev_index);
@@ -76,6 +82,7 @@ typedef struct member {
             value_kind_t type;
             attr_get_fn get;
             attr_set_fn set; // NULL → read-only
+            const void *user_data; // borrowed; passed back via the `m` arg
         } attr;
         struct {
             const arg_decl_t *args;

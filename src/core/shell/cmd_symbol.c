@@ -8,6 +8,7 @@
 
 #include "cmd_symbol.h"
 
+#include "alias.h"
 #include "cpu.h"
 #include "cpu_internal.h"
 #include "fpu.h"
@@ -315,14 +316,40 @@ static bool resolve_mac_global(const char *name, struct resolved_symbol *out) {
     return false;
 }
 
-// Resolve a symbol name (without '$' prefix) using the priority order:
-// 1. CPU registers  2. FPU registers  3. MMU registers  4. Mac globals
+// Resolve a symbol name (without `$` prefix). Consults the new alias
+// table first (proposal-module-object-model.md §4.4) and dispatches to
+// the appropriate legacy reader based on the alias's target path.
+//
+// On miss in the alias table, falls through to the legacy chain so
+// MMU registers, SR flag bits (`c`/`v`/`z`/…), and case-insensitive
+// matches keep working — proposal-module-object-model.md M3 promise:
+// "no behavior change visible to users."
 bool resolve_symbol(const char *name, struct resolved_symbol *out) {
     if (!name || !out)
         return false;
 
     memset(out, 0, sizeof(*out));
 
+    // Tier 1: the canonical alias directory.
+    const char *path = alias_lookup(name, NULL);
+    if (path) {
+        if (strncmp(path, "cpu.fpu.", 8) == 0) {
+            if (resolve_fpu_register(path + 8, out))
+                return true;
+        } else if (strncmp(path, "cpu.", 4) == 0) {
+            if (resolve_cpu_register(path + 4, out))
+                return true;
+        } else if (strncmp(path, "mac.", 4) == 0) {
+            if (resolve_mac_global(path + 4, out))
+                return true;
+        }
+        // Alias maps to a path no legacy reader knows how to handle —
+        // fall through. (Will become reachable once gs_eval grows full
+        // method dispatch in M4 and the legacy path retires in M10.)
+    }
+
+    // Tier 2: legacy chain — covers MMU registers and the SR flag bits
+    // that aren't aliased per §4.4.1, plus case-insensitive matches.
     if (resolve_cpu_register(name, out))
         return true;
     if (resolve_fpu_register(name, out))

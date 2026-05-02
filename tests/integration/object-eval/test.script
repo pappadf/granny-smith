@@ -20,4 +20,16 @@ eval scheduler
 # Unknown paths fail cleanly with an error JSON.
 eval ghost.path
 
+# M3 paths — the new mac class is auto-populated from
+# mac_globals_data.c, so these resolve as V_UINT (size 1/2/4) or
+# V_BYTES (other sizes). Parity vs. the legacy `$NAME` resolver is
+# covered by the existing shell-commands integration tests (which
+# still exercise `$pc` etc. via `info regs`) plus the alias unit
+# suite — the alias table now backs both paths.
+eval mac.MBState
+eval mac.Ticks
+eval mac.ROMBase
+eval cpu.ccr
+eval cpu.sp
+
 quit

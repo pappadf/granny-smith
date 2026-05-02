@@ -2,18 +2,33 @@
 // Copyright (c) pappadf
 
 // gs_classes.c
-// M2 stub classes. Each class wraps existing C state read-only and
-// exposes the minimum attributes needed to exercise the resolver and
-// the `eval` shell command. Real classes (with setters, methods,
-// children) land in M3–M7.
+// Stub class registry for the object-model rollout. M2 stood up
+// cpu/memory/scheduler/machine/shell/storage with read-only
+// attributes; M3 extends:
+//   - More CPU registers (ccr, sp, usp, ssp, msp, vbr).
+//   - cpu.fpu child class with fp0..fp7, fpcr, fpsr, fpiar (when FPU
+//     is present on the active machine).
+//   - `mac` root child auto-populated from mac_globals_data.c (471
+//     entries, V_UINT/V_BYTES per size column).
+//   - `shell.alias` child object with add / remove / list methods.
+//   - Built-in alias registration at install time:
+//       cpu / fpu register short forms ($pc, $d0, $fpcr, …)
+//       all 471 mac globals ($MBState, $Ticks, $ROMBase, …)
+//
+// Real per-peripheral classes (cpu setters, scc, scsi, …) land in
+// M3+ per the milestone plan.
 
 #include "gs_classes.h"
 
+#include <ctype.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
+#include "alias.h"
 #include "cpu.h"
+#include "cpu_internal.h"
+#include "fpu.h"
 #include "machine.h"
 #include "memory.h"
 #include "object.h"
@@ -33,7 +48,8 @@ static cpu_t *cpu_from(struct object *self) {
 
 // === CPU class ==============================================================
 
-static value_t attr_cpu_pc(struct object *self) {
+static value_t attr_cpu_pc(struct object *self, const member_t *m) {
+    (void)m;
     cpu_t *cpu = cpu_from(self);
     if (!cpu)
         return val_err("cpu not initialised");
@@ -42,7 +58,8 @@ static value_t attr_cpu_pc(struct object *self) {
     return v;
 }
 
-static value_t attr_cpu_sr(struct object *self) {
+static value_t attr_cpu_sr(struct object *self, const member_t *m) {
+    (void)m;
     cpu_t *cpu = cpu_from(self);
     if (!cpu)
         return val_err("cpu not initialised");
@@ -51,8 +68,69 @@ static value_t attr_cpu_sr(struct object *self) {
     return v;
 }
 
+static value_t attr_cpu_ccr(struct object *self, const member_t *m) {
+    (void)m;
+    cpu_t *cpu = cpu_from(self);
+    if (!cpu)
+        return val_err("cpu not initialised");
+    value_t v = val_uint(1, cpu_get_sr(cpu) & 0xFFu);
+    v.flags |= VAL_HEX;
+    return v;
+}
+
+static value_t attr_cpu_ssp(struct object *self, const member_t *m) {
+    (void)m;
+    cpu_t *cpu = cpu_from(self);
+    if (!cpu)
+        return val_err("cpu not initialised");
+    value_t v = val_uint(4, cpu_get_ssp(cpu));
+    v.flags |= VAL_HEX;
+    return v;
+}
+
+static value_t attr_cpu_usp(struct object *self, const member_t *m) {
+    (void)m;
+    cpu_t *cpu = cpu_from(self);
+    if (!cpu)
+        return val_err("cpu not initialised");
+    value_t v = val_uint(4, cpu_get_usp(cpu));
+    v.flags |= VAL_HEX;
+    return v;
+}
+
+static value_t attr_cpu_msp(struct object *self, const member_t *m) {
+    (void)m;
+    cpu_t *cpu = cpu_from(self);
+    if (!cpu)
+        return val_err("cpu not initialised");
+    value_t v = val_uint(4, cpu_get_msp(cpu));
+    v.flags |= VAL_HEX;
+    return v;
+}
+
+static value_t attr_cpu_vbr(struct object *self, const member_t *m) {
+    (void)m;
+    cpu_t *cpu = cpu_from(self);
+    if (!cpu)
+        return val_err("cpu not initialised");
+    value_t v = val_uint(4, cpu_get_vbr(cpu));
+    v.flags |= VAL_HEX;
+    return v;
+}
+
+static value_t attr_cpu_sp(struct object *self, const member_t *m) {
+    (void)m;
+    cpu_t *cpu = cpu_from(self);
+    if (!cpu)
+        return val_err("cpu not initialised");
+    value_t v = val_uint(4, cpu_get_an(cpu, 7));
+    v.flags |= VAL_HEX;
+    return v;
+}
+
 #define CPU_DREG_GETTER(N)                                                                                             \
-    static value_t attr_cpu_d##N(struct object *self) {                                                                \
+    static value_t attr_cpu_d##N(struct object *self, const member_t *m) {                                             \
+        (void)m;                                                                                                       \
         cpu_t *cpu = cpu_from(self);                                                                                   \
         if (!cpu)                                                                                                      \
             return val_err("cpu not initialised");                                                                     \
@@ -61,7 +139,8 @@ static value_t attr_cpu_sr(struct object *self) {
         return v;                                                                                                      \
     }
 #define CPU_AREG_GETTER(N)                                                                                             \
-    static value_t attr_cpu_a##N(struct object *self) {                                                                \
+    static value_t attr_cpu_a##N(struct object *self, const member_t *m) {                                             \
+        (void)m;                                                                                                       \
         cpu_t *cpu = cpu_from(self);                                                                                   \
         if (!cpu)                                                                                                      \
             return val_err("cpu not initialised");                                                                     \
@@ -71,8 +150,7 @@ static value_t attr_cpu_sr(struct object *self) {
     }
 
 // clang-format off — these macros expand to function definitions
-// without a trailing `;`, which clang-format mis-parses as expressions
-// and reflows on every commit. Keep them on one line each.
+// without a trailing `;`, which clang-format mis-parses as expressions.
 CPU_DREG_GETTER(0)
 CPU_DREG_GETTER(1)
 CPU_DREG_GETTER(2)
@@ -97,12 +175,14 @@ CPU_AREG_GETTER(7)
     }
 
 static const member_t cpu_members[] = {
-    ATTR_RO_HEX("pc", attr_cpu_pc), ATTR_RO_HEX("sr", attr_cpu_sr), ATTR_RO_HEX("d0", attr_cpu_d0),
-    ATTR_RO_HEX("d1", attr_cpu_d1), ATTR_RO_HEX("d2", attr_cpu_d2), ATTR_RO_HEX("d3", attr_cpu_d3),
-    ATTR_RO_HEX("d4", attr_cpu_d4), ATTR_RO_HEX("d5", attr_cpu_d5), ATTR_RO_HEX("d6", attr_cpu_d6),
-    ATTR_RO_HEX("d7", attr_cpu_d7), ATTR_RO_HEX("a0", attr_cpu_a0), ATTR_RO_HEX("a1", attr_cpu_a1),
-    ATTR_RO_HEX("a2", attr_cpu_a2), ATTR_RO_HEX("a3", attr_cpu_a3), ATTR_RO_HEX("a4", attr_cpu_a4),
-    ATTR_RO_HEX("a5", attr_cpu_a5), ATTR_RO_HEX("a6", attr_cpu_a6), ATTR_RO_HEX("a7", attr_cpu_a7),
+    ATTR_RO_HEX("pc", attr_cpu_pc),   ATTR_RO_HEX("sr", attr_cpu_sr),   ATTR_RO_HEX("ccr", attr_cpu_ccr),
+    ATTR_RO_HEX("ssp", attr_cpu_ssp), ATTR_RO_HEX("usp", attr_cpu_usp), ATTR_RO_HEX("msp", attr_cpu_msp),
+    ATTR_RO_HEX("vbr", attr_cpu_vbr), ATTR_RO_HEX("sp", attr_cpu_sp),   ATTR_RO_HEX("d0", attr_cpu_d0),
+    ATTR_RO_HEX("d1", attr_cpu_d1),   ATTR_RO_HEX("d2", attr_cpu_d2),   ATTR_RO_HEX("d3", attr_cpu_d3),
+    ATTR_RO_HEX("d4", attr_cpu_d4),   ATTR_RO_HEX("d5", attr_cpu_d5),   ATTR_RO_HEX("d6", attr_cpu_d6),
+    ATTR_RO_HEX("d7", attr_cpu_d7),   ATTR_RO_HEX("a0", attr_cpu_a0),   ATTR_RO_HEX("a1", attr_cpu_a1),
+    ATTR_RO_HEX("a2", attr_cpu_a2),   ATTR_RO_HEX("a3", attr_cpu_a3),   ATTR_RO_HEX("a4", attr_cpu_a4),
+    ATTR_RO_HEX("a5", attr_cpu_a5),   ATTR_RO_HEX("a6", attr_cpu_a6),   ATTR_RO_HEX("a7", attr_cpu_a7),
 };
 
 static const class_desc_t cpu_class = {
@@ -111,14 +191,112 @@ static const class_desc_t cpu_class = {
     .n_members = sizeof(cpu_members) / sizeof(cpu_members[0]),
 };
 
+// === CPU.fpu child class ====================================================
+//
+// The fpu instance_data is config_t*; we walk to cfg->cpu->fpu
+// internally because the FPU pointer lives on the cpu_t (and `fpu`
+// is exposed as a struct field, not a public getter).
+
+static fpu_state_t *fpu_from(struct object *self) {
+    config_t *cfg = (config_t *)object_data(self);
+    if (!cfg || !cfg->cpu)
+        return NULL;
+    return (fpu_state_t *)cfg->cpu->fpu;
+}
+
+static value_t attr_fpu_fpcr(struct object *self, const member_t *m) {
+    (void)m;
+    fpu_state_t *fpu = fpu_from(self);
+    if (!fpu)
+        return val_err("fpu not present");
+    value_t v = val_uint(4, fpu->fpcr);
+    v.flags |= VAL_HEX;
+    return v;
+}
+
+static value_t attr_fpu_fpsr(struct object *self, const member_t *m) {
+    (void)m;
+    fpu_state_t *fpu = fpu_from(self);
+    if (!fpu)
+        return val_err("fpu not present");
+    value_t v = val_uint(4, fpu->fpsr);
+    v.flags |= VAL_HEX;
+    return v;
+}
+
+static value_t attr_fpu_fpiar(struct object *self, const member_t *m) {
+    (void)m;
+    fpu_state_t *fpu = fpu_from(self);
+    if (!fpu)
+        return val_err("fpu not present");
+    value_t v = val_uint(4, fpu->fpiar);
+    v.flags |= VAL_HEX;
+    return v;
+}
+
+// FP0..FP7: 80-bit extended precision. Expose the raw register bytes
+// as V_BYTES (10 bytes) so the formatter can hex-dump it and tests
+// can compare bit-for-bit. Conversion to a host double is lossy and
+// belongs in a future helper; M3 keeps the raw payload visible.
+static value_t attr_fpu_fpN(struct object *self, const member_t *m) {
+    fpu_state_t *fpu = fpu_from(self);
+    if (!fpu)
+        return val_err("fpu not present");
+    int n = (int)(uintptr_t)m->attr.user_data;
+    if (n < 0 || n > 7)
+        return val_err("invalid fp register index %d", n);
+    return val_bytes(&fpu->fp[n], sizeof(fpu->fp[n]));
+}
+
+#define FP_REG(idx)                                                                                                    \
+    {                                                                                                                  \
+        .kind = M_ATTR, .name = "fp" #idx, .flags = VAL_RO, .attr = {                                                  \
+            .type = V_BYTES,                                                                                           \
+            .get = attr_fpu_fpN,                                                                                       \
+            .set = NULL,                                                                                               \
+            .user_data = (const void *)(uintptr_t)idx                                                                  \
+        }                                                                                                              \
+    }
+
+static const member_t fpu_members[] = {
+    FP_REG(0),
+    FP_REG(1),
+    FP_REG(2),
+    FP_REG(3),
+    FP_REG(4),
+    FP_REG(5),
+    FP_REG(6),
+    FP_REG(7),
+    {.kind = M_ATTR,
+         .name = "fpcr",
+         .flags = VAL_RO | VAL_HEX,
+         .attr = {.type = V_UINT, .get = attr_fpu_fpcr, .set = NULL} },
+    {.kind = M_ATTR,
+         .name = "fpsr",
+         .flags = VAL_RO | VAL_HEX,
+         .attr = {.type = V_UINT, .get = attr_fpu_fpsr, .set = NULL} },
+    {.kind = M_ATTR,
+         .name = "fpiar",
+         .flags = VAL_RO | VAL_HEX,
+         .attr = {.type = V_UINT, .get = attr_fpu_fpiar, .set = NULL}},
+};
+
+static const class_desc_t fpu_class = {
+    .name = "fpu",
+    .members = fpu_members,
+    .n_members = sizeof(fpu_members) / sizeof(fpu_members[0]),
+};
+
 // === Memory class ===========================================================
 
-static value_t attr_mem_ram_size(struct object *self) {
+static value_t attr_mem_ram_size(struct object *self, const member_t *m) {
+    (void)m;
     config_t *cfg = (config_t *)object_data(self);
     return val_uint(4, cfg ? cfg->ram_size : 0u);
 }
 
-static value_t attr_mem_rom_size(struct object *self) {
+static value_t attr_mem_rom_size(struct object *self, const member_t *m) {
+    (void)m;
     config_t *cfg = (config_t *)object_data(self);
     return val_uint(4, (cfg && cfg->machine) ? cfg->machine->rom_size : 0u);
 }
@@ -142,17 +320,20 @@ static const class_desc_t memory_class = {
 
 // === Machine class ==========================================================
 
-static value_t attr_machine_model_id(struct object *self) {
+static value_t attr_machine_model_id(struct object *self, const member_t *m) {
+    (void)m;
     config_t *cfg = (config_t *)object_data(self);
     return val_str((cfg && cfg->machine && cfg->machine->model_id) ? cfg->machine->model_id : "");
 }
 
-static value_t attr_machine_model_name(struct object *self) {
+static value_t attr_machine_model_name(struct object *self, const member_t *m) {
+    (void)m;
     config_t *cfg = (config_t *)object_data(self);
     return val_str((cfg && cfg->machine && cfg->machine->model_name) ? cfg->machine->model_name : "");
 }
 
-static value_t attr_machine_cpu_clock(struct object *self) {
+static value_t attr_machine_cpu_clock(struct object *self, const member_t *m) {
+    (void)m;
     config_t *cfg = (config_t *)object_data(self);
     return val_uint(4, (cfg && cfg->machine) ? cfg->machine->cpu_clock_hz : 0u);
 }
@@ -178,26 +359,286 @@ static const class_desc_t machine_class = {
     .n_members = sizeof(machine_members) / sizeof(machine_members[0]),
 };
 
-// === Scheduler / Shell / Storage stubs ======================================
+// === Mac low-memory globals (auto-populated) ================================
 //
-// Empty member tables — these classes exist purely so the path
-// resolver sees them and `eval` can confirm they are present. Real
-// content lands in later milestones.
+// Reads the existing mac_global_vars[] table from
+// src/core/debug/mac_globals_data.c at install time, allocates a
+// matching member_t[] array, and points each member's user_data at
+// the table row. One shared getter dispatches by row.
+
+extern struct {
+    const char *name;
+    uint32_t address;
+    int size;
+    const char *description;
+} mac_global_vars[];
+extern const size_t mac_global_vars_count;
+
+// Generic getter for any mac global. user_data is the entry index
+// into mac_global_vars[]. Size column 1/2/4 → V_UINT; otherwise the
+// full buffer is read as V_BYTES (proposal §5.5 strict-improvement
+// rule — old code truncated 8/10/16-byte buffers to a u32).
+static value_t attr_mac_global(struct object *self, const member_t *m) {
+    (void)self;
+    if (!m || !m->attr.user_data)
+        return val_err("mac member missing user_data");
+    size_t idx = (size_t)(uintptr_t)m->attr.user_data;
+    if (idx >= mac_global_vars_count)
+        return val_err("mac index %zu out of range", idx);
+    uint32_t addr = mac_global_vars[idx].address;
+    int sz = mac_global_vars[idx].size;
+    switch (sz) {
+    case 1: {
+        value_t v = val_uint(1, memory_read_uint8(addr));
+        v.flags |= VAL_HEX;
+        return v;
+    }
+    case 2: {
+        value_t v = val_uint(2, memory_read_uint16(addr));
+        v.flags |= VAL_HEX;
+        return v;
+    }
+    case 4: {
+        value_t v = val_uint(4, memory_read_uint32(addr));
+        v.flags |= VAL_HEX;
+        return v;
+    }
+    default: {
+        // Read `sz` bytes via memory_read_uint8 — this respects
+        // overlay / ROM mapping just like the existing $Symbol path.
+        if (sz <= 0 || sz > 256)
+            return val_err("unexpected mac entry size %d", sz);
+        uint8_t buf[256];
+        for (int i = 0; i < sz; i++)
+            buf[i] = memory_read_uint8(addr + (uint32_t)i);
+        return val_bytes(buf, (size_t)sz);
+    }
+    }
+}
+
+static member_t *g_mac_members = NULL; // heap-allocated 471-entry table
+static class_desc_t g_mac_class = {0};
+
+static int build_mac_class(void) {
+    if (g_mac_members)
+        return 0;
+    size_t n = mac_global_vars_count;
+    g_mac_members = (member_t *)calloc(n, sizeof(member_t));
+    if (!g_mac_members)
+        return -1;
+    size_t out = 0;
+    for (size_t i = 0; i < n; i++) {
+        const char *nm = mac_global_vars[i].name;
+        if (!nm)
+            continue;
+        // Dedupe by name. mac_globals_data.c carries a handful of
+        // historical duplicates (e.g. TimeSCSIDB at $B24 and $DA6);
+        // the legacy resolver matched on first-found, so we mirror
+        // that behavior — first entry wins, later ones drop.
+        bool dup = false;
+        for (size_t j = 0; j < out; j++) {
+            if (g_mac_members[j].name && strcmp(g_mac_members[j].name, nm) == 0) {
+                dup = true;
+                break;
+            }
+        }
+        if (dup)
+            continue;
+        g_mac_members[out].kind = M_ATTR;
+        g_mac_members[out].name = nm;
+        g_mac_members[out].doc = mac_global_vars[i].description;
+        g_mac_members[out].flags = VAL_RO | VAL_HEX | VAL_VOLATILE;
+        // Size 1/2/4 → V_UINT; everything else → V_BYTES. Matches the
+        // proposal §5.5 mapping table.
+        int sz = mac_global_vars[i].size;
+        g_mac_members[out].attr.type = (sz == 1 || sz == 2 || sz == 4) ? V_UINT : V_BYTES;
+        g_mac_members[out].attr.get = attr_mac_global;
+        g_mac_members[out].attr.set = NULL;
+        g_mac_members[out].attr.user_data = (const void *)(uintptr_t)i;
+        out++;
+    }
+    g_mac_class.name = "mac";
+    g_mac_class.members = g_mac_members;
+    g_mac_class.n_members = out;
+    return 0;
+}
+
+static void free_mac_class(void) {
+    free(g_mac_members);
+    g_mac_members = NULL;
+    g_mac_class.members = NULL;
+    g_mac_class.n_members = 0;
+}
+
+// === shell.alias child class ================================================
+//
+// Method shells: callable via node_call once gs_eval grows method
+// dispatch in M4. M3 wires them through C-side helpers used by tests.
+
+static value_t method_alias_add(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)self;
+    (void)m;
+    if (argc < 2)
+        return val_err("shell.alias.add: expected 2 args (name, path)");
+    if (argv[0].kind != V_STRING || argv[1].kind != V_STRING)
+        return val_err("shell.alias.add: name and path must be strings");
+    char err[160];
+    if (alias_add_user(argv[0].s, argv[1].s, err, sizeof(err)) < 0)
+        return val_err("%s", err);
+    return val_none();
+}
+
+static value_t method_alias_remove(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)self;
+    (void)m;
+    if (argc < 1 || argv[0].kind != V_STRING)
+        return val_err("shell.alias.remove: expected name (string)");
+    char err[160];
+    if (alias_remove_user(argv[0].s, err, sizeof(err)) < 0)
+        return val_err("%s", err);
+    return val_none();
+}
+
+// shell.alias.list builds a V_LIST of V_STRING entries: each "name=path".
+typedef struct {
+    value_t *items;
+    size_t len;
+    size_t cap;
+} list_acc_t;
+
+static bool list_acc_collect(const char *name, const char *path, alias_kind_t kind, void *ud) {
+    list_acc_t *acc = (list_acc_t *)ud;
+    char buf[256];
+    snprintf(buf, sizeof(buf), "%s=%s%s", name, path, kind == ALIAS_BUILTIN ? " (built-in)" : "");
+    if (acc->len + 1 > acc->cap) {
+        size_t cap = acc->cap ? acc->cap * 2 : 32;
+        value_t *t = (value_t *)realloc(acc->items, cap * sizeof(value_t));
+        if (!t)
+            return false;
+        acc->items = t;
+        acc->cap = cap;
+    }
+    acc->items[acc->len++] = val_str(buf);
+    return true;
+}
+
+static value_t method_alias_list(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)self;
+    (void)m;
+    (void)argc;
+    (void)argv;
+    list_acc_t acc = {0};
+    alias_each(list_acc_collect, &acc);
+    return val_list(acc.items, acc.len);
+}
+
+static const arg_decl_t alias_add_args[] = {
+    {.name = "name", .kind = V_STRING, .flags = 0, .doc = "alias identifier (no $)"          },
+    {.name = "path", .kind = V_STRING, .flags = 0, .doc = "object path the alias substitutes"},
+};
+static const arg_decl_t alias_remove_args[] = {
+    {.name = "name", .kind = V_STRING, .flags = 0, .doc = "alias identifier (no $)"},
+};
+
+static const member_t shell_alias_members[] = {
+    {.kind = M_METHOD,
+     .name = "add",
+     .doc = "Register a user alias",
+     .flags = 0,
+     .method = {.args = alias_add_args, .nargs = 2, .result = V_NONE, .fn = method_alias_add}      },
+    {.kind = M_METHOD,
+     .name = "remove",
+     .doc = "Remove a user alias",
+     .flags = 0,
+     .method = {.args = alias_remove_args, .nargs = 1, .result = V_NONE, .fn = method_alias_remove}},
+    {.kind = M_METHOD,
+     .name = "list",
+     .doc = "List aliases as 'name=path' strings",
+     .flags = 0,
+     .method = {.args = NULL, .nargs = 0, .result = V_LIST, .fn = method_alias_list}               },
+};
+
+static const class_desc_t shell_alias_class = {
+    .name = "alias",
+    .members = shell_alias_members,
+    .n_members = sizeof(shell_alias_members) / sizeof(shell_alias_members[0]),
+};
+
+// === Scheduler / Shell / Storage stubs ======================================
 
 static const class_desc_t scheduler_class_desc = {.name = "scheduler", .members = NULL, .n_members = 0};
 static const class_desc_t shell_class_desc = {.name = "shell", .members = NULL, .n_members = 0};
 static const class_desc_t storage_class_desc = {.name = "storage", .members = NULL, .n_members = 0};
 
+// === Built-in alias registration ============================================
+//
+// Register at install time. Order matters only insofar as built-ins
+// must be registered before any user can issue shell.alias.add — at
+// startup that's guaranteed because user input arrives later.
+
+static void register_builtin(const char *name, const char *path) {
+    char err[160];
+    if (alias_register_builtin(name, path, err, sizeof(err)) < 0)
+        fprintf(stderr, "gs_classes: built-in alias '$%s' → '%s' rejected: %s\n", name, path, err);
+}
+
+static void register_cpu_aliases(void) {
+    register_builtin("pc", "cpu.pc");
+    register_builtin("sr", "cpu.sr");
+    register_builtin("ccr", "cpu.ccr");
+    register_builtin("ssp", "cpu.ssp");
+    register_builtin("usp", "cpu.usp");
+    register_builtin("msp", "cpu.msp");
+    register_builtin("vbr", "cpu.vbr");
+    register_builtin("sp", "cpu.sp");
+    static const char *const dnames[] = {"d0", "d1", "d2", "d3", "d4", "d5", "d6", "d7"};
+    static const char *const anames[] = {"a0", "a1", "a2", "a3", "a4", "a5", "a6", "a7"};
+    for (int i = 0; i < 8; i++) {
+        char path[16];
+        snprintf(path, sizeof(path), "cpu.%s", dnames[i]);
+        register_builtin(dnames[i], path);
+        snprintf(path, sizeof(path), "cpu.%s", anames[i]);
+        register_builtin(anames[i], path);
+    }
+}
+
+static void register_fpu_aliases(void) {
+    register_builtin("fpcr", "cpu.fpu.fpcr");
+    register_builtin("fpsr", "cpu.fpu.fpsr");
+    register_builtin("fpiar", "cpu.fpu.fpiar");
+    static const char *const fpnames[] = {"fp0", "fp1", "fp2", "fp3", "fp4", "fp5", "fp6", "fp7"};
+    for (int i = 0; i < 8; i++) {
+        char path[24];
+        snprintf(path, sizeof(path), "cpu.fpu.%s", fpnames[i]);
+        register_builtin(fpnames[i], path);
+    }
+}
+
+static void register_mac_aliases(void) {
+    for (size_t i = 0; i < mac_global_vars_count; i++) {
+        if (!mac_global_vars[i].name)
+            continue;
+        char path[128];
+        snprintf(path, sizeof(path), "mac.%s", mac_global_vars[i].name);
+        char err[160];
+        if (alias_register_builtin(mac_global_vars[i].name, path, err, sizeof(err)) < 0) {
+            // Skip silently on collision: a later milestone may rename.
+            // We log once per startup for diagnostics.
+            fprintf(stderr, "gs_classes: skipping mac alias '$%s': %s\n", mac_global_vars[i].name, err);
+        }
+    }
+}
+
 // === Install / uninstall ====================================================
 
-#define MAX_STUBS 8
+#define MAX_STUBS 16
 static struct object *g_stubs[MAX_STUBS];
 static int g_stub_count = 0;
 
-static struct object *attach_stub(const class_desc_t *cls, void *data, const char *name) {
+static struct object *attach_stub(struct object *parent, const class_desc_t *cls, void *data, const char *name) {
     if (g_stub_count >= MAX_STUBS)
         return NULL;
-    char err[160];
+    char err[200];
     if (!object_validate_class(cls, err, sizeof(err))) {
         fprintf(stderr, "gs_classes: class '%s' invalid: %s\n", cls->name ? cls->name : "?", err);
         return NULL;
@@ -205,7 +646,7 @@ static struct object *attach_stub(const class_desc_t *cls, void *data, const cha
     struct object *o = object_new(cls, data, name);
     if (!o)
         return NULL;
-    object_attach(object_root(), o);
+    object_attach(parent ? parent : object_root(), o);
     g_stubs[g_stub_count++] = o;
     return o;
 }
@@ -213,12 +654,32 @@ static struct object *attach_stub(const class_desc_t *cls, void *data, const cha
 void gs_classes_install(struct config *cfg) {
     if (g_stub_count > 0)
         return; // idempotent
-    attach_stub(&cpu_class, cfg, "cpu");
-    attach_stub(&memory_class, cfg, "memory");
-    attach_stub(&scheduler_class_desc, cfg, "scheduler");
-    attach_stub(&machine_class, cfg, "machine");
-    attach_stub(&shell_class_desc, cfg, "shell");
-    attach_stub(&storage_class_desc, cfg, "storage");
+
+    struct object *cpu_obj = attach_stub(NULL, &cpu_class, cfg, "cpu");
+    /* memory */ attach_stub(NULL, &memory_class, cfg, "memory");
+    /* scheduler */ attach_stub(NULL, &scheduler_class_desc, cfg, "scheduler");
+    /* machine */ attach_stub(NULL, &machine_class, cfg, "machine");
+    struct object *shell_obj = attach_stub(NULL, &shell_class_desc, cfg, "shell");
+    /* storage */ attach_stub(NULL, &storage_class_desc, cfg, "storage");
+
+    // mac is always attached — readers tolerate uninitialised RAM.
+    if (build_mac_class() == 0)
+        attach_stub(NULL, &g_mac_class, cfg, "mac");
+
+    // shell.alias child object.
+    if (shell_obj)
+        attach_stub(shell_obj, &shell_alias_class, cfg, "alias");
+
+    // cpu.fpu child object — only when the active CPU model has an FPU.
+    if (cpu_obj && cfg && cfg->cpu && cfg->cpu->fpu)
+        attach_stub(cpu_obj, &fpu_class, cfg, "fpu");
+
+    // Built-in aliases. Register CPU always, FPU only when present,
+    // mac always (the table is size-driven and machine-independent).
+    register_cpu_aliases();
+    if (cfg && cfg->cpu && cfg->cpu->fpu)
+        register_fpu_aliases();
+    register_mac_aliases();
 }
 
 void gs_classes_uninstall(void) {
@@ -231,4 +692,6 @@ void gs_classes_uninstall(void) {
         g_stubs[i] = NULL;
     }
     g_stub_count = 0;
+    alias_reset();
+    free_mac_class();
 }

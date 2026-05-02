@@ -483,7 +483,7 @@ value_t node_get(node_t n) {
     case M_ATTR: {
         if (!n.member->attr.get)
             return val_err("attribute '%s' has no getter", n.member->name);
-        value_t v = n.member->attr.get(n.obj);
+        value_t v = n.member->attr.get(n.obj, n.member);
         // Propagate display flags from the descriptor onto the value so
         // formatters see the intent ('VAL_HEX', etc.) without consulting
         // the descriptor separately.
@@ -531,7 +531,7 @@ value_t node_set(node_t n, value_t v) {
         value_free(&v);
         return val_err("attribute '%s' has no setter", n.member->name);
     }
-    return n.member->attr.set(n.obj, v);
+    return n.member->attr.set(n.obj, n.member, v);
 }
 
 value_t node_call(node_t n, int argc, const value_t *argv) {
@@ -541,5 +541,5 @@ value_t node_call(node_t n, int argc, const value_t *argv) {
         return val_err("'%s' is not a method", n.member ? n.member->name : "(object)");
     if (!n.member->method.fn)
         return val_err("method '%s' has no implementation", n.member->name);
-    return n.member->method.fn(n.obj, argc, argv);
+    return n.member->method.fn(n.obj, n.member, argc, argv);
 }
