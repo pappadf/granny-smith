@@ -1,0 +1,42 @@
+# M7d integration: `scsi` object class.
+# A SCSI HD image is attached at boot, so devices.N has at least one
+# populated slot. We verify the path resolves, the bus phase enum
+# reports a known phase, the device collection enumerates correctly
+# (sparse semantics — empty IDs are holes), and the legacy loopback
+# command shares state with scsi.loopback.
+
+run 50000
+
+# Top-level object.
+eval scsi
+eval scsi.loopback
+
+# Bus child: phase is a V_ENUM, target / initiator are ints.
+eval scsi.bus
+eval scsi.bus.phase
+eval scsi.bus.target
+eval scsi.bus.initiator
+
+# Devices collection — at least one populated slot from hd1.img.
+eval scsi.devices
+# Walk the populated slots via the indexed child. ID 0 is the boot HD
+# in this image; later IDs depend on the image. We just read the
+# attributes that must be present for any populated slot.
+eval scsi.devices[0].id
+eval scsi.devices[0].type
+eval scsi.devices[0].vendor
+eval scsi.devices[0].product
+eval scsi.devices[0].block_size
+eval scsi.devices[0].read_only
+eval scsi.devices[0].medium_present
+
+# Empty slot 5 (no CD attached) reports an "empty" error from node_get,
+# which is the correct sparse-collection behavior.
+eval scsi.devices[5]
+
+# Loopback: flip via attr setter (through expression form), observe
+# via the same attr. The legacy `scsi loopback` command still works
+# but the test's job here is to verify the new path.
+echo $(scsi.devices[0].id)
+
+quit

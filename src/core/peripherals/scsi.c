@@ -1308,6 +1308,57 @@ bool scsi_get_loopback(scsi_t *scsi) {
     return scsi->loopback;
 }
 
+// === M7d — read-only views for the object model =============================
+
+int scsi_get_bus_phase(const scsi_t *scsi) {
+    return scsi ? (int)scsi->bus.phase : 0;
+}
+int scsi_get_bus_target(const scsi_t *scsi) {
+    return scsi ? scsi->bus.target : -1;
+}
+int scsi_get_bus_initiator(const scsi_t *scsi) {
+    return scsi ? scsi->bus.initiator : -1;
+}
+
+int scsi_device_type(const scsi_t *scsi, unsigned which) {
+    if (!scsi || which > 7)
+        return 0;
+    return (int)scsi->devices[which].type;
+}
+bool scsi_device_present(const scsi_t *scsi, unsigned which) {
+    return scsi_device_type(scsi, which) != scsi_dev_none;
+}
+bool scsi_device_read_only(const scsi_t *scsi, unsigned which) {
+    if (!scsi || which > 7)
+        return false;
+    return scsi->devices[which].read_only;
+}
+bool scsi_device_medium_present(const scsi_t *scsi, unsigned which) {
+    if (!scsi || which > 7)
+        return false;
+    return scsi->devices[which].medium_present;
+}
+uint16_t scsi_device_block_size(const scsi_t *scsi, unsigned which) {
+    if (!scsi || which > 7)
+        return 0;
+    return scsi->devices[which].block_size;
+}
+const char *scsi_device_vendor(const scsi_t *scsi, unsigned which) {
+    if (!scsi || which > 7 || scsi->devices[which].type == scsi_dev_none)
+        return NULL;
+    return (const char *)scsi->devices[which].vendor_id;
+}
+const char *scsi_device_product(const scsi_t *scsi, unsigned which) {
+    if (!scsi || which > 7 || scsi->devices[which].type == scsi_dev_none)
+        return NULL;
+    return (const char *)scsi->devices[which].product_id;
+}
+const char *scsi_device_revision(const scsi_t *scsi, unsigned which) {
+    if (!scsi || which > 7 || scsi->devices[which].type == scsi_dev_none)
+        return NULL;
+    return (const char *)scsi->devices[which].revision;
+}
+
 // ============================================================================
 // Lifecycle: Destructor
 // ============================================================================

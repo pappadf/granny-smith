@@ -48,4 +48,37 @@ void scsi_set_loopback(scsi_t *scsi, bool enable);
 // Query whether SCSI loopback mode is active
 bool scsi_get_loopback(scsi_t *scsi);
 
+// === M7d — object-model accessors ==========================================
+//
+// Read-only views over the SCSI controller and its 8 device slots used
+// by the `scsi` / `scsi.bus` / `scsi.devices` object classes. Phase is
+// exposed as an integer with the canonical name table living in the
+// object class so the proposal's V_ENUM display works without leaking
+// the internal phase enum across the public header.
+//
+// Slot index is 0..7 (the SCSI ID). Reads on an unpopulated slot
+// return type=0 (none) / 0 / NULL — callers test `type` first.
+
+// Bus phase as a small integer matching the order:
+//   0=bus_free, 1=arbitration, 2=selection, 3=reselection, 4=command,
+//   5=data_in, 6=data_out, 7=status, 8=message_in, 9=message_out
+int scsi_get_bus_phase(const scsi_t *scsi);
+int scsi_get_bus_target(const scsi_t *scsi);
+int scsi_get_bus_initiator(const scsi_t *scsi);
+
+// Per-device queries. `which` is the SCSI ID (0..7).
+//   type:           0=none, 1=hd, 2=cdrom (matches `enum scsi_device_type`)
+//   read_only:      block-write inhibit
+//   medium_present: relevant for CD-ROM eject/insert state
+//   block_size:     512 for HD, usually 2048 for CD-ROM
+//   vendor/product: NULL when slot is empty
+int scsi_device_type(const scsi_t *scsi, unsigned which);
+bool scsi_device_present(const scsi_t *scsi, unsigned which);
+bool scsi_device_read_only(const scsi_t *scsi, unsigned which);
+bool scsi_device_medium_present(const scsi_t *scsi, unsigned which);
+uint16_t scsi_device_block_size(const scsi_t *scsi, unsigned which);
+const char *scsi_device_vendor(const scsi_t *scsi, unsigned which);
+const char *scsi_device_product(const scsi_t *scsi, unsigned which);
+const char *scsi_device_revision(const scsi_t *scsi, unsigned which);
+
 #endif // SCSI_H
