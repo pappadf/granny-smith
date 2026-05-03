@@ -5,26 +5,28 @@
 
 run 50000
 
-# Top-level floppy.
+# Top-level floppy. Plus uses the IWM controller; sel is the active
+# drive selector.
 eval floppy
-floppy.type
+assert $(floppy.type == "iwm") "Plus floppy controller is iwm"
 floppy.sel
 
 # Drives collection.
 floppy.drives
 
-# Drive 0: populated. Assert present=true; the other attributes are
-# walked as bare reads to verify the path resolves.
+# Drive 0: populated by --fd0=. After 50K cycles the head is at
+# track 0, side 0, motor still spinning up. disk is a content-
+# hashed path so it stays a bare read.
+assert $(floppy.drives[0].index == 0)
 assert $(floppy.drives[0].present == true)
-floppy.drives[0].index
-floppy.drives[0].disk
-floppy.drives[0].track
-floppy.drives[0].side
+assert $(floppy.drives[0].track == 0)
+assert $(floppy.drives[0].side == 0)
 floppy.drives[0].motor_on
+floppy.drives[0].disk
 
 # Drive 1: empty.
+assert $(floppy.drives[1].index == 1)
 assert $(floppy.drives[1].present == false)
-floppy.drives[1].index
 floppy.drives[1].disk
 
 # Eject drive 0 — present must flip to false, disk to empty string.
