@@ -8,17 +8,19 @@ run 50000
 eval storage
 storage.images
 
-# First image: HD attached at boot.
+# First image: HD attached at boot. Pin the catalog-driven attrs so a
+# regression in storage.images enumeration order or attribute mapping
+# fails fast. raw_size is the hd1.img file size (HD20SC catalog).
 storage.images[0]
-storage.images[0].index
+assert $(storage.images[0].index == 0)
+assert $(storage.images[0].type == "hd")
+assert $(storage.images[0].writable == true)
+assert $(storage.images[0].raw_size == 21411840)
 storage.images[0].filename
-storage.images[0].type
-storage.images[0].writable
-storage.images[0].raw_size
 
 # Second image: the System 6 floppy.
+assert $(storage.images[1].type == "fd_ds")
 storage.images[1].filename
-storage.images[1].type
 
 # storage.import — copy a small file to a chosen destination via the
 # legacy `cp` route, then verify storage.import without dst_path
