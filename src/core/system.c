@@ -12,6 +12,8 @@
 #include "appletalk.h"
 #include "build_id.h"
 #include "checkpoint_machine.h"
+#include "cmd_io.h"
+#include "cmd_parse.h"
 #include "cmd_types.h"
 #include "cpu.h"
 #include "drive_catalog.h"
@@ -1694,6 +1696,62 @@ uint64_t cmd_load_checkpoint(int argc, char *argv[]) {
         return 0;
     }
     return -1;
+}
+
+// ===== Phase 5b: argv-driven entry points for the typed object-model bridge =====
+// Mirror the legacy `fd` / `hd` shell commands but skip find_cmd / shell_dispatch.
+
+static int run_subcmd_handler(cmd_fn fn, const struct cmd_reg *reg, int argc, char **argv) {
+    struct cmd_io io;
+    init_cmd_io(&io, INVOKE_INTERACTIVE);
+    struct cmd_context ctx;
+    memset(&ctx, 0, sizeof(ctx));
+    ctx.out = io.out_stream;
+    ctx.err = io.err_stream;
+    struct cmd_result res;
+    memset(&res, 0, sizeof(res));
+    res.type = RES_OK;
+    if (cmd_parse_args(argc, argv, reg, &ctx, &res))
+        fn(&ctx, &res);
+    finalize_cmd_io(&io, &res);
+    if (res.type == RES_ERR) {
+        if (res.as_str)
+            fprintf(stderr, "%s\n", res.as_str);
+        return -1;
+    }
+    if (res.type == RES_INT)
+        return (int)res.as_int;
+    return 0;
+}
+
+int shell_fd_argv(int argc, char **argv) {
+    static const struct cmd_reg reg = {
+        .name = "fd",
+        .fn = cmd_fd_handler,
+        .subcmds = fd_subcmds,
+        .n_subcmds = 5,
+    };
+    return run_subcmd_handler(cmd_fd_handler, &reg, argc, argv);
+}
+
+int shell_hd_argv(int argc, char **argv) {
+    static const struct cmd_reg reg = {
+        .name = "hd",
+        .fn = cmd_hd_handler,
+        .subcmds = hd_subcmds,
+        .n_subcmds = 6,
+    };
+    return run_subcmd_handler(cmd_hd_handler, &reg, argc, argv);
+}
+
+int shell_image_argv(int argc, char **argv) {
+    static const struct cmd_reg reg = {
+        .name = "image",
+        .fn = cmd_image_handler,
+        .subcmds = image_subcmds,
+        .n_subcmds = 4,
+    };
+    return run_subcmd_handler(cmd_image_handler, &reg, argc, argv);
 }
 
 // ---------------- AppleTalk command handlers ----------------

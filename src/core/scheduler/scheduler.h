@@ -127,4 +127,8 @@ uint64_t cpu_instr_count(void);
 // Reconcile sprint counters (called from IRQ handlers to stabilize accounting)
 void cpu_reschedule(void);
 
+// Legacy `run [instructions]` shell entry. Exposed so the typed `run`
+// root method can call it directly (no shell_dispatch).
+uint64_t cmd_run(int argc, char *argv[]);
+
 #endif // SCHEDULE_H

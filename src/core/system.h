@@ -167,6 +167,16 @@ int system_probe_floppy(const char *path);
 // Returns 0 on success, non-zero on failure.
 int system_download_hd(const char *src_path, const char *dest_path);
 
+// argv-driven entry points for the legacy `fd` / `hd` shell commands.
+// Used by the typed object-model bridge (fd_insert, hd_create, hd_attach
+// wrappers) to bypass shell_dispatch / find_cmd registry lookup.
+int shell_fd_argv(int argc, char **argv);
+int shell_hd_argv(int argc, char **argv);
+int shell_image_argv(int argc, char **argv);
+
+// Legacy `setup` shell entry (machine-model query/configure).
+uint64_t cmd_setup(int argc, char *argv[]);
+
 // Pending RAM override for next system_create() call (KB, 0 = use default)
 void system_set_pending_ram_kb(uint32_t kb);
 uint32_t system_get_pending_ram_kb(void);

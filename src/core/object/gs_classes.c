@@ -3416,14 +3416,11 @@ static value_t storage_method_import(struct object *self, const member_t *m, int
         return v;
     }
 
-    // Explicit destination — defer to the legacy `cp` command via
-    // shell_dispatch so quoting and VFS handling stay in one place.
-    char line[1024];
-    int n = snprintf(line, sizeof(line), "cp \"%s\" \"%s\"", host_path, dst_path);
-    if (n < 0 || (size_t)n >= sizeof(line))
-        return val_err("storage.import: arguments too long");
-    if (shell_dispatch(line) != 0)
-        return val_err("storage.import: cp '%s' -> '%s' failed", host_path, dst_path);
+    // Explicit destination — call shell_cp directly so VFS handling
+    // stays in one place (no shell_dispatch).
+    char err[256] = {0};
+    if (shell_cp(host_path, dst_path, false, err, sizeof(err)) < 0)
+        return val_err("storage.import: cp '%s' -> '%s' failed: %s", host_path, dst_path, err[0] ? err : "unknown");
     return val_str(dst_path);
 }
 
@@ -3722,10 +3719,9 @@ static value_t method_root_print(struct object *self, const member_t *m, int arg
 //
 // Per proposal §5.10 these are top-level methods that flatten existing
 // `image foo` / `hd foo` / `rom foo` / `vrom foo` / `peeler` / `cp` /
-// `quit` shell forms into one-call methods. Each wrapper builds a
-// quoted command line and routes it through shell_dispatch — that
-// keeps argument parsing and quoting in one place (the shell tokenizer)
-// and avoids duplicating the per-command argument validation.
+// `quit` shell forms into one-call methods. Each wrapper now calls
+// the underlying C primitive (or `shell_<cmd>_argv` for the rich
+// parsers) directly — phase 5b retired the shell_dispatch round-trip.
 //
 // `let` and `source` defer to a later sub-commit — they touch
 // shell-state plumbing (variables, script context) that the M9–M10
@@ -3733,72 +3729,6 @@ static value_t method_root_print(struct object *self, const member_t *m, int arg
 //
 // `hd_download` defers similarly — it requires platform/network state
 // outside the scope of the object tree.
-
-// Append `s` to `out` enclosed in double quotes. Backslashes and
-// embedded double quotes are escaped to match the shell tokenizer's
-// expectations. Returns false if the buffer is full.
-static bool append_quoted(char *out, size_t cap, size_t *pos, const char *s) {
-    if (!s)
-        s = "";
-    if (*pos + 1 >= cap)
-        return false;
-    out[(*pos)++] = '"';
-    for (const char *p = s; *p; p++) {
-        if (*pos + 2 >= cap)
-            return false;
-        if (*p == '"' || *p == '\\')
-            out[(*pos)++] = '\\';
-        out[(*pos)++] = *p;
-    }
-    if (*pos + 1 >= cap)
-        return false;
-    out[(*pos)++] = '"';
-    out[*pos] = '\0';
-    return true;
-}
-
-static bool append_literal(char *out, size_t cap, size_t *pos, const char *s) {
-    size_t n = strlen(s);
-    if (*pos + n >= cap)
-        return false;
-    memcpy(out + *pos, s, n);
-    *pos += n;
-    out[*pos] = '\0';
-    return true;
-}
-
-// Build a shell line "<cmd> [arg1 [arg2 [...]]]" from V_STRING argv,
-// then dispatch. Returns 0 on dispatch success (legacy command was
-// found and ran to completion), -1 if the command line couldn't be
-// built. The legacy commands' own return codes are intentionally
-// ignored — different commands use the int return for unrelated
-// purposes (rom_validate uses 1 for "valid", cp uses byte counts on
-// some paths, …) so a uniform success-vs-error read on it is wrong.
-// Commands that fail print to stderr; the caller reads that out of
-// band, just like at the shell.
-// Build a shell-form line "<cmd> <arg> <arg>..." (each arg double-quoted)
-// and dispatch it. Returns -1 on a build error (non-string arg, line too
-// long), otherwise the legacy command's int return cast through uint64_t.
-// Caller decides how to interpret the value — most legacy commands use
-// 0 = success, but some return cmd_bool (1 = success). The two helpers
-// below codify each convention so the migration can stop carrying the
-// inconsistency.
-static int64_t dispatch_with_string_args(const char *cmd, int argc, const value_t *argv) {
-    char line[1024];
-    size_t pos = 0;
-    line[0] = '\0';
-    if (!append_literal(line, sizeof(line), &pos, cmd))
-        return -1;
-    for (int i = 0; i < argc; i++) {
-        if (argv[i].kind != V_STRING)
-            return -1;
-        if (!append_literal(line, sizeof(line), &pos, " "))
-            return -1;
-        if (!append_quoted(line, sizeof(line), &pos, argv[i].s ? argv[i].s : ""))
-            return -1;
-    }
-    return (int64_t)shell_dispatch(line);
-}
 
 // `cp(src, dst, [flags])` — top-level alias for `storage.import` per
 // proposal §5.10 ("preserve UNIX muscle memory"). Calls shell_cp directly.
@@ -3905,7 +3835,11 @@ static value_t method_root_hd_create(struct object *self, const member_t *m, int
     }
     if (n < 0 || (size_t)n >= sizeof(line))
         return val_err("hd_create: arguments too long");
-    return val_bool(shell_dispatch(line) == 0);
+    char *targv[32];
+    int targc = tokenize(line, targv, 32);
+    if (targc <= 0)
+        return val_err("hd_create: tokenisation failed");
+    return val_bool(shell_hd_argv(targc, targv) == 0);
 }
 
 // `hd_download(src, dst)` — export a hard disk image (base + delta) to a
@@ -3925,14 +3859,13 @@ static value_t method_root_hd_download(struct object *self, const member_t *m, i
 // subcommand forms. Each takes a single path argument. Two helpers
 // codify the two legacy return conventions: cmd_int (0 = success) for
 // the *_probe family and cmd_bool (1 = valid) for the *_validate family.
-static int64_t dispatch_subcmd_path_rc(const char *cmd, const char *sub, int argc, const value_t *argv) {
+// `which` is 0 for rom, 1 for vrom.
+static int64_t call_rom_subcmd(int which, const char *sub, int argc, const value_t *argv) {
     if (argc < 1 || argv[0].kind != V_STRING)
-        return -2; // signal "bad arg" distinct from dispatch failure
-    char line[512];
-    int n = snprintf(line, sizeof(line), "%s %s \"%s\"", cmd, sub, argv[0].s);
-    if (n < 0 || (size_t)n >= sizeof(line))
-        return -1;
-    return (int64_t)shell_dispatch(line);
+        return -2;
+    const char *cmd = which ? "vrom" : "rom";
+    char *fake_argv[] = {(char *)cmd, (char *)sub, (char *)(argv[0].s ? argv[0].s : "")};
+    return (int64_t)(which ? cmd_vrom(3, fake_argv) : cmd_rom(3, fake_argv));
 }
 
 static value_t method_root_rom_probe(struct object *self, const member_t *m, int argc, const value_t *argv) {
@@ -3949,11 +3882,9 @@ static value_t method_root_rom_probe(struct object *self, const member_t *m, int
 static value_t method_root_rom_validate(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)self;
     (void)m;
-    int64_t rc = dispatch_subcmd_path_rc("rom", "validate", argc, argv);
+    int64_t rc = call_rom_subcmd(0, "validate", argc, argv);
     if (rc == -2)
         return val_err("rom_validate: expected (path)");
-    if (rc == -1)
-        return val_err("rom_validate: argument too long");
     // cmd_bool semantics: 1 = valid.
     return val_bool(rc == 1);
 }
@@ -3968,11 +3899,9 @@ static value_t method_root_vrom_probe(struct object *self, const member_t *m, in
 static value_t method_root_vrom_validate(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)self;
     (void)m;
-    int64_t rc = dispatch_subcmd_path_rc("vrom", "validate", argc, argv);
+    int64_t rc = call_rom_subcmd(1, "validate", argc, argv);
     if (rc == -2)
         return val_err("vrom_validate: expected (path)");
-    if (rc == -1)
-        return val_err("vrom_validate: argument too long");
     return val_bool(rc == 1);
 }
 
@@ -3982,12 +3911,10 @@ static value_t method_root_vrom_validate(struct object *self, const member_t *m,
 // commands print info to stdout and return cmd_int; we expose the
 // success bit so callers can branch on it.
 static value_t image_subcmd_bool(const char *sub, int argc, const value_t *argv, const char *err_prefix) {
-    int64_t rc = dispatch_subcmd_path_rc("image", sub, argc, argv);
-    if (rc == -2)
+    if (argc < 1 || argv[0].kind != V_STRING)
         return val_err("%s: expected (path)", err_prefix);
-    if (rc == -1)
-        return val_err("%s: argument too long", err_prefix);
-    return val_bool(rc == 0);
+    char *fake_argv[] = {"image", (char *)sub, (char *)(argv[0].s ? argv[0].s : "")};
+    return val_bool(shell_image_argv(3, fake_argv) == 0);
 }
 static const char *apm_fs_kind_label(enum apm_fs_kind k) {
     switch (k) {
@@ -4293,7 +4220,11 @@ static value_t method_root_fd_insert(struct object *self, const member_t *m, int
                      writable ? "true" : "false");
     if (n < 0 || (size_t)n >= sizeof(line))
         return val_err("fd_insert: arguments too long");
-    return val_bool(shell_dispatch(line) == 0);
+    char *targv[32];
+    int targc = tokenize(line, targv, 32);
+    if (targc <= 0)
+        return val_err("fd_insert: tokenisation failed");
+    return val_bool(shell_fd_argv(targc, targv) == 0);
 }
 
 // `run([cycles])` — start the scheduler. With no argument, runs
@@ -4310,20 +4241,18 @@ static value_t method_root_run(struct object *self, const member_t *m, int argc,
     // executeShellCommand path the cmd registry happened to lose this race.
     if (!system_scheduler())
         return val_err("run: no machine loaded");
-    char line[64];
-    int n;
+    char cycles_buf[32];
     if (argc >= 1) {
         bool ok = false;
         int64_t cycles = (int64_t)val_as_i64(&argv[0], &ok);
         if (!ok && argv[0].kind == V_UINT)
             cycles = (int64_t)argv[0].u;
-        n = snprintf(line, sizeof(line), "run %lld", (long long)cycles);
-    } else {
-        n = snprintf(line, sizeof(line), "run");
+        snprintf(cycles_buf, sizeof(cycles_buf), "%lld", (long long)cycles);
+        char *fake_argv[] = {"run", cycles_buf};
+        return val_bool(cmd_run(2, fake_argv) == 0);
     }
-    if (n < 0 || (size_t)n >= sizeof(line))
-        return val_err("run: argument too long");
-    return val_bool(shell_dispatch(line) == 0);
+    char *fake_argv[] = {"run"};
+    return val_bool(cmd_run(1, fake_argv) == 0);
 }
 
 // === Boot/setup root methods (M10b — url-media + config-dialog area) =======
@@ -4355,7 +4284,11 @@ static value_t method_root_hd_attach(struct object *self, const member_t *m, int
     int n = snprintf(line, sizeof(line), "hd attach \"%s\" %lld", argv[0].s ? argv[0].s : "", (long long)id);
     if (n < 0 || (size_t)n >= sizeof(line))
         return val_err("hd_attach: arguments too long");
-    return val_bool(shell_dispatch(line) == 0);
+    char *targv[32];
+    int targc = tokenize(line, targv, 32);
+    if (targc <= 0)
+        return val_err("hd_attach: tokenisation failed");
+    return val_bool(shell_hd_argv(targc, targv) == 0);
 }
 
 // === dump_tree (M12 — auto-generated docs) =================================
@@ -5235,7 +5168,11 @@ static value_t method_root_setup_machine(struct object *self, const member_t *m,
         n = snprintf(line, sizeof(line), "setup --model %s", argv[0].s ? argv[0].s : "");
     if (n < 0 || (size_t)n >= sizeof(line))
         return val_err("setup_machine: arguments too long");
-    return val_bool(shell_dispatch(line) == 0);
+    char *targv[32];
+    int targc = tokenize(line, targv, 32);
+    if (targc <= 0)
+        return val_err("setup_machine: tokenisation failed");
+    return val_bool(cmd_setup(targc, targv) == 0);
 }
 
 // `schedule(mode)` — set the scheduler mode (max / realtime / hardware).

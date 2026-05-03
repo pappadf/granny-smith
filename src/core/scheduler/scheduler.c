@@ -370,7 +370,7 @@ void scheduler_start_vbl(struct scheduler *restrict s, config_t *config) {
 }
 
 // Shell command to start execution, optionally limiting the number of instructions to run
-static uint64_t cmd_run(int argc, char *argv[]) {
+uint64_t cmd_run(int argc, char *argv[]) {
     if (argc > 2) {
         printf("Usage: run [instructions]\n");
         return 0;
