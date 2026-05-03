@@ -153,12 +153,13 @@ export async function bootWithUploadedMedia(
 		return (window as any).__gsBootReady === true;
 	}, { timeout: 60000 });
 
-	// Issue boot-time commands but DO NOT run
-	await page.evaluate(({ hasFd, hasHd, hdSlot, fdWritable }) => {
-		const send = (window as any).runCommand;
-		send('rom load /tmp/rom');
-		if (hasFd) send(`fd insert /tmp/fd0 0 ${fdWritable ? 'true' : 'false'}`);
-		if (hasHd) send(`hd attach /tmp/hd${hdSlot} ${hdSlot}`);
+	// Issue boot-time commands but DO NOT run. Routed through gsEval so the
+	// helper stays off the legacy window.runCommand bridge.
+	await page.evaluate(async ({ hasFd, hasHd, hdSlot, fdWritable }) => {
+		const ev = (window as any).gsEval;
+		await ev('rom_load', ['/tmp/rom']);
+		if (hasFd) await ev('fd_insert', ['/tmp/fd0', 0, fdWritable]);
+		if (hasHd) await ev('hd_attach', [`/tmp/hd${hdSlot}`, hdSlot]);
 	}, { hasFd: Boolean(fd0), hasHd: Boolean(hdZip), hdSlot, fdWritable });
 }
 

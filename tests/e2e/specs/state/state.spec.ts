@@ -35,7 +35,7 @@ async function bootSE30WithUploadedMedia(
     try { FS.unlink('/tmp/vrom'); } catch (_) {}
     FS.writeFile('/tmp/vrom', new Uint8Array(data));
   }, Array.from(vromData));
-  await page.evaluate(() => (window as any).runCommand('vrom load /tmp/vrom'));
+  await runCommand(page, 'vrom load /tmp/vrom');
 }
 
 test.describe('State', () => {
@@ -84,7 +84,7 @@ test.describe('State', () => {
     await bootWithUploadedMedia(page, 'roms/Plus_v3.rom', 'systems/System_6_0_8.dsk', undefined, { hideOverlay: true });
 
     // Disable idle checkpointing for this test to ensure deterministic execution
-    await page.evaluate(() => (window as any).runCommand('checkpoint auto off'));
+    await runCommand(page, 'checkpoint auto off');
 
     log('[state-test2] first run (pre-save)');
     await runCommand(page, 'run 25000000');
@@ -425,7 +425,7 @@ test.describe('State', () => {
     await bootWithUploadedMedia(page, 'roms/Plus_v3.rom', 'systems/System_6_0_8.dsk', undefined, { hideOverlay: true });
 
     // Disable idle checkpointing for this test to ensure deterministic execution
-    await page.evaluate(() => (window as any).runCommand('checkpoint auto off'));
+    await runCommand(page, 'checkpoint auto off');
 
     log('[state-test7] running initial instructions');
     await runCommand(page, 'run 100000000');
@@ -529,7 +529,7 @@ test.describe('State', () => {
     await waitForPrompt(page);
 
     // Disable idle checkpointing again after restore
-    await page.evaluate(() => (window as any).runCommand('checkpoint auto off'));
+    await runCommand(page, 'checkpoint auto off');
 
     log('[state-test7] iteration 2: start logging to file');
     await runCommand(page, 'log floppy level=5 file=/tmp/test-7-iteration-2.txt stdout=off ts=on');
@@ -593,10 +593,10 @@ test.describe('State', () => {
     await bootWithUploadedMedia(page, 'roms/Plus_v3.rom', undefined, undefined, { hideOverlay: true });
 
     // Disable idle checkpointing for deterministic execution
-    await page.evaluate(() => (window as any).runCommand('checkpoint auto off'));
+    await runCommand(page, 'checkpoint auto off');
 
     // Start the CPU so the Mac shows the blinking question-mark floppy icon
-    await page.evaluate(() => (window as any).runCommand('run'));
+    await runCommand(page, 'run');
     await page.waitForTimeout(2_000);
 
     // Drag-drop the boot disk image onto the emulator canvas
@@ -612,7 +612,7 @@ test.describe('State', () => {
     await matchScreenFast(page, 'test-8-desktop', { initialWaitMs: 5_000, waitBeforeUpdateMs: 60_000, timeoutMs: 90_000 });
 
     // Stop the CPU so we can proceed with deterministic stepped execution
-    await page.evaluate(() => (window as any).runCommand('stop'));
+    await runCommand(page, 'stop');
     await waitForPrompt(page);
 
     // --- Phase 2: create on-demand checkpoint and download it ---
@@ -705,7 +705,7 @@ test.describe('State', () => {
     await waitForPrompt(page);
 
     // Disable idle checkpointing again after restore
-    await page.evaluate(() => (window as any).runCommand('checkpoint auto off'));
+    await runCommand(page, 'checkpoint auto off');
 
     log('[state-test8] iteration 2: start logging to file');
     await runCommand(page, 'log floppy level=5 file=/tmp/test-8-iteration-2.txt stdout=off ts=on');

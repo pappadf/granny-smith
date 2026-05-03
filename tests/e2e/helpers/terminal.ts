@@ -105,11 +105,12 @@ export async function installTestShim(page: Page) {
 					});
 				};
 
-				// clearCheckpoints uses the shell command (runs on worker where OPFS is accessible)
+				// clearCheckpoints uses the typed checkpoint_clear method via gsEval —
+				// gsEval routes to the worker pthread where OPFS is accessible.
 				(window as any).__gsTestShim.clearCheckpoints = (window as any).__gsTestShim.clearCheckpoints || async function() {
-					if (typeof (window as any).runCommand !== 'function') return;
+					if (typeof (window as any).gsEval !== 'function') return;
 					try {
-						await (window as any).runCommand('checkpoint clear');
+						await (window as any).gsEval('checkpoint_clear');
 						console.log('[test-shim] checkpoints cleared');
 					} catch (e) {
 						console.warn('[test-shim] clearCheckpoints failed', e);

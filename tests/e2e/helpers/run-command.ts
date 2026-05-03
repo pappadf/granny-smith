@@ -17,9 +17,10 @@ import type { Page } from '@playwright/test';
  * ```
  *
  * Implementation: every shell-form line is translated to a typed `gsEval`
- * call. Specs that still use raw legacy commands (`vrom load`,
- * `checkpoint auto off`, etc.) call `(window as any).runCommand(...)`
- * directly — this helper no longer routes there.
+ * call. The legacy `window.runCommand` bridge is no longer reachable
+ * through this helper; the only spec that still calls it directly is
+ * the gs-eval regression test that asserts the legacy bridge keeps
+ * working alongside the new wrapper.
  */
 export async function runCommand(page: Page, cmd: string): Promise<number> {
   const translated = translateToGsEval(cmd);
@@ -323,9 +324,11 @@ function translateToGsEval(line: string): Translation | null {
       };
   }
 
-  // checkpoint subcommands (--probe / clear / --load / --save / --machine)
+  // checkpoint subcommands (--probe / clear / --load / --save / --machine /
+  // auto on|off). `checkpoint auto on|off` writes the auto_checkpoint
+  // attribute; bare `checkpoint` is no longer a valid form (the legacy
+  // bridge that handled the auto-state query is gone).
   if (head === 'checkpoint') {
-    if (tail.length === 0) return null; // bare `checkpoint` queries auto state — leave on legacy
     if (tail[0] === '--probe' && tail.length === 1)
       return { method: 'checkpoint_probe', args: [], convention: 'cmd_int_bool' };
     if ((tail[0] === 'clear' || tail[0] === '--clear') && tail.length === 1)
@@ -347,6 +350,12 @@ function translateToGsEval(line: string): Translation | null {
         method: 'register_machine',
         args: [tail[1], tail[2]],
         convention: 'cmd_int_bool',
+      };
+    if (tail[0] === 'auto' && tail.length === 2 && (tail[1] === 'on' || tail[1] === 'off'))
+      return {
+        method: 'auto_checkpoint',
+        args: [tail[1] === 'on'],
+        convention: 'void_or_error',
       };
   }
 
