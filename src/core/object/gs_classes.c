@@ -4209,6 +4209,14 @@ static value_t method_root_fd_insert(struct object *self, const member_t *m, int
 static value_t method_root_run(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)self;
     (void)m;
+    // Guard against being called before any machine is loaded (e.g. the
+    // basic-ui `?noui` smoke test that pings runCommand before booting).
+    // The legacy `cmd_run` GS_ASSERT prints + returns rather than aborting,
+    // then dereferences NULL on s->mode — under the gsEval path the worker
+    // is fully initialised so the crash is reachable; under the older
+    // executeShellCommand path the cmd registry happened to lose this race.
+    if (!system_scheduler())
+        return val_err("run: no machine loaded");
     char line[64];
     int n;
     if (argc >= 1) {
