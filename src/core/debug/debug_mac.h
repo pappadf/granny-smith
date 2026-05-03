@@ -41,6 +41,19 @@ void debug_mac_print_process_info_header(void);
 // no-flag `set-mouse x y` shell form.
 void debug_mac_set_mouse(long x, long y);
 
+// Set mouse position with explicit routing mode. Mode chars:
+//   'g' = global (Mac OS Toolbox MTemp + MTemp guard)
+//   'h' = hardware (raw quadrature / ADB delta)
+//   'a' = aux (A/UX MAE physical-page write)
+//   else = default (per-platform best route)
+// Returns 0 on success, -1 if the memory system isn't initialised.
+int debug_mac_set_mouse_mode(long x, long y, char mode);
+
+// Inject a mouse button event with explicit routing mode.
+//   'g' = global (write MBState directly)
+//   else = hw / default (route through ADB/VIA PB3)
+void debug_mac_mouse_button_mode(bool button_down, char mode);
+
 // Toggle the 1 Hz mouse-position trace logger. Equivalent to
 // `trace-mouse start` / `trace-mouse stop`.
 void debug_mac_set_trace_mouse(bool enabled);

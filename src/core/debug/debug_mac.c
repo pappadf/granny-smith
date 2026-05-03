@@ -863,6 +863,51 @@ static void set_mouse_default(long x, long y) {
     }
 }
 
+// Set the mouse cursor position via the requested routing mode.
+//   'g' = global (Mac OS Toolbox MTemp + MTemp guard)
+//   'h' = hardware (raw quadrature / ADB delta)
+//   'a' = aux (A/UX MAE physical-page write)
+//   else = default (per-platform best route)
+// Returns 0 on success, non-zero if memory is unavailable. Coordinates are
+// clamped to int16 for absolute modes ('g'/'a'/default) since the Mac OS
+// Point type is 16-bit signed; 'h' passes deltas through unchanged.
+int debug_mac_set_mouse_mode(long x, long y, char mode) {
+    if (!system_memory())
+        return -1;
+    if (mode != 'h') {
+        if (x < -32768)
+            x = -32768;
+        else if (x > 32767)
+            x = 32767;
+        if (y < -32768)
+            y = -32768;
+        else if (y > 32767)
+            y = 32767;
+    }
+    switch (mode) {
+    case 'g':
+        set_mouse_global(x, y);
+        // Activate the MTemp guard to protect against phantom ADB deltas.
+        // user_only=false: classic Mac OS — kernel addresses don't matter
+        // because there is no separate Unix kernel.
+        mouse_guard_start((int16_t)x, (int16_t)y, /*user_only=*/false);
+        break;
+    case 'h':
+        mouse_guard_stop();
+        set_mouse_hw(x, y);
+        break;
+    case 'a':
+        mouse_guard_stop();
+        set_mouse_aux(x, y);
+        break;
+    default:
+        mouse_guard_stop();
+        set_mouse_default(x, y);
+        break;
+    }
+    return 0;
+}
+
 uint64_t cmd_set_mouse(int argc, char *argv[]) {
     char mode;
     parse_mode_flag(&argc, argv, &mode);
@@ -895,53 +940,10 @@ uint64_t cmd_set_mouse(int argc, char *argv[]) {
         return 0;
     }
 
-    if (!system_memory()) {
+    if (debug_mac_set_mouse_mode(a, b, mode) < 0) {
         printf("Error: memory system not initialized.\n");
         return 0;
     }
-
-    // Clamp to 16-bit signed range (Mac Point) for absolute modes
-    if (mode != 'h') {
-        if (a < -32768)
-            a = -32768;
-        else if (a > 32767)
-            a = 32767;
-        if (b < -32768)
-            b = -32768;
-        else if (b > 32767)
-            b = 32767;
-    }
-
-    switch (mode) {
-    case 'g':
-        set_mouse_global(a, b);
-        // Activate the MTemp guard to protect against phantom ADB deltas.
-        // The guard keeps MTemp pinned to (a, b) until the next set-mouse
-        // or mouse-button up, preventing stale ADB buffer data from
-        // shifting the cursor during button-hold tracking loops.
-        // user_only=false: classic Mac OS, kernel addresses don't matter
-        // because there is no separate Unix kernel.
-        mouse_guard_start((int16_t)a, (int16_t)b, /*user_only=*/false);
-        break;
-    case 'h':
-        mouse_guard_stop();
-        set_mouse_hw(a, b);
-        break;
-    case 'a':
-        // --aux: translate MTemp/RawMouse/Mouse through the cached MAE
-        // user CRP and write the resolved physical pages directly,
-        // bypassing the active-SoA path.  No guard tick — the writes
-        // hit MAE's address space exactly once and stay put because no
-        // recurring tick is racing them.
-        mouse_guard_stop();
-        set_mouse_aux(a, b);
-        break;
-    default:
-        mouse_guard_stop();
-        set_mouse_default(a, b);
-        break;
-    }
-
     return 0;
 }
 
@@ -1096,6 +1098,16 @@ static void mouse_button_global(bool button_down) {
     }
 }
 
+// Inject a mouse button up/down event via the requested routing mode.
+//   'g' = global (Mac OS Toolbox MBState write)
+//   else = hw / default (route through ADB/VIA PB3 hardware emulation)
+void debug_mac_mouse_button_mode(bool button_down, char mode) {
+    if (mode == 'g')
+        mouse_button_global(button_down);
+    else
+        system_mouse_update(button_down, 0, 0);
+}
+
 uint64_t cmd_mouse_button(int argc, char *argv[]) {
     char mode;
     parse_mode_flag(&argc, argv, &mode);
@@ -1115,13 +1127,7 @@ uint64_t cmd_mouse_button(int argc, char *argv[]) {
         return 0;
     }
 
-    if (mode == 'g') {
-        // --global: write MBState directly
-        mouse_button_global(button_down);
-    } else {
-        // --hw or default: route through hardware emulation (ADB or VIA PB3)
-        system_mouse_update(button_down, 0, 0);
-    }
+    debug_mac_mouse_button_mode(button_down, mode);
 
     printf("mouse-button: %s (%s)\n", button_down ? "down" : "up", mode == 'g' ? "global" : "hw");
     return 0;

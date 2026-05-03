@@ -2749,25 +2749,24 @@ static const class_desc_t network_class = {
 
 // --- mouse ----------------------------------------------------------------
 
-// Mode flag string -> legacy short option.
-//   "default" / NULL  → no flag (per-platform default routing)
-//   "global"          → --global  (Mac OS Toolbox MTemp write)
-//   "hw"              → --hw      (raw quadrature / ADB delta)
-//   "aux"             → --aux     (A/UX MAE physical-page write)
-// Returns "" for default, an `--<flag>` token otherwise, or NULL if the
-// caller passed an unknown mode.
-static const char *mouse_mode_flag(const value_t *v) {
+// Mode-string → mode char for debug_mac_*_mode().
+//   "default" / NULL → 'd' (default routing)
+//   "global"         → 'g'
+//   "hw"             → 'h'
+//   "aux"            → 'a'
+// Returns 'd' for default, the mode char otherwise, or 0 on bad input.
+static char mouse_mode_char(const value_t *v) {
     if (!v || v->kind != V_STRING || !v->s || !*v->s)
-        return "";
+        return 'd';
     if (strcmp(v->s, "default") == 0)
-        return "";
+        return 'd';
     if (strcmp(v->s, "global") == 0)
-        return "--global ";
+        return 'g';
     if (strcmp(v->s, "hw") == 0)
-        return "--hw ";
+        return 'h';
     if (strcmp(v->s, "aux") == 0)
-        return "--aux ";
-    return NULL;
+        return 'a';
+    return 0;
 }
 
 static value_t mouse_method_move(struct object *self, const member_t *m, int argc, const value_t *argv) {
@@ -2780,28 +2779,23 @@ static value_t mouse_method_move(struct object *self, const member_t *m, int arg
     int64_t y = val_as_i64(&argv[1], &oky);
     if (!okx || !oky)
         return val_err("mouse.move: x and y must be integers");
-    const char *flag = (argc >= 3) ? mouse_mode_flag(&argv[2]) : "";
-    if (!flag)
+    char mode = (argc >= 3) ? mouse_mode_char(&argv[2]) : 'd';
+    if (!mode)
         return val_err("mouse.move: mode must be one of \"default\"/\"global\"/\"hw\"/\"aux\"");
-    char line[128];
-    int n = snprintf(line, sizeof(line), "set-mouse %s%lld %lld", flag, (long long)x, (long long)y);
-    if (n < 0 || (size_t)n >= sizeof(line))
-        return val_err("mouse.move: arguments too long");
-    return val_bool(shell_dispatch(line) == 0);
+    if (debug_mac_set_mouse_mode((long)x, (long)y, mode) < 0)
+        return val_err("mouse.move: memory not initialised");
+    return val_bool(true);
 }
 
 static value_t mouse_method_click(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)self;
     (void)m;
     bool down = (argc >= 1) ? val_as_bool(&argv[0]) : true;
-    const char *flag = (argc >= 2) ? mouse_mode_flag(&argv[1]) : "";
-    if (!flag)
+    char mode = (argc >= 2) ? mouse_mode_char(&argv[1]) : 'd';
+    if (!mode)
         return val_err("mouse.click: mode must be one of \"default\"/\"global\"/\"hw\"");
-    char line[64];
-    int n = snprintf(line, sizeof(line), "mouse-button %s%s", flag, down ? "down" : "up");
-    if (n < 0 || (size_t)n >= sizeof(line))
-        return val_err("mouse.click: arguments too long");
-    return val_bool(shell_dispatch(line) == 0);
+    debug_mac_mouse_button_mode(down, mode);
+    return val_bool(true);
 }
 
 static value_t mouse_method_trace(struct object *self, const member_t *m, int argc, const value_t *argv) {
