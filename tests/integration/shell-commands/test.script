@@ -26,12 +26,6 @@ help info_regs
 # Test: info fpregs (replaces fpregs command)
 assert $(info_fpregs()) "info_fpregs failed"
 
-# Test: prompt off suppresses status line
-prompt off
-
-# Test: prompt on re-enables it
-prompt on
-
 # Test: logpoint list (should be empty)
 assert $(logpoint_list_dump()) "logpoint_list_dump failed"
 

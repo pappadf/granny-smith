@@ -7,7 +7,7 @@ run 50000
 
 # Top-level floppy. Plus uses the IWM controller; sel is the active
 # drive selector.
-eval floppy
+floppy
 assert $(floppy.type == "iwm") "Plus floppy controller is iwm"
 floppy.sel
 

@@ -3141,6 +3141,11 @@ static value_t screen_method_save(struct object *self, const member_t *m, int ar
     return val_bool(true);
 }
 
+// `screen.match(reference)` — bitwise compare the framebuffer against
+// a reference PNG.  A mismatch is a HARD failure: returns val_err so
+// the path-form dispatcher (and hence the headless script runner)
+// propagates non-zero out, failing the integration test.  Use
+// `screen.match_or_save` for the non-fatal diagnostic flow.
 static value_t screen_method_match(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)self;
     (void)m;
@@ -3152,15 +3157,15 @@ static value_t screen_method_match(struct object *self, const member_t *m, int a
         return val_err("screen.match: framebuffer not available");
     int result = match_framebuffer_with_png(fb, ref);
     if (result < 0) {
-        printf("MATCH FAILED: Error loading reference image.\n");
-        return val_bool(false);
+        printf("MATCH FAILED: Error loading reference image '%s'.\n", ref);
+        return val_err("screen.match: cannot load reference '%s'", ref);
     }
     if (result == 0) {
         printf("MATCH OK: Screen matches '%s'.\n", ref);
         return val_bool(true);
     }
     printf("MATCH FAILED: Screen does not match '%s'.\n", ref);
-    return val_bool(false);
+    return val_err("screen.match: screen does not match '%s'", ref);
 }
 
 static value_t screen_method_match_or_save(struct object *self, const member_t *m, int argc, const value_t *argv) {

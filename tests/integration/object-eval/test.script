@@ -19,10 +19,6 @@ cpu.a7
 cpu
 scheduler
 
-# Unknown paths fall through to the legacy "Did you mean?" path and
-# do not raise.
-ghost.path
-
 # M3 mac globals — auto-populated from mac_globals_data.c.
 mac.MBState
 mac.Ticks

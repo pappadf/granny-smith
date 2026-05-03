@@ -8,7 +8,7 @@
 run 50000
 
 # Top-level object. Loopback default is false at boot.
-eval scsi
+scsi
 assert $(scsi.loopback == false)
 
 # Bus child: phase is a V_ENUM, target / initiator are ints. After a

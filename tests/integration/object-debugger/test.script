@@ -11,7 +11,7 @@
 run 50000
 
 # The debugger object resolves to a class instance.
-eval debugger
+debugger
 debugger.breakpoints
 debugger.logpoints
 debugger.watches

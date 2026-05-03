@@ -33,7 +33,7 @@ run 150000000
 screen.match insert-800k-floppy.png
 
 # Insert 800K floppy
-fd create ${WORK_DIR}/blank800.dsk 0
+fd_create "${WORK_DIR}/blank800.dsk" 0
 
 # Let it run a short bit - detect the floppy
 run 10000000
@@ -58,7 +58,7 @@ screen.match insert-1.4mb-floppy.png
 mouse.click false "global"
 
 # Insert 1.4MB HD floppy and click immediately (before .Sony VBL auto-mounts)
-fd create --hd ${WORK_DIR}/blankHD.dsk 0
+fd_create "${WORK_DIR}/blankHD.dsk" "--hd"
 mouse.move 370 185 "global"
 run 5000000
 mouse.click true

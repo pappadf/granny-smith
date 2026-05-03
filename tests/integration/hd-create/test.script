@@ -25,7 +25,7 @@ assert $(path_size("${WORK_DIR}/test_exact.img") == 21411840) "test_exact.img wr
 # "40mb" case, "20M" geometry-aligns rather than producing an exact
 # 20*1024*1024 byte count.
 assert $(hd_create("${WORK_DIR}/test_20M.img", "20M")) "hd_create failed for size 20M"
-path_size("${WORK_DIR}/test_20M.img")
+path_size "${WORK_DIR}/test_20M.img"
 
 # Test: hd_models prints the catalog one more time (smoke check).
 hd_models

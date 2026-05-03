@@ -5,7 +5,7 @@
 run 50000
 
 # Tree shape.
-eval storage
+storage
 storage.images
 
 # First image: HD attached at boot. Pin the catalog-driven attrs so a

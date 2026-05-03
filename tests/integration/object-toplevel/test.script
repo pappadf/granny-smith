@@ -5,11 +5,11 @@
 run 50000
 
 # Tree shape.
-eval network
+network
 network.appletalk
 network.appletalk.shares
 network.appletalk.printer
-eval mouse
+mouse
 
 # Initially the shares table is empty. The printer is auto-enabled at
 # register time (atalk_printer_register → atalk_printer_enable(NULL))
@@ -22,7 +22,7 @@ network.appletalk.printer.name
 # both in the dev container (/workspaces/granny-smith) and in CI
 # (/__w/granny-smith/granny-smith) so the path is portable.
 echo $(network.appletalk.shares.add("docs", "/tmp"))
-atalk-share-list
+network.appletalk.shares
 assert $(network.appletalk.shares[0].name == "docs")
 assert $(network.appletalk.shares[0].path == "/tmp")
 network.appletalk.shares[0].vol_id
@@ -33,7 +33,7 @@ assert $(network.appletalk.shares[1].name == "demo")
 
 # Remove via the new tree's per-entry method, verify legacy list reflects it.
 echo $(network.appletalk.shares[0].remove())
-atalk-share-list
+network.appletalk.shares
 
 # Printer enable/disable via the new methods, assert state through the
 # new tree's enabled attr after each transition.

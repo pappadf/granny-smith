@@ -405,7 +405,8 @@ void dispatch_command(char *line, struct cmd_result *res) {
     int pd = try_path_dispatch(argc, argv);
     if (pd < 0)
         cmd_err(res, "command failed");
-    // pd > 0 (not a recognised path) → silent no-op, matching legacy parity.
+    else if (pd > 0)
+        cmd_err(res, "unknown command: '%s'", argv[0]);
     free_replacements(MAXTOK, replaced);
     free(expanded);
 }
@@ -531,14 +532,12 @@ static void format_value_print(const value_t *v) {
 static int try_path_dispatch(int argc, char **argv) {
     if (argc < 1)
         return 1;
-    // Quick rejection: a path either contains '.' / '[' or matches a
-    // root member name. The cheaper test (look for '.' or '[') covers
-    // the common case and lets the legacy registry win on names like
-    // `run` that ARE root methods but whose legacy command aliases
-    // matter for back-compat with scripts.
-    bool dotted = strchr(argv[0], '.') || strchr(argv[0], '[');
+    // Resolve argv[0] against the object root.  Anything that names a
+    // valid node — root method, attached child object, attribute, or
+    // dotted path — dispatches; everything else falls through to the
+    // unknown-command path.
     node_t n = object_resolve(object_root(), argv[0]);
-    if (!node_valid(n) || (!dotted && (!n.member || n.member->kind != M_METHOD)))
+    if (!node_valid(n))
         return 1;
 
     // Setter form: `path = value`.
@@ -648,14 +647,16 @@ uint64_t shell_dispatch(char *line) {
     }
 
     int pd = try_path_dispatch(argc, argv);
+    if (pd > 0)
+        fprintf(stderr, "Unknown command: '%s'\n", argv[0]);
     free_replacements(MAXTOK, replaced);
     free(expanded);
     // pd == 0 → handled successfully
     // pd  < 0 → handled with error
-    // pd  > 0 → not a recognised path; treat as no-op so the script keeps
-    //          going (legacy parity — `path_size("...")` and other expression
-    //          forms used to silently no-op when invoked at top level).
-    return (pd < 0) ? (uint64_t)-1 : 0;
+    // pd  > 0 → unknown command; HARD error (was a no-op pre-phase-5e
+    //          which masked test-script regressions like the legacy
+    //          `fd create` line silently no-opping after 5c).
+    return (pd != 0) ? (uint64_t)-1 : 0;
 }
 
 // Tab completion entry point

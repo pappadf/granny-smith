@@ -8,7 +8,7 @@
 run 50000
 
 # Read-only views.
-eval rtc
+rtc
 rtc.read_only
 
 # Set the time via the typed setter, assert the round-trip. There's

@@ -7,7 +7,7 @@
 run 50000
 
 # Defaults.
-eval scc
+scc
 scc.loopback
 scc.pclk_hz
 scc.rtxc_hz

@@ -6,7 +6,7 @@
 run 50000
 
 # Top-level object + read-only attrs.
-eval sound
+sound
 sound.sample_rate
 
 # enabled / volume — values depend on boot timing, just verify the
