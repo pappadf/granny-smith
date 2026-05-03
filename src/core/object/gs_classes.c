@@ -4696,12 +4696,8 @@ static value_t method_root_path_exists(struct object *self, const member_t *m, i
     (void)m;
     if (argc < 1 || argv[0].kind != V_STRING)
         return val_err("path_exists: expected (path)");
-    char line[1024];
-    int n = snprintf(line, sizeof(line), "exists \"%s\"", argv[0].s ? argv[0].s : "");
-    if (n < 0 || (size_t)n >= sizeof(line))
-        return val_err("path_exists: path too long");
-    // legacy `exists` returns 0=exists, 1=missing — invert for V_BOOL.
-    return val_bool(shell_dispatch(line) == 0);
+    vfs_stat_t st;
+    return val_bool(vfs_stat(argv[0].s ? argv[0].s : "", &st) == 0);
 }
 
 // `path_size(path)` — file size in bytes (0 on stat failure).
@@ -4710,12 +4706,14 @@ static value_t method_root_path_size(struct object *self, const member_t *m, int
     (void)m;
     if (argc < 1 || argv[0].kind != V_STRING)
         return val_err("path_size: expected (path)");
-    char line[1024];
-    int n = snprintf(line, sizeof(line), "size \"%s\"", argv[0].s ? argv[0].s : "");
-    if (n < 0 || (size_t)n >= sizeof(line))
-        return val_err("path_size: path too long");
-    uint64_t r = shell_dispatch(line);
-    return val_uint(8, r);
+    const char *path = argv[0].s ? argv[0].s : "";
+    vfs_stat_t st = {0};
+    int rc = vfs_stat(path, &st);
+    if (rc < 0) {
+        printf("size: cannot stat '%s': %s\n", path, strerror(-rc));
+        return val_uint(8, 0);
+    }
+    return val_uint(8, st.size);
 }
 
 // `fd_create(path, [size_str])` — create a blank floppy image. Optional
