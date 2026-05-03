@@ -159,6 +159,53 @@ done:
     return rc;
 }
 
+// Public entry point: copy `src` to `dst`. Returns 0 on success, negative
+// errno on failure. `*out_err` (if not NULL) is set to a static error
+// message describing the failure (e.g. "omitting directory 'X' (use -r)").
+int shell_cp(const char *src, const char *dst, bool recursive, char *err_buf, size_t err_cap) {
+    if (err_buf && err_cap)
+        err_buf[0] = '\0';
+    if (!src || !dst) {
+        if (err_buf && err_cap)
+            snprintf(err_buf, err_cap, "usage: cp [-r] <src> <dst>");
+        return -EINVAL;
+    }
+
+    vfs_stat_t src_st = {0};
+    int rc = vfs_stat(src, &src_st);
+    if (rc < 0) {
+        if (err_buf && err_cap)
+            snprintf(err_buf, err_cap, "cp: cannot stat '%s': %s", src, strerror(-rc));
+        return rc;
+    }
+    if ((src_st.mode & VFS_MODE_DIR) && !recursive) {
+        if (err_buf && err_cap)
+            snprintf(err_buf, err_cap, "cp: omitting directory '%s' (use -r)", src);
+        return -EISDIR;
+    }
+
+    char final_dst[VFS_PATH_MAX];
+    snprintf(final_dst, sizeof(final_dst), "%s", dst);
+    vfs_stat_t dst_st = {0};
+    if (vfs_stat(dst, &dst_st) == 0 && (dst_st.mode & VFS_MODE_DIR)) {
+        char base[256];
+        path_basename(src, base, sizeof(base));
+        if (base[0])
+            path_join(final_dst, sizeof(final_dst), dst, base);
+    }
+
+    struct cp_stats s = {0};
+    rc = copy_recursive(src, final_dst, &s);
+    if (rc < 0) {
+        if (err_buf && err_cap)
+            snprintf(err_buf, err_cap, "cp: copy failed: %s", strerror(-rc));
+        return rc;
+    }
+    printf("copied %llu file(s), %llu byte(s)%s\n", (unsigned long long)s.files_copied,
+           (unsigned long long)s.bytes_copied, s.dirs_created ? "" : "");
+    return 0;
+}
+
 // cp [-r] <src> <dst>
 // If dst is an existing directory, we append basename(src) to dst before
 // recursing (POSIX behaviour).
@@ -179,41 +226,12 @@ static void cmd_cp(struct cmd_context *ctx, struct cmd_result *res) {
             return;
         }
     }
-    if (!src || !dst) {
-        cmd_err(res, "usage: cp [-r] <src> <dst>");
-        return;
-    }
-
-    vfs_stat_t src_st = {0};
-    int rc = vfs_stat(src, &src_st);
+    char err[256] = {0};
+    int rc = shell_cp(src, dst, recursive, err, sizeof(err));
     if (rc < 0) {
-        cmd_err(res, "cp: cannot stat '%s': %s", src, strerror(-rc));
+        cmd_err(res, "%s", err[0] ? err : "cp: failed");
         return;
     }
-    if ((src_st.mode & VFS_MODE_DIR) && !recursive) {
-        cmd_err(res, "cp: omitting directory '%s' (use -r)", src);
-        return;
-    }
-
-    // If dst exists and is a directory, append basename(src).
-    char final_dst[VFS_PATH_MAX];
-    snprintf(final_dst, sizeof(final_dst), "%s", dst);
-    vfs_stat_t dst_st = {0};
-    if (vfs_stat(dst, &dst_st) == 0 && (dst_st.mode & VFS_MODE_DIR)) {
-        char base[256];
-        path_basename(src, base, sizeof(base));
-        if (base[0])
-            path_join(final_dst, sizeof(final_dst), dst, base);
-    }
-
-    struct cp_stats s = {0};
-    rc = copy_recursive(src, final_dst, &s);
-    if (rc < 0) {
-        cmd_err(res, "cp: copy failed: %s", strerror(-rc));
-        return;
-    }
-    cmd_printf(ctx, "copied %llu file(s), %llu byte(s)%s\n", (unsigned long long)s.files_copied,
-               (unsigned long long)s.bytes_copied, s.dirs_created ? "" : "");
     cmd_ok(res);
 }
 

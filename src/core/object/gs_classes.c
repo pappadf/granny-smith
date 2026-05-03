@@ -2990,7 +2990,11 @@ static value_t find_dispatch_kind(const char *kind, int argc, const value_t *arg
     }
     if (pos < 0 || (size_t)pos >= sizeof(buf))
         return val_err("%s: arguments too long", err_label);
-    return val_bool(shell_dispatch(buf) == 0);
+    char *targv[32];
+    int targc = tokenize(buf, targv, 32);
+    if (targc <= 0)
+        return val_err("%s: tokenisation failed", err_label);
+    return val_bool(shell_find_argv(targc, targv) == 0);
 }
 
 static value_t find_method_str(struct object *self, const member_t *m, int argc, const value_t *argv) {
@@ -3797,18 +3801,24 @@ static int64_t dispatch_with_string_args(const char *cmd, int argc, const value_
 }
 
 // `cp(src, dst, [flags])` — top-level alias for `storage.import` per
-// proposal §5.10 ("preserve UNIX muscle memory"). Routes through the
-// legacy `cp` command directly to keep -r/-R handling in one place.
-// Returns true on success, false on dispatch / copy failure.
+// proposal §5.10 ("preserve UNIX muscle memory"). Calls shell_cp directly.
+// `flags` is a string; "-r" / "-R" enables recursive directory copy.
 static value_t method_root_cp(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)self;
     (void)m;
-    if (argc < 2)
+    if (argc < 2 || argv[0].kind != V_STRING || argv[1].kind != V_STRING)
         return val_err("cp: expected (src, dst, [flags])");
-    int64_t rc = dispatch_with_string_args("cp", argc, argv);
+    bool recursive = false;
+    if (argc >= 3 && argv[2].kind == V_STRING && argv[2].s) {
+        const char *f = argv[2].s;
+        if (strstr(f, "-r") || strstr(f, "-R"))
+            recursive = true;
+    }
+    char err[256] = {0};
+    int rc = shell_cp(argv[0].s, argv[1].s, recursive, err, sizeof(err));
     if (rc < 0)
-        return val_err("cp: dispatch failed (command line too long?)");
-    return val_bool(rc == 0);
+        return val_err("%s", err[0] ? err : "cp: failed");
+    return val_bool(true);
 }
 
 // `peeler(path, [out_dir])` — extract a Mac archive
@@ -4695,8 +4705,8 @@ static value_t method_root_logpoint_clear(struct object *self, const member_t *m
 }
 
 // `logpoint_set(spec)` — pass the legacy logpoint spec as a single string
-// (e.g. `--write 0x000016A.l "Ticks bumped..." level=5`). The legacy
-// parser handles `--write` / `--read` / address / message / level.
+// (e.g. `--write 0x000016A.l "Ticks bumped..." level=5`). Calls the legacy
+// `cmd_logpoint_handler` parser via shell_logpoint_argv (no shell_dispatch).
 static value_t method_root_logpoint_set(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)self;
     (void)m;
@@ -4706,13 +4716,18 @@ static value_t method_root_logpoint_set(struct object *self, const member_t *m, 
     int n = snprintf(line, sizeof(line), "logpoint %s", argv[0].s ? argv[0].s : "");
     if (n < 0 || (size_t)n >= sizeof(line))
         return val_err("logpoint_set: argument too long");
-    return val_bool(shell_dispatch(line) == 0);
+    char *targv[32];
+    int targc = tokenize(line, targv, 32);
+    if (targc <= 0)
+        return val_err("logpoint_set: empty spec");
+    return val_bool(shell_logpoint_argv(targc, targv) == 0);
 }
 
 // `log_set(subsys, level_or_spec)` — adjust per-subsystem log level. The
 // second arg accepts either an integer level or a full named-arg spec
-// string (e.g. `"level=5 file=/tmp/foo.txt stdout=off ts=on"`); the spec
-// form is forwarded verbatim to the legacy `log` parser.
+// string (e.g. `"level=5 file=/tmp/foo.txt stdout=off ts=on"`); spec
+// strings are tokenised and forwarded to cmd_log directly (no
+// shell_dispatch).
 static value_t method_root_log_set(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)self;
     (void)m;
@@ -4731,7 +4746,11 @@ static value_t method_root_log_set(struct object *self, const member_t *m, int a
     }
     if (n < 0 || (size_t)n >= sizeof(line))
         return val_err("log_set: argument too long");
-    return val_bool(shell_dispatch(line) == 0);
+    char *targv[32];
+    int targc = tokenize(line, targv, 32);
+    if (targc <= 0)
+        return val_err("log_set: empty spec");
+    return val_bool(cmd_log(targc, targv) == 0);
 }
 
 // `stop()` — interrupt the scheduler.
@@ -4841,8 +4860,9 @@ static value_t method_root_fd_create(struct object *self, const member_t *m, int
 }
 
 // `print_value(target)` — read a register / condition code / memory cell
-// via the legacy `print` command. Returns the numeric value as V_UINT;
-// the test convention uses `>>> 0` to truncate to uint32.
+// by calling the legacy `print` handler via shell_print_argv (no
+// shell_dispatch). Returns the numeric value as V_UINT; the test
+// convention uses `>>> 0` to truncate to uint32.
 static value_t method_root_print_value(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)self;
     (void)m;
@@ -4852,13 +4872,17 @@ static value_t method_root_print_value(struct object *self, const member_t *m, i
     int n = snprintf(line, sizeof(line), "print %s", argv[0].s ? argv[0].s : "");
     if (n < 0 || (size_t)n >= sizeof(line))
         return val_err("print_value: target too long");
-    return val_uint(8, shell_dispatch(line));
+    char *targv[32];
+    int targc = tokenize(line, targv, 32);
+    if (targc <= 0)
+        return val_err("print_value: empty target");
+    return val_uint(8, (uint64_t)shell_print_argv(targc, targv));
 }
 
 // `set_value(target, value)` — write a register / condition code / memory
 // cell via the legacy `set` command. Target syntax matches the legacy
-// command (`d5`, `pc`, `z`, `0x1000.b`, etc.). Numeric values are
-// stringified as hex; string values pass through verbatim.
+// command (`d5`, `pc`, `z`, `0x1000.b`, etc.). Calls cmd_set directly
+// (no shell_dispatch).
 static value_t method_root_set_value(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)self;
     (void)m;
@@ -4880,7 +4904,11 @@ static value_t method_root_set_value(struct object *self, const member_t *m, int
     int n = snprintf(line, sizeof(line), "set %s %s", argv[0].s ? argv[0].s : "", value_str);
     if (n < 0 || (size_t)n >= sizeof(line))
         return val_err("set_value: argument too long");
-    return val_bool(shell_dispatch(line) == 0);
+    char *targv[32];
+    int targc = tokenize(line, targv, 32);
+    if (targc <= 0)
+        return val_err("set_value: tokenisation failed");
+    return val_bool(cmd_set(targc, targv) == 0);
 }
 
 // `examine(addr, [count])` — hex-dump `count` bytes from `addr` (legacy
@@ -4919,7 +4947,11 @@ static value_t method_root_examine(struct object *self, const member_t *m, int a
     }
     if (n < 0 || (size_t)n >= sizeof(line))
         return val_err("examine: argument too long");
-    return val_bool(shell_dispatch(line) == 0);
+    char *targv[32];
+    int targc = tokenize(line, targv, 32);
+    if (targc <= 0)
+        return val_err("examine: tokenisation failed");
+    return val_bool(shell_examine_argv(targc, targv) == 0);
 }
 
 static value_t method_root_dump_tree(struct object *self, const member_t *m, int argc, const value_t *argv) {
@@ -5086,9 +5118,16 @@ static value_t method_root_cdrom_eject(struct object *self, const member_t *m, i
         if (!ok && argv[0].kind == V_UINT)
             id = (int64_t)argv[0].u;
     }
-    char line[64];
-    snprintf(line, sizeof(line), "cdrom eject %lld", (long long)id);
-    return val_bool(shell_dispatch(line) == 0);
+    if (!global_emulator || !global_emulator->scsi)
+        return val_err("cdrom_eject: emulator not initialised");
+    int rc = scsi_eject_device(global_emulator->scsi, (int)id);
+    if (rc < 0)
+        return val_err("cdrom_eject: invalid SCSI ID %lld (expected 0..6)", (long long)id);
+    if (rc == 0)
+        printf("cdrom eject: no disc in SCSI ID %lld\n", (long long)id);
+    else
+        printf("cdrom eject: ejected disc from SCSI ID %lld\n", (long long)id);
+    return val_bool(true);
 }
 
 // `cdrom_info(id)` — print info about the CD-ROM at the given SCSI id
@@ -5106,9 +5145,25 @@ static value_t method_root_cdrom_info(struct object *self, const member_t *m, in
         if (!ok && argv[0].kind == V_UINT)
             id = (int64_t)argv[0].u;
     }
-    char line[64];
-    snprintf(line, sizeof(line), "cdrom info %lld", (long long)id);
-    return val_bool(shell_dispatch(line) == 0);
+    if (!global_emulator || !global_emulator->scsi)
+        return val_err("cdrom_info: emulator not initialised");
+    if (id < 0 || id > 6)
+        return val_err("cdrom_info: invalid SCSI ID %lld (expected 0..6)", (long long)id);
+    int t = scsi_device_type(global_emulator->scsi, (unsigned)id);
+    if (t != /* scsi_dev_cdrom */ 2) {
+        printf("cdrom info: SCSI ID %lld is not a CD-ROM device\n", (long long)id);
+        return val_bool(true);
+    }
+    image_t *img = scsi_device_image(global_emulator->scsi, (unsigned)id);
+    if (!img) {
+        printf("cdrom info: SCSI ID %lld — no disc\n", (long long)id);
+        return val_bool(true);
+    }
+    const char *fname = image_get_filename(img);
+    size_t sz = disk_size(img);
+    double size_mb = (double)sz / (1024.0 * 1024.0);
+    printf("cdrom info: SCSI ID %lld — %.1f MB — %s\n", (long long)id, size_mb, fname ? fname : "(unknown)");
+    return val_bool(true);
 }
 
 // `image_mounts()` — list currently-mounted image paths (the legacy

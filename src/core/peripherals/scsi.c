@@ -1308,6 +1308,22 @@ bool scsi_get_loopback(scsi_t *scsi) {
     return scsi->loopback;
 }
 
+// Eject the medium currently in the SCSI device at `id` (0..6).  Mirrors
+// the START/STOP UNIT eject path: clear the medium pointer, set the
+// medium-not-present unit attention so the host sees a fresh transition.
+// Returns 1 on success, 0 if the slot was already empty, -1 on error.
+int scsi_eject_device(scsi_t *scsi, int id) {
+    if (!scsi || id < 0 || id > 6)
+        return -1;
+    if (!scsi->devices[id].image && !scsi->devices[id].medium_present)
+        return 0;
+    scsi->devices[id].medium_present = false;
+    scsi->devices[id].image = NULL;
+    scsi->devices[id].unit_attention = true;
+    scsi_set_sense(scsi, id, SENSE_UNIT_ATTENTION, ASC_MEDIUM_NOT_PRESENT, 0x00);
+    return 1;
+}
+
 // === M7d — read-only views for the object model =============================
 
 int scsi_get_bus_phase(const scsi_t *scsi) {
@@ -1357,6 +1373,14 @@ const char *scsi_device_revision(const scsi_t *scsi, unsigned which) {
     if (!scsi || which > 7 || scsi->devices[which].type == scsi_dev_none)
         return NULL;
     return (const char *)scsi->devices[which].revision;
+}
+
+struct image *scsi_device_image(const scsi_t *scsi, unsigned which) {
+    if (!scsi || which > 7 || scsi->devices[which].type == scsi_dev_none)
+        return NULL;
+    if (!scsi->devices[which].medium_present)
+        return NULL;
+    return scsi->devices[which].image;
 }
 
 // ============================================================================

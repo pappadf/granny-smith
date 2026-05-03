@@ -48,6 +48,10 @@ void scsi_set_loopback(scsi_t *scsi, bool enable);
 // Query whether SCSI loopback mode is active
 bool scsi_get_loopback(scsi_t *scsi);
 
+// Eject the medium at the given SCSI id (0..6). Returns 1 on successful
+// eject, 0 if the slot was already empty, -1 on bad arguments.
+int scsi_eject_device(scsi_t *scsi, int id);
+
 // === M7d — object-model accessors ==========================================
 //
 // Read-only views over the SCSI controller and its 8 device slots used
@@ -80,5 +84,9 @@ uint16_t scsi_device_block_size(const scsi_t *scsi, unsigned which);
 const char *scsi_device_vendor(const scsi_t *scsi, unsigned which);
 const char *scsi_device_product(const scsi_t *scsi, unsigned which);
 const char *scsi_device_revision(const scsi_t *scsi, unsigned which);
+
+// Get the image_t* mounted at the given SCSI id, or NULL if the slot
+// is empty or the device has no medium loaded.
+struct image *scsi_device_image(const scsi_t *scsi, unsigned which);
 
 #endif // SCSI_H

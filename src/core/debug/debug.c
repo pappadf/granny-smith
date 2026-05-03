@@ -12,6 +12,8 @@
 
 #include "addr_format.h"
 #include "alias.h"
+#include "cmd_io.h"
+#include "cmd_parse.h"
 #include "cmd_symbol.h"
 #include "cmd_types.h"
 #include "common.h"
@@ -1275,7 +1277,7 @@ static void str_to_upper(char *dest, const char *src) {
     *dest = '\0';
 }
 
-static uint64_t cmd_set(int argc, char *argv[]) {
+uint64_t cmd_set(int argc, char *argv[]) {
     if (argc != 3) {
         printf("Usage: set <register|address> <value>\n");
         printf("  Registers: D0-D7, A0-A7, PC, SP, SSP, USP, SR, CCR\n");
@@ -4829,4 +4831,75 @@ void gs_assert_fail(const char *expr, const char *file, int line, const char *fu
     if (debug && debug->assertion_callback) {
         debug->assertion_callback(expr, file, line, func);
     }
+}
+
+// ===== Phase 5b: argv-driven entry points for the typed object-model bridge =====
+// These mirror the legacy `print` / `examine` / `logpoint` / `find` shell
+// commands but bypass shell_dispatch / find_cmd. The typed wrappers in
+// gs_classes.c tokenize their spec strings via `tokenize` and call into
+// these helpers directly.
+
+// Run a cmd_fn handler with a fresh ctx/result/io. Returns the integer
+// from cmd_int (when set), 0 on RES_OK, -1 on parse error or RES_ERR.
+static int64_t run_handler(cmd_fn fn, const struct cmd_reg *reg, int argc, char **argv) {
+    struct cmd_io io;
+    init_cmd_io(&io, INVOKE_INTERACTIVE);
+    struct cmd_context ctx;
+    memset(&ctx, 0, sizeof(ctx));
+    ctx.out = io.out_stream;
+    ctx.err = io.err_stream;
+    struct cmd_result res;
+    memset(&res, 0, sizeof(res));
+    res.type = RES_OK;
+    if (cmd_parse_args(argc, argv, reg, &ctx, &res))
+        fn(&ctx, &res);
+    finalize_cmd_io(&io, &res);
+    if (res.type == RES_ERR) {
+        if (res.as_str)
+            fprintf(stderr, "%s\n", res.as_str);
+        return -1;
+    }
+    if (res.type == RES_INT)
+        return res.as_int;
+    return 0;
+}
+
+int64_t shell_print_argv(int argc, char **argv) {
+    static const struct cmd_reg reg = {
+        .name = "print",
+        .fn = cmd_print_handler,
+        .args = print_args,
+        .nargs = 1,
+    };
+    return run_handler(cmd_print_handler, &reg, argc, argv);
+}
+
+int shell_examine_argv(int argc, char **argv) {
+    static const struct cmd_reg reg = {
+        .name = "examine",
+        .fn = cmd_examine_handler,
+        .args = examine_args,
+        .nargs = 2,
+    };
+    return (int)run_handler(cmd_examine_handler, &reg, argc, argv);
+}
+
+int shell_logpoint_argv(int argc, char **argv) {
+    static const struct cmd_reg reg = {
+        .name = "logpoint",
+        .fn = cmd_logpoint_handler,
+        .subcmds = logpoint_subcmds,
+        .n_subcmds = 5,
+    };
+    return (int)run_handler(cmd_logpoint_handler, &reg, argc, argv);
+}
+
+int shell_find_argv(int argc, char **argv) {
+    static const struct cmd_reg reg = {
+        .name = "find",
+        .fn = cmd_find_handler,
+        .subcmds = find_subcmds,
+        .n_subcmds = 4,
+    };
+    return (int)run_handler(cmd_find_handler, &reg, argc, argv);
 }

@@ -1143,6 +1143,9 @@ int gs_background_checkpoint(const char *reason) {
     return (rc == GS_SUCCESS) ? 0 : -1;
 }
 
+// Forward declaration — definition is below.
+static int clear_checkpoint_files(void);
+
 // Platform impl of gs_checkpoint_clear / gs_register_machine.  Both
 // only mean something on WASM (where OPFS hosts per-machine
 // checkpoint directories); headless gets the weak no-op stubs.

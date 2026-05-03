@@ -109,6 +109,15 @@ int delete_all_breakpoints(debug_t *debug);
 void list_logpoints(debug_t *debug);
 int delete_all_logpoints(debug_t *debug);
 
+// argv-driven entry points for the legacy `print` / `examine` /
+// `logpoint` / `find` commands. The typed object-model bridge tokenises
+// its spec strings via shell_tokenize and calls these directly so the
+// rich-parser command bodies stay in one place.
+int64_t shell_print_argv(int argc, char **argv);
+int shell_examine_argv(int argc, char **argv);
+int shell_logpoint_argv(int argc, char **argv);
+int shell_find_argv(int argc, char **argv);
+
 // Register / FPU / Mac-state dumps — used by typed `info_*` wrappers
 // and the legacy `td` / `fpregs` / `mac-state` commands. Both layers
 // share the same printer; the typed wrapper has no cmd_context so

@@ -180,7 +180,12 @@ static void suggest_command(const char *name) {
 
 /* --- tokenizer ----------------------------------------------------------- */
 #define MAXTOK 32
-static int tokenize(char *line, char *argv[], int max) {
+
+// In-place tokenizer exposed via shell.h as `shell_tokenize` so the
+// typed object-model bridge can split free-form spec strings (e.g.
+// logpoint specs, log argv) without routing through `shell_dispatch`.
+// `line` is mutated in place; returned argv pointers point inside it.
+int tokenize(char *line, char *argv[], int max) {
     // Tokenizer with support for: \-escapes, ASCII and UTF-8 curly
     // quotes, and `$(...)` expression tokens (proposal §4.1.2). Inside
     // a `$(...)` token, whitespace and `[...]` are part of the token

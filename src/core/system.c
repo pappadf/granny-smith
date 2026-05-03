@@ -1098,23 +1098,15 @@ static void cmd_cdrom_handler(struct cmd_context *ctx, struct cmd_result *res) {
             cmd_err(res, "cdrom eject: emulator not initialized");
             return;
         }
-        if (id < 0 || id > 6) {
+        int rc = scsi_eject_device(config->scsi, id);
+        if (rc < 0) {
             cmd_err(res, "cdrom eject: invalid SCSI ID %d (expected 0..6)", id);
             return;
         }
-        // Use START/STOP UNIT eject path: clear medium, set UNIT ATTENTION
-        // Access scsi internals via the internal header
-        scsi_t *scsi = config->scsi;
-        if (!scsi->devices[id].image && !scsi->devices[id].medium_present) {
+        if (rc == 0)
             cmd_printf(ctx, "cdrom eject: no disc in SCSI ID %d\n", id);
-            cmd_ok(res);
-            return;
-        }
-        scsi->devices[id].medium_present = false;
-        scsi->devices[id].image = NULL;
-        scsi->devices[id].unit_attention = true;
-        scsi_set_sense(scsi, id, SENSE_UNIT_ATTENTION, ASC_MEDIUM_NOT_PRESENT, 0x00);
-        cmd_printf(ctx, "cdrom eject: ejected disc from SCSI ID %d\n", id);
+        else
+            cmd_printf(ctx, "cdrom eject: ejected disc from SCSI ID %d\n", id);
         cmd_ok(res);
         return;
     }
@@ -1130,19 +1122,19 @@ static void cmd_cdrom_handler(struct cmd_context *ctx, struct cmd_result *res) {
             cmd_err(res, "cdrom info: invalid SCSI ID %d (expected 0..6)", id);
             return;
         }
-        scsi_t *scsi = config->scsi;
-        if (scsi->devices[id].type != scsi_dev_cdrom) {
+        if (scsi_device_type(config->scsi, (unsigned)id) != scsi_dev_cdrom) {
             cmd_printf(ctx, "cdrom info: SCSI ID %d is not a CD-ROM device\n", id);
             cmd_ok(res);
             return;
         }
-        if (!scsi->devices[id].medium_present || !scsi->devices[id].image) {
+        image_t *img = scsi_device_image(config->scsi, (unsigned)id);
+        if (!img) {
             cmd_printf(ctx, "cdrom info: SCSI ID %d — no disc\n", id);
             cmd_ok(res);
             return;
         }
-        const char *fname = image_get_filename(scsi->devices[id].image);
-        size_t sz = disk_size(scsi->devices[id].image);
+        const char *fname = image_get_filename(img);
+        size_t sz = disk_size(img);
         double size_mb = (double)sz / (1024.0 * 1024.0);
         cmd_printf(ctx, "cdrom info: SCSI ID %d — %.1f MB — %s\n", id, size_mb, fname ? fname : "(unknown)");
         cmd_ok(res);

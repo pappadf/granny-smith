@@ -146,7 +146,7 @@ static int parse_onoff(const char *v, int *out) {
     return -1;
 }
 
-static uint64_t cmd_log(int argc, char *argv[]) {
+uint64_t cmd_log(int argc, char *argv[]) {
     // Unified usage:
     //   log                              -> list all categories
     //   log <cat>                        -> show config for category
