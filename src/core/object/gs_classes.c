@@ -39,6 +39,8 @@
 #include "floppy.h"
 #include "fpu.h"
 #include "image.h"
+#include "image_apm.h"
+#include "image_vfs.h"
 #include "keyboard.h"
 #include "machine.h"
 #include "memory.h"
@@ -3990,17 +3992,86 @@ static value_t method_root_partmap(struct object *self, const member_t *m, int a
 static value_t method_root_probe(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)self;
     (void)m;
-    return image_subcmd_bool("probe", argc, argv, "probe");
+    if (argc < 1 || argv[0].kind != V_STRING)
+        return val_err("probe: expected (path)");
+    const char *path = argv[0].s ? argv[0].s : "";
+    image_t *img = image_open_readonly(path);
+    if (!img) {
+        printf("cannot open image '%s'\n", path);
+        return val_bool(false);
+    }
+    size_t size = disk_size(img);
+    // APM first (matches the proposal's probe order — APM wins over ISO 9660
+    // because Apple install CDs carry both).
+    uint8_t block[512];
+    bool apm = false;
+    if (size >= 1024 && disk_read_data(img, 512, block, sizeof(block)) == sizeof(block))
+        apm = image_apm_probe_magic(block);
+    bool iso = false;
+    if (size >= 33280 && disk_read_data(img, 32768, block, sizeof(block)) == sizeof(block))
+        iso = (memcmp(block + 1, "CD001", 5) == 0);
+    bool hfs = false;
+    if (!apm && size >= 1024 + 512 && disk_read_data(img, 1024, block, sizeof(block)) == sizeof(block))
+        hfs = (block[0] == 0x42 && block[1] == 0x44);
+    if (apm && iso)
+        printf("format: APM + ISO 9660 hybrid (%zu bytes)\n", size);
+    else if (apm)
+        printf("format: APM (%zu bytes)\n", size);
+    else if (iso)
+        printf("format: ISO 9660 (%zu bytes)\n", size);
+    else if (hfs)
+        printf("format: HFS (bare, %zu bytes)\n", size);
+    else
+        printf("format: unrecognised / raw (%zu bytes)\n", size);
+    image_close(img);
+    return val_bool(true);
+}
+// list_partitions / image_mounts both want the cached-mounts table via
+// image_vfs_list. Render-row callbacks receive the per-image columns.
+static void list_row_print(const char *path, const char *fmt, uint32_t n_parts, uint32_t refs, bool conflicted,
+                           void *user) {
+    bool *header_printed = (bool *)user;
+    if (!*header_printed) {
+        printf("PATH                                        FMT  PARTS  REFS  STATUS\n");
+        *header_printed = true;
+    }
+    printf("%-44s %-3s %5u %5u  %s\n", path, fmt, n_parts, refs, conflicted ? "busy" : "ok");
 }
 static value_t method_root_list_partitions(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)self;
     (void)m;
-    return image_subcmd_bool("list", argc, argv, "list_partitions");
+    (void)argc;
+    (void)argv;
+    bool header_printed = false;
+    image_vfs_list(list_row_print, &header_printed);
+    if (!header_printed)
+        printf("(no cached image mounts)\n");
+    return val_bool(true);
 }
 static value_t method_root_unmount(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)self;
     (void)m;
-    return image_subcmd_bool("unmount", argc, argv, "unmount");
+    if (argc < 1 || argv[0].kind != V_STRING)
+        return val_err("unmount: expected (path)");
+    const char *path = argv[0].s ? argv[0].s : "";
+    char resolved[VFS_PATH_MAX];
+    const vfs_backend_t *be = NULL;
+    void *bctx = NULL;
+    const char *tail = NULL;
+    if (vfs_resolve(path, resolved, sizeof(resolved), &be, &bctx, &tail) == 0)
+        path = resolved;
+    int rc = image_vfs_unmount(path);
+    if (rc == 0) {
+        printf("unmounted %s\n", path);
+        return val_bool(true);
+    }
+    if (rc == -ENOENT)
+        printf("image unmount: not currently mounted: %s\n", path);
+    else if (rc == -EBUSY)
+        printf("image unmount: %s has live handles; marked conflicted\n", path);
+    else
+        printf("image unmount: %s: %s\n", path, strerror(-rc));
+    return val_bool(false);
 }
 
 // `quit()` — dispatches the legacy `quit` command. The headless main
@@ -5022,14 +5093,18 @@ static value_t method_root_cdrom_info(struct object *self, const member_t *m, in
 }
 
 // `image_mounts()` — list currently-mounted image paths (the legacy
-// `image list` no-arg form). Returns a V_LIST<V_STRING>; scripts that
-// expect the human-readable table output should use the legacy form.
+// `image list` no-arg form). Same body as method_root_list_partitions
+// since the underlying primitive (image_vfs_list) is the same.
 static value_t method_root_image_mounts(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)self;
     (void)m;
     (void)argc;
     (void)argv;
-    return val_bool(shell_dispatch("image list") == 0);
+    bool header_printed = false;
+    image_vfs_list(list_row_print, &header_printed);
+    if (!header_printed)
+        printf("(no cached image mounts)\n");
+    return val_bool(true);
 }
 
 // `fd_validate(path)` — return the floppy density tag ("400K", "800K",
