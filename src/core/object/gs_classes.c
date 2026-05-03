@@ -2850,6 +2850,78 @@ static const class_desc_t mouse_class = {
     .n_members = sizeof(mouse_members) / sizeof(mouse_members[0]),
 };
 
+// --- vfs ------------------------------------------------------------------
+//
+// Wraps the shell's filesystem commands (ls, mkdir, cat) under a single
+// object so scripts have a typed entry point. Each method delegates to
+// shell_dispatch — same scaffolding as the rom_*/hd_*/etc. wrappers.
+
+static value_t vfs_method_ls(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)self;
+    (void)m;
+    char line[1024];
+    int n;
+    if (argc >= 1 && argv[0].kind == V_STRING && argv[0].s && *argv[0].s)
+        n = snprintf(line, sizeof(line), "ls \"%s\"", argv[0].s);
+    else
+        n = snprintf(line, sizeof(line), "ls");
+    if (n < 0 || (size_t)n >= sizeof(line))
+        return val_err("vfs.ls: argument too long");
+    return val_bool(shell_dispatch(line) == 0);
+}
+
+static value_t vfs_method_mkdir(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)self;
+    (void)m;
+    if (argc < 1 || argv[0].kind != V_STRING)
+        return val_err("vfs.mkdir: expected (path)");
+    char line[1024];
+    int n = snprintf(line, sizeof(line), "mkdir \"%s\"", argv[0].s ? argv[0].s : "");
+    if (n < 0 || (size_t)n >= sizeof(line))
+        return val_err("vfs.mkdir: argument too long");
+    return val_bool(shell_dispatch(line) == 0);
+}
+
+static value_t vfs_method_cat(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)self;
+    (void)m;
+    if (argc < 1 || argv[0].kind != V_STRING)
+        return val_err("vfs.cat: expected (path)");
+    char line[1024];
+    int n = snprintf(line, sizeof(line), "cat \"%s\"", argv[0].s ? argv[0].s : "");
+    if (n < 0 || (size_t)n >= sizeof(line))
+        return val_err("vfs.cat: argument too long");
+    return val_bool(shell_dispatch(line) == 0);
+}
+
+static const arg_decl_t vfs_path_arg[] = {
+    {.name = "path", .kind = V_STRING, .doc = "Filesystem path"},
+};
+static const arg_decl_t vfs_path_arg_optional[] = {
+    {.name = "path", .kind = V_STRING, .flags = OBJ_ARG_OPTIONAL, .doc = "Directory path (default: cwd)"},
+};
+
+static const member_t vfs_members[] = {
+    {.kind = M_METHOD,
+     .name = "ls",
+     .doc = "List directory contents (or current directory)",
+     .method = {.args = vfs_path_arg_optional, .nargs = 1, .result = V_BOOL, .fn = vfs_method_ls}},
+    {.kind = M_METHOD,
+     .name = "mkdir",
+     .doc = "Create a directory",
+     .method = {.args = vfs_path_arg, .nargs = 1, .result = V_BOOL, .fn = vfs_method_mkdir}      },
+    {.kind = M_METHOD,
+     .name = "cat",
+     .doc = "Print the contents of a text file",
+     .method = {.args = vfs_path_arg, .nargs = 1, .result = V_BOOL, .fn = vfs_method_cat}        },
+};
+
+static const class_desc_t vfs_class = {
+    .name = "vfs",
+    .members = vfs_members,
+    .n_members = sizeof(vfs_members) / sizeof(vfs_members[0]),
+};
+
 // --- keyboard -------------------------------------------------------------
 //
 // Wraps the legacy `key <name|0xNN>` command. The arg is either a string
@@ -3657,15 +3729,21 @@ static value_t method_root_hd_create(struct object *self, const member_t *m, int
     return val_bool(shell_dispatch(line) == 0);
 }
 
-// `hd_download(...)` is reserved per proposal §5.10 but its underlying
-// command isn't registered everywhere (platform-specific; needs the
-// fetch glue). Stubbed with a deferral error so the path resolves.
+// `hd_download(src, dst)` — export a hard disk image (base + delta) to a
+// flat file. Wraps the legacy `hd download` command, which the headless
+// build does support (the WASM platform's fetch glue is a separate
+// concern that the typed wrapper doesn't change).
 static value_t method_root_hd_download(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)self;
     (void)m;
-    (void)argc;
-    (void)argv;
-    return val_err("hd_download: deferred — needs platform fetch plumbing");
+    if (argc < 2 || argv[0].kind != V_STRING || argv[1].kind != V_STRING)
+        return val_err("hd_download: expected (source_path, dest_path)");
+    char line[1024];
+    int n = snprintf(line, sizeof(line), "hd download \"%s\" \"%s\"", argv[0].s ? argv[0].s : "",
+                     argv[1].s ? argv[1].s : "");
+    if (n < 0 || (size_t)n >= sizeof(line))
+        return val_err("hd_download: arguments too long");
+    return val_bool(shell_dispatch(line) == 0);
 }
 
 // rom_* / vrom_* — wrap the `rom probe|validate` / `vrom probe|validate`
@@ -4463,7 +4541,8 @@ static const arg_decl_t root_hd_create_args[] = {
     {.name = "size", .kind = V_STRING, .doc = "Image size (e.g. \"40M\" or \"512K\")"},
 };
 static const arg_decl_t root_hd_download_args[] = {
-    {.name = "path", .kind = V_STRING, .doc = "Image path to download"},
+    {.name = "src", .kind = V_STRING, .doc = "Source HD image path (base + delta)"},
+    {.name = "dst", .kind = V_STRING, .doc = "Destination flat-file path"         },
 };
 static const arg_decl_t root_path_arg[] = {
     {.name = "path", .kind = V_STRING, .doc = "File path"},
@@ -4575,8 +4654,8 @@ static const member_t emu_root_members[] = {
      .method = {.args = root_hd_create_args, .nargs = 2, .result = V_BOOL, .fn = method_root_hd_create}              },
     {.kind = M_METHOD,
      .name = "hd_download",
-     .doc = "Download an HD image (deferred — needs platform plumbing)",
-     .method = {.args = root_hd_download_args, .nargs = 1, .result = V_NONE, .fn = method_root_hd_download}          },
+     .doc = "Export a hard-disk image (base + delta) to a flat file",
+     .method = {.args = root_hd_download_args, .nargs = 2, .result = V_BOOL, .fn = method_root_hd_download}          },
     {.kind = M_METHOD,
      .name = "rom_probe",
      .doc = "True if a file is a recognised ROM image (no arg = is a ROM loaded?)",
@@ -5006,6 +5085,7 @@ void gs_classes_install(struct config *cfg) {
     attach_stub(NULL, &mouse_class, cfg, "mouse");
     attach_stub(NULL, &keyboard_class, cfg, "keyboard");
     attach_stub(NULL, &screen_class, cfg, "screen");
+    attach_stub(NULL, &vfs_class, cfg, "vfs");
 
     // Built-in aliases. Register CPU always, FPU only when present,
     // mac always (the table is size-driven and machine-independent).

@@ -97,7 +97,7 @@ run 50000000
 screen.match shutdown.png
 
 # Download (export) the formatted HD image to a flat file
-hd download ${WORK_DIR}/blank80.img ${WORK_DIR}/downloaded.img
+hd_download ${WORK_DIR}/blank80.img ${WORK_DIR}/downloaded.img
 
 quit
 

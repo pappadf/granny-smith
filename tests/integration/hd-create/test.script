@@ -17,6 +17,6 @@ hd_create ${WORK_DIR}/test_exact.img 21411840
 hd_create ${WORK_DIR}/test_20M.img 20M
 
 # Test: hd models --json returns JSON output
-hd models --json
+hd_models
 
 quit
