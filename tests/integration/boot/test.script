@@ -6,7 +6,7 @@ run 60000000
 
 # Compare screen against reference desktop image
 # Path is relative to the current working directory (tests/integration/boot/)
-screenshot match desktop.png
+screen.match desktop.png
 
 # Exit with success (screenshot match sets exit code)
 quit

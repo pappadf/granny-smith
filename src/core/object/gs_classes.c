@@ -1569,12 +1569,50 @@ static value_t rtc_attr_time_set(struct object *self, const member_t *m, value_t
         value_free(&in);
         return val_err("rtc not available");
     }
-    bool ok = true;
-    uint64_t s = val_as_u64(&in, &ok);
+    uint32_t mac_seconds = 0;
+    bool resolved = false;
+    if (in.kind == V_STRING && in.s) {
+        // Mirror cmd_set_time: accept either a decimal unix-epoch
+        // string or an ISO-8601 "YYYY-MM-DDTHH:MM:SS" timestamp.
+        // Either way, the result is unix seconds, then we shift to
+        // the Mac 1904 epoch.
+        char *endp = NULL;
+        long long parsed = strtoll(in.s, &endp, 10);
+        if (endp && endp != in.s && *endp == '\0') {
+            if (parsed < 0) {
+                value_free(&in);
+                return val_err("rtc.time: epoch must be non-negative");
+            }
+            mac_seconds = (uint32_t)((uint64_t)parsed + 2082844800u /* MAC_TO_UNIX_EPOCH */);
+            resolved = true;
+        } else {
+            struct tm tm = {0};
+            if (strptime(in.s, "%Y-%m-%dT%H:%M:%S", &tm)) {
+                time_t t = timegm(&tm);
+                if (t != (time_t)-1) {
+                    mac_seconds = (uint32_t)((int64_t)t + 2082844800);
+                    resolved = true;
+                }
+            }
+        }
+        if (!resolved) {
+            value_free(&in);
+            return val_err("rtc.time: expected unix-epoch integer or YYYY-MM-DDTHH:MM:SS");
+        }
+    } else {
+        bool ok = true;
+        uint64_t s = val_as_u64(&in, &ok);
+        if (!ok) {
+            value_free(&in);
+            return val_err("rtc.time: value is not numeric");
+        }
+        // Numeric input is treated as Mac-epoch seconds (matches the
+        // getter's V_UINT result). Use the string form for unix epochs
+        // or ISO timestamps.
+        mac_seconds = (uint32_t)s;
+    }
     value_free(&in);
-    if (!ok)
-        return val_err("rtc.time: value is not numeric");
-    rtc_set_seconds(rtc, (uint32_t)s);
+    rtc_set_seconds(rtc, mac_seconds);
     return val_none();
 }
 
@@ -2708,29 +2746,59 @@ static const class_desc_t network_class = {
 
 // --- mouse ----------------------------------------------------------------
 
+// Mode flag string -> legacy short option.
+//   "default" / NULL  → no flag (per-platform default routing)
+//   "global"          → --global  (Mac OS Toolbox MTemp write)
+//   "hw"              → --hw      (raw quadrature / ADB delta)
+//   "aux"             → --aux     (A/UX MAE physical-page write)
+// Returns "" for default, an `--<flag>` token otherwise, or NULL if the
+// caller passed an unknown mode.
+static const char *mouse_mode_flag(const value_t *v) {
+    if (!v || v->kind != V_STRING || !v->s || !*v->s)
+        return "";
+    if (strcmp(v->s, "default") == 0)
+        return "";
+    if (strcmp(v->s, "global") == 0)
+        return "--global ";
+    if (strcmp(v->s, "hw") == 0)
+        return "--hw ";
+    if (strcmp(v->s, "aux") == 0)
+        return "--aux ";
+    return NULL;
+}
+
 static value_t mouse_method_move(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)self;
     (void)m;
     if (argc < 2)
-        return val_err("mouse.move: expected (x, y)");
+        return val_err("mouse.move: expected (x, y, [mode])");
     bool okx = true, oky = true;
     int64_t x = val_as_i64(&argv[0], &okx);
     int64_t y = val_as_i64(&argv[1], &oky);
     if (!okx || !oky)
         return val_err("mouse.move: x and y must be integers");
-    debug_mac_set_mouse((long)x, (long)y);
-    return val_none();
+    const char *flag = (argc >= 3) ? mouse_mode_flag(&argv[2]) : "";
+    if (!flag)
+        return val_err("mouse.move: mode must be one of \"default\"/\"global\"/\"hw\"/\"aux\"");
+    char line[128];
+    int n = snprintf(line, sizeof(line), "set-mouse %s%lld %lld", flag, (long long)x, (long long)y);
+    if (n < 0 || (size_t)n >= sizeof(line))
+        return val_err("mouse.move: arguments too long");
+    return val_bool(shell_dispatch(line) == 0);
 }
 
 static value_t mouse_method_click(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)self;
     (void)m;
     bool down = (argc >= 1) ? val_as_bool(&argv[0]) : true;
-    // Routes through the per-platform mouse path (ADB or quadrature) —
-    // same as legacy `mouse-button down|up` without --global.
-    extern void system_mouse_update(bool button, int dx, int dy);
-    system_mouse_update(down, 0, 0);
-    return val_none();
+    const char *flag = (argc >= 2) ? mouse_mode_flag(&argv[1]) : "";
+    if (!flag)
+        return val_err("mouse.click: mode must be one of \"default\"/\"global\"/\"hw\"");
+    char line[64];
+    int n = snprintf(line, sizeof(line), "mouse-button %s%s", flag, down ? "down" : "up");
+    if (n < 0 || (size_t)n >= sizeof(line))
+        return val_err("mouse.click: arguments too long");
+    return val_bool(shell_dispatch(line) == 0);
 }
 
 static value_t mouse_method_trace(struct object *self, const member_t *m, int argc, const value_t *argv) {
@@ -2745,9 +2813,17 @@ static value_t mouse_method_trace(struct object *self, const member_t *m, int ar
 static const arg_decl_t mouse_move_args[] = {
     {.name = "x", .kind = V_INT, .doc = "Target X coordinate"},
     {.name = "y", .kind = V_INT, .doc = "Target Y coordinate"},
+    {.name = "mode",
+     .kind = V_STRING,
+     .flags = OBJ_ARG_OPTIONAL,
+     .doc = "\"default\" (per-platform), \"global\" (Toolbox MTemp), \"hw\" (raw quadrature), or \"aux\" (A/UX MAE)"},
 };
 static const arg_decl_t mouse_click_args[] = {
     {.name = "down", .kind = V_BOOL, .flags = OBJ_ARG_OPTIONAL, .doc = "true = press, false = release (default true)"},
+    {.name = "mode",
+     .kind = V_STRING,
+     .flags = OBJ_ARG_OPTIONAL,
+     .doc = "\"default\" (per-platform), \"global\" (Toolbox MBState), or \"hw\" (raw)"                              },
 };
 static const arg_decl_t mouse_trace_args[] = {
     {.name = "enabled", .kind = V_BOOL, .doc = "true = log mouse position once per second"},
@@ -2756,12 +2832,12 @@ static const arg_decl_t mouse_trace_args[] = {
 static const member_t mouse_members[] = {
     {.kind = M_METHOD,
      .name = "move",
-     .doc = "Set mouse position (per-platform default route)",
-     .method = {.args = mouse_move_args, .nargs = 2, .result = V_NONE, .fn = mouse_method_move}  },
+     .doc = "Set mouse position; optional mode chooses the routing path",
+     .method = {.args = mouse_move_args, .nargs = 3, .result = V_BOOL, .fn = mouse_method_move}  },
     {.kind = M_METHOD,
      .name = "click",
-     .doc = "Press or release the mouse button via the hardware path",
-     .method = {.args = mouse_click_args, .nargs = 1, .result = V_NONE, .fn = mouse_method_click}},
+     .doc = "Press or release the mouse button; optional mode chooses the routing path",
+     .method = {.args = mouse_click_args, .nargs = 2, .result = V_BOOL, .fn = mouse_method_click}},
     {.kind = M_METHOD,
      .name = "trace",
      .doc = "Toggle the 1 Hz mouse-position trace logger",
@@ -2772,6 +2848,124 @@ static const class_desc_t mouse_class = {
     .name = "mouse",
     .members = mouse_members,
     .n_members = sizeof(mouse_members) / sizeof(mouse_members[0]),
+};
+
+// --- screen ---------------------------------------------------------------
+//
+// Wraps the legacy `screenshot` subcommand family. Each method
+// delegates to shell_dispatch so the underlying framebuffer logic in
+// debug.c stays the single source of truth — same scaffolding pattern
+// as the rom_*/hd_*/etc. wrappers.
+
+static value_t screen_method_save(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)self;
+    (void)m;
+    if (argc < 1 || argv[0].kind != V_STRING)
+        return val_err("screen.save: expected (path)");
+    char line[1024];
+    int n = snprintf(line, sizeof(line), "screenshot save \"%s\"", argv[0].s ? argv[0].s : "");
+    if (n < 0 || (size_t)n >= sizeof(line))
+        return val_err("screen.save: argument too long");
+    return val_bool(shell_dispatch(line) == 0);
+}
+
+static value_t screen_method_match(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)self;
+    (void)m;
+    if (argc < 1 || argv[0].kind != V_STRING)
+        return val_err("screen.match: expected (reference_path)");
+    char line[1024];
+    int n = snprintf(line, sizeof(line), "screenshot match \"%s\"", argv[0].s ? argv[0].s : "");
+    if (n < 0 || (size_t)n >= sizeof(line))
+        return val_err("screen.match: argument too long");
+    // Returns the legacy int result code: 0 = match, 1 = mismatch, 2 = error.
+    // Wrap in val_bool for the shell-form true/false convention so the
+    // common case (matched) reads as `true` in path-form prints.
+    return val_bool(shell_dispatch(line) == 0);
+}
+
+static value_t screen_method_match_or_save(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)self;
+    (void)m;
+    if (argc < 1 || argv[0].kind != V_STRING)
+        return val_err("screen.match_or_save: expected (reference_path, [actual_path])");
+    char line[1024];
+    int n;
+    if (argc >= 2 && argv[1].kind == V_STRING && argv[1].s && *argv[1].s)
+        n = snprintf(line, sizeof(line), "screenshot match-or-save \"%s\" \"%s\"", argv[0].s, argv[1].s);
+    else
+        n = snprintf(line, sizeof(line), "screenshot match-or-save \"%s\"", argv[0].s);
+    if (n < 0 || (size_t)n >= sizeof(line))
+        return val_err("screen.match_or_save: arguments too long");
+    return val_bool(shell_dispatch(line) == 0);
+}
+
+static value_t screen_method_checksum(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)self;
+    (void)m;
+    char line[256];
+    int n;
+    if (argc >= 4) {
+        // Region: (top, left, bottom, right)
+        bool ok = true;
+        int64_t t = val_as_i64(&argv[0], &ok);
+        int64_t l = val_as_i64(&argv[1], &ok);
+        int64_t b = val_as_i64(&argv[2], &ok);
+        int64_t r = val_as_i64(&argv[3], &ok);
+        if (!ok)
+            return val_err("screen.checksum: region args must be integers");
+        n = snprintf(line, sizeof(line), "screenshot checksum %lld %lld %lld %lld", (long long)t, (long long)l,
+                     (long long)b, (long long)r);
+    } else if (argc != 0) {
+        return val_err("screen.checksum: expected (top, left, bottom, right) or no args");
+    } else {
+        n = snprintf(line, sizeof(line), "screenshot checksum");
+    }
+    if (n < 0 || (size_t)n >= sizeof(line))
+        return val_err("screen.checksum: arguments too long");
+    return val_int((int64_t)shell_dispatch(line));
+}
+
+static const arg_decl_t screen_save_args[] = {
+    {.name = "path", .kind = V_STRING, .doc = "Output PNG path (must end in .png)"},
+};
+static const arg_decl_t screen_match_args[] = {
+    {.name = "reference", .kind = V_STRING, .doc = "Reference PNG path"},
+};
+static const arg_decl_t screen_match_or_save_args[] = {
+    {.name = "reference", .kind = V_STRING, .doc = "Reference PNG path"},
+    {.name = "actual", .kind = V_STRING, .flags = OBJ_ARG_OPTIONAL, .doc = "Path to write current screen on miss"},
+};
+static const arg_decl_t screen_checksum_args[] = {
+    {.name = "top",    .kind = V_INT, .flags = OBJ_ARG_OPTIONAL, .doc = "Region top edge"   },
+    {.name = "left",   .kind = V_INT, .flags = OBJ_ARG_OPTIONAL, .doc = "Region left edge"  },
+    {.name = "bottom", .kind = V_INT, .flags = OBJ_ARG_OPTIONAL, .doc = "Region bottom edge"},
+    {.name = "right",  .kind = V_INT, .flags = OBJ_ARG_OPTIONAL, .doc = "Region right edge" },
+};
+
+static const member_t screen_members[] = {
+    {.kind = M_METHOD,
+     .name = "save",
+     .doc = "Save the current framebuffer to a PNG file",
+     .method = {.args = screen_save_args, .nargs = 1, .result = V_BOOL, .fn = screen_method_save}                  },
+    {.kind = M_METHOD,
+     .name = "match",
+     .doc = "Compare the framebuffer against a reference PNG (true if identical)",
+     .method = {.args = screen_match_args, .nargs = 1, .result = V_BOOL, .fn = screen_method_match}                },
+    {.kind = M_METHOD,
+     .name = "match_or_save",
+     .doc = "Like `match`, but also write the current screen to `actual` on mismatch",
+     .method = {.args = screen_match_or_save_args, .nargs = 2, .result = V_BOOL, .fn = screen_method_match_or_save}},
+    {.kind = M_METHOD,
+     .name = "checksum",
+     .doc = "Polynomial hash of the framebuffer (full screen or top/left/bottom/right region)",
+     .method = {.args = screen_checksum_args, .nargs = 4, .result = V_INT, .fn = screen_method_checksum}           },
+};
+
+static const class_desc_t screen_class = {
+    .name = "screen",
+    .members = screen_members,
+    .n_members = sizeof(screen_members) / sizeof(screen_members[0]),
 };
 
 // === M8 (slice 2) — storage object with images indexed children ============
@@ -4701,6 +4895,7 @@ void gs_classes_install(struct config *cfg) {
         }
     }
     attach_stub(NULL, &mouse_class, cfg, "mouse");
+    attach_stub(NULL, &screen_class, cfg, "screen");
 
     // Built-in aliases. Register CPU always, FPU only when present,
     // mac always (the table is size-driven and machine-independent).

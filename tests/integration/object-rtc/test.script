@@ -14,11 +14,11 @@ eval rtc.read_only
 # Set the time via the legacy command — expects unix epoch.
 # 1969-12-31T23:59:59 UTC is unix epoch -1; pick a positive value.
 # 0 unix → 1970-01-01T00:00:00 UTC → 2082844800 mac seconds.
-set-time 0
+rtc.time = 0
 eval rtc.time
 
 # Set a different time, observe again.
-set-time 1000000
+rtc.time = 1000000
 eval rtc.time
 
 # PRAM read of a known address. Mac PRAM is initialised by the boot

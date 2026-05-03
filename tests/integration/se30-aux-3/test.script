@@ -11,24 +11,24 @@
 
 run 200000000
 
-screenshot match installer.png
+screen.match installer.png
 
 # Click "Easy Install" (button center ~(380, 80)) — opens a confirm
 # dialog asking "...will be overwritten by the installation process.
 # Do you wish to continue?" with Cancel / OK buttons.
-set-mouse 380 80 --aux
+mouse.move 380 80 "aux"
 mouse.click true
 run 5000000
 mouse.click false
 run 25000000
 
-screenshot match confirm.png
+screen.match confirm.png
 
 # Click "OK" (button center ~(337, 185)) — confirms and dismisses the
 # dialog, transitioning to the install-progress screen.  The cursor is
 # hidden by the dialog, but the click still hit-tests against MTemp
 # (which --aux keeps pinned at our target), so the click lands on OK.
-set-mouse 337 185 --aux
+mouse.move 337 185 "aux"
 mouse.click true
 run 1000000
 mouse.click false
@@ -40,11 +40,11 @@ run 2000000
 # while the installer scans the CD.  We capture the brief gray-screen
 # state right after dismissal — confirm dialog is gone and the
 # installer hasn't yet drawn the progress UI.
-screenshot match dialog-dismissed.png
+screen.match dialog-dismissed.png
 
 run 750000000
 
 # This is an UNWANTED match -> match does NOT equal success
-screenshot match error.png
+screen.match error.png
 
 quit

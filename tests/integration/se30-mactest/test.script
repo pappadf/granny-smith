@@ -14,10 +14,10 @@ hd loopback on
 run 200000000
 
 # Match the MacTest main screen
-screenshot match main.png
+screen.match main.png
 
 # Start the test
-set-mouse 100 121 --global
+mouse.move 100 121 "global"
 run 5000000
 mouse.click true
 run 5000000
@@ -25,12 +25,12 @@ mouse.click false
 run 20000000
 
 # We should be running the VIA tests now
-screenshot match via.png
+screen.match via.png
 
 run 150000000
 
 # The test now asks us to insert a 800K floppy
-screenshot match insert-800k-floppy.png
+screen.match insert-800k-floppy.png
 
 # Insert 800K floppy
 fd create ${WORK_DIR}/blank800.dsk 0
@@ -39,7 +39,7 @@ fd create ${WORK_DIR}/blank800.dsk 0
 run 10000000
 
 # Click the OK button on the "insert floppy" dialog
-set-mouse 370 185 --global
+mouse.move 370 185 "global"
 run 5000000
 mouse.click true
 run 5000000
@@ -48,18 +48,18 @@ mouse.click false
 run 250000000
 
 # The test now asks us to insert a 1.4MB floppy
-screenshot match insert-1.4mb-floppy.png
+screen.match insert-1.4mb-floppy.png
 
 # Reset MBState: the mouse guard from the 800K set-mouse --global kept the
 # cursor pinned at the OK button position during the 250M-cycle run above.
 # Intermediate dialogs (Phase 2 boot-disk-reinsert, error dialogs) were
 # auto-clicked by the guard + stale MBState, leaving MBState stuck at 0x00.
 # Force it back to 0x80 (button up) before our click.
-mouse-button --global up
+mouse.click false "global"
 
 # Insert 1.4MB HD floppy and click immediately (before .Sony VBL auto-mounts)
 fd create --hd ${WORK_DIR}/blankHD.dsk 0
-set-mouse 370 185 --global
+mouse.move 370 185 "global"
 run 5000000
 mouse.click true
 run 5000000
@@ -68,7 +68,7 @@ mouse.click false
 run 100000000
 
 # Screen should now say that floppy tests succeeded and prompt us to re-insert app disk
-screenshot match floppy-test-success.png
+screen.match floppy-test-success.png
 
 # Insert the original application disk
 fd_insert ../../data/apps/MacTest-SE30.image 0 true
@@ -88,6 +88,6 @@ run 7000000000
 # After the reboot, MacTest should have reloaded from the floppy and reached
 # its main screen.  It reads the PRAM flag set before the test and knows the
 # memory test passed.
-screenshot match main-after-reboot.png
+screen.match main-after-reboot.png
 
 quit

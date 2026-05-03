@@ -982,9 +982,12 @@ static int try_path_dispatch(int argc, char **argv) {
         }
         value_t v = parse_literal_full(argv[2], NULL, 0);
         if (val_is_error(&v)) {
-            fprintf(stderr, "set %s: %s\n", argv[0], v.err ? v.err : "parse error");
+            // Fall back to treating the token as a string literal —
+            // mirrors the method-call branch and lets attribute setters
+            // accept opaque tokens (ISO timestamps, paths, identifiers
+            // that aren't valid number/bool/enum literals).
             value_free(&v);
-            return -1;
+            v = val_str(argv[2]);
         }
         value_t result = node_set(n, v);
         if (val_is_error(&result)) {

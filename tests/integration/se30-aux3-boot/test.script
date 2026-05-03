@@ -7,7 +7,7 @@
 # specific seed used to panic with "Sorry, a system error occurred."
 # before the se30 slot-deassert fix (commit db03c13). Booting cleanly
 # at this seed proves the fix.
-set-time 2026-04-26T21:30:36
+rtc.time = 2026-04-26T21:30:36
 
 run 300000000
 
@@ -23,20 +23,20 @@ key return
 
 run 100000000
 
-screenshot match desktop.png
+screen.match desktop.png
 
 # select "CommandShell" via Special menu
-set-mouse 20 10 --aux
+mouse.move 20 10 "aux"
 run 10000000
 mouse.click true
 run 10000000
-set-mouse 20 110 --aux
+mouse.move 20 110 "aux"
 run 10000000
 mouse.click false
 run 10000000
 
 # The command shell should now be open
-screenshot match shell.png
+screen.match shell.png
 
 # enter command "ls"
 key 0x25
@@ -46,6 +46,6 @@ key return
 run 10000000
 
 # The shell should have run `ls` and printed a directory listing
-screenshot match ls.png
+screen.match ls.png
 
 quit

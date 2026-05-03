@@ -5,5 +5,5 @@
 run 335000000
 
 # Verify the screen matches the floppy icon reference image
-screenshot match floppy.png
+screen.match floppy.png
 quit

@@ -5,7 +5,7 @@
 run 800000000
 
 # Verify the screen matches the reference image
-screenshot match finder.png
+screen.match finder.png
 
 mouse.move 50 50
 
@@ -21,6 +21,6 @@ mouse.click false
 
 run 45000000
 
-screenshot match about.png
+screen.match about.png
 
 quit
