@@ -46,6 +46,7 @@
 #include "memory.h"
 #include "object.h"
 #include "peeler.h"
+#include "peeler_shell.h"
 #include "rom.h"
 #include "rtc.h"
 #include "scc.h"
@@ -3823,12 +3824,7 @@ static value_t method_root_peeler(struct object *self, const member_t *m, int ar
         return val_err("peeler: expected (path, [out_dir])");
     const char *path = argv[0].s ? argv[0].s : "";
     const char *out_dir = (argc >= 2 && argv[1].kind == V_STRING && argv[1].s && *argv[1].s) ? argv[1].s : NULL;
-    char line[1024];
-    int n = out_dir ? snprintf(line, sizeof(line), "peeler -o \"%s\" \"%s\"", out_dir, path)
-                    : snprintf(line, sizeof(line), "peeler \"%s\"", path);
-    if (n < 0 || (size_t)n >= sizeof(line))
-        return val_err("peeler: arguments too long");
-    return val_bool(shell_dispatch(line) == 0);
+    return val_bool(peeler_shell_extract(path, out_dir) == 0);
 }
 
 // `peeler_probe(path)` — true if the given file is a peeler-supported
@@ -3872,10 +3868,9 @@ static value_t method_root_find_media(struct object *self, const member_t *m, in
     (void)m;
     if (argc < 1 || argv[0].kind != V_STRING)
         return val_err("find_media: expected (dir, [dst])");
-    int64_t rc = dispatch_with_string_args("find-media", argc, argv);
-    if (rc < 0)
-        return val_err("find_media: dispatch failed");
-    return val_bool(rc == 0);
+    const char *dir = argv[0].s ? argv[0].s : "";
+    const char *dst = (argc >= 2 && argv[1].kind == V_STRING && argv[1].s && *argv[1].s) ? argv[1].s : NULL;
+    return val_bool(gs_find_media(dir, dst) == 0);
 }
 
 // `hd_create(path, size)` — wraps `hd create <path> <size>`.

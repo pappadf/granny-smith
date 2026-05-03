@@ -208,6 +208,10 @@ int gs_download(const char *path);
 int gs_background_checkpoint(const char *reason);
 int gs_checkpoint_clear(void);
 int gs_register_machine(const char *machine_id, const char *created);
+// gs_find_media(dir, [dest]) — find the first floppy image in `dir`,
+// optionally copy to `dest`.  WASM provides the impl; headless gets
+// the weak stub.  Prints the discovered path on success.
+int gs_find_media(const char *dir_path, const char *dest);
 
 // True if a valid checkpoint exists for the active machine.  Weak
 // default returns NULL (headless has no auto-checkpoint loop); WASM

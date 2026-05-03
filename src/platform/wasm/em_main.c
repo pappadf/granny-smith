@@ -833,15 +833,12 @@ static uint64_t cmd_file_copy(int argc, char *argv[]) {
 // Prints the path of the first match and returns 0, or returns 1 if none found.
 // Used by JS after peeler extraction (FS.readdir from main thread is broken
 // with WasmFS pthreads, so this runs on the worker).
-static uint64_t cmd_find_media(int argc, char *argv[]) {
-    if (argc < 2) {
-        printf("usage: find-media <directory> [dest]\n");
-        return 1;
-    }
-
-    const char *dir_path = argv[1];
-    const char *dest = (argc >= 3) ? argv[2] : NULL;
-
+// Platform impl of gs_find_media (weak default in system.c stubs out
+// for headless).  Walks `dir_path`, picks the first regular file
+// recognised as a floppy image, optionally copies it to `dest`, and
+// prints the path on success.  Returns 0 on success, non-zero on
+// "no media found" / IO error.
+int gs_find_media(const char *dir_path, const char *dest) {
     DIR *dir = opendir(dir_path);
     if (!dir) {
         printf("find-media: cannot open '%s': %s\n", dir_path, strerror(errno));
@@ -899,6 +896,15 @@ static uint64_t cmd_find_media(int argc, char *argv[]) {
 
     printf("%s\n", found_path);
     return 0;
+}
+
+// Legacy shell `find-media <dir> [dest]` — thin shim.
+static uint64_t cmd_find_media(int argc, char *argv[]) {
+    if (argc < 2) {
+        printf("usage: find-media <directory> [dest]\n");
+        return 1;
+    }
+    return (uint64_t)gs_find_media(argv[1], argc >= 3 ? argv[2] : NULL);
 }
 
 // Download command - save file to browser

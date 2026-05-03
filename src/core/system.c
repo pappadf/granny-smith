@@ -1393,6 +1393,13 @@ __attribute__((weak)) int gs_register_machine(const char *machine_id, const char
     return 0; // headless has no per-machine checkpoint scoping; treat as no-op success
 }
 
+__attribute__((weak)) int gs_find_media(const char *dir_path, const char *dest) {
+    (void)dir_path;
+    (void)dest;
+    printf("find-media: only supported in the WASM build\n");
+    return 1;
+}
+
 // Create an emulator instance for the given machine profile.
 // Allocates config_t, wires the machine descriptor, and calls profile->init().
 config_t *system_create(const hw_profile_t *profile, checkpoint_t *checkpoint) {

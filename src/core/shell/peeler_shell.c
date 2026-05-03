@@ -242,6 +242,24 @@ static uint64_t cmd_peeler(int argc, char *argv[]) {
     return status;
 }
 
+// Public entry point: extract a single archive at `path` into `out_dir`.
+// Used by the typed `peeler` root method to bypass shell_dispatch.
+// Returns 0 on success, non-zero on failure.
+int peeler_shell_extract(const char *path, const char *out_dir) {
+    if (!path)
+        return -1;
+    peeler_ctx_t ctx = {
+        .output_dir = (out_dir && *out_dir) ? out_dir : ".", .verbose = 0, .file_count = 0, .probe_only = 0};
+    if (mkdir(ctx.output_dir, 0755) != 0 && errno != EEXIST) {
+        fprintf(stderr, "peeler: cannot create output directory '%s': %s\n", ctx.output_dir, strerror(errno));
+        return -1;
+    }
+    int rc = process_archive(&ctx, path);
+    if (rc == 0)
+        printf("Successfully extracted '%s' (%d file%s)\n", path, ctx.file_count, ctx.file_count == 1 ? "" : "s");
+    return rc;
+}
+
 // Initialize peeler shell integration
 void peeler_shell_init(void) {
     register_cmd("peeler", "Archive",
