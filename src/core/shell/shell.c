@@ -9,7 +9,6 @@
 #include "alias.h"
 #include "cmd_complete.h"
 #include "cmd_io.h"
-#include "cmd_json.h"
 #include "cmd_parse.h"
 #include "cmd_types.h"
 #include "expr.h"
@@ -374,11 +373,9 @@ static void free_replacements(int argc, char **replaced) {
 // grammar block. Returns 0 on success, -1 on error, 1 if unhandled.
 static int try_path_dispatch(int argc, char **argv);
 
-// Dispatch a command line with the given invocation mode. Phase 5c —
-// the legacy registry is gone; everything routes through the typed
-// path-form parser.
-void dispatch_command(char *line, enum invoke_mode mode, struct cmd_result *res) {
-    (void)mode;
+// Dispatch a command line. Phase 5c — the legacy registry is gone;
+// everything routes through the typed path-form parser.
+void dispatch_command(char *line, struct cmd_result *res) {
     memset(res, 0, sizeof(*res));
     res->type = RES_OK;
 

@@ -23,7 +23,7 @@
 // shell_poll(), which calls dispatch_command(). The headless REPL
 // uses shell_dispatch() the same way.
 
-void dispatch_command(char *line, enum invoke_mode mode, struct cmd_result *res);
+void dispatch_command(char *line, struct cmd_result *res);
 uint64_t shell_dispatch(char *line);
 
 // === Shell Lifecycle ===

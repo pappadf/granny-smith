@@ -1579,10 +1579,9 @@ static value_t rtc_attr_time_set(struct object *self, const member_t *m, value_t
     uint32_t mac_seconds = 0;
     bool resolved = false;
     if (in.kind == V_STRING && in.s) {
-        // Mirror cmd_set_time: accept either a decimal unix-epoch
-        // string or an ISO-8601 "YYYY-MM-DDTHH:MM:SS" timestamp.
-        // Either way, the result is unix seconds, then we shift to
-        // the Mac 1904 epoch.
+        // Accept either a decimal unix-epoch string or an ISO-8601
+        // "YYYY-MM-DDTHH:MM:SS" timestamp. Either way, the result is
+        // unix seconds, then we shift to the Mac 1904 epoch.
         char *endp = NULL;
         long long parsed = strtoll(in.s, &endp, 10);
         if (endp && endp != in.s && *endp == '\0') {
@@ -3064,9 +3063,10 @@ static const class_desc_t find_class = {
 
 // --- keyboard -------------------------------------------------------------
 //
-// Wraps the legacy `key <name|0xNN>` command. The arg is either a string
-// name ("return", "space", "esc", a-z, 0-9 …) or an integer ADB virtual
-// keycode (0x00–0x7F). Mirrors the legacy parser in cmd_key.
+// `keyboard.press(key)` — inject a key-down + key-up via the keyboard
+// subsystem. The arg is either a string name ("return", "space",
+// "esc", a-z, 0-9 …) resolved by debug_mac_resolve_key_name, or an
+// integer ADB virtual keycode (0x00–0x7F).
 
 static value_t keyboard_method_press(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)self;

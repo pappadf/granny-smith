@@ -1294,7 +1294,7 @@ uint64_t cmd_load_checkpoint(int argc, char *argv[]) {
 
 static int run_subcmd_handler(cmd_fn fn, const struct cmd_reg *reg, int argc, char **argv) {
     struct cmd_io io;
-    init_cmd_io(&io, INVOKE_INTERACTIVE);
+    init_cmd_io(&io);
     struct cmd_context ctx;
     memset(&ctx, 0, sizeof(ctx));
     ctx.out = io.out_stream;

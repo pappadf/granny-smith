@@ -2791,7 +2791,7 @@ void gs_assert_fail(const char *expr, const char *file, int line, const char *fu
 // from cmd_int (when set), 0 on RES_OK, -1 on parse error or RES_ERR.
 static int64_t run_handler(cmd_fn fn, const struct cmd_reg *reg, int argc, char **argv) {
     struct cmd_io io;
-    init_cmd_io(&io, INVOKE_INTERACTIVE);
+    init_cmd_io(&io);
     struct cmd_context ctx;
     memset(&ctx, 0, sizeof(ctx));
     ctx.out = io.out_stream;

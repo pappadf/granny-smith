@@ -43,7 +43,6 @@
 
 #include "checkpoint.h"
 #include "checkpoint_machine.h"
-#include "cmd_json.h"
 #include "cmd_types.h"
 #include "cpu.h"
 #include "gs_api.h"
@@ -545,7 +544,7 @@ int shell_poll(void) {
             g_gs_path_buffer[--len] = '\0';
         struct cmd_result res;
         memset(&res, 0, sizeof(res));
-        dispatch_command(g_gs_path_buffer, INVOKE_INTERACTIVE, &res);
+        dispatch_command(g_gs_path_buffer, &res);
         build_prompt_text(g_prompt_buffer, PROMPT_BUF_SIZE);
         if (res.type == RES_INT)
             rc = (int)res.as_int;

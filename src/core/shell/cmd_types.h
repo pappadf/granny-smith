@@ -110,13 +110,6 @@ struct arg_value {
     };
 };
 
-// Invocation mode (set by the dispatcher)
-enum invoke_mode {
-    INVOKE_INTERACTIVE, // user typed at shell prompt
-    INVOKE_PROGRAMMATIC, // called from JS via runCommand()
-    INVOKE_PIPE, // output feeds into another command (future)
-};
-
 // cmd_io is defined in cmd_io.h (not here, to avoid redefinition)
 
 // The full parsed context handed to a command
