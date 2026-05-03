@@ -2850,6 +2850,50 @@ static const class_desc_t mouse_class = {
     .n_members = sizeof(mouse_members) / sizeof(mouse_members[0]),
 };
 
+// --- keyboard -------------------------------------------------------------
+//
+// Wraps the legacy `key <name|0xNN>` command. The arg is either a string
+// name ("return", "space", "esc", a-z, 0-9 …) or an integer ADB virtual
+// keycode (0x00–0x7F). Mirrors the legacy parser in cmd_key.
+
+static value_t keyboard_method_press(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)self;
+    (void)m;
+    if (argc < 1)
+        return val_err("keyboard.press: expected (key) — name string or keycode int");
+    char line[64];
+    int n;
+    if (argv[0].kind == V_STRING) {
+        n = snprintf(line, sizeof(line), "key %s", argv[0].s ? argv[0].s : "");
+    } else if (argv[0].kind == V_INT) {
+        n = snprintf(line, sizeof(line), "key 0x%02llx", (long long)argv[0].i);
+    } else if (argv[0].kind == V_UINT) {
+        n = snprintf(line, sizeof(line), "key 0x%02llx", (long long)argv[0].u);
+    } else {
+        return val_err("keyboard.press: key must be a string name or integer keycode");
+    }
+    if (n < 0 || (size_t)n >= sizeof(line))
+        return val_err("keyboard.press: argument too long");
+    return val_bool(shell_dispatch(line) == 0);
+}
+
+static const arg_decl_t keyboard_press_args[] = {
+    {.name = "key", .kind = V_STRING, .doc = "Key name (\"return\"/\"esc\"/\"a\"/...) or ADB keycode int"},
+};
+
+static const member_t keyboard_members[] = {
+    {.kind = M_METHOD,
+     .name = "press",
+     .doc = "Tap a key (down + up) on the emulated keyboard",
+     .method = {.args = keyboard_press_args, .nargs = 1, .result = V_BOOL, .fn = keyboard_method_press}},
+};
+
+static const class_desc_t keyboard_class = {
+    .name = "keyboard",
+    .members = keyboard_members,
+    .n_members = sizeof(keyboard_members) / sizeof(keyboard_members[0]),
+};
+
 // --- screen ---------------------------------------------------------------
 //
 // Wraps the legacy `screenshot` subcommand family. Each method
@@ -4960,6 +5004,7 @@ void gs_classes_install(struct config *cfg) {
         }
     }
     attach_stub(NULL, &mouse_class, cfg, "mouse");
+    attach_stub(NULL, &keyboard_class, cfg, "keyboard");
     attach_stub(NULL, &screen_class, cfg, "screen");
 
     // Built-in aliases. Register CPU always, FPU only when present,

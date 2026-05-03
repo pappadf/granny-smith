@@ -12,14 +12,14 @@ rtc.time = 2026-04-26T21:30:36
 run 300000000
 
 # enter user "root"
-key 0x0F
-key 0x1F
-key 0x1F
-key 0x11
-key return
+keyboard.press 0x0F
+keyboard.press 0x1F
+keyboard.press 0x1F
+keyboard.press 0x11
+keyboard.press return
 
 # enter empty password
-key return
+keyboard.press return
 
 run 100000000
 
@@ -39,9 +39,9 @@ run 10000000
 screen.match shell.png
 
 # enter command "ls"
-key 0x25
-key 0x01
-key return
+keyboard.press 0x25
+keyboard.press 0x01
+keyboard.press return
 
 run 10000000
 
