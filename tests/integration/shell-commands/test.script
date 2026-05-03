@@ -1,26 +1,30 @@
 # Integration test: Shell Commands
 # Exercises v2 command framework with GDB-style naming.
+# Each typed wrapper returns val_bool(success); wrap in assert so a
+# regression that fails the dispatch (e.g. system_cpu() going NULL,
+# the output stream being closed, cmd_result not getting set) fails
+# the test fast instead of bare-printing "false" and continuing.
 
 # Run a few instructions to initialize state
 run 100
 
 # Test: info regs shows register dump (replaces td)
-info_regs
+assert $(info_regs()) "info_regs failed"
 
 # Test: info r alias works
-info_regs
+assert $(info_regs()) "info_regs (second call) failed"
 
 # Test: disasm defaults to PC when no address given
-disasm
+assert $(disasm()) "disasm (default count) failed"
 
 # Test: disasm with count only (alias 'd')
-disasm 5
+assert $(disasm(5)) "disasm 5 failed"
 
 # Test: help for specific command (v2 name)
 help info
 
 # Test: info fpregs (replaces fpregs command)
-info_fpregs
+assert $(info_fpregs()) "info_fpregs failed"
 
 # Test: prompt off suppresses status line
 prompt off
@@ -29,9 +33,9 @@ prompt off
 prompt on
 
 # Test: logpoint list (should be empty)
-logpoint_list_dump
+assert $(logpoint_list_dump()) "logpoint_list_dump failed"
 
 # Test: info mac (replaces mac-state)
-info_mac
+assert $(info_mac()) "info_mac failed"
 
 quit
