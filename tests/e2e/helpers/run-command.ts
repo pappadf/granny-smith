@@ -42,7 +42,8 @@ export async function runCommand(page: Page, cmd: string): Promise<number> {
 type ReturnConvention =
   | 'cmd_int_bool'   // bool true → 0, false → 1 (legacy cmd_int convention)
   | 'cmd_bool'       // bool true → 1, false → 0 (legacy cmd_bool convention)
-  | 'string_nonempty'; // V_STRING non-empty → 1, empty → 0 (mirrors fd validate)
+  | 'string_nonempty' // V_STRING non-empty → 1, empty → 0 (mirrors fd validate)
+  | 'void_or_error'; // any non-error → 0, error → 1 (legacy "did dispatch succeed")
 
 type Translation = {
   method: string;
@@ -59,6 +60,7 @@ function mapResult(value: any, convention: ReturnConvention): number {
   if (convention === 'cmd_bool') return value === true ? 1 : 0;
   if (convention === 'string_nonempty')
     return typeof value === 'string' && value.length > 0 ? 1 : 0;
+  if (convention === 'void_or_error') return 0;
   return 0;
 }
 
@@ -131,6 +133,82 @@ function translateToGsEval(line: string): Translation | null {
     return { method: 'download', args: tail, convention: 'cmd_int_bool' };
   if (head === 'schedule' && tail.length === 1)
     return { method: 'schedule', args: tail, convention: 'cmd_int_bool' };
+  if (head === 'br' && tail.length === 1)
+    return { method: 'break_set', args: [tail[0]], convention: 'cmd_int_bool' };
+
+  // Mouse: set-mouse [--global|--hw|--aux] x y, or x y first then mode.
+  if (head === 'set-mouse') {
+    let mode: string | null = null;
+    const positional: string[] = [];
+    for (const arg of tail) {
+      if (arg === '--global') mode = 'global';
+      else if (arg === '--hw') mode = 'hw';
+      else if (arg === '--aux') mode = 'aux';
+      else positional.push(arg);
+    }
+    if (positional.length === 2) {
+      const x = parseInt10(positional[0]);
+      const y = parseInt10(positional[1]);
+      if (x !== null && y !== null) {
+        const args: unknown[] = [x, y];
+        if (mode) args.push(mode);
+        return { method: 'mouse.move', args, convention: 'cmd_int_bool' };
+      }
+    }
+  }
+
+  // Mouse: mouse-button [--global|--hw] up|down
+  if (head === 'mouse-button') {
+    let mode: string | null = null;
+    let downStr: string | null = null;
+    for (const arg of tail) {
+      if (arg === '--global') mode = 'global';
+      else if (arg === '--hw') mode = 'hw';
+      else if (arg === 'down' || arg === 'up') downStr = arg;
+    }
+    if (downStr !== null) {
+      const args: unknown[] = [downStr === 'down'];
+      if (mode) args.push(mode);
+      return { method: 'mouse.click', args, convention: 'cmd_int_bool' };
+    }
+  }
+
+  // AppleTalk shares (typed methods return V_NONE — use void_or_error)
+  if (head === 'atalk-share-add' && tail.length === 2)
+    return {
+      method: 'network.appletalk.shares.add',
+      args: tail,
+      convention: 'void_or_error',
+    };
+  if (head === 'atalk-share-remove' && tail.length === 1)
+    return {
+      method: 'network.appletalk.shares.remove',
+      args: tail,
+      convention: 'void_or_error',
+    };
+
+  // logpoint <spec...> — pack everything into a single spec string.
+  // Keep `logpoint list` / `logpoint clear` on the typed list/clear methods.
+  if (head === 'logpoint') {
+    if (tail.length === 1 && tail[0] === 'list')
+      return { method: 'logpoint_list_dump', args: [], convention: 'cmd_int_bool' };
+    if (tail.length === 1 && tail[0] === 'clear')
+      return { method: 'logpoint_clear', args: [], convention: 'cmd_int_bool' };
+    if (tail.length >= 1)
+      return {
+        method: 'logpoint_set',
+        args: [tail.join(' ')],
+        convention: 'cmd_int_bool',
+      };
+  }
+
+  // log <cat> <level>  (positional shorthand only — named-arg form falls
+  // through to the legacy bridge until log_set grows a spec-string overload).
+  if (head === 'log' && tail.length === 2) {
+    const lvl = parseInt10(tail[1]);
+    if (lvl !== null)
+      return { method: 'log_set', args: [tail[0], lvl], convention: 'cmd_int_bool' };
+  }
 
   // peeler: --probe X | -o D X | <archive>
   if (head === 'peeler') {
@@ -237,6 +315,8 @@ function translateToGsEval(line: string): Translation | null {
       }
       if (sub === 'create' && subArgs.length === 2)
         return { method: 'hd_create', args: subArgs, convention: 'cmd_int_bool' };
+      if (sub === 'loopback' && subArgs.length === 1 && (subArgs[0] === 'on' || subArgs[0] === 'off'))
+        return { method: 'scsi.loopback', args: [subArgs[0] === 'on'], convention: 'void_or_error' };
     }
 
     if (head === 'cdrom') {
@@ -244,6 +324,30 @@ function translateToGsEval(line: string): Translation | null {
         return { method: 'cdrom_validate', args: subArgs, convention: 'cmd_bool' };
       if (sub === 'attach' && subArgs.length === 1)
         return { method: 'cdrom_attach', args: subArgs, convention: 'cmd_int_bool' };
+      if (sub === 'eject')
+        return {
+          method: 'cdrom_eject',
+          args: subArgs.length >= 1 ? [parseInt10(subArgs[0]) ?? 3] : [],
+          convention: 'cmd_int_bool',
+        };
+      if (sub === 'info')
+        return {
+          method: 'cdrom_info',
+          args: subArgs.length >= 1 ? [parseInt10(subArgs[0]) ?? 3] : [],
+          convention: 'cmd_int_bool',
+        };
+    }
+
+    if (head === 'scc') {
+      // `scc loopback` (query) → bare-read attribute (legacy returns 0 = ok
+      // regardless of state); `scc loopback on|off` → setter, returns the
+      // new value (true → cmd_int_bool 0 = success).
+      if (sub === 'loopback') {
+        if (subArgs.length === 0)
+          return { method: 'scc.loopback', args: [], convention: 'void_or_error' };
+        if (subArgs.length === 1 && (subArgs[0] === 'on' || subArgs[0] === 'off'))
+          return { method: 'scc.loopback', args: [subArgs[0] === 'on'], convention: 'void_or_error' };
+      }
     }
 
     if (head === 'image') {
