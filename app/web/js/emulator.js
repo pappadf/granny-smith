@@ -240,32 +240,57 @@ export async function shellInterrupt() {
   Module._shell_interrupt();
 }
 
-// Tab completion: call the WASM completion engine and return an array of matches.
-// Uses ccall to marshal the call to the worker thread (PROXY_TO_PTHREAD).
-// Note: With PROXY_TO_PTHREAD, ccall with async:false blocks until the worker responds.
+// Tab completion: route through the gs_eval SAB queue with kind=3 so the
+// completion runs on the worker pthread (where the cmd registry and
+// object tree live). Returns an array of matches, or [] / null on error.
 let completionBufPtr = 0;
 
-export function tabComplete(line, cursorPos) {
+export async function tabComplete(line, cursorPos) {
   if (!Module || !moduleReady) return null;
 
-  // Resolve the completion buffer pointer on first use
   if (!completionBufPtr) {
     try { completionBufPtr = Module._get_completion_buffer(); } catch (e) { return null; }
   }
   if (!completionBufPtr) return null;
 
-  try {
-    // Use ccall to invoke em_tab_complete on the worker thread
-    const count = Module.ccall('em_tab_complete', 'number',
-      ['string', 'number'], [line, cursorPos]);
+  await waitForShellReady();
 
+  // Same in-flight lock as gsEval / executeShellCommand: shell_poll
+  // drains both queues but only one of them may be set at a time.
+  while (cmdInFlight) {
+    await new Promise(r => cmdWaiters.push(r));
+  }
+  cmdInFlight = true;
+  try {
+    Module.stringToUTF8(String(line || ''), gsPathBufPtr, GS_PATH_BUF_SIZE);
+    Module.stringToUTF8(String(cursorPos | 0), gsArgsBufPtr, GS_ARGS_BUF_SIZE);
+
+    Module.HEAP32[gsDonePtr >> 2] = 0;
+    Module.HEAP32[gsPendingPtr >> 2] = 3; // kind=3 → tab complete
+
+    await new Promise(resolve => {
+      function check() {
+        if (Module.HEAP32[gsDonePtr >> 2]) {
+          Module.HEAP32[gsDonePtr >> 2] = 0;
+          resolve();
+        } else {
+          setTimeout(check, 1);
+        }
+      }
+      check();
+    });
+
+    const count = Module.HEAP32[gsResultPtr >> 2];
     if (count === 0) return [];
 
-    // Read the JSON result from the completion buffer (shared heap)
     const jsonStr = Module.UTF8ToString(completionBufPtr);
-    return JSON.parse(jsonStr);
+    try { return JSON.parse(jsonStr); } catch (e) { return null; }
   } catch (e) {
     return null;
+  } finally {
+    cmdInFlight = false;
+    const waiters = cmdWaiters.splice(0);
+    waiters.forEach(r => r());
   }
 }
 

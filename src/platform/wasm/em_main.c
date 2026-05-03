@@ -407,12 +407,6 @@ static void build_prompt_text(char *dest, size_t dest_len) {
 // Emscripten-specific shell stubs
 void print_prompt(void) {}
 
-EMSCRIPTEN_KEEPALIVE const char *shell_emit_prompt(void) {
-    static char prompt[100];
-    build_prompt_text(prompt, sizeof(prompt));
-    return prompt;
-}
-
 // ============================================================================
 // Shared-heap Command Queue (and gs_eval queue)
 // ============================================================================
@@ -483,13 +477,18 @@ static volatile int32_t g_cmd_done = 0;
 static volatile int32_t g_cmd_result = 0;
 
 // gs_eval queue (path + args_json in, JSON result out via g_gs_eval_buffer).
-// g_gs_pending values: 0 = idle, 1 = gs_eval, 2 = gs_inspect.
-#define GS_PATH_BUF_SIZE 1024
-#define GS_ARGS_BUF_SIZE 8192
-#define GS_EVAL_BUF_SIZE 16384
+// g_gs_pending values: 0 = idle, 1 = gs_eval, 2 = gs_inspect, 3 = tab_complete.
+// For tab_complete: g_gs_path_buffer holds the line, g_gs_args_buffer holds the
+// cursor pos as decimal text, g_completion_buffer (further down) holds the
+// JSON array result, g_gs_result holds the match count.
+#define GS_PATH_BUF_SIZE    1024
+#define GS_ARGS_BUF_SIZE    8192
+#define GS_EVAL_BUF_SIZE    16384
+#define COMPLETION_BUF_SIZE 4096
 static char g_gs_path_buffer[GS_PATH_BUF_SIZE];
 static char g_gs_args_buffer[GS_ARGS_BUF_SIZE];
 static char g_gs_eval_buffer[GS_EVAL_BUF_SIZE];
+static char g_completion_buffer[COMPLETION_BUF_SIZE];
 static volatile int32_t g_gs_pending = 0;
 static volatile int32_t g_gs_done = 0;
 static volatile int32_t g_gs_result = 0;
@@ -551,6 +550,9 @@ EMSCRIPTEN_KEEPALIVE volatile int32_t *get_gs_result_ptr(void) {
     return &g_gs_result;
 }
 
+// Forward declaration: defined alongside the completion buffer below.
+static int dispatch_tab_complete(const char *line, int cursor_pos);
+
 int shell_poll(void) {
     // Drain the gs_eval queue first. Both queues are protected by the
     // same JS-side cmdInFlight lock so only one of (g_cmd_pending,
@@ -562,6 +564,12 @@ int shell_poll(void) {
         int rc;
         if (kind == 2) {
             rc = gs_inspect(g_gs_path_buffer, g_gs_eval_buffer, GS_EVAL_BUF_SIZE);
+        } else if (kind == 3) {
+            // Tab complete: line in g_gs_path_buffer, cursor pos in
+            // g_gs_args_buffer (decimal text), JSON result written to
+            // g_completion_buffer, match count returned.
+            int cursor_pos = atoi(g_gs_args_buffer);
+            rc = dispatch_tab_complete(g_gs_path_buffer, cursor_pos);
         } else {
             const char *args = (g_gs_args_buffer[0] != '\0') ? g_gs_args_buffer : NULL;
             rc = gs_eval(g_gs_path_buffer, args, g_gs_eval_buffer, GS_EVAL_BUF_SIZE);
@@ -622,15 +630,6 @@ int shell_poll(void) {
     return 1;
 }
 
-// ============================================================================
-// Tab Completion
-// ============================================================================
-
-// Shared completion result buffer (JSON array of strings)
-#define COMPLETION_BUF_SIZE 4096
-static char g_completion_buffer[COMPLETION_BUF_SIZE];
-
-// Export the completion buffer pointer
 EMSCRIPTEN_KEEPALIVE char *get_completion_buffer(void) {
     return g_completion_buffer;
 }
@@ -650,9 +649,12 @@ EMSCRIPTEN_KEEPALIVE char *get_gs_eval_buffer(void) {
     return g_gs_eval_buffer;
 }
 
-// Run tab completion and write results as JSON array to the completion buffer.
-// Called from JS when user presses Tab.
-EMSCRIPTEN_KEEPALIVE int em_tab_complete(const char *line, int cursor_pos) {
+// Run tab completion on the worker. Invoked by shell_poll when JS sets
+// g_gs_pending = 3 — see the queue protocol comment near the cmd queue
+// definition above. (Originally exported as `em_tab_complete` callable
+// via Module.ccall; that path was removed for the same threading
+// reason as em_gs_eval.)
+static int dispatch_tab_complete(const char *line, int cursor_pos) {
     struct completion comp;
     memset(&comp, 0, sizeof(comp));
 
@@ -1285,13 +1287,6 @@ static uint64_t cmd_checkpoint(int argc, char *argv[]) {
 // Exported Runtime Query Functions (for tests and diagnostics)
 // ============================================================================
 
-// Direct mouse event handler for tests (bypasses HTML5 pointer lock)
-// Used by e2e tests to inject synthetic mouse button state
-EMSCRIPTEN_KEEPALIVE
-void handle_mouse_event(int button_state, int dx, int dy) {
-    system_mouse_update(button_state != 0, dx, dy);
-}
-
 // ============================================================================
 // Main Entry Point
 // ============================================================================
@@ -1427,16 +1422,6 @@ int main(int argc, char *argv[]) {
 
     emscripten_set_main_loop(tick, 0, 1); // Use RAF, simulate infinite loop
     return 0;
-}
-
-// ============================================================================
-// Shell Command Interface for JavaScript
-// ============================================================================
-
-// Platform wrapper for shell command handling; exposed to JavaScript
-EMSCRIPTEN_KEEPALIVE
-uint64_t em_handle_command(const char *input_line) {
-    return handle_command(input_line);
 }
 
 // ============================================================================

@@ -65,6 +65,16 @@ Emulator modules (e.g., scsi, cpu, via, scc, rtc) have `.c`/`.h` files in `src/c
   (~10–15 min, requires test data from `scripts/fetch-test-data.sh`)
 - In general, no need to run unit tests unless explicitly asked
 
+**Always capture test output to a file** so subsequent grep / re-analysis
+doesn't require re-running. Integration suites take 1–5 min, the e2e
+suite 10+ min — re-running just to filter is pure waste. Pattern:
+```bash
+make integration-test 2>&1 | tee /tmp/it.log
+grep -E "PASS|FAIL|Error" /tmp/it.log
+```
+Same for unit / e2e. Avoid piping straight into `tail`/`grep`/`head`
+without a `tee` first; you discard the data you need next.
+
 **Environment-specific Testing Guidelines:**
 
 *When running in a codespace (prepared devcontainer):*

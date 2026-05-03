@@ -36,9 +36,6 @@ void dispatch_command(char *line, enum invoke_mode mode, struct cmd_result *res)
 // that don't need the full cmd_result (e.g., headless script runner).
 uint64_t shell_dispatch(char *line);
 
-// Handle command input from the platform layer (makes a mutable copy, dispatches)
-uint64_t handle_command(const char *input_line);
-
 // === Shell Lifecycle ===
 
 int shell_init(void);

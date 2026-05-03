@@ -1108,28 +1108,6 @@ uint64_t shell_dispatch(char *line) {
     return 0;
 }
 
-// Handle command input from platform layer
-uint64_t handle_command(const char *input_line) {
-    if (!input_line || !shell_initialized)
-        return -1;
-
-    size_t len = strlen(input_line);
-    while (len > 0 && (input_line[len - 1] == '\n' || input_line[len - 1] == '\r'))
-        len--;
-
-    char *mutable_line = (char *)malloc(len + 1);
-    if (!mutable_line)
-        return -1;
-
-    memcpy(mutable_line, input_line, len);
-    mutable_line[len] = '\0';
-
-    uint64_t result = shell_dispatch(mutable_line);
-
-    free(mutable_line);
-    return result;
-}
-
 // Get the JSON result buffer pointer
 char *get_cmd_json_result(void) {
     return g_cmd_json_buffer;
