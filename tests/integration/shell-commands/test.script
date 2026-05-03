@@ -5,22 +5,22 @@
 run 100
 
 # Test: info regs shows register dump (replaces td)
-info regs
+info_regs
 
 # Test: info r alias works
-info r
+info_regs
 
 # Test: disasm defaults to PC when no address given
 disasm
 
 # Test: disasm with count only (alias 'd')
-d 5
+disasm 5
 
 # Test: help for specific command (v2 name)
 help info
 
 # Test: info fpregs (replaces fpregs command)
-info fpregs
+info_fpregs
 
 # Test: prompt off suppresses status line
 prompt off
@@ -29,9 +29,9 @@ prompt off
 prompt on
 
 # Test: logpoint list (should be empty)
-logpoint list
+logpoint_list_dump
 
 # Test: info mac (replaces mac-state)
-info mac
+info_mac
 
 quit

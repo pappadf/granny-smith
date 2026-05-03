@@ -26,7 +26,7 @@ debugger.breakpoints.0.id
 debugger.breakpoints.1.addr
 
 # Legacy `break list` must see the same entries (single store).
-break list
+break_list_dump
 
 # Remove #0 via the method. #1 stays at id 1 — sparse indices.
 # Inside $(...) the index uses bracket form (the dotted form is for paths
@@ -45,6 +45,6 @@ debugger.breakpoints.3.condition
 
 # Clear via the new collection method, verify legacy list is empty too.
 echo $(debugger.breakpoints.clear())
-break list
+break_list_dump
 
 quit
