@@ -27,8 +27,13 @@
 // Result string scratch buffer size
 #define CMD_RESULT_BUF_SIZE 256
 
-// Tab completion maximum items
-#define CMD_MAX_COMPLETIONS 64
+// Tab completion maximum items.  Sized for the typed-tree root, which
+// has ~70 root methods plus ~12 attached child objects (cpu, memory,
+// scsi, floppy, mouse, keyboard, screen, vfs, find, debugger, …) plus
+// any legacy command names still present.  The cap exists so the
+// JSON-encoded completion buffer (4 KiB) doesn't overflow; bumping
+// past ~250 risks that.
+#define CMD_MAX_COMPLETIONS 200
 
 // === Argument Types ===
 
