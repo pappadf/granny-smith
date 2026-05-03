@@ -788,46 +788,6 @@ void em_main_interrupt(void) {
 // Filesystem Commands
 // ============================================================================
 
-// File copy command - copies a file from one path to another.
-// Used by JS frontend to stage files from /tmp/ (memory) to OPFS paths.
-static uint64_t cmd_file_copy(int argc, char *argv[]) {
-    if (argc != 3) {
-        printf("usage: file-copy <src> <dest>\n");
-        return 1;
-    }
-
-    const char *src = argv[1];
-    const char *dest = argv[2];
-
-    FILE *fin = fopen(src, "rb");
-    if (!fin) {
-        printf("file-copy: cannot open '%s': %s\n", src, strerror(errno));
-        return 1;
-    }
-
-    FILE *fout = fopen(dest, "wb");
-    if (!fout) {
-        fclose(fin);
-        printf("file-copy: cannot create '%s': %s\n", dest, strerror(errno));
-        return 1;
-    }
-
-    char buf[65536];
-    size_t n;
-    while ((n = fread(buf, 1, sizeof(buf), fin)) > 0) {
-        if (fwrite(buf, 1, n, fout) != n) {
-            printf("file-copy: write error: %s\n", strerror(errno));
-            fclose(fin);
-            fclose(fout);
-            return 1;
-        }
-    }
-
-    fclose(fin);
-    fclose(fout);
-    return 0;
-}
-
 // Find a mountable media file in a directory.
 // Scans the directory for files that pass floppy image validation (fd probe).
 // Prints the path of the first match and returns 0, or returns 1 if none found.
@@ -898,18 +858,8 @@ int gs_find_media(const char *dir_path, const char *dest) {
     return 0;
 }
 
-// Legacy shell `find-media <dir> [dest]` — thin shim.
-static uint64_t cmd_find_media(int argc, char *argv[]) {
-    if (argc < 2) {
-        printf("usage: find-media <directory> [dest]\n");
-        return 1;
-    }
-    return (uint64_t)gs_find_media(argv[1], argc >= 3 ? argv[2] : NULL);
-}
-
 // Download command - save file to browser
 // Platform impl of gs_download (weak default in system.c stubs out).
-// The legacy `download` shell cmd routes through this via cmd_download.
 int gs_download(const char *path) {
     struct stat st;
     if (stat(path, &st) != 0) {
@@ -975,15 +925,6 @@ int gs_download(const char *path) {
     free(buf);
     printf("download: requested '%s'\n", path);
     return 0;
-}
-
-// Legacy shell `download <path>` — thin shim that calls gs_download.
-static uint64_t cmd_download(int argc, char *argv[]) {
-    if (argc != 2) {
-        printf("usage: download <path>\n");
-        return 0;
-    }
-    return (uint64_t)gs_download(argv[1]);
 }
 
 // ============================================================================
@@ -1164,12 +1105,6 @@ int gs_register_machine(const char *machine_id, const char *created) {
     return rc == 0 ? 0 : -1;
 }
 
-// Legacy shell `background-checkpoint [reason]` — thin shim.
-static uint64_t cmd_background_checkpoint(int argc, char *argv[]) {
-    const char *reason = (argc >= 2) ? argv[1] : "manual";
-    return (uint64_t)gs_background_checkpoint(reason);
-}
-
 // Clear checkpoint files inside the current machine directory.  Drops
 // state.checkpoint, any leftover *.tmp, and (defensive) any legacy
 // sequence-numbered *.checkpoint / *.pending / *.complete files.  The
@@ -1208,118 +1143,6 @@ static int clear_checkpoint_files(void) {
     return removed;
 }
 
-// Checkpoint command dispatcher - handles auto on/off and clear
-static uint64_t cmd_checkpoint(int argc, char *argv[]) {
-    if (argc < 2) {
-        // No arguments - just query and return current auto state
-        printf("Current state: %s\n", checkpoint_auto_enabled ? "on" : "off");
-        return 0;
-    }
-
-    const char *action = argv[1];
-
-    // checkpoint --machine <id> <created> — set the active machine identity
-    // (must be the first checkpoint command run, before any image is opened).
-    if (strcmp(action, "--machine") == 0) {
-        if (argc < 4) {
-            printf("Usage: checkpoint --machine <id> <created>\n");
-            return 1;
-        }
-        int rc = checkpoint_machine_set(argv[2], argv[3]);
-        if (rc != 0) {
-            printf("checkpoint --machine: failed to set %s-%s\n", argv[2], argv[3]);
-            return 1;
-        }
-        // Sweep stale machine directories left over from older sessions.
-        checkpoint_machine_sweep_others();
-        printf("Machine directory: %s\n", checkpoint_machine_dir());
-        return 0;
-    }
-
-    // checkpoint --save <path> [content|refs] — save machine state
-    if (strcmp(action, "--save") == 0) {
-        // Shift argv so cmd_save_checkpoint sees the path as argv[1]
-        return cmd_save_checkpoint(argc - 1, argv + 1);
-    }
-
-    // checkpoint --load [<path>] — load machine state (auto-loads latest if no path)
-    if (strcmp(action, "--load") == 0) {
-        return cmd_load_checkpoint(argc - 1, argv + 1);
-    }
-
-    // checkpoint --validate <path> — check if path contains a valid checkpoint
-    if (strcmp(action, "--validate") == 0) {
-        if (argc < 3) {
-            printf("Usage: checkpoint --validate <path>\n");
-            return 1;
-        }
-        const char *path = argv[2];
-        FILE *f = fopen(path, "rb");
-        if (!f)
-            return 1;
-        char magic[9] = {0};
-        size_t n = fread(magic, 1, 8, f);
-        fclose(f);
-        if (n < 8)
-            return 1;
-        if (memcmp(magic, "GSCHKPT2", 8) == 0 || memcmp(magic, "GSCHKPT3", 8) == 0) {
-            printf("valid\n");
-            return 0;
-        }
-        printf("invalid\n");
-        return 1;
-    }
-
-    // checkpoint --probe — check if any valid checkpoint exists (returns 0/1)
-    if (strcmp(action, "--probe") == 0) {
-        const char *path = find_valid_checkpoint_path();
-        return (path != NULL) ? 0 : 1;
-    }
-
-    // checkpoint clear - remove all checkpoint files
-    if (strcmp(action, "clear") == 0) {
-        return (uint64_t)gs_checkpoint_clear();
-    }
-
-    // checkpoint auto on/off
-    if (strcmp(action, "auto") == 0) {
-        if (argc < 3) {
-            printf("Current state: %s\n", checkpoint_auto_enabled ? "on" : "off");
-            return 0;
-        }
-        const char *toggle = argv[2];
-        if (strcmp(toggle, "off") == 0 || strcmp(toggle, "disable") == 0) {
-            checkpoint_auto_enabled = false;
-            checkpoint_tick_counter = 0;
-            printf("Automatic checkpointing disabled\n");
-            return 0;
-        } else if (strcmp(toggle, "on") == 0 || strcmp(toggle, "enable") == 0) {
-            checkpoint_auto_enabled = true;
-            printf("Automatic checkpointing enabled\n");
-            return 0;
-        }
-        printf("Usage: checkpoint auto <on|off>\n");
-        return 1;
-    }
-
-    // Legacy: checkpoint on/off (without 'auto' subcommand)
-    if (strcmp(action, "off") == 0 || strcmp(action, "disable") == 0) {
-        checkpoint_auto_enabled = false;
-        checkpoint_tick_counter = 0;
-        printf("Automatic checkpointing disabled\n");
-        return 0;
-    } else if (strcmp(action, "on") == 0 || strcmp(action, "enable") == 0) {
-        checkpoint_auto_enabled = true;
-        printf("Automatic checkpointing enabled\n");
-        return 0;
-    }
-
-    printf(
-        "Usage: checkpoint --machine <id> <created> | --save <path> | --load [<path>] | --validate <path> | --probe | "
-        "clear | auto <on|off>\n");
-    return 1;
-}
-
 // ============================================================================
 // Exported Runtime Query Functions (for tests and diagnostics)
 // ============================================================================
@@ -1327,9 +1150,6 @@ static uint64_t cmd_checkpoint(int argc, char *argv[]) {
 // ============================================================================
 // Main Entry Point
 // ============================================================================
-
-// Forward declaration of external command registration
-extern void em_audio_register_commands(void);
 
 int main(int argc, char *argv[]) {
     signal(SIGINT, sigint_handler);
@@ -1440,17 +1260,10 @@ int main(int argc, char *argv[]) {
     em_audio_init();
     setup_pointer_lock();
 
-    // Register shell commands
-    register_cmd("download", "Filesystem", "download <path> – save file to your computer", cmd_download);
-    register_cmd("file-copy", "Filesystem", "file-copy <src> <dest> – copy a file", cmd_file_copy);
-    register_cmd("find-media", "Filesystem",
-                 "find-media <dir> [dest] – find first floppy image in dir, optionally copy to dest", cmd_find_media);
-    register_cmd("background-checkpoint", "Checkpointing",
-                 "background-checkpoint [reason] – save a quick checkpoint to /checkpoint", cmd_background_checkpoint);
-    register_cmd("checkpoint", "Checkpointing",
-                 "checkpoint --save <path> | --load [<path>] | --validate <path> | --probe | clear | auto <on|off>",
-                 cmd_checkpoint);
-    em_audio_register_commands();
+    // Phase 5c — legacy WASM-platform shell command registrations
+    // retired. Typed root methods (download, find_media, checkpoint_*,
+    // background_checkpoint, beep) replace them; cmd_* bodies are kept
+    // when the typed wrappers still call them.
 
     install_background_checkpoint_handlers();
 

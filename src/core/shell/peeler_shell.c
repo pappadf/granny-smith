@@ -152,96 +152,6 @@ static int process_archive(const peeler_ctx_t *ctx, const char *filepath) {
     return status;
 }
 
-// Shell command: peeler
-static uint64_t cmd_peeler(int argc, char *argv[]) {
-    // Parse options
-    peeler_ctx_t ctx = {.output_dir = ".", .verbose = 0, .file_count = 0, .probe_only = 0};
-
-    int opt_idx = 1;
-    while (opt_idx < argc && argv[opt_idx][0] == '-') {
-        if (strcmp(argv[opt_idx], "-o") == 0) {
-            opt_idx++;
-            if (opt_idx >= argc) {
-                fprintf(stderr, "peeler: -o requires directory argument\n");
-                return 0;
-            }
-            ctx.output_dir = argv[opt_idx];
-            opt_idx++;
-        } else if (strcmp(argv[opt_idx], "-v") == 0 || strcmp(argv[opt_idx], "--verbose") == 0) {
-            ctx.verbose = 1;
-            opt_idx++;
-        } else if (strcmp(argv[opt_idx], "-p") == 0 || strcmp(argv[opt_idx], "--probe") == 0) {
-            ctx.probe_only = 1;
-            opt_idx++;
-        } else if (strcmp(argv[opt_idx], "-h") == 0 || strcmp(argv[opt_idx], "--help") == 0) {
-            printf("Usage: peeler [options] <archive1> [<archive2> ...]\n");
-            printf("Unpacks classic Macintosh archives (StuffIt, BinHex, CompactPro, MacBinary).\n\n");
-            printf("Options:\n");
-            printf("  -o <dir>       Extract files to specified directory (default: .)\n");
-            printf("  -v, --verbose  Enable verbose output\n");
-            printf("  -p, --probe    Test format detection without extracting\n");
-            printf("  -h, --help     Show this help message\n");
-            return 0;
-        } else {
-            fprintf(stderr, "peeler: unknown option '%s'\n", argv[opt_idx]);
-            return 0;
-        }
-    }
-
-    // Check for input files
-    if (opt_idx >= argc) {
-        fprintf(stderr, "peeler: no input files specified\n");
-        fprintf(stderr, "Usage: peeler [options] <archive1> [<archive2> ...]\n");
-        return 0;
-    }
-
-    // Handle probe mode
-    if (ctx.probe_only) {
-        int status = 0;
-        for (int i = opt_idx; i < argc; i++) {
-            // Read the file and detect its format
-            peel_err_t *err = NULL;
-            peel_buf_t buf = peel_read_file(argv[i], &err);
-            if (err) {
-                fprintf(stderr, "peeler: cannot open '%s': %s\n", argv[i], peel_err_msg(err));
-                peel_err_free(err);
-                status = 1;
-                continue;
-            }
-
-            const char *format = peel_detect(buf.data, buf.size);
-            if (format) {
-                printf("%s: Supported (%s format detected)\n", argv[i], format);
-            } else {
-                printf("%s: NOT a supported format\n", argv[i]);
-                status = 1;
-            }
-            peel_free(&buf);
-        }
-        return status;
-    }
-
-    // Ensure output directory exists
-    if (mkdir(ctx.output_dir, 0755) != 0 && errno != EEXIST) {
-        fprintf(stderr, "peeler: cannot create output directory '%s': %s\n", ctx.output_dir, strerror(errno));
-        return 0;
-    }
-
-    // Process each archive
-    int status = 0;
-    for (int i = opt_idx; i < argc; i++) {
-        if (process_archive(&ctx, argv[i]) != 0) {
-            status = 1;
-        } else {
-            printf("Successfully extracted '%s' (%d file%s)\n", argv[i], ctx.file_count,
-                   ctx.file_count == 1 ? "" : "s");
-            ctx.file_count = 0; // Reset for next archive
-        }
-    }
-
-    return status;
-}
-
 // Public entry point: extract a single archive at `path` into `out_dir`.
 // Used by the typed `peeler` root method to bypass shell_dispatch.
 // Returns 0 on success, non-zero on failure.
@@ -258,11 +168,4 @@ int peeler_shell_extract(const char *path, const char *out_dir) {
     if (rc == 0)
         printf("Successfully extracted '%s' (%d file%s)\n", path, ctx.file_count, ctx.file_count == 1 ? "" : "s");
     return rc;
-}
-
-// Initialize peeler shell integration
-void peeler_shell_init(void) {
-    register_cmd("peeler", "Archive",
-                 "peeler [-o <dir>] [-v] [-p] <archive> ... – unpack Mac archives (.sit, .hqx, .cpt, .bin)",
-                 cmd_peeler);
 }

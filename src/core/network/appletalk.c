@@ -232,54 +232,6 @@ static void ddp_setup_reply(const ddp_header_t *request, ddp_header_t *reply) {
 }
 
 // ============================================================================
-// Shell Commands
-// ============================================================================
-
-static int usage_atalk_add(void) {
-    printf("Usage: atalk-share-add <name> <path>\n");
-    return 0;
-}
-
-static uint64_t cmd_atalk_share_add(int argc, char *argv[]) {
-    if (argc != 3)
-        return usage_atalk_add();
-    return atalk_share_add(argv[1], argv[2]);
-}
-
-static uint64_t cmd_atalk_share_list(int argc, char *argv[]) {
-    (void)argc;
-    (void)argv;
-    return atalk_share_list();
-}
-
-static int usage_atalk_rm(void) {
-    printf("Usage: atalk-share-remove <name>\n");
-    return 0;
-}
-
-static uint64_t cmd_atalk_share_remove(int argc, char *argv[]) {
-    if (argc != 2)
-        return usage_atalk_rm();
-    return atalk_share_remove(argv[1]);
-}
-
-static uint64_t cmd_atalk_printer(int argc, char *argv[]) {
-    if (argc < 2) {
-        printf("Usage: atalk-printer enable [name] | disable\n");
-        return 0;
-    }
-    if (strcmp(argv[1], "enable") == 0) {
-        const char *nm = (argc >= 3) ? argv[2] : NULL;
-        return atalk_printer_enable(nm);
-    } else if (strcmp(argv[1], "disable") == 0) {
-        return atalk_printer_disable();
-    } else {
-        printf("Unknown subcommand '%s'\n", argv[1]);
-        return -1;
-    }
-}
-
-// ============================================================================
 // Lifecycle: Constructor
 // ============================================================================
 
@@ -288,15 +240,9 @@ void appletalk_init(scheduler_t *scheduler, scc_t *scc, checkpoint_t *checkpoint
     g_scc = scc; // Store SCC dependency for later use
     g_scheduler = scheduler; // Store scheduler for ATP timers
     atalk_server_init();
-    register_cmd("atalk-share-add", "AppleTalk",
-                 "atalk-share-add <name> <path>  – add a volume to the 'Shared Folders' AFP server from MEMFS path",
-                 &cmd_atalk_share_add);
-    register_cmd("atalk-share-list", "AppleTalk", "atalk-share-list            – list defined AppleShare volumes",
-                 &cmd_atalk_share_list);
-    register_cmd("atalk-share-remove", "AppleTalk", "atalk-share-remove <name>   – remove a defined AppleShare volume",
-                 &cmd_atalk_share_remove);
-    register_cmd("atalk-printer", "AppleTalk",
-                 "atalk-printer enable [name] | disable  – control LaserWriter advertisement", &cmd_atalk_printer);
+    // Phase 5c — legacy `atalk-share-*` and `atalk-printer` shell
+    // command registrations retired. AppleTalk admin moved to typed
+    // root methods (network.appletalk.*).
     atalk_printer_register();
 
     static const atp_socket_handler_t asp_handler = {.handle_request = asp_in};

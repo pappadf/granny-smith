@@ -267,44 +267,4 @@ void platform_play_8bit_pwm(uint8_t *samples, int num_samples, unsigned int volu
 // Shell Commands
 // ============================================================================
 
-// Shell command: beep - play a test tone
-static uint64_t cmd_beep(int argc, char *argv[]) {
-    (void)argc;
-    (void)argv;
-
-    // Generate a short 440Hz beep at source rate 22254.5 Hz
-    const double rate = 22254.5;
-    const double freq = 440.0;
-    const double dur = 0.25; // 250 ms
-    int samples = (int)(rate * dur);
-    if (samples <= 0)
-        samples = 1;
-
-    uint8_t *buf = (uint8_t *)malloc(samples);
-    if (!buf)
-        return 0;
-
-    // Generate sine wave
-    for (int i = 0; i < samples; i++) {
-        double t = (double)i / rate;
-        double s = sin(2.0 * 3.141592653589793 * freq * t);
-        int v = (int)(s * 127.0) + 128; // convert -1..1 to 0..255
-        if (v < 0)
-            v = 0;
-        else if (v > 255)
-            v = 255;
-        buf[i] = (uint8_t)v;
-    }
-
-    platform_play_8bit_pwm(buf, samples, 7);
-    free(buf);
-    printf("(beep)\n");
-    return 0;
-}
-
-// Registration hook for shell commands (called from em_main.c)
-void em_audio_register_commands(void);
-void em_audio_register_commands(void) {
-    extern int register_cmd(const char *name, const char *category, const char *help, uint64_t (*func)(int, char **));
-    register_cmd("beep", "Audio", "beep – play a test tone", cmd_beep);
-}
+// Phase 5c — legacy `beep` shell command and its handler retired.

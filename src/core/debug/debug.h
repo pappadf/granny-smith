@@ -118,6 +118,12 @@ int shell_examine_argv(int argc, char **argv);
 int shell_logpoint_argv(int argc, char **argv);
 int shell_find_argv(int argc, char **argv);
 
+// Truthiness check used by typed `assert` root method. Strings like
+// "false", "0", or formatted-error tails are falsy; everything else
+// (including the empty/whitespace-only result of an unknown enum) is
+// truthy.  The rule mirrors proposal §2.5.
+bool predicate_is_truthy(const char *s);
+
 // Register / FPU / Mac-state dumps — used by typed `info_*` wrappers
 // and the legacy `td` / `fpregs` / `mac-state` commands. Both layers
 // share the same printer; the typed wrapper has no cmd_context so
@@ -216,9 +222,6 @@ int debug_prompt_enabled(void);
 // subsequent shell connection inherits the setting without having to send
 // "prompt off" first).
 void debug_set_prompt_default(int enabled);
-
-// Check and auto-delete temporary breakpoints (IMP-601)
-void debug_check_tbreak(debug_t *debug, uint32_t pc);
 
 // === Exception trace ring ===
 // Records every CPU bus error / exception as a ring buffer entry.  The

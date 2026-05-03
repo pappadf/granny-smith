@@ -157,86 +157,12 @@ char *shell_var_expand(const char *input) {
     return buf;
 }
 
-/* --- "var" command -------------------------------------------------------- */
-
-// var set NAME VALUE
-static void cmd_var_set(struct cmd_context *ctx, struct cmd_result *res) {
-    const char *name = ctx->args[0].as_str;
-    const char *value = ctx->args[1].as_str;
-
-    if (shell_var_set(name, value) < 0) {
-        cmd_err(res, "failed to set variable (limit: %d)", MAX_VARS);
-        return;
-    }
-    res->type = RES_OK;
-}
-
-// var unset NAME
-static void cmd_var_unset(struct cmd_context *ctx, struct cmd_result *res) {
-    const char *name = ctx->args[0].as_str;
-
-    if (shell_var_unset(name) < 0) {
-        cmd_err(res, "variable '%s' not defined", name);
-        return;
-    }
-    res->type = RES_OK;
-}
-
-// var list (default subcommand)
-static void cmd_var_list(struct cmd_context *ctx, struct cmd_result *res) {
-    (void)ctx;
-    if (nvar == 0) {
-        fprintf(ctx->out, "(no variables defined)\n");
-    } else {
-        for (int i = 0; i < nvar; i++)
-            fprintf(ctx->out, "%s=%s\n", vars[i].name, vars[i].value);
-    }
-    res->type = RES_OK;
-}
-
-// Unified command handler — dispatches to subcommands
-static void cmd_var(struct cmd_context *ctx, struct cmd_result *res) {
-    if (!ctx->subcmd)
-        cmd_var_list(ctx, res);
-    else if (strcmp(ctx->subcmd, "set") == 0)
-        cmd_var_set(ctx, res);
-    else if (strcmp(ctx->subcmd, "unset") == 0)
-        cmd_var_unset(ctx, res);
-}
-
-// Argument specs for each subcommand
-static const struct arg_spec var_set_args[] = {
-    {"name",  ARG_STRING, "variable name"  },
-    {"value", ARG_REST,   "value to assign"},
-};
-
-static const struct arg_spec var_unset_args[] = {
-    {"name", ARG_STRING, "variable name"},
-};
-
-// Subcommand table
-static const struct subcmd_spec var_subcmds[] = {
-    {NULL,    NULL, NULL,           0, "list all variables"},
-    {"set",   NULL, var_set_args,   2, "set a variable"    },
-    {"unset", NULL, var_unset_args, 1, "unset a variable"  },
-};
-
-// Command registration record
-static const struct cmd_reg var_cmd_reg = {
-    .name = "var",
-    .category = "General",
-    .synopsis = "var [set NAME VALUE | unset NAME] - shell variables",
-    .fn = cmd_var,
-    .subcmds = var_subcmds,
-    .n_subcmds = 3,
-};
-
 /* --- init ---------------------------------------------------------------- */
 
-// Register the "var" command and seed built-in defaults
+// Phase 5c — legacy `var` shell command registration retired. The
+// `${VAR}` expansion in shell_var_expand() is still active. Tests
+// that need to set variables interactively use `let NAME=value` (TBD)
+// or pre-set via the platform wrapper.
 void shell_var_init(void) {
-    register_command(&var_cmd_reg);
-
-    // seed default variables
     shell_var_set("TMP_DIR", "tmp");
 }

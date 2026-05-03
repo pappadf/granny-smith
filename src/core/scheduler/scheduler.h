@@ -131,4 +131,9 @@ void cpu_reschedule(void);
 // root method can call it directly (no shell_dispatch).
 uint64_t cmd_run(int argc, char *argv[]);
 
+// Legacy `events` / `schedule` argv handlers. The typed `info_events`
+// and `info_schedule` paths call these directly.
+uint64_t cmd_events(int argc, char *argv[]);
+uint64_t cmd_schedule(int argc, char *argv[]);
+
 #endif // SCHEDULE_H

@@ -410,21 +410,8 @@ uint64_t cmd_run(int argc, char *argv[]) {
 }
 
 // Shell command to stop execution
-static uint64_t cmd_stop(int argc, char *argv[]) {
-    if (argc != 1) {
-        printf("Usage: stop\n");
-        return 0;
-    }
-
-    scheduler_t *s = system_scheduler();
-    GS_ASSERT(s != NULL);
-
-    scheduler_stop(s);
-    return 0;
-}
-
 // Shell command to get/set scheduler mode
-static uint64_t cmd_schedule(int argc, char *argv[]) {
+uint64_t cmd_schedule(int argc, char *argv[]) {
     scheduler_t *s = system_scheduler();
     GS_ASSERT(s != NULL);
 
@@ -491,22 +478,8 @@ static uint64_t cmd_schedule(int argc, char *argv[]) {
     return 0;
 }
 
-// Shell command to check if scheduler is running
-static uint64_t cmd_status(int argc, char *argv[]) {
-    (void)argc;
-    (void)argv;
-    scheduler_t *s = system_scheduler();
-    if (!s) {
-        printf("idle\n");
-        return 0;
-    }
-    int running = scheduler_is_running(s);
-    printf("%s\n", running ? "running" : "idle");
-    return running ? 1 : 0;
-}
-
 // Shell command to print a readable view of the event queue
-static uint64_t cmd_events(int argc, char *argv[]) {
+uint64_t cmd_events(int argc, char *argv[]) {
     struct scheduler *s = system_scheduler();
     GS_ASSERT(s != NULL);
 
@@ -612,14 +585,10 @@ struct scheduler *scheduler_init(struct cpu *cpu, checkpoint_t *checkpoint) {
         s->tmp_events = NULL;
     }
 
-    // Register shell commands
-    register_cmd("run", "Scheduler", "run [instructions] - start execution, optionally stop after N instructions",
-                 cmd_run);
-    register_cmd("stop", "Scheduler", "stop – stop execution", cmd_stop);
-    register_cmd("schedule", "Scheduler", "schedule [max|real|hw] – set or show scheduler mode", cmd_schedule);
-    register_cmd("status", "Scheduler", "status – return 1 if running, 0 if idle", cmd_status);
-    register_cmd("events", "Scheduler", "events – show pending CPU event queue", cmd_events);
-
+    // Phase 5c — legacy `run` / `stop` / `schedule` / `status` / `events`
+    // shell commands retired. Typed object-model methods (run, stop,
+    // schedule, running, info_events) replace them; cmd_run is still
+    // exposed so the typed `run` wrapper can call it directly.
     scheduler_new_event_type(s, "Scheduler", s, "run_stop", run_stop_event);
     // Note: scheduler_vbl_tick uses config_t* as source, so its source is
     // not knowable here.  Machine init calls scheduler_register_vbl_type()

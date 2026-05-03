@@ -26,13 +26,8 @@
 #include "../object/object.h"
 #include "../object/value.h"
 
-// === Legacy command registry (defined in shell.c) ============================
-
-struct cmd_reg_node {
-    struct cmd_reg reg;
-    struct cmd_reg_node *next;
-};
-extern struct cmd_reg_node *cmd_head;
+// Phase 5c — legacy command registry deleted; no more `cmd_head`. The
+// completion code below skips the legacy branch entirely.
 
 // === Tiny per-call string pool ==============================================
 //
@@ -442,66 +437,6 @@ static void complete_method_arg(const member_t *m, int arg_idx, const char *part
     }
 }
 
-static void complete_legacy_arg(const struct cmd_reg *reg, int arg_idx, const char *partial, struct completion *out,
-                                const char *subcmd_name) {
-    if (!reg)
-        return;
-    const struct arg_spec *specs = reg->args;
-    int nspecs = reg->nargs;
-    if (reg->subcmds && reg->n_subcmds > 0 && subcmd_name) {
-        for (int i = 0; i < reg->n_subcmds; i++) {
-            if (!reg->subcmds[i].name)
-                continue;
-            if (strcasecmp(reg->subcmds[i].name, subcmd_name) == 0) {
-                specs = reg->subcmds[i].args;
-                nspecs = reg->subcmds[i].nargs;
-                break;
-            }
-        }
-    }
-    if (arg_idx < 0 || arg_idx >= nspecs)
-        return;
-    const struct arg_spec *spec = &specs[arg_idx];
-    int base_type = ARG_BASE_TYPE(spec->type);
-    switch (base_type) {
-    case ARG_SYMBOL:
-    case ARG_ADDR:
-        if (partial[0] == '$')
-            complete_symbols(partial + 1, out);
-        else if (base_type == ARG_SYMBOL)
-            complete_symbols(partial, out);
-        break;
-    case ARG_ENUM:
-        complete_enum(spec->enum_values, partial, out);
-        break;
-    case ARG_BOOL:
-        complete_bool(partial, out);
-        break;
-    case ARG_PATH:
-        complete_paths(partial, out);
-        break;
-    default:
-        break;
-    }
-}
-
-// Find a registered legacy command by name or alias.
-static const struct cmd_reg *find_legacy(const char *name) {
-    if (!name)
-        return NULL;
-    for (struct cmd_reg_node *n = cmd_head; n; n = n->next) {
-        if (strcasecmp(n->reg.name, name) == 0)
-            return &n->reg;
-        if (n->reg.aliases) {
-            for (const char **a = n->reg.aliases; *a; a++) {
-                if (strcasecmp(*a, name) == 0)
-                    return &n->reg;
-            }
-        }
-    }
-    return NULL;
-}
-
 // === Line-start (command-position) completion ================================
 
 static void complete_root_members(const char *tail, struct completion *out) {
@@ -510,16 +445,6 @@ static void complete_root_members(const char *tail, struct completion *out) {
         return;
     complete_class_members(object_class(root), tail, out);
     complete_attached(root, tail, out);
-}
-
-static void complete_legacy_names(const char *tail, struct completion *out) {
-    for (struct cmd_reg_node *n = cmd_head; n; n = n->next) {
-        push_match(out, n->reg.name, tail);
-        if (n->reg.aliases) {
-            for (const char **a = n->reg.aliases; *a; a++)
-                push_match(out, *a, tail);
-        }
-    }
 }
 
 // === Word-boundary scan ======================================================
@@ -615,12 +540,10 @@ void shell_complete(const char *line, int cursor_pos, struct completion *out) {
     // partials (containing '.' or '[') walk into the tree.
     if (info.word_count == 0) {
         bool dotted = (strchr(partial, '.') != NULL) || (strchr(partial, '[') != NULL);
-        if (dotted) {
+        if (dotted)
             complete_path(partial, out);
-        } else {
+        else
             complete_root_members(partial, out);
-            complete_legacy_names(partial, out);
-        }
         return;
     }
 
@@ -634,56 +557,9 @@ void shell_complete(const char *line, int cursor_pos, struct completion *out) {
     memcpy(first, line + info.first_word_start, fwlen);
     first[fwlen] = '\0';
 
-    // Resolve as a tree path first — root methods (`cp`, `peeler`, …) and
+    // Resolve as a tree path — root methods (`cp`, `peeler`, …) and
     // dotted method paths (`floppy.drives[0].insert`) both land here.
     node_t cmd_node = object_resolve(object_root(), first);
-    if (node_valid(cmd_node) && cmd_node.member && cmd_node.member->kind == M_METHOD) {
+    if (node_valid(cmd_node) && cmd_node.member && cmd_node.member->kind == M_METHOD)
         complete_method_arg(cmd_node.member, info.word_count - 1, partial, out);
-        return;
-    }
-
-    // Legacy registry fallback. Subcommand-bearing commands consume their
-    // first arg as the subcmd name (`mem set ...` → arg 0 of the
-    // `set` subspec is the next token).
-    const struct cmd_reg *reg = find_legacy(first);
-    if (reg) {
-        if (reg->subcmds && reg->n_subcmds > 0) {
-            if (info.word_count == 1) {
-                // Completing the subcommand name itself.
-                for (int i = 0; i < reg->n_subcmds; i++) {
-                    if (!reg->subcmds[i].name)
-                        continue;
-                    push_match(out, reg->subcmds[i].name, partial);
-                    if (reg->subcmds[i].aliases) {
-                        for (const char **a = reg->subcmds[i].aliases; *a; a++)
-                            push_match(out, *a, partial);
-                    }
-                }
-                return;
-            }
-            // Locate the subcommand token (word 1).
-            // word 1 starts at first whitespace after first_word_end.
-            int p = info.first_word_end;
-            while (p < len && isspace((unsigned char)line[p]))
-                p++;
-            int sub_start = p;
-            while (p < len && !isspace((unsigned char)line[p]))
-                p++;
-            char sub[64];
-            int slen = p - sub_start;
-            if (slen >= (int)sizeof(sub))
-                slen = sizeof(sub) - 1;
-            memcpy(sub, line + sub_start, slen);
-            sub[slen] = '\0';
-            complete_legacy_arg(reg, info.word_count - 2, partial, out, sub);
-            return;
-        }
-        complete_legacy_arg(reg, info.word_count - 1, partial, out, NULL);
-        // Fall through to the custom completer if the command provides one.
-        if (reg->complete) {
-            struct cmd_context ctx = {0};
-            reg->complete(&ctx, partial, out);
-        }
-        return;
-    }
 }

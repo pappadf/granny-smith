@@ -3730,22 +3730,33 @@ static value_t method_root_print(struct object *self, const member_t *m, int arg
 // `hd_download` defers similarly — it requires platform/network state
 // outside the scope of the object tree.
 
-// `cp(src, dst, [flags])` — top-level alias for `storage.import` per
-// proposal §5.10 ("preserve UNIX muscle memory"). Calls shell_cp directly.
-// `flags` is a string; "-r" / "-R" enables recursive directory copy.
+// `cp([-r], src, dst)` — top-level alias for `storage.import` per
+// proposal §5.10 ("preserve UNIX muscle memory"). Accepts `-r` / `-R`
+// in any positional slot to match POSIX muscle memory.
 static value_t method_root_cp(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)self;
     (void)m;
-    if (argc < 2 || argv[0].kind != V_STRING || argv[1].kind != V_STRING)
-        return val_err("cp: expected (src, dst, [flags])");
     bool recursive = false;
-    if (argc >= 3 && argv[2].kind == V_STRING && argv[2].s) {
-        const char *f = argv[2].s;
-        if (strstr(f, "-r") || strstr(f, "-R"))
+    const char *src = NULL;
+    const char *dst = NULL;
+    for (int i = 0; i < argc; i++) {
+        if (argv[i].kind != V_STRING || !argv[i].s)
+            return val_err("cp: expected ([-r], src, dst)");
+        const char *s = argv[i].s;
+        if (strcmp(s, "-r") == 0 || strcmp(s, "-R") == 0) {
             recursive = true;
+        } else if (!src) {
+            src = s;
+        } else if (!dst) {
+            dst = s;
+        } else {
+            return val_err("cp: too many arguments");
+        }
     }
+    if (!src || !dst)
+        return val_err("cp: expected ([-r], src, dst)");
     char err[256] = {0};
-    int rc = shell_cp(argv[0].s, argv[1].s, recursive, err, sizeof(err));
+    int rc = shell_cp(src, dst, recursive, err, sizeof(err));
     if (rc < 0)
         return val_err("%s", err[0] ? err : "cp: failed");
     return val_bool(true);
@@ -4056,6 +4067,72 @@ static value_t method_root_quit(struct object *self, const member_t *m, int argc
     (void)argv;
     gs_quit();
     return val_none();
+}
+
+// `assert(predicate, [message])` — proposal §2.5 truthy check. Called
+// in path-form as `assert <pred>` or `assert <pred> "<msg>"`. The
+// caller has already $()-expanded the predicate to a string, so the
+// method just runs predicate_is_truthy on it; on failure the script
+// aborts via the val_err return path (path-form prints to stderr and
+// returns -1, which the headless runner treats as fatal).
+static value_t method_root_assert(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)self;
+    (void)m;
+    if (argc < 1)
+        return val_err("assert: expected (predicate, [message])");
+    const char *pred = (argv[0].kind == V_STRING && argv[0].s) ? argv[0].s : NULL;
+    if (!pred && argv[0].kind == V_BOOL)
+        pred = argv[0].b ? "true" : "false";
+    if (!pred)
+        pred = "";
+    const char *msg = (argc >= 2 && argv[1].kind == V_STRING) ? argv[1].s : NULL;
+    if (predicate_is_truthy(pred)) {
+        printf("ASSERT OK: %s\n", pred);
+        return val_bool(true);
+    }
+    if (msg && *msg)
+        printf("ASSERT FAILED: %s\n", msg);
+    else
+        printf("ASSERT FAILED: %s\n", pred);
+    return val_err("assert failed: %s", msg && *msg ? msg : pred);
+}
+
+// `echo(...)` — print arguments separated by spaces. Mirrors the
+// classic `echo` shell command so test scripts can write the result
+// of a `$(...)` expression to stdout without going through any
+// detour. Returns true on success.
+static value_t method_root_echo(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)self;
+    (void)m;
+    for (int i = 0; i < argc; i++) {
+        if (i > 0)
+            putchar(' ');
+        switch (argv[i].kind) {
+        case V_STRING:
+            fputs(argv[i].s ? argv[i].s : "", stdout);
+            break;
+        case V_BOOL:
+            fputs(argv[i].b ? "true" : "false", stdout);
+            break;
+        case V_INT:
+            printf("%lld", (long long)argv[i].i);
+            break;
+        case V_UINT:
+            printf("%llu", (unsigned long long)argv[i].u);
+            break;
+        case V_FLOAT:
+            printf("%g", argv[i].f);
+            break;
+        default:
+            // Fall back to a path-form-style label for the kinds we
+            // don't usually echo (V_OBJECT, V_LIST). Keeps output
+            // deterministic for diff-based regression tests.
+            fputs("<?>", stdout);
+            break;
+        }
+    }
+    putchar('\n');
+    return val_bool(true);
 }
 
 // === Checkpoint root methods (M10b — checkpoint area) ======================
@@ -5385,6 +5462,14 @@ static const member_t emu_root_members[] = {
      .name = "quit",
      .doc = "Exit the emulator (asks the legacy quit command to end the run)",
      .method = {.args = NULL, .nargs = 0, .result = V_NONE, .fn = method_root_quit}                                  },
+    {.kind = M_METHOD,
+     .name = "assert",
+     .doc = "Assert that a predicate is truthy; abort the script otherwise",
+     .method = {.args = NULL, .nargs = 2, .result = V_BOOL, .fn = method_root_assert}                                },
+    {.kind = M_METHOD,
+     .name = "echo",
+     .doc = "Print arguments separated by spaces (final newline appended)",
+     .method = {.args = NULL, .nargs = 0, .result = V_BOOL, .fn = method_root_echo}                                  },
     // Checkpoint / runtime-state wrappers (M10b — checkpoint area).
     {.kind = M_METHOD,
      .name = "checkpoint_probe",
@@ -5551,8 +5636,16 @@ static const member_t emu_root_members[] = {
      .doc = "True if the path exists in the shell VFS (legacy `exists`)",
      .method = {.args = NULL, .nargs = 1, .result = V_BOOL, .fn = method_root_path_exists}                           },
     {.kind = M_METHOD,
+     .name = "exists",
+     .doc = "True if the path exists in the shell VFS (alias for path_exists)",
+     .method = {.args = NULL, .nargs = 1, .result = V_BOOL, .fn = method_root_path_exists}                           },
+    {.kind = M_METHOD,
      .name = "path_size",
      .doc = "File size in bytes (legacy `size`)",
+     .method = {.args = NULL, .nargs = 1, .result = V_UINT, .fn = method_root_path_size}                             },
+    {.kind = M_METHOD,
+     .name = "size",
+     .doc = "File size in bytes (alias for path_size)",
      .method = {.args = NULL, .nargs = 1, .result = V_UINT, .fn = method_root_path_size}                             },
     {.kind = M_METHOD,
      .name = "fd_create",

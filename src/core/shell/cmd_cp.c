@@ -14,7 +14,6 @@
 // and `<file>/finf` from the shell still works, so resource forks can be
 // extracted manually.
 
-#include "cmd_types.h"
 #include "shell.h"
 #include "vfs.h"
 
@@ -206,50 +205,5 @@ int shell_cp(const char *src, const char *dst, bool recursive, char *err_buf, si
     return 0;
 }
 
-// cp [-r] <src> <dst>
-// If dst is an existing directory, we append basename(src) to dst before
-// recursing (POSIX behaviour).
-static void cmd_cp(struct cmd_context *ctx, struct cmd_result *res) {
-    bool recursive = false;
-    const char *src = NULL;
-    const char *dst = NULL;
-    for (int i = 1; i < ctx->raw_argc; i++) {
-        const char *a = ctx->raw_argv[i];
-        if (strcmp(a, "-r") == 0 || strcmp(a, "-R") == 0) {
-            recursive = true;
-        } else if (!src) {
-            src = a;
-        } else if (!dst) {
-            dst = a;
-        } else {
-            cmd_err(res, "cp: too many arguments");
-            return;
-        }
-    }
-    char err[256] = {0};
-    int rc = shell_cp(src, dst, recursive, err, sizeof(err));
-    if (rc < 0) {
-        cmd_err(res, "%s", err[0] ? err : "cp: failed");
-        return;
-    }
-    cmd_ok(res);
-}
-
-// Argument specs for cp.  We rely on ARG_REST since -r mixes with
-// positional args; the handler re-parses raw_argv.
-static const struct arg_spec cp_args[] = {
-    {"args", ARG_REST, "[-r] <src> <dst>"},
-};
-
-// Public registration hook, called from shell_init.
-void cmd_cp_register(void);
-void cmd_cp_register(void) {
-    register_command(&(struct cmd_reg){
-        .name = "cp",
-        .category = "Filesystem",
-        .synopsis = "cp [-r] <src> <dst> - copy file or directory",
-        .fn = cmd_cp,
-        .args = cp_args,
-        .nargs = 1,
-    });
-}
+// Phase 5c — legacy `cp` shell command and its handler retired. The
+// typed `cp` root method calls shell_cp() directly.

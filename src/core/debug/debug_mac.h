@@ -28,18 +28,10 @@ void debug_mac_print_target_backtrace(void);
 // Prints current Mac application process info with header
 void debug_mac_print_process_info_header(void);
 
-// === M8 — public mouse / trace control =====================================
+// === Public mouse / trace control ===========================================
 //
-// Thin entry points around the file-private helpers used by the legacy
-// `set-mouse` / `mouse-button` / `trace-mouse` commands. The
-// `input.mouse` object class calls these so both the legacy shell
-// path and the new tree path share the same backing logic.
-
-// Set mouse position via the per-platform default route (Mac OS uses
-// global write; A/UX MAE uses MAE-resolved physical write; others
-// fall back to hardware delta injection). Equivalent to the
-// no-flag `set-mouse x y` shell form.
-void debug_mac_set_mouse(long x, long y);
+// Backing entry points used by the typed `mouse.move` / `mouse.click` /
+// `mouse.trace` root methods.
 
 // Set mouse position with explicit routing mode. Mode chars:
 //   'g' = global (Mac OS Toolbox MTemp + MTemp guard)

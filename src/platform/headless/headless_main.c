@@ -170,82 +170,11 @@ void gs_quit(void) {
 }
 
 // Legacy shell `quit` — thin shim.
-static uint64_t cmd_quit(int argc, char *argv[]) {
-    (void)argc;
-    (void)argv;
-    gs_quit();
-    return 0;
-}
-
-// Headless checkpoint command — delegates to core save/load functions.
-static uint64_t cmd_headless_checkpoint(int argc, char *argv[]) {
-    if (argc < 2) {
-        printf("Usage: checkpoint --save <path> | --load [<path>]\n");
-        return 0;
-    }
-    const char *action = argv[1];
-    if (strcmp(action, "--save") == 0) {
-        return cmd_save_checkpoint(argc - 1, argv + 1);
-    }
-    if (strcmp(action, "--load") == 0) {
-        return cmd_load_checkpoint(argc - 1, argv + 1);
-    }
-    printf("Usage: checkpoint --save <path> | --load [<path>]\n");
-    return 1;
-}
-
-// Forward declaration for run_script_file
+// Forward declaration for run_script_file (used by main script-flag path).
 static int run_script_file(const char *filename);
 
-// Forward decl — used by cmd_run_screenshots below
+// Forward decl — used by the daemon-mode loop.
 static void pump_scheduler_with_heartbeat(void);
-
-// Script command — execute a script file inline (IMP-802)
-static uint64_t cmd_script(int argc, char *argv[]) {
-    if (argc < 2) {
-        printf("Usage: script <path>\n");
-        return (uint64_t)-1;
-    }
-    return (uint64_t)run_script_file(argv[1]);
-}
-
-// run-screenshots N <prefix> <count>
-//   Run <count> instructions total, taking a screenshot every N instructions
-//   into files named <prefix>-<step>M.png (step is the cumulative instruction
-//   count in millions, rounded to the nearest million).  Matches the naming
-//   convention used under tests/integration/se30-aux-3/ (phase1-35M.png ...).
-//   <count> is required so the run is bounded.
-static uint64_t cmd_run_screenshots(int argc, char *argv[]) {
-    if (argc < 4) {
-        printf("Usage: run-screenshots <per-step> <prefix> <total>\n");
-        printf("  Example: run-screenshots 35000000 phase 595000000\n");
-        return (uint64_t)-1;
-    }
-    uint64_t step = strtoull(argv[1], NULL, 0);
-    const char *prefix = argv[2];
-    uint64_t total = strtoull(argv[3], NULL, 0);
-    if (step == 0 || total == 0 || step > total) {
-        printf("run-screenshots: invalid per-step or total\n");
-        return (uint64_t)-1;
-    }
-    int phase = 1;
-    for (uint64_t done = 0; done < total && !quit_requested; done += step) {
-        uint64_t remaining = total - done;
-        uint64_t this_step = (remaining < step) ? remaining : step;
-        char cmd[64];
-        snprintf(cmd, sizeof(cmd), "run %llu", (unsigned long long)this_step);
-        shell_dispatch(cmd);
-        pump_scheduler_with_heartbeat();
-        if (quit_requested)
-            break;
-        uint64_t millions = (done + this_step) / 1000000;
-        char path[512];
-        snprintf(path, sizeof(path), "%s%d-%lluM.png", prefix, phase++, (unsigned long long)millions);
-        snprintf(cmd, sizeof(cmd), "screenshot save %s", path);
-        shell_dispatch(cmd);
-    }
-    return 0;
-}
 
 // ============================================================================
 // Daemon mode: TCP socket interface for AI agents
@@ -894,12 +823,11 @@ int main(int argc, char *argv[]) {
         }
     }
 
-    // Register headless-specific commands
-    register_cmd("quit", "General", "quit — exit the emulator", cmd_quit);
-    register_cmd("script", "General", "script <path> — execute a script file", cmd_script);
-    register_cmd("run-screenshots", "Scheduler",
-                 "run-screenshots <per-step> <prefix> <total> — run taking periodic screenshots", cmd_run_screenshots);
-    register_cmd("checkpoint", "Checkpointing", "checkpoint --save <path> | --load [<path>]", cmd_headless_checkpoint);
+    // Phase 5c — legacy `quit` / `script` / `run-screenshots` /
+    // `checkpoint` shell command registrations retired. The typed
+    // `quit()` / `checkpoint_save(path)` / `checkpoint_load(path)`
+    // root methods replace them; `script=<path>` is a CLI flag (still
+    // honoured by the headless main loop).
 
     setup_init();
 
@@ -921,12 +849,11 @@ int main(int argc, char *argv[]) {
     if (ram_kb > 0)
         system_set_pending_ram_kb(ram_kb);
 
-    // Use rom load to identify the ROM and create the appropriate machine.
-    // rom load reads the ROM file, determines the machine type from the checksum,
-    // calls system_create() internally, and loads the ROM into machine memory.
-    char cmd[1024];
-    snprintf(cmd, sizeof(cmd), "rom load %s", rom_file);
-    shell_dispatch(cmd);
+    // Use rom_load to identify the ROM and create the appropriate machine.
+    // The function reads the ROM file, determines the machine type from the
+    // checksum, calls system_create() internally, and loads the ROM into
+    // machine memory.
+    cmd_rom_load(rom_file);
 
     if (!global_emulator) {
         fprintf(stderr, "Error: Failed to initialize emulator (ROM identification failed)\n");
@@ -961,22 +888,19 @@ int main(int argc, char *argv[]) {
     // Attach CD-ROM images (default SCSI ID starts at 3)
     for (int i = 0; i < cdrom_count; i++) {
         int cdrom_id = 3 + i; // default SCSI IDs 3, 4, 5, ...
-        snprintf(cmd, sizeof(cmd), "cdrom attach %s %d", cdrom_files[i], cdrom_id);
-        int rc = shell_dispatch(cmd);
-        if (rc == 0) {
-            if (!quiet)
-                printf("Attached CD-ROM[%d]: %s (SCSI ID %d)\n", i, cdrom_files[i], cdrom_id);
-        } else {
-            fprintf(stderr, "Warning: Cannot attach CD-ROM image: %s\n", cdrom_files[i]);
-        }
+        add_scsi_cdrom(global_emulator, cdrom_files[i], cdrom_id);
+        if (!quiet)
+            printf("Attached CD-ROM[%d]: %s (SCSI ID %d)\n", i, cdrom_files[i], cdrom_id);
     }
 
     // Insert explicit fd0=/fd1= floppy images into their designated drives
     for (int i = 0; i < 2; i++) {
         if (!fd_explicit[i])
             continue;
-        snprintf(cmd, sizeof(cmd), "fd insert %s %d true", fd_explicit[i], i);
-        int rc = shell_dispatch(cmd);
+        char drive_str[8];
+        snprintf(drive_str, sizeof(drive_str), "%d", i);
+        char *fake_argv[] = {"fd", "insert", (char *)fd_explicit[i], drive_str, "true"};
+        int rc = shell_fd_argv(5, fake_argv);
         if (rc == 0) {
             if (!quiet)
                 printf("Inserted FD[%d]: %s\n", i, fd_explicit[i]);
@@ -987,8 +911,8 @@ int main(int argc, char *argv[]) {
 
     // Insert sequential fd= floppy images into first available drives
     for (int i = 0; i < fd_count; i++) {
-        snprintf(cmd, sizeof(cmd), "fd insert %s", fd_files[i]);
-        int rc = shell_dispatch(cmd);
+        char *fake_argv[] = {"fd", "insert", (char *)fd_files[i]};
+        int rc = shell_fd_argv(3, fake_argv);
         if (rc == 0) {
             if (!quiet)
                 printf("Inserted FD[%d]: %s\n", i, fd_files[i]);
