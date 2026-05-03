@@ -4441,17 +4441,26 @@ static value_t method_root_info_mac(struct object *self, const member_t *m, int 
 static value_t method_root_disasm(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)self;
     (void)m;
-    char line[64];
+    int64_t count = 16;
     if (argc >= 1) {
         bool ok = false;
-        int64_t count = (int64_t)val_as_i64(&argv[0], &ok);
+        count = val_as_i64(&argv[0], &ok);
         if (!ok)
             return val_err("disasm: count must be integer");
-        snprintf(line, sizeof(line), "d %lld", (long long)count);
-    } else {
-        snprintf(line, sizeof(line), "d");
+        if (count <= 0)
+            count = 16;
     }
-    return val_bool(shell_dispatch(line) == 0);
+    cpu_t *cpu = system_cpu();
+    if (!cpu)
+        return val_err("disasm: CPU not initialised");
+    uint32_t addr = cpu_get_pc(cpu);
+    char buf[160];
+    for (int i = 0; i < (int)count; i++) {
+        int instr_len = debugger_disasm(buf, sizeof(buf), addr);
+        printf("%s\n", buf);
+        addr += 2 * instr_len;
+    }
+    return val_bool(true);
 }
 
 // `break_set(target)` accepts either a numeric address or a string
@@ -4557,25 +4566,32 @@ static value_t method_root_stop(struct object *self, const member_t *m, int argc
     (void)m;
     (void)argc;
     (void)argv;
-    char line[8] = "stop";
-    return val_bool(shell_dispatch(line) == 0);
+    scheduler_t *s = system_scheduler();
+    if (!s)
+        return val_err("stop: scheduler not initialised");
+    scheduler_stop(s);
+    return val_bool(true);
 }
 
 // `step([n])` — single-step n instructions (default 1).
 static value_t method_root_step(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)self;
     (void)m;
-    char line[64];
+    int64_t count = 1;
     if (argc >= 1) {
         bool ok = false;
-        int64_t count = val_as_i64(&argv[0], &ok);
+        count = val_as_i64(&argv[0], &ok);
         if (!ok)
             return val_err("step: count must be integer");
-        snprintf(line, sizeof(line), "step %lld", (long long)count);
-    } else {
-        snprintf(line, sizeof(line), "step");
     }
-    return val_bool(shell_dispatch(line) == 0);
+    if (count <= 0)
+        return val_err("step: count must be positive");
+    scheduler_t *s = system_scheduler();
+    if (!s)
+        return val_err("step: scheduler not initialised");
+    scheduler_run_instructions(s, (int)count);
+    scheduler_stop(s);
+    return val_bool(true);
 }
 
 // `background_checkpoint(name)` — capture a snapshot under the given label.
