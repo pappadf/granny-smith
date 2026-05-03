@@ -13,23 +13,24 @@ floppy.sel
 # Drives collection.
 floppy.drives
 
-# Drive 0: populated.
+# Drive 0: populated. Assert present=true; the other attributes are
+# walked as bare reads to verify the path resolves.
+assert $(floppy.drives[0].present == true)
 floppy.drives[0].index
-floppy.drives[0].present
 floppy.drives[0].disk
 floppy.drives[0].track
 floppy.drives[0].side
 floppy.drives[0].motor_on
 
 # Drive 1: empty.
+assert $(floppy.drives[1].present == false)
 floppy.drives[1].index
-floppy.drives[1].present
 floppy.drives[1].disk
 
 # Eject drive 0 — present must flip to false, disk to empty string.
 echo $(floppy.drives[0].eject())
-floppy.drives[0].present
-floppy.drives[0].disk
+assert $(floppy.drives[0].present == false)
+assert $(floppy.drives[0].disk == "")
 
 # Ejecting an already-empty drive is an error (the method is honest
 # rather than silently no-op'ing — the harness shouldn't fail on

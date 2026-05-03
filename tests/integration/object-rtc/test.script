@@ -11,21 +11,19 @@ run 50000
 eval rtc
 rtc.read_only
 
-# Set the time via the legacy command — expects unix epoch.
-# 1969-12-31T23:59:59 UTC is unix epoch -1; pick a positive value.
-# 0 unix → 1970-01-01T00:00:00 UTC → 2082844800 mac seconds.
+# Set the time via the typed setter, assert the round-trip. There's
+# no `run` between set and read so emulation-time is frozen and the
+# value lands exactly as written.
 rtc.time = 0
-rtc.time
-
-# Set a different time, observe again.
+assert $(rtc.time == 0)
 rtc.time = 1000000
-rtc.time
+assert $(rtc.time == 1000000)
 
 # PRAM read of a known address. Mac PRAM is initialised by the boot
 # code, so the contents depend on how far through boot we are. We
-# write a sentinel and read it back via the same path.
+# write a sentinel and assert the read returns the same value.
 echo $(rtc.pram_write(0x80, 0xAB))
-echo $(rtc.pram_read(0x80))
+assert $(rtc.pram_read(0x80) == 0xAB)
 
 # Read the full PRAM snapshot — output is "0x..." hex string.
 rtc.pram

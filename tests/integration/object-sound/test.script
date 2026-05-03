@@ -14,12 +14,12 @@ sound.sample_rate
 sound.enabled
 sound.volume
 
-# Mute via the method, observe via `enabled`.
+# Mute via the method, assert `enabled` flipped to false.
 echo $(sound.mute(true))
-sound.enabled
+assert $(sound.enabled == false)
 
-# Unmute and verify enabled flips back.
+# Unmute and assert `enabled` flips back to true.
 echo $(sound.mute(false))
-sound.enabled
+assert $(sound.enabled == true)
 
 quit

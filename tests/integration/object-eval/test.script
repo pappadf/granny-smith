@@ -30,13 +30,13 @@ mac.ROMBase
 cpu.ccr
 cpu.sp
 
-# Setter form — write through node_set, then read back. Use a writable
-# attribute (sound.enabled, V_BOOL) so the path-equals dispatch round-
-# trips cleanly.
+# Setter form — write through node_set, then assert the round-trip.
+# sound.enabled is a writable V_BOOL attribute; the assert form is a
+# stronger check than a bare-read whose output used to be eyeballed.
 sound.enabled = false
-sound.enabled
+assert $(sound.enabled == false)
 sound.enabled = true
-sound.enabled
+assert $(sound.enabled == true)
 
 # Legacy `eval` continues to work in parallel for the JSON shape.
 machine.model_id

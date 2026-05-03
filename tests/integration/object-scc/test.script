@@ -22,11 +22,13 @@ scc.b.dcd
 scc.a.tx_empty
 scc.b.rx_pending
 
-# Flip via the legacy command, observe via the new attr.
+# Flip via the typed setter, assert via the path predicate. The
+# round-trip is the real test — anything that decouples the attribute
+# from the underlying scc state shows up here as an assertion failure.
 scc.loopback = true
-scc.loopback
+assert $(scc.loopback == true)
 scc.loopback = false
-scc.loopback
+assert $(scc.loopback == false)
 
 # Reset method runs to completion (no return value to assert beyond
 # the absence of an error in the JSON output).
