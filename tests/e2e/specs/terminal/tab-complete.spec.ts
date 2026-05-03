@@ -89,11 +89,4 @@ test.describe('Tab completion', () => {
     expect(matches).toEqual([]);
   });
 
-  test('legacy commands still tab-complete', async ({ page }) => {
-    // The legacy registry is union-merged with the root tree at the
-    // line-start position; until the M10 cutover deletes the registry,
-    // names like `eval` must still appear when their prefix is typed.
-    const matches = await complete(page, 'eva');
-    expect(matches).toEqual(expect.arrayContaining(['eval']));
-  });
 });
