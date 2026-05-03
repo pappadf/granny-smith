@@ -4526,20 +4526,116 @@ static value_t method_root_logpoint_set(struct object *self, const member_t *m, 
     return val_bool(shell_dispatch(line) == 0);
 }
 
-// `log_set(subsys, level)` — adjust per-subsystem log level.
+// `log_set(subsys, level_or_spec)` — adjust per-subsystem log level. The
+// second arg accepts either an integer level or a full named-arg spec
+// string (e.g. `"level=5 file=/tmp/foo.txt stdout=off ts=on"`); the spec
+// form is forwarded verbatim to the legacy `log` parser.
 static value_t method_root_log_set(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)self;
     (void)m;
     if (argc < 2 || argv[0].kind != V_STRING)
-        return val_err("log_set: expected (subsys, level)");
-    bool ok = false;
-    int64_t level = val_as_i64(&argv[1], &ok);
-    if (!ok)
-        return val_err("log_set: level must be integer");
-    char line[128];
-    int n = snprintf(line, sizeof(line), "log %s %lld", argv[0].s, (long long)level);
+        return val_err("log_set: expected (subsys, level|spec)");
+    char line[512];
+    int n;
+    if (argv[1].kind == V_STRING) {
+        n = snprintf(line, sizeof(line), "log %s %s", argv[0].s, argv[1].s ? argv[1].s : "");
+    } else {
+        bool ok = false;
+        int64_t level = val_as_i64(&argv[1], &ok);
+        if (!ok)
+            return val_err("log_set: second arg must be integer level or spec string");
+        n = snprintf(line, sizeof(line), "log %s %lld", argv[0].s, (long long)level);
+    }
     if (n < 0 || (size_t)n >= sizeof(line))
         return val_err("log_set: argument too long");
+    return val_bool(shell_dispatch(line) == 0);
+}
+
+// `stop()` — interrupt the scheduler.
+static value_t method_root_stop(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)self;
+    (void)m;
+    (void)argc;
+    (void)argv;
+    char line[8] = "stop";
+    return val_bool(shell_dispatch(line) == 0);
+}
+
+// `step([n])` — single-step n instructions (default 1).
+static value_t method_root_step(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)self;
+    (void)m;
+    char line[64];
+    if (argc >= 1) {
+        bool ok = false;
+        int64_t count = val_as_i64(&argv[0], &ok);
+        if (!ok)
+            return val_err("step: count must be integer");
+        snprintf(line, sizeof(line), "step %lld", (long long)count);
+    } else {
+        snprintf(line, sizeof(line), "step");
+    }
+    return val_bool(shell_dispatch(line) == 0);
+}
+
+// `background_checkpoint(name)` — capture a snapshot under the given label.
+static value_t method_root_background_checkpoint(struct object *self, const member_t *m, int argc,
+                                                 const value_t *argv) {
+    (void)self;
+    (void)m;
+    if (argc < 1 || argv[0].kind != V_STRING)
+        return val_err("background_checkpoint: expected (name)");
+    char line[256];
+    int n = snprintf(line, sizeof(line), "background-checkpoint %s", argv[0].s ? argv[0].s : "");
+    if (n < 0 || (size_t)n >= sizeof(line))
+        return val_err("background_checkpoint: name too long");
+    return val_bool(shell_dispatch(line) == 0);
+}
+
+// `path_exists(path)` — true if the path exists in the shell VFS.
+static value_t method_root_path_exists(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)self;
+    (void)m;
+    if (argc < 1 || argv[0].kind != V_STRING)
+        return val_err("path_exists: expected (path)");
+    char line[1024];
+    int n = snprintf(line, sizeof(line), "exists \"%s\"", argv[0].s ? argv[0].s : "");
+    if (n < 0 || (size_t)n >= sizeof(line))
+        return val_err("path_exists: path too long");
+    // legacy `exists` returns 0=exists, 1=missing — invert for V_BOOL.
+    return val_bool(shell_dispatch(line) == 0);
+}
+
+// `path_size(path)` — file size in bytes (0 on stat failure).
+static value_t method_root_path_size(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)self;
+    (void)m;
+    if (argc < 1 || argv[0].kind != V_STRING)
+        return val_err("path_size: expected (path)");
+    char line[1024];
+    int n = snprintf(line, sizeof(line), "size \"%s\"", argv[0].s ? argv[0].s : "");
+    if (n < 0 || (size_t)n >= sizeof(line))
+        return val_err("path_size: path too long");
+    uint64_t r = shell_dispatch(line);
+    return val_uint(8, r);
+}
+
+// `fd_create(path, [size_str])` — create a blank floppy image. Optional
+// size string accepts the legacy forms `"400K"` / `"800K"` / `"1.4MB"`;
+// when omitted, the legacy default (1.4 MB) applies.
+static value_t method_root_fd_create(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)self;
+    (void)m;
+    if (argc < 1 || argv[0].kind != V_STRING)
+        return val_err("fd_create: expected (path, [size])");
+    char line[512];
+    int n;
+    if (argc >= 2 && argv[1].kind == V_STRING && argv[1].s && *argv[1].s)
+        n = snprintf(line, sizeof(line), "fd create \"%s\" %s", argv[0].s ? argv[0].s : "", argv[1].s);
+    else
+        n = snprintf(line, sizeof(line), "fd create \"%s\"", argv[0].s ? argv[0].s : "");
+    if (n < 0 || (size_t)n >= sizeof(line))
+        return val_err("fd_create: argument too long");
     return val_bool(shell_dispatch(line) == 0);
 }
 
@@ -5090,8 +5186,32 @@ static const member_t emu_root_members[] = {
      .method = {.args = NULL, .nargs = 0, .result = V_BOOL, .fn = method_root_logpoint_clear}                        },
     {.kind = M_METHOD,
      .name = "log_set",
-     .doc = "Set per-subsystem log level (legacy `log <subsys> <level>`)",
+     .doc = "Set per-subsystem log level or full spec (legacy `log <subsys> <level|spec>`)",
      .method = {.args = NULL, .nargs = 2, .result = V_BOOL, .fn = method_root_log_set}                               },
+    {.kind = M_METHOD,
+     .name = "stop",
+     .doc = "Interrupt the scheduler (legacy `stop`)",
+     .method = {.args = NULL, .nargs = 0, .result = V_BOOL, .fn = method_root_stop}                                  },
+    {.kind = M_METHOD,
+     .name = "step",
+     .doc = "Single-step N instructions; default 1 (legacy `step`/`s`)",
+     .method = {.args = NULL, .nargs = 1, .result = V_BOOL, .fn = method_root_step}                                  },
+    {.kind = M_METHOD,
+     .name = "background_checkpoint",
+     .doc = "Capture a checkpoint under the given label (legacy `background-checkpoint`)",
+     .method = {.args = NULL, .nargs = 1, .result = V_BOOL, .fn = method_root_background_checkpoint}                 },
+    {.kind = M_METHOD,
+     .name = "path_exists",
+     .doc = "True if the path exists in the shell VFS (legacy `exists`)",
+     .method = {.args = NULL, .nargs = 1, .result = V_BOOL, .fn = method_root_path_exists}                           },
+    {.kind = M_METHOD,
+     .name = "path_size",
+     .doc = "File size in bytes (legacy `size`)",
+     .method = {.args = NULL, .nargs = 1, .result = V_UINT, .fn = method_root_path_size}                             },
+    {.kind = M_METHOD,
+     .name = "fd_create",
+     .doc = "Create a blank floppy image (legacy `fd create`)",
+     .method = {.args = NULL, .nargs = 2, .result = V_BOOL, .fn = method_root_fd_create}                             },
 };
 
 static const class_desc_t emu_root_class_real = {

@@ -43,7 +43,8 @@ type ReturnConvention =
   | 'cmd_int_bool'   // bool true → 0, false → 1 (legacy cmd_int convention)
   | 'cmd_bool'       // bool true → 1, false → 0 (legacy cmd_bool convention)
   | 'string_nonempty' // V_STRING non-empty → 1, empty → 0 (mirrors fd validate)
-  | 'void_or_error'; // any non-error → 0, error → 1 (legacy "did dispatch succeed")
+  | 'void_or_error'  // any non-error → 0, error → 1 (legacy "did dispatch succeed")
+  | 'pass_through';  // numeric value passed through unchanged (e.g. size/print)
 
 type Translation = {
   method: string;
@@ -61,6 +62,11 @@ function mapResult(value: any, convention: ReturnConvention): number {
   if (convention === 'string_nonempty')
     return typeof value === 'string' && value.length > 0 ? 1 : 0;
   if (convention === 'void_or_error') return 0;
+  if (convention === 'pass_through') {
+    if (typeof value === 'number') return value;
+    if (typeof value === 'bigint') return Number(value);
+    return 0;
+  }
   return 0;
 }
 
@@ -135,6 +141,24 @@ function translateToGsEval(line: string): Translation | null {
     return { method: 'schedule', args: tail, convention: 'cmd_int_bool' };
   if (head === 'br' && tail.length === 1)
     return { method: 'break_set', args: [tail[0]], convention: 'cmd_int_bool' };
+  if (head === 'stop' && tail.length === 0)
+    return { method: 'stop', args: [], convention: 'cmd_int_bool' };
+  if ((head === 's' || head === 'step') && tail.length <= 1) {
+    const n = tail.length === 1 ? parseInt10(tail[0]) : null;
+    return {
+      method: 'step',
+      args: tail.length === 1 && n !== null ? [n] : [],
+      convention: 'cmd_int_bool',
+    };
+  }
+  if (head === 'background-checkpoint' && tail.length === 1)
+    return { method: 'background_checkpoint', args: [tail[0]], convention: 'cmd_int_bool' };
+  if (head === 'exists' && tail.length === 1)
+    // Legacy `exists` returned 0=exists, 1=missing — map_int_bool keeps that.
+    return { method: 'path_exists', args: [tail[0]], convention: 'cmd_int_bool' };
+  if (head === 'size' && tail.length === 1)
+    // Legacy `size` returned the byte count — pass it through unchanged.
+    return { method: 'path_size', args: [tail[0]], convention: 'pass_through' };
 
   // Mouse: set-mouse [--global|--hw|--aux] x y, or x y first then mode.
   if (head === 'set-mouse') {
@@ -202,12 +226,22 @@ function translateToGsEval(line: string): Translation | null {
       };
   }
 
-  // log <cat> <level>  (positional shorthand only — named-arg form falls
-  // through to the legacy bridge until log_set grows a spec-string overload).
-  if (head === 'log' && tail.length === 2) {
-    const lvl = parseInt10(tail[1]);
-    if (lvl !== null)
-      return { method: 'log_set', args: [tail[0], lvl], convention: 'cmd_int_bool' };
+  // log <cat> <level>  (positional shorthand) or
+  // log <cat> level=N file=... stdout=... ts=...  (full named-arg spec).
+  // log_set's second arg now accepts either an integer level or the full
+  // spec string (forwarded verbatim to the legacy `log` parser).
+  if (head === 'log' && tail.length >= 2) {
+    const cat = tail[0];
+    if (tail.length === 2) {
+      const lvl = parseInt10(tail[1]);
+      if (lvl !== null)
+        return { method: 'log_set', args: [cat, lvl], convention: 'cmd_int_bool' };
+    }
+    return {
+      method: 'log_set',
+      args: [cat, tail.slice(1).join(' ')],
+      convention: 'cmd_int_bool',
+    };
   }
 
   // peeler: --probe X | -o D X | <archive>
@@ -295,6 +329,12 @@ function translateToGsEval(line: string): Translation | null {
         return { method: 'fd_probe', args: subArgs, convention: 'cmd_int_bool' };
       if (sub === 'validate' && subArgs.length === 1)
         return { method: 'fd_validate', args: subArgs, convention: 'string_nonempty' };
+      if (sub === 'create' && subArgs.length >= 1)
+        return {
+          method: 'fd_create',
+          args: subArgs.length >= 2 ? [subArgs[0], subArgs[1]] : [subArgs[0]],
+          convention: 'cmd_int_bool',
+        };
       if (sub === 'insert' && subArgs.length >= 2) {
         const slot = parseInt10(subArgs[1]) ?? 0;
         const writable = subArgs.length >= 3 ? parseBool(subArgs[2]) : false;
