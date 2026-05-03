@@ -1258,6 +1258,14 @@ static uint64_t cmd_td(int argc, char *argv[]) {
     return 0;
 }
 
+// Public wrappers for the typed `info_regs` / `info_fpregs` /
+// `info_mac` root methods — same body as the legacy `td` / `fpregs`
+// / `mac-state` commands and the `info <regs|fpregs|mac>` subcommands,
+// just reachable without going through cmd_dispatch.
+void debug_print_regs(void) {
+    cmd_td(0, NULL);
+}
+
 // Helper function to convert string to uppercase (for case-insensitive comparisons)
 static void str_to_upper(char *dest, const char *src) {
     while (*src) {
@@ -2390,6 +2398,10 @@ static uint64_t cmd_fpregs(int argc, char *argv[]) {
     return 0;
 }
 
+void debug_print_fpregs(void) {
+    cmd_fpregs(0, NULL);
+}
+
 // ============================================================================
 // Configurable status line / prompt (IMP-308)
 // ============================================================================
@@ -2748,6 +2760,10 @@ static uint64_t cmd_mac_state(int argc, char *argv[]) {
     }
 
     return 0;
+}
+
+void debug_print_mac_state(void) {
+    cmd_mac_state(0, NULL);
 }
 
 // ============================================================================

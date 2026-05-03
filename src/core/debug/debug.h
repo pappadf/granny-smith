@@ -109,6 +109,14 @@ int delete_all_breakpoints(debug_t *debug);
 void list_logpoints(debug_t *debug);
 int delete_all_logpoints(debug_t *debug);
 
+// Register / FPU / Mac-state dumps — used by typed `info_*` wrappers
+// and the legacy `td` / `fpregs` / `mac-state` commands. Both layers
+// share the same printer; the typed wrapper has no cmd_context so
+// stdout is the only output target.
+void debug_print_regs(void);
+void debug_print_fpregs(void);
+void debug_print_mac_state(void);
+
 // Framebuffer utilities — used by typed `screen.*` wrappers and the
 // legacy `screenshot` command. Both layers call into the same
 // primitives so neither has to know about the other.

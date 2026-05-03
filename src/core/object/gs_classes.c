@@ -4444,7 +4444,8 @@ static value_t method_root_info_regs(struct object *self, const member_t *m, int
     (void)m;
     (void)argc;
     (void)argv;
-    return val_bool(shell_dispatch("info regs") == 0);
+    debug_print_regs();
+    return val_bool(true);
 }
 
 static value_t method_root_info_fpregs(struct object *self, const member_t *m, int argc, const value_t *argv) {
@@ -4452,7 +4453,8 @@ static value_t method_root_info_fpregs(struct object *self, const member_t *m, i
     (void)m;
     (void)argc;
     (void)argv;
-    return val_bool(shell_dispatch("info fpregs") == 0);
+    debug_print_fpregs();
+    return val_bool(true);
 }
 
 static value_t method_root_info_mac(struct object *self, const member_t *m, int argc, const value_t *argv) {
@@ -4460,7 +4462,8 @@ static value_t method_root_info_mac(struct object *self, const member_t *m, int 
     (void)m;
     (void)argc;
     (void)argv;
-    return val_bool(shell_dispatch("info mac") == 0);
+    debug_print_mac_state();
+    return val_bool(true);
 }
 
 static value_t method_root_disasm(struct object *self, const member_t *m, int argc, const value_t *argv) {
