@@ -612,9 +612,9 @@ extern int disasm_68000(uint16_t *instr, char *buf);
 static void trace_add_pc_entry(debug_t *debug, uint32_t pc);
 
 // Forward declarations for logpoint management (IMP-604)
-static void list_logpoints(debug_t *debug);
+void list_logpoints(debug_t *debug);
 static int delete_logpoint(debug_t *debug, uint32_t addr);
-static void delete_all_logpoints(debug_t *debug);
+int delete_all_logpoints(debug_t *debug);
 
 static int disasm(uint16_t *instr, char *mnemonic, char *operands) {
     char buf[100];
@@ -850,7 +850,7 @@ static bool delete_breakpoint_by_id(debug_t *debug, int id) {
 
 // Delete all breakpoints
 // Returns the number of breakpoints deleted
-static int delete_all_breakpoints(debug_t *debug) {
+int delete_all_breakpoints(debug_t *debug) {
     int count = 0;
     breakpoint_t *bp = debug->breakpoints;
 
@@ -865,7 +865,7 @@ static int delete_all_breakpoints(debug_t *debug) {
 }
 
 // List all breakpoints
-static void list_breakpoints(debug_t *debug) {
+void list_breakpoints(debug_t *debug) {
     breakpoint_t *bp = debug->breakpoints;
     int count = 0;
 
@@ -2486,7 +2486,7 @@ static const char *lp_kind_label(int kind) {
 }
 
 // List all logpoints
-static void list_logpoints(debug_t *debug) {
+void list_logpoints(debug_t *debug) {
     if (!debug || !debug->logpoints) {
         printf("No logpoints set\n");
         return;
@@ -2560,15 +2560,20 @@ static int delete_logpoint_by_id(debug_t *debug, int id) {
     return -1;
 }
 
-// Delete all logpoints
-static void delete_all_logpoints(debug_t *debug) {
-    logpoint_t *lp = debug->logpoints;
+// Delete all logpoints; returns the number deleted (matches the
+// breakpoint counterpart so typed wrappers can report the count).
+int delete_all_logpoints(debug_t *debug) {
+    int count = 0;
+    logpoint_t *lp = debug ? debug->logpoints : NULL;
     while (lp) {
         logpoint_t *next = lp->next;
         free_logpoint(lp);
         lp = next;
+        count++;
     }
-    debug->logpoints = NULL;
+    if (debug)
+        debug->logpoints = NULL;
+    return count;
 }
 
 // ============================================================================

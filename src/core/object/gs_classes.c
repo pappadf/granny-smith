@@ -27,6 +27,7 @@
 #include <string.h>
 #include <time.h>
 
+#include "addr_format.h"
 #include "alias.h"
 #include "appletalk.h"
 #include "cpu.h"
@@ -4463,29 +4464,37 @@ static value_t method_root_disasm(struct object *self, const member_t *m, int ar
     return val_bool(true);
 }
 
-// `break_set(target)` accepts either a numeric address or a string
-// expression that the `$(...)` evaluator can resolve. The legacy
-// command takes whatever the shell produced after `$(...)` expansion;
-// we mirror that by stringifying the value here and dispatching.
+// `break_set(target)` accepts a numeric address or a string the legacy
+// address parser understands (`$0040A714`, `0x004007ba`, symbol names,
+// expressions). For string args we stringify into a temporary buffer
+// so parse_address sees a single token.
 static value_t method_root_break_set(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)self;
     (void)m;
     if (argc < 1)
         return val_err("break_set: expected (address)");
-    char line[256];
-    int n;
+    debug_t *debug = system_debug();
+    if (!debug)
+        return val_err("break_set: debug not available");
+    char target[64];
     if (argv[0].kind == V_STRING) {
-        n = snprintf(line, sizeof(line), "break set %s", argv[0].s ? argv[0].s : "");
+        snprintf(target, sizeof(target), "%s", argv[0].s ? argv[0].s : "");
     } else {
         bool ok = false;
         uint64_t a = val_as_u64(&argv[0], &ok);
         if (!ok)
             return val_err("break_set: address must be integer or string");
-        n = snprintf(line, sizeof(line), "break set 0x%llx", (unsigned long long)a);
+        snprintf(target, sizeof(target), "0x%llx", (unsigned long long)a);
     }
-    if (n < 0 || (size_t)n >= sizeof(line))
-        return val_err("break_set: argument too long");
-    return val_bool(shell_dispatch(line) == 0);
+    uint32_t addr;
+    addr_space_t sp;
+    if (!parse_address(target, &addr, &sp))
+        return val_err("break_set: invalid address '%s'", target);
+    breakpoint_t *bp = set_breakpoint(debug, addr, sp == ADDR_PHYSICAL ? ADDR_PHYSICAL : ADDR_LOGICAL);
+    if (!bp)
+        return val_err("break_set: failed to install breakpoint at $%08X", addr);
+    printf("Breakpoint set at $%08X.\n", addr);
+    return val_bool(true);
 }
 
 static value_t method_root_break_list_dump(struct object *self, const member_t *m, int argc, const value_t *argv) {
@@ -4493,7 +4502,11 @@ static value_t method_root_break_list_dump(struct object *self, const member_t *
     (void)m;
     (void)argc;
     (void)argv;
-    return val_bool(shell_dispatch("break list") == 0);
+    debug_t *debug = system_debug();
+    if (!debug)
+        return val_err("break_list_dump: debug not available");
+    list_breakpoints(debug);
+    return val_bool(true);
 }
 
 static value_t method_root_break_clear(struct object *self, const member_t *m, int argc, const value_t *argv) {
@@ -4501,7 +4514,12 @@ static value_t method_root_break_clear(struct object *self, const member_t *m, i
     (void)m;
     (void)argc;
     (void)argv;
-    return val_bool(shell_dispatch("break clear") == 0);
+    debug_t *debug = system_debug();
+    if (!debug)
+        return val_err("break_clear: debug not available");
+    int count = delete_all_breakpoints(debug);
+    printf("Deleted %d breakpoint(s).\n", count);
+    return val_bool(true);
 }
 
 static value_t method_root_logpoint_list_dump(struct object *self, const member_t *m, int argc, const value_t *argv) {
@@ -4509,7 +4527,11 @@ static value_t method_root_logpoint_list_dump(struct object *self, const member_
     (void)m;
     (void)argc;
     (void)argv;
-    return val_bool(shell_dispatch("logpoint list") == 0);
+    debug_t *debug = system_debug();
+    if (!debug)
+        return val_err("logpoint_list_dump: debug not available");
+    list_logpoints(debug);
+    return val_bool(true);
 }
 
 static value_t method_root_logpoint_clear(struct object *self, const member_t *m, int argc, const value_t *argv) {
@@ -4517,7 +4539,11 @@ static value_t method_root_logpoint_clear(struct object *self, const member_t *m
     (void)m;
     (void)argc;
     (void)argv;
-    return val_bool(shell_dispatch("logpoint clear") == 0);
+    debug_t *debug = system_debug();
+    if (!debug)
+        return val_err("logpoint_clear: debug not available");
+    delete_all_logpoints(debug);
+    return val_bool(true);
 }
 
 // `logpoint_set(spec)` — pass the legacy logpoint spec as a single string

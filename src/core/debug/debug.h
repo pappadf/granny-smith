@@ -101,6 +101,14 @@ breakpoint_t *set_breakpoint(debug_t *debug, uint32_t addr, addr_space_t space);
 
 bool delete_breakpoint(debug_t *debug, uint32_t addr, addr_space_t space);
 
+// Bulk break/logpoint management — used by typed root wrappers as direct
+// implementations (no shell_dispatch indirection). list_* prints to
+// stdout; delete_all_* returns the count of entries removed.
+void list_breakpoints(debug_t *debug);
+int delete_all_breakpoints(debug_t *debug);
+void list_logpoints(debug_t *debug);
+int delete_all_logpoints(debug_t *debug);
+
 // === M6: object-model accessors ============================================
 //
 // debugger.{breakpoints,logpoints}.add(...) / .N.remove() and the
