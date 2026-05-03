@@ -11,7 +11,7 @@
 > **Try it →** &nbsp;[Open Granny Smith in your browser](https://pappadf.github.io/gs-pages/latest/)
 > _Best experience on Chromium-based browsers (Chrome, Edge). Safari and Firefox have known issues — see below._
 
-![A/UX 3.0.1 CommandShell on SE/30](tests/integration/se30-aux3-boot/shell.png)
+![A/UX 3.0.1 booting on SE/30](docs/assets/aux_boot.gif)
 
 The guiding principle of this project is **"keep it simple"** — simple for users to run classic Macintosh software, and simple to develop and maintain.
 
