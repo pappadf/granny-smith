@@ -40,7 +40,7 @@ const CHECKPOINT_MAGIC = new Uint8Array([0x47, 0x53, 0x43, 0x48, 0x4B, 0x50, 0x5
 
 async function waitForEmulatorReady(page: any, log: (msg: string) => void) {
   await page.waitForFunction(() => {
-    return typeof (window as any).runCommand === 'function';
+    return typeof (window as any).gsEval === 'function';
   }, { timeout: 30000 });
   log('emulator ready for drop events');
 }

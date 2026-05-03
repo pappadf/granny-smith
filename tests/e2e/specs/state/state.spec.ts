@@ -499,9 +499,9 @@ test.describe('State', () => {
     await page.evaluate(() => { window.location.reload(); }).catch(() => null);
     await reloadPromise;
 
-    // Wait for WASM module to load and runCommand to become available
+    // Wait for WASM module to load and the gsEval bridge to become available
     await page.waitForFunction(() => {
-      return typeof (window as any).runCommand === 'function';
+      return typeof (window as any).gsEval === 'function';
     }, { timeout: 30_000 });
 
     // Dismiss the checkpoint dialog if it somehow still appears
@@ -677,9 +677,9 @@ test.describe('State', () => {
     await page.evaluate(() => { window.location.reload(); }).catch(() => null);
     await reloadPromise;
 
-    // Wait for WASM module to load and runCommand to become available
+    // Wait for WASM module to load and the gsEval bridge to become available
     await page.waitForFunction(() => {
-      return typeof (window as any).runCommand === 'function';
+      return typeof (window as any).gsEval === 'function';
     }, { timeout: 30_000 });
 
     // Dismiss the checkpoint dialog if it somehow still appears

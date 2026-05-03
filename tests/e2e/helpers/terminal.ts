@@ -74,7 +74,7 @@ export async function installTestShim(page: Page) {
 								const deadline = Date.now() + 15000;
 								(function poll() {
 									const mod = (window as any).__Module;
-									if (mod && mod.FS && typeof (window as any).runCommand === 'function') {
+									if (mod && mod.FS && typeof (window as any).gsEval === 'function') {
 										res();
 										return;
 									}
@@ -140,45 +140,15 @@ export async function installTestShim(page: Page) {
 				// separate `__gsTestShim` name so the page can install its own hooks
 				// if it wants while our shim remains independent.
 
-								// Ensure command logging exists and robustly wrap runCommand to record commands,
-								// even if the app assigns it later. Use a property hook.
+								// __commandLog records every gsEval invocation in shell-form so
+								// existing assertions like `log.toContain('run')` keep working
+								// without teaching every spec the typed-call API.  Method names
+								// are normalised to their legacy spelling (`rom_load` → `rom
+								// load`); positional args are stringified inline.
 								(window as any).__commandLog = (window as any).__commandLog || [];
 								const logCommand = (cmd: string) => {
 									try { (window as any).__commandLog.push(String(cmd)); } catch {}
 								};
-								let _runCommand: any = (window as any).runCommand;
-								if (typeof _runCommand !== 'function') {
-									_runCommand = (cmd: string) => { logCommand(cmd); };
-								} else {
-									const real = _runCommand;
-									_runCommand = (cmd: string) => { logCommand(cmd); return real(cmd); };
-								}
-								try {
-									Object.defineProperty(window, 'runCommand', {
-										configurable: true,
-										get() { return _runCommand; },
-										set(v) {
-											if (typeof v === 'function') {
-												const real = v;
-												_runCommand = (cmd: string) => { logCommand(cmd); return real(cmd); };
-											} else {
-												_runCommand = (cmd: string) => { logCommand(cmd); };
-											}
-										}
-									});
-								} catch {
-									// Fallback if defineProperty fails: at least ensure a wrapper exists now
-									(window as any).runCommand = _runCommand;
-								}
-								// Backward-compat alias
-								(window as any).queueCommand = _runCommand;
-
-								// Wrap gsEval too: M10b migrates many `runCommand("foo bar baz")`
-								// calls to `gsEval("foo", [bar, baz])`, and test-shim consumers
-								// reach for __commandLog with the legacy shell-form string. Synthesise
-								// that string here so existing assertions keep working without
-								// teaching every spec the new API. Method name is normalised
-								// to its legacy spelling (`rom_load` → `rom load`).
 								const _logGsEval = (path: string, args: any[]) => {
 									try {
 										const norm = String(path || '').replace(/_/g, ' ');

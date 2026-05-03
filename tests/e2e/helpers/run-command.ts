@@ -17,17 +17,16 @@ import type { Page } from '@playwright/test';
  * ```
  *
  * Implementation: every shell-form line is translated to a typed `gsEval`
- * call. The legacy `window.runCommand` bridge is no longer reachable
- * through this helper; the only spec that still calls it directly is
- * the gs-eval regression test that asserts the legacy bridge keeps
- * working alongside the new wrapper.
+ * call. The legacy `window.runCommand` bridge is gone — anything that
+ * lacks a translation throws so the gap surfaces immediately rather
+ * than silently passing through a fallback.
  */
 export async function runCommand(page: Page, cmd: string): Promise<number> {
   const translated = translateToGsEval(cmd);
   if (!translated) {
     throw new Error(
       `runCommand: shell form '${cmd}' has no typed translation — ` +
-        `extend translateToGsEval() in run-command.ts or call window.runCommand directly.`
+        `extend translateToGsEval() in run-command.ts.`
     );
   }
   const result: any = await page.evaluate(
@@ -487,14 +486,13 @@ export async function waitForPrompt(page: Page, timeoutMs = 120_000, initialWait
   // initial short wait used throughout tests
   await page.waitForTimeout(initialWaitMs);
 
-  // Wait for Module readiness via either bridge.
+  // Wait for Module readiness via the gsEval bridge.
   try {
-    await page.waitForFunction(() => {
-      const w: any = window as any;
-      return typeof w.runCommand === 'function' && typeof w.gsEval === 'function';
-    }, { timeout: timeoutMs });
+    await page.waitForFunction(() => typeof (window as any).gsEval === 'function', {
+      timeout: timeoutMs,
+    });
   } catch (e) {
-    throw new Error(`Timeout waiting for runCommand readiness after ${timeoutMs}ms`);
+    throw new Error(`Timeout waiting for gsEval readiness after ${timeoutMs}ms`);
   }
 
   // Poll `running()` via gsEval until the scheduler is idle.

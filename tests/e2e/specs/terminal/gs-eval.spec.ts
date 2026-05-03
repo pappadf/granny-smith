@@ -55,13 +55,4 @@ test.describe('gsEval bridge', () => {
     const r = await page.evaluate(async () => await (window as any).gsEval('not.a.thing'));
     expect(r).toEqual({ error: expect.stringContaining('did not resolve') });
   });
-
-  test('runCommand still works alongside the new wrapper', async ({ page }) => {
-    // Cutover principle: M10a does not retire the legacy bridge.
-    const ok = await page.evaluate(async () => {
-      try { await (window as any).runCommand('eval cpu.pc'); return true; }
-      catch (e) { return false; }
-    });
-    expect(ok).toBeTruthy();
-  });
 });

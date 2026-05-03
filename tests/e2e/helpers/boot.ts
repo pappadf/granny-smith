@@ -94,12 +94,13 @@ export async function bootWithUploadedMedia(
 	const sep = navigatePath.includes('?') ? '&' : '?';
 	await page.goto(`${navigatePath}${sep}noui`);
 
-	// Wait for shim and command bridge. injectMedia now uses drop events (no __Module.FS needed).
+	// Wait for shim and the gsEval bridge. injectMedia now uses drop events
+	// (no __Module.FS needed).
 	await page.waitForFunction(() => {
 		const shim = (window as any).__gsTestShim;
 		const hasInject = typeof shim?.injectMedia === 'function';
-		const hasRunCommand = typeof (window as any).runCommand === 'function';
-		return hasInject && hasRunCommand;
+		const hasGsEval = typeof (window as any).gsEval === 'function';
+		return hasInject && hasGsEval;
 	}, { timeout: 60000 });
 
 	if (options?.wipeCheckpoints !== false) {
@@ -153,8 +154,9 @@ export async function bootWithUploadedMedia(
 		return (window as any).__gsBootReady === true;
 	}, { timeout: 60000 });
 
-	// Issue boot-time commands but DO NOT run. Routed through gsEval so the
-	// helper stays off the legacy window.runCommand bridge.
+	// Issue boot-time commands but DO NOT run. All three calls go through
+	// gsEval inside one page.evaluate to avoid a Playwright round-trip
+	// per command.
 	await page.evaluate(async ({ hasFd, hasHd, hdSlot, fdWritable }) => {
 		const ev = (window as any).gsEval;
 		await ev('rom_load', ['/tmp/rom']);

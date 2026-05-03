@@ -171,12 +171,11 @@ export async function initEmulator(canvas, wasmArgs, printFn) {
   // Expose Module on window for test shim access to FS
   window.__Module = Module;
 
-  // Expose both bridges on window. App callers use `gsEval` for typed
-  // object-model access; `runCommand` stays as the free-form shell line
-  // bridge — currently only used by the terminal input handler and the
-  // few callers that don't have a typed wrapper yet.
-  window.runCommand = (cmd) => executeShellCommand(cmd);
-  window.queueCommand = window.runCommand;
+  // Expose object-model and tab-completion bridges. The terminal input
+  // handler in main.js uses the imported `runCommand` directly (it
+  // still routes through executeShellCommand → shell_dispatch so users
+  // can type anything the shell supports). External callers should use
+  // gsEval / gsInspect for typed object-model access.
   window.tabComplete = (line, cursorPos) => tabComplete(line, cursorPos);
   window.gsEval = (path, args) => gsEval(path, args);
   window.gsInspect = (path) => gsInspect(path);
