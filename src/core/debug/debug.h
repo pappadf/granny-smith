@@ -109,6 +109,16 @@ int delete_all_breakpoints(debug_t *debug);
 void list_logpoints(debug_t *debug);
 int delete_all_logpoints(debug_t *debug);
 
+// Framebuffer utilities — used by typed `screen.*` wrappers and the
+// legacy `screenshot` command. Both layers call into the same
+// primitives so neither has to know about the other.
+#define DEBUG_SCREEN_WIDTH  512
+#define DEBUG_SCREEN_HEIGHT 342
+uint32_t framebuffer_checksum(const uint8_t *fb);
+uint32_t framebuffer_region_checksum(const uint8_t *fb, int top, int left, int bottom, int right);
+int match_framebuffer_with_png(const uint8_t *fb, const char *filename);
+int save_framebuffer_as_png(const uint8_t *fb, const char *filename);
+
 // === M6: object-model accessors ============================================
 //
 // debugger.{breakpoints,logpoints}.add(...) / .N.remove() and the

@@ -3086,11 +3086,18 @@ static value_t screen_method_save(struct object *self, const member_t *m, int ar
     (void)m;
     if (argc < 1 || argv[0].kind != V_STRING)
         return val_err("screen.save: expected (path)");
-    char line[1024];
-    int n = snprintf(line, sizeof(line), "screenshot save \"%s\"", argv[0].s ? argv[0].s : "");
-    if (n < 0 || (size_t)n >= sizeof(line))
-        return val_err("screen.save: argument too long");
-    return val_bool(shell_dispatch(line) == 0);
+    const char *path = argv[0].s;
+    if (!path || !*path)
+        return val_err("screen.save: empty path");
+    size_t n = strlen(path);
+    if (n < 4 || strcasecmp(path + n - 4, ".png") != 0)
+        return val_err("screen.save: path must end in .png (got '%s')", path);
+    const uint8_t *fb = system_framebuffer();
+    if (!fb)
+        return val_err("screen.save: framebuffer not available");
+    if (save_framebuffer_as_png(fb, path) < 0)
+        return val_err("screen.save: failed to save '%s'", path);
+    return val_bool(true);
 }
 
 static value_t screen_method_match(struct object *self, const member_t *m, int argc, const value_t *argv) {
@@ -3098,14 +3105,21 @@ static value_t screen_method_match(struct object *self, const member_t *m, int a
     (void)m;
     if (argc < 1 || argv[0].kind != V_STRING)
         return val_err("screen.match: expected (reference_path)");
-    char line[1024];
-    int n = snprintf(line, sizeof(line), "screenshot match \"%s\"", argv[0].s ? argv[0].s : "");
-    if (n < 0 || (size_t)n >= sizeof(line))
-        return val_err("screen.match: argument too long");
-    // Returns the legacy int result code: 0 = match, 1 = mismatch, 2 = error.
-    // Wrap in val_bool for the shell-form true/false convention so the
-    // common case (matched) reads as `true` in path-form prints.
-    return val_bool(shell_dispatch(line) == 0);
+    const char *ref = argv[0].s ? argv[0].s : "";
+    const uint8_t *fb = system_framebuffer();
+    if (!fb)
+        return val_err("screen.match: framebuffer not available");
+    int result = match_framebuffer_with_png(fb, ref);
+    if (result < 0) {
+        printf("MATCH FAILED: Error loading reference image.\n");
+        return val_bool(false);
+    }
+    if (result == 0) {
+        printf("MATCH OK: Screen matches '%s'.\n", ref);
+        return val_bool(true);
+    }
+    printf("MATCH FAILED: Screen does not match '%s'.\n", ref);
+    return val_bool(false);
 }
 
 static value_t screen_method_match_or_save(struct object *self, const member_t *m, int argc, const value_t *argv) {
@@ -3113,41 +3127,51 @@ static value_t screen_method_match_or_save(struct object *self, const member_t *
     (void)m;
     if (argc < 1 || argv[0].kind != V_STRING)
         return val_err("screen.match_or_save: expected (reference_path, [actual_path])");
-    char line[1024];
-    int n;
-    if (argc >= 2 && argv[1].kind == V_STRING && argv[1].s && *argv[1].s)
-        n = snprintf(line, sizeof(line), "screenshot match-or-save \"%s\" \"%s\"", argv[0].s, argv[1].s);
-    else
-        n = snprintf(line, sizeof(line), "screenshot match-or-save \"%s\"", argv[0].s);
-    if (n < 0 || (size_t)n >= sizeof(line))
-        return val_err("screen.match_or_save: arguments too long");
-    return val_bool(shell_dispatch(line) == 0);
+    const char *ref = argv[0].s ? argv[0].s : "";
+    const char *actual = (argc >= 2 && argv[1].kind == V_STRING && argv[1].s && *argv[1].s) ? argv[1].s : NULL;
+    const uint8_t *fb = system_framebuffer();
+    if (!fb)
+        return val_err("screen.match_or_save: framebuffer not available");
+    int result = match_framebuffer_with_png(fb, ref);
+    if (result < 0) {
+        printf("MATCH FAILED: Error loading reference image.\n");
+        if (actual)
+            save_framebuffer_as_png(fb, actual);
+        return val_bool(false);
+    }
+    if (result == 0) {
+        printf("MATCH OK: Screen matches '%s'.\n", ref);
+        return val_bool(true);
+    }
+    if (actual) {
+        save_framebuffer_as_png(fb, actual);
+        printf("MATCH FAILED: Screen does not match '%s'. Saved actual to '%s'.\n", ref, actual);
+    } else {
+        printf("MATCH FAILED: Screen does not match '%s'.\n", ref);
+    }
+    return val_bool(false);
 }
 
 static value_t screen_method_checksum(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)self;
     (void)m;
-    char line[256];
-    int n;
-    if (argc >= 4) {
-        // Region: (top, left, bottom, right)
-        bool ok = true;
-        int64_t t = val_as_i64(&argv[0], &ok);
-        int64_t l = val_as_i64(&argv[1], &ok);
-        int64_t b = val_as_i64(&argv[2], &ok);
-        int64_t r = val_as_i64(&argv[3], &ok);
-        if (!ok)
-            return val_err("screen.checksum: region args must be integers");
-        n = snprintf(line, sizeof(line), "screenshot checksum %lld %lld %lld %lld", (long long)t, (long long)l,
-                     (long long)b, (long long)r);
-    } else if (argc != 0) {
+    const uint8_t *fb = system_framebuffer();
+    if (!fb)
+        return val_err("screen.checksum: framebuffer not available");
+    if (argc == 0)
+        return val_int((int64_t)(int32_t)framebuffer_checksum(fb));
+    if (argc < 4)
         return val_err("screen.checksum: expected (top, left, bottom, right) or no args");
-    } else {
-        n = snprintf(line, sizeof(line), "screenshot checksum");
-    }
-    if (n < 0 || (size_t)n >= sizeof(line))
-        return val_err("screen.checksum: arguments too long");
-    return val_int((int64_t)shell_dispatch(line));
+    bool ok = true;
+    int64_t t = val_as_i64(&argv[0], &ok);
+    int64_t l = val_as_i64(&argv[1], &ok);
+    int64_t b = val_as_i64(&argv[2], &ok);
+    int64_t r = val_as_i64(&argv[3], &ok);
+    if (!ok)
+        return val_err("screen.checksum: region args must be integers");
+    if (t < 0 || l < 0 || b <= t || r <= l || b > DEBUG_SCREEN_HEIGHT || r > DEBUG_SCREEN_WIDTH)
+        return val_err("screen.checksum: invalid region bounds (0,0)-(%d,%d)", DEBUG_SCREEN_WIDTH, DEBUG_SCREEN_HEIGHT);
+    return val_int((int64_t)(int32_t)framebuffer_region_checksum(fb, (int)t, (int)l, (int)b, (int)r));
 }
 
 static const arg_decl_t screen_save_args[] = {

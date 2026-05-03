@@ -1639,7 +1639,7 @@ static uint32_t adler32(const uint8_t *data, size_t len) {
 }
 
 // Calculate a simple checksum of the framebuffer for fast screen comparison
-static uint32_t framebuffer_checksum(const uint8_t *fb) {
+uint32_t framebuffer_checksum(const uint8_t *fb) {
     uint32_t checksum = 0;
     for (int i = 0; i < FB_BYTES; i++) {
         checksum = checksum * 31 + fb[i];
@@ -1649,7 +1649,7 @@ static uint32_t framebuffer_checksum(const uint8_t *fb) {
 
 // Calculate checksum for a region of the framebuffer (top, left, bottom, right)
 // Region is specified in pixels; checksum operates on the 1-bit packed data
-static uint32_t framebuffer_region_checksum(const uint8_t *fb, int top, int left, int bottom, int right) {
+uint32_t framebuffer_region_checksum(const uint8_t *fb, int top, int left, int bottom, int right) {
     uint32_t checksum = 0;
     int width = right - left;
     int height = bottom - top;
@@ -1910,7 +1910,7 @@ static int load_png_to_framebuffer(const char *filename, uint8_t *fb_out) {
 
 // Compare current framebuffer with a reference PNG file
 // Returns 0 if match, 1 if mismatch, -1 on error
-static int match_framebuffer_with_png(const uint8_t *fb, const char *filename) {
+int match_framebuffer_with_png(const uint8_t *fb, const char *filename) {
     uint8_t *ref_fb = malloc(FB_BYTES);
     if (!ref_fb) {
         printf("Error: Out of memory.\n");
@@ -1931,7 +1931,7 @@ static int match_framebuffer_with_png(const uint8_t *fb, const char *filename) {
 
 // Save framebuffer as PNG to the given file path
 // Returns 0 on success, -1 on error
-static int save_framebuffer_as_png(const uint8_t *fb, const char *filename) {
+int save_framebuffer_as_png(const uint8_t *fb, const char *filename) {
     // Initialize CRC table
     init_crc32_table();
 
