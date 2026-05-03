@@ -10,8 +10,10 @@
 run 100000000
 
 # Save machine state to checkpoint file
-# Saved to current working directory (test-results/checkpoint2/)
-checkpoint_save checkpoint.gs
+# Saved to current working directory (test-results/checkpoint2/).
+# Assert so a save failure breaks the step instead of silently
+# letting step2's load reach a missing file.
+assert $(checkpoint_save("checkpoint.gs")) "checkpoint2 step1 save failed"
 
 # Save screenshot for debugging
 screen.save screenshot-step1.png
