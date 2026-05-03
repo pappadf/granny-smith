@@ -47,7 +47,7 @@ LOG_USE_CATEGORY_NAME("setup");
 config_t *global_emulator = NULL;
 
 // Forward declarations for SCSI device attachment functions
-static void add_scsi_cdrom(struct config *restrict config, const char *filename, int scsi_id);
+void add_scsi_cdrom(struct config *restrict config, const char *filename, int scsi_id);
 
 // Pending RAM override (KB). Set by `setup --ram` or headless `ram=` arg.
 // Consumed by system_create(); 0 means use machine default.
@@ -1479,7 +1479,7 @@ void add_scsi_drive(struct config *restrict config, const char *filename, int sc
 }
 
 // Add a SCSI CD-ROM to the configuration (AppleCD SC Plus / Sony CDU-8002)
-static void add_scsi_cdrom(struct config *restrict config, const char *filename, int scsi_id) {
+void add_scsi_cdrom(struct config *restrict config, const char *filename, int scsi_id) {
     // Persist volatile images to OPFS
     char *persistent_path = image_persist_volatile(filename);
     if (persistent_path)

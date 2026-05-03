@@ -152,6 +152,12 @@ int system_ensure_machine(const char *model_id);
 // or -1 on failure (file exists, both drives full, image system error).
 int system_create_floppy(const char *path, bool high_density, int preferred);
 
+// Attach a read-only CD-ROM image at the given SCSI id. Used by typed
+// `cdrom_attach` and the legacy `cdrom attach` command alike — the
+// underlying primitive opens the image, registers it as a SCSI device,
+// and emits the legacy "Attaching CD-ROM" stdout message.
+void add_scsi_cdrom(struct config *restrict config, const char *filename, int scsi_id);
+
 // Pending RAM override for next system_create() call (KB, 0 = use default)
 void system_set_pending_ram_kb(uint32_t kb);
 uint32_t system_get_pending_ram_kb(void);

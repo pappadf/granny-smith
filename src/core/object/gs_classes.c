@@ -4897,11 +4897,10 @@ static value_t method_root_cdrom_attach(struct object *self, const member_t *m, 
     (void)m;
     if (argc < 1 || argv[0].kind != V_STRING)
         return val_err("cdrom_attach: expected (path)");
-    char line[1024];
-    int n = snprintf(line, sizeof(line), "cdrom attach \"%s\"", argv[0].s ? argv[0].s : "");
-    if (n < 0 || (size_t)n >= sizeof(line))
-        return val_err("cdrom_attach: argument too long");
-    return val_bool(shell_dispatch(line) == 0);
+    if (!global_emulator)
+        return val_err("cdrom_attach: emulator not initialised");
+    add_scsi_cdrom(global_emulator, argv[0].s ? argv[0].s : "", 3);
+    return val_bool(true);
 }
 
 // `hd_validate(path)` — true if the file passes legacy `hd validate`
