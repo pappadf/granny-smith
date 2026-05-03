@@ -436,7 +436,7 @@ static int do_probe_fd(const char *path) {
 
 // Create a new blank floppy image and insert it.
 // Returns 0 on success, -1 on failure.
-static int do_create_fd(const char *path, bool high_density, int preferred) {
+int system_create_floppy(const char *path, bool high_density, int preferred) {
     config_t *config = global_emulator;
     if (!config) {
         printf("fd create: emulator config not initialized.\n");
@@ -685,7 +685,7 @@ static void cmd_fd_handler(struct cmd_context *ctx, struct cmd_result *res) {
             cmd_err(res, "usage: fd create [--hd] <path> [drive]");
             return;
         }
-        int rc = do_create_fd(path, has_hd, preferred);
+        int rc = system_create_floppy(path, has_hd, preferred);
         cmd_int(res, (int64_t)rc);
         return;
     }

@@ -146,6 +146,12 @@ const char *system_machine_model_id(void);
 // current machine's model_id doesn't match.  Returns 0 on success, -1 on error.
 int system_ensure_machine(const char *model_id);
 
+// Create a blank floppy image at `path` and auto-mount it. high_density
+// chooses 1.44 MB vs 800 KB. preferred is the target drive (0 or 1; pass
+// -1 to let the system pick the first free drive). Returns 0 on success
+// or -1 on failure (file exists, both drives full, image system error).
+int system_create_floppy(const char *path, bool high_density, int preferred);
+
 // Pending RAM override for next system_create() call (KB, 0 = use default)
 void system_set_pending_ram_kb(uint32_t kb);
 uint32_t system_get_pending_ram_kb(void);

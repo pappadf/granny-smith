@@ -4720,23 +4720,37 @@ static value_t method_root_path_size(struct object *self, const member_t *m, int
     return val_uint(8, st.size);
 }
 
-// `fd_create(path, [size_str])` — create a blank floppy image. Optional
-// size string accepts the legacy forms `"400K"` / `"800K"` / `"1.4MB"`;
-// when omitted, the legacy default (1.4 MB) applies.
+// `fd_create(path, [drive_or_hd])` — create a blank 800 KB floppy image
+// and auto-mount it. The optional second arg matches the legacy
+// `fd create [--hd] <path> [drive]` parser: pass the string `"--hd"`
+// for a 1.44 MB image, or an integer 0/1 to target a specific drive.
+// String integers (e.g. `"0"`) are accepted too — that's how the
+// integration scripts spell it.
 static value_t method_root_fd_create(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)self;
     (void)m;
     if (argc < 1 || argv[0].kind != V_STRING)
-        return val_err("fd_create: expected (path, [size])");
-    char line[512];
-    int n;
-    if (argc >= 2 && argv[1].kind == V_STRING && argv[1].s && *argv[1].s)
-        n = snprintf(line, sizeof(line), "fd create \"%s\" %s", argv[0].s ? argv[0].s : "", argv[1].s);
-    else
-        n = snprintf(line, sizeof(line), "fd create \"%s\"", argv[0].s ? argv[0].s : "");
-    if (n < 0 || (size_t)n >= sizeof(line))
-        return val_err("fd_create: argument too long");
-    return val_bool(shell_dispatch(line) == 0);
+        return val_err("fd_create: expected (path, [drive_or_hd])");
+    bool high_density = false;
+    int preferred = -1;
+    if (argc >= 2) {
+        if (argv[1].kind == V_STRING && argv[1].s) {
+            if (strcmp(argv[1].s, "--hd") == 0) {
+                high_density = true;
+            } else if (argv[1].s[0] >= '0' && argv[1].s[0] <= '1' && argv[1].s[1] == '\0') {
+                preferred = argv[1].s[0] - '0';
+            } else if (*argv[1].s) {
+                return val_err("fd_create: second arg must be \"--hd\" or drive index 0/1");
+            }
+        } else if (argv[1].kind == V_INT || argv[1].kind == V_UINT) {
+            int64_t d = (argv[1].kind == V_INT) ? argv[1].i : (int64_t)argv[1].u;
+            if (d != 0 && d != 1)
+                return val_err("fd_create: drive index must be 0 or 1");
+            preferred = (int)d;
+        }
+    }
+    int rc = system_create_floppy(argv[0].s ? argv[0].s : "", high_density, preferred);
+    return val_bool(rc == 0);
 }
 
 // `print_value(target)` — read a register / condition code / memory cell
