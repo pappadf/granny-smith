@@ -1,19 +1,19 @@
 # Run a few thousand instructions so PC has actually moved.
 run 50000
 
-# Object-model resolver smoke checks. Each bare path reads through the
-# new shell-form grammar (proposal §4.1) and the value is printed to
-# stdout — the harness greps for the expected markers downstream. The
-# legacy `eval <path>` form still works (it lives on as a JSON-printer
-# until M10e); we mix both forms here to exercise each.
-machine.model_id
+# Object-model resolver checks. Hardware-constant attributes are
+# pinned with assert; cpu.pc / cpu.d0 / cpu.a7 are bare-read because
+# their values depend on how far through boot we ran. The legacy
+# `eval <path>` form still works (it lives on as a JSON-printer);
+# we mix both forms below to exercise each.
+assert $(machine.model_id == "plus") "expected Plus machine"
+assert $(machine.cpu_clock_hz == 7833600) "Plus runs at 7.83 MHz"
+assert $(memory.ram_size == 4194304) "Plus has 4 MiB RAM"
+assert $(memory.rom_size == 131072) "Plus has 128 KiB ROM"
 machine.model_name
-machine.cpu_clock_hz
 cpu.pc
 cpu.d0
 cpu.a7
-memory.ram_size
-memory.rom_size
 
 # Bare object reads return an object reference.
 cpu
