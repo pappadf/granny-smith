@@ -2,27 +2,27 @@
 
 # Load the checkpoint saved in step 1 (restores to 50M instruction point with floppy)
 # Loaded from current working directory (test-results/checkpoint2/)
-checkpoint --load checkpoint.gs
+checkpoint_load checkpoint.gs
 
 # Run 50M more instructions (should reach desktop just like step 1 would)
 run 100000000
 
 #
-screenshot match ../../checkpoint2/desktop.png
+screen.match ../../checkpoint2/desktop.png
 
 run 100000000
 
-set-mouse 25 10
+mouse.move 25 10
 run 1000000
-mouse-button down
+mouse.click true
 run 1000000
-set-mouse 25 30
+mouse.move 25 30
 run 1000000
-mouse-button up
+mouse.click false
 
 run 100000000
 
 # Save screenshot for debugging, then verify against reference
-screenshot screenshot-step2.png
+screen.save screenshot-step2.png
 
 quit

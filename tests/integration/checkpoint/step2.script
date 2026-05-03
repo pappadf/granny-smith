@@ -5,7 +5,7 @@
 run 100000000
 
 # Load the checkpoint saved in step 1 (restores floppy boot state at 50M instructions)
-checkpoint --load checkpoint
+checkpoint_load checkpoint
 
 # Run another 50M instructions from the restored checkpoint
 # Total should be 50M + 50M = 100M instructions from floppy boot
@@ -13,6 +13,6 @@ checkpoint --load checkpoint
 run 70000000
 
 # Match against the boot test's desktop reference
-screenshot match desktop.png
+screen.match desktop.png
 
 quit
