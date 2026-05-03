@@ -160,6 +160,22 @@ function translateToGsEval(line: string): Translation | null {
     // Legacy `size` returned the byte count — pass it through unchanged.
     return { method: 'path_size', args: [tail[0]], convention: 'pass_through' };
 
+  // `screenshot checksum [top left bottom right]` — used by helpers/screen.ts
+  // for fast frame matching. The typed wrapper takes either 0 or 4 args and
+  // returns the polynomial hash as V_INT; pass it through unchanged.
+  if (head === 'screenshot' && tail.length >= 1 && tail[0] === 'checksum') {
+    if (tail.length === 1)
+      return { method: 'screen.checksum', args: [], convention: 'pass_through' };
+    if (tail.length === 5) {
+      const t = parseInt10(tail[1]);
+      const l = parseInt10(tail[2]);
+      const b = parseInt10(tail[3]);
+      const r = parseInt10(tail[4]);
+      if (t !== null && l !== null && b !== null && r !== null)
+        return { method: 'screen.checksum', args: [t, l, b, r], convention: 'pass_through' };
+    }
+  }
+
   // Debug ops: print/set/x. Targets accept the legacy syntax (`d5`, `pc`,
   // `z`, `0x1000.b`, `instr`, `$pc`, etc.) — passed through verbatim to
   // the print/set/examine wrappers, which forward to the legacy parser.
