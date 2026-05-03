@@ -4137,9 +4137,7 @@ static value_t method_root_checkpoint_probe(struct object *self, const member_t 
     (void)m;
     (void)argc;
     (void)argv;
-    char line[24];
-    snprintf(line, sizeof(line), "checkpoint --probe");
-    return val_bool(shell_dispatch(line) == 0);
+    return val_bool(find_valid_checkpoint_path() != NULL);
 }
 
 static value_t method_root_checkpoint_clear(struct object *self, const member_t *m, int argc, const value_t *argv) {
@@ -4147,23 +4145,18 @@ static value_t method_root_checkpoint_clear(struct object *self, const member_t 
     (void)m;
     (void)argc;
     (void)argv;
-    char line[24];
-    snprintf(line, sizeof(line), "checkpoint clear");
-    return val_bool(shell_dispatch(line) == 0);
+    return val_bool(gs_checkpoint_clear() == 0);
 }
 
 static value_t method_root_checkpoint_load(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)self;
     (void)m;
-    char line[1024];
-    int n;
-    if (argc >= 1 && argv[0].kind == V_STRING && argv[0].s && *argv[0].s)
-        n = snprintf(line, sizeof(line), "checkpoint --load \"%s\"", argv[0].s);
-    else
-        n = snprintf(line, sizeof(line), "checkpoint --load");
-    if (n < 0 || (size_t)n >= sizeof(line))
-        return val_err("checkpoint_load: argument too long");
-    return val_bool(shell_dispatch(line) == 0);
+    if (argc >= 1 && argv[0].kind == V_STRING && argv[0].s && *argv[0].s) {
+        char *fake_argv[2] = {"--load", (char *)argv[0].s};
+        return val_bool(cmd_load_checkpoint(2, fake_argv) == 0);
+    }
+    char *fake_argv[1] = {"--load"};
+    return val_bool(cmd_load_checkpoint(1, fake_argv) == 0);
 }
 
 static value_t method_root_checkpoint_save(struct object *self, const member_t *m, int argc, const value_t *argv) {
@@ -4171,16 +4164,14 @@ static value_t method_root_checkpoint_save(struct object *self, const member_t *
     (void)m;
     if (argc < 1 || argv[0].kind != V_STRING)
         return val_err("checkpoint_save: expected (path, [mode])");
-    char line[1024];
-    int n;
     const char *path = argv[0].s ? argv[0].s : "";
-    if (argc >= 2 && argv[1].kind == V_STRING && argv[1].s && *argv[1].s)
-        n = snprintf(line, sizeof(line), "checkpoint --save \"%s\" %s", path, argv[1].s);
-    else
-        n = snprintf(line, sizeof(line), "checkpoint --save \"%s\"", path);
-    if (n < 0 || (size_t)n >= sizeof(line))
-        return val_err("checkpoint_save: arguments too long");
-    return val_bool(shell_dispatch(line) == 0);
+    char *fake_argv[3] = {"--save", (char *)path, NULL};
+    int fake_argc = 2;
+    if (argc >= 2 && argv[1].kind == V_STRING && argv[1].s && *argv[1].s) {
+        fake_argv[2] = (char *)argv[1].s;
+        fake_argc = 3;
+    }
+    return val_bool(cmd_save_checkpoint(fake_argc, fake_argv) == 0);
 }
 
 static value_t method_root_register_machine(struct object *self, const member_t *m, int argc, const value_t *argv) {
@@ -4188,12 +4179,7 @@ static value_t method_root_register_machine(struct object *self, const member_t 
     (void)m;
     if (argc < 2 || argv[0].kind != V_STRING || argv[1].kind != V_STRING)
         return val_err("register_machine: expected (id, created)");
-    char line[256];
-    int n = snprintf(line, sizeof(line), "checkpoint --machine \"%s\" \"%s\"", argv[0].s ? argv[0].s : "",
-                     argv[1].s ? argv[1].s : "");
-    if (n < 0 || (size_t)n >= sizeof(line))
-        return val_err("register_machine: arguments too long");
-    return val_bool(shell_dispatch(line) == 0);
+    return val_bool(gs_register_machine(argv[0].s ? argv[0].s : "", argv[1].s ? argv[1].s : "") == 0);
 }
 
 // `auto_checkpoint` attribute (V_BOOL, rw) — exposes the WASM

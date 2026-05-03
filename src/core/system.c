@@ -1383,6 +1383,15 @@ __attribute__((weak)) int gs_background_checkpoint(const char *reason) {
     printf("background-checkpoint: only supported in the WASM build\n");
     return -1;
 }
+__attribute__((weak)) int gs_checkpoint_clear(void) {
+    printf("checkpoint clear: only supported in the WASM build\n");
+    return -1;
+}
+__attribute__((weak)) int gs_register_machine(const char *machine_id, const char *created) {
+    (void)machine_id;
+    (void)created;
+    return 0; // headless has no per-machine checkpoint scoping; treat as no-op success
+}
 
 // Create an emulator instance for the given machine profile.
 // Allocates config_t, wires the machine descriptor, and calls profile->init().

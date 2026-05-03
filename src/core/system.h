@@ -194,9 +194,24 @@ void gs_checkpoint_auto_set(bool enabled);
 //                            — capture a quick checkpoint.  Headless
 //                              prints "not supported"; WASM saves via
 //                              save_quick_checkpoint.
+//   gs_checkpoint_clear()    — delete all checkpoint files for the
+//                              active machine.  Headless prints
+//                              "not supported"; WASM nukes the
+//                              per-machine checkpoint dir contents.
+//   gs_register_machine(id, created)
+//                            — register the active machine identity
+//                              for checkpoint scoping.  Headless
+//                              no-ops; WASM updates the OPFS layout.
 // Returns 0 on success, non-zero on failure.
 void gs_quit(void);
 int gs_download(const char *path);
 int gs_background_checkpoint(const char *reason);
+int gs_checkpoint_clear(void);
+int gs_register_machine(const char *machine_id, const char *created);
+
+// True if a valid checkpoint exists for the active machine.  Weak
+// default returns NULL (headless has no auto-checkpoint loop); WASM
+// overrides with actual scanning of /opfs/checkpoints/.
+const char *find_valid_checkpoint_path(void);
 
 #endif // SETUP_H

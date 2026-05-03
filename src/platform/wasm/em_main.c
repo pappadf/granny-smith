@@ -1137,6 +1137,24 @@ int gs_background_checkpoint(const char *reason) {
     return (rc == GS_SUCCESS) ? 0 : -1;
 }
 
+// Platform impl of gs_checkpoint_clear / gs_register_machine.  Both
+// only mean something on WASM (where OPFS hosts per-machine
+// checkpoint directories); headless gets the weak no-op stubs.
+int gs_checkpoint_clear(void) {
+    int removed = clear_checkpoint_files();
+    printf("Cleared %d checkpoint file(s)\n", removed);
+    return 0;
+}
+
+int gs_register_machine(const char *machine_id, const char *created) {
+    if (!machine_id || !created)
+        return -1;
+    int rc = checkpoint_machine_set(machine_id, created);
+    if (rc != 0)
+        printf("register_machine: failed to set %s-%s\n", machine_id, created);
+    return rc == 0 ? 0 : -1;
+}
+
 // Legacy shell `background-checkpoint [reason]` — thin shim.
 static uint64_t cmd_background_checkpoint(int argc, char *argv[]) {
     const char *reason = (argc >= 2) ? argv[1] : "manual";
@@ -1251,9 +1269,7 @@ static uint64_t cmd_checkpoint(int argc, char *argv[]) {
 
     // checkpoint clear - remove all checkpoint files
     if (strcmp(action, "clear") == 0) {
-        int removed = clear_checkpoint_files();
-        printf("Cleared %d checkpoint file(s)\n", removed);
-        return 0;
+        return (uint64_t)gs_checkpoint_clear();
     }
 
     // checkpoint auto on/off
