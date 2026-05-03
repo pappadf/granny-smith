@@ -1128,7 +1128,7 @@ uint64_t cmd_mouse_button(int argc, char *argv[]) {
 }
 
 // Resolves a key name to an ADB virtual keycode, or -1 if unknown
-static int resolve_key_name(const char *name) {
+int debug_mac_resolve_key_name(const char *name) {
     // Named keys (case-insensitive comparison via manual lowering)
     if (!strcasecmp(name, "return") || !strcasecmp(name, "enter"))
         return 0x24;
@@ -1177,7 +1177,7 @@ uint64_t cmd_key(int argc, char *argv[]) {
         return 0;
     }
 
-    int keycode = resolve_key_name(argv[1]);
+    int keycode = debug_mac_resolve_key_name(argv[1]);
     if (keycode < 0) {
         printf("Unknown key: %s\n", argv[1]);
         return 0;

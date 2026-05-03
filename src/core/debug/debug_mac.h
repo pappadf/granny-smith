@@ -45,4 +45,9 @@ void debug_mac_set_mouse(long x, long y);
 // `trace-mouse start` / `trace-mouse stop`.
 void debug_mac_set_trace_mouse(bool enabled);
 
+// Resolve a key name (e.g. "return", "esc", "0x24") to an ADB
+// keycode (0..0x7F). Returns -1 if the name doesn't match any
+// registered alias and isn't a 0xNN hex literal in range.
+int debug_mac_resolve_key_name(const char *name);
+
 #endif // DEBUG_MAC_H

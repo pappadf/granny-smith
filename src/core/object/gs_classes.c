@@ -39,6 +39,7 @@
 #include "floppy.h"
 #include "fpu.h"
 #include "image.h"
+#include "keyboard.h"
 #include "machine.h"
 #include "memory.h"
 #include "object.h"
@@ -3070,20 +3071,29 @@ static value_t keyboard_method_press(struct object *self, const member_t *m, int
     (void)m;
     if (argc < 1)
         return val_err("keyboard.press: expected (key) — name string or keycode int");
-    char line[64];
-    int n;
+    int keycode = -1;
+    char hexbuf[8];
+    const char *display_name = NULL;
     if (argv[0].kind == V_STRING) {
-        n = snprintf(line, sizeof(line), "key %s", argv[0].s ? argv[0].s : "");
-    } else if (argv[0].kind == V_INT) {
-        n = snprintf(line, sizeof(line), "key 0x%02llx", (long long)argv[0].i);
-    } else if (argv[0].kind == V_UINT) {
-        n = snprintf(line, sizeof(line), "key 0x%02llx", (long long)argv[0].u);
+        const char *name = argv[0].s ? argv[0].s : "";
+        keycode = debug_mac_resolve_key_name(name);
+        display_name = name;
+    } else if (argv[0].kind == V_INT || argv[0].kind == V_UINT) {
+        long long raw = (argv[0].kind == V_INT) ? (long long)argv[0].i : (long long)argv[0].u;
+        snprintf(hexbuf, sizeof(hexbuf), "0x%02llx", raw);
+        keycode = debug_mac_resolve_key_name(hexbuf);
+        display_name = hexbuf;
     } else {
         return val_err("keyboard.press: key must be a string name or integer keycode");
     }
-    if (n < 0 || (size_t)n >= sizeof(line))
-        return val_err("keyboard.press: argument too long");
-    return val_bool(shell_dispatch(line) == 0);
+    if (keycode < 0) {
+        printf("Unknown key: %s\n", display_name ? display_name : "(?)");
+        return val_bool(false);
+    }
+    system_keyboard_update(key_down, keycode);
+    system_keyboard_update(key_up, keycode);
+    printf("key: 0x%02X (%s)\n", keycode, display_name);
+    return val_bool(true);
 }
 
 static const arg_decl_t keyboard_press_args[] = {
