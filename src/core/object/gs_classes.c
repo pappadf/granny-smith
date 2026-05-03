@@ -5037,11 +5037,21 @@ static value_t method_root_schedule(struct object *self, const member_t *m, int 
     (void)m;
     if (argc < 1 || argv[0].kind != V_STRING)
         return val_err("schedule: expected (mode)");
-    char line[64];
-    int n = snprintf(line, sizeof(line), "schedule %s", argv[0].s ? argv[0].s : "");
-    if (n < 0 || (size_t)n >= sizeof(line))
-        return val_err("schedule: argument too long");
-    return val_bool(shell_dispatch(line) == 0);
+    const char *mode_str = argv[0].s ? argv[0].s : "";
+    enum schedule_mode mode;
+    if (strcmp(mode_str, "max") == 0)
+        mode = schedule_max_speed;
+    else if (strcmp(mode_str, "real") == 0)
+        mode = schedule_real_time;
+    else if (strcmp(mode_str, "hw") == 0)
+        mode = schedule_hw_accuracy;
+    else
+        return val_err("schedule: unknown mode '%s' (valid: max, real, hw)", mode_str);
+    scheduler_t *s = system_scheduler();
+    if (!s)
+        return val_err("schedule: scheduler not initialised");
+    scheduler_set_mode(s, mode);
+    return val_bool(true);
 }
 
 // `download(path)` — trigger a browser file download via the legacy
