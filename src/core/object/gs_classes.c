@@ -21,6 +21,7 @@
 #include "gs_classes.h"
 
 #include <ctype.h>
+#include <errno.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -2860,15 +2861,20 @@ static const class_desc_t mouse_class = {
 static value_t vfs_method_ls(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)self;
     (void)m;
-    char line[1024];
-    int n;
-    if (argc >= 1 && argv[0].kind == V_STRING && argv[0].s && *argv[0].s)
-        n = snprintf(line, sizeof(line), "ls \"%s\"", argv[0].s);
-    else
-        n = snprintf(line, sizeof(line), "ls");
-    if (n < 0 || (size_t)n >= sizeof(line))
-        return val_err("vfs.ls: argument too long");
-    return val_bool(shell_dispatch(line) == 0);
+    const char *path = (argc >= 1 && argv[0].kind == V_STRING && argv[0].s && *argv[0].s) ? argv[0].s : vfs_get_cwd();
+    vfs_dir_t *dir = NULL;
+    const vfs_backend_t *be = NULL;
+    int rc = vfs_opendir(path, &dir, &be);
+    if (rc < 0) {
+        printf("ls: cannot open directory '%s': %s\n", path, strerror(-rc));
+        return val_bool(true);
+    }
+    vfs_dirent_t entry;
+    int r;
+    while ((r = be->readdir(dir, &entry)) > 0)
+        printf("%s\n", entry.name);
+    be->closedir(dir);
+    return val_bool(true);
 }
 
 static value_t vfs_method_mkdir(struct object *self, const member_t *m, int argc, const value_t *argv) {
@@ -2876,11 +2882,14 @@ static value_t vfs_method_mkdir(struct object *self, const member_t *m, int argc
     (void)m;
     if (argc < 1 || argv[0].kind != V_STRING)
         return val_err("vfs.mkdir: expected (path)");
-    char line[1024];
-    int n = snprintf(line, sizeof(line), "mkdir \"%s\"", argv[0].s ? argv[0].s : "");
-    if (n < 0 || (size_t)n >= sizeof(line))
-        return val_err("vfs.mkdir: argument too long");
-    return val_bool(shell_dispatch(line) == 0);
+    const char *dir = argv[0].s ? argv[0].s : "";
+    int rc = vfs_mkdir(dir);
+    if (rc == 0) {
+        printf("Directory '%s' created\n", dir);
+        return val_bool(true);
+    }
+    printf("mkdir: cannot create directory '%s': %s\n", dir, strerror(-rc));
+    return val_bool(false);
 }
 
 static value_t vfs_method_cat(struct object *self, const member_t *m, int argc, const value_t *argv) {
@@ -2888,11 +2897,31 @@ static value_t vfs_method_cat(struct object *self, const member_t *m, int argc, 
     (void)m;
     if (argc < 1 || argv[0].kind != V_STRING)
         return val_err("vfs.cat: expected (path)");
-    char line[1024];
-    int n = snprintf(line, sizeof(line), "cat \"%s\"", argv[0].s ? argv[0].s : "");
-    if (n < 0 || (size_t)n >= sizeof(line))
-        return val_err("vfs.cat: argument too long");
-    return val_bool(shell_dispatch(line) == 0);
+    const char *path = argv[0].s ? argv[0].s : "";
+    vfs_file_t *f = NULL;
+    const vfs_backend_t *be = NULL;
+    int rc = vfs_open(path, &f, &be);
+    if (rc < 0) {
+        printf("cat: cannot open '%s': %s\n", path, strerror(-rc));
+        return val_bool(false);
+    }
+    uint8_t buf[4096];
+    uint64_t off = 0;
+    for (;;) {
+        size_t got = 0;
+        int rr = be->read(f, off, buf, sizeof(buf), &got);
+        if (rr < 0) {
+            printf("cat: read error on '%s': %s\n", path, strerror(-rr));
+            be->close(f);
+            return val_bool(false);
+        }
+        if (got == 0)
+            break;
+        fwrite(buf, 1, got, stdout);
+        off += got;
+    }
+    be->close(f);
+    return val_bool(true);
 }
 
 static const arg_decl_t vfs_path_arg[] = {
