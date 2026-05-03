@@ -4267,6 +4267,56 @@ static value_t method_root_cdrom_validate(struct object *self, const member_t *m
     return val_bool(shell_dispatch(line) == 1);
 }
 
+// `cdrom_eject(id)` — eject the CD-ROM at the given SCSI id (default 3).
+// `scsi.devices[id].eject()` already exists for per-device ejection;
+// this wrapper preserves the legacy `cdrom eject [id]` shape so the
+// integration scripts have a 1:1 mapping.
+static value_t method_root_cdrom_eject(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)self;
+    (void)m;
+    int64_t id = 3;
+    if (argc >= 1) {
+        bool ok = false;
+        id = (int64_t)val_as_i64(&argv[0], &ok);
+        if (!ok && argv[0].kind == V_UINT)
+            id = (int64_t)argv[0].u;
+    }
+    char line[64];
+    snprintf(line, sizeof(line), "cdrom eject %lld", (long long)id);
+    return val_bool(shell_dispatch(line) == 0);
+}
+
+// `cdrom_info(id)` — print info about the CD-ROM at the given SCSI id
+// (default 3). Returns true if a disc is present, false if the slot is
+// empty / wrong type. The detail lines are printed via the legacy
+// command's printf; scripts can also walk `scsi.devices[id].*` directly
+// for structured access.
+static value_t method_root_cdrom_info(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)self;
+    (void)m;
+    int64_t id = 3;
+    if (argc >= 1) {
+        bool ok = false;
+        id = (int64_t)val_as_i64(&argv[0], &ok);
+        if (!ok && argv[0].kind == V_UINT)
+            id = (int64_t)argv[0].u;
+    }
+    char line[64];
+    snprintf(line, sizeof(line), "cdrom info %lld", (long long)id);
+    return val_bool(shell_dispatch(line) == 0);
+}
+
+// `image_mounts()` — list currently-mounted image paths (the legacy
+// `image list` no-arg form). Returns a V_LIST<V_STRING>; scripts that
+// expect the human-readable table output should use the legacy form.
+static value_t method_root_image_mounts(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)self;
+    (void)m;
+    (void)argc;
+    (void)argv;
+    return val_bool(shell_dispatch("image list") == 0);
+}
+
 // `fd_validate(path)` — return the floppy density tag ("400K", "800K",
 // "1.4MB", …) when the file is a recognised floppy image, or empty
 // string otherwise. The legacy `fd validate` command prints the
@@ -4383,6 +4433,9 @@ static const arg_decl_t root_path_arg_optional[] = {
 static const arg_decl_t root_hd_attach_args[] = {
     {.name = "path", .kind = V_STRING, .doc = "HD image path"},
     {.name = "id", .kind = V_INT, .flags = OBJ_ARG_OPTIONAL, .doc = "SCSI bus index 0-6 (default 0)"},
+};
+static const arg_decl_t root_cdrom_id_arg[] = {
+    {.name = "id", .kind = V_INT, .flags = OBJ_ARG_OPTIONAL, .doc = "SCSI id 0-6 (default 3)"},
 };
 static const arg_decl_t root_setup_machine_args[] = {
     {.name = "model", .kind = V_STRING, .doc = "Machine model id (plus / se30 / iicx)"},
@@ -4587,6 +4640,18 @@ static const member_t emu_root_members[] = {
      .name = "cdrom_validate",
      .doc = "True if the file is a recognised CD-ROM image",
      .method = {.args = root_path_arg, .nargs = 1, .result = V_BOOL, .fn = method_root_cdrom_validate}               },
+    {.kind = M_METHOD,
+     .name = "cdrom_eject",
+     .doc = "Eject the CD-ROM at the given SCSI id (default 3)",
+     .method = {.args = root_cdrom_id_arg, .nargs = 1, .result = V_BOOL, .fn = method_root_cdrom_eject}              },
+    {.kind = M_METHOD,
+     .name = "cdrom_info",
+     .doc = "Print info for the CD-ROM at the given SCSI id (default 3)",
+     .method = {.args = root_cdrom_id_arg, .nargs = 1, .result = V_BOOL, .fn = method_root_cdrom_info}               },
+    {.kind = M_METHOD,
+     .name = "image_mounts",
+     .doc = "List currently-mounted image paths (table format)",
+     .method = {.args = NULL, .nargs = 0, .result = V_BOOL, .fn = method_root_image_mounts}                          },
     {.kind = M_METHOD,
      .name = "fd_validate",
      .doc = "Floppy density tag (\"400K\" / \"800K\" / \"1.4MB\") or empty if unrecognised",

@@ -28,10 +28,10 @@ cp -r ../../data/aux/aux_3.0.1/APPLE_AUX_3-0-1_RETAIL.iso/partition6/etc ${WORK_
 ls ${WORK_DIR}/aux-etc
 
 # Auto-mount cache visible to the user.
-image list
+image_mounts
 
 # Force-unmount releases the cache entry.
 unmount ../../data/aux/aux_3.0.1/APPLE_AUX_3-0-1_RETAIL.iso
-image list
+image_mounts
 
 quit

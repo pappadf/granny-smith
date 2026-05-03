@@ -12,7 +12,7 @@ probe ../../data/aux/hd-with-aux-partition.img
 partmap ../../data/aux/hd-with-aux-partition.img --json
 
 # Phase 2 stubs — must return an error but not crash.
-image list
+image_mounts
 unmount ../../data/aux/hd-with-aux-partition.img
 
 quit
