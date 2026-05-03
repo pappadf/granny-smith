@@ -902,13 +902,9 @@ static uint64_t cmd_find_media(int argc, char *argv[]) {
 }
 
 // Download command - save file to browser
-static uint64_t cmd_download(int argc, char *argv[]) {
-    if (argc != 2) {
-        printf("usage: download <path>\n");
-        return 0;
-    }
-
-    const char *path = argv[1];
+// Platform impl of gs_download (weak default in system.c stubs out).
+// The legacy `download` shell cmd routes through this via cmd_download.
+int gs_download(const char *path) {
     struct stat st;
     if (stat(path, &st) != 0) {
         printf("download: cannot access '%s': %s\n", path, strerror(errno));
@@ -973,6 +969,15 @@ static uint64_t cmd_download(int argc, char *argv[]) {
     free(buf);
     printf("download: requested '%s'\n", path);
     return 0;
+}
+
+// Legacy shell `download <path>` — thin shim that calls gs_download.
+static uint64_t cmd_download(int argc, char *argv[]) {
+    if (argc != 2) {
+        printf("usage: download <path>\n");
+        return 0;
+    }
+    return (uint64_t)gs_download(argv[1]);
 }
 
 // ============================================================================
@@ -1125,10 +1130,17 @@ static void install_background_checkpoint_handlers(void) {
 }
 
 // Background checkpoint command
+// Platform impl of gs_background_checkpoint (weak default in system.c
+// stubs out for headless).
+int gs_background_checkpoint(const char *reason) {
+    int rc = save_quick_checkpoint(reason ? reason : "manual", true, false);
+    return (rc == GS_SUCCESS) ? 0 : -1;
+}
+
+// Legacy shell `background-checkpoint [reason]` — thin shim.
 static uint64_t cmd_background_checkpoint(int argc, char *argv[]) {
     const char *reason = (argc >= 2) ? argv[1] : "manual";
-    int rc = save_quick_checkpoint(reason, true, false);
-    return (rc == GS_SUCCESS) ? 0 : -1;
+    return (uint64_t)gs_background_checkpoint(reason);
 }
 
 // Clear checkpoint files inside the current machine directory.  Drops

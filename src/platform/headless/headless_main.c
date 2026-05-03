@@ -159,16 +159,21 @@ static int g_script_exit_code = 0;
 // Quit flag for headless mode - set by quit command
 static volatile int quit_requested = 0;
 
-// Quit command - headless-specific
-static uint64_t cmd_quit(int argc, char *argv[]) {
-    (void)argc;
-    (void)argv;
+// Platform impl of gs_quit (weak default in system.c is a no-op).
+void gs_quit(void) {
     quit_requested = 1;
     // Stop scheduler to break out of any running emulation
     scheduler_t *sched = system_scheduler();
     if (sched) {
         scheduler_stop(sched);
     }
+}
+
+// Legacy shell `quit` — thin shim.
+static uint64_t cmd_quit(int argc, char *argv[]) {
+    (void)argc;
+    (void)argv;
+    gs_quit();
     return 0;
 }
 

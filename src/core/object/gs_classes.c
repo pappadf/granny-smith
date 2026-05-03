@@ -3984,10 +3984,50 @@ static value_t image_subcmd_bool(const char *sub, int argc, const value_t *argv,
         return val_err("%s: argument too long", err_prefix);
     return val_bool(rc == 0);
 }
+static const char *apm_fs_kind_label(enum apm_fs_kind k) {
+    switch (k) {
+    case APM_FS_HFS:
+        return "HFS";
+    case APM_FS_UFS:
+        return "UFS";
+    case APM_FS_PARTITION_MAP:
+        return "map";
+    case APM_FS_DRIVER:
+        return "drvr";
+    case APM_FS_FREE:
+        return "free";
+    case APM_FS_PATCHES:
+        return "patch";
+    default:
+        return "--";
+    }
+}
 static value_t method_root_partmap(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)self;
     (void)m;
-    return image_subcmd_bool("partmap", argc, argv, "partmap");
+    if (argc < 1 || argv[0].kind != V_STRING)
+        return val_err("partmap: expected (path)");
+    const char *path = argv[0].s ? argv[0].s : "";
+    image_t *img = image_open_readonly(path);
+    if (!img)
+        return val_err("partmap: cannot open image '%s'", path);
+    const char *errmsg = NULL;
+    apm_table_t *table = image_apm_parse(img, &errmsg);
+    if (!table) {
+        image_close(img);
+        return val_err("partmap: not an APM image: %s", errmsg ? errmsg : "unknown error");
+    }
+    printf("format: APM (512B blocks, %zu total)\n", disk_size(img) / 512);
+    printf("  #  Name                             Type                        Start        Size  FS\n");
+    for (uint32_t i = 0; i < table->n_partitions; i++) {
+        const apm_partition_t *p = &table->partitions[i];
+        printf("  %-2u %-32s %-24s %10llu  %10llu  %s\n", (unsigned)p->index, p->name[0] ? p->name : "(unnamed)",
+               p->type[0] ? p->type : "(unknown)", (unsigned long long)p->start_block,
+               (unsigned long long)p->size_blocks, apm_fs_kind_label(p->fs_kind));
+    }
+    image_apm_free(table);
+    image_close(img);
+    return val_bool(true);
 }
 static value_t method_root_probe(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)self;
@@ -4074,16 +4114,15 @@ static value_t method_root_unmount(struct object *self, const member_t *m, int a
     return val_bool(false);
 }
 
-// `quit()` — dispatches the legacy `quit` command. The headless main
-// loop already handles the exit signal it raises; the WASM platform
-// turns it into a "stop running" notification.
+// `quit()` — request emulator shutdown. Headless sets the script
+// quit flag and stops the scheduler; WASM is a no-op (the browser
+// owns the lifecycle).
 static value_t method_root_quit(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)self;
     (void)m;
     (void)argc;
     (void)argv;
-    char line[8] = "quit";
-    shell_dispatch(line);
+    gs_quit();
     return val_none();
 }
 
@@ -4749,17 +4788,16 @@ static value_t method_root_step(struct object *self, const member_t *m, int argc
 }
 
 // `background_checkpoint(name)` — capture a snapshot under the given label.
+// Routes to the platform-specific gs_background_checkpoint (WASM
+// implements via save_quick_checkpoint; headless prints a "not
+// supported" stub).
 static value_t method_root_background_checkpoint(struct object *self, const member_t *m, int argc,
                                                  const value_t *argv) {
     (void)self;
     (void)m;
     if (argc < 1 || argv[0].kind != V_STRING)
         return val_err("background_checkpoint: expected (name)");
-    char line[256];
-    int n = snprintf(line, sizeof(line), "background-checkpoint %s", argv[0].s ? argv[0].s : "");
-    if (n < 0 || (size_t)n >= sizeof(line))
-        return val_err("background_checkpoint: name too long");
-    return val_bool(shell_dispatch(line) == 0);
+    return val_bool(gs_background_checkpoint(argv[0].s ? argv[0].s : "") == 0);
 }
 
 // `path_exists(path)` — true if the path exists in the shell VFS.
@@ -5187,19 +5225,15 @@ static value_t method_root_schedule(struct object *self, const member_t *m, int 
     return val_bool(true);
 }
 
-// `download(path)` — trigger a browser file download via the legacy
-// `download` command (WASM-only; the headless build has no equivalent
-// platform plumbing).
+// `download(path)` — trigger a browser file download. Routes to the
+// platform-specific gs_download (WASM streams via Blob+anchor; headless
+// prints a "not supported" stub).
 static value_t method_root_download(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)self;
     (void)m;
     if (argc < 1 || argv[0].kind != V_STRING)
         return val_err("download: expected (path)");
-    char line[1024];
-    int n = snprintf(line, sizeof(line), "download \"%s\"", argv[0].s ? argv[0].s : "");
-    if (n < 0 || (size_t)n >= sizeof(line))
-        return val_err("download: argument too long");
-    return val_bool(shell_dispatch(line) == 0);
+    return val_bool(gs_download(argv[0].s ? argv[0].s : "") == 0);
 }
 
 static const arg_decl_t root_cp_args[] = {

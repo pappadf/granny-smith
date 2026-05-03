@@ -180,4 +180,23 @@ extern void mac_reset(config_t *restrict sim);
 bool gs_checkpoint_auto_get(void);
 void gs_checkpoint_auto_set(bool enabled);
 
+// Platform-specific entry points used by typed root methods.  Each has
+// a weak default in system.c that stubs to the headless behaviour;
+// em_main.c overrides them on the WASM platform with the real
+// browser-driven implementations.
+//
+//   gs_quit()                — request emulator shutdown.  Headless
+//                              sets the quit flag; WASM no-ops.
+//   gs_download(path)        — trigger a browser download of a file.
+//                              Headless prints a "not supported"
+//                              message; WASM streams via blob+anchor.
+//   gs_background_checkpoint(reason)
+//                            — capture a quick checkpoint.  Headless
+//                              prints "not supported"; WASM saves via
+//                              save_quick_checkpoint.
+// Returns 0 on success, non-zero on failure.
+void gs_quit(void);
+int gs_download(const char *path);
+int gs_background_checkpoint(const char *reason);
+
 #endif // SETUP_H

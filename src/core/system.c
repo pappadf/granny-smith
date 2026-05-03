@@ -1370,6 +1370,20 @@ __attribute__((weak)) void gs_checkpoint_auto_set(bool enabled) {
     (void)enabled;
 }
 
+// Platform-specific entry points (see system.h).  Headless gets the
+// "not supported" stubs by default; em_main.c overrides them on WASM.
+__attribute__((weak)) void gs_quit(void) {}
+__attribute__((weak)) int gs_download(const char *path) {
+    (void)path;
+    printf("download: only supported in the WASM build\n");
+    return -1;
+}
+__attribute__((weak)) int gs_background_checkpoint(const char *reason) {
+    (void)reason;
+    printf("background-checkpoint: only supported in the WASM build\n");
+    return -1;
+}
+
 // Create an emulator instance for the given machine profile.
 // Allocates config_t, wires the machine descriptor, and calls profile->init().
 config_t *system_create(const hw_profile_t *profile, checkpoint_t *checkpoint) {
