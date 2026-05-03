@@ -193,7 +193,9 @@ static bool same_kind_equal(const value_t *a, const value_t *b) {
     }
 }
 
-// True if a == b under cross-kind numeric promotion.
+// True if a == b under cross-kind numeric promotion. V_ENUM compares
+// against V_STRING by label so `scsi.devices[0].type == "hd"` matches
+// the enum's spelling rather than forcing the test to know the index.
 static value_t value_equal(const value_t *a, const value_t *b) {
     num_kind_t ka = classify_numeric(a);
     num_kind_t kb = classify_numeric(b);
@@ -205,6 +207,15 @@ static value_t value_equal(const value_t *a, const value_t *b) {
         value_free(&pa);
         value_free(&pb);
         return val_bool(eq);
+    }
+    if ((a->kind == V_ENUM && b->kind == V_STRING) || (a->kind == V_STRING && b->kind == V_ENUM)) {
+        const value_t *e = a->kind == V_ENUM ? a : b;
+        const value_t *s = a->kind == V_STRING ? a : b;
+        const char *label = NULL;
+        if (e->enm.table && (size_t)e->enm.idx < e->enm.n_table)
+            label = e->enm.table[e->enm.idx];
+        const char *str = s->s ? s->s : "";
+        return val_bool(label && strcmp(label, str) == 0);
     }
     return val_bool(same_kind_equal(a, b));
 }

@@ -7,36 +7,38 @@
 
 run 50000
 
-# Top-level object.
+# Top-level object. Loopback default is false at boot.
 eval scsi
-scsi.loopback
+assert $(scsi.loopback == false)
 
-# Bus child: phase is a V_ENUM, target / initiator are ints.
+# Bus child: phase is a V_ENUM, target / initiator are ints. After a
+# brief warmup the bus has settled back to bus_free.
 scsi.bus
-scsi.bus.phase
+assert $(scsi.bus.phase == "bus_free")
 scsi.bus.target
 scsi.bus.initiator
 
 # Devices collection — at least one populated slot from hd1.img.
 scsi.devices
-# Walk the populated slots via the indexed child. ID 0 is the boot HD
-# in this image; later IDs depend on the image. We just read the
-# attributes that must be present for any populated slot.
-scsi.devices[0].id
-scsi.devices[0].type
+# Boot HD lands on SCSI id 0; assert the populated-slot attributes
+# match the expected catalog entry for the test image.
+assert $(scsi.devices[0].id == 0)
+assert $(scsi.devices[0].type == "hd")
+assert $(scsi.devices[0].block_size == 512)
+assert $(scsi.devices[0].medium_present == true)
 scsi.devices[0].vendor
 scsi.devices[0].product
-scsi.devices[0].block_size
 scsi.devices[0].read_only
-scsi.devices[0].medium_present
 
 # Empty slot 5 (no CD attached) reports an "empty" error from node_get,
 # which is the correct sparse-collection behavior.
 scsi.devices[5]
 
-# Loopback: flip via attr setter (through expression form), observe
-# via the same attr. The legacy `scsi loopback` command still works
-# but the test's job here is to verify the new path.
-echo $(scsi.devices[0].id)
+# Loopback: flip via attr setter, observe via the same attr (round-trip
+# through the same path the legacy `hd loopback` command writes).
+scsi.loopback = true
+assert $(scsi.loopback == true)
+scsi.loopback = false
+assert $(scsi.loopback == false)
 
 quit
