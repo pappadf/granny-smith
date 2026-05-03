@@ -2,7 +2,7 @@
 # Runner cd's into this directory; paths are relative.
 
 # Partition 6 is "UNIX Root&Usr slice 0" — the A/UX root filesystem.
-image partmap ../../data/aux/aux_3.0.1/APPLE_AUX_3-0-1_RETAIL.iso
+partmap ../../data/aux/aux_3.0.1/APPLE_AUX_3-0-1_RETAIL.iso
 
 # Descend into the mount: should list partition1..7.
 ls ../../data/aux/aux_3.0.1/APPLE_AUX_3-0-1_RETAIL.iso
@@ -31,7 +31,7 @@ ls ${WORK_DIR}/aux-etc
 image list
 
 # Force-unmount releases the cache entry.
-image unmount ../../data/aux/aux_3.0.1/APPLE_AUX_3-0-1_RETAIL.iso
+unmount ../../data/aux/aux_3.0.1/APPLE_AUX_3-0-1_RETAIL.iso
 image list
 
 quit

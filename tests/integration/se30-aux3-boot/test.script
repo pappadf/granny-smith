@@ -28,11 +28,11 @@ screenshot match desktop.png
 # select "CommandShell" via Special menu
 set-mouse 20 10 --aux
 run 10000000
-mouse-button down
+mouse.click true
 run 10000000
 set-mouse 20 110 --aux
 run 10000000
-mouse-button up
+mouse.click false
 run 10000000
 
 # The command shell should now be open

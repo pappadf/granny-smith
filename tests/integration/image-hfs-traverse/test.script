@@ -2,7 +2,7 @@
 # Runner cd's into this directory; paths are relative.
 
 # Probe the image: expected to surface as a bare HFS volume.
-image probe ../../data/systems/System_6_0_8.dsk
+probe ../../data/systems/System_6_0_8.dsk
 
 # Root of the synthesised partition layer (one entry since no APM).
 ls ../../data/systems/System_6_0_8.dsk
@@ -34,11 +34,11 @@ image list
 
 # Attaching to SCSI must flip the mount to conflicted; subsequent VFS ops
 # return EBUSY.
-hd attach ../../data/systems/System_6_0_8.dsk 2
+hd_attach ../../data/systems/System_6_0_8.dsk 2
 ls ../../data/systems/System_6_0_8.dsk/partition1
 
 # Force-unmount releases the cache entry.
-image unmount ../../data/systems/System_6_0_8.dsk
+unmount ../../data/systems/System_6_0_8.dsk
 image list
 
 quit

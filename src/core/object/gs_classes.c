@@ -2706,23 +2706,23 @@ static const class_desc_t network_class = {
     .n_members = 0,
 };
 
-// --- input.mouse ----------------------------------------------------------
+// --- mouse ----------------------------------------------------------------
 
-static value_t input_mouse_method_move(struct object *self, const member_t *m, int argc, const value_t *argv) {
+static value_t mouse_method_move(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)self;
     (void)m;
     if (argc < 2)
-        return val_err("input.mouse.move: expected (x, y)");
+        return val_err("mouse.move: expected (x, y)");
     bool okx = true, oky = true;
     int64_t x = val_as_i64(&argv[0], &okx);
     int64_t y = val_as_i64(&argv[1], &oky);
     if (!okx || !oky)
-        return val_err("input.mouse.move: x and y must be integers");
+        return val_err("mouse.move: x and y must be integers");
     debug_mac_set_mouse((long)x, (long)y);
     return val_none();
 }
 
-static value_t input_mouse_method_click(struct object *self, const member_t *m, int argc, const value_t *argv) {
+static value_t mouse_method_click(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)self;
     (void)m;
     bool down = (argc >= 1) ? val_as_bool(&argv[0]) : true;
@@ -2733,51 +2733,45 @@ static value_t input_mouse_method_click(struct object *self, const member_t *m, 
     return val_none();
 }
 
-static value_t input_mouse_method_trace(struct object *self, const member_t *m, int argc, const value_t *argv) {
+static value_t mouse_method_trace(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)self;
     (void)m;
     if (argc < 1)
-        return val_err("input.mouse.trace: expected (enabled)");
+        return val_err("mouse.trace: expected (enabled)");
     debug_mac_set_trace_mouse(val_as_bool(&argv[0]));
     return val_none();
 }
 
-static const arg_decl_t input_mouse_move_args[] = {
+static const arg_decl_t mouse_move_args[] = {
     {.name = "x", .kind = V_INT, .doc = "Target X coordinate"},
     {.name = "y", .kind = V_INT, .doc = "Target Y coordinate"},
 };
-static const arg_decl_t input_mouse_click_args[] = {
+static const arg_decl_t mouse_click_args[] = {
     {.name = "down", .kind = V_BOOL, .flags = OBJ_ARG_OPTIONAL, .doc = "true = press, false = release (default true)"},
 };
-static const arg_decl_t input_mouse_trace_args[] = {
+static const arg_decl_t mouse_trace_args[] = {
     {.name = "enabled", .kind = V_BOOL, .doc = "true = log mouse position once per second"},
 };
 
-static const member_t input_mouse_members[] = {
+static const member_t mouse_members[] = {
     {.kind = M_METHOD,
      .name = "move",
      .doc = "Set mouse position (per-platform default route)",
-     .method = {.args = input_mouse_move_args, .nargs = 2, .result = V_NONE, .fn = input_mouse_method_move}  },
+     .method = {.args = mouse_move_args, .nargs = 2, .result = V_NONE, .fn = mouse_method_move}  },
     {.kind = M_METHOD,
      .name = "click",
      .doc = "Press or release the mouse button via the hardware path",
-     .method = {.args = input_mouse_click_args, .nargs = 1, .result = V_NONE, .fn = input_mouse_method_click}},
+     .method = {.args = mouse_click_args, .nargs = 1, .result = V_NONE, .fn = mouse_method_click}},
     {.kind = M_METHOD,
      .name = "trace",
      .doc = "Toggle the 1 Hz mouse-position trace logger",
-     .method = {.args = input_mouse_trace_args, .nargs = 1, .result = V_NONE, .fn = input_mouse_method_trace}},
+     .method = {.args = mouse_trace_args, .nargs = 1, .result = V_NONE, .fn = mouse_method_trace}},
 };
 
-static const class_desc_t input_mouse_class = {
+static const class_desc_t mouse_class = {
     .name = "mouse",
-    .members = input_mouse_members,
-    .n_members = sizeof(input_mouse_members) / sizeof(input_mouse_members[0]),
-};
-
-static const class_desc_t input_class = {
-    .name = "input",
-    .members = NULL,
-    .n_members = 0,
+    .members = mouse_members,
+    .n_members = sizeof(mouse_members) / sizeof(mouse_members[0]),
 };
 
 // === M8 (slice 2) — storage object with images indexed children ============
@@ -3404,10 +3398,22 @@ static value_t method_root_find_media(struct object *self, const member_t *m, in
 static value_t method_root_hd_create(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)self;
     (void)m;
-    if (argc < 2 || argv[0].kind != V_STRING || argv[1].kind != V_STRING)
+    if (argc < 2 || argv[0].kind != V_STRING)
         return val_err("hd_create: expected (path, size)");
     char line[512];
-    int n = snprintf(line, sizeof(line), "hd create \"%s\" \"%s\"", argv[0].s, argv[1].s);
+    int n;
+    // size accepts either a string ("HD20SC", "40M", "21411840") or a
+    // bare integer (raw byte count). The shell-form size parser handles
+    // both, so just stringify whichever variant we got.
+    if (argv[1].kind == V_STRING) {
+        n = snprintf(line, sizeof(line), "hd create \"%s\" \"%s\"", argv[0].s, argv[1].s);
+    } else if (argv[1].kind == V_INT) {
+        n = snprintf(line, sizeof(line), "hd create \"%s\" %lld", argv[0].s, (long long)argv[1].i);
+    } else if (argv[1].kind == V_UINT) {
+        n = snprintf(line, sizeof(line), "hd create \"%s\" %llu", argv[0].s, (unsigned long long)argv[1].u);
+    } else {
+        return val_err("hd_create: size must be string or integer");
+    }
     if (n < 0 || (size_t)n >= sizeof(line))
         return val_err("hd_create: arguments too long");
     return val_bool(shell_dispatch(line) == 0);
@@ -3757,12 +3763,15 @@ static value_t method_root_vrom_load(struct object *self, const member_t *m, int
 static value_t method_root_hd_attach(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)self;
     (void)m;
-    if (argc < 2 || argv[0].kind != V_STRING)
-        return val_err("hd_attach: expected (path, id)");
-    bool ok = false;
-    int64_t id = (int64_t)val_as_i64(&argv[1], &ok);
-    if (!ok && argv[1].kind == V_UINT)
-        id = (int64_t)argv[1].u;
+    if (argc < 1 || argv[0].kind != V_STRING)
+        return val_err("hd_attach: expected (path, [id])");
+    int64_t id = 0; // Legacy default — matches cmd_hd_handler's `attach` branch.
+    if (argc >= 2) {
+        bool ok = false;
+        id = (int64_t)val_as_i64(&argv[1], &ok);
+        if (!ok && argv[1].kind == V_UINT)
+            id = (int64_t)argv[1].u;
+    }
     char line[1024];
     int n = snprintf(line, sizeof(line), "hd attach \"%s\" %lld", argv[0].s ? argv[0].s : "", (long long)id);
     if (n < 0 || (size_t)n >= sizeof(line))
@@ -4178,8 +4187,8 @@ static const arg_decl_t root_path_arg_optional[] = {
      .doc = "File path; empty falls back to the currently-loaded ROM"},
 };
 static const arg_decl_t root_hd_attach_args[] = {
-    {.name = "path", .kind = V_STRING, .doc = "HD image path"         },
-    {.name = "id",   .kind = V_INT,    .doc = "SCSI bus index (0–6)"},
+    {.name = "path", .kind = V_STRING, .doc = "HD image path"},
+    {.name = "id", .kind = V_INT, .flags = OBJ_ARG_OPTIONAL, .doc = "SCSI bus index 0-6 (default 0)"},
 };
 static const arg_decl_t root_setup_machine_args[] = {
     {.name = "model", .kind = V_STRING, .doc = "Machine model id (plus / se30 / iicx)"},
@@ -4691,11 +4700,7 @@ void gs_classes_install(struct config *cfg) {
             }
         }
     }
-    {
-        struct object *input_obj = attach_stub(NULL, &input_class, cfg, "input");
-        if (input_obj)
-            attach_stub(input_obj, &input_mouse_class, cfg, "mouse");
-    }
+    attach_stub(NULL, &mouse_class, cfg, "mouse");
 
     // Built-in aliases. Register CPU always, FPU only when present,
     // mac always (the table is size-driven and machine-independent).

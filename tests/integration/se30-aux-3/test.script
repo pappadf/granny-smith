@@ -17,9 +17,9 @@ screenshot match installer.png
 # dialog asking "...will be overwritten by the installation process.
 # Do you wish to continue?" with Cancel / OK buttons.
 set-mouse 380 80 --aux
-mouse-button down
+mouse.click true
 run 5000000
-mouse-button up
+mouse.click false
 run 25000000
 
 screenshot match confirm.png
@@ -29,9 +29,9 @@ screenshot match confirm.png
 # hidden by the dialog, but the click still hit-tests against MTemp
 # (which --aux keeps pinned at our target), so the click lands on OK.
 set-mouse 337 185 --aux
-mouse-button down
+mouse.click true
 run 1000000
-mouse-button up
+mouse.click false
 run 2000000
 
 # At this point the confirm dialog has been dismissed.  The install

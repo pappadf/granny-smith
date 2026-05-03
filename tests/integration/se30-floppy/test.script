@@ -7,17 +7,17 @@ run 800000000
 # Verify the screen matches the reference image
 screenshot match finder.png
 
-set-mouse 50 50
+mouse.move 50 50
 
 run 5000000
 
-set-mouse 25 10
+mouse.move 25 10
 run 2000000
-mouse-button down
+mouse.click true
 run 4000000
-set-mouse 25 30
+mouse.move 25 30
 run 2000000
-mouse-button up
+mouse.click false
 
 run 45000000
 

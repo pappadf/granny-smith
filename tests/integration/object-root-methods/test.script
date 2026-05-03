@@ -29,7 +29,7 @@ echo $(methods("rtc"))
 # help() on a member returns its doc string.
 echo $(help("cpu.pc"))
 echo $(help("rtc.time"))
-echo $(help("input.mouse.move"))
+echo $(help("mouse.move"))
 
 # print() round-trips through value formatting.
 echo $(print(42))
