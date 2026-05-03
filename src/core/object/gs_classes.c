@@ -2937,10 +2937,18 @@ static value_t find_dispatch_kind(const char *kind, int argc, const value_t *arg
     int pos = snprintf(buf, sizeof(buf), "find %s ", kind);
     if (pos < 0)
         return val_err("%s: format error", err_label);
+    // `find bytes` is variadic in the legacy parser: each hex byte
+    // must arrive as a separate whitespace-delimited token. Forward
+    // the pattern string unquoted so re-tokenisation splits it.
+    // `find str` needs the opposite — the pattern is one token even
+    // if it contains spaces — so we quote it. Numeric patterns pass
+    // through as `0xN`.
+    bool is_bytes = (strcmp(kind, "bytes") == 0);
     if (argv[0].kind == V_STRING) {
-        // Quote string patterns so spaces in `find bytes "4E 71"` and
-        // `find str "Apple"` survive the second tokenise pass.
-        pos += snprintf(buf + pos, sizeof(buf) - (size_t)pos, "\"%s\"", argv[0].s ? argv[0].s : "");
+        if (is_bytes)
+            pos += snprintf(buf + pos, sizeof(buf) - (size_t)pos, "%s", argv[0].s ? argv[0].s : "");
+        else
+            pos += snprintf(buf + pos, sizeof(buf) - (size_t)pos, "\"%s\"", argv[0].s ? argv[0].s : "");
     } else if (argv[0].kind == V_INT) {
         pos += snprintf(buf + pos, sizeof(buf) - (size_t)pos, "0x%llx", (unsigned long long)argv[0].i);
     } else if (argv[0].kind == V_UINT) {

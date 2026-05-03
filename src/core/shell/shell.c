@@ -944,7 +944,60 @@ static void format_value_print(const value_t *v) {
             printf("enum:%d\n", v->enm.idx);
         break;
     case V_LIST:
-        printf("<list:%zu>\n", v->list.len);
+        // Expand list elements inline: [item1, item2, ...]. Strings are
+        // quoted, ints/uints printed in their natural base, objects use
+        // <class:name>, nested lists recurse via the size form.
+        printf("[");
+        for (size_t i = 0; i < v->list.len; i++) {
+            const value_t *e = &v->list.items[i];
+            if (i)
+                printf(", ");
+            switch (e->kind) {
+            case V_NONE:
+                printf("null");
+                break;
+            case V_BOOL:
+                printf("%s", e->b ? "true" : "false");
+                break;
+            case V_INT:
+                printf("%" PRId64, e->i);
+                break;
+            case V_UINT:
+                if (e->flags & VAL_HEX)
+                    printf("0x%" PRIx64, e->u);
+                else
+                    printf("%" PRIu64, e->u);
+                break;
+            case V_FLOAT:
+                printf("%g", e->f);
+                break;
+            case V_STRING:
+                printf("\"%s\"", e->s ? e->s : "");
+                break;
+            case V_BYTES:
+                printf("<bytes:%zu>", e->bytes.n);
+                break;
+            case V_LIST:
+                printf("<list:%zu>", e->list.len);
+                break;
+            case V_ENUM:
+                if (e->enm.table && (size_t)e->enm.idx < e->enm.n_table && e->enm.table[e->enm.idx])
+                    printf("\"%s\"", e->enm.table[e->enm.idx]);
+                else
+                    printf("enum:%d", e->enm.idx);
+                break;
+            case V_OBJECT: {
+                const class_desc_t *cc = e->obj ? object_class(e->obj) : NULL;
+                printf("<%s:%s>", cc && cc->name ? cc->name : "object",
+                       e->obj && object_name(e->obj) ? object_name(e->obj) : "");
+                break;
+            }
+            case V_ERROR:
+                printf("<error>");
+                break;
+            }
+        }
+        printf("]\n");
         break;
     case V_OBJECT: {
         const class_desc_t *cls = v->obj ? object_class(v->obj) : NULL;
