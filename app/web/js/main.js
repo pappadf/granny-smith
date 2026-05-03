@@ -3,7 +3,7 @@
 
 // Orchestrator: startup sequence and module glue.
 // Zero business logic — only wires modules together in the correct order.
-import { initEmulator, runCommand, gsEval, isModuleReady, getModule, getRuntimePrompt, shellInterrupt, isRunning, tabComplete } from './emulator.js';
+import { initEmulator, gsEvalLine, gsEval, isModuleReady, getModule, getRuntimePrompt, shellInterrupt, isRunning, tabComplete } from './emulator.js';
 import { initTerminal, writeLine, showPrompt, fitTerminal, handleInterrupt } from './terminal.js';
 import { initFS } from './fs.js';
 import { initDragDrop } from './drop.js';
@@ -34,7 +34,7 @@ if (params.has('speed')) {
 
 // --- 2. Terminal (must be created before emulator so writeLine is ready) ---
 initTerminal(document.getElementById('terminal'), {
-  onSubmit: async (line) => { await runCommand(line); },
+  onSubmit: async (line) => { await gsEvalLine(line); },
   onInterrupt: async () => { await shellInterrupt(); },
   isReady: () => isModuleReady(),
   isRunning: () => isRunning(),

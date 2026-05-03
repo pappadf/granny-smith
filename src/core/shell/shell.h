@@ -18,10 +18,10 @@
 // === Dispatch (Phase 5c — registry retired) ===
 //
 // Free-form dispatch is gone; only the typed path-form remains. JS
-// callers use gs_eval() / gs_inspect() directly. The legacy
-// shell_dispatch() and dispatch_command() entry points stay so the
-// headless REPL and the WASM `g_cmd_pending` queue keep working — they
-// route every line through the typed path-form parser internally.
+// callers use gs_eval() / gs_inspect() directly. The terminal's
+// free-form line input goes through the SAB queue's kind=4 case in
+// shell_poll(), which calls dispatch_command(). The headless REPL
+// uses shell_dispatch() the same way.
 
 void dispatch_command(char *line, enum invoke_mode mode, struct cmd_result *res);
 uint64_t shell_dispatch(char *line);
@@ -58,11 +58,6 @@ uint64_t cmd_log(int argc, char *argv[]);
 
 // `set` legacy shell entry point (register/CC/memory writer).
 uint64_t cmd_set(int argc, char *argv[]);
-
-// === JSON Bridge ===
-
-// Get the JSON result buffer pointer (for WASM bridge)
-char *get_cmd_json_result(void);
 
 // === Tab Completion ===
 

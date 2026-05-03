@@ -48,10 +48,6 @@ volatile int32_t *gs_shell_ready_ptr(void) {
     return &shell_initialized;
 }
 
-// JSON result buffer for WASM bridge (16KB)
-#define CMD_JSON_BUF_SIZE 16384
-static char g_cmd_json_buffer[CMD_JSON_BUF_SIZE];
-
 // Phase 5c — legacy command registry deleted. The typed object-model
 // bridge is the sole dispatch surface; shell_dispatch falls straight
 // through to the path-form parser.
@@ -663,11 +659,6 @@ uint64_t shell_dispatch(char *line) {
     //          going (legacy parity — `path_size("...")` and other expression
     //          forms used to silently no-op when invoked at top level).
     return (pd < 0) ? (uint64_t)-1 : 0;
-}
-
-// Get the JSON result buffer pointer
-char *get_cmd_json_result(void) {
-    return g_cmd_json_buffer;
 }
 
 // Tab completion entry point

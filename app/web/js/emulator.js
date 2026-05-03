@@ -22,20 +22,14 @@
 // crashes in CI. Probes (pthread_self() inside shell_poll vs. inside
 // em_gs_eval) confirmed two distinct thread IDs.
 //
-// THE RULE: every JS → C request goes through one of the SAB-backed
-// queues whose pointers are resolved below. JS writes into the input
-// buffer, sets the pending flag, polls the done flag. The worker's
-// `shell_poll()` (called from `em_main_tick`) drains both queues. There
-// are currently two queues:
-//   - cmd (free-form shell line)            — `g_cmd_*`     in em_main.c
-//   - gs_eval (typed object-model bridge)   — `g_gs_*`      in em_main.c
-// Both are serialized through the same JS-side `cmdInFlight` lock so
-// only one is in flight at a time and ordering is well defined.
-//
-// (`em_tab_complete` is still a direct ccall today — same threading
-// hazard, but tab completion is a synchronous read-only operation and
-// has not surfaced as a problem. If it ever does, route it through a
-// third SAB queue with the same shape.)
+// THE RULE: every JS → C request goes through the SAB-backed queue
+// whose pointers are resolved below. JS writes into the input buffer,
+// sets the pending flag, polls the done flag. The worker's
+// `shell_poll()` drains the queue and writes the result. The single
+// queue (`g_gs_*`) carries every request — `g_gs_pending` selects the
+// dispatch by kind (1=gs_eval, 2=gs_inspect, 3=tab_complete,
+// 4=free-form shell line). The JS-side `cmdInFlight` lock ensures
+// only one request is in flight at a time.
 import { CONFIG } from './config.js';
 
 // Module-level state (owned exclusively by this module)
@@ -43,11 +37,7 @@ let Module = null;
 let moduleReady = false;
 let isRunningUI = false;
 
-// Shared-heap command queue pointers (resolved after Module init)
-let cmdBufPtr = 0;
-let cmdPendingPtr = 0;
-let cmdDonePtr = 0;
-let cmdResultPtr = 0;
+// Shared-heap pointers (resolved after Module init)
 let promptBufPtr = 0;
 let isRunningPtr = 0;
 
@@ -63,9 +53,7 @@ let gsEvalBufPtr = 0;
 const GS_PATH_BUF_SIZE = 1024;
 const GS_ARGS_BUF_SIZE = 8192;
 
-// Serialization: only one command (legacy or gs_eval) in flight at a time.
-// shell_poll() drains both queues but the C-side pre-condition is that
-// only one is set at a time, so this lock covers both bridges.
+// Serialization: only one request in flight on the SAB queue at a time.
 let cmdInFlight = false;
 let cmdWaiters = [];
 
@@ -96,49 +84,6 @@ function pollRunState() {
   }
 }
 
-// Execute a single shell command string and return the exit code.
-// Commands are serialized (one at a time) and dispatched to the worker
-// via the shared-heap command buffer.
-async function executeShellCommand(cmd) {
-  const line = (cmd ?? '').toString();
-  if (!line.trim()) return 0;
-
-  // Wait for any in-flight command to complete
-  while (cmdInFlight) {
-    await new Promise(r => cmdWaiters.push(r));
-  }
-  cmdInFlight = true;
-
-  try {
-    // Write command string to shared heap buffer
-    Module.stringToUTF8(line, cmdBufPtr, 4096);
-
-    // Clear done flag, set pending flag (HEAP32 indices are byte-offset >> 2)
-    Module.HEAP32[cmdDonePtr >> 2] = 0;
-    Module.HEAP32[cmdPendingPtr >> 2] = 1;
-
-    // Poll for completion (worker executes between main loop ticks)
-    const result = await new Promise(resolve => {
-      function check() {
-        if (Module.HEAP32[cmdDonePtr >> 2]) {
-          const intResult = Module.HEAP32[cmdResultPtr >> 2];
-          Module.HEAP32[cmdDonePtr >> 2] = 0;
-          resolve(intResult);
-        } else {
-          setTimeout(check, 1);
-        }
-      }
-      check();
-    });
-
-    return result;
-  } finally {
-    cmdInFlight = false;
-    const waiters = cmdWaiters.splice(0);
-    waiters.forEach(r => r());
-  }
-}
-
 // Initialize the WASM module (called once from main.js).
 // printFn is used for both print and printErr on the Module.
 export async function initEmulator(canvas, wasmArgs, printFn) {
@@ -154,10 +99,6 @@ export async function initEmulator(canvas, wasmArgs, printFn) {
   });
 
   // Resolve shared-heap pointers into the WASM heap.
-  cmdBufPtr = Module._get_cmd_buffer();
-  cmdPendingPtr = Module._get_cmd_pending_ptr();
-  cmdDonePtr = Module._get_cmd_done_ptr();
-  cmdResultPtr = Module._get_cmd_result_ptr();
   promptBufPtr = Module._get_prompt_buffer();
   isRunningPtr = Module._get_is_running_ptr();
 
@@ -171,11 +112,9 @@ export async function initEmulator(canvas, wasmArgs, printFn) {
   // Expose Module on window for test shim access to FS
   window.__Module = Module;
 
-  // Expose object-model and tab-completion bridges. The terminal input
-  // handler in main.js uses the imported `runCommand` directly (it
-  // still routes through executeShellCommand → shell_dispatch so users
-  // can type anything the shell supports). External callers should use
-  // gsEval / gsInspect for typed object-model access.
+  // Expose object-model bridges. The terminal's onSubmit (main.js)
+  // imports gsEvalLine for free-form lines; everything else uses gsEval
+  // / gsInspect for typed object-model access.
   window.tabComplete = (line, cursorPos) => tabComplete(line, cursorPos);
   window.gsEval = (path, args) => gsEval(path, args);
   window.gsInspect = (path) => gsInspect(path);
@@ -223,13 +162,45 @@ export function setRunning(running) {
   for (const cb of _runStateCallbacks) cb(running);
 }
 
-// --- Command API (string-based) ---
+// --- Command API ---
 
-// Execute a shell line via the worker-side command queue. Returns the
-// integer result. Used for the terminal input handler and any caller
-// that needs free-form shell text; everything else should use gsEval.
-export function runCommand(cmd) {
-  return executeShellCommand(cmd);
+// Execute a free-form shell line via the SAB queue (kind=4). Returns
+// the integer result. Used by the terminal input handler — every other
+// caller should use gsEval / gsInspect for typed object-model access.
+export async function gsEvalLine(line) {
+  if (!Module || !moduleReady) return -1;
+  const text = (line ?? '').toString();
+  if (!text.trim()) return 0;
+
+  await waitForShellReady();
+
+  while (cmdInFlight) {
+    await new Promise(r => cmdWaiters.push(r));
+  }
+  cmdInFlight = true;
+  try {
+    Module.stringToUTF8(text, gsPathBufPtr, GS_PATH_BUF_SIZE);
+    gsArgsBufPtr && (Module.HEAPU8[gsArgsBufPtr] = 0); // clear stale args
+    Module.HEAP32[gsDonePtr >> 2] = 0;
+    Module.HEAP32[gsPendingPtr >> 2] = 4; // kind=4 → free-form line
+
+    await new Promise(resolve => {
+      function check() {
+        if (Module.HEAP32[gsDonePtr >> 2]) {
+          Module.HEAP32[gsDonePtr >> 2] = 0;
+          resolve();
+        } else {
+          setTimeout(check, 1);
+        }
+      }
+      check();
+    });
+    return Module.HEAP32[gsResultPtr >> 2];
+  } finally {
+    cmdInFlight = false;
+    const waiters = cmdWaiters.splice(0);
+    waiters.forEach(r => r());
+  }
 }
 
 // Send shell interrupt (Ctrl-C) to the emulator.
@@ -254,8 +225,8 @@ export async function tabComplete(line, cursorPos) {
 
   await waitForShellReady();
 
-  // Same in-flight lock as gsEval / executeShellCommand: shell_poll
-  // drains both queues but only one of them may be set at a time.
+  // Same in-flight lock as gsEval / gsEvalLine: shell_poll drains
+  // the SAB queue and only one kind may be set at a time.
   while (cmdInFlight) {
     await new Promise(r => cmdWaiters.push(r));
   }
@@ -340,9 +311,8 @@ async function waitForShellReady() {
 // Drive a single gs_eval / gs_inspect request through the SAB queue.
 // kind: 1 = gs_eval (uses both path + argsJson), 2 = gs_inspect (path only).
 async function executeGsRequest(path, argsJson, kind) {
-  // Same in-flight lock as executeShellCommand: shell_poll() drains both
-  // queues but the C-side pre-condition is that only one of (cmd_pending,
-  // gs_pending) is set at a time, so we serialize JS-side.
+  // Same in-flight lock as gsEvalLine / tabComplete: shell_poll
+  // drains the SAB queue and only one kind may be set at a time.
   while (cmdInFlight) {
     await new Promise(r => cmdWaiters.push(r));
   }

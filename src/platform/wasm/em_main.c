@@ -445,42 +445,23 @@ void print_prompt(void) {}
 //
 // THE RULE
 // --------
-// JS → C must always go through one of the SAB queues below. JS writes
-// the request into shared globals, sets a pending flag, and polls a done
-// flag. The worker's `shell_poll()` (called from `em_main_tick`) drains
-// the queue and writes the result. ccall on `_em_*` exports is forbidden.
+// JS → C must always go through the SAB queue below. JS writes the
+// request into shared globals, sets a pending flag, and polls a done
+// flag. The worker's `shell_poll()` (called from `em_main_tick`)
+// drains the queue and writes the result. ccall on `_em_*` exports is
+// forbidden.
 //
+// SAB queue (`g_gs_*`) — single typed bridge.
+//   g_gs_pending = 1 → gs_eval(path, args_json)         result JSON in g_gs_eval_buffer
+//   g_gs_pending = 2 → gs_inspect(path)                 result JSON in g_gs_eval_buffer
+//   g_gs_pending = 3 → tab_complete(line, cursor_pos)   match list in g_completion_buffer
+//   g_gs_pending = 4 → free-form shell line             integer in g_gs_result, output to stdout/stderr
+//   For kind=3, the cursor position is passed as decimal text in
+//   g_gs_args_buffer; for kind=4, the line is in g_gs_path_buffer.
 //
-// Queue 1 — Free-form shell command (`g_cmd_*`)
-//   Protocol:
-//     1. JS writes the command string into g_cmd_buffer
-//     2. JS clears g_cmd_done, sets g_cmd_pending = 1
-//     3. shell_poll() sees g_cmd_pending, calls dispatch_command(),
-//        writes g_cmd_result + g_cmd_json_buffer, sets g_cmd_done = 1,
-//        clears g_cmd_pending
-//     4. JS polls g_cmd_done (setTimeout 1ms), reads result, resolves
-//
-// Queue 2 — Typed object-model bridge (`g_gs_*`)
-//   Same shape as queue 1 but carries (path, args_json) tuples instead
-//   of a shell line. g_gs_pending = 1 means gs_eval, 2 means gs_inspect.
-//   Result is JSON in g_gs_eval_buffer.
-//
-// Both queues are drained by the same shell_poll() call and JS-side
-// serialization (cmdInFlight in emulator.js) ensures only one is in
-// flight at a time, so ordering is well-defined.
+// JS-side serialization (cmdInFlight in emulator.js) ensures only one
+// request is in flight at a time.
 
-#define CMD_BUF_SIZE 4096
-
-static char g_cmd_buffer[CMD_BUF_SIZE];
-static volatile int32_t g_cmd_pending = 0;
-static volatile int32_t g_cmd_done = 0;
-static volatile int32_t g_cmd_result = 0;
-
-// gs_eval queue (path + args_json in, JSON result out via g_gs_eval_buffer).
-// g_gs_pending values: 0 = idle, 1 = gs_eval, 2 = gs_inspect, 3 = tab_complete.
-// For tab_complete: g_gs_path_buffer holds the line, g_gs_args_buffer holds the
-// cursor pos as decimal text, g_completion_buffer (further down) holds the
-// JSON array result, g_gs_result holds the match count.
 #define GS_PATH_BUF_SIZE    1024
 #define GS_ARGS_BUF_SIZE    8192
 #define GS_EVAL_BUF_SIZE    16384
@@ -502,23 +483,7 @@ static char g_prompt_buffer[PROMPT_BUF_SIZE];
 // poll it without a cross-thread EM_ASM callback.
 static volatile int32_t g_shared_is_running = 0;
 
-// JSON result buffer for structured command results (shared heap, 16KB)
-#define CMD_JSON_BUF_SIZE 16384
-static char g_cmd_json_buffer[CMD_JSON_BUF_SIZE];
-
-// Exported getters so JS can find these addresses in the shared heap
-EMSCRIPTEN_KEEPALIVE char *get_cmd_buffer(void) {
-    return g_cmd_buffer;
-}
-EMSCRIPTEN_KEEPALIVE volatile int32_t *get_cmd_pending_ptr(void) {
-    return &g_cmd_pending;
-}
-EMSCRIPTEN_KEEPALIVE volatile int32_t *get_cmd_done_ptr(void) {
-    return &g_cmd_done;
-}
-EMSCRIPTEN_KEEPALIVE volatile int32_t *get_cmd_result_ptr(void) {
-    return &g_cmd_result;
-}
+// Exported getters so JS can find these addresses in the shared heap.
 EMSCRIPTEN_KEEPALIVE char *get_prompt_buffer(void) {
     return g_prompt_buffer;
 }
@@ -527,9 +492,6 @@ EMSCRIPTEN_KEEPALIVE volatile int32_t *get_is_running_ptr(void) {
 }
 EMSCRIPTEN_KEEPALIVE volatile int32_t *get_shell_ready_ptr(void) {
     return gs_shell_ready_ptr();
-}
-EMSCRIPTEN_KEEPALIVE char *get_cmd_json_buffer(void) {
-    return g_cmd_json_buffer;
 }
 
 // gs_eval queue accessors (see "Threading model" comment block above for
@@ -554,79 +516,53 @@ EMSCRIPTEN_KEEPALIVE volatile int32_t *get_gs_result_ptr(void) {
 static int dispatch_tab_complete(const char *line, int cursor_pos);
 
 int shell_poll(void) {
-    // Drain the gs_eval queue first. Both queues are protected by the
-    // same JS-side cmdInFlight lock so only one of (g_cmd_pending,
-    // g_gs_pending) can be set at a time; the order checked here only
-    // matters as a tiebreaker for that brief window before JS releases
-    // the lock.
-    if (g_gs_pending) {
-        int kind = g_gs_pending;
-        int rc;
-        if (kind == 2) {
-            rc = gs_inspect(g_gs_path_buffer, g_gs_eval_buffer, GS_EVAL_BUF_SIZE);
-        } else if (kind == 3) {
-            // Tab complete: line in g_gs_path_buffer, cursor pos in
-            // g_gs_args_buffer (decimal text), JSON result written to
-            // g_completion_buffer, match count returned.
-            int cursor_pos = atoi(g_gs_args_buffer);
-            rc = dispatch_tab_complete(g_gs_path_buffer, cursor_pos);
-        } else {
-            const char *args = (g_gs_args_buffer[0] != '\0') ? g_gs_args_buffer : NULL;
-            rc = gs_eval(g_gs_path_buffer, args, g_gs_eval_buffer, GS_EVAL_BUF_SIZE);
-        }
-        g_gs_result = rc;
-        g_gs_pending = 0;
-        g_gs_done = 1;
-        return 1;
-    }
-
-    if (!g_cmd_pending)
+    // The single SAB queue (`g_gs_*`) carries every JS → worker
+    // request. `kind` selects the dispatch:
+    //   1 = gs_eval(path, args)        — typed object-model call
+    //   2 = gs_inspect(path)           — recursive JSON dump
+    //   3 = tab complete (line, pos)   — completion engine
+    //   4 = free-form shell line       — terminal onSubmit
+    if (!g_gs_pending)
         return 0;
 
-    // Make a mutable copy — tokenize() modifies the buffer in-place
-    char cmd_copy[CMD_BUF_SIZE];
-    size_t len = strnlen(g_cmd_buffer, CMD_BUF_SIZE - 1);
-    memcpy(cmd_copy, g_cmd_buffer, len);
-    cmd_copy[len] = '\0';
-
-    // Strip trailing newlines/carriage returns
-    while (len > 0 && (cmd_copy[len - 1] == '\n' || cmd_copy[len - 1] == '\r'))
-        cmd_copy[--len] = '\0';
-
-    // Execute in programmatic mode so cmd_printf output is captured into
-    // buffers (needed by runCommandJSON on the JS side).  After dispatch we
-    // echo the captured output to stdout/stderr so it still appears in the
-    // xterm.js terminal for interactive users.
-    struct cmd_result cmd_res;
-    memset(&cmd_res, 0, sizeof(cmd_res));
-
-    dispatch_command(cmd_copy, INVOKE_PROGRAMMATIC, &cmd_res);
-
-    // Echo captured output to the terminal
-    if (cmd_res.output && cmd_res.output_len > 0)
-        fwrite(cmd_res.output, 1, cmd_res.output_len, stdout);
-    if (cmd_res.error_output && cmd_res.error_len > 0)
-        fwrite(cmd_res.error_output, 1, cmd_res.error_len, stderr);
-
-    // Serialize the structured result to JSON for JS consumption
-    cmd_result_to_json(&cmd_res, g_cmd_json_buffer, CMD_JSON_BUF_SIZE);
-
-    // Refresh the prompt on the worker (where system state is fully visible)
-    build_prompt_text(g_prompt_buffer, PROMPT_BUF_SIZE);
-
-    // Extract integer result
-    int32_t result = 0;
-    if (cmd_res.type == RES_INT)
-        result = (int32_t)cmd_res.as_int;
-    else if (cmd_res.type == RES_BOOL)
-        result = cmd_res.as_bool;
-    else if (cmd_res.type == RES_ERR)
-        result = -1;
-
-    g_cmd_result = result;
-    g_cmd_pending = 0;
-    g_cmd_done = 1;
-
+    int kind = g_gs_pending;
+    int rc;
+    if (kind == 2) {
+        rc = gs_inspect(g_gs_path_buffer, g_gs_eval_buffer, GS_EVAL_BUF_SIZE);
+    } else if (kind == 3) {
+        // Tab complete: line in g_gs_path_buffer, cursor pos in
+        // g_gs_args_buffer (decimal text), JSON result in
+        // g_completion_buffer, match count returned.
+        int cursor_pos = atoi(g_gs_args_buffer);
+        rc = dispatch_tab_complete(g_gs_path_buffer, cursor_pos);
+    } else if (kind == 4) {
+        // Free-form line — used by the xterm.js terminal. Output goes
+        // straight to stdout/stderr (the WASM Module's printFn already
+        // routes those into the terminal); the integer result lands in
+        // g_gs_result so the caller can branch on success/failure.
+        size_t len = strnlen(g_gs_path_buffer, GS_PATH_BUF_SIZE - 1);
+        while (len > 0 && (g_gs_path_buffer[len - 1] == '\n' || g_gs_path_buffer[len - 1] == '\r'))
+            g_gs_path_buffer[--len] = '\0';
+        struct cmd_result res;
+        memset(&res, 0, sizeof(res));
+        dispatch_command(g_gs_path_buffer, INVOKE_INTERACTIVE, &res);
+        build_prompt_text(g_prompt_buffer, PROMPT_BUF_SIZE);
+        if (res.type == RES_INT)
+            rc = (int)res.as_int;
+        else if (res.type == RES_BOOL)
+            rc = res.as_bool;
+        else if (res.type == RES_ERR)
+            rc = -1;
+        else
+            rc = 0;
+        g_gs_eval_buffer[0] = '\0';
+    } else {
+        const char *args = (g_gs_args_buffer[0] != '\0') ? g_gs_args_buffer : NULL;
+        rc = gs_eval(g_gs_path_buffer, args, g_gs_eval_buffer, GS_EVAL_BUF_SIZE);
+    }
+    g_gs_result = rc;
+    g_gs_pending = 0;
+    g_gs_done = 1;
     return 1;
 }
 
