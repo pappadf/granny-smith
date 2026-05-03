@@ -26,9 +26,13 @@ assert $(scsi.devices[0].id == 0)
 assert $(scsi.devices[0].type == "hd")
 assert $(scsi.devices[0].block_size == 512)
 assert $(scsi.devices[0].medium_present == true)
-scsi.devices[0].vendor
-scsi.devices[0].product
-scsi.devices[0].read_only
+assert $(scsi.devices[0].read_only == false)
+# hd1.img matches the HD20SC catalog entry. vendor / product are the
+# raw SCSI INQUIRY fields stored on the device — vendor is the 8-char
+# catalog literal " SEAGATE" (leading space); product_id is left-
+# padded to 16 chars by scsi_attach (see scsi.c:1188).
+assert $(scsi.devices[0].vendor == " SEAGATE") "boot HD vendor regressed"
+assert $(scsi.devices[0].product == "ST225N          ") "boot HD product regressed"
 
 # Empty slot 5 (no CD attached) reports an "empty" error from node_get,
 # which is the correct sparse-collection behavior.
