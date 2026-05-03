@@ -400,7 +400,7 @@ static int do_insert_fd(const char *path, int preferred, int writable_flag) {
 
 // Probe a file to check if it's a valid floppy image (without inserting).
 // Returns 0 if valid floppy, 1 if not.
-static int do_probe_fd(const char *path) {
+int system_probe_floppy(const char *path) {
     // Persist volatile images (/tmp/, /fd/) to OPFS so they survive page reload
     char *persistent_path = image_persist_volatile(path);
     if (persistent_path)
@@ -543,7 +543,7 @@ static image_t *find_attached_image(const char *path) {
 // Prefers the live attached image (has current in-memory bitmaps) over
 // opening a fresh instance (which may have stale on-disk bitmaps).
 // Returns 0 on success, -1 on failure.
-static int do_download_hd(const char *src_path, const char *dest_path) {
+int system_download_hd(const char *src_path, const char *dest_path) {
     // Try the live attached image first (has up-to-date bitmaps)
     image_t *live = find_attached_image(src_path);
     if (live) {
@@ -694,7 +694,7 @@ static void cmd_fd_handler(struct cmd_context *ctx, struct cmd_result *res) {
             cmd_err(res, "usage: fd probe <path>");
             return;
         }
-        int rc = do_probe_fd(ctx->args[0].as_str);
+        int rc = system_probe_floppy(ctx->args[0].as_str);
         cmd_int(res, (int64_t)rc);
         return;
     }
@@ -811,7 +811,7 @@ static void cmd_hd_handler(struct cmd_context *ctx, struct cmd_result *res) {
             cmd_err(res, "usage: hd download <source> <dest>");
             return;
         }
-        int rc = do_download_hd(ctx->args[0].as_str, ctx->args[1].as_str);
+        int rc = system_download_hd(ctx->args[0].as_str, ctx->args[1].as_str);
         cmd_int(res, (int64_t)rc);
         return;
     }

@@ -158,6 +158,15 @@ int system_create_floppy(const char *path, bool high_density, int preferred);
 // and emits the legacy "Attaching CD-ROM" stdout message.
 void add_scsi_cdrom(struct config *restrict config, const char *filename, int scsi_id);
 
+// Probe a floppy image at `path`. Persists volatile (/tmp/, /fd/) paths
+// to OPFS first, then opens read-only and prints the detected density.
+// Returns 0 if the image is a recognised floppy, non-zero otherwise.
+int system_probe_floppy(const char *path);
+
+// Export a SCSI HD image (base + delta) as a single flat file at `dest_path`.
+// Returns 0 on success, non-zero on failure.
+int system_download_hd(const char *src_path, const char *dest_path);
+
 // Pending RAM override for next system_create() call (KB, 0 = use default)
 void system_set_pending_ram_kb(uint32_t kb);
 uint32_t system_get_pending_ram_kb(void);

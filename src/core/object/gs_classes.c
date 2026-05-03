@@ -43,6 +43,7 @@
 #include "machine.h"
 #include "memory.h"
 #include "object.h"
+#include "peeler.h"
 #include "rom.h"
 #include "rtc.h"
 #include "scc.h"
@@ -3835,24 +3836,30 @@ static value_t method_root_peeler_probe(struct object *self, const member_t *m, 
     (void)m;
     if (argc < 1 || argv[0].kind != V_STRING)
         return val_err("peeler_probe: expected (path)");
-    char line[512];
-    int n = snprintf(line, sizeof(line), "peeler --probe \"%s\"", argv[0].s ? argv[0].s : "");
-    if (n < 0 || (size_t)n >= sizeof(line))
-        return val_err("peeler_probe: argument too long");
-    return val_bool(shell_dispatch(line) == 0);
+    const char *path = argv[0].s ? argv[0].s : "";
+    peel_err_t *err = NULL;
+    peel_buf_t buf = peel_read_file(path, &err);
+    if (err) {
+        fprintf(stderr, "peeler: cannot open '%s': %s\n", path, peel_err_msg(err));
+        peel_err_free(err);
+        return val_bool(false);
+    }
+    const char *format = peel_detect(buf.data, buf.size);
+    if (format)
+        printf("%s: Supported (%s format detected)\n", path, format);
+    else
+        printf("%s: NOT a supported format\n", path);
+    peel_free(&buf);
+    return val_bool(format != NULL);
 }
 
-// `fd_probe(path)` — true if the file passes legacy `fd probe`.
+// `fd_probe(path)` — true if the file is a recognised floppy image.
 static value_t method_root_fd_probe(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)self;
     (void)m;
     if (argc < 1 || argv[0].kind != V_STRING)
         return val_err("fd_probe: expected (path)");
-    char line[512];
-    int n = snprintf(line, sizeof(line), "fd probe \"%s\"", argv[0].s ? argv[0].s : "");
-    if (n < 0 || (size_t)n >= sizeof(line))
-        return val_err("fd_probe: argument too long");
-    return val_bool(shell_dispatch(line) == 0);
+    return val_bool(system_probe_floppy(argv[0].s ? argv[0].s : "") == 0);
 }
 
 // `find_media(dir, [dst])` — search a directory for a recognised
@@ -3903,12 +3910,8 @@ static value_t method_root_hd_download(struct object *self, const member_t *m, i
     (void)m;
     if (argc < 2 || argv[0].kind != V_STRING || argv[1].kind != V_STRING)
         return val_err("hd_download: expected (source_path, dest_path)");
-    char line[1024];
-    int n = snprintf(line, sizeof(line), "hd download \"%s\" \"%s\"", argv[0].s ? argv[0].s : "",
-                     argv[1].s ? argv[1].s : "");
-    if (n < 0 || (size_t)n >= sizeof(line))
-        return val_err("hd_download: arguments too long");
-    return val_bool(shell_dispatch(line) == 0);
+    int rc = system_download_hd(argv[0].s ? argv[0].s : "", argv[1].s ? argv[1].s : "");
+    return val_bool(rc == 0);
 }
 
 // rom_* / vrom_* — wrap the `rom probe|validate` / `vrom probe|validate`
@@ -3930,16 +3933,11 @@ static value_t method_root_rom_probe(struct object *self, const member_t *m, int
     (void)m;
     // No-arg form: probe the currently loaded ROM.
     if (argc < 1 || argv[0].kind != V_STRING || !argv[0].s || !*argv[0].s) {
-        char line[16];
-        snprintf(line, sizeof(line), "rom probe");
-        return val_bool(shell_dispatch(line) == 0);
+        char *fake_argv[] = {"rom", "probe"};
+        return val_bool(cmd_rom_probe(2, fake_argv, 2) == 0);
     }
-    int64_t rc = dispatch_subcmd_path_rc("rom", "probe", argc, argv);
-    if (rc == -2)
-        return val_err("rom_probe: expected (path)");
-    if (rc == -1)
-        return val_err("rom_probe: argument too long");
-    return val_bool(rc == 0);
+    char *fake_argv[] = {"rom", "probe", (char *)argv[0].s};
+    return val_bool(cmd_rom_probe(3, fake_argv, 2) == 0);
 }
 static value_t method_root_rom_validate(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)self;
@@ -3955,12 +3953,10 @@ static value_t method_root_rom_validate(struct object *self, const member_t *m, 
 static value_t method_root_vrom_probe(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)self;
     (void)m;
-    int64_t rc = dispatch_subcmd_path_rc("vrom", "probe", argc, argv);
-    if (rc == -2)
+    if (argc < 1 || argv[0].kind != V_STRING)
         return val_err("vrom_probe: expected (path)");
-    if (rc == -1)
-        return val_err("vrom_probe: argument too long");
-    return val_bool(rc == 0);
+    char *fake_argv[] = {"vrom", "probe", (char *)(argv[0].s ? argv[0].s : "")};
+    return val_bool(cmd_vrom(3, fake_argv) == 0);
 }
 static value_t method_root_vrom_validate(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)self;
@@ -4173,11 +4169,7 @@ static value_t method_root_rom_load(struct object *self, const member_t *m, int 
     (void)m;
     if (argc < 1 || argv[0].kind != V_STRING)
         return val_err("rom_load: expected (path)");
-    char line[1024];
-    int n = snprintf(line, sizeof(line), "rom load \"%s\"", argv[0].s ? argv[0].s : "");
-    if (n < 0 || (size_t)n >= sizeof(line))
-        return val_err("rom_load: argument too long");
-    return val_bool(shell_dispatch(line) == 0);
+    return val_bool(cmd_rom_load(argv[0].s ? argv[0].s : "") == 0);
 }
 
 // `fd_insert(path, slot, writable)` — mount a floppy image into one of
@@ -4241,11 +4233,8 @@ static value_t method_root_vrom_load(struct object *self, const member_t *m, int
     (void)m;
     if (argc < 1 || argv[0].kind != V_STRING)
         return val_err("vrom_load: expected (path)");
-    char line[1024];
-    int n = snprintf(line, sizeof(line), "vrom load \"%s\"", argv[0].s ? argv[0].s : "");
-    if (n < 0 || (size_t)n >= sizeof(line))
-        return val_err("vrom_load: argument too long");
-    return val_bool(shell_dispatch(line) == 0);
+    char *fake_argv[] = {"vrom", "load", (char *)(argv[0].s ? argv[0].s : "")};
+    return val_bool(cmd_vrom(3, fake_argv) == 0);
 }
 
 // `hd_attach(path, id)` — attach a hard-disk image at the given SCSI id.
@@ -4910,25 +4899,87 @@ static value_t method_root_hd_validate(struct object *self, const member_t *m, i
     (void)m;
     if (argc < 1 || argv[0].kind != V_STRING)
         return val_err("hd_validate: expected (path)");
-    char line[1024];
-    int n = snprintf(line, sizeof(line), "hd validate \"%s\"", argv[0].s ? argv[0].s : "");
-    if (n < 0 || (size_t)n >= sizeof(line))
-        return val_err("hd_validate: argument too long");
-    return val_bool(shell_dispatch(line) == 1);
+    const char *path = argv[0].s ? argv[0].s : "";
+    image_t *img = image_open_readonly(path);
+    if (!img) {
+        printf("invalid SCSI HD image: cannot open %s\n", path);
+        return val_bool(false);
+    }
+    if (img->type == image_fd_ss || img->type == image_fd_ds || img->type == image_fd_hd) {
+        printf("invalid SCSI HD image: size matches floppy (%zu bytes), use fd validate\n", img->raw_size);
+        image_close(img);
+        return val_bool(false);
+    }
+    size_t sz = img->raw_size;
+    const struct drive_model *best = drive_catalog_find_closest(sz);
+    if (sz == best->size)
+        printf("valid SCSI HD image: %zu bytes, matches %s %s\n", sz, best->vendor, best->product);
+    else
+        printf("valid SCSI HD image: %zu bytes, nearest model %s %s\n", sz, best->vendor, best->product);
+    image_close(img);
+    return val_bool(true);
 }
 
-// `cdrom_validate(path)` — true if the file passes legacy `cdrom
-// validate` (cmd_bool 1 = valid).
+// `cdrom_validate(path)` — true if the file is a recognised CD-ROM image
+// (ISO 9660, HFS, or Apple Partition Map). Mirrors the legacy `cdrom
+// validate` body (system.c:1003) but works against the public disk_*
+// API so no shell_dispatch round-trip is required.
 static value_t method_root_cdrom_validate(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)self;
     (void)m;
     if (argc < 1 || argv[0].kind != V_STRING)
         return val_err("cdrom_validate: expected (path)");
-    char line[1024];
-    int n = snprintf(line, sizeof(line), "cdrom validate \"%s\"", argv[0].s ? argv[0].s : "");
-    if (n < 0 || (size_t)n >= sizeof(line))
-        return val_err("cdrom_validate: argument too long");
-    return val_bool(shell_dispatch(line) == 1);
+    const char *path = argv[0].s ? argv[0].s : "";
+    image_t *img = image_open_readonly(path);
+    if (!img) {
+        printf("invalid CD-ROM image: cannot open %s\n", path);
+        return val_bool(false);
+    }
+    if (img->type == image_fd_ss || img->type == image_fd_ds || img->type == image_fd_hd) {
+        printf("invalid CD-ROM image: floppy-sized (%zu bytes)\n", img->raw_size);
+        image_close(img);
+        return val_bool(false);
+    }
+    bool is_iso = false, is_hfs = false, is_apm = false;
+    size_t sz = disk_size(img);
+    uint8_t sector[512];
+    // ISO 9660: "CD001" at offset 32769 = sector 64, byte 1
+    if (sz >= 33280) {
+        disk_read_data(img, 32768, sector, 512);
+        if (memcmp(sector + 1, "CD001", 5) == 0)
+            is_iso = true;
+    }
+    // HFS: 0x4244 at offset 1024 = sector 2, byte 0
+    if (sz >= 1536) {
+        disk_read_data(img, 1024, sector, 512);
+        if (sector[0] == 0x42 && sector[1] == 0x44)
+            is_hfs = true;
+    }
+    // Apple Partition Map: DDM 0x4552 at sector 0 + PM 0x504D at sector 1
+    if (sz >= 1024) {
+        disk_read_data(img, 0, sector, 512);
+        bool has_ddm = (sector[0] == 0x45 && sector[1] == 0x52);
+        disk_read_data(img, 512, sector, 512);
+        bool has_pm = (sector[0] == 0x50 && sector[1] == 0x4D);
+        if (has_ddm && has_pm)
+            is_apm = true;
+    }
+    double size_mb = (double)sz / (1024.0 * 1024.0);
+    if (is_iso && is_hfs)
+        printf("valid CD-ROM image: %.1f MB, ISO 9660 + HFS hybrid\n", size_mb);
+    else if (is_iso)
+        printf("valid CD-ROM image: %.1f MB, ISO 9660\n", size_mb);
+    else if (is_hfs)
+        printf("valid CD-ROM image: %.1f MB, HFS\n", size_mb);
+    else if (is_apm)
+        printf("valid CD-ROM image: %.1f MB, Apple Partition Map\n", size_mb);
+    else {
+        printf("invalid CD-ROM image: no ISO 9660, HFS, or Apple Partition Map detected\n");
+        image_close(img);
+        return val_bool(false);
+    }
+    image_close(img);
+    return val_bool(true);
 }
 
 // `cdrom_eject(id)` — eject the CD-ROM at the given SCSI id (default 3).

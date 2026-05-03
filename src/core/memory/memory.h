@@ -286,4 +286,16 @@ static inline void memory_write_uint32(uint32_t addr, uint32_t value) {
     memory_write_uint32_slow(masked, value);
 }
 
+// === ROM / VROM shell-command helpers ======================================
+//
+// Used by both the legacy `rom`/`vrom` commands (system.c) and the typed
+// `rom_load` / `rom_probe` / `vrom_*` root methods (gs_classes.c).  Each
+// returns 0 on success and non-zero on failure (matching the legacy
+// shell-command convention).
+
+uint64_t cmd_rom_load(const char *filename);
+uint64_t cmd_rom_probe(int argc, char *argv[], int filename_arg);
+uint64_t cmd_rom(int argc, char *argv[]);
+uint64_t cmd_vrom(int argc, char *argv[]);
+
 #endif // MEMORY_MAP_H

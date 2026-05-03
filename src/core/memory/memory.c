@@ -717,7 +717,7 @@ static uint8_t *read_rom_file(const char *filename, size_t *out_size, bool quiet
 }
 
 // rom load <path>: Load a ROM file, identify the machine, and reset CPU.
-static uint64_t cmd_rom_load(const char *filename) {
+uint64_t cmd_rom_load(const char *filename) {
     size_t file_size = 0;
     uint8_t *rom_data = read_rom_file(filename, &file_size, false);
     if (!rom_data)
@@ -805,7 +805,7 @@ static uint64_t cmd_rom_checksum(const char *filename) {
 }
 
 // rom probe [<path>]: Check if a ROM file or current ROM is valid.
-static uint64_t cmd_rom_probe(int argc, char *argv[], int filename_arg) {
+uint64_t cmd_rom_probe(int argc, char *argv[], int filename_arg) {
     if (argc < filename_arg + 1) {
         // No filename: check if a ROM is currently loaded
         memory_map_t *mem = system_memory();
