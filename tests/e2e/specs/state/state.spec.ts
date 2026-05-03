@@ -6,7 +6,7 @@ import { expect } from '@playwright/test';
 import { matchScreenFast } from '../../helpers/screen';
 import { bootWithUploadedMedia, bootWithMedia, TEST_MEDIA_ROOT } from '../../helpers/boot';
 import { installTestShim, captureXterm } from '../../helpers/terminal';
-import { runCommand, waitForPrompt, waitForSync, waitForCompleteCheckpoint } from '../../helpers/run-command';
+import { runCommand, waitForPrompt, waitForCompleteCheckpoint } from '../../helpers/run-command';
 import { mouseDrag } from '../../helpers/mouse';
 import { readMemfsFiles } from '../../helpers/memfs';
 import { dispatchDropEvent } from '../../helpers/drop';
@@ -196,9 +196,6 @@ test.describe('State', () => {
     log('[state-test3] waiting for checkpoint to be marked complete');
     await waitForCompleteCheckpoint(page);
 
-    log('[state-test3] syncing persist storage');
-    await waitForSync(page);
-
     log('[state-test3] reloading page to trigger resume prompt');
     await page.reload();
 
@@ -318,7 +315,6 @@ test.describe('State', () => {
     await runCommand(page, 'background-checkpoint final');
     await waitForPrompt(page);
     await waitForCompleteCheckpoint(page);
-    await waitForSync(page);
 
     // Verify a valid checkpoint exists
     const finalProbe = await runCommand(page, 'checkpoint --probe');
@@ -812,9 +808,6 @@ test.describe('State', () => {
 
     log('[state-test10] waiting for checkpoint to be marked complete');
     await waitForCompleteCheckpoint(page);
-
-    log('[state-test10] syncing persist storage');
-    await waitForSync(page);
 
     log('[state-test10] reloading page to trigger resume prompt');
     await page.reload();

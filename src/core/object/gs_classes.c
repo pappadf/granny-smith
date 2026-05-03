@@ -4639,6 +4639,88 @@ static value_t method_root_fd_create(struct object *self, const member_t *m, int
     return val_bool(shell_dispatch(line) == 0);
 }
 
+// `print_value(target)` — read a register / condition code / memory cell
+// via the legacy `print` command. Returns the numeric value as V_UINT;
+// the test convention uses `>>> 0` to truncate to uint32.
+static value_t method_root_print_value(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)self;
+    (void)m;
+    if (argc < 1 || argv[0].kind != V_STRING)
+        return val_err("print_value: expected (target)");
+    char line[256];
+    int n = snprintf(line, sizeof(line), "print %s", argv[0].s ? argv[0].s : "");
+    if (n < 0 || (size_t)n >= sizeof(line))
+        return val_err("print_value: target too long");
+    return val_uint(8, shell_dispatch(line));
+}
+
+// `set_value(target, value)` — write a register / condition code / memory
+// cell via the legacy `set` command. Target syntax matches the legacy
+// command (`d5`, `pc`, `z`, `0x1000.b`, etc.). Numeric values are
+// stringified as hex; string values pass through verbatim.
+static value_t method_root_set_value(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)self;
+    (void)m;
+    if (argc < 2 || argv[0].kind != V_STRING)
+        return val_err("set_value: expected (target, value)");
+    char value_buf[64];
+    const char *value_str = NULL;
+    if (argv[1].kind == V_STRING) {
+        value_str = argv[1].s ? argv[1].s : "";
+    } else {
+        bool ok = false;
+        uint64_t v = val_as_u64(&argv[1], &ok);
+        if (!ok)
+            return val_err("set_value: value must be integer or string");
+        snprintf(value_buf, sizeof(value_buf), "0x%llx", (unsigned long long)v);
+        value_str = value_buf;
+    }
+    char line[256];
+    int n = snprintf(line, sizeof(line), "set %s %s", argv[0].s ? argv[0].s : "", value_str);
+    if (n < 0 || (size_t)n >= sizeof(line))
+        return val_err("set_value: argument too long");
+    return val_bool(shell_dispatch(line) == 0);
+}
+
+// `examine(addr, [count])` — hex-dump `count` bytes from `addr` (legacy
+// `x` / `examine`). `addr` accepts integer or string (alias / expression).
+static value_t method_root_examine(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)self;
+    (void)m;
+    if (argc < 1)
+        return val_err("examine: expected (addr, [count])");
+    char line[128];
+    int n;
+    bool addr_ok = false;
+    uint64_t addr_u = val_as_u64(&argv[0], &addr_ok);
+    bool addr_is_str = (argv[0].kind == V_STRING);
+    if (!addr_ok && !addr_is_str)
+        return val_err("examine: addr must be integer or string");
+    int64_t count = 0;
+    bool have_count = false;
+    if (argc >= 2) {
+        bool ok = false;
+        count = val_as_i64(&argv[1], &ok);
+        if (!ok)
+            return val_err("examine: count must be integer");
+        have_count = true;
+    }
+    if (have_count) {
+        if (addr_ok)
+            n = snprintf(line, sizeof(line), "x 0x%llx %lld", (unsigned long long)addr_u, (long long)count);
+        else
+            n = snprintf(line, sizeof(line), "x %s %lld", argv[0].s ? argv[0].s : "", (long long)count);
+    } else {
+        if (addr_ok)
+            n = snprintf(line, sizeof(line), "x 0x%llx", (unsigned long long)addr_u);
+        else
+            n = snprintf(line, sizeof(line), "x %s", argv[0].s ? argv[0].s : "");
+    }
+    if (n < 0 || (size_t)n >= sizeof(line))
+        return val_err("examine: argument too long");
+    return val_bool(shell_dispatch(line) == 0);
+}
+
 static value_t method_root_dump_tree(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)self;
     (void)m;
@@ -5212,6 +5294,18 @@ static const member_t emu_root_members[] = {
      .name = "fd_create",
      .doc = "Create a blank floppy image (legacy `fd create`)",
      .method = {.args = NULL, .nargs = 2, .result = V_BOOL, .fn = method_root_fd_create}                             },
+    {.kind = M_METHOD,
+     .name = "print_value",
+     .doc = "Read a register / flag / memory cell (legacy `print <target>`)",
+     .method = {.args = NULL, .nargs = 1, .result = V_UINT, .fn = method_root_print_value}                           },
+    {.kind = M_METHOD,
+     .name = "set_value",
+     .doc = "Write a register / flag / memory cell (legacy `set <target> <value>`)",
+     .method = {.args = NULL, .nargs = 2, .result = V_BOOL, .fn = method_root_set_value}                             },
+    {.kind = M_METHOD,
+     .name = "examine",
+     .doc = "Hex-dump memory (legacy `x` / `examine`)",
+     .method = {.args = NULL, .nargs = 2, .result = V_BOOL, .fn = method_root_examine}                               },
 };
 
 static const class_desc_t emu_root_class_real = {

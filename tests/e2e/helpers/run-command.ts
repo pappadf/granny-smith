@@ -16,25 +16,25 @@ import type { Page } from '@playwright/test';
  * expect(exitCode).toBe(0); // success
  * ```
  *
- * Implementation (M10c): the helper translates well-known shell-form
- * lines into typed `gsEval` calls, then maps the typed return back to
- * the legacy int convention. Anything that doesn't have a typed
- * wrapper yet falls through to the legacy `runCommand` bridge — that
- * fallback path goes away with M10e.
+ * Implementation: every shell-form line is translated to a typed `gsEval`
+ * call. Specs that still use raw legacy commands (`vrom load`,
+ * `checkpoint auto off`, etc.) call `(window as any).runCommand(...)`
+ * directly — this helper no longer routes there.
  */
 export async function runCommand(page: Page, cmd: string): Promise<number> {
   const translated = translateToGsEval(cmd);
-  if (translated) {
-    const result: any = await page.evaluate(
-      ({ method, args }: { method: string; args: any[] }) => (window as any).gsEval(method, args),
-      { method: translated.method, args: translated.args }
+  if (!translated) {
+    throw new Error(
+      `runCommand: shell form '${cmd}' has no typed translation — ` +
+        `extend translateToGsEval() in run-command.ts or call window.runCommand directly.`
     );
-    return mapResult(result, translated.convention);
   }
-  // Legacy fallback for shell-form lines that don't have a typed wrapper
-  // (eval / br / s / x / log / set / print / mouse-button / scc / sync / …).
-  const result = await page.evaluate((c: string) => (window as any).runCommand(c), cmd);
-  return typeof result === 'bigint' ? Number(result) : result;
+  const result: any = await page.evaluate(
+    ({ method, args }: { method: string; args: any[] }) =>
+      (window as any).gsEval(method, args),
+    { method: translated.method, args: translated.args }
+  );
+  return mapResult(result, translated.convention);
 }
 
 // === Shell-form → gsEval translator ========================================
@@ -159,6 +159,45 @@ function translateToGsEval(line: string): Translation | null {
   if (head === 'size' && tail.length === 1)
     // Legacy `size` returned the byte count — pass it through unchanged.
     return { method: 'path_size', args: [tail[0]], convention: 'pass_through' };
+
+  // Debug ops: print/set/x. Targets accept the legacy syntax (`d5`, `pc`,
+  // `z`, `0x1000.b`, `instr`, `$pc`, etc.) — passed through verbatim to
+  // the print/set/examine wrappers, which forward to the legacy parser.
+  if (head === 'print') {
+    if (tail.length === 0)
+      // Bare `print` — typed wrapper rejects empty target with V_ERR,
+      // which mapResult turns into 1 (matches the test expectation).
+      return { method: 'print_value', args: [''], convention: 'pass_through' };
+    if (tail.length === 1)
+      return { method: 'print_value', args: [tail[0]], convention: 'pass_through' };
+    // `print instr` and similar multi-token forms with a single logical
+    // target: rejoin them into one string.
+    return {
+      method: 'print_value',
+      args: [tail.join(' ')],
+      convention: 'pass_through',
+    };
+  }
+  if (head === 'set') {
+    if (tail.length === 2)
+      return { method: 'set_value', args: tail, convention: 'cmd_int_bool' };
+    if (tail.length === 0)
+      // Bare `set` — typed wrapper rejects with V_ERR; legacy printed
+      // a usage message and returned 0. The debug spec asserts `toBe(0)`
+      // here, so we pass through cmd_int_bool which gives 1 on error.
+      // Tests for `set` (no args) currently use `expect(exitCode).toBe(0)`
+      // — use void_or_error to keep that contract.
+      return { method: 'set_value', args: ['', ''], convention: 'void_or_error' };
+  }
+  if (head === 'x' && tail.length >= 1) {
+    const args: unknown[] = [tail[0]];
+    if (tail.length >= 2) {
+      const c = parseInt10(tail[1]);
+      if (c !== null) args.push(c);
+    }
+    return { method: 'examine', args, convention: 'cmd_int_bool' };
+  }
+
 
   // Mouse: set-mouse [--global|--hw|--aux] x y, or x y first then mode.
   if (head === 'set-mouse') {
@@ -446,30 +485,6 @@ export async function waitForPrompt(page: Page, timeoutMs = 120_000, initialWait
 
     if (Date.now() - startTime > timeoutMs) {
       throw new Error(`Timeout waiting for scheduler to become idle after ${timeoutMs}ms`);
-    }
-
-    await page.waitForTimeout(pollIntervalMs);
-  }
-}
-
-/**
- * Trigger a filesystem sync and wait for it to complete.
- * Uses the 'sync' command to start, then polls 'sync status' until done.
- */
-export async function waitForSync(page: Page, timeoutMs = 10_000): Promise<void> {
-  // Trigger the sync (no typed wrapper yet — stays on the legacy bridge).
-  await runCommand(page, 'sync');
-
-  // Poll until sync completes (status returns 0)
-  const pollIntervalMs = 200;
-  const startTime = Date.now();
-
-  while (true) {
-    const status = await runCommand(page, 'sync status');
-    if (status === 0) return; // Sync complete
-
-    if (Date.now() - startTime > timeoutMs) {
-      throw new Error(`Timeout waiting for sync to complete after ${timeoutMs}ms`);
     }
 
     await page.waitForTimeout(pollIntervalMs);
