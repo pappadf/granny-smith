@@ -6,19 +6,19 @@ run 50000
 
 # Tree shape.
 eval storage
-eval storage.images
+storage.images
 
 # First image: HD attached at boot.
-eval storage.images[0]
-eval storage.images[0].index
-eval storage.images[0].filename
-eval storage.images[0].type
-eval storage.images[0].writable
-eval storage.images[0].raw_size
+storage.images[0]
+storage.images[0].index
+storage.images[0].filename
+storage.images[0].type
+storage.images[0].writable
+storage.images[0].raw_size
 
 # Second image: the System 6 floppy.
-eval storage.images[1].filename
-eval storage.images[1].type
+storage.images[1].filename
+storage.images[1].type
 
 # storage.import — copy a small file to a chosen destination via the
 # legacy `cp` route, then verify storage.import without dst_path

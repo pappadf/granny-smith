@@ -39,7 +39,7 @@ sound.enabled = true
 sound.enabled
 
 # Legacy `eval` continues to work in parallel for the JSON shape.
-eval machine.model_id
-eval cpu.pc
+machine.model_id
+cpu.pc
 
 quit

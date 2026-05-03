@@ -9,30 +9,30 @@ run 50000
 
 # Top-level object.
 eval scsi
-eval scsi.loopback
+scsi.loopback
 
 # Bus child: phase is a V_ENUM, target / initiator are ints.
-eval scsi.bus
-eval scsi.bus.phase
-eval scsi.bus.target
-eval scsi.bus.initiator
+scsi.bus
+scsi.bus.phase
+scsi.bus.target
+scsi.bus.initiator
 
 # Devices collection — at least one populated slot from hd1.img.
-eval scsi.devices
+scsi.devices
 # Walk the populated slots via the indexed child. ID 0 is the boot HD
 # in this image; later IDs depend on the image. We just read the
 # attributes that must be present for any populated slot.
-eval scsi.devices[0].id
-eval scsi.devices[0].type
-eval scsi.devices[0].vendor
-eval scsi.devices[0].product
-eval scsi.devices[0].block_size
-eval scsi.devices[0].read_only
-eval scsi.devices[0].medium_present
+scsi.devices[0].id
+scsi.devices[0].type
+scsi.devices[0].vendor
+scsi.devices[0].product
+scsi.devices[0].block_size
+scsi.devices[0].read_only
+scsi.devices[0].medium_present
 
 # Empty slot 5 (no CD attached) reports an "empty" error from node_get,
 # which is the correct sparse-collection behavior.
-eval scsi.devices[5]
+scsi.devices[5]
 
 # Loopback: flip via attr setter (through expression form), observe
 # via the same attr. The legacy `scsi loopback` command still works

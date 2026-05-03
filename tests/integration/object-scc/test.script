@@ -8,25 +8,25 @@ run 50000
 
 # Defaults.
 eval scc
-eval scc.loopback
-eval scc.pclk_hz
-eval scc.rtxc_hz
+scc.loopback
+scc.pclk_hz
+scc.rtxc_hz
 
 # Channel children both resolve and report their own index.
-eval scc.a
-eval scc.b
-eval scc.a.index
-eval scc.b.index
-eval scc.a.dcd
-eval scc.b.dcd
-eval scc.a.tx_empty
-eval scc.b.rx_pending
+scc.a
+scc.b
+scc.a.index
+scc.b.index
+scc.a.dcd
+scc.b.dcd
+scc.a.tx_empty
+scc.b.rx_pending
 
 # Flip via the legacy command, observe via the new attr.
-scc loopback on
-eval scc.loopback
-scc loopback off
-eval scc.loopback
+scc.loopback = true
+scc.loopback
+scc.loopback = false
+scc.loopback
 
 # Reset method runs to completion (no return value to assert beyond
 # the absence of an error in the JSON output).

@@ -1031,9 +1031,14 @@ static int try_path_dispatch(int argc, char **argv) {
     if (argc == 1) {
         value_t v = node_get(n);
         if (val_is_error(&v)) {
+            // Print the error to stderr but return 0 — matches the
+            // legacy `eval` semantics. Tests intentionally probe empty
+            // indexed slots etc. ("scsi.devices[5]") and expect the
+            // script to keep going. Use `assert (exists(path))` for
+            // strict membership checks.
             fprintf(stderr, "%s: %s\n", argv[0], v.err ? v.err : "read failed");
             value_free(&v);
-            return -1;
+            return 0;
         }
         format_value_print(&v);
         value_free(&v);

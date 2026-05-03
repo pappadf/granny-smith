@@ -4,11 +4,11 @@
 # AS THEY HAVE A SIGNIFICANT PERFORMANCE IMPACT
 
 # Enable external loopback cable emulation between SCC ports
-scc loopback on
+scc.loopback = true
 
 # Enable SCSI loopback test card before boot.
 # MacTest detects the card during startup and skips the SCSI warning dialog.
-hd loopback on
+scsi.loopback = true
 
 # Boot past Happy Mac through splash screens
 run 200000000

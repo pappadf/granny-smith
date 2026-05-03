@@ -7,29 +7,29 @@ run 50000
 
 # Top-level floppy.
 eval floppy
-eval floppy.type
-eval floppy.sel
+floppy.type
+floppy.sel
 
 # Drives collection.
-eval floppy.drives
+floppy.drives
 
 # Drive 0: populated.
-eval floppy.drives[0].index
-eval floppy.drives[0].present
-eval floppy.drives[0].disk
-eval floppy.drives[0].track
-eval floppy.drives[0].side
-eval floppy.drives[0].motor_on
+floppy.drives[0].index
+floppy.drives[0].present
+floppy.drives[0].disk
+floppy.drives[0].track
+floppy.drives[0].side
+floppy.drives[0].motor_on
 
 # Drive 1: empty.
-eval floppy.drives[1].index
-eval floppy.drives[1].present
-eval floppy.drives[1].disk
+floppy.drives[1].index
+floppy.drives[1].present
+floppy.drives[1].disk
 
 # Eject drive 0 — present must flip to false, disk to empty string.
 echo $(floppy.drives[0].eject())
-eval floppy.drives[0].present
-eval floppy.drives[0].disk
+floppy.drives[0].present
+floppy.drives[0].disk
 
 # Ejecting an already-empty drive is an error (the method is honest
 # rather than silently no-op'ing — the harness shouldn't fail on

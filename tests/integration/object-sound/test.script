@@ -7,19 +7,19 @@ run 50000
 
 # Top-level object + read-only attrs.
 eval sound
-eval sound.sample_rate
+sound.sample_rate
 
 # enabled / volume — values depend on boot timing, just verify the
 # paths resolve to a usable JSON shape.
-eval sound.enabled
-eval sound.volume
+sound.enabled
+sound.volume
 
 # Mute via the method, observe via `enabled`.
 echo $(sound.mute(true))
-eval sound.enabled
+sound.enabled
 
 # Unmute and verify enabled flips back.
 echo $(sound.mute(false))
-eval sound.enabled
+sound.enabled
 
 quit

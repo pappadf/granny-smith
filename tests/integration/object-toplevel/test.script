@@ -6,14 +6,14 @@ run 50000
 
 # Tree shape.
 eval network
-eval network.appletalk
-eval network.appletalk.shares
-eval network.appletalk.printer
+network.appletalk
+network.appletalk.shares
+network.appletalk.printer
 eval mouse
 
 # Initially the shares table is empty and the printer is disabled.
-eval network.appletalk.printer.enabled
-eval network.appletalk.printer.name
+network.appletalk.printer.enabled
+network.appletalk.printer.name
 
 # Add a share via the new method, observe it via the legacy command.
 # Use /tmp because atalk_share_add stat()s the directory; /tmp exists
@@ -21,13 +21,13 @@ eval network.appletalk.printer.name
 # (/__w/granny-smith/granny-smith) so the path is portable.
 echo $(network.appletalk.shares.add("docs", "/tmp"))
 atalk-share-list
-eval network.appletalk.shares[0].name
-eval network.appletalk.shares[0].path
-eval network.appletalk.shares[0].vol_id
+network.appletalk.shares[0].name
+network.appletalk.shares[0].path
+network.appletalk.shares[0].vol_id
 
 # Add via the legacy command, observe via the new tree.
 network.appletalk.shares.add demo /tmp
-eval network.appletalk.shares[1].name
+network.appletalk.shares[1].name
 
 # Remove via the new tree's per-entry method, verify legacy list reflects it.
 echo $(network.appletalk.shares[0].remove())
@@ -35,10 +35,10 @@ atalk-share-list
 
 # Printer enable/disable via the new methods.
 echo $(network.appletalk.printer.enable("Test LaserWriter"))
-eval network.appletalk.printer.enabled
-eval network.appletalk.printer.name
+network.appletalk.printer.enabled
+network.appletalk.printer.name
 echo $(network.appletalk.printer.disable())
-eval network.appletalk.printer.enabled
+network.appletalk.printer.enabled
 
 # Mouse methods. Plus is a non-ADB machine with no MAE, so move()
 # falls through to the global write path via set_mouse_default.

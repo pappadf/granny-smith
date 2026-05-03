@@ -8,34 +8,34 @@ run 100000
 
 # via1 attributes.
 eval via1
-eval via1.ifr
-eval via1.ier
-eval via1.acr
-eval via1.pcr
-eval via1.sr
-eval via1.freq_factor
+via1.ifr
+via1.ier
+via1.acr
+via1.pcr
+via1.sr
+via1.freq_factor
 
 # via1 port children.
-eval via1.port_a
-eval via1.port_a.output
-eval via1.port_a.input
-eval via1.port_a.direction
-eval via1.port_b.output
-eval via1.port_b.input
-eval via1.port_b.direction
+via1.port_a
+via1.port_a.output
+via1.port_a.input
+via1.port_a.direction
+via1.port_b.output
+via1.port_b.input
+via1.port_b.direction
 
 # via2 — only present on SE/30 / IIcx, which is what this test boots.
 eval via2
-eval via2.ifr
-eval via2.ier
-eval via2.acr
-eval via2.port_a.output
-eval via2.port_b.direction
+via2.ifr
+via2.ier
+via2.acr
+via2.port_a.output
+via2.port_b.direction
 
 # Sanity: via1 and via2 are independent — different freq_factor
 # (Plus VIA divisor is 10, SE/30 is 20; via2 tracks its parent VIA's
 # divisor, which is the same on Universal ROM machines).
-eval via1.freq_factor
-eval via2.freq_factor
+via1.freq_factor
+via2.freq_factor
 
 quit
