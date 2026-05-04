@@ -53,6 +53,7 @@ INCLUDE_FLAGS := -I$(UNIT_ROOT)/support \
                  -I$(EMU_ROOT)/core/shell \
                  -I$(EMU_ROOT)/core/object \
                  -I$(EMU_ROOT)/core/vfs \
+                 -I$(EMU_ROOT)/machines \
                  -I$(EMU_ROOT)/platform/wasm \
                  -DUNIT_TEST_PLATFORM_OVERRIDE \
                  -include $(UNIT_ROOT)/support/platform.h \
@@ -98,7 +99,9 @@ else ifeq ($(TEST_HARNESS),cpu)
               $(EMU_ROOT)/core/cpu/fpu.c \
               $(EMU_ROOT)/core/cpu/fpu_transc.c \
               $(EMU_ROOT)/core/memory/memory.c \
-              $(EMU_ROOT)/core/memory/mmu.c
+              $(EMU_ROOT)/core/memory/mmu.c \
+              $(EMU_ROOT)/core/object/object.c \
+              $(EMU_ROOT)/core/object/value.c
   COMMON_SRCS := $(HARNESS_SRCS) $(STUB_SRCS)
 
 else

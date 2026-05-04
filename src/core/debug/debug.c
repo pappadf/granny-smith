@@ -35,9 +35,21 @@
 
 // Forward declarations — class descriptors are at the bottom of the file but
 // debug_init / debug_cleanup reference them.
-extern const class_desc_t debugger_class;
+extern const class_desc_t debug_class;
 extern const class_desc_t bp_collection_class;
 extern const class_desc_t lp_collection_class;
+extern const class_desc_t debug_mac_class;
+extern const class_desc_t debug_mac_globals_class;
+
+// Mac low-memory globals table (defined in mac_globals_data.c). Used by
+// debug.mac.globals.{read,write,address,list}.
+extern struct {
+    const char *name;
+    uint32_t address;
+    int size;
+    const char *description;
+} mac_global_vars[];
+extern const size_t mac_global_vars_count;
 
 #include <ctype.h>
 #include <stdarg.h>
@@ -58,11 +70,11 @@ struct breakpoint {
     // fires when the expression evaluates to true.  NULL = always fire.
     char *condition;
 
-    // Hit counter — exposed via debugger.breakpoints[N].hit_count (M6).
+    // Hit counter — exposed via debug.breakpoints[N].hit_count (M6).
     uint32_t hit_count;
 
     // M6 — sparse stable id (proposal §2.1) and the per-entry object_t
-    // that backs `debugger.breakpoints[id]`. The object is owned by
+    // that backs `debug.breakpoints[id]`. The object is owned by
     // this breakpoint; freeing it fires invalidators on any held nodes.
     int id;
     struct object *entry_object;
@@ -139,7 +151,7 @@ breakpoint_t *set_breakpoint(debug_t *debug, uint32_t addr, addr_space_t space) 
     bp->hit_count = 0;
     bp->id = debug->next_breakpoint_id++;
     // The entry object is created lazily by gs_classes the first time
-    // someone resolves debugger.breakpoints[id]; we just hold the slot.
+    // someone resolves debug.breakpoints[id]; we just hold the slot.
     bp->entry_object = gs_classes_make_breakpoint_object(bp);
 
     // add bp to a linked list
@@ -2473,7 +2485,7 @@ static const struct subcmd_spec find_subcmds[] = {
 // M6 — object-model accessors and id-based collection helpers
 // ============================================================================
 //
-// These implement the `debugger.{breakpoints,logpoints}` indexed-child
+// These implement the `debug.{breakpoints,logpoints}` indexed-child
 // surface declared in debug.h. Walks are O(N) over the linked list;
 // fanout is bounded by user-set entries (~tens) so this is fine.
 
@@ -2643,17 +2655,24 @@ debug_t *debug_init(void) {
     // Install memory-logpoint hook so the memory slow path can emit logs
     g_mem_logpoint_hook = debug_memory_logpoint_hook;
 
-    // Object-tree binding — instance_data on the debugger node and its
-    // collection children is the debug_t* itself.
-    debug->debugger_object = object_new(&debugger_class, debug, "debugger");
-    if (debug->debugger_object) {
-        object_attach(object_root(), debug->debugger_object);
+    // Object-tree binding — instance_data on the debug node and its
+    // collection / mac children is the debug_t* itself.
+    debug->object = object_new(&debug_class, debug, "debug");
+    if (debug->object) {
+        object_attach(object_root(), debug->object);
         debug->bp_collection_object = object_new(&bp_collection_class, debug, "breakpoints");
         if (debug->bp_collection_object)
-            object_attach(debug->debugger_object, debug->bp_collection_object);
+            object_attach(debug->object, debug->bp_collection_object);
         debug->lp_collection_object = object_new(&lp_collection_class, debug, "logpoints");
         if (debug->lp_collection_object)
-            object_attach(debug->debugger_object, debug->lp_collection_object);
+            object_attach(debug->object, debug->lp_collection_object);
+        debug->mac_object = object_new(&debug_mac_class, debug, "mac");
+        if (debug->mac_object) {
+            object_attach(debug->object, debug->mac_object);
+            debug->mac_globals_object = object_new(&debug_mac_globals_class, debug, "globals");
+            if (debug->mac_globals_object)
+                object_attach(debug->mac_object, debug->mac_globals_object);
+        }
     }
 
     return debug;
@@ -2670,7 +2689,17 @@ void debug_cleanup(debug_t *debug) {
 
     // Tear down object-tree nodes before any of the underlying storage
     // is freed (entry objects fired by object_delete reference the
-    // breakpoint_t / logpoint_t state).
+    // breakpoint_t / logpoint_t state). Children first, then root.
+    if (debug->mac_globals_object) {
+        object_detach(debug->mac_globals_object);
+        object_delete(debug->mac_globals_object);
+        debug->mac_globals_object = NULL;
+    }
+    if (debug->mac_object) {
+        object_detach(debug->mac_object);
+        object_delete(debug->mac_object);
+        debug->mac_object = NULL;
+    }
     if (debug->lp_collection_object) {
         object_detach(debug->lp_collection_object);
         object_delete(debug->lp_collection_object);
@@ -2681,10 +2710,10 @@ void debug_cleanup(debug_t *debug) {
         object_delete(debug->bp_collection_object);
         debug->bp_collection_object = NULL;
     }
-    if (debug->debugger_object) {
-        object_detach(debug->debugger_object);
-        object_delete(debug->debugger_object);
-        debug->debugger_object = NULL;
+    if (debug->object) {
+        object_detach(debug->object);
+        object_delete(debug->object);
+        debug->object = NULL;
     }
 
     // Free all breakpoints
@@ -2889,7 +2918,7 @@ int shell_find_argv(int argc, char **argv) {
 
 // === Object-model class descriptors =========================================
 //
-// `debugger.breakpoints` / `debugger.logpoints` are indexed children
+// `debug.breakpoints` / `debug.logpoints` are indexed children
 // with sparse stable indices. Each entry is its own object_t whose
 // instance_data is the underlying breakpoint_t / logpoint_t. The entry
 // classes carry the per-entry attributes (addr, condition, hit_count,
@@ -3145,13 +3174,13 @@ struct object *gs_classes_make_logpoint_object(struct logpoint *lp) {
 
 // --- collection objects -----------------------------------------------------
 //
-// `debugger.breakpoints` is a real object_t* attached to `debugger` at
+// `debug.breakpoints` is a real object_t* attached to `debug` at
 // debug_init time. Its instance_data is the debug_t* itself, so a
-// single helper recovers it whether you're holding the debugger node
+// single helper recovers it whether you're holding the debug node
 // or one of its collection children. The collection class declares:
 //   - method members (add, clear) for the legacy mutation API;
 //   - one indexed M_CHILD member that exposes per-entry objects, so
-//     `debugger.breakpoints.0` and `[0]` both resolve via the integer-
+//     `debug.breakpoints.0` and `[0]` both resolve via the integer-
 //     segment rule in node_child (object.c).
 
 static debug_t *debug_from(struct object *self) {
@@ -3285,12 +3314,214 @@ const class_desc_t lp_collection_class = {
     .n_members = sizeof(lp_collection_members) / sizeof(lp_collection_members[0]),
 };
 
-// `debugger` itself: namespace-only. breakpoints / logpoints are
+// `debug` itself: namespace-only. breakpoints / logpoints / mac are
 // attached as named children at debug_init time.
-const class_desc_t debugger_class = {
-    .name = "debugger",
+const class_desc_t debug_class = {
+    .name = "debug",
     .members = NULL,
     .n_members = 0,
+};
+
+// === debug.mac.globals — Mac low-memory globals access ======================
+//
+// `mac_global_vars[]` (defined in mac_globals_data.c) names ~471 fixed
+// addresses in the Mac low-memory area, each with a size (1/2/4/N) and
+// a description. Rather than auto-expand into 471 attributes, we
+// expose them through a small method surface:
+//
+//   debug.mac.globals.read(name)        — read by name; returns uint
+//                                          for size 1/2/4, bytes for N
+//   debug.mac.globals.write(name, val)  — write a 1/2/4-byte global
+//   debug.mac.globals.address(name)     — return the static address
+//   debug.mac.globals.list()            — list of known names
+//
+// Lookup is O(N) over the table; this is a debugging-only surface.
+
+static int mac_global_lookup(const char *name) {
+    if (!name)
+        return -1;
+    for (size_t i = 0; i < mac_global_vars_count; i++) {
+        if (mac_global_vars[i].name && strcmp(mac_global_vars[i].name, name) == 0)
+            return (int)i;
+    }
+    return -1;
+}
+
+static value_t method_mac_globals_read(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)self;
+    (void)m;
+    if (argc < 1 || argv[0].kind != V_STRING || !argv[0].s)
+        return val_err("debug.mac.globals.read: expected (name)");
+    int idx = mac_global_lookup(argv[0].s);
+    if (idx < 0)
+        return val_err("debug.mac.globals.read: unknown global '%s'", argv[0].s);
+    uint32_t addr = mac_global_vars[idx].address;
+    int sz = mac_global_vars[idx].size;
+    switch (sz) {
+    case 1: {
+        value_t v = val_uint(1, memory_read_uint8(addr));
+        v.flags |= VAL_HEX;
+        return v;
+    }
+    case 2: {
+        value_t v = val_uint(2, memory_read_uint16(addr));
+        v.flags |= VAL_HEX;
+        return v;
+    }
+    case 4: {
+        value_t v = val_uint(4, memory_read_uint32(addr));
+        v.flags |= VAL_HEX;
+        return v;
+    }
+    default: {
+        if (sz <= 0 || sz > 256)
+            return val_err("debug.mac.globals.read: unexpected entry size %d", sz);
+        uint8_t buf[256];
+        for (int i = 0; i < sz; i++)
+            buf[i] = memory_read_uint8(addr + (uint32_t)i);
+        return val_bytes(buf, (size_t)sz);
+    }
+    }
+}
+
+static value_t method_mac_globals_write(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)self;
+    (void)m;
+    if (argc < 2 || argv[0].kind != V_STRING || !argv[0].s)
+        return val_err("debug.mac.globals.write: expected (name, value)");
+    int idx = mac_global_lookup(argv[0].s);
+    if (idx < 0)
+        return val_err("debug.mac.globals.write: unknown global '%s'", argv[0].s);
+    bool ok = true;
+    uint64_t v = val_as_u64(&argv[1], &ok);
+    if (!ok)
+        return val_err("debug.mac.globals.write: value is not numeric");
+    uint32_t addr = mac_global_vars[idx].address;
+    int sz = mac_global_vars[idx].size;
+    switch (sz) {
+    case 1:
+        memory_write_uint8(addr, (uint8_t)v);
+        break;
+    case 2:
+        memory_write_uint16(addr, (uint16_t)v);
+        break;
+    case 4:
+        memory_write_uint32(addr, (uint32_t)v);
+        break;
+    default:
+        return val_err("debug.mac.globals.write: '%s' is %d bytes (only 1/2/4 supported)", argv[0].s, sz);
+    }
+    return val_none();
+}
+
+static value_t method_mac_globals_address(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)self;
+    (void)m;
+    if (argc < 1 || argv[0].kind != V_STRING || !argv[0].s)
+        return val_err("debug.mac.globals.address: expected (name)");
+    int idx = mac_global_lookup(argv[0].s);
+    if (idx < 0)
+        return val_err("debug.mac.globals.address: unknown global '%s'", argv[0].s);
+    value_t v = val_uint(4, mac_global_vars[idx].address);
+    v.flags |= VAL_HEX;
+    return v;
+}
+
+static value_t method_mac_globals_list(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)self;
+    (void)m;
+    (void)argc;
+    (void)argv;
+    // Build a deduplicated list of names (the table has a few historical
+    // duplicates such as TimeSCSIDB; the legacy resolver kept first-found).
+    value_t *items = (value_t *)calloc(mac_global_vars_count, sizeof(value_t));
+    if (!items)
+        return val_err("debug.mac.globals.list: out of memory");
+    size_t out = 0;
+    for (size_t i = 0; i < mac_global_vars_count; i++) {
+        const char *nm = mac_global_vars[i].name;
+        if (!nm)
+            continue;
+        bool dup = false;
+        for (size_t j = 0; j < out; j++) {
+            if (items[j].kind == V_STRING && items[j].s && strcmp(items[j].s, nm) == 0) {
+                dup = true;
+                break;
+            }
+        }
+        if (dup)
+            continue;
+        items[out++] = val_str(nm);
+    }
+    return val_list(items, out);
+}
+
+static const arg_decl_t mac_globals_name_arg[] = {
+    {.name = "name", .kind = V_STRING, .doc = "Mac low-memory global symbol (e.g. \"Ticks\")"},
+};
+static const arg_decl_t mac_globals_write_args[] = {
+    {.name = "name", .kind = V_STRING, .doc = "Mac low-memory global symbol"},
+    {.name = "value", .kind = V_UINT, .flags = VAL_HEX, .doc = "value to write"},
+};
+
+static const member_t debug_mac_globals_members[] = {
+    {.kind = M_METHOD,
+     .name = "read",
+     .doc = "Read a Mac low-memory global by name (uint for 1/2/4-byte; bytes for larger)",
+     .method = {.args = mac_globals_name_arg, .nargs = 1, .result = V_UINT, .fn = method_mac_globals_read}   },
+    {.kind = M_METHOD,
+     .name = "write",
+     .doc = "Write a 1/2/4-byte Mac low-memory global by name",
+     .method = {.args = mac_globals_write_args, .nargs = 2, .result = V_NONE, .fn = method_mac_globals_write}},
+    {.kind = M_METHOD,
+     .name = "address",
+     .doc = "Return the address of a named Mac low-memory global",
+     .method = {.args = mac_globals_name_arg, .nargs = 1, .result = V_UINT, .fn = method_mac_globals_address}},
+    {.kind = M_METHOD,
+     .name = "list",
+     .doc = "List all known Mac low-memory global names",
+     .method = {.args = NULL, .nargs = 0, .result = V_LIST, .fn = method_mac_globals_list}                   },
+};
+
+const class_desc_t debug_mac_globals_class = {
+    .name = "globals",
+    .members = debug_mac_globals_members,
+    .n_members = sizeof(debug_mac_globals_members) / sizeof(debug_mac_globals_members[0]),
+};
+
+// === debug.mac — Mac-specific debugging utilities ===========================
+//
+// Holds `globals` as a child and exposes lookups for atrap names. More
+// Mac-specific facets (process info, target backtrace, …) belong here
+// in time; for now this covers the typed-bridge needs.
+
+static value_t method_mac_atrap(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)self;
+    (void)m;
+    if (argc < 1)
+        return val_err("debug.mac.atrap: expected (opcode)");
+    bool ok = true;
+    uint64_t op = val_as_u64(&argv[0], &ok);
+    if (!ok)
+        return val_err("debug.mac.atrap: opcode must be numeric");
+    return val_str(macos_atrap_name((uint16_t)op));
+}
+
+static const arg_decl_t mac_atrap_args[] = {
+    {.name = "opcode", .kind = V_UINT, .flags = VAL_HEX, .doc = "A-trap opcode (e.g. 0xA86E)"},
+};
+
+static const member_t debug_mac_members[] = {
+    {.kind = M_METHOD,
+     .name = "atrap",
+     .doc = "Resolve an A-trap opcode to its symbolic name",
+     .method = {.args = mac_atrap_args, .nargs = 1, .result = V_STRING, .fn = method_mac_atrap}},
+};
+
+const class_desc_t debug_mac_class = {
+    .name = "mac",
+    .members = debug_mac_members,
+    .n_members = sizeof(debug_mac_members) / sizeof(debug_mac_members[0]),
 };
 
 // --- screen ---------------------------------------------------------------

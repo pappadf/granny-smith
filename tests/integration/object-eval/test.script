@@ -19,10 +19,11 @@ cpu.a7
 cpu
 scheduler
 
-# M3 mac globals — auto-populated from mac_globals_data.c.
-mac.MBState
-mac.Ticks
-mac.ROMBase
+# Mac low-memory globals via debug.mac.globals.read — value lookup
+# delegates to mac_globals_data.c.
+echo $(debug.mac.globals.read("MBState"))
+echo $(debug.mac.globals.read("Ticks"))
+echo $(debug.mac.globals.read("ROMBase"))
 cpu.ccr
 cpu.sp
 

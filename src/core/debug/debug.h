@@ -86,9 +86,11 @@ struct debug {
     // Platform-specific assertion callback (e.g., for test integration)
     void (*assertion_callback)(const char *expr, const char *file, int line, const char *func);
     // Object-tree binding — lifetime tied to debug_init / debug_cleanup.
-    struct object *debugger_object;
+    struct object *object; // root `debug` node
     struct object *bp_collection_object;
     struct object *lp_collection_object;
+    struct object *mac_object; // debug.mac
+    struct object *mac_globals_object; // debug.mac.globals
 };
 
 struct debug;
@@ -148,7 +150,7 @@ int save_framebuffer_as_png(const uint8_t *fb, const char *filename);
 
 // === M6: object-model accessors ============================================
 //
-// debugger.{breakpoints,logpoints}.add(...) / .N.remove() and the
+// debug.{breakpoints,logpoints}.add(...) / .N.remove() and the
 // per-entry attribute getters live in src/core/object/debug_classes.c.
 // They reach into the debug_t lists via these accessors so the
 // debug.c internals stay private (struct breakpoint / struct logpoint

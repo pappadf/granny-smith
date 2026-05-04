@@ -2,21 +2,19 @@
 // Copyright (c) pappadf
 
 // gs_classes.c
-// Stub class registry for the object-model rollout. M2 stood up
-// cpu/memory/scheduler/machine/shell/storage with read-only
-// attributes; M3 extends:
-//   - More CPU registers (ccr, sp, usp, ssp, msp, vbr).
-//   - cpu.fpu child class with fp0..fp7, fpcr, fpsr, fpiar (when FPU
-//     is present on the active machine).
-//   - `mac` root child auto-populated from mac_globals_data.c (471
-//     entries, V_UINT/V_BYTES per size column).
-//   - `shell.alias` child object with add / remove / list methods.
-//   - Built-in alias registration at install time:
-//       cpu / fpu register short forms ($pc, $d0, $fpcr, …)
-//       all 471 mac globals ($MBState, $Ticks, $ROMBase, …)
+// Object-model install/uninstall orchestrator + a few process-/cfg-
+// scoped class definitions that have no per-subsystem owner:
+//   - scheduler / shell / storage namespace stubs
+//   - lp synthetic class (logpoint fire context)
+//   - shell.alias methods
+//   - root-level methods (cp / peeler / rom_load / hd_attach / …)
+//   - top-level introspection (objects/attributes/methods/help/print/time)
+//   - debug-thin wrapper methods used by the typed bridge
+//   - built-in cpu / fpu register aliases (e.g. $pc, $d0, $fpcr)
 //
-// Real per-peripheral classes (cpu setters, scc, scsi, …) land in
-// M3+ per the milestone plan.
+// Subsystem-owned classes (cpu/fpu/memory/scc/rtc/via/scsi/floppy/
+// sound/appletalk/debug/mouse/keyboard/screen/vfs/find/storage_image)
+// live in their owning modules and self-register via *_init / *_delete.
 
 #include "gs_classes.h"
 
@@ -78,117 +76,6 @@ extern const class_desc_t storage_class_real; // src/core/storage/storage.c
 extern const class_desc_t storage_image_class; // src/core/storage/storage.c
 extern const class_desc_t storage_images_collection_class; // src/core/storage/storage.c
 extern const class_desc_t shell_alias_class; // src/core/object/alias.c
-
-// === Mac low-memory globals (auto-populated) ================================
-//
-// Reads the existing mac_global_vars[] table from
-// src/core/debug/mac_globals_data.c at install time, allocates a
-// matching member_t[] array, and points each member's user_data at
-// the table row. One shared getter dispatches by row.
-
-extern struct {
-    const char *name;
-    uint32_t address;
-    int size;
-    const char *description;
-} mac_global_vars[];
-extern const size_t mac_global_vars_count;
-
-// Generic getter for any mac global. user_data is the entry index
-// into mac_global_vars[]. Size column 1/2/4 → V_UINT; otherwise the
-// full buffer is read as V_BYTES (proposal §5.5 strict-improvement
-// rule — old code truncated 8/10/16-byte buffers to a u32).
-static value_t attr_mac_global(struct object *self, const member_t *m) {
-    (void)self;
-    if (!m || !m->attr.user_data)
-        return val_err("mac member missing user_data");
-    size_t idx = (size_t)(uintptr_t)m->attr.user_data;
-    if (idx >= mac_global_vars_count)
-        return val_err("mac index %zu out of range", idx);
-    uint32_t addr = mac_global_vars[idx].address;
-    int sz = mac_global_vars[idx].size;
-    switch (sz) {
-    case 1: {
-        value_t v = val_uint(1, memory_read_uint8(addr));
-        v.flags |= VAL_HEX;
-        return v;
-    }
-    case 2: {
-        value_t v = val_uint(2, memory_read_uint16(addr));
-        v.flags |= VAL_HEX;
-        return v;
-    }
-    case 4: {
-        value_t v = val_uint(4, memory_read_uint32(addr));
-        v.flags |= VAL_HEX;
-        return v;
-    }
-    default: {
-        // Read `sz` bytes via memory_read_uint8 — this respects
-        // overlay / ROM mapping just like the existing $Symbol path.
-        if (sz <= 0 || sz > 256)
-            return val_err("unexpected mac entry size %d", sz);
-        uint8_t buf[256];
-        for (int i = 0; i < sz; i++)
-            buf[i] = memory_read_uint8(addr + (uint32_t)i);
-        return val_bytes(buf, (size_t)sz);
-    }
-    }
-}
-
-static member_t *g_mac_members = NULL; // heap-allocated 471-entry table
-static class_desc_t g_mac_class = {0};
-
-static int build_mac_class(void) {
-    if (g_mac_members)
-        return 0;
-    size_t n = mac_global_vars_count;
-    g_mac_members = (member_t *)calloc(n, sizeof(member_t));
-    if (!g_mac_members)
-        return -1;
-    size_t out = 0;
-    for (size_t i = 0; i < n; i++) {
-        const char *nm = mac_global_vars[i].name;
-        if (!nm)
-            continue;
-        // Dedupe by name. mac_globals_data.c carries a handful of
-        // historical duplicates (e.g. TimeSCSIDB at $B24 and $DA6);
-        // the legacy resolver matched on first-found, so we mirror
-        // that behavior — first entry wins, later ones drop.
-        bool dup = false;
-        for (size_t j = 0; j < out; j++) {
-            if (g_mac_members[j].name && strcmp(g_mac_members[j].name, nm) == 0) {
-                dup = true;
-                break;
-            }
-        }
-        if (dup)
-            continue;
-        g_mac_members[out].kind = M_ATTR;
-        g_mac_members[out].name = nm;
-        g_mac_members[out].doc = mac_global_vars[i].description;
-        g_mac_members[out].flags = VAL_RO | VAL_HEX | VAL_VOLATILE;
-        // Size 1/2/4 → V_UINT; everything else → V_BYTES. Matches the
-        // proposal §5.5 mapping table.
-        int sz = mac_global_vars[i].size;
-        g_mac_members[out].attr.type = (sz == 1 || sz == 2 || sz == 4) ? V_UINT : V_BYTES;
-        g_mac_members[out].attr.get = attr_mac_global;
-        g_mac_members[out].attr.set = NULL;
-        g_mac_members[out].attr.user_data = (const void *)(uintptr_t)i;
-        out++;
-    }
-    g_mac_class.name = "mac";
-    g_mac_class.members = g_mac_members;
-    g_mac_class.n_members = out;
-    return 0;
-}
-
-static void free_mac_class(void) {
-    free(g_mac_members);
-    g_mac_members = NULL;
-    g_mac_class.members = NULL;
-    g_mac_class.n_members = 0;
-}
 
 // === Scheduler / Shell / Storage stubs ======================================
 
@@ -2273,21 +2160,6 @@ static void register_fpu_aliases(void) {
     }
 }
 
-static void register_mac_aliases(void) {
-    for (size_t i = 0; i < mac_global_vars_count; i++) {
-        if (!mac_global_vars[i].name)
-            continue;
-        char path[128];
-        snprintf(path, sizeof(path), "mac.%s", mac_global_vars[i].name);
-        char err[160];
-        if (alias_register_builtin(mac_global_vars[i].name, path, err, sizeof(err)) < 0) {
-            // Skip silently on collision: a later milestone may rename.
-            // We log once per startup for diagnostics.
-            fprintf(stderr, "gs_classes: skipping mac alias '$%s': %s\n", mac_global_vars[i].name, err);
-        }
-    }
-}
-
 // === Install / uninstall ====================================================
 //
 // Lifecycle invariant: stubs are tied to a specific `cfg` pointer. Two
@@ -2381,8 +2253,6 @@ void gs_classes_install(struct config *cfg) {
     /* lp   */ attach_stub(NULL, &lp_class_desc, cfg, "lp");
 
     // mac is always attached — readers tolerate uninitialised RAM.
-    if (build_mac_class() == 0)
-        attach_stub(NULL, &g_mac_class, cfg, "mac");
 
     // shell.alias child object.
     if (shell_obj)
@@ -2399,7 +2269,6 @@ void gs_classes_install(struct config *cfg) {
     register_cpu_aliases();
     if (cfg && cfg->cpu && cfg->cpu->fpu)
         register_fpu_aliases();
-    register_mac_aliases();
 }
 
 void gs_classes_uninstall(void) {
@@ -2421,7 +2290,6 @@ void gs_classes_uninstall(void) {
     // call after uninstall doesn't surface stale members.
     object_root_set_class(NULL);
     alias_reset();
-    free_mac_class();
     g_installed_cfg = NULL;
 }
 
