@@ -44,7 +44,6 @@
 #include "object.h"
 #include "peeler.h"
 #include "peeler_shell.h"
-#include "rom.h"
 #include "rtc.h"
 #include "scc.h"
 #include "scheduler.h"
@@ -347,56 +346,6 @@ static value_t method_root_fd_probe(struct object *self, const member_t *m, int 
     return val_bool(system_probe_floppy(argv[0].s ? argv[0].s : "") == 0);
 }
 
-// rom_* / vrom_* — wrap the `rom probe|validate` / `vrom probe|validate`
-// subcommand forms. Each takes a single path argument. Two helpers
-// codify the two legacy return conventions: cmd_int (0 = success) for
-// the *_probe family and cmd_bool (1 = valid) for the *_validate family.
-// `which` is 0 for rom, 1 for vrom.
-static int64_t call_rom_subcmd(int which, const char *sub, int argc, const value_t *argv) {
-    if (argc < 1 || argv[0].kind != V_STRING)
-        return -2;
-    const char *cmd = which ? "vrom" : "rom";
-    char *fake_argv[] = {(char *)cmd, (char *)sub, (char *)(argv[0].s ? argv[0].s : "")};
-    return (int64_t)(which ? cmd_vrom(3, fake_argv) : cmd_rom(3, fake_argv));
-}
-
-static value_t method_root_rom_probe(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
-    // No-arg form: probe the currently loaded ROM.
-    if (argc < 1 || argv[0].kind != V_STRING || !argv[0].s || !*argv[0].s) {
-        char *fake_argv[] = {"rom", "probe"};
-        return val_bool(cmd_rom_probe(2, fake_argv, 2) == 0);
-    }
-    char *fake_argv[] = {"rom", "probe", (char *)argv[0].s};
-    return val_bool(cmd_rom_probe(3, fake_argv, 2) == 0);
-}
-static value_t method_root_rom_validate(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
-    int64_t rc = call_rom_subcmd(0, "validate", argc, argv);
-    if (rc == -2)
-        return val_err("rom_validate: expected (path)");
-    // cmd_bool semantics: 1 = valid.
-    return val_bool(rc == 1);
-}
-static value_t method_root_vrom_probe(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
-    if (argc < 1 || argv[0].kind != V_STRING)
-        return val_err("vrom_probe: expected (path)");
-    char *fake_argv[] = {"vrom", "probe", (char *)(argv[0].s ? argv[0].s : "")};
-    return val_bool(cmd_vrom(3, fake_argv) == 0);
-}
-static value_t method_root_vrom_validate(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
-    int64_t rc = call_rom_subcmd(1, "validate", argc, argv);
-    if (rc == -2)
-        return val_err("vrom_validate: expected (path)");
-    return val_bool(rc == 1);
-}
-
 // `quit()` — request emulator shutdown. Headless sets the script
 // quit flag and stops the scheduler; WASM is a no-op (the browser
 // owns the lifecycle).
@@ -523,14 +472,6 @@ static value_t method_root_checkpoint_save(struct object *self, const member_t *
     return val_bool(cmd_save_checkpoint(fake_argc, fake_argv) == 0);
 }
 
-static value_t method_root_register_machine(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
-    if (argc < 2 || argv[0].kind != V_STRING || argv[1].kind != V_STRING)
-        return val_err("register_machine: expected (id, created)");
-    return val_bool(gs_register_machine(argv[0].s ? argv[0].s : "", argv[1].s ? argv[1].s : "") == 0);
-}
-
 // `auto_checkpoint` attribute (V_BOOL, rw) — exposes the WASM
 // background-checkpoint loop's enabled flag. Headless's weak defaults
 // stub out (no auto-checkpoint there), so reads return false and
@@ -551,60 +492,6 @@ static value_t attr_auto_checkpoint_set(struct object *self, const member_t *m, 
 }
 
 // === ROM / disk-mount root methods (M10b — drop area) ======================
-
-// `rom_checksum(path)` — return the 8-char hex checksum of a ROM file,
-// or empty string when the file doesn't validate. Mirrors the legacy
-// `rom checksum` command's printed output as a typed return value, so
-// JS can avoid runCommandJSON + stdout-parsing.
-static value_t method_root_rom_checksum(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
-    if (argc < 1 || argv[0].kind != V_STRING || !argv[0].s)
-        return val_err("rom_checksum: expected (path)");
-    FILE *f = fopen(argv[0].s, "rb");
-    if (!f)
-        return val_str("");
-    if (fseek(f, 0, SEEK_END) != 0) {
-        fclose(f);
-        return val_str("");
-    }
-    long sz = ftell(f);
-    if (sz <= 0 || sz > 2 * 1024 * 1024) {
-        fclose(f);
-        return val_str("");
-    }
-    if (fseek(f, 0, SEEK_SET) != 0) {
-        fclose(f);
-        return val_str("");
-    }
-    uint8_t *buf = (uint8_t *)malloc((size_t)sz);
-    if (!buf) {
-        fclose(f);
-        return val_str("");
-    }
-    size_t got = fread(buf, 1, (size_t)sz, f);
-    fclose(f);
-    if (got != (size_t)sz) {
-        free(buf);
-        return val_str("");
-    }
-    uint32_t cksum = 0;
-    const rom_info_t *info = rom_identify_data(buf, (size_t)sz, &cksum);
-    free(buf);
-    if (!info)
-        return val_str("");
-    char hex[16];
-    snprintf(hex, sizeof(hex), "%08X", cksum);
-    return val_str(hex);
-}
-
-static value_t method_root_rom_load(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
-    if (argc < 1 || argv[0].kind != V_STRING)
-        return val_err("rom_load: expected (path)");
-    return val_bool(cmd_rom_load(argv[0].s ? argv[0].s : "") == 0);
-}
 
 // `fd_insert(path, slot, writable)` — mount a floppy image into one of
 // the 1–2 floppy drives. Returns true on successful insert.
@@ -634,16 +521,6 @@ static value_t method_root_fd_insert(struct object *self, const member_t *m, int
 }
 
 // === Boot/setup root methods (M10b — url-media + config-dialog area) =======
-
-// `vrom_load(path)` — set the video-ROM path for the next machine init.
-static value_t method_root_vrom_load(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
-    if (argc < 1 || argv[0].kind != V_STRING)
-        return val_err("vrom_load: expected (path)");
-    char *fake_argv[] = {"vrom", "load", (char *)(argv[0].s ? argv[0].s : "")};
-    return val_bool(cmd_vrom(3, fake_argv) == 0);
-}
 
 // `hd_attach(path, id)` — attach a hard-disk image at the given SCSI id.
 static value_t method_root_hd_attach(struct object *self, const member_t *m, int argc, const value_t *argv) {
@@ -1092,34 +969,6 @@ static value_t method_root_fd_validate(struct object *self, const member_t *m, i
     return val_str(density);
 }
 
-// `setup_machine(model, ram_kb)` — run the legacy `setup --model X
-// --ram Y` command that primes the next `rom load` for a specific
-// machine profile. Renamed in the gsEval surface so the top-level
-// namespace doesn't grow a generic `setup` verb.
-static value_t method_root_setup_machine(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
-    if (argc < 1 || argv[0].kind != V_STRING)
-        return val_err("setup_machine: expected (model, [ram_kb])");
-    bool ok = false;
-    int64_t ram = (argc >= 2) ? (int64_t)val_as_i64(&argv[1], &ok) : 0;
-    if (!ok && argc >= 2 && argv[1].kind == V_UINT)
-        ram = (int64_t)argv[1].u;
-    char line[256];
-    int n;
-    if (argc >= 2)
-        n = snprintf(line, sizeof(line), "setup --model %s --ram %lld", argv[0].s ? argv[0].s : "", (long long)ram);
-    else
-        n = snprintf(line, sizeof(line), "setup --model %s", argv[0].s ? argv[0].s : "");
-    if (n < 0 || (size_t)n >= sizeof(line))
-        return val_err("setup_machine: arguments too long");
-    char *targv[32];
-    int targc = tokenize(line, targv, 32);
-    if (targc <= 0)
-        return val_err("setup_machine: tokenisation failed");
-    return val_bool(cmd_setup(targc, targv) == 0);
-}
-
 // `download(path)` — trigger a browser file download. Routes to the
 // platform-specific gs_download (WASM streams via Blob+anchor; headless
 // prints a "not supported" stub).
@@ -1138,22 +987,12 @@ static const arg_decl_t root_peeler_args[] = {
 static const arg_decl_t root_path_arg[] = {
     {.name = "path", .kind = V_STRING, .doc = "File path"},
 };
-static const arg_decl_t root_path_arg_optional[] = {
-    {.name = "path",
-     .kind = V_STRING,
-     .flags = OBJ_ARG_OPTIONAL,
-     .doc = "File path; empty falls back to the currently-loaded ROM"},
-};
 static const arg_decl_t root_hd_attach_args[] = {
     {.name = "path", .kind = V_STRING, .doc = "HD image path"},
     {.name = "id", .kind = V_INT, .flags = OBJ_ARG_OPTIONAL, .doc = "SCSI bus index 0-6 (default 0)"},
 };
 static const arg_decl_t root_cdrom_id_arg[] = {
     {.name = "id", .kind = V_INT, .flags = OBJ_ARG_OPTIONAL, .doc = "SCSI id 0-6 (default 3)"},
-};
-static const arg_decl_t root_setup_machine_args[] = {
-    {.name = "model", .kind = V_STRING, .doc = "Machine model id (plus / se30 / iicx)"},
-    {.name = "ram_kb", .kind = V_UINT, .flags = OBJ_ARG_OPTIONAL, .doc = "RAM size in KB"},
 };
 static const arg_decl_t root_checkpoint_load_args[] = {
     {.name = "path",
@@ -1164,10 +1003,6 @@ static const arg_decl_t root_checkpoint_load_args[] = {
 static const arg_decl_t root_checkpoint_save_args[] = {
     {.name = "path", .kind = V_STRING, .doc = "Checkpoint output path"},
     {.name = "mode", .kind = V_STRING, .flags = OBJ_ARG_OPTIONAL, .doc = "Optional 'content' or 'refs' mode"},
-};
-static const arg_decl_t root_register_machine_args[] = {
-    {.name = "id",      .kind = V_STRING, .doc = "Machine identity (UUID-like)"},
-    {.name = "created", .kind = V_STRING, .doc = "Creation timestamp"          },
 };
 static const arg_decl_t root_fd_insert_args[] = {
     {.name = "path", .kind = V_STRING, .doc = "Floppy image path"},
@@ -1191,27 +1026,27 @@ static const member_t emu_root_members[] = {
     {.kind = M_METHOD,
      .name = "objects",
      .doc = "List child object names at the given path (or root)",
-     .method = {.args = root_path_args, .nargs = 1, .result = V_LIST, .fn = method_root_objects}                     },
+     .method = {.args = root_path_args, .nargs = 1, .result = V_LIST, .fn = method_root_objects}                   },
     {.kind = M_METHOD,
      .name = "attributes",
      .doc = "List attribute names of the resolved object's class",
-     .method = {.args = root_path_args, .nargs = 1, .result = V_LIST, .fn = method_root_attributes}                  },
+     .method = {.args = root_path_args, .nargs = 1, .result = V_LIST, .fn = method_root_attributes}                },
     {.kind = M_METHOD,
      .name = "methods",
      .doc = "List method names of the resolved object's class",
-     .method = {.args = root_path_args, .nargs = 1, .result = V_LIST, .fn = method_root_methods}                     },
+     .method = {.args = root_path_args, .nargs = 1, .result = V_LIST, .fn = method_root_methods}                   },
     {.kind = M_METHOD,
      .name = "help",
      .doc = "Return the doc string of a resolved member (or class name)",
-     .method = {.args = root_help_args, .nargs = 1, .result = V_STRING, .fn = method_root_help}                      },
+     .method = {.args = root_help_args, .nargs = 1, .result = V_STRING, .fn = method_root_help}                    },
     {.kind = M_METHOD,
      .name = "time",
      .doc = "Wall-clock seconds since the Unix epoch",
-     .method = {.args = NULL, .nargs = 0, .result = V_UINT, .fn = method_root_time}                                  },
+     .method = {.args = NULL, .nargs = 0, .result = V_UINT, .fn = method_root_time}                                },
     {.kind = M_METHOD,
      .name = "print",
      .doc = "Format a value as a string for display",
-     .method = {.args = root_print_args, .nargs = 1, .result = V_STRING, .fn = method_root_print}                    },
+     .method = {.args = root_print_args, .nargs = 1, .result = V_STRING, .fn = method_root_print}                  },
     // Legacy-command wrappers (M8 slice 4 — proposal §5.10).
     // Side-effect wrappers return V_BOOL (true on dispatch success) so
     // the M10b migrators can branch on the result without re-deriving
@@ -1219,155 +1054,119 @@ static const member_t emu_root_members[] = {
     {.kind = M_METHOD,
      .name = "peeler",
      .doc = "Extract a Mac archive (.sit/.cpt/.hqx/.bin)",
-     .method = {.args = root_peeler_args, .nargs = 2, .result = V_BOOL, .fn = method_root_peeler}                    },
+     .method = {.args = root_peeler_args, .nargs = 2, .result = V_BOOL, .fn = method_root_peeler}                  },
     {.kind = M_METHOD,
      .name = "peeler_probe",
      .doc = "True if a file is a peeler-supported archive",
-     .method = {.args = root_path_arg, .nargs = 1, .result = V_BOOL, .fn = method_root_peeler_probe}                 },
-    {.kind = M_METHOD,
-     .name = "rom_probe",
-     .doc = "True if a file is a recognised ROM image (no arg = is a ROM loaded?)",
-     .method = {.args = root_path_arg_optional, .nargs = 1, .result = V_BOOL, .fn = method_root_rom_probe}           },
-    {.kind = M_METHOD,
-     .name = "rom_validate",
-     .doc = "Verify a ROM file's checksum and recognised model",
-     .method = {.args = root_path_arg, .nargs = 1, .result = V_BOOL, .fn = method_root_rom_validate}                 },
-    {.kind = M_METHOD,
-     .name = "vrom_probe",
-     .doc = "True if a file is a recognised video-ROM image",
-     .method = {.args = root_path_arg, .nargs = 1, .result = V_BOOL, .fn = method_root_vrom_probe}                   },
-    {.kind = M_METHOD,
-     .name = "vrom_validate",
-     .doc = "Verify a video-ROM file's signature",
-     .method = {.args = root_path_arg, .nargs = 1, .result = V_BOOL, .fn = method_root_vrom_validate}                },
+     .method = {.args = root_path_arg, .nargs = 1, .result = V_BOOL, .fn = method_root_peeler_probe}               },
     {.kind = M_METHOD,
      .name = "fd_probe",
      .doc = "True if a file is a recognised floppy-disk image",
-     .method = {.args = root_path_arg, .nargs = 1, .result = V_BOOL, .fn = method_root_fd_probe}                     },
+     .method = {.args = root_path_arg, .nargs = 1, .result = V_BOOL, .fn = method_root_fd_probe}                   },
     {.kind = M_METHOD,
      .name = "quit",
      .doc = "Exit the emulator (asks the legacy quit command to end the run)",
-     .method = {.args = NULL, .nargs = 0, .result = V_NONE, .fn = method_root_quit}                                  },
+     .method = {.args = NULL, .nargs = 0, .result = V_NONE, .fn = method_root_quit}                                },
     {.kind = M_METHOD,
      .name = "assert",
      .doc = "Assert that a predicate is truthy; abort the script otherwise",
-     .method = {.args = NULL, .nargs = 2, .result = V_BOOL, .fn = method_root_assert}                                },
+     .method = {.args = NULL, .nargs = 2, .result = V_BOOL, .fn = method_root_assert}                              },
     {.kind = M_METHOD,
      .name = "echo",
      .doc = "Print arguments separated by spaces (final newline appended)",
-     .method = {.args = NULL, .nargs = 0, .result = V_BOOL, .fn = method_root_echo}                                  },
+     .method = {.args = NULL, .nargs = 0, .result = V_BOOL, .fn = method_root_echo}                                },
     // Checkpoint / runtime-state wrappers (M10b — checkpoint area).
     {.kind = M_METHOD,
      .name = "checkpoint_probe",
      .doc = "True if a valid checkpoint exists for the active machine",
-     .method = {.args = NULL, .nargs = 0, .result = V_BOOL, .fn = method_root_checkpoint_probe}                      },
+     .method = {.args = NULL, .nargs = 0, .result = V_BOOL, .fn = method_root_checkpoint_probe}                    },
     {.kind = M_METHOD,
      .name = "checkpoint_clear",
      .doc = "Remove all checkpoint files for the active machine",
-     .method = {.args = NULL, .nargs = 0, .result = V_BOOL, .fn = method_root_checkpoint_clear}                      },
+     .method = {.args = NULL, .nargs = 0, .result = V_BOOL, .fn = method_root_checkpoint_clear}                    },
     {.kind = M_METHOD,
      .name = "checkpoint_load",
      .doc = "Load a checkpoint (auto-loads latest when path is omitted)",
-     .method = {.args = root_checkpoint_load_args, .nargs = 1, .result = V_BOOL, .fn = method_root_checkpoint_load}  },
+     .method = {.args = root_checkpoint_load_args, .nargs = 1, .result = V_BOOL, .fn = method_root_checkpoint_load}},
     {.kind = M_METHOD,
      .name = "checkpoint_save",
      .doc = "Save the current machine state to a checkpoint file",
-     .method = {.args = root_checkpoint_save_args, .nargs = 2, .result = V_BOOL, .fn = method_root_checkpoint_save}  },
-    {.kind = M_METHOD,
-     .name = "register_machine",
-     .doc = "Register the active machine identity (must precede any image open)",
-     .method = {.args = root_register_machine_args, .nargs = 2, .result = V_BOOL, .fn = method_root_register_machine}},
+     .method = {.args = root_checkpoint_save_args, .nargs = 2, .result = V_BOOL, .fn = method_root_checkpoint_save}},
     {.kind = M_ATTR,
      .name = "auto_checkpoint",
      .doc = "Enable/disable the background auto-checkpoint loop (WASM-only)",
-     .attr = {.type = V_BOOL, .get = attr_auto_checkpoint_get, .set = attr_auto_checkpoint_set}                      },
+     .attr = {.type = V_BOOL, .get = attr_auto_checkpoint_get, .set = attr_auto_checkpoint_set}                    },
     // Drag-drop boot helpers (M10b — drop area).
-    {.kind = M_METHOD,
-     .name = "rom_checksum",
-     .doc = "Return the 8-char hex checksum of a ROM file (empty on invalid)",
-     .method = {.args = root_path_arg, .nargs = 1, .result = V_STRING, .fn = method_root_rom_checksum}               },
-    {.kind = M_METHOD,
-     .name = "rom_load",
-     .doc = "Load a ROM file and create the matching machine",
-     .method = {.args = root_path_arg, .nargs = 1, .result = V_BOOL, .fn = method_root_rom_load}                     },
     {.kind = M_METHOD,
      .name = "fd_insert",
      .doc = "Insert a floppy image into a drive slot",
-     .method = {.args = root_fd_insert_args, .nargs = 3, .result = V_BOOL, .fn = method_root_fd_insert}              },
+     .method = {.args = root_fd_insert_args, .nargs = 3, .result = V_BOOL, .fn = method_root_fd_insert}            },
     // url-media + config-dialog + ui boot helpers (M10b — finish line).
-    {.kind = M_METHOD,
-     .name = "vrom_load",
-     .doc = "Set the video-ROM path for the next machine init",
-     .method = {.args = root_path_arg, .nargs = 1, .result = V_BOOL, .fn = method_root_vrom_load}                    },
     {.kind = M_METHOD,
      .name = "hd_attach",
      .doc = "Attach a hard-disk image at the given SCSI id",
-     .method = {.args = root_hd_attach_args, .nargs = 2, .result = V_BOOL, .fn = method_root_hd_attach}              },
+     .method = {.args = root_hd_attach_args, .nargs = 2, .result = V_BOOL, .fn = method_root_hd_attach}            },
     {.kind = M_METHOD,
      .name = "hd_validate",
      .doc = "True if the file is a recognised hard-disk image",
-     .method = {.args = root_path_arg, .nargs = 1, .result = V_BOOL, .fn = method_root_hd_validate}                  },
+     .method = {.args = root_path_arg, .nargs = 1, .result = V_BOOL, .fn = method_root_hd_validate}                },
     {.kind = M_METHOD,
      .name = "cdrom_validate",
      .doc = "True if the file is a recognised CD-ROM image",
-     .method = {.args = root_path_arg, .nargs = 1, .result = V_BOOL, .fn = method_root_cdrom_validate}               },
+     .method = {.args = root_path_arg, .nargs = 1, .result = V_BOOL, .fn = method_root_cdrom_validate}             },
     {.kind = M_METHOD,
      .name = "cdrom_eject",
      .doc = "Eject the CD-ROM at the given SCSI id (default 3)",
-     .method = {.args = root_cdrom_id_arg, .nargs = 1, .result = V_BOOL, .fn = method_root_cdrom_eject}              },
+     .method = {.args = root_cdrom_id_arg, .nargs = 1, .result = V_BOOL, .fn = method_root_cdrom_eject}            },
     {.kind = M_METHOD,
      .name = "cdrom_info",
      .doc = "Print info for the CD-ROM at the given SCSI id (default 3)",
-     .method = {.args = root_cdrom_id_arg, .nargs = 1, .result = V_BOOL, .fn = method_root_cdrom_info}               },
+     .method = {.args = root_cdrom_id_arg, .nargs = 1, .result = V_BOOL, .fn = method_root_cdrom_info}             },
     {.kind = M_METHOD,
      .name = "fd_validate",
      .doc = "Floppy density tag (\"400K\" / \"800K\" / \"1.4MB\") or empty if unrecognised",
-     .method = {.args = root_path_arg, .nargs = 1, .result = V_STRING, .fn = method_root_fd_validate}                },
-    {.kind = M_METHOD,
-     .name = "setup_machine",
-     .doc = "Prime the next `rom_load` for a specific machine model",
-     .method = {.args = root_setup_machine_args, .nargs = 2, .result = V_BOOL, .fn = method_root_setup_machine}      },
+     .method = {.args = root_path_arg, .nargs = 1, .result = V_STRING, .fn = method_root_fd_validate}              },
     {.kind = M_METHOD,
      .name = "download",
      .doc = "Trigger a browser file download (WASM-only)",
-     .method = {.args = root_path_arg, .nargs = 1, .result = V_BOOL, .fn = method_root_download}                     },
+     .method = {.args = root_path_arg, .nargs = 1, .result = V_BOOL, .fn = method_root_download}                   },
     {.kind = M_METHOD,
      .name = "cdrom_attach",
      .doc = "Attach a CD-ROM image to the SCSI bus",
-     .method = {.args = root_path_arg, .nargs = 1, .result = V_BOOL, .fn = method_root_cdrom_attach}                 },
+     .method = {.args = root_path_arg, .nargs = 1, .result = V_BOOL, .fn = method_root_cdrom_attach}               },
     {.kind = M_METHOD,
      .name = "hd_models",
      .doc = "Return the known SCSI HD model catalog as a JSON array string",
-     .method = {.args = NULL, .nargs = 0, .result = V_STRING, .fn = method_root_hd_models}                           },
+     .method = {.args = NULL, .nargs = 0, .result = V_STRING, .fn = method_root_hd_models}                         },
     // Debugging-area thin wrappers.
     {.kind = M_METHOD,
      .name = "disasm",
      .doc = "Disassemble forward from PC (legacy `d [count]`)",
-     .method = {.args = NULL, .nargs = 1, .result = V_BOOL, .fn = method_root_disasm}                                },
+     .method = {.args = NULL, .nargs = 1, .result = V_BOOL, .fn = method_root_disasm}                              },
     {.kind = M_METHOD,
      .name = "step",
      .doc = "Single-step N instructions; default 1 (legacy `step`/`s`)",
-     .method = {.args = NULL, .nargs = 1, .result = V_BOOL, .fn = method_root_step}                                  },
+     .method = {.args = NULL, .nargs = 1, .result = V_BOOL, .fn = method_root_step}                                },
     {.kind = M_METHOD,
      .name = "background_checkpoint",
      .doc = "Capture a checkpoint under the given label (legacy `background-checkpoint`)",
-     .method = {.args = NULL, .nargs = 1, .result = V_BOOL, .fn = method_root_background_checkpoint}                 },
+     .method = {.args = NULL, .nargs = 1, .result = V_BOOL, .fn = method_root_background_checkpoint}               },
     {.kind = M_METHOD,
      .name = "fd_create",
      .doc = "Create a blank floppy image (legacy `fd create`)",
-     .method = {.args = NULL, .nargs = 2, .result = V_BOOL, .fn = method_root_fd_create}                             },
+     .method = {.args = NULL, .nargs = 2, .result = V_BOOL, .fn = method_root_fd_create}                           },
     {.kind = M_METHOD,
      .name = "print_value",
      .doc = "Read a register / flag / memory cell (legacy `print <target>`)",
-     .method = {.args = NULL, .nargs = 1, .result = V_UINT, .fn = method_root_print_value}                           },
+     .method = {.args = NULL, .nargs = 1, .result = V_UINT, .fn = method_root_print_value}                         },
     {.kind = M_METHOD,
      .name = "set_value",
      .doc = "Write a register / flag / memory cell (legacy `set <target> <value>`)",
-     .method = {.args = NULL, .nargs = 2, .result = V_BOOL, .fn = method_root_set_value}                             },
+     .method = {.args = NULL, .nargs = 2, .result = V_BOOL, .fn = method_root_set_value}                           },
     {.kind = M_METHOD,
      .name = "examine",
      .doc = "Hex-dump memory (legacy `x` / `examine`)",
-     .method = {.args = NULL, .nargs = 2, .result = V_BOOL, .fn = method_root_examine}                               },
+     .method = {.args = NULL, .nargs = 2, .result = V_BOOL, .fn = method_root_examine}                             },
 };
 
 static const class_desc_t emu_root_class_real = {

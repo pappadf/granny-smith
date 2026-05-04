@@ -35,6 +35,7 @@
 #include "shell.h"
 #include "sound.h"
 #include "via.h"
+#include "vrom.h"
 
 #include <assert.h>
 #include <stdint.h>
@@ -236,9 +237,6 @@ int system_ensure_machine(const char *model_id) {
     return 0;
 }
 
-// Forward declaration for setup command handler
-uint64_t cmd_setup(int argc, char *argv[]);
-
 // Helpers to abstract floppy insertion
 static bool sys_fd_is_inserted(config_t *cfg, int drive) {
     if (cfg->floppy)
@@ -257,93 +255,6 @@ void trigger_vbl(struct config *restrict config) {
     if (config && config->machine && config->machine->trigger_vbl) {
         config->machine->trigger_vbl(config);
     }
-}
-
-// Query or configure the active machine.
-// setup                              → print current machine info
-// setup --model <model> [--ram <kb>] → teardown current machine, create new one
-uint64_t cmd_setup(int argc, char *argv[]) {
-    if (argc < 2) {
-        // No args: print current machine info
-        if (!global_emulator || !global_emulator->machine) {
-            printf("No machine instantiated\n");
-            return 0;
-        }
-        const hw_profile_t *m = global_emulator->machine;
-        printf("Machine: %s (%s)\n", m->model_name, m->model_id);
-        printf("  CPU: 680%02d @ %.4f MHz\n", m->cpu_model / 1000, m->cpu_clock_hz / 1000000.0);
-        printf("  Address: %d-bit, RAM: %u KB, ROM: %u KB\n", m->address_bits, global_emulator->ram_size / 1024,
-               m->rom_size / 1024);
-        printf("  VIAs: %d, ADB: %s\n", m->via_count, m->has_adb ? "yes" : "no");
-        return 0;
-    }
-
-    // Parse --model and --ram options
-    const char *model_id = NULL;
-    uint32_t ram_kb = 0;
-    int i = 1;
-    while (i < argc) {
-        if (strcmp(argv[i], "--model") == 0) {
-            if (++i >= argc) {
-                printf("setup: --model requires an argument\n");
-                return -1;
-            }
-            model_id = argv[i];
-        } else if (strcmp(argv[i], "--ram") == 0) {
-            if (++i >= argc) {
-                printf("setup: --ram requires an argument (size in KB)\n");
-                return -1;
-            }
-            ram_kb = (uint32_t)strtoul(argv[i], NULL, 10);
-            if (ram_kb == 0) {
-                printf("setup: invalid RAM size '%s'\n", argv[i]);
-                return -1;
-            }
-        } else {
-            printf("setup: unknown option '%s'\n", argv[i]);
-            printf("Usage: setup [--model <model>] [--ram <kb>]\n");
-            return -1;
-        }
-        i++;
-    }
-
-    if (!model_id) {
-        printf("Usage: setup [--model <model>] [--ram <kb>]\n");
-        return -1;
-    }
-
-    // Look up the requested machine profile
-    const hw_profile_t *profile = machine_find(model_id);
-    if (!profile) {
-        printf("setup: unknown model '%s'\n", model_id);
-        return -1;
-    }
-
-    // Validate RAM against machine limits
-    if (ram_kb > 0) {
-        uint32_t max_kb = profile->ram_size_max / 1024;
-        if (ram_kb > max_kb) {
-            printf("setup: RAM %u KB exceeds maximum %u KB for %s\n", ram_kb, max_kb, profile->model_name);
-            return -1;
-        }
-        g_pending_ram_kb = ram_kb;
-    }
-
-    // Teardown existing machine if one is active
-    if (global_emulator) {
-        system_destroy(global_emulator);
-        global_emulator = NULL;
-    }
-
-    // Create the new machine (cold boot)
-    config_t *cfg = system_create(profile, NULL);
-    if (!cfg) {
-        printf("setup: failed to create %s\n", model_id);
-        return -1;
-    }
-
-    printf("Machine created: %s (%s), RAM: %u KB\n", profile->model_name, profile->model_id, cfg->ram_size / 1024);
-    return 0;
 }
 
 // ============================================================================
@@ -1017,6 +928,11 @@ config_t *system_create(const hw_profile_t *profile, checkpoint_t *checkpoint) {
     // runtime state. The legacy shell remains primary.
     gs_classes_install(cfg);
 
+    // Self-registering subsystem objects that are not tied to a config_t —
+    // their state is process-singleton, idempotent on repeated calls.
+    rom_init();
+    vrom_init();
+
     // Notify the platform (e.g., install assertion callback)
     system_post_create(cfg);
 
@@ -1039,6 +955,13 @@ void system_destroy(config_t *config) {
     // _if variant so the destroy of an already-replaced config (e.g.,
     // after `checkpoint --load` ran system_create(new) before us) does
     // NOT wipe the just-installed new-cfg stubs.
+    //
+    // Note: rom and vrom are deliberately NOT torn down here. They are
+    // process-scoped singletons (no per-config state); their object nodes
+    // outlive any specific emulator instance and are reclaimed at process
+    // exit. Calling rom_delete here would break checkpoint reload, where
+    // system_destroy(old) runs *after* system_create(new) has already
+    // pinned a fresh emulator that still references the rom object.
     gs_classes_uninstall_if(config);
 
     // Delegate machine-specific teardown to the profile

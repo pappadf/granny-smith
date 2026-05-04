@@ -27,12 +27,14 @@
 #include "log.h"
 #include "memory.h"
 #include "mmu.h"
+#include "rom.h"
 #include "rtc.h"
 #include "scc.h"
 #include "scheduler.h"
 #include "scsi.h"
 #include "shell.h"
 #include "via.h"
+#include "vrom.h"
 
 #include <assert.h>
 #include <stddef.h>
@@ -408,8 +410,8 @@ static bool try_load_vrom(const char *path, uint8_t *vrom_buf) {
 static bool se30_load_vrom(config_t *cfg, uint8_t *vrom_buf) {
     se30_state_t *se30 = se30_state(cfg);
 
-    // Check explicit VROM path first (set via "vrom load <path>")
-    const char *explicit_path = memory_pending_vrom_path();
+    // Check explicit VROM path first (set via "vrom.load <path>")
+    const char *explicit_path = vrom_pending_path();
     if (explicit_path) {
         if (try_load_vrom(explicit_path, vrom_buf)) {
             free(se30->vrom_path);
@@ -433,7 +435,7 @@ static bool se30_load_vrom(config_t *cfg, uint8_t *vrom_buf) {
 
     // Also search in the same directory as the ROM file.
     // Use pending_rom_path since rom_filename isn't set yet during init.
-    const char *rom_path = memory_pending_rom_path();
+    const char *rom_path = rom_pending_path();
     if (!rom_path)
         rom_path = memory_rom_filename(cfg->mem_map);
     if (rom_path) {

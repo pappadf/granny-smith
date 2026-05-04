@@ -174,9 +174,6 @@ int shell_fd_argv(int argc, char **argv);
 int shell_hd_argv(int argc, char **argv);
 int shell_image_argv(int argc, char **argv);
 
-// Legacy `setup` shell entry (machine-model query/configure).
-uint64_t cmd_setup(int argc, char *argv[]);
-
 // Pending RAM override for next system_create() call (KB, 0 = use default)
 void system_set_pending_ram_kb(uint32_t kb);
 uint32_t system_get_pending_ram_kb(void);

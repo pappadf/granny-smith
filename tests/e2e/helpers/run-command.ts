@@ -314,7 +314,7 @@ function translateToGsEval(line: string): Translation | null {
       return { method: 'peeler', args: [tail[2], tail[1]], convention: 'cmd_int_bool' };
   }
 
-  // setup --model X --ram Y
+  // setup --model X --ram Y → machine.boot(model, [ram_kb])
   if (head === 'setup') {
     let model = '';
     let ram: number | null = null;
@@ -324,7 +324,7 @@ function translateToGsEval(line: string): Translation | null {
     }
     if (model)
       return {
-        method: 'setup_machine',
+        method: 'machine.boot',
         args: ram !== null ? [model, ram] : [model],
         convention: 'cmd_int_bool',
       };
@@ -353,7 +353,7 @@ function translateToGsEval(line: string): Translation | null {
       };
     if (tail[0] === '--machine' && tail.length === 3)
       return {
-        method: 'register_machine',
+        method: 'machine.register',
         args: [tail[1], tail[2]],
         convention: 'cmd_int_bool',
       };
@@ -370,28 +370,30 @@ function translateToGsEval(line: string): Translation | null {
     const sub = tail[0];
     const subArgs = tail.slice(1);
 
+    // rom.* — see rom.h. The legacy `rom probe`/`rom validate` distinction
+    // is gone: rom.identify returns the list of compatible models (empty if
+    // unrecognised), which we collapse to a non-empty / empty signal here.
     if (head === 'rom') {
-      if (sub === 'probe')
-        return {
-          method: 'rom_probe',
-          args: subArgs.length >= 1 ? [subArgs[0]] : [],
-          convention: 'cmd_int_bool',
-        };
+      if (sub === 'probe' || sub === 'validate') {
+        if (subArgs.length === 1)
+          return { method: 'rom.identify', args: subArgs, convention: 'cmd_int_bool' };
+        // bare `rom probe` (no path) → "is something loaded?"
+        if (sub === 'probe' && subArgs.length === 0)
+          return { method: 'rom.loaded', args: [], convention: 'cmd_bool' };
+      }
       if (sub === 'checksum' && subArgs.length === 1)
-        return { method: 'rom_checksum', args: subArgs, convention: 'string_nonempty' };
+        return { method: 'rom.checksum_of', args: subArgs, convention: 'string_nonempty' };
       if (sub === 'load' && subArgs.length === 1)
-        return { method: 'rom_load', args: subArgs, convention: 'cmd_int_bool' };
-      if (sub === 'validate' && subArgs.length === 1)
-        return { method: 'rom_validate', args: subArgs, convention: 'cmd_bool' };
+        return { method: 'rom.load', args: subArgs, convention: 'cmd_int_bool' };
     }
 
     if (head === 'vrom') {
-      if (sub === 'probe' && subArgs.length === 1)
-        return { method: 'vrom_probe', args: subArgs, convention: 'cmd_int_bool' };
-      if (sub === 'validate' && subArgs.length === 1)
-        return { method: 'vrom_validate', args: subArgs, convention: 'cmd_bool' };
+      if (sub === 'probe' || sub === 'validate') {
+        if (subArgs.length === 1)
+          return { method: 'vrom.identify', args: subArgs, convention: 'cmd_bool' };
+      }
       if (sub === 'load' && subArgs.length === 1)
-        return { method: 'vrom_load', args: subArgs, convention: 'cmd_int_bool' };
+        return { method: 'vrom.load', args: subArgs, convention: 'cmd_int_bool' };
     }
 
     if (head === 'fd') {

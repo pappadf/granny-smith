@@ -159,7 +159,15 @@ export async function bootWithUploadedMedia(
 	// per command.
 	await page.evaluate(async ({ hasFd, hasHd, hdSlot, fdWritable }) => {
 		const ev = (window as any).gsEval;
-		await ev('rom_load', ['/tmp/rom']);
+		// New machine-creation model: pick a machine explicitly via
+		// machine.boot() before loading the ROM. rom.identify returns the
+		// list of compatible model_ids; we boot the first one (matches the
+		// old auto-pick behaviour: Plus ROM → Plus, Universal → SE/30).
+		const compatible = await ev('rom.identify', ['/tmp/rom']);
+		if (!Array.isArray(compatible) || compatible.length === 0)
+			throw new Error('rom.identify: no compatible machines for /tmp/rom');
+		await ev('machine.boot', [compatible[0]]);
+		await ev('rom.load', ['/tmp/rom']);
 		if (hasFd) await ev('fd_insert', ['/tmp/fd0', 0, fdWritable]);
 		if (hasHd) await ev('hd_attach', [`/tmp/hd${hdSlot}`, hdSlot]);
 	}, { hasFd: Boolean(fd0), hasHd: Boolean(hdZip), hdSlot, fdWritable });

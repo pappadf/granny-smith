@@ -618,6 +618,7 @@ int main(int argc, char *argv[]) {
     const char *speed_mode = "realtime";
     uint64_t max_cycles = 0;
     uint32_t ram_kb = 0;
+    const char *model_override = NULL;
     int quiet = 0;
     int script_stdin = 0;
     int kill_daemon = 0;
@@ -753,6 +754,11 @@ int main(int argc, char *argv[]) {
             continue;
         }
 
+        if ((value = parse_arg(arg, "model")) != NULL) {
+            model_override = value;
+            continue;
+        }
+
         if ((value = parse_arg(arg, "script")) != NULL) {
             script_file = value;
             continue;
@@ -845,18 +851,65 @@ int main(int argc, char *argv[]) {
         }
     }
 
-    // Set pending RAM override before machine creation (if specified)
+    // Probe the ROM to find compatible machines, then explicitly boot one.
+    // ROM identity does not pick the machine — multiple Mac models share the
+    // same ROM (Universal IIx/IIcx/SE/30), so the user picks via --model.
+    rom_file_info_t rom_fi = {0};
+    if (rom_probe_file(rom_file, &rom_fi) != 0 || !rom_fi.info) {
+        fprintf(stderr, "Error: ROM file %s could not be identified\n", rom_file);
+        return 1;
+    }
+
+    // Resolve target machine: --model overrides; else use the first entry in
+    // the ROM's compatible list (the family default, e.g. SE/30 for Universal).
+    const char *target_model = model_override;
+    if (!target_model) {
+        target_model = rom_fi.info->compatible[0];
+    } else {
+        // Validate that the override is in the compatibility list.
+        bool ok = false;
+        for (const char *const *p = rom_fi.info->compatible; *p; p++) {
+            if (strcmp(*p, target_model) == 0) {
+                ok = true;
+                break;
+            }
+        }
+        if (!ok) {
+            fprintf(stderr, "Error: --model %s is not compatible with this ROM (%s).\n", target_model,
+                    rom_fi.info->family_name);
+            fprintf(stderr, "Compatible models:");
+            for (const char *const *p = rom_fi.info->compatible; *p; p++)
+                fprintf(stderr, " %s", *p);
+            fprintf(stderr, "\n");
+            return 1;
+        }
+    }
+
+    const hw_profile_t *profile = machine_find(target_model);
+    if (!profile) {
+        fprintf(stderr, "Error: machine model '%s' is not registered\n", target_model);
+        return 1;
+    }
+
     if (ram_kb > 0)
         system_set_pending_ram_kb(ram_kb);
 
-    // Use rom_load to identify the ROM and create the appropriate machine.
-    // The function reads the ROM file, determines the machine type from the
-    // checksum, calls system_create() internally, and loads the ROM into
-    // machine memory.
-    cmd_rom_load(rom_file);
+    // Set the pending ROM path BEFORE system_create so SE/30 init can
+    // auto-discover a sibling SE30.vrom file during machine bring-up.
+    rom_pending_set(rom_file);
+
+    if (!system_create(profile, NULL)) {
+        fprintf(stderr, "Error: failed to create machine '%s'\n", target_model);
+        return 1;
+    }
+
+    if (rom_load_into_machine(rom_file) != 0) {
+        fprintf(stderr, "Error: failed to load ROM bytes into machine\n");
+        return 1;
+    }
 
     if (!global_emulator) {
-        fprintf(stderr, "Error: Failed to initialize emulator (ROM identification failed)\n");
+        fprintf(stderr, "Error: Failed to initialize emulator\n");
         return 1;
     }
 

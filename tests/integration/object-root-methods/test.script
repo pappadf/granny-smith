@@ -45,8 +45,8 @@ echo ${time()}
 # runs from this test's directory (tests/integration/object-root-methods)
 # so the ROM lives at ../../data/roms/Plus_v3.rom — a relative path
 # that works in both the dev container and the GitHub Actions runner.
-echo ${rom_validate("../../data/roms/Plus_v3.rom")}
-echo ${rom_probe("../../data/roms/Plus_v3.rom")}
+echo ${rom.identify("../../data/roms/Plus_v3.rom")}
+echo ${rom.checksum_of("../../data/roms/Plus_v3.rom")}
 
 # methods() at the root should now include the wrappers above.
 echo ${methods()}
