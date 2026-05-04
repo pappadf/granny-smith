@@ -4,7 +4,7 @@
 # point with floppy). Loaded from current working directory
 # (test-results/checkpoint2/). Assert so a load failure aborts the
 # step before screen.match runs against an unrestored machine.
-assert $(checkpoint_load("checkpoint.gs")) "checkpoint2 step2 load failed"
+assert ${checkpoint_load("checkpoint.gs")} "checkpoint2 step2 load failed"
 
 # Run 50M more instructions (should reach desktop just like step 1 would)
 run 100000000

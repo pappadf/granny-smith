@@ -26,12 +26,12 @@ scc.b.rx_pending
 # round-trip is the real test — anything that decouples the attribute
 # from the underlying scc state shows up here as an assertion failure.
 scc.loopback = true
-assert $(scc.loopback == true)
+assert ${scc.loopback == true}
 scc.loopback = false
-assert $(scc.loopback == false)
+assert ${scc.loopback == false}
 
 # Reset method runs to completion (no return value to assert beyond
 # the absence of an error in the JSON output).
-echo $(scc.reset())
+echo ${scc.reset()}
 
 quit

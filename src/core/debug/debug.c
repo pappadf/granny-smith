@@ -385,20 +385,54 @@ static const char *alias_lookup_for_expr(void *ud, const char *name) {
 // Old vocabulary (`$pc`, `$value`, `$mem.l.<src>`, `$str.<src>`) was
 // deleted in M5; user messages must use ${cpu.pc}, ${lp.value},
 // ${memory.peek.l(<addr>)}, ${memory.read_cstring(<addr>)} instead.
+// Per-fire bindings exposed during logpoint message expansion. The
+// three event-intrinsic values (`value`, `addr`, `size`) live nowhere
+// else — there is no persistent object holding "the byte that just got
+// written to 0x4000". The deferred interpolator queries this binding
+// table for bare identifiers; everything else (registers, memory,
+// peripherals) resolves through the normal object tree at fire time.
+typedef struct {
+    uint32_t addr;
+    uint32_t value;
+    unsigned size;
+} lp_bindings_t;
+
+static value_t lp_binding(void *ud, const char *name) {
+    const lp_bindings_t *lp = (const lp_bindings_t *)ud;
+    if (strcmp(name, "value") == 0) {
+        // Mask the value to its declared width so 1/2-byte writes don't
+        // print as full 32-bit words.
+        uint64_t mask = (lp->size >= 4) ? 0xFFFFFFFFu : ((1u << (lp->size * 8)) - 1u);
+        int w = (lp->size == 1) ? 1 : (lp->size == 2) ? 2 : 4;
+        value_t v = val_uint((uint8_t)w, lp->value & mask);
+        v.flags |= VAL_HEX;
+        return v;
+    }
+    if (strcmp(name, "addr") == 0) {
+        value_t v = val_uint(4, lp->addr);
+        v.flags |= VAL_HEX;
+        return v;
+    }
+    if (strcmp(name, "size") == 0)
+        return val_uint(1, lp->size);
+    return val_none();
+}
+
 static void format_logpoint_message(char *buf, size_t buf_size, const char *msg, uint32_t addr, uint32_t value,
                                     unsigned size) {
     if (!msg) {
         buf[0] = '\0';
         return;
     }
-    gs_lp_context_begin(addr, value, size);
+    lp_bindings_t lp = {.addr = addr, .value = value, .size = size};
     expr_ctx_t ctx = {
         .root = object_root(),
         .alias = alias_lookup_for_expr,
         .alias_ud = NULL,
+        .binding = lp_binding,
+        .binding_ud = &lp,
     };
     value_t v = expr_interpolate_string(msg, &ctx);
-    gs_lp_context_end();
 
     const char *s = (v.kind == V_STRING && v.s) ? v.s : "";
     size_t n = strlen(s);

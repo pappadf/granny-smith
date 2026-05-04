@@ -10,7 +10,7 @@
 
 # methods("find") lists the four sub-command methods this script
 # exercises. Replaces the legacy `help find` synopsis check.
-echo $(methods("find"))
+echo ${methods("find")}
 
 # === find.str: ASCII search =============================================
 

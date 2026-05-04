@@ -3,16 +3,17 @@
 
 // expr.h
 // Recursive-descent expression parser/evaluator for the shell's
-// `$(...)` and `${...}` forms. See proposal-shell-expressions.md.
+// `${...}` form. See proposal-shell-expressions.md.
 //
 // The parser is pure (no parse-time side effects). Evaluation may
 // invoke methods on the object tree, which can have side effects;
 // purity is convention, not enforced.
 //
-// Bindings: callers may supply an alias-resolver and a root object so
-// the parser can resolve `$alias` and bare paths against the tree. M1
-// keeps these optional; tests that don't need them can pass NULLs and
-// stay within pure literal/operator territory.
+// Bindings: callers may supply an alias-resolver, a root object, and a
+// per-eval bindings table so the parser can resolve `$alias`, bare
+// object paths, and bare names (shell variables, deferred-eval scope)
+// against the tree. All three are optional; tests that don't need them
+// can pass NULLs and stay within pure literal/operator territory.
 
 #ifndef GS_OBJECT_EXPR_H
 #define GS_OBJECT_EXPR_H
@@ -33,11 +34,24 @@ struct object;
 // not take ownership. Return NULL if `name` is not a known alias.
 typedef const char *(*expr_alias_fn)(void *ud, const char *name);
 
+// Bindings callback: resolve a bare identifier (no leading `$`, no
+// dots) to a value_t. Used for shell variables (`let X=42` → `${X}`)
+// at shell time and for per-fire context (`${value}`/`${addr}`/`${size}`
+// inside a logpoint message) at fire time. The evaluator queries this
+// after path/alias lookup fails. Return val_none() / V_NONE if unknown
+// — anything else (including V_ERROR) is treated as the resolved value.
+// Returned value_t is OWNED by the caller of expr_eval; the binding fn
+// must produce a freshly-allocated value (or a self-contained inline
+// value like val_int that needs no free).
+typedef value_t (*expr_binding_fn)(void *ud, const char *name);
+
 // Context bundling the bindings a single evaluation needs.
 typedef struct expr_ctx {
     struct object *root; // bare paths resolve against this; may be NULL
     expr_alias_fn alias; // $name lookup; may be NULL
     void *alias_ud; // user-data for alias callback
+    expr_binding_fn binding; // bare-name lookup fallback; may be NULL
+    void *binding_ud; // user-data for binding callback
 } expr_ctx_t;
 
 // Evaluate the expression in `src` (the body of a `$(...)` form, with

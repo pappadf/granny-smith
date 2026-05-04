@@ -5,7 +5,6 @@
 // Object-model install/uninstall orchestrator + a few process-/cfg-
 // scoped class definitions that have no per-subsystem owner:
 //   - scheduler / shell / storage namespace stubs
-//   - lp synthetic class (logpoint fire context)
 //   - shell.alias methods
 //   - root-level methods (cp / peeler / rom_load / hd_attach / …)
 //   - top-level introspection (objects/attributes/methods/help/print/time)
@@ -83,108 +82,6 @@ static const class_desc_t scheduler_class_desc = {.name = "scheduler", .members 
 static const class_desc_t shell_class_desc = {.name = "shell", .members = NULL, .n_members = 0};
 static const class_desc_t storage_class_desc = {.name = "storage", .members = NULL, .n_members = 0};
 
-// === lp synthetic class (logpoint fire context) =============================
-//
-// Per-fire context is tracked in a static struct that debug.c flips
-// on/off around expr_interpolate_string. While `active` is true, the
-// lp class getters read from the struct; outside that window they
-// return V_ERROR (proposal §5.3 — "lp.value resolves to V_ERROR
-// outside that context").
-
-static struct {
-    bool active;
-    uint32_t addr;
-    uint32_t value;
-    unsigned size;
-} g_lp;
-
-void gs_lp_context_begin(uint32_t addr, uint32_t value, unsigned size) {
-    g_lp.active = true;
-    g_lp.addr = addr;
-    g_lp.value = value;
-    g_lp.size = size;
-}
-
-void gs_lp_context_end(void) {
-    g_lp.active = false;
-}
-
-static value_t attr_lp_value(struct object *self, const member_t *m) {
-    (void)self;
-    (void)m;
-    if (!g_lp.active)
-        return val_err("lp.value: only valid inside a logpoint message");
-    int w = (g_lp.size == 1) ? 1 : (g_lp.size == 2) ? 2 : 4;
-    uint64_t mask = (g_lp.size >= 4) ? 0xFFFFFFFFu : ((1u << (g_lp.size * 8)) - 1u);
-    value_t v = val_uint((uint8_t)w, g_lp.value & mask);
-    v.flags |= VAL_HEX;
-    return v;
-}
-static value_t attr_lp_addr(struct object *self, const member_t *m) {
-    (void)self;
-    (void)m;
-    if (!g_lp.active)
-        return val_err("lp.addr: only valid inside a logpoint message");
-    value_t v = val_uint(4, g_lp.addr);
-    v.flags |= VAL_HEX;
-    return v;
-}
-static value_t attr_lp_size(struct object *self, const member_t *m) {
-    (void)self;
-    (void)m;
-    if (!g_lp.active)
-        return val_err("lp.size: only valid inside a logpoint message");
-    return val_uint(1, g_lp.size);
-}
-static value_t attr_lp_pc(struct object *self, const member_t *m) {
-    (void)self;
-    (void)m;
-    if (!g_lp.active)
-        return val_err("lp.pc: only valid inside a logpoint message");
-    config_t *cfg = (config_t *)object_data(self);
-    if (!cfg || !cfg->cpu)
-        return val_err("lp.pc: cpu not initialised");
-    value_t v = val_uint(4, cpu_get_pc(cfg->cpu));
-    v.flags |= VAL_HEX;
-    return v;
-}
-static value_t attr_lp_instruction_pc(struct object *self, const member_t *m) {
-    (void)self;
-    (void)m;
-    if (!g_lp.active)
-        return val_err("lp.instruction_pc: only valid inside a logpoint message");
-    config_t *cfg = (config_t *)object_data(self);
-    if (!cfg || !cfg->cpu)
-        return val_err("lp.instruction_pc: cpu not initialised");
-    value_t v = val_uint(4, cfg->cpu->instruction_pc);
-    v.flags |= VAL_HEX;
-    return v;
-}
-
-static const member_t lp_members[] = {
-    {.kind = M_ATTR,
-     .name = "value",
-     .flags = VAL_RO | VAL_HEX,
-     .attr = {.type = V_UINT, .get = attr_lp_value, .set = NULL}                                                          },
-    {.kind = M_ATTR,
-     .name = "addr",
-     .flags = VAL_RO | VAL_HEX,
-     .attr = {.type = V_UINT, .get = attr_lp_addr, .set = NULL}                                                           },
-    {.kind = M_ATTR, .name = "size", .flags = VAL_RO,           .attr = {.type = V_UINT, .get = attr_lp_size, .set = NULL}},
-    {.kind = M_ATTR, .name = "pc",   .flags = VAL_RO | VAL_HEX, .attr = {.type = V_UINT, .get = attr_lp_pc, .set = NULL}  },
-    {.kind = M_ATTR,
-     .name = "instruction_pc",
-     .flags = VAL_RO | VAL_HEX,
-     .attr = {.type = V_UINT, .get = attr_lp_instruction_pc, .set = NULL}                                                 },
-};
-
-static const class_desc_t lp_class_desc = {
-    .name = "lp",
-    .members = lp_members,
-    .n_members = sizeof(lp_members) / sizeof(lp_members[0]),
-};
-
-// === M8 (slice 3) — top-level root methods ==================================
 //
 // Registers the introspection-and-utility subset of proposal §5.10's
 // root methods: `objects`, `attributes`, `methods`, `help`, `print`,
@@ -2250,7 +2147,6 @@ void gs_classes_install(struct config *cfg) {
         attach_stub(storage_obj, &storage_images_collection_class, cfg, "images");
         storage_object_classes_init(cfg);
     }
-    /* lp   */ attach_stub(NULL, &lp_class_desc, cfg, "lp");
 
     // mac is always attached — readers tolerate uninitialised RAM.
 

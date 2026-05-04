@@ -15,15 +15,15 @@ rtc.read_only
 # no `run` between set and read so emulation-time is frozen and the
 # value lands exactly as written.
 rtc.time = 0
-assert $(rtc.time == 0)
+assert ${rtc.time == 0}
 rtc.time = 1000000
-assert $(rtc.time == 1000000)
+assert ${rtc.time == 1000000}
 
 # PRAM read of a known address. Mac PRAM is initialised by the boot
 # code, so the contents depend on how far through boot we are. We
 # write a sentinel and assert the read returns the same value.
-echo $(rtc.pram_write(0x80, 0xAB))
-assert $(rtc.pram_read(0x80) == 0xAB)
+echo ${rtc.pram_write(0x80, 0xAB)}
+assert ${rtc.pram_read(0x80) == 0xAB}
 
 # Read the full PRAM snapshot — output is "0x..." hex string.
 rtc.pram

@@ -48,24 +48,6 @@ void gs_classes_uninstall(void);
 // See the comment above the install/uninstall block in gs_classes.c.
 void gs_classes_uninstall_if(struct config *cfg);
 
-// === lp (logpoint) synthetic class ==========================================
-//
-// `lp` exposes the per-fire context to ${...} interpolation in
-// logpoint messages — `lp.value`, `lp.addr`, `lp.size`,
-// `lp.instruction_pc`, `lp.pc` (proposal §5.3). The fields are valid
-// only while a logpoint is being formatted; outside that window the
-// getters return V_ERROR.
-//
-// debug.c brackets each format call with begin/end so the lp child
-// reads the right values:
-//
-//   gs_lp_context_begin(addr, value, size);
-//   expr_interpolate_string(msg, &ctx);   // getters see lp.* values
-//   gs_lp_context_end();
-
-void gs_lp_context_begin(uint32_t addr, uint32_t value, unsigned size);
-void gs_lp_context_end(void);
-
 // === M6 — debug entry-object factories ======================================
 //
 // Each breakpoint / logpoint owns a per-entry object_t* exposed under

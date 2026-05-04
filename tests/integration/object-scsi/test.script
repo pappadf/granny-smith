@@ -9,12 +9,12 @@ run 50000
 
 # Top-level object. Loopback default is false at boot.
 scsi
-assert $(scsi.loopback == false)
+assert ${scsi.loopback == false}
 
 # Bus child: phase is a V_ENUM, target / initiator are ints. After a
 # brief warmup the bus has settled back to bus_free.
 scsi.bus
-assert $(scsi.bus.phase == "bus_free")
+assert ${scsi.bus.phase == "bus_free"}
 scsi.bus.target
 scsi.bus.initiator
 
@@ -22,17 +22,17 @@ scsi.bus.initiator
 scsi.devices
 # Boot HD lands on SCSI id 0; assert the populated-slot attributes
 # match the expected catalog entry for the test image.
-assert $(scsi.devices[0].id == 0)
-assert $(scsi.devices[0].type == "hd")
-assert $(scsi.devices[0].block_size == 512)
-assert $(scsi.devices[0].medium_present == true)
-assert $(scsi.devices[0].read_only == false)
+assert ${scsi.devices[0].id == 0}
+assert ${scsi.devices[0].type == "hd"}
+assert ${scsi.devices[0].block_size == 512}
+assert ${scsi.devices[0].medium_present == true}
+assert ${scsi.devices[0].read_only == false}
 # hd1.img matches the HD20SC catalog entry. vendor / product are the
 # raw SCSI INQUIRY fields stored on the device — vendor is the 8-char
 # catalog literal " SEAGATE" (leading space); product_id is left-
 # padded to 16 chars by scsi_attach (see scsi.c:1188).
-assert $(scsi.devices[0].vendor == " SEAGATE") "boot HD vendor regressed"
-assert $(scsi.devices[0].product == "ST225N          ") "boot HD product regressed"
+assert ${scsi.devices[0].vendor == " SEAGATE"} "boot HD vendor regressed"
+assert ${scsi.devices[0].product == "ST225N          "} "boot HD product regressed"
 
 # Empty slot 5 (no CD attached) reports an "empty" error from node_get,
 # which is the correct sparse-collection behavior.
@@ -41,8 +41,8 @@ scsi.devices[5]
 # Loopback: flip via attr setter, observe via the same attr (round-trip
 # through the same path the legacy `hd loopback` command writes).
 scsi.loopback = true
-assert $(scsi.loopback == true)
+assert ${scsi.loopback == true}
 scsi.loopback = false
-assert $(scsi.loopback == false)
+assert ${scsi.loopback == false}
 
 quit

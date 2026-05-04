@@ -10,46 +10,46 @@ run 50000
 # debugger / network / input / storage etc. The legacy harness checks
 # stdout for substring matches so we only need the names to appear
 # somewhere in the JSON list output.
-echo $(objects())
+echo ${objects()}
 
 # objects("cpu") drills in. cpu has no child objects on Plus (no FPU
 # without --fpu), so the list is empty — but it must resolve cleanly.
-echo $(objects("cpu"))
+echo ${objects("cpu")}
 
 # attributes("cpu") names the per-register getters.
-echo $(attributes("cpu"))
+echo ${attributes("cpu")}
 
 # methods("cpu") is currently empty (cpu has only attributes), so the
 # call is a path-resolves-cleanly test.
-echo $(methods("cpu"))
+echo ${methods("cpu")}
 
 # methods("rtc") includes pram_read, pram_write.
-echo $(methods("rtc"))
+echo ${methods("rtc")}
 
 # help() on a member returns its doc string.
-echo $(help("cpu.pc"))
-echo $(help("rtc.time"))
-echo $(help("mouse.move"))
+echo ${help("cpu.pc")}
+echo ${help("rtc.time")}
+echo ${help("mouse.move")}
 
 # print() round-trips through value formatting.
-echo $(print(42))
-echo $(print("hello"))
-echo $(print(true))
+echo ${print(42)}
+echo ${print("hello")}
+echo ${print(true)}
 
 # time() is just monotonic-ish; we don't pin a value, only that the
 # call resolves.
-echo $(time())
+echo ${time()}
 
 # M8 slice 4 — legacy-command wrappers. Each method must resolve and
 # either succeed or fail with a clean error (no crash). The headless
 # runs from this test's directory (tests/integration/object-root-methods)
 # so the ROM lives at ../../data/roms/Plus_v3.rom — a relative path
 # that works in both the dev container and the GitHub Actions runner.
-echo $(rom_validate("../../data/roms/Plus_v3.rom"))
-echo $(rom_probe("../../data/roms/Plus_v3.rom"))
+echo ${rom_validate("../../data/roms/Plus_v3.rom")}
+echo ${rom_probe("../../data/roms/Plus_v3.rom")}
 
 # methods() at the root should now include the wrappers above.
-echo $(methods())
+echo ${methods()}
 
 # quit() is the last call — same as the legacy `quit` command.
-echo $(quit())
+echo ${quit()}

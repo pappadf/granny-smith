@@ -16,35 +16,35 @@ debug.breakpoints
 debug.logpoints
 
 # Add via the new method, capturing into the breakpoint store.
-echo $(debug.breakpoints.add(0x400100))
-echo $(debug.breakpoints.add(0x400200))
+echo ${debug.breakpoints.add(0x400100)}
+echo ${debug.breakpoints.add(0x400200)}
 
 # Index 0 and 1 should now be live with the addresses we set. Use the
-# bracket form inside $(...) since the expression parser keeps
+# bracket form inside ${...} since the expression parser keeps
 # `.<ident>` only (the dotted-index form is path-form syntax).
-assert $(debug.breakpoints[0].addr == 0x400100)
-assert $(debug.breakpoints[0].id == 0)
-assert $(debug.breakpoints[1].addr == 0x400200)
+assert ${debug.breakpoints[0].addr == 0x400100}
+assert ${debug.breakpoints[0].id == 0}
+assert ${debug.breakpoints[1].addr == 0x400200}
 
 # Legacy `break list` must see the same entries (single store).
 break_list_dump
 
 # Remove #0 via the method. #1 stays at id 1 — sparse indices.
-echo $(debug.breakpoints[0].remove())
-assert $(debug.breakpoints[1].addr == 0x400200)
+echo ${debug.breakpoints[0].remove()}
+assert ${debug.breakpoints[1].addr == 0x400200}
 
 # The next add gets id=2 (max-id-ever + 1; never recycled).
-echo $(debug.breakpoints.add(0x400300))
-assert $(debug.breakpoints[2].addr == 0x400300)
-assert $(debug.breakpoints[2].id == 2)
+echo ${debug.breakpoints.add(0x400300)}
+assert ${debug.breakpoints[2].addr == 0x400300}
+assert ${debug.breakpoints[2].id == 2}
 
 # Conditional breakpoint via the method form (M6's predicate field).
-echo $(debug.breakpoints.add(0x400400, "cpu.d0 == 0"))
-assert $(debug.breakpoints[3].addr == 0x400400)
-assert $(debug.breakpoints[3].condition == "cpu.d0 == 0")
+echo ${debug.breakpoints.add(0x400400, "cpu.d0 == 0")}
+assert ${debug.breakpoints[3].addr == 0x400400}
+assert ${debug.breakpoints[3].condition == "cpu.d0 == 0"}
 
 # Clear via the new collection method, verify legacy list is empty too.
-echo $(debug.breakpoints.clear())
+echo ${debug.breakpoints.clear()}
 break_list_dump
 
 quit

@@ -60,11 +60,11 @@ volatile int32_t *gs_shell_ready_ptr(void) {
 // `line` is mutated in place; returned argv pointers point inside it.
 int tokenize(char *line, char *argv[], int max) {
     // Tokenizer with support for: \-escapes, ASCII and UTF-8 curly
-    // quotes, and `$(...)` expression tokens (proposal §4.1.2). Inside
-    // a `$(...)` token, whitespace and `[...]` are part of the token
-    // until the matching `)` closes it. Quote state is reset at the
-    // expression boundary; the expression parser owns its own
-    // tokenization inside.
+    // quotes, and ' / " quoted strings. `${...}` substitution has
+    // already been resolved by shell_var_expand before tokenisation,
+    // so the tokenizer only sees the post-expansion source — except
+    // inside single-quoted regions, where `${...}` survives verbatim
+    // (the deferred-eval opt-out used by logpoint messages).
     int argc = 0;
     int esc = 0;
     enum { Q_NONE = 0, Q_DQUOTE, Q_SQUOTE, Q_CURLY } qstate = Q_NONE;
@@ -115,46 +115,6 @@ int tokenize(char *line, char *argv[], int max) {
                 continue;
             }
 
-            // Open `$(` outside any quote — start an expression token.
-            // Inside the expression we count `(`/`)` for nesting but
-            // honor `"..."` strings (with backslash escapes) so a `)`
-            // inside a string literal does not close the expression.
-            if (qstate == Q_NONE && p[0] == '$' && p[1] == '(') {
-                int paren_depth = 1;
-                *dst++ = *p++; // copy '$'
-                *dst++ = *p++; // copy '('
-                bool in_str = false;
-                while (*p && paren_depth > 0) {
-                    char ch = *p;
-                    if (in_str) {
-                        if (ch == '\\' && p[1]) {
-                            *dst++ = *p++;
-                            *dst++ = *p++;
-                            continue;
-                        }
-                        if (ch == '"')
-                            in_str = false;
-                        *dst++ = *p++;
-                        continue;
-                    }
-                    if (ch == '"') {
-                        in_str = true;
-                        *dst++ = *p++;
-                        continue;
-                    }
-                    if (ch == '(')
-                        paren_depth++;
-                    else if (ch == ')')
-                        paren_depth--;
-                    *dst++ = *p++;
-                }
-                // paren_depth==0 means we copied the closing `)`. If
-                // we hit end of line first, the expression is
-                // unterminated and the expr parser will report it
-                // when this token is evaluated.
-                continue;
-            }
-
             if (*p == '"') {
                 if (qstate == Q_NONE)
                     qstate = Q_DQUOTE;
@@ -189,177 +149,6 @@ int tokenize(char *line, char *argv[], int max) {
     return argc;
 }
 
-/* --- $(...) expansion + operator check ----------------------------------- */
-//
-// After tokenize() splits the line into argv[], any token of the form
-// `$(...)` is the body of an expression that the user wants
-// substituted. We hand the body to expr_eval (proposal §4) and replace
-// the token with the formatted result.
-//
-// Top-level operators (proposal §4.1.3): a token that is exactly an
-// operator string at depth zero is a syntax error with a corrective
-// message. This catches `cpu.d0 = $cpu.pc + 4` (silently dropping
-// "+ 4") which is the failure mode the proposal calls out.
-
-static const char *shell_alias_resolver(void *ud, const char *name) {
-    (void)ud;
-    return alias_lookup(name, NULL);
-}
-
-// Returns true if `tok` is exactly an operator that's only legal
-// inside `$(...)`. Multi-char tokens like `-1` or `cpu.d*` are not
-// flagged because they aren't an operator alone.
-static bool is_bare_operator(const char *tok) {
-    if (!tok || !*tok)
-        return false;
-    static const char *const ops[] = {
-        "+", "-",  "*",  "/",  "%",  "&",  "|",  "^",  "~",  "!",  "<",
-        ">", "==", "!=", "<=", ">=", "&&", "||", "<<", ">>", NULL,
-    };
-    for (int i = 0; ops[i]; i++)
-        if (strcmp(tok, ops[i]) == 0)
-            return true;
-    return false;
-}
-
-// Format a value_t into a fresh malloc'd string suitable for splicing
-// back into argv[]. Numerics in hex; bools as "true"/"false"; strings
-// verbatim; bytes as a 0x... hex run.
-static char *format_value_for_shell(const value_t *v) {
-    char buf[256];
-    buf[0] = '\0';
-    switch (v->kind) {
-    case V_NONE:
-        snprintf(buf, sizeof(buf), "");
-        break;
-    case V_BOOL:
-        snprintf(buf, sizeof(buf), v->b ? "true" : "false");
-        break;
-    case V_INT:
-        if (v->flags & VAL_HEX)
-            snprintf(buf, sizeof(buf), "0x%llx", (unsigned long long)(uint64_t)v->i);
-        else
-            snprintf(buf, sizeof(buf), "%lld", (long long)v->i);
-        break;
-    case V_UINT:
-        if (v->flags & VAL_HEX)
-            snprintf(buf, sizeof(buf), "0x%llx", (unsigned long long)v->u);
-        else
-            snprintf(buf, sizeof(buf), "%llu", (unsigned long long)v->u);
-        break;
-    case V_FLOAT:
-        snprintf(buf, sizeof(buf), "%g", v->f);
-        break;
-    case V_STRING:
-        return strdup(v->s ? v->s : "");
-    case V_BYTES: {
-        char *out = (char *)malloc(3 + v->bytes.n * 2 + 1);
-        if (!out)
-            return NULL;
-        char *q = out;
-        *q++ = '0';
-        *q++ = 'x';
-        for (size_t i = 0; i < v->bytes.n; i++) {
-            static const char hex[] = "0123456789abcdef";
-            *q++ = hex[(v->bytes.p[i] >> 4) & 0xF];
-            *q++ = hex[v->bytes.p[i] & 0xF];
-        }
-        *q = '\0';
-        return out;
-    }
-    case V_ENUM:
-        if (v->enm.table && (size_t)v->enm.idx < v->enm.n_table && v->enm.table[v->enm.idx])
-            snprintf(buf, sizeof(buf), "%s", v->enm.table[v->enm.idx]);
-        else
-            snprintf(buf, sizeof(buf), "%d", v->enm.idx);
-        break;
-    case V_OBJECT:
-        snprintf(buf, sizeof(buf), "<object:%s>", object_class(v->obj) ? object_class(v->obj)->name : "?");
-        break;
-    case V_ERROR:
-        snprintf(buf, sizeof(buf), "<error: %s>", v->err ? v->err : "");
-        break;
-    case V_LIST:
-        snprintf(buf, sizeof(buf), "<list:%zu>", v->list.len);
-        break;
-    }
-    return strdup(buf);
-}
-
-// Walk argv[]; for every token starting with `$(` evaluate the
-// expression body and replace argv[i] with the formatted result.
-// Tokens that are bare top-level operators trigger a syntax error.
-//
-// `replaced[i]` points at malloc'd storage when argv[i] was rewritten;
-// the caller frees the array entries after dispatch.
-//
-// Returns 0 on success, -1 if the line should be rejected (errors
-// already emitted to stderr).
-static int expand_args(int argc, char **argv, char **replaced) {
-    expr_ctx_t ectx = {
-        .root = object_root(),
-        .alias = shell_alias_resolver,
-        .alias_ud = NULL,
-    };
-    // argv[0] is the command name; never expand it.
-    for (int i = 1; i < argc; i++) {
-        char *tok = argv[i];
-        if (!tok)
-            continue;
-
-        // Operator at top level → corrective syntax error.
-        if (is_bare_operator(tok)) {
-            fprintf(stderr,
-                    "shell: '%s' is an operator and is only valid inside $(...);"
-                    " write `$(... %s ...)` instead\n",
-                    tok, tok);
-            return -1;
-        }
-
-        if (tok[0] != '$' || tok[1] != '(')
-            continue;
-
-        // Strip the surrounding `$(` and `)`. The closing paren may be
-        // missing if the user typed an unterminated expression — the
-        // expr parser will reject it cleanly in that case.
-        size_t len = strlen(tok);
-        size_t bend = len;
-        if (bend >= 1 && tok[bend - 1] == ')')
-            bend--;
-        size_t bstart = 2;
-        char saved = tok[bend];
-        tok[bend] = '\0';
-        const char *body = tok + bstart;
-
-        value_t v = expr_eval(body, &ectx);
-        tok[bend] = saved;
-
-        if (val_is_error(&v)) {
-            fprintf(stderr, "shell: $(...) error: %s\n", v.err ? v.err : "(unknown)");
-            value_free(&v);
-            return -1;
-        }
-        char *formatted = format_value_for_shell(&v);
-        value_free(&v);
-        if (!formatted) {
-            fputs("shell: out of memory expanding $(...)\n", stderr);
-            return -1;
-        }
-        replaced[i] = formatted;
-        argv[i] = formatted;
-    }
-    return 0;
-}
-
-static void free_replacements(int argc, char **replaced) {
-    for (int i = 0; i < argc; i++) {
-        if (replaced[i]) {
-            free(replaced[i]);
-            replaced[i] = NULL;
-        }
-    }
-}
-
 // Phase 5c — legacy `help` / `echo` / `time` / `add` / `remove`
 // shell built-ins retired. `echo` and other utilities are typed root
 // methods now (gs_classes.c).
@@ -385,19 +174,14 @@ void dispatch_command(char *line, struct cmd_result *res) {
     }
 
     char *expanded = shell_var_expand(line);
-    char *to_parse = expanded ? expanded : line;
-
-    char *argv[MAXTOK];
-    int argc = tokenize(to_parse, argv, MAXTOK);
-    if (argc <= 0) {
-        free(expanded);
+    if (!expanded) {
+        cmd_err(res, "expansion failed");
         return;
     }
 
-    char *replaced[MAXTOK] = {0};
-    if (expand_args(argc, argv, replaced) < 0) {
-        cmd_err(res, "syntax error");
-        free_replacements(MAXTOK, replaced);
+    char *argv[MAXTOK];
+    int argc = tokenize(expanded, argv, MAXTOK);
+    if (argc <= 0) {
         free(expanded);
         return;
     }
@@ -407,7 +191,6 @@ void dispatch_command(char *line, struct cmd_result *res) {
         cmd_err(res, "command failed");
     else if (pd > 0)
         cmd_err(res, "unknown command: '%s'", argv[0]);
-    free_replacements(MAXTOK, replaced);
     free(expanded);
 }
 
@@ -625,10 +408,13 @@ uint64_t shell_dispatch(char *line) {
     gs_thread_assert_worker("shell_dispatch");
 
     char *expanded = shell_var_expand(line);
-    char *to_parse = expanded ? expanded : line;
+    if (!expanded) {
+        fputs("expansion failed\n", stderr);
+        return (uint64_t)-1;
+    }
 
     char *argv[MAXTOK];
-    int argc = tokenize(to_parse, argv, MAXTOK);
+    int argc = tokenize(expanded, argv, MAXTOK);
     if (argc < 0) {
         fputs("too many arguments\n", stderr);
         free(expanded);
@@ -639,17 +425,9 @@ uint64_t shell_dispatch(char *line) {
         return 0;
     }
 
-    char *replaced[MAXTOK] = {0};
-    if (expand_args(argc, argv, replaced) < 0) {
-        free_replacements(MAXTOK, replaced);
-        free(expanded);
-        return (uint64_t)-1;
-    }
-
     int pd = try_path_dispatch(argc, argv);
     if (pd > 0)
         fprintf(stderr, "Unknown command: '%s'\n", argv[0]);
-    free_replacements(MAXTOK, replaced);
     free(expanded);
     // pd == 0 → handled successfully
     // pd  < 0 → handled with error

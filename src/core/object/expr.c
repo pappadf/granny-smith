@@ -466,6 +466,20 @@ static value_t parse_primary(lex_t *L, const expr_ctx_t *ctx) {
         bool call_open = false;
         if (!read_path_segments(L, ctx, path_buf, sizeof(path_buf), &call_open))
             return val_err("bad path");
+        // Bare-identifier bindings fallback: if path_buf is a single
+        // segment (no dots) with no call, the binding callback gets
+        // first crack. Used for shell variables (`let X=42`) and for
+        // per-eval scope (`${value}`/`${addr}`/`${size}` inside a
+        // logpoint message). Bindings are queried BEFORE object_resolve
+        // so a fire-time `${value}` doesn't get shadowed by an unrelated
+        // root-attached `value` if one ever shows up.
+        bool bare_ident = !call_open && strchr(path_buf, '.') == NULL;
+        if (bare_ident && ctx && ctx->binding) {
+            value_t bound = ctx->binding(ctx->binding_ud, path_buf);
+            if (bound.kind != V_NONE)
+                return bound;
+            value_free(&bound);
+        }
         if (!ctx || !ctx->root) {
             // No root bound — path resolution is a runtime error (not a
             // syntax error), so it propagates as V_ERROR through operators

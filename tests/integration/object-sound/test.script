@@ -15,11 +15,11 @@ sound.enabled
 sound.volume
 
 # Mute via the method, assert `enabled` flipped to false.
-echo $(sound.mute(true))
-assert $(sound.enabled == false)
+echo ${sound.mute(true)}
+assert ${sound.enabled == false}
 
 # Unmute and assert `enabled` flips back to true.
-echo $(sound.mute(false))
-assert $(sound.enabled == true)
+echo ${sound.mute(false)}
+assert ${sound.enabled == true}
 
 quit
