@@ -5,7 +5,6 @@
 #   - $(...) with paths and aliases
 #   - break set with a computed address
 #   - predicate assert (truthy and falsy with message)
-#   - math object methods inside $(...)
 
 run 50000
 
@@ -27,14 +26,5 @@ assert $(memory.rom_size == 131072) "Plus ROM is 128 KiB"
 
 # Predicate assert — boolean expressions chain through.
 assert $(memory.rom_size > 0 && memory.ram_size > 0) "memory present"
-
-# Math object methods.
-echo $(math.close(1.0, 1.0001, 0.001))
-echo $(math.min(3, 7))
-echo $(math.max(3, 7))
-echo $(math.abs(-42))
-
-# Predicate via math.close.
-assert $(math.close(memory.rom_size, 131072, 0)) "rom size exact"
 
 quit

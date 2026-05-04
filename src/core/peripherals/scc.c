@@ -9,9 +9,12 @@
 #include "appletalk.h"
 #include "cpu.h"
 #include "log.h"
+#include "object.h"
 #include "platform.h"
 #include "scheduler.h"
 #include "system.h"
+#include "system_config.h"
+#include "value.h"
 
 #include <assert.h>
 #include <stdbool.h>
@@ -26,6 +29,12 @@
 #define RX_PENDING_QUEUE_DEPTH 8
 
 LOG_USE_CATEGORY_NAME("scc");
+
+// Forward declarations — class descriptors are at the bottom of the file but
+// scc_init / scc_delete reference them.
+extern const class_desc_t scc_class;
+extern const class_desc_t scc_channel_a_class;
+extern const class_desc_t scc_channel_b_class;
 
 static inline bool scc_should_log(int level) {
     return log_would_log(_log_get_local_category(), level);
@@ -129,6 +138,11 @@ struct scc {
 
     // External loopback: port A TX → port B RX, port B TX → port A RX
     bool external_loopback;
+
+    // Object-tree nodes — lifetime tied to scc_init / scc_delete.
+    struct object *object; // top-level scc node
+    struct object *channel_a; // scc.a child
+    struct object *channel_b; // scc.b child
 };
 
 #define SDLC_MODE(ch)  ((ch->wr[4] >> 4 & 3) == 2)
@@ -1094,6 +1108,18 @@ scc_t *scc_init(memory_map_t *map, struct scheduler *scheduler, scc_irq_fn irq_c
         update_irqs(scc);
     }
 
+    // Object-tree binding — instance_data is the scc itself.
+    scc->object = object_new(&scc_class, scc, "scc");
+    if (scc->object) {
+        object_attach(object_root(), scc->object);
+        scc->channel_a = object_new(&scc_channel_a_class, scc, "a");
+        if (scc->channel_a)
+            object_attach(scc->object, scc->channel_a);
+        scc->channel_b = object_new(&scc_channel_b_class, scc, "b");
+        if (scc->channel_b)
+            object_attach(scc->object, scc->channel_b);
+    }
+
     return scc;
 }
 
@@ -1159,6 +1185,22 @@ unsigned scc_channel_rx_pending(const scc_t *scc, unsigned int ch) {
 void scc_delete(scc_t *scc) {
     if (!scc)
         return;
+    // Tear down object-tree nodes in reverse order (children first).
+    if (scc->channel_b) {
+        object_detach(scc->channel_b);
+        object_delete(scc->channel_b);
+        scc->channel_b = NULL;
+    }
+    if (scc->channel_a) {
+        object_detach(scc->channel_a);
+        object_delete(scc->channel_a);
+        scc->channel_a = NULL;
+    }
+    if (scc->object) {
+        object_detach(scc->object);
+        object_delete(scc->object);
+        scc->object = NULL;
+    }
     free(scc);
 }
 
@@ -1174,3 +1216,181 @@ void scc_checkpoint(scc_t *restrict scc, checkpoint_t *checkpoint) {
     // function pointers or the mapping pointer. Those are runtime-specific and re-initialized
     // on startup.
 }
+
+// === Object-model class descriptors =========================================
+//
+// Replaces the bespoke `scc loopback` command (proposal §5.4). The
+// `scc` root object has a writable `loopback` attribute, an immutable
+// view of the BRG source clocks, a `reset()` method, and per-channel
+// children `a` / `b` (proposal goal: "scc class with loopback, reset,
+// channel children a/b").
+//
+// instance_data is the scc_t* itself (lifetime is tied to scc_init /
+// scc_delete). Channel objects also carry the same scc_t*; their
+// per-member user_data encodes the channel index (0 = A, 1 = B), so
+// a single getter per attribute can serve both children (mirrors the
+// trick the auto-populated `mac` class uses).
+
+static scc_t *scc_from(struct object *self) {
+    return (scc_t *)object_data(self);
+}
+
+// `loopback` is the writable head attribute — get/set wrap the C API.
+static value_t scc_attr_loopback_get(struct object *self, const member_t *m) {
+    (void)m;
+    scc_t *scc = scc_from(self);
+    return val_bool(scc ? scc_get_external_loopback(scc) : false);
+}
+
+static value_t scc_attr_loopback_set(struct object *self, const member_t *m, value_t in) {
+    (void)m;
+    scc_t *scc = scc_from(self);
+    if (!scc) {
+        value_free(&in);
+        return val_err("scc not available");
+    }
+    bool b = val_as_bool(&in);
+    value_free(&in);
+    scc_set_external_loopback(scc, b);
+    return val_none();
+}
+
+static value_t scc_attr_pclk_hz(struct object *self, const member_t *m) {
+    (void)m;
+    scc_t *scc = scc_from(self);
+    return val_uint(4, scc ? scc_get_pclk_hz(scc) : 0);
+}
+
+static value_t scc_attr_rtxc_hz(struct object *self, const member_t *m) {
+    (void)m;
+    scc_t *scc = scc_from(self);
+    return val_uint(4, scc ? scc_get_rtxc_hz(scc) : 0);
+}
+
+static value_t scc_method_reset(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)m;
+    (void)argc;
+    (void)argv;
+    scc_t *scc = scc_from(self);
+    if (!scc)
+        return val_err("scc not available");
+    scc_reset(scc);
+    return val_none();
+}
+
+// --- Channel attributes -----------------------------------------------------
+//
+// One getter per logical attribute, dispatched by `m->attr.user_data`
+// holding the channel index (cast through uintptr_t). Three small
+// channel attrs exposed for now — the proposal lists "loopback,
+// reset, channel children a/b" without enumerating channel members,
+// so we expose the three things existing code already encapsulates
+// (`scc_channel_*`). Heavier per-channel views (BRG, baud, sync mode)
+// can land later once a real consumer needs them.
+
+static unsigned channel_index_from_member(const member_t *m) {
+    return (unsigned)(uintptr_t)m->attr.user_data;
+}
+
+static value_t scc_ch_attr_index(struct object *self, const member_t *m) {
+    (void)self;
+    return val_int((int)channel_index_from_member(m));
+}
+
+static value_t scc_ch_attr_dcd(struct object *self, const member_t *m) {
+    scc_t *scc = scc_from(self);
+    return val_bool(scc_channel_dcd(scc, channel_index_from_member(m)));
+}
+
+static value_t scc_ch_attr_tx_empty(struct object *self, const member_t *m) {
+    scc_t *scc = scc_from(self);
+    return val_bool(scc_channel_tx_empty(scc, channel_index_from_member(m)));
+}
+
+static value_t scc_ch_attr_rx_pending(struct object *self, const member_t *m) {
+    scc_t *scc = scc_from(self);
+    return val_uint(4, scc_channel_rx_pending(scc, channel_index_from_member(m)));
+}
+
+// Two member tables — one per channel — because the user_data slot
+// has to encode the channel index statically. (Trying to share a
+// single table across both channels would need per-instance member
+// data, which the substrate intentionally avoids.)
+
+static const member_t scc_ch_a_members[] = {
+    {.kind = M_ATTR,
+     .name = "index",
+     .flags = VAL_RO,
+     .attr = {.type = V_INT, .get = scc_ch_attr_index, .set = NULL, .user_data = (void *)(uintptr_t)0}      },
+    {.kind = M_ATTR,
+     .name = "dcd",
+     .flags = VAL_RO,
+     .attr = {.type = V_BOOL, .get = scc_ch_attr_dcd, .set = NULL, .user_data = (void *)(uintptr_t)0}       },
+    {.kind = M_ATTR,
+     .name = "tx_empty",
+     .flags = VAL_RO,
+     .attr = {.type = V_BOOL, .get = scc_ch_attr_tx_empty, .set = NULL, .user_data = (void *)(uintptr_t)0}  },
+    {.kind = M_ATTR,
+     .name = "rx_pending",
+     .flags = VAL_RO,
+     .attr = {.type = V_UINT, .get = scc_ch_attr_rx_pending, .set = NULL, .user_data = (void *)(uintptr_t)0}},
+};
+
+static const member_t scc_ch_b_members[] = {
+    {.kind = M_ATTR,
+     .name = "index",
+     .flags = VAL_RO,
+     .attr = {.type = V_INT, .get = scc_ch_attr_index, .set = NULL, .user_data = (void *)(uintptr_t)1}      },
+    {.kind = M_ATTR,
+     .name = "dcd",
+     .flags = VAL_RO,
+     .attr = {.type = V_BOOL, .get = scc_ch_attr_dcd, .set = NULL, .user_data = (void *)(uintptr_t)1}       },
+    {.kind = M_ATTR,
+     .name = "tx_empty",
+     .flags = VAL_RO,
+     .attr = {.type = V_BOOL, .get = scc_ch_attr_tx_empty, .set = NULL, .user_data = (void *)(uintptr_t)1}  },
+    {.kind = M_ATTR,
+     .name = "rx_pending",
+     .flags = VAL_RO,
+     .attr = {.type = V_UINT, .get = scc_ch_attr_rx_pending, .set = NULL, .user_data = (void *)(uintptr_t)1}},
+};
+
+const class_desc_t scc_channel_a_class = {
+    .name = "scc_channel",
+    .members = scc_ch_a_members,
+    .n_members = sizeof(scc_ch_a_members) / sizeof(scc_ch_a_members[0]),
+};
+const class_desc_t scc_channel_b_class = {
+    .name = "scc_channel",
+    .members = scc_ch_b_members,
+    .n_members = sizeof(scc_ch_b_members) / sizeof(scc_ch_b_members[0]),
+};
+
+static const member_t scc_members[] = {
+    {.kind = M_ATTR,
+     .name = "loopback",
+     .doc = "External loopback (port A TX → port B RX, port B TX → port A RX)",
+     .flags = 0,
+     .attr = {.type = V_BOOL, .get = scc_attr_loopback_get, .set = scc_attr_loopback_set}},
+    {.kind = M_ATTR,
+     .name = "pclk_hz",
+     .doc = "PCLK source frequency (Hz)",
+     .flags = VAL_RO,
+     .attr = {.type = V_UINT, .get = scc_attr_pclk_hz, .set = NULL}                      },
+    {.kind = M_ATTR,
+     .name = "rtxc_hz",
+     .doc = "RTxC source frequency (Hz)",
+     .flags = VAL_RO,
+     .attr = {.type = V_UINT, .get = scc_attr_rtxc_hz, .set = NULL}                      },
+    {.kind = M_METHOD,
+     .name = "reset",
+     .doc = "Reset the SCC (both channels)",
+     .flags = 0,
+     .method = {.args = NULL, .nargs = 0, .result = V_NONE, .fn = scc_method_reset}      },
+};
+
+const class_desc_t scc_class = {
+    .name = "scc",
+    .members = scc_members,
+    .n_members = sizeof(scc_members) / sizeof(scc_members[0]),
+};

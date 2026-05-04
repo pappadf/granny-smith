@@ -1072,15 +1072,13 @@ static void se30_init(config_t *cfg, checkpoint_t *checkpoint) {
     // Initialise VIA1 (NULL map: I/O dispatcher handles addressing)
     // VIA1: system events — VBL, ADB data (shift register), timers
     // freq_factor=20: SE/30 CPU runs at 15.6672 MHz, VIA φ2 clock is ~783 kHz (CPU/20)
-    cfg->via1 =
-        via_init(NULL, cfg->scheduler, 20, se30_via1_output, se30_via1_shift_out, se30_via1_irq, cfg, checkpoint);
-    via_set_instance_name(cfg->via1, "via1");
+    cfg->via1 = via_init(NULL, cfg->scheduler, 20, "via1", se30_via1_output, se30_via1_shift_out, se30_via1_irq, cfg,
+                         checkpoint);
 
     // Initialise VIA2 (NULL map: I/O dispatcher handles addressing)
     // VIA2: expansion — NuBus/PDS slots, SCSI, ASC interrupts, ADB control, RTC
-    cfg->via2 =
-        via_init(NULL, cfg->scheduler, 20, se30_via2_output, se30_via2_shift_out, se30_via2_irq, cfg, checkpoint);
-    via_set_instance_name(cfg->via2, "via2");
+    cfg->via2 = via_init(NULL, cfg->scheduler, 20, "via2", se30_via2_output, se30_via2_shift_out, se30_via2_irq, cfg,
+                         checkpoint);
 
     // Wire RTC 1-second tick to VIA1 CA2
     rtc_set_via(cfg->rtc, cfg->via1);

@@ -6,8 +6,15 @@
 
 #include "sound.h"
 #include "memory.h"
+#include "object.h"
 #include "platform.h"
 #include "system.h"
+#include "system_config.h"
+#include "value.h"
+
+// Forward declaration — class descriptor is at the bottom of the file but
+// sound_init / sound_delete reference it.
+extern const class_desc_t sound_class;
 
 #include <assert.h>
 #include <stddef.h>
@@ -21,6 +28,7 @@ struct sound {
     // Pointers last (excluded from checkpoint)
     uint16_t *buffer;
     memory_map_t *mem; // Memory map for buffer access
+    struct object *object; // object-tree node; lifetime tied to this sound
 };
 
 // System 6 starts at an offset of 90 words into the sound buffer, selected
@@ -131,6 +139,11 @@ sound_t *sound_init(memory_map_t *map, checkpoint_t *checkpoint) {
         system_read_checkpoint_data(checkpoint, sound, data_size);
     }
 
+    // Object-tree binding — instance_data is the sound itself.
+    sound->object = object_new(&sound_class, sound, "sound");
+    if (sound->object)
+        object_attach(object_root(), sound->object);
+
     return sound;
 }
 
@@ -138,6 +151,11 @@ sound_t *sound_init(memory_map_t *map, checkpoint_t *checkpoint) {
 void sound_delete(sound_t *sound) {
     if (!sound)
         return;
+    if (sound->object) {
+        object_detach(sound->object);
+        object_delete(sound->object);
+        sound->object = NULL;
+    }
     free(sound);
 }
 
@@ -150,3 +168,105 @@ void sound_checkpoint(sound_t *restrict sound, checkpoint_t *checkpoint) {
     system_write_checkpoint_data(checkpoint, sound, data_size);
     // Do not write buffer contents; RAM is serialized by memory_map_checkpoint.
 }
+
+// === Object-model class descriptor =========================================
+//
+// Plus's PWM sound module per proposal §5.4: `sound.enabled`,
+// `sound.sample_rate`, `sound.volume` attributes plus `mute(bool)`
+// method. SE/30 / IIcx use the Apple Sound Chip and don't populate
+// `cfg->sound`; the object is only attached when the field is set.
+//
+// instance_data is the sound_t* itself; lifetime is tied to
+// sound_init / sound_delete.
+
+static sound_t *sound_self_from(struct object *self) {
+    return (sound_t *)object_data(self);
+}
+
+static value_t sound_attr_enabled_get(struct object *self, const member_t *m) {
+    (void)m;
+    return val_bool(sound_get_enabled(sound_self_from(self)));
+}
+static value_t sound_attr_enabled_set(struct object *self, const member_t *m, value_t in) {
+    (void)m;
+    sound_t *sound = sound_self_from(self);
+    if (!sound) {
+        value_free(&in);
+        return val_err("sound not available");
+    }
+    bool b = val_as_bool(&in);
+    value_free(&in);
+    sound_enable(sound, b);
+    return val_none();
+}
+
+static value_t sound_attr_volume_get(struct object *self, const member_t *m) {
+    (void)m;
+    return val_uint(1, sound_get_volume(sound_self_from(self)));
+}
+static value_t sound_attr_volume_set(struct object *self, const member_t *m, value_t in) {
+    (void)m;
+    sound_t *sound = sound_self_from(self);
+    if (!sound) {
+        value_free(&in);
+        return val_err("sound not available");
+    }
+    bool ok = true;
+    uint64_t v = val_as_u64(&in, &ok);
+    value_free(&in);
+    if (!ok)
+        return val_err("sound.volume: value is not numeric");
+    if (v >= 8)
+        return val_err("sound.volume: must be 0..7 (got %llu)", (unsigned long long)v);
+    sound_volume(sound, (unsigned)v);
+    return val_none();
+}
+
+static value_t sound_attr_sample_rate(struct object *self, const member_t *m) {
+    (void)m;
+    return val_uint(4, sound_get_sample_rate(sound_self_from(self)));
+}
+
+static value_t sound_method_mute(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)m;
+    sound_t *sound = sound_self_from(self);
+    if (!sound)
+        return val_err("sound not available");
+    if (argc < 1)
+        return val_err("sound.mute: expected (muted)");
+    bool muted = val_as_bool(&argv[0]);
+    sound_mute(sound, muted);
+    return val_none();
+}
+
+static const arg_decl_t sound_mute_args[] = {
+    {.name = "muted", .kind = V_BOOL, .doc = "true to mute, false to unmute"},
+};
+
+static const member_t sound_members[] = {
+    {.kind = M_ATTR,
+     .name = "enabled",
+     .doc = "Sound output gate (writable mirror of mute)",
+     .flags = 0,
+     .attr = {.type = V_BOOL, .get = sound_attr_enabled_get, .set = sound_attr_enabled_set}},
+    {.kind = M_ATTR,
+     .name = "volume",
+     .doc = "Output level (0..7)",
+     .flags = 0,
+     .attr = {.type = V_UINT, .get = sound_attr_volume_get, .set = sound_attr_volume_set}},
+    {.kind = M_ATTR,
+     .name = "sample_rate",
+     .doc = "Output sample rate in Hz",
+     .flags = VAL_RO,
+     .attr = {.type = V_UINT, .get = sound_attr_sample_rate, .set = NULL}},
+    {.kind = M_METHOD,
+     .name = "mute",
+     .doc = "Mute or unmute the sound output",
+     .method = {.args = sound_mute_args, .nargs = 1, .result = V_NONE, .fn = sound_method_mute}},
+};
+
+const class_desc_t sound_class = {
+    .name = "sound",
+    .members = sound_members,
+    .n_members = sizeof(sound_members) / sizeof(sound_members[0]),
+};

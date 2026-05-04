@@ -85,6 +85,10 @@ struct debug {
     uint32_t trace_entries_tail;
     // Platform-specific assertion callback (e.g., for test integration)
     void (*assertion_callback)(const char *expr, const char *file, int line, const char *func);
+    // Object-tree binding — lifetime tied to debug_init / debug_cleanup.
+    struct object *debugger_object;
+    struct object *bp_collection_object;
+    struct object *lp_collection_object;
 };
 
 struct debug;

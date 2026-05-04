@@ -18,6 +18,7 @@
 #include <string.h>
 
 #include "object.h" // object_is_reserved_word, object_validate_name
+#include "value.h"
 
 typedef struct {
     char *name;
@@ -229,3 +230,96 @@ void alias_clear_user(void) {
         memset(&g_table[i], 0, sizeof(alias_entry_t));
     g_count = w;
 }
+
+// === Object-model class descriptor =========================================
+//
+// `shell.alias` exposes alias add / remove / list as object methods.
+
+static value_t method_alias_add(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)self;
+    (void)m;
+    if (argc < 2)
+        return val_err("shell.alias.add: expected 2 args (name, path)");
+    if (argv[0].kind != V_STRING || argv[1].kind != V_STRING)
+        return val_err("shell.alias.add: name and path must be strings");
+    char err[160];
+    if (alias_add_user(argv[0].s, argv[1].s, err, sizeof(err)) < 0)
+        return val_err("%s", err);
+    return val_none();
+}
+
+static value_t method_alias_remove(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)self;
+    (void)m;
+    if (argc < 1 || argv[0].kind != V_STRING)
+        return val_err("shell.alias.remove: expected name (string)");
+    char err[160];
+    if (alias_remove_user(argv[0].s, err, sizeof(err)) < 0)
+        return val_err("%s", err);
+    return val_none();
+}
+
+// shell.alias.list builds a V_LIST of V_STRING entries: each "name=path".
+typedef struct {
+    value_t *items;
+    size_t len;
+    size_t cap;
+} list_acc_t;
+
+static bool list_acc_collect(const char *name, const char *path, alias_kind_t kind, void *ud) {
+    list_acc_t *acc = (list_acc_t *)ud;
+    char buf[256];
+    snprintf(buf, sizeof(buf), "%s=%s%s", name, path, kind == ALIAS_BUILTIN ? " (built-in)" : "");
+    if (acc->len + 1 > acc->cap) {
+        size_t cap = acc->cap ? acc->cap * 2 : 32;
+        value_t *t = (value_t *)realloc(acc->items, cap * sizeof(value_t));
+        if (!t)
+            return false;
+        acc->items = t;
+        acc->cap = cap;
+    }
+    acc->items[acc->len++] = val_str(buf);
+    return true;
+}
+
+static value_t method_alias_list(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)self;
+    (void)m;
+    (void)argc;
+    (void)argv;
+    list_acc_t acc = {0};
+    alias_each(list_acc_collect, &acc);
+    return val_list(acc.items, acc.len);
+}
+
+static const arg_decl_t alias_add_args[] = {
+    {.name = "name", .kind = V_STRING, .flags = 0, .doc = "alias identifier (no $)"          },
+    {.name = "path", .kind = V_STRING, .flags = 0, .doc = "object path the alias substitutes"},
+};
+static const arg_decl_t alias_remove_args[] = {
+    {.name = "name", .kind = V_STRING, .flags = 0, .doc = "alias identifier (no $)"},
+};
+
+static const member_t shell_alias_members[] = {
+    {.kind = M_METHOD,
+     .name = "add",
+     .doc = "Register a user alias",
+     .flags = 0,
+     .method = {.args = alias_add_args, .nargs = 2, .result = V_NONE, .fn = method_alias_add}      },
+    {.kind = M_METHOD,
+     .name = "remove",
+     .doc = "Remove a user alias",
+     .flags = 0,
+     .method = {.args = alias_remove_args, .nargs = 1, .result = V_NONE, .fn = method_alias_remove}},
+    {.kind = M_METHOD,
+     .name = "list",
+     .doc = "List aliases as 'name=path' strings",
+     .flags = 0,
+     .method = {.args = NULL, .nargs = 0, .result = V_LIST, .fn = method_alias_list}               },
+};
+
+const class_desc_t shell_alias_class = {
+    .name = "alias",
+    .members = shell_alias_members,
+    .n_members = sizeof(shell_alias_members) / sizeof(shell_alias_members[0]),
+};

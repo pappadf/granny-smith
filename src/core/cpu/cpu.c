@@ -8,7 +8,16 @@
 
 #include "fpu.h"
 #include "log.h"
+#include "memory.h"
+#include "object.h"
 #include "system.h"
+#include "system_config.h"
+#include "value.h"
+
+// Forward declarations — class descriptors are at the bottom of the file but
+// cpu_init / cpu_delete reference them.
+extern const class_desc_t cpu_class;
+extern const class_desc_t fpu_class;
 LOG_USE_CATEGORY_NAME("cpu");
 
 // Declare decoder functions (defined in cpu_68000.c and cpu_68030.c)
@@ -162,6 +171,18 @@ extern cpu_t *cpu_init(int cpu_model, checkpoint_t *checkpoint) {
         cpu->fpu = fpu_init();
     }
 
+    // Object-tree binding — instance_data on the cpu node is the cpu_t
+    // itself, on the fpu node it's the fpu_state_t* directly.
+    cpu->cpu_object = object_new(&cpu_class, cpu, "cpu");
+    if (cpu->cpu_object) {
+        object_attach(object_root(), cpu->cpu_object);
+        if (cpu->fpu) {
+            cpu->fpu_object = object_new(&fpu_class, cpu->fpu, "fpu");
+            if (cpu->fpu_object)
+                object_attach(cpu->cpu_object, cpu->fpu_object);
+        }
+    }
+
     return cpu;
 }
 
@@ -169,6 +190,16 @@ extern cpu_t *cpu_init(int cpu_model, checkpoint_t *checkpoint) {
 void cpu_delete(cpu_t *cpu) {
     if (!cpu)
         return;
+    if (cpu->fpu_object) {
+        object_detach(cpu->fpu_object);
+        object_delete(cpu->fpu_object);
+        cpu->fpu_object = NULL;
+    }
+    if (cpu->cpu_object) {
+        object_detach(cpu->cpu_object);
+        object_delete(cpu->cpu_object);
+        cpu->cpu_object = NULL;
+    }
     if (cpu->fpu) {
         fpu_free((fpu_state_t *)cpu->fpu);
         cpu->fpu = NULL;
@@ -193,3 +224,320 @@ void cpu_run_sprint(cpu_t *restrict cpu, uint32_t *instructions) {
     else
         cpu_run_68000(cpu, instructions);
 }
+
+// === Object-model class descriptors =========================================
+//
+// instance_data on the cpu node is the cpu_t* itself; lifetime is tied
+// to cpu_init / cpu_delete.
+
+static cpu_t *cpu_from(struct object *self) {
+    return (cpu_t *)object_data(self);
+}
+
+// === CPU class ==============================================================
+
+static value_t attr_cpu_pc(struct object *self, const member_t *m) {
+    (void)m;
+    cpu_t *cpu = cpu_from(self);
+    if (!cpu)
+        return val_err("cpu not initialised");
+    value_t v = val_uint(4, cpu_get_pc(cpu));
+    v.flags |= VAL_HEX;
+    return v;
+}
+
+static value_t attr_cpu_sr(struct object *self, const member_t *m) {
+    (void)m;
+    cpu_t *cpu = cpu_from(self);
+    if (!cpu)
+        return val_err("cpu not initialised");
+    value_t v = val_uint(2, cpu_get_sr(cpu));
+    v.flags |= VAL_HEX;
+    return v;
+}
+
+static value_t attr_cpu_ccr(struct object *self, const member_t *m) {
+    (void)m;
+    cpu_t *cpu = cpu_from(self);
+    if (!cpu)
+        return val_err("cpu not initialised");
+    value_t v = val_uint(1, cpu_get_sr(cpu) & 0xFFu);
+    v.flags |= VAL_HEX;
+    return v;
+}
+
+static value_t attr_cpu_ssp(struct object *self, const member_t *m) {
+    (void)m;
+    cpu_t *cpu = cpu_from(self);
+    if (!cpu)
+        return val_err("cpu not initialised");
+    value_t v = val_uint(4, cpu_get_ssp(cpu));
+    v.flags |= VAL_HEX;
+    return v;
+}
+
+static value_t attr_cpu_usp(struct object *self, const member_t *m) {
+    (void)m;
+    cpu_t *cpu = cpu_from(self);
+    if (!cpu)
+        return val_err("cpu not initialised");
+    value_t v = val_uint(4, cpu_get_usp(cpu));
+    v.flags |= VAL_HEX;
+    return v;
+}
+
+static value_t attr_cpu_msp(struct object *self, const member_t *m) {
+    (void)m;
+    cpu_t *cpu = cpu_from(self);
+    if (!cpu)
+        return val_err("cpu not initialised");
+    value_t v = val_uint(4, cpu_get_msp(cpu));
+    v.flags |= VAL_HEX;
+    return v;
+}
+
+static value_t attr_cpu_vbr(struct object *self, const member_t *m) {
+    (void)m;
+    cpu_t *cpu = cpu_from(self);
+    if (!cpu)
+        return val_err("cpu not initialised");
+    value_t v = val_uint(4, cpu_get_vbr(cpu));
+    v.flags |= VAL_HEX;
+    return v;
+}
+
+static value_t attr_cpu_sp(struct object *self, const member_t *m) {
+    (void)m;
+    cpu_t *cpu = cpu_from(self);
+    if (!cpu)
+        return val_err("cpu not initialised");
+    value_t v = val_uint(4, cpu_get_an(cpu, 7));
+    v.flags |= VAL_HEX;
+    return v;
+}
+
+#define CPU_DREG_GETTER(N)                                                                                             \
+    static value_t attr_cpu_d##N(struct object *self, const member_t *m) {                                             \
+        (void)m;                                                                                                       \
+        cpu_t *cpu = cpu_from(self);                                                                                   \
+        if (!cpu)                                                                                                      \
+            return val_err("cpu not initialised");                                                                     \
+        value_t v = val_uint(4, cpu_get_dn(cpu, N));                                                                   \
+        v.flags |= VAL_HEX;                                                                                            \
+        return v;                                                                                                      \
+    }
+#define CPU_AREG_GETTER(N)                                                                                             \
+    static value_t attr_cpu_a##N(struct object *self, const member_t *m) {                                             \
+        (void)m;                                                                                                       \
+        cpu_t *cpu = cpu_from(self);                                                                                   \
+        if (!cpu)                                                                                                      \
+            return val_err("cpu not initialised");                                                                     \
+        value_t v = val_uint(4, cpu_get_an(cpu, N));                                                                   \
+        v.flags |= VAL_HEX;                                                                                            \
+        return v;                                                                                                      \
+    }
+
+// clang-format off — these macros expand to function definitions
+// without a trailing `;`, which clang-format mis-parses as expressions.
+CPU_DREG_GETTER(0)
+CPU_DREG_GETTER(1)
+CPU_DREG_GETTER(2)
+CPU_DREG_GETTER(3)
+CPU_DREG_GETTER(4)
+CPU_DREG_GETTER(5)
+CPU_DREG_GETTER(6)
+CPU_DREG_GETTER(7)
+CPU_AREG_GETTER(0)
+CPU_AREG_GETTER(1)
+CPU_AREG_GETTER(2)
+CPU_AREG_GETTER(3)
+CPU_AREG_GETTER(4)
+CPU_AREG_GETTER(5)
+CPU_AREG_GETTER(6)
+CPU_AREG_GETTER(7)
+// clang-format on
+
+#define ATTR_RO_HEX(name_, get_)                                                                                       \
+    {                                                                                                                  \
+        .kind = M_ATTR, .name = name_, .flags = VAL_RO | VAL_HEX, .attr = {.type = V_UINT, .get = get_, .set = NULL }  \
+    }
+
+static const member_t cpu_members[] = {
+    ATTR_RO_HEX("pc", attr_cpu_pc),   ATTR_RO_HEX("sr", attr_cpu_sr),   ATTR_RO_HEX("ccr", attr_cpu_ccr),
+    ATTR_RO_HEX("ssp", attr_cpu_ssp), ATTR_RO_HEX("usp", attr_cpu_usp), ATTR_RO_HEX("msp", attr_cpu_msp),
+    ATTR_RO_HEX("vbr", attr_cpu_vbr), ATTR_RO_HEX("sp", attr_cpu_sp),   ATTR_RO_HEX("d0", attr_cpu_d0),
+    ATTR_RO_HEX("d1", attr_cpu_d1),   ATTR_RO_HEX("d2", attr_cpu_d2),   ATTR_RO_HEX("d3", attr_cpu_d3),
+    ATTR_RO_HEX("d4", attr_cpu_d4),   ATTR_RO_HEX("d5", attr_cpu_d5),   ATTR_RO_HEX("d6", attr_cpu_d6),
+    ATTR_RO_HEX("d7", attr_cpu_d7),   ATTR_RO_HEX("a0", attr_cpu_a0),   ATTR_RO_HEX("a1", attr_cpu_a1),
+    ATTR_RO_HEX("a2", attr_cpu_a2),   ATTR_RO_HEX("a3", attr_cpu_a3),   ATTR_RO_HEX("a4", attr_cpu_a4),
+    ATTR_RO_HEX("a5", attr_cpu_a5),   ATTR_RO_HEX("a6", attr_cpu_a6),   ATTR_RO_HEX("a7", attr_cpu_a7),
+};
+
+const class_desc_t cpu_class = {
+    .name = "cpu",
+    .members = cpu_members,
+    .n_members = sizeof(cpu_members) / sizeof(cpu_members[0]),
+};
+
+// === CPU.fpu child class ====================================================
+//
+// instance_data on the fpu node is the fpu_state_t* itself; lifetime
+// is tied to cpu_init / cpu_delete (the parent cpu owns the fpu).
+
+static fpu_state_t *fpu_from(struct object *self) {
+    return (fpu_state_t *)object_data(self);
+}
+
+static value_t attr_fpu_fpcr(struct object *self, const member_t *m) {
+    (void)m;
+    fpu_state_t *fpu = fpu_from(self);
+    if (!fpu)
+        return val_err("fpu not present");
+    value_t v = val_uint(4, fpu->fpcr);
+    v.flags |= VAL_HEX;
+    return v;
+}
+
+static value_t attr_fpu_fpsr(struct object *self, const member_t *m) {
+    (void)m;
+    fpu_state_t *fpu = fpu_from(self);
+    if (!fpu)
+        return val_err("fpu not present");
+    value_t v = val_uint(4, fpu->fpsr);
+    v.flags |= VAL_HEX;
+    return v;
+}
+
+static value_t attr_fpu_fpiar(struct object *self, const member_t *m) {
+    (void)m;
+    fpu_state_t *fpu = fpu_from(self);
+    if (!fpu)
+        return val_err("fpu not present");
+    value_t v = val_uint(4, fpu->fpiar);
+    v.flags |= VAL_HEX;
+    return v;
+}
+
+// FP0..FP7: 80-bit extended precision. Expose the raw register bytes
+// as V_BYTES (10 bytes) so the formatter can hex-dump it and tests
+// can compare bit-for-bit. Conversion to a host double is lossy and
+// belongs in a future helper; M3 keeps the raw payload visible.
+static value_t attr_fpu_fpN(struct object *self, const member_t *m) {
+    fpu_state_t *fpu = fpu_from(self);
+    if (!fpu)
+        return val_err("fpu not present");
+    int n = (int)(uintptr_t)m->attr.user_data;
+    if (n < 0 || n > 7)
+        return val_err("invalid fp register index %d", n);
+    return val_bytes(&fpu->fp[n], sizeof(fpu->fp[n]));
+}
+
+#define FP_REG(idx)                                                                                                    \
+    {                                                                                                                  \
+        .kind = M_ATTR, .name = "fp" #idx, .flags = VAL_RO, .attr = {                                                  \
+            .type = V_BYTES,                                                                                           \
+            .get = attr_fpu_fpN,                                                                                       \
+            .set = NULL,                                                                                               \
+            .user_data = (const void *)(uintptr_t)idx                                                                  \
+        }                                                                                                              \
+    }
+
+static const member_t fpu_members[] = {
+    FP_REG(0),
+    FP_REG(1),
+    FP_REG(2),
+    FP_REG(3),
+    FP_REG(4),
+    FP_REG(5),
+    FP_REG(6),
+    FP_REG(7),
+    {.kind = M_ATTR,
+         .name = "fpcr",
+         .flags = VAL_RO | VAL_HEX,
+         .attr = {.type = V_UINT, .get = attr_fpu_fpcr, .set = NULL} },
+    {.kind = M_ATTR,
+         .name = "fpsr",
+         .flags = VAL_RO | VAL_HEX,
+         .attr = {.type = V_UINT, .get = attr_fpu_fpsr, .set = NULL} },
+    {.kind = M_ATTR,
+         .name = "fpiar",
+         .flags = VAL_RO | VAL_HEX,
+         .attr = {.type = V_UINT, .get = attr_fpu_fpiar, .set = NULL}},
+};
+
+const class_desc_t fpu_class = {
+    .name = "fpu",
+    .members = fpu_members,
+    .n_members = sizeof(fpu_members) / sizeof(fpu_members[0]),
+};
+
+// === memory.peek child class ================================================
+//
+// Three methods (b/w/l) that read sized values from guest memory at a
+// caller-supplied address. Used by ${...} interpolation in logpoint
+// messages (proposal §5.3) and any expression that needs a peek.
+
+static value_t method_mem_peek_b(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)self;
+    (void)m;
+    if (argc < 1)
+        return val_err("memory.peek.b: expected addr");
+    bool ok = false;
+    uint64_t a = val_as_u64(&argv[0], &ok);
+    if (!ok)
+        return val_err("memory.peek.b: addr must be numeric");
+    value_t v = val_uint(1, memory_read_uint8((uint32_t)a));
+    v.flags |= VAL_HEX;
+    return v;
+}
+static value_t method_mem_peek_w(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)self;
+    (void)m;
+    if (argc < 1)
+        return val_err("memory.peek.w: expected addr");
+    bool ok = false;
+    uint64_t a = val_as_u64(&argv[0], &ok);
+    if (!ok)
+        return val_err("memory.peek.w: addr must be numeric");
+    value_t v = val_uint(2, memory_read_uint16((uint32_t)a));
+    v.flags |= VAL_HEX;
+    return v;
+}
+static value_t method_mem_peek_l(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)self;
+    (void)m;
+    if (argc < 1)
+        return val_err("memory.peek.l: expected addr");
+    bool ok = false;
+    uint64_t a = val_as_u64(&argv[0], &ok);
+    if (!ok)
+        return val_err("memory.peek.l: addr must be numeric");
+    value_t v = val_uint(4, memory_read_uint32((uint32_t)a));
+    v.flags |= VAL_HEX;
+    return v;
+}
+
+static const arg_decl_t mem_peek_args[] = {
+    {.name = "addr", .kind = V_UINT, .flags = VAL_HEX, .doc = "guest memory address"},
+};
+
+static const member_t mem_peek_members[] = {
+    {.kind = M_METHOD,
+     .name = "b",
+     .doc = "Read 1 byte at addr",
+     .method = {.args = mem_peek_args, .nargs = 1, .result = V_UINT, .fn = method_mem_peek_b}},
+    {.kind = M_METHOD,
+     .name = "w",
+     .doc = "Read 2 bytes (big-endian word) at addr",
+     .method = {.args = mem_peek_args, .nargs = 1, .result = V_UINT, .fn = method_mem_peek_w}},
+    {.kind = M_METHOD,
+     .name = "l",
+     .doc = "Read 4 bytes (big-endian long) at addr",
+     .method = {.args = mem_peek_args, .nargs = 1, .result = V_UINT, .fn = method_mem_peek_l}},
+};
+
+const class_desc_t mem_peek_class = {
+    .name = "peek",
+    .members = mem_peek_members,
+    .n_members = sizeof(mem_peek_members) / sizeof(mem_peek_members[0]),
+};

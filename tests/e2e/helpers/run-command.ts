@@ -255,13 +255,13 @@ function translateToGsEval(line: string): Translation | null {
   // AppleTalk shares (typed methods return V_NONE — use void_or_error)
   if (head === 'atalk-share-add' && tail.length === 2)
     return {
-      method: 'network.appletalk.shares.add',
+      method: 'appletalk.shares.add',
       args: tail,
       convention: 'void_or_error',
     };
   if (head === 'atalk-share-remove' && tail.length === 1)
     return {
-      method: 'network.appletalk.shares.remove',
+      method: 'appletalk.shares.remove',
       args: tail,
       convention: 'void_or_error',
     };

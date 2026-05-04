@@ -882,4 +882,4 @@ int debug_mac_resolve_key_name(const char *name) {
 }
 
 // Phase 5c — `post-event` and `set-time` legacy commands deleted. The
-// typed surface (`network.appletalk.*`, `rtc.set_time`) replaces them.
+// typed surface (`appletalk.*`, `rtc.set_time`) replaces them.

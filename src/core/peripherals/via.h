@@ -35,12 +35,12 @@ typedef void (*via_irq_fn)(void *context, bool active);
 // shift_cb: called when the shift register completes a shift-out
 // irq_cb: called when the aggregate interrupt line changes state
 // cb_context: opaque pointer passed to all three callbacks
-via_t *via_init(memory_map_t *map, struct scheduler *scheduler, uint8_t freq_factor, via_output_fn output_cb,
-                via_shift_out_fn shift_cb, via_irq_fn irq_cb, void *cb_context, checkpoint_t *checkpoint);
-
-// Set a custom instance name for event type registration (e.g. "via1", "via2").
-// Must be called before scheduler_start() if using checkpoints on multi-VIA machines.
-void via_set_instance_name(via_t *via, const char *name);
+// `name` ("via1" / "via2") tags scheduler events for checkpointing and is
+// used as the object-tree node name. Must be a string literal or otherwise
+// outlive the via_t.
+via_t *via_init(memory_map_t *map, struct scheduler *scheduler, uint8_t freq_factor, const char *name,
+                via_output_fn output_cb, via_shift_out_fn shift_cb, via_irq_fn irq_cb, void *cb_context,
+                checkpoint_t *checkpoint);
 
 void via_delete(via_t *via);
 

@@ -7,7 +7,10 @@
 #include "rtc.h"
 
 #include "log.h"
+#include "object.h"
 #include "system.h"
+#include "system_config.h"
+#include "value.h"
 #include "via.h"
 
 #include <assert.h>
@@ -20,6 +23,10 @@
 #include <time.h>
 
 LOG_USE_CATEGORY_NAME("rtc");
+
+// Forward declaration — class descriptor is defined at the bottom of the
+// file but rtc_init / rtc_delete reference it.
+extern const class_desc_t rtc_class;
 
 // === Private Types ===
 // RTC state structure (opaque to callers)
@@ -38,6 +45,7 @@ struct rtc {
     /* Pointers and non-POD members last */
     via_t *via;
     struct scheduler *scheduler;
+    struct object *object; // object-tree node; lifetime tied to this rtc
 };
 
 // diff between mac (1904) and unix (1970) epochs
@@ -358,6 +366,12 @@ rtc_t *rtc_init(struct scheduler *restrict scheduler, checkpoint_t *checkpoint) 
         LOG(1, "rtc_init: scheduled one-second interrupt");
     }
 
+    // Object-tree binding — instance_data is the rtc itself, so getters
+    // can recover it without consulting cfg.
+    rtc->object = object_new(&rtc_class, rtc, "rtc");
+    if (rtc->object)
+        object_attach(object_root(), rtc->object);
+
     return rtc;
 }
 
@@ -365,6 +379,11 @@ void rtc_delete(rtc_t *rtc) {
     if (!rtc)
         return;
     LOG(1, "rtc_delete: freeing rtc seconds=%u", rtc->seconds);
+    if (rtc->object) {
+        object_detach(rtc->object);
+        object_delete(rtc->object);
+        rtc->object = NULL;
+    }
     free(rtc);
 }
 
@@ -375,3 +394,172 @@ void rtc_checkpoint(rtc_t *restrict rtc, checkpoint_t *checkpoint) {
     size_t data_size = offsetof(rtc_t, via);
     system_write_checkpoint_data(checkpoint, rtc, data_size);
 }
+
+// === Object-model class descriptor =========================================
+//
+// `rtc.time` is the writable head (Mac-epoch seconds, 1904); it
+// replaces `set-time` as the canonical entry point — the legacy
+// command remains and `rtc.time = N` is the new equivalent. PRAM is
+// exposed two ways: a read-only V_BYTES snapshot of all 256 bytes
+// (`rtc.pram`) and per-byte read/write methods (`pram_read(addr)`,
+// `pram_write(addr, value)`). Per-byte writes honor the write-protect
+// bit the same way the chip-level command stream does — bypassing it
+// from the shell would let test scripts mask kernel bugs.
+//
+// instance_data is the rtc_t* itself — the object's lifetime is tied
+// to rtc_init / rtc_delete so it is never NULL while the object exists.
+
+static rtc_t *rtc_from(struct object *self) {
+    return (rtc_t *)object_data(self);
+}
+
+static value_t rtc_attr_time_get(struct object *self, const member_t *m) {
+    (void)m;
+    rtc_t *rtc = rtc_from(self);
+    return val_uint(4, rtc ? rtc_get_seconds(rtc) : 0);
+}
+
+static value_t rtc_attr_time_set(struct object *self, const member_t *m, value_t in) {
+    (void)m;
+    rtc_t *rtc = rtc_from(self);
+    if (!rtc) {
+        value_free(&in);
+        return val_err("rtc not available");
+    }
+    uint32_t mac_seconds = 0;
+    bool resolved = false;
+    if (in.kind == V_STRING && in.s) {
+        // Accept either a decimal unix-epoch string or an ISO-8601
+        // "YYYY-MM-DDTHH:MM:SS" timestamp. Either way, the result is
+        // unix seconds, then we shift to the Mac 1904 epoch.
+        char *endp = NULL;
+        long long parsed = strtoll(in.s, &endp, 10);
+        if (endp && endp != in.s && *endp == '\0') {
+            if (parsed < 0) {
+                value_free(&in);
+                return val_err("rtc.time: epoch must be non-negative");
+            }
+            mac_seconds = (uint32_t)((uint64_t)parsed + 2082844800u /* MAC_TO_UNIX_EPOCH */);
+            resolved = true;
+        } else {
+            struct tm tm = {0};
+            if (strptime(in.s, "%Y-%m-%dT%H:%M:%S", &tm)) {
+                time_t t = timegm(&tm);
+                if (t != (time_t)-1) {
+                    mac_seconds = (uint32_t)((int64_t)t + 2082844800);
+                    resolved = true;
+                }
+            }
+        }
+        if (!resolved) {
+            value_free(&in);
+            return val_err("rtc.time: expected unix-epoch integer or YYYY-MM-DDTHH:MM:SS");
+        }
+    } else {
+        bool ok = true;
+        uint64_t s = val_as_u64(&in, &ok);
+        if (!ok) {
+            value_free(&in);
+            return val_err("rtc.time: value is not numeric");
+        }
+        // Numeric input is treated as Mac-epoch seconds (matches the
+        // getter's V_UINT result). Use the string form for unix epochs
+        // or ISO timestamps.
+        mac_seconds = (uint32_t)s;
+    }
+    value_free(&in);
+    rtc_set_seconds(rtc, mac_seconds);
+    return val_none();
+}
+
+static value_t rtc_attr_read_only(struct object *self, const member_t *m) {
+    (void)m;
+    rtc_t *rtc = rtc_from(self);
+    return val_bool(rtc ? rtc_get_read_only(rtc) : false);
+}
+
+static value_t rtc_attr_pram(struct object *self, const member_t *m) {
+    (void)m;
+    rtc_t *rtc = rtc_from(self);
+    if (!rtc)
+        return val_err("rtc not available");
+    uint8_t buf[256];
+    for (int i = 0; i < 256; i++)
+        buf[i] = rtc_pram_read(rtc, (uint8_t)i);
+    return val_bytes(buf, sizeof(buf));
+}
+
+static value_t rtc_method_pram_read(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)m;
+    rtc_t *rtc = rtc_from(self);
+    if (!rtc)
+        return val_err("rtc not available");
+    if (argc < 1)
+        return val_err("rtc.pram_read: expected (addr)");
+    bool ok = true;
+    uint64_t addr = val_as_u64(&argv[0], &ok);
+    if (!ok || addr > 0xFF)
+        return val_err("rtc.pram_read: addr must be 0..255");
+    value_t v = val_uint(1, rtc_pram_read(rtc, (uint8_t)addr));
+    v.flags |= VAL_HEX;
+    return v;
+}
+
+static value_t rtc_method_pram_write(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)m;
+    rtc_t *rtc = rtc_from(self);
+    if (!rtc)
+        return val_err("rtc not available");
+    if (argc < 2)
+        return val_err("rtc.pram_write: expected (addr, value)");
+    bool ok1 = true, ok2 = true;
+    uint64_t addr = val_as_u64(&argv[0], &ok1);
+    uint64_t value = val_as_u64(&argv[1], &ok2);
+    if (!ok1 || !ok2)
+        return val_err("rtc.pram_write: arguments must be numeric");
+    if (addr > 0xFF || value > 0xFF)
+        return val_err("rtc.pram_write: addr and value must be 0..255");
+    if (!rtc_pram_write(rtc, (uint8_t)addr, (uint8_t)value))
+        return val_err("rtc.pram_write: PRAM is write-protected");
+    return val_none();
+}
+
+static const arg_decl_t rtc_pram_read_args[] = {
+    {.name = "addr", .kind = V_UINT, .flags = VAL_HEX, .doc = "PRAM offset (0..255)"},
+};
+static const arg_decl_t rtc_pram_write_args[] = {
+    {.name = "addr",  .kind = V_UINT, .flags = VAL_HEX, .doc = "PRAM offset (0..255)"},
+    {.name = "value", .kind = V_UINT, .flags = VAL_HEX, .doc = "byte to write"       },
+};
+
+static const member_t rtc_members[] = {
+    {.kind = M_ATTR,
+     .name = "time",
+     .doc = "Mac-epoch seconds (1904-based); writable",
+     .flags = 0,
+     .attr = {.type = V_UINT, .get = rtc_attr_time_get, .set = rtc_attr_time_set}},
+    {.kind = M_ATTR,
+     .name = "read_only",
+     .doc = "Write-protect bit",
+     .flags = VAL_RO,
+     .attr = {.type = V_BOOL, .get = rtc_attr_read_only, .set = NULL}},
+    {.kind = M_ATTR,
+     .name = "pram",
+     .doc = "256-byte PRAM snapshot",
+     .flags = VAL_RO,
+     .attr = {.type = V_BYTES, .get = rtc_attr_pram, .set = NULL}},
+    {.kind = M_METHOD,
+     .name = "pram_read",
+     .doc = "Read one PRAM byte",
+     .method = {.args = rtc_pram_read_args, .nargs = 1, .result = V_UINT, .fn = rtc_method_pram_read}},
+    {.kind = M_METHOD,
+     .name = "pram_write",
+     .doc = "Write one PRAM byte (honors the write-protect bit)",
+     .method = {.args = rtc_pram_write_args, .nargs = 2, .result = V_NONE, .fn = rtc_method_pram_write}},
+};
+
+const class_desc_t rtc_class = {
+    .name = "rtc",
+    .members = rtc_members,
+    .n_members = sizeof(rtc_members) / sizeof(rtc_members[0]),
+};

@@ -24,6 +24,7 @@ RUN apt-get update \
     nodejs \
     npm \
     clang-format-18 \
+    gh \
  && rm -rf /var/lib/apt/lists/* \
  && pip3 install --break-system-packages --no-cache-dir pre-commit
 

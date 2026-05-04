@@ -1,6 +1,6 @@
-# M6 integration: debugger.breakpoints / .logpoints / .watches
-# indexed-child surface. Verifies:
-#   - debugger root resolves and lists three children
+# M6 integration: debugger.breakpoints / .logpoints indexed-child
+# surface. Verifies:
+#   - debugger root resolves and lists its children
 #   - debugger.breakpoints.add(addr) adds a breakpoint AND the
 #     entry is reachable via debugger.breakpoints.<id>
 #   - sparse stable indices: removing #0 does not renumber #1
@@ -14,7 +14,6 @@ run 50000
 debugger
 debugger.breakpoints
 debugger.logpoints
-debugger.watches
 
 # Add via the new method, capturing into the breakpoint store.
 echo $(debugger.breakpoints.add(0x400100))

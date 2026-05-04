@@ -30,7 +30,14 @@
 #include "scheduler.h"
 #include "shell.h"
 #include "system.h"
+#include "system_config.h"
 #include "value.h"
+
+// Forward declarations — class descriptors are at the bottom of the file but
+// debug_init / debug_cleanup reference them.
+extern const class_desc_t debugger_class;
+extern const class_desc_t bp_collection_class;
+extern const class_desc_t lp_collection_class;
 
 #include <ctype.h>
 #include <stdarg.h>
@@ -1980,10 +1987,6 @@ int delete_all_logpoints(debug_t *debug) {
 }
 
 // ============================================================================
-// run-until command (IMP-504)
-// ============================================================================
-
-// ============================================================================
 // Mac state summary (IMP-702)
 // ============================================================================
 
@@ -2640,6 +2643,19 @@ debug_t *debug_init(void) {
     // Install memory-logpoint hook so the memory slow path can emit logs
     g_mem_logpoint_hook = debug_memory_logpoint_hook;
 
+    // Object-tree binding — instance_data on the debugger node and its
+    // collection children is the debug_t* itself.
+    debug->debugger_object = object_new(&debugger_class, debug, "debugger");
+    if (debug->debugger_object) {
+        object_attach(object_root(), debug->debugger_object);
+        debug->bp_collection_object = object_new(&bp_collection_class, debug, "breakpoints");
+        if (debug->bp_collection_object)
+            object_attach(debug->debugger_object, debug->bp_collection_object);
+        debug->lp_collection_object = object_new(&lp_collection_class, debug, "logpoints");
+        if (debug->lp_collection_object)
+            object_attach(debug->debugger_object, debug->lp_collection_object);
+    }
+
     return debug;
 }
 
@@ -2651,6 +2667,25 @@ debug_t *debug_init(void) {
 void debug_cleanup(debug_t *debug) {
     if (!debug)
         return;
+
+    // Tear down object-tree nodes before any of the underlying storage
+    // is freed (entry objects fired by object_delete reference the
+    // breakpoint_t / logpoint_t state).
+    if (debug->lp_collection_object) {
+        object_detach(debug->lp_collection_object);
+        object_delete(debug->lp_collection_object);
+        debug->lp_collection_object = NULL;
+    }
+    if (debug->bp_collection_object) {
+        object_detach(debug->bp_collection_object);
+        object_delete(debug->bp_collection_object);
+        debug->bp_collection_object = NULL;
+    }
+    if (debug->debugger_object) {
+        object_detach(debug->debugger_object);
+        object_delete(debug->debugger_object);
+        debug->debugger_object = NULL;
+    }
 
     // Free all breakpoints
     breakpoint_t *bp = debug->breakpoints;
@@ -2851,3 +2886,554 @@ int shell_find_argv(int argc, char **argv) {
     };
     return (int)run_handler(cmd_find_handler, &reg, argc, argv);
 }
+
+// === Object-model class descriptors =========================================
+//
+// `debugger.breakpoints` / `debugger.logpoints` are indexed children
+// with sparse stable indices. Each entry is its own object_t whose
+// instance_data is the underlying breakpoint_t / logpoint_t. The entry
+// classes carry the per-entry attributes (addr, condition, hit_count,
+// …) and a `remove()` method.
+
+// --- breakpoint entry class -------------------------------------------------
+
+static breakpoint_t *bp_from(struct object *self) {
+    return (breakpoint_t *)object_data(self);
+}
+
+static value_t bp_attr_addr(struct object *self, const member_t *m) {
+    (void)m;
+    breakpoint_t *bp = bp_from(self);
+    if (!bp)
+        return val_err("breakpoint detached");
+    value_t v = val_uint(4, breakpoint_get_addr(bp));
+    v.flags |= VAL_HEX;
+    return v;
+}
+
+static value_t bp_attr_space(struct object *self, const member_t *m) {
+    (void)m;
+    breakpoint_t *bp = bp_from(self);
+    if (!bp)
+        return val_err("breakpoint detached");
+    static const char *const names[] = {"logical", "physical"};
+    int idx = breakpoint_get_space(bp);
+    return val_enum(idx, names, 2);
+}
+
+static value_t bp_attr_condition(struct object *self, const member_t *m) {
+    (void)m;
+    breakpoint_t *bp = bp_from(self);
+    if (!bp)
+        return val_err("breakpoint detached");
+    const char *c = breakpoint_get_condition(bp);
+    return val_str(c ? c : "");
+}
+
+static value_t bp_attr_condition_set(struct object *self, const member_t *m, value_t in) {
+    (void)m;
+    breakpoint_t *bp = bp_from(self);
+    if (!bp) {
+        value_free(&in);
+        return val_err("breakpoint detached");
+    }
+    if (in.kind != V_STRING && in.kind != V_NONE) {
+        value_free(&in);
+        return val_err("condition must be a string");
+    }
+    breakpoint_set_condition(bp, (in.kind == V_STRING) ? in.s : NULL);
+    value_free(&in);
+    return val_none();
+}
+
+static value_t bp_attr_hit_count(struct object *self, const member_t *m) {
+    (void)m;
+    breakpoint_t *bp = bp_from(self);
+    if (!bp)
+        return val_err("breakpoint detached");
+    return val_uint(4, breakpoint_get_hit_count(bp));
+}
+
+static value_t bp_attr_id(struct object *self, const member_t *m) {
+    (void)m;
+    breakpoint_t *bp = bp_from(self);
+    if (!bp)
+        return val_err("breakpoint detached");
+    return val_int(breakpoint_get_id(bp));
+}
+
+static value_t bp_method_remove(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)m;
+    (void)argc;
+    (void)argv;
+    breakpoint_t *bp = bp_from(self);
+    if (!bp)
+        return val_err("breakpoint already removed");
+    debug_t *debug = system_debug();
+    if (!debug)
+        return val_err("debugger not initialised");
+    int id = breakpoint_get_id(bp);
+    if (!debug_remove_breakpoint(debug, id))
+        return val_err("breakpoint #%d not found", id);
+    return val_none();
+}
+
+static const member_t bp_entry_members[] = {
+    {.kind = M_ATTR,
+     .name = "addr",
+     .flags = VAL_RO | VAL_HEX,
+     .attr = {.type = V_UINT, .get = bp_attr_addr, .set = NULL}},
+    {.kind = M_ATTR, .name = "space", .flags = VAL_RO, .attr = {.type = V_ENUM, .get = bp_attr_space, .set = NULL}},
+    {.kind = M_ATTR,
+     .name = "condition",
+     .flags = 0,
+     .attr = {.type = V_STRING, .get = bp_attr_condition, .set = bp_attr_condition_set}},
+    {.kind = M_ATTR,
+     .name = "hit_count",
+     .flags = VAL_RO,
+     .attr = {.type = V_UINT, .get = bp_attr_hit_count, .set = NULL}},
+    {.kind = M_ATTR, .name = "id", .flags = VAL_RO, .attr = {.type = V_INT, .get = bp_attr_id, .set = NULL}},
+    {.kind = M_METHOD,
+     .name = "remove",
+     .doc = "Remove this breakpoint",
+     .flags = 0,
+     .method = {.args = NULL, .nargs = 0, .result = V_NONE, .fn = bp_method_remove}},
+};
+
+const class_desc_t breakpoint_entry_class = {
+    .name = "breakpoint",
+    .members = bp_entry_members,
+    .n_members = sizeof(bp_entry_members) / sizeof(bp_entry_members[0]),
+};
+
+struct object *gs_classes_make_breakpoint_object(struct breakpoint *bp) {
+    if (!bp)
+        return NULL;
+    return object_new(&breakpoint_entry_class, bp, NULL);
+}
+
+// --- logpoint entry class ---------------------------------------------------
+
+static logpoint_t *lp_from(struct object *self) {
+    return (logpoint_t *)object_data(self);
+}
+
+static value_t lpe_attr_addr(struct object *self, const member_t *m) {
+    (void)m;
+    logpoint_t *lp = lp_from(self);
+    if (!lp)
+        return val_err("logpoint detached");
+    value_t v = val_uint(4, logpoint_get_addr(lp));
+    v.flags |= VAL_HEX;
+    return v;
+}
+static value_t lpe_attr_end_addr(struct object *self, const member_t *m) {
+    (void)m;
+    logpoint_t *lp = lp_from(self);
+    if (!lp)
+        return val_err("logpoint detached");
+    value_t v = val_uint(4, logpoint_get_end_addr(lp));
+    v.flags |= VAL_HEX;
+    return v;
+}
+static value_t lpe_attr_kind(struct object *self, const member_t *m) {
+    (void)m;
+    logpoint_t *lp = lp_from(self);
+    if (!lp)
+        return val_err("logpoint detached");
+    static const char *const names[] = {"pc", "write", "read", "rw"};
+    int idx = logpoint_get_kind(lp);
+    if (idx < 0 || idx > 3)
+        idx = 0;
+    return val_enum(idx, names, 4);
+}
+static value_t lpe_attr_level(struct object *self, const member_t *m) {
+    (void)m;
+    logpoint_t *lp = lp_from(self);
+    if (!lp)
+        return val_err("logpoint detached");
+    return val_int(logpoint_get_level(lp));
+}
+static value_t lpe_attr_category(struct object *self, const member_t *m) {
+    (void)m;
+    logpoint_t *lp = lp_from(self);
+    if (!lp)
+        return val_err("logpoint detached");
+    const char *n = logpoint_get_category_name(lp);
+    return val_str(n ? n : "");
+}
+static value_t lpe_attr_message(struct object *self, const member_t *m) {
+    (void)m;
+    logpoint_t *lp = lp_from(self);
+    if (!lp)
+        return val_err("logpoint detached");
+    const char *s = logpoint_get_message(lp);
+    return val_str(s ? s : "");
+}
+static value_t lpe_attr_hit_count(struct object *self, const member_t *m) {
+    (void)m;
+    logpoint_t *lp = lp_from(self);
+    if (!lp)
+        return val_err("logpoint detached");
+    return val_uint(4, logpoint_get_hit_count(lp));
+}
+static value_t lpe_attr_id(struct object *self, const member_t *m) {
+    (void)m;
+    logpoint_t *lp = lp_from(self);
+    if (!lp)
+        return val_err("logpoint detached");
+    return val_int(logpoint_get_id(lp));
+}
+static value_t lpe_method_remove(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)m;
+    (void)argc;
+    (void)argv;
+    logpoint_t *lp = lp_from(self);
+    if (!lp)
+        return val_err("logpoint already removed");
+    debug_t *debug = system_debug();
+    if (!debug)
+        return val_err("debugger not initialised");
+    int id = logpoint_get_id(lp);
+    if (!debug_remove_logpoint(debug, id))
+        return val_err("logpoint #%d not found", id);
+    return val_none();
+}
+
+static const member_t lp_entry_members[] = {
+    {.kind = M_ATTR,
+     .name = "addr",
+     .flags = VAL_RO | VAL_HEX,
+     .attr = {.type = V_UINT, .get = lpe_attr_addr, .set = NULL}},
+    {.kind = M_ATTR,
+     .name = "end_addr",
+     .flags = VAL_RO | VAL_HEX,
+     .attr = {.type = V_UINT, .get = lpe_attr_end_addr, .set = NULL}},
+    {.kind = M_ATTR, .name = "kind", .flags = VAL_RO, .attr = {.type = V_ENUM, .get = lpe_attr_kind, .set = NULL}},
+    {.kind = M_ATTR, .name = "level", .flags = VAL_RO, .attr = {.type = V_INT, .get = lpe_attr_level, .set = NULL}},
+    {.kind = M_ATTR,
+     .name = "category",
+     .flags = VAL_RO,
+     .attr = {.type = V_STRING, .get = lpe_attr_category, .set = NULL}},
+    {.kind = M_ATTR,
+     .name = "message",
+     .flags = VAL_RO,
+     .attr = {.type = V_STRING, .get = lpe_attr_message, .set = NULL}},
+    {.kind = M_ATTR,
+     .name = "hit_count",
+     .flags = VAL_RO,
+     .attr = {.type = V_UINT, .get = lpe_attr_hit_count, .set = NULL}},
+    {.kind = M_ATTR, .name = "id", .flags = VAL_RO, .attr = {.type = V_INT, .get = lpe_attr_id, .set = NULL}},
+    {.kind = M_METHOD,
+     .name = "remove",
+     .doc = "Remove this logpoint",
+     .flags = 0,
+     .method = {.args = NULL, .nargs = 0, .result = V_NONE, .fn = lpe_method_remove}},
+};
+
+const class_desc_t logpoint_entry_class = {
+    .name = "logpoint",
+    .members = lp_entry_members,
+    .n_members = sizeof(lp_entry_members) / sizeof(lp_entry_members[0]),
+};
+
+struct object *gs_classes_make_logpoint_object(struct logpoint *lp) {
+    if (!lp)
+        return NULL;
+    return object_new(&logpoint_entry_class, lp, NULL);
+}
+
+// --- collection objects -----------------------------------------------------
+//
+// `debugger.breakpoints` is a real object_t* attached to `debugger` at
+// debug_init time. Its instance_data is the debug_t* itself, so a
+// single helper recovers it whether you're holding the debugger node
+// or one of its collection children. The collection class declares:
+//   - method members (add, clear) for the legacy mutation API;
+//   - one indexed M_CHILD member that exposes per-entry objects, so
+//     `debugger.breakpoints.0` and `[0]` both resolve via the integer-
+//     segment rule in node_child (object.c).
+
+static debug_t *debug_from(struct object *self) {
+    return (debug_t *)object_data(self);
+}
+
+// Forward-declared because the indexed-child member descriptors below
+// need it but the entry classes are already defined above.
+static struct object *bp_entries_get(struct object *self, int index);
+static int bp_entries_count(struct object *self);
+static int bp_entries_next(struct object *self, int prev_index);
+static struct object *lp_entries_get(struct object *self, int index);
+static int lp_entries_count(struct object *self);
+static int lp_entries_next(struct object *self, int prev_index);
+
+static struct object *bp_entries_get(struct object *self, int index) {
+    breakpoint_t *bp = debug_breakpoint_by_id(debug_from(self), index);
+    return bp ? breakpoint_get_entry_object(bp) : NULL;
+}
+static int bp_entries_count(struct object *self) {
+    return debug_breakpoint_count(debug_from(self));
+}
+static int bp_entries_next(struct object *self, int prev_index) {
+    return debug_breakpoint_next_id(debug_from(self), prev_index);
+}
+
+static struct object *lp_entries_get(struct object *self, int index) {
+    logpoint_t *lp = debug_logpoint_by_id(debug_from(self), index);
+    return lp ? logpoint_get_entry_object(lp) : NULL;
+}
+static int lp_entries_count(struct object *self) {
+    return debug_logpoint_count(debug_from(self));
+}
+static int lp_entries_next(struct object *self, int prev_index) {
+    return debug_logpoint_next_id(debug_from(self), prev_index);
+}
+
+static value_t bp_method_add(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)m;
+    debug_t *debug = debug_from(self);
+    if (!debug)
+        return val_err("debugger not initialised");
+    if (argc < 1)
+        return val_err("breakpoints.add: expected (addr, [condition])");
+    bool ok = true;
+    uint64_t addr = val_as_u64(&argv[0], &ok);
+    if (!ok)
+        return val_err("breakpoints.add: addr is not numeric");
+    breakpoint_t *bp = set_breakpoint(debug, (uint32_t)addr, ADDR_LOGICAL);
+    if (!bp)
+        return val_err("breakpoints.add: allocation failed");
+    if (argc >= 2 && argv[1].kind == V_STRING && argv[1].s && *argv[1].s)
+        breakpoint_set_condition(bp, argv[1].s);
+    return val_obj(breakpoint_get_entry_object(bp));
+}
+
+static value_t bp_method_clear(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)m;
+    (void)argc;
+    (void)argv;
+    debug_t *debug = debug_from(self);
+    if (!debug)
+        return val_err("debugger not initialised");
+    int id;
+    while ((id = debug_breakpoint_next_id(debug, -1)) >= 0)
+        debug_remove_breakpoint(debug, id);
+    return val_none();
+}
+
+static value_t lp_method_clear(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)m;
+    (void)argc;
+    (void)argv;
+    debug_t *debug = debug_from(self);
+    if (!debug)
+        return val_err("debugger not initialised");
+    int id;
+    while ((id = debug_logpoint_next_id(debug, -1)) >= 0)
+        debug_remove_logpoint(debug, id);
+    return val_none();
+}
+
+static const arg_decl_t bp_add_args[] = {
+    {.name = "addr",      .kind = V_UINT,   .flags = VAL_HEX,          .doc = "logical address"          },
+    {.name = "condition", .kind = V_STRING, .flags = OBJ_ARG_OPTIONAL, .doc = "optional condition string"},
+};
+
+static const member_t bp_collection_members[] = {
+    {.kind = M_METHOD,
+     .name = "add",
+     .doc = "Add a logical-space breakpoint",
+     .method = {.args = bp_add_args, .nargs = 2, .result = V_OBJECT, .fn = bp_method_add}},
+    {.kind = M_METHOD,
+     .name = "clear",
+     .doc = "Remove every breakpoint",
+     .method = {.args = NULL, .nargs = 0, .result = V_NONE, .fn = bp_method_clear}},
+    {.kind = M_CHILD,
+     .name = "entries",
+     .child = {.cls = &breakpoint_entry_class,
+               .indexed = true,
+               .get = bp_entries_get,
+               .count = bp_entries_count,
+               .next = bp_entries_next,
+               .lookup = NULL}},
+};
+
+const class_desc_t bp_collection_class = {
+    .name = "breakpoints",
+    .members = bp_collection_members,
+    .n_members = sizeof(bp_collection_members) / sizeof(bp_collection_members[0]),
+};
+
+static const member_t lp_collection_members[] = {
+    {.kind = M_METHOD,
+     .name = "clear",
+     .doc = "Remove every logpoint",
+     .method = {.args = NULL, .nargs = 0, .result = V_NONE, .fn = lp_method_clear}},
+    {.kind = M_CHILD,
+     .name = "entries",
+     .child = {.cls = &logpoint_entry_class,
+               .indexed = true,
+               .get = lp_entries_get,
+               .count = lp_entries_count,
+               .next = lp_entries_next,
+               .lookup = NULL}},
+};
+
+const class_desc_t lp_collection_class = {
+    .name = "logpoints",
+    .members = lp_collection_members,
+    .n_members = sizeof(lp_collection_members) / sizeof(lp_collection_members[0]),
+};
+
+// `debugger` itself: namespace-only. breakpoints / logpoints are
+// attached as named children at debug_init time.
+const class_desc_t debugger_class = {
+    .name = "debugger",
+    .members = NULL,
+    .n_members = 0,
+};
+
+// --- screen ---------------------------------------------------------------
+//
+// Wraps the legacy `screenshot` subcommand family. Each method
+// delegates to the framebuffer logic in this module.
+
+static value_t screen_method_save(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)self;
+    (void)m;
+    if (argc < 1 || argv[0].kind != V_STRING)
+        return val_err("screen.save: expected (path)");
+    const char *path = argv[0].s;
+    if (!path || !*path)
+        return val_err("screen.save: empty path");
+    size_t n = strlen(path);
+    if (n < 4 || strcasecmp(path + n - 4, ".png") != 0)
+        return val_err("screen.save: path must end in .png (got '%s')", path);
+    const uint8_t *fb = system_framebuffer();
+    if (!fb)
+        return val_err("screen.save: framebuffer not available");
+    if (save_framebuffer_as_png(fb, path) < 0)
+        return val_err("screen.save: failed to save '%s'", path);
+    return val_bool(true);
+}
+
+// `screen.match(reference)` — bitwise compare the framebuffer against
+// a reference PNG.  A mismatch is a HARD failure: returns val_err so
+// the path-form dispatcher (and hence the headless script runner)
+// propagates non-zero out, failing the integration test.  Use
+// `screen.match_or_save` for the non-fatal diagnostic flow.
+static value_t screen_method_match(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)self;
+    (void)m;
+    if (argc < 1 || argv[0].kind != V_STRING)
+        return val_err("screen.match: expected (reference_path)");
+    const char *ref = argv[0].s ? argv[0].s : "";
+    const uint8_t *fb = system_framebuffer();
+    if (!fb)
+        return val_err("screen.match: framebuffer not available");
+    int result = match_framebuffer_with_png(fb, ref);
+    if (result < 0) {
+        printf("MATCH FAILED: Error loading reference image '%s'.\n", ref);
+        return val_err("screen.match: cannot load reference '%s'", ref);
+    }
+    if (result == 0) {
+        printf("MATCH OK: Screen matches '%s'.\n", ref);
+        return val_bool(true);
+    }
+    printf("MATCH FAILED: Screen does not match '%s'.\n", ref);
+    return val_err("screen.match: screen does not match '%s'", ref);
+}
+
+static value_t screen_method_match_or_save(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)self;
+    (void)m;
+    if (argc < 1 || argv[0].kind != V_STRING)
+        return val_err("screen.match_or_save: expected (reference_path, [actual_path])");
+    const char *ref = argv[0].s ? argv[0].s : "";
+    const char *actual = (argc >= 2 && argv[1].kind == V_STRING && argv[1].s && *argv[1].s) ? argv[1].s : NULL;
+    const uint8_t *fb = system_framebuffer();
+    if (!fb)
+        return val_err("screen.match_or_save: framebuffer not available");
+    int result = match_framebuffer_with_png(fb, ref);
+    if (result < 0) {
+        printf("MATCH FAILED: Error loading reference image.\n");
+        if (actual)
+            save_framebuffer_as_png(fb, actual);
+        return val_bool(false);
+    }
+    if (result == 0) {
+        printf("MATCH OK: Screen matches '%s'.\n", ref);
+        return val_bool(true);
+    }
+    if (actual) {
+        save_framebuffer_as_png(fb, actual);
+        printf("MATCH FAILED: Screen does not match '%s'. Saved actual to '%s'.\n", ref, actual);
+    } else {
+        printf("MATCH FAILED: Screen does not match '%s'.\n", ref);
+    }
+    return val_bool(false);
+}
+
+static value_t screen_method_checksum(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)self;
+    (void)m;
+    const uint8_t *fb = system_framebuffer();
+    if (!fb)
+        return val_err("screen.checksum: framebuffer not available");
+    if (argc == 0)
+        return val_int((int64_t)(int32_t)framebuffer_checksum(fb));
+    if (argc < 4)
+        return val_err("screen.checksum: expected (top, left, bottom, right) or no args");
+    bool ok = true;
+    int64_t t = val_as_i64(&argv[0], &ok);
+    int64_t l = val_as_i64(&argv[1], &ok);
+    int64_t b = val_as_i64(&argv[2], &ok);
+    int64_t r = val_as_i64(&argv[3], &ok);
+    if (!ok)
+        return val_err("screen.checksum: region args must be integers");
+    if (t < 0 || l < 0 || b <= t || r <= l || b > DEBUG_SCREEN_HEIGHT || r > DEBUG_SCREEN_WIDTH)
+        return val_err("screen.checksum: invalid region bounds (0,0)-(%d,%d)", DEBUG_SCREEN_WIDTH, DEBUG_SCREEN_HEIGHT);
+    return val_int((int64_t)(int32_t)framebuffer_region_checksum(fb, (int)t, (int)l, (int)b, (int)r));
+}
+
+static const arg_decl_t screen_save_args[] = {
+    {.name = "path", .kind = V_STRING, .doc = "Output PNG path (must end in .png)"},
+};
+static const arg_decl_t screen_match_args[] = {
+    {.name = "reference", .kind = V_STRING, .doc = "Reference PNG path"},
+};
+static const arg_decl_t screen_match_or_save_args[] = {
+    {.name = "reference", .kind = V_STRING, .doc = "Reference PNG path"},
+    {.name = "actual", .kind = V_STRING, .flags = OBJ_ARG_OPTIONAL, .doc = "Path to write current screen on miss"},
+};
+static const arg_decl_t screen_checksum_args[] = {
+    {.name = "top",    .kind = V_INT, .flags = OBJ_ARG_OPTIONAL, .doc = "Region top edge"   },
+    {.name = "left",   .kind = V_INT, .flags = OBJ_ARG_OPTIONAL, .doc = "Region left edge"  },
+    {.name = "bottom", .kind = V_INT, .flags = OBJ_ARG_OPTIONAL, .doc = "Region bottom edge"},
+    {.name = "right",  .kind = V_INT, .flags = OBJ_ARG_OPTIONAL, .doc = "Region right edge" },
+};
+
+static const member_t screen_members[] = {
+    {.kind = M_METHOD,
+     .name = "save",
+     .doc = "Save the current framebuffer to a PNG file",
+     .method = {.args = screen_save_args, .nargs = 1, .result = V_BOOL, .fn = screen_method_save}                  },
+    {.kind = M_METHOD,
+     .name = "match",
+     .doc = "Compare the framebuffer against a reference PNG (true if identical)",
+     .method = {.args = screen_match_args, .nargs = 1, .result = V_BOOL, .fn = screen_method_match}                },
+    {.kind = M_METHOD,
+     .name = "match_or_save",
+     .doc = "Like `match`, but also write the current screen to `actual` on mismatch",
+     .method = {.args = screen_match_or_save_args, .nargs = 2, .result = V_BOOL, .fn = screen_method_match_or_save}},
+    {.kind = M_METHOD,
+     .name = "checksum",
+     .doc = "Polynomial hash of the framebuffer (full screen or top/left/bottom/right region)",
+     .method = {.args = screen_checksum_args, .nargs = 4, .result = V_INT, .fn = screen_method_checksum}           },
+};
+
+const class_desc_t screen_class = {
+    .name = "screen",
+    .members = screen_members,
+    .n_members = sizeof(screen_members) / sizeof(screen_members[0]),
+};

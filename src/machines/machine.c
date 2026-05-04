@@ -6,6 +6,11 @@
 
 #include "machine.h"
 
+#include "object.h"
+#include "system.h"
+#include "system_config.h"
+#include "value.h"
+
 #include <string.h>
 
 #define MAX_MACHINES 8
@@ -31,3 +36,47 @@ const hw_profile_t *machine_find(const char *model_id) {
     }
     return NULL;
 }
+
+// === Object-model class descriptor =========================================
+//
+// instance_data on the machine stub is config_t*. The lifetime is bounded
+// by gs_classes_install / gs_classes_uninstall.
+
+static value_t attr_machine_model_id(struct object *self, const member_t *m) {
+    (void)m;
+    config_t *cfg = (config_t *)object_data(self);
+    return val_str((cfg && cfg->machine && cfg->machine->model_id) ? cfg->machine->model_id : "");
+}
+
+static value_t attr_machine_model_name(struct object *self, const member_t *m) {
+    (void)m;
+    config_t *cfg = (config_t *)object_data(self);
+    return val_str((cfg && cfg->machine && cfg->machine->model_name) ? cfg->machine->model_name : "");
+}
+
+static value_t attr_machine_cpu_clock(struct object *self, const member_t *m) {
+    (void)m;
+    config_t *cfg = (config_t *)object_data(self);
+    return val_uint(4, (cfg && cfg->machine) ? cfg->machine->cpu_clock_hz : 0u);
+}
+
+static const member_t machine_members[] = {
+    {.kind = M_ATTR,
+     .name = "model_id",
+     .flags = VAL_RO,
+     .attr = {.type = V_STRING, .get = attr_machine_model_id, .set = NULL}  },
+    {.kind = M_ATTR,
+     .name = "model_name",
+     .flags = VAL_RO,
+     .attr = {.type = V_STRING, .get = attr_machine_model_name, .set = NULL}},
+    {.kind = M_ATTR,
+     .name = "cpu_clock_hz",
+     .flags = VAL_RO,
+     .attr = {.type = V_UINT, .get = attr_machine_cpu_clock, .set = NULL}   },
+};
+
+const class_desc_t machine_class = {
+    .name = "machine",
+    .members = machine_members,
+    .n_members = sizeof(machine_members) / sizeof(machine_members[0]),
+};

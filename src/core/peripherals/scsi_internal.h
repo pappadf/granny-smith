@@ -161,6 +161,13 @@ enum scsi_device_type {
 typedef struct scsi scsi_t;
 
 // SCSI controller state (NCR 5380 emulation)
+// Per-slot back-link stored on scsi_t so each device entry object's
+// instance_data can recover (scsi, slot) in one indirection.
+typedef struct {
+    struct scsi *scsi;
+    int slot;
+} scsi_device_link_t;
+
 struct scsi {
 
     /* Plain POD fields first (no pointers) */
@@ -284,6 +291,15 @@ struct scsi {
     // second-to-last register write.  Modeled as a 3-element ring buffer.
     uint8_t cdr_pipeline[3];
     int cdr_idx;
+
+    // Object-tree binding — lifetime tied to scsi_init / scsi_delete.
+    struct object *object; // top-level scsi node
+    struct object *bus_object; // scsi.bus child
+    struct object *devices_object; // scsi.devices collection
+    struct object *device_objects[8]; // per-slot entry objects
+    // Per-slot back-link used as instance_data on each device entry
+    // object so accessors can recover (scsi, slot) cheaply.
+    scsi_device_link_t device_links[8];
 };
 
 // ============================================================================

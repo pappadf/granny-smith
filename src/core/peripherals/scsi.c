@@ -8,10 +8,20 @@
 
 #include "scsi.h"
 #include "log.h"
+#include "object.h"
 #include "platform.h"
 #include "scsi_internal.h"
 #include "shell.h"
 #include "system.h"
+#include "system_config.h"
+#include "value.h"
+
+// Forward declarations — class descriptors are at the bottom of the file but
+// scsi_init / scsi_delete reference them.
+extern const class_desc_t scsi_class;
+extern const class_desc_t scsi_bus_class;
+extern const class_desc_t scsi_devices_collection_class;
+extern const class_desc_t scsi_device_class;
 
 #include <assert.h>
 #include <limits.h>
@@ -1281,6 +1291,25 @@ scsi_t *scsi_init(memory_map_t *map, checkpoint_t *checkpoint) {
         }
     }
 
+    // Object-tree binding — instance_data is the scsi itself, with bus
+    // and devices children plus the per-slot device entries that the
+    // indexed-child get() returns on demand.
+    scsi->object = object_new(&scsi_class, scsi, "scsi");
+    if (scsi->object) {
+        object_attach(object_root(), scsi->object);
+        scsi->bus_object = object_new(&scsi_bus_class, scsi, "bus");
+        if (scsi->bus_object)
+            object_attach(scsi->object, scsi->bus_object);
+        scsi->devices_object = object_new(&scsi_devices_collection_class, scsi, "devices");
+        if (scsi->devices_object)
+            object_attach(scsi->object, scsi->devices_object);
+        for (int i = 0; i < 8; i++) {
+            scsi->device_links[i].scsi = scsi;
+            scsi->device_links[i].slot = i;
+            scsi->device_objects[i] = object_new(&scsi_device_class, &scsi->device_links[i], NULL);
+        }
+    }
+
     return scsi;
 }
 
@@ -1391,6 +1420,29 @@ struct image *scsi_device_image(const scsi_t *scsi, unsigned which) {
 void scsi_delete(scsi_t *scsi) {
     if (!scsi)
         return;
+    // Tear down per-slot entry objects (never attached to the tree),
+    // then the named children, then the top-level node.
+    for (int i = 0; i < 8; i++) {
+        if (scsi->device_objects[i]) {
+            object_delete(scsi->device_objects[i]);
+            scsi->device_objects[i] = NULL;
+        }
+    }
+    if (scsi->devices_object) {
+        object_detach(scsi->devices_object);
+        object_delete(scsi->devices_object);
+        scsi->devices_object = NULL;
+    }
+    if (scsi->bus_object) {
+        object_detach(scsi->bus_object);
+        object_delete(scsi->bus_object);
+        scsi->bus_object = NULL;
+    }
+    if (scsi->object) {
+        object_detach(scsi->object);
+        object_delete(scsi->object);
+        scsi->object = NULL;
+    }
     if (scsi->buf.data) {
         free(scsi->buf.data);
         scsi->buf.data = NULL;
@@ -1444,3 +1496,291 @@ void scsi_checkpoint(scsi_t *restrict scsi, checkpoint_t *checkpoint) {
         system_write_checkpoint_data(checkpoint, scsi->buf.data, to_write);
     }
 }
+
+// === Object-model class descriptors =========================================
+//
+// `scsi` exposes:
+//   - `loopback` (R/W bool) — wraps scsi_get/set_loopback
+//   - `bus` named child with `phase` (V_ENUM), `target`, `initiator`
+//   - `devices` indexed children — sparse stable indices = SCSI ID 0..7
+//     (proposal §5.4: "scsi.devices (indexed; each device exposes id,
+//     type, image (path attribute), methods eject(), insert)")
+//
+// Empty SCSI IDs are holes in the indexed collection: `count()`
+// returns the number of populated slots, `next()` skips empties.
+//
+// instance_data on the top-level scsi node, the bus child, and the
+// devices collection is the scsi_t* itself. Per-device entry objects
+// carry a pointer into scsi->device_links[slot] so accessors can
+// recover (scsi, slot) in one indirection.
+
+static scsi_t *scsi_self_from(struct object *self) {
+    return (scsi_t *)object_data(self);
+}
+
+// --- Per-device entry class ------------------------------------------------
+
+static scsi_t *scsi_dev_scsi(struct object *self, unsigned *slot_out) {
+    // instance_data is a pointer into scsi->device_links[i]; recover
+    // both the controller and the slot index from it.
+    scsi_device_link_t *link = (scsi_device_link_t *)object_data(self);
+    if (!link) {
+        *slot_out = 0;
+        return NULL;
+    }
+    *slot_out = (unsigned)link->slot;
+    return link->scsi;
+}
+
+static value_t scsi_dev_attr_id(struct object *self, const member_t *m) {
+    (void)m;
+    unsigned slot = 0;
+    (void)scsi_dev_scsi(self, &slot);
+    return val_int((int)slot);
+}
+
+static const char *const SCSI_DEV_TYPE_NAMES[] = {"none", "hd", "cdrom"};
+
+static value_t scsi_dev_attr_type(struct object *self, const member_t *m) {
+    (void)m;
+    unsigned slot = 0;
+    scsi_t *scsi = scsi_dev_scsi(self, &slot);
+    int t = scsi_device_type(scsi, slot);
+    if (t < 0 || t > 2)
+        t = 0;
+    return val_enum(t, SCSI_DEV_TYPE_NAMES, 3);
+}
+
+static value_t scsi_dev_attr_vendor(struct object *self, const member_t *m) {
+    (void)m;
+    unsigned slot = 0;
+    scsi_t *scsi = scsi_dev_scsi(self, &slot);
+    const char *s = scsi_device_vendor(scsi, slot);
+    return val_str(s ? s : "");
+}
+static value_t scsi_dev_attr_product(struct object *self, const member_t *m) {
+    (void)m;
+    unsigned slot = 0;
+    scsi_t *scsi = scsi_dev_scsi(self, &slot);
+    const char *s = scsi_device_product(scsi, slot);
+    return val_str(s ? s : "");
+}
+static value_t scsi_dev_attr_revision(struct object *self, const member_t *m) {
+    (void)m;
+    unsigned slot = 0;
+    scsi_t *scsi = scsi_dev_scsi(self, &slot);
+    const char *s = scsi_device_revision(scsi, slot);
+    return val_str(s ? s : "");
+}
+static value_t scsi_dev_attr_block_size(struct object *self, const member_t *m) {
+    (void)m;
+    unsigned slot = 0;
+    scsi_t *scsi = scsi_dev_scsi(self, &slot);
+    return val_uint(2, scsi_device_block_size(scsi, slot));
+}
+static value_t scsi_dev_attr_read_only(struct object *self, const member_t *m) {
+    (void)m;
+    unsigned slot = 0;
+    scsi_t *scsi = scsi_dev_scsi(self, &slot);
+    return val_bool(scsi_device_read_only(scsi, slot));
+}
+static value_t scsi_dev_attr_medium_present(struct object *self, const member_t *m) {
+    (void)m;
+    unsigned slot = 0;
+    scsi_t *scsi = scsi_dev_scsi(self, &slot);
+    return val_bool(scsi_device_medium_present(scsi, slot));
+}
+
+// `eject()` and `insert(path)` are deferred — they need the
+// image-loading plumbing that lands with M7e (floppy.drives) and the
+// M8 storage rollout. For M7d the methods are stubs returning a
+// V_ERROR explaining the deferral, so paths still resolve and tests
+// that only read attributes pass cleanly.
+static value_t scsi_dev_method_eject(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)self;
+    (void)m;
+    (void)argc;
+    (void)argv;
+    return val_err("scsi.devices.N.eject(): deferred — see M7e / M8 plan");
+}
+static value_t scsi_dev_method_insert(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)self;
+    (void)m;
+    (void)argc;
+    (void)argv;
+    return val_err("scsi.devices.N.insert(): deferred — see M7e / M8 plan");
+}
+
+static const arg_decl_t scsi_dev_insert_args[] = {
+    {.name = "path", .kind = V_STRING, .doc = "Host path or storage URI of the image to mount"},
+};
+
+static const member_t scsi_device_members[] = {
+    {.kind = M_ATTR,   .name = "id",   .flags = VAL_RO,       .attr = {.type = V_INT, .get = scsi_dev_attr_id, .set = NULL}   },
+    {.kind = M_ATTR,   .name = "type", .flags = VAL_RO,       .attr = {.type = V_ENUM, .get = scsi_dev_attr_type, .set = NULL}},
+    {.kind = M_ATTR,
+     .name = "vendor",
+     .flags = VAL_RO,
+     .attr = {.type = V_STRING, .get = scsi_dev_attr_vendor, .set = NULL}                                                     },
+    {.kind = M_ATTR,
+     .name = "product",
+     .flags = VAL_RO,
+     .attr = {.type = V_STRING, .get = scsi_dev_attr_product, .set = NULL}                                                    },
+    {.kind = M_ATTR,
+     .name = "revision",
+     .flags = VAL_RO,
+     .attr = {.type = V_STRING, .get = scsi_dev_attr_revision, .set = NULL}                                                   },
+    {.kind = M_ATTR,
+     .name = "block_size",
+     .flags = VAL_RO,
+     .attr = {.type = V_UINT, .get = scsi_dev_attr_block_size, .set = NULL}                                                   },
+    {.kind = M_ATTR,
+     .name = "read_only",
+     .flags = VAL_RO,
+     .attr = {.type = V_BOOL, .get = scsi_dev_attr_read_only, .set = NULL}                                                    },
+    {.kind = M_ATTR,
+     .name = "medium_present",
+     .flags = VAL_RO,
+     .attr = {.type = V_BOOL, .get = scsi_dev_attr_medium_present, .set = NULL}                                               },
+    {.kind = M_METHOD,
+     .name = "eject",
+     .doc = "Eject medium (CD-ROM); deferred until M7e / M8",
+     .method = {.args = NULL, .nargs = 0, .result = V_NONE, .fn = scsi_dev_method_eject}                                      },
+    {.kind = M_METHOD,
+     .name = "insert",
+     .doc = "Insert image; deferred until M7e / M8",
+     .method = {.args = scsi_dev_insert_args, .nargs = 1, .result = V_NONE, .fn = scsi_dev_method_insert}                     },
+};
+
+const class_desc_t scsi_device_class = {
+    .name = "scsi_device",
+    .members = scsi_device_members,
+    .n_members = sizeof(scsi_device_members) / sizeof(scsi_device_members[0]),
+};
+
+// --- bus child class -------------------------------------------------------
+
+static const char *const SCSI_PHASE_NAMES[] = {
+    "bus_free", "arbitration", "selection", "reselection", "command",
+    "data_in",  "data_out",    "status",    "message_in",  "message_out",
+};
+
+static value_t scsi_bus_attr_phase(struct object *self, const member_t *m) {
+    (void)m;
+    int p = scsi_get_bus_phase((scsi_t *)object_data(self));
+    if (p < 0 || p > 9)
+        p = 0;
+    return val_enum(p, SCSI_PHASE_NAMES, 10);
+}
+static value_t scsi_bus_attr_target(struct object *self, const member_t *m) {
+    (void)m;
+    return val_int(scsi_get_bus_target((scsi_t *)object_data(self)));
+}
+static value_t scsi_bus_attr_initiator(struct object *self, const member_t *m) {
+    (void)m;
+    return val_int(scsi_get_bus_initiator((scsi_t *)object_data(self)));
+}
+
+static const member_t scsi_bus_members[] = {
+    {.kind = M_ATTR,
+     .name = "phase",
+     .flags = VAL_RO,
+     .attr = {.type = V_ENUM, .get = scsi_bus_attr_phase, .set = NULL}   },
+    {.kind = M_ATTR,
+     .name = "target",
+     .flags = VAL_RO,
+     .attr = {.type = V_INT, .get = scsi_bus_attr_target, .set = NULL}   },
+    {.kind = M_ATTR,
+     .name = "initiator",
+     .flags = VAL_RO,
+     .attr = {.type = V_INT, .get = scsi_bus_attr_initiator, .set = NULL}},
+};
+const class_desc_t scsi_bus_class = {
+    .name = "scsi_bus",
+    .members = scsi_bus_members,
+    .n_members = sizeof(scsi_bus_members) / sizeof(scsi_bus_members[0]),
+};
+
+// --- devices collection: indexed children -----------------------------------
+//
+// Empty SCSI IDs are holes in the indexed collection: `count()`
+// returns the number of populated slots, `next()` skips empties.
+// Per-entry objects live on the scsi_t (scsi->device_objects[]) and
+// are created/destroyed alongside the controller.
+
+static struct object *scsi_devices_get(struct object *self, int index) {
+    scsi_t *scsi = (scsi_t *)object_data(self);
+    if (!scsi || index < 0 || index > 7)
+        return NULL;
+    if (!scsi_device_present(scsi, (unsigned)index))
+        return NULL;
+    return scsi->device_objects[index];
+}
+static int scsi_devices_count(struct object *self) {
+    scsi_t *scsi = (scsi_t *)object_data(self);
+    if (!scsi)
+        return 0;
+    int n = 0;
+    for (int i = 0; i < 8; i++)
+        if (scsi_device_present(scsi, (unsigned)i))
+            n++;
+    return n;
+}
+static int scsi_devices_next(struct object *self, int prev_index) {
+    scsi_t *scsi = (scsi_t *)object_data(self);
+    if (!scsi)
+        return -1;
+    for (int i = prev_index + 1; i < 8; i++)
+        if (scsi_device_present(scsi, (unsigned)i))
+            return i;
+    return -1;
+}
+
+static const member_t scsi_devices_collection_members[] = {
+    {.kind = M_CHILD,
+     .name = "entries",
+     .child = {.cls = &scsi_device_class,
+               .indexed = true,
+               .get = scsi_devices_get,
+               .count = scsi_devices_count,
+               .next = scsi_devices_next,
+               .lookup = NULL}},
+};
+const class_desc_t scsi_devices_collection_class = {
+    .name = "scsi_devices",
+    .members = scsi_devices_collection_members,
+    .n_members = 1,
+};
+
+// --- top-level scsi class ---------------------------------------------------
+
+static value_t scsi_attr_loopback_get(struct object *self, const member_t *m) {
+    (void)m;
+    return val_bool(scsi_get_loopback(scsi_self_from(self)));
+}
+static value_t scsi_attr_loopback_set(struct object *self, const member_t *m, value_t in) {
+    (void)m;
+    scsi_t *scsi = scsi_self_from(self);
+    if (!scsi) {
+        value_free(&in);
+        return val_err("scsi not available");
+    }
+    bool b = val_as_bool(&in);
+    value_free(&in);
+    scsi_set_loopback(scsi, b);
+    return val_none();
+}
+
+static const member_t scsi_members[] = {
+    {.kind = M_ATTR,
+     .name = "loopback",
+     .doc = "Loopback test card / passive terminator",
+     .flags = 0,
+     .attr = {.type = V_BOOL, .get = scsi_attr_loopback_get, .set = scsi_attr_loopback_set}},
+};
+
+const class_desc_t scsi_class = {
+    .name = "scsi",
+    .members = scsi_members,
+    .n_members = sizeof(scsi_members) / sizeof(scsi_members[0]),
+};

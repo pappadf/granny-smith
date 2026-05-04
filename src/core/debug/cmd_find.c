@@ -14,7 +14,11 @@
 
 #include "addr_format.h"
 #include "cmd_types.h"
+#include "debug.h"
 #include "memory.h"
+#include "object.h"
+#include "shell.h"
+#include "value.h"
 
 #include <ctype.h>
 #include <stdbool.h>
@@ -321,3 +325,114 @@ void cmd_find_handler(struct cmd_context *ctx, struct cmd_result *res) {
     // printed output; the result stays OK.
     cmd_ok(res);
 }
+
+// === Object-model class descriptor =========================================
+//
+// Wraps `find str|bytes|long|word`. Each method takes the literal
+// pattern token plus an optional rest string (range / "all" markers)
+// and dispatches the joined legacy line. Variadic byte patterns are
+// accepted as a space-separated hex string ("4E 71") since the legacy
+// parser tokenises on whitespace anyway.
+
+static value_t find_dispatch_kind(const char *kind, int argc, const value_t *argv, const char *err_label) {
+    if (argc < 1)
+        return val_err("%s: expected (pattern, [rest])", err_label);
+    char buf[1024];
+    int pos = snprintf(buf, sizeof(buf), "find %s ", kind);
+    if (pos < 0)
+        return val_err("%s: format error", err_label);
+    // `find bytes` is variadic in the legacy parser: each hex byte
+    // must arrive as a separate whitespace-delimited token. Forward
+    // the pattern string unquoted so re-tokenisation splits it.
+    // `find str` needs the opposite — the pattern is one token even
+    // if it contains spaces — so we quote it. Numeric patterns pass
+    // through as `0xN`.
+    bool is_bytes = (strcmp(kind, "bytes") == 0);
+    if (argv[0].kind == V_STRING) {
+        if (is_bytes)
+            pos += snprintf(buf + pos, sizeof(buf) - (size_t)pos, "%s", argv[0].s ? argv[0].s : "");
+        else
+            pos += snprintf(buf + pos, sizeof(buf) - (size_t)pos, "\"%s\"", argv[0].s ? argv[0].s : "");
+    } else if (argv[0].kind == V_INT) {
+        pos += snprintf(buf + pos, sizeof(buf) - (size_t)pos, "0x%llx", (unsigned long long)argv[0].i);
+    } else if (argv[0].kind == V_UINT) {
+        pos += snprintf(buf + pos, sizeof(buf) - (size_t)pos, "0x%llx", (unsigned long long)argv[0].u);
+    } else {
+        return val_err("%s: pattern must be string or integer", err_label);
+    }
+    if (argc >= 2 && argv[1].kind == V_STRING && argv[1].s && *argv[1].s) {
+        pos += snprintf(buf + pos, sizeof(buf) - (size_t)pos, " %s", argv[1].s);
+    }
+    if (pos < 0 || (size_t)pos >= sizeof(buf))
+        return val_err("%s: arguments too long", err_label);
+    char *targv[32];
+    int targc = tokenize(buf, targv, 32);
+    if (targc <= 0)
+        return val_err("%s: tokenisation failed", err_label);
+    return val_bool(shell_find_argv(targc, targv) == 0);
+}
+
+static value_t find_method_str(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)self;
+    (void)m;
+    return find_dispatch_kind("str", argc, argv, "find.str");
+}
+
+static value_t find_method_bytes(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)self;
+    (void)m;
+    return find_dispatch_kind("bytes", argc, argv, "find.bytes");
+}
+
+static value_t find_method_long(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)self;
+    (void)m;
+    return find_dispatch_kind("long", argc, argv, "find.long");
+}
+
+static value_t find_method_word(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)self;
+    (void)m;
+    return find_dispatch_kind("word", argc, argv, "find.word");
+}
+
+static const arg_decl_t find_str_args[] = {
+    {.name = "text", .kind = V_STRING, .doc = "Search text"},
+    {.name = "rest",
+     .kind = V_STRING,
+     .flags = OBJ_ARG_OPTIONAL,
+     .doc = "Optional range [+ \"all\"], e.g. \"$400000..$440000 all\""},
+};
+static const arg_decl_t find_bytes_args[] = {
+    {.name = "hex", .kind = V_STRING, .doc = "Space-separated hex bytes (\"4E 71\")"},
+    {.name = "rest", .kind = V_STRING, .flags = OBJ_ARG_OPTIONAL, .doc = "Optional range [+ \"all\"]"},
+};
+static const arg_decl_t find_int_args[] = {
+    {.name = "value", .kind = V_INT, .doc = "Integer value to search for"},
+    {.name = "rest", .kind = V_STRING, .flags = OBJ_ARG_OPTIONAL, .doc = "Optional range [+ \"all\"]"},
+};
+
+static const member_t find_members[] = {
+    {.kind = M_METHOD,
+     .name = "str",
+     .doc = "Search memory for a UTF-8 string",
+     .method = {.args = find_str_args, .nargs = 2, .result = V_BOOL, .fn = find_method_str}    },
+    {.kind = M_METHOD,
+     .name = "bytes",
+     .doc = "Search memory for a sequence of bytes (hex string)",
+     .method = {.args = find_bytes_args, .nargs = 2, .result = V_BOOL, .fn = find_method_bytes}},
+    {.kind = M_METHOD,
+     .name = "long",
+     .doc = "Search memory for a 32-bit integer",
+     .method = {.args = find_int_args, .nargs = 2, .result = V_BOOL, .fn = find_method_long}   },
+    {.kind = M_METHOD,
+     .name = "word",
+     .doc = "Search memory for a 16-bit integer",
+     .method = {.args = find_int_args, .nargs = 2, .result = V_BOOL, .fn = find_method_word}   },
+};
+
+const class_desc_t find_class = {
+    .name = "find",
+    .members = find_members,
+    .n_members = sizeof(find_members) / sizeof(find_members[0]),
+};

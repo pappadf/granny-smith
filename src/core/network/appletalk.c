@@ -13,10 +13,12 @@
 #include "appletalk_internal.h"
 #include "common.h"
 #include "log.h"
+#include "object.h"
 #include "scc.h"
 #include "scheduler.h"
 #include "shell.h"
 #include "system.h"
+#include "value.h"
 
 #include <assert.h>
 #include <ctype.h>
@@ -36,6 +38,29 @@
 // Module-level state: dependencies passed at init time (Pattern B)
 static scc_t *g_scc = NULL;
 static scheduler_t *g_scheduler = NULL;
+
+// Object-model class descriptors live near the bottom of the file but
+// appletalk_init / appletalk_delete reference them.
+extern const class_desc_t atalk_class;
+extern const class_desc_t atalk_shares_collection_class;
+extern const class_desc_t atalk_printer_class;
+extern const class_desc_t atalk_share_class;
+
+// Per-share entry data. Indexed by slot (0..MAX_SHARES-1); the
+// collection's get() consults atalk_share_in_use() and returns the
+// corresponding pre-allocated object so shares with `in_use=false`
+// are holes in the collection.
+typedef struct {
+    int slot;
+} atalk_share_data_t;
+
+static atalk_share_data_t g_atalk_share_data[8];
+static struct object *g_atalk_share_objs[8];
+
+// Singleton object-tree nodes — lifetime tied to appletalk_init/delete.
+static struct object *g_atalk_object;
+static struct object *g_atalk_shares_object;
+static struct object *g_atalk_printer_object;
 
 #ifndef ARRAY_LEN
 #define ARRAY_LEN(a) ((int)(sizeof(a) / sizeof((a)[0])))
@@ -242,12 +267,34 @@ void appletalk_init(scheduler_t *scheduler, scc_t *scc, checkpoint_t *checkpoint
     atalk_server_init();
     // Phase 5c — legacy `atalk-share-*` and `atalk-printer` shell
     // command registrations retired. AppleTalk admin moved to typed
-    // root methods (network.appletalk.*).
+    // root methods (appletalk.*).
     atalk_printer_register();
 
     static const atp_socket_handler_t asp_handler = {.handle_request = asp_in};
     atp_register_socket_handler(HOST_AFP_SOCKET, &asp_handler, NULL);
     atp_register_socket_handler(HOST_AFP_COMPAT_SOCKET, &asp_handler, NULL);
+
+    // Object-tree binding — instance_data is unused (NULL) for the
+    // appletalk / printer nodes (their accessors call into the
+    // AppleTalk subsystem singletons directly). Per-share entry
+    // objects carry &g_atalk_share_data[i].
+    g_atalk_object = object_new(&atalk_class, NULL, "appletalk");
+    if (g_atalk_object) {
+        object_attach(object_root(), g_atalk_object);
+        g_atalk_shares_object = object_new(&atalk_shares_collection_class, NULL, "shares");
+        if (g_atalk_shares_object)
+            object_attach(g_atalk_object, g_atalk_shares_object);
+        g_atalk_printer_object = object_new(&atalk_printer_class, NULL, "printer");
+        if (g_atalk_printer_object)
+            object_attach(g_atalk_object, g_atalk_printer_object);
+        int max = atalk_share_max();
+        if (max > 8)
+            max = 8;
+        for (int i = 0; i < max; i++) {
+            g_atalk_share_data[i].slot = i;
+            g_atalk_share_objs[i] = object_new(&atalk_share_class, &g_atalk_share_data[i], NULL);
+        }
+    }
 }
 
 // ============================================================================
@@ -255,7 +302,30 @@ void appletalk_init(scheduler_t *scheduler, scc_t *scc, checkpoint_t *checkpoint
 // ============================================================================
 
 void appletalk_delete(void) {
-    // No persistent global state to clean up
+    // Tear down per-share entry objects (never attached), then the
+    // named children, then the top-level appletalk node.
+    for (int i = 0; i < 8; i++) {
+        if (g_atalk_share_objs[i]) {
+            object_delete(g_atalk_share_objs[i]);
+            g_atalk_share_objs[i] = NULL;
+        }
+        g_atalk_share_data[i].slot = 0;
+    }
+    if (g_atalk_printer_object) {
+        object_detach(g_atalk_printer_object);
+        object_delete(g_atalk_printer_object);
+        g_atalk_printer_object = NULL;
+    }
+    if (g_atalk_shares_object) {
+        object_detach(g_atalk_shares_object);
+        object_delete(g_atalk_shares_object);
+        g_atalk_shares_object = NULL;
+    }
+    if (g_atalk_object) {
+        object_detach(g_atalk_object);
+        object_delete(g_atalk_object);
+        g_atalk_object = NULL;
+    }
 }
 
 // Send a DDP packet to the Mac via LocalTalk
@@ -2014,3 +2084,231 @@ static void asp_in(const ddp_header_t *ddp, atp_packet_t *atp, void *ctx) {
 static uint16_t rd16be(const uint8_t *p) {
     return (uint16_t)((p[0] << 8) | p[1]);
 }
+
+// === Object-model class descriptors =========================================
+//
+// appletalk.shares — indexed children, sparse stable indices.
+//                    Each share exposes name / path / vol_id;
+//                    add(name, path) / remove(name) live on the
+//                    collection class.
+// appletalk.printer — `enabled` (R/O bool), `name` (R/O str — empty
+//                    when disabled). Methods `enable(name?)` /
+//                    `disable()`.
+
+// --- appletalk.shares.* indexed entries ------------------------------------
+
+// Per-share entry data and singleton object handles are declared at the
+// top of the file (just below g_scc) because appletalk_init /
+// appletalk_delete reference them.
+static struct object *g_atalk_printer_object;
+
+static int atalk_share_data_slot(struct object *self) {
+    atalk_share_data_t *d = (atalk_share_data_t *)object_data(self);
+    return d ? d->slot : -1;
+}
+
+static value_t atalk_share_attr_name(struct object *self, const member_t *m) {
+    (void)m;
+    const char *s = atalk_share_name(atalk_share_data_slot(self));
+    return val_str(s ? s : "");
+}
+static value_t atalk_share_attr_path(struct object *self, const member_t *m) {
+    (void)m;
+    const char *s = atalk_share_path(atalk_share_data_slot(self));
+    return val_str(s ? s : "");
+}
+static value_t atalk_share_attr_vol_id(struct object *self, const member_t *m) {
+    (void)m;
+    return val_uint(2, atalk_share_vol_id(atalk_share_data_slot(self)));
+}
+
+static value_t atalk_share_method_remove(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)m;
+    (void)argc;
+    (void)argv;
+    const char *name = atalk_share_name(atalk_share_data_slot(self));
+    if (!name)
+        return val_err("share already removed");
+    if (atalk_share_remove(name) != 0)
+        return val_err("atalk_share_remove failed");
+    return val_none();
+}
+
+static const member_t atalk_share_members[] = {
+    {.kind = M_ATTR,
+     .name = "name",
+     .flags = VAL_RO,
+     .attr = {.type = V_STRING, .get = atalk_share_attr_name, .set = NULL}                  },
+    {.kind = M_ATTR,
+     .name = "path",
+     .flags = VAL_RO,
+     .attr = {.type = V_STRING, .get = atalk_share_attr_path, .set = NULL}                  },
+    {.kind = M_ATTR,
+     .name = "vol_id",
+     .flags = VAL_RO,
+     .attr = {.type = V_UINT, .get = atalk_share_attr_vol_id, .set = NULL}                  },
+    {.kind = M_METHOD,
+     .name = "remove",
+     .doc = "Remove this AppleShare volume",
+     .method = {.args = NULL, .nargs = 0, .result = V_NONE, .fn = atalk_share_method_remove}},
+};
+
+const class_desc_t atalk_share_class = {
+    .name = "atalk_share",
+    .members = atalk_share_members,
+    .n_members = sizeof(atalk_share_members) / sizeof(atalk_share_members[0]),
+};
+
+// --- shares collection -----------------------------------------------------
+
+static struct object *atalk_shares_get(struct object *self, int index) {
+    (void)self;
+    if (index < 0 || index >= 8)
+        return NULL;
+    if (!atalk_share_in_use(index))
+        return NULL;
+    return g_atalk_share_objs[index];
+}
+static int atalk_shares_count(struct object *self) {
+    (void)self;
+    int n = 0;
+    int max = atalk_share_max();
+    for (int i = 0; i < max && i < 8; i++)
+        if (atalk_share_in_use(i))
+            n++;
+    return n;
+}
+static int atalk_shares_next(struct object *self, int prev_index) {
+    (void)self;
+    int max = atalk_share_max();
+    for (int i = prev_index + 1; i < max && i < 8; i++)
+        if (atalk_share_in_use(i))
+            return i;
+    return -1;
+}
+
+static value_t atalk_shares_method_add(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)self;
+    (void)m;
+    if (argc < 2 || argv[0].kind != V_STRING || argv[1].kind != V_STRING)
+        return val_err("appletalk.shares.add: expected (name, path)");
+    if (atalk_share_add(argv[0].s, argv[1].s) != 0)
+        return val_err("atalk_share_add failed (see log)");
+    return val_none();
+}
+
+static value_t atalk_shares_method_remove(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)self;
+    (void)m;
+    if (argc < 1 || argv[0].kind != V_STRING)
+        return val_err("appletalk.shares.remove: expected (name)");
+    if (atalk_share_remove(argv[0].s) != 0)
+        return val_err("atalk_share_remove failed (no such share?)");
+    return val_none();
+}
+
+static const arg_decl_t atalk_shares_add_args[] = {
+    {.name = "name", .kind = V_STRING, .doc = "Volume name (max 32 chars)"          },
+    {.name = "path", .kind = V_STRING, .doc = "Host path to a directory under MEMFS"},
+};
+static const arg_decl_t atalk_shares_remove_args[] = {
+    {.name = "name", .kind = V_STRING, .doc = "Volume name to remove"},
+};
+
+static const member_t atalk_shares_collection_members[] = {
+    {.kind = M_METHOD,
+     .name = "add",
+     .doc = "Add an AppleShare volume",
+     .method = {.args = atalk_shares_add_args, .nargs = 2, .result = V_NONE, .fn = atalk_shares_method_add}},
+    {.kind = M_METHOD,
+     .name = "remove",
+     .doc = "Remove an AppleShare volume by name",
+     .method = {.args = atalk_shares_remove_args, .nargs = 1, .result = V_NONE, .fn = atalk_shares_method_remove}},
+    {.kind = M_CHILD,
+     .name = "entries",
+     .child = {.cls = &atalk_share_class,
+               .indexed = true,
+               .get = atalk_shares_get,
+               .count = atalk_shares_count,
+               .next = atalk_shares_next,
+               .lookup = NULL}},
+};
+
+const class_desc_t atalk_shares_collection_class = {
+    .name = "atalk_shares",
+    .members = atalk_shares_collection_members,
+    .n_members = sizeof(atalk_shares_collection_members) / sizeof(atalk_shares_collection_members[0]),
+};
+
+// --- appletalk.printer ----------------------------------------------------
+
+static value_t atalk_printer_attr_enabled(struct object *self, const member_t *m) {
+    (void)self;
+    (void)m;
+    return val_bool(atalk_printer_is_enabled());
+}
+static value_t atalk_printer_attr_name(struct object *self, const member_t *m) {
+    (void)self;
+    (void)m;
+    const char *n = atalk_printer_object_name();
+    return val_str(n ? n : "");
+}
+
+static value_t atalk_printer_method_enable(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)self;
+    (void)m;
+    const char *name = (argc >= 1 && argv[0].kind == V_STRING && argv[0].s && *argv[0].s) ? argv[0].s : NULL;
+    if (atalk_printer_enable(name) != 0)
+        return val_err("atalk_printer_enable failed");
+    return val_none();
+}
+static value_t atalk_printer_method_disable(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)self;
+    (void)m;
+    (void)argc;
+    (void)argv;
+    if (atalk_printer_disable() != 0)
+        return val_err("atalk_printer_disable failed");
+    return val_none();
+}
+
+static const arg_decl_t atalk_printer_enable_args[] = {
+    {.name = "name", .kind = V_STRING, .flags = OBJ_ARG_OPTIONAL, .doc = "Optional NBP entity name override"},
+};
+
+static const member_t atalk_printer_members[] = {
+    {.kind = M_ATTR,
+     .name = "enabled",
+     .flags = VAL_RO,
+     .attr = {.type = V_BOOL, .get = atalk_printer_attr_enabled, .set = NULL}                                      },
+    {.kind = M_ATTR,
+     .name = "name",
+     .flags = VAL_RO,
+     .attr = {.type = V_STRING, .get = atalk_printer_attr_name, .set = NULL}                                       },
+    {.kind = M_METHOD,
+     .name = "enable",
+     .doc = "Advertise the LaserWriter via NBP",
+     .method = {.args = atalk_printer_enable_args, .nargs = 1, .result = V_NONE, .fn = atalk_printer_method_enable}},
+    {.kind = M_METHOD,
+     .name = "disable",
+     .doc = "Stop advertising the LaserWriter",
+     .method = {.args = NULL, .nargs = 0, .result = V_NONE, .fn = atalk_printer_method_disable}                    },
+};
+
+const class_desc_t atalk_printer_class = {
+    .name = "atalk_printer",
+    .members = atalk_printer_members,
+    .n_members = sizeof(atalk_printer_members) / sizeof(atalk_printer_members[0]),
+};
+
+// --- appletalk root --------------------------------------------------------
+//
+// Currently a namespace-only parent for `shares` and `printer`. Its own
+// members slot is reserved for future ATP-stack / connection-state
+// attributes (node id, sessions, packet counters, ...).
+
+const class_desc_t atalk_class = {
+    .name = "appletalk",
+    .members = NULL,
+    .n_members = 0,
+};

@@ -79,6 +79,13 @@ struct cpu {
 
     // 68030-specific: FPU state pointer (NULL for 68000 or if no FPU)
     void *fpu;
+
+    // Object-tree binding — lifetime tied to cpu_init / cpu_delete.
+    // The cpu_object is overwritten when the checkpoint read above
+    // copies the entire struct; cpu_init replants the real pointer
+    // after reading.
+    struct object *cpu_object;
+    struct object *fpu_object;
 };
 
 // Read the condition code register from CPU flags

@@ -157,8 +157,8 @@ static void plus_init(config_t *cfg, checkpoint_t *checkpoint) {
     cfg->sound = ps->sound; // mirror onto cfg so the object-model `sound`
                             // class can find it via cfg->sound (M7f)
 
-    cfg->via1 =
-        via_init(cfg->mem_map, cfg->scheduler, 10, plus_via_output, plus_via_shift_out, plus_via_irq, cfg, checkpoint);
+    cfg->via1 = via_init(cfg->mem_map, cfg->scheduler, 10, "via1", plus_via_output, plus_via_shift_out, plus_via_irq,
+                         cfg, checkpoint);
 
     rtc_set_via(cfg->rtc, cfg->via1);
 

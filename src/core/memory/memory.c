@@ -13,10 +13,18 @@
 
 #include "common.h"
 #include "cpu.h"
+#include "object.h"
 #include "platform.h"
 #include "rom.h"
 #include "shell.h"
 #include "system.h"
+#include "system_config.h"
+#include "value.h"
+
+// Forward declarations — class descriptors are at the bottom of the file but
+// memory_map_init / memory_map_delete reference them.
+extern const class_desc_t memory_class;
+extern const class_desc_t mem_peek_class;
 
 #include <assert.h>
 #include <stdio.h>
@@ -146,6 +154,10 @@ typedef struct memory {
     bool checksum_valid;
 
     int version;
+
+    // Object-tree binding — lifetime tied to memory_map_init / delete.
+    struct object *memory_object;
+    struct object *peek_object;
 
 } memory_map_t;
 
@@ -1070,6 +1082,17 @@ memory_map_t *memory_map_init(int address_bits, uint32_t ram_size, uint32_t rom_
         }
     }
 
+    // Object-tree binding — instance_data is the memory_map_t itself,
+    // memory.peek's accessors call into the global memory_read_* helpers
+    // directly so its instance_data is unused.
+    mem->memory_object = object_new(&memory_class, mem, "memory");
+    if (mem->memory_object) {
+        object_attach(object_root(), mem->memory_object);
+        mem->peek_object = object_new(&mem_peek_class, NULL, "peek");
+        if (mem->peek_object)
+            object_attach(mem->memory_object, mem->peek_object);
+    }
+
     return mem;
 }
 
@@ -1081,6 +1104,16 @@ memory_map_t *memory_map_init(int address_bits, uint32_t ram_size, uint32_t rom_
 void memory_map_delete(memory_map_t *mem) {
     if (!mem)
         return;
+    if (mem->peek_object) {
+        object_detach(mem->peek_object);
+        object_delete(mem->peek_object);
+        mem->peek_object = NULL;
+    }
+    if (mem->memory_object) {
+        object_detach(mem->memory_object);
+        object_delete(mem->memory_object);
+        mem->memory_object = NULL;
+    }
     // Free mappings
     mapping_t *m = mem->map;
     while (m) {
@@ -1161,3 +1194,92 @@ void memory_map_print(memory_map_t *restrict mem) {
         map = map->next;
     }
 }
+
+// === Object-model class descriptor =========================================
+//
+// instance_data on the memory node is the memory_map_t* itself.
+// Lifetime is tied to memory_map_init / memory_map_delete.
+
+static value_t attr_mem_ram_size(struct object *self, const member_t *m) {
+    (void)m;
+    memory_map_t *mem = (memory_map_t *)object_data(self);
+    return val_uint(4, mem ? mem->ram_size : 0u);
+}
+
+static value_t attr_mem_rom_size(struct object *self, const member_t *m) {
+    (void)m;
+    memory_map_t *mem = (memory_map_t *)object_data(self);
+    return val_uint(4, mem ? mem->rom_size : 0u);
+}
+
+// === memory.read_cstring ====================================================
+//
+// Read a NUL-terminated string from guest memory at addr, escaping
+// non-printable bytes. Used to migrate the legacy `$str.<src>`
+// vocabulary onto the unified ${...} interpolator.
+
+static value_t method_mem_read_cstring(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)self;
+    (void)m;
+    if (argc < 1)
+        return val_err("memory.read_cstring: expected addr");
+    bool ok = false;
+    uint64_t addr_u = val_as_u64(&argv[0], &ok);
+    if (!ok)
+        return val_err("memory.read_cstring: addr must be numeric");
+    uint32_t addr = (uint32_t)addr_u;
+    int max_chars = 96;
+    if (argc >= 2) {
+        bool ok2 = false;
+        int64_t mc = val_as_i64(&argv[1], &ok2);
+        if (ok2 && mc > 0 && mc <= 4096)
+            max_chars = (int)mc;
+    }
+    char buf[8192];
+    size_t out = 0;
+    if (out < sizeof(buf))
+        buf[out++] = '"';
+    for (int i = 0; i < max_chars && out + 4 < sizeof(buf); i++) {
+        uint8_t b = memory_read_uint8(addr + (uint32_t)i);
+        if (b == 0)
+            break;
+        if (b >= 0x20 && b <= 0x7E) {
+            buf[out++] = (char)b;
+        } else {
+            int n = snprintf(buf + out, sizeof(buf) - out, "\\x%02X", b);
+            if (n < 0)
+                break;
+            out += (size_t)n;
+        }
+    }
+    if (out + 1 < sizeof(buf))
+        buf[out++] = '"';
+    buf[out] = '\0';
+    return val_str(buf);
+}
+
+static const arg_decl_t mem_read_cstring_args[] = {
+    {.name = "addr",      .kind = V_UINT, .flags = VAL_HEX,          .doc = "guest memory address"          },
+    {.name = "max_chars", .kind = V_INT,  .flags = OBJ_ARG_OPTIONAL, .doc = "max chars to read (default 96)"},
+};
+
+static const member_t memory_members[] = {
+    {.kind = M_ATTR,
+     .name = "ram_size",
+     .flags = VAL_RO,
+     .attr = {.type = V_UINT, .get = attr_mem_ram_size, .set = NULL}                                         },
+    {.kind = M_ATTR,
+     .name = "rom_size",
+     .flags = VAL_RO,
+     .attr = {.type = V_UINT, .get = attr_mem_rom_size, .set = NULL}                                         },
+    {.kind = M_METHOD,
+     .name = "read_cstring",
+     .doc = "Read a quoted, escape-encoded C string at addr",
+     .method = {.args = mem_read_cstring_args, .nargs = 2, .result = V_STRING, .fn = method_mem_read_cstring}},
+};
+
+const class_desc_t memory_class = {
+    .name = "memory",
+    .members = memory_members,
+    .n_members = sizeof(memory_members) / sizeof(memory_members[0]),
+};
