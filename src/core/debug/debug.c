@@ -977,59 +977,6 @@ static void trace_add_pc_entry(debug_t *debug, uint32_t pc) {
     }
 }
 
-static uint64_t cmd_td(int argc, char *argv[]) {
-    cpu_t *cpu = system_cpu();
-    if (!cpu) {
-        printf("CPU not available\n");
-        return 0;
-    }
-
-    // CPU/Addressing/MMU header line
-    bool is_24bit = (g_address_mask == 0x00FFFFFF);
-    if (g_mmu) {
-        printf("CPU: 68030  Addressing: %s  MMU: %s", is_24bit ? "24-bit" : "32-bit",
-               g_mmu->enabled ? "enabled" : "disabled");
-        if (g_mmu->enabled)
-            printf(" (TC=$%08X)", g_mmu->tc);
-        printf("\n");
-    } else {
-        printf("CPU: 68000  Addressing: %s  MMU: none\n", is_24bit ? "24-bit" : "32-bit");
-    }
-
-    printf("D0 = $%08X    A0 = $%08X\n", (unsigned int)cpu_get_dn(cpu, 0), (unsigned int)cpu_get_an(cpu, 0));
-    printf("D1 = $%08X    A1 = $%08X\n", (unsigned int)cpu_get_dn(cpu, 1), (unsigned int)cpu_get_an(cpu, 1));
-    printf("D2 = $%08X    A2 = $%08X\n", (unsigned int)cpu_get_dn(cpu, 2), (unsigned int)cpu_get_an(cpu, 2));
-    printf("D3 = $%08X    A3 = $%08X\n", (unsigned int)cpu_get_dn(cpu, 3), (unsigned int)cpu_get_an(cpu, 3));
-    printf("D4 = $%08X    A4 = $%08X\n", (unsigned int)cpu_get_dn(cpu, 4), (unsigned int)cpu_get_an(cpu, 4));
-    printf("D5 = $%08X    A5 = $%08X\n", (unsigned int)cpu_get_dn(cpu, 5), (unsigned int)cpu_get_an(cpu, 5));
-    printf("D6 = $%08X    A6 = $%08X\n", (unsigned int)cpu_get_dn(cpu, 6), (unsigned int)cpu_get_an(cpu, 6));
-    printf("D7 = $%08X    A7 = $%08X\n", (unsigned int)cpu_get_dn(cpu, 7), (unsigned int)cpu_get_an(cpu, 7));
-
-    // PC, SR with decoded fields, USP/SSP (IMP-401, IMP-405)
-    uint16_t sr = cpu_get_sr(cpu);
-    int s_bit = (sr >> 13) & 1;
-    int im = (sr >> 8) & 7;
-    int t_bit = (sr >> 15) & 1;
-    int x = (sr & cpu_ccr_x) ? 1 : 0;
-    int n = (sr & cpu_ccr_n) ? 1 : 0;
-    int z = (sr & cpu_ccr_z) ? 1 : 0;
-    int v = (sr & cpu_ccr_v) ? 1 : 0;
-    int cc = (sr & cpu_ccr_c) ? 1 : 0;
-    printf("PC = $%08X    SR = $%04X  (S=%d, IM=%d, T=%d, XNZVC=%d%d%d%d%d)\n", (unsigned int)cpu_get_pc(cpu), sr,
-           s_bit, im, t_bit, x, n, z, v, cc);
-    printf("USP = $%08X   SSP = $%08X\n", (unsigned int)cpu_get_usp(cpu), (unsigned int)cpu_get_ssp(cpu));
-
-    return 0;
-}
-
-// Public wrappers for the typed `info_regs` / `info_fpregs` /
-// `info_mac` root methods — same body as the legacy `td` / `fpregs`
-// / `mac-state` commands and the `info <regs|fpregs|mac>` subcommands,
-// just reachable without going through cmd_dispatch.
-void debug_print_regs(void) {
-    cmd_td(0, NULL);
-}
-
 // Helper function to convert string to uppercase (for case-insensitive comparisons)
 static void str_to_upper(char *dest, const char *src) {
     while (*src) {
@@ -1863,49 +1810,6 @@ static double fp80_to_double(float80_reg_t f) {
     return sign ? -result : result;
 }
 
-static uint64_t cmd_fpregs(int argc, char *argv[]) {
-    (void)argc;
-    (void)argv;
-
-    cpu_t *cpu = system_cpu();
-    if (!cpu) {
-        printf("CPU not available\n");
-        return 0;
-    }
-    fpu_state_t *fpu = (fpu_state_t *)cpu->fpu;
-    if (!fpu) {
-        printf("FPU not available\n");
-        return 0;
-    }
-
-    for (int i = 0; i < 8; i++) {
-        float80_reg_t fp = fpu->fp[i];
-        double approx = fp80_to_double(fp);
-        printf("FP%d = $%04X.%016llX  (%g)\n", i, fp.exponent, (unsigned long long)fp.mantissa, approx);
-    }
-
-    // FPCR decode: rounding mode and precision
-    const char *rmode[] = {"RN", "RZ", "RM", "RP"};
-    const char *rprec[] = {"Extended", "Single", "Double", "(reserved)"};
-    uint32_t fpcr = fpu->fpcr;
-    printf("FPCR  = $%08X  (%s, %s)\n", fpcr, rmode[(fpcr >> 4) & 3], rprec[(fpcr >> 6) & 3]);
-
-    // FPSR decode: condition codes and accrued exceptions
-    uint32_t fpsr = fpu->fpsr;
-    printf("FPSR  = $%08X  [%c%c%c%c] Accrued:[%c%c%c%c%c]\n", fpsr, (fpsr & FPCC_N) ? 'N' : '-',
-           (fpsr & FPCC_Z) ? 'Z' : '-', (fpsr & FPCC_I) ? 'I' : '-', (fpsr & FPCC_NAN) ? 'A' : '-',
-           (fpsr & FPACC_IOP) ? 'I' : '-', (fpsr & FPACC_OVFL) ? 'O' : '-', (fpsr & FPACC_UNFL) ? 'U' : '-',
-           (fpsr & FPACC_DZ) ? 'D' : '-', (fpsr & FPACC_INEX) ? 'X' : '-');
-
-    printf("FPIAR = $%08X\n", fpu->fpiar);
-
-    return 0;
-}
-
-void debug_print_fpregs(void) {
-    cmd_fpregs(0, NULL);
-}
-
 // ============================================================================
 // Configurable status line / prompt (IMP-308)
 // ============================================================================
@@ -2035,59 +1939,6 @@ int delete_all_logpoints(debug_t *debug) {
 // ============================================================================
 // Mac state summary (IMP-702)
 // ============================================================================
-
-static uint64_t cmd_mac_state(int argc, char *argv[]) {
-    (void)argc;
-    (void)argv;
-
-    if (!system_memory()) {
-        printf("System not initialized\n");
-        return 0;
-    }
-
-    // Mouse state
-    uint32_t addr_MTemp = debug_mac_lookup_global_address("MTemp");
-    uint32_t addr_RawMouse = debug_mac_lookup_global_address("RawMouse");
-    uint32_t addr_Mouse = debug_mac_lookup_global_address("Mouse");
-    uint32_t addr_MBState = debug_mac_lookup_global_address("MBState");
-    uint32_t addr_CrsrNew = debug_mac_lookup_global_address("CrsrNew");
-    uint32_t addr_CrsrCouple = debug_mac_lookup_global_address("CrsrCouple");
-    uint32_t addr_Ticks = debug_mac_lookup_global_address("Ticks");
-
-    if (addr_Mouse) {
-        int16_t mv = (int16_t)memory_read_uint16(addr_Mouse);
-        int16_t mh = (int16_t)memory_read_uint16(addr_Mouse + 2);
-        printf("Mouse:   pos=(%d,%d)", mv, mh);
-    }
-    if (addr_MBState) {
-        uint8_t mb = memory_read_uint8(addr_MBState);
-        printf("  button=%s  MBState=$%02X", (mb & 0x80) ? "UP" : "DOWN", mb);
-    }
-    printf("\n");
-
-    if (addr_MTemp) {
-        int16_t tv = (int16_t)memory_read_uint16(addr_MTemp);
-        int16_t th = (int16_t)memory_read_uint16(addr_MTemp + 2);
-        printf("Cursor:  MTemp=(%d,%d)", tv, th);
-    }
-    if (addr_CrsrNew) {
-        printf("  CrsrNew=$%02X", memory_read_uint8(addr_CrsrNew));
-    }
-    if (addr_CrsrCouple) {
-        printf("  CrsrCouple=$%02X", memory_read_uint8(addr_CrsrCouple));
-    }
-    printf("\n");
-
-    if (addr_Ticks) {
-        printf("Ticks:   %u\n", memory_read_uint32(addr_Ticks));
-    }
-
-    return 0;
-}
-
-void debug_print_mac_state(void) {
-    cmd_mac_state(0, NULL);
-}
 
 // ============================================================================
 // Lifecycle: Constructor

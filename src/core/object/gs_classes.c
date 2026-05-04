@@ -943,33 +943,6 @@ static value_t method_root_hd_attach(struct object *self, const member_t *m, int
 // handlers; these methods exist so test scripts and the typed-bridge
 // have one consistent path-form interface.
 
-static value_t method_root_info_regs(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
-    (void)argc;
-    (void)argv;
-    debug_print_regs();
-    return val_bool(true);
-}
-
-static value_t method_root_info_fpregs(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
-    (void)argc;
-    (void)argv;
-    debug_print_fpregs();
-    return val_bool(true);
-}
-
-static value_t method_root_info_mac(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
-    (void)argc;
-    (void)argv;
-    debug_print_mac_state();
-    return val_bool(true);
-}
-
 static value_t method_root_disasm(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)self;
     (void)m;
@@ -1883,19 +1856,7 @@ static const member_t emu_root_members[] = {
      .name = "hd_models",
      .doc = "Return the known SCSI HD model catalog as a JSON array string",
      .method = {.args = NULL, .nargs = 0, .result = V_STRING, .fn = method_root_hd_models}                           },
-    // Debugging-area thin wrappers (Phase 3 final batch).
-    {.kind = M_METHOD,
-     .name = "info_regs",
-     .doc = "Print the integer register file (legacy `info regs`)",
-     .method = {.args = NULL, .nargs = 0, .result = V_BOOL, .fn = method_root_info_regs}                             },
-    {.kind = M_METHOD,
-     .name = "info_fpregs",
-     .doc = "Print the floating-point register file (legacy `info fpregs`)",
-     .method = {.args = NULL, .nargs = 0, .result = V_BOOL, .fn = method_root_info_fpregs}                           },
-    {.kind = M_METHOD,
-     .name = "info_mac",
-     .doc = "Print the Mac-OS state snapshot (legacy `info mac`)",
-     .method = {.args = NULL, .nargs = 0, .result = V_BOOL, .fn = method_root_info_mac}                              },
+    // Debugging-area thin wrappers.
     {.kind = M_METHOD,
      .name = "disasm",
      .doc = "Disassemble forward from PC (legacy `d [count]`)",

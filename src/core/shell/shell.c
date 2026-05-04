@@ -205,6 +205,115 @@ void dispatch_command(char *line, struct cmd_result *res) {
 // Returns true if the line was handled (caller should not fall through
 // to suggest_command), false otherwise.
 
+// Print one scalar value inline (no trailing newline). Used as the
+// rhs in the object-attribute table dump and inside list expansion.
+// Mirrors the per-kind formatting in format_value_print but without
+// a trailing newline so it composes into a `name = value` line.
+static void format_scalar_inline(const value_t *v) {
+    if (!v)
+        return;
+    switch (v->kind) {
+    case V_NONE:
+        // empty inline representation
+        break;
+    case V_BOOL:
+        printf("%s", v->b ? "true" : "false");
+        break;
+    case V_INT:
+        if (v->flags & VAL_HEX)
+            printf("0x%" PRIx64, (uint64_t)v->i);
+        else
+            printf("%" PRId64, v->i);
+        break;
+    case V_UINT:
+        if (v->flags & VAL_HEX)
+            printf("0x%" PRIx64, v->u);
+        else
+            printf("%" PRIu64, v->u);
+        break;
+    case V_FLOAT:
+        printf("%g", v->f);
+        break;
+    case V_STRING:
+        printf("\"%s\"", v->s ? v->s : "");
+        break;
+    case V_BYTES:
+        printf("0x");
+        for (size_t i = 0; i < v->bytes.n; i++)
+            printf("%02x", v->bytes.p[i]);
+        break;
+    case V_ENUM:
+        if (v->enm.table && (size_t)v->enm.idx < v->enm.n_table && v->enm.table[v->enm.idx])
+            printf("\"%s\"", v->enm.table[v->enm.idx]);
+        else
+            printf("enum:%d", v->enm.idx);
+        break;
+    case V_LIST:
+        printf("<list:%zu>", v->list.len);
+        break;
+    case V_OBJECT: {
+        const class_desc_t *cc = v->obj ? object_class(v->obj) : NULL;
+        printf("<%s>", cc && cc->name ? cc->name : "object");
+        break;
+    }
+    case V_ERROR:
+        printf("<error: %s>", v->err ? v->err : "");
+        break;
+    }
+}
+
+// Print an object as a multi-line `name = value` table. Walks the
+// class's member table and reads each attribute through its getter;
+// child objects show as `<class:name>` placeholders (drill in via
+// the path to see their state); methods are skipped.
+static void format_object_table(struct object *o) {
+    if (!o)
+        return;
+    const class_desc_t *cls = object_class(o);
+    if (!cls || !cls->members || cls->n_members == 0) {
+        const char *cls_name = (cls && cls->name) ? cls->name : "object";
+        const char *o_name = object_name(o);
+        printf("<%s:%s>\n", cls_name, o_name ? o_name : "");
+        return;
+    }
+    // Pass 1: compute the longest member name so we can right-pad.
+    int width = 0;
+    for (size_t i = 0; i < cls->n_members; i++) {
+        const member_t *mb = &cls->members[i];
+        if (!mb->name)
+            continue;
+        if (mb->kind == M_METHOD)
+            continue;
+        int len = (int)strlen(mb->name);
+        if (len > width)
+            width = len;
+    }
+    if (width > 24)
+        width = 24; // cap so very long attr names don't blow the layout
+    // Pass 2: print attrs first, then children.
+    for (size_t i = 0; i < cls->n_members; i++) {
+        const member_t *mb = &cls->members[i];
+        if (!mb->name)
+            continue;
+        if (mb->kind != M_ATTR)
+            continue;
+        if (!mb->attr.get)
+            continue;
+        value_t v = mb->attr.get(o, mb);
+        printf("%-*s = ", width, mb->name);
+        format_scalar_inline(&v);
+        printf("\n");
+        value_free(&v);
+    }
+    for (size_t i = 0; i < cls->n_members; i++) {
+        const member_t *mb = &cls->members[i];
+        if (!mb->name || mb->kind != M_CHILD)
+            continue;
+        const char *child_cls = (mb->child.cls && mb->child.cls->name) ? mb->child.cls->name : "object";
+        printf("%-*s : <%s%s>\n", width, mb->name, child_cls, mb->child.indexed ? "[]" : "");
+    }
+}
+
 static void format_value_print(const value_t *v) {
     if (!v)
         return;
@@ -297,13 +406,12 @@ static void format_value_print(const value_t *v) {
         }
         printf("]\n");
         break;
-    case V_OBJECT: {
-        const class_desc_t *cls = v->obj ? object_class(v->obj) : NULL;
-        const char *cls_name = (cls && cls->name) ? cls->name : "object";
-        const char *o_name = v->obj ? object_name(v->obj) : NULL;
-        printf("<%s:%s>\n", cls_name, o_name ? o_name : "");
+    case V_OBJECT:
+        // Bare-read of an object prints its attributes as a
+        // `name = value` table. Methods are skipped; child nodes show
+        // as placeholders (drill in by typing the dotted path).
+        format_object_table(v->obj);
         break;
-    }
     case V_ERROR:
         fprintf(stderr, "%s\n", v->err ? v->err : "(error)");
         break;

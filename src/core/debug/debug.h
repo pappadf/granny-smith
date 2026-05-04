@@ -130,14 +130,6 @@ int shell_find_argv(int argc, char **argv);
 // truthy.  The rule mirrors proposal §2.5.
 bool predicate_is_truthy(const char *s);
 
-// Register / FPU / Mac-state dumps — used by typed `info_*` wrappers
-// and the legacy `td` / `fpregs` / `mac-state` commands. Both layers
-// share the same printer; the typed wrapper has no cmd_context so
-// stdout is the only output target.
-void debug_print_regs(void);
-void debug_print_fpregs(void);
-void debug_print_mac_state(void);
-
 // Framebuffer utilities — used by typed `screen.*` wrappers and the
 // legacy `screenshot` command. Both layers call into the same
 // primitives so neither has to know about the other.

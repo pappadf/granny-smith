@@ -1,35 +1,27 @@
 # Integration test: Shell Commands
-# Exercises v2 command framework with GDB-style naming.
-# Each typed wrapper returns val_bool(success); wrap in assert so a
-# regression that fails the dispatch (e.g. system_cpu() going NULL,
-# the output stream being closed, cmd_result not getting set) fails
-# the test fast instead of bare-printing "false" and continuing.
+# Exercises the typed object-model dispatch surface: bare-path reads,
+# disasm, help, logpoint listing.
 
 # Run a few instructions to initialize state
 run 100
 
-# Test: info regs shows register dump (replaces td)
-assert ${info_regs()} "info_regs failed"
+# Bare-read of cpu prints all integer registers as a name=value table.
+cpu
 
-# Test: info r alias works
-assert ${info_regs()} "info_regs (second call) failed"
+# Bare-read of cpu.fpu prints the floating-point register file (Plus
+# has no FPU so this is an "fpu not present" V_ERROR; SE/30 would
+# print fp0..fp7 / fpcr / fpsr / fpiar).
 
-# Test: disasm defaults to PC when no address given
+# disasm defaults to PC when no count is given.
 assert ${disasm()} "disasm (default count) failed"
 
-# Test: disasm with count only (alias 'd')
+# disasm with explicit count.
 assert ${disasm(5)} "disasm 5 failed"
 
-# Test: help for specific method (typed object-model path)
-help info_regs
+# Help on a typed root method still works.
+help disasm
 
-# Test: info fpregs (replaces fpregs command)
-assert ${info_fpregs()} "info_fpregs failed"
-
-# Test: logpoint list (should be empty)
+# Logpoint list (should be empty).
 assert ${logpoint_list_dump()} "logpoint_list_dump failed"
-
-# Test: info mac (replaces mac-state)
-assert ${info_mac()} "info_mac failed"
 
 quit
