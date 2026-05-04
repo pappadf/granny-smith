@@ -11,8 +11,8 @@
 # Create a blank 80 MB hard disk image (exact HD80SC size, zero-filled)
 storage.hd_create ${WORK_DIR}/blank80.img HD20SC
 
-# Attach the blank image as SCSI ID 6 (default)
-scsi.attach_hd ${WORK_DIR}/blank80.img
+# Attach the blank image at SCSI ID 0
+scsi.attach_hd ${WORK_DIR}/blank80.img 0
 
 # Boot to Finder desktop (SE/30 with 8 MB RAM)
 scheduler.run 80000000
