@@ -3,7 +3,7 @@
 # disasm, help, logpoint listing.
 
 # Run a few instructions to initialize state
-run 100
+scheduler.run 100
 
 # Bare-read of cpu prints all integer registers as a name=value table.
 cpu

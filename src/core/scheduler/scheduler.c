@@ -12,8 +12,10 @@
 
 #include "cpu.h"
 #include "memory.h"
+#include "object.h"
 #include "shell.h"
 #include "system.h"
+#include "value.h"
 
 #include <math.h>
 #include <stddef.h>
@@ -97,6 +99,9 @@ struct scheduler {
     event_as_checkpoint_t *tmp_events;
 
     uint32_t frequency;
+
+    // Object-tree binding — lifetime tied to scheduler_init / scheduler_delete.
+    struct object *object;
 };
 
 // ============================================================================
@@ -105,6 +110,8 @@ struct scheduler {
 
 static uint64_t current_cpu_cycles(struct scheduler *s);
 static int num_events_in_queue(struct scheduler *restrict s);
+
+extern const class_desc_t scheduler_class;
 
 // ============================================================================
 // Static Helpers
@@ -369,113 +376,27 @@ void scheduler_start_vbl(struct scheduler *restrict s, config_t *config) {
     scheduler_new_cpu_event(s, scheduler_vbl_tick, config, 0, cycles_per_vbl, 0);
 }
 
-// Shell command to start execution, optionally limiting the number of instructions to run
-uint64_t cmd_run(int argc, char *argv[]) {
-    if (argc > 2) {
-        printf("Usage: run [instructions]\n");
-        return 0;
-    }
-
-    scheduler_t *s = system_scheduler();
+// Schedule a stop after `instructions` more instructions of execution.
+// Returns false on overflow / zero-count / scheduler not initialised.
+static bool scheduler_run_with_budget(scheduler_t *s, uint64_t instructions) {
     GS_ASSERT(s != NULL);
-
     int cpi = avg_cycles_per_instr(s);
 
     // Cancel any pending stop events from previous limited runs
     remove_event(s, run_stop_event, NULL);
 
-    if (argc == 2) {
-        char *endptr = NULL;
-        unsigned long long instructions = strtoull(argv[1], &endptr, 0);
-        if (endptr == argv[1] || *endptr != '\0') {
-            printf("Invalid instruction count: %s\n", argv[1]);
-            return 0;
-        }
-        if (instructions == 0) {
-            printf("Instruction count must be greater than zero\n");
-            return 0;
-        }
-        if (instructions > UINT64_MAX / cpi) {
-            printf("Instruction count too large\n");
-            return 0;
-        }
-
-        uint64_t cycles = instructions * cpi;
-        scheduler_new_cpu_event(s, run_stop_event, s, 0, cycles, 0);
+    if (instructions == 0) {
+        // Run indefinitely (caller wants to step until externally stopped).
+        s->running = true;
+        return true;
     }
+    if (instructions > UINT64_MAX / cpi)
+        return false;
 
-    // Enter running state
+    uint64_t cycles = instructions * cpi;
+    scheduler_new_cpu_event(s, run_stop_event, s, 0, cycles, 0);
     s->running = true;
-    return 0;
-}
-
-// Shell command to stop execution
-// Shell command to get/set scheduler mode
-uint64_t cmd_schedule(int argc, char *argv[]) {
-    scheduler_t *s = system_scheduler();
-    GS_ASSERT(s != NULL);
-
-    // Map mode enum to display string
-    const char *mode_str = "?";
-    switch (s->mode) {
-    case schedule_max_speed:
-        mode_str = "max";
-        break;
-    case schedule_real_time:
-        mode_str = "real";
-        break;
-    case schedule_hw_accuracy:
-        mode_str = "hw";
-        break;
-    default:
-        break;
-    }
-
-    if (argc == 1) {
-        printf("current scheduler mode: %s (cycles/instr: %u) (options: max, real, hw)\n", mode_str,
-               avg_cycles_per_instr(s));
-        return 0;
-    }
-
-    // Handle 'schedule cpi <N>' sub-command
-    if (argc == 3 && strcmp(argv[1], "cpi") == 0) {
-        unsigned long val = strtoul(argv[2], NULL, 0);
-        if (val == 0 || val > 255) {
-            printf("cpi must be between 1 and 255\n");
-            return 0;
-        }
-        uint32_t v = (uint32_t)val;
-        switch (s->mode) {
-        case schedule_hw_accuracy:
-            scheduler_set_cpi(s, v, s->cpi_fast);
-            break;
-        default:
-            scheduler_set_cpi(s, s->cpi_hw, v);
-            break;
-        }
-        printf("cycles/instr set to: %u (for current mode: %s)\n", v, mode_str);
-        return 0;
-    }
-
-    if (argc != 2) {
-        printf("usage: schedule [max|real|hw|cpi <N>]\n");
-        return 0;
-    }
-
-    if (strcmp(argv[1], "max") == 0) {
-        s->mode = schedule_max_speed;
-    } else if (strcmp(argv[1], "real") == 0) {
-        s->mode = schedule_real_time;
-        s->vbl_acc_error = 0; // reset accumulated error when switching back
-    } else if (strcmp(argv[1], "hw") == 0) {
-        s->mode = schedule_hw_accuracy;
-    } else {
-        printf("unknown mode '%s' (valid: max, real, hw, cpi <N>)\n", argv[1]);
-        return 0;
-    }
-
-    printf("scheduler mode set to: %s (cycles/instr: %u)\n", argv[1], avg_cycles_per_instr(s));
-    return 0;
+    return true;
 }
 
 // Shell command to print a readable view of the event queue
@@ -585,16 +506,17 @@ struct scheduler *scheduler_init(struct cpu *cpu, checkpoint_t *checkpoint) {
         s->tmp_events = NULL;
     }
 
-    // Phase 5c — legacy `run` / `stop` / `schedule` / `status` / `events`
-    // shell commands retired. Typed object-model methods (run, stop,
-    // schedule, running, info_events) replace them; cmd_run is still
-    // exposed so the typed `run` wrapper can call it directly.
     scheduler_new_event_type(s, "Scheduler", s, "run_stop", run_stop_event);
     // Note: scheduler_vbl_tick uses config_t* as source, so its source is
     // not knowable here.  Machine init calls scheduler_register_vbl_type()
     // (so checkpoint restore can resolve a saved vbl_tick event), and the
     // headless platform additionally calls scheduler_start_vbl() on cold
     // boot to schedule the recurring event.
+
+    // Object-tree binding — instance_data is the scheduler itself.
+    s->object = object_new(&scheduler_class, s, "scheduler");
+    if (s->object)
+        object_attach(object_root(), s->object);
 
     return s;
 }
@@ -607,6 +529,13 @@ struct scheduler *scheduler_init(struct cpu *cpu, checkpoint_t *checkpoint) {
 void scheduler_delete(struct scheduler *scheduler) {
     if (!scheduler)
         return;
+
+    // Object-tree teardown — fires invalidators before any internal state goes.
+    if (scheduler->object) {
+        object_detach(scheduler->object);
+        object_delete(scheduler->object);
+        scheduler->object = NULL;
+    }
 
     // Free pending CPU events
     event_t *e = scheduler->cpu_events;
@@ -1157,3 +1086,165 @@ void scheduler_main_loop(config_t *restrict config, double now_msecs) {
     else
         s->host_secs_per_vbl = s->host_secs_per_vbl * 0.9 + (delta * 0.1) / denom;
 }
+
+// ============================================================================
+// Object-model class descriptor
+// ============================================================================
+
+static scheduler_t *sched_self_from(struct object *self) {
+    return (scheduler_t *)object_data(self);
+}
+
+static const char *mode_label(enum schedule_mode m) {
+    switch (m) {
+    case schedule_max_speed:
+        return "max";
+    case schedule_real_time:
+        return "real";
+    case schedule_hw_accuracy:
+        return "hw";
+    default:
+        return "?";
+    }
+}
+
+static value_t sched_attr_running(struct object *self, const member_t *m) {
+    (void)m;
+    return val_bool(scheduler_is_running(sched_self_from(self)));
+}
+
+static value_t sched_attr_mode_get(struct object *self, const member_t *m) {
+    (void)m;
+    return val_str(mode_label(sched_self_from(self)->mode));
+}
+static value_t sched_attr_mode_set(struct object *self, const member_t *m, value_t in) {
+    (void)m;
+    scheduler_t *s = sched_self_from(self);
+    if (in.kind != V_STRING || !in.s) {
+        value_free(&in);
+        return val_err("scheduler.mode: expected string ('max' | 'real' | 'hw')");
+    }
+    enum schedule_mode mode;
+    if (strcmp(in.s, "max") == 0)
+        mode = schedule_max_speed;
+    else if (strcmp(in.s, "real") == 0)
+        mode = schedule_real_time;
+    else if (strcmp(in.s, "hw") == 0)
+        mode = schedule_hw_accuracy;
+    else {
+        value_t e = val_err("scheduler.mode: unknown mode '%s' (valid: max, real, hw)", in.s);
+        value_free(&in);
+        return e;
+    }
+    value_free(&in);
+    scheduler_set_mode(s, mode);
+    return val_none();
+}
+
+static value_t sched_attr_cpi(struct object *self, const member_t *m) {
+    (void)m;
+    return val_uint(4, avg_cycles_per_instr(sched_self_from(self)));
+}
+
+static value_t sched_attr_cycles(struct object *self, const member_t *m) {
+    (void)m;
+    return val_uint(8, scheduler_cpu_cycles(sched_self_from(self)));
+}
+
+static value_t sched_attr_instr_count(struct object *self, const member_t *m) {
+    (void)self;
+    (void)m;
+    return val_uint(8, cpu_instr_count());
+}
+
+static value_t sched_attr_frequency(struct object *self, const member_t *m) {
+    (void)m;
+    return val_uint(4, sched_self_from(self)->frequency);
+}
+
+static value_t sched_method_run(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)m;
+    scheduler_t *s = sched_self_from(self);
+    if (!s)
+        return val_err("scheduler.run: scheduler not initialised");
+    uint64_t instructions = 0; // 0 = run-until-stopped
+    if (argc >= 1) {
+        bool ok = false;
+        int64_t n = val_as_i64(&argv[0], &ok);
+        if (!ok && argv[0].kind == V_UINT) {
+            instructions = argv[0].u;
+        } else if (!ok || n < 0) {
+            return val_err("scheduler.run: instructions must be a non-negative integer");
+        } else {
+            instructions = (uint64_t)n;
+        }
+    }
+    if (!scheduler_run_with_budget(s, instructions))
+        return val_err("scheduler.run: instruction count too large");
+    return val_bool(true);
+}
+
+static value_t sched_method_stop(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)m;
+    (void)argc;
+    (void)argv;
+    scheduler_t *s = sched_self_from(self);
+    if (!s)
+        return val_err("scheduler.stop: scheduler not initialised");
+    scheduler_stop(s);
+    return val_none();
+}
+
+static const arg_decl_t sched_run_args[] = {
+    {.name = "instructions",
+     .kind = V_UINT,
+     .flags = OBJ_ARG_OPTIONAL,
+     .doc = "Optional instruction budget; 0 / omitted = run until stopped"},
+};
+
+static const member_t scheduler_members[] = {
+    {.kind = M_ATTR,
+     .name = "running",
+     .doc = "True while the scheduler is executing instructions",
+     .flags = VAL_RO,
+     .attr = {.type = V_BOOL, .get = sched_attr_running, .set = NULL}},
+    {.kind = M_ATTR,
+     .name = "mode",
+     .doc = "Scheduler mode ('max' | 'real' | 'hw')",
+     .flags = 0,
+     .attr = {.type = V_STRING, .get = sched_attr_mode_get, .set = sched_attr_mode_set}},
+    {.kind = M_ATTR,
+     .name = "cpi",
+     .doc = "Cycles per instruction for the current mode",
+     .flags = VAL_RO,
+     .attr = {.type = V_UINT, .get = sched_attr_cpi, .set = NULL}},
+    {.kind = M_ATTR,
+     .name = "cycles",
+     .doc = "Total CPU cycles executed so far",
+     .flags = VAL_RO,
+     .attr = {.type = V_UINT, .get = sched_attr_cycles, .set = NULL}},
+    {.kind = M_ATTR,
+     .name = "instr_count",
+     .doc = "Total CPU instructions executed so far",
+     .flags = VAL_RO,
+     .attr = {.type = V_UINT, .get = sched_attr_instr_count, .set = NULL}},
+    {.kind = M_ATTR,
+     .name = "frequency",
+     .doc = "CPU clock frequency in Hz",
+     .flags = VAL_RO,
+     .attr = {.type = V_UINT, .get = sched_attr_frequency, .set = NULL}},
+    {.kind = M_METHOD,
+     .name = "run",
+     .doc = "Start execution; with an instruction budget, stop after that many",
+     .method = {.args = sched_run_args, .nargs = 1, .result = V_BOOL, .fn = sched_method_run}},
+    {.kind = M_METHOD,
+     .name = "stop",
+     .doc = "Interrupt execution",
+     .method = {.args = NULL, .nargs = 0, .result = V_NONE, .fn = sched_method_stop}},
+};
+
+const class_desc_t scheduler_class = {
+    .name = "scheduler",
+    .members = scheduler_members,
+    .n_members = sizeof(scheduler_members) / sizeof(scheduler_members[0]),
+};

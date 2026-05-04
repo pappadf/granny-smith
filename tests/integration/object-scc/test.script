@@ -4,7 +4,7 @@
 # other is the strongest test that the object surface is a real
 # view, not a separate bag of fields.
 
-run 50000
+scheduler.run 50000
 
 # Defaults.
 scc

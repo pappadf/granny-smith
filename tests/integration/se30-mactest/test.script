@@ -11,23 +11,23 @@ scc.loopback = true
 scsi.loopback = true
 
 # Boot past Happy Mac through splash screens
-run 200000000
+scheduler.run 200000000
 
 # Match the MacTest main screen
 screen.match main.png
 
 # Start the test
 mouse.move 100 121 "global"
-run 5000000
+scheduler.run 5000000
 mouse.click true
-run 5000000
+scheduler.run 5000000
 mouse.click false
-run 20000000
+scheduler.run 20000000
 
 # We should be running the VIA tests now
 screen.match via.png
 
-run 150000000
+scheduler.run 150000000
 
 # The test now asks us to insert a 800K floppy
 screen.match insert-800k-floppy.png
@@ -36,16 +36,16 @@ screen.match insert-800k-floppy.png
 fd_create "${WORK_DIR}/blank800.dsk" 0
 
 # Let it run a short bit - detect the floppy
-run 10000000
+scheduler.run 10000000
 
 # Click the OK button on the "insert floppy" dialog
 mouse.move 370 185 "global"
-run 5000000
+scheduler.run 5000000
 mouse.click true
-run 5000000
+scheduler.run 5000000
 mouse.click false
 
-run 250000000
+scheduler.run 250000000
 
 # The test now asks us to insert a 1.4MB floppy
 screen.match insert-1.4mb-floppy.png
@@ -60,12 +60,12 @@ mouse.click false "global"
 # Insert 1.4MB HD floppy and click immediately (before .Sony VBL auto-mounts)
 fd_create "${WORK_DIR}/blankHD.dsk" "--hd"
 mouse.move 370 185 "global"
-run 5000000
+scheduler.run 5000000
 mouse.click true
-run 5000000
+scheduler.run 5000000
 mouse.click false
 
-run 100000000
+scheduler.run 100000000
 
 # Screen should now say that floppy tests succeeded and prompt us to re-insert app disk
 screen.match floppy-test-success.png
@@ -82,8 +82,8 @@ mouse.move 0 0
 # After all passes, the test code returns through the destroyed stack, triggers
 # a double bus error, and the GLU resets the machine automatically.
 # Budget: ~5B for the test + ~1B for the reboot + ~200M for MacTest reload.
-schedule max
-run 7000000000
+scheduler.mode = "max"
+scheduler.run 7000000000
 
 # After the reboot, MacTest should have reloaded from the floppy and reached
 # its main screen.  It reads the PRAM flag set before the test and knows the

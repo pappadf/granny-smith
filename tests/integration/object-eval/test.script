@@ -1,5 +1,5 @@
 # Run a few thousand instructions so PC has actually moved.
-run 50000
+scheduler.run 50000
 
 # Object-model resolver checks. Hardware-constant attributes are
 # pinned with assert; cpu.pc / cpu.d0 / cpu.a7 are bare-read because

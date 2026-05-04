@@ -17,7 +17,7 @@ log_set logpoint 5
 
 logpoint_set '--write 0x000016A.l "Ticks bumped pc=${cpu.pc} addr=${addr:08x} val=${value:08x} size=${size}" level=5'
 
-run 5000000
+scheduler.run 5000000
 
 logpoint_list_dump
 quit

@@ -6,7 +6,7 @@
 #   - break set with a computed address
 #   - predicate assert (truthy and falsy with message)
 
-run 50000
+scheduler.run 50000
 
 # Pure arithmetic substitution.
 echo ${1 + 2}

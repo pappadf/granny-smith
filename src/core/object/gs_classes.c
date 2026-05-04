@@ -75,10 +75,10 @@ extern const class_desc_t storage_class_real; // src/core/storage/storage.c
 extern const class_desc_t storage_image_class; // src/core/storage/storage.c
 extern const class_desc_t storage_images_collection_class; // src/core/storage/storage.c
 extern const class_desc_t shell_alias_class; // src/core/object/alias.c
+extern const class_desc_t scheduler_class; // src/core/scheduler/scheduler.c
 
-// === Scheduler / Shell / Storage stubs ======================================
+// === Shell / Storage stubs ==================================================
 
-static const class_desc_t scheduler_class_desc = {.name = "scheduler", .members = NULL, .n_members = 0};
 static const class_desc_t shell_class_desc = {.name = "shell", .members = NULL, .n_members = 0};
 static const class_desc_t storage_class_desc = {.name = "storage", .members = NULL, .n_members = 0};
 
@@ -484,17 +484,6 @@ static value_t method_root_vrom_validate(struct object *self, const member_t *m,
     return val_bool(rc == 1);
 }
 
-// image_* — wraps the `image partmap|probe|list|unmount` subcommands
-// per proposal §5.10's "Legacy `image foo` subcommand machinery
-// becomes shims that flatten to top-level method calls". These four
-// commands print info to stdout and return cmd_int; we expose the
-// success bit so callers can branch on it.
-static value_t image_subcmd_bool(const char *sub, int argc, const value_t *argv, const char *err_prefix) {
-    if (argc < 1 || argv[0].kind != V_STRING)
-        return val_err("%s: expected (path)", err_prefix);
-    char *fake_argv[] = {"image", (char *)sub, (char *)(argv[0].s ? argv[0].s : "")};
-    return val_bool(shell_image_argv(3, fake_argv) == 0);
-}
 static const char *apm_fs_kind_label(enum apm_fs_kind k) {
     switch (k) {
     case APM_FS_HFS:
@@ -778,18 +767,7 @@ static value_t attr_auto_checkpoint_set(struct object *self, const member_t *m, 
     return val_none();
 }
 
-// `running()` — true if the scheduler is currently running. Mirrors
-// the legacy `status` command's int return (cmd_int 1 = running).
-static value_t method_root_running(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
-    (void)argc;
-    (void)argv;
-    scheduler_t *s = system_scheduler();
-    return val_bool(s ? scheduler_is_running(s) : false);
-}
-
-// === ROM / disk-mount / scheduler root methods (M10b — drop area) ==========
+// === ROM / disk-mount root methods (M10b — drop area) ======================
 
 // `rom_checksum(path)` — return the 8-char hex checksum of a ROM file,
 // or empty string when the file doesn't validate. Mirrors the legacy
@@ -870,34 +848,6 @@ static value_t method_root_fd_insert(struct object *self, const member_t *m, int
     if (targc <= 0)
         return val_err("fd_insert: tokenisation failed");
     return val_bool(shell_fd_argv(targc, targv) == 0);
-}
-
-// `run([cycles])` — start the scheduler. With no argument, runs
-// indefinitely (until paused / exception). With a cycle count, runs
-// for that many CPU cycles and pauses.
-static value_t method_root_run(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
-    // Guard against being called before any machine is loaded (e.g. the
-    // basic-ui `?noui` smoke test that pings runCommand before booting).
-    // The legacy `cmd_run` GS_ASSERT prints + returns rather than aborting,
-    // then dereferences NULL on s->mode — under the gsEval path the worker
-    // is fully initialised so the crash is reachable; under the older
-    // executeShellCommand path the cmd registry happened to lose this race.
-    if (!system_scheduler())
-        return val_err("run: no machine loaded");
-    char cycles_buf[32];
-    if (argc >= 1) {
-        bool ok = false;
-        int64_t cycles = (int64_t)val_as_i64(&argv[0], &ok);
-        if (!ok && argv[0].kind == V_UINT)
-            cycles = (int64_t)argv[0].u;
-        snprintf(cycles_buf, sizeof(cycles_buf), "%lld", (long long)cycles);
-        char *fake_argv[] = {"run", cycles_buf};
-        return val_bool(cmd_run(2, fake_argv) == 0);
-    }
-    char *fake_argv[] = {"run"};
-    return val_bool(cmd_run(1, fake_argv) == 0);
 }
 
 // === Boot/setup root methods (M10b — url-media + config-dialog area) =======
@@ -1064,19 +1014,6 @@ static value_t method_root_log_set(struct object *self, const member_t *m, int a
     if (targc <= 0)
         return val_err("log_set: empty spec");
     return val_bool(cmd_log(targc, targv) == 0);
-}
-
-// `stop()` — interrupt the scheduler.
-static value_t method_root_stop(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
-    (void)argc;
-    (void)argv;
-    scheduler_t *s = system_scheduler();
-    if (!s)
-        return val_err("stop: scheduler not initialised");
-    scheduler_stop(s);
-    return val_bool(true);
 }
 
 // `step([n])` — single-step n instructions (default 1).
@@ -1539,29 +1476,6 @@ static value_t method_root_setup_machine(struct object *self, const member_t *m,
     return val_bool(cmd_setup(targc, targv) == 0);
 }
 
-// `schedule(mode)` — set the scheduler mode (max / realtime / hardware).
-static value_t method_root_schedule(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
-    if (argc < 1 || argv[0].kind != V_STRING)
-        return val_err("schedule: expected (mode)");
-    const char *mode_str = argv[0].s ? argv[0].s : "";
-    enum schedule_mode mode;
-    if (strcmp(mode_str, "max") == 0)
-        mode = schedule_max_speed;
-    else if (strcmp(mode_str, "real") == 0)
-        mode = schedule_real_time;
-    else if (strcmp(mode_str, "hw") == 0)
-        mode = schedule_hw_accuracy;
-    else
-        return val_err("schedule: unknown mode '%s' (valid: max, real, hw)", mode_str);
-    scheduler_t *s = system_scheduler();
-    if (!s)
-        return val_err("schedule: scheduler not initialised");
-    scheduler_set_mode(s, mode);
-    return val_bool(true);
-}
-
 // `download(path)` — trigger a browser file download. Routes to the
 // platform-specific gs_download (WASM streams via Blob+anchor; headless
 // prints a "not supported" stub).
@@ -1613,9 +1527,6 @@ static const arg_decl_t root_setup_machine_args[] = {
     {.name = "model", .kind = V_STRING, .doc = "Machine model id (plus / se30 / iicx)"},
     {.name = "ram_kb", .kind = V_UINT, .flags = OBJ_ARG_OPTIONAL, .doc = "RAM size in KB"},
 };
-static const arg_decl_t root_schedule_args[] = {
-    {.name = "mode", .kind = V_STRING, .doc = "Scheduler mode (max | realtime | hardware)"},
-};
 static const arg_decl_t root_find_media_args[] = {
     {.name = "dir", .kind = V_STRING, .doc = "Directory to scan"},
     {.name = "dst", .kind = V_STRING, .flags = OBJ_ARG_OPTIONAL, .doc = "Optional path to copy match into"},
@@ -1639,10 +1550,6 @@ static const arg_decl_t root_fd_insert_args[] = {
     {.name = "slot", .kind = V_INT, .doc = "Drive index (0 = upper, 1 = lower)"},
     {.name = "writable", .kind = V_BOOL, .flags = OBJ_ARG_OPTIONAL, .doc = "Mount writable (default false)"},
 };
-static const arg_decl_t root_run_args[] = {
-    {.name = "cycles", .kind = V_UINT, .flags = OBJ_ARG_OPTIONAL, .doc = "Optional cycle budget; 0 = run until paused"},
-};
-
 static const arg_decl_t root_path_args[] = {
     {.name = "path", .kind = V_STRING, .flags = OBJ_ARG_OPTIONAL, .doc = "Object path; empty resolves to the root"},
 };
@@ -1778,10 +1685,6 @@ static const member_t emu_root_members[] = {
      .name = "register_machine",
      .doc = "Register the active machine identity (must precede any image open)",
      .method = {.args = root_register_machine_args, .nargs = 2, .result = V_BOOL, .fn = method_root_register_machine}},
-    {.kind = M_METHOD,
-     .name = "running",
-     .doc = "True if the scheduler is currently running",
-     .method = {.args = NULL, .nargs = 0, .result = V_BOOL, .fn = method_root_running}                               },
     {.kind = M_ATTR,
      .name = "auto_checkpoint",
      .doc = "Enable/disable the background auto-checkpoint loop (WASM-only)",
@@ -1799,10 +1702,6 @@ static const member_t emu_root_members[] = {
      .name = "fd_insert",
      .doc = "Insert a floppy image into a drive slot",
      .method = {.args = root_fd_insert_args, .nargs = 3, .result = V_BOOL, .fn = method_root_fd_insert}              },
-    {.kind = M_METHOD,
-     .name = "run",
-     .doc = "Start the scheduler (optionally for a cycle budget)",
-     .method = {.args = root_run_args, .nargs = 1, .result = V_BOOL, .fn = method_root_run}                          },
     // url-media + config-dialog + ui boot helpers (M10b — finish line).
     {.kind = M_METHOD,
      .name = "vrom_load",
@@ -1840,10 +1739,6 @@ static const member_t emu_root_members[] = {
      .name = "setup_machine",
      .doc = "Prime the next `rom_load` for a specific machine model",
      .method = {.args = root_setup_machine_args, .nargs = 2, .result = V_BOOL, .fn = method_root_setup_machine}      },
-    {.kind = M_METHOD,
-     .name = "schedule",
-     .doc = "Set the scheduler mode (max / realtime / hardware)",
-     .method = {.args = root_schedule_args, .nargs = 1, .result = V_BOOL, .fn = method_root_schedule}                },
     {.kind = M_METHOD,
      .name = "download",
      .doc = "Trigger a browser file download (WASM-only)",
@@ -1885,10 +1780,6 @@ static const member_t emu_root_members[] = {
      .name = "log_set",
      .doc = "Set per-subsystem log level or full spec (legacy `log <subsys> <level|spec>`)",
      .method = {.args = NULL, .nargs = 2, .result = V_BOOL, .fn = method_root_log_set}                               },
-    {.kind = M_METHOD,
-     .name = "stop",
-     .doc = "Interrupt the scheduler (legacy `stop`)",
-     .method = {.args = NULL, .nargs = 0, .result = V_BOOL, .fn = method_root_stop}                                  },
     {.kind = M_METHOD,
      .name = "step",
      .doc = "Single-step N instructions; default 1 (legacy `step`/`s`)",
@@ -2063,7 +1954,6 @@ void gs_classes_install(struct config *cfg) {
     // init function: stub namespace nodes, the storage view of
     // cfg->images, the lazy mac globals, the shell alias child, and
     // the platform-level mouse / keyboard / screen / vfs / find facades.
-    /* scheduler */ attach_stub(NULL, &scheduler_class_desc, cfg, "scheduler");
     /* machine   */ attach_stub(NULL, &machine_class, cfg, "machine");
     struct object *shell_obj = attach_stub(NULL, &shell_class_desc, cfg, "shell");
     struct object *storage_obj = attach_stub(NULL, &storage_class_real, cfg, "storage");

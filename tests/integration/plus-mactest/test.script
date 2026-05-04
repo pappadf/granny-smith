@@ -3,69 +3,69 @@
 # runs the hardware test suite, and verifies each stage via screenshot match.
 
 # Boot to MacTest UI
-run 50000000
+scheduler.run 50000000
 screen.match mactest-booted.png
 
 # Deselect short RAM test: drag from (100, 10) to (100, 90)
 mouse.move 100 10
-run 2000000
+scheduler.run 2000000
 mouse.click true
-run 2000000
+scheduler.run 2000000
 mouse.move 100 90
-run 2000000
+scheduler.run 2000000
 mouse.click false
-run 2000000
+scheduler.run 2000000
 
 # Deselect logic board 2 test: drag from (100, 10) to (100, 75)
 mouse.move 100 10
-run 2000000
+scheduler.run 2000000
 mouse.click true
-run 2000000
+scheduler.run 2000000
 mouse.move 100 75
-run 2000000
+scheduler.run 2000000
 mouse.click false
-run 2000000
+scheduler.run 2000000
 
 # Deselect serial loopback test: drag from (100, 10) to (100, 125)
 mouse.move 100 10
-run 2000000
+scheduler.run 2000000
 mouse.click true
-run 2000000
+scheduler.run 2000000
 mouse.move 100 125
-run 2000000
+scheduler.run 2000000
 mouse.click false
-run 2000000
+scheduler.run 2000000
 
 # Deselect SCSI loopback test: drag from (100, 10) to (100, 140)
 mouse.move 100 10
-run 2000000
+scheduler.run 2000000
 mouse.click true
-run 2000000
+scheduler.run 2000000
 mouse.move 100 140
-run 2000000
+scheduler.run 2000000
 mouse.click false
-run 2000000
+scheduler.run 2000000
 
 # Switch to hardware accuracy for the test run
-schedule hw
+scheduler.mode = "hw"
 
 # Click START button at (340, 210)
 mouse.move 340 210
-run 2000000
+scheduler.run 2000000
 mouse.click true
-run 2000000
+scheduler.run 2000000
 mouse.click false
 
 # Logic test completes within ~1M hw instructions of clicking START
-run 2000000
+scheduler.run 2000000
 screen.match mactest-logic.png
 
 # Floppy test completes within ~7M hw instructions of logic match
-run 8000000
+scheduler.run 8000000
 screen.match mactest-floppy.png
 
 # Success screen within ~24M hw instructions of floppy match
-run 25000000
+scheduler.run 25000000
 screen.match mactest-success.png
 
 quit

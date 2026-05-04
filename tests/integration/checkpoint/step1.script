@@ -1,7 +1,7 @@
 # Step 1: Boot from floppy and save checkpoint
 # Run 50M instructions to get partway through boot process
 
-run 50000000
+scheduler.run 50000000
 
 # Save machine state to checkpoint file. assert fails the step if the
 # typed wrapper returned false (silent failure used to be masked by

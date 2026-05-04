@@ -9,7 +9,7 @@
 # at this seed proves the fix.
 rtc.time = 2026-04-26T21:30:36
 
-run 300000000
+scheduler.run 300000000
 
 # enter user "root"
 keyboard.press 0x0F
@@ -21,19 +21,19 @@ keyboard.press return
 # enter empty password
 keyboard.press return
 
-run 100000000
+scheduler.run 100000000
 
 screen.match desktop.png
 
 # select "CommandShell" via Special menu
 mouse.move 20 10 "aux"
-run 10000000
+scheduler.run 10000000
 mouse.click true
-run 10000000
+scheduler.run 10000000
 mouse.move 20 110 "aux"
-run 10000000
+scheduler.run 10000000
 mouse.click false
-run 10000000
+scheduler.run 10000000
 
 # The command shell should now be open
 screen.match shell.png
@@ -43,7 +43,7 @@ keyboard.press 0x25
 keyboard.press 0x01
 keyboard.press return
 
-run 10000000
+scheduler.run 10000000
 
 # The shell should have run `ls` and printed a directory listing
 screen.match ls.png

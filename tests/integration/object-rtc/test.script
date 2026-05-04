@@ -5,7 +5,7 @@
 # through pram_read / pram_write methods (the legacy shell parser
 # doesn't have `=` so attr assignment lands with the M9 cutover).
 
-run 50000
+scheduler.run 50000
 
 # Read-only views.
 rtc

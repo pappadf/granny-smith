@@ -2,7 +2,7 @@
 # Both are exercised through the new tree paths and through the legacy
 # command shims to verify they share state.
 
-run 50000
+scheduler.run 50000
 
 # Tree shape.
 appletalk

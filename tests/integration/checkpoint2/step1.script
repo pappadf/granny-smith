@@ -7,7 +7,7 @@
 #
 # Run 50M instructions to get partway through boot process
 
-run 100000000
+scheduler.run 100000000
 
 # Save machine state to checkpoint file
 # Saved to current working directory (test-results/checkpoint2/).

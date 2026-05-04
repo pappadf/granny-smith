@@ -2,7 +2,7 @@
 # Boots SE/30 to the floppy icon screen and verifies the display.
 
 # Run enough instructions to reach the floppy icon screen
-run 335000000
+scheduler.run 335000000
 
 # Verify the screen matches the floppy icon reference image
 screen.match floppy.png

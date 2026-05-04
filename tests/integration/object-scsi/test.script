@@ -5,7 +5,7 @@
 # (sparse semantics — empty IDs are holes), and the legacy loopback
 # command shares state with scsi.loopback.
 
-run 50000
+scheduler.run 50000
 
 # Top-level object. Loopback default is false at boot.
 scsi

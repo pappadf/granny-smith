@@ -4,7 +4,7 @@
 # the resolved class. `help(path)` returns a doc string. `print(v)`
 # formats a value as a string. `time()` returns wall-clock seconds.
 
-run 50000
+scheduler.run 50000
 
 # objects() at the root: should include cpu / memory / scsi / floppy /
 # debugger / network / input / storage etc. The legacy harness checks

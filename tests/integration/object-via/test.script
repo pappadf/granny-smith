@@ -4,7 +4,7 @@
 # we don't pin them, but each path must resolve to a numeric/JSON
 # value with no error JSON.
 
-run 100000
+scheduler.run 100000
 
 # via1 attributes.
 via1

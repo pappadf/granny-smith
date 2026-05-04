@@ -2,7 +2,7 @@
 # Plus boots with one SCSI HD (hd1.img) and one floppy (System 6.0.8).
 # storage.images should enumerate at least these two entries.
 
-run 50000
+scheduler.run 50000
 
 # Tree shape.
 storage

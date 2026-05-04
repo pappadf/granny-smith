@@ -9,7 +9,7 @@
 # the tick boundary.  --aux uses a user-mode-only guard tick, so it pins
 # MAE's MTemp without corrupting the kernel.
 
-run 200000000
+scheduler.run 200000000
 
 screen.match installer.png
 
@@ -18,9 +18,9 @@ screen.match installer.png
 # Do you wish to continue?" with Cancel / OK buttons.
 mouse.move 380 80 "aux"
 mouse.click true
-run 5000000
+scheduler.run 5000000
 mouse.click false
-run 25000000
+scheduler.run 25000000
 
 screen.match confirm.png
 
@@ -30,9 +30,9 @@ screen.match confirm.png
 # (which --aux keeps pinned at our target), so the click lands on OK.
 mouse.move 337 185 "aux"
 mouse.click true
-run 1000000
+scheduler.run 1000000
 mouse.click false
-run 2000000
+scheduler.run 2000000
 
 # At this point the confirm dialog has been dismissed.  The install
 # progress screen briefly flashes "Determining which files will be
@@ -42,7 +42,7 @@ run 2000000
 # installer hasn't yet drawn the progress UI.
 screen.match dialog-dismissed.png
 
-run 750000000
+scheduler.run 750000000
 
 # This is an UNWANTED match -> match does NOT equal success
 screen.match error.png

@@ -3,7 +3,7 @@
 # walks both drives, verifies present/disk reflect the load state,
 # exercises eject() and confirms present flips to false afterwards.
 
-run 50000
+scheduler.run 50000
 
 # Top-level floppy. Plus uses the IWM controller; sel is the active
 # drive selector.

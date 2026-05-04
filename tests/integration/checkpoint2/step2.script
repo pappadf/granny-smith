@@ -7,22 +7,22 @@
 assert ${checkpoint_load("checkpoint.gs")} "checkpoint2 step2 load failed"
 
 # Run 50M more instructions (should reach desktop just like step 1 would)
-run 100000000
+scheduler.run 100000000
 
 #
 screen.match ../../checkpoint2/desktop.png
 
-run 100000000
+scheduler.run 100000000
 
 mouse.move 25 10
-run 1000000
+scheduler.run 1000000
 mouse.click true
-run 1000000
+scheduler.run 1000000
 mouse.move 25 30
-run 1000000
+scheduler.run 1000000
 mouse.click false
 
-run 100000000
+scheduler.run 100000000
 
 # Save screenshot for debugging, then verify against reference
 screen.save screenshot-step2.png

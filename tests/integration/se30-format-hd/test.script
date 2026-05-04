@@ -15,84 +15,84 @@ hd_create ${WORK_DIR}/blank80.img HD20SC
 hd_attach ${WORK_DIR}/blank80.img
 
 # Boot to Finder desktop (SE/30 with 8 MB RAM)
-run 80000000
+scheduler.run 80000000
 
 screen.match desktop.png
 
 # Double click the "Disk Tools" icon to open the floppy
 mouse.move 480 55 "global"
-run 5000000
+scheduler.run 5000000
 mouse.click true
-run 1000000
+scheduler.run 1000000
 mouse.click false
-run 1000000
+scheduler.run 1000000
 mouse.click true
-run 1000000
+scheduler.run 1000000
 mouse.click false
 
 # Run a bit so that the floppy has time to open
-run 50000000
+scheduler.run 50000000
 
 screen.match floppy.png
 
 # Double-click Apple HD SC Setup icon in the Disk Tools window
 mouse.move 167 83 "global"
-run 5000000
+scheduler.run 5000000
 mouse.click true
-run 1000000
+scheduler.run 1000000
 mouse.click false
-run 1000000
+scheduler.run 1000000
 mouse.click true
-run 1000000
+scheduler.run 1000000
 mouse.click false
 
 # Run a bit so that the Apple HD SC Setup app opens
-run 50000000
+scheduler.run 50000000
 
 # Verify Apple HD SC Setup recognizes the blank drive
 screen.match ready.png
 
 # Click "Initialize"
 mouse.move 167 115 "global"
-run 5000000
+scheduler.run 5000000
 mouse.click true
-run 1000000
+scheduler.run 1000000
 mouse.click false
-run 5000000
+scheduler.run 5000000
 
 mouse.move 360 190 "global"
-run 5000000
+scheduler.run 5000000
 mouse.click true
-run 1000000
+scheduler.run 1000000
 mouse.click false
 
-run 500000000
+scheduler.run 500000000
 
 # Click ok re. name
 mouse.move 200 180 "global"
-run 5000000
+scheduler.run 5000000
 mouse.click true
-run 1000000
+scheduler.run 1000000
 mouse.click false
-run 50000000
+scheduler.run 50000000
 
 # quit app
 mouse.move 167 230 "global"
-run 5000000
+scheduler.run 5000000
 mouse.click true
-run 1000000
+scheduler.run 1000000
 mouse.click false
-run 5000000
+scheduler.run 5000000
 
 # Shutdown computer
 mouse.move 250 10 "global"
-run 5000000
+scheduler.run 5000000
 mouse.click true
-run 1000000
+scheduler.run 1000000
 mouse.move 250 140 "global"
-run 5000000
+scheduler.run 5000000
 mouse.click false
-run 50000000
+scheduler.run 50000000
 
 screen.match shutdown.png
 

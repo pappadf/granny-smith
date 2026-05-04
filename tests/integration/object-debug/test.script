@@ -8,7 +8,7 @@
 #   - per-entry attributes (addr, hit_count, condition, id) work
 #   - .remove() detaches the entry (subsequent reads error cleanly)
 
-run 50000
+scheduler.run 50000
 
 # The debug object resolves to a class instance.
 debug

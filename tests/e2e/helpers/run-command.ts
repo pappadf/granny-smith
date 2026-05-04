@@ -122,10 +122,10 @@ function translateToGsEval(line: string): Translation | null {
 
   // Single-token commands (no subcommand).
   if (head === 'status' && tail.length === 0)
-    return { method: 'running', args: [], convention: 'cmd_bool' };
+    return { method: 'scheduler.running', args: [], convention: 'cmd_bool' };
   if (head === 'run')
     return {
-      method: 'run',
+      method: 'scheduler.run',
       args: tail.length >= 1 && parseInt10(tail[0]) !== null ? [parseInt10(tail[0])] : [],
       convention: 'cmd_int_bool',
     };
@@ -138,7 +138,7 @@ function translateToGsEval(line: string): Translation | null {
   if (head === 'download' && tail.length === 1)
     return { method: 'download', args: tail, convention: 'cmd_int_bool' };
   if (head === 'schedule' && tail.length === 1)
-    return { method: 'schedule', args: tail, convention: 'cmd_int_bool' };
+    return { method: 'scheduler.mode', args: tail, convention: 'void_or_error' };
   if (head === 'br' && tail.length === 1) {
     const addr = parseInt10(tail[0]);
     if (addr === null) return null;
@@ -149,7 +149,7 @@ function translateToGsEval(line: string): Translation | null {
     };
   }
   if (head === 'stop' && tail.length === 0)
-    return { method: 'stop', args: [], convention: 'cmd_int_bool' };
+    return { method: 'scheduler.stop', args: [], convention: 'void_or_error' };
   if ((head === 's' || head === 'step') && tail.length <= 1) {
     const n = tail.length === 1 ? parseInt10(tail[0]) : null;
     return {
@@ -502,12 +502,12 @@ export async function waitForPrompt(page: Page, timeoutMs = 120_000, initialWait
     throw new Error(`Timeout waiting for gsEval readiness after ${timeoutMs}ms`);
   }
 
-  // Poll `running()` via gsEval until the scheduler is idle.
+  // Poll `scheduler.running` via gsEval until the scheduler is idle.
   const pollIntervalMs = 100;
   const startTime = Date.now();
   while (true) {
     try {
-      const isRunning = await page.evaluate(() => (window as any).gsEval('running'));
+      const isRunning = await page.evaluate(() => (window as any).gsEval('scheduler.running'));
       if (isRunning === false) return; // Idle
     } catch {
       // Ignore errors during polling

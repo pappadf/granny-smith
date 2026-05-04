@@ -3,7 +3,7 @@
 # sound around the chime, so `enabled` flips during the run; we
 # pin the path resolves cleanly and that mute()/volume= round-trip.
 
-run 50000
+scheduler.run 50000
 
 # Top-level object + read-only attrs.
 sound
