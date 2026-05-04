@@ -4,7 +4,7 @@
 # fast instead of being silently masked by a later passing call.
 
 # Test: hd models lists known drive models
-hd_models
+scsi.hd_models
 
 # Test: hd create with a model name. The model-name parser looks up the
 # size in the catalog (HD20SC = 20 MB).
@@ -28,6 +28,6 @@ assert ${storage.hd_create("${WORK_DIR}/test_20M.img", "20M")} "hd_create failed
 storage.path_size "${WORK_DIR}/test_20M.img"
 
 # Test: hd_models prints the catalog one more time (smoke check).
-hd_models
+scsi.hd_models
 
 quit

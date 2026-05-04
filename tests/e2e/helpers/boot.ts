@@ -168,8 +168,8 @@ export async function bootWithUploadedMedia(
 			throw new Error('rom.identify: no compatible machines for /tmp/rom');
 		await ev('machine.boot', [compatible[0]]);
 		await ev('rom.load', ['/tmp/rom']);
-		if (hasFd) await ev('fd_insert', ['/tmp/fd0', 0, fdWritable]);
-		if (hasHd) await ev('hd_attach', [`/tmp/hd${hdSlot}`, hdSlot]);
+		if (hasFd) await ev('floppy.drives[0].insert', ['/tmp/fd0', fdWritable]);
+		if (hasHd) await ev('scsi.attach_hd', [`/tmp/hd${hdSlot}`, hdSlot]);
 	}, { hasFd: Boolean(fd0), hasHd: Boolean(hdZip), hdSlot, fdWritable });
 }
 

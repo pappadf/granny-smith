@@ -337,15 +337,6 @@ static value_t method_root_peeler_probe(struct object *self, const member_t *m, 
     return val_bool(format != NULL);
 }
 
-// `fd_probe(path)` — true if the file is a recognised floppy image.
-static value_t method_root_fd_probe(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
-    if (argc < 1 || argv[0].kind != V_STRING)
-        return val_err("fd_probe: expected (path)");
-    return val_bool(system_probe_floppy(argv[0].s ? argv[0].s : "") == 0);
-}
-
 // `quit()` — request emulator shutdown. Headless sets the script
 // quit flag and stops the scheduler; WASM is a no-op (the browser
 // owns the lifecycle).
@@ -493,59 +484,6 @@ static value_t attr_auto_checkpoint_set(struct object *self, const member_t *m, 
 
 // === ROM / disk-mount root methods (M10b — drop area) ======================
 
-// `fd_insert(path, slot, writable)` — mount a floppy image into one of
-// the 1–2 floppy drives. Returns true on successful insert.
-static value_t method_root_fd_insert(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
-    if (argc < 2 || argv[0].kind != V_STRING)
-        return val_err("fd_insert: expected (path, slot, [writable])");
-    int64_t slot = 0;
-    bool ok = false;
-    slot = (int64_t)val_as_i64(&argv[1], &ok);
-    if (!ok && argv[1].kind == V_UINT)
-        slot = (int64_t)argv[1].u;
-    bool writable = false;
-    if (argc >= 3)
-        writable = val_as_bool(&argv[2]);
-    char line[1024];
-    int n = snprintf(line, sizeof(line), "fd insert \"%s\" %lld %s", argv[0].s ? argv[0].s : "", (long long)slot,
-                     writable ? "true" : "false");
-    if (n < 0 || (size_t)n >= sizeof(line))
-        return val_err("fd_insert: arguments too long");
-    char *targv[32];
-    int targc = tokenize(line, targv, 32);
-    if (targc <= 0)
-        return val_err("fd_insert: tokenisation failed");
-    return val_bool(shell_fd_argv(targc, targv) == 0);
-}
-
-// === Boot/setup root methods (M10b — url-media + config-dialog area) =======
-
-// `hd_attach(path, id)` — attach a hard-disk image at the given SCSI id.
-static value_t method_root_hd_attach(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
-    if (argc < 1 || argv[0].kind != V_STRING)
-        return val_err("hd_attach: expected (path, [id])");
-    int64_t id = 0; // Legacy default — matches cmd_hd_handler's `attach` branch.
-    if (argc >= 2) {
-        bool ok = false;
-        id = (int64_t)val_as_i64(&argv[1], &ok);
-        if (!ok && argv[1].kind == V_UINT)
-            id = (int64_t)argv[1].u;
-    }
-    char line[1024];
-    int n = snprintf(line, sizeof(line), "hd attach \"%s\" %lld", argv[0].s ? argv[0].s : "", (long long)id);
-    if (n < 0 || (size_t)n >= sizeof(line))
-        return val_err("hd_attach: arguments too long");
-    char *targv[32];
-    int targc = tokenize(line, targv, 32);
-    if (targc <= 0)
-        return val_err("hd_attach: tokenisation failed");
-    return val_bool(shell_hd_argv(targc, targv) == 0);
-}
-
 // === Debugging-area root methods ===========================================
 //
 // Thin wrappers around the legacy `info` / `d` / `break` / `logpoint` /
@@ -610,39 +548,6 @@ static value_t method_root_background_checkpoint(struct object *self, const memb
     if (argc < 1 || argv[0].kind != V_STRING)
         return val_err("background_checkpoint: expected (name)");
     return val_bool(gs_background_checkpoint(argv[0].s ? argv[0].s : "") == 0);
-}
-
-// `fd_create(path, [drive_or_hd])` — create a blank 800 KB floppy image
-// and auto-mount it. The optional second arg matches the legacy
-// `fd create [--hd] <path> [drive]` parser: pass the string `"--hd"`
-// for a 1.44 MB image, or an integer 0/1 to target a specific drive.
-// String integers (e.g. `"0"`) are accepted too — that's how the
-// integration scripts spell it.
-static value_t method_root_fd_create(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
-    if (argc < 1 || argv[0].kind != V_STRING)
-        return val_err("fd_create: expected (path, [drive_or_hd])");
-    bool high_density = false;
-    int preferred = -1;
-    if (argc >= 2) {
-        if (argv[1].kind == V_STRING && argv[1].s) {
-            if (strcmp(argv[1].s, "--hd") == 0) {
-                high_density = true;
-            } else if (argv[1].s[0] >= '0' && argv[1].s[0] <= '1' && argv[1].s[1] == '\0') {
-                preferred = argv[1].s[0] - '0';
-            } else if (*argv[1].s) {
-                return val_err("fd_create: second arg must be \"--hd\" or drive index 0/1");
-            }
-        } else if (argv[1].kind == V_INT || argv[1].kind == V_UINT) {
-            int64_t d = (argv[1].kind == V_INT) ? argv[1].i : (int64_t)argv[1].u;
-            if (d != 0 && d != 1)
-                return val_err("fd_create: drive index must be 0 or 1");
-            preferred = (int)d;
-        }
-    }
-    int rc = system_create_floppy(argv[0].s ? argv[0].s : "", high_density, preferred);
-    return val_bool(rc == 0);
 }
 
 // `print_value(target)` — read a register / condition code / memory cell
@@ -740,235 +645,6 @@ static value_t method_root_examine(struct object *self, const member_t *m, int a
     return val_bool(shell_examine_argv(targc, targv) == 0);
 }
 
-// `hd_models()` — return the known SCSI HD model catalog as a single
-// JSON-encoded V_STRING (array of `{label, vendor, product, size}`).
-// The web frontend's "create disk" dialog reads this list to populate
-// its drive picker; returning the JSON inline retires the last
-// `runCommandJSON("hd models --json")` caller in app/web/js.
-static value_t method_root_hd_models(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
-    (void)argc;
-    (void)argv;
-    int count = drive_catalog_count();
-    size_t cap = 64 + (size_t)count * 128;
-    char *buf = (char *)malloc(cap);
-    if (!buf)
-        return val_err("hd_models: out of memory");
-    size_t pos = 0;
-    pos += (size_t)snprintf(buf + pos, cap - pos, "[");
-    for (int i = 0; i < count && pos + 256 < cap; i++) {
-        const struct drive_model *md = drive_catalog_get(i);
-        if (!md)
-            continue;
-        pos += (size_t)snprintf(buf + pos, cap - pos,
-                                "%s{\"label\":\"%s\",\"vendor\":\"%s\",\"product\":\"%s\",\"size\":%zu}", i ? "," : "",
-                                md->label, md->vendor, md->product, md->size);
-    }
-    if (pos + 1 < cap)
-        pos += (size_t)snprintf(buf + pos, cap - pos, "]");
-    value_t v = val_str(buf);
-    free(buf);
-    return v;
-}
-
-// `cdrom_attach(path)` — attach a CD-ROM image to the system.
-static value_t method_root_cdrom_attach(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
-    if (argc < 1 || argv[0].kind != V_STRING)
-        return val_err("cdrom_attach: expected (path)");
-    if (!global_emulator)
-        return val_err("cdrom_attach: emulator not initialised");
-    add_scsi_cdrom(global_emulator, argv[0].s ? argv[0].s : "", 3);
-    return val_bool(true);
-}
-
-// `hd_validate(path)` — true if the file passes legacy `hd validate`
-// (cmd_bool 1 = valid).
-static value_t method_root_hd_validate(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
-    if (argc < 1 || argv[0].kind != V_STRING)
-        return val_err("hd_validate: expected (path)");
-    const char *path = argv[0].s ? argv[0].s : "";
-    image_t *img = image_open_readonly(path);
-    if (!img) {
-        printf("invalid SCSI HD image: cannot open %s\n", path);
-        return val_bool(false);
-    }
-    if (img->type == image_fd_ss || img->type == image_fd_ds || img->type == image_fd_hd) {
-        printf("invalid SCSI HD image: size matches floppy (%zu bytes), use fd validate\n", img->raw_size);
-        image_close(img);
-        return val_bool(false);
-    }
-    size_t sz = img->raw_size;
-    const struct drive_model *best = drive_catalog_find_closest(sz);
-    if (sz == best->size)
-        printf("valid SCSI HD image: %zu bytes, matches %s %s\n", sz, best->vendor, best->product);
-    else
-        printf("valid SCSI HD image: %zu bytes, nearest model %s %s\n", sz, best->vendor, best->product);
-    image_close(img);
-    return val_bool(true);
-}
-
-// `cdrom_validate(path)` — true if the file is a recognised CD-ROM image
-// (ISO 9660, HFS, or Apple Partition Map). Mirrors the legacy `cdrom
-// validate` body (system.c:1003) but works against the public disk_*
-// API so no shell_dispatch round-trip is required.
-static value_t method_root_cdrom_validate(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
-    if (argc < 1 || argv[0].kind != V_STRING)
-        return val_err("cdrom_validate: expected (path)");
-    const char *path = argv[0].s ? argv[0].s : "";
-    image_t *img = image_open_readonly(path);
-    if (!img) {
-        printf("invalid CD-ROM image: cannot open %s\n", path);
-        return val_bool(false);
-    }
-    if (img->type == image_fd_ss || img->type == image_fd_ds || img->type == image_fd_hd) {
-        printf("invalid CD-ROM image: floppy-sized (%zu bytes)\n", img->raw_size);
-        image_close(img);
-        return val_bool(false);
-    }
-    bool is_iso = false, is_hfs = false, is_apm = false;
-    size_t sz = disk_size(img);
-    uint8_t sector[512];
-    // ISO 9660: "CD001" at offset 32769 = sector 64, byte 1
-    if (sz >= 33280) {
-        disk_read_data(img, 32768, sector, 512);
-        if (memcmp(sector + 1, "CD001", 5) == 0)
-            is_iso = true;
-    }
-    // HFS: 0x4244 at offset 1024 = sector 2, byte 0
-    if (sz >= 1536) {
-        disk_read_data(img, 1024, sector, 512);
-        if (sector[0] == 0x42 && sector[1] == 0x44)
-            is_hfs = true;
-    }
-    // Apple Partition Map: DDM 0x4552 at sector 0 + PM 0x504D at sector 1
-    if (sz >= 1024) {
-        disk_read_data(img, 0, sector, 512);
-        bool has_ddm = (sector[0] == 0x45 && sector[1] == 0x52);
-        disk_read_data(img, 512, sector, 512);
-        bool has_pm = (sector[0] == 0x50 && sector[1] == 0x4D);
-        if (has_ddm && has_pm)
-            is_apm = true;
-    }
-    double size_mb = (double)sz / (1024.0 * 1024.0);
-    if (is_iso && is_hfs)
-        printf("valid CD-ROM image: %.1f MB, ISO 9660 + HFS hybrid\n", size_mb);
-    else if (is_iso)
-        printf("valid CD-ROM image: %.1f MB, ISO 9660\n", size_mb);
-    else if (is_hfs)
-        printf("valid CD-ROM image: %.1f MB, HFS\n", size_mb);
-    else if (is_apm)
-        printf("valid CD-ROM image: %.1f MB, Apple Partition Map\n", size_mb);
-    else {
-        printf("invalid CD-ROM image: no ISO 9660, HFS, or Apple Partition Map detected\n");
-        image_close(img);
-        return val_bool(false);
-    }
-    image_close(img);
-    return val_bool(true);
-}
-
-// `cdrom_eject(id)` — eject the CD-ROM at the given SCSI id (default 3).
-// `scsi.devices[id].eject()` already exists for per-device ejection;
-// this wrapper preserves the legacy `cdrom eject [id]` shape so the
-// integration scripts have a 1:1 mapping.
-static value_t method_root_cdrom_eject(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
-    int64_t id = 3;
-    if (argc >= 1) {
-        bool ok = false;
-        id = (int64_t)val_as_i64(&argv[0], &ok);
-        if (!ok && argv[0].kind == V_UINT)
-            id = (int64_t)argv[0].u;
-    }
-    if (!global_emulator || !global_emulator->scsi)
-        return val_err("cdrom_eject: emulator not initialised");
-    int rc = scsi_eject_device(global_emulator->scsi, (int)id);
-    if (rc < 0)
-        return val_err("cdrom_eject: invalid SCSI ID %lld (expected 0..6)", (long long)id);
-    if (rc == 0)
-        printf("cdrom eject: no disc in SCSI ID %lld\n", (long long)id);
-    else
-        printf("cdrom eject: ejected disc from SCSI ID %lld\n", (long long)id);
-    return val_bool(true);
-}
-
-// `cdrom_info(id)` — print info about the CD-ROM at the given SCSI id
-// (default 3). Returns true if a disc is present, false if the slot is
-// empty / wrong type. The detail lines are printed via the legacy
-// command's printf; scripts can also walk `scsi.devices[id].*` directly
-// for structured access.
-static value_t method_root_cdrom_info(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
-    int64_t id = 3;
-    if (argc >= 1) {
-        bool ok = false;
-        id = (int64_t)val_as_i64(&argv[0], &ok);
-        if (!ok && argv[0].kind == V_UINT)
-            id = (int64_t)argv[0].u;
-    }
-    if (!global_emulator || !global_emulator->scsi)
-        return val_err("cdrom_info: emulator not initialised");
-    if (id < 0 || id > 6)
-        return val_err("cdrom_info: invalid SCSI ID %lld (expected 0..6)", (long long)id);
-    int t = scsi_device_type(global_emulator->scsi, (unsigned)id);
-    if (t != /* scsi_dev_cdrom */ 2) {
-        printf("cdrom info: SCSI ID %lld is not a CD-ROM device\n", (long long)id);
-        return val_bool(true);
-    }
-    image_t *img = scsi_device_image(global_emulator->scsi, (unsigned)id);
-    if (!img) {
-        printf("cdrom info: SCSI ID %lld — no disc\n", (long long)id);
-        return val_bool(true);
-    }
-    const char *fname = image_get_filename(img);
-    size_t sz = disk_size(img);
-    double size_mb = (double)sz / (1024.0 * 1024.0);
-    printf("cdrom info: SCSI ID %lld — %.1f MB — %s\n", (long long)id, size_mb, fname ? fname : "(unknown)");
-    return val_bool(true);
-}
-
-// `fd_validate(path)` — return the floppy density tag ("400K", "800K",
-// "1.4MB", …) when the file is a recognised floppy image, or empty
-// string otherwise. The legacy `fd validate` command prints the
-// density to stdout and uses cmd_bool, so this wrapper opens the
-// image directly via image_open_readonly to extract the type and
-// avoid stdout-parsing.
-static value_t method_root_fd_validate(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
-    if (argc < 1 || argv[0].kind != V_STRING)
-        return val_err("fd_validate: expected (path)");
-    image_t *img = image_open_readonly(argv[0].s ? argv[0].s : "");
-    if (!img)
-        return val_str("");
-    const char *density = "";
-    switch (img->type) {
-    case image_fd_ss:
-        density = "400K";
-        break;
-    case image_fd_ds:
-        density = "800K";
-        break;
-    case image_fd_hd:
-        density = "1.4MB";
-        break;
-    default:
-        density = "";
-        break;
-    }
-    image_close(img);
-    return val_str(density);
-}
-
 // `download(path)` — trigger a browser file download. Routes to the
 // platform-specific gs_download (WASM streams via Blob+anchor; headless
 // prints a "not supported" stub).
@@ -987,13 +663,6 @@ static const arg_decl_t root_peeler_args[] = {
 static const arg_decl_t root_path_arg[] = {
     {.name = "path", .kind = V_STRING, .doc = "File path"},
 };
-static const arg_decl_t root_hd_attach_args[] = {
-    {.name = "path", .kind = V_STRING, .doc = "HD image path"},
-    {.name = "id", .kind = V_INT, .flags = OBJ_ARG_OPTIONAL, .doc = "SCSI bus index 0-6 (default 0)"},
-};
-static const arg_decl_t root_cdrom_id_arg[] = {
-    {.name = "id", .kind = V_INT, .flags = OBJ_ARG_OPTIONAL, .doc = "SCSI id 0-6 (default 3)"},
-};
 static const arg_decl_t root_checkpoint_load_args[] = {
     {.name = "path",
      .kind = V_STRING,
@@ -1003,11 +672,6 @@ static const arg_decl_t root_checkpoint_load_args[] = {
 static const arg_decl_t root_checkpoint_save_args[] = {
     {.name = "path", .kind = V_STRING, .doc = "Checkpoint output path"},
     {.name = "mode", .kind = V_STRING, .flags = OBJ_ARG_OPTIONAL, .doc = "Optional 'content' or 'refs' mode"},
-};
-static const arg_decl_t root_fd_insert_args[] = {
-    {.name = "path", .kind = V_STRING, .doc = "Floppy image path"},
-    {.name = "slot", .kind = V_INT, .doc = "Drive index (0 = upper, 1 = lower)"},
-    {.name = "writable", .kind = V_BOOL, .flags = OBJ_ARG_OPTIONAL, .doc = "Mount writable (default false)"},
 };
 static const arg_decl_t root_path_args[] = {
     {.name = "path", .kind = V_STRING, .flags = OBJ_ARG_OPTIONAL, .doc = "Object path; empty resolves to the root"},
@@ -1060,10 +724,6 @@ static const member_t emu_root_members[] = {
      .doc = "True if a file is a peeler-supported archive",
      .method = {.args = root_path_arg, .nargs = 1, .result = V_BOOL, .fn = method_root_peeler_probe}               },
     {.kind = M_METHOD,
-     .name = "fd_probe",
-     .doc = "True if a file is a recognised floppy-disk image",
-     .method = {.args = root_path_arg, .nargs = 1, .result = V_BOOL, .fn = method_root_fd_probe}                   },
-    {.kind = M_METHOD,
      .name = "quit",
      .doc = "Exit the emulator (asks the legacy quit command to end the run)",
      .method = {.args = NULL, .nargs = 0, .result = V_NONE, .fn = method_root_quit}                                },
@@ -1096,48 +756,10 @@ static const member_t emu_root_members[] = {
      .name = "auto_checkpoint",
      .doc = "Enable/disable the background auto-checkpoint loop (WASM-only)",
      .attr = {.type = V_BOOL, .get = attr_auto_checkpoint_get, .set = attr_auto_checkpoint_set}                    },
-    // Drag-drop boot helpers (M10b — drop area).
-    {.kind = M_METHOD,
-     .name = "fd_insert",
-     .doc = "Insert a floppy image into a drive slot",
-     .method = {.args = root_fd_insert_args, .nargs = 3, .result = V_BOOL, .fn = method_root_fd_insert}            },
-    // url-media + config-dialog + ui boot helpers (M10b — finish line).
-    {.kind = M_METHOD,
-     .name = "hd_attach",
-     .doc = "Attach a hard-disk image at the given SCSI id",
-     .method = {.args = root_hd_attach_args, .nargs = 2, .result = V_BOOL, .fn = method_root_hd_attach}            },
-    {.kind = M_METHOD,
-     .name = "hd_validate",
-     .doc = "True if the file is a recognised hard-disk image",
-     .method = {.args = root_path_arg, .nargs = 1, .result = V_BOOL, .fn = method_root_hd_validate}                },
-    {.kind = M_METHOD,
-     .name = "cdrom_validate",
-     .doc = "True if the file is a recognised CD-ROM image",
-     .method = {.args = root_path_arg, .nargs = 1, .result = V_BOOL, .fn = method_root_cdrom_validate}             },
-    {.kind = M_METHOD,
-     .name = "cdrom_eject",
-     .doc = "Eject the CD-ROM at the given SCSI id (default 3)",
-     .method = {.args = root_cdrom_id_arg, .nargs = 1, .result = V_BOOL, .fn = method_root_cdrom_eject}            },
-    {.kind = M_METHOD,
-     .name = "cdrom_info",
-     .doc = "Print info for the CD-ROM at the given SCSI id (default 3)",
-     .method = {.args = root_cdrom_id_arg, .nargs = 1, .result = V_BOOL, .fn = method_root_cdrom_info}             },
-    {.kind = M_METHOD,
-     .name = "fd_validate",
-     .doc = "Floppy density tag (\"400K\" / \"800K\" / \"1.4MB\") or empty if unrecognised",
-     .method = {.args = root_path_arg, .nargs = 1, .result = V_STRING, .fn = method_root_fd_validate}              },
     {.kind = M_METHOD,
      .name = "download",
      .doc = "Trigger a browser file download (WASM-only)",
      .method = {.args = root_path_arg, .nargs = 1, .result = V_BOOL, .fn = method_root_download}                   },
-    {.kind = M_METHOD,
-     .name = "cdrom_attach",
-     .doc = "Attach a CD-ROM image to the SCSI bus",
-     .method = {.args = root_path_arg, .nargs = 1, .result = V_BOOL, .fn = method_root_cdrom_attach}               },
-    {.kind = M_METHOD,
-     .name = "hd_models",
-     .doc = "Return the known SCSI HD model catalog as a JSON array string",
-     .method = {.args = NULL, .nargs = 0, .result = V_STRING, .fn = method_root_hd_models}                         },
     // Debugging-area thin wrappers.
     {.kind = M_METHOD,
      .name = "disasm",
@@ -1151,10 +773,6 @@ static const member_t emu_root_members[] = {
      .name = "background_checkpoint",
      .doc = "Capture a checkpoint under the given label (legacy `background-checkpoint`)",
      .method = {.args = NULL, .nargs = 1, .result = V_BOOL, .fn = method_root_background_checkpoint}               },
-    {.kind = M_METHOD,
-     .name = "fd_create",
-     .doc = "Create a blank floppy image (legacy `fd create`)",
-     .method = {.args = NULL, .nargs = 2, .result = V_BOOL, .fn = method_root_fd_create}                           },
     {.kind = M_METHOD,
      .name = "print_value",
      .doc = "Read a register / flag / memory cell (legacy `print <target>`)",

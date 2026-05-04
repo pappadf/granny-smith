@@ -397,13 +397,11 @@ function translateToGsEval(line: string): Translation | null {
     }
 
     if (head === 'fd') {
-      if (sub === 'probe' && subArgs.length === 1)
-        return { method: 'fd_probe', args: subArgs, convention: 'cmd_int_bool' };
-      if (sub === 'validate' && subArgs.length === 1)
-        return { method: 'fd_validate', args: subArgs, convention: 'string_nonempty' };
+      if ((sub === 'probe' || sub === 'validate') && subArgs.length === 1)
+        return { method: 'floppy.identify', args: subArgs, convention: 'string_nonempty' };
       if (sub === 'create' && subArgs.length >= 1)
         return {
-          method: 'fd_create',
+          method: 'floppy.create',
           args: subArgs.length >= 2 ? [subArgs[0], subArgs[1]] : [subArgs[0]],
           convention: 'cmd_int_bool',
         };
@@ -411,8 +409,8 @@ function translateToGsEval(line: string): Translation | null {
         const slot = parseInt10(subArgs[1]) ?? 0;
         const writable = subArgs.length >= 3 ? parseBool(subArgs[2]) : false;
         return {
-          method: 'fd_insert',
-          args: [subArgs[0], slot, writable],
+          method: `floppy.drives[${slot}].insert`,
+          args: [subArgs[0], writable],
           convention: 'cmd_int_bool',
         };
       }
@@ -420,10 +418,10 @@ function translateToGsEval(line: string): Translation | null {
 
     if (head === 'hd') {
       if (sub === 'validate' && subArgs.length === 1)
-        return { method: 'hd_validate', args: subArgs, convention: 'cmd_bool' };
+        return { method: 'scsi.identify_hd', args: subArgs, convention: 'cmd_bool' };
       if (sub === 'attach' && subArgs.length === 2) {
         const id = parseInt10(subArgs[1]) ?? 0;
-        return { method: 'hd_attach', args: [subArgs[0], id], convention: 'cmd_int_bool' };
+        return { method: 'scsi.attach_hd', args: [subArgs[0], id], convention: 'cmd_int_bool' };
       }
       if (sub === 'create' && subArgs.length === 2)
         return { method: 'storage.hd_create', args: subArgs, convention: 'cmd_int_bool' };
@@ -431,23 +429,23 @@ function translateToGsEval(line: string): Translation | null {
         return { method: 'scsi.loopback', args: [subArgs[0] === 'on'], convention: 'void_or_error' };
     }
 
+    // cdrom: id is now mandatory at the API level. Fall back to 3 for the
+    // legacy shell-form callers that omit it; the typed path requires it.
     if (head === 'cdrom') {
       if (sub === 'validate' && subArgs.length === 1)
-        return { method: 'cdrom_validate', args: subArgs, convention: 'cmd_bool' };
-      if (sub === 'attach' && subArgs.length === 1)
-        return { method: 'cdrom_attach', args: subArgs, convention: 'cmd_int_bool' };
-      if (sub === 'eject')
-        return {
-          method: 'cdrom_eject',
-          args: subArgs.length >= 1 ? [parseInt10(subArgs[0]) ?? 3] : [],
-          convention: 'cmd_int_bool',
-        };
-      if (sub === 'info')
-        return {
-          method: 'cdrom_info',
-          args: subArgs.length >= 1 ? [parseInt10(subArgs[0]) ?? 3] : [],
-          convention: 'cmd_int_bool',
-        };
+        return { method: 'scsi.identify_cdrom', args: subArgs, convention: 'cmd_bool' };
+      if (sub === 'attach' && subArgs.length >= 1) {
+        const id = subArgs.length >= 2 ? (parseInt10(subArgs[1]) ?? 3) : 3;
+        return { method: 'scsi.attach_cdrom', args: [subArgs[0], id], convention: 'cmd_int_bool' };
+      }
+      if (sub === 'eject') {
+        const id = subArgs.length >= 1 ? (parseInt10(subArgs[0]) ?? 3) : 3;
+        return { method: `scsi.devices[${id}].eject`, args: [], convention: 'cmd_int_bool' };
+      }
+      if (sub === 'info') {
+        const id = subArgs.length >= 1 ? (parseInt10(subArgs[0]) ?? 3) : 3;
+        return { method: `scsi.devices[${id}].info`, args: [], convention: 'cmd_int_bool' };
+      }
     }
 
     if (head === 'scc') {

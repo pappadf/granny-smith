@@ -812,6 +812,81 @@ static value_t floppy_attr_sel(struct object *self, const member_t *m) {
     return val_bool(floppy_get_sel(floppy_self_from(self)));
 }
 
+// `floppy.identify(path)` — return density string for a recognised floppy
+// image ("400K" / "800K" / "1.4MB"), or empty string otherwise. Empty is
+// falsy under the predicate-truthy rule, so callers can do
+//   `assert ${floppy.identify(path)} "not a floppy"`.
+static value_t floppy_method_identify(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)self;
+    (void)m;
+    if (argc < 1 || argv[0].kind != V_STRING || !argv[0].s)
+        return val_err("floppy.identify: expected (path)");
+    image_t *img = image_open_readonly(argv[0].s);
+    if (!img)
+        return val_str("");
+    const char *density = "";
+    switch (img->type) {
+    case image_fd_ss:
+        density = "400K";
+        break;
+    case image_fd_ds:
+        density = "800K";
+        break;
+    case image_fd_hd:
+        density = "1.4MB";
+        break;
+    default:
+        density = "";
+        break;
+    }
+    image_close(img);
+    return val_str(density);
+}
+
+// `floppy.create(path, [hd])` — create a blank floppy image and auto-mount
+// it. `hd` is the optional density flag: "hd" / true → 1.44 MB, anything
+// else → 800 KB. The legacy `--hd` string spelling is also accepted.
+static value_t floppy_method_create(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)self;
+    (void)m;
+    if (argc < 1 || argv[0].kind != V_STRING || !argv[0].s)
+        return val_err("floppy.create: expected (path, [hd])");
+    bool high_density = false;
+    int preferred = -1;
+    if (argc >= 2) {
+        if (argv[1].kind == V_STRING && argv[1].s) {
+            if (strcmp(argv[1].s, "hd") == 0 || strcmp(argv[1].s, "--hd") == 0) {
+                high_density = true;
+            } else if (argv[1].s[0] >= '0' && argv[1].s[0] <= '1' && argv[1].s[1] == '\0') {
+                preferred = argv[1].s[0] - '0';
+            } else if (*argv[1].s) {
+                return val_err("floppy.create: second arg must be \"hd\" or drive index 0/1");
+            }
+        } else if (argv[1].kind == V_BOOL) {
+            high_density = argv[1].b;
+        } else if (argv[1].kind == V_INT || argv[1].kind == V_UINT) {
+            int64_t d = (argv[1].kind == V_INT) ? argv[1].i : (int64_t)argv[1].u;
+            if (d != 0 && d != 1)
+                return val_err("floppy.create: drive index must be 0 or 1");
+            preferred = (int)d;
+        }
+    }
+    int rc = system_create_floppy(argv[0].s, high_density, preferred);
+    return val_bool(rc == 0);
+}
+
+static const arg_decl_t floppy_path_arg[] = {
+    {.name = "path", .kind = V_STRING, .doc = "Floppy image path"},
+};
+
+static const arg_decl_t floppy_create_args[] = {
+    {.name = "path", .kind = V_STRING, .doc = "Output path"},
+    {.name = "hd",
+     .kind = V_NONE,
+     .flags = OBJ_ARG_OPTIONAL,
+     .doc = "\"hd\" / true for 1.44 MB; drive index 0/1 to pick a slot"},
+};
+
 static const member_t floppy_members[] = {
     {.kind = M_ATTR,
      .name = "type",
@@ -822,7 +897,15 @@ static const member_t floppy_members[] = {
      .name = "sel",
      .doc = "VIA-driven head-select signal",
      .flags = VAL_RO,
-     .attr = {.type = V_BOOL, .get = floppy_attr_sel, .set = NULL} },
+     .attr = {.type = V_BOOL, .get = floppy_attr_sel, .set = NULL}},
+    {.kind = M_METHOD,
+     .name = "identify",
+     .doc = "Return floppy density (\"400K\" / \"800K\" / \"1.4MB\") or empty if not a floppy",
+     .method = {.args = floppy_path_arg, .nargs = 1, .result = V_STRING, .fn = floppy_method_identify}},
+    {.kind = M_METHOD,
+     .name = "create",
+     .doc = "Create a blank floppy image and auto-mount it",
+     .method = {.args = floppy_create_args, .nargs = 2, .result = V_BOOL, .fn = floppy_method_create}},
 };
 
 const class_desc_t floppy_class = {
@@ -899,20 +982,31 @@ static value_t floppy_drive_method_eject(struct object *self, const member_t *m,
     return val_none();
 }
 
-// `insert(path)` is deferred — image loading and floppy_insert
-// require the M8 storage rollout to converge cleanly. For M7e the
-// method is a stub returning V_ERROR, mirroring the scsi.devices
-// eject/insert deferral. Paths still resolve.
+// `floppy.drives[N].insert(path, [writable])` — mount an image into this
+// specific drive. Routes through shell_fd_argv so persistence / VFS
+// resolution / drive-occupancy bookkeeping all stay in one place.
 static value_t floppy_drive_method_insert(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
     (void)m;
-    (void)argc;
-    (void)argv;
-    return val_err("floppy.drives.N.insert(): deferred — see M8 plan");
+    if (argc < 1 || argv[0].kind != V_STRING || !argv[0].s)
+        return val_err("floppy.drives.N.insert: expected (path, [writable])");
+    unsigned slot = 0;
+    if (!floppy_drive_floppy(self, &slot))
+        return val_err("floppy.drives.N.insert: floppy controller not available");
+    bool writable = (argc >= 2) ? val_as_bool(&argv[1]) : false;
+    char line[1024];
+    int n = snprintf(line, sizeof(line), "fd insert \"%s\" %u %s", argv[0].s, slot, writable ? "true" : "false");
+    if (n < 0 || (size_t)n >= sizeof(line))
+        return val_err("floppy.drives.N.insert: path too long");
+    char *targv[16];
+    int targc = tokenize(line, targv, 16);
+    if (targc <= 0)
+        return val_err("floppy.drives.N.insert: tokenisation failed");
+    return val_bool(shell_fd_argv(targc, targv) == 0);
 }
 
 static const arg_decl_t floppy_drive_insert_args[] = {
     {.name = "path", .kind = V_STRING, .doc = "Host path or storage URI of the image to mount"},
+    {.name = "writable", .kind = V_BOOL, .flags = OBJ_ARG_OPTIONAL, .doc = "Mount writable (default false)"},
 };
 
 static const member_t floppy_drive_members[] = {
@@ -947,8 +1041,8 @@ static const member_t floppy_drive_members[] = {
      .method = {.args = NULL, .nargs = 0, .result = V_NONE, .fn = floppy_drive_method_eject}},
     {.kind = M_METHOD,
      .name = "insert",
-     .doc = "Insert a disk image; deferred until M8",
-     .method = {.args = floppy_drive_insert_args, .nargs = 1, .result = V_NONE, .fn = floppy_drive_method_insert}},
+     .doc = "Mount a disk image into this drive",
+     .method = {.args = floppy_drive_insert_args, .nargs = 2, .result = V_BOOL, .fn = floppy_drive_method_insert}},
 };
 
 const class_desc_t floppy_drive_class = {

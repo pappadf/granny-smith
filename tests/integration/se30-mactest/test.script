@@ -33,7 +33,7 @@ scheduler.run 150000000
 screen.match insert-800k-floppy.png
 
 # Insert 800K floppy
-fd_create "${WORK_DIR}/blank800.dsk" 0
+floppy.create "${WORK_DIR}/blank800.dsk" 0
 
 # Let it run a short bit - detect the floppy
 scheduler.run 10000000
@@ -58,7 +58,7 @@ screen.match insert-1.4mb-floppy.png
 mouse.click false "global"
 
 # Insert 1.4MB HD floppy and click immediately (before .Sony VBL auto-mounts)
-fd_create "${WORK_DIR}/blankHD.dsk" "--hd"
+floppy.create "${WORK_DIR}/blankHD.dsk" "hd"
 mouse.move 370 185 "global"
 scheduler.run 5000000
 mouse.click true
@@ -71,7 +71,7 @@ scheduler.run 100000000
 screen.match floppy-test-success.png
 
 # Insert the original application disk
-fd_insert ../../data/apps/MacTest-SE30.image 0 true
+floppy.drives[0].insert ../../data/apps/MacTest-SE30.image true
 
 # Stop the mouse guard before the RAM test — it writes to RAM every 1ms,
 # corrupting test patterns and causing verify failures.

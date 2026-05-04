@@ -34,7 +34,7 @@ storage.mounts
 
 # Attaching to SCSI must flip the mount to conflicted; subsequent VFS ops
 # return EBUSY.
-hd_attach ../../data/systems/System_6_0_8.dsk 2
+scsi.attach_hd ../../data/systems/System_6_0_8.dsk 2
 vfs.ls ../../data/systems/System_6_0_8.dsk/partition1
 
 # Force-unmount releases the cache entry.
