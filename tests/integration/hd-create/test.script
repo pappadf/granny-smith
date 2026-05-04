@@ -8,24 +8,24 @@ hd_models
 
 # Test: hd create with a model name. The model-name parser looks up the
 # size in the catalog (HD20SC = 20 MB).
-assert ${hd_create("${WORK_DIR}/test_model.img", "HD20SC")} "hd_create failed for model HD20SC"
-assert ${path_exists("${WORK_DIR}/test_model.img")} "test_model.img missing after create"
+assert ${storage.hd_create("${WORK_DIR}/test_model.img", "HD20SC")} "hd_create failed for model HD20SC"
+assert ${storage.path_exists("${WORK_DIR}/test_model.img")} "test_model.img missing after create"
 
 # Test: hd create with a human-friendly size (mb suffix). The "40mb"
 # form rounds to a geometry-aligned size (40061952 bytes, ~38.2 MiB
 # usable) — pinning the exact byte count guards the rounding rule.
-assert ${hd_create("${WORK_DIR}/test_40mb.img", "40mb")} "hd_create failed for size 40mb"
-assert ${path_size("${WORK_DIR}/test_40mb.img") == 40061952} "test_40mb.img wrong size"
+assert ${storage.hd_create("${WORK_DIR}/test_40mb.img", "40mb")} "hd_create failed for size 40mb"
+assert ${storage.path_size("${WORK_DIR}/test_40mb.img") == 40061952} "test_40mb.img wrong size"
 
 # Test: hd create with exact byte count (backward compatible).
-assert ${hd_create("${WORK_DIR}/test_exact.img", "21411840")} "hd_create failed for exact byte count"
-assert ${path_size("${WORK_DIR}/test_exact.img") == 21411840} "test_exact.img wrong size"
+assert ${storage.hd_create("${WORK_DIR}/test_exact.img", "21411840")} "hd_create failed for exact byte count"
+assert ${storage.path_size("${WORK_DIR}/test_exact.img") == 21411840} "test_exact.img wrong size"
 
 # Test: hd create with binary suffix (backward compatible). Like the
 # "40mb" case, "20M" geometry-aligns rather than producing an exact
 # 20*1024*1024 byte count.
-assert ${hd_create("${WORK_DIR}/test_20M.img", "20M")} "hd_create failed for size 20M"
-path_size "${WORK_DIR}/test_20M.img"
+assert ${storage.hd_create("${WORK_DIR}/test_20M.img", "20M")} "hd_create failed for size 20M"
+storage.path_size "${WORK_DIR}/test_20M.img"
 
 # Test: hd_models prints the catalog one more time (smoke check).
 hd_models

@@ -9,7 +9,7 @@
 #   - Double-click: down 1.6M up 1.6M down 1.6M up — total ~300ms
 
 # Create a blank 80 MB hard disk image (exact HD80SC size, zero-filled)
-hd_create ${WORK_DIR}/blank80.img HD20SC
+storage.hd_create ${WORK_DIR}/blank80.img HD20SC
 
 # Attach the blank image as SCSI ID 6 (default)
 hd_attach ${WORK_DIR}/blank80.img
@@ -97,7 +97,7 @@ scheduler.run 50000000
 screen.match shutdown.png
 
 # Download (export) the formatted HD image to a flat file
-hd_download ${WORK_DIR}/blank80.img ${WORK_DIR}/downloaded.img
+storage.hd_download ${WORK_DIR}/blank80.img ${WORK_DIR}/downloaded.img
 
 quit
 

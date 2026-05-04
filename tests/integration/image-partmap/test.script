@@ -3,16 +3,16 @@
 # relative to tests/integration/image-partmap/.
 
 # Human-readable partition map.
-partmap ../../data/aux/hd-with-aux-partition.img
+storage.partmap ../../data/aux/hd-with-aux-partition.img
 
 # Format probe — exercises the APM sniff path.
-probe ../../data/aux/hd-with-aux-partition.img
+storage.probe ../../data/aux/hd-with-aux-partition.img
 
 # JSON output path (catches formatter regressions).
-partmap ../../data/aux/hd-with-aux-partition.img --json
+storage.partmap ../../data/aux/hd-with-aux-partition.img --json
 
 # Phase 2 stubs — must return an error but not crash.
-image_mounts
-unmount ../../data/aux/hd-with-aux-partition.img
+storage.mounts
+storage.unmount ../../data/aux/hd-with-aux-partition.img
 
 quit

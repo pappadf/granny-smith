@@ -130,11 +130,11 @@ function translateToGsEval(line: string): Translation | null {
       convention: 'cmd_int_bool',
     };
   if (head === 'cp' && tail.length >= 2)
-    return { method: 'cp', args: tail, convention: 'cmd_int_bool' };
+    return { method: 'storage.cp', args: tail, convention: 'cmd_int_bool' };
   if (head === 'file-copy' && tail.length === 2)
-    return { method: 'cp', args: tail, convention: 'cmd_int_bool' };
+    return { method: 'storage.cp', args: tail, convention: 'cmd_int_bool' };
   if (head === 'find-media' && tail.length >= 1)
-    return { method: 'find_media', args: tail, convention: 'cmd_int_bool' };
+    return { method: 'storage.find_media', args: tail, convention: 'cmd_int_bool' };
   if (head === 'download' && tail.length === 1)
     return { method: 'download', args: tail, convention: 'cmd_int_bool' };
   if (head === 'schedule' && tail.length === 1)
@@ -162,10 +162,10 @@ function translateToGsEval(line: string): Translation | null {
     return { method: 'background_checkpoint', args: [tail[0]], convention: 'cmd_int_bool' };
   if (head === 'exists' && tail.length === 1)
     // Legacy `exists` returned 0=exists, 1=missing — map_int_bool keeps that.
-    return { method: 'path_exists', args: [tail[0]], convention: 'cmd_int_bool' };
+    return { method: 'storage.path_exists', args: [tail[0]], convention: 'cmd_int_bool' };
   if (head === 'size' && tail.length === 1)
     // Legacy `size` returned the byte count — pass it through unchanged.
-    return { method: 'path_size', args: [tail[0]], convention: 'pass_through' };
+    return { method: 'storage.path_size', args: [tail[0]], convention: 'pass_through' };
 
   // `screenshot checksum [top left bottom right]` — used by helpers/screen.ts
   // for fast frame matching. The typed wrapper takes either 0 or 4 args and
@@ -424,7 +424,7 @@ function translateToGsEval(line: string): Translation | null {
         return { method: 'hd_attach', args: [subArgs[0], id], convention: 'cmd_int_bool' };
       }
       if (sub === 'create' && subArgs.length === 2)
-        return { method: 'hd_create', args: subArgs, convention: 'cmd_int_bool' };
+        return { method: 'storage.hd_create', args: subArgs, convention: 'cmd_int_bool' };
       if (sub === 'loopback' && subArgs.length === 1 && (subArgs[0] === 'on' || subArgs[0] === 'off'))
         return { method: 'scsi.loopback', args: [subArgs[0] === 'on'], convention: 'void_or_error' };
     }
@@ -462,17 +462,17 @@ function translateToGsEval(line: string): Translation | null {
 
     if (head === 'image') {
       if (sub === 'partmap' && subArgs.length === 1)
-        return { method: 'partmap', args: subArgs, convention: 'cmd_int_bool' };
+        return { method: 'storage.partmap', args: subArgs, convention: 'cmd_int_bool' };
       if (sub === 'probe' && subArgs.length === 1)
-        return { method: 'probe', args: subArgs, convention: 'cmd_int_bool' };
+        return { method: 'storage.probe', args: subArgs, convention: 'cmd_int_bool' };
       if (sub === 'list')
         return {
-          method: 'list_partitions',
+          method: 'storage.list_partitions',
           args: subArgs.length >= 1 ? subArgs : [],
           convention: 'cmd_int_bool',
         };
       if (sub === 'unmount' && subArgs.length === 1)
-        return { method: 'unmount', args: subArgs, convention: 'cmd_int_bool' };
+        return { method: 'storage.unmount', args: subArgs, convention: 'cmd_int_bool' };
     }
   }
 

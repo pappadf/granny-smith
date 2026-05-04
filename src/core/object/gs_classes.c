@@ -298,38 +298,6 @@ static value_t method_root_print(struct object *self, const member_t *m, int arg
 // `hd_download` defers similarly — it requires platform/network state
 // outside the scope of the object tree.
 
-// `cp([-r], src, dst)` — top-level alias for `storage.import` per
-// proposal §5.10 ("preserve UNIX muscle memory"). Accepts `-r` / `-R`
-// in any positional slot to match POSIX muscle memory.
-static value_t method_root_cp(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
-    bool recursive = false;
-    const char *src = NULL;
-    const char *dst = NULL;
-    for (int i = 0; i < argc; i++) {
-        if (argv[i].kind != V_STRING || !argv[i].s)
-            return val_err("cp: expected ([-r], src, dst)");
-        const char *s = argv[i].s;
-        if (strcmp(s, "-r") == 0 || strcmp(s, "-R") == 0) {
-            recursive = true;
-        } else if (!src) {
-            src = s;
-        } else if (!dst) {
-            dst = s;
-        } else {
-            return val_err("cp: too many arguments");
-        }
-    }
-    if (!src || !dst)
-        return val_err("cp: expected ([-r], src, dst)");
-    char err[256] = {0};
-    int rc = shell_cp(src, dst, recursive, err, sizeof(err));
-    if (rc < 0)
-        return val_err("%s", err[0] ? err : "cp: failed");
-    return val_bool(true);
-}
-
 // `peeler(path, [out_dir])` — extract a Mac archive
 // (.sit/.cpt/.hqx/.bin) via the legacy `peeler` shell command.
 // Returns true on successful extraction. Note: legacy peeler takes the
@@ -377,61 +345,6 @@ static value_t method_root_fd_probe(struct object *self, const member_t *m, int 
     if (argc < 1 || argv[0].kind != V_STRING)
         return val_err("fd_probe: expected (path)");
     return val_bool(system_probe_floppy(argv[0].s ? argv[0].s : "") == 0);
-}
-
-// `find_media(dir, [dst])` — search a directory for a recognised
-// floppy image; if `dst` is given, the image is copied there. Returns
-// true if a match was found.
-static value_t method_root_find_media(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
-    if (argc < 1 || argv[0].kind != V_STRING)
-        return val_err("find_media: expected (dir, [dst])");
-    const char *dir = argv[0].s ? argv[0].s : "";
-    const char *dst = (argc >= 2 && argv[1].kind == V_STRING && argv[1].s && *argv[1].s) ? argv[1].s : NULL;
-    return val_bool(gs_find_media(dir, dst) == 0);
-}
-
-// `hd_create(path, size)` — wraps `hd create <path> <size>`.
-static value_t method_root_hd_create(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
-    if (argc < 2 || argv[0].kind != V_STRING)
-        return val_err("hd_create: expected (path, size)");
-    char line[512];
-    int n;
-    // size accepts either a string ("HD20SC", "40M", "21411840") or a
-    // bare integer (raw byte count). The shell-form size parser handles
-    // both, so just stringify whichever variant we got.
-    if (argv[1].kind == V_STRING) {
-        n = snprintf(line, sizeof(line), "hd create \"%s\" \"%s\"", argv[0].s, argv[1].s);
-    } else if (argv[1].kind == V_INT) {
-        n = snprintf(line, sizeof(line), "hd create \"%s\" %lld", argv[0].s, (long long)argv[1].i);
-    } else if (argv[1].kind == V_UINT) {
-        n = snprintf(line, sizeof(line), "hd create \"%s\" %llu", argv[0].s, (unsigned long long)argv[1].u);
-    } else {
-        return val_err("hd_create: size must be string or integer");
-    }
-    if (n < 0 || (size_t)n >= sizeof(line))
-        return val_err("hd_create: arguments too long");
-    char *targv[32];
-    int targc = tokenize(line, targv, 32);
-    if (targc <= 0)
-        return val_err("hd_create: tokenisation failed");
-    return val_bool(shell_hd_argv(targc, targv) == 0);
-}
-
-// `hd_download(src, dst)` — export a hard disk image (base + delta) to a
-// flat file. Wraps the legacy `hd download` command, which the headless
-// build does support (the WASM platform's fetch glue is a separate
-// concern that the typed wrapper doesn't change).
-static value_t method_root_hd_download(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
-    if (argc < 2 || argv[0].kind != V_STRING || argv[1].kind != V_STRING)
-        return val_err("hd_download: expected (source_path, dest_path)");
-    int rc = system_download_hd(argv[0].s ? argv[0].s : "", argv[1].s ? argv[1].s : "");
-    return val_bool(rc == 0);
 }
 
 // rom_* / vrom_* — wrap the `rom probe|validate` / `vrom probe|validate`
@@ -482,136 +395,6 @@ static value_t method_root_vrom_validate(struct object *self, const member_t *m,
     if (rc == -2)
         return val_err("vrom_validate: expected (path)");
     return val_bool(rc == 1);
-}
-
-static const char *apm_fs_kind_label(enum apm_fs_kind k) {
-    switch (k) {
-    case APM_FS_HFS:
-        return "HFS";
-    case APM_FS_UFS:
-        return "UFS";
-    case APM_FS_PARTITION_MAP:
-        return "map";
-    case APM_FS_DRIVER:
-        return "drvr";
-    case APM_FS_FREE:
-        return "free";
-    case APM_FS_PATCHES:
-        return "patch";
-    default:
-        return "--";
-    }
-}
-static value_t method_root_partmap(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
-    if (argc < 1 || argv[0].kind != V_STRING)
-        return val_err("partmap: expected (path)");
-    const char *path = argv[0].s ? argv[0].s : "";
-    image_t *img = image_open_readonly(path);
-    if (!img)
-        return val_err("partmap: cannot open image '%s'", path);
-    const char *errmsg = NULL;
-    apm_table_t *table = image_apm_parse(img, &errmsg);
-    if (!table) {
-        image_close(img);
-        return val_err("partmap: not an APM image: %s", errmsg ? errmsg : "unknown error");
-    }
-    printf("format: APM (512B blocks, %zu total)\n", disk_size(img) / 512);
-    printf("  #  Name                             Type                        Start        Size  FS\n");
-    for (uint32_t i = 0; i < table->n_partitions; i++) {
-        const apm_partition_t *p = &table->partitions[i];
-        printf("  %-2u %-32s %-24s %10llu  %10llu  %s\n", (unsigned)p->index, p->name[0] ? p->name : "(unnamed)",
-               p->type[0] ? p->type : "(unknown)", (unsigned long long)p->start_block,
-               (unsigned long long)p->size_blocks, apm_fs_kind_label(p->fs_kind));
-    }
-    image_apm_free(table);
-    image_close(img);
-    return val_bool(true);
-}
-static value_t method_root_probe(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
-    if (argc < 1 || argv[0].kind != V_STRING)
-        return val_err("probe: expected (path)");
-    const char *path = argv[0].s ? argv[0].s : "";
-    image_t *img = image_open_readonly(path);
-    if (!img) {
-        printf("cannot open image '%s'\n", path);
-        return val_bool(false);
-    }
-    size_t size = disk_size(img);
-    // APM first (matches the proposal's probe order — APM wins over ISO 9660
-    // because Apple install CDs carry both).
-    uint8_t block[512];
-    bool apm = false;
-    if (size >= 1024 && disk_read_data(img, 512, block, sizeof(block)) == sizeof(block))
-        apm = image_apm_probe_magic(block);
-    bool iso = false;
-    if (size >= 33280 && disk_read_data(img, 32768, block, sizeof(block)) == sizeof(block))
-        iso = (memcmp(block + 1, "CD001", 5) == 0);
-    bool hfs = false;
-    if (!apm && size >= 1024 + 512 && disk_read_data(img, 1024, block, sizeof(block)) == sizeof(block))
-        hfs = (block[0] == 0x42 && block[1] == 0x44);
-    if (apm && iso)
-        printf("format: APM + ISO 9660 hybrid (%zu bytes)\n", size);
-    else if (apm)
-        printf("format: APM (%zu bytes)\n", size);
-    else if (iso)
-        printf("format: ISO 9660 (%zu bytes)\n", size);
-    else if (hfs)
-        printf("format: HFS (bare, %zu bytes)\n", size);
-    else
-        printf("format: unrecognised / raw (%zu bytes)\n", size);
-    image_close(img);
-    return val_bool(true);
-}
-// list_partitions / image_mounts both want the cached-mounts table via
-// image_vfs_list. Render-row callbacks receive the per-image columns.
-static void list_row_print(const char *path, const char *fmt, uint32_t n_parts, uint32_t refs, bool conflicted,
-                           void *user) {
-    bool *header_printed = (bool *)user;
-    if (!*header_printed) {
-        printf("PATH                                        FMT  PARTS  REFS  STATUS\n");
-        *header_printed = true;
-    }
-    printf("%-44s %-3s %5u %5u  %s\n", path, fmt, n_parts, refs, conflicted ? "busy" : "ok");
-}
-static value_t method_root_list_partitions(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
-    (void)argc;
-    (void)argv;
-    bool header_printed = false;
-    image_vfs_list(list_row_print, &header_printed);
-    if (!header_printed)
-        printf("(no cached image mounts)\n");
-    return val_bool(true);
-}
-static value_t method_root_unmount(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
-    if (argc < 1 || argv[0].kind != V_STRING)
-        return val_err("unmount: expected (path)");
-    const char *path = argv[0].s ? argv[0].s : "";
-    char resolved[VFS_PATH_MAX];
-    const vfs_backend_t *be = NULL;
-    void *bctx = NULL;
-    const char *tail = NULL;
-    if (vfs_resolve(path, resolved, sizeof(resolved), &be, &bctx, &tail) == 0)
-        path = resolved;
-    int rc = image_vfs_unmount(path);
-    if (rc == 0) {
-        printf("unmounted %s\n", path);
-        return val_bool(true);
-    }
-    if (rc == -ENOENT)
-        printf("image unmount: not currently mounted: %s\n", path);
-    else if (rc == -EBUSY)
-        printf("image unmount: %s has live handles; marked conflicted\n", path);
-    else
-        printf("image unmount: %s: %s\n", path, strerror(-rc));
-    return val_bool(false);
 }
 
 // `quit()` — request emulator shutdown. Headless sets the script
@@ -952,32 +735,6 @@ static value_t method_root_background_checkpoint(struct object *self, const memb
     return val_bool(gs_background_checkpoint(argv[0].s ? argv[0].s : "") == 0);
 }
 
-// `path_exists(path)` — true if the path exists in the shell VFS.
-static value_t method_root_path_exists(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
-    if (argc < 1 || argv[0].kind != V_STRING)
-        return val_err("path_exists: expected (path)");
-    vfs_stat_t st;
-    return val_bool(vfs_stat(argv[0].s ? argv[0].s : "", &st) == 0);
-}
-
-// `path_size(path)` — file size in bytes (0 on stat failure).
-static value_t method_root_path_size(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
-    if (argc < 1 || argv[0].kind != V_STRING)
-        return val_err("path_size: expected (path)");
-    const char *path = argv[0].s ? argv[0].s : "";
-    vfs_stat_t st = {0};
-    int rc = vfs_stat(path, &st);
-    if (rc < 0) {
-        printf("size: cannot stat '%s': %s\n", path, strerror(-rc));
-        return val_uint(8, 0);
-    }
-    return val_uint(8, st.size);
-}
-
 // `fd_create(path, [drive_or_hd])` — create a blank 800 KB floppy image
 // and auto-mount it. The optional second arg matches the legacy
 // `fd create [--hd] <path> [drive]` parser: pass the string `"--hd"`
@@ -1302,21 +1059,6 @@ static value_t method_root_cdrom_info(struct object *self, const member_t *m, in
     return val_bool(true);
 }
 
-// `image_mounts()` — list currently-mounted image paths (the legacy
-// `image list` no-arg form). Same body as method_root_list_partitions
-// since the underlying primitive (image_vfs_list) is the same.
-static value_t method_root_image_mounts(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
-    (void)argc;
-    (void)argv;
-    bool header_printed = false;
-    image_vfs_list(list_row_print, &header_printed);
-    if (!header_printed)
-        printf("(no cached image mounts)\n");
-    return val_bool(true);
-}
-
 // `fd_validate(path)` — return the floppy density tag ("400K", "800K",
 // "1.4MB", …) when the file is a recognised floppy image, or empty
 // string otherwise. The legacy `fd validate` command prints the
@@ -1389,25 +1131,9 @@ static value_t method_root_download(struct object *self, const member_t *m, int 
     return val_bool(gs_download(argv[0].s ? argv[0].s : "") == 0);
 }
 
-static const arg_decl_t root_cp_args[] = {
-    {.name = "src", .kind = V_STRING, .doc = "Source path"},
-    {.name = "dst", .kind = V_STRING, .doc = "Destination path"},
-    {.name = "flags",
-     .kind = V_STRING,
-     .flags = OBJ_ARG_OPTIONAL,
-     .doc = "Optional flags (e.g. -r for recursive copy)"},
-};
 static const arg_decl_t root_peeler_args[] = {
     {.name = "path", .kind = V_STRING, .doc = "Archive path"},
     {.name = "out_dir", .kind = V_STRING, .flags = OBJ_ARG_OPTIONAL, .doc = "Optional extraction directory"},
-};
-static const arg_decl_t root_hd_create_args[] = {
-    {.name = "path", .kind = V_STRING, .doc = "Output path"                          },
-    {.name = "size", .kind = V_STRING, .doc = "Image size (e.g. \"40M\" or \"512K\")"},
-};
-static const arg_decl_t root_hd_download_args[] = {
-    {.name = "src", .kind = V_STRING, .doc = "Source HD image path (base + delta)"},
-    {.name = "dst", .kind = V_STRING, .doc = "Destination flat-file path"         },
 };
 static const arg_decl_t root_path_arg[] = {
     {.name = "path", .kind = V_STRING, .doc = "File path"},
@@ -1428,10 +1154,6 @@ static const arg_decl_t root_cdrom_id_arg[] = {
 static const arg_decl_t root_setup_machine_args[] = {
     {.name = "model", .kind = V_STRING, .doc = "Machine model id (plus / se30 / iicx)"},
     {.name = "ram_kb", .kind = V_UINT, .flags = OBJ_ARG_OPTIONAL, .doc = "RAM size in KB"},
-};
-static const arg_decl_t root_find_media_args[] = {
-    {.name = "dir", .kind = V_STRING, .doc = "Directory to scan"},
-    {.name = "dst", .kind = V_STRING, .flags = OBJ_ARG_OPTIONAL, .doc = "Optional path to copy match into"},
 };
 static const arg_decl_t root_checkpoint_load_args[] = {
     {.name = "path",
@@ -1495,10 +1217,6 @@ static const member_t emu_root_members[] = {
     // the M10b migrators can branch on the result without re-deriving
     // the legacy command's int / cmd_bool convention.
     {.kind = M_METHOD,
-     .name = "cp",
-     .doc = "Copy a file or directory (alias for storage.import / legacy `cp`)",
-     .method = {.args = root_cp_args, .nargs = 3, .result = V_BOOL, .fn = method_root_cp}                            },
-    {.kind = M_METHOD,
      .name = "peeler",
      .doc = "Extract a Mac archive (.sit/.cpt/.hqx/.bin)",
      .method = {.args = root_peeler_args, .nargs = 2, .result = V_BOOL, .fn = method_root_peeler}                    },
@@ -1506,14 +1224,6 @@ static const member_t emu_root_members[] = {
      .name = "peeler_probe",
      .doc = "True if a file is a peeler-supported archive",
      .method = {.args = root_path_arg, .nargs = 1, .result = V_BOOL, .fn = method_root_peeler_probe}                 },
-    {.kind = M_METHOD,
-     .name = "hd_create",
-     .doc = "Create a blank SCSI hard-disk image",
-     .method = {.args = root_hd_create_args, .nargs = 2, .result = V_BOOL, .fn = method_root_hd_create}              },
-    {.kind = M_METHOD,
-     .name = "hd_download",
-     .doc = "Export a hard-disk image (base + delta) to a flat file",
-     .method = {.args = root_hd_download_args, .nargs = 2, .result = V_BOOL, .fn = method_root_hd_download}          },
     {.kind = M_METHOD,
      .name = "rom_probe",
      .doc = "True if a file is a recognised ROM image (no arg = is a ROM loaded?)",
@@ -1534,26 +1244,6 @@ static const member_t emu_root_members[] = {
      .name = "fd_probe",
      .doc = "True if a file is a recognised floppy-disk image",
      .method = {.args = root_path_arg, .nargs = 1, .result = V_BOOL, .fn = method_root_fd_probe}                     },
-    {.kind = M_METHOD,
-     .name = "find_media",
-     .doc = "Search a directory for a floppy image; copy to dst if given",
-     .method = {.args = root_find_media_args, .nargs = 2, .result = V_BOOL, .fn = method_root_find_media}            },
-    {.kind = M_METHOD,
-     .name = "partmap",
-     .doc = "Parse and print the Apple Partition Map of a disk image",
-     .method = {.args = root_path_arg, .nargs = 1, .result = V_BOOL, .fn = method_root_partmap}                      },
-    {.kind = M_METHOD,
-     .name = "probe",
-     .doc = "Probe an image for its format (HFS / ISO / APM / ...)",
-     .method = {.args = root_path_arg, .nargs = 1, .result = V_BOOL, .fn = method_root_probe}                        },
-    {.kind = M_METHOD,
-     .name = "list_partitions",
-     .doc = "List partitions cached for a mounted image",
-     .method = {.args = root_path_arg, .nargs = 1, .result = V_BOOL, .fn = method_root_list_partitions}              },
-    {.kind = M_METHOD,
-     .name = "unmount",
-     .doc = "Force-close a cached auto-mount of an image",
-     .method = {.args = root_path_arg, .nargs = 1, .result = V_BOOL, .fn = method_root_unmount}                      },
     {.kind = M_METHOD,
      .name = "quit",
      .doc = "Exit the emulator (asks the legacy quit command to end the run)",
@@ -1630,10 +1320,6 @@ static const member_t emu_root_members[] = {
      .doc = "Print info for the CD-ROM at the given SCSI id (default 3)",
      .method = {.args = root_cdrom_id_arg, .nargs = 1, .result = V_BOOL, .fn = method_root_cdrom_info}               },
     {.kind = M_METHOD,
-     .name = "image_mounts",
-     .doc = "List currently-mounted image paths (table format)",
-     .method = {.args = NULL, .nargs = 0, .result = V_BOOL, .fn = method_root_image_mounts}                          },
-    {.kind = M_METHOD,
      .name = "fd_validate",
      .doc = "Floppy density tag (\"400K\" / \"800K\" / \"1.4MB\") or empty if unrecognised",
      .method = {.args = root_path_arg, .nargs = 1, .result = V_STRING, .fn = method_root_fd_validate}                },
@@ -1666,22 +1352,6 @@ static const member_t emu_root_members[] = {
      .name = "background_checkpoint",
      .doc = "Capture a checkpoint under the given label (legacy `background-checkpoint`)",
      .method = {.args = NULL, .nargs = 1, .result = V_BOOL, .fn = method_root_background_checkpoint}                 },
-    {.kind = M_METHOD,
-     .name = "path_exists",
-     .doc = "True if the path exists in the shell VFS (legacy `exists`)",
-     .method = {.args = NULL, .nargs = 1, .result = V_BOOL, .fn = method_root_path_exists}                           },
-    {.kind = M_METHOD,
-     .name = "exists",
-     .doc = "True if the path exists in the shell VFS (alias for path_exists)",
-     .method = {.args = NULL, .nargs = 1, .result = V_BOOL, .fn = method_root_path_exists}                           },
-    {.kind = M_METHOD,
-     .name = "path_size",
-     .doc = "File size in bytes (legacy `size`)",
-     .method = {.args = NULL, .nargs = 1, .result = V_UINT, .fn = method_root_path_size}                             },
-    {.kind = M_METHOD,
-     .name = "size",
-     .doc = "File size in bytes (alias for path_size)",
-     .method = {.args = NULL, .nargs = 1, .result = V_UINT, .fn = method_root_path_size}                             },
     {.kind = M_METHOD,
      .name = "fd_create",
      .doc = "Create a blank floppy image (legacy `fd create`)",

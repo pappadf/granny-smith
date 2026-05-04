@@ -2,7 +2,7 @@
 # Runner cd's into this directory; paths are relative.
 
 # Partition 6 is "UNIX Root&Usr slice 0" — the A/UX root filesystem.
-partmap ../../data/aux/aux_3.0.1/APPLE_AUX_3-0-1_RETAIL.iso
+storage.partmap ../../data/aux/aux_3.0.1/APPLE_AUX_3-0-1_RETAIL.iso
 
 # Descend into the mount: should list partition1..7.
 vfs.ls ../../data/aux/aux_3.0.1/APPLE_AUX_3-0-1_RETAIL.iso
@@ -15,8 +15,8 @@ vfs.ls ../../data/aux/aux_3.0.1/APPLE_AUX_3-0-1_RETAIL.iso/partition6/etc
 
 # Exercise file reads end to end: small text file + size check.
 vfs.cat ../../data/aux/aux_3.0.1/APPLE_AUX_3-0-1_RETAIL.iso/partition6/etc/motd
-exists ../../data/aux/aux_3.0.1/APPLE_AUX_3-0-1_RETAIL.iso/partition6/etc/passwd
-exists ../../data/aux/aux_3.0.1/APPLE_AUX_3-0-1_RETAIL.iso/partition6/unix
+storage.path_exists ../../data/aux/aux_3.0.1/APPLE_AUX_3-0-1_RETAIL.iso/partition6/etc/passwd
+storage.path_exists ../../data/aux/aux_3.0.1/APPLE_AUX_3-0-1_RETAIL.iso/partition6/unix
 
 # Writes into a UFS image path must be structurally refused (EROFS).
 vfs.mkdir ../../data/aux/aux_3.0.1/APPLE_AUX_3-0-1_RETAIL.iso/partition6/newdir
@@ -24,14 +24,14 @@ vfs.mkdir ../../data/aux/aux_3.0.1/APPLE_AUX_3-0-1_RETAIL.iso/partition6/newdir
 # Recursive cp out of UFS into WORK_DIR (host path provided by runner).
 # /etc is ~380 entries including symlinks; exercises direct + single-indirect
 # reads, symlink extraction (via file contents), and mkdir recursion.
-cp -r ../../data/aux/aux_3.0.1/APPLE_AUX_3-0-1_RETAIL.iso/partition6/etc ${WORK_DIR}/aux-etc
+storage.cp -r ../../data/aux/aux_3.0.1/APPLE_AUX_3-0-1_RETAIL.iso/partition6/etc ${WORK_DIR}/aux-etc
 vfs.ls ${WORK_DIR}/aux-etc
 
 # Auto-mount cache visible to the user.
-image_mounts
+storage.mounts
 
 # Force-unmount releases the cache entry.
-unmount ../../data/aux/aux_3.0.1/APPLE_AUX_3-0-1_RETAIL.iso
-image_mounts
+storage.unmount ../../data/aux/aux_3.0.1/APPLE_AUX_3-0-1_RETAIL.iso
+storage.mounts
 
 quit

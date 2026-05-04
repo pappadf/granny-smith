@@ -46,4 +46,5 @@ Thumbs.db
 notes/
 todo/
 local/
-tmp/.claude/scheduled_tasks.lock
+tmp/
+.claude/scheduled_tasks.lock
