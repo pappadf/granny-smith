@@ -277,12 +277,12 @@ function translateToGsEval(line: string): Translation | null {
   // Keep `logpoint list` / `logpoint clear` on the typed list/clear methods.
   if (head === 'logpoint') {
     if (tail.length === 1 && tail[0] === 'list')
-      return { method: 'logpoint_list_dump', args: [], convention: 'cmd_int_bool' };
+      return { method: 'debug.logpoints.list', args: [], convention: 'void_or_error' };
     if (tail.length === 1 && tail[0] === 'clear')
-      return { method: 'logpoint_clear', args: [], convention: 'cmd_int_bool' };
+      return { method: 'debug.logpoints.clear', args: [], convention: 'void_or_error' };
     if (tail.length >= 1)
       return {
-        method: 'logpoint_set',
+        method: 'debug.logpoints.add',
         args: [tail.join(' ')],
         convention: 'cmd_int_bool',
       };
@@ -290,17 +290,17 @@ function translateToGsEval(line: string): Translation | null {
 
   // log <cat> <level>  (positional shorthand) or
   // log <cat> level=N file=... stdout=... ts=...  (full named-arg spec).
-  // log_set's second arg now accepts either an integer level or the full
+  // debug.log's second arg accepts either an integer level or the full
   // spec string (forwarded verbatim to the legacy `log` parser).
   if (head === 'log' && tail.length >= 2) {
     const cat = tail[0];
     if (tail.length === 2) {
       const lvl = parseInt10(tail[1]);
       if (lvl !== null)
-        return { method: 'log_set', args: [cat, lvl], convention: 'cmd_int_bool' };
+        return { method: 'debug.log', args: [cat, lvl], convention: 'cmd_int_bool' };
     }
     return {
-      method: 'log_set',
+      method: 'debug.log',
       args: [cat, tail.slice(1).join(' ')],
       convention: 'cmd_int_bool',
     };

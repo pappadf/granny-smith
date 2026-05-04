@@ -918,104 +918,6 @@ static value_t method_root_disasm(struct object *self, const member_t *m, int ar
     return val_bool(true);
 }
 
-static value_t method_root_break_list_dump(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
-    (void)argc;
-    (void)argv;
-    debug_t *debug = system_debug();
-    if (!debug)
-        return val_err("break_list_dump: debug not available");
-    list_breakpoints(debug);
-    return val_bool(true);
-}
-
-static value_t method_root_break_clear(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
-    (void)argc;
-    (void)argv;
-    debug_t *debug = system_debug();
-    if (!debug)
-        return val_err("break_clear: debug not available");
-    int count = delete_all_breakpoints(debug);
-    printf("Deleted %d breakpoint(s).\n", count);
-    return val_bool(true);
-}
-
-static value_t method_root_logpoint_list_dump(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
-    (void)argc;
-    (void)argv;
-    debug_t *debug = system_debug();
-    if (!debug)
-        return val_err("logpoint_list_dump: debug not available");
-    list_logpoints(debug);
-    return val_bool(true);
-}
-
-static value_t method_root_logpoint_clear(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
-    (void)argc;
-    (void)argv;
-    debug_t *debug = system_debug();
-    if (!debug)
-        return val_err("logpoint_clear: debug not available");
-    delete_all_logpoints(debug);
-    return val_bool(true);
-}
-
-// `logpoint_set(spec)` — pass the legacy logpoint spec as a single string
-// (e.g. `--write 0x000016A.l "Ticks bumped..." level=5`). Calls the legacy
-// `cmd_logpoint_handler` parser via shell_logpoint_argv (no shell_dispatch).
-static value_t method_root_logpoint_set(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
-    if (argc < 1 || argv[0].kind != V_STRING)
-        return val_err("logpoint_set: expected (spec_string)");
-    char line[2048];
-    int n = snprintf(line, sizeof(line), "logpoint %s", argv[0].s ? argv[0].s : "");
-    if (n < 0 || (size_t)n >= sizeof(line))
-        return val_err("logpoint_set: argument too long");
-    char *targv[32];
-    int targc = tokenize(line, targv, 32);
-    if (targc <= 0)
-        return val_err("logpoint_set: empty spec");
-    return val_bool(shell_logpoint_argv(targc, targv) == 0);
-}
-
-// `log_set(subsys, level_or_spec)` — adjust per-subsystem log level. The
-// second arg accepts either an integer level or a full named-arg spec
-// string (e.g. `"level=5 file=/tmp/foo.txt stdout=off ts=on"`); spec
-// strings are tokenised and forwarded to cmd_log directly (no
-// shell_dispatch).
-static value_t method_root_log_set(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
-    if (argc < 2 || argv[0].kind != V_STRING)
-        return val_err("log_set: expected (subsys, level|spec)");
-    char line[512];
-    int n;
-    if (argv[1].kind == V_STRING) {
-        n = snprintf(line, sizeof(line), "log %s %s", argv[0].s, argv[1].s ? argv[1].s : "");
-    } else {
-        bool ok = false;
-        int64_t level = val_as_i64(&argv[1], &ok);
-        if (!ok)
-            return val_err("log_set: second arg must be integer level or spec string");
-        n = snprintf(line, sizeof(line), "log %s %lld", argv[0].s, (long long)level);
-    }
-    if (n < 0 || (size_t)n >= sizeof(line))
-        return val_err("log_set: argument too long");
-    char *targv[32];
-    int targc = tokenize(line, targv, 32);
-    if (targc <= 0)
-        return val_err("log_set: empty spec");
-    return val_bool(cmd_log(targc, targv) == 0);
-}
-
 // `step([n])` — single-step n instructions (default 1).
 static value_t method_root_step(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)self;
@@ -1756,30 +1658,6 @@ static const member_t emu_root_members[] = {
      .name = "disasm",
      .doc = "Disassemble forward from PC (legacy `d [count]`)",
      .method = {.args = NULL, .nargs = 1, .result = V_BOOL, .fn = method_root_disasm}                                },
-    {.kind = M_METHOD,
-     .name = "break_list_dump",
-     .doc = "Print the breakpoint table (legacy `break list`)",
-     .method = {.args = NULL, .nargs = 0, .result = V_BOOL, .fn = method_root_break_list_dump}                       },
-    {.kind = M_METHOD,
-     .name = "break_clear",
-     .doc = "Clear all breakpoints (legacy `break clear`)",
-     .method = {.args = NULL, .nargs = 0, .result = V_BOOL, .fn = method_root_break_clear}                           },
-    {.kind = M_METHOD,
-     .name = "logpoint_set",
-     .doc = "Install a logpoint from a spec string (legacy `logpoint <spec>`)",
-     .method = {.args = NULL, .nargs = 1, .result = V_BOOL, .fn = method_root_logpoint_set}                          },
-    {.kind = M_METHOD,
-     .name = "logpoint_list_dump",
-     .doc = "Print the logpoint table (legacy `logpoint list`)",
-     .method = {.args = NULL, .nargs = 0, .result = V_BOOL, .fn = method_root_logpoint_list_dump}                    },
-    {.kind = M_METHOD,
-     .name = "logpoint_clear",
-     .doc = "Clear all logpoints (legacy `logpoint clear`)",
-     .method = {.args = NULL, .nargs = 0, .result = V_BOOL, .fn = method_root_logpoint_clear}                        },
-    {.kind = M_METHOD,
-     .name = "log_set",
-     .doc = "Set per-subsystem log level or full spec (legacy `log <subsys> <level|spec>`)",
-     .method = {.args = NULL, .nargs = 2, .result = V_BOOL, .fn = method_root_log_set}                               },
     {.kind = M_METHOD,
      .name = "step",
      .doc = "Single-step N instructions; default 1 (legacy `step`/`s`)",

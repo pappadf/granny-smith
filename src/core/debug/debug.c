@@ -3145,6 +3145,17 @@ static value_t bp_method_clear(struct object *self, const member_t *m, int argc,
     return val_none();
 }
 
+static value_t bp_method_list(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)m;
+    (void)argc;
+    (void)argv;
+    debug_t *debug = debug_from(self);
+    if (!debug)
+        return val_err("debugger not initialised");
+    list_breakpoints(debug);
+    return val_none();
+}
+
 static value_t lp_method_clear(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)m;
     (void)argc;
@@ -3158,10 +3169,46 @@ static value_t lp_method_clear(struct object *self, const member_t *m, int argc,
     return val_none();
 }
 
+static value_t lp_method_list(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)m;
+    (void)argc;
+    (void)argv;
+    debug_t *debug = debug_from(self);
+    if (!debug)
+        return val_err("debugger not initialised");
+    list_logpoints(debug);
+    return val_none();
+}
+
+// `debug.logpoints.add(spec)` — install a logpoint from the legacy spec
+// string (e.g. `--write 0x000016A.l "Ticks bumped pc=${cpu.pc} ..." level=5`).
+// Forwarded to shell_logpoint_argv which carries the rich-parser command body.
+static value_t lp_method_add(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)self;
+    (void)m;
+    if (argc < 1 || argv[0].kind != V_STRING)
+        return val_err("logpoints.add: expected (spec_string)");
+    char line[2048];
+    int n = snprintf(line, sizeof(line), "logpoint %s", argv[0].s ? argv[0].s : "");
+    if (n < 0 || (size_t)n >= sizeof(line))
+        return val_err("logpoints.add: argument too long");
+    char *targv[32];
+    int targc = tokenize(line, targv, 32);
+    if (targc <= 0)
+        return val_err("logpoints.add: empty spec");
+    return val_bool(shell_logpoint_argv(targc, targv) == 0);
+}
+
 static const arg_decl_t bp_add_args[] = {
     {.name = "addr",      .kind = V_UINT,   .flags = VAL_HEX,          .doc = "address"                              },
     {.name = "condition", .kind = V_STRING, .flags = OBJ_ARG_OPTIONAL, .doc = "optional condition string"            },
     {.name = "space",     .kind = V_STRING, .flags = OBJ_ARG_OPTIONAL, .doc = "\"logical\" (default) or \"physical\""},
+};
+
+static const arg_decl_t lp_add_args[] = {
+    {.name = "spec",
+     .kind = V_STRING,
+     .doc = "Legacy logpoint spec string (e.g. `--write 0x000016A.l \"text\" level=5`)"},
 };
 
 static const member_t bp_collection_members[] = {
@@ -3173,6 +3220,10 @@ static const member_t bp_collection_members[] = {
      .name = "clear",
      .doc = "Remove every breakpoint",
      .method = {.args = NULL, .nargs = 0, .result = V_NONE, .fn = bp_method_clear}},
+    {.kind = M_METHOD,
+     .name = "list",
+     .doc = "Print the breakpoint table",
+     .method = {.args = NULL, .nargs = 0, .result = V_NONE, .fn = bp_method_list}},
     {.kind = M_CHILD,
      .name = "entries",
      .child = {.cls = &breakpoint_entry_class,
@@ -3191,9 +3242,17 @@ const class_desc_t bp_collection_class = {
 
 static const member_t lp_collection_members[] = {
     {.kind = M_METHOD,
+     .name = "add",
+     .doc = "Install a logpoint from a spec string",
+     .method = {.args = lp_add_args, .nargs = 1, .result = V_BOOL, .fn = lp_method_add}},
+    {.kind = M_METHOD,
      .name = "clear",
      .doc = "Remove every logpoint",
      .method = {.args = NULL, .nargs = 0, .result = V_NONE, .fn = lp_method_clear}},
+    {.kind = M_METHOD,
+     .name = "list",
+     .doc = "Print the logpoint table",
+     .method = {.args = NULL, .nargs = 0, .result = V_NONE, .fn = lp_method_list}},
     {.kind = M_CHILD,
      .name = "entries",
      .child = {.cls = &logpoint_entry_class,
@@ -3210,12 +3269,51 @@ const class_desc_t lp_collection_class = {
     .n_members = sizeof(lp_collection_members) / sizeof(lp_collection_members[0]),
 };
 
-// `debug` itself: namespace-only. breakpoints / logpoints / mac are
-// attached as named children at debug_init time.
+// `debug.log(category, level_or_spec)` — adjust per-subsystem log level.
+// The second arg accepts either an integer level or a full named-arg spec
+// string (e.g. `"level=5 file=/tmp/foo.txt stdout=off ts=on"`); spec
+// strings are tokenised and forwarded to cmd_log directly.
+static value_t debug_method_log(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)self;
+    (void)m;
+    if (argc < 2 || argv[0].kind != V_STRING)
+        return val_err("debug.log: expected (category, level | spec)");
+    char line[512];
+    int n;
+    if (argv[1].kind == V_STRING) {
+        n = snprintf(line, sizeof(line), "log %s %s", argv[0].s, argv[1].s ? argv[1].s : "");
+    } else {
+        bool ok = false;
+        int64_t level = val_as_i64(&argv[1], &ok);
+        if (!ok)
+            return val_err("debug.log: second arg must be integer level or spec string");
+        n = snprintf(line, sizeof(line), "log %s %lld", argv[0].s, (long long)level);
+    }
+    if (n < 0 || (size_t)n >= sizeof(line))
+        return val_err("debug.log: argument too long");
+    char *targv[32];
+    int targc = tokenize(line, targv, 32);
+    if (targc <= 0)
+        return val_err("debug.log: empty spec");
+    return val_bool(cmd_log(targc, targv) == 0);
+}
+
+static const arg_decl_t debug_log_args[] = {
+    {.name = "category", .kind = V_STRING, .doc = "Subsystem name (memory, logpoint, ...)"            },
+    {.name = "level",    .kind = V_NONE,   .doc = "Integer level (0..5) or full named-arg spec string"},
+};
+
+static const member_t debug_members[] = {
+    {.kind = M_METHOD,
+     .name = "log",
+     .doc = "Set per-subsystem log level (or pass a full spec string)",
+     .method = {.args = debug_log_args, .nargs = 2, .result = V_BOOL, .fn = debug_method_log}},
+};
+
 const class_desc_t debug_class = {
     .name = "debug",
-    .members = NULL,
-    .n_members = 0,
+    .members = debug_members,
+    .n_members = sizeof(debug_members) / sizeof(debug_members[0]),
 };
 
 // === debug.mac.globals — Mac low-memory globals access ======================

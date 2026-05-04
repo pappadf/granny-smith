@@ -12,12 +12,12 @@
 # After running long enough for at least one VBL, the harness
 # captures the formatted line and the run continues to `quit`.
 
-log_set memory 5
-log_set logpoint 5
+debug.log memory 5
+debug.log logpoint 5
 
-logpoint_set '--write 0x000016A.l "Ticks bumped pc=${cpu.pc} addr=${addr:08x} val=${value:08x} size=${size}" level=5'
+debug.logpoints.add '--write 0x000016A.l "Ticks bumped pc=${cpu.pc} addr=${addr:08x} val=${value:08x} size=${size}" level=5'
 
 scheduler.run 5000000
 
-logpoint_list_dump
+debug.logpoints.list
 quit

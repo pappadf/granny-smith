@@ -22,6 +22,6 @@ assert ${disasm(5)} "disasm 5 failed"
 help disasm
 
 # Logpoint list (should be empty).
-assert ${logpoint_list_dump()} "logpoint_list_dump failed"
+assert ${debug.logpoints.list()} "debug.logpoints.list failed"
 
 quit

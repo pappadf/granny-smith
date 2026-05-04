@@ -27,7 +27,7 @@ assert ${debug.breakpoints[0].id == 0}
 assert ${debug.breakpoints[1].addr == 0x400200}
 
 # Legacy `break list` must see the same entries (single store).
-break_list_dump
+debug.breakpoints.list
 
 # Remove #0 via the method. #1 stays at id 1 — sparse indices.
 echo ${debug.breakpoints[0].remove()}
@@ -45,6 +45,6 @@ assert ${debug.breakpoints[3].condition == "cpu.d0 == 0"}
 
 # Clear via the new collection method, verify legacy list is empty too.
 echo ${debug.breakpoints.clear()}
-break_list_dump
+debug.breakpoints.list
 
 quit
