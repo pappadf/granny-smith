@@ -17,7 +17,7 @@ echo ${memory.rom_size + 1}
 echo ${$pc + 4}
 
 # Computed breakpoint address — proposal §0 example.
-break_set "${$pc + 0x10}"
+debug.breakpoints.add ${$pc + 0x10}
 break_list_dump
 
 # Predicate assert — truthy.

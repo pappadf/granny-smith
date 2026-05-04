@@ -139,8 +139,15 @@ function translateToGsEval(line: string): Translation | null {
     return { method: 'download', args: tail, convention: 'cmd_int_bool' };
   if (head === 'schedule' && tail.length === 1)
     return { method: 'schedule', args: tail, convention: 'cmd_int_bool' };
-  if (head === 'br' && tail.length === 1)
-    return { method: 'break_set', args: [tail[0]], convention: 'cmd_int_bool' };
+  if (head === 'br' && tail.length === 1) {
+    const addr = parseInt10(tail[0]);
+    if (addr === null) return null;
+    return {
+      method: 'debug.breakpoints.add',
+      args: [addr],
+      convention: 'void_or_error',
+    };
+  }
   if (head === 'stop' && tail.length === 0)
     return { method: 'stop', args: [], convention: 'cmd_int_bool' };
   if ((head === 's' || head === 'step') && tail.length <= 1) {

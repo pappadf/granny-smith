@@ -3258,12 +3258,22 @@ static value_t bp_method_add(struct object *self, const member_t *m, int argc, c
     if (!debug)
         return val_err("debugger not initialised");
     if (argc < 1)
-        return val_err("breakpoints.add: expected (addr, [condition])");
+        return val_err("breakpoints.add: expected (addr, [condition], [space])");
     bool ok = true;
     uint64_t addr = val_as_u64(&argv[0], &ok);
     if (!ok)
         return val_err("breakpoints.add: addr is not numeric");
-    breakpoint_t *bp = set_breakpoint(debug, (uint32_t)addr, ADDR_LOGICAL);
+    // Optional `space` (3rd arg): "logical" (default) or "physical".
+    // Physical-space breakpoints are only meaningful on the 68030 with
+    // the MMU active; on the Plus the two address spaces coincide.
+    addr_space_t space = ADDR_LOGICAL;
+    if (argc >= 3 && argv[2].kind == V_STRING && argv[2].s && *argv[2].s) {
+        if (strcmp(argv[2].s, "physical") == 0)
+            space = ADDR_PHYSICAL;
+        else if (strcmp(argv[2].s, "logical") != 0)
+            return val_err("breakpoints.add: space must be \"logical\" or \"physical\"");
+    }
+    breakpoint_t *bp = set_breakpoint(debug, (uint32_t)addr, space);
     if (!bp)
         return val_err("breakpoints.add: allocation failed");
     if (argc >= 2 && argv[1].kind == V_STRING && argv[1].s && *argv[1].s)
@@ -3298,15 +3308,16 @@ static value_t lp_method_clear(struct object *self, const member_t *m, int argc,
 }
 
 static const arg_decl_t bp_add_args[] = {
-    {.name = "addr",      .kind = V_UINT,   .flags = VAL_HEX,          .doc = "logical address"          },
-    {.name = "condition", .kind = V_STRING, .flags = OBJ_ARG_OPTIONAL, .doc = "optional condition string"},
+    {.name = "addr",      .kind = V_UINT,   .flags = VAL_HEX,          .doc = "address"                              },
+    {.name = "condition", .kind = V_STRING, .flags = OBJ_ARG_OPTIONAL, .doc = "optional condition string"            },
+    {.name = "space",     .kind = V_STRING, .flags = OBJ_ARG_OPTIONAL, .doc = "\"logical\" (default) or \"physical\""},
 };
 
 static const member_t bp_collection_members[] = {
     {.kind = M_METHOD,
      .name = "add",
-     .doc = "Add a logical-space breakpoint",
-     .method = {.args = bp_add_args, .nargs = 2, .result = V_OBJECT, .fn = bp_method_add}},
+     .doc = "Add a breakpoint (logical-space by default; pass space=\"physical\" for the 68030 PMMU path)",
+     .method = {.args = bp_add_args, .nargs = 3, .result = V_OBJECT, .fn = bp_method_add}},
     {.kind = M_METHOD,
      .name = "clear",
      .doc = "Remove every breakpoint",

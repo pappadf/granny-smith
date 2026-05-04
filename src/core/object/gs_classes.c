@@ -995,39 +995,6 @@ static value_t method_root_disasm(struct object *self, const member_t *m, int ar
     return val_bool(true);
 }
 
-// `break_set(target)` accepts a numeric address or a string the legacy
-// address parser understands (`$0040A714`, `0x004007ba`, symbol names,
-// expressions). For string args we stringify into a temporary buffer
-// so parse_address sees a single token.
-static value_t method_root_break_set(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
-    if (argc < 1)
-        return val_err("break_set: expected (address)");
-    debug_t *debug = system_debug();
-    if (!debug)
-        return val_err("break_set: debug not available");
-    char target[64];
-    if (argv[0].kind == V_STRING) {
-        snprintf(target, sizeof(target), "%s", argv[0].s ? argv[0].s : "");
-    } else {
-        bool ok = false;
-        uint64_t a = val_as_u64(&argv[0], &ok);
-        if (!ok)
-            return val_err("break_set: address must be integer or string");
-        snprintf(target, sizeof(target), "0x%llx", (unsigned long long)a);
-    }
-    uint32_t addr;
-    addr_space_t sp;
-    if (!parse_address(target, &addr, &sp))
-        return val_err("break_set: invalid address '%s'", target);
-    breakpoint_t *bp = set_breakpoint(debug, addr, sp == ADDR_PHYSICAL ? ADDR_PHYSICAL : ADDR_LOGICAL);
-    if (!bp)
-        return val_err("break_set: failed to install breakpoint at $%08X", addr);
-    printf("Breakpoint set at $%08X.\n", addr);
-    return val_bool(true);
-}
-
 static value_t method_root_break_list_dump(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)self;
     (void)m;
@@ -1933,10 +1900,6 @@ static const member_t emu_root_members[] = {
      .name = "disasm",
      .doc = "Disassemble forward from PC (legacy `d [count]`)",
      .method = {.args = NULL, .nargs = 1, .result = V_BOOL, .fn = method_root_disasm}                                },
-    {.kind = M_METHOD,
-     .name = "break_set",
-     .doc = "Set a breakpoint at the given address (legacy `break set X`)",
-     .method = {.args = NULL, .nargs = 1, .result = V_BOOL, .fn = method_root_break_set}                             },
     {.kind = M_METHOD,
      .name = "break_list_dump",
      .doc = "Print the breakpoint table (legacy `break list`)",
