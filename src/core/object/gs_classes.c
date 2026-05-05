@@ -15,37 +15,16 @@
 
 #include "gs_classes.h"
 
-#include <ctype.h>
-#include <errno.h>
-#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <string.h>
 #include <time.h>
 
 #include "alias.h"
-#include "appletalk.h"
-#include "cpu.h"
-#include "cpu_internal.h"
 #include "debug.h"
-#include "floppy.h"
-#include "fpu.h"
-#include "image.h"
-#include "keyboard.h"
-#include "machine.h"
-#include "memory.h"
 #include "object.h"
-#include "rtc.h"
-#include "scc.h"
-#include "scheduler.h"
-#include "scsi.h"
-#include "shell.h"
-#include "sound.h"
 #include "system.h"
 #include "system_config.h"
 #include "value.h"
-#include "vfs.h"
-#include "via.h"
 
 // instance_data on these stubs is config_t*. The lifetime is bounded
 // by gs_classes_install / gs_classes_uninstall — same scope as the
@@ -56,10 +35,8 @@
 // to keep this file as the install/uninstall orchestrator.
 
 extern const class_desc_t storage_class_real; // src/core/storage/storage.c
-extern const class_desc_t storage_image_class; // src/core/storage/storage.c
 extern const class_desc_t storage_images_collection_class; // src/core/storage/storage.c
 extern const class_desc_t shell_alias_class; // src/core/object/alias.c
-extern const class_desc_t scheduler_class; // src/core/scheduler/scheduler.c
 
 // === Shell stub ==============================================================
 // Empty class so `shell` exists as a path component for shell.alias.* etc.
