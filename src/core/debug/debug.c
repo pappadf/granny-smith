@@ -70,12 +70,12 @@ struct breakpoint {
     // fires when the expression evaluates to true.  NULL = always fire.
     char *condition;
 
-    // Hit counter — exposed via debug.breakpoints[N].hit_count (M6).
+    // Hit counter — exposed via debug.breakpoints[N].hit_count.
     uint32_t hit_count;
 
-    // M6 — sparse stable id (proposal §2.1) and the per-entry object_t
-    // that backs `debug.breakpoints[id]`. The object is owned by
-    // this breakpoint; freeing it fires invalidators on any held nodes.
+    // Sparse stable id and the per-entry object_t that backs
+    // `debug.breakpoints[id]`. The object is owned by this breakpoint;
+    // freeing it fires invalidators on any held nodes.
     int id;
     struct object *entry_object;
 
@@ -116,8 +116,8 @@ struct logpoint {
     bool value_filter_active;
     uint32_t value_filter;
 
-    // M6 — sparse stable id and the per-entry object_t. Same shape as
-    // breakpoint above; see proposal §2.1.
+    // Sparse stable id and the per-entry object_t. Same shape as the
+    // breakpoint struct above.
     int id;
     struct object *entry_object;
 
@@ -365,10 +365,6 @@ logpoint_t *set_memory_logpoint(debug_t *debug, uint32_t addr, uint32_t end_addr
     return lp;
 }
 
-// (resolve_lp_addr deleted in M5 — the bespoke logpoint vocabulary is
-// retired in favour of the unified ${...} interpolator. See
-// proposal-module-object-model.md §5.3.)
-
 // Adapter for expr_alias_fn — alias_lookup's signature differs because
 // it also returns the alias kind via an out-pointer.
 static const char *alias_lookup_for_expr(void *ud, const char *name) {
@@ -376,15 +372,12 @@ static const char *alias_lookup_for_expr(void *ud, const char *name) {
     return alias_lookup(name, NULL);
 }
 
-// Expand a logpoint message via the unified ${...} interpolator
-// (proposal §4.2.1, §5.3). Sets up the `lp` synthetic context with
-// addr/value/size, then calls expr_interpolate_string against the
-// object root with the alias resolver bound. Outside ${...} the
-// message is literal — a bare `$` is just a dollar sign.
-//
-// Old vocabulary (`$pc`, `$value`, `$mem.l.<src>`, `$str.<src>`) was
-// deleted in M5; user messages must use ${cpu.pc}, ${lp.value},
-// ${memory.peek.l(<addr>)}, ${memory.read_cstring(<addr>)} instead.
+// Expand a logpoint message via the unified ${...} interpolator. Sets
+// up the `lp` synthetic context with addr/value/size, then calls
+// expr_interpolate_string against the object root with the alias
+// resolver bound. Outside ${...} the message is literal — a bare `$`
+// is just a dollar sign. Use ${cpu.pc}, ${lp.value},
+// ${memory.peek.l(<addr>)}, ${memory.read_cstring(<addr>)}.
 // Per-fire bindings exposed during logpoint message expansion. The
 // three event-intrinsic values (`value`, `addr`, `size`) live nowhere
 // else — there is no persistent object holding "the byte that just got
@@ -2210,9 +2203,9 @@ static void cmd_logpoint_handler(struct cmd_context *ctx, struct cmd_result *res
         // Tokens of the form `<known-key>=<value>` are recognised as
         // named parameters. Anything else — including a message like
         // "pc=${cpu.pc}" that happens to contain `=` — is treated as
-        // the message body. M5 broadened message vocabulary to use
-        // ${...} interpolation, which naturally contains `key=value`
-        // text patterns that pre-existing logic would have mis-parsed.
+        // the message body. ${...} interpolation in a message naturally
+        // contains `key=value` text patterns that pre-existing logic
+        // would have mis-parsed.
         char *equals = strchr(a, '=');
         bool is_named = false;
         const char *key = NULL, *value = NULL;
@@ -2367,7 +2360,7 @@ static const struct subcmd_spec find_subcmds[] = {
 };
 
 // ============================================================================
-// M6 — object-model accessors and id-based collection helpers
+// Object-model accessors and id-based collection helpers
 // ============================================================================
 //
 // These implement the `debug.{breakpoints,logpoints}` indexed-child
@@ -2730,11 +2723,9 @@ void gs_assert_fail(const char *expr, const char *file, int line, const char *fu
     }
 }
 
-// ===== Phase 5b: argv-driven entry points for the typed object-model bridge =====
-// These mirror the legacy `print` / `examine` / `logpoint` / `find` shell
-// commands but bypass shell_dispatch / find_cmd. The typed wrappers in
-// gs_classes.c tokenize their spec strings via `tokenize` and call into
-// these helpers directly.
+// ===== argv-driven entry points for the typed object-model bridge =====
+// These bypass shell_dispatch / find_cmd: the typed wrappers tokenize
+// their spec strings via `tokenize` and call into these helpers directly.
 
 // Run a cmd_fn handler with a fresh ctx/result/io. Returns the integer
 // from cmd_int (when set), 0 on RES_OK, -1 on parse error or RES_ERR.

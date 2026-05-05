@@ -6,12 +6,7 @@
 // path position. See proposal-module-object-model.md §4.6 — line-start
 // suggests root children and pragmas, mid-path suggests members of the
 // resolved-so-far object, method-arg position dispatches by arg_decl[i],
-// and any cursor inside `$(...)`, `${...}`, or `"..."` returns nothing
-// (the depth-tracking state machine here mirrors §4.1.2).
-//
-// Legacy `register_command` shims still complete because we union their
-// names with the root tree's members at line-start position; once the
-// M10 cutover deletes the legacy registry, that branch falls away.
+// and any cursor inside `$(...)`, `${...}`, or `"..."` returns nothing.
 
 #include "cmd_complete.h"
 #include "cmd_symbol.h"
@@ -535,9 +530,9 @@ void shell_complete(const char *line, int cursor_pos, struct completion *out) {
     memcpy(partial, line + info.word_start, plen);
     partial[plen] = '\0';
 
-    // Word 0: command position. Suggest root members + attached children
-    // + legacy registry names, all filtered by the typed prefix. Mid-path
-    // partials (containing '.' or '[') walk into the tree.
+    // Word 0: command position. Suggest root members + attached children,
+    // filtered by the typed prefix. Mid-path partials (containing '.' or
+    // '[') walk into the tree.
     if (info.word_count == 0) {
         bool dotted = (strchr(partial, '.') != NULL) || (strchr(partial, '[') != NULL);
         if (dotted)
@@ -557,8 +552,8 @@ void shell_complete(const char *line, int cursor_pos, struct completion *out) {
     memcpy(first, line + info.first_word_start, fwlen);
     first[fwlen] = '\0';
 
-    // Resolve as a tree path — root methods (`cp`, `peeler`, …) and
-    // dotted method paths (`floppy.drives[0].insert`) both land here.
+    // Resolve as a tree path — root methods and dotted method paths
+    // (`floppy.drives[0].insert`) both land here.
     node_t cmd_node = object_resolve(object_root(), first);
     if (node_valid(cmd_node) && cmd_node.member && cmd_node.member->kind == M_METHOD)
         complete_method_arg(cmd_node.member, info.word_count - 1, partial, out);

@@ -322,8 +322,7 @@ static bool resolve_mac_global(const char *name, struct resolved_symbol *out) {
 //
 // On miss in the alias table, falls through to the legacy chain so
 // MMU registers, SR flag bits (`c`/`v`/`z`/…), and case-insensitive
-// matches keep working — proposal-module-object-model.md M3 promise:
-// "no behavior change visible to users."
+// matches keep working.
 bool resolve_symbol(const char *name, struct resolved_symbol *out) {
     if (!name || !out)
         return false;
@@ -344,8 +343,7 @@ bool resolve_symbol(const char *name, struct resolved_symbol *out) {
                 return true;
         }
         // Alias maps to a path no legacy reader knows how to handle —
-        // fall through. (Will become reachable once gs_eval grows full
-        // method dispatch in M4 and the legacy path retires in M10.)
+        // fall through.
     }
 
     // Tier 2: legacy chain — covers MMU registers and the SR flag bits

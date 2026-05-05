@@ -2,11 +2,8 @@
 // Copyright (c) pappadf
 
 // gs_classes.h
-// Stub classes for the object-model rollout. M2 wires these into the
-// root tree so the resolver has something to traverse and the `eval`
-// shell command has paths to read. Each stub is intentionally minimal:
-// read-only attributes that wrap existing C state. Methods, setters,
-// and indexed children land in M3–M7 per the milestone plan.
+// Install/uninstall orchestrator for the object-model class tree, plus
+// factories for per-entry debug objects (breakpoints/logpoints).
 
 #ifndef GS_OBJECT_GS_CLASSES_H
 #define GS_OBJECT_GS_CLASSES_H
@@ -32,10 +29,10 @@ struct object;
 // system_create() and gs_classes_uninstall() runs from system_destroy().
 void gs_classes_install(struct config *cfg);
 
-// Install just the root class — the top-level methods (cp, peeler,
-// rom_probe, …) that don't depend on a booted machine. Called early
-// from shell_init() so JS tooling can call gsEval('rom_probe', …)
-// before any machine is created. Safe to call multiple times.
+// Install just the root class — top-level methods that don't depend on
+// a booted machine. Called early from shell_init() so JS tooling can
+// resolve those paths before any machine is created. Safe to call
+// multiple times.
 void gs_classes_install_root(void);
 
 // Detach and free every stub object the install path created. Safe to
@@ -48,14 +45,13 @@ void gs_classes_uninstall(void);
 // See the comment above the install/uninstall block in gs_classes.c.
 void gs_classes_uninstall_if(struct config *cfg);
 
-// === M6 — debug entry-object factories ======================================
+// === Debug entry-object factories ===========================================
 //
 // Each breakpoint / logpoint owns a per-entry object_t* exposed under
-// debug.breakpoints[id] / debug.logpoints[id] (proposal §5.3,
-// §9). debug.c calls these factories once per entry at set-time;
-// object_delete fires the per-entry invalidator hooks (object.h) when
-// the entry is removed. NULL is a valid return — object resolution
-// falls back to "empty slot" semantics.
+// debug.breakpoints[id] / debug.logpoints[id]. debug.c calls these
+// factories once per entry at set-time; object_delete fires the per-entry
+// invalidator hooks (object.h) when the entry is removed. NULL is a
+// valid return — object resolution falls back to "empty slot" semantics.
 
 struct breakpoint;
 struct logpoint;

@@ -769,7 +769,7 @@ static void trace_mouse_tick(void *source, uint64_t data) {
     scheduler_new_cpu_event(sched, &trace_mouse_tick, NULL, 0, 0, 1000000000ULL);
 }
 
-// === M8 — public mouse / trace control =====================================
+// === Public mouse / trace control =====================================
 //
 // Thin wrappers around the file-private helpers used by the typed
 // `mouse.move` / `mouse.click` / `mouse.trace` root methods.

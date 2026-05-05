@@ -540,7 +540,7 @@ static value_t parse_primary(lex_t *L, const expr_ctx_t *ctx) {
 //
 // Postfix is folded into the path parser inside parse_primary (paths
 // own their own `.` / `[...]`). For non-path primaries (literals,
-// parenthesised expressions, calls), no postfix is permitted in M1.
+// parenthesised expressions, calls), no postfix is permitted.
 
 static value_t parse_postfix(lex_t *L, const expr_ctx_t *ctx) {
     return parse_primary(L, ctx);
@@ -1230,9 +1230,8 @@ value_t expr_eval(const char *src, const expr_ctx_t *ctx) {
 // === String interpolation ===================================================
 //
 // Replaces ${expr} regions with their default-formatted values. The
-// formatter is intentionally minimal in M1 — we render integers as
-// hex when VAL_HEX is set, decimal otherwise; strings copy as-is. The
-// proposal's full format-spec table lands in M5.
+// formatter is intentionally minimal: integers render as hex when
+// VAL_HEX is set, decimal otherwise; strings copy as-is.
 
 static void buf_append(char **buf, size_t *len, size_t *cap, const char *s, size_t n) {
     if (*len + n + 1 > *cap) {

@@ -253,7 +253,7 @@ int atalk_share_list(void) {
     return 0;
 }
 
-// === M8 — read-only views =================================================
+// === Read-only views =================================================
 
 int atalk_share_max(void) {
     return MAX_SHARES;

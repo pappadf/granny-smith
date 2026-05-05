@@ -16,9 +16,9 @@
 
 #include "cmd_types.h"
 
-// I/O state for a command invocation. After phase 5d this is just a
-// pair of stdout/stderr handles; the buffer fields are kept zero-init
-// so callers that touch them (none today) don't UB.
+// I/O state for a command invocation. The active fields are the
+// stdout/stderr stream handles; the buffer fields are kept zero-init
+// for any holdover callers that might touch them.
 struct cmd_io {
     char out_buf[CMD_OUT_BUF_SIZE];
     int out_len;

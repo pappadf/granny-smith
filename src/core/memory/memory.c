@@ -37,9 +37,6 @@ extern const class_desc_t mem_poke_class;
 // Constants and Macros
 // ============================================================================
 
-// (Plus-specific PLUS_ROM_SIZE and rom_version/rom_file_version removed in M6;
-//  ROM identification is now handled by rom.c)
-
 // Page table globals (defined here, declared extern in memory.h)
 page_entry_t *g_page_table = NULL;
 uint32_t g_address_mask = 0x00FFFFFFUL; // 24-bit default

@@ -3,8 +3,8 @@
 
 // archive.c
 // Mac archive file handling. Wraps the third-party peeler library so the
-// emulator-side surface (archive.identify, archive.extract) doesn't leak
-// the library name to users. Moved here from the legacy peeler_shell.c.
+// emulator-side surface (archive.identify, archive.extract) doesn't
+// leak the library name to users.
 
 #include "archive.h"
 
@@ -23,7 +23,7 @@
 #include <unistd.h>
 
 // ============================================================================
-// Extraction helpers (lifted from src/core/shell/peeler_shell.c)
+// Extraction helpers
 // ============================================================================
 
 typedef struct {

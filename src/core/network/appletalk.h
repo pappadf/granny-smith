@@ -28,7 +28,7 @@ int atalk_share_remove(const char *name);
 
 int atalk_share_list(void);
 
-// === M8 — object-model accessors ============================================
+// === Object-model accessors ============================================
 //
 // Read-only views over the share table used by the
 // `appletalk.shares` indexed-child class. Slot index is in

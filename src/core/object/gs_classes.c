@@ -2,18 +2,17 @@
 // Copyright (c) pappadf
 
 // gs_classes.c
-// Object-model install/uninstall orchestrator + a few process-/cfg-
-// scoped class definitions that have no per-subsystem owner:
-//   - scheduler / shell / storage namespace stubs
+// Object-model install/uninstall orchestrator + a few cfg-scoped class
+// definitions that have no per-subsystem owner:
+//   - shell namespace stub (parent for shell.alias)
 //   - shell.alias methods
-//   - root-level methods (cp / peeler / rom_load / hd_attach / …)
 //   - top-level introspection (objects/attributes/methods/help/print/time)
-//   - debug-thin wrapper methods used by the typed bridge
+//     and a few thin top-level wrappers (echo, assert, download, step)
 //   - built-in cpu / fpu register aliases (e.g. $pc, $d0, $fpcr)
 //
-// Subsystem-owned classes (cpu/fpu/memory/scc/rtc/via/scsi/floppy/
-// sound/appletalk/debug/mouse/keyboard/screen/vfs/find/storage_image)
-// live in their owning modules and self-register via *_init / *_delete.
+// Subsystem-owned classes (cpu/fpu/memory/scc/rtc/via/scsi/floppy/sound/
+// appletalk/debug/mouse/keyboard/screen/vfs/find/storage*) live in their
+// owning modules and self-register via *_init / *_delete.
 
 #include "gs_classes.h"
 
@@ -25,19 +24,14 @@
 #include <string.h>
 #include <time.h>
 
-#include "addr_format.h"
 #include "alias.h"
 #include "appletalk.h"
 #include "cpu.h"
 #include "cpu_internal.h"
 #include "debug.h"
-#include "debug_mac.h"
-#include "drive_catalog.h"
 #include "floppy.h"
 #include "fpu.h"
 #include "image.h"
-#include "image_apm.h"
-#include "image_vfs.h"
 #include "keyboard.h"
 #include "machine.h"
 #include "memory.h"
@@ -73,23 +67,15 @@ extern const class_desc_t storage_images_collection_class; // src/core/storage/s
 extern const class_desc_t shell_alias_class; // src/core/object/alias.c
 extern const class_desc_t scheduler_class; // src/core/scheduler/scheduler.c
 
-// === Shell / Storage stubs ==================================================
+// === Shell stub ==============================================================
+// Empty class so `shell` exists as a path component for shell.alias.* etc.
+// without forcing a real subsystem hookup at install time.
 
 static const class_desc_t shell_class_desc = {.name = "shell", .members = NULL, .n_members = 0};
-static const class_desc_t storage_class_desc = {.name = "storage", .members = NULL, .n_members = 0};
 
-//
-// Registers the introspection-and-utility subset of proposal §5.10's
-// root methods: `objects`, `attributes`, `methods`, `help`, `print`,
-// and `time`. These are the ones with no dependency on legacy command
-// internals — wrappers for `cp`, `peeler`, `hd_*`, `rom_*`, `vrom_*`,
-// `partmap`, `probe`, `list_partitions`, `unmount`, `let`, `quit`,
-// `source`, `hd_create`, `hd_download` defer to a follow-up
-// substrate-and-shell sub-commit (the `quit` / `source` ones in
-// particular need shell-state plumbing).
-//
-// All five introspection methods accept an optional path string; an
-// empty / missing path resolves to the root itself.
+// Introspection root methods: `objects`, `attributes`, `methods`, `help`,
+// `print`, `time`. Each accepts an optional path string; empty / missing
+// resolves to the root itself.
 
 static struct object *resolve_target(const value_t *path_arg) {
     const char *path = (path_arg && path_arg->kind == V_STRING && path_arg->s) ? path_arg->s : "";
@@ -224,7 +210,7 @@ static value_t method_root_help(struct object *self, const member_t *m, int argc
 
 // `time()` — wall-clock seconds since the Unix epoch. Useful for
 // timestamping log lines from scripts; deterministic test runs use
-// `rtc.time =` (M7b) instead.
+// `rtc.time =` instead.
 static value_t method_root_time(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)self;
     (void)m;
@@ -233,11 +219,8 @@ static value_t method_root_time(struct object *self, const member_t *m, int argc
     return val_uint(8, (uint64_t)time(NULL));
 }
 
-// `print(value)` — formats a value as a string. The implementation
-// just round-trips through V_STRING for now: numerics → decimal/hex
+// `print(value)` — formats a value as a string. Numerics → decimal/hex
 // per flags, strings stay strings, others get a class-shaped tag.
-// This matches the proposal's §5.10 listing without committing to a
-// rich formatter (which lands with M9 / M10).
 static value_t method_root_print(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)self;
     (void)m;
@@ -279,20 +262,17 @@ static value_t method_root_print(struct object *self, const member_t *m, int arg
     }
 }
 
-// --- M8 (slice 4) — root methods that wrap legacy shell commands ----------
+// --- Top-level methods that wrap shell-style verbs -----------------------
 //
-// Per proposal §5.10 these are top-level methods that flatten existing
-// `image foo` / `hd foo` / `rom foo` / `vrom foo` / `peeler` / `cp` /
-// `quit` shell forms into one-call methods. Each wrapper now calls
-// the underlying C primitive (or `shell_<cmd>_argv` for the rich
-// parsers) directly — phase 5b retired the shell_dispatch round-trip.
+// These flatten existing `image foo` / `hd foo` / `rom foo` / `vrom foo`
+// / `cp` / `quit` shell forms into one-call methods. Each wrapper calls
+// the underlying C primitive directly (or `shell_<cmd>_argv` for the
+// rich parsers).
 //
-// `let` and `source` defer to a later sub-commit — they touch
-// shell-state plumbing (variables, script context) that the M9–M10
-// cutover rewrites end-to-end.
-//
-// `hd_download` defers similarly — it requires platform/network state
-// outside the scope of the object tree.
+// `let` and `source` are not wrapped here — they touch shell-state
+// plumbing (variables, script context) that lives in the shell layer.
+// `hd_download` similarly requires platform/network state outside the
+// object tree.
 
 // `quit()` — request emulator shutdown. Headless sets the script
 // quit flag and stops the scheduler; WASM is a no-op (the browser
@@ -372,14 +352,12 @@ static value_t method_root_echo(struct object *self, const member_t *m, int argc
     return val_bool(true);
 }
 
-// === ROM / disk-mount root methods (M10b — drop area) ======================
-
 // === Debugging-area root methods ===========================================
 //
-// Thin wrappers around the legacy `info` / `d` / `break` / `logpoint` /
-// `log` shell commands. The legacy parsing stays in their respective
-// handlers; these methods exist so test scripts and the typed-bridge
-// have one consistent path-form interface.
+// Thin wrappers around the `info` / `d` / `break` / `logpoint` / `log`
+// shell commands. Parsing stays in the underlying handlers; these
+// methods exist so test scripts and the typed-bridge have one
+// consistent path-form interface.
 
 // `step([n])` — single-step n instructions (default 1).
 static value_t method_root_step(struct object *self, const member_t *m, int argc, const value_t *argv) {
@@ -466,15 +444,13 @@ static const member_t emu_root_members[] = {
      .name = "echo",
      .doc = "Print arguments separated by spaces (final newline appended)",
      .method = {.args = NULL, .nargs = 0, .result = V_BOOL, .fn = method_root_echo}                },
-    // Checkpoint / runtime-state wrappers (M10b — checkpoint area).
     {.kind = M_METHOD,
      .name = "download",
      .doc = "Trigger a browser file download (WASM-only)",
      .method = {.args = root_path_arg, .nargs = 1, .result = V_BOOL, .fn = method_root_download}   },
-    // Debugging-area thin wrappers.
     {.kind = M_METHOD,
      .name = "step",
-     .doc = "Single-step N instructions; default 1 (legacy `step`/`s`)",
+     .doc = "Single-step N instructions; default 1",
      .method = {.args = NULL, .nargs = 1, .result = V_BOOL, .fn = method_root_step}                },
 };
 

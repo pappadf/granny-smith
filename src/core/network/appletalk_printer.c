@@ -1286,7 +1286,7 @@ int atalk_printer_disable(void) {
     return 0;
 }
 
-// === M8 — read-only views =================================================
+// === Read-only views =================================================
 
 bool atalk_printer_is_enabled(void) {
     return g_printer.enabled;

@@ -115,11 +115,10 @@ int delete_all_breakpoints(debug_t *debug);
 void list_logpoints(debug_t *debug);
 int delete_all_logpoints(debug_t *debug);
 
-// argv-driven entry points for the legacy `print` / `examine` /
-// `logpoint` / `find` commands. The typed object-model bridge tokenises
-// its spec strings via shell_tokenize and calls these directly so the
-// rich-parser command bodies stay in one place.
-int64_t shell_print_argv(int argc, char **argv);
+// argv-driven entry points for the rich-parser `examine` / `logpoint` /
+// `find` commands. The typed object-model bridge tokenises its spec
+// strings via shell_tokenize and calls these directly so the rich-parser
+// command bodies stay in one place.
 int shell_examine_argv(int argc, char **argv);
 int shell_logpoint_argv(int argc, char **argv);
 int shell_find_argv(int argc, char **argv);
@@ -127,7 +126,7 @@ int shell_find_argv(int argc, char **argv);
 // Truthiness check used by typed `assert` root method. Strings like
 // "false", "0", or formatted-error tails are falsy; everything else
 // (including the empty/whitespace-only result of an unknown enum) is
-// truthy.  The rule mirrors proposal §2.5.
+// truthy.
 bool predicate_is_truthy(const char *s);
 
 // Framebuffer utilities — used by typed `screen.*` wrappers and the

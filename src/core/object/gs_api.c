@@ -156,9 +156,8 @@ static void format_value_json(const value_t *v, char *buf, size_t size, size_t *
 
 // === Minimal JSON-array parser for `args_json` ==============================
 //
-// Accepts a single top-level JSON array of primitive values. Sufficient for
-// the M10 cutover — the migration table in proposal §7.2 covers numbers,
-// strings, booleans, and null. JSON objects and nested arrays are not
+// Accepts a single top-level JSON array of primitive values: numbers,
+// strings, booleans, null. JSON objects and nested arrays are not
 // argument shapes the methods declare; reject them rather than guess a
 // mapping. Returns 0 on success and writes `*out_argv` (heap-allocated,
 // caller frees with free_args) and `*out_argc`.
@@ -453,7 +452,7 @@ int gs_eval(const char *path, const char *args_json, char *out_buf, size_t out_s
 }
 
 int gs_inspect(const char *path, char *out_buf, size_t out_size) {
-    // M2: same shape as gs_eval. Subtree expansion arrives with M11.
+    // Same shape as gs_eval; subtree expansion not yet implemented.
     return gs_eval(path, NULL, out_buf, out_size);
 }
 
@@ -461,8 +460,8 @@ int gs_complete(const char *partial, char *out_buf, size_t out_size) {
     (void)partial;
     if (!out_buf || out_size == 0)
         return -1;
-    // M2 placeholder: empty completion array. Tab completion stays on
-    // the legacy engine until M9.
+    // Placeholder: empty completion array. Tab completion remains on the
+    // shell-side cmd_complete engine for now.
     snprintf(out_buf, out_size, "[]");
     return 0;
 }

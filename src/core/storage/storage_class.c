@@ -215,9 +215,7 @@ const class_desc_t storage_images_collection_class = {
 };
 
 // `storage.list_dir(path)` — list directory entries via the VFS as a
-// V_LIST<V_STRING>. Powers the M10b/c migration of url-media.js's
-// legacy `ls $ROMS_DIR` (whose stdout-only output had no typed
-// successor until now).
+// V_LIST<V_STRING>. Used by url-media.js to enumerate ROMs in OPFS.
 static value_t storage_method_list_dir(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)self;
     (void)m;
