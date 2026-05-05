@@ -582,6 +582,17 @@ int shell_init(void) {
     vrom_init();
     machine_init();
 
+    // Install the cfg-scoped namespace stubs (storage, shell, mouse,
+    // keyboard, screen, vfs, find) with a NULL cfg so their pre-boot
+    // surfaces resolve — particularly storage.cp and storage.find_media,
+    // which the URL-media auto-boot path uses *before* machine.boot to
+    // copy the downloaded ROM into OPFS and to scan extracted archives
+    // for floppy images. system_create will later re-install with the
+    // real cfg (gs_classes_install handles the cfg-change uninstall +
+    // reinstall internally).
+    extern void gs_classes_install(struct config * cfg);
+    gs_classes_install(NULL);
+
     // Latch the worker pthread for the thread-affinity guard. From now
     // on (under MODE=debug/sanitize) any call into shell_dispatch() or
     // gs_eval() from a different thread aborts with GS_ASSERTF.
