@@ -24,11 +24,11 @@ const ZIP_EXTENSION = /\.zip$/i;
 // Check if filename indicates a ZIP archive
 export function isZipFile(name) { return ZIP_EXTENSION.test(name || ''); }
 
-// Check if filename indicates a peeler-supported archive
-export function isPeelerArchive(name) { return ARCHIVE_EXTENSIONS.test(name || ''); }
+// Check if filename indicates a Mac archive (sit/hqx/cpt/bin/sea)
+export function isMacArchive(name) { return ARCHIVE_EXTENSIONS.test(name || ''); }
 
-// Check if a filename looks like an archive (ZIP or peeler)
-export function isArchiveFile(name) { return isZipFile(name) || isPeelerArchive(name); }
+// Check if a filename looks like an archive (ZIP or Mac archive)
+export function isArchiveFile(name) { return isZipFile(name) || isMacArchive(name); }
 
 // --- Sanitization ---
 
@@ -59,18 +59,19 @@ export async function extractZipToDir(data, extractDir) {
   return extractedPaths;
 }
 
-// Extract a peeler-supported archive to a directory.
-export async function extractPeelerToDir(archivePath, extractDir) {
+// Extract a Mac archive (sit/hqx/cpt/bin/sea) to a directory.
+export async function extractMacArchiveToDir(archivePath, extractDir) {
   ensureDir(extractDir);
-  const result = await window.runCommand(`peeler -o ${quotePath(extractDir)} ${quotePath(archivePath)}`);
-  return result === 0;
+  return (await window.gsEval('archive.extract', [archivePath, extractDir])) === true;
 }
 
-// Probe if a file is a peeler-supported archive.
-export async function probePeelerArchive(filePath) {
+// Probe if a file is a recognised Mac archive.
+// archive.identify returns the format short name ("sit"/"hqx"/"cpt"/"bin"/"sea")
+// for a recognised file, or empty otherwise — non-empty means "is an archive".
+export async function probeMacArchive(filePath) {
   try {
-    const result = await window.runCommand(`peeler --probe ${quotePath(filePath)}`);
-    return result === 0;
+    const fmt = await window.gsEval('archive.identify', [filePath]);
+    return typeof fmt === 'string' && fmt.length > 0;
   } catch {
     return false;
   }
@@ -96,16 +97,16 @@ export async function tryExtractArchive(filePath, displayName, data) {
     return { extracted: false, extractDir: null };
   }
 
-  // Try peeler extraction (probe first)
-  if (await probePeelerArchive(filePath)) {
+  // Try Mac-archive extraction (probe first)
+  if (await probeMacArchive(filePath)) {
     toast(`Extracting ${displayName}...`);
     try {
-      if (await extractPeelerToDir(filePath, extractDir)) {
+      if (await extractMacArchiveToDir(filePath, extractDir)) {
         toast(`Extracted ${displayName} to ${extractDir}`);
         return { extracted: true, extractDir };
       }
     } catch (err) {
-      console.error('Peeler extract failed:', err);
+      console.error('Archive extract failed:', err);
     }
     toast(`Failed to extract ${displayName}; file kept at ${filePath}`);
   }
@@ -118,18 +119,21 @@ export async function tryExtractArchive(filePath, displayName, data) {
 // Probe if a file is a valid ROM.
 export async function probeRom(filePath) {
   try {
-    const result = await window.runCommand(`rom probe ${quotePath(filePath)}`);
-    return result === 0;
+    const compatible = await window.gsEval('rom.identify', [filePath]);
+    return Array.isArray(compatible) && compatible.length > 0;
   } catch {
     return false;
   }
 }
 
 // Probe if a file is a valid floppy disk image.
+// floppy.identify returns the density string ("400K" / "800K" / "1.4MB")
+// for a recognised image, or empty for non-floppies — so non-empty means
+// "is a floppy".
 export async function probeFloppy(filePath) {
   try {
-    const result = await window.runCommand(`fd probe ${quotePath(filePath)}`);
-    return result === 0;
+    const density = await window.gsEval('floppy.identify', [filePath]);
+    return typeof density === 'string' && density.length > 0;
   } catch {
     return false;
   }
@@ -143,12 +147,13 @@ export async function classifyMediaFile(filePath) {
 }
 
 // Search a directory for recognizable media files (ROM or floppy).
-// Uses the C-side find-media command (FS.readdir fails cross-thread with WasmFS pthreads).
-// find-media copies the found image to a staging path so we have a concrete file to mount.
+// Uses the C-side find_media root method (FS.readdir fails cross-thread
+// with WasmFS pthreads). find_media copies the found image to dst so
+// we have a concrete file to mount.
 export async function findMediaInDirectory(dirPath) {
   const destPath = `${dirPath}/_found_media.img`;
-  const rc = await window.runCommand(`find-media ${dirPath} ${destPath}`);
-  if (rc === 0) return { path: destPath, kind: 'floppy' };
+  const found = await window.gsEval('storage.find_media', [dirPath, destPath]);
+  if (found === true) return { path: destPath, kind: 'floppy' };
   return null;
 }
 

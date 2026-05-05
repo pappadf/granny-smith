@@ -146,7 +146,7 @@ static int parse_onoff(const char *v, int *out) {
     return -1;
 }
 
-static uint64_t cmd_log(int argc, char *argv[]) {
+uint64_t cmd_log(int argc, char *argv[]) {
     // Unified usage:
     //   log                              -> list all categories
     //   log <cat>                        -> show config for category
@@ -242,15 +242,12 @@ static uint64_t cmd_log(int argc, char *argv[]) {
 
 // Public API ----------------------------------------------------------------
 
-// Initializes the logging system and registers the shell command.
-// Initializes logging and registers the `log` shell command.
+// Initializes the logging system. Phase 5c: legacy `log` shell command
+// registration retired; the typed `log_set` root method calls cmd_log
+// directly.
 void log_init(void) {
-    // Do not install a default sink; per-category stdout/file controls apply.
     if (!s_sink_fn)
         s_sink_fn = NULL;
-    // Register shell command; ignore duplicate registration errors via return value
-    register_cmd("log", "Logging", "log [<cat> [level=N] [stdout=on|off] [file=PATH|off] [ts=on|off] [pc=on|off]]",
-                 cmd_log);
 }
 
 // Registers a category by name (idempotent). Level defaults to 0 on first create.

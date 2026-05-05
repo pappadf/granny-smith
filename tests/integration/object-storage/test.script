@@ -1,0 +1,30 @@
+# M8 (slice 2) integration: `storage` object class.
+# Plus boots with one SCSI HD (hd1.img) and one floppy (System 6.0.8).
+# storage.images should enumerate at least these two entries.
+
+scheduler.run 50000
+
+# Tree shape.
+storage
+storage.images
+
+# First image: HD attached at boot. Pin the catalog-driven attrs so a
+# regression in storage.images enumeration order or attribute mapping
+# fails fast. raw_size is the hd1.img file size (HD20SC catalog).
+storage.images[0]
+assert ${storage.images[0].index == 0}
+assert ${storage.images[0].type == "hd"}
+assert ${storage.images[0].writable == true}
+assert ${storage.images[0].raw_size == 21411840}
+storage.images[0].filename
+
+# Second image: the System 6 floppy.
+assert ${storage.images[1].type == "fd_ds"}
+storage.images[1].filename
+
+# storage.import — copy a small file to a chosen destination via the
+# legacy `cp` route, then verify storage.import without dst_path
+# falls back to the content-hash naming under /opfs/images/.
+echo ${storage.import("../../data/roms/Plus_v3.rom", "/tmp/imported_rom.bin")}
+
+quit

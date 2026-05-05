@@ -23,11 +23,13 @@ export CHECKPOINT_FILE
 echo "Step 1: Boot from floppy, run 50M instructions, save checkpoint"
 echo "Checkpoint will be saved to: $CHECKPOINT_FILE"
 
-# Create step1 script - boot from floppy, run 50M instructions, save checkpoint
+# Create step1 script - boot from floppy, run 50M instructions, save checkpoint.
+# `\$(...)` escapes bash command substitution so the literal `$(...)`
+# reaches the gs-headless expression evaluator.
 cat > "$TEST_TMPDIR/step1.script" << INNER_EOF
 # Step 1: Boot from floppy and save checkpoint
-run 50000000
-checkpoint --save $CHECKPOINT_FILE
+scheduler.run 50000000
+assert \${checkpoint.save("$CHECKPOINT_FILE")} "step1 checkpoint save failed"
 quit
 INNER_EOF
 
@@ -46,15 +48,17 @@ echo "Checkpoint saved: $CHECKPOINT_FILE ($(stat -c%s "$CHECKPOINT_FILE") bytes)
 echo ""
 echo "Step 2: Boot from SCSI HD, load checkpoint, run 50M more, verify desktop"
 
-# Create step2 script - boot from SCSI, load checkpoint, run 50M more, verify screen
+# Create step2 script - boot from SCSI, load checkpoint, run 50M more, verify screen.
+# `\$(...)` escapes bash command substitution so the literal `$(...)`
+# reaches the gs-headless expression evaluator.
 cat > "$TEST_TMPDIR/step2.script" << INNER_EOF
 # Step 2: Boot from SCSI HD, load checkpoint, continue to desktop
-run 100000000
-checkpoint --load $CHECKPOINT_FILE
+scheduler.run 100000000
+assert \${checkpoint.load("$CHECKPOINT_FILE")} "step2 checkpoint load failed"
 # Run 50M more instructions (should reach desktop just like step 1 would)
-run 50000000
+scheduler.run 50000000
 # Save screenshot for debugging, then verify
-screenshot match desktop.png
+screen.match desktop.png
 quit
 INNER_EOF
 

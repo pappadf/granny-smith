@@ -23,8 +23,9 @@ export async function scanForPersistedRoms() {
   const found = [];
   for (const cs of Object.keys(ROM_DATABASE)) {
     const path = romPathForChecksum(cs);
-    const rc = await window.runCommand(`rom probe ${path}`);
-    if (rc === 0) {
+    // rom.identify returns the compatible-machine list; non-empty == valid ROM.
+    const compatible = await window.gsEval('rom.identify', [path]);
+    if (Array.isArray(compatible) && compatible.length > 0) {
       found.push(cs);
     }
   }
@@ -76,21 +77,18 @@ export function showRomUploadDialog() {
       const tmpPath = `/tmp/upload_rom_${Date.now()}`;
       writeBinary(tmpPath, data);
 
-      // Validate
-      const rc = await window.runCommand(`rom checksum ${tmpPath}`);
-      if (rc !== 0) {
+      // Validate via rom_checksum: returns the hex string for a valid
+      // ROM, empty when the file isn't recognised.
+      const checksum = await window.gsEval('rom.checksum_of', [tmpPath]);
+      if (typeof checksum !== 'string' || !checksum) {
         errorSpan.textContent = 'Not a valid Macintosh ROM image. Please try another file.';
         errorSpan.hidden = false;
         fileInput.value = '';
         return;
       }
 
-      // Extract checksum from header
-      const dv = new DataView(data.buffer, data.byteOffset, data.byteLength);
-      const checksum = dv.getUint32(0, false).toString(16).toUpperCase().padStart(8, '0');
-
       // Persist to /rom/<checksum> (best-effort)
-      await window.runCommand(`file-copy ${tmpPath} ${romPathForChecksum(checksum)}`);
+      await window.gsEval('storage.cp', [tmpPath, romPathForChecksum(checksum)]);
 
       dlg.setAttribute('aria-hidden', 'true');
       fileInput.value = '';
@@ -330,9 +328,9 @@ export async function showConfigDialog(romChecksums) {
         // query available drive models from the emulator
         let models = [];
         try {
-          const result = await window.runCommandJSON('hd models --json');
-          if (result && result.output) {
-            models = JSON.parse(result.output);
+          const json = await window.gsEval('scsi.hd_models');
+          if (typeof json === 'string') {
+            models = JSON.parse(json);
           }
         } catch (e) {
           // fallback: empty means dialog will show an error
@@ -421,8 +419,7 @@ export async function showConfigDialog(romChecksums) {
           const name = `blank_${sizeMB}MB_${Date.now()}.img`;
           const path = `${HD_DIR}/${name}`;
 
-          const rc = await window.runCommand(`hd create ${quotePath(path)} ${sizeBytes}`);
-          if (rc !== 0) {
+          if ((await window.gsEval('storage.hd_create', [path, String(sizeBytes)])) !== true) {
             errorSpan.textContent = 'Failed to create disk image.';
             errorSpan.hidden = false;
             return;
@@ -555,56 +552,56 @@ export async function showConfigDialog(romChecksums) {
 export async function bootFromConfig(config, tmpRomPath) {
   const { model, romChecksum, ram, vromPath, floppies, hdImages, cdImage } = config;
 
-  // Set VROM path before rom load, because rom load triggers machine
-  // creation which needs the VROM during SE/30 init.
+  // Set VROM path before machine creation, because SE/30 init reads it
+  // during the boot sequence.
   if (vromPath) {
-    await window.runCommand(`vrom load ${quotePath(vromPath)}`);
+    await window.gsEval('vrom.load', [vromPath]);
   }
 
-  // Create machine with selected model and RAM before ROM load.
-  // rom load will see the correct machine is already active and skip recreation.
+  // Create the machine with the user-selected model and RAM. Under the
+  // explicit-machine-creation model, this MUST happen before rom.load.
   if (model) {
     const ramKB = Math.round((ram || 4) * 1024);
-    await window.runCommand(`setup --model ${model} --ram ${ramKB}`);
+    await window.gsEval('machine.boot', [model, ramKB]);
   }
 
   // Load ROM — try persisted OPFS path first, fall back to /tmp.
-  // rom load identifies the ROM and loads it into the existing machine.
   if (romChecksum) {
     const persistedPath = romPathForChecksum(romChecksum);
-    let rc = await window.runCommand(`rom load ${quotePath(persistedPath)}`);
-    if (rc !== 0 && tmpRomPath) {
-      rc = await window.runCommand(`rom load ${quotePath(tmpRomPath)}`);
+    let ok = (await window.gsEval('rom.load', [persistedPath])) === true;
+    if (!ok && tmpRomPath) {
+      ok = (await window.gsEval('rom.load', [tmpRomPath])) === true;
     }
-    if (rc !== 0) {
+    if (!ok) {
       toast('Failed to load ROM');
       return;
     }
   }
 
-  // Mount floppies
+  // Mount floppies into successive drive slots.
   if (floppies) {
     for (let i = 0; i < floppies.length; i++) {
-      await window.runCommand(`fd insert ${quotePath(floppies[i])} ${i} true`);
+      await window.gsEval(`floppy.drives[${i}].insert`, [floppies[i], true]);
     }
   }
 
-  // Attach SCSI hard disks
+  // Attach SCSI hard disks.
   if (hdImages) {
     for (const { path, id } of hdImages) {
-      await window.runCommand(`hd attach ${quotePath(path)} ${id}`);
+      await window.gsEval('scsi.attach_hd', [path, id]);
     }
   }
 
-  // Attach CD-ROM
+  // Attach CD-ROM at SCSI id 3 (the de-facto default; legacy callers
+  // baked this in, but the typed API requires it explicitly).
   if (cdImage) {
-    await window.runCommand(`cdrom attach ${quotePath(cdImage)}`);
+    await window.gsEval('scsi.attach_cdrom', [cdImage, 3]);
   }
 
   hideRomOverlay();
   enableRunButton();
   setBackgroundMessage('Click \u25b6 to start emulation');
 
-  await window.runCommand('run');
+  await window.gsEval('scheduler.run');
   setRunning(true);
 }

@@ -27,8 +27,8 @@ echo "Step 1: Cold boot → run 5M cycles → save checkpoint"
 
 cat > "$TEST_TMPDIR/step1.script" << 'INNER'
 # Boot from ROM, run 5M cycles, save state, quit
-run 5000000
-checkpoint --save CHECKPOINT_PLACEHOLDER
+scheduler.run 5000000
+assert ${checkpoint.save("CHECKPOINT_PLACEHOLDER")} "step1 checkpoint save failed"
 quit
 INNER
 # Substitute the actual checkpoint path (avoid quoting issues in heredoc)
@@ -53,9 +53,9 @@ echo "Step 2: Restore checkpoint → run 1M cycles → quit"
 
 cat > "$TEST_TMPDIR/step2.script" << 'INNER'
 # Load saved checkpoint (exercises system_destroy + system_create restore path)
-checkpoint --load CHECKPOINT_PLACEHOLDER
+assert ${checkpoint.load("CHECKPOINT_PLACEHOLDER")} "step2 checkpoint load failed"
 # Run 1M more cycles from restored state
-run 1000000
+scheduler.run 1000000
 quit
 INNER
 sed -i "s|CHECKPOINT_PLACEHOLDER|$CHECKPOINT_FILE|g" "$TEST_TMPDIR/step2.script"

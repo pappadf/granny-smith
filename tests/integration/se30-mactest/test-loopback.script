@@ -2,47 +2,47 @@
 # Boots MacTest, enables loopback, runs tests, captures result
 
 # Enable SCC external loopback before boot
-scc loopback on
+scc.loopback = true
 
 # Boot past Happy Mac through splash screens
-run 490000000
-run 90000000
-run 2000000
-run 190000000
+scheduler.run 490000000
+scheduler.run 90000000
+scheduler.run 2000000
+scheduler.run 190000000
 
-screenshot match scsi-warning.png
+screen.match scsi-warning.png
 
 # Click "OK" re. the scsi warning
-set-mouse 95 295 --global
-run 20000000
-mouse-button down
-run 2000000
-mouse-button up
-run 20000000
+mouse.move 95 295 "global"
+scheduler.run 20000000
+mouse.click true
+scheduler.run 2000000
+mouse.click false
+scheduler.run 20000000
 
 # We should be back on the main screen now
-screenshot match main.png
+screen.match main.png
 
 # Start the test
-set-mouse 100 115 --global
-run 2000000
-mouse-button down
-run 2000000
-mouse-button up
-run 20000000
+mouse.move 100 115 "global"
+scheduler.run 2000000
+mouse.click true
+scheduler.run 2000000
+mouse.click false
+scheduler.run 20000000
 
 # We should be running the VIA tests now
-screenshot match via.png
+screen.match via.png
 
 # Run enough to let the VIA tests + SCC tests finish
-run 200000000
+scheduler.run 200000000
 
 # Capture what state we're in now (may or may not be loopback-missing)
-screenshot tmp/post-loopback.png
+screen.save tmp/post-loopback.png
 
 # Run more to see if we progress further
-run 200000000
+scheduler.run 200000000
 
-screenshot tmp/post-loopback2.png
+screen.save tmp/post-loopback2.png
 
 quit

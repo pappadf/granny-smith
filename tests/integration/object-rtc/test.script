@@ -1,0 +1,31 @@
+# M7b integration: `rtc` object class.
+# Both the legacy `set-time` command and the new `rtc.time` attribute
+# read/write the same state — flipping one and reading via the other
+# is the strongest test of view-vs-state separation. PRAM access goes
+# through pram_read / pram_write methods (the legacy shell parser
+# doesn't have `=` so attr assignment lands with the M9 cutover).
+
+scheduler.run 50000
+
+# Read-only views.
+rtc
+rtc.read_only
+
+# Set the time via the typed setter, assert the round-trip. There's
+# no `run` between set and read so emulation-time is frozen and the
+# value lands exactly as written.
+rtc.time = 0
+assert ${rtc.time == 0}
+rtc.time = 1000000
+assert ${rtc.time == 1000000}
+
+# PRAM read of a known address. Mac PRAM is initialised by the boot
+# code, so the contents depend on how far through boot we are. We
+# write a sentinel and assert the read returns the same value.
+echo ${rtc.pram_write(0x80, 0xAB)}
+assert ${rtc.pram_read(0x80) == 0xAB}
+
+# Read the full PRAM snapshot — output is "0x..." hex string.
+rtc.pram
+
+quit

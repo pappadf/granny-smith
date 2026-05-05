@@ -17,6 +17,7 @@
 
 // === Forward Declarations ===
 struct cpu;
+struct object;
 
 struct breakpoint;
 typedef struct breakpoint breakpoint_t;
@@ -62,6 +63,10 @@ struct debug {
     breakpoint_t *breakpoints;
     uint32_t last_breakpoint_pc; // Track last breakpoint PC hit to skip it once when resuming
     logpoint_t *logpoints;
+    // Sparse stable id counters (proposal §2.1). Incremented on every
+    // add; never reset, never recycled. The first allocated id is 0.
+    int next_breakpoint_id;
+    int next_logpoint_id;
     // Trace buffer for PC entries
     uint32_t *trace_buffer;
     uint32_t trace_buffer_size;
@@ -80,6 +85,12 @@ struct debug {
     uint32_t trace_entries_tail;
     // Platform-specific assertion callback (e.g., for test integration)
     void (*assertion_callback)(const char *expr, const char *file, int line, const char *func);
+    // Object-tree binding — lifetime tied to debug_init / debug_cleanup.
+    struct object *object; // root `debug` node
+    struct object *bp_collection_object;
+    struct object *lp_collection_object;
+    struct object *mac_object; // debug.mac
+    struct object *mac_globals_object; // debug.mac.globals
 };
 
 struct debug;
@@ -95,6 +106,97 @@ void debug_cleanup(debug_t *debug);
 breakpoint_t *set_breakpoint(debug_t *debug, uint32_t addr, addr_space_t space);
 
 bool delete_breakpoint(debug_t *debug, uint32_t addr, addr_space_t space);
+
+// Bulk break/logpoint management — used by typed root wrappers as direct
+// implementations (no shell_dispatch indirection). list_* prints to
+// stdout; delete_all_* returns the count of entries removed.
+void list_breakpoints(debug_t *debug);
+int delete_all_breakpoints(debug_t *debug);
+void list_logpoints(debug_t *debug);
+int delete_all_logpoints(debug_t *debug);
+
+// argv-driven entry points for the rich-parser `examine` / `logpoint` /
+// `find` commands. The typed object-model bridge tokenises its spec
+// strings via shell_tokenize and calls these directly so the rich-parser
+// command bodies stay in one place.
+int shell_examine_argv(int argc, char **argv);
+int shell_logpoint_argv(int argc, char **argv);
+int shell_find_argv(int argc, char **argv);
+
+// Truthiness check used by typed `assert` root method. Strings like
+// "false", "0", or formatted-error tails are falsy; everything else
+// (including the empty/whitespace-only result of an unknown enum) is
+// truthy.
+bool predicate_is_truthy(const char *s);
+
+// Framebuffer utilities — used by typed `screen.*` wrappers and the
+// legacy `screenshot` command. Both layers call into the same
+// primitives so neither has to know about the other.
+#define DEBUG_SCREEN_WIDTH  512
+#define DEBUG_SCREEN_HEIGHT 342
+uint32_t framebuffer_checksum(const uint8_t *fb);
+uint32_t framebuffer_region_checksum(const uint8_t *fb, int top, int left, int bottom, int right);
+int match_framebuffer_with_png(const uint8_t *fb, const char *filename);
+int save_framebuffer_as_png(const uint8_t *fb, const char *filename);
+
+// === M6: object-model accessors ============================================
+//
+// debug.{breakpoints,logpoints}.add(...) / .N.remove() and the
+// per-entry attribute getters live in src/core/object/debug_classes.c.
+// They reach into the debug_t lists via these accessors so the
+// debug.c internals stay private (struct breakpoint / struct logpoint
+// definitions live in debug.c).
+//
+// Identity: every breakpoint and logpoint carries a sparse stable id
+// (proposal §2.1 — never recycled, max-id-ever + 1 on add). The id is
+// what the indexed-child callbacks expose as the "index" segment.
+
+// Allocate a fresh sparse id. Caller assigns it to its entry struct
+// before linking it into the list. Pure helper, no side effects beyond
+// bumping the counter.
+int debug_alloc_breakpoint_id(debug_t *debug);
+int debug_alloc_logpoint_id(debug_t *debug);
+
+// Look up an entry by sparse id. Returns NULL if no live entry has
+// this id. Used by indexed-child get(parent, index).
+breakpoint_t *debug_breakpoint_by_id(debug_t *debug, int id);
+logpoint_t *debug_logpoint_by_id(debug_t *debug, int id);
+
+// Walk the live entries in id order. count() returns the live entry
+// count; next(prev) returns the smallest id strictly greater than prev,
+// or -1 if no more entries (prev = -1 returns the smallest live id).
+int debug_breakpoint_count(debug_t *debug);
+int debug_breakpoint_next_id(debug_t *debug, int prev_id);
+int debug_logpoint_count(debug_t *debug);
+int debug_logpoint_next_id(debug_t *debug, int prev_id);
+
+// Remove by sparse id. Returns true if an entry was removed. Frees the
+// entry's attached object_t (which fires invalidators) before freeing
+// the entry struct.
+bool debug_remove_breakpoint(debug_t *debug, int id);
+bool debug_remove_logpoint(debug_t *debug, int id);
+
+// Per-entry attribute getters (read-only at this stage; setters arrive
+// alongside writable conditions / messages in a future milestone).
+uint32_t breakpoint_get_addr(const breakpoint_t *bp);
+int breakpoint_get_space(const breakpoint_t *bp); // 0 = LOGICAL, 1 = PHYSICAL
+const char *breakpoint_get_condition(const breakpoint_t *bp); // NULL if none
+uint32_t breakpoint_get_hit_count(const breakpoint_t *bp);
+int breakpoint_get_id(const breakpoint_t *bp);
+struct object *breakpoint_get_entry_object(const breakpoint_t *bp);
+// Replace the condition string. NULL clears it. Takes ownership semantics
+// via strdup; caller's buffer is not retained.
+void breakpoint_set_condition(breakpoint_t *bp, const char *expr);
+
+uint32_t logpoint_get_addr(const logpoint_t *lp);
+uint32_t logpoint_get_end_addr(const logpoint_t *lp);
+int logpoint_get_kind(const logpoint_t *lp); // enum logpoint_kind
+int logpoint_get_level(const logpoint_t *lp);
+const char *logpoint_get_category_name(const logpoint_t *lp);
+const char *logpoint_get_message(const logpoint_t *lp);
+uint32_t logpoint_get_hit_count(const logpoint_t *lp);
+int logpoint_get_id(const logpoint_t *lp);
+struct object *logpoint_get_entry_object(const logpoint_t *lp);
 
 void debugger_disasm_pc(char *buf, size_t buf_size);
 
@@ -117,9 +219,6 @@ int debug_prompt_enabled(void);
 // subsequent shell connection inherits the setting without having to send
 // "prompt off" first).
 void debug_set_prompt_default(int enabled);
-
-// Check and auto-delete temporary breakpoints (IMP-601)
-void debug_check_tbreak(debug_t *debug, uint32_t pc);
 
 // === Exception trace ring ===
 // Records every CPU bus error / exception as a ring buffer entry.  The

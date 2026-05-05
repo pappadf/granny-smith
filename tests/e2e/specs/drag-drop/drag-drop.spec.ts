@@ -40,7 +40,7 @@ const CHECKPOINT_MAGIC = new Uint8Array([0x47, 0x53, 0x43, 0x48, 0x4B, 0x50, 0x5
 
 async function waitForEmulatorReady(page: any, log: (msg: string) => void) {
   await page.waitForFunction(() => {
-    return typeof (window as any).runCommand === 'function';
+    return typeof (window as any).gsEval === 'function';
   }, { timeout: 30000 });
   log('emulator ready for drop events');
 }
@@ -120,7 +120,7 @@ test.describe('Disk Image Drag/Drop', () => {
     
     // Boot with ROM only - no disk
     await bootWithUploadedMedia(page, ROM_REL, undefined, undefined, { hideOverlay: true });
-    await page.evaluate(() => (window as any).runCommand('run'));
+    await runCommand(page, 'run');
     await page.waitForTimeout(2000);
     log('emulator running with ROM, no disk');
     
@@ -163,7 +163,7 @@ test.describe('Disk Image Drag/Drop', () => {
     
     // Boot with ROM and system disk
     await bootWithUploadedMedia(page, ROM_REL, SYSTEM_DISK_REL, undefined, { hideOverlay: true, fdWritable: true });
-    await page.evaluate(() => (window as any).runCommand('run'));
+    await runCommand(page, 'run');
     await page.waitForTimeout(5000);
     log('emulator running with ROM and system disk');
     
@@ -391,11 +391,7 @@ test.describe('Unknown File Drag/Drop', () => {
     log('unknown file uploaded to memfs successfully');
     
     // Verify the file was NOT mounted as a disk (probe should fail)
-    const probeResult = await page.evaluate(async () => {
-      const result = await (window as any).runCommand('fd probe "/tmp/upload/readme.txt"');
-      return result;
-    });
-    
+    const probeResult = await runCommand(page, 'fd probe "/tmp/upload/readme.txt"');
     expect(probeResult).not.toBe(0); // Non-zero means probe failed (as expected)
     log('text file correctly NOT recognized as disk image');
   });

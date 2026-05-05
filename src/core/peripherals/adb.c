@@ -17,8 +17,14 @@
 // ============================================================================
 
 #include "adb.h"
+#include "debug_mac.h"
+#include "keyboard.h"
 #include "log.h"
+#include "object.h"
 #include "system.h"
+#include "value.h"
+
+#include <stdio.h>
 
 #include <assert.h>
 #include <stddef.h>
@@ -852,4 +858,81 @@ void adb_mouse_event(adb_t *adb, bool button, int dx, int dy) {
 // Used by set-mouse to move the cursor through the ADB hardware path.
 void adb_mouse_move(adb_t *adb, int dx, int dy) {
     adb_mouse_event(adb, adb->mouse_button, dx, dy);
+}
+
+// === Object-model class descriptor =========================================
+//
+// `keyboard.press(key)` — inject a key-down + key-up via the keyboard
+// subsystem. The arg is either a string name ("return", "space",
+// "esc", a-z, 0-9 …) resolved by debug_mac_resolve_key_name, or an
+// integer ADB virtual keycode (0x00–0x7F).
+
+static value_t keyboard_method_press(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)self;
+    (void)m;
+    if (argc < 1)
+        return val_err("keyboard.press: expected (key) — name string or keycode int");
+    int keycode = -1;
+    char hexbuf[8];
+    const char *display_name = NULL;
+    if (argv[0].kind == V_STRING) {
+        const char *name = argv[0].s ? argv[0].s : "";
+        keycode = debug_mac_resolve_key_name(name);
+        display_name = name;
+    } else if (argv[0].kind == V_INT || argv[0].kind == V_UINT) {
+        long long raw = (argv[0].kind == V_INT) ? (long long)argv[0].i : (long long)argv[0].u;
+        snprintf(hexbuf, sizeof(hexbuf), "0x%02llx", raw);
+        keycode = debug_mac_resolve_key_name(hexbuf);
+        display_name = hexbuf;
+    } else {
+        return val_err("keyboard.press: key must be a string name or integer keycode");
+    }
+    if (keycode < 0) {
+        printf("Unknown key: %s\n", display_name ? display_name : "(?)");
+        return val_bool(false);
+    }
+    system_keyboard_update(key_down, keycode);
+    system_keyboard_update(key_up, keycode);
+    printf("key: 0x%02X (%s)\n", keycode, display_name);
+    return val_bool(true);
+}
+
+static const arg_decl_t keyboard_press_args[] = {
+    {.name = "key", .kind = V_STRING, .doc = "Key name (\"return\"/\"esc\"/\"a\"/...) or ADB keycode int"},
+};
+
+static const member_t keyboard_members[] = {
+    {.kind = M_METHOD,
+     .name = "press",
+     .doc = "Tap a key (down + up) on the emulated keyboard",
+     .method = {.args = keyboard_press_args, .nargs = 1, .result = V_BOOL, .fn = keyboard_method_press}},
+};
+
+const class_desc_t keyboard_class = {
+    .name = "keyboard",
+    .members = keyboard_members,
+    .n_members = sizeof(keyboard_members) / sizeof(keyboard_members[0]),
+};
+
+// === Process-singleton lifecycle ============================================
+//
+// `keyboard` is a stateless facade — its press() method routes through
+// adb_press_key on the active machine. Register once at shell_init.
+
+static struct object *s_keyboard_object = NULL;
+
+void keyboard_class_register(void) {
+    if (s_keyboard_object)
+        return;
+    s_keyboard_object = object_new(&keyboard_class, NULL, "keyboard");
+    if (s_keyboard_object)
+        object_attach(object_root(), s_keyboard_object);
+}
+
+void keyboard_class_unregister(void) {
+    if (s_keyboard_object) {
+        object_detach(s_keyboard_object);
+        object_delete(s_keyboard_object);
+        s_keyboard_object = NULL;
+    }
 }

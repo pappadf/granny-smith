@@ -13,10 +13,20 @@
 
 #include "common.h"
 #include "cpu.h"
+#include "debug.h"
+#include "object.h"
 #include "platform.h"
 #include "rom.h"
 #include "shell.h"
 #include "system.h"
+#include "system_config.h"
+#include "value.h"
+
+// Forward declarations — class descriptors are at the bottom of the file but
+// memory_map_init / memory_map_delete reference them.
+extern const class_desc_t memory_class;
+extern const class_desc_t mem_peek_class;
+extern const class_desc_t mem_poke_class;
 
 #include <assert.h>
 #include <stdio.h>
@@ -26,9 +36,6 @@
 // ============================================================================
 // Constants and Macros
 // ============================================================================
-
-// (Plus-specific PLUS_ROM_SIZE and rom_version/rom_file_version removed in M6;
-//  ROM identification is now handled by rom.c)
 
 // Page table globals (defined here, declared extern in memory.h)
 page_entry_t *g_page_table = NULL;
@@ -146,6 +153,11 @@ typedef struct memory {
     bool checksum_valid;
 
     int version;
+
+    // Object-tree binding — lifetime tied to memory_map_init / delete.
+    struct object *memory_object;
+    struct object *peek_object;
+    struct object *poke_object;
 
 } memory_map_t;
 
@@ -629,6 +641,42 @@ const char *memory_rom_filename(memory_map_t *mem) {
     return mem ? mem->rom_filename : NULL;
 }
 
+// Forward declaration; defined further down.
+static void calculate_checksum(memory_map_t *rom);
+
+// Copy ROM bytes into the rom region (immediately after RAM) and refresh the
+// internal checksum. Truncates if size > mem->rom_size, drops nothing if
+// size < mem->rom_size (the trailing bytes keep whatever they had — for
+// freshly-allocated memory that's zero).
+size_t memory_install_rom(memory_map_t *mem, const uint8_t *data, size_t size, const char *filename) {
+    if (!mem || !data || size == 0)
+        return 0;
+    size_t copy_size = size < mem->rom_size ? size : mem->rom_size;
+    memcpy(mem->image + mem->ram_size, data, copy_size);
+    calculate_checksum(mem);
+    if (mem->rom_filename) {
+        free(mem->rom_filename);
+        mem->rom_filename = NULL;
+    }
+    if (filename)
+        mem->rom_filename = strdup(filename);
+    return copy_size;
+}
+
+// Direct read access to the ROM region (read-only). Returns NULL if the
+// memory map has no ROM bytes loaded yet.
+const uint8_t *memory_rom_bytes(memory_map_t *mem) {
+    return (mem && mem->image) ? mem->image + mem->ram_size : NULL;
+}
+
+uint32_t memory_rom_size(memory_map_t *mem) {
+    return mem ? mem->rom_size : 0;
+}
+
+uint32_t memory_rom_checksum(memory_map_t *mem) {
+    return mem ? mem->checksum : 0;
+}
+
 // Calculate and validate ROM checksum and identify ROM version
 static void calculate_checksum(memory_map_t *rom) {
     int i;
@@ -659,260 +707,6 @@ static void calculate_checksum(memory_map_t *rom) {
         rom->version = -1;
         break;
     }
-}
-
-// ============================================================================
-// Shell Commands
-// ============================================================================
-
-// Pending ROM path — set before machine init so VROM loading can find it.
-static char *s_pending_rom_path = NULL;
-
-const char *memory_pending_rom_path(void) {
-    return s_pending_rom_path;
-}
-
-// Pending VROM path — set via "rom load-vrom" before machine init.
-static char *s_pending_vrom_path = NULL;
-
-const char *memory_pending_vrom_path(void) {
-    return s_pending_vrom_path;
-}
-
-// Helper: read a ROM file into a buffer, returning size via out_size.
-// Returns NULL on failure; caller must free the returned buffer.
-static uint8_t *read_rom_file(const char *filename, size_t *out_size, bool quiet) {
-    FILE *f = fopen(filename, "rb");
-    if (!f) {
-        if (!quiet)
-            printf("Failed to open ROM file: %s\n", filename);
-        return NULL;
-    }
-    fseek(f, 0, SEEK_END);
-    long file_size = ftell(f);
-    fseek(f, 0, SEEK_SET);
-    if (file_size <= 0) {
-        fclose(f);
-        if (!quiet)
-            printf("Failed to read ROM file: %s\n", filename);
-        return NULL;
-    }
-    uint8_t *rom_data = malloc((size_t)file_size);
-    if (!rom_data) {
-        fclose(f);
-        if (!quiet)
-            printf("Failed to allocate memory for ROM\n");
-        return NULL;
-    }
-    size_t n = fread(rom_data, 1, (size_t)file_size, f);
-    fclose(f);
-    if ((long)n != file_size) {
-        free(rom_data);
-        if (!quiet)
-            printf("Failed to read ROM file: %s\n", filename);
-        return NULL;
-    }
-    *out_size = (size_t)file_size;
-    return rom_data;
-}
-
-// rom load <path>: Load a ROM file, identify the machine, and reset CPU.
-static uint64_t cmd_rom_load(const char *filename) {
-    size_t file_size = 0;
-    uint8_t *rom_data = read_rom_file(filename, &file_size, false);
-    if (!rom_data)
-        return (uint64_t)-1;
-
-    uint32_t checksum = 0;
-    const rom_info_t *info = rom_identify_data(rom_data, file_size, &checksum);
-
-    if (info) {
-        printf("ROM: %s (checksum %08X)\n", info->model_name, checksum);
-    } else {
-        printf("ROM: unknown (checksum %08X, size %zu bytes)\n", checksum, file_size);
-        free(rom_data);
-        return (uint64_t)-1;
-    }
-
-    // Store pending ROM path so machine init code (e.g. SE/30 VROM loader)
-    // can find related files next to the ROM.
-    free(s_pending_rom_path);
-    s_pending_rom_path = strdup(filename);
-
-    // Ensure the correct machine is active (creates or switches as needed)
-    if (system_ensure_machine(info->model_id) != 0) {
-        free(rom_data);
-        return (uint64_t)-1;
-    }
-
-    // Load ROM data into machine memory
-    memory_map_t *mem = system_memory();
-    if (!mem) {
-        printf("rom: memory not initialized\n");
-        free(rom_data);
-        return (uint64_t)-1;
-    }
-
-    // Copy ROM data into the flat buffer at ram_size offset
-    size_t copy_size = file_size < mem->rom_size ? file_size : mem->rom_size;
-    memcpy(mem->image + mem->ram_size, rom_data, copy_size);
-    free(rom_data);
-
-    // Update memory-level checksum state
-    calculate_checksum(mem);
-
-    // Remember ROM filename for checkpointing
-    if (mem->rom_filename)
-        free(mem->rom_filename);
-    mem->rom_filename = strdup(filename);
-
-    // Reset CPU from ROM reset vectors (SSP at ROM offset 0, PC at ROM offset 4).
-    // Read directly from the ROM buffer since address 0 may map to RAM, not ROM
-    // (e.g. Plus has ROM at 0x400000, not overlaid at address 0).
-    cpu_t *cpu = system_cpu();
-    if (cpu && copy_size >= 8) {
-        uint8_t *rom_base = mem->image + mem->ram_size;
-        uint32_t initial_ssp = LOAD_BE32(rom_base);
-        uint32_t initial_pc = LOAD_BE32(rom_base + 4);
-        cpu_set_an(cpu, 7, initial_ssp);
-        cpu_set_pc(cpu, initial_pc);
-        printf("CPU reset: PC=%08X SSP=%08X\n", initial_pc, initial_ssp);
-    }
-
-    printf("ROM loaded successfully from %s\n", filename);
-    return 0;
-}
-
-// rom checksum <path>: Validate and print checksum, or print "0" if invalid.
-static uint64_t cmd_rom_checksum(const char *filename) {
-    size_t file_size = 0;
-    uint8_t *rom_data = read_rom_file(filename, &file_size, true);
-    if (!rom_data) {
-        printf("0\n");
-        return 1;
-    }
-
-    uint32_t checksum = 0;
-    const rom_info_t *info = rom_identify_data(rom_data, file_size, &checksum);
-    free(rom_data);
-
-    if (info) {
-        printf("%08X\n", checksum);
-        return 0;
-    }
-    printf("0\n");
-    return 1;
-}
-
-// rom probe [<path>]: Check if a ROM file or current ROM is valid.
-static uint64_t cmd_rom_probe(int argc, char *argv[], int filename_arg) {
-    if (argc < filename_arg + 1) {
-        // No filename: check if a ROM is currently loaded
-        memory_map_t *mem = system_memory();
-        return (mem && mem->rom_filename) ? 0 : 1;
-    }
-    const char *filename = argv[filename_arg];
-    size_t file_size = 0;
-    uint8_t *rom_data = read_rom_file(filename, &file_size, true);
-    if (!rom_data)
-        return 1;
-    uint32_t checksum = 0;
-    const rom_info_t *info = rom_identify_data(rom_data, file_size, &checksum);
-    free(rom_data);
-    return info ? 0 : 1;
-}
-
-// Shell command: ROM operations.
-//   rom load <path>       Load and identify ROM, create machine, reset CPU
-//   rom checksum <path>   Print checksum hex if valid, "0" if not
-//   rom probe [<path>]    Return 0 if valid ROM, 1 if not (no output)
-uint64_t cmd_rom(int argc, char *argv[]) {
-    if (argc < 2) {
-        printf("Usage: rom load <path> | --checksum <path> | --probe [<path>]\n");
-        return 0;
-    }
-
-    const char *action = argv[1];
-
-    if (strcmp(action, "load") == 0) {
-        if (argc < 3) {
-            printf("Usage: rom load <path>\n");
-            return (uint64_t)-1;
-        }
-        return cmd_rom_load(argv[2]);
-    }
-
-    if (strcmp(action, "checksum") == 0) {
-        if (argc < 3) {
-            printf("Usage: rom checksum <path>\n");
-            return (uint64_t)-1;
-        }
-        return cmd_rom_checksum(argv[2]);
-    }
-
-    if (strcmp(action, "probe") == 0) {
-        return cmd_rom_probe(argc, argv, 2);
-    }
-
-    printf("Usage: rom load <path> | --checksum <path> | --probe [<path>]\n");
-    return (uint64_t)-1;
-}
-
-// Shell command: Video ROM operations.
-//   vrom load <path>      Set VROM path for next machine init (SE/30)
-//   vrom checksum <path>  Validate VROM file size (must be 32 KB)
-//   vrom probe [<path>]   Return 0 if valid VROM, 1 if not
-uint64_t cmd_vrom(int argc, char *argv[]) {
-    if (argc < 2) {
-        printf("Usage: vrom load <path> | --checksum <path> | --probe [<path>]\n");
-        return 0;
-    }
-
-    const char *action = argv[1];
-
-    if (strcmp(action, "load") == 0) {
-        if (argc < 3) {
-            printf("Usage: vrom load <path>\n");
-            return (uint64_t)-1;
-        }
-        free(s_pending_vrom_path);
-        s_pending_vrom_path = strdup(argv[2]);
-        printf("VROM path set: %s\n", s_pending_vrom_path);
-        return 0;
-    }
-
-    if (strcmp(action, "checksum") == 0 || strcmp(action, "probe") == 0) {
-        bool probe = strcmp(action, "probe") == 0;
-        if (argc < 3) {
-            if (probe) {
-                // No path: check if a VROM path is set
-                return s_pending_vrom_path ? 0 : 1;
-            }
-            printf("Usage: vrom checksum <path>\n");
-            return (uint64_t)-1;
-        }
-        // Validate: must be exactly 32 KB
-        FILE *f = fopen(argv[2], "rb");
-        if (!f) {
-            if (!probe)
-                printf("0\n");
-            return 1;
-        }
-        fseek(f, 0, SEEK_END);
-        long size = ftell(f);
-        fclose(f);
-        if (size == 32 * 1024) {
-            if (!probe)
-                printf("VROM OK (%ld bytes)\n", size);
-            return 0;
-        }
-        if (!probe)
-            printf("0\n");
-        return 1;
-    }
-
-    printf("Usage: vrom load <path> | --checksum <path> | --probe [<path>]\n");
-    return (uint64_t)-1;
 }
 
 // ============================================================================
@@ -1070,6 +864,20 @@ memory_map_t *memory_map_init(int address_bits, uint32_t ram_size, uint32_t rom_
         }
     }
 
+    // Object-tree binding — instance_data is the memory_map_t itself,
+    // memory.peek's accessors call into the global memory_read_* helpers
+    // directly so its instance_data is unused.
+    mem->memory_object = object_new(&memory_class, mem, "memory");
+    if (mem->memory_object) {
+        object_attach(object_root(), mem->memory_object);
+        mem->peek_object = object_new(&mem_peek_class, NULL, "peek");
+        if (mem->peek_object)
+            object_attach(mem->memory_object, mem->peek_object);
+        mem->poke_object = object_new(&mem_poke_class, NULL, "poke");
+        if (mem->poke_object)
+            object_attach(mem->memory_object, mem->poke_object);
+    }
+
     return mem;
 }
 
@@ -1081,6 +889,21 @@ memory_map_t *memory_map_init(int address_bits, uint32_t ram_size, uint32_t rom_
 void memory_map_delete(memory_map_t *mem) {
     if (!mem)
         return;
+    if (mem->peek_object) {
+        object_detach(mem->peek_object);
+        object_delete(mem->peek_object);
+        mem->peek_object = NULL;
+    }
+    if (mem->poke_object) {
+        object_detach(mem->poke_object);
+        object_delete(mem->poke_object);
+        mem->poke_object = NULL;
+    }
+    if (mem->memory_object) {
+        object_detach(mem->memory_object);
+        object_delete(mem->memory_object);
+        mem->memory_object = NULL;
+    }
     // Free mappings
     mapping_t *m = mem->map;
     while (m) {
@@ -1161,3 +984,300 @@ void memory_map_print(memory_map_t *restrict mem) {
         map = map->next;
     }
 }
+
+// === Object-model class descriptor =========================================
+//
+// instance_data on the memory node is the memory_map_t* itself.
+// Lifetime is tied to memory_map_init / memory_map_delete.
+
+static value_t attr_mem_ram_size(struct object *self, const member_t *m) {
+    (void)m;
+    memory_map_t *mem = (memory_map_t *)object_data(self);
+    return val_uint(4, mem ? mem->ram_size : 0u);
+}
+
+static value_t attr_mem_rom_size(struct object *self, const member_t *m) {
+    (void)m;
+    memory_map_t *mem = (memory_map_t *)object_data(self);
+    return val_uint(4, mem ? mem->rom_size : 0u);
+}
+
+// === memory.read_cstring ====================================================
+//
+// Read a NUL-terminated string from guest memory at addr, escaping
+// non-printable bytes. Used to migrate the legacy `$str.<src>`
+// vocabulary onto the unified ${...} interpolator.
+
+static value_t method_mem_read_cstring(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)self;
+    (void)m;
+    if (argc < 1)
+        return val_err("memory.read_cstring: expected addr");
+    bool ok = false;
+    uint64_t addr_u = val_as_u64(&argv[0], &ok);
+    if (!ok)
+        return val_err("memory.read_cstring: addr must be numeric");
+    uint32_t addr = (uint32_t)addr_u;
+    int max_chars = 96;
+    if (argc >= 2) {
+        bool ok2 = false;
+        int64_t mc = val_as_i64(&argv[1], &ok2);
+        if (ok2 && mc > 0 && mc <= 4096)
+            max_chars = (int)mc;
+    }
+    char buf[8192];
+    size_t out = 0;
+    if (out < sizeof(buf))
+        buf[out++] = '"';
+    for (int i = 0; i < max_chars && out + 4 < sizeof(buf); i++) {
+        uint8_t b = memory_read_uint8(addr + (uint32_t)i);
+        if (b == 0)
+            break;
+        if (b >= 0x20 && b <= 0x7E) {
+            buf[out++] = (char)b;
+        } else {
+            int n = snprintf(buf + out, sizeof(buf) - out, "\\x%02X", b);
+            if (n < 0)
+                break;
+            out += (size_t)n;
+        }
+    }
+    if (out + 1 < sizeof(buf))
+        buf[out++] = '"';
+    buf[out] = '\0';
+    return val_str(buf);
+}
+
+static const arg_decl_t mem_read_cstring_args[] = {
+    {.name = "addr",      .kind = V_UINT, .flags = VAL_HEX,          .doc = "guest memory address"          },
+    {.name = "max_chars", .kind = V_INT,  .flags = OBJ_ARG_OPTIONAL, .doc = "max chars to read (default 96)"},
+};
+
+// `memory.dump(addr, [count])` — hex-dump `count` bytes from `addr`.
+// Replaces the legacy gdb-style `x` / `examine` command. `addr` accepts an
+// integer or a string (alias / register name / expression resolved by the
+// rich-parser). Output goes to stdout in the legacy `x` layout; the method
+// returns true on dispatch success.
+static value_t method_mem_dump(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)self;
+    (void)m;
+    if (argc < 1)
+        return val_err("memory.dump: expected (addr, [count])");
+    bool addr_ok = false;
+    uint64_t addr_u = val_as_u64(&argv[0], &addr_ok);
+    bool addr_is_str = (argv[0].kind == V_STRING);
+    if (!addr_ok && !addr_is_str)
+        return val_err("memory.dump: addr must be integer or string");
+    int64_t count = 0;
+    bool have_count = false;
+    if (argc >= 2) {
+        bool ok = false;
+        count = val_as_i64(&argv[1], &ok);
+        if (!ok)
+            return val_err("memory.dump: count must be integer");
+        have_count = true;
+    }
+    char line[128];
+    int n;
+    if (have_count) {
+        if (addr_ok)
+            n = snprintf(line, sizeof(line), "x 0x%llx %lld", (unsigned long long)addr_u, (long long)count);
+        else
+            n = snprintf(line, sizeof(line), "x %s %lld", argv[0].s ? argv[0].s : "", (long long)count);
+    } else {
+        if (addr_ok)
+            n = snprintf(line, sizeof(line), "x 0x%llx", (unsigned long long)addr_u);
+        else
+            n = snprintf(line, sizeof(line), "x %s", argv[0].s ? argv[0].s : "");
+    }
+    if (n < 0 || (size_t)n >= sizeof(line))
+        return val_err("memory.dump: argument too long");
+    char *targv[32];
+    int targc = tokenize(line, targv, 32);
+    if (targc <= 0)
+        return val_err("memory.dump: tokenisation failed");
+    return val_bool(shell_examine_argv(targc, targv) == 0);
+}
+
+static const arg_decl_t mem_dump_args[] = {
+    {.name = "addr", .kind = V_NONE, .doc = "guest memory address (integer or alias/expression)"},
+    {.name = "count", .kind = V_INT, .flags = OBJ_ARG_OPTIONAL, .doc = "byte count (default 16)"},
+};
+
+static const member_t memory_members[] = {
+    {.kind = M_ATTR,
+     .name = "ram_size",
+     .flags = VAL_RO,
+     .attr = {.type = V_UINT, .get = attr_mem_ram_size, .set = NULL}                                         },
+    {.kind = M_ATTR,
+     .name = "rom_size",
+     .flags = VAL_RO,
+     .attr = {.type = V_UINT, .get = attr_mem_rom_size, .set = NULL}                                         },
+    {.kind = M_METHOD,
+     .name = "read_cstring",
+     .doc = "Read a quoted, escape-encoded C string at addr",
+     .method = {.args = mem_read_cstring_args, .nargs = 2, .result = V_STRING, .fn = method_mem_read_cstring}},
+    {.kind = M_METHOD,
+     .name = "dump",
+     .doc = "Hex-dump count bytes at addr (replaces the legacy `x` / examine)",
+     .method = {.args = mem_dump_args, .nargs = 2, .result = V_BOOL, .fn = method_mem_dump}                  },
+};
+
+const class_desc_t memory_class = {
+    .name = "memory",
+    .members = memory_members,
+    .n_members = sizeof(memory_members) / sizeof(memory_members[0]),
+};
+
+// === memory.peek child class ================================================
+//
+// Three methods (b/w/l) that read sized values from guest memory at a
+// caller-supplied address. Used by ${...} interpolation in logpoint
+// messages (proposal §5.3) and any expression that needs a peek.
+
+static value_t method_mem_peek_b(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)self;
+    (void)m;
+    if (argc < 1)
+        return val_err("memory.peek.b: expected addr");
+    bool ok = false;
+    uint64_t a = val_as_u64(&argv[0], &ok);
+    if (!ok)
+        return val_err("memory.peek.b: addr must be numeric");
+    value_t v = val_uint(1, memory_read_uint8((uint32_t)a));
+    v.flags |= VAL_HEX;
+    return v;
+}
+static value_t method_mem_peek_w(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)self;
+    (void)m;
+    if (argc < 1)
+        return val_err("memory.peek.w: expected addr");
+    bool ok = false;
+    uint64_t a = val_as_u64(&argv[0], &ok);
+    if (!ok)
+        return val_err("memory.peek.w: addr must be numeric");
+    value_t v = val_uint(2, memory_read_uint16((uint32_t)a));
+    v.flags |= VAL_HEX;
+    return v;
+}
+static value_t method_mem_peek_l(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)self;
+    (void)m;
+    if (argc < 1)
+        return val_err("memory.peek.l: expected addr");
+    bool ok = false;
+    uint64_t a = val_as_u64(&argv[0], &ok);
+    if (!ok)
+        return val_err("memory.peek.l: addr must be numeric");
+    value_t v = val_uint(4, memory_read_uint32((uint32_t)a));
+    v.flags |= VAL_HEX;
+    return v;
+}
+
+static const arg_decl_t mem_peek_args[] = {
+    {.name = "addr", .kind = V_UINT, .flags = VAL_HEX, .doc = "guest memory address"},
+};
+
+static const member_t mem_peek_members[] = {
+    {.kind = M_METHOD,
+     .name = "b",
+     .doc = "Read 1 byte at addr",
+     .method = {.args = mem_peek_args, .nargs = 1, .result = V_UINT, .fn = method_mem_peek_b}},
+    {.kind = M_METHOD,
+     .name = "w",
+     .doc = "Read 2 bytes (big-endian word) at addr",
+     .method = {.args = mem_peek_args, .nargs = 1, .result = V_UINT, .fn = method_mem_peek_w}},
+    {.kind = M_METHOD,
+     .name = "l",
+     .doc = "Read 4 bytes (big-endian long) at addr",
+     .method = {.args = mem_peek_args, .nargs = 1, .result = V_UINT, .fn = method_mem_peek_l}},
+};
+
+const class_desc_t mem_peek_class = {
+    .name = "peek",
+    .members = mem_peek_members,
+    .n_members = sizeof(mem_peek_members) / sizeof(mem_peek_members[0]),
+};
+
+// === memory.poke child class ================================================
+//
+// Three methods (b/w/l) that write sized values to guest memory at a
+// caller-supplied address. Pairs with memory.peek, replacing the legacy
+// `set <addr>.<size> <value>` shell form.
+
+static int parse_poke_args(int argc, const value_t *argv, uint32_t *addr_out, uint64_t *value_out, const char *who) {
+    if (argc < 2) {
+        // Caller turns -1 into a val_err; we just need to communicate failure.
+        return -1;
+    }
+    bool ok = false;
+    uint64_t a = val_as_u64(&argv[0], &ok);
+    if (!ok)
+        return -1;
+    bool ok2 = false;
+    uint64_t v = val_as_u64(&argv[1], &ok2);
+    if (!ok2)
+        return -1;
+    (void)who;
+    *addr_out = (uint32_t)a;
+    *value_out = v;
+    return 0;
+}
+
+static value_t method_mem_poke_b(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)self;
+    (void)m;
+    uint32_t addr;
+    uint64_t v;
+    if (parse_poke_args(argc, argv, &addr, &v, "memory.poke.b") != 0)
+        return val_err("memory.poke.b: expected (addr, value)");
+    memory_write_uint8(addr, (uint8_t)v);
+    return val_none();
+}
+static value_t method_mem_poke_w(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)self;
+    (void)m;
+    uint32_t addr;
+    uint64_t v;
+    if (parse_poke_args(argc, argv, &addr, &v, "memory.poke.w") != 0)
+        return val_err("memory.poke.w: expected (addr, value)");
+    memory_write_uint16(addr, (uint16_t)v);
+    return val_none();
+}
+static value_t method_mem_poke_l(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)self;
+    (void)m;
+    uint32_t addr;
+    uint64_t v;
+    if (parse_poke_args(argc, argv, &addr, &v, "memory.poke.l") != 0)
+        return val_err("memory.poke.l: expected (addr, value)");
+    memory_write_uint32(addr, (uint32_t)v);
+    return val_none();
+}
+
+static const arg_decl_t mem_poke_args[] = {
+    {.name = "addr",  .kind = V_UINT, .flags = VAL_HEX, .doc = "guest memory address"},
+    {.name = "value", .kind = V_UINT, .flags = VAL_HEX, .doc = "value to write"      },
+};
+
+static const member_t mem_poke_members[] = {
+    {.kind = M_METHOD,
+     .name = "b",
+     .doc = "Write 1 byte at addr",
+     .method = {.args = mem_poke_args, .nargs = 2, .result = V_NONE, .fn = method_mem_poke_b}},
+    {.kind = M_METHOD,
+     .name = "w",
+     .doc = "Write 2 bytes (big-endian word) at addr",
+     .method = {.args = mem_poke_args, .nargs = 2, .result = V_NONE, .fn = method_mem_poke_w}},
+    {.kind = M_METHOD,
+     .name = "l",
+     .doc = "Write 4 bytes (big-endian long) at addr",
+     .method = {.args = mem_poke_args, .nargs = 2, .result = V_NONE, .fn = method_mem_poke_l}},
+};
+
+const class_desc_t mem_poke_class = {
+    .name = "poke",
+    .members = mem_poke_members,
+    .n_members = sizeof(mem_poke_members) / sizeof(mem_poke_members[0]),
+};

@@ -121,10 +121,10 @@ async function submitLine() {
 }
 
 // Handle Tab completion
-function handleTab() {
+async function handleTab() {
   if (!_tabComplete || !inputState.active) return;
 
-  const completions = _tabComplete(inputState.buffer, inputState.cursor);
+  const completions = await _tabComplete(inputState.buffer, inputState.cursor);
   if (!completions || completions.length === 0) return;
 
   // Find the word being completed (last token up to cursor)

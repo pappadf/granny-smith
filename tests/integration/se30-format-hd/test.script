@@ -9,95 +9,95 @@
 #   - Double-click: down 1.6M up 1.6M down 1.6M up — total ~300ms
 
 # Create a blank 80 MB hard disk image (exact HD80SC size, zero-filled)
-hd create ${WORK_DIR}/blank80.img HD20SC
+storage.hd_create ${WORK_DIR}/blank80.img HD20SC
 
-# Attach the blank image as SCSI ID 6 (default)
-hd attach ${WORK_DIR}/blank80.img
+# Attach the blank image at SCSI ID 0
+scsi.attach_hd ${WORK_DIR}/blank80.img 0
 
 # Boot to Finder desktop (SE/30 with 8 MB RAM)
-run 80000000
+scheduler.run 80000000
 
-screenshot match desktop.png
+screen.match desktop.png
 
 # Double click the "Disk Tools" icon to open the floppy
-set-mouse 480 55 --global
-run 5000000
-mouse-button down
-run 1000000
-mouse-button up
-run 1000000
-mouse-button down
-run 1000000
-mouse-button up
+mouse.move 480 55 "global"
+scheduler.run 5000000
+mouse.click true
+scheduler.run 1000000
+mouse.click false
+scheduler.run 1000000
+mouse.click true
+scheduler.run 1000000
+mouse.click false
 
 # Run a bit so that the floppy has time to open
-run 50000000
+scheduler.run 50000000
 
-screenshot match floppy.png
+screen.match floppy.png
 
 # Double-click Apple HD SC Setup icon in the Disk Tools window
-set-mouse 167 83 --global
-run 5000000
-mouse-button down
-run 1000000
-mouse-button up
-run 1000000
-mouse-button down
-run 1000000
-mouse-button up
+mouse.move 167 83 "global"
+scheduler.run 5000000
+mouse.click true
+scheduler.run 1000000
+mouse.click false
+scheduler.run 1000000
+mouse.click true
+scheduler.run 1000000
+mouse.click false
 
 # Run a bit so that the Apple HD SC Setup app opens
-run 50000000
+scheduler.run 50000000
 
 # Verify Apple HD SC Setup recognizes the blank drive
-screenshot match ready.png
+screen.match ready.png
 
 # Click "Initialize"
-set-mouse 167 115 --global
-run 5000000
-mouse-button down
-run 1000000
-mouse-button up
-run 5000000
+mouse.move 167 115 "global"
+scheduler.run 5000000
+mouse.click true
+scheduler.run 1000000
+mouse.click false
+scheduler.run 5000000
 
-set-mouse 360 190 --global
-run 5000000
-mouse-button down
-run 1000000
-mouse-button up
+mouse.move 360 190 "global"
+scheduler.run 5000000
+mouse.click true
+scheduler.run 1000000
+mouse.click false
 
-run 500000000
+scheduler.run 500000000
 
 # Click ok re. name
-set-mouse 200 180 --global
-run 5000000
-mouse-button down
-run 1000000
-mouse-button up
-run 50000000
+mouse.move 200 180 "global"
+scheduler.run 5000000
+mouse.click true
+scheduler.run 1000000
+mouse.click false
+scheduler.run 50000000
 
 # quit app
-set-mouse 167 230 --global
-run 5000000
-mouse-button down
-run 1000000
-mouse-button up
-run 5000000
+mouse.move 167 230 "global"
+scheduler.run 5000000
+mouse.click true
+scheduler.run 1000000
+mouse.click false
+scheduler.run 5000000
 
 # Shutdown computer
-set-mouse 250 10 --global
-run 5000000
-mouse-button down
-run 1000000
-set-mouse 250 140 --global
-run 5000000
-mouse-button up
-run 50000000
+mouse.move 250 10 "global"
+scheduler.run 5000000
+mouse.click true
+scheduler.run 1000000
+mouse.move 250 140 "global"
+scheduler.run 5000000
+mouse.click false
+scheduler.run 50000000
 
-screenshot match shutdown.png
+screen.match shutdown.png
 
 # Download (export) the formatted HD image to a flat file
-hd download ${WORK_DIR}/blank80.img ${WORK_DIR}/downloaded.img
+storage.hd_download ${WORK_DIR}/blank80.img ${WORK_DIR}/downloaded.img
 
 quit
 

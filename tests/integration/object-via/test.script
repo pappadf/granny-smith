@@ -1,0 +1,41 @@
+# M7c integration: `via1` / `via2` object classes.
+# SE/30 has both. The script just walks the tree and reads each
+# attribute — the exact register values depend on boot timing, so
+# we don't pin them, but each path must resolve to a numeric/JSON
+# value with no error JSON.
+
+scheduler.run 100000
+
+# via1 attributes.
+via1
+via1.ifr
+via1.ier
+via1.acr
+via1.pcr
+via1.sr
+via1.freq_factor
+
+# via1 port children.
+via1.port_a
+via1.port_a.output
+via1.port_a.input
+via1.port_a.direction
+via1.port_b.output
+via1.port_b.input
+via1.port_b.direction
+
+# via2 — only present on SE/30 / IIcx, which is what this test boots.
+via2
+via2.ifr
+via2.ier
+via2.acr
+via2.port_a.output
+via2.port_b.direction
+
+# Sanity: Universal-ROM machines (this test boots IIcx) clock both
+# VIAs with a divisor of 20. Plus would be 10. Pin the value so a
+# regression in either machine's clock plumbing fails fast.
+assert ${via1.freq_factor == 20} "IIcx via1 freq_factor regressed"
+assert ${via2.freq_factor == 20} "IIcx via2 freq_factor regressed"
+
+quit

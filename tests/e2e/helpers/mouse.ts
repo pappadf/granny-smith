@@ -2,6 +2,7 @@
 // Copyright (c) pappadf
 
 import type { Page } from '@playwright/test';
+import { runCommand } from './run-command';
 
 async function waitForPrompt(page: Page, timeoutMs = 5000) {
 	await page.waitForFunction(() => {
@@ -14,11 +15,13 @@ async function waitForPrompt(page: Page, timeoutMs = 5000) {
 	}, { timeout: timeoutMs });
 }
 
-async function ensureRunCommand(page: Page) { await page.waitForFunction(() => typeof (window as any).runCommand === 'function'); }
+async function ensureGsEval(page: Page) {
+	await page.waitForFunction(() => typeof (window as any).gsEval === 'function');
+}
 
 async function prepareMousePosition(page: Page, x: number, y: number) {
-	await ensureRunCommand(page);
-	await page.evaluate((cmd) => (window as any).runCommand(cmd), `set-mouse ${x} ${y}`);
+	await ensureGsEval(page);
+	await runCommand(page, `set-mouse ${x} ${y}`);
 }
 
 export async function mouseClick(page: Page, x: number, y: number) {
@@ -49,11 +52,11 @@ export async function mouseDrag(page: Page, x1: number, y1: number, x2: number, 
 }
 
 async function mouseDown(page: Page) {
-	await ensureRunCommand(page);
-	await page.evaluate(() => (window as any).runCommand('mouse-button down'));
+	await ensureGsEval(page);
+	await runCommand(page, 'mouse-button down');
 }
 async function mouseUp(page: Page) {
-	await ensureRunCommand(page);
-	await page.evaluate(() => (window as any).runCommand('mouse-button up'));
+	await ensureGsEval(page);
+	await runCommand(page, 'mouse-button up');
 }
 

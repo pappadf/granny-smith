@@ -1,85 +1,87 @@
-# Integration test: Debug tooling (PR1 + PR2 of proposal-debug-tooling.md)
-# Exercises the "find" command across all sub-commands (str, bytes, word,
-# long), argument forms, and error paths.  The runner (run.sh) captures
-# this script's output and greps for expected markers.
+# Integration test: Debug tooling — `find` family
+# (PR1 + PR2 of proposal-debug-tooling.md).
+#
+# Uses the typed `find.{str|bytes|long|word}` methods. Each method
+# delegates to the legacy `find` parser via shell_dispatch, so error
+# messages are preserved unchanged. The runner (run.sh) captures
+# stdout and greps for the parser's output markers.
 
-# === find: basic help + usage diagnostics ===============================
+# === find: introspection ================================================
 
-help find
-find
-find str
-find bytes
-find word
-find long
+# methods("find") lists the four sub-command methods this script
+# exercises. Replaces the legacy `help find` synopsis check.
+echo ${methods("find")}
 
-# Bogus sub-command should produce a clear error.
-find bogus
-
-# === find str: ASCII search =============================================
+# === find.str: ASCII search =============================================
 
 # "Apple" appears in the Plus ROM (which is mirrored at 0x400000).
-# Restrict the scan to the primary mirror so the expected hit count is stable.
-find str "Apple" $400000..$440000
+# Restrict the scan to the primary mirror so the expected hit count is
+# stable.
+find.str "Apple" "$400000..$440000"
 
 # `all` token uncaps the hit limit (exercises the 'all' parser path).
-find str "Apple" $400000..$440000 all
+find.str "Apple" "$400000..$440000 all"
 
 # "<start> <count>" form: scan exactly 0x40000 bytes from 0x400000.
-find str "Apple" $400000 0x40000
+find.str "Apple" "$400000 0x40000"
 
 # Empty pattern should be rejected.
-find str "" $400000..$440000
+find.str "" "$400000..$440000"
 
-# === find bytes: hex-byte-sequence search ===============================
+# === find.bytes: hex-byte-sequence search ===============================
 
 # Search for NOP (4E 71) in the mapped address range.
-find bytes 4E 71 $400000..$440000
+find.bytes "4E 71" "$400000..$440000"
 
 # Longer pattern with range.
-find bytes 4E B9 $400000..$440000
+find.bytes "4E B9" "$400000..$440000"
 
 # Non-hex token should be rejected (ZZ is not a valid hex byte).
-find bytes ZZ
+find.bytes "ZZ"
 
-# Hex mixed with range on the same line (whitespace-delimited).
-find bytes 4E 71 $400000..$440000 all
+# Hex mixed with range on the same line.
+find.bytes "4E 71" "$400000..$440000 all"
 
-# === find word: 16-bit big-endian value search ==========================
+# === find.word: 16-bit big-endian value search ==========================
 
-# "Apple" begins with bytes 41 70 ('A','p'), so word $4170 hits
-# wherever "Apple" starts — same location the str test already asserts.
-find word $4170 $400000..$440000
+# "Apple" begins with bytes 41 70 ('A','p'), so word $4170 hits wherever
+# "Apple" starts — same location the str test already asserts.
+# `$XXXX` parses as V_STRING in path-form and is forwarded verbatim to
+# the legacy parser, which interprets the `$` prefix as hex.
+find.word $4170 "$400000..$440000"
 
-# 0x-prefixed value is accepted too (same result as above).
-find word 0x4170 $400000..$440000
+# 0x-prefixed value parses as V_INT and is dispatched as 0xN.
+find.word 0x4170 "$400000..$440000"
 
-# Bare-hex form (no prefix) is parsed as hex.
-find word 4170 $400000..$440000
+# Bare-hex form (no prefix) needs quoting in path-form so the literal
+# parser doesn't read it as decimal — quote it as a string and the
+# legacy parser still treats it as hex.
+find.word "4170" "$400000..$440000"
 
 # Values exceeding 16 bits must be rejected — not silently truncated.
-find word $10000 $400000..$440000
+find.word $10000 "$400000..$440000"
 
 # Non-numeric value should produce a clear error.
-find word zzz $400000..$440000
+find.word zzz "$400000..$440000"
 
-# === find long: 32-bit big-endian value search ==========================
+# === find.long: 32-bit big-endian value search ==========================
 
-# First four bytes of "Apple" = 41 70 70 6C; long $4170706C hits
-# at the same address as the str match.
-find long $4170706C $400000..$440000
+# First four bytes of "Apple" = 41 70 70 6C; long $4170706C hits at the
+# same address as the str match.
+find.long $4170706C "$400000..$440000"
 
 # `all` token uncaps the hit limit for the long variant too.
-find long $4170706C $400000..$440000 all
+find.long $4170706C "$400000..$440000 all"
 
 # "<start> <count>" range form works for long as well.
-find long $4170706C $400000 0x40000
+find.long $4170706C "$400000 0x40000"
 
 # === Error paths: bad range forms =======================================
 
 # Missing right side of ..
-find str "Apple" $400000..
+find.str "Apple" "$400000.."
 
 # Backwards range.
-find str "Apple" $500000..$400000
+find.str "Apple" "$500000..$400000"
 
 quit

@@ -3,21 +3,21 @@
 # and verifies that the Finder desktop appears.
 
 # Boot to Finder desktop (8MB RAM needs more cycles for memory test)
-run 2000000000
+scheduler.run 2000000000
 
 # Verify the screen matches the Finder desktop reference image
-screenshot match finder.png
+screen.match finder.png
 
 # Bring up the "About..." window
-set-mouse 25 10 --global
-run 4000000
-mouse-button down
-run 20000000
-set-mouse 25 30 --global
-run 40000000
-mouse-button up
-run 100000000
+mouse.move 25 10 "global"
+scheduler.run 4000000
+mouse.click true
+scheduler.run 20000000
+mouse.move 25 30 "global"
+scheduler.run 40000000
+mouse.click false
+scheduler.run 100000000
 
-screenshot match about.png
+screen.match about.png
 
 quit

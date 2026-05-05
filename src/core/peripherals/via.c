@@ -12,13 +12,22 @@
 #include "common.h"
 #include "cpu.h"
 #include "log.h"
+#include "object.h"
 #include "platform.h"
 #include "system.h"
+#include "system_config.h"
+#include "value.h"
 
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
+
+// Forward declarations — class descriptors are at the bottom of the file but
+// via_init / via_delete reference them.
+extern const class_desc_t via_class;
+extern const class_desc_t via_port_a_class;
+extern const class_desc_t via_port_b_class;
 
 // ============================================================================
 // Constants and Macros
@@ -112,6 +121,11 @@ struct via {
 
     // CPU-to-VIA clock divisor: CPU_clock / freq_factor ≈ 783 kHz VIA φ2 clock
     uint8_t freq_factor;
+
+    // Object-tree binding — lifetime tied to via_init / via_delete.
+    struct object *object;
+    struct object *port_a_object;
+    struct object *port_b_object;
 };
 
 // ============================================================================
@@ -576,8 +590,9 @@ static void via_write_uint32(void *via, uint32_t addr, uint32_t value) {
 // ============================================================================
 
 // Initialize a new VIA instance with callbacks and optional checkpoint restoration
-via_t *via_init(memory_map_t *restrict map, struct scheduler *scheduler, uint8_t freq_factor, via_output_fn output_cb,
-                via_shift_out_fn shift_cb, via_irq_fn irq_cb, void *cb_context, checkpoint_t *checkpoint) {
+via_t *via_init(memory_map_t *restrict map, struct scheduler *scheduler, uint8_t freq_factor, const char *name,
+                via_output_fn output_cb, via_shift_out_fn shift_cb, via_irq_fn irq_cb, void *cb_context,
+                checkpoint_t *checkpoint) {
     via_t *via = (via_t *)malloc(sizeof(via_t));
     if (via == NULL)
         return NULL;
@@ -604,10 +619,12 @@ via_t *via_init(memory_map_t *restrict map, struct scheduler *scheduler, uint8_t
     via->ports[0].input = 0xf7;
     via->ports[1].input = 0xFF;
 
-    // Register event types for checkpointing
-    scheduler_new_event_type(scheduler, "via", via, "t1", &t1_callback);
-    scheduler_new_event_type(scheduler, "via", via, "t2", &t2_callback);
-    scheduler_new_event_type(scheduler, "via", via, "sr", &sr_shift_complete_callback);
+    // Register event types for checkpointing under the per-instance name
+    // ("via1", "via2") so multi-VIA machines don't collide.
+    const char *event_name = name ? name : "via";
+    scheduler_new_event_type(scheduler, event_name, via, "t1", &t1_callback);
+    scheduler_new_event_type(scheduler, event_name, via, "t2", &t2_callback);
+    scheduler_new_event_type(scheduler, event_name, via, "sr", &sr_shift_complete_callback);
 
     // Register with memory map if provided (NULL = machine handles registration)
     if (map)
@@ -628,16 +645,23 @@ via_t *via_init(memory_map_t *restrict map, struct scheduler *scheduler, uint8_t
         LOG(1, "via_init: restored from checkpoint IFR=0x%02x", (unsigned)via->ifr);
     }
 
-    return via;
-}
+    // Object-tree binding — instance_data is the via_t itself; ports are
+    // attached as named children. Both child member tables share the same
+    // class descriptors (via_port_a_class / via_port_b_class) — the channel
+    // index is encoded in the member's user_data, the VIA identity comes
+    // from the object's instance_data.
+    via->object = object_new(&via_class, via, name ? name : "via");
+    if (via->object) {
+        object_attach(object_root(), via->object);
+        via->port_a_object = object_new(&via_port_a_class, via, "port_a");
+        if (via->port_a_object)
+            object_attach(via->object, via->port_a_object);
+        via->port_b_object = object_new(&via_port_b_class, via, "port_b");
+        if (via->port_b_object)
+            object_attach(via->object, via->port_b_object);
+    }
 
-// Re-register event types under a custom instance name (e.g. "via2")
-void via_set_instance_name(via_t *via, const char *name) {
-    if (!via || !via->scheduler || !name)
-        return;
-    scheduler_new_event_type(via->scheduler, name, via, "t1", &t1_callback);
-    scheduler_new_event_type(via->scheduler, name, via, "t2", &t2_callback);
-    scheduler_new_event_type(via->scheduler, name, via, "sr", &sr_shift_complete_callback);
+    return via;
 }
 
 // ============================================================================
@@ -649,6 +673,42 @@ const memory_interface_t *via_get_memory_interface(via_t *via) {
     return &via->memory_interface;
 }
 
+// === M7c — read-only views for the object model =============================
+
+uint8_t via_get_ifr(const via_t *via) {
+    return via ? via->ifr : 0;
+}
+uint8_t via_get_ier(const via_t *via) {
+    return via ? via->ier : 0;
+}
+uint8_t via_get_acr(const via_t *via) {
+    return via ? via->acr : 0;
+}
+uint8_t via_get_pcr(const via_t *via) {
+    return via ? via->pcr : 0;
+}
+uint8_t via_get_sr(const via_t *via) {
+    return via ? via->sr : 0;
+}
+uint8_t via_port_output(const via_t *via, unsigned which) {
+    return (via && which < 2) ? via->ports[which].output : 0;
+}
+uint8_t via_port_input(const via_t *via, unsigned which) {
+    return (via && which < 2) ? via->ports[which].input : 0;
+}
+uint8_t via_port_direction(const via_t *via, unsigned which) {
+    return (via && which < 2) ? via->ports[which].direction : 0;
+}
+uint16_t via_timer_counter(const via_t *via, unsigned which) {
+    return (via && which < 2) ? via->timers[which].counter : 0;
+}
+uint16_t via_timer_latch(const via_t *via, unsigned which) {
+    return (via && which < 2) ? via->timers[which].latch : 0;
+}
+uint8_t via_get_freq_factor(const via_t *via) {
+    return via ? via->freq_factor : 0;
+}
+
 // ============================================================================
 // Lifecycle: Destructor
 // ============================================================================
@@ -658,6 +718,21 @@ void via_delete(via_t *via) {
     if (!via)
         return;
     LOG(1, "via_delete: freeing via");
+    if (via->port_b_object) {
+        object_detach(via->port_b_object);
+        object_delete(via->port_b_object);
+        via->port_b_object = NULL;
+    }
+    if (via->port_a_object) {
+        object_detach(via->port_a_object);
+        object_delete(via->port_a_object);
+        via->port_a_object = NULL;
+    }
+    if (via->object) {
+        object_detach(via->object);
+        object_delete(via->object);
+        via->object = NULL;
+    }
     free(via);
 }
 
@@ -798,3 +873,127 @@ void via_input_c(via_t *restrict via, int port, int c, bool value) {
         }
     }
 }
+
+// === Object-model class descriptors =========================================
+//
+// Plus has a single `via1`; SE/30 and IIcx add `via2`. Both VIAs share
+// the same `via_class` descriptor — instance_data is the via_t* itself,
+// and the object's name (set at attach time) distinguishes them.
+//
+// Port children: instance_data is the parent's via_t*; the port index
+// (0 = A, 1 = B) is encoded in each member's user_data slot.
+
+static via_t *via_instance_from(struct object *self) {
+    return (via_t *)object_data(self);
+}
+#define VIA_BYTE_GETTER(NAME, ACC)                                                                                     \
+    static value_t via_attr_##NAME(struct object *self, const member_t *m) {                                           \
+        (void)m;                                                                                                       \
+        via_t *via = via_instance_from(self);                                                                          \
+        value_t v = val_uint(1, ACC(via));                                                                             \
+        v.flags |= VAL_HEX;                                                                                            \
+        return v;                                                                                                      \
+    }
+
+VIA_BYTE_GETTER(ifr, via_get_ifr)
+VIA_BYTE_GETTER(ier, via_get_ier)
+VIA_BYTE_GETTER(acr, via_get_acr)
+VIA_BYTE_GETTER(pcr, via_get_pcr)
+VIA_BYTE_GETTER(sr, via_get_sr)
+
+static value_t via_attr_freq_factor(struct object *self, const member_t *m) {
+    (void)m;
+    via_t *via = via_instance_from(self);
+    return val_uint(1, via_get_freq_factor(via));
+}
+
+// Port child: instance_data is the parent VIA's via_t*; the port index
+// (0 = A, 1 = B) lives in the member's user_data.
+
+static unsigned port_index_from_member(const member_t *m) {
+    return (unsigned)(uintptr_t)m->attr.user_data;
+}
+
+static value_t via_port_attr_output(struct object *self, const member_t *m) {
+    via_t *via = via_instance_from(self);
+    value_t v = val_uint(1, via_port_output(via, port_index_from_member(m)));
+    v.flags |= VAL_HEX;
+    return v;
+}
+static value_t via_port_attr_input(struct object *self, const member_t *m) {
+    via_t *via = via_instance_from(self);
+    value_t v = val_uint(1, via_port_input(via, port_index_from_member(m)));
+    v.flags |= VAL_HEX;
+    return v;
+}
+static value_t via_port_attr_direction(struct object *self, const member_t *m) {
+    via_t *via = via_instance_from(self);
+    value_t v = val_uint(1, via_port_direction(via, port_index_from_member(m)));
+    v.flags |= VAL_HEX;
+    return v;
+}
+
+// One member table per port index (A=0, B=1). Two tables instead of four
+// because instance_data carries the VIA identity now.
+#define VIA_PORT_MEMBERS(VAR, PORT)                                                                                    \
+    static const member_t VAR[] = {                                                                                    \
+        {.kind = M_ATTR,                                                                                               \
+         .name = "output",                                                                                             \
+         .flags = VAL_RO | VAL_HEX,                                                                                    \
+         .attr = {.type = V_UINT, .get = via_port_attr_output, .set = NULL, .user_data = (void *)(uintptr_t)(PORT)}},  \
+        {.kind = M_ATTR,                                                                                               \
+         .name = "input",                                                                                              \
+         .flags = VAL_RO | VAL_HEX,                                                                                    \
+         .attr = {.type = V_UINT, .get = via_port_attr_input, .set = NULL, .user_data = (void *)(uintptr_t)(PORT)} },   \
+        {.kind = M_ATTR,                                                                                               \
+         .name = "direction",                                                                                          \
+         .flags = VAL_RO | VAL_HEX,                                                                                    \
+         .attr =                                                                                                       \
+             {.type = V_UINT, .get = via_port_attr_direction, .set = NULL, .user_data = (void *)(uintptr_t)(PORT)} },   \
+    }
+
+// clang-format off — macro expands to definitions; no trailing semicolons.
+VIA_PORT_MEMBERS(via_port_a_members, 0);
+VIA_PORT_MEMBERS(via_port_b_members, 1);
+// clang-format on
+
+const class_desc_t via_port_a_class = {.name = "via_port",
+                                       .members = via_port_a_members,
+                                       .n_members = sizeof(via_port_a_members) / sizeof(via_port_a_members[0])};
+const class_desc_t via_port_b_class = {.name = "via_port",
+                                       .members = via_port_b_members,
+                                       .n_members = sizeof(via_port_b_members) / sizeof(via_port_b_members[0])};
+
+// Status-register member table (shared by via1 / via2 via instance_data).
+static const member_t via_members[] = {
+    {.kind = M_ATTR,
+     .name = "ifr",
+     .flags = VAL_RO | VAL_HEX,
+     .attr = {.type = V_UINT, .get = via_attr_ifr, .set = NULL}        },
+    {.kind = M_ATTR,
+     .name = "ier",
+     .flags = VAL_RO | VAL_HEX,
+     .attr = {.type = V_UINT, .get = via_attr_ier, .set = NULL}        },
+    {.kind = M_ATTR,
+     .name = "acr",
+     .flags = VAL_RO | VAL_HEX,
+     .attr = {.type = V_UINT, .get = via_attr_acr, .set = NULL}        },
+    {.kind = M_ATTR,
+     .name = "pcr",
+     .flags = VAL_RO | VAL_HEX,
+     .attr = {.type = V_UINT, .get = via_attr_pcr, .set = NULL}        },
+    {.kind = M_ATTR,
+     .name = "sr",
+     .flags = VAL_RO | VAL_HEX,
+     .attr = {.type = V_UINT, .get = via_attr_sr, .set = NULL}         },
+    {.kind = M_ATTR,
+     .name = "freq_factor",
+     .flags = VAL_RO,
+     .attr = {.type = V_UINT, .get = via_attr_freq_factor, .set = NULL}},
+};
+
+const class_desc_t via_class = {
+    .name = "via",
+    .members = via_members,
+    .n_members = sizeof(via_members) / sizeof(via_members[0]),
+};

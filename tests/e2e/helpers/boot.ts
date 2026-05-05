@@ -78,7 +78,7 @@ export async function bootWithUploadedMedia(
 	romRel: string,
 	fd0Rel?: string,
 	hd0ZipRel?: string,
-	options?: { hdSlot?: number; navigatePath?: string; hideOverlay?: boolean; fdWritable?: boolean }
+	options?: { hdSlot?: number; navigatePath?: string; hideOverlay?: boolean; fdWritable?: boolean; vromRel?: string }
 ) {
 	const hdSlot = options?.hdSlot ?? 0;
 	const navigatePath = options?.navigatePath ?? '/index.html';
@@ -89,17 +89,19 @@ export async function bootWithUploadedMedia(
 	const rom = resolveRequired(romRel, 'ROM');
 	const fd0 = resolveOptional(fd0Rel, 'fd0');
 	const hdZip = resolveOptional(hd0ZipRel, 'HD zip');
+	const vrom = resolveOptional(options?.vromRel, 'vrom');
 
 	// Navigate to the app with ?noui to skip ROM upload / config dialogs.
 	const sep = navigatePath.includes('?') ? '&' : '?';
 	await page.goto(`${navigatePath}${sep}noui`);
 
-	// Wait for shim and command bridge. injectMedia now uses drop events (no __Module.FS needed).
+	// Wait for shim and the gsEval bridge. injectMedia now uses drop events
+	// (no __Module.FS needed).
 	await page.waitForFunction(() => {
 		const shim = (window as any).__gsTestShim;
 		const hasInject = typeof shim?.injectMedia === 'function';
-		const hasRunCommand = typeof (window as any).runCommand === 'function';
-		return hasInject && hasRunCommand;
+		const hasGsEval = typeof (window as any).gsEval === 'function';
+		return hasInject && hasGsEval;
 	}, { timeout: 60000 });
 
 	if (options?.wipeCheckpoints !== false) {
@@ -110,9 +112,11 @@ export async function bootWithUploadedMedia(
 		});
 	}
 
-	// Build uploads: ROM always; optional FD0; HD is extracted from zip to its inner image
+	// Build uploads: ROM always; optional VROM/FD0; HD is extracted from zip to its inner image.
+	// VROM must be staged BEFORE machine.boot — SE/30 init aborts if it can't find a Video ROM.
 	const uploads: { name: string; data: Uint8Array }[] = [];
 	uploads.push({ name: 'rom', data: readFileBytes(rom.abs) });
+	if (vrom) uploads.push({ name: 'vrom', data: readFileBytes(vrom.abs) });
 	if (fd0) uploads.push({ name: 'fd0', data: readFileBytes(fd0.abs) });
 	if (hdZip) {
 		const hd = await extractFirstFileFromZip(hdZip.abs);
@@ -153,13 +157,27 @@ export async function bootWithUploadedMedia(
 		return (window as any).__gsBootReady === true;
 	}, { timeout: 60000 });
 
-	// Issue boot-time commands but DO NOT run
-	await page.evaluate(({ hasFd, hasHd, hdSlot, fdWritable }) => {
-		const send = (window as any).runCommand;
-		send('rom load /tmp/rom');
-		if (hasFd) send(`fd insert /tmp/fd0 0 ${fdWritable ? 'true' : 'false'}`);
-		if (hasHd) send(`hd attach /tmp/hd${hdSlot} ${hdSlot}`);
-	}, { hasFd: Boolean(fd0), hasHd: Boolean(hdZip), hdSlot, fdWritable });
+	// Issue boot-time commands but DO NOT run. All three calls go through
+	// gsEval inside one page.evaluate to avoid a Playwright round-trip
+	// per command.
+	await page.evaluate(async ({ hasFd, hasHd, hasVrom, hdSlot, fdWritable }) => {
+		const ev = (window as any).gsEval;
+		// New machine-creation model: pick a machine explicitly via
+		// machine.boot() before loading the ROM. rom.identify returns the
+		// list of compatible model_ids; we boot the first one (matches the
+		// old auto-pick behaviour: Plus ROM → Plus, Universal → SE/30).
+		const compatible = await ev('rom.identify', ['/tmp/rom']);
+		if (!Array.isArray(compatible) || compatible.length === 0)
+			throw new Error('rom.identify: no compatible machines for /tmp/rom');
+		// vrom.load only stages a pending path; the bytes are read by
+		// machine.boot during SE/30 peripheral init. Stage it first so the
+		// SE/30 init can find the file.
+		if (hasVrom) await ev('vrom.load', ['/tmp/vrom']);
+		await ev('machine.boot', [compatible[0]]);
+		await ev('rom.load', ['/tmp/rom']);
+		if (hasFd) await ev('floppy.drives[0].insert', ['/tmp/fd0', fdWritable]);
+		if (hasHd) await ev('scsi.attach_hd', [`/tmp/hd${hdSlot}`, hdSlot]);
+	}, { hasFd: Boolean(fd0), hasHd: Boolean(hdZip), hasVrom: Boolean(vrom), hdSlot, fdWritable });
 }
 
 interface UploadEntry { name: string; data: Uint8Array; }

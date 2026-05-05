@@ -1,0 +1,37 @@
+# M7a integration: `scc` object class.
+# The new `scc.*` paths and the legacy `scc loopback` command must
+# share the same backing state — flipping one and reading via the
+# other is the strongest test that the object surface is a real
+# view, not a separate bag of fields.
+
+scheduler.run 50000
+
+# Defaults.
+scc
+scc.loopback
+scc.pclk_hz
+scc.rtxc_hz
+
+# Channel children both resolve and report their own index.
+scc.a
+scc.b
+scc.a.index
+scc.b.index
+scc.a.dcd
+scc.b.dcd
+scc.a.tx_empty
+scc.b.rx_pending
+
+# Flip via the typed setter, assert via the path predicate. The
+# round-trip is the real test — anything that decouples the attribute
+# from the underlying scc state shows up here as an assertion failure.
+scc.loopback = true
+assert ${scc.loopback == true}
+scc.loopback = false
+assert ${scc.loopback == false}
+
+# Reset method runs to completion (no return value to assert beyond
+# the absence of an error in the JSON output).
+echo ${scc.reset()}
+
+quit

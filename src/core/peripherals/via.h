@@ -35,12 +35,12 @@ typedef void (*via_irq_fn)(void *context, bool active);
 // shift_cb: called when the shift register completes a shift-out
 // irq_cb: called when the aggregate interrupt line changes state
 // cb_context: opaque pointer passed to all three callbacks
-via_t *via_init(memory_map_t *map, struct scheduler *scheduler, uint8_t freq_factor, via_output_fn output_cb,
-                via_shift_out_fn shift_cb, via_irq_fn irq_cb, void *cb_context, checkpoint_t *checkpoint);
-
-// Set a custom instance name for event type registration (e.g. "via1", "via2").
-// Must be called before scheduler_start() if using checkpoints on multi-VIA machines.
-void via_set_instance_name(via_t *via, const char *name);
+// `name` ("via1" / "via2") tags scheduler events for checkpointing and is
+// used as the object-tree node name. Must be a string literal or otherwise
+// outlive the via_t.
+via_t *via_init(memory_map_t *map, struct scheduler *scheduler, uint8_t freq_factor, const char *name,
+                via_output_fn output_cb, via_shift_out_fn shift_cb, via_irq_fn irq_cb, void *cb_context,
+                checkpoint_t *checkpoint);
 
 void via_delete(via_t *via);
 
@@ -68,5 +68,28 @@ void via_cancel_pending_shift(via_t *via);
 
 // Get the memory-mapped I/O interface for machine-level address decode
 const memory_interface_t *via_get_memory_interface(via_t *via);
+
+// === M7c — object-model accessors ===========================================
+//
+// Read-only views over the VIA register file used by the `via1` /
+// `via2` object classes. Port `which` is 0 (A) or 1 (B); timer
+// `which` is 0 (T1) or 1 (T2). All accessors return 0 / false when
+// `via` is NULL or the index is out of range, so the object getters
+// can ignore those edge cases.
+
+uint8_t via_get_ifr(const via_t *via);
+uint8_t via_get_ier(const via_t *via);
+uint8_t via_get_acr(const via_t *via);
+uint8_t via_get_pcr(const via_t *via);
+uint8_t via_get_sr(const via_t *via);
+
+uint8_t via_port_output(const via_t *via, unsigned which);
+uint8_t via_port_input(const via_t *via, unsigned which);
+uint8_t via_port_direction(const via_t *via, unsigned which);
+
+uint16_t via_timer_counter(const via_t *via, unsigned which);
+uint16_t via_timer_latch(const via_t *via, unsigned which);
+
+uint8_t via_get_freq_factor(const via_t *via);
 
 #endif // VIA_H

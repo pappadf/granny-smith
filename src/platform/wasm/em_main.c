@@ -41,9 +41,9 @@
 #endif
 #endif
 
+#include "api.h"
 #include "checkpoint.h"
 #include "checkpoint_machine.h"
-#include "cmd_json.h"
 #include "cmd_types.h"
 #include "cpu.h"
 #include "keyboard.h"
@@ -406,33 +406,72 @@ static void build_prompt_text(char *dest, size_t dest_len) {
 // Emscripten-specific shell stubs
 void print_prompt(void) {}
 
-EMSCRIPTEN_KEEPALIVE const char *shell_emit_prompt(void) {
-    static char prompt[100];
-    build_prompt_text(prompt, sizeof(prompt));
-    return prompt;
-}
-
 // ============================================================================
-// Shared-heap Command Queue
+// Shared-heap Command Queue (and gs_eval queue)
 // ============================================================================
 //
-// With PROXY_TO_PTHREAD, Module on the main thread and Module on the worker
-// are separate JS objects.  We cannot share a JS queue between them.  Instead,
-// use C globals in the WASM heap (backed by SharedArrayBuffer) which ARE
-// visible from both threads.
+// THREADING MODEL — read this before changing anything in this section.
 //
-// Protocol:
-//   1. JS writes the command string into g_cmd_buffer, sets g_cmd_pending=1
-//   2. Worker's shell_poll() sees g_cmd_pending, executes the command,
-//      writes g_cmd_result, sets g_cmd_done=1, clears g_cmd_pending
-//   3. JS polls g_cmd_done with setTimeout, reads g_cmd_result, resolves Promise
+// We build with -sPROXY_TO_PTHREAD, which spawns a worker pthread and runs
+// `main()` (and therefore `shell_init()`, `system_create()`,
+// `emscripten_set_main_loop(em_main_tick, ...)`) on that worker. The worker
+// owns every piece of emulator state: scheduler, machine, devices, RAM,
+// OPFS file handles. The JS main thread keeps its own Module instance for
+// canvas + DOM + xterm, but it does NOT own emulator state.
+//
+// IMPORTANT: with PROXY_TO_PTHREAD, exported Wasm functions are ALSO
+// callable directly from the main JS thread via `Module.ccall(...)`. Such
+// a call does NOT proxy to the worker — it executes the Wasm code on the
+// main thread, with the main thread's pthread context, while the worker
+// is concurrently running `em_main_tick`. Only functions that Emscripten
+// emits into `proxiedFunctionTable` (a small set of built-in callbacks
+// like pointerlock / mouse / visibility) get auto-proxied. None of our
+// `_em_*` exports are in that table.
+//
+// Calling shell-touching code from the main thread is therefore unsafe:
+//   - It races the worker for scheduler / machine / device state
+//   - WASMFS / OPFS handles opened on the worker pthread are not
+//     guaranteed to behave correctly from another thread
+//   - Mutexes inside the runtime can deadlock or stall for many seconds
+//
+// Real-world fallout from violating this rule (M10c regression, 2026-05-02):
+// `Module.ccall('em_gs_eval', ...)` was used for the typed object-model
+// bridge (`gsEval` / `gsInspect`) and ran shell_dispatch() on the main
+// thread.  E2E tests using checkpoint --save / --load via gsEval saw
+// 60–90 s per call, post-load `run` not advancing the emulator, and
+// "browser closed" crashes. Probes (pthread_self() inside shell_poll vs.
+// inside em_gs_eval) confirmed two distinct thread IDs.
+//
+// THE RULE
+// --------
+// JS → C must always go through the SAB queue below. JS writes the
+// request into shared globals, sets a pending flag, and polls a done
+// flag. The worker's `shell_poll()` (called from `em_main_tick`)
+// drains the queue and writes the result. ccall on `_em_*` exports is
+// forbidden.
+//
+// SAB queue (`g_gs_*`) — single typed bridge.
+//   g_gs_pending = 1 → gs_eval(path, args_json)         result JSON in g_gs_eval_buffer
+//   g_gs_pending = 2 → gs_inspect(path)                 result JSON in g_gs_eval_buffer
+//   g_gs_pending = 3 → tab_complete(line, cursor_pos)   match list in g_completion_buffer
+//   g_gs_pending = 4 → free-form shell line             integer in g_gs_result, output to stdout/stderr
+//   For kind=3, the cursor position is passed as decimal text in
+//   g_gs_args_buffer; for kind=4, the line is in g_gs_path_buffer.
+//
+// JS-side serialization (cmdInFlight in emulator.js) ensures only one
+// request is in flight at a time.
 
-#define CMD_BUF_SIZE 4096
-
-static char g_cmd_buffer[CMD_BUF_SIZE];
-static volatile int32_t g_cmd_pending = 0;
-static volatile int32_t g_cmd_done = 0;
-static volatile int32_t g_cmd_result = 0;
+#define GS_PATH_BUF_SIZE    1024
+#define GS_ARGS_BUF_SIZE    8192
+#define GS_EVAL_BUF_SIZE    16384
+#define COMPLETION_BUF_SIZE 4096
+static char g_gs_path_buffer[GS_PATH_BUF_SIZE];
+static char g_gs_args_buffer[GS_ARGS_BUF_SIZE];
+static char g_gs_eval_buffer[GS_EVAL_BUF_SIZE];
+static char g_completion_buffer[COMPLETION_BUF_SIZE];
+static volatile int32_t g_gs_pending = 0;
+static volatile int32_t g_gs_done = 0;
+static volatile int32_t g_gs_result = 0;
 
 // Shared prompt buffer — updated by the worker after each command so JS
 // on the main thread can read the current prompt without a cross-thread call.
@@ -443,100 +482,114 @@ static char g_prompt_buffer[PROMPT_BUF_SIZE];
 // poll it without a cross-thread EM_ASM callback.
 static volatile int32_t g_shared_is_running = 0;
 
-// JSON result buffer for structured command results (shared heap, 16KB)
-#define CMD_JSON_BUF_SIZE 16384
-static char g_cmd_json_buffer[CMD_JSON_BUF_SIZE];
-
-// Exported getters so JS can find these addresses in the shared heap
-EMSCRIPTEN_KEEPALIVE char *get_cmd_buffer(void) {
-    return g_cmd_buffer;
-}
-EMSCRIPTEN_KEEPALIVE volatile int32_t *get_cmd_pending_ptr(void) {
-    return &g_cmd_pending;
-}
-EMSCRIPTEN_KEEPALIVE volatile int32_t *get_cmd_done_ptr(void) {
-    return &g_cmd_done;
-}
-EMSCRIPTEN_KEEPALIVE volatile int32_t *get_cmd_result_ptr(void) {
-    return &g_cmd_result;
-}
+// Exported getters so JS can find these addresses in the shared heap.
 EMSCRIPTEN_KEEPALIVE char *get_prompt_buffer(void) {
     return g_prompt_buffer;
 }
 EMSCRIPTEN_KEEPALIVE volatile int32_t *get_is_running_ptr(void) {
     return &g_shared_is_running;
 }
-EMSCRIPTEN_KEEPALIVE char *get_cmd_json_buffer(void) {
-    return g_cmd_json_buffer;
+EMSCRIPTEN_KEEPALIVE volatile int32_t *get_shell_ready_ptr(void) {
+    return gs_shell_ready_ptr();
 }
 
+// gs_eval queue accessors (see "Threading model" comment block above for
+// why this exists — JS must NOT call ccall on _em_gs_eval directly).
+EMSCRIPTEN_KEEPALIVE char *get_gs_path_buffer(void) {
+    return g_gs_path_buffer;
+}
+EMSCRIPTEN_KEEPALIVE char *get_gs_args_buffer(void) {
+    return g_gs_args_buffer;
+}
+EMSCRIPTEN_KEEPALIVE volatile int32_t *get_gs_pending_ptr(void) {
+    return &g_gs_pending;
+}
+EMSCRIPTEN_KEEPALIVE volatile int32_t *get_gs_done_ptr(void) {
+    return &g_gs_done;
+}
+EMSCRIPTEN_KEEPALIVE volatile int32_t *get_gs_result_ptr(void) {
+    return &g_gs_result;
+}
+
+// Forward declaration: defined alongside the completion buffer below.
+static int dispatch_tab_complete(const char *line, int cursor_pos);
+
 int shell_poll(void) {
-    if (!g_cmd_pending)
+    // The single SAB queue (`g_gs_*`) carries every JS → worker
+    // request. `kind` selects the dispatch:
+    //   1 = gs_eval(path, args)        — typed object-model call
+    //   2 = gs_inspect(path)           — recursive JSON dump
+    //   3 = tab complete (line, pos)   — completion engine
+    //   4 = free-form shell line       — terminal onSubmit
+    if (!g_gs_pending)
         return 0;
 
-    // Make a mutable copy — tokenize() modifies the buffer in-place
-    char cmd_copy[CMD_BUF_SIZE];
-    size_t len = strnlen(g_cmd_buffer, CMD_BUF_SIZE - 1);
-    memcpy(cmd_copy, g_cmd_buffer, len);
-    cmd_copy[len] = '\0';
-
-    // Strip trailing newlines/carriage returns
-    while (len > 0 && (cmd_copy[len - 1] == '\n' || cmd_copy[len - 1] == '\r'))
-        cmd_copy[--len] = '\0';
-
-    // Execute in programmatic mode so cmd_printf output is captured into
-    // buffers (needed by runCommandJSON on the JS side).  After dispatch we
-    // echo the captured output to stdout/stderr so it still appears in the
-    // xterm.js terminal for interactive users.
-    struct cmd_result cmd_res;
-    memset(&cmd_res, 0, sizeof(cmd_res));
-
-    dispatch_command(cmd_copy, INVOKE_PROGRAMMATIC, &cmd_res);
-
-    // Echo captured output to the terminal
-    if (cmd_res.output && cmd_res.output_len > 0)
-        fwrite(cmd_res.output, 1, cmd_res.output_len, stdout);
-    if (cmd_res.error_output && cmd_res.error_len > 0)
-        fwrite(cmd_res.error_output, 1, cmd_res.error_len, stderr);
-
-    // Serialize the structured result to JSON for JS consumption
-    cmd_result_to_json(&cmd_res, g_cmd_json_buffer, CMD_JSON_BUF_SIZE);
-
-    // Refresh the prompt on the worker (where system state is fully visible)
-    build_prompt_text(g_prompt_buffer, PROMPT_BUF_SIZE);
-
-    // Extract integer result
-    int32_t result = 0;
-    if (cmd_res.type == RES_INT)
-        result = (int32_t)cmd_res.as_int;
-    else if (cmd_res.type == RES_BOOL)
-        result = cmd_res.as_bool;
-    else if (cmd_res.type == RES_ERR)
-        result = -1;
-
-    g_cmd_result = result;
-    g_cmd_pending = 0;
-    g_cmd_done = 1;
-
+    int kind = g_gs_pending;
+    int rc;
+    if (kind == 2) {
+        rc = gs_inspect(g_gs_path_buffer, g_gs_eval_buffer, GS_EVAL_BUF_SIZE);
+    } else if (kind == 3) {
+        // Tab complete: line in g_gs_path_buffer, cursor pos in
+        // g_gs_args_buffer (decimal text), JSON result in
+        // g_completion_buffer, match count returned.
+        int cursor_pos = atoi(g_gs_args_buffer);
+        rc = dispatch_tab_complete(g_gs_path_buffer, cursor_pos);
+    } else if (kind == 4) {
+        // Free-form line — used by the xterm.js terminal. Output goes
+        // straight to stdout/stderr (the WASM Module's printFn already
+        // routes those into the terminal); the integer result lands in
+        // g_gs_result so the caller can branch on success/failure.
+        size_t len = strnlen(g_gs_path_buffer, GS_PATH_BUF_SIZE - 1);
+        while (len > 0 && (g_gs_path_buffer[len - 1] == '\n' || g_gs_path_buffer[len - 1] == '\r'))
+            g_gs_path_buffer[--len] = '\0';
+        struct cmd_result res;
+        memset(&res, 0, sizeof(res));
+        dispatch_command(g_gs_path_buffer, &res);
+        build_prompt_text(g_prompt_buffer, PROMPT_BUF_SIZE);
+        if (res.type == RES_INT)
+            rc = (int)res.as_int;
+        else if (res.type == RES_BOOL)
+            rc = res.as_bool;
+        else if (res.type == RES_ERR)
+            rc = -1;
+        else
+            rc = 0;
+        g_gs_eval_buffer[0] = '\0';
+    } else {
+        const char *args = (g_gs_args_buffer[0] != '\0') ? g_gs_args_buffer : NULL;
+        rc = gs_eval(g_gs_path_buffer, args, g_gs_eval_buffer, GS_EVAL_BUF_SIZE);
+    }
+    g_gs_result = rc;
+    g_gs_pending = 0;
+    g_gs_done = 1;
     return 1;
 }
 
-// ============================================================================
-// Tab Completion
-// ============================================================================
-
-// Shared completion result buffer (JSON array of strings)
-#define COMPLETION_BUF_SIZE 4096
-static char g_completion_buffer[COMPLETION_BUF_SIZE];
-
-// Export the completion buffer pointer
 EMSCRIPTEN_KEEPALIVE char *get_completion_buffer(void) {
     return g_completion_buffer;
 }
 
-// Run tab completion and write results as JSON array to the completion buffer.
-// Called from JS when user presses Tab.
-EMSCRIPTEN_KEEPALIVE int em_tab_complete(const char *line, int cursor_pos) {
+// ============================================================================
+// Object-model bridge result buffer
+// ============================================================================
+// (The actual gs_eval queue state and processing live alongside the cmd
+// queue further up — see the "Threading model" comment block. There used
+// to be `em_gs_eval` / `em_gs_inspect` exports JS called via ccall; they
+// were removed because ccall on those from the main thread does NOT
+// proxy to the worker. JS now writes (path, args_json) into
+// g_gs_path_buffer / g_gs_args_buffer, sets g_gs_pending, and the
+// worker's shell_poll() runs gs_eval there.)
+
+EMSCRIPTEN_KEEPALIVE char *get_gs_eval_buffer(void) {
+    return g_gs_eval_buffer;
+}
+
+// Run tab completion on the worker. Invoked by shell_poll when JS sets
+// g_gs_pending = 3 — see the queue protocol comment near the cmd queue
+// definition above. (Originally exported as `em_tab_complete` callable
+// via Module.ccall; that path was removed for the same threading
+// reason as em_gs_eval.)
+static int dispatch_tab_complete(const char *line, int cursor_pos) {
     struct completion comp;
     memset(&comp, 0, sizeof(comp));
 
@@ -670,60 +723,17 @@ void em_main_interrupt(void) {
 // Filesystem Commands
 // ============================================================================
 
-// File copy command - copies a file from one path to another.
-// Used by JS frontend to stage files from /tmp/ (memory) to OPFS paths.
-static uint64_t cmd_file_copy(int argc, char *argv[]) {
-    if (argc != 3) {
-        printf("usage: file-copy <src> <dest>\n");
-        return 1;
-    }
-
-    const char *src = argv[1];
-    const char *dest = argv[2];
-
-    FILE *fin = fopen(src, "rb");
-    if (!fin) {
-        printf("file-copy: cannot open '%s': %s\n", src, strerror(errno));
-        return 1;
-    }
-
-    FILE *fout = fopen(dest, "wb");
-    if (!fout) {
-        fclose(fin);
-        printf("file-copy: cannot create '%s': %s\n", dest, strerror(errno));
-        return 1;
-    }
-
-    char buf[65536];
-    size_t n;
-    while ((n = fread(buf, 1, sizeof(buf), fin)) > 0) {
-        if (fwrite(buf, 1, n, fout) != n) {
-            printf("file-copy: write error: %s\n", strerror(errno));
-            fclose(fin);
-            fclose(fout);
-            return 1;
-        }
-    }
-
-    fclose(fin);
-    fclose(fout);
-    return 0;
-}
-
 // Find a mountable media file in a directory.
 // Scans the directory for files that pass floppy image validation (fd probe).
 // Prints the path of the first match and returns 0, or returns 1 if none found.
 // Used by JS after peeler extraction (FS.readdir from main thread is broken
 // with WasmFS pthreads, so this runs on the worker).
-static uint64_t cmd_find_media(int argc, char *argv[]) {
-    if (argc < 2) {
-        printf("usage: find-media <directory> [dest]\n");
-        return 1;
-    }
-
-    const char *dir_path = argv[1];
-    const char *dest = (argc >= 3) ? argv[2] : NULL;
-
+// Platform impl of gs_find_media (weak default in system.c stubs out
+// for headless).  Walks `dir_path`, picks the first regular file
+// recognised as a floppy image, optionally copies it to `dest`, and
+// prints the path on success.  Returns 0 on success, non-zero on
+// "no media found" / IO error.
+int gs_find_media(const char *dir_path, const char *dest) {
     DIR *dir = opendir(dir_path);
     if (!dir) {
         printf("find-media: cannot open '%s': %s\n", dir_path, strerror(errno));
@@ -784,13 +794,8 @@ static uint64_t cmd_find_media(int argc, char *argv[]) {
 }
 
 // Download command - save file to browser
-static uint64_t cmd_download(int argc, char *argv[]) {
-    if (argc != 2) {
-        printf("usage: download <path>\n");
-        return 0;
-    }
-
-    const char *path = argv[1];
+// Platform impl of gs_download (weak default in system.c stubs out).
+int gs_download(const char *path) {
     struct stat st;
     if (stat(path, &st) != 0) {
         printf("download: cannot access '%s': %s\n", path, strerror(errno));
@@ -1007,10 +1012,32 @@ static void install_background_checkpoint_handlers(void) {
 }
 
 // Background checkpoint command
-static uint64_t cmd_background_checkpoint(int argc, char *argv[]) {
-    const char *reason = (argc >= 2) ? argv[1] : "manual";
-    int rc = save_quick_checkpoint(reason, true, false);
+// Platform impl of gs_background_checkpoint (weak default in system.c
+// stubs out for headless).
+int gs_background_checkpoint(const char *reason) {
+    int rc = save_quick_checkpoint(reason ? reason : "manual", true, false);
     return (rc == GS_SUCCESS) ? 0 : -1;
+}
+
+// Forward declaration — definition is below.
+static int clear_checkpoint_files(void);
+
+// Platform impl of gs_checkpoint_clear / gs_register_machine.  Both
+// only mean something on WASM (where OPFS hosts per-machine
+// checkpoint directories); headless gets the weak no-op stubs.
+int gs_checkpoint_clear(void) {
+    int removed = clear_checkpoint_files();
+    printf("Cleared %d checkpoint file(s)\n", removed);
+    return 0;
+}
+
+int gs_register_machine(const char *machine_id, const char *created) {
+    if (!machine_id || !created)
+        return -1;
+    int rc = checkpoint_machine_set(machine_id, created);
+    if (rc != 0)
+        printf("register_machine: failed to set %s-%s\n", machine_id, created);
+    return rc == 0 ? 0 : -1;
 }
 
 // Clear checkpoint files inside the current machine directory.  Drops
@@ -1051,137 +1078,13 @@ static int clear_checkpoint_files(void) {
     return removed;
 }
 
-// Checkpoint command dispatcher - handles auto on/off and clear
-static uint64_t cmd_checkpoint(int argc, char *argv[]) {
-    if (argc < 2) {
-        // No arguments - just query and return current auto state
-        printf("Current state: %s\n", checkpoint_auto_enabled ? "on" : "off");
-        return 0;
-    }
-
-    const char *action = argv[1];
-
-    // checkpoint --machine <id> <created> — set the active machine identity
-    // (must be the first checkpoint command run, before any image is opened).
-    if (strcmp(action, "--machine") == 0) {
-        if (argc < 4) {
-            printf("Usage: checkpoint --machine <id> <created>\n");
-            return 1;
-        }
-        int rc = checkpoint_machine_set(argv[2], argv[3]);
-        if (rc != 0) {
-            printf("checkpoint --machine: failed to set %s-%s\n", argv[2], argv[3]);
-            return 1;
-        }
-        // Sweep stale machine directories left over from older sessions.
-        checkpoint_machine_sweep_others();
-        printf("Machine directory: %s\n", checkpoint_machine_dir());
-        return 0;
-    }
-
-    // checkpoint --save <path> [content|refs] — save machine state
-    if (strcmp(action, "--save") == 0) {
-        // Shift argv so cmd_save_checkpoint sees the path as argv[1]
-        return cmd_save_checkpoint(argc - 1, argv + 1);
-    }
-
-    // checkpoint --load [<path>] — load machine state (auto-loads latest if no path)
-    if (strcmp(action, "--load") == 0) {
-        return cmd_load_checkpoint(argc - 1, argv + 1);
-    }
-
-    // checkpoint --validate <path> — check if path contains a valid checkpoint
-    if (strcmp(action, "--validate") == 0) {
-        if (argc < 3) {
-            printf("Usage: checkpoint --validate <path>\n");
-            return 1;
-        }
-        const char *path = argv[2];
-        FILE *f = fopen(path, "rb");
-        if (!f)
-            return 1;
-        char magic[9] = {0};
-        size_t n = fread(magic, 1, 8, f);
-        fclose(f);
-        if (n < 8)
-            return 1;
-        if (memcmp(magic, "GSCHKPT2", 8) == 0 || memcmp(magic, "GSCHKPT3", 8) == 0) {
-            printf("valid\n");
-            return 0;
-        }
-        printf("invalid\n");
-        return 1;
-    }
-
-    // checkpoint --probe — check if any valid checkpoint exists (returns 0/1)
-    if (strcmp(action, "--probe") == 0) {
-        const char *path = find_valid_checkpoint_path();
-        return (path != NULL) ? 0 : 1;
-    }
-
-    // checkpoint clear - remove all checkpoint files
-    if (strcmp(action, "clear") == 0) {
-        int removed = clear_checkpoint_files();
-        printf("Cleared %d checkpoint file(s)\n", removed);
-        return 0;
-    }
-
-    // checkpoint auto on/off
-    if (strcmp(action, "auto") == 0) {
-        if (argc < 3) {
-            printf("Current state: %s\n", checkpoint_auto_enabled ? "on" : "off");
-            return 0;
-        }
-        const char *toggle = argv[2];
-        if (strcmp(toggle, "off") == 0 || strcmp(toggle, "disable") == 0) {
-            checkpoint_auto_enabled = false;
-            checkpoint_tick_counter = 0;
-            printf("Automatic checkpointing disabled\n");
-            return 0;
-        } else if (strcmp(toggle, "on") == 0 || strcmp(toggle, "enable") == 0) {
-            checkpoint_auto_enabled = true;
-            printf("Automatic checkpointing enabled\n");
-            return 0;
-        }
-        printf("Usage: checkpoint auto <on|off>\n");
-        return 1;
-    }
-
-    // Legacy: checkpoint on/off (without 'auto' subcommand)
-    if (strcmp(action, "off") == 0 || strcmp(action, "disable") == 0) {
-        checkpoint_auto_enabled = false;
-        checkpoint_tick_counter = 0;
-        printf("Automatic checkpointing disabled\n");
-        return 0;
-    } else if (strcmp(action, "on") == 0 || strcmp(action, "enable") == 0) {
-        checkpoint_auto_enabled = true;
-        printf("Automatic checkpointing enabled\n");
-        return 0;
-    }
-
-    printf(
-        "Usage: checkpoint --machine <id> <created> | --save <path> | --load [<path>] | --validate <path> | --probe | "
-        "clear | auto <on|off>\n");
-    return 1;
-}
-
 // ============================================================================
 // Exported Runtime Query Functions (for tests and diagnostics)
 // ============================================================================
 
-// Direct mouse event handler for tests (bypasses HTML5 pointer lock)
-// Used by e2e tests to inject synthetic mouse button state
-EMSCRIPTEN_KEEPALIVE
-void handle_mouse_event(int button_state, int dx, int dy) {
-    system_mouse_update(button_state != 0, dx, dy);
-}
-
 // ============================================================================
 // Main Entry Point
 // ============================================================================
-
-// Forward declaration of external command registration
-extern void em_audio_register_commands(void);
 
 int main(int argc, char *argv[]) {
     signal(SIGINT, sigint_handler);
@@ -1292,17 +1195,10 @@ int main(int argc, char *argv[]) {
     em_audio_init();
     setup_pointer_lock();
 
-    // Register shell commands
-    register_cmd("download", "Filesystem", "download <path> – save file to your computer", cmd_download);
-    register_cmd("file-copy", "Filesystem", "file-copy <src> <dest> – copy a file", cmd_file_copy);
-    register_cmd("find-media", "Filesystem",
-                 "find-media <dir> [dest] – find first floppy image in dir, optionally copy to dest", cmd_find_media);
-    register_cmd("background-checkpoint", "Checkpointing",
-                 "background-checkpoint [reason] – save a quick checkpoint to /checkpoint", cmd_background_checkpoint);
-    register_cmd("checkpoint", "Checkpointing",
-                 "checkpoint --save <path> | --load [<path>] | --validate <path> | --probe | clear | auto <on|off>",
-                 cmd_checkpoint);
-    em_audio_register_commands();
+    // Phase 5c — legacy WASM-platform shell command registrations
+    // retired. Typed root methods (download, find_media, checkpoint_*,
+    // background_checkpoint, beep) replace them; cmd_* bodies are kept
+    // when the typed wrappers still call them.
 
     install_background_checkpoint_handlers();
 
@@ -1311,16 +1207,6 @@ int main(int argc, char *argv[]) {
 
     emscripten_set_main_loop(tick, 0, 1); // Use RAF, simulate infinite loop
     return 0;
-}
-
-// ============================================================================
-// Shell Command Interface for JavaScript
-// ============================================================================
-
-// Platform wrapper for shell command handling; exposed to JavaScript
-EMSCRIPTEN_KEEPALIVE
-uint64_t em_handle_command(const char *input_line) {
-    return handle_command(input_line);
 }
 
 // ============================================================================
@@ -1351,6 +1237,18 @@ static void em_assertion_callback(const char *expr, const char *file, int line, 
         },
         expr, file, line, func);
     // clang-format on
+}
+
+// Background auto-checkpoint accessors — override the weak defaults in
+// system.c so the `auto_checkpoint` attribute reads/writes the live flag.
+bool gs_checkpoint_auto_get(void) {
+    return checkpoint_auto_enabled;
+}
+
+void gs_checkpoint_auto_set(bool enabled) {
+    checkpoint_auto_enabled = enabled;
+    if (!enabled)
+        checkpoint_tick_counter = 0;
 }
 
 // Platform hook: install assertion callback and apply deferred speed mode

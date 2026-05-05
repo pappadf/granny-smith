@@ -9,4 +9,4 @@ TEST_DESC := Boots SE/30 with CD-ROM on SCSI bus, verifies Finder desktop and cd
 TEST_ROM := roms/SE30.rom
 
 # Boot from 1.44MB HD MFM floppy (System 7.0.1) with CD-ROM on SCSI ID 3
-TEST_ARGS := ram=8192 fd=$(TEST_DATA)/systems/System_7_0_1.image cdrom=$(TEST_DATA)/aux/aux_3.0.1/AUX_3.0.1_Install.toast
+TEST_ARGS := ram=8192 fd=$(TEST_DATA)/systems/System_7_0_1.image cdrom=$(TEST_DATA)/aux/aux_3.0.1/APPLE_AUX_3-0-1_RETAIL.iso

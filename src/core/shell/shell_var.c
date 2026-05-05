@@ -2,12 +2,25 @@
 // Copyright (c) pappadf
 
 // shell_var.c
-// Shell variable store, ${NAME} expansion, and the "var" command.
+// Shell variable store + ${expr} substitution pass.
+//
+// `${...}` is the shell's one and only substitution sigil. The body is
+// an expression evaluated by expr_eval — it can be a path (cpu.pc), a
+// method call (memory.peek.l(0x100)), arithmetic (cpu.d0 + 4), or a
+// bare identifier. Bare identifiers fall through to the bindings table
+// which today is backed by the shell-variable store (`let` / WORK_DIR /
+// TMP_DIR). Single quotes opt out of substitution entirely so deferred
+// templates (logpoint messages) can carry literal `${...}` through to
+// fire-time expansion.
 
 #include "shell_var.h"
 
+#include "alias.h"
 #include "cmd_types.h"
+#include "expr.h"
+#include "object.h"
 #include "shell.h"
+#include "value.h"
 
 #include <ctype.h>
 #include <stdio.h>
@@ -93,20 +106,125 @@ int shell_var_unset(const char *name) {
     return 0;
 }
 
-/* --- expansion ----------------------------------------------------------- */
+/* --- bindings adapter ---------------------------------------------------- */
 
-// Check if c is a valid variable name character
-static int is_var_char(char c) {
-    return isalnum((unsigned char)c) || c == '_';
+// expr_ctx_t.binding callback that exposes the shell-variable table.
+// Returns V_NONE for unknown names so expr_eval falls through to its
+// other resolution paths (path / alias / error).
+static value_t shell_var_binding(void *ud, const char *name) {
+    (void)ud;
+    const char *v = shell_var_get(name);
+    if (!v)
+        return val_none();
+    return val_str(v);
 }
 
-// Expand ${NAME} references in a string.
-// Returns a malloc'd copy with substitutions applied.
+/* --- alias adapter ------------------------------------------------------- */
+//
+// expr_ctx_t.alias callback bound to the global alias table.
+
+static const char *shell_alias_for_expr(void *ud, const char *name) {
+    (void)ud;
+    return alias_lookup(name, NULL);
+}
+
+/* --- ${expr} formatting -------------------------------------------------- */
+
+// Format an evaluated value into a fresh malloc'd string suitable for
+// splicing back into the source text (verbatim for V_STRING, hex for
+// VAL_HEX numerics, "true"/"false" for V_BOOL, etc.). Mirrors the
+// shell-side printer used for top-level evaluations.
+static char *format_substitution(const value_t *v) {
+    char buf[256];
+    buf[0] = '\0';
+    switch (v->kind) {
+    case V_NONE:
+        break;
+    case V_BOOL:
+        snprintf(buf, sizeof(buf), v->b ? "true" : "false");
+        break;
+    case V_INT:
+        if (v->flags & VAL_HEX)
+            snprintf(buf, sizeof(buf), "0x%llx", (unsigned long long)(uint64_t)v->i);
+        else
+            snprintf(buf, sizeof(buf), "%lld", (long long)v->i);
+        break;
+    case V_UINT:
+        if (v->flags & VAL_HEX)
+            snprintf(buf, sizeof(buf), "0x%llx", (unsigned long long)v->u);
+        else
+            snprintf(buf, sizeof(buf), "%llu", (unsigned long long)v->u);
+        break;
+    case V_FLOAT:
+        snprintf(buf, sizeof(buf), "%g", v->f);
+        break;
+    case V_STRING:
+        return strdup(v->s ? v->s : "");
+    case V_BYTES: {
+        char *out = (char *)malloc(3 + v->bytes.n * 2 + 1);
+        if (!out)
+            return NULL;
+        char *q = out;
+        *q++ = '0';
+        *q++ = 'x';
+        for (size_t i = 0; i < v->bytes.n; i++) {
+            static const char hex[] = "0123456789abcdef";
+            *q++ = hex[(v->bytes.p[i] >> 4) & 0xF];
+            *q++ = hex[v->bytes.p[i] & 0xF];
+        }
+        *q = '\0';
+        return out;
+    }
+    case V_ENUM:
+        if (v->enm.table && (size_t)v->enm.idx < v->enm.n_table && v->enm.table[v->enm.idx])
+            snprintf(buf, sizeof(buf), "%s", v->enm.table[v->enm.idx]);
+        else
+            snprintf(buf, sizeof(buf), "%d", v->enm.idx);
+        break;
+    case V_OBJECT:
+        snprintf(buf, sizeof(buf), "<object>");
+        break;
+    case V_ERROR:
+        snprintf(buf, sizeof(buf), "<error: %s>", v->err ? v->err : "");
+        break;
+    case V_LIST:
+        snprintf(buf, sizeof(buf), "<list:%zu>", v->list.len);
+        break;
+    }
+    return strdup(buf);
+}
+
+/* --- ${expr} substitution pass ------------------------------------------- */
+//
+// Walks `input` character by character, tracking single-quote state and
+// escape sequences. Single-quoted regions are preserved verbatim
+// (including any `${...}` they contain — that's the deferred-eval opt-
+// out used by logpoint messages). Outside single quotes, `${...}` is
+// parsed brace-balanced (with awareness of `"..."` and `'...'` strings
+// in the body) and the contents are evaluated as an expression. The
+// formatted result is spliced into the output stream.
+//
+// On evaluation error, the substitution pass writes a diagnostic to
+// stderr and aborts — the shell wrapper treats this as a syntax error
+// for the input line.
+
+// Skip past a body-internal string literal so embedded `}`/`'`/`"` don't
+// confuse the brace-depth tracker. Returns a pointer to the character
+// past the closing quote (or to the terminating NUL on unterminated
+// string). `quote` is either `'` or `"`.
+static const char *skip_quoted(const char *p, char quote) {
+    while (*p && *p != quote) {
+        if (*p == '\\' && p[1])
+            p += 2;
+        else
+            p++;
+    }
+    return *p ? p + 1 : p;
+}
+
 char *shell_var_expand(const char *input) {
     if (!input)
         return NULL;
-
-    // quick check: if no '$' present, just return a copy
     if (!strchr(input, '$'))
         return strdup(input);
 
@@ -114,38 +232,100 @@ char *shell_var_expand(const char *input) {
     if (!buf)
         return strdup(input);
 
+    expr_ctx_t ectx = {
+        .root = object_root(),
+        .alias = shell_alias_for_expr,
+        .alias_ud = NULL,
+        .binding = shell_var_binding,
+        .binding_ud = NULL,
+    };
+
     size_t out = 0;
     const char *p = input;
+    bool in_squote = false;
 
     while (*p && out < MAX_EXPAND_LEN - 1) {
-        if (p[0] == '$' && p[1] == '{') {
-            // find closing brace
-            const char *start = p + 2;
-            const char *end = strchr(start, '}');
-            if (end && end > start) {
-                // extract variable name
-                size_t namelen = (size_t)(end - start);
-                char name[128];
-                if (namelen < sizeof(name)) {
-                    memcpy(name, start, namelen);
-                    name[namelen] = '\0';
-
-                    const char *val = shell_var_get(name);
-                    if (val) {
-                        size_t vlen = strlen(val);
-                        if (out + vlen < MAX_EXPAND_LEN) {
-                            memcpy(buf + out, val, vlen);
-                            out += vlen;
-                        }
-                    }
-                    // undefined vars expand to empty string
-                    p = end + 1;
+        // Backslash escape: copy the next character literally regardless
+        // of quote state. Lets users embed a literal `${` via `\${`.
+        if (*p == '\\' && p[1]) {
+            buf[out++] = *p++;
+            if (out < MAX_EXPAND_LEN - 1)
+                buf[out++] = *p++;
+            continue;
+        }
+        if (*p == '\'') {
+            in_squote = !in_squote;
+            buf[out++] = *p++;
+            continue;
+        }
+        if (!in_squote && p[0] == '$' && p[1] == '{') {
+            // Find the matching `}`, respecting embedded strings and
+            // nested `{...}` (e.g. method calls with braces in body —
+            // unlikely in practice but keep the depth counter honest).
+            const char *body = p + 2;
+            const char *q = body;
+            int depth = 1;
+            while (*q && depth > 0) {
+                if (*q == '\\' && q[1]) {
+                    q += 2;
                     continue;
                 }
+                if (*q == '"' || *q == '\'') {
+                    q = skip_quoted(q + 1, *q);
+                    continue;
+                }
+                if (*q == '{')
+                    depth++;
+                else if (*q == '}')
+                    depth--;
+                if (depth == 0)
+                    break;
+                q++;
             }
+            if (depth != 0) {
+                fprintf(stderr, "shell: unterminated ${...}\n");
+                free(buf);
+                return NULL;
+            }
+            // Extract the body verbatim into a NUL-terminated copy.
+            size_t blen = (size_t)(q - body);
+            char *bcopy = (char *)malloc(blen + 1);
+            if (!bcopy) {
+                free(buf);
+                return NULL;
+            }
+            memcpy(bcopy, body, blen);
+            bcopy[blen] = '\0';
+
+            value_t v = expr_eval(bcopy, &ectx);
+            free(bcopy);
+            if (v.kind == V_ERROR) {
+                fprintf(stderr, "shell: ${...} error: %s\n", v.err ? v.err : "(unknown)");
+                value_free(&v);
+                free(buf);
+                return NULL;
+            }
+            char *formatted = format_substitution(&v);
+            value_free(&v);
+            if (!formatted) {
+                free(buf);
+                return NULL;
+            }
+            size_t flen = strlen(formatted);
+            if (out + flen >= MAX_EXPAND_LEN) {
+                free(formatted);
+                free(buf);
+                fprintf(stderr, "shell: expansion exceeds %d bytes\n", MAX_EXPAND_LEN);
+                return NULL;
+            }
+            memcpy(buf + out, formatted, flen);
+            out += flen;
+            free(formatted);
+            p = q + 1; // skip past closing `}`
+            continue;
         }
 
-        // regular character (or bare $ not followed by {)
+        // Regular character.
         buf[out++] = *p++;
     }
 
@@ -153,86 +333,8 @@ char *shell_var_expand(const char *input) {
     return buf;
 }
 
-/* --- "var" command -------------------------------------------------------- */
-
-// var set NAME VALUE
-static void cmd_var_set(struct cmd_context *ctx, struct cmd_result *res) {
-    const char *name = ctx->args[0].as_str;
-    const char *value = ctx->args[1].as_str;
-
-    if (shell_var_set(name, value) < 0) {
-        cmd_err(res, "failed to set variable (limit: %d)", MAX_VARS);
-        return;
-    }
-    res->type = RES_OK;
-}
-
-// var unset NAME
-static void cmd_var_unset(struct cmd_context *ctx, struct cmd_result *res) {
-    const char *name = ctx->args[0].as_str;
-
-    if (shell_var_unset(name) < 0) {
-        cmd_err(res, "variable '%s' not defined", name);
-        return;
-    }
-    res->type = RES_OK;
-}
-
-// var list (default subcommand)
-static void cmd_var_list(struct cmd_context *ctx, struct cmd_result *res) {
-    (void)ctx;
-    if (nvar == 0) {
-        fprintf(ctx->out, "(no variables defined)\n");
-    } else {
-        for (int i = 0; i < nvar; i++)
-            fprintf(ctx->out, "%s=%s\n", vars[i].name, vars[i].value);
-    }
-    res->type = RES_OK;
-}
-
-// Unified command handler — dispatches to subcommands
-static void cmd_var(struct cmd_context *ctx, struct cmd_result *res) {
-    if (!ctx->subcmd)
-        cmd_var_list(ctx, res);
-    else if (strcmp(ctx->subcmd, "set") == 0)
-        cmd_var_set(ctx, res);
-    else if (strcmp(ctx->subcmd, "unset") == 0)
-        cmd_var_unset(ctx, res);
-}
-
-// Argument specs for each subcommand
-static const struct arg_spec var_set_args[] = {
-    {"name",  ARG_STRING, "variable name"  },
-    {"value", ARG_REST,   "value to assign"},
-};
-
-static const struct arg_spec var_unset_args[] = {
-    {"name", ARG_STRING, "variable name"},
-};
-
-// Subcommand table
-static const struct subcmd_spec var_subcmds[] = {
-    {NULL,    NULL, NULL,           0, "list all variables"},
-    {"set",   NULL, var_set_args,   2, "set a variable"    },
-    {"unset", NULL, var_unset_args, 1, "unset a variable"  },
-};
-
-// Command registration record
-static const struct cmd_reg var_cmd_reg = {
-    .name = "var",
-    .category = "General",
-    .synopsis = "var [set NAME VALUE | unset NAME] - shell variables",
-    .fn = cmd_var,
-    .subcmds = var_subcmds,
-    .n_subcmds = 3,
-};
-
 /* --- init ---------------------------------------------------------------- */
 
-// Register the "var" command and seed built-in defaults
 void shell_var_init(void) {
-    register_command(&var_cmd_reg);
-
-    // seed default variables
     shell_var_set("TMP_DIR", "tmp");
 }

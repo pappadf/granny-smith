@@ -14,10 +14,10 @@ test.describe('Terminal interactions', () => {
     await expect(panel).toHaveAttribute('data-collapsed', 'true');
   });
 
-  test('runCommand helper reachable', async ({ page }) => {
+  test('gsEval bridge reachable', async ({ page }) => {
     await page.goto('/index.html?noui');
-    await page.waitForFunction(() => typeof (window as any).runCommand === 'function');
-    const ok = await page.evaluate(() => typeof (window as any).runCommand === 'function');
+    await page.waitForFunction(() => typeof (window as any).gsEval === 'function');
+    const ok = await page.evaluate(() => typeof (window as any).gsEval === 'function');
     expect(ok).toBeTruthy();
   });
 });

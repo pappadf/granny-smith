@@ -12,6 +12,8 @@
 #include "appletalk.h"
 #include "build_id.h"
 #include "checkpoint_machine.h"
+#include "cmd_io.h"
+#include "cmd_parse.h"
 #include "cmd_types.h"
 #include "cpu.h"
 #include "drive_catalog.h"
@@ -24,6 +26,7 @@
 #include "memory.h"
 #include "mouse.h"
 #include "rom.h"
+#include "root.h"
 #include "rtc.h"
 #include "scc.h"
 #include "scheduler.h"
@@ -32,6 +35,7 @@
 #include "shell.h"
 #include "sound.h"
 #include "via.h"
+#include "vrom.h"
 
 #include <assert.h>
 #include <stdint.h>
@@ -46,7 +50,7 @@ LOG_USE_CATEGORY_NAME("setup");
 config_t *global_emulator = NULL;
 
 // Forward declarations for SCSI device attachment functions
-static void add_scsi_cdrom(struct config *restrict config, const char *filename, int scsi_id);
+void add_scsi_cdrom(struct config *restrict config, const char *filename, int scsi_id);
 
 // Pending RAM override (KB). Set by `setup --ram` or headless `ram=` arg.
 // Consumed by system_create(); 0 means use machine default.
@@ -233,9 +237,6 @@ int system_ensure_machine(const char *model_id) {
     return 0;
 }
 
-// Forward declaration for setup command handler
-uint64_t cmd_setup(int argc, char *argv[]);
-
 // Helpers to abstract floppy insertion
 static bool sys_fd_is_inserted(config_t *cfg, int drive) {
     if (cfg->floppy)
@@ -254,93 +255,6 @@ void trigger_vbl(struct config *restrict config) {
     if (config && config->machine && config->machine->trigger_vbl) {
         config->machine->trigger_vbl(config);
     }
-}
-
-// Query or configure the active machine.
-// setup                              → print current machine info
-// setup --model <model> [--ram <kb>] → teardown current machine, create new one
-uint64_t cmd_setup(int argc, char *argv[]) {
-    if (argc < 2) {
-        // No args: print current machine info
-        if (!global_emulator || !global_emulator->machine) {
-            printf("No machine instantiated\n");
-            return 0;
-        }
-        const hw_profile_t *m = global_emulator->machine;
-        printf("Machine: %s (%s)\n", m->model_name, m->model_id);
-        printf("  CPU: 680%02d @ %.4f MHz\n", m->cpu_model / 1000, m->cpu_clock_hz / 1000000.0);
-        printf("  Address: %d-bit, RAM: %u KB, ROM: %u KB\n", m->address_bits, global_emulator->ram_size / 1024,
-               m->rom_size / 1024);
-        printf("  VIAs: %d, ADB: %s\n", m->via_count, m->has_adb ? "yes" : "no");
-        return 0;
-    }
-
-    // Parse --model and --ram options
-    const char *model_id = NULL;
-    uint32_t ram_kb = 0;
-    int i = 1;
-    while (i < argc) {
-        if (strcmp(argv[i], "--model") == 0) {
-            if (++i >= argc) {
-                printf("setup: --model requires an argument\n");
-                return -1;
-            }
-            model_id = argv[i];
-        } else if (strcmp(argv[i], "--ram") == 0) {
-            if (++i >= argc) {
-                printf("setup: --ram requires an argument (size in KB)\n");
-                return -1;
-            }
-            ram_kb = (uint32_t)strtoul(argv[i], NULL, 10);
-            if (ram_kb == 0) {
-                printf("setup: invalid RAM size '%s'\n", argv[i]);
-                return -1;
-            }
-        } else {
-            printf("setup: unknown option '%s'\n", argv[i]);
-            printf("Usage: setup [--model <model>] [--ram <kb>]\n");
-            return -1;
-        }
-        i++;
-    }
-
-    if (!model_id) {
-        printf("Usage: setup [--model <model>] [--ram <kb>]\n");
-        return -1;
-    }
-
-    // Look up the requested machine profile
-    const hw_profile_t *profile = machine_find(model_id);
-    if (!profile) {
-        printf("setup: unknown model '%s'\n", model_id);
-        return -1;
-    }
-
-    // Validate RAM against machine limits
-    if (ram_kb > 0) {
-        uint32_t max_kb = profile->ram_size_max / 1024;
-        if (ram_kb > max_kb) {
-            printf("setup: RAM %u KB exceeds maximum %u KB for %s\n", ram_kb, max_kb, profile->model_name);
-            return -1;
-        }
-        g_pending_ram_kb = ram_kb;
-    }
-
-    // Teardown existing machine if one is active
-    if (global_emulator) {
-        system_destroy(global_emulator);
-        global_emulator = NULL;
-    }
-
-    // Create the new machine (cold boot)
-    config_t *cfg = system_create(profile, NULL);
-    if (!cfg) {
-        printf("setup: failed to create %s\n", model_id);
-        return -1;
-    }
-
-    printf("Machine created: %s (%s), RAM: %u KB\n", profile->model_name, profile->model_id, cfg->ram_size / 1024);
-    return 0;
 }
 
 // ============================================================================
@@ -399,7 +313,7 @@ static int do_insert_fd(const char *path, int preferred, int writable_flag) {
 
 // Probe a file to check if it's a valid floppy image (without inserting).
 // Returns 0 if valid floppy, 1 if not.
-static int do_probe_fd(const char *path) {
+int system_probe_floppy(const char *path) {
     // Persist volatile images (/tmp/, /fd/) to OPFS so they survive page reload
     char *persistent_path = image_persist_volatile(path);
     if (persistent_path)
@@ -435,7 +349,7 @@ static int do_probe_fd(const char *path) {
 
 // Create a new blank floppy image and insert it.
 // Returns 0 on success, -1 on failure.
-static int do_create_fd(const char *path, bool high_density, int preferred) {
+int system_create_floppy(const char *path, bool high_density, int preferred) {
     config_t *config = global_emulator;
     if (!config) {
         printf("fd create: emulator config not initialized.\n");
@@ -542,7 +456,7 @@ static image_t *find_attached_image(const char *path) {
 // Prefers the live attached image (has current in-memory bitmaps) over
 // opening a fresh instance (which may have stale on-disk bitmaps).
 // Returns 0 on success, -1 on failure.
-static int do_download_hd(const char *src_path, const char *dest_path) {
+int system_download_hd(const char *src_path, const char *dest_path) {
     // Try the live attached image first (has up-to-date bitmaps)
     image_t *live = find_attached_image(src_path);
     if (live) {
@@ -684,7 +598,7 @@ static void cmd_fd_handler(struct cmd_context *ctx, struct cmd_result *res) {
             cmd_err(res, "usage: fd create [--hd] <path> [drive]");
             return;
         }
-        int rc = do_create_fd(path, has_hd, preferred);
+        int rc = system_create_floppy(path, has_hd, preferred);
         cmd_int(res, (int64_t)rc);
         return;
     }
@@ -693,7 +607,7 @@ static void cmd_fd_handler(struct cmd_context *ctx, struct cmd_result *res) {
             cmd_err(res, "usage: fd probe <path>");
             return;
         }
-        int rc = do_probe_fd(ctx->args[0].as_str);
+        int rc = system_probe_floppy(ctx->args[0].as_str);
         cmd_int(res, (int64_t)rc);
         return;
     }
@@ -810,7 +724,7 @@ static void cmd_hd_handler(struct cmd_context *ctx, struct cmd_result *res) {
             cmd_err(res, "usage: hd download <source> <dest>");
             return;
         }
-        int rc = do_download_hd(ctx->args[0].as_str, ctx->args[1].as_str);
+        int rc = system_download_hd(ctx->args[0].as_str, ctx->args[1].as_str);
         cmd_int(res, (int64_t)rc);
         return;
     }
@@ -840,315 +754,6 @@ static void cmd_hd_handler(struct cmd_context *ctx, struct cmd_result *res) {
         return;
     }
     cmd_err(res, "unknown hd subcommand: %s", subcmd);
-}
-
-// --- scc (unified) ---
-static void cmd_scc_handler(struct cmd_context *ctx, struct cmd_result *res) {
-    const char *subcmd = ctx->subcmd;
-    if (!subcmd) {
-        cmd_err(res, "usage: scc loopback [on|off]");
-        return;
-    }
-
-    if (strcmp(subcmd, "loopback") == 0) {
-        const char *state = ctx->args[0].present ? ctx->args[0].as_str : NULL;
-        int rc = do_scc_loopback(state);
-        cmd_int(res, (int64_t)rc);
-        return;
-    }
-    cmd_err(res, "unknown scc subcommand: %s", subcmd);
-}
-
-// --- rom (subcommand style: load/probe/checksum/validate) ---
-static void cmd_rom_handler(struct cmd_context *ctx, struct cmd_result *res) {
-    const char *subcmd = ctx->subcmd;
-
-    // load/probe/checksum delegate to the simple handler
-    if (subcmd && (strcmp(subcmd, "load") == 0 || strcmp(subcmd, "probe") == 0 || strcmp(subcmd, "checksum") == 0)) {
-        char *argv[4] = {NULL};
-        int argc = 0;
-        argv[argc++] = "rom";
-        argv[argc++] = (char *)subcmd;
-        if (ctx->args[0].present)
-            argv[argc++] = (char *)ctx->args[0].as_str;
-        uint64_t r = cmd_rom(argc, argv);
-        cmd_int(res, (int64_t)r);
-        return;
-    }
-
-    if (!subcmd) {
-        cmd_err(res, "usage: rom <load|probe|checksum|validate> <path>");
-        return;
-    }
-
-    if (strcmp(subcmd, "validate") == 0) {
-        if (!ctx->args[0].present) {
-            cmd_err(res, "usage: rom validate <path>");
-            return;
-        }
-        const char *path = ctx->args[0].as_str;
-
-        // Read file
-        struct stat st;
-        if (stat(path, &st) != 0) {
-            cmd_printf(ctx, "invalid ROM: file not found: %s\n", path);
-            cmd_bool(res, false);
-            return;
-        }
-        size_t size = (size_t)st.st_size;
-        if (size != 128 * 1024 && size != 256 * 1024) {
-            cmd_printf(ctx, "invalid ROM: unrecognised size (%zu bytes, expected 128K or 256K)\n", size);
-            cmd_bool(res, false);
-            return;
-        }
-
-        FILE *f = fopen(path, "rb");
-        if (!f) {
-            cmd_printf(ctx, "invalid ROM: cannot open %s\n", path);
-            cmd_bool(res, false);
-            return;
-        }
-        uint8_t *data = malloc(size);
-        if (!data) {
-            fclose(f);
-            cmd_err(res, "out of memory");
-            return;
-        }
-        if (fread(data, 1, size, f) != size) {
-            cmd_printf(ctx, "invalid ROM: read error\n");
-            free(data);
-            fclose(f);
-            cmd_bool(res, false);
-            return;
-        }
-        fclose(f);
-
-        uint32_t checksum = 0;
-        const rom_info_t *info = rom_identify_data(data, size, &checksum);
-        bool valid = rom_validate(data, size);
-        free(data);
-
-        if (valid && info) {
-            cmd_printf(ctx, "valid ROM: %s (checksum 0x%08X)\n", info->model_name, checksum);
-        } else if (valid) {
-            cmd_printf(ctx, "valid ROM: unknown (%zu KB, checksum 0x%08X)\n", size / 1024, checksum);
-        } else {
-            cmd_printf(ctx, "invalid ROM: checksum mismatch (stored 0x%08X)\n", checksum);
-        }
-        cmd_bool(res, valid);
-        return;
-    }
-
-    cmd_err(res, "unknown rom subcommand: %s", subcmd);
-}
-
-// --- vrom (subcommand style: load/probe/checksum/validate) ---
-static void cmd_vrom_handler(struct cmd_context *ctx, struct cmd_result *res) {
-    const char *subcmd = ctx->subcmd;
-
-    // load/probe/checksum delegate to the simple handler
-    if (subcmd && (strcmp(subcmd, "load") == 0 || strcmp(subcmd, "probe") == 0 || strcmp(subcmd, "checksum") == 0)) {
-        char *argv[4] = {NULL};
-        int argc = 0;
-        argv[argc++] = "vrom";
-        argv[argc++] = (char *)subcmd;
-        if (ctx->args[0].present)
-            argv[argc++] = (char *)ctx->args[0].as_str;
-        uint64_t r = cmd_vrom(argc, argv);
-        cmd_int(res, (int64_t)r);
-        return;
-    }
-
-    if (!subcmd) {
-        cmd_err(res, "usage: vrom <load|probe|checksum|validate> <path>");
-        return;
-    }
-
-    if (strcmp(subcmd, "validate") == 0) {
-        if (!ctx->args[0].present) {
-            cmd_err(res, "usage: vrom validate <path>");
-            return;
-        }
-        const char *path = ctx->args[0].as_str;
-
-        struct stat st;
-        if (stat(path, &st) != 0) {
-            cmd_printf(ctx, "invalid VROM: file not found: %s\n", path);
-            cmd_bool(res, false);
-            return;
-        }
-        if ((size_t)st.st_size != 32 * 1024) {
-            cmd_printf(ctx, "invalid VROM: wrong size (%lld bytes, expected 32768)\n", (long long)st.st_size);
-            cmd_bool(res, false);
-            return;
-        }
-        cmd_printf(ctx, "valid VROM: 32 KB\n");
-        cmd_bool(res, true);
-        return;
-    }
-
-    cmd_err(res, "unknown vrom subcommand: %s", subcmd);
-}
-
-// --- cdrom (unified: validate/attach/eject/info) ---
-static void cmd_cdrom_handler(struct cmd_context *ctx, struct cmd_result *res) {
-    const char *subcmd = ctx->subcmd;
-    if (!subcmd) {
-        cmd_err(res, "usage: cdrom <validate|attach|eject|info> [args...]");
-        return;
-    }
-
-    if (strcmp(subcmd, "validate") == 0) {
-        if (!ctx->args[0].present) {
-            cmd_err(res, "usage: cdrom validate <path>");
-            return;
-        }
-        const char *path = ctx->args[0].as_str;
-        image_t *img = image_open_readonly(path);
-        if (!img) {
-            cmd_printf(ctx, "invalid CD-ROM image: cannot open %s\n", path);
-            cmd_bool(res, false);
-            return;
-        }
-        // Reject floppy-sized images
-        if (img->type == image_fd_ss || img->type == image_fd_ds || img->type == image_fd_hd) {
-            cmd_printf(ctx, "invalid CD-ROM image: floppy-sized (%zu bytes)\n", img->raw_size);
-            image_close(img);
-            cmd_bool(res, false);
-            return;
-        }
-
-        // Signature checks use disk_read_data which requires 512-byte aligned
-        // reads, so we read whole sectors and extract bytes within them.
-        bool is_iso = false;
-        bool is_hfs = false;
-        bool is_apm = false;
-        size_t sz = disk_size(img);
-        uint8_t sector[512];
-
-        // Check for ISO 9660 signature ("CD001" at offset 32769 = sector 64, byte 1)
-        if (sz >= 33280) { // need sector 64 + sector 65
-            disk_read_data(img, 32768, sector, 512);
-            if (memcmp(sector + 1, "CD001", 5) == 0)
-                is_iso = true;
-        }
-
-        // Check for HFS signature (0x4244 at offset 1024 = sector 2, byte 0)
-        if (sz >= 1536) {
-            disk_read_data(img, 1024, sector, 512);
-            if (sector[0] == 0x42 && sector[1] == 0x44)
-                is_hfs = true;
-        }
-
-        // Check for Apple Partition Map (DDM 0x4552 at sector 0, PM 0x504D at sector 1)
-        if (sz >= 1024) {
-            disk_read_data(img, 0, sector, 512);
-            bool has_ddm = (sector[0] == 0x45 && sector[1] == 0x52);
-            disk_read_data(img, 512, sector, 512);
-            bool has_pm = (sector[0] == 0x50 && sector[1] == 0x4D);
-            if (has_ddm && has_pm)
-                is_apm = true;
-        }
-
-        // Format size for display
-        double size_mb = (double)sz / (1024.0 * 1024.0);
-
-        if (is_iso && is_hfs)
-            cmd_printf(ctx, "valid CD-ROM image: %.1f MB, ISO 9660 + HFS hybrid\n", size_mb);
-        else if (is_iso)
-            cmd_printf(ctx, "valid CD-ROM image: %.1f MB, ISO 9660\n", size_mb);
-        else if (is_hfs)
-            cmd_printf(ctx, "valid CD-ROM image: %.1f MB, HFS\n", size_mb);
-        else if (is_apm)
-            cmd_printf(ctx, "valid CD-ROM image: %.1f MB, Apple Partition Map\n", size_mb);
-        else {
-            cmd_printf(ctx, "invalid CD-ROM image: no ISO 9660, HFS, or Apple Partition Map detected\n");
-            image_close(img);
-            cmd_bool(res, false);
-            return;
-        }
-
-        image_close(img);
-        cmd_bool(res, true);
-        return;
-    }
-
-    if (strcmp(subcmd, "attach") == 0) {
-        if (!ctx->args[0].present) {
-            cmd_err(res, "usage: cdrom attach <path> [scsi-id]");
-            return;
-        }
-        // CD-ROM is a read-only SCSI device. Default SCSI ID = 3.
-        int id = ctx->args[1].present ? (int)ctx->args[1].as_int : 3;
-        config_t *config = global_emulator;
-        if (!config) {
-            cmd_err(res, "cdrom attach: emulator not initialized");
-            return;
-        }
-        add_scsi_cdrom(config, ctx->args[0].as_str, id);
-        cmd_int(res, 0);
-        return;
-    }
-
-    if (strcmp(subcmd, "eject") == 0) {
-        int id = ctx->args[0].present ? (int)ctx->args[0].as_int : 3;
-        config_t *config = global_emulator;
-        if (!config || !config->scsi) {
-            cmd_err(res, "cdrom eject: emulator not initialized");
-            return;
-        }
-        if (id < 0 || id > 6) {
-            cmd_err(res, "cdrom eject: invalid SCSI ID %d (expected 0..6)", id);
-            return;
-        }
-        // Use START/STOP UNIT eject path: clear medium, set UNIT ATTENTION
-        // Access scsi internals via the internal header
-        scsi_t *scsi = config->scsi;
-        if (!scsi->devices[id].image && !scsi->devices[id].medium_present) {
-            cmd_printf(ctx, "cdrom eject: no disc in SCSI ID %d\n", id);
-            cmd_ok(res);
-            return;
-        }
-        scsi->devices[id].medium_present = false;
-        scsi->devices[id].image = NULL;
-        scsi->devices[id].unit_attention = true;
-        scsi_set_sense(scsi, id, SENSE_UNIT_ATTENTION, ASC_MEDIUM_NOT_PRESENT, 0x00);
-        cmd_printf(ctx, "cdrom eject: ejected disc from SCSI ID %d\n", id);
-        cmd_ok(res);
-        return;
-    }
-
-    if (strcmp(subcmd, "info") == 0) {
-        int id = ctx->args[0].present ? (int)ctx->args[0].as_int : 3;
-        config_t *config = global_emulator;
-        if (!config || !config->scsi) {
-            cmd_err(res, "cdrom info: emulator not initialized");
-            return;
-        }
-        if (id < 0 || id > 6) {
-            cmd_err(res, "cdrom info: invalid SCSI ID %d (expected 0..6)", id);
-            return;
-        }
-        scsi_t *scsi = config->scsi;
-        if (scsi->devices[id].type != scsi_dev_cdrom) {
-            cmd_printf(ctx, "cdrom info: SCSI ID %d is not a CD-ROM device\n", id);
-            cmd_ok(res);
-            return;
-        }
-        if (!scsi->devices[id].medium_present || !scsi->devices[id].image) {
-            cmd_printf(ctx, "cdrom info: SCSI ID %d — no disc\n", id);
-            cmd_ok(res);
-            return;
-        }
-        const char *fname = image_get_filename(scsi->devices[id].image);
-        size_t sz = disk_size(scsi->devices[id].image);
-        double size_mb = (double)sz / (1024.0 * 1024.0);
-        cmd_printf(ctx, "cdrom info: SCSI ID %d — %.1f MB — %s\n", id, size_mb, fname ? fname : "(unknown)");
-        cmd_ok(res);
-        return;
-    }
-
-    cmd_err(res, "unknown cdrom subcommand: %s", subcmd);
 }
 
 // Registration tables
@@ -1200,51 +805,6 @@ static const struct subcmd_spec hd_subcmds[] = {
     {"download", NULL, hd_download_args, 2, "export disk image (base+delta) to file"},
 };
 
-// scc subcommands
-static const struct subcmd_spec scc_subcmds[] = {
-    {"loopback", NULL, loopback_args, 1, "external loopback on/off"},
-};
-
-// setup args
-static const struct arg_spec setup_args[] = {
-    {"options", ARG_REST | ARG_OPTIONAL, "setup options (--model, --ram)"},
-};
-
-// rom/vrom subcommands
-static const struct arg_spec rom_path_args[] = {
-    {"path", ARG_PATH | ARG_OPTIONAL, "ROM image path"},
-};
-static const struct subcmd_spec rom_subcmds[] = {
-    {"load",     NULL, rom_path_args, 1, "load a ROM image"                   },
-    {"probe",    NULL, rom_path_args, 1, "check if ROM is valid (returns 0/1)"},
-    {"checksum", NULL, rom_path_args, 1, "compute and print checksum"         },
-    {"validate", NULL, rom_path_args, 1, "validate ROM with detailed output"  },
-};
-static const struct subcmd_spec vrom_subcmds[] = {
-    {"load",     NULL, rom_path_args, 1, "load a VROM image"                   },
-    {"probe",    NULL, rom_path_args, 1, "check if VROM is valid (returns 0/1)"},
-    {"checksum", NULL, rom_path_args, 1, "validate VROM file size"             },
-    {"validate", NULL, rom_path_args, 1, "validate VROM with detailed output"  },
-};
-
-// cdrom subcommands
-static const struct arg_spec cdrom_path_args[] = {
-    {"path", ARG_PATH, "CD-ROM image path"},
-};
-static const struct arg_spec cdrom_attach_args[] = {
-    {"path", ARG_PATH,               "CD-ROM image path"  },
-    {"id",   ARG_INT | ARG_OPTIONAL, "SCSI ID (default 3)"},
-};
-static const struct arg_spec cdrom_id_args[] = {
-    {"id", ARG_INT | ARG_OPTIONAL, "SCSI ID (default 3)"},
-};
-static const struct subcmd_spec cdrom_subcmds[] = {
-    {"validate", NULL, cdrom_path_args,   1, "validate CD-ROM image"    },
-    {"attach",   NULL, cdrom_attach_args, 2, "attach CD-ROM to SCSI bus"},
-    {"eject",    NULL, cdrom_id_args,     1, "eject CD-ROM"             },
-    {"info",     NULL, cdrom_id_args,     1, "show attached CD-ROM info"},
-};
-
 // image subcommands — inspect disk image contents without attaching to
 // a SCSI bus.  Phase 1: partmap + probe work; list + unmount are stubs.
 static const struct arg_spec image_partmap_args[] = {
@@ -1280,74 +840,11 @@ void setup_init() {
     // shell_init() (called earlier) already invoked log_init(); categories default to level 0 (OFF).
     (void)log_register_category("appletalk");
 
-    // Module-owned command registrations
-    image_init(NULL); // No cross-module commands registered here
-
-    // Unified commands
-    register_command(&(struct cmd_reg){
-        .name = "fd",
-        .category = "Media",
-        .synopsis = "Manage floppy disks (insert/create/validate/eject)",
-        .fn = cmd_fd_handler,
-        .subcmds = fd_subcmds,
-        .n_subcmds = 5,
-    });
-    register_command(&(struct cmd_reg){
-        .name = "hd",
-        .category = "Media",
-        .synopsis = "Manage SCSI hard disks (create/attach/models/validate/download)",
-        .fn = cmd_hd_handler,
-        .subcmds = hd_subcmds,
-        .n_subcmds = 6,
-    });
-    register_command(&(struct cmd_reg){
-        .name = "setup",
-        .category = "Configuration",
-        .synopsis = "Query or configure machine model",
-        .simple_fn = cmd_setup,
-        .args = setup_args,
-        .nargs = 1,
-    });
-    register_command(&(struct cmd_reg){
-        .name = "rom",
-        .category = "Media",
-        .synopsis = "Load, probe, or validate ROM image",
-        .fn = cmd_rom_handler,
-        .subcmds = rom_subcmds,
-        .n_subcmds = 4,
-    });
-    register_command(&(struct cmd_reg){
-        .name = "vrom",
-        .category = "Media",
-        .synopsis = "Load, probe, or validate VROM image",
-        .fn = cmd_vrom_handler,
-        .subcmds = vrom_subcmds,
-        .n_subcmds = 4,
-    });
-    register_command(&(struct cmd_reg){
-        .name = "scc",
-        .category = "Configuration",
-        .synopsis = "SCC serial port configuration",
-        .fn = cmd_scc_handler,
-        .subcmds = scc_subcmds,
-        .n_subcmds = 1,
-    });
-    register_command(&(struct cmd_reg){
-        .name = "cdrom",
-        .category = "Media",
-        .synopsis = "Manage CD-ROM images (validate/attach/eject/info)",
-        .fn = cmd_cdrom_handler,
-        .subcmds = cdrom_subcmds,
-        .n_subcmds = 4,
-    });
-    register_command(&(struct cmd_reg){
-        .name = "image",
-        .category = "Media",
-        .synopsis = "Inspect disk image contents (partmap/probe/list/unmount)",
-        .fn = cmd_image_handler,
-        .subcmds = image_subcmds,
-        .n_subcmds = 4,
-    });
+    // Phase 5c — legacy `register_command` calls retired. The typed
+    // object-model bridge (root.c) now provides every operation;
+    // the underlying handlers (cmd_fd_handler, cmd_hd_handler, …)
+    // remain so shell_fd_argv / shell_hd_argv can call them directly.
+    image_init(NULL);
 }
 
 // Platform hook called after system_create completes.
@@ -1355,6 +852,48 @@ void setup_init() {
 // the assertion callback (which requires the debug object to exist).
 __attribute__((weak)) void system_post_create(config_t *cfg) {
     (void)cfg;
+}
+
+// Background-checkpoint auto state. WASM-only at the moment — the
+// headless build has no auto-checkpoint loop, so the weak defaults
+// just stub out; em_main.c overrides them to read/write the live
+// `checkpoint_auto_enabled` flag.
+__attribute__((weak)) bool gs_checkpoint_auto_get(void) {
+    return false;
+}
+
+__attribute__((weak)) void gs_checkpoint_auto_set(bool enabled) {
+    (void)enabled;
+}
+
+// Platform-specific entry points (see system.h).  Headless gets the
+// "not supported" stubs by default; em_main.c overrides them on WASM.
+__attribute__((weak)) void gs_quit(void) {}
+__attribute__((weak)) int gs_download(const char *path) {
+    (void)path;
+    printf("download: only supported in the WASM build\n");
+    return -1;
+}
+__attribute__((weak)) int gs_background_checkpoint(const char *reason) {
+    (void)reason;
+    printf("background-checkpoint: only supported in the WASM build\n");
+    return -1;
+}
+__attribute__((weak)) int gs_checkpoint_clear(void) {
+    printf("checkpoint clear: only supported in the WASM build\n");
+    return -1;
+}
+__attribute__((weak)) int gs_register_machine(const char *machine_id, const char *created) {
+    (void)machine_id;
+    (void)created;
+    return 0; // headless has no per-machine checkpoint scoping; treat as no-op success
+}
+
+__attribute__((weak)) int gs_find_media(const char *dir_path, const char *dest) {
+    (void)dir_path;
+    (void)dest;
+    printf("find-media: only supported in the WASM build\n");
+    return 1;
 }
 
 // Create an emulator instance for the given machine profile.
@@ -1384,6 +923,11 @@ config_t *system_create(const hw_profile_t *profile, checkpoint_t *checkpoint) {
     // Delegate all machine-specific initialisation to the profile
     profile->init(cfg, checkpoint);
 
+    // Stand up the object-model root (M2): attaches stub classes for
+    // cpu/memory/scheduler/machine/shell/storage so `eval` can read
+    // runtime state. The legacy shell remains primary.
+    root_install(cfg);
+
     // Notify the platform (e.g., install assertion callback)
     system_post_create(cfg);
 
@@ -1400,6 +944,20 @@ config_t *system_create(const hw_profile_t *profile, checkpoint_t *checkpoint) {
 void system_destroy(config_t *config) {
     if (!config)
         return;
+
+    // Tear down the object-model root before machine teardown so stub
+    // getters cannot dereference half-freed subsystem state.  Use the
+    // _if variant so the destroy of an already-replaced config (e.g.,
+    // after `checkpoint --load` ran system_create(new) before us) does
+    // NOT wipe the just-installed new-cfg stubs.
+    //
+    // Note: rom and vrom are deliberately NOT torn down here. They are
+    // process-scoped singletons (no per-config state); their object nodes
+    // outlive any specific emulator instance and are reclaimed at process
+    // exit. Calling rom_delete here would break checkpoint reload, where
+    // system_destroy(old) runs *after* system_create(new) has already
+    // pinned a fresh emulator that still references the rom object.
+    root_uninstall_if(config);
 
     // Delegate machine-specific teardown to the profile
     if (config->machine && config->machine->teardown) {
@@ -1454,7 +1012,7 @@ void add_scsi_drive(struct config *restrict config, const char *filename, int sc
 }
 
 // Add a SCSI CD-ROM to the configuration (AppleCD SC Plus / Sony CDU-8002)
-static void add_scsi_cdrom(struct config *restrict config, const char *filename, int scsi_id) {
+void add_scsi_cdrom(struct config *restrict config, const char *filename, int scsi_id) {
     // Persist volatile images to OPFS
     char *persistent_path = image_persist_volatile(filename);
     if (persistent_path)
@@ -1647,6 +1205,62 @@ uint64_t cmd_load_checkpoint(int argc, char *argv[]) {
         return 0;
     }
     return -1;
+}
+
+// ===== Phase 5b: argv-driven entry points for the typed object-model bridge =====
+// Mirror the legacy `fd` / `hd` shell commands but skip find_cmd / shell_dispatch.
+
+static int run_subcmd_handler(cmd_fn fn, const struct cmd_reg *reg, int argc, char **argv) {
+    struct cmd_io io;
+    init_cmd_io(&io);
+    struct cmd_context ctx;
+    memset(&ctx, 0, sizeof(ctx));
+    ctx.out = io.out_stream;
+    ctx.err = io.err_stream;
+    struct cmd_result res;
+    memset(&res, 0, sizeof(res));
+    res.type = RES_OK;
+    if (cmd_parse_args(argc, argv, reg, &ctx, &res))
+        fn(&ctx, &res);
+    finalize_cmd_io(&io, &res);
+    if (res.type == RES_ERR) {
+        if (res.as_str)
+            fprintf(stderr, "%s\n", res.as_str);
+        return -1;
+    }
+    if (res.type == RES_INT)
+        return (int)res.as_int;
+    return 0;
+}
+
+int shell_fd_argv(int argc, char **argv) {
+    static const struct cmd_reg reg = {
+        .name = "fd",
+        .fn = cmd_fd_handler,
+        .subcmds = fd_subcmds,
+        .n_subcmds = 5,
+    };
+    return run_subcmd_handler(cmd_fd_handler, &reg, argc, argv);
+}
+
+int shell_hd_argv(int argc, char **argv) {
+    static const struct cmd_reg reg = {
+        .name = "hd",
+        .fn = cmd_hd_handler,
+        .subcmds = hd_subcmds,
+        .n_subcmds = 6,
+    };
+    return run_subcmd_handler(cmd_hd_handler, &reg, argc, argv);
+}
+
+int shell_image_argv(int argc, char **argv) {
+    static const struct cmd_reg reg = {
+        .name = "image",
+        .fn = cmd_image_handler,
+        .subcmds = image_subcmds,
+        .n_subcmds = 4,
+    };
+    return run_subcmd_handler(cmd_image_handler, &reg, argc, argv);
 }
 
 // ---------------- AppleTalk command handlers ----------------

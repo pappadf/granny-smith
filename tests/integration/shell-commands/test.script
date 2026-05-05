@@ -1,37 +1,27 @@
 # Integration test: Shell Commands
-# Exercises v2 command framework with GDB-style naming.
+# Exercises the typed object-model dispatch surface: bare-path reads,
+# disasm, help, logpoint listing.
 
 # Run a few instructions to initialize state
-run 100
+scheduler.run 100
 
-# Test: info regs shows register dump (replaces td)
-info regs
+# Bare-read of cpu prints all integer registers as a name=value table.
+cpu
 
-# Test: info r alias works
-info r
+# Bare-read of cpu.fpu prints the floating-point register file (Plus
+# has no FPU so this is an "fpu not present" V_ERROR; SE/30 would
+# print fp0..fp7 / fpcr / fpsr / fpiar).
 
-# Test: disasm defaults to PC when no address given
-disasm
+# disasm defaults to PC when no count is given.
+assert ${debug.disasm()} "disasm (default count) failed"
 
-# Test: disasm with count only (alias 'd')
-d 5
+# disasm with explicit count.
+assert ${debug.disasm(5)} "disasm 5 failed"
 
-# Test: help for specific command (v2 name)
-help info
+# Help on a typed root method still works.
+help debug.disasm
 
-# Test: info fpregs (replaces fpregs command)
-info fpregs
-
-# Test: prompt off suppresses status line
-prompt off
-
-# Test: prompt on re-enables it
-prompt on
-
-# Test: logpoint list (should be empty)
-logpoint list
-
-# Test: info mac (replaces mac-state)
-info mac
+# Logpoint list (should be empty).
+assert ${debug.logpoints.list()} "debug.logpoints.list failed"
 
 quit

@@ -1,0 +1,53 @@
+# M8 integration: appletalk + mouse top-level objects.
+# Both are exercised through the new tree paths and through the legacy
+# command shims to verify they share state.
+
+scheduler.run 50000
+
+# Tree shape.
+appletalk
+appletalk.shares
+appletalk.printer
+mouse
+
+# Initially the shares table is empty. The printer is auto-enabled at
+# register time (atalk_printer_register → atalk_printer_enable(NULL))
+# so enabled starts true with the default object name.
+assert ${appletalk.printer.enabled == true}
+appletalk.printer.name
+
+# Add a share via the new method, observe it via the legacy command.
+# Use /tmp because atalk_share_add stat()s the directory; /tmp exists
+# both in the dev container (/workspaces/granny-smith) and in CI
+# (/__w/granny-smith/granny-smith) so the path is portable.
+echo ${appletalk.shares.add("docs", "/tmp")}
+appletalk.shares
+assert ${appletalk.shares[0].name == "docs"}
+assert ${appletalk.shares[0].path == "/tmp"}
+appletalk.shares[0].vol_id
+
+# Add via the legacy command, observe via the new tree.
+appletalk.shares.add demo /tmp
+assert ${appletalk.shares[1].name == "demo"}
+
+# Remove via the new tree's per-entry method, verify legacy list reflects it.
+echo ${appletalk.shares[0].remove()}
+appletalk.shares
+
+# Printer enable/disable via the new methods, assert state through the
+# new tree's enabled attr after each transition.
+echo ${appletalk.printer.enable("Test LaserWriter")}
+assert ${appletalk.printer.enabled == true}
+assert ${appletalk.printer.name == "Test LaserWriter"}
+echo ${appletalk.printer.disable()}
+assert ${appletalk.printer.enabled == false}
+
+# Mouse methods. Plus is a non-ADB machine with no MAE, so move()
+# falls through to the global write path via set_mouse_default.
+echo ${mouse.move(100, 200)}
+echo ${mouse.click(true)}
+echo ${mouse.click(false)}
+echo ${mouse.trace(true)}
+echo ${mouse.trace(false)}
+
+quit

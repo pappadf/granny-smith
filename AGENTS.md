@@ -65,6 +65,16 @@ Emulator modules (e.g., scsi, cpu, via, scc, rtc) have `.c`/`.h` files in `src/c
   (~10–15 min, requires test data from `scripts/fetch-test-data.sh`)
 - In general, no need to run unit tests unless explicitly asked
 
+**Always capture test output to a file** so subsequent grep / re-analysis
+doesn't require re-running. Integration suites take 1–5 min, the e2e
+suite 10+ min — re-running just to filter is pure waste. Pattern:
+```bash
+make integration-test 2>&1 | tee /tmp/it.log
+grep -E "PASS|FAIL|Error" /tmp/it.log
+```
+Same for unit / e2e. Avoid piping straight into `tail`/`grep`/`head`
+without a `tee` first; you discard the data you need next.
+
 **Environment-specific Testing Guidelines:**
 
 *When running in a codespace (prepared devcontainer):*
@@ -129,6 +139,30 @@ Emulator modules (e.g., scsi, cpu, via, scc, rtc) have `.c`/`.h` files in `src/c
 - Each function and structure needs a one-line comment above describing its purpose
 - Do not change or remove existing comments unnecessarily
 - Refer to `docs/STYLE_GUIDE.md` for conventions when unsure
+
+## Object model (`gs_eval`)
+
+Every emulator subsystem is exposed through a single tagged-union value
+type and an opaque `object_t` tree rooted at `emu`. Top-level paths are
+`cpu`, `memory`, `scc`, `via1`/`via2`, `rtc`, `scsi`, `floppy`, `sound`,
+`storage`, `network.appletalk`, `input.mouse`, `debugger`, `mac`, plus
+the root methods (`cp`, `peeler`, `rom_probe`, `rom_load`, `fd_insert`,
+`hd_attach`, `run`, `checkpoint_*`, `register_machine`, `running`,
+`hd_models`, `dump_tree`, …).
+
+The browser frontend and the e2e helpers call into the tree via
+`window.gsEval(path, args?)` (see `app/web/js/emulator.js`). Inside the
+shell, the same tree is reachable via four surface forms (proposal §4.1):
+
+  cpu.pc                # bare path → read & print
+  cpu.d0 = 0x1234        # path = value → write
+  cpu.step 1000          # path arg → method call (shell form)
+  $(cpu.step(1000))      # path(args) → method call (call form, expressions)
+
+The legacy `eval <path>` and `runCommand`/`runCommandJSON` JS helpers
+remain only as the terminal-input bridge and the two pre-main-loop
+boot calls (`main.js` / `checkpoint.js`); everything else goes through
+`gsEval`.
 
 ## When AGENTS.md Is Wrong
 

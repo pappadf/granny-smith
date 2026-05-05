@@ -6,15 +6,21 @@
 
 #include "shell.h"
 
+#include "alias.h"
 #include "cmd_complete.h"
 #include "cmd_io.h"
-#include "cmd_json.h"
 #include "cmd_parse.h"
 #include "cmd_types.h"
+#include "expr.h"
 #include "log.h"
-#include "peeler_shell.h"
+#include "object.h"
+#include "parse.h"
 #include "shell_var.h"
+#include "value.h"
 #include "vfs.h"
+#include "worker_thread.h"
+
+#include <inttypes.h>
 
 #include <ctype.h>
 #include <dirent.h>
@@ -28,141 +34,37 @@
 #include <sys/types.h>
 #include <unistd.h>
 
-static int shell_initialized = 0;
+// Volatile so the shared-memory pointer exposed to JS sees the real
+// flag flip — avoids the optimiser caching the constant `0` it sees
+// at init time and confusing the JS-side gsEval ready check.
+static volatile int32_t shell_initialized = 0;
 
-// JSON result buffer for WASM bridge (16KB)
-#define CMD_JSON_BUF_SIZE 16384
-static char g_cmd_json_buffer[CMD_JSON_BUF_SIZE];
-
-/* --- command registry ---------------------------------------------------- */
-
-// Single unified command registry node
-struct cmd_reg_node {
-    struct cmd_reg reg;
-    struct cmd_reg_node *next;
-};
-
-// Head of the command registry (exported for the completion engine)
-struct cmd_reg_node *cmd_head = NULL;
-
-// Find a command by name or alias
-static struct cmd_reg_node *find_cmd(const char *name) {
-    for (struct cmd_reg_node *n = cmd_head; n; n = n->next) {
-        if (strcasecmp(n->reg.name, name) == 0)
-            return n;
-        if (n->reg.aliases) {
-            for (const char **a = n->reg.aliases; *a; a++) {
-                if (strcasecmp(*a, name) == 0)
-                    return n;
-            }
-        }
-    }
-    return NULL;
+// Borrowed pointer into the shared-memory shell-initialized flag. JS
+// polls this on first gsEval call before issuing the ccall — without
+// it, calls fired during the boot window between Module-ready and the
+// worker leaving shell_init() see the stale empty root class.
+volatile int32_t *gs_shell_ready_ptr(void) {
+    return &shell_initialized;
 }
 
-// Register a command with full declarative metadata
-int register_command(const struct cmd_reg *reg) {
-    if (!reg || !reg->name || (!reg->fn && !reg->simple_fn))
-        return -1;
-    if (find_cmd(reg->name))
-        return -1; // already registered
-
-    struct cmd_reg_node *node = malloc(sizeof(struct cmd_reg_node));
-    if (!node)
-        return -1;
-
-    node->reg = *reg; // shallow copy (all strings are static)
-    node->next = cmd_head;
-    cmd_head = node;
-    return 0;
-}
-
-// Register a simple command (classic argc/argv signature)
-int register_cmd(const char *name, const char *category, const char *synopsis, cmd_fn_simple fn) {
-    if (find_cmd(name))
-        return -1;
-    return register_command(&(struct cmd_reg){
-        .name = name,
-        .category = category,
-        .synopsis = synopsis,
-        .simple_fn = fn,
-    });
-}
-
-// Unregister a command by name
-int unregister_cmd(const char *name) {
-    struct cmd_reg_node *prev = NULL, *cur = cmd_head;
-    while (cur) {
-        if (strcmp(cur->reg.name, name) == 0) {
-            if (prev)
-                prev->next = cur->next;
-            else
-                cmd_head = cur->next;
-            free(cur);
-            return 0;
-        }
-        prev = cur;
-        cur = cur->next;
-    }
-    return -1;
-}
-
-/* --- "did you mean?" suggestion ------------------------------------------ */
-
-// Simple edit distance (Levenshtein) for short strings
-static int edit_distance(const char *a, const char *b) {
-    int la = strlen(a), lb = strlen(b);
-    if (la > 20 || lb > 20)
-        return 99;
-    int dp[21][21];
-    for (int i = 0; i <= la; i++)
-        dp[i][0] = i;
-    for (int j = 0; j <= lb; j++)
-        dp[0][j] = j;
-    for (int i = 1; i <= la; i++) {
-        for (int j = 1; j <= lb; j++) {
-            int cost = (tolower((unsigned char)a[i - 1]) != tolower((unsigned char)b[j - 1])) ? 1 : 0;
-            int del = dp[i - 1][j] + 1;
-            int ins = dp[i][j - 1] + 1;
-            int sub = dp[i - 1][j - 1] + cost;
-            dp[i][j] = del < ins ? (del < sub ? del : sub) : (ins < sub ? ins : sub);
-        }
-    }
-    return dp[la][lb];
-}
-
-// Suggest closest matching command or alias for an unknown command name
-static void suggest_command(const char *name) {
-    const char *best = NULL;
-    int best_dist = 4; // max distance threshold
-
-    for (struct cmd_reg_node *n = cmd_head; n; n = n->next) {
-        int d = edit_distance(name, n->reg.name);
-        if (d < best_dist) {
-            best_dist = d;
-            best = n->reg.name;
-        }
-        if (n->reg.aliases) {
-            for (const char **a = n->reg.aliases; *a; a++) {
-                d = edit_distance(name, *a);
-                if (d < best_dist) {
-                    best_dist = d;
-                    best = *a;
-                }
-            }
-        }
-    }
-
-    if (best)
-        fprintf(stderr, "Unknown command \"%s\". Did you mean \"%s\"?\n", name, best);
-    else
-        fprintf(stderr, "Unknown command \"%s\". Type \"help\" for a list of commands.\n", name);
-}
+// Phase 5c — legacy command registry deleted. The typed object-model
+// bridge is the sole dispatch surface; shell_dispatch falls straight
+// through to the path-form parser.
 
 /* --- tokenizer ----------------------------------------------------------- */
 #define MAXTOK 32
-static int tokenize(char *line, char *argv[], int max) {
-    // Tokenizer with support for: \-escapes, ASCII and UTF-8 curly quotes.
+
+// In-place tokenizer exposed via shell.h as `shell_tokenize` so the
+// typed object-model bridge can split free-form spec strings (e.g.
+// logpoint specs, log argv) without routing through `shell_dispatch`.
+// `line` is mutated in place; returned argv pointers point inside it.
+int tokenize(char *line, char *argv[], int max) {
+    // Tokenizer with support for: \-escapes, ASCII and UTF-8 curly
+    // quotes, and ' / " quoted strings. `${...}` substitution has
+    // already been resolved by shell_var_expand before tokenisation,
+    // so the tokenizer only sees the post-expansion source — except
+    // inside single-quoted regions, where `${...}` survives verbatim
+    // (the deferred-eval opt-out used by logpoint messages).
     int argc = 0;
     int esc = 0;
     enum { Q_NONE = 0, Q_DQUOTE, Q_SQUOTE, Q_CURLY } qstate = Q_NONE;
@@ -247,379 +149,22 @@ static int tokenize(char *line, char *argv[], int max) {
     return argc;
 }
 
-/* --- built-in commands ---------------------------------------------------- */
+// Phase 5c — legacy `help` / `echo` / `time` / `add` / `remove`
+// shell built-ins retired. `echo` and other utilities are typed root
+// methods now (root.c).
 
-// Help category display order
-static const char *help_category_order[] = {"Execution",  "Breakpoints", "Inspection",    "Tracing",       "Display",
-                                            "Input",      "Media",       "Configuration", "Checkpointing", "Scheduler",
-                                            "Filesystem", "Archive",     "Testing",       "Logging",       "AppleTalk",
-                                            "General",    NULL};
+// Phase 5c — legacy filesystem commands (`ls`, `cd`, `mkdir`, `mv`,
+// `cat`, `exists`, `size`, `rm`) and the registry-based execute_cmd
+// retired. Typed object-model methods (vfs.ls, vfs.mkdir, vfs.cat,
+// path_exists, path_size, …) replace them.
 
-// Print commands in a given category
-static void help_print_category(const char *cat) {
-    int printed = 0;
-    for (struct cmd_reg_node *n = cmd_head; n; n = n->next) {
-        if (strcmp(n->reg.category, cat) == 0) {
-            if (!printed) {
-                printf("\n%s:\n", cat);
-                printed = 1;
-            }
-            printf("  %-14s %s\n", n->reg.name, n->reg.synopsis);
-        }
-    }
-}
+// Forward declaration — definition lives below in the shell-form
+// grammar block. Returns 0 on success, -1 on error, 1 if unhandled.
+static int try_path_dispatch(int argc, char **argv);
 
-static uint64_t cmd_help(int argc, char *argv[]) {
-    if (argc == 1) {
-        // Print categories in defined order
-        for (int i = 0; help_category_order[i]; i++)
-            help_print_category(help_category_order[i]);
-
-        // Print any remaining categories not in the fixed order
-        for (struct cmd_reg_node *n = cmd_head; n; n = n->next) {
-            int found = 0;
-            for (int i = 0; help_category_order[i]; i++) {
-                if (strcmp(n->reg.category, help_category_order[i]) == 0) {
-                    found = 1;
-                    break;
-                }
-            }
-            if (!found) {
-                int already = 0;
-                for (struct cmd_reg_node *prev = cmd_head; prev != n; prev = prev->next) {
-                    if (strcmp(prev->reg.category, n->reg.category) == 0) {
-                        already = 1;
-                        break;
-                    }
-                }
-                if (!already)
-                    help_print_category(n->reg.category);
-            }
-        }
-    } else {
-        // Per-command help
-        for (int i = 1; i < argc; ++i) {
-            struct cmd_reg_node *c = find_cmd(argv[i]);
-            if (!c) {
-                printf("Unknown command \"%s\"\n", argv[i]);
-                continue;
-            }
-
-            printf("%s — %s\n", c->reg.name, c->reg.synopsis);
-
-            // Print subcommands if any
-            if (c->reg.subcmds && c->reg.n_subcmds > 0) {
-                printf("\n");
-                for (int j = 0; j < c->reg.n_subcmds; j++) {
-                    const struct subcmd_spec *sc = &c->reg.subcmds[j];
-                    if (!sc->name) {
-                        if (sc->nargs > 0) {
-                            printf("  %s", c->reg.name);
-                            for (int k = 0; k < sc->nargs; k++) {
-                                if (ARG_IS_OPTIONAL(sc->args[k].type))
-                                    printf(" [%s]", sc->args[k].name);
-                                else
-                                    printf(" <%s>", sc->args[k].name);
-                            }
-                            if (sc->description)
-                                printf("   %s", sc->description);
-                            printf("\n");
-                        }
-                    } else {
-                        printf("  %s %s", c->reg.name, sc->name);
-                        if (sc->aliases) {
-                            printf(" (");
-                            for (const char **a = sc->aliases; *a; a++) {
-                                if (a != sc->aliases)
-                                    printf(", ");
-                                printf("%s", *a);
-                            }
-                            printf(")");
-                        }
-                        for (int k = 0; k < sc->nargs; k++) {
-                            if (ARG_IS_OPTIONAL(sc->args[k].type))
-                                printf(" [%s]", sc->args[k].name);
-                            else
-                                printf(" <%s>", sc->args[k].name);
-                        }
-                        if (sc->description)
-                            printf("   %s", sc->description);
-                        printf("\n");
-                    }
-                }
-            } else if (c->reg.args && c->reg.nargs > 0) {
-                printf("\n  %s", c->reg.name);
-                for (int k = 0; k < c->reg.nargs; k++) {
-                    if (ARG_IS_OPTIONAL(c->reg.args[k].type))
-                        printf(" [%s]", c->reg.args[k].name);
-                    else
-                        printf(" <%s>", c->reg.args[k].name);
-                }
-                printf("\n");
-            }
-
-            // Print aliases
-            if (c->reg.aliases) {
-                printf("  Aliases:");
-                for (const char **a = c->reg.aliases; *a; a++)
-                    printf(" %s", *a);
-                printf("\n");
-            }
-        }
-    }
-    return 0;
-}
-
-static uint64_t cmd_echo(int argc, char *argv[]) {
-    for (int i = 1; i < argc; ++i) {
-        if (i > 1)
-            putchar(' ');
-        fputs(argv[i], stdout);
-    }
-    putchar('\n');
-    return 0;
-}
-
-/* Demo of a command that can be loaded and unloaded at run-time */
-static uint64_t cmd_time(int argc, char *argv[]) {
-    (void)argc;
-    (void)argv;
-    time_t t = time(NULL);
-    printf("Current time: %s", ctime(&t));
-    return 0;
-}
-
-static uint64_t cmd_add(int argc, char *argv[]) {
-    if (argc != 2) {
-        puts("usage: add time");
-        return 0;
-    }
-    if (strcmp(argv[1], "time") == 0) {
-        if (register_cmd("time", "General", "time  – show the clock", cmd_time) == 0)
-            puts("time command added");
-        else
-            puts("time command already present");
-    } else
-        puts("only \"time\" is available in this demo");
-    return 0;
-}
-
-static uint64_t cmd_remove(int argc, char *argv[]) {
-    if (argc != 2) {
-        puts("usage: remove time");
-        return 0;
-    }
-    if (strcmp(argv[1], "time") == 0) {
-        if (unregister_cmd("time") == 0)
-            puts("time command removed");
-        else
-            puts("time command is not loaded");
-    } else
-        puts("only \"time\" is available in this demo");
-    return 0;
-}
-
-/* --- file system commands ------------------------------------------------ */
-// FS commands route through the VFS layer (src/core/vfs/).  In Phase 1
-// there is only one backend (host), so behaviour is byte-identical to the
-// pre-refactor libc calls.  Phase 2 adds an image backend plus an
-// auto-mount resolver; the call sites here do not change.
-
-// ls [dir] — list directory contents; defaults to current_dir
-static void cmd_ls(struct cmd_context *ctx, struct cmd_result *res) {
-    const char *path = ctx->args[0].present ? ctx->args[0].as_str : vfs_get_cwd();
-    vfs_dir_t *dir = NULL;
-    const vfs_backend_t *be = NULL;
-    int rc = vfs_opendir(path, &dir, &be);
-    if (rc < 0) {
-        cmd_printf(ctx, "ls: cannot open directory '%s': %s\n", path, strerror(-rc));
-        cmd_ok(res);
-        return;
-    }
-    vfs_dirent_t entry;
-    int r;
-    while ((r = be->readdir(dir, &entry)) > 0)
-        cmd_printf(ctx, "%s\n", entry.name);
-    be->closedir(dir);
-    cmd_ok(res);
-}
-
-// cd <dir> — change current directory.  Honours the "bare image path =
-// descend" rule (§2.9) so `cd foo.img` enters the partition-list root.
-// The logical cwd is tracked in the VFS layer; we only call libc chdir()
-// when the destination is a host path (image paths have no real host
-// cwd, so subsequent relative paths re-resolve via normalise_path).
-static void cmd_cd(struct cmd_context *ctx, struct cmd_result *res) {
-    const char *input = ctx->args[0].as_str;
-    char resolved[VFS_PATH_MAX];
-    const vfs_backend_t *be = NULL;
-    void *bctx = NULL;
-    const char *tail = NULL;
-    int rc = vfs_resolve_descend(input, resolved, sizeof(resolved), &be, &bctx, &tail);
-    if (rc < 0) {
-        cmd_printf(ctx, "cd: cannot change to '%s': %s\n", input, strerror(-rc));
-        cmd_ok(res);
-        return;
-    }
-    vfs_stat_t st = {0};
-    rc = be->stat(bctx, tail, &st);
-    if (rc < 0) {
-        cmd_printf(ctx, "cd: cannot change to '%s': %s\n", input, strerror(-rc));
-        cmd_ok(res);
-        return;
-    }
-    if (!(st.mode & VFS_MODE_DIR)) {
-        cmd_printf(ctx, "cd: not a directory: %s\n", input);
-        cmd_ok(res);
-        return;
-    }
-    // For host-backed directories keep the process cwd in sync so libc
-    // calls elsewhere (e.g. non-VFS consumers) see the same working dir.
-    // Image-backed paths have no host equivalent, so skip chdir() and
-    // rely on the logical cwd tracked by the VFS layer.
-    if (strcmp(be->scheme, "host") == 0) {
-        if (chdir(resolved) != 0) {
-            cmd_printf(ctx, "cd: cannot change to '%s': %s\n", input, strerror(errno));
-            cmd_ok(res);
-            return;
-        }
-    }
-    vfs_set_cwd(resolved);
-    cmd_printf(ctx, "Changed directory to %s\n", vfs_get_cwd());
-    cmd_ok(res);
-}
-
-// mkdir <dir> — create a directory
-static void cmd_mkdir(struct cmd_context *ctx, struct cmd_result *res) {
-    const char *dir = ctx->args[0].as_str;
-    int rc = vfs_mkdir(dir);
-    if (rc == 0)
-        cmd_printf(ctx, "Directory '%s' created\n", dir);
-    else
-        cmd_printf(ctx, "mkdir: cannot create directory '%s': %s\n", dir, strerror(-rc));
-    cmd_ok(res);
-}
-
-// mv <src> <dst> — rename/move a file or directory
-static void cmd_mv(struct cmd_context *ctx, struct cmd_result *res) {
-    const char *src = ctx->args[0].as_str;
-    const char *dst = ctx->args[1].as_str;
-    int rc = vfs_rename(src, dst);
-    if (rc == 0)
-        cmd_printf(ctx, "Moved '%s' to '%s'\n", src, dst);
-    else
-        cmd_printf(ctx, "mv: cannot move '%s' to '%s': %s\n", src, dst, strerror(-rc));
-    cmd_ok(res);
-}
-
-// cat <path> — stream file contents to the command output
-static void cmd_cat(struct cmd_context *ctx, struct cmd_result *res) {
-    const char *path = ctx->args[0].as_str;
-    vfs_file_t *f = NULL;
-    const vfs_backend_t *be = NULL;
-    int rc = vfs_open(path, &f, &be);
-    if (rc < 0) {
-        cmd_printf(ctx, "cat: cannot open '%s': %s\n", path, strerror(-rc));
-        cmd_int(res, 1);
-        return;
-    }
-    // Stream bytes in 4KB chunks; pread handles the offset tracking.
-    uint8_t buf[4096];
-    uint64_t off = 0;
-    for (;;) {
-        size_t n = 0;
-        rc = be->read(f, off, buf, sizeof(buf), &n);
-        if (rc < 0) {
-            cmd_printf(ctx, "cat: read error on '%s': %s\n", path, strerror(-rc));
-            be->close(f);
-            cmd_int(res, 1);
-            return;
-        }
-        if (n == 0)
-            break;
-        fwrite(buf, 1, n, ctx->out);
-        off += n;
-    }
-    be->close(f);
-    cmd_int(res, 0);
-}
-
-// exists <path> — exit code 0 if the path exists, 1 otherwise
-static void cmd_exists(struct cmd_context *ctx, struct cmd_result *res) {
-    const char *path = ctx->args[0].as_str;
-    vfs_stat_t st;
-    cmd_int(res, (vfs_stat(path, &st) == 0) ? 0 : 1);
-}
-
-// size <path> — return file size in bytes (0 on stat failure)
-static void cmd_size(struct cmd_context *ctx, struct cmd_result *res) {
-    const char *path = ctx->args[0].as_str;
-    vfs_stat_t st = {0};
-    int rc = vfs_stat(path, &st);
-    if (rc < 0) {
-        cmd_printf(ctx, "size: cannot stat '%s': %s\n", path, strerror(-rc));
-        cmd_int(res, 0);
-        return;
-    }
-    cmd_int(res, (int64_t)st.size);
-}
-
-// rm <path> — unlink a file
-static void cmd_rm(struct cmd_context *ctx, struct cmd_result *res) {
-    const char *path = ctx->args[0].as_str;
-    int rc = vfs_unlink(path);
-    if (rc < 0) {
-        cmd_printf(ctx, "rm: cannot remove '%s': %s\n", path, strerror(-rc));
-        cmd_int(res, 1);
-        return;
-    }
-    cmd_int(res, 0);
-}
-
-// Argument specs for filesystem commands (ARG_PATH drives tab completion)
-static const struct arg_spec fs_ls_args[] = {
-    {"dir", ARG_PATH | ARG_OPTIONAL, "directory to list"},
-};
-static const struct arg_spec fs_dir_args[] = {
-    {"dir", ARG_PATH, "directory"},
-};
-static const struct arg_spec fs_mv_args[] = {
-    {"src", ARG_PATH, "source path"     },
-    {"dst", ARG_PATH, "destination path"},
-};
-static const struct arg_spec fs_path_args[] = {
-    {"path", ARG_PATH, "file path"},
-};
-
-/* --- dispatcher ---------------------------------------------------------- */
-
-// Execute a command through a cmd_reg_node (handles both fn and simple_fn)
-static void execute_cmd(struct cmd_reg_node *node, int argc, char **argv, enum invoke_mode mode,
-                        struct cmd_result *res) {
-    if (node->reg.fn) {
-        // Full command handler with parsed args
-        struct cmd_io io;
-        init_cmd_io(&io, mode);
-
-        struct cmd_context ctx;
-        memset(&ctx, 0, sizeof(ctx));
-        ctx.out = io.out_stream;
-        ctx.err = io.err_stream;
-
-        if (cmd_parse_args(argc, argv, &node->reg, &ctx, res))
-            node->reg.fn(&ctx, res);
-
-        finalize_cmd_io(&io, res);
-    } else if (node->reg.simple_fn) {
-        // Simple (argc, argv) → uint64_t handler
-        uint64_t retval = node->reg.simple_fn(argc, argv);
-        res->type = RES_INT;
-        res->as_int = (int64_t)retval;
-    }
-}
-
-// Dispatch a command line with the given invocation mode
-void dispatch_command(char *line, enum invoke_mode mode, struct cmd_result *res) {
+// Dispatch a command line. Phase 5c — the legacy registry is gone;
+// everything routes through the typed path-form parser.
+void dispatch_command(char *line, struct cmd_result *res) {
     memset(res, 0, sizeof(*res));
     res->type = RES_OK;
 
@@ -628,40 +173,356 @@ void dispatch_command(char *line, enum invoke_mode mode, struct cmd_result *res)
         return;
     }
 
-    // expand ${VAR} references before tokenizing
     char *expanded = shell_var_expand(line);
-    char *to_parse = expanded ? expanded : line;
+    if (!expanded) {
+        cmd_err(res, "expansion failed");
+        return;
+    }
 
     char *argv[MAXTOK];
-    int argc = tokenize(to_parse, argv, MAXTOK);
-    if (argc <= 0)
-        return;
-
-    struct cmd_reg_node *c = find_cmd(argv[0]);
-    if (c) {
-        execute_cmd(c, argc, argv, mode, res);
+    int argc = tokenize(expanded, argv, MAXTOK);
+    if (argc <= 0) {
         free(expanded);
         return;
     }
 
-    // Unknown command: print suggestion, but return OK (exit code 0)
-    // to match the convention that unknown commands are not fatal errors.
-    suggest_command(argv[0]);
-    res->type = RES_OK;
+    int pd = try_path_dispatch(argc, argv);
+    if (pd < 0)
+        cmd_err(res, "command failed");
+    else if (pd > 0)
+        cmd_err(res, "unknown command: '%s'", argv[0]);
     free(expanded);
 }
 
-// Dispatch interactively and return integer result
+// === New shell-form grammar dispatch (proposal §4.1) =======================
+//
+// Falls between the legacy command lookup and the "unknown command"
+// suggestion: if argv[0] resolves as a path against the object root,
+// dispatch as one of:
+//   - bare path (argc == 1)            → node_get + print
+//   - path = value (argv[1] == "=")    → node_set with parsed argv[2]
+//   - path arg arg arg (M_METHOD)      → node_call with parsed args
+// Returns true if the line was handled (caller should not fall through
+// to suggest_command), false otherwise.
+
+// Print one scalar value inline (no trailing newline). Used as the
+// rhs in the object-attribute table dump and inside list expansion.
+// Mirrors the per-kind formatting in format_value_print but without
+// a trailing newline so it composes into a `name = value` line.
+static void format_scalar_inline(const value_t *v) {
+    if (!v)
+        return;
+    switch (v->kind) {
+    case V_NONE:
+        // empty inline representation
+        break;
+    case V_BOOL:
+        printf("%s", v->b ? "true" : "false");
+        break;
+    case V_INT:
+        if (v->flags & VAL_HEX)
+            printf("0x%" PRIx64, (uint64_t)v->i);
+        else
+            printf("%" PRId64, v->i);
+        break;
+    case V_UINT:
+        if (v->flags & VAL_HEX)
+            printf("0x%" PRIx64, v->u);
+        else
+            printf("%" PRIu64, v->u);
+        break;
+    case V_FLOAT:
+        printf("%g", v->f);
+        break;
+    case V_STRING:
+        printf("\"%s\"", v->s ? v->s : "");
+        break;
+    case V_BYTES:
+        printf("0x");
+        for (size_t i = 0; i < v->bytes.n; i++)
+            printf("%02x", v->bytes.p[i]);
+        break;
+    case V_ENUM:
+        if (v->enm.table && (size_t)v->enm.idx < v->enm.n_table && v->enm.table[v->enm.idx])
+            printf("\"%s\"", v->enm.table[v->enm.idx]);
+        else
+            printf("enum:%d", v->enm.idx);
+        break;
+    case V_LIST:
+        printf("<list:%zu>", v->list.len);
+        break;
+    case V_OBJECT: {
+        const class_desc_t *cc = v->obj ? object_class(v->obj) : NULL;
+        printf("<%s>", cc && cc->name ? cc->name : "object");
+        break;
+    }
+    case V_ERROR:
+        printf("<error: %s>", v->err ? v->err : "");
+        break;
+    }
+}
+
+// Print an object as a multi-line `name = value` table. Walks the
+// class's member table and reads each attribute through its getter;
+// child objects show as `<class:name>` placeholders (drill in via
+// the path to see their state); methods are skipped.
+static void format_object_table(struct object *o) {
+    if (!o)
+        return;
+    const class_desc_t *cls = object_class(o);
+    if (!cls || !cls->members || cls->n_members == 0) {
+        const char *cls_name = (cls && cls->name) ? cls->name : "object";
+        const char *o_name = object_name(o);
+        printf("<%s:%s>\n", cls_name, o_name ? o_name : "");
+        return;
+    }
+    // Pass 1: compute the longest member name so we can right-pad.
+    int width = 0;
+    for (size_t i = 0; i < cls->n_members; i++) {
+        const member_t *mb = &cls->members[i];
+        if (!mb->name)
+            continue;
+        if (mb->kind == M_METHOD)
+            continue;
+        int len = (int)strlen(mb->name);
+        if (len > width)
+            width = len;
+    }
+    if (width > 24)
+        width = 24; // cap so very long attr names don't blow the layout
+    // Pass 2: print attrs first, then children.
+    for (size_t i = 0; i < cls->n_members; i++) {
+        const member_t *mb = &cls->members[i];
+        if (!mb->name)
+            continue;
+        if (mb->kind != M_ATTR)
+            continue;
+        if (!mb->attr.get)
+            continue;
+        value_t v = mb->attr.get(o, mb);
+        printf("%-*s = ", width, mb->name);
+        format_scalar_inline(&v);
+        printf("\n");
+        value_free(&v);
+    }
+    for (size_t i = 0; i < cls->n_members; i++) {
+        const member_t *mb = &cls->members[i];
+        if (!mb->name || mb->kind != M_CHILD)
+            continue;
+        const char *child_cls = (mb->child.cls && mb->child.cls->name) ? mb->child.cls->name : "object";
+        printf("%-*s : <%s%s>\n", width, mb->name, child_cls, mb->child.indexed ? "[]" : "");
+    }
+}
+
+static void format_value_print(const value_t *v) {
+    if (!v)
+        return;
+    switch (v->kind) {
+    case V_NONE:
+        break;
+    case V_BOOL:
+        printf("%s\n", v->b ? "true" : "false");
+        break;
+    case V_INT:
+        printf("%" PRId64 "\n", v->i);
+        break;
+    case V_UINT:
+        if (v->flags & VAL_HEX)
+            printf("0x%" PRIx64 "\n", v->u);
+        else
+            printf("%" PRIu64 "\n", v->u);
+        break;
+    case V_FLOAT:
+        printf("%g\n", v->f);
+        break;
+    case V_STRING:
+        printf("%s\n", v->s ? v->s : "");
+        break;
+    case V_BYTES:
+        printf("0x");
+        for (size_t i = 0; i < v->bytes.n; i++)
+            printf("%02x", v->bytes.p[i]);
+        printf("\n");
+        break;
+    case V_ENUM:
+        if (v->enm.table && (size_t)v->enm.idx < v->enm.n_table && v->enm.table[v->enm.idx])
+            printf("%s\n", v->enm.table[v->enm.idx]);
+        else
+            printf("enum:%d\n", v->enm.idx);
+        break;
+    case V_LIST:
+        // Expand list elements inline: [item1, item2, ...]. Strings are
+        // quoted, ints/uints printed in their natural base, objects use
+        // <class:name>, nested lists recurse via the size form.
+        printf("[");
+        for (size_t i = 0; i < v->list.len; i++) {
+            const value_t *e = &v->list.items[i];
+            if (i)
+                printf(", ");
+            switch (e->kind) {
+            case V_NONE:
+                printf("null");
+                break;
+            case V_BOOL:
+                printf("%s", e->b ? "true" : "false");
+                break;
+            case V_INT:
+                printf("%" PRId64, e->i);
+                break;
+            case V_UINT:
+                if (e->flags & VAL_HEX)
+                    printf("0x%" PRIx64, e->u);
+                else
+                    printf("%" PRIu64, e->u);
+                break;
+            case V_FLOAT:
+                printf("%g", e->f);
+                break;
+            case V_STRING:
+                printf("\"%s\"", e->s ? e->s : "");
+                break;
+            case V_BYTES:
+                printf("<bytes:%zu>", e->bytes.n);
+                break;
+            case V_LIST:
+                printf("<list:%zu>", e->list.len);
+                break;
+            case V_ENUM:
+                if (e->enm.table && (size_t)e->enm.idx < e->enm.n_table && e->enm.table[e->enm.idx])
+                    printf("\"%s\"", e->enm.table[e->enm.idx]);
+                else
+                    printf("enum:%d", e->enm.idx);
+                break;
+            case V_OBJECT: {
+                const class_desc_t *cc = e->obj ? object_class(e->obj) : NULL;
+                printf("<%s:%s>", cc && cc->name ? cc->name : "object",
+                       e->obj && object_name(e->obj) ? object_name(e->obj) : "");
+                break;
+            }
+            case V_ERROR:
+                printf("<error>");
+                break;
+            }
+        }
+        printf("]\n");
+        break;
+    case V_OBJECT:
+        // Bare-read of an object prints its attributes as a
+        // `name = value` table. Methods are skipped; child nodes show
+        // as placeholders (drill in by typing the dotted path).
+        format_object_table(v->obj);
+        break;
+    case V_ERROR:
+        fprintf(stderr, "%s\n", v->err ? v->err : "(error)");
+        break;
+    }
+}
+
+// Returns 0 if handled successfully, -1 if handled with error, or 1 if
+// not a path (caller continues with the unknown-command path).
+static int try_path_dispatch(int argc, char **argv) {
+    if (argc < 1)
+        return 1;
+    // Resolve argv[0] against the object root.  Anything that names a
+    // valid node — root method, attached child object, attribute, or
+    // dotted path — dispatches; everything else falls through to the
+    // unknown-command path.
+    node_t n = object_resolve(object_root(), argv[0]);
+    if (!node_valid(n))
+        return 1;
+
+    // Setter form: `path = value`.
+    if (argc >= 3 && strcmp(argv[1], "=") == 0) {
+        if (!n.member || n.member->kind != M_ATTR) {
+            fprintf(stderr, "'%s' is not a settable attribute\n", argv[0]);
+            return -1;
+        }
+        value_t v = parse_literal_full(argv[2], NULL, 0);
+        if (val_is_error(&v)) {
+            // Fall back to treating the token as a string literal —
+            // mirrors the method-call branch and lets attribute setters
+            // accept opaque tokens (ISO timestamps, paths, identifiers
+            // that aren't valid number/bool/enum literals).
+            value_free(&v);
+            v = val_str(argv[2]);
+        }
+        value_t result = node_set(n, v);
+        if (val_is_error(&result)) {
+            fprintf(stderr, "set %s: %s\n", argv[0], result.err ? result.err : "failed");
+            value_free(&result);
+            return -1;
+        }
+        value_free(&result);
+        return 0;
+    }
+
+    // Method call form: `path arg arg arg ...`.
+    if (n.member && n.member->kind == M_METHOD) {
+        int call_argc = argc - 1;
+        value_t *vals = call_argc > 0 ? (value_t *)calloc((size_t)call_argc, sizeof(value_t)) : NULL;
+        for (int i = 0; i < call_argc; i++) {
+            vals[i] = parse_literal_full(argv[i + 1], NULL, 0);
+            if (val_is_error(&vals[i])) {
+                // Fall back to treating the token as a string literal —
+                // mirrors the way most legacy commands accept a bare
+                // word as a path/name.
+                value_free(&vals[i]);
+                vals[i] = val_str(argv[i + 1]);
+            }
+        }
+        value_t result = node_call(n, call_argc, vals);
+        for (int i = 0; i < call_argc; i++)
+            value_free(&vals[i]);
+        free(vals);
+        if (val_is_error(&result)) {
+            fprintf(stderr, "%s: %s\n", argv[0], result.err ? result.err : "call failed");
+            value_free(&result);
+            return -1;
+        }
+        format_value_print(&result);
+        value_free(&result);
+        return 0;
+    }
+
+    // Bare path read.
+    if (argc == 1) {
+        value_t v = node_get(n);
+        if (val_is_error(&v)) {
+            // Print the error to stderr but return 0 — matches the
+            // legacy `eval` semantics. Tests intentionally probe empty
+            // indexed slots etc. ("scsi.devices[5]") and expect the
+            // script to keep going. Use `assert (exists(path))` for
+            // strict membership checks.
+            fprintf(stderr, "%s: %s\n", argv[0], v.err ? v.err : "read failed");
+            value_free(&v);
+            return 0;
+        }
+        format_value_print(&v);
+        value_free(&v);
+        return 0;
+    }
+
+    // Anything else (path with extra tokens that isn't a setter or a
+    // method call) is ambiguous — let the legacy code path handle it.
+    return 1;
+}
+
+// Dispatch interactively and return integer result. Phase 5c — only
+// the typed path-form parser remains.
 uint64_t shell_dispatch(char *line) {
     if (!shell_initialized)
         return -1;
 
-    // expand ${VAR} references before tokenizing
+    worker_thread_assert("shell_dispatch");
+
     char *expanded = shell_var_expand(line);
-    char *to_parse = expanded ? expanded : line;
+    if (!expanded) {
+        fputs("expansion failed\n", stderr);
+        return (uint64_t)-1;
+    }
 
     char *argv[MAXTOK];
-    int argc = tokenize(to_parse, argv, MAXTOK);
+    int argc = tokenize(expanded, argv, MAXTOK);
     if (argc < 0) {
         fputs("too many arguments\n", stderr);
         free(expanded);
@@ -672,55 +533,16 @@ uint64_t shell_dispatch(char *line) {
         return 0;
     }
 
-    struct cmd_reg_node *c = find_cmd(argv[0]);
-    if (!c) {
-        suggest_command(argv[0]);
-        free(expanded);
-        return 0;
-    }
-
-    struct cmd_result res;
-    memset(&res, 0, sizeof(res));
-    execute_cmd(c, argc, argv, INVOKE_INTERACTIVE, &res);
+    int pd = try_path_dispatch(argc, argv);
+    if (pd > 0)
+        fprintf(stderr, "Unknown command: '%s'\n", argv[0]);
     free(expanded);
-
-    if (res.type == RES_INT)
-        return (uint64_t)res.as_int;
-    if (res.type == RES_BOOL)
-        return (uint64_t)res.as_bool;
-    if (res.type == RES_ERR) {
-        if (res.as_str)
-            fprintf(stderr, "%s\n", res.as_str);
-        return (uint64_t)-1;
-    }
-    return 0;
-}
-
-// Handle command input from platform layer
-uint64_t handle_command(const char *input_line) {
-    if (!input_line || !shell_initialized)
-        return -1;
-
-    size_t len = strlen(input_line);
-    while (len > 0 && (input_line[len - 1] == '\n' || input_line[len - 1] == '\r'))
-        len--;
-
-    char *mutable_line = (char *)malloc(len + 1);
-    if (!mutable_line)
-        return -1;
-
-    memcpy(mutable_line, input_line, len);
-    mutable_line[len] = '\0';
-
-    uint64_t result = shell_dispatch(mutable_line);
-
-    free(mutable_line);
-    return result;
-}
-
-// Get the JSON result buffer pointer
-char *get_cmd_json_result(void) {
-    return g_cmd_json_buffer;
+    // pd == 0 → handled successfully
+    // pd  < 0 → handled with error
+    // pd  > 0 → unknown command; HARD error (was a no-op pre-phase-5e
+    //          which masked test-script regressions like the legacy
+    //          `fd create` line silently no-opping after 5c).
+    return (pd != 0) ? (uint64_t)-1 : 0;
 }
 
 // Tab completion entry point
@@ -734,79 +556,61 @@ int shell_init(void) {
         return 0;
 
     log_init();
-    peeler_shell_init();
     shell_var_init();
 
-    register_cmd("help", "General", "help [cmd]", cmd_help);
-    register_cmd("echo", "General", "echo ARG...", cmd_echo);
-    register_cmd("add", "General", "add time", cmd_add);
-    register_cmd("remove", "General", "remove time", cmd_remove);
-    register_command(&(struct cmd_reg){
-        .name = "ls",
-        .category = "Filesystem",
-        .synopsis = "ls [dir] - list directory contents",
-        .fn = cmd_ls,
-        .args = fs_ls_args,
-        .nargs = 1,
-    });
-    register_command(&(struct cmd_reg){
-        .name = "cd",
-        .category = "Filesystem",
-        .synopsis = "cd <dir> - change current directory",
-        .fn = cmd_cd,
-        .args = fs_dir_args,
-        .nargs = 1,
-    });
-    register_command(&(struct cmd_reg){
-        .name = "mkdir",
-        .category = "Filesystem",
-        .synopsis = "mkdir <dir> - create directory",
-        .fn = cmd_mkdir,
-        .args = fs_dir_args,
-        .nargs = 1,
-    });
-    register_command(&(struct cmd_reg){
-        .name = "mv",
-        .category = "Filesystem",
-        .synopsis = "mv <src> <dst> - move/rename file or directory",
-        .fn = cmd_mv,
-        .args = fs_mv_args,
-        .nargs = 2,
-    });
-    register_command(&(struct cmd_reg){
-        .name = "cat",
-        .category = "Filesystem",
-        .synopsis = "cat <path> - output file contents",
-        .fn = cmd_cat,
-        .args = fs_path_args,
-        .nargs = 1,
-    });
-    register_command(&(struct cmd_reg){
-        .name = "exists",
-        .category = "Filesystem",
-        .synopsis = "exists <path> - test if path exists (exit code)",
-        .fn = cmd_exists,
-        .args = fs_path_args,
-        .nargs = 1,
-    });
-    register_command(&(struct cmd_reg){
-        .name = "size",
-        .category = "Filesystem",
-        .synopsis = "size <path> - return file size in bytes",
-        .fn = cmd_size,
-        .args = fs_path_args,
-        .nargs = 1,
-    });
-    register_command(&(struct cmd_reg){
-        .name = "rm",
-        .category = "Filesystem",
-        .synopsis = "rm <path> - remove file",
-        .fn = cmd_rm,
-        .args = fs_path_args,
-        .nargs = 1,
-    });
-    extern void cmd_cp_register(void);
-    cmd_cp_register();
+    // Install the top-level object-root methods (assert, echo, cp,
+    // peeler, rom_probe, …) so JS callers (`gsEval`) and the typed
+    // path-form parser can reach them.
+    extern void root_install_class(void);
+    root_install_class();
+
+    // Register process-singleton namespace objects that exist
+    // independently of any machine instance: rom, vrom, and machine
+    // all carry pre-boot surfaces (rom.identify, vrom.load,
+    // machine.boot, machine.profiles) that callers reach for *before*
+    // a machine has been created. The WASM URL-media boot path is the
+    // canonical case — drag-drop a Plus ROM, ask rom.identify for the
+    // compatible models, then call machine.boot with the answer.
+    // Hooking these up in system_create was wrong: the WASM platform
+    // doesn't run system_create at startup, so the path-form would
+    // fail to resolve until the legacy `rom load` had already booted
+    // a machine.
+    extern void rom_init(void);
+    extern void vrom_init(void);
+    extern void machine_init(void);
+    extern void checkpoint_init(void);
+    extern void archive_init(void);
+    extern void mouse_class_register(void);
+    extern void keyboard_class_register(void);
+    extern void screen_class_register(void);
+    extern void vfs_class_register(void);
+    extern void find_class_register(void);
+    rom_init();
+    vrom_init();
+    machine_init();
+    checkpoint_init();
+    archive_init();
+    mouse_class_register();
+    keyboard_class_register();
+    screen_class_register();
+    vfs_class_register();
+    find_class_register();
+
+    // Install the cfg-scoped namespace stubs (storage, shell, mouse,
+    // keyboard, screen, vfs, find) with a NULL cfg so their pre-boot
+    // surfaces resolve — particularly storage.cp and storage.find_media,
+    // which the URL-media auto-boot path uses *before* machine.boot to
+    // copy the downloaded ROM into OPFS and to scan extracted archives
+    // for floppy images. system_create will later re-install with the
+    // real cfg (root_install handles the cfg-change uninstall +
+    // reinstall internally).
+    extern void root_install(struct config * cfg);
+    root_install(NULL);
+
+    // Latch the worker pthread for the thread-affinity guard. From now
+    // on (under MODE=debug/sanitize) any call into shell_dispatch() or
+    // gs_eval() from a different thread aborts with GS_ASSERTF.
+    worker_thread_record();
 
     shell_initialized = 1;
     return 0;

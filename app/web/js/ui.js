@@ -98,10 +98,10 @@ export async function insertFloppyWithResume(path) {
     await waitForRunState(false, 1200);
     await sleep(40);
   }
-  await window.runCommand(`fd insert ${path} 0 true`);
+  await window.gsEval('floppy.drives[0].insert', [path, true]);
   if (wasRunning) {
     await sleep(30);
-    await window.runCommand('run');
+    await window.gsEval('scheduler.run');
     setRunning(true);
   }
 }
@@ -216,7 +216,7 @@ export function initUI({ canvas, panel, toggle, termBody, canvasWrapper, screenT
       setRunning(false);
       toast('interrupt (Ctrl-C)');
     } else {
-      await window.runCommand('run');
+      await window.gsEval('scheduler.run');
       setRunning(true);
       toast('run');
     }
@@ -243,8 +243,8 @@ export function initUI({ canvas, panel, toggle, termBody, canvasWrapper, screenT
       // checkpoint --save runs synchronously via the command mutex;
       // no need to pause — the checkpoint captures the scheduler's
       // running flag so the saved state preserves run/pause state.
-      await window.runCommand(`checkpoint --save ${tempPath}`);
-      await window.runCommand(`download ${tempPath}`);
+      await window.gsEval('checkpoint.save', [tempPath]);
+      await window.gsEval('download', [tempPath]);
       toast(`State saved (${tempName})`);
     } catch (err) {
       console.error('State download failed', err);
@@ -275,7 +275,8 @@ export function initUI({ canvas, panel, toggle, termBody, canvasWrapper, screenT
   }
 
   async function setScheduleMode(mode) {
-    await window.runCommand(`schedule ${mode}`);
+    // gs_eval treats `path + single arg` on an attribute as a setter.
+    await window.gsEval('scheduler.mode', [mode]);
     updateScheduleSwitcherUI(mode);
   }
 
@@ -325,11 +326,8 @@ export function initUI({ canvas, panel, toggle, termBody, canvasWrapper, screenT
   document.getElementById('btn-settings').addEventListener('click', async () => {
     settingsModal.setAttribute('aria-hidden', 'false');
     try {
-      const output = await window.runCommand('checkpoint');
-      if (output && output.includes('Current state:')) {
-        const isOn = output.includes('Current state: on');
-        checkpointToggle.checked = isOn;
-      }
+      const isOn = (await window.gsEval('checkpoint.auto')) === true;
+      checkpointToggle.checked = isOn;
     } catch (e) {
       console.warn('Failed to query checkpoint state:', e);
     }
@@ -341,9 +339,8 @@ export function initUI({ canvas, panel, toggle, termBody, canvasWrapper, screenT
 
   checkpointToggle.addEventListener('change', async (e) => {
     const enabled = e.target.checked;
-    const command = `checkpoint ${enabled ? 'on' : 'off'}`;
     try {
-      await window.runCommand(command);
+      await window.gsEval('checkpoint.auto', [enabled]);
       console.log(`Background checkpointing ${enabled ? 'enabled' : 'disabled'}`);
     } catch (err) {
       console.error('Failed to toggle checkpoint:', err);

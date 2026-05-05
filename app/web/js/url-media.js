@@ -32,20 +32,17 @@ export function isRomLoaded() { return romLoaded; }
 // Load ROM from persistent storage and start the emulator.
 // Lists ROMs in /images/rom/ and loads the first one found.
 export async function loadRomAndMaybeRun() {
-  // List ROMs via ls command (OPFS accessible only from worker)
-  const lsResult = await window.runCommand(`ls ${ROMS_DIR}`);
-  // If ls returns non-zero or no output, no ROM available
-  if (lsResult !== 0) { showRomOverlay(); return; }
+  // List ROMs via storage.list_dir (returns V_LIST<V_STRING>).
+  const entries = await window.gsEval('storage.list_dir', [ROMS_DIR]);
+  if (!Array.isArray(entries) || entries.length === 0) { showRomOverlay(); return; }
 
-  // The ls command printed filenames to stdout; we can't easily capture them.
-  // Instead, try to load using rom probe to check if a ROM is loaded
-  const probeResult = await window.runCommand('rom probe');
-  if (probeResult === 0) {
+  // rom.loaded is true if a ROM has already been loaded (e.g. via checkpoint).
+  if ((await window.gsEval('rom.loaded')) === true) {
     // ROM already loaded (from a previous session or checkpoint)
     romLoaded = true;
     hideRomOverlay();
     enableRunButton();
-    await window.runCommand('run');
+    await window.gsEval('scheduler.run');
     return;
   }
 
@@ -101,24 +98,23 @@ async function fetchAndStore(slot, url) {
         return;
       }
     } else {
-      // Check if it might be a peeler-supported archive
-      const isPeelerArch = /\.(sit|hqx|cpt|bin|sea)(_|$)/i.test(fileName);
+      // Check if it might be a Mac archive (sit/hqx/cpt/bin/sea)
+      const isMacArch = /\.(sit|hqx|cpt|bin|sea)(_|$)/i.test(fileName);
 
-      if (isPeelerArch && isModuleReady()) {
+      if (isMacArch && isModuleReady()) {
         const tempPath = `/tmp/${slot}_download`;
         writeBinary(tempPath, buf);
 
         try {
-          const probeResult = await window.runCommand(`peeler --probe ${tempPath}`);
-
-          if (probeResult === 0) {
+          // archive.identify returns the format short name (non-empty
+          // string) for a recognised archive, or empty otherwise.
+          const fmt = await window.gsEval('archive.identify', [tempPath]);
+          if (typeof fmt === 'string' && fmt.length > 0) {
             const extractDir = `/tmp/${slot}_unpacked`;
             toast(`Extracting ${fileName}...`);
 
-            const extractResult = await window.runCommand(`peeler -o ${extractDir} ${tempPath}`);
-            if (extractResult === 0) {
-              const findResult = await window.runCommand(`find-media ${extractDir} ${tmpPath}`);
-              if (findResult === 0) {
+            if ((await window.gsEval('archive.extract', [tempPath, extractDir])) === true) {
+              if ((await window.gsEval('storage.find_media', [extractDir, tmpPath])) === true) {
                 toast(`${slot} downloaded (extracted from archive)`);
               } else {
                 writeBinary(tmpPath, buf);
@@ -133,7 +129,7 @@ async function fetchAndStore(slot, url) {
             toast(`${slot} downloaded`);
           }
         } catch (err) {
-          console.warn('Peeler processing failed, storing original', err);
+          console.warn('Archive processing failed, storing original', err);
           writeBinary(tmpPath, buf);
           toast(`${slot} downloaded`);
         }
@@ -144,8 +140,8 @@ async function fetchAndStore(slot, url) {
       }
     }
 
-    // Copy from /tmp/ staging to persistent OPFS path via C-side file copy.
-    await window.runCommand(`file-copy ${tmpPath} ${path}`);
+    // Copy from /tmp/ staging to persistent OPFS path.
+    await window.gsEval('storage.cp', [tmpPath, path]);
   } catch (e) {
     console.error(`[url-media] Download FAILED for ${slot}:`, e);
     toast(`${slot} failed`);
@@ -170,40 +166,47 @@ export async function processUrlMedia(params) {
   console.log(`[url-media] all downloads complete`);
 
   if (params.has('rom')) {
-    // Load ROM — this creates the machine via rom_identify + system_ensure_machine
-    // The ROM was stored under /images/rom/<filename>; use the tmp path directly
+    // New machine-creation model: rom.identify reports compatible models,
+    // we boot the first one (Plus ROM → Plus, Universal ROM → SE/30 by
+    // default), then load the ROM into the freshly created machine.
     const tmpPath = '/tmp/url_rom';
     console.log(`[url-media] loading ROM from: ${tmpPath}`);
-    await window.runCommand(`rom load ${tmpPath}`);
+    const compatible = await window.gsEval('rom.identify', [tmpPath]);
+    if (!Array.isArray(compatible) || compatible.length === 0) {
+      console.error(`[url-media] rom.identify: no compatible machines for ${tmpPath}`);
+      return;
+    }
+    await window.gsEval('machine.boot', [compatible[0]]);
+    await window.gsEval('rom.load', [tmpPath]);
     romLoaded = true;
     hideRomOverlay();
     enableRunButton();
 
-    // Now that the machine exists, insert floppies
+    // Now that the machine exists, insert floppies into drive 0.
     for (const [k] of params.entries()) {
       if (/^fd\d+$/.test(k)) {
         const fdPath = `/tmp/url_${k}`;
         console.log(`[url-media] inserting floppy: ${fdPath}`);
-        const rc = await window.runCommand(`fd insert ${fdPath} 0 true`);
-        console.log(`[url-media] fd insert result: ${rc}`);
+        const ok = await window.gsEval('floppy.drives[0].insert', [fdPath, true]);
+        console.log(`[url-media] fd insert result: ${ok}`);
       }
     }
 
-    // Attach HDs
+    // Attach HDs at the SCSI id encoded in the URL key (hd0, hd1, ...).
     for (const [k] of params.entries()) {
       if (/^hd\d+$/.test(k)) {
         const hdPath = `/tmp/url_${k}`;
         const id = parseInt(k.replace('hd', ''), 10);
-        await window.runCommand(`hd attach ${hdPath} ${id}`);
+        await window.gsEval('scsi.attach_hd', [hdPath, id]);
       }
     }
 
-    await window.runCommand('run');
+    await window.gsEval('scheduler.run');
   } else {
-    // No ROM in URL params — insert floppies if machine already exists
+    // No ROM in URL params — insert floppies if machine already exists.
     for (const [k] of params.entries()) {
       if (/^fd\d+$/.test(k)) {
-        await window.runCommand(`fd insert /tmp/url_${k} 0 true`);
+        await window.gsEval('floppy.drives[0].insert', [`/tmp/url_${k}`, true]);
       }
     }
   }

@@ -24,6 +24,9 @@ INCLUDE_FLAGS := -I$(UNIT_ROOT)/support \
                  -I$(EMU_ROOT)/core/storage \
                  -I$(EMU_ROOT)/core/network \
                  -I$(EMU_ROOT)/core/shell \
+                 -I$(EMU_ROOT)/core/object \
+                 -I$(EMU_ROOT)/core/vfs \
+                 -I$(EMU_ROOT)/machines \
                  -I$(EMU_ROOT)/platform/wasm \
                  -DUNIT_TEST_PLATFORM_OVERRIDE \
                  -include $(UNIT_ROOT)/support/platform.h \
@@ -46,7 +49,9 @@ SRCS := $(CURDIR)/test.c \
         $(UNIT_ROOT)/support/stub_assert.c \
         $(UNIT_ROOT)/support/stub_cpu.c \
         $(EMU_ROOT)/core/memory/memory.c \
-        $(EMU_ROOT)/core/memory/mmu.c
+        $(EMU_ROOT)/core/memory/mmu.c \
+        $(EMU_ROOT)/core/object/object.c \
+        $(EMU_ROOT)/core/object/value.c
 
 ALL_SRCS := $(abspath $(SRCS))
 

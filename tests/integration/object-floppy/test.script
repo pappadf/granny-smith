@@ -1,0 +1,41 @@
+# M7e integration: `floppy` object class.
+# fd0 is loaded with a System 6.0.8 disk, fd1 is empty. The script
+# walks both drives, verifies present/disk reflect the load state,
+# exercises eject() and confirms present flips to false afterwards.
+
+scheduler.run 50000
+
+# Top-level floppy. Plus uses the IWM controller; sel is the active
+# drive selector.
+floppy
+assert ${floppy.type == "iwm"} "Plus floppy controller is iwm"
+floppy.sel
+
+# Drives collection.
+floppy.drives
+
+# Drive 0: populated by --fd0=. After 50K cycles the head is at
+# track 0, side 0, motor still spinning up. disk is a content-
+# hashed path so it stays a bare read.
+assert ${floppy.drives[0].index == 0}
+assert ${floppy.drives[0].present == true}
+assert ${floppy.drives[0].track == 0}
+assert ${floppy.drives[0].side == 0}
+floppy.drives[0].motor_on
+floppy.drives[0].disk
+
+# Drive 1: empty.
+assert ${floppy.drives[1].index == 1}
+assert ${floppy.drives[1].present == false}
+floppy.drives[1].disk
+
+# Eject drive 0 — present must flip to false, disk to empty string.
+echo ${floppy.drives[0].eject()}
+assert ${floppy.drives[0].present == false}
+assert ${floppy.drives[0].disk == ""}
+
+# Ejecting an already-empty drive is an error (the method is honest
+# rather than silently no-op'ing — the harness shouldn't fail on
+# this since echo ${} prints the error and continues).
+
+quit

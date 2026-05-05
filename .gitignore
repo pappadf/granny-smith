@@ -47,3 +47,4 @@ notes/
 todo/
 local/
 tmp/
+.claude/scheduled_tasks.lock

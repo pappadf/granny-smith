@@ -154,9 +154,11 @@ static void plus_init(config_t *cfg, checkpoint_t *checkpoint) {
     appletalk_init(cfg->scheduler, cfg->scc, NULL);
 
     ps->sound = sound_init(cfg->mem_map, checkpoint);
+    cfg->sound = ps->sound; // mirror onto cfg so the object-model `sound`
+                            // class can find it via cfg->sound (M7f)
 
-    cfg->via1 =
-        via_init(cfg->mem_map, cfg->scheduler, 10, plus_via_output, plus_via_shift_out, plus_via_irq, cfg, checkpoint);
+    cfg->via1 = via_init(cfg->mem_map, cfg->scheduler, 10, "via1", plus_via_output, plus_via_shift_out, plus_via_irq,
+                         cfg, checkpoint);
 
     rtc_set_via(cfg->rtc, cfg->via1);
 
@@ -307,6 +309,7 @@ static void plus_teardown(config_t *cfg) {
     if (ps && ps->sound) {
         sound_delete(ps->sound);
         ps->sound = NULL;
+        cfg->sound = NULL;
     }
 
     if (cfg->scc) {

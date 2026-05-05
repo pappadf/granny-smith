@@ -1,0 +1,30 @@
+# M4 integration test: ${...} expression substitution + predicate assert.
+#
+# Boots Plus, runs a few thousand instructions, then exercises:
+#   - ${literal arithmetic} expanded into shell args
+#   - ${...} with paths and aliases
+#   - break set with a computed address
+#   - predicate assert (truthy and falsy with message)
+
+scheduler.run 50000
+
+# Pure arithmetic substitution.
+echo ${1 + 2}
+echo ${0xFF & 0x0F}
+
+# Path arithmetic and alias resolution inside ${...}.
+echo ${memory.rom_size + 1}
+echo ${$pc + 4}
+
+# Computed breakpoint address — proposal §0 example.
+debug.breakpoints.add ${$pc + 0x10}
+debug.breakpoints.list
+
+# Predicate assert — truthy.
+assert ${1 == 1}
+assert ${memory.rom_size == 131072} "Plus ROM is 128 KiB"
+
+# Predicate assert — boolean expressions chain through.
+assert ${memory.rom_size > 0 && memory.ram_size > 0} "memory present"
+
+quit

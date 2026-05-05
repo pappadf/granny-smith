@@ -4,17 +4,19 @@
 import { test } from '../../fixtures';
 import { expect } from '@playwright/test';
 import { matchScreenFast } from '../../helpers/screen';
-import { bootWithUploadedMedia, bootWithMedia, TEST_MEDIA_ROOT } from '../../helpers/boot';
+import { bootWithUploadedMedia, bootWithMedia } from '../../helpers/boot';
 import { installTestShim, captureXterm } from '../../helpers/terminal';
-import { runCommand, waitForPrompt, waitForSync, waitForCompleteCheckpoint } from '../../helpers/run-command';
+import { runCommand, waitForPrompt, waitForCompleteCheckpoint } from '../../helpers/run-command';
 import { mouseDrag } from '../../helpers/mouse';
 import { readMemfsFiles } from '../../helpers/memfs';
 import { dispatchDropEvent } from '../../helpers/drop';
 import * as fs from 'fs';
 import * as path from 'path';
 
-// Helper: boot an SE/30 with uploaded media (ROM + VROM + optional disk)
-// bootWithUploadedMedia doesn't handle VROM, so we inject it manually.
+// Helper: boot an SE/30 with uploaded media (ROM + VROM + optional disk).
+// bootWithUploadedMedia stages the VROM at /tmp/vrom and calls vrom.load
+// before machine.boot — required because SE/30 init reads the Video ROM
+// file during peripheral setup.
 async function bootSE30WithUploadedMedia(
   page: import('@playwright/test').Page,
   fd0Rel?: string,
@@ -23,19 +25,9 @@ async function bootSE30WithUploadedMedia(
 ) {
   const hdSlot = options?.hdSlot ?? 0;
   const hideOverlay = options?.hideOverlay ?? true;
-
-  // Boot with SE30 ROM via the standard helper
-  await bootWithUploadedMedia(page, 'roms/SE30.rom', fd0Rel, hd0ZipRel, { hdSlot, hideOverlay });
-
-  // Inject the VROM file and issue vrom load command
-  const vromPath = path.join(TEST_MEDIA_ROOT, 'roms', 'SE30.vrom');
-  const vromData = new Uint8Array(fs.readFileSync(vromPath));
-  await page.evaluate((data) => {
-    const FS = (window as any).__Module.FS;
-    try { FS.unlink('/tmp/vrom'); } catch (_) {}
-    FS.writeFile('/tmp/vrom', new Uint8Array(data));
-  }, Array.from(vromData));
-  await page.evaluate(() => (window as any).runCommand('vrom load /tmp/vrom'));
+  await bootWithUploadedMedia(page, 'roms/SE30.rom', fd0Rel, hd0ZipRel, {
+    hdSlot, hideOverlay, vromRel: 'roms/SE30.vrom',
+  });
 }
 
 test.describe('State', () => {
@@ -84,7 +76,7 @@ test.describe('State', () => {
     await bootWithUploadedMedia(page, 'roms/Plus_v3.rom', 'systems/System_6_0_8.dsk', undefined, { hideOverlay: true });
 
     // Disable idle checkpointing for this test to ensure deterministic execution
-    await page.evaluate(() => (window as any).runCommand('checkpoint auto off'));
+    await runCommand(page, 'checkpoint auto off');
 
     log('[state-test2] first run (pre-save)');
     await runCommand(page, 'run 25000000');
@@ -195,9 +187,6 @@ test.describe('State', () => {
 
     log('[state-test3] waiting for checkpoint to be marked complete');
     await waitForCompleteCheckpoint(page);
-
-    log('[state-test3] syncing persist storage');
-    await waitForSync(page);
 
     log('[state-test3] reloading page to trigger resume prompt');
     await page.reload();
@@ -318,7 +307,6 @@ test.describe('State', () => {
     await runCommand(page, 'background-checkpoint final');
     await waitForPrompt(page);
     await waitForCompleteCheckpoint(page);
-    await waitForSync(page);
 
     // Verify a valid checkpoint exists
     const finalProbe = await runCommand(page, 'checkpoint --probe');
@@ -429,7 +417,7 @@ test.describe('State', () => {
     await bootWithUploadedMedia(page, 'roms/Plus_v3.rom', 'systems/System_6_0_8.dsk', undefined, { hideOverlay: true });
 
     // Disable idle checkpointing for this test to ensure deterministic execution
-    await page.evaluate(() => (window as any).runCommand('checkpoint auto off'));
+    await runCommand(page, 'checkpoint auto off');
 
     log('[state-test7] running initial instructions');
     await runCommand(page, 'run 100000000');
@@ -503,9 +491,9 @@ test.describe('State', () => {
     await page.evaluate(() => { window.location.reload(); }).catch(() => null);
     await reloadPromise;
 
-    // Wait for WASM module to load and runCommand to become available
+    // Wait for WASM module to load and the gsEval bridge to become available
     await page.waitForFunction(() => {
-      return typeof (window as any).runCommand === 'function';
+      return typeof (window as any).gsEval === 'function';
     }, { timeout: 30_000 });
 
     // Dismiss the checkpoint dialog if it somehow still appears
@@ -533,7 +521,7 @@ test.describe('State', () => {
     await waitForPrompt(page);
 
     // Disable idle checkpointing again after restore
-    await page.evaluate(() => (window as any).runCommand('checkpoint auto off'));
+    await runCommand(page, 'checkpoint auto off');
 
     log('[state-test7] iteration 2: start logging to file');
     await runCommand(page, 'log floppy level=5 file=/tmp/test-7-iteration-2.txt stdout=off ts=on');
@@ -597,10 +585,10 @@ test.describe('State', () => {
     await bootWithUploadedMedia(page, 'roms/Plus_v3.rom', undefined, undefined, { hideOverlay: true });
 
     // Disable idle checkpointing for deterministic execution
-    await page.evaluate(() => (window as any).runCommand('checkpoint auto off'));
+    await runCommand(page, 'checkpoint auto off');
 
     // Start the CPU so the Mac shows the blinking question-mark floppy icon
-    await page.evaluate(() => (window as any).runCommand('run'));
+    await runCommand(page, 'run');
     await page.waitForTimeout(2_000);
 
     // Drag-drop the boot disk image onto the emulator canvas
@@ -616,7 +604,7 @@ test.describe('State', () => {
     await matchScreenFast(page, 'test-8-desktop', { initialWaitMs: 5_000, waitBeforeUpdateMs: 60_000, timeoutMs: 90_000 });
 
     // Stop the CPU so we can proceed with deterministic stepped execution
-    await page.evaluate(() => (window as any).runCommand('stop'));
+    await runCommand(page, 'stop');
     await waitForPrompt(page);
 
     // --- Phase 2: create on-demand checkpoint and download it ---
@@ -681,9 +669,9 @@ test.describe('State', () => {
     await page.evaluate(() => { window.location.reload(); }).catch(() => null);
     await reloadPromise;
 
-    // Wait for WASM module to load and runCommand to become available
+    // Wait for WASM module to load and the gsEval bridge to become available
     await page.waitForFunction(() => {
-      return typeof (window as any).runCommand === 'function';
+      return typeof (window as any).gsEval === 'function';
     }, { timeout: 30_000 });
 
     // Dismiss the checkpoint dialog if it somehow still appears
@@ -709,7 +697,7 @@ test.describe('State', () => {
     await waitForPrompt(page);
 
     // Disable idle checkpointing again after restore
-    await page.evaluate(() => (window as any).runCommand('checkpoint auto off'));
+    await runCommand(page, 'checkpoint auto off');
 
     log('[state-test8] iteration 2: start logging to file');
     await runCommand(page, 'log floppy level=5 file=/tmp/test-8-iteration-2.txt stdout=off ts=on');
@@ -812,9 +800,6 @@ test.describe('State', () => {
 
     log('[state-test10] waiting for checkpoint to be marked complete');
     await waitForCompleteCheckpoint(page);
-
-    log('[state-test10] syncing persist storage');
-    await waitForSync(page);
 
     log('[state-test10] reloading page to trigger resume prompt');
     await page.reload();

@@ -167,6 +167,22 @@ canvas { display:block; width:1024px; height:684px; image-rendering:pixelated; i
 .terminal-body { background:#ffffff; position:relative; overflow:auto; min-height:180px; }
 .term-status { margin-left:auto; font-weight:400; font-size:12px; color: var(--color-muted); }
 
+/* --- Object inspector panel (M11) --------------------------------------- */
+.inspector-panel { margin-top:.5rem; }
+.inspector-body { display:flex; min-height:240px; padding:0; }
+.inspector-tree { flex:0 0 240px; overflow:auto; border-right:1px solid var(--color-border); padding:.5rem 0; font-size:13px; }
+.inspector-detail { flex:1; overflow:auto; padding:.5rem .8rem; font-size:13px; }
+.inspector-tree .ip-row { padding:.2rem .8rem; cursor:pointer; user-select:none; white-space:nowrap; color: var(--color-text); }
+.inspector-tree .ip-row:hover { background: var(--color-hover); }
+.inspector-tree .ip-row[aria-selected='true'] { background:#e0e7ff; font-weight:500; }
+.inspector-empty { color: var(--color-muted); font-style: italic; padding: 1rem; }
+.inspector-detail h3 { margin: 0 0 .4rem 0; font-size:13px; font-weight:600; color: var(--color-muted); text-transform: uppercase; letter-spacing: .05em; }
+.inspector-detail .ip-attr-table { border-collapse: collapse; width:100%; margin-bottom:.8rem; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size:12px; }
+.inspector-detail .ip-attr-table td { padding:.15rem .5rem; vertical-align:top; }
+.inspector-detail .ip-attr-table td:first-child { color: var(--color-muted); width:40%; }
+.inspector-detail .ip-method-list { display:flex; flex-wrap:wrap; gap:.3rem; }
+.inspector-detail .ip-method { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size:12px; padding:.15rem .5rem; background:#f0f0f0; border:1px solid var(--color-border); border-radius:4px; }
+
 /* --- Scrollbar Tuning (WebKit) ------------------------------------------- */
 ::-webkit-scrollbar { width:8px; height:8px; }
 ::-webkit-scrollbar-track { background: var(--color-bg-alt); }

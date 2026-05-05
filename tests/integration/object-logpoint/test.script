@@ -1,0 +1,23 @@
+# M5 integration: logpoint messages use ${...} interpolation.
+#
+# The VBL handler bumps Ticks ($00016A.l) once per VBL — set a write
+# logpoint there with a message that exercises:
+#   ${cpu.pc}              — register read at fire time (object path)
+#   ${value:08x}           — per-fire bound name, format spec
+#   ${addr:08x}            — per-fire bound name
+#   ${size}                — default formatter
+# The message is single-quoted so the shell doesn't try to expand
+# ${value}/${addr}/${size} at parse time — they're only bound during
+# the deferred fire-time evaluation.
+# After running long enough for at least one VBL, the harness
+# captures the formatted line and the run continues to `quit`.
+
+debug.log memory 5
+debug.log logpoint 5
+
+debug.logpoints.add '--write 0x000016A.l "Ticks bumped pc=${cpu.pc} addr=${addr:08x} val=${value:08x} size=${size}" level=5'
+
+scheduler.run 5000000
+
+debug.logpoints.list
+quit

@@ -74,7 +74,7 @@ export async function installTestShim(page: Page) {
 								const deadline = Date.now() + 15000;
 								(function poll() {
 									const mod = (window as any).__Module;
-									if (mod && mod.FS && typeof (window as any).runCommand === 'function') {
+									if (mod && mod.FS && typeof (window as any).gsEval === 'function') {
 										res();
 										return;
 									}
@@ -105,11 +105,12 @@ export async function installTestShim(page: Page) {
 					});
 				};
 
-				// clearCheckpoints uses the shell command (runs on worker where OPFS is accessible)
+				// clearCheckpoints uses the typed checkpoint_clear method via gsEval —
+				// gsEval routes to the worker pthread where OPFS is accessible.
 				(window as any).__gsTestShim.clearCheckpoints = (window as any).__gsTestShim.clearCheckpoints || async function() {
-					if (typeof (window as any).runCommand !== 'function') return;
+					if (typeof (window as any).gsEval !== 'function') return;
 					try {
-						await (window as any).runCommand('checkpoint clear');
+						await (window as any).gsEval('checkpoint.clear');
 						console.log('[test-shim] checkpoints cleared');
 					} catch (e) {
 						console.warn('[test-shim] clearCheckpoints failed', e);
@@ -139,38 +140,49 @@ export async function installTestShim(page: Page) {
 				// separate `__gsTestShim` name so the page can install its own hooks
 				// if it wants while our shim remains independent.
 
-								// Ensure command logging exists and robustly wrap runCommand to record commands,
-								// even if the app assigns it later. Use a property hook.
+								// __commandLog records every gsEval invocation in shell-form so
+								// existing assertions like `log.toContain('run')` keep working
+								// without teaching every spec the typed-call API.  Method names
+								// are normalised to their legacy spelling: `_` → ` ` for the
+								// pre-typed `rom_load` style, and `.` → ` ` for the typed
+								// `rom.load` / `floppy.drives[0].insert` style.  Positional
+								// args are stringified inline.
 								(window as any).__commandLog = (window as any).__commandLog || [];
 								const logCommand = (cmd: string) => {
 									try { (window as any).__commandLog.push(String(cmd)); } catch {}
 								};
-								let _runCommand: any = (window as any).runCommand;
-								if (typeof _runCommand !== 'function') {
-									_runCommand = (cmd: string) => { logCommand(cmd); };
+								const _logGsEval = (path: string, args: any[]) => {
+									try {
+										const norm = String(path || '').replace(/[_.]/g, ' ');
+										const argStr = (args || [])
+											.map((a) => (typeof a === 'string' ? `"${a}"` : String(a)))
+											.join(' ');
+										logCommand(argStr ? `${norm} ${argStr}` : norm);
+									} catch {}
+								};
+								let _gsEval: any = (window as any).gsEval;
+								if (typeof _gsEval === 'function') {
+									const real = _gsEval;
+									_gsEval = (path: string, args: any[]) => { _logGsEval(path, args); return real(path, args); };
 								} else {
-									const real = _runCommand;
-									_runCommand = (cmd: string) => { logCommand(cmd); return real(cmd); };
+									_gsEval = (path: string, args: any[]) => { _logGsEval(path, args); };
 								}
 								try {
-									Object.defineProperty(window, 'runCommand', {
+									Object.defineProperty(window, 'gsEval', {
 										configurable: true,
-										get() { return _runCommand; },
+										get() { return _gsEval; },
 										set(v) {
 											if (typeof v === 'function') {
 												const real = v;
-												_runCommand = (cmd: string) => { logCommand(cmd); return real(cmd); };
+												_gsEval = (path: string, args: any[]) => { _logGsEval(path, args); return real(path, args); };
 											} else {
-												_runCommand = (cmd: string) => { logCommand(cmd); };
+												_gsEval = (path: string, args: any[]) => { _logGsEval(path, args); };
 											}
 										}
 									});
 								} catch {
-									// Fallback if defineProperty fails: at least ensure a wrapper exists now
-									(window as any).runCommand = _runCommand;
+									(window as any).gsEval = _gsEval;
 								}
-								// Backward-compat alias
-								(window as any).queueCommand = _runCommand;
 
 						// Provide a minimal __gsTest facade for tests that expect it while
 						// delegating implementation to the shimbed functions.

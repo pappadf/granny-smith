@@ -11,6 +11,9 @@
 
 #include "checkpoint.h"
 #include "build_id.h"
+#include "object.h"
+#include "system.h"
+#include "value.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -1168,4 +1171,165 @@ bool checkpoint_validate_build_id(const char *filename) {
 
     // Compare with the current application's build ID
     return memcmp(file_build_id, get_build_id(), BUILD_ID_LEN) == 0;
+}
+
+// ============================================================================
+// Object-model class descriptor
+// ============================================================================
+//
+// `checkpoint` is a process-singleton (registered at shell_init), so its
+// methods resolve before any machine has been booted — that matters for
+// the `checkpoint.probe` / `checkpoint.load` calls the WASM startup path
+// uses to detect and resume from a quick-saved state. None of the methods
+// read object_data; they all go through the platform-level helpers.
+
+static value_t checkpoint_method_probe(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)self;
+    (void)m;
+    (void)argc;
+    (void)argv;
+    return val_bool(find_valid_checkpoint_path() != NULL);
+}
+
+static value_t checkpoint_method_clear(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)self;
+    (void)m;
+    (void)argc;
+    (void)argv;
+    return val_bool(gs_checkpoint_clear() == 0);
+}
+
+// `checkpoint.load([path])` — load the named checkpoint file or, when
+// path is omitted/empty, auto-load the latest valid checkpoint for the
+// active machine. Routes through cmd_load_checkpoint so the legacy
+// shell command and the typed method share one body.
+static value_t checkpoint_method_load(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)self;
+    (void)m;
+    if (argc >= 1 && argv[0].kind == V_STRING && argv[0].s && *argv[0].s) {
+        char *fake_argv[2] = {"--load", (char *)argv[0].s};
+        return val_bool(cmd_load_checkpoint(2, fake_argv) == 0);
+    }
+    char *fake_argv[1] = {"--load"};
+    return val_bool(cmd_load_checkpoint(1, fake_argv) == 0);
+}
+
+// `checkpoint.save(path, [mode])` — write a consolidated checkpoint to
+// the given path. `mode` is "content" (default; embed image bytes) or
+// "refs" (record paths only — smaller file, requires the same images
+// to exist on restore).
+static value_t checkpoint_method_save(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)self;
+    (void)m;
+    if (argc < 1 || argv[0].kind != V_STRING)
+        return val_err("checkpoint.save: expected (path, [mode])");
+    const char *path = argv[0].s ? argv[0].s : "";
+    char *fake_argv[3] = {"--save", (char *)path, NULL};
+    int fake_argc = 2;
+    if (argc >= 2 && argv[1].kind == V_STRING && argv[1].s && *argv[1].s) {
+        fake_argv[2] = (char *)argv[1].s;
+        fake_argc = 3;
+    }
+    return val_bool(cmd_save_checkpoint(fake_argc, fake_argv) == 0);
+}
+
+// `checkpoint.snapshot(name)` — capture a quick (background) checkpoint
+// under the given label. Routes to the platform-specific
+// gs_background_checkpoint (WASM implements via save_quick_checkpoint;
+// headless prints a "not supported" stub).
+static value_t checkpoint_method_snapshot(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)self;
+    (void)m;
+    if (argc < 1 || argv[0].kind != V_STRING)
+        return val_err("checkpoint.snapshot: expected (name)");
+    return val_bool(gs_background_checkpoint(argv[0].s ? argv[0].s : "") == 0);
+}
+
+// `checkpoint.auto` (V_BOOL, RW) — exposes the WASM background-checkpoint
+// loop's enabled flag. Headless's weak defaults stub out.
+static value_t checkpoint_attr_auto_get(struct object *self, const member_t *m) {
+    (void)self;
+    (void)m;
+    return val_bool(gs_checkpoint_auto_get());
+}
+
+static value_t checkpoint_attr_auto_set(struct object *self, const member_t *m, value_t in) {
+    (void)self;
+    (void)m;
+    bool b = val_as_bool(&in);
+    value_free(&in);
+    gs_checkpoint_auto_set(b);
+    return val_none();
+}
+
+static const arg_decl_t checkpoint_load_args[] = {
+    {.name = "path",
+     .kind = V_STRING,
+     .flags = OBJ_ARG_OPTIONAL,
+     .doc = "Checkpoint path; empty auto-loads the latest"},
+};
+
+static const arg_decl_t checkpoint_save_args[] = {
+    {.name = "path", .kind = V_STRING, .doc = "Checkpoint output path"},
+    {.name = "mode", .kind = V_STRING, .flags = OBJ_ARG_OPTIONAL, .doc = "\"content\" (default) or \"refs\""},
+};
+
+static const arg_decl_t checkpoint_snapshot_args[] = {
+    {.name = "name", .kind = V_STRING, .doc = "Snapshot label"},
+};
+
+static const member_t checkpoint_members[] = {
+    {.kind = M_ATTR,
+     .name = "auto",
+     .doc = "Background auto-checkpoint loop enabled (WASM only)",
+     .flags = 0,
+     .attr = {.type = V_BOOL, .get = checkpoint_attr_auto_get, .set = checkpoint_attr_auto_set}},
+    {.kind = M_METHOD,
+     .name = "probe",
+     .doc = "True if a valid checkpoint exists for the active machine",
+     .method = {.args = NULL, .nargs = 0, .result = V_BOOL, .fn = checkpoint_method_probe}},
+    {.kind = M_METHOD,
+     .name = "clear",
+     .doc = "Remove all checkpoint files for the active machine",
+     .method = {.args = NULL, .nargs = 0, .result = V_BOOL, .fn = checkpoint_method_clear}},
+    {.kind = M_METHOD,
+     .name = "load",
+     .doc = "Load a checkpoint (auto-loads latest when path is omitted)",
+     .method = {.args = checkpoint_load_args, .nargs = 1, .result = V_BOOL, .fn = checkpoint_method_load}},
+    {.kind = M_METHOD,
+     .name = "save",
+     .doc = "Save the current machine state to a checkpoint file",
+     .method = {.args = checkpoint_save_args, .nargs = 2, .result = V_BOOL, .fn = checkpoint_method_save}},
+    {.kind = M_METHOD,
+     .name = "snapshot",
+     .doc = "Capture a quick (background) checkpoint under the given label",
+     .method = {.args = checkpoint_snapshot_args, .nargs = 1, .result = V_BOOL, .fn = checkpoint_method_snapshot}},
+};
+
+const class_desc_t checkpoint_class = {
+    .name = "checkpoint",
+    .members = checkpoint_members,
+    .n_members = sizeof(checkpoint_members) / sizeof(checkpoint_members[0]),
+};
+
+// ============================================================================
+// Lifecycle (process-singleton, idempotent)
+// ============================================================================
+
+static struct object *s_checkpoint_object = NULL;
+
+void checkpoint_init(void) {
+    if (s_checkpoint_object)
+        return;
+    s_checkpoint_object = object_new(&checkpoint_class, NULL, "checkpoint");
+    if (s_checkpoint_object)
+        object_attach(object_root(), s_checkpoint_object);
+}
+
+void checkpoint_delete(void) {
+    if (s_checkpoint_object) {
+        object_detach(s_checkpoint_object);
+        object_delete(s_checkpoint_object);
+        s_checkpoint_object = NULL;
+    }
 }

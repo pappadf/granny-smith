@@ -182,6 +182,13 @@ typedef struct floppy_drive {
 // Unified Floppy Controller Struct
 // ============================================================================
 
+// Per-drive back-link used as instance_data on each drive entry object
+// so accessors recover (floppy, slot) cheaply.
+typedef struct {
+    struct floppy *floppy;
+    int slot;
+} floppy_drive_link_t;
+
 // Unified floppy disk controller state (IWM or SWIM)
 typedef struct floppy floppy_t;
 struct floppy {
@@ -241,6 +248,13 @@ struct floppy {
     image_t *disk[NUM_DRIVES]; // disk image pointers
     struct scheduler *scheduler; // scheduler for timed events
     memory_interface_t memory_interface; // memory interface
+
+    // Object-tree binding — lifetime tied to floppy_init / floppy_delete.
+    struct object *object; // top-level floppy node
+    struct object *drives_object; // floppy.drives collection child
+    struct object *drive_objects[NUM_DRIVES]; // per-drive entry objects
+    // Per-drive back-link used as instance_data for each drive entry.
+    floppy_drive_link_t drive_links[NUM_DRIVES];
 };
 
 // Size of plain-data portion for checkpointing (excludes pointers at end)

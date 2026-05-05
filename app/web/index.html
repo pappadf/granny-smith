@@ -79,6 +79,23 @@
       </header>
       <div id="terminal" class="terminal-body"></div>
     </section>
+  <!-- Object inspector panel (M11). Idle while the emulator runs;
+       repaints once on every "stopped" run-state edge. -->
+  <section class="inspector-panel terminal-panel" id="inspector-panel" data-collapsed="true" style="width:1024px;">
+      <header class="terminal-header" id="inspector-toggle" role="button" aria-expanded="false" aria-controls="inspector" tabindex="0">
+        <button class="tb-btn toggle-btn" aria-hidden="true">
+          <svg class="chevron" viewBox="0 0 24 24" aria-hidden="true"><path d="M7.41 8.59L12 13.17l4.59-4.58L18 10l-6 6-6-6z"/></svg>
+        </button>
+        <span class="term-title">Inspector</span>
+        <span class="term-status" id="inspector-status"></span>
+      </header>
+      <div id="inspector" class="terminal-body inspector-body">
+        <aside class="inspector-tree" id="inspector-tree" aria-label="Object tree"></aside>
+        <div class="inspector-detail" id="inspector-detail">
+          <p class="inspector-empty">Pick a path on the left.</p>
+        </div>
+      </div>
+    </section>
   </main>
 
   <!-- Settings modal - styles in style.css -->

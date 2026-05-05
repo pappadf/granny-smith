@@ -5,25 +5,564 @@ import type { Page } from '@playwright/test';
 
 /**
  * Run an emulator command in the browser context and return its exit code.
- * 
- * Commands return 0 for success, non-zero for failure.
- * This allows tests to check command results programmatically.
  *
- * Usage: 
+ * Commands return 0 for success, non-zero for failure (or 1 for cmd_bool
+ * "true" — same as the legacy shell). This allows tests to check command
+ * results programmatically.
+ *
+ * Usage:
  * ```
  * const exitCode = await runCommand(page, 'fd probe /tmp/file.dsk');
  * expect(exitCode).toBe(0); // success
  * ```
+ *
+ * Implementation: every shell-form line is translated to a typed `gsEval`
+ * call. The legacy `window.runCommand` bridge is gone — anything that
+ * lacks a translation throws so the gap surfaces immediately rather
+ * than silently passing through a fallback.
  */
 export async function runCommand(page: Page, cmd: string): Promise<number> {
-  const result = await page.evaluate((c: string) => (window as any).runCommand(c), cmd);
-  // Convert BigInt to Number if needed (Emscripten returns BigInt for uint64_t)
-  return typeof result === 'bigint' ? Number(result) : result;
+  const translated = translateToGsEval(cmd);
+  if (!translated) {
+    throw new Error(
+      `runCommand: shell form '${cmd}' has no typed translation — ` +
+        `extend translateToGsEval() in run-command.ts.`
+    );
+  }
+  const result: any = await page.evaluate(
+    ({ method, args }: { method: string; args: any[] }) =>
+      (window as any).gsEval(method, args),
+    { method: translated.method, args: translated.args }
+  );
+  return mapResult(result, translated.convention);
+}
+
+// === Shell-form → gsEval translator ========================================
+
+type ReturnConvention =
+  | 'cmd_int_bool'   // bool true → 0, false → 1 (legacy cmd_int convention)
+  | 'cmd_bool'       // bool true → 1, false → 0 (legacy cmd_bool convention)
+  | 'string_nonempty' // V_STRING non-empty → 1, empty → 0 (mirrors fd validate)
+  | 'string_to_cmd_int' // non-empty string → 0, empty → 1 (legacy probe convention)
+  | 'void_or_error'  // any non-error → 0, error → 1 (legacy "did dispatch succeed")
+  | 'pass_through';  // numeric value passed through unchanged (e.g. size/print)
+
+type Translation = {
+  method: string;
+  args: unknown[];
+  convention: ReturnConvention;
+};
+
+function mapResult(value: any, convention: ReturnConvention): number {
+  if (value && typeof value === 'object' && 'error' in value) {
+    // gsEval returns {error: "..."} for unresolved paths or bad args.
+    return 1;
+  }
+  if (convention === 'cmd_int_bool') return value === true ? 0 : 1;
+  if (convention === 'cmd_bool') return value === true ? 1 : 0;
+  if (convention === 'string_nonempty')
+    return typeof value === 'string' && value.length > 0 ? 1 : 0;
+  if (convention === 'string_to_cmd_int')
+    return typeof value === 'string' && value.length > 0 ? 0 : 1;
+  if (convention === 'void_or_error') return 0;
+  if (convention === 'pass_through') {
+    if (typeof value === 'number') return value;
+    if (typeof value === 'bigint') return Number(value);
+    // V_UINT values with VAL_HEX serialize as "0x…" strings (gs_api JSON
+    // shape). Decode them so callers using `pass_through` get numbers.
+    if (typeof value === 'string' && /^0x[0-9a-fA-F]+$/.test(value))
+      return Number(value);
+    return 0;
+  }
+  return 0;
+}
+
+// Tokenize a shell-form line. Handles "double quoted" args and
+// preserves the rest as literal whitespace-separated tokens. Backslash
+// escapes inside quotes are decoded.
+function tokenize(line: string): string[] {
+  const out: string[] = [];
+  let i = 0;
+  while (i < line.length) {
+    while (i < line.length && /\s/.test(line[i])) i++;
+    if (i >= line.length) break;
+    let token = '';
+    if (line[i] === '"') {
+      i++;
+      while (i < line.length && line[i] !== '"') {
+        if (line[i] === '\\' && i + 1 < line.length) {
+          token += line[i + 1];
+          i += 2;
+        } else {
+          token += line[i];
+          i++;
+        }
+      }
+      if (i < line.length) i++; // consume closing "
+    } else {
+      while (i < line.length && !/\s/.test(line[i])) {
+        token += line[i];
+        i++;
+      }
+    }
+    out.push(token);
+  }
+  return out;
+}
+
+function parseInt10(s: string | undefined): number | null {
+  if (s === undefined) return null;
+  const n = Number(s);
+  return Number.isFinite(n) ? n : null;
+}
+
+function parseBool(s: string | undefined): boolean {
+  if (s === undefined) return false;
+  return s === 'true' || s === 'on' || s === 'yes' || s === '1';
+}
+
+// Parse a numeric literal accepting `0x`, `$`, or bare decimal/hex.
+// Returns the integer as a number (32-bit safe via BigInt for large hex),
+// or null on parse failure.
+function parseHexOrDec(raw: string): number | null {
+  let s = raw;
+  if (s.startsWith('$')) s = '0x' + s.slice(1);
+  else if (/^[0-9a-fA-F]+$/.test(s) && /[a-fA-F]/.test(s))
+    s = '0x' + s; // bare hex if any hex digit
+  const n = Number(s);
+  if (Number.isFinite(n)) return n;
+  return null;
+}
+
+function parseSetValue(raw: string): number | null {
+  return parseHexOrDec(raw);
+}
+
+// Resolve a legacy `print`/`set` target to a typed object-model path.
+// Returns null when the target doesn't map to anything known. Memory
+// targets come back as a 'method' with the peek path; the `set` branch
+// rewrites peek→poke and appends the value.
+type DebugTarget =
+  | { kind: 'attr'; method: string }
+  | { kind: 'method'; method: string; args: unknown[] };
+
+function resolveDebugTarget(rawTarget: string): DebugTarget | null {
+  // Accept `$d0` / `D5` / `0x1000.b` / `instr`. Strip a leading `$`.
+  const target = rawTarget.startsWith('$') ? rawTarget.slice(1) : rawTarget;
+
+  // Memory address.size form.
+  const mem = target.match(/^(.+)\.([bwlBWL])$/);
+  if (mem) {
+    const addr = parseHexOrDec(mem[1]);
+    if (addr === null) return null;
+    const size = mem[2].toLowerCase();
+    return { kind: 'method', method: `memory.peek.${size}`, args: [addr] };
+  }
+
+  const lower = target.toLowerCase();
+
+  // Instruction counter.
+  if (lower === 'instr') return { kind: 'attr', method: 'cpu.instr_count' };
+
+  // CPU registers / CCR bits — every name maps directly to a cpu.* attr.
+  const cpuAttrs = new Set([
+    'pc', 'sr', 'ccr', 'ssp', 'usp', 'msp', 'vbr', 'sp',
+    'd0', 'd1', 'd2', 'd3', 'd4', 'd5', 'd6', 'd7',
+    'a0', 'a1', 'a2', 'a3', 'a4', 'a5', 'a6', 'a7',
+    'c', 'v', 'z', 'n', 'x',
+  ]);
+  if (cpuAttrs.has(lower)) return { kind: 'attr', method: `cpu.${lower}` };
+
+  return null;
+}
+
+function translateToGsEval(line: string): Translation | null {
+  const t = tokenize(line);
+  if (t.length === 0) return null;
+  const head = t[0];
+  const tail = t.slice(1);
+
+  // Single-token commands (no subcommand).
+  if (head === 'status' && tail.length === 0)
+    return { method: 'scheduler.running', args: [], convention: 'cmd_bool' };
+  if (head === 'run')
+    return {
+      method: 'scheduler.run',
+      args: tail.length >= 1 && parseInt10(tail[0]) !== null ? [parseInt10(tail[0])] : [],
+      convention: 'cmd_int_bool',
+    };
+  if (head === 'cp' && tail.length >= 2)
+    return { method: 'storage.cp', args: tail, convention: 'cmd_int_bool' };
+  if (head === 'file-copy' && tail.length === 2)
+    return { method: 'storage.cp', args: tail, convention: 'cmd_int_bool' };
+  if (head === 'find-media' && tail.length >= 1)
+    return { method: 'storage.find_media', args: tail, convention: 'cmd_int_bool' };
+  if (head === 'download' && tail.length === 1)
+    return { method: 'download', args: tail, convention: 'cmd_int_bool' };
+  if (head === 'schedule' && tail.length === 1)
+    return { method: 'scheduler.mode', args: tail, convention: 'void_or_error' };
+  if (head === 'br' && tail.length === 1) {
+    const addr = parseInt10(tail[0]);
+    if (addr === null) return null;
+    return {
+      method: 'debug.breakpoints.add',
+      args: [addr],
+      convention: 'void_or_error',
+    };
+  }
+  if (head === 'stop' && tail.length === 0)
+    return { method: 'scheduler.stop', args: [], convention: 'void_or_error' };
+  if ((head === 's' || head === 'step') && tail.length <= 1) {
+    const n = tail.length === 1 ? parseInt10(tail[0]) : null;
+    return {
+      method: 'debug.step',
+      args: tail.length === 1 && n !== null ? [n] : [],
+      convention: 'cmd_int_bool',
+    };
+  }
+  if (head === 'background-checkpoint' && tail.length === 1)
+    return { method: 'checkpoint.snapshot', args: [tail[0]], convention: 'cmd_int_bool' };
+  if (head === 'exists' && tail.length === 1)
+    // Legacy `exists` returned 0=exists, 1=missing — map_int_bool keeps that.
+    return { method: 'storage.path_exists', args: [tail[0]], convention: 'cmd_int_bool' };
+  if (head === 'size' && tail.length === 1)
+    // Legacy `size` returned the byte count — pass it through unchanged.
+    return { method: 'storage.path_size', args: [tail[0]], convention: 'pass_through' };
+
+  // `screenshot checksum [top left bottom right]` — used by helpers/screen.ts
+  // for fast frame matching. The typed wrapper takes either 0 or 4 args and
+  // returns the polynomial hash as V_INT; pass it through unchanged.
+  if (head === 'screenshot' && tail.length >= 1 && tail[0] === 'checksum') {
+    if (tail.length === 1)
+      return { method: 'screen.checksum', args: [], convention: 'pass_through' };
+    if (tail.length === 5) {
+      const t = parseInt10(tail[1]);
+      const l = parseInt10(tail[2]);
+      const b = parseInt10(tail[3]);
+      const r = parseInt10(tail[4]);
+      if (t !== null && l !== null && b !== null && r !== null)
+        return { method: 'screen.checksum', args: [t, l, b, r], convention: 'pass_through' };
+    }
+  }
+
+  // Debug ops: print/set/x. Targets accept the legacy syntax (`d5`, `pc`,
+  // `z`, `0x1000.b`, `instr`, `$pc`, etc.) and route to the typed cpu.* /
+  // memory.peek.*/poke.* paths. Mac globals are handled via
+  // debug.mac.globals.read / write.
+  if (head === 'print') {
+    if (tail.length === 0)
+      // Bare `print` — surface as an unresolved path so mapResult returns 1.
+      return { method: 'cpu', args: [''], convention: 'pass_through' };
+    const target = tail[0];
+    const t = resolveDebugTarget(target);
+    if (t === null) return null;
+    if (t.kind === 'attr')
+      return { method: t.method, args: [], convention: 'pass_through' };
+    if (t.kind === 'method')
+      return { method: t.method, args: t.args, convention: 'pass_through' };
+    return null;
+  }
+  if (head === 'set') {
+    if (tail.length === 0)
+      // Bare `set` — pass an unresolvable path; mapResult turns the error
+      // into a non-zero exit, matching the legacy "usage" exit shape.
+      return { method: 'cpu', args: [], convention: 'void_or_error' };
+    if (tail.length === 2) {
+      const target = tail[0];
+      const value = parseSetValue(tail[1]);
+      if (value === null) return null;
+      const t = resolveDebugTarget(target);
+      if (t === null) return null;
+      if (t.kind === 'attr')
+        // Attribute write: gsEval(path, [value]) → node_set.
+        return { method: t.method, args: [value], convention: 'void_or_error' };
+      if (t.kind === 'method')
+        // memory.poke.b/w/l takes (addr, value). `t.args` already has addr;
+        // append the value.
+        return { method: t.method.replace('.peek.', '.poke.'),
+                 args: [...t.args, value],
+                 convention: 'void_or_error' };
+    }
+  }
+  if (head === 'x' && tail.length >= 1) {
+    const args: unknown[] = [tail[0]];
+    if (tail.length >= 2) {
+      const c = parseInt10(tail[1]);
+      if (c !== null) args.push(c);
+    }
+    return { method: 'memory.dump', args, convention: 'cmd_int_bool' };
+  }
+
+
+  // Mouse: set-mouse [--global|--hw|--aux] x y, or x y first then mode.
+  if (head === 'set-mouse') {
+    let mode: string | null = null;
+    const positional: string[] = [];
+    for (const arg of tail) {
+      if (arg === '--global') mode = 'global';
+      else if (arg === '--hw') mode = 'hw';
+      else if (arg === '--aux') mode = 'aux';
+      else positional.push(arg);
+    }
+    if (positional.length === 2) {
+      const x = parseInt10(positional[0]);
+      const y = parseInt10(positional[1]);
+      if (x !== null && y !== null) {
+        const args: unknown[] = [x, y];
+        if (mode) args.push(mode);
+        return { method: 'mouse.move', args, convention: 'cmd_int_bool' };
+      }
+    }
+  }
+
+  // Mouse: mouse-button [--global|--hw] up|down
+  if (head === 'mouse-button') {
+    let mode: string | null = null;
+    let downStr: string | null = null;
+    for (const arg of tail) {
+      if (arg === '--global') mode = 'global';
+      else if (arg === '--hw') mode = 'hw';
+      else if (arg === 'down' || arg === 'up') downStr = arg;
+    }
+    if (downStr !== null) {
+      const args: unknown[] = [downStr === 'down'];
+      if (mode) args.push(mode);
+      return { method: 'mouse.click', args, convention: 'cmd_int_bool' };
+    }
+  }
+
+  // AppleTalk shares (typed methods return V_NONE — use void_or_error)
+  if (head === 'atalk-share-add' && tail.length === 2)
+    return {
+      method: 'appletalk.shares.add',
+      args: tail,
+      convention: 'void_or_error',
+    };
+  if (head === 'atalk-share-remove' && tail.length === 1)
+    return {
+      method: 'appletalk.shares.remove',
+      args: tail,
+      convention: 'void_or_error',
+    };
+
+  // logpoint <spec...> — pack everything into a single spec string.
+  // Keep `logpoint list` / `logpoint clear` on the typed list/clear methods.
+  if (head === 'logpoint') {
+    if (tail.length === 1 && tail[0] === 'list')
+      return { method: 'debug.logpoints.list', args: [], convention: 'void_or_error' };
+    if (tail.length === 1 && tail[0] === 'clear')
+      return { method: 'debug.logpoints.clear', args: [], convention: 'void_or_error' };
+    if (tail.length >= 1)
+      return {
+        method: 'debug.logpoints.add',
+        args: [tail.join(' ')],
+        convention: 'cmd_int_bool',
+      };
+  }
+
+  // log <cat> <level>  (positional shorthand) or
+  // log <cat> level=N file=... stdout=... ts=...  (full named-arg spec).
+  // debug.log's second arg accepts either an integer level or the full
+  // spec string (forwarded verbatim to the legacy `log` parser).
+  if (head === 'log' && tail.length >= 2) {
+    const cat = tail[0];
+    if (tail.length === 2) {
+      const lvl = parseInt10(tail[1]);
+      if (lvl !== null)
+        return { method: 'debug.log', args: [cat, lvl], convention: 'cmd_int_bool' };
+    }
+    return {
+      method: 'debug.log',
+      args: [cat, tail.slice(1).join(' ')],
+      convention: 'cmd_int_bool',
+    };
+  }
+
+  // Legacy `peeler --probe X` / `peeler -o D X` shell forms still appear in
+  // older test specs; route them to the new archive.* surface. The probe
+  // form needs string→cmd_int conversion because archive.identify returns
+  // the format short name (non-empty == "is an archive").
+  if (head === 'peeler') {
+    if (tail[0] === '--probe' && tail.length === 2)
+      return { method: 'archive.identify', args: [tail[1]], convention: 'string_to_cmd_int' };
+    if (tail[0] === '-o' && tail.length === 3)
+      return { method: 'archive.extract', args: [tail[2], tail[1]], convention: 'cmd_int_bool' };
+  }
+
+  // setup --model X --ram Y → machine.boot(model, [ram_kb])
+  if (head === 'setup') {
+    let model = '';
+    let ram: number | null = null;
+    for (let i = 0; i < tail.length; i++) {
+      if (tail[i] === '--model' && i + 1 < tail.length) model = tail[++i];
+      else if (tail[i] === '--ram' && i + 1 < tail.length) ram = parseInt10(tail[++i]);
+    }
+    if (model)
+      return {
+        method: 'machine.boot',
+        args: ram !== null ? [model, ram] : [model],
+        convention: 'cmd_int_bool',
+      };
+  }
+
+  // checkpoint subcommands (--probe / clear / --load / --save / --machine /
+  // auto on|off). `checkpoint auto on|off` writes the auto_checkpoint
+  // attribute; bare `checkpoint` is no longer a valid form (the legacy
+  // bridge that handled the auto-state query is gone).
+  if (head === 'checkpoint') {
+    if (tail[0] === '--probe' && tail.length === 1)
+      return { method: 'checkpoint.probe', args: [], convention: 'cmd_int_bool' };
+    if ((tail[0] === 'clear' || tail[0] === '--clear') && tail.length === 1)
+      return { method: 'checkpoint.clear', args: [], convention: 'cmd_int_bool' };
+    if (tail[0] === '--load')
+      return {
+        method: 'checkpoint.load',
+        args: tail.length >= 2 ? [tail[1]] : [],
+        convention: 'cmd_int_bool',
+      };
+    if (tail[0] === '--save' && tail.length >= 2)
+      return {
+        method: 'checkpoint.save',
+        args: tail.length >= 3 ? [tail[1], tail[2]] : [tail[1]],
+        convention: 'cmd_int_bool',
+      };
+    if (tail[0] === '--machine' && tail.length === 3)
+      return {
+        method: 'machine.register',
+        args: [tail[1], tail[2]],
+        convention: 'cmd_int_bool',
+      };
+    if (tail[0] === 'auto' && tail.length === 2 && (tail[1] === 'on' || tail[1] === 'off'))
+      return {
+        method: 'checkpoint.auto',
+        args: [tail[1] === 'on'],
+        convention: 'void_or_error',
+      };
+  }
+
+  // Subcommand-style: rom / vrom / fd / hd / cdrom / image
+  if (tail.length >= 1) {
+    const sub = tail[0];
+    const subArgs = tail.slice(1);
+
+    // rom.* — see rom.h. The legacy `rom probe`/`rom validate` distinction
+    // is gone: rom.identify returns the list of compatible models (empty if
+    // unrecognised), which we collapse to a non-empty / empty signal here.
+    if (head === 'rom') {
+      if (sub === 'probe' || sub === 'validate') {
+        if (subArgs.length === 1)
+          return { method: 'rom.identify', args: subArgs, convention: 'cmd_int_bool' };
+        // bare `rom probe` (no path) → "is something loaded?"
+        if (sub === 'probe' && subArgs.length === 0)
+          return { method: 'rom.loaded', args: [], convention: 'cmd_bool' };
+      }
+      if (sub === 'checksum' && subArgs.length === 1)
+        return { method: 'rom.checksum_of', args: subArgs, convention: 'string_nonempty' };
+      if (sub === 'load' && subArgs.length === 1)
+        return { method: 'rom.load', args: subArgs, convention: 'cmd_int_bool' };
+    }
+
+    if (head === 'vrom') {
+      if (sub === 'probe' || sub === 'validate') {
+        if (subArgs.length === 1)
+          return { method: 'vrom.identify', args: subArgs, convention: 'cmd_bool' };
+      }
+      if (sub === 'load' && subArgs.length === 1)
+        return { method: 'vrom.load', args: subArgs, convention: 'cmd_int_bool' };
+    }
+
+    if (head === 'fd') {
+      // `fd probe` mirrors the legacy `peeler --probe` convention: 0 on
+      // success (recognised disk image), 1 on failure (empty string from
+      // floppy.identify). `fd validate` is shaped to mirror the bool
+      // attribute style — kept on string_nonempty for backwards-compat.
+      if (sub === 'probe' && subArgs.length === 1)
+        return { method: 'floppy.identify', args: subArgs, convention: 'string_to_cmd_int' };
+      if (sub === 'validate' && subArgs.length === 1)
+        return { method: 'floppy.identify', args: subArgs, convention: 'string_nonempty' };
+      if (sub === 'create' && subArgs.length >= 1)
+        return {
+          method: 'floppy.create',
+          args: subArgs.length >= 2 ? [subArgs[0], subArgs[1]] : [subArgs[0]],
+          convention: 'cmd_int_bool',
+        };
+      if (sub === 'insert' && subArgs.length >= 2) {
+        const slot = parseInt10(subArgs[1]) ?? 0;
+        const writable = subArgs.length >= 3 ? parseBool(subArgs[2]) : false;
+        return {
+          method: `floppy.drives[${slot}].insert`,
+          args: [subArgs[0], writable],
+          convention: 'cmd_int_bool',
+        };
+      }
+    }
+
+    if (head === 'hd') {
+      if (sub === 'validate' && subArgs.length === 1)
+        return { method: 'scsi.identify_hd', args: subArgs, convention: 'cmd_bool' };
+      if (sub === 'attach' && subArgs.length === 2) {
+        const id = parseInt10(subArgs[1]) ?? 0;
+        return { method: 'scsi.attach_hd', args: [subArgs[0], id], convention: 'cmd_int_bool' };
+      }
+      if (sub === 'create' && subArgs.length === 2)
+        return { method: 'storage.hd_create', args: subArgs, convention: 'cmd_int_bool' };
+      if (sub === 'loopback' && subArgs.length === 1 && (subArgs[0] === 'on' || subArgs[0] === 'off'))
+        return { method: 'scsi.loopback', args: [subArgs[0] === 'on'], convention: 'void_or_error' };
+    }
+
+    // cdrom: id is now mandatory at the API level. Fall back to 3 for the
+    // legacy shell-form callers that omit it; the typed path requires it.
+    if (head === 'cdrom') {
+      if (sub === 'validate' && subArgs.length === 1)
+        return { method: 'scsi.identify_cdrom', args: subArgs, convention: 'cmd_bool' };
+      if (sub === 'attach' && subArgs.length >= 1) {
+        const id = subArgs.length >= 2 ? (parseInt10(subArgs[1]) ?? 3) : 3;
+        return { method: 'scsi.attach_cdrom', args: [subArgs[0], id], convention: 'cmd_int_bool' };
+      }
+      if (sub === 'eject') {
+        const id = subArgs.length >= 1 ? (parseInt10(subArgs[0]) ?? 3) : 3;
+        return { method: `scsi.devices[${id}].eject`, args: [], convention: 'cmd_int_bool' };
+      }
+      if (sub === 'info') {
+        const id = subArgs.length >= 1 ? (parseInt10(subArgs[0]) ?? 3) : 3;
+        return { method: `scsi.devices[${id}].info`, args: [], convention: 'cmd_int_bool' };
+      }
+    }
+
+    if (head === 'scc') {
+      // `scc loopback` (query) → bare-read attribute (legacy returns 0 = ok
+      // regardless of state); `scc loopback on|off` → setter, returns the
+      // new value (true → cmd_int_bool 0 = success).
+      if (sub === 'loopback') {
+        if (subArgs.length === 0)
+          return { method: 'scc.loopback', args: [], convention: 'void_or_error' };
+        if (subArgs.length === 1 && (subArgs[0] === 'on' || subArgs[0] === 'off'))
+          return { method: 'scc.loopback', args: [subArgs[0] === 'on'], convention: 'void_or_error' };
+      }
+    }
+
+    if (head === 'image') {
+      if (sub === 'partmap' && subArgs.length === 1)
+        return { method: 'storage.partmap', args: subArgs, convention: 'cmd_int_bool' };
+      if (sub === 'probe' && subArgs.length === 1)
+        return { method: 'storage.probe', args: subArgs, convention: 'cmd_int_bool' };
+      if (sub === 'list')
+        return {
+          method: 'storage.list_partitions',
+          args: subArgs.length >= 1 ? subArgs : [],
+          convention: 'cmd_int_bool',
+        };
+      if (sub === 'unmount' && subArgs.length === 1)
+        return { method: 'storage.unmount', args: subArgs, convention: 'cmd_int_bool' };
+    }
+  }
+
+  return null;
 }
 
 /**
  * Wait first for a short delay (to allow UI updates), then wait until
- * runCommand is ready and the scheduler reports idle via the 'status' shell command.
+ * runCommand is ready and the scheduler reports idle via `running()`.
  *
  * This combines the previous pattern of `await page.waitForTimeout(10_000)` +
  * `waitForIdle(page, timeoutMs)` into a single helper.
@@ -35,71 +574,45 @@ export async function waitForPrompt(page: Page, timeoutMs = 120_000, initialWait
   // initial short wait used throughout tests
   await page.waitForTimeout(initialWaitMs);
 
-  // Wait for Module readiness
+  // Wait for Module readiness via the gsEval bridge.
   try {
-    await page.waitForFunction(() => {
-      const w: any = window as any;
-      return !!(w.runCommand && typeof w.runCommand === 'function');
-    }, { timeout: timeoutMs });
+    await page.waitForFunction(() => typeof (window as any).gsEval === 'function', {
+      timeout: timeoutMs,
+    });
   } catch (e) {
-    throw new Error(`Timeout waiting for runCommand readiness after ${timeoutMs}ms`);
+    throw new Error(`Timeout waiting for gsEval readiness after ${timeoutMs}ms`);
   }
 
-  // Poll status command until scheduler is idle (returns 0)
+  // Poll `scheduler.running` via gsEval until the scheduler is idle.
   const pollIntervalMs = 100;
   const startTime = Date.now();
   while (true) {
     try {
-      const status = await runCommand(page, 'status');
-      if (status === 0) return; // Idle
+      const isRunning = await page.evaluate(() => (window as any).gsEval('scheduler.running'));
+      if (isRunning === false) return; // Idle
     } catch {
       // Ignore errors during polling
     }
-    
+
     if (Date.now() - startTime > timeoutMs) {
       throw new Error(`Timeout waiting for scheduler to become idle after ${timeoutMs}ms`);
     }
-    
-    await page.waitForTimeout(pollIntervalMs);
-  }
-}
 
-/**
- * Trigger a filesystem sync and wait for it to complete.
- * Uses the 'sync' command to start, then polls 'sync status' until done.
- */
-export async function waitForSync(page: Page, timeoutMs = 10_000): Promise<void> {
-  // Trigger the sync
-  await runCommand(page, 'sync');
-  
-  // Poll until sync completes (status returns 0)
-  const pollIntervalMs = 200;
-  const startTime = Date.now();
-  
-  while (true) {
-    const status = await runCommand(page, 'sync status');
-    if (status === 0) return; // Sync complete
-    
-    if (Date.now() - startTime > timeoutMs) {
-      throw new Error(`Timeout waiting for sync to complete after ${timeoutMs}ms`);
-    }
-    
     await page.waitForTimeout(pollIntervalMs);
   }
 }
 
 /**
  * Wait for at least one complete checkpoint to exist.
- * Uses `checkpoint --probe` which returns 0 when a valid (complete) checkpoint
- * is found in the checkpoint directory.
+ * Uses `checkpoint_probe()` via gsEval.
  */
 export async function waitForCompleteCheckpoint(page: Page, timeoutMs = 15_000): Promise<void> {
   const pollIntervalMs = 200;
   const startTime = Date.now();
 
   while (true) {
-    const result = await runCommand(page, 'checkpoint --probe');
-    if (result === 0) return;
+    const ok = await page.evaluate(() => (window as any).gsEval('checkpoint.probe'));
+    if (ok === true) return;
 
     if (Date.now() - startTime > timeoutMs) {
       throw new Error(`Timeout waiting for complete checkpoint after ${timeoutMs}ms`);

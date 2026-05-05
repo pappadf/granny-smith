@@ -64,15 +64,16 @@ uint8_t *ram_native_pointer(memory_map_t *ram, uint32_t addr);
 // Return the filename of the currently loaded ROM, or NULL if none.
 const char *memory_rom_filename(memory_map_t *mem);
 
-// Return the ROM path being loaded (available during machine init).
-const char *memory_pending_rom_path(void);
+// Direct accessors for the loaded ROM region. Returned pointer is owned by
+// the memory map and remains valid until the next memory_install_rom() call.
+const uint8_t *memory_rom_bytes(memory_map_t *mem);
+uint32_t memory_rom_size(memory_map_t *mem);
+uint32_t memory_rom_checksum(memory_map_t *mem);
 
-// Return the VROM path set via "rom --load-vrom" (available during machine init).
-const char *memory_pending_vrom_path(void);
-
-// Shell command handlers for ROM operations (registered by setup_init)
-uint64_t cmd_rom(int argc, char *argv[]);
-uint64_t cmd_vrom(int argc, char *argv[]);
+// Copy ROM bytes into the ROM region, refresh internal checksum, and store
+// the filename for checkpointing. Truncates if size > rom_size. Returns the
+// number of bytes actually written.
+size_t memory_install_rom(memory_map_t *mem, const uint8_t *data, size_t size, const char *filename);
 
 uint32_t memory_read(unsigned int size, uint32_t addr);
 

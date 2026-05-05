@@ -3,7 +3,7 @@
 
 // Orchestrator: startup sequence and module glue.
 // Zero business logic — only wires modules together in the correct order.
-import { initEmulator, runCommand, isModuleReady, getModule, getRuntimePrompt, shellInterrupt, isRunning, tabComplete } from './emulator.js';
+import { initEmulator, gsEvalLine, gsEval, isModuleReady, getModule, getRuntimePrompt, shellInterrupt, isRunning, tabComplete } from './emulator.js';
 import { initTerminal, writeLine, showPrompt, fitTerminal, handleInterrupt } from './terminal.js';
 import { initFS } from './fs.js';
 import { initDragDrop } from './drop.js';
@@ -14,6 +14,7 @@ import { scanForPersistedRoms, showRomUploadDialog, showConfigDialog, bootFromCo
 import { UPLOAD_DIR } from './config.js';
 import { clearOPFSDir } from './fs.js';
 import { getOrCreateMachine } from './checkpoint-machine.js';
+import { initInspector } from './inspector.js';
 
 const params = new URLSearchParams(location.search);
 
@@ -33,7 +34,7 @@ if (params.has('speed')) {
 
 // --- 2. Terminal (must be created before emulator so writeLine is ready) ---
 initTerminal(document.getElementById('terminal'), {
-  onSubmit: async (line) => { await runCommand(line); },
+  onSubmit: async (line) => { await gsEvalLine(line); },
   onInterrupt: async () => { await shellInterrupt(); },
   isReady: () => isModuleReady(),
   isRunning: () => isRunning(),
@@ -66,17 +67,19 @@ initUI({
 // --- 5. Drag & drop ---
 initDragDrop(canvas);
 
+// --- 5b. Object inspector panel (M11) ---
+initInspector();
+
 // --- 6. Load media ---
 // OPFS directories are already available (mounted by C-side main()).
 
-// Activate the per-machine checkpoint directory before anything that opens
-// images runs.  Awaiting here preserves command ordering: every later
-// runCommand (starting with `checkpoint --probe` below) sees the machine
-// identity already registered.  Done after initUI so the click handlers on
-// the terminal toggle / canvas are wired before this awaits.
+// Activate the per-machine checkpoint directory before anything that
+// opens images runs. Awaiting here preserves command ordering: every
+// later request (starting with `checkpoint --probe` below) sees the
+// machine identity already registered.
 {
   const machine = getOrCreateMachine();
-  await runCommand(`checkpoint --machine ${machine.id} ${machine.created}`);
+  await gsEval('machine.register', [machine.id, machine.created]);
 }
 
 const resumedFromCheckpoint = await maybeOfferBackgroundCheckpoint();

@@ -2,11 +2,11 @@
 # This script boots the emulator from a SCSI hard disk and verifies it reaches the desktop
 
 # Boot with VBL-based timing (~120M instructions for full boot)
-run 30000000
+scheduler.run 30000000
 
 # Compare screen against reference desktop image
 # Path is relative to the current working directory (tests/integration/scsi/)
-screenshot match desktop.png
+screen.match desktop.png
 
 # Exit with success (screenshot match sets exit code)
 quit

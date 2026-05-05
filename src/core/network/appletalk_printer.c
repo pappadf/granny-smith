@@ -1285,3 +1285,12 @@ int atalk_printer_disable(void) {
     printf("atalk: printer disabled\n");
     return 0;
 }
+
+// === Read-only views =================================================
+
+bool atalk_printer_is_enabled(void) {
+    return g_printer.enabled;
+}
+const char *atalk_printer_object_name(void) {
+    return g_printer.enabled ? g_printer.object_name : NULL;
+}

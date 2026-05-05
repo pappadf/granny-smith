@@ -6,7 +6,12 @@
 
 #include "mouse.h"
 #include "cpu.h"
+#include "debug_mac.h"
+#include "object.h"
 #include "system.h"
+#include "value.h"
+
+#include <string.h>
 
 #include <assert.h>
 #include <stddef.h>
@@ -174,4 +179,132 @@ void mouse_checkpoint(mouse_t *restrict mouse, checkpoint_t *checkpoint) {
         return;
     size_t data_size = offsetof(mouse_t, scheduler);
     system_write_checkpoint_data(checkpoint, mouse, data_size);
+}
+
+// === Object-model class descriptor =========================================
+//
+// `input.mouse` (proposal §5.9). Methods move(x, y), click(down),
+// trace(enabled). Wraps debug_mac_set_mouse_mode / system_mouse_update
+// / debug_mac_set_trace_mouse.
+
+// Mode-string → mode char for debug_mac_*_mode().
+//   "default" / NULL → 'd' (default routing)
+//   "global"         → 'g'
+//   "hw"             → 'h'
+//   "aux"            → 'a'
+// Returns 'd' for default, the mode char otherwise, or 0 on bad input.
+static char mouse_mode_char(const value_t *v) {
+    if (!v || v->kind != V_STRING || !v->s || !*v->s)
+        return 'd';
+    if (strcmp(v->s, "default") == 0)
+        return 'd';
+    if (strcmp(v->s, "global") == 0)
+        return 'g';
+    if (strcmp(v->s, "hw") == 0)
+        return 'h';
+    if (strcmp(v->s, "aux") == 0)
+        return 'a';
+    return 0;
+}
+
+static value_t mouse_method_move(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)self;
+    (void)m;
+    if (argc < 2)
+        return val_err("mouse.move: expected (x, y, [mode])");
+    bool okx = true, oky = true;
+    int64_t x = val_as_i64(&argv[0], &okx);
+    int64_t y = val_as_i64(&argv[1], &oky);
+    if (!okx || !oky)
+        return val_err("mouse.move: x and y must be integers");
+    char mode = (argc >= 3) ? mouse_mode_char(&argv[2]) : 'd';
+    if (!mode)
+        return val_err("mouse.move: mode must be one of \"default\"/\"global\"/\"hw\"/\"aux\"");
+    if (debug_mac_set_mouse_mode((long)x, (long)y, mode) < 0)
+        return val_err("mouse.move: memory not initialised");
+    return val_bool(true);
+}
+
+static value_t mouse_method_click(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)self;
+    (void)m;
+    bool down = (argc >= 1) ? val_as_bool(&argv[0]) : true;
+    char mode = (argc >= 2) ? mouse_mode_char(&argv[1]) : 'd';
+    if (!mode)
+        return val_err("mouse.click: mode must be one of \"default\"/\"global\"/\"hw\"");
+    debug_mac_mouse_button_mode(down, mode);
+    return val_bool(true);
+}
+
+static value_t mouse_method_trace(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)self;
+    (void)m;
+    if (argc < 1)
+        return val_err("mouse.trace: expected (enabled)");
+    debug_mac_set_trace_mouse(val_as_bool(&argv[0]));
+    return val_none();
+}
+
+static const arg_decl_t mouse_move_args[] = {
+    {.name = "x", .kind = V_INT, .doc = "Target X coordinate"},
+    {.name = "y", .kind = V_INT, .doc = "Target Y coordinate"},
+    {.name = "mode",
+     .kind = V_STRING,
+     .flags = OBJ_ARG_OPTIONAL,
+     .doc = "\"default\" (per-platform), \"global\" (Toolbox MTemp), \"hw\" (raw quadrature), or \"aux\" (A/UX MAE)"},
+};
+static const arg_decl_t mouse_click_args[] = {
+    {.name = "down", .kind = V_BOOL, .flags = OBJ_ARG_OPTIONAL, .doc = "true = press, false = release (default true)"},
+    {.name = "mode",
+     .kind = V_STRING,
+     .flags = OBJ_ARG_OPTIONAL,
+     .doc = "\"default\" (per-platform), \"global\" (Toolbox MBState), or \"hw\" (raw)"                              },
+};
+static const arg_decl_t mouse_trace_args[] = {
+    {.name = "enabled", .kind = V_BOOL, .doc = "true = log mouse position once per second"},
+};
+
+static const member_t mouse_members[] = {
+    {.kind = M_METHOD,
+     .name = "move",
+     .doc = "Set mouse position; optional mode chooses the routing path",
+     .method = {.args = mouse_move_args, .nargs = 3, .result = V_BOOL, .fn = mouse_method_move}  },
+    {.kind = M_METHOD,
+     .name = "click",
+     .doc = "Press or release the mouse button; optional mode chooses the routing path",
+     .method = {.args = mouse_click_args, .nargs = 2, .result = V_BOOL, .fn = mouse_method_click}},
+    {.kind = M_METHOD,
+     .name = "trace",
+     .doc = "Toggle the 1 Hz mouse-position trace logger",
+     .method = {.args = mouse_trace_args, .nargs = 1, .result = V_NONE, .fn = mouse_method_trace}},
+};
+
+const class_desc_t mouse_class = {
+    .name = "mouse",
+    .members = mouse_members,
+    .n_members = sizeof(mouse_members) / sizeof(mouse_members[0]),
+};
+
+// === Process-singleton lifecycle ============================================
+//
+// `mouse` is a stateless facade over the platform-level debug_mac_*
+// helpers; nothing it exposes depends on a booted machine or a specific
+// cfg lifetime. Register once at shell_init time (idempotent).
+
+static struct object *s_mouse_object = NULL;
+
+void mouse_class_register(void) {
+    if (s_mouse_object)
+        return;
+    s_mouse_object = object_new(&mouse_class, NULL, "mouse");
+    if (s_mouse_object)
+        object_attach(object_root(), s_mouse_object);
+}
+
+void mouse_class_unregister(void) {
+    if (s_mouse_object) {
+        object_detach(s_mouse_object);
+        object_delete(s_mouse_object);
+        s_mouse_object = NULL;
+    }
 }

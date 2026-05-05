@@ -4,6 +4,7 @@
 import { test, expect } from '../../fixtures';
 import { bootWithMedia } from '../../helpers/boot';
 import { matchScreenFast } from '../../helpers/screen';
+import { runCommand } from '../../helpers/run-command';
 
 // Basic smoke test: page loads, toolbar buttons exist, test hooks active.
 
@@ -21,11 +22,13 @@ test.describe('Granny Smith UI basic', () => {
   test('command logging via runCommand', async ({ page }) => {
     await page.goto('/index.html?noui');
     // Wait for command bridge (async module load)
-    await page.waitForFunction(() => typeof (window as any).runCommand === 'function');
+    await page.waitForFunction(() => typeof (window as any).gsEval === 'function');
     await page.evaluate(() => (window as any).__gsTest?.clearLog());
-    await page.evaluate(() => (window as any).runCommand('run'));
+    await runCommand(page, 'run');
     const log = await page.evaluate(() => (window as any).__gsTest?.commandLog);
-    expect(log).toContain('run');
+    // commandLog records the gsEval method name with `.` → ` `, so
+    // `run` (translated to scheduler.run) shows up as 'scheduler run'.
+    expect(log).toContain('scheduler run');
   });
 
   test('zoom out eventually reduces effective scale', async ({ page }) => {
@@ -75,10 +78,10 @@ test.describe('Granny Smith UI basic', () => {
   test('play/pause toggles emulator and instruction count advances', async ({ page }) => {
     // Boot directly with ROM (auto-runs); no manual inject or initial Run click needed.
     await bootWithMedia(page, 'roms/Plus_v3.rom');
-    await page.waitForFunction(() => typeof (window as any).runCommand === 'function');
+    await page.waitForFunction(() => typeof (window as any).gsEval === 'function');
 
     // Disable idle checkpointing for this test to avoid state corruption
-    await page.evaluate(() => (window as any).runCommand('checkpoint auto off'));
+    await runCommand(page, 'checkpoint auto off');
 
     // Allow brief execution time before first pause
     await page.waitForTimeout(1000);
@@ -86,15 +89,14 @@ test.describe('Granny Smith UI basic', () => {
     // Helper: pause emulator and return instruction count
     async function pauseAndGetInstrCount(): Promise<number> {
       await page.click('#btn-run');
-      // Wait for the emulator to be paused (status returns 0 when idle)
-      // runCommand is async, so the predicate must await it
+      // Wait for the emulator to be paused. `running()` returns false when
+      // idle; gsEval awaits the worker so the predicate naturally polls.
       await page.waitForFunction(async () => {
         try {
-          return (await (window as any).runCommand('status')) === 0;
+          return (await (window as any).gsEval('scheduler.running')) === false;
         } catch { return false; }
       }, { timeout: 5000 });
-      const raw = await page.evaluate(() => (window as any).runCommand('print instr'));
-      return typeof raw === 'bigint' ? Number(raw) : Number(raw);
+      return await runCommand(page, 'print instr');
     }
 
     // First click pauses (was running already)

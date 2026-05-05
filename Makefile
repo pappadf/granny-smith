@@ -77,6 +77,7 @@ CORE_SRC := $(wildcard $(CORE_DIR)/*.c) \
             $(wildcard $(CORE_DIR)/storage/*.c) \
             $(wildcard $(CORE_DIR)/network/*.c) \
             $(wildcard $(CORE_DIR)/shell/*.c) \
+            $(wildcard $(CORE_DIR)/object/*.c) \
             $(wildcard $(CORE_DIR)/vfs/*.c) \
             $(wildcard $(MACHINES_DIR)/*.c)
 
@@ -107,10 +108,12 @@ OUTPUT := $(BUILD_DIR)/main.mjs
 MODE ?= release
 
 ifeq ($(MODE),debug)
-	# -Og avoids excessive WASM locals that can exceed browser limits
-	MODE_CFLAGS := -Og -g
+	# -Og avoids excessive WASM locals that can exceed browser limits.
+	# -DGS_DEBUG enables thread-affinity assertions (see worker_thread.h)
+	# and any other invariants gated behind that flag.
+	MODE_CFLAGS := -Og -g -DGS_DEBUG
 else ifeq ($(MODE),sanitize)
-	MODE_CFLAGS := -O1 -g -fsanitize=address,undefined -sSTACK_OVERFLOW_CHECK=2
+	MODE_CFLAGS := -O1 -g -DGS_DEBUG -fsanitize=address,undefined -sSTACK_OVERFLOW_CHECK=2
 else
 	MODE_CFLAGS := -O2
 endif
@@ -128,6 +131,7 @@ INCLUDES := -I$(CORE_DIR) \
             -I$(CORE_DIR)/storage \
             -I$(CORE_DIR)/network \
             -I$(CORE_DIR)/shell \
+            -I$(CORE_DIR)/object \
             -I$(CORE_DIR)/vfs \
             -I$(MACHINES_DIR) \
             -I$(PLATFORM_DIR)
@@ -154,7 +158,7 @@ LDFLAGS := $(MODE_CFLAGS) \
            -sOFFSCREEN_FRAMEBUFFER \
            -sOFFSCREENCANVASES_TO_PTHREAD='\#screen' \
            -s EXPORTED_RUNTIME_METHODS=['FS','cwrap','ccall','stringToUTF8','UTF8ToString','HEAP32','HEAPU8'] \
-           -s EXPORTED_FUNCTIONS="['_main','_shell_init','_em_handle_command','_shell_interrupt','_shell_emit_prompt','_background_checkpoint_from_js','_get_cmd_buffer','_get_cmd_pending_ptr','_get_cmd_done_ptr','_get_cmd_result_ptr','_get_prompt_buffer','_get_is_running_ptr','_get_cmd_json_buffer','_em_tab_complete','_get_completion_buffer']" \
+           -s EXPORTED_FUNCTIONS="['_main','_shell_init','_shell_interrupt','_background_checkpoint_from_js','_get_prompt_buffer','_get_is_running_ptr','_get_completion_buffer','_get_gs_eval_buffer','_get_gs_path_buffer','_get_gs_args_buffer','_get_gs_pending_ptr','_get_gs_done_ptr','_get_gs_result_ptr','_get_shell_ready_ptr']" \
            -s STACK_SIZE=5MB \
            -s ALLOW_MEMORY_GROWTH=1 \
            -s USE_WEBGL2=1

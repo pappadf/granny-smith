@@ -6,7 +6,6 @@ import { test } from '@playwright/test';
 import type { Page } from '@playwright/test';
 import * as fs from 'fs';
 import * as path from 'path';
-import { runCommand } from './run-command';
 
 export interface CaptureResult { full: Buffer; region: Buffer; }
 export interface CaptureOptions { regionW: number; regionH: number; }
@@ -160,19 +159,21 @@ export function calculateScreenChecksum(png: Buffer | PNG, region?: MatchRegion)
 
 /**
  * Get the current screen checksum from the emulator.
- * This is much faster than capturing and transferring a full PNG.
- * Note: Emscripten ccall returns signed 32-bit, we convert to unsigned.
+ * Calls the typed `screen.checksum` root method directly via gsEval.
  * @param page Playwright page
  * @param region Optional region bounds (top, left, bottom, right)
  */
 export async function getScreenChecksum(page: Page, region?: MatchRegion): Promise<number> {
-	let cmd = 'screenshot checksum';
-	if (region) {
-		cmd += ` ${region.top} ${region.left} ${region.bottom} ${region.right}`;
-	}
-	const result = await runCommand(page, cmd);
-	// Convert signed int32 to unsigned uint32
-	return result >>> 0;
+	const args = region
+		? [region.top, region.left, region.bottom, region.right]
+		: [];
+	const result = await page.evaluate(
+		(args) => (window as any).gsEval('screen.checksum', args),
+		args
+	);
+	const n = typeof result === 'bigint' ? Number(result) : Number(result);
+	// Convert signed int32 to unsigned uint32.
+	return n >>> 0;
 }
 
 /**
