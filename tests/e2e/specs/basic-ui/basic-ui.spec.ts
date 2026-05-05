@@ -91,7 +91,7 @@ test.describe('Granny Smith UI basic', () => {
       // idle; gsEval awaits the worker so the predicate naturally polls.
       await page.waitForFunction(async () => {
         try {
-          return (await (window as any).gsEval('running')) === false;
+          return (await (window as any).gsEval('scheduler.running')) === false;
         } catch { return false; }
       }, { timeout: 5000 });
       return await runCommand(page, 'print instr');

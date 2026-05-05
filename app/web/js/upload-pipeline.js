@@ -113,7 +113,7 @@ async function persistAndCleanup(sourcePath, fileName, mediaType, info) {
   const targetDir = info?.persistDir || mediaType.persistDir;
   const finalPath = `${targetDir}/${finalName}`;
 
-  const ok = await window.gsEval('cp', [sourcePath, finalPath]);
+  const ok = await window.gsEval('storage.cp', [sourcePath, finalPath]);
   if (ok !== true) {
     console.error(`upload-pipeline: failed to persist ${sourcePath} -> ${finalPath}`);
     toast(`Failed to save ${fileName}`);

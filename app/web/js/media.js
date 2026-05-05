@@ -116,7 +116,8 @@ export async function tryExtractArchive(filePath, displayName, data) {
 // Probe if a file is a valid ROM.
 export async function probeRom(filePath) {
   try {
-    return (await window.gsEval('rom_probe', [filePath])) === true;
+    const compatible = await window.gsEval('rom.identify', [filePath]);
+    return Array.isArray(compatible) && compatible.length > 0;
   } catch {
     return false;
   }
@@ -125,7 +126,7 @@ export async function probeRom(filePath) {
 // Probe if a file is a valid floppy disk image.
 export async function probeFloppy(filePath) {
   try {
-    return (await window.gsEval('fd_probe', [filePath])) === true;
+    return (await window.gsEval('floppy.identify', [filePath])) === true;
   } catch {
     return false;
   }
@@ -144,7 +145,7 @@ export async function classifyMediaFile(filePath) {
 // we have a concrete file to mount.
 export async function findMediaInDirectory(dirPath) {
   const destPath = `${dirPath}/_found_media.img`;
-  const found = await window.gsEval('find_media', [dirPath, destPath]);
+  const found = await window.gsEval('storage.find_media', [dirPath, destPath]);
   if (found === true) return { path: destPath, kind: 'floppy' };
   return null;
 }

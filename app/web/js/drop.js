@@ -37,7 +37,7 @@ async function loadCheckpointFromPath(path, displayName) {
     await window.gsEval('checkpoint_load', [path]);
 
     // Sync JS-side running flag with the restored scheduler state
-    const running = (await window.gsEval('running')) === true;
+    const running = (await window.gsEval('scheduler.running')) === true;
     setRunning(running);
     toast(`Checkpoint loaded (${label})`);
     enableRunButton();
@@ -185,16 +185,26 @@ async function probeAndMountDiskImage(path, isDirectory, displayName) {
     if (kind === 'rom') {
       toast(`Loading ROM: ${imagePath.split('/').pop()}`);
       try {
-        // Validate via rom_checksum: returns the hex string for a valid
+        // Validate via rom.checksum_of: returns the hex string for a valid
         // ROM, empty when the file isn't recognised.
-        const checksum = await window.gsEval('rom_checksum', [imagePath]);
+        const checksum = await window.gsEval('rom.checksum_of', [imagePath]);
         if (typeof checksum !== 'string' || !checksum) {
           toast('Not a valid ROM image');
           return;
         }
 
-        // Load the ROM directly from the /tmp path (already validated above)
-        if ((await window.gsEval('rom_load', [imagePath])) !== true) {
+        // Pick a machine for the ROM (first compatible model). When the
+        // family has multiple members (e.g. Universal IIx/IIcx/SE/30), the
+        // user can switch via the config dialog after boot.
+        const compatible = await window.gsEval('rom.identify', [imagePath]);
+        if (!Array.isArray(compatible) || compatible.length === 0) {
+          toast('No compatible machine for this ROM');
+          return;
+        }
+        await window.gsEval('machine.boot', [compatible[0]]);
+
+        // Load the ROM into the freshly created machine.
+        if ((await window.gsEval('rom.load', [imagePath])) !== true) {
           toast('Failed to load ROM');
           return;
         }
@@ -203,11 +213,11 @@ async function probeAndMountDiskImage(path, isDirectory, displayName) {
         const romData = FS.readFile(imagePath);
         const tmpCopy = `/tmp/rom_${checksum}`;
         writeBinary(tmpCopy, romData);
-        await window.gsEval('cp', [tmpCopy, romPathForChecksum(checksum)]);
+        await window.gsEval('storage.cp', [tmpCopy, romPathForChecksum(checksum)]);
 
         hideRomOverlay();
         enableRunButton();
-        await window.gsEval('run');
+        await window.gsEval('scheduler.run');
         toast(`ROM loaded successfully`);
         setBackgroundMessage('Click \u25b6 to start emulation');
       } catch (err) {
@@ -216,7 +226,7 @@ async function probeAndMountDiskImage(path, isDirectory, displayName) {
       }
     } else if (kind === 'floppy') {
       toast(`Mounting disk image: ${imagePath.split('/').pop()}`);
-      const mounted = (await window.gsEval('fd_insert', [imagePath, 0, true])) === true;
+      const mounted = (await window.gsEval('floppy.drives[0].insert', [imagePath, true])) === true;
       if (mounted) {
         toast(`Disk image mounted successfully`);
       } else {

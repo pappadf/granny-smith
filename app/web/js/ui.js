@@ -98,10 +98,10 @@ export async function insertFloppyWithResume(path) {
     await waitForRunState(false, 1200);
     await sleep(40);
   }
-  await window.gsEval('fd_insert', [path, 0, true]);
+  await window.gsEval('floppy.drives[0].insert', [path, true]);
   if (wasRunning) {
     await sleep(30);
-    await window.gsEval('run');
+    await window.gsEval('scheduler.run');
     setRunning(true);
   }
 }
@@ -216,7 +216,7 @@ export function initUI({ canvas, panel, toggle, termBody, canvasWrapper, screenT
       setRunning(false);
       toast('interrupt (Ctrl-C)');
     } else {
-      await window.gsEval('run');
+      await window.gsEval('scheduler.run');
       setRunning(true);
       toast('run');
     }
@@ -275,7 +275,8 @@ export function initUI({ canvas, panel, toggle, termBody, canvasWrapper, screenT
   }
 
   async function setScheduleMode(mode) {
-    await window.gsEval('schedule', [mode]);
+    // gs_eval treats `path + single arg` on an attribute as a setter.
+    await window.gsEval('scheduler.mode', [mode]);
     updateScheduleSwitcherUI(mode);
   }
 

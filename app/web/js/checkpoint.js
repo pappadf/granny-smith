@@ -29,7 +29,7 @@ export async function maybeOfferBackgroundCheckpoint() {
   // checkpoints (captured while running) auto-resume; consolidated ones
   // (captured while paused) restore to paused.  Sync the JS-side flag
   // with the actual scheduler state so the UI stays consistent.
-  const running = (await window.gsEval('running')) === true;
+  const running = (await window.gsEval('scheduler.running')) === true;
   setRunning(running);
   toast(running ? 'Resumed from saved checkpoint' : 'Restored checkpoint (paused)');
   return true;

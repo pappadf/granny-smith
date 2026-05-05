@@ -79,7 +79,7 @@ initInspector();
 // machine identity already registered.
 {
   const machine = getOrCreateMachine();
-  await gsEval('register_machine', [machine.id, machine.created]);
+  await gsEval('machine.register', [machine.id, machine.created]);
 }
 
 const resumedFromCheckpoint = await maybeOfferBackgroundCheckpoint();

@@ -26,7 +26,7 @@ export const MEDIA_TYPES = {
     async validate(path) {
       // rom_checksum returns the 8-char hex string for a valid ROM,
       // empty when the file isn't recognised.
-      const checksum = await window.gsEval('rom_checksum', [path]);
+      const checksum = await window.gsEval('rom.checksum_of', [path]);
       if (typeof checksum !== 'string' || !checksum) return { valid: false };
       return { valid: true, info: { checksum } };
     },
@@ -41,7 +41,7 @@ export const MEDIA_TYPES = {
     label: 'Video ROM image',
     persistDir: VROMS_DIR,
     async validate(path) {
-      return { valid: (await window.gsEval('vrom_probe', [path])) === true };
+      return { valid: (await window.gsEval('vrom.identify', [path])) === true };
     },
   },
 
@@ -53,7 +53,7 @@ export const MEDIA_TYPES = {
       // fd_validate returns the density tag ("400K" / "800K" / "1.4MB")
       // for valid floppy images, empty otherwise. Pick FDHD vs FD based
       // on the tag.
-      const density = await window.gsEval('fd_validate', [path]);
+      const density = await window.gsEval('floppy.identify', [path]);
       if (typeof density !== 'string' || !density) return { valid: false };
       const isHD = density === '1.4MB';
       return { valid: true, info: { persistDir: isHD ? FDHD_DIR : FD_DIR } };
@@ -65,7 +65,7 @@ export const MEDIA_TYPES = {
     label: 'Hard Disk image',
     persistDir: HD_DIR,
     async validate(path) {
-      return { valid: (await window.gsEval('hd_validate', [path])) === true };
+      return { valid: (await window.gsEval('scsi.identify_hd', [path])) === true };
     },
   },
 
@@ -74,7 +74,7 @@ export const MEDIA_TYPES = {
     label: 'CD-ROM image',
     persistDir: CD_DIR,
     async validate(path) {
-      return { valid: (await window.gsEval('cdrom_validate', [path])) === true };
+      return { valid: (await window.gsEval('scsi.identify_cdrom', [path])) === true };
     },
   },
 };
