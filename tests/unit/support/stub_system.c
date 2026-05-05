@@ -81,6 +81,13 @@ void remove_event_by_data(scheduler_t *sched, event_callback_t callback, void *s
     (void)data;
 }
 
+// Scheduler-tracked instruction counter — referenced by cpu.c's
+// `cpu.instr_count` attribute. The unit tests don't drive the
+// scheduler so the live counter is irrelevant; return 0.
+uint64_t cpu_instr_count(void) {
+    return 0;
+}
+
 // Keyboard stub for key injection command
 typedef enum { key_up, key_down } key_event_t;
 void system_keyboard_update(key_event_t event, int key) {
