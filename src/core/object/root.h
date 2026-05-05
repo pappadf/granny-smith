@@ -4,8 +4,6 @@
 // root.h
 // The `emu` root class plus the install/uninstall lifecycle that
 // attaches the few cfg-scoped stubs (storage, shell.alias) under it.
-// Declarations for the per-entry debug-object factories live here too
-// because they are used by debug.c at breakpoint/logpoint set-time.
 
 #ifndef GS_OBJECT_ROOT_H
 #define GS_OBJECT_ROOT_H
@@ -23,26 +21,23 @@ struct object;
 
 // Full root install: attaches the `emu` class onto object_root() and
 // wires up the cfg-scoped stubs (storage, shell.alias). Idempotent for
-// the same config — a second call with the same `cfg` is a no-op. When
-// `cfg` differs from the previous install (e.g., after a checkpoint
-// load), the old stubs are torn down before new ones are attached.
-//
-// `cfg` must outlive the root population — typically the caller is
-// system_create() and root_uninstall_if() runs from system_destroy().
+// the same `cfg`; if `cfg` differs from the previous install (e.g.,
+// after a checkpoint load), the old stubs are torn down before new
+// ones are attached. `cfg` must outlive the root population.
 void root_install(struct config *cfg);
 
 // Attach just the `emu` class onto object_root(). Called early from
-// shell_init() so JS tooling can resolve the top-level methods before
-// any machine is created. Safe to call multiple times.
+// shell_init() so the top-level methods resolve before any machine is
+// created. Safe to call multiple times.
 void root_install_class(void);
 
 // Detach and free every stub object the install path created. Safe to
 // call when nothing is installed.
 void root_uninstall(void);
 
-// Conditional uninstall: only tears down when the stubs are still
-// associated with `cfg`. Used by `system_destroy(old_cfg)` after a
-// `checkpoint --load` has already swapped in stubs for the new cfg.
+// Tear down only when the installed stubs are still associated with
+// `cfg`. Lets `system_destroy(old)` no-op after a `checkpoint --load`
+// has already swapped in stubs for the new cfg.
 void root_uninstall_if(struct config *cfg);
 
 // === Debug entry-object factories ===========================================

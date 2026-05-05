@@ -8,11 +8,6 @@
 // install/uninstall of the small set of cfg-scoped stubs that hang off
 // it (the shell namespace and shell.alias child, the storage view of
 // cfg->images).
-//
-// Subsystem-owned classes (cpu/fpu/memory/scc/rtc/via/scsi/floppy/sound/
-// appletalk/debug/mouse/keyboard/screen/vfs/find/storage*) live in their
-// owning modules and self-register via *_init / *_delete. Built-in
-// `$reg` aliases for CPU/FPU registers register from cpu_init().
 
 #include "root.h"
 
@@ -27,27 +22,17 @@
 #include "system_config.h"
 #include "value.h"
 
-// instance_data on these stubs is config_t*. The lifetime is bounded
-// by root_install / root_uninstall — same scope as the owning emulator
-// instance.
-//
-// Class descriptors are defined in their owning modules (cpu.c,
-// memory.c, machine.c, scc.c, etc.) and referenced here via extern
-// to keep this file as the install/uninstall orchestrator.
-
 extern const class_desc_t storage_class_real; // src/core/storage/storage.c
 extern const class_desc_t storage_images_collection_class; // src/core/storage/storage.c
 extern const class_desc_t shell_alias_class; // src/core/object/alias.c
 
-// === Shell stub ==============================================================
-// Empty class so `shell` exists as a path component for shell.alias.* etc.
+// Empty class so `shell` exists as a path component for shell.alias.*
 // without forcing a real subsystem hookup at install time.
-
 static const class_desc_t shell_class_desc = {.name = "shell", .members = NULL, .n_members = 0};
 
-// Introspection root methods: `objects`, `attributes`, `methods`,
-// `help`, `time`. Each accepts an optional path string; empty / missing
-// resolves to the root itself.
+// === Introspection root methods =============================================
+// `objects`, `attributes`, `methods`, `help`, `time`. Each accepts an
+// optional path string; empty / missing resolves to the root itself.
 
 static struct object *resolve_target(const value_t *path_arg) {
     const char *path = (path_arg && path_arg->kind == V_STRING && path_arg->s) ? path_arg->s : "";
@@ -75,15 +60,16 @@ static struct object *resolve_target(const value_t *path_arg) {
     return n.obj;
 }
 
-// Append `name` as a V_STRING into a growing items array. Returns
-// false on allocation failure (caller falls through to V_LIST with
-// what's been accumulated).
+// Growable V_STRING list used to accumulate object/attribute/method
+// names for the introspection methods.
 typedef struct {
     value_t *items;
     size_t len;
     size_t cap;
 } string_list_acc_t;
 
+// Append `name` as a V_STRING. Returns false on allocation failure;
+// callers fall through to val_list() with what's been accumulated.
 static bool string_list_push(string_list_acc_t *acc, const char *name) {
     if (!name)
         return true;
@@ -98,14 +84,6 @@ static bool string_list_push(string_list_acc_t *acc, const char *name) {
     acc->items[acc->len++] = val_str(name);
     return true;
 }
-
-// Walks the class member table, pushing names of members matching
-// `kind`. Plus, for kind == M_CHILD, also enumerates runtime-attached
-// named children (object_each_attached).
-typedef struct {
-    string_list_acc_t *acc;
-    member_kind_t kind; // 0 (M_ATTR base) means "any"
-} class_walker_t;
 
 static void each_attached_collect(struct object *parent, struct object *child, void *ud) {
     (void)parent;
@@ -191,17 +169,10 @@ static value_t method_root_time(struct object *self, const member_t *m, int argc
     return val_uint(8, (uint64_t)time(NULL));
 }
 
-// --- Top-level methods that wrap shell-style verbs -----------------------
-//
-// These flatten existing `image foo` / `hd foo` / `rom foo` / `vrom foo`
-// / `cp` / `quit` shell forms into one-call methods. Each wrapper calls
-// the underlying C primitive directly (or `shell_<cmd>_argv` for the
-// rich parsers).
-//
-// `let` and `source` are not wrapped here — they touch shell-state
-// plumbing (variables, script context) that lives in the shell layer.
-// `hd_download` similarly requires platform/network state outside the
-// object tree.
+// === Top-level wrappers =====================================================
+// quit / assert / echo / download. Subsystem-specific verbs live with
+// their owning class (cpu.*, memory.*, debug.*, archive.*, …); only the
+// process-wide ones stay here.
 
 // `quit()` — request emulator shutdown. Headless sets the script
 // quit flag and stops the scheduler; WASM is a no-op (the browser
@@ -215,12 +186,9 @@ static value_t method_root_quit(struct object *self, const member_t *m, int argc
     return val_none();
 }
 
-// `assert(predicate, [message])` — proposal §2.5 truthy check. Called
-// in path-form as `assert <pred>` or `assert <pred> "<msg>"`. The
-// caller has already $()-expanded the predicate to a string, so the
-// method just runs predicate_is_truthy on it; on failure the script
-// aborts via the val_err return path (path-form prints to stderr and
-// returns -1, which the headless runner treats as fatal).
+// `assert(predicate, [message])` — truthiness check. Callers have
+// already $()-expanded the predicate to a string, so this just runs
+// predicate_is_truthy on it and returns V_ERROR on failure.
 static value_t method_root_assert(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)self;
     (void)m;
@@ -351,31 +319,19 @@ static const class_desc_t emu_root_class_real = {
 
 // === Install / uninstall ====================================================
 //
-// Lifecycle invariant: stubs are tied to a specific `cfg` pointer. Two
-// patterns both have to work:
+// Stubs are tied to a specific `cfg` pointer. Two lifecycle patterns
+// have to work:
 //
-//   1. Cold boot
-//        system_create(new) -> root_install(new)
-//        ... later ...
-//        system_destroy(new) -> root_uninstall_if(new)
+//   1. Cold boot:        system_create(new) → install(new); later
+//                        system_destroy(new) → uninstall_if(new).
+//   2. checkpoint --load: system_create(new) → install(new) runs
+//                        BEFORE system_destroy(old) → uninstall_if(old).
 //
-//   2. checkpoint --load (cmd_load_checkpoint)
-//        new = system_restore(...);     // system_create(new) -> install(new)
-//        global_emulator = new;
-//        system_destroy(old)            // uninstall_if(old) -- no-op
-//
-// The danger is pattern 2 with a naive idempotent install: if install
-// short-circuits when stubs already exist, the install for `new` is a
-// no-op (old's stubs are still attached), and the subsequent
-// destroy(old) wipes everything — leaving the object root empty and
-// every gsEval('cpu.pc' / 'running' / …) returning
-// `{"error":"path '...' did not resolve"}`.
-//
-// The fix: track which cfg the stubs were installed for. Install is
-// idempotent only for the *same* cfg and otherwise uninstalls before
-// reinstalling. `root_uninstall_if(cfg)` (called from system_destroy)
-// only tears down when the stubs are still associated with `cfg` — so
-// destroying the old config after a load is a no-op.
+// Pattern 2 needs the install on the new cfg to tear down the old
+// stubs first (otherwise destroy(old) would wipe the freshly attached
+// new stubs); and the destroy on the old cfg must be a no-op when
+// install has already swapped to the new cfg. The g_installed_cfg
+// pointer guards both directions.
 
 #define MAX_STUBS 40
 static struct object *g_stubs[MAX_STUBS];
@@ -467,11 +423,6 @@ void root_uninstall(void) {
     g_installed_cfg = NULL;
 }
 
-// Conditional uninstall used by `system_destroy(cfg)`: only tears down
-// when the stubs are still associated with `cfg`. After
-// `checkpoint --load`, the order is `system_create(new)` → install(new)
-// → `system_destroy(old)`; without this gate the destroy would wipe the
-// freshly installed `new` root.
 void root_uninstall_if(struct config *cfg) {
     if (g_installed_cfg == cfg)
         root_uninstall();
