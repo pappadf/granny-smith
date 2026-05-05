@@ -29,3 +29,20 @@ uint64_t shell_dispatch(char *line) {
     (void)line;
     return 0;
 }
+
+// Tokenizer + rich-parser argv entry points: stubbed because the unit
+// tests don't exercise the typed methods that route through them
+// (memory.dump → shell_examine_argv via tokenize, etc.). The CPU/MMU/
+// storage suites just need memory.o to link.
+int tokenize(char *line, char *argv[], int max) {
+    (void)line;
+    (void)argv;
+    (void)max;
+    return 0;
+}
+
+int shell_examine_argv(int argc, char **argv) {
+    (void)argc;
+    (void)argv;
+    return 0;
+}
