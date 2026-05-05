@@ -491,31 +491,6 @@ static value_t attr_auto_checkpoint_set(struct object *self, const member_t *m, 
 // handlers; these methods exist so test scripts and the typed-bridge
 // have one consistent path-form interface.
 
-static value_t method_root_disasm(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
-    int64_t count = 16;
-    if (argc >= 1) {
-        bool ok = false;
-        count = val_as_i64(&argv[0], &ok);
-        if (!ok)
-            return val_err("disasm: count must be integer");
-        if (count <= 0)
-            count = 16;
-    }
-    cpu_t *cpu = system_cpu();
-    if (!cpu)
-        return val_err("disasm: CPU not initialised");
-    uint32_t addr = cpu_get_pc(cpu);
-    char buf[160];
-    for (int i = 0; i < (int)count; i++) {
-        int instr_len = debugger_disasm(buf, sizeof(buf), addr);
-        printf("%s\n", buf);
-        addr += 2 * instr_len;
-    }
-    return val_bool(true);
-}
-
 // `step([n])` — single-step n instructions (default 1).
 static value_t method_root_step(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)self;
@@ -600,49 +575,6 @@ static value_t method_root_set_value(struct object *self, const member_t *m, int
     if (targc <= 0)
         return val_err("set_value: tokenisation failed");
     return val_bool(cmd_set(targc, targv) == 0);
-}
-
-// `examine(addr, [count])` — hex-dump `count` bytes from `addr` (legacy
-// `x` / `examine`). `addr` accepts integer or string (alias / expression).
-static value_t method_root_examine(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
-    if (argc < 1)
-        return val_err("examine: expected (addr, [count])");
-    char line[128];
-    int n;
-    bool addr_ok = false;
-    uint64_t addr_u = val_as_u64(&argv[0], &addr_ok);
-    bool addr_is_str = (argv[0].kind == V_STRING);
-    if (!addr_ok && !addr_is_str)
-        return val_err("examine: addr must be integer or string");
-    int64_t count = 0;
-    bool have_count = false;
-    if (argc >= 2) {
-        bool ok = false;
-        count = val_as_i64(&argv[1], &ok);
-        if (!ok)
-            return val_err("examine: count must be integer");
-        have_count = true;
-    }
-    if (have_count) {
-        if (addr_ok)
-            n = snprintf(line, sizeof(line), "x 0x%llx %lld", (unsigned long long)addr_u, (long long)count);
-        else
-            n = snprintf(line, sizeof(line), "x %s %lld", argv[0].s ? argv[0].s : "", (long long)count);
-    } else {
-        if (addr_ok)
-            n = snprintf(line, sizeof(line), "x 0x%llx", (unsigned long long)addr_u);
-        else
-            n = snprintf(line, sizeof(line), "x %s", argv[0].s ? argv[0].s : "");
-    }
-    if (n < 0 || (size_t)n >= sizeof(line))
-        return val_err("examine: argument too long");
-    char *targv[32];
-    int targc = tokenize(line, targv, 32);
-    if (targc <= 0)
-        return val_err("examine: tokenisation failed");
-    return val_bool(shell_examine_argv(targc, targv) == 0);
 }
 
 // `download(path)` — trigger a browser file download. Routes to the
@@ -762,10 +694,6 @@ static const member_t emu_root_members[] = {
      .method = {.args = root_path_arg, .nargs = 1, .result = V_BOOL, .fn = method_root_download}                   },
     // Debugging-area thin wrappers.
     {.kind = M_METHOD,
-     .name = "disasm",
-     .doc = "Disassemble forward from PC (legacy `d [count]`)",
-     .method = {.args = NULL, .nargs = 1, .result = V_BOOL, .fn = method_root_disasm}                              },
-    {.kind = M_METHOD,
      .name = "step",
      .doc = "Single-step N instructions; default 1 (legacy `step`/`s`)",
      .method = {.args = NULL, .nargs = 1, .result = V_BOOL, .fn = method_root_step}                                },
@@ -781,10 +709,6 @@ static const member_t emu_root_members[] = {
      .name = "set_value",
      .doc = "Write a register / flag / memory cell (legacy `set <target> <value>`)",
      .method = {.args = NULL, .nargs = 2, .result = V_BOOL, .fn = method_root_set_value}                           },
-    {.kind = M_METHOD,
-     .name = "examine",
-     .doc = "Hex-dump memory (legacy `x` / `examine`)",
-     .method = {.args = NULL, .nargs = 2, .result = V_BOOL, .fn = method_root_examine}                             },
 };
 
 static const class_desc_t emu_root_class_real = {

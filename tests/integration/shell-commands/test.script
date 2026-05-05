@@ -13,13 +13,13 @@ cpu
 # print fp0..fp7 / fpcr / fpsr / fpiar).
 
 # disasm defaults to PC when no count is given.
-assert ${disasm()} "disasm (default count) failed"
+assert ${debug.disasm()} "disasm (default count) failed"
 
 # disasm with explicit count.
-assert ${disasm(5)} "disasm 5 failed"
+assert ${debug.disasm(5)} "disasm 5 failed"
 
 # Help on a typed root method still works.
-help disasm
+help debug.disasm
 
 # Logpoint list (should be empty).
 assert ${debug.logpoints.list()} "debug.logpoints.list failed"

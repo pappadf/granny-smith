@@ -13,6 +13,7 @@
 
 #include "common.h"
 #include "cpu.h"
+#include "debug.h"
 #include "object.h"
 #include "platform.h"
 #include "rom.h"
@@ -1045,6 +1046,57 @@ static const arg_decl_t mem_read_cstring_args[] = {
     {.name = "max_chars", .kind = V_INT,  .flags = OBJ_ARG_OPTIONAL, .doc = "max chars to read (default 96)"},
 };
 
+// `memory.dump(addr, [count])` — hex-dump `count` bytes from `addr`.
+// Replaces the legacy gdb-style `x` / `examine` command. `addr` accepts an
+// integer or a string (alias / register name / expression resolved by the
+// rich-parser). Output goes to stdout in the legacy `x` layout; the method
+// returns true on dispatch success.
+static value_t method_mem_dump(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)self;
+    (void)m;
+    if (argc < 1)
+        return val_err("memory.dump: expected (addr, [count])");
+    bool addr_ok = false;
+    uint64_t addr_u = val_as_u64(&argv[0], &addr_ok);
+    bool addr_is_str = (argv[0].kind == V_STRING);
+    if (!addr_ok && !addr_is_str)
+        return val_err("memory.dump: addr must be integer or string");
+    int64_t count = 0;
+    bool have_count = false;
+    if (argc >= 2) {
+        bool ok = false;
+        count = val_as_i64(&argv[1], &ok);
+        if (!ok)
+            return val_err("memory.dump: count must be integer");
+        have_count = true;
+    }
+    char line[128];
+    int n;
+    if (have_count) {
+        if (addr_ok)
+            n = snprintf(line, sizeof(line), "x 0x%llx %lld", (unsigned long long)addr_u, (long long)count);
+        else
+            n = snprintf(line, sizeof(line), "x %s %lld", argv[0].s ? argv[0].s : "", (long long)count);
+    } else {
+        if (addr_ok)
+            n = snprintf(line, sizeof(line), "x 0x%llx", (unsigned long long)addr_u);
+        else
+            n = snprintf(line, sizeof(line), "x %s", argv[0].s ? argv[0].s : "");
+    }
+    if (n < 0 || (size_t)n >= sizeof(line))
+        return val_err("memory.dump: argument too long");
+    char *targv[32];
+    int targc = tokenize(line, targv, 32);
+    if (targc <= 0)
+        return val_err("memory.dump: tokenisation failed");
+    return val_bool(shell_examine_argv(targc, targv) == 0);
+}
+
+static const arg_decl_t mem_dump_args[] = {
+    {.name = "addr", .kind = V_NONE, .doc = "guest memory address (integer or alias/expression)"},
+    {.name = "count", .kind = V_INT, .flags = OBJ_ARG_OPTIONAL, .doc = "byte count (default 16)"},
+};
+
 static const member_t memory_members[] = {
     {.kind = M_ATTR,
      .name = "ram_size",
@@ -1058,6 +1110,10 @@ static const member_t memory_members[] = {
      .name = "read_cstring",
      .doc = "Read a quoted, escape-encoded C string at addr",
      .method = {.args = mem_read_cstring_args, .nargs = 2, .result = V_STRING, .fn = method_mem_read_cstring}},
+    {.kind = M_METHOD,
+     .name = "dump",
+     .doc = "Hex-dump count bytes at addr (replaces the legacy `x` / examine)",
+     .method = {.args = mem_dump_args, .nargs = 2, .result = V_BOOL, .fn = method_mem_dump}                  },
 };
 
 const class_desc_t memory_class = {

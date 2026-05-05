@@ -218,7 +218,7 @@ function translateToGsEval(line: string): Translation | null {
       const c = parseInt10(tail[1]);
       if (c !== null) args.push(c);
     }
-    return { method: 'examine', args, convention: 'cmd_int_bool' };
+    return { method: 'memory.dump', args, convention: 'cmd_int_bool' };
   }
 
 

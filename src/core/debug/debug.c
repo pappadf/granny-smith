@@ -3303,11 +3303,49 @@ static const arg_decl_t debug_log_args[] = {
     {.name = "level",    .kind = V_NONE,   .doc = "Integer level (0..5) or full named-arg spec string"},
 };
 
+// `debug.disasm([count])` — disassemble `count` instructions forward from
+// the current PC (default 16). Lives under debug.* (not cpu.*) because it's
+// a pure observation operation: same family as debug.breakpoints,
+// debug.logpoints, debug.mac.* — debugger affordances that *use* the CPU's
+// encoding knowledge but aren't themselves part of running the CPU.
+static value_t debug_method_disasm(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)self;
+    (void)m;
+    int64_t count = 16;
+    if (argc >= 1) {
+        bool ok = false;
+        count = val_as_i64(&argv[0], &ok);
+        if (!ok)
+            return val_err("debug.disasm: count must be integer");
+        if (count <= 0)
+            count = 16;
+    }
+    cpu_t *cpu = system_cpu();
+    if (!cpu)
+        return val_err("debug.disasm: CPU not initialised");
+    uint32_t addr = cpu_get_pc(cpu);
+    char buf[160];
+    for (int i = 0; i < (int)count; i++) {
+        int instr_len = debugger_disasm(buf, sizeof(buf), addr);
+        printf("%s\n", buf);
+        addr += 2 * instr_len;
+    }
+    return val_bool(true);
+}
+
+static const arg_decl_t debug_disasm_args[] = {
+    {.name = "count", .kind = V_INT, .flags = OBJ_ARG_OPTIONAL, .doc = "Number of instructions (default 16)"},
+};
+
 static const member_t debug_members[] = {
     {.kind = M_METHOD,
      .name = "log",
      .doc = "Set per-subsystem log level (or pass a full spec string)",
-     .method = {.args = debug_log_args, .nargs = 2, .result = V_BOOL, .fn = debug_method_log}},
+     .method = {.args = debug_log_args, .nargs = 2, .result = V_BOOL, .fn = debug_method_log}      },
+    {.kind = M_METHOD,
+     .name = "disasm",
+     .doc = "Disassemble forward from PC (default 16 instructions)",
+     .method = {.args = debug_disasm_args, .nargs = 1, .result = V_BOOL, .fn = debug_method_disasm}},
 };
 
 const class_desc_t debug_class = {
