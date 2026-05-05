@@ -1,79 +1,91 @@
-# Peeler Integration
+# Archive (peeler) Integration
 
-This document describes the **peeler** library integration in the Granny Smith emulator, which provides support for unpacking classic Macintosh archive formats.
+This document describes how the emulator unpacks classic Macintosh
+archive formats. The underlying library is **peeler**; the
+emulator-facing surface is the `archive` namespace on the object tree.
 
-## 1. Overview
+## Overview
 
-**peeler** is a modern, portable C99 library for peeling apart classic Macintosh archive formats such as StuffIt (.sit), BinHex (.hqx), Compact Pro (.cpt), and MacBinary (.bin). It is integrated as a git submodule and provides a `peeler` shell command for extracting archives within the emulator's MEMFS environment.
+**peeler** is a portable C99 library for reading classic Macintosh
+archive formats: StuffIt (`.sit`, versions 1.x–5.x), BinHex 4.0
+(`.hqx`), Compact Pro (`.cpt`), and MacBinary (`.bin`). It auto-
+detects nested formats so a `.sit.hqx` file unpacks in a single call.
 
-The library is developed independently at https://github.com/pappadf/peeler and integrated into this project to enable users to extract vintage Macintosh software and data files directly within the emulated environment.
+The library is developed independently at
+<https://github.com/pappadf/peeler> and integrated as a git submodule.
+The emulator wraps it as `archive` on the object tree so users and
+scripts never see the library name; from their point of view, the
+emulator just knows how to identify and extract Mac archives.
 
-## 2. Architecture
+## Object-model surface
 
-### 2.1. Integration Method
+| Path | Result | Description |
+|------|--------|-------------|
+| `archive.identify(path)` | `V_STRING` — `"sit"` / `"hqx"` / `"cpt"` / `"bin"` / `"sea"`, or empty string when the file isn't a recognised archive | Format probe; doesn't extract |
+| `archive.extract(path, [out_dir])` | `V_BOOL` — `true` on success | Extract every file in the archive to `out_dir` (defaults to the current working directory) |
 
-peeler is integrated using the **separate library build** approach:
+Empty / missing return values follow the predicate-truthy rule: an
+unrecognised file produces an empty string, which scripts can test as
+a falsy `${...}`.
 
-* **Git Submodule:** Located at `third-party/peeler/`, tracks the main branch
-* **Build System:** Source files compiled directly alongside the emulator
-* **Linkage:** Compiled as part of the main WASM module during build
+`archive.identify` and `archive.extract` are reachable everywhere the
+object model is reachable: the interactive shell, headless scripts,
+the JavaScript bridge (`gsEval('archive.identify', [path])`), and the
+inspector UI.
 
-### 2.2. Buffer-Based API
+## Architecture
 
-peeler uses a **buffer-based processing model** where archives are read into memory and extracted in a single pass:
+### Integration
+
+The peeler library is integrated using a **separate library build**:
+
+- **Submodule** at `third-party/peeler/`, tracking the upstream main
+  branch.
+- **Build** — sources compiled directly alongside the emulator, with
+  include paths added in the top-level `Makefile`.
+- **Linkage** — peeler objects link into both the WASM module and the
+  headless binary.
+
+### API
+
+peeler's processing model is buffer-based:
 
 ```
 peel_read_file(path) → peel(src, len, &err) → peel_file_list_t
 ```
 
-The library automatically detects and handles nested formats (e.g. `.sit.hqx`). The extracted result is a flat list of files, each with:
+The library detects nested formats automatically. The result is a flat
+list of files, each with:
 
-* `meta` - File metadata (name, Mac type/creator, Finder flags)
-* `data_fork` - Main file content as a buffer
-* `resource_fork` - Resource fork as a buffer (if present)
+- `meta` — file metadata (name, Mac type/creator, Finder flags)
+- `data_fork` — main file content
+- `resource_fork` — resource fork (when present)
 
-## 3. Shell Integration
+### Wrapper
 
-### 3.1. Command Interface
+The emulator-side wrapper lives at
+[`src/core/storage/archive.c`](../src/core/storage/archive.c). It:
 
-The peeler library is exposed through a shell command registered in `src/core/shell/shell.c`:
+- Owns the `archive` class descriptor and registers the object as a
+  process-singleton from `archive_init` (called by `shell_init`).
+- Implements `archive_identify_file(path)` and
+  `archive_extract_file(path, out_dir)` — small C wrappers over the
+  peeler API that the typed methods bind to.
+- Discards resource forks on extraction. The emulator filesystems
+  don't model resource forks, and the only callers want the data
+  fork (disk images, system files unpacked from `.sit` / `.hqx`).
 
-```
-peeler [-o <dir>] [-v] <archive1> [<archive2> ...]
-```
+## Supported formats
 
-**Options:**
-* `-o <dir>` - Extract files to specified directory (default: current directory)
-* `-v, --verbose` - Enable verbose output showing each extracted file
-* `-p, --probe` - Test format detection without extracting
-* `-h, --help` - Display help message
+- StuffIt archives (`.sit`) — versions 1.x through 5.x
+- BinHex 4.0 (`.hqx`) — ASCII-armored format with CRC validation
+- Compact Pro (`.cpt`) — compressed archive format
+- MacBinary (`.bin`) — file wrapper preserving Mac metadata
+- Self-extracting archives (`.sea`)
 
-**Supported Formats:**
-* StuffIt archives (.sit) - versions 1.x through 5.x
-* BinHex 4.0 (.hqx) - ASCII-armored format with CRC validation
-* Compact Pro (.cpt) - compressed archive format
-* MacBinary (.bin) - file wrapper preserving Mac metadata
+## Build process
 
-### 3.2. Implementation Files
-
-| File                  | Purpose                                           |
-| --------------------- | ------------------------------------------------- |
-| `src/core/shell/peeler_shell.c`  | Shell command implementation and peeler API usage |
-| `src/core/shell/peeler_shell.h`  | Public interface for shell integration            |
-| `third-party/peeler/` | peeler library submodule                          |
-
-The shell integration (`peeler_shell.c`) wraps the peeler library API and provides:
-
-* Command-line parsing compatible with shell tokenizer
-* File extraction to MEMFS with directory creation
-* Progress reporting and error handling
-* Resource fork handling (currently no-op for MEMFS)
-
-## 4. Build Process
-
-### 4.1. Makefile Integration
-
-The `Makefile` includes peeler source files directly:
+The top-level `Makefile` adds the peeler sources directly:
 
 ```makefile
 PEELER_DIR := third-party/peeler
@@ -89,76 +101,75 @@ PEELER_SRC := $(PEELER_DIR)/lib/peeler.c \
               $(PEELER_DIR)/lib/formats/sit15.c
 ```
 
-Include paths are added via `PEELER_INCLUDES = -I$(PEELER_DIR)/include -I$(PEELER_DIR)/lib`.
+Include paths are added via `PEELER_INCLUDES = -I$(PEELER_DIR)/include
+-I$(PEELER_DIR)/lib`. peeler adds minimal overhead to clean builds.
 
-### 4.2. Build Time Impact
+## Usage
 
-Peeler adds minimal overhead to clean builds as it compiles directly with the emulator sources.
-
-## 5. Usage Examples
-
-### 5.1. Extracting a BinHex-encoded StuffIt Archive
+### Interactive shell
 
 ```
-peeler myarchive.sit.hqx
+> archive.identify /tmp/myarchive.sit.hqx
+hqx
+> archive.extract /tmp/myarchive.sit.hqx /tmp/out
+true
 ```
 
-This automatically:
-1. Reads the file into memory
-2. Detects BinHex encoding and nested StuffIt archive
-3. Peels all layers and extracts files
-4. Writes extracted files to current directory
-
-### 5.2. Extracting Multiple Archives to Specific Directory
+### Script form
 
 ```
-mkdir /extracted
-peeler -o /extracted -v archive1.sit archive2.cpt archive3.bin
+${archive.identify("/tmp/myarchive.sit")}
+assert ${archive.extract("/tmp/myarchive.sit", "/tmp/out")}
 ```
 
-### 5.3. Typical Workflow
+### Web drag-and-drop
 
-```
-# Upload archive to MEMFS (via web UI file upload)
-ls
-# Shows: myapp.sit.hqx
+The browser frontend probes dropped files in this order: ZIP via
+JSZip, Mac archive via `archive.identify`, then media-format probes.
+Recognised archives are extracted to a staging directory and their
+contents are re-probed for media. See [`web.md`](web.md) for the full
+upload pipeline.
 
-# Extract archive
-peeler myapp.sit.hqx
-# Output: Extracting: MyApp
-#         Successfully extracted 'myapp.sit.hqx' (1 file)
+## Implementation details
 
-# Verify extraction
-ls
-# Shows: myapp.sit.hqx  MyApp
-```
+### File extraction flow
 
-## 6. Implementation Details
+1. **Read & peel** — `peel_path()` reads the file and peels all layers
+   automatically.
+2. **Iterate files** — walk `peel_file_list_t.files[]`.
+3. **Write output** — write each file's data fork to the destination
+   directory, creating parent directories as needed.
+4. **Cleanup** — `peel_file_list_free()`.
 
-### 6.1. File Extraction Process
-
-The extraction process in `peeler_shell.c` follows this sequence:
-
-1. **Read & Peel:** `peel_path()` reads the file and peels all layers automatically
-2. **Iterate Files:** Loop over `peel_file_list_t.files[]` array
-3. **Write Output:** Write each file's data fork to MEMFS, skip resource forks
-4. **Cleanup:** Free the file list via `peel_file_list_free()`
-
-### 6.2. Mac Metadata Handling
+### Mac metadata handling
 
 Classic Mac files contain:
-* **Data Fork:** Main file content
-* **Resource Fork:** Additional structured data (icons, code, etc.)
-* **Finder Info:** Type/creator codes, flags
 
-In the MEMFS environment:
-* Data forks are written as regular files
-* Resource forks are available but not persisted (not needed for most use cases)
-* Finder metadata is available in `peel_file_meta_t` but not stored (no filesystem support)
+- **Data fork** — main file content
+- **Resource fork** — additional structured data (icons, code, etc.)
+- **Finder info** — type/creator codes, flags
 
-## 7. Updating peeler
+In the emulator's filesystems:
 
-To update to a newer version of peeler:
+- Data forks are written as regular files.
+- Resource forks are discarded (no filesystem support; not needed for
+  the disk-image / boot-floppy use cases that drive most extractions).
+- Finder metadata is available in `peel_file_meta_t` but not stored.
+
+## Error handling
+
+peeler uses explicit error objects:
+
+- `peel_err_t *` — `NULL` means no error.
+- `peel_err_msg(err)` — get human-readable message.
+- `peel_err_free(err)` — free the error object.
+
+The wrapper translates these into method-call failures (`V_BOOL false`
+for `archive.extract`, empty string for `archive.identify`). Detailed
+messages still print to stderr via `fprintf` so scripts get a useful
+trace when a recognised archive fails to unpack.
+
+## Updating peeler
 
 ```bash
 cd third-party/peeler
@@ -170,54 +181,20 @@ git add third-party/peeler
 git commit -m "Update peeler to latest version"
 ```
 
-The submodule tracks specific commits, so updates are explicit and controlled.
+The submodule tracks specific commits, so updates are explicit and
+controlled.
 
-## 8. Development Notes
+## Testing
 
-### 8.1. Error Handling
+Integration coverage lives in `tests/e2e/specs/peeler/peeler.spec.ts`,
+which uploads test archives, calls `archive.identify` /
+`archive.extract` via `gsEval`, and verifies the extracted files
+appear in OPFS. The library itself ships unit tests in
+`third-party/peeler/`.
 
-peeler uses explicit error objects:
-* `peel_err_t *` - NULL means no error
-* `peel_err_msg(err)` - Get human-readable error message
-* `peel_err_free(err)` - Free error object
+## References
 
-The shell integration reports errors via `fprintf(stderr, ...)` which appears in the emulator's console output.
-
-### 8.2. Memory Management
-
-* The library allocates buffers internally
-* Caller frees via `peel_free()` for buffers, `peel_file_list_free()` for file lists
-* No persistent memory caching — each operation is independent
-
-### 8.3. Format Detection
-
-`peel_detect(src, len)` identifies the outermost format without extracting:
-* Returns a short name ("hqx", "bin", "sit", "cpt") or NULL if unknown
-* Used by the `--probe` shell option
-
-## 9. Testing
-
-To test peeler integration:
-
-1. Build project: `make`
-2. Start emulator with test archives in MEMFS
-3. Use shell command: `peeler test.sit`
-4. Verify extracted files: `ls`
-
-End-to-end tests can be added to `tests/e2e/` using Playwright to:
-* Upload test archives
-* Execute peeler commands via shell
-* Verify extracted file presence
-
-## 10. Future Enhancements
-
-Potential improvements:
-* Support for AppleDouble format in MEMFS (store resource forks separately)
-* Progress callbacks for large archives
-* Integration with file upload UI (auto-detect and extract archives)
-* Command completion for archive filenames
-
-## 11. References
-
-* peeler repository: https://github.com/pappadf/peeler
-* peeler documentation: `third-party/peeler/docs/`
+- peeler repository: <https://github.com/pappadf/peeler>
+- peeler documentation: `third-party/peeler/docs/`
+- [`docs/object-model.md`](object-model.md) — the surface
+  `archive.*` participates in.

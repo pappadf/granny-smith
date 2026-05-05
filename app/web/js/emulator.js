@@ -37,21 +37,25 @@ let Module = null;
 let moduleReady = false;
 let isRunningUI = false;
 
-// Shared-heap pointers (resolved after Module init)
-let promptBufPtr = 0;
-let isRunningPtr = 0;
+// Base pointer to the single shared-memory `js_bridge_t` region exposed
+// by the worker. Resolved once at init via Module._get_js_bridge().
+// Layout MUST mirror src/platform/wasm/em.h — bump BRIDGE_VERSION and
+// the offsets below whenever the C struct changes.
+let bridgePtr = 0;
 
-// Shared-heap gs_eval queue pointers (resolved after Module init)
-let gsPathBufPtr = 0;
-let gsArgsBufPtr = 0;
-let gsPendingPtr = 0;
-let gsDonePtr = 0;
-let gsResultPtr = 0;
-let gsEvalBufPtr = 0;
-
-// Buffer sizes mirror em_main.c. Keep in sync there.
-const GS_PATH_BUF_SIZE = 1024;
-const GS_ARGS_BUF_SIZE = 8192;
+const BRIDGE_VERSION = 1;
+const OFF_VERSION     = 0;
+const OFF_SHELL_READY = 4;
+const OFF_IS_RUNNING  = 8;
+const OFF_PENDING     = 12;
+const OFF_DONE        = 16;
+const OFF_RESULT      = 20;
+const OFF_PROMPT      = 24;
+const OFF_PATH        = 280;
+const OFF_ARGS        = 1304;
+const OFF_OUTPUT      = 9496;
+const PATH_SIZE       = 1024;
+const ARGS_SIZE       = 8192;
 
 // Serialization: only one request in flight on the SAB queue at a time.
 let cmdInFlight = false;
@@ -76,8 +80,8 @@ window.__gsAssertionHandler = (info) => {
 
 // Poll the shared-heap running flag and update JS state if it changed.
 function pollRunState() {
-  if (!Module || !isRunningPtr) return;
-  const running = Boolean(Module.HEAP32[isRunningPtr >> 2]);
+  if (!Module || !bridgePtr) return;
+  const running = Boolean(Module.HEAP32[(bridgePtr + OFF_IS_RUNNING) >> 2]);
   if (running !== isRunningUI) {
     isRunningUI = running;
     for (const cb of _runStateCallbacks) cb(running);
@@ -98,16 +102,13 @@ export async function initEmulator(canvas, wasmArgs, printFn) {
     printErr: printFn,
   });
 
-  // Resolve shared-heap pointers into the WASM heap.
-  promptBufPtr = Module._get_prompt_buffer();
-  isRunningPtr = Module._get_is_running_ptr();
-
-  gsPathBufPtr = Module._get_gs_path_buffer();
-  gsArgsBufPtr = Module._get_gs_args_buffer();
-  gsPendingPtr = Module._get_gs_pending_ptr();
-  gsDonePtr = Module._get_gs_done_ptr();
-  gsResultPtr = Module._get_gs_result_ptr();
-  gsEvalBufPtr = Module._get_gs_eval_buffer();
+  // Resolve the single bridge pointer and verify the layout version
+  // matches what we were compiled against.
+  bridgePtr = Module._get_js_bridge();
+  const v = Module.HEAP32[(bridgePtr + OFF_VERSION) >> 2];
+  if (v !== BRIDGE_VERSION) {
+    throw new Error(`js_bridge version mismatch: C=${v}, JS=${BRIDGE_VERSION}`);
+  }
 
   // Expose Module on window for test shim access to FS
   window.__Module = Module;
@@ -137,12 +138,12 @@ export function getModule() { return Module; }
 export function isModuleReady() { return moduleReady; }
 export function isRunning() { return isRunningUI; }
 
-// Get the current prompt string from the shared heap buffer.
-// The worker updates g_prompt_buffer after each command in shell_poll().
+// Get the current prompt string from the bridge. The worker updates
+// it after each free-form command in shell_poll().
 export function getRuntimePrompt() {
-  if (!Module || !promptBufPtr) return null;
+  if (!Module || !bridgePtr) return null;
   try {
-    const value = Module.UTF8ToString(promptBufPtr);
+    const value = Module.UTF8ToString(bridgePtr + OFF_PROMPT);
     return (value && value.length) ? value : null;
   } catch (err) {
     return null;
@@ -179,15 +180,15 @@ export async function gsEvalLine(line) {
   }
   cmdInFlight = true;
   try {
-    Module.stringToUTF8(text, gsPathBufPtr, GS_PATH_BUF_SIZE);
-    gsArgsBufPtr && (Module.HEAPU8[gsArgsBufPtr] = 0); // clear stale args
-    Module.HEAP32[gsDonePtr >> 2] = 0;
-    Module.HEAP32[gsPendingPtr >> 2] = 4; // kind=4 → free-form line
+    Module.stringToUTF8(text, bridgePtr + OFF_PATH, PATH_SIZE);
+    Module.HEAPU8[bridgePtr + OFF_ARGS] = 0; // clear stale args
+    Module.HEAP32[(bridgePtr + OFF_DONE) >> 2] = 0;
+    Module.HEAP32[(bridgePtr + OFF_PENDING) >> 2] = 4; // kind=4 → free-form line
 
     await new Promise(resolve => {
       function check() {
-        if (Module.HEAP32[gsDonePtr >> 2]) {
-          Module.HEAP32[gsDonePtr >> 2] = 0;
+        if (Module.HEAP32[(bridgePtr + OFF_DONE) >> 2]) {
+          Module.HEAP32[(bridgePtr + OFF_DONE) >> 2] = 0;
           resolve();
         } else {
           setTimeout(check, 1);
@@ -195,7 +196,7 @@ export async function gsEvalLine(line) {
       }
       check();
     });
-    return Module.HEAP32[gsResultPtr >> 2];
+    return Module.HEAP32[(bridgePtr + OFF_RESULT) >> 2];
   } finally {
     cmdInFlight = false;
     const waiters = cmdWaiters.splice(0);
@@ -203,45 +204,37 @@ export async function gsEvalLine(line) {
   }
 }
 
-// Send shell interrupt (Ctrl-C) to the emulator.
-// shell_interrupt just sets a flag — safe to call from any thread.
+// Stop the running scheduler (Ctrl-C / Pause). Routes through the
+// object-model channel like every other JS→C call; shell_poll drains
+// the SAB queue every tick regardless of CPU run-state, so this
+// reaches scheduler_stop even mid-emulation.
 export async function shellInterrupt() {
-  if (!Module) return;
-  Module._shell_interrupt();
+  if (!Module || !moduleReady) return;
+  await gsEval('scheduler.stop');
 }
 
-// Tab completion: route through the gs_eval SAB queue with kind=3 so the
-// completion runs on the worker pthread (where the cmd registry and
-// object tree live). Returns an array of matches, or [] / null on error.
-let completionBufPtr = 0;
-
+// Tab completion: kind=3 on the bridge. Cursor pos goes in `args` as
+// decimal text; JSON match list comes back in `output`.
 export async function tabComplete(line, cursorPos) {
   if (!Module || !moduleReady) return null;
 
-  if (!completionBufPtr) {
-    try { completionBufPtr = Module._get_completion_buffer(); } catch (e) { return null; }
-  }
-  if (!completionBufPtr) return null;
-
   await waitForShellReady();
 
-  // Same in-flight lock as gsEval / gsEvalLine: shell_poll drains
-  // the SAB queue and only one kind may be set at a time.
   while (cmdInFlight) {
     await new Promise(r => cmdWaiters.push(r));
   }
   cmdInFlight = true;
   try {
-    Module.stringToUTF8(String(line || ''), gsPathBufPtr, GS_PATH_BUF_SIZE);
-    Module.stringToUTF8(String(cursorPos | 0), gsArgsBufPtr, GS_ARGS_BUF_SIZE);
+    Module.stringToUTF8(String(line || ''), bridgePtr + OFF_PATH, PATH_SIZE);
+    Module.stringToUTF8(String(cursorPos | 0), bridgePtr + OFF_ARGS, ARGS_SIZE);
 
-    Module.HEAP32[gsDonePtr >> 2] = 0;
-    Module.HEAP32[gsPendingPtr >> 2] = 3; // kind=3 → tab complete
+    Module.HEAP32[(bridgePtr + OFF_DONE) >> 2] = 0;
+    Module.HEAP32[(bridgePtr + OFF_PENDING) >> 2] = 3; // kind=3 → tab complete
 
     await new Promise(resolve => {
       function check() {
-        if (Module.HEAP32[gsDonePtr >> 2]) {
-          Module.HEAP32[gsDonePtr >> 2] = 0;
+        if (Module.HEAP32[(bridgePtr + OFF_DONE) >> 2]) {
+          Module.HEAP32[(bridgePtr + OFF_DONE) >> 2] = 0;
           resolve();
         } else {
           setTimeout(check, 1);
@@ -250,10 +243,10 @@ export async function tabComplete(line, cursorPos) {
       check();
     });
 
-    const count = Module.HEAP32[gsResultPtr >> 2];
+    const count = Module.HEAP32[(bridgePtr + OFF_RESULT) >> 2];
     if (count === 0) return [];
 
-    const jsonStr = Module.UTF8ToString(completionBufPtr);
+    const jsonStr = Module.UTF8ToString(bridgePtr + OFF_OUTPUT);
     try { return JSON.parse(jsonStr); } catch (e) { return null; }
   } catch (e) {
     return null;
@@ -274,17 +267,17 @@ export async function tabComplete(line, cursorPos) {
 //   gsInspect(path)         → same JSON shape as gsEval; recursive
 //                             subtree expansion is in progress (M11+)
 //
-// args may be undefined / null / an array of primitive values (number,
-// string, boolean, null). The C side parses the JSON-encoded array.
+// args may be undefined / null / an array of primitive values. The C
+// side parses the JSON-encoded array.
 //
-// Routes through the SAB-backed gs_eval queue (g_gs_*) so the body runs
-// on the worker pthread that owns scheduler / device / OPFS state. Do
-// NOT add a direct `Module.ccall('em_gs_eval', ...)` — see the
-// threading-model comment at the top of this file for why.
+// Every JS→C call routes through the bridge so the body runs on the
+// worker pthread that owns scheduler / device / OPFS state. Do NOT add
+// a direct ccall — see the threading-model comment at the top of this
+// file for why.
 
-function readGsEvalResult() {
-  if (!gsEvalBufPtr) return null;
-  const jsonStr = Module.UTF8ToString(gsEvalBufPtr);
+function readBridgeOutput() {
+  if (!bridgePtr) return null;
+  const jsonStr = Module.UTF8ToString(bridgePtr + OFF_OUTPUT);
   if (!jsonStr) return null;
   try { return JSON.parse(jsonStr); } catch (e) { return jsonStr; }
 }
@@ -292,42 +285,37 @@ function readGsEvalResult() {
 // Wait for the worker's shell_init() to complete before issuing the
 // first gs_eval request. With PROXY_TO_PTHREAD, createModule resolves
 // while the worker is still inside main() / shell_init() — setting
-// g_gs_pending during that window would have shell_poll dispatch
-// against the empty default root class and return {error: "..."}. The
-// shared-memory flag is flipped to 1 at the end of shell_init().
-let shellReadyPtr = 0;
+// `pending` during that window would have shell_poll dispatch against
+// the empty default root class. main() flips bridge.shell_ready to 1
+// once shell_init() returns.
 async function waitForShellReady() {
-  if (!shellReadyPtr) {
-    try { shellReadyPtr = Module._get_shell_ready_ptr(); } catch (e) { return; }
-  }
-  if (!shellReadyPtr) return;
-  if (Module.HEAP32[shellReadyPtr >> 2]) return;
+  if (!bridgePtr) return;
+  const offset = (bridgePtr + OFF_SHELL_READY) >> 2;
+  if (Module.HEAP32[offset]) return;
   for (let i = 0; i < 200; i++) {
-    if (Module.HEAP32[shellReadyPtr >> 2]) return;
+    if (Module.HEAP32[offset]) return;
     await new Promise((r) => setTimeout(r, 10));
   }
 }
 
-// Drive a single gs_eval / gs_inspect request through the SAB queue.
+// Drive a single gs_eval / gs_inspect request through the bridge.
 // kind: 1 = gs_eval (uses both path + argsJson), 2 = gs_inspect (path only).
 async function executeGsRequest(path, argsJson, kind) {
-  // Same in-flight lock as gsEvalLine / tabComplete: shell_poll
-  // drains the SAB queue and only one kind may be set at a time.
   while (cmdInFlight) {
     await new Promise(r => cmdWaiters.push(r));
   }
   cmdInFlight = true;
   try {
-    Module.stringToUTF8(String(path || ''), gsPathBufPtr, GS_PATH_BUF_SIZE);
-    Module.stringToUTF8(argsJson || '', gsArgsBufPtr, GS_ARGS_BUF_SIZE);
+    Module.stringToUTF8(String(path || ''), bridgePtr + OFF_PATH, PATH_SIZE);
+    Module.stringToUTF8(argsJson || '', bridgePtr + OFF_ARGS, ARGS_SIZE);
 
-    Module.HEAP32[gsDonePtr >> 2] = 0;
-    Module.HEAP32[gsPendingPtr >> 2] = kind;
+    Module.HEAP32[(bridgePtr + OFF_DONE) >> 2] = 0;
+    Module.HEAP32[(bridgePtr + OFF_PENDING) >> 2] = kind;
 
     await new Promise(resolve => {
       function check() {
-        if (Module.HEAP32[gsDonePtr >> 2]) {
-          Module.HEAP32[gsDonePtr >> 2] = 0;
+        if (Module.HEAP32[(bridgePtr + OFF_DONE) >> 2]) {
+          Module.HEAP32[(bridgePtr + OFF_DONE) >> 2] = 0;
           resolve();
         } else {
           setTimeout(check, 1);
@@ -336,7 +324,7 @@ async function executeGsRequest(path, argsJson, kind) {
       check();
     });
 
-    return readGsEvalResult();
+    return readBridgeOutput();
   } finally {
     cmdInFlight = false;
     const waiters = cmdWaiters.splice(0);

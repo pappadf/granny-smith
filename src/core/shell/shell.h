@@ -30,14 +30,6 @@ uint64_t shell_dispatch(char *line);
 
 int shell_init(void);
 
-void shell_interrupt(void);
-
-// Borrowed pointer into the shared-memory shell-initialized flag.
-// JS uses this to gate gsEval calls during the boot window, where
-// ccall can otherwise fire before the worker has finished shell_init()
-// and seen root_install_class().
-volatile int32_t *gs_shell_ready_ptr(void);
-
 // === Public command primitives (used by the typed object-model bridge) ===
 
 // `cp` core: copy `src` to `dst`. Set `recursive` for directory copies.

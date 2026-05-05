@@ -46,12 +46,49 @@ void em_audio_play_8bit_pwm(uint8_t *samples, int num_samples, unsigned int volu
 // Execute one tick of the emulator main loop
 void em_main_tick(void);
 
-// Interrupt the emulator (stop execution)
-void em_main_interrupt(void);
-
 // === Diagnostics ===
 
 // Print host callstack for debugging
 void em_print_host_callstack(void);
+
+// === JS Bridge ===
+//
+// Single shared-memory region that carries every JS↔C interaction.
+// JS resolves the base pointer once via `_get_js_bridge()` and reads /
+// writes fields by offset through `Module.HEAP32` / `Module.HEAPU8`.
+// Layout is mirrored in `app/web/js/emulator.js`; bump JS_BRIDGE_VERSION
+// whenever fields are added, reordered, or resized.
+//
+// Request protocol (all four kinds use this one slot, serialised by the
+// JS-side `cmdInFlight` lock):
+//
+//   pending = 1 → gs_eval(path, args)        — JSON result in `output`
+//   pending = 2 → gs_inspect(path)           — JSON result in `output`
+//   pending = 3 → tab_complete(line, pos)    — JSON match list in `output`,
+//                                              cursor pos as decimal text in `args`
+//   pending = 4 → free-form shell line       — int result in `result`,
+//                                              stdout/stderr to terminal
+//
+// JS clears `done`, fills `path` / `args`, writes `pending`, and polls
+// `done`. `shell_poll()` (worker pthread, every tick) drains the slot.
+
+#define JS_BRIDGE_VERSION     1
+#define JS_BRIDGE_PROMPT_SIZE 256
+#define JS_BRIDGE_PATH_SIZE   1024
+#define JS_BRIDGE_ARGS_SIZE   8192
+#define JS_BRIDGE_OUTPUT_SIZE 16384
+
+typedef struct {
+    int32_t version; // offset 0;  must equal JS_BRIDGE_VERSION
+    volatile int32_t shell_ready; // offset 4;  1 once shell_init has returned
+    volatile int32_t is_running; // offset 8;  scheduler running flag (worker → JS)
+    volatile int32_t pending; // offset 12; request kind (1..4); 0 = idle
+    volatile int32_t done; // offset 16; flipped to 1 by worker on completion
+    volatile int32_t result; // offset 20; integer result code
+    char prompt[JS_BRIDGE_PROMPT_SIZE]; // offset 24
+    char path[JS_BRIDGE_PATH_SIZE]; // offset 280
+    char args[JS_BRIDGE_ARGS_SIZE]; // offset 1304
+    char output[JS_BRIDGE_OUTPUT_SIZE]; // offset 9496
+} js_bridge_t; // total: 25880 bytes
 
 #endif // EM_H

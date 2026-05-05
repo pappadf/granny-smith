@@ -158,7 +158,7 @@ LDFLAGS := $(MODE_CFLAGS) \
            -sOFFSCREEN_FRAMEBUFFER \
            -sOFFSCREENCANVASES_TO_PTHREAD='\#screen' \
            -s EXPORTED_RUNTIME_METHODS=['FS','cwrap','ccall','stringToUTF8','UTF8ToString','HEAP32','HEAPU8'] \
-           -s EXPORTED_FUNCTIONS="['_main','_shell_init','_shell_interrupt','_background_checkpoint_from_js','_get_prompt_buffer','_get_is_running_ptr','_get_completion_buffer','_get_gs_eval_buffer','_get_gs_path_buffer','_get_gs_args_buffer','_get_gs_pending_ptr','_get_gs_done_ptr','_get_gs_result_ptr','_get_shell_ready_ptr']" \
+           -s EXPORTED_FUNCTIONS="['_main','_get_js_bridge']" \
            -s STACK_SIZE=5MB \
            -s ALLOW_MEMORY_GROWTH=1 \
            -s USE_WEBGL2=1

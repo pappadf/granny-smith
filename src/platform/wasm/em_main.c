@@ -450,102 +450,49 @@ void print_prompt(void) {}
 // drains the queue and writes the result. ccall on `_em_*` exports is
 // forbidden.
 //
-// SAB queue (`g_gs_*`) — single typed bridge.
-//   g_gs_pending = 1 → gs_eval(path, args_json)         result JSON in g_gs_eval_buffer
-//   g_gs_pending = 2 → gs_inspect(path)                 result JSON in g_gs_eval_buffer
-//   g_gs_pending = 3 → tab_complete(line, cursor_pos)   match list in g_completion_buffer
-//   g_gs_pending = 4 → free-form shell line             integer in g_gs_result, output to stdout/stderr
-//   For kind=3, the cursor position is passed as decimal text in
-//   g_gs_args_buffer; for kind=4, the line is in g_gs_path_buffer.
-//
-// JS-side serialization (cmdInFlight in emulator.js) ensures only one
-// request is in flight at a time.
+// The single shared-memory region. Layout in em.h, mirrored in
+// emulator.js. Buffer sizes (path, args, output) are tuned for current
+// peak usage: longest paths are checkpoint paths under /opfs, args
+// carry JSON arrays of primitive values, output carries gs_inspect
+// dumps which dominate.
+static js_bridge_t g_bridge = {.version = JS_BRIDGE_VERSION};
 
-#define GS_PATH_BUF_SIZE    1024
-#define GS_ARGS_BUF_SIZE    8192
-#define GS_EVAL_BUF_SIZE    16384
-#define COMPLETION_BUF_SIZE 4096
-static char g_gs_path_buffer[GS_PATH_BUF_SIZE];
-static char g_gs_args_buffer[GS_ARGS_BUF_SIZE];
-static char g_gs_eval_buffer[GS_EVAL_BUF_SIZE];
-static char g_completion_buffer[COMPLETION_BUF_SIZE];
-static volatile int32_t g_gs_pending = 0;
-static volatile int32_t g_gs_done = 0;
-static volatile int32_t g_gs_result = 0;
-
-// Shared prompt buffer — updated by the worker after each command so JS
-// on the main thread can read the current prompt without a cross-thread call.
-#define PROMPT_BUF_SIZE 256
-static char g_prompt_buffer[PROMPT_BUF_SIZE];
-
-// Shared running-state flag — updated every tick by the worker so JS can
-// poll it without a cross-thread EM_ASM callback.
-static volatile int32_t g_shared_is_running = 0;
-
-// Exported getters so JS can find these addresses in the shared heap.
-EMSCRIPTEN_KEEPALIVE char *get_prompt_buffer(void) {
-    return g_prompt_buffer;
-}
-EMSCRIPTEN_KEEPALIVE volatile int32_t *get_is_running_ptr(void) {
-    return &g_shared_is_running;
-}
-EMSCRIPTEN_KEEPALIVE volatile int32_t *get_shell_ready_ptr(void) {
-    return gs_shell_ready_ptr();
+EMSCRIPTEN_KEEPALIVE js_bridge_t *get_js_bridge(void) {
+    return &g_bridge;
 }
 
-// gs_eval queue accessors (see "Threading model" comment block above for
-// why this exists — JS must NOT call ccall on _em_gs_eval directly).
-EMSCRIPTEN_KEEPALIVE char *get_gs_path_buffer(void) {
-    return g_gs_path_buffer;
-}
-EMSCRIPTEN_KEEPALIVE char *get_gs_args_buffer(void) {
-    return g_gs_args_buffer;
-}
-EMSCRIPTEN_KEEPALIVE volatile int32_t *get_gs_pending_ptr(void) {
-    return &g_gs_pending;
-}
-EMSCRIPTEN_KEEPALIVE volatile int32_t *get_gs_done_ptr(void) {
-    return &g_gs_done;
-}
-EMSCRIPTEN_KEEPALIVE volatile int32_t *get_gs_result_ptr(void) {
-    return &g_gs_result;
-}
-
-// Forward declaration: defined alongside the completion buffer below.
 static int dispatch_tab_complete(const char *line, int cursor_pos);
 
 int shell_poll(void) {
-    // The single SAB queue (`g_gs_*`) carries every JS → worker
-    // request. `kind` selects the dispatch:
+    // Drain the bridge slot. `pending` selects the dispatch:
     //   1 = gs_eval(path, args)        — typed object-model call
     //   2 = gs_inspect(path)           — recursive JSON dump
     //   3 = tab complete (line, pos)   — completion engine
     //   4 = free-form shell line       — terminal onSubmit
-    if (!g_gs_pending)
+    if (!g_bridge.pending)
         return 0;
 
-    int kind = g_gs_pending;
+    int kind = g_bridge.pending;
     int rc;
     if (kind == 2) {
-        rc = gs_inspect(g_gs_path_buffer, g_gs_eval_buffer, GS_EVAL_BUF_SIZE);
+        rc = gs_inspect(g_bridge.path, g_bridge.output, JS_BRIDGE_OUTPUT_SIZE);
     } else if (kind == 3) {
-        // Tab complete: line in g_gs_path_buffer, cursor pos in
-        // g_gs_args_buffer (decimal text), JSON result in
-        // g_completion_buffer, match count returned.
-        int cursor_pos = atoi(g_gs_args_buffer);
-        rc = dispatch_tab_complete(g_gs_path_buffer, cursor_pos);
+        // Tab complete: line in `path`, cursor pos as decimal text in
+        // `args`, JSON match list written to `output`, count returned.
+        int cursor_pos = atoi(g_bridge.args);
+        rc = dispatch_tab_complete(g_bridge.path, cursor_pos);
     } else if (kind == 4) {
         // Free-form line — used by the xterm.js terminal. Output goes
-        // straight to stdout/stderr (the WASM Module's printFn already
-        // routes those into the terminal); the integer result lands in
-        // g_gs_result so the caller can branch on success/failure.
-        size_t len = strnlen(g_gs_path_buffer, GS_PATH_BUF_SIZE - 1);
-        while (len > 0 && (g_gs_path_buffer[len - 1] == '\n' || g_gs_path_buffer[len - 1] == '\r'))
-            g_gs_path_buffer[--len] = '\0';
+        // straight to stdout/stderr (the WASM Module's printFn routes
+        // those into the terminal); the integer result lands in
+        // `result` so the caller can branch on success/failure.
+        size_t len = strnlen(g_bridge.path, JS_BRIDGE_PATH_SIZE - 1);
+        while (len > 0 && (g_bridge.path[len - 1] == '\n' || g_bridge.path[len - 1] == '\r'))
+            g_bridge.path[--len] = '\0';
         struct cmd_result res;
         memset(&res, 0, sizeof(res));
-        dispatch_command(g_gs_path_buffer, &res);
-        build_prompt_text(g_prompt_buffer, PROMPT_BUF_SIZE);
+        dispatch_command(g_bridge.path, &res);
+        build_prompt_text(g_bridge.prompt, JS_BRIDGE_PROMPT_SIZE);
         if (res.type == RES_INT)
             rc = (int)res.as_int;
         else if (res.type == RES_BOOL)
@@ -554,56 +501,31 @@ int shell_poll(void) {
             rc = -1;
         else
             rc = 0;
-        g_gs_eval_buffer[0] = '\0';
+        g_bridge.output[0] = '\0';
     } else {
-        const char *args = (g_gs_args_buffer[0] != '\0') ? g_gs_args_buffer : NULL;
-        rc = gs_eval(g_gs_path_buffer, args, g_gs_eval_buffer, GS_EVAL_BUF_SIZE);
+        const char *args = (g_bridge.args[0] != '\0') ? g_bridge.args : NULL;
+        rc = gs_eval(g_bridge.path, args, g_bridge.output, JS_BRIDGE_OUTPUT_SIZE);
     }
-    g_gs_result = rc;
-    g_gs_pending = 0;
-    g_gs_done = 1;
+    g_bridge.result = rc;
+    g_bridge.pending = 0;
+    g_bridge.done = 1;
     return 1;
 }
 
-EMSCRIPTEN_KEEPALIVE char *get_completion_buffer(void) {
-    return g_completion_buffer;
-}
-
-// ============================================================================
-// Object-model bridge result buffer
-// ============================================================================
-// (The actual gs_eval queue state and processing live alongside the cmd
-// queue further up — see the "Threading model" comment block. There used
-// to be `em_gs_eval` / `em_gs_inspect` exports JS called via ccall; they
-// were removed because ccall on those from the main thread does NOT
-// proxy to the worker. JS now writes (path, args_json) into
-// g_gs_path_buffer / g_gs_args_buffer, sets g_gs_pending, and the
-// worker's shell_poll() runs gs_eval there.)
-
-EMSCRIPTEN_KEEPALIVE char *get_gs_eval_buffer(void) {
-    return g_gs_eval_buffer;
-}
-
-// Run tab completion on the worker. Invoked by shell_poll when JS sets
-// g_gs_pending = 3 — see the queue protocol comment near the cmd queue
-// definition above. (Originally exported as `em_tab_complete` callable
-// via Module.ccall; that path was removed for the same threading
-// reason as em_gs_eval.)
 static int dispatch_tab_complete(const char *line, int cursor_pos) {
     struct completion comp;
     memset(&comp, 0, sizeof(comp));
 
     shell_tab_complete(line, cursor_pos, &comp);
 
-    // Serialize completions as JSON array
     int off = 0;
-    off += snprintf(g_completion_buffer + off, COMPLETION_BUF_SIZE - off, "[");
-    for (int i = 0; i < comp.count && off < COMPLETION_BUF_SIZE - 10; i++) {
+    off += snprintf(g_bridge.output + off, JS_BRIDGE_OUTPUT_SIZE - off, "[");
+    for (int i = 0; i < comp.count && off < (int)JS_BRIDGE_OUTPUT_SIZE - 10; i++) {
         if (i > 0)
-            off += snprintf(g_completion_buffer + off, COMPLETION_BUF_SIZE - off, ",");
-        off += snprintf(g_completion_buffer + off, COMPLETION_BUF_SIZE - off, "\"%s\"", comp.items[i]);
+            off += snprintf(g_bridge.output + off, JS_BRIDGE_OUTPUT_SIZE - off, ",");
+        off += snprintf(g_bridge.output + off, JS_BRIDGE_OUTPUT_SIZE - off, "\"%s\"", comp.items[i]);
     }
-    snprintf(g_completion_buffer + off, COMPLETION_BUF_SIZE - off, "]");
+    snprintf(g_bridge.output + off, JS_BRIDGE_OUTPUT_SIZE - off, "]");
 
     return comp.count;
 }
@@ -681,7 +603,7 @@ void em_main_tick(void) {
     shell_poll();
 
     // Update shared running-state flag (read by JS via HEAP32)
-    g_shared_is_running = (sched && scheduler_is_running(sched)) ? 1 : 0;
+    g_bridge.is_running = (sched && scheduler_is_running(sched)) ? 1 : 0;
 }
 
 // Exposed tick wrapper for Emscripten main loop
@@ -698,25 +620,15 @@ static void print_usage(const char *program_name) {
     printf("  --help           Display this help message\n");
 }
 
-// Signal handler
-static volatile sig_atomic_t got_sigint = 0;
-
+// SIGINT handler — stops the scheduler so a real Ctrl-C in the headless
+// driver, or any other process-level signal, halts emulation cleanly.
+// JS pauses the emulator via gsEval('scheduler.stop'), which routes
+// through the object-model channel like every other JS→C call.
 void sigint_handler(int sig) {
     (void)sig;
-    got_sigint = 1;
     scheduler_t *sched = system_scheduler();
     if (sched)
         scheduler_stop(sched);
-}
-
-// Interrupt from JS
-EMSCRIPTEN_KEEPALIVE void shell_interrupt(void) {
-    sigint_handler(SIGINT);
-}
-
-// Public interrupt wrapper
-void em_main_interrupt(void) {
-    shell_interrupt();
 }
 
 // ============================================================================
@@ -979,11 +891,6 @@ static void maybe_request_background_checkpoint(const char *reason, bool rate_li
     }
 }
 
-// Checkpoint from JS callback (exported for pagehide/visibility hooks)
-EMSCRIPTEN_KEEPALIVE void background_checkpoint_from_js(void) {
-    maybe_request_background_checkpoint("pagehide", true);
-}
-
 // Visibility change callback
 static EM_BOOL background_visibility_callback(int eventType, const EmscriptenVisibilityChangeEvent *event,
                                               void *userData) {
@@ -1150,6 +1057,11 @@ int main(int argc, char *argv[]) {
 
     shell_init();
     setup_init();
+
+    // Bridge is open for business. JS gates its first gsEval on this
+    // flag so requests issued during the boot window don't dispatch
+    // against the empty default root class.
+    g_bridge.shell_ready = 1;
 
     // Deferred machine instantiation: global_emulator stays NULL until a ROM
     // is loaded via the `rom load` command, which identifies the machine type

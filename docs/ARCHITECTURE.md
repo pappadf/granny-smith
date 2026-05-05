@@ -80,7 +80,8 @@ Key subsystems (modules) include:
 - **SCSI subsystem** (`scsi`) — SCSI bus and device emulation
 - **Disk image handling** (`image`) — Disk image management and storage backends
 - **AppleTalk integration** (`appletalk`) — Networking and AppleShare support
-- **Shell and CLI** (`shell`) — Command framework, dispatch, tab completion, and scripting
+- **Object model** (`object`) — Typed substrate (classes, members, nodes, value type, path resolver, expression interpolator, alias table) used by the shell, JS bridge, scripts, and the inspector UI
+- **Shell and CLI** (`shell`) — Line tokeniser, path-form dispatcher, tab completion, scripting; sits on top of the object model
 - **Debugger** (`debug`, `debug_mac`) — Debugging and diagnostics tools
 
 Each module is responsible for its own initialization, teardown, and (where
@@ -103,19 +104,24 @@ consistent pattern to maximize encapsulation, maintainability, and testability:
   - Constructors may accept dependencies (such as pointers to other modules)
     and, if supported, a `checkpoint_t` for state restoration.
 
-- **Command registration:**
-  - Module-specific shell commands are registered within the module’s
-    constructor.
-  - Commands with declarative argument specs, subcommands, and aliases use
-    `register_command()` with a `cmd_reg` struct.
-  - Simple commands (classic `argc`/`argv` signature) use `register_cmd()`
-    as a convenience wrapper.
-  - Both forms register into a single unified command registry. The
-    dispatcher handles argument parsing, `$`-prefix symbol resolution, and
-    structured result generation automatically for `register_command()`
-    commands. Simple commands are wrapped transparently.
-  - Commands that span multiple modules are registered centrally in `system.c`
-    to avoid cross-module coupling.
+- **Object-model class registration:**
+  - Module-specific operations are exposed through a `class_desc_t`
+    declared alongside the module's other code. The class names the
+    path segment (`cpu`, `floppy`, `scsi`, …) and lists its members:
+    typed attributes (`M_ATTR`), methods (`M_METHOD`), and child
+    objects (`M_CHILD`, named or indexed).
+  - The class is attached to the object root by the module's `_init`
+    function (cfg-scoped subsystems) or by a dedicated
+    `<module>_class_register` called from `shell_init`
+    (process-singletons that don't need per-machine state).
+  - Built-in `$reg` aliases that the module owns are registered in the
+    same `_init` (`alias_register_builtin`).
+  - The shell, the JavaScript / WASM bridge, scripts, tab completion,
+    and the inspector UI all walk the same tree, so a new class is
+    visible everywhere as soon as it's attached. There is no separate
+    "command registry" or "JS API" layer to maintain in lock-step.
+  - See [`docs/object-model.md`](object-model.md) for the substrate
+    and the conventions modules follow when adding a class.
 
 - **Checkpointing (optional):**
   - Modules that support state serialization implement
@@ -125,44 +131,42 @@ consistent pattern to maximize encapsulation, maintainability, and testability:
     (plain old data) regions, serializing any dynamic buffers separately.
   -
 
-### Shell Command Framework
+### Object model and shell
 
-The emulator exposes its functionality through a unified shell command framework
-implemented in `src/core/shell/`. Commands follow GDB/LLDB naming conventions
-and support declarative argument specifications, `$`-prefix symbol resolution,
-structured results, and tab completion.
+Every emulator subsystem is exposed through a single typed tree rooted
+at `emu`. Top-level paths are the subsystem names (`cpu`, `memory`,
+`scc`, `via1`/`via2`, `rtc`, `scsi`, `floppy`, `sound`, `storage`,
+`appletalk`, `mouse`, `keyboard`, `screen`, `debug`, `archive`,
+`rom`, `vrom`, `machine`, `checkpoint`, `scheduler`, …). Each
+subsystem's class lives next to its other code and self-registers via
+`<module>_init`.
 
-**Command types:** Commands use one of two handler signatures:
+Four caller surfaces walk that tree:
 
-- **Full handlers** (`cmd_fn`) receive a `cmd_context` with parsed, typed
-  arguments and write to `cmd_result`. These support declarative arg specs,
-  subcommands with aliases, and `$`-prefix symbol resolution (registers and
-  Mac globals).
-- **Simple handlers** (`cmd_fn_simple`) use the classic `(int argc, char *argv[])
-  → uint64_t` signature. They are wrapped transparently by the dispatcher.
+- **Interactive shell** (terminal): `src/core/shell/` tokenises the
+  line and translates the path forms (`path` / `path = value` /
+  `path arg` / `path(args)`) to `node_get` / `node_set` / `node_call`.
+- **Headless scripts**: same dispatcher, reading from a script file
+  instead of the terminal. Integration tests in `tests/integration/`
+  are scripts.
+- **JavaScript / WASM bridge**: `gs_eval(path, args_json, out, size)`
+  resolves the same path, JSON-encodes the result, and returns to JS.
+  The web frontend calls this as `gsEval(path, args)` via the SAB
+  queue (`PROXY_TO_PTHREAD` requires worker-thread dispatch).
+- **Inspector UI**: walks `objects()` / `attributes()` / `methods()` /
+  `help()` to render the live tree.
 
-Both types register into the same command registry and are dispatched uniformly.
+There is no separate command framework, no parallel JS API. Adding a
+new operation is one act — declare a member on the right class — and
+every caller sees it.
 
-**Key framework components** (`src/core/shell/`):
+See [`docs/object-model.md`](object-model.md) for the substrate, the
+path forms in detail, the lifecycle invariants (process-singleton vs.
+cfg-scoped), and the recipe for adding a new class.
 
-- `cmd_types.h` — All type definitions: `arg_spec`, `cmd_context`, `cmd_result`,
-  `cmd_reg`, `subcmd_spec`, `completion`
-- `cmd_parse.c` — Argument parser: tokenized argv → typed `arg_value[]` using
-  `arg_spec` declarations, with `$`-prefix symbol resolution
-- `cmd_symbol.c` — Unified symbol resolver for CPU registers (D0–D7, A0–A7, PC,
-  SR, flags), FPU registers, MMU registers, and 471 Mac low-memory globals
-- `cmd_io.c` — I/O stream routing: interactive mode passes through to
-  stdout/stderr; programmatic mode captures into buffers
-- `cmd_complete.c` — Metadata-driven tab completion engine
-- `cmd_json.c` — JSON serializer for `cmd_result` (used by the WASM bridge)
-
-**Result types:** Commands return structured results (`cmd_result`) with a type
-tag (`RES_OK`, `RES_INT`, `RES_STR`, `RES_BOOL`, `RES_ERR`). The WASM bridge
-serializes these as JSON for JavaScript callers via `runCommandJSON()`.
-
-**Command categories:** Commands are organized into: Execution, Breakpoints,
-Inspection, Tracing, Display, Input, Media, Configuration, Filesystem, and
-General.
+See [`docs/shell.md`](shell.md) for the line-input layer specifically:
+tokenisation, `$alias` expansion, `${expr}` interpolation, shell
+variables, scripts, and tab completion.
 
 ### Orchestration and System Wiring
 

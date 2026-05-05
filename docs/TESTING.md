@@ -206,7 +206,7 @@ Chromium. Test suites live under `tests/e2e/specs/`, shared helpers under
 | `debug/` | Shell debugger commands |
 | `drag-drop/` | File drop (ROM, disk, archive files) |
 | `floppy/` | Floppy insert, eject, swap, disk-copy |
-| `peeler/` | Archive extraction (StuffIt, BinHex) |
+| `peeler/` | Mac archive extraction via `archive.identify` / `archive.extract` (StuffIt, BinHex, …) |
 | `scsi/` | SCSI hard disk boot + image baselines |
 | `state/` | Checkpoint save/restore across page reloads |
 | `terminal/` | Terminal panel collapse/expand |
