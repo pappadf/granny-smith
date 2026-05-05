@@ -12,13 +12,13 @@
 #include "cmd_parse.h"
 #include "cmd_types.h"
 #include "expr.h"
-#include "gs_thread.h"
 #include "log.h"
 #include "object.h"
 #include "parse.h"
 #include "shell_var.h"
 #include "value.h"
 #include "vfs.h"
+#include "worker_thread.h"
 
 #include <inttypes.h>
 
@@ -513,7 +513,7 @@ uint64_t shell_dispatch(char *line) {
     if (!shell_initialized)
         return -1;
 
-    gs_thread_assert_worker("shell_dispatch");
+    worker_thread_assert("shell_dispatch");
 
     char *expanded = shell_var_expand(line);
     if (!expanded) {
@@ -610,7 +610,7 @@ int shell_init(void) {
     // Latch the worker pthread for the thread-affinity guard. From now
     // on (under MODE=debug/sanitize) any call into shell_dispatch() or
     // gs_eval() from a different thread aborts with GS_ASSERTF.
-    gs_thread_record_worker();
+    worker_thread_record();
 
     shell_initialized = 1;
     return 0;

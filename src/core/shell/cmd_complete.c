@@ -10,7 +10,7 @@
 
 #include "cmd_complete.h"
 #include "cmd_symbol.h"
-#include "gs_thread.h"
+#include "worker_thread.h"
 
 #include <ctype.h>
 #include <dirent.h>
@@ -502,8 +502,8 @@ static cursor_info_t scan_to_cursor(const char *line, int cursor_pos) {
 // === Public entry point =====================================================
 
 void shell_complete(const char *line, int cursor_pos, struct completion *out) {
-    // Thread-affinity guard (compiled out in release). See gs_thread.h.
-    gs_thread_assert_worker("shell_complete");
+    // Thread-affinity guard (compiled out in release). See worker_thread.h.
+    worker_thread_assert("shell_complete");
 
     if (!line || !out)
         return;

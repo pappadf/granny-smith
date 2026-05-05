@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) pappadf
 
-// See gs_thread.h for the rationale.
+// See worker_thread.h for the rationale.
 
-#include "gs_thread.h"
+#include "worker_thread.h"
 
 #ifdef GS_DEBUG
 
@@ -16,11 +16,11 @@
 // records itself. After that, only that thread is allowed.
 static volatile uintptr_t g_worker_tid = 0;
 
-void gs_thread_record_worker(void) {
+void worker_thread_record(void) {
     g_worker_tid = (uintptr_t)pthread_self();
 }
 
-void gs_thread_assert_worker(const char *where) {
+void worker_thread_assert(const char *where) {
     if (g_worker_tid == 0)
         return; // pre-init: guard is open
     uintptr_t me = (uintptr_t)pthread_self();

@@ -109,7 +109,7 @@ MODE ?= release
 
 ifeq ($(MODE),debug)
 	# -Og avoids excessive WASM locals that can exceed browser limits.
-	# -DGS_DEBUG enables thread-affinity assertions (see gs_thread.h)
+	# -DGS_DEBUG enables thread-affinity assertions (see worker_thread.h)
 	# and any other invariants gated behind that flag.
 	MODE_CFLAGS := -Og -g -DGS_DEBUG
 else ifeq ($(MODE),sanitize)

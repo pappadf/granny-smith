@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) pappadf
 
-// Optional thread-affinity guard for the object-model bridge.
+// Optional thread-affinity guard for the JS → C bridge.
 //
 // Why this header exists
 // ----------------------
@@ -16,15 +16,15 @@
 // dispatch happens inside `shell_poll()` on the worker. A regression
 // that adds a `Module.ccall('em_*', ...)` shortcut from the main JS
 // thread silently violates this invariant. The first such regression
-// (M10c, May 2026) sat in the tree for several commits before
-// surfacing as 60–90 s checkpoint latency in CI.
+// sat in the tree for several commits before surfacing as 60–90 s
+// checkpoint latency in CI.
 //
 // This header provides a one-line invariant check: at the worker's
 // startup we latch `pthread_self()`, and gateway functions
-// (`gs_eval`, `gs_inspect`, `dispatch_command`) call
-// `gs_thread_assert_worker()` to verify they're running there. A
-// future ccall-from-main regression trips a `GS_ASSERT` inside the
-// gateway, the page logs a fatal, and the e2e harness fails fast.
+// (`gs_eval`, `shell_dispatch`, `shell_complete`) call
+// `worker_thread_assert()` to verify they're running there. A future
+// ccall-from-main regression trips a `GS_ASSERT` inside the gateway,
+// the page logs a fatal, and the e2e harness fails fast.
 //
 // Performance — explicit design choice
 // ------------------------------------
@@ -41,8 +41,8 @@
 // the existing e2e suite. Any added entry point that bypasses the SAB
 // queues fires the assertion in the very first test that touches it.
 
-#ifndef GS_THREAD_H
-#define GS_THREAD_H
+#ifndef WORKER_THREAD_H
+#define WORKER_THREAD_H
 
 #ifdef __cplusplus
 extern "C" {
@@ -52,17 +52,17 @@ extern "C" {
 
 // Latch the current thread as "the worker". Call once from the worker's
 // startup path (shell_init).
-void gs_thread_record_worker(void);
+void worker_thread_record(void);
 
 // Abort with GS_ASSERTF if the calling thread isn't the latched worker.
 // `where` shows up in the failure message (file:line are added by the
 // macro layer); pass a static string identifying the gateway.
-void gs_thread_assert_worker(const char *where);
+void worker_thread_assert(const char *where);
 
 #else /* GS_DEBUG */
 
-static inline void gs_thread_record_worker(void) {}
-static inline void gs_thread_assert_worker(const char *where) {
+static inline void worker_thread_record(void) {}
+static inline void worker_thread_assert(const char *where) {
     (void)where;
 }
 
@@ -72,4 +72,4 @@ static inline void gs_thread_assert_worker(const char *where) {
 }
 #endif
 
-#endif /* GS_THREAD_H */
+#endif /* WORKER_THREAD_H */
