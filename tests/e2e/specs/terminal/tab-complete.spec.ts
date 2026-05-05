@@ -33,7 +33,7 @@ test.describe('Tab completion', () => {
     expect(Array.isArray(all)).toBeTruthy();
     // Top-level objects attached to the root.
     expect(all).toEqual(expect.arrayContaining(['cpu', 'memory', 'storage']));
-    // Root methods on the emu root class: help, quit, time, print, echo, …
+    // Root methods on the emu root class: help, quit, time, echo, …
     expect(all).toEqual(expect.arrayContaining(['help', 'quit']));
   });
 

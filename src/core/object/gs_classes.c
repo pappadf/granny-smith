@@ -6,7 +6,7 @@
 // definitions that have no per-subsystem owner:
 //   - shell namespace stub (parent for shell.alias)
 //   - shell.alias methods
-//   - top-level introspection (objects/attributes/methods/help/print/time)
+//   - top-level introspection (objects/attributes/methods/help/time)
 //     and a few thin top-level wrappers (echo, assert, download, step)
 //   - built-in cpu / fpu register aliases (e.g. $pc, $d0, $fpcr)
 //
@@ -73,8 +73,8 @@ extern const class_desc_t scheduler_class; // src/core/scheduler/scheduler.c
 
 static const class_desc_t shell_class_desc = {.name = "shell", .members = NULL, .n_members = 0};
 
-// Introspection root methods: `objects`, `attributes`, `methods`, `help`,
-// `print`, `time`. Each accepts an optional path string; empty / missing
+// Introspection root methods: `objects`, `attributes`, `methods`,
+// `help`, `time`. Each accepts an optional path string; empty / missing
 // resolves to the root itself.
 
 static struct object *resolve_target(const value_t *path_arg) {
@@ -219,49 +219,6 @@ static value_t method_root_time(struct object *self, const member_t *m, int argc
     return val_uint(8, (uint64_t)time(NULL));
 }
 
-// `print(value)` — formats a value as a string. Numerics → decimal/hex
-// per flags, strings stay strings, others get a class-shaped tag.
-static value_t method_root_print(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
-    if (argc < 1)
-        return val_str("");
-    const value_t *v = &argv[0];
-    char buf[256];
-    switch (v->kind) {
-    case V_NONE:
-        return val_str("");
-    case V_BOOL:
-        return val_str(v->b ? "true" : "false");
-    case V_INT:
-        snprintf(buf, sizeof(buf), "%lld", (long long)v->i);
-        return val_str(buf);
-    case V_UINT:
-        if (v->flags & VAL_HEX)
-            snprintf(buf, sizeof(buf), "0x%llx", (unsigned long long)v->u);
-        else
-            snprintf(buf, sizeof(buf), "%llu", (unsigned long long)v->u);
-        return val_str(buf);
-    case V_FLOAT:
-        snprintf(buf, sizeof(buf), "%g", v->f);
-        return val_str(buf);
-    case V_STRING:
-        return val_str(v->s ? v->s : "");
-    case V_ENUM:
-        if (v->enm.table && (size_t)v->enm.idx < v->enm.n_table && v->enm.table[v->enm.idx])
-            return val_str(v->enm.table[v->enm.idx]);
-        snprintf(buf, sizeof(buf), "<enum:%d>", v->enm.idx);
-        return val_str(buf);
-    case V_OBJECT: {
-        const class_desc_t *cls = v->obj ? object_class(v->obj) : NULL;
-        snprintf(buf, sizeof(buf), "<object:%s>", cls && cls->name ? cls->name : "?");
-        return val_str(buf);
-    }
-    default:
-        return val_str("<value>");
-    }
-}
-
 // --- Top-level methods that wrap shell-style verbs -----------------------
 //
 // These flatten existing `image foo` / `hd foo` / `rom foo` / `vrom foo`
@@ -403,10 +360,6 @@ static const arg_decl_t root_help_args[] = {
      .flags = OBJ_ARG_OPTIONAL,
      .doc = "Path to a member or object; empty resolves to the root"},
 };
-static const arg_decl_t root_print_args[] = {
-    {.name = "value", .kind = V_NONE, .doc = "Value to format"},
-};
-
 static const member_t emu_root_members[] = {
     {.kind = M_METHOD,
      .name = "objects",
@@ -428,10 +381,6 @@ static const member_t emu_root_members[] = {
      .name = "time",
      .doc = "Wall-clock seconds since the Unix epoch",
      .method = {.args = NULL, .nargs = 0, .result = V_UINT, .fn = method_root_time}                },
-    {.kind = M_METHOD,
-     .name = "print",
-     .doc = "Format a value as a string for display",
-     .method = {.args = root_print_args, .nargs = 1, .result = V_STRING, .fn = method_root_print}  },
     {.kind = M_METHOD,
      .name = "quit",
      .doc = "Exit the emulator (asks the legacy quit command to end the run)",

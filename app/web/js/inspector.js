@@ -67,7 +67,7 @@ async function paintTree() {
 
   // Root members: methods + attached children. The root's `objects`
   // method returns the list of attached child names; introspection
-  // methods (objects/attributes/methods/help/time/print) and other
+  // methods (objects/attributes/methods/help/time) and other
   // top-level methods are deliberately omitted from the tree — they
   // operate on the root, not the tree.
   const children = await safeEval('objects', ['']);
