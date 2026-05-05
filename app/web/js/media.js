@@ -124,9 +124,13 @@ export async function probeRom(filePath) {
 }
 
 // Probe if a file is a valid floppy disk image.
+// floppy.identify returns the density string ("400K" / "800K" / "1.4MB")
+// for a recognised image, or empty for non-floppies — so non-empty means
+// "is a floppy".
 export async function probeFloppy(filePath) {
   try {
-    return (await window.gsEval('floppy.identify', [filePath])) === true;
+    const density = await window.gsEval('floppy.identify', [filePath]);
+    return typeof density === 'string' && density.length > 0;
   } catch {
     return false;
   }
