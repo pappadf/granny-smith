@@ -5,14 +5,13 @@
 // Object-model install/uninstall orchestrator + a few cfg-scoped class
 // definitions that have no per-subsystem owner:
 //   - shell namespace stub (parent for shell.alias)
-//   - shell.alias methods
 //   - top-level introspection (objects/attributes/methods/help/time)
 //     and a few thin top-level wrappers (echo, assert, download, step)
-//   - built-in cpu / fpu register aliases (e.g. $pc, $d0, $fpcr)
 //
 // Subsystem-owned classes (cpu/fpu/memory/scc/rtc/via/scsi/floppy/sound/
 // appletalk/debug/mouse/keyboard/screen/vfs/find/storage*) live in their
-// owning modules and self-register via *_init / *_delete.
+// owning modules and self-register via *_init / *_delete. Built-in
+// `$reg` aliases for CPU/FPU registers register from cpu_init().
 
 #include "gs_classes.h"
 
@@ -409,50 +408,6 @@ static const class_desc_t emu_root_class_real = {
     .n_members = sizeof(emu_root_members) / sizeof(emu_root_members[0]),
 };
 
-// === Built-in alias registration ============================================
-//
-// Register at install time. Order matters only insofar as built-ins
-// must be registered before any user can issue shell.alias.add — at
-// startup that's guaranteed because user input arrives later.
-
-static void register_builtin(const char *name, const char *path) {
-    char err[160];
-    if (alias_register_builtin(name, path, err, sizeof(err)) < 0)
-        fprintf(stderr, "gs_classes: built-in alias '$%s' → '%s' rejected: %s\n", name, path, err);
-}
-
-static void register_cpu_aliases(void) {
-    register_builtin("pc", "cpu.pc");
-    register_builtin("sr", "cpu.sr");
-    register_builtin("ccr", "cpu.ccr");
-    register_builtin("ssp", "cpu.ssp");
-    register_builtin("usp", "cpu.usp");
-    register_builtin("msp", "cpu.msp");
-    register_builtin("vbr", "cpu.vbr");
-    register_builtin("sp", "cpu.sp");
-    static const char *const dnames[] = {"d0", "d1", "d2", "d3", "d4", "d5", "d6", "d7"};
-    static const char *const anames[] = {"a0", "a1", "a2", "a3", "a4", "a5", "a6", "a7"};
-    for (int i = 0; i < 8; i++) {
-        char path[16];
-        snprintf(path, sizeof(path), "cpu.%s", dnames[i]);
-        register_builtin(dnames[i], path);
-        snprintf(path, sizeof(path), "cpu.%s", anames[i]);
-        register_builtin(anames[i], path);
-    }
-}
-
-static void register_fpu_aliases(void) {
-    register_builtin("fpcr", "cpu.fpu.fpcr");
-    register_builtin("fpsr", "cpu.fpu.fpsr");
-    register_builtin("fpiar", "cpu.fpu.fpiar");
-    static const char *const fpnames[] = {"fp0", "fp1", "fp2", "fp3", "fp4", "fp5", "fp6", "fp7"};
-    for (int i = 0; i < 8; i++) {
-        char path[24];
-        snprintf(path, sizeof(path), "cpu.fpu.%s", fpnames[i]);
-        register_builtin(fpnames[i], path);
-    }
-}
-
 // === Install / uninstall ====================================================
 //
 // Lifecycle invariant: stubs are tied to a specific `cfg` pointer. Two
@@ -553,12 +508,6 @@ void gs_classes_install(struct config *cfg) {
     attach_stub(NULL, &screen_class, cfg, "screen");
     attach_stub(NULL, &vfs_class, cfg, "vfs");
     attach_stub(NULL, &find_class, cfg, "find");
-
-    // Built-in aliases. Register CPU always, FPU only when present,
-    // mac always (the table is size-driven and machine-independent).
-    register_cpu_aliases();
-    if (cfg && cfg->cpu && cfg->cpu->fpu)
-        register_fpu_aliases();
 }
 
 void gs_classes_uninstall(void) {

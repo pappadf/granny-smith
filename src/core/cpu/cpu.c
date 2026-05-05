@@ -6,6 +6,7 @@
 
 #include "cpu_internal.h"
 
+#include "alias.h"
 #include "fpu.h"
 #include "log.h"
 #include "memory.h"
@@ -142,6 +143,51 @@ bool cpu_is_supervisor(cpu_t *restrict cpu) {
     return cpu->supervisor != 0;
 }
 
+// === Built-in alias registration =============================================
+//
+// `$pc`, `$d0`, `$fpcr`, etc. are convenience names that resolve through
+// the alias table to their typed cpu / cpu.fpu paths. Registration is
+// idempotent (alias.c returns 0 on a re-registration with the same
+// target), so calling these from every cpu_init is safe.
+
+static void register_alias_or_warn(const char *name, const char *path) {
+    char err[160];
+    if (alias_register_builtin(name, path, err, sizeof(err)) < 0)
+        fprintf(stderr, "cpu: built-in alias '$%s' → '%s' rejected: %s\n", name, path, err);
+}
+
+static void register_cpu_aliases(void) {
+    register_alias_or_warn("pc", "cpu.pc");
+    register_alias_or_warn("sr", "cpu.sr");
+    register_alias_or_warn("ccr", "cpu.ccr");
+    register_alias_or_warn("ssp", "cpu.ssp");
+    register_alias_or_warn("usp", "cpu.usp");
+    register_alias_or_warn("msp", "cpu.msp");
+    register_alias_or_warn("vbr", "cpu.vbr");
+    register_alias_or_warn("sp", "cpu.sp");
+    static const char *const dnames[] = {"d0", "d1", "d2", "d3", "d4", "d5", "d6", "d7"};
+    static const char *const anames[] = {"a0", "a1", "a2", "a3", "a4", "a5", "a6", "a7"};
+    for (int i = 0; i < 8; i++) {
+        char path[16];
+        snprintf(path, sizeof(path), "cpu.%s", dnames[i]);
+        register_alias_or_warn(dnames[i], path);
+        snprintf(path, sizeof(path), "cpu.%s", anames[i]);
+        register_alias_or_warn(anames[i], path);
+    }
+}
+
+static void register_fpu_aliases(void) {
+    register_alias_or_warn("fpcr", "cpu.fpu.fpcr");
+    register_alias_or_warn("fpsr", "cpu.fpu.fpsr");
+    register_alias_or_warn("fpiar", "cpu.fpu.fpiar");
+    static const char *const fpnames[] = {"fp0", "fp1", "fp2", "fp3", "fp4", "fp5", "fp6", "fp7"};
+    for (int i = 0; i < 8; i++) {
+        char path[24];
+        snprintf(path, sizeof(path), "cpu.fpu.%s", fpnames[i]);
+        register_alias_or_warn(fpnames[i], path);
+    }
+}
+
 // === Lifecycle ===
 
 // Create and initialize a CPU instance for the specified model.
@@ -183,6 +229,13 @@ extern cpu_t *cpu_init(int cpu_model, checkpoint_t *checkpoint) {
                 object_attach(cpu->cpu_object, cpu->fpu_object);
         }
     }
+
+    // Built-in `$reg` aliases. CPU set is always registered; FPU set
+    // only when the model has one. Idempotent, so safe under repeated
+    // cpu_init / cpu_delete cycles (e.g. machine.boot).
+    register_cpu_aliases();
+    if (cpu->fpu)
+        register_fpu_aliases();
 
     return cpu;
 }
