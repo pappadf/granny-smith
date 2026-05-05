@@ -564,6 +564,20 @@ int shell_init(void) {
     extern void gs_classes_install_root(void);
     gs_classes_install_root();
 
+    // Register process-singleton namespace objects that exist
+    // independently of any machine instance: rom and vrom carry
+    // file-level surfaces (rom.identify, rom.checksum_of, vrom.load)
+    // that callers reach for *before* a machine is booted (URL-media
+    // boot path is the canonical case — drag-drop a Plus ROM, ask
+    // rom.identify, then call machine.boot with the answer). Doing
+    // this in system_create was wrong: the WASM platform doesn't run
+    // system_create at startup, so rom.* failed to resolve until a
+    // ROM had already been loaded the legacy way.
+    extern void rom_init(void);
+    extern void vrom_init(void);
+    rom_init();
+    vrom_init();
+
     // Latch the worker pthread for the thread-affinity guard. From now
     // on (under MODE=debug/sanitize) any call into shell_dispatch() or
     // gs_eval() from a different thread aborts with GS_ASSERTF.

@@ -169,11 +169,6 @@ export async function processUrlMedia(params) {
     const tmpPath = '/tmp/url_rom';
     console.log(`[url-media] loading ROM from: ${tmpPath}`);
     const compatible = await window.gsEval('rom.identify', [tmpPath]);
-    console.log(`[url-media] rom.identify result:`, JSON.stringify(compatible));
-    // Diagnostic: also probe checksum_of so we can see whether the file is
-    // even readable from C.
-    const cs = await window.gsEval('rom.checksum_of', [tmpPath]);
-    console.log(`[url-media] rom.checksum_of result:`, JSON.stringify(cs));
     if (!Array.isArray(compatible) || compatible.length === 0) {
       console.error(`[url-media] rom.identify: no compatible machines for ${tmpPath}`);
       return;

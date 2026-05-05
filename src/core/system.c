@@ -928,11 +928,6 @@ config_t *system_create(const hw_profile_t *profile, checkpoint_t *checkpoint) {
     // runtime state. The legacy shell remains primary.
     gs_classes_install(cfg);
 
-    // Self-registering subsystem objects that are not tied to a config_t —
-    // their state is process-singleton, idempotent on repeated calls.
-    rom_init();
-    vrom_init();
-
     // Notify the platform (e.g., install assertion callback)
     system_post_create(cfg);
 

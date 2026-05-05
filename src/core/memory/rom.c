@@ -147,20 +147,14 @@ int rom_probe_file(const char *path, rom_file_info_t *out) {
     out->info = NULL;
     out->checksum = 0;
     out->size = 0;
-    if (!path || !*path) {
-        fprintf(stderr, "rom_probe_file: empty path\n");
+    if (!path || !*path)
         return -1;
-    }
     size_t file_size = 0;
-    uint8_t *data = read_rom_file(path, &file_size, false);
-    if (!data) {
-        fprintf(stderr, "rom_probe_file: read_rom_file('%s') returned NULL\n", path);
+    uint8_t *data = read_rom_file(path, &file_size, true);
+    if (!data)
         return -1;
-    }
-    fprintf(stderr, "rom_probe_file: read %zu bytes from '%s'\n", file_size, path);
     uint32_t checksum = 0;
     const rom_info_t *info = rom_identify_data(data, file_size, &checksum);
-    fprintf(stderr, "rom_probe_file: checksum=0x%08X info=%s\n", checksum, info ? info->family_name : "(unknown)");
     free(data);
     out->info = info;
     out->checksum = checksum;
