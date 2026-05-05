@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) pappadf
 
-// gs_api.c
+// api.c
 // Public entry points: gs_eval / gs_inspect / gs_complete.
 
-#include "gs_api.h"
+#include "api.h"
 
 #include <inttypes.h>
 #include <stdarg.h>
