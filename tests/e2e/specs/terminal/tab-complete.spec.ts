@@ -33,15 +33,14 @@ test.describe('Tab completion', () => {
     expect(Array.isArray(all)).toBeTruthy();
     // Top-level objects attached to the root.
     expect(all).toEqual(expect.arrayContaining(['cpu', 'memory', 'storage']));
-    // Root methods (registered as members on emu_root_class_real in
-    // M8 slice 3 / 4): help, quit, cp, peeler, …
+    // Root methods on the emu root class: help, quit, time, print, echo, …
     expect(all).toEqual(expect.arrayContaining(['help', 'quit']));
   });
 
   test('line-start prefix narrows the suggestions', async ({ page }) => {
     const matches = await complete(page, 'cp');
-    // `cpu` (root child) and `cp` (root method) both start with "cp".
-    expect(matches).toEqual(expect.arrayContaining(['cpu', 'cp']));
+    // `cpu` (root child) starts with "cp".
+    expect(matches).toEqual(expect.arrayContaining(['cpu']));
     // Anything that doesn't start with `cp` must be filtered out.
     expect(matches.every((m: string) => m.toLowerCase().startsWith('cp'))).toBeTruthy();
   });

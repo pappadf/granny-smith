@@ -203,8 +203,9 @@ test.describe('Config Dialog', () => {
     expect(hasRomLoad).toBe(true);
     log('rom load command was issued');
 
-    // Verify 'run' command was issued
-    const hasRun = commandLog.some((cmd: string) => cmd === 'run');
+    // Verify the run was triggered. commandLog records the gsEval method name
+    // with `.` → ` `, so `scheduler.run` shows up as 'scheduler run'.
+    const hasRun = commandLog.some((cmd: string) => cmd === 'scheduler run' || cmd.startsWith('scheduler run '));
     expect(hasRun).toBe(true);
     log('run command was issued — emulator started');
   });

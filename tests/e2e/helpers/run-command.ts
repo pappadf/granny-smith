@@ -403,7 +403,13 @@ function translateToGsEval(line: string): Translation | null {
     }
 
     if (head === 'fd') {
-      if ((sub === 'probe' || sub === 'validate') && subArgs.length === 1)
+      // `fd probe` mirrors the legacy `peeler --probe` convention: 0 on
+      // success (recognised disk image), 1 on failure (empty string from
+      // floppy.identify). `fd validate` is shaped to mirror the bool
+      // attribute style — kept on string_nonempty for backwards-compat.
+      if (sub === 'probe' && subArgs.length === 1)
+        return { method: 'floppy.identify', args: subArgs, convention: 'string_to_cmd_int' };
+      if (sub === 'validate' && subArgs.length === 1)
         return { method: 'floppy.identify', args: subArgs, convention: 'string_nonempty' };
       if (sub === 'create' && subArgs.length >= 1)
         return {

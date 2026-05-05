@@ -26,7 +26,9 @@ test.describe('Granny Smith UI basic', () => {
     await page.evaluate(() => (window as any).__gsTest?.clearLog());
     await runCommand(page, 'run');
     const log = await page.evaluate(() => (window as any).__gsTest?.commandLog);
-    expect(log).toContain('run');
+    // commandLog records the gsEval method name with `.` → ` `, so
+    // `run` (translated to scheduler.run) shows up as 'scheduler run'.
+    expect(log).toContain('scheduler run');
   });
 
   test('zoom out eventually reduces effective scale', async ({ page }) => {
