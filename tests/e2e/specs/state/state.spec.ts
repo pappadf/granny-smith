@@ -4,7 +4,7 @@
 import { test } from '../../fixtures';
 import { expect } from '@playwright/test';
 import { matchScreenFast } from '../../helpers/screen';
-import { bootWithUploadedMedia, bootWithMedia, TEST_MEDIA_ROOT } from '../../helpers/boot';
+import { bootWithUploadedMedia, bootWithMedia } from '../../helpers/boot';
 import { installTestShim, captureXterm } from '../../helpers/terminal';
 import { runCommand, waitForPrompt, waitForCompleteCheckpoint } from '../../helpers/run-command';
 import { mouseDrag } from '../../helpers/mouse';
@@ -13,8 +13,10 @@ import { dispatchDropEvent } from '../../helpers/drop';
 import * as fs from 'fs';
 import * as path from 'path';
 
-// Helper: boot an SE/30 with uploaded media (ROM + VROM + optional disk)
-// bootWithUploadedMedia doesn't handle VROM, so we inject it manually.
+// Helper: boot an SE/30 with uploaded media (ROM + VROM + optional disk).
+// bootWithUploadedMedia stages the VROM at /tmp/vrom and calls vrom.load
+// before machine.boot — required because SE/30 init reads the Video ROM
+// file during peripheral setup.
 async function bootSE30WithUploadedMedia(
   page: import('@playwright/test').Page,
   fd0Rel?: string,
@@ -23,19 +25,9 @@ async function bootSE30WithUploadedMedia(
 ) {
   const hdSlot = options?.hdSlot ?? 0;
   const hideOverlay = options?.hideOverlay ?? true;
-
-  // Boot with SE30 ROM via the standard helper
-  await bootWithUploadedMedia(page, 'roms/SE30.rom', fd0Rel, hd0ZipRel, { hdSlot, hideOverlay });
-
-  // Inject the VROM file and issue vrom load command
-  const vromPath = path.join(TEST_MEDIA_ROOT, 'roms', 'SE30.vrom');
-  const vromData = new Uint8Array(fs.readFileSync(vromPath));
-  await page.evaluate((data) => {
-    const FS = (window as any).__Module.FS;
-    try { FS.unlink('/tmp/vrom'); } catch (_) {}
-    FS.writeFile('/tmp/vrom', new Uint8Array(data));
-  }, Array.from(vromData));
-  await runCommand(page, 'vrom load /tmp/vrom');
+  await bootWithUploadedMedia(page, 'roms/SE30.rom', fd0Rel, hd0ZipRel, {
+    hdSlot, hideOverlay, vromRel: 'roms/SE30.vrom',
+  });
 }
 
 test.describe('State', () => {
