@@ -10,19 +10,19 @@ import { toast, hideRomOverlay } from './ui.js';
 // Probe for a background checkpoint and offer resume if found.
 // Returns true if the user resumed from a checkpoint.
 export async function maybeOfferBackgroundCheckpoint() {
-  const hasCheckpoint = (await window.gsEval('checkpoint_probe')) === true;
+  const hasCheckpoint = (await window.gsEval('checkpoint.probe')) === true;
 
   if (!hasCheckpoint) return false;
 
   const accept = await showCheckpointPrompt();
   if (!accept) {
-    await window.gsEval('checkpoint_clear');
+    await window.gsEval('checkpoint.clear');
     toast('Starting fresh (checkpoint discarded)');
     return false;
   }
 
   hideRomOverlay();
-  const ok = (await window.gsEval('checkpoint_load')) === true;
+  const ok = (await window.gsEval('checkpoint.load')) === true;
   if (!ok) return false;
 
   // The checkpoint preserves the scheduler's running flag.  Quick

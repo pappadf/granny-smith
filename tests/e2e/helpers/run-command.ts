@@ -159,7 +159,7 @@ function translateToGsEval(line: string): Translation | null {
     };
   }
   if (head === 'background-checkpoint' && tail.length === 1)
-    return { method: 'background_checkpoint', args: [tail[0]], convention: 'cmd_int_bool' };
+    return { method: 'checkpoint.snapshot', args: [tail[0]], convention: 'cmd_int_bool' };
   if (head === 'exists' && tail.length === 1)
     // Legacy `exists` returned 0=exists, 1=missing — map_int_bool keeps that.
     return { method: 'storage.path_exists', args: [tail[0]], convention: 'cmd_int_bool' };
@@ -336,18 +336,18 @@ function translateToGsEval(line: string): Translation | null {
   // bridge that handled the auto-state query is gone).
   if (head === 'checkpoint') {
     if (tail[0] === '--probe' && tail.length === 1)
-      return { method: 'checkpoint_probe', args: [], convention: 'cmd_int_bool' };
+      return { method: 'checkpoint.probe', args: [], convention: 'cmd_int_bool' };
     if ((tail[0] === 'clear' || tail[0] === '--clear') && tail.length === 1)
-      return { method: 'checkpoint_clear', args: [], convention: 'cmd_int_bool' };
+      return { method: 'checkpoint.clear', args: [], convention: 'cmd_int_bool' };
     if (tail[0] === '--load')
       return {
-        method: 'checkpoint_load',
+        method: 'checkpoint.load',
         args: tail.length >= 2 ? [tail[1]] : [],
         convention: 'cmd_int_bool',
       };
     if (tail[0] === '--save' && tail.length >= 2)
       return {
-        method: 'checkpoint_save',
+        method: 'checkpoint.save',
         args: tail.length >= 3 ? [tail[1], tail[2]] : [tail[1]],
         convention: 'cmd_int_bool',
       };
@@ -359,7 +359,7 @@ function translateToGsEval(line: string): Translation | null {
       };
     if (tail[0] === 'auto' && tail.length === 2 && (tail[1] === 'on' || tail[1] === 'off'))
       return {
-        method: 'auto_checkpoint',
+        method: 'checkpoint.auto',
         args: [tail[1] === 'on'],
         convention: 'void_or_error',
       };
@@ -530,7 +530,7 @@ export async function waitForCompleteCheckpoint(page: Page, timeoutMs = 15_000):
   const startTime = Date.now();
 
   while (true) {
-    const ok = await page.evaluate(() => (window as any).gsEval('checkpoint_probe'));
+    const ok = await page.evaluate(() => (window as any).gsEval('checkpoint.probe'));
     if (ok === true) return;
 
     if (Date.now() - startTime > timeoutMs) {

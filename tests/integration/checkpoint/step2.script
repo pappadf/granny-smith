@@ -7,7 +7,7 @@ scheduler.run 100000000
 # Load the checkpoint saved in step 1 (restores floppy boot state at
 # 50M instructions). assert prevents the rest of the step from running
 # against an unrestored machine if load failed.
-assert ${checkpoint_load("checkpoint")} "step2 checkpoint load failed"
+assert ${checkpoint.load("checkpoint")} "step2 checkpoint load failed"
 
 # Run another 50M instructions from the restored checkpoint
 # Total should be 50M + 50M = 100M instructions from floppy boot

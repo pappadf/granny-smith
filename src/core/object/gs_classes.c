@@ -414,73 +414,6 @@ static value_t method_root_echo(struct object *self, const member_t *m, int argc
     return val_bool(true);
 }
 
-// === Checkpoint root methods (M10b — checkpoint area) ======================
-//
-// Thin V_BOOL wrappers around the legacy `checkpoint <subcmd>` form.
-// `running()` exposes scheduler_is_running so JS can replace
-// `runCommand('status') === 1` with a direct boolean read.
-
-static value_t method_root_checkpoint_probe(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
-    (void)argc;
-    (void)argv;
-    return val_bool(find_valid_checkpoint_path() != NULL);
-}
-
-static value_t method_root_checkpoint_clear(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
-    (void)argc;
-    (void)argv;
-    return val_bool(gs_checkpoint_clear() == 0);
-}
-
-static value_t method_root_checkpoint_load(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
-    if (argc >= 1 && argv[0].kind == V_STRING && argv[0].s && *argv[0].s) {
-        char *fake_argv[2] = {"--load", (char *)argv[0].s};
-        return val_bool(cmd_load_checkpoint(2, fake_argv) == 0);
-    }
-    char *fake_argv[1] = {"--load"};
-    return val_bool(cmd_load_checkpoint(1, fake_argv) == 0);
-}
-
-static value_t method_root_checkpoint_save(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
-    if (argc < 1 || argv[0].kind != V_STRING)
-        return val_err("checkpoint_save: expected (path, [mode])");
-    const char *path = argv[0].s ? argv[0].s : "";
-    char *fake_argv[3] = {"--save", (char *)path, NULL};
-    int fake_argc = 2;
-    if (argc >= 2 && argv[1].kind == V_STRING && argv[1].s && *argv[1].s) {
-        fake_argv[2] = (char *)argv[1].s;
-        fake_argc = 3;
-    }
-    return val_bool(cmd_save_checkpoint(fake_argc, fake_argv) == 0);
-}
-
-// `auto_checkpoint` attribute (V_BOOL, rw) — exposes the WASM
-// background-checkpoint loop's enabled flag. Headless's weak defaults
-// stub out (no auto-checkpoint there), so reads return false and
-// writes are silently ignored on that platform.
-static value_t attr_auto_checkpoint_get(struct object *self, const member_t *m) {
-    (void)self;
-    (void)m;
-    return val_bool(gs_checkpoint_auto_get());
-}
-
-static value_t attr_auto_checkpoint_set(struct object *self, const member_t *m, value_t in) {
-    (void)self;
-    (void)m;
-    bool b = val_as_bool(&in);
-    value_free(&in);
-    gs_checkpoint_auto_set(b);
-    return val_none();
-}
-
 // === ROM / disk-mount root methods (M10b — drop area) ======================
 
 // === Debugging-area root methods ===========================================
@@ -509,19 +442,6 @@ static value_t method_root_step(struct object *self, const member_t *m, int argc
     scheduler_run_instructions(s, (int)count);
     scheduler_stop(s);
     return val_bool(true);
-}
-
-// `background_checkpoint(name)` — capture a snapshot under the given label.
-// Routes to the platform-specific gs_background_checkpoint (WASM
-// implements via save_quick_checkpoint; headless prints a "not
-// supported" stub).
-static value_t method_root_background_checkpoint(struct object *self, const member_t *m, int argc,
-                                                 const value_t *argv) {
-    (void)self;
-    (void)m;
-    if (argc < 1 || argv[0].kind != V_STRING)
-        return val_err("background_checkpoint: expected (name)");
-    return val_bool(gs_background_checkpoint(argv[0].s ? argv[0].s : "") == 0);
 }
 
 // `print_value(target)` — read a register / condition code / memory cell
@@ -594,16 +514,6 @@ static const arg_decl_t root_peeler_args[] = {
 static const arg_decl_t root_path_arg[] = {
     {.name = "path", .kind = V_STRING, .doc = "File path"},
 };
-static const arg_decl_t root_checkpoint_load_args[] = {
-    {.name = "path",
-     .kind = V_STRING,
-     .flags = OBJ_ARG_OPTIONAL,
-     .doc = "Checkpoint path; empty auto-loads the latest"},
-};
-static const arg_decl_t root_checkpoint_save_args[] = {
-    {.name = "path", .kind = V_STRING, .doc = "Checkpoint output path"},
-    {.name = "mode", .kind = V_STRING, .flags = OBJ_ARG_OPTIONAL, .doc = "Optional 'content' or 'refs' mode"},
-};
 static const arg_decl_t root_path_args[] = {
     {.name = "path", .kind = V_STRING, .flags = OBJ_ARG_OPTIONAL, .doc = "Object path; empty resolves to the root"},
 };
@@ -621,27 +531,27 @@ static const member_t emu_root_members[] = {
     {.kind = M_METHOD,
      .name = "objects",
      .doc = "List child object names at the given path (or root)",
-     .method = {.args = root_path_args, .nargs = 1, .result = V_LIST, .fn = method_root_objects}                   },
+     .method = {.args = root_path_args, .nargs = 1, .result = V_LIST, .fn = method_root_objects}    },
     {.kind = M_METHOD,
      .name = "attributes",
      .doc = "List attribute names of the resolved object's class",
-     .method = {.args = root_path_args, .nargs = 1, .result = V_LIST, .fn = method_root_attributes}                },
+     .method = {.args = root_path_args, .nargs = 1, .result = V_LIST, .fn = method_root_attributes} },
     {.kind = M_METHOD,
      .name = "methods",
      .doc = "List method names of the resolved object's class",
-     .method = {.args = root_path_args, .nargs = 1, .result = V_LIST, .fn = method_root_methods}                   },
+     .method = {.args = root_path_args, .nargs = 1, .result = V_LIST, .fn = method_root_methods}    },
     {.kind = M_METHOD,
      .name = "help",
      .doc = "Return the doc string of a resolved member (or class name)",
-     .method = {.args = root_help_args, .nargs = 1, .result = V_STRING, .fn = method_root_help}                    },
+     .method = {.args = root_help_args, .nargs = 1, .result = V_STRING, .fn = method_root_help}     },
     {.kind = M_METHOD,
      .name = "time",
      .doc = "Wall-clock seconds since the Unix epoch",
-     .method = {.args = NULL, .nargs = 0, .result = V_UINT, .fn = method_root_time}                                },
+     .method = {.args = NULL, .nargs = 0, .result = V_UINT, .fn = method_root_time}                 },
     {.kind = M_METHOD,
      .name = "print",
      .doc = "Format a value as a string for display",
-     .method = {.args = root_print_args, .nargs = 1, .result = V_STRING, .fn = method_root_print}                  },
+     .method = {.args = root_print_args, .nargs = 1, .result = V_STRING, .fn = method_root_print}   },
     // Legacy-command wrappers (M8 slice 4 — proposal §5.10).
     // Side-effect wrappers return V_BOOL (true on dispatch success) so
     // the M10b migrators can branch on the result without re-deriving
@@ -649,65 +559,41 @@ static const member_t emu_root_members[] = {
     {.kind = M_METHOD,
      .name = "peeler",
      .doc = "Extract a Mac archive (.sit/.cpt/.hqx/.bin)",
-     .method = {.args = root_peeler_args, .nargs = 2, .result = V_BOOL, .fn = method_root_peeler}                  },
+     .method = {.args = root_peeler_args, .nargs = 2, .result = V_BOOL, .fn = method_root_peeler}   },
     {.kind = M_METHOD,
      .name = "peeler_probe",
      .doc = "True if a file is a peeler-supported archive",
-     .method = {.args = root_path_arg, .nargs = 1, .result = V_BOOL, .fn = method_root_peeler_probe}               },
+     .method = {.args = root_path_arg, .nargs = 1, .result = V_BOOL, .fn = method_root_peeler_probe}},
     {.kind = M_METHOD,
      .name = "quit",
      .doc = "Exit the emulator (asks the legacy quit command to end the run)",
-     .method = {.args = NULL, .nargs = 0, .result = V_NONE, .fn = method_root_quit}                                },
+     .method = {.args = NULL, .nargs = 0, .result = V_NONE, .fn = method_root_quit}                 },
     {.kind = M_METHOD,
      .name = "assert",
      .doc = "Assert that a predicate is truthy; abort the script otherwise",
-     .method = {.args = NULL, .nargs = 2, .result = V_BOOL, .fn = method_root_assert}                              },
+     .method = {.args = NULL, .nargs = 2, .result = V_BOOL, .fn = method_root_assert}               },
     {.kind = M_METHOD,
      .name = "echo",
      .doc = "Print arguments separated by spaces (final newline appended)",
-     .method = {.args = NULL, .nargs = 0, .result = V_BOOL, .fn = method_root_echo}                                },
+     .method = {.args = NULL, .nargs = 0, .result = V_BOOL, .fn = method_root_echo}                 },
     // Checkpoint / runtime-state wrappers (M10b — checkpoint area).
-    {.kind = M_METHOD,
-     .name = "checkpoint_probe",
-     .doc = "True if a valid checkpoint exists for the active machine",
-     .method = {.args = NULL, .nargs = 0, .result = V_BOOL, .fn = method_root_checkpoint_probe}                    },
-    {.kind = M_METHOD,
-     .name = "checkpoint_clear",
-     .doc = "Remove all checkpoint files for the active machine",
-     .method = {.args = NULL, .nargs = 0, .result = V_BOOL, .fn = method_root_checkpoint_clear}                    },
-    {.kind = M_METHOD,
-     .name = "checkpoint_load",
-     .doc = "Load a checkpoint (auto-loads latest when path is omitted)",
-     .method = {.args = root_checkpoint_load_args, .nargs = 1, .result = V_BOOL, .fn = method_root_checkpoint_load}},
-    {.kind = M_METHOD,
-     .name = "checkpoint_save",
-     .doc = "Save the current machine state to a checkpoint file",
-     .method = {.args = root_checkpoint_save_args, .nargs = 2, .result = V_BOOL, .fn = method_root_checkpoint_save}},
-    {.kind = M_ATTR,
-     .name = "auto_checkpoint",
-     .doc = "Enable/disable the background auto-checkpoint loop (WASM-only)",
-     .attr = {.type = V_BOOL, .get = attr_auto_checkpoint_get, .set = attr_auto_checkpoint_set}                    },
     {.kind = M_METHOD,
      .name = "download",
      .doc = "Trigger a browser file download (WASM-only)",
-     .method = {.args = root_path_arg, .nargs = 1, .result = V_BOOL, .fn = method_root_download}                   },
+     .method = {.args = root_path_arg, .nargs = 1, .result = V_BOOL, .fn = method_root_download}    },
     // Debugging-area thin wrappers.
     {.kind = M_METHOD,
      .name = "step",
      .doc = "Single-step N instructions; default 1 (legacy `step`/`s`)",
-     .method = {.args = NULL, .nargs = 1, .result = V_BOOL, .fn = method_root_step}                                },
-    {.kind = M_METHOD,
-     .name = "background_checkpoint",
-     .doc = "Capture a checkpoint under the given label (legacy `background-checkpoint`)",
-     .method = {.args = NULL, .nargs = 1, .result = V_BOOL, .fn = method_root_background_checkpoint}               },
+     .method = {.args = NULL, .nargs = 1, .result = V_BOOL, .fn = method_root_step}                 },
     {.kind = M_METHOD,
      .name = "print_value",
      .doc = "Read a register / flag / memory cell (legacy `print <target>`)",
-     .method = {.args = NULL, .nargs = 1, .result = V_UINT, .fn = method_root_print_value}                         },
+     .method = {.args = NULL, .nargs = 1, .result = V_UINT, .fn = method_root_print_value}          },
     {.kind = M_METHOD,
      .name = "set_value",
      .doc = "Write a register / flag / memory cell (legacy `set <target> <value>`)",
-     .method = {.args = NULL, .nargs = 2, .result = V_BOOL, .fn = method_root_set_value}                           },
+     .method = {.args = NULL, .nargs = 2, .result = V_BOOL, .fn = method_root_set_value}            },
 };
 
 static const class_desc_t emu_root_class_real = {

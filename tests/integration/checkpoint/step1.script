@@ -6,6 +6,6 @@ scheduler.run 50000000
 # Save machine state to checkpoint file. assert fails the step if the
 # typed wrapper returned false (silent failure used to be masked by
 # path-form returning 0 regardless of the bool result).
-assert ${checkpoint_save("checkpoint")} "step1 checkpoint save failed"
+assert ${checkpoint.save("checkpoint")} "step1 checkpoint save failed"
 
 quit

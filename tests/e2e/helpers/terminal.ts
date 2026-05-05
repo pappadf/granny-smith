@@ -110,7 +110,7 @@ export async function installTestShim(page: Page) {
 				(window as any).__gsTestShim.clearCheckpoints = (window as any).__gsTestShim.clearCheckpoints || async function() {
 					if (typeof (window as any).gsEval !== 'function') return;
 					try {
-						await (window as any).gsEval('checkpoint_clear');
+						await (window as any).gsEval('checkpoint.clear');
 						console.log('[test-shim] checkpoints cleared');
 					} catch (e) {
 						console.warn('[test-shim] clearCheckpoints failed', e);

@@ -34,7 +34,7 @@ async function loadCheckpointFromPath(path, displayName) {
     // no need to pause first.  The restored scheduler's running flag
     // determines whether execution continues or stays paused.
     toast(`Loading ${label}…`);
-    await window.gsEval('checkpoint_load', [path]);
+    await window.gsEval('checkpoint.load', [path]);
 
     // Sync JS-side running flag with the restored scheduler state
     const running = (await window.gsEval('scheduler.running')) === true;
