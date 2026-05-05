@@ -565,18 +565,22 @@ int shell_init(void) {
     gs_classes_install_root();
 
     // Register process-singleton namespace objects that exist
-    // independently of any machine instance: rom and vrom carry
-    // file-level surfaces (rom.identify, rom.checksum_of, vrom.load)
-    // that callers reach for *before* a machine is booted (URL-media
-    // boot path is the canonical case — drag-drop a Plus ROM, ask
-    // rom.identify, then call machine.boot with the answer). Doing
-    // this in system_create was wrong: the WASM platform doesn't run
-    // system_create at startup, so rom.* failed to resolve until a
-    // ROM had already been loaded the legacy way.
+    // independently of any machine instance: rom, vrom, and machine
+    // all carry pre-boot surfaces (rom.identify, vrom.load,
+    // machine.boot, machine.profiles) that callers reach for *before*
+    // a machine has been created. The WASM URL-media boot path is the
+    // canonical case — drag-drop a Plus ROM, ask rom.identify for the
+    // compatible models, then call machine.boot with the answer.
+    // Hooking these up in system_create was wrong: the WASM platform
+    // doesn't run system_create at startup, so the path-form would
+    // fail to resolve until the legacy `rom load` had already booted
+    // a machine.
     extern void rom_init(void);
     extern void vrom_init(void);
+    extern void machine_init(void);
     rom_init();
     vrom_init();
+    machine_init();
 
     // Latch the worker pthread for the thread-affinity guard. From now
     // on (under MODE=debug/sanitize) any call into shell_dispatch() or

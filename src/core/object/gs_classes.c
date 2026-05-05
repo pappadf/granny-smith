@@ -64,7 +64,6 @@
 // memory.c, machine.c, scc.c, etc.) and referenced here via extern
 // to keep this file as the install/uninstall orchestrator.
 
-extern const class_desc_t machine_class; // src/machines/machine.c
 extern const class_desc_t mouse_class; // src/core/peripherals/mouse.c
 extern const class_desc_t keyboard_class; // src/core/peripherals/adb.c
 extern const class_desc_t vfs_class; // src/core/vfs/vfs.c
@@ -843,7 +842,6 @@ void gs_classes_install(struct config *cfg) {
     // init function: stub namespace nodes, the storage view of
     // cfg->images, the lazy mac globals, the shell alias child, and
     // the platform-level mouse / keyboard / screen / vfs / find facades.
-    /* machine   */ attach_stub(NULL, &machine_class, cfg, "machine");
     struct object *shell_obj = attach_stub(NULL, &shell_class_desc, cfg, "shell");
     struct object *storage_obj = attach_stub(NULL, &storage_class_real, cfg, "storage");
     if (storage_obj) {

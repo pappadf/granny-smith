@@ -143,15 +143,17 @@ export async function installTestShim(page: Page) {
 								// __commandLog records every gsEval invocation in shell-form so
 								// existing assertions like `log.toContain('run')` keep working
 								// without teaching every spec the typed-call API.  Method names
-								// are normalised to their legacy spelling (`rom_load` → `rom
-								// load`); positional args are stringified inline.
+								// are normalised to their legacy spelling: `_` → ` ` for the
+								// pre-typed `rom_load` style, and `.` → ` ` for the typed
+								// `rom.load` / `floppy.drives[0].insert` style.  Positional
+								// args are stringified inline.
 								(window as any).__commandLog = (window as any).__commandLog || [];
 								const logCommand = (cmd: string) => {
 									try { (window as any).__commandLog.push(String(cmd)); } catch {}
 								};
 								const _logGsEval = (path: string, args: any[]) => {
 									try {
-										const norm = String(path || '').replace(/_/g, ' ');
+										const norm = String(path || '').replace(/[_.]/g, ' ');
 										const argStr = (args || [])
 											.map((a) => (typeof a === 'string' ? `"${a}"` : String(a)))
 											.join(' ');

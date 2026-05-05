@@ -42,36 +42,46 @@ const hw_profile_t *machine_find(const char *model_id) {
 
 // === Object-model class descriptor =========================================
 //
-// instance_data on the machine stub is config_t*. The lifetime is bounded
-// by gs_classes_install / gs_classes_uninstall.
+// machine is a process-singleton namespace: registered once at shell_init
+// (machine_init below) and never torn down.  All attribute getters read
+// from `global_emulator` rather than `object_data(self)` so the live
+// machine state is reflected regardless of when the object was attached
+// and how many cfg lifetimes have come and gone since.
+
+extern config_t *global_emulator;
 
 static value_t attr_machine_model_id(struct object *self, const member_t *m) {
+    (void)self;
     (void)m;
-    config_t *cfg = (config_t *)object_data(self);
+    config_t *cfg = global_emulator;
     return val_str((cfg && cfg->machine && cfg->machine->model_id) ? cfg->machine->model_id : "");
 }
 
 static value_t attr_machine_model_name(struct object *self, const member_t *m) {
+    (void)self;
     (void)m;
-    config_t *cfg = (config_t *)object_data(self);
+    config_t *cfg = global_emulator;
     return val_str((cfg && cfg->machine && cfg->machine->model_name) ? cfg->machine->model_name : "");
 }
 
 static value_t attr_machine_cpu_clock(struct object *self, const member_t *m) {
+    (void)self;
     (void)m;
-    config_t *cfg = (config_t *)object_data(self);
+    config_t *cfg = global_emulator;
     return val_uint(4, (cfg && cfg->machine) ? cfg->machine->cpu_clock_hz : 0u);
 }
 
 static value_t attr_machine_ram_kb(struct object *self, const member_t *m) {
+    (void)self;
     (void)m;
-    config_t *cfg = (config_t *)object_data(self);
+    config_t *cfg = global_emulator;
     return val_uint(4, cfg ? cfg->ram_size / 1024u : 0u);
 }
 
 static value_t attr_machine_created(struct object *self, const member_t *m) {
+    (void)self;
     (void)m;
-    config_t *cfg = (config_t *)object_data(self);
+    config_t *cfg = global_emulator;
     return val_bool(cfg && cfg->machine != NULL);
 }
 
@@ -89,8 +99,6 @@ static value_t attr_machine_profiles(struct object *self, const member_t *m) {
         items[i] = val_str(g_machines[i] && g_machines[i]->model_id ? g_machines[i]->model_id : "");
     return val_list(items, (size_t)n);
 }
-
-extern config_t *global_emulator;
 
 // machine.boot(model, [ram_kb]) — atomic machine creation. Tears down any
 // existing machine and creates a fresh one with no ROM loaded. Caller must
@@ -199,3 +207,28 @@ const class_desc_t machine_class = {
     .members = machine_members,
     .n_members = sizeof(machine_members) / sizeof(machine_members[0]),
 };
+
+// === Lifecycle ============================================================
+//
+// machine is a process-singleton — registered once at shell_init time and
+// never detached.  Attribute getters read from global_emulator so the live
+// state is reflected regardless of how many cfg lifetimes have come and
+// gone since the object was attached.  Both functions are idempotent.
+
+static struct object *s_machine_object = NULL;
+
+void machine_init(void) {
+    if (s_machine_object)
+        return;
+    s_machine_object = object_new(&machine_class, NULL, "machine");
+    if (s_machine_object)
+        object_attach(object_root(), s_machine_object);
+}
+
+void machine_delete(void) {
+    if (s_machine_object) {
+        object_detach(s_machine_object);
+        object_delete(s_machine_object);
+        s_machine_object = NULL;
+    }
+}
