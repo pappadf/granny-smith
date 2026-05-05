@@ -3722,3 +3722,27 @@ const class_desc_t screen_class = {
     .members = screen_members,
     .n_members = sizeof(screen_members) / sizeof(screen_members[0]),
 };
+
+// === Process-singleton lifecycle ============================================
+//
+// `screen` is a stateless facade — checksum/save read the framebuffer
+// from whatever machine is currently booted. Register once at
+// shell_init.
+
+static struct object *s_screen_object = NULL;
+
+void screen_class_register(void) {
+    if (s_screen_object)
+        return;
+    s_screen_object = object_new(&screen_class, NULL, "screen");
+    if (s_screen_object)
+        object_attach(object_root(), s_screen_object);
+}
+
+void screen_class_unregister(void) {
+    if (s_screen_object) {
+        object_detach(s_screen_object);
+        object_delete(s_screen_object);
+        s_screen_object = NULL;
+    }
+}

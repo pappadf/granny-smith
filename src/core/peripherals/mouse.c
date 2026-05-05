@@ -284,3 +284,27 @@ const class_desc_t mouse_class = {
     .members = mouse_members,
     .n_members = sizeof(mouse_members) / sizeof(mouse_members[0]),
 };
+
+// === Process-singleton lifecycle ============================================
+//
+// `mouse` is a stateless facade over the platform-level debug_mac_*
+// helpers; nothing it exposes depends on a booted machine or a specific
+// cfg lifetime. Register once at shell_init time (idempotent).
+
+static struct object *s_mouse_object = NULL;
+
+void mouse_class_register(void) {
+    if (s_mouse_object)
+        return;
+    s_mouse_object = object_new(&mouse_class, NULL, "mouse");
+    if (s_mouse_object)
+        object_attach(object_root(), s_mouse_object);
+}
+
+void mouse_class_unregister(void) {
+    if (s_mouse_object) {
+        object_detach(s_mouse_object);
+        object_delete(s_mouse_object);
+        s_mouse_object = NULL;
+    }
+}

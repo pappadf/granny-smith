@@ -116,3 +116,26 @@ const class_desc_t vfs_class = {
     .members = vfs_members,
     .n_members = sizeof(vfs_members) / sizeof(vfs_members[0]),
 };
+
+// === Process-singleton lifecycle ============================================
+//
+// `vfs` is a stateless facade — its methods route through the global
+// VFS registry. Register once at shell_init.
+
+static struct object *s_vfs_object = NULL;
+
+void vfs_class_register(void) {
+    if (s_vfs_object)
+        return;
+    s_vfs_object = object_new(&vfs_class, NULL, "vfs");
+    if (s_vfs_object)
+        object_attach(object_root(), s_vfs_object);
+}
+
+void vfs_class_unregister(void) {
+    if (s_vfs_object) {
+        object_detach(s_vfs_object);
+        object_delete(s_vfs_object);
+        s_vfs_object = NULL;
+    }
+}

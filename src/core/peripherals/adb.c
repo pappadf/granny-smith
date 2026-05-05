@@ -913,3 +913,26 @@ const class_desc_t keyboard_class = {
     .members = keyboard_members,
     .n_members = sizeof(keyboard_members) / sizeof(keyboard_members[0]),
 };
+
+// === Process-singleton lifecycle ============================================
+//
+// `keyboard` is a stateless facade — its press() method routes through
+// adb_press_key on the active machine. Register once at shell_init.
+
+static struct object *s_keyboard_object = NULL;
+
+void keyboard_class_register(void) {
+    if (s_keyboard_object)
+        return;
+    s_keyboard_object = object_new(&keyboard_class, NULL, "keyboard");
+    if (s_keyboard_object)
+        object_attach(object_root(), s_keyboard_object);
+}
+
+void keyboard_class_unregister(void) {
+    if (s_keyboard_object) {
+        object_detach(s_keyboard_object);
+        object_delete(s_keyboard_object);
+        s_keyboard_object = NULL;
+    }
+}

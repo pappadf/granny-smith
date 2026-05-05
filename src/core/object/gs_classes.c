@@ -55,11 +55,6 @@
 // memory.c, machine.c, scc.c, etc.) and referenced here via extern
 // to keep this file as the install/uninstall orchestrator.
 
-extern const class_desc_t mouse_class; // src/core/peripherals/mouse.c
-extern const class_desc_t keyboard_class; // src/core/peripherals/adb.c
-extern const class_desc_t vfs_class; // src/core/vfs/vfs.c
-extern const class_desc_t find_class; // src/core/debug/cmd_find.c
-extern const class_desc_t screen_class; // src/core/debug/debug.c
 extern const class_desc_t storage_class_real; // src/core/storage/storage.c
 extern const class_desc_t storage_image_class; // src/core/storage/storage.c
 extern const class_desc_t storage_images_collection_class; // src/core/storage/storage.c
@@ -453,11 +448,13 @@ void gs_classes_install(struct config *cfg) {
 
     // Subsystem-scoped objects are registered by their owners (cpu_init,
     // memory_map_init, scc_init, rtc_init, via_init, scsi_init,
-    // floppy_init, sound_init, appletalk_init, debug_init). What
-    // remains here is process-/cfg-scoped state that has no per-machine
-    // init function: stub namespace nodes, the storage view of
-    // cfg->images, the lazy mac globals, the shell alias child, and
-    // the platform-level mouse / keyboard / screen / vfs / find facades.
+    // floppy_init, sound_init, appletalk_init, debug_init). The
+    // platform-level facades (mouse, keyboard, screen, vfs, find) are
+    // process-singletons attached from shell_init via their owning
+    // module's *_class_register hook.
+    //
+    // What remains here is the shell namespace stub, the storage view
+    // of cfg->images, and the shell.alias child.
     struct object *shell_obj = attach_stub(NULL, &shell_class_desc, cfg, "shell");
     struct object *storage_obj = attach_stub(NULL, &storage_class_real, cfg, "storage");
     if (storage_obj) {
@@ -465,17 +462,9 @@ void gs_classes_install(struct config *cfg) {
         storage_object_classes_init(cfg);
     }
 
-    // mac is always attached — readers tolerate uninitialised RAM.
-
     // shell.alias child object.
     if (shell_obj)
         attach_stub(shell_obj, &shell_alias_class, cfg, "alias");
-
-    attach_stub(NULL, &mouse_class, cfg, "mouse");
-    attach_stub(NULL, &keyboard_class, cfg, "keyboard");
-    attach_stub(NULL, &screen_class, cfg, "screen");
-    attach_stub(NULL, &vfs_class, cfg, "vfs");
-    attach_stub(NULL, &find_class, cfg, "find");
 }
 
 void gs_classes_uninstall(void) {

@@ -436,3 +436,26 @@ const class_desc_t find_class = {
     .members = find_members,
     .n_members = sizeof(find_members) / sizeof(find_members[0]),
 };
+
+// === Process-singleton lifecycle ============================================
+//
+// `find` is a stateless facade — its methods scan whichever memory map
+// is currently active. Register once at shell_init.
+
+static struct object *s_find_object = NULL;
+
+void find_class_register(void) {
+    if (s_find_object)
+        return;
+    s_find_object = object_new(&find_class, NULL, "find");
+    if (s_find_object)
+        object_attach(object_root(), s_find_object);
+}
+
+void find_class_unregister(void) {
+    if (s_find_object) {
+        object_detach(s_find_object);
+        object_delete(s_find_object);
+        s_find_object = NULL;
+    }
+}
