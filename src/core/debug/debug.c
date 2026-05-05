@@ -22,11 +22,11 @@
 #include "debug_mac.h"
 #include "expr.h"
 #include "fpu.h"
-#include "gs_classes.h"
 #include "log.h"
 #include "memory.h"
 #include "mmu.h"
 #include "object.h"
+#include "root.h"
 #include "scheduler.h"
 #include "shell.h"
 #include "system.h"
@@ -150,7 +150,7 @@ breakpoint_t *set_breakpoint(debug_t *debug, uint32_t addr, addr_space_t space) 
     bp->condition = NULL;
     bp->hit_count = 0;
     bp->id = debug->next_breakpoint_id++;
-    // The entry object is created lazily by gs_classes the first time
+    // The entry object is created lazily by the root install path the first time
     // someone resolves debug.breakpoints[id]; we just hold the slot.
     bp->entry_object = gs_classes_make_breakpoint_object(bp);
 

@@ -1240,8 +1240,7 @@ static void em_assertion_callback(const char *expr, const char *file, int line, 
 }
 
 // Background auto-checkpoint accessors — override the weak defaults in
-// system.c so gs_classes' `auto_checkpoint` attribute reads/writes the
-// live flag.
+// system.c so the `auto_checkpoint` attribute reads/writes the live flag.
 bool gs_checkpoint_auto_get(void) {
     return checkpoint_auto_enabled;
 }

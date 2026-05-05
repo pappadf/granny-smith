@@ -1,19 +1,20 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) pappadf
 
-// gs_classes.c
-// Object-model install/uninstall orchestrator + a few cfg-scoped class
-// definitions that have no per-subsystem owner:
-//   - shell namespace stub (parent for shell.alias)
-//   - top-level introspection (objects/attributes/methods/help/time)
-//     and a few thin top-level wrappers (echo, assert, download)
+// root.c
+// Defines the `emu` root class — the top-level introspection methods
+// (objects / attributes / methods / help / time) plus a few thin
+// wrappers (quit / assert / echo / download) — and orchestrates the
+// install/uninstall of the small set of cfg-scoped stubs that hang off
+// it (the shell namespace and shell.alias child, the storage view of
+// cfg->images).
 //
 // Subsystem-owned classes (cpu/fpu/memory/scc/rtc/via/scsi/floppy/sound/
 // appletalk/debug/mouse/keyboard/screen/vfs/find/storage*) live in their
 // owning modules and self-register via *_init / *_delete. Built-in
 // `$reg` aliases for CPU/FPU registers register from cpu_init().
 
-#include "gs_classes.h"
+#include "root.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -27,8 +28,8 @@
 #include "value.h"
 
 // instance_data on these stubs is config_t*. The lifetime is bounded
-// by gs_classes_install / gs_classes_uninstall — same scope as the
-// owning emulator instance.
+// by root_install / root_uninstall — same scope as the owning emulator
+// instance.
 //
 // Class descriptors are defined in their owning modules (cpu.c,
 // memory.c, machine.c, scc.c, etc.) and referenced here via extern
@@ -354,9 +355,9 @@ static const class_desc_t emu_root_class_real = {
 // patterns both have to work:
 //
 //   1. Cold boot
-//        system_create(new) -> gs_classes_install(new)
+//        system_create(new) -> root_install(new)
 //        ... later ...
-//        system_destroy(new) -> gs_classes_uninstall_if(new)
+//        system_destroy(new) -> root_uninstall_if(new)
 //
 //   2. checkpoint --load (cmd_load_checkpoint)
 //        new = system_restore(...);     // system_create(new) -> install(new)
@@ -372,9 +373,9 @@ static const class_desc_t emu_root_class_real = {
 //
 // The fix: track which cfg the stubs were installed for. Install is
 // idempotent only for the *same* cfg and otherwise uninstalls before
-// reinstalling. `gs_classes_uninstall_if(cfg)` (called from
-// system_destroy) only tears down when the stubs are still associated
-// with `cfg` — so destroying the old config after a load is a no-op.
+// reinstalling. `root_uninstall_if(cfg)` (called from system_destroy)
+// only tears down when the stubs are still associated with `cfg` — so
+// destroying the old config after a load is a no-op.
 
 #define MAX_STUBS 40
 static struct object *g_stubs[MAX_STUBS];
@@ -386,7 +387,7 @@ static struct object *attach_stub(struct object *parent, const class_desc_t *cls
         return NULL;
     char err[200];
     if (!object_validate_class(cls, err, sizeof(err))) {
-        fprintf(stderr, "gs_classes: class '%s' invalid: %s\n", cls->name ? cls->name : "?", err);
+        fprintf(stderr, "root: class '%s' invalid: %s\n", cls->name ? cls->name : "?", err);
         return NULL;
     }
     struct object *o = object_new(cls, data, name);
@@ -397,14 +398,14 @@ static struct object *attach_stub(struct object *parent, const class_desc_t *cls
     return o;
 }
 
-void gs_classes_install_root(void) {
+void root_install_class(void) {
     // Registers the top-level method table on the object root. Safe to
     // call repeatedly — object_root_set_class is idempotent for the
     // same class pointer.
     object_root_set_class(&emu_root_class_real);
 }
 
-void gs_classes_install(struct config *cfg) {
+void root_install(struct config *cfg) {
     // Idempotent for the SAME cfg — second-call from a redundant init
     // path keeps the existing stubs.
     if (g_stub_count > 0 && g_installed_cfg == cfg)
@@ -415,13 +416,13 @@ void gs_classes_install(struct config *cfg) {
     // the eventual `system_destroy(old_cfg)` call below doesn't end up
     // wiping the freshly installed root.
     if (g_stub_count > 0)
-        gs_classes_uninstall();
+        root_uninstall();
     g_installed_cfg = cfg;
 
     // Top-level methods. Already installed by shell_init via
-    // gs_classes_install_root; the call is repeated here so paths that
-    // skip shell_init still get the methods.
-    gs_classes_install_root();
+    // root_install_class; the call is repeated here so paths that skip
+    // shell_init still get the methods.
+    root_install_class();
 
     // Subsystem-scoped objects are registered by their owners (cpu_init,
     // memory_map_init, scc_init, rtc_init, via_init, scsi_init,
@@ -444,7 +445,7 @@ void gs_classes_install(struct config *cfg) {
         attach_stub(shell_obj, &shell_alias_class, cfg, "alias");
 }
 
-void gs_classes_uninstall(void) {
+void root_uninstall(void) {
     for (int i = g_stub_count - 1; i >= 0; i--) {
         struct object *o = g_stubs[i];
         if (o) {
@@ -471,7 +472,7 @@ void gs_classes_uninstall(void) {
 // `checkpoint --load`, the order is `system_create(new)` → install(new)
 // → `system_destroy(old)`; without this gate the destroy would wipe the
 // freshly installed `new` root.
-void gs_classes_uninstall_if(struct config *cfg) {
+void root_uninstall_if(struct config *cfg) {
     if (g_installed_cfg == cfg)
-        gs_classes_uninstall();
+        root_uninstall();
 }

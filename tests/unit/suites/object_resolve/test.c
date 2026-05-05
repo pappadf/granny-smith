@@ -242,7 +242,7 @@ TEST(test_indexed_next_skips_holes) {
 
 // Mock class with a reserved-word member name. object_validate_class
 // must reject it. Note: registration entry points should always
-// validate before attaching (gs_classes.c does this; M3 alias.add
+// validate before attaching (root.c does this; M3 alias.add
 // will too).
 static const member_t bad_members[] = {
     {.kind = M_ATTR, .name = "while", .flags = VAL_RO, .attr = {.type = V_UINT, .get = a_get_pc, .set = NULL}},

@@ -14,7 +14,7 @@ import { bootWithMedia } from '../../helpers/boot';
 test.describe('gsEval bridge', () => {
   test.beforeEach(async ({ page }) => {
     // The wrapper needs the object root populated, which only happens
-    // after a machine boots (gs_classes_install runs from system_create).
+    // after a machine boots (root_install runs from system_create).
     await bootWithMedia(page, 'roms/Plus_v3.rom');
     await page.waitForFunction(() => typeof (window as any).gsEval === 'function');
   });

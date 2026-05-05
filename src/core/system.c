@@ -18,7 +18,6 @@
 #include "cpu.h"
 #include "drive_catalog.h"
 #include "floppy.h"
-#include "gs_classes.h"
 #include "image.h"
 #include "image_vfs.h"
 #include "keyboard.h"
@@ -27,6 +26,7 @@
 #include "memory.h"
 #include "mouse.h"
 #include "rom.h"
+#include "root.h"
 #include "rtc.h"
 #include "scc.h"
 #include "scheduler.h"
@@ -841,7 +841,7 @@ void setup_init() {
     (void)log_register_category("appletalk");
 
     // Phase 5c — legacy `register_command` calls retired. The typed
-    // object-model bridge (gs_classes.c) now provides every operation;
+    // object-model bridge (root.c) now provides every operation;
     // the underlying handlers (cmd_fd_handler, cmd_hd_handler, …)
     // remain so shell_fd_argv / shell_hd_argv can call them directly.
     image_init(NULL);
@@ -926,7 +926,7 @@ config_t *system_create(const hw_profile_t *profile, checkpoint_t *checkpoint) {
     // Stand up the object-model root (M2): attaches stub classes for
     // cpu/memory/scheduler/machine/shell/storage so `eval` can read
     // runtime state. The legacy shell remains primary.
-    gs_classes_install(cfg);
+    root_install(cfg);
 
     // Notify the platform (e.g., install assertion callback)
     system_post_create(cfg);
@@ -957,7 +957,7 @@ void system_destroy(config_t *config) {
     // exit. Calling rom_delete here would break checkpoint reload, where
     // system_destroy(old) runs *after* system_create(new) has already
     // pinned a fresh emulator that still references the rom object.
-    gs_classes_uninstall_if(config);
+    root_uninstall_if(config);
 
     // Delegate machine-specific teardown to the profile
     if (config->machine && config->machine->teardown) {

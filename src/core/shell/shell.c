@@ -151,7 +151,7 @@ int tokenize(char *line, char *argv[], int max) {
 
 // Phase 5c — legacy `help` / `echo` / `time` / `add` / `remove`
 // shell built-ins retired. `echo` and other utilities are typed root
-// methods now (gs_classes.c).
+// methods now (root.c).
 
 // Phase 5c — legacy filesystem commands (`ls`, `cd`, `mkdir`, `mv`,
 // `cat`, `exists`, `size`, `rm`) and the registry-based execute_cmd
@@ -561,8 +561,8 @@ int shell_init(void) {
     // Install the top-level object-root methods (assert, echo, cp,
     // peeler, rom_probe, …) so JS callers (`gsEval`) and the typed
     // path-form parser can reach them.
-    extern void gs_classes_install_root(void);
-    gs_classes_install_root();
+    extern void root_install_class(void);
+    root_install_class();
 
     // Register process-singleton namespace objects that exist
     // independently of any machine instance: rom, vrom, and machine
@@ -602,10 +602,10 @@ int shell_init(void) {
     // which the URL-media auto-boot path uses *before* machine.boot to
     // copy the downloaded ROM into OPFS and to scan extracted archives
     // for floppy images. system_create will later re-install with the
-    // real cfg (gs_classes_install handles the cfg-change uninstall +
+    // real cfg (root_install handles the cfg-change uninstall +
     // reinstall internally).
-    extern void gs_classes_install(struct config * cfg);
-    gs_classes_install(NULL);
+    extern void root_install(struct config * cfg);
+    root_install(NULL);
 
     // Latch the worker pthread for the thread-affinity guard. From now
     // on (under MODE=debug/sanitize) any call into shell_dispatch() or

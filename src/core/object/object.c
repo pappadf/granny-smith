@@ -39,7 +39,7 @@ struct object {
     struct invalidator *invalidators; // weak-ref callbacks for held nodes
 };
 
-// Root class: namespace-only by default. gs_classes_install swaps in a
+// Root class: namespace-only by default. root_install swaps in a
 // richer class via object_root_set_class() to register the top-level
 // methods.
 static const class_desc_t emu_root_class_default = {

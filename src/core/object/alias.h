@@ -63,7 +63,7 @@ void alias_each(alias_iter_fn fn, void *ud);
 size_t alias_count(void);
 
 // Drop every alias (both tiers). Tests use this to start clean;
-// gs_classes_uninstall() also calls it so a re-installed root has no
+// root_uninstall() also calls it so a re-installed root has no
 // stale aliases.
 void alias_reset(void);
 

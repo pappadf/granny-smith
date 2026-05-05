@@ -1,12 +1,14 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) pappadf
 
-// gs_classes.h
-// Install/uninstall orchestrator for the object-model class tree, plus
-// factories for per-entry debug objects (breakpoints/logpoints).
+// root.h
+// The `emu` root class plus the install/uninstall lifecycle that
+// attaches the few cfg-scoped stubs (storage, shell.alias) under it.
+// Declarations for the per-entry debug-object factories live here too
+// because they are used by debug.c at breakpoint/logpoint set-time.
 
-#ifndef GS_OBJECT_GS_CLASSES_H
-#define GS_OBJECT_GS_CLASSES_H
+#ifndef GS_OBJECT_ROOT_H
+#define GS_OBJECT_ROOT_H
 
 #include <stdbool.h>
 #include <stddef.h>
@@ -19,31 +21,29 @@ extern "C" {
 struct config;
 struct object;
 
-// One-time installation of the stub class tree onto object_root().
-// Looks up CPU/memory/scheduler/machine state from `cfg` and creates
-// objects that wrap that state read-only. Idempotent: if called twice
-// for the same config the second call is a no-op (existing objects
-// remain attached).
+// Full root install: attaches the `emu` class onto object_root() and
+// wires up the cfg-scoped stubs (storage, shell.alias). Idempotent for
+// the same config — a second call with the same `cfg` is a no-op. When
+// `cfg` differs from the previous install (e.g., after a checkpoint
+// load), the old stubs are torn down before new ones are attached.
 //
 // `cfg` must outlive the root population — typically the caller is
-// system_create() and gs_classes_uninstall() runs from system_destroy().
-void gs_classes_install(struct config *cfg);
+// system_create() and root_uninstall_if() runs from system_destroy().
+void root_install(struct config *cfg);
 
-// Install just the root class — top-level methods that don't depend on
-// a booted machine. Called early from shell_init() so JS tooling can
-// resolve those paths before any machine is created. Safe to call
-// multiple times.
-void gs_classes_install_root(void);
+// Attach just the `emu` class onto object_root(). Called early from
+// shell_init() so JS tooling can resolve the top-level methods before
+// any machine is created. Safe to call multiple times.
+void root_install_class(void);
 
 // Detach and free every stub object the install path created. Safe to
 // call when nothing is installed.
-void gs_classes_uninstall(void);
+void root_uninstall(void);
 
 // Conditional uninstall: only tears down when the stubs are still
 // associated with `cfg`. Used by `system_destroy(old_cfg)` after a
 // `checkpoint --load` has already swapped in stubs for the new cfg.
-// See the comment above the install/uninstall block in gs_classes.c.
-void gs_classes_uninstall_if(struct config *cfg);
+void root_uninstall_if(struct config *cfg);
 
 // === Debug entry-object factories ===========================================
 //
@@ -63,4 +63,4 @@ struct object *gs_classes_make_logpoint_object(struct logpoint *lp);
 }
 #endif
 
-#endif // GS_OBJECT_GS_CLASSES_H
+#endif // GS_OBJECT_ROOT_H

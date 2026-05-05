@@ -262,7 +262,7 @@ static const arg_decl_t storage_list_dir_args[] = {
 // === Disk-image probe / mount surface =======================================
 //
 // The methods below were previously top-level `partmap`, `probe`, etc.
-// root methods in gs_classes.c; they all read or mutate the storage
+// root methods in root.c; they all read or mutate the storage
 // view of `cfg->images[]` and the cached image-VFS mount table, so
 // they live with the rest of the storage class.
 
@@ -593,7 +593,7 @@ const class_desc_t storage_class_real = {
 };
 
 // Per-slot image-entry object setup/teardown for storage.images
-// indexed children. Called from gs_classes_install / gs_classes_uninstall.
+// indexed children. Called from root_install / root_uninstall.
 void storage_object_classes_init(struct config *cfg) {
     for (int i = 0; i < MAX_IMAGES; i++) {
         g_storage_image_data[i].cfg = cfg;
