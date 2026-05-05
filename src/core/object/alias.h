@@ -62,9 +62,7 @@ void alias_each(alias_iter_fn fn, void *ud);
 // Number of currently registered aliases (built-in + user).
 size_t alias_count(void);
 
-// Drop every alias (both tiers). Tests use this to start clean;
-// root_uninstall() also calls it so a re-installed root has no
-// stale aliases.
+// Drop every alias (both tiers). Tests use this to start clean.
 void alias_reset(void);
 
 // Drop only user aliases — used by checkpoint restore (per

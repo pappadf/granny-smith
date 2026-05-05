@@ -419,7 +419,11 @@ void root_uninstall(void) {
     // Restore the namespace-only root class so a fresh object_root()
     // call after uninstall doesn't surface stale members.
     object_root_set_class(NULL);
-    alias_reset();
+    // Drop user-added aliases only — built-in `$reg` aliases are owned
+    // by the subsystem _init hooks (cpu_init, etc.) and the next
+    // machine boot re-registers them. Wiping built-ins here would
+    // strand them between cpu_init and the next install.
+    alias_clear_user();
     g_installed_cfg = NULL;
 }
 
