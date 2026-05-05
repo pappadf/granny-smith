@@ -6,8 +6,8 @@
 // parameterized by the media type descriptor from media-types.js.
 
 import { UPLOAD_DIR } from './config.js';
-import { sanitizeName, isZipFile, isPeelerArchive, probePeelerArchive,
-         extractZipToDir, extractPeelerToDir } from './media.js';
+import { sanitizeName, isZipFile, isMacArchive, probeMacArchive,
+         extractZipToDir, extractMacArchiveToDir } from './media.js';
 import { writeToOPFS, removeFromOPFS, listDir } from './fs.js';
 import { toast } from './ui.js';
 import { showUploadDialog } from './dialogs.js';
@@ -52,8 +52,8 @@ export async function runUploadPipeline(file, mediaType) {
 
 // Attempt to extract an archive and find a valid media file inside.
 async function tryArchiveExtraction(filePath, displayName, file, mediaType) {
-  const isArchive = isZipFile(displayName) || isPeelerArchive(displayName)
-                    || await probePeelerArchive(filePath);
+  const isArchive = isZipFile(displayName) || isMacArchive(displayName)
+                    || await probeMacArchive(filePath);
 
   if (!isArchive) return null;
 
@@ -74,8 +74,8 @@ async function tryArchiveExtraction(filePath, displayName, file, mediaType) {
       return null;
     }
   } else {
-    // Peeler extraction (sit, hqx, cpt, bin, sea)
-    const ok = await extractPeelerToDir(filePath, extractDir);
+    // Mac-archive extraction (sit, hqx, cpt, bin, sea)
+    const ok = await extractMacArchiveToDir(filePath, extractDir);
     if (!ok) {
       toast(`Failed to extract archive: ${displayName}`);
       return null;
@@ -147,7 +147,7 @@ async function listExtractedFiles(dirPath) {
         results.push(fullPath);
       }
     } else if (entry.kind === 'directory') {
-      // Recurse into subdirectories (peeler creates folders for SIT archives)
+      // Recurse into subdirectories (some archives create folders, e.g. SIT)
       const subFiles = await listExtractedFiles(fullPath);
       results.push(...subFiles);
     }

@@ -43,6 +43,7 @@ type ReturnConvention =
   | 'cmd_int_bool'   // bool true → 0, false → 1 (legacy cmd_int convention)
   | 'cmd_bool'       // bool true → 1, false → 0 (legacy cmd_bool convention)
   | 'string_nonempty' // V_STRING non-empty → 1, empty → 0 (mirrors fd validate)
+  | 'string_to_cmd_int' // non-empty string → 0, empty → 1 (legacy probe convention)
   | 'void_or_error'  // any non-error → 0, error → 1 (legacy "did dispatch succeed")
   | 'pass_through';  // numeric value passed through unchanged (e.g. size/print)
 
@@ -61,6 +62,8 @@ function mapResult(value: any, convention: ReturnConvention): number {
   if (convention === 'cmd_bool') return value === true ? 1 : 0;
   if (convention === 'string_nonempty')
     return typeof value === 'string' && value.length > 0 ? 1 : 0;
+  if (convention === 'string_to_cmd_int')
+    return typeof value === 'string' && value.length > 0 ? 0 : 1;
   if (convention === 'void_or_error') return 0;
   if (convention === 'pass_through') {
     if (typeof value === 'number') return value;
@@ -306,12 +309,15 @@ function translateToGsEval(line: string): Translation | null {
     };
   }
 
-  // peeler: --probe X | -o D X | <archive>
+  // Legacy `peeler --probe X` / `peeler -o D X` shell forms still appear in
+  // older test specs; route them to the new archive.* surface. The probe
+  // form needs string→cmd_int conversion because archive.identify returns
+  // the format short name (non-empty == "is an archive").
   if (head === 'peeler') {
     if (tail[0] === '--probe' && tail.length === 2)
-      return { method: 'peeler_probe', args: [tail[1]], convention: 'cmd_int_bool' };
+      return { method: 'archive.identify', args: [tail[1]], convention: 'string_to_cmd_int' };
     if (tail[0] === '-o' && tail.length === 3)
-      return { method: 'peeler', args: [tail[2], tail[1]], convention: 'cmd_int_bool' };
+      return { method: 'archive.extract', args: [tail[2], tail[1]], convention: 'cmd_int_bool' };
   }
 
   // setup --model X --ram Y → machine.boot(model, [ram_kb])

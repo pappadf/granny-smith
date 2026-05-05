@@ -98,19 +98,22 @@ async function fetchAndStore(slot, url) {
         return;
       }
     } else {
-      // Check if it might be a peeler-supported archive
-      const isPeelerArch = /\.(sit|hqx|cpt|bin|sea)(_|$)/i.test(fileName);
+      // Check if it might be a Mac archive (sit/hqx/cpt/bin/sea)
+      const isMacArch = /\.(sit|hqx|cpt|bin|sea)(_|$)/i.test(fileName);
 
-      if (isPeelerArch && isModuleReady()) {
+      if (isMacArch && isModuleReady()) {
         const tempPath = `/tmp/${slot}_download`;
         writeBinary(tempPath, buf);
 
         try {
-          if ((await window.gsEval('peeler_probe', [tempPath])) === true) {
+          // archive.identify returns the format short name (non-empty
+          // string) for a recognised archive, or empty otherwise.
+          const fmt = await window.gsEval('archive.identify', [tempPath]);
+          if (typeof fmt === 'string' && fmt.length > 0) {
             const extractDir = `/tmp/${slot}_unpacked`;
             toast(`Extracting ${fileName}...`);
 
-            if ((await window.gsEval('peeler', [tempPath, extractDir])) === true) {
+            if ((await window.gsEval('archive.extract', [tempPath, extractDir])) === true) {
               if ((await window.gsEval('storage.find_media', [extractDir, tmpPath])) === true) {
                 toast(`${slot} downloaded (extracted from archive)`);
               } else {
@@ -126,7 +129,7 @@ async function fetchAndStore(slot, url) {
             toast(`${slot} downloaded`);
           }
         } catch (err) {
-          console.warn('Peeler processing failed, storing original', err);
+          console.warn('Archive processing failed, storing original', err);
           writeBinary(tmpPath, buf);
           toast(`${slot} downloaded`);
         }

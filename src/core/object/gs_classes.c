@@ -42,8 +42,6 @@
 #include "machine.h"
 #include "memory.h"
 #include "object.h"
-#include "peeler.h"
-#include "peeler_shell.h"
 #include "rtc.h"
 #include "scc.h"
 #include "scheduler.h"
@@ -296,46 +294,6 @@ static value_t method_root_print(struct object *self, const member_t *m, int arg
 // `hd_download` defers similarly — it requires platform/network state
 // outside the scope of the object tree.
 
-// `peeler(path, [out_dir])` — extract a Mac archive
-// (.sit/.cpt/.hqx/.bin) via the legacy `peeler` shell command.
-// Returns true on successful extraction. Note: legacy peeler takes the
-// output directory via `-o <dir>` (not as a positional arg), so this
-// wrapper builds the line by hand rather than going through
-// dispatch_with_string_args.
-static value_t method_root_peeler(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
-    if (argc < 1 || argv[0].kind != V_STRING)
-        return val_err("peeler: expected (path, [out_dir])");
-    const char *path = argv[0].s ? argv[0].s : "";
-    const char *out_dir = (argc >= 2 && argv[1].kind == V_STRING && argv[1].s && *argv[1].s) ? argv[1].s : NULL;
-    return val_bool(peeler_shell_extract(path, out_dir) == 0);
-}
-
-// `peeler_probe(path)` — true if the given file is a peeler-supported
-// archive (`peeler --probe` returns 0 on success).
-static value_t method_root_peeler_probe(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
-    if (argc < 1 || argv[0].kind != V_STRING)
-        return val_err("peeler_probe: expected (path)");
-    const char *path = argv[0].s ? argv[0].s : "";
-    peel_err_t *err = NULL;
-    peel_buf_t buf = peel_read_file(path, &err);
-    if (err) {
-        fprintf(stderr, "peeler: cannot open '%s': %s\n", path, peel_err_msg(err));
-        peel_err_free(err);
-        return val_bool(false);
-    }
-    const char *format = peel_detect(buf.data, buf.size);
-    if (format)
-        printf("%s: Supported (%s format detected)\n", path, format);
-    else
-        printf("%s: NOT a supported format\n", path);
-    peel_free(&buf);
-    return val_bool(format != NULL);
-}
-
 // `quit()` — request emulator shutdown. Headless sets the script
 // quit flag and stops the scheduler; WASM is a no-op (the browser
 // owns the lifecycle).
@@ -507,10 +465,6 @@ static value_t method_root_download(struct object *self, const member_t *m, int 
     return val_bool(gs_download(argv[0].s ? argv[0].s : "") == 0);
 }
 
-static const arg_decl_t root_peeler_args[] = {
-    {.name = "path", .kind = V_STRING, .doc = "Archive path"},
-    {.name = "out_dir", .kind = V_STRING, .flags = OBJ_ARG_OPTIONAL, .doc = "Optional extraction directory"},
-};
 static const arg_decl_t root_path_arg[] = {
     {.name = "path", .kind = V_STRING, .doc = "File path"},
 };
@@ -531,69 +485,57 @@ static const member_t emu_root_members[] = {
     {.kind = M_METHOD,
      .name = "objects",
      .doc = "List child object names at the given path (or root)",
-     .method = {.args = root_path_args, .nargs = 1, .result = V_LIST, .fn = method_root_objects}    },
+     .method = {.args = root_path_args, .nargs = 1, .result = V_LIST, .fn = method_root_objects}   },
     {.kind = M_METHOD,
      .name = "attributes",
      .doc = "List attribute names of the resolved object's class",
-     .method = {.args = root_path_args, .nargs = 1, .result = V_LIST, .fn = method_root_attributes} },
+     .method = {.args = root_path_args, .nargs = 1, .result = V_LIST, .fn = method_root_attributes}},
     {.kind = M_METHOD,
      .name = "methods",
      .doc = "List method names of the resolved object's class",
-     .method = {.args = root_path_args, .nargs = 1, .result = V_LIST, .fn = method_root_methods}    },
+     .method = {.args = root_path_args, .nargs = 1, .result = V_LIST, .fn = method_root_methods}   },
     {.kind = M_METHOD,
      .name = "help",
      .doc = "Return the doc string of a resolved member (or class name)",
-     .method = {.args = root_help_args, .nargs = 1, .result = V_STRING, .fn = method_root_help}     },
+     .method = {.args = root_help_args, .nargs = 1, .result = V_STRING, .fn = method_root_help}    },
     {.kind = M_METHOD,
      .name = "time",
      .doc = "Wall-clock seconds since the Unix epoch",
-     .method = {.args = NULL, .nargs = 0, .result = V_UINT, .fn = method_root_time}                 },
+     .method = {.args = NULL, .nargs = 0, .result = V_UINT, .fn = method_root_time}                },
     {.kind = M_METHOD,
      .name = "print",
      .doc = "Format a value as a string for display",
-     .method = {.args = root_print_args, .nargs = 1, .result = V_STRING, .fn = method_root_print}   },
-    // Legacy-command wrappers (M8 slice 4 — proposal §5.10).
-    // Side-effect wrappers return V_BOOL (true on dispatch success) so
-    // the M10b migrators can branch on the result without re-deriving
-    // the legacy command's int / cmd_bool convention.
-    {.kind = M_METHOD,
-     .name = "peeler",
-     .doc = "Extract a Mac archive (.sit/.cpt/.hqx/.bin)",
-     .method = {.args = root_peeler_args, .nargs = 2, .result = V_BOOL, .fn = method_root_peeler}   },
-    {.kind = M_METHOD,
-     .name = "peeler_probe",
-     .doc = "True if a file is a peeler-supported archive",
-     .method = {.args = root_path_arg, .nargs = 1, .result = V_BOOL, .fn = method_root_peeler_probe}},
+     .method = {.args = root_print_args, .nargs = 1, .result = V_STRING, .fn = method_root_print}  },
     {.kind = M_METHOD,
      .name = "quit",
      .doc = "Exit the emulator (asks the legacy quit command to end the run)",
-     .method = {.args = NULL, .nargs = 0, .result = V_NONE, .fn = method_root_quit}                 },
+     .method = {.args = NULL, .nargs = 0, .result = V_NONE, .fn = method_root_quit}                },
     {.kind = M_METHOD,
      .name = "assert",
      .doc = "Assert that a predicate is truthy; abort the script otherwise",
-     .method = {.args = NULL, .nargs = 2, .result = V_BOOL, .fn = method_root_assert}               },
+     .method = {.args = NULL, .nargs = 2, .result = V_BOOL, .fn = method_root_assert}              },
     {.kind = M_METHOD,
      .name = "echo",
      .doc = "Print arguments separated by spaces (final newline appended)",
-     .method = {.args = NULL, .nargs = 0, .result = V_BOOL, .fn = method_root_echo}                 },
+     .method = {.args = NULL, .nargs = 0, .result = V_BOOL, .fn = method_root_echo}                },
     // Checkpoint / runtime-state wrappers (M10b — checkpoint area).
     {.kind = M_METHOD,
      .name = "download",
      .doc = "Trigger a browser file download (WASM-only)",
-     .method = {.args = root_path_arg, .nargs = 1, .result = V_BOOL, .fn = method_root_download}    },
+     .method = {.args = root_path_arg, .nargs = 1, .result = V_BOOL, .fn = method_root_download}   },
     // Debugging-area thin wrappers.
     {.kind = M_METHOD,
      .name = "step",
      .doc = "Single-step N instructions; default 1 (legacy `step`/`s`)",
-     .method = {.args = NULL, .nargs = 1, .result = V_BOOL, .fn = method_root_step}                 },
+     .method = {.args = NULL, .nargs = 1, .result = V_BOOL, .fn = method_root_step}                },
     {.kind = M_METHOD,
      .name = "print_value",
      .doc = "Read a register / flag / memory cell (legacy `print <target>`)",
-     .method = {.args = NULL, .nargs = 1, .result = V_UINT, .fn = method_root_print_value}          },
+     .method = {.args = NULL, .nargs = 1, .result = V_UINT, .fn = method_root_print_value}         },
     {.kind = M_METHOD,
      .name = "set_value",
      .doc = "Write a register / flag / memory cell (legacy `set <target> <value>`)",
-     .method = {.args = NULL, .nargs = 2, .result = V_BOOL, .fn = method_root_set_value}            },
+     .method = {.args = NULL, .nargs = 2, .result = V_BOOL, .fn = method_root_set_value}           },
 };
 
 static const class_desc_t emu_root_class_real = {

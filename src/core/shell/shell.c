@@ -579,10 +579,12 @@ int shell_init(void) {
     extern void vrom_init(void);
     extern void machine_init(void);
     extern void checkpoint_init(void);
+    extern void archive_init(void);
     rom_init();
     vrom_init();
     machine_init();
     checkpoint_init();
+    archive_init();
 
     // Install the cfg-scoped namespace stubs (storage, shell, mouse,
     // keyboard, screen, vfs, find) with a NULL cfg so their pre-boot

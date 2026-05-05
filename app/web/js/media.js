@@ -24,11 +24,11 @@ const ZIP_EXTENSION = /\.zip$/i;
 // Check if filename indicates a ZIP archive
 export function isZipFile(name) { return ZIP_EXTENSION.test(name || ''); }
 
-// Check if filename indicates a peeler-supported archive
-export function isPeelerArchive(name) { return ARCHIVE_EXTENSIONS.test(name || ''); }
+// Check if filename indicates a Mac archive (sit/hqx/cpt/bin/sea)
+export function isMacArchive(name) { return ARCHIVE_EXTENSIONS.test(name || ''); }
 
-// Check if a filename looks like an archive (ZIP or peeler)
-export function isArchiveFile(name) { return isZipFile(name) || isPeelerArchive(name); }
+// Check if a filename looks like an archive (ZIP or Mac archive)
+export function isArchiveFile(name) { return isZipFile(name) || isMacArchive(name); }
 
 // --- Sanitization ---
 
@@ -59,16 +59,19 @@ export async function extractZipToDir(data, extractDir) {
   return extractedPaths;
 }
 
-// Extract a peeler-supported archive to a directory.
-export async function extractPeelerToDir(archivePath, extractDir) {
+// Extract a Mac archive (sit/hqx/cpt/bin/sea) to a directory.
+export async function extractMacArchiveToDir(archivePath, extractDir) {
   ensureDir(extractDir);
-  return (await window.gsEval('peeler', [archivePath, extractDir])) === true;
+  return (await window.gsEval('archive.extract', [archivePath, extractDir])) === true;
 }
 
-// Probe if a file is a peeler-supported archive.
-export async function probePeelerArchive(filePath) {
+// Probe if a file is a recognised Mac archive.
+// archive.identify returns the format short name ("sit"/"hqx"/"cpt"/"bin"/"sea")
+// for a recognised file, or empty otherwise — non-empty means "is an archive".
+export async function probeMacArchive(filePath) {
   try {
-    return (await window.gsEval('peeler_probe', [filePath])) === true;
+    const fmt = await window.gsEval('archive.identify', [filePath]);
+    return typeof fmt === 'string' && fmt.length > 0;
   } catch {
     return false;
   }
@@ -94,16 +97,16 @@ export async function tryExtractArchive(filePath, displayName, data) {
     return { extracted: false, extractDir: null };
   }
 
-  // Try peeler extraction (probe first)
-  if (await probePeelerArchive(filePath)) {
+  // Try Mac-archive extraction (probe first)
+  if (await probeMacArchive(filePath)) {
     toast(`Extracting ${displayName}...`);
     try {
-      if (await extractPeelerToDir(filePath, extractDir)) {
+      if (await extractMacArchiveToDir(filePath, extractDir)) {
         toast(`Extracted ${displayName} to ${extractDir}`);
         return { extracted: true, extractDir };
       }
     } catch (err) {
-      console.error('Peeler extract failed:', err);
+      console.error('Archive extract failed:', err);
     }
     toast(`Failed to extract ${displayName}; file kept at ${filePath}`);
   }
