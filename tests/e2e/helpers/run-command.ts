@@ -68,6 +68,10 @@ function mapResult(value: any, convention: ReturnConvention): number {
   if (convention === 'pass_through') {
     if (typeof value === 'number') return value;
     if (typeof value === 'bigint') return Number(value);
+    // V_UINT values with VAL_HEX serialize as "0x…" strings (gs_api JSON
+    // shape). Decode them so callers using `pass_through` get numbers.
+    if (typeof value === 'string' && /^0x[0-9a-fA-F]+$/.test(value))
+      return Number(value);
     return 0;
   }
   return 0;
@@ -115,6 +119,61 @@ function parseInt10(s: string | undefined): number | null {
 function parseBool(s: string | undefined): boolean {
   if (s === undefined) return false;
   return s === 'true' || s === 'on' || s === 'yes' || s === '1';
+}
+
+// Parse a numeric literal accepting `0x`, `$`, or bare decimal/hex.
+// Returns the integer as a number (32-bit safe via BigInt for large hex),
+// or null on parse failure.
+function parseHexOrDec(raw: string): number | null {
+  let s = raw;
+  if (s.startsWith('$')) s = '0x' + s.slice(1);
+  else if (/^[0-9a-fA-F]+$/.test(s) && /[a-fA-F]/.test(s))
+    s = '0x' + s; // bare hex if any hex digit
+  const n = Number(s);
+  if (Number.isFinite(n)) return n;
+  return null;
+}
+
+function parseSetValue(raw: string): number | null {
+  return parseHexOrDec(raw);
+}
+
+// Resolve a legacy `print`/`set` target to a typed object-model path.
+// Returns null when the target doesn't map to anything known. Memory
+// targets come back as a 'method' with the peek path; the `set` branch
+// rewrites peek→poke and appends the value.
+type DebugTarget =
+  | { kind: 'attr'; method: string }
+  | { kind: 'method'; method: string; args: unknown[] };
+
+function resolveDebugTarget(rawTarget: string): DebugTarget | null {
+  // Accept `$d0` / `D5` / `0x1000.b` / `instr`. Strip a leading `$`.
+  const target = rawTarget.startsWith('$') ? rawTarget.slice(1) : rawTarget;
+
+  // Memory address.size form.
+  const mem = target.match(/^(.+)\.([bwlBWL])$/);
+  if (mem) {
+    const addr = parseHexOrDec(mem[1]);
+    if (addr === null) return null;
+    const size = mem[2].toLowerCase();
+    return { kind: 'method', method: `memory.peek.${size}`, args: [addr] };
+  }
+
+  const lower = target.toLowerCase();
+
+  // Instruction counter.
+  if (lower === 'instr') return { kind: 'attr', method: 'cpu.instr_count' };
+
+  // CPU registers / CCR bits — every name maps directly to a cpu.* attr.
+  const cpuAttrs = new Set([
+    'pc', 'sr', 'ccr', 'ssp', 'usp', 'msp', 'vbr', 'sp',
+    'd0', 'd1', 'd2', 'd3', 'd4', 'd5', 'd6', 'd7',
+    'a0', 'a1', 'a2', 'a3', 'a4', 'a5', 'a6', 'a7',
+    'c', 'v', 'z', 'n', 'x',
+  ]);
+  if (cpuAttrs.has(lower)) return { kind: 'attr', method: `cpu.${lower}` };
+
+  return null;
 }
 
 function translateToGsEval(line: string): Translation | null {
@@ -187,33 +246,43 @@ function translateToGsEval(line: string): Translation | null {
   }
 
   // Debug ops: print/set/x. Targets accept the legacy syntax (`d5`, `pc`,
-  // `z`, `0x1000.b`, `instr`, `$pc`, etc.) — passed through verbatim to
-  // the print/set/examine wrappers, which forward to the legacy parser.
+  // `z`, `0x1000.b`, `instr`, `$pc`, etc.) and route to the typed cpu.* /
+  // memory.peek.*/poke.* paths. Mac globals are handled via
+  // debug.mac.globals.read / write.
   if (head === 'print') {
     if (tail.length === 0)
-      // Bare `print` — typed wrapper rejects empty target with V_ERR,
-      // which mapResult turns into 1 (matches the test expectation).
-      return { method: 'print_value', args: [''], convention: 'pass_through' };
-    if (tail.length === 1)
-      return { method: 'print_value', args: [tail[0]], convention: 'pass_through' };
-    // `print instr` and similar multi-token forms with a single logical
-    // target: rejoin them into one string.
-    return {
-      method: 'print_value',
-      args: [tail.join(' ')],
-      convention: 'pass_through',
-    };
+      // Bare `print` — surface as an unresolved path so mapResult returns 1.
+      return { method: 'cpu', args: [''], convention: 'pass_through' };
+    const target = tail[0];
+    const t = resolveDebugTarget(target);
+    if (t === null) return null;
+    if (t.kind === 'attr')
+      return { method: t.method, args: [], convention: 'pass_through' };
+    if (t.kind === 'method')
+      return { method: t.method, args: t.args, convention: 'pass_through' };
+    return null;
   }
   if (head === 'set') {
-    if (tail.length === 2)
-      return { method: 'set_value', args: tail, convention: 'cmd_int_bool' };
     if (tail.length === 0)
-      // Bare `set` — typed wrapper rejects with V_ERR; legacy printed
-      // a usage message and returned 0. The debug spec asserts `toBe(0)`
-      // here, so we pass through cmd_int_bool which gives 1 on error.
-      // Tests for `set` (no args) currently use `expect(exitCode).toBe(0)`
-      // — use void_or_error to keep that contract.
-      return { method: 'set_value', args: ['', ''], convention: 'void_or_error' };
+      // Bare `set` — pass an unresolvable path; mapResult turns the error
+      // into a non-zero exit, matching the legacy "usage" exit shape.
+      return { method: 'cpu', args: [], convention: 'void_or_error' };
+    if (tail.length === 2) {
+      const target = tail[0];
+      const value = parseSetValue(tail[1]);
+      if (value === null) return null;
+      const t = resolveDebugTarget(target);
+      if (t === null) return null;
+      if (t.kind === 'attr')
+        // Attribute write: gsEval(path, [value]) → node_set.
+        return { method: t.method, args: [value], convention: 'void_or_error' };
+      if (t.kind === 'method')
+        // memory.poke.b/w/l takes (addr, value). `t.args` already has addr;
+        // append the value.
+        return { method: t.method.replace('.peek.', '.poke.'),
+                 args: [...t.args, value],
+                 convention: 'void_or_error' };
+    }
   }
   if (head === 'x' && tail.length >= 1) {
     const args: unknown[] = [tail[0]];

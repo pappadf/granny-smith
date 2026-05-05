@@ -10,6 +10,7 @@
 #include "log.h"
 #include "memory.h"
 #include "object.h"
+#include "scheduler.h"
 #include "system.h"
 #include "system_config.h"
 #include "value.h"
@@ -316,7 +317,18 @@ static value_t attr_cpu_sp(struct object *self, const member_t *m) {
     return v;
 }
 
-#define CPU_DREG_GETTER(N)                                                                                             \
+// Coerce an incoming value into a uint32 register payload. Always frees
+// `in` (setter ownership). On parse failure returns an error value_t and
+// stores `false` in *ok.
+static uint32_t set_value_to_u32(value_t *in, bool *ok) {
+    bool inner = false;
+    uint64_t v = val_as_u64(in, &inner);
+    value_free(in);
+    *ok = inner;
+    return (uint32_t)v;
+}
+
+#define CPU_DREG_RW(N)                                                                                                 \
     static value_t attr_cpu_d##N(struct object *self, const member_t *m) {                                             \
         (void)m;                                                                                                       \
         cpu_t *cpu = cpu_from(self);                                                                                   \
@@ -325,8 +337,20 @@ static value_t attr_cpu_sp(struct object *self, const member_t *m) {
         value_t v = val_uint(4, cpu_get_dn(cpu, N));                                                                   \
         v.flags |= VAL_HEX;                                                                                            \
         return v;                                                                                                      \
+    }                                                                                                                  \
+    static value_t set_cpu_d##N(struct object *self, const member_t *m, value_t in) {                                  \
+        (void)m;                                                                                                       \
+        cpu_t *cpu = cpu_from(self);                                                                                   \
+        bool ok = false;                                                                                               \
+        uint32_t v = set_value_to_u32(&in, &ok);                                                                       \
+        if (!cpu)                                                                                                      \
+            return val_err("cpu not initialised");                                                                     \
+        if (!ok)                                                                                                       \
+            return val_err("cpu.d" #N ": expected integer");                                                           \
+        cpu_set_dn(cpu, N, v);                                                                                         \
+        return val_none();                                                                                             \
     }
-#define CPU_AREG_GETTER(N)                                                                                             \
+#define CPU_AREG_RW(N)                                                                                                 \
     static value_t attr_cpu_a##N(struct object *self, const member_t *m) {                                             \
         (void)m;                                                                                                       \
         cpu_t *cpu = cpu_from(self);                                                                                   \
@@ -335,42 +359,224 @@ static value_t attr_cpu_sp(struct object *self, const member_t *m) {
         value_t v = val_uint(4, cpu_get_an(cpu, N));                                                                   \
         v.flags |= VAL_HEX;                                                                                            \
         return v;                                                                                                      \
+    }                                                                                                                  \
+    static value_t set_cpu_a##N(struct object *self, const member_t *m, value_t in) {                                  \
+        (void)m;                                                                                                       \
+        cpu_t *cpu = cpu_from(self);                                                                                   \
+        bool ok = false;                                                                                               \
+        uint32_t v = set_value_to_u32(&in, &ok);                                                                       \
+        if (!cpu)                                                                                                      \
+            return val_err("cpu not initialised");                                                                     \
+        if (!ok)                                                                                                       \
+            return val_err("cpu.a" #N ": expected integer");                                                           \
+        cpu_set_an(cpu, N, v);                                                                                         \
+        return val_none();                                                                                             \
     }
 
 // clang-format off — these macros expand to function definitions
 // without a trailing `;`, which clang-format mis-parses as expressions.
-CPU_DREG_GETTER(0)
-CPU_DREG_GETTER(1)
-CPU_DREG_GETTER(2)
-CPU_DREG_GETTER(3)
-CPU_DREG_GETTER(4)
-CPU_DREG_GETTER(5)
-CPU_DREG_GETTER(6)
-CPU_DREG_GETTER(7)
-CPU_AREG_GETTER(0)
-CPU_AREG_GETTER(1)
-CPU_AREG_GETTER(2)
-CPU_AREG_GETTER(3)
-CPU_AREG_GETTER(4)
-CPU_AREG_GETTER(5)
-CPU_AREG_GETTER(6)
-CPU_AREG_GETTER(7)
+CPU_DREG_RW(0)
+CPU_DREG_RW(1)
+CPU_DREG_RW(2)
+CPU_DREG_RW(3)
+CPU_DREG_RW(4)
+CPU_DREG_RW(5)
+CPU_DREG_RW(6)
+CPU_DREG_RW(7)
+CPU_AREG_RW(0)
+CPU_AREG_RW(1)
+CPU_AREG_RW(2)
+CPU_AREG_RW(3)
+CPU_AREG_RW(4)
+CPU_AREG_RW(5)
+CPU_AREG_RW(6)
+CPU_AREG_RW(7)
 // clang-format on
 
-#define ATTR_RO_HEX(name_, get_)                                                                                       \
+// === Setters for the named registers and CCR-bit attributes ===
+
+static value_t set_cpu_pc(struct object *self, const member_t *m, value_t in) {
+    (void)m;
+    cpu_t *cpu = cpu_from(self);
+    bool ok = false;
+    uint32_t v = set_value_to_u32(&in, &ok);
+    if (!cpu)
+        return val_err("cpu not initialised");
+    if (!ok)
+        return val_err("cpu.pc: expected integer");
+    cpu_set_pc(cpu, v);
+    return val_none();
+}
+
+static value_t set_cpu_sr(struct object *self, const member_t *m, value_t in) {
+    (void)m;
+    cpu_t *cpu = cpu_from(self);
+    bool ok = false;
+    uint32_t v = set_value_to_u32(&in, &ok);
+    if (!cpu)
+        return val_err("cpu not initialised");
+    if (!ok)
+        return val_err("cpu.sr: expected integer");
+    cpu_set_sr(cpu, (uint16_t)v);
+    return val_none();
+}
+
+static value_t set_cpu_ccr(struct object *self, const member_t *m, value_t in) {
+    (void)m;
+    cpu_t *cpu = cpu_from(self);
+    bool ok = false;
+    uint32_t v = set_value_to_u32(&in, &ok);
+    if (!cpu)
+        return val_err("cpu not initialised");
+    if (!ok)
+        return val_err("cpu.ccr: expected integer");
+    uint16_t sr = cpu_get_sr(cpu);
+    sr = (sr & (uint16_t)~cpu_ccr_mask) | (uint16_t)(v & cpu_ccr_mask);
+    cpu_set_sr(cpu, sr);
+    return val_none();
+}
+
+static value_t set_cpu_ssp(struct object *self, const member_t *m, value_t in) {
+    (void)m;
+    cpu_t *cpu = cpu_from(self);
+    bool ok = false;
+    uint32_t v = set_value_to_u32(&in, &ok);
+    if (!cpu)
+        return val_err("cpu not initialised");
+    if (!ok)
+        return val_err("cpu.ssp: expected integer");
+    cpu_set_ssp(cpu, v);
+    return val_none();
+}
+
+static value_t set_cpu_usp(struct object *self, const member_t *m, value_t in) {
+    (void)m;
+    cpu_t *cpu = cpu_from(self);
+    bool ok = false;
+    uint32_t v = set_value_to_u32(&in, &ok);
+    if (!cpu)
+        return val_err("cpu not initialised");
+    if (!ok)
+        return val_err("cpu.usp: expected integer");
+    cpu_set_usp(cpu, v);
+    return val_none();
+}
+
+static value_t set_cpu_msp(struct object *self, const member_t *m, value_t in) {
+    (void)m;
+    cpu_t *cpu = cpu_from(self);
+    bool ok = false;
+    uint32_t v = set_value_to_u32(&in, &ok);
+    if (!cpu)
+        return val_err("cpu not initialised");
+    if (!ok)
+        return val_err("cpu.msp: expected integer");
+    cpu_set_msp(cpu, v);
+    return val_none();
+}
+
+static value_t set_cpu_vbr(struct object *self, const member_t *m, value_t in) {
+    (void)m;
+    cpu_t *cpu = cpu_from(self);
+    bool ok = false;
+    uint32_t v = set_value_to_u32(&in, &ok);
+    if (!cpu)
+        return val_err("cpu not initialised");
+    if (!ok)
+        return val_err("cpu.vbr: expected integer");
+    cpu_set_vbr(cpu, v);
+    return val_none();
+}
+
+// `cpu.sp` aliases A7 (the active stack pointer).
+static value_t set_cpu_sp(struct object *self, const member_t *m, value_t in) {
+    (void)m;
+    cpu_t *cpu = cpu_from(self);
+    bool ok = false;
+    uint32_t v = set_value_to_u32(&in, &ok);
+    if (!cpu)
+        return val_err("cpu not initialised");
+    if (!ok)
+        return val_err("cpu.sp: expected integer");
+    cpu_set_an(cpu, 7, v);
+    return val_none();
+}
+
+// `cpu.instr_count` — total instructions retired since reset. Read-only;
+// the scheduler owns the counter. Mirrors `print instr` from the legacy
+// shell.
+static value_t attr_cpu_instr_count(struct object *self, const member_t *m) {
+    (void)self;
+    (void)m;
+    return val_uint(8, cpu_instr_count());
+}
+
+// CCR-bit attributes (cpu.c / cpu.v / cpu.z / cpu.n / cpu.x). 1-bit reads
+// and writes that round-trip through SR — the legacy `set z 1` interface
+// in typed form.
+#define CPU_CCR_BIT_RW(letter, mask_const)                                                                             \
+    static value_t attr_cpu_cc_##letter(struct object *self, const member_t *m) {                                      \
+        (void)m;                                                                                                       \
+        cpu_t *cpu = cpu_from(self);                                                                                   \
+        if (!cpu)                                                                                                      \
+            return val_err("cpu not initialised");                                                                     \
+        return val_uint(1, (cpu_get_sr(cpu) & (mask_const)) ? 1u : 0u);                                                \
+    }                                                                                                                  \
+    static value_t set_cpu_cc_##letter(struct object *self, const member_t *m, value_t in) {                           \
+        (void)m;                                                                                                       \
+        cpu_t *cpu = cpu_from(self);                                                                                   \
+        bool ok = false;                                                                                               \
+        uint32_t v = set_value_to_u32(&in, &ok);                                                                       \
+        if (!cpu)                                                                                                      \
+            return val_err("cpu not initialised");                                                                     \
+        if (!ok)                                                                                                       \
+            return val_err("cpu." #letter ": expected integer");                                                       \
+        uint16_t sr = cpu_get_sr(cpu);                                                                                 \
+        if (v & 1u)                                                                                                    \
+            sr |= (mask_const);                                                                                        \
+        else                                                                                                           \
+            sr &= (uint16_t) ~(mask_const);                                                                            \
+        cpu_set_sr(cpu, sr);                                                                                           \
+        return val_none();                                                                                             \
+    }
+
+// clang-format off
+CPU_CCR_BIT_RW(c, cpu_ccr_c)
+CPU_CCR_BIT_RW(v, cpu_ccr_v)
+CPU_CCR_BIT_RW(z, cpu_ccr_z)
+CPU_CCR_BIT_RW(n, cpu_ccr_n)
+CPU_CCR_BIT_RW(x, cpu_ccr_x)
+// clang-format on
+
+#define ATTR_RW_HEX(name_, get_, set_)                                                                                 \
     {                                                                                                                  \
-        .kind = M_ATTR, .name = name_, .flags = VAL_RO | VAL_HEX, .attr = {.type = V_UINT, .get = get_, .set = NULL }  \
+        .kind = M_ATTR, .name = name_, .flags = VAL_HEX, .attr = {.type = V_UINT, .get = get_, .set = set_ }           \
+    }
+#define ATTR_RO(name_, get_)                                                                                           \
+    {                                                                                                                  \
+        .kind = M_ATTR, .name = name_, .flags = VAL_RO, .attr = {.type = V_UINT, .get = get_, .set = NULL }            \
+    }
+#define ATTR_RW_BIT(name_, get_, set_)                                                                                 \
+    {                                                                                                                  \
+        .kind = M_ATTR, .name = name_, .attr = {.type = V_UINT, .get = get_, .set = set_ }                             \
     }
 
 static const member_t cpu_members[] = {
-    ATTR_RO_HEX("pc", attr_cpu_pc),   ATTR_RO_HEX("sr", attr_cpu_sr),   ATTR_RO_HEX("ccr", attr_cpu_ccr),
-    ATTR_RO_HEX("ssp", attr_cpu_ssp), ATTR_RO_HEX("usp", attr_cpu_usp), ATTR_RO_HEX("msp", attr_cpu_msp),
-    ATTR_RO_HEX("vbr", attr_cpu_vbr), ATTR_RO_HEX("sp", attr_cpu_sp),   ATTR_RO_HEX("d0", attr_cpu_d0),
-    ATTR_RO_HEX("d1", attr_cpu_d1),   ATTR_RO_HEX("d2", attr_cpu_d2),   ATTR_RO_HEX("d3", attr_cpu_d3),
-    ATTR_RO_HEX("d4", attr_cpu_d4),   ATTR_RO_HEX("d5", attr_cpu_d5),   ATTR_RO_HEX("d6", attr_cpu_d6),
-    ATTR_RO_HEX("d7", attr_cpu_d7),   ATTR_RO_HEX("a0", attr_cpu_a0),   ATTR_RO_HEX("a1", attr_cpu_a1),
-    ATTR_RO_HEX("a2", attr_cpu_a2),   ATTR_RO_HEX("a3", attr_cpu_a3),   ATTR_RO_HEX("a4", attr_cpu_a4),
-    ATTR_RO_HEX("a5", attr_cpu_a5),   ATTR_RO_HEX("a6", attr_cpu_a6),   ATTR_RO_HEX("a7", attr_cpu_a7),
+    ATTR_RW_HEX("pc", attr_cpu_pc, set_cpu_pc),    ATTR_RW_HEX("sr", attr_cpu_sr, set_cpu_sr),
+    ATTR_RW_HEX("ccr", attr_cpu_ccr, set_cpu_ccr), ATTR_RW_HEX("ssp", attr_cpu_ssp, set_cpu_ssp),
+    ATTR_RW_HEX("usp", attr_cpu_usp, set_cpu_usp), ATTR_RW_HEX("msp", attr_cpu_msp, set_cpu_msp),
+    ATTR_RW_HEX("vbr", attr_cpu_vbr, set_cpu_vbr), ATTR_RW_HEX("sp", attr_cpu_sp, set_cpu_sp),
+    ATTR_RW_HEX("d0", attr_cpu_d0, set_cpu_d0),    ATTR_RW_HEX("d1", attr_cpu_d1, set_cpu_d1),
+    ATTR_RW_HEX("d2", attr_cpu_d2, set_cpu_d2),    ATTR_RW_HEX("d3", attr_cpu_d3, set_cpu_d3),
+    ATTR_RW_HEX("d4", attr_cpu_d4, set_cpu_d4),    ATTR_RW_HEX("d5", attr_cpu_d5, set_cpu_d5),
+    ATTR_RW_HEX("d6", attr_cpu_d6, set_cpu_d6),    ATTR_RW_HEX("d7", attr_cpu_d7, set_cpu_d7),
+    ATTR_RW_HEX("a0", attr_cpu_a0, set_cpu_a0),    ATTR_RW_HEX("a1", attr_cpu_a1, set_cpu_a1),
+    ATTR_RW_HEX("a2", attr_cpu_a2, set_cpu_a2),    ATTR_RW_HEX("a3", attr_cpu_a3, set_cpu_a3),
+    ATTR_RW_HEX("a4", attr_cpu_a4, set_cpu_a4),    ATTR_RW_HEX("a5", attr_cpu_a5, set_cpu_a5),
+    ATTR_RW_HEX("a6", attr_cpu_a6, set_cpu_a6),    ATTR_RW_HEX("a7", attr_cpu_a7, set_cpu_a7),
+    ATTR_RW_BIT("c", attr_cpu_cc_c, set_cpu_cc_c), ATTR_RW_BIT("v", attr_cpu_cc_v, set_cpu_cc_v),
+    ATTR_RW_BIT("z", attr_cpu_cc_z, set_cpu_cc_z), ATTR_RW_BIT("n", attr_cpu_cc_n, set_cpu_cc_n),
+    ATTR_RW_BIT("x", attr_cpu_cc_x, set_cpu_cc_x), ATTR_RO("instr_count", attr_cpu_instr_count),
 };
 
 const class_desc_t cpu_class = {

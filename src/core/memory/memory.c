@@ -26,6 +26,7 @@
 // memory_map_init / memory_map_delete reference them.
 extern const class_desc_t memory_class;
 extern const class_desc_t mem_peek_class;
+extern const class_desc_t mem_poke_class;
 
 #include <assert.h>
 #include <stdio.h>
@@ -159,6 +160,7 @@ typedef struct memory {
     // Object-tree binding — lifetime tied to memory_map_init / delete.
     struct object *memory_object;
     struct object *peek_object;
+    struct object *poke_object;
 
 } memory_map_t;
 
@@ -874,6 +876,9 @@ memory_map_t *memory_map_init(int address_bits, uint32_t ram_size, uint32_t rom_
         mem->peek_object = object_new(&mem_peek_class, NULL, "peek");
         if (mem->peek_object)
             object_attach(mem->memory_object, mem->peek_object);
+        mem->poke_object = object_new(&mem_poke_class, NULL, "poke");
+        if (mem->poke_object)
+            object_attach(mem->memory_object, mem->poke_object);
     }
 
     return mem;
@@ -891,6 +896,11 @@ void memory_map_delete(memory_map_t *mem) {
         object_detach(mem->peek_object);
         object_delete(mem->peek_object);
         mem->peek_object = NULL;
+    }
+    if (mem->poke_object) {
+        object_detach(mem->poke_object);
+        object_delete(mem->poke_object);
+        mem->poke_object = NULL;
     }
     if (mem->memory_object) {
         object_detach(mem->memory_object);
@@ -1191,4 +1201,86 @@ const class_desc_t mem_peek_class = {
     .name = "peek",
     .members = mem_peek_members,
     .n_members = sizeof(mem_peek_members) / sizeof(mem_peek_members[0]),
+};
+
+// === memory.poke child class ================================================
+//
+// Three methods (b/w/l) that write sized values to guest memory at a
+// caller-supplied address. Pairs with memory.peek, replacing the legacy
+// `set <addr>.<size> <value>` shell form.
+
+static int parse_poke_args(int argc, const value_t *argv, uint32_t *addr_out, uint64_t *value_out, const char *who) {
+    if (argc < 2) {
+        // Caller turns -1 into a val_err; we just need to communicate failure.
+        return -1;
+    }
+    bool ok = false;
+    uint64_t a = val_as_u64(&argv[0], &ok);
+    if (!ok)
+        return -1;
+    bool ok2 = false;
+    uint64_t v = val_as_u64(&argv[1], &ok2);
+    if (!ok2)
+        return -1;
+    (void)who;
+    *addr_out = (uint32_t)a;
+    *value_out = v;
+    return 0;
+}
+
+static value_t method_mem_poke_b(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)self;
+    (void)m;
+    uint32_t addr;
+    uint64_t v;
+    if (parse_poke_args(argc, argv, &addr, &v, "memory.poke.b") != 0)
+        return val_err("memory.poke.b: expected (addr, value)");
+    memory_write_uint8(addr, (uint8_t)v);
+    return val_none();
+}
+static value_t method_mem_poke_w(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)self;
+    (void)m;
+    uint32_t addr;
+    uint64_t v;
+    if (parse_poke_args(argc, argv, &addr, &v, "memory.poke.w") != 0)
+        return val_err("memory.poke.w: expected (addr, value)");
+    memory_write_uint16(addr, (uint16_t)v);
+    return val_none();
+}
+static value_t method_mem_poke_l(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)self;
+    (void)m;
+    uint32_t addr;
+    uint64_t v;
+    if (parse_poke_args(argc, argv, &addr, &v, "memory.poke.l") != 0)
+        return val_err("memory.poke.l: expected (addr, value)");
+    memory_write_uint32(addr, (uint32_t)v);
+    return val_none();
+}
+
+static const arg_decl_t mem_poke_args[] = {
+    {.name = "addr",  .kind = V_UINT, .flags = VAL_HEX, .doc = "guest memory address"},
+    {.name = "value", .kind = V_UINT, .flags = VAL_HEX, .doc = "value to write"      },
+};
+
+static const member_t mem_poke_members[] = {
+    {.kind = M_METHOD,
+     .name = "b",
+     .doc = "Write 1 byte at addr",
+     .method = {.args = mem_poke_args, .nargs = 2, .result = V_NONE, .fn = method_mem_poke_b}},
+    {.kind = M_METHOD,
+     .name = "w",
+     .doc = "Write 2 bytes (big-endian word) at addr",
+     .method = {.args = mem_poke_args, .nargs = 2, .result = V_NONE, .fn = method_mem_poke_w}},
+    {.kind = M_METHOD,
+     .name = "l",
+     .doc = "Write 4 bytes (big-endian long) at addr",
+     .method = {.args = mem_poke_args, .nargs = 2, .result = V_NONE, .fn = method_mem_poke_l}},
+};
+
+const class_desc_t mem_poke_class = {
+    .name = "poke",
+    .members = mem_poke_members,
+    .n_members = sizeof(mem_poke_members) / sizeof(mem_poke_members[0]),
 };

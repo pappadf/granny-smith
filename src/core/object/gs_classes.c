@@ -402,58 +402,6 @@ static value_t method_root_step(struct object *self, const member_t *m, int argc
     return val_bool(true);
 }
 
-// `print_value(target)` — read a register / condition code / memory cell
-// by calling the legacy `print` handler via shell_print_argv (no
-// shell_dispatch). Returns the numeric value as V_UINT; the test
-// convention uses `>>> 0` to truncate to uint32.
-static value_t method_root_print_value(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
-    if (argc < 1 || argv[0].kind != V_STRING)
-        return val_err("print_value: expected (target)");
-    char line[256];
-    int n = snprintf(line, sizeof(line), "print %s", argv[0].s ? argv[0].s : "");
-    if (n < 0 || (size_t)n >= sizeof(line))
-        return val_err("print_value: target too long");
-    char *targv[32];
-    int targc = tokenize(line, targv, 32);
-    if (targc <= 0)
-        return val_err("print_value: empty target");
-    return val_uint(8, (uint64_t)shell_print_argv(targc, targv));
-}
-
-// `set_value(target, value)` — write a register / condition code / memory
-// cell via the legacy `set` command. Target syntax matches the legacy
-// command (`d5`, `pc`, `z`, `0x1000.b`, etc.). Calls cmd_set directly
-// (no shell_dispatch).
-static value_t method_root_set_value(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
-    if (argc < 2 || argv[0].kind != V_STRING)
-        return val_err("set_value: expected (target, value)");
-    char value_buf[64];
-    const char *value_str = NULL;
-    if (argv[1].kind == V_STRING) {
-        value_str = argv[1].s ? argv[1].s : "";
-    } else {
-        bool ok = false;
-        uint64_t v = val_as_u64(&argv[1], &ok);
-        if (!ok)
-            return val_err("set_value: value must be integer or string");
-        snprintf(value_buf, sizeof(value_buf), "0x%llx", (unsigned long long)v);
-        value_str = value_buf;
-    }
-    char line[256];
-    int n = snprintf(line, sizeof(line), "set %s %s", argv[0].s ? argv[0].s : "", value_str);
-    if (n < 0 || (size_t)n >= sizeof(line))
-        return val_err("set_value: argument too long");
-    char *targv[32];
-    int targc = tokenize(line, targv, 32);
-    if (targc <= 0)
-        return val_err("set_value: tokenisation failed");
-    return val_bool(cmd_set(targc, targv) == 0);
-}
-
 // `download(path)` — trigger a browser file download. Routes to the
 // platform-specific gs_download (WASM streams via Blob+anchor; headless
 // prints a "not supported" stub).
@@ -528,14 +476,6 @@ static const member_t emu_root_members[] = {
      .name = "step",
      .doc = "Single-step N instructions; default 1 (legacy `step`/`s`)",
      .method = {.args = NULL, .nargs = 1, .result = V_BOOL, .fn = method_root_step}                },
-    {.kind = M_METHOD,
-     .name = "print_value",
-     .doc = "Read a register / flag / memory cell (legacy `print <target>`)",
-     .method = {.args = NULL, .nargs = 1, .result = V_UINT, .fn = method_root_print_value}         },
-    {.kind = M_METHOD,
-     .name = "set_value",
-     .doc = "Write a register / flag / memory cell (legacy `set <target> <value>`)",
-     .method = {.args = NULL, .nargs = 2, .result = V_BOOL, .fn = method_root_set_value}           },
 };
 
 static const class_desc_t emu_root_class_real = {
