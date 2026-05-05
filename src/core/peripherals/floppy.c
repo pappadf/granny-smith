@@ -12,6 +12,7 @@
 #include "memory.h"
 #include "object.h"
 #include "platform.h"
+#include "shell.h"
 #include "system.h"
 #include "system_config.h"
 #include "value.h"
