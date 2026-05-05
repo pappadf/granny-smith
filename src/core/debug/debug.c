@@ -3328,6 +3328,33 @@ static const arg_decl_t debug_disasm_args[] = {
     {.name = "count", .kind = V_INT, .flags = OBJ_ARG_OPTIONAL, .doc = "Number of instructions (default 16)"},
 };
 
+// `debug.step([n])` — single-step n instructions (default 1) and stop.
+// Wraps the scheduler's run-N-then-stop pattern in one call so debug
+// scripts don't have to chain `scheduler.run(n)` + `scheduler.stop`.
+static value_t debug_method_step(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)self;
+    (void)m;
+    int64_t count = 1;
+    if (argc >= 1) {
+        bool ok = false;
+        count = val_as_i64(&argv[0], &ok);
+        if (!ok)
+            return val_err("debug.step: count must be integer");
+    }
+    if (count <= 0)
+        return val_err("debug.step: count must be positive");
+    scheduler_t *s = system_scheduler();
+    if (!s)
+        return val_err("debug.step: scheduler not initialised");
+    scheduler_run_instructions(s, (int)count);
+    scheduler_stop(s);
+    return val_bool(true);
+}
+
+static const arg_decl_t debug_step_args[] = {
+    {.name = "count", .kind = V_INT, .flags = OBJ_ARG_OPTIONAL, .doc = "Number of instructions (default 1)"},
+};
+
 static const member_t debug_members[] = {
     {.kind = M_METHOD,
      .name = "log",
@@ -3337,6 +3364,10 @@ static const member_t debug_members[] = {
      .name = "disasm",
      .doc = "Disassemble forward from PC (default 16 instructions)",
      .method = {.args = debug_disasm_args, .nargs = 1, .result = V_BOOL, .fn = debug_method_disasm}},
+    {.kind = M_METHOD,
+     .name = "step",
+     .doc = "Single-step N instructions and stop (default 1)",
+     .method = {.args = debug_step_args, .nargs = 1, .result = V_BOOL, .fn = debug_method_step}    },
 };
 
 const class_desc_t debug_class = {

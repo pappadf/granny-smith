@@ -6,7 +6,7 @@
 // definitions that have no per-subsystem owner:
 //   - shell namespace stub (parent for shell.alias)
 //   - top-level introspection (objects/attributes/methods/help/time)
-//     and a few thin top-level wrappers (echo, assert, download, step)
+//     and a few thin top-level wrappers (echo, assert, download)
 //
 // Subsystem-owned classes (cpu/fpu/memory/scc/rtc/via/scsi/floppy/sound/
 // appletalk/debug/mouse/keyboard/screen/vfs/find/storage*) live in their
@@ -308,34 +308,6 @@ static value_t method_root_echo(struct object *self, const member_t *m, int argc
     return val_bool(true);
 }
 
-// === Debugging-area root methods ===========================================
-//
-// Thin wrappers around the `info` / `d` / `break` / `logpoint` / `log`
-// shell commands. Parsing stays in the underlying handlers; these
-// methods exist so test scripts and the typed-bridge have one
-// consistent path-form interface.
-
-// `step([n])` — single-step n instructions (default 1).
-static value_t method_root_step(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
-    int64_t count = 1;
-    if (argc >= 1) {
-        bool ok = false;
-        count = val_as_i64(&argv[0], &ok);
-        if (!ok)
-            return val_err("step: count must be integer");
-    }
-    if (count <= 0)
-        return val_err("step: count must be positive");
-    scheduler_t *s = system_scheduler();
-    if (!s)
-        return val_err("step: scheduler not initialised");
-    scheduler_run_instructions(s, (int)count);
-    scheduler_stop(s);
-    return val_bool(true);
-}
-
 // `download(path)` — trigger a browser file download. Routes to the
 // platform-specific gs_download (WASM streams via Blob+anchor; headless
 // prints a "not supported" stub).
@@ -396,10 +368,6 @@ static const member_t emu_root_members[] = {
      .name = "download",
      .doc = "Trigger a browser file download (WASM-only)",
      .method = {.args = root_path_arg, .nargs = 1, .result = V_BOOL, .fn = method_root_download}   },
-    {.kind = M_METHOD,
-     .name = "step",
-     .doc = "Single-step N instructions; default 1",
-     .method = {.args = NULL, .nargs = 1, .result = V_BOOL, .fn = method_root_step}                },
 };
 
 static const class_desc_t emu_root_class_real = {

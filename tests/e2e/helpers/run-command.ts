@@ -215,7 +215,7 @@ function translateToGsEval(line: string): Translation | null {
   if ((head === 's' || head === 'step') && tail.length <= 1) {
     const n = tail.length === 1 ? parseInt10(tail[0]) : null;
     return {
-      method: 'step',
+      method: 'debug.step',
       args: tail.length === 1 && n !== null ? [n] : [],
       convention: 'cmd_int_bool',
     };
