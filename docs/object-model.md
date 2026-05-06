@@ -171,11 +171,17 @@ configure, and what the JS frontend operates on:
   terminal, or from the URL-media auto-boot path on the web.
 - **JS / WASM bridge.** `gs_eval(path, args_json, out_buf, size)`
   resolves the path, parses arguments from JSON, invokes the right
-  read / write / call, and serialises the result back to JSON. The
-  worker-thread guard (see `worker_thread.h`) checks that callers
-  reach this entry point through the SAB queue, not via direct
-  `Module.ccall` from the main thread. JS callers see numbers,
-  strings, lists, and `{error: "…"}` shapes — never raw exit codes.
+  read / write / call, and serialises the result back to JSON. JS
+  reaches it through a single shared-memory region (`js_bridge_t`,
+  declared in [`em.h`](../src/platform/wasm/em.h) and exposed via the
+  lone `_get_js_bridge` export); the worker's `shell_poll()` services
+  the slot every tick. `Atomics.waitAsync` + `emscripten_atomic_notify`
+  carry the completion signal — no polling. The worker-thread guard
+  in `worker_thread.h` enforces that `gs_eval` only runs on the worker
+  pthread, never via direct `Module.ccall` from the main thread. JS
+  callers see numbers, strings, lists, and `{error: "…"}` shapes —
+  never raw exit codes. See [`web.md`](web.md) for the wire layout
+  and protocol.
 - **Inspector UI.** The browser inspector panel reads the tree by
   walking `objects()` / `attributes()` / `methods()` and rendering the
   results. No bespoke inspection protocol; the panel is just another

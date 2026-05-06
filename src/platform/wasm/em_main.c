@@ -14,12 +14,14 @@
 #include <ctype.h>
 #include <dirent.h>
 #include <emscripten.h>
+#include <emscripten/atomic.h>
 #include <emscripten/emscripten.h>
 #include <emscripten/html5.h>
 #include <emscripten/version.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <getopt.h>
+#include <limits.h>
 #include <signal.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -492,7 +494,17 @@ int shell_poll(void) {
         struct cmd_result res;
         memset(&res, 0, sizeof(res));
         dispatch_command(g_bridge.path, &res);
-        build_prompt_text(g_bridge.prompt, JS_BRIDGE_PROMPT_SIZE);
+        // Push the new prompt to JS via Module.onPromptChange. SYNC so
+        // the JS-side cache is updated before we set `done = 1`; the JS
+        // terminal reads the cached prompt immediately after gsEvalLine
+        // resolves, and ASYNC would race that read.
+        char prompt_buf[256];
+        build_prompt_text(prompt_buf, sizeof(prompt_buf));
+        // clang-format off
+        MAIN_THREAD_EM_ASM(
+            { if (typeof Module.onPromptChange === 'function') Module.onPromptChange(UTF8ToString($0)); },
+            prompt_buf);
+        // clang-format on
         if (res.type == RES_INT)
             rc = (int)res.as_int;
         else if (res.type == RES_BOOL)
@@ -508,7 +520,11 @@ int shell_poll(void) {
     }
     g_bridge.result = rc;
     g_bridge.pending = 0;
-    g_bridge.done = 1;
+    // Atomic store + wake any JS thread parked in Atomics.waitAsync on
+    // `done`. Sequentially consistent so the result/output writes above
+    // are visible before JS observes done == 1.
+    __atomic_store_n(&g_bridge.done, 1, __ATOMIC_SEQ_CST);
+    emscripten_atomic_notify((void *)&g_bridge.done, 1);
     return 1;
 }
 
@@ -602,8 +618,20 @@ void em_main_tick(void) {
     // commands, etc. execute while the emulator is running.
     shell_poll();
 
-    // Update shared running-state flag (read by JS via HEAP32)
-    g_bridge.is_running = (sched && scheduler_is_running(sched)) ? 1 : 0;
+    // Push a run-state notification to JS on every transition
+    // (including the first tick). The callback is installed via
+    // Module.onRunStateChange at module construction; ASYNC variant so
+    // the worker doesn't block during emulation.
+    int running = (sched && scheduler_is_running(sched)) ? 1 : 0;
+    static int last_reported_running = -1;
+    if (running != last_reported_running) {
+        last_reported_running = running;
+        // clang-format off
+        MAIN_THREAD_ASYNC_EM_ASM(
+            { if (typeof Module.onRunStateChange === 'function') Module.onRunStateChange(!!$0); },
+            running);
+        // clang-format on
+    }
 }
 
 // Exposed tick wrapper for Emscripten main loop
@@ -1060,8 +1088,10 @@ int main(int argc, char *argv[]) {
 
     // Bridge is open for business. JS gates its first gsEval on this
     // flag so requests issued during the boot window don't dispatch
-    // against the empty default root class.
-    g_bridge.shell_ready = 1;
+    // against the empty default root class. The notify wakes any JS
+    // thread parked in Atomics.waitAsync on this field.
+    __atomic_store_n(&g_bridge.ready, 1, __ATOMIC_SEQ_CST);
+    emscripten_atomic_notify((void *)&g_bridge.ready, INT_MAX);
 
     // Deferred machine instantiation: global_emulator stays NULL until a ROM
     // is loaded via the `rom load` command, which identifies the machine type

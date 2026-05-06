@@ -17,10 +17,13 @@ Two callers reach the emulator through the shell layer:
   script file (`script=...`) or stdin.
 
 Both go through the same tokeniser and the same path-form dispatcher.
-JavaScript callers in the web frontend bypass the shell layer entirely
-and call `gs_eval` (the object-model bridge) directly via the SAB
-queue; the shell is the *line-input* surface, not a separate command
-framework with its own registry.
+JavaScript callers in the web frontend bypass the shell layer for
+typed object-model calls and reach `gs_eval` directly through the
+shared-memory bridge described in [`web.md`](web.md); the xterm.js
+terminal is the only JS caller that goes through `dispatch_command`,
+and only because users type free-form lines into it. The shell is the
+*line-input* surface, not a separate command framework with its own
+registry.
 
 The earlier shell had its own command registry, dispatcher, parsed-
 argument framework, and JSON result protocol. All of that has moved

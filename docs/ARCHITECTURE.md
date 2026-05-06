@@ -151,8 +151,14 @@ Four caller surfaces walk that tree:
   are scripts.
 - **JavaScript / WASM bridge**: `gs_eval(path, args_json, out, size)`
   resolves the same path, JSON-encodes the result, and returns to JS.
-  The web frontend calls this as `gsEval(path, args)` via the SAB
-  queue (`PROXY_TO_PTHREAD` requires worker-thread dispatch).
+  The web frontend reaches it through a single shared-memory region
+  (`js_bridge_t` in [`src/platform/wasm/em.h`](../src/platform/wasm/em.h)),
+  exposed via one `_get_js_bridge` WASM export. JS calls
+  `gsEval(path, args)`; that puts the request in the bridge slot and
+  parks on `Atomics.waitAsync(done)` until the worker's `shell_poll()`
+  services it. C→JS state pushes (run-state, prompt) flow the other
+  way through `Module.*` callbacks fired with `MAIN_THREAD_*_EM_ASM`.
+  See [`web.md`](web.md) for the wire layout and protocol.
 - **Inspector UI**: walks `objects()` / `attributes()` / `methods()` /
   `help()` to render the live tree.
 

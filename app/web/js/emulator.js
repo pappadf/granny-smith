@@ -43,17 +43,15 @@ let isRunningUI = false;
 // the offsets below whenever the C struct changes.
 let bridgePtr = 0;
 
-const BRIDGE_VERSION = 1;
+const BRIDGE_VERSION = 3;
 const OFF_VERSION     = 0;
-const OFF_SHELL_READY = 4;
-const OFF_IS_RUNNING  = 8;
-const OFF_PENDING     = 12;
-const OFF_DONE        = 16;
-const OFF_RESULT      = 20;
-const OFF_PROMPT      = 24;
-const OFF_PATH        = 280;
-const OFF_ARGS        = 1304;
-const OFF_OUTPUT      = 9496;
+const OFF_READY = 4;
+const OFF_PENDING     = 8;
+const OFF_DONE        = 12;
+const OFF_RESULT      = 16;
+const OFF_PATH        = 20;
+const OFF_ARGS        = 1044;
+const OFF_OUTPUT      = 9236;
 const PATH_SIZE       = 1024;
 const ARGS_SIZE       = 8192;
 
@@ -61,10 +59,9 @@ const ARGS_SIZE       = 8192;
 let cmdInFlight = false;
 let cmdWaiters = [];
 
-// Run-state polling interval handle
-let _runStatePollId = 0;
-
-// Run-state change callbacks (registered by other modules via onRunStateChange)
+// Run-state change callbacks (registered by other modules via onRunStateChange).
+// Fired by the C side via Module.onRunStateChange whenever the scheduler
+// flips state — no JS-side polling.
 const _runStateCallbacks = [];
 
 // Install global assertion failure handler (called from C via MAIN_THREAD_EM_ASM).
@@ -78,14 +75,35 @@ window.__gsAssertionHandler = (info) => {
   window.dispatchEvent(new CustomEvent('gs-assertion-failure', { detail: info }));
 };
 
-// Poll the shared-heap running flag and update JS state if it changed.
-function pollRunState() {
-  if (!Module || !bridgePtr) return;
-  const running = Boolean(Module.HEAP32[(bridgePtr + OFF_IS_RUNNING) >> 2]);
-  if (running !== isRunningUI) {
-    isRunningUI = running;
-    for (const cb of _runStateCallbacks) cb(running);
-  }
+// Park until the worker stores `done = 1` and notifies. The C side
+// pairs its store with `emscripten_atomic_notify(&g_bridge.done, 1)`,
+// so this resolves on the next event-loop turn after the worker tick
+// — no setTimeout polling, no main-thread CPU spin. Atomics.waitAsync
+// returns synchronously with `not-equal` if the worker beat us to it.
+async function waitForBridgeDone() {
+  const doneIdx = (bridgePtr + OFF_DONE) >> 2;
+  const w = Atomics.waitAsync(Module.HEAP32, doneIdx, 0);
+  if (w.async) await w.value;
+  Atomics.store(Module.HEAP32, doneIdx, 0);
+}
+
+// Receives push notifications from the worker on every scheduler
+// state transition (including the first tick). Mirrors what the old
+// pollRunState() did, minus the timer.
+function handleRunStateChange(running) {
+  running = Boolean(running);
+  if (running === isRunningUI) return;
+  isRunningUI = running;
+  for (const cb of _runStateCallbacks) cb(running);
+}
+
+// Cache for the current shell prompt. The worker pushes updates via
+// Module.onPromptChange after each free-form line in shell_poll; the
+// terminal reads this through getRuntimePrompt() when it needs to
+// display the next prompt.
+let cachedPrompt = null;
+function handlePromptChange(text) {
+  cachedPrompt = (typeof text === 'string' && text.length) ? text : null;
 }
 
 // Initialize the WASM module (called once from main.js).
@@ -100,6 +118,8 @@ export async function initEmulator(canvas, wasmArgs, printFn) {
     locateFile: (p) => p.endsWith('.wasm') ? `${p}?v=${bust}` : p,
     print: printFn,
     printErr: printFn,
+    onRunStateChange: handleRunStateChange,
+    onPromptChange: handlePromptChange,
   });
 
   // Resolve the single bridge pointer and verify the layout version
@@ -121,14 +141,9 @@ export async function initEmulator(canvas, wasmArgs, printFn) {
   window.gsInspect = (path) => gsInspect(path);
 
   // With PROXY_TO_PTHREAD, shell_init is called from main() on the worker.
-  // No need to ccall it from JS.
+  // No need to ccall it from JS. The worker pushes the initial run-state
+  // (and every transition) via Module.onRunStateChange — see em_main_tick.
   moduleReady = true;
-
-  // Start polling the worker's running-state flag so the UI stays in sync.
-  // The worker may have already loaded a ROM and started running by now.
-  _runStatePollId = setInterval(pollRunState, 100);
-  pollRunState(); // sync immediately
-
   return Module;
 }
 
@@ -138,16 +153,12 @@ export function getModule() { return Module; }
 export function isModuleReady() { return moduleReady; }
 export function isRunning() { return isRunningUI; }
 
-// Get the current prompt string from the bridge. The worker updates
-// it after each free-form command in shell_poll().
+// Get the current shell prompt. The worker pushes updates via
+// Module.onPromptChange after each free-form command, which is fired
+// synchronously before gsEvalLine resolves — so this read always
+// reflects the prompt the worker just produced.
 export function getRuntimePrompt() {
-  if (!Module || !bridgePtr) return null;
-  try {
-    const value = Module.UTF8ToString(bridgePtr + OFF_PROMPT);
-    return (value && value.length) ? value : null;
-  } catch (err) {
-    return null;
-  }
+  return cachedPrompt;
 }
 
 // --- Run-state management ---
@@ -173,7 +184,7 @@ export async function gsEvalLine(line) {
   const text = (line ?? '').toString();
   if (!text.trim()) return 0;
 
-  await waitForShellReady();
+  await waitForBridgeReady();
 
   while (cmdInFlight) {
     await new Promise(r => cmdWaiters.push(r));
@@ -182,20 +193,10 @@ export async function gsEvalLine(line) {
   try {
     Module.stringToUTF8(text, bridgePtr + OFF_PATH, PATH_SIZE);
     Module.HEAPU8[bridgePtr + OFF_ARGS] = 0; // clear stale args
-    Module.HEAP32[(bridgePtr + OFF_DONE) >> 2] = 0;
-    Module.HEAP32[(bridgePtr + OFF_PENDING) >> 2] = 4; // kind=4 → free-form line
+    Atomics.store(Module.HEAP32, (bridgePtr + OFF_DONE) >> 2, 0);
+    Atomics.store(Module.HEAP32, (bridgePtr + OFF_PENDING) >> 2, 4); // kind=4 → free-form line
 
-    await new Promise(resolve => {
-      function check() {
-        if (Module.HEAP32[(bridgePtr + OFF_DONE) >> 2]) {
-          Module.HEAP32[(bridgePtr + OFF_DONE) >> 2] = 0;
-          resolve();
-        } else {
-          setTimeout(check, 1);
-        }
-      }
-      check();
-    });
+    await waitForBridgeDone();
     return Module.HEAP32[(bridgePtr + OFF_RESULT) >> 2];
   } finally {
     cmdInFlight = false;
@@ -218,7 +219,7 @@ export async function shellInterrupt() {
 export async function tabComplete(line, cursorPos) {
   if (!Module || !moduleReady) return null;
 
-  await waitForShellReady();
+  await waitForBridgeReady();
 
   while (cmdInFlight) {
     await new Promise(r => cmdWaiters.push(r));
@@ -228,20 +229,10 @@ export async function tabComplete(line, cursorPos) {
     Module.stringToUTF8(String(line || ''), bridgePtr + OFF_PATH, PATH_SIZE);
     Module.stringToUTF8(String(cursorPos | 0), bridgePtr + OFF_ARGS, ARGS_SIZE);
 
-    Module.HEAP32[(bridgePtr + OFF_DONE) >> 2] = 0;
-    Module.HEAP32[(bridgePtr + OFF_PENDING) >> 2] = 3; // kind=3 → tab complete
+    Atomics.store(Module.HEAP32, (bridgePtr + OFF_DONE) >> 2, 0);
+    Atomics.store(Module.HEAP32, (bridgePtr + OFF_PENDING) >> 2, 3); // kind=3 → tab complete
 
-    await new Promise(resolve => {
-      function check() {
-        if (Module.HEAP32[(bridgePtr + OFF_DONE) >> 2]) {
-          Module.HEAP32[(bridgePtr + OFF_DONE) >> 2] = 0;
-          resolve();
-        } else {
-          setTimeout(check, 1);
-        }
-      }
-      check();
-    });
+    await waitForBridgeDone();
 
     const count = Module.HEAP32[(bridgePtr + OFF_RESULT) >> 2];
     if (count === 0) return [];
@@ -282,20 +273,18 @@ function readBridgeOutput() {
   try { return JSON.parse(jsonStr); } catch (e) { return jsonStr; }
 }
 
-// Wait for the worker's shell_init() to complete before issuing the
-// first gs_eval request. With PROXY_TO_PTHREAD, createModule resolves
-// while the worker is still inside main() / shell_init() — setting
-// `pending` during that window would have shell_poll dispatch against
-// the empty default root class. main() flips bridge.shell_ready to 1
-// once shell_init() returns.
-async function waitForShellReady() {
+// Wait for the worker to be ready to dispatch bridge requests. With
+// PROXY_TO_PTHREAD, createModule resolves while the worker is still
+// inside main() — sending a request during that window would dispatch
+// against the empty default root class. main() stores 1 into the
+// `ready` field and calls emscripten_atomic_notify; we park in
+// Atomics.waitAsync until then (or return immediately if the worker
+// beat us to it).
+async function waitForBridgeReady() {
   if (!bridgePtr) return;
-  const offset = (bridgePtr + OFF_SHELL_READY) >> 2;
-  if (Module.HEAP32[offset]) return;
-  for (let i = 0; i < 200; i++) {
-    if (Module.HEAP32[offset]) return;
-    await new Promise((r) => setTimeout(r, 10));
-  }
+  const idx = (bridgePtr + OFF_READY) >> 2;
+  const w = Atomics.waitAsync(Module.HEAP32, idx, 0);
+  if (w.async) await w.value;
 }
 
 // Drive a single gs_eval / gs_inspect request through the bridge.
@@ -309,20 +298,10 @@ async function executeGsRequest(path, argsJson, kind) {
     Module.stringToUTF8(String(path || ''), bridgePtr + OFF_PATH, PATH_SIZE);
     Module.stringToUTF8(argsJson || '', bridgePtr + OFF_ARGS, ARGS_SIZE);
 
-    Module.HEAP32[(bridgePtr + OFF_DONE) >> 2] = 0;
-    Module.HEAP32[(bridgePtr + OFF_PENDING) >> 2] = kind;
+    Atomics.store(Module.HEAP32, (bridgePtr + OFF_DONE) >> 2, 0);
+    Atomics.store(Module.HEAP32, (bridgePtr + OFF_PENDING) >> 2, kind);
 
-    await new Promise(resolve => {
-      function check() {
-        if (Module.HEAP32[(bridgePtr + OFF_DONE) >> 2]) {
-          Module.HEAP32[(bridgePtr + OFF_DONE) >> 2] = 0;
-          resolve();
-        } else {
-          setTimeout(check, 1);
-        }
-      }
-      check();
-    });
+    await waitForBridgeDone();
 
     return readBridgeOutput();
   } finally {
@@ -334,7 +313,7 @@ async function executeGsRequest(path, argsJson, kind) {
 
 export async function gsEval(path, args) {
   if (!Module || !moduleReady) return null;
-  await waitForShellReady();
+  await waitForBridgeReady();
   const argsJson = (args === undefined || args === null) ? '' : JSON.stringify(args);
   try {
     return await executeGsRequest(String(path || ''), argsJson, 1);
@@ -345,7 +324,7 @@ export async function gsEval(path, args) {
 
 export async function gsInspect(path) {
   if (!Module || !moduleReady) return null;
-  await waitForShellReady();
+  await waitForBridgeReady();
   try {
     return await executeGsRequest(String(path || ''), '', 2);
   } catch (e) {

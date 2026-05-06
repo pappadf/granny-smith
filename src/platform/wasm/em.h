@@ -72,23 +72,20 @@ void em_print_host_callstack(void);
 // JS clears `done`, fills `path` / `args`, writes `pending`, and polls
 // `done`. `shell_poll()` (worker pthread, every tick) drains the slot.
 
-#define JS_BRIDGE_VERSION     1
-#define JS_BRIDGE_PROMPT_SIZE 256
+#define JS_BRIDGE_VERSION     3
 #define JS_BRIDGE_PATH_SIZE   1024
 #define JS_BRIDGE_ARGS_SIZE   8192
 #define JS_BRIDGE_OUTPUT_SIZE 16384
 
 typedef struct {
     int32_t version; // offset 0;  must equal JS_BRIDGE_VERSION
-    volatile int32_t shell_ready; // offset 4;  1 once shell_init has returned
-    volatile int32_t is_running; // offset 8;  scheduler running flag (worker → JS)
-    volatile int32_t pending; // offset 12; request kind (1..4); 0 = idle
-    volatile int32_t done; // offset 16; flipped to 1 by worker on completion
-    volatile int32_t result; // offset 20; integer result code
-    char prompt[JS_BRIDGE_PROMPT_SIZE]; // offset 24
-    char path[JS_BRIDGE_PATH_SIZE]; // offset 280
-    char args[JS_BRIDGE_ARGS_SIZE]; // offset 1304
-    char output[JS_BRIDGE_OUTPUT_SIZE]; // offset 9496
-} js_bridge_t; // total: 25880 bytes
+    volatile int32_t ready; // offset 4;  1 once the worker is ready to dispatch requests
+    volatile int32_t pending; // offset 8;  request kind (1..4); 0 = idle
+    volatile int32_t done; // offset 12; flipped to 1 by worker on completion
+    volatile int32_t result; // offset 16; integer result code
+    char path[JS_BRIDGE_PATH_SIZE]; // offset 20
+    char args[JS_BRIDGE_ARGS_SIZE]; // offset 1044
+    char output[JS_BRIDGE_OUTPUT_SIZE]; // offset 9236
+} js_bridge_t; // total: 25620 bytes
 
 #endif // EM_H
