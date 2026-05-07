@@ -1050,7 +1050,7 @@ static void se30_init(config_t *cfg, checkpoint_t *checkpoint) {
     cfg->scheduler = scheduler_init(cfg->cpu, checkpoint);
 
     // Set SE/30 CPU clock frequency (15.6672 MHz = 2x Plus clock)
-    scheduler_set_frequency(cfg->scheduler, cfg->machine->cpu_clock_hz);
+    scheduler_set_frequency(cfg->scheduler, cfg->machine->freq);
 
     // SE/30 68030: 4 cycles/instr (hw accuracy), 4 cycle/instr (fast)
     scheduler_set_cpi(cfg->scheduler, 4, 4);
@@ -1220,8 +1220,7 @@ static void se30_init(config_t *cfg, checkpoint_t *checkpoint) {
     uint8_t *rom_data = ram_native_pointer(cfg->mem_map, ram_size);
     uint32_t rom_size = cfg->machine->rom_size;
 
-    se30->mmu =
-        mmu_init(ram_base, ram_size, cfg->machine->ram_size_max, rom_data, rom_size, SE30_ROM_START, SE30_ROM_END);
+    se30->mmu = mmu_init(ram_base, ram_size, cfg->machine->ram_max, rom_data, rom_size, SE30_ROM_START, SE30_ROM_END);
     assert(se30->mmu != NULL);
     g_mmu = se30->mmu;
     cfg->cpu->mmu = se30->mmu;
@@ -1449,22 +1448,45 @@ static void se30_checkpoint_save(config_t *cfg, checkpoint_t *cp) {
 // Machine descriptor
 // ============================================================
 
+// SE/30 configuration-dialog metadata.
+static const uint32_t se30_ram_options_kb[] = {1024, 2048, 4096, 8192, 16384, 32768, 65536, 131072, 0};
+
+static const struct floppy_slot se30_floppy_slots[] = {
+    {.label = "Internal FD0", .kind = FLOPPY_HD},
+    {.label = "External FD1", .kind = FLOPPY_HD},
+    {0},
+};
+
+static const struct scsi_slot se30_scsi_slots[] = {
+    {.label = "SCSI HD0", .id = 0},
+    {.label = "SCSI HD1", .id = 1},
+    {0},
+};
+
 // Macintosh SE/30 hardware profile descriptor
 const hw_profile_t machine_se30 = {
-    .model_name = "Macintosh SE/30",
-    .model_id = "se30",
+    .name = "Macintosh SE/30",
+    .id = "se30",
 
     // 68030 at 15.6672 MHz
     .cpu_model = 68030,
-    .cpu_clock_hz = 15667200,
+    .freq = 15667200,
     .mmu_present = true,
     .fpu_present = true, // 68882 FPU standard on SE/30
 
     // 32-bit address space
     .address_bits = 32,
-    .ram_size_default = 0x400000, // 4 MB default
-    .ram_size_max = 0x8000000, // 128 MB max
+    .ram_default = 0x800000, // 8 MB default (matches dialog RAM default)
+    .ram_max = 0x8000000, // 128 MB max
     .rom_size = 0x040000, // 256 KB
+
+    // Configuration-dialog shape
+    .ram_options = se30_ram_options_kb,
+    .floppy_slots = se30_floppy_slots,
+    .scsi_slots = se30_scsi_slots,
+    .has_cdrom = true,
+    .cdrom_id = 3,
+    .needs_vrom = true,
 
     // Two VIAs, ADB present, one PDS slot (no NuBus)
     .via_count = 2,

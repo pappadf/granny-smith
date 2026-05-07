@@ -139,6 +139,8 @@ export async function initEmulator(canvas, wasmArgs, printFn) {
   window.tabComplete = (line, cursorPos) => tabComplete(line, cursorPos);
   window.gsEval = (path, args) => gsEval(path, args);
   window.gsInspect = (path) => gsInspect(path);
+  window.romIdentify = (path) => romIdentify(path);
+  window.machineProfile = (id) => machineProfile(id);
 
   // With PROXY_TO_PTHREAD, shell_init is called from main() on the worker.
   // No need to ccall it from JS. The worker pushes the initial run-state
@@ -330,4 +332,27 @@ export async function gsInspect(path) {
   } catch (e) {
     return null;
   }
+}
+
+// Probe a ROM file via rom.identify and return the parsed info map:
+//   { recognised, compatible, checksum, name, size }
+// Returns null when the path can't be opened (V_ERROR on the C side).
+// recognised==false (with empty compatible / name) is a successful probe of
+// an unrecognised ROM and is *not* an error.
+export async function romIdentify(path) {
+  const r = await gsEval('rom.identify', [path]);
+  if (r === null || r === undefined) return null;
+  if (typeof r === 'object' && 'error' in r) return null;
+  if (typeof r !== 'string') return null;
+  try { return JSON.parse(r); } catch (e) { return null; }
+}
+
+// Look up a static machine profile by id and return the parsed config map.
+// Returns null when id doesn't match a registered profile.
+export async function machineProfile(id) {
+  const r = await gsEval('machine.profile', [id]);
+  if (r === null || r === undefined) return null;
+  if (typeof r === 'object' && 'error' in r) return null;
+  if (typeof r !== 'string') return null;
+  try { return JSON.parse(r); } catch (e) { return null; }
 }

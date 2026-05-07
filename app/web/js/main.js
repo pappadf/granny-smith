@@ -97,22 +97,36 @@ if (resumedFromCheckpoint) {
   // Normal startup: clean up stale staging files from previous sessions
   await clearOPFSDir(UPLOAD_DIR);
 
-  // Scan OPFS for persisted ROMs
-  let romChecksums = await scanForPersistedRoms();
+  // Scan OPFS for persisted ROMs.  Each entry: {path, checksum, name,
+  // compatible, size}.  The dialog uses the full info (no JS-side checksum
+  // table to consult).
+  let scanResults = await scanForPersistedRoms();
   let tmpRomPath = null;
 
-  // If no ROMs found, show the ROM upload dialog
-  if (romChecksums.length === 0) {
+  // If no ROMs found, show the ROM upload dialog and re-probe the result so
+  // the configuration dialog has the same shape regardless of source.
+  if (scanResults.length === 0) {
     const result = await showRomUploadDialog();
     if (result) {
-      romChecksums = [result.checksum];
+      const { romPathForChecksum } = await import('./fs.js');
+      const persistedPath = romPathForChecksum(result.checksum);
+      const info = await window.romIdentify(persistedPath);
+      if (info && info.recognised) {
+        scanResults = [{
+          path: persistedPath,
+          checksum: result.checksum,
+          name: info.name,
+          compatible: info.compatible,
+          size: info.size,
+        }];
+      }
       tmpRomPath = result.tmpPath; // fallback if OPFS persist failed
     }
   }
 
-  if (romChecksums.length > 0) {
+  if (scanResults.length > 0) {
     // Show machine configuration dialog
-    const config = await showConfigDialog(romChecksums);
+    const config = await showConfigDialog(scanResults);
     await bootFromConfig(config, tmpRomPath);
   }
 }

@@ -194,16 +194,16 @@ bool system_is_initialized(void) {
     return global_emulator != NULL;
 }
 
-// Return the model_id of the current machine, or NULL if none is active
+// Return the id of the current machine, or NULL if none is active
 const char *system_machine_model_id(void) {
     if (!global_emulator || !global_emulator->machine)
         return NULL;
-    return global_emulator->machine->model_id;
+    return global_emulator->machine->id;
 }
 
-// Ensure the correct machine is active for the given model_id.
+// Ensure the correct machine is active for the given model id.
 // Creates a new machine if none exists, or tears down and recreates if the
-// current machine's model_id doesn't match.  Returns 0 on success, -1 on error.
+// current machine's id doesn't match.  Returns 0 on success, -1 on error.
 int system_ensure_machine(const char *model_id) {
     if (!model_id)
         return -1;
@@ -221,7 +221,7 @@ int system_ensure_machine(const char *model_id) {
 
     // Teardown existing machine if wrong type
     if (global_emulator) {
-        printf("Switching machine from %s to %s\n", global_emulator->machine->model_id, model_id);
+        printf("Switching machine from %s to %s\n", global_emulator->machine->id, model_id);
         system_destroy(global_emulator);
         global_emulator = NULL;
     }
@@ -233,7 +233,7 @@ int system_ensure_machine(const char *model_id) {
         return -1;
     }
 
-    printf("Machine created: %s (%s)\n", needed->model_name, needed->model_id);
+    printf("Machine created: %s (%s)\n", needed->name, needed->id);
     return 0;
 }
 
@@ -913,11 +913,11 @@ config_t *system_create(const hw_profile_t *profile, checkpoint_t *checkpoint) {
     // Compute RAM size: use pending override if set, otherwise machine default
     if (g_pending_ram_kb > 0) {
         cfg->ram_size = g_pending_ram_kb * 1024;
-        if (cfg->ram_size > profile->ram_size_max)
-            cfg->ram_size = profile->ram_size_max;
+        if (cfg->ram_size > profile->ram_max)
+            cfg->ram_size = profile->ram_max;
         g_pending_ram_kb = 0; // consume the override
     } else {
-        cfg->ram_size = profile->ram_size_default;
+        cfg->ram_size = profile->ram_default;
     }
 
     // Delegate all machine-specific initialisation to the profile
@@ -1058,7 +1058,7 @@ int system_checkpoint(const char *filename, checkpoint_kind_t kind) {
     }
 
     // Pass the machine model ID and RAM size so they're stored in the checkpoint header
-    const char *model_id = global_emulator->machine->model_id;
+    const char *model_id = global_emulator->machine->id;
     uint32_t ram_size_kb = global_emulator->ram_size / 1024;
     checkpoint_t *checkpoint = checkpoint_open_write(filename, kind, model_id, ram_size_kb);
     if (!checkpoint) {

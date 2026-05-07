@@ -6,11 +6,11 @@ scheduler.run 50000
 # their values depend on how far through boot we ran. The legacy
 # `eval <path>` form still works (it lives on as a JSON-printer);
 # we mix both forms below to exercise each.
-assert ${machine.model_id == "plus"} "expected Plus machine"
-assert ${machine.cpu_clock_hz == 7833600} "Plus runs at 7.83 MHz"
+assert ${machine.id == "plus"} "expected Plus machine"
+assert ${machine.freq == 7833600} "Plus runs at 7.83 MHz"
 assert ${memory.ram_size == 4194304} "Plus has 4 MiB RAM"
 assert ${memory.rom_size == 131072} "Plus has 128 KiB ROM"
-machine.model_name
+machine.name
 cpu.pc
 cpu.d0
 cpu.a7
@@ -36,7 +36,7 @@ sound.enabled = true
 assert ${sound.enabled == true}
 
 # Legacy `eval` continues to work in parallel for the JSON shape.
-machine.model_id
+machine.id
 cpu.pc
 
 quit

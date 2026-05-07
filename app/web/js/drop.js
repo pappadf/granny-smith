@@ -185,23 +185,26 @@ async function probeAndMountDiskImage(path, isDirectory, displayName) {
     if (kind === 'rom') {
       toast(`Loading ROM: ${imagePath.split('/').pop()}`);
       try {
-        // Validate via rom.checksum_of: returns the hex string for a valid
-        // ROM, empty when the file isn't recognised.
-        const checksum = await window.gsEval('rom.checksum_of', [imagePath]);
-        if (typeof checksum !== 'string' || !checksum) {
+        // Single probe returns checksum + compatible models in one call.
+        const info = await window.romIdentify(imagePath);
+        if (!info || !info.recognised) {
           toast('Not a valid ROM image');
           return;
         }
-
-        // Pick a machine for the ROM (first compatible model). When the
-        // family has multiple members (e.g. Universal IIx/IIcx/SE/30), the
-        // user can switch via the config dialog after boot.
-        const compatible = await window.gsEval('rom.identify', [imagePath]);
+        const checksum = info.checksum;
+        const compatible = info.compatible;
         if (!Array.isArray(compatible) || compatible.length === 0) {
           toast('No compatible machine for this ROM');
           return;
         }
-        await window.gsEval('machine.boot', [compatible[0]]);
+        // Pick a machine for the ROM (first compatible model). When the
+        // family has multiple members (e.g. Universal IIx/IIcx/SE/30), the
+        // user can switch via the config dialog after boot.  ram comes from
+        // the model's default profile so machine.boot's required-arg check
+        // passes against an explicit, profile-validated value.
+        const profile = await window.machineProfile(compatible[0]);
+        const ramKB = profile ? profile.ram_default : 4096;
+        await window.gsEval('machine.boot', [compatible[0], ramKB]);
 
         // Load the ROM into the freshly created machine.
         if ((await window.gsEval('rom.load', [imagePath])) !== true) {

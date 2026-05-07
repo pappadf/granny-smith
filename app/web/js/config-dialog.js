@@ -3,9 +3,13 @@
 
 // Machine configuration dialog: lets the user pick model, RAM, media, and boot.
 // Also provides the ROM-required dialog for first-time setup.
-import { VROMS_DIR, FD_DIR, FDHD_DIR, HD_DIR, CD_DIR } from './config.js';
-import { ROM_DATABASE, getAvailableModels } from './rom-db.js';
-import { MACHINE_DEFS } from './machine-defs.js';
+//
+// The dialog is fully driven by core probes — no JS-side machine table:
+//   • scanForPersistedRoms() walks /opfs/images/rom/ and calls rom.identify
+//     once per file to learn checksum, name, and the compatible-models list.
+//   • buildRows() asks machine.profile(id) for the static configuration
+//     shape (RAM options, slot layout, CD/VROM flags, …).
+import { ROMS_DIR, VROMS_DIR, FD_DIR, FDHD_DIR, HD_DIR, CD_DIR } from './config.js';
 import { romPathForChecksum, listDir } from './fs.js';
 import { toast, hideRomOverlay, enableRunButton, setBackgroundMessage } from './ui.js';
 import { setRunning } from './emulator.js';
@@ -14,22 +18,50 @@ import { runUploadPipeline } from './upload-pipeline.js';
 import { quotePath } from './media.js';
 
 // ---------------------------------------------------------------------------
-// OPFS ROM scanning — probe known checksums to find persisted ROMs
+// OPFS ROM scanning — list /opfs/images/rom and probe each entry
 // ---------------------------------------------------------------------------
 
-// Scan /rom/ for ROM files by probing all known checksums from ROM_DATABASE.
-// Returns an array of checksum strings that exist on disk.
+// Walk the ROM directory the frontend owns and call rom.identify per file.
+// Returns an array of recognised entries, each:
+//   { path, checksum, name, compatible: string[], size }
+// Unrecognised files and directories are skipped; unreadable paths are
+// silently dropped.
 export async function scanForPersistedRoms() {
   const found = [];
-  for (const cs of Object.keys(ROM_DATABASE)) {
-    const path = romPathForChecksum(cs);
-    // rom.identify returns the compatible-machine list; non-empty == valid ROM.
-    const compatible = await window.gsEval('rom.identify', [path]);
-    if (Array.isArray(compatible) && compatible.length > 0) {
-      found.push(cs);
-    }
+  let entries = [];
+  try {
+    entries = await listDir(ROMS_DIR);
+  } catch (e) {
+    return found;
+  }
+  for (const entry of entries) {
+    if (entry.kind !== 'file') continue;
+    const path = `${ROMS_DIR}/${entry.name}`;
+    const info = await window.romIdentify(path);
+    if (!info || !info.recognised) continue;
+    found.push({
+      path,
+      checksum: info.checksum,
+      name: info.name,
+      compatible: Array.isArray(info.compatible) ? info.compatible : [],
+      size: info.size,
+    });
   }
   return found;
+}
+
+// Group scan results by model id.  Returns a Map of model_id → array of
+// matching ROM info entries (so the dialog can offer every ROM that lights
+// up the model — e.g. both a Universal ROM and a IIcx-specific ROM).
+function groupRomsByModel(scanResults) {
+  const byModel = new Map();
+  for (const r of scanResults) {
+    for (const model of r.compatible) {
+      if (!byModel.has(model)) byModel.set(model, []);
+      byModel.get(model).push(r);
+    }
+  }
+  return byModel;
 }
 
 // ---------------------------------------------------------------------------
@@ -77,15 +109,16 @@ export function showRomUploadDialog() {
       const tmpPath = `/tmp/upload_rom_${Date.now()}`;
       writeBinary(tmpPath, data);
 
-      // Validate via rom_checksum: returns the hex string for a valid
-      // ROM, empty when the file isn't recognised.
-      const checksum = await window.gsEval('rom.checksum_of', [tmpPath]);
-      if (typeof checksum !== 'string' || !checksum) {
+      // Validate via rom.identify: returns null when unreadable, or a map
+      // with recognised==false when the bytes don't match a known ROM.
+      const info = await window.romIdentify(tmpPath);
+      if (!info || !info.recognised || !info.checksum) {
         errorSpan.textContent = 'Not a valid Macintosh ROM image. Please try another file.';
         errorSpan.hidden = false;
         fileInput.value = '';
         return;
       }
+      const checksum = info.checksum;
 
       // Persist to /rom/<checksum> (best-effort)
       await window.gsEval('storage.cp', [tmpPath, romPathForChecksum(checksum)]);
@@ -107,11 +140,21 @@ export function showRomUploadDialog() {
 // ---------------------------------------------------------------------------
 
 // Build the configuration dialog UI.
+// `scanResults` is the array produced by scanForPersistedRoms() above.
 // Returns a Promise that resolves with the user's configuration choices.
-export async function showConfigDialog(romChecksums) {
+export async function showConfigDialog(scanResults) {
   return new Promise(async (resolve) => {
-    const models = getAvailableModels(romChecksums);
-    const modelIds = [...models.keys()];
+    const romsByModel = groupRomsByModel(scanResults);
+    const modelIds = [...romsByModel.keys()];
+
+    // machine.profile cache keyed by model id; populated lazily as the user
+    // switches between models.  No staleness window (catalog is the running
+    // build).
+    const profileCache = new Map();
+    async function getProfile(id) {
+      if (!profileCache.has(id)) profileCache.set(id, await window.machineProfile(id));
+      return profileCache.get(id);
+    }
 
     let dlg = document.getElementById('config-dialog');
     if (!dlg) {
@@ -157,61 +200,76 @@ export async function showConfigDialog(romChecksums) {
       return opts;
     }
 
+    // Map a floppy_slots[*].kind to the OPFS directories whose contents
+    // should appear for that drive.  Mirrors the rule in proposal §3.3:
+    // 800K drives read both 400K and 800K media (single /fd directory),
+    // HD drives also read 1.4 MB media (/fd + /fdhd).
+    function dirsForFloppyKind(kind) {
+      if (kind === 'hd') return [FD_DIR, FDHD_DIR];
+      return [FD_DIR];
+    }
+
     async function buildRows(selectedModelId) {
-      const def = MACHINE_DEFS[selectedModelId];
-      if (!def) return;
+      const profile = await getProfile(selectedModelId);
+      if (!profile) return;
 
       rowsContainer.innerHTML = '';
 
       // Row 1: Machine Model
-      addRow('Machine Model:', buildModelSelect(selectedModelId));
+      addRow('Machine Model:', await buildModelSelect(selectedModelId));
 
-      // Row 2: Video ROM (SE/30 only)
-      if (def.hasVrom) {
+      // Row 2: Video ROM (when the profile reports needs_vrom)
+      if (profile.needs_vrom) {
         const vromFiles = imageFiles(await listDir(VROMS_DIR));
         addRow('Video ROM:', buildMediaSelect('config-vrom',
           mediaOptions(vromFiles, VROMS_DIR), VROMS_DIR));
       }
 
-      // Row 3: RAM Size
-      const ramOptions = def.ramOptions.map(mb => ({
-        value: String(mb),
-        label: `${mb} MB`,
-        selected: mb === def.defaultRam,
+      // Row 3: RAM Size — driven by ram_options (KB), default ram_default (KB).
+      const ramOptions = profile.ram_options.map(kb => ({
+        value: String(kb),
+        label: kb >= 1024 && kb % 1024 === 0
+          ? `${kb / 1024} MB`
+          : kb >= 1024
+            ? `${(kb / 1024).toFixed(1)} MB`
+            : `${kb} KB`,
+        selected: kb === profile.ram_default,
       }));
       addRow('RAM Size:', buildSelect('config-ram', ramOptions));
 
       // Scan OPFS directories for persisted media (via browser OPFS API)
-      const fdFiles = imageFiles(await listDir(FD_DIR));
-      const fdhdFiles = imageFiles(await listDir(FDHD_DIR));
+      const fdEntries = await listDir(FD_DIR);
+      const fdhdEntries = await listDir(FDHD_DIR);
+      const fdFiles = imageFiles(fdEntries);
+      const fdhdFiles = imageFiles(fdhdEntries);
       const hdFiles = imageFiles(await listDir(HD_DIR));
       const cdFiles = imageFiles(await listDir(CD_DIR));
 
-      // Combine floppy dirs based on machine capabilities
-      const floppyFiles = def.floppyDirs.includes('fdhd')
-        ? [...fdFiles.map(f => ({ name: f, dir: FD_DIR })),
-           ...fdhdFiles.map(f => ({ name: f, dir: FDHD_DIR }))]
-        : fdFiles.map(f => ({ name: f, dir: FD_DIR }));
-
-      // Floppy rows
-      const defaultFloppyDir = def.floppyDirs.includes('fdhd') ? FDHD_DIR : FD_DIR;
-      for (let i = 0; i < def.floppySlots.length; i++) {
+      // Floppy rows — one per slot.  Per-slot kind picks the directories.
+      for (let i = 0; i < profile.floppy_slots.length; i++) {
+        const slot = profile.floppy_slots[i];
+        const dirs = dirsForFloppyKind(slot.kind);
+        const persistDir = dirs[dirs.length - 1]; // HD drives default uploads to /fdhd
         const opts = [{ value: '', label: '(none)' }];
-        for (const { name, dir } of floppyFiles) {
-          opts.push({ value: `${dir}/${name}`, label: name });
+        for (const dir of dirs) {
+          const files = dir === FD_DIR ? fdFiles : fdhdFiles;
+          for (const name of files) {
+            opts.push({ value: `${dir}/${name}`, label: name });
+          }
         }
         opts.push({ value: '__divider__', label: '───────────', disabled: true });
         opts.push({ value: '__upload__', label: 'Upload image...' });
-        addRow(`${def.floppySlots[i]}:`, buildMediaSelect(`config-fd${i}`, opts, defaultFloppyDir));
+        addRow(`${slot.label}:`, buildMediaSelect(`config-fd${i}`, opts, persistDir));
       }
 
       // SCSI HD rows
-      for (let i = 0; i < def.scsiSlots.length; i++) {
-        addRow(`${def.scsiSlots[i]}:`, buildMediaSelect(`config-hd${i}`, mediaOptions(hdFiles, HD_DIR, true), HD_DIR));
+      for (let i = 0; i < profile.scsi_slots.length; i++) {
+        const slot = profile.scsi_slots[i];
+        addRow(`${slot.label}:`, buildMediaSelect(`config-hd${i}`, mediaOptions(hdFiles, HD_DIR, true), HD_DIR));
       }
 
       // CD-ROM row
-      if (def.hasCdrom) {
+      if (profile.has_cdrom) {
         addRow('SCSI CD:', buildMediaSelect('config-cd', mediaOptions(cdFiles, CD_DIR), CD_DIR));
       }
     }
@@ -227,10 +285,14 @@ export async function showConfigDialog(romChecksums) {
       rowsContainer.appendChild(row);
     }
 
-    function buildModelSelect(selectedId) {
-      const options = modelIds.map(id => ({
+    async function buildModelSelect(selectedId) {
+      const labels = await Promise.all(modelIds.map(async (id) => {
+        const p = await getProfile(id);
+        return p?.name || id;
+      }));
+      const options = modelIds.map((id, i) => ({
         value: id,
-        label: MACHINE_DEFS[id]?.displayName || id,
+        label: labels[i],
         selected: id === selectedId,
       }));
       // Add divider and upload option
@@ -239,17 +301,31 @@ export async function showConfigDialog(romChecksums) {
       const sel = buildSelect('config-model', options);
       sel.addEventListener('change', () => {
         if (sel.value === '__upload__') {
-          triggerRomUpload().then(newCs => {
+          triggerRomUpload().then(async (newCs) => {
             if (newCs) {
-              romChecksums.push(newCs);
-              const newModels = getAvailableModels(romChecksums);
-              const newIds = [...newModels.keys()];
-              modelIds.length = 0;
-              modelIds.push(...newIds);
-              buildRows(newIds.includes(sel._prevValue) ? sel._prevValue : newIds[0]).then(updateStartButton);
-            } else {
-              sel.value = sel._prevValue || modelIds[0];
+              // Re-probe the new ROM to get its compatible-models list and
+              // refresh the model dropdown.  Probing the file (rather than
+              // looking up by checksum) keeps the JS side authoritative-free.
+              const info = await window.romIdentify(romPathForChecksum(newCs));
+              if (info && info.recognised) {
+                scanResults.push({
+                  path: romPathForChecksum(newCs),
+                  checksum: newCs,
+                  name: info.name,
+                  compatible: info.compatible,
+                  size: info.size,
+                });
+                const fresh = groupRomsByModel(scanResults);
+                modelIds.length = 0;
+                for (const id of fresh.keys()) modelIds.push(id);
+                romsByModel.clear();
+                for (const [k, v] of fresh) romsByModel.set(k, v);
+                const next = modelIds.includes(sel._prevValue) ? sel._prevValue : modelIds[0];
+                buildRows(next).then(updateStartButton);
+                return;
+              }
             }
+            sel.value = sel._prevValue || modelIds[0];
           });
           return;
         }
@@ -473,14 +549,14 @@ export async function showConfigDialog(romChecksums) {
     }
 
     // Enable/disable Start based on required selections (e.g. VROM for SE/30).
-    function updateStartButton() {
+    async function updateStartButton() {
       const startBtn = dlg.querySelector('#config-start-btn');
       if (!startBtn) return;
       const modelSel = dlg.querySelector('#config-model');
       const currentModel = modelSel?.value || initialModel;
-      const def = MACHINE_DEFS[currentModel];
+      const profile = await getProfile(currentModel);
       let canStart = true;
-      if (def?.hasVrom) {
+      if (profile?.needs_vrom) {
         const vromSel = dlg.querySelector('#config-vrom');
         const val = vromSel?.value;
         if (!val || val === '__upload__') canStart = false;
@@ -491,7 +567,7 @@ export async function showConfigDialog(romChecksums) {
     // Initialize with first available model — await OPFS scans before showing
     const initialModel = modelIds[0] || 'plus';
     await buildRows(initialModel);
-    updateStartButton();
+    await updateStartButton();
 
     // Start button handler
     const startBtn = dlg.querySelector('#config-start-btn');
@@ -502,39 +578,46 @@ export async function showConfigDialog(romChecksums) {
       const modelSel = dlg.querySelector('#config-model');
       const ramSel = dlg.querySelector('#config-ram');
       const selectedModel = modelSel?.value || initialModel;
-      const selectedRam = ramSel?.value || '4';
-      const modelInfo = models.get(selectedModel);
-      const def = MACHINE_DEFS[selectedModel];
+      const profile = await getProfile(selectedModel);
+      const ramKB = parseInt(ramSel?.value, 10) || profile?.ram_default || 4096;
+
+      // Pick the first ROM file matching the chosen model.
+      const matchingRoms = romsByModel.get(selectedModel) || [];
+      const romChecksum = matchingRoms[0]?.checksum;
 
       // Collect media selections
       const floppies = [];
-      if (def) {
-        for (let i = 0; i < def.floppySlots.length; i++) {
+      if (profile) {
+        for (let i = 0; i < profile.floppy_slots.length; i++) {
           const sel = dlg.querySelector(`#config-fd${i}`);
           if (sel && sel.value && sel.value !== '__upload__') floppies.push(sel.value);
         }
       }
       const hdImages = [];
-      if (def) {
-        for (let i = 0; i < def.scsiSlots.length; i++) {
+      if (profile) {
+        for (let i = 0; i < profile.scsi_slots.length; i++) {
           const sel = dlg.querySelector(`#config-hd${i}`);
-          if (sel && sel.value && sel.value !== '__upload__') hdImages.push({ path: sel.value, id: i });
+          if (sel && sel.value && sel.value !== '__upload__') {
+            hdImages.push({ path: sel.value, id: profile.scsi_slots[i].id });
+          }
         }
       }
       const cdSel = dlg.querySelector('#config-cd');
       const cdImage = (cdSel && cdSel.value && cdSel.value !== '__upload__') ? cdSel.value : null;
+      const cdId = profile?.cdrom_id ?? 3;
 
       const vromSel = dlg.querySelector('#config-vrom');
       const vromPath = (vromSel && vromSel.value && vromSel.value !== '__upload__') ? vromSel.value : null;
 
       resolve({
         model: selectedModel,
-        romChecksum: modelInfo?.romChecksum,
-        ram: parseFloat(selectedRam),
+        romChecksum,
+        ramKB,
         vromPath,
         floppies,
         hdImages,
         cdImage,
+        cdId,
       });
     };
     startBtn.addEventListener('click', onStart);
@@ -550,7 +633,7 @@ export async function showConfigDialog(romChecksums) {
 // Execute the boot sequence from config dialog selections.
 // tmpRomPath is a fallback if the persisted ROM can't be found.
 export async function bootFromConfig(config, tmpRomPath) {
-  const { model, romChecksum, ram, vromPath, floppies, hdImages, cdImage } = config;
+  const { model, romChecksum, ramKB, vromPath, floppies, hdImages, cdImage, cdId } = config;
 
   // Set VROM path before machine creation, because SE/30 init reads it
   // during the boot sequence.
@@ -558,11 +641,11 @@ export async function bootFromConfig(config, tmpRomPath) {
     await window.gsEval('vrom.load', [vromPath]);
   }
 
-  // Create the machine with the user-selected model and RAM. Under the
-  // explicit-machine-creation model, this MUST happen before rom.load.
+  // Create the machine with the user-selected model and RAM.  Under the
+  // explicit-machine-creation model, this MUST happen before rom.load — and
+  // ramKB MUST be one of the model's profile.ram_options values.
   if (model) {
-    const ramKB = Math.round((ram || 4) * 1024);
-    await window.gsEval('machine.boot', [model, ramKB]);
+    await window.gsEval('machine.boot', [model, ramKB || 4096]);
   }
 
   // Load ROM — try persisted OPFS path first, fall back to /tmp.
@@ -585,22 +668,22 @@ export async function bootFromConfig(config, tmpRomPath) {
     }
   }
 
-  // Attach SCSI hard disks.
+  // Attach SCSI hard disks at the bus ids declared by the profile.
   if (hdImages) {
     for (const { path, id } of hdImages) {
       await window.gsEval('scsi.attach_hd', [path, id]);
     }
   }
 
-  // Attach CD-ROM at SCSI id 3 (the de-facto default; legacy callers
-  // baked this in, but the typed API requires it explicitly).
+  // Attach CD-ROM at the profile's cdrom_id (universally 3 today; the
+  // value comes from the C side rather than being hardcoded here).
   if (cdImage) {
-    await window.gsEval('scsi.attach_cdrom', [cdImage, 3]);
+    await window.gsEval('scsi.attach_cdrom', [cdImage, cdId ?? 3]);
   }
 
   hideRomOverlay();
   enableRunButton();
-  setBackgroundMessage('Click \u25b6 to start emulation');
+  setBackgroundMessage('Click ▶ to start emulation');
 
   await window.gsEval('scheduler.run');
   setRunning(true);

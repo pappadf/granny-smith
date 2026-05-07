@@ -62,7 +62,7 @@ static void plus_update_ipl(config_t *sim, int level, bool value);
 // Video buffer helper (Plus-specific address constants)
 // ============================================================
 
-// Plus RAM top: 4 MB, matching machine_plus.ram_size_default
+// Plus RAM top: 4 MB, matching machine_plus.ram_default
 #define PLUS_RAM_TOP 0x400000UL
 // Plus ROM start in the 24-bit address space
 #define PLUS_ROM_START 0x400000UL
@@ -479,22 +479,46 @@ static void plus_trigger_vbl(config_t *cfg) {
 // Machine descriptor
 // ============================================================
 
+// Plus configuration-dialog metadata.  Plus accepts a 2.5 MB stepping in
+// addition to the powers of two — historically valid on real hardware.
+static const uint32_t plus_ram_options_kb[] = {1024, 2048, 2560, 4096, 0};
+
+static const struct floppy_slot plus_floppy_slots[] = {
+    {.label = "Internal FD0", .kind = FLOPPY_800K},
+    {.label = "External FD1", .kind = FLOPPY_800K},
+    {0},
+};
+
+static const struct scsi_slot plus_scsi_slots[] = {
+    {.label = "SCSI HD0", .id = 0},
+    {.label = "SCSI HD1", .id = 1},
+    {0},
+};
+
 // Macintosh Plus hardware profile descriptor
 const hw_profile_t machine_plus = {
-    .model_name = "Macintosh Plus",
-    .model_id = "plus",
+    .name = "Macintosh Plus",
+    .id = "plus",
 
     // 68000 at 7.8336 MHz (actual Plus clock)
     .cpu_model = 68000,
-    .cpu_clock_hz = 7833600,
+    .freq = 7833600,
     .mmu_present = false,
     .fpu_present = false,
 
     // 24-bit address space
     .address_bits = 24,
-    .ram_size_default = 0x400000, // 4 MB
-    .ram_size_max = 0x400000, // 4 MB max
+    .ram_default = 0x400000, // 4 MB
+    .ram_max = 0x400000, // 4 MB max
     .rom_size = 0x020000, // 128 KB
+
+    // Configuration-dialog shape
+    .ram_options = plus_ram_options_kb,
+    .floppy_slots = plus_floppy_slots,
+    .scsi_slots = plus_scsi_slots,
+    .has_cdrom = false, // Plus CD-ROM driver chain not yet integrated
+    .cdrom_id = 3,
+    .needs_vrom = false,
 
     // Single VIA, no ADB, no NuBus
     .via_count = 1,

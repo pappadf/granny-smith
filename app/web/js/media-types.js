@@ -24,11 +24,11 @@ export const MEDIA_TYPES = {
     label: 'ROM image',
     persistDir: ROMS_DIR,
     async validate(path) {
-      // rom_checksum returns the 8-char hex string for a valid ROM,
-      // empty when the file isn't recognised.
-      const checksum = await window.gsEval('rom.checksum_of', [path]);
-      if (typeof checksum !== 'string' || !checksum) return { valid: false };
-      return { valid: true, info: { checksum } };
+      // rom.identify returns the file's full info map; recognised==true means
+      // the checksum matches an entry in the C-side ROM_TABLE.
+      const info = await window.romIdentify(path);
+      if (!info || !info.recognised) return { valid: false };
+      return { valid: true, info: { checksum: info.checksum } };
     },
     // ROMs are stored by checksum, not original filename
     nameFn(originalName, info) {

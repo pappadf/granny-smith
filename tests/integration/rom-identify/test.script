@@ -1,0 +1,61 @@
+# rom.identify and machine.profile probe surface.
+#
+# Headless boots Plus from Plus_v3.rom (config.mk's TEST_ROM); we then
+# probe the same file plus the SE/30 ROM by relative path to exercise the
+# new map shape, and call machine.profile() for both registered models to
+# pin the static configuration shape.  The cross-check here is what
+# protects against the drift documented in proposal §1.1.
+
+# rom.identify on the loaded Plus ROM.  Output is a JSON-encoded V_STRING.
+echo ${rom.identify("../../data/roms/Plus_v3.rom")}
+
+# Universal ROM: must list se30 / iicx / iix as compatible.  Headless ran
+# its boot pass against Plus, so this is just a path probe — no machine
+# state is touched.
+echo ${rom.identify("../../data/roms/SE30.rom")}
+
+# Unrecognised file: probing /dev/null/nonexistent must yield V_ERROR.
+# The shell's truthiness rule treats errors as falsy.
+assert ${!rom.identify("/dev/null/nonexistent")} "expected V_ERROR for unreadable path"
+
+# Per-instance attributes describe the *loaded* ROM (Plus_v3 in this run).
+assert ${rom.loaded == true} "Plus ROM must be loaded"
+assert ${rom.checksum == "4D1F8172"} "Plus_v3 checksum is 4D1F8172"
+assert ${rom.name == "Macintosh Plus (Rev 3, Loud Harmonicas)"} "Plus_v3 family name"
+assert ${rom.size == 131072} "Plus ROM is 128 KiB"
+
+# Static profile lookup.  Both registered models must resolve.  IIcx is
+# intentionally unregistered (proposal §3.1 "no partial profiles").
+echo ${machine.profile("plus")}
+echo ${machine.profile("se30")}
+
+# Empty / unknown id → V_ERROR.
+assert ${!machine.profile("")} "machine.profile(\"\") must error"
+assert ${!machine.profile("nonesuch")} "machine.profile(\"nonesuch\") must error"
+
+# Per-instance attributes (post-boot, Plus is the active machine).
+assert ${machine.created == true} "machine.created should be true"
+assert ${machine.id == "plus"} "machine.id"
+assert ${machine.name == "Macintosh Plus"} "machine.name"
+assert ${machine.freq == 7833600} "machine.freq"
+assert ${machine.ram == 4096} "machine.ram (default 4 MB)"
+
+# machine.boot's ram-options validation.  4 MB is in Plus's ram_options;
+# 99999 KB is not.  The 2.5 MB stepping is accepted (Plus supports it).
+assert ${!machine.boot("plus", 99999)} "ram=99999 must fail Plus ram_options check"
+assert ${machine.boot("plus", 2560)} "ram=2560 (2.5 MB) must succeed for Plus"
+assert ${machine.ram == 2560} "machine.ram reflects 2.5 MB after re-boot"
+
+# Re-boot back to a default-ish 4 MB so the rest of the harness sees
+# something it can boot — the cleanup quit() below is what matters.
+assert ${machine.boot("plus", 4096)} "ram=4096 must succeed for Plus"
+
+# Switch to SE/30 with its default 8 MB to confirm the cross-model attr
+# update.  No ROM is loaded into the new machine, so we only check the
+# profile-derived attributes.
+assert ${machine.boot("se30", 8192)} "machine.boot(se30, 8192)"
+assert ${machine.id == "se30"} "machine.id after se30 boot"
+assert ${machine.ram == 8192} "machine.ram after se30 boot"
+assert ${machine.freq == 15667200} "machine.freq after se30 boot"
+
+quit

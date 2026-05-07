@@ -285,8 +285,8 @@ int checkpoint_machine_write_manifest(void) {
 
     const char *model_id = "";
     uint32_t ram_bytes = 0;
-    if (global_emulator && global_emulator->machine && global_emulator->machine->model_id) {
-        model_id = global_emulator->machine->model_id;
+    if (global_emulator && global_emulator->machine && global_emulator->machine->id) {
+        model_id = global_emulator->machine->id;
         ram_bytes = global_emulator->ram_size;
     }
     char *machine = str_printf_local("  \"machine\": { \"model\": \"%s\", \"ram_bytes\": %u },\n", model_id, ram_bytes);

@@ -1101,7 +1101,7 @@ int main(int argc, char *argv[]) {
         const hw_profile_t *profile = machine_find(model);
         if (profile) {
             global_emulator = system_create(profile, NULL);
-            printf("%s (%u KB RAM)\n", profile->model_name, profile->ram_size_default / 1024);
+            printf("%s (%u KB RAM)\n", profile->name, profile->ram_default / 1024);
         } else {
             printf("Unknown model: %s\n", model);
         }

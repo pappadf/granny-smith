@@ -11,5 +11,8 @@ TEST_ROM := roms/SE30.rom
 # Boot from drive 0 (IWM SELECT=0).  MacTest's floppy test (TEST_PERFO) ejects
 # the boot disk during its head-seek phase, then asks the user to insert a blank.
 # The blank is inserted into fd0 at the right moment (after eject, at a breakpoint).
-TEST_ARGS := fd0=$(TEST_DATA)/apps/MacTest-SE30.image
+# Pin RAM at 4 MB to match the existing screenshot baseline; SE/30's profile
+# default is 8 MB now (proposal §3.1) and MacTest's RAM-test reports would
+# otherwise drift across the screenshots.
+TEST_ARGS := ram=4096 fd0=$(TEST_DATA)/apps/MacTest-SE30.image
 

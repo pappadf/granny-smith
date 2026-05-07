@@ -119,8 +119,8 @@ export async function tryExtractArchive(filePath, displayName, data) {
 // Probe if a file is a valid ROM.
 export async function probeRom(filePath) {
   try {
-    const compatible = await window.gsEval('rom.identify', [filePath]);
-    return Array.isArray(compatible) && compatible.length > 0;
+    const info = await window.romIdentify(filePath);
+    return !!(info && info.recognised && Array.isArray(info.compatible) && info.compatible.length > 0);
   } catch {
     return false;
   }

@@ -171,12 +171,15 @@ export async function processUrlMedia(params) {
     // default), then load the ROM into the freshly created machine.
     const tmpPath = '/tmp/url_rom';
     console.log(`[url-media] loading ROM from: ${tmpPath}`);
-    const compatible = await window.gsEval('rom.identify', [tmpPath]);
+    const info = await window.romIdentify(tmpPath);
+    const compatible = info && info.recognised ? info.compatible : null;
     if (!Array.isArray(compatible) || compatible.length === 0) {
       console.error(`[url-media] rom.identify: no compatible machines for ${tmpPath}`);
       return;
     }
-    await window.gsEval('machine.boot', [compatible[0]]);
+    const profile = await window.machineProfile(compatible[0]);
+    const ramKB = profile ? profile.ram_default : 4096;
+    await window.gsEval('machine.boot', [compatible[0], ramKB]);
     await window.gsEval('rom.load', [tmpPath]);
     romLoaded = true;
     hideRomOverlay();

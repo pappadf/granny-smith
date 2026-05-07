@@ -44,8 +44,21 @@ type ReturnConvention =
   | 'cmd_bool'       // bool true → 1, false → 0 (legacy cmd_bool convention)
   | 'string_nonempty' // V_STRING non-empty → 1, empty → 0 (mirrors fd validate)
   | 'string_to_cmd_int' // non-empty string → 0, empty → 1 (legacy probe convention)
+  | 'rom_recognised_cmd_int' // rom.identify map → recognised → 0, else 1
+  | 'rom_checksum_string_nonempty' // rom.identify map → non-empty checksum → 1, else 0
   | 'void_or_error'  // any non-error → 0, error → 1 (legacy "did dispatch succeed")
   | 'pass_through';  // numeric value passed through unchanged (e.g. size/print)
+
+// Parse a rom.identify result (JSON-encoded V_STRING) into the info map, or
+// null on any error / non-string return.
+function parseRomIdentify(value: any): { recognised: boolean; compatible: string[]; checksum: string } | null {
+  if (typeof value !== 'string') return null;
+  try {
+    const r = JSON.parse(value);
+    if (!r || typeof r !== 'object') return null;
+    return r as { recognised: boolean; compatible: string[]; checksum: string };
+  } catch { return null; }
+}
 
 type Translation = {
   method: string;
@@ -64,6 +77,14 @@ function mapResult(value: any, convention: ReturnConvention): number {
     return typeof value === 'string' && value.length > 0 ? 1 : 0;
   if (convention === 'string_to_cmd_int')
     return typeof value === 'string' && value.length > 0 ? 0 : 1;
+  if (convention === 'rom_recognised_cmd_int') {
+    const info = parseRomIdentify(value);
+    return info && info.recognised && Array.isArray(info.compatible) && info.compatible.length > 0 ? 0 : 1;
+  }
+  if (convention === 'rom_checksum_string_nonempty') {
+    const info = parseRomIdentify(value);
+    return info && typeof info.checksum === 'string' && info.checksum.length > 0 ? 1 : 0;
+  }
   if (convention === 'void_or_error') return 0;
   if (convention === 'pass_through') {
     if (typeof value === 'number') return value;
@@ -389,7 +410,10 @@ function translateToGsEval(line: string): Translation | null {
       return { method: 'archive.extract', args: [tail[2], tail[1]], convention: 'cmd_int_bool' };
   }
 
-  // setup --model X --ram Y → machine.boot(model, [ram_kb])
+  // setup --model X --ram Y → machine.boot(model, ram_kb).  The C-side ram
+  // arg is required and validated against profile.ram_options; when the
+  // shell-form caller omits --ram, fall back to the profile defaults known
+  // to be in-range for the registered models (Plus 4 MB, SE/30 8 MB).
   if (head === 'setup') {
     let model = '';
     let ram: number | null = null;
@@ -397,12 +421,14 @@ function translateToGsEval(line: string): Translation | null {
       if (tail[i] === '--model' && i + 1 < tail.length) model = tail[++i];
       else if (tail[i] === '--ram' && i + 1 < tail.length) ram = parseInt10(tail[++i]);
     }
-    if (model)
+    if (model) {
+      if (ram === null) ram = model === 'se30' ? 8192 : 4096;
       return {
         method: 'machine.boot',
-        args: ram !== null ? [model, ram] : [model],
+        args: [model, ram],
         convention: 'cmd_int_bool',
       };
+    }
   }
 
   // checkpoint subcommands (--probe / clear / --load / --save / --machine /
@@ -445,19 +471,18 @@ function translateToGsEval(line: string): Translation | null {
     const sub = tail[0];
     const subArgs = tail.slice(1);
 
-    // rom.* — see rom.h. The legacy `rom probe`/`rom validate` distinction
-    // is gone: rom.identify returns the list of compatible models (empty if
-    // unrecognised), which we collapse to a non-empty / empty signal here.
+    // rom.* — see rom.h. rom.identify returns a JSON-encoded info map; the
+    // dedicated conventions below pluck `recognised` / `checksum` out of it.
     if (head === 'rom') {
       if (sub === 'probe' || sub === 'validate') {
         if (subArgs.length === 1)
-          return { method: 'rom.identify', args: subArgs, convention: 'cmd_int_bool' };
+          return { method: 'rom.identify', args: subArgs, convention: 'rom_recognised_cmd_int' };
         // bare `rom probe` (no path) → "is something loaded?"
         if (sub === 'probe' && subArgs.length === 0)
           return { method: 'rom.loaded', args: [], convention: 'cmd_bool' };
       }
       if (sub === 'checksum' && subArgs.length === 1)
-        return { method: 'rom.checksum_of', args: subArgs, convention: 'string_nonempty' };
+        return { method: 'rom.identify', args: subArgs, convention: 'rom_checksum_string_nonempty' };
       if (sub === 'load' && subArgs.length === 1)
         return { method: 'rom.load', args: subArgs, convention: 'cmd_int_bool' };
     }

@@ -23,22 +23,35 @@
 
 #include "machine.h"
 
-// Macintosh IIcx hardware profile descriptor (stub — all callbacks NULL)
+// Macintosh IIcx hardware profile descriptor (stub — all callbacks NULL).
+// Per the proposal's "no partial profiles" rule this stub is *not* registered
+// in the runtime registry until callbacks and the dialog-shape arrays are
+// populated.  Kept as a compile-time placeholder so the symbol exists for
+// future wiring.
 const hw_profile_t machine_iicx = {
-    .model_name = "Macintosh IIcx",
-    .model_id = "iicx",
+    .name = "Macintosh IIcx",
+    .id = "iicx",
 
     // 68030 at 15.6672 MHz
     .cpu_model = 68030,
-    .cpu_clock_hz = 15667200,
+    .freq = 15667200,
     .mmu_present = true,
     .fpu_present = true, // 68882 FPU (optional but standard)
 
     // 32-bit address space
     .address_bits = 32,
-    .ram_size_default = 0x100000, // 1 MB default
-    .ram_size_max = 0x8000000, // 128 MB max (8x 16MB SIMMs)
+    .ram_default = 0x100000, // 1 MB default
+    .ram_max = 0x8000000, // 128 MB max (8x 16MB SIMMs)
     .rom_size = 0x040000, // 256 KB
+
+    // Configuration-dialog shape: not populated — IIcx is unfinished and
+    // therefore intentionally *not* registered with machine_register().
+    .ram_options = NULL,
+    .floppy_slots = NULL,
+    .scsi_slots = NULL,
+    .has_cdrom = false,
+    .cdrom_id = 3,
+    .needs_vrom = false,
 
     // Two VIAs, ADB present, three NuBus slots
     .via_count = 2,

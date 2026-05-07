@@ -14,6 +14,7 @@
 #include "rom.h"
 
 #include "cpu.h"
+#include "json_encode.h"
 #include "memory.h"
 #include "object.h"
 #include "system.h"
@@ -280,10 +281,19 @@ static value_t rom_attr_loaded(struct object *self, const member_t *m) {
     return val_bool(memory_rom_filename(system_memory()) != NULL);
 }
 
+// rom.checksum → 8 uppercase hex chars of the loaded ROM's stored checksum,
+// or empty string when no ROM is loaded.  Surfaced as a string (not a number)
+// because checksums are identifiers — never arithmetic — and the OPFS layout
+// uses the canonical 8-hex form as the filename.
 static value_t rom_attr_checksum(struct object *self, const member_t *m) {
     (void)self;
     (void)m;
-    return val_uint(4, memory_rom_checksum(system_memory()));
+    memory_map_t *mem = system_memory();
+    if (!mem || !memory_rom_filename(mem))
+        return val_str("");
+    char hex[16];
+    snprintf(hex, sizeof(hex), "%08X", memory_rom_checksum(mem));
+    return val_str(hex);
 }
 
 static value_t rom_attr_size(struct object *self, const member_t *m) {
@@ -292,7 +302,9 @@ static value_t rom_attr_size(struct object *self, const member_t *m) {
     return val_uint(4, memory_rom_size(system_memory()));
 }
 
-static value_t rom_attr_family(struct object *self, const member_t *m) {
+// rom.name → family name of the loaded ROM (e.g. "Universal IIx/IIcx/SE/30 ROM"),
+// or empty string when no ROM is loaded or the checksum is unrecognised.
+static value_t rom_attr_name(struct object *self, const member_t *m) {
     (void)self;
     (void)m;
     memory_map_t *mem = system_memory();
@@ -311,8 +323,11 @@ static value_t rom_method_load(struct object *self, const member_t *m, int argc,
     return val_bool(true);
 }
 
-// rom.identify(path) → V_LIST of model_id strings the ROM is compatible with,
-// or empty list if the ROM isn't recognised. Use rom.checksum_of for the hex.
+// rom.identify(path) → JSON-encoded info map describing the ROM file:
+//   { recognised, compatible, checksum, name, size }
+// recognised==false implies compatible==[] and name=="" but the checksum and
+// size are still populated from the file.  Returns V_ERROR if the path can
+// not be opened (caller treats that as "no info, skip this entry").
 static value_t rom_method_identify(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)self;
     (void)m;
@@ -320,40 +335,32 @@ static value_t rom_method_identify(struct object *self, const member_t *m, int a
     rom_file_info_t fi = {0};
     if (rom_probe_file(argv[0].s, &fi) != 0)
         return val_err("rom.identify: cannot read '%s'", argv[0].s);
-    if (!fi.info)
-        return val_list(NULL, 0);
-    int n = rom_info_compatible_count(fi.info);
-    value_t *items = (value_t *)calloc((size_t)n, sizeof(value_t));
-    if (!items)
-        return val_err("rom.identify: out of memory");
-    for (int i = 0; i < n; i++)
-        items[i] = val_str(fi.info->compatible[i]);
-    return val_list(items, (size_t)n);
-}
 
-// rom.checksum_of(path) → 8-char hex of the file's stored checksum, or
-// empty string if the file is unreadable.
-static value_t rom_method_checksum_of(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
-    (void)argc;
-    rom_file_info_t fi = {0};
-    if (rom_probe_file(argv[0].s, &fi) != 0)
-        return val_str("");
+    json_builder_t *b = json_builder_new();
+    if (!b)
+        return val_err("rom.identify: out of memory");
+
+    json_open_obj(b);
+    json_key(b, "recognised");
+    json_bool(b, fi.info != NULL);
+    json_key(b, "compatible");
+    json_open_arr(b);
+    if (fi.info && fi.info->compatible) {
+        for (const char *const *p = fi.info->compatible; *p; p++)
+            json_str(b, *p);
+    }
+    json_close_arr(b);
     char hex[16];
     snprintf(hex, sizeof(hex), "%08X", fi.checksum);
-    return val_str(hex);
-}
+    json_key(b, "checksum");
+    json_str(b, hex);
+    json_key(b, "name");
+    json_str(b, fi.info ? fi.info->family_name : "");
+    json_key(b, "size");
+    json_int(b, (int64_t)fi.size);
+    json_close_obj(b);
 
-// rom.family_of(path) → family name from the table, or empty string.
-static value_t rom_method_family_of(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
-    (void)argc;
-    rom_file_info_t fi = {0};
-    if (rom_probe_file(argv[0].s, &fi) != 0)
-        return val_str("");
-    return val_str(fi.info ? fi.info->family_name : "");
+    return json_finish(b);
 }
 
 static const arg_decl_t rom_path_arg[] = {
@@ -373,35 +380,27 @@ static const member_t rom_members[] = {
      .attr = {.type = V_BOOL, .get = rom_attr_loaded, .set = NULL}},
     {.kind = M_ATTR,
      .name = "checksum",
-     .doc = "Stored checksum of the loaded ROM",
+     .doc = "Stored checksum of the loaded ROM (8 uppercase hex chars, no prefix)",
      .flags = VAL_RO,
-     .attr = {.type = V_UINT, .get = rom_attr_checksum, .set = NULL}},
+     .attr = {.type = V_STRING, .get = rom_attr_checksum, .set = NULL}},
     {.kind = M_ATTR,
      .name = "size",
      .doc = "ROM region size in bytes",
      .flags = VAL_RO,
      .attr = {.type = V_UINT, .get = rom_attr_size, .set = NULL}},
     {.kind = M_ATTR,
-     .name = "family",
+     .name = "name",
      .doc = "Family name of the loaded ROM (e.g. \"Universal IIx/IIcx/SE/30 ROM\")",
      .flags = VAL_RO,
-     .attr = {.type = V_STRING, .get = rom_attr_family, .set = NULL}},
+     .attr = {.type = V_STRING, .get = rom_attr_name, .set = NULL}},
     {.kind = M_METHOD,
      .name = "load",
      .doc = "Load ROM bytes into the active machine and reset the CPU",
      .method = {.args = rom_path_arg, .nargs = 1, .result = V_BOOL, .fn = rom_method_load}},
     {.kind = M_METHOD,
      .name = "identify",
-     .doc = "Return the list of machine model_ids this ROM is compatible with",
-     .method = {.args = rom_path_arg, .nargs = 1, .result = V_LIST, .fn = rom_method_identify}},
-    {.kind = M_METHOD,
-     .name = "checksum_of",
-     .doc = "Return the 8-char hex checksum of a ROM file",
-     .method = {.args = rom_path_arg, .nargs = 1, .result = V_STRING, .fn = rom_method_checksum_of}},
-    {.kind = M_METHOD,
-     .name = "family_of",
-     .doc = "Return the family name of a ROM file (empty if unrecognised)",
-     .method = {.args = rom_path_arg, .nargs = 1, .result = V_STRING, .fn = rom_method_family_of}},
+     .doc = "Return a JSON-encoded info map for a ROM file (compatible/checksum/name/size/recognised)",
+     .method = {.args = rom_path_arg, .nargs = 1, .result = V_STRING, .fn = rom_method_identify}},
 };
 
 const class_desc_t rom_class = {

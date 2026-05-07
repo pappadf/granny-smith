@@ -559,7 +559,7 @@ int shell_init(void) {
     // Register process-singleton namespace objects that exist
     // independently of any machine instance: rom, vrom, and machine
     // all carry pre-boot surfaces (rom.identify, vrom.load,
-    // machine.boot, machine.profiles) that callers reach for *before*
+    // machine.boot, machine.profile) that callers reach for *before*
     // a machine has been created. The WASM URL-media boot path is the
     // canonical case — drag-drop a Plus ROM, ask rom.identify for the
     // compatible models, then call machine.boot with the answer.
