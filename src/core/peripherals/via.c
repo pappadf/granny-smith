@@ -939,17 +939,28 @@ static value_t via_port_attr_direction(struct object *self, const member_t *m) {
     static const member_t VAR[] = {                                                                                    \
         {.kind = M_ATTR,                                                                                               \
          .name = "output",                                                                                             \
-         .flags = VAL_RO | VAL_HEX,                                                                                    \
-         .attr = {.type = V_UINT, .get = via_port_attr_output, .set = NULL, .user_data = (void *)(uintptr_t)(PORT)}},  \
+         .flags = VAL_RO,                                                                                              \
+         .attr = {.type = V_UINT,                                                                                      \
+                  .presentation_flags = VAL_HEX,                                                                       \
+                  .get = via_port_attr_output,                                                                         \
+                  .set = NULL,                                                                                         \
+                  .user_data = (void *)(uintptr_t)(PORT)}},                                                            \
         {.kind = M_ATTR,                                                                                               \
          .name = "input",                                                                                              \
-         .flags = VAL_RO | VAL_HEX,                                                                                    \
-         .attr = {.type = V_UINT, .get = via_port_attr_input, .set = NULL, .user_data = (void *)(uintptr_t)(PORT)} },   \
+         .flags = VAL_RO,                                                                                              \
+         .attr = {.type = V_UINT,                                                                                      \
+                  .presentation_flags = VAL_HEX,                                                                       \
+                  .get = via_port_attr_input,                                                                          \
+                  .set = NULL,                                                                                         \
+                  .user_data = (void *)(uintptr_t)(PORT)}},                                                            \
         {.kind = M_ATTR,                                                                                               \
          .name = "direction",                                                                                          \
-         .flags = VAL_RO | VAL_HEX,                                                                                    \
-         .attr =                                                                                                       \
-             {.type = V_UINT, .get = via_port_attr_direction, .set = NULL, .user_data = (void *)(uintptr_t)(PORT)} },   \
+         .flags = VAL_RO,                                                                                              \
+         .attr = {.type = V_UINT,                                                                                      \
+                  .presentation_flags = VAL_HEX,                                                                       \
+                  .get = via_port_attr_direction,                                                                      \
+                  .set = NULL,                                                                                         \
+                  .user_data = (void *)(uintptr_t)(PORT)}},                                                            \
     }
 
 // clang-format off — macro expands to definitions; no trailing semicolons.
@@ -968,28 +979,28 @@ const class_desc_t via_port_b_class = {.name = "via_port",
 static const member_t via_members[] = {
     {.kind = M_ATTR,
      .name = "ifr",
-     .flags = VAL_RO | VAL_HEX,
-     .attr = {.type = V_UINT, .get = via_attr_ifr, .set = NULL}        },
+     .flags = VAL_RO,
+     .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = via_attr_ifr, .set = NULL}},
     {.kind = M_ATTR,
      .name = "ier",
-     .flags = VAL_RO | VAL_HEX,
-     .attr = {.type = V_UINT, .get = via_attr_ier, .set = NULL}        },
+     .flags = VAL_RO,
+     .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = via_attr_ier, .set = NULL}},
     {.kind = M_ATTR,
      .name = "acr",
-     .flags = VAL_RO | VAL_HEX,
-     .attr = {.type = V_UINT, .get = via_attr_acr, .set = NULL}        },
+     .flags = VAL_RO,
+     .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = via_attr_acr, .set = NULL}},
     {.kind = M_ATTR,
      .name = "pcr",
-     .flags = VAL_RO | VAL_HEX,
-     .attr = {.type = V_UINT, .get = via_attr_pcr, .set = NULL}        },
+     .flags = VAL_RO,
+     .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = via_attr_pcr, .set = NULL}},
     {.kind = M_ATTR,
      .name = "sr",
-     .flags = VAL_RO | VAL_HEX,
-     .attr = {.type = V_UINT, .get = via_attr_sr, .set = NULL}         },
+     .flags = VAL_RO,
+     .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = via_attr_sr, .set = NULL} },
     {.kind = M_ATTR,
      .name = "freq_factor",
      .flags = VAL_RO,
-     .attr = {.type = V_UINT, .get = via_attr_freq_factor, .set = NULL}},
+     .attr = {.type = V_UINT, .get = via_attr_freq_factor, .set = NULL}                       },
 };
 
 const class_desc_t via_class = {

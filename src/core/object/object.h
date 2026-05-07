@@ -42,11 +42,18 @@ struct class_desc;
 #define OBJ_ARG_STRICT_KIND 0x0008u // disable int↔uint, int→float, string→enum coercion
 
 // One declared parameter on a method. Mirrors proposal §3.
+//
+// Two flag fields (proposal §3.3):
+//   `validation_flags` change what the validator does (OBJ_ARG_*).
+//   `presentation_flags` steer formatters and inspectors (VAL_HEX,
+//      VAL_DEC, VAL_BIN, VAL_VOLATILE, VAL_SENSITIVE) — no effect at
+//      call time on a method-arg slot, but propagated to help text.
 typedef struct arg_decl {
     const char *name;
     value_kind_t kind;
     uint8_t width; // 1/2/4/8 for V_INT/V_UINT range check; 0 = unconstrained
-    unsigned flags; // OBJ_ARG_OPTIONAL | OBJ_ARG_REST | OBJ_ARG_NONEMPTY | ...
+    uint16_t validation_flags; // OBJ_ARG_OPTIONAL | OBJ_ARG_REST | OBJ_ARG_NONEMPTY | OBJ_ARG_STRICT_KIND
+    uint16_t presentation_flags; // VAL_HEX | VAL_DEC | VAL_BIN | ...
     const char *const *enum_values; // NULL-terminated table for V_ENUM
     const value_t *default_value; // optional default for OBJ_ARG_OPTIONAL slots
     const char *doc;
@@ -84,12 +91,13 @@ typedef struct member {
     member_kind_t kind;
     const char *name;
     const char *doc;
-    unsigned flags; // VAL_RO, VAL_VOLATILE, VAL_HEX, ...
+    uint16_t flags; // VAL_RO (read-only marker — per-member, not per-slot)
     union {
         struct {
             value_kind_t type;
             uint8_t width; // 1/2/4/8 for V_INT/V_UINT range check; 0 = unconstrained
-            unsigned flags; // OBJ_ARG_NONEMPTY | OBJ_ARG_STRICT_KIND
+            uint16_t validation_flags; // OBJ_ARG_NONEMPTY | OBJ_ARG_STRICT_KIND
+            uint16_t presentation_flags; // VAL_HEX | VAL_DEC | VAL_BIN | VAL_VOLATILE | VAL_SENSITIVE
             const char *const *enum_values; // NULL-terminated table for V_ENUM
             attr_get_fn get;
             attr_set_fn set; // NULL → read-only

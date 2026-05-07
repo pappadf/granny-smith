@@ -335,8 +335,6 @@ void cmd_find_handler(struct cmd_context *ctx, struct cmd_result *res) {
 // parser tokenises on whitespace anyway.
 
 static value_t find_dispatch_kind(const char *kind, int argc, const value_t *argv, const char *err_label) {
-    if (argc < 1)
-        return val_err("%s: expected (pattern, [rest])", err_label);
     char buf[1024];
     int pos = snprintf(buf, sizeof(buf), "find %s ", kind);
     if (pos < 0)
@@ -360,7 +358,7 @@ static value_t find_dispatch_kind(const char *kind, int argc, const value_t *arg
     } else {
         return val_err("%s: pattern must be string or integer", err_label);
     }
-    if (argc >= 2 && argv[1].kind == V_STRING && argv[1].s && *argv[1].s) {
+    if (argc >= 2 && argv[1].s && *argv[1].s) {
         pos += snprintf(buf + pos, sizeof(buf) - (size_t)pos, " %s", argv[1].s);
     }
     if (pos < 0 || (size_t)pos >= sizeof(buf))
@@ -400,16 +398,16 @@ static const arg_decl_t find_str_args[] = {
     {.name = "text", .kind = V_STRING, .doc = "Search text"},
     {.name = "rest",
      .kind = V_STRING,
-     .flags = OBJ_ARG_OPTIONAL,
+     .validation_flags = OBJ_ARG_OPTIONAL,
      .doc = "Optional range [+ \"all\"], e.g. \"$400000..$440000 all\""},
 };
 static const arg_decl_t find_bytes_args[] = {
     {.name = "hex", .kind = V_STRING, .doc = "Space-separated hex bytes (\"4E 71\")"},
-    {.name = "rest", .kind = V_STRING, .flags = OBJ_ARG_OPTIONAL, .doc = "Optional range [+ \"all\"]"},
+    {.name = "rest", .kind = V_STRING, .validation_flags = OBJ_ARG_OPTIONAL, .doc = "Optional range [+ \"all\"]"},
 };
 static const arg_decl_t find_int_args[] = {
     {.name = "value", .kind = V_INT, .doc = "Integer value to search for"},
-    {.name = "rest", .kind = V_STRING, .flags = OBJ_ARG_OPTIONAL, .doc = "Optional range [+ \"all\"]"},
+    {.name = "rest", .kind = V_STRING, .validation_flags = OBJ_ARG_OPTIONAL, .doc = "Optional range [+ \"all\"]"},
 };
 
 static const member_t find_members[] = {

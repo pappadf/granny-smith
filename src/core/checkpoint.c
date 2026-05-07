@@ -1206,7 +1206,7 @@ static value_t checkpoint_method_clear(struct object *self, const member_t *m, i
 static value_t checkpoint_method_load(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)self;
     (void)m;
-    if (argc >= 1 && argv[0].kind == V_STRING && argv[0].s && *argv[0].s) {
+    if (argc >= 1 && argv[0].s && *argv[0].s) {
         char *fake_argv[2] = {"--load", (char *)argv[0].s};
         return val_bool(cmd_load_checkpoint(2, fake_argv) == 0);
     }
@@ -1221,12 +1221,10 @@ static value_t checkpoint_method_load(struct object *self, const member_t *m, in
 static value_t checkpoint_method_save(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)self;
     (void)m;
-    if (argc < 1 || argv[0].kind != V_STRING)
-        return val_err("checkpoint.save: expected (path, [mode])");
-    const char *path = argv[0].s ? argv[0].s : "";
+    const char *path = argv[0].s;
     char *fake_argv[3] = {"--save", (char *)path, NULL};
     int fake_argc = 2;
-    if (argc >= 2 && argv[1].kind == V_STRING && argv[1].s && *argv[1].s) {
+    if (argc >= 2 && argv[1].s && *argv[1].s) {
         fake_argv[2] = (char *)argv[1].s;
         fake_argc = 3;
     }
@@ -1240,9 +1238,8 @@ static value_t checkpoint_method_save(struct object *self, const member_t *m, in
 static value_t checkpoint_method_snapshot(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)self;
     (void)m;
-    if (argc < 1 || argv[0].kind != V_STRING)
-        return val_err("checkpoint.snapshot: expected (name)");
-    return val_bool(gs_background_checkpoint(argv[0].s ? argv[0].s : "") == 0);
+    (void)argc;
+    return val_bool(gs_background_checkpoint(argv[0].s) == 0);
 }
 
 // `checkpoint.auto` (V_BOOL, RW) — exposes the WASM background-checkpoint
@@ -1256,22 +1253,23 @@ static value_t checkpoint_attr_auto_get(struct object *self, const member_t *m) 
 static value_t checkpoint_attr_auto_set(struct object *self, const member_t *m, value_t in) {
     (void)self;
     (void)m;
-    bool b = val_as_bool(&in);
-    value_free(&in);
-    gs_checkpoint_auto_set(b);
+    gs_checkpoint_auto_set(in.b);
     return val_none();
 }
 
 static const arg_decl_t checkpoint_load_args[] = {
     {.name = "path",
      .kind = V_STRING,
-     .flags = OBJ_ARG_OPTIONAL,
+     .validation_flags = OBJ_ARG_OPTIONAL,
      .doc = "Checkpoint path; empty auto-loads the latest"},
 };
 
 static const arg_decl_t checkpoint_save_args[] = {
     {.name = "path", .kind = V_STRING, .doc = "Checkpoint output path"},
-    {.name = "mode", .kind = V_STRING, .flags = OBJ_ARG_OPTIONAL, .doc = "\"content\" (default) or \"refs\""},
+    {.name = "mode",
+     .kind = V_STRING,
+     .validation_flags = OBJ_ARG_OPTIONAL,
+     .doc = "\"content\" (default) or \"refs\""},
 };
 
 static const arg_decl_t checkpoint_snapshot_args[] = {

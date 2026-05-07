@@ -146,7 +146,7 @@ static value_t method_root_methods(struct object *self, const member_t *m, int a
 static value_t method_root_help(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)self;
     (void)m;
-    const char *path = (argc >= 1 && argv[0].kind == V_STRING && argv[0].s) ? argv[0].s : "";
+    const char *path = (argc >= 1 && argv[0].s) ? argv[0].s : "";
     node_t n = object_resolve(object_root(), path);
     if (!node_valid(n))
         return val_err("help: path did not resolve");
@@ -255,21 +255,23 @@ static value_t method_root_echo(struct object *self, const member_t *m, int argc
 static value_t method_root_download(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)self;
     (void)m;
-    if (argc < 1 || argv[0].kind != V_STRING)
-        return val_err("download: expected (path)");
-    return val_bool(gs_download(argv[0].s ? argv[0].s : "") == 0);
+    (void)argc;
+    return val_bool(gs_download(argv[0].s) == 0);
 }
 
 static const arg_decl_t root_path_arg[] = {
     {.name = "path", .kind = V_STRING, .doc = "File path"},
 };
 static const arg_decl_t root_path_args[] = {
-    {.name = "path", .kind = V_STRING, .flags = OBJ_ARG_OPTIONAL, .doc = "Object path; empty resolves to the root"},
+    {.name = "path",
+     .kind = V_STRING,
+     .validation_flags = OBJ_ARG_OPTIONAL,
+     .doc = "Object path; empty resolves to the root"},
 };
 static const arg_decl_t root_help_args[] = {
     {.name = "path",
      .kind = V_STRING,
-     .flags = OBJ_ARG_OPTIONAL,
+     .validation_flags = OBJ_ARG_OPTIONAL,
      .doc = "Path to a member or object; empty resolves to the root"},
 };
 static const member_t emu_root_members[] = {

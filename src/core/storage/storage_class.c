@@ -165,10 +165,8 @@ static int storage_images_next(struct object *self, int prev_index) {
 static value_t storage_method_import(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)self;
     (void)m;
-    if (argc < 1 || argv[0].kind != V_STRING || !argv[0].s)
-        return val_err("storage.import: expected (host_path, [dst_path])");
     const char *host_path = argv[0].s;
-    const char *dst_path = (argc >= 2 && argv[1].kind == V_STRING && argv[1].s && *argv[1].s) ? argv[1].s : NULL;
+    const char *dst_path = (argc >= 2 && argv[1].s && *argv[1].s) ? argv[1].s : NULL;
 
     if (!dst_path) {
         // Hash-named persistence — handles the drag-drop / volatile-
@@ -193,7 +191,7 @@ static const arg_decl_t storage_import_args[] = {
     {.name = "host_path", .kind = V_STRING, .doc = "Host path to read"},
     {.name = "dst_path",
      .kind = V_STRING,
-     .flags = OBJ_ARG_OPTIONAL,
+     .validation_flags = OBJ_ARG_OPTIONAL,
      .doc = "Destination path; empty → /opfs/images/<hash>.img"},
 };
 
@@ -219,8 +217,7 @@ const class_desc_t storage_images_collection_class = {
 static value_t storage_method_list_dir(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)self;
     (void)m;
-    if (argc < 1 || argv[0].kind != V_STRING || !argv[0].s)
-        return val_err("storage.list_dir: expected (path)");
+    (void)argc;
     vfs_dir_t *d = NULL;
     const vfs_backend_t *be = NULL;
     int rc = vfs_opendir(argv[0].s, &d, &be);
@@ -274,8 +271,6 @@ static value_t storage_method_cp(struct object *self, const member_t *m, int arg
     const char *src = NULL;
     const char *dst = NULL;
     for (int i = 0; i < argc; i++) {
-        if (argv[i].kind != V_STRING || !argv[i].s)
-            return val_err("storage.cp: expected ([-r], src, dst)");
         const char *s = argv[i].s;
         if (strcmp(s, "-r") == 0 || strcmp(s, "-R") == 0) {
             recursive = true;
@@ -301,19 +296,18 @@ static value_t storage_method_cp(struct object *self, const member_t *m, int arg
 static value_t storage_method_find_media(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)self;
     (void)m;
-    if (argc < 1 || argv[0].kind != V_STRING)
-        return val_err("storage.find_media: expected (dir, [dst])");
-    const char *dir = argv[0].s ? argv[0].s : "";
-    const char *dst = (argc >= 2 && argv[1].kind == V_STRING && argv[1].s && *argv[1].s) ? argv[1].s : NULL;
+    const char *dir = argv[0].s;
+    const char *dst = (argc >= 2 && argv[1].s && *argv[1].s) ? argv[1].s : NULL;
     return val_bool(gs_find_media(dir, dst) == 0);
 }
 
 // `storage.hd_create(path, size)` — create a blank SCSI HD image.
+// size is a V_NONE-kind slot, so the body discriminates between
+// V_STRING (label/size string) and integer (byte count).
 static value_t storage_method_hd_create(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)self;
     (void)m;
-    if (argc < 2 || argv[0].kind != V_STRING)
-        return val_err("storage.hd_create: expected (path, size)");
+    (void)argc;
     char line[512];
     int n;
     if (argv[1].kind == V_STRING) {
@@ -338,9 +332,8 @@ static value_t storage_method_hd_create(struct object *self, const member_t *m, 
 static value_t storage_method_hd_download(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)self;
     (void)m;
-    if (argc < 2 || argv[0].kind != V_STRING || argv[1].kind != V_STRING)
-        return val_err("storage.hd_download: expected (source_path, dest_path)");
-    int rc = system_download_hd(argv[0].s ? argv[0].s : "", argv[1].s ? argv[1].s : "");
+    (void)argc;
+    int rc = system_download_hd(argv[0].s, argv[1].s);
     return val_bool(rc == 0);
 }
 
@@ -367,9 +360,8 @@ static const char *apm_fs_kind_label(enum apm_fs_kind k) {
 static value_t storage_method_partmap(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)self;
     (void)m;
-    if (argc < 1 || argv[0].kind != V_STRING)
-        return val_err("storage.partmap: expected (path)");
-    const char *path = argv[0].s ? argv[0].s : "";
+    (void)argc;
+    const char *path = argv[0].s;
     image_t *img = image_open_readonly(path);
     if (!img)
         return val_err("storage.partmap: cannot open image '%s'", path);
@@ -396,9 +388,8 @@ static value_t storage_method_partmap(struct object *self, const member_t *m, in
 static value_t storage_method_probe(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)self;
     (void)m;
-    if (argc < 1 || argv[0].kind != V_STRING)
-        return val_err("storage.probe: expected (path)");
-    const char *path = argv[0].s ? argv[0].s : "";
+    (void)argc;
+    const char *path = argv[0].s;
     image_t *img = image_open_readonly(path);
     if (!img) {
         printf("cannot open image '%s'\n", path);
@@ -461,9 +452,8 @@ static value_t storage_method_mounts(struct object *self, const member_t *m, int
 static value_t storage_method_unmount(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)self;
     (void)m;
-    if (argc < 1 || argv[0].kind != V_STRING)
-        return val_err("storage.unmount: expected (path)");
-    const char *path = argv[0].s ? argv[0].s : "";
+    (void)argc;
+    const char *path = argv[0].s;
     char resolved[VFS_PATH_MAX];
     const vfs_backend_t *be = NULL;
     void *bctx = NULL;
@@ -488,19 +478,17 @@ static value_t storage_method_unmount(struct object *self, const member_t *m, in
 static value_t storage_method_path_exists(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)self;
     (void)m;
-    if (argc < 1 || argv[0].kind != V_STRING)
-        return val_err("storage.path_exists: expected (path)");
+    (void)argc;
     vfs_stat_t st;
-    return val_bool(vfs_stat(argv[0].s ? argv[0].s : "", &st) == 0);
+    return val_bool(vfs_stat(argv[0].s, &st) == 0);
 }
 
 // `storage.path_size(path)` — file size in bytes (0 on stat failure).
 static value_t storage_method_path_size(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)self;
     (void)m;
-    if (argc < 1 || argv[0].kind != V_STRING)
-        return val_err("storage.path_size: expected (path)");
-    const char *path = argv[0].s ? argv[0].s : "";
+    (void)argc;
+    const char *path = argv[0].s;
     vfs_stat_t st = {0};
     int rc = vfs_stat(path, &st);
     if (rc < 0) {
@@ -513,11 +501,11 @@ static value_t storage_method_path_size(struct object *self, const member_t *m, 
 static const arg_decl_t storage_cp_args[] = {
     {.name = "src", .kind = V_STRING, .doc = "Source path (host or VFS)"},
     {.name = "dst", .kind = V_STRING, .doc = "Destination path"},
-    {.name = "flag", .kind = V_STRING, .flags = OBJ_ARG_OPTIONAL, .doc = "Optional -r / -R for recursive"},
+    {.name = "flag", .kind = V_STRING, .validation_flags = OBJ_ARG_OPTIONAL, .doc = "Optional -r / -R for recursive"},
 };
 static const arg_decl_t storage_find_media_args[] = {
     {.name = "dir", .kind = V_STRING, .doc = "Directory to scan"},
-    {.name = "dst", .kind = V_STRING, .flags = OBJ_ARG_OPTIONAL, .doc = "Optional path to copy match into"},
+    {.name = "dst", .kind = V_STRING, .validation_flags = OBJ_ARG_OPTIONAL, .doc = "Optional path to copy match into"},
 };
 static const arg_decl_t storage_hd_create_args[] = {
     {.name = "path", .kind = V_STRING, .doc = "Image output path"                                   },
@@ -534,7 +522,7 @@ static const arg_decl_t storage_path_arg[] = {
 // silently ignores today; declared so the framework's arity check matches.
 static const arg_decl_t storage_partmap_args[] = {
     {.name = "path", .kind = V_STRING, .doc = "Image path"},
-    {.name = "flag", .kind = V_STRING, .flags = OBJ_ARG_OPTIONAL, .doc = "Optional output flag (--json)"},
+    {.name = "flag", .kind = V_STRING, .validation_flags = OBJ_ARG_OPTIONAL, .doc = "Optional output flag (--json)"},
 };
 
 static const member_t storage_members[] = {

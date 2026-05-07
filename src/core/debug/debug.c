@@ -2842,11 +2842,8 @@ static value_t bp_attr_condition_set(struct object *self, const member_t *m, val
         value_free(&in);
         return val_err("breakpoint detached");
     }
-    if (in.kind != V_STRING && in.kind != V_NONE) {
-        value_free(&in);
-        return val_err("condition must be a string");
-    }
-    breakpoint_set_condition(bp, (in.kind == V_STRING) ? in.s : NULL);
+    // Empty string clears the condition.
+    breakpoint_set_condition(bp, (in.s && *in.s) ? in.s : NULL);
     value_free(&in);
     return val_none();
 }
@@ -2886,8 +2883,8 @@ static value_t bp_method_remove(struct object *self, const member_t *m, int argc
 static const member_t bp_entry_members[] = {
     {.kind = M_ATTR,
      .name = "addr",
-     .flags = VAL_RO | VAL_HEX,
-     .attr = {.type = V_UINT, .get = bp_attr_addr, .set = NULL}},
+     .flags = VAL_RO,
+     .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = bp_attr_addr, .set = NULL}},
     {.kind = M_ATTR, .name = "space", .flags = VAL_RO, .attr = {.type = V_ENUM, .get = bp_attr_space, .set = NULL}},
     {.kind = M_ATTR,
      .name = "condition",
@@ -3008,12 +3005,12 @@ static value_t lpe_method_remove(struct object *self, const member_t *m, int arg
 static const member_t lp_entry_members[] = {
     {.kind = M_ATTR,
      .name = "addr",
-     .flags = VAL_RO | VAL_HEX,
-     .attr = {.type = V_UINT, .get = lpe_attr_addr, .set = NULL}},
+     .flags = VAL_RO,
+     .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = lpe_attr_addr, .set = NULL}},
     {.kind = M_ATTR,
      .name = "end_addr",
-     .flags = VAL_RO | VAL_HEX,
-     .attr = {.type = V_UINT, .get = lpe_attr_end_addr, .set = NULL}},
+     .flags = VAL_RO,
+     .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = lpe_attr_end_addr, .set = NULL}},
     {.kind = M_ATTR, .name = "kind", .flags = VAL_RO, .attr = {.type = V_ENUM, .get = lpe_attr_kind, .set = NULL}},
     {.kind = M_ATTR, .name = "level", .flags = VAL_RO, .attr = {.type = V_INT, .get = lpe_attr_level, .set = NULL}},
     {.kind = M_ATTR,
@@ -3099,17 +3096,12 @@ static value_t bp_method_add(struct object *self, const member_t *m, int argc, c
     debug_t *debug = debug_from(self);
     if (!debug)
         return val_err("debugger not initialised");
-    if (argc < 1)
-        return val_err("breakpoints.add: expected (addr, [condition], [space])");
-    bool ok = true;
-    uint64_t addr = val_as_u64(&argv[0], &ok);
-    if (!ok)
-        return val_err("breakpoints.add: addr is not numeric");
+    uint64_t addr = argv[0].u;
     // Optional `space` (3rd arg): "logical" (default) or "physical".
     // Physical-space breakpoints are only meaningful on the 68030 with
     // the MMU active; on the Plus the two address spaces coincide.
     addr_space_t space = ADDR_LOGICAL;
-    if (argc >= 3 && argv[2].kind == V_STRING && argv[2].s && *argv[2].s) {
+    if (argc >= 3 && argv[2].s && *argv[2].s) {
         if (strcmp(argv[2].s, "physical") == 0)
             space = ADDR_PHYSICAL;
         else if (strcmp(argv[2].s, "logical") != 0)
@@ -3118,7 +3110,7 @@ static value_t bp_method_add(struct object *self, const member_t *m, int argc, c
     breakpoint_t *bp = set_breakpoint(debug, (uint32_t)addr, space);
     if (!bp)
         return val_err("breakpoints.add: allocation failed");
-    if (argc >= 2 && argv[1].kind == V_STRING && argv[1].s && *argv[1].s)
+    if (argc >= 2 && argv[1].s && *argv[1].s)
         breakpoint_set_condition(bp, argv[1].s);
     return val_obj(breakpoint_get_entry_object(bp));
 }
@@ -3177,10 +3169,9 @@ static value_t lp_method_list(struct object *self, const member_t *m, int argc, 
 static value_t lp_method_add(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)self;
     (void)m;
-    if (argc < 1 || argv[0].kind != V_STRING)
-        return val_err("logpoints.add: expected (spec_string)");
+    (void)argc;
     char line[2048];
-    int n = snprintf(line, sizeof(line), "logpoint %s", argv[0].s ? argv[0].s : "");
+    int n = snprintf(line, sizeof(line), "logpoint %s", argv[0].s);
     if (n < 0 || (size_t)n >= sizeof(line))
         return val_err("logpoints.add: argument too long");
     char *targv[32];
@@ -3191,9 +3182,12 @@ static value_t lp_method_add(struct object *self, const member_t *m, int argc, c
 }
 
 static const arg_decl_t bp_add_args[] = {
-    {.name = "addr",      .kind = V_UINT,   .flags = VAL_HEX,          .doc = "address"                              },
-    {.name = "condition", .kind = V_STRING, .flags = OBJ_ARG_OPTIONAL, .doc = "optional condition string"            },
-    {.name = "space",     .kind = V_STRING, .flags = OBJ_ARG_OPTIONAL, .doc = "\"logical\" (default) or \"physical\""},
+    {.name = "addr",      .kind = V_UINT,   .presentation_flags = VAL_HEX,        .doc = "address"                  },
+    {.name = "condition", .kind = V_STRING, .validation_flags = OBJ_ARG_OPTIONAL, .doc = "optional condition string"},
+    {.name = "space",
+     .kind = V_STRING,
+     .validation_flags = OBJ_ARG_OPTIONAL,
+     .doc = "\"logical\" (default) or \"physical\""                                                                 },
 };
 
 static const arg_decl_t lp_add_args[] = {
@@ -3267,17 +3261,17 @@ const class_desc_t lp_collection_class = {
 static value_t debug_method_log(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)self;
     (void)m;
-    if (argc < 2 || argv[0].kind != V_STRING)
-        return val_err("debug.log: expected (category, level | spec)");
+    (void)argc;
     char line[512];
     int n;
+    // level is V_NONE-kind: body discriminates string spec vs integer level.
     if (argv[1].kind == V_STRING) {
-        n = snprintf(line, sizeof(line), "log %s %s", argv[0].s, argv[1].s ? argv[1].s : "");
+        n = snprintf(line, sizeof(line), "log %s %s", argv[0].s, argv[1].s);
     } else {
         bool ok = false;
         int64_t level = val_as_i64(&argv[1], &ok);
         if (!ok)
-            return val_err("debug.log: second arg must be integer level or spec string");
+            return val_err("debug.log: level must be integer or spec string");
         n = snprintf(line, sizeof(line), "log %s %lld", argv[0].s, (long long)level);
     }
     if (n < 0 || (size_t)n >= sizeof(line))
@@ -3302,15 +3296,9 @@ static const arg_decl_t debug_log_args[] = {
 static value_t debug_method_disasm(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)self;
     (void)m;
-    int64_t count = 16;
-    if (argc >= 1) {
-        bool ok = false;
-        count = val_as_i64(&argv[0], &ok);
-        if (!ok)
-            return val_err("debug.disasm: count must be integer");
-        if (count <= 0)
-            count = 16;
-    }
+    int64_t count = (argc >= 1) ? argv[0].i : 16;
+    if (count <= 0)
+        count = 16;
     cpu_t *cpu = system_cpu();
     if (!cpu)
         return val_err("debug.disasm: CPU not initialised");
@@ -3325,7 +3313,10 @@ static value_t debug_method_disasm(struct object *self, const member_t *m, int a
 }
 
 static const arg_decl_t debug_disasm_args[] = {
-    {.name = "count", .kind = V_INT, .flags = OBJ_ARG_OPTIONAL, .doc = "Number of instructions (default 16)"},
+    {.name = "count",
+     .kind = V_INT,
+     .validation_flags = OBJ_ARG_OPTIONAL,
+     .doc = "Number of instructions (default 16)"},
 };
 
 // `debug.step([n])` — single-step n instructions (default 1) and stop.
@@ -3334,13 +3325,7 @@ static const arg_decl_t debug_disasm_args[] = {
 static value_t debug_method_step(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)self;
     (void)m;
-    int64_t count = 1;
-    if (argc >= 1) {
-        bool ok = false;
-        count = val_as_i64(&argv[0], &ok);
-        if (!ok)
-            return val_err("debug.step: count must be integer");
-    }
+    int64_t count = (argc >= 1) ? argv[0].i : 1;
     if (count <= 0)
         return val_err("debug.step: count must be positive");
     scheduler_t *s = system_scheduler();
@@ -3352,7 +3337,7 @@ static value_t debug_method_step(struct object *self, const member_t *m, int arg
 }
 
 static const arg_decl_t debug_step_args[] = {
-    {.name = "count", .kind = V_INT, .flags = OBJ_ARG_OPTIONAL, .doc = "Number of instructions (default 1)"},
+    {.name = "count", .kind = V_INT, .validation_flags = OBJ_ARG_OPTIONAL, .doc = "Number of instructions (default 1)"},
 };
 
 static const member_t debug_members[] = {
@@ -3404,8 +3389,7 @@ static int mac_global_lookup(const char *name) {
 static value_t method_mac_globals_read(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)self;
     (void)m;
-    if (argc < 1 || argv[0].kind != V_STRING || !argv[0].s)
-        return val_err("debug.mac.globals.read: expected (name)");
+    (void)argc;
     int idx = mac_global_lookup(argv[0].s);
     if (idx < 0)
         return val_err("debug.mac.globals.read: unknown global '%s'", argv[0].s);
@@ -3441,15 +3425,11 @@ static value_t method_mac_globals_read(struct object *self, const member_t *m, i
 static value_t method_mac_globals_write(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)self;
     (void)m;
-    if (argc < 2 || argv[0].kind != V_STRING || !argv[0].s)
-        return val_err("debug.mac.globals.write: expected (name, value)");
+    (void)argc;
     int idx = mac_global_lookup(argv[0].s);
     if (idx < 0)
         return val_err("debug.mac.globals.write: unknown global '%s'", argv[0].s);
-    bool ok = true;
-    uint64_t v = val_as_u64(&argv[1], &ok);
-    if (!ok)
-        return val_err("debug.mac.globals.write: value is not numeric");
+    uint64_t v = argv[1].u;
     uint32_t addr = mac_global_vars[idx].address;
     int sz = mac_global_vars[idx].size;
     switch (sz) {
@@ -3471,8 +3451,7 @@ static value_t method_mac_globals_write(struct object *self, const member_t *m, 
 static value_t method_mac_globals_address(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)self;
     (void)m;
-    if (argc < 1 || argv[0].kind != V_STRING || !argv[0].s)
-        return val_err("debug.mac.globals.address: expected (name)");
+    (void)argc;
     int idx = mac_global_lookup(argv[0].s);
     if (idx < 0)
         return val_err("debug.mac.globals.address: unknown global '%s'", argv[0].s);
@@ -3515,7 +3494,7 @@ static const arg_decl_t mac_globals_name_arg[] = {
 };
 static const arg_decl_t mac_globals_write_args[] = {
     {.name = "name", .kind = V_STRING, .doc = "Mac low-memory global symbol"},
-    {.name = "value", .kind = V_UINT, .flags = VAL_HEX, .doc = "value to write"},
+    {.name = "value", .kind = V_UINT, .presentation_flags = VAL_HEX, .doc = "value to write"},
 };
 
 static const member_t debug_mac_globals_members[] = {
@@ -3552,17 +3531,12 @@ const class_desc_t debug_mac_globals_class = {
 static value_t method_mac_atrap(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)self;
     (void)m;
-    if (argc < 1)
-        return val_err("debug.mac.atrap: expected (opcode)");
-    bool ok = true;
-    uint64_t op = val_as_u64(&argv[0], &ok);
-    if (!ok)
-        return val_err("debug.mac.atrap: opcode must be numeric");
-    return val_str(macos_atrap_name((uint16_t)op));
+    (void)argc;
+    return val_str(macos_atrap_name((uint16_t)argv[0].u));
 }
 
 static const arg_decl_t mac_atrap_args[] = {
-    {.name = "opcode", .kind = V_UINT, .flags = VAL_HEX, .doc = "A-trap opcode (e.g. 0xA86E)"},
+    {.name = "opcode", .kind = V_UINT, .presentation_flags = VAL_HEX, .doc = "A-trap opcode (e.g. 0xA86E)"},
 };
 
 static const member_t debug_mac_members[] = {
@@ -3586,10 +3560,9 @@ const class_desc_t debug_mac_class = {
 static value_t screen_method_save(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)self;
     (void)m;
-    if (argc < 1 || argv[0].kind != V_STRING)
-        return val_err("screen.save: expected (path)");
+    (void)argc;
     const char *path = argv[0].s;
-    if (!path || !*path)
+    if (!*path)
         return val_err("screen.save: empty path");
     size_t n = strlen(path);
     if (n < 4 || strcasecmp(path + n - 4, ".png") != 0)
@@ -3610,9 +3583,8 @@ static value_t screen_method_save(struct object *self, const member_t *m, int ar
 static value_t screen_method_match(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)self;
     (void)m;
-    if (argc < 1 || argv[0].kind != V_STRING)
-        return val_err("screen.match: expected (reference_path)");
-    const char *ref = argv[0].s ? argv[0].s : "";
+    (void)argc;
+    const char *ref = argv[0].s;
     const uint8_t *fb = system_framebuffer();
     if (!fb)
         return val_err("screen.match: framebuffer not available");
@@ -3632,10 +3604,8 @@ static value_t screen_method_match(struct object *self, const member_t *m, int a
 static value_t screen_method_match_or_save(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)self;
     (void)m;
-    if (argc < 1 || argv[0].kind != V_STRING)
-        return val_err("screen.match_or_save: expected (reference_path, [actual_path])");
-    const char *ref = argv[0].s ? argv[0].s : "";
-    const char *actual = (argc >= 2 && argv[1].kind == V_STRING && argv[1].s && *argv[1].s) ? argv[1].s : NULL;
+    const char *ref = argv[0].s;
+    const char *actual = (argc >= 2 && argv[1].s && *argv[1].s) ? argv[1].s : NULL;
     const uint8_t *fb = system_framebuffer();
     if (!fb)
         return val_err("screen.match_or_save: framebuffer not available");
@@ -3669,13 +3639,7 @@ static value_t screen_method_checksum(struct object *self, const member_t *m, in
         return val_int((int64_t)(int32_t)framebuffer_checksum(fb));
     if (argc < 4)
         return val_err("screen.checksum: expected (top, left, bottom, right) or no args");
-    bool ok = true;
-    int64_t t = val_as_i64(&argv[0], &ok);
-    int64_t l = val_as_i64(&argv[1], &ok);
-    int64_t b = val_as_i64(&argv[2], &ok);
-    int64_t r = val_as_i64(&argv[3], &ok);
-    if (!ok)
-        return val_err("screen.checksum: region args must be integers");
+    int64_t t = argv[0].i, l = argv[1].i, b = argv[2].i, r = argv[3].i;
     if (t < 0 || l < 0 || b <= t || r <= l || b > DEBUG_SCREEN_HEIGHT || r > DEBUG_SCREEN_WIDTH)
         return val_err("screen.checksum: invalid region bounds (0,0)-(%d,%d)", DEBUG_SCREEN_WIDTH, DEBUG_SCREEN_HEIGHT);
     return val_int((int64_t)(int32_t)framebuffer_region_checksum(fb, (int)t, (int)l, (int)b, (int)r));
@@ -3689,13 +3653,16 @@ static const arg_decl_t screen_match_args[] = {
 };
 static const arg_decl_t screen_match_or_save_args[] = {
     {.name = "reference", .kind = V_STRING, .doc = "Reference PNG path"},
-    {.name = "actual", .kind = V_STRING, .flags = OBJ_ARG_OPTIONAL, .doc = "Path to write current screen on miss"},
+    {.name = "actual",
+     .kind = V_STRING,
+     .validation_flags = OBJ_ARG_OPTIONAL,
+     .doc = "Path to write current screen on miss"},
 };
 static const arg_decl_t screen_checksum_args[] = {
-    {.name = "top",    .kind = V_INT, .flags = OBJ_ARG_OPTIONAL, .doc = "Region top edge"   },
-    {.name = "left",   .kind = V_INT, .flags = OBJ_ARG_OPTIONAL, .doc = "Region left edge"  },
-    {.name = "bottom", .kind = V_INT, .flags = OBJ_ARG_OPTIONAL, .doc = "Region bottom edge"},
-    {.name = "right",  .kind = V_INT, .flags = OBJ_ARG_OPTIONAL, .doc = "Region right edge" },
+    {.name = "top",    .kind = V_INT, .validation_flags = OBJ_ARG_OPTIONAL, .doc = "Region top edge"   },
+    {.name = "left",   .kind = V_INT, .validation_flags = OBJ_ARG_OPTIONAL, .doc = "Region left edge"  },
+    {.name = "bottom", .kind = V_INT, .validation_flags = OBJ_ARG_OPTIONAL, .doc = "Region bottom edge"},
+    {.name = "right",  .kind = V_INT, .validation_flags = OBJ_ARG_OPTIONAL, .doc = "Region right edge" },
 };
 
 static const member_t screen_members[] = {

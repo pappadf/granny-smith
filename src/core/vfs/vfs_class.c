@@ -26,7 +26,7 @@
 static value_t vfs_method_ls(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)self;
     (void)m;
-    const char *path = (argc >= 1 && argv[0].kind == V_STRING && argv[0].s && *argv[0].s) ? argv[0].s : vfs_get_cwd();
+    const char *path = (argc >= 1 && argv[0].s && *argv[0].s) ? argv[0].s : vfs_get_cwd();
     vfs_dir_t *dir = NULL;
     const vfs_backend_t *be = NULL;
     int rc = vfs_opendir(path, &dir, &be);
@@ -45,9 +45,8 @@ static value_t vfs_method_ls(struct object *self, const member_t *m, int argc, c
 static value_t vfs_method_mkdir(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)self;
     (void)m;
-    if (argc < 1 || argv[0].kind != V_STRING)
-        return val_err("vfs.mkdir: expected (path)");
-    const char *dir = argv[0].s ? argv[0].s : "";
+    (void)argc;
+    const char *dir = argv[0].s;
     int rc = vfs_mkdir(dir);
     if (rc == 0) {
         printf("Directory '%s' created\n", dir);
@@ -60,9 +59,8 @@ static value_t vfs_method_mkdir(struct object *self, const member_t *m, int argc
 static value_t vfs_method_cat(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)self;
     (void)m;
-    if (argc < 1 || argv[0].kind != V_STRING)
-        return val_err("vfs.cat: expected (path)");
-    const char *path = argv[0].s ? argv[0].s : "";
+    (void)argc;
+    const char *path = argv[0].s;
     vfs_file_t *f = NULL;
     const vfs_backend_t *be = NULL;
     int rc = vfs_open(path, &f, &be);
@@ -93,7 +91,7 @@ static const arg_decl_t vfs_path_arg[] = {
     {.name = "path", .kind = V_STRING, .doc = "Filesystem path"},
 };
 static const arg_decl_t vfs_path_arg_optional[] = {
-    {.name = "path", .kind = V_STRING, .flags = OBJ_ARG_OPTIONAL, .doc = "Directory path (default: cwd)"},
+    {.name = "path", .kind = V_STRING, .validation_flags = OBJ_ARG_OPTIONAL, .doc = "Directory path (default: cwd)"},
 };
 
 static const member_t vfs_members[] = {

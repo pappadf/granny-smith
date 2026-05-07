@@ -238,10 +238,7 @@ void alias_clear_user(void) {
 static value_t method_alias_add(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)self;
     (void)m;
-    if (argc < 2)
-        return val_err("shell.alias.add: expected 2 args (name, path)");
-    if (argv[0].kind != V_STRING || argv[1].kind != V_STRING)
-        return val_err("shell.alias.add: name and path must be strings");
+    (void)argc;
     char err[160];
     if (alias_add_user(argv[0].s, argv[1].s, err, sizeof(err)) < 0)
         return val_err("%s", err);
@@ -251,8 +248,7 @@ static value_t method_alias_add(struct object *self, const member_t *m, int argc
 static value_t method_alias_remove(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)self;
     (void)m;
-    if (argc < 1 || argv[0].kind != V_STRING)
-        return val_err("shell.alias.remove: expected name (string)");
+    (void)argc;
     char err[160];
     if (alias_remove_user(argv[0].s, err, sizeof(err)) < 0)
         return val_err("%s", err);
@@ -293,11 +289,11 @@ static value_t method_alias_list(struct object *self, const member_t *m, int arg
 }
 
 static const arg_decl_t alias_add_args[] = {
-    {.name = "name", .kind = V_STRING, .flags = 0, .doc = "alias identifier (no $)"          },
-    {.name = "path", .kind = V_STRING, .flags = 0, .doc = "object path the alias substitutes"},
+    {.name = "name", .kind = V_STRING, .doc = "alias identifier (no $)"          },
+    {.name = "path", .kind = V_STRING, .doc = "object path the alias substitutes"},
 };
 static const arg_decl_t alias_remove_args[] = {
-    {.name = "name", .kind = V_STRING, .flags = 0, .doc = "alias identifier (no $)"},
+    {.name = "name", .kind = V_STRING, .doc = "alias identifier (no $)"},
 };
 
 static const member_t shell_alias_members[] = {

@@ -491,14 +491,12 @@ static value_t rtc_attr_pram(struct object *self, const member_t *m) {
 
 static value_t rtc_method_pram_read(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)m;
+    (void)argc;
     rtc_t *rtc = rtc_from(self);
     if (!rtc)
         return val_err("rtc not available");
-    if (argc < 1)
-        return val_err("rtc.pram_read: expected (addr)");
-    bool ok = true;
-    uint64_t addr = val_as_u64(&argv[0], &ok);
-    if (!ok || addr > 0xFF)
+    uint64_t addr = argv[0].u;
+    if (addr > 0xFF)
         return val_err("rtc.pram_read: addr must be 0..255");
     value_t v = val_uint(1, rtc_pram_read(rtc, (uint8_t)addr));
     v.flags |= VAL_HEX;
@@ -507,16 +505,12 @@ static value_t rtc_method_pram_read(struct object *self, const member_t *m, int 
 
 static value_t rtc_method_pram_write(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)m;
+    (void)argc;
     rtc_t *rtc = rtc_from(self);
     if (!rtc)
         return val_err("rtc not available");
-    if (argc < 2)
-        return val_err("rtc.pram_write: expected (addr, value)");
-    bool ok1 = true, ok2 = true;
-    uint64_t addr = val_as_u64(&argv[0], &ok1);
-    uint64_t value = val_as_u64(&argv[1], &ok2);
-    if (!ok1 || !ok2)
-        return val_err("rtc.pram_write: arguments must be numeric");
+    uint64_t addr = argv[0].u;
+    uint64_t value = argv[1].u;
     if (addr > 0xFF || value > 0xFF)
         return val_err("rtc.pram_write: addr and value must be 0..255");
     if (!rtc_pram_write(rtc, (uint8_t)addr, (uint8_t)value))
@@ -525,11 +519,11 @@ static value_t rtc_method_pram_write(struct object *self, const member_t *m, int
 }
 
 static const arg_decl_t rtc_pram_read_args[] = {
-    {.name = "addr", .kind = V_UINT, .flags = VAL_HEX, .doc = "PRAM offset (0..255)"},
+    {.name = "addr", .kind = V_UINT, .presentation_flags = VAL_HEX, .doc = "PRAM offset (0..255)"},
 };
 static const arg_decl_t rtc_pram_write_args[] = {
-    {.name = "addr",  .kind = V_UINT, .flags = VAL_HEX, .doc = "PRAM offset (0..255)"},
-    {.name = "value", .kind = V_UINT, .flags = VAL_HEX, .doc = "byte to write"       },
+    {.name = "addr",  .kind = V_UINT, .presentation_flags = VAL_HEX, .doc = "PRAM offset (0..255)"},
+    {.name = "value", .kind = V_UINT, .presentation_flags = VAL_HEX, .doc = "byte to write"       },
 };
 
 static const member_t rtc_members[] = {

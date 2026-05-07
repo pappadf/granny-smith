@@ -1617,8 +1617,7 @@ static value_t scsi_dev_method_eject(struct object *self, const member_t *m, int
 // `insert(path)` — mount a CD-ROM image into this slot.
 static value_t scsi_dev_method_insert(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)m;
-    if (argc < 1 || argv[0].kind != V_STRING || !argv[0].s)
-        return val_err("scsi.devices.N.insert: expected (path)");
+    (void)argc;
     unsigned slot = 0;
     if (!scsi_dev_scsi(self, &slot))
         return val_err("scsi.devices.N.insert: scsi controller not available");
@@ -1807,13 +1806,9 @@ static value_t scsi_attr_loopback_get(struct object *self, const member_t *m) {
 static value_t scsi_attr_loopback_set(struct object *self, const member_t *m, value_t in) {
     (void)m;
     scsi_t *scsi = scsi_self_from(self);
-    if (!scsi) {
-        value_free(&in);
+    if (!scsi)
         return val_err("scsi not available");
-    }
-    bool b = val_as_bool(&in);
-    value_free(&in);
-    scsi_set_loopback(scsi, b);
+    scsi_set_loopback(scsi, in.b);
     return val_none();
 }
 
@@ -1823,8 +1818,7 @@ static value_t scsi_attr_loopback_set(struct object *self, const member_t *m, va
 static value_t scsi_method_identify_hd(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)self;
     (void)m;
-    if (argc < 1 || argv[0].kind != V_STRING || !argv[0].s)
-        return val_err("scsi.identify_hd: expected (path)");
+    (void)argc;
     const char *path = argv[0].s;
     image_t *img = image_open_readonly(path);
     if (!img) {
@@ -1852,8 +1846,7 @@ static value_t scsi_method_identify_hd(struct object *self, const member_t *m, i
 static value_t scsi_method_identify_cdrom(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)self;
     (void)m;
-    if (argc < 1 || argv[0].kind != V_STRING || !argv[0].s)
-        return val_err("scsi.identify_cdrom: expected (path)");
+    (void)argc;
     const char *path = argv[0].s;
     image_t *img = image_open_readonly(path);
     if (!img) {
@@ -1910,14 +1903,8 @@ static value_t scsi_method_identify_cdrom(struct object *self, const member_t *m
 static value_t scsi_method_attach_hd(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)self;
     (void)m;
-    if (argc < 2 || argv[0].kind != V_STRING || !argv[0].s)
-        return val_err("scsi.attach_hd: expected (path, id)");
-    bool ok = false;
-    int64_t id = val_as_i64(&argv[1], &ok);
-    if (!ok && argv[1].kind == V_UINT)
-        id = (int64_t)argv[1].u;
-    else if (!ok)
-        return val_err("scsi.attach_hd: id must be an integer");
+    (void)argc;
+    int64_t id = argv[1].i;
     if (id < 0 || id > 6)
         return val_err("scsi.attach_hd: id must be 0..6");
     char line[1024];
@@ -1935,14 +1922,8 @@ static value_t scsi_method_attach_hd(struct object *self, const member_t *m, int
 static value_t scsi_method_attach_cdrom(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)self;
     (void)m;
-    if (argc < 2 || argv[0].kind != V_STRING || !argv[0].s)
-        return val_err("scsi.attach_cdrom: expected (path, id)");
-    bool ok = false;
-    int64_t id = val_as_i64(&argv[1], &ok);
-    if (!ok && argv[1].kind == V_UINT)
-        id = (int64_t)argv[1].u;
-    else if (!ok)
-        return val_err("scsi.attach_cdrom: id must be an integer");
+    (void)argc;
+    int64_t id = argv[1].i;
     if (id < 0 || id > 6)
         return val_err("scsi.attach_cdrom: id must be 0..6");
     if (!global_emulator)

@@ -1120,10 +1120,6 @@ static value_t sched_attr_mode_get(struct object *self, const member_t *m) {
 static value_t sched_attr_mode_set(struct object *self, const member_t *m, value_t in) {
     (void)m;
     scheduler_t *s = sched_self_from(self);
-    if (in.kind != V_STRING || !in.s) {
-        value_free(&in);
-        return val_err("scheduler.mode: expected string ('max' | 'real' | 'hw')");
-    }
     enum schedule_mode mode;
     if (strcmp(in.s, "max") == 0)
         mode = schedule_max_speed;
@@ -1167,18 +1163,7 @@ static value_t sched_method_run(struct object *self, const member_t *m, int argc
     scheduler_t *s = sched_self_from(self);
     if (!s)
         return val_err("scheduler.run: scheduler not initialised");
-    uint64_t instructions = 0; // 0 = run-until-stopped
-    if (argc >= 1) {
-        bool ok = false;
-        int64_t n = val_as_i64(&argv[0], &ok);
-        if (!ok && argv[0].kind == V_UINT) {
-            instructions = argv[0].u;
-        } else if (!ok || n < 0) {
-            return val_err("scheduler.run: instructions must be a non-negative integer");
-        } else {
-            instructions = (uint64_t)n;
-        }
-    }
+    uint64_t instructions = (argc >= 1) ? argv[0].u : 0; // 0 = run-until-stopped
     if (!scheduler_run_with_budget(s, instructions))
         return val_err("scheduler.run: instruction count too large");
     return val_bool(true);
@@ -1198,7 +1183,7 @@ static value_t sched_method_stop(struct object *self, const member_t *m, int arg
 static const arg_decl_t sched_run_args[] = {
     {.name = "instructions",
      .kind = V_UINT,
-     .flags = OBJ_ARG_OPTIONAL,
+     .validation_flags = OBJ_ARG_OPTIONAL,
      .doc = "Optional instruction budget; 0 / omitted = run until stopped"},
 };
 

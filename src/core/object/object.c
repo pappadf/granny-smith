@@ -330,8 +330,8 @@ bool object_validate_class(const class_desc_t *cls, char *err_buf, size_t err_si
             int rest_count = 0;
             for (int a = 0; a < nargs; a++) {
                 const arg_decl_t *p = &args[a];
-                bool is_opt = (p->flags & OBJ_ARG_OPTIONAL) != 0;
-                bool is_rest = (p->flags & OBJ_ARG_REST) != 0;
+                bool is_opt = (p->validation_flags & OBJ_ARG_OPTIONAL) != 0;
+                bool is_rest = (p->validation_flags & OBJ_ARG_REST) != 0;
                 if (is_rest) {
                     rest_count++;
                     if (a != nargs - 1) {
@@ -391,7 +391,7 @@ bool object_validate_class(const class_desc_t *cls, char *err_buf, size_t err_si
 
         // Attribute-slot invariants.
         if (m->kind == M_ATTR) {
-            if (m->attr.flags & (OBJ_ARG_OPTIONAL | OBJ_ARG_REST)) {
+            if (m->attr.validation_flags & (OBJ_ARG_OPTIONAL | OBJ_ARG_REST)) {
                 if (err_buf && err_size)
                     snprintf(err_buf, err_size, "%s.%s: arg-only flag set on attribute slot", cls->name, m->name);
                 return false;
@@ -658,12 +658,14 @@ typedef enum {
     VALIDATE_ERR, // validation failed; message in err_buf
 } validate_status_t;
 
-// Project an arg_decl onto a slot view.
+// Project an arg_decl onto a slot view. Only validation_flags drive
+// the engine; presentation_flags are documentation/formatting metadata
+// that do not affect call-time behaviour on method-arg slots.
 static void slot_from_arg(typed_slot_t *out, const arg_decl_t *a) {
     out->name = a->name ? a->name : "";
     out->kind = a->kind;
     out->width = a->width;
-    out->flags = a->flags;
+    out->flags = a->validation_flags;
     out->enum_values = a->enum_values;
     out->default_value = a->default_value;
 }
@@ -673,7 +675,7 @@ static void slot_from_attr(typed_slot_t *out, const member_t *m) {
     out->name = "";
     out->kind = m->attr.type;
     out->width = m->attr.width;
-    out->flags = m->attr.flags;
+    out->flags = m->attr.validation_flags;
     out->enum_values = m->attr.enum_values;
     out->default_value = NULL;
 }
@@ -940,12 +942,12 @@ static value_t node_validate_args(struct object *obj, const member_t *m, int in_
         return val_err("%s: declared arg count %d exceeds limit %d", prefix, nargs, OBJ_VALIDATE_MAX_ARGS);
 
     // Locate the rest slot, if any (must be last per registration check).
-    bool has_rest = (nargs > 0) && (args[nargs - 1].flags & OBJ_ARG_REST) != 0;
+    bool has_rest = (nargs > 0) && (args[nargs - 1].validation_flags & OBJ_ARG_REST) != 0;
     int fixed_n = has_rest ? (nargs - 1) : nargs;
 
     // Arity check.
     for (int i = 0; i < fixed_n; i++) {
-        if (i >= in_argc && !(args[i].flags & OBJ_ARG_OPTIONAL) && !args[i].default_value) {
+        if (i >= in_argc && !(args[i].validation_flags & OBJ_ARG_OPTIONAL) && !args[i].default_value) {
             return val_err("%s: missing argument '%s'", prefix, args[i].name ? args[i].name : "?");
         }
     }
@@ -1090,10 +1092,12 @@ value_t node_get(node_t n) {
         if (!n.member->attr.get)
             return val_err("attribute '%s' has no getter", n.member->name);
         value_t v = n.member->attr.get(n.obj, n.member);
-        // Propagate display flags from the descriptor onto the value so
-        // formatters see the intent ('VAL_HEX', etc.) without consulting
-        // the descriptor separately.
-        v.flags |= (uint16_t)n.member->flags;
+        // Propagate display flags from the slot's presentation_flags
+        // (VAL_HEX/VAL_DEC/VAL_BIN/VAL_VOLATILE/VAL_SENSITIVE) onto the
+        // value so formatters see the intent without consulting the
+        // descriptor separately. Per-member VAL_RO stays on member.flags
+        // and does not propagate (it controls writability, not display).
+        v.flags |= n.member->attr.presentation_flags;
 #ifndef NDEBUG
         typed_slot_t slot;
         slot_from_attr(&slot, n.member);

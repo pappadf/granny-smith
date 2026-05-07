@@ -870,8 +870,8 @@ void adb_mouse_move(adb_t *adb, int dx, int dy) {
 static value_t keyboard_method_press(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)self;
     (void)m;
-    if (argc < 1)
-        return val_err("keyboard.press: expected (key) — name string or keycode int");
+    (void)argc;
+    // key is V_NONE-kind: body discriminates V_STRING vs V_INT/V_UINT.
     int keycode = -1;
     char hexbuf[8];
     const char *display_name = NULL;

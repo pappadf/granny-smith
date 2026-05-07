@@ -144,8 +144,11 @@ static value_t machine_method_register(struct object *self, const member_t *m, i
 }
 
 static const arg_decl_t machine_boot_args[] = {
-    {.name = "model",  .kind = V_STRING, .flags = OBJ_ARG_NONEMPTY, .doc = "Machine model id (plus / se30 / iicx)"},
-    {.name = "ram_kb", .kind = V_UINT,   .flags = OBJ_ARG_OPTIONAL, .doc = "Optional RAM override (KB)"           },
+    {.name = "model",
+     .kind = V_STRING,
+     .validation_flags = OBJ_ARG_NONEMPTY,
+     .doc = "Machine model id (plus / se30 / iicx)"                                                             },
+    {.name = "ram_kb", .kind = V_UINT, .validation_flags = OBJ_ARG_OPTIONAL, .doc = "Optional RAM override (KB)"},
 };
 
 static const arg_decl_t machine_register_args[] = {

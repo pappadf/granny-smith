@@ -194,9 +194,7 @@ static value_t sound_attr_enabled_set(struct object *self, const member_t *m, va
         value_free(&in);
         return val_err("sound not available");
     }
-    bool b = val_as_bool(&in);
-    value_free(&in);
-    sound_enable(sound, b);
+    sound_enable(sound, in.b);
     return val_none();
 }
 
@@ -207,15 +205,9 @@ static value_t sound_attr_volume_get(struct object *self, const member_t *m) {
 static value_t sound_attr_volume_set(struct object *self, const member_t *m, value_t in) {
     (void)m;
     sound_t *sound = sound_self_from(self);
-    if (!sound) {
-        value_free(&in);
+    if (!sound)
         return val_err("sound not available");
-    }
-    bool ok = true;
-    uint64_t v = val_as_u64(&in, &ok);
-    value_free(&in);
-    if (!ok)
-        return val_err("sound.volume: value is not numeric");
+    uint64_t v = in.u;
     if (v >= 8)
         return val_err("sound.volume: must be 0..7 (got %llu)", (unsigned long long)v);
     sound_volume(sound, (unsigned)v);
@@ -229,13 +221,11 @@ static value_t sound_attr_sample_rate(struct object *self, const member_t *m) {
 
 static value_t sound_method_mute(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)m;
+    (void)argc;
     sound_t *sound = sound_self_from(self);
     if (!sound)
         return val_err("sound not available");
-    if (argc < 1)
-        return val_err("sound.mute: expected (muted)");
-    bool muted = val_as_bool(&argv[0]);
-    sound_mute(sound, muted);
+    sound_mute(sound, argv[0].b);
     return val_none();
 }
 

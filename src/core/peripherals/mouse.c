@@ -210,13 +210,8 @@ static char mouse_mode_char(const value_t *v) {
 static value_t mouse_method_move(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)self;
     (void)m;
-    if (argc < 2)
-        return val_err("mouse.move: expected (x, y, [mode])");
-    bool okx = true, oky = true;
-    int64_t x = val_as_i64(&argv[0], &okx);
-    int64_t y = val_as_i64(&argv[1], &oky);
-    if (!okx || !oky)
-        return val_err("mouse.move: x and y must be integers");
+    int64_t x = argv[0].i;
+    int64_t y = argv[1].i;
     char mode = (argc >= 3) ? mouse_mode_char(&argv[2]) : 'd';
     if (!mode)
         return val_err("mouse.move: mode must be one of \"default\"/\"global\"/\"hw\"/\"aux\"");
@@ -228,7 +223,7 @@ static value_t mouse_method_move(struct object *self, const member_t *m, int arg
 static value_t mouse_method_click(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)self;
     (void)m;
-    bool down = (argc >= 1) ? val_as_bool(&argv[0]) : true;
+    bool down = (argc >= 1) ? argv[0].b : true;
     char mode = (argc >= 2) ? mouse_mode_char(&argv[1]) : 'd';
     if (!mode)
         return val_err("mouse.click: mode must be one of \"default\"/\"global\"/\"hw\"");
@@ -239,9 +234,8 @@ static value_t mouse_method_click(struct object *self, const member_t *m, int ar
 static value_t mouse_method_trace(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)self;
     (void)m;
-    if (argc < 1)
-        return val_err("mouse.trace: expected (enabled)");
-    debug_mac_set_trace_mouse(val_as_bool(&argv[0]));
+    (void)argc;
+    debug_mac_set_trace_mouse(argv[0].b);
     return val_none();
 }
 
@@ -250,15 +244,18 @@ static const arg_decl_t mouse_move_args[] = {
     {.name = "y", .kind = V_INT, .doc = "Target Y coordinate"},
     {.name = "mode",
      .kind = V_STRING,
-     .flags = OBJ_ARG_OPTIONAL,
+     .validation_flags = OBJ_ARG_OPTIONAL,
      .doc = "\"default\" (per-platform), \"global\" (Toolbox MTemp), \"hw\" (raw quadrature), or \"aux\" (A/UX MAE)"},
 };
 static const arg_decl_t mouse_click_args[] = {
-    {.name = "down", .kind = V_BOOL, .flags = OBJ_ARG_OPTIONAL, .doc = "true = press, false = release (default true)"},
+    {.name = "down",
+     .kind = V_BOOL,
+     .validation_flags = OBJ_ARG_OPTIONAL,
+     .doc = "true = press, false = release (default true)"                             },
     {.name = "mode",
      .kind = V_STRING,
-     .flags = OBJ_ARG_OPTIONAL,
-     .doc = "\"default\" (per-platform), \"global\" (Toolbox MBState), or \"hw\" (raw)"                              },
+     .validation_flags = OBJ_ARG_OPTIONAL,
+     .doc = "\"default\" (per-platform), \"global\" (Toolbox MBState), or \"hw\" (raw)"},
 };
 static const arg_decl_t mouse_trace_args[] = {
     {.name = "enabled", .kind = V_BOOL, .doc = "true = log mouse position once per second"},

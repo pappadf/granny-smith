@@ -1245,13 +1245,9 @@ static value_t scc_attr_loopback_get(struct object *self, const member_t *m) {
 static value_t scc_attr_loopback_set(struct object *self, const member_t *m, value_t in) {
     (void)m;
     scc_t *scc = scc_from(self);
-    if (!scc) {
-        value_free(&in);
+    if (!scc)
         return val_err("scc not available");
-    }
-    bool b = val_as_bool(&in);
-    value_free(&in);
-    scc_set_external_loopback(scc, b);
+    scc_set_external_loopback(scc, in.b);
     return val_none();
 }
 

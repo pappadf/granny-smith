@@ -2190,8 +2190,7 @@ static int atalk_shares_next(struct object *self, int prev_index) {
 static value_t atalk_shares_method_add(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)self;
     (void)m;
-    if (argc < 2 || argv[0].kind != V_STRING || argv[1].kind != V_STRING)
-        return val_err("appletalk.shares.add: expected (name, path)");
+    (void)argc;
     if (atalk_share_add(argv[0].s, argv[1].s) != 0)
         return val_err("atalk_share_add failed (see log)");
     return val_none();
@@ -2200,8 +2199,7 @@ static value_t atalk_shares_method_add(struct object *self, const member_t *m, i
 static value_t atalk_shares_method_remove(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)self;
     (void)m;
-    if (argc < 1 || argv[0].kind != V_STRING)
-        return val_err("appletalk.shares.remove: expected (name)");
+    (void)argc;
     if (atalk_share_remove(argv[0].s) != 0)
         return val_err("atalk_share_remove failed (no such share?)");
     return val_none();
@@ -2257,7 +2255,7 @@ static value_t atalk_printer_attr_name(struct object *self, const member_t *m) {
 static value_t atalk_printer_method_enable(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)self;
     (void)m;
-    const char *name = (argc >= 1 && argv[0].kind == V_STRING && argv[0].s && *argv[0].s) ? argv[0].s : NULL;
+    const char *name = (argc >= 1 && argv[0].s && *argv[0].s) ? argv[0].s : NULL;
     if (atalk_printer_enable(name) != 0)
         return val_err("atalk_printer_enable failed");
     return val_none();
@@ -2273,7 +2271,10 @@ static value_t atalk_printer_method_disable(struct object *self, const member_t 
 }
 
 static const arg_decl_t atalk_printer_enable_args[] = {
-    {.name = "name", .kind = V_STRING, .flags = OBJ_ARG_OPTIONAL, .doc = "Optional NBP entity name override"},
+    {.name = "name",
+     .kind = V_STRING,
+     .validation_flags = OBJ_ARG_OPTIONAL,
+     .doc = "Optional NBP entity name override"},
 };
 
 static const member_t atalk_printer_members[] = {

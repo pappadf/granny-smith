@@ -192,8 +192,7 @@ int archive_extract_file(const char *path, const char *out_dir) {
 static value_t archive_method_identify(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)self;
     (void)m;
-    if (argc < 1 || argv[0].kind != V_STRING || !argv[0].s)
-        return val_err("archive.identify: expected (path)");
+    (void)argc;
     const char *format = archive_identify_file(argv[0].s);
     return val_str(format ? format : "");
 }
@@ -203,10 +202,8 @@ static value_t archive_method_identify(struct object *self, const member_t *m, i
 static value_t archive_method_extract(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)self;
     (void)m;
-    if (argc < 1 || argv[0].kind != V_STRING || !argv[0].s)
-        return val_err("archive.extract: expected (path, [out_dir])");
     const char *path = argv[0].s;
-    const char *out_dir = (argc >= 2 && argv[1].kind == V_STRING && argv[1].s && *argv[1].s) ? argv[1].s : NULL;
+    const char *out_dir = (argc >= 2 && argv[1].s && *argv[1].s) ? argv[1].s : NULL;
     return val_bool(archive_extract_file(path, out_dir) == 0);
 }
 
@@ -216,7 +213,10 @@ static const arg_decl_t archive_path_arg[] = {
 
 static const arg_decl_t archive_extract_args[] = {
     {.name = "path", .kind = V_STRING, .doc = "Archive file path"},
-    {.name = "out_dir", .kind = V_STRING, .flags = OBJ_ARG_OPTIONAL, .doc = "Output directory (default: cwd)"},
+    {.name = "out_dir",
+     .kind = V_STRING,
+     .validation_flags = OBJ_ARG_OPTIONAL,
+     .doc = "Output directory (default: cwd)"},
 };
 
 static const member_t archive_members[] = {

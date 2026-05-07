@@ -820,8 +820,7 @@ static value_t floppy_attr_sel(struct object *self, const member_t *m) {
 static value_t floppy_method_identify(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)self;
     (void)m;
-    if (argc < 1 || argv[0].kind != V_STRING || !argv[0].s)
-        return val_err("floppy.identify: expected (path)");
+    (void)argc;
     image_t *img = image_open_readonly(argv[0].s);
     if (!img)
         return val_str("");
@@ -850,10 +849,9 @@ static value_t floppy_method_identify(struct object *self, const member_t *m, in
 static value_t floppy_method_create(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)self;
     (void)m;
-    if (argc < 1 || argv[0].kind != V_STRING || !argv[0].s)
-        return val_err("floppy.create: expected (path, [hd])");
     bool high_density = false;
     int preferred = -1;
+    // hd is V_NONE-kind: body discriminates string / bool / integer.
     if (argc >= 2) {
         if (argv[1].kind == V_STRING && argv[1].s) {
             if (strcmp(argv[1].s, "hd") == 0 || strcmp(argv[1].s, "--hd") == 0) {
@@ -884,7 +882,7 @@ static const arg_decl_t floppy_create_args[] = {
     {.name = "path", .kind = V_STRING, .doc = "Output path"},
     {.name = "hd",
      .kind = V_NONE,
-     .flags = OBJ_ARG_OPTIONAL,
+     .validation_flags = OBJ_ARG_OPTIONAL,
      .doc = "\"hd\" / true for 1.44 MB; drive index 0/1 to pick a slot"},
 };
 
@@ -988,12 +986,10 @@ static value_t floppy_drive_method_eject(struct object *self, const member_t *m,
 // resolution / drive-occupancy bookkeeping all stay in one place.
 static value_t floppy_drive_method_insert(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)m;
-    if (argc < 1 || argv[0].kind != V_STRING || !argv[0].s)
-        return val_err("floppy.drives.N.insert: expected (path, [writable])");
     unsigned slot = 0;
     if (!floppy_drive_floppy(self, &slot))
         return val_err("floppy.drives.N.insert: floppy controller not available");
-    bool writable = (argc >= 2) ? val_as_bool(&argv[1]) : false;
+    bool writable = (argc >= 2) ? argv[1].b : false;
     char line[1024];
     int n = snprintf(line, sizeof(line), "fd insert \"%s\" %u %s", argv[0].s, slot, writable ? "true" : "false");
     if (n < 0 || (size_t)n >= sizeof(line))
@@ -1007,7 +1003,7 @@ static value_t floppy_drive_method_insert(struct object *self, const member_t *m
 
 static const arg_decl_t floppy_drive_insert_args[] = {
     {.name = "path", .kind = V_STRING, .doc = "Host path or storage URI of the image to mount"},
-    {.name = "writable", .kind = V_BOOL, .flags = OBJ_ARG_OPTIONAL, .doc = "Mount writable (default false)"},
+    {.name = "writable", .kind = V_BOOL, .validation_flags = OBJ_ARG_OPTIONAL, .doc = "Mount writable (default false)"},
 };
 
 static const member_t floppy_drive_members[] = {

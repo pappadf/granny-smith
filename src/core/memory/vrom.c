@@ -96,8 +96,7 @@ static value_t vrom_attr_size(struct object *self, const member_t *m) {
 static value_t vrom_method_load(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)self;
     (void)m;
-    if (argc < 1 || argv[0].kind != V_STRING || !argv[0].s)
-        return val_err("vrom.load: expected (path)");
+    (void)argc;
     if (vrom_set_path(argv[0].s) != 0)
         return val_err("vrom.load: failed");
     return val_bool(true);
@@ -108,8 +107,7 @@ static value_t vrom_method_load(struct object *self, const member_t *m, int argc
 static value_t vrom_method_identify(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)self;
     (void)m;
-    if (argc < 1 || argv[0].kind != V_STRING || !argv[0].s)
-        return val_err("vrom.identify: expected (path)");
+    (void)argc;
     return val_bool(vrom_probe_file(argv[0].s, NULL));
 }
 

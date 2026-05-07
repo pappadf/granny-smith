@@ -370,17 +370,6 @@ static value_t attr_cpu_sp(struct object *self, const member_t *m) {
     return v;
 }
 
-// Coerce an incoming value into a uint32 register payload. Always frees
-// `in` (setter ownership). On parse failure returns an error value_t and
-// stores `false` in *ok.
-static uint32_t set_value_to_u32(value_t *in, bool *ok) {
-    bool inner = false;
-    uint64_t v = val_as_u64(in, &inner);
-    value_free(in);
-    *ok = inner;
-    return (uint32_t)v;
-}
-
 #define CPU_DREG_RW(N)                                                                                                 \
     static value_t attr_cpu_d##N(struct object *self, const member_t *m) {                                             \
         (void)m;                                                                                                       \
@@ -394,13 +383,9 @@ static uint32_t set_value_to_u32(value_t *in, bool *ok) {
     static value_t set_cpu_d##N(struct object *self, const member_t *m, value_t in) {                                  \
         (void)m;                                                                                                       \
         cpu_t *cpu = cpu_from(self);                                                                                   \
-        bool ok = false;                                                                                               \
-        uint32_t v = set_value_to_u32(&in, &ok);                                                                       \
         if (!cpu)                                                                                                      \
             return val_err("cpu not initialised");                                                                     \
-        if (!ok)                                                                                                       \
-            return val_err("cpu.d" #N ": expected integer");                                                           \
-        cpu_set_dn(cpu, N, v);                                                                                         \
+        cpu_set_dn(cpu, N, (uint32_t)in.u);                                                                            \
         return val_none();                                                                                             \
     }
 #define CPU_AREG_RW(N)                                                                                                 \
@@ -416,13 +401,9 @@ static uint32_t set_value_to_u32(value_t *in, bool *ok) {
     static value_t set_cpu_a##N(struct object *self, const member_t *m, value_t in) {                                  \
         (void)m;                                                                                                       \
         cpu_t *cpu = cpu_from(self);                                                                                   \
-        bool ok = false;                                                                                               \
-        uint32_t v = set_value_to_u32(&in, &ok);                                                                       \
         if (!cpu)                                                                                                      \
             return val_err("cpu not initialised");                                                                     \
-        if (!ok)                                                                                                       \
-            return val_err("cpu.a" #N ": expected integer");                                                           \
-        cpu_set_an(cpu, N, v);                                                                                         \
+        cpu_set_an(cpu, N, (uint32_t)in.u);                                                                            \
         return val_none();                                                                                             \
     }
 
@@ -451,40 +432,28 @@ CPU_AREG_RW(7)
 static value_t set_cpu_pc(struct object *self, const member_t *m, value_t in) {
     (void)m;
     cpu_t *cpu = cpu_from(self);
-    bool ok = false;
-    uint32_t v = set_value_to_u32(&in, &ok);
     if (!cpu)
         return val_err("cpu not initialised");
-    if (!ok)
-        return val_err("cpu.pc: expected integer");
-    cpu_set_pc(cpu, v);
+    cpu_set_pc(cpu, (uint32_t)in.u);
     return val_none();
 }
 
 static value_t set_cpu_sr(struct object *self, const member_t *m, value_t in) {
     (void)m;
     cpu_t *cpu = cpu_from(self);
-    bool ok = false;
-    uint32_t v = set_value_to_u32(&in, &ok);
     if (!cpu)
         return val_err("cpu not initialised");
-    if (!ok)
-        return val_err("cpu.sr: expected integer");
-    cpu_set_sr(cpu, (uint16_t)v);
+    cpu_set_sr(cpu, (uint16_t)in.u);
     return val_none();
 }
 
 static value_t set_cpu_ccr(struct object *self, const member_t *m, value_t in) {
     (void)m;
     cpu_t *cpu = cpu_from(self);
-    bool ok = false;
-    uint32_t v = set_value_to_u32(&in, &ok);
     if (!cpu)
         return val_err("cpu not initialised");
-    if (!ok)
-        return val_err("cpu.ccr: expected integer");
     uint16_t sr = cpu_get_sr(cpu);
-    sr = (sr & (uint16_t)~cpu_ccr_mask) | (uint16_t)(v & cpu_ccr_mask);
+    sr = (sr & (uint16_t)~cpu_ccr_mask) | (uint16_t)(in.u & cpu_ccr_mask);
     cpu_set_sr(cpu, sr);
     return val_none();
 }
@@ -492,52 +461,36 @@ static value_t set_cpu_ccr(struct object *self, const member_t *m, value_t in) {
 static value_t set_cpu_ssp(struct object *self, const member_t *m, value_t in) {
     (void)m;
     cpu_t *cpu = cpu_from(self);
-    bool ok = false;
-    uint32_t v = set_value_to_u32(&in, &ok);
     if (!cpu)
         return val_err("cpu not initialised");
-    if (!ok)
-        return val_err("cpu.ssp: expected integer");
-    cpu_set_ssp(cpu, v);
+    cpu_set_ssp(cpu, (uint32_t)in.u);
     return val_none();
 }
 
 static value_t set_cpu_usp(struct object *self, const member_t *m, value_t in) {
     (void)m;
     cpu_t *cpu = cpu_from(self);
-    bool ok = false;
-    uint32_t v = set_value_to_u32(&in, &ok);
     if (!cpu)
         return val_err("cpu not initialised");
-    if (!ok)
-        return val_err("cpu.usp: expected integer");
-    cpu_set_usp(cpu, v);
+    cpu_set_usp(cpu, (uint32_t)in.u);
     return val_none();
 }
 
 static value_t set_cpu_msp(struct object *self, const member_t *m, value_t in) {
     (void)m;
     cpu_t *cpu = cpu_from(self);
-    bool ok = false;
-    uint32_t v = set_value_to_u32(&in, &ok);
     if (!cpu)
         return val_err("cpu not initialised");
-    if (!ok)
-        return val_err("cpu.msp: expected integer");
-    cpu_set_msp(cpu, v);
+    cpu_set_msp(cpu, (uint32_t)in.u);
     return val_none();
 }
 
 static value_t set_cpu_vbr(struct object *self, const member_t *m, value_t in) {
     (void)m;
     cpu_t *cpu = cpu_from(self);
-    bool ok = false;
-    uint32_t v = set_value_to_u32(&in, &ok);
     if (!cpu)
         return val_err("cpu not initialised");
-    if (!ok)
-        return val_err("cpu.vbr: expected integer");
-    cpu_set_vbr(cpu, v);
+    cpu_set_vbr(cpu, (uint32_t)in.u);
     return val_none();
 }
 
@@ -545,13 +498,9 @@ static value_t set_cpu_vbr(struct object *self, const member_t *m, value_t in) {
 static value_t set_cpu_sp(struct object *self, const member_t *m, value_t in) {
     (void)m;
     cpu_t *cpu = cpu_from(self);
-    bool ok = false;
-    uint32_t v = set_value_to_u32(&in, &ok);
     if (!cpu)
         return val_err("cpu not initialised");
-    if (!ok)
-        return val_err("cpu.sp: expected integer");
-    cpu_set_an(cpu, 7, v);
+    cpu_set_an(cpu, 7, (uint32_t)in.u);
     return val_none();
 }
 
@@ -578,14 +527,10 @@ static value_t attr_cpu_instr_count(struct object *self, const member_t *m) {
     static value_t set_cpu_cc_##letter(struct object *self, const member_t *m, value_t in) {                           \
         (void)m;                                                                                                       \
         cpu_t *cpu = cpu_from(self);                                                                                   \
-        bool ok = false;                                                                                               \
-        uint32_t v = set_value_to_u32(&in, &ok);                                                                       \
         if (!cpu)                                                                                                      \
             return val_err("cpu not initialised");                                                                     \
-        if (!ok)                                                                                                       \
-            return val_err("cpu." #letter ": expected integer");                                                       \
         uint16_t sr = cpu_get_sr(cpu);                                                                                 \
-        if (v & 1u)                                                                                                    \
+        if (in.u & 1u)                                                                                                 \
             sr |= (mask_const);                                                                                        \
         else                                                                                                           \
             sr &= (uint16_t) ~(mask_const);                                                                            \
@@ -603,7 +548,12 @@ CPU_CCR_BIT_RW(x, cpu_ccr_x)
 
 #define ATTR_RW_HEX(name_, get_, set_)                                                                                 \
     {                                                                                                                  \
-        .kind = M_ATTR, .name = name_, .flags = VAL_HEX, .attr = {.type = V_UINT, .get = get_, .set = set_ }           \
+        .kind = M_ATTR, .name = name_, .attr = {                                                                       \
+            .type = V_UINT,                                                                                            \
+            .presentation_flags = VAL_HEX,                                                                             \
+            .get = get_,                                                                                               \
+            .set = set_                                                                                                \
+        }                                                                                                              \
     }
 #define ATTR_RO(name_, get_)                                                                                           \
     {                                                                                                                  \
@@ -712,16 +662,16 @@ static const member_t fpu_members[] = {
     FP_REG(7),
     {.kind = M_ATTR,
          .name = "fpcr",
-         .flags = VAL_RO | VAL_HEX,
-         .attr = {.type = V_UINT, .get = attr_fpu_fpcr, .set = NULL} },
+         .flags = VAL_RO,
+         .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = attr_fpu_fpcr, .set = NULL} },
     {.kind = M_ATTR,
          .name = "fpsr",
-         .flags = VAL_RO | VAL_HEX,
-         .attr = {.type = V_UINT, .get = attr_fpu_fpsr, .set = NULL} },
+         .flags = VAL_RO,
+         .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = attr_fpu_fpsr, .set = NULL} },
     {.kind = M_ATTR,
          .name = "fpiar",
-         .flags = VAL_RO | VAL_HEX,
-         .attr = {.type = V_UINT, .get = attr_fpu_fpiar, .set = NULL}},
+         .flags = VAL_RO,
+         .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = attr_fpu_fpiar, .set = NULL}},
 };
 
 const class_desc_t fpu_class = {

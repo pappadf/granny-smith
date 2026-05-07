@@ -402,7 +402,7 @@ static void complete_method_arg(const member_t *m, int arg_idx, const char *part
     int idx = arg_idx;
     const arg_decl_t *last = &m->method.args[n - 1];
     if (idx >= n) {
-        if (last->flags & OBJ_ARG_REST)
+        if (last->validation_flags & OBJ_ARG_REST)
             idx = n - 1;
         else
             return;

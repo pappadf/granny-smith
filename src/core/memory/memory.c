@@ -1011,18 +1011,11 @@ static value_t attr_mem_rom_size(struct object *self, const member_t *m) {
 static value_t method_mem_read_cstring(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)self;
     (void)m;
-    if (argc < 1)
-        return val_err("memory.read_cstring: expected addr");
-    bool ok = false;
-    uint64_t addr_u = val_as_u64(&argv[0], &ok);
-    if (!ok)
-        return val_err("memory.read_cstring: addr must be numeric");
-    uint32_t addr = (uint32_t)addr_u;
+    uint32_t addr = (uint32_t)argv[0].u;
     int max_chars = 96;
     if (argc >= 2) {
-        bool ok2 = false;
-        int64_t mc = val_as_i64(&argv[1], &ok2);
-        if (ok2 && mc > 0 && mc <= 4096)
+        int64_t mc = argv[1].i;
+        if (mc > 0 && mc <= 4096)
             max_chars = (int)mc;
     }
     char buf[8192];
@@ -1049,8 +1042,8 @@ static value_t method_mem_read_cstring(struct object *self, const member_t *m, i
 }
 
 static const arg_decl_t mem_read_cstring_args[] = {
-    {.name = "addr",      .kind = V_UINT, .flags = VAL_HEX,          .doc = "guest memory address"          },
-    {.name = "max_chars", .kind = V_INT,  .flags = OBJ_ARG_OPTIONAL, .doc = "max chars to read (default 96)"},
+    {.name = "addr",      .kind = V_UINT, .presentation_flags = VAL_HEX,        .doc = "guest memory address"          },
+    {.name = "max_chars", .kind = V_INT,  .validation_flags = OBJ_ARG_OPTIONAL, .doc = "max chars to read (default 96)"},
 };
 
 // `memory.dump(addr, [count])` — hex-dump `count` bytes from `addr`.
@@ -1061,8 +1054,7 @@ static const arg_decl_t mem_read_cstring_args[] = {
 static value_t method_mem_dump(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)self;
     (void)m;
-    if (argc < 1)
-        return val_err("memory.dump: expected (addr, [count])");
+    // addr is V_NONE-kind: body discriminates integer vs string.
     bool addr_ok = false;
     uint64_t addr_u = val_as_u64(&argv[0], &addr_ok);
     bool addr_is_str = (argv[0].kind == V_STRING);
@@ -1071,10 +1063,7 @@ static value_t method_mem_dump(struct object *self, const member_t *m, int argc,
     int64_t count = 0;
     bool have_count = false;
     if (argc >= 2) {
-        bool ok = false;
-        count = val_as_i64(&argv[1], &ok);
-        if (!ok)
-            return val_err("memory.dump: count must be integer");
+        count = argv[1].i;
         have_count = true;
     }
     char line[128];
@@ -1101,7 +1090,7 @@ static value_t method_mem_dump(struct object *self, const member_t *m, int argc,
 
 static const arg_decl_t mem_dump_args[] = {
     {.name = "addr", .kind = V_NONE, .doc = "guest memory address (integer or alias/expression)"},
-    {.name = "count", .kind = V_INT, .flags = OBJ_ARG_OPTIONAL, .doc = "byte count (default 16)"},
+    {.name = "count", .kind = V_INT, .validation_flags = OBJ_ARG_OPTIONAL, .doc = "byte count (default 16)"},
 };
 
 static const member_t memory_members[] = {
@@ -1138,45 +1127,30 @@ const class_desc_t memory_class = {
 static value_t method_mem_peek_b(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)self;
     (void)m;
-    if (argc < 1)
-        return val_err("memory.peek.b: expected addr");
-    bool ok = false;
-    uint64_t a = val_as_u64(&argv[0], &ok);
-    if (!ok)
-        return val_err("memory.peek.b: addr must be numeric");
-    value_t v = val_uint(1, memory_read_uint8((uint32_t)a));
+    (void)argc;
+    value_t v = val_uint(1, memory_read_uint8((uint32_t)argv[0].u));
     v.flags |= VAL_HEX;
     return v;
 }
 static value_t method_mem_peek_w(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)self;
     (void)m;
-    if (argc < 1)
-        return val_err("memory.peek.w: expected addr");
-    bool ok = false;
-    uint64_t a = val_as_u64(&argv[0], &ok);
-    if (!ok)
-        return val_err("memory.peek.w: addr must be numeric");
-    value_t v = val_uint(2, memory_read_uint16((uint32_t)a));
+    (void)argc;
+    value_t v = val_uint(2, memory_read_uint16((uint32_t)argv[0].u));
     v.flags |= VAL_HEX;
     return v;
 }
 static value_t method_mem_peek_l(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)self;
     (void)m;
-    if (argc < 1)
-        return val_err("memory.peek.l: expected addr");
-    bool ok = false;
-    uint64_t a = val_as_u64(&argv[0], &ok);
-    if (!ok)
-        return val_err("memory.peek.l: addr must be numeric");
-    value_t v = val_uint(4, memory_read_uint32((uint32_t)a));
+    (void)argc;
+    value_t v = val_uint(4, memory_read_uint32((uint32_t)argv[0].u));
     v.flags |= VAL_HEX;
     return v;
 }
 
 static const arg_decl_t mem_peek_args[] = {
-    {.name = "addr", .kind = V_UINT, .flags = VAL_HEX, .doc = "guest memory address"},
+    {.name = "addr", .kind = V_UINT, .presentation_flags = VAL_HEX, .doc = "guest memory address"},
 };
 
 static const member_t mem_peek_members[] = {
@@ -1206,59 +1180,31 @@ const class_desc_t mem_peek_class = {
 // caller-supplied address. Pairs with memory.peek, replacing the legacy
 // `set <addr>.<size> <value>` shell form.
 
-static int parse_poke_args(int argc, const value_t *argv, uint32_t *addr_out, uint64_t *value_out, const char *who) {
-    if (argc < 2) {
-        // Caller turns -1 into a val_err; we just need to communicate failure.
-        return -1;
-    }
-    bool ok = false;
-    uint64_t a = val_as_u64(&argv[0], &ok);
-    if (!ok)
-        return -1;
-    bool ok2 = false;
-    uint64_t v = val_as_u64(&argv[1], &ok2);
-    if (!ok2)
-        return -1;
-    (void)who;
-    *addr_out = (uint32_t)a;
-    *value_out = v;
-    return 0;
-}
-
 static value_t method_mem_poke_b(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)self;
     (void)m;
-    uint32_t addr;
-    uint64_t v;
-    if (parse_poke_args(argc, argv, &addr, &v, "memory.poke.b") != 0)
-        return val_err("memory.poke.b: expected (addr, value)");
-    memory_write_uint8(addr, (uint8_t)v);
+    (void)argc;
+    memory_write_uint8((uint32_t)argv[0].u, (uint8_t)argv[1].u);
     return val_none();
 }
 static value_t method_mem_poke_w(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)self;
     (void)m;
-    uint32_t addr;
-    uint64_t v;
-    if (parse_poke_args(argc, argv, &addr, &v, "memory.poke.w") != 0)
-        return val_err("memory.poke.w: expected (addr, value)");
-    memory_write_uint16(addr, (uint16_t)v);
+    (void)argc;
+    memory_write_uint16((uint32_t)argv[0].u, (uint16_t)argv[1].u);
     return val_none();
 }
 static value_t method_mem_poke_l(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)self;
     (void)m;
-    uint32_t addr;
-    uint64_t v;
-    if (parse_poke_args(argc, argv, &addr, &v, "memory.poke.l") != 0)
-        return val_err("memory.poke.l: expected (addr, value)");
-    memory_write_uint32(addr, (uint32_t)v);
+    (void)argc;
+    memory_write_uint32((uint32_t)argv[0].u, (uint32_t)argv[1].u);
     return val_none();
 }
 
 static const arg_decl_t mem_poke_args[] = {
-    {.name = "addr",  .kind = V_UINT, .flags = VAL_HEX, .doc = "guest memory address"},
-    {.name = "value", .kind = V_UINT, .flags = VAL_HEX, .doc = "value to write"      },
+    {.name = "addr",  .kind = V_UINT, .presentation_flags = VAL_HEX, .doc = "guest memory address"},
+    {.name = "value", .kind = V_UINT, .presentation_flags = VAL_HEX, .doc = "value to write"      },
 };
 
 static const member_t mem_poke_members[] = {
