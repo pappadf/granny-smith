@@ -36,15 +36,19 @@ struct class_desc;
 // shell's `ARG_OPTIONAL` / `ARG_REST` macros defined in cmd_types.h
 // (different values, different namespace). Translation units that
 // include both headers must keep these distinct.
-#define OBJ_ARG_OPTIONAL 0x0001u // trailing optional argument
-#define OBJ_ARG_REST     0x0002u // slurp all remaining arguments into a V_LIST
+#define OBJ_ARG_OPTIONAL    0x0001u // trailing optional argument
+#define OBJ_ARG_REST        0x0002u // slurp all remaining arguments into a V_LIST
+#define OBJ_ARG_NONEMPTY    0x0004u // V_STRING value must be non-NULL and non-empty
+#define OBJ_ARG_STRICT_KIND 0x0008u // disable int↔uint, int→float, string→enum coercion
 
 // One declared parameter on a method. Mirrors proposal §3.
 typedef struct arg_decl {
     const char *name;
     value_kind_t kind;
-    unsigned flags; // OBJ_ARG_OPTIONAL | OBJ_ARG_REST | VAL_HEX | ...
+    uint8_t width; // 1/2/4/8 for V_INT/V_UINT range check; 0 = unconstrained
+    unsigned flags; // OBJ_ARG_OPTIONAL | OBJ_ARG_REST | OBJ_ARG_NONEMPTY | ...
     const char *const *enum_values; // NULL-terminated table for V_ENUM
+    const value_t *default_value; // optional default for OBJ_ARG_OPTIONAL slots
     const char *doc;
 } arg_decl_t;
 
@@ -84,6 +88,9 @@ typedef struct member {
     union {
         struct {
             value_kind_t type;
+            uint8_t width; // 1/2/4/8 for V_INT/V_UINT range check; 0 = unconstrained
+            unsigned flags; // OBJ_ARG_NONEMPTY | OBJ_ARG_STRICT_KIND
+            const char *const *enum_values; // NULL-terminated table for V_ENUM
             attr_get_fn get;
             attr_set_fn set; // NULL → read-only
             const void *user_data; // borrowed; passed back via the `m` arg

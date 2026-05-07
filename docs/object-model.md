@@ -77,16 +77,24 @@ A `class_desc_t` is a static description with a name and a member
 table. Each `member_t` is one of three kinds:
 
 - **`M_ATTR`** — a typed attribute with a getter and (optionally) a
-  setter. Attributes that lack a setter or carry the `VAL_RO` flag
-  reject `node_set` cleanly. Each member has a per-member `user_data`
-  pointer so dispatchers shared across many attributes (the 471-entry
+  setter. The attribute slot declares the value's kind, optional
+  `width` (1/2/4/8 for sized integers), optional `enum_values` table,
+  and slot flags (`OBJ_ARG_NONEMPTY`, `OBJ_ARG_STRICT_KIND`). Setters
+  whose input fails those constraints are short-circuited by the
+  framework with a uniform error before the body runs. Attributes
+  that lack a setter or carry the `VAL_RO` flag reject `node_set`
+  cleanly. Each member has a per-member `user_data` pointer so
+  dispatchers shared across many attributes (the 471-entry
   `mac.globals` is one such case) recover their context from the
   member descriptor instead of via lookup tables.
 - **`M_METHOD`** — a callable taking declared `arg_decl_t` parameters
-  and returning a `value_t`. Argument declarations carry a kind, a
-  doc string, and an optional `OBJ_ARG_OPTIONAL` / `OBJ_ARG_REST`
-  flag, which is enough metadata for the framework to validate and
-  for the completer to suggest sensible argument values.
+  and returning a `value_t`. Each parameter declares its kind,
+  optional `width`, optional `enum_values`, optional `default_value`,
+  a doc string, and per-slot flags (`OBJ_ARG_OPTIONAL`, `OBJ_ARG_REST`,
+  `OBJ_ARG_NONEMPTY`, `OBJ_ARG_STRICT_KIND`). The framework validates
+  argv against this declaration before invoking the body (see
+  *Typed dispatch validation* below) and the completer reads the
+  same metadata for argument-position suggestions.
 - **`M_CHILD`** — a child object. Children are either *named* (a fixed
   name with its own class) or *indexed* (a sparse, stable-id
   collection accessed via `child.get(i)` / `child.count` / `child.next`
@@ -151,6 +159,117 @@ falsy rules (empty string, "false", "0", any error).
 - **User aliases** are added at runtime via `shell.alias.add`. They
   cannot collide with built-ins or reserved words, and they don't
   persist across the process.
+
+## Typed dispatch validation
+
+`node_call` and `node_set` enforce each method's `arg_decl_t[]` and
+each attribute's slot declaration before invoking the body. Bodies
+do not re-check kinds, arity, widths, non-emptiness, or enum
+membership; the framework rejects mismatches with a uniform
+`V_ERROR` and the body never runs.
+
+The same engine drives both surfaces — methods are N-tuples of
+typed slots, attributes are 1-tuples — so the validation vocabulary
+and error wording are identical regardless of where the input
+arrived from.
+
+### What the framework checks
+
+- **Arity.** Required parameters must be present; `OBJ_ARG_OPTIONAL`
+  parameters may be omitted; `OBJ_ARG_REST` (last slot only) slurps
+  any remaining items into the body's argv. Calls with too many
+  arguments are rejected unless the last slot is rest.
+- **Kind match.** `argv[i].kind` must equal the slot's declared
+  kind (with the coercion exceptions below).
+- **Width fit.** `V_INT` / `V_UINT` slots that declare `width=1/2/4/8`
+  reject values whose bit pattern doesn't fit. Width `0` (or `10`,
+  used by FPU extended-precision attributes) means "no explicit
+  bound". Catches the silent truncation problem that used to hide
+  in `cpu.pc = 0x100000000` style writes.
+- **Non-empty strings.** Slots flagged `OBJ_ARG_NONEMPTY` require a
+  non-NULL, non-empty `V_STRING`.
+- **Enum membership.** `V_ENUM` slots validate the index is in
+  `enum_values`; `V_STRING` input is looked up against the same
+  table and rewritten to `V_ENUM` so the body always sees the
+  enum form (see coercion below).
+- **`V_OBJECT` non-NULL.** `V_OBJECT` slots reject `argv[i].obj == NULL`.
+- **Default fill.** Optional parameters that declare a `default_value`
+  are synthesised into the rewritten argv when the caller omits them,
+  so the body reads `argv[N]` without an `argc` check.
+
+### Coercion policy
+
+Cross-kind input is accepted in a small, deliberate set of cases.
+The body always sees a value matching the declared slot kind:
+
+- **`V_INT` ↔ `V_UINT`.** Width fit is checked under the input's
+  signedness, then the bit pattern is reinterpreted under the
+  declared signedness. So `cpu.pc = -1` succeeds and stores
+  `0xFFFFFFFF`; `cpu.d0 = 0xDEADBEEFCAFE` against `width=4` is
+  rejected.
+- **`V_INT` / `V_UINT` → `V_FLOAT`.** Numeric input widens to
+  double. The reverse (`V_FLOAT` to integer slot) is rejected;
+  callers needing truncation must cast in the expression.
+- **`V_INT` / `V_UINT` 0 / 1 → `V_BOOL`.** Other integers (`2`,
+  `-1`, …) are rejected. Strings like `"true"` are the lexer's
+  job — the framework does not re-interpret them.
+- **`V_STRING` → `V_ENUM`.** A string is matched against the slot's
+  `enum_values[]` table and the body receives a `V_ENUM`. Wrong
+  names produce a `must be one of {...}` error.
+- **`OBJ_ARG_STRICT_KIND` opt-out.** A slot with this flag accepts
+  exactly its declared kind and disables the coercions above.
+
+### `V_NONE`-kind slots
+
+A slot declared with `kind = V_NONE` is the explicit "accept any
+kind" sentinel — the framework skips kind / width / enum checks
+and the body discriminates the input. Used for legitimately
+multi-kind attributes and parameters: `rtc.time` accepts either an
+ISO-8601 string or a Mac-epoch integer; `keyboard.press` accepts
+either a key name or an ADB keycode; `memory.dump.addr` accepts
+either an address integer or an alias / expression string. Most
+slots should declare a concrete kind; `V_NONE` is reserved for
+genuine dual-input shapes.
+
+### Argv rewriting and ownership
+
+Validation copies the caller's argv into a stack-scratch buffer
+when any coercion fires or any default needs filling. The caller's
+argv is never mutated and the body must not call `value_free` on
+items in argv (the existing convention). When the caller passes a
+heap-owning value (e.g. `V_STRING`) to `node_set` and the validator
+coerces it to a different kind (e.g. `V_ENUM`), `node_set` frees
+the orphaned heap memory before calling the setter.
+
+### Class-registration invariants
+
+`object_validate_class` runs at registration time and rejects
+malformed declarations before the process can dispatch a single
+call. Hard errors abort startup in every build configuration:
+
+- Required parameter follows an optional one.
+- More than one `OBJ_ARG_REST` slot, or `OBJ_ARG_REST` not on the
+  last slot, or `OBJ_ARG_REST` combined with `OBJ_ARG_OPTIONAL`.
+- `default_value` set on a non-optional parameter, or whose kind
+  doesn't match the slot.
+- `V_ENUM` slot with no `enum_values` table.
+- Arg-only flags (`OBJ_ARG_OPTIONAL`, `OBJ_ARG_REST`,
+  `default_value`) set on an attribute slot.
+
+This turns class-author mistakes into first-boot failures rather
+than first-call surprises.
+
+### Return-kind assertions (debug builds)
+
+In debug builds the framework asserts that getter returns, method
+results, and setter returns match their declarations. A getter for
+a `V_UINT, width=4` attribute that returns `V_STRING` aborts
+immediately; a method declared `result = V_NONE` that returns a
+non-error value also aborts. `V_ERROR` is always allowed (in-band
+error). Release builds compile the asserts out, so the production
+cost is zero. Integration and unit tests run with assertions
+enabled so cross-kind regressions surface in CI rather than only
+locally.
 
 ## Foundation for shell and configuration
 
@@ -233,7 +352,14 @@ singleton or cfg-scoped:
    in a `class_desc_t` named after the path segment.
 2. **Implement getters / setters / methods** as plain C functions
    matching the framework's signatures. Read instance state through
-   `object_data(self)`; emit `value_t` results.
+   `object_data(self)`; emit `value_t` results. Method bodies trust
+   the framework's validation contract — for any parameter declared
+   with a concrete kind they read `argv[i]` (or `argv[i].u`,
+   `argv[i].s`, …) directly without re-checking `argc`, kind, width,
+   non-emptiness, or enum membership. Bodies still own *semantic*
+   checks — value ranges that depend on runtime state ("HD already
+   attached at id %d", "frequency must be a power of two") — and
+   discrimination on `V_NONE`-kind slots.
 3. **Attach the object** at the right lifecycle point — for cfg-scoped
    classes, do it inside the existing `*_init` (next to the
    `cfg->foo = foo_init(...)` call); for process-singletons, add a
@@ -248,7 +374,10 @@ singleton or cfg-scoped:
 
 A subsystem that wants to expose state and a few operations typically
 ends up writing about 50–100 lines of class boilerplate plus the
-attribute/method bodies it would have written anyway.
+attribute/method bodies it would have written anyway. Argument
+validation that used to dominate the first few lines of every
+method body now lives in the slot declaration (one line per
+parameter) and is shared by every caller.
 
 ## Why the doc avoids enumerating classes
 

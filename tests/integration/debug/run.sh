@@ -70,7 +70,7 @@ expect "empty pattern" "'find.str \"\"' should reject empty pattern"
 expect "expected 2-digit hex" "'find.bytes \"ZZ\"' should reject non-hex tokens"
 expect "range end must be greater" "backwards range should error"
 expect "exceeds 16 bits" "'find.word \$10000' should reject out-of-range value"
-expect "invalid value 'zzz'" "'find.word zzz' should reject non-numeric value"
+expect "must be INT, got STRING" "'find.word zzz' should reject non-numeric value"
 
 # Well-formed `all` invocation must not surface a usage marker — i.e.
 # the parser accepted both the pattern and the range without falling

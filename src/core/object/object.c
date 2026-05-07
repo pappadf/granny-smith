@@ -6,7 +6,10 @@
 
 #include "object.h"
 
+#include <assert.h>
 #include <ctype.h>
+#include <inttypes.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -279,6 +282,18 @@ bool object_validate_name(const char *name, char *err_buf, size_t err_size) {
     return true;
 }
 
+// Forward declaration: defined in the validator section below.
+static const char *kind_name(value_kind_t k);
+
+// Helpers for §3.13 ordering / coercion checks.
+static bool kind_supports_width(value_kind_t k) {
+    return k == V_INT || k == V_UINT;
+}
+static bool kind_supports_strict(value_kind_t k) {
+    // Strict-kind only meaningful for kinds that have coercion paths.
+    return k == V_INT || k == V_UINT || k == V_BOOL || k == V_FLOAT || k == V_ENUM;
+}
+
 bool object_validate_class(const class_desc_t *cls, char *err_buf, size_t err_size) {
     if (!cls) {
         if (err_buf && err_size)
@@ -303,6 +318,88 @@ bool object_validate_class(const class_desc_t *cls, char *err_buf, size_t err_si
             if (cls->members[j].name && strcmp(cls->members[j].name, m->name) == 0) {
                 if (err_buf && err_size)
                     snprintf(err_buf, err_size, "class %s: duplicate member '%s'", cls->name, m->name);
+                return false;
+            }
+        }
+
+        // Method-arg ordering / coercion invariants (proposal §3.13).
+        if (m->kind == M_METHOD && m->method.args && m->method.nargs > 0) {
+            const arg_decl_t *args = m->method.args;
+            int nargs = m->method.nargs;
+            bool seen_optional = false;
+            int rest_count = 0;
+            for (int a = 0; a < nargs; a++) {
+                const arg_decl_t *p = &args[a];
+                bool is_opt = (p->flags & OBJ_ARG_OPTIONAL) != 0;
+                bool is_rest = (p->flags & OBJ_ARG_REST) != 0;
+                if (is_rest) {
+                    rest_count++;
+                    if (a != nargs - 1) {
+                        if (err_buf && err_size)
+                            snprintf(err_buf, err_size, "%s.%s: rest arg '%s' must be the last parameter", cls->name,
+                                     m->name, p->name ? p->name : "?");
+                        return false;
+                    }
+                    if (is_opt) {
+                        if (err_buf && err_size)
+                            snprintf(err_buf, err_size, "%s.%s: rest arg '%s' must not also be optional", cls->name,
+                                     m->name, p->name ? p->name : "?");
+                        return false;
+                    }
+                }
+                if (is_opt)
+                    seen_optional = true;
+                if (!is_opt && !is_rest && seen_optional) {
+                    if (err_buf && err_size)
+                        snprintf(err_buf, err_size, "%s.%s: required arg '%s' follows optional", cls->name, m->name,
+                                 p->name ? p->name : "?");
+                    return false;
+                }
+                if (p->default_value && !is_opt) {
+                    if (err_buf && err_size)
+                        snprintf(err_buf, err_size, "%s.%s: arg '%s' has default but is not optional", cls->name,
+                                 m->name, p->name ? p->name : "?");
+                    return false;
+                }
+                if (p->default_value && p->default_value->kind != p->kind) {
+                    if (err_buf && err_size)
+                        snprintf(err_buf, err_size, "%s.%s: default for arg '%s' is %s, declared %s", cls->name,
+                                 m->name, p->name ? p->name : "?", kind_name(p->default_value->kind),
+                                 kind_name(p->kind));
+                    return false;
+                }
+                if (p->kind == V_ENUM && (!p->enum_values || !p->enum_values[0])) {
+                    if (err_buf && err_size)
+                        snprintf(err_buf, err_size, "%s.%s: arg '%s' is V_ENUM but has no enum_values table", cls->name,
+                                 m->name, p->name ? p->name : "?");
+                    return false;
+                }
+                if (p->width && !kind_supports_width(p->kind)) {
+                    // Warning: width meaningless for this kind. Logged but
+                    // not fatal. Stay quiet by default — class authors will
+                    // see it via a follow-up audit pass.
+                    (void)0;
+                }
+                (void)kind_supports_strict;
+            }
+            if (rest_count > 1) {
+                if (err_buf && err_size)
+                    snprintf(err_buf, err_size, "%s.%s: only one rest arg allowed", cls->name, m->name);
+                return false;
+            }
+        }
+
+        // Attribute-slot invariants.
+        if (m->kind == M_ATTR) {
+            if (m->attr.flags & (OBJ_ARG_OPTIONAL | OBJ_ARG_REST)) {
+                if (err_buf && err_size)
+                    snprintf(err_buf, err_size, "%s.%s: arg-only flag set on attribute slot", cls->name, m->name);
+                return false;
+            }
+            if (m->attr.type == V_ENUM && (!m->attr.enum_values || !m->attr.enum_values[0])) {
+                if (err_buf && err_size)
+                    snprintf(err_buf, err_size, "%s.%s: V_ENUM attribute slot has no enum_values table", cls->name,
+                             m->name);
                 return false;
             }
         }
@@ -537,7 +634,451 @@ node_t object_resolve(struct object *root, const char *path) {
     return cur;
 }
 
+// === Argument / setter validation ===========================================
+//
+// Single engine drives both: arg_decl_t (one per method param) and
+// member.attr (one per attribute) project onto the same `typed_slot_t`
+// view, then validate_slot() enforces kind / width / non-empty / enum
+// rules with limited coercion. See proposal-typed-dispatch.md §3.
+
+#define OBJ_VALIDATE_MAX_ARGS 16
+
+typedef struct typed_slot {
+    const char *name; // arg name; "" for attribute slots
+    value_kind_t kind;
+    uint8_t width; // 1/2/4/8 for V_INT/V_UINT range; 0 = unconstrained
+    unsigned flags; // OBJ_ARG_OPTIONAL | OBJ_ARG_REST | OBJ_ARG_NONEMPTY | OBJ_ARG_STRICT_KIND
+    const char *const *enum_values; // NULL-terminated; required if kind == V_ENUM
+    const value_t *default_value; // optional default for OBJ_ARG_OPTIONAL
+} typed_slot_t;
+
+typedef enum {
+    VALIDATE_OK = 0, // input passes, no rewrite needed
+    VALIDATE_REWRITE, // input passes after coercion; rewritten value in *out
+    VALIDATE_ERR, // validation failed; message in err_buf
+} validate_status_t;
+
+// Project an arg_decl onto a slot view.
+static void slot_from_arg(typed_slot_t *out, const arg_decl_t *a) {
+    out->name = a->name ? a->name : "";
+    out->kind = a->kind;
+    out->width = a->width;
+    out->flags = a->flags;
+    out->enum_values = a->enum_values;
+    out->default_value = a->default_value;
+}
+
+// Project an attribute member onto a slot view.
+static void slot_from_attr(typed_slot_t *out, const member_t *m) {
+    out->name = "";
+    out->kind = m->attr.type;
+    out->width = m->attr.width;
+    out->flags = m->attr.flags;
+    out->enum_values = m->attr.enum_values;
+    out->default_value = NULL;
+}
+
+// Human-readable kind name used in error messages.
+static const char *kind_name(value_kind_t k) {
+    switch (k) {
+    case V_NONE:
+        return "NONE";
+    case V_BOOL:
+        return "BOOL";
+    case V_INT:
+        return "INT";
+    case V_UINT:
+        return "UINT";
+    case V_FLOAT:
+        return "FLOAT";
+    case V_STRING:
+        return "STRING";
+    case V_BYTES:
+        return "BYTES";
+    case V_ENUM:
+        return "ENUM";
+    case V_LIST:
+        return "LIST";
+    case V_OBJECT:
+        return "OBJECT";
+    case V_ERROR:
+        return "ERROR";
+    }
+    return "?";
+}
+
+// True if the value's bit pattern fits in `width` bytes interpreted under
+// the value's own signedness. `width=0` and `width=10` (FPU extended) mean
+// "no explicit constraint" and we treat them as 8 bytes.
+static bool value_fits_width(const value_t *v, uint8_t width) {
+    if (width == 0 || width >= 8 || width == 10)
+        return true;
+    if (v->kind == V_INT) {
+        int64_t lo = -((int64_t)1 << (8 * width - 1));
+        int64_t hi = ((int64_t)1 << (8 * width - 1)) - 1;
+        return v->i >= lo && v->i <= hi;
+    }
+    if (v->kind == V_UINT) {
+        uint64_t cap = ((uint64_t)1 << (8 * width)) - 1;
+        return v->u <= cap;
+    }
+    return true;
+}
+
+// Reinterpret bit pattern under the target signedness, width-bytes wide.
+// Mutates *out in place; assumes value_fits_width has already passed.
+static void coerce_int_sign(value_t *out, value_kind_t target_kind, uint8_t width) {
+    uint8_t w = width ? width : 8;
+    if (out->kind == V_INT && target_kind == V_UINT) {
+        uint64_t mask = (w >= 8) ? UINT64_MAX : (((uint64_t)1 << (8 * w)) - 1);
+        out->u = (uint64_t)out->i & mask;
+        out->kind = V_UINT;
+        out->width = w;
+    } else if (out->kind == V_UINT && target_kind == V_INT) {
+        if (w >= 8) {
+            out->i = (int64_t)out->u;
+        } else {
+            uint64_t mask = ((uint64_t)1 << (8 * w)) - 1;
+            uint64_t bits = out->u & mask;
+            uint64_t sign = (uint64_t)1 << (8 * w - 1);
+            if (bits & sign)
+                out->i = (int64_t)(bits | ~mask);
+            else
+                out->i = (int64_t)bits;
+        }
+        out->kind = V_INT;
+        out->width = w;
+    }
+}
+
+// Format a "{a, b, c}" list of enum values for error messages.
+static void format_enum_list(char *buf, size_t buf_size, const char *const *values) {
+    size_t off = 0;
+    int wrote = snprintf(buf + off, buf_size - off, "{");
+    if (wrote > 0)
+        off += (size_t)wrote;
+    for (size_t i = 0; values && values[i] && off < buf_size; i++) {
+        wrote = snprintf(buf + off, buf_size - off, "%s%s", i ? "," : "", values[i]);
+        if (wrote > 0)
+            off += (size_t)wrote;
+    }
+    snprintf(buf + off, buf_size - off, "}");
+}
+
+// Validate / coerce one slot. Writes a rewritten value to *out when coercion
+// occurred (status VALIDATE_REWRITE). On failure, writes a one-line message
+// to err_buf describing the constraint that failed (caller composes the
+// final error string with method/attribute path prefix).
+static validate_status_t validate_slot(const typed_slot_t *s, const value_t *in, value_t *out, char *err_buf,
+                                       size_t err_size) {
+    bool strict = (s->flags & OBJ_ARG_STRICT_KIND) != 0;
+    bool rewrote = false;
+    *out = *in;
+
+    // V_NONE-kind slot is the "accept any kind" sentinel — body sees the
+    // value as-is and does its own discrimination. Used today for slots
+    // that legitimately accept multiple kinds (e.g. storage.hd_create's
+    // size arg, which takes either a string label or an integer count).
+    if (s->kind == V_NONE) {
+        if ((s->flags & OBJ_ARG_NONEMPTY) && in->kind == V_STRING) {
+            if (!in->s || !*in->s) {
+                snprintf(err_buf, err_size, "must not be empty");
+                return VALIDATE_ERR;
+            }
+        }
+        return VALIDATE_OK;
+    }
+
+    if (in->kind != s->kind) {
+        if (strict) {
+            snprintf(err_buf, err_size, "must be %s, got %s", kind_name(s->kind), kind_name(in->kind));
+            return VALIDATE_ERR;
+        }
+        // V_INT ↔ V_UINT with width fit + sign reinterpret.
+        if ((s->kind == V_UINT && in->kind == V_INT) || (s->kind == V_INT && in->kind == V_UINT)) {
+            if (s->width && !value_fits_width(in, s->width)) {
+                if (in->kind == V_INT)
+                    snprintf(err_buf, err_size, "= %" PRId64 " does not fit in %u bytes", in->i, s->width);
+                else
+                    snprintf(err_buf, err_size, "= 0x%" PRIx64 " does not fit in %u bytes", in->u, s->width);
+                return VALIDATE_ERR;
+            }
+            coerce_int_sign(out, s->kind, s->width);
+            rewrote = true;
+        }
+        // int → float
+        else if (s->kind == V_FLOAT && (in->kind == V_INT || in->kind == V_UINT)) {
+            bool ok = false;
+            double f = val_as_f64(in, &ok);
+            *out = (value_t){.kind = V_FLOAT, .width = 8, .f = f};
+            rewrote = true;
+        }
+        // int 0/1 → bool
+        else if (s->kind == V_BOOL && (in->kind == V_INT || in->kind == V_UINT)) {
+            int64_t v = (in->kind == V_INT) ? in->i : (int64_t)in->u;
+            if (v != 0 && v != 1) {
+                snprintf(err_buf, err_size, "must be 0 or 1");
+                return VALIDATE_ERR;
+            }
+            *out = (value_t){.kind = V_BOOL, .width = 1, .b = (v != 0)};
+            rewrote = true;
+        }
+        // V_STRING → V_ENUM lookup
+        else if (s->kind == V_ENUM && in->kind == V_STRING) {
+            if (!s->enum_values) {
+                snprintf(err_buf, err_size, "enum slot has no value table");
+                return VALIDATE_ERR;
+            }
+            const char *str = in->s ? in->s : "";
+            int idx = -1;
+            size_t n_table = 0;
+            while (s->enum_values[n_table])
+                n_table++;
+            for (size_t i = 0; i < n_table; i++) {
+                if (strcmp(s->enum_values[i], str) == 0) {
+                    idx = (int)i;
+                    break;
+                }
+            }
+            if (idx < 0) {
+                char list_buf[120];
+                format_enum_list(list_buf, sizeof(list_buf), s->enum_values);
+                snprintf(err_buf, err_size, "must be one of %s, got '%.20s'", list_buf, str);
+                return VALIDATE_ERR;
+            }
+            *out = (value_t){
+                .kind = V_ENUM, .enm = {.idx = idx, .table = s->enum_values, .n_table = n_table}
+            };
+            rewrote = true;
+        } else {
+            snprintf(err_buf, err_size, "must be %s, got %s", kind_name(s->kind), kind_name(in->kind));
+            return VALIDATE_ERR;
+        }
+    } else {
+        // Kinds match — secondary checks.
+        if (s->kind == V_ENUM && s->enum_values) {
+            size_t n_table = 0;
+            while (s->enum_values[n_table])
+                n_table++;
+            if (out->enm.idx < 0 || (size_t)out->enm.idx >= n_table) {
+                snprintf(err_buf, err_size, "enum index %d out of range", out->enm.idx);
+                return VALIDATE_ERR;
+            }
+        }
+        if ((s->kind == V_INT || s->kind == V_UINT) && s->width) {
+            if (!value_fits_width(out, s->width)) {
+                if (out->kind == V_INT)
+                    snprintf(err_buf, err_size, "= %" PRId64 " does not fit in %u bytes", out->i, s->width);
+                else
+                    snprintf(err_buf, err_size, "= 0x%" PRIx64 " does not fit in %u bytes", out->u, s->width);
+                return VALIDATE_ERR;
+            }
+        }
+        if (s->kind == V_OBJECT && !out->obj) {
+            snprintf(err_buf, err_size, "must be a non-NULL object");
+            return VALIDATE_ERR;
+        }
+    }
+
+    // OBJ_ARG_NONEMPTY check on V_STRING.
+    if ((s->flags & OBJ_ARG_NONEMPTY) && out->kind == V_STRING) {
+        if (!out->s || !*out->s) {
+            snprintf(err_buf, err_size, "must not be empty");
+            return VALIDATE_ERR;
+        }
+    }
+
+    return rewrote ? VALIDATE_REWRITE : VALIDATE_OK;
+}
+
+// Build a "<class>.<member>" prefix into buf. Used for the leading text
+// in method/setter error messages.
+static void format_member_path(char *buf, size_t buf_size, struct object *obj, const member_t *m) {
+    const class_desc_t *cls = obj ? object_class(obj) : NULL;
+    const char *cls_name = (cls && cls->name) ? cls->name : "";
+    const char *member_name = (m && m->name) ? m->name : "";
+    if (*cls_name && *member_name)
+        snprintf(buf, buf_size, "%s.%s", cls_name, member_name);
+    else if (*member_name)
+        snprintf(buf, buf_size, "%s", member_name);
+    else
+        snprintf(buf, buf_size, "%s", cls_name);
+}
+
+// Validate argv against a method's declared args[]. On success the body is
+// invoked with `*out_argv` (which may alias the caller's argv if no rewrite
+// was needed, or point at scratch[] otherwise). Caller owns `scratch` (a
+// stack array of capacity OBJ_VALIDATE_MAX_ARGS). The framework does not
+// take ownership of any heap memory in the caller's argv.
+static value_t node_validate_args(struct object *obj, const member_t *m, int in_argc, const value_t *in_argv,
+                                  value_t *scratch, int *out_argc, const value_t **out_argv) {
+    const arg_decl_t *args = m->method.args;
+    int nargs = m->method.nargs;
+
+    char prefix[128];
+    format_member_path(prefix, sizeof(prefix), obj, m);
+
+    // No declared args[] table → opt out of framework validation entirely
+    // (the body owns argc / kind checking). This matches the legacy
+    // contract for methods that haven't been migrated yet, and for
+    // genuinely-variadic helpers like `echo` whose shape isn't expressible
+    // in the current arg_decl_t vocabulary.
+    if (!args) {
+        *out_argc = in_argc;
+        *out_argv = in_argv;
+        return val_none();
+    }
+    if (nargs <= 0) {
+        if (in_argc != 0)
+            return val_err("%s: too many arguments (got %d, want 0)", prefix, in_argc);
+        *out_argc = 0;
+        *out_argv = NULL;
+        return val_none();
+    }
+
+    if (nargs > OBJ_VALIDATE_MAX_ARGS)
+        return val_err("%s: declared arg count %d exceeds limit %d", prefix, nargs, OBJ_VALIDATE_MAX_ARGS);
+
+    // Locate the rest slot, if any (must be last per registration check).
+    bool has_rest = (nargs > 0) && (args[nargs - 1].flags & OBJ_ARG_REST) != 0;
+    int fixed_n = has_rest ? (nargs - 1) : nargs;
+
+    // Arity check.
+    for (int i = 0; i < fixed_n; i++) {
+        if (i >= in_argc && !(args[i].flags & OBJ_ARG_OPTIONAL) && !args[i].default_value) {
+            return val_err("%s: missing argument '%s'", prefix, args[i].name ? args[i].name : "?");
+        }
+    }
+    if (!has_rest && in_argc > nargs) {
+        return val_err("%s: too many arguments (got %d, want %d)", prefix, in_argc, nargs);
+    }
+
+    bool any_rewrite = false;
+    int eff_n = fixed_n;
+    if (in_argc > eff_n)
+        eff_n = in_argc;
+    if (eff_n > OBJ_VALIDATE_MAX_ARGS)
+        eff_n = OBJ_VALIDATE_MAX_ARGS;
+
+    // Fixed slots.
+    for (int i = 0; i < fixed_n; i++) {
+        typed_slot_t s;
+        slot_from_arg(&s, &args[i]);
+
+        if (i >= in_argc) {
+            // Optional missing — fill with default if provided.
+            if (args[i].default_value) {
+                scratch[i] = *args[i].default_value;
+                any_rewrite = true;
+            } else {
+                // Optional without default — body sees argc < nargs.
+                eff_n = i;
+                break;
+            }
+            continue;
+        }
+
+        char err[160];
+        value_t out_v;
+        validate_status_t st = validate_slot(&s, &in_argv[i], &out_v, err, sizeof(err));
+        if (st == VALIDATE_ERR) {
+            return val_err("%s: '%s' %s", prefix, s.name, err);
+        }
+        scratch[i] = (st == VALIDATE_REWRITE) ? out_v : in_argv[i];
+        if (st == VALIDATE_REWRITE)
+            any_rewrite = true;
+    }
+
+    // Rest slot: validate each tail item against the rest slot's kind/width/etc.
+    int eff_rest_n = 0;
+    if (has_rest) {
+        const arg_decl_t *rest = &args[nargs - 1];
+        typed_slot_t s;
+        slot_from_arg(&s, rest);
+        // V_NONE rest accepts any kind without coercion.
+        bool accept_any = (rest->kind == V_NONE);
+        for (int i = fixed_n; i < in_argc; i++) {
+            char err[160];
+            value_t out_v;
+            if (accept_any) {
+                scratch[i] = in_argv[i];
+            } else {
+                validate_status_t st = validate_slot(&s, &in_argv[i], &out_v, err, sizeof(err));
+                if (st == VALIDATE_ERR) {
+                    return val_err("%s: rest item %d ('%s') %s", prefix, i - fixed_n, rest->name ? rest->name : "?",
+                                   err);
+                }
+                scratch[i] = (st == VALIDATE_REWRITE) ? out_v : in_argv[i];
+                if (st == VALIDATE_REWRITE)
+                    any_rewrite = true;
+            }
+            eff_rest_n++;
+        }
+        eff_n = fixed_n + eff_rest_n;
+    }
+
+    *out_argv = (any_rewrite || in_argc < fixed_n) ? scratch : in_argv;
+    *out_argc = eff_n;
+    return val_none();
+}
+
+// Validate the input value of a setter against the attribute's slot.
+// Mutates *v in place: if a rewrite occurs (e.g. V_STRING→V_ENUM), the
+// rewritten inline value replaces *v and any heap memory the original
+// owned is freed.
+static value_t node_validate_set(struct object *obj, const member_t *m, value_t *v) {
+    typed_slot_t s;
+    slot_from_attr(&s, m);
+
+    char prefix[128];
+    format_member_path(prefix, sizeof(prefix), obj, m);
+
+    char err[160];
+    value_t out_v;
+    validate_status_t st = validate_slot(&s, v, &out_v, err, sizeof(err));
+    if (st == VALIDATE_ERR) {
+        return val_err("%s %s", prefix, err);
+    }
+    if (st == VALIDATE_REWRITE) {
+        // Free any heap owned by the original before swapping in the
+        // inline-only rewritten value.
+        value_free(v);
+        *v = out_v;
+    }
+    return val_none();
+}
+
 // === Node operations =========================================================
+
+#ifndef NDEBUG
+// Result-kind sanity check for getters / method results / setter returns.
+// V_ERROR is always allowed (in-band error path).
+static void assert_return_matches(const typed_slot_t *slot, const value_t *out, const char *site) {
+    (void)site;
+    if (out->kind == V_ERROR)
+        return;
+    // V_NONE-kind slot is the "no constraint" sentinel; no return-kind check.
+    if (slot->kind == V_NONE)
+        return;
+    if (slot->kind != out->kind) {
+        fprintf(stderr, "[object] %s: kind mismatch (declared %s, got %s)\n", site, kind_name(slot->kind),
+                kind_name(out->kind));
+        assert(out->kind == slot->kind && "return kind mismatch");
+    }
+    if ((slot->kind == V_INT || slot->kind == V_UINT) && slot->width) {
+        if (!value_fits_width(out, slot->width)) {
+            fprintf(stderr, "[object] %s: width mismatch (declared %u bytes)\n", site, slot->width);
+            assert(value_fits_width(out, slot->width) && "return width mismatch");
+        }
+    }
+    if (slot->kind == V_ENUM && slot->enum_values) {
+        size_t n_table = 0;
+        while (slot->enum_values[n_table])
+            n_table++;
+        assert(out->enm.idx >= 0 && (size_t)out->enm.idx < n_table && "return enum index out of table");
+    }
+}
+#endif
 
 value_t node_get(node_t n) {
     if (!node_valid(n))
@@ -553,6 +1094,11 @@ value_t node_get(node_t n) {
         // formatters see the intent ('VAL_HEX', etc.) without consulting
         // the descriptor separately.
         v.flags |= (uint16_t)n.member->flags;
+#ifndef NDEBUG
+        typed_slot_t slot;
+        slot_from_attr(&slot, n.member);
+        assert_return_matches(&slot, &v, "attr.get");
+#endif
         return v;
     }
     case M_METHOD:
@@ -596,7 +1142,16 @@ value_t node_set(node_t n, value_t v) {
         value_free(&v);
         return val_err("attribute '%s' has no setter", n.member->name);
     }
-    return n.member->attr.set(n.obj, n.member, v);
+    value_t err = node_validate_set(n.obj, n.member, &v);
+    if (err.kind == V_ERROR) {
+        value_free(&v);
+        return err;
+    }
+    value_t out = n.member->attr.set(n.obj, n.member, v);
+#ifndef NDEBUG
+    assert((out.kind == V_NONE || out.kind == V_ERROR) && "setter returned a value other than V_NONE / V_ERROR");
+#endif
+    return out;
 }
 
 value_t node_call(node_t n, int argc, const value_t *argv) {
@@ -606,5 +1161,23 @@ value_t node_call(node_t n, int argc, const value_t *argv) {
         return val_err("'%s' is not a method", n.member ? n.member->name : "(object)");
     if (!n.member->method.fn)
         return val_err("method '%s' has no implementation", n.member->name);
-    return n.member->method.fn(n.obj, n.member, argc, argv);
+
+    value_t scratch[OBJ_VALIDATE_MAX_ARGS];
+    int eff_argc = argc;
+    const value_t *eff_argv = argv;
+    value_t err = node_validate_args(n.obj, n.member, argc, argv, scratch, &eff_argc, &eff_argv);
+    if (err.kind == V_ERROR)
+        return err;
+
+    value_t out = n.member->method.fn(n.obj, n.member, eff_argc, eff_argv);
+#ifndef NDEBUG
+    value_kind_t want = n.member->method.result;
+    if (want == V_NONE) {
+        assert((out.kind == V_NONE || out.kind == V_ERROR) && "method declared result V_NONE but returned a value");
+    } else {
+        typed_slot_t result_slot = {.kind = want};
+        assert_return_matches(&result_slot, &out, "method.fn");
+    }
+#endif
+    return out;
 }

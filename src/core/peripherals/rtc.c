@@ -537,7 +537,10 @@ static const member_t rtc_members[] = {
      .name = "time",
      .doc = "Mac-epoch seconds (1904-based); writable",
      .flags = 0,
-     .attr = {.type = V_UINT, .get = rtc_attr_time_get, .set = rtc_attr_time_set}},
+     // .type = V_NONE: setter intentionally accepts either V_UINT (Mac
+     // seconds) or V_STRING (unix epoch / ISO-8601). Skip framework
+     // kind validation; the body discriminates.
+     .attr = {.type = V_NONE, .get = rtc_attr_time_get, .set = rtc_attr_time_set}},
     {.kind = M_ATTR,
      .name = "read_only",
      .doc = "Write-protect bit",

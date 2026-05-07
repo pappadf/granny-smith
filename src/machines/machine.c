@@ -106,8 +106,6 @@ static value_t attr_machine_profiles(struct object *self, const member_t *m) {
 static value_t machine_method_boot(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)self;
     (void)m;
-    if (argc < 1 || argv[0].kind != V_STRING || !argv[0].s || !*argv[0].s)
-        return val_err("machine.boot: expected (model, [ram_kb])");
     const char *model_id = argv[0].s;
     const hw_profile_t *profile = machine_find(model_id);
     if (!profile)
@@ -115,15 +113,10 @@ static value_t machine_method_boot(struct object *self, const member_t *m, int a
 
     uint32_t ram_kb = 0;
     if (argc >= 2) {
-        bool ok = false;
-        int64_t v = val_as_i64(&argv[1], &ok);
-        if (!ok && argv[1].kind == V_UINT)
-            v = (int64_t)argv[1].u;
-        else if (!ok)
-            return val_err("machine.boot: ram_kb must be an integer");
-        if (v <= 0)
+        // framework guarantees V_UINT
+        if (argv[1].u == 0)
             return val_err("machine.boot: ram_kb must be positive");
-        ram_kb = (uint32_t)v;
+        ram_kb = (uint32_t)argv[1].u;
         uint32_t max_kb = profile->ram_size_max / 1024u;
         if (ram_kb > max_kb)
             return val_err("machine.boot: %u KB exceeds max %u KB for %s", ram_kb, max_kb, profile->model_name);
@@ -146,14 +139,13 @@ static value_t machine_method_boot(struct object *self, const member_t *m, int a
 static value_t machine_method_register(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)self;
     (void)m;
-    if (argc < 2 || argv[0].kind != V_STRING || argv[1].kind != V_STRING)
-        return val_err("machine.register: expected (id, created)");
-    return val_bool(gs_register_machine(argv[0].s ? argv[0].s : "", argv[1].s ? argv[1].s : "") == 0);
+    (void)argc;
+    return val_bool(gs_register_machine(argv[0].s, argv[1].s) == 0);
 }
 
 static const arg_decl_t machine_boot_args[] = {
-    {.name = "model", .kind = V_STRING, .doc = "Machine model id (plus / se30 / iicx)"},
-    {.name = "ram_kb", .kind = V_UINT, .flags = OBJ_ARG_OPTIONAL, .doc = "Optional RAM override (KB)"},
+    {.name = "model",  .kind = V_STRING, .flags = OBJ_ARG_NONEMPTY, .doc = "Machine model id (plus / se30 / iicx)"},
+    {.name = "ram_kb", .kind = V_UINT,   .flags = OBJ_ARG_OPTIONAL, .doc = "Optional RAM override (KB)"           },
 };
 
 static const arg_decl_t machine_register_args[] = {

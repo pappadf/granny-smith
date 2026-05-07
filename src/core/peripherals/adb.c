@@ -898,7 +898,8 @@ static value_t keyboard_method_press(struct object *self, const member_t *m, int
 }
 
 static const arg_decl_t keyboard_press_args[] = {
-    {.name = "key", .kind = V_STRING, .doc = "Key name (\"return\"/\"esc\"/\"a\"/...) or ADB keycode int"},
+    // V_NONE: body accepts either a name string or a numeric ADB keycode.
+    {.name = "key", .kind = V_NONE, .doc = "Key name (\"return\"/\"esc\"/\"a\"/...) or ADB keycode int"},
 };
 
 static const member_t keyboard_members[] = {

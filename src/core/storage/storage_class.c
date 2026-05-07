@@ -530,6 +530,12 @@ static const arg_decl_t storage_hd_download_args[] = {
 static const arg_decl_t storage_path_arg[] = {
     {.name = "path", .kind = V_STRING, .doc = "Image path"},
 };
+// partmap accepts an optional trailing flag (e.g. --json) that the body
+// silently ignores today; declared so the framework's arity check matches.
+static const arg_decl_t storage_partmap_args[] = {
+    {.name = "path", .kind = V_STRING, .doc = "Image path"},
+    {.name = "flag", .kind = V_STRING, .flags = OBJ_ARG_OPTIONAL, .doc = "Optional output flag (--json)"},
+};
 
 static const member_t storage_members[] = {
     {.kind = M_METHOD,
@@ -559,7 +565,7 @@ static const member_t storage_members[] = {
     {.kind = M_METHOD,
      .name = "partmap",
      .doc = "Print the Apple Partition Map of an image",
-     .method = {.args = storage_path_arg, .nargs = 1, .result = V_BOOL, .fn = storage_method_partmap}            },
+     .method = {.args = storage_partmap_args, .nargs = 2, .result = V_BOOL, .fn = storage_method_partmap}        },
     {.kind = M_METHOD,
      .name = "probe",
      .doc = "Identify the format of a disk image",

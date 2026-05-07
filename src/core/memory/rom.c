@@ -305,8 +305,7 @@ static value_t rom_attr_family(struct object *self, const member_t *m) {
 static value_t rom_method_load(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)self;
     (void)m;
-    if (argc < 1 || argv[0].kind != V_STRING || !argv[0].s)
-        return val_err("rom.load: expected (path)");
+    (void)argc;
     if (rom_load_into_machine(argv[0].s) != 0)
         return val_err("rom.load: failed");
     return val_bool(true);
@@ -317,8 +316,7 @@ static value_t rom_method_load(struct object *self, const member_t *m, int argc,
 static value_t rom_method_identify(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)self;
     (void)m;
-    if (argc < 1 || argv[0].kind != V_STRING || !argv[0].s)
-        return val_err("rom.identify: expected (path)");
+    (void)argc;
     rom_file_info_t fi = {0};
     if (rom_probe_file(argv[0].s, &fi) != 0)
         return val_err("rom.identify: cannot read '%s'", argv[0].s);
@@ -338,8 +336,7 @@ static value_t rom_method_identify(struct object *self, const member_t *m, int a
 static value_t rom_method_checksum_of(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)self;
     (void)m;
-    if (argc < 1 || argv[0].kind != V_STRING || !argv[0].s)
-        return val_err("rom.checksum_of: expected (path)");
+    (void)argc;
     rom_file_info_t fi = {0};
     if (rom_probe_file(argv[0].s, &fi) != 0)
         return val_str("");
@@ -352,8 +349,7 @@ static value_t rom_method_checksum_of(struct object *self, const member_t *m, in
 static value_t rom_method_family_of(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)self;
     (void)m;
-    if (argc < 1 || argv[0].kind != V_STRING || !argv[0].s)
-        return val_err("rom.family_of: expected (path)");
+    (void)argc;
     rom_file_info_t fi = {0};
     if (rom_probe_file(argv[0].s, &fi) != 0)
         return val_str("");
