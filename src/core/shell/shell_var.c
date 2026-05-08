@@ -128,72 +128,6 @@ static const char *shell_alias_for_expr(void *ud, const char *name) {
     return alias_lookup(name, NULL);
 }
 
-/* --- ${expr} formatting -------------------------------------------------- */
-
-// Format an evaluated value into a fresh malloc'd string suitable for
-// splicing back into the source text (verbatim for V_STRING, hex for
-// VAL_HEX numerics, "true"/"false" for V_BOOL, etc.). Mirrors the
-// shell-side printer used for top-level evaluations.
-static char *format_substitution(const value_t *v) {
-    char buf[256];
-    buf[0] = '\0';
-    switch (v->kind) {
-    case V_NONE:
-        break;
-    case V_BOOL:
-        snprintf(buf, sizeof(buf), v->b ? "true" : "false");
-        break;
-    case V_INT:
-        if (v->flags & VAL_HEX)
-            snprintf(buf, sizeof(buf), "0x%llx", (unsigned long long)(uint64_t)v->i);
-        else
-            snprintf(buf, sizeof(buf), "%lld", (long long)v->i);
-        break;
-    case V_UINT:
-        if (v->flags & VAL_HEX)
-            snprintf(buf, sizeof(buf), "0x%llx", (unsigned long long)v->u);
-        else
-            snprintf(buf, sizeof(buf), "%llu", (unsigned long long)v->u);
-        break;
-    case V_FLOAT:
-        snprintf(buf, sizeof(buf), "%g", v->f);
-        break;
-    case V_STRING:
-        return strdup(v->s ? v->s : "");
-    case V_BYTES: {
-        char *out = (char *)malloc(3 + v->bytes.n * 2 + 1);
-        if (!out)
-            return NULL;
-        char *q = out;
-        *q++ = '0';
-        *q++ = 'x';
-        for (size_t i = 0; i < v->bytes.n; i++) {
-            static const char hex[] = "0123456789abcdef";
-            *q++ = hex[(v->bytes.p[i] >> 4) & 0xF];
-            *q++ = hex[v->bytes.p[i] & 0xF];
-        }
-        *q = '\0';
-        return out;
-    }
-    case V_ENUM:
-        if (v->enm.table && (size_t)v->enm.idx < v->enm.n_table && v->enm.table[v->enm.idx])
-            snprintf(buf, sizeof(buf), "%s", v->enm.table[v->enm.idx]);
-        else
-            snprintf(buf, sizeof(buf), "%d", v->enm.idx);
-        break;
-    case V_OBJECT:
-        snprintf(buf, sizeof(buf), "<object>");
-        break;
-    case V_ERROR:
-        snprintf(buf, sizeof(buf), "<error: %s>", v->err ? v->err : "");
-        break;
-    case V_LIST:
-        snprintf(buf, sizeof(buf), "<list:%zu>", v->list.len);
-        break;
-    }
-    return strdup(buf);
-}
-
 /* --- ${expr} substitution pass ------------------------------------------- */
 //
 // Walks `input` character by character, tracking single-quote state and
@@ -297,17 +231,16 @@ char *shell_var_expand(const char *input) {
             memcpy(bcopy, body, blen);
             bcopy[blen] = '\0';
 
-            value_t v = expr_eval(bcopy, &ectx);
+            // expr_substitute splits off any trailing `:fmt` format
+            // spec at top level (proposal-shell-expressions §4.2.1) so
+            // the colon does not leak into the expression parser, then
+            // formats the result accordingly.
+            char *err = NULL;
+            char *formatted = expr_substitute(bcopy, &ectx, &err);
             free(bcopy);
-            if (v.kind == V_ERROR) {
-                fprintf(stderr, "shell: ${...} error: %s\n", v.err ? v.err : "(unknown)");
-                value_free(&v);
-                free(buf);
-                return NULL;
-            }
-            char *formatted = format_substitution(&v);
-            value_free(&v);
             if (!formatted) {
+                fprintf(stderr, "shell: ${...} error: %s\n", err ? err : "(unknown)");
+                free(err);
                 free(buf);
                 return NULL;
             }

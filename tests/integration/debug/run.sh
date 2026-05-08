@@ -78,6 +78,25 @@ expect "must be INT, got STRING" "'find.word zzz' should reject non-numeric valu
 expect_not "usage: find str" "well-formed 'find.str ... all' must not print legacy usage"
 expect_not "usage: find bytes" "well-formed 'find.bytes ... all' must not print legacy usage"
 
+# Format specs in ${expr:fmt}. The literal $ is doubled here so the
+# shell that runs run.sh doesn't expand the value before grep sees it.
+expect "ab" "format spec :x should produce lowercase hex without prefix"
+expect "000000ab" "format spec :08x should zero-pad to width 8"
+expect "[      AB]" "format spec :8X should space-pad and uppercase"
+expect "171" "format spec :d should print 0xab decimal"
+expect "[   42]" "format spec :5d should space-pad"
+expect "fmt-marker[000000ab]" "format spec must apply inside string interpolation"
+expect_not "trailing garbage in expression" "format-spec colon must not leak into expr parser"
+
+# Indexed-child error must name the parent object, not the internal
+# 'entries' child.
+expect "'breakpoints[42]' is empty" "indexed error must name parent object"
+expect_not "'entries[42]' is empty" "indexed error must not leak internal 'entries' name"
+
+# debug.disasm with an explicit address (two-arg form). The address
+# tag printed at the start of each line is the stable marker.
+expect '$00400090' "debug.disasm <addr> <count> should disassemble at the given address"
+
 if [ $rc -eq 0 ]; then
     echo "debug tooling integration checks passed"
 else

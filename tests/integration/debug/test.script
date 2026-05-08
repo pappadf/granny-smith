@@ -84,4 +84,42 @@ find.str "Apple" "$400000.."
 # Backwards range.
 find.str "Apple" "$500000..$400000"
 
+# === format specs in ${expr:fmt} ========================================
+#
+# Format specs were silently broken in shell_var.c — the colon was not
+# split off before expr_eval, so the spec leaked into the body and
+# tripped the parser with "trailing garbage". These exercises pin down
+# the supported specs (decimal, hex, width-padded hex, force-string) so
+# we don't regress them.
+
+# Each unquoted form prints the formatted value. Padding-sensitive
+# specs (`8X`, `5d`) are wrapped in `"..."` because an unquoted ${...}
+# whose result contains whitespace is word-split by the tokenizer
+# (standard shell behaviour); quoting forces it into a single arg.
+echo ${0xab:x}
+echo ${0xab:08x}
+echo "[${0xab:8X}]"
+echo ${0xab:d}
+echo "[${42:5d}]"
+echo ${"hello":s}
+echo "fmt-marker[${0xab:08x}]"
+
+# === indexed-child error message naming ================================
+#
+# `debug.breakpoints[42]` historically reported `'entries[0]' is empty`
+# which leaked the internal child name. After the fix the parent
+# object's name appears in the diagnostic.
+
+debug.breakpoints.clear
+debug.breakpoints[42]
+
+# === debug.disasm with explicit address =================================
+#
+# `debug.disasm` accepts an optional starting address. The two-arg form
+# `disasm <addr> <count>` lets you disassemble at an arbitrary address
+# without first moving PC. The address below is in the Plus ROM that
+# this test boots against.
+
+debug.disasm 0x400090 3
+
 quit

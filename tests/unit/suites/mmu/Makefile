@@ -19,6 +19,7 @@ INCLUDE_FLAGS := -I$(UNIT_ROOT)/support \
                  -I$(EMU_ROOT)/core/cpu \
                  -I$(EMU_ROOT)/core/memory \
                  -I$(EMU_ROOT)/core/peripherals \
+                 -I$(EMU_ROOT)/core/peripherals/nubus \
                  -I$(EMU_ROOT)/core/scheduler \
                  -I$(EMU_ROOT)/core/debug \
                  -I$(EMU_ROOT)/core/storage \

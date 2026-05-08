@@ -1112,8 +1112,15 @@ value_t node_get(node_t n) {
             if (!n.member->child.get)
                 return val_err("indexed child '%s' has no get callback", n.member->name);
             struct object *c = n.member->child.get(n.obj, n.index);
-            if (!c)
-                return val_err("'%s[%d]' is empty", n.member->name, n.index);
+            if (!c) {
+                // The user-facing path is typically `<parent>[<i>]`
+                // (the resolver auto-routes a bare integer segment
+                // into the first indexed-child member). Name the
+                // parent object rather than the internal member name
+                // so the diagnostic matches what the user typed.
+                const char *parent = object_name(n.obj);
+                return val_err("'%s[%d]' is empty", parent ? parent : n.member->name, n.index);
+            }
             return val_obj(c);
         }
         struct object *c = NULL;

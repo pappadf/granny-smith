@@ -422,6 +422,54 @@ void mmu_register_vrom(mmu_state_t *mmu, uint8_t *vrom, uint32_t phys_base, uint
     mmu->physical_vrom_size = size;
 }
 
+// === memory_map_host_region — public bus-map API (proposal §3.2.3) =========
+//
+// The names below live on the memory map (declared in memory.h) but the
+// storage they manipulate is still the 4-slot mmu_state_t today; this
+// is a deliberate v1 rename-only move.  The storage refactor (move
+// host-region list into memory_map_t, drop the fixed slots) is a known
+// follow-up that becomes forced when a second card per machine lands.
+// Until then the forwarders use g_mmu, which every glue030-family
+// machine sets up before calling these.  No fast-path change — these
+// run only at machine init.
+
+void memory_map_host_region(memory_map_t *m, const char *name, uint8_t *host_ptr, uint32_t phys_base, uint32_t size,
+                            bool writable) {
+    (void)m; // forwarder uses g_mmu in v1
+    (void)name; // names are tracked once the storage refactor lands
+    if (!g_mmu)
+        return;
+    if (writable)
+        mmu_register_vram(g_mmu, host_ptr, phys_base, size);
+    else
+        mmu_register_vrom(g_mmu, host_ptr, phys_base, size);
+}
+
+void memory_map_host_region_alias(memory_map_t *m, uint32_t alias_phys_base, uint32_t original_phys_base) {
+    (void)m;
+    if (!g_mmu)
+        return;
+    if (g_mmu->physical_vram && original_phys_base == g_mmu->vram_phys_base) {
+        g_mmu->vram_phys_alt = alias_phys_base;
+        return;
+    }
+    if (g_mmu->physical_vrom && original_phys_base == g_mmu->vrom_phys_base) {
+        g_mmu->vrom_phys_alt = alias_phys_base;
+        return;
+    }
+    // Unrecognised original — silently ignore in v1; once the storage
+    // refactor lands and host regions become a list, we'll match by phys
+    // base instead of by named slot.
+}
+
+void memory_set_bus_error_range(memory_map_t *m, uint32_t start, uint32_t end) {
+    (void)m;
+    if (!g_mmu)
+        return;
+    g_mmu->nubus_berr_start = start;
+    g_mmu->nubus_berr_end = end;
+}
+
 // Invalidate the software TLB.  Uses the tracking list to zero only
 // populated entries — typically ~2000-3000 pages vs 1M+ for a full memset.
 // Falls back to full memset if the tracking list overflowed.

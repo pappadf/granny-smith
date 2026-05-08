@@ -1,6 +1,7 @@
 // System accessor stubs for unit tests
 // Routes system_*() calls to the active test context via the harness API.
 
+#include "display.h"
 #include "harness.h"
 #include <stdbool.h>
 #include <stddef.h>
@@ -41,6 +42,29 @@ rtc_t *system_rtc(void) {
 uint8_t *system_framebuffer(void) {
     test_context_t *ctx = test_get_active_context();
     return ctx ? test_get_framebuffer(ctx) : NULL;
+}
+
+// Stub display descriptor — unit tests don't render but a few code paths
+// (debug.c screen.* methods) reach for system_display(); return a 1bpp
+// 512x342 descriptor pointing at the harness framebuffer when present.
+const display_t *system_display(void) {
+    static display_t synth = {
+        .width = 512,
+        .height = 342,
+        .stride = 512 / 8,
+        .format = PIXEL_1BPP_MSB,
+        .bits = NULL,
+        .clut = NULL,
+        .clut_len = 0,
+        .generation = 0,
+    };
+    test_context_t *ctx = test_get_active_context();
+    const uint8_t *bits = ctx ? test_get_framebuffer(ctx) : NULL;
+    if (bits != synth.bits) {
+        synth.bits = bits;
+        synth.generation++;
+    }
+    return bits ? &synth : NULL;
 }
 
 bool system_is_initialized(void) {

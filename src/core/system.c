@@ -16,6 +16,7 @@
 #include "cmd_parse.h"
 #include "cmd_types.h"
 #include "cpu.h"
+#include "display.h"
 #include "drive_catalog.h"
 #include "floppy.h"
 #include "image.h"
@@ -25,6 +26,7 @@
 #include "machine.h"
 #include "memory.h"
 #include "mouse.h"
+#include "nubus.h"
 #include "rom.h"
 #include "root.h"
 #include "rtc.h"
@@ -186,7 +188,35 @@ rtc_t *system_rtc(void) {
 
 // System-level framebuffer accessor: returns pointer to video RAM buffer
 uint8_t *system_framebuffer(void) {
-    return global_emulator ? global_emulator->ram_vbuf : NULL;
+    const display_t *d = system_display();
+    return d ? (uint8_t *)d->bits : NULL;
+}
+
+// System-level display accessor.  Until step 4 lands the per-machine display
+// ownership (NuBus cards on the glue030 family, plus_state.display on Plus),
+// every booted machine still funnels its framebuffer through cfg->ram_vbuf
+// and the display is a fixed 512x342x1bpp synthesised on the spot.  This
+// scaffold lets the rest of the pipeline (PNG save/match, screen.* surface)
+// take a display_t today; later steps swap the body without touching callers.
+const display_t *system_display(void) {
+    static display_t synth = {
+        .width = 512,
+        .height = 342,
+        .stride = 512 / 8,
+        .format = PIXEL_1BPP_MSB,
+        .bits = NULL,
+        .clut = NULL,
+        .clut_len = 0,
+        .generation = 0,
+    };
+    if (!global_emulator)
+        return NULL;
+    const uint8_t *bits = global_emulator->ram_vbuf;
+    if (bits != synth.bits) {
+        synth.bits = bits;
+        synth.generation++;
+    }
+    return bits ? &synth : NULL;
 }
 
 // Check if emulator is initialized and running
@@ -958,6 +988,14 @@ void system_destroy(config_t *config) {
     // system_destroy(old) runs *after* system_create(new) has already
     // pinned a fresh emulator that still references the rom object.
     root_uninstall_if(config);
+
+    // Tear down NuBus before peripherals so cards (which hold device
+    // pointers via cfg->via2 etc.) free cleanly first.  No-op when nubus
+    // is NULL (Plus today; future 68000-family machines).
+    if (config->nubus) {
+        nubus_delete(config->nubus);
+        config->nubus = NULL;
+    }
 
     // Delegate machine-specific teardown to the profile
     if (config->machine && config->machine->teardown) {

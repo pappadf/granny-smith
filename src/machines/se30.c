@@ -23,6 +23,7 @@
 #include "cpu_internal.h" // for cpu->mmu field
 #include "debug.h"
 #include "floppy.h"
+#include "glue030.h" // family-shared lifecycle helpers
 #include "image.h"
 #include "log.h"
 #include "memory.h"
@@ -1107,72 +1108,11 @@ static void se30_init(config_t *cfg, checkpoint_t *checkpoint) {
     se30->adb = adb_init(cfg->via1, cfg->scheduler, checkpoint);
     cfg->adb = se30->adb; // expose ADB to system-level input routing
 
-    // Restore image list from checkpoint before devices that reference them
-    if (checkpoint) {
-        uint32_t count = 0;
-        system_read_checkpoint_data(checkpoint, &count, sizeof(count));
-        for (uint32_t i = 0; i < count; ++i) {
-            uint32_t len = 0;
-            system_read_checkpoint_data(checkpoint, &len, sizeof(len));
-            char *name = NULL;
-            if (len > 0) {
-                name = (char *)malloc(len);
-                if (!name) {
-                    char tmp;
-                    for (uint32_t k = 0; k < len; ++k)
-                        system_read_checkpoint_data(checkpoint, &tmp, 1);
-                } else {
-                    system_read_checkpoint_data(checkpoint, name, len);
-                }
-            }
-            char writable = 0;
-            system_read_checkpoint_data(checkpoint, &writable, sizeof(writable));
-            uint64_t raw_size = 0;
-            system_read_checkpoint_data(checkpoint, &raw_size, sizeof(raw_size));
-            uint32_t instance_len = 0;
-            system_read_checkpoint_data(checkpoint, &instance_len, sizeof(instance_len));
-            char *instance_path = NULL;
-            if (instance_len > 0) {
-                instance_path = (char *)malloc(instance_len);
-                if (instance_path)
-                    system_read_checkpoint_data(checkpoint, instance_path, instance_len);
-                else {
-                    char tmp;
-                    for (uint32_t k = 0; k < instance_len; ++k)
-                        system_read_checkpoint_data(checkpoint, &tmp, 1);
-                }
-            }
-            image_t *img = NULL;
-            if (name) {
-                bool consolidated = checkpoint_get_kind(checkpoint) == CHECKPOINT_KIND_CONSOLIDATED;
-                if (raw_size > 0 && consolidated)
-                    image_create_empty(name, (size_t)raw_size);
-                if (writable && consolidated) {
-                    img = image_create(name, checkpoint_machine_dir());
-                } else if (writable && instance_path && instance_path[0]) {
-                    img = image_open(name, instance_path);
-                } else if (writable) {
-                    img = image_create(name, checkpoint_machine_dir());
-                } else {
-                    img = image_open_readonly(name);
-                }
-                if (!img) {
-                    printf("Error: image_open failed for %s while restoring checkpoint\n", name);
-                    checkpoint_set_error(checkpoint);
-                }
-            }
-            if (storage_restore_from_checkpoint(img ? img->storage : NULL, checkpoint) != GS_SUCCESS) {
-                printf("Error: storage_restore_from_checkpoint failed for %s\n", name ? name : "<unnamed>");
-                checkpoint_set_error(checkpoint);
-            }
-            if (img)
-                add_image(cfg, img);
-            if (name)
-                free(name);
-            if (instance_path)
-                free(instance_path);
-        }
-    }
+    // Restore image list from checkpoint before devices that reference them.
+    // Loop body lives in glue030_checkpoint_restore_images so future glue030
+    // family members (IIcx, IIx) reuse the same serialisation.
+    if (checkpoint)
+        glue030_checkpoint_restore_images(cfg, checkpoint);
 
     // Initialise SCSI (NULL map: I/O dispatcher handles addressing)
     cfg->scsi = scsi_init(NULL, checkpoint);
@@ -1227,11 +1167,11 @@ static void se30_init(config_t *cfg, checkpoint_t *checkpoint) {
 
     // Let the MMU resolve VRAM physical addresses during table walks.
     // VRAM stays identity-mapped at its logical base for MMU resolution.
-    mmu_register_vram(se30->mmu, se30->vram, SE30_VRAM_BASE, SE30_VRAM_SIZE);
+    memory_map_host_region(cfg->mem_map, "se30_vram", se30->vram, SE30_VRAM_BASE, SE30_VRAM_SIZE, /*writable*/ true);
 
     // Let the MMU resolve VROM physical addresses during table walks.
     // TT identity-maps NuBus addresses, so physical $FEFF8000 = logical $FEFF8000.
-    mmu_register_vrom(se30->mmu, se30->vrom, SE30_VROM_PHYS, SE30_VROM_SIZE);
+    memory_map_host_region(cfg->mem_map, "se30_vrom", se30->vrom, SE30_VROM_PHYS, SE30_VROM_SIZE, /*writable*/ false);
 
     // Emulate the GLUE chip's transparent NuBus slot address decoding.
     // The SE/30 ROM never writes TT registers (confirmed by ROM binary scan);
@@ -1252,14 +1192,13 @@ static void se30_init(config_t *cfg, checkpoint_t *checkpoint) {
     // After the ROM sets up MMU page tables, logical $FExxxxxx maps to
     // physical $50Fxxxxx. Both VRAM and VROM must be accessible at their
     // page-table-mapped physical addresses in addition to their TT addresses.
-    se30->mmu->vram_phys_alt = SE30_VRAM_PHYS_ALT;
-    se30->mmu->vrom_phys_alt = SE30_VROM_PHYS_ALT;
+    memory_map_host_region_alias(cfg->mem_map, SE30_VRAM_PHYS_ALT, SE30_VRAM_BASE);
+    memory_map_host_region_alias(cfg->mem_map, SE30_VROM_PHYS_ALT, SE30_VROM_PHYS);
 
     // Only NuBus expansion slots $9-$D generate bus errors on unmapped reads.
     // Slot $E is built-in video (mapped). Slot $F and $0-$8 are internal/absent
     // and return 0 without bus error, matching SE/30 GLUE chip behavior.
-    se30->mmu->nubus_berr_start = 0xF9000000;
-    se30->mmu->nubus_berr_end = 0xFDFFFFFF;
+    memory_set_bus_error_range(cfg->mem_map, 0xF9000000, 0xFDFFFFFF);
 
     // Point the video subsystem at the primary framebuffer in VRAM
     cfg->ram_vbuf = se30->vram + SE30_FB_PRIMARY_OFFSET;
@@ -1416,13 +1355,9 @@ static void se30_checkpoint_save(config_t *cfg, checkpoint_t *cp) {
 
     adb_checkpoint(se30->adb, cp);
 
-    // Checkpoint list of images before devices that reference them
-    {
-        uint32_t count = (uint32_t)cfg->n_images;
-        system_write_checkpoint_data(cp, &count, sizeof(count));
-        for (uint32_t i = 0; i < count; ++i)
-            image_checkpoint(cfg->images[i], cp);
-    }
+    // Checkpoint list of images before devices that reference them.
+    // Family-shared serialisation lives in glue030_checkpoint_save_images.
+    glue030_checkpoint_save_images(cfg, cp);
 
     scsi_checkpoint(cfg->scsi, cp);
     asc_checkpoint(se30->asc, cp);
