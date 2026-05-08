@@ -63,7 +63,6 @@ struct config {
     int n_images;
 
     struct scheduler *scheduler;
-    uint8_t *ram_vbuf; // pointer into RAM at current video framebuffer address
     uint32_t irq; // active interrupt bitmask
 
     // NuBus subsystem.  NULL on machines without NuBus (Plus today;

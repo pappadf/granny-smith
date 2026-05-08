@@ -102,6 +102,13 @@ typedef struct hw_profile {
 
     // Machine-specific VBL handling
     void (*trigger_vbl)(struct config *cfg);
+
+    // Optional: per-machine primary display.  Used by system_display()
+    // when cfg->nubus is NULL (Plus and any future non-NuBus machine);
+    // glue030-family machines leave this NULL because their display
+    // comes from a NuBus card via cfg->nubus.  Forward declaration of
+    // display_t lives in system.h.
+    const struct display *(*display)(struct config *cfg);
 } hw_profile_t;
 
 // Registry: find a machine profile by id

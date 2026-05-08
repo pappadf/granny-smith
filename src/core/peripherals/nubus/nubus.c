@@ -29,10 +29,12 @@ struct nubus_bus {
 // === Card-kind registry =====================================================
 //
 // Single explicit list (no linker-section magic).  Adding a card driver
-// is one extern + one entry.  Empty at step 3; the first non-NULL entry
-// (`builtin_se30_video_kind`) lands in step 4.
+// is one extern + one entry.
+
+extern const nubus_card_kind_t builtin_se30_video_kind; // cards/builtin_se30_video.c
 
 static const nubus_card_kind_t *const g_card_registry[] = {
+    &builtin_se30_video_kind,
     NULL,
 };
 

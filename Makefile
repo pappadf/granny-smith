@@ -130,6 +130,7 @@ INCLUDES := -I$(CORE_DIR) \
             -I$(CORE_DIR)/memory \
             -I$(CORE_DIR)/peripherals \
             -I$(CORE_DIR)/peripherals/nubus \
+            -I$(CORE_DIR)/peripherals/nubus/cards \
             -I$(CORE_DIR)/scheduler \
             -I$(CORE_DIR)/debug \
             -I$(CORE_DIR)/storage \

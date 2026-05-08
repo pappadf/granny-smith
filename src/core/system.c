@@ -186,37 +186,32 @@ rtc_t *system_rtc(void) {
     return global_emulator ? global_emulator->rtc : NULL;
 }
 
-// System-level framebuffer accessor: returns pointer to video RAM buffer
+// System-level framebuffer accessor: thin wrapper over system_display()
+// for the WebGL renderer's existing call sites.  Step 5 rewrites the
+// renderer to consume the descriptor directly.
 uint8_t *system_framebuffer(void) {
     const display_t *d = system_display();
     return d ? (uint8_t *)d->bits : NULL;
 }
 
-// System-level display accessor.  Until step 4 lands the per-machine display
-// ownership (NuBus cards on the glue030 family, plus_state.display on Plus),
-// every booted machine still funnels its framebuffer through cfg->ram_vbuf
-// and the display is a fixed 512x342x1bpp synthesised on the spot.  This
-// scaffold lets the rest of the pipeline (PNG save/match, screen.* surface)
-// take a display_t today; later steps swap the body without touching callers.
+// System-level display accessor.  Per proposal §3.3.2: glue030-family
+// machines source their primary display from the NuBus bus controller;
+// Plus (and any future non-NuBus machine) implements the
+// hw_profile_t.display callback to surface its own descriptor.  Returns
+// NULL when no machine is booted or the booted machine has no primary
+// display (e.g. a IIcx with no card seated, once IIcx lands).
 const display_t *system_display(void) {
-    static display_t synth = {
-        .width = 512,
-        .height = 342,
-        .stride = 512 / 8,
-        .format = PIXEL_1BPP_MSB,
-        .bits = NULL,
-        .clut = NULL,
-        .clut_len = 0,
-        .generation = 0,
-    };
-    if (!global_emulator)
+    config_t *cfg = global_emulator;
+    if (!cfg || !cfg->machine)
         return NULL;
-    const uint8_t *bits = global_emulator->ram_vbuf;
-    if (bits != synth.bits) {
-        synth.bits = bits;
-        synth.generation++;
+    if (cfg->nubus) {
+        const display_t *d = nubus_primary_display(cfg->nubus);
+        if (d)
+            return d;
     }
-    return bits ? &synth : NULL;
+    if (cfg->machine->display)
+        return cfg->machine->display(cfg);
+    return NULL;
 }
 
 // Check if emulator is initialized and running
