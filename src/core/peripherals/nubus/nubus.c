@@ -32,9 +32,11 @@ struct nubus_bus {
 // is one extern + one entry.
 
 extern const nubus_card_kind_t builtin_se30_video_kind; // cards/builtin_se30_video.c
+extern const nubus_card_kind_t mdc_8_24_kind; // cards/jmfb.c
 
 static const nubus_card_kind_t *const g_card_registry[] = {
     &builtin_se30_video_kind,
+    &mdc_8_24_kind,
     NULL,
 };
 

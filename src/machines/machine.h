@@ -119,9 +119,10 @@ const hw_profile_t *machine_find(const char *id);
 // floppy_slots, scsi_slots) are rejected.
 void machine_register(const hw_profile_t *profile);
 
-// Built-in machine profiles (defined in plus.c, iicx.c, se30.c, etc.)
+// Built-in machine profiles (defined in plus.c, iicx.c, iix.c, se30.c, etc.)
 extern const hw_profile_t machine_plus;
 extern const hw_profile_t machine_se30;
-// extern const hw_profile_t machine_iicx;  // TODO: IIcx stub — partial profile, not registered
+extern const hw_profile_t machine_iicx;
+extern const hw_profile_t machine_iix;
 
 #endif // MACHINE_H
