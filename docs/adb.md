@@ -862,15 +862,6 @@ SRQ scan from advancing past idle devices to the one with actual data. Fix: adde
 
 ## Source References
 
-### System 7.1 Source (local/sys71src-main)
-
-| File | Contents |
-|------|----------|
-| `OS/IoPrimitives/ADBPrimitives.a` | VIA-level ADB implementation: FDBShiftInt, @sendCmd, @getNextByte, @waitForInput, @sendByte |
-| `OS/ADBMgr/ADBMgr.a` | ADB Manager: RunADBRequest, ImplicitRequestDone, ExplicitRequestDone, boot init |
-| `Internal/Asm/AppleDeskBusPriv.a` | ADB data structure definitions and field offsets |
-| `Interfaces/AIncludes/HardwareEqu.a` | VIA bit definitions: vFDBInt, vFDesk1, vFDesk2 |
-
 ### ROM Addresses (SE/30 Universal ROM, checksum 0x97221136)
 
 | Address | Function |
