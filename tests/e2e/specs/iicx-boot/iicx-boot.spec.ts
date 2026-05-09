@@ -51,17 +51,17 @@ async function runForInstructions(page: import('@playwright/test').Page, log: (m
 // page's CSS, but page.locator('#screen').screenshot() returns the pixels
 // as rendered in the viewport — that's what we want to compare.
 
-// NOTE: the floppy boot baseline below stops at the "Welcome to
-// Macintosh" splash screen, NOT at the Finder desktop.  In the
-// headless integration test (tests/integration/iicx-floppy) the same
-// boot reaches Finder at 2B instructions; in the browser System 7
-// progresses through Ticks but the screen stays on the splash
-// indefinitely (we tested up to 5B instructions).  ScrnBase is
-// correctly $F9000A00, JMFB is programmed, Mode-32 is active —
-// the splash is REAL screen content, not a render glitch (screen.save
-// from the C side returns the same image).  Likely a VBL/timer
-// interrupt routing difference under PROXY_TO_PTHREAD that affects
-// System 7's screen update path.  TODO: investigate separately.
+// NOTE on the WebGL renderer bug fixed alongside this test:
+// The renderer (em_video.c) caches uploads keyed on display.generation,
+// and previously generation only bumped on JMFB *register* writes
+// (CSR/VBASE/RowWords/CLUT).  Direct VRAM writes — the mainline path
+// for QuickDraw / Finder painting — never bumped generation, so the
+// canvas froze on the first post-PrimaryInit frame.  jmfb.c's
+// card_on_vbl now bumps generation each VBL so the renderer re-uploads
+// the framebuffer ~60 times/sec.  Without that fix, the browser canvas
+// stayed on the "Welcome to Macintosh" splash even though VRAM
+// contained the fully-painted Finder desktop (verified by the C-side
+// screen.save vs page.locator('#screen').screenshot() divergence).
 test.describe('IIcx Boot (browser/canvas-level)', () => {
   test('boots to floppy/? icon (no boot media)', async ({ page, log }) => {
     test.setTimeout(360_000);
@@ -84,38 +84,22 @@ test.describe('IIcx Boot (browser/canvas-level)', () => {
     expect(shot).toMatchSnapshot('iicx-floppy-icon.png', { maxDiffPixelRatio: 0.01 });
   });
 
-  test('boots to "Welcome to Macintosh" splash with floppy', async ({ page, log }) => {
-    test.setTimeout(720_000);
+  test('boots to Finder desktop with System 7.0.1 floppy', async ({ page, log }) => {
+    test.setTimeout(900_000);
 
-    log('[iicx-boot] booting with IIcx ROM + System 7.0.1 floppy');
+    log('[iicx-boot] booting with IIcx ROM + Apple-341-0868.vrom + System 7.0.1 floppy');
     await bootWithMedia(page, ROM_REL, FD_REL, undefined, 'max', 'iicx', VROM_REL);
 
-    // Boot through ~3B instructions to reach Finder.  The headless
-    // integration test (tests/integration/iicx-floppy) needs only
-    // 2B at the C-side max-speed scheduler; the browser runs slightly
-    // slower per cycle (we observe ~7-10 M instructions/sec wall
-    // clock) and System 7's progress through "Welcome to Macintosh"
-    // → Finder takes a bit longer in instruction terms too because
-    // of VBL/timer interrupt routing differences with PROXY_TO_PTHREAD.
-    // Boot far enough to reach the "Welcome to Macintosh" splash —
-    // proves PrimaryInit ran, VROM was loaded, the slot scanner
-    // accepted the Display Card 8•24, and System 7 boot blocks
-    // executed.  In the headless integration test the same boot
-    // budget reaches the Finder desktop; in the browser System 7
-    // progresses through Ticks but the screen stays on the splash
-    // (TODO: track down the platform-specific divergence — likely
-    // a VBL/timer interrupt routing difference under
-    // PROXY_TO_PTHREAD).  The splash baseline is still a regression
-    // anchor for the JMFB pipeline (PrimaryInit + VRAM mirror +
-    // Mode-24 alias + WebGL renderer all working).
-    log('[iicx-boot] running 1.5B instructions to reach "Welcome to Macintosh"');
-    await runForInstructions(page, log, 1_500_000_000, { timeoutMs: 360_000 });
+    // Boot through 2B instructions — same budget as the headless
+    // integration test (tests/integration/iicx-floppy/test.script).
+    log('[iicx-boot] running 2B instructions to reach Finder desktop');
+    await runForInstructions(page, log, 2_000_000_000, { timeoutMs: 540_000 });
 
     // Let the canvas/rAF pipeline catch up.
     await page.waitForTimeout(2000);
 
-    log('[iicx-boot] capturing Welcome-to-Macintosh splash screenshot');
-    const splash = await page.locator('#screen').screenshot();
-    expect(splash).toMatchSnapshot('iicx-welcome.png', { maxDiffPixelRatio: 0.01 });
+    log('[iicx-boot] capturing Finder desktop screenshot');
+    const finderShot = await page.locator('#screen').screenshot();
+    expect(finderShot).toMatchSnapshot('iicx-finder.png', { maxDiffPixelRatio: 0.01 });
   });
 });

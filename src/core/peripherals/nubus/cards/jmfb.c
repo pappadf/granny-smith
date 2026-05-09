@@ -646,6 +646,11 @@ static void card_on_vbl(nubus_card_t *card, config_t *cfg) {
         return;
     if (p->sw_ic_reg & ENVERTI)
         nubus_assert_irq(card);
+    // Bump display.generation every VBL so consumers that cache on
+    // generation (the WebGL renderer in em_video.c) re-upload the
+    // framebuffer.  CPU writes to VRAM happen directly through the
+    // host_region mapping and don't otherwise notify the renderer.
+    p->display.generation++;
 }
 
 static const display_t *card_display(nubus_card_t *card) {
