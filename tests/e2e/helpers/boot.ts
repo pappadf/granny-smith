@@ -12,7 +12,7 @@ const TEST_MEDIA_BASE_URL = 'http://localhost:18080/tests-media';
 interface MediaEntry { rel: string; abs: string; baseName: string; }
 function resolveRequired(relPath: string, label: string): MediaEntry { const rel = relPath.replace(/^\/+/,''); const abs = path.isAbsolute(rel) ? rel : path.join(TEST_MEDIA_ROOT, rel); if(!fs.existsSync(abs)) throw new Error(`Missing ${label} media: ${abs}`); return { rel: path.relative(TEST_MEDIA_ROOT, abs), abs, baseName: path.basename(abs)}; }
 function resolveOptional(relPath: string | undefined, label: string): MediaEntry | undefined { if(!relPath) return; return resolveRequired(relPath, label);} 
-export async function bootWithMedia(page: Page, romRel: string, fd0Rel?: string, hd0Rel?: string, speed?: 'max' | 'realtime' | 'hardware') {
+export async function bootWithMedia(page: Page, romRel: string, fd0Rel?: string, hd0Rel?: string, speed?: 'max' | 'realtime' | 'hardware', model?: string) {
 	const rom = resolveRequired(romRel,'ROM');
 	const fd0 = resolveOptional(fd0Rel,'fd0');
 	const hd0 = resolveOptional(hd0Rel,'hd0');
@@ -32,6 +32,7 @@ export async function bootWithMedia(page: Page, romRel: string, fd0Rel?: string,
 	if(fd0) params.push(`fd0=${encodeURIComponent(`${TEST_MEDIA_BASE_URL}/${fd0.baseName}`)}`);
 	if(hd0) params.push(`hd0=${encodeURIComponent(`${TEST_MEDIA_BASE_URL}/${hd0.baseName}`)}`);
 	if(speed) params.push(`speed=${encodeURIComponent(speed)}`);
+	if(model) params.push(`model=${encodeURIComponent(model)}`);
 	// Prefer relative navigation; Playwright baseURL (playwright.config.ts) provides the origin.
 	const rel = `/index.html?${params.join('&')}`;
 	await page.goto(rel);

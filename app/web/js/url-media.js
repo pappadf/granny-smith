@@ -169,6 +169,8 @@ export async function processUrlMedia(params) {
     // New machine-creation model: rom.identify reports compatible models,
     // we boot the first one (Plus ROM → Plus, Universal ROM → SE/30 by
     // default), then load the ROM into the freshly created machine.
+    // If the URL specifies an explicit `model=` parameter and that model
+    // is in the ROM's compatibility list, prefer it over the default.
     const tmpPath = '/tmp/url_rom';
     console.log(`[url-media] loading ROM from: ${tmpPath}`);
     const info = await window.romIdentify(tmpPath);
@@ -177,9 +179,17 @@ export async function processUrlMedia(params) {
       console.error(`[url-media] rom.identify: no compatible machines for ${tmpPath}`);
       return;
     }
-    const profile = await window.machineProfile(compatible[0]);
+    const requestedModel = params.get('model');
+    const chosenModel = (requestedModel && compatible.includes(requestedModel))
+      ? requestedModel
+      : compatible[0];
+    if (requestedModel && chosenModel !== requestedModel) {
+      console.warn(`[url-media] requested model="${requestedModel}" not in ROM compatibility list (${compatible.join(', ')}); falling back to ${chosenModel}`);
+    }
+    const profile = await window.machineProfile(chosenModel);
     const ramKB = profile ? profile.ram_default : 4096;
-    await window.gsEval('machine.boot', [compatible[0], ramKB]);
+    console.log(`[url-media] booting machine: ${chosenModel} ram=${ramKB}KB`);
+    await window.gsEval('machine.boot', [chosenModel, ramKB]);
     await window.gsEval('rom.load', [tmpPath]);
     romLoaded = true;
     hideRomOverlay();

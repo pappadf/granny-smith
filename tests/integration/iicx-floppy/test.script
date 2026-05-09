@@ -1,24 +1,29 @@
 # Integration test: IIcx System 7.0.1 Floppy Boot
-# Runs the Universal ROM with the System 7.0.1 floppy attached for
-# enough cycles to exit SCSI scan, transfer to the System 7 boot
-# blocks, and let the JMFB PrimaryInit run.
+# Boots IIcx from the System 7.0.1 1.44 MB MFM floppy, lands on the
+# Finder desktop, then opens "About This Macintosh" — which on this
+# build identifies the machine as "Macintosh IIcx" with the configured
+# RAM size. Matches the structure of the SE/30 floppy-hd test.
 
-# 1B instructions: covers RAM test (~300M) + SCSI scan + Slot Manager
-# probe + System 7 boot-block load + first Finder paint pass on the
-# matching SE/30 path.  IIcx may need more once mode-table parsing
-# inside the JMFB driver lights up.
-scheduler.run 200000000
+# Boot to Finder desktop (8 MB RAM — same budget as se30-floppy-hd).
+scheduler.run 2000000000
 
-# Machine identified.
 assert ${machine.id == "iicx"} "machine.id != iicx"
-
-# Display still on the 640x480 default — System 7's first cscSetMode
-# may bump format/depth but not resolution unless the user explicitly
-# changes monitor.
 assert ${screen.width == 640} "screen.width != 640"
 assert ${screen.height == 480} "screen.height != 480"
 
-# Real screen content must be present.
-assert ${screen.checksum() != 0} "screen.checksum == 0 — JMFB never painted"
+# Verify the screen matches the Finder desktop reference image.
+screen.match finder.png
+
+# Bring up the "About This Macintosh..." window via the Apple menu.
+mouse.move 25 10 "global"
+scheduler.run 4000000
+mouse.click true
+scheduler.run 20000000
+mouse.move 25 30 "global"
+scheduler.run 40000000
+mouse.click false
+scheduler.run 100000000
+
+screen.match about.png
 
 quit
