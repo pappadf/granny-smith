@@ -129,6 +129,23 @@ static int classify(uint32_t rel_addr, uint32_t slot_base, uint32_t *out_off) {
     return (int)(rel_addr >> 8); // 0=JMFB, 1=Stopwatch, 2=CLUT, 3=Endeavor
 }
 
+// JMFBLSR / JMFBVideoBase / JMFBRowWords are 16-bit registers that
+// occupy the LOW half of a 32-bit-aligned slot in the JMFB block —
+// Apple's bus convention for half-word registers in long-aligned slot
+// space.  When the driver writes them with `move.l #N, (slot)`, our
+// io_write32 splits into two 16-bit halves: io_write16(slot, hi=0)
+// and io_write16(slot+2, lo=N).  The meaningful value lands at
+// slot+2; slot is a no-op write of zero.  Likewise for reads — slot+2
+// returns the register value, slot returns zero (high half of long).
+//
+// The .h offsets keep Apple's spec naming (slot offset).  The handler
+// dispatches on slot+2 for the actual data, and accepts (no-op-style)
+// writes to slot for the high-half pass of a 32-bit access.  Without
+// this split the OS's `move.l #$50, (JMFBVideoBase)` clobbered
+// jmfb_video_base to 0 (the high-half write hit case JMFBVideoBase
+// while the meaningful $50 fell through to the unmodeled default at
+// slot+2), pointing display.bits at VRAM+0 instead of VRAM+$A00 and
+// shifting the rendered framebuffer ~32 rows up.
 static void handle_jmfb_write16(jmfb_priv_t *p, uint32_t off, uint16_t val) {
     switch (off) {
     case JMFBCSR:
@@ -152,16 +169,21 @@ static void handle_jmfb_write16(jmfb_priv_t *p, uint32_t off, uint16_t val) {
             LOG(3, "JMFBCSR: VIDGO set (video transfer enabled)");
         return;
     case JMFBLSR:
+    case JMFBVideoBase:
+    case JMFBRowWords:
+        // High half of a long write — bus discards.
+        return;
+    case JMFBLSR + 2:
         p->jmfb_lsr = val;
         LOG(3, "JMFBLSR write %04x (accept-and-log)", val);
         return;
-    case JMFBVideoBase:
+    case JMFBVideoBase + 2:
         p->jmfb_video_base = val;
         // Encoded value × 32 = byte offset into VRAM
         p->display.bits = p->vram + ((size_t)val * 32u);
         p->display.generation++;
         return;
-    case JMFBRowWords:
+    case JMFBRowWords + 2:
         p->jmfb_row_words = val;
         recompute_stride(p);
         p->display.generation++;
@@ -189,10 +211,15 @@ static uint16_t handle_jmfb_read16(jmfb_priv_t *p, uint32_t off) {
         // the JMFBCSR write path.
         return (uint16_t)((p->jmfb_csr & MaskSenseLine) | ((p->sense_code & 7) << 9));
     case JMFBLSR:
-        return p->jmfb_lsr;
     case JMFBVideoBase:
-        return p->jmfb_video_base;
     case JMFBRowWords:
+        // High half of a long read — bus drives zero.
+        return 0;
+    case JMFBLSR + 2:
+        return p->jmfb_lsr;
+    case JMFBVideoBase + 2:
+        return p->jmfb_video_base;
+    case JMFBRowWords + 2:
         return p->jmfb_row_words;
     default:
         LOG(2, "JMFB block read at +%02x (unmodeled, returning 0)", off);
