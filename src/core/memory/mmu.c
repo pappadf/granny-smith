@@ -474,6 +474,23 @@ void memory_set_bus_error_range(memory_map_t *m, uint32_t start, uint32_t end) {
 // populated entries — typically ~2000-3000 pages vs 1M+ for a full memset.
 // Falls back to full memset if the tracking list overflowed.
 void mmu_invalidate_tlb(mmu_state_t *mmu) {
+    // Fast path: when the MMU is disabled and was disabled the previous
+    // time we ran (no enabled→disabled transition), the SoA fast-path
+    // already holds the direct host-backed mappings the boot ROM relies
+    // on; PMOVE updates to TC/SRP/TT0/TT1 don't perturb them, so the
+    // zero-and-repopulate walk below is wasted work — and a hot one,
+    // because the IIcx PrimaryInit's JMFB driver fires _SwapMMUMode
+    // many thousands of times during slot-scan / sBlock dispatch and
+    // each call PMOVE-writes TC.  The full path still runs on
+    // disabled→enabled and enabled→disabled transitions, where the SoA
+    // really does need to switch shape.
+    bool now_enabled = mmu && mmu->enabled;
+    if (!now_enabled && mmu && !mmu->tlb_was_enabled) {
+        mmu->tlb_was_enabled = now_enabled;
+        return;
+    }
+    if (mmu)
+        mmu->tlb_was_enabled = now_enabled;
     if (g_tlb_track_overflow) {
         // Tracking overflowed — fall back to zeroing everything
         size_t sz = (size_t)g_page_count * sizeof(uintptr_t);
