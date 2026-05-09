@@ -1,28 +1,18 @@
 # Integration test: IIcx Boot
-# Runs the Universal ROM far enough to exit RAM-test and reach the floppy
-# / question-mark icon screen, then verifies the machine identified
-# itself as IIcx (PA6=1, PB3=1) and exposes a 640x480 NuBus video display.
+# Boots IIcx (no SCSI/floppy attached) to the "insert disk" floppy
+# icon screen and verifies the display matches the reference image.
+#
+# Same cycle budget as the SE/30 boot test — both share the Universal
+# ROM and reach SCSI_WAIT_BSY in roughly the same number of instructions.
 
-# 500M instructions is enough to clear the RAM test and reach the
-# Slot Manager phase where the JMFB driver's PrimaryInit runs.  The
-# matching SE/30 boot test uses 335M; IIcx takes longer because the
-# Slot Manager scans NuBus space.
-scheduler.run 100000000
+scheduler.run 335000000
 
-# Machine-ID bits resolved correctly: ROM identified the IIcx.
 assert ${machine.id == "iicx"} "machine.id != iicx"
-
-# NuBus card seated in slot $9 with a 640x480 default mode.
 assert ${screen.width == 640} "screen.width != 640 (NuBus card not seated?)"
 assert ${screen.height == 480} "screen.height != 480"
 
-# JMFB card driver registered.  nubus.cards() returns a list of card-id
-# strings; we just check it's non-empty (truthy).
-assert $(nubus.cards()) "nubus.cards() returned empty"
-
-# Real screen content must be present.  A zero checksum means the OS
-# never painted anything to the framebuffer (PrimaryInit didn't run, or
-# our display descriptor isn't pointing at painted VRAM).
-assert ${screen.checksum() != 0} "screen.checksum == 0 — JMFB never painted"
+# Verify the screen matches the floppy icon reference image
+# (gray desktop + cursor in top-left + insert-disk icon centered).
+screen.match floppy.png
 
 quit
