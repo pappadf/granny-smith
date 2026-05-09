@@ -17,7 +17,6 @@
 
 import { test, expect } from '../../fixtures';
 import { bootWithMedia } from '../../helpers/boot';
-import { runCommand } from '../../helpers/run-command';
 
 const ROM_REL = 'roms/IIcx.rom';
 const VROM_REL = 'roms/Apple-341-0868.vrom';
@@ -85,15 +84,17 @@ test.describe('IIcx Boot (browser/canvas-level)', () => {
   });
 
   test('boots to Finder desktop with System 7.0.1 floppy', async ({ page, log }) => {
-    test.setTimeout(900_000);
+    test.setTimeout(360_000);
 
     log('[iicx-boot] booting with IIcx ROM + Apple-341-0868.vrom + System 7.0.1 floppy');
     await bootWithMedia(page, ROM_REL, FD_REL, undefined, 'max', 'iicx', VROM_REL);
 
-    // Boot through 2B instructions — same budget as the headless
-    // integration test (tests/integration/iicx-floppy/test.script).
-    log('[iicx-boot] running 2B instructions to reach Finder desktop');
-    await runForInstructions(page, log, 2_000_000_000, { timeoutMs: 540_000 });
+    // Headless probe: the System 7.0.1 floppy reaches a stable Finder
+    // desktop at ~140 M instructions (screen.match pins to the first
+    // post-paint frame); 200 M gives ~40% headroom for browser-side
+    // wall-clock jitter without burning extra wall time.
+    log('[iicx-boot] running 200M instructions to reach Finder desktop');
+    await runForInstructions(page, log, 200_000_000, { timeoutMs: 240_000 });
 
     // Let the canvas/rAF pipeline catch up.
     await page.waitForTimeout(2000);

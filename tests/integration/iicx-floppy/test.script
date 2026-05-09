@@ -4,8 +4,11 @@
 # build identifies the machine as "Macintosh IIcx" with the configured
 # RAM size. Matches the structure of the SE/30 floppy-hd test.
 
-# Boot to Finder desktop (8 MB RAM — same budget as se30-floppy-hd).
-scheduler.run 2000000000
+# Boot to Finder desktop.  Headless probe shows the System 7.0.1 boot
+# disk reaches a stable Finder painting around 150 M cycles; 250 M
+# leaves ~60% headroom.  (The 2 B figure that originally lived here
+# was inherited from se30-floppy-hd's HD boot and was ~13× over.)
+scheduler.run 250000000
 
 assert ${machine.id == "iicx"} "machine.id != iicx"
 assert ${screen.width == 640} "screen.width != 640"
