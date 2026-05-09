@@ -1670,8 +1670,21 @@ int save_framebuffer_as_png(const display_t *d, const char *filename) {
         printf("Error: No active display.\n");
         return -1;
     }
-    if (d->format != PIXEL_1BPP_MSB) {
-        printf("Error: PNG save supports 1bpp displays only (v1).\n");
+    switch (d->format) {
+    case PIXEL_1BPP_MSB:
+    case PIXEL_2BPP_MSB:
+    case PIXEL_4BPP_MSB:
+    case PIXEL_8BPP:
+    case PIXEL_16BPP_555:
+    case PIXEL_32BPP_XRGB:
+        break;
+    default:
+        printf("Error: PNG save: unsupported pixel format %d.\n", (int)d->format);
+        return -1;
+    }
+    if ((d->format == PIXEL_2BPP_MSB || d->format == PIXEL_4BPP_MSB || d->format == PIXEL_8BPP) &&
+        (!d->clut || d->clut_len == 0)) {
+        printf("Error: PNG save: indexed format with no CLUT.\n");
         return -1;
     }
     const int width = (int)d->width;
@@ -1718,22 +1731,70 @@ int save_framebuffer_as_png(const display_t *d, const char *filename) {
         return -1;
     }
 
-    // Convert 1-bit packed framebuffer to RGBA
-    // In Mac framebuffer: 1 = black, 0 = white
+    // Convert framebuffer to 8-bit RGBA, one row at a time.
+    const rgba8_t *clut = d->clut;
+    const uint32_t clut_len = d->clut_len;
     for (int y = 0; y < height; y++) {
         uint8_t *row = raw_data + y * row_size;
+        const uint8_t *src_row = fb + (size_t)y * stride;
         row[0] = 0; // filter byte: none
         for (int x = 0; x < width; x++) {
-            int byte_idx = y * (int)stride + (x / 8);
-            int bit_idx = 7 - (x % 8); // MSB first
-            int bit = (fb[byte_idx] >> bit_idx) & 1;
-            // bit=1 means black (0), bit=0 means white (255)
-            uint8_t v = bit ? 0 : 255;
             uint8_t *pixel = row + 1 + x * 4;
-            pixel[0] = v; // R
-            pixel[1] = v; // G
-            pixel[2] = v; // B
-            pixel[3] = 255; // A (fully opaque)
+            uint8_t r = 0, g = 0, b = 0, a = 255;
+            switch (d->format) {
+            case PIXEL_1BPP_MSB: {
+                int bit = (src_row[x >> 3] >> (7 - (x & 7))) & 1;
+                // 1 = black, 0 = white (Mac convention)
+                r = g = b = bit ? 0 : 255;
+                break;
+            }
+            case PIXEL_2BPP_MSB: {
+                int idx = (src_row[x >> 2] >> ((3 - (x & 3)) * 2)) & 0x3;
+                rgba8_t c = clut[idx % clut_len];
+                r = c.r;
+                g = c.g;
+                b = c.b;
+                break;
+            }
+            case PIXEL_4BPP_MSB: {
+                int idx = (src_row[x >> 1] >> ((1 - (x & 1)) * 4)) & 0xF;
+                rgba8_t c = clut[idx % clut_len];
+                r = c.r;
+                g = c.g;
+                b = c.b;
+                break;
+            }
+            case PIXEL_8BPP: {
+                uint8_t idx = src_row[x];
+                rgba8_t c = clut[idx % clut_len];
+                r = c.r;
+                g = c.g;
+                b = c.b;
+                break;
+            }
+            case PIXEL_16BPP_555: {
+                // big-endian 1-5-5-5
+                uint16_t v = ((uint16_t)src_row[x * 2] << 8) | src_row[x * 2 + 1];
+                uint8_t r5 = (v >> 10) & 0x1F;
+                uint8_t g5 = (v >> 5) & 0x1F;
+                uint8_t b5 = v & 0x1F;
+                r = (uint8_t)((r5 << 3) | (r5 >> 2));
+                g = (uint8_t)((g5 << 3) | (g5 >> 2));
+                b = (uint8_t)((b5 << 3) | (b5 >> 2));
+                break;
+            }
+            case PIXEL_32BPP_XRGB: {
+                // [X][R][G][B] big-endian
+                r = src_row[x * 4 + 1];
+                g = src_row[x * 4 + 2];
+                b = src_row[x * 4 + 3];
+                break;
+            }
+            }
+            pixel[0] = r;
+            pixel[1] = g;
+            pixel[2] = b;
+            pixel[3] = a;
         }
     }
 

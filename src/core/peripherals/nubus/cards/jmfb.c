@@ -29,6 +29,7 @@
 #include "log.h"
 #include "memory.h"
 #include "nubus.h"
+#include "rom.h"
 #include "system.h"
 #include "system_config.h"
 
@@ -99,8 +100,15 @@ static pixel_format_t depth_to_format(uint16_t pbcr) {
     // separate `pbcr & 0x2` test in the write handler.
 }
 
-// Recompute display.stride from JMFBRowWords + current format.
+// Recompute display.stride from JMFBRowWords + current format.  The Apple
+// driver clears JMFBRowWords to 0 during chip-reset sequences before
+// programming the real value; treating raw 0 as stride=0 zeros our
+// display and breaks the renderer / PNG / checksum paths.  Keep the
+// previous stride value across 0 writes — the next non-zero write fixes
+// it.
 static void recompute_stride(jmfb_priv_t *p) {
+    if (p->jmfb_row_words == 0)
+        return; // chip-reset sentinel; preserve last good stride
     if (p->display.format == PIXEL_32BPP_XRGB)
         p->display.stride = (uint32_t)p->jmfb_row_words * 32u / 3u;
     else
@@ -109,21 +117,26 @@ static void recompute_stride(jmfb_priv_t *p) {
 
 // === Memory interface (register window I/O) =================================
 
-// Translate a physical address inside the register window into a (block,
-// in-block-offset) pair the dispatch can switch over.  Returns -1 if the
-// address falls outside any block.
-static int classify(uint32_t phys, uint32_t slot_base, uint32_t *out_off) {
-    uint32_t window = phys - slot_base;
-    if (window < JMFB_BLOCK_OFFSET || window >= JMFB_BLOCK_OFFSET + 0x400u)
+// Translate the relative address handed to our I/O dispatcher (relative
+// to slot_base + JMFB_BLOCK_OFFSET — i.e. the address `memory_map_add`
+// passes back to its dev callback) into a (block, in-block-offset) pair.
+// Returns -1 if the offset is outside the four-block register window.
+static int classify(uint32_t rel_addr, uint32_t slot_base, uint32_t *out_off) {
+    (void)slot_base; // kept in the signature to clarify the convention; unused
+    if (rel_addr >= 0x400u)
         return -1;
-    uint32_t off_in_window = window - JMFB_BLOCK_OFFSET;
-    *out_off = off_in_window & 0xFFu; // each block is 256 bytes
-    return (int)(off_in_window >> 8); // 0=JMFB, 1=Stopwatch, 2=CLUT, 3=Endeavor
+    *out_off = rel_addr & 0xFFu; // each of the four blocks is 256 bytes wide
+    return (int)(rel_addr >> 8); // 0=JMFB, 1=Stopwatch, 2=CLUT, 3=Endeavor
 }
 
 static void handle_jmfb_write16(jmfb_priv_t *p, uint32_t off, uint16_t val) {
     switch (off) {
     case JMFBCSR:
+        // High 16 bits of the 32-bit CSR.  No documented soft-controlled
+        // bits modelled here — accept-and-ignore.
+        return;
+    case JMFBCSR + 2:
+        // Low 16 bits — software-writable control bits live here.
         p->jmfb_csr = (val & ~MaskSenseLine) | (p->jmfb_csr & MaskSenseLine);
         if (val & VRSTB) {
             // Master reset clears software-controlled bits and stops the
@@ -162,9 +175,18 @@ static void handle_jmfb_write16(jmfb_priv_t *p, uint32_t off, uint16_t val) {
 static uint16_t handle_jmfb_read16(jmfb_priv_t *p, uint32_t off) {
     switch (off) {
     case JMFBCSR:
-        // Real hardware: sense lines drive bits 9-11 (the bits NOT in
-        // MaskSenseLine).  PrimaryInit reads this value to pick the
-        // active monitor's mode table.
+        // JMFBCSR is a 32-bit register at offset $00.  Apple's PrimaryInit
+        // reads sense via `BFEXTU (A1,D1.L){20:3},D4` — bits 20..22 of the
+        // 32-bit memory value, which is the LOW 16-bit half (bits 9..11
+        // LSB-numbered).  So the sense lines live at offset $02 (low
+        // half), and offset $00 returns the high half of the CSR.
+        // The high half currently has no documented soft-controlled bits
+        // we model — return 0.
+        return 0;
+    case JMFBCSR + 2:
+        // Low 16 bits of the 32-bit CSR.  Sense lines occupy bits 9-11
+        // (NOT in MaskSenseLine); other bits are software-writable from
+        // the JMFBCSR write path.
         return (uint16_t)((p->jmfb_csr & MaskSenseLine) | ((p->sense_code & 7) << 9));
     case JMFBLSR:
         return p->jmfb_lsr;
@@ -206,11 +228,20 @@ static void handle_stopwatch_write16(jmfb_priv_t *p, uint32_t off, uint16_t val)
 static uint16_t handle_stopwatch_read16(jmfb_priv_t *p, uint32_t off) {
     switch (off) {
     case SWStatusReg:
-        // Return a toggling pattern that satisfies the driver's poll for
-        // "VBL ticked".  Two-state value flipped each call mirrors what
-        // the real chip's vertical-toggle bit does.
-        p->sw_status_reg ^= 0x0001u;
-        return p->sw_status_reg;
+        // Top half of the 32-bit Stopwatch status word.  Real hardware
+        // exposes the VBL toggle bit at *long-word* bit 2 (= byte $C3
+        // bit 2, big-endian).  The Apple driver polls that bit via
+        // BFEXTU (A0){#$1D:#$1} — see the JMFB PrimaryInit code.  The
+        // toggle is implemented in the +$C2 read path below; this top-
+        // half read is a stable 0 (the chip's status flags live at the
+        // bottom of the long).
+        return 0;
+    case SWStatusReg + 2:
+        // Bottom half of the 32-bit Stopwatch status word — bit 2 of
+        // this 16-bit value is the VBL toggle the OS polls for.  Flip
+        // it on every read so the OS sees both edges.
+        p->sw_status_reg ^= 0x0004u;
+        return p->sw_status_reg & 0x0004u;
     case SWICReg:
         return p->sw_ic_reg;
     default:
@@ -414,16 +445,57 @@ static memory_interface_t s_jmfb_mem_iface = {
 // === Card vtable ============================================================
 
 // Try the explicit pending path first, then a small set of well-known
-// search paths.  Returns true on success.
+// search paths.  Returns true on success.  `buf` must hold at least
+// JMFB_DECLROM_CHIP_SIZE bytes; the loader reads the raw chip data
+// (32 KB).  The byte-lane expansion happens later in load_vrom().
 static bool try_load_vrom(const char *path, uint8_t *buf) {
     FILE *f = fopen(path, "rb");
     if (!f)
         return false;
-    size_t n = fread(buf, 1, JMFB_DECLROM_SIZE, f);
+    size_t n = fread(buf, 1, JMFB_DECLROM_CHIP_SIZE, f);
     fclose(f);
-    return n == JMFB_DECLROM_SIZE;
+    return n == JMFB_DECLROM_CHIP_SIZE;
 }
 
+// Expand a 32 KB chip image with byteLanes = $78 (lane 3 only) into a
+// 128 KB bus-space buffer.  Each chip byte at offset i ends up at bus
+// offset i*4 + 3 (lane 3 of longword i); lanes 0..2 stay zero.  This is
+// what the OS Slot Manager expects when it reads the format block at
+// the high end of slot space.
+static void expand_lane3(const uint8_t *chip, size_t chip_size, uint8_t *bus_buf) {
+    for (size_t i = 0; i < chip_size; i++)
+        bus_buf[i * 4 + 3] = chip[i];
+}
+
+// Try the well-known search paths and the directory of the loaded ROM
+// (which is what the integration test harness sets via the absolute
+// `rom=...` arg, so the relative-path entries below don't resolve once
+// the harness has cd'd into the per-test directory).  `rom_path` is the
+// absolute ROM path the user passed on the command line; we look for
+// `Apple-341-0868.vrom` next to it.  Returns true on success.
+static bool try_load_vrom_in_rom_dir(uint8_t *chip, char **out_path) {
+    const char *rom_path = rom_pending_path();
+    if (!rom_path)
+        return false;
+    const char *slash = strrchr(rom_path, '/');
+    if (!slash)
+        return false;
+    size_t dir_len = (size_t)(slash - rom_path + 1);
+    char path[1024];
+    if (dir_len + sizeof("Apple-341-0868.vrom") > sizeof(path))
+        return false;
+    memcpy(path, rom_path, dir_len);
+    memcpy(path + dir_len, "Apple-341-0868.vrom", sizeof("Apple-341-0868.vrom"));
+    if (try_load_vrom(path, chip)) {
+        *out_path = strdup(path);
+        return true;
+    }
+    return false;
+}
+
+// Load Apple-341-0868.vrom (32 KB chip image), validate its byteLanes
+// byte, and produce the bus-space layout into p->vrom (which is sized
+// JMFB_DECLROM_BUS_SIZE = 128 KB).  Returns true on success.
 static bool load_vrom(jmfb_priv_t *p) {
     static const char *search_paths[] = {
         "/opfs/images/vrom/Apple-341-0868.vrom",
@@ -431,15 +503,44 @@ static bool load_vrom(jmfb_priv_t *p) {
         "Apple-341-0868.vrom",
         NULL,
     };
-    for (const char **q = search_paths; *q; q++) {
-        if (try_load_vrom(*q, p->vrom)) {
-            free(p->vrom_path);
-            p->vrom_path = strdup(*q);
-            p->vrom_size = JMFB_DECLROM_SIZE;
-            return true;
+    uint8_t *chip = calloc(1, JMFB_DECLROM_CHIP_SIZE);
+    if (!chip)
+        return false;
+    char *rom_dir_path = NULL;
+    bool found = try_load_vrom_in_rom_dir(chip, &rom_dir_path);
+    for (const char **q = search_paths; !found && *q; q++) {
+        if (try_load_vrom(*q, chip)) {
+            rom_dir_path = strdup(*q);
+            found = true;
         }
     }
-    return false;
+    if (!found) {
+        free(chip);
+        free(rom_dir_path);
+        return false;
+    }
+    // The chip's last byte is the byteLanes value (per spec, the
+    // byteLanes byte sits at the highest address of the active lanes —
+    // for lane-3-only that's the chip's last byte).
+    uint8_t byteLanes = chip[JMFB_DECLROM_CHIP_SIZE - 1];
+    if (byteLanes == 0x78u) {
+        // Standard 8·24 layout — sparse-expand.
+        expand_lane3(chip, JMFB_DECLROM_CHIP_SIZE, p->vrom);
+    } else if (byteLanes == 0x0Fu) {
+        // 4-lane layout (e.g. a synth ROM) — flat copy into the last
+        // 32 KB of the bus buffer; lanes 0..3 all carry data.
+        memcpy(p->vrom + JMFB_DECLROM_BUS_SIZE - JMFB_DECLROM_CHIP_SIZE, chip, JMFB_DECLROM_CHIP_SIZE);
+    } else {
+        LOG(0, "Apple-341-0868.vrom: unsupported byteLanes $%02x (only $78 and $0F handled)", byteLanes);
+        free(chip);
+        free(rom_dir_path);
+        return false;
+    }
+    free(p->vrom_path);
+    p->vrom_path = rom_dir_path;
+    p->vrom_size = JMFB_DECLROM_BUS_SIZE;
+    free(chip);
+    return true;
 }
 
 static int card_init(nubus_card_t *card, config_t *cfg, checkpoint_t *cp) {
@@ -451,7 +552,7 @@ static int card_init(nubus_card_t *card, config_t *cfg, checkpoint_t *cp) {
     p->slot_base = nubus_slot_base(card->slot);
 
     p->vram = calloc(1, JMFB_VRAM_SIZE);
-    p->vrom = calloc(1, JMFB_DECLROM_SIZE);
+    p->vrom = calloc(1, JMFB_DECLROM_BUS_SIZE);
     if (!p->vram || !p->vrom) {
         free(p->vram);
         free(p->vrom);
@@ -472,16 +573,18 @@ static int card_init(nubus_card_t *card, config_t *cfg, checkpoint_t *cp) {
     p->sense_code = 0x6;
 
     // Default register state from PrimaryInit's expected starting point.
+    // The Apple Display Card 8•24 powers up at 1 bpp; PrimaryInit fills
+    // VRAM with the canonical $AAAAAAAA / $55555555 gray pattern in that
+    // mode, and the OS later switches depth via cscSetMode.  Defaulting
+    // to 8 bpp here makes that gray fill render as black/white stripes.
     p->jmfb_csr = 0;
     p->jmfb_video_base = 0xA00 / 32; // driver convention: $A00 byte offset
-    p->jmfb_row_words = 640 / 4; // 13" RGB at 1bpp; OS reprograms on cscSetMode
+    p->jmfb_row_words = 640 / 32; // 13" mono at 1bpp: 20 longs/row
 
-    // Display: start at 13" RGB / 8 bpp so the canvas comes up colour
-    // (the OS then drives any depth change via cscSetMode).
     p->display.width = 640;
     p->display.height = 480;
-    p->display.stride = 640;
-    p->display.format = PIXEL_8BPP;
+    p->display.stride = 640 / 8; // 1 bpp: 80 bytes/row
+    p->display.format = PIXEL_1BPP_MSB;
     p->display.bits = p->vram + 0xA00;
     p->display.clut = p->clut;
     p->display.clut_len = 256;
@@ -504,10 +607,22 @@ static int card_init(nubus_card_t *card, config_t *cfg, checkpoint_t *cp) {
     // through memory_map_add with a memory_interface_t since it needs
     // I/O dispatch on every access.
     memory_map_host_region(cfg->mem_map, "jmfb_vram", p->vram, p->slot_base, JMFB_VRAM_SIZE, /*writable*/ true);
-    memory_map_host_region(cfg->mem_map, "jmfb_declrom", p->vrom, p->slot_base + JMFB_DECLROM_OFFSET, JMFB_DECLROM_SIZE,
-                           /*writable*/ false);
+    memory_map_host_region(cfg->mem_map, "jmfb_declrom", p->vrom, p->slot_base + JMFB_DECLROM_BUS_OFFSET,
+                           JMFB_DECLROM_BUS_SIZE, /*writable*/ false);
     memory_map_add(cfg->mem_map, p->slot_base + JMFB_BLOCK_OFFSET, JMFB_REGISTER_SIZE, "JMFB regs", &s_jmfb_mem_iface,
                    p);
+
+    // VRAM mirror at slot+$900000 — the Mac IIcx ROM, when running in
+    // 24-bit Memory Manager Mode, builds framebuffer pointers with the
+    // high byte holding master-pointer flags ($F9_______ for slot $9).
+    // Apple QuickDraw inner loops dereference these pointers without
+    // first calling _StripAddress, so the access goes to the literal
+    // 32-bit address $F9900xxx.  Real Mac IIcx hardware: the card's
+    // 16 MB slot allocation is decoded such that VRAM is reachable from
+    // multiple base offsets; the slot $900000 region is one of those
+    // aliases.  Without this mirror, ScrnBase = $F9900A00 reads land in
+    // unmapped memory and QuickDraw bus-errors.
+    memory_map_host_region_alias(cfg->mem_map, p->slot_base + 0x900000u, p->slot_base);
 
     return 0;
 }

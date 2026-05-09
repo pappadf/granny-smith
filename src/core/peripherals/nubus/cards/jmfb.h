@@ -35,9 +35,18 @@
 #define CLUT_BLOCK_OFFSET      0x200200u
 #define ENDEAVOR_BLOCK_OFFSET  0x200300u
 #define JMFB_REGISTER_SIZE     0x000400u // covers all four blocks
-#define JMFB_DECLROM_OFFSET    0xFF8000u // 32 KB at top of slot space
-#define JMFB_DECLROM_SIZE      0x008000u
-#define JMFB_VRAM_SIZE         0x200000u // 2 MB (defMinorLengthB)
+// Apple-341-0868.vrom is a 32 KB chip with byteLanes = $78 (lane 3 only,
+// per "Designing Cards and Drivers for the Macintosh Family" 3rd ed.,
+// Table 8-2).  In bus-space layout the chip's bytes appear sparsely:
+// each chip byte at lane 3 of a longword, with lanes 0-2 inactive.  So
+// the 32 KB chip occupies 128 KB of slot space — JMFB_DECLROM_BUS_SIZE
+// is the bus footprint, JMFB_DECLROM_CHIP_SIZE is the file size, and
+// JMFB_DECLROM_BUS_OFFSET places the bus region at the top of slot
+// space (`slot_base + 0xFFFFFFFF` minus 128KB + 1).
+#define JMFB_DECLROM_CHIP_SIZE  0x008000u // 32 KB raw chip data (file size)
+#define JMFB_DECLROM_BUS_SIZE   0x020000u // 128 KB bus-space footprint (chip × 4 for byteLanes=$78)
+#define JMFB_DECLROM_BUS_OFFSET 0xFE0000u // slot top minus 128 KB
+#define JMFB_VRAM_SIZE          0x200000u // 2 MB (defMinorLengthB)
 
 // === In-block offsets — verbatim from JMFBDepVideoEqu.a =====================
 // JMFB block
