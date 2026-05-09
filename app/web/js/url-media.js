@@ -74,7 +74,15 @@ async function fetchAndStore(slot, url) {
     const fileName = url.split('/').pop().split('?')[0] || slot;
     const isZip = /\.zip($|[?#])/i.test(url) || /zip/i.test(ct);
     const dir = targetDir(slot);
-    const destName = slot === 'rom' ? fileName : (slot.startsWith('SE30') ? slot : fileName);
+    // For ROM and VROM, preserve the filename from the URL so card
+    // drivers can find them by their canonical name (e.g.
+    // 'Apple-341-0868.vrom' for the IIcx Display Card 8•24).  Legacy
+    // 'SE30.vrom' slot keeps its hardcoded name for back-compat.
+    const destName =
+      slot === 'rom' ? fileName :
+      slot === 'vrom' ? fileName :
+      slot.startsWith('SE30') ? slot :
+      fileName;
     const path = `${dir}/${sanitizeName(destName)}`;
     console.log(`[url-media] ${slot}: fileName=${fileName} isZip=${isZip} destPath=${path}`);
 
@@ -155,8 +163,12 @@ export async function processUrlMedia(params) {
   const downloads = [];
   // ROM first
   if (params.has('rom')) downloads.push(fetchAndStore('rom', params.get('rom')));
-  // Video ROM
-  if (params.has('vrom')) downloads.push(fetchAndStore('SE30.vrom', params.get('vrom')));
+  // Video ROM (SE30.vrom for SE/30 built-in video, Apple-341-0868.vrom
+  // for the IIcx/IIx Display Card 8•24, etc.).  We pass slot='vrom' so
+  // fetchAndStore preserves the URL's filename and writes to
+  // /opfs/images/vrom/<filename>, where the JMFB and SE30 video cards
+  // will look for it.
+  if (params.has('vrom')) downloads.push(fetchAndStore('vrom', params.get('vrom')));
   // Floppies
   for (const [k, v] of params.entries()) if (/^fd\d+$/.test(k)) downloads.push(fetchAndStore(k, v));
   // Hard disks
