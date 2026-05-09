@@ -757,7 +757,15 @@ const hw_profile_t machine_iicx = {
     .scsi_slots = iicx_scsi_slots,
     .has_cdrom = true,
     .cdrom_id = 3,
-    .needs_vrom = false, // VROM lives on the slot-$9 card
+    // The IIcx has no built-in video — its primary display comes from
+    // a NuBus video card seated in slot $9 (Apple Display Card 8•24 by
+    // default).  That card needs Apple-341-0868.vrom to declare itself
+    // to the Slot Manager (without it, slot scan finds an empty slot
+    // and the boot ROM can't bring up a framebuffer).  We mark
+    // needs_vrom = true so the config dialog asks the user for a VROM
+    // file; the JMFB card driver picks it up from /opfs/images/vrom/
+    // by its canonical name during card init.
+    .needs_vrom = true,
 
     .via_count = 2,
     .has_adb = true,
