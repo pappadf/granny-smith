@@ -227,21 +227,33 @@ static uint16_t handle_jmfb_read16(jmfb_priv_t *p, uint32_t off) {
     }
 }
 
+// Stopwatch block registers (SWICReg / SWClrVInt / SWStatusReg) follow
+// the same 16-bit-in-32-bit-slot bus convention as the JMFB block —
+// meaningful value lands at slot+2 of the long-word slot, slot+0 is
+// the high half (zero on write, zero on read).  SWStatusReg's +2 read
+// path was already wired correctly because the Apple driver's
+// `BFEXTU (A0){#$1D:#$1}` test made the convention obvious there;
+// SWICReg / SWClrVInt writes were silently lost on long-write paths
+// before this fix.
 static void handle_stopwatch_write16(jmfb_priv_t *p, uint32_t off, uint16_t val) {
     switch (off) {
     case SWICReg:
+    case SWClrVInt:
+    case SWStatusReg:
+        return; // high half of long write — bus discards
+    case SWICReg + 2:
         p->sw_ic_reg = val;
         if (val & SRST)
             LOG(2, "SWICReg: soft reset");
         // ENVERTI: 1 = vertical interrupts enabled.  Card decides whether
         // to call nubus_assert_irq based on this in on_vbl.
         return;
-    case SWClrVInt:
+    case SWClrVInt + 2:
         // Write any value clears the pending VBL and de-asserts the
         // slot's IRQ on the bus controller.
         nubus_deassert_irq(p->card);
         return;
-    case SWStatusReg:
+    case SWStatusReg + 2:
         // Status register is technically read-mostly; the System 7
         // driver writes here to clear bits.  Accept-and-log.
         p->sw_status_reg = val;
@@ -270,6 +282,8 @@ static uint16_t handle_stopwatch_read16(jmfb_priv_t *p, uint32_t off) {
         p->sw_status_reg ^= 0x0004u;
         return p->sw_status_reg & 0x0004u;
     case SWICReg:
+        return 0; // high half — bus drives zero
+    case SWICReg + 2:
         return p->sw_ic_reg;
     default:
         LOG(2, "Stopwatch block read at +%02x (unmodeled)", off);
@@ -277,16 +291,29 @@ static uint16_t handle_stopwatch_read16(jmfb_priv_t *p, uint32_t off) {
     }
 }
 
+// CLUT block registers (CLUTAddrReg / CLUTDataReg / CLUTPBCR) follow
+// the same 16-bit-in-32-bit-slot bus convention as the JMFB block —
+// the meaningful 16 bits live at slot+2.  Without this the JMFB
+// driver's `cscSetEntries` writes hit the unmodeled default at +2
+// while our slot+0 cases caught the high-half zero (palette stayed
+// pinned to the init grayscale ramp), and `cscSetMode` writes to
+// CLUTPBCR likewise lost — depth changes from System 7's Monitors
+// control panel never reached display.format.
 static void handle_clut_write16(jmfb_priv_t *p, uint32_t off, uint16_t val) {
     switch (off) {
     case CLUTAddrReg:
+    case CLUTDataReg:
+    case CLUTPBCR:
+        // High half of long write — bus discards.
+        return;
+    case CLUTAddrReg + 2:
         // 8·24 maps the index into the low byte; a write resets the R/G/B
         // sub-counter so the next three CLUTDataReg writes load the new
         // entry.
         p->clut_idx = (uint8_t)(val & 0xFFu);
         p->clut_phase = 0;
         return;
-    case CLUTDataReg: {
+    case CLUTDataReg + 2: {
         uint8_t component = (uint8_t)(val & 0xFFu);
         if (p->clut_phase == 0) {
             p->clut_pending.r = component;
@@ -304,7 +331,7 @@ static void handle_clut_write16(jmfb_priv_t *p, uint32_t off, uint16_t val) {
         }
         return;
     }
-    case CLUTPBCR: {
+    case CLUTPBCR + 2: {
         p->clut_pbcr = val;
         pixel_format_t f = depth_to_format(val);
         // Bit 1 = 24bpp packed (RAMDAC bypass) on top of the depth=3 case.
@@ -326,8 +353,11 @@ static void handle_clut_write16(jmfb_priv_t *p, uint32_t off, uint16_t val) {
 static uint16_t handle_clut_read16(jmfb_priv_t *p, uint32_t off) {
     switch (off) {
     case CLUTAddrReg:
-        return p->clut_idx;
     case CLUTPBCR:
+        return 0; // high half of long read — bus drives zero
+    case CLUTAddrReg + 2:
+        return p->clut_idx;
+    case CLUTPBCR + 2:
         return p->clut_pbcr;
     default:
         LOG(2, "CLUT block read at +%02x (unmodeled)", off);
@@ -336,17 +366,24 @@ static uint16_t handle_clut_read16(jmfb_priv_t *p, uint32_t off) {
 }
 
 static void handle_endeavor_write16(jmfb_priv_t *p, uint32_t off, uint16_t val) {
+    // Endeavor PLL registers are 16-bit-in-32-bit-slot too — meaningful
+    // value lands at slot+2 when the driver writes them with `move.l`.
     switch (off) {
     case EndeavorM:
+    case EndeavorN:
+    case EndeavorExtClkSel:
+    case EndeavorReserved:
+        return; // high half of long write — bus discards
+    case EndeavorM + 2:
         p->endeavor_m = val;
         break;
-    case EndeavorN:
+    case EndeavorN + 2:
         p->endeavor_n = val;
         break;
-    case EndeavorExtClkSel:
+    case EndeavorExtClkSel + 2:
         p->endeavor_ext_clk = val;
         break;
-    case EndeavorReserved:
+    case EndeavorReserved + 2:
         p->endeavor_reserved = val;
         break;
     default:
@@ -359,12 +396,17 @@ static void handle_endeavor_write16(jmfb_priv_t *p, uint32_t off, uint16_t val) 
 static uint16_t handle_endeavor_read16(jmfb_priv_t *p, uint32_t off) {
     switch (off) {
     case EndeavorM:
-        return p->endeavor_m;
     case EndeavorN:
-        return p->endeavor_n;
     case EndeavorExtClkSel:
-        return p->endeavor_ext_clk;
     case EndeavorReserved:
+        return 0; // high half of long read — bus drives zero
+    case EndeavorM + 2:
+        return p->endeavor_m;
+    case EndeavorN + 2:
+        return p->endeavor_n;
+    case EndeavorExtClkSel + 2:
+        return p->endeavor_ext_clk;
+    case EndeavorReserved + 2:
         return EndeavorID;
     default:
         LOG(2, "Endeavor block read at +%02x (unmodeled)", off);
