@@ -1469,6 +1469,219 @@ static uint8_t *inflate_stored_only(const uint8_t *data, size_t data_len, size_t
     return output;
 }
 
+// Convert one row of a live framebuffer to packed RGBA (no PNG filter
+// byte).  Pulled out of save_framebuffer_as_png so screen.match can
+// compare any pixel format against an RGBA reference PNG without
+// going through a temp PNG round-trip.
+//
+// `out_rgba` must point to at least `width * 4` bytes.
+static void framebuffer_row_to_rgba(const display_t *d, int y, uint8_t *out_rgba) {
+    const uint8_t *src_row = d->bits + (size_t)y * d->stride;
+    const rgba8_t *clut = d->clut;
+    const uint32_t clut_len = d->clut_len;
+    for (uint32_t x = 0; x < d->width; x++) {
+        uint8_t *pixel = out_rgba + x * 4;
+        uint8_t r = 0, g = 0, b = 0;
+        switch (d->format) {
+        case PIXEL_1BPP_MSB: {
+            int bit = (src_row[x >> 3] >> (7 - (x & 7))) & 1;
+            // 1 = black, 0 = white (Mac convention)
+            r = g = b = bit ? 0 : 255;
+            break;
+        }
+        case PIXEL_2BPP_MSB: {
+            int idx = (src_row[x >> 2] >> ((3 - (x & 3)) * 2)) & 0x3;
+            rgba8_t c = clut[idx % clut_len];
+            r = c.r;
+            g = c.g;
+            b = c.b;
+            break;
+        }
+        case PIXEL_4BPP_MSB: {
+            int idx = (src_row[x >> 1] >> ((1 - (x & 1)) * 4)) & 0xF;
+            rgba8_t c = clut[idx % clut_len];
+            r = c.r;
+            g = c.g;
+            b = c.b;
+            break;
+        }
+        case PIXEL_8BPP: {
+            uint8_t idx = src_row[x];
+            rgba8_t c = clut[idx % clut_len];
+            r = c.r;
+            g = c.g;
+            b = c.b;
+            break;
+        }
+        case PIXEL_16BPP_555: {
+            uint16_t v = ((uint16_t)src_row[x * 2] << 8) | src_row[x * 2 + 1];
+            uint8_t r5 = (v >> 10) & 0x1F;
+            uint8_t g5 = (v >> 5) & 0x1F;
+            uint8_t b5 = v & 0x1F;
+            r = (uint8_t)((r5 << 3) | (r5 >> 2));
+            g = (uint8_t)((g5 << 3) | (g5 >> 2));
+            b = (uint8_t)((b5 << 3) | (b5 >> 2));
+            break;
+        }
+        case PIXEL_32BPP_XRGB: {
+            r = src_row[x * 4 + 1];
+            g = src_row[x * 4 + 2];
+            b = src_row[x * 4 + 3];
+            break;
+        }
+        }
+        pixel[0] = r;
+        pixel[1] = g;
+        pixel[2] = b;
+        pixel[3] = 255;
+    }
+}
+
+// Load a PNG file and decode it to packed RGBA (8 bits per channel, 4
+// bytes per pixel, no filter bytes).  Used by screen.match's
+// RGBA-vs-RGBA comparison path; works with any PNG color type that
+// save_framebuffer_as_png emits (RGBA) or that older 1bpp tooling
+// might have produced (grayscale, RGB).  `out_rgba` must be at least
+// `expected_width * expected_height * 4` bytes.  Returns 0 / -1.
+static int load_png_to_rgba(const char *filename, int expected_width, int expected_height, uint8_t *out_rgba) {
+    FILE *fp = fopen(filename, "rb");
+    if (!fp) {
+        printf("Error: Cannot open '%s' for reading.\n", filename);
+        return -1;
+    }
+    fseek(fp, 0, SEEK_END);
+    long file_size = ftell(fp);
+    fseek(fp, 0, SEEK_SET);
+    uint8_t *file_data = malloc(file_size);
+    if (!file_data) {
+        fclose(fp);
+        printf("Error: Out of memory.\n");
+        return -1;
+    }
+    if (fread(file_data, 1, file_size, fp) != (size_t)file_size) {
+        free(file_data);
+        fclose(fp);
+        printf("Error: Failed to read file.\n");
+        return -1;
+    }
+    fclose(fp);
+
+    static const uint8_t png_sig[8] = {0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n'};
+    if (file_size < 8 || memcmp(file_data, png_sig, 8) != 0) {
+        free(file_data);
+        printf("Error: Not a valid PNG file.\n");
+        return -1;
+    }
+
+    size_t pos = 8;
+    int width = 0, height = 0, bit_depth = 0, color_type = 0;
+    uint8_t *idat_data = NULL;
+    size_t idat_len = 0;
+    size_t idat_capacity = 0;
+    while (pos + 12 <= (size_t)file_size) {
+        uint32_t chunk_len = read_be32(file_data + pos);
+        char chunk_type[5];
+        memcpy(chunk_type, file_data + pos + 4, 4);
+        chunk_type[4] = '\0';
+        if (strcmp(chunk_type, "IHDR") == 0 && chunk_len >= 13) {
+            width = read_be32(file_data + pos + 8);
+            height = read_be32(file_data + pos + 12);
+            bit_depth = file_data[pos + 16];
+            color_type = file_data[pos + 17];
+        } else if (strcmp(chunk_type, "IDAT") == 0) {
+            if (idat_len + chunk_len > idat_capacity) {
+                idat_capacity = (idat_len + chunk_len) * 2;
+                uint8_t *new_idat = realloc(idat_data, idat_capacity);
+                if (!new_idat) {
+                    free(idat_data);
+                    free(file_data);
+                    printf("Error: Out of memory.\n");
+                    return -1;
+                }
+                idat_data = new_idat;
+            }
+            memcpy(idat_data + idat_len, file_data + pos + 8, chunk_len);
+            idat_len += chunk_len;
+        } else if (strcmp(chunk_type, "IEND") == 0) {
+            break;
+        }
+        pos += 12 + chunk_len;
+    }
+    free(file_data);
+
+    if (width != expected_width || height != expected_height) {
+        free(idat_data);
+        printf("Error: PNG dimensions %dx%d don't match screen %dx%d.\n", width, height, expected_width,
+               expected_height);
+        return -1;
+    }
+    if (!idat_data || idat_len == 0) {
+        free(idat_data);
+        printf("Error: No image data in PNG.\n");
+        return -1;
+    }
+    if (bit_depth != 8) {
+        free(idat_data);
+        printf("Error: PNG bit depth %d unsupported (only 8).\n", bit_depth);
+        return -1;
+    }
+
+    size_t raw_size = 0;
+    uint8_t *raw_data = inflate_stored_only(idat_data, idat_len, &raw_size);
+    free(idat_data);
+    if (!raw_data) {
+        printf("Error: Failed to decompress PNG (only stored-block PNGs supported).\n");
+        return -1;
+    }
+
+    size_t bpp_in;
+    if (color_type == 6)
+        bpp_in = 4; // RGBA
+    else if (color_type == 2)
+        bpp_in = 3; // RGB
+    else if (color_type == 0)
+        bpp_in = 1; // Grayscale
+    else {
+        free(raw_data);
+        printf("Error: Unsupported PNG color type %d.\n", color_type);
+        return -1;
+    }
+    size_t row_size = 1 + (size_t)width * bpp_in;
+    if (raw_size != row_size * (size_t)height) {
+        free(raw_data);
+        printf("Error: PNG data size mismatch (got %zu, expected %zu).\n", raw_size, row_size * (size_t)height);
+        return -1;
+    }
+
+    for (int y = 0; y < height; y++) {
+        const uint8_t *row = raw_data + (size_t)y * row_size + 1; // skip filter byte
+        uint8_t *out_row = out_rgba + (size_t)y * (size_t)width * 4;
+        for (int x = 0; x < width; x++) {
+            uint8_t r, g, b, a;
+            if (color_type == 6) {
+                r = row[x * 4 + 0];
+                g = row[x * 4 + 1];
+                b = row[x * 4 + 2];
+                a = row[x * 4 + 3];
+            } else if (color_type == 2) {
+                r = row[x * 3 + 0];
+                g = row[x * 3 + 1];
+                b = row[x * 3 + 2];
+                a = 255;
+            } else { // grayscale
+                r = g = b = row[x];
+                a = 255;
+            }
+            out_row[x * 4 + 0] = r;
+            out_row[x * 4 + 1] = g;
+            out_row[x * 4 + 2] = b;
+            out_row[x * 4 + 3] = a;
+        }
+    }
+    free(raw_data);
+    return 0;
+}
+
 // Load a PNG file and extract framebuffer (1-bit packed, same format as emulator).
 // `expected_width`, `expected_height`, and `expected_stride` are the active
 // display's dimensions; the helper validates the PNG matches before
@@ -1633,31 +1846,57 @@ static int load_png_to_framebuffer(const char *filename, uint8_t *fb_out, int ex
 
 // Compare current framebuffer with a reference PNG file.
 // Returns 0 if match, 1 if mismatch, -1 on error.
+//
+// Compares in RGBA space (8 bits per channel, 4 bytes per pixel) so
+// every pixel format save_framebuffer_as_png supports — 1/2/4/8 bpp
+// indexed, 16-bit 5-5-5, and 32-bit XRGB — also matches.  Indexed
+// formats need the live CLUT to be populated; if the framebuffer is
+// indexed and the CLUT is empty (e.g. screenshot before the OS has
+// uploaded a palette) the live conversion will see clut_len == 0 and
+// the colour bytes will be zero, which won't match a real reference
+// — that's intentional, the test should screenshot post-CLUT-load.
 int match_framebuffer_with_png(const display_t *d, const char *filename) {
     if (!d || !d->bits) {
         printf("Error: No active display.\n");
         return -1;
     }
-    if (d->format != PIXEL_1BPP_MSB) {
-        printf("Error: PNG match supports 1bpp displays only (v1).\n");
+    switch (d->format) {
+    case PIXEL_1BPP_MSB:
+    case PIXEL_2BPP_MSB:
+    case PIXEL_4BPP_MSB:
+    case PIXEL_8BPP:
+    case PIXEL_16BPP_555:
+    case PIXEL_32BPP_XRGB:
+        break;
+    default:
+        printf("Error: PNG match: unsupported pixel format %d.\n", (int)d->format);
         return -1;
     }
-    const size_t fb_bytes = (size_t)d->stride * d->height;
-    uint8_t *ref_fb = malloc(fb_bytes);
-    if (!ref_fb) {
+    if ((d->format == PIXEL_2BPP_MSB || d->format == PIXEL_4BPP_MSB || d->format == PIXEL_8BPP) &&
+        (!d->clut || d->clut_len == 0)) {
+        printf("Error: PNG match: indexed format with no CLUT.\n");
+        return -1;
+    }
+
+    const size_t rgba_bytes = (size_t)d->width * (size_t)d->height * 4;
+    uint8_t *fb_rgba = malloc(rgba_bytes);
+    uint8_t *ref_rgba = malloc(rgba_bytes);
+    if (!fb_rgba || !ref_rgba) {
+        free(fb_rgba);
+        free(ref_rgba);
         printf("Error: Out of memory.\n");
         return -1;
     }
-
-    if (load_png_to_framebuffer(filename, ref_fb, (int)d->width, (int)d->height, d->stride) < 0) {
-        free(ref_fb);
+    for (uint32_t y = 0; y < d->height; y++)
+        framebuffer_row_to_rgba(d, (int)y, fb_rgba + (size_t)y * d->width * 4);
+    if (load_png_to_rgba(filename, (int)d->width, (int)d->height, ref_rgba) < 0) {
+        free(fb_rgba);
+        free(ref_rgba);
         return -1;
     }
-
-    // Compare framebuffers
-    int match = (memcmp(d->bits, ref_fb, fb_bytes) == 0);
-    free(ref_fb);
-
+    int match = (memcmp(fb_rgba, ref_rgba, rgba_bytes) == 0);
+    free(fb_rgba);
+    free(ref_rgba);
     return match ? 0 : 1;
 }
 

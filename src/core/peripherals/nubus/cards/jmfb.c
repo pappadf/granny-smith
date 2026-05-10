@@ -70,12 +70,33 @@ typedef struct {
     rgba8_t clut[256];
     display_t display;
 
-    // RAMDAC sub-state for CLUT writes — three sequential writes to
-    // CLUTDataReg load R, G, B for the indexed palette entry.  After the
-    // third write, the palette index auto-increments.
+    // RAMDAC sub-state for CLUT writes — three sequential long writes
+    // to CLUTDataReg load one palette entry.  After the third write,
+    // the palette index auto-increments.  Apple's JMFB driver uses
+    // TWO protocols here, picked at runtime via bit $C of
+    // driver_private+$10 (see Apple-341-0868-vrom.asm Section 11,
+    // Control case 2):
+    //
+    //   * 8/16bpp variant (12"/13"/16" RGB monitors):  three long
+    //     writes to (A3) where D2 = 0x00BBGGRR is shifted right by
+    //     8 between writes.  The RAMDAC reads byte 0 (LSB) of each
+    //     long, yielding R, G, B in that order.
+    //
+    //   * "24bpp" variant (Portrait B&W, 21" Color, NTSC/PAL):  two
+    //     CLR.L (A3) writes followed by one MOVE.L D2,(A3) where
+    //     D2 = 0x00BBGGRR.  The RAMDAC reads bytes 0/1/2 of that
+    //     single long simultaneously as R/G/B; the two zero writes
+    //     are discarded.
+    //
+    // Protocol detection: track the three full 32-bit values of an
+    // entry-update window.  If pending[0] == 0 AND pending[1] == 0
+    // AND the upper 24 bits of pending[2] are non-zero, treat
+    // pending[2] as a packed triplet; otherwise read byte 0 of each
+    // pending[N] as one component.  See clut_finalize_entry below.
     uint8_t clut_idx; // current palette index
-    uint8_t clut_phase; // 0 = R, 1 = G, 2 = B; resets on CLUTAddrReg write
-    rgba8_t clut_pending; // R/G partial values waiting for the B write
+    uint8_t clut_phase; // 0 = R/CLR1, 1 = G/CLR2, 2 = B/triplet; resets on CLUTAddrReg write
+    uint32_t clut_pending[3]; // full 32-bit longs of the in-progress entry update
+    uint16_t clut_long_hi; // most recent write to CLUTDataReg+0 (high half of long)
 
     // Register-file scratch.  All accept-and-log registers stash their last
     // value here so the inspector can peek at the chip's effective state.
@@ -377,12 +398,42 @@ static uint16_t handle_stopwatch_read16(jmfb_priv_t *p, uint32_t off) {
 // pinned to the init grayscale ramp), and `cscSetMode` writes to
 // CLUTPBCR likewise lost — depth changes from System 7's Monitors
 // control panel never reached display.format.
+static void clut_finalize_entry(jmfb_priv_t *p) {
+    // Decode the three completed long writes in p->clut_pending[]
+    // into one rgba8 entry.  See the struct comment for the two
+    // protocols and the detection rule.
+    uint32_t w0 = p->clut_pending[0];
+    uint32_t w1 = p->clut_pending[1];
+    uint32_t w2 = p->clut_pending[2];
+    rgba8_t e;
+    if (w0 == 0 && w1 == 0 && (w2 & 0xFFFFFF00u) != 0) {
+        // 24bpp variant: w2 carries 0x00BBGGRR all in one long.
+        e.r = (uint8_t)(w2 & 0xFFu);
+        e.g = (uint8_t)((w2 >> 8) & 0xFFu);
+        e.b = (uint8_t)((w2 >> 16) & 0xFFu);
+    } else {
+        // 8/16bpp variant: each long's LSB is one component (R, G, B).
+        e.r = (uint8_t)(w0 & 0xFFu);
+        e.g = (uint8_t)(w1 & 0xFFu);
+        e.b = (uint8_t)(w2 & 0xFFu);
+    }
+    e.a = 255;
+    p->clut[p->clut_idx] = e;
+    p->clut_idx++; // auto-increment for run-write
+    p->clut_phase = 0;
+    p->display.generation++; // renderer re-uploads the CLUT
+}
+
 static void handle_clut_write16(jmfb_priv_t *p, uint32_t off, uint16_t val) {
     switch (off) {
     case CLUTAddrReg:
-    case CLUTDataReg:
     case CLUTPBCR:
         // High half of long write — bus discards.
+        return;
+    case CLUTDataReg:
+        // High half of a CLUTDataReg long write — stash so the LSB
+        // half can reassemble the full 32-bit value below.
+        p->clut_long_hi = val;
         return;
     case CLUTAddrReg + 2:
         // 8·24 maps the index into the low byte; a write resets the R/G/B
@@ -392,20 +443,14 @@ static void handle_clut_write16(jmfb_priv_t *p, uint32_t off, uint16_t val) {
         p->clut_phase = 0;
         return;
     case CLUTDataReg + 2: {
-        uint8_t component = (uint8_t)(val & 0xFFu);
-        if (p->clut_phase == 0) {
-            p->clut_pending.r = component;
-            p->clut_phase = 1;
-        } else if (p->clut_phase == 1) {
-            p->clut_pending.g = component;
-            p->clut_phase = 2;
-        } else {
-            p->clut_pending.b = component;
-            p->clut_pending.a = 255;
-            p->clut[p->clut_idx] = p->clut_pending;
-            p->clut_idx++; // auto-increment for run-write
-            p->clut_phase = 0;
-            p->display.generation++; // renderer re-uploads the CLUT
+        uint32_t full = ((uint32_t)p->clut_long_hi << 16) | val;
+        p->clut_long_hi = 0;
+        if (p->clut_phase < 3) {
+            p->clut_pending[p->clut_phase] = full;
+            p->clut_phase++;
+        }
+        if (p->clut_phase == 3) {
+            clut_finalize_entry(p);
         }
         return;
     }
