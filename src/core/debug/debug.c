@@ -3756,6 +3756,143 @@ static value_t screen_method_checksum(struct object *self, const member_t *m, in
     return val_int((int64_t)(int32_t)framebuffer_region_checksum(d, (int)t, (int)l, (int)b, (int)r));
 }
 
+// `screen.set_video_mode(depth)` — drive a real `_Control(cscSetMode,
+// depth)` on the JMFB driver from the running OS, so QuickDraw
+// repaints the desktop at the new depth.  Only works once Mac OS has
+// reached the WaitNextEvent loop (typically once Finder is up); the
+// boot ROM doesn't have driver dispatch wired and can't service
+// _Control.
+//
+// Mechanics:
+//   1. Walk the unit table at `[$011C]` looking for an AuxDCE whose
+//      `dCtlSlot` field (offset $28) is the JMFB's slot number 9,
+//      and convert its index back into the negative refnum the slot
+//      manager assigned.
+//   2. Build a Device Manager IOPB at scratch RAM ($00400000) with
+//      ioRefNum = the located refnum, csCode = 2 (cscSetMode),
+//      csMode = the requested depth spID.
+//   3. Build a 4-instruction 68k stub at scratch+$100:
+//          LEA pb, A0 ; _Control ; BRA.S *  (loop forever)
+//      The stub doesn't save/restore registers — the OS's trap
+//      handler is reentrant and the calling state we replace is
+//      typically idle WaitNextEvent code that re-syncs from the
+//      event queue on its next pass.
+//   4. Snapshot CPU PC, point it at the stub, run scheduler.run for
+//      enough instructions to dispatch the trap and return (5 M is
+//      ~2 orders of magnitude over the typical _Control latency).
+//   5. Confirm PC reached the post-trap BRA.S * target ($stub+$08),
+//      read ioResult ($pb+$10), restore PC, return success or error.
+//
+// Caveat: the OS at trap time must be in a state where _Control is
+// safe to call — i.e., not already in the middle of a Device Manager
+// dispatch.  Calling this from the test script while the scheduler
+// is paused at Finder idle satisfies that.  See
+// JMFBDriver.a:SetVidMode for the JMFB driver's own implementation
+// of cscSetMode (control selector 2).
+static value_t screen_method_set_video_mode(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)self;
+    (void)m;
+    (void)argc;
+    cpu_t *cpu = system_cpu();
+    scheduler_t *sched = system_scheduler();
+    if (!cpu || !sched)
+        return val_err("screen.set_video_mode: machine not running");
+    // The Pascal Toolbox call SetDepth(gd, depth, whichFlags, flags)
+    // takes the *literal* depth (1, 2, 4, 8, 16, 32) — not the spID
+    // that cscSetMode wants ($80..$85).  Matches SetDepth's interface
+    // in Palettes.p / Palettes.h (`= {0x303C, 0x0A13, 0xAAA2}`).
+    int64_t depth = argv[0].u;
+    if (depth != 1 && depth != 2 && depth != 4 && depth != 8 && depth != 16 && depth != 32)
+        return val_err("screen.set_video_mode: depth must be one of 1, 2, 4, 8, 16, 32 (got %lld)", (long long)depth);
+
+    // Step 1 — confirm Mac OS is up by reading MainDevice ($08A4).
+    // We don't need the gdRefNum directly — SetDepth takes the
+    // GDevice handle as its first arg and looks the driver up
+    // internally — but we use this read as a "is the OS running yet"
+    // probe.
+    uint32_t main_dev_handle = memory_read_uint32_slow(0x000008A4);
+    if (!main_dev_handle)
+        return val_err("screen.set_video_mode: MainDevice ($08A4) is null — boot Mac OS first");
+
+    // Step 2 — pick a scratch RAM area for the stub.  The IIcx in
+    // our integration tests has 8 MB RAM; address $00400000 is well
+    // above the Mac OS application heap (which on a fresh System
+    // 7.0.1 boot tops out around $00200000) and well below MemTop /
+    // the supervisor stack (~$00800000), so it's safely inside
+    // unallocated user-bus space the OS won't touch.
+    const uint32_t scratch = 0x00400000u;
+    const uint32_t stub = scratch;
+
+    // Step 3 — build a 68k stub that calls SetDepth (the high-level
+    // Pascal Toolbox routine) followed by _PaintBehind(NIL, GrayRgn)
+    // to force the desktop to repaint with the new pixel format.
+    // SetDepth orchestrates everything cscSetMode would do plus the
+    // GDevice / gdPMap update that Mac OS needs in order to redraw
+    // at the new depth — the inline glue from Palettes.h is
+    // {0x303C, 0x0A13, 0xAAA2}.
+    //
+    //   stub layout (28 bytes):
+    //     +$00  CLR.W -(SP)             ; 4267         ; reserve OSErr return
+    //     +$02  MOVE.L $08A4,-(SP)      ; 2F38 08A4    ; arg1: MainDevice (GDHandle)
+    //     +$06  MOVE.W #depth,-(SP)     ; 3F3C XXXX    ; arg2: depth
+    //     +$0A  CLR.W -(SP)             ; 4267         ; arg3: whichFlags = 0
+    //     +$0C  CLR.W -(SP)             ; 4267         ; arg4: flags = 0
+    //     +$0E  MOVE.W #$0A13,D0        ; 303C 0A13    ; SetDepth selector
+    //     +$12  _PaletteDispatch        ; AAA2
+    //     +$14  ADDQ.L #2,SP            ; 548F         ; pop OSErr
+    //     +$16  PEA #0                  ; 4879 0000 0000  arg1: NIL window
+    //     +$1C  MOVE.L $09EE,-(SP)      ; 2F38 09EE    ; arg2: GrayRgn handle
+    //     +$20  _PaintBehind            ; A87B
+    //     +$22  BRA.S *                 ; 60FE         ; post-trap loop
+    memory_write_uint16_slow(stub + 0x00, 0x4267); // CLR.W -(SP)
+    memory_write_uint16_slow(stub + 0x02, 0x2F38); // MOVE.L abs.W, -(SP)
+    memory_write_uint16_slow(stub + 0x04, 0x08A4); // arg1: MainDevice
+    memory_write_uint16_slow(stub + 0x06, 0x3F3C); // MOVE.W #imm, -(SP)
+    memory_write_uint16_slow(stub + 0x08, (uint16_t)depth); // arg2: depth
+    memory_write_uint16_slow(stub + 0x0A, 0x4267); // CLR.W -(SP) — whichFlags
+    memory_write_uint16_slow(stub + 0x0C, 0x4267); // CLR.W -(SP) — flags
+    memory_write_uint16_slow(stub + 0x0E, 0x303C); // MOVE.W #imm, D0
+    memory_write_uint16_slow(stub + 0x10, 0x0A13); // SetDepth selector
+    memory_write_uint16_slow(stub + 0x12, 0xAAA2); // _PaletteDispatch
+    memory_write_uint16_slow(stub + 0x14, 0x548F); // ADDQ.L #2, SP — pop OSErr
+    memory_write_uint16_slow(stub + 0x16, 0x4879); // PEA absolute long
+    memory_write_uint32_slow(stub + 0x18, 0); // arg1: NIL window
+    memory_write_uint16_slow(stub + 0x1C, 0x2F38); // MOVE.L abs.W, -(SP)
+    memory_write_uint16_slow(stub + 0x1E, 0x09EE); // arg2: GrayRgn handle
+    memory_write_uint16_slow(stub + 0x20, 0xA87B); // _PaintBehind
+    memory_write_uint16_slow(stub + 0x22, 0x60FE); // BRA.S *
+
+    // Step 4 — snapshot full CPU register state, redirect to stub,
+    // run.  Saving just PC isn't enough: the stub pushes args onto
+    // the supervisor stack and the SetDepth + PaintBehind traps
+    // clobber data registers, so on return the running OS would see
+    // a stack/register state that doesn't match where we hijacked
+    // it.  Saving D0-D7, A0-A7 (== current SP), and PC and rolling
+    // them all back lets the OS resume as if nothing happened.
+    uint32_t saved_pc = cpu->pc;
+    uint32_t saved_d[8];
+    uint32_t saved_a[8];
+    for (int i = 0; i < 8; i++) {
+        saved_d[i] = cpu->d[i];
+        saved_a[i] = cpu->a[i];
+    }
+    cpu->pc = stub;
+    scheduler_run_instructions(sched, 8000000);
+    scheduler_stop(sched);
+
+    // Step 5 — verify trap returned (PC parked at the BRA.S * loop).
+    bool reached_loop = (cpu->pc == stub + 0x22u);
+    cpu->pc = saved_pc;
+    for (int i = 0; i < 8; i++) {
+        cpu->d[i] = saved_d[i];
+        cpu->a[i] = saved_a[i];
+    }
+
+    if (!reached_loop)
+        return val_err("screen.set_video_mode: stub did not return — pc=%08x, expected %08x", cpu->pc, stub + 0x22u);
+    return val_bool(true);
+}
+
 // `screen.width` / `screen.height` — read the active display's pixel
 // dimensions.  Lets e2e and integration tests stop hardcoding 512/342 so
 // they keep working when a IIcx/IIx with a 640x480 NuBus card boots.
@@ -3792,6 +3929,9 @@ static const arg_decl_t screen_checksum_args[] = {
     {.name = "bottom", .kind = V_INT, .validation_flags = OBJ_ARG_OPTIONAL, .doc = "Region bottom edge"},
     {.name = "right",  .kind = V_INT, .validation_flags = OBJ_ARG_OPTIONAL, .doc = "Region right edge" },
 };
+static const arg_decl_t screen_set_video_mode_args[] = {
+    {.name = "depth", .kind = V_UINT, .doc = "Pixel depth (1, 2, 4, 8, 16, or 32)"},
+};
 
 static const member_t screen_members[] = {
     {.kind = M_ATTR,
@@ -3820,6 +3960,10 @@ static const member_t screen_members[] = {
      .name = "checksum",
      .doc = "Polynomial hash of the framebuffer (full screen or top/left/bottom/right region)",
      .method = {.args = screen_checksum_args, .nargs = 4, .result = V_INT, .fn = screen_method_checksum}},
+    {.kind = M_METHOD,
+     .name = "set_video_mode",
+     .doc = "Issue a real cscSetMode trap to the JMFB driver — only valid once Mac OS is at idle",
+     .method = {.args = screen_set_video_mode_args, .nargs = 1, .result = V_BOOL, .fn = screen_method_set_video_mode}},
 };
 
 const class_desc_t screen_class = {
