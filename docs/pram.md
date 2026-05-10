@@ -852,14 +852,24 @@ which happens before `_InitGraf`.
   *and* keep byte 6 matching `pGetClockType`'s return, *and* match
   BoardID — at which point you've recreated the cold-boot baseline
   PRAM exactly, with byte 2 being the only meaningful knob.
-* **JMFB 32 bpp ≠ renderer's `PIXEL_32BPP_XRGB`.** Calling
-  `SetDepth(32)` succeeds at the OS level — Mac OS gets the right
-  GDevice update and Finder redraws — but our renderer treats the
-  framebuffer as XRGB (4 bytes/pixel) while the JMFB hardware on
-  this card writes packed 24-bit triples (3 bytes/pixel).  Mac OS
-  paints at 32 bpp into the `display.bits`-anchored buffer, our
-  pixel-format path mis-decodes the stride, and Finder eventually
-  segfaults with a system-error bomb.  The card is "8/24" — there
-  is no real 32 bpp mode here; the renderer needs a `PIXEL_24BPP_PACKED`
-  path (or an existing mode mapped to it).  Tracked as a gap;
-  `iicx-video-modes` skips depth=32.
+* **JMFB 24 bpp encoding (was a gap, now closed).** When the doc
+  was first written, calling `SetDepth(32)` brought up the JMFB's
+  "millions of colours" mode but Finder crashed with a system-error
+  bomb because two pieces of decoding were wrong:
+    1. `recompute_stride` derived `width = stride / 3` for the
+       PIXEL_32BPP_XRGB path, giving 853 instead of 640 for the JMFB
+       driver's `RowWords = 240` — the card *stores* 4 bytes/pixel
+       (Mac OS sets PixMap.pixelSize = 32 and writes XRGB; the
+       RAMDAC bypass mode discards the X byte during scan, so "24
+       bpp" describes the visible colour depth, not storage).  Fix:
+       `width = stride / 4`.
+    2. `JMFBVideoBase` was always decoded as `value × 32` to get the
+       byte offset, but the JMFB driver's `TFBM30Parms` encodes the
+       24bpp framebuffer base as `(defmBaseOffset × 3/4) >> 5 >> 1`.
+       Inverting: byte_offset = `value × 32 × 8 / 3` for 24 bpp.
+       Without this, `display.bits` pointed ~1700 bytes before the
+       framebuffer Mac OS painted into and each row showed content
+       from a slightly-wrong VRAM region.
+  Both fixes landed in commit `64263ef`; `iicx-video-modes` now
+  covers depth = 32 (= 24 bpp packed) end-to-end with a Finder
+  baseline at `finder-13in_rgb-640x480-24bpp.png`.
