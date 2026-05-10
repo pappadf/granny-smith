@@ -235,7 +235,7 @@ static const prog_uniforms_t *uniforms_for(pixel_format_t format) {
 // the framebuffer bytes pack into pixels:
 //   * 1bpp / 2bpp / 4bpp / 8bpp:  width = stride bytes, R8 internal
 //   * 16bpp:                      width = stride/2,     R16UI (mediump)
-//   * 32bpp:                      width = stride/4,     RGBA8
+//   * 24bpp packed:               width = stride/3,     RGB8
 // The shader's u_stride uniform feeds the byte-to-pixel index math.
 static void allocate_fb_texture(pixel_format_t format, uint32_t stride, uint32_t height) {
     GLenum internal = GL_R8;

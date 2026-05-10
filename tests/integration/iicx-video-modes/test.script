@@ -33,11 +33,12 @@
 #   depths.  PNG references for 2/4/8bpp are kept alongside for
 #   human inspection but aren't byte-compared by the test runner.
 #
-# 32 bpp is intentionally NOT covered: SetDepth 32 brings up the
-# JMFB's 24bpp packed mode but our renderer's PIXEL_32BPP_XRGB path
-# disagrees with Mac OS on bytes-per-pixel (3 vs 4), so Finder
-# crashes with a system-error bomb.  That's a pre-existing JMFB
-# modelling gap — landing it cleanly is a separate task.
+# SetDepth 32 enters the JMFB's "millions of colours" mode where Mac
+# OS writes 4 bytes/pixel (XRGB) into VRAM at stride 2560 and the
+# RAMDAC bypass mode scans 3 of those 4 bytes per pixel for display
+# (per the Designing Cards & Drivers "24bpp packed-pixel" terminology
+# — the storage is XRGB; the visible colour depth is 24).  See
+# JMFBDriver.a's TFBM30Parms for the encoding the driver uses.
 
 # === Depth sweep — drive SetDepth from a running Mac OS ===
 
@@ -72,6 +73,13 @@ scheduler.run 200000000
 assert ${memory.peek.l(0xf9200208) == 0x98} "CLUTPBCR after SetDepth 8 != 0x98"
 assert ${memory.peek.l(0xf920000c) == 0xa0} "RowWords after SetDepth 8 != 0xa0"
 assert ${screen.checksum() == 149101200}    "screen.checksum at 8bpp Finder mismatch"
+
+# === SetDepth 32 ("millions of colours" — JMFB stores XRGB, RAMDAC scans 24bpp) ===
+screen.set_video_mode 32
+scheduler.run 200000000
+assert ${memory.peek.l(0xf9200208) == 0x9a} "CLUTPBCR after SetDepth 32 != 0x9a"
+assert ${memory.peek.l(0xf920000c) == 0xf0} "RowWords after SetDepth 32 != 0xf0"
+assert ${screen.checksum() == 1026734418}   "screen.checksum at 24bpp Finder mismatch"
 
 # === Resolution sweep — cold-boot per monitor sense ===
 # Anchor at the boot ROM "insert disk" floppy/? icon at each

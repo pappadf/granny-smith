@@ -1784,7 +1784,10 @@ int save_framebuffer_as_png(const display_t *d, const char *filename) {
                 break;
             }
             case PIXEL_32BPP_XRGB: {
-                // [X][R][G][B] big-endian
+                // [X][R][G][B] big-endian, 4 bytes per pixel.  Mac OS
+                // at SetDepth(32) sets PixMap.pixelSize=32 and writes
+                // XRGB pixels; the JMFB's RAMDAC-bypass mode reads 3
+                // of those 4 bytes per pixel for scan and discards X.
                 r = src_row[x * 4 + 1];
                 g = src_row[x * 4 + 2];
                 b = src_row[x * 4 + 3];

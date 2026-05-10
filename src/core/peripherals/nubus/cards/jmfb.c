@@ -124,9 +124,10 @@ static pixel_format_t depth_to_format(uint16_t pbcr) {
 // display and breaks the renderer / PNG / checksum paths.  Keep the
 // previous stride value across 0 writes — the next non-zero write fixes
 // it.
-// Bits-per-pixel for the current display format.  24-bit-direct counts
-// as 24 (not 32) because the framebuffer stores packed RGB triples in
-// the JMFB's RAMDAC-bypass mode.
+// Bits-per-pixel for storage (not visible-colour-depth) of the
+// current display format.  PIXEL_32BPP_XRGB returns 32 because the
+// framebuffer stores 4 bytes/pixel; the RAMDAC bypass mode discards
+// one of those bytes during scan but the storage layout is XRGB.
 static uint32_t format_bpp(pixel_format_t f) {
     switch (f) {
     case PIXEL_1BPP_MSB:
@@ -140,7 +141,7 @@ static uint32_t format_bpp(pixel_format_t f) {
     case PIXEL_16BPP_555:
         return 16;
     case PIXEL_32BPP_XRGB:
-        return 24; // packed-pixel direct mode
+        return 32;
     default:
         return 8; // safe fallback
     }
@@ -148,19 +149,35 @@ static uint32_t format_bpp(pixel_format_t f) {
 
 // Recompute display.stride AND display.width every time row_words or
 // the pixel format changes.  Width is a pure function of (row_words,
-// bpp): row_words counts longs-per-row for ≤8 bpp and 32/3-byte units
-// for 24 bpp packed.  Height is a property of the chosen monitor,
-// fixed at JMFB factory time from sense_code, and not derived here.
+// bpp); height is a property of the chosen monitor, fixed at JMFB
+// factory time from sense_code and not derived here.
+//
+// Two stride formulas, picked by depth:
+//
+//   ≤8 bpp:    stride = row_words * 4
+//              width  = stride * 8 / bpp = row_words * 32 / bpp
+//
+//   24 bpp:    stride = row_words * 32 / 3
+//              width  = stride / 4
+//
+// The 24bpp ("PIXEL_32BPP_XRGB") path stores 4 bytes per pixel on the
+// JMFB — Mac OS sets PixMap.pixelSize=32 / rowBytes=2560 (= 4 × 640)
+// and writes XRGB values; the RAMDAC ignores the X byte during scan
+// (per the Designing Cards & Drivers "8•24 24-bit selection: bit 1
+// of CLUTPBCR enters RAMDAC bypass and consumes all three colour
+// bytes" passage — three of four written, one discarded).  The
+// driver's TFBM30Parms encodes rowWords as 240 from
+// `(TFBM30RB * 3 / 4) / 4 / 2`; inverted, that gives stride =
+// row_words * 32 / 3 = 2560 — the *storage* stride, not the
+// 1920-byte RAMDAC scan stride.
 static void recompute_stride(jmfb_priv_t *p) {
     if (p->jmfb_row_words == 0)
         return; // chip-reset sentinel; preserve last good stride+width
     if (p->display.format == PIXEL_32BPP_XRGB) {
         p->display.stride = (uint32_t)p->jmfb_row_words * 32u / 3u;
-        // 24bpp packed: stride bytes / 3 = pixels
-        p->display.width = p->display.stride / 3u;
+        p->display.width = p->display.stride / 4u;
     } else {
         p->display.stride = (uint32_t)p->jmfb_row_words * 4u;
-        // ≤8 bpp: width = (stride bytes * 8) / bpp = row_words * 32 / bpp
         uint32_t bpp = format_bpp(p->display.format);
         if (bpp > 0)
             p->display.width = (uint32_t)p->jmfb_row_words * 32u / bpp;
@@ -231,8 +248,17 @@ static void handle_jmfb_write16(jmfb_priv_t *p, uint32_t off, uint16_t val) {
         return;
     case JMFBVideoBase + 2:
         p->jmfb_video_base = val;
-        // Encoded value × 32 = byte offset into VRAM
-        p->display.bits = p->vram + ((size_t)val * 32u);
+        // Byte offset into VRAM is depth-dependent.  For ≤8 bpp the
+        // encoded value × 32 = byte offset.  For 24 bpp (PIXEL_32BPP_XRGB)
+        // the JMFB driver writes `(defmBaseOffset * 3/4) >> 5 >> 1`
+        // (TFBM30Parms in JMFBDriver.a) — inverted, that's
+        // `value * 32 * 8/3`.  The factor matches the
+        // `recompute_stride`'s `value * 32 / 3` formula scaled by 8 to
+        // get from row-stride units back to byte offset.
+        if (p->display.format == PIXEL_32BPP_XRGB)
+            p->display.bits = p->vram + ((size_t)val * 32u * 8u / 3u);
+        else
+            p->display.bits = p->vram + ((size_t)val * 32u);
         p->display.generation++;
         return;
     case JMFBRowWords + 2:
