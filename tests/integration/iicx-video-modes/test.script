@@ -37,7 +37,7 @@
 #   gives equivalent regression coverage at non-1bpp depths.  The
 #   PNG references in this directory are kept for human inspection and
 #   are auto-regenerated from the actual framebuffer when the
-#   checksum assertions fail (see floppy-*.png).
+#   checksum assertions fail (see <monitor>-<resolution>-<depth>.png).
 #
 # Mode-switch programming for the JMFB:
 #   CLUTPBCR (slot+$200+$08 = $F9200208), depth field bits 3-4:
@@ -63,7 +63,7 @@ assert ${screen.width == 640}  "screen.width != 640"
 assert ${screen.height == 480} "screen.height != 480"
 
 # === 1 bpp baseline (confirms PrimaryInit's default depth) ===
-screen.match floppy-1bpp.png
+screen.match 13in_rgb-640x480-1bpp.png
 
 # === 2 bpp ===
 memory.poke.l 0xf9200208 0x00000008
@@ -115,7 +115,7 @@ scheduler.run 335000000
 assert ${screen.width == 512}  "12in_rgb width != 512"
 assert ${screen.height == 384} "12in_rgb height != 384"
 assert ${memory.peek.l(0xf920000c) == 0x10} "12in_rgb 1bpp RowWords != 0x10"
-screen.match floppy-12in_rgb-1bpp.png
+screen.match 12in_rgb-512x384-1bpp.png
 
 # === 15" Portrait B&W (sense 0x1 = "B/W Full Page") — 640x870 ===
 nubus.video_sense = 0x1
@@ -125,7 +125,7 @@ scheduler.run 335000000
 assert ${screen.width == 640}  "15in_bw width != 640"
 assert ${screen.height == 870} "15in_bw height != 870"
 assert ${memory.peek.l(0xf920000c) == 0x14} "15in_bw 1bpp RowWords != 0x14"
-screen.match floppy-15in_bw-1bpp.png
+screen.match 15in_bw-640x870-1bpp.png
 
 # === 21" RGB / Kong (sense 0x0 = "RGB Workstation") — 1152x870 ===
 nubus.video_sense = 0x0
@@ -135,6 +135,6 @@ scheduler.run 335000000
 assert ${screen.width == 1152} "21in_rgb width != 1152"
 assert ${screen.height == 870} "21in_rgb height != 870"
 assert ${memory.peek.l(0xf920000c) == 0x24} "21in_rgb 1bpp RowWords != 0x24"
-screen.match floppy-21in_rgb-1bpp.png
+screen.match 21in_rgb-1152x870-1bpp.png
 
 quit
