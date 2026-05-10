@@ -81,4 +81,15 @@
 // Per-card kind descriptor — registered in nubus.c's g_card_registry.
 extern const nubus_card_kind_t mdc_8_24_kind;
 
+// Pending monitor sense for the next-instantiated JMFB card.  Set
+// before `machine.boot` to make the new machine's JMFB report a
+// different monitor type to the boot ROM (changes display.width and
+// display.height to match — see monitor_for_sense in jmfb.c).  After
+// the next factory call the pending slot is reset to the default
+// ($6 = 13" RGB).  Valid raw-sense codes per JMFBPrimaryInit.a are
+// 0..6; 7 is "no connect / extended sense" and falls back to
+// 13" RGB dimensions.
+void jmfb_pending_sense_set(uint8_t sense);
+uint8_t jmfb_pending_sense_get(void);
+
 #endif // NUBUS_CARDS_JMFB_H

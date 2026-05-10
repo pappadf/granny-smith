@@ -10,6 +10,7 @@
 // which only happens after step 4 wires up nubus_init from glue030_init.
 
 #include "card.h"
+#include "jmfb.h"
 #include "object.h"
 #include "value.h"
 
@@ -39,11 +40,48 @@ static value_t nubus_method_cards(struct object *self, const member_t *m, int ar
     return val_list(items, n);
 }
 
+// `nubus.video_sense` — get/set the JMFB-card monitor sense for the
+// next machine.boot.  Reads return the current pending value (which
+// the JMFB factory will consume on its next instantiation); writes
+// stage the new value.  Valid raw-sense codes are 0..6 per
+// JMFBPrimaryInit.a's sense table (0=21" RGB / 1=15" Mono /
+// 2=12" RGB / 3=21" B&W / 4=NTSC / 5=15" RGB / 6=13" RGB / 7=no
+// connect).  Settable from integration test scripts via
+// `nubus.video_sense = N` before `machine.boot`.
+static value_t nubus_attr_video_sense_get(struct object *self, const member_t *m) {
+    (void)self;
+    (void)m;
+    value_t v = val_uint(1, jmfb_pending_sense_get());
+    v.flags |= VAL_HEX;
+    return v;
+}
+
+static value_t nubus_attr_video_sense_set(struct object *self, const member_t *m, value_t in) {
+    (void)self;
+    (void)m;
+    if (in.kind != V_UINT) {
+        value_free(&in);
+        return val_err("nubus.video_sense: expected unsigned integer 0..7");
+    }
+    if (in.u > 7) {
+        value_free(&in);
+        return val_err("nubus.video_sense: value must be 0..7 (got %llu)", (unsigned long long)in.u);
+    }
+    jmfb_pending_sense_set((uint8_t)in.u);
+    value_free(&in);
+    return val_none();
+}
+
 static const member_t nubus_members[] = {
     {.kind = M_METHOD,
      .name = "cards",
      .doc = "List the ids of all registered NuBus card drivers",
      .method = {.args = NULL, .nargs = 0, .result = V_LIST, .fn = nubus_method_cards}},
+    {.kind = M_ATTR,
+     .name = "video_sense",
+     .doc = "Pending JMFB monitor sense (0..6, 7 = no connect)",
+     .flags = 0,
+     .attr = {.type = V_UINT, .get = nubus_attr_video_sense_get, .set = nubus_attr_video_sense_set}},
 };
 
 const class_desc_t nubus_class = {

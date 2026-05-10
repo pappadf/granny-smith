@@ -40,6 +40,24 @@
 
 LOG_USE_CATEGORY_NAME("jmfb");
 
+// === Forward declarations ===================================================
+//
+// The monitor list `mdc_8_24_monitors` and the sense→monitor lookup
+// live near the bottom of this file (next to the per-card kind
+// descriptor that references the list); the JMFB factory body
+// further up needs to reach them.  Forward declarations here let the
+// factory call `monitor_for_sense` and read `s_pending_sense` /
+// `s_pending_sense_set` without reshuffling the file.
+typedef struct nubus_monitor nubus_monitor_t_fwd;
+static const struct nubus_monitor *monitor_for_sense(uint8_t sense);
+
+// Pending sense code consumed by the next JMFB factory call.  Set
+// from the shell via `nubus.video_sense = N` before `machine.boot`;
+// reset to the default ($6 = 13" RGB) on consumption so a forgotten
+// configuration doesn't leak across machine reinitialisations.
+static uint8_t s_pending_sense = 0x6;
+static bool s_pending_sense_set = false;
+
 // === Per-card private state =================================================
 
 typedef struct {
@@ -106,13 +124,47 @@ static pixel_format_t depth_to_format(uint16_t pbcr) {
 // display and breaks the renderer / PNG / checksum paths.  Keep the
 // previous stride value across 0 writes — the next non-zero write fixes
 // it.
+// Bits-per-pixel for the current display format.  24-bit-direct counts
+// as 24 (not 32) because the framebuffer stores packed RGB triples in
+// the JMFB's RAMDAC-bypass mode.
+static uint32_t format_bpp(pixel_format_t f) {
+    switch (f) {
+    case PIXEL_1BPP_MSB:
+        return 1;
+    case PIXEL_2BPP_MSB:
+        return 2;
+    case PIXEL_4BPP_MSB:
+        return 4;
+    case PIXEL_8BPP:
+        return 8;
+    case PIXEL_16BPP_555:
+        return 16;
+    case PIXEL_32BPP_XRGB:
+        return 24; // packed-pixel direct mode
+    default:
+        return 8; // safe fallback
+    }
+}
+
+// Recompute display.stride AND display.width every time row_words or
+// the pixel format changes.  Width is a pure function of (row_words,
+// bpp): row_words counts longs-per-row for ≤8 bpp and 32/3-byte units
+// for 24 bpp packed.  Height is a property of the chosen monitor,
+// fixed at JMFB factory time from sense_code, and not derived here.
 static void recompute_stride(jmfb_priv_t *p) {
     if (p->jmfb_row_words == 0)
-        return; // chip-reset sentinel; preserve last good stride
-    if (p->display.format == PIXEL_32BPP_XRGB)
+        return; // chip-reset sentinel; preserve last good stride+width
+    if (p->display.format == PIXEL_32BPP_XRGB) {
         p->display.stride = (uint32_t)p->jmfb_row_words * 32u / 3u;
-    else
+        // 24bpp packed: stride bytes / 3 = pixels
+        p->display.width = p->display.stride / 3u;
+    } else {
         p->display.stride = (uint32_t)p->jmfb_row_words * 4u;
+        // ≤8 bpp: width = (stride bytes * 8) / bpp = row_words * 32 / bpp
+        uint32_t bpp = format_bpp(p->display.format);
+        if (bpp > 0)
+            p->display.width = (uint32_t)p->jmfb_row_words * 32u / bpp;
+    }
 }
 
 // === Memory interface (register window I/O) =================================
@@ -638,8 +690,20 @@ static int card_init(nubus_card_t *card, config_t *cfg, checkpoint_t *cp) {
         LOG(0, "Apple-341-0868.vrom not found; declaration ROM is zero-filled");
     }
 
-    // Default monitor sense code: 13" RGB (sense `110`).
-    p->sense_code = 0x6;
+    // Monitor sense code — consumed from the pending-sense slot the
+    // shell can set via `nubus.video_sense = N` before `machine.boot`.
+    // The default is $6 (Standard RGB / 13" AppleColor), which keeps
+    // existing tests/integration paths reproducing the same boot we've
+    // baselined.  After consumption the pending slot is left at the
+    // default so a forgotten configuration doesn't leak into the next
+    // machine.boot.
+    p->sense_code = s_pending_sense;
+    s_pending_sense = 0x6;
+    s_pending_sense_set = false;
+
+    const nubus_monitor_t *monitor = monitor_for_sense(p->sense_code);
+    uint32_t mon_w = monitor ? monitor->width : 640;
+    uint32_t mon_h = monitor ? monitor->height : 480;
 
     // Default register state from PrimaryInit's expected starting point.
     // The Apple Display Card 8•24 powers up at 1 bpp; PrimaryInit fills
@@ -648,10 +712,10 @@ static int card_init(nubus_card_t *card, config_t *cfg, checkpoint_t *cp) {
     // to 8 bpp here makes that gray fill render as black/white stripes.
     p->jmfb_csr = 0;
     p->jmfb_video_base = 0xA00 / 32; // driver convention: $A00 byte offset
-    p->jmfb_row_words = 640 / 32; // 13" mono at 1bpp: 20 longs/row
+    p->jmfb_row_words = mon_w / 32u; // 1bpp longs/row for the chosen monitor
 
-    p->display.width = 640;
-    p->display.height = 480;
+    p->display.width = mon_w;
+    p->display.height = mon_h;
     p->display.stride = 640 / 8; // 1 bpp: 80 bytes/row
     p->display.format = PIXEL_1BPP_MSB;
     p->display.bits = p->vram + 0xA00;
@@ -767,6 +831,62 @@ static const nubus_monitor_t mdc_8_24_monitors[] = {
     {.id = "21in_rgb", .name = "21\" RGB", .width = 1152, .height = 870, .depths = mdc_8bpp_depths},
     {0},
 };
+
+// Map the JMFB's 3-bit raw monitor sense to the (width, height) the
+// JMFB driver's PrimaryInit will configure once it scans the sense
+// lines and picks the matching mode-list sRsrc out of the declaration
+// ROM.  The table is a literal transcription of the comment block at
+// JMFBPrimaryInit.a:78-95 ("Sense(2:0) Raw / Reformatted Sense /
+// Monitor Type"):
+//
+//   000 = RGB Workstation (Kong)        — 21" RGB,  1152x870
+//   001 = B/W Full Page (Portrait)      — 15" Mono, 640x870
+//   010 = Modified Apple II-GS (Rubik)  — 12" RGB,  512x384
+//   011 = B/W Workstation (Kong)        — 21" B&W,  1152x870
+//   100 = NTSC (Interlaced)             — 640x480 approximation
+//   101 = RGB Full Page (Portrait)      — 15" RGB,  640x870
+//   110 = Standard RGB                  — 13" RGB,  640x480  (default)
+//   111 = no connect / extended sense   — unsupported here
+//
+// Returns the matching nubus_monitor_t for a given sense code, or NULL
+// for the no-connect code so the caller can fall back to safe defaults.
+// (Extended-sense detection — for the 16" RGB and Sarnoff NTSC box —
+// would key off this NULL return; we don't model it.)
+static const nubus_monitor_t *monitor_for_sense(uint8_t sense) {
+    static const struct {
+        uint8_t sense;
+        const char *id;
+    } map[] = {
+        {0x0, "21in_rgb"}, // RGB Workstation
+        {0x1, "15in_bw" }, // B&W Portrait
+        {0x2, "12in_rgb"}, // Rubik
+        {0x3, "21in_rgb"}, // B&W Workstation (same dimensions as RGB Kong)
+        {0x4, "13in_rgb"}, // NTSC — approximate as 640x480
+        {0x5, "15in_bw" }, // RGB Portrait (same dimensions as B&W Portrait)
+        {0x6, "13in_rgb"}, // Standard RGB
+    };
+    for (size_t i = 0; i < sizeof(map) / sizeof(map[0]); i++) {
+        if (map[i].sense != (sense & 7))
+            continue;
+        for (const nubus_monitor_t *m = mdc_8_24_monitors; m->id; m++) {
+            if (strcmp(m->id, map[i].id) == 0)
+                return m;
+        }
+    }
+    return NULL;
+}
+
+// (s_pending_sense / s_pending_sense_set defined near the top of this
+// file alongside the matching forward declarations.)
+
+void jmfb_pending_sense_set(uint8_t sense) {
+    s_pending_sense = sense & 7;
+    s_pending_sense_set = true;
+}
+
+uint8_t jmfb_pending_sense_get(void) {
+    return s_pending_sense;
+}
 
 const nubus_card_kind_t mdc_8_24_kind = {
     .id = "mdc_8_24",

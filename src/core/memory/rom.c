@@ -323,6 +323,27 @@ static value_t rom_method_load(struct object *self, const member_t *m, int argc,
     return val_bool(true);
 }
 
+// rom.reload — load the ROM file the binary was launched with into
+// the active machine.  Convenience for integration test scripts that
+// `machine.boot` mid-stream to reset state and then need to re-stage
+// the same ROM bytes; the script doesn't otherwise have access to the
+// startup-time absolute path.  The pending path is set by the platform
+// at startup (rom_pending_set) and never cleared, so reload is always
+// a no-arg operation.  Errors if no startup ROM was specified or if
+// no machine is currently active.
+static value_t rom_method_reload(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)self;
+    (void)m;
+    (void)argc;
+    (void)argv;
+    const char *path = rom_pending_path();
+    if (!path || !*path)
+        return val_err("rom.reload: no startup ROM path recorded; pass an explicit path to rom.load instead");
+    if (rom_load_into_machine(path) != 0)
+        return val_err("rom.reload: failed to reload '%s'", path);
+    return val_bool(true);
+}
+
 // rom.identify(path) → JSON-encoded info map describing the ROM file:
 //   { recognised, compatible, checksum, name, size }
 // recognised==false implies compatible==[] and name=="" but the checksum and
@@ -397,6 +418,10 @@ static const member_t rom_members[] = {
      .name = "load",
      .doc = "Load ROM bytes into the active machine and reset the CPU",
      .method = {.args = rom_path_arg, .nargs = 1, .result = V_BOOL, .fn = rom_method_load}},
+    {.kind = M_METHOD,
+     .name = "reload",
+     .doc = "Reload the startup-time ROM (path remembered from launch)",
+     .method = {.args = NULL, .nargs = 0, .result = V_BOOL, .fn = rom_method_reload}},
     {.kind = M_METHOD,
      .name = "identify",
      .doc = "Return a JSON-encoded info map for a ROM file (compatible/checksum/name/size/recognised)",
