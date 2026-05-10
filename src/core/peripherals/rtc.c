@@ -489,6 +489,35 @@ static value_t rtc_attr_pram(struct object *self, const member_t *m) {
     return val_bytes(buf, sizeof(buf));
 }
 
+// Whole-PRAM setter — accepts a 256-byte V_BYTES value and writes every
+// PRAM cell.  Used by integration tests that want to seed PRAM with a
+// previously-snapshotted state (typically dumped via the matching getter
+// after a cold boot, then replayed across `machine.boot` cycles to
+// preserve the boot ROM's validity tokens and slot-PRAM init data —
+// individually replaying 256 `pram_write` calls is just slow).  Honors
+// the write-protect bit the same way per-byte writes do.
+static value_t rtc_attr_pram_set(struct object *self, const member_t *m, value_t in) {
+    (void)m;
+    rtc_t *rtc = rtc_from(self);
+    if (!rtc) {
+        value_free(&in);
+        return val_err("rtc not available");
+    }
+    if (in.kind != V_BYTES || in.bytes.n != 256 || !in.bytes.p) {
+        size_t n = (in.kind == V_BYTES) ? in.bytes.n : 0;
+        value_free(&in);
+        return val_err("rtc.pram: expected V_BYTES of length 256 (got len=%zu)", n);
+    }
+    for (int i = 0; i < 256; i++) {
+        if (!rtc_pram_write(rtc, (uint8_t)i, in.bytes.p[i])) {
+            value_free(&in);
+            return val_err("rtc.pram: PRAM is write-protected");
+        }
+    }
+    value_free(&in);
+    return val_none();
+}
+
 static value_t rtc_method_pram_read(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)m;
     (void)argc;
@@ -542,9 +571,9 @@ static const member_t rtc_members[] = {
      .attr = {.type = V_BOOL, .get = rtc_attr_read_only, .set = NULL}},
     {.kind = M_ATTR,
      .name = "pram",
-     .doc = "256-byte PRAM snapshot",
-     .flags = VAL_RO,
-     .attr = {.type = V_BYTES, .get = rtc_attr_pram, .set = NULL}},
+     .doc = "256-byte PRAM snapshot; setter expects V_BYTES of length 256",
+     .flags = 0,
+     .attr = {.type = V_BYTES, .get = rtc_attr_pram, .set = rtc_attr_pram_set}},
     {.kind = M_METHOD,
      .name = "pram_read",
      .doc = "Read one PRAM byte",
