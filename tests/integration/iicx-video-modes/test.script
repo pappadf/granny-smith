@@ -1,0 +1,86 @@
+# Integration test: IIcx Video Modes
+#
+# Drive the Apple Display Card 8•24 (JMFB) through 1, 2, 4, 8, and 24
+# bpp at 640x480 by writing CLUTPBCR (depth field) and JMFBRowWords
+# (stride) directly, and verify the renderer produces the expected
+# pixel-level output for the same VRAM contents at each depth.
+#
+# Why direct register writes instead of PRAM-driven mode:
+#   The IIcx Universal ROM's JMFB PrimaryInit unconditionally rewrites
+#   slot-9 PRAM byte 2 to FirstVidMode ($80, 1 bpp) at boot if its
+#   sense/clock validity checks fail — and on a fresh emulator that
+#   check always fails.  Saved depth therefore does not survive a cold
+#   boot until Mac OS's Monitors cdev runs and primes 'scrn'.  Direct
+#   register programming exercises the renderer at every depth without
+#   that round trip and at full headless speed.  See docs/pram.md §9
+#   for the empirical evidence.
+#
+# Why screen.checksum + assert instead of screen.match:
+#   screen.match (PNG-byte comparison after loading the reference into
+#   a framebuffer) is hard-coded to 1bpp in debug.c — extending it to
+#   compare in RGBA space is more refactor than this test warrants.
+#   screen.checksum is deterministic per VRAM/format combination and
+#   gives equivalent regression coverage at non-1bpp depths.  The
+#   PNG references in this directory are kept for human inspection and
+#   are auto-regenerated from the actual framebuffer when the
+#   checksum assertions fail (see floppy-*.png).
+#
+# Mode-switch programming for the JMFB:
+#   CLUTPBCR (slot+$200+$08 = $F9200208), depth field bits 3-4:
+#     $00=1bpp $08=2bpp $10=4bpp $18=8bpp; bit 1 (=$02) selects 24bpp
+#     packed on top of $18, so $1A=24bpp.
+#   JMFBRowWords (slot+$0C = $F920000C), stride in 4-byte units for
+#   <=8bpp or 32/3-byte units for 24bpp:
+#     1bpp: 640/8 = 80 bytes -> rowWords = 20  ($14)
+#     2bpp: 640/4 = 160      -> rowWords = 40  ($28)
+#     4bpp: 640/2 = 320      -> rowWords = 80  ($50)
+#     8bpp: 640              -> rowWords = 160 ($A0)
+#     24bpp packed: stride = 1920 = rowWords*32/3 -> rowWords = 180 ($B4)
+#   Long-write addresses target the slot-aligned base; the JMFB
+#   memory_interface_t splits the access into two 16-bit halves and
+#   the meaningful low half lands at slot+2 — see jmfb.c handlers.
+
+# Boot to the boot-ROM "insert disk" floppy/? icon (1 bpp default).
+# Same budget as tests/integration/iicx-boot.
+scheduler.run 335000000
+
+assert ${machine.id == "iicx"} "machine.id != iicx"
+assert ${screen.width == 640}  "screen.width != 640"
+assert ${screen.height == 480} "screen.height != 480"
+
+# === 1 bpp baseline (confirms PrimaryInit's default depth) ===
+screen.match floppy-1bpp.png
+
+# === 2 bpp ===
+memory.poke.l 0xf9200208 0x00000008
+memory.poke.l 0xf920000c 0x00000028
+scheduler.run 1000000
+assert ${memory.peek.l(0xf9200208) == 0x8}  "CLUTPBCR after 2bpp set != 0x08"
+assert ${memory.peek.l(0xf920000c) == 0x28} "RowWords after 2bpp set != 0x28"
+assert ${screen.checksum() == 1051777872}     "screen.checksum at 2bpp mismatch"
+
+# === 4 bpp ===
+memory.poke.l 0xf9200208 0x00000010
+memory.poke.l 0xf920000c 0x00000050
+scheduler.run 1000000
+assert ${memory.peek.l(0xf9200208) == 0x10} "CLUTPBCR after 4bpp set != 0x10"
+assert ${memory.peek.l(0xf920000c) == 0x50} "RowWords after 4bpp set != 0x50"
+assert ${screen.checksum() == 932129373}      "screen.checksum at 4bpp mismatch"
+
+# === 8 bpp ===
+memory.poke.l 0xf9200208 0x00000018
+memory.poke.l 0xf920000c 0x000000a0
+scheduler.run 1000000
+assert ${memory.peek.l(0xf9200208) == 0x18} "CLUTPBCR after 8bpp set != 0x18"
+assert ${memory.peek.l(0xf920000c) == 0xa0} "RowWords after 8bpp set != 0xa0"
+assert ${screen.checksum() == -2040518051}    "screen.checksum at 8bpp mismatch"
+
+# === 24 bpp packed (RAMDAC bypass) ===
+memory.poke.l 0xf9200208 0x0000001a
+memory.poke.l 0xf920000c 0x000000b4
+scheduler.run 1000000
+assert ${memory.peek.l(0xf9200208) == 0x1a} "CLUTPBCR after 24bpp set != 0x1a"
+assert ${memory.peek.l(0xf920000c) == 0xb4} "RowWords after 24bpp set != 0xb4"
+assert ${screen.checksum() == -1046205859}    "screen.checksum at 24bpp mismatch"
+
+quit
