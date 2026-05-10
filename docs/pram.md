@@ -790,22 +790,76 @@ the realistic options (in increasing order of fidelity):
 
 1. **Direct register programming** — write CLUTPBCR / JMFBRowWords
    from the test script via `memory.poke.l` against the slot $9
-   register block. This exercises the renderer at every depth but
-   bypasses both PRAM and the OS's mode-switch flow.
-2. **Driver `_Control` trap** — once the driver is open (i.e. after
-   System 7 has reached `_InitGraf`), build a `cscSetMode` parameter
-   block in RAM and trap into the driver. This exercises the
-   renderer plus the driver's depth-switch path; still bypasses
-   PRAM.
-3. **Full Monitors-cdev round trip** — boot to Finder, drive the
+   register block.  Exercises the renderer at every depth but
+   bypasses both PRAM and the OS's mode-switch flow; the captured
+   framebuffer is "the boot ROM's 1bpp byte stream reinterpreted
+   as N-bpp pixels," which is visually noise rather than the kind
+   of image you'd ever see on real hardware.
+2. **Driver `_Control(cscSetMode)` trap** — once the driver is open
+   (i.e. after System 7 has reached `_InitGraf`), build a
+   `cscSetMode` parameter block in RAM and trap into the driver.
+   The driver writes JMFB hardware registers and pre-greys VRAM but
+   does NOT update the GDevice's `gdPMap` or invalidate windows, so
+   QuickDraw and Finder don't redraw — captured screenshots are
+   uniform gray.
+3. **Pascal Toolbox `SetDepth` trap (Recommended)** — call
+   `SetDepth(MainDevice, depth, 0, 0)` (Palettes.h:
+   `{0x303C, 0x0A13, 0xAAA2}`).  Internally this orchestrates
+   `_Control(cscSetMode)` + the gdPMap pixelSize/rowBytes update
+   that QuickDraw needs + the secondary update calls Mac OS
+   requires; pair it with `_PaintBehind(NIL, GrayRgn)` to flush
+   pending update events and the Window Manager redraws the
+   desktop in the new format.  Captured screenshots are *real*
+   Finder-at-N-bpp.  Implemented in our shell as
+   [`screen.set_video_mode N`](../src/core/debug/debug.c) — injects
+   a 36-byte 68k stub at scratch RAM ($00400000) that pushes
+   SetDepth args, traps `_PaletteDispatch`, then traps
+   `_PaintBehind`, then halts at a known PC sentinel.
+4. **Full Monitors-cdev round trip** — boot to Finder, drive the
    Monitors control panel via simulated mouse events to change
    depth, watch the driver call `_SPutPRAMRec`, then reboot and
-   verify the saved depth is honoured. This exercises PRAM
+   verify the saved depth is honoured.  This exercises PRAM
    end-to-end but is slow (each iteration takes a full Finder boot
    plus a control-panel UI run) and brittle (depends on the exact
-   pixel layout of the System 7.0.1 Monitors cdev's UI).
+   pixel layout of the System 7.0.1 Monitors cdev's UI).  The only
+   path that produces a "this saved value really survived a cold
+   boot" assertion.
 
-For our `iicx-video-modes` integration test we use option 1, with
-a comment in the script explicitly cross-referencing this section
-and §6.5 to make the trade-off auditable. If you need PRAM coverage
-specifically, option 3 is the only path; expect ~30 s × N modes.
+Our `iicx-video-modes` integration test uses **option 3**.  Boots
+the IIcx with the System 7.0.1 floppy, reaches Finder, then calls
+`screen.set_video_mode {1,2,4,8}` and asserts on the resulting
+JMFB register state plus the rendered framebuffer's checksum.  The
+boot-icon resolution sweep at non-default monitor senses still
+uses cold-boot-per-resolution because no Mac OS is needed there —
+sense lines drive the JMFB's mode-list selection at PrimaryInit,
+which happens before `_InitGraf`.
+
+### 9.7 Implementation gaps surfaced along the way
+
+* **`savedClockType` (slot-PRAM byte 6)** is the flag that decides
+  whether `JMFBPrimaryInit`'s `CheckInval` path resets the slot
+  record on each boot.  The IIcx ROM's `pGetClockType` returns
+  `$00` (Endeavor) on our default JMFB, and a fresh PRAM cell is
+  also `$00`, so the comparison succeeds *by coincidence* — the
+  `BNE.s @setInvalidate` doesn't fire on clock mismatch.  But the
+  same code path's sense-line check (`BFEXTU D1{29:3} ≠ D4`)
+  always fires when the saved low 3 bits don't match the current
+  monitor sense, and that's why a hand-seeded
+  `savedSRsrcID = $83` (8 bpp + sense `011`) gets rewritten back to
+  `$80` + the actual sense.  Test scripts that want to prevent
+  this would have to seed the low 3 bits of byte 3 with the
+  current monitor's sense (`$6` for 13" RGB → byte 3 = `$A6`)
+  *and* keep byte 6 matching `pGetClockType`'s return, *and* match
+  BoardID — at which point you've recreated the cold-boot baseline
+  PRAM exactly, with byte 2 being the only meaningful knob.
+* **JMFB 32 bpp ≠ renderer's `PIXEL_32BPP_XRGB`.** Calling
+  `SetDepth(32)` succeeds at the OS level — Mac OS gets the right
+  GDevice update and Finder redraws — but our renderer treats the
+  framebuffer as XRGB (4 bytes/pixel) while the JMFB hardware on
+  this card writes packed 24-bit triples (3 bytes/pixel).  Mac OS
+  paints at 32 bpp into the `display.bits`-anchored buffer, our
+  pixel-format path mis-decodes the stride, and Finder eventually
+  segfaults with a system-error bomb.  The card is "8/24" — there
+  is no real 32 bpp mode here; the renderer needs a `PIXEL_24BPP_PACKED`
+  path (or an existing mode mapped to it).  Tracked as a gap;
+  `iicx-video-modes` skips depth=32.
