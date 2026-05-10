@@ -5,7 +5,7 @@
 // scheduler switcher, audio unlock, settings modal, and status/toast notifications.
 import { CONFIG } from './config.js';
 import {
-  isRunning, setRunning, isModuleReady, getModule, onRunStateChange
+  isRunning, setRunning, isModuleReady, getModule, onRunStateChange, onScreenResize
 } from './emulator.js';
 import { handleInterrupt, fitTerminal, showPrompt, setActive, isActive } from './terminal.js';
 import { fileExists } from './fs.js';
@@ -118,8 +118,16 @@ export function initUI({ canvas, panel, toggle, termBody, canvasWrapper, screenT
   toggle.addEventListener('keydown', e => { if (['Enter', ' '].includes(e.key)) { e.preventDefault(); toggle.click(); } });
 
   // --- Zoom ---
-  const baseWidth = canvas.width || 512;
-  const baseHeight = canvas.height || 342;
+  // baseWidth / baseHeight track the framebuffer's intrinsic pixel size.
+  // They start at whatever the HTML canvas was authored with (512×342
+  // for the SE/30-default first paint) and get updated whenever the C
+  // side fires Module.onScreenResize — e.g. when the JMFB driver picks
+  // up the configured monitor size (IIcx's 640×480 / 1152×870 / …).
+  // The CSS-displayed dimensions are baseWidth × scale, recomputed by
+  // applyZoom both when the user toggles zoom and when the framebuffer
+  // intrinsic size changes.
+  let baseWidth = canvas.width || 512;
+  let baseHeight = canvas.height || 342;
   const zoomLevelInput = document.getElementById('zoom-level');
   let zoomPct = CONFIG.DEFAULT_ZOOM_PCT;
   if (zoomPct < CONFIG.MIN_ZOOM_PCT || zoomPct > CONFIG.MAX_ZOOM_PCT) zoomPct = CONFIG.DEFAULT_ZOOM_PCT;
@@ -146,6 +154,20 @@ export function initUI({ canvas, panel, toggle, termBody, canvasWrapper, screenT
     if (!isNaN(v)) applyZoom(v); else zoomLevelInput.value = `${zoomPct}%`;
   });
   applyZoom(zoomPct);
+
+  // When the framebuffer's intrinsic size changes (machine boot, video
+  // mode switch), update baseWidth/baseHeight and re-apply the current
+  // zoom so the CSS-displayed wrapper reflows to match the new aspect
+  // ratio.  The C side already calls emscripten_set_canvas_element_size
+  // for the canvas's intrinsic resolution; this listener handles the
+  // CSS side.
+  onScreenResize((w, h) => {
+    if (w <= 0 || h <= 0) return;
+    if (w === baseWidth && h === baseHeight) return;
+    baseWidth = w;
+    baseHeight = h;
+    applyZoom(zoomPct);
+  });
 
   // Fit terminal when layout changes
   const ro = new ResizeObserver(fitTerminal);

@@ -304,9 +304,28 @@ static void upload_clut(const display_t *d) {
 // CSS scale (zoom) is applied JS-side via the screen-wrapper element; here
 // we set the *intrinsic* canvas resolution so 1 canvas pixel == 1 emulator
 // pixel.
+//
+// Notifies the JS layout layer via Module.onScreenResize(width, height)
+// on every transition so the page can reflow its screen-wrapper element
+// to match the new aspect ratio / size.  Without this the wrapper stays
+// at the previous size — the canvas's intrinsic resolution updates but
+// CSS-driven display dimensions don't, and the page shows a stretched /
+// letterboxed framebuffer (this surfaced for the IIcx when the JMFB
+// driver flipped from the SE/30-default 512×342 to 640×480).  Mirrors
+// the change-only pattern used by em_main_tick's onRunStateChange push.
 static void resize_canvas(uint32_t width, uint32_t height) {
     emscripten_set_canvas_element_size("#screen", (int)width, (int)height);
     glViewport(0, 0, (int)width, (int)height);
+    static uint32_t last_w = 0, last_h = 0;
+    if (width != last_w || height != last_h) {
+        last_w = width;
+        last_h = height;
+        // clang-format off
+        MAIN_THREAD_ASYNC_EM_ASM(
+            { if (typeof Module.onScreenResize === 'function') Module.onScreenResize($0, $1); },
+            (int)width, (int)height);
+        // clang-format on
+    }
 }
 
 // ============================================================================

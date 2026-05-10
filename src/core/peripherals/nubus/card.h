@@ -84,12 +84,24 @@ typedef nubus_card_t *(*nubus_card_factory_fn)(int slot, config_t *cfg, checkpoi
 // by the card-kind registry so the dialog can populate a monitor / depth
 // dropdown without knowing about the card driver.  Sentinel-terminated
 // arrays end at the entry whose `id` is NULL.
+//
+// `sense_code` is the value the card's sense lines report when this
+// monitor is plugged in.  Setting `nubus.video_sense = sense_code`
+// before `machine.boot` tells the JMFB factory which monitor to model
+// (see jmfb.c::monitor_for_sense).  `srsrc_sister` is the top-level
+// "Ax" sister sResource ID that the JMFB driver's Slot Manager picks
+// up from PRAM for this monitor; a video-mode-aware integration test
+// (or the configuration dialog) writes this byte into PRAM offset
+// $49/$4A so `_SlotManager $06 sReadFHeader` finds the right entry
+// at boot — see tests/integration/iicx-video-modes/test.script.
 typedef struct nubus_monitor {
     const char *id; // "13in_rgb"
     const char *name; // "13\" AppleColor"
     uint32_t width; // pixels
     uint32_t height; // pixels
     const int *depths; // 0-terminated array of supported bpp values
+    uint8_t sense_code; // 0..7 — value of the card's monitor-sense register
+    uint8_t srsrc_sister; // top-level Ax sister sResource ID (savedSRsrcID)
 } nubus_monitor_t;
 
 // Per-card driver descriptor — one static instance per registered driver.

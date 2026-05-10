@@ -378,6 +378,7 @@ const hw_profile_t machine_iix = {
     .has_adb = true,
     .has_nubus = true,
     .nubus_slot_count = 6,
+    .nubus_slots = iix_slots,
 
     .init = iix_init,
     .reset = iix_reset,

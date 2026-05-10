@@ -237,6 +237,25 @@ export async function showConfigDialog(scanResults) {
       }));
       addRow('RAM Size:', buildSelect('config-ram', ramOptions));
 
+      // Row 4: Video Mode — driven by profile.video_modes when the
+      // model has configurable video (IIcx / IIx with a JMFB).  Each
+      // entry's id round-trips back to `nubus.video_mode = "<id>"`
+      // before machine.boot; the JMFB factory consumes it and seeds
+      // PRAM so the Slot Manager's GET_SLOT_DEPTH lands on the
+      // chosen (monitor, depth).  Skipped for machines whose profile
+      // returns an empty video_modes list (Plus / SE/30 with the
+      // builtin video card / future non-video machines).
+      const videoModes = Array.isArray(profile.video_modes) ? profile.video_modes : [];
+      if (videoModes.length > 0) {
+        const defaultId = profile.video_mode_default || videoModes[0].id;
+        const videoOptions = videoModes.map(m => ({
+          value: m.id,
+          label: m.label,
+          selected: m.id === defaultId,
+        }));
+        addRow('Video Mode:', buildSelect('config-video-mode', videoOptions));
+      }
+
       // Scan OPFS directories for persisted media (via browser OPFS API)
       const fdEntries = await listDir(FD_DIR);
       const fdhdEntries = await listDir(FDHD_DIR);
@@ -609,11 +628,15 @@ export async function showConfigDialog(scanResults) {
       const vromSel = dlg.querySelector('#config-vrom');
       const vromPath = (vromSel && vromSel.value && vromSel.value !== '__upload__') ? vromSel.value : null;
 
+      const videoModeSel = dlg.querySelector('#config-video-mode');
+      const videoMode = videoModeSel?.value || null;
+
       resolve({
         model: selectedModel,
         romChecksum,
         ramKB,
         vromPath,
+        videoMode,
         floppies,
         hdImages,
         cdImage,
@@ -633,12 +656,23 @@ export async function showConfigDialog(scanResults) {
 // Execute the boot sequence from config dialog selections.
 // tmpRomPath is a fallback if the persisted ROM can't be found.
 export async function bootFromConfig(config, tmpRomPath) {
-  const { model, romChecksum, ramKB, vromPath, floppies, hdImages, cdImage, cdId } = config;
+  const { model, romChecksum, ramKB, vromPath, videoMode, floppies, hdImages, cdImage, cdId } = config;
 
   // Set VROM path before machine creation, because SE/30 init reads it
   // during the boot sequence.
   if (vromPath) {
     await window.gsEval('vrom.load', [vromPath]);
+  }
+
+  // Stage the user's pending video-mode selection on the NuBus root
+  // before machine creation.  The JMFB factory consumes this during
+  // `machine.boot`: it resolves the id to (monitor, depth), sets the
+  // matching sense lines on the slot, and seeds PRAM so the Slot
+  // Manager's GET_SLOT_DEPTH picks up the requested mode at first
+  // boot.  Empty / null is a no-op (machines without configurable
+  // video, or first-run defaults).
+  if (videoMode) {
+    await window.gsEval('nubus.video_mode', [videoMode]);
   }
 
   // Create the machine with the user-selected model and RAM.  Under the

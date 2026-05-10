@@ -72,6 +72,44 @@ static value_t nubus_attr_video_sense_set(struct object *self, const member_t *m
     return val_none();
 }
 
+// `nubus.video_mode` — get/set a pending high-level video-mode id
+// for the next machine.boot.  The id matches one of the entries in
+// `machine.profile(...).video_modes[].id` (e.g. "13in_rgb_8bpp").
+// When the JMFB factory consumes the pending id it resolves it to a
+// (monitor, depth) tuple, overrides nubus.video_sense to the
+// monitor's sense_code, and writes the boot-ROM PRAM validity tokens
+// plus the slot-PRAMRec bytes so the Slot Manager's GET_SLOT_DEPTH
+// lands on the requested mode.  Reading returns the pending id (or
+// the empty string when none is set); writing "" clears it.
+static value_t nubus_attr_video_mode_get(struct object *self, const member_t *m) {
+    (void)self;
+    (void)m;
+    const char *id = jmfb_pending_video_mode_get();
+    return val_str(id ? id : "");
+}
+
+static value_t nubus_attr_video_mode_set(struct object *self, const member_t *m, value_t in) {
+    (void)self;
+    (void)m;
+    if (in.kind != V_STRING) {
+        value_free(&in);
+        return val_err("nubus.video_mode: expected string id (e.g. \"13in_rgb_8bpp\")");
+    }
+    const char *id = in.s ? in.s : "";
+    // Validate against the catalog so the user gets immediate
+    // feedback if they pass a typo instead of waiting until the next
+    // machine.boot to discover the id didn't match.  Empty string is
+    // permitted and clears any pending selection.
+    if (*id && !jmfb_video_mode_lookup(id, NULL, NULL)) {
+        value_t err = val_err("nubus.video_mode: unknown video-mode id '%s'", id);
+        value_free(&in);
+        return err;
+    }
+    jmfb_pending_video_mode_set(id);
+    value_free(&in);
+    return val_none();
+}
+
 static const member_t nubus_members[] = {
     {.kind = M_METHOD,
      .name = "cards",
@@ -82,6 +120,11 @@ static const member_t nubus_members[] = {
      .doc = "Pending JMFB monitor sense (0..6, 7 = no connect)",
      .flags = 0,
      .attr = {.type = V_UINT, .get = nubus_attr_video_sense_get, .set = nubus_attr_video_sense_set}},
+    {.kind = M_ATTR,
+     .name = "video_mode",
+     .doc = "Pending video-mode id for next machine.boot (matches profile.video_modes[].id)",
+     .flags = 0,
+     .attr = {.type = V_STRING, .get = nubus_attr_video_mode_get, .set = nubus_attr_video_mode_set}},
 };
 
 const class_desc_t nubus_class = {

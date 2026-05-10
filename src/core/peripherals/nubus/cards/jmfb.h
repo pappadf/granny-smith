@@ -92,4 +92,28 @@ extern const nubus_card_kind_t mdc_8_24_kind;
 void jmfb_pending_sense_set(uint8_t sense);
 uint8_t jmfb_pending_sense_get(void);
 
+// Pending high-level video-mode selection consumed by the next JMFB
+// factory call.  The id matches one of the entries enumerated by
+// `machine.profile(id).video_modes[].id` (e.g. "13in_rgb_8bpp").
+// When set, the factory:
+//   1. resolves id → (monitor, depth) via mdc_8_24_monitors[],
+//   2. overrides the pending sense to the monitor's sense_code,
+//   3. seeds PRAM with the boot-ROM validity tokens ($00=$A8,
+//      $0C-$0F='NuMc') and the slot-9 sPRAMRec bytes that name
+//      the requested (sister sRsrcID, spDepth) pair, so the Slot
+//      Manager's GET_SLOT_DEPTH picks it up at first boot.
+// Mirrors how `tests/integration/iicx-video-modes/test.script`
+// drives the same dance shell-side.  Passing NULL or "" clears
+// the pending selection.
+void jmfb_pending_video_mode_set(const char *id);
+const char *jmfb_pending_video_mode_get(void);
+
+// Look up a video-mode entry by id ("monitor_Nbpp") in the JMFB
+// catalog.  Writes the resolved monitor + depth into *out_monitor
+// / *out_depth_bpp on success and returns true; returns false (and
+// leaves the out-params untouched) when id doesn't match any
+// catalog entry.  Used by the JMFB factory to consume a pending
+// video-mode selection.
+bool jmfb_video_mode_lookup(const char *id, const nubus_monitor_t **out_monitor, int *out_depth_bpp);
+
 #endif // NUBUS_CARDS_JMFB_H

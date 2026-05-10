@@ -771,6 +771,7 @@ const hw_profile_t machine_iicx = {
     .has_adb = true,
     .has_nubus = true,
     .nubus_slot_count = 3,
+    .nubus_slots = iicx_slots,
 
     .init = iicx_init,
     .reset = iicx_reset,

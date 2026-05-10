@@ -30,6 +30,7 @@
 #include "memory.h"
 #include "nubus.h"
 #include "rom.h"
+#include "rtc.h"
 #include "system.h"
 #include "system_config.h"
 
@@ -57,6 +58,12 @@ static const struct nubus_monitor *monitor_for_sense(uint8_t sense);
 // configuration doesn't leak across machine reinitialisations.
 static uint8_t s_pending_sense = 0x6;
 static bool s_pending_sense_set = false;
+
+// Pending video-mode selection set via `machine.video_mode = "id"`
+// (mirrors s_pending_sense above; consumed in the same factory
+// invocation).  At most 31 chars + NUL fits any "monitor_Nbpp" id.
+// Empty string means "no pending mode — fall back to plain sense".
+static char s_pending_video_mode_id[32] = "";
 
 // === Per-card private state =================================================
 
@@ -761,6 +768,21 @@ static int card_init(nubus_card_t *card, config_t *cfg, checkpoint_t *cp) {
         LOG(0, "Apple-341-0868.vrom not found; declaration ROM is zero-filled");
     }
 
+    // If a pending video-mode id was set (via `machine.video_mode =
+    // "13in_rgb_8bpp"`), resolve it now — it overrides the pending
+    // sense and triggers PRAM seeding below.
+    const nubus_monitor_t *seeded_monitor = NULL;
+    int seeded_depth_bpp = 0;
+    if (s_pending_video_mode_id[0]) {
+        if (jmfb_video_mode_lookup(s_pending_video_mode_id, &seeded_monitor, &seeded_depth_bpp)) {
+            s_pending_sense = seeded_monitor->sense_code;
+            s_pending_sense_set = true;
+        } else {
+            LOG(1, "jmfb: pending video_mode '%s' did not match any catalog entry; ignored", s_pending_video_mode_id);
+        }
+        s_pending_video_mode_id[0] = '\0';
+    }
+
     // Monitor sense code — consumed from the pending-sense slot the
     // shell can set via `nubus.video_sense = N` before `machine.boot`.
     // The default is $6 (Standard RGB / 13" AppleColor), which keeps
@@ -828,6 +850,58 @@ static int card_init(nubus_card_t *card, config_t *cfg, checkpoint_t *cp) {
     // unmapped memory and QuickDraw bus-errors.
     memory_map_host_region_alias(cfg->mem_map, p->slot_base + 0x900000u, p->slot_base);
 
+    // If the user picked a video mode via `machine.video_mode = "id"`,
+    // seed PRAM so the Slot Manager's GET_SLOT_DEPTH lands on it at
+    // boot.  Mirrors the dance `tests/integration/iicx-video-modes/
+    // test.script` does shell-side.  PRAM is already alive at this
+    // point — RTC is initialised earlier in the machine init sequence.
+    if (seeded_monitor && seeded_depth_bpp > 0) {
+        rtc_t *rtc = system_rtc();
+        if (rtc) {
+            uint8_t spDepth = 0x80;
+            switch (seeded_depth_bpp) {
+            case 1:
+                spDepth = 0x80;
+                break;
+            case 2:
+                spDepth = 0x81;
+                break;
+            case 4:
+                spDepth = 0x82;
+                break;
+            case 8:
+                spDepth = 0x83;
+                break;
+            default:
+                LOG(1, "jmfb: unexpected video-mode depth=%d; PRAM seed using $80 (1bpp)", seeded_depth_bpp);
+                break;
+            }
+            // Boot-ROM cold-init validity tokens (docs/pram.md §3) —
+            // without these `_InitUtil` rewrites low-PRAM and zeroes
+            // XPRAM at boot, clobbering our slot-9 sPRAMRec seed.
+            rtc_pram_write(rtc, 0x00, 0xA8);
+            rtc_pram_write(rtc, 0x0C, 0x4E); // 'N'
+            rtc_pram_write(rtc, 0x0D, 0x75); // 'u'
+            rtc_pram_write(rtc, 0x0E, 0x4D); // 'M'
+            rtc_pram_write(rtc, 0x0F, 0x63); // 'c'
+            // Per-slot sPRAMRec layout (8 bytes): each slot's record
+            // lives at offset (0x46 + (slot - 9) * 8) in PRAM (see
+            // docs/pram.md §6).  $46..$47 = BoardID, $48 = savedMode,
+            // $49/$4A = savedSRsrcID / savedRawSRsrcID, $4B..$4D = 0.
+            uint8_t pram_off = (uint8_t)(0x46 + (card->slot - 9) * 8);
+            rtc_pram_write(rtc, pram_off + 0, 0x00);
+            rtc_pram_write(rtc, pram_off + 1, 0x27); // BoardID = $0027 (JMFB)
+            rtc_pram_write(rtc, pram_off + 2, spDepth);
+            rtc_pram_write(rtc, pram_off + 3, seeded_monitor->srsrc_sister);
+            rtc_pram_write(rtc, pram_off + 4, seeded_monitor->srsrc_sister);
+            rtc_pram_write(rtc, pram_off + 5, 0x00);
+            rtc_pram_write(rtc, pram_off + 6, 0x00);
+            rtc_pram_write(rtc, pram_off + 7, 0x00);
+            LOG(1, "jmfb: seeded slot-%d PRAM for video mode '%s' (sister=$%02X spDepth=$%02X)", card->slot,
+                seeded_monitor->id, seeded_monitor->srsrc_sister, spDepth);
+        }
+    }
+
     return 0;
 }
 
@@ -891,15 +965,56 @@ static nubus_card_t *factory(int slot, config_t *cfg, checkpoint_t *cp) {
     return card;
 }
 
-// Five monitor types per the Rev B ROM mode matrix (proposal §3.2.5).
-static const int mdc_full_depths[] = {1, 2, 4, 8, 24, 0};
-static const int mdc_8bpp_depths[] = {1, 2, 4, 8, 0};
+// Monitor types the Rev B ROM supports (proposal §3.2.5 + the mode
+// catalog Apple ships in chip[$4000..$502B] of the JMFB VROM, see
+// Apple-341-0868-vrom.asm §6b).
+//
+// `depths` lists the supported bit-depths that are PRAM-reachable on
+// this card — i.e. modes the user could pick in the Monitors control
+// panel and have survive a reboot.  24 bpp is *not* listed: its
+// spDepth4 entry only exists in the INACTIVE Ax-pair sister sResources
+// and `_SlotManager $06 sReadFHeader` rejects them at boot.  Apple's
+// "Millions of Colors" mode was runtime-only on this card.
+//
+// `sense_code` is the value the card's monitor-sense lines report
+// when this display is connected.  `srsrc_sister` is the top-level
+// "Ax" sister sResource ID that PrimaryInit selects for this
+// monitor (the ACTIVE list when 32-bit QuickDraw isn't loaded; on
+// stock System 7.0.1 we stay on Ax).  Both bytes were verified
+// empirically by the iicx-video-modes integration test.
+// 13" RGB is listed first so it's the catalog default — matches the
+// JMFB's cold-init sense ($6 = 13" RGB) when no monitor is explicitly
+// chosen.  monitor_for_sense() looks up by sense_code, not list order.
+static const int mdc_8_24_4depths[] = {1, 2, 4, 8, 0};
 static const nubus_monitor_t mdc_8_24_monitors[] = {
-    {.id = "12in_rgb", .name = "12\" RGB", .width = 512, .height = 384, .depths = mdc_full_depths},
-    {.id = "13in_rgb", .name = "13\" AppleColor", .width = 640, .height = 480, .depths = mdc_full_depths},
-    {.id = "15in_bw", .name = "15\" Portrait B&W", .width = 640, .height = 870, .depths = mdc_8bpp_depths},
-    {.id = "16in_rgb", .name = "16\" RGB", .width = 832, .height = 624, .depths = mdc_8bpp_depths},
-    {.id = "21in_rgb", .name = "21\" RGB", .width = 1152, .height = 870, .depths = mdc_8bpp_depths},
+    {.id = "13in_rgb",
+     .name = "13\" AppleColor",
+     .width = 640,
+     .height = 480,
+     .depths = mdc_8_24_4depths,
+     .sense_code = 0x6,
+     .srsrc_sister = 0xA6},
+    {.id = "12in_rgb",
+     .name = "12\" RGB",
+     .width = 512,
+     .height = 384,
+     .depths = mdc_8_24_4depths,
+     .sense_code = 0x2,
+     .srsrc_sister = 0xA2},
+    {.id = "15in_bw",
+     .name = "15\" Portrait B&W",
+     .width = 640,
+     .height = 870,
+     .depths = mdc_8_24_4depths,
+     .sense_code = 0x1,
+     .srsrc_sister = 0xA1},
+    {.id = "21in_rgb",
+     .name = "21\" RGB",
+     .width = 1152,
+     .height = 870,
+     .depths = mdc_8_24_4depths,
+     .sense_code = 0x0,
+     .srsrc_sister = 0xA7},
     {0},
 };
 
@@ -957,6 +1072,65 @@ void jmfb_pending_sense_set(uint8_t sense) {
 
 uint8_t jmfb_pending_sense_get(void) {
     return s_pending_sense;
+}
+
+void jmfb_pending_video_mode_set(const char *id) {
+    if (!id || !*id) {
+        s_pending_video_mode_id[0] = '\0';
+        return;
+    }
+    snprintf(s_pending_video_mode_id, sizeof s_pending_video_mode_id, "%s", id);
+}
+
+const char *jmfb_pending_video_mode_get(void) {
+    return s_pending_video_mode_id[0] ? s_pending_video_mode_id : NULL;
+}
+
+// Parse "monitor_Nbpp" into (monitor, N).  monitor portion is matched
+// case-sensitively against entries in mdc_8_24_monitors[]; N is parsed
+// as a decimal integer and validated against the monitor's depth list.
+bool jmfb_video_mode_lookup(const char *id, const nubus_monitor_t **out_monitor, int *out_depth_bpp) {
+    if (!id || !*id)
+        return false;
+    const char *underscore_bpp = strstr(id, "_");
+    while (underscore_bpp) {
+        const char *next = strstr(underscore_bpp + 1, "_");
+        if (!next)
+            break;
+        underscore_bpp = next;
+    }
+    if (!underscore_bpp)
+        return false;
+    size_t mon_len = (size_t)(underscore_bpp - id);
+    if (mon_len == 0 || mon_len >= 32)
+        return false;
+    char mon_id[32];
+    memcpy(mon_id, id, mon_len);
+    mon_id[mon_len] = '\0';
+    // Trailing chunk should be e.g. "_8bpp" — strip the underscore and
+    // the "bpp" suffix.
+    const char *bpp_str = underscore_bpp + 1;
+    char *end = NULL;
+    long bpp = strtol(bpp_str, &end, 10);
+    if (!end || end == bpp_str || strcmp(end, "bpp") != 0)
+        return false;
+    for (const nubus_monitor_t *m = mdc_8_24_monitors; m->id; m++) {
+        if (strcmp(m->id, mon_id) != 0)
+            continue;
+        if (!m->depths)
+            return false;
+        for (const int *d = m->depths; *d; d++) {
+            if ((int)bpp == *d) {
+                if (out_monitor)
+                    *out_monitor = m;
+                if (out_depth_bpp)
+                    *out_depth_bpp = (int)bpp;
+                return true;
+            }
+        }
+        return false; // monitor matched but depth didn't
+    }
+    return false;
 }
 
 const nubus_card_kind_t mdc_8_24_kind = {

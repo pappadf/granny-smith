@@ -7,10 +7,12 @@
 #include "machine.h"
 
 #include "json_encode.h"
+#include "nubus.h"
 #include "object.h"
 #include "system.h"
 #include "system_config.h"
 #include "value.h"
+#include "nubus/card.h"
 
 #include <stdbool.h>
 #include <stdint.h>
@@ -212,6 +214,89 @@ static value_t encode_profile(const hw_profile_t *p) {
     json_int(b, (int64_t)p->cdrom_id);
     json_key(b, "needs_vrom");
     json_bool(b, p->needs_vrom);
+
+    // video_modes: flat per-(monitor, depth) catalog aggregated across
+    // every populated NuBus slot whose card-kind has a non-NULL
+    // monitor list.  Each entry carries the data the configuration
+    // dialog needs (id, human label, dimensions, depth in bpp); the
+    // bytes the JMFB factory needs (sense_code, srsrc_sister) stay
+    // C-side and are looked up at machine.boot time when the dialog
+    // sets `machine.video_mode = "<id>"`.  Empty array for machines
+    // without configurable video.
+    json_key(b, "video_modes");
+    json_open_arr(b);
+    if (p->nubus_slots) {
+        for (const struct nubus_slot_decl *s = p->nubus_slots; s->slot; s++) {
+            // Slot card-kind ids to query for monitors:
+            //   BUILTIN: builtin_card_id (single)
+            //   VIDEO:   default_card    (the monitor list is per-card-kind, not
+            //                             per-instance, so default_card is enough
+            //                             to enumerate the catalog the user can pick)
+            const char *card_id = NULL;
+            if (s->kind == NUBUS_SLOT_BUILTIN)
+                card_id = s->builtin_card_id;
+            else if (s->kind == NUBUS_SLOT_VIDEO)
+                card_id = s->default_card;
+            if (!card_id)
+                continue;
+            const nubus_card_kind_t *kind = nubus_card_find(card_id);
+            if (!kind || !kind->monitors)
+                continue;
+            for (const nubus_monitor_t *mon = kind->monitors; mon->id; mon++) {
+                if (!mon->depths)
+                    continue;
+                for (const int *d = mon->depths; *d; d++) {
+                    char id_buf[64];
+                    char label_buf[128];
+                    snprintf(id_buf, sizeof id_buf, "%s_%dbpp", mon->id, *d);
+                    snprintf(label_buf, sizeof label_buf, "%s · %u\xc3\x97%u · %d bpp", mon->name, mon->width,
+                             mon->height, *d);
+                    json_open_obj(b);
+                    json_key(b, "id");
+                    json_str(b, id_buf);
+                    json_key(b, "label");
+                    json_str(b, label_buf);
+                    json_key(b, "width");
+                    json_int(b, (int64_t)mon->width);
+                    json_key(b, "height");
+                    json_int(b, (int64_t)mon->height);
+                    json_key(b, "depth_bpp");
+                    json_int(b, (int64_t)*d);
+                    json_close_obj(b);
+                }
+            }
+        }
+    }
+    json_close_arr(b);
+
+    // Default mode id matches the first (monitor, depth) tuple — i.e.
+    // the card's first monitor at its lowest supported depth.  For the
+    // JMFB this is "12in_rgb_1bpp"; the dialog can override.  If no
+    // video_modes were emitted (non-video machine) the field is "".
+    json_key(b, "video_mode_default");
+    {
+        const char *first_id = NULL;
+        char first_buf[64];
+        if (p->nubus_slots) {
+            for (const struct nubus_slot_decl *s = p->nubus_slots; s->slot && !first_id; s++) {
+                const char *card_id = (s->kind == NUBUS_SLOT_BUILTIN) ? s->builtin_card_id
+                                      : (s->kind == NUBUS_SLOT_VIDEO) ? s->default_card
+                                                                      : NULL;
+                if (!card_id)
+                    continue;
+                const nubus_card_kind_t *kind = nubus_card_find(card_id);
+                if (!kind || !kind->monitors)
+                    continue;
+                for (const nubus_monitor_t *mon = kind->monitors; mon->id && !first_id; mon++) {
+                    if (!mon->depths || !*mon->depths)
+                        continue;
+                    snprintf(first_buf, sizeof first_buf, "%s_%dbpp", mon->id, *mon->depths);
+                    first_id = first_buf;
+                }
+            }
+        }
+        json_str(b, first_id ? first_id : "");
+    }
 
     json_close_obj(b);
     return json_finish(b);
