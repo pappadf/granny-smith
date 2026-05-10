@@ -1,19 +1,19 @@
 # Integration test configuration: IIcx Video Modes
-# Cycle the Apple Macintosh Display Card 8•24 (JMFB) through every
-# supported pixel depth on the 13" RGB monitor sense — 1, 2, 4, 8, and
-# 24 bpp at 640x480 — and verify the framebuffer renders correctly at
-# each.  See tests/integration/iicx-video-modes/test.script for the
-# detailed setup, and docs/pram.md §9 for the reasoning behind the
-# direct-register-programming approach (vs. PRAM-driven boot mode,
-# which the IIcx ROM does not honour at the boot-icon stage).
+# Boots IIcx with the System 7.0.1 floppy, drives the Apple Macintosh
+# Display Card 8•24 (JMFB) through 1, 2, 4, and 8 bpp at 640x480 by
+# calling SetDepth on the active GDevice from the running OS, and
+# verifies the rendered Finder desktop at each depth.  Then cold-
+# boots once per supported monitor sense (12" RGB / 15" Portrait
+# B&W / 21" RGB Kong) and verifies the boot-icon screen at each
+# resolution at 1bpp.  See tests/integration/iicx-video-modes/test.script
+# for the detailed setup, and docs/pram.md §9 for the reasoning.
 
 TEST_NAME := IIcx Video Modes
-TEST_DESC := Cycles JMFB through 1/2/4/8/24 bpp via direct CLUTPBCR/RowWords programming and verifies the renderer at each depth.
+TEST_DESC := Real Finder-at-N-bpp via SetDepth + cold-boot resolution sweep on the JMFB.
 
 TEST_ROM := roms/IIcx.rom
 
-# 8 MB RAM lets the JMFB driver complete PrimaryInit cleanly (matches
-# the iicx-boot / iicx-floppy budgets).  No floppy media — the test
-# anchors at the boot ROM's "insert disk" floppy/? icon, which is
-# painted at 1 bpp by PrimaryInit before any user-mode code runs.
-TEST_ARGS := model=iicx ram=8192
+# 8 MB RAM lets the JMFB driver complete PrimaryInit cleanly and
+# matches the iicx-floppy budget so the Finder boot timing transfers
+# directly.
+TEST_ARGS := model=iicx ram=8192 fd=$(TEST_DATA)/systems/System_7_0_1.image

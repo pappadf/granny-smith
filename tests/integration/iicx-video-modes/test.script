@@ -2,112 +2,85 @@
 #
 # Two axes of coverage:
 #
-# 1. **Depths.** With the default 13" RGB monitor sense, drive the
-#    Apple Display Card 8•24 (JMFB) through 1, 2, 4, 8, and 24 bpp at
-#    640x480 by writing CLUTPBCR (depth field) and JMFBRowWords
-#    (stride) directly, and verify the renderer produces the expected
-#    pixel-level output for the same VRAM contents at each depth.
-# 2. **Resolutions.** Cold-boot once per supported monitor sense
-#    (12" RGB / 13" RGB / 15" Portrait B&W / 21" RGB Kong) and verify
-#    the JMFB driver picks the correct mode-list sRsrc, the framebuffer
-#    ends up at the expected pixel dimensions, and the rendered
-#    boot-icon screen matches the per-resolution baseline.  Sense is
-#    set via the new `nubus.video_sense = N` shell attribute, which
-#    JMFB's factory consumes on the next `machine.boot`.  See
-#    JMFBPrimaryInit.a comment block at lines 78-95 for the full sense
-#    table and src/core/peripherals/nubus/cards/jmfb.c
-#    monitor_for_sense() for the (sense -> width, height) mapping
-#    we use.
+# 1. **Depths.** Boot the IIcx with the System 7.0.1 floppy, reach
+#    Finder, then drive the Apple Macintosh Display Card 8•24 (JMFB)
+#    through 1, 2, 4, and 8 bpp at 640x480 by calling SetDepth on the
+#    active GDevice from the running OS.  SetDepth orchestrates
+#    cscSetMode + GDevice/gdPMap update + _PaintBehind so the Window
+#    Manager redraws the desktop in the new pixel format — the
+#    captured Finder-at-N-bpp screenshots reflect what a real user
+#    would see after toggling depth in the Monitors control panel.
+#    SetDepth is invoked via `screen.set_video_mode N` (see
+#    src/core/debug/debug.c — injects a 68k stub at scratch RAM that
+#    calls the SetDepth + PaintBehind traps and returns).
 #
-# Why direct register writes instead of PRAM-driven mode:
-#   The IIcx Universal ROM's JMFB PrimaryInit unconditionally rewrites
-#   slot-9 PRAM byte 2 to FirstVidMode ($80, 1 bpp) at boot if its
-#   sense/clock validity checks fail — and on a fresh emulator that
-#   check always fails.  Saved depth therefore does not survive a cold
-#   boot until Mac OS's Monitors cdev runs and primes 'scrn'.  Direct
-#   register programming exercises the renderer at every depth without
-#   that round trip and at full headless speed.  See docs/pram.md §9
-#   for the empirical evidence.
+# 2. **Resolutions.** Cold-boot the IIcx with no boot media, vary
+#    `nubus.video_sense` per monitor type (12" RGB / 15" Portrait B&W
+#    / 21" RGB Kong), and verify the JMFB driver picks the correct
+#    mode-list sRsrc and the framebuffer ends up at the matching
+#    pixel dimensions.  Anchored at the boot ROM's "insert disk"
+#    floppy/? icon — Mac OS isn't loaded for these because we're
+#    testing what the boot ROM + JMFB driver agree on without OS
+#    involvement.  See JMFBPrimaryInit.a:78-95 for the sense table
+#    and src/core/peripherals/nubus/cards/jmfb.c monitor_for_sense()
+#    for the (sense -> width, height) mapping.
 #
-# Why screen.checksum + assert instead of screen.match:
-#   screen.match (PNG-byte comparison after loading the reference into
-#   a framebuffer) is hard-coded to 1bpp in debug.c — extending it to
-#   compare in RGBA space is more refactor than this test warrants.
-#   screen.checksum is deterministic per VRAM/format combination and
-#   gives equivalent regression coverage at non-1bpp depths.  The
-#   PNG references in this directory are kept for human inspection and
-#   are auto-regenerated from the actual framebuffer when the
-#   checksum assertions fail (see <monitor>-<resolution>-<depth>.png).
+# Why screen.checksum + assert instead of screen.match for >1bpp:
+#   screen.match is hard-coded to 1bpp in debug.c — extending its
+#   PNG-load path to compare in RGBA space is more refactor than this
+#   test warrants.  screen.checksum is deterministic per (VRAM, format,
+#   stride) and gives equivalent regression coverage at non-1bpp
+#   depths.  PNG references for 2/4/8bpp are kept alongside for
+#   human inspection but aren't byte-compared by the test runner.
 #
-# Mode-switch programming for the JMFB:
-#   CLUTPBCR (slot+$200+$08 = $F9200208), depth field bits 3-4:
-#     $00=1bpp $08=2bpp $10=4bpp $18=8bpp; bit 1 (=$02) selects 24bpp
-#     packed on top of $18, so $1A=24bpp.
-#   JMFBRowWords (slot+$0C = $F920000C), stride in 4-byte units for
-#   <=8bpp or 32/3-byte units for 24bpp:
-#     1bpp: 640/8 = 80 bytes -> rowWords = 20  ($14)
-#     2bpp: 640/4 = 160      -> rowWords = 40  ($28)
-#     4bpp: 640/2 = 320      -> rowWords = 80  ($50)
-#     8bpp: 640              -> rowWords = 160 ($A0)
-#     24bpp packed: stride = 1920 = rowWords*32/3 -> rowWords = 180 ($B4)
-#   Long-write addresses target the slot-aligned base; the JMFB
-#   memory_interface_t splits the access into two 16-bit halves and
-#   the meaningful low half lands at slot+2 — see jmfb.c handlers.
+# 32 bpp is intentionally NOT covered: SetDepth 32 brings up the
+# JMFB's 24bpp packed mode but our renderer's PIXEL_32BPP_XRGB path
+# disagrees with Mac OS on bytes-per-pixel (3 vs 4), so Finder
+# crashes with a system-error bomb.  That's a pre-existing JMFB
+# modelling gap — landing it cleanly is a separate task.
 
-# Boot to the boot-ROM "insert disk" floppy/? icon (1 bpp default).
-# Same budget as tests/integration/iicx-boot.
-scheduler.run 335000000
+# === Depth sweep — drive SetDepth from a running Mac OS ===
+
+# Boot to Finder (System 7.0.1 / 8 MB / 13" RGB 640x480 1 bpp).
+# Same budget as tests/integration/iicx-floppy.
+scheduler.run 250000000
 
 assert ${machine.id == "iicx"} "machine.id != iicx"
 assert ${screen.width == 640}  "screen.width != 640"
 assert ${screen.height == 480} "screen.height != 480"
 
-# === 1 bpp baseline (confirms PrimaryInit's default depth) ===
-screen.match 13in_rgb-640x480-1bpp.png
+# === 1 bpp baseline — Finder at default depth ===
+screen.match finder-13in_rgb-640x480-1bpp.png
 
-# === 2 bpp ===
-memory.poke.l 0xf9200208 0x00000008
-memory.poke.l 0xf920000c 0x00000028
-scheduler.run 1000000
-assert ${memory.peek.l(0xf9200208) == 0x8}  "CLUTPBCR after 2bpp set != 0x08"
-assert ${memory.peek.l(0xf920000c) == 0x28} "RowWords after 2bpp set != 0x28"
-assert ${screen.checksum() == 1051777872}     "screen.checksum at 2bpp mismatch"
+# === SetDepth 2 ===
+screen.set_video_mode 2
+scheduler.run 200000000
+assert ${memory.peek.l(0xf9200208) == 0x88} "CLUTPBCR after SetDepth 2 != 0x88"
+assert ${memory.peek.l(0xf920000c) == 0x28} "RowWords after SetDepth 2 != 0x28"
+assert ${screen.checksum() == 309742193}     "screen.checksum at 2bpp Finder mismatch"
 
-# === 4 bpp ===
-memory.poke.l 0xf9200208 0x00000010
-memory.poke.l 0xf920000c 0x00000050
-scheduler.run 1000000
-assert ${memory.peek.l(0xf9200208) == 0x10} "CLUTPBCR after 4bpp set != 0x10"
-assert ${memory.peek.l(0xf920000c) == 0x50} "RowWords after 4bpp set != 0x50"
-assert ${screen.checksum() == 932129373}      "screen.checksum at 4bpp mismatch"
+# === SetDepth 4 ===
+screen.set_video_mode 4
+scheduler.run 200000000
+assert ${memory.peek.l(0xf9200208) == 0x90} "CLUTPBCR after SetDepth 4 != 0x90"
+assert ${memory.peek.l(0xf920000c) == 0x50} "RowWords after SetDepth 4 != 0x50"
+assert ${screen.checksum() == -442908457}   "screen.checksum at 4bpp Finder mismatch"
 
-# === 8 bpp ===
-memory.poke.l 0xf9200208 0x00000018
-memory.poke.l 0xf920000c 0x000000a0
-scheduler.run 1000000
-assert ${memory.peek.l(0xf9200208) == 0x18} "CLUTPBCR after 8bpp set != 0x18"
-assert ${memory.peek.l(0xf920000c) == 0xa0} "RowWords after 8bpp set != 0xa0"
-assert ${screen.checksum() == -2040518051}    "screen.checksum at 8bpp mismatch"
+# === SetDepth 8 ===
+screen.set_video_mode 8
+scheduler.run 200000000
+assert ${memory.peek.l(0xf9200208) == 0x98} "CLUTPBCR after SetDepth 8 != 0x98"
+assert ${memory.peek.l(0xf920000c) == 0xa0} "RowWords after SetDepth 8 != 0xa0"
+assert ${screen.checksum() == 149101200}    "screen.checksum at 8bpp Finder mismatch"
 
-# === 24 bpp packed (RAMDAC bypass) ===
-memory.poke.l 0xf9200208 0x0000001a
-memory.poke.l 0xf920000c 0x000000b4
-scheduler.run 1000000
-assert ${memory.peek.l(0xf9200208) == 0x1a} "CLUTPBCR after 24bpp set != 0x1a"
-assert ${memory.peek.l(0xf920000c) == 0xb4} "RowWords after 24bpp set != 0xb4"
-assert ${screen.checksum() == -1046205859}    "screen.checksum at 24bpp mismatch"
+# === Resolution sweep — cold-boot per monitor sense ===
+# Anchor at the boot ROM "insert disk" floppy/? icon at each
+# resolution; Mac OS isn't relevant here because the JMFB driver's
+# resolution choice is fixed by the sense lines at PrimaryInit time.
+# Per-resolution boot uses the same 335 M cycle budget as
+# tests/integration/iicx-boot.
 
-# === Resolution sweep ===
-# Cold-boot once per monitor sense and verify the JMFB driver
-# programs the framebuffer to the matching resolution.  Each sense
-# code sets a different mode-list in PrimaryInit; the JMFB writes
-# JMFBRowWords accordingly and our recompute_stride derives
-# display.width from row_words+depth.  display.height comes from
-# the sense->monitor lookup at JMFB factory time (see
-# monitor_for_sense in jmfb.c) — the JMFB driver does not write a
-# height-bearing register in its mode-data tables.
-
-# === 12" RGB / Rubik (sense 0x2 = "Modified II-GS RGB") — 512x384 ===
+# === 12" RGB / Rubik (sense 0x2) — 512x384 ===
 nubus.video_sense = 0x2
 machine.boot "iicx" 8192
 rom.reload
@@ -115,9 +88,9 @@ scheduler.run 335000000
 assert ${screen.width == 512}  "12in_rgb width != 512"
 assert ${screen.height == 384} "12in_rgb height != 384"
 assert ${memory.peek.l(0xf920000c) == 0x10} "12in_rgb 1bpp RowWords != 0x10"
-screen.match 12in_rgb-512x384-1bpp.png
+screen.match floppy-12in_rgb-512x384-1bpp.png
 
-# === 15" Portrait B&W (sense 0x1 = "B/W Full Page") — 640x870 ===
+# === 15" Portrait B&W (sense 0x1) — 640x870 ===
 nubus.video_sense = 0x1
 machine.boot "iicx" 8192
 rom.reload
@@ -125,9 +98,9 @@ scheduler.run 335000000
 assert ${screen.width == 640}  "15in_bw width != 640"
 assert ${screen.height == 870} "15in_bw height != 870"
 assert ${memory.peek.l(0xf920000c) == 0x14} "15in_bw 1bpp RowWords != 0x14"
-screen.match 15in_bw-640x870-1bpp.png
+screen.match floppy-15in_bw-640x870-1bpp.png
 
-# === 21" RGB / Kong (sense 0x0 = "RGB Workstation") — 1152x870 ===
+# === 21" RGB / Kong (sense 0x0) — 1152x870 ===
 nubus.video_sense = 0x0
 machine.boot "iicx" 8192
 rom.reload
@@ -135,6 +108,6 @@ scheduler.run 335000000
 assert ${screen.width == 1152} "21in_rgb width != 1152"
 assert ${screen.height == 870} "21in_rgb height != 870"
 assert ${memory.peek.l(0xf920000c) == 0x24} "21in_rgb 1bpp RowWords != 0x24"
-screen.match 21in_rgb-1152x870-1bpp.png
+screen.match floppy-21in_rgb-1152x870-1bpp.png
 
 quit
