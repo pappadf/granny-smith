@@ -1,18 +1,40 @@
 # Integration test: IIcx Video Modes
 #
-# Two axes of coverage:
+# Two axes of coverage, both driven by full cold-boots — no in-place
+# mode changes, no OS patching.
 #
-# 1. **Depths.** Boot the IIcx with the System 7.0.1 floppy, reach
-#    Finder, then drive the Apple Macintosh Display Card 8•24 (JMFB)
-#    through 1, 2, 4, and 8 bpp at 640x480 by calling SetDepth on the
-#    active GDevice from the running OS.  SetDepth orchestrates
-#    cscSetMode + GDevice/gdPMap update + _PaintBehind so the Window
-#    Manager redraws the desktop in the new pixel format — the
-#    captured Finder-at-N-bpp screenshots reflect what a real user
-#    would see after toggling depth in the Monitors control panel.
-#    SetDepth is invoked via `screen.set_video_mode N` (see
-#    src/core/debug/debug.c — injects a 68k stub at scratch RAM that
-#    calls the SetDepth + PaintBehind traps and returns).
+# 1. **Depths.** Boot the IIcx with the System 7.0.1 floppy at 13" RGB
+#    (sense $6) at 1, 2, 4, and 8 bpp.  Each depth is a separate cold
+#    boot: PRAM is seeded with the slot-9 sPRAMRec values that name
+#    the desired (monitor variant, depth) sResource on the Apple
+#    Macintosh Display Card 8•24 (JMFB), then Mac OS boots and the
+#    Slot Manager picks up the seeded mode at GET_SLOT_DEPTH time
+#    (boot ROM $40800820 → $408009F6).  Seeded values:
+#
+#      $00       = $A8                    low-PRAM validator
+#      $0C..$0F  = 'NuMc' ($4E754D63)     XPRAM validator
+#      $46..$47  = $0027                  BoardID = JMFB
+#      $48       = spDepth (varies)       savedMode  = $80/$81/$82/$83
+#      $49..$4A  = $B6 / $B6              savedSRsrcID, savedRawSRsrcID
+#                                         (= "Mac Hi-Res Display" — the
+#                                          ACTIVE Bx sister for 13" RGB
+#                                          per Apple-341-0868-vrom.asm
+#                                          §6b row $B6)
+#      $4B..$4D  = $00 / $00 / $00        specialFlag / clock / pad
+#
+#    Both validators are required: without $00=$A8 the boot ROM's
+#    _InitUtil zeroes XPRAM and the seed is lost; without 'NuMc' the
+#    XPRAM init runs even when low-PRAM passes (see docs/pram.md §3).
+#    spDepth $80/$81/$82/$83 = 1/2/4/8 bpp — the 4 ACTIVE entries on
+#    sRsrcID $B6.
+#
+#    24/32 bpp is intentionally NOT covered.  On the JMFB, 32bpp lives
+#    only in the INACTIVE Ax sister sResources (e.g. $A6 spDepth4) and
+#    `_SlotManager $06 sReadFHeader` rejects them — meaning a real
+#    user's "Millions of Colors" pick on this card never persisted
+#    across a reboot.  Reaching 32bpp from a test would require an OS
+#    patch (the abandoned `screen.set_video_mode` route) and is out
+#    of scope here.
 #
 # 2. **Resolutions.** Cold-boot the IIcx with no boot media, vary
 #    `nubus.video_sense` per monitor type (12" RGB / 15" Portrait B&W
@@ -32,56 +54,112 @@
 #   stride) and gives equivalent regression coverage at non-1bpp
 #   depths.  PNG references for 2/4/8bpp are kept alongside for
 #   human inspection but aren't byte-compared by the test runner.
-#
-# SetDepth 32 enters the JMFB's "millions of colours" mode where Mac
-# OS writes 4 bytes/pixel (XRGB) into VRAM at stride 2560 and the
-# RAMDAC bypass mode scans 3 of those 4 bytes per pixel for display
-# (per the Designing Cards & Drivers "24bpp packed-pixel" terminology
-# — the storage is XRGB; the visible colour depth is 24).  See
-# JMFBDriver.a's TFBM30Parms for the encoding the driver uses.
 
-# === Depth sweep — drive SetDepth from a running Mac OS ===
+# === Helpers ==================================================================
+# Same boot-to-Finder budget as tests/integration/iicx-floppy.
 
-# Boot to Finder (System 7.0.1 / 8 MB / 13" RGB 640x480 1 bpp).
-# Same budget as tests/integration/iicx-floppy.
+# === Depth sweep — one cold boot per (13" RGB, depth) =========================
+
+# --- 1 bpp (spDepth $80) ---
+machine.boot "iicx" 8192
+rom.reload
+floppy.drives[0].insert "../../data/systems/System_7_0_1.image"
+nubus.video_sense = 0x6
+rtc.pram_write 0x00 0xa8
+rtc.pram_write 0x0c 0x4e
+rtc.pram_write 0x0d 0x75
+rtc.pram_write 0x0e 0x4d
+rtc.pram_write 0x0f 0x63
+rtc.pram_write 0x46 0x00
+rtc.pram_write 0x47 0x27
+rtc.pram_write 0x48 0x80
+rtc.pram_write 0x49 0xb6
+rtc.pram_write 0x4a 0xb6
+rtc.pram_write 0x4b 0x00
+rtc.pram_write 0x4c 0x00
+rtc.pram_write 0x4d 0x00
 scheduler.run 250000000
-
 assert ${machine.id == "iicx"} "machine.id != iicx"
-assert ${screen.width == 640}  "screen.width != 640"
-assert ${screen.height == 480} "screen.height != 480"
-
-# === 1 bpp baseline — Finder at default depth ===
+assert ${screen.width == 640}  "1bpp screen.width != 640"
+assert ${screen.height == 480} "1bpp screen.height != 480"
+assert ${rtc.pram_read(0x48) == 0x80} "1bpp savedMode rewritten by ROM"
+assert ${memory.peek.l(0xf9200208) == 0x80} "1bpp CLUTPBCR != 0x80"
+assert ${memory.peek.l(0xf920000c) == 0x14} "1bpp RowWords != 0x14"
 screen.match finder-13in_rgb-640x480-1bpp.png
 
-# === SetDepth 2 ===
-screen.set_video_mode 2
-scheduler.run 200000000
-assert ${memory.peek.l(0xf9200208) == 0x88} "CLUTPBCR after SetDepth 2 != 0x88"
-assert ${memory.peek.l(0xf920000c) == 0x28} "RowWords after SetDepth 2 != 0x28"
-assert ${screen.checksum() == 309742193}     "screen.checksum at 2bpp Finder mismatch"
+# --- 2 bpp (spDepth $81) ---
+machine.boot "iicx" 8192
+rom.reload
+floppy.drives[0].insert "../../data/systems/System_7_0_1.image"
+nubus.video_sense = 0x6
+rtc.pram_write 0x00 0xa8
+rtc.pram_write 0x0c 0x4e
+rtc.pram_write 0x0d 0x75
+rtc.pram_write 0x0e 0x4d
+rtc.pram_write 0x0f 0x63
+rtc.pram_write 0x46 0x00
+rtc.pram_write 0x47 0x27
+rtc.pram_write 0x48 0x81
+rtc.pram_write 0x49 0xb6
+rtc.pram_write 0x4a 0xb6
+rtc.pram_write 0x4b 0x00
+rtc.pram_write 0x4c 0x00
+rtc.pram_write 0x4d 0x00
+scheduler.run 250000000
+assert ${rtc.pram_read(0x48) == 0x81}     "2bpp savedMode rewritten by ROM"
+assert ${memory.peek.l(0xf9200208) == 0x88} "2bpp CLUTPBCR != 0x88"
+assert ${memory.peek.l(0xf920000c) == 0x28} "2bpp RowWords != 0x28"
+assert ${screen.checksum() == 130002408}    "2bpp Finder screen.checksum mismatch"
 
-# === SetDepth 4 ===
-screen.set_video_mode 4
-scheduler.run 200000000
-assert ${memory.peek.l(0xf9200208) == 0x90} "CLUTPBCR after SetDepth 4 != 0x90"
-assert ${memory.peek.l(0xf920000c) == 0x50} "RowWords after SetDepth 4 != 0x50"
-assert ${screen.checksum() == -442908457}   "screen.checksum at 4bpp Finder mismatch"
+# --- 4 bpp (spDepth $82) ---
+machine.boot "iicx" 8192
+rom.reload
+floppy.drives[0].insert "../../data/systems/System_7_0_1.image"
+nubus.video_sense = 0x6
+rtc.pram_write 0x00 0xa8
+rtc.pram_write 0x0c 0x4e
+rtc.pram_write 0x0d 0x75
+rtc.pram_write 0x0e 0x4d
+rtc.pram_write 0x0f 0x63
+rtc.pram_write 0x46 0x00
+rtc.pram_write 0x47 0x27
+rtc.pram_write 0x48 0x82
+rtc.pram_write 0x49 0xb6
+rtc.pram_write 0x4a 0xb6
+rtc.pram_write 0x4b 0x00
+rtc.pram_write 0x4c 0x00
+rtc.pram_write 0x4d 0x00
+scheduler.run 250000000
+assert ${rtc.pram_read(0x48) == 0x82}     "4bpp savedMode rewritten by ROM"
+assert ${memory.peek.l(0xf9200208) == 0x90} "4bpp CLUTPBCR != 0x90"
+assert ${memory.peek.l(0xf920000c) == 0x50} "4bpp RowWords != 0x50"
+assert ${screen.checksum() == -1064842012} "4bpp Finder screen.checksum mismatch"
 
-# === SetDepth 8 ===
-screen.set_video_mode 8
-scheduler.run 200000000
-assert ${memory.peek.l(0xf9200208) == 0x98} "CLUTPBCR after SetDepth 8 != 0x98"
-assert ${memory.peek.l(0xf920000c) == 0xa0} "RowWords after SetDepth 8 != 0xa0"
-assert ${screen.checksum() == 149101200}    "screen.checksum at 8bpp Finder mismatch"
+# --- 8 bpp (spDepth $83) ---
+machine.boot "iicx" 8192
+rom.reload
+floppy.drives[0].insert "../../data/systems/System_7_0_1.image"
+nubus.video_sense = 0x6
+rtc.pram_write 0x00 0xa8
+rtc.pram_write 0x0c 0x4e
+rtc.pram_write 0x0d 0x75
+rtc.pram_write 0x0e 0x4d
+rtc.pram_write 0x0f 0x63
+rtc.pram_write 0x46 0x00
+rtc.pram_write 0x47 0x27
+rtc.pram_write 0x48 0x83
+rtc.pram_write 0x49 0xb6
+rtc.pram_write 0x4a 0xb6
+rtc.pram_write 0x4b 0x00
+rtc.pram_write 0x4c 0x00
+rtc.pram_write 0x4d 0x00
+scheduler.run 250000000
+assert ${rtc.pram_read(0x48) == 0x83}     "8bpp savedMode rewritten by ROM"
+assert ${memory.peek.l(0xf9200208) == 0x98} "8bpp CLUTPBCR != 0x98"
+assert ${memory.peek.l(0xf920000c) == 0xa0} "8bpp RowWords != 0xa0"
+assert ${screen.checksum() == -456393471} "8bpp Finder screen.checksum mismatch"
 
-# === SetDepth 32 ("millions of colours" — JMFB stores XRGB, RAMDAC scans 24bpp) ===
-screen.set_video_mode 32
-scheduler.run 200000000
-assert ${memory.peek.l(0xf9200208) == 0x9a} "CLUTPBCR after SetDepth 32 != 0x9a"
-assert ${memory.peek.l(0xf920000c) == 0xf0} "RowWords after SetDepth 32 != 0xf0"
-assert ${screen.checksum() == 1026734418}   "screen.checksum at 24bpp Finder mismatch"
-
-# === Resolution sweep — cold-boot per monitor sense ===
+# === Resolution sweep — cold-boot per monitor sense ===========================
 # Anchor at the boot ROM "insert disk" floppy/? icon at each
 # resolution; Mac OS isn't relevant here because the JMFB driver's
 # resolution choice is fixed by the sense lines at PrimaryInit time.
