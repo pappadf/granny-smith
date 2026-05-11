@@ -2,8 +2,7 @@
 # Both the legacy `set-time` command and the new `rtc.time` attribute
 # read/write the same state — flipping one and reading via the other
 # is the strongest test of view-vs-state separation. PRAM access goes
-# through pram_read / pram_write methods (the legacy shell parser
-# doesn't have `=` so attr assignment lands with the M9 cutover).
+# through the `rtc.pram` child object (peek / poke / snapshot / ...).
 
 scheduler.run 50000
 
@@ -22,10 +21,10 @@ assert ${rtc.time == 1000000}
 # PRAM read of a known address. Mac PRAM is initialised by the boot
 # code, so the contents depend on how far through boot we are. We
 # write a sentinel and assert the read returns the same value.
-echo ${rtc.pram_write(0x80, 0xAB)}
-assert ${rtc.pram_read(0x80) == 0xAB}
+rtc.pram.poke 0x80 0xAB:1
+assert ${rtc.pram.peek(0x80) == 0xAB}
 
-# Read the full PRAM snapshot — output is "0x..." hex string.
-rtc.pram
+# Read the full PRAM snapshot — output is V_BYTES.
+rtc.pram.snapshot
 
 quit
