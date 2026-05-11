@@ -351,8 +351,8 @@ static void handle_stopwatch_write16(jmfb_priv_t *p, uint32_t off, uint16_t val)
         p->sw_ic_reg = val;
         if (val & SRST)
             LOG(2, "SWICReg: soft reset");
-        // ENVERTI: 1 = vertical interrupts enabled.  Card decides whether
-        // to call nubus_assert_irq based on this in on_vbl.
+        // Bit 1 = VINT_DISABLE (active-high mask): cleared = VBL IRQ on
+        // every VBL, set = masked.  card_on_vbl gates on this.
         return;
     case SWClrVInt + 2:
         // Write any value clears the pending VBL and de-asserts the
@@ -749,6 +749,9 @@ static int card_init(nubus_card_t *card, config_t *cfg, checkpoint_t *cp) {
         return -1;
     p->card = card;
     p->slot_base = nubus_slot_base(card->slot);
+    // VBL IRQ starts masked — bit 1 is active-high disable.  Mac OS's
+    // InstallSlotInterrupt clears it once the SlotIQE is installed.
+    p->sw_ic_reg = VINT_DISABLE;
 
     p->vram = calloc(1, JMFB_VRAM_SIZE);
     p->vrom = calloc(1, JMFB_DECLROM_BUS_SIZE);
@@ -933,7 +936,7 @@ static void card_on_vbl(nubus_card_t *card, config_t *cfg) {
     jmfb_priv_t *p = card->priv;
     if (!p)
         return;
-    if (p->sw_ic_reg & ENVERTI)
+    if (!(p->sw_ic_reg & VINT_DISABLE))
         nubus_assert_irq(card);
     // Mark the framebuffer dirty every VBL so the renderer re-uploads.
     // CPU writes to VRAM happen directly through the host_region mapping

@@ -76,7 +76,12 @@
 #define PIXSEL1       0x2000u // Endeavor reset / pixel-clock source
 #define VRSTB         0x8000u // Master reset
 #define SRST          0x0001u // Soft reset (Stopwatch SWICReg bit 0)
-#define ENVERTI       0x0002u // Enable vertical interrupt (SWICReg bit 1)
+// Vertical-interrupt MASK (Stopwatch SWICReg bit 1).  Active-HIGH disable:
+// bit clear = card raises slot IRQ on every VBL, bit set = VBL IRQ masked.
+// Confirmed against the Apple driver's InstallSlotInterrupt (writes $5,
+// bit 1 clear, to enable) / RemoveSlotInterrupt (writes $7, bit 1 set,
+// to disable) — see local/gs-docs/asm/Apple-341-0868-vrom.asm L3017,L3049.
+#define VINT_DISABLE 0x0002u
 
 // Per-card kind descriptor — registered in nubus.c's g_card_registry.
 extern const nubus_card_kind_t mdc_8_24_kind;
