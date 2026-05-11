@@ -47,7 +47,7 @@ uint8_t *system_framebuffer(void) {
 // Stub display descriptor — unit tests don't render but a few code paths
 // (debug.c screen.* methods) reach for system_display(); return a 1bpp
 // 512x342 descriptor pointing at the harness framebuffer when present.
-const display_t *system_display(void) {
+display_t *system_display(void) {
     static display_t synth = {
         .width = 512,
         .height = 342,
@@ -56,13 +56,12 @@ const display_t *system_display(void) {
         .bits = NULL,
         .clut = NULL,
         .clut_len = 0,
-        .generation = 0,
     };
     test_context_t *ctx = test_get_active_context();
     const uint8_t *bits = ctx ? test_get_framebuffer(ctx) : NULL;
     if (bits != synth.bits) {
         synth.bits = bits;
-        synth.generation++;
+        synth.fb_dirty = true;
     }
     return bits ? &synth : NULL;
 }

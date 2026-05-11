@@ -44,7 +44,7 @@ typedef struct plus_state {
     sound_t *sound; // PWM sound (VIA-driven)
     // Plus owns its display descriptor directly — no NuBus involved.
     // bits flips between the main and alternate framebuffer addresses
-    // each time VIA1 PA6 toggles; generation bumps on every change so
+    // each time VIA1 PA6 toggles; fb_dirty is set on every change so
     // the renderer re-uploads.
     display_t display;
 } plus_state_t;
@@ -77,13 +77,13 @@ static void plus_update_ipl(config_t *sim, int level, bool value);
 
 // Switch between main and alternate video buffer addresses for the Plus.
 // Main buffer is at top of RAM minus 0x5900; alternate is 0x8000 bytes lower.
-// Updates the descriptor's `bits` field and bumps `generation` so the
-// renderer re-uploads on the next frame.
+// Updates the descriptor's `bits` field and marks the framebuffer dirty so
+// the renderer re-uploads on the next frame.
 static void plus_use_video_buffer(config_t *cfg, bool main) {
     plus_state_t *ps = plus_state(cfg);
     uint32_t addr = main ? (PLUS_RAM_TOP - 0x5900) : (PLUS_RAM_TOP - 0x5900 - 0x8000);
     ps->display.bits = ram_native_pointer(cfg->mem_map, addr);
-    ps->display.generation++;
+    ps->display.fb_dirty = true;
 }
 
 // Initialise the Plus display descriptor.  Called once during plus_init,
@@ -97,12 +97,12 @@ static void plus_display_init(config_t *cfg) {
     ps->display.bits = NULL;
     ps->display.clut = NULL;
     ps->display.clut_len = 0;
-    ps->display.generation = 1;
+    ps->display.shape_dirty = true;
 }
 
 // hw_profile_t.display callback — surface the Plus framebuffer to
 // system_display() on the non-NuBus path.
-static const display_t *plus_display(config_t *cfg) {
+static display_t *plus_display(config_t *cfg) {
     plus_state_t *ps = plus_state(cfg);
     return ps && ps->display.bits ? &ps->display : NULL;
 }

@@ -46,8 +46,8 @@ typedef struct nubus_card_ops {
     // Optional: present this card's framebuffer as the primary display
     // surface.  Returns NULL if the card has no display.  The pointer is
     // stable across the card's lifetime; the descriptor's contents are
-    // live-mutable (see display.h for the generation-bump contract).
-    const display_t *(*display)(nubus_card_t *card);
+    // live-mutable (see display.h for the dirty-flag contract).
+    display_t *(*display)(nubus_card_t *card);
 
     // Checkpoint hooks; the bus controller calls these for every populated
     // slot in canonical slot order.
@@ -102,6 +102,18 @@ typedef struct nubus_monitor {
     const int *depths; // 0-terminated array of supported bpp values
     uint8_t sense_code; // 0..7 — value of the card's monitor-sense register
     uint8_t srsrc_sister; // top-level Ax sister sResource ID (savedSRsrcID)
+    // CRT response curve (physical phosphor / gamma response) that the
+    // monitor on the far end of the cable would apply.  Mac System 7's
+    // video driver gamma-pre-corrects CLUT writes for THIS specific
+    // monitor; on real hardware the CRT's response cancels the
+    // pre-correction, so the user sees a neutral image.  In software
+    // we apply the response ourselves at display time.  NULL means
+    // "identity" (display the card's CLUT output directly — fine for
+    // monitors whose gamma table happens to be near-identity, like
+    // the 13" and 12" RGB Apple-Color displays).  Non-NULL is a
+    // pointer to a 3 × 256 byte table, R/G/B order; see display_t::
+    // crt_response for the on-display contract.
+    const uint8_t (*crt_response)[256];
 } nubus_monitor_t;
 
 // Per-card driver descriptor — one static instance per registered driver.

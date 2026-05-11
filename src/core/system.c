@@ -190,7 +190,7 @@ rtc_t *system_rtc(void) {
 // for the WebGL renderer's existing call sites.  Step 5 rewrites the
 // renderer to consume the descriptor directly.
 uint8_t *system_framebuffer(void) {
-    const display_t *d = system_display();
+    display_t *d = system_display();
     return d ? (uint8_t *)d->bits : NULL;
 }
 
@@ -200,12 +200,12 @@ uint8_t *system_framebuffer(void) {
 // hw_profile_t.display callback to surface its own descriptor.  Returns
 // NULL when no machine is booted or the booted machine has no primary
 // display (e.g. a IIcx with no card seated, once IIcx lands).
-const display_t *system_display(void) {
+display_t *system_display(void) {
     config_t *cfg = global_emulator;
     if (!cfg || !cfg->machine)
         return NULL;
     if (cfg->nubus) {
-        const display_t *d = nubus_primary_display(cfg->nubus);
+        display_t *d = nubus_primary_display(cfg->nubus);
         if (d)
             return d;
     }

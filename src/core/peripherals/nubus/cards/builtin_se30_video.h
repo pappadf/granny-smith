@@ -33,7 +33,7 @@ extern const nubus_card_kind_t builtin_se30_video_kind;
 
 // Switch the on-screen framebuffer between the primary ($8040) and
 // alternate ($0040) VRAM offsets.  Called from se30_via1_output when
-// the OS toggles VIA1 PA6.  Bumps display.generation so the renderer
+// the OS toggles VIA1 PA6.  Sets display.fb_dirty so the renderer
 // re-uploads.  No-op if `card` is NULL.
 void builtin_se30_video_select_buffer(nubus_card_t *card, bool main_buf);
 

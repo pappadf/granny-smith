@@ -292,7 +292,8 @@ static int card_init(nubus_card_t *card, config_t *cfg, checkpoint_t *cp) {
     p->display.bits = p->vram + SE30_FB_PRIMARY_OFFSET;
     p->display.clut = NULL;
     p->display.clut_len = 0;
-    p->display.generation = 1;
+    p->display.shape_dirty = true;
+    p->display.fb_dirty = true;
 
     card->priv = p;
     return 0;
@@ -310,7 +311,7 @@ static void card_teardown(nubus_card_t *card, config_t *cfg) {
     card->priv = NULL;
 }
 
-static const display_t *card_display(nubus_card_t *card) {
+static display_t *card_display(nubus_card_t *card) {
     se30_priv_t *p = card->priv;
     return p ? &p->display : NULL;
 }
@@ -370,7 +371,7 @@ void builtin_se30_video_select_buffer(nubus_card_t *card, bool main_buf) {
         return;
     p->main_buf = main_buf;
     p->display.bits = p->vram + (main_buf ? SE30_FB_PRIMARY_OFFSET : SE30_FB_ALTERNATE_OFFSET);
-    p->display.generation++;
+    p->display.fb_dirty = true;
 }
 
 uint8_t *builtin_se30_video_vram(nubus_card_t *card) {
@@ -404,5 +405,5 @@ void builtin_se30_video_checkpoint_restore_vram(nubus_card_t *card, checkpoint_t
     // VIA1 PA6 to a value that toggles the buffer (via_redrive_outputs
     // will fire after we return).
     p->display.bits = p->vram + (p->main_buf ? SE30_FB_PRIMARY_OFFSET : SE30_FB_ALTERNATE_OFFSET);
-    p->display.generation++;
+    p->display.fb_dirty = true;
 }

@@ -143,10 +143,11 @@ typedef struct display display_t;
 
 // System-level display accessor: returns the active display descriptor for
 // whichever machine is currently booted, or NULL if no display is available.
-// Consumers must read fresh each frame and observe `generation` bumps to
-// invalidate any cached state — pointer identity is stable across the
-// machine's lifetime, but the pointed-to fields are live-mutable.
-const display_t *system_display(void);
+// Consumers read fresh each frame; the renderer additionally consumes
+// (reads and clears) the per-resource dirty flags on display_t to decide
+// what to re-upload.  Pointer identity is stable across the machine's
+// lifetime; the pointed-to fields are live-mutable.
+display_t *system_display(void);
 
 // Check if emulator is initialized and running
 bool system_is_initialized(void);

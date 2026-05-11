@@ -51,16 +51,17 @@ async function runForInstructions(page: import('@playwright/test').Page, log: (m
 // as rendered in the viewport — that's what we want to compare.
 
 // NOTE on the WebGL renderer bug fixed alongside this test:
-// The renderer (em_video.c) caches uploads keyed on display.generation,
-// and previously generation only bumped on JMFB *register* writes
-// (CSR/VBASE/RowWords/CLUT).  Direct VRAM writes — the mainline path
-// for QuickDraw / Finder painting — never bumped generation, so the
-// canvas froze on the first post-PrimaryInit frame.  jmfb.c's
-// card_on_vbl now bumps generation each VBL so the renderer re-uploads
-// the framebuffer ~60 times/sec.  Without that fix, the browser canvas
-// stayed on the "Welcome to Macintosh" splash even though VRAM
-// contained the fully-painted Finder desktop (verified by the C-side
-// screen.save vs page.locator('#screen').screenshot() divergence).
+// The renderer (em_video.c) only re-uploads pixels when the producer
+// marks display.fb_dirty, and previously the producer set it only on
+// JMFB *register* writes (CSR/VBASE/RowWords/CLUT).  Direct VRAM
+// writes — the mainline path for QuickDraw / Finder painting — never
+// notified the renderer, so the canvas froze on the first post-
+// PrimaryInit frame.  jmfb.c's card_on_vbl now sets fb_dirty each VBL
+// so the renderer re-uploads ~60 times/sec.  Without that fix, the
+// browser canvas stayed on the "Welcome to Macintosh" splash even
+// though VRAM contained the fully-painted Finder desktop (verified by
+// the C-side screen.save vs page.locator('#screen').screenshot()
+// divergence).
 test.describe('IIcx Boot (browser/canvas-level)', () => {
   test('boots to floppy/? icon (no boot media)', async ({ page, log }) => {
     test.setTimeout(360_000);

@@ -5,14 +5,15 @@
 // WebGL2 renderer for the emulator's display.  Step 5 of the IIcx/IIx
 // proposal (§3.3.3): format-aware shader pipeline + variable canvas.
 // Reads the active `display_t` from system_display() each frame and
-// adapts:
+// consumes its dirty flags:
 //
-//   * format crossed an indexed/direct boundary (or first frame): bind
-//     a different fragment-shader program, reallocate the framebuffer
-//     texture in the matching internal format
-//   * width/height/stride changed: reallocate texture, resize canvas
-//   * bits changed (same shape): re-upload the framebuffer texture
-//   * clut changed: re-upload the CLUT texture (indexed formats only)
+//   * shape_dirty: rebind the fragment-shader program for the current
+//     format, reallocate the framebuffer texture, resize the canvas,
+//     and re-upload pixels
+//   * fb_dirty (and not shape_dirty): re-upload pixels into the
+//     existing texture
+//   * clut_dirty: re-upload the CLUT texture (indexed formats only)
+//   * response_dirty: re-upload the per-channel CRT response LUT
 //
 // v1 ships full pixel paths for PIXEL_1BPP_MSB and PIXEL_8BPP (the
 // shipping cards land on these); 16-bpp / 32-bpp programs are stubs
@@ -41,26 +42,12 @@
 // scratch upload buffer is sized once.
 #define MAX_FB_BYTES (1152u * 870u * 4u)
 
-// Cached snapshot of the descriptor we last rendered.  When the live
-// descriptor's generation differs from `last_generation`, we walk through
-// the change tree below and re-bind / re-upload as needed.
-typedef struct cache {
-    uint64_t last_generation;
-    pixel_format_t last_format;
-    uint32_t last_width;
-    uint32_t last_height;
-    uint32_t last_stride;
-    uint32_t last_clut_len;
-    bool initialised;
-} cache_t;
-
-static cache_t s_cache = {0};
-
 // WebGL resources
 static EMSCRIPTEN_WEBGL_CONTEXT_HANDLE s_ctx = 0;
 static GLuint s_vbo = 0;
 static GLuint s_fb_tex = 0; // framebuffer texture (format depends on pixel_format)
 static GLuint s_clut_tex = 0; // 256x1 RGBA texture for indexed-format CLUTs
+static GLuint s_response_tex = 0; // 256x3 R8 texture — per-channel CRT response LUT
 
 // Per-format shader programs.  Indexed by pixel_format_t.  A NULL slot means
 // "no program for this format yet" — fall back to the 1bpp program with
@@ -75,6 +62,7 @@ typedef struct prog_uniforms {
     GLint u_stride; // float — bytes per row in the framebuffer texture
     GLint u_texture; // sampler2D (framebuffer)
     GLint u_clut; // sampler2D (CLUT, optional)
+    GLint u_response; // sampler2D (256x3 R8 CRT response LUT, optional)
 } prog_uniforms_t;
 
 static prog_uniforms_t s_uniforms[NUM_FORMATS] = {0};
@@ -124,11 +112,18 @@ static const char *FS_1BPP = "#version 300 es\n"
 
 // 8 bpp indexed.  Framebuffer texture stores raw bytes in red channel;
 // CLUT texture is 256x1 RGBA8.  Sample the byte, scale to [0,1], lookup
-// in the CLUT.
+// in the CLUT, then route each component through the per-channel CRT
+// response LUT (`u_response`, 256x3 R8: row 0 = R, row 1 = G, row 2 = B).
+// The response LUT models the monitor's physical gamma response — see
+// display_t::crt_response.  For monitors with near-identity gamma
+// (12"/13" RGB, Portrait), the LUT is filled with identity so this
+// pass is a no-op; for Kong it un-does Apple's gamma pre-correction
+// and yields a neutral image.
 static const char *FS_8BPP = "#version 300 es\n"
                              "precision mediump float;\n"
                              "uniform sampler2D u_texture;\n"
                              "uniform sampler2D u_clut;\n"
+                             "uniform sampler2D u_response;\n"
                              "uniform vec2 u_fb_size;\n"
                              "uniform float u_stride;\n"
                              "in  vec2 v_uv;\n"
@@ -141,7 +136,10 @@ static const char *FS_8BPP = "#version 300 es\n"
                              "                         (y + 0.5) / u_fb_size.y);\n"
                              "    float idx     = floor(texture(u_texture, tc).r * 255.0 + 0.5);\n"
                              "    vec4 entry    = texture(u_clut, vec2((idx + 0.5) / 256.0, 0.5));\n"
-                             "    fragColor     = vec4(entry.rgb, 1.0);\n"
+                             "    float r_out   = texture(u_response, vec2(entry.r, 0.5 / 3.0)).r;\n"
+                             "    float g_out   = texture(u_response, vec2(entry.g, 1.5 / 3.0)).r;\n"
+                             "    float b_out   = texture(u_response, vec2(entry.b, 2.5 / 3.0)).r;\n"
+                             "    fragColor     = vec4(r_out, g_out, b_out, 1.0);\n"
                              "}\n";
 
 // Stubs for 2/4 bpp indexed: same shape as 8bpp but unpacking a 2- or
@@ -200,6 +198,7 @@ static GLuint link_program(const char *vs_src, const char *fs_src, prog_uniforms
         u_out->u_stride = glGetUniformLocation(prog, "u_stride");
         u_out->u_texture = glGetUniformLocation(prog, "u_texture");
         u_out->u_clut = glGetUniformLocation(prog, "u_clut");
+        u_out->u_response = glGetUniformLocation(prog, "u_response");
     }
     return prog;
 }
@@ -261,6 +260,7 @@ static void allocate_fb_texture(pixel_format_t format, uint32_t stride, uint32_t
         tex_width = stride / 4;
         break;
     }
+    glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, s_fb_tex);
     glTexImage2D(GL_TEXTURE_2D, 0, internal, tex_width, height, 0, src_fmt, src_type, NULL);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
@@ -271,6 +271,11 @@ static void allocate_fb_texture(pixel_format_t format, uint32_t stride, uint32_t
 
 // (Re)upload the live framebuffer bytes into the existing texture.  Caller
 // must have called allocate_fb_texture first if the shape changed.
+//
+// Explicitly selects texture unit 0 before binding so this routine doesn't
+// clobber the s_clut_tex / s_response_tex bindings on units 1 / 2 by
+// rebinding s_fb_tex on whichever unit happened to be active.  Same fix
+// applies to upload_clut (unit 1) and upload_response (unit 2).
 static void upload_fb(const display_t *d) {
     GLenum src_fmt = (d->format == PIXEL_32BPP_XRGB) ? GL_RGBA : GL_RED;
     uint32_t tex_width = (d->format == PIXEL_32BPP_XRGB) ? d->stride / 4 : d->stride;
@@ -280,6 +285,7 @@ static void upload_fb(const display_t *d) {
         bytes = sizeof(s_upload_scratch);
     memcpy(s_upload_scratch, d->bits, bytes);
 
+    glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, s_fb_tex);
     glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, tex_width, d->height, src_fmt, GL_UNSIGNED_BYTE, s_upload_scratch);
 }
@@ -296,6 +302,7 @@ static void upload_clut(const display_t *d) {
         buf[i * 4 + 2] = d->clut[i].b;
         buf[i * 4 + 3] = 255;
     }
+    glActiveTexture(GL_TEXTURE1);
     glBindTexture(GL_TEXTURE_2D, s_clut_tex);
     glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, 256, 1, GL_RGBA, GL_UNSIGNED_BYTE, buf);
 }
@@ -367,20 +374,58 @@ static void init_gl(void) {
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+
+    // CRT response LUT — 256x3 R8 texture.  Initialised to identity (every
+    // row 0..255) so display sources whose monitor has no per-channel
+    // response (`display.crt_response == NULL`) render through a pass-
+    // through path.  Non-identity responses (e.g. Kong's blue-boost
+    // table) get uploaded by upload_response when the display source
+    // assigns its monitor's table.
+    glGenTextures(1, &s_response_tex);
+    glBindTexture(GL_TEXTURE_2D, s_response_tex);
+    uint8_t identity[3 * 256];
+    for (int c = 0; c < 3; c++)
+        for (int v = 0; v < 256; v++)
+            identity[c * 256 + v] = (uint8_t)v;
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_R8, 256, 3, 0, GL_RED, GL_UNSIGNED_BYTE, identity);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
 }
 
-// Walk the change tree against the live descriptor and re-bind / re-upload
-// only what actually changed.  Returns false if nothing to draw (no display).
-static bool refresh_from_display(const display_t *d, bool force_full) {
+// Upload the per-channel CRT response LUT.  If the display source has a
+// non-NULL crt_response pointer, upload its 3x256 bytes; otherwise upload
+// the identity table so the response pass is a no-op for monitors whose
+// gamma is near-identity (12"/13" RGB, Portrait B&W).
+static void upload_response(const display_t *d) {
+    glActiveTexture(GL_TEXTURE2);
+    glBindTexture(GL_TEXTURE_2D, s_response_tex);
+    if (d->crt_response) {
+        glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, 256, 3, GL_RED, GL_UNSIGNED_BYTE, d->crt_response);
+    } else {
+        uint8_t identity[3 * 256];
+        for (int c = 0; c < 3; c++)
+            for (int v = 0; v < 256; v++)
+                identity[c * 256 + v] = (uint8_t)v;
+        glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, 256, 3, GL_RED, GL_UNSIGNED_BYTE, identity);
+    }
+}
+
+// Consume the display's dirty flags and re-bind / re-upload exactly what
+// the producer marked changed.  Returns false if nothing to draw (no
+// display).  shape_dirty implies the framebuffer texture must be
+// reallocated and its pixels re-uploaded, so we treat it as fb-implying.
+static bool refresh_from_display(display_t *d, bool force_full) {
     if (!d || !d->bits)
         return false;
 
-    bool shape_changed = !s_cache.initialised || force_full || s_cache.last_format != d->format ||
-                         s_cache.last_width != d->width || s_cache.last_height != d->height ||
-                         s_cache.last_stride != d->stride;
-    bool clut_changed = !s_cache.initialised || force_full || s_cache.last_clut_len != d->clut_len;
+    bool shape = force_full || d->shape_dirty;
+    bool fb = force_full || d->fb_dirty || shape;
+    bool clut = force_full || d->clut_dirty;
+    bool response = force_full || d->response_dirty;
 
-    if (shape_changed) {
+    if (shape) {
         glUseProgram(program_for(d->format));
         const prog_uniforms_t *u = uniforms_for(d->format);
         if (u->u_fb_size >= 0)
@@ -397,23 +442,28 @@ static bool refresh_from_display(const display_t *d, bool force_full) {
             glBindTexture(GL_TEXTURE_2D, s_clut_tex);
             glUniform1i(u->u_clut, 1);
         }
+        if (u->u_response >= 0) {
+            glActiveTexture(GL_TEXTURE2);
+            glBindTexture(GL_TEXTURE_2D, s_response_tex);
+            glUniform1i(u->u_response, 2);
+        }
         allocate_fb_texture(d->format, d->stride, d->height);
-        if (s_cache.last_width != d->width || s_cache.last_height != d->height || force_full)
-            resize_canvas(d->width, d->height);
+        resize_canvas(d->width, d->height);
     }
 
-    upload_fb(d);
+    if (fb)
+        upload_fb(d);
 
-    if (clut_changed && d->clut && d->clut_len > 0)
+    if (clut && d->clut && d->clut_len > 0)
         upload_clut(d);
 
-    s_cache.last_generation = d->generation;
-    s_cache.last_format = d->format;
-    s_cache.last_width = d->width;
-    s_cache.last_height = d->height;
-    s_cache.last_stride = d->stride;
-    s_cache.last_clut_len = d->clut_len;
-    s_cache.initialised = true;
+    if (response)
+        upload_response(d);
+
+    d->fb_dirty = false;
+    d->shape_dirty = false;
+    d->clut_dirty = false;
+    d->response_dirty = false;
     return true;
 }
 
@@ -434,20 +484,19 @@ void em_video_init(void) {
 }
 
 void em_video_update(void) {
-    const display_t *d = system_display();
+    display_t *d = system_display();
     if (!d || !d->bits)
         return;
-    // Generation-based change detection: if it didn't bump, the descriptor
-    // is byte-identical to the previous frame.  Skip the redundant
-    // re-upload — the texture already holds the right bytes.
-    if (s_cache.initialised && d->generation == s_cache.last_generation)
+    // If the producer hasn't marked anything dirty, the GPU still holds
+    // the right pixels and the canvas already shows them — nothing to do.
+    if (!d->fb_dirty && !d->shape_dirty && !d->clut_dirty && !d->response_dirty)
         return;
     if (refresh_from_display(d, /*force_full*/ false))
         draw();
 }
 
 void em_video_force_redraw(void) {
-    const display_t *d = system_display();
+    display_t *d = system_display();
     if (refresh_from_display(d, /*force_full*/ true))
         draw();
 }

@@ -77,7 +77,7 @@ nubus_card_t *nubus_card(nubus_bus_t *bus, int slot);
 // Return the primary display — the card whose framebuffer drives the
 // canvas.  v1: first slot in declared order whose ops->display() returns
 // non-NULL.
-const display_t *nubus_primary_display(nubus_bus_t *bus);
+display_t *nubus_primary_display(nubus_bus_t *bus);
 
 // VBL fan-out.  Family code calls this from glue030_trigger_vbl after
 // pulsing the GLUE-driven CA1 lines; it iterates the slot table and

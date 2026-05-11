@@ -118,7 +118,7 @@ typedef struct hw_profile {
     // glue030-family machines leave this NULL because their display
     // comes from a NuBus card via cfg->nubus.  Forward declaration of
     // display_t lives in system.h.
-    const struct display *(*display)(struct config *cfg);
+    struct display *(*display)(struct config *cfg);
 } hw_profile_t;
 
 // Registry: find a machine profile by id

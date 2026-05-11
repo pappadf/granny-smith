@@ -5,16 +5,18 @@
 // Display descriptor used by all display sources (machine-owned framebuffers
 // on Plus, NuBus video cards on the glue030 family).  Consumers (WebGL
 // renderer, PNG save/match, screen.* surface) read the descriptor every
-// frame; if `generation` bumped vs the cached snapshot, anything in the
-// descriptor may have changed.
+// frame; the renderer additionally watches the per-resource dirty flags
+// below to decide what to re-upload to the GPU.
 //
 // All fields are live-mutable: a card may change `bits`, `width`, `height`,
-// `stride`, `format`, `clut`, or `clut_len` at any time.  `generation` must
-// bump on every change.
+// `stride`, `format`, `clut`, or `clut_len` at any time.  Whenever it does,
+// it sets the matching `*_dirty` flag.  The renderer clears the flag after
+// consuming it.
 
 #ifndef NUBUS_DISPLAY_H
 #define NUBUS_DISPLAY_H
 
+#include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -44,8 +46,34 @@ typedef struct rgba8 {
 
 // Display descriptor.  Owned by whichever source (machine or NuBus card)
 // drives the active display.  Consumers must not retain the pointer across
-// frames — read fresh each frame, observe `generation` bumps to invalidate
-// any cached state.
+// frames — read fresh each frame and consume the dirty flags to learn
+// which GPU resources need re-uploading.
+//
+// `crt_response` models the physical response curve of the monitor on the
+// far end of the cable.  Mac System 7's video drivers gamma-pre-correct
+// every CLUT write per a per-monitor gamma table (see the JMFB driver's
+// SetGamma / ProgramCLUT in Apple-341-0868-vrom.asm); on real hardware
+// the CRT's phosphor/electron-gun gamma applies the inverse and the user
+// sees a perceptually-neutral image.  Software displays have no CRT to
+// cancel the pre-correction, so without modelling the monitor's response
+// the gamma table shows through as a chromatic tint (Kong's blue
+// attenuation surfaces as yellow on screen).  `crt_response` is the
+// inverse LUT applied per channel at display time; identity means
+// "no monitor response model — show what the card put on the bus."
+//
+// Layout: 3 × 256 bytes.  crt_response[c][v] = the perceptual output
+// value when channel c receives byte v on the bus.  Channel order is
+// R/G/B = 0/1/2.  The display source owns the storage; consumers read
+// const.
+//
+// Dirty flags: producers set the relevant flag(s) at every mutation
+// point; the renderer reads them at refresh time and clears them after
+// consuming.  Flags are not mutually exclusive — e.g. an SE/30 alt-buffer
+// swap changes only `bits` (fb_dirty); a JMFB depth change re-derives
+// stride and format (shape_dirty); a CLUT entry write only touches the
+// palette (clut_dirty).  shape_dirty implies the framebuffer texture
+// must be reallocated and its contents re-uploaded; the renderer treats
+// shape_dirty as fb-implying so producers don't need to set both.
 typedef struct display {
     uint32_t width; // pixels
     uint32_t height; // pixels
@@ -54,7 +82,12 @@ typedef struct display {
     const uint8_t *bits; // primary framebuffer; stride * height bytes
     const rgba8_t *clut; // 0/4/16/256-entry palette; NULL for direct formats
     uint32_t clut_len; // entries in clut (0 for direct formats)
-    uint64_t generation; // bumps on any change to the above fields
+    const uint8_t (*crt_response)[256]; // 3 × 256 bytes (R/G/B inverse gamma); NULL = identity
+
+    bool fb_dirty; // `bits` contents may have changed (incl. pointer swap)
+    bool shape_dirty; // width/height/stride/format changed — texture needs reallocation
+    bool clut_dirty; // CLUT entries changed
+    bool response_dirty; // crt_response changed (effectively init-only today)
 } display_t;
 
 #endif // NUBUS_DISPLAY_H

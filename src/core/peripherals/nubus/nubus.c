@@ -121,7 +121,7 @@ nubus_card_t *nubus_card(nubus_bus_t *bus, int slot) {
     return bus->cards[slot];
 }
 
-const display_t *nubus_primary_display(nubus_bus_t *bus) {
+display_t *nubus_primary_display(nubus_bus_t *bus) {
     if (!bus)
         return NULL;
     // First slot in numerical order whose ops->display() returns non-NULL.
@@ -129,7 +129,7 @@ const display_t *nubus_primary_display(nubus_bus_t *bus) {
         nubus_card_t *card = bus->cards[i];
         if (!card || !card->ops || !card->ops->display)
             continue;
-        const display_t *d = card->ops->display(card);
+        display_t *d = card->ops->display(card);
         if (d)
             return d;
     }
