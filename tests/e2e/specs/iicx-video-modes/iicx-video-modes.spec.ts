@@ -4,9 +4,30 @@
 // IIcx video-mode matrix end-to-end test — the WebGL/UI-flow sibling of
 // tests/integration/iicx-video-modes.  Cold-boots the IIcx through the
 // machine-configuration dialog for every (monitor, depth) tuple the JMFB
-// catalog exposes, runs to the Finder desktop in "fast" (max-speed)
-// scheduler mode at 100% zoom, and matches the post-shader canvas
-// screenshot against a checked-in baseline.
+// catalog exposes, runs to the "Welcome to Macintosh" splash in
+// "fast" (max-speed) scheduler mode at 100% zoom, and matches the
+// post-shader canvas screenshot against a checked-in baseline.
+//
+// Boot-drive wait skip.  The Universal ROM's boot-drive-discovery wait
+// at $40801610 burns ~16.8 s of wall-clock time polling the drive
+// queue for a key-filtered drive type that never matches the floppy.
+// We short-circuit it the same way the integration test does: poke
+// $8805 (Cmd-Shift-Power) into $017A (KeyMap modifier word) once the
+// wait routine has been entered, then clear $017A so System 7's INIT
+// loader doesn't see Cmd-Shift held.  Wasm VBL is host-time-driven
+// (vs cycle-driven in headless), so the 16.8 s saving is real wall
+// time, not just emulated cycles.
+//
+// Match-at-Welcome strategy.  The JMFB is fully configured (resolution
+// / depth / CLUT / stride) by the time the splash paints, so matching
+// there rather than at Finder exercises the same plumbing and cuts the
+// per-mode wall time substantially.  Because wasm VBL is host-time
+// driven, Mac-OS state at any given cum_instr varies slightly between
+// runs (different host throughput → different VBL count at the same
+// cum_instr).  We absorb the variance two ways: (a) target a cum_instr
+// deep inside the splash plateau so a few-VBL drift can't push us out,
+// and (b) call `scheduler.stop` immediately after hitting the target
+// so the canvas freezes on a deterministic frame.
 //
 // Why a separate test, not an extension of the headless integration run:
 //
@@ -36,6 +57,7 @@
 // Playwright run.
 
 import { test, expect } from '../../fixtures';
+import { runCommand, waitForPrompt } from '../../helpers/run-command';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 
@@ -79,32 +101,6 @@ const MODES: VideoMode[] = (process.env.IICX_VIDEO_MODES
   ? ALL_MODES.filter(m => process.env.IICX_VIDEO_MODES!.split(',').map(s => s.trim()).includes(m.id))
   : ALL_MODES);
 
-// 200 M instructions reaches a stable Finder desktop for every mode in
-// the matrix — verified by running the full 16-mode matrix at 200 M and
-// confirming every baseline matched the 250 M-generated reference.  The
-// integration test uses 250 M (test.script: `scheduler.run 250000000`)
-// for headroom; the WebGL test takes the same screenshot at the same
-// stable state, so the smaller budget is enough here.  Overridable via
-// IICX_BOOT_INSTRUCTIONS for boot-budget probes.
-const BOOT_INSTRUCTIONS = 200_000_000;
-
-// Spin until cpu.instr_count has advanced by `delta`.  scheduler.run on the
-// worker thread returns immediately — wall-clock here is dominated by the
-// worker's emulation throughput, which `scheduler.mode = max` minimises.
-async function runForInstructions(page: import('@playwright/test').Page, delta: number, log: (m: string) => void, timeoutMs = 240_000) {
-  const start = Number(await page.evaluate(() => (window as any).gsEval('cpu.instr_count'))) >>> 0;
-  const target = start + delta;
-  const t0 = Date.now();
-  while (Date.now() - t0 < timeoutMs) {
-    const cur = Number(await page.evaluate(() => (window as any).gsEval('cpu.instr_count'))) >>> 0;
-    if (cur >= target) {
-      log(`[video-modes] ran ${cur - start} instr in ${Date.now() - t0}ms`);
-      return;
-    }
-    await page.waitForTimeout(500);
-  }
-  throw new Error(`runForInstructions: only advanced to ${target - delta}/${delta} in ${timeoutMs}ms`);
-}
 
 // Drive the toolbar zoom-out button from the 200% default down to 100% so
 // the captured canvas screenshot is at the framebuffer's native resolution
@@ -269,14 +265,26 @@ test.describe('IIcx video-mode matrix via web UI', () => {
       // "live" default to keep playback realtime.
       await page.evaluate(() => (window as any).gsEval('scheduler.mode', ['max']));
 
-      // Drive the boot to Finder (mirrors the integration test budget).
-      await runForInstructions(page, BOOT_INSTRUCTIONS, log);
-      await page.waitForTimeout(2000); // canvas + RAF flush
+      // Drive the boot to the Welcome splash via three bounded `run N`
+      // stages with wait-skip pokes in between.  Mirrors the integration
+      // test's `scheduler.run` sequence in test.script (40M past wait
+      // routine entry → poke $8805 → 2M poll → clear → 15M to splash
+      // plateau).  The 15M final stage sits deep enough into the splash
+      // plateau to absorb the wasm-specific VBL drift described in the
+      // file-header.
+      await runCommand(page, 'run 40000000');
+      await waitForPrompt(page);
+      await page.evaluate(() => (window as any).gsEval('memory.poke.w', [0x017A, 0x8805]));
+      await runCommand(page, 'run 2000000');
+      await waitForPrompt(page);
+      await page.evaluate(() => (window as any).gsEval('memory.poke.w', [0x017A, 0]));
+      await runCommand(page, 'run 15000000');
+      await waitForPrompt(page);
 
       // Compare against the per-mode baseline.  First run with
       // `--update-snapshots` seeds the file; subsequent runs verify.
       const png = await page.locator('#screen').screenshot();
-      expect(png).toMatchSnapshot(`finder-${mode.id}.png`, { maxDiffPixelRatio: 0.01 });
+      expect(png).toMatchSnapshot(`welcome-${mode.id}.png`, { maxDiffPixelRatio: 0.01 });
 
       firstIteration = false;
     }
