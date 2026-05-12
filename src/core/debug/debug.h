@@ -130,14 +130,16 @@ int shell_find_argv(int argc, char **argv);
 bool predicate_is_truthy(const char *s);
 
 // Framebuffer utilities — used by typed `screen.*` wrappers and the
-// legacy `screenshot` command. Both layers call into the same
-// primitives so neither has to know about the other.
-#define DEBUG_SCREEN_WIDTH  512
-#define DEBUG_SCREEN_HEIGHT 342
-uint32_t framebuffer_checksum(const uint8_t *fb);
-uint32_t framebuffer_region_checksum(const uint8_t *fb, int top, int left, int bottom, int right);
-int match_framebuffer_with_png(const uint8_t *fb, const char *filename);
-int save_framebuffer_as_png(const uint8_t *fb, const char *filename);
+// legacy `screenshot` command.  Each takes a const display_t * so the
+// helper can read `bits`, `width`, `height`, `stride`, `format`, and (in
+// later steps) `clut`.  v1 supports PIXEL_1BPP_MSB only — paths for the
+// other pixel formats land alongside the JMFB driver in step 6.
+struct display;
+typedef struct display display_t;
+uint32_t framebuffer_checksum(const display_t *d);
+uint32_t framebuffer_region_checksum(const display_t *d, int top, int left, int bottom, int right);
+int match_framebuffer_with_png(const display_t *d, const char *filename);
+int save_framebuffer_as_png(const display_t *d, const char *filename);
 
 // === M6: object-model accessors ============================================
 //

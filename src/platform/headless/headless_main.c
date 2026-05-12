@@ -42,6 +42,26 @@ void frontend_force_redraw(void) {
     // No video in headless mode
 }
 
+// Headless target: VBL is driven by a recurring cycle event so timing
+// is a pure function of cumulative cycles, not host wall-clock.  Arm
+// it for every machine the system creates — the cold boot in main()
+// AND every `machine.boot` (which calls system_destroy + system_create
+// to swap models, resetting the scheduler in the process).  Without
+// this hook the rebooted machine never receives VBL ticks → Mac's
+// `Ticks` low-mem global never advances → the boot ROM's Tick-based
+// busy-wait at $40801652 spins forever.
+//
+// scheduler_start_vbl is idempotent (checks has_event), so re-calls
+// during checkpoint restore or repeated boots are safe.  WASM keeps
+// its own override that drives VBL on host rhythm via
+// scheduler_main_loop.  See docs/scheduler.md §10.
+void system_post_create(config_t *cfg) {
+    (void)cfg;
+    scheduler_t *s = system_scheduler();
+    if (s)
+        scheduler_start_vbl(s, global_emulator);
+}
+
 // Signal handling for graceful shutdown
 static volatile sig_atomic_t g_running = 1;
 static volatile sig_atomic_t g_interrupted = 0;
@@ -913,15 +933,9 @@ int main(int argc, char *argv[]) {
         return 1;
     }
 
-    // Headless target: VBL is driven by a recurring cycle event so timing is a
-    // pure function of cumulative cycles, not host wall-clock.  The WASM target
-    // does not call this — its scheduler_main_loop injects VBL on host rhythm
-    // to stay synced with the browser's render loop.  See docs/scheduler.md §10.
-    {
-        scheduler_t *s = system_scheduler();
-        if (s)
-            scheduler_start_vbl(s, global_emulator);
-    }
+    // VBL was already armed by the system_post_create override above —
+    // it ran from inside system_create, which the rom_load path or the
+    // earlier system_create call has already kicked.
 
     // In daemon mode, stop the scheduler that se30_init/plus_init auto-started.
     // The agent will explicitly send "run" or "s" commands to control execution.

@@ -1,0 +1,17 @@
+# Integration test: IIx Boot
+# Mirrors iicx-boot but validates the IIx-specific machine-ID
+# (PA6 = 0, PB3 = 0) and the larger six-slot NuBus address space.
+
+scheduler.run 100000000
+
+assert ${machine.id == "iix"} "machine.id != iix"
+
+# JMFB card seated in slot $9 same as IIcx — the slot table is the
+# only declarative difference, plus the empty $C..$E slots.
+assert ${screen.width == 640} "screen.width != 640"
+assert ${screen.height == 480} "screen.height != 480"
+
+# Real screen content must be present (see iicx-boot for rationale).
+assert ${screen.checksum() != 0} "screen.checksum == 0 — JMFB never painted"
+
+quit

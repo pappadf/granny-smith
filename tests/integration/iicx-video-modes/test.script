@@ -1,0 +1,247 @@
+# Integration test: IIcx Video Modes
+#
+# Cold-boot matrix covering 4 monitor types × 4 colour depths on the
+# Apple Macintosh Display Card 8•24 (JMFB).  Each combination is a
+# separate `machine.boot` of the IIcx with the System 7.0.1 floppy at
+# the chosen `nubus.video_sense`, with PRAM seeded so the Slot
+# Manager's GET_SLOT_DEPTH (boot ROM $40800820 → $408009F6) picks up
+# the desired sResource at boot time.  Mac OS reaches Finder, paints
+# the desktop at the seeded depth, and the test verifies the
+# rendered framebuffer against a checked-in reference PNG.
+#
+# Seeded slot-9 sPRAMRec (8 bytes packed as one big-endian literal):
+#
+#   $46..$47 = $0027              BoardID = JMFB
+#   $48      = spDepth (varies)   savedMode  = $80/$81/$82/$83
+#   $49..$4A = sister / sister    savedSRsrcID, savedRawSRsrcID
+#                                 (the ACTIVE Ax sister for this sense
+#                                  per Apple-341-0868-vrom.asm §6b)
+#   $4B..$4D = 00 00 00           specialFlag / clock / pad
+#
+# `rtc.pram.validate` stamps the two boot-ROM validity tokens
+# ($00=$A8 + $0C-$0F='NuMc') so `_InitUtil` skips its cold-init pass;
+# without those tokens the seeded slot-PRAM gets clobbered (see
+# docs/pram.md §3).
+#
+# (sense → sister sRsrcID) mapping derived empirically — see Section
+# 6b of the JMFB VROM disasm for the full catalog.  PrimaryInit picks
+# the Ax sister at boot time; SecondaryInit would upgrade to Bx if
+# 32-bit QuickDraw were in ROM, but System 7.0.1 leaves us on Ax:
+#
+#   sense $0  21" Color Kong / Mac Two-Page    $A7   1152×870
+#   sense $1  Mac Portrait Display (B&W)        $A1    640×870
+#   sense $2  Mac 12" RGB / small RGB           $A2    512×384
+#   sense $6  Mac Hi-Res 13" RGB                $A6    640×480
+#
+# spDepth $80/$81/$82/$83 = 1/2/4/8 bpp on every Bx/Ax sister.
+#
+# 24/32 bpp is intentionally NOT covered: on the JMFB, 32bpp lives
+# only in spDepth4 of the Ax INACTIVE-pair sisters (e.g. $A6 spDepth4)
+# and `_SlotManager $06 sReadFHeader` rejects them at boot — Apple's
+# "Millions of Colors" mode was runtime-only on this card and never
+# persisted across a reboot.
+#
+# Reference-image note (Kong yellow tint).  The 21" Color reference
+# PNGs at $\geq$2 bpp show a subtle yellow tint compared to the
+# perceptually-neutral 13"/12" RGB images.  This is real Apple
+# firmware behavior, not an emulation bug: the JMFB driver applies
+# a per-monitor gamma table at CLUT-write time (see disasm
+# $40FF7E06 + ProgramCLUT at $40FF75BC) that pre-distorts RGB values
+# to compensate for each CRT's physical response curve.  On real
+# hardware the CRT phosphors apply the inverse and the user sees
+# neutral.  Our headless `screen.save` emits the post-driver,
+# pre-CRT-response RGB ("what the JMFB put on the bus"), so Kong's
+# pre-distortion shows through.  That makes the references
+# byte-stable for regression testing but not directly representative
+# of the user-facing image; the WebGL frontend applies a per-monitor
+# response LUT in the fragment shader, which is the correct place
+# for that compensation.
+
+# === Helpers ==================================================================
+# Same boot-to-Finder budget as tests/integration/iicx-floppy.
+
+# === Depth × Resolution matrix — one cold boot per (sense, depth) =============
+
+# --- 13" RGB (sense $6) at 1/2/4/8 bpp ---
+nubus.video_sense = 0x6
+machine.boot "iicx" 8192
+rom.reload
+floppy.drives[0].insert "../../data/systems/System_7_0_1.image"
+rtc.pram.validate
+rtc.pram.poke 0x46 0x002780a6a6000000:8
+scheduler.run 250000000
+assert ${machine.id == "iicx"}              "machine.id != iicx"
+assert ${screen.width == 640}               "13in_rgb 1bpp width != 640"
+assert ${screen.height == 480}              "13in_rgb 1bpp height != 480"
+assert ${rtc.pram.peek(0x48) == 0x80}       "13in_rgb 1bpp savedMode rewritten by ROM"
+assert ${memory.peek.l(0xf9200208) == 0x80} "13in_rgb 1bpp CLUTPBCR != 0x80"
+assert ${memory.peek.l(0xf920000c) == 0x14} "13in_rgb 1bpp RowWords != 0x14"
+screen.match finder-13in_rgb-640x480-1bpp.png
+
+nubus.video_sense = 0x6
+machine.boot "iicx" 8192
+rom.reload
+floppy.drives[0].insert "../../data/systems/System_7_0_1.image"
+rtc.pram.validate
+rtc.pram.poke 0x46 0x002781a6a6000000:8
+scheduler.run 250000000
+assert ${rtc.pram.peek(0x48) == 0x81}       "13in_rgb 2bpp savedMode rewritten by ROM"
+assert ${memory.peek.l(0xf9200208) == 0x88} "13in_rgb 2bpp CLUTPBCR != 0x88"
+assert ${memory.peek.l(0xf920000c) == 0x28} "13in_rgb 2bpp RowWords != 0x28"
+screen.match finder-13in_rgb-640x480-2bpp.png
+
+nubus.video_sense = 0x6
+machine.boot "iicx" 8192
+rom.reload
+floppy.drives[0].insert "../../data/systems/System_7_0_1.image"
+rtc.pram.validate
+rtc.pram.poke 0x46 0x002782a6a6000000:8
+scheduler.run 250000000
+assert ${rtc.pram.peek(0x48) == 0x82}       "13in_rgb 4bpp savedMode rewritten by ROM"
+assert ${memory.peek.l(0xf9200208) == 0x90} "13in_rgb 4bpp CLUTPBCR != 0x90"
+assert ${memory.peek.l(0xf920000c) == 0x50} "13in_rgb 4bpp RowWords != 0x50"
+screen.match finder-13in_rgb-640x480-4bpp.png
+
+nubus.video_sense = 0x6
+machine.boot "iicx" 8192
+rom.reload
+floppy.drives[0].insert "../../data/systems/System_7_0_1.image"
+rtc.pram.validate
+rtc.pram.poke 0x46 0x002783a6a6000000:8
+scheduler.run 250000000
+assert ${rtc.pram.peek(0x48) == 0x83}       "13in_rgb 8bpp savedMode rewritten by ROM"
+assert ${memory.peek.l(0xf9200208) == 0x98} "13in_rgb 8bpp CLUTPBCR != 0x98"
+assert ${memory.peek.l(0xf920000c) == 0xa0} "13in_rgb 8bpp RowWords != 0xa0"
+screen.match finder-13in_rgb-640x480-8bpp.png
+
+# --- 12" RGB (sense $2) at 1/2/4/8 bpp ---
+nubus.video_sense = 0x2
+machine.boot "iicx" 8192
+rom.reload
+floppy.drives[0].insert "../../data/systems/System_7_0_1.image"
+rtc.pram.validate
+rtc.pram.poke 0x46 0x002780a2a2000000:8
+scheduler.run 250000000
+assert ${screen.width == 512}               "12in_rgb 1bpp width != 512"
+assert ${screen.height == 384}              "12in_rgb 1bpp height != 384"
+assert ${rtc.pram.peek(0x48) == 0x80}       "12in_rgb 1bpp savedMode rewritten by ROM"
+screen.match finder-12in_rgb-512x384-1bpp.png
+
+nubus.video_sense = 0x2
+machine.boot "iicx" 8192
+rom.reload
+floppy.drives[0].insert "../../data/systems/System_7_0_1.image"
+rtc.pram.validate
+rtc.pram.poke 0x46 0x002781a2a2000000:8
+scheduler.run 250000000
+assert ${rtc.pram.peek(0x48) == 0x81}       "12in_rgb 2bpp savedMode rewritten by ROM"
+screen.match finder-12in_rgb-512x384-2bpp.png
+
+nubus.video_sense = 0x2
+machine.boot "iicx" 8192
+rom.reload
+floppy.drives[0].insert "../../data/systems/System_7_0_1.image"
+rtc.pram.validate
+rtc.pram.poke 0x46 0x002782a2a2000000:8
+scheduler.run 250000000
+assert ${rtc.pram.peek(0x48) == 0x82}       "12in_rgb 4bpp savedMode rewritten by ROM"
+screen.match finder-12in_rgb-512x384-4bpp.png
+
+nubus.video_sense = 0x2
+machine.boot "iicx" 8192
+rom.reload
+floppy.drives[0].insert "../../data/systems/System_7_0_1.image"
+rtc.pram.validate
+rtc.pram.poke 0x46 0x002783a2a2000000:8
+scheduler.run 250000000
+assert ${rtc.pram.peek(0x48) == 0x83}       "12in_rgb 8bpp savedMode rewritten by ROM"
+screen.match finder-12in_rgb-512x384-8bpp.png
+
+# --- 15" Portrait B&W (sense $1) at 1/2/4/8 bpp ---
+nubus.video_sense = 0x1
+machine.boot "iicx" 8192
+rom.reload
+floppy.drives[0].insert "../../data/systems/System_7_0_1.image"
+rtc.pram.validate
+rtc.pram.poke 0x46 0x002780a1a1000000:8
+scheduler.run 250000000
+assert ${screen.width == 640}               "15in_bw 1bpp width != 640"
+assert ${screen.height == 870}              "15in_bw 1bpp height != 870"
+assert ${rtc.pram.peek(0x48) == 0x80}       "15in_bw 1bpp savedMode rewritten by ROM"
+screen.match finder-15in_bw-640x870-1bpp.png
+
+nubus.video_sense = 0x1
+machine.boot "iicx" 8192
+rom.reload
+floppy.drives[0].insert "../../data/systems/System_7_0_1.image"
+rtc.pram.validate
+rtc.pram.poke 0x46 0x002781a1a1000000:8
+scheduler.run 250000000
+assert ${rtc.pram.peek(0x48) == 0x81}       "15in_bw 2bpp savedMode rewritten by ROM"
+screen.match finder-15in_bw-640x870-2bpp.png
+
+nubus.video_sense = 0x1
+machine.boot "iicx" 8192
+rom.reload
+floppy.drives[0].insert "../../data/systems/System_7_0_1.image"
+rtc.pram.validate
+rtc.pram.poke 0x46 0x002782a1a1000000:8
+scheduler.run 250000000
+assert ${rtc.pram.peek(0x48) == 0x82}       "15in_bw 4bpp savedMode rewritten by ROM"
+screen.match finder-15in_bw-640x870-4bpp.png
+
+nubus.video_sense = 0x1
+machine.boot "iicx" 8192
+rom.reload
+floppy.drives[0].insert "../../data/systems/System_7_0_1.image"
+rtc.pram.validate
+rtc.pram.poke 0x46 0x002783a1a1000000:8
+scheduler.run 250000000
+assert ${rtc.pram.peek(0x48) == 0x83}       "15in_bw 8bpp savedMode rewritten by ROM"
+screen.match finder-15in_bw-640x870-8bpp.png
+
+# --- 21" RGB Kong (sense $0) at 1/2/4/8 bpp ---
+# References at >= 2bpp show a yellow tint — see header comment.
+nubus.video_sense = 0x0
+machine.boot "iicx" 8192
+rom.reload
+floppy.drives[0].insert "../../data/systems/System_7_0_1.image"
+rtc.pram.validate
+rtc.pram.poke 0x46 0x002780a7a7000000:8
+scheduler.run 250000000
+assert ${screen.width == 1152}              "21in_rgb 1bpp width != 1152"
+assert ${screen.height == 870}              "21in_rgb 1bpp height != 870"
+assert ${rtc.pram.peek(0x48) == 0x80}       "21in_rgb 1bpp savedMode rewritten by ROM"
+screen.match finder-21in_rgb-1152x870-1bpp.png
+
+nubus.video_sense = 0x0
+machine.boot "iicx" 8192
+rom.reload
+floppy.drives[0].insert "../../data/systems/System_7_0_1.image"
+rtc.pram.validate
+rtc.pram.poke 0x46 0x002781a7a7000000:8
+scheduler.run 250000000
+assert ${rtc.pram.peek(0x48) == 0x81}       "21in_rgb 2bpp savedMode rewritten by ROM"
+screen.match finder-21in_rgb-1152x870-2bpp.png
+
+nubus.video_sense = 0x0
+machine.boot "iicx" 8192
+rom.reload
+floppy.drives[0].insert "../../data/systems/System_7_0_1.image"
+rtc.pram.validate
+rtc.pram.poke 0x46 0x002782a7a7000000:8
+scheduler.run 250000000
+assert ${rtc.pram.peek(0x48) == 0x82}       "21in_rgb 4bpp savedMode rewritten by ROM"
+screen.match finder-21in_rgb-1152x870-4bpp.png
+
+nubus.video_sense = 0x0
+machine.boot "iicx" 8192
+rom.reload
+floppy.drives[0].insert "../../data/systems/System_7_0_1.image"
+rtc.pram.validate
+rtc.pram.poke 0x46 0x002783a7a7000000:8
+scheduler.run 250000000
+assert ${rtc.pram.peek(0x48) == 0x83}       "21in_rgb 8bpp savedMode rewritten by ROM"
+screen.match finder-21in_rgb-1152x870-8bpp.png
+
+quit

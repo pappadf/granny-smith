@@ -1547,3 +1547,43 @@ value_t expr_interpolate_string(const char *src, const expr_ctx_t *ctx) {
     free(out);
     return r;
 }
+
+char *expr_substitute(const char *body, const expr_ctx_t *ctx, char **err) {
+    if (err)
+        *err = NULL;
+    if (!body)
+        return strdup("");
+
+    // Split off an optional `:fmt` format spec at the top level. The
+    // expression evaluator must not see it (the colon would parse as
+    // trailing garbage); the formatter takes the spec separately.
+    size_t blen = strlen(body);
+    int colon = find_format_colon(body, blen);
+    size_t expr_len = (colon >= 0) ? (size_t)colon : blen;
+    const char *fmt_spec = (colon >= 0) ? body + colon + 1 : NULL;
+
+    char *expr_buf = (char *)malloc(expr_len + 1);
+    if (!expr_buf)
+        return NULL;
+    memcpy(expr_buf, body, expr_len);
+    expr_buf[expr_len] = '\0';
+
+    value_t v = expr_eval(expr_buf, ctx);
+    free(expr_buf);
+    if (v.kind == V_ERROR) {
+        if (err)
+            *err = strdup(v.err ? v.err : "(unknown)");
+        value_free(&v);
+        return NULL;
+    }
+
+    char *out = NULL;
+    size_t out_len = 0, out_cap = 0;
+    format_value_with_spec(&v, fmt_spec, &out, &out_len, &out_cap);
+    value_free(&v);
+    if (!out) {
+        // format_value_with_spec emits no chars for V_NONE; return "".
+        return strdup("");
+    }
+    return out;
+}

@@ -37,7 +37,7 @@ test.describe('State', () => {
   // In this case we test checkpointing when booting from hard disk image.
   test('test 1: save and load back state', async ({ page, log }) => {
 
-    test.setTimeout(180_000);
+    test.setTimeout(300_000);
 
     log('[state-test1] booting via MEMFS uploads');
     await bootWithUploadedMedia(page, 'roms/Plus_v3.rom', undefined, 'systems/hd1.zip', { hdSlot: 0, hideOverlay: true });

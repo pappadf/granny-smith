@@ -74,7 +74,15 @@ async function fetchAndStore(slot, url) {
     const fileName = url.split('/').pop().split('?')[0] || slot;
     const isZip = /\.zip($|[?#])/i.test(url) || /zip/i.test(ct);
     const dir = targetDir(slot);
-    const destName = slot === 'rom' ? fileName : (slot.startsWith('SE30') ? slot : fileName);
+    // For ROM and VROM, preserve the filename from the URL so card
+    // drivers can find them by their canonical name (e.g.
+    // 'Apple-341-0868.vrom' for the IIcx Display Card 8•24).  Legacy
+    // 'SE30.vrom' slot keeps its hardcoded name for back-compat.
+    const destName =
+      slot === 'rom' ? fileName :
+      slot === 'vrom' ? fileName :
+      slot.startsWith('SE30') ? slot :
+      fileName;
     const path = `${dir}/${sanitizeName(destName)}`;
     console.log(`[url-media] ${slot}: fileName=${fileName} isZip=${isZip} destPath=${path}`);
 
@@ -155,8 +163,12 @@ export async function processUrlMedia(params) {
   const downloads = [];
   // ROM first
   if (params.has('rom')) downloads.push(fetchAndStore('rom', params.get('rom')));
-  // Video ROM
-  if (params.has('vrom')) downloads.push(fetchAndStore('SE30.vrom', params.get('vrom')));
+  // Video ROM (SE30.vrom for SE/30 built-in video, Apple-341-0868.vrom
+  // for the IIcx/IIx Display Card 8•24, etc.).  We pass slot='vrom' so
+  // fetchAndStore preserves the URL's filename and writes to
+  // /opfs/images/vrom/<filename>, where the JMFB and SE30 video cards
+  // will look for it.
+  if (params.has('vrom')) downloads.push(fetchAndStore('vrom', params.get('vrom')));
   // Floppies
   for (const [k, v] of params.entries()) if (/^fd\d+$/.test(k)) downloads.push(fetchAndStore(k, v));
   // Hard disks
@@ -169,6 +181,8 @@ export async function processUrlMedia(params) {
     // New machine-creation model: rom.identify reports compatible models,
     // we boot the first one (Plus ROM → Plus, Universal ROM → SE/30 by
     // default), then load the ROM into the freshly created machine.
+    // If the URL specifies an explicit `model=` parameter and that model
+    // is in the ROM's compatibility list, prefer it over the default.
     const tmpPath = '/tmp/url_rom';
     console.log(`[url-media] loading ROM from: ${tmpPath}`);
     const info = await window.romIdentify(tmpPath);
@@ -177,9 +191,17 @@ export async function processUrlMedia(params) {
       console.error(`[url-media] rom.identify: no compatible machines for ${tmpPath}`);
       return;
     }
-    const profile = await window.machineProfile(compatible[0]);
+    const requestedModel = params.get('model');
+    const chosenModel = (requestedModel && compatible.includes(requestedModel))
+      ? requestedModel
+      : compatible[0];
+    if (requestedModel && chosenModel !== requestedModel) {
+      console.warn(`[url-media] requested model="${requestedModel}" not in ROM compatibility list (${compatible.join(', ')}); falling back to ${chosenModel}`);
+    }
+    const profile = await window.machineProfile(chosenModel);
     const ramKB = profile ? profile.ram_default : 4096;
-    await window.gsEval('machine.boot', [compatible[0], ramKB]);
+    console.log(`[url-media] booting machine: ${chosenModel} ram=${ramKB}KB`);
+    await window.gsEval('machine.boot', [chosenModel, ramKB]);
     await window.gsEval('rom.load', [tmpPath]);
     romLoaded = true;
     hideRomOverlay();

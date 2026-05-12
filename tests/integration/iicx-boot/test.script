@@ -1,0 +1,18 @@
+# Integration test: IIcx Boot
+# Boots IIcx (no SCSI/floppy attached) to the "insert disk" floppy
+# icon screen and verifies the display matches the reference image.
+#
+# Same cycle budget as the SE/30 boot test — both share the Universal
+# ROM and reach SCSI_WAIT_BSY in roughly the same number of instructions.
+
+scheduler.run 335000000
+
+assert ${machine.id == "iicx"} "machine.id != iicx"
+assert ${screen.width == 640} "screen.width != 640 (NuBus card not seated?)"
+assert ${screen.height == 480} "screen.height != 480"
+
+# Verify the screen matches the floppy icon reference image
+# (gray desktop + cursor in top-left + insert-disk icon centered).
+screen.match floppy.png
+
+quit

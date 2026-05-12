@@ -25,6 +25,7 @@
 extern const class_desc_t storage_class_real; // src/core/storage/storage.c
 extern const class_desc_t storage_images_collection_class; // src/core/storage/storage.c
 extern const class_desc_t shell_alias_class; // src/core/object/alias.c
+extern const class_desc_t nubus_class; // src/core/peripherals/nubus/nubus_class.c
 
 // Empty class so `shell` exists as a path component for shell.alias.*
 // without forcing a real subsystem hookup at install time.
@@ -401,6 +402,12 @@ void root_install(struct config *cfg) {
     // shell.alias child object.
     if (shell_obj)
         attach_stub(shell_obj, &shell_alias_class, cfg, "alias");
+
+    // `nubus.*` namespace.  Step 3 attaches it whenever a config is
+    // present so `nubus.cards()` is reachable; the registry is empty
+    // until step 4, so the method returns [].  Once cfg->nubus exists
+    // (step 4) the surface gains slot.<n>/ children per proposal §3.5.3.
+    attach_stub(NULL, &nubus_class, cfg, "nubus");
 }
 
 void root_uninstall(void) {

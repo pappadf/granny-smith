@@ -15,6 +15,7 @@
 #include "checkpoint_machine.h"
 #include "cpu.h"
 #include "debug.h"
+#include "display.h"
 #include "floppy.h"
 #include "image.h"
 #include "keyboard.h"
@@ -41,6 +42,11 @@ LOG_USE_CATEGORY_NAME("plus");
 // Accessed through config_t.machine_context.
 typedef struct plus_state {
     sound_t *sound; // PWM sound (VIA-driven)
+    // Plus owns its display descriptor directly — no NuBus involved.
+    // bits flips between the main and alternate framebuffer addresses
+    // each time VIA1 PA6 toggles; fb_dirty is set on every change so
+    // the renderer re-uploads.
+    display_t display;
 } plus_state_t;
 
 // Helper: return the Plus-specific state from a config handle
@@ -71,9 +77,34 @@ static void plus_update_ipl(config_t *sim, int level, bool value);
 
 // Switch between main and alternate video buffer addresses for the Plus.
 // Main buffer is at top of RAM minus 0x5900; alternate is 0x8000 bytes lower.
+// Updates the descriptor's `bits` field and marks the framebuffer dirty so
+// the renderer re-uploads on the next frame.
 static void plus_use_video_buffer(config_t *cfg, bool main) {
+    plus_state_t *ps = plus_state(cfg);
     uint32_t addr = main ? (PLUS_RAM_TOP - 0x5900) : (PLUS_RAM_TOP - 0x5900 - 0x8000);
-    cfg->ram_vbuf = ram_native_pointer(cfg->mem_map, addr);
+    ps->display.bits = ram_native_pointer(cfg->mem_map, addr);
+    ps->display.fb_dirty = true;
+}
+
+// Initialise the Plus display descriptor.  Called once during plus_init,
+// before plus_use_video_buffer fills in `bits`.
+static void plus_display_init(config_t *cfg) {
+    plus_state_t *ps = plus_state(cfg);
+    ps->display.width = 512;
+    ps->display.height = 342;
+    ps->display.stride = 512 / 8;
+    ps->display.format = PIXEL_1BPP_MSB;
+    ps->display.bits = NULL;
+    ps->display.clut = NULL;
+    ps->display.clut_len = 0;
+    ps->display.shape_dirty = true;
+}
+
+// hw_profile_t.display callback — surface the Plus framebuffer to
+// system_display() on the non-NuBus path.
+static display_t *plus_display(config_t *cfg) {
+    plus_state_t *ps = plus_state(cfg);
+    return ps && ps->display.bits ? &ps->display : NULL;
 }
 
 // ============================================================
@@ -251,6 +282,11 @@ static void plus_init(config_t *cfg, checkpoint_t *checkpoint) {
 
     // Initialise floppy last to match checkpoint save order
     cfg->floppy = floppy_init(FLOPPY_TYPE_IWM, cfg->mem_map, cfg->scheduler, checkpoint);
+
+    // Initialise the display descriptor before anything that might call
+    // plus_use_video_buffer().  Both the cold-boot default and the
+    // checkpoint-driven via_redrive_outputs path mutate ps->display.
+    plus_display_init(cfg);
 
     // After floppy exists, if restoring from a checkpoint, re-drive VIA outputs
     // so SEL and other external signals propagate to the floppy.
@@ -534,4 +570,5 @@ const hw_profile_t machine_plus = {
     .memory_layout_init = plus_memory_layout_init,
     .update_ipl = NULL, // internal: plus_update_ipl() called directly by VIA/SCC callbacks
     .trigger_vbl = plus_trigger_vbl,
+    .display = plus_display,
 };

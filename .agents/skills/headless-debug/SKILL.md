@@ -1,9 +1,13 @@
 ---
 name: headless-debug
 description: >
-  Interactive debugging via the headless emulator's TCP shell. Covers
-  daemon startup, command protocol (step/run/breakpoint/memory examine),
-  register inspection, logging, and common debugging workflows.
+  Interactive debugging via the headless emulator's TCP shell. Covers daemon
+  startup, the typed object-model shell grammar (bare-path reads, setters,
+  shell-form and call-form method invocation, ${...} expression
+  interpolation), introspection (objects/attributes/methods/help), and the
+  command surfaces for cpu, memory, debug.breakpoints/logpoints,
+  debug.mac.globals, scheduler, screen, machine.profile, rom.identify,
+  scsi/floppy/scc/via/rtc/nubus, mouse/keyboard/find, and common workflows.
 triggers:
   - single step
   - set a breakpoint
@@ -22,15 +26,20 @@ triggers:
   - run to address
   - examine low memory
   - check global variable
+  - object model
+  - shell expression
 ---
 
 # Granny Smith Headless Daemon — Agent Skill
 
-## Overview
+Granny Smith is a browser-based Macintosh emulator. The headless daemon
+exposes its interactive shell over a TCP socket so an agent can start the
+emulator, send commands, and capture output reliably.
 
-Granny Smith is a browser-based Macintosh emulator. The **headless daemon mode** exposes
-its interactive shell over a TCP socket, enabling AI agents to start the emulator,
-send commands, and capture output reliably.
+The shell is a typed object-model REPL. Every emulator subsystem is an
+object reachable by a dotted path: `cpu.pc`, `memory.peek.l 0x400`,
+`debug.breakpoints.add 0x40802A14`, `screen.save "/tmp/x.png"`,
+`machine.profile "se30"`.
 
 ## 1. Building
 
@@ -39,518 +48,489 @@ cd /workspaces/granny-smith
 make -f Makefile.headless
 ```
 
-The binary is produced at `build/headless/gs-headless`.
+Binary: `build/headless/gs-headless`.
 
-## 2. Starting the Daemon
-
-```bash
-./build/headless/gs-headless --daemon rom=<ROM_FILE> [hd=<HD_FILE>] [fd=<FD_FILE>] [--port=PORT] &
-```
-
-- `--daemon` — required, enables TCP socket mode
-- `rom=<file>` — ROM image (required). Example: `tests/data/roms/SE30.rom`
-- `hd=<file>` — hard disk image (optional, can repeat up to 8)
-- `fd=<file>` — floppy disk image (optional, can repeat up to 2)
-- `--port=PORT` — TCP port (default: **6800**)
-- `--speed=MODE` — scheduler mode: `max`, `realtime`, `hardware` (default: `realtime`)
-- `--kill` — kill any existing daemon on the same port before starting
-- `--script-stdin` — read script commands from stdin instead of a file
-- `--quiet`, `-q` — suppress startup messages
-- `--no-prompt` — disable the trailing PC-disassembly status line for **all** subsequent
-  client connections (avoids having to send `prompt off` at the start of every script)
-
-**Important:** The emulator does NOT auto-run in daemon mode. It waits for commands.
-
-**Tip:** Use `--speed=max` for debugging to avoid real-time delays. The emulator
-runs as fast as the host CPU allows, making breakpoint-heavy workflows much faster.
-
-### Startup and READY Signal
-
-The daemon prints `READY` to stdout once the TCP listener is bound and the machine
-is fully initialized. Callers can block-read for this line instead of sleeping:
+## 2. Starting the daemon
 
 ```bash
-./build/headless/gs-headless --daemon rom=SE30.rom &
-read -r line < /proc/$!/fd/1  # or use a pipe
-# $line == "READY"
+./build/headless/gs-headless --daemon --kill --speed=max --no-prompt \
+    rom=tests/data/roms/SE30.rom [hd=disk.img] [fd=floppy.dsk] &
+sleep 2  # or block-read for "READY" on stdout
 ```
 
-The daemon also prints its PID: `Daemon PID: 12345`.
+Flags:
+- `--daemon` — required, enables TCP socket mode.
+- `rom=<file>` — required. ROMs live under `tests/data/roms/`
+  (`SE30.rom`, `Plus_v3.rom`, `IIcx.rom`; vrom: `SE30.vrom`,
+  `Apple-341-0868.vrom`).
+- `hd=<file>` (×8) / `fd=<file>` (×2) — pre-attach disks.
+- `--port=N` — TCP port (default **6800**).
+- `--speed=max|realtime|hardware` — default `realtime`. Use `max` for
+  debugging.
+- `--kill` — kill any existing daemon on the same port before starting.
+- `--no-prompt` — recommended. Suppresses the trailing PC-disassembly
+  status line otherwise appended to every response.
+- `--quiet` / `-q` — suppress the startup banner.
+- `--script-stdin` — read script commands from stdin instead of a file.
 
-### Port Conflicts
+The daemon prints `READY` on stdout once the TCP listener is bound and
+the machine is fully initialised. It also prints `Daemon PID: <n>`. PID
+files go to `/tmp/gs-headless-<port>.pid`.
 
-If port 6800 is already in use, the daemon prints a clear error:
-```
-Error: port 6800 already in use. Use --port=N to specify a different port.
-```
+The emulator does not auto-run; it waits for commands.
 
-Use `--kill` to automatically kill an existing daemon on the same port before starting:
+### Example — SE/30, fast, no trailing prompt
+
 ```bash
-./build/headless/gs-headless --daemon --kill rom=SE30.rom &
-```
-
-### Example — SE/30 with ROM only
-
-```bash
-./build/headless/gs-headless --daemon --speed=max rom=tests/data/roms/SE30.rom &
-sleep 2   # wait for daemon to initialise (or block-read for READY)
-```
-
-### Example — Macintosh Plus with hard disk
-
-```bash
-./build/headless/gs-headless --daemon rom=tests/data/roms/plus.rom hd=tests/data/hd/disk.img &
+./build/headless/gs-headless --daemon --kill --speed=max --no-prompt \
+    rom=tests/data/roms/SE30.rom &
 sleep 2
+echo "objects" | nc -w 2 localhost 6800
 ```
 
-### Example — Script from stdin (no file needed)
+## 3. Sending commands over TCP
 
-```bash
-printf 'break $2B868\nrun\ninfo regs\nquit\n' | ./build/headless/gs-headless rom=SE30.rom --script-stdin
-```
-
-## 3. Sending Commands
-
-Every command is a one-shot TCP transaction:
+Each command is one or more newline-delimited lines on a TCP connection:
 
 ```bash
 echo "<command>" | nc -w 2 localhost 6800
+printf "cpu.pc\ndebug.step\ncpu.pc\n" | nc -w 5 localhost 6800
 ```
 
-The daemon reads the command, executes it, writes all output to the socket,
-and closes the connection when the command finishes (or the emulator stops).
+Always use `nc -w <secs>` (timeout for both connect and idle), not
+`nc -q`, which can race with daemon output.
 
-### Batch Mode (Multiple Commands per Connection)
+The daemon handles one connection at a time but accepts multiple
+commands per connection. Output is line-buffered and flushed between
+commands.
 
-Multiple newline-delimited commands can be sent in a single TCP connection.
-They execute in order, with output flushed between commands:
+**Heartbeats during long runs.** While `scheduler.run` is in flight the
+daemon emits one heartbeat per second:
+`# running... 54000000 instructions (+54000000 since start)`. Filter
+with `grep -v '^#'` if you don't want them.
 
-```bash
-printf "step\ninfo regs\nprint \$pc\n" | nc -w 5 localhost 6800
+**Stop preempts a run.** Sending any command on a fresh connection
+(typically `scheduler.stop`) breaks the scheduler out of its loop.
+
+**Disconnect cancels a run.** If the driving client disconnects mid-run,
+the daemon detects EOF and stops the scheduler instead of burning the
+budget.
+
+## 4. The shell grammar
+
+### 4.1 Four input shapes
+
+The shell accepts exactly four shapes:
+
+1. **Bare path read** — `cpu.pc`, `memory.ram_size`, `machine.id`,
+   `scsi.bus.phase`. Prints the value using the attribute's declared
+   formatter (e.g. `cpu.pc` → `0x40826cc6` because the attribute has a
+   hex flag).
+2. **Setter** — `cpu.d0 = 0x1234`, `sound.enabled = false`. The RHS is
+   parsed using the attribute's declared kind. Hex / decimal /
+   `true`/`false` are accepted as literals; computed values go inside
+   `${...}` (see 4.2).
+3. **Shell-form method call** — `path arg1 arg2`, whitespace-separated:
+   `debug.breakpoints.add 0x40802A14`, `screen.save "/tmp/x.png"`,
+   `find.str "Apple" $0x40800000..$0x40810000`. Strings with spaces are
+   double-quoted. Top-level call form `path(arg, arg)` is not accepted
+   — that syntax is reserved for inside `${...}`.
+4. **Expression in argument or interpolation** — `${expr}` evaluates and
+   is spliced into the surrounding context. Use it as a method argument
+   (`cpu.d0 = ${cpu.pc + 4}`), inside a string
+   (`echo "pc=${cpu.pc}"`), or as the predicate to `assert`/the source
+   for `echo`. A bare `${expr}` typed as a whole line does not print —
+   the daemon re-dispatches the substituted text as a command and
+   errors with "Unknown command" on the value. To print an expression,
+   wrap it: `echo ${cpu.pc + 4}`.
+
+### 4.2 `${expr}` interpolation
+
+`${...}` is the form of expression substitution in the shell. It works
+in two places:
+
+- **As an argument**: the result is spliced into the command line.
+  `cpu.d0 = ${cpu.pc + 4}`, `assert ${cpu.pc == 0x40800090}`,
+  `echo ${cpu.pc + 4}`.
+- **Inside a double-quoted string literal**: the result is
+  interpolated textually. `echo "pc=${cpu.pc} d0=${cpu.d0}"`.
+
+Inside `${...}` the body is a typed expression:
+
+- arithmetic / bitwise / comparison / logical / ternary operators with
+  C-like precedence: `+ - * / % << >> & | ^ == != < > <= >= && || ! ~ ?:`.
+  Operators only work inside `${...}` — `cpu.d0 = cpu.pc + 4` at the
+  top level is a syntax error.
+- literals: `42`, `0x1234`, `0b1010`, `0o17`, `$1234`, `0d100`, `1.0`,
+  `"text"`, `true`/`false`/`on`/`off`/`yes`/`no`.
+- bare identifiers are paths (`cpu.pc`, `memory.ram_size`); they are
+  not alias-resolved here. Aliases require an explicit `$` prefix even
+  inside `${...}`: `${$pc + 4}` works, `${pc + 4}` errors with "path
+  'pc' did not resolve."
+- method calls use call form with parens and commas:
+  `${memory.peek.l(0x400)}`, `${debug.breakpoints.add(0x400100)}`,
+  `${debug.mac.globals.read("MBState")}`. Shell-form is not accepted
+  here.
+- indexed children use brackets:
+  `${debug.breakpoints[3].addr}`, `${floppy.drives[0].present}`.
+  Indices are stable global IDs (sparse, never reused) — the first
+  breakpoint added in a fresh process is `[0]`, the next `[1]`, and
+  removing one leaves a hole.
+- short-circuit: `&&` and `||` skip the unused arm. Errors propagate
+  and count as falsy.
+- truthiness: `assert ${...}` succeeds when the predicate is truthy;
+  numbers are truthy iff non-zero, strings iff non-empty, lists iff
+  non-empty, errors are always falsy.
+- format spec: an optional trailing `:fmt` controls the to-string
+  conversion. The default (no spec) uses the value's native formatter,
+  which respects the attribute's hex/decimal flag. Supported specs:
+
+  | Spec        | Effect                                           |
+  |-------------|--------------------------------------------------|
+  | (none)      | native formatter (e.g. `cpu.pc` → `0x4080002a`)  |
+  | `:d`        | force decimal                                    |
+  | `:x` / `:X` | force lowercase / uppercase hex (no `$` prefix)  |
+  | `:s`        | string passthrough (rejects non-strings)         |
+  | `:<W>d`     | space-padded decimal: `${42:5d}` → `"   42"`     |
+  | `:0<W>x`    | zero-padded hex: `${cpu.pc:08x}` → `"4080002a"`  |
+  | `:%<printf>`| printf-style escape hatch: `${name:%-10s}`       |
+
+  Padding-sensitive specs need to be quoted at the call site if the
+  result is consumed as a single argument: an unquoted `${0xab:8X}`
+  produces `      AB`, which the line tokenizer then splits on
+  whitespace. Wrap in `"..."` (`echo "${0xab:8X}"`) to keep it intact.
+
+### 4.3 Aliases
+
+`shell.alias.list` shows the live set. Built-in aliases cover the CPU
+register file: `pc`, `sr`, `ccr`, `ssp`, `usp`, `msp`, `vbr`, `sp`,
+`d0..d7`, `a0..a7`, `fpcr`, `fpsr`, `fpiar`, `fp0..fp7`. Mac low-memory
+globals are not aliased — read them via
+`debug.mac.globals.read("Name")`.
+
+User aliases:
+
+```
+shell.alias.add foo cpu.d0
+shell.alias.remove foo
 ```
 
-This is faster than separate connections and ensures commands execute
-as a sequence without gaps.
+Resolution: `$name` is alias substitution. There is no auto-fallthrough
+to "try as a root child"; root paths are always written without `$`.
+Inside `${...}`, alias substitution still requires the leading `$`.
 
-**Every response ends with a status line** showing the disassembled instruction
-at the current PC (like the web shell prompt). Use `prompt off` to suppress
-this status line for cleaner script output:
+### 4.4 Top-level root methods
 
-```bash
-printf "prompt off\nstep\ninfo regs\n" | nc -w 5 localhost 6800
+Shown by `methods emu` (or `methods` with no argument):
+`objects`, `attributes`, `methods`, `help`, `time`, `quit`, `assert`,
+`echo`, `download`.
+
+```
+echo "hello"                              # → hello
+echo "pc=${cpu.pc} d0=${cpu.d0}"          # → pc=0x40826cc6 d0=0x0
+assert ${cpu.pc == 0x40826cc6}            # → ASSERT OK: true
+assert ${cpu.pc == 0} "boot stalled"      # → ASSERT FAILED: boot stalled
+time                                      # → 1778263528 (Unix epoch)
 ```
 
+## 5. Introspection — discover what's there
+
+Use these four root methods at any prompt to learn the model live; they
+are how you should answer "what does this object expose?" before
+guessing.
+
 ```
-$ echo "step" | nc -w 2 localhost 6800
-4083f61c  6000  BRA       *+$023A
-```
-
-This means the PC is now at `$4083F61C` and the next instruction to execute
-is `BRA *+$023A`. This applies to all commands — `step`, `info regs`, `print $pc`, `examine`, etc.
-
-All addresses use the Motorola `$` hex prefix (e.g., `$40800000`) with uppercase
-hex digits. Input accepts `$`, `0x`, or bare hex. Use `L:` or `P:` prefix for
-explicit logical/physical addressing (e.g., `break P:$00801656`).
-
-### Capturing output
-
-```bash
-RESULT=$(echo "info regs" | nc -w 2 localhost 6800)
-echo "$RESULT"
+objects                       # list root children (cpu, memory, debug, ...)
+objects cpu                   # list child objects of cpu (e.g. ["fpu"])
+attributes cpu                # list cpu attributes
+attributes debug.breakpoints  # attributes on a sub-object
+methods debug                 # methods on the debug object
+help debug.disasm             # docstring for one member
 ```
 
-## 4. Command Reference
+Sample (will drift; treat as illustration):
 
-Commands follow GDB/LLDB naming conventions. The `$` prefix resolves registers
-(`$pc`, `$d0`) and Mac globals (`$Ticks`, `$MBState`) uniformly.
+| Object       | Children         | Selected attributes                                       | Selected methods                                            |
+|--------------|------------------|-----------------------------------------------------------|-------------------------------------------------------------|
+| `cpu`        | `fpu`            | `pc sr ccr ssp usp msp vbr sp d0..d7 a0..a7 c v z n x instr_count` | (none)                                              |
+| `cpu.fpu`    | —                | `fp0..fp7 fpcr fpsr fpiar`                                | (none)                                                      |
+| `memory`     | `peek poke`      | `ram_size rom_size`                                       | `read_cstring(addr) dump(addr, n)`                          |
+| `memory.peek`| —                | —                                                         | `b(addr) w(addr) l(addr)`                                   |
+| `memory.poke`| —                | —                                                         | `b(addr,v) w(addr,v) l(addr,v)`                             |
+| `scheduler`  | —                | `running mode cpi cycles instr_count frequency`           | `run([n]) stop()`                                           |
+| `debug`      | `mac breakpoints logpoints` | —                                              | `log(cat, level) disasm([addr], [count]) step([n])`         |
+| `debug.breakpoints` | indexed entries (by id) | —                                          | `add(addr, [cond], [space]) clear() list()`                 |
+| `debug.logpoints`   | indexed entries (by id) | —                                          | `add(spec) clear() list()`                                  |
+| `debug.mac`  | `globals`        | —                                                         | `atrap(opcode)`                                             |
+| `debug.mac.globals` | —         | —                                                         | `read(name) write(name, val) address(name) list()`          |
+| `machine`    | —                | `id name freq ram created`                                | `profile(id) boot(model, ram) register(id, created)`        |
+| `rom`        | —                | `path loaded checksum size name`                          | `load(path) identify(path)`                                 |
+| `vrom`       | —                | `path loaded size`                                        | `load(path) identify(path)`                                 |
+| `screen`     | —                | `width height`                                            | `save(path) match(ref) match_or_save(ref, [actual]) checksum([t l b r])` |
+| `find`       | —                | —                                                         | `str(text, [range]) bytes(hex, [range]) long(v, [range]) word(v, [range])` |
+| `scsi`       | `devices bus`    | `loopback hd_models`                                      | `identify_hd(p) identify_cdrom(p) attach_hd(p, [id]) attach_cdrom(p, [id])` |
+| `scsi.bus`   | —                | `phase target initiator`                                  | (none)                                                      |
+| `floppy`     | `drives`         | `type sel`                                                | `identify(path) create(path)`                               |
+| `floppy.drives` | indexed (`[0]`, `[1]`) | per-entry: `index present track side motor_on disk` | per-entry: `eject() insert(path)`                |
+| `scc`        | `a b`            | `loopback pclk_hz rtxc_hz`                                | `reset()`                                                   |
+| `scc.a` / `scc.b` | —           | `index dcd tx_empty rx_pending`                           | (none)                                                      |
+| `rtc`        | —                | `time read_only pram`                                     | `pram_read pram_write`                                      |
+| `via1` / `via2` | `port_a port_b` | `ifr ier acr pcr sr freq_factor`                       | (none)                                                      |
+| `nubus`      | —                | —                                                         | `cards()`                                                   |
+| `mouse`      | —                | —                                                         | `move(x, y) click([button], [mode]) trace(start\|stop)`     |
+| `keyboard`   | —                | —                                                         | `press(key)` (named keys like `"Return"`, single letters not accepted) |
+| `checkpoint` | —                | `auto`                                                    | `probe() clear() load([path]) save([path]) snapshot()`      |
+| `storage`    | `images`         | —                                                         | `import cp list_dir find_media hd_create hd_download partmap probe list_partitions mounts unmount path_exists path_size` |
+| `vfs`        | —                | —                                                         | `ls([path]) mkdir(path) cat(path)`                          |
+| `archive`    | —                | —                                                         | `identify(path) extract(path, dst)`                         |
+| `shell.alias`| —                | —                                                         | `add(name, path) remove(name) list()`                       |
 
-### Execution Control
+When in doubt, run `objects` / `attributes <path>` / `methods <path>` /
+`help <path>` against the live daemon — the model is self-describing.
 
-| Command | Alias(es) | Description |
-|---------|-----------|-------------|
-| `continue [N]` | `c` | Resume execution (optionally for N instructions) |
-| `run [N]` | — | Start execution (optionally stop after N instructions) |
-| `step [N]` | `s`, `si` | Step one (or N) instructions |
-| `next` | `n`, `ni` | Step over subroutine call |
-| `finish` | `fin` | Run until current subroutine returns |
-| `until <addr>` | `u` | Run until address is reached |
-| `stop` | `halt` | Stop execution immediately |
-| `advance <addr>.size <op> <val>` | — | Run until memory condition is met |
+## 6. Common workflows
 
-### Breakpoints and Watchpoints
+### 6.1 Inspect CPU state
 
-| Command | Alias(es) | Description |
-|---------|-----------|-------------|
-| `break <addr> [if <cond>]` | `b` | Set breakpoint, optionally conditional |
-| `break set <addr> [if <cond>]` | — | Set breakpoint (explicit) |
-| `break del <#id\|addr\|all>` | — | Delete by ID (`#0`), address, or all |
-| `break list` | — | List all breakpoints (with `#id` prefix and condition) |
-| `break clear` | — | Delete all breakpoints |
-| `tbreak <addr>` | `tb` | Set temporary breakpoint (auto-deletes on hit) |
-| `watch <addr>.size <op> <val>` | `w` | Set memory watchpoint (halts on match) |
-| `logpoint set <addr> [msg]` | `lp` | PC logpoint — log on instruction execution |
-| `logpoint set --write <addr>[.b\|.w\|.l] [msg]` | — | Memory write logpoint (no halt) |
-| `logpoint set --read <addr>[.b\|.w\|.l] [msg]` | — | Memory read logpoint (no halt) |
-| `logpoint set --rw <addr>[.b\|.w\|.l] [msg]` | — | Memory read+write logpoint |
-| `logpoint del <#id\|addr\|all>` | — | Delete by ID, address, or all |
-| `logpoint list` | — | List all logpoints (with `#id` and kind) |
-| `logpoint clear` | — | Delete all logpoints |
-
-**Conditional breakpoints.** The optional `if <expr>` clause is evaluated each
-hit and the breakpoint only fires when the expression is true. Supported:
-`mmu.enabled`, `!mmu.enabled`, `cpu.supervisor`, `!cpu.supervisor`, comparisons
-of `cpu.d0..d7`, `cpu.a0..a7`, `$tc`, `$sr`, `$vbr` against hex literals
-(`==`, `!=`, `<`, `>`, `<=`, `>=`). Examples:
 ```
-break $54232 if mmu.enabled
-break $40802A14 if cpu.d0 == $1
-```
-
-**Memory logpoints (read/write watchers without halt).** Unlike `watch`, these
-don't stop execution — they stream a log line each access. The fast path is
-**unaffected**: only pages with active logpoints route through the slow path.
-Messages use `${...}` interpolation (proposal §4.2.1, §5.3) to splice values
-from the object tree. Common references:
-`${cpu.pc}`, `${cpu.dN}`, `${cpu.aN}`, `${lp.value}`, `${lp.addr}`,
-`${lp.size}`, `${lp.instruction_pc}`. Format specs: `:d` decimal, `:x`/`:X`
-hex, `:08x` zero-padded width-8 hex, `:s` string. Examples:
-```
-logpoint --write $00104000.l "cleared pc=${cpu.pc} value=${lp.value:08x}"
-logpoint --read  $00100000-$00100FFF "page-table read pc=${cpu.pc}"
-log memory 1                            # enable streaming for the default category
-```
-The default log category for memory logpoints is `memory` (PC logpoints use
-`logpoint`); set with `category=<name> level=<n>` if you want a custom one.
-
-**Logical vs physical address space.** Memory logpoints accept the same `L:`
-(default) / `P:` prefix as breakpoints. A logical-space logpoint watches the
-logical page at install time **and** the physical page the MMU currently
-maps it to — so accesses via any alias of that physical page still fire.
-A physical-space logpoint watches only the physical page and catches every
-alias (useful for kernel data reached via multiple virtual mappings).
-```
-logpoint --write P:$00040000.b "kernel heap overwrite pc=${cpu.pc}"
-logpoint --write L:$1200D0C3.b "req+$27 write"   # also catches aliases
+cpu.pc                         # 0x40826cc6
+cpu.d0                         # 0x0
+cpu.sp                         # via the alias; same as cpu.a7
+cpu.fpu.fpcr                   # FPU control reg
+echo "pc=${cpu.pc} sp=${cpu.sp}"
 ```
 
-### Inspection
+### 6.2 Single-step
 
-| Command | Alias(es) | Description |
-|---------|-----------|-------------|
-| `print <target>` | `p` | Print register, Mac global, or memory value |
-| `examine <addr> [n]` | `x` | Examine raw memory (hex + ASCII, default 64 bytes) |
-| `disasm [addr] [n]` | `dis`, `d` | Disassemble instructions (default: from PC) |
-| `find str <text> [range] [all]` | `f` | Search memory for ASCII/UTF-8 text |
-| `find bytes <hex…> [range] [all]` | `f` | Search memory for a byte sequence (2-digit hex tokens) |
-| `find word <value> [range] [all]` | `f` | Search for a 16-bit big-endian value |
-| `find long <value> [range] [all]` | `f` | Search for a 32-bit big-endian value |
-| `set <target> <value>` | — | Set register, flag, or memory value |
-
-**`print` examples:**
 ```
-p $d0              # CPU register
-p $pc              # program counter
-p $Ticks           # Mac global (reads value at address 0x016A)
-p $MBState         # Mac global
-p $0400.w          # memory word at address 0x400
+debug.step                     # one instruction
+debug.step 100                 # 100 instructions, no per-step output
+cpu.pc                         # see where we ended up
+debug.disasm                   # 16 instructions forward from PC (default)
+debug.disasm 5                 # 5 instructions forward from PC
+debug.disasm 0x40802A14 5      # 5 instructions forward from an explicit addr
 ```
 
-**`find` examples:**
+`debug.step N` runs N instructions then stops; it does not emit
+per-step disassembly. To see each instruction, loop one-step batches
+and print PC + `debug.disasm 1`. The two-arg `debug.disasm` form lets
+you peek at code anywhere without moving PC first.
+
+### 6.3 Run to a breakpoint
+
 ```
-find str "loadshlibs" $11000000..$11100000   # ASCII search in a range
-find bytes 4E B9 10 01 61 96                 # JSR encoding — whole address space
-find word $4170 $400000..$440000             # 16-bit BE value (matches "Ap" in ASCII)
-find long $4170706C $400000..$440000         # 32-bit BE value (matches "Appl")
-find str "Apple" $400000 0x40000             # "<start> <count>" range form
-find str "Apple" $400000..$500000 all        # drop the default 16-hit cap
-```
-
-- Range forms: `<start>..<end>` (half-open) or `<start> <count>`. Omitted range = full address space.
-- First 16 hits are printed by default; append `all` to uncap.
-- `find word` / `find long` use the 68K's native big-endian byte order.
-- Each hit line is `$ADDR  <label>`, where the label is the reconstructed literal
-  (quoted text for `str`, `$XXXX` / `$XXXXXXXX` for `word`/`long`, or hex bytes for `bytes`) —
-  greppable from scripted drivers.
-
-### Info Subcommands
-
-| Command | Alias | Description |
-|---------|-------|-------------|
-| `info regs` | `info r`, `i r` | CPU register dump (D0-D7, A0-A7, PC, SR, USP, SSP) |
-| `info fpregs` | `info fp` | FPU register dump (FP0-FP7, FPCR, FPSR, FPIAR) |
-| `info mmu` | — | MMU register dump (TC, CRP, SRP, TT0, TT1) |
-| `info mmu-descriptors <addr> [n]` | — | Decode `n` PMMU descriptors (DT, page/table flags, phys/next) |
-| `info break` | `info b` | List all breakpoints (with `#id` and condition) |
-| `info logpoint` | `info lp` | List all logpoints (with `#id` and kind) |
-| `info mac` | — | Mac OS state summary (mouse, cursor, ticks) |
-| `info process` | `info proc` | Current application info |
-| `info events` | — | Scheduler event queue |
-| `info schedule` | — | Scheduler mode and CPI |
-| `info exceptions [n]` | — | Dump the last `n` (default 32, max 256) CPU exception trace ring entries |
-
-**Exception trace ring.** Every bus error / format-frame exception is recorded
-in a 256-entry ring buffer with `ts`, `faulting_pc`, `saved_pc`, `fault_addr`,
-`rw`, `vbr`, `sr`, `format_frame`, `double_fault_kind`. The ring is always on;
-toggle live streaming with `log exceptions 1` (or `0`). Use this instead of
-patching `cpu_internal.h` with `fprintf` when chasing MMU/bus-error bugs.
-
-### Tracing and Logging
-
-| Command | Description |
-|---------|-------------|
-| `trace start [file]` | Start instruction tracing (optionally to a file) |
-| `trace stop` | Stop tracing |
-| `trace show [file]` | Show trace buffer (optionally save to file) |
-| `log <category> <level>` | Enable logging for a category |
-| `log <category> <level> file=<path>` | Redirect log output to a file |
-
-### Display
-
-| Command | Description |
-|---------|-------------|
-| `translate <addr>` | Show MMU address translation (logical → physical) |
-| `translate --reverse <phys>` | Find logical pages mapping to a physical address |
-| `addrmode [auto\|expanded\|collapsed]` | Set address display format |
-| `prompt [on\|off]` | Toggle trailing PC disassembly status line (per-connection) |
-| `screenshot save <file.png>` | Save emulated screen as PNG (path **must** end in `.png`) |
-| `screenshot checksum [t l b r]` | Compute screen checksum |
-| `screenshot match <ref.png>` | Compare screen with reference PNG |
-| `screenshot match-or-save <ref.png> [actual.png]` | Compare with reference; save actual on mismatch |
-
-### Input
-
-| Command | Description |
-|---------|-------------|
-| `key <name\|0xNN>` | Inject keyboard input |
-| `mouse move <x> <y>` | Move mouse to position |
-| `mouse down` / `mouse up` | Press/release mouse button |
-| `mouse click [x y]` | Click (optional move + press + release) |
-| `mouse trace start\|stop` | Log mouse position periodically |
-| `post-event <what> <message>` | Post raw Mac OS event |
-
-### Media and Configuration
-
-| Command | Description |
-|---------|-------------|
-| `fd insert <path>` | Auto-detect and insert a floppy disk image |
-| `fd create [--hd] <path>` | Create blank floppy |
-| `hd attach <path> [id]` | Attach SCSI hard disk image |
-| `hd loopback [on\|off]` | SCSI loopback test card |
-| `scc loopback [on\|off]` | SCC serial port loopback |
-| `rom load <file>` | Load a ROM image |
-| `rom checksum <file>` | Validate and print ROM checksum |
-| `rom probe [<file>]` | Check if ROM is valid |
-| `setup [--model M] [--ram N]` | Configure machine model |
-| `schedule [max\|real\|hw]` | Show/set scheduler mode |
-| `status` | Print `running` or `idle` |
-| `events` | Show pending CPU event queue |
-| `run-screenshots <per> <prefix> <total>` | Run `total` instructions, saving a PNG every `per` instructions (e.g. `run-screenshots 35000000 phase 595000000` produces `phase1-35M.png` ... `phase17-595M.png`) |
-
-### System
-
-| Command | Description |
-|---------|-------------|
-| `help` | List all available commands |
-| `help <cmd>` | Show help for a specific command |
-| `script <path>` | Execute a script file |
-| `quit` | Shut down the emulator daemon |
-
-## 5. Common Workflows
-
-### Single-step the boot sequence
-
-Every command response includes the current PC and disassembled instruction,
-so just sending `step` repeatedly produces a trace:
-
-```bash
-# Start daemon
-./build/headless/gs-headless --daemon --speed=max rom=tests/data/roms/SE30.rom &
-sleep 2
-
-# Step one instruction — output shows where PC is now
-echo "step" | nc -w 2 localhost 6800
-# output: $40800090  4ef9  JMP       $4083F61C
-
-echo "step" | nc -w 2 localhost 6800
-# output: $4083F61C  6000  BRA       *+$023A
-
-# Step 10 instructions at once — shows final position
-echo "step 10" | nc -w 2 localhost 6800
+debug.breakpoints.add 0x40802A14                   # plain
+debug.breakpoints.add 0x40802A14 "cpu.d0 == 0"     # conditional
+debug.breakpoints.add 0x40802A14 "" "physical"     # physical-space
+debug.breakpoints.list
+scheduler.run                                      # runs to break or stop
+scheduler.run 1000000                              # bounded run (instruction budget)
+cpu.pc
+debug.breakpoints.clear
 ```
 
-No need for separate `print $pc` or `disasm` calls after stepping.
+Conditional predicates are expression strings — `cpu.d0 == 0`,
+`mmu.enabled` (when an MMU object exists), etc.; they share the
+expression grammar. Inspect a live entry inside an expression:
+`${debug.breakpoints[<id>].hit_count}`.
 
-### Run to a breakpoint
+### 6.4 Memory poke / peek / dump / search
 
-```bash
-# Set breakpoint
-echo "break 0x40802a14" | nc -w 2 localhost 6800
+```
+memory.ram_size                                       # 8388608 (SE/30 default)
+memory.peek.l 0x400                                   # 32-bit BE long
+memory.peek.b 0x400                                   # one byte
+memory.poke.l 0x10000 0xdeadbeef                      # write
+memory.dump 0x100 32                                  # hex+ASCII
+memory.read_cstring 0x40800030                        # null-terminated string
 
-# Run (connection stays open until breakpoint hit)
-echo "run" | nc -w 10 localhost 6800
-
-# Check where we stopped
-echo "info regs" | nc -w 2 localhost 6800
+find.str "Apple" $0x40800000..$0x40810000             # half-open range
+find.long 0x4170706c $0x40800000..$0x40810000         # 32-bit BE
+find.bytes "4e 75" "$0x40800000..$0x40810000 all"     # range + "all" as one quoted arg
 ```
 
-Or use `until` which sets a temporary breakpoint that auto-deletes:
+Range syntax: `$<start>..$<end>` half-open, or `$<start> <count>`.
+Append `all` to lift the default 16-hit cap. Ranges are passed as a
+single `rest` string argument; quote them when in doubt:
+`find.str "Apple" "$0x40800000..$0x40810000 all"`.
 
-```bash
-echo "until 0x40802a14" | nc -w 10 localhost 6800
-echo "info regs" | nc -w 2 localhost 6800
+### 6.5 Memory logpoints (no-halt watchers)
+
+`debug.logpoints.add` takes a single string spec re-tokenised into the
+logpoint grammar. Wrap the spec in **single quotes** so the shell
+leaves any `${...}` placeholders intact for the logpoint parser to
+expand at fire time:
+
+```
+debug.logpoints.add '0x40800090 "hello pc=${cpu.pc}"'
+debug.logpoints.add '--write 0x16A.l "Ticks bumped pc=${cpu.pc} val=${lp.value}"'
+debug.logpoints.add '--read  L:0x1200D0C3.b'
+debug.logpoints.list
+debug.logpoints.clear
 ```
 
-### Examine memory
+Spec components: `[--write|--read|--rw]` (PC logpoint when omitted),
+`[L:|P:]<addr>[.b|.w|.l]`, `"message"`, `level=<n>`,
+`category=<name>` (default `logpoint` for PC, `memory` for read/write).
 
-```bash
-# Read 32 bytes at address 0
-echo "x 0 32" | nc -w 2 localhost 6800
+Single quotes opt out of `${...}` substitution entirely — the body is
+passed through to the logpoint parser verbatim, so deferred
+placeholders survive. Inside double quotes `${...}` is expanded
+immediately (useful only when you want the *current* value baked into
+the message text). Available placeholders at fire time: `${cpu.pc}`,
+`${cpu.d0}`, …, `${lp.value}`, `${lp.addr}`, `${lp.size}`,
+`${lp.instruction_pc}`, `${memory.peek.b(addr)}`,
+`${memory.read_cstring(addr)}`. Streaming output requires the matching
+log category to be enabled — `debug.log "memory" 1`.
 
-# Disassemble 20 instructions from current PC
-echo "disasm 20" | nc -w 2 localhost 6800
+### 6.6 Mac low-memory globals
 
-# Use register names and Mac globals as addresses
-echo "x \$sp 64" | nc -w 2 localhost 6800
-echo "disasm \$pc 20" | nc -w 2 localhost 6800
-echo "x \$Mouse 16" | nc -w 2 localhost 6800
+```
+debug.mac.globals.read "Ticks"          # → 0xf999
+debug.mac.globals.read "MBState"        # → 0x80
+debug.mac.globals.address "MBState"     # → 0x172
+debug.mac.globals.list                  # ["BusErrVct", "MonkeyLives", ..., 471 names]
+debug.mac.atrap 0xa05d                  # → "_SwapMMUMode"
 ```
 
-### Inspect Mac globals
+Sizes: 1/2/4-byte globals come back as unsigned ints; larger blobs
+(KeyMap, EventQueue, …) come back as byte buffers.
 
-```bash
-echo "print \$MBState" | nc -w 2 localhost 6800
-echo "info mac" | nc -w 2 localhost 6800
+### 6.7 Screen capture and matching
+
+```
+screen.save "/tmp/now.png"
+screen.checksum                                       # whole framebuffer
+screen.checksum 0 0 100 100                           # rectangle
+screen.match "tests/integration/<test>/expected.png"
+screen.match_or_save "ref.png" "/tmp/actual.png"
 ```
 
-### FPU register inspection
+Screenshot path must end in `.png`. `match` returns true on
+byte-identical framebuffers.
 
-```bash
-echo "info fpregs" | nc -w 2 localhost 6800
-echo "print \$fpcr" | nc -w 2 localhost 6800
+### 6.8 Machine config and ROM probing
+
+```
+machine.id                                            # "se30"
+machine.ram                                           # 8192 (KB)
+machine.freq                                          # 15667200 (Hz)
+machine.profile "se30"                                # full profile (JSON string)
+machine.profile "plus"                                # ditto
+
+rom.path                                              # currently loaded ROM
+rom.checksum                                          # "97221136" (8-hex string)
+rom.name                                              # "Universal IIx/IIcx/SE/30 ROM"
+rom.identify "tests/data/roms/Plus_v3.rom"            # full info map (JSON)
 ```
 
-### Instruction tracing to a file
+`machine.profile(id)` returns a JSON-string carrying `id`, `name`,
+`freq`, `ram_options`, `ram_default`, `ram_max`, `floppy_slots`,
+`scsi_slots`, `has_cdrom`, `cdrom_id`, `needs_vrom`. `rom.identify(path)`
+returns `{recognised, compatible, checksum, name, size}`. For
+unreadable paths both return an error.
 
-```bash
-echo "trace start /tmp/trace.log" | nc -w 2 localhost 6800
-echo "run 10000" | nc -w 10 localhost 6800
-echo "trace stop" | nc -w 2 localhost 6800
-cat /tmp/trace.log
+### 6.9 Scheduler control
+
+```
+scheduler.running                                     # false (idle) / true
+scheduler.cycles                                      # cumulative cycle count
+scheduler.run                                         # unbounded (until breakpoint/stop)
+scheduler.run 1000000                                 # instruction-budgeted
+scheduler.stop                                        # halt; safe to send on a
+                                                      # second connection mid-run
+scheduler.mode                                        # max / realtime / hardware
 ```
 
-### Enable logging
+`debug.step N` is sugar for "run N instructions, then stop".
 
-```bash
-echo "log cpu 5" | nc -w 2 localhost 6800
-echo "log scsi 10" | nc -w 2 localhost 6800
+### 6.10 Logging
+
+```
+debug.log "cpu" 5                                     # enable cpu category at level 5
+debug.log "scsi" 10                                   # high-volume scsi
+debug.log "memory" 1                                  # required for memory logpoints
+debug.log "cpu" 0                                     # disable
 ```
 
-## 6. Tips
+The second arg accepts either an integer level or a full named-arg
+spec string (`level=5 file=/tmp/cpu.log ts=on`).
 
-- Always use `nc -w 2` (timeout) instead of `nc -q 2` for reliable connection handling.
-  The `-w` flag sets a timeout for both connect and idle; `-q` only affects idle after EOF
-  on stdin, which can cause `nc` to exit before the daemon finishes writing its response.
-- The daemon handles one connection at a time, but supports multiple commands per
-  connection (batch mode). Send multi-command batches for efficiency.
-- During long-running `run` commands, the daemon emits a **heartbeat** line once
-  per second: `# running... 54000000 instructions (+54000000 since start)`.
-  This keeps `nc -w` connections alive and lets you monitor progress. Heartbeat
-  lines start with `#` so they can be filtered with `grep -v '^#'` if needed.
-- **Stop preempts a run.** While a `run` is in flight, sending **any** command on
-  a fresh connection (typically `stop`) breaks the scheduler out of its loop so
-  the next dispatch reads the new command. You no longer have to wait for the
-  current run to finish before regaining control.
-- **Disconnect cancels the run.** If the driving client disconnects mid-run
-  (e.g. `nc -w` timed out), the daemon detects EOF on the socket and stops the
-  scheduler instead of burning the rest of the budget into a dead connection.
-- The daemon prints `READY` to stdout after initialization. Block-read for this
-  instead of using `sleep` for more reliable startup.
-- ROM files: `tests/data/roms/` contains available ROM images. Use `SE30.rom`
-  for SE/30, `plus.rom` for Macintosh Plus.
-- Port 6800 is the default. Use `--port=PORT` to change it if there's a conflict.
-  Use `--kill` to automatically kill any existing daemon on the same port.
-- Use `--speed=max` for debugging sessions — it avoids real-time delays and makes
-  breakpoint-heavy workflows much faster.
-- **Toggle commands** like `scc loopback` and `hd loopback` without arguments
-  only query the current state — they do NOT enable the feature. Always pass `on`
-  or `off` explicitly: `scc loopback on`.
-- **Paths are relative to the daemon's CWD** (typically the repo root).
-  Use absolute paths for reliability.
-- **Output buffering**: When piping daemon output through filters, stdout is
-  line-buffered in script mode. If output appears delayed, the daemon uses
-  `setvbuf(stdout, NULL, _IOLBF, 0)` when running scripts.
-- The `step` command works correctly at breakpoints — there is a `last_breakpoint_pc`
-  skip mechanism that prevents re-triggering the breakpoint on the first step.
-- `set` values are hex by default (Motorola convention): `set d0 42` sets D0 to
-  $42 (66 decimal). Use `0d` prefix for decimal: `set d0 0d66`.
-- `$`-prefix resolves both registers and Mac globals uniformly: `print $pc`,
-  `x $Ticks 4`, `break $a5`.
+### 6.11 Floppy / SCSI / input
+
+```
+floppy.create "/tmp/blank.dsk"                        # 800K blank, auto-mounts
+floppy.drives[0].insert "/tmp/blank.dsk"              # mount into drive 0
+echo ${floppy.drives[0].present}                      # true
+floppy.drives[0].eject                                # zero-arg call
+
+scsi.attach_hd "tests/data/hd/system.img" 0
+scsi.bus.phase                                        # bus_free / cmd / data / ...
+
+mouse.move 100 100
+mouse.click
+keyboard.press "Return"
+```
 
 ## 7. Pitfalls
 
-- **VIA timer interrupts don't fire during single-step.** The VIA timers are driven
-  by the scheduler, which only advances during `run`. If you need timer-dependent
-  code to execute, use `run <N>` instead of `step <N>`.
-- **Don't forget to kill the daemon.** Send `echo "quit" | nc -w 2 localhost 6800`
-  when done, or use `kill %1` if it was backgrounded. Orphaned daemons hold the port.
-  PID files are written to `/tmp/gs-headless-<port>.pid` for cleanup.
-- **Large step counts can be slow.** `step 100000` steps one instruction at a time
-  with output for each. Use `run 100000` for faster bulk execution (only the final
-  state is printed).
-- **Response may be empty if daemon isn't ready.** If `nc` returns nothing, the
-  daemon likely hasn't finished initialization. Wait for the `READY` signal or
-  increase the startup `sleep` delay.
-- **Assertions kill the daemon silently.** If the emulator hits an internal
-  assertion, the daemon process terminates without sending an error to the TCP
-  client. Check if the daemon is still running with `kill -0 <pid>`.
+- **Operators only work inside `${...}`.** `cpu.d0 = cpu.pc + 4` at the
+  top level is a syntax error; write `cpu.d0 = ${cpu.pc + 4}`.
+- **Top-level `path(arg)` is rejected** — the call form is reserved for
+  inside `${...}`. At the prompt use shell form: `cpu.step 1000`,
+  `debug.breakpoints.add 0x400`. Inside `${...}` use call form:
+  `${cpu.step(1000)}`, `${debug.breakpoints.add(0x400)}`.
+- **Aliases require `$`.** `${pc}` errors; `${$pc}` works. Bare `pc`
+  is treated as a path against the root, which fails.
+- **Padding-sensitive format specs need quoting.** An unquoted
+  `${0xab:8X}` expands to `      AB`, which the line tokenizer splits
+  on whitespace. Quote the substitution (`echo "${0xab:8X}"`) when the
+  consumer wants it as a single token.
+- **Indexed children are keyed by stable id, not position.** A fresh
+  process numbers from 0; subsequent `clear` + `add` keeps incrementing
+  ids monotonically (sparse, never recycled). A stale id surfaces as
+  `'breakpoints[<id>]' is empty` (the diagnostic names the parent
+  object that the user typed) — read the id from the `add` result and
+  use that.
+- **Indexed-child reads of attributes work both at the top level and
+  inside `${...}`** (`debug.breakpoints[<id>].addr`,
+  `floppy.drives[0].present`), but the index must resolve to a live
+  entry: a stale id gives "entries[N] is empty" rather than
+  dispatching. Method calls on indexed entries also work in both forms
+  — shell-form at the prompt (`floppy.drives[0].insert "/tmp/x.dsk"`,
+  `debug.breakpoints[<id>].remove`) and call-form inside expressions
+  (`${debug.breakpoints[<id>].remove()}`).
+- **Logpoint specs need single quotes for deferred `${...}`.** The
+  shell substitutor expands `${...}` immediately inside double-quoted
+  strings; wrap the whole logpoint spec in `'...'` so placeholders
+  reach the logpoint parser intact (`debug.logpoints.add '0x... "${cpu.pc}"'`).
+- **VIA timer interrupts don't fire during single-step.** Use
+  `scheduler.run N` instead of `debug.step N` if timer-driven code
+  needs to make progress.
+- **Keyboard `press` accepts named keys like `"Return"`, `"Space"`,
+  or hex bytes (`0x24`), but not single letters.** The usable forms
+  are the symbolic key names recognised by the ADB key table and the
+  raw scancode hex.
+- **Heartbeats during long runs.** Filter with `grep -v '^#'`. Don't
+  let short `nc -w` timeouts kill long runs — disconnect cancels the
+  run.
+- **Assertions kill the daemon silently.** A C-level `assert()` fail
+  terminates the process without notifying the TCP client. Check
+  `kill -0 <pid>` (or just `objects | nc -w 2 localhost 6800`) if
+  responses dry up.
 
-## 8. Boot Preamble Recipes
+## 8. Cross-references
 
-Common boot sequences for integration test scripts:
-
-### SE/30 boot to desktop (with HD)
-```
-run 120000000
-screenshot match desktop.png
-```
-
-### SE/30 boot with floppy and HD
-```
-fd insert /path/to/system.dsk
-run 800000000
-screenshot match desktop.png
-```
-
-### Screenshot in test scripts
-
-In integration test `.script` files, use shell variables for paths:
-```
-screenshot save ${WORK_DIR}/debug.png       # save to test's work directory
-screenshot match expected.png               # match against reference in test dir
-screenshot match-or-save ref.png actual.png # save actual on mismatch for diffing
-screenshot checksum                         # print checksum for comparison
-```
-
-Available variables: `${WORK_DIR}` (build output dir), `${TEST_DIR}` (test source dir).
-Note: `${RESULTS_DIR}` is NOT available in test scripts.
-
-### Script include for shared preambles
-Scripts support `include` directives to avoid copy-pasting boot sequences:
-```
-include tests/integration/se30-mactest/boot-preamble.script
-break $2B868
-run
-info regs
-```
-
-## 9. Cross-References
-
-- **Offline disassembly**: See the `disasm-tool` skill for disassembling ROM images
-  and binary files without running the emulator. Useful for static analysis of large
-  code regions before setting breakpoints.
-- **Logging & logpoints**: See docs/log.md for the full logging system reference.
-  Use `log <category> <level>` in the shell to enable runtime logging. Use
-  `log <category> <level> file=<path>` to redirect log output to a file.
-- **Source code**: The headless platform lives in `src/platform/headless/`. The shell
-  command framework is in `src/core/shell/`. Debug command handlers are in
-  `src/core/debug/`.
+- **Disassembly without a running emulator**: `disasm-tool` skill —
+  for static analysis of ROMs and binaries before placing breakpoints.
+- **Source layout**: object model in `src/core/object/`; debug
+  commands in `src/core/debug/`; shell entry point in
+  `src/core/shell/shell.c`; headless TCP daemon in
+  `src/platform/headless/headless_main.c`.
+- **Integration test scripts** under `tests/integration/` are reliable
+  usage examples — `tests/integration/object-eval/test.script`,
+  `tests/integration/object-debug/test.script`.
+- **Script files** (`--script <path>` or `--script-stdin`) accept the
+  same line grammar plus `# comments` and `include <other.script>`.
+  The `include` directive is recognised in script files only, not
+  over the TCP shell.

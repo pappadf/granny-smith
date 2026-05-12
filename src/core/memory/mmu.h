@@ -73,6 +73,11 @@ typedef struct mmu_state {
     uint16_t mmusr; // MMU status register
 
     bool enabled; // TC.E bit — is translation active?
+    bool tlb_was_enabled; // last value of `enabled` seen by mmu_invalidate_tlb;
+                          // the invalidation can shortcut-return when both
+                          // current and previous calls find MMU off, since
+                          // PMOVE updates to TC/SRP/TT0/TT1 don't perturb
+                          // the direct-host SoA mappings under MMU-disabled.
 
     // Host-side state for table walks
     uint8_t *physical_ram; // base of physical RAM buffer

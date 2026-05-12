@@ -50,12 +50,26 @@ export const MEDIA_TYPES = {
     label: 'Floppy Disk image',
     persistDir: FD_DIR,
     async validate(path) {
-      // fd_validate returns the density tag ("400K" / "800K" / "1.4MB")
-      // for valid floppy images, empty otherwise. Pick FDHD vs FD based
-      // on the tag.
-      const density = await window.gsEval('floppy.identify', [path]);
-      if (typeof density !== 'string' || !density) return { valid: false };
-      const isHD = density === '1.4MB';
+      // The config dialog runs *before* machine.boot — at that point the
+      // per-machine `floppy` object has not been registered on the
+      // object root, so `floppy.identify` would fail with "did not
+      // resolve".  Match the C-side classifier (image.c::classify_image
+      // + detect_diskcopy) using only the file size, which is the
+      // single discriminator for raw and DiskCopy 4.2 wrapped floppies
+      // without sector tags:
+      //   400 KB / 800 KB / 1.4 MB raw, or +84 for the DC42 header.
+      // Floppy disk sizes have been frozen since the 1980s, so this
+      // duplicated table is stable.  Tagged DC42 images (common only
+      // for very old MFS disks) are not handled here — they would need
+      // a magic-byte read.
+      const size = await window.gsEval('storage.path_size', [path]);
+      const FD_400 = 400 * 1024, FD_800 = 800 * 1024, FD_HD = 1440 * 1024;
+      const DC42 = 0x54;
+      let isHD = false, recognised = false;
+      if (size === FD_400 || size === FD_400 + DC42) recognised = true;
+      else if (size === FD_800 || size === FD_800 + DC42) recognised = true;
+      else if (size === FD_HD || size === FD_HD + DC42) { recognised = true; isHD = true; }
+      if (!recognised) return { valid: false };
       return { valid: true, info: { persistDir: isHD ? FDHD_DIR : FD_DIR } };
     },
   },

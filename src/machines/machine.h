@@ -13,6 +13,7 @@
 
 // Forward declarations
 struct config;
+struct nubus_slot_decl;
 
 // Floppy drive capabilities form a strict superset hierarchy:
 //   FLOPPY_400K reads 400K only.
@@ -87,6 +88,15 @@ typedef struct hw_profile {
     bool has_nubus;
     int nubus_slot_count;
 
+    // NuBus slot declarations — sentinel-terminated array of
+    // nubus_slot_decl_t (slot id, kind, builtin/available card list).
+    // Used by machine.profile to enumerate cards per slot and build
+    // the per-card video-mode catalog the configuration dialog needs.
+    // NULL for non-NuBus machines (Plus, …).  The machine's `init`
+    // callback passes this same pointer to nubus_init() so the
+    // runtime view and the profile view are guaranteed identical.
+    const struct nubus_slot_decl *nubus_slots;
+
     // Callbacks: machine-specific setup/teardown
     void (*init)(struct config *cfg, checkpoint_t *cp);
     void (*reset)(struct config *cfg); // hardware RESET line: re-init VIAs, overlay, MMU
@@ -102,6 +112,13 @@ typedef struct hw_profile {
 
     // Machine-specific VBL handling
     void (*trigger_vbl)(struct config *cfg);
+
+    // Optional: per-machine primary display.  Used by system_display()
+    // when cfg->nubus is NULL (Plus and any future non-NuBus machine);
+    // glue030-family machines leave this NULL because their display
+    // comes from a NuBus card via cfg->nubus.  Forward declaration of
+    // display_t lives in system.h.
+    struct display *(*display)(struct config *cfg);
 } hw_profile_t;
 
 // Registry: find a machine profile by id
@@ -112,9 +129,10 @@ const hw_profile_t *machine_find(const char *id);
 // floppy_slots, scsi_slots) are rejected.
 void machine_register(const hw_profile_t *profile);
 
-// Built-in machine profiles (defined in plus.c, iicx.c, se30.c, etc.)
+// Built-in machine profiles (defined in plus.c, iicx.c, iix.c, se30.c, etc.)
 extern const hw_profile_t machine_plus;
 extern const hw_profile_t machine_se30;
-// extern const hw_profile_t machine_iicx;  // TODO: IIcx stub — partial profile, not registered
+extern const hw_profile_t machine_iicx;
+extern const hw_profile_t machine_iix;
 
 #endif // MACHINE_H

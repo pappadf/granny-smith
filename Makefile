@@ -72,6 +72,8 @@ CORE_SRC := $(wildcard $(CORE_DIR)/*.c) \
             $(wildcard $(CORE_DIR)/cpu/*.c) \
             $(wildcard $(CORE_DIR)/memory/*.c) \
             $(wildcard $(CORE_DIR)/peripherals/*.c) \
+            $(wildcard $(CORE_DIR)/peripherals/nubus/*.c) \
+            $(wildcard $(CORE_DIR)/peripherals/nubus/cards/*.c) \
             $(wildcard $(CORE_DIR)/scheduler/*.c) \
             $(wildcard $(CORE_DIR)/debug/*.c) \
             $(wildcard $(CORE_DIR)/storage/*.c) \
@@ -79,7 +81,8 @@ CORE_SRC := $(wildcard $(CORE_DIR)/*.c) \
             $(wildcard $(CORE_DIR)/shell/*.c) \
             $(wildcard $(CORE_DIR)/object/*.c) \
             $(wildcard $(CORE_DIR)/vfs/*.c) \
-            $(wildcard $(MACHINES_DIR)/*.c)
+            $(wildcard $(MACHINES_DIR)/*.c) \
+            $(wildcard $(MACHINES_DIR)/glue030/*.c)
 
 # Platform-specific sources (WASM/Emscripten)
 PLATFORM_SRC := $(wildcard $(PLATFORM_DIR)/*.c)
@@ -126,6 +129,8 @@ INCLUDES := -I$(CORE_DIR) \
             -I$(CORE_DIR)/cpu \
             -I$(CORE_DIR)/memory \
             -I$(CORE_DIR)/peripherals \
+            -I$(CORE_DIR)/peripherals/nubus \
+            -I$(CORE_DIR)/peripherals/nubus/cards \
             -I$(CORE_DIR)/scheduler \
             -I$(CORE_DIR)/debug \
             -I$(CORE_DIR)/storage \
@@ -134,6 +139,7 @@ INCLUDES := -I$(CORE_DIR) \
             -I$(CORE_DIR)/object \
             -I$(CORE_DIR)/vfs \
             -I$(MACHINES_DIR) \
+            -I$(MACHINES_DIR)/glue030 \
             -I$(PLATFORM_DIR)
 
 # -- Compile flags (source -> object) --

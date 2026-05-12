@@ -132,8 +132,22 @@ cpu_t *system_cpu(void);
 // System-level RTC accessor: returns the current RTC object (or NULL)
 rtc_t *system_rtc(void);
 
-// System-level framebuffer accessor: returns pointer to video RAM buffer
+// System-level framebuffer accessor: returns pointer to video RAM buffer.
+// Equivalent to system_display()->bits; retained for back-compat with the
+// WebGL renderer until it gains full display_t awareness in step 5.
 uint8_t *system_framebuffer(void);
+
+// Forward declaration; full definition in nubus/display.h.
+struct display;
+typedef struct display display_t;
+
+// System-level display accessor: returns the active display descriptor for
+// whichever machine is currently booted, or NULL if no display is available.
+// Consumers read fresh each frame; the renderer additionally consumes
+// (reads and clears) the per-resource dirty flags on display_t to decide
+// what to re-upload.  Pointer identity is stable across the machine's
+// lifetime; the pointed-to fields are live-mutable.
+display_t *system_display(void);
 
 // Check if emulator is initialized and running
 bool system_is_initialized(void);

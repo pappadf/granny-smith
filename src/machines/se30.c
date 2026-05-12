@@ -18,15 +18,18 @@
 
 #include "adb.h"
 #include "asc.h"
+#include "builtin_se30_video.h" // SE/30 built-in video as a NuBus card (slot $E)
 #include "checkpoint_machine.h"
 #include "cpu.h"
 #include "cpu_internal.h" // for cpu->mmu field
 #include "debug.h"
 #include "floppy.h"
+#include "glue030.h" // family-shared lifecycle helpers
 #include "image.h"
 #include "log.h"
 #include "memory.h"
 #include "mmu.h"
+#include "nubus.h"
 #include "rom.h"
 #include "rtc.h"
 #include "scc.h"
@@ -34,7 +37,6 @@
 #include "scsi.h"
 #include "shell.h"
 #include "via.h"
-#include "vrom.h"
 
 #include <assert.h>
 #include <stddef.h>
@@ -124,12 +126,14 @@ typedef struct se30_state {
     // ROM overlay state (true = ROM mapped at $00000000)
     bool rom_overlay;
 
-    // Video RAM (64 KB, separate from main RAM)
+    // VRAM / VROM live on the slot-$E NuBus card (cards/builtin_se30_video.c).
+    // These are borrowed pointers, set after nubus_init returns; the card
+    // owns the storage and frees it during nubus_delete.  `video_card` is
+    // the card handle used by se30_via1_output to toggle the on-screen
+    // buffer when the OS writes VIA1 PA6.
     uint8_t *vram;
-
-    // Video ROM (real SE/30 declaration ROM for slot E, loaded from file)
     uint8_t *vrom;
-    char *vrom_path; // path the VROM was loaded from (for checkpoint serialization)
+    nubus_card_t *video_card;
 
     // MMU state (NULL until se30_init creates it)
     mmu_state_t *mmu;
@@ -167,299 +171,9 @@ static void se30_via2_irq(void *context, bool active);
 static void se30_scc_irq(void *context, bool active);
 static void se30_update_ipl(config_t *cfg, int source, bool active);
 
-// ============================================================
-// VROM loading (NuBus declaration ROM for slot E)
-// ============================================================
-
-// Build a minimal fallback NuBus declaration ROM (8 KB at the top of the
-// 32 KB buffer) when the real VROM binary is not available.
-static void se30_build_vrom_fallback(uint8_t *rom) {
-    memset(rom, 0, SE30_VROM_SIZE);
-    // The fallback VROM lives in the top 8 KB of the 32 KB buffer
-    // (file offsets $6000-$7FFF = NuBus $FEFFE000-$FEFFFFFF).
-    uint8_t *top = rom + 0x6000;
-
-    // ---- sResource Directory at 0x0000 ----
-    top[0x00] = 0x01;
-    top[0x03] = 0x14; // Board sResource (ID=1) at +0x14
-    top[0x04] = 0x80;
-    top[0x07] = 0x3C; // Video sResource (ID=0x80) at +0x3C
-    top[0x08] = 0xFF; // end
-
-    // ---- Board sResource at 0x0014 ----
-    top[0x14] = 0x01;
-    top[0x17] = 0xAC; // sRsrcType → 0x00C0
-    top[0x18] = 0x02;
-    top[0x1B] = 0xB8; // sRsrcName → 0x00D0
-    top[0x1C] = 0x20;
-    top[0x1F] = 0x0C; // BoardId = $0C
-    top[0x20] = 0x22;
-    top[0x22] = 0x02;
-    top[0x23] = 0xE0; // PrimaryInit → 0x0300
-    top[0x24] = 0xFF;
-
-    // ---- Video sResource at 0x0040 ----
-    top[0x40] = 0x01;
-    top[0x43] = 0xA0; // sRsrcType → 0x00E0
-    top[0x44] = 0x02;
-    top[0x47] = 0xAC; // sRsrcName → 0x00F0
-    top[0x48] = 0x04;
-    top[0x4A] = 0x01;
-    top[0x4B] = 0xB8; // sRsrcDrvrDir → 0x0200
-    top[0x4C] = 0x08;
-    top[0x4F] = 0x01; // sRsrcHWDevId = 1
-    top[0x50] = 0x0A;
-    top[0x52] = 0x01;
-    top[0x53] = 0x2A; // minorBaseOS → 0x017A
-    top[0x54] = 0x0B;
-    top[0x56] = 0x01;
-    top[0x57] = 0x2A; // minorLength → 0x017E
-    top[0x58] = 0x80;
-    top[0x5B] = 0xE8; // OneBitMode → 0x0140
-    top[0x5C] = 0xFF;
-
-    // ---- Type & name blocks ----
-    top[0xC1] = 0x01; // catBoard
-    memcpy(&top[0xD0], "Macintosh SE/30", 16);
-    top[0xE1] = 0x03;
-    top[0xE3] = 0x01;
-    top[0xE5] = 0x01; // drSwApple = 1 (standard driver in declaration ROM)
-    top[0xE7] = 0x09;
-    memcpy(&top[0xF0], "Built-in Video", 15);
-
-    // ---- PrimaryInit sBlock at 0x0300 ----
-    // Modeled on the real SE/30 VROM PrimaryInit: sets spResult=1 (video
-    // initialized), writes XPRAM default-video (slot $E, spID $80),
-    // configures VIA PA6/PB6 bits, fills both video buffers with gray.
-    top[0x303] = 0x80; // sBlock size 128
-    top[0x304] = 0x02;
-    top[0x305] = 0x02; // rev=2, cpu=68020
-    top[0x30B] = 0x04; // code offset
-    static const uint8_t primaryinit[] = {
-        0x31, 0x7C, 0x00, 0x01, 0x00, 0x02, // MOVE.W #1,spResult(A0)
-        0x41, 0xFA, 0x00, 0x6A, // LEA data(PC),A0
-        0x20, 0x3C, 0x00, 0x02, 0x00, 0x80, // MOVE.L #$00020080,D0 (2 bytes at XPRAM $80)
-        0xA0, 0x52, // _WriteXPRam
-        0x20, 0x78, 0x01, 0xD4, // MOVEA.L $01D4.W,A0 (VIA1 base)
-        0x08, 0xE8, 0x00, 0x06, 0x06, 0x00, // BSET #6,$600(A0) (DDRA)
-        0x08, 0xE8, 0x00, 0x06, 0x04, 0x00, // BSET #6,$400(A0) (DDRB)
-        0x08, 0xE8, 0x00, 0x06, 0x1E, 0x00, // BSET #6,$1E00(A0) (ORA, PA6=1)
-        0x08, 0xD0, 0x00, 0x06, // BSET #6,(A0) (ORB, PB6=1)
-        0x22, 0x7C, 0xFE, 0xE0, 0x00, 0x00, // MOVEA.L #$FEE00000,A1 (VRAM)
-        0x24, 0x49, // MOVEA.L A1,A2
-        0x2A, 0x3C, 0xAA, 0xAA, 0xAA, 0xAA, // MOVE.L #$AAAAAAAA,D5
-        0xD3, 0xFC, 0x00, 0x00, 0x80, 0x40, // ADDA.L #$8040,A1 (primary buf)
-        0x36, 0x3C, 0x01, 0x55, // MOVE.W #$155,D3 (342 rows)
-        0x34, 0x3C, 0x00, 0x0F, // MOVE.W #$F,D2 (16 longs/row)
-        0x22, 0xC5, // MOVE.L D5,(A1)+
-        0x51, 0xCA, 0xFF, 0xFC, // DBF D2,*-2
-        0x46, 0x85, // NOT.L D5
-        0x51, 0xCB, 0xFF, 0xF2, // DBF D3,*-14
-        0x22, 0x4A, // MOVEA.L A2,A1
-        0xD2, 0xFC, 0x00, 0x40, // ADDA.W #$40,A1 (alt buf)
-        0x36, 0x3C, 0x01, 0x55, // MOVE.W #$155,D3
-        0x34, 0x3C, 0x00, 0x0F, // MOVE.W #$F,D2
-        0x22, 0xC5, // MOVE.L D5,(A1)+
-        0x51, 0xCA, 0xFF, 0xFC, // DBF D2,*-2
-        0x46, 0x85, // NOT.L D5
-        0x51, 0xCB, 0xFF, 0xF2, // DBF D3,*-14
-        0x70, 0x00, // MOVEQ #0,D0
-        0x4E, 0x75, // RTS
-        0x0E, 0x80 // data: slot $E, spID $80
-    };
-    memcpy(&top[0x30C], primaryinit, sizeof(primaryinit));
-
-    // ---- Mode sResource at 0x0140 ----
-    top[0x140] = 0x01;
-    top[0x143] = 0x10; // mVidParams → 0x0150
-    top[0x144] = 0x03;
-    top[0x147] = 0x02; // mPageCnt = 2
-    top[0x148] = 0x04; // mDevType = 0
-    top[0x14C] = 0xFF;
-
-    // ---- VPBlock sBlock at 0x0150 ----
-    // sBlock: 4-byte size header followed by VPBlock data
-    // VPBlock fields: vpBaseOffset(4), vpRowBytes(2), vpBounds(8),
-    //   vpVersion(2), vpPackType(2), vpPackSize(4), vpHRes(4), vpVRes(4),
-    //   vpPixelType(2), vpPixelSize(2), vpCmpCount(2), vpCmpSize(2),
-    //   vpPlaneBytes(4) = 42 bytes total
-    top[0x153] = 0x2E; // sBlock size = 46 ($2E), matches real VROM
-    // VPBlock data at top+0x154: offsets relative to 0x154
-    top[0x156] = 0x80;
-    top[0x157] = 0x40; // +0: vpBaseOffset = $00008040
-    top[0x159] = 0x40; // +4: vpRowBytes = 64
-    // +6: vpBounds = {0, 0, 342, 512}
-    top[0x15E] = 0x01;
-    top[0x15F] = 0x56; // bottom = 342
-    top[0x160] = 0x02; // right high byte (512 = $0200)
-    // +22: vpHRes = 72.0 ($00480000)
-    top[0x16A] = 0x00;
-    top[0x16B] = 0x48;
-    // +26: vpVRes = 72.0
-    top[0x16E] = 0x00;
-    top[0x16F] = 0x48;
-    // +30: vpPixelType = 0 (indexed) — default
-    // +32: vpPixelSize = 1
-    top[0x175] = 0x01;
-    // +34: vpCmpCount = 1
-    top[0x177] = 0x01;
-    // +36: vpCmpSize = 1
-    top[0x179] = 0x01;
-
-    // ---- minorLength data at 0x017E = $0000D5C0 ----
-    // Match real VROM: video framebuffer region size
-    top[0x0180] = 0xD5;
-    top[0x0181] = 0xC0;
-
-    // ---- Driver directory at 0x0200 ----
-    // With drSw=1, the ROM's video init expects a standard DRVR resource
-    // via SReadDrvrName (Slot Manager trap $16). The driver directory must
-    // contain ID=2 pointing to an sBlock with a valid DRVR.
-    top[0x200] = 0x02;
-    top[0x203] = 0x20; // ID=2 DRVR → 0x0220
-    top[0x204] = 0xFF;
-
-    // ---- DRVR sBlock at 0x0220 ----
-    // Minimal video driver: all routines return noErr.
-    // The ROM opens this driver to install a DCE for the video slot.
-    // DRVR layout (offsets relative to DRVR start, after 4-byte sBlock size):
-    //   +$00: drvrFlags    +$08: drvrOpen   +$0C: drvrCtl
-    //   +$0E: drvrStatus   +$10: drvrClose  +$12: drvrName (Pascal)
-    //   Name ".Display_Video_Apple_SE30" = 25 chars → +$12..+$2B (26 bytes)
-    //   Code starts at +$2C (even boundary after name)
-    static const uint8_t drvr_sblock[] = {
-        // sBlock size (4 bytes): total size of data after this field
-        0x00, 0x00, 0x00, 0x38, // 56 bytes ($38)
-
-        // DRVR header (18 bytes: +$00..+$11)
-        0x4F, 0x00, // +$00 drvrFlags: $4F00
-        0x00, 0x01, // +$02 drvrDelay: 1 tick
-        0x00, 0x00, // +$04 drvrEMask: 0
-        0x00, 0x00, // +$06 drvrMenu: 0
-        0x00, 0x2C, // +$08 drvrOpen:   offset $2C
-        0x00, 0x00, // +$0A drvrPrime:  not used
-        0x00, 0x30, // +$0C drvrCtl:    offset $30
-        0x00, 0x34, // +$0E drvrStatus: offset $34
-        0x00, 0x2C, // +$10 drvrClose:  offset $2C (same as Open)
-
-        // drvrName: Pascal string ".Display_Video_Apple_SE30" (26 bytes: +$12..+$2B)
-        0x19, // length = 25
-        0x2E, 0x44, 0x69, 0x73, 0x70, 0x6C, 0x61, 0x79, // .Display
-        0x5F, 0x56, 0x69, 0x64, 0x65, 0x6F, 0x5F, // _Video_
-        0x41, 0x70, 0x70, 0x6C, 0x65, 0x5F, 0x53, 0x45, // Apple_SE
-        0x33, 0x30, // 30
-
-        // ---- Open/Close at +$2C: return noErr ----
-        0x70, 0x00, // MOVEQ #0,D0
-        0x4E, 0x75, // RTS
-
-        // ---- Control at +$30: return noErr for all csCodes ----
-        0x70, 0x00, // MOVEQ #0,D0
-        0x4E, 0x75, // RTS
-
-        // ---- Status at +$34: return noErr for all csCodes ----
-        0x70, 0x00, // MOVEQ #0,D0
-        0x4E, 0x75, // RTS
-    };
-    memcpy(&top[0x220], drvr_sblock, sizeof(drvr_sblock));
-
-    // ---- Format Header at top+0x1FEC (last 20 bytes) ----
-    top[0x1FEC] = 0x00;
-    top[0x1FED] = 0xFF;
-    top[0x1FEE] = 0xE0;
-    top[0x1FEF] = 0x14;
-    top[0x1FF2] = 0x20; // fhLength = 0x2000
-    top[0x1FF8] = 0x01; // fhROMRev
-    top[0x1FF9] = 0x01; // fhFormat (Apple)
-    top[0x1FFA] = 0x5A;
-    top[0x1FFB] = 0x93;
-    top[0x1FFC] = 0x2B;
-    top[0x1FFD] = 0xC7;
-    top[0x1FFF] = 0x0F; // fhByteLanes
-
-    // CRC over the top 8 KB
-    uint32_t crc = 0;
-    for (int i = 0; i < 0x2000; i++) {
-        crc = ((crc << 1) | (crc >> 31));
-        if (i < 0x1FF4 || i >= 0x1FF8)
-            crc += top[i];
-    }
-    top[0x1FF4] = (uint8_t)(crc >> 24);
-    top[0x1FF5] = (uint8_t)(crc >> 16);
-    top[0x1FF6] = (uint8_t)(crc >> 8);
-    top[0x1FF7] = (uint8_t)(crc);
-}
-
-// Try to load the VROM from a single path. Returns true on success.
-static bool try_load_vrom(const char *path, uint8_t *vrom_buf) {
-    FILE *f = fopen(path, "rb");
-    if (!f)
-        return false;
-    size_t n = fread(vrom_buf, 1, SE30_VROM_SIZE, f);
-    fclose(f);
-    if (n == SE30_VROM_SIZE) {
-        LOG(1, "Loaded real VROM from %s (%zu bytes)", path, n);
-        return true;
-    }
-    return false;
-}
-
-// Try to load the real SE/30 VROM from a file.
-// On success, stores the loaded path in se30->vrom_path for checkpoint serialization.
-// Returns true if a real VROM was loaded, false if not found.
-static bool se30_load_vrom(config_t *cfg, uint8_t *vrom_buf) {
-    se30_state_t *se30 = se30_state(cfg);
-
-    // Check explicit VROM path first (set via "vrom.load <path>")
-    const char *explicit_path = vrom_pending_path();
-    if (explicit_path) {
-        if (try_load_vrom(explicit_path, vrom_buf)) {
-            free(se30->vrom_path);
-            se30->vrom_path = strdup(explicit_path);
-            return true;
-        }
-        LOG(0, "VROM file %s not found or wrong size", explicit_path);
-    }
-
-    // Fallback: search well-known paths for the real 32 KB VROM binary
-    static const char *search_paths[] = {"/opfs/images/vrom/SE30.vrom", // OPFS-persisted VROM (survives page reloads)
-                                         "tests/data/roms/SE30.vrom", "SE30.vrom", NULL};
-
-    for (const char **p = search_paths; *p; p++) {
-        if (try_load_vrom(*p, vrom_buf)) {
-            free(se30->vrom_path);
-            se30->vrom_path = strdup(*p);
-            return true;
-        }
-    }
-
-    // Also search in the same directory as the ROM file.
-    // Use pending_rom_path since rom_filename isn't set yet during init.
-    const char *rom_path = rom_pending_path();
-    if (!rom_path)
-        rom_path = memory_rom_filename(cfg->mem_map);
-    if (rom_path) {
-        const char *slash = strrchr(rom_path, '/');
-        if (slash) {
-            size_t dir_len = (size_t)(slash - rom_path + 1);
-            char vrom_path[512];
-            if (dir_len + sizeof("SE30.vrom") <= sizeof(vrom_path)) {
-                memcpy(vrom_path, rom_path, dir_len);
-                memcpy(vrom_path + dir_len, "SE30.vrom", sizeof("SE30.vrom"));
-                if (try_load_vrom(vrom_path, vrom_buf)) {
-                    free(se30->vrom_path);
-                    se30->vrom_path = strdup(vrom_path);
-                    return true;
-                }
-            }
-        }
-    }
-
-    LOG(0, "FATAL: Real VROM (SE30.vrom) not found. "
-           "The SE/30 requires a real Video ROM for proper VBL interrupt setup. "
-           "Place SE30.vrom next to the ROM file or in tests/data/roms/.");
-    return false;
-}
+// VROM loading / synth has moved to
+// src/core/peripherals/nubus/cards/builtin_se30_video.c — slot-$E is a
+// NuBus card now, and that driver owns the declaration-ROM bytes.
 
 // ============================================================
 // SoA page helper
@@ -907,7 +621,7 @@ static void se30_via1_output(void *context, uint8_t port, uint8_t output) {
         // Port A outputs:
         // Bit 6: screen buffer select (1 = primary at VRAM+$8040, 0 = alternate at VRAM+$0040)
         bool main_buf = (output & 0x40) != 0;
-        cfg->ram_vbuf = se30->vram + (main_buf ? SE30_FB_PRIMARY_OFFSET : SE30_FB_ALTERNATE_OFFSET);
+        builtin_se30_video_select_buffer(se30->video_card, main_buf);
         // Bit 5: floppy head select → SWIM
         if (se30->floppy)
             floppy_set_sel_signal(se30->floppy, (output & 0x20) != 0);
@@ -1107,72 +821,11 @@ static void se30_init(config_t *cfg, checkpoint_t *checkpoint) {
     se30->adb = adb_init(cfg->via1, cfg->scheduler, checkpoint);
     cfg->adb = se30->adb; // expose ADB to system-level input routing
 
-    // Restore image list from checkpoint before devices that reference them
-    if (checkpoint) {
-        uint32_t count = 0;
-        system_read_checkpoint_data(checkpoint, &count, sizeof(count));
-        for (uint32_t i = 0; i < count; ++i) {
-            uint32_t len = 0;
-            system_read_checkpoint_data(checkpoint, &len, sizeof(len));
-            char *name = NULL;
-            if (len > 0) {
-                name = (char *)malloc(len);
-                if (!name) {
-                    char tmp;
-                    for (uint32_t k = 0; k < len; ++k)
-                        system_read_checkpoint_data(checkpoint, &tmp, 1);
-                } else {
-                    system_read_checkpoint_data(checkpoint, name, len);
-                }
-            }
-            char writable = 0;
-            system_read_checkpoint_data(checkpoint, &writable, sizeof(writable));
-            uint64_t raw_size = 0;
-            system_read_checkpoint_data(checkpoint, &raw_size, sizeof(raw_size));
-            uint32_t instance_len = 0;
-            system_read_checkpoint_data(checkpoint, &instance_len, sizeof(instance_len));
-            char *instance_path = NULL;
-            if (instance_len > 0) {
-                instance_path = (char *)malloc(instance_len);
-                if (instance_path)
-                    system_read_checkpoint_data(checkpoint, instance_path, instance_len);
-                else {
-                    char tmp;
-                    for (uint32_t k = 0; k < instance_len; ++k)
-                        system_read_checkpoint_data(checkpoint, &tmp, 1);
-                }
-            }
-            image_t *img = NULL;
-            if (name) {
-                bool consolidated = checkpoint_get_kind(checkpoint) == CHECKPOINT_KIND_CONSOLIDATED;
-                if (raw_size > 0 && consolidated)
-                    image_create_empty(name, (size_t)raw_size);
-                if (writable && consolidated) {
-                    img = image_create(name, checkpoint_machine_dir());
-                } else if (writable && instance_path && instance_path[0]) {
-                    img = image_open(name, instance_path);
-                } else if (writable) {
-                    img = image_create(name, checkpoint_machine_dir());
-                } else {
-                    img = image_open_readonly(name);
-                }
-                if (!img) {
-                    printf("Error: image_open failed for %s while restoring checkpoint\n", name);
-                    checkpoint_set_error(checkpoint);
-                }
-            }
-            if (storage_restore_from_checkpoint(img ? img->storage : NULL, checkpoint) != GS_SUCCESS) {
-                printf("Error: storage_restore_from_checkpoint failed for %s\n", name ? name : "<unnamed>");
-                checkpoint_set_error(checkpoint);
-            }
-            if (img)
-                add_image(cfg, img);
-            if (name)
-                free(name);
-            if (instance_path)
-                free(instance_path);
-        }
-    }
+    // Restore image list from checkpoint before devices that reference them.
+    // Loop body lives in glue030_checkpoint_restore_images so future glue030
+    // family members (IIcx, IIx) reuse the same serialisation.
+    if (checkpoint)
+        glue030_checkpoint_restore_images(cfg, checkpoint);
 
     // Initialise SCSI (NULL map: I/O dispatcher handles addressing)
     cfg->scsi = scsi_init(NULL, checkpoint);
@@ -1196,23 +849,7 @@ static void se30_init(config_t *cfg, checkpoint_t *checkpoint) {
     se30->asc_iface = asc_get_memory_interface(se30->asc);
     se30->floppy_iface = floppy_get_memory_interface(se30->floppy);
 
-    // ---- VRAM / VROM / MMU wiring ----
-
-    // Allocate 64 KB VRAM (framebuffer lives here, not in main RAM)
-    se30->vram = calloc(1, SE30_VRAM_SIZE);
-    assert(se30->vram != NULL);
-
-    // Load the real SE/30 video declaration ROM from disk.
-    // When restoring from a checkpoint, the VROM will be overwritten from
-    // the checkpoint data, so a missing file is not fatal in that case.
-    se30->vrom = calloc(1, SE30_VROM_SIZE);
-    assert(se30->vrom != NULL);
-    if (!se30_load_vrom(cfg, se30->vrom) && !checkpoint) {
-        fprintf(stderr, "Error: SE/30 Video ROM (SE30.vrom) not found.\n"
-                        "The SE/30 emulator requires a real VROM file for proper operation.\n"
-                        "Place SE30.vrom next to the ROM file or in tests/data/roms/.\n");
-        exit(1);
-    }
+    // ---- MMU + NuBus + VRAM/VROM wiring ----
 
     // Create the 68030 PMMU and make it globally reachable
     uint8_t *ram_base = ram_native_pointer(cfg->mem_map, 0);
@@ -1225,13 +862,37 @@ static void se30_init(config_t *cfg, checkpoint_t *checkpoint) {
     g_mmu = se30->mmu;
     cfg->cpu->mmu = se30->mmu;
 
+    // Bring up the NuBus.  Slot $E is BUILTIN with the SE/30 video card;
+    // slots $9..$B are the PDS pseudo-slots (EMPTY in v1, no card seated).
+    // The card factory allocates VRAM/VROM and loads SE30.vrom from disk;
+    // we expose its buffers via borrowed pointers below for the
+    // memory_map_host_region calls and the I/O dispatcher's VRAM mirror.
+    static const nubus_slot_decl_t se30_slots[] = {
+        {.slot = 0x9, .kind = NUBUS_SLOT_EMPTY},
+        {.slot = 0xA, .kind = NUBUS_SLOT_EMPTY},
+        {.slot = 0xB, .kind = NUBUS_SLOT_EMPTY},
+        {.slot = 0xE, .kind = NUBUS_SLOT_BUILTIN, .builtin_card_id = "builtin_se30_video"},
+        {0},
+    };
+    cfg->nubus = nubus_init(cfg, se30_slots, checkpoint);
+    se30->video_card = nubus_card(cfg->nubus, 0xE);
+    assert(se30->video_card != NULL);
+    se30->vram = builtin_se30_video_vram(se30->video_card);
+    se30->vrom = builtin_se30_video_vrom(se30->video_card);
+    if (!se30->vram || !se30->vrom) {
+        fprintf(stderr, "Error: SE/30 Video ROM (SE30.vrom) not found.\n"
+                        "The SE/30 emulator requires a real VROM file for proper operation.\n"
+                        "Place SE30.vrom next to the ROM file or in tests/data/roms/.\n");
+        exit(1);
+    }
+
     // Let the MMU resolve VRAM physical addresses during table walks.
     // VRAM stays identity-mapped at its logical base for MMU resolution.
-    mmu_register_vram(se30->mmu, se30->vram, SE30_VRAM_BASE, SE30_VRAM_SIZE);
+    memory_map_host_region(cfg->mem_map, "se30_vram", se30->vram, SE30_VRAM_BASE, SE30_VRAM_SIZE, /*writable*/ true);
 
     // Let the MMU resolve VROM physical addresses during table walks.
     // TT identity-maps NuBus addresses, so physical $FEFF8000 = logical $FEFF8000.
-    mmu_register_vrom(se30->mmu, se30->vrom, SE30_VROM_PHYS, SE30_VROM_SIZE);
+    memory_map_host_region(cfg->mem_map, "se30_vrom", se30->vrom, SE30_VROM_PHYS, SE30_VROM_SIZE, /*writable*/ false);
 
     // Emulate the GLUE chip's transparent NuBus slot address decoding.
     // The SE/30 ROM never writes TT registers (confirmed by ROM binary scan);
@@ -1252,19 +913,18 @@ static void se30_init(config_t *cfg, checkpoint_t *checkpoint) {
     // After the ROM sets up MMU page tables, logical $FExxxxxx maps to
     // physical $50Fxxxxx. Both VRAM and VROM must be accessible at their
     // page-table-mapped physical addresses in addition to their TT addresses.
-    se30->mmu->vram_phys_alt = SE30_VRAM_PHYS_ALT;
-    se30->mmu->vrom_phys_alt = SE30_VROM_PHYS_ALT;
+    memory_map_host_region_alias(cfg->mem_map, SE30_VRAM_PHYS_ALT, SE30_VRAM_BASE);
+    memory_map_host_region_alias(cfg->mem_map, SE30_VROM_PHYS_ALT, SE30_VROM_PHYS);
 
     // Only NuBus expansion slots $9-$D generate bus errors on unmapped reads.
     // Slot $E is built-in video (mapped). Slot $F and $0-$8 are internal/absent
     // and return 0 without bus error, matching SE/30 GLUE chip behavior.
-    se30->mmu->nubus_berr_start = 0xF9000000;
-    se30->mmu->nubus_berr_end = 0xFDFFFFFF;
+    memory_set_bus_error_range(cfg->mem_map, 0xF9000000, 0xFDFFFFFF);
 
-    // Point the video subsystem at the primary framebuffer in VRAM
-    cfg->ram_vbuf = se30->vram + SE30_FB_PRIMARY_OFFSET;
-
-    // Populate SE/30 memory layout (RAM, ROM, VRAM, VROM, I/O, overlay)
+    // Populate SE/30 memory layout (RAM, ROM, VRAM, VROM, I/O, overlay).
+    // The card-owned VRAM/VROM bytes are wired into the page table here;
+    // the framebuffer pointer the renderer reads lives on the card's
+    // display_t and is reached via system_display() / cfg->nubus.
     se30_memory_layout_init(cfg);
 
     // Re-drive VIA outputs on checkpoint restore (also restores alt-buffer state)
@@ -1324,18 +984,13 @@ static void se30_teardown(config_t *cfg) {
             mmu_delete(se30->mmu); // also clears g_mmu if it matches
             se30->mmu = NULL;
         }
-        if (se30->vram) {
-            free(se30->vram);
-            se30->vram = NULL;
-        }
-        if (se30->vrom) {
-            free(se30->vrom);
-            se30->vrom = NULL;
-        }
-        if (se30->vrom_path) {
-            free(se30->vrom_path);
-            se30->vrom_path = NULL;
-        }
+        // VRAM, VROM, and the borrowed video_card pointer all live on the
+        // slot-$E card; system_destroy calls nubus_delete before us, which
+        // in turn calls the card's teardown — we just clear our borrowed
+        // references here.
+        se30->vram = NULL;
+        se30->vrom = NULL;
+        se30->video_card = NULL;
         if (se30->floppy) {
             floppy_delete(se30->floppy);
             se30->floppy = NULL;
@@ -1416,23 +1071,24 @@ static void se30_checkpoint_save(config_t *cfg, checkpoint_t *cp) {
 
     adb_checkpoint(se30->adb, cp);
 
-    // Checkpoint list of images before devices that reference them
-    {
-        uint32_t count = (uint32_t)cfg->n_images;
-        system_write_checkpoint_data(cp, &count, sizeof(count));
-        for (uint32_t i = 0; i < count; ++i)
-            image_checkpoint(cfg->images[i], cp);
-    }
+    // Checkpoint list of images before devices that reference them.
+    // Family-shared serialisation lives in glue030_checkpoint_save_images.
+    glue030_checkpoint_save_images(cfg, cp);
 
     scsi_checkpoint(cfg->scsi, cp);
     asc_checkpoint(se30->asc, cp);
     floppy_checkpoint(se30->floppy, cp);
 
-    // Save VRAM contents (must match restore order in se30_init)
+    // Save VRAM contents (must match restore order in se30_init).  The
+    // bytes are owned by the slot-$E card; se30->vram is a borrowed
+    // pointer into that buffer, so the existing memcpy still hits the
+    // right backing store.
     system_write_checkpoint_data(cp, se30->vram, SE30_VRAM_SIZE);
 
-    // Save VROM (content embedded in consolidated checkpoints, path reference in quick)
-    checkpoint_write_file(cp, se30->vrom_path ? se30->vrom_path : "");
+    // Save VROM (content embedded in consolidated checkpoints, path
+    // reference in quick).  The path lives on the card too.
+    const char *vrom_path = builtin_se30_video_vrom_path(se30->video_card);
+    checkpoint_write_file(cp, vrom_path ? vrom_path : "");
 
     // Save MMU guest registers (TC, CRP, SRP, TT0, TT1, MMUSR, enabled flag)
     system_write_checkpoint_data(cp, &se30->mmu->tc, sizeof(se30->mmu->tc));

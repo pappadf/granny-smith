@@ -20,6 +20,7 @@
 #include "cpu.h"
 #include "cpu_internal.h"
 #include "debug_mac.h"
+#include "display.h"
 #include "expr.h"
 #include "fpu.h"
 #include "log.h"
@@ -1270,11 +1271,11 @@ uint64_t cmd_set(int argc, char *argv[]) {
 // ────────────────────────────────────────────────────────────────────────────
 // Screenshot command - save emulated screen as PNG
 // ────────────────────────────────────────────────────────────────────────────
-
-// Screen dimensions (Macintosh Plus)
-#define SCREEN_WIDTH  512
-#define SCREEN_HEIGHT 342
-#define FB_BYTES      (SCREEN_WIDTH * SCREEN_HEIGHT / 8)
+//
+// Pixel-format support, v1: PIXEL_1BPP_MSB only — every machine that ships
+// today (Plus, SE/30 built-in video) drives a 1bpp framebuffer.  The wider
+// indexed/direct paths land alongside the JMFB driver in step 6 of the
+// IIcx/IIx proposal; for now an unsupported format is a hard error.
 
 // CRC32 table for PNG chunk checksums
 static uint32_t crc32_table[256];
@@ -1350,29 +1351,34 @@ static uint32_t adler32(const uint8_t *data, size_t len) {
     return (b << 16) | a;
 }
 
-// Calculate a simple checksum of the framebuffer for fast screen comparison
-uint32_t framebuffer_checksum(const uint8_t *fb) {
+// Calculate a simple checksum of the framebuffer for fast screen comparison.
+// v1 hashes every byte of `bits`; CLUT inclusion (so palette-only changes
+// hash differently) lands with the indexed/direct format expansion.
+uint32_t framebuffer_checksum(const display_t *d) {
+    if (!d || !d->bits)
+        return 0;
+    const size_t fb_bytes = (size_t)d->stride * d->height;
     uint32_t checksum = 0;
-    for (int i = 0; i < FB_BYTES; i++) {
-        checksum = checksum * 31 + fb[i];
+    for (size_t i = 0; i < fb_bytes; i++) {
+        checksum = checksum * 31 + d->bits[i];
     }
     return checksum;
 }
 
 // Calculate checksum for a region of the framebuffer (top, left, bottom, right)
-// Region is specified in pixels; checksum operates on the 1-bit packed data
-uint32_t framebuffer_region_checksum(const uint8_t *fb, int top, int left, int bottom, int right) {
+// Region is specified in pixels; v1 supports 1bpp only.
+uint32_t framebuffer_region_checksum(const display_t *d, int top, int left, int bottom, int right) {
+    if (!d || !d->bits || d->format != PIXEL_1BPP_MSB)
+        return 0;
+    const uint8_t *fb = d->bits;
+    const uint32_t stride = d->stride;
     uint32_t checksum = 0;
-    int width = right - left;
-    int height = bottom - top;
-    (void)width;
-    (void)height;
 
     // Process each row in the region
     for (int y = top; y < bottom; y++) {
         // Process each pixel in the row, packing into bytes
         for (int x = left; x < right; x++) {
-            int byte_idx = y * (SCREEN_WIDTH / 8) + (x / 8);
+            int byte_idx = y * (int)stride + (x / 8);
             int bit_idx = 7 - (x % 8); // MSB first
             int bit = (fb[byte_idx] >> bit_idx) & 1;
 
@@ -1463,10 +1469,227 @@ static uint8_t *inflate_stored_only(const uint8_t *data, size_t data_len, size_t
     return output;
 }
 
-// Load a PNG file and extract framebuffer (1-bit packed, same format as emulator)
-// Returns 0 on success, -1 on error
-// Supports both stored-block PNGs (our format) and standard deflate PNGs
-static int load_png_to_framebuffer(const char *filename, uint8_t *fb_out) {
+// Convert one row of a live framebuffer to packed RGBA (no PNG filter
+// byte).  Pulled out of save_framebuffer_as_png so screen.match can
+// compare any pixel format against an RGBA reference PNG without
+// going through a temp PNG round-trip.
+//
+// `out_rgba` must point to at least `width * 4` bytes.
+static void framebuffer_row_to_rgba(const display_t *d, int y, uint8_t *out_rgba) {
+    const uint8_t *src_row = d->bits + (size_t)y * d->stride;
+    const rgba8_t *clut = d->clut;
+    const uint32_t clut_len = d->clut_len;
+    for (uint32_t x = 0; x < d->width; x++) {
+        uint8_t *pixel = out_rgba + x * 4;
+        uint8_t r = 0, g = 0, b = 0;
+        switch (d->format) {
+        case PIXEL_1BPP_MSB: {
+            int bit = (src_row[x >> 3] >> (7 - (x & 7))) & 1;
+            // 1 = black, 0 = white (Mac convention)
+            r = g = b = bit ? 0 : 255;
+            break;
+        }
+        case PIXEL_2BPP_MSB: {
+            int idx = (src_row[x >> 2] >> ((3 - (x & 3)) * 2)) & 0x3;
+            rgba8_t c = clut[idx % clut_len];
+            r = c.r;
+            g = c.g;
+            b = c.b;
+            break;
+        }
+        case PIXEL_4BPP_MSB: {
+            int idx = (src_row[x >> 1] >> ((1 - (x & 1)) * 4)) & 0xF;
+            rgba8_t c = clut[idx % clut_len];
+            r = c.r;
+            g = c.g;
+            b = c.b;
+            break;
+        }
+        case PIXEL_8BPP: {
+            uint8_t idx = src_row[x];
+            rgba8_t c = clut[idx % clut_len];
+            r = c.r;
+            g = c.g;
+            b = c.b;
+            break;
+        }
+        case PIXEL_16BPP_555: {
+            uint16_t v = ((uint16_t)src_row[x * 2] << 8) | src_row[x * 2 + 1];
+            uint8_t r5 = (v >> 10) & 0x1F;
+            uint8_t g5 = (v >> 5) & 0x1F;
+            uint8_t b5 = v & 0x1F;
+            r = (uint8_t)((r5 << 3) | (r5 >> 2));
+            g = (uint8_t)((g5 << 3) | (g5 >> 2));
+            b = (uint8_t)((b5 << 3) | (b5 >> 2));
+            break;
+        }
+        case PIXEL_32BPP_XRGB: {
+            r = src_row[x * 4 + 1];
+            g = src_row[x * 4 + 2];
+            b = src_row[x * 4 + 3];
+            break;
+        }
+        }
+        pixel[0] = r;
+        pixel[1] = g;
+        pixel[2] = b;
+        pixel[3] = 255;
+    }
+}
+
+// Load a PNG file and decode it to packed RGBA (8 bits per channel, 4
+// bytes per pixel, no filter bytes).  Used by screen.match's
+// RGBA-vs-RGBA comparison path; works with any PNG color type that
+// save_framebuffer_as_png emits (RGBA) or that older 1bpp tooling
+// might have produced (grayscale, RGB).  `out_rgba` must be at least
+// `expected_width * expected_height * 4` bytes.  Returns 0 / -1.
+static int load_png_to_rgba(const char *filename, int expected_width, int expected_height, uint8_t *out_rgba) {
+    FILE *fp = fopen(filename, "rb");
+    if (!fp) {
+        printf("Error: Cannot open '%s' for reading.\n", filename);
+        return -1;
+    }
+    fseek(fp, 0, SEEK_END);
+    long file_size = ftell(fp);
+    fseek(fp, 0, SEEK_SET);
+    uint8_t *file_data = malloc(file_size);
+    if (!file_data) {
+        fclose(fp);
+        printf("Error: Out of memory.\n");
+        return -1;
+    }
+    if (fread(file_data, 1, file_size, fp) != (size_t)file_size) {
+        free(file_data);
+        fclose(fp);
+        printf("Error: Failed to read file.\n");
+        return -1;
+    }
+    fclose(fp);
+
+    static const uint8_t png_sig[8] = {0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n'};
+    if (file_size < 8 || memcmp(file_data, png_sig, 8) != 0) {
+        free(file_data);
+        printf("Error: Not a valid PNG file.\n");
+        return -1;
+    }
+
+    size_t pos = 8;
+    int width = 0, height = 0, bit_depth = 0, color_type = 0;
+    uint8_t *idat_data = NULL;
+    size_t idat_len = 0;
+    size_t idat_capacity = 0;
+    while (pos + 12 <= (size_t)file_size) {
+        uint32_t chunk_len = read_be32(file_data + pos);
+        char chunk_type[5];
+        memcpy(chunk_type, file_data + pos + 4, 4);
+        chunk_type[4] = '\0';
+        if (strcmp(chunk_type, "IHDR") == 0 && chunk_len >= 13) {
+            width = read_be32(file_data + pos + 8);
+            height = read_be32(file_data + pos + 12);
+            bit_depth = file_data[pos + 16];
+            color_type = file_data[pos + 17];
+        } else if (strcmp(chunk_type, "IDAT") == 0) {
+            if (idat_len + chunk_len > idat_capacity) {
+                idat_capacity = (idat_len + chunk_len) * 2;
+                uint8_t *new_idat = realloc(idat_data, idat_capacity);
+                if (!new_idat) {
+                    free(idat_data);
+                    free(file_data);
+                    printf("Error: Out of memory.\n");
+                    return -1;
+                }
+                idat_data = new_idat;
+            }
+            memcpy(idat_data + idat_len, file_data + pos + 8, chunk_len);
+            idat_len += chunk_len;
+        } else if (strcmp(chunk_type, "IEND") == 0) {
+            break;
+        }
+        pos += 12 + chunk_len;
+    }
+    free(file_data);
+
+    if (width != expected_width || height != expected_height) {
+        free(idat_data);
+        printf("Error: PNG dimensions %dx%d don't match screen %dx%d.\n", width, height, expected_width,
+               expected_height);
+        return -1;
+    }
+    if (!idat_data || idat_len == 0) {
+        free(idat_data);
+        printf("Error: No image data in PNG.\n");
+        return -1;
+    }
+    if (bit_depth != 8) {
+        free(idat_data);
+        printf("Error: PNG bit depth %d unsupported (only 8).\n", bit_depth);
+        return -1;
+    }
+
+    size_t raw_size = 0;
+    uint8_t *raw_data = inflate_stored_only(idat_data, idat_len, &raw_size);
+    free(idat_data);
+    if (!raw_data) {
+        printf("Error: Failed to decompress PNG (only stored-block PNGs supported).\n");
+        return -1;
+    }
+
+    size_t bpp_in;
+    if (color_type == 6)
+        bpp_in = 4; // RGBA
+    else if (color_type == 2)
+        bpp_in = 3; // RGB
+    else if (color_type == 0)
+        bpp_in = 1; // Grayscale
+    else {
+        free(raw_data);
+        printf("Error: Unsupported PNG color type %d.\n", color_type);
+        return -1;
+    }
+    size_t row_size = 1 + (size_t)width * bpp_in;
+    if (raw_size != row_size * (size_t)height) {
+        free(raw_data);
+        printf("Error: PNG data size mismatch (got %zu, expected %zu).\n", raw_size, row_size * (size_t)height);
+        return -1;
+    }
+
+    for (int y = 0; y < height; y++) {
+        const uint8_t *row = raw_data + (size_t)y * row_size + 1; // skip filter byte
+        uint8_t *out_row = out_rgba + (size_t)y * (size_t)width * 4;
+        for (int x = 0; x < width; x++) {
+            uint8_t r, g, b, a;
+            if (color_type == 6) {
+                r = row[x * 4 + 0];
+                g = row[x * 4 + 1];
+                b = row[x * 4 + 2];
+                a = row[x * 4 + 3];
+            } else if (color_type == 2) {
+                r = row[x * 3 + 0];
+                g = row[x * 3 + 1];
+                b = row[x * 3 + 2];
+                a = 255;
+            } else { // grayscale
+                r = g = b = row[x];
+                a = 255;
+            }
+            out_row[x * 4 + 0] = r;
+            out_row[x * 4 + 1] = g;
+            out_row[x * 4 + 2] = b;
+            out_row[x * 4 + 3] = a;
+        }
+    }
+    free(raw_data);
+    return 0;
+}
+
+// Load a PNG file and extract framebuffer (1-bit packed, same format as emulator).
+// `expected_width`, `expected_height`, and `expected_stride` are the active
+// display's dimensions; the helper validates the PNG matches before
+// converting and writing into `fb_out` (which must be at least
+// expected_stride * expected_height bytes).  Returns 0 on success, -1 on error.
+// Supports both stored-block PNGs (our format) and standard deflate PNGs.
+static int load_png_to_framebuffer(const char *filename, uint8_t *fb_out, int expected_width, int expected_height,
+                                   size_t expected_stride) {
     FILE *fp = fopen(filename, "rb");
     if (!fp) {
         printf("Error: Cannot open '%s' for reading.\n", filename);
@@ -1544,9 +1767,10 @@ static int load_png_to_framebuffer(const char *filename, uint8_t *fb_out) {
     free(file_data);
 
     // Validate dimensions
-    if (width != SCREEN_WIDTH || height != SCREEN_HEIGHT) {
+    if (width != expected_width || height != expected_height) {
         free(idat_data);
-        printf("Error: PNG dimensions %dx%d don't match screen %dx%d.\n", width, height, SCREEN_WIDTH, SCREEN_HEIGHT);
+        printf("Error: PNG dimensions %dx%d don't match screen %dx%d.\n", width, height, expected_width,
+               expected_height);
         return -1;
     }
 
@@ -1590,7 +1814,7 @@ static int load_png_to_framebuffer(const char *filename, uint8_t *fb_out) {
     }
 
     // Convert RGBA/RGB/Grayscale back to 1-bit packed framebuffer
-    memset(fb_out, 0, FB_BYTES);
+    memset(fb_out, 0, expected_stride * (size_t)expected_height);
     for (int y = 0; y < height; y++) {
         uint8_t *row = raw_data + y * row_size + 1; // Skip filter byte
         for (int x = 0; x < width; x++) {
@@ -1608,7 +1832,7 @@ static int load_png_to_framebuffer(const char *filename, uint8_t *fb_out) {
             int bit = (v < 128) ? 1 : 0;
 
             // Pack into framebuffer
-            int byte_idx = y * (SCREEN_WIDTH / 8) + (x / 8);
+            int byte_idx = y * (int)expected_stride + (x / 8);
             int bit_idx = 7 - (x % 8); // MSB first
             if (bit) {
                 fb_out[byte_idx] |= (1 << bit_idx);
@@ -1620,30 +1844,93 @@ static int load_png_to_framebuffer(const char *filename, uint8_t *fb_out) {
     return 0;
 }
 
-// Compare current framebuffer with a reference PNG file
-// Returns 0 if match, 1 if mismatch, -1 on error
-int match_framebuffer_with_png(const uint8_t *fb, const char *filename) {
-    uint8_t *ref_fb = malloc(FB_BYTES);
-    if (!ref_fb) {
+// Compare current framebuffer with a reference PNG file.
+// Returns 0 if match, 1 if mismatch, -1 on error.
+//
+// Compares in RGBA space (8 bits per channel, 4 bytes per pixel) so
+// every pixel format save_framebuffer_as_png supports — 1/2/4/8 bpp
+// indexed, 16-bit 5-5-5, and 32-bit XRGB — also matches.  Indexed
+// formats need the live CLUT to be populated; if the framebuffer is
+// indexed and the CLUT is empty (e.g. screenshot before the OS has
+// uploaded a palette) the live conversion will see clut_len == 0 and
+// the colour bytes will be zero, which won't match a real reference
+// — that's intentional, the test should screenshot post-CLUT-load.
+int match_framebuffer_with_png(const display_t *d, const char *filename) {
+    if (!d || !d->bits) {
+        printf("Error: No active display.\n");
+        return -1;
+    }
+    switch (d->format) {
+    case PIXEL_1BPP_MSB:
+    case PIXEL_2BPP_MSB:
+    case PIXEL_4BPP_MSB:
+    case PIXEL_8BPP:
+    case PIXEL_16BPP_555:
+    case PIXEL_32BPP_XRGB:
+        break;
+    default:
+        printf("Error: PNG match: unsupported pixel format %d.\n", (int)d->format);
+        return -1;
+    }
+    if ((d->format == PIXEL_2BPP_MSB || d->format == PIXEL_4BPP_MSB || d->format == PIXEL_8BPP) &&
+        (!d->clut || d->clut_len == 0)) {
+        printf("Error: PNG match: indexed format with no CLUT.\n");
+        return -1;
+    }
+
+    const size_t rgba_bytes = (size_t)d->width * (size_t)d->height * 4;
+    uint8_t *fb_rgba = malloc(rgba_bytes);
+    uint8_t *ref_rgba = malloc(rgba_bytes);
+    if (!fb_rgba || !ref_rgba) {
+        free(fb_rgba);
+        free(ref_rgba);
         printf("Error: Out of memory.\n");
         return -1;
     }
-
-    if (load_png_to_framebuffer(filename, ref_fb) < 0) {
-        free(ref_fb);
+    for (uint32_t y = 0; y < d->height; y++)
+        framebuffer_row_to_rgba(d, (int)y, fb_rgba + (size_t)y * d->width * 4);
+    if (load_png_to_rgba(filename, (int)d->width, (int)d->height, ref_rgba) < 0) {
+        free(fb_rgba);
+        free(ref_rgba);
         return -1;
     }
-
-    // Compare framebuffers
-    int match = (memcmp(fb, ref_fb, FB_BYTES) == 0);
-    free(ref_fb);
-
+    int match = (memcmp(fb_rgba, ref_rgba, rgba_bytes) == 0);
+    free(fb_rgba);
+    free(ref_rgba);
     return match ? 0 : 1;
 }
 
-// Save framebuffer as PNG to the given file path
-// Returns 0 on success, -1 on error
-int save_framebuffer_as_png(const uint8_t *fb, const char *filename) {
+// Save framebuffer as PNG to the given file path.
+// v1 emits an 8-bit RGBA truecolour PNG; the 1bpp encoder is the only path
+// implemented (every shipping machine drives 1bpp).  Indexed/direct format
+// support lands with step 6's JMFB driver.
+int save_framebuffer_as_png(const display_t *d, const char *filename) {
+    if (!d || !d->bits) {
+        printf("Error: No active display.\n");
+        return -1;
+    }
+    switch (d->format) {
+    case PIXEL_1BPP_MSB:
+    case PIXEL_2BPP_MSB:
+    case PIXEL_4BPP_MSB:
+    case PIXEL_8BPP:
+    case PIXEL_16BPP_555:
+    case PIXEL_32BPP_XRGB:
+        break;
+    default:
+        printf("Error: PNG save: unsupported pixel format %d.\n", (int)d->format);
+        return -1;
+    }
+    if ((d->format == PIXEL_2BPP_MSB || d->format == PIXEL_4BPP_MSB || d->format == PIXEL_8BPP) &&
+        (!d->clut || d->clut_len == 0)) {
+        printf("Error: PNG save: indexed format with no CLUT.\n");
+        return -1;
+    }
+    const int width = (int)d->width;
+    const int height = (int)d->height;
+    const uint32_t stride = d->stride;
+    const uint8_t *fb = d->bits;
+
     // Initialize CRC table
     init_crc32_table();
 
@@ -1662,8 +1949,8 @@ int save_framebuffer_as_png(const uint8_t *fb, const char *filename) {
     // IHDR chunk: width, height, bit depth, color type, compression, filter, interlace
     // bit depth = 8, color type = 6 (RGBA)
     uint8_t ihdr[13];
-    write_be32(ihdr, SCREEN_WIDTH);
-    write_be32(ihdr + 4, SCREEN_HEIGHT);
+    write_be32(ihdr, (uint32_t)width);
+    write_be32(ihdr + 4, (uint32_t)height);
     ihdr[8] = 8; // bit depth (8 bits per channel)
     ihdr[9] = 6; // color type (RGBA)
     ihdr[10] = 0; // compression method (deflate)
@@ -1673,9 +1960,9 @@ int save_framebuffer_as_png(const uint8_t *fb, const char *filename) {
         goto write_error;
 
     // Prepare uncompressed image data with filter bytes
-    // Each row: 1 filter byte (0 = none) + SCREEN_WIDTH * 4 bytes (RGBA)
-    size_t row_size = 1 + SCREEN_WIDTH * 4;
-    size_t raw_size = row_size * SCREEN_HEIGHT;
+    // Each row: 1 filter byte (0 = none) + width * 4 bytes (RGBA)
+    size_t row_size = 1 + (size_t)width * 4;
+    size_t raw_size = row_size * (size_t)height;
     uint8_t *raw_data = malloc(raw_size);
     if (!raw_data) {
         printf("Error: Out of memory.\n");
@@ -1683,22 +1970,73 @@ int save_framebuffer_as_png(const uint8_t *fb, const char *filename) {
         return -1;
     }
 
-    // Convert 1-bit packed framebuffer to RGBA
-    // In Mac framebuffer: 1 = black, 0 = white
-    for (int y = 0; y < SCREEN_HEIGHT; y++) {
+    // Convert framebuffer to 8-bit RGBA, one row at a time.
+    const rgba8_t *clut = d->clut;
+    const uint32_t clut_len = d->clut_len;
+    for (int y = 0; y < height; y++) {
         uint8_t *row = raw_data + y * row_size;
+        const uint8_t *src_row = fb + (size_t)y * stride;
         row[0] = 0; // filter byte: none
-        for (int x = 0; x < SCREEN_WIDTH; x++) {
-            int byte_idx = y * (SCREEN_WIDTH / 8) + (x / 8);
-            int bit_idx = 7 - (x % 8); // MSB first
-            int bit = (fb[byte_idx] >> bit_idx) & 1;
-            // bit=1 means black (0), bit=0 means white (255)
-            uint8_t v = bit ? 0 : 255;
+        for (int x = 0; x < width; x++) {
             uint8_t *pixel = row + 1 + x * 4;
-            pixel[0] = v; // R
-            pixel[1] = v; // G
-            pixel[2] = v; // B
-            pixel[3] = 255; // A (fully opaque)
+            uint8_t r = 0, g = 0, b = 0, a = 255;
+            switch (d->format) {
+            case PIXEL_1BPP_MSB: {
+                int bit = (src_row[x >> 3] >> (7 - (x & 7))) & 1;
+                // 1 = black, 0 = white (Mac convention)
+                r = g = b = bit ? 0 : 255;
+                break;
+            }
+            case PIXEL_2BPP_MSB: {
+                int idx = (src_row[x >> 2] >> ((3 - (x & 3)) * 2)) & 0x3;
+                rgba8_t c = clut[idx % clut_len];
+                r = c.r;
+                g = c.g;
+                b = c.b;
+                break;
+            }
+            case PIXEL_4BPP_MSB: {
+                int idx = (src_row[x >> 1] >> ((1 - (x & 1)) * 4)) & 0xF;
+                rgba8_t c = clut[idx % clut_len];
+                r = c.r;
+                g = c.g;
+                b = c.b;
+                break;
+            }
+            case PIXEL_8BPP: {
+                uint8_t idx = src_row[x];
+                rgba8_t c = clut[idx % clut_len];
+                r = c.r;
+                g = c.g;
+                b = c.b;
+                break;
+            }
+            case PIXEL_16BPP_555: {
+                // big-endian 1-5-5-5
+                uint16_t v = ((uint16_t)src_row[x * 2] << 8) | src_row[x * 2 + 1];
+                uint8_t r5 = (v >> 10) & 0x1F;
+                uint8_t g5 = (v >> 5) & 0x1F;
+                uint8_t b5 = v & 0x1F;
+                r = (uint8_t)((r5 << 3) | (r5 >> 2));
+                g = (uint8_t)((g5 << 3) | (g5 >> 2));
+                b = (uint8_t)((b5 << 3) | (b5 >> 2));
+                break;
+            }
+            case PIXEL_32BPP_XRGB: {
+                // [X][R][G][B] big-endian, 4 bytes per pixel.  Mac OS
+                // at SetDepth(32) sets PixMap.pixelSize=32 and writes
+                // XRGB pixels; the JMFB's RAMDAC-bypass mode reads 3
+                // of those 4 bytes per pixel for scan and discards X.
+                r = src_row[x * 4 + 1];
+                g = src_row[x * 4 + 2];
+                b = src_row[x * 4 + 3];
+                break;
+            }
+            }
+            pixel[0] = r;
+            pixel[1] = g;
+            pixel[2] = b;
+            pixel[3] = a;
         }
     }
 
@@ -1766,7 +2104,7 @@ int save_framebuffer_as_png(const uint8_t *fb, const char *filename) {
         goto write_error;
 
     fclose(fp);
-    printf("Screenshot saved to '%s' (%dx%d).\n", filename, SCREEN_WIDTH, SCREEN_HEIGHT);
+    printf("Screenshot saved to '%s' (%dx%d).\n", filename, width, height);
     return 0;
 
 write_error:
@@ -3288,21 +3626,32 @@ static const arg_decl_t debug_log_args[] = {
     {.name = "level",    .kind = V_NONE,   .doc = "Integer level (0..5) or full named-arg spec string"},
 };
 
-// `debug.disasm([count])` — disassemble `count` instructions forward from
-// the current PC (default 16). Lives under debug.* (not cpu.*) because it's
-// a pure observation operation: same family as debug.breakpoints,
-// debug.logpoints, debug.mac.* — debugger affordances that *use* the CPU's
-// encoding knowledge but aren't themselves part of running the CPU.
+// `debug.disasm([addr], [count])` — disassemble forward.
+//   debug.disasm                    PC, 16 instructions
+//   debug.disasm <count>            PC, <count> instructions
+//   debug.disasm <addr> <count>     <addr>, <count> instructions
+// Lives under debug.* (not cpu.*) because it's a pure observation
+// operation: same family as debug.breakpoints, debug.logpoints,
+// debug.mac.* — debugger affordances that *use* the CPU's encoding
+// knowledge but aren't themselves part of running the CPU.
 static value_t debug_method_disasm(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)self;
     (void)m;
-    int64_t count = (argc >= 1) ? argv[0].i : 16;
-    if (count <= 0)
-        count = 16;
     cpu_t *cpu = system_cpu();
     if (!cpu)
         return val_err("debug.disasm: CPU not initialised");
+
     uint32_t addr = cpu_get_pc(cpu);
+    int64_t count = 16;
+    if (argc == 1) {
+        count = argv[0].i;
+    } else if (argc >= 2) {
+        addr = (uint32_t)argv[0].i;
+        count = argv[1].i;
+    }
+    if (count <= 0)
+        count = 16;
+
     char buf[160];
     for (int i = 0; i < (int)count; i++) {
         int instr_len = debugger_disasm(buf, sizeof(buf), addr);
@@ -3313,10 +3662,14 @@ static value_t debug_method_disasm(struct object *self, const member_t *m, int a
 }
 
 static const arg_decl_t debug_disasm_args[] = {
+    {.name = "addr_or_count",
+     .kind = V_INT,
+     .validation_flags = OBJ_ARG_OPTIONAL,
+     .doc = "With one arg: instruction count (from PC, default 16). With two args: start address."},
     {.name = "count",
      .kind = V_INT,
      .validation_flags = OBJ_ARG_OPTIONAL,
-     .doc = "Number of instructions (default 16)"},
+     .doc = "Number of instructions when addr is given as the first argument."                    },
 };
 
 // `debug.step([n])` — single-step n instructions (default 1) and stop.
@@ -3347,8 +3700,8 @@ static const member_t debug_members[] = {
      .method = {.args = debug_log_args, .nargs = 2, .result = V_BOOL, .fn = debug_method_log}      },
     {.kind = M_METHOD,
      .name = "disasm",
-     .doc = "Disassemble forward from PC (default 16 instructions)",
-     .method = {.args = debug_disasm_args, .nargs = 1, .result = V_BOOL, .fn = debug_method_disasm}},
+     .doc = "Disassemble forward. `disasm` from PC, `disasm <count>` from PC, `disasm <addr> <count>` from addr.",
+     .method = {.args = debug_disasm_args, .nargs = 2, .result = V_BOOL, .fn = debug_method_disasm}},
     {.kind = M_METHOD,
      .name = "step",
      .doc = "Single-step N instructions and stop (default 1)",
@@ -3567,10 +3920,10 @@ static value_t screen_method_save(struct object *self, const member_t *m, int ar
     size_t n = strlen(path);
     if (n < 4 || strcasecmp(path + n - 4, ".png") != 0)
         return val_err("screen.save: path must end in .png (got '%s')", path);
-    const uint8_t *fb = system_framebuffer();
-    if (!fb)
+    const display_t *d = system_display();
+    if (!d || !d->bits)
         return val_err("screen.save: framebuffer not available");
-    if (save_framebuffer_as_png(fb, path) < 0)
+    if (save_framebuffer_as_png(d, path) < 0)
         return val_err("screen.save: failed to save '%s'", path);
     return val_bool(true);
 }
@@ -3585,10 +3938,10 @@ static value_t screen_method_match(struct object *self, const member_t *m, int a
     (void)m;
     (void)argc;
     const char *ref = argv[0].s;
-    const uint8_t *fb = system_framebuffer();
-    if (!fb)
+    const display_t *d = system_display();
+    if (!d || !d->bits)
         return val_err("screen.match: framebuffer not available");
-    int result = match_framebuffer_with_png(fb, ref);
+    int result = match_framebuffer_with_png(d, ref);
     if (result < 0) {
         printf("MATCH FAILED: Error loading reference image '%s'.\n", ref);
         return val_err("screen.match: cannot load reference '%s'", ref);
@@ -3606,14 +3959,14 @@ static value_t screen_method_match_or_save(struct object *self, const member_t *
     (void)m;
     const char *ref = argv[0].s;
     const char *actual = (argc >= 2 && argv[1].s && *argv[1].s) ? argv[1].s : NULL;
-    const uint8_t *fb = system_framebuffer();
-    if (!fb)
+    const display_t *d = system_display();
+    if (!d || !d->bits)
         return val_err("screen.match_or_save: framebuffer not available");
-    int result = match_framebuffer_with_png(fb, ref);
+    int result = match_framebuffer_with_png(d, ref);
     if (result < 0) {
         printf("MATCH FAILED: Error loading reference image.\n");
         if (actual)
-            save_framebuffer_as_png(fb, actual);
+            save_framebuffer_as_png(d, actual);
         return val_bool(false);
     }
     if (result == 0) {
@@ -3621,7 +3974,7 @@ static value_t screen_method_match_or_save(struct object *self, const member_t *
         return val_bool(true);
     }
     if (actual) {
-        save_framebuffer_as_png(fb, actual);
+        save_framebuffer_as_png(d, actual);
         printf("MATCH FAILED: Screen does not match '%s'. Saved actual to '%s'.\n", ref, actual);
     } else {
         printf("MATCH FAILED: Screen does not match '%s'.\n", ref);
@@ -3632,17 +3985,34 @@ static value_t screen_method_match_or_save(struct object *self, const member_t *
 static value_t screen_method_checksum(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)self;
     (void)m;
-    const uint8_t *fb = system_framebuffer();
-    if (!fb)
+    const display_t *d = system_display();
+    if (!d || !d->bits)
         return val_err("screen.checksum: framebuffer not available");
     if (argc == 0)
-        return val_int((int64_t)(int32_t)framebuffer_checksum(fb));
+        return val_int((int64_t)(int32_t)framebuffer_checksum(d));
     if (argc < 4)
         return val_err("screen.checksum: expected (top, left, bottom, right) or no args");
     int64_t t = argv[0].i, l = argv[1].i, b = argv[2].i, r = argv[3].i;
-    if (t < 0 || l < 0 || b <= t || r <= l || b > DEBUG_SCREEN_HEIGHT || r > DEBUG_SCREEN_WIDTH)
-        return val_err("screen.checksum: invalid region bounds (0,0)-(%d,%d)", DEBUG_SCREEN_WIDTH, DEBUG_SCREEN_HEIGHT);
-    return val_int((int64_t)(int32_t)framebuffer_region_checksum(fb, (int)t, (int)l, (int)b, (int)r));
+    if (t < 0 || l < 0 || b <= t || r <= l || b > (int64_t)d->height || r > (int64_t)d->width)
+        return val_err("screen.checksum: invalid region bounds (0,0)-(%u,%u)", d->width, d->height);
+    return val_int((int64_t)(int32_t)framebuffer_region_checksum(d, (int)t, (int)l, (int)b, (int)r));
+}
+
+// `screen.width` / `screen.height` — read the active display's pixel
+// dimensions.  Lets e2e and integration tests stop hardcoding 512/342 so
+// they keep working when a IIcx/IIx with a 640x480 NuBus card boots.
+static value_t screen_attr_width(struct object *self, const member_t *m) {
+    (void)self;
+    (void)m;
+    const display_t *d = system_display();
+    return val_int(d ? (int64_t)d->width : 0);
+}
+
+static value_t screen_attr_height(struct object *self, const member_t *m) {
+    (void)self;
+    (void)m;
+    const display_t *d = system_display();
+    return val_int(d ? (int64_t)d->height : 0);
 }
 
 static const arg_decl_t screen_save_args[] = {
@@ -3664,16 +4034,25 @@ static const arg_decl_t screen_checksum_args[] = {
     {.name = "bottom", .kind = V_INT, .validation_flags = OBJ_ARG_OPTIONAL, .doc = "Region bottom edge"},
     {.name = "right",  .kind = V_INT, .validation_flags = OBJ_ARG_OPTIONAL, .doc = "Region right edge" },
 };
-
 static const member_t screen_members[] = {
+    {.kind = M_ATTR,
+     .name = "width",
+     .flags = VAL_RO,
+     .doc = "Active display width in pixels",
+     .attr = {.type = V_INT, .get = screen_attr_width, .set = NULL}},
+    {.kind = M_ATTR,
+     .name = "height",
+     .flags = VAL_RO,
+     .doc = "Active display height in pixels",
+     .attr = {.type = V_INT, .get = screen_attr_height, .set = NULL}},
     {.kind = M_METHOD,
      .name = "save",
      .doc = "Save the current framebuffer to a PNG file",
-     .method = {.args = screen_save_args, .nargs = 1, .result = V_BOOL, .fn = screen_method_save}                  },
+     .method = {.args = screen_save_args, .nargs = 1, .result = V_BOOL, .fn = screen_method_save}},
     {.kind = M_METHOD,
      .name = "match",
      .doc = "Compare the framebuffer against a reference PNG (true if identical)",
-     .method = {.args = screen_match_args, .nargs = 1, .result = V_BOOL, .fn = screen_method_match}                },
+     .method = {.args = screen_match_args, .nargs = 1, .result = V_BOOL, .fn = screen_method_match}},
     {.kind = M_METHOD,
      .name = "match_or_save",
      .doc = "Like `match`, but also write the current screen to `actual` on mismatch",
@@ -3681,7 +4060,7 @@ static const member_t screen_members[] = {
     {.kind = M_METHOD,
      .name = "checksum",
      .doc = "Polynomial hash of the framebuffer (full screen or top/left/bottom/right region)",
-     .method = {.args = screen_checksum_args, .nargs = 4, .result = V_INT, .fn = screen_method_checksum}           },
+     .method = {.args = screen_checksum_args, .nargs = 4, .result = V_INT, .fn = screen_method_checksum}},
 };
 
 const class_desc_t screen_class = {

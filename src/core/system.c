@@ -16,6 +16,7 @@
 #include "cmd_parse.h"
 #include "cmd_types.h"
 #include "cpu.h"
+#include "display.h"
 #include "drive_catalog.h"
 #include "floppy.h"
 #include "image.h"
@@ -25,6 +26,7 @@
 #include "machine.h"
 #include "memory.h"
 #include "mouse.h"
+#include "nubus.h"
 #include "rom.h"
 #include "root.h"
 #include "rtc.h"
@@ -184,9 +186,32 @@ rtc_t *system_rtc(void) {
     return global_emulator ? global_emulator->rtc : NULL;
 }
 
-// System-level framebuffer accessor: returns pointer to video RAM buffer
+// System-level framebuffer accessor: thin wrapper over system_display()
+// for the WebGL renderer's existing call sites.  Step 5 rewrites the
+// renderer to consume the descriptor directly.
 uint8_t *system_framebuffer(void) {
-    return global_emulator ? global_emulator->ram_vbuf : NULL;
+    display_t *d = system_display();
+    return d ? (uint8_t *)d->bits : NULL;
+}
+
+// System-level display accessor.  Per proposal §3.3.2: glue030-family
+// machines source their primary display from the NuBus bus controller;
+// Plus (and any future non-NuBus machine) implements the
+// hw_profile_t.display callback to surface its own descriptor.  Returns
+// NULL when no machine is booted or the booted machine has no primary
+// display (e.g. a IIcx with no card seated, once IIcx lands).
+display_t *system_display(void) {
+    config_t *cfg = global_emulator;
+    if (!cfg || !cfg->machine)
+        return NULL;
+    if (cfg->nubus) {
+        display_t *d = nubus_primary_display(cfg->nubus);
+        if (d)
+            return d;
+    }
+    if (cfg->machine->display)
+        return cfg->machine->display(cfg);
+    return NULL;
 }
 
 // Check if emulator is initialized and running
@@ -835,6 +860,8 @@ void setup_init() {
     // Register built-in machine profiles so machine_find() can look them up
     machine_register(&machine_plus);
     machine_register(&machine_se30);
+    machine_register(&machine_iicx);
+    machine_register(&machine_iix);
 
     // Ensure logging categories of interest appear in `log list` even before any messages are emitted.
     // shell_init() (called earlier) already invoked log_init(); categories default to level 0 (OFF).
@@ -958,6 +985,14 @@ void system_destroy(config_t *config) {
     // system_destroy(old) runs *after* system_create(new) has already
     // pinned a fresh emulator that still references the rom object.
     root_uninstall_if(config);
+
+    // Tear down NuBus before peripherals so cards (which hold device
+    // pointers via cfg->via2 etc.) free cleanly first.  No-op when nubus
+    // is NULL (Plus today; future 68000-family machines).
+    if (config->nubus) {
+        nubus_delete(config->nubus);
+        config->nubus = NULL;
+    }
 
     // Delegate machine-specific teardown to the profile
     if (config->machine && config->machine->teardown) {

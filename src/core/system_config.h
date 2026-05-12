@@ -63,8 +63,12 @@ struct config {
     int n_images;
 
     struct scheduler *scheduler;
-    uint8_t *ram_vbuf; // pointer into RAM at current video framebuffer address
     uint32_t irq; // active interrupt bitmask
+
+    // NuBus subsystem.  NULL on machines without NuBus (Plus today;
+    // future 68000 family).  Set by glue030_init() once it lands; for
+    // now stays NULL because no machine creates a bus yet.
+    struct nubus_bus *nubus;
 };
 
 #endif // SYSTEM_CONFIG_H

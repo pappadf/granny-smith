@@ -1,0 +1,12 @@
+# Integration test: IIx System 7.0.1 Floppy Boot
+
+scheduler.run 200000000
+
+assert ${machine.id == "iix"} "machine.id != iix"
+assert ${screen.width == 640} "screen.width != 640"
+assert ${screen.height == 480} "screen.height != 480"
+
+# Real screen content must be present.
+assert ${screen.checksum() != 0} "screen.checksum == 0 — JMFB never painted"
+
+quit

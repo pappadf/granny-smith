@@ -64,6 +64,15 @@ let cmdWaiters = [];
 // flips state — no JS-side polling.
 const _runStateCallbacks = [];
 
+// Screen-resize callbacks (registered via onScreenResize).  Fired by the
+// C side via Module.onScreenResize whenever em_video.c::resize_canvas
+// changes the framebuffer's intrinsic dimensions — typically once per
+// machine boot when the JMFB / SE/30 driver picks up the active monitor's
+// resolution, and again at runtime if the user switches modes.
+const _screenResizeCallbacks = [];
+let lastScreenW = 0;
+let lastScreenH = 0;
+
 // Install global assertion failure handler (called from C via MAIN_THREAD_EM_ASM).
 // Tests can listen for 'gs-assertion-failure' event or check window.__gsAssertionDetected.
 window.__gsAssertionFailures = [];
@@ -97,6 +106,19 @@ function handleRunStateChange(running) {
   for (const cb of _runStateCallbacks) cb(running);
 }
 
+// Receives push notifications from the worker when the framebuffer's
+// intrinsic dimensions change.  Mirrors handleRunStateChange — only
+// fires on transitions, so subscribers can treat each callback as a
+// real change (no "init at same size" no-ops to filter).
+function handleScreenResize(width, height) {
+  width = Number(width) | 0;
+  height = Number(height) | 0;
+  if (width === lastScreenW && height === lastScreenH) return;
+  lastScreenW = width;
+  lastScreenH = height;
+  for (const cb of _screenResizeCallbacks) cb(width, height);
+}
+
 // Cache for the current shell prompt. The worker pushes updates via
 // Module.onPromptChange after each free-form line in shell_poll; the
 // terminal reads this through getRuntimePrompt() when it needs to
@@ -120,6 +142,7 @@ export async function initEmulator(canvas, wasmArgs, printFn) {
     printErr: printFn,
     onRunStateChange: handleRunStateChange,
     onPromptChange: handlePromptChange,
+    onScreenResize: handleScreenResize,
   });
 
   // Resolve the single bridge pointer and verify the layout version
@@ -167,6 +190,21 @@ export function getRuntimePrompt() {
 
 // Register a callback for run-state changes: cb(running: boolean).
 export function onRunStateChange(cb) { _runStateCallbacks.push(cb); }
+
+// Register a callback for framebuffer-dimension changes: cb(width: int, height: int).
+// Fired by the C side via Module.onScreenResize whenever em_video.c's
+// resize_canvas updates the intrinsic canvas size (once per machine
+// boot at minimum; again if the active video mode changes).  Use this
+// to reflow CSS-driven layout containers — setting the canvas's
+// intrinsic resolution does NOT reflow its CSS-displayed dimensions
+// automatically.
+export function onScreenResize(cb) {
+  _screenResizeCallbacks.push(cb);
+  // Replay the latest known dimensions to the new subscriber so it
+  // can initialise its layout without waiting for the next change.
+  if (lastScreenW > 0 && lastScreenH > 0) cb(lastScreenW, lastScreenH);
+}
+export function getLastScreenSize() { return { width: lastScreenW, height: lastScreenH }; }
 
 // Update the run state and notify all registered listeners.
 export function setRunning(running) {

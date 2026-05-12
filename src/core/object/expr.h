@@ -73,6 +73,14 @@ value_t expr_eval_at(const char **p, const expr_ctx_t *ctx);
 // values. ${ that is not closed is an error.
 value_t expr_interpolate_string(const char *src, const expr_ctx_t *ctx);
 
+// Evaluate the body of a single `${...}` substitution and return the
+// result as a freshly malloc'd, NUL-terminated string. The body may
+// carry an optional trailing `:fmt` format spec at the top level (see
+// proposal-shell-expressions §4.2.1); in that case the spec governs the
+// to-string conversion. On error the returned string is NULL and *err
+// is set to a freshly malloc'd error message (caller frees both).
+char *expr_substitute(const char *body, const expr_ctx_t *ctx, char **err);
+
 #ifdef __cplusplus
 }
 #endif

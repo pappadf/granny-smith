@@ -54,6 +54,26 @@ void memory_map_checkpoint(memory_map_t *restrict mem, checkpoint_t *checkpoint)
 extern void memory_map_add(memory_map_t *mem, uint32_t addr, uint32_t size, const char *name, memory_interface_t *iface,
                            void *device);
 
+// Register a host-backed region on the physical bus map.  `writable`
+// distinguishes RAM-shaped (VRAM, framebuffer) from ROM-shaped (declrom)
+// regions.  The NuBus bus controller calls this once per card region
+// during nubus_init().  See proposal-machine-iicx-iix.md §3.2.3 for the
+// rename rationale: the storage still lives in mmu_state_t (4-slot fixed
+// layout in v1) but the call-site lie ("the MMU manages mappings") is
+// fixed by exposing the API on the memory map.  No fast-path change.
+void memory_map_host_region(memory_map_t *m, const char *name, uint8_t *host_ptr, uint32_t phys_base, uint32_t size,
+                            bool writable);
+
+// Mirror an already-registered host region at a second physical address.
+// Used on SE/30 where the same VRAM is reachable via TT identity-map at
+// $FEE00000 and via the page-table-mapped alias at $50FE0000.
+void memory_map_host_region_alias(memory_map_t *m, uint32_t alias_phys_base, uint32_t original_phys_base);
+
+// Address range where unmapped accesses raise a bus error.  Outside this
+// range, unmapped reads return 0 silently (matches GLUE behaviour for
+// non-NuBus slots).
+void memory_set_bus_error_range(memory_map_t *m, uint32_t start, uint32_t end);
+
 extern void memory_map_remove(memory_map_t *mem, uint32_t addr, uint32_t size, const char *name,
                               memory_interface_t *iface, void *device);
 

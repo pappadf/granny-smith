@@ -1,0 +1,1236 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) pappadf
+
+// jmfb.c
+// Apple Macintosh Display Card 8•24 (Rev B, ROM `341-0868`).  See
+// proposal-machine-iicx-iix.md §3.2.5 + jmfb.h for the contract.
+//
+// Implementation status (proposal step 6, minimum-viable):
+//   * Card factory loads `Apple-341-0868.vrom` and registers VRAM,
+//     declrom, and the register window on the bus.
+//   * I/O dispatcher in this file handles all four register blocks at
+//     a single switch.  Modelled handlers cover the registers the
+//     Monitors-control-panel boot path depends on; everything else is
+//     accept-and-log so an OS write that should be a no-op doesn't
+//     turn into a bus error.
+//   * Sense lines satisfy the JMFB PrimaryInit read so the OS picks
+//     up the user's `monitor=` choice.
+//   * CLUT writes feed display.clut and set clut_dirty; depth changes
+//     via CLUTPBCR feed display.format and set shape_dirty.
+//   * Mode-table parsing inside `Apple-341-0868.vrom` is left to the
+//     System 7 driver — we present the bytes; it walks them.
+
+#include "jmfb.h"
+
+#include "card.h"
+#include "checkpoint.h"
+#include "declrom.h"
+#include "display.h"
+#include "log.h"
+#include "memory.h"
+#include "nubus.h"
+#include "rom.h"
+#include "rtc.h"
+#include "system.h"
+#include "system_config.h"
+
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+LOG_USE_CATEGORY_NAME("jmfb");
+
+// === Forward declarations ===================================================
+//
+// The monitor list `mdc_8_24_monitors` and the sense→monitor lookup
+// live near the bottom of this file (next to the per-card kind
+// descriptor that references the list); the JMFB factory body
+// further up needs to reach them.  Forward declarations here let the
+// factory call `monitor_for_sense` and read `s_pending_sense` /
+// `s_pending_sense_set` without reshuffling the file.
+typedef struct nubus_monitor nubus_monitor_t_fwd;
+static const struct nubus_monitor *monitor_for_sense(uint8_t sense);
+
+// Pending sense code consumed by the next JMFB factory call.  Set
+// from the shell via `nubus.video_sense = N` before `machine.boot`;
+// reset to the default ($6 = 13" RGB) on consumption so a forgotten
+// configuration doesn't leak across machine reinitialisations.
+static uint8_t s_pending_sense = 0x6;
+static bool s_pending_sense_set = false;
+
+// Pending video-mode selection set via `machine.video_mode = "id"`
+// (mirrors s_pending_sense above; consumed in the same factory
+// invocation).  At most 31 chars + NUL fits any "monitor_Nbpp" id.
+// Empty string means "no pending mode — fall back to plain sense".
+static char s_pending_video_mode_id[32] = "";
+
+// === Per-card private state =================================================
+
+typedef struct {
+    nubus_card_t *card; // back-pointer for IRQ helpers
+    uint8_t *vram; // 2 MB
+    uint8_t *vrom; // 32 KB declaration ROM bytes
+    char *vrom_path; // path the VROM was loaded from
+    uint32_t vrom_size; // typically 32 KB; 0 if no VROM loaded
+    uint32_t slot_base; // physical bus base (== nubus_slot_base(slot))
+    rgba8_t clut[256];
+    display_t display;
+
+    // RAMDAC sub-state for CLUT writes — three sequential long writes
+    // to CLUTDataReg load one palette entry.  After the third write,
+    // the palette index auto-increments.  Apple's JMFB driver uses
+    // TWO protocols here, picked at runtime via bit $C of
+    // driver_private+$10 (see Apple-341-0868-vrom.asm Section 11,
+    // Control case 2):
+    //
+    //   * 8/16bpp variant (12"/13"/16" RGB monitors):  three long
+    //     writes to (A3) where D2 = 0x00BBGGRR is shifted right by
+    //     8 between writes.  The RAMDAC reads byte 0 (LSB) of each
+    //     long, yielding R, G, B in that order.
+    //
+    //   * "24bpp" variant (Portrait B&W, 21" Color, NTSC/PAL):  two
+    //     CLR.L (A3) writes followed by one MOVE.L D2,(A3) where
+    //     D2 = 0x00BBGGRR.  The RAMDAC reads bytes 0/1/2 of that
+    //     single long simultaneously as R/G/B; the two zero writes
+    //     are discarded.
+    //
+    // Protocol detection: track the three full 32-bit values of an
+    // entry-update window.  If pending[0] == 0 AND pending[1] == 0
+    // AND the upper 24 bits of pending[2] are non-zero, treat
+    // pending[2] as a packed triplet; otherwise read byte 0 of each
+    // pending[N] as one component.  See clut_finalize_entry below.
+    uint8_t clut_idx; // current palette index
+    uint8_t clut_phase; // 0 = R/CLR1, 1 = G/CLR2, 2 = B/triplet; resets on CLUTAddrReg write
+    uint32_t clut_pending[3]; // full 32-bit longs of the in-progress entry update
+    uint16_t clut_long_hi; // most recent write to CLUTDataReg+0 (high half of long)
+
+    // Register-file scratch.  All accept-and-log registers stash their last
+    // value here so the inspector can peek at the chip's effective state.
+    uint16_t jmfb_csr;
+    uint16_t jmfb_lsr;
+    uint16_t jmfb_video_base; // raw value; offset = value * 32 bytes
+    uint16_t jmfb_row_words; // raw value; stride = value * 4 (≤8bpp) or *32/3 (24bpp)
+    uint16_t sw_ic_reg; // SRST | ENVERTI | …
+    uint16_t sw_status_reg;
+    uint16_t clut_pbcr;
+    uint16_t endeavor_m;
+    uint16_t endeavor_n;
+    uint16_t endeavor_ext_clk;
+    uint16_t endeavor_reserved;
+
+    // Sense-line state — set from the user's monitor choice via the
+    // bus controller.  Default 13" RGB (sense `110` → bits 9..11 of
+    // JMFBCSR = 0x0C00).
+    uint8_t sense_code;
+} jmfb_priv_t;
+
+// === Helpers ================================================================
+
+// Map the ≤8 bpp depth field in CLUTPBCR (bits 3-4) to a pixel_format_t.
+static pixel_format_t depth_to_format(uint16_t pbcr) {
+    switch ((pbcr >> 3) & 0x3) {
+    case 0:
+        return PIXEL_1BPP_MSB;
+    case 1:
+        return PIXEL_2BPP_MSB;
+    case 2:
+        return PIXEL_4BPP_MSB;
+    case 3:
+    default:
+        return PIXEL_8BPP;
+    }
+    // 24 bpp on the 8·24 is depth=3 + bit-1 set; the System 7 driver only
+    // toggles bit 1 once it's already in 8bpp, so the depth_to_format
+    // result above is the right starting point.  The 24bpp upgrade is a
+    // separate `pbcr & 0x2` test in the write handler.
+}
+
+// Recompute display.stride from JMFBRowWords + current format.  The Apple
+// driver clears JMFBRowWords to 0 during chip-reset sequences before
+// programming the real value; treating raw 0 as stride=0 zeros our
+// display and breaks the renderer / PNG / checksum paths.  Keep the
+// previous stride value across 0 writes — the next non-zero write fixes
+// it.
+// Bits-per-pixel for storage (not visible-colour-depth) of the
+// current display format.  PIXEL_32BPP_XRGB returns 32 because the
+// framebuffer stores 4 bytes/pixel; the RAMDAC bypass mode discards
+// one of those bytes during scan but the storage layout is XRGB.
+static uint32_t format_bpp(pixel_format_t f) {
+    switch (f) {
+    case PIXEL_1BPP_MSB:
+        return 1;
+    case PIXEL_2BPP_MSB:
+        return 2;
+    case PIXEL_4BPP_MSB:
+        return 4;
+    case PIXEL_8BPP:
+        return 8;
+    case PIXEL_16BPP_555:
+        return 16;
+    case PIXEL_32BPP_XRGB:
+        return 32;
+    default:
+        return 8; // safe fallback
+    }
+}
+
+// Recompute display.stride AND display.width every time row_words or
+// the pixel format changes.  Width is a pure function of (row_words,
+// bpp); height is a property of the chosen monitor, fixed at JMFB
+// factory time from sense_code and not derived here.
+//
+// Two stride formulas, picked by depth:
+//
+//   ≤8 bpp:    stride = row_words * 4
+//              width  = stride * 8 / bpp = row_words * 32 / bpp
+//
+//   24 bpp:    stride = row_words * 32 / 3
+//              width  = stride / 4
+//
+// The 24bpp ("PIXEL_32BPP_XRGB") path stores 4 bytes per pixel on the
+// JMFB — Mac OS sets PixMap.pixelSize=32 / rowBytes=2560 (= 4 × 640)
+// and writes XRGB values; the RAMDAC ignores the X byte during scan
+// (per the Designing Cards & Drivers "8•24 24-bit selection: bit 1
+// of CLUTPBCR enters RAMDAC bypass and consumes all three colour
+// bytes" passage — three of four written, one discarded).  The
+// driver's TFBM30Parms encodes rowWords as 240 from
+// `(TFBM30RB * 3 / 4) / 4 / 2`; inverted, that gives stride =
+// row_words * 32 / 3 = 2560 — the *storage* stride, not the
+// 1920-byte RAMDAC scan stride.
+static void recompute_stride(jmfb_priv_t *p) {
+    if (p->jmfb_row_words == 0)
+        return; // chip-reset sentinel; preserve last good stride+width
+    if (p->display.format == PIXEL_32BPP_XRGB) {
+        p->display.stride = (uint32_t)p->jmfb_row_words * 32u / 3u;
+        p->display.width = p->display.stride / 4u;
+    } else {
+        p->display.stride = (uint32_t)p->jmfb_row_words * 4u;
+        uint32_t bpp = format_bpp(p->display.format);
+        if (bpp > 0)
+            p->display.width = (uint32_t)p->jmfb_row_words * 32u / bpp;
+    }
+}
+
+// === Memory interface (register window I/O) =================================
+
+// Translate the relative address handed to our I/O dispatcher (relative
+// to slot_base + JMFB_BLOCK_OFFSET — i.e. the address `memory_map_add`
+// passes back to its dev callback) into a (block, in-block-offset) pair.
+// Returns -1 if the offset is outside the four-block register window.
+static int classify(uint32_t rel_addr, uint32_t slot_base, uint32_t *out_off) {
+    (void)slot_base; // kept in the signature to clarify the convention; unused
+    if (rel_addr >= 0x400u)
+        return -1;
+    *out_off = rel_addr & 0xFFu; // each of the four blocks is 256 bytes wide
+    return (int)(rel_addr >> 8); // 0=JMFB, 1=Stopwatch, 2=CLUT, 3=Endeavor
+}
+
+// JMFBLSR / JMFBVideoBase / JMFBRowWords are 16-bit registers that
+// occupy the LOW half of a 32-bit-aligned slot in the JMFB block —
+// Apple's bus convention for half-word registers in long-aligned slot
+// space.  When the driver writes them with `move.l #N, (slot)`, our
+// io_write32 splits into two 16-bit halves: io_write16(slot, hi=0)
+// and io_write16(slot+2, lo=N).  The meaningful value lands at
+// slot+2; slot is a no-op write of zero.  Likewise for reads — slot+2
+// returns the register value, slot returns zero (high half of long).
+//
+// The .h offsets keep Apple's spec naming (slot offset).  The handler
+// dispatches on slot+2 for the actual data, and accepts (no-op-style)
+// writes to slot for the high-half pass of a 32-bit access.  Without
+// this split the OS's `move.l #$50, (JMFBVideoBase)` clobbered
+// jmfb_video_base to 0 (the high-half write hit case JMFBVideoBase
+// while the meaningful $50 fell through to the unmodeled default at
+// slot+2), pointing display.bits at VRAM+0 instead of VRAM+$A00 and
+// shifting the rendered framebuffer ~32 rows up.
+static void handle_jmfb_write16(jmfb_priv_t *p, uint32_t off, uint16_t val) {
+    switch (off) {
+    case JMFBCSR:
+        // High 16 bits of the 32-bit CSR.  No documented soft-controlled
+        // bits modelled here — accept-and-ignore.
+        return;
+    case JMFBCSR + 2:
+        // Low 16 bits — software-writable control bits live here.
+        p->jmfb_csr = (val & ~MaskSenseLine) | (p->jmfb_csr & MaskSenseLine);
+        if (val & VRSTB) {
+            // Master reset clears software-controlled bits and stops the
+            // RAMDAC sub-counter.  Sense lines are a hardware property and
+            // are NOT cleared.
+            p->jmfb_csr &= MaskSenseLine;
+            p->clut_phase = 0;
+            LOG(2, "JMFBCSR: VRSTB master reset");
+        }
+        if (val & REFEN)
+            LOG(3, "JMFBCSR: REFEN set");
+        if (val & VIDGO)
+            LOG(3, "JMFBCSR: VIDGO set (video transfer enabled)");
+        return;
+    case JMFBLSR:
+    case JMFBVideoBase:
+    case JMFBRowWords:
+        // High half of a long write — bus discards.
+        return;
+    case JMFBLSR + 2:
+        p->jmfb_lsr = val;
+        LOG(3, "JMFBLSR write %04x (accept-and-log)", val);
+        return;
+    case JMFBVideoBase + 2:
+        p->jmfb_video_base = val;
+        // Byte offset into VRAM is depth-dependent.  For ≤8 bpp the
+        // encoded value × 32 = byte offset.  For 24 bpp (PIXEL_32BPP_XRGB)
+        // the JMFB driver writes `(defmBaseOffset * 3/4) >> 5 >> 1`
+        // (TFBM30Parms in JMFBDriver.a) — inverted, that's
+        // `value * 32 * 8/3`.  The factor matches the
+        // `recompute_stride`'s `value * 32 / 3` formula scaled by 8 to
+        // get from row-stride units back to byte offset.
+        if (p->display.format == PIXEL_32BPP_XRGB)
+            p->display.bits = p->vram + ((size_t)val * 32u * 8u / 3u);
+        else
+            p->display.bits = p->vram + ((size_t)val * 32u);
+        p->display.fb_dirty = true;
+        return;
+    case JMFBRowWords + 2:
+        p->jmfb_row_words = val;
+        recompute_stride(p);
+        p->display.shape_dirty = true;
+        return;
+    default:
+        LOG(2, "JMFB block write at +%02x = %04x (unmodeled)", off, val);
+        return;
+    }
+}
+
+static uint16_t handle_jmfb_read16(jmfb_priv_t *p, uint32_t off) {
+    switch (off) {
+    case JMFBCSR:
+        // JMFBCSR is a 32-bit register at offset $00.  Apple's PrimaryInit
+        // reads sense via `BFEXTU (A1,D1.L){20:3},D4` — bits 20..22 of the
+        // 32-bit memory value, which is the LOW 16-bit half (bits 9..11
+        // LSB-numbered).  So the sense lines live at offset $02 (low
+        // half), and offset $00 returns the high half of the CSR.
+        // The high half currently has no documented soft-controlled bits
+        // we model — return 0.
+        return 0;
+    case JMFBCSR + 2:
+        // Low 16 bits of the 32-bit CSR.  Sense lines occupy bits 9-11
+        // (NOT in MaskSenseLine); other bits are software-writable from
+        // the JMFBCSR write path.
+        return (uint16_t)((p->jmfb_csr & MaskSenseLine) | ((p->sense_code & 7) << 9));
+    case JMFBLSR:
+    case JMFBVideoBase:
+    case JMFBRowWords:
+        // High half of a long read — bus drives zero.
+        return 0;
+    case JMFBLSR + 2:
+        return p->jmfb_lsr;
+    case JMFBVideoBase + 2:
+        return p->jmfb_video_base;
+    case JMFBRowWords + 2:
+        return p->jmfb_row_words;
+    default:
+        LOG(2, "JMFB block read at +%02x (unmodeled, returning 0)", off);
+        return 0;
+    }
+}
+
+// Stopwatch block registers (SWICReg / SWClrVInt / SWStatusReg) follow
+// the same 16-bit-in-32-bit-slot bus convention as the JMFB block —
+// meaningful value lands at slot+2 of the long-word slot, slot+0 is
+// the high half (zero on write, zero on read).  SWStatusReg's +2 read
+// path was already wired correctly because the Apple driver's
+// `BFEXTU (A0){#$1D:#$1}` test made the convention obvious there;
+// SWICReg / SWClrVInt writes were silently lost on long-write paths
+// before this fix.
+static void handle_stopwatch_write16(jmfb_priv_t *p, uint32_t off, uint16_t val) {
+    switch (off) {
+    case SWICReg:
+    case SWClrVInt:
+    case SWStatusReg:
+        return; // high half of long write — bus discards
+    case SWICReg + 2:
+        p->sw_ic_reg = val;
+        if (val & SRST)
+            LOG(2, "SWICReg: soft reset");
+        // Bit 1 = VINT_DISABLE (active-high mask): cleared = VBL IRQ on
+        // every VBL, set = masked.  card_on_vbl gates on this.
+        return;
+    case SWClrVInt + 2:
+        // Write any value clears the pending VBL and de-asserts the
+        // slot's IRQ on the bus controller.
+        nubus_deassert_irq(p->card);
+        return;
+    case SWStatusReg + 2:
+        // Status register is technically read-mostly; the System 7
+        // driver writes here to clear bits.  Accept-and-log.
+        p->sw_status_reg = val;
+        return;
+    default:
+        LOG(2, "Stopwatch block write at +%02x = %04x (unmodeled)", off, val);
+        return;
+    }
+}
+
+static uint16_t handle_stopwatch_read16(jmfb_priv_t *p, uint32_t off) {
+    switch (off) {
+    case SWStatusReg:
+        // Top half of the 32-bit Stopwatch status word.  Real hardware
+        // exposes the VBL toggle bit at *long-word* bit 2 (= byte $C3
+        // bit 2, big-endian).  The Apple driver polls that bit via
+        // BFEXTU (A0){#$1D:#$1} — see the JMFB PrimaryInit code.  The
+        // toggle is implemented in the +$C2 read path below; this top-
+        // half read is a stable 0 (the chip's status flags live at the
+        // bottom of the long).
+        return 0;
+    case SWStatusReg + 2:
+        // Bottom half of the 32-bit Stopwatch status word — bit 2 of
+        // this 16-bit value is the VBL toggle the OS polls for.  Flip
+        // it on every read so the OS sees both edges.
+        p->sw_status_reg ^= 0x0004u;
+        return p->sw_status_reg & 0x0004u;
+    case SWICReg:
+        return 0; // high half — bus drives zero
+    case SWICReg + 2:
+        return p->sw_ic_reg;
+    default:
+        LOG(2, "Stopwatch block read at +%02x (unmodeled)", off);
+        return 0;
+    }
+}
+
+// CLUT block registers (CLUTAddrReg / CLUTDataReg / CLUTPBCR) follow
+// the same 16-bit-in-32-bit-slot bus convention as the JMFB block —
+// the meaningful 16 bits live at slot+2.  Without this the JMFB
+// driver's `cscSetEntries` writes hit the unmodeled default at +2
+// while our slot+0 cases caught the high-half zero (palette stayed
+// pinned to the init grayscale ramp), and `cscSetMode` writes to
+// CLUTPBCR likewise lost — depth changes from System 7's Monitors
+// control panel never reached display.format.
+static void clut_finalize_entry(jmfb_priv_t *p) {
+    // Decode the three completed long writes in p->clut_pending[]
+    // into one rgba8 entry.  See the struct comment for the two
+    // protocols and the detection rule.
+    uint32_t w0 = p->clut_pending[0];
+    uint32_t w1 = p->clut_pending[1];
+    uint32_t w2 = p->clut_pending[2];
+    rgba8_t e;
+    if (w0 == 0 && w1 == 0 && (w2 & 0xFFFFFF00u) != 0) {
+        // 24bpp variant: w2 carries 0x00BBGGRR all in one long.
+        e.r = (uint8_t)(w2 & 0xFFu);
+        e.g = (uint8_t)((w2 >> 8) & 0xFFu);
+        e.b = (uint8_t)((w2 >> 16) & 0xFFu);
+    } else {
+        // 8/16bpp variant: each long's LSB is one component (R, G, B).
+        e.r = (uint8_t)(w0 & 0xFFu);
+        e.g = (uint8_t)(w1 & 0xFFu);
+        e.b = (uint8_t)(w2 & 0xFFu);
+    }
+    e.a = 255;
+    p->clut[p->clut_idx] = e;
+    p->clut_idx++; // auto-increment for run-write
+    p->clut_phase = 0;
+    p->display.clut_dirty = true;
+}
+
+static void handle_clut_write16(jmfb_priv_t *p, uint32_t off, uint16_t val) {
+    switch (off) {
+    case CLUTAddrReg:
+    case CLUTPBCR:
+        // High half of long write — bus discards.
+        return;
+    case CLUTDataReg:
+        // High half of a CLUTDataReg long write — stash so the LSB
+        // half can reassemble the full 32-bit value below.
+        p->clut_long_hi = val;
+        return;
+    case CLUTAddrReg + 2:
+        // 8·24 maps the index into the low byte; a write resets the R/G/B
+        // sub-counter so the next three CLUTDataReg writes load the new
+        // entry.
+        p->clut_idx = (uint8_t)(val & 0xFFu);
+        p->clut_phase = 0;
+        return;
+    case CLUTDataReg + 2: {
+        uint32_t full = ((uint32_t)p->clut_long_hi << 16) | val;
+        p->clut_long_hi = 0;
+        if (p->clut_phase < 3) {
+            p->clut_pending[p->clut_phase] = full;
+            p->clut_phase++;
+        }
+        if (p->clut_phase == 3) {
+            clut_finalize_entry(p);
+        }
+        return;
+    }
+    case CLUTPBCR + 2: {
+        p->clut_pbcr = val;
+        pixel_format_t f = depth_to_format(val);
+        // Bit 1 = 24bpp packed (RAMDAC bypass) on top of the depth=3 case.
+        if ((val & 0x0002u) && f == PIXEL_8BPP)
+            f = PIXEL_32BPP_XRGB;
+        if (p->display.format != f) {
+            p->display.format = f;
+            recompute_stride(p);
+            p->display.shape_dirty = true;
+        }
+        return;
+    }
+    default:
+        LOG(2, "CLUT block write at +%02x = %04x (unmodeled)", off, val);
+        return;
+    }
+}
+
+static uint16_t handle_clut_read16(jmfb_priv_t *p, uint32_t off) {
+    switch (off) {
+    case CLUTAddrReg:
+    case CLUTPBCR:
+        return 0; // high half of long read — bus drives zero
+    case CLUTAddrReg + 2:
+        return p->clut_idx;
+    case CLUTPBCR + 2:
+        return p->clut_pbcr;
+    default:
+        LOG(2, "CLUT block read at +%02x (unmodeled)", off);
+        return 0;
+    }
+}
+
+static void handle_endeavor_write16(jmfb_priv_t *p, uint32_t off, uint16_t val) {
+    // Endeavor PLL registers are 16-bit-in-32-bit-slot too — meaningful
+    // value lands at slot+2 when the driver writes them with `move.l`.
+    switch (off) {
+    case EndeavorM:
+    case EndeavorN:
+    case EndeavorExtClkSel:
+    case EndeavorReserved:
+        return; // high half of long write — bus discards
+    case EndeavorM + 2:
+        p->endeavor_m = val;
+        break;
+    case EndeavorN + 2:
+        p->endeavor_n = val;
+        break;
+    case EndeavorExtClkSel + 2:
+        p->endeavor_ext_clk = val;
+        break;
+    case EndeavorReserved + 2:
+        p->endeavor_reserved = val;
+        break;
+    default:
+        LOG(2, "Endeavor block write at +%02x = %04x (unmodeled)", off, val);
+        return;
+    }
+    LOG(3, "Endeavor +%02x = %04x (accept-and-log)", off, val);
+}
+
+static uint16_t handle_endeavor_read16(jmfb_priv_t *p, uint32_t off) {
+    switch (off) {
+    case EndeavorM:
+    case EndeavorN:
+    case EndeavorExtClkSel:
+    case EndeavorReserved:
+        return 0; // high half of long read — bus drives zero
+    case EndeavorM + 2:
+        return p->endeavor_m;
+    case EndeavorN + 2:
+        return p->endeavor_n;
+    case EndeavorExtClkSel + 2:
+        return p->endeavor_ext_clk;
+    case EndeavorReserved + 2:
+        return EndeavorID;
+    default:
+        LOG(2, "Endeavor block read at +%02x (unmodeled)", off);
+        return 0;
+    }
+}
+
+// Dispatch table.  Each call checks the block id then forks into
+// per-block per-width handlers.
+
+static uint8_t io_read8(void *dev, uint32_t addr) {
+    // 8-bit register reads aren't issued by the Apple driver but are
+    // tolerated.  Read the underlying 16-bit value and return the byte.
+    jmfb_priv_t *p = dev;
+    uint32_t off;
+    int blk = classify(addr, p->slot_base, &off);
+    if (blk < 0)
+        return 0;
+    uint16_t v;
+    switch (blk) {
+    case 0:
+        v = handle_jmfb_read16(p, off & ~1u);
+        break;
+    case 1:
+        v = handle_stopwatch_read16(p, off & ~1u);
+        break;
+    case 2:
+        v = handle_clut_read16(p, off & ~1u);
+        break;
+    case 3:
+        v = handle_endeavor_read16(p, off & ~1u);
+        break;
+    default:
+        return 0;
+    }
+    return (uint8_t)((addr & 1) ? (v & 0xFFu) : (v >> 8));
+}
+
+static uint16_t io_read16(void *dev, uint32_t addr) {
+    jmfb_priv_t *p = dev;
+    uint32_t off;
+    int blk = classify(addr, p->slot_base, &off);
+    if (blk < 0)
+        return 0;
+    switch (blk) {
+    case 0:
+        return handle_jmfb_read16(p, off);
+    case 1:
+        return handle_stopwatch_read16(p, off);
+    case 2:
+        return handle_clut_read16(p, off);
+    case 3:
+        return handle_endeavor_read16(p, off);
+    }
+    return 0;
+}
+
+static uint32_t io_read32(void *dev, uint32_t addr) {
+    return ((uint32_t)io_read16(dev, addr) << 16) | io_read16(dev, addr + 2);
+}
+
+static void io_write16(void *dev, uint32_t addr, uint16_t val);
+
+static void io_write8(void *dev, uint32_t addr, uint8_t val) {
+    // Same treatment as io_read8 — promote to a 16-bit write.
+    io_write16(dev, addr & ~1u, (uint16_t)((uint16_t)val | ((uint16_t)val << 8)));
+}
+
+static void io_write16(void *dev, uint32_t addr, uint16_t val) {
+    jmfb_priv_t *p = dev;
+    uint32_t off;
+    int blk = classify(addr, p->slot_base, &off);
+    if (blk < 0)
+        return;
+    switch (blk) {
+    case 0:
+        handle_jmfb_write16(p, off, val);
+        break;
+    case 1:
+        handle_stopwatch_write16(p, off, val);
+        break;
+    case 2:
+        handle_clut_write16(p, off, val);
+        break;
+    case 3:
+        handle_endeavor_write16(p, off, val);
+        break;
+    }
+}
+
+static void io_write32(void *dev, uint32_t addr, uint32_t val) {
+    io_write16(dev, addr, (uint16_t)(val >> 16));
+    io_write16(dev, addr + 2, (uint16_t)(val & 0xFFFFu));
+}
+
+static memory_interface_t s_jmfb_mem_iface = {
+    .read_uint8 = io_read8,
+    .read_uint16 = io_read16,
+    .read_uint32 = io_read32,
+    .write_uint8 = io_write8,
+    .write_uint16 = io_write16,
+    .write_uint32 = io_write32,
+};
+
+// === Card vtable ============================================================
+
+// Try the explicit pending path first, then a small set of well-known
+// search paths.  Returns true on success.  `buf` must hold at least
+// JMFB_DECLROM_CHIP_SIZE bytes; the loader reads the raw chip data
+// (32 KB).  The byte-lane expansion happens later in load_vrom().
+static bool try_load_vrom(const char *path, uint8_t *buf) {
+    FILE *f = fopen(path, "rb");
+    if (!f)
+        return false;
+    size_t n = fread(buf, 1, JMFB_DECLROM_CHIP_SIZE, f);
+    fclose(f);
+    return n == JMFB_DECLROM_CHIP_SIZE;
+}
+
+// Expand a 32 KB chip image with byteLanes = $78 (lane 3 only) into a
+// 128 KB bus-space buffer.  Each chip byte at offset i ends up at bus
+// offset i*4 + 3 (lane 3 of longword i); lanes 0..2 stay zero.  This is
+// what the OS Slot Manager expects when it reads the format block at
+// the high end of slot space.
+static void expand_lane3(const uint8_t *chip, size_t chip_size, uint8_t *bus_buf) {
+    for (size_t i = 0; i < chip_size; i++)
+        bus_buf[i * 4 + 3] = chip[i];
+}
+
+// Try the well-known search paths and the directory of the loaded ROM
+// (which is what the integration test harness sets via the absolute
+// `rom=...` arg, so the relative-path entries below don't resolve once
+// the harness has cd'd into the per-test directory).  `rom_path` is the
+// absolute ROM path the user passed on the command line; we look for
+// `Apple-341-0868.vrom` next to it.  Returns true on success.
+static bool try_load_vrom_in_rom_dir(uint8_t *chip, char **out_path) {
+    const char *rom_path = rom_pending_path();
+    if (!rom_path)
+        return false;
+    const char *slash = strrchr(rom_path, '/');
+    if (!slash)
+        return false;
+    size_t dir_len = (size_t)(slash - rom_path + 1);
+    char path[1024];
+    if (dir_len + sizeof("Apple-341-0868.vrom") > sizeof(path))
+        return false;
+    memcpy(path, rom_path, dir_len);
+    memcpy(path + dir_len, "Apple-341-0868.vrom", sizeof("Apple-341-0868.vrom"));
+    if (try_load_vrom(path, chip)) {
+        *out_path = strdup(path);
+        return true;
+    }
+    return false;
+}
+
+// Load Apple-341-0868.vrom (32 KB chip image), validate its byteLanes
+// byte, and produce the bus-space layout into p->vrom (which is sized
+// JMFB_DECLROM_BUS_SIZE = 128 KB).  Returns true on success.
+static bool load_vrom(jmfb_priv_t *p) {
+    static const char *search_paths[] = {
+        "/opfs/images/vrom/Apple-341-0868.vrom",
+        "tests/data/roms/Apple-341-0868.vrom",
+        "Apple-341-0868.vrom",
+        NULL,
+    };
+    uint8_t *chip = calloc(1, JMFB_DECLROM_CHIP_SIZE);
+    if (!chip)
+        return false;
+    char *rom_dir_path = NULL;
+    bool found = try_load_vrom_in_rom_dir(chip, &rom_dir_path);
+    for (const char **q = search_paths; !found && *q; q++) {
+        if (try_load_vrom(*q, chip)) {
+            rom_dir_path = strdup(*q);
+            found = true;
+        }
+    }
+    if (!found) {
+        free(chip);
+        free(rom_dir_path);
+        return false;
+    }
+    // The chip's last byte is the byteLanes value (per spec, the
+    // byteLanes byte sits at the highest address of the active lanes —
+    // for lane-3-only that's the chip's last byte).
+    uint8_t byteLanes = chip[JMFB_DECLROM_CHIP_SIZE - 1];
+    if (byteLanes == 0x78u) {
+        // Standard 8·24 layout — sparse-expand.
+        expand_lane3(chip, JMFB_DECLROM_CHIP_SIZE, p->vrom);
+    } else if (byteLanes == 0x0Fu) {
+        // 4-lane layout (e.g. a synth ROM) — flat copy into the last
+        // 32 KB of the bus buffer; lanes 0..3 all carry data.
+        memcpy(p->vrom + JMFB_DECLROM_BUS_SIZE - JMFB_DECLROM_CHIP_SIZE, chip, JMFB_DECLROM_CHIP_SIZE);
+    } else {
+        LOG(0, "Apple-341-0868.vrom: unsupported byteLanes $%02x (only $78 and $0F handled)", byteLanes);
+        free(chip);
+        free(rom_dir_path);
+        return false;
+    }
+    free(p->vrom_path);
+    p->vrom_path = rom_dir_path;
+    p->vrom_size = JMFB_DECLROM_BUS_SIZE;
+    free(chip);
+    return true;
+}
+
+static int card_init(nubus_card_t *card, config_t *cfg, checkpoint_t *cp) {
+    (void)cp;
+    jmfb_priv_t *p = calloc(1, sizeof(*p));
+    if (!p)
+        return -1;
+    p->card = card;
+    p->slot_base = nubus_slot_base(card->slot);
+    // VBL IRQ starts masked — bit 1 is active-high disable.  Mac OS's
+    // InstallSlotInterrupt clears it once the SlotIQE is installed.
+    p->sw_ic_reg = VINT_DISABLE;
+
+    p->vram = calloc(1, JMFB_VRAM_SIZE);
+    p->vrom = calloc(1, JMFB_DECLROM_BUS_SIZE);
+    if (!p->vram || !p->vrom) {
+        free(p->vram);
+        free(p->vrom);
+        free(p);
+        return -1;
+    }
+
+    if (!load_vrom(p)) {
+        // requires_vrom is true on this kind, so the dialog gates
+        // boot on a real VROM file; reaching here means CI ran without
+        // one.  Log loudly and continue with a zero-filled declrom —
+        // PrimaryInit won't find a Format Header and the OS will skip
+        // the slot, but the rest of the machine still boots.
+        LOG(0, "Apple-341-0868.vrom not found; declaration ROM is zero-filled");
+    }
+
+    // If a pending video-mode id was set (via `machine.video_mode =
+    // "13in_rgb_8bpp"`), resolve it now — it overrides the pending
+    // sense and triggers PRAM seeding below.
+    const nubus_monitor_t *seeded_monitor = NULL;
+    int seeded_depth_bpp = 0;
+    if (s_pending_video_mode_id[0]) {
+        if (jmfb_video_mode_lookup(s_pending_video_mode_id, &seeded_monitor, &seeded_depth_bpp)) {
+            s_pending_sense = seeded_monitor->sense_code;
+            s_pending_sense_set = true;
+        } else {
+            LOG(1, "jmfb: pending video_mode '%s' did not match any catalog entry; ignored", s_pending_video_mode_id);
+        }
+        s_pending_video_mode_id[0] = '\0';
+    }
+
+    // Monitor sense code — consumed from the pending-sense slot the
+    // shell can set via `nubus.video_sense = N` before `machine.boot`.
+    // The default is $6 (Standard RGB / 13" AppleColor), which keeps
+    // existing tests/integration paths reproducing the same boot we've
+    // baselined.  After consumption the pending slot is left at the
+    // default so a forgotten configuration doesn't leak into the next
+    // machine.boot.
+    p->sense_code = s_pending_sense;
+    s_pending_sense = 0x6;
+    s_pending_sense_set = false;
+
+    const nubus_monitor_t *monitor = monitor_for_sense(p->sense_code);
+    uint32_t mon_w = monitor ? monitor->width : 640;
+    uint32_t mon_h = monitor ? monitor->height : 480;
+
+    // Default register state from PrimaryInit's expected starting point.
+    // The Apple Display Card 8•24 powers up at 1 bpp; PrimaryInit fills
+    // VRAM with the canonical $AAAAAAAA / $55555555 gray pattern in that
+    // mode, and the OS later switches depth via cscSetMode.  Defaulting
+    // to 8 bpp here makes that gray fill render as black/white stripes.
+    p->jmfb_csr = 0;
+    p->jmfb_video_base = 0xA00 / 32; // driver convention: $A00 byte offset
+    p->jmfb_row_words = mon_w / 32u; // 1bpp longs/row for the chosen monitor
+
+    p->display.width = mon_w;
+    p->display.height = mon_h;
+    p->display.stride = 640 / 8; // 1 bpp: 80 bytes/row
+    p->display.format = PIXEL_1BPP_MSB;
+    p->display.bits = p->vram + 0xA00;
+    p->display.clut = p->clut;
+    p->display.clut_len = 256;
+    p->display.shape_dirty = true;
+    p->display.clut_dirty = true;
+    p->display.fb_dirty = true;
+    // CRT response for the attached monitor — see display_t::crt_response.
+    // NULL means "identity gamma", which is the right model for 12"/13"
+    // RGB and Portrait B&W (their gamma tables are near-identity in our
+    // CLUT trace, so a software display without monitor compensation
+    // renders neutral grays correctly).  Kong's CRT amplified blue more
+    // than R/G, so its non-NULL kong_crt_response table inverts Apple's
+    // gamma pre-correction at display time.
+    p->display.crt_response = monitor ? monitor->crt_response : NULL;
+    p->display.response_dirty = true;
+
+    // Initial CLUT — a simple grayscale ramp so the canvas isn't blank
+    // before the OS programs a palette.  The driver's first cscSetEntries
+    // will overwrite this.
+    for (int i = 0; i < 256; i++) {
+        p->clut[i].r = (uint8_t)i;
+        p->clut[i].g = (uint8_t)i;
+        p->clut[i].b = (uint8_t)i;
+        p->clut[i].a = 255;
+    }
+
+    card->priv = p;
+
+    // Register host-backed regions on the bus map.  VRAM is writable;
+    // the declaration ROM is read-only.  The register window goes
+    // through memory_map_add with a memory_interface_t since it needs
+    // I/O dispatch on every access.
+    memory_map_host_region(cfg->mem_map, "jmfb_vram", p->vram, p->slot_base, JMFB_VRAM_SIZE, /*writable*/ true);
+    memory_map_host_region(cfg->mem_map, "jmfb_declrom", p->vrom, p->slot_base + JMFB_DECLROM_BUS_OFFSET,
+                           JMFB_DECLROM_BUS_SIZE, /*writable*/ false);
+    memory_map_add(cfg->mem_map, p->slot_base + JMFB_BLOCK_OFFSET, JMFB_REGISTER_SIZE, "JMFB regs", &s_jmfb_mem_iface,
+                   p);
+
+    // VRAM mirror at slot+$900000 — the Mac IIcx ROM, when running in
+    // 24-bit Memory Manager Mode, builds framebuffer pointers with the
+    // high byte holding master-pointer flags ($F9_______ for slot $9).
+    // Apple QuickDraw inner loops dereference these pointers without
+    // first calling _StripAddress, so the access goes to the literal
+    // 32-bit address $F9900xxx.  Real Mac IIcx hardware: the card's
+    // 16 MB slot allocation is decoded such that VRAM is reachable from
+    // multiple base offsets; the slot $900000 region is one of those
+    // aliases.  Without this mirror, ScrnBase = $F9900A00 reads land in
+    // unmapped memory and QuickDraw bus-errors.
+    memory_map_host_region_alias(cfg->mem_map, p->slot_base + 0x900000u, p->slot_base);
+
+    // If the user picked a video mode via `machine.video_mode = "id"`,
+    // seed PRAM so the Slot Manager's GET_SLOT_DEPTH lands on it at
+    // boot.  Mirrors the dance `tests/integration/iicx-video-modes/
+    // test.script` does shell-side.  PRAM is already alive at this
+    // point — RTC is initialised earlier in the machine init sequence.
+    if (seeded_monitor && seeded_depth_bpp > 0) {
+        rtc_t *rtc = system_rtc();
+        if (rtc) {
+            uint8_t spDepth = 0x80;
+            switch (seeded_depth_bpp) {
+            case 1:
+                spDepth = 0x80;
+                break;
+            case 2:
+                spDepth = 0x81;
+                break;
+            case 4:
+                spDepth = 0x82;
+                break;
+            case 8:
+                spDepth = 0x83;
+                break;
+            default:
+                LOG(1, "jmfb: unexpected video-mode depth=%d; PRAM seed using $80 (1bpp)", seeded_depth_bpp);
+                break;
+            }
+            // Boot-ROM cold-init validity tokens (docs/pram.md §3) —
+            // without these `_InitUtil` rewrites low-PRAM and zeroes
+            // XPRAM at boot, clobbering our slot-9 sPRAMRec seed.
+            rtc_pram_write(rtc, 0x00, 0xA8);
+            rtc_pram_write(rtc, 0x0C, 0x4E); // 'N'
+            rtc_pram_write(rtc, 0x0D, 0x75); // 'u'
+            rtc_pram_write(rtc, 0x0E, 0x4D); // 'M'
+            rtc_pram_write(rtc, 0x0F, 0x63); // 'c'
+            // Per-slot sPRAMRec layout (8 bytes): each slot's record
+            // lives at offset (0x46 + (slot - 9) * 8) in PRAM (see
+            // docs/pram.md §6).  $46..$47 = BoardID, $48 = savedMode,
+            // $49/$4A = savedSRsrcID / savedRawSRsrcID, $4B..$4D = 0.
+            uint8_t pram_off = (uint8_t)(0x46 + (card->slot - 9) * 8);
+            rtc_pram_write(rtc, pram_off + 0, 0x00);
+            rtc_pram_write(rtc, pram_off + 1, 0x27); // BoardID = $0027 (JMFB)
+            rtc_pram_write(rtc, pram_off + 2, spDepth);
+            rtc_pram_write(rtc, pram_off + 3, seeded_monitor->srsrc_sister);
+            rtc_pram_write(rtc, pram_off + 4, seeded_monitor->srsrc_sister);
+            rtc_pram_write(rtc, pram_off + 5, 0x00);
+            rtc_pram_write(rtc, pram_off + 6, 0x00);
+            rtc_pram_write(rtc, pram_off + 7, 0x00);
+            LOG(1, "jmfb: seeded slot-%d PRAM for video mode '%s' (sister=$%02X spDepth=$%02X)", card->slot,
+                seeded_monitor->id, seeded_monitor->srsrc_sister, spDepth);
+        }
+    }
+
+    return 0;
+}
+
+static void card_teardown(nubus_card_t *card, config_t *cfg) {
+    (void)cfg;
+    jmfb_priv_t *p = card->priv;
+    if (!p)
+        return;
+    free(p->vram);
+    free(p->vrom);
+    free(p->vrom_path);
+    free(p);
+    card->priv = NULL;
+}
+
+static void card_on_vbl(nubus_card_t *card, config_t *cfg) {
+    (void)cfg;
+    jmfb_priv_t *p = card->priv;
+    if (!p)
+        return;
+    if (!(p->sw_ic_reg & VINT_DISABLE))
+        nubus_assert_irq(card);
+    // Mark the framebuffer dirty every VBL so the renderer re-uploads.
+    // CPU writes to VRAM happen directly through the host_region mapping
+    // and don't otherwise notify the renderer, so this VBL pulse is what
+    // surfaces ongoing Mac OS drawing to the canvas.
+    p->display.fb_dirty = true;
+}
+
+static display_t *card_display(nubus_card_t *card) {
+    jmfb_priv_t *p = card->priv;
+    return p ? &p->display : NULL;
+}
+
+static const char *card_name(const nubus_card_t *card) {
+    (void)card;
+    return "Apple Macintosh Display Card 8\xe2\x80\xa2"
+           "24"; // "8•24"
+}
+
+static const nubus_card_ops_t mdc_8_24_ops = {
+    .init = card_init,
+    .teardown = card_teardown,
+    .on_vbl = card_on_vbl,
+    .display = card_display,
+    .name = card_name,
+};
+
+// === Factory + kind descriptor ==============================================
+
+static nubus_card_t *factory(int slot, config_t *cfg, checkpoint_t *cp) {
+    nubus_card_t *card = calloc(1, sizeof(*card));
+    if (!card)
+        return NULL;
+    card->ops = &mdc_8_24_ops;
+    card->slot = slot;
+    if (card->ops->init(card, cfg, cp) != 0) {
+        free(card);
+        return NULL;
+    }
+    return card;
+}
+
+// Monitor types the Rev B ROM supports (proposal §3.2.5 + the mode
+// catalog Apple ships in chip[$4000..$502B] of the JMFB VROM, see
+// Apple-341-0868-vrom.asm §6b).
+//
+// `depths` lists the supported bit-depths that are PRAM-reachable on
+// this card — i.e. modes the user could pick in the Monitors control
+// panel and have survive a reboot.  24 bpp is *not* listed: its
+// spDepth4 entry only exists in the INACTIVE Ax-pair sister sResources
+// and `_SlotManager $06 sReadFHeader` rejects them at boot.  Apple's
+// "Millions of Colors" mode was runtime-only on this card.
+//
+// `sense_code` is the value the card's monitor-sense lines report
+// when this display is connected.  `srsrc_sister` is the top-level
+// "Ax" sister sResource ID that PrimaryInit selects for this
+// monitor (the ACTIVE list when 32-bit QuickDraw isn't loaded; on
+// stock System 7.0.1 we stay on Ax).  Both bytes were verified
+// empirically by the iicx-video-modes integration test.
+// 13" RGB is listed first so it's the catalog default — matches the
+// JMFB's cold-init sense ($6 = 13" RGB) when no monitor is explicitly
+// chosen.  monitor_for_sense() looks up by sense_code, not list order.
+static const int mdc_8_24_4depths[] = {1, 2, 4, 8, 0};
+
+// CRT response curves for monitors whose JMFB gamma table is NOT
+// near-identity.  Mac System 7's JMFB driver gamma-pre-corrects CLUT
+// writes for each monitor via Apple's per-display 'gama' resource
+// (see Section 7 of Apple-341-0868-vrom.asm — six tables at
+// chip[$4A86..$502B]).  On real hardware the CRT phosphor/electron-
+// gun gamma response cancels the pre-correction and the user sees a
+// neutral image.  In software we apply the inverse here.
+//
+// 13"/12" RGB and Portrait B&W happen to ship with near-identity
+// gamma tables — their CLUT entries come out as true grays in our
+// trace, so leaving `crt_response = NULL` (identity) renders the
+// emulated framebuffer correctly with no further work.
+//
+// 21" RGB Kong ships with a deliberately B-channel-attenuated gamma
+// table (Kong's blue phosphor was more efficient than R/G, so Apple
+// pre-multiplied B by ~0.84 to compensate; the CRT then boosts B
+// back by ~1.19 for a neutral display).  Without modelling the
+// Kong CRT here, the page shows a yellow-tinted screenshot.
+//
+// Provenance: the three tables below were derived offline by booting
+// the IIcx at sense=$0 (Kong) and sense=$6 (13" RGB) and capturing
+// the gamma-pre-corrected CLUTs Mac OS uploads via the JMFB driver.
+// Treating the 13" RGB CLUT as the perceptually-neutral ground truth
+// (its gamma is near-identity in our trace), the per-channel inverse
+// LUT for Kong is:
+//     kong_crt_response_R[kong_CLUT_R[i]] = rgb13_CLUT_R[i]
+//     (and same for G, B).
+// Round-trip self-check confirmed 256/256 sample indices recover the
+// 13"-RGB-equivalent neutral grays within ±1 byte.  See the offline
+// derivation in this commit's discussion thread.
+static const uint8_t kong_crt_response[3][256] = {
+    // R
+    {0x00, 0x01, 0x02, 0x03, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B, 0x0D, 0x0E, 0x0F, 0x10, 0x11, 0x12, 0x14, 0x15,
+     0x16, 0x17, 0x18, 0x19, 0x1A, 0x1C, 0x1D, 0x1E, 0x1F, 0x20, 0x21, 0x22, 0x24, 0x25, 0x26, 0x27, 0x28, 0x28, 0x29,
+     0x2A, 0x2B, 0x2B, 0x2C, 0x2D, 0x2D, 0x2E, 0x2F, 0x2F, 0x30, 0x31, 0x32, 0x32, 0x33, 0x34, 0x34, 0x35, 0x36, 0x37,
+     0x37, 0x38, 0x39, 0x39, 0x3A, 0x3B, 0x3B, 0x3C, 0x3D, 0x3E, 0x3E, 0x3F, 0x40, 0x42, 0x43, 0x44, 0x46, 0x47, 0x48,
+     0x4A, 0x4B, 0x4C, 0x4D, 0x4F, 0x50, 0x51, 0x53, 0x54, 0x55, 0x56, 0x57, 0x58, 0x59, 0x5A, 0x5B, 0x5C, 0x5E, 0x5F,
+     0x60, 0x61, 0x62, 0x63, 0x64, 0x65, 0x66, 0x67, 0x68, 0x69, 0x6A, 0x6B, 0x6C, 0x6D, 0x6E, 0x70, 0x71, 0x72, 0x73,
+     0x74, 0x75, 0x76, 0x77, 0x78, 0x79, 0x7A, 0x7B, 0x7C, 0x7D, 0x7E, 0x7F, 0x80, 0x81, 0x82, 0x83, 0x84, 0x85, 0x86,
+     0x87, 0x88, 0x89, 0x8A, 0x8B, 0x8C, 0x8D, 0x8E, 0x8F, 0x90, 0x91, 0x92, 0x93, 0x94, 0x95, 0x96, 0x97, 0x98, 0x99,
+     0x9A, 0x9B, 0x9C, 0x9D, 0x9E, 0x9F, 0xA0, 0xA1, 0xA2, 0xA3, 0xA4, 0xA5, 0xA6, 0xA7, 0xA8, 0xA9, 0xAA, 0xAB, 0xAC,
+     0xAD, 0xAE, 0xAF, 0xB0, 0xB1, 0xB2, 0xB3, 0xB4, 0xB5, 0xB6, 0xB7, 0xB8, 0xB9, 0xBA, 0xBB, 0xBC, 0xBD, 0xBE, 0xBF,
+     0xC0, 0xC1, 0xC2, 0xC3, 0xC4, 0xC5, 0xC6, 0xC7, 0xC8, 0xC9, 0xCA, 0xCB, 0xCC, 0xCD, 0xCE, 0xCF, 0xD0, 0xD1, 0xD2,
+     0xD3, 0xD4, 0xD5, 0xD6, 0xD7, 0xD8, 0xD9, 0xDA, 0xDB, 0xDC, 0xDD, 0xDE, 0xDF, 0xE0, 0xE1, 0xE2, 0xE3, 0xE4, 0xE5,
+     0xE6, 0xE7, 0xE8, 0xE9, 0xEA, 0xEB, 0xEC, 0xED, 0xED, 0xEE, 0xEF, 0xF0, 0xF1, 0xF2, 0xF3, 0xF4, 0xF5, 0xF6, 0xF7,
+     0xF8, 0xF9, 0xF9, 0xFA, 0xFB, 0xFC, 0xFD, 0xFE, 0xFF},
+    // G
+    {0x00, 0x01, 0x02, 0x03, 0x04, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0C, 0x0D, 0x0E, 0x0F, 0x10,
+     0x11, 0x12, 0x13, 0x14, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19, 0x1A, 0x1B, 0x1B, 0x1C, 0x1D, 0x1E, 0x1F, 0x20, 0x21,
+     0x22, 0x23, 0x23, 0x24, 0x25, 0x26, 0x27, 0x28, 0x29, 0x2A, 0x2B, 0x2C, 0x2D, 0x2E, 0x2F, 0x30, 0x31, 0x32, 0x33,
+     0x34, 0x35, 0x36, 0x37, 0x38, 0x39, 0x3A, 0x3B, 0x3C, 0x3D, 0x3E, 0x3F, 0x40, 0x42, 0x43, 0x44, 0x46, 0x47, 0x48,
+     0x4A, 0x4B, 0x4C, 0x4D, 0x4F, 0x50, 0x51, 0x53, 0x54, 0x55, 0x56, 0x57, 0x58, 0x59, 0x5A, 0x5B, 0x5C, 0x5E, 0x5F,
+     0x60, 0x61, 0x62, 0x63, 0x64, 0x65, 0x66, 0x67, 0x68, 0x69, 0x6B, 0x6C, 0x6D, 0x6E, 0x6F, 0x70, 0x71, 0x72, 0x74,
+     0x75, 0x76, 0x77, 0x78, 0x79, 0x7A, 0x7B, 0x7C, 0x7D, 0x7E, 0x7F, 0x80, 0x81, 0x82, 0x83, 0x84, 0x85, 0x86, 0x87,
+     0x88, 0x89, 0x8A, 0x8B, 0x8C, 0x8D, 0x8E, 0x90, 0x91, 0x92, 0x93, 0x94, 0x95, 0x96, 0x97, 0x98, 0x99, 0x9B, 0x9C,
+     0x9D, 0x9E, 0x9F, 0xA0, 0xA2, 0xA3, 0xA4, 0xA5, 0xA6, 0xA7, 0xA8, 0xA9, 0xAA, 0xAB, 0xAD, 0xAE, 0xAF, 0xB0, 0xB1,
+     0xB2, 0xB3, 0xB4, 0xB5, 0xB6, 0xB7, 0xB8, 0xB9, 0xBA, 0xBB, 0xBC, 0xBD, 0xBE, 0xBF, 0xC0, 0xC1, 0xC2, 0xC3, 0xC4,
+     0xC5, 0xC6, 0xC7, 0xC8, 0xC9, 0xCA, 0xCB, 0xCC, 0xCD, 0xCE, 0xCF, 0xD0, 0xD1, 0xD2, 0xD4, 0xD5, 0xD6, 0xD7, 0xD8,
+     0xD9, 0xDA, 0xDB, 0xDC, 0xDD, 0xDE, 0xDF, 0xE0, 0xE2, 0xE3, 0xE4, 0xE5, 0xE6, 0xE7, 0xE8, 0xE9, 0xEA, 0xEB, 0xEC,
+     0xED, 0xED, 0xEE, 0xEF, 0xF0, 0xF1, 0xF2, 0xF3, 0xF4, 0xF5, 0xF6, 0xF7, 0xF8, 0xF9, 0xFA, 0xFB, 0xFC, 0xFD, 0xFE,
+     0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF},
+    // B
+    {0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F, 0x10, 0x11, 0x12,
+     0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19, 0x1A, 0x1B, 0x1C, 0x1D, 0x1E, 0x1F, 0x20, 0x21, 0x22, 0x23, 0x24, 0x25,
+     0x26, 0x27, 0x28, 0x29, 0x2A, 0x2B, 0x2C, 0x2E, 0x2F, 0x30, 0x31, 0x32, 0x33, 0x34, 0x35, 0x36, 0x37, 0x38, 0x3A,
+     0x3B, 0x3C, 0x3D, 0x3E, 0x3F, 0x41, 0x42, 0x44, 0x45, 0x47, 0x49, 0x4A, 0x4C, 0x4E, 0x4F, 0x51, 0x52, 0x54, 0x55,
+     0x57, 0x58, 0x5A, 0x5B, 0x5C, 0x5E, 0x5F, 0x60, 0x62, 0x63, 0x65, 0x66, 0x67, 0x68, 0x6A, 0x6B, 0x6C, 0x6D, 0x6E,
+     0x70, 0x71, 0x72, 0x73, 0x75, 0x76, 0x77, 0x78, 0x79, 0x7B, 0x7C, 0x7D, 0x7E, 0x80, 0x81, 0x82, 0x83, 0x85, 0x86,
+     0x87, 0x88, 0x8A, 0x8B, 0x8C, 0x8D, 0x8E, 0x90, 0x91, 0x92, 0x94, 0x95, 0x96, 0x97, 0x98, 0x9A, 0x9B, 0x9C, 0x9E,
+     0x9F, 0xA0, 0xA1, 0xA2, 0xA4, 0xA5, 0xA6, 0xA7, 0xA8, 0xAA, 0xAB, 0xAC, 0xAD, 0xAE, 0xB0, 0xB1, 0xB2, 0xB3, 0xB4,
+     0xB5, 0xB7, 0xB8, 0xB9, 0xBA, 0xBB, 0xBC, 0xBE, 0xBF, 0xC0, 0xC1, 0xC2, 0xC4, 0xC5, 0xC6, 0xC7, 0xC8, 0xC9, 0xCB,
+     0xCC, 0xCD, 0xCE, 0xD0, 0xD1, 0xD2, 0xD4, 0xD5, 0xD6, 0xD7, 0xD9, 0xDA, 0xDB, 0xDC, 0xDE, 0xDF, 0xE0, 0xE1, 0xE2,
+     0xE3, 0xE5, 0xE6, 0xE7, 0xE8, 0xE9, 0xEB, 0xEC, 0xED, 0xEE, 0xEF, 0xF1, 0xF2, 0xF3, 0xF4, 0xF5, 0xF6, 0xF7, 0xF8,
+     0xFA, 0xFB, 0xFC, 0xFD, 0xFE, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
+     0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
+     0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF},
+};
+static const nubus_monitor_t mdc_8_24_monitors[] = {
+    {.id = "13in_rgb",
+     .name = "13\" AppleColor",
+     .width = 640,
+     .height = 480,
+     .depths = mdc_8_24_4depths,
+     .sense_code = 0x6,
+     .srsrc_sister = 0xA6},
+    {.id = "12in_rgb",
+     .name = "12\" RGB",
+     .width = 512,
+     .height = 384,
+     .depths = mdc_8_24_4depths,
+     .sense_code = 0x2,
+     .srsrc_sister = 0xA2},
+    {.id = "15in_bw",
+     .name = "15\" Portrait B&W",
+     .width = 640,
+     .height = 870,
+     .depths = mdc_8_24_4depths,
+     .sense_code = 0x1,
+     .srsrc_sister = 0xA1},
+    {.id = "21in_rgb",
+     .name = "21\" RGB",
+     .width = 1152,
+     .height = 870,
+     .depths = mdc_8_24_4depths,
+     .sense_code = 0x0,
+     .srsrc_sister = 0xA7,
+     .crt_response = kong_crt_response},
+    {0},
+};
+
+// Map the JMFB's 3-bit raw monitor sense to the (width, height) the
+// JMFB driver's PrimaryInit will configure once it scans the sense
+// lines and picks the matching mode-list sRsrc out of the declaration
+// ROM.  The table is a literal transcription of the comment block at
+// JMFBPrimaryInit.a:78-95 ("Sense(2:0) Raw / Reformatted Sense /
+// Monitor Type"):
+//
+//   000 = RGB Workstation (Kong)        — 21" RGB,  1152x870
+//   001 = B/W Full Page (Portrait)      — 15" Mono, 640x870
+//   010 = Modified Apple II-GS (Rubik)  — 12" RGB,  512x384
+//   011 = B/W Workstation (Kong)        — 21" B&W,  1152x870
+//   100 = NTSC (Interlaced)             — 640x480 approximation
+//   101 = RGB Full Page (Portrait)      — 15" RGB,  640x870
+//   110 = Standard RGB                  — 13" RGB,  640x480  (default)
+//   111 = no connect / extended sense   — unsupported here
+//
+// Returns the matching nubus_monitor_t for a given sense code, or NULL
+// for the no-connect code so the caller can fall back to safe defaults.
+// (Extended-sense detection — for the 16" RGB and Sarnoff NTSC box —
+// would key off this NULL return; we don't model it.)
+static const nubus_monitor_t *monitor_for_sense(uint8_t sense) {
+    static const struct {
+        uint8_t sense;
+        const char *id;
+    } map[] = {
+        {0x0, "21in_rgb"}, // RGB Workstation
+        {0x1, "15in_bw" }, // B&W Portrait
+        {0x2, "12in_rgb"}, // Rubik
+        {0x3, "21in_rgb"}, // B&W Workstation (same dimensions as RGB Kong)
+        {0x4, "13in_rgb"}, // NTSC — approximate as 640x480
+        {0x5, "15in_bw" }, // RGB Portrait (same dimensions as B&W Portrait)
+        {0x6, "13in_rgb"}, // Standard RGB
+    };
+    for (size_t i = 0; i < sizeof(map) / sizeof(map[0]); i++) {
+        if (map[i].sense != (sense & 7))
+            continue;
+        for (const nubus_monitor_t *m = mdc_8_24_monitors; m->id; m++) {
+            if (strcmp(m->id, map[i].id) == 0)
+                return m;
+        }
+    }
+    return NULL;
+}
+
+// (s_pending_sense / s_pending_sense_set defined near the top of this
+// file alongside the matching forward declarations.)
+
+void jmfb_pending_sense_set(uint8_t sense) {
+    s_pending_sense = sense & 7;
+    s_pending_sense_set = true;
+}
+
+uint8_t jmfb_pending_sense_get(void) {
+    return s_pending_sense;
+}
+
+void jmfb_pending_video_mode_set(const char *id) {
+    if (!id || !*id) {
+        s_pending_video_mode_id[0] = '\0';
+        return;
+    }
+    snprintf(s_pending_video_mode_id, sizeof s_pending_video_mode_id, "%s", id);
+}
+
+const char *jmfb_pending_video_mode_get(void) {
+    return s_pending_video_mode_id[0] ? s_pending_video_mode_id : NULL;
+}
+
+// Parse "monitor_Nbpp" into (monitor, N).  monitor portion is matched
+// case-sensitively against entries in mdc_8_24_monitors[]; N is parsed
+// as a decimal integer and validated against the monitor's depth list.
+bool jmfb_video_mode_lookup(const char *id, const nubus_monitor_t **out_monitor, int *out_depth_bpp) {
+    if (!id || !*id)
+        return false;
+    const char *underscore_bpp = strstr(id, "_");
+    while (underscore_bpp) {
+        const char *next = strstr(underscore_bpp + 1, "_");
+        if (!next)
+            break;
+        underscore_bpp = next;
+    }
+    if (!underscore_bpp)
+        return false;
+    size_t mon_len = (size_t)(underscore_bpp - id);
+    if (mon_len == 0 || mon_len >= 32)
+        return false;
+    char mon_id[32];
+    memcpy(mon_id, id, mon_len);
+    mon_id[mon_len] = '\0';
+    // Trailing chunk should be e.g. "_8bpp" — strip the underscore and
+    // the "bpp" suffix.
+    const char *bpp_str = underscore_bpp + 1;
+    char *end = NULL;
+    long bpp = strtol(bpp_str, &end, 10);
+    if (!end || end == bpp_str || strcmp(end, "bpp") != 0)
+        return false;
+    for (const nubus_monitor_t *m = mdc_8_24_monitors; m->id; m++) {
+        if (strcmp(m->id, mon_id) != 0)
+            continue;
+        if (!m->depths)
+            return false;
+        for (const int *d = m->depths; *d; d++) {
+            if ((int)bpp == *d) {
+                if (out_monitor)
+                    *out_monitor = m;
+                if (out_depth_bpp)
+                    *out_depth_bpp = (int)bpp;
+                return true;
+            }
+        }
+        return false; // monitor matched but depth didn't
+    }
+    return false;
+}
+
+const nubus_card_kind_t mdc_8_24_kind = {
+    .id = "mdc_8_24",
+    .display_name = "Apple Macintosh Display Card 8\xe2\x80\xa2"
+                    "24",
+    .requires_vrom = true,
+    .monitors = mdc_8_24_monitors,
+    .factory = factory,
+};
