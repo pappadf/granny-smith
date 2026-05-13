@@ -1,0 +1,227 @@
+# Integration test: IIcx MacTest Boot
+# Opens `Options > Test Selections` first, unchecks the two ADB
+# Communication sub-tests (Keyboard + Mouse), confirms the dialog
+# state via screen.match, presses OK, and then runs the full IIcx
+# MacTest floppy-test sequence.  The MacTest IIcx/IIci floppy suite
+# normally asks for the test disk after the floppy phase to run
+# the Keyboard / Mouse / RAM tests; disabling Keyboard + Mouse here
+# leaves only RAM in that phase while keeping the floppy phase
+# itself unaffected — so the per-phase screenshot baselines apply
+# through `floppy-test-success.png`.
+#
+# See `tests/integration/iicx-mactest-options/test.script` for the
+# investigation harness that established the Options-menu and DITL
+# checkbox coordinates used below.
+
+# Configure JMFB for 13" RGB at 8 bpp.  Equivalent to the explicit
+# nubus.video_sense + rtc.pram.poke pair used by iicx-video-modes.
+nubus.video_mode = "13in_rgb_8bpp"
+
+machine.boot "iicx" 4096
+rom.reload
+floppy.drives[0].insert "../../data/apps/MacTest-IIcx-IIci.image" true
+
+scc.loopback = true
+scsi.loopback = true
+
+# Boot past Happy Mac through splash screens to MacTest main UI.
+scheduler.run 200000000
+
+assert ${machine.id == "iicx"}              "machine.id != iicx"
+assert ${screen.width == 640}               "screen.width != 640 (JMFB not seated?)"
+assert ${screen.height == 480}              "screen.height != 480"
+assert ${rtc.pram.peek(0x48) == 0x83}       "savedMode != 0x83 (8bpp)"
+assert ${memory.peek.l(0xf9200208) == 0x98} "JMFB CLUTPBCR != 0x98 (8bpp)"
+assert ${memory.peek.l(0xf920000c) == 0xa0} "JMFB RowWords != 0xa0 (640*8/8/8)"
+
+screen.match main.png
+
+# --- Open Options > Test Selections and uncheck ADB sub-tests --------------
+# Pull-down menu pattern: move + 4M, mousedown + 20M to draw the menu,
+# move to highlight item + 8M, mouseup + 100M to fire the action.  Menu
+# bar x-coords (verified empirically in iicx-mactest-options): Options
+# title sits at x~115.  "Test Selections..." is the first item at y~28.
+mouse.move 115 10 "global"
+scheduler.run 4000000
+mouse.click true
+scheduler.run 20000000
+
+mouse.move 115 28 "global"
+scheduler.run 8000000
+
+mouse.click false
+scheduler.run 100000000
+# Extra settle so the dialog finishes painting.
+scheduler.run 60000000
+
+# Uncheck "Keyboard" — ADB Communication checkbox column, y=305.
+mouse.move 130 305 "global"
+scheduler.run 5000000
+mouse.click true
+scheduler.run 5000000
+mouse.click false
+scheduler.run 10000000
+
+# Uncheck "Mouse" — directly below Keyboard at y=325.
+mouse.move 130 325 "global"
+scheduler.run 5000000
+mouse.click true
+scheduler.run 5000000
+mouse.click false
+scheduler.run 10000000
+
+# Verify both ADB items are now unchecked.  This baseline was captured
+# by `tests/integration/iicx-mactest-options/test.script` after the
+# same two clicks at the same coordinates — so a mismatch here means
+# the dialog DITL layout drifted or one of the clicks landed off the
+# checkbox row.
+screen.match test-selections-adb-unchecked.png
+
+# Click OK to commit and close the dialog.
+#
+# Coordinate provenance: the OK button is DITL item 1 at LOCAL rect
+# (top=293, left=470, bottom=318, right=530).  The dialog's contRgn
+# (handle in WindowRec+118 → region at $000482F0) places the dialog
+# content origin at GLOBAL (top=81, left=47), so the OK hit-rect in
+# global coords is (374, 517, 399, 577).  Clicking at (560, 385)
+# lands inside this rect — ModalDialog returns itemHit=1 and the
+# OK-button handler at $00034C14 commits and closes the dialog
+# normally.
+#
+# Earlier iterations of this test used the visual centre of the
+# rendered OK glyph (~542, 372) and the dialog refused to dismiss.
+# Cause: that y-coord is 2 pixels ABOVE the actual button rect.  The
+# click hit DITL item 24 (an enabled "dummy" user-item that sits
+# just above the OK/Cancel row) whose handler intentionally returns
+# 0 → the modal loop re-enters.  Use the rect-derived coords below,
+# not the rendered-glyph centre, when targeting Mac OS dialog
+# buttons in tests.
+mouse.move 560 385 "global"
+scheduler.run 5000000
+mouse.click true
+scheduler.run 5000000
+mouse.click false
+scheduler.run 60000000
+
+# --- Continue with the normal MacTest flow ---------------------------------
+# Click Start (button center ~(188, 153)) — same coords as iicx-mactest.
+mouse.move 188 153 "global"
+scheduler.run 5000000
+mouse.click true
+scheduler.run 5000000
+mouse.click false
+
+# VIA -> ASC -> clock/PRAM -> SCSI tests run, then MacTest asks for the
+# first blank 800K diskette.
+scheduler.run 100000000
+screen.match insert-800k-internal.png
+
+floppy.create "${WORK_DIR}/blank800-int.dsk" 0
+scheduler.run 10000000
+
+# OK on the "insert disk" dialog (~454, 245).
+mouse.move 454 245 "global"
+scheduler.run 5000000
+mouse.click true
+scheduler.run 5000000
+mouse.click false
+
+scheduler.run 300000000
+screen.match insert-1.4mb-internal.png
+
+mouse.click false "global"
+floppy.create "${WORK_DIR}/blankHD-int.dsk" "hd"
+mouse.move 454 245 "global"
+scheduler.run 5000000
+mouse.click true
+scheduler.run 5000000
+mouse.click false
+
+scheduler.run 300000000
+screen.match insert-800k-external.png
+
+mouse.click false "global"
+floppy.create "${WORK_DIR}/blank800-ext.dsk" 1
+mouse.move 454 245 "global"
+scheduler.run 5000000
+mouse.click true
+scheduler.run 5000000
+mouse.click false
+
+scheduler.run 300000000
+screen.match insert-1.4mb-external.png
+
+mouse.click false "global"
+floppy.create "${WORK_DIR}/blankHD-ext.dsk" "hd"
+floppy.drives[0].eject
+floppy.drives[1].insert "${WORK_DIR}/blankHD-ext.dsk" true
+
+mouse.move 454 245 "global"
+scheduler.run 5000000
+mouse.click true
+scheduler.run 5000000
+mouse.click false
+
+scheduler.run 300000000
+screen.match floppy-test-success.png
+
+
+
+# --- Re-insert the MacTest disk to continue with remaining tests ----------
+# At this point MacTest has finished the floppy phase and is asking for
+# the original "MacTest IIcx/IIci" floppy to run the remaining tests.
+# In iicx-mactest the dialog continues into Keyboard + Mouse + RAM; we
+# disabled Keyboard and Mouse in the Options dialog earlier, so RAM is
+# all that's left.  fd0 was ejected during the External-HD swap so
+# inserting back there matches what a real user would do.
+mouse.click false "global"
+floppy.drives[0].insert "../../data/apps/MacTest-IIcx-IIci.image" true
+
+# Click OK on the "Please insert the disk" dialog (same OK button
+# position as the earlier insert-disk dialogs at this dialog kind).
+mouse.move 454 245 "global"
+scheduler.run 5000000
+mouse.click true
+scheduler.run 5000000
+mouse.click false
+
+# Run for a while to let MacTest read the app disk, skip the
+# disabled Keyboard/Mouse phases, and reach the RAM-test "Testing
+# RAM1..." status display.
+scheduler.run 600000000
+screen.save "${WORK_DIR}/post-floppy-state.png"
+screen.save "post-floppy-state.png"
+
+# Stop the MTemp guard before the RAM test runs.  Every prior
+# `mouse.move "global"` call leaves a 1 kHz scheduler event re-pinning
+# MTemp/RawMouse/Mouse (see docs/mouse_control.md §10); MacTest's RAM
+# test fills ALL of RAM with verify patterns, so leaving the guard
+# active would corrupt whichever pass overlaps the cursor globals.
+# Same fix sibling `se30-mactest` applies before its RAM phase.
+mouse.move 0 0
+
+# Let the RAM test run.  On real IIcx hardware MacTest's RAM test
+# fills + verifies all 4 MB with several patterns (~4 min @ 16 MHz),
+# returns through the destroyed stack → bus error chain → double bus
+# error → CPU halt → GLU resets the machine → MacTest re-boots from
+# fd0 and shows a "Tests passed" success screen (reading the PRAM
+# flag it set before the destructive phase).  The sibling
+# `tests/integration/se30-mactest` test successfully drives the
+# SE/30 version of this floppy through the full sequence with
+# scheduler.run 7B.
+#
+# IIcx finding (2026-05-13): the CPU stays in the ROM RAM-test +
+# exception code at $40802EE0-$40803304 indefinitely.  Instr_count
+# grows steadily (CPU is executing, not halted) but the screen
+# never updates past "Testing RAM1...".  16 B cycles is more than
+# 4× the real-hardware 4-minute budget — the auto-reboot path that
+# leads to the success screen does not fire on IIcx in this build,
+# even though the analogous SE/30 path does.  Likely IIcx is
+# missing the IIcx-side equivalent of the SE/30 hardware-reset
+# wiring documented in `local/gs-docs/asm/MacTest-SE30.asm` (the
+# 5-part fix listed there at lines 963-978).  Filed as future
+# work — for now the test stops at the RAM-running display.
+scheduler.run 4000000000
+screen.save "${WORK_DIR}/ram-running.png"
+screen.save "ram-running.png"
+quit
