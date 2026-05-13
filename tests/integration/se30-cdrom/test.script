@@ -3,8 +3,15 @@
 # device attached via cdrom= CLI argument.
 # Verifies Finder desktop, exercises cdrom commands (info/eject).
 
-# Boot to Finder desktop (8MB RAM needs more cycles for memory test)
-scheduler.run 2000000000
+# Boot to Finder desktop (8MB RAM needs more cycles for memory test).
+# Skip the Universal ROM's ~13 s boot-drive-discovery wait at $40801610
+# (poke $8805 into $017A, clear it after one inner-poll cycle).  See
+# tests/integration/iicx-video-modes/test.script for the mechanics.
+scheduler.run 40000000
+memory.poke.w 0x017A 0x8805
+scheduler.run 2000000
+memory.poke.w 0x017A 0
+scheduler.run 1900000000
 
 # Verify the screen matches the Finder desktop reference image.
 # The CD-ROM is on the bus but System 7.0.1 floppy does not include

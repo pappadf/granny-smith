@@ -8,7 +8,17 @@
 # disk reaches a stable Finder painting around 150 M cycles; 250 M
 # leaves ~60% headroom.  (The 2 B figure that originally lived here
 # was inherited from se30-floppy-hd's HD boot and was ~13× over.)
-scheduler.run 250000000
+#
+# Skip the Universal ROM's ~13 s boot-drive-discovery wait at $40801610
+# by poking $8805 (Cmd-Shift-Power) into $017A — the routine reads $017A
+# at $40801614 and exits via the programmer's-key branch.  Clear $017A
+# afterwards so System 7's INIT loader doesn't see Cmd-Shift held.  See
+# tests/integration/iicx-video-modes/test.script for the full mechanics.
+scheduler.run 40000000
+memory.poke.w 0x017A 0x8805
+scheduler.run 2000000
+memory.poke.w 0x017A 0
+scheduler.run 150000000
 
 assert ${machine.id == "iicx"} "machine.id != iicx"
 assert ${screen.width == 640} "screen.width != 640"

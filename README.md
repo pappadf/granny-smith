@@ -3,7 +3,7 @@
 [![CI](https://github.com/pappadf/granny-smith/actions/workflows/tests.yml/badge.svg)](https://github.com/pappadf/granny-smith/actions/workflows/tests.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-**Granny Smith** is a browser-first 68000/68030 Macintosh emulator capable of running classic Mac OS (System 2 through System 7) and A/UX.
+**Granny Smith** is a browser-first Macintosh emulator capable of running classic Mac OS (System 2 through System 7) and A/UX.
 
 > **See it →** &nbsp;[Screenshot gallery of A/UX, MacTest, and more](GALLERY.md)
 > _Captured by automated integration tests — what you see is what the emulator actually produces._
@@ -13,16 +13,35 @@
 
 ![A/UX 3.0.1 booting on SE/30](docs/assets/aux_boot.gif)
 
+## Tested Configurations
+
+The matrix below reflects **proven results from actual test coverage** — every ✅ is exercised on every CI run by the integration suite (headless emulator) and/or the end-to-end suite (Playwright in a real browser).
+
+| Model                   | System 2.x | System 3.x | System 4.x | System 6.x | System 7.0 | System 7.1 | A/UX 3.0.1 |
+| ----------------------- | :--------: | :--------: | :--------: | :--------: | :----------: | :--------: | :--------: |
+| Macintosh Plus (68000)  |     ✅     |     ✅     |     ✅     |     ✅     |      —       |     ✅     |     —      |
+| Macintosh SE/30 (68030) |     —      |     —      |     —      |     —      |      ✅      |     ✅     |    ✅ †    |
+| Macintosh IIcx (68030)  |     —      |     —      |     —      |     —      |      ✅      |     —      |     —      |
+| Macintosh IIx (68030)   |     —      |     —      |     —      |     —      |     ✅ ‡     |     —      |     —      |
+
+- **Plus, System 2.x–7.1** — booted to the Apple-menu signature across 14 distinct System releases (2.0.1, 2.0.4, 3.0, 3.2, 3.3, 4.0, 4.1, 4.2, 4.3, 6.0.0, 6.0.3, 6.0.5, 6.0.8, 7.1.0) by the Playwright boot-matrix; System 6.0.8 also boots all the way to the Finder desktop in the headless suite, and the MacTest hardware-diagnostic ROM passes.
+- **SE/30, System 7.0.1 / 7.1** — boots to the Finder desktop from 800 KB and 1.44 MB floppy and from SCSI; CD-ROM mount verified; MacTest passes.
+- **SE/30, A/UX 3.0.1 †** — boots from a pre-installed UFS disk image to a shell prompt, *and* the full retail Installer flow runs from floppy + CD to the point where it mounts the root filesystem.
+- **IIcx, System 7.0.1** — boots from floppy to the Finder desktop on the JMFB framebuffer; cold-boot verified across four colour depths (1/2/4/8 bpp) and four monitor sense codes (12″ RGB, 13″ RGB, 15″ Portrait B&W, 21″ RGB).
+- **IIx, System 7.0.1 ‡** — no-crash boot smoke test only; JMFB colour modes on the IIx profile are still minimum-viable.
+
+## Design Principles
+
 The guiding principle of this project is **"keep it simple"** — simple for users to run classic Macintosh software, and simple to develop and maintain.
 
-## Simple for Users
+**For users:**
 
 - **Runs in the browser** — no installation required
 - **Continuous background checkpointing** — close or reload the tab without losing your session
 - **Drag-and-drop disk images** — even compressed `*.sit.hqx` archives are handled transparently
 - **Built-in AFP file server** — bridge the browser/host filesystem into the guest OS
 
-## Simple for Developers
+**For developers:**
 
 - **Extensive automated testing** — unit tests, headless integration tests, and Playwright end-to-end tests
 - **Highly portable C99 core** — no special runtime requirements
@@ -45,21 +64,7 @@ Disk images can be raw (`.dsk`, `.img`), compressed (`.sit.hqx`), or packaged in
 
 For build, test, and contribution instructions, see [CONTRIBUTING.md](CONTRIBUTING.md). Architecture and design docs live in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md), and coding guidelines in [AGENTS.md](AGENTS.md).
 
-## Current Status
-
-### What Works
-
-- Macintosh Plus (68000) and SE/30 (68030) fully emulated, with no ROM patching
-- Machine configuration dialog with model selection and RAM sizing
-- Accurate-enough timing — the MacTest hardware test suite passes on both models
-- Booting **classic Mac OS** — verified end-to-end across System 2 through System 7
-- Booting **A/UX 3.0.1**
-- Installing **A/UX 3.0.1** from floppy + CD
-- Mounting of compressed disk images (`*.sit.hqx`, `*.zip`) via the [peeler](third-party/peeler) library
-- Background checkpointing and on-demand checkpoint/restore
-- Browser filesystem exposed as an AFP share with authentication, browsing, and file read/write
-
-### Known Limitations
+## Known Limitations
 
 - **Safari** — known rendering and audio issues; not currently supported
 - **Firefox** — works partially; some compatibility problems remain

@@ -9,7 +9,14 @@
 # at this seed proves the fix.
 rtc.time = 2026-04-26T21:30:36
 
-scheduler.run 300000000
+# Skip the Universal ROM's ~13 s boot-drive-discovery wait at $40801610
+# (poke $8805 into $017A, clear it after one inner-poll cycle).  See
+# tests/integration/iicx-video-modes/test.script for the mechanics.
+scheduler.run 40000000
+memory.poke.w 0x017A 0x8805
+scheduler.run 2000000
+memory.poke.w 0x017A 0
+scheduler.run 250000000
 
 # enter user "root"
 keyboard.press 0x0F
