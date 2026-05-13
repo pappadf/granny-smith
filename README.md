@@ -3,29 +3,29 @@
 [![CI](https://github.com/pappadf/granny-smith/actions/workflows/tests.yml/badge.svg)](https://github.com/pappadf/granny-smith/actions/workflows/tests.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-**Granny Smith** is a browser-first Macintosh emulator running classic Mac OS (System 2 through System 7) and A/UX.
+**Granny Smith** is a browser-first Macintosh emulator running Mac OS (System 2 through System 7) and A/UX.
 
 > **See it:** [Screenshot gallery of A/UX, MacTest, and more](GALLERY.md) from the test system
 
-> **Try it:** [Open Granny Smith in your browser](https://pappadf.github.io/gs-pages/latest/)
-> Use Chromium-based browsers (Safari and Firefox have known issues)
+> **Try it:** [Run Granny Smith in your browser](https://pappadf.github.io/gs-pages/latest/)
+> Use Chromium browser (Safari and Firefox have known issues)
 
 ![A/UX 3.0.1 booting on SE/30](docs/assets/aux_boot.gif)
 
 ## Tested Configurations
 
-Every ✅ is exercised on every CI run. Other combinations may well work - they just aren't continuously verified.
+Every ✅ is exercised on every CI run. Some other combinations may well work - they just aren't continuously verified.
 
-| Software       | Plus (68000) | SE/30 (68030) | IIcx (68030) | IIx (68030) |
-| -------------- | :----------: | :-----------: | :----------: | :---------: |
-| System 2.x     |      ✅      |       -       |      -       |      -      |
-| System 3.x     |      ✅      |       -       |      -       |      -      |
-| System 4.x     |      ✅      |       -       |      -       |      -      |
-| System 6.x     |      ✅      |       -       |      -       |      -      |
-| System 7.0.1 ‡ |      -       |      ✅       |      ✅      |     ✅      |
-| System 7.1     |      ✅      |      ✅       |      -       |      -      |
-| A/UX 3.0.1 †   |      -       |      ✅       |      -       |      -      |
-| MacTest        |      ✅      |      ✅       |      -       |      -      |
+| Software       |  Plus  | SE/30  |  IIcx  |  IIx   |
+| -------------- | :----: | :----: | :----: | :----: |
+| System 2.x     |   ✅   |    -   |    -   |    -   |
+| System 3.x     |   ✅   |    -   |    -   |    -   |
+| System 4.x     |   ✅   |    -   |    -   |    -   |
+| System 6.x     |   ✅   |    -   |    -   |    -   |
+| System 7.0.1 ‡ |    -   |   ✅   |   ✅   |   ✅   |
+| System 7.1     |   ✅   |   ✅   |    -   |    -   |
+| A/UX 3.0.1 †   |    -   |   ✅   |    -   |    -   |
+| MacTest        |   ✅   |   ✅   |    -   |    -   |
 
 † On SE/30, boots from a pre-installed HD image to a shell *and* the full retail Installer flow runs from floppy + CD.
 ‡ On IIx, only a no-crash boot smoke test - JMFB colour modes on the IIx profile are still minimum-viable.
