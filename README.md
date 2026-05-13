@@ -15,20 +15,21 @@
 
 ## Tested Configurations
 
-The matrix below reflects **proven results from actual test coverage** — every ✅ is exercised on every CI run by the integration suite (headless emulator) and/or the end-to-end suite (Playwright in a real browser).
+Every ✅ is exercised on every CI run. Other combinations may well work — they just aren't continuously verified.
 
-| Model                   | System 2.x | System 3.x | System 4.x | System 6.x | System 7.0 | System 7.1 | A/UX 3.0.1 |
-| ----------------------- | :--------: | :--------: | :--------: | :--------: | :----------: | :--------: | :--------: |
-| Macintosh Plus (68000)  |     ✅     |     ✅     |     ✅     |     ✅     |      —       |     ✅     |     —      |
-| Macintosh SE/30 (68030) |     —      |     —      |     —      |     —      |      ✅      |     ✅     |    ✅ †    |
-| Macintosh IIcx (68030)  |     —      |     —      |     —      |     —      |      ✅      |     —      |     —      |
-| Macintosh IIx (68030)   |     —      |     —      |     —      |     —      |     ✅ ‡     |     —      |     —      |
+| Software       | Plus (68000) | SE/30 (68030) | IIcx (68030) | IIx (68030) |
+| -------------- | :----------: | :-----------: | :----------: | :---------: |
+| System 2.x     |      ✅      |       —       |      —       |      —      |
+| System 3.x     |      ✅      |       —       |      —       |      —      |
+| System 4.x     |      ✅      |       —       |      —       |      —      |
+| System 6.x     |      ✅      |       —       |      —       |      —      |
+| System 7.0.1 ‡ |      —       |      ✅       |      ✅      |     ✅      |
+| System 7.1     |      ✅      |      ✅       |      —       |      —      |
+| A/UX 3.0.1 †   |      —       |      ✅       |      —       |      —      |
+| MacTest        |      ✅      |      ✅       |      —       |      —      |
 
-- **Plus, System 2.x–7.1** — booted to the Apple-menu signature across 14 distinct System releases (2.0.1, 2.0.4, 3.0, 3.2, 3.3, 4.0, 4.1, 4.2, 4.3, 6.0.0, 6.0.3, 6.0.5, 6.0.8, 7.1.0) by the Playwright boot-matrix; System 6.0.8 also boots all the way to the Finder desktop in the headless suite, and the MacTest hardware-diagnostic ROM passes.
-- **SE/30, System 7.0.1 / 7.1** — boots to the Finder desktop from 800 KB and 1.44 MB floppy and from SCSI; CD-ROM mount verified; MacTest passes.
-- **SE/30, A/UX 3.0.1 †** — boots from a pre-installed UFS disk image to a shell prompt, *and* the full retail Installer flow runs from floppy + CD to the point where it mounts the root filesystem.
-- **IIcx, System 7.0.1** — boots from floppy to the Finder desktop on the JMFB framebuffer; cold-boot verified across four colour depths (1/2/4/8 bpp) and four monitor sense codes (12″ RGB, 13″ RGB, 15″ Portrait B&W, 21″ RGB).
-- **IIx, System 7.0.1 ‡** — no-crash boot smoke test only; JMFB colour modes on the IIx profile are still minimum-viable.
+† On SE/30, boots from a pre-installed HD image to a shell *and* the full retail Installer flow runs from floppy + CD.
+‡ On IIx, only a no-crash boot smoke test — JMFB colour modes on the IIx profile are still minimum-viable.
 
 ## Design Principles
 
