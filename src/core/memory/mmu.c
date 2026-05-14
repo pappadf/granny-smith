@@ -56,7 +56,11 @@ void tlb_track_page(uint32_t page_index) {
 // Read a 32-bit big-endian value from physical RAM at the given address.
 // Used during table walks to fetch descriptors from the guest's page tables.
 // ROM region addresses are wrapped modulo rom_size to handle mirroring.
-static uint32_t phys_read32(mmu_state_t *mmu, uint32_t phys_addr) {
+//
+// Forced inline: this is on the per-fault hot path (mmu_table_walk fetches
+// 2–3 descriptors per fault).  Out-of-line, it costs ~9% of SE/30 boot time
+// in function-call overhead alone (gprof).
+static inline __attribute__((always_inline)) uint32_t phys_read32(mmu_state_t *mmu, uint32_t phys_addr) {
     if (phys_addr + 4 <= mmu->physical_ram_size) {
         return LOAD_BE32(mmu->physical_ram + phys_addr);
     }
@@ -72,7 +76,10 @@ static uint32_t phys_read32(mmu_state_t *mmu, uint32_t phys_addr) {
 // Resolve a physical address to a host pointer (RAM, ROM, or VRAM).
 // Returns NULL if the physical address is not backed by host memory.
 // ROM addresses are wrapped modulo rom_size to handle mirroring.
-static uint8_t *phys_to_host(mmu_state_t *mmu, uint32_t phys_addr) {
+//
+// Forced inline: hot-path called from mmu_fill_soa_entry on every TLB miss.
+// Out-of-line, it was the top gprof entry at ~13% of SE/30 boot time.
+static inline __attribute__((always_inline)) uint8_t *phys_to_host(mmu_state_t *mmu, uint32_t phys_addr) {
     if (phys_addr < mmu->physical_ram_size)
         return mmu->physical_ram + phys_addr;
     if (mmu->physical_rom && phys_addr >= mmu->rom_phys_base && phys_addr < mmu->rom_region_end) {
@@ -98,7 +105,7 @@ static uint8_t *phys_to_host(mmu_state_t *mmu, uint32_t phys_addr) {
 }
 
 // Check if physical address is in writable RAM or VRAM (not ROM)
-static bool phys_is_writable(mmu_state_t *mmu, uint32_t phys_addr) {
+static inline __attribute__((always_inline)) bool phys_is_writable(mmu_state_t *mmu, uint32_t phys_addr) {
     if (phys_addr < mmu->physical_ram_size)
         return true;
     // ROM mirror region is read-only
