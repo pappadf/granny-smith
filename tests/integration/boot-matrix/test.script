@@ -54,6 +54,7 @@ assert ${machine.ram == 1024}     "ssw-2.0/1M: machine.ram != 1024"
 assert ${screen.width == 512}     "ssw-2.0/1M: screen.width != 512"
 assert ${screen.height == 342}    "ssw-2.0/1M: screen.height != 342"
 screen.match plus-ssw-2.0.png
+echo "ssw-2.0/1M:    ${scheduler.instr_count * 1000 / (scheduler.host_user_ns - t0)} MIPS"
 assert ${scheduler.instr_count * 1000000000 / (scheduler.host_user_ns - t0) > 50000000} "ssw-2.0/1M: emulator throughput below 50 MIPS"
 
 # --- System Software 3.2 (400K) @ 2 MB RAM --------------------------
@@ -67,6 +68,7 @@ assert ${machine.ram == 2048}     "ssw-3.2/2M: machine.ram != 2048"
 assert ${screen.width == 512}     "ssw-3.2/2M: screen.width != 512"
 assert ${screen.height == 342}    "ssw-3.2/2M: screen.height != 342"
 screen.match plus-ssw-3.2.png
+echo "ssw-3.2/2M:    ${scheduler.instr_count * 1000 / (scheduler.host_user_ns - t0)} MIPS"
 assert ${scheduler.instr_count * 1000000000 / (scheduler.host_user_ns - t0) > 50000000} "ssw-3.2/2M: emulator throughput below 50 MIPS"
 
 # --- System Software 4.2 (800K) @ 2.5 MB RAM ------------------------
@@ -80,6 +82,7 @@ assert ${machine.ram == 2560}     "ssw-4.2/2.5M: machine.ram != 2560"
 assert ${screen.width == 512}     "ssw-4.2/2.5M: screen.width != 512"
 assert ${screen.height == 342}    "ssw-4.2/2.5M: screen.height != 342"
 screen.match plus-ssw-4.2.png
+echo "ssw-4.2/2.5M:  ${scheduler.instr_count * 1000 / (scheduler.host_user_ns - t0)} MIPS"
 assert ${scheduler.instr_count * 1000000000 / (scheduler.host_user_ns - t0) > 50000000} "ssw-4.2/2.5M: emulator throughput below 50 MIPS"
 
 # --- System Software 6.0.8 (800K) @ 4 MB RAM ------------------------
@@ -93,6 +96,52 @@ assert ${machine.ram == 4096}     "ssw-6.0.8/4M: machine.ram != 4096"
 assert ${screen.width == 512}     "ssw-6.0.8/4M: screen.width != 512"
 assert ${screen.height == 342}    "ssw-6.0.8/4M: screen.height != 342"
 screen.match plus-ssw-6.0.8.png
+echo "ssw-6.0.8/4M:  ${scheduler.instr_count * 1000 / (scheduler.host_user_ns - t0)} MIPS"
 assert ${scheduler.instr_count * 1000000000 / (scheduler.host_user_ns - t0) > 50000000} "ssw-6.0.8/4M: emulator throughput below 50 MIPS"
+
+# ====================================================================
+# SE/30 iterations
+# ====================================================================
+#
+# The SE/30 uses the Universal ROM (the same image shared with IIcx and
+# IIx; we keep the canonical filename IIcx.rom).  Switching ROMs is a
+# `rom.load` from the script — the daemon was started with Plus_v3.rom
+# from config.mk, but each iteration is free to swap ROMs before
+# running.  The Universal ROM also runs a ~13 s (guest time) boot-drive-
+# discovery wait at $40801610 before falling through to the actual boot;
+# we short-circuit it by poking the Cmd-Shift-Power modifier combo into
+# the lowmem KeyMap global at $017A, then clearing it after one inner
+# poll cycle.  See tests/integration/iicx-video-modes/test.script for
+# the full mechanism.
+
+# --- SE/30 + System Software 6.0.8 (800K) @ 4 MB RAM ----------------
+machine.boot "se30" 4096
+rom.load "../../data/roms/IIcx.rom"
+floppy.drives[0].insert "../../data/systems/SSW-6.08-800K/SSW 6.0.8-800k Disk1of4"
+t0 = ${scheduler.host_user_ns}
+scheduler.run 40000000
+memory.poke.w 0x017A 0x8805
+scheduler.run 2000000
+memory.poke.w 0x017A 0
+scheduler.run 33000000
+assert ${machine.id == "se30"}    "se30-ssw-6.0.8/4M: machine.id != se30"
+assert ${machine.ram == 4096}     "se30-ssw-6.0.8/4M: machine.ram != 4096"
+assert ${screen.width == 512}     "se30-ssw-6.0.8/4M: screen.width != 512"
+assert ${screen.height == 342}    "se30-ssw-6.0.8/4M: screen.height != 342"
+screen.match se30-ssw-6.0.8.png
+echo "se30/ssw-6.0.8/4M: ${scheduler.instr_count * 1000 / (scheduler.host_user_ns - t0)} MIPS"
+# SE/30 floor is well below Plus's 50 MIPS because the SE/30 *boot* phase
+# emulates much more slowly than steady-state.  Measured at the time of
+# writing:
+#   Plus 4MB,  4M-instr boot         ~ 95 MIPS
+#   SE/30 4MB, 75M-instr boot        ~ 13 MIPS   <-- this row
+#   SE/30 4MB, 50M-instr steady state ~ 53 MIPS  (after Welcome)
+# i.e. the steady-state 68030 cost is ~2× 68000 (reasonable for the
+# PMMU/FPU/wider-ISA overhead), but the boot phase is ~8× — likely from
+# MMU table init, 4 MB RAM probe, and cold-path memory access overhead.
+# This is worth a separate perf investigation; for now the floor catches
+# anything that pushes the boot-phase cost below ~80% of the current
+# baseline.
+assert ${scheduler.instr_count * 1000000000 / (scheduler.host_user_ns - t0) > 10000000} "se30-ssw-6.0.8/4M: emulator throughput below 10 MIPS"
 
 quit
