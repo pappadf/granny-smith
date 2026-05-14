@@ -128,6 +128,11 @@ void mmu_delete(mmu_state_t *mmu);
 // Called on PMOVE to TC/CRP/SRP and PFLUSHA.
 void mmu_invalidate_tlb(mmu_state_t *mmu);
 
+// Record that page p has been written into one of the four SoA arrays since
+// the last invalidation. Callers in the slow path of memory.c use this when
+// lazy-installing an identity mapping for an MMU-disabled access.
+void tlb_track_page(uint32_t page_index);
+
 // === Address Translation ===
 
 // Handle a TLB miss: perform table walk (or TT check), fill SoA entry.

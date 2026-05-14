@@ -39,7 +39,7 @@ static int g_tlb_track_count = 0; // entries in tracking list
 static bool g_tlb_track_overflow = true;
 
 // Record that a page index has been populated in the SoA TLB arrays
-static inline void tlb_track_page(uint32_t page_index) {
+void tlb_track_page(uint32_t page_index) {
     if (g_tlb_track_overflow)
         return; // already in fallback mode
     if (g_tlb_track_count >= TLB_TRACK_MAX) {
@@ -521,29 +521,12 @@ void mmu_invalidate_tlb(mmu_state_t *mmu) {
     g_tlb_track_count = 0;
     g_tlb_track_overflow = false;
 
-    // When the MMU is disabled, repopulate SoA from the AoS cold-path table
-    // so that direct physical memory mappings (RAM, ROM, VRAM) remain usable.
-    if (!mmu || !mmu->enabled) {
-        for (int p = 0; p < g_page_count; p++) {
-            page_entry_t *pe = &g_page_table[p];
-            if (pe->host_base && !pe->dev) {
-                uint32_t guest_base = (uint32_t)p << PAGE_SHIFT;
-                uintptr_t adjusted = (uintptr_t)pe->host_base - guest_base;
-                // Track each page we populate
-                tlb_track_page(p);
-                if (g_supervisor_read)
-                    g_supervisor_read[p] = adjusted;
-                if (g_user_read)
-                    g_user_read[p] = adjusted;
-                if (pe->writable) {
-                    if (g_supervisor_write)
-                        g_supervisor_write[p] = adjusted;
-                    if (g_user_write)
-                        g_user_write[p] = adjusted;
-                }
-            }
-        }
-    }
+    // When the MMU is disabled, host-backed pages (RAM/ROM/VRAM) are
+    // installed lazily on first access by the memory.c slow path via
+    // rebuild_soa_page. The eager repopulate that used to live here did a
+    // linear scan of all g_page_count AoS slots (32 MB for SE/30) to find
+    // ~1500 host-backed pages — that scan dominated SE/30 boot at 37% of
+    // CPU time. See docs/mmu-tlb-invalidate-perf.md.
 }
 
 // Handle a TLB miss: perform table walk or TT check, fill SoA entry.

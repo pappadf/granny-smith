@@ -169,6 +169,23 @@ typedef struct memory {
 // Dispatch order: device I/O (via page_entry_t) → MMU TLB handling via
 // mmu_handle_fault(...) and deferred bus error signaling → unmapped (return $FF).
 
+// Forward declaration: lazy-install identity SoA for a host-backed page when
+// the MMU is disabled.  Defined further down in this file.
+static void rebuild_soa_page(uint32_t p);
+
+// Returns true iff the page can take a direct identity host mapping under
+// the current state (MMU disabled, host-backed, not a device, no logpoint).
+// Used by the slow paths to decide whether to lazy-install the SoA entry.
+static inline bool can_lazy_install(uint32_t page, const page_entry_t *pe) {
+    if (g_mmu && g_mmu->enabled)
+        return false;
+    if (!pe->host_base || pe->dev)
+        return false;
+    if (g_mem_logpoint_page_count && g_mem_logpoint_page_count[page])
+        return false;
+    return true;
+}
+
 // Does the access at `addr` hit a memory logpoint (logical or physical-space)?
 // Sets *host_out to the host pointer for the access (MMU-translated when the
 // MMU is enabled), and *writable_out to whether the host page is writable.
@@ -216,6 +233,11 @@ uint8_t memory_read_uint8_slow(uint32_t addr) {
         if (g_mem_logpoint_hook)
             g_mem_logpoint_hook(addr, 1, v, false);
         return v;
+    }
+    // Lazy-install identity SoA for a host-backed page when the MMU is off.
+    if (can_lazy_install(page, pe)) {
+        rebuild_soa_page(page);
+        return LOAD_BE8(pe->host_base + (addr & PAGE_MASK));
     }
     if (pe->dev)
         return pe->dev->read_uint8(pe->dev_context, addr - pe->base_addr);
@@ -269,6 +291,12 @@ uint16_t memory_read_uint16_slow(uint32_t addr) {
         return v;
     }
 
+    // Lazy-install identity SoA for in-page accesses to host-backed pages.
+    if ((addr & PAGE_MASK) <= MEM_PAGE_SIZE - 2 && can_lazy_install(page, pe)) {
+        rebuild_soa_page(page);
+        return LOAD_BE16(pe->host_base + (addr & PAGE_MASK));
+    }
+
     // Device I/O (single page, not crossing boundary)
     if (pe->dev && (addr & PAGE_MASK) <= MEM_PAGE_SIZE - 2)
         return pe->dev->read_uint16(pe->dev_context, addr - pe->base_addr);
@@ -292,6 +320,12 @@ uint32_t memory_read_uint32_slow(uint32_t addr) {
         if (g_mem_logpoint_hook)
             g_mem_logpoint_hook(addr, 4, v, false);
         return v;
+    }
+
+    // Lazy-install identity SoA for in-page accesses to host-backed pages.
+    if ((addr & PAGE_MASK) <= MEM_PAGE_SIZE - 4 && can_lazy_install(page, pe)) {
+        rebuild_soa_page(page);
+        return LOAD_BE32(pe->host_base + (addr & PAGE_MASK));
     }
 
     // Device I/O (single page, not crossing boundary)
@@ -327,6 +361,14 @@ void memory_write_uint8_slow(uint32_t addr, uint8_t value) {
         STORE_BE8(lp_host, value);
         if (g_mem_logpoint_hook)
             g_mem_logpoint_hook(addr, 1, value, true);
+        return;
+    }
+    // Lazy-install identity SoA for a writable host-backed page when MMU off.
+    // Read-only pages (ROM) still drop the write silently via the fall-through.
+    if (can_lazy_install(page, pe)) {
+        rebuild_soa_page(page);
+        if (pe->writable)
+            STORE_BE8(pe->host_base + (addr & PAGE_MASK), value);
         return;
     }
     if (pe->dev) {
@@ -381,6 +423,14 @@ void memory_write_uint16_slow(uint32_t addr, uint16_t value) {
         return;
     }
 
+    // Lazy-install identity SoA for in-page writes to host-backed pages.
+    if ((addr & PAGE_MASK) <= MEM_PAGE_SIZE - 2 && can_lazy_install(page, pe)) {
+        rebuild_soa_page(page);
+        if (pe->writable)
+            STORE_BE16(pe->host_base + (addr & PAGE_MASK), value);
+        return;
+    }
+
     // Device I/O (single page, not crossing boundary)
     if (pe->dev && (addr & PAGE_MASK) <= MEM_PAGE_SIZE - 2) {
         pe->dev->write_uint16(pe->dev_context, addr - pe->base_addr, value);
@@ -405,6 +455,14 @@ void memory_write_uint32_slow(uint32_t addr, uint32_t value) {
         STORE_BE32(lp_host, value);
         if (g_mem_logpoint_hook)
             g_mem_logpoint_hook(addr, 4, value, true);
+        return;
+    }
+
+    // Lazy-install identity SoA for in-page writes to host-backed pages.
+    if ((addr & PAGE_MASK) <= MEM_PAGE_SIZE - 4 && can_lazy_install(page, pe)) {
+        rebuild_soa_page(page);
+        if (pe->writable)
+            STORE_BE32(pe->host_base + (addr & PAGE_MASK), value);
         return;
     }
 
@@ -459,19 +517,26 @@ void memory_write(unsigned int size, uint32_t addr, uint32_t value) {
 // Called when a page's logpoint refcount returns to zero, so the fast path
 // can resume direct access.  For MMU-mapped pages, the TLB fill will happen
 // lazily on the next access (we simply leave the SoA entry zero).
+//
+// Also called from the memory_*_slow paths to lazy-install identity mappings
+// for host-backed pages when the MMU is disabled — replaces the eager-fill
+// loop that used to live in mmu_invalidate_tlb. Safe to call from anywhere;
+// no-ops when the page can't take a direct identity mapping (MMU enabled,
+// device page, unmapped page, or page covered by a memory logpoint).
 static void rebuild_soa_page(uint32_t p) {
     if ((int)p >= g_page_count)
         return;
     page_entry_t *pe = &g_page_table[p];
     // MMU-mapped pages rebuild themselves via mmu_handle_fault on next access.
-    // Only plain RAM/ROM pages (host_base != NULL, no MMU) rebuild here when
-    // the MMU is disabled — otherwise the MMU owns the SoA entry.
     if (g_mmu && g_mmu->enabled)
-        return; // let the TLB re-fill via the slow path
-    if (!pe->host_base)
-        return; // device/unmapped page: leave SoA at 0
+        return;
+    if (!pe->host_base || pe->dev)
+        return; // device/unmapped: leave SoA at 0 so the slow path takes over
+    if (g_mem_logpoint_page_count && g_mem_logpoint_page_count[p])
+        return; // logpoint: must keep SoA = 0 to fire the hook on every access
     uint32_t guest_base = p << PAGE_SHIFT;
     uintptr_t adjusted = (uintptr_t)pe->host_base - guest_base;
+    tlb_track_page(p); // ensure the next mmu_invalidate_tlb zeroes this entry
     if (g_supervisor_read)
         g_supervisor_read[p] = adjusted;
     if (g_user_read)
