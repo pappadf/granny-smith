@@ -598,9 +598,17 @@ void asc_checkpoint(asc_t *restrict asc, checkpoint_t *checkpoint) {
 // Wiring
 // ============================================================================
 
-// Connects the ASC interrupt output to VIA2 CB1 for interrupt delivery
+// Connects the ASC interrupt output to VIA2 CB1 for interrupt delivery.
+// The IRQ output is active-low and idles HIGH at power-on; drive CB1 to its
+// idle state immediately so the VIA's edge detector has a known reference
+// edge before the first asc_update_irq() asserts the line LOW.  Without this,
+// the first overflow (e.g. MacTest sub-test 3 phase 1) calls
+// via_input_c(.., false) on a CB1 line that was zero-initialised to LOW —
+// no edge is observed and IFR_CB1 never latches.
 void asc_set_via(asc_t *asc, via_t *via) {
     asc->via = via;
+    if (via)
+        via_input_c(via, /*port B*/ 1, /*c index 0 = CB1*/ 0, /*idle HIGH*/ true);
 }
 
 // ============================================================================

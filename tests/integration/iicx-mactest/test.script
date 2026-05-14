@@ -167,6 +167,7 @@ screen.match floppy-test-success.png
 
 
 
+
 # --- Re-insert the MacTest disk to continue with remaining tests ----------
 # At this point MacTest has finished the floppy phase and is asking for
 # the original "MacTest IIcx/IIci" floppy to run the remaining tests.
@@ -185,20 +186,21 @@ mouse.click true
 scheduler.run 5000000
 mouse.click false
 
+# Stop the MTemp guard NOW — before any further scheduler.run, because
+# MacTest enters the destructive RAM phase quickly after the reinsert
+# and the guard's 1 kHz writes to MTemp/RawMouse/Mouse at $0828-$0833
+# would otherwise overwrite the RAM-test verify patterns and trip the
+# ROM POST's pattern-mismatch error path (reset → SCC error-dispatch
+# loop at $40802EC0-$40803304 → "Testing RAM1..." hang).
+# Same fix sibling `se30-mactest` applies before its RAM phase.
+mouse.move 0 0
+
 # Run for a while to let MacTest read the app disk, skip the
 # disabled Keyboard/Mouse phases, and reach the RAM-test "Testing
 # RAM1..." status display.
 scheduler.run 600000000
 screen.save "${WORK_DIR}/post-floppy-state.png"
 screen.save "post-floppy-state.png"
-
-# Stop the MTemp guard before the RAM test runs.  Every prior
-# `mouse.move "global"` call leaves a 1 kHz scheduler event re-pinning
-# MTemp/RawMouse/Mouse (see docs/mouse_control.md §10); MacTest's RAM
-# test fills ALL of RAM with verify patterns, so leaving the guard
-# active would corrupt whichever pass overlaps the cursor globals.
-# Same fix sibling `se30-mactest` applies before its RAM phase.
-mouse.move 0 0
 
 # Let the RAM test run.  On real IIcx hardware MacTest's RAM test
 # fills + verifies all 4 MB with several patterns (~4 min @ 16 MHz),
@@ -224,4 +226,5 @@ mouse.move 0 0
 scheduler.run 4000000000
 screen.save "${WORK_DIR}/ram-running.png"
 screen.save "ram-running.png"
+
 quit
