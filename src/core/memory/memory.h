@@ -105,6 +105,16 @@ void memory_write(unsigned int size, uint32_t addr, uint32_t value);
 // Called from machine-specific layout callbacks (e.g. plus_memory_layout_init).
 extern void memory_populate_pages(memory_map_t *mem, uint32_t rom_start_addr, uint32_t rom_region_end);
 
+// Populate page table entries for a RAM-mirror region.  Each guest address in
+// [mirror_start, mirror_end) aliases the corresponding RAM byte at
+// `(guest_addr % ram_size)`, with full read+write access.  On a Mac Plus with
+// less than 4 MB of RAM, the unmapped gap between top-of-RAM and the ROM
+// region wraps physically through the address decoder back into installed
+// RAM — the ROM's exception save area at $3FFC80 relies on this.  Call this
+// from the machine layout callback for any machine that needs that
+// behaviour (Plus does; explicitly-decoded machines like the SE/30 do not).
+extern void memory_populate_ram_mirror(memory_map_t *mem, uint32_t mirror_start, uint32_t mirror_end);
+
 // === Page Table ===
 
 #define PAGE_SHIFT    12

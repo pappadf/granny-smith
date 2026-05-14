@@ -172,6 +172,35 @@ void value_free_ptr(value_t *v) {
     value_free(v);
 }
 
+value_t value_dup(const value_t *v) {
+    if (!v)
+        return val_none();
+    switch (v->kind) {
+    case V_STRING:
+        return val_str(v->s ? v->s : "");
+    case V_ERROR:
+        return val_err("%s", v->err ? v->err : "");
+    case V_BYTES:
+        return val_bytes(v->bytes.p, v->bytes.n);
+    case V_LIST: {
+        value_t *items = NULL;
+        if (v->list.len > 0) {
+            items = (value_t *)calloc(v->list.len, sizeof(value_t));
+            if (!items)
+                return val_err("value_dup: OOM duplicating list of %zu", v->list.len);
+            for (size_t i = 0; i < v->list.len; i++)
+                items[i] = value_dup(&v->list.items[i]);
+        }
+        return val_list(items, v->list.len);
+    }
+    default:
+        // Inline kinds (V_NONE, V_BOOL, V_INT, V_UINT, V_FLOAT, V_ENUM,
+        // V_OBJECT) carry their payload by value — a structure copy is
+        // a complete duplicate.
+        return *v;
+    }
+}
+
 uint64_t val_as_u64(const value_t *v, bool *ok) {
     if (!v) {
         if (ok)

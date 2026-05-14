@@ -77,11 +77,15 @@ static void plus_update_ipl(config_t *sim, int level, bool value);
 
 // Switch between main and alternate video buffer addresses for the Plus.
 // Main buffer is at top of RAM minus 0x5900; alternate is 0x8000 bytes lower.
-// Updates the descriptor's `bits` field and marks the framebuffer dirty so
-// the renderer re-uploads on the next frame.
+// Both addresses scale with installed RAM — `ScrnBase`/`ScrnAlt` on a real
+// Plus are computed from physical RAM size by the ROM boot code, so a Plus
+// with 1 MB has its framebuffer at $FA700, not $3FA700.  Updates the
+// descriptor's `bits` field and marks the framebuffer dirty so the
+// renderer re-uploads on the next frame.
 static void plus_use_video_buffer(config_t *cfg, bool main) {
     plus_state_t *ps = plus_state(cfg);
-    uint32_t addr = main ? (PLUS_RAM_TOP - 0x5900) : (PLUS_RAM_TOP - 0x5900 - 0x8000);
+    uint32_t top = cfg->ram_size;
+    uint32_t addr = main ? (top - 0x5900) : (top - 0x5900 - 0x8000);
     ps->display.bits = ram_native_pointer(cfg->mem_map, addr);
     ps->display.fb_dirty = true;
 }
@@ -136,6 +140,16 @@ static uint32_t plus_phase_read_uint32(void *dev, uint32_t addr) {
 static void plus_memory_layout_init(config_t *cfg) {
     // Map RAM and ROM pages into the global page table
     memory_populate_pages(cfg->mem_map, PLUS_ROM_START, PLUS_ROM_END);
+
+    // Mirror RAM into the unmapped gap [ram_size, PLUS_ROM_START).  On real
+    // Plus hardware the address decoder doesn't gate accesses in this range,
+    // so they wrap physically into installed RAM.  The Plus ROM's exception
+    // save area at $3FFC80 (close to the 4 MB ceiling) relies on this — on
+    // a 1 MB Plus that address physically refers to RAM at $0FFC80.  Without
+    // the mirror, the first interrupt/exception corrupts CPU state on any
+    // sub-4-MB configuration.
+    if (cfg->ram_size < PLUS_ROM_START)
+        memory_populate_ram_mirror(cfg->mem_map, cfg->ram_size, PLUS_ROM_START);
 
     // Register the Phase Read device for the Plus I/O region
     memory_interface_t phase_read;

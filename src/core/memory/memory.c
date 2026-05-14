@@ -786,6 +786,49 @@ void memory_populate_pages(memory_map_t *mem, uint32_t rom_start_addr, uint32_t 
     }
 }
 
+// Populate page-table entries for a RAM-mirror region.  Each page in
+// [mirror_start, mirror_end) is set up as a full read+write alias of RAM at
+// (guest_page << PAGE_SHIFT) % ram_size.  This models the physical
+// address-bus wraparound on a Macintosh Plus: high address bits beyond the
+// installed RAM range are undecoded, so accesses in the unmapped gap fold
+// down into actual RAM.  The Plus ROM relies on this for its exception save
+// area at $3FFC80, which physically points into installed RAM on any Plus
+// with less than 4 MB.
+void memory_populate_ram_mirror(memory_map_t *mem, uint32_t mirror_start, uint32_t mirror_end) {
+    if (!g_page_table || !mem->image || mem->ram_size == 0)
+        return;
+    if (mirror_end <= mirror_start)
+        return;
+
+    uint32_t ram_size = mem->ram_size;
+    uint32_t start_page = (mirror_start & g_address_mask) >> PAGE_SHIFT;
+    uint32_t end_page = (mirror_end & g_address_mask) >> PAGE_SHIFT;
+
+    for (uint32_t p = start_page; p < end_page && (int)p < g_page_count; p++) {
+        uint32_t guest_base = p << PAGE_SHIFT;
+        uint32_t ram_off = guest_base % ram_size;
+        uint8_t *host_ptr = mem->image + ram_off;
+        uintptr_t adjusted = (uintptr_t)host_ptr - guest_base;
+
+        // AoS cold-path entry: same RAM image, just aliased at a different
+        // guest base.  Marked writable so the slow path treats it like RAM.
+        g_page_table[p].host_base = host_ptr;
+        g_page_table[p].dev = NULL;
+        g_page_table[p].dev_context = NULL;
+        g_page_table[p].writable = true;
+
+        // SoA fast-path: full read+write on both supervisor and user sides.
+        if (g_supervisor_read)
+            g_supervisor_read[p] = adjusted;
+        if (g_supervisor_write)
+            g_supervisor_write[p] = adjusted;
+        if (g_user_read)
+            g_user_read[p] = adjusted;
+        if (g_user_write)
+            g_user_write[p] = adjusted;
+    }
+}
+
 // ============================================================================
 // Lifecycle: Constructor
 // ============================================================================

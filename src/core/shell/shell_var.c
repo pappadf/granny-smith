@@ -33,10 +33,14 @@
 // Maximum length of expanded output
 #define MAX_EXPAND_LEN 4096
 
-// A single shell variable
+// A single shell variable.  The stored value is typed `value_t` so
+// numeric assignments (e.g. `t0 = ${scheduler.host_user_ns}`) preserve
+// their integer type through to subsequent arithmetic — no round-trip
+// through strings.  Legacy --var FOO=BAR command-line flags and other
+// string-only setters store V_STRING.
 struct shell_var {
     char *name;
-    char *value;
+    value_t value;
 };
 
 // Variable store (simple linear array)
@@ -54,40 +58,67 @@ static int find_var(const char *name) {
     return -1;
 }
 
-// Set a shell variable (overwrites if it exists)
-int shell_var_set(const char *name, const char *value) {
-    if (!name || !name[0] || !value)
+// Set a typed shell variable (overwrites if it exists).  Takes
+// ownership of `v` (frees the old value if any).
+int shell_var_set_value(const char *name, value_t v) {
+    if (!name || !name[0]) {
+        value_free(&v);
         return -1;
+    }
 
     int idx = find_var(name);
     if (idx >= 0) {
-        // overwrite existing
-        free(vars[idx].value);
-        vars[idx].value = strdup(value);
-        return vars[idx].value ? 0 : -1;
+        // Overwrite existing — free the old typed value first.
+        value_free(&vars[idx].value);
+        vars[idx].value = v;
+        return 0;
     }
 
-    if (nvar >= MAX_VARS)
+    if (nvar >= MAX_VARS) {
+        value_free(&v);
         return -1;
+    }
 
-    // add new entry
     vars[nvar].name = strdup(name);
-    vars[nvar].value = strdup(value);
-    if (!vars[nvar].name || !vars[nvar].value) {
-        free(vars[nvar].name);
-        free(vars[nvar].value);
+    if (!vars[nvar].name) {
+        value_free(&v);
         return -1;
     }
+    vars[nvar].value = v;
     nvar++;
     return 0;
 }
 
-// Get a shell variable value (returns NULL if undefined)
+// String setter — wraps the value as V_STRING.  Used by --var on the
+// command line and by internal init code that has only strings.
+int shell_var_set(const char *name, const char *value) {
+    if (!value)
+        return -1;
+    return shell_var_set_value(name, val_str(value));
+}
+
+// Get a shell variable's typed value.  Returns V_NONE if undefined.
+// The returned value is a borrowed view — do not free it.  Use
+// value_dup() if you need to keep it past the next set/unset.
+value_t shell_var_get_value(const char *name) {
+    if (!name)
+        return val_none();
+    int idx = find_var(name);
+    return (idx >= 0) ? vars[idx].value : val_none();
+}
+
+// Legacy string getter.  Returns a pointer into the value_t's storage
+// if it's V_STRING, NULL otherwise.  New code should use
+// shell_var_get_value().
 const char *shell_var_get(const char *name) {
     if (!name)
         return NULL;
     int idx = find_var(name);
-    return (idx >= 0) ? vars[idx].value : NULL;
+    if (idx < 0)
+        return NULL;
+    if (vars[idx].value.kind != V_STRING)
+        return NULL;
+    return vars[idx].value.s;
 }
 
 // Delete a shell variable (returns 0 on success, -1 if not found)
@@ -97,7 +128,7 @@ int shell_var_unset(const char *name) {
         return -1;
 
     free(vars[idx].name);
-    free(vars[idx].value);
+    value_free(&vars[idx].value);
 
     // move last entry into the gap
     if (idx < nvar - 1)
@@ -110,13 +141,14 @@ int shell_var_unset(const char *name) {
 
 // expr_ctx_t.binding callback that exposes the shell-variable table.
 // Returns V_NONE for unknown names so expr_eval falls through to its
-// other resolution paths (path / alias / error).
+// other resolution paths (path / alias / error).  Hands back an owned
+// duplicate so the caller can free it independently of our storage.
 static value_t shell_var_binding(void *ud, const char *name) {
     (void)ud;
-    const char *v = shell_var_get(name);
-    if (!v)
-        return val_none();
-    return val_str(v);
+    value_t v = shell_var_get_value(name);
+    if (v.kind == V_NONE)
+        return v;
+    return value_dup(&v);
 }
 
 /* --- alias adapter ------------------------------------------------------- */

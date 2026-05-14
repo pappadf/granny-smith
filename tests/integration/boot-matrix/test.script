@@ -1,0 +1,98 @@
+# Integration test: Boot Matrix
+#
+# Sequentially cold-boots a Macintosh Plus with four different System
+# Software versions, each at a different RAM configuration matching
+# what Apple officially supported on a real Plus.  This exercises
+# both the boot path for each system version AND every supported
+# Plus RAM total (1 / 2 / 2.5 / 4 MB) in one test run.
+#
+# Real Mac Plus RAM configurations (four 30-pin SIMM slots, two banks):
+#   1.0 MB  =  4× 256 KB                (factory default)
+#   2.0 MB  =  2× 1 MB + 2 empty
+#   2.5 MB  =  2× 1 MB + 2× 256 KB      (asymmetric)
+#   4.0 MB  =  4× 1 MB                  (maximum)
+#
+# Each iteration:
+#
+#   1. `machine.boot "plus" N`    re-instantiates the Plus at the
+#      iteration's RAM size, throwing away all prior guest state.
+#   2. `rom.reload`               re-loads the ROM image from disk
+#      (the new machine doesn't inherit the prior ROM mapping).
+#   3. `floppy.drives[0].insert`  mounts the per-iteration system disk.
+#   4. `t0 = ${scheduler.host_user_ns}`  snapshots POSIX user-CPU
+#      before this iteration's run.  Typed shell variable — value
+#      stored as V_UINT, not coerced to string.
+#   5. `scheduler.run N`          per-(system, RAM) instruction budget
+#      needed to reach a stable Finder desktop.  Budgets were measured
+#      empirically (1M-cycle probe sweep) and rounded up with ~10-14%
+#      margin.  Actual first-stable cycles: 15M / 21M / 30M / 36M.
+#   6. `screen.match`             verifies against the checked-in
+#      reference PNG.  A mismatch is a hard test failure.
+#   7. `assert ${scheduler.instr_count * 1e9 / (scheduler.host_user_ns - t0) > FLOOR}`
+#      Per-iteration emulator-throughput floor.  scheduler.instr_count
+#      is the count for the current machine (machine.boot reset it);
+#      the time delta is over just this iteration's scheduler.run.
+#      Floor set at 50 MIPS — a comfortable margin below the ~80–100
+#      MIPS a modern x86 host delivers at --speed=max.
+#
+# Note: sub-4 MB RAM configurations depend on the Plus RAM mirror in
+# src/machines/plus.c.  The Plus ROM hardcodes its exception save area
+# at $3FFC80 (close to the 4 MB ceiling); on a real Plus with less RAM
+# the un-decoded address-bus gap [installed_ram, $400000) physically
+# wraps that address back into installed RAM.  Without the emulator
+# mirror, the first exception at any sub-4-MB size hangs boot at the
+# "Welcome to Macintosh" splash.
+
+# --- System Software 2.0 (400K) @ 1 MB RAM --------------------------
+machine.boot "plus" 1024
+rom.reload
+floppy.drives[0].insert "../../data/systems/SSW-2.0-400K/System Disk.image"
+t0 = ${scheduler.host_user_ns}
+scheduler.run 17000000
+assert ${machine.id == "plus"}    "ssw-2.0/1M: machine.id != plus"
+assert ${machine.ram == 1024}     "ssw-2.0/1M: machine.ram != 1024"
+assert ${screen.width == 512}     "ssw-2.0/1M: screen.width != 512"
+assert ${screen.height == 342}    "ssw-2.0/1M: screen.height != 342"
+screen.match plus-ssw-2.0.png
+assert ${scheduler.instr_count * 1000000000 / (scheduler.host_user_ns - t0) > 50000000} "ssw-2.0/1M: emulator throughput below 50 MIPS"
+
+# --- System Software 3.2 (400K) @ 2 MB RAM --------------------------
+machine.boot "plus" 2048
+rom.reload
+floppy.drives[0].insert "../../data/systems/SSW-3.2-400K/System Installation v1.0.image"
+t0 = ${scheduler.host_user_ns}
+scheduler.run 24000000
+assert ${machine.id == "plus"}    "ssw-3.2/2M: machine.id != plus"
+assert ${machine.ram == 2048}     "ssw-3.2/2M: machine.ram != 2048"
+assert ${screen.width == 512}     "ssw-3.2/2M: screen.width != 512"
+assert ${screen.height == 342}    "ssw-3.2/2M: screen.height != 342"
+screen.match plus-ssw-3.2.png
+assert ${scheduler.instr_count * 1000000000 / (scheduler.host_user_ns - t0) > 50000000} "ssw-3.2/2M: emulator throughput below 50 MIPS"
+
+# --- System Software 4.2 (800K) @ 2.5 MB RAM ------------------------
+machine.boot "plus" 2560
+rom.reload
+floppy.drives[0].insert "../../data/systems/SSW-4.2-800K/System Tools 1.image"
+t0 = ${scheduler.host_user_ns}
+scheduler.run 33000000
+assert ${machine.id == "plus"}    "ssw-4.2/2.5M: machine.id != plus"
+assert ${machine.ram == 2560}     "ssw-4.2/2.5M: machine.ram != 2560"
+assert ${screen.width == 512}     "ssw-4.2/2.5M: screen.width != 512"
+assert ${screen.height == 342}    "ssw-4.2/2.5M: screen.height != 342"
+screen.match plus-ssw-4.2.png
+assert ${scheduler.instr_count * 1000000000 / (scheduler.host_user_ns - t0) > 50000000} "ssw-4.2/2.5M: emulator throughput below 50 MIPS"
+
+# --- System Software 6.0.8 (800K) @ 4 MB RAM ------------------------
+machine.boot "plus" 4096
+rom.reload
+floppy.drives[0].insert "../../data/systems/SSW-6.08-800K/SSW 6.0.8-800k Disk1of4"
+t0 = ${scheduler.host_user_ns}
+scheduler.run 40000000
+assert ${machine.id == "plus"}    "ssw-6.0.8/4M: machine.id != plus"
+assert ${machine.ram == 4096}     "ssw-6.0.8/4M: machine.ram != 4096"
+assert ${screen.width == 512}     "ssw-6.0.8/4M: screen.width != 512"
+assert ${screen.height == 342}    "ssw-6.0.8/4M: screen.height != 342"
+screen.match plus-ssw-6.0.8.png
+assert ${scheduler.instr_count * 1000000000 / (scheduler.host_user_ns - t0) > 50000000} "ssw-6.0.8/4M: emulator throughput below 50 MIPS"
+
+quit

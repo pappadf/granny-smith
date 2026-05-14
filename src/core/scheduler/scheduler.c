@@ -22,6 +22,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 // ============================================================================
 // Constants and Macros
@@ -103,6 +104,20 @@ struct scheduler {
     // Object-tree binding — lifetime tied to scheduler_init / scheduler_delete.
     struct object *object;
 };
+
+// Read a POSIX clock as nanoseconds.  CLOCK_PROCESS_CPUTIME_ID measures
+// pure user-mode CPU time consumed by this process across all threads;
+// CLOCK_MONOTONIC measures wall time.  On platforms that don't expose
+// CLOCK_PROCESS_CPUTIME_ID, we fall back to CLOCK_MONOTONIC for both.
+static inline uint64_t host_clock_ns(clockid_t clk) {
+    struct timespec ts;
+    if (clock_gettime(clk, &ts) != 0) {
+        // Fallback if the requested clock isn't available
+        if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0)
+            return 0;
+    }
+    return (uint64_t)ts.tv_sec * NS_PER_SEC + (uint64_t)ts.tv_nsec;
+}
 
 // ============================================================================
 // Forward Declarations
@@ -1158,6 +1173,28 @@ static value_t sched_attr_frequency(struct object *self, const member_t *m) {
     return val_uint(4, sched_self_from(self)->frequency);
 }
 
+// Cumulative host user-mode CPU time consumed by this process across
+// all threads, in nanoseconds, since process start.  Read from POSIX
+// CLOCK_PROCESS_CPUTIME_ID on every query.  Sample the delta around a
+// scheduler.run call and divide instr_count delta by it for emulator
+// IPS that excludes OS scheduling jitter and I/O wait.
+static value_t sched_attr_host_user_ns(struct object *self, const member_t *m) {
+    (void)self;
+    (void)m;
+    return val_uint(8, host_clock_ns(CLOCK_PROCESS_CPUTIME_ID));
+}
+
+// Host wall-clock time, in nanoseconds, since an unspecified monotonic
+// epoch (typically boot).  Read from POSIX CLOCK_MONOTONIC on every
+// query.  Sample the delta around a scheduler.run call and divide
+// instr_count delta by it for perceived emulator IPS — what the user
+// actually waits for.  Always >= host_user_ns delta by definition.
+static value_t sched_attr_host_wall_ns(struct object *self, const member_t *m) {
+    (void)self;
+    (void)m;
+    return val_uint(8, host_clock_ns(CLOCK_MONOTONIC));
+}
+
 static value_t sched_method_run(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)m;
     scheduler_t *s = sched_self_from(self);
@@ -1218,6 +1255,18 @@ static const member_t scheduler_members[] = {
      .doc = "CPU clock frequency in Hz",
      .flags = VAL_RO,
      .attr = {.type = V_UINT, .get = sched_attr_frequency, .set = NULL}},
+    {.kind = M_ATTR,
+     .name = "host_user_ns",
+     .doc = "Process user-CPU time since daemon start, ns (POSIX CLOCK_PROCESS_CPUTIME_ID). "
+            "Sample before+after scheduler.run; divide instr_count delta by the time delta "
+            "and multiply by 1e9 for emulator throughput in instructions per CPU-second.", .flags = VAL_RO,
+     .attr = {.type = V_UINT, .get = sched_attr_host_user_ns, .set = NULL}},
+    {.kind = M_ATTR,
+     .name = "host_wall_ns",
+     .doc = "Host monotonic wall-clock time, ns (POSIX CLOCK_MONOTONIC). "
+            "Sample before+after scheduler.run; divide instr_count delta by the time delta "
+            "and multiply by 1e9 for perceived emulator throughput in instructions per real second.", .flags = VAL_RO,
+     .attr = {.type = V_UINT, .get = sched_attr_host_wall_ns, .set = NULL}},
     {.kind = M_METHOD,
      .name = "run",
      .doc = "Start execution; with an instruction budget, stop after that many",

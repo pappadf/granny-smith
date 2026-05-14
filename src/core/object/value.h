@@ -105,6 +105,12 @@ value_t val_err(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
 // (zero-initialised) value_t.
 void value_free(value_t *v);
 
+// Deep-copy a value.  The returned value owns its own heap storage so the
+// caller can free it independently of `v`.  Used by the shell-variable
+// binding to hand out owned copies to expression callers without sharing
+// pointer-typed payloads (V_STRING, V_BYTES, V_LIST, V_ERROR).
+value_t value_dup(const value_t *v);
+
 // GCC/Clang cleanup attribute helper, used as:
 //   VALUE_AUTO value_t x = something();
 // to release on scope exit including error paths.

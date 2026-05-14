@@ -420,6 +420,38 @@ static int try_path_dispatch(int argc, char **argv) {
     // dotted path — dispatches; everything else falls through to the
     // unknown-command path.
     node_t n = object_resolve(object_root(), argv[0]);
+
+    // Script-variable setter fallback: `name = value` where `name` is a
+    // bare identifier that doesn't resolve to any existing path creates
+    // a typed shell variable.  The RHS goes through parse_literal_full
+    // so numeric literals (after ${...} substitution has already
+    // happened) become V_UINT / V_INT, and non-literal tokens fall
+    // back to V_STRING.  Subsequent reads via `${name}` or bare `name`
+    // inside `${...}` see the typed value, so arithmetic like
+    // `${scheduler.host_user_ns - t0}` works without string coercion.
+    //
+    //     t0 = ${scheduler.host_user_ns}       # snapshot, typed V_UINT
+    //     scheduler.run 17000000
+    //     echo "elapsed = ${scheduler.host_user_ns - t0} ns"
+    //
+    // Existing attribute setters (e.g. `cpu.d0 = 0x1234`) are unchanged
+    // because they resolve before reaching this branch.  The dot-free
+    // gate prevents accidentally creating shell vars from mistyped
+    // attribute paths (`cpu.dO = 1` falls through to the usual
+    // "not a settable attribute" error rather than silently making a
+    // shell var named "cpu.dO").
+    if (!node_valid(n) && argc == 3 && strcmp(argv[1], "=") == 0 && strchr(argv[0], '.') == NULL &&
+        !object_is_reserved_word(argv[0])) {
+        value_t rhs = parse_literal_full(argv[2], NULL, 0);
+        if (val_is_error(&rhs)) {
+            // Not a recognised literal — treat the token as a string.
+            value_free(&rhs);
+            rhs = val_str(argv[2]);
+        }
+        shell_var_set_value(argv[0], rhs);
+        return 0;
+    }
+
     if (!node_valid(n))
         return 1;
 
