@@ -187,4 +187,39 @@ echo "iicx/ssw-6.0.8/4M: ${scheduler.instr_count * 1000 / (scheduler.host_user_n
 # the effective MIPS down — current baseline ~8 MIPS.
 assert ${scheduler.instr_count * 1000000000 / (scheduler.host_user_ns - t0) > 5000000} "iicx-ssw-6.0.8/4M: emulator throughput below 5 MIPS"
 
+# --- IIcx + SSW 7.0 "Disk Tools" (800K) @ 8 MB RAM, 13" RGB 2bpp -----
+# The SSW 7.0 Disk Tools floppy ships its boot blocks as System 6.0.7 +
+# Finder 6.1.7 (the actual System 7 install set doesn't fit on an 800K
+# disk), so this row visually resembles the SSW 6.0.8 row above — the
+# coverage it adds is on the *configuration* axes: 8 MB RAM and a 2bpp
+# JMFB mode ($81 savedMode + $A6 sister for 13" RGB at 640×480).  The
+# About box reports "Total Memory: 8,192K" — extra confirmation that
+# ram=8192 took effect.  Cycle budgets are wider than the 6.0.8 row
+# because Disk Tools' INIT chain is heavier.
+nubus.video_sense = 0x6
+machine.boot "iicx" 8192
+rom.load "../../data/roms/IIcx.rom"
+floppy.drives[0].insert "../../data/systems/SSW-7.0-800K/Disk Tools.image"
+rtc.pram.validate
+rtc.pram.poke 0x46 0x002781a6a6000000:8
+t0 = ${scheduler.host_user_ns}
+scheduler.run 30000000
+memory.poke.w 0x017A 0x8805
+scheduler.run 2000000
+memory.poke.w 0x017A 0
+scheduler.run 35000000
+mouse.click true
+scheduler.run 3000000
+mouse.move 25 30 "global"
+scheduler.run 3000000
+mouse.click false
+scheduler.run 5000000
+assert ${machine.id == "iicx"}    "iicx-ssw-7.0/8M: machine.id != iicx"
+assert ${machine.ram == 8192}     "iicx-ssw-7.0/8M: machine.ram != 8192"
+assert ${screen.width == 640}     "iicx-ssw-7.0/8M: screen.width != 640"
+assert ${screen.height == 480}    "iicx-ssw-7.0/8M: screen.height != 480"
+screen.match iicx-ssw-7.0.png
+echo "iicx/ssw-7.0/8M: ${scheduler.instr_count * 1000 / (scheduler.host_user_ns - t0)} MIPS"
+assert ${scheduler.instr_count * 1000000000 / (scheduler.host_user_ns - t0) > 5000000} "iicx-ssw-7.0/8M: emulator throughput below 5 MIPS"
+
 quit
