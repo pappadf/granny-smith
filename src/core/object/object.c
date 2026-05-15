@@ -14,6 +14,8 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "meta.h"
+
 // === Object representation ==================================================
 //
 // Objects form a tree. Each object holds a pointer to its parent and the
@@ -40,7 +42,17 @@ struct object {
     struct object *first_child;
     struct object *next_sibling;
     struct invalidator *invalidators; // weak-ref callbacks for held nodes
+    struct object *meta_node; // lazily-created Meta node bound to this object (see meta.c)
 };
+
+struct object *object_get_meta(struct object *o) {
+    return o ? o->meta_node : NULL;
+}
+
+void object_set_meta(struct object *o, struct object *meta) {
+    if (o)
+        o->meta_node = meta;
+}
 
 // Root class: namespace-only by default. root_install swaps in a
 // richer class via object_root_set_class() to register the top-level
@@ -81,6 +93,10 @@ void object_root_reset(void) {
             break;
         object_detach(c);
     }
+    // Free the cached Meta node on the root, if any. Callers leak the
+    // synthetic introspection node otherwise — object_delete is the only
+    // path that runs meta_node_release, and the root bypasses it here.
+    meta_node_release(g_root);
     free(g_root);
     g_root = NULL;
 }
@@ -104,6 +120,10 @@ void object_delete(struct object *o) {
     // cached node_t while the object is still inspectable, but they
     // must not dereference it after this returns.
     object_fire_invalidators(o);
+    // Free the synthetic Meta node (if any) before freeing self so a
+    // cached meta_node cannot outlive its inspected target. The release
+    // helper short-circuits when there is nothing cached.
+    meta_node_release(o);
     if (o->parent)
         object_detach(o);
     free(o);
@@ -311,6 +331,13 @@ bool object_validate_class(const class_desc_t *cls, char *err_buf, size_t err_si
         if (!object_validate_name(m->name, sub_err, sizeof(sub_err))) {
             if (err_buf && err_size)
                 snprintf(err_buf, err_size, "class %s member[%zu]: %s", cls->name, i, sub_err);
+            return false;
+        }
+        // `meta` is reserved for the synthetic introspection node — see
+        // proposal-introspection-via-meta-attribute.md §2.1.
+        if (m->name && strcmp(m->name, "meta") == 0) {
+            if (err_buf && err_size)
+                snprintf(err_buf, err_size, "class %s: 'meta' is reserved for introspection", cls->name);
             return false;
         }
         // Duplicate-name check within the class.
@@ -534,6 +561,19 @@ node_t node_child(node_t n, const char *segment) {
                 return bad;
             here = child;
         }
+    }
+
+    // Synthetic `meta` segment (proposal-introspection-via-meta-attribute.md).
+    // Every object implicitly carries a `meta` attribute whose value is a
+    // Meta node bound to it. The segment intercept lives here — after the
+    // M_CHILD descent computes the real target object, before the regular
+    // member lookup — so paths like `cpu.meta`, `floppy.drives.0.meta`,
+    // and bare `meta` (root) all resolve uniformly.
+    if (strcmp(segment, "meta") == 0) {
+        struct object *meta = meta_node_for(here);
+        if (!meta)
+            return bad;
+        return (node_t){.obj = meta, .member = NULL, .index = -1};
     }
 
     // Integer segment now means "first indexed-child member of `here`."

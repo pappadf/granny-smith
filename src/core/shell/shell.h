@@ -18,10 +18,11 @@
 // === Dispatch (Phase 5c — registry retired) ===
 //
 // Free-form dispatch is gone; only the typed path-form remains. JS
-// callers use gs_eval() / gs_inspect() directly. The terminal's
-// free-form line input goes through the SAB queue's kind=4 case in
-// shell_poll(), which calls dispatch_command(). The headless REPL
-// uses shell_dispatch() the same way.
+// callers use gs_eval() directly (introspection rides on the same
+// surface via `<path>.meta.*`). The terminal's free-form line input
+// goes through the SAB queue's kind=4 case in shell_poll(), which
+// calls dispatch_command(). The headless REPL uses shell_dispatch()
+// the same way.
 
 void dispatch_command(char *line, struct cmd_result *res);
 uint64_t shell_dispatch(char *line);

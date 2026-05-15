@@ -455,35 +455,24 @@ void print_prompt(void) {}
 // The single shared-memory region. Layout in em.h, mirrored in
 // emulator.js. Buffer sizes (path, args, output) are tuned for current
 // peak usage: longest paths are checkpoint paths under /opfs, args
-// carry JSON arrays of primitive values, output carries gs_inspect
-// dumps which dominate.
+// carry JSON arrays of primitive values, output carries `meta.*`
+// introspection dumps which dominate.
 static js_bridge_t g_bridge = {.version = JS_BRIDGE_VERSION};
 
 EMSCRIPTEN_KEEPALIVE js_bridge_t *get_js_bridge(void) {
     return &g_bridge;
 }
 
-static int dispatch_tab_complete(const char *line, int cursor_pos);
-
 int shell_poll(void) {
     // Drain the bridge slot. `pending` selects the dispatch:
-    //   1 = gs_eval(path, args)        — typed object-model call
-    //   2 = gs_inspect(path)           — recursive JSON dump
-    //   3 = tab complete (line, pos)   — completion engine
+    //   1 = gs_eval(path, args)        — typed object-model call (incl. meta.*)
     //   4 = free-form shell line       — terminal onSubmit
     if (!g_bridge.pending)
         return 0;
 
     int kind = g_bridge.pending;
     int rc;
-    if (kind == 2) {
-        rc = gs_inspect(g_bridge.path, g_bridge.output, JS_BRIDGE_OUTPUT_SIZE);
-    } else if (kind == 3) {
-        // Tab complete: line in `path`, cursor pos as decimal text in
-        // `args`, JSON match list written to `output`, count returned.
-        int cursor_pos = atoi(g_bridge.args);
-        rc = dispatch_tab_complete(g_bridge.path, cursor_pos);
-    } else if (kind == 4) {
+    if (kind == 4) {
         // Free-form line — used by the xterm.js terminal. Output goes
         // straight to stdout/stderr (the WASM Module's printFn routes
         // those into the terminal); the integer result lands in
@@ -526,24 +515,6 @@ int shell_poll(void) {
     __atomic_store_n(&g_bridge.done, 1, __ATOMIC_SEQ_CST);
     emscripten_atomic_notify((void *)&g_bridge.done, 1);
     return 1;
-}
-
-static int dispatch_tab_complete(const char *line, int cursor_pos) {
-    struct completion comp;
-    memset(&comp, 0, sizeof(comp));
-
-    shell_tab_complete(line, cursor_pos, &comp);
-
-    int off = 0;
-    off += snprintf(g_bridge.output + off, JS_BRIDGE_OUTPUT_SIZE - off, "[");
-    for (int i = 0; i < comp.count && off < (int)JS_BRIDGE_OUTPUT_SIZE - 10; i++) {
-        if (i > 0)
-            off += snprintf(g_bridge.output + off, JS_BRIDGE_OUTPUT_SIZE - off, ",");
-        off += snprintf(g_bridge.output + off, JS_BRIDGE_OUTPUT_SIZE - off, "\"%s\"", comp.items[i]);
-    }
-    snprintf(g_bridge.output + off, JS_BRIDGE_OUTPUT_SIZE - off, "]");
-
-    return comp.count;
 }
 
 // Startup command runner

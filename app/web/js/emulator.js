@@ -26,10 +26,11 @@
 // whose pointers are resolved below. JS writes into the input buffer,
 // sets the pending flag, polls the done flag. The worker's
 // `shell_poll()` drains the queue and writes the result. The single
-// queue (`g_gs_*`) carries every request — `g_gs_pending` selects the
-// dispatch by kind (1=gs_eval, 2=gs_inspect, 3=tab_complete,
-// 4=free-form shell line). The JS-side `cmdInFlight` lock ensures
-// only one request is in flight at a time.
+// queue carries exactly two kinds (1=gs_eval, 4=free-form shell line)
+// — introspection and tab completion both ride on kind=1 via the
+// synthetic `meta.*` surface (proposal-introspection-via-meta-attribute.md).
+// The JS-side `cmdInFlight` lock ensures only one request is in flight
+// at a time.
 import { CONFIG } from './config.js';
 
 // Module-level state (owned exclusively by this module)
@@ -43,7 +44,7 @@ let isRunningUI = false;
 // the offsets below whenever the C struct changes.
 let bridgePtr = 0;
 
-const BRIDGE_VERSION = 3;
+const BRIDGE_VERSION = 4;
 const OFF_VERSION     = 0;
 const OFF_READY = 4;
 const OFF_PENDING     = 8;
@@ -158,10 +159,10 @@ export async function initEmulator(canvas, wasmArgs, printFn) {
 
   // Expose object-model bridges. The terminal's onSubmit (main.js)
   // imports gsEvalLine for free-form lines; everything else uses gsEval
-  // / gsInspect for typed object-model access.
+  // for typed object-model access (including schema queries via
+  // `<path>.meta.*` and tab completion via `meta.complete`).
   window.tabComplete = (line, cursorPos) => tabComplete(line, cursorPos);
   window.gsEval = (path, args) => gsEval(path, args);
-  window.gsInspect = (path) => gsInspect(path);
   window.romIdentify = (path) => romIdentify(path);
   window.machineProfile = (id) => machineProfile(id);
 
@@ -218,7 +219,7 @@ export function setRunning(running) {
 
 // Execute a free-form shell line via the SAB queue (kind=4). Returns
 // the integer result. Used by the terminal input handler — every other
-// caller should use gsEval / gsInspect for typed object-model access.
+// caller should use gsEval for typed object-model access.
 export async function gsEvalLine(line) {
   if (!Module || !moduleReady) return -1;
   const text = (line ?? '').toString();
@@ -254,38 +255,13 @@ export async function shellInterrupt() {
   await gsEval('scheduler.stop');
 }
 
-// Tab completion: kind=3 on the bridge. Cursor pos goes in `args` as
-// decimal text; JSON match list comes back in `output`.
+// Tab completion: routed through `meta.complete(line, cursor)` on the
+// object tree, so it shares the single gs_eval bridge kind. Returns a
+// list of candidate strings (or [] when nothing matches / on error).
 export async function tabComplete(line, cursorPos) {
   if (!Module || !moduleReady) return null;
-
-  await waitForBridgeReady();
-
-  while (cmdInFlight) {
-    await new Promise(r => cmdWaiters.push(r));
-  }
-  cmdInFlight = true;
-  try {
-    Module.stringToUTF8(String(line || ''), bridgePtr + OFF_PATH, PATH_SIZE);
-    Module.stringToUTF8(String(cursorPos | 0), bridgePtr + OFF_ARGS, ARGS_SIZE);
-
-    Atomics.store(Module.HEAP32, (bridgePtr + OFF_DONE) >> 2, 0);
-    Atomics.store(Module.HEAP32, (bridgePtr + OFF_PENDING) >> 2, 3); // kind=3 → tab complete
-
-    await waitForBridgeDone();
-
-    const count = Module.HEAP32[(bridgePtr + OFF_RESULT) >> 2];
-    if (count === 0) return [];
-
-    const jsonStr = Module.UTF8ToString(bridgePtr + OFF_OUTPUT);
-    try { return JSON.parse(jsonStr); } catch (e) { return null; }
-  } catch (e) {
-    return null;
-  } finally {
-    cmdInFlight = false;
-    const waiters = cmdWaiters.splice(0);
-    waiters.forEach(r => r());
-  }
+  const r = await gsEval('meta.complete', [String(line || ''), cursorPos | 0]);
+  return Array.isArray(r) ? r : [];
 }
 
 // ----------------------------------------------------------------------------
@@ -295,8 +271,10 @@ export async function tabComplete(line, cursorPos) {
 //   gsEval(path)            → attribute read or zero-arg method call
 //   gsEval(path, [v0, v1])  → method call, or attribute write when path
 //                             is an attribute and the array has one entry
-//   gsInspect(path)         → same JSON shape as gsEval; recursive
-//                             subtree expansion is in progress (M11+)
+//   gsEval('cpu.meta.*')    → schema introspection (children, attributes,
+//                             methods, path, class, doc) on the synthetic
+//                             `meta` overlay — see
+//                             proposal-introspection-via-meta-attribute.md
 //
 // args may be undefined / null / an array of primitive values. The C
 // side parses the JSON-encoded array.
@@ -327,8 +305,9 @@ async function waitForBridgeReady() {
   if (w.async) await w.value;
 }
 
-// Drive a single gs_eval / gs_inspect request through the bridge.
-// kind: 1 = gs_eval (uses both path + argsJson), 2 = gs_inspect (path only).
+// Drive a single gs_eval request through the bridge. `kind` is kept as
+// a parameter for symmetry with the free-form-line dispatch but is now
+// always 1 — introspection and tab completion ride on the same kind.
 async function executeGsRequest(path, argsJson, kind) {
   while (cmdInFlight) {
     await new Promise(r => cmdWaiters.push(r));
@@ -357,16 +336,6 @@ export async function gsEval(path, args) {
   const argsJson = (args === undefined || args === null) ? '' : JSON.stringify(args);
   try {
     return await executeGsRequest(String(path || ''), argsJson, 1);
-  } catch (e) {
-    return null;
-  }
-}
-
-export async function gsInspect(path) {
-  if (!Module || !moduleReady) return null;
-  await waitForBridgeReady();
-  try {
-    return await executeGsRequest(String(path || ''), '', 2);
   } catch (e) {
     return null;
   }

@@ -2,7 +2,11 @@
 // Copyright (c) pappadf
 
 // api.c
-// Public entry points: gs_eval / gs_inspect / gs_complete.
+// Public entry point: gs_eval. The former gs_inspect and gs_complete
+// entry points were folded into the object model itself — schema is now
+// reached via `<path>.meta.*` and tab-completion via
+// `gs_eval("meta.complete", [...])`. See
+// proposal-introspection-via-meta-attribute.md.
 
 #include "api.h"
 
@@ -449,19 +453,4 @@ int gs_eval(const char *path, const char *args_json, char *out_buf, size_t out_s
     value_free(&v);
     free_args(argv, argc);
     return rc;
-}
-
-int gs_inspect(const char *path, char *out_buf, size_t out_size) {
-    // Same shape as gs_eval; subtree expansion not yet implemented.
-    return gs_eval(path, NULL, out_buf, out_size);
-}
-
-int gs_complete(const char *partial, char *out_buf, size_t out_size) {
-    (void)partial;
-    if (!out_buf || out_size == 0)
-        return -1;
-    // Placeholder: empty completion array. Tab completion remains on the
-    // shell-side cmd_complete engine for now.
-    snprintf(out_buf, out_size, "[]");
-    return 0;
 }

@@ -274,6 +274,15 @@ void object_fire_invalidators(struct object *o);
 // writes a one-line message into err_buf (may be NULL).
 bool object_validate_class(const class_desc_t *cls, char *err_buf, size_t err_size);
 
+// === Meta-attribute slot ====================================================
+//
+// Each object carries an opaque pointer to its lazily-created `Meta`
+// node (see meta.c). The slot accessors are the only path through
+// which meta.c reads/writes the field without making struct object's
+// layout public.
+struct object *object_get_meta(struct object *o);
+void object_set_meta(struct object *o, struct object *meta);
+
 #ifdef __cplusplus
 }
 #endif

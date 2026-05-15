@@ -13,6 +13,7 @@
 #include "cmd_types.h"
 #include "expr.h"
 #include "log.h"
+#include "meta.h"
 #include "object.h"
 #include "parse.h"
 #include "shell_var.h"
@@ -574,6 +575,25 @@ void shell_tab_complete(const char *line, int cursor_pos, struct completion *out
     shell_complete(line, cursor_pos, out);
 }
 
+// Provider wired into the Meta class so `meta.complete(line, cursor)`
+// runs the shell's full tab-completion engine. The Meta layer treats a
+// missing provider as "completion service not available" (empty list);
+// shell_init registers this wrapper so the bridge has the engine wired
+// once the worker is ready.
+static value_t shell_meta_complete_provider(const char *line, int cursor) {
+    struct completion comp;
+    memset(&comp, 0, sizeof(comp));
+    shell_complete(line ? line : "", cursor, &comp);
+    if (comp.count <= 0)
+        return val_list(NULL, 0);
+    value_t *items = (value_t *)calloc((size_t)comp.count, sizeof(value_t));
+    if (!items)
+        return val_err("meta.complete: out of memory");
+    for (int i = 0; i < comp.count; i++)
+        items[i] = val_str(comp.items[i] ? comp.items[i] : "");
+    return val_list(items, (size_t)comp.count);
+}
+
 /* --- shell init ---------------------------------------------------------- */
 int shell_init(void) {
     if (shell_initialized)
@@ -581,6 +601,12 @@ int shell_init(void) {
 
     log_init();
     shell_var_init();
+
+    // Wire the Meta class's `complete(line, cursor)` method to the
+    // shell's tab-completion engine. Done early so any `gs_eval` that
+    // lands during init (vanishingly unlikely but cheap to guarantee)
+    // sees a live provider.
+    meta_set_complete_provider(shell_meta_complete_provider);
 
     // Install the top-level object-root methods (assert, echo, cp,
     // peeler, rom_probe, …) so JS callers (`gsEval`) and the typed
