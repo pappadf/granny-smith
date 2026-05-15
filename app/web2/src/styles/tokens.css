@@ -1,0 +1,178 @@
+/* ====== Granny Smith UI — design tokens ======
+   Copied verbatim from the prototype (local/gs-docs/prototypes/ui/styles.css,
+   :root + :root[data-theme="light"] blocks). Source values are derived from
+   VS Code workbench/platform color definitions:
+       src/vs/workbench/common/theme.ts
+       src/vs/platform/theme/common/colors/*
+   See plan-doc §15 - tokens are kept verbatim, prototype is source of truth. */
+
+/* Dark theme (default) */
+:root,
+:root[data-theme='dark'] {
+  --gs-bg: #1e1e1e; /* editor.background dark */
+  --gs-bg-alt: #252526; /* editorWidget.background dark */
+  --gs-bg-input: #3c3c3c; /* input.background dark */
+  --gs-fg: #cccccc; /* editor foreground (muted) */
+  --gs-fg-bright: #e7e7e7; /* panelTitle.activeForeground dark */
+  --gs-fg-muted: rgba(231, 231, 231, 0.6);
+  --gs-fg-dim: #858585;
+
+  --gs-border: rgba(128, 128, 128, 0.35); /* panel.border */
+  --gs-border-soft: rgba(204, 204, 204, 0.13);
+
+  --gs-btn-hover: rgba(90, 93, 94, 0.31); /* toolbar.hoverBackground dark */
+  --gs-btn-active: rgba(90, 93, 94, 0.41);
+  --gs-focus: #007fd4; /* focusBorder dark */
+
+  --gs-tab-active-fg: #e7e7e7;
+  --gs-tab-inactive-fg: rgba(231, 231, 231, 0.6);
+
+  --gs-list-hover: #2a2d2e; /* list.hoverBackground dark */
+  --gs-list-sel: #04395e; /* list.activeSelectionBackground dark */
+  --gs-list-sel-inactive: #37373d;
+  --gs-list-sel-fg: #ffffff;
+  --gs-odd-row: rgba(204, 204, 204, 0.04);
+
+  --gs-link: #3794ff; /* textLink.foreground dark */
+
+  --gs-card-bg: #252526;
+  --gs-card-border: rgba(255, 255, 255, 0.1);
+
+  --gs-input-bg: #3c3c3c;
+  --gs-input-fg: #e7e7e7;
+  --gs-input-border: rgba(255, 255, 255, 0.1);
+
+  --gs-primary-bg: #0e639c;
+  --gs-primary-hover: #1177bb;
+  --gs-primary-active: #0a4c7a;
+  --gs-primary-fg: #ffffff;
+
+  --gs-sb-idle-bg: #1e1e1e;
+  --gs-sb-idle-fg: #858585;
+  --gs-sb-running: #007acc;
+  --gs-sb-paused: #cc6633;
+  --gs-sb-stopped: #cc3333;
+  --gs-sb-fg-running: #ffffff;
+  --gs-sb-hover: rgba(255, 255, 255, 0.12);
+
+  --gs-disasm-addr: #858585;
+  --gs-disasm-mnemonic: #569cd6;
+  --gs-disasm-operands: #cccccc;
+  --gs-disasm-comment: #6a9955;
+  --gs-disasm-pc: #89d185;
+  --gs-disasm-pc-row-bg: rgba(255, 255, 0, 0.07);
+  --gs-reg-name: #9cdcfe;
+  --gs-reg-val: #ce9178;
+  --gs-reg-changed: #dcdcaa;
+  --gs-section-heading: #bbbbbb;
+  --gs-section-head-bg: rgba(128, 128, 128, 0.1);
+
+  --gs-logs-fg: #cccccc;
+
+  --gs-drop-border: #0969da;
+  --gs-drop-bg: rgba(9, 105, 218, 0.08);
+  --gs-drop-label-bg: rgba(9, 105, 218, 0.85);
+  --gs-drop-label-fg: #ffffff;
+
+  --gs-screen-bg: #000000;
+  --gs-sash-hover: rgba(0, 127, 212, 0.3);
+  --gs-scrollbar-thumb: rgba(255, 255, 255, 0.15);
+  --gs-scrollbar-thumb-hover: rgba(255, 255, 255, 0.25);
+
+  --gs-toast-bg: #252526;
+  --gs-toast-fg: #cccccc;
+  --gs-toast-info: #59a4f9;
+  --gs-toast-warning: #cca700;
+  --gs-toast-error: #f14c4c;
+  --gs-toast-shadow: 0 0 8px 2px rgba(0, 0, 0, 0.36);
+
+  --gs-apple-green: #6a9955;
+
+  /* Fonts */
+  --gs-font-ui:
+    -apple-system, BlinkMacSystemFont, 'Segoe WPC', 'Segoe UI', system-ui, Ubuntu, 'Droid Sans',
+    sans-serif;
+  --gs-font-mono: 'SF Mono', Monaco, Menlo, Consolas, 'Liberation Mono', 'Courier New', monospace;
+}
+
+/* Light theme */
+:root[data-theme='light'] {
+  --gs-bg: #ffffff; /* editor.background light */
+  --gs-bg-alt: #f3f3f3; /* editorWidget.background light */
+  --gs-bg-input: #ffffff;
+  --gs-fg: #333333; /* editor foreground light */
+  --gs-fg-bright: #424242; /* panelTitle.activeForeground light */
+  --gs-fg-muted: rgba(66, 66, 66, 0.75);
+  --gs-fg-dim: #6c6c6c;
+
+  --gs-border: rgba(128, 128, 128, 0.35);
+  --gs-border-soft: rgba(60, 60, 60, 0.12);
+
+  --gs-btn-hover: rgba(184, 184, 184, 0.31); /* toolbar.hoverBackground light */
+  --gs-btn-active: rgba(184, 184, 184, 0.41);
+  --gs-focus: #0090f1; /* focusBorder light */
+
+  --gs-tab-active-fg: #424242;
+  --gs-tab-inactive-fg: rgba(66, 66, 66, 0.75);
+
+  --gs-list-hover: #f0f0f0; /* list.hoverBackground light */
+  --gs-list-sel: #0060c0; /* list.activeSelectionBackground light */
+  --gs-list-sel-inactive: #e4e6f1;
+  --gs-list-sel-fg: #ffffff;
+  --gs-odd-row: rgba(60, 60, 60, 0.035);
+
+  --gs-link: #006ab1; /* textLink.foreground light */
+
+  --gs-card-bg: #f3f3f3;
+  --gs-card-border: rgba(0, 0, 0, 0.08);
+
+  --gs-input-bg: #ffffff;
+  --gs-input-fg: #333333;
+  --gs-input-border: #cecece;
+
+  --gs-primary-bg: #007acc;
+  --gs-primary-hover: #1a8bd9;
+  --gs-primary-active: #005a9e;
+  --gs-primary-fg: #ffffff;
+
+  --gs-sb-idle-bg: #f3f3f3;
+  --gs-sb-idle-fg: #6c6c6c;
+  --gs-sb-running: #007acc;
+  --gs-sb-paused: #cc6633;
+  --gs-sb-stopped: #cc3333;
+  --gs-sb-fg-running: #ffffff;
+  --gs-sb-hover: rgba(0, 0, 0, 0.12);
+
+  --gs-disasm-addr: #6c6c6c;
+  --gs-disasm-mnemonic: #0000ff;
+  --gs-disasm-operands: #333333;
+  --gs-disasm-comment: #008000;
+  --gs-disasm-pc: #267f26;
+  --gs-disasm-pc-row-bg: rgba(255, 220, 0, 0.25);
+  --gs-reg-name: #0451a5;
+  --gs-reg-val: #a31515;
+  --gs-reg-changed: #795e26;
+  --gs-section-heading: #555555;
+  --gs-section-head-bg: rgba(60, 60, 60, 0.06);
+
+  --gs-logs-fg: #333333;
+
+  --gs-drop-border: #0969da;
+  --gs-drop-bg: rgba(9, 105, 218, 0.08);
+  --gs-drop-label-bg: rgba(9, 105, 218, 0.9);
+  --gs-drop-label-fg: #ffffff;
+
+  --gs-screen-bg: #000000;
+  --gs-sash-hover: rgba(0, 144, 241, 0.3);
+  --gs-scrollbar-thumb: rgba(100, 100, 100, 0.3);
+  --gs-scrollbar-thumb-hover: rgba(100, 100, 100, 0.45);
+
+  --gs-toast-bg: #f3f3f3;
+  --gs-toast-fg: #333333;
+  --gs-toast-info: #0078d4;
+  --gs-toast-warning: #a88f00;
+  --gs-toast-error: #c72e0f;
+  --gs-toast-shadow: 0 0 8px 2px rgba(0, 0, 0, 0.18);
+
+  --gs-apple-green: #4e7a3f;
+}

@@ -1,0 +1,39 @@
+{
+  "name": "granny-smith-ui",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Granny Smith emulator web UI (Svelte 5 + Vite + TypeScript). Successor to app/web/.",
+  "engines": {
+    "node": ">=20.9"
+  },
+  "scripts": {
+    "dev": "vite",
+    "build": "svelte-check --tsconfig ./tsconfig.json && vite build",
+    "preview": "vite preview",
+    "check": "svelte-check --tsconfig ./tsconfig.json",
+    "lint": "eslint . && prettier --check .",
+    "format": "prettier --write .",
+    "test": "vitest run --passWithNoTests"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.18.0",
+    "@sveltejs/vite-plugin-svelte": "^5.0.3",
+    "@testing-library/jest-dom": "^6.6.3",
+    "@testing-library/svelte": "^5.2.4",
+    "@types/node": "^22.10.5",
+    "eslint": "^9.18.0",
+    "eslint-plugin-svelte": "^3.10.1",
+    "globals": "^15.14.0",
+    "jsdom": "^25.0.1",
+    "prettier": "^3.4.2",
+    "prettier-plugin-svelte": "^3.3.3",
+    "svelte": "^5.16.0",
+    "svelte-check": "^4.1.4",
+    "svelte-eslint-parser": "^1.0.1",
+    "typescript": "^5.7.3",
+    "typescript-eslint": "^8.20.0",
+    "vite": "^6.0.7",
+    "vitest": "^3.0.4"
+  }
+}

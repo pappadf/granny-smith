@@ -59,6 +59,8 @@ endif
 BUILD_DIR     := build
 OBJ_DIR       := $(BUILD_DIR)/wasm
 WEB_DIR       := app/web
+WEB2_DIR      := app/web2
+WEB2_DIST     := $(WEB2_DIR)/dist
 CORE_DIR      := src/core
 MACHINES_DIR  := src/machines
 PLATFORM_DIR  := src/platform/wasm
@@ -182,7 +184,8 @@ STATIC_JS_DIR := $(WEB_DIR)/js
 
 .PHONY: all release debug sanitize copy-static run \
         headless unit-test integration-test integration-test-valgrind \
-        e2e-test test clean help FORCE
+        e2e-test test clean help FORCE \
+        ui2 ui2-dev ui2-test ui2-check run2
 
 # -- WASM build --
 
@@ -324,6 +327,26 @@ e2e-test:
 # Run unit + integration tests
 test: unit-test integration-test
 
+# -- New UI (app/web2) — Svelte 5 + Vite + TypeScript --
+# See local/gs-docs/plans/new-ui-impl-plan.md. Phase 0 (Scaffold) only.
+# These targets do not yet depend on the WASM build; Phase 3 wires that in.
+
+ui2:
+	cd $(WEB2_DIR) && npm ci --silent && npm run build
+
+ui2-dev:
+	cd $(WEB2_DIR) && npm run dev
+
+ui2-test:
+	cd $(WEB2_DIR) && npm test
+
+ui2-check:
+	cd $(WEB2_DIR) && npm run check && npm run lint
+
+run2: ui2
+	@echo "Serving new UI on http://localhost:8080"
+	python3 scripts/dev_server.py --root $(WEB2_DIST) --port 8080
+
 # -- Clean (everything) --
 # Removes all build artifacts: wasm, headless, unit, integration, e2e
 
@@ -344,6 +367,13 @@ help:
 	@echo "  sanitize                   Build WASM emulator (sanitizers)"
 	@echo "  headless                   Build native headless CLI"
 	@echo "  run                        Build and start HTTP server on :8080"
+	@echo ""
+	@echo "New UI targets (app/web2 — Phase 0 scaffold):"
+	@echo "  ui2                        Build the new Svelte UI (production)"
+	@echo "  ui2-dev                    Start Vite dev server (HMR) on :5173"
+	@echo "  ui2-check                  Run svelte-check + ESLint + Prettier"
+	@echo "  ui2-test                   Run Vitest"
+	@echo "  run2                       Build the new UI and serve on :8080"
 	@echo ""
 	@echo "Test targets:"
 	@echo "  test                       Run unit + integration tests"
