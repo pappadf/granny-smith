@@ -32,7 +32,7 @@ jobs:
         id: meta
         run: |
           IMAGE_NAME="ghcr.io/pappadf/granny-smith-dev"
-          TAG_BASE="ubuntu24-emsdk4.0.10-nodeLTS"
+          TAG_BASE="ubuntu24-emsdk4.0.10-node22"
           echo "image=${IMAGE_NAME}" >> $GITHUB_OUTPUT
           echo "tag=${TAG_BASE}" >> $GITHUB_OUTPUT
 
@@ -59,7 +59,7 @@ jobs:
           platforms: linux/amd64
           labels: |
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
-            org.opencontainers.image.description=Dev image with Emscripten 4.0.10, Node LTS, C/C++ toolchain
+            org.opencontainers.image.description=Dev image with Emscripten 4.0.10, Node 22, C/C++ toolchain
             org.opencontainers.image.revision=${{ github.sha }}
           tags: |
             ${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.tag }}

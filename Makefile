@@ -95,6 +95,7 @@ PEELER_SRC := $(PEELER_DIR)/lib/peeler.c \
               $(PEELER_DIR)/lib/formats/cpt.c \
               $(PEELER_DIR)/lib/formats/hqx.c \
               $(PEELER_DIR)/lib/formats/sit.c \
+              $(PEELER_DIR)/lib/formats/sit3.c \
               $(PEELER_DIR)/lib/formats/sit13.c \
               $(PEELER_DIR)/lib/formats/sit15.c
 

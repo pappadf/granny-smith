@@ -1,13 +1,14 @@
 # .devcontainer/Dockerfile
-# Purpose: Build a general-purpose dev image with Emscripten 4.0.10 + C/C++ + Node LTS
+# Purpose: Build a general-purpose dev image with Emscripten 4.0.10 + C/C++ + Node 22
 
 FROM mcr.microsoft.com/devcontainers/base:ubuntu-24.04
 
 # ---- ARGs / Versions ----
 ARG DEBIAN_FRONTEND=noninteractive
 ARG EMSDK_VERSION=4.0.10
+ARG NODE_MAJOR=22
 
-# ---- Base packages (includes system Node.js LTS from Ubuntu repos) ----
+# ---- Base packages (Node.js installed separately from NodeSource below) ----
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
     build-essential \
@@ -21,12 +22,15 @@ RUN apt-get update \
     git \
     git-lfs \
     xz-utils \
-    nodejs \
-    npm \
     clang-format-18 \
     gh \
  && rm -rf /var/lib/apt/lists/* \
  && pip3 install --break-system-packages --no-cache-dir pre-commit
+
+# ---- Node.js (NodeSource; Ubuntu 24.04 only ships Node 18 in apt) ----
+RUN curl -fsSL https://deb.nodesource.com/setup_${NODE_MAJOR}.x | bash - \
+ && apt-get install -y --no-install-recommends nodejs \
+ && rm -rf /var/lib/apt/lists/*
 
 # Verify node/npm available
 RUN node -v && npm -v
