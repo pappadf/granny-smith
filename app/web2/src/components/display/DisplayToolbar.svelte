@@ -1,16 +1,24 @@
 <script lang="ts">
-  import { machine } from '@/state/machine.svelte';
+  import { machine, setSchedulerMode, setZoom } from '@/state/machine.svelte';
   import { layout, setPanelPos, setPanelCollapsed, type PanelPos } from '@/state/layout.svelte';
   import { theme, cycleTheme, resolveTheme } from '@/state/theme.svelte';
   import { showNotification } from '@/state/toasts.svelte';
+  import { pauseEmulator, resumeEmulator, shutdownEmulator, saveCheckpoint } from '@/bus';
   import Icon from '../common/Icon.svelte';
   import type { IconName } from '@/lib/icons';
+  import type { SchedulerMode } from '@/state/machine.svelte';
 
-  const noMachine = $derived(machine.status === 'no-machine');
+  // Enable predicates (Phase 2 wiring). `isLive` covers running + paused — the
+  // states where machine-dependent toolbar buttons are interactive. After a
+  // Shut Down the status is 'stopped'; Welcome view is shown again so the user
+  // can pick a new config, but the Run/Save/etc. buttons stay disabled until
+  // they do.
+  const isLive = $derived(machine.status === 'running' || machine.status === 'paused');
+  const everStarted = $derived(machine.status !== 'no-machine');
 
-  // Layout buttons swap icons depending on whether their position is active.
-  // Active position uses the "filled" variant (e.g. layout-bottom); inactive
-  // positions use the "-off" variant (layout-bottom-off).
+  let saving = $state(false);
+  const zoomInput = $derived(`${machine.zoom}%`);
+
   function layoutIcon(pos: PanelPos): IconName {
     const active = layout.panelPos === pos && !layout.panelCollapsed;
     if (pos === 'left') return active ? 'layout-left' : 'layout-left-off';
@@ -33,14 +41,12 @@
     if (document.fullscreenElement) {
       void document.exitFullscreen().catch(() => undefined);
     } else {
-      // Request on <html> so the entire viewport is taken over.
       document.documentElement.requestFullscreen().catch(() => {
         showNotification('Full screen blocked by the browser', 'warning');
       });
     }
   }
 
-  // Sync layout.fullscreen with the browser's fullscreen state.
   $effect(() => {
     const handler = () => {
       layout.fullscreen = !!document.fullscreenElement;
@@ -61,36 +67,109 @@
         ? 'Theme: dark. Click for light.'
         : 'Theme: light. Click for system.',
   );
+
+  // Run/Pause icon flip — prototype app.js:877-881.
+  const runIcon: IconName = $derived(machine.status === 'running' ? 'pause' : 'play');
+  const runTitle = $derived(machine.status === 'running' ? 'Pause' : 'Run');
+
+  async function onRunPause() {
+    if (machine.status === 'running') await pauseEmulator();
+    else if (machine.status === 'paused') await resumeEmulator();
+  }
+
+  async function onShutdown() {
+    await shutdownEmulator();
+  }
+
+  async function onSave() {
+    saving = true;
+    try {
+      const path = await saveCheckpoint();
+      showNotification(`State saved (${path})`, 'info');
+    } finally {
+      // Match prototype's 400 ms re-enable delay (app.js:962).
+      setTimeout(() => (saving = false), 400);
+    }
+  }
+
+  function onSchedulerClick(mode: SchedulerMode) {
+    setSchedulerMode(mode);
+  }
+
+  function onZoomInput(e: Event) {
+    const input = e.target as HTMLInputElement;
+    const n = parseInt(input.value, 10);
+    if (Number.isFinite(n)) setZoom(n);
+    // If the user typed a non-number, the $derived `zoomInput` will revert
+    // the displayed value on the next reactive tick without us touching it.
+    else input.value = `${machine.zoom}%`;
+  }
 </script>
 
 <div class="gs-toolbar" role="toolbar" aria-label="Display toolbar">
   <div class="tg execution">
-    <button class="tbtn" title="Run" disabled={noMachine}>
-      <Icon name="play" />
+    <button class="tbtn" title={runTitle} disabled={!isLive} onclick={onRunPause}>
+      <Icon name={runIcon} />
     </button>
-    <button class="tbtn" title="Shut down — return to Welcome view" disabled={noMachine}>
+    <button
+      class="tbtn"
+      title="Shut down — return to Welcome view"
+      disabled={!everStarted}
+      onclick={onShutdown}
+    >
       <Icon name="sign-out" />
     </button>
     <div class="sep"></div>
     <div class="scheduler" role="group" aria-label="Scheduler mode">
-      <button class="sch-btn" disabled={noMachine}>strict</button>
-      <button class="sch-btn active" disabled={noMachine}>live</button>
-      <button class="sch-btn" disabled={noMachine}>fast</button>
+      <button
+        class="sch-btn"
+        class:active={machine.scheduler === 'strict'}
+        disabled={!isLive}
+        onclick={() => onSchedulerClick('strict')}>strict</button
+      >
+      <button
+        class="sch-btn"
+        class:active={machine.scheduler === 'live'}
+        disabled={!isLive}
+        onclick={() => onSchedulerClick('live')}>live</button
+      >
+      <button
+        class="sch-btn"
+        class:active={machine.scheduler === 'fast'}
+        disabled={!isLive}
+        onclick={() => onSchedulerClick('fast')}>fast</button
+      >
     </div>
   </div>
   <div class="sep"></div>
   <div class="tg view">
-    <button class="tbtn" title="Zoom out" disabled={noMachine}>
+    <button
+      class="tbtn"
+      title="Zoom out"
+      disabled={!isLive}
+      onclick={() => setZoom(machine.zoom - 10)}
+    >
       <Icon name="minus" />
     </button>
-    <input class="zoom-input" value="200%" disabled={noMachine} aria-label="Zoom level" />
-    <button class="tbtn" title="Zoom in" disabled={noMachine}>
+    <input
+      class="zoom-input"
+      value={zoomInput}
+      disabled={!isLive}
+      aria-label="Zoom level"
+      onchange={onZoomInput}
+    />
+    <button
+      class="tbtn"
+      title="Zoom in"
+      disabled={!isLive}
+      onclick={() => setZoom(machine.zoom + 10)}
+    >
       <Icon name="plus" />
     </button>
   </div>
   <div class="sep"></div>
   <div class="tg actions">
-    <button class="tbtn" title="Save State" disabled={noMachine}>
+    <button class="tbtn" title="Save State" disabled={!isLive || saving} onclick={onSave}>
       <Icon name="download" />
     </button>
   </div>

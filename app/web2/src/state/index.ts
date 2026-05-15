@@ -1,4 +1,13 @@
-export { machine, type MachineStatus, type DriveActivity } from './machine.svelte';
+export {
+  machine,
+  setZoom,
+  setSchedulerMode,
+  startDriveActivityMock,
+  stopDriveActivityMock,
+  type MachineStatus,
+  type DriveActivity,
+  type SchedulerMode,
+} from './machine.svelte';
 export {
   layout,
   PANEL_TABS,
@@ -6,11 +15,13 @@ export {
   setPanelSize,
   setPanelCollapsed,
   setActiveTab,
+  setWelcomeSlide,
   resetPanelSizes,
   getPanelMin,
   autoPickPanelPos,
   type PanelPos,
   type PanelTab,
+  type WelcomeSlide,
 } from './layout.svelte';
 export {
   theme,

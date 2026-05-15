@@ -1,16 +1,20 @@
 <script lang="ts">
   import { machine } from '@/state/machine.svelte';
   import WelcomeView from './WelcomeView.svelte';
+  import ScreenView from './ScreenView.svelte';
   import DropOverlay from './DropOverlay.svelte';
 
-  // Phase 1 only renders the Welcome view. ScreenView arrives in Phase 3
-  // when bus/emulator.ts wires the real Emscripten canvas.
-  const showWelcome = $derived(machine.status === 'no-machine');
+  // After a Shut Down, machine.status === 'stopped' and the user is back on
+  // the Welcome view (so they can pick a new config). The StatusBar stays
+  // visible (spec §11) — that's handled in StatusBar.svelte, not here.
+  const showWelcome = $derived(machine.status === 'no-machine' || machine.status === 'stopped');
 </script>
 
 <div class="gs-display-content">
   {#if showWelcome}
     <WelcomeView />
+  {:else}
+    <ScreenView />
   {/if}
   <DropOverlay />
 </div>

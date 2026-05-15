@@ -25,12 +25,15 @@ export const PANEL_TABS: ReadonlyArray<PanelTab> = [
 const DEFAULT_PANEL_SIZE = { bottom: 280, left: 340, right: 340 };
 const PANEL_MIN = { bottom: 120, left: 200, right: 200 };
 
+export type WelcomeSlide = 'home' | 'configuration';
+
 interface LayoutState {
   panelPos: PanelPos;
   panelSize: { bottom: number; left: number; right: number };
   panelCollapsed: boolean;
   fullscreen: boolean;
   activeTab: PanelTab;
+  welcomeSlide: WelcomeSlide;
 }
 
 export const layout: LayoutState = $state({
@@ -39,7 +42,12 @@ export const layout: LayoutState = $state({
   panelCollapsed: false,
   fullscreen: false,
   activeTab: 'terminal',
+  welcomeSlide: 'home',
 });
+
+export function setWelcomeSlide(slide: WelcomeSlide): void {
+  layout.welcomeSlide = slide;
+}
 
 export function setPanelPos(pos: PanelPos): void {
   layout.panelPos = pos;

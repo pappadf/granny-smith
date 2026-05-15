@@ -1,73 +1,79 @@
 <script lang="ts">
+  import { onMount } from 'svelte';
   import { showNotification } from '@/state/toasts.svelte';
+  import { setWelcomeSlide } from '@/state/layout.svelte';
+  import { initEmulator, opfs } from '@/bus';
+  import type { RecentEntry } from '@/bus/types';
   import Icon from '../common/Icon.svelte';
 
-  // Mock Recent entries. In Phase 2 these come from OPFS
-  // (/opfs/config/recent.json) and the Recent card is hidden when empty.
-  const recents = [
-    { model: 'Macintosh SE/30', ram: '8 MB', media: 'HD0: System 7.1, FD0: Install Disk' },
-    { model: 'Macintosh Plus', ram: '4 MB', media: 'HD0: hd1.img' },
-  ];
+  // Recent list — loaded from OPFS (Phase 2 backs it with MockOpfs;
+  // Phase 3 swaps in a real-OPFS backend without changing this component).
+  let recents = $state<RecentEntry[]>([]);
+  onMount(async () => {
+    const loaded = await opfs.readJson<RecentEntry[]>('/opfs/config/recent.json');
+    if (loaded) recents = loaded;
+  });
+
+  function openConfigSlide() {
+    setWelcomeSlide('configuration');
+  }
 
   function notImplemented() {
-    showNotification('Coming in Phase 2 (Configuration slide)', 'warning');
+    showNotification('Coming in Phase 3 (real emulator)', 'warning');
+  }
+
+  async function launchRecent(r: RecentEntry) {
+    await initEmulator({
+      model: r.model,
+      ram: r.ram,
+      vrom: '(auto)',
+      fd: '',
+      hd: '',
+      cd: '',
+    });
   }
 </script>
 
-<div class="welcome-slide active">
-  <div class="welcome-content">
-    <h1 class="welcome-title">Granny Smith</h1>
-    <p class="welcome-subtitle">A classic Macintosh emulator in the browser.</p>
+<div class="home-content">
+  <h1 class="welcome-title">Granny Smith</h1>
+  <p class="welcome-subtitle">A classic Macintosh emulator in the browser.</p>
+  <section class="card">
+    <h3 class="card-heading">Start</h3>
+    <div class="card-rows">
+      <button class="card-row" onclick={openConfigSlide}>
+        <Icon name="mac" />
+        <span>New Machine...</span>
+      </button>
+      <button class="card-row" onclick={notImplemented}>
+        <Icon name="clock" />
+        <span>Open Checkpoint...</span>
+      </button>
+      <button class="card-row" onclick={notImplemented}>
+        <Icon name="upload" />
+        <span>Upload ROM...</span>
+      </button>
+    </div>
+  </section>
+  {#if recents.length > 0}
     <section class="card">
-      <h3 class="card-heading">Start</h3>
+      <h3 class="card-heading">Recent</h3>
       <div class="card-rows">
-        <button class="card-row" onclick={notImplemented}>
-          <Icon name="mac" />
-          <span>New Machine...</span>
-        </button>
-        <button class="card-row" onclick={notImplemented}>
-          <Icon name="clock" />
-          <span>Open Checkpoint...</span>
-        </button>
-        <button class="card-row" onclick={notImplemented}>
-          <Icon name="upload" />
-          <span>Upload ROM...</span>
-        </button>
+        {#each recents as r (r.model + r.media + r.lastUsedAt)}
+          <button class="card-row recent" onclick={() => launchRecent(r)}>
+            <Icon name="mac" />
+            <span class="recent-text">
+              <span class="recent-main">{r.model} — {r.ram}</span>
+              <span class="recent-sub">{r.media}</span>
+            </span>
+          </button>
+        {/each}
       </div>
     </section>
-    {#if recents.length > 0}
-      <section class="card">
-        <h3 class="card-heading">Recent</h3>
-        <div class="card-rows">
-          {#each recents as r (r.model + r.media)}
-            <button class="card-row recent" onclick={notImplemented}>
-              <Icon name="mac" />
-              <span class="recent-text">
-                <span class="recent-main">{r.model} — {r.ram}</span>
-                <span class="recent-sub">{r.media}</span>
-              </span>
-            </button>
-          {/each}
-        </div>
-      </section>
-    {/if}
-  </div>
+  {/if}
 </div>
 
 <style>
-  .welcome-slide {
-    position: absolute;
-    inset: 0;
-    display: flex;
-    align-items: flex-start;
-    justify-content: center;
-    overflow: auto;
-    /* Phase 1 ships only the active Home slide so the inactive-state
-       transitions specced in Phase 2 are deferred. */
-    opacity: 1;
-    pointer-events: auto;
-  }
-  .welcome-content {
+  .home-content {
     max-width: 560px;
     width: 100%;
     padding: 48px 32px 32px;
