@@ -1,6 +1,6 @@
 {
   "name": "Granny Smith Dev",
-  "image": "ghcr.io/pappadf/granny-smith-dev:ubuntu24-emsdk4.0.10-nodeLTS",
+  "image": "ghcr.io/pappadf/granny-smith-dev:ubuntu24-emsdk4.0.10-node22",
   "remoteUser": "vscode",
 
   // Keep your port forwarding setup

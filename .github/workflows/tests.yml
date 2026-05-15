@@ -21,7 +21,7 @@ jobs:
   test:
     runs-on: ubuntu-24.04
     container:
-      image: ghcr.io/pappadf/granny-smith-dev:ubuntu24-emsdk4.0.10-nodeLTS
+      image: ghcr.io/pappadf/granny-smith-dev:ubuntu24-emsdk4.0.10-node22
       # Optionally, after a build you can pin by digest instead for immutability:
       # image: ghcr.io/pappadf/granny-smith-dev@sha256:<digest-here>
       credentials:
