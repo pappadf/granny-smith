@@ -144,4 +144,47 @@ echo "se30/ssw-6.0.8/4M: ${scheduler.instr_count * 1000 / (scheduler.host_user_n
 # baseline.
 assert ${scheduler.instr_count * 1000000000 / (scheduler.host_user_ns - t0) > 10000000} "se30-ssw-6.0.8/4M: emulator throughput below 10 MIPS"
 
+# --- IIcx + System Software 6.0.8 (800K) @ 4 MB RAM, 13" RGB 1bpp ----
+# Same Universal ROM and $017A wait-bypass as the SE/30 row above; the
+# wrinkle here is the NuBus JMFB (Display Card 8•24), which the IIcx
+# uses for video.  We seed `nubus.video_sense=$6` (13" RGB) plus a
+# matching slot-9 sPRAMRec so the Slot Manager picks the 640×480 @
+# 1bpp sister at boot — see tests/integration/iicx-video-modes for the
+# full sense/PRAM mechanism.  After Finder paints we click through the
+# Apple menu to "About the Finder" and match the dialog (which carries
+# the "Total Memory: 4,096K" line — extra confirmation that ram=4096
+# took effect end-to-end).
+nubus.video_sense = 0x6
+machine.boot "iicx" 4096
+rom.load "../../data/roms/IIcx.rom"
+floppy.drives[0].insert "../../data/systems/SSW-6.08-800K/SSW 6.0.8-800k Disk1of4"
+rtc.pram.validate
+rtc.pram.poke 0x46 0x002780a6a6000000:8
+t0 = ${scheduler.host_user_ns}
+scheduler.run 30000000
+memory.poke.w 0x017A 0x8805
+scheduler.run 2000000
+memory.poke.w 0x017A 0
+scheduler.run 33000000
+# Bring up "About the Macintosh Finder" via the Apple menu.  Cursor
+# default position at boot is already over the Apple icon, so a bare
+# `mouse.click true` is enough — no prior `mouse.move` needed.
+mouse.click true
+scheduler.run 3000000
+mouse.move 25 30 "global"
+scheduler.run 3000000
+mouse.click false
+scheduler.run 5000000
+assert ${machine.id == "iicx"}    "iicx-ssw-6.0.8/4M: machine.id != iicx"
+assert ${machine.ram == 4096}     "iicx-ssw-6.0.8/4M: machine.ram != 4096"
+assert ${screen.width == 640}     "iicx-ssw-6.0.8/4M: screen.width != 640"
+assert ${screen.height == 480}    "iicx-ssw-6.0.8/4M: screen.height != 480"
+screen.match iicx-ssw-6.0.8.png
+echo "iicx/ssw-6.0.8/4M: ${scheduler.instr_count * 1000 / (scheduler.host_user_ns - t0)} MIPS"
+# Floor is well below the SE/30 row because this iteration runs only ~60 M
+# instructions to Finder-plus-About; the formula divides by *iteration*
+# host time, so a budget dominated by the (slow) cold-boot phase pulls
+# the effective MIPS down — current baseline ~8 MIPS.
+assert ${scheduler.instr_count * 1000000000 / (scheduler.host_user_ns - t0) > 5000000} "iicx-ssw-6.0.8/4M: emulator throughput below 5 MIPS"
+
 quit
