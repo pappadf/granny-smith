@@ -43,8 +43,9 @@ the same errors. There is no shadow API.
 | [parse.c](../src/core/object/parse.c) | Path tokeniser shared by the resolver and completer |
 | [expr.h](../src/core/object/expr.h) | `${...}` expression parser and evaluator |
 | [alias.h](../src/core/object/alias.h) | Two-tier `$name` alias table (built-in + user) |
-| [api.h](../src/core/object/api.h) | Public C entry point (`gs_eval` — single dispatch for reads, writes, calls, schema, and completion) |
+| [api.h](../src/core/object/api.h) | Public C entry point (`gs_eval` — single dispatch for reads, writes, calls, schema, completion, and shell-line input) |
 | [meta.h](../src/core/object/meta.h) | The synthetic `Meta` class (`<path>.meta.*` introspection + `meta.complete`) |
+| [shell_class.c](../src/core/shell/shell_class.c) | The `Shell` class (`shell.run`, `shell.complete`, `shell.expand`, `shell.script_run`, `shell.alias_set`/`alias_unset`, `shell.interrupt`, `shell.prompt`/`running`/`aliases`/`vars`) |
 | [root.c](../src/core/object/root.c) | The `emu` root class plus install/uninstall lifecycle |
 
 ## Core concepts

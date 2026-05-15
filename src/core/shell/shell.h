@@ -18,14 +18,19 @@
 // === Dispatch (Phase 5c — registry retired) ===
 //
 // Free-form dispatch is gone; only the typed path-form remains. JS
-// callers use gs_eval() directly (introspection rides on the same
-// surface via `<path>.meta.*`). The terminal's free-form line input
-// goes through the SAB queue's kind=4 case in shell_poll(), which
-// calls dispatch_command(). The headless REPL uses shell_dispatch()
-// the same way.
+// callers use gs_eval() directly — including for free-form lines,
+// which go through `gs_eval("shell.run", [line])` (see
+// proposal-shell-as-object-model-citizen.md). The headless REPL uses
+// shell_dispatch() directly; the Shell class's `run` method calls the
+// file-static `dispatch_command()` in shell.c.
 
-void dispatch_command(char *line, struct cmd_result *res);
 uint64_t shell_dispatch(char *line);
+
+// Compose the current shell prompt (e.g. "<disasm> > " when a machine
+// is up, "gs> " otherwise) into `buf`. Used by the Shell class's
+// `prompt` attribute and the headless REPL's `print_prompt`. Output is
+// NUL-terminated and truncated to `buf_size - 1`.
+void shell_build_prompt(char *buf, size_t buf_size);
 
 // === Shell Lifecycle ===
 

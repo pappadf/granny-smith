@@ -59,20 +59,20 @@ void em_print_host_callstack(void);
 // Layout is mirrored in `app/web/js/emulator.js`; bump JS_BRIDGE_VERSION
 // whenever fields are added, reordered, or resized.
 //
-// Request protocol — exactly two kinds, serialised by the JS-side
-// `cmdInFlight` lock. Introspection and tab completion are reached
-// through `gs_eval` on the synthetic `meta.*` surface
-// (proposal-introspection-via-meta-attribute.md), not through their own
-// bridge kinds.
+// Request protocol — exactly one kind, serialised by the JS-side
+// `cmdInFlight` lock. Introspection rides on `<path>.meta.*`
+// (proposal-introspection-via-meta-attribute.md); free-form shell
+// lines and tab completion ride on the `Shell` class's `run` and
+// `complete` methods (proposal-shell-as-object-model-citizen.md). The
+// `pending` field is kept as a 32-bit slot so future call kinds can be
+// added without a layout change, but only kind 1 is currently used.
 //
 //   pending = 1 → gs_eval(path, args)        — JSON result in `output`
-//   pending = 4 → free-form shell line       — int result in `result`,
-//                                              stdout/stderr to terminal
 //
 // JS clears `done`, fills `path` / `args`, writes `pending`, and polls
 // `done`. `shell_poll()` (worker pthread, every tick) drains the slot.
 
-#define JS_BRIDGE_VERSION     4
+#define JS_BRIDGE_VERSION     5
 #define JS_BRIDGE_PATH_SIZE   1024
 #define JS_BRIDGE_ARGS_SIZE   8192
 #define JS_BRIDGE_OUTPUT_SIZE 16384

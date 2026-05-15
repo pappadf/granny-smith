@@ -25,11 +25,8 @@
 extern const class_desc_t storage_class_real; // src/core/storage/storage.c
 extern const class_desc_t storage_images_collection_class; // src/core/storage/storage.c
 extern const class_desc_t shell_alias_class; // src/core/object/alias.c
+extern const class_desc_t shell_class; // src/core/shell/shell_class.c
 extern const class_desc_t nubus_class; // src/core/peripherals/nubus/nubus_class.c
-
-// Empty class so `shell` exists as a path component for shell.alias.*
-// without forcing a real subsystem hookup at install time.
-static const class_desc_t shell_class_desc = {.name = "shell", .members = NULL, .n_members = 0};
 
 // === Introspection root methods =============================================
 // `objects`, `attributes`, `methods`, `help`, `time`. Each accepts an
@@ -390,9 +387,11 @@ void root_install(struct config *cfg) {
     // process-singletons attached from shell_init via their owning
     // module's *_class_register hook.
     //
-    // What remains here is the shell namespace stub, the storage view
-    // of cfg->images, and the shell.alias child.
-    struct object *shell_obj = attach_stub(NULL, &shell_class_desc, cfg, "shell");
+    // What remains here is the Shell class instance, the storage view
+    // of cfg->images, and the shell.alias child (kept attached for
+    // backwards compatibility with the existing
+    // `shell.alias.{add,remove,list}` surface).
+    struct object *shell_obj = attach_stub(NULL, &shell_class, cfg, "shell");
     struct object *storage_obj = attach_stub(NULL, &storage_class_real, cfg, "storage");
     if (storage_obj) {
         attach_stub(storage_obj, &storage_images_collection_class, cfg, "images");

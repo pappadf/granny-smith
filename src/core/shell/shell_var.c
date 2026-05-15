@@ -121,6 +121,18 @@ const char *shell_var_get(const char *name) {
     return vars[idx].value.s;
 }
 
+// Walk every variable in insertion order. Callers (Shell class's
+// `vars` attribute, future scripting hooks) use this to enumerate the
+// table without depending on the private storage layout.
+void shell_var_each(shell_var_iter_fn fn, void *ud) {
+    if (!fn)
+        return;
+    for (int i = 0; i < nvar; i++) {
+        if (!fn(vars[i].name, &vars[i].value, ud))
+            return;
+    }
+}
+
 // Delete a shell variable (returns 0 on success, -1 if not found)
 int shell_var_unset(const char *name) {
     int idx = find_var(name);

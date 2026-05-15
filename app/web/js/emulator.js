@@ -44,7 +44,7 @@ let isRunningUI = false;
 // the offsets below whenever the C struct changes.
 let bridgePtr = 0;
 
-const BRIDGE_VERSION = 4;
+const BRIDGE_VERSION = 5;
 const OFF_VERSION     = 0;
 const OFF_READY = 4;
 const OFF_PENDING     = 8;
@@ -120,14 +120,11 @@ function handleScreenResize(width, height) {
   for (const cb of _screenResizeCallbacks) cb(width, height);
 }
 
-// Cache for the current shell prompt. The worker pushes updates via
-// Module.onPromptChange after each free-form line in shell_poll; the
-// terminal reads this through getRuntimePrompt() when it needs to
-// display the next prompt.
+// Cache for the current shell prompt. Updated by gsEvalLine after each
+// free-form line completes (it reads the new prompt back from
+// `shell.run`'s return value). The terminal reads this through
+// getRuntimePrompt() when it needs to display the next prompt.
 let cachedPrompt = null;
-function handlePromptChange(text) {
-  cachedPrompt = (typeof text === 'string' && text.length) ? text : null;
-}
 
 // Initialize the WASM module (called once from main.js).
 // printFn is used for both print and printErr on the Module.
@@ -142,7 +139,6 @@ export async function initEmulator(canvas, wasmArgs, printFn) {
     print: printFn,
     printErr: printFn,
     onRunStateChange: handleRunStateChange,
-    onPromptChange: handlePromptChange,
     onScreenResize: handleScreenResize,
   });
 
@@ -179,10 +175,11 @@ export function getModule() { return Module; }
 export function isModuleReady() { return moduleReady; }
 export function isRunning() { return isRunningUI; }
 
-// Get the current shell prompt. The worker pushes updates via
-// Module.onPromptChange after each free-form command, which is fired
-// synchronously before gsEvalLine resolves — so this read always
-// reflects the prompt the worker just produced.
+// Get the current shell prompt. gsEvalLine refreshes this from
+// `shell.run`'s return value after every free-form command, so the
+// terminal reads the up-to-date prompt as soon as the call resolves.
+// On first access (before any command has run) the cache is populated
+// from `shell.prompt` lazily.
 export function getRuntimePrompt() {
   return cachedPrompt;
 }
@@ -217,50 +214,40 @@ export function setRunning(running) {
 
 // --- Command API ---
 
-// Execute a free-form shell line via the SAB queue (kind=4). Returns
-// the integer result. Used by the terminal input handler — every other
-// caller should use gsEval for typed object-model access.
+// Execute a free-form shell line via the Shell class's `run` method.
+// Used by the terminal input handler — every other caller should use
+// gsEval for typed object-model access. Returns 0 on success, -1 on
+// dispatch failure. The new prompt is read back from `shell.run`'s
+// return value (a V_STRING) and cached for getRuntimePrompt().
 export async function gsEvalLine(line) {
   if (!Module || !moduleReady) return -1;
   const text = (line ?? '').toString();
   if (!text.trim()) return 0;
-
-  await waitForBridgeReady();
-
-  while (cmdInFlight) {
-    await new Promise(r => cmdWaiters.push(r));
+  const r = await gsEval('shell.run', [text]);
+  if (typeof r === 'string') {
+    cachedPrompt = r.length ? r : null;
+    return 0;
   }
-  cmdInFlight = true;
-  try {
-    Module.stringToUTF8(text, bridgePtr + OFF_PATH, PATH_SIZE);
-    Module.HEAPU8[bridgePtr + OFF_ARGS] = 0; // clear stale args
-    Atomics.store(Module.HEAP32, (bridgePtr + OFF_DONE) >> 2, 0);
-    Atomics.store(Module.HEAP32, (bridgePtr + OFF_PENDING) >> 2, 4); // kind=4 → free-form line
-
-    await waitForBridgeDone();
-    return Module.HEAP32[(bridgePtr + OFF_RESULT) >> 2];
-  } finally {
-    cmdInFlight = false;
-    const waiters = cmdWaiters.splice(0);
-    waiters.forEach(r => r());
-  }
+  // V_ERROR comes back as { error: "…" }. Keep the cached prompt as-is.
+  return -1;
 }
 
 // Stop the running scheduler (Ctrl-C / Pause). Routes through the
-// object-model channel like every other JS→C call; shell_poll drains
-// the SAB queue every tick regardless of CPU run-state, so this
-// reaches scheduler_stop even mid-emulation.
+// Shell class's `interrupt` method like every other JS→C call;
+// shell_poll drains the SAB queue every tick regardless of CPU
+// run-state, so this reaches scheduler_stop even mid-emulation.
 export async function shellInterrupt() {
   if (!Module || !moduleReady) return;
-  await gsEval('scheduler.stop');
+  await gsEval('shell.interrupt');
 }
 
-// Tab completion: routed through `meta.complete(line, cursor)` on the
-// object tree, so it shares the single gs_eval bridge kind. Returns a
-// list of candidate strings (or [] when nothing matches / on error).
+// Tab completion: routed through `shell.complete(line, cursor)`. Both
+// `shell.complete` and `meta.complete` reach the same engine; the
+// `shell.*` path is the canonical one. Returns a list of candidate
+// strings (or [] when nothing matches / on error).
 export async function tabComplete(line, cursorPos) {
   if (!Module || !moduleReady) return null;
-  const r = await gsEval('meta.complete', [String(line || ''), cursorPos | 0]);
+  const r = await gsEval('shell.complete', [String(line || ''), cursorPos | 0]);
   return Array.isArray(r) ? r : [];
 }
 
