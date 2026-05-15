@@ -29,6 +29,15 @@ export default [
     },
   },
   {
+    // Svelte 5 runes can live in *.svelte.ts files; ESLint needs the TS
+    // parser explicitly because typescript-eslint's flat preset only
+    // captures *.ts / *.tsx by default.
+    files: ['**/*.svelte.ts'],
+    languageOptions: {
+      parser: tseslint.parser,
+    },
+  },
+  {
     files: ['vite.config.ts', 'vitest.config.ts', 'svelte.config.js', 'eslint.config.js'],
     languageOptions: { globals: { ...globals.node } },
   },
