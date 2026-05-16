@@ -54,3 +54,18 @@ export {
   setCatLevel,
   type LogEntry,
 } from './logs.svelte';
+export {
+  filesystem,
+  toggleFsExpanded,
+  setFsExpanded,
+  setFsDragSource,
+  setFsSelected,
+} from './filesystem.svelte';
+export { images, toggleCategory, setMounted } from './images.svelte';
+export {
+  checkpoints,
+  setCheckpointSort,
+  selectCheckpoint,
+  type CheckpointSortColumn,
+  type SortDirection,
+} from './checkpoints.svelte';

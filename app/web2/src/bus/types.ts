@@ -34,3 +34,23 @@ export interface RecentEntry {
 }
 
 export type ImageCategory = 'rom' | 'vrom' | 'fd' | 'hd' | 'cd';
+
+// One checkpoint as surfaced by opfs.scanCheckpoints(). The dir name is
+// `<machine_id>-<created>` per docs/checkpointing.md; `label` and `machine`
+// come from the dir's manifest.json when present (best-effort).
+export interface CheckpointEntry {
+  /** OPFS path of the checkpoint directory (e.g. /opfs/checkpoints/abc…-…) */
+  path: string;
+  /** Directory basename — `<id>-<created>` */
+  dirName: string;
+  /** 16 hex chars from the dir name */
+  id: string;
+  /** Compact ISO 8601 from the dir name */
+  created: string;
+  /** Human label (manifest.json `label`, else the formatted timestamp) */
+  label: string;
+  /** Machine model (manifest.json `machine`, else "unknown") */
+  machine: string;
+  /** Sum of file sizes inside the dir; 0 if unreadable */
+  sizeBytes: number;
+}

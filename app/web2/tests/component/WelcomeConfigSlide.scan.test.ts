@@ -20,10 +20,25 @@ class StubOpfs implements OpfsBackend {
   async scanImages(cat: ImageCategory): Promise<OpfsEntry[]> {
     return this.images[cat] ?? [];
   }
+  async scanCheckpoints(): Promise<never[]> {
+    return [];
+  }
   async readJson(): Promise<null> {
     return null;
   }
   async writeJson(): Promise<void> {
+    /* no-op */
+  }
+  async move(): Promise<void> {
+    /* no-op */
+  }
+  async delete(): Promise<void> {
+    /* no-op */
+  }
+  async rename(): Promise<void> {
+    /* no-op */
+  }
+  async mkdirP(): Promise<void> {
     /* no-op */
   }
 }

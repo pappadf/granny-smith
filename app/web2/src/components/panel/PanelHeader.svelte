@@ -3,6 +3,7 @@
   import PanelTabComp from './PanelTab.svelte';
   import { logs, clearLogs, downloadLogs, setAutoscroll } from '@/state/logs.svelte';
   import { toggleLogsPopover } from '../panel-views/logs/logsHeader.svelte';
+  import CreateCheckpointButton from '../panel-views/checkpoints/CreateCheckpointButton.svelte';
 
   // Display labels — spec §4 fixes this order and casing.
   const LABELS: Record<PanelTab, string> = {
@@ -56,6 +57,8 @@
       >
         Download
       </button>
+    {:else if layout.activeTab === 'checkpoints'}
+      <CreateCheckpointButton />
     {/if}
   </div>
 </div>
