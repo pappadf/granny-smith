@@ -69,3 +69,13 @@ export {
   type CheckpointSortColumn,
   type SortDirection,
 } from './checkpoints.svelte';
+export {
+  debug,
+  toggleSection,
+  setSection,
+  inspectMmuWalk,
+  inspectMemoryAt,
+  resetDebugSections,
+  type MmuSubtab,
+  type MemoryMode,
+} from './debug.svelte';

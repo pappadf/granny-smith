@@ -17,6 +17,26 @@ export {
 export { setTerminalSink, routePrintLine, routeLogEmit } from './logSink';
 export { loadMachineRoots, loadMachineChildren, type MachineTreeNode } from './machineTree';
 export {
+  disasmAt,
+  readRegisters,
+  writeRegister,
+  peekL,
+  peekBytes,
+  peekPhysBytes,
+  listBreakpoints,
+  addBreakpoint,
+  removeBreakpoint,
+  continueExec,
+  pauseExec,
+  stepInto,
+  stepOver,
+  stopMachine,
+  restart,
+  type DisasmRow,
+  type Registers,
+  type Breakpoint,
+} from './debug';
+export {
   opfs,
   setOpfsBackend,
   MockOpfs,
