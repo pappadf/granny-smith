@@ -58,7 +58,7 @@ endif
 
 BUILD_DIR     := build
 OBJ_DIR       := $(BUILD_DIR)/wasm
-WEB_DIR       := app/web
+WEB_DIR       := app/web-legacy
 WEB2_DIR      := app/web2
 WEB2_DIST     := $(WEB2_DIR)/dist
 CORE_DIR      := src/core
@@ -182,7 +182,7 @@ STATIC_JS_DIR := $(WEB_DIR)/js
 
 # -- Phony targets --
 
-.PHONY: all release debug sanitize copy-static run \
+.PHONY: all release debug sanitize copy-static run run-legacy \
         headless unit-test integration-test integration-test-valgrind \
         e2e-test test clean help FORCE \
         ui2 ui2-dev ui2-test ui2-check run2
@@ -288,12 +288,26 @@ ifneq ($(strip $(RUN_PARAMS)),)
 RUN_SERVER_FLAGS += --fallback-root .
 endif
 
-run: all
+# `make run` now serves the new UI (app/web2/dist/). Phase 7 flipped
+# the default; the legacy UI is reachable as `make run-legacy`. Depends
+# on `all` so the WASM build runs first; ui2 then copies the fresh
+# build artifacts into the dist directory.
+run: all ui2
 ifneq ($(strip $(RUN_PARAMS)),)
-	@echo "Starting dev server on http://localhost:8080"
+	@echo "Serving new UI on http://localhost:8080"
+	python3 scripts/dev_server.py --root $(WEB2_DIST) --port 8080 $(RUN_SERVER_FLAGS) --default-params '$(RUN_QS)'
+else
+	@echo "Serving new UI on http://localhost:8080"
+	python3 scripts/dev_server.py --root $(WEB2_DIST) --port 8080
+endif
+
+# Legacy UI (app/web-legacy/). Slated for removal after a soak period.
+run-legacy: all
+ifneq ($(strip $(RUN_PARAMS)),)
+	@echo "Serving legacy UI on http://localhost:8080"
 	python3 scripts/dev_server.py --root $(BUILD_DIR) --port 8080 $(RUN_SERVER_FLAGS) --default-params '$(RUN_QS)'
 else
-	@echo "Starting dev server on http://localhost:8080"
+	@echo "Serving legacy UI on http://localhost:8080"
 	python3 scripts/dev_server.py --root $(BUILD_DIR) --port 8080
 endif
 
@@ -328,8 +342,9 @@ e2e-test:
 test: unit-test integration-test
 
 # -- New UI (app/web2) — Svelte 5 + Vite + TypeScript --
-# See local/gs-docs/plans/new-ui-impl-plan.md. Phase 0 (Scaffold) only.
-# These targets do not yet depend on the WASM build; Phase 3 wires that in.
+# See local/gs-docs/plans/new-ui-impl-plan.md. Phase 7 flipped
+# `make run` to serve this UI; `make run-legacy` keeps the old one
+# reachable while it soaks before removal.
 
 ui2:
 	cd $(WEB2_DIR) && npm ci --silent && npm run build
@@ -356,9 +371,10 @@ ui2-test:
 ui2-check:
 	cd $(WEB2_DIR) && npm run check && npm run lint
 
-run2: ui2
-	@echo "Serving new UI on http://localhost:8080"
-	python3 scripts/dev_server.py --root $(WEB2_DIST) --port 8080
+# run2 is an alias for `run` for muscle-memory continuity. The Phase 7
+# retire pass made `run` itself serve the new UI; this alias can be
+# dropped in a future cleanup.
+run2: run
 
 # -- Clean (everything) --
 # Removes all build artifacts: wasm, headless, unit, integration, e2e
@@ -379,14 +395,15 @@ help:
 	@echo "  debug                      Build WASM emulator (debug)"
 	@echo "  sanitize                   Build WASM emulator (sanitizers)"
 	@echo "  headless                   Build native headless CLI"
-	@echo "  run                        Build and start HTTP server on :8080"
+	@echo "  run                        Build the new UI and serve on :8080 (default)"
+	@echo "  run-legacy                 Serve the legacy UI (app/web-legacy/) on :8080"
 	@echo ""
-	@echo "New UI targets (app/web2 — Phase 0 scaffold):"
+	@echo "New UI targets (app/web2 — Svelte 5 + Vite + TS):"
 	@echo "  ui2                        Build the new Svelte UI (production)"
 	@echo "  ui2-dev                    Start Vite dev server (HMR) on :5173"
 	@echo "  ui2-check                  Run svelte-check + ESLint + Prettier"
 	@echo "  ui2-test                   Run Vitest"
-	@echo "  run2                       Build the new UI and serve on :8080"
+	@echo "  run2                       Alias for run (kept for muscle-memory)"
 	@echo ""
 	@echo "Test targets:"
 	@echo "  test                       Run unit + integration tests"

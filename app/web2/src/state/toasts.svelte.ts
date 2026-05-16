@@ -56,12 +56,6 @@ export function showNotification(msg: string, severity: ToastSeverity = 'info'):
   return toast.id;
 }
 
-// Legacy alias kept for parity with the prototype's `toast(msg)` calls.
-// Plan §4 keeps the alias until Phase 7.
-export function toast(msg: string): number {
-  return showNotification(msg, 'info');
-}
-
 export function dismissToast(id: number): void {
   const idx = toasts.active.findIndex((t) => t.id === id);
   if (idx === -1) {

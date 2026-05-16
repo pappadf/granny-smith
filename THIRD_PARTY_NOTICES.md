@@ -1,7 +1,7 @@
 # Third-Party Notices
 
 Granny Smith uses the following third-party libraries at runtime. The legacy
-`app/web/` loads xterm.js, xterm-addon-fit, and JSZip from the
+`app/web-legacy/` loads xterm.js, xterm-addon-fit, and JSZip from the
 [jsdelivr](https://www.jsdelivr.com/) CDN. The new UI at `app/web2/` bundles
 all runtime dependencies — Svelte 5, JSZip, and (as of the Terminal/Logs
 phase) `@xterm/xterm` and `@xterm/addon-fit`.
@@ -13,7 +13,7 @@ phase) `@xterm/xterm` and `@xterm/addon-fit`.
 - **Website:** <https://xtermjs.org/>
 - **Repository:** <https://github.com/xtermjs/xterm.js>
 - **License:** MIT
-- **Used in:** [app/web/index.html](app/web/index.html) (CDN-loaded, legacy);
+- **Used in:** [app/web-legacy/index.html](app/web-legacy/index.html) (CDN-loaded, legacy);
   [app/web2/src/components/panel-views/terminal/TerminalPane.svelte](app/web2/src/components/panel-views/terminal/TerminalPane.svelte)
   (bundled, dynamic-imported so the terminal chunk only loads when the Terminal
   tab first mounts).
@@ -46,7 +46,7 @@ phase) `@xterm/xterm` and `@xterm/addon-fit`.
 
 - **Repository:** <https://github.com/xtermjs/xterm.js> (packages/addon-fit)
 - **License:** MIT (same as xterm.js above)
-- **Used in:** [app/web/index.html](app/web/index.html) (CDN-loaded, legacy);
+- **Used in:** [app/web-legacy/index.html](app/web-legacy/index.html) (CDN-loaded, legacy);
   [app/web2/src/components/panel-views/terminal/TerminalPane.svelte](app/web2/src/components/panel-views/terminal/TerminalPane.svelte)
   (bundled).
 
@@ -57,7 +57,7 @@ phase) `@xterm/xterm` and `@xterm/addon-fit`.
 - **Website:** <https://stuk.github.io/jszip/>
 - **Repository:** <https://github.com/Stuk/jszip>
 - **License:** MIT or GPLv3 (dual-licensed)
-- **Used in:** [app/web/js/media.js](app/web/js/media.js), [app/web/js/url-media.js](app/web/js/url-media.js)
+- **Used in:** [app/web-legacy/js/media.js](app/web-legacy/js/media.js), [app/web-legacy/js/url-media.js](app/web-legacy/js/url-media.js); [app/web2/src/lib/archive.ts](app/web2/src/lib/archive.ts) (bundled as a code-split dynamic-import chunk in the new UI)
 
 > MIT License
 >

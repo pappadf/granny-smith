@@ -1,6 +1,12 @@
 # Web Frontend Reference
 
-The Granny Smith web frontend lives in `app/web/index.html`. The page and its module scripts act as the single entry point for initializing the emulator, wiring terminal I/O, and handling user interaction. This reference documents both the user-facing capabilities and the architectural details you need when modifying the UI or embedding it elsewhere.
+The current Granny Smith web frontend lives in `app/web2/` (Svelte 5 +
+Vite + TypeScript) — that's what `make run` serves. This document
+describes the architectural contract (bridge, threading, OPFS) it
+implements; details still point at the legacy reference implementation
+in `app/web-legacy/index.html` for code-walks because the two share the
+same Emscripten / bridge / OPFS conventions. The legacy UI is kept
+reachable via `make run-legacy` until a soak period elapses.
 
 ## Architecture: Pthreads + WasmFS + OPFS
 
@@ -73,7 +79,7 @@ The two callbacks are the template for any future C→JS event: install on `Modu
 - With `PROXY_TO_PTHREAD`, `shell_init()` is called from `main()` on the worker — no `ccall` from JS. JS gates the first `gsEval` on the bridge's `ready` field via `Atomics.waitAsync`; the worker writes that field and calls `emscripten_atomic_notify` once `shell_init()` returns.
 
 ### The Bridge Struct
-Layout (mirrored in [`emulator.js`](../app/web/js/emulator.js)):
+Layout (mirrored in [`emulator.js`](../app/web-legacy/js/emulator.js)):
 
 ```
 offset 0    version       int32     must equal JS_BRIDGE_VERSION
@@ -118,7 +124,7 @@ Three pieces of state are pushed via `Module.*` callbacks, set on the config obj
 - **`Module.onPromptChange(text)`** — fired via `MAIN_THREAD_EM_ASM` (sync) at the end of free-form-line dispatch, before `done` is flipped. Sync because the JS terminal reads the cached prompt right after `gsEvalLine` resolves; ASYNC would race that read.
 - **`Module.onScreenResize(width, height)`** — fired via `MAIN_THREAD_ASYNC_EM_ASM` from `em_video.c::resize_canvas` whenever the framebuffer's intrinsic dimensions change (transition-only — repeated identical sizes are suppressed by a `last_w`/`last_h` guard). Fires at minimum once per machine boot, again whenever the active video mode changes — e.g. when the JMFB driver flips a IIcx from the SE/30-default 512×342 to 640×480. ASYNC because the worker doesn't block on JS layout.
 
-JS caches the values in module-locals (`isRunningUI`, `cachedPrompt`, `lastScreenW`/`lastScreenH`) and exposes them through `isRunning()` / `getRuntimePrompt()` / `getLastScreenSize()` for synchronous access from UI code. The screen-resize subscriber API in `app/web/js/emulator.js` (`onScreenResize(cb)`) replays the latest dimensions to new subscribers immediately, so a component mounting after the machine has already booted gets the current size without waiting for the next change.
+JS caches the values in module-locals (`isRunningUI`, `cachedPrompt`, `lastScreenW`/`lastScreenH`) and exposes them through `isRunning()` / `getRuntimePrompt()` / `getLastScreenSize()` for synchronous access from UI code. The screen-resize subscriber API in `app/web-legacy/js/emulator.js` (`onScreenResize(cb)`) replays the latest dimensions to new subscribers immediately, so a component mounting after the machine has already booted gets the current size without waiting for the next change.
 
 **Important for the JS side.** Setting the canvas's intrinsic resolution via `emscripten_set_canvas_element_size` does **not** reflow CSS-driven container dimensions. Any wrapper that sizes itself in CSS (zoom wrapper, layout container) must subscribe to `onScreenResize` and re-apply its sizing logic — otherwise a resolution switch leaves the framebuffer stretched or letterboxed at the previous aspect ratio.
 

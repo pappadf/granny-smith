@@ -2,6 +2,11 @@
 // The buffer is a capped ring (oldest lines drop when MAX is exceeded).
 // Per-category levels mirror the C-side state; setCatLevel writes
 // through via gsEval('log.<cat>.level = N').
+//
+// Phase 7 perf: appendLog coalesces high-frequency emits through
+// requestAnimationFrame so a burst of N lines only causes one reactive
+// update per frame. Tests fall back to microtasks (queueMicrotask) so
+// they can assert synchronously after `await Promise.resolve()`.
 
 export interface LogEntry {
   ts: number; // wall-clock ms when JS observed the line
@@ -24,15 +29,53 @@ export const logs: LogsState = $state({
   catLevels: {},
 });
 
-export function appendLog(e: LogEntry): void {
-  logs.entries.push(e);
-  if (logs.entries.length > MAX) {
-    logs.entries.splice(0, logs.entries.length - MAX);
+// Pending emits waiting for the next frame flush.
+let pendingEmits: LogEntry[] = [];
+let scheduled = false;
+// One-shot sentinel — emitted on the first overflow after a fresh boot
+// so the user knows oldest entries were dropped.
+let overflowAnnounced = false;
+
+function scheduleFlush(): void {
+  if (scheduled) return;
+  scheduled = true;
+  if (typeof requestAnimationFrame === 'function') {
+    requestAnimationFrame(flushPending);
+  } else {
+    queueMicrotask(flushPending);
   }
+}
+
+function flushPending(): void {
+  scheduled = false;
+  if (!pendingEmits.length) return;
+  const batch = pendingEmits;
+  pendingEmits = [];
+  const overflow = logs.entries.length + batch.length - MAX;
+  if (overflow > 0) {
+    logs.entries.splice(0, overflow);
+    if (!overflowAnnounced) {
+      overflowAnnounced = true;
+      logs.entries.unshift({
+        ts: Date.now(),
+        cat: 'logs',
+        level: 0,
+        msg: `[${overflow} older entries dropped — buffer capped at ${MAX} lines]`,
+      });
+    }
+  }
+  logs.entries.push(...batch);
+}
+
+export function appendLog(e: LogEntry): void {
+  pendingEmits.push(e);
+  scheduleFlush();
 }
 
 export function clearLogs(): void {
   logs.entries.length = 0;
+  pendingEmits.length = 0;
+  overflowAnnounced = false;
 }
 
 export function setAutoscroll(on: boolean): void {

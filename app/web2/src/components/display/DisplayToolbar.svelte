@@ -108,12 +108,19 @@
 
 <div class="gs-toolbar" role="toolbar" aria-label="Display toolbar">
   <div class="tg execution">
-    <button class="tbtn" title={runTitle} disabled={!isLive} onclick={onRunPause}>
+    <button
+      class="tbtn"
+      title={runTitle}
+      aria-label={runTitle}
+      disabled={!isLive}
+      onclick={onRunPause}
+    >
       <Icon name={runIcon} />
     </button>
     <button
       class="tbtn"
       title="Shut down — return to Welcome view"
+      aria-label="Shut down"
       disabled={!everStarted}
       onclick={onShutdown}
     >
@@ -146,6 +153,7 @@
     <button
       class="tbtn"
       title="Zoom out"
+      aria-label="Zoom out"
       disabled={!isLive}
       onclick={() => setZoom(machine.zoom - 10)}
     >
@@ -161,6 +169,7 @@
     <button
       class="tbtn"
       title="Zoom in"
+      aria-label="Zoom in"
       disabled={!isLive}
       onclick={() => setZoom(machine.zoom + 10)}
     >
@@ -169,15 +178,26 @@
   </div>
   <div class="sep"></div>
   <div class="tg actions">
-    <button class="tbtn" title="Save State" disabled={!isLive || saving} onclick={onSave}>
+    <button
+      class="tbtn"
+      title="Save State"
+      aria-label="Save State"
+      disabled={!isLive || saving}
+      onclick={onSave}
+    >
       <Icon name="download" />
     </button>
   </div>
   <div class="layout-controls">
-    <button class="tbtn" title={themeTitle} onclick={cycleTheme}>
+    <button class="tbtn" title={themeTitle} aria-label={themeTitle} onclick={cycleTheme}>
       <Icon name="color-mode" />
     </button>
-    <button class="tbtn" title={fullscreenTitle} onclick={onFullscreenClick}>
+    <button
+      class="tbtn"
+      title={fullscreenTitle}
+      aria-label={fullscreenTitle}
+      onclick={onFullscreenClick}
+    >
       <Icon name={fullscreenIcon} />
     </button>
     <div class="sep"></div>
@@ -185,6 +205,7 @@
       class="tbtn layout-btn"
       class:active={layout.panelPos === 'left' && !layout.panelCollapsed}
       title="Panel Left"
+      aria-label="Panel Left"
       onclick={() => onLayoutClick('left')}
     >
       <Icon name={layoutIcon('left')} />
@@ -193,6 +214,7 @@
       class="tbtn layout-btn"
       class:active={layout.panelPos === 'bottom' && !layout.panelCollapsed}
       title="Panel Bottom"
+      aria-label="Panel Bottom"
       onclick={() => onLayoutClick('bottom')}
     >
       <Icon name={layoutIcon('bottom')} />
@@ -201,6 +223,7 @@
       class="tbtn layout-btn"
       class:active={layout.panelPos === 'right' && !layout.panelCollapsed}
       title="Panel Right"
+      aria-label="Panel Right"
       onclick={() => onLayoutClick('right')}
     >
       <Icon name={layoutIcon('right')} />

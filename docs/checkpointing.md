@@ -33,7 +33,7 @@ Background checkpoints (quick checkpoints saved automatically) are written direc
 - `<created>` is a UTC timestamp in compact ISO 8601 (`YYYYMMDDTHHMMSSZ`) — purely for human legibility in `ls /opfs/checkpoints/`. Code never parses it.
 - `<id>` (per-image instance id) is also 16 hex chars, minted by the image layer in `image_create`. Each writable image gets a fresh one — reusing the same base image for an unrelated machine no longer replays stale deltas.
 
-The C side is told about the active machine via the shell command `checkpoint --machine <id> <created>`, which `app/web/js/main.js` issues exactly once on startup before any image is opened. The handler calls `checkpoint_machine_set` and then `checkpoint_machine_sweep_others` to drop stale machine directories left behind by previous sessions.
+The C side is told about the active machine via the shell command `checkpoint --machine <id> <created>`, which `app/web-legacy/js/main.js` issues exactly once on startup before any image is opened. The handler calls `checkpoint_machine_set` and then `checkpoint_machine_sweep_others` to drop stale machine directories left behind by previous sessions.
 
 `checkpoint_machine_set` is called **at most once per process lifetime**. Rotation is a JS-driven page reload; the C side does not support changing machine identity in-place.
 
@@ -72,7 +72,7 @@ The headless target has no `localStorage` and no machine-id concept. Pass `--che
   - Each subsystem declares its checkpoint function in its own header, alongside `*_init` and `delete_*`. The central `system.h` does not list all subsystem checkpoint prototypes; consumers include the relevant subsystem headers as needed.
 
 - **Save/Load commands:**
-  - `checkpoint --machine <id> <created>`: Activates the per-machine directory `<machine_id>-<created>` under `/opfs/checkpoints/` and sweeps stale sibling dirs. **Must be the first checkpoint command in the process** (called once by `app/web/js/main.js` at startup, before any image is opened); subsequent calls in the same process are rejected.
+  - `checkpoint --machine <id> <created>`: Activates the per-machine directory `<machine_id>-<created>` under `/opfs/checkpoints/` and sweeps stale sibling dirs. **Must be the first checkpoint command in the process** (called once by `app/web-legacy/js/main.js` at startup, before any image is opened); subsequent calls in the same process are rejected.
   - `checkpoint --save <file>`: Iterates all subsystems and writes a consolidated machine snapshot to the specified file. Consolidated checkpoints are self-contained and live wherever the user chooses — they do **not** go under `/opfs/checkpoints/<machine_id>-...`, which is reserved for the single quick-checkpoint slot.
   - `checkpoint --load <file>`: Constructs a new `config_t` via the active machine profile, restoring each subsystem from the stream.
   - `checkpoint --validate <path>`: Checks if the file contains a valid checkpoint (magic bytes).

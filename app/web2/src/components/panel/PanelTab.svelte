@@ -52,4 +52,11 @@
     border-top: 1px solid var(--gs-tab-active-fg);
     pointer-events: none;
   }
+  .ptab:focus {
+    outline: none;
+  }
+  .ptab:focus-visible {
+    outline: 1px solid var(--gs-focus, #0969da);
+    outline-offset: -2px;
+  }
 </style>

@@ -36,7 +36,6 @@ export {
 export {
   toasts,
   showNotification,
-  toast,
   dismissToast,
   pauseTimer,
   resumeTimer,

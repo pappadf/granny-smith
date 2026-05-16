@@ -56,8 +56,9 @@ void em_print_host_callstack(void);
 // Single shared-memory region that carries every JS↔C interaction.
 // JS resolves the base pointer once via `_get_js_bridge()` and reads /
 // writes fields by offset through `Module.HEAP32` / `Module.HEAPU8`.
-// Layout is mirrored in `app/web/js/emulator.js`; bump JS_BRIDGE_VERSION
-// whenever fields are added, reordered, or resized.
+// Layout is mirrored in `app/web2/src/bus/emulator.ts` (and the legacy
+// `app/web-legacy/js/emulator.js`); bump JS_BRIDGE_VERSION whenever
+// fields are added, reordered, or resized.
 //
 // Request protocol — exactly one kind, serialised by the JS-side
 // `cmdInFlight` lock. Introspection rides on `<path>.meta.*`

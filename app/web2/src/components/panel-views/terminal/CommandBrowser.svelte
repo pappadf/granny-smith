@@ -3,17 +3,30 @@
   import { showNotification } from '@/state/toasts.svelte';
   import { insertIntoTerminal } from './terminalBridge';
   import CommandBrowser from './CommandBrowser.svelte';
+  import { cycleListSelection, listKeyFromEvent } from '@/lib/keyboardNav';
 
   interface Props {
     nodes?: CommandNode[];
     depth?: number;
+    /** Shared expansion / selection / keyboard state (root creates it). */
+    expandedState?: Record<string, boolean>;
+    selectedKey?: string;
+    onSelect?: (k: string) => void;
   }
-  let { nodes = commandsTree, depth = 0 }: Props = $props();
+  let {
+    nodes = commandsTree,
+    depth = 0,
+    expandedState,
+    selectedKey = $bindable(''),
+    onSelect,
+  }: Props = $props();
 
-  const expanded: Record<string, boolean> = $state({});
+  const localExpanded: Record<string, boolean> = $state({});
+  // svelte-ignore state_referenced_locally
+  const expanded = expandedState ?? localExpanded;
 
-  function keyOf(n: CommandNode): string {
-    return n.insert ? `${depth}:${n.insert}` : `${depth}:${n.name}`;
+  function keyOf(n: CommandNode, atDepth = depth): string {
+    return n.insert ? `${atDepth}:${n.insert}` : `${atDepth}:${n.name}`;
   }
 
   function isOpen(n: CommandNode): boolean {
@@ -28,6 +41,7 @@
   }
 
   function onRowClick(n: CommandNode) {
+    onSelect?.(keyOf(n));
     if (n.insert) {
       const ok = insertIntoTerminal(n.insert);
       if (ok) showNotification(`Inserted: ${n.insert}`, 'info');
@@ -41,17 +55,77 @@
     ev.stopPropagation();
     toggle(n);
   }
+
+  // ---- Keyboard navigation (root only) -----------------------------
+  function flatten(): Array<{ key: string; node: CommandNode; atDepth: number }> {
+    const out: Array<{ key: string; node: CommandNode; atDepth: number }> = [];
+    const walk = (ns: CommandNode[], d: number) => {
+      for (const n of ns) {
+        const k = keyOf(n, d);
+        out.push({ key: k, node: n, atDepth: d });
+        if (n.children?.length && expanded[k]) walk(n.children, d + 1);
+      }
+    };
+    walk(commandsTree, 0);
+    return out;
+  }
+
+  function onRootKey(ev: KeyboardEvent) {
+    if (depth !== 0) return;
+    const flat = flatten();
+    if (!flat.length) return;
+    const currentIdx = selectedKey ? flat.findIndex((r) => r.key === selectedKey) : -1;
+
+    if (ev.key === 'ArrowLeft' || ev.key === 'ArrowRight') {
+      if (currentIdx < 0) return;
+      const row = flat[currentIdx];
+      const hasChildren = !!row.node.children?.length;
+      if (!hasChildren) return;
+      const wantOpen = ev.key === 'ArrowRight';
+      if (!!expanded[row.key] !== wantOpen) {
+        ev.preventDefault();
+        toggle(row.node);
+      }
+      return;
+    }
+
+    if (ev.key === 'Enter') {
+      if (currentIdx < 0) return;
+      ev.preventDefault();
+      onRowClick(flat[currentIdx].node);
+      return;
+    }
+
+    const k = listKeyFromEvent(ev);
+    if (!k) return;
+    if (k === 'ArrowLeft' || k === 'ArrowRight') return;
+    const next = cycleListSelection(flat.length, currentIdx, k, { wrap: false });
+    if (next === currentIdx) return;
+    ev.preventDefault();
+    selectedKey = flat[next].key;
+    onSelect?.(flat[next].key);
+  }
 </script>
 
-<ul class="cmd-tree" class:root={depth === 0} role={depth === 0 ? 'tree' : 'group'}>
+<!-- svelte-ignore a11y_no_noninteractive_tabindex -->
+<ul
+  class="cmd-tree"
+  class:root={depth === 0}
+  role={depth === 0 ? 'tree' : 'group'}
+  tabindex={depth === 0 ? 0 : undefined}
+  onkeydown={depth === 0 ? onRootKey : undefined}
+>
   {#each nodes as node (keyOf(node))}
     {@const hasChildren = !!node.children?.length}
     {@const open = isOpen(node)}
+    {@const k = keyOf(node)}
+    {@const isSelected = selectedKey === k}
     <li
       class="cmd-row"
       class:category={!node.insert}
+      class:selected={isSelected}
       role="treeitem"
-      aria-selected="false"
+      aria-selected={isSelected}
       aria-expanded={hasChildren ? open : undefined}
     >
       <!-- svelte-ignore a11y_click_events_have_key_events -->
@@ -75,7 +149,13 @@
         <div class="desc">{node.desc}</div>
       {/if}
       {#if hasChildren && open}
-        <CommandBrowser nodes={node.children} depth={depth + 1} />
+        <CommandBrowser
+          nodes={node.children}
+          depth={depth + 1}
+          expandedState={expanded}
+          {selectedKey}
+          {onSelect}
+        />
       {/if}
     </li>
   {/each}
@@ -97,6 +177,16 @@
   }
   .cmd-row {
     margin: 0;
+  }
+  .cmd-row.selected > .cmd-line {
+    background: var(--gs-row-selected, rgba(80, 140, 220, 0.25));
+  }
+  .cmd-tree.root:focus {
+    outline: none;
+  }
+  .cmd-tree.root:focus-visible {
+    outline: 1px solid var(--gs-focus, #0969da);
+    outline-offset: -1px;
   }
   .cmd-line {
     display: flex;

@@ -8,7 +8,8 @@ Granny Smith: a browser-based Motorola 68000 Macintosh Plus–style emulator com
 - `src/platform/`: Platform-specific code (wasm/, headless/)
   - `wasm/`: WebAssembly platform for browser (em_main.c, em_audio.c, em_video.c) — compiled with Emscripten
   - `headless/`: Native command-line platform for testing (headless_main.c)
-- `app/web/`: Browser frontend (HTML, JS, CSS)
+- `app/web2/`: Browser frontend (Svelte 5 + Vite + TypeScript) — default
+- `app/web-legacy/`: Previous browser frontend (vanilla HTML/JS/CSS) — reachable via `make run-legacy` while it soaks before removal
 - `docs/`: Design, architecture, and developer docs
 - `build/`: Generated artifacts — do not edit
 - `scripts/`: Tools and helpers
@@ -151,7 +152,8 @@ the root methods (`cp`, `peeler`, `rom_probe`, `rom_load`, `fd_insert`,
 `hd_models`, `dump_tree`, …).
 
 The browser frontend and the e2e helpers call into the tree via
-`window.gsEval(path, args?)` (see `app/web/js/emulator.js`). Inside the
+`gsEval(path, args?)` (see `app/web2/src/bus/emulator.ts`; the legacy
+helper still exists in `app/web-legacy/js/emulator.js`). Inside the
 shell, the same tree is reachable via four surface forms (proposal §4.1):
 
   cpu.pc                # bare path → read & print

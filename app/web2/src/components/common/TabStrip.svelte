@@ -1,5 +1,6 @@
 <script lang="ts" generics="K extends string">
   import type { Snippet } from 'svelte';
+  import { cycleListSelection, listKeyFromEvent } from '@/lib/keyboardNav';
 
   interface Props {
     tabs: ReadonlyArray<{ key: K; label: string }>;
@@ -9,9 +10,25 @@
     accessory?: Snippet;
   }
   let { tabs, active, onSelect, accessory }: Props = $props();
+
+  function onKey(ev: KeyboardEvent) {
+    const k = listKeyFromEvent(ev);
+    if (!k) return;
+    // Tab strip only responds to horizontal nav keys + Home/End — ignore
+    // the vertical ones so a focused tab inside a scrolling container
+    // doesn't hijack ↑/↓.
+    if (k === 'ArrowUp' || k === 'ArrowDown' || k === 'PageUp' || k === 'PageDown') return;
+    const current = tabs.findIndex((t) => t.key === active);
+    const next = cycleListSelection(tabs.length, current, k, { wrap: true });
+    if (next >= 0 && next < tabs.length) {
+      ev.preventDefault();
+      onSelect(tabs[next].key);
+    }
+  }
 </script>
 
-<div class="tab-strip" role="tablist">
+<!-- svelte-ignore a11y_interactive_supports_focus -->
+<div class="tab-strip" role="tablist" onkeydown={onKey}>
   {#each tabs as tab (tab.key)}
     <button
       type="button"

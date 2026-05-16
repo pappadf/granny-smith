@@ -42,16 +42,41 @@ export default [
     languageOptions: { globals: { ...globals.node } },
   },
   {
-    // Master plan §6.1 / proposal-shell-as-object-model-citizen.md §5.3:
-    // only the Terminal pane may invoke `shell.run` — every other
-    // caller in the bus layer must use typed object-model paths via
-    // gsEval. gsEvalLine in bus/emulator.ts is the one legitimate
-    // exception (the TerminalPane's call site); it carries a local
-    // eslint-disable-next-line.
-    files: ['src/bus/**/*.ts'],
+    // Project-wide no-restricted-syntax guards. ESLint flat configs
+    // merge by replacing rule values for overlapping file globs, so we
+    // keep all `no-restricted-syntax` selectors in this single block
+    // and route them to the right files via the source-pattern.
+    //
+    //   - `shell.run`: master plan §6.1 / proposal-shell-as-object-
+    //     model-citizen.md §5.3. Only TerminalPane.svelte may construct
+    //     shell-line strings; bus/* uses typed object-model paths.
+    //     gsEvalLine in bus/emulator.ts is the one legitimate exception
+    //     and carries a local eslint-disable-next-line.
+    //   - `toast()`: master plan §12 Phase 7. The legacy alias was
+    //     retired in favour of `showNotification(msg, severity)`.
+    files: ['src/**/*.{ts,svelte,svelte.ts}'],
     rules: {
       'no-restricted-syntax': [
         'error',
+        {
+          selector: "CallExpression[callee.name='toast']",
+          message:
+            'Use showNotification(msg, severity) — the toast() alias was removed in Phase 7.',
+        },
+      ],
+    },
+  },
+  {
+    files: ['src/bus/**/*.ts'],
+    rules: {
+      // Same merged-into-one rule pattern (see comment above).
+      'no-restricted-syntax': [
+        'error',
+        {
+          selector: "CallExpression[callee.name='toast']",
+          message:
+            'Use showNotification(msg, severity) — the toast() alias was removed in Phase 7.',
+        },
         {
           selector: "CallExpression[callee.name='gsEval'][arguments.0.value='shell.run']",
           message:

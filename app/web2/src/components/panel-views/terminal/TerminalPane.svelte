@@ -249,6 +249,9 @@
         fontSize: 13,
         cursorBlink: true,
         convertEol: true,
+        // Match the log-buffer cap for memory symmetry. xterm's default
+        // is 1000 lines; 5000 fits one user-session of debug output.
+        scrollback: 5000,
         theme: { background: '#0d0f11' },
       });
       fitAddon = new FitAddonCtor();

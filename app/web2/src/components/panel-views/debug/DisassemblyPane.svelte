@@ -6,6 +6,7 @@
   import { debug, inspectMmuWalk, inspectMemoryAt } from '@/state/debug.svelte';
   import { mmuLookup } from '@/bus/mockMmu';
   import { fmtHex32 } from '@/lib/hex';
+  import { cycleListSelection, listKeyFromEvent } from '@/lib/keyboardNav';
 
   const ROWS = 32;
   // Naive instruction stride — 68K has variable-length instructions; we
@@ -91,9 +92,57 @@
     });
     openContextMenu(items, ev.clientX, ev.clientY);
   }
+
+  // Keyboard navigation: ↑/↓ moves selected row, PgUp/PgDn pages,
+  // Home jumps to PC.
+  let selectedIdx = $state(-1);
+  let paneEl = $state<HTMLDivElement | null>(null);
+
+  // When PC changes, re-center selected on the PC row.
+  $effect(() => {
+    void pc;
+    const pcIdx = rows.findIndex((r) => r.addr === pc);
+    if (pcIdx >= 0) selectedIdx = pcIdx;
+  });
+
+  function onKey(ev: KeyboardEvent) {
+    if (ev.key === 'Home') {
+      const pcIdx = rows.findIndex((r) => r.addr === pc);
+      if (pcIdx >= 0) {
+        ev.preventDefault();
+        selectedIdx = pcIdx;
+        scrollRowIntoView(pcIdx);
+      }
+      return;
+    }
+    const k = listKeyFromEvent(ev);
+    if (!k) return;
+    // Ignore horizontal keys — they're not meaningful for a flat row list.
+    if (k === 'ArrowLeft' || k === 'ArrowRight') return;
+    const next = cycleListSelection(rows.length, selectedIdx, k, { pageSize: 10 });
+    if (next === selectedIdx) return;
+    ev.preventDefault();
+    selectedIdx = next;
+    scrollRowIntoView(next);
+  }
+
+  function scrollRowIntoView(i: number): void {
+    if (!paneEl) return;
+    const rowEls = paneEl.querySelectorAll<HTMLElement>('.row');
+    rowEls[i]?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+  }
 </script>
 
-<div class="disasm-pane">
+<!-- svelte-ignore a11y_no_noninteractive_tabindex -->
+<!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+<div
+  class="disasm-pane"
+  role="application"
+  aria-label="Disassembly"
+  bind:this={paneEl}
+  tabindex="0"
+  onkeydown={onKey}
+>
   <div class="banner">{bannerLabel()}</div>
   {#if rows.length === 0}
     <p class="hint">Pause the machine to see the disasm listing.</p>
@@ -102,7 +151,12 @@
       {@const isPc = row.addr === pc}
       {@const addr = rowAddrLabel(row)}
       <!-- svelte-ignore a11y_no_static_element_interactions -->
-      <div class="row" class:pc={isPc} oncontextmenu={(ev) => onRowContext(row, ev)}>
+      <div
+        class="row"
+        class:pc={isPc}
+        class:selected={selectedIdx === i}
+        oncontextmenu={(ev) => onRowContext(row, ev)}
+      >
         <span class="marker">{isPc ? '►' : ''}</span>
         <span class="addr-l">{addr.logical}</span>
         {#if addr.physical}<span class="addr-p">{addr.physical}</span>{/if}
@@ -155,6 +209,17 @@
   }
   .row.pc {
     background: rgba(80, 140, 220, 0.2);
+  }
+  .row.selected {
+    outline: 1px solid var(--gs-focus, #0969da);
+    outline-offset: -1px;
+  }
+  .disasm-pane:focus {
+    outline: none;
+  }
+  .disasm-pane:focus-visible {
+    outline: 1px solid var(--gs-focus, #0969da);
+    outline-offset: -1px;
   }
   .marker {
     color: var(--gs-focus, #0969da);
