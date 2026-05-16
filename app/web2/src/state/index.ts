@@ -44,3 +44,13 @@ export {
   type ToastSeverity,
 } from './toasts.svelte';
 export { loadPersistedState, startPersistEffects } from './persist.svelte';
+export {
+  logs,
+  appendLog,
+  clearLogs,
+  setAutoscroll,
+  downloadLogs,
+  refreshCatLevels,
+  setCatLevel,
+  type LogEntry,
+} from './logs.svelte';

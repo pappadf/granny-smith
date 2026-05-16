@@ -16,6 +16,11 @@
     "format": "prettier --write .",
     "test": "vitest run --passWithNoTests"
   },
+  "dependencies": {
+    "@xterm/addon-fit": "^0.10.0",
+    "@xterm/xterm": "^5.5.0",
+    "jszip": "^3.10.1"
+  },
   "devDependencies": {
     "@eslint/js": "^9.18.0",
     "@sveltejs/vite-plugin-svelte": "^5.0.3",
@@ -26,7 +31,6 @@
     "eslint-plugin-svelte": "^3.10.1",
     "globals": "^15.14.0",
     "jsdom": "^25.0.1",
-    "jszip": "^3.10.1",
     "prettier": "^3.4.2",
     "prettier-plugin-svelte": "^3.3.3",
     "svelte": "^5.16.0",

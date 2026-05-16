@@ -1,6 +1,8 @@
 <script lang="ts">
   import { layout, PANEL_TABS, type PanelTab } from '@/state/layout.svelte';
   import PanelTabComp from './PanelTab.svelte';
+  import { logs, clearLogs, downloadLogs, setAutoscroll } from '@/state/logs.svelte';
+  import { toggleLogsPopover } from '../panel-views/logs/logsHeader.svelte';
 
   // Display labels — spec §4 fixes this order and casing.
   const LABELS: Record<PanelTab, string> = {
@@ -21,7 +23,40 @@
     {/each}
   </div>
   <div class="panel-actions">
-    <!-- Per-view action buttons land with their view components in later phases. -->
+    {#if layout.activeTab === 'logs'}
+      <button
+        type="button"
+        class="action-btn"
+        onclick={() => toggleLogsPopover()}
+        title="Set per-category log levels"
+      >
+        Levels
+      </button>
+      <label class="action-toggle" title="Scroll to newest line automatically">
+        <input
+          type="checkbox"
+          checked={logs.autoscroll}
+          onchange={(e) => setAutoscroll((e.target as HTMLInputElement).checked)}
+        />
+        autoscroll
+      </label>
+      <button
+        type="button"
+        class="action-btn"
+        onclick={() => clearLogs()}
+        title="Clear the log buffer"
+      >
+        Clear
+      </button>
+      <button
+        type="button"
+        class="action-btn"
+        onclick={() => downloadLogs()}
+        title="Download the log buffer as text"
+      >
+        Download
+      </button>
+    {/if}
   </div>
 </div>
 
@@ -51,8 +86,33 @@
   .panel-actions {
     display: flex;
     align-items: center;
-    gap: 4px;
-    padding: 0 6px;
+    gap: 6px;
+    padding: 0 8px;
     flex-shrink: 0;
+  }
+  .action-btn {
+    background: transparent;
+    color: var(--gs-fg);
+    border: 1px solid var(--gs-border);
+    border-radius: 2px;
+    height: 22px;
+    padding: 0 8px;
+    font-size: 11px;
+    cursor: pointer;
+  }
+  .action-btn:hover {
+    background: var(--gs-row-hover, rgba(255, 255, 255, 0.06));
+  }
+  .action-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    color: var(--gs-fg-muted);
+    font-size: 11px;
+    cursor: pointer;
+    user-select: none;
+  }
+  .action-toggle input {
+    margin: 0;
   }
 </style>

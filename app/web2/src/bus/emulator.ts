@@ -11,6 +11,7 @@
 import { machine, type MachineStatus } from '@/state/machine.svelte';
 import { showNotification } from '@/state/toasts.svelte';
 import { getOrCreateMachine } from '@/lib/machineId';
+import { routePrintLine, routeLogEmit } from './logSink';
 import type { MachineConfig } from './types';
 
 const BRIDGE_VERSION = 5;
@@ -49,6 +50,7 @@ interface EmscriptenModuleConfig {
   printErr?(s: string): void;
   onRunStateChange?(running: boolean): void;
   onScreenResize?(w: number, h: number): void;
+  onLogEmit?(line: string): void;
 }
 
 type CreateModule = (config: EmscriptenModuleConfig) => Promise<EmscriptenModule>;
@@ -82,10 +84,11 @@ export async function bootstrap(canvas: HTMLCanvasElement, wasmArgs: string[] = 
     canvas,
     arguments: wasmArgs,
     locateFile: (p: string) => (p.endsWith('.wasm') ? `/main.wasm?v=${bust}` : p),
-    print: (s: string) => console.log(s),
-    printErr: (s: string) => console.error(s),
+    print: routePrintLine,
+    printErr: routePrintLine,
     onRunStateChange: handleRunStateChange,
     onScreenResize: handleScreenResize,
+    onLogEmit: routeLogEmit,
   });
 
   bridgePtr = Module._get_js_bridge();
@@ -116,6 +119,67 @@ export async function gsEval(path: string, args?: unknown[]): Promise<unknown> {
   } catch {
     return null;
   }
+}
+
+// --- Shell line surface (Terminal pane only) ----------------------------
+//
+// The Terminal view is the single caller of `shell.run` — every other
+// component reaches the core through typed object-model paths via
+// gsEval. The proposal-shell-as-object-model-citizen.md §5.3 ESLint
+// rule pins this; only TerminalPane.svelte may construct shell-line
+// strings.
+
+let cachedPrompt: string | null = null;
+
+// Execute a free-form shell line. Returns 0 on success, -1 on dispatch
+// failure. The new prompt is returned from `shell.run` as a V_STRING and
+// cached for getRuntimePrompt(). This is the *only* call to `shell.run`
+// allowed in src/bus/** — the no-restricted-syntax rule pins that, and
+// the disable below is the single sanctioned exception (forwarded from
+// TerminalPane.svelte, the only legitimate caller).
+export async function gsEvalLine(line: string): Promise<number> {
+  if (!moduleReady) return -1;
+  const text = (line ?? '').toString();
+  if (!text.trim()) return 0;
+  // eslint-disable-next-line no-restricted-syntax
+  const r = await gsEval('shell.run', [text]);
+  if (typeof r === 'string') {
+    cachedPrompt = r.length ? r : null;
+    return 0;
+  }
+  return -1;
+}
+
+export function getRuntimePrompt(): string | null {
+  return cachedPrompt;
+}
+
+export async function shellInterrupt(): Promise<void> {
+  if (!moduleReady) return;
+  await gsEval('shell.interrupt');
+}
+
+export interface CompletionResult {
+  candidates: string[];
+  span: { start: number; end: number };
+}
+
+export async function tabComplete(line: string, cursor: number): Promise<CompletionResult | null> {
+  if (!moduleReady) return null;
+  const r = await gsEval('shell.complete', [line, cursor]);
+  if (r && typeof r === 'object') {
+    const obj = r as { candidates?: unknown; span?: unknown };
+    if (Array.isArray(obj.candidates) && obj.span && typeof obj.span === 'object') {
+      const span = obj.span as { start?: unknown; end?: unknown };
+      if (typeof span.start === 'number' && typeof span.end === 'number') {
+        return {
+          candidates: obj.candidates.filter((s): s is string => typeof s === 'string'),
+          span: { start: span.start, end: span.end },
+        };
+      }
+    }
+  }
+  return null;
 }
 
 async function waitForBridgeReady(): Promise<void> {

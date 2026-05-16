@@ -7,8 +7,14 @@ export {
   bootstrap,
   isModuleReady,
   gsEval,
+  gsEvalLine,
+  getRuntimePrompt,
+  shellInterrupt,
+  tabComplete,
   getModule,
+  type CompletionResult,
 } from './emulator';
+export { setTerminalSink, routePrintLine, routeLogEmit } from './logSink';
 export {
   opfs,
   setOpfsBackend,

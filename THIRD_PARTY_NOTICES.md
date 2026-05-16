@@ -3,17 +3,20 @@
 Granny Smith uses the following third-party libraries at runtime. The legacy
 `app/web/` loads xterm.js, xterm-addon-fit, and JSZip from the
 [jsdelivr](https://www.jsdelivr.com/) CDN. The new UI at `app/web2/` bundles
-its runtime dependencies (Svelte 5; xterm.js and JSZip are bundled in later
-phases as their consumer components arrive).
+all runtime dependencies — Svelte 5, JSZip, and (as of the Terminal/Logs
+phase) `@xterm/xterm` and `@xterm/addon-fit`.
 
 ---
 
-## xterm.js v5.3.0
+## xterm.js v5.x (`@xterm/xterm`)
 
 - **Website:** <https://xtermjs.org/>
 - **Repository:** <https://github.com/xtermjs/xterm.js>
 - **License:** MIT
-- **Used in:** [app/web/index.html](app/web/index.html)
+- **Used in:** [app/web/index.html](app/web/index.html) (CDN-loaded, legacy);
+  [app/web2/src/components/panel-views/terminal/TerminalPane.svelte](app/web2/src/components/panel-views/terminal/TerminalPane.svelte)
+  (bundled, dynamic-imported so the terminal chunk only loads when the Terminal
+  tab first mounts).
 
 > MIT License
 >
@@ -39,11 +42,13 @@ phases as their consumer components arrive).
 
 ---
 
-## xterm-addon-fit v0.8.0
+## xterm-addon-fit v0.10.x (`@xterm/addon-fit`)
 
 - **Repository:** <https://github.com/xtermjs/xterm.js> (packages/addon-fit)
 - **License:** MIT (same as xterm.js above)
-- **Used in:** [app/web/index.html](app/web/index.html)
+- **Used in:** [app/web/index.html](app/web/index.html) (CDN-loaded, legacy);
+  [app/web2/src/components/panel-views/terminal/TerminalPane.svelte](app/web2/src/components/panel-views/terminal/TerminalPane.svelte)
+  (bundled).
 
 ---
 

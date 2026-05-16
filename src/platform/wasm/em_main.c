@@ -49,6 +49,7 @@
 #include "cmd_types.h"
 #include "cpu.h"
 #include "keyboard.h"
+#include "log.h"
 #include "machine.h"
 #include "mouse.h"
 #include "platform.h"
@@ -564,6 +565,23 @@ void tick(void) {
     em_main_tick();
 }
 
+// Forward formatted log lines to the JS-side Module.onLogEmit callback.
+// Installed once at boot via log_set_sink so the new-UI Logs view can
+// fan emissions out to a per-category mirror without inferring them
+// from Module.print (which captures everything, not just LOG sites).
+// Same MAIN_THREAD_ASYNC_EM_ASM pattern as the onRunStateChange push
+// above so the worker thread never blocks on the main-thread invoke.
+static void js_log_sink(const char *line, void *user) {
+    (void)user;
+    if (!line)
+        return;
+    // clang-format off
+    MAIN_THREAD_ASYNC_EM_ASM(
+        { if (typeof Module.onLogEmit === 'function') Module.onLogEmit(UTF8ToString($0)); },
+        line);
+    // clang-format on
+}
+
 // Print usage
 static void print_usage(const char *program_name) {
     printf("Usage: %s [options]\n", program_name);
@@ -1010,6 +1028,12 @@ int main(int argc, char *argv[]) {
 
     shell_init();
     setup_init();
+
+    // Route every log_emit through Module.onLogEmit so the new-UI Logs
+    // view gets a structured stream parallel to stdout. shell_init has
+    // already called log_init; setting the sink here also forwards any
+    // categories registered later (setup_init, machine boot, …).
+    log_set_sink(js_log_sink, NULL);
 
     // Bridge is open for business. JS gates its first gsEval on this
     // flag so requests issued during the boot window don't dispatch

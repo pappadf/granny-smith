@@ -41,4 +41,23 @@ export default [
     files: ['vite.config.ts', 'vitest.config.ts', 'svelte.config.js', 'eslint.config.js'],
     languageOptions: { globals: { ...globals.node } },
   },
+  {
+    // Master plan §6.1 / proposal-shell-as-object-model-citizen.md §5.3:
+    // only the Terminal pane may invoke `shell.run` — every other
+    // caller in the bus layer must use typed object-model paths via
+    // gsEval. gsEvalLine in bus/emulator.ts is the one legitimate
+    // exception (the TerminalPane's call site); it carries a local
+    // eslint-disable-next-line.
+    files: ['src/bus/**/*.ts'],
+    rules: {
+      'no-restricted-syntax': [
+        'error',
+        {
+          selector: "CallExpression[callee.name='gsEval'][arguments.0.value='shell.run']",
+          message:
+            "bus/* must not call gsEval('shell.run', ...). Use a typed object-model path instead. Only TerminalPane.svelte may construct shell-line strings.",
+        },
+      ],
+    },
+  },
 ];
