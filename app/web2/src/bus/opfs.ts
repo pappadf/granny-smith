@@ -87,4 +87,106 @@ export function setOpfsBackend(b: OpfsBackend): void {
   backend = b;
 }
 
+// --- BrowserOpfs ---------------------------------------------------------
+//
+// Real OPFS-backed implementation. Reads (list / scanRoms / scanImages /
+// readJson) use navigator.storage.getDirectory() directly — safe from any
+// thread, browser-internal. Writes (writeJson) also use OPFS direct;
+// cross-thread *image* writes still go through gsEval('storage.cp', …) in
+// bus/upload.ts because those are bigger and have to coexist with the
+// emulator's own OPFS handles. JSON config files are small and short-lived
+// — direct OPFS works fine.
+//
+// All paths use the `/opfs/...` prefix to match the C-side mount path.
+// BrowserOpfs strips the prefix before walking the navigator.storage tree.
+
+import { ROMS_DIR } from '@/lib/opfsPaths';
+
+async function getDirAtPath(
+  path: string,
+  options: { create?: boolean } = {},
+): Promise<FileSystemDirectoryHandle> {
+  const rel = path.replace(/^\/opfs\/?/, '');
+  let dir = await navigator.storage.getDirectory();
+  if (!rel) return dir;
+  for (const part of rel.split('/').filter(Boolean)) {
+    dir = await dir.getDirectoryHandle(part, options);
+  }
+  return dir;
+}
+
+export class BrowserOpfs implements OpfsBackend {
+  async list(dir: string): Promise<OpfsEntry[]> {
+    try {
+      const handle = await getDirAtPath(dir);
+      const out: OpfsEntry[] = [];
+      for await (const [name, child] of handle.entries()) {
+        out.push({ name, path: `${dir}/${name}`, kind: child.kind });
+      }
+      return out;
+    } catch {
+      return [];
+    }
+  }
+
+  async scanRoms(): Promise<RomInfo[]> {
+    const entries = await this.list(ROMS_DIR);
+    return entries
+      .filter((e) => e.kind === 'file')
+      .map((e) => ({ name: e.name, path: e.path, size: 0 }));
+  }
+
+  async scanImages(cat: ImageCategory): Promise<OpfsEntry[]> {
+    return this.list(`/opfs/images/${cat}`);
+  }
+
+  async readJson<T>(path: string): Promise<T | null> {
+    try {
+      const dir = await getDirAtPath(path.replace(/\/[^/]+$/, ''));
+      const fileName = path.split('/').pop() ?? '';
+      const fileHandle = await dir.getFileHandle(fileName);
+      const file = await fileHandle.getFile();
+      const text = await file.text();
+      return JSON.parse(text) as T;
+    } catch {
+      return null;
+    }
+  }
+
+  async writeJson(path: string, value: unknown): Promise<void> {
+    try {
+      const dir = await getDirAtPath(path.replace(/\/[^/]+$/, ''), { create: true });
+      const fileName = path.split('/').pop() ?? '';
+      const fileHandle = await dir.getFileHandle(fileName, { create: true });
+      const writable = await fileHandle.createWritable();
+      await writable.write(JSON.stringify(value));
+      await writable.close();
+    } catch {
+      // Quota / locked file / private mode — silent fall-through.
+    }
+  }
+}
+
+// Direct OPFS write for arbitrary File/Blob (bypasses /tmp + WASM heap).
+// Used by bus/upload.ts to stage uploaded files. Mirrors fs.js::writeToOPFS.
+export async function writeToOPFS(opfsPath: string, fileOrBlob: Blob): Promise<void> {
+  const dir = await getDirAtPath(opfsPath.replace(/\/[^/]+$/, ''), { create: true });
+  const fileName = opfsPath.split('/').pop() ?? '';
+  const fileHandle = await dir.getFileHandle(fileName, { create: true });
+  const writable = await fileHandle.createWritable();
+  await writable.write(fileOrBlob);
+  await writable.close();
+}
+
+// Best-effort directory removal.
+export async function removeFromOPFS(opfsPath: string): Promise<void> {
+  try {
+    const dir = await getDirAtPath(opfsPath.replace(/\/[^/]+$/, ''));
+    const name = opfsPath.split('/').pop() ?? '';
+    await dir.removeEntry(name, { recursive: true });
+  } catch {
+    // Best-effort.
+  }
+}
+
 export { MockOpfs };

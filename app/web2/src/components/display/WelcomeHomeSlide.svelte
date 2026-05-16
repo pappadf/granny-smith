@@ -3,11 +3,13 @@
   import { showNotification } from '@/state/toasts.svelte';
   import { setWelcomeSlide } from '@/state/layout.svelte';
   import { initEmulator, opfs } from '@/bus';
+  import { pickAndUpload } from '@/bus/upload';
   import type { RecentEntry } from '@/bus/types';
   import Icon from '../common/Icon.svelte';
 
-  // Recent list — loaded from OPFS (Phase 2 backs it with MockOpfs;
-  // Phase 3 swaps in a real-OPFS backend without changing this component).
+  // Recent list — loaded from OPFS. MockOpfs (tests) returns prototype
+  // fixtures; BrowserOpfs (production) reads /opfs/config/recent.json
+  // once it exists.
   let recents = $state<RecentEntry[]>([]);
   onMount(async () => {
     const loaded = await opfs.readJson<RecentEntry[]>('/opfs/config/recent.json');
@@ -18,8 +20,12 @@
     setWelcomeSlide('configuration');
   }
 
-  function notImplemented() {
-    showNotification('Coming in Phase 3 (real emulator)', 'warning');
+  async function openUploadRom() {
+    await pickAndUpload();
+  }
+
+  function openCheckpointPicker() {
+    showNotification('Open Checkpoint... arrives in Phase 5 (Checkpoints view)', 'warning');
   }
 
   async function launchRecent(r: RecentEntry) {
@@ -44,11 +50,11 @@
         <Icon name="mac" />
         <span>New Machine...</span>
       </button>
-      <button class="card-row" onclick={notImplemented}>
+      <button class="card-row" onclick={openCheckpointPicker}>
         <Icon name="clock" />
         <span>Open Checkpoint...</span>
       </button>
-      <button class="card-row" onclick={notImplemented}>
+      <button class="card-row" onclick={openUploadRom}>
         <Icon name="upload" />
         <span>Upload ROM...</span>
       </button>

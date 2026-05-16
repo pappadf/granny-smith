@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { showNotification } from '@/state/toasts.svelte';
+  import { processDataTransfer } from '@/bus/upload';
 
   // Basic show-on-dragenter / hide-on-leave-or-drop overlay (spec §8.5 polish
   // is Phase 7). Uses a depth counter so dragging across child elements
@@ -29,12 +29,8 @@
       e.preventDefault();
       depth = 0;
       visible = false;
-      const n = e.dataTransfer?.files?.length ?? 0;
-      if (n > 0) {
-        showNotification(
-          `${n} file${n === 1 ? '' : 's'} received (upload pipeline arrives in Phase 3)`,
-          'info',
-        );
+      if (e.dataTransfer) {
+        void processDataTransfer(e.dataTransfer);
       }
     };
 

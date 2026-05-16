@@ -333,6 +333,19 @@ test: unit-test integration-test
 
 ui2:
 	cd $(WEB2_DIR) && npm ci --silent && npm run build
+	@# Phase 3: copy WASM build artifacts into the served dist directory.
+	@# Skipped silently if the WASM build hasn't run yet — `make` produces them.
+	@if [ -f $(BUILD_DIR)/main.mjs ]; then \
+		cp $(BUILD_DIR)/main.mjs $(BUILD_DIR)/main.wasm $(WEB2_DIST)/ ; \
+		if [ -f $(BUILD_DIR)/coi-serviceworker.js ]; then \
+			cp $(BUILD_DIR)/coi-serviceworker.js $(WEB2_DIST)/ ; \
+		fi ; \
+		if [ -d $(BUILD_DIR)/wasm ]; then \
+			cp -R $(BUILD_DIR)/wasm $(WEB2_DIST)/wasm ; \
+		fi ; \
+	else \
+		echo "Note: $(BUILD_DIR)/main.mjs not found; run 'make' first to produce WASM artifacts" ; \
+	fi
 
 ui2-dev:
 	cd $(WEB2_DIR) && npm run dev

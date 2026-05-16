@@ -3,6 +3,10 @@
 
 export interface MachineConfig {
   model: string;
+  /** ROM image path (under /opfs/images/rom/). Empty / unset = use the
+   *  C-side default for the model (machine.boot may succeed without one
+   *  during early development). */
+  rom?: string;
   vrom: string;
   ram: string;
   fd: string;

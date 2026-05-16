@@ -4,17 +4,22 @@
   import ScreenView from './ScreenView.svelte';
   import DropOverlay from './DropOverlay.svelte';
 
-  // After a Shut Down, machine.status === 'stopped' and the user is back on
-  // the Welcome view (so they can pick a new config). The StatusBar stays
-  // visible (spec §11) — that's handled in StatusBar.svelte, not here.
+  // After Shut Down, machine.status === 'stopped' and the user is back on
+  // Welcome (so they can pick a new config). The StatusBar stays visible
+  // (spec §11) — handled in StatusBar.svelte, not here.
+  //
+  // Layering note: ScreenView is always mounted so bus.emulator.bootstrap()
+  // can hand Emscripten a stable canvas reference at page load. Welcome
+  // sits on top until a machine is running.
   const showWelcome = $derived(machine.status === 'no-machine' || machine.status === 'stopped');
 </script>
 
 <div class="gs-display-content">
+  <ScreenView />
   {#if showWelcome}
-    <WelcomeView />
-  {:else}
-    <ScreenView />
+    <div class="welcome-layer">
+      <WelcomeView />
+    </div>
   {/if}
   <DropOverlay />
 </div>
@@ -26,5 +31,11 @@
     position: relative;
     overflow: hidden;
     background: var(--gs-bg);
+  }
+  .welcome-layer {
+    position: absolute;
+    inset: 0;
+    background: var(--gs-bg);
+    z-index: 10;
   }
 </style>

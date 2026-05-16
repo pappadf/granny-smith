@@ -40,13 +40,13 @@ describe('WelcomeHomeSlide', () => {
     expect(toasts.active).toEqual([]);
   });
 
-  it('"Open Checkpoint..." fires a warning toast pointing at Phase 3', async () => {
+  it('"Open Checkpoint..." fires a warning toast pointing at Phase 5', async () => {
     const { container } = render(WelcomeHomeSlide);
     const buttons = container.querySelectorAll('.card-row');
     await fireEvent.click(buttons[1] as HTMLButtonElement);
     expect(toasts.active.length).toBe(1);
     expect(toasts.active[0].severity).toBe('warning');
-    expect(toasts.active[0].msg).toContain('Phase 3');
+    expect(toasts.active[0].msg).toContain('Phase 5');
   });
 
   it('renders the Recent card after loading recents from OPFS', async () => {
@@ -62,7 +62,7 @@ describe('WelcomeHomeSlide', () => {
     expect(rows.length).toBeGreaterThan(0);
   });
 
-  it('clicking a Recent entry boots the mock machine', async () => {
+  it('clicking a Recent entry invokes the bus (no-op without Module, but does not throw)', async () => {
     const { container } = render(WelcomeHomeSlide);
     const recentRow = await waitFor(() => {
       const r = container.querySelector('.card-row.recent') as HTMLButtonElement | null;
@@ -70,9 +70,8 @@ describe('WelcomeHomeSlide', () => {
       return r;
     });
     await fireEvent.click(recentRow);
-    expect(machine.status).toBe('running');
-    expect(machine.model).toBeTruthy();
-
-    stopDriveActivityMock();
+    // Without a real Module bound, initEmulator's gsEval calls return null
+    // and machine state is unchanged. The interaction itself must not throw.
+    expect(machine.status).toBe('no-machine');
   });
 });
