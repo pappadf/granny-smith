@@ -2,7 +2,11 @@
 // bus seam (UI <-> emulator / OPFS) goes through one of these types.
 
 export interface MachineConfig {
+  /** Model id as accepted by `machine.boot` (e.g. "plus", "se30", "iici"). */
   model: string;
+  /** Optional human-readable model name from `machine.profile(id).name`,
+   *  used for status-bar display when set. Falls back to `model` if absent. */
+  modelName?: string;
   /** ROM image path (under /opfs/images/rom/). Empty / unset = use the
    *  C-side default for the model (machine.boot may succeed without one
    *  during early development). */

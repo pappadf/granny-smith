@@ -61,11 +61,9 @@
   );
 
   const themeTitle = $derived(
-    theme.mode === 'system'
-      ? `Theme: system (${resolveTheme(theme.mode)}). Click for dark.`
-      : theme.mode === 'dark'
-        ? 'Theme: dark. Click for light.'
-        : 'Theme: light. Click for system.',
+    resolveTheme(theme.mode) === 'dark'
+      ? 'Theme: dark. Click for light.'
+      : 'Theme: light. Click for dark.',
   );
 
   // Run/Pause icon flip — prototype app.js:877-881.

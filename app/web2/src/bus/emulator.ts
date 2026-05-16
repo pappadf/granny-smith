@@ -319,9 +319,9 @@ export async function initEmulator(config: MachineConfig): Promise<void> {
     await gsEval('scsi.attach_cdrom', [config.cd, 3]);
   }
 
-  machine.model = config.model;
+  machine.model = config.modelName ?? config.model;
   machine.ram = config.ram;
-  machine.mmuEnabled = /SE\/30|II/i.test(config.model);
+  machine.mmuEnabled = /SE\/30|II/i.test(machine.model);
 
   await gsEval('scheduler.run');
   // onRunStateChange will flip machine.status to 'running' once the

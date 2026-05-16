@@ -7,14 +7,21 @@ beforeEach(() => {
 });
 
 describe('theme state', () => {
-  it('cycles dark -> light -> system -> dark', () => {
+  it('toggles between dark and light', () => {
     expect(theme.mode).toBe('dark');
     cycleTheme();
     expect(theme.mode).toBe('light');
     cycleTheme();
-    expect(theme.mode).toBe('system');
-    cycleTheme();
     expect(theme.mode).toBe('dark');
+  });
+
+  it('toggle from system flips to the opposite of the resolved theme', () => {
+    // jsdom has no prefers-color-scheme implementation; resolveTheme('system')
+    // returns 'dark' by default. The toggle should land on the opposite.
+    theme.mode = 'system';
+    const resolvedBefore = resolveTheme('system');
+    cycleTheme();
+    expect(theme.mode).toBe(resolvedBefore === 'dark' ? 'light' : 'dark');
   });
 
   it('applyThemeToHtml writes resolved theme to <html data-theme>', () => {

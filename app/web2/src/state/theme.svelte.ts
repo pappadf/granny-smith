@@ -15,9 +15,14 @@ export function setThemeMode(mode: ThemeMode): void {
   theme.mode = mode;
 }
 
-// Cycle dark -> light -> system -> dark (used by the toolbar toggle button).
+// Toggle between dark and light (used by the toolbar toggle button). Always
+// flips to the opposite of the currently *resolved* theme, so a click from
+// 'system' lands on the visible opposite — no silent no-op step. 'system'
+// remains the initial mode on first load (when no persisted preference
+// exists) but isn't reachable from this button afterward.
 export function cycleTheme(): void {
-  theme.mode = theme.mode === 'dark' ? 'light' : theme.mode === 'light' ? 'system' : 'dark';
+  const current = resolveTheme(theme.mode);
+  theme.mode = current === 'dark' ? 'light' : 'dark';
 }
 
 export function systemTheme(): ResolvedTheme {
