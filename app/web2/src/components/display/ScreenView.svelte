@@ -35,12 +35,25 @@
 
 <div class="screen-view">
   <div class="screen-wrap">
+    <!--
+      Intrinsic width/height attributes are static (Plus default). The
+      worker owns canvas resolution via emscripten_set_canvas_element_size
+      ("#screen", w, h) after transferControlToOffscreen runs; once that
+      transfer has happened the canvas's `width`/`height` properties can
+      no longer be assigned from the main thread (InvalidStateError).
+      Letting Svelte rebind them reactively from `machine.screen.*`
+      throws when the worker reports a resize, which aborts the rest of
+      that reactive batch — including the `style="…"` update below — so
+      CSS scaling stops following the actual screen size. The CSS
+      (style.width / style.height) is what drives layout and is safe
+      to update reactively.
+    -->
     <canvas
       id="screen"
       bind:this={canvas}
       tabindex="0"
-      width={machine.screen.width}
-      height={machine.screen.height}
+      width="512"
+      height="342"
       style="width: {cssWidth}px; height: {cssHeight}px"
     ></canvas>
   </div>

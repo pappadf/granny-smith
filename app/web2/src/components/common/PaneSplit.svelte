@@ -123,15 +123,38 @@
     z-index: 5;
     user-select: none;
   }
+  /* 1px visible line centered inside the 4px hit area. Same colour as
+     section dividers so the split reads as part of the same hairline
+     grid. The wider parent stays hover-able and draggable. */
+  .pane-sash::before {
+    content: '';
+    position: absolute;
+    background: var(--gs-border);
+    pointer-events: none;
+  }
   .pane-split:not(.vertical) > .pane-sash {
     cursor: col-resize;
     width: 4px;
     margin: 0 -2px;
   }
+  .pane-split:not(.vertical) > .pane-sash::before {
+    top: 0;
+    bottom: 0;
+    left: 50%;
+    width: 1px;
+    transform: translateX(-50%);
+  }
   .pane-split.vertical > .pane-sash {
     cursor: row-resize;
     height: 4px;
     margin: -2px 0;
+  }
+  .pane-split.vertical > .pane-sash::before {
+    left: 0;
+    right: 0;
+    top: 50%;
+    height: 1px;
+    transform: translateY(-50%);
   }
   .pane-sash:hover,
   .pane-sash.active {

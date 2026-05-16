@@ -13,7 +13,7 @@
   let { title, open, onToggle, count, actions, children }: Props = $props();
 </script>
 
-<section class="section" class:open>
+<section class="section gs-collapsible" class:open>
   <!-- svelte-ignore a11y_click_events_have_key_events -->
   <header class="header" onclick={onToggle} role="button" tabindex="-1" aria-expanded={open}>
     <span class="twistie">{open ? '▼' : '▶'}</span>
@@ -36,6 +36,14 @@
   .section {
     display: flex;
     flex-direction: column;
+  }
+  /* Divider between consecutive sections — no leading border above the
+     first one, no trailing border below the last one. `:global` because
+     each <section> is the root of its own CollapsibleSection instance,
+     so Svelte's per-component scoping would otherwise treat the second
+     selector as unmatched. */
+  :global(.gs-collapsible + .gs-collapsible) {
+    border-top: 1px solid var(--gs-border);
   }
   .header {
     height: 22px;

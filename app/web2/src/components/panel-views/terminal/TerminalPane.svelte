@@ -11,7 +11,21 @@
   } from '@/bus/emulator';
   import { setTerminalSink } from '@/bus/logSink';
   import { layout } from '@/state/layout.svelte';
+  import { theme } from '@/state/theme.svelte';
   import { registerTerminalInsert } from './terminalBridge';
+
+  // Resolve a CSS custom property against :root. Used to feed concrete
+  // colours into xterm.js, which doesn't accept var(...) references.
+  function readCssToken(name: string): string {
+    return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+  }
+  function terminalTheme() {
+    return {
+      background: readCssToken('--gs-terminal-bg') || '#0d0f11',
+      foreground: readCssToken('--gs-terminal-fg') || '#cccccc',
+      cursor: readCssToken('--gs-terminal-cursor') || '#cccccc',
+    };
+  }
 
   // xterm types kept opaque — the module is dynamic-imported so the
   // dependency is code-split and only loads when the Terminal tab first
@@ -25,6 +39,7 @@
     focus(): void;
     scrollToBottom(): void;
     cols: number;
+    options: { theme?: { background?: string; foreground?: string; cursor?: string } };
   }
   interface FitAddonLike {
     fit(): void;
@@ -234,6 +249,14 @@
     if (fitAddon) requestAnimationFrame(() => fitAddon?.fit());
   });
 
+  // Re-skin xterm when the user flips dark/light. xterm.js doesn't read
+  // CSS variables itself; we have to push concrete colours into its
+  // theme option on every change.
+  $effect(() => {
+    void theme.mode;
+    if (xterm) xterm.options.theme = terminalTheme();
+  });
+
   onMount(() => {
     let cleanup: (() => void) | null = null;
     void (async () => {
@@ -254,7 +277,7 @@
         // Match the log-buffer cap for memory symmetry. xterm's default
         // is 1000 lines; 5000 fits one user-session of debug output.
         scrollback: 5000,
-        theme: { background: '#0d0f11' },
+        theme: terminalTheme(),
       });
       fitAddon = new FitAddonCtor();
       xterm.loadAddon(fitAddon);
@@ -401,12 +424,12 @@
   .terminal-host {
     width: 100%;
     height: 100%;
-    background: #0d0f11;
+    background: var(--gs-terminal-bg);
     overflow: hidden;
     padding: 4px 6px;
     box-sizing: border-box;
   }
   .terminal-host :global(.xterm-viewport) {
-    background: #0d0f11 !important;
+    background: var(--gs-terminal-bg) !important;
   }
 </style>

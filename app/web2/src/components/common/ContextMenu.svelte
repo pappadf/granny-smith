@@ -158,9 +158,9 @@
 <style>
   .context-menu {
     position: fixed;
-    background: var(--gs-menu-bg, #252526);
-    color: var(--gs-menu-fg, #cccccc);
-    border: 1px solid var(--gs-border, #454545);
+    background: var(--gs-menu-bg);
+    color: var(--gs-menu-fg);
+    border: 1px solid var(--gs-border);
     border-radius: 4px;
     box-shadow: 0 4px 14px rgba(0, 0, 0, 0.5);
     min-width: 160px;
@@ -177,15 +177,15 @@
     cursor: pointer;
   }
   .item.highlight {
-    background: var(--gs-menu-hover, #04395e);
-    color: #ffffff;
+    background: var(--gs-menu-hover-bg);
+    color: var(--gs-menu-hover-fg);
   }
   .item.danger {
-    color: var(--gs-error-fg, #f48771);
+    color: var(--gs-toast-error);
   }
   .sep {
     height: 1px;
-    background: var(--gs-border, #454545);
+    background: var(--gs-border);
     margin: 4px 0;
   }
 </style>
