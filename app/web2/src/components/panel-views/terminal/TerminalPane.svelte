@@ -3,9 +3,11 @@
   import {
     gsEvalLine,
     getRuntimePrompt,
+    seedPrompt,
     shellInterrupt,
     tabComplete,
     isModuleReady,
+    whenModuleReady,
   } from '@/bus/emulator';
   import { setTerminalSink } from '@/bus/logSink';
   import { layout } from '@/state/layout.svelte';
@@ -365,7 +367,16 @@
         }
       });
 
+      // Seed the prompt once the WASM module's bridge is live. bootstrap()
+      // (in ScreenView's onMount) runs in parallel; we await its public
+      // ready signal — no polling, no settle guess.
       showPrompt(true);
+      void (async () => {
+        await whenModuleReady();
+        if (destroyed) return;
+        await seedPrompt();
+        if (!destroyed) showPrompt(true);
+      })();
       const onResize = () => fitAddon?.fit();
       window.addEventListener('resize', onResize);
       cleanup = () => window.removeEventListener('resize', onResize);

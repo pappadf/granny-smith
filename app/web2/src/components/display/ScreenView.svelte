@@ -78,6 +78,7 @@
 <div class="screen-view">
   <div class="screen-wrap">
     <canvas
+      id="screen"
       bind:this={canvas}
       tabindex="0"
       width={machine.screen.width}

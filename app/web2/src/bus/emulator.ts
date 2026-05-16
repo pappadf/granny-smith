@@ -61,6 +61,19 @@ let bridgePtr = 0;
 let cmdInFlight = false;
 const cmdWaiters: Array<() => void> = [];
 
+// Single-source-of-truth ready signal. Consumers `await whenModuleReady()`
+// rather than polling isModuleReady() — bootstrap() resolves this exactly
+// when moduleReady flips to true (and the machine.register bridge call
+// has completed).
+let resolveReady: (() => void) | null = null;
+const readyPromise: Promise<void> = new Promise((res) => {
+  resolveReady = res;
+});
+
+export function whenModuleReady(): Promise<void> {
+  return readyPromise;
+}
+
 // Run-state mirror so we can ignore redundant transitions.
 let isRunningUI = false;
 let lastScreenW = 0;
@@ -102,6 +115,10 @@ export async function bootstrap(canvas: HTMLCanvasElement, wasmArgs: string[] = 
   // images. Matches app/web/js/main.js:81-83.
   const id = getOrCreateMachine();
   await gsEval('machine.register', [id.id, id.created]);
+
+  // Resolve the public ready signal — TerminalPane (and anyone else
+  // who needs the bridge live) is awaiting this.
+  resolveReady?.();
 }
 
 export function isModuleReady(): boolean {
@@ -152,6 +169,16 @@ export async function gsEvalLine(line: string): Promise<number> {
 
 export function getRuntimePrompt(): string | null {
   return cachedPrompt;
+}
+
+// Seed the cached prompt from the C-side `shell.prompt` attribute.
+// Called once by TerminalPane on mount so the first prompt is visible
+// before any user input. After this, gsEvalLine keeps cachedPrompt in
+// sync via the return value of `shell.run`.
+export async function seedPrompt(): Promise<void> {
+  if (!moduleReady) return;
+  const r = await gsEval('shell.prompt');
+  if (typeof r === 'string' && r.length) cachedPrompt = r;
 }
 
 export async function shellInterrupt(): Promise<void> {

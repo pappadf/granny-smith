@@ -185,7 +185,7 @@ STATIC_JS_DIR := $(WEB_DIR)/js
 .PHONY: all release debug sanitize copy-static run run-legacy \
         headless unit-test integration-test integration-test-valgrind \
         e2e-test test clean help FORCE \
-        ui2 ui2-dev ui2-test ui2-check run2
+        ui2 ui2-dev ui2-test ui2-check ui2-diag run2
 
 # -- WASM build --
 
@@ -370,6 +370,21 @@ ui2-test:
 
 ui2-check:
 	cd $(WEB2_DIR) && npm run check && npm run lint
+
+# Headless diagnostic — spawns the dev server + drives Chromium via
+# Playwright, captures console output / pageerror / xterm contents,
+# and prints a JSON report. Useful for triaging "doesn't boot" bugs
+# without an interactive browser. Depends on tests/e2e's Playwright
+# install (chromium pre-fetched there).
+#
+# Environment knobs (forwarded to scripts/ui2-diag.mjs):
+#   GL=swiftshader (default) | native | disable   — WebGL backend
+#   COMMANDS='cpu.pc;rom list'                    — type these in
+#   SETTLE=8000                                   — wait ms after boot
+#   PORT=18181                                    — dev server port
+#   HEADLESS=0                                    — show the browser
+ui2-diag: ui2
+	@/usr/bin/env node scripts/ui2-diag.mjs
 
 # run2 is an alias for `run` for muscle-memory continuity. The Phase 7
 # retire pass made `run` itself serve the new UI; this alias can be
