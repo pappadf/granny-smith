@@ -27,7 +27,7 @@ describe('shortModel', () => {
 describe('DEFAULT_CONFIG', () => {
   it('has all six required fields', () => {
     expect(Object.keys(DEFAULT_CONFIG).sort()).toEqual(
-      ['cd', 'fd', 'hd', 'model', 'ram', 'vrom'].sort(),
+      ['cd', 'floppies', 'hd', 'model', 'ram', 'vrom'].sort(),
     );
   });
 

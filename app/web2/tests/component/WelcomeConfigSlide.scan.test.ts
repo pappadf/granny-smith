@@ -44,11 +44,26 @@ vi.mock('@/bus/emulator', async (importOriginal) => {
       }
       if (path === 'machine.profile') {
         const id = (args?.[0] as string) ?? '';
-        const names: Record<string, string> = {
-          plus: 'Macintosh Plus',
-          se30: 'Macintosh SE/30',
+        const byId: Record<string, object> = {
+          plus: {
+            name: 'Macintosh Plus',
+            needs_vrom: false,
+            ram_options: [1024, 2048, 4096],
+            ram_default: 4096,
+            floppy_slots: [
+              { label: 'Internal Floppy', kind: 'standard' },
+              { label: 'External Floppy', kind: 'standard' },
+            ],
+          },
+          se30: {
+            name: 'Macintosh SE/30',
+            needs_vrom: true,
+            ram_options: [2048, 4096, 8192, 16384],
+            ram_default: 8192,
+            floppy_slots: [{ label: 'Internal Floppy', kind: 'hd' }],
+          },
         };
-        return JSON.stringify({ name: names[id] ?? id });
+        return JSON.stringify(byId[id] ?? { name: id });
       }
       return null;
     },

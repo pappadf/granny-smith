@@ -33,7 +33,7 @@
       model: r.model,
       ram: r.ram,
       vrom: '(auto)',
-      fd: '',
+      floppies: [],
       hd: '',
       cd: '',
     });

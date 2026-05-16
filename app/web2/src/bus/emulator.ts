@@ -309,8 +309,10 @@ export async function initEmulator(config: MachineConfig): Promise<void> {
       return;
     }
   }
-  if (config.fd && config.fd !== '(none)') {
-    await gsEval('floppy.drives[0].insert', [config.fd, true]);
+  for (let i = 0; i < (config.floppies?.length ?? 0); i++) {
+    const path = config.floppies[i];
+    if (!path || path === '(none)') continue;
+    await gsEval(`floppy.drives[${i}].insert`, [path, true]);
   }
   if (config.hd && config.hd !== '(none)') {
     await gsEval('scsi.attach_hd', [config.hd, 0]);

@@ -39,11 +39,26 @@ vi.mock('@/bus/emulator', async (importOriginal) => {
       }
       if (path === 'machine.profile') {
         const id = (args?.[0] as string) ?? '';
-        const names: Record<string, string> = {
-          plus: 'Macintosh Plus',
-          se30: 'Macintosh SE/30',
+        const byId: Record<string, object> = {
+          plus: {
+            name: 'Macintosh Plus',
+            needs_vrom: false,
+            ram_options: [1024, 2048, 4096],
+            ram_default: 4096,
+            floppy_slots: [
+              { label: 'Internal Floppy', kind: 'standard' },
+              { label: 'External Floppy', kind: 'standard' },
+            ],
+          },
+          se30: {
+            name: 'Macintosh SE/30',
+            needs_vrom: true,
+            ram_options: [2048, 4096, 8192, 16384],
+            ram_default: 8192,
+            floppy_slots: [{ label: 'Internal Floppy', kind: 'hd' }],
+          },
         };
-        return JSON.stringify({ name: names[id] ?? id });
+        return JSON.stringify(byId[id] ?? { name: id });
       }
       return null;
     },
@@ -75,16 +90,77 @@ describe('WelcomeConfigSlide', () => {
     expect(container.querySelector('#cfg-rom')).toBeNull();
   });
 
-  it('renders the remaining fields with prototype defaults', async () => {
+  it('renders profile-driven defaults for the chosen model', async () => {
     const { container } = render(WelcomeConfigSlide);
     await waitFor(() => {
       const sel = container.querySelector('#cfg-model') as HTMLSelectElement | null;
       if (!sel || sel.options.length === 0) throw new Error('not ready');
     });
-    expect((container.querySelector('#cfg-vrom') as HTMLSelectElement).value).toBe('(auto)');
+    // Default model is 'plus' (first scanned). Its profile reports
+    // needs_vrom=false (VROM row hidden), ram_default=4096 KB, and two
+    // floppy slots.
+    expect(container.querySelector('#cfg-vrom')).toBeNull();
     expect((container.querySelector('#cfg-ram') as HTMLSelectElement).value).toBe('4 MB');
-    expect((container.querySelector('#cfg-fd') as HTMLSelectElement).value).toBe('(none)');
+    expect(container.querySelectorAll('select[id^="cfg-fd"]').length).toBe(2);
     expect((container.querySelector('#cfg-cd') as HTMLSelectElement).value).toBe('(none)');
+  });
+
+  it('shows the Video ROM row only for models whose profile reports needs_vrom', async () => {
+    const { container } = render(WelcomeConfigSlide);
+    await waitFor(() => {
+      const sel = container.querySelector('#cfg-model') as HTMLSelectElement | null;
+      if (!sel || sel.options.length === 0) throw new Error('not ready');
+    });
+    // Plus: needs_vrom=false → hidden.
+    expect(container.querySelector('#cfg-vrom')).toBeNull();
+    const modelSel = container.querySelector('#cfg-model') as HTMLSelectElement;
+    modelSel.value = 'se30';
+    modelSel.dispatchEvent(new Event('change', { bubbles: true }));
+    await waitFor(() => {
+      // SE/30: needs_vrom=true → visible.
+      if (!container.querySelector('#cfg-vrom')) throw new Error('vrom not shown yet');
+    });
+  });
+
+  it('RAM options follow machine.profile and reset to ram_default on model switch', async () => {
+    const { container } = render(WelcomeConfigSlide);
+    await waitFor(() => {
+      const sel = container.querySelector('#cfg-model') as HTMLSelectElement | null;
+      if (!sel || sel.options.length === 0) throw new Error('not ready');
+    });
+    let ramSel = container.querySelector('#cfg-ram') as HTMLSelectElement;
+    // Plus: ram_options [1, 2, 4] MB, default 4 MB.
+    expect(Array.from(ramSel.options).map((o) => o.textContent)).toEqual(['1 MB', '2 MB', '4 MB']);
+    expect(ramSel.value).toBe('4 MB');
+    const modelSel = container.querySelector('#cfg-model') as HTMLSelectElement;
+    modelSel.value = 'se30';
+    modelSel.dispatchEvent(new Event('change', { bubbles: true }));
+    await waitFor(() => {
+      ramSel = container.querySelector('#cfg-ram') as HTMLSelectElement;
+      // SE/30: ram_options [2, 4, 8, 16] MB, default 8 MB.
+      const labels = Array.from(ramSel.options).map((o) => o.textContent);
+      if (labels.join() !== ['2 MB', '4 MB', '8 MB', '16 MB'].join())
+        throw new Error('ram options not refreshed yet');
+    });
+    expect(ramSel.value).toBe('8 MB');
+  });
+
+  it('renders one floppy row per profile.floppy_slots entry', async () => {
+    const { container } = render(WelcomeConfigSlide);
+    await waitFor(() => {
+      const sel = container.querySelector('#cfg-model') as HTMLSelectElement | null;
+      if (!sel || sel.options.length === 0) throw new Error('not ready');
+    });
+    // Plus: two floppy slots.
+    expect(container.querySelectorAll('select[id^="cfg-fd"]').length).toBe(2);
+    const modelSel = container.querySelector('#cfg-model') as HTMLSelectElement;
+    modelSel.value = 'se30';
+    modelSel.dispatchEvent(new Event('change', { bubbles: true }));
+    await waitFor(() => {
+      // SE/30: one floppy slot.
+      if (container.querySelectorAll('select[id^="cfg-fd"]').length !== 1)
+        throw new Error('floppy rows not resized yet');
+    });
   });
 
   it('Back link returns to the home slide', async () => {

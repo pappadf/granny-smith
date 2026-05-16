@@ -20,20 +20,33 @@
     compatible: string[];
   }
 
+  // Static configuration shape per model, returned by `machine.profile(id)`.
+  // The slide reads `name` for the dropdown label, `needs_vrom` to decide
+  // whether to show the Video ROM row, `ram_options` / `ram_default` to
+  // build the RAM dropdown, and `floppy_slots` to know how many floppy
+  // rows to render (with what label).
+  interface MachineProfile {
+    name?: string;
+    needs_vrom?: boolean;
+    ram_options?: number[]; // KB
+    ram_default?: number; // KB
+    floppy_slots?: Array<{ label?: string; kind?: string }>;
+  }
+
   // Local form state.
   let modelId = $state('');
   let vrom = $state(DEFAULT_CONFIG.vrom);
   let ram = $state(DEFAULT_CONFIG.ram);
   let romPath = $state('');
-  let fd = $state(NONE_SENTINEL);
+  let floppies = $state<string[]>([]);
   let hd = $state(NONE_SENTINEL);
   let cd = $state(NONE_SENTINEL);
 
   // Discovery state.
   let scanning = $state(true);
   let allRoms = $state<RomEntry[]>([]);
-  // model id -> display name, populated lazily via machine.profile.
-  let modelNames = $state<Record<string, string>>({});
+  // model id -> profile, populated lazily via gsEval('machine.profile').
+  let profiles = $state<Record<string, MachineProfile>>({});
   // model id -> ROMs that boot this model.
   let romsByModel = $derived.by(() => {
     const out: Record<string, RomEntry[]> = {};
@@ -45,16 +58,30 @@
     return out;
   });
   let modelOptions = $derived(
-    Object.keys(romsByModel).map((id) => ({ id, label: modelNames[id] ?? id })),
+    Object.keys(romsByModel).map((id) => ({ id, label: profiles[id]?.name ?? id })),
   );
   let romsForCurrentModel = $derived(modelId ? (romsByModel[modelId] ?? []) : []);
   let needsRomPicker = $derived(romsForCurrentModel.length > 1);
-  let modelName = $derived(modelId ? (modelNames[modelId] ?? modelId) : '');
+  let currentProfile = $derived(modelId ? profiles[modelId] : undefined);
+  let modelName = $derived(currentProfile?.name ?? modelId);
+  let needsVrom = $derived(currentProfile?.needs_vrom === true);
+  let ramOptions = $derived.by(() => {
+    const opts = currentProfile?.ram_options ?? [];
+    if (opts.length) return opts.map(formatRamKb);
+    return ['1 MB', '2 MB', '4 MB', '8 MB', '16 MB'];
+  });
+  let floppySlots = $derived(currentProfile?.floppy_slots ?? []);
 
   let vromOptions = $state<string[]>(['(auto)']);
   let fdOptions = $state<string[]>([NONE_SENTINEL]);
   let hdOptions = $state<string[]>([NONE_SENTINEL]);
   let cdOptions = $state<string[]>([NONE_SENTINEL]);
+
+  function formatRamKb(kb: number): string {
+    if (kb >= 1024 && kb % 1024 === 0) return `${kb / 1024} MB`;
+    if (kb >= 1024) return `${(kb / 1024).toFixed(1)} MB`;
+    return `${kb} KB`;
+  }
 
   async function identifyRom(path: string): Promise<RomEntry | null> {
     const r = await gsEval('rom.identify', [path]);
@@ -78,22 +105,19 @@
     }
   }
 
-  async function resolveModelName(id: string): Promise<string> {
-    if (modelNames[id]) return modelNames[id];
+  async function resolveProfile(id: string): Promise<MachineProfile> {
+    if (profiles[id]) return profiles[id];
     const r = await gsEval('machine.profile', [id]);
+    let parsed: MachineProfile = {};
     if (typeof r === 'string') {
       try {
-        const parsed = JSON.parse(r) as { name?: string };
-        if (parsed.name) {
-          modelNames = { ...modelNames, [id]: parsed.name };
-          return parsed.name;
-        }
+        parsed = JSON.parse(r) as MachineProfile;
       } catch {
-        /* fall through */
+        /* fall through with empty profile */
       }
     }
-    modelNames = { ...modelNames, [id]: id };
-    return id;
+    profiles = { ...profiles, [id]: parsed };
+    return parsed;
   }
 
   async function refreshOpfs() {
@@ -119,7 +143,7 @@
         if (!seenIds.includes(id)) seenIds.push(id);
       }
     }
-    await Promise.all(seenIds.map(resolveModelName));
+    await Promise.all(seenIds.map(resolveProfile));
 
     // Default the model selection to the first compatible model we found.
     if (!modelId || !seenIds.includes(modelId)) {
@@ -144,6 +168,19 @@
     }
   });
 
+  // When the *selected model* changes, reset RAM to the new model's
+  // ram_default (matches the legacy dialog — every model change rebuilds
+  // the RAM dropdown around the profile's recommended value) and resize
+  // the floppy-selection array to match the new slot count.
+  let appliedFor = $state('');
+  $effect(() => {
+    if (!currentProfile || modelId === appliedFor) return;
+    appliedFor = modelId;
+    const dflt = currentProfile.ram_default;
+    ram = dflt ? formatRamKb(dflt) : (ramOptions[0] ?? DEFAULT_CONFIG.ram);
+    floppies = new Array<string>(floppySlots.length).fill(NONE_SENTINEL);
+  });
+
   onMount(() => {
     void (async () => {
       await whenModuleReady();
@@ -164,10 +201,12 @@
     return null;
   }
 
-  async function onFdChange(e: Event) {
+  async function onFdChange(e: Event, slotIndex: number) {
     const v = (e.target as HTMLSelectElement).value;
     const result = await interceptIfUpload(v, 'fd');
-    fd = result ?? NONE_SENTINEL;
+    const next = floppies.slice();
+    next[slotIndex] = result ?? NONE_SENTINEL;
+    floppies = next;
   }
   async function onHdChange(e: Event) {
     const v = (e.target as HTMLSelectElement).value;
@@ -187,8 +226,10 @@
       return;
     }
     const selected = romsForCurrentModel.find((r) => r.path === romPath) ?? romsForCurrentModel[0];
-    const vromPath = vrom === '(auto)' ? '(auto)' : `/opfs/images/vrom/${vrom}`;
-    const fdPath = fd === NONE_SENTINEL ? NONE_SENTINEL : `/opfs/images/fd/${fd}`;
+    const vromPath = !needsVrom || vrom === '(auto)' ? '(auto)' : `/opfs/images/vrom/${vrom}`;
+    const floppyPaths = floppies.map((f) =>
+      f === NONE_SENTINEL || !f ? '' : `/opfs/images/fd/${f}`,
+    );
     const hdPath = hd === NONE_SENTINEL ? NONE_SENTINEL : `/opfs/images/hd/${hd}`;
     const cdPath = cd === NONE_SENTINEL ? NONE_SENTINEL : `/opfs/images/cd/${cd}`;
     await initEmulator({
@@ -197,7 +238,7 @@
       rom: selected.path,
       vrom: vromPath,
       ram,
-      fd: fdPath,
+      floppies: floppyPaths,
       hd: hdPath,
       cd: cdPath,
     });
@@ -243,33 +284,39 @@
           </select>
         </div>
       {/if}
-      <div class="form-row">
-        <label for="cfg-vrom">Video ROM</label>
-        <select id="cfg-vrom" bind:value={vrom}>
-          {#each vromOptions as v (v)}
-            <option>{v}</option>
-          {/each}
-        </select>
-      </div>
+      {#if needsVrom}
+        <div class="form-row">
+          <label for="cfg-vrom">Video ROM</label>
+          <select id="cfg-vrom" bind:value={vrom}>
+            {#each vromOptions as v (v)}
+              <option>{v}</option>
+            {/each}
+          </select>
+        </div>
+      {/if}
       <div class="form-row">
         <label for="cfg-ram">RAM</label>
         <select id="cfg-ram" bind:value={ram}>
-          <option>1 MB</option>
-          <option>2 MB</option>
-          <option>4 MB</option>
-          <option>8 MB</option>
-          <option>16 MB</option>
-        </select>
-      </div>
-      <div class="form-divider"></div>
-      <div class="form-row">
-        <label for="cfg-fd">Internal Floppy</label>
-        <select id="cfg-fd" value={fd} onchange={onFdChange}>
-          {#each fdOptions as opt (opt)}
+          {#each ramOptions as opt (opt)}
             <option>{opt}</option>
           {/each}
         </select>
       </div>
+      <div class="form-divider"></div>
+      {#each floppySlots as slot, i (i)}
+        <div class="form-row">
+          <label for={`cfg-fd${i}`}>{slot.label ?? `Floppy ${i}`}</label>
+          <select
+            id={`cfg-fd${i}`}
+            value={floppies[i] ?? NONE_SENTINEL}
+            onchange={(e) => onFdChange(e, i)}
+          >
+            {#each fdOptions as opt (opt)}
+              <option>{opt}</option>
+            {/each}
+          </select>
+        </div>
+      {/each}
       <div class="form-row">
         <label for="cfg-hd">SCSI HD 0</label>
         <select id="cfg-hd" value={hd} onchange={onHdChange}>

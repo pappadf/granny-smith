@@ -13,7 +13,9 @@ export interface MachineConfig {
   rom?: string;
   vrom: string;
   ram: string;
-  fd: string;
+  /** Ordered list of floppy image paths, one per drive slot. Entries that
+   *  are empty / '(none)' are skipped (no insertion into that slot). */
+  floppies: string[];
   hd: string;
   cd: string;
 }

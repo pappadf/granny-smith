@@ -19,7 +19,7 @@ export const DEFAULT_CONFIG: MachineConfig = {
   model: 'Macintosh Plus',
   vrom: '(auto)',
   ram: '4 MB',
-  fd: '(none)',
+  floppies: [],
   hd: 'hd1.img',
   cd: '(none)',
 };

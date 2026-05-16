@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { machine } from '@/state/machine.svelte';
-  import { bootstrap, gsEval, isModuleReady } from '@/bus/emulator';
+  import { bootstrap } from '@/bus/emulator';
   import { showNotification } from '@/state/toasts.svelte';
 
   let canvas: HTMLCanvasElement | undefined = $state(undefined);
@@ -13,6 +13,14 @@
   const cssWidth = $derived(Math.round(machine.screen.width * (machine.zoom / 100)));
   const cssHeight = $derived(Math.round(machine.screen.height * (machine.zoom / 100)));
 
+  // Input handling lives entirely on the worker side via Emscripten's
+  // built-in proxied callbacks (emscripten_set_mousemove_callback("#screen",
+  // …) etc., registered after transferControlToOffscreen). We deliberately
+  // do NOT attach JS-side mouse/keyboard handlers here — every such
+  // handler would issue a gsEval round-trip per event and saturate the
+  // bridge queue, starving the worker's render tick. See app/web-legacy
+  // for the same pattern.
+
   onMount(() => {
     if (!canvas) return;
     // Boot the Module on first canvas mount. Subsequent mounts (component
@@ -23,56 +31,6 @@
       showNotification('Emulator failed to start (see console)', 'error');
     });
   });
-
-  // ----- Input forwarding -----
-  // Mouse: emit position + button events to input.mouse.* via gsEval.
-  // Keyboard: focus the canvas, forward keydown/keyup to input.keyboard.*.
-  // These shell-line paths exist on the C side post-shell-as-object-model
-  // proposal; the exact method names may shift — keep gsEval calls as the
-  // single seam so updates land in one place.
-
-  function rectScale(ev: MouseEvent): { x: number; y: number } {
-    if (!canvas) return { x: 0, y: 0 };
-    const rect = canvas.getBoundingClientRect();
-    // Map CSS pixels back to the canvas's logical resolution.
-    const scaleX = machine.screen.width / rect.width;
-    const scaleY = machine.screen.height / rect.height;
-    return {
-      x: Math.round((ev.clientX - rect.left) * scaleX),
-      y: Math.round((ev.clientY - rect.top) * scaleY),
-    };
-  }
-
-  function onMouseMove(ev: MouseEvent) {
-    if (!isModuleReady()) return;
-    const { x, y } = rectScale(ev);
-    void gsEval('input.mouse.move', [x, y]);
-  }
-
-  function onMouseDown(ev: MouseEvent) {
-    if (!isModuleReady()) return;
-    ev.preventDefault();
-    canvas?.focus();
-    void gsEval('input.mouse.button', ['down']);
-  }
-
-  function onMouseUp(ev: MouseEvent) {
-    if (!isModuleReady()) return;
-    ev.preventDefault();
-    void gsEval('input.mouse.button', ['up']);
-  }
-
-  function onKeyDown(ev: KeyboardEvent) {
-    if (!isModuleReady()) return;
-    ev.preventDefault();
-    void gsEval('input.keyboard.down', [ev.code]);
-  }
-
-  function onKeyUp(ev: KeyboardEvent) {
-    if (!isModuleReady()) return;
-    ev.preventDefault();
-    void gsEval('input.keyboard.up', [ev.code]);
-  }
 </script>
 
 <div class="screen-view">
@@ -84,11 +42,6 @@
       width={machine.screen.width}
       height={machine.screen.height}
       style="width: {cssWidth}px; height: {cssHeight}px"
-      onmousemove={onMouseMove}
-      onmousedown={onMouseDown}
-      onmouseup={onMouseUp}
-      onkeydown={onKeyDown}
-      onkeyup={onKeyUp}
     ></canvas>
   </div>
 </div>

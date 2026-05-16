@@ -32,7 +32,7 @@ describe('emulator lifecycle (no Module in jsdom)', () => {
       model: 'Macintosh Plus',
       vrom: '(auto)',
       ram: '4 MB',
-      fd: '(none)',
+      floppies: [],
       hd: '(none)',
       cd: '(none)',
     });
