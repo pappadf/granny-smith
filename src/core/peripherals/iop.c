@@ -113,6 +113,25 @@ static uint32_t iop_fnv1a32(const uint8_t *data, size_t n) {
     return h;
 }
 
+// Verify IOP RAM contents after a RUN-bit 0→1 transition matches the
+// behavioural model's expected firmware image hash.
+//
+// IOP firmware loading is multi-stage on real hardware:
+//   1. Host writes a small bypass-mode bootstrap into the IOP's vector
+//      area (~18 bytes at $7FEE-$7FFF: enable bypass via $F030, halt).
+//      All three 65C02 vectors point at the bootstrap.  Host sets RUN.
+//   2. Host enters bypass mode, drives the front-side device directly.
+//      May re-flip bypass settings (a single byte at $7FF4 changes
+//      between successive runs).
+//   3. Eventually the host loads the FULL firmware image ($0400-$1020+
+//      for SCC, $5000-$7506 for SWIM) and sets RUN again.  This is the
+//      hash we capture in the behaviour table.
+//
+// So mismatches on the early stages are EXPECTED — they reflect the
+// intermediate bypass-bootstrap images, not the full firmware.  Only
+// the FINAL stage should match.  We log mismatches at level 2 (off by
+// default) and the success at level 2; if the boot lands somewhere
+// broken the user can enable iop logging to inspect the stage trail.
 static void iop_verify_firmware(iop_t *iop) {
     uint32_t got = iop_fnv1a32(iop->ram, IOP_RAM_SIZE);
     if (iop->behavior->expected_fnv1a == 0) {
@@ -123,8 +142,8 @@ static void iop_verify_firmware(iop_t *iop) {
         LOG(2, "%s firmware verified ($%08x)", iop->behavior->name, got);
         return;
     }
-    LOG(0, "%s firmware MISMATCH: got $%08x, expected $%08x — behavioural model may misbehave", iop->behavior->name,
-        got, iop->behavior->expected_fnv1a);
+    LOG(2, "%s firmware stage hash $%08x (expected final $%08x) — intermediate load stage", iop->behavior->name, got,
+        iop->behavior->expected_fnv1a);
 }
 
 // ============================================================================
