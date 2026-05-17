@@ -7,14 +7,12 @@
 // catalog file into RAM, and exposes path-lookup, directory-enumerate, and
 // fork-read entry points for the image_vfs backend.
 //
-// Scope (Phase 2):
+// Scope:
 //   - 400K / 800K / 1.4M floppies with no partition map (partition_offset=0).
 //   - HFS partitions inside an APM image.
-//   - Data and resource forks via three-extent file record; the extent
-//     overflow file is not consulted (fragmented large files will read
-//     only the portion captured in the catalog record).  Realistic 800K
-//     and A/UX install-era HFS volumes almost never fragment to the point
-//     of overflow; revisit if a test fixture hits the limit.
+//   - Data and resource forks via the three-extent inline file record; the
+//     extent overflow file is not consulted, so fragmented large files will
+//     read only the portion captured in the catalog record.
 //   - MacRoman -> UTF-8 transcoding on enumeration.
 
 #pragma once

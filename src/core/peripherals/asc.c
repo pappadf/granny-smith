@@ -666,10 +666,18 @@ void asc_render(asc_t *asc, int16_t *buffer, int nsamples) {
                 asc->wave_phase[v] = (asc->wave_phase[v] + asc->wave_incr[v]) & PHASE_MASK;
             }
 
-            // Scale by volume and expand to 16-bit; output same value to both channels
+            // Scale by volume and expand to 16-bit; output same value to both channels.
+            // 4 voices × ±128 × vol(7) × 32 = up to ±114688 — far past int16's ±32767,
+            // so saturate explicitly rather than letting the cast wrap into garbage noise.
             int16_t out = 0;
-            if (active_count > 0)
-                out = (int16_t)((mixed * vol) << 5);
+            if (active_count > 0) {
+                int32_t scaled = mixed * vol * 32;
+                if (scaled > INT16_MAX)
+                    scaled = INT16_MAX;
+                else if (scaled < INT16_MIN)
+                    scaled = INT16_MIN;
+                out = (int16_t)scaled;
+            }
 
             buffer[i * 2] = out;
             buffer[i * 2 + 1] = out;

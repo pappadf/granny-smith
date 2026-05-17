@@ -36,9 +36,6 @@ enum logpoint_kind {
     LP_KIND_RW = 3, // fire on read or write
 };
 
-struct config;
-typedef struct config config_t;
-
 // === Constants ===
 #define TRACE_ENTRY_PC  0
 #define TRACE_ENTRY_LOG 1
@@ -93,7 +90,6 @@ struct debug {
     struct object *mac_globals_object; // debug.mac.globals
 };
 
-struct debug;
 typedef struct debug debug_t;
 
 // === Lifecycle (Constructor / Destructor) ===
@@ -215,12 +211,12 @@ int debug_trace_is_active(void);
 bool debug_active(debug_t *debug);
 
 // Check if prompt/status line is enabled (IMP-308)
-int debug_prompt_enabled(void);
+bool debug_prompt_enabled(void);
 
 // Set the default for prompt (used by --no-prompt CLI flag so that every
 // subsequent shell connection inherits the setting without having to send
 // "prompt off" first).
-void debug_set_prompt_default(int enabled);
+void debug_set_prompt_default(bool enabled);
 
 // === Exception trace ring ===
 // Records every CPU bus error / exception as a ring buffer entry.  The

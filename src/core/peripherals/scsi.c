@@ -327,11 +327,23 @@ static void run_cmd(scsi_t *scsi) {
     case CMD_WRITE: {
 
         scsi->cmd.lun = scsi->buf.data[1] >> 5;
-        scsi->cmd.lba = scsi->buf.data[1] << 16 & 0x1FFFFF | scsi->buf.data[2] << 8 | scsi->buf.data[3];
-        scsi->cmd.tl = scsi->cmd.tl = (scsi->buf.data[4] - 1 & 0xFF) + 1;
+        // 6-byte CDB LBA: 5 low bits of data[1] form bits [20:16], data[2..3]
+        // form bits [15:0]. Promote each byte to uint32_t before shifting so
+        // the result is unambiguous regardless of int width.
+        scsi->cmd.lba = (((uint32_t)scsi->buf.data[1] & 0x1F) << 16) | ((uint32_t)scsi->buf.data[2] << 8) |
+                        (uint32_t)scsi->buf.data[3];
+        // 6-byte CDB tl: 0 means 256 blocks (per SCSI-1). Compute (tl - 1) mod
+        // 256 + 1 to convert; mask after the subtract to keep it inside uint8.
+        scsi->cmd.tl = (uint16_t)((((uint16_t)scsi->buf.data[4] - 1) & 0xFF) + 1);
 
-        assert((scsi->buf.data[5] & 0x3) == 0); // FLAG = LINK = 0
-        assert(scsi->cmd.lun == 0);
+        // FLAG/LINK and non-zero LUN aren't modeled. Decline with CHECK
+        // CONDITION rather than asserting — the guest may legitimately try.
+        if ((scsi->buf.data[5] & 0x3) != 0 || scsi->cmd.lun != 0) {
+            LOG(1, "SCSI %s with FLAG/LINK or LUN!=0 (data[5]=0x%02X lun=%u) — declining",
+                scsi->cmd.opcode == CMD_WRITE ? "WRITE" : "READ", scsi->buf.data[5], scsi->cmd.lun);
+            scsi_check_condition(scsi, SENSE_ILLEGAL_REQUEST, ASC_INVALID_OPCODE, 0x00);
+            break;
+        }
 
         uint16_t blk_sz = scsi->devices[target].block_size;
 
@@ -345,7 +357,15 @@ static void run_cmd(scsi_t *scsi) {
             break;
         }
 
-        assert(scsi->cmd.tl * blk_sz <= BUF_LIMIT);
+        // Promote both operands before the multiply so an overflow can't slip
+        // past a 32-bit-int host. tl is up to 256, blk_sz is typically 512 or
+        // 2048, so the product stays inside BUF_LIMIT in practice.
+        if ((size_t)scsi->cmd.tl * (size_t)blk_sz > BUF_LIMIT) {
+            LOG(1, "SCSI %s transfer too large: tl=%u blk_sz=%u > BUF_LIMIT=%zu",
+                scsi->cmd.opcode == CMD_WRITE ? "WRITE" : "READ", scsi->cmd.tl, blk_sz, (size_t)BUF_LIMIT);
+            scsi_check_condition(scsi, SENSE_ILLEGAL_REQUEST, ASC_INVALID_OPCODE, 0x00);
+            break;
+        }
 
         if (scsi->cmd.opcode == CMD_WRITE) {
             phase_data_out(scsi, blk_sz * scsi->cmd.tl);
@@ -545,8 +565,12 @@ static void run_cmd(scsi_t *scsi) {
         size_t sz = disk_size(image) / blk_sz;
 
         phase_data_in(scsi, 8);
-        *(uint32_t *)(scsi->buf.data) = BE32((uint32_t)sz - 1);
-        *(uint32_t *)(scsi->buf.data + 4) = BE32((uint32_t)blk_sz);
+        // memcpy through uint8_t* to dodge strict-aliasing UB; gcc/clang fold
+        // constant-size memcpy to a single MOV.
+        uint32_t last_lba = BE32((uint32_t)sz - 1);
+        uint32_t be_blk_sz = BE32((uint32_t)blk_sz);
+        memcpy(scsi->buf.data, &last_lba, 4);
+        memcpy(scsi->buf.data + 4, &be_blk_sz, 4);
 
         break;
     }
@@ -751,14 +775,10 @@ static void write_icr(scsi_t *scsi, uint8_t val) {
             SCSI_TRACE("write_icr: MESSAGE OUT byte=0x%02X", msg);
             if (msg >= 0x80) {
                 // IDENTIFY: LUN in bits 0-2, disconnect privilege in bit 6.
-                // After IDENTIFY, resume the original phase's completion —
-                // if we came from data_in/data_out with transfer done, go
-                // to status; otherwise return to command phase.
-                if (scsi->buf.size == 0 &&
-                    (scsi->bus.saved_phase == scsi_data_in || scsi->bus.saved_phase == scsi_data_out))
-                    phase_status(scsi, STATUS_GOOD);
-                else
-                    phase_status(scsi, STATUS_GOOD);
+                // Both branches of the saved_phase test currently complete with
+                // STATUS_GOOD; the dispatch is kept as a hook for future
+                // phase-specific message handling.
+                phase_status(scsi, STATUS_GOOD);
             } else if (msg == 0x06 || msg == 0x0C) {
                 // ABORT or BUS DEVICE RESET: go bus free
                 phase_free(scsi);
@@ -1033,16 +1053,20 @@ static uint8_t read_uint8(void *s, uint32_t addr) {
     return 0;
 }
 
-// Read a 16-bit word from SCSI controller (not supported)
+// Read a 16-bit word from SCSI controller. The NCR 5380 is byte-only; wide
+// reads come from buggy drivers or debugger probes. Log and return a safe
+// floating-bus value rather than aborting.
 static uint16_t read_uint16(void *scsi, uint32_t addr) {
-    assert(0);
-    return 0;
+    (void)scsi;
+    LOG(1, "scsi: word read at 0x%08X — NCR 5380 is byte-only, returning 0xFFFF", addr);
+    return 0xFFFF;
 }
 
-// Read a 32-bit longword from SCSI controller (not supported)
+// Read a 32-bit longword from SCSI controller — same byte-only rationale.
 static uint32_t read_uint32(void *scsi, uint32_t addr) {
-    GS_ASSERT(0);
-    return 0;
+    (void)scsi;
+    LOG(1, "scsi: long read at 0x%08X — NCR 5380 is byte-only, returning 0xFFFFFFFF", addr);
+    return 0xFFFFFFFFu;
 }
 
 // Write a byte to SCSI controller register
@@ -1170,14 +1194,15 @@ static void write_uint8(void *s, uint32_t addr, uint8_t value) {
     }
 }
 
-// Write a 16-bit word to SCSI controller (not supported)
+// Wide writes — same byte-only rationale as the wide-read helpers.
 static void write_uint16(void *scsi, uint32_t addr, uint16_t value) {
-    assert(0);
+    (void)scsi;
+    LOG(1, "scsi: word write at 0x%08X = 0x%04X — NCR 5380 is byte-only, ignored", addr, value);
 }
 
-// Write a 32-bit longword to SCSI controller (not supported)
 static void write_uint32(void *scsi, uint32_t addr, uint32_t value) {
-    assert(0);
+    (void)scsi;
+    LOG(1, "scsi: long write at 0x%08X = 0x%08X — NCR 5380 is byte-only, ignored", addr, value);
 }
 
 // ============================================================================
@@ -1187,7 +1212,8 @@ static void write_uint32(void *scsi, uint32_t addr, uint32_t value) {
 // Add a SCSI device to the bus at the specified SCSI ID
 void scsi_add_device(scsi_t *restrict scsi, int scsi_id, const char *vendor, const char *product, const char *revision,
                      image_t *image, enum scsi_device_type type, uint16_t block_size, bool read_only) {
-    assert(scsi_id < 7);
+    // scsi_id 7 is reserved for the Mac initiator; only targets 0..6 are valid.
+    GS_ASSERTF(scsi_id < 7, "scsi_add_device: scsi_id %d is the initiator slot, expected 0..6", scsi_id);
 
     scsi->devices[scsi_id].image = image;
     scsi->devices[scsi_id].type = type;
@@ -1233,6 +1259,7 @@ scsi_t *scsi_init(memory_map_t *map, checkpoint_t *checkpoint) {
     scsi->bus.phase = scsi_bus_free;
 
     scsi->buf.data = malloc(BUF_LIMIT);
+    GS_ASSERTF(scsi->buf.data != NULL, "scsi_init: failed to allocate %zu-byte transfer buffer", (size_t)BUF_LIMIT);
     scsi->buf.max = MAX_CMD_SIZE;
     scsi->bus.initiator = INT_MAX;
 

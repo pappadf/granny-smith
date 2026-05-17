@@ -61,16 +61,9 @@ struct keyboard {
     via_t *via; // VIA for shift register communication
 };
 
-// Context passed to scheduled key update events (currently unused)
-typedef struct {
-    keyboard_t *keyboard;
-    key_event_t event;
-    uint8_t key;
-} key_update_t;
-
 // Adds a byte to the keyboard transmit queue
 static void enqueue(keyboard_t *keyboard, uint8_t byte) {
-    int head = keyboard->queue.head + 1;
+    unsigned int head = keyboard->queue.head + 1;
 
     if (head == QUEUE_SIZE)
         head = 0; // wrap

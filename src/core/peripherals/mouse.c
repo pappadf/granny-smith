@@ -19,7 +19,7 @@
 
 // Represents the mouse device state and scheduling tails for each axis
 struct mouse {
-    int x1, y1; // Current interrupt line logic levels (SCC DCD inputs)
+    bool x1, y1; // Current interrupt line logic levels (SCC DCD inputs)
     uint64_t tail_timestamp_x; // CPU cycle timestamp of the last scheduled X pulse (edge)
     uint64_t tail_timestamp_y; // CPU cycle timestamp of the last scheduled Y pulse (edge)
 
@@ -48,14 +48,14 @@ static void mouse_event_step(void *source, uint64_t data) {
         // Toggle X1 edge (rising or falling depending on previous state)
         m->x1 = !m->x1;
         // For right motion X2 follows X1; for left motion X2 is inverted relative to X1
-        int x2 = data & EVENT_DATA_POSITIVE ? m->x1 : !m->x1;
+        bool x2 = (data & EVENT_DATA_POSITIVE) ? m->x1 : !m->x1;
         scc_dcd(m->scc, 0, m->x1); // Update SCC DCD A (X1)
         via_input(m->via, 1, 4, x2); // Update VIA PB4 (X2)
     } else {
         // Toggle Y1 edge
         m->y1 = !m->y1;
         // For down motion Y2 is opposite Y1; for up motion Y2 equals Y1 (see table)
-        int y2 = data & EVENT_DATA_POSITIVE ? !m->y1 : m->y1;
+        bool y2 = (data & EVENT_DATA_POSITIVE) ? !m->y1 : m->y1;
         scc_dcd(m->scc, 1, m->y1); // Update SCC DCD B (Y1)
         via_input(m->via, 1, 5, y2); // Update VIA PB5 (Y2)
     }

@@ -2,7 +2,7 @@
 // Copyright (c) pappadf
 
 // vrom.c
-// Video-ROM file handling and the vrom.* object-model surface.
+// VROM file handling and the vrom.* object-model surface.
 //
 // VROM is a 32 KB blob the SE/30 needs alongside the main ROM. Because the
 // main ROM is only loaded after machine creation and the VROM has to be
@@ -18,6 +18,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 
 // ============================================================================
 // File-level helpers
@@ -28,16 +29,14 @@ bool vrom_probe_file(const char *path, size_t *out_size) {
         *out_size = 0;
     if (!path || !*path)
         return false;
-    FILE *f = fopen(path, "rb");
-    if (!f)
+    // stat is portable for binary-file sizing; fseek(SEEK_END)+ftell on a
+    // binary stream is implementation-defined per ISO C. See [F-354].
+    struct stat st;
+    if (stat(path, &st) != 0 || st.st_size <= 0)
         return false;
-    fseek(f, 0, SEEK_END);
-    long size = ftell(f);
-    fclose(f);
-    if (size <= 0)
-        return false;
+    size_t size = (size_t)st.st_size;
     if (out_size)
-        *out_size = (size_t)size;
+        *out_size = size;
     return size == VROM_EXPECTED_SIZE;
 }
 
@@ -57,7 +56,8 @@ int vrom_set_path(const char *path) {
         return -1;
     free(s_pending_vrom_path);
     s_pending_vrom_path = dup;
-    printf("VROM path set: %s\n", s_pending_vrom_path);
+    // Note: no log line here on success — the path is just stashed for later
+    // consumption by machine init; the user gets `true` back from vrom.load().
     return 0;
 }
 

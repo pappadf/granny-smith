@@ -32,7 +32,7 @@ void rtc_checkpoint(rtc_t *restrict rtc, checkpoint_t *checkpoint);
 
 // === Operations ===
 
-void rtc_input(rtc_t *restrict rtc, bool disable, bool clock, bool pram);
+void rtc_input(rtc_t *restrict rtc, bool disable, bool clock, bool data);
 
 void rtc_set_via(rtc_t *restrict rtc, via_t *via);
 

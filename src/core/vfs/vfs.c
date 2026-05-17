@@ -6,7 +6,8 @@
 // resolver walks host segments left-to-right; if any segment resolves to
 // a regular file and further segments follow, it probes the file as a
 // disk image and routes the remaining path into the image backend via an
-// auto-mount (proposal-image-vfs.md §2.9).
+// auto-mount. The "ls/cd descends into a bare image path" rule lives in
+// `vfs_resolve_descend`.
 
 #include "vfs.h"
 
@@ -17,10 +18,10 @@
 #include <string.h>
 #include <unistd.h>
 
-// The shell's logical current directory, primed from getcwd() on first use
-// (see Phase 1 summary).  Stays a host absolute path; Phase 2 does not yet
-// extend it with logical cwds that live inside images — commands that
-// `cd` into an image path have their in-image tail re-resolved each time.
+// The shell's logical current directory, primed from getcwd() on first use.
+// Stays a host absolute path; commands that `cd` into an image path have
+// their in-image tail re-resolved each time rather than tracking an
+// image-rooted cwd.
 static char g_cwd[VFS_PATH_MAX] = "";
 
 static void prime_cwd(void) {
@@ -31,18 +32,24 @@ static void prime_cwd(void) {
 }
 
 // Normalise `input` (absolute or relative to g_cwd) resolving . and ..
-// components.  Produces an absolute path starting with '/'.
-static void normalise_path(const char *input, char *out, size_t outlen) {
+// components. Produces an absolute path starting with '/'. Returns 0 on
+// success, -ENAMETOOLONG when the joined cwd+input or the assembled output
+// would overflow the destination buffer or the component-count cap.
+static int normalise_path(const char *input, char *out, size_t outlen) {
     char buf[VFS_PATH_MAX * 2 + 2];
+    int n;
     if (input[0] == '/') {
-        snprintf(buf, sizeof(buf), "%s", input);
+        n = snprintf(buf, sizeof(buf), "%s", input);
     } else {
         prime_cwd();
-        snprintf(buf, sizeof(buf), "%s/%s", g_cwd, input);
+        n = snprintf(buf, sizeof(buf), "%s/%s", g_cwd, input);
     }
+    if (n < 0 || (size_t)n >= sizeof(buf))
+        return -ENAMETOOLONG;
 
     const char *components[128];
-    int depth = 0;
+    size_t depth = 0;
+    const size_t MAX_DEPTH = sizeof(components) / sizeof(components[0]);
     char *saveptr = NULL;
     char *token = strtok_r(buf, "/", &saveptr);
     while (token) {
@@ -51,20 +58,28 @@ static void normalise_path(const char *input, char *out, size_t outlen) {
         } else if (strcmp(token, "..") == 0) {
             if (depth > 0)
                 depth--;
-        } else if (depth < (int)(sizeof(components) / sizeof(components[0]))) {
+        } else if (depth < MAX_DEPTH) {
             components[depth++] = token;
+        } else {
+            return -ENAMETOOLONG; // too many components
         }
         token = strtok_r(NULL, "/", &saveptr);
     }
     if (depth == 0) {
-        snprintf(out, outlen, "/");
+        if (outlen < 2)
+            return -ENAMETOOLONG;
+        out[0] = '/';
+        out[1] = '\0';
     } else {
-        out[0] = '\0';
-        for (int i = 0; i < depth; i++) {
-            size_t len = strlen(out);
-            snprintf(out + len, outlen - len, "/%s", components[i]);
+        size_t off = 0;
+        for (size_t i = 0; i < depth; i++) {
+            int w = snprintf(out + off, outlen - off, "/%s", components[i]);
+            if (w < 0 || (size_t)w >= outlen - off)
+                return -ENAMETOOLONG;
+            off += (size_t)w;
         }
     }
+    return 0;
 }
 
 // Walk `resolved` from left to right.  At the first intermediate segment
@@ -110,10 +125,18 @@ static image_mount_t *walk_for_descent(const char *resolved, size_t *out_prefix_
                 *out_prefix_len = j;
                 return mount;
             }
-            // EBUSY propagates.  Any other probe failure means "not an
-            // image with segments past it" — signal ENOTDIR so downstream
-            // calls stop rather than trying to readdir a blob.
-            *rc = (pr == -EBUSY) ? -EBUSY : -ENOTDIR;
+            // Pass real probe-time errors (OOM, mount-table-full, busy) up
+            // to the user; collapse only the benign "not-an-image" verdict
+            // to ENOTDIR so subsequent path-walking gives a normal error
+            // rather than the misleading "out of memory" wording.
+            //
+            // image_vfs_acquire_mount currently uses -ENOTDIR for "not an
+            // image" and -ENOENT for "file vanished mid-probe" — treat both
+            // as the benign case.
+            if (pr == -ENOTDIR || pr == -ENOENT)
+                *rc = -ENOTDIR;
+            else
+                *rc = pr; // -EBUSY, -ENOMEM, -ENOSPC, ...
             return NULL;
         }
         // Directory: continue past this slash.
@@ -128,7 +151,9 @@ static int resolve_impl(const char *input, char *resolved, size_t resolved_len, 
                         const char **tail, bool descend_bare) {
     if (!input || !resolved || resolved_len == 0)
         return -EINVAL;
-    normalise_path(input, resolved, resolved_len);
+    int nrc = normalise_path(input, resolved, resolved_len);
+    if (nrc < 0)
+        return nrc;
 
     size_t prefix_len = 0;
     int walk_rc = 0;
@@ -279,5 +304,14 @@ const char *vfs_get_cwd(void) {
 void vfs_set_cwd(const char *path) {
     if (!path)
         return;
-    snprintf(g_cwd, sizeof(g_cwd), "%s", path);
+    int n = snprintf(g_cwd, sizeof(g_cwd), "%s", path);
+    if (n < 0 || (size_t)n >= sizeof(g_cwd)) {
+        // Truncation would leave the cwd in a syntactically valid but
+        // semantically wrong state. Fall back to root rather than carrying
+        // a corrupted path silently. Callers that need stricter validation
+        // (path-is-a-directory) do that before invoking us; this is the
+        // defensive last line.
+        g_cwd[0] = '/';
+        g_cwd[1] = '\0';
+    }
 }

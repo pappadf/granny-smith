@@ -22,13 +22,11 @@
 
 #include <assert.h>
 #include <ctype.h>
-#include <dirent.h>
 #include <inttypes.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/stat.h>
 #include <time.h>
 
 // ============================================================================
@@ -81,9 +79,9 @@ static struct object *g_atalk_printer_object;
 // ============================================================================
 
 // Lower layers at top of file, higher at bottom. These prototypes resolve circular references.
-static void ddp_short_in(llap_header_t *llap, uint8_t *buf, size_t len);
-static void ddp_in(ddp_header_t *ddp, uint8_t *buf, size_t len);
-static void nbp_in(ddp_header_t *ddp, uint8_t *buf, size_t len);
+static void ddp_short_in(llap_header_t *llap, const uint8_t *buf, size_t len);
+static void ddp_in(ddp_header_t *ddp, const uint8_t *buf, size_t len);
+static void nbp_in(ddp_header_t *ddp, const uint8_t *buf, size_t len);
 static void atp_in(const ddp_header_t *ddp, const uint8_t *buf, int len);
 static void asp_in(const ddp_header_t *ddp, atp_packet_t *atp, void *ctx);
 // AFP handler implemented in server.c
@@ -91,7 +89,6 @@ extern uint32_t afp_handle_command(uint8_t opcode, const uint8_t *in, int in_len
                                    int *out_len);
 // Logging category function used by LOG() macro; provided by LOG_USE_CATEGORY_NAME later
 static log_category_t *_log_get_local_category(void);
-// Hex dump helper forward declaration
 static void log_hex(int level, const char *tag, const uint8_t *data, size_t len);
 
 // ============================================================================
@@ -99,17 +96,21 @@ static void log_hex(int level, const char *tag, const uint8_t *data, size_t len)
 // ============================================================================
 
 // =============================== LLAP (LocalTalk) - lowest layer ===============================
-static void llap_send(const llap_header_t *llap, const uint8_t *data, size_t len) {
+// Returns 0 on success, -1 if `len` exceeds the LLAP payload max (caller bug).
+// We refuse to transmit truncated frames rather than silently emit a corrupted
+// one — the peer would see a malformed LLAP and discard it anyway, but in
+// our local trace it would look like a successful send.
+static int llap_send(const llap_header_t *llap, const uint8_t *data, size_t len) {
+    if (len > LLAP_DATA_MAX_SIZE) {
+        LOG(1, "LLAP tx: refused oversize frame (%zu > %d)", len, LLAP_DATA_MAX_SIZE);
+        return -1;
+    }
     uint8_t buf[LLAP_HEADER_SIZE + LLAP_DATA_MAX_SIZE];
 
     buf[0] = llap->dst;
     buf[1] = llap->src;
     buf[2] = llap->type;
 
-    if (len > LLAP_DATA_MAX_SIZE) {
-        // Defensive cap to prevent overflow in case callers miscompute
-        len = LLAP_DATA_MAX_SIZE;
-    }
     if (len > 0 && data) {
         memcpy((char *)(buf + 3), data, len);
     }
@@ -119,9 +120,10 @@ static void llap_send(const llap_header_t *llap, const uint8_t *data, size_t len
     log_hex(11, "LLAP tx dump", buf, total);
     if (g_scc)
         scc_sdlc_send(g_scc, buf, total);
+    return 0;
 }
 
-void llap_in(uint8_t *buf, size_t len) {
+void llap_in(const uint8_t *buf, size_t len) {
     llap_header_t header;
 
     // Short/malformed packets can arrive from the SCC during A/UX
@@ -188,7 +190,7 @@ void llap_in(uint8_t *buf, size_t len) {
     }
 }
 
-void process_packet(uint8_t *buf, size_t size) {
+void process_packet(const uint8_t *buf, size_t size) {
     llap_in(buf, size);
 }
 
@@ -225,7 +227,6 @@ static const char *ddp_type_name(uint8_t type) {
     }
 }
 
-// Emits a consistent one-line DDP summary including direction and payload size.
 static void ddp_log_summary(int level, const char *direction, const ddp_header_t *ddp, uint16_t total_len,
                             size_t payload_len) {
     if (!ddp || !direction)
@@ -265,9 +266,6 @@ void appletalk_init(scheduler_t *scheduler, scc_t *scc, checkpoint_t *checkpoint
     g_scc = scc; // Store SCC dependency for later use
     g_scheduler = scheduler; // Store scheduler for ATP timers
     atalk_server_init();
-    // Phase 5c — legacy `atalk-share-*` and `atalk-printer` shell
-    // command registrations retired. AppleTalk admin moved to typed
-    // root methods (appletalk.*).
     atalk_printer_register();
 
     static const atp_socket_handler_t asp_handler = {.handle_request = asp_in};
@@ -304,7 +302,7 @@ void appletalk_init(scheduler_t *scheduler, scc_t *scc, checkpoint_t *checkpoint
 void appletalk_delete(void) {
     // Tear down per-share entry objects (never attached), then the
     // named children, then the top-level appletalk node.
-    for (int i = 0; i < 8; i++) {
+    for (int i = 0; i < atalk_share_max(); i++) {
         if (g_atalk_share_objs[i]) {
             object_delete(g_atalk_share_objs[i]);
             g_atalk_share_objs[i] = NULL;
@@ -356,7 +354,7 @@ static void ddp_send(const ddp_header_t *header, const uint8_t *data, int size) 
 //
 
 // Process an incoming DDP packet and dispatch to appropriate protocol handler
-void ddp_in(ddp_header_t *ddp, uint8_t *buf, size_t len) {
+void ddp_in(ddp_header_t *ddp, const uint8_t *buf, size_t len) {
     switch (ddp->type) {
 
     case DDP_NBP:
@@ -403,7 +401,7 @@ void ddp_in(ddp_header_t *ddp, uint8_t *buf, size_t len) {
 }
 
 // Process an incoming short DDP header and dispatch to ddp_in
-void ddp_short_in(llap_header_t *llap, uint8_t *buf, size_t len) {
+void ddp_short_in(llap_header_t *llap, const uint8_t *buf, size_t len) {
     ddp_header_t ddp;
 
     assert(len >= DDP_SHORT_HEADER_SIZE);
@@ -479,8 +477,10 @@ typedef struct {
 
 // Helper: parse an NBP length-prefixed (P-string style) up to 32 bytes.
 // Advances *p and reduces *len; writes dst and dst_len on success.
-static bool nbp_parse_pstr32(const uint8_t **p, int *len, uint8_t *dst, int *dst_len) {
-    if (!p || !*p || !len || *len < 1 || !dst || !dst_len)
+// `dst_cap` is the capacity of `dst`, asserted at compile-time by callers
+// who pass `sizeof(field)`; minimum 33 (32 payload + NUL).
+static bool nbp_parse_pstr32(const uint8_t **p, int *len, uint8_t *dst, size_t dst_cap, int *dst_len) {
+    if (!p || !*p || !len || *len < 1 || !dst || !dst_len || dst_cap < 33)
         return false;
     uint8_t n = (*p)[0];
     if (n > 32)
@@ -497,7 +497,7 @@ static bool nbp_parse_pstr32(const uint8_t **p, int *len, uint8_t *dst, int *dst
 }
 
 // ATP layer wrappers (parallel to DDP): parse, setup reply, and send
-/* atp_send prototype declared later after atp_packet_t typedef */
+
 // Logging: implicit category for this file
 LOG_USE_CATEGORY_NAME("appletalk");
 
@@ -774,33 +774,42 @@ static bool nbp_zone_query_is_wildcard(const nbp_tuple_t *tuple) {
     return (tuple->zone_len == 0) || (tuple->zone_len == 1 && tuple->zone[0] == '*');
 }
 
-static bool nbp_glob_match_ci_impl(const char *value, int value_len, const uint8_t *pattern, int pos, int pat_len) {
-    while (pos < pat_len) {
-        uint8_t folded = nbp_ascii_fold(pattern[pos]);
-        if (folded == NBP_APPROX_CHAR) {
-            while (pos < pat_len && nbp_ascii_fold(pattern[pos]) == NBP_APPROX_CHAR)
-                pos++;
-            if (pos == pat_len)
-                return true; // trailing wildcard matches rest of string
-            for (int i = 0; i <= value_len; i++) {
-                if (nbp_glob_match_ci_impl(value + i, value_len - i, pattern, pos, pat_len))
-                    return true;
-            }
-            return false;
-        }
-        if (value_len == 0)
-            return false;
-        if (nbp_ascii_fold((uint8_t)value[0]) != folded)
-            return false;
-        value++;
-        value_len--;
-        pos++;
-    }
-    return value_len == 0;
-}
-
+// Iterative two-pointer glob matcher with backtracking.  NBP_APPROX_CHAR
+// (`≈`) is a `*`-style wildcard matching any run of bytes.  The recursive
+// formulation was O(2^n) for patterns with many wildcards (a crafted NBP
+// lookup tuple could DoS the server).  This version is O(n*m) worst-case.
 static bool nbp_glob_match_ci(const char *value, int value_len, const uint8_t *pattern, int pat_len) {
-    return nbp_glob_match_ci_impl(value, value_len, pattern, 0, pat_len);
+    int v = 0;
+    int p = 0;
+    int star_p = -1;
+    int star_v = 0;
+    while (v < value_len) {
+        if (p < pat_len && nbp_ascii_fold(pattern[p]) == NBP_APPROX_CHAR) {
+            // Collapse consecutive wildcards into a single backtrack point.
+            while (p < pat_len && nbp_ascii_fold(pattern[p]) == NBP_APPROX_CHAR)
+                p++;
+            star_p = p;
+            star_v = v;
+            continue;
+        }
+        if (p < pat_len && nbp_ascii_fold((uint8_t)value[v]) == nbp_ascii_fold(pattern[p])) {
+            v++;
+            p++;
+            continue;
+        }
+        if (star_p >= 0) {
+            // Backtrack: let the wildcard consume one more byte and retry.
+            p = star_p;
+            star_v++;
+            v = star_v;
+            continue;
+        }
+        return false;
+    }
+    // Skip trailing wildcards on the pattern side.
+    while (p < pat_len && nbp_ascii_fold(pattern[p]) == NBP_APPROX_CHAR)
+        p++;
+    return p == pat_len;
 }
 
 static bool nbp_field_matches(const char *value, uint8_t value_len, const uint8_t *pattern, int pattern_len) {
@@ -915,11 +924,12 @@ static void nbp_parse_and_dispatch(const ddp_header_t *ddp, const uint8_t *buf, 
         tuples[parsed].enumerator = p[4];
         p += 5;
         rem -= 5;
-        if (!nbp_parse_pstr32(&p, &rem, tuples[parsed].object, &tuples[parsed].object_len))
+        if (!nbp_parse_pstr32(&p, &rem, tuples[parsed].object, sizeof(tuples[parsed].object),
+                              &tuples[parsed].object_len))
             break;
-        if (!nbp_parse_pstr32(&p, &rem, tuples[parsed].type, &tuples[parsed].type_len))
+        if (!nbp_parse_pstr32(&p, &rem, tuples[parsed].type, sizeof(tuples[parsed].type), &tuples[parsed].type_len))
             break;
-        if (!nbp_parse_pstr32(&p, &rem, tuples[parsed].zone, &tuples[parsed].zone_len))
+        if (!nbp_parse_pstr32(&p, &rem, tuples[parsed].zone, sizeof(tuples[parsed].zone), &tuples[parsed].zone_len))
             break;
         parsed++;
     }
@@ -991,7 +1001,7 @@ static void nbp_send(const ddp_header_t *ddp_header, const nbp_header_t *nbp_hea
 #undef NBP_ENSURE
 }
 
-void nbp_in(ddp_header_t *ddp, uint8_t *buf, size_t len) {
+void nbp_in(ddp_header_t *ddp, const uint8_t *buf, size_t len) {
     uint8_t header_byte = (len >= 1) ? buf[0] : 0;
     uint8_t nbp_id = (len >= 2) ? buf[1] : 0;
     int function = (header_byte >> 4) & 0x0F;
@@ -1730,7 +1740,10 @@ static int asp_build_reply(uint8_t *out, int out_max, uint8_t func, uint16_t ses
     return 6 + data_len;
 }
 
-// ASP SPWrite: pending state for the WriteContinue two-transaction flow
+// ASP SPWrite: pending state for the WriteContinue two-transaction flow.
+// The factor of 8 matches the ATP burst size cap (which incidentally also
+// matches PAP_MAX_FLOW_QUANTUM); both ASP and PAP run over ATP with the
+// same 8-fragment burst, but they're independent protocol limits.
 #define ASP_WRITE_QUANTUM (8 * ATP_MAX_ATP_PAYLOAD) // 4624 bytes max per WriteContinue
 
 typedef struct {
@@ -1881,10 +1894,11 @@ static void asp_in(const ddp_header_t *ddp, atp_packet_t *atp, void *ctx) {
         return;
     }
 
-    // ASP Tickle: one-way keepalive (no response)
+    // ASP Tickle: one-way keepalive (no response). Liveness tracking is
+    // intentionally omitted — this stack doesn't time sessions out; clients
+    // explicitly CloseSess when done.
     if (atp->user[0] == ASP_TICKLE) {
         LOG(3, "ASP Tickle: received (no response)");
-        // TODO: refresh session liveness timer for the indicated SessionID
         return;
     }
 
@@ -2074,11 +2088,6 @@ static void asp_in(const ddp_header_t *ddp, atp_packet_t *atp, void *ctx) {
     atp_responder_send_simple(ddp, atp, reply_user, asp_reply_len > 0 ? asp_reply : NULL, asp_reply_len, false);
 }
 
-// Build an ASP reply payload (to be wrapped inside ATP response)
-// Note: In this stack, SPFunction travels in ATP UserBytes[0]; the ASP bytes
-// begin with SessionRefNum, ReqRefNum, CmdResult, followed by payload.
-
-// AFP implementation moved to server.c
 // Common wire helpers (big-endian readers/writers)
 
 static uint16_t rd16be(const uint8_t *p) {

@@ -153,7 +153,7 @@ bool cpu_is_supervisor(cpu_t *restrict cpu) {
 static void register_alias_or_warn(const char *name, const char *path) {
     char err[160];
     if (alias_register_builtin(name, path, err, sizeof(err)) < 0)
-        fprintf(stderr, "cpu: built-in alias '$%s' → '%s' rejected: %s\n", name, path, err);
+        LOG(0, "cpu: built-in alias '$%s' → '%s' rejected: %s", name, path, err);
 }
 
 static void register_cpu_aliases(void) {

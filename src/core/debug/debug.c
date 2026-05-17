@@ -251,7 +251,7 @@ static bool eval_breakpoint_condition(const char *expr) {
 // Set a logpoint at the specified address range (end_addr == addr for single address)
 logpoint_t *set_logpoint(debug_t *debug, uint32_t addr, uint32_t end_addr, log_category_t *category, int level) {
 
-    logpoint_t *lp = malloc(sizeof(logpoint_t));
+    logpoint_t *lp = calloc(1, sizeof(logpoint_t));
 
     if (lp == NULL)
         return NULL;
@@ -545,7 +545,6 @@ static void debug_memory_logpoint_hook(uint32_t addr, unsigned size, uint32_t va
 }
 
 extern int cpu_disasm(uint16_t *instr, char *buf);
-extern int disasm_68000(uint16_t *instr, char *buf);
 
 // Forward declarations for trace functions
 static void trace_add_pc_entry(debug_t *debug, uint32_t pc);
@@ -563,13 +562,15 @@ static int disasm(uint16_t *instr, char *mnemonic, char *operands) {
 
     if (strlen(buf) == 0) {
         sprintf(mnemonic, "ILLEGAL");
-        sprintf(operands, "");
+        operands[0] = '\0';
     } else {
-        for (i = 0; buf[i] != '\0' && buf[i] != '\t'; i++)
+        // Cap at 31 so we always have room for the trailing NUL even if
+        // cpu_disasm ever returns an opcode without a tab separator.
+        for (i = 0; i < 31 && buf[i] != '\0' && buf[i] != '\t'; i++)
             mnemonic[i] = buf[i];
         mnemonic[i] = '\0';
         if (buf[i] == '\t')
-            sprintf(operands, "%s", buf + i + 1);
+            snprintf(operands, 80, "%s", buf + i + 1);
         else
             operands[0] = '\0';
     }
@@ -701,15 +702,20 @@ int debug_break_and_trace(void) {
     }
 
     if (debug->trace_buffer) {
-        debug->trace_buffer[debug->trace_head] = cpu_get_pc(cpu);
-        debug->trace_head = (debug->trace_head + 1) % debug->trace_buffer_size;
-        if (debug->trace_head == debug->trace_tail)
+        // Standard ring buffer: advance tail past the slot we're about to
+        // clobber BEFORE the write, so the just-written entry survives the
+        // wrap.  Previous order (write then check-and-advance-tail) lost
+        // the newest entry the moment the buffer first filled.
+        int next_head = (debug->trace_head + 1) % debug->trace_buffer_size;
+        if (next_head == debug->trace_tail)
             debug->trace_tail = (debug->trace_tail + 1) % debug->trace_buffer_size;
+        debug->trace_buffer[debug->trace_head] = current_pc;
+        debug->trace_head = next_head;
     }
 
     // Record PC in new trace entries buffer
     if (debug->trace_entries) {
-        trace_add_pc_entry(debug, cpu_get_pc(cpu));
+        trace_add_pc_entry(debug, current_pc);
     }
 
     return stop;
@@ -874,16 +880,6 @@ static bool parse_logpoint_target(const char *in, uint32_t *addr_out, uint32_t *
     *space_out = sp;
     return true;
 }
-
-/*
-static void cmd_step(struct config* config, int n)
-{
-    debugger_t* debug = &config->debugger;
-
-    debug->step = n > 0 ? n : 1;
-
-    scheduler_run(config->scheduler);
-}*/
 
 // Check if tracing is active (for log capture hook)
 int debug_trace_is_active(void) {
@@ -1374,19 +1370,21 @@ uint32_t framebuffer_region_checksum(const display_t *d, int top, int left, int 
     const uint32_t stride = d->stride;
     uint32_t checksum = 0;
 
-    // Process each row in the region
+    // Process each row in the region.  The byte accumulator must reset at
+    // each row boundary (independent of `left % 8`), so we initialise it
+    // here rather than relying on byte_bit==7 inside the loop — that path
+    // fires only when `left` is byte-aligned and would leak bits across
+    // rows otherwise. (F-1288)
     for (int y = top; y < bottom; y++) {
+        uint8_t accum_byte = 0;
         // Process each pixel in the row, packing into bytes
         for (int x = left; x < right; x++) {
             int byte_idx = y * (int)stride + (x / 8);
             int bit_idx = 7 - (x % 8); // MSB first
             int bit = (fb[byte_idx] >> bit_idx) & 1;
 
-            // Pack bits into a byte and add to checksum when we have 8 bits
-            // or at end of row
             int rel_x = x - left;
             int byte_bit = 7 - (rel_x % 8);
-            static uint8_t accum_byte = 0;
             if (byte_bit == 7)
                 accum_byte = 0; // Start new byte
             if (bit)
@@ -2113,7 +2111,6 @@ write_error:
     return -1;
 }
 
-// Screenshot handler - save, checksum, match, or match-or-save
 // ============================================================================
 // FPU register dump (IMP-402)
 // ============================================================================
@@ -2145,17 +2142,17 @@ static double fp80_to_double(float80_reg_t f) {
 // Configurable status line / prompt (IMP-308)
 // ============================================================================
 
-static int g_prompt_enabled = 1;
+static bool g_prompt_enabled = true;
 
 // Check if prompt/status line is enabled
-int debug_prompt_enabled(void) {
+bool debug_prompt_enabled(void) {
     return g_prompt_enabled;
 }
 
 // Set prompt default at startup (e.g. from --no-prompt CLI flag).
 // Persists across all subsequent client connections.
-void debug_set_prompt_default(int enabled) {
-    g_prompt_enabled = enabled ? 1 : 0;
+void debug_set_prompt_default(bool enabled) {
+    g_prompt_enabled = enabled;
 }
 
 // ============================================================================
@@ -2200,6 +2197,8 @@ void list_logpoints(debug_t *debug) {
 
 // Helper: free one logpoint node, releasing memory-logpoint page refcounts too
 static void free_logpoint(logpoint_t *lp) {
+    if (!lp)
+        return;
     if (lp->kind != LP_KIND_PC) {
         if (lp->space == ADDR_LOGICAL) {
             uint32_t start_page = lp->addr >> PAGE_SHIFT;
@@ -2266,14 +2265,6 @@ int delete_all_logpoints(debug_t *debug) {
         debug->logpoints = NULL;
     return count;
 }
-
-// ============================================================================
-// Mac state summary (IMP-702)
-// ============================================================================
-
-// ============================================================================
-// Lifecycle: Constructor
-// ============================================================================
 
 // ============================================================================
 // Command Handlers
@@ -2852,19 +2843,10 @@ struct object *logpoint_get_entry_object(const logpoint_t *lp) {
 // ============================================================================
 
 debug_t *debug_init(void) {
-    debug_t *debug = (debug_t *)malloc(sizeof(debug_t));
+    debug_t *debug = (debug_t *)calloc(1, sizeof(debug_t));
     if (!debug) {
         return NULL;
     }
-    // Zero-initialize all fields to match behavior when struct was embedded
-    memset(debug, 0, sizeof(debug_t));
-
-    // Command registrations
-
-    // Phase 5c — legacy debugger / inspection / display shell command
-    // registrations retired. The typed object-model bridge surfaces
-    // every operation; cmd_*_handler bodies remain for the
-    // shell_*_argv apply functions used by the typed wrappers.
 
     debug_mac_init();
 
@@ -3460,9 +3442,7 @@ static value_t bp_method_clear(struct object *self, const member_t *m, int argc,
     debug_t *debug = debug_from(self);
     if (!debug)
         return val_err("debugger not initialised");
-    int id;
-    while ((id = debug_breakpoint_next_id(debug, -1)) >= 0)
-        debug_remove_breakpoint(debug, id);
+    delete_all_breakpoints(debug);
     return val_none();
 }
 
@@ -3484,9 +3464,7 @@ static value_t lp_method_clear(struct object *self, const member_t *m, int argc,
     debug_t *debug = debug_from(self);
     if (!debug)
         return val_err("debugger not initialised");
-    int id;
-    while ((id = debug_logpoint_next_id(debug, -1)) >= 0)
-        debug_remove_logpoint(debug, id);
+    delete_all_logpoints(debug);
     return val_none();
 }
 

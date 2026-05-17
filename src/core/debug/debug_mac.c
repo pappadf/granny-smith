@@ -34,7 +34,7 @@ extern const size_t mac_global_vars_count;
 // A-trap info (defined in mac_traps_data.c)
 extern struct {
     const char *name;
-    uint32_t trap;
+    uint16_t trap;
 } macos_atraps[];
 extern const size_t macos_atraps_count;
 
@@ -62,14 +62,20 @@ const char *macos_atrap_name(uint16_t trap) {
 
     static char buffer[32];
 
+    // Most A-trap flag-bit combinations are pre-expanded in the table
+    // (e.g. _BlockMove appears at 0xA02E/0xA12E/0xA42E/...).  Try the exact
+    // form first; only fall back to masked lookups if it misses.
     const char *name = lookup_atrap(trap);
+    if (name)
+        return name;
 
-    if (trap & 0x0800) { // Toolbox trap
-        if ((name = lookup_atrap(trap & 0xFBFF)))
-            return name;
-    } else { // OS trap
-
-        if ((name = lookup_atrap(trap)))
+    // Strip the flag bits that aren't part of the selector and retry.
+    //   Toolbox traps (bit 11 set):  bit 10 ($0400, auto-pop)
+    //   OS traps      (bit 11 clr):  bit 9 ($0200, immediate) + bit 10 ($0400, async)
+    uint16_t masked = (trap & 0x0800) ? (trap & ~0x0400) : (trap & ~0x0600);
+    if (masked != trap) {
+        name = lookup_atrap(masked);
+        if (name)
             return name;
     }
 
@@ -77,25 +83,25 @@ const char *macos_atrap_name(uint16_t trap) {
     return buffer;
 }
 
-uint8_t read_8bit_be(uint32_t addr) {
+static uint8_t read_8bit_be(uint32_t addr) {
     if (!system_memory())
         return 0;
     return memory_read_uint8(addr);
 }
 
-uint16_t read_16bit_be(uint32_t addr) {
+static uint16_t read_16bit_be(uint32_t addr) {
     if (!system_memory())
         return 0;
     return memory_read_uint16(addr);
 }
 
-uint32_t read_32bit_be(uint32_t addr) {
+static uint32_t read_32bit_be(uint32_t addr) {
     if (!system_memory())
         return 0;
     return memory_read_uint32(addr);
 }
 
-void read_bytes(uint32_t addr, uint8_t *buffer, size_t size) {
+static void read_bytes(uint32_t addr, uint8_t *buffer, size_t size) {
     if (!system_memory())
         return;
     for (size_t i = 0; i < size; ++i) {
@@ -103,7 +109,9 @@ void read_bytes(uint32_t addr, uint8_t *buffer, size_t size) {
     }
 }
 
-size_t read_pstring(uint32_t addr, char *buffer, size_t max_length) {
+static size_t read_pstring(uint32_t addr, char *buffer, size_t max_length) {
+    if (max_length == 0)
+        return 0; // No room for NUL terminator
     size_t length = 0;
     while (length < max_length - 1) {
         uint8_t byte = read_8bit_be(addr + length);
@@ -310,23 +318,26 @@ uint64_t cmd_process_info(int argc, char *argv[]) {
     uint32_t heap_limit_ptr = read_32bit_be(0x0130);
     uint32_t a5_world_ptr = read_32bit_be(0x0904);
 
-    uint32_t partition_size_bytes = heap_limit_ptr - heap_start_ptr;
-
     printf("Application Partition Start: %#010x\n", heap_start_ptr);
     printf("Application Partition Limit: %#010x\n", heap_limit_ptr);
     printf("  Heap Start:                %#010x\n", heap_start_ptr);
     printf("  Stack Base (Top of A5):    %#010x (grows downwards)\n", a5_world_ptr);
-    printf("Total Partition Size:        %u KB\n", partition_size_bytes / 1024);
+    if (heap_limit_ptr >= heap_start_ptr) {
+        uint32_t partition_size_bytes = heap_limit_ptr - heap_start_ptr;
+        printf("Total Partition Size:        %u KB\n", partition_size_bytes / 1024);
+    } else {
+        printf("Total Partition Size:        <invalid: heap limit %#010x < start %#010x>\n", heap_limit_ptr,
+               heap_start_ptr);
+    }
 
     return 0;
 }
 
 void debug_mac_init(void) {
-    // Phase 5c — legacy `pi` / `set-mouse` / `mouse-button` / `key` /
-    // `post-event` / `mouse` / `set-time` shell command registrations
-    // retired. The typed object-model surface (mouse.move, mouse.click,
-    // keyboard.press) replaces them; cmd_* bodies are kept where the
-    // typed wrappers still call them.
+    // Empty by design: all command registration moved to the typed
+    // object-model bridge.  Kept as a stub for callers that expect a
+    // module init hook so the call site stays stable if state is ever
+    // re-introduced.
 }
 
 // Helper to print process info programmatically (used by assertion handler)
@@ -705,14 +716,14 @@ int debug_mac_set_mouse_mode(long x, long y, char mode) {
     if (!system_memory())
         return -1;
     if (mode != 'h') {
-        if (x < -32768)
-            x = -32768;
-        else if (x > 32767)
-            x = 32767;
-        if (y < -32768)
-            y = -32768;
-        else if (y > 32767)
-            y = 32767;
+        if (x < INT16_MIN)
+            x = INT16_MIN;
+        else if (x > INT16_MAX)
+            x = INT16_MAX;
+        if (y < INT16_MIN)
+            y = INT16_MIN;
+        else if (y > INT16_MAX)
+            y = INT16_MAX;
     }
     switch (mode) {
     case 'g':
@@ -880,6 +891,3 @@ int debug_mac_resolve_key_name(const char *name) {
 
     return -1;
 }
-
-// Phase 5c — `post-event` and `set-time` legacy commands deleted. The
-// typed surface (`appletalk.*`, `rtc.set_time`) replaces them.

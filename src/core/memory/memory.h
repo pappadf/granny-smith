@@ -4,8 +4,8 @@
 // memory.h
 // Public interface for memory map management.
 
-#ifndef MEMORY_MAP_H
-#define MEMORY_MAP_H
+#ifndef MEMORY_H
+#define MEMORY_H
 
 // === Includes ===
 #include "common.h"
@@ -133,7 +133,7 @@ typedef struct page_entry {
 // Global page table and address mask (set by memory_map_init)
 extern page_entry_t *g_page_table;
 extern uint32_t g_address_mask; // 0x00FFFFFF for 24-bit, 0xFFFFFFFF for 32-bit
-extern int g_page_count; // total number of pages in the current page table
+extern uint32_t g_page_count; // total number of pages in the current page table
 
 // SoA (Struct-of-Arrays) fast-path page tables.
 // Each entry stores an adjusted host address: (uintptr_t)host_base - page_guest_base
@@ -152,11 +152,11 @@ extern uintptr_t *g_active_write;
 // the pending flag AND zeroing *g_bus_error_instr_ptr, which forces the
 // CPU decoder loop to exit after the current instruction completes.
 // The bus error exception is then processed outside the hot loop.
-extern uint32_t g_bus_error_pending; // 0=none, 1=pending
+extern bool g_bus_error_pending; // false=none, true=pending
 extern uint32_t g_bus_error_address; // faulting logical address
-extern uint32_t g_bus_error_rw; // 1=read, 0=write
+extern bool g_bus_error_rw; // true=read, false=write
 extern uint32_t g_bus_error_fc; // FC of the faulting access (1=user-data, 5=super-data)
-extern uint32_t g_bus_error_is_pmmu; // 1=PMMU descriptor fault (retry), 0=bus timeout (skip)
+extern bool g_bus_error_is_pmmu; // true=PMMU descriptor fault (retry), false=bus timeout (skip)
 extern uint32_t *g_bus_error_instr_ptr; // points to decoder's instruction counter
 
 // I/O cycle penalty: tracks extra bus wait-state cycles for I/O accesses.
@@ -200,7 +200,7 @@ void memory_write_uint32_slow(uint32_t addr, uint32_t value);
 // cost when no memory logpoints are set.
 
 // Per-page memory-logpoint reference count.  Non-zero entries indicate pages
-// whose SoA fast-path must stay at 0 (force slow path).  Allocated with the
+// whose SoA fast-path must stay at 0 (force slow path). Allocated alongside the
 // page tables in memory_map_init.
 extern uint8_t *g_mem_logpoint_page_count;
 
@@ -317,4 +317,4 @@ static inline void memory_write_uint32(uint32_t addr, uint32_t value) {
     memory_write_uint32_slow(masked, value);
 }
 
-#endif // MEMORY_MAP_H
+#endif // MEMORY_H

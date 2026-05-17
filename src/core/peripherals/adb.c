@@ -43,7 +43,7 @@ LOG_USE_CATEGORY_NAME("adb");
 // approximate ADB attention-plus-command duration, ensuring the ROM's VBL handler
 // (which enables nested interrupts) has time to finish setting up ADB state
 // machine callback pointers before the completion interrupt fires (BUG-003).
-#define ADB_SHIFT_DELAY (800 * 1000)
+#define ADB_SHIFT_DELAY ((uint64_t)800 * 1000)
 
 // Delay (nanoseconds) before delivering the next reply byte via the VIA shift
 // register.  On real hardware the ADB transceiver completes a full command–
@@ -556,7 +556,9 @@ static void adb_autopoll_deferred(void *source, uint64_t data) {
     (void)data;
     adb_t *adb = (adb_t *)source;
 
-    LOG(1, "autopoll: entry state=%d pending=%d mouse_pending=%d mouse_btn=%d", adb->state, has_pending_data(adb),
+    // Demoted from level 1: this fires every ~11 ms while ADB is idle, which
+    // floods logs at the WARN tier. Level 3 keeps it as on-demand debug info.
+    LOG(3, "autopoll: entry state=%d pending=%d mouse_pending=%d mouse_btn=%d", adb->state, has_pending_data(adb),
         adb->mouse_data_pending, adb->mouse_button);
 
     // Stale event: state has moved on since this was scheduled
@@ -887,13 +889,11 @@ static value_t keyboard_method_press(struct object *self, const member_t *m, int
     } else {
         return val_err("keyboard.press: key must be a string name or integer keycode");
     }
-    if (keycode < 0) {
-        printf("Unknown key: %s\n", display_name ? display_name : "(?)");
-        return val_bool(false);
-    }
+    if (keycode < 0)
+        return val_err("keyboard.press: unknown key '%s'", display_name ? display_name : "(?)");
     system_keyboard_update(key_down, keycode);
     system_keyboard_update(key_up, keycode);
-    printf("key: 0x%02X (%s)\n", keycode, display_name);
+    LOG(3, "keyboard.press: key=0x%02X (%s)", keycode, display_name);
     return val_bool(true);
 }
 

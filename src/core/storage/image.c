@@ -352,15 +352,10 @@ image_t *image_create(const char *base_path, const char *delta_dir) {
     if (!base_path || !*base_path)
         return NULL;
 
-    // Verify write access on base (used by floppy/hd insert; treat lack of
-    // write access as a hard failure here so callers don't silently fall back).
-    FILE *test = fopen(base_path, "r+b");
-    if (!test) {
-        // Some tests open via fd= and the base may live on a read-only FS;
-        // create still proceeds — only the delta needs to be writable.
-    } else {
-        fclose(test);
-    }
+    // No write-access probe: only the delta needs to be writable, and the
+    // base can legitimately live on a read-only FS (some tests, distribution
+    // mounts). The probe that used to live here had no effect on subsequent
+    // behaviour.
 
     size_t raw_size = 0;
     bool is_diskcopy = false;
@@ -549,18 +544,14 @@ int image_create_empty(const char *filename, size_t size) {
     FILE *f = fopen(filename, "wb");
     if (!f)
         return -1;
-    uint8_t zeros[4096];
-    memset(zeros, 0, sizeof(zeros));
-    size_t remaining = size;
-    while (remaining > 0) {
-        size_t chunk = remaining > sizeof(zeros) ? sizeof(zeros) : remaining;
-        size_t w = fwrite(zeros, 1, chunk, f);
-        if (w != chunk) {
-            fclose(f);
-            remove(filename);
-            return -1;
-        }
-        remaining -= w;
+    // Use ftruncate to extend the file — POSIX guarantees the new bytes read
+    // as zero. Skips the 40 000+ iteration chunked-fwrite loop a 160 MB HD
+    // would otherwise take.
+    int fd = fileno(f);
+    if (fd < 0 || ftruncate(fd, (off_t)size) != 0) {
+        fclose(f);
+        remove(filename);
+        return -1;
     }
     fclose(f);
     return 0;
@@ -580,18 +571,11 @@ int image_create_blank_floppy(const char *filename, bool overwrite, bool high_de
     if (!f)
         return -1;
     const size_t total = high_density ? 1440 * 1024 : 800 * 1024;
-    uint8_t zeros[4096];
-    memset(zeros, 0, sizeof(zeros));
-    size_t remaining = total;
-    while (remaining > 0) {
-        size_t chunk = remaining > sizeof(zeros) ? sizeof(zeros) : remaining;
-        size_t w = fwrite(zeros, 1, chunk, f);
-        if (w != chunk) {
-            fclose(f);
-            remove(filename);
-            return -1;
-        }
-        remaining -= w;
+    int fd = fileno(f);
+    if (fd < 0 || ftruncate(fd, (off_t)total) != 0) {
+        fclose(f);
+        remove(filename);
+        return -1;
     }
     fclose(f);
     return 0;

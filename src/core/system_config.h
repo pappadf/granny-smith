@@ -13,6 +13,7 @@
 #define SYSTEM_CONFIG_H
 
 #include "adb.h"
+#include "card.h"
 #include "checkpoint.h"
 #include "cpu.h"
 #include "debug.h"
@@ -39,17 +40,17 @@ struct config {
     void *machine_context; // machine-specific state (e.g., plus_state_t)
 
     // Core CPU and memory subsystems
-    cpu_t *cpu; // was: new_cpu
+    cpu_t *cpu;
     memory_map_t *mem_map;
 
     // VIA chips (via1 = primary; via2 = NULL on Plus)
-    via_t *via1; // was: new_via
+    via_t *via1;
     via_t *via2; // secondary VIA (SE/30, IIcx); NULL for Plus
 
     // Other peripherals
-    scc_t *scc; // was: new_scc
-    scsi_t *scsi; // was: new_scsi
-    rtc_t *rtc; // was: new_rtc
+    scc_t *scc;
+    scsi_t *scsi;
+    rtc_t *rtc;
     floppy_t *floppy; // floppy controller: IWM (Plus) or SWIM (SE/30)
     sound_t *sound; // PWM sound (Plus); NULL on SE/30 / IIcx (which use ASC)
     mouse_t *mouse;
@@ -62,13 +63,11 @@ struct config {
     image_t *images[MAX_IMAGES];
     int n_images;
 
-    struct scheduler *scheduler;
+    scheduler_t *scheduler;
     uint32_t irq; // active interrupt bitmask
 
-    // NuBus subsystem.  NULL on machines without NuBus (Plus today;
-    // future 68000 family).  Set by glue030_init() once it lands; for
-    // now stays NULL because no machine creates a bus yet.
-    struct nubus_bus *nubus;
+    // NuBus subsystem. NULL on machines without NuBus.
+    nubus_bus_t *nubus;
 };
 
 #endif // SYSTEM_CONFIG_H

@@ -12,11 +12,14 @@
 
 #include "declrom.h"
 #include "card.h"
+#include "log.h"
 
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+LOG_USE_CATEGORY_NAME("nubus");
 
 struct declrom_builder {
     uint8_t *buf;
@@ -85,18 +88,27 @@ uint8_t *declrom_load(const char *path, size_t expected_size) {
     if (!path || expected_size == 0)
         return NULL;
     FILE *f = fopen(path, "rb");
-    if (!f)
+    if (!f) {
+        LOG(1, "declrom_load: cannot open '%s'", path);
         return NULL;
+    }
     uint8_t *buf = malloc(expected_size);
     if (!buf) {
         fclose(f);
+        LOG(1, "declrom_load: out of memory allocating %zu bytes for '%s'", expected_size, path);
         return NULL;
     }
     size_t n = fread(buf, 1, expected_size, f);
+    // Detect whether the file has more bytes beyond the expected size so we
+    // can warn about silent truncation.
+    int extra_present = (fgetc(f) != EOF);
     fclose(f);
     if (n != expected_size) {
+        LOG(1, "declrom_load: '%s' is %zu bytes, expected %zu — refusing", path, n, expected_size);
         free(buf);
         return NULL;
     }
+    if (extra_present)
+        LOG(1, "declrom_load: '%s' is larger than expected %zu bytes — trailing data ignored", path, expected_size);
     return buf;
 }

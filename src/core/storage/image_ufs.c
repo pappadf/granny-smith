@@ -54,10 +54,6 @@ static uint16_t be16(const uint8_t *p) {
 static uint32_t be32(const uint8_t *p) {
     return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) | ((uint32_t)p[2] << 8) | (uint32_t)p[3];
 }
-static int16_t be16s(const uint8_t *p) {
-    return (int16_t)be16(p);
-}
-
 // ---- Superblock offsets ---------------------------------------------------
 // Layout matches 4.3BSD-Tahoe struct fs; field offsets are stable in every
 // A/UX UFS the project cares about.
@@ -143,9 +139,11 @@ struct ufs_dir_iter {
 
 // ---- Small utilities -----------------------------------------------------
 
-// Read raw bytes from the partition (relative to partition start).
+// Read raw bytes from the partition (relative to partition start). Bounds
+// check is written as `n > size || off > size - n` so a hostile `off + n`
+// can't wrap and slip past `> partition_size`.
 static int read_partition(ufs_volume_t *vol, uint64_t off, void *buf, size_t n) {
-    if (off + n > vol->partition_size)
+    if (n > vol->partition_size || off > vol->partition_size - n)
         return -EIO;
     return disk_read_bytes(vol->img, vol->partition_off + off, buf, n);
 }
@@ -168,7 +166,10 @@ static uint64_t inode_byte_offset(const ufs_volume_t *vol, uint32_t ino) {
 
 // Load one dinode into `di[DI_SIZE]`.
 static int load_dinode(ufs_volume_t *vol, uint32_t ino, uint8_t *di) {
-    if (ino < UFS_ROOT_INO || ino >= vol->ncg * vol->ipg)
+    // Compute the limit in 64-bit to dodge `ncg * ipg` int32 overflow on a
+    // hostile / corrupted superblock that survived `ufs_open`'s sanity check.
+    uint64_t inode_limit = (uint64_t)vol->ncg * (uint64_t)vol->ipg;
+    if (ino < UFS_ROOT_INO || (uint64_t)ino >= inode_limit)
         return -ENOENT;
     return read_partition(vol, inode_byte_offset(vol, ino), di, DI_SIZE);
 }
@@ -575,7 +576,6 @@ int ufs_read_file(ufs_volume_t *vol, uint32_t ino, uint64_t off, void *buf, size
     // For device nodes / FIFOs / sockets di_size is 0, so read_file_by_dinode
     // immediately returns 0 bytes — which matches the semantics a recursive
     // copy wants (treat the special file as an empty file rather than an
-    // error; preserving device numbers is out of scope for v1).
-    (void)be16s;
+    // error; preserving device numbers is not modelled here).
     return read_file_by_dinode(vol, di, off, buf, n, nread);
 }

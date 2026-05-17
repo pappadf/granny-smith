@@ -343,9 +343,12 @@ static int collect_catalog_records(hfs_volume_t *vol, const uint8_t *cat_buf, si
     cat_rec_t *dst = NULL;
     size_t n = 0, cap = 0;
     uint32_t node_idx = first_leaf;
-    int safety = 1 << 20; // arbitrary high cap to catch cycles
+    // Hard upper bound on chain length: at most one visit per node in the
+    // catalog. Anything past that means a forward-link cycle.
+    size_t max_nodes = node_size ? (cat_size / node_size) + 1 : 0;
+    size_t visited = 0;
 
-    while (node_idx != 0 && safety-- > 0) {
+    while (node_idx != 0 && visited++ < max_nodes) {
         uint64_t off = (uint64_t)node_idx * node_size;
         if (off + node_size > cat_size)
             break;
@@ -487,6 +490,13 @@ hfs_volume_t *hfs_open(image_t *img, uint64_t partition_byte_offset, uint64_t pa
         node_size = 512;
     if (node_size < 512 || node_size > 8192 || (node_size & (node_size - 1)) != 0) {
         // node_size must be a power of two in [512, 8192].
+        free(cat);
+        free(vol);
+        return NULL;
+    }
+    // Reject volumes whose catalog file is shorter than one B-tree node —
+    // otherwise the leaf-chain walker below reads garbage past EOF.
+    if (cat_size < node_size) {
         free(cat);
         free(vol);
         return NULL;

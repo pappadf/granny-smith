@@ -266,7 +266,7 @@ static inline uint32_t calculate_ea(cpu_t *restrict cpu, int size, int mode, int
     case 7:
         switch (reg) {
         case 0: // (xxx).W
-            return (int32_t)(int16_t)fetch_16(cpu, increment);
+            return (uint32_t)(int32_t)(int16_t)fetch_16(cpu, increment);
         case 1: // (xxx).L
             return fetch_32(cpu, increment);
         case 2: // (d16,PC)
@@ -435,8 +435,15 @@ static inline void movem_to_register(cpu_t *restrict cpu, uint16_t opcode, int b
         if (a_set & (1 << i))
             cpu->a[i] = new_a[i];
 
-    if ((opcode & 0x38) == 0x18) // post-increment mode updates address register after MOVEM
-        cpu->a[opcode & 7] = ea;
+    if ((opcode & 0x38) == 0x18) {
+        // Post-increment mode updates address register after MOVEM.
+        // M68000PRM: on 68000, if An is in the list, the *loaded* value wins;
+        // on 68030, the *incremented* value wins (MC68030UM §3.2.5.2).
+        int an = opcode & 7;
+        bool an_in_list = (a_set & (1u << an)) != 0;
+        if (!an_in_list || cpu->cpu_model >= CPU_MODEL_68030)
+            cpu->a[an] = ea;
+    }
 }
 
 // Execute MOVEM instruction: store multiple registers to memory.
@@ -562,17 +569,20 @@ static inline bool conditional_test(cpu_t *restrict cpu, uint8_t test) {
         return !cpu->negative;
     case 0xB:
         return cpu->negative;
-    case 0xC:
-        return cpu->negative && cpu->overflow || !cpu->negative && !cpu->overflow;
-    case 0xD:
-        return cpu->negative && !cpu->overflow || !cpu->negative && cpu->overflow;
-    case 0xE:
-        return cpu->negative && cpu->overflow && !cpu->zero || !cpu->negative && !cpu->overflow && !cpu->zero;
-    case 0xF:
-        return cpu->zero || cpu->negative && !cpu->overflow || !cpu->negative && cpu->overflow;
+    case 0xC: // GE
+        return (cpu->negative && cpu->overflow) || (!cpu->negative && !cpu->overflow);
+    case 0xD: // LT
+        return (cpu->negative && !cpu->overflow) || (!cpu->negative && cpu->overflow);
+    case 0xE: // GT
+        return (cpu->negative && cpu->overflow && !cpu->zero) || (!cpu->negative && !cpu->overflow && !cpu->zero);
+    case 0xF: // LE
+        return cpu->zero || (cpu->negative && !cpu->overflow) || (!cpu->negative && cpu->overflow);
+    default:
+        // assert(test < 16) above pins the contract; reaching the default
+        // means a caller violated it. Return false defensively rather than
+        // hitting an unreachable warning.
+        return false;
     }
-
-    return 0;
 }
 
 // Raise a CPU exception by pushing state and loading exception vector.
@@ -692,7 +702,7 @@ static __attribute__((noinline, cold)) void exception_bus_error_retry(cpu_t *res
     // Detect double bus error during frame push or field writes
     if (g_bus_error_pending) {
         cpu->halted = 1;
-        g_bus_error_pending = 0;
+        g_bus_error_pending = false;
         if (g_bus_error_instr_ptr)
             *g_bus_error_instr_ptr = 0;
         exc_trace_record(0x008, faulting_pc, saved_pc, fault_addr, rw, cpu->vbr, saved_sr, 0xB, 1);
@@ -704,7 +714,7 @@ static __attribute__((noinline, cold)) void exception_bus_error_retry(cpu_t *res
     // Detect double bus error during vector read
     if (g_bus_error_pending) {
         cpu->halted = 1;
-        g_bus_error_pending = 0;
+        g_bus_error_pending = false;
         if (g_bus_error_instr_ptr)
             *g_bus_error_instr_ptr = 0;
         exc_trace_record(0x008, faulting_pc, saved_pc, fault_addr, rw, cpu->vbr, saved_sr, 0xB, 2);
@@ -733,7 +743,7 @@ static __attribute__((noinline, cold)) void exception_bus_error(cpu_t *restrict 
     if (cpu->last_bus_error_pc != 0 && cpu->last_bus_error_pc == faulting_pc) {
         cpu->halted = 1;
         cpu->last_bus_error_pc = 0;
-        g_bus_error_pending = 0;
+        g_bus_error_pending = false;
         if (g_bus_error_instr_ptr)
             *g_bus_error_instr_ptr = 0;
         exc_trace_record(0x008, faulting_pc, cpu->pc, fault_addr, rw, cpu->vbr, cpu_get_sr(cpu), 0xB, 1);
@@ -895,7 +905,7 @@ static inline void f_trap(cpu_t *restrict cpu) {
     //   2. The instruction page has no SoA read entry (unmapped after MMU walk)
     // Convert to a bus error with retry semantics → double bus error → halt.
     if (__builtin_expect(g_bus_error_pending, 0) && g_bus_error_address == cpu->instruction_pc) {
-        g_bus_error_pending = 0;
+        g_bus_error_pending = false;
         cpu->pc = cpu->instruction_pc;
         exception_bus_error(cpu, cpu->instruction_pc, 1);
         return;

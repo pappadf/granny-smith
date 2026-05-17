@@ -9,12 +9,15 @@
 
 #include "nubus.h"
 #include "card.h"
+#include "log.h"
 #include "system_config.h" // full config_t for VIA pointer access
 #include "via.h"
 
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+
+LOG_USE_CATEGORY_NAME("nubus");
 
 #define NUBUS_MAX_SLOTS 16 // slots are numbered $0..$F; we only populate $9..$E
 
@@ -88,8 +91,13 @@ nubus_bus_t *nubus_init(config_t *cfg, const nubus_slot_decl_t *slots, checkpoin
             if (!kind || !kind->factory)
                 continue;
             nubus_card_t *card = kind->factory(s->slot, cfg, cp);
-            if (!card)
+            if (!card) {
+                // Factory returned NULL — typically a missing/invalid VROM
+                // file or out-of-memory. Log so a silent boot-time failure
+                // doesn't manifest as "card is missing for unclear reasons".
+                LOG(1, "nubus: slot $%X card factory '%s' returned NULL", s->slot, (kind && kind->id) ? kind->id : "?");
                 continue;
+            }
             card->bus = bus;
             card->slot = s->slot;
             if (s->slot >= 0 && s->slot < NUBUS_MAX_SLOTS)

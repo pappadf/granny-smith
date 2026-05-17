@@ -3,10 +3,8 @@
 
 // cmd_image.c
 // `image` command: inspect disk image contents without SCSI-attaching.
-// Phase 1 implements `partmap` and `probe` against APM (and sniffs
-// ISO 9660 in `probe`).  `list` and `unmount` return a "not implemented
-// yet" error; they become real in Phase 2 when the auto-mount cache
-// lands.
+// Subcommands: `partmap` and `probe` (APM + ISO 9660 sniffing) read-only;
+// `list` and `unmount` go through the auto-mount cache.
 
 #include "cmd_types.h"
 #include "image.h"
@@ -72,15 +70,46 @@ static void render_partmap_text(struct cmd_context *ctx, image_t *img, const apm
     }
 }
 
+// Emit a JSON string literal body (no surrounding quotes), escaping the
+// minimum required by JSON: `"`, `\`, and control chars below 0x20.  The
+// partition name/type fields come from on-disk APM bytes that may be
+// hostile or corrupted; without escaping, a `"` in pmPartName would break
+// the JSON stream and inject arbitrary content into downstream consumers.
+static void emit_json_escaped(struct cmd_context *ctx, const char *s) {
+    if (!s)
+        return;
+    for (const unsigned char *p = (const unsigned char *)s; *p; p++) {
+        unsigned char c = *p;
+        if (c == '"' || c == '\\') {
+            cmd_printf(ctx, "\\%c", (char)c);
+        } else if (c == '\b') {
+            cmd_printf(ctx, "\\b");
+        } else if (c == '\f') {
+            cmd_printf(ctx, "\\f");
+        } else if (c == '\n') {
+            cmd_printf(ctx, "\\n");
+        } else if (c == '\r') {
+            cmd_printf(ctx, "\\r");
+        } else if (c == '\t') {
+            cmd_printf(ctx, "\\t");
+        } else if (c < 0x20) {
+            cmd_printf(ctx, "\\u%04x", c);
+        } else {
+            cmd_printf(ctx, "%c", (char)c);
+        }
+    }
+}
+
 // Render a parsed APM table as JSON (array of partition objects).
 static void render_partmap_json(struct cmd_context *ctx, const apm_table_t *table) {
     cmd_printf(ctx, "[");
     for (uint32_t i = 0; i < table->n_partitions; i++) {
         const apm_partition_t *p = &table->partitions[i];
-        cmd_printf(ctx,
-                   "%s{\"index\":%u,\"name\":\"%s\",\"type\":\"%s\","
-                   "\"start\":%llu,\"size\":%llu,\"fs\":\"%s\"}",
-                   i ? "," : "", (unsigned)p->index, p->name, p->type, (unsigned long long)p->start_block,
+        cmd_printf(ctx, "%s{\"index\":%u,\"name\":\"", i ? "," : "", (unsigned)p->index);
+        emit_json_escaped(ctx, p->name);
+        cmd_printf(ctx, "\",\"type\":\"");
+        emit_json_escaped(ctx, p->type);
+        cmd_printf(ctx, "\",\"start\":%llu,\"size\":%llu,\"fs\":\"%s\"}", (unsigned long long)p->start_block,
                    (unsigned long long)p->size_blocks, fs_kind_label(p->fs_kind));
     }
     cmd_printf(ctx, "]\n");

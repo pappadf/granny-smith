@@ -5,12 +5,15 @@
 // Implements the Macintosh Plus sound subsystem.
 
 #include "sound.h"
+#include "log.h"
 #include "memory.h"
 #include "object.h"
 #include "platform.h"
 #include "system.h"
 #include "system_config.h"
 #include "value.h"
+
+LOG_USE_CATEGORY_NAME("sound");
 
 // Forward declaration — class descriptor is at the bottom of the file but
 // sound_init / sound_delete reference it.
@@ -58,9 +61,9 @@ void sound_volume(sound_t *sound, unsigned int volume) {
 // Enables or disables the sound output
 void sound_enable(sound_t *sound, bool enabled) {
     if (sound->enabled && !enabled)
-        printf("sound disabled\n");
+        LOG(2, "sound disabled");
     if (!sound->enabled && enabled)
-        printf("sound enabled\n");
+        LOG(2, "sound enabled");
 
     sound->enabled = enabled;
 }

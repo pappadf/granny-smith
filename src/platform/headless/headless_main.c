@@ -849,17 +849,11 @@ int main(int argc, char *argv[]) {
         }
     }
 
-    // Phase 5c — legacy `quit` / `script` / `run-screenshots` /
-    // `checkpoint` shell command registrations retired. The typed
-    // `quit()` / `checkpoint_save(path)` / `checkpoint_load(path)`
-    // root methods replace them; `script=<path>` is a CLI flag (still
-    // honoured by the headless main loop).
-
     setup_init();
 
     // Apply --no-prompt default so every client connection inherits it
     if (no_prompt)
-        debug_set_prompt_default(0);
+        debug_set_prompt_default(false);
 
     // If a --checkpoint-dir was given, point the machine layer at it
     // verbatim so writable image deltas land there.  No id/timestamp

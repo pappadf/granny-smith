@@ -9,7 +9,7 @@
 
 struct {
     const char *name;
-    uint32_t trap;
+    uint16_t trap;
 } macos_atraps[] = {
 
     {"_Open",                            0xa000},
@@ -2805,7 +2805,7 @@ struct {
     {"_MessageMgr",                      0xabfb},
     {"_TranslationDispatch",             0xabfc},
     {"_Printing",                        0xabfe},
-    {"_DebugStr",                        0xabff}
+    {"_DebugStr",                        0xabff},
 };
 
 const size_t macos_atraps_count = sizeof(macos_atraps) / sizeof(macos_atraps[0]);

@@ -9,6 +9,9 @@
 
 #include "fpu.h"
 
+#include "log.h"
+LOG_USE_CATEGORY_NAME("fpu");
+
 // ============================================================================
 // Helpers for building fpu_unpacked_t constants from FPSP data
 // ============================================================================
@@ -849,7 +852,9 @@ fpu_unpacked_t fpu_op_etox(fpu_state_t *fpu, fpu_unpacked_t src, float80_reg_t r
         fp_n = (fpu_unpacked_t){false, FPU_EXP_ZERO, 0, 0};
     } else {
         fp_n.sign = (n < 0);
-        int32_t abs_n = n < 0 ? -n : n;
+        // Magnitude via uint cast so INT32_MIN doesn't trip signed-overflow
+        // UB (`-INT32_MIN` is UB). Valid inputs keep |n| well under that.
+        uint32_t abs_n = n < 0 ? (uint32_t)(-(uint32_t)n) : (uint32_t)n;
         fp_n.mantissa_hi = (uint64_t)abs_n;
         fp_n.mantissa_lo = 0;
         fp_n.exponent = 63;
@@ -1052,7 +1057,9 @@ fpu_unpacked_t fpu_op_etoxm1(fpu_state_t *fpu, fpu_unpacked_t src, float80_reg_t
         fp_n = (fpu_unpacked_t){false, FPU_EXP_ZERO, 0, 0};
     } else {
         fp_n.sign = (n < 0);
-        int32_t abs_n = n < 0 ? -n : n;
+        // Magnitude via uint cast so INT32_MIN doesn't trip signed-overflow
+        // UB (`-INT32_MIN` is UB). Valid inputs keep |n| well under that.
+        uint32_t abs_n = n < 0 ? (uint32_t)(-(uint32_t)n) : (uint32_t)n;
         fp_n.mantissa_hi = (uint64_t)abs_n;
         fp_n.mantissa_lo = 0;
         fp_n.exponent = 63;
@@ -1107,7 +1114,9 @@ fpu_unpacked_t fpu_op_etoxm1(fpu_state_t *fpu, fpu_unpacked_t src, float80_reg_t
 
     // Step 6: reconstruction — compute 2^M * (T*(1+p) + t - 2^(-M))
     // OnebySc = -2^(-M): after multiplying by 2^M, this contributes -1
-    fpu_unpacked_t onebysc = {true, -m, 0x8000000000000000ULL, 0}; // -2^(-M)
+    // Negate via uint cast so a hypothetical INT32_MIN can't trip signed
+    // overflow UB. For valid etoxm1 inputs m stays in [-16384, 16384].
+    fpu_unpacked_t onebysc = {true, (int32_t)(-(uint32_t)m), 0x8000000000000000ULL, 0}; // -2^(-M)
 
     if (m >= 64) {
         // T + (T*p + (t + OnebySc))
@@ -1320,7 +1329,9 @@ fpu_unpacked_t fpu_op_twotox(fpu_state_t *fpu, fpu_unpacked_t src, float80_reg_t
         fp_n = (fpu_unpacked_t){false, FPU_EXP_ZERO, 0, 0};
     } else {
         fp_n.sign = (n < 0);
-        int32_t abs_n = n < 0 ? -n : n;
+        // Magnitude via uint cast so INT32_MIN doesn't trip signed-overflow
+        // UB (`-INT32_MIN` is UB). Valid inputs keep |n| well under that.
+        uint32_t abs_n = n < 0 ? (uint32_t)(-(uint32_t)n) : (uint32_t)n;
         fp_n.mantissa_hi = (uint64_t)abs_n;
         fp_n.mantissa_lo = 0;
         fp_n.exponent = 63;
@@ -1422,7 +1433,9 @@ fpu_unpacked_t fpu_op_tentox(fpu_state_t *fpu, fpu_unpacked_t src, float80_reg_t
         fp_n = (fpu_unpacked_t){false, FPU_EXP_ZERO, 0, 0};
     } else {
         fp_n.sign = (n < 0);
-        int32_t abs_n = n < 0 ? -n : n;
+        // Magnitude via uint cast so INT32_MIN doesn't trip signed-overflow
+        // UB (`-INT32_MIN` is UB). Valid inputs keep |n| well under that.
+        uint32_t abs_n = n < 0 ? (uint32_t)(-(uint32_t)n) : (uint32_t)n;
         fp_n.mantissa_hi = (uint64_t)abs_n;
         fp_n.mantissa_lo = 0;
         fp_n.exponent = 63;
@@ -2150,8 +2163,12 @@ static trig_reduced_t trig_reduce_general(fpu_state_t *fpu, fpu_unpacked_t x) {
     // max exponent 16383, each iteration reduces by ~27 → at most ~608 iters
     int max_iter = 700;
     for (;;) {
-        if (--max_iter <= 0)
-            break; // guard against non-termination
+        if (--max_iter <= 0) {
+            // Should not reach here for any input the 68882 accepts; log so
+            // a non-terminating input doesn't return silent garbage.
+            LOG(1, "trig_reduce_general: hit %d-iter cap (input exp=%d)", 700, x.exponent);
+            break;
+        }
         // K = exponent of FP0
         int32_t k = fp0.exponent;
         int32_t l;
@@ -2647,9 +2664,8 @@ fpu_unpacked_t fpu_op_sincos(fpu_state_t *fpu, fpu_unpacked_t src, float80_reg_t
         // Actually: after first ROR (at SCCONT), d0[31]=bit0=0, d0[0]=bit1
         // At NEVEN: d0 ROR 1 again: d0[31] = former d0[0] = bit1 of N
         // AND 0x80000000: bit1 of N in sign position
-        bool negate = ((n_mod4 == 2) || (n_mod4 == 6));
-        // Actually, n_mod4 can only be 0 or 2 since N is even
-        negate = (n_mod4 == 2);
+        // n_mod4 ∈ {0, 2} on this branch (N is even).
+        bool negate = (n_mod4 == 2);
 
         // Both use straight Horner interleaved
         fpu_unpacked_t rp = r;
@@ -2745,9 +2761,10 @@ fpu_unpacked_t fpu_op_tan(fpu_state_t *fpu, fpu_unpacked_t src, float80_reg_t ra
         return src;
     }
 
-    // Compute sin(X) and cos(X) using the shared trig reduction and polynomials
+    // Compute sin(X) and cos(X) using the shared trig reduction and polynomials.
+    // Exception bits from either call accumulate into fpu->fpsr; the final
+    // FPCR-controlled rounding/INEX2 from the divide below subsumes them.
     fpu_unpacked_t sin_val = fpu_op_sin(fpu, src, raw);
-    // Clear any exception bits sin may have set (we handle them at the end)
     fpu_unpacked_t cos_val = fpu_op_cos(fpu, src, raw);
 
     // tan(X) = sin(X) / cos(X)

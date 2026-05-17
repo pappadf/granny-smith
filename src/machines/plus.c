@@ -68,9 +68,7 @@ static void plus_update_ipl(config_t *sim, int level, bool value);
 // Video buffer helper (Plus-specific address constants)
 // ============================================================
 
-// Plus RAM top: 4 MB, matching machine_plus.ram_default
-#define PLUS_RAM_TOP 0x400000UL
-// Plus ROM start in the 24-bit address space
+// Plus ROM start in the 24-bit address space (== Plus RAM top of 4 MB)
 #define PLUS_ROM_START 0x400000UL
 // Plus ROM region end (1.5 MB window covers all ROM mirrors)
 #define PLUS_ROM_END 0x580000UL
@@ -268,12 +266,12 @@ static void plus_init(config_t *cfg, checkpoint_t *checkpoint) {
                     img = image_open_readonly(name);
                 }
                 if (!img) {
-                    printf("Error: image_open failed for %s while restoring checkpoint\n", name);
+                    LOG(0, "image_open failed for %s while restoring checkpoint", name);
                     checkpoint_set_error(checkpoint);
                 }
             }
             if (storage_restore_from_checkpoint(img ? img->storage : NULL, checkpoint) != GS_SUCCESS) {
-                printf("Error: storage_restore_from_checkpoint failed for %s\n", name ? name : "<unnamed>");
+                LOG(0, "storage_restore_from_checkpoint failed for %s", name ? name : "<unnamed>");
                 checkpoint_set_error(checkpoint);
             }
             if (img) {

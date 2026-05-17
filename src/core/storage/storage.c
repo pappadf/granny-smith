@@ -18,6 +18,8 @@
 #include "log.h"
 #include "system.h"
 
+LOG_USE_CATEGORY_NAME("storage");
+
 #include <assert.h>
 #include <errno.h>
 #include <inttypes.h>
@@ -38,7 +40,7 @@
 #define DELTA_HEADER_SIZE  24 // magic(4) + version(4) + block_count(8) + block_size(4) + reserved(4)
 #define JOURNAL_ENTRY_SIZE (4 + STORAGE_BLOCK_SIZE) // LBA(4) + data(512) = 516
 
-#define STORAGE_SNAPSHOT_VERSION 2 // Bumped from v1 (directory-of-blocks)
+#define STORAGE_SNAPSHOT_VERSION 2
 
 // ============================================================================
 // Internal types
@@ -139,26 +141,35 @@ static int journal_load_index(storage_t *s) {
     if (!s->journal_fp)
         return GS_SUCCESS;
 
-    fseek(s->journal_fp, 0, SEEK_END);
-    long size = ftell(s->journal_fp);
+    // ftello returns off_t (64-bit when _FILE_OFFSET_BITS=64) so a >2 GiB
+    // journal doesn't silently truncate to int32 on wasm32.
+    if (fseeko(s->journal_fp, 0, SEEK_END) != 0)
+        return GS_ERROR;
+    off_t size = ftello(s->journal_fp);
     if (size <= 0)
         return GS_SUCCESS;
 
-    fseek(s->journal_fp, 0, SEEK_SET);
+    if (fseeko(s->journal_fp, 0, SEEK_SET) != 0)
+        return GS_ERROR;
     size_t entries = (size_t)size / JOURNAL_ENTRY_SIZE;
 
     for (size_t i = 0; i < entries; i++) {
         uint32_t lba;
-        if (fread(&lba, sizeof(lba), 1, s->journal_fp) != 1)
-            break;
+        if (fread(&lba, sizeof(lba), 1, s->journal_fp) != 1) {
+            // Short read mid-iteration: the journal is truncated and the
+            // in-memory index is inconsistent with the on-disk file. Surface
+            // it so the caller can decide whether to discard and re-roll.
+            return GS_ERROR;
+        }
         // Skip block data
         if (fseek(s->journal_fp, STORAGE_BLOCK_SIZE, SEEK_CUR) != 0)
-            break;
-        journal_index_add(s, lba);
+            return GS_ERROR;
+        if (journal_index_add(s, lba) != GS_SUCCESS)
+            return GS_ERROR; // OOM growing the index
     }
 
     // Position at end for appending
-    fseek(s->journal_fp, 0, SEEK_END);
+    fseeko(s->journal_fp, 0, SEEK_END);
     return GS_SUCCESS;
 }
 
@@ -259,7 +270,9 @@ static int checkpoint_storage_write_cb(void *ctx, const void *data, size_t size)
 static int checkpoint_storage_read_cb(void *ctx, void *data, size_t size) {
     checkpoint_stream_ctx_t *c = (checkpoint_stream_ctx_t *)ctx;
     system_read_checkpoint_data(c->checkpoint, data, size);
-    return checkpoint_has_error(c->checkpoint) ? 0 : (int)size;
+    // Negative on error so read_exact can distinguish "I/O error" from
+    // "EOF / zero-byte read".
+    return checkpoint_has_error(c->checkpoint) ? -1 : (int)size;
 }
 
 // ============================================================================
@@ -272,6 +285,10 @@ int storage_new(const storage_config_t *config, storage_t **out_storage) {
     if (config->block_size != STORAGE_BLOCK_SIZE)
         return GS_ERROR;
     if (config->block_count == 0)
+        return GS_ERROR;
+    // LBAs are uint32_t internally — anything larger silently truncates
+    // when an LBA is computed.
+    if (config->block_count > UINT32_MAX)
         return GS_ERROR;
 
     storage_t *s = calloc(1, sizeof(storage_t));
@@ -297,9 +314,17 @@ int storage_new(const storage_config_t *config, storage_t **out_storage) {
         // base_fp can be NULL if base doesn't exist yet (new image)
     }
 
-    // Open or create delta file
-    bool delta_exists = (access(config->delta_path, F_OK) == 0);
-    s->delta_fp = fopen(config->delta_path, delta_exists ? "r+b" : "w+b");
+    // Open or create delta file. Try the "existing" path first so an
+    // access()-then-fopen() race can't silently clobber the existing file
+    // if a concurrent process deletes it between the two calls. ENOENT
+    // means "go create one" — anything else is a real failure.
+    bool delta_exists = false;
+    s->delta_fp = fopen(config->delta_path, "r+b");
+    if (s->delta_fp) {
+        delta_exists = true;
+    } else if (errno == ENOENT) {
+        s->delta_fp = fopen(config->delta_path, "w+b");
+    }
     if (!s->delta_fp)
         goto fail;
 
@@ -454,11 +479,16 @@ int storage_apply_rollback(storage_t *storage) {
     if (delta_flush_bitmaps(storage) != GS_SUCCESS)
         return GS_ERROR;
 
-    // Truncate journal
+    // Truncate journal. If ftruncate fails, leave journal_count alone so the
+    // in-memory index still matches whatever stayed on disk; otherwise reset.
     if (storage->journal_fp) {
         int fd = fileno(storage->journal_fp);
-        if (fd >= 0)
-            ftruncate(fd, 0);
+        if (fd >= 0) {
+            if (ftruncate(fd, 0) != 0) {
+                LOG(0, "storage: ftruncate failed on journal (errno=%d); keeping in-memory index", errno);
+                return GS_ERROR;
+            }
+        }
         fseek(storage->journal_fp, 0, SEEK_SET);
     }
     storage->journal_count = 0;
@@ -562,16 +592,21 @@ int storage_restore_from_checkpoint(storage_t *storage, checkpoint_t *checkpoint
     system_read_checkpoint_data(checkpoint, &header, sizeof(header));
     if (checkpoint_has_error(checkpoint))
         return GS_ERROR;
-    if (header.version != STORAGE_SNAPSHOT_VERSION)
+    if (header.version != STORAGE_SNAPSHOT_VERSION) {
+        LOG(0, "storage: snapshot version mismatch (got %u, expected %u)", header.version, STORAGE_SNAPSHOT_VERSION);
         return GS_ERROR;
+    }
 
     // NULL storage — consume and discard
     if (!storage)
         return storage_skip_snapshot(checkpoint, &header);
 
     // Validate geometry
-    if (header.block_count != storage->block_count || header.block_size != storage->block_size)
+    if (header.block_count != storage->block_count || header.block_size != storage->block_size) {
+        LOG(0, "storage: geometry mismatch (snapshot %" PRIu64 "x%u, storage %" PRIu64 "x%u)", header.block_count,
+            header.block_size, storage->block_count, storage->block_size);
         return GS_ERROR;
+    }
 
     if (header.has_data) {
         // Consolidated: load all blocks
@@ -596,11 +631,16 @@ int storage_restore_from_checkpoint(storage_t *storage, checkpoint_t *checkpoint
     memcpy(storage->committed_bitmap, storage->bitmap, storage->bitmap_bytes);
     delta_flush_bitmaps(storage);
 
-    // Truncate journal
+    // Truncate journal. If ftruncate fails, leave journal_count alone so the
+    // in-memory index still matches whatever stayed on disk; otherwise reset.
     if (storage->journal_fp) {
         int fd = fileno(storage->journal_fp);
-        if (fd >= 0)
-            ftruncate(fd, 0);
+        if (fd >= 0) {
+            if (ftruncate(fd, 0) != 0) {
+                LOG(0, "storage: ftruncate failed on journal (errno=%d); keeping in-memory index", errno);
+                return GS_ERROR;
+            }
+        }
         fseek(storage->journal_fp, 0, SEEK_SET);
     }
     storage->journal_count = 0;

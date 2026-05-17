@@ -17,8 +17,11 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "log.h"
 #include "object.h" // object_is_reserved_word, object_validate_name
 #include "value.h"
+
+LOG_USE_CATEGORY_NAME("alias");
 
 typedef struct {
     char *name;
@@ -112,7 +115,10 @@ int alias_register_builtin(const char *name, const char *path, char *err_buf, si
         }
         // Replacing a user alias with a built-in is fine — built-ins
         // win when both are registered (the framework registers them
-        // before user aliases can be added).
+        // before user aliases can be added). Log so a user who set
+        // `$x = some.path` and then a subsystem registered `$x` as a
+        // built-in to a different target can see what happened.
+        LOG(1, "user alias '$%s' (→ %s) replaced by built-in (→ %s)", name, e->path ? e->path : "?", path);
         free_entry(e);
         e->name = xstrdup(name);
         e->path = xstrdup(path);

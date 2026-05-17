@@ -68,8 +68,8 @@ typedef enum {
     ea_any = 0x00FFF,
     ea_data = ea_any & ~ea_an,
     ea_memory = ea_data & ~ea_dn,
-    ea_control = ea_memory & ~(ea_an_plus + ea_min_an + ea_xxx), // 0x1FFE4,
-    ea_alterable = ea_any & ~(ea_d16_pc + ea_d8_pc_xn + ea_xxx), // 0x1E3FF,
+    ea_control = ea_memory & ~(ea_an_plus | ea_min_an | ea_xxx),
+    ea_alterable = ea_any & ~(ea_d16_pc | ea_d8_pc_xn | ea_xxx),
 
 } ea_mode_t;
 

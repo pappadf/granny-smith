@@ -142,10 +142,16 @@ apm_table_t *image_apm_parse_buffer(const uint8_t *buf, size_t buf_size, const c
         const uint8_t *block = buf + offset;
         if (be16(block + APM_OFF_SIG) != APM_SIG_PM)
             break;
+        uint32_t start_block = be32(block + APM_OFF_PY_START);
+        uint32_t size_blocks = be32(block + APM_OFF_PART_BLKCNT);
+        // No size-vs-image cap here: this parser only sees the partition-map
+        // scan window, not the full image.  Bounds-versus-image are checked
+        // at read time in image_apm_parse and at use time by callers that
+        // dereference start_block / size_blocks against disk_size(img).
         apm_partition_t *p = &table->partitions[table->n_partitions++];
         p->index = i + 1;
-        p->start_block = be32(block + APM_OFF_PY_START);
-        p->size_blocks = be32(block + APM_OFF_PART_BLKCNT);
+        p->start_block = start_block;
+        p->size_blocks = size_blocks;
         p->status = be32(block + APM_OFF_STATUS);
         copy_apm_str(p->name, block + APM_OFF_NAME);
         copy_apm_str(p->type, block + APM_OFF_TYPE);
