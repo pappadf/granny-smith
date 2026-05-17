@@ -339,6 +339,18 @@ static void swim_drive_poll_tick(void *source, uint64_t data) {
         scheduler_new_cpu_event(iop->scheduler, &swim_drive_poll_tick, iop, 0, 0, DRIVE_POLL_TICK_NS);
 }
 
+// Mapping between physical floppy module indices (0-based: 0 = internal,
+// 1 = external) and the .Sony driver's drive numbers (1-based, with
+// drive 0 reserved as "no drive").  See iifx-drive-numbering memory for
+// background.
+static inline uint8_t swim_floppy_to_drvnum(uint8_t floppy_idx) {
+    return (uint8_t)(floppy_idx + 1);
+}
+
+static inline int swim_drvnum_to_floppy(uint8_t drvnum) {
+    return (drvnum < 1 || drvnum > SWIM_NUM_DRIVES) ? -1 : (int)drvnum - 1;
+}
+
 // Walks both drives, comparing the current floppy_drive_image() state
 // against the previous announcement and emitting the appropriate
 // rcvReqDiskInserted / rcvReqDiskEjected event.  Skips drives whose
@@ -352,19 +364,20 @@ static void swim_drive_poll_scan(iop_t *iop) {
         return; // previous event not yet drained by host
 
     uint8_t announced = iop->ram[SWIM_MODEL_DRIVE_ANNOUNCED];
-    for (uint8_t drv = 0; drv < SWIM_NUM_DRIVES; drv++) {
-        bool present = floppy_is_inserted(floppy, drv);
-        bool last = (announced & (1u << drv)) != 0;
+    for (uint8_t idx = 0; idx < SWIM_NUM_DRIVES; idx++) {
+        bool present = floppy_is_inserted(floppy, idx);
+        bool last = (announced & (1u << idx)) != 0;
+        uint8_t drvnum = swim_floppy_to_drvnum(idx);
         if (present && !last) {
-            if (swim_post_rcv2_event(iop, SWIM_EVT_DISK_INSERTED, drv)) {
-                announced |= (uint8_t)(1u << drv);
+            if (swim_post_rcv2_event(iop, SWIM_EVT_DISK_INSERTED, drvnum)) {
+                announced |= (uint8_t)(1u << idx);
                 iop->ram[SWIM_MODEL_DRIVE_ANNOUNCED] = announced;
             }
             return; // one event per tick — wait for host to drain
         }
         if (!present && last) {
-            if (swim_post_rcv2_event(iop, SWIM_EVT_DISK_EJECTED, drv)) {
-                announced &= (uint8_t) ~(1u << drv);
+            if (swim_post_rcv2_event(iop, SWIM_EVT_DISK_EJECTED, drvnum)) {
+                announced &= (uint8_t) ~(1u << idx);
                 iop->ram[SWIM_MODEL_DRIVE_ANNOUNCED] = announced;
             }
             return;
@@ -535,11 +548,19 @@ static void swim_handle_initialize(iop_t *iop) {
         iop->ram[pl + SIM_DRIVE_KINDS + i] = 0;
 
     // The IIfx ships two SuperDrives (1.44 MB MFM-capable GCR).  Both
-    // slots advertise DRIVE_KIND_DSMFM_HD even when empty — the host's
-    // _AddDrive walk adds an entry per kind regardless of media.
-    iop->ram[pl + SIM_DRIVE_KINDS + 0] = DRIVE_KIND_DSMFM_HD;
+    // slots advertise DRIVE_KIND_DSMFM_HD; slot 0 is left as
+    // DRIVE_KIND_NONE so the .Sony driver's @AddDriveLoop skips d1=0
+    // (the "logical drive 0" position) when calling _AddDrive.  This
+    // shift is required because the .Sony driver passes d1 directly as
+    // the drive number argument to _AddDrive — and Mac OS treats drive
+    // number 0 as "no drive" / invalid, so the first physical floppy
+    // must be registered at d1=1 to receive qDrive=1 in the drive
+    // queue.  Without this shift, _MountVol(BootDrive=0) returns
+    // paramErr (-50) and the boot block code at $00400FA2 aborts
+    // (see local/gs-docs/asm/IIfx-ROM.asm §23 for the analysis).
+    iop->ram[pl + SIM_DRIVE_KINDS + 0] = DRIVE_KIND_NONE;
     iop->ram[pl + SIM_DRIVE_KINDS + 1] = DRIVE_KIND_DSMFM_HD;
-    iop->ram[pl + SIM_DRIVE_KINDS + 2] = DRIVE_KIND_NONE;
+    iop->ram[pl + SIM_DRIVE_KINDS + 2] = DRIVE_KIND_DSMFM_HD;
     iop->ram[pl + SIM_DRIVE_KINDS + 3] = DRIVE_KIND_NONE;
 
     LOG(3, "SWIM IOP: Initialize — DriveKinds = {%02x %02x %02x %02x}", iop->ram[pl + SIM_DRIVE_KINDS + 0],
@@ -579,17 +600,22 @@ static void swim_handle_set_hfs_tag(iop_t *iop) {
     swim_slot2_complete(iop, MAC_ERR_NO_ERR);
 }
 
-// Drive number range check + presence lookup.  Returns false (with
-// SIM_ERROR_CODE already set on the reply) if the drive index is out of
-// range; caller should still mark the slot completed.
-static bool swim_validate_drive(iop_t *iop, uint8_t *out_drive, int16_t *out_err) {
+// Reads the .Sony driver's 1-based drive number from XmtMsg[2], maps it
+// to a 0-based floppy module index, and validates the range.  Returns
+// false (with *out_err set to NSDrvErr) if the drive number is 0 or
+// past the number of physical floppy bays we model; caller should mark
+// the slot completed with that error.
+static bool swim_validate_drive(iop_t *iop, int *out_floppy_idx, uint8_t *out_drvnum, int16_t *out_err) {
     uint32_t pl = IOPMsgPayload(IOPXmtMsgBase, SWIM_SLOT);
-    uint8_t drv = iop->ram[pl + SIM_DRIVE_NUMBER];
-    *out_drive = drv;
-    if (drv >= SWIM_NUM_DRIVES) {
+    uint8_t drvnum = iop->ram[pl + SIM_DRIVE_NUMBER];
+    *out_drvnum = drvnum;
+    int idx = swim_drvnum_to_floppy(drvnum);
+    if (idx < 0) {
+        *out_floppy_idx = -1;
         *out_err = MAC_ERR_NS_DRV;
         return false;
     }
+    *out_floppy_idx = idx;
     *out_err = MAC_ERR_NO_ERR;
     return true;
 }
@@ -597,16 +623,18 @@ static bool swim_validate_drive(iop_t *iop, uint8_t *out_drive, int16_t *out_err
 // Fills the DriveStatus and ExtDriveStatus fields of XmtMsg[2] from the
 // floppy module's live state.  Mirrors the firmware's $58xx status-build
 // path: track, write-protect, in-place, installed, sides, format.
-static void swim_fill_drive_status(iop_t *iop, uint8_t drv) {
+// `floppy_idx` is 0-based (already translated from the .Sony driver's
+// 1-based drive number by swim_validate_drive).
+static void swim_fill_drive_status(iop_t *iop, int floppy_idx) {
     uint32_t pl = IOPMsgPayload(IOPXmtMsgBase, SWIM_SLOT);
     floppy_t *floppy = (floppy_t *)iop->bypass_device;
-    image_t *img = floppy ? floppy_drive_image(floppy, drv) : NULL;
+    image_t *img = (floppy && floppy_idx >= 0) ? floppy_drive_image(floppy, (unsigned)floppy_idx) : NULL;
     bool present = img != NULL;
     bool writable = present && img->writable;
     bool is_hd = present && img->type == image_fd_hd;
     bool is_ds = present && (img->type == image_fd_ds || img->type == image_fd_hd);
 
-    int track = floppy ? floppy_drive_track(floppy, drv) : 0;
+    int track = (floppy && floppy_idx >= 0) ? floppy_drive_track(floppy, (unsigned)floppy_idx) : 0;
     if (track < 0)
         track = 0;
     swim_ram_write_be16(iop, pl + SIM_TRACK, (uint16_t)track);
@@ -645,30 +673,33 @@ static void swim_fill_drive_status(iop_t *iop, uint8_t drv) {
 }
 
 static void swim_handle_drive_status(iop_t *iop) {
-    uint8_t drv;
+    int idx;
+    uint8_t drvnum;
     int16_t err;
-    if (!swim_validate_drive(iop, &drv, &err)) {
+    if (!swim_validate_drive(iop, &idx, &drvnum, &err)) {
         swim_slot2_complete(iop, err);
         return;
     }
-    swim_fill_drive_status(iop, drv);
-    LOG(3, "SWIM IOP: DriveStatus drive=%d present=%d", drv,
+    swim_fill_drive_status(iop, idx);
+    LOG(3, "SWIM IOP: DriveStatus drive=%d present=%d", drvnum,
         iop->ram[IOPMsgPayload(IOPXmtMsgBase, SWIM_SLOT) + SIM_DISK_IN_PLACE] != 0);
     swim_slot2_complete(iop, MAC_ERR_NO_ERR);
 }
 
 static void swim_handle_eject(iop_t *iop) {
-    uint8_t drv;
+    int idx;
+    uint8_t drvnum;
     int16_t err;
-    if (!swim_validate_drive(iop, &drv, &err)) {
+    if (!swim_validate_drive(iop, &idx, &drvnum, &err)) {
         swim_slot2_complete(iop, err);
         return;
     }
     floppy_t *floppy = (floppy_t *)iop->bypass_device;
-    if (floppy)
-        (void)floppy_drive_eject(floppy, drv);
-    iop->ram[SWIM_MODEL_DRIVE_ANNOUNCED] &= (uint8_t) ~(1u << drv);
-    LOG(3, "SWIM IOP: Eject drive=%d", drv);
+    if (floppy && idx >= 0)
+        (void)floppy_drive_eject(floppy, (unsigned)idx);
+    if (idx >= 0)
+        iop->ram[SWIM_MODEL_DRIVE_ANNOUNCED] &= (uint8_t) ~(1u << idx);
+    LOG(3, "SWIM IOP: Eject drive=%d", drvnum);
     swim_slot2_complete(iop, MAC_ERR_NO_ERR);
 }
 
@@ -687,11 +718,12 @@ static uint8_t *swim_host_dma_ptr(uint32_t host_addr, size_t byte_count) {
 }
 
 // Copies `count` blocks (512 bytes each) starting at `block_number` from
-// the floppy image at `drive` into host RAM at `host_addr`.  Returns a
-// MacOS-level error code (0 on success, offLinErr/paramErr on failure).
-static int16_t swim_read_blocks(iop_t *iop, uint8_t drive, uint32_t block_number, uint32_t count, uint32_t host_addr) {
+// the floppy image at `floppy_idx` (0-based) into host RAM at `host_addr`.
+// Returns a MacOS-level error code (0 on success, offLinErr/paramErr on
+// failure).
+static int16_t swim_read_blocks(iop_t *iop, int floppy_idx, uint32_t block_number, uint32_t count, uint32_t host_addr) {
     floppy_t *floppy = (floppy_t *)iop->bypass_device;
-    image_t *img = floppy ? floppy_drive_image(floppy, drive) : NULL;
+    image_t *img = (floppy && floppy_idx >= 0) ? floppy_drive_image(floppy, (unsigned)floppy_idx) : NULL;
     if (!img)
         return MAC_ERR_OFFLINE;
 
@@ -710,9 +742,10 @@ static int16_t swim_read_blocks(iop_t *iop, uint8_t drive, uint32_t block_number
     return MAC_ERR_NO_ERR;
 }
 
-static int16_t swim_write_blocks(iop_t *iop, uint8_t drive, uint32_t block_number, uint32_t count, uint32_t host_addr) {
+static int16_t swim_write_blocks(iop_t *iop, int floppy_idx, uint32_t block_number, uint32_t count,
+                                 uint32_t host_addr) {
     floppy_t *floppy = (floppy_t *)iop->bypass_device;
-    image_t *img = floppy ? floppy_drive_image(floppy, drive) : NULL;
+    image_t *img = (floppy && floppy_idx >= 0) ? floppy_drive_image(floppy, (unsigned)floppy_idx) : NULL;
     if (!img)
         return MAC_ERR_OFFLINE;
     if (!img->writable)
@@ -734,9 +767,10 @@ static int16_t swim_write_blocks(iop_t *iop, uint8_t drive, uint32_t block_numbe
 }
 
 static void swim_handle_read(iop_t *iop, bool verify_only) {
-    uint8_t drv;
+    int idx;
+    uint8_t drvnum;
     int16_t err;
-    if (!swim_validate_drive(iop, &drv, &err)) {
+    if (!swim_validate_drive(iop, &idx, &drvnum, &err)) {
         swim_slot2_complete(iop, err);
         return;
     }
@@ -749,7 +783,7 @@ static void swim_handle_read(iop_t *iop, bool verify_only) {
         // Verify mode: read but don't store.  We have no on-disk error
         // model, so just confirm the range is valid.
         floppy_t *floppy = (floppy_t *)iop->bypass_device;
-        image_t *img = floppy ? floppy_drive_image(floppy, drv) : NULL;
+        image_t *img = (floppy && idx >= 0) ? floppy_drive_image(floppy, (unsigned)idx) : NULL;
         if (!img)
             rc = MAC_ERR_OFFLINE;
         else if ((size_t)(blk + cnt) * 512u > disk_size(img))
@@ -757,17 +791,18 @@ static void swim_handle_read(iop_t *iop, bool verify_only) {
         else
             rc = MAC_ERR_NO_ERR;
     } else {
-        rc = swim_read_blocks(iop, drv, blk, cnt, buf);
+        rc = swim_read_blocks(iop, idx, blk, cnt, buf);
     }
-    LOG(3, "SWIM IOP: %s drive=%d blk=%u cnt=%u buf=$%08x → %d", verify_only ? "ReadVerify" : "Read", drv, blk, cnt,
+    LOG(3, "SWIM IOP: %s drive=%d blk=%u cnt=%u buf=$%08x → %d", verify_only ? "ReadVerify" : "Read", drvnum, blk, cnt,
         buf, rc);
     swim_slot2_complete(iop, rc);
 }
 
 static void swim_handle_write(iop_t *iop) {
-    uint8_t drv;
+    int idx;
+    uint8_t drvnum;
     int16_t err;
-    if (!swim_validate_drive(iop, &drv, &err)) {
+    if (!swim_validate_drive(iop, &idx, &drvnum, &err)) {
         swim_slot2_complete(iop, err);
         return;
     }
@@ -775,22 +810,23 @@ static void swim_handle_write(iop_t *iop) {
     uint32_t buf = swim_ram_read_be32(iop, pl + SIM_BUFFER_ADDR);
     uint32_t blk = swim_ram_read_be32(iop, pl + SIM_BLOCK_NUMBER);
     uint32_t cnt = swim_ram_read_be32(iop, pl + SIM_BLOCK_COUNT);
-    int16_t rc = swim_write_blocks(iop, drv, blk, cnt, buf);
-    LOG(3, "SWIM IOP: Write drive=%d blk=%u cnt=%u buf=$%08x → %d", drv, blk, cnt, buf, rc);
+    int16_t rc = swim_write_blocks(iop, idx, blk, cnt, buf);
+    LOG(3, "SWIM IOP: Write drive=%d blk=%u cnt=%u buf=$%08x → %d", drvnum, blk, cnt, buf, rc);
     swim_slot2_complete(iop, rc);
 }
 
 // Format / FormatVerify: we don't simulate sector-by-sector formatting;
 // just clear the image (Format) or treat as a no-op (FormatVerify).
 static void swim_handle_format(iop_t *iop, bool verify_only) {
-    uint8_t drv;
+    int idx;
+    uint8_t drvnum;
     int16_t err;
-    if (!swim_validate_drive(iop, &drv, &err)) {
+    if (!swim_validate_drive(iop, &idx, &drvnum, &err)) {
         swim_slot2_complete(iop, err);
         return;
     }
     floppy_t *floppy = (floppy_t *)iop->bypass_device;
-    image_t *img = floppy ? floppy_drive_image(floppy, drv) : NULL;
+    image_t *img = (floppy && idx >= 0) ? floppy_drive_image(floppy, (unsigned)idx) : NULL;
     if (!img) {
         swim_slot2_complete(iop, MAC_ERR_OFFLINE);
         return;
@@ -811,7 +847,7 @@ static void swim_handle_format(iop_t *iop, bool verify_only) {
             }
         }
     }
-    LOG(3, "SWIM IOP: %s drive=%d → %d", verify_only ? "FormatVerify" : "Format", drv, rc);
+    LOG(3, "SWIM IOP: %s drive=%d → %d", verify_only ? "FormatVerify" : "Format", drvnum, rc);
     swim_slot2_complete(iop, rc);
 }
 
