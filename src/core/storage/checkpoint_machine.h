@@ -3,8 +3,7 @@
 
 // checkpoint_machine.h
 // Process-global "current machine" identity used to root all per-machine
-// checkpoint state under /opfs/checkpoints/<machine_id>-<created>/.  See
-// local/gs-docs/notes/proposal-checkpoint-storage-isolation.md.
+// checkpoint state under /opfs/checkpoints/<machine_id>-<created>/.
 
 #ifndef CHECKPOINT_MACHINE_H
 #define CHECKPOINT_MACHINE_H

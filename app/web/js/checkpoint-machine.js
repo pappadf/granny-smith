@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) pappadf
 
-// Machine-id management for the per-machine checkpoint directory.  See
-// local/gs-docs/notes/proposal-checkpoint-storage-isolation.md §4.1.
+// Machine-id management for the per-machine checkpoint directory.
 //
 // The id+timestamp pair lives in localStorage and is rotated only on
 // explicit "new machine" actions (config-dialog confirm or URL-driven media
