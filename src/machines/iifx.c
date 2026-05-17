@@ -79,9 +79,27 @@ LOG_USE_CATEGORY_NAME("iifx");
 // $408430DC accesses $50F1E000 (= $50(A0)) as a long word inside a
 // bus-error-driven probe.  For the rest of the OSS_EXT range we keep a
 // simple R/W backing store.
+//
+// $50F1E000 is the address of the optional RPU (RAM Parity Unit) chip —
+// see local/gs-docs/code/sys71src-main/OS/UniversalTables.a:7701 where
+// the IIfx DecoderInfo's RPUAddr field is listed as "RPU - (optional)".
+// On real hardware the chip is only present if parity SIMMs are
+// installed; without it, the IIfx's BIU30 leaves the address undecoded
+// and every access bus-errors.  POST phase $93 ($408430DC) probes the
+// address by trying 32 BSET / BCLR / MOVE.L cycles and PASSES only if
+// every access traps (= no RPU).  Later, the OS's gestaltParityAttr
+// handler reads RPUAddr from DecoderInfo and writes to the chip — but
+// only after first checking AddrMapFlags bit 20 (RPUExists), which the
+// IIfx ROM only sets when POST phase $93 detected an installed chip.
+// So when we bus-error at this window:
+//   1. POST phase $93 sees the expected bus errors → RPUExists stays 0
+//   2. _Gestalt(gestaltParityAttr) takes the @parityExit branch and
+//      returns 0 → System 7's ParityINIT skips the dialog.
 #define IO_OSS_EXT_START 0x1c000
 #define IO_OSS_EXT_END   0x20000
 #define IO_OSS_EXT_SHIFT 0x1c000 // 16-bit serial shift register
+#define IO_RPU_PROBE     0x1e000 // optional RPU base; bus-errors when absent
+#define IO_RPU_PROBE_END 0x1e020 // 32 bytes of register window (mode + reset)
 #define IO_FMC_BERR      0x24000
 #define IO_FMC_BERR_END  0x28000
 
@@ -526,6 +544,12 @@ static uint8_t iifx_io_read_uint8(void *ctx, uint32_t addr) {
         LOG(5, "io_r8 @%08x ->%02x [OSS+%x]", IIFX_IO_BASE + raw, v, offset - IO_OSS);
         return v;
     }
+    if (offset >= IO_RPU_PROBE && offset < IO_RPU_PROBE_END) {
+        // Optional RPU chip not installed — bus-error like real BIU30
+        // does when the parity SIMMs / parity controller are absent.
+        iifx_bus_error(IIFX_IO_BASE + raw, true);
+        return 0xff;
+    }
     if (offset >= IO_OSS_EXT_START && offset < IO_OSS_EXT_END) {
         memory_io_penalty(IIFX_OSS_IO_PENALTY);
         if (offset == IO_OSS_EXT_SHIFT) {
@@ -630,6 +654,13 @@ static void iifx_io_write_uint8(void *ctx, uint32_t addr, uint8_t value) {
         memory_io_penalty(IIFX_OSS_IO_PENALTY);
         LOG(5, "io_w8 @%08x =%02x [OSS+%x]", IIFX_IO_BASE + raw, value, offset - IO_OSS);
         st->oss_iface->write_uint8(st->oss, offset - IO_OSS, value);
+        return;
+    }
+    if (offset >= IO_RPU_PROBE && offset < IO_RPU_PROBE_END) {
+        // Same as the read side: optional RPU chip absent → bus-error
+        // every access so POST phase $93 sees a clean "no RPU" result
+        // and System 7's gestaltParityAttr returns "no capability".
+        iifx_bus_error(IIFX_IO_BASE + raw, false);
         return;
     }
     if (offset >= IO_OSS_EXT_START && offset < IO_OSS_EXT_END) {
