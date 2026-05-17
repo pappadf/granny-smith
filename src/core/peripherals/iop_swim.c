@@ -98,6 +98,8 @@
 #include "log.h"
 #include "memory.h"
 #include "scheduler.h"
+#include "system.h"
+#include "system_config.h"
 
 #include <string.h>
 
@@ -245,10 +247,6 @@ static bool swim_post_rcv2_event(iop_t *iop, uint8_t event, uint8_t drive);
 // ============================================================================
 //  Endian helpers — IOP RAM and host RAM are both big-endian on Mac.
 // ============================================================================
-
-static uint16_t swim_ram_read_be16(const iop_t *iop, uint32_t off) {
-    return (uint16_t)((iop->ram[off] << 8) | iop->ram[off + 1]);
-}
 
 static uint32_t swim_ram_read_be32(const iop_t *iop, uint32_t off) {
     return ((uint32_t)iop->ram[off] << 24) | ((uint32_t)iop->ram[off + 1] << 16) | ((uint32_t)iop->ram[off + 2] << 8) |
@@ -674,10 +672,23 @@ static void swim_handle_eject(iop_t *iop) {
     swim_slot2_complete(iop, MAC_ERR_NO_ERR);
 }
 
+// Resolves host_addr to a direct RAM pointer using ram_native_pointer.
+// The IIfx PIC's DMA controller writes to *physical* RAM addresses,
+// bypassing the host MMU — modelled here by writing directly into the
+// memory_map_t's flat RAM image.  Returns NULL if host_addr + byte_count
+// would extend past the configured RAM size.
+static uint8_t *swim_host_dma_ptr(uint32_t host_addr, size_t byte_count) {
+    config_t *cfg = global_emulator;
+    if (!cfg || !cfg->mem_map)
+        return NULL;
+    if ((uint64_t)host_addr + byte_count > (uint64_t)cfg->ram_size)
+        return NULL;
+    return ram_native_pointer(cfg->mem_map, host_addr);
+}
+
 // Copies `count` blocks (512 bytes each) starting at `block_number` from
-// the floppy image at `drive` into host RAM at `host_addr`, byte by byte
-// using the public memory_write_uint8 fast path.  Returns a MacOS-level
-// error code (0 on success, offLinErr/paramErr on failure).
+// the floppy image at `drive` into host RAM at `host_addr`.  Returns a
+// MacOS-level error code (0 on success, offLinErr/paramErr on failure).
 static int16_t swim_read_blocks(iop_t *iop, uint8_t drive, uint32_t block_number, uint32_t count, uint32_t host_addr) {
     floppy_t *floppy = (floppy_t *)iop->bypass_device;
     image_t *img = floppy ? floppy_drive_image(floppy, drive) : NULL;
@@ -690,14 +701,12 @@ static int16_t swim_read_blocks(iop_t *iop, uint8_t drive, uint32_t block_number
     if (byte_offset + byte_count > total)
         return MAC_ERR_PARAM;
 
-    uint8_t buf[512];
-    for (uint32_t b = 0; b < count; b++) {
-        size_t got = disk_read_data(img, byte_offset + (size_t)b * 512u, buf, sizeof buf);
-        if (got != sizeof buf)
-            return MAC_ERR_IO;
-        for (uint32_t i = 0; i < sizeof buf; i++)
-            memory_write_uint8(host_addr + b * 512u + i, buf[i]);
-    }
+    uint8_t *dst = swim_host_dma_ptr(host_addr, byte_count);
+    if (!dst)
+        return MAC_ERR_PARAM;
+    size_t got = disk_read_data(img, byte_offset, dst, byte_count);
+    if (got != byte_count)
+        return MAC_ERR_IO;
     return MAC_ERR_NO_ERR;
 }
 
@@ -715,14 +724,12 @@ static int16_t swim_write_blocks(iop_t *iop, uint8_t drive, uint32_t block_numbe
     if (byte_offset + byte_count > total)
         return MAC_ERR_PARAM;
 
-    uint8_t buf[512];
-    for (uint32_t b = 0; b < count; b++) {
-        for (uint32_t i = 0; i < sizeof buf; i++)
-            buf[i] = memory_read_uint8(host_addr + b * 512u + i);
-        size_t wrote = disk_write_data(img, byte_offset + (size_t)b * 512u, buf, sizeof buf);
-        if (wrote != sizeof buf)
-            return MAC_ERR_IO;
-    }
+    uint8_t *src = swim_host_dma_ptr(host_addr, byte_count);
+    if (!src)
+        return MAC_ERR_PARAM;
+    size_t wrote = disk_write_data(img, byte_offset, src, byte_count);
+    if (wrote != byte_count)
+        return MAC_ERR_IO;
     return MAC_ERR_NO_ERR;
 }
 
