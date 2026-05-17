@@ -207,7 +207,9 @@ LOG_USE_CATEGORY_NAME("iop_swim");
 #define SWIM_MODEL_POLL_ENABLED    (SWIM_MODEL_BASE + 3) // drive-poll loop active
 #define SWIM_MODEL_DRIVE_PRESENT   (SWIM_MODEL_BASE + 4) // bitmap: bit N = drive N has disk last seen
 #define SWIM_MODEL_DRIVE_ANNOUNCED (SWIM_MODEL_BASE + 5) // bitmap: bit N = DiskInserted has been delivered for drive N
+#define SWIM_MODEL_ADB_DATACOUNT   (SWIM_MODEL_BASE + 6) // bytes of saved Listen data (0..8)
 #define SWIM_MODEL_HFS_TAG_ADDR    (SWIM_MODEL_BASE + 8) // long: host RAM addr for MFS tags
+#define SWIM_MODEL_ADB_DATA        (SWIM_MODEL_BASE + 12) // 8 bytes: saved Listen-side ADBData
 
 // Number of floppy drives we model (must match floppy.c NUM_DRIVES).
 #define SWIM_NUM_DRIVES 2
@@ -496,6 +498,19 @@ static void swim_handle_xmt_slot(iop_t *iop, int slot) {
         uint8_t count = iop->ram[pl + ADBMSG_DATACOUNT];
         uint8_t cmd = iop->ram[pl + ADBMSG_ADBCMD];
         LOG(3, "SWIM IOP: XmtMsg[3] ADB req: flags=$%02x count=%d cmd=$%02x", flags, count, cmd);
+
+        // Snapshot the Listen-side payload for the deferred response
+        // builder.  XmtMsg[3].ADBData carries 0..8 bytes; for a Listen
+        // command these are the bytes the device should latch (e.g.
+        // Listen R3 for SetPollEnables uses 2 bytes).  We stash them in
+        // our scratch area so swim_adb_response() can pass them to
+        // adb_iop_transact() when it fires, since the OS may overwrite
+        // XmtMsg[3] before the scheduler tick lands.
+        if (count > 8)
+            count = 8;
+        iop->ram[SWIM_MODEL_ADB_DATACOUNT] = count;
+        for (uint8_t i = 0; i < count; i++)
+            iop->ram[SWIM_MODEL_ADB_DATA + i] = iop->ram[pl + ADBMSG_ADBDATA + i];
 
         // $550D ack: XmtMsg[3].state := MsgCompleted, raise Int0.
         iop->ram[IOPXmtMsgBase + IOPMsgState(slot)] = MsgCompleted;
@@ -962,27 +977,57 @@ static void swim_adb_response(void *source, uint64_t data) {
         return;
     }
 
-    // Build the reply.  The firmware's $5560 channel engine writes its
-    // internal $07 state directly to RcvMsg[N].Flags — that state was
-    // initialised from the request's Flags byte in $55B4 (`sta $07`)
-    // and then ORed with NoReply ($02) in $5610.  So the reply's Flags
-    // = request_Flags | NoReply.  Critically, the ExplicitCmd bit
-    // (bit 7) from the request must be preserved so the host routes
-    // via ExplicitRequestDone (which advances the cmd queue head)
-    // rather than ImplicitRequestDone (which leaves the queue stuck).
-    uint8_t reply_flags = iop->ram[SWIM_MODEL_ADB_FLAGS] | ADBMSG_FLAG_NOREPLY;
+    uint8_t cmd = iop->ram[SWIM_MODEL_ADB_CMD];
+    uint8_t req_flags = iop->ram[SWIM_MODEL_ADB_FLAGS];
+    uint8_t in_count = iop->ram[SWIM_MODEL_ADB_DATACOUNT];
+    if (in_count > 8)
+        in_count = 8;
+    const uint8_t *in_data = &iop->ram[SWIM_MODEL_ADB_DATA];
+
+    // Hand off to the shared ADB device state machine — adb_iop_transact()
+    // runs the same Talk / Listen / Reset / Flush dispatch as the
+    // VIA-shift path on SE/30 / IIcx / IIx, just bypassing the bit-bang.
+    // global_emulator->adb is the per-machine adb_t initialised in
+    // iifx_init().  When the ADB module has pending mouse/keyboard data
+    // (from system_mouse_update / adb_keyboard_event) it returns it
+    // here; otherwise out_data_len stays 0 and we fall back to NoReply.
+    uint8_t out_data[8] = {0};
+    int out_data_len = 0;
+    bool has_reply = false;
+    if (global_emulator && global_emulator->adb)
+        has_reply = adb_iop_transact(global_emulator->adb, cmd, in_data, in_count, out_data, &out_data_len);
+
+    // Build the RcvMsg[3] payload.  The firmware's $5560 channel engine
+    // writes its internal $07 state directly to RcvMsg[N].Flags — that
+    // state was initialised from the request's Flags byte in $55B4 and
+    // OR'd with NoReply ($02) in $5610 when nothing answered.  We
+    // preserve the ExplicitCmd bit (bit 7) so the host routes via
+    // ExplicitRequestDone (advances the cmd queue head) rather than
+    // ImplicitRequestDone (leaves the queue stuck).
+    // NoReply means "no device at that address responded" — set it whenever
+    // adb_iop_transact returned false, including Talk-R0 polls of devices
+    // with no pending data.  Successful Flush / Listen / Reset return
+    // has_reply=true with out_data_len=0 — those clear NoReply so the host
+    // sees the ACK.
+    uint8_t reply_flags = req_flags;
+    if (!has_reply)
+        reply_flags |= ADBMSG_FLAG_NOREPLY;
+    else
+        reply_flags &= (uint8_t)~ADBMSG_FLAG_NOREPLY;
+
     uint32_t pl = IOPMsgPayload(IOPRcvMsgBase, ADB_SLOT);
     iop->ram[pl + ADBMSG_FLAGS] = reply_flags;
-    iop->ram[pl + ADBMSG_DATACOUNT] = 0;
-    iop->ram[pl + ADBMSG_ADBCMD] = iop->ram[SWIM_MODEL_ADB_CMD];
-    // ADBData bytes left as-is — host won't read them when DataCount==0.
+    iop->ram[pl + ADBMSG_DATACOUNT] = (uint8_t)out_data_len;
+    iop->ram[pl + ADBMSG_ADBCMD] = cmd;
+    for (int i = 0; i < out_data_len; i++)
+        iop->ram[pl + ADBMSG_ADBDATA + i] = out_data[i];
 
-    // $5560: increment RcvMsg[3].state to NewMsgSent and raise Int1.
+    // $5560: mark RcvMsg[3].state = NewMsgSent and raise Int1.
     iop->ram[IOPRcvMsgBase + IOPMsgState(ADB_SLOT)] = NewMsgSent;
     iop_raise_int1(iop);
 
     iop->ram[SWIM_MODEL_ADB_BUSY] = 0;
-    LOG(3, "SWIM IOP: RcvMsg[3] ADB reply: NoReply, cmd echo=$%02x", iop->ram[SWIM_MODEL_ADB_CMD]);
+    LOG(3, "SWIM IOP: RcvMsg[3] ADB reply: cmd=$%02x flags=$%02x count=%d", cmd, reply_flags, out_data_len);
 }
 
 // ============================================================================
@@ -1052,6 +1097,14 @@ static void swim_handle_rcv_slot(iop_t *iop, int slot) {
 
     LOG(3, "SWIM IOP: RcvMsg[%d] ADB req (irSendRcvReply path): flags=$%02x count=%d cmd=$%02x", slot, flags, count,
         cmd);
+
+    // Snapshot the Listen payload from the RcvMsg buffer too — autopoll
+    // commands posted via irSendRcvReply carry their data in ADBData[].
+    if (count > 8)
+        count = 8;
+    iop->ram[SWIM_MODEL_ADB_DATACOUNT] = count;
+    for (uint8_t i = 0; i < count; i++)
+        iop->ram[SWIM_MODEL_ADB_DATA + i] = iop->ram[pl + ADBMSG_ADBDATA + i];
 
     // Process the request the same way as an XmtMsg-side request.
     swim_start_adb_send(iop, cmd, flags);
