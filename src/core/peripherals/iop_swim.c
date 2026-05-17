@@ -208,8 +208,10 @@ LOG_USE_CATEGORY_NAME("iop_swim");
 #define SWIM_MODEL_DRIVE_PRESENT   (SWIM_MODEL_BASE + 4) // bitmap: bit N = drive N has disk last seen
 #define SWIM_MODEL_DRIVE_ANNOUNCED (SWIM_MODEL_BASE + 5) // bitmap: bit N = DiskInserted has been delivered for drive N
 #define SWIM_MODEL_ADB_DATACOUNT   (SWIM_MODEL_BASE + 6) // bytes of saved Listen data (0..8)
+#define SWIM_MODEL_AUTOPOLL_ADDR   (SWIM_MODEL_BASE + 7) // next ADB address to probe in autopoll cycle (1..15)
 #define SWIM_MODEL_HFS_TAG_ADDR    (SWIM_MODEL_BASE + 8) // long: host RAM addr for MFS tags
 #define SWIM_MODEL_ADB_DATA        (SWIM_MODEL_BASE + 12) // 8 bytes: saved Listen-side ADBData
+#define SWIM_MODEL_DEVMAP          (SWIM_MODEL_BASE + 20) // 2 bytes: SetPollEnables DevMap bitmap
 
 // Number of floppy drives we model (must match floppy.c NUM_DRIVES).
 #define SWIM_NUM_DRIVES 2
@@ -415,6 +417,9 @@ static void iop_swim_on_run_start(iop_t *iop) {
     iop->ram[SWIM_MODEL_POLL_ENABLED] = 0;
     iop->ram[SWIM_MODEL_DRIVE_PRESENT] = 0;
     iop->ram[SWIM_MODEL_DRIVE_ANNOUNCED] = 0;
+    iop->ram[SWIM_MODEL_AUTOPOLL_ADDR] = 1;
+    iop->ram[SWIM_MODEL_DEVMAP + 0] = 0;
+    iop->ram[SWIM_MODEL_DEVMAP + 1] = 0;
     swim_ram_write_be32(iop, SWIM_MODEL_HFS_TAG_ADDR, 0);
 
     // $50BA InitMsgChannelList
@@ -984,41 +989,93 @@ static void swim_adb_response(void *source, uint64_t data) {
         in_count = 8;
     const uint8_t *in_data = &iop->ram[SWIM_MODEL_ADB_DATA];
 
-    // Hand off to the shared ADB device state machine — adb_iop_transact()
-    // runs the same Talk / Listen / Reset / Flush dispatch as the
-    // VIA-shift path on SE/30 / IIcx / IIx, just bypassing the bit-bang.
-    // global_emulator->adb is the per-machine adb_t initialised in
-    // iifx_init().  When the ADB module has pending mouse/keyboard data
-    // (from system_mouse_update / adb_keyboard_event) it returns it
-    // here; otherwise out_data_len stays 0 and we fall back to NoReply.
+    // Two transport paths into the slot-3 channel:
+    //
+    //  A) Explicit (Flags has ExplicitCmd bit 7).  Host sets ADBCmd to a
+    //     specific Talk / Listen / Reset / Flush byte and expects the
+    //     firmware to issue it on the bus.  Reply echoes ExplicitCmd so
+    //     the ADB Mgr's IOPReqDone routes to ExplicitRequestDone and
+    //     advances the cmd queue head.
+    //
+    //  B) Implicit autopoll (Flags has PollEnable bit 6 — set by the OS
+    //     in IOPStartReq when fDBExpActive is already 1).  The ADBCmd
+    //     byte in the message is meaningless (whatever stale value the
+    //     buffer happened to hold); the firmware is expected to pick the
+    //     next enabled device from DevMap and Talk-R0 it on its own.
+    //     If SetPollEnables bit 5 is also set, ADBData carries a fresh
+    //     2-byte DevMap bitmap that should replace the firmware's
+    //     current poll mask.  Reply ADBCmd should be the actual Talk
+    //     command the firmware (would have) issued, so the OS's
+    //     pollCmd / pollAddr globals reflect which device responded.
+    bool is_explicit = (req_flags & ADBMSG_FLAG_EXPLICIT) != 0;
+    bool is_autopoll = !is_explicit && (req_flags & ADBMSG_FLAG_POLL_EN) != 0;
+
+    if ((req_flags & ADBMSG_FLAG_SETPOLL_EN) && in_count >= 2) {
+        uint16_t bitmap = ((uint16_t)in_data[0] << 8) | in_data[1];
+        iop->ram[SWIM_MODEL_DEVMAP + 0] = (uint8_t)(bitmap >> 8);
+        iop->ram[SWIM_MODEL_DEVMAP + 1] = (uint8_t)bitmap;
+        LOG(3, "SWIM IOP: SetPollEnables — DevMap = $%04x", bitmap);
+    }
+
     uint8_t out_data[8] = {0};
     int out_data_len = 0;
     bool has_reply = false;
-    if (global_emulator && global_emulator->adb)
-        has_reply = adb_iop_transact(global_emulator->adb, cmd, in_data, in_count, out_data, &out_data_len);
+    uint8_t reply_cmd = cmd;
 
-    // Build the RcvMsg[3] payload.  The firmware's $5560 channel engine
-    // writes its internal $07 state directly to RcvMsg[N].Flags — that
-    // state was initialised from the request's Flags byte in $55B4 and
-    // OR'd with NoReply ($02) in $5610 when nothing answered.  We
-    // preserve the ExplicitCmd bit (bit 7) so the host routes via
-    // ExplicitRequestDone (advances the cmd queue head) rather than
-    // ImplicitRequestDone (leaves the queue stuck).
-    // NoReply means "no device at that address responded" — set it whenever
-    // adb_iop_transact returned false, including Talk-R0 polls of devices
-    // with no pending data.  Successful Flush / Listen / Reset return
-    // has_reply=true with out_data_len=0 — those clear NoReply so the host
-    // sees the ACK.
+    if (is_autopoll) {
+        // Cycle through enabled devices, looking for one with pending data.
+        // Talk-R0 each in turn; first non-NoReply wins.  Honors the DevMap
+        // bitmap when the OS has installed one; otherwise polls every
+        // address (1..15) on the off-chance that the OS hasn't called
+        // SetPollEnables yet.
+        uint16_t devmap = ((uint16_t)iop->ram[SWIM_MODEL_DEVMAP + 0] << 8) | iop->ram[SWIM_MODEL_DEVMAP + 1];
+        uint8_t start = iop->ram[SWIM_MODEL_AUTOPOLL_ADDR];
+        if (start < 1 || start > 15)
+            start = 1;
+        for (int step = 0; step < 15; step++) {
+            uint8_t addr = (uint8_t)(((start - 1 + step) % 15) + 1);
+            if (devmap != 0 && (devmap & (1u << addr)) == 0)
+                continue;
+            uint8_t talk_r0 = (uint8_t)((addr << 4) | 0x0C); // Talk-Reg-0
+            int n = 0;
+            uint8_t buf[8] = {0};
+            if (global_emulator && global_emulator->adb &&
+                adb_iop_transact(global_emulator->adb, talk_r0, NULL, 0, buf, &n) && n > 0) {
+                memcpy(out_data, buf, (size_t)n);
+                out_data_len = n;
+                reply_cmd = talk_r0;
+                has_reply = true;
+                iop->ram[SWIM_MODEL_AUTOPOLL_ADDR] = (uint8_t)((addr % 15) + 1);
+                break;
+            }
+        }
+        if (!has_reply) {
+            // Nothing pending — keep advancing the round-robin pointer
+            // so the next autopoll cycle starts at the next address.
+            iop->ram[SWIM_MODEL_AUTOPOLL_ADDR] = (uint8_t)(((start) % 15) + 1);
+        }
+    } else {
+        // Explicit cmd path: dispatch the host's ADBCmd directly.
+        if (global_emulator && global_emulator->adb)
+            has_reply = adb_iop_transact(global_emulator->adb, cmd, in_data, in_count, out_data, &out_data_len);
+    }
+
+    // Build reply Flags.  Preserve ExplicitCmd and PollEnable from the
+    // request so the OS's IOPReqDone routes through the right path
+    // (ExplicitRequestDone advances the cmd queue, ImplicitRequestDone
+    // resumes autopoll).  Set NoReply when no device answered.
     uint8_t reply_flags = req_flags;
     if (!has_reply)
         reply_flags |= ADBMSG_FLAG_NOREPLY;
     else
         reply_flags &= (uint8_t)~ADBMSG_FLAG_NOREPLY;
+    // SetPollEnables is a one-shot bit — clear it on the reply.
+    reply_flags &= (uint8_t)~ADBMSG_FLAG_SETPOLL_EN;
 
     uint32_t pl = IOPMsgPayload(IOPRcvMsgBase, ADB_SLOT);
     iop->ram[pl + ADBMSG_FLAGS] = reply_flags;
     iop->ram[pl + ADBMSG_DATACOUNT] = (uint8_t)out_data_len;
-    iop->ram[pl + ADBMSG_ADBCMD] = cmd;
+    iop->ram[pl + ADBMSG_ADBCMD] = reply_cmd;
     for (int i = 0; i < out_data_len; i++)
         iop->ram[pl + ADBMSG_ADBDATA + i] = out_data[i];
 

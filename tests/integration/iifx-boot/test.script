@@ -46,4 +46,23 @@ assert ${(memory.peek.l(0x0DD0) & 0x100000) == 0} "RPUExists bit 20 of AddrMapFl
 # Disk Tools volume icon, Trash icon, gray desktop pattern).
 screen.match finder.png
 
+# Bring up the "About This Macintosh..." dialog via the Apple menu.
+# Mouse-position writes go through "global" (the Mouse / MTemp lowmem
+# Toolbox globals) since the IIfx's ADB cursor-tracking path takes the
+# scenic route through the SWIM IOP firmware; the button press itself
+# goes through the SWIM IOP autopoll cycle (commit handling implicit
+# Talk-R0 polls via the SetPollEnables / PollEnable Flags in
+# iop_swim.c's swim_adb_response).
+mouse.move 25 10 "global"
+scheduler.run 4000000
+mouse.click true
+scheduler.run 50000000
+
+mouse.move 25 30 "global"
+scheduler.run 40000000
+mouse.click false
+scheduler.run 200000000
+
+screen.match about.png
+
 quit
