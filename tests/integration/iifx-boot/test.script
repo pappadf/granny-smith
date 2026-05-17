@@ -23,7 +23,9 @@
 # Run long enough for the boot to read the System file from the floppy,
 # load the boot blocks into RAM, jump into the System loader, init the
 # Toolbox, and draw the Finder desktop with the volume + Trash icons.
-scheduler.run 700000000
+# Finder paints stable by ~225M instructions; 260M gives a comfortable
+# margin without burning cycles past it.
+scheduler.run 260000000
 
 assert ${machine.id == "iifx"} "machine.id != iifx"
 assert ${rom.checksum == "4147DD77"} "rom.checksum != 4147DD77"
@@ -56,12 +58,12 @@ screen.match finder.png
 mouse.move 25 10 "global"
 scheduler.run 4000000
 mouse.click true
-scheduler.run 50000000
+scheduler.run 10000000
 
 mouse.move 25 30 "global"
-scheduler.run 40000000
+scheduler.run 10000000
 mouse.click false
-scheduler.run 200000000
+scheduler.run 10000000
 
 screen.match about.png
 
