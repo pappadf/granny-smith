@@ -7,6 +7,7 @@
 #include "machine.h"
 #include "system_config.h"
 
+#include "adb.h"
 #include "asc.h"
 #include "checkpoint_machine.h"
 #include "cpu.h"
@@ -134,6 +135,7 @@ typedef struct iifx_state {
     struct asc *asc;
     struct floppy *floppy;
     oss_t *oss;
+    adb_t *adb; // ADB device state — driven via SWIM IOP slot 3
     iop_t *scc_iop;
     iop_t *swim_iop;
 
@@ -948,6 +950,16 @@ static void iifx_init(config_t *cfg, checkpoint_t *checkpoint) {
     st->floppy = floppy_init(FLOPPY_TYPE_SWIM, NULL, cfg->scheduler, checkpoint);
     cfg->floppy = st->floppy;
 
+    // ADB device state: the IIfx's ADB bus is bit-banged by the SWIM IOP
+    // firmware ($F032 in iop-swim.bin), not by VIA1's shift register, so
+    // pass NULL for the VIA argument — slot-3 traffic on the SWIM IOP
+    // calls adb_iop_transact() directly without going through
+    // via_input_sr() / via_input(pb3).  cfg->adb exposes this instance
+    // to system_mouse_update / adb_keyboard_event so host-side mouse +
+    // keyboard input routes here transparently.
+    st->adb = adb_init(NULL, cfg->scheduler, checkpoint);
+    cfg->adb = st->adb;
+
     st->via1_iface = via_get_memory_interface(cfg->via1);
     st->scc_iface = scc_get_memory_interface(cfg->scc);
     st->scsi_iface = scsi_get_memory_interface(cfg->scsi);
@@ -1040,6 +1052,11 @@ static void iifx_teardown(config_t *cfg) {
             asc_delete(st->asc);
             st->asc = NULL;
         }
+        if (st->adb) {
+            adb_delete(st->adb);
+            st->adb = NULL;
+            cfg->adb = NULL;
+        }
     }
     if (cfg->scsi) {
         scsi_delete(cfg->scsi);
@@ -1092,6 +1109,7 @@ static void iifx_checkpoint_save(config_t *cfg, checkpoint_t *cp) {
     glue030_checkpoint_save_images(cfg, cp);
     scsi_checkpoint(cfg->scsi, cp);
     asc_checkpoint(st->asc, cp);
+    adb_checkpoint(st->adb, cp);
     floppy_checkpoint(st->floppy, cp);
     oss_checkpoint(st->oss, cp);
     iop_checkpoint(st->scc_iop, cp);

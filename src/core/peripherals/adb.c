@@ -237,8 +237,13 @@ static uint8_t encode_delta(int clamped) {
     return (uint8_t)(clamped & 0x7F);
 }
 
-// Drives the vADBInt line on VIA1 port B bit 3: high = idle/continue, low = SRQ/done
+// Drives the vADBInt line on VIA1 port B bit 3: high = idle/continue, low = SRQ/done.
+// On IOP-based machines (Macintosh IIfx) the ADB module is initialised with a
+// NULL VIA pointer because the SWIM IOP drives the bus directly; this is a no-op
+// in that case — IRQ delivery from RcvMsg[3] is the IOP's job.
 static void set_adb_int(adb_t *adb, bool high) {
+    if (!adb || !adb->via)
+        return;
     via_input(adb->via, 1, ADB_INT_PIN, high);
 }
 
@@ -453,12 +458,24 @@ static void adb_decode_command(adb_t *adb, uint8_t cmd) {
 
     switch (type) {
     case CMD_TYPE_SENDRESET:
-        // Address-specific SendReset; treat the same as broadcast reset
-        adb_reset(adb);
+        // Type-00 sub-commands: bits 1-0 distinguish SendReset ($X0) from
+        // Flush ($X1).  Inside Mac V "The Apple Desktop Bus" §6.2:
+        //   $X0  Reserved for SendReset to addr X (no real device implements it)
+        //   $X1  Flush device X (discard buffered output, keep address remap)
+        // Treating $X1 as a broadcast reset would wipe the device-address
+        // remap state set up by an earlier Listen-R3 — every Talk poll after
+        // the Flush would then see the original default addresses and the OS
+        // would loop probing the same devices forever.
+        if (reg == 1)
+            flush_device(adb, addr);
+        else
+            adb_reset(adb);
         break;
 
     case CMD_TYPE_FLUSH:
-        // Discard buffered data for the target device
+        // Type-01 is "Reserved" per the ADB spec.  Earlier code mapped this
+        // here, but real OSes use the type-00 + sub=01 encoding (above);
+        // we keep this case as a defensive alias.
         flush_device(adb, addr);
         break;
 
@@ -558,6 +575,13 @@ static void adb_autopoll_deferred(void *source, uint64_t data) {
 
     LOG(1, "autopoll: entry state=%d pending=%d mouse_pending=%d mouse_btn=%d", adb->state, has_pending_data(adb),
         adb->mouse_data_pending, adb->mouse_button);
+
+    // IOP-based machines (Macintosh IIfx) don't have an autopoll timer in
+    // this module — the SWIM IOP polls each ADB device via XmtMsg[3] /
+    // irSendRcvReply and pulls data through adb_iop_transact() instead.
+    // Skip the VIA-shift-register wake-up; it would NULL-deref the VIA.
+    if (!adb->via)
+        return;
 
     // Stale event: state has moved on since this was scheduled
     if (adb->state != ADB_STATE_IDLE)
@@ -858,6 +882,67 @@ void adb_mouse_event(adb_t *adb, bool button, int dx, int dy) {
 // Used by set-mouse to move the cursor through the ADB hardware path.
 void adb_mouse_move(adb_t *adb, int dx, int dy) {
     adb_mouse_event(adb, adb->mouse_button, dx, dy);
+}
+
+// IOP-based ADB transaction (Macintosh IIfx).  See adb.h for the protocol
+// background.  Runs the same Talk / Listen / Reset / Flush dispatch as the
+// VIA-shift path but returns the Talk reply by value instead of clocking
+// it out byte-by-byte through via_input_sr().
+//
+// Note: this reuses adb_decode_command() — which leaves a few internal
+// fields (reply_buf, listen_active, listen_addr/reg) set up as if a real
+// VIA Talk/Listen were in progress.  That's fine because the SWIM IOP
+// firmware on real hardware drives each transaction to completion before
+// the next host kick, so the next call's adb_decode_command() clears the
+// stale state on entry.
+bool adb_iop_transact(adb_t *adb, uint8_t cmd, const uint8_t *in_data, int in_data_len, uint8_t *out_data,
+                      int *out_data_len) {
+    if (!adb || !out_data || !out_data_len)
+        return false;
+    *out_data_len = 0;
+
+    uint8_t type = (cmd >> 2) & 0x03;
+
+    // Run the existing command dispatch.  This populates adb->reply_buf
+    // for Talk, sets listen_active/listen_addr/listen_reg for Listen,
+    // or runs Reset / Flush in place.
+    adb_decode_command(adb, cmd);
+
+    if (type == CMD_TYPE_TALK) {
+        if (adb->reply_len == 0)
+            return false; // no device at this address
+        int n = adb->reply_len;
+        if (n > 8)
+            n = 8;
+        memcpy(out_data, adb->reply_buf, (size_t)n);
+        *out_data_len = n;
+        // Drain the reply buffer so a follow-up Talk poll on the same
+        // address with no new data returns NoReply (matches real-hw
+        // autopoll behaviour — devices only respond once per change).
+        adb->reply_len = 0;
+        adb->reply_index = 0;
+        return true;
+    }
+
+    if (type == CMD_TYPE_LISTEN) {
+        // adb_decode_command set listen_active/listen_addr/listen_reg.
+        // Feed the IOP-supplied data into listen_buf[] and run the same
+        // apply_listen_data() the VIA-shift path uses.
+        int n = in_data_len;
+        if (n < 0)
+            n = 0;
+        if (n > (int)sizeof adb->listen_buf)
+            n = (int)sizeof adb->listen_buf;
+        if (in_data && n > 0)
+            memcpy(adb->listen_buf, in_data, (size_t)n);
+        adb->listen_index = n;
+        apply_listen_data(adb);
+        adb->listen_active = false;
+        return true;
+    }
+
+    // SendReset / Flush: dispatched by adb_decode_command(), no reply data.
+    return true;
 }
 
 // === Object-model class descriptor =========================================
