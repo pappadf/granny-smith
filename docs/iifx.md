@@ -549,24 +549,255 @@ The SWIM IOP runs in firmware-driven mode at all times — there is no
 host-direct path to the SWIM1 chip. Floppy I/O and ADB transactions
 are entirely mailbox-driven.
 
-The firmware fronts two distinct functions through the same mailbox:
+The firmware fronts two distinct functions through the same mailbox,
+each on its own dedicated slot:
 
-- **Floppy**. The host posts XmtMsg requests describing the floppy
-  operation (seek, read sector, write sector, etc.). The firmware
-  programs the SWIM1, runs the data-transfer state machine using its
-  internal DMA channel, and posts the result as a slot completion
-  (Int0) or as an unsolicited disk-change notification on an RcvMsg
-  slot (Int1).
-
-- **ADB**. The firmware bit-bangs the ADB single-wire bus via its
-  on-die GPIO. Talk and listen transactions are issued as XmtMsg
-  requests; service-request and key/mouse events arrive as RcvMsg
-  notifications on Int1.
+| Slot | Channel             | Direction(s)                     | Protocol           |
+| ---- | ------------------- | -------------------------------- | ------------------ |
+| 1    | IOPMgr kernel       | XmtMsg + RcvMsg                  | `MoveReqInfo` (§12)|
+| 2    | `.Sony` (SonyIOP)   | XmtMsg (host → IOP), RcvMsg (IOP → host) | `SwimIopMsg` (§17) |
+| 3    | ADB Mgr (ADBMsg)    | XmtMsg (host → IOP), RcvMsg (IOP → host) | `ADBMsg` (§18) |
 
 Bit interactions specific to the SWIM IOP:
 
 - `iopInBypassMode`: always reads 0 (firmware never enables bypass).
 - `iopBypassIntReq`: not wired; reads 0.
 - `iopSCCWrReq`: not wired; reads 1.
+
+---
+
+## 17. SWIM IOP — slot 2 SonyIOP protocol
+
+Slot 2 carries the `.Sony` driver's IOP-mediated floppy protocol. The
+on-the-wire layout of the payload is the `SwimIopMsg record` from the
+System ROM. Both directions share the layout — XmtMsg payloads carry a
+`ReqKind` request code, RcvMsg payloads carry an `EvtKind` event code in
+the same byte position.
+
+### 17.1 Payload layout (`SwimIopMsg`)
+
+Common header (always present at the start of both XmtMsg and RcvMsg
+payloads):
+
+| Offset | Size | Name          | Notes                                                     |
+| ------ | ---- | ------------- | --------------------------------------------------------- |
+| `+$00` | byte | `ReqKind`     | Request code (host → IOP) or event code (IOP → host).      |
+| `+$01` | byte | `DriveNumber` | Logical drive index; see §17.4.                            |
+| `+$02` | word | `ErrorCode`   | Signed Mac OS result code in replies (noErr / -50 / etc.). |
+
+The bytes from `+$04` onward overlay one of several per-command payload
+shapes (an `AdditionalParam` union in the original source):
+
+**Initialize reply** (`xmtReqInitialize`):
+
+| Offset | Size    | Name          | Notes                                          |
+| ------ | ------- | ------------- | ---------------------------------------------- |
+| `+$04` | 4 bytes | `DriveKinds[0..3]` | One `DriveKind` per logical drive index. |
+
+**DriveStatus / ExtDriveStatus reply** (`xmtReqDriveStatus`):
+
+| Offset | Size | Name              | Notes                                              |
+| ------ | ---- | ----------------- | -------------------------------------------------- |
+| `+$04` | word | `Track`           | Current head track.                                |
+| `+$06` | byte | `WriteProtected`  | bit 7 set → write-protected.                       |
+| `+$07` | byte | `DiskInPlace`     | 0 = empty, 1/2 = disk present.                     |
+| `+$08` | byte | `DriveInstalled`  | 0 = unknown, 1 = installed, `$FF` = no drive.       |
+| `+$09` | byte | `Sides`           | bit 7 set → double-sided.                          |
+| `+$0A` | byte | `TwoSidedFormat`  | `$FF` = 2-sided disk, `$00` = 1-sided.              |
+| `+$0B` | byte | `NewInterface`    | `$FF` = 800K+ / SuperDrive.                         |
+| `+$0C` | word | `DiskErrors`      | Running disk-error count.                          |
+| `+$0E` | byte | `MfmDrive`        | `$FF` = SuperDrive.                                 |
+| `+$0F` | byte | `MfmDisk`         | `$FF` = MFM disk in drive.                          |
+| `+$10` | byte | `MfmFormat`       | `$FF` = 1440K, `$00` = 720K.                        |
+| `+$11` | byte | `DiskController`  | `$FF` = SWIM, `$00` = IWM.                          |
+| `+$12` | word | `CurrentFormat`   | Current-format bit mask.                           |
+| `+$14` | word | `FormatsAllowed`  | Allowable-format bit mask.                         |
+
+**Data-transfer request** (`xmtReqRead` / `xmtReqWrite` /
+`xmtReqReadVerify` / `xmtReqFormat`):
+
+| Offset | Size     | Name          | Notes                                       |
+| ------ | -------- | ------------- | ------------------------------------------- |
+| `+$04` | long     | `BufferAddr`  | Host RAM target/source physical address.    |
+| `+$08` | long     | `BlockNumber` | Starting 512-byte block.                    |
+| `+$0C` | long     | `BlockCount`  | Number of 512-byte blocks to transfer.      |
+| `+$10` | 12 bytes | `MfsTagData`  | MFS tag bytes (read/write).                  |
+
+### 17.2 xmtReq request codes (host → IOP, in `ReqKind`)
+
+| Code  | Apple name              | Meaning                                                       |
+| ----- | ----------------------- | ------------------------------------------------------------- |
+| `$01` | `xmtReqInitialize`      | Returns `DriveKinds[0..3]` in the reply.                       |
+| `$02` | `xmtReqShutdown`        | Stop driver activity.                                          |
+| `$03` | `xmtReqStartPolling`    | Begin autonomous drive-presence polling.                       |
+| `$04` | `xmtReqStopPolling`     | Pause drive polling.                                           |
+| `$05` | `xmtReqSetHfsTagAddr`   | Stash a host RAM address for MFS tag bytes.                    |
+| `$06` | `xmtReqDriveStatus`     | Returns the DriveStatus block above in the reply.              |
+| `$07` | `xmtReqEject`           | Eject media from the named drive.                              |
+| `$08` | `xmtReqFormat`          | Format media (destructive).                                    |
+| `$09` | `xmtReqFormatVerify`    | Verify formatting.                                             |
+| `$0A` | `xmtReqWrite`           | Write `BlockCount` × 512-byte blocks from `BufferAddr`.        |
+| `$0B` | `xmtReqRead`            | Read `BlockCount` × 512-byte blocks into `BufferAddr`.         |
+| `$0C` | `xmtReqReadVerify`      | Read + compare; no host buffer touched.                        |
+| `$0D` | `xmtReqCacheControl`    | Track-cache enable / disable.                                  |
+| `$0E` | `xmtReqTagBufControl`   | Tag-buffer enable / disable.                                   |
+| `$0F` | `xmtReqGetIcon`         | Fetch media/drive icon resource.                                |
+| `$10` | `xmtReqDupInfo`         | Disk-duplicator info.                                          |
+| `$11` | `xmtReqGetRawData`      | Copy-protection raw read.                                      |
+
+The IOP services every `ReqKind` it understands by writing the result
+into the same XmtMsg payload, setting `ErrorCode`, advancing
+`XmtMsg[2].state` to `MsgCompleted`, and raising `iopInt0Active`.
+
+### 17.3 rcvReq event codes (IOP → host, in `ReqKind`)
+
+Posted asynchronously through `RcvMsg[2]` with `iopInt1Active`. The
+host must subscribe to slot 2 with `irWaitRcvMessage` at boot.
+
+| Code  | Apple name                 | Meaning                                              |
+| ----- | -------------------------- | ---------------------------------------------------- |
+| `$01` | `rcvReqDiskInserted`       | Disk just appeared in `DriveNumber`.                  |
+| `$02` | `rcvReqDiskEjected`        | Disk just removed from `DriveNumber`.                 |
+| `$03` | `rcvReqDiskStatusChanged`  | Drive status changed (e.g. write-protect tab moved).  |
+
+### 17.4 DriveKinds and the qDrive numbering convention
+
+The `DriveKinds[0..3]` byte table returned by `xmtReqInitialize` is
+**the** authoritative source of "which drive index is what." The Sony
+driver uses each index `N` as the `qDrive` argument when calling
+`_AddDrive`, which in turn becomes `ioVRefNum` for `_MountVol`.
+
+DriveKind values:
+
+| Value | Meaning                                       |
+| ----- | --------------------------------------------- |
+| `$00` | `noDriveKind` — no drive present at this index. |
+| `$01` | unspecified.                                  |
+| `$02` | `SSGCRDriveKind` — 400 KB GCR single-sided.    |
+| `$03` | `DSGCRDriveKind` — 800 KB GCR double-sided.    |
+| `$04` | `DSMFMHDDriveKind` — 1.44 MB SuperDrive.       |
+| `$07` | `HD20DriveKind` — HD-20 fixed disk.            |
+
+Because Mac OS rejects `ioVRefNum = 0` in `_MountVol` (returns
+`paramErr` / -50), **`DriveKinds[0]` must be `$00` on the IIfx** —
+logical drive 0 is reserved, and the firmware advertises the two
+physical SuperDrives at indices 1 and 2. Granny Smith's SWIM IOP model
+issues `DriveKinds = {$00, $04, $04, $00}` for that reason; advertising
+the first physical drive at index 0 sends the boot block into a
+`_MountVol`-loops-forever stall.
+
+---
+
+## 18. SWIM IOP — slot 3 ADBMsg protocol
+
+Slot 3 carries the OS's `ADB Mgr ↔ IOP firmware` packet protocol. The
+payload layout is `ADBMsg`:
+
+| Offset | Size    | Name        | Notes                                              |
+| ------ | ------- | ----------- | -------------------------------------------------- |
+| `+$00` | byte    | `Flags`     | Bitfield; see §18.1.                                |
+| `+$01` | byte    | `DataCount` | Length of valid `ADBData[]` bytes (0..8).           |
+| `+$02` | byte    | `ADBCmd`    | The ADB command byte (Talk / Listen / Reset / Flush). |
+| `+$03` | 8 bytes | `ADBData`   | Up to 8 bytes of in/out payload.                    |
+
+### 18.1 `Flags` bit semantics
+
+| Bit | Name              | Meaning                                                                                              |
+| --- | ----------------- | ---------------------------------------------------------------------------------------------------- |
+| 7   | `ExplicitCmd`     | Host-initiated command. Firmware must issue `ADBCmd` verbatim on the bus.                              |
+| 6   | `PollEnable`      | Autopoll mode. Firmware picks the next enabled device and Talk-R0s it; `ADBCmd` in request is ignored. |
+| 5   | `SetPollEnables`  | `ADBData[0..1]` carries a fresh 2-byte DevMap bitmap to replace the firmware's current poll mask.    |
+| 2   | `SRQ`             | Service-request pending — at least one device asserted SRQ during the last bus cycle.                |
+| 1   | `NoReply`         | Set on the reply when no device answered the issued command.                                          |
+
+`ExplicitCmd` and `PollEnable` are mutually exclusive on a single
+request; the OS uses them to disambiguate routing in its `IOPReqDone`
+dispatch (one branch goes to `ExplicitRequestDone`, the other to
+`ImplicitRequestDone`).
+
+### 18.2 The two transport paths
+
+**A. Explicit command** (`ExplicitCmd = 1`). Host fills `ADBCmd`
+with a specific command byte and `ADBData` with up to 8 outgoing bytes
+(for Listen). The firmware issues that exact command on the bus. The
+reply preserves `ExplicitCmd` and echoes the same `ADBCmd`, with
+`ADBData` carrying the Talk reply (or empty + `NoReply` if no device
+answered). The host's `ADB Mgr` routes the completion through
+`ExplicitRequestDone` and advances its command queue.
+
+**B. Implicit autopoll** (`PollEnable = 1`, `ExplicitCmd = 0`). The
+OS posts an autopoll request when `fDBExpActive = 1` in ADBVars. The
+`ADBCmd` field of the request is **meaningless** — whatever stale
+value the buffer happened to hold — because the firmware itself picks
+the next device. The firmware:
+
+1. Walks its `DevMap` (16-bit bitmap, bit `N` = address `N` enabled),
+   starting from the address after the previous autopoll cycle.
+2. Issues `Talk-Reg-0` (`$XC` where `X = addr`) to the first enabled
+   address with pending data.
+3. Returns the response in `ADBData` and sets the reply's `ADBCmd`
+   to the actual Talk command that was issued, **not** to the stale
+   value from the request.
+
+That last point matters: the host's `ADB Mgr` uses the reply's
+`ADBCmd` to update its `pollCmd` / `pollAddr` globals, which in turn
+feed mouse / keyboard event dispatch. A reply with the wrong `ADBCmd`
+either misdelivers data (e.g. mouse bytes look like keyboard events)
+or sends the OS into a stuck-state loop (e.g. retrying `Flush` on
+address 2 forever).
+
+When the OS sets `SetPollEnables` together with `PollEnable`, the
+firmware also reads `ADBData[0..1]` as a big-endian 2-byte DevMap and
+latches it before the autopoll scan. The reply clears
+`SetPollEnables` (one-shot bit).
+
+### 18.3 Reply Int conventions
+
+Both explicit and autopoll completions land on `RcvMsg[3]` with
+`iopInt1Active` raised — **not** `iopInt0Active`. (The IOP firmware
+does post explicit replies on `XmtMsg[3]` completion initially, but
+once the OS has issued its first `irSendRcvReply` on slot 3 and set
+`fDBUseRcvMsg = 1`, all subsequent slot-3 traffic — including replies
+to host-posted explicit commands — flows over `RcvMsg[3]` via Int1.)
+This means the simple "Int0 = reply, Int1 = unsolicited" framing from
+§11 does not strictly apply to slot 3; the channel is steady-state
+Int1 once initialised.
+
+---
+
+## 19. RPU (RAM Parity Unit) probe at `$50F1E000`
+
+Not part of the IOP register window proper, but tightly coupled to
+boot-time IOP setup because POST runs the RPU probe between the SCC
+IOP heartbeat and the SWIM IOP heartbeat.
+
+The IIfx supports an **optional** RAM Parity Unit chip decoded at
+`$50F1E000-$50F1E01F` (the DecoderInfo's `RPUAddr` field is annotated
+"RPU - (optional)" in Apple's source). On unequipped IIfxs — including
+every shipping production unit — the BIU30's memory decoder is left
+without a target for that range and **every access bus-errors**.
+
+POST phase `$93` ($408430DC in IIfx-ROM) probes the chip with a
+sequence of ~32 `BSET` / `BCLR` / `MOVE.L` cycles against the
+`$50F1E000` window. Every one of those accesses is expected to
+bus-error. The handler at the trap vector advances the probe state
+machine on each bus-error and leaves `AddrMapFlags` bit 20
+(`RPUExists`) **clear** if all 32 cycles trap. Later, the OS's
+`gestaltParityAttr` handler reads `RPUAddr` from DecoderInfo and would
+touch the chip — but only after first checking `AddrMapFlags` bit 20.
+
+Consequence:
+
+- If the emulated machine returns data for `$50F1E000..$50F1E01F`
+  instead of bus-erroring, POST decides the RPU **is** installed,
+  sets `RPUExists`, and later `gestaltParityAttr` finds the chip
+  unresponsive. System 7's `ParityINIT` then posts the modal
+  "Parity has been disabled" dialog and the boot stalls before the
+  Finder draws.
+
+Granny Smith's IIfx model bus-errors every byte / word / long
+read and write in `$50F1E000..$50F1E01F` to model the absent-RPU
+case. This is the only way to reach Finder without an out-of-band
+software patch to `AddrMapFlags`.
 
 ---
