@@ -11,7 +11,7 @@ int snd_offset = 0;
 static page_entry_t stub_page_table[1 << 16]; // zero-initialized for safe no-op access
 page_entry_t *g_page_table = stub_page_table;
 uint32_t g_address_mask = 0x00FFFFFFUL;
-int g_page_count = 1 << 16;
+uint32_t g_page_count = 1 << 16;
 
 // Memory read/write stubs (return zeros, ignore writes)
 uint32_t memory_read(unsigned int size, uint32_t addr) {

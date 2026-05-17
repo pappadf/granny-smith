@@ -435,15 +435,8 @@ static inline void movem_to_register(cpu_t *restrict cpu, uint16_t opcode, int b
         if (a_set & (1 << i))
             cpu->a[i] = new_a[i];
 
-    if ((opcode & 0x38) == 0x18) {
-        // Post-increment mode updates address register after MOVEM.
-        // M68000PRM: on 68000, if An is in the list, the *loaded* value wins;
-        // on 68030, the *incremented* value wins (MC68030UM §3.2.5.2).
-        int an = opcode & 7;
-        bool an_in_list = (a_set & (1u << an)) != 0;
-        if (!an_in_list || cpu->cpu_model >= CPU_MODEL_68030)
-            cpu->a[an] = ea;
-    }
+    if ((opcode & 0x38) == 0x18) // post-increment mode updates address register after MOVEM
+        cpu->a[opcode & 7] = ea;
 }
 
 // Execute MOVEM instruction: store multiple registers to memory.
