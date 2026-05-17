@@ -1,6 +1,8 @@
-# Integration test: IIfx Boot to "?" Disk
-# Boots the Macintosh IIfx through its full POST + ADB device-table scan
-# to the "insert disk" prompt screen (no boot media attached).
+# Integration test: IIfx Floppy Boot to Finder
+# Boots the Macintosh IIfx from a 1.44MB HD MFM floppy disk (System 7.0.1)
+# through POST + ADB scan + .Sony IOP driver init + SWIM IOP slot-2 floppy
+# I/O + boot-block execution + System loader, and verifies the Finder
+# desktop appears.
 #
 # Exercises:
 #   - 68030 PMMU FD-bit handling (PMOVEFD CRP / PMOVE TC at $40804C02-$06)
@@ -8,8 +10,20 @@
 #   - OSS interrupt controller (60 Hz pulse, source pending decode)
 #   - SCC IOP and SWIM IOP firmware load + behavioural models
 #   - SWIM IOP slot-3 (ADB) protocol over XmtMsg and RcvMsg/irSendRcvReply
+#   - SWIM IOP slot-2 .Sony driver protocol (Initialize, StartPolling,
+#     DriveStatus, Read, async DiskInserted via RcvMsg[2])
+#   - $50F1E000 RPU bus-error probe (POST phase $93) so AddrMapFlags
+#     bit 20 stays clear and ParityINIT doesn't post the "Parity has
+#     been disabled" dialog
+#   - Boot-block code at $00400EF6 (ROM version match, _BlockMove of
+#     SysName / FinderName / ScrapName, _InitEvents, _InitFS,
+#     _MountVol on drive 1, _PBHGetVInfoSync) and the ROM-side System
+#     loader at the JMP target $4080203E + region
 
-scheduler.run 1500000000
+# Run long enough for the boot to read the System file from the floppy,
+# load the boot blocks into RAM, jump into the System loader, init the
+# Toolbox, and draw the Finder desktop with the volume + Trash icons.
+scheduler.run 700000000
 
 assert ${machine.id == "iifx"} "machine.id != iifx"
 assert ${rom.checksum == "4147DD77"} "rom.checksum != 4147DD77"
@@ -19,12 +33,17 @@ assert ${screen.width == 640} "screen.width != 640"
 assert ${screen.height == 480} "screen.height != 480"
 
 # fDBInit (bit 5 of $5405 in ADBVars) must be CLEAR after the ADB scan.
-# RAM scrub patterns (e.g. $20, $6D, $B6, $DB) leave $5405 with bit 5
-# arbitrary; only a real ADBVars allocation produces $04 (fDBQEmpty
-# set, fDBInit clear) once InitDevT's @PollNext loop has finished.
 assert ${memory.peek.b(0x5405) == 0x04} "fDBInit still set ($5405 != 0x04)"
 
-# Verify the "?" disk prompt screen matches the reference.
-screen.match question-mark-640x480.png
+# AddrMapFlags bit 20 (RPUExists) must be clear — POST phase $93's
+# bus-error probe of $50F1E000 should have stayed in the "no parity
+# unit" branch, otherwise System 7's ParityINIT would post the
+# "Parity has been disabled" alert and stall the boot at a modal
+# dialog.  See src/machines/iifx.c (commit a2f2e34).
+assert ${(memory.peek.l(0x0DD0) & 0x100000) == 0} "RPUExists bit 20 of AddrMapFlags still set"
+
+# Verify the Finder desktop matches the reference (System 7 menu bar,
+# Disk Tools volume icon, Trash icon, gray desktop pattern).
+screen.match finder.png
 
 quit
