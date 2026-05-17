@@ -40,17 +40,6 @@ reconstructed precisely from these sources:
 | **SE/30 Universal ROM disassembly** — `INIT_PRAM` at `$40800478`, `SCSI_MGR_INIT` at `$40826636` | ROM-side validation hooks (`_InitUtil`, SCSI XPRAM word)        |
 | **Inside Macintosh: Operating System Utilities** — Parameter RAM chapter            | Original 20-byte layout (Mac 128K..Plus); still used as the low region of XPRAM |
 
-In-tree paths:
-
-- [local/gs-docs/src/sys71src-main/OS/SysUtil.a](../local/gs-docs/src/sys71src-main/OS/SysUtil.a)
-- [local/gs-docs/src/sys71src-main/OS/SlotMgr/SlotMgrInit.a](../local/gs-docs/src/sys71src-main/OS/SlotMgr/SlotMgrInit.a)
-- [local/gs-docs/src/sys71src-main/Interfaces/AIncludes/Slots.a](../local/gs-docs/src/sys71src-main/Interfaces/AIncludes/Slots.a)
-- [local/gs-docs/src/sys71src-main/DeclData/DeclVideo/Tim/TimDriver.a](../local/gs-docs/src/sys71src-main/DeclData/DeclVideo/Tim/TimDriver.a) (TFB / Toby = Apple Macintosh II Video Card — single-mode NuBus card)
-- [local/gs-docs/src/sys71src-main/DeclData/DeclVideo/V8/V8Driver.a](../local/gs-docs/src/sys71src-main/DeclData/DeclVideo/V8/V8Driver.a) (V8 ASIC; multi-mode driver, used here as the canonical example of `SetDefaultMode` / `GetDefaultMode`)
-- [local/gs-docs/src/sys71src-main/DeclData/DeclVideo/RBV/RBVDriver.a](../local/gs-docs/src/sys71src-main/DeclData/DeclVideo/RBV/RBVDriver.a) (RBV — IIci/IIsi only; **not** used by SE/30 or IIcx, but shows the same `SetGray` luminance-flag pattern referenced in §6.4)
-- [local/gs-docs/asm/SE30-ROM-v2.asm](../local/gs-docs/asm/SE30-ROM-v2.asm) (annotated ROM disassembly)
-- [local/gs-docs/Designing_Cards_and_Drivers_for_the_Macintosh_Family_3rd_Edition_1992/single-file.md](../local/gs-docs/Designing_Cards_and_Drivers_for_the_Macintosh_Family_3rd_Edition_1992/single-file.md)
-
 ## 2. Two-region PRAM model
 
 The 256-byte PRAM is partitioned into two logical regions, each protected by
@@ -414,9 +403,9 @@ The exact sequence is identical across every in-tree multi-mode video
 driver (V8, DAFB, CSC, Sonora, RBV) — `_sReadPRAMRec` to fetch the
 8-byte record, mutate byte 2 or byte 3, `_SPutPRAMRec` to write it
 back. We use the **V8 driver** as the canonical example because it is
-the simplest multi-mode driver in the System 7.1 source tree and its
-implementation maps directly onto how the Apple Display Card 8•24 (JMFB,
-the IIcx's video card in our integration test) and any third-party
+the simplest multi-mode driver pattern and its implementation maps
+directly onto how the Apple Display Card 8•24 (JMFB, the IIcx's video
+card in our integration test) and any third-party
 SE/30 PDS video card behave.
 
 [V8Driver.a:1042-1075](../local/gs-docs/src/sys71src-main/DeclData/DeclVideo/V8/V8Driver.a),
@@ -641,10 +630,11 @@ new clock chip's XPRAM signature.
 
 Two non-exclusive explanations are consistent with this observation:
 
-* The Universal ROM's `_InitUtil` is older than the System 7.1 source
-  in the in-tree archive — the Mac II/IIcx/SE-30 family ROM predates
-  the 'NuMc' validator, which was added on later models with the new
-  clock chip (the `BTST #6,HWCfgFlags` gate the spec describes).
+* The Universal ROM's `_InitUtil` predates the 'NuMc' validator
+  documented for System 7.1 — the Mac II/IIcx/SE-30 family ROM
+  was released earlier and the validator was added on later models
+  with the new clock chip (the `BTST #6,HWCfgFlags` gate the spec
+  describes).
 * `HWCfgFlags` bit 6 is not set on the IIcx hardware-config word, so
   the gated XPRAM-rewrite path simply never runs and the bytes at
   `$0C..$0F` retain whatever the low-PRAM `PRAMInit` table writes.
