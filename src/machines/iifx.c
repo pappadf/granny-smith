@@ -770,52 +770,6 @@ static void iifx_update_ipl(config_t *cfg, int source, bool active) {
     oss_set_source_mask(st->oss, (uint16_t)source, active);
 }
 
-// Clears the RPUExists bit (= bit 20) of AddrMapFlags ($0DD0) so the OS's
-// `gestaltParityAttr` handler takes the @parityExit branch and returns
-// zero ("no parity capability") instead of the @parityOff path
-// ("capability present but parity disabled" — which triggers System 7's
-// "Parity has been disabled..." alert).
-//
-// Background: the IIfx ships with a RAM Parity Unit chip whose self-
-// test fires a level-7 (NMI) interrupt on bad-parity reads.  Our
-// emulator doesn't model the chip's register surface or its NMI path,
-// so the boot's POST self-test fails and either disables parity or
-// leaves the unit in an indeterminate state; System 7 then sees that
-// AddrMapFlags advertises RPUExists but the gestalt check finds parity
-// "not enabled" → @parityOff → dialog.
-//
-// The minimal "fake PGC/RPU" we can put in place is just to suppress
-// the OS's belief that this machine HAS parity hardware in the first
-// place.  We write directly to the physical RAM image via
-// ram_native_pointer so this doesn't depend on the host CPU's current
-// MMU state (the gestalt check might run from user mode where lowmem
-// isn't directly addressable).
-#define ADDR_MAP_FLAGS_LOWMEM 0x0DD0u
-#define ADDR_MAP_RPU_BIT      20
-
-static void iifx_strip_rpu_capability(config_t *cfg) {
-    if (!cfg || !cfg->mem_map || cfg->ram_size < ADDR_MAP_FLAGS_LOWMEM + 4)
-        return;
-    uint8_t *p = ram_native_pointer(cfg->mem_map, ADDR_MAP_FLAGS_LOWMEM);
-    uint32_t flags = ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) | ((uint32_t)p[2] << 8) | (uint32_t)p[3];
-    // POST writes a series of scrub patterns into RAM (including this
-    // lowmem region) before installing the real AddrMapFlags.  Only act
-    // on a value that has the low-order "essentials" (ROM / DiagROM /
-    // VIA1) set — that's the signature of "boot has finished POST and
-    // populated AddrMapFlags from DecoderInfo."  Modifying earlier than
-    // that would corrupt POST's RAM-pattern self-test and stall the
-    // boot in diagnostic-stripe mode.
-    if ((flags & 0x7u) != 0x7u)
-        return;
-    if (flags & (1u << ADDR_MAP_RPU_BIT)) {
-        flags &= ~(1u << ADDR_MAP_RPU_BIT);
-        p[0] = (uint8_t)(flags >> 24);
-        p[1] = (uint8_t)(flags >> 16);
-        p[2] = (uint8_t)(flags >> 8);
-        p[3] = (uint8_t)flags;
-    }
-}
-
 // Pulses the IIfx 60 Hz sources.
 static void iifx_trigger_vbl(config_t *cfg) {
     iifx_state_t *st = iifx_state(cfg);
@@ -827,7 +781,6 @@ static void iifx_trigger_vbl(config_t *cfg) {
     // from iop_swim.c / iop_scc.c — they don't need VBL ticks here.)
     nubus_tick_vbl(cfg->nubus);
     image_tick_all(cfg);
-    iifx_strip_rpu_capability(cfg);
 }
 
 // Initializes IIfx physical memory, ROM switching, I/O, and NuBus aliases.
