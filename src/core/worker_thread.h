@@ -15,9 +15,7 @@
 // SAB-backed queues in em_main.c (`g_cmd_*`, `g_gs_*`) so the actual
 // dispatch happens inside `shell_poll()` on the worker. A regression
 // that adds a `Module.ccall('em_*', ...)` shortcut from the main JS
-// thread silently violates this invariant. The first such regression
-// sat in the tree for several commits before surfacing as 60–90 s
-// checkpoint latency in CI.
+// thread silently violates this invariant.
 //
 // This header provides a one-line invariant check: at the worker's
 // startup we latch `pthread_self()`, and gateway functions
@@ -59,14 +57,14 @@ void worker_thread_record(void);
 // macro layer); pass a static string identifying the gateway.
 void worker_thread_assert(const char *where);
 
-#else /* GS_DEBUG */
+#else // GS_DEBUG
 
 static inline void worker_thread_record(void) {}
 static inline void worker_thread_assert(const char *where) {
     (void)where;
 }
 
-#endif /* GS_DEBUG */
+#endif // GS_DEBUG
 
 #ifdef __cplusplus
 }

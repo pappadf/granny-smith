@@ -590,7 +590,8 @@ static uint8_t swim_ism_read(floppy_t *floppy, uint32_t offset) {
         return floppy->ism_mode;
 
     case 15: { // rHandshake: derive from current state
-        int drv = (floppy->ism_mode & ISM_MODE_DRIVE2) ? 1 : (floppy->ism_mode & ISM_MODE_DRIVE1) ? 0 : 0;
+        // DRIVE2 selects drive 1; DRIVE1 (or neither) selects drive 0.
+        int drv = (floppy->ism_mode & ISM_MODE_DRIVE2) ? 1 : 0;
 
         uint8_t hdshk = 0;
 

@@ -65,7 +65,7 @@ extern const class_desc_t rtc_pram_class;
 #define CMD_TEST          0x31
 #define CMD_WRITE_PROTECT 0x35
 
-void rtc_input(rtc_t *rtc, bool disable, bool clock, bool pram);
+void rtc_input(rtc_t *rtc, bool disable, bool clock, bool data);
 
 static uint8_t read_cmd(rtc_t *rtc, uint8_t cmd) {
     // high bits set equals read operation
@@ -133,22 +133,22 @@ static void write_cmd(rtc_t *rtc, uint8_t cmd, uint8_t pram) {
 
     case CMD_SECONDS_REG_0:
     case CMD_SECONDS_REG_0 + 16:
-        rtc->seconds = rtc->seconds & 0xFFFFFF00 | pram;
+        rtc->seconds = (rtc->seconds & 0xFFFFFF00) | pram;
         return;
 
     case CMD_SECONDS_REG_1:
     case CMD_SECONDS_REG_1 + 16:
-        rtc->seconds = rtc->seconds & 0xFFFF00FF | (uint32_t)pram << 8;
+        rtc->seconds = (rtc->seconds & 0xFFFF00FF) | ((uint32_t)pram << 8);
         return;
 
     case CMD_SECONDS_REG_2:
     case CMD_SECONDS_REG_2 + 16:
-        rtc->seconds = rtc->seconds & 0xFF00FFFF | (uint32_t)pram << 16;
+        rtc->seconds = (rtc->seconds & 0xFF00FFFF) | ((uint32_t)pram << 16);
         return;
 
     case CMD_SECONDS_REG_3:
     case CMD_SECONDS_REG_3 + 16:
-        rtc->seconds = rtc->seconds & 0x00FFFFFF | (uint32_t)pram << 24;
+        rtc->seconds = (rtc->seconds & 0x00FFFFFF) | ((uint32_t)pram << 24);
         return;
 
     case CMD_TEST:
@@ -195,7 +195,7 @@ static uint8_t read_ext(rtc_t *rtc, uint8_t cmd1, uint8_t cmd2) {
     uint8_t address = addr_high | addr_low;
 
     LOG(3, "Extended read: cmd1=0x%02X cmd2=0x%02X addr=0x%02X", cmd1, cmd2, address);
-    LOG(1, "Extended PRAM read: addr=0x%02X value=0x%02X", address, rtc->pram[address]);
+    LOG(3, "Extended PRAM read: addr=0x%02X value=0x%02X", address, rtc->pram[address]);
     return rtc->pram[address];
 }
 
@@ -305,7 +305,10 @@ static void one_second_interrupt(void *source, uint64_t data) {
 static uint32_t wall_clock_seconds(void) {
     assert(sizeof(time_t) >= 4);
 
-    return (uint32_t)(time(NULL) + MAC_TO_UNIX_EPOCH);
+    // Promote to uint64_t before the cast so the wrap point is visible (Mac
+    // epoch in 1904 + Unix epoch overflowing uint32_t in 2040): the explicit
+    // 64-bit add documents the assumption, the (uint32_t) cast is the wrap.
+    return (uint32_t)((uint64_t)time(NULL) + MAC_TO_UNIX_EPOCH);
 }
 
 void rtc_set_via(rtc_t *restrict rtc, via_t *via) {
@@ -468,9 +471,12 @@ static value_t rtc_attr_time_set(struct object *self, const member_t *m, value_t
         char *endp = NULL;
         long long parsed = strtoll(in.s, &endp, 10);
         if (endp && endp != in.s && *endp == '\0') {
-            if (parsed < 0) {
+            // Reject negatives and values that would overflow the 32-bit Mac
+            // seconds counter after the epoch shift. UINT32_MAX - 2082844800
+            // corresponds to early 2040, the Mac-counter wraparound point.
+            if (parsed < 0 || (uint64_t)parsed > (UINT32_MAX - 2082844800ull)) {
                 value_free(&in);
-                return val_err("rtc.time: epoch must be non-negative");
+                return val_err("rtc.time: epoch out of range (0 ≤ unix < 2040)");
             }
             mac_seconds = (uint32_t)((uint64_t)parsed + 2082844800u /* MAC_TO_UNIX_EPOCH */);
             resolved = true;
@@ -478,8 +484,8 @@ static value_t rtc_attr_time_set(struct object *self, const member_t *m, value_t
             struct tm tm = {0};
             if (strptime(in.s, "%Y-%m-%dT%H:%M:%S", &tm)) {
                 time_t t = timegm(&tm);
-                if (t != (time_t)-1) {
-                    mac_seconds = (uint32_t)((int64_t)t + 2082844800);
+                if (t != (time_t)-1 && t >= 0 && (uint64_t)t <= (UINT32_MAX - 2082844800ull)) {
+                    mac_seconds = (uint32_t)((uint64_t)t + 2082844800u);
                     resolved = true;
                 }
             }

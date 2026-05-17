@@ -18,7 +18,7 @@ typedef struct scheduler scheduler_t;
 // === Operations ===
 
 // Entry point from SCC SDLC to feed a LocalTalk frame (LLAP) to AppleTalk stack
-void process_packet(uint8_t *buf, size_t size);
+void process_packet(const uint8_t *buf, size_t size);
 
 // AppleTalk share management (AppleShare/AFP server) API exposed for shell cmds
 // Name: up to 32 chars; Path: POSIX path inside Emscripten MEMFS

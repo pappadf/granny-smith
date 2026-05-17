@@ -139,8 +139,12 @@ static uint64_t cpu_to_via_cycles(via_t *via, uint64_t scheduler_cpu_cycles) {
 
 // Update the interrupt flag register and invoke IRQ callback if aggregate changes
 static void update_ifr(via_t *restrict via, uint8_t new_ifr) {
-    // bit seven is the aggregate of all enabled bits
-    new_ifr = new_ifr & 0x7F & via->ier ? new_ifr | 0x80 : new_ifr & 0x7F;
+    // Bit 7 of IFR is the aggregate "any-enabled-flag-set" bit: set if any of
+    // the source-flag bits (bits 6:0) that are enabled in IER are also set in
+    // the candidate IFR value. The `& 0x7F` strips any incoming bit 7 so the
+    // aggregate is recomputed from the source flags alone.
+    uint8_t flags = new_ifr & 0x7F;
+    new_ifr = (flags & via->ier) ? (flags | 0x80) : flags;
 
     if ((via->ifr ^ new_ifr) & 0x80) {
         via->irq_cb(via->cb_context, new_ifr >> 7 & 1);
@@ -163,7 +167,9 @@ static uint16_t read_timer(via_t *restrict via, int timer) {
     GS_ASSERT(now >= via->timers[timer].start_timestamp);
     uint64_t delta = cpu_to_via_cycles(via, now - via->timers[timer].start_timestamp);
 
-    // Cast to uint16_t handles wraparound naturally (e.g., 0 - 100 = 0xFF9C)
+    // Both operands are unsigned, so the subtraction wraps mod 2^N and the
+    // (uint16_t) cast keeps the low 16 bits — i.e. the correct mod-2^16 counter
+    // value even for arbitrarily large `delta`. (e.g., 0 - 100 = 0xFF9C.)
     return (uint16_t)(via->timers[timer].start_value - delta);
 }
 
@@ -179,8 +185,10 @@ static void arm_timer(via_t *restrict via, int timer, uint16_t counter, event_ca
     via->timers[timer].start_timestamp = scheduler_cpu_cycles(via->scheduler);
     via->timers[timer].expired = false; // reset expired flag on arm
 
-    // timer interrupt fires when the counter wraps around, i.e. delay is counter + 1
-    scheduler_new_cpu_event(via->scheduler, cb, via, 0, (counter + 1) * via->freq_factor, 0);
+    // Timer interrupt fires when the counter wraps around, i.e. delay is counter + 1.
+    // Promote to uint64_t before the multiply so an exotic int-width host can't
+    // sign-overflow the intermediate.
+    scheduler_new_cpu_event(via->scheduler, cb, via, 0, ((uint64_t)counter + 1) * via->freq_factor, 0);
 }
 
 // Shift register completion callback - fires after 8 clock cycles
@@ -280,6 +288,7 @@ static void set_t1c_high(via_t *restrict via, uint8_t value) {
         // DDRB bit 7 must be set for PB7 to function as a timer output
         if (via->ports[PORT_B].direction & 0x80)
             via->ports[PORT_B].output &= 0x7F; // PB7 is set low when the timer starts
+        __attribute__((fallthrough));
     case 0: // One-shot mode - PB7 disabled
     case 1: // Free-running mode - PB7 disabled
     case 3: // Free‑run w/ PB7 output
@@ -616,7 +625,10 @@ via_t *via_init(memory_map_t *restrict map, struct scheduler *scheduler, uint8_t
     via->memory_interface.write_uint16 = &via_write_uint16;
     via->memory_interface.write_uint32 = &via_write_uint32;
 
-    via->ports[0].input = 0xf7;
+    // Port A defaults to all-1s except bit 3 (0xF7 = ~0x08). On a Plus that
+    // bit is the SCC W/REQ line, pulled low at boot before the SCC is taken
+    // out of reset. Port B defaults to all-1s (idle high) for everything.
+    via->ports[0].input = 0xF7;
     via->ports[1].input = 0xFF;
 
     // Register event types for checkpointing under the per-instance name

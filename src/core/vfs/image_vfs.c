@@ -68,9 +68,15 @@ static image_mount_t g_mounts[IMAGE_VFS_MAX_MOUNTS];
 // input path on failure so callers still get consistent lookup semantics
 // when realpath can't resolve (e.g. the file was just deleted).
 static void canonicalise(const char *path, char *out, size_t cap) {
-    char tmp[PATH_MAX];
-    if (realpath(path, tmp)) {
-        snprintf(out, cap, "%s", tmp);
+    // Pass NULL to let realpath() allocate the buffer itself so we don't
+    // silently truncate against PATH_MAX on hosts where the kernel's path
+    // limit is higher than the build-time PATH_MAX. Fall back to the input
+    // on failure (e.g. file just deleted) so callers still get consistent
+    // keying.
+    char *resolved = realpath(path, NULL);
+    if (resolved) {
+        snprintf(out, cap, "%s", resolved);
+        free(resolved);
     } else {
         snprintf(out, cap, "%s", path);
     }
@@ -224,9 +230,12 @@ int image_vfs_acquire_mount(const char *host_path_in, image_mount_t **out_mount)
     if (!m)
         return -ENOSPC;
 
+    // Propagate the actual errno from image_open_readonly rather than
+    // collapsing every failure (EACCES, EISDIR, EIO, ENOENT) to ENOENT.
+    errno = 0;
     image_t *img = image_open_readonly(host_path);
     if (!img)
-        return -ENOENT;
+        return -(errno ? errno : ENOENT);
 
     memset(m, 0, sizeof(*m));
     m->in_use = true;
@@ -252,10 +261,17 @@ int image_vfs_acquire_mount(const char *host_path_in, image_mount_t **out_mount)
         return -ENOTDIR;
     }
 
-    m->parts_fs = calloc(m->n_partitions, sizeof(partition_fs_t));
-    if (!m->parts_fs) {
-        mount_destroy(m);
-        return -ENOMEM;
+    // Skip the alloc entirely for an empty APM. `calloc(0, ...)` is
+    // implementation-defined (some libc return NULL, some a 1-byte sentinel);
+    // bypassing the call keeps the cleanup paths uniform.
+    if (m->n_partitions > 0) {
+        m->parts_fs = calloc(m->n_partitions, sizeof(partition_fs_t));
+        if (!m->parts_fs) {
+            mount_destroy(m);
+            return -ENOMEM;
+        }
+    } else {
+        m->parts_fs = NULL;
     }
     for (uint32_t i = 0; i < m->n_partitions; i++) {
         const apm_partition_t *p = mount_get_partition(m, i + 1);
@@ -299,7 +315,11 @@ void image_vfs_list(image_vfs_list_cb cb, void *user) {
 void image_vfs_notify_attached(const char *host_path) {
     if (!host_path)
         return;
-    image_mount_t *m = find_mount_by_path(host_path);
+    // Canonicalise so a notify with `/foo/../bar/disk.img` matches the mount
+    // keyed on `/bar/disk.img`.
+    char canon[PATH_MAX];
+    canonicalise(host_path, canon, sizeof(canon));
+    image_mount_t *m = find_mount_by_path(canon);
     if (m)
         m->conflicted = true;
 }
@@ -307,7 +327,9 @@ void image_vfs_notify_attached(const char *host_path) {
 void image_vfs_notify_detached(const char *host_path) {
     if (!host_path)
         return;
-    image_mount_t *m = find_mount_by_path(host_path);
+    char canon[PATH_MAX];
+    canonicalise(host_path, canon, sizeof(canon));
+    image_mount_t *m = find_mount_by_path(canon);
     if (m && m->refcount == 0) {
         // Simplest recovery: drop the cached mount entirely so the next
         // acquire re-opens cleanly against the now-released file.
@@ -420,8 +442,11 @@ static int parse_image_path(const char *path, image_path_t *out) {
     if (!*nstr)
         return -ENOENT;
     char *end = NULL;
+    errno = 0;
     long idx = strtol(nstr, &end, 10);
-    if (!end || *end != '\0' || idx <= 0)
+    // Reject: parse failure, trailing junk, non-positive, ERANGE overflow,
+    // and values that wouldn't fit in `partition_idx` (uint32_t).
+    if (errno == ERANGE || !end || *end != '\0' || idx <= 0 || (unsigned long)idx > UINT32_MAX)
         return -ENOENT;
     out->partition_idx = (uint32_t)idx;
 
@@ -431,9 +456,9 @@ static int parse_image_path(const char *path, image_path_t *out) {
             return -ENAMETOOLONG;
         out->components[out->n_components++] = tok;
     }
-    // Detect fork suffix: the last component may be "rsrc" or "finf" and
-    // only counts as a fork if the preceding path resolves to a file.  The
-    // actual split is performed during lookup.
+    // Fork-suffix ("rsrc"/"finf") handling lives in img_stat / img_open, not
+    // here — whether the trailing component is a fork or part of the filename
+    // can't be decided without resolving the prior path component.
     return 0;
 }
 
@@ -452,13 +477,16 @@ struct vfs_dir {
     ufs_dir_iter_t *ufs_iter;
 };
 
+// HFS finder info is 16 bytes per fork + 16 bytes extended = 32 bytes total.
+#define HFS_FINDER_INFO_SIZE 32
+
 // File handle: data/resource fork, synthetic Finder-info blob, or UFS inode.
 struct vfs_file {
     image_mount_t *mount;
     enum { FILE_HFS_FORK, FILE_FINDER_INFO, FILE_UFS } kind;
     hfs_volume_t *hfs;
     hfs_fork_t fork; // used for FILE_HFS_FORK
-    uint8_t finder_info[32];
+    uint8_t finder_info[HFS_FINDER_INFO_SIZE];
     ufs_volume_t *ufs; // used for FILE_UFS
     uint32_t ufs_ino;
 };
@@ -516,14 +544,18 @@ static int img_stat(void *ctx, const char *path, vfs_stat_t *out) {
         return 0;
     }
 
-    // HFS lookup path: peel off optional fork suffix first.
+    // HFS lookup path: peel off optional fork suffix first. Guard the
+    // `components[core - 1]` read with `core >= 1` so a zero-component
+    // path doesn't index components[-1] (UB).
     bool rsrc = false, finf = false;
     size_t core = ip.n_components;
-    const char *last = ip.components[core - 1];
-    if (core >= 1 && (strcmp(last, "rsrc") == 0 || strcmp(last, "finf") == 0)) {
-        rsrc = strcmp(last, "rsrc") == 0;
-        finf = strcmp(last, "finf") == 0;
-        core--;
+    if (core >= 1) {
+        const char *last = ip.components[core - 1];
+        if (strcmp(last, "rsrc") == 0 || strcmp(last, "finf") == 0) {
+            rsrc = strcmp(last, "rsrc") == 0;
+            finf = strcmp(last, "finf") == 0;
+            core--;
+        }
     }
 
     if (p->fs_kind != APM_FS_HFS)
@@ -565,7 +597,7 @@ static int img_stat(void *ctx, const char *path, vfs_stat_t *out) {
         if (d.is_dir)
             return -ENOENT;
         out->mode = VFS_MODE_FILE;
-        out->size = 32;
+        out->size = HFS_FINDER_INFO_SIZE;
         return 0;
     }
     out->mode = d.is_dir ? VFS_MODE_DIR : VFS_MODE_FILE;
@@ -661,7 +693,10 @@ static int img_opendir(void *ctx, const char *path, vfs_dir_t **out) {
     d->hfs_iter = hfs_opendir_cnid(hfs, parent_cnid);
     if (!d->hfs_iter) {
         free(d);
-        return -ENOMEM;
+        // `hfs_opendir_cnid` doesn't surface an errno; the failure mode is
+        // either OOM or a corrupt catalog. `-EIO` is the closer match for the
+        // latter (the most likely case once the volume has cached past init).
+        return -EIO;
     }
     m->refcount++;
     *out = d;
@@ -674,15 +709,17 @@ static int img_readdir(vfs_dir_t *d, vfs_dirent_t *out) {
     memset(out, 0, sizeof(*out));
     if (d->kind == DIR_PART_LIST) {
         uint32_t total = mount_partition_count(d->mount);
-        // Skip partitions with fs_kind we can't descend into (map, driver,
-        // free, patches) — the proposal suggests hiding them from listings
-        // for non-debug use.  For v1 we include them; they stat as empty
-        // directories but opendir returns ENOTDIR.  Users can still see
-        // the full layout via `image partmap`.
+        // Include all partitions in the listing, including ones we can't
+        // descend into (map, driver, free, patches). They stat as empty
+        // read-only directories; opendir on them returns ENOTDIR. Users
+        // who want the full layout can use `image partmap`.
         if (d->next_partition > total)
             return 0;
-        snprintf(out->name, sizeof(out->name), "partition%u", d->next_partition);
+        int w = snprintf(out->name, sizeof(out->name), "partition%u", d->next_partition);
+        if (w < 0 || (size_t)w >= sizeof(out->name))
+            return -ENAMETOOLONG;
         out->st.mode = VFS_MODE_DIR;
+        out->st.readonly = true;
         out->has_stat = true;
         d->next_partition++;
         return 1;
@@ -772,13 +809,18 @@ static int img_open(void *ctx, const char *path, vfs_file_t **out) {
     if (p->fs_kind != APM_FS_HFS)
         return -ENOTDIR;
 
+    // Same fork-suffix peel as img_stat. The earlier `if (ip.n_components == 0)
+    // return -EISDIR` (around line 747) keeps `core >= 1` here today, but
+    // bracket the read so an ASAN run wouldn't trip on a future caller.
     bool rsrc = false, finf = false;
     size_t core = ip.n_components;
-    const char *last = ip.components[core - 1];
-    if (core >= 1 && (strcmp(last, "rsrc") == 0 || strcmp(last, "finf") == 0)) {
-        rsrc = strcmp(last, "rsrc") == 0;
-        finf = strcmp(last, "finf") == 0;
-        core--;
+    if (core >= 1) {
+        const char *last = ip.components[core - 1];
+        if (strcmp(last, "rsrc") == 0 || strcmp(last, "finf") == 0) {
+            rsrc = strcmp(last, "rsrc") == 0;
+            finf = strcmp(last, "finf") == 0;
+            core--;
+        }
     }
 
     hfs_volume_t *hfs = get_partition_hfs(m, ip.partition_idx);
@@ -807,7 +849,7 @@ static int img_open(void *ctx, const char *path, vfs_file_t **out) {
     f->hfs = hfs;
     if (finf) {
         f->kind = FILE_FINDER_INFO;
-        memcpy(f->finder_info, d.finder_info, 32);
+        memcpy(f->finder_info, d.finder_info, HFS_FINDER_INFO_SIZE);
     } else {
         f->kind = FILE_HFS_FORK;
         f->fork = rsrc ? d.rsrc_fork : d.data_fork;
@@ -824,8 +866,8 @@ static int img_read(vfs_file_t *f, uint64_t off, void *buf, size_t n, size_t *nr
         return -EBUSY;
     if (f->kind == FILE_FINDER_INFO) {
         size_t got = 0;
-        if (off < 32) {
-            size_t avail = 32 - (size_t)off;
+        if (off < HFS_FINDER_INFO_SIZE) {
+            size_t avail = HFS_FINDER_INFO_SIZE - (size_t)off;
             size_t take = n < avail ? n : avail;
             memcpy(buf, f->finder_info + off, take);
             got = take;

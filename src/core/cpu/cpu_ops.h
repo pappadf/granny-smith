@@ -704,92 +704,103 @@
         EXC_PRIVILEGE();                                                                                               \
     }
 
-#define OP_MOVE_EA_SR         OP(VALID_EA(ea_data); SUPER(LOAD_EA_WITH_UPDATE(16, s); SET_SR(s)))
-#define OP_BCHG_L_DX_DY       OP(BIT_OP_WRITE(32, DX & 0x1F, dst ^ mask))
-#define OP_BCHG_B_DN_EA       OP(BIT_OP_WRITE(8, DX & 7, dst ^ mask))
-#define OP_BCHG_L_DATA_DN     OP(BIT_OP_WRITE(32, FETCH16() & 0x1F, dst ^ mask))
-#define OP_BCHG_B_DATA_EA     OP(BIT_OP_WRITE(8, FETCH16() & 7, dst ^ mask))
-#define OP_BCLR_L_DX_DY       OP(BIT_OP_WRITE(32, DX & 0x1F, dst & ~mask))
-#define OP_BCLR_B_DN_EA       OP(BIT_OP_WRITE(8, DX & 7, dst & ~mask))
-#define OP_BCLR_L_DATA_DN     OP(BIT_OP_WRITE(32, FETCH16() & 0x1F, dst & ~mask))
-#define OP_BCLR_B_DATA_EA     OP(BIT_OP_WRITE(8, FETCH16() & 7, dst & ~mask))
-#define OP_BSET_L_DX_DY       OP(BIT_OP_WRITE(32, DX & 0x1F, dst | mask))
-#define OP_BSET_B_DN_EA       OP(BIT_OP_WRITE(8, DX & 7, dst | mask))
-#define OP_BSET_L_DATA_DN     OP(BIT_OP_WRITE(32, FETCH16() & 0x1F, dst | mask))
-#define OP_BSET_B_DATA_EA     OP(BIT_OP_WRITE(8, FETCH16() & 7, dst | mask))
-#define OP_BTST_L_DX_DY       OP(BIT_OP_TEST(32, DX & 0x1F, ea_data - ea_xxx))
-#define OP_BTST_B_DN_EA       OP(BIT_OP_TEST(8, DX & 7, ea_data))
-#define OP_BTST_L_DATA_DN     OP(BIT_OP_TEST(32, FETCH16() & 0x1F, ea_data - ea_xxx))
-#define OP_BTST_B_DATA_EA     OP(BIT_OP_TEST(8, FETCH16() & 7, ea_data - ea_xxx))
-#define OP_MOVE_B_EA_EA       OP(VALID_EA_MOVE((ea_data & ea_alterable)); MOVE(8))
-#define OP_MOVE_W_EA_EA       OP(VALID_EA_MOVE((ea_data & ea_alterable)); MOVEx(16))
-#define OP_MOVE_L_EA_EA       OP(VALID_EA_MOVE((ea_data & ea_alterable)); MOVEx(32))
-#define OP_MOVEA_W_EA_AN      OP(MOVEA(16))
-#define OP_MOVEA_L_EA_AN      OP(MOVEA(32))
-#define OP_CLR_B_EA           OP(VALID_EA((ea_data & ea_alterable)); CLR(8))
-#define OP_CLR_W_EA           OP(VALID_EA((ea_data & ea_alterable)); CLR(16))
-#define OP_CLR_L_EA           OP(VALID_EA((ea_data & ea_alterable)); CLR(32))
-#define OP_NOT_B_EA           OP(NOT(8))
-#define OP_NOT_W_EA           OP(NOT(16))
-#define OP_NOT_L_EA           OP(NOT(32))
-#define OP_SWAP_DN            OP(DY = (DY >> 16) | (DY << 16); UPDATE_NZ_CLEAR_CV(DY))
-#define OP_JSR_EA             OP(VALID_EA(ea_control); uint32_t ea = GET_EA; PUSH(PC); PC = ea)
-#define OP_JMP_EA             OP(VALID_EA(ea_control); PC = GET_EA)
-#define OP_MOVEP_W_DX_D16AY   OP(EA_D16_AN(ea); WRITE2x8(ea, DX))
-#define OP_MOVEP_L_D16AY_DX   OP(EA_D16_AN(ea); DX = READ4x8(ea))
-#define OP_MOVEP_W_D16AY_DX   OP(EA_D16_AN(ea); STORE_DN(16, opcode >> 9 & 7, READ2x8(ea)))
-#define OP_MOVEP_L_DX_D16AY   OP(EA_D16_AN(ea); WRITE4x8(ea, DX))
-#define OP_PEA_EA             OP(VALID_EA(ea_control); uint32_t ea = GET_EA; PUSH(ea))
-#define OP_BSR_B_LABEL        OP(uint32_t p = PC + DISP8(); PUSH(PC); PC = p)
-#define OP_BSR_W_LABEL        OP(uint32_t p = PC + DISP16(); PUSH(PC); PC = p)
-#define OP_BSR_L_LABEL        OP(uint32_t p = PC + DISP32(); PUSH(PC); PC = p)
-#define OP_ORI_B_DATA_CCR     OP(TO_CCR(|))
-#define OP_ORI_W_DATA_SR      OP(TO_SR(|))
-#define OP_ORI_B_DATA_EA      OP(IMM_LOGICAL(8, |))
-#define OP_ORI_W_DATA_EA      OP(IMM_LOGICAL(16, |))
-#define OP_ORI_L_DATA_EA      OP(IMM_LOGICAL(32, |))
-#define OP_ANDI_B_DATA_CCR    OP(TO_CCR(&))
-#define OP_ANDI_W_DATA_SR     OP(TO_SR(&))
-#define OP_ANDI_B_DATA_EA     OP(IMM_LOGICAL(8, &))
-#define OP_ANDI_W_DATA_EA     OP(IMM_LOGICAL(16, &))
-#define OP_ANDI_L_DATA_EA     OP(IMM_LOGICAL(32, &))
-#define OP_RTM_RN             OP_UNDEFINED
-#define OP_CALLM_DATA_EA      OP_UNDEFINED
-#define OP_SUBI_B_DATA_EA     OP(SUBI(8))
-#define OP_SUBI_W_DATA_EA     OP(SUBI(16))
-#define OP_SUBI_L_DATA_EA     OP(SUBI(32))
-#define OP_ADDI_B_DATA_EA     OP(ADDI(8))
-#define OP_ADDI_W_DATA_EA     OP(ADDI(16))
-#define OP_ADDI_L_DATA_EA     OP(ADDI(32))
-#define OP_EORI_B_DATA_CCR    OP(TO_CCR(^))
-#define OP_EORI_W_DATA_SR     OP(TO_SR(^))
-#define OP_EORI_B_DATA_EA     OP(IMM_LOGICAL(8, ^))
-#define OP_EORI_W_DATA_EA     OP(IMM_LOGICAL(16, ^))
-#define OP_EORI_L_DATA_EA     OP(IMM_LOGICAL(32, ^))
-#define OP_CMPI_B_DATA_EA     OP(CMPI(8))
-#define OP_CMPI_W_DATA_EA     OP(CMPI(16))
-#define OP_CMPI_L_DATA_EA     OP(CMPI(32))
-#define OP_NEGX_B_EA          OP(NEGX(8))
-#define OP_NEGX_W_EA          OP(NEGX(16))
-#define OP_NEGX_L_EA          OP(NEGX(32))
-#define OP_NEG_B_EA           OP(NEG(8))
-#define OP_NEG_W_EA           OP(NEG(16))
-#define OP_NEG_L_EA           OP(NEG(32))
-#define OP_MOVE_B_EA_CCR      OP(VALID_EA(ea_data); LOAD_EA_WITH_UPDATE(16, src); WRITE_CCR(src))
-#define OP_NBCD_B_EA          OP(LOAD_EA(8, src, (ea_data & ea_alterable)); STORE_EA(8, SBCD(0, src)))
-#define OP_EXT_W_DN           OP(UINT(16) r = S_EXT_8TO16(DY); STORE_DN(16, EA_REG, r); UPDATE_NZ_CLEAR_CV(r))
-#define OP_EXT_L_DN           OP(UINT(32) r = S_EXT_16TO32(DY); DY = r; UPDATE_NZ_CLEAR_CV(r))
-#define OP_ILLEGAL            OP_UNDEFINED
-#define OP_TAS_B_EA           OP(LOAD_EA(8, ea, (ea_data & ea_alterable)); UPDATE_NZ_CLEAR_CV(ea); ea |= 0x80; STORE_EA(8, ea))
-#define OP_MOVEM_W_EA_LIST    OP(VALID_EA(ea_control + ea_an_plus); MOVEM_TO_REGISTER(opcode, 16))
-#define OP_MOVEM_L_EA_LIST    OP(VALID_EA(ea_control + ea_an_plus); MOVEM_TO_REGISTER(opcode, 32))
-#define OP_TRAP_VECTOR        OP(EXC_TRAP(opcode & 0xF))
-#define OP_RESET              OP(SUPER())
-#define OP_STOP_DATA          OP(SUPER(uint16_t sr = FETCH16(); SET_SR(sr)))
-#define OP_RTS                OP(POP32(PC))
-#define OP_TRAPV              OP(if (CC_V) EXC_TRAPV())
-#define OP_RTR                OP(uint16_t ccr; POP16(ccr); WRITE_CCR(ccr); POP32(PC))
-#define OP_LINK               OP(uint32_t a = AY; PUSH32(a); AY = SP; SP += (int32_t)(int16_t)FETCH16())
+#define OP_MOVE_EA_SR       OP(VALID_EA(ea_data); SUPER(LOAD_EA_WITH_UPDATE(16, s); SET_SR(s)))
+#define OP_BCHG_L_DX_DY     OP(BIT_OP_WRITE(32, DX & 0x1F, dst ^ mask))
+#define OP_BCHG_B_DN_EA     OP(BIT_OP_WRITE(8, DX & 7, dst ^ mask))
+#define OP_BCHG_L_DATA_DN   OP(BIT_OP_WRITE(32, FETCH16() & 0x1F, dst ^ mask))
+#define OP_BCHG_B_DATA_EA   OP(BIT_OP_WRITE(8, FETCH16() & 7, dst ^ mask))
+#define OP_BCLR_L_DX_DY     OP(BIT_OP_WRITE(32, DX & 0x1F, dst & ~mask))
+#define OP_BCLR_B_DN_EA     OP(BIT_OP_WRITE(8, DX & 7, dst & ~mask))
+#define OP_BCLR_L_DATA_DN   OP(BIT_OP_WRITE(32, FETCH16() & 0x1F, dst & ~mask))
+#define OP_BCLR_B_DATA_EA   OP(BIT_OP_WRITE(8, FETCH16() & 7, dst & ~mask))
+#define OP_BSET_L_DX_DY     OP(BIT_OP_WRITE(32, DX & 0x1F, dst | mask))
+#define OP_BSET_B_DN_EA     OP(BIT_OP_WRITE(8, DX & 7, dst | mask))
+#define OP_BSET_L_DATA_DN   OP(BIT_OP_WRITE(32, FETCH16() & 0x1F, dst | mask))
+#define OP_BSET_B_DATA_EA   OP(BIT_OP_WRITE(8, FETCH16() & 7, dst | mask))
+#define OP_BTST_L_DX_DY     OP(BIT_OP_TEST(32, DX & 0x1F, ea_data - ea_xxx))
+#define OP_BTST_B_DN_EA     OP(BIT_OP_TEST(8, DX & 7, ea_data))
+#define OP_BTST_L_DATA_DN   OP(BIT_OP_TEST(32, FETCH16() & 0x1F, ea_data - ea_xxx))
+#define OP_BTST_B_DATA_EA   OP(BIT_OP_TEST(8, FETCH16() & 7, ea_data - ea_xxx))
+#define OP_MOVE_B_EA_EA     OP(VALID_EA_MOVE((ea_data & ea_alterable)); MOVE(8))
+#define OP_MOVE_W_EA_EA     OP(VALID_EA_MOVE((ea_data & ea_alterable)); MOVEx(16))
+#define OP_MOVE_L_EA_EA     OP(VALID_EA_MOVE((ea_data & ea_alterable)); MOVEx(32))
+#define OP_MOVEA_W_EA_AN    OP(MOVEA(16))
+#define OP_MOVEA_L_EA_AN    OP(MOVEA(32))
+#define OP_CLR_B_EA         OP(VALID_EA((ea_data & ea_alterable)); CLR(8))
+#define OP_CLR_W_EA         OP(VALID_EA((ea_data & ea_alterable)); CLR(16))
+#define OP_CLR_L_EA         OP(VALID_EA((ea_data & ea_alterable)); CLR(32))
+#define OP_NOT_B_EA         OP(NOT(8))
+#define OP_NOT_W_EA         OP(NOT(16))
+#define OP_NOT_L_EA         OP(NOT(32))
+#define OP_SWAP_DN          OP(DY = (DY >> 16) | (DY << 16); UPDATE_NZ_CLEAR_CV(DY))
+#define OP_JSR_EA           OP(VALID_EA(ea_control); uint32_t ea = GET_EA; PUSH(PC); PC = ea)
+#define OP_JMP_EA           OP(VALID_EA(ea_control); PC = GET_EA)
+#define OP_MOVEP_W_DX_D16AY OP(EA_D16_AN(ea); WRITE2x8(ea, DX))
+#define OP_MOVEP_L_D16AY_DX OP(EA_D16_AN(ea); DX = READ4x8(ea))
+#define OP_MOVEP_W_D16AY_DX OP(EA_D16_AN(ea); STORE_DN(16, opcode >> 9 & 7, READ2x8(ea)))
+#define OP_MOVEP_L_DX_D16AY OP(EA_D16_AN(ea); WRITE4x8(ea, DX))
+#define OP_PEA_EA           OP(VALID_EA(ea_control); uint32_t ea = GET_EA; PUSH(ea))
+#define OP_BSR_B_LABEL      OP(uint32_t p = PC + DISP8(); PUSH(PC); PC = p)
+#define OP_BSR_W_LABEL      OP(uint32_t p = PC + DISP16(); PUSH(PC); PC = p)
+#define OP_BSR_L_LABEL      OP(uint32_t p = PC + DISP32(); PUSH(PC); PC = p)
+#define OP_ORI_B_DATA_CCR   OP(TO_CCR(|))
+#define OP_ORI_W_DATA_SR    OP(TO_SR(|))
+#define OP_ORI_B_DATA_EA    OP(IMM_LOGICAL(8, |))
+#define OP_ORI_W_DATA_EA    OP(IMM_LOGICAL(16, |))
+#define OP_ORI_L_DATA_EA    OP(IMM_LOGICAL(32, |))
+#define OP_ANDI_B_DATA_CCR  OP(TO_CCR(&))
+#define OP_ANDI_W_DATA_SR   OP(TO_SR(&))
+#define OP_ANDI_B_DATA_EA   OP(IMM_LOGICAL(8, &))
+#define OP_ANDI_W_DATA_EA   OP(IMM_LOGICAL(16, &))
+#define OP_ANDI_L_DATA_EA   OP(IMM_LOGICAL(32, &))
+#define OP_RTM_RN           OP_UNDEFINED
+#define OP_CALLM_DATA_EA    OP_UNDEFINED
+#define OP_SUBI_B_DATA_EA   OP(SUBI(8))
+#define OP_SUBI_W_DATA_EA   OP(SUBI(16))
+#define OP_SUBI_L_DATA_EA   OP(SUBI(32))
+#define OP_ADDI_B_DATA_EA   OP(ADDI(8))
+#define OP_ADDI_W_DATA_EA   OP(ADDI(16))
+#define OP_ADDI_L_DATA_EA   OP(ADDI(32))
+#define OP_EORI_B_DATA_CCR  OP(TO_CCR(^))
+#define OP_EORI_W_DATA_SR   OP(TO_SR(^))
+#define OP_EORI_B_DATA_EA   OP(IMM_LOGICAL(8, ^))
+#define OP_EORI_W_DATA_EA   OP(IMM_LOGICAL(16, ^))
+#define OP_EORI_L_DATA_EA   OP(IMM_LOGICAL(32, ^))
+#define OP_CMPI_B_DATA_EA   OP(CMPI(8))
+#define OP_CMPI_W_DATA_EA   OP(CMPI(16))
+#define OP_CMPI_L_DATA_EA   OP(CMPI(32))
+#define OP_NEGX_B_EA        OP(NEGX(8))
+#define OP_NEGX_W_EA        OP(NEGX(16))
+#define OP_NEGX_L_EA        OP(NEGX(32))
+#define OP_NEG_B_EA         OP(NEG(8))
+#define OP_NEG_W_EA         OP(NEG(16))
+#define OP_NEG_L_EA         OP(NEG(32))
+#define OP_MOVE_B_EA_CCR    OP(VALID_EA(ea_data); LOAD_EA_WITH_UPDATE(16, src); WRITE_CCR(src))
+#define OP_NBCD_B_EA        OP(LOAD_EA(8, src, (ea_data & ea_alterable)); STORE_EA(8, SBCD(0, src)))
+#define OP_EXT_W_DN         OP(UINT(16) r = S_EXT_8TO16(DY); STORE_DN(16, EA_REG, r); UPDATE_NZ_CLEAR_CV(r))
+#define OP_EXT_L_DN         OP(UINT(32) r = S_EXT_16TO32(DY); DY = r; UPDATE_NZ_CLEAR_CV(r))
+#define OP_ILLEGAL          OP_UNDEFINED
+#define OP_TAS_B_EA         OP(LOAD_EA(8, ea, (ea_data & ea_alterable)); UPDATE_NZ_CLEAR_CV(ea); ea |= 0x80; STORE_EA(8, ea))
+#define OP_MOVEM_W_EA_LIST  OP(VALID_EA(ea_control + ea_an_plus); MOVEM_TO_REGISTER(opcode, 16))
+#define OP_MOVEM_L_EA_LIST  OP(VALID_EA(ea_control + ea_an_plus); MOVEM_TO_REGISTER(opcode, 32))
+#define OP_TRAP_VECTOR      OP(EXC_TRAP(opcode & 0xF))
+#define OP_RESET            OP(SUPER())
+#define OP_STOP_DATA        OP(SUPER(uint16_t sr = FETCH16(); SET_SR(sr)))
+#define OP_RTS              OP(POP32(PC))
+#define OP_TRAPV            OP(if (CC_V) EXC_TRAPV())
+#define OP_RTR              OP(uint16_t ccr; POP16(ccr); WRITE_CCR(ccr); POP32(PC))
+// LINK: fetch the displacement word *before* mutating any register, so a
+// page-cross fault on the immediate restarts the instruction cleanly (the
+// pre-PUSH/AY-update state is untouched). M68000PRM §8.1: An is pushed,
+// then An <- SP, then SP += disp.
+#define OP_LINK                                                                                                        \
+    OP({                                                                                                               \
+        int32_t _disp = (int32_t)(int16_t)FETCH16();                                                                   \
+        uint32_t _ay = AY;                                                                                             \
+        PUSH32(_ay);                                                                                                   \
+        AY = SP;                                                                                                       \
+        SP += _disp;                                                                                                   \
+    })
 #define OP_UNLK               OP(SP = AY; uint32_t a; POP32(a); AY = a)
 #define OP_NOP                OP(/* no-op */)
 #define OP_MOVE_AN_USP        OP(SUPER(SET_USP(A(EA_REG))))
@@ -1208,16 +1219,30 @@ static inline uint32_t bf_insert_reg(uint32_t dst, int32_t offset, uint32_t w, u
     })
 
 // --- CHK.W <ea>,Dn and CHK.L <ea>,Dn ---
+// M68000PRM: N=1 if Dn < 0, N=0 if Dn > upper bound. Both cases raise the
+// CHK exception (vector 6); the handler reads N from the stacked SR to
+// distinguish underflow from overflow.
 #define OP_CHK_W_EA_DN                                                                                                 \
     OP(                                                                                                                \
         VALID_EA(ea_data); LOAD_EA_WITH_UPDATE(16, _src); int32_t _dn = (int32_t)(int16_t)(uint16_t)DX;                \
-        int32_t _b = (int32_t)(int16_t)_src; cpu->negative = (_dn < 0);                                                \
-        if (_dn < 0) { EXC_CHK(); } else if (_dn > _b) { EXC_CHK(); })
+        int32_t _b = (int32_t)(int16_t)_src; if (_dn < 0) {                                                            \
+            cpu->negative = 1;                                                                                         \
+            EXC_CHK();                                                                                                 \
+        } else if (_dn > _b) {                                                                                         \
+            cpu->negative = 0;                                                                                         \
+            EXC_CHK();                                                                                                 \
+        })
 
 #define OP_CHK_L_EA_DN                                                                                                 \
     OP(                                                                                                                \
         VALID_EA(ea_data); LOAD_EA_WITH_UPDATE(32, _bound); int32_t _dn = (int32_t)DX; int32_t _b = (int32_t)_bound;   \
-        cpu->negative = (_dn < 0); if (_dn < 0) { EXC_CHK(); } else if (_dn > _b) { EXC_CHK(); })
+        if (_dn < 0) {                                                                                                 \
+            cpu->negative = 1;                                                                                         \
+            EXC_CHK();                                                                                                 \
+        } else if (_dn > _b) {                                                                                         \
+            cpu->negative = 0;                                                                                         \
+            EXC_CHK();                                                                                                 \
+        })
 
 // --- CHK2/CMP2: Compare with bounds ---
 // Extension word: Dn/An:Rn at bits 15:12, IS bit 11 (0=CMP2, 1=CHK2)
@@ -1305,7 +1330,11 @@ static inline uint32_t bf_insert_reg(uint32_t dst, int32_t offset, uint32_t w, u
     uint32_t _dc2 = _e2 & 7u;                                                                                          \
     uint32_t _du2 = (_e2 >> 6) & 7u;                                                                                   \
     UINT(bits) _m1 = (UINT(bits))READ##bits(_rn1);                                                                     \
+    if (__builtin_expect(g_bus_error_pending, 0))                                                                      \
+        break; /* CAS2: first read faulted — bail before touching CC or running the second read */                   \
     UINT(bits) _m2 = (UINT(bits))READ##bits(_rn2);                                                                     \
+    if (__builtin_expect(g_bus_error_pending, 0))                                                                      \
+        break; /* CAS2: second read faulted */                                                                         \
     UINT(bits) _r1;                                                                                                    \
     GENERIC_SUB(_m1, (UINT(bits))D(_dc1), _r1);                                                                        \
     if (CC_Z) {                                                                                                        \
@@ -1831,12 +1860,21 @@ static inline uint32_t bf_insert_reg(uint32_t dst, int32_t offset, uint32_t w, u
 #define OP_FBCC_W_DISPLACEMENT OP(EXC_FTRAP())
 #define OP_FBCC_L_DISPLACEMENT OP(EXC_FTRAP())
 
-// --- FTRAP default: CpID=0 -> 68030 MMU stub (privileged), else F-line exception ---
+// --- FTRAP default: any F-line opcode the dispatcher didn't recognise ---
+//
+// Real hardware dispatches the opcode to the coprocessor matching CpID. If
+// the coprocessor reports "unimplemented" (or there is no coprocessor), the
+// CPU raises a line-F trap (vector 11). Privilege violation (vector 8) is
+// only the right answer when the coprocessor itself recognised the opcode
+// and reports privilege error — which we don't model here, since this is
+// the catch-all for *unrecognised* opcodes only.
 #define OP_FTRAP                                                                                                       \
     OP({                                                                                                               \
         if (((opcode >> 9) & 7u) == 0u) {                                                                              \
-            /* CpID=0: 68030 MMU instruction -- privileged, consume ext word in supervisor */                          \
-            SUPER((void)FETCH16());                                                                                    \
+            /* CpID=0: 68030 PMMU coprocessor space. Sub-types we implement   */                                       \
+            /* are routed elsewhere by cpu_decode.h. Reaching here means the  */                                       \
+            /* sub-type is unimplemented — emit F-line trap (vector 11).      */                                     \
+            EXC_FTRAP();                                                                                               \
         } else {                                                                                                       \
             /* cpSAVE (type=4) / cpRESTORE (type=5) are privileged when EA is valid */                                 \
             uint32_t _cotype = (opcode >> 6) & 7u;                                                                     \

@@ -87,9 +87,12 @@ void scsi_cdrom_mode_sense(scsi_t *scsi) {
     uint8_t page_code = scsi->buf.data[2] & 0x3F;
     int page_control = (scsi->buf.data[2] >> 6) & 0x03;
 
-    // Build response in the SCSI buffer
+    // Build response in the SCSI buffer. The mode-sense response can grow
+    // past 256 bytes for page_code == 0x3F (all pages), so zero the *whole*
+    // BUF_LIMIT region rather than just the first 256 bytes — otherwise stale
+    // payload from a previous command leaks into the unzeroed tail.
     uint8_t *buf = scsi->buf.data;
-    memset(buf, 0, BUF_LIMIT < 256 ? BUF_LIMIT : 256);
+    memset(buf, 0, BUF_LIMIT);
 
     // Mode parameter header (4 bytes)
     int pos = 4;
@@ -144,8 +147,13 @@ void scsi_cdrom_mode_sense(scsi_t *scsi) {
         break;
     }
 
-    // Fill in the mode data length (byte 0 = total length - 1)
-    buf[0] = (uint8_t)(pos - 1);
+    // Fill in the mode data length (byte 0 = total length - 1). The field is
+    // a single byte, so clamp to avoid silent truncation if the assembled
+    // response ever grew past 256 bytes.
+    int data_len = pos - 1;
+    if (data_len > 255)
+        data_len = 255;
+    buf[0] = (uint8_t)data_len;
 
     // Clamp to allocation length
     int len = pos;
@@ -297,8 +305,11 @@ void scsi_cdrom_read_sub_channel(scsi_t *scsi) {
 
 // Handle READ HEADER — return mode 1 data for the requested LBA
 void scsi_cdrom_read_header(scsi_t *scsi) {
-    uint16_t alloc_len = (scsi->buf.data[7] << 8) | scsi->buf.data[8];
-    uint32_t lba = (scsi->buf.data[2] << 24) | (scsi->buf.data[3] << 16) | (scsi->buf.data[4] << 8) | scsi->buf.data[5];
+    uint16_t alloc_len = (uint16_t)(((uint16_t)scsi->buf.data[7] << 8) | scsi->buf.data[8]);
+    // Promote each byte to uint32_t before shifting so the high-byte shift
+    // (`<< 24`) doesn't trip signed-overflow UB when data[2] > 0x7F.
+    uint32_t lba = ((uint32_t)scsi->buf.data[2] << 24) | ((uint32_t)scsi->buf.data[3] << 16) |
+                   ((uint32_t)scsi->buf.data[4] << 8) | (uint32_t)scsi->buf.data[5];
 
     uint8_t resp[8];
     memset(resp, 0, sizeof(resp));

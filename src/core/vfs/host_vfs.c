@@ -12,7 +12,7 @@
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
-#include <stdio.h> // for rename()
+#include <stdio.h> // rename() is in <stdio.h> per POSIX
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
@@ -42,9 +42,11 @@ static int host_stat(void *ctx, const char *path, vfs_stat_t *out) {
         out->mode = VFS_MODE_FILE;
         out->size = (uint64_t)st.st_size;
     } else {
-        // Other file types (symlinks, devices) surface as files for now.
-        out->mode = VFS_MODE_FILE;
-        out->size = (uint64_t)st.st_size;
+        // Non-regular non-directory entries (symlinks, sockets, fifos, devices)
+        // would otherwise loop the cat/copy commands forever on `/dev/zero` or
+        // succeed misleadingly on a socket. Refuse with EINVAL — the directory
+        // listing still shows them via readdir, the user just can't read them.
+        return -EINVAL;
     }
     out->mtime = (uint32_t)st.st_mtime;
     out->readonly = false;
@@ -71,7 +73,7 @@ static int host_opendir(void *ctx, const char *path, vfs_dir_t **out) {
 static int host_readdir(vfs_dir_t *d, vfs_dirent_t *out) {
     if (!d || !d->dir || !out)
         return -EINVAL;
-    // Loop past any readdir() interruption; a NULL with errno==0 means EOF.
+    // A NULL return with errno==0 means EOF; otherwise propagate the errno.
     errno = 0;
     struct dirent *entry = readdir(d->dir);
     if (!entry) {
@@ -80,7 +82,9 @@ static int host_readdir(vfs_dir_t *d, vfs_dirent_t *out) {
         return 0; // EOF
     }
     memset(out, 0, sizeof(*out));
-    snprintf(out->name, sizeof(out->name), "%s", entry->d_name);
+    int w = snprintf(out->name, sizeof(out->name), "%s", entry->d_name);
+    if (w < 0 || (size_t)w >= sizeof(out->name))
+        return -ENAMETOOLONG; // caller sees the entry was skipped
     out->has_stat = false;
     return 1;
 }
@@ -97,7 +101,8 @@ static int host_open(void *ctx, const char *path, vfs_file_t **out) {
     (void)ctx;
     if (!path || !out)
         return -EINVAL;
-    int fd = open(path, O_RDONLY);
+    // O_CLOEXEC: don't leak the fd across a hypothetical future fork/exec.
+    int fd = open(path, O_RDONLY | O_CLOEXEC);
     if (fd < 0)
         return -errno;
     vfs_file_t *handle = calloc(1, sizeof(*handle));
@@ -109,6 +114,10 @@ static int host_open(void *ctx, const char *path, vfs_file_t **out) {
     *out = handle;
     return 0;
 }
+
+// Pin the off_t width so this TU doesn't silently miscompile on a 32-bit
+// off_t legacy build — large-file support is required.
+_Static_assert(sizeof(off_t) >= 8, "host_vfs requires 64-bit off_t (build with _FILE_OFFSET_BITS=64)");
 
 static int host_read(vfs_file_t *f, uint64_t off, void *buf, size_t n, size_t *nread) {
     if (!f || f->fd < 0 || !buf)

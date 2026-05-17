@@ -71,16 +71,8 @@ void object_root_reset(void) {
         return;
     // Detach every child first so children's parent pointers are cleared
     // before we free the root. Callers own the children themselves.
-    while (1) {
-        struct object *c = NULL;
-        for (struct object *it = g_root->first_child; it; it = it->next_sibling) {
-            c = it;
-            break;
-        }
-        if (!c)
-            break;
-        object_detach(c);
-    }
+    while (g_root->first_child)
+        object_detach(g_root->first_child);
     free(g_root);
     g_root = NULL;
 }
@@ -289,11 +281,10 @@ static const char *kind_name(value_kind_t k);
 static bool kind_supports_width(value_kind_t k) {
     return k == V_INT || k == V_UINT;
 }
-static bool kind_supports_strict(value_kind_t k) {
-    // Strict-kind only meaningful for kinds that have coercion paths.
-    return k == V_INT || k == V_UINT || k == V_BOOL || k == V_FLOAT || k == V_ENUM;
+static bool width_is_supported(uint8_t w) {
+    // 0 = unconstrained, 1/2/4/8 = integer widths, 10 = FPU extended.
+    return w == 0 || w == 1 || w == 2 || w == 4 || w == 8 || w == 10;
 }
-
 bool object_validate_class(const class_desc_t *cls, char *err_buf, size_t err_size) {
     if (!cls) {
         if (err_buf && err_size)
@@ -380,7 +371,12 @@ bool object_validate_class(const class_desc_t *cls, char *err_buf, size_t err_si
                     // see it via a follow-up audit pass.
                     (void)0;
                 }
-                (void)kind_supports_strict;
+                if (!width_is_supported(p->width)) {
+                    if (err_buf && err_size)
+                        snprintf(err_buf, err_size, "%s.%s: arg '%s' has unsupported width %u (allowed: 0,1,2,4,8,10)",
+                                 cls->name, m->name, p->name ? p->name : "?", p->width);
+                    return false;
+                }
             }
             if (rest_count > 1) {
                 if (err_buf && err_size)
@@ -400,6 +396,12 @@ bool object_validate_class(const class_desc_t *cls, char *err_buf, size_t err_si
                 if (err_buf && err_size)
                     snprintf(err_buf, err_size, "%s.%s: V_ENUM attribute slot has no enum_values table", cls->name,
                              m->name);
+                return false;
+            }
+            if (!width_is_supported(m->attr.width)) {
+                if (err_buf && err_size)
+                    snprintf(err_buf, err_size, "%s.%s: attribute has unsupported width %u (allowed: 0,1,2,4,8,10)",
+                             cls->name, m->name, m->attr.width);
                 return false;
             }
         }
@@ -432,7 +434,6 @@ static const char *skip_ws(const char *p) {
 static const char *parse_int(const char *p, long long *out) {
     if (!p)
         return NULL;
-    const char *start = p;
     int base = 10;
     int sign = 1;
     if (*p == '-') {
@@ -454,7 +455,6 @@ static const char *parse_int(const char *p, long long *out) {
         return NULL;
     if (out)
         *out = sign * v;
-    (void)start;
     return endp;
 }
 
@@ -496,7 +496,7 @@ node_t node_child(node_t n, const char *segment) {
     long long ival = 0;
     {
         char *endp = NULL;
-        long v = strtol(segment, &endp, 0);
+        long long v = strtoll(segment, &endp, 0);
         if (endp && endp != segment && *endp == '\0') {
             is_int = true;
             ival = v;

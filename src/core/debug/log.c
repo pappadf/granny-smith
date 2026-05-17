@@ -35,7 +35,7 @@ static log_sink_fn s_sink_fn = NULL;
 static void *s_sink_user = NULL;
 
 #define LOG_MAX_INDENT_SPACES 64
-static int s_global_indent_spaces = 0;
+static int s_indent_spaces = 0;
 
 // Clamps the requested indent width into the supported range.
 static int clamp_indent(int spaces) {
@@ -44,13 +44,6 @@ static int clamp_indent(int spaces) {
     if (spaces > LOG_MAX_INDENT_SPACES)
         return LOG_MAX_INDENT_SPACES;
     return spaces;
-}
-
-// Default sink: write line to stdout
-// Historical default sink used when a caller explicitly installs one.
-static void default_sink(const char *line, void *user) {
-    (void)user; // not used
-    fputs(line, stdout);
 }
 
 // Finds a category by name; returns pointer or NULL
@@ -124,7 +117,7 @@ static int set_category_file(struct log_category *c, const char *path) {
     return 0;
 }
 
-// Registers the 'log' shell command
+// Prints one category's level/sink/timestamp/PC configuration.
 static void print_category_config(const struct log_category *c) {
     if (!c)
         return;
@@ -215,8 +208,8 @@ uint64_t cmd_log(int argc, char *argv[]) {
             else
                 puts("log: stdout expects on/off");
         } else if (strcasecmp(key, "file") == 0) {
-            if (set_category_file(c, val) != 0) { /* error already printed */
-            }
+            // error already printed by set_category_file on failure
+            (void)set_category_file(c, val);
         } else if (strcasecmp(key, "ts") == 0 || strcasecmp(key, "timestamp") == 0) {
             int b;
             if (parse_onoff(val, &b) == 0)
@@ -302,23 +295,22 @@ void log_set_sink(log_sink_fn fn, void *user) {
 
 // Sets the indentation width (in spaces) applied before each message body.
 void log_indent_set(int spaces) {
-    s_global_indent_spaces = clamp_indent(spaces);
+    s_indent_spaces = clamp_indent(spaces);
 }
 
 // Returns the current indentation width in spaces.
 int log_indent_get(void) {
-    return s_global_indent_spaces;
+    return s_indent_spaces;
 }
 
 // Adjusts the indentation width by delta then clamps.
 void log_indent_adjust(int delta) {
     if (delta == 0)
         return;
-    log_indent_set(s_global_indent_spaces + delta);
+    log_indent_set(s_indent_spaces + delta);
 }
 
-// Emits a formatted log line: "[name] level message\n"
-// Emits a log line using a va_list.
+// Emits a log line using a va_list. Final form: "[name] level message\n"
 void log_vemit(const log_category_t *cat, int level, const char *fmt, va_list ap) {
     if (!cat)
         return; // Treat missing category as disabled
@@ -335,7 +327,7 @@ void log_vemit(const log_category_t *cat, int level, const char *fmt, va_list ap
     // Compose the final line with optional timestamp and/or PC
     char line[768];
     const char *name = c->name ? c->name : "";
-    const int indent_spaces = s_global_indent_spaces;
+    const int indent_spaces = s_indent_spaces;
     char indent_buf[LOG_MAX_INDENT_SPACES + 1];
     if (indent_spaces > 0) {
         memset(indent_buf, ' ', (size_t)indent_spaces);

@@ -9,6 +9,9 @@
 #include "system.h"
 
 #include <ctype.h>
+#include <errno.h>
+#include <limits.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -16,7 +19,7 @@
 // Default display mode: auto (collapsed unless MMU is active)
 addr_display_mode_t g_addr_display_mode = ADDR_DISPLAY_AUTO;
 
-// Try to resolve a name as a CPU register, returning its value (IMP-407)
+// Try to resolve a name as a CPU register, returning its value.
 // Returns true if name matched a register, false otherwise.
 static bool resolve_register_address(const char *name, uint32_t *value) {
     cpu_t *cpu = system_cpu();
@@ -89,29 +92,44 @@ bool parse_address(const char *str, uint32_t *addr_out, addr_space_t *space_out)
     if (*str == '\0')
         return false;
 
-    // Check for $ prefix — try register name first, then hex (IMP-407)
+    // Check for $ prefix — try register name first, then hex.
     if (*str == '$') {
         str++;
+        if (*str == '\0')
+            return false; // explicit reject empty after $
         // Try to resolve as register name (pc, sp, a0-a7, d0-d7, ssp, usp)
         if (resolve_register_address(str, addr_out))
             return true;
-        // Fall through to hex parsing
+        // Fall through to hex parsing.
         char *endptr;
-        *addr_out = (uint32_t)strtoul(str, &endptr, 16);
-        return *endptr == '\0';
+        errno = 0;
+        unsigned long v = strtoul(str, &endptr, 16);
+        if (errno || v > UINT32_MAX || *endptr != '\0')
+            return false;
+        *addr_out = (uint32_t)v;
+        return true;
     }
 
-    // Check for 0x prefix (C hex)
+    // Check for 0x prefix (C hex). Parse with explicit base 16 to avoid the
+    // base-0 octal-on-leading-zero footgun (`017` parses differently otherwise).
     if (str[0] == '0' && (str[1] == 'x' || str[1] == 'X')) {
         char *endptr;
-        *addr_out = (uint32_t)strtoul(str, &endptr, 0);
-        return *endptr == '\0';
+        errno = 0;
+        unsigned long v = strtoul(str + 2, &endptr, 16);
+        if (errno || v > UINT32_MAX || *endptr != '\0')
+            return false;
+        *addr_out = (uint32_t)v;
+        return true;
     }
 
-    // Bare number — parse as hex by default
+    // Bare number — parse as hex by default.
     char *endptr;
-    *addr_out = (uint32_t)strtoul(str, &endptr, 16);
-    return *endptr == '\0';
+    errno = 0;
+    unsigned long v = strtoul(str, &endptr, 16);
+    if (errno || v > UINT32_MAX || *endptr != '\0')
+        return false;
+    *addr_out = (uint32_t)v;
+    return true;
 }
 
 // Format a single address with $ prefix and uppercase hex: "$XXXXXXXX"

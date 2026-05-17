@@ -2,7 +2,7 @@
 // Copyright (c) pappadf
 
 // vrom.h
-// Video-ROM handling for machines with discrete VROM (currently SE/30 only).
+// VROM handling for machines with discrete VROM (currently SE/30 only).
 // The user picks the path via vrom.load(path); the actual blit into video
 // memory happens during machine init (machines/se30.c::se30_load_vrom),
 // which calls vrom_pending_path() to retrieve the path.

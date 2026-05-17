@@ -8,6 +8,7 @@
 
 #include <assert.h>
 #include <stdarg.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -32,12 +33,21 @@ struct json_builder {
 static bool ensure_cap(json_builder_t *b, size_t extra) {
     if (b->err)
         return false;
+    if (extra > SIZE_MAX - 1 - b->len) {
+        b->err = true;
+        return false;
+    }
     size_t need = b->len + extra + 1;
     if (need <= b->cap)
         return true;
     size_t cap = b->cap ? b->cap * 2 : 64;
-    while (cap < need)
+    while (cap < need) {
+        if (cap > SIZE_MAX / 2) {
+            cap = need;
+            break;
+        }
         cap *= 2;
+    }
     char *p = (char *)realloc(b->buf, cap);
     if (!p) {
         b->err = true;

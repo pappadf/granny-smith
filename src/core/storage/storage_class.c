@@ -2,10 +2,8 @@
 // Copyright (c) pappadf
 
 // storage_class.c
-// Object-model class descriptors for `storage` (storage.images,
-// storage.list_dir, storage.import, plus the disk-image probe / mount
-// surface — partmap, probe, list_partitions, mounts, unmount, find_media,
-// hd_create, hd_download, cp, path_exists, path_size). Split out from
+// Object-model class descriptors for `storage`. See `storage_members[]`
+// near the bottom of the file for the current method list. Split out from
 // storage.c so the storage block-I/O unit test can link only the core
 // delta-storage API without pulling in image / vfs / shell dependencies.
 
@@ -79,8 +77,11 @@ static value_t storage_image_attr_writable(struct object *self, const member_t *
     return val_bool(img ? img->writable : false);
 }
 
+// Designated-initialiser table keyed by `image_type` so a future enum
+// reorder (or a value inserted out of order) keeps the labels aligned.
 static const char *const STORAGE_IMAGE_TYPE_NAMES[] = {
-    "other", "fd_ss", "fd_ds", "fd_hd", "hd", "cdrom",
+    [image_other] = "other", [image_fd_ss] = "fd_ss", [image_fd_ds] = "fd_ds",
+    [image_fd_hd] = "fd_hd", [image_hd] = "hd",       [image_cdrom] = "cdrom",
 };
 
 static value_t storage_image_attr_type(struct object *self, const member_t *m) {
@@ -88,7 +89,7 @@ static value_t storage_image_attr_type(struct object *self, const member_t *m) {
     image_t *img = storage_image_at(self);
     int t = img ? (int)img->type : 0;
     int max = (int)(sizeof(STORAGE_IMAGE_TYPE_NAMES) / sizeof(STORAGE_IMAGE_TYPE_NAMES[0]));
-    if (t < 0 || t >= max)
+    if (t < 0 || t >= max || !STORAGE_IMAGE_TYPE_NAMES[t])
         t = 0;
     return val_enum(t, STORAGE_IMAGE_TYPE_NAMES, (size_t)max);
 }
@@ -297,8 +298,13 @@ static value_t storage_method_find_media(struct object *self, const member_t *m,
     (void)self;
     (void)m;
     const char *dir = argv[0].s;
+    if (!dir || !*dir)
+        return val_err("storage.find_media: expected a non-empty directory path");
     const char *dst = (argc >= 2 && argv[1].s && *argv[1].s) ? argv[1].s : NULL;
-    return val_bool(gs_find_media(dir, dst) == 0);
+    int rc = gs_find_media(dir, dst);
+    if (rc != 0)
+        return val_err("storage.find_media: no recognised media found under '%s'", dir);
+    return val_bool(true);
 }
 
 // `storage.hd_create(path, size)` — create a blank SCSI HD image.
@@ -528,7 +534,7 @@ static const arg_decl_t storage_partmap_args[] = {
 static const member_t storage_members[] = {
     {.kind = M_METHOD,
      .name = "import",
-     .doc = "Persist a host file under /images/ (deferred — see proposal §5.7)",
+     .doc = "Persist a host file under /images/ (implementation in progress)",
      .method = {.args = storage_import_args, .nargs = 2, .result = V_STRING, .fn = storage_method_import}        },
     {.kind = M_METHOD,
      .name = "list_dir",

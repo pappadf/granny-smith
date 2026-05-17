@@ -3,10 +3,11 @@
 
 // vfs.h
 // Thin VFS layer: the shell's filesystem commands (ls, cd, cat, ...) call
-// through a small backend interface instead of libc directly.  Phase 1 ships
-// one backend (host) whose operations are byte-identical to what the FS
-// commands used to do; Phase 2 of proposal-image-vfs.md adds an image
-// backend plus a resolver that transparently descends into image files.
+// through a small backend interface instead of libc directly. Two backends
+// ship today — `host` for plain filesystem paths and `image` (see image_vfs.h)
+// for paths that descend into a Mac disk image. The resolver
+// (`vfs_resolve`/`vfs_resolve_descend`) routes between them transparently so
+// `ls /tmp/foo.img/partition2/etc/motd` Just Works.
 
 #pragma once
 
@@ -29,7 +30,7 @@ typedef struct vfs_stat {
     uint64_t size; // bytes (0 for directories)
     uint32_t mtime; // Unix seconds (0 if unavailable)
     uint16_t mode; // VFS_MODE_FILE or VFS_MODE_DIR
-    bool readonly; // true for image-backed paths (Phase 2+)
+    bool readonly; // true for image-backed paths
 } vfs_stat_t;
 
 // One directory entry.
@@ -56,8 +57,9 @@ typedef struct vfs_backend {
     int (*read)(vfs_file_t *f, uint64_t off, void *buf, size_t n, size_t *nread);
     void (*close)(vfs_file_t *f);
 
-    // Writable operations.  Image-backed paths return -EROFS in Phase 2+;
-    // for now only the host backend implements these.
+    // Writable operations. Image-backed paths reject these (the image
+    // backend installs static `-EROFS` rejecters); only the host backend
+    // actually mutates the filesystem.
     int (*mkdir)(void *ctx, const char *path);
     int (*unlink)(void *ctx, const char *path);
     int (*rename)(void *ctx, const char *src, const char *dst);
@@ -103,8 +105,8 @@ int vfs_unlink(const char *path);
 int vfs_rename(const char *src, const char *dst);
 
 // current_dir accessor + setter (backed by the shell's existing static).
-// Phase 2 will need to extend this with logical cwds that live inside an
-// image; today it is a pure pass-through.
+// Today the cwd is a host path string; an image-rooted cwd would need
+// extending this with the resolver's auto-mount state.
 const char *vfs_get_cwd(void);
 void vfs_set_cwd(const char *path);
 

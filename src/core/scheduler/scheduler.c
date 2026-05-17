@@ -11,11 +11,14 @@
 #include "scheduler.h"
 
 #include "cpu.h"
+#include "log.h"
 #include "memory.h"
 #include "object.h"
 #include "shell.h"
 #include "system.h"
 #include "value.h"
+
+LOG_USE_CATEGORY_NAME("scheduler");
 
 #include <math.h>
 #include <stddef.h>
@@ -96,7 +99,7 @@ struct scheduler {
     event_t *cpu_events; // priority queue sorted by timestamp
 
     // Temporary storage used during checkpoint restore
-    int tmp_num_events;
+    unsigned int tmp_num_events;
     event_as_checkpoint_t *tmp_events;
 
     uint32_t frequency;
@@ -187,7 +190,7 @@ static void scheduler_check_invariants(struct scheduler *s, const char *context)
     // Timing accumulator sanity (warning only, not a hard assert)
     if (!isnan(s->vbl_acc_error)) {
         if (s->vbl_acc_error > 10.0 || s->vbl_acc_error < -10.0) {
-            printf("WARNING [%s]: vbl_acc_error out of bounds (%f)\n", context, s->vbl_acc_error);
+            LOG(1, "[%s] vbl_acc_error out of bounds (%f)", context, s->vbl_acc_error);
         }
     }
 
@@ -302,11 +305,10 @@ static event_t *add_event_internal(struct scheduler *restrict s, event_callback_
     else
         cycles = ns * s->frequency / NS_PER_SEC;
 
-    event_t *event = (event_t *)malloc(sizeof(event_t));
+    event_t *event = (event_t *)calloc(1, sizeof(event_t));
     if (event == NULL)
         return NULL;
 
-    memset(event, 0, sizeof(event_t));
     event->callback = callback;
     event->source = source;
     event->data = data;
@@ -475,7 +477,7 @@ struct scheduler *scheduler_init(struct cpu *cpu, checkpoint_t *checkpoint) {
     s->previous_time = host_time();
     s->host_secs_per_vbl = NAN;
     s->host_secs_per_loop = 1.0 / 60.0;
-    s->frequency = 7833600;
+    s->frequency = (uint32_t)MAC_CPU_FREQUENCY;
     s->cpi_hw = CYCLES_PER_INSTR_HW_DEFAULT;
     s->cpi_fast = CYCLES_PER_INSTR_FAST_DEFAULT;
     s->num_event_types = 0;
@@ -506,10 +508,19 @@ struct scheduler *scheduler_init(struct cpu *cpu, checkpoint_t *checkpoint) {
         GS_ASSERT(s->mode >= schedule_max_speed && s->mode <= schedule_hw_accuracy);
         GS_ASSERT(s->cpu_cycles < (1ULL << 60));
 
-        // Save event data for deferred restoration (names must be resolved after device registration)
+        // Save event data for deferred restoration (names must be resolved after device registration).
         system_read_checkpoint_data(checkpoint, &s->tmp_num_events, sizeof(s->tmp_num_events));
-        s->tmp_events = (event_as_checkpoint_t *)malloc(s->tmp_num_events * sizeof(event_as_checkpoint_t));
-        system_read_checkpoint_data(checkpoint, s->tmp_events, s->tmp_num_events * sizeof(event_as_checkpoint_t));
+        // Reject negative-decoded / absurdly-large counts on a corrupt checkpoint.
+        GS_ASSERTF(s->tmp_num_events <= MAX_SANE_EVENTS, "checkpoint claims %u pending events (cap %d)",
+                   s->tmp_num_events, MAX_SANE_EVENTS);
+        if (s->tmp_num_events == 0) {
+            s->tmp_events = NULL;
+        } else {
+            s->tmp_events = (event_as_checkpoint_t *)malloc((size_t)s->tmp_num_events * sizeof(event_as_checkpoint_t));
+            GS_ASSERT(s->tmp_events != NULL);
+            system_read_checkpoint_data(checkpoint, s->tmp_events,
+                                        (size_t)s->tmp_num_events * sizeof(event_as_checkpoint_t));
+        }
     } else {
         // Fresh boot
         s->mode = schedule_real_time;
@@ -521,7 +532,7 @@ struct scheduler *scheduler_init(struct cpu *cpu, checkpoint_t *checkpoint) {
         s->tmp_events = NULL;
     }
 
-    scheduler_new_event_type(s, "Scheduler", s, "run_stop", run_stop_event);
+    scheduler_new_event_type(s, "scheduler", s, "run_stop", run_stop_event);
     // Note: scheduler_vbl_tick uses config_t* as source, so its source is
     // not knowable here.  Machine init calls scheduler_register_vbl_type()
     // (so checkpoint restore can resolve a saved vbl_tick event), and the
@@ -589,7 +600,10 @@ void scheduler_checkpoint(struct scheduler *restrict scheduler, checkpoint_t *ch
     // Convert event queue to checkpoint-friendly format (names instead of pointers)
     unsigned int num_events = num_events_in_queue(scheduler);
     system_write_checkpoint_data(checkpoint, &num_events, sizeof(num_events));
-    event_as_checkpoint_t *events_to_save = (event_as_checkpoint_t *)calloc(num_events, sizeof(event_as_checkpoint_t));
+    // calloc(0, …) is implementation-defined (some libc return NULL, some a 1-byte sentinel).
+    // Skip the alloc entirely on an empty queue.
+    event_as_checkpoint_t *events_to_save =
+        num_events ? (event_as_checkpoint_t *)calloc(num_events, sizeof(event_as_checkpoint_t)) : NULL;
 
     event_t *e = scheduler->cpu_events;
     for (unsigned int i = 0; i < num_events; i++) {
@@ -614,8 +628,10 @@ void scheduler_checkpoint(struct scheduler *restrict scheduler, checkpoint_t *ch
         e = e->next;
     }
 
-    system_write_checkpoint_data(checkpoint, events_to_save, num_events * sizeof(event_as_checkpoint_t));
-    free(events_to_save);
+    if (num_events) {
+        system_write_checkpoint_data(checkpoint, events_to_save, num_events * sizeof(event_as_checkpoint_t));
+        free(events_to_save);
+    }
 }
 
 // ============================================================================
@@ -631,15 +647,16 @@ void scheduler_start(struct scheduler *restrict s) {
         return;
 
     // Resolve saved event names to live pointers and rebuild the event queue
-    for (int i = 0; i < s->tmp_num_events; i++) {
+    for (unsigned int i = 0; i < s->tmp_num_events; i++) {
         event_as_checkpoint_t *saved = &s->tmp_events[i];
 
-        // Find matching registered event type by name
+        // Find matching registered event type by name. The name buffers are
+        // null-terminated on both sides, so strcmp catches differences past
+        // the buffer length too (a 64-byte strncmp would alias collisions).
         int found = -1;
         for (int j = 0; j < s->num_event_types; j++) {
-            if (strncmp(s->event_types[j].source_name, saved->source_name, sizeof(s->event_types[j].source_name)) ==
-                    0 &&
-                strncmp(s->event_types[j].event_name, saved->event_name, sizeof(s->event_types[j].event_name)) == 0) {
+            if (strcmp(s->event_types[j].source_name, saved->source_name) == 0 &&
+                strcmp(s->event_types[j].event_name, saved->event_name) == 0) {
                 found = j;
                 break;
             }
@@ -647,14 +664,17 @@ void scheduler_start(struct scheduler *restrict s) {
 
         GS_ASSERTF(found >= 0, "cannot restore event '%s.%s' — type not registered", saved->source_name,
                    saved->event_name);
-        GS_ASSERTF(saved->timestamp > s->cpu_cycles, "restored event timestamp (%llu) <= cpu_cycles (%llu) for '%s.%s'",
+        // Match the documented invariant: timestamp + CPI >= cpu_cycles (so an
+        // event that legitimately fired on the same cycle the checkpoint was
+        // taken can still be restored).
+        GS_ASSERTF(saved->timestamp + avg_cycles_per_instr(s) >= s->cpu_cycles,
+                   "restored event timestamp (%llu) too far past cpu_cycles (%llu) for '%s.%s'",
                    (unsigned long long)saved->timestamp, (unsigned long long)s->cpu_cycles, saved->source_name,
                    saved->event_name);
 
         // Recreate and insert event
-        event_t *e = (event_t *)malloc(sizeof(event_t));
+        event_t *e = (event_t *)calloc(1, sizeof(event_t));
         GS_ASSERT(e != NULL);
-        memset(e, 0, sizeof(event_t));
 
         e->timestamp = saved->timestamp;
         e->callback = s->event_types[found].callback;
@@ -685,10 +705,14 @@ void scheduler_new_event_type(struct scheduler *restrict scheduler, const char *
     // the same callback with different source pointers, e.g. VIA1 vs VIA2)
     for (int i = 0; i < scheduler->num_event_types; i++) {
         if (scheduler->event_types[i].callback == callback && scheduler->event_types[i].source == source) {
-            // Update names (allows via_set_instance_name to relabel entries)
+            // Update names (allows via_set_instance_name to relabel entries).
+            // strncpy doesn't null-terminate on full fill; do it explicitly so a
+            // shorter previous name doesn't leak past a longer new name.
             strncpy(scheduler->event_types[i].source_name, source_name,
                     sizeof(scheduler->event_types[i].source_name) - 1);
+            scheduler->event_types[i].source_name[sizeof(scheduler->event_types[i].source_name) - 1] = '\0';
             strncpy(scheduler->event_types[i].event_name, event_name, sizeof(scheduler->event_types[i].event_name) - 1);
+            scheduler->event_types[i].event_name[sizeof(scheduler->event_types[i].event_name) - 1] = '\0';
             return;
         }
     }
@@ -813,6 +837,8 @@ void scheduler_set_running(struct scheduler *restrict scheduler, bool running) {
 
 // Check if the scheduler is currently running
 bool scheduler_is_running(struct scheduler *restrict s) {
+    if (!s)
+        return false;
     return s->running;
 }
 
@@ -1060,7 +1086,8 @@ void scheduler_main_loop(config_t *restrict config, double now_msecs) {
             vbls_to_execute = 1;
             break;
         }
-        // Fall through to hw_accuracy model when host loop deviates too much
+        // Fall through to hw_accuracy model when host loop deviates too much.
+        __attribute__((fallthrough));
 
     case schedule_hw_accuracy:
         // Accumulate elapsed time and execute VBLs when enough has accumulated

@@ -30,7 +30,6 @@
 #include "image.h"
 #include "log.h"
 #include "memory.h"
-#include "memory_internal.h"
 #include "mmu.h"
 #include "nubus.h"
 #include "rom.h"

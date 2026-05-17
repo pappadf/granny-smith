@@ -39,10 +39,6 @@
 // read the flag from another thread.
 static volatile int32_t shell_initialized = 0;
 
-// Phase 5c — legacy command registry deleted. The typed object-model
-// bridge is the sole dispatch surface; shell_dispatch falls straight
-// through to the path-form parser.
-
 /* --- tokenizer ----------------------------------------------------------- */
 #define MAXTOK 32
 
@@ -141,21 +137,11 @@ int tokenize(char *line, char *argv[], int max) {
     return argc;
 }
 
-// Phase 5c — legacy `help` / `echo` / `time` / `add` / `remove`
-// shell built-ins retired. `echo` and other utilities are typed root
-// methods now (root.c).
-
-// Phase 5c — legacy filesystem commands (`ls`, `cd`, `mkdir`, `mv`,
-// `cat`, `exists`, `size`, `rm`) and the registry-based execute_cmd
-// retired. Typed object-model methods (vfs.ls, vfs.mkdir, vfs.cat,
-// path_exists, path_size, …) replace them.
-
 // Forward declaration — definition lives below in the shell-form
 // grammar block. Returns 0 on success, -1 on error, 1 if unhandled.
 static int try_path_dispatch(int argc, char **argv);
 
-// Dispatch a command line. Phase 5c — the legacy registry is gone;
-// everything routes through the typed path-form parser.
+// Dispatch a command line through the typed path-form parser.
 void dispatch_command(char *line, struct cmd_result *res) {
     memset(res, 0, sizeof(*res));
     res->type = RES_OK;
@@ -229,11 +215,18 @@ static void format_scalar_inline(const value_t *v) {
     case V_STRING:
         printf("\"%s\"", v->s ? v->s : "");
         break;
-    case V_BYTES:
+    case V_BYTES: {
+        // Cap inline rendering so a 1 MiB bytes attribute doesn't print
+        // 2 MiB of hex. Past `bytes_cap` we annotate with "...N more".
+        size_t bytes_cap = 64;
+        size_t shown = v->bytes.n > bytes_cap ? bytes_cap : v->bytes.n;
         printf("0x");
-        for (size_t i = 0; i < v->bytes.n; i++)
+        for (size_t i = 0; i < shown; i++)
             printf("%02x", v->bytes.p[i]);
+        if (v->bytes.n > bytes_cap)
+            printf(" ...%zu more", v->bytes.n - bytes_cap);
         break;
+    }
     case V_ENUM:
         if (v->enm.table && (size_t)v->enm.idx < v->enm.n_table && v->enm.table[v->enm.idx])
             printf("\"%s\"", v->enm.table[v->enm.idx]);
@@ -484,6 +477,10 @@ static int try_path_dispatch(int argc, char **argv) {
     if (n.member && n.member->kind == M_METHOD) {
         int call_argc = argc - 1;
         value_t *vals = call_argc > 0 ? (value_t *)calloc((size_t)call_argc, sizeof(value_t)) : NULL;
+        if (call_argc > 0 && !vals) {
+            fprintf(stderr, "%s: out of memory\n", argv[0]);
+            return -1;
+        }
         for (int i = 0; i < call_argc; i++) {
             vals[i] = parse_literal_full(argv[i + 1], NULL, 0);
             if (val_is_error(&vals[i])) {
@@ -531,8 +528,7 @@ static int try_path_dispatch(int argc, char **argv) {
     return 1;
 }
 
-// Dispatch interactively and return integer result. Phase 5c — only
-// the typed path-form parser remains.
+// Dispatch interactively and return integer result.
 uint64_t shell_dispatch(char *line) {
     if (!shell_initialized)
         return -1;
@@ -563,9 +559,8 @@ uint64_t shell_dispatch(char *line) {
     free(expanded);
     // pd == 0 → handled successfully
     // pd  < 0 → handled with error
-    // pd  > 0 → unknown command; HARD error (was a no-op pre-phase-5e
-    //          which masked test-script regressions like the legacy
-    //          `fd create` line silently no-opping after 5c).
+    // pd  > 0 → unknown command; treated as a hard error so test scripts
+    //          surface typos instead of silently no-opping.
     return (pd != 0) ? (uint64_t)-1 : 0;
 }
 

@@ -200,10 +200,11 @@ int shell_cp(const char *src, const char *dst, bool recursive, char *err_buf, si
             snprintf(err_buf, err_cap, "cp: copy failed: %s", strerror(-rc));
         return rc;
     }
-    printf("copied %llu file(s), %llu byte(s)%s\n", (unsigned long long)s.files_copied,
-           (unsigned long long)s.bytes_copied, s.dirs_created ? "" : "");
+    if (s.dirs_created > 0)
+        printf("copied %llu file(s), %llu byte(s), %llu dir(s) created\n", (unsigned long long)s.files_copied,
+               (unsigned long long)s.bytes_copied, (unsigned long long)s.dirs_created);
+    else
+        printf("copied %llu file(s), %llu byte(s)\n", (unsigned long long)s.files_copied,
+               (unsigned long long)s.bytes_copied);
     return 0;
 }
-
-// Phase 5c — legacy `cp` shell command and its handler retired. The
-// typed `cp` root method calls shell_cp() directly.

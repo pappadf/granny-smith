@@ -7,17 +7,16 @@
 // for inode and block address math, and exposes path-lookup, directory
 // enumerate, and file-read entry points for the image_vfs backend.
 //
-// Scope (Phase 3):
-//   - A/UX 3.0.x UFS-1 partitions (big-endian on 68k).  Targets
-//     "Apple_UNIX_SVR2" APM entries that a period install writes.
+// Scope:
+//   - A/UX 3.0.x UFS-1 partitions (big-endian on 68k). Targets the
+//     "Apple_UNIX_SVR2" APM entries a period install writes.
 //   - Direct (12) + single-indirect + double-indirect block pointers.
-//     Triple-indirect is declared but not currently needed in realistic
-//     A/UX installs; add when a fixture requires it.
+//     Triple-indirect is unused; no current fixture needs it.
 //   - 4.3BSD-Tahoe dinode layout: the 32-bit di_size lives at inode offset
 //     12, not 8 — Tahoe used quad_t val[0] for di_rdev and val[1] for the
-//     size, and A/UX inherited that convention.  Files > 4 GiB are not
-//     supported (would need to read the full quad and treat it as 64-bit,
-//     but no A/UX file hits that limit).
+//     size, and A/UX inherited that convention. Files > 4 GiB aren't
+//     supported (would require reading the full quad as 64-bit, but no
+//     A/UX file hits that limit).
 
 #pragma once
 

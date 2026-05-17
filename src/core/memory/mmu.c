@@ -6,12 +6,15 @@
 // populates the SoA entry so subsequent accesses hit the fast path.
 
 #include "mmu.h"
+#include "log.h"
 #include "memory.h"
 
 #include <assert.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+LOG_USE_CATEGORY_NAME("mmu");
 
 // Global MMU state pointer (NULL for 68000 machines)
 mmu_state_t *g_mmu = NULL;
@@ -61,13 +64,15 @@ void tlb_track_page(uint32_t page_index) {
 // 2–3 descriptors per fault).  Out-of-line, it costs ~9% of SE/30 boot time
 // in function-call overhead alone (gprof).
 static inline __attribute__((always_inline)) uint32_t phys_read32(mmu_state_t *mmu, uint32_t phys_addr) {
-    if (phys_addr + 4 <= mmu->physical_ram_size) {
+    // Subtract before adding so a phys_addr near UINT32_MAX can't wrap past
+    // the bound check.
+    if (mmu->physical_ram_size >= 4 && phys_addr <= mmu->physical_ram_size - 4) {
         return LOAD_BE32(mmu->physical_ram + phys_addr);
     }
     // Check if address falls in ROM mirror region and wrap to actual ROM data
     if (mmu->physical_rom && phys_addr >= mmu->rom_phys_base && phys_addr < mmu->rom_region_end) {
         uint32_t offset = (phys_addr - mmu->rom_phys_base) % mmu->physical_rom_size;
-        if (offset + 4 <= mmu->physical_rom_size)
+        if (mmu->physical_rom_size >= 4 && offset <= mmu->physical_rom_size - 4)
             return LOAD_BE32(mmu->physical_rom + offset);
     }
     return 0; // unmapped physical address
@@ -86,20 +91,23 @@ static inline __attribute__((always_inline)) uint8_t *phys_to_host(mmu_state_t *
         uint32_t offset = (phys_addr - mmu->rom_phys_base) % mmu->physical_rom_size;
         return mmu->physical_rom + offset;
     }
+    // Range checks use (addr - base < size) so they don't wrap when base+size
+    // would exceed UINT32_MAX (defensive; SE/30 placements are well below the
+    // wrap, but VROM at $FExxxxxx is close enough to flag).
     if (mmu->physical_vram && phys_addr >= mmu->vram_phys_base &&
-        phys_addr < mmu->vram_phys_base + mmu->physical_vram_size)
+        (phys_addr - mmu->vram_phys_base) < mmu->physical_vram_size)
         return mmu->physical_vram + (phys_addr - mmu->vram_phys_base);
     // VROM region (read-only video declaration ROM)
     if (mmu->physical_vrom && phys_addr >= mmu->vrom_phys_base &&
-        phys_addr < mmu->vrom_phys_base + mmu->physical_vrom_size)
+        (phys_addr - mmu->vrom_phys_base) < mmu->physical_vrom_size)
         return mmu->physical_vrom + (phys_addr - mmu->vrom_phys_base);
     // Alternate VRAM address (page-table-mapped I/O space)
     if (mmu->vram_phys_alt && mmu->physical_vram && phys_addr >= mmu->vram_phys_alt &&
-        phys_addr < mmu->vram_phys_alt + mmu->physical_vram_size)
+        (phys_addr - mmu->vram_phys_alt) < mmu->physical_vram_size)
         return mmu->physical_vram + (phys_addr - mmu->vram_phys_alt);
     // Alternate VROM address (page-table-mapped I/O space)
     if (mmu->vrom_phys_alt && mmu->physical_vrom && phys_addr >= mmu->vrom_phys_alt &&
-        phys_addr < mmu->vrom_phys_alt + mmu->physical_vrom_size)
+        (phys_addr - mmu->vrom_phys_alt) < mmu->physical_vrom_size)
         return mmu->physical_vrom + (phys_addr - mmu->vrom_phys_alt);
     return NULL;
 }
@@ -112,19 +120,19 @@ static inline __attribute__((always_inline)) bool phys_is_writable(mmu_state_t *
     if (mmu->physical_rom && phys_addr >= mmu->rom_phys_base && phys_addr < mmu->rom_region_end)
         return false;
     if (mmu->physical_vram && phys_addr >= mmu->vram_phys_base &&
-        phys_addr < mmu->vram_phys_base + mmu->physical_vram_size)
+        (phys_addr - mmu->vram_phys_base) < mmu->physical_vram_size)
         return true;
     // VROM is read-only
     if (mmu->physical_vrom && phys_addr >= mmu->vrom_phys_base &&
-        phys_addr < mmu->vrom_phys_base + mmu->physical_vrom_size)
+        (phys_addr - mmu->vrom_phys_base) < mmu->physical_vrom_size)
         return false;
     // Alternate VRAM address is writable
     if (mmu->vram_phys_alt && mmu->physical_vram && phys_addr >= mmu->vram_phys_alt &&
-        phys_addr < mmu->vram_phys_alt + mmu->physical_vram_size)
+        (phys_addr - mmu->vram_phys_alt) < mmu->physical_vram_size)
         return true;
     // Alternate VROM address is read-only
     if (mmu->vrom_phys_alt && mmu->physical_vrom && phys_addr >= mmu->vrom_phys_alt &&
-        phys_addr < mmu->vrom_phys_alt + mmu->physical_vrom_size)
+        (phys_addr - mmu->vrom_phys_alt) < mmu->physical_vrom_size)
         return false;
     return false;
 }
@@ -236,6 +244,14 @@ static mmu_walk_result_t mmu_table_walk(mmu_state_t *mmu, uint32_t logical_addr,
         if (index_bits == 0)
             continue; // skip empty levels
 
+        // index_bits is from a 4-bit TC field so it's in [0, 15] — well clear
+        // of the `1u << 32` UB threshold. Defensive guard so a future widening
+        // of the field doesn't silently invoke UB.
+        if (index_bits >= 32) {
+            result.mmusr |= MMUSR_I;
+            return result;
+        }
+
         // Extract index from logical address
         bit_pos -= index_bits;
         uint32_t index = (logical_addr >> bit_pos) & ((1u << index_bits) - 1);
@@ -261,8 +277,15 @@ static mmu_walk_result_t mmu_table_walk(mmu_state_t *mmu, uint32_t logical_addr,
         }
 
         if (dt == DESC_DT_PAGE) {
-            // Page descriptor (early termination) — translation complete
-            // The remaining address bits below bit_pos form the page offset
+            // Page descriptor (early termination) — translation complete.
+            // The remaining address bits below bit_pos form the page offset.
+            // Guard against `1u << 32` UB if a degenerate TC (IS=0, no TI
+            // levels) left bit_pos at 32 — treat as invalid translation.
+            if (bit_pos >= 32) {
+                result.mmusr |= MMUSR_I;
+                result.mmusr |= (levels_walked & 7);
+                return result;
+            }
             uint32_t page_mask = (1u << bit_pos) - 1;
             // Short: address in same word as flags; Long: address in lower word.
             uint32_t phys_base = desc_lo & ~page_mask & 0xFFFFFFFC;
@@ -407,6 +430,12 @@ void mmu_delete(mmu_state_t *mmu) {
         // Clear the user-CRP snapshot so a fresh machine doesn't inherit
         // a stale CRP from the previous instance.
         g_last_user_crp = 0;
+        // Reset TLB-tracker state. Stale indices from this machine could
+        // index past the next machine's smaller SoA arrays. Setting
+        // overflow=true also makes the first post-init invalidate fall
+        // back to a full memset (matches the file-scope default).
+        g_tlb_track_count = 0;
+        g_tlb_track_overflow = true;
     }
     free(mmu);
 }
@@ -443,13 +472,23 @@ void mmu_register_vrom(mmu_state_t *mmu, uint8_t *vrom, uint32_t phys_base, uint
 void memory_map_host_region(memory_map_t *m, const char *name, uint8_t *host_ptr, uint32_t phys_base, uint32_t size,
                             bool writable) {
     (void)m; // forwarder uses g_mmu in v1
-    (void)name; // names are tracked once the storage refactor lands
     if (!g_mmu)
         return;
-    if (writable)
+    // V1 limitation: there's exactly one VRAM slot and one VROM slot in
+    // mmu_state_t. Warn loudly if a caller's host region would overwrite
+    // a populated slot — without the warning, a second call silently
+    // detaches the previous machine layout.
+    if (writable) {
+        if (g_mmu->physical_vram)
+            LOG(1, "memory_map_host_region: '%s' overwrites existing VRAM slot (phys $%08X size $%X)",
+                name ? name : "?", g_mmu->vram_phys_base, g_mmu->physical_vram_size);
         mmu_register_vram(g_mmu, host_ptr, phys_base, size);
-    else
+    } else {
+        if (g_mmu->physical_vrom)
+            LOG(1, "memory_map_host_region: '%s' overwrites existing VROM slot (phys $%08X size $%X)",
+                name ? name : "?", g_mmu->vrom_phys_base, g_mmu->physical_vrom_size);
         mmu_register_vrom(g_mmu, host_ptr, phys_base, size);
+    }
 }
 
 void memory_map_host_region_alias(memory_map_t *m, uint32_t alias_phys_base, uint32_t original_phys_base) {
@@ -466,7 +505,10 @@ void memory_map_host_region_alias(memory_map_t *m, uint32_t alias_phys_base, uin
     }
     // Unrecognised original — silently ignore in v1; once the storage
     // refactor lands and host regions become a list, we'll match by phys
-    // base instead of by named slot.
+    // base instead of by named slot. Log so callers know their alias was
+    // dropped on the floor.
+    LOG(1, "memory_map_host_region_alias: no host region at phys $%08X; alias $%08X dropped", original_phys_base,
+        alias_phys_base);
 }
 
 void memory_set_bus_error_range(memory_map_t *m, uint32_t start, uint32_t end) {
@@ -510,9 +552,13 @@ void mmu_invalidate_tlb(mmu_state_t *mmu) {
         if (g_user_write)
             memset(g_user_write, 0, sz);
     } else {
-        // Fast path: zero only pages that were actually populated
+        // Fast path: zero only pages that were actually populated.
+        // Bounds-check each index in case the tracker carries entries from a
+        // previous machine with a larger page table (see mmu_delete's reset).
         for (int i = 0; i < g_tlb_track_count; i++) {
             uint32_t p = g_tlb_track[i];
+            if (p >= g_page_count)
+                continue;
             if (g_supervisor_read)
                 g_supervisor_read[p] = 0;
             if (g_supervisor_write)
@@ -559,7 +605,7 @@ bool mmu_handle_fault(mmu_state_t *mmu, uint32_t logical_addr, bool write, bool 
                 logical_addr >= mmu->nubus_berr_start && logical_addr <= mmu->nubus_berr_end) {
                 // TT + unmapped physical = plain bus timeout; ROM handlers
                 // expect skip semantics (Format $A).
-                g_bus_error_is_pmmu = 0;
+                g_bus_error_is_pmmu = false;
                 return false;
             }
         }
@@ -571,19 +617,19 @@ bool mmu_handle_fault(mmu_state_t *mmu, uint32_t logical_addr, bool write, bool 
 
     if (!result.valid) {
         // Invalid descriptor: PMMU walk fault, retry semantics (Format $B)
-        g_bus_error_is_pmmu = 1;
+        g_bus_error_is_pmmu = true;
         return false;
     }
 
     // Check supervisor-only restriction
     if (result.supervisor_only && !supervisor) {
-        g_bus_error_is_pmmu = 1;
+        g_bus_error_is_pmmu = true;
         return false; // user accessing supervisor page → bus error
     }
 
     // Check write protection
     if (result.write_protected && write) {
-        g_bus_error_is_pmmu = 1;
+        g_bus_error_is_pmmu = true;
         return false; // write to write-protected page → bus error
     }
 
@@ -774,14 +820,10 @@ uint32_t mmu_read_physical_uint32(mmu_state_t *mmu, uint32_t phys_addr) {
 bool mmu_write_physical_uint8(mmu_state_t *mmu, uint32_t phys_addr, uint8_t value) {
     if (!mmu)
         return false;
+    if (!phys_is_writable(mmu, phys_addr))
+        return false; // unmapped or ROM/VROM
     uint8_t *host = phys_to_host(mmu, phys_addr);
     if (!host)
-        return false;
-    // Reject ROM/VROM (they're mapped via phys_to_host but not writable).
-    if (mmu->physical_rom && phys_addr >= mmu->rom_phys_base && phys_addr < mmu->rom_region_end)
-        return false;
-    if (mmu->physical_vrom && phys_addr >= mmu->vrom_phys_base &&
-        phys_addr < mmu->vrom_phys_base + mmu->physical_vrom_size)
         return false;
     *host = value;
     return true;

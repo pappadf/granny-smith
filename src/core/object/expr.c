@@ -587,13 +587,15 @@ static value_t parse_unary(lex_t *L, const expr_ctx_t *ctx) {
             return val_float(d);
         }
         if (v.kind == V_INT) {
-            int64_t i = -v.i;
+            // Negating INT64_MIN overflows signed int (UB); produce the
+            // two's-complement bit pattern via uint and reinterpret.
+            int64_t i = (int64_t)(-(uint64_t)v.i);
             value_free(&v);
             return val_int(i);
         }
         if (v.kind == V_UINT) {
             // -uint produces signed (mirrors C semantics enough for our purposes).
-            int64_t i = -(int64_t)v.u;
+            int64_t i = (int64_t)(-v.u);
             value_free(&v);
             return val_int(i);
         }
@@ -670,6 +672,12 @@ static value_t numeric_op(const value_t *a, const value_t *b, char op, char op2,
                 value_free(&pb);
                 return val_err("division by zero");
             }
+            // INT64_MIN / -1 overflows signed int (UB).
+            if (x == INT64_MIN && y == -1) {
+                value_free(&pa);
+                value_free(&pb);
+                return val_err("integer overflow in division");
+            }
             z = x / y;
             break;
         case '%':
@@ -677,6 +685,11 @@ static value_t numeric_op(const value_t *a, const value_t *b, char op, char op2,
                 value_free(&pa);
                 value_free(&pb);
                 return val_err("division by zero");
+            }
+            if (x == INT64_MIN && y == -1) {
+                value_free(&pa);
+                value_free(&pb);
+                return val_err("integer overflow in modulo");
             }
             z = x % y;
             break;
@@ -690,9 +703,19 @@ static value_t numeric_op(const value_t *a, const value_t *b, char op, char op2,
             z = x ^ y;
             break;
         case '<':
-            z = x << y;
+            if (y < 0 || y >= 64) {
+                value_free(&pa);
+                value_free(&pb);
+                return val_err("shift count out of range");
+            }
+            z = (int64_t)((uint64_t)x << y); // avoid signed shift UB
             break;
         case '>':
+            if (y < 0 || y >= 64) {
+                value_free(&pa);
+                value_free(&pb);
+                return val_err("shift count out of range");
+            }
             z = x >> y;
             break; // arithmetic shift on signed (proposal §2.3)
         default:
@@ -739,9 +762,19 @@ static value_t numeric_op(const value_t *a, const value_t *b, char op, char op2,
             z = x ^ y;
             break;
         case '<':
+            if (y >= 64) {
+                value_free(&pa);
+                value_free(&pb);
+                return val_err("shift count out of range");
+            }
             z = x << y;
             break;
         case '>':
+            if (y >= 64) {
+                value_free(&pa);
+                value_free(&pb);
+                return val_err("shift count out of range");
+            }
             z = x >> y;
             break;
         default:

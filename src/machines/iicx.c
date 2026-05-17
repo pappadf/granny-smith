@@ -38,7 +38,6 @@
 #include "image.h"
 #include "log.h"
 #include "memory.h"
-#include "memory_internal.h"
 #include "mmu.h"
 #include "nubus.h"
 #include "rom.h"
@@ -160,12 +159,7 @@ static void iicx_reset(config_t *cfg) {
 // ============================================================
 // I/O dispatcher (same address map as SE/30 — shared GLUE chip)
 // ============================================================
-
-#define IICX_VIA_IO_PENALTY  16
-#define IICX_SCC_IO_PENALTY  2
-#define IICX_SCSI_IO_PENALTY 2
-#define IICX_ASC_IO_PENALTY  2
-#define IICX_SWIM_IO_PENALTY 2
+// IICX_*_IO_PENALTY values live in iicx_internal.h so iix.c shares them.
 
 uint8_t iicx_io_read_uint8(void *ctx, uint32_t addr) {
     config_t *cfg = (config_t *)ctx;
@@ -468,7 +462,7 @@ static void iicx_via2_output(void *context, uint8_t port, uint8_t output) {
     if (!st->soft_power_armed && new_pb2) {
         st->soft_power_armed = true;
     } else if (st->soft_power_armed && !new_pb2) {
-        LOG(0, "IIcx soft power-off (VIA2 PB2 = 0)");
+        LOG(1, "IIcx soft power-off (VIA2 PB2 = 0)");
         if (cfg->scheduler)
             scheduler_stop(cfg->scheduler);
     }

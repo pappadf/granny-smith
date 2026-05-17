@@ -7,12 +7,15 @@
 #include "machine.h"
 
 #include "json_encode.h"
+#include "log.h"
 #include "nubus.h"
 #include "object.h"
 #include "system.h"
 #include "system_config.h"
 #include "value.h"
 #include "nubus/card.h"
+
+LOG_USE_CATEGORY_NAME("setup");
 
 #include <stdbool.h>
 #include <stdint.h>
@@ -67,7 +70,7 @@ static bool profile_is_complete(const hw_profile_t *p) {
 // Register a machine profile with the registry.  Rejects partial profiles.
 void machine_register(const hw_profile_t *profile) {
     if (!profile_is_complete(profile)) {
-        printf("machine_register: rejected partial profile '%s'\n", (profile && profile->id) ? profile->id : "(null)");
+        LOG(1, "machine_register: rejected partial profile '%s'", (profile && profile->id) ? profile->id : "(null)");
         return;
     }
     if (g_machine_count >= MAX_MACHINES)
@@ -377,7 +380,7 @@ static value_t machine_method_boot(struct object *self, const member_t *m, int a
     config_t *cfg = system_create(profile, NULL);
     if (!cfg)
         return val_err("machine.boot: failed to create %s", model_id);
-    printf("Machine created: %s (%s), RAM: %u KB\n", profile->name, profile->id, cfg->ram_size / 1024u);
+    LOG(1, "Machine created: %s (%s), RAM: %u KB", profile->name, profile->id, cfg->ram_size / 1024u);
     return val_bool(true);
 }
 

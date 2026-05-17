@@ -16,6 +16,7 @@
 #include "cpu.h"
 #include "json_encode.h"
 #include "memory.h"
+#include "mmu.h"
 #include "object.h"
 #include "system.h"
 #include "value.h"
@@ -23,6 +24,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 
 // ============================================================================
 // Compatible-model lists
@@ -57,6 +59,10 @@ const rom_info_t *rom_identify(uint32_t checksum) {
 }
 
 uint32_t rom_compute_checksum(const uint8_t *data, size_t size) {
+    // Real Macintosh ROMs are word-aligned (even size). An odd-sized buffer
+    // silently drops the trailing byte; the stored-vs-computed mismatch will
+    // flag it, but assert in debug builds so the cause is obvious.
+    GS_ASSERTF((size % 2) == 0, "rom_compute_checksum: odd ROM size %zu", size);
     uint32_t sum = 0;
     for (size_t i = 4; i + 1 < size; i += 2) {
         uint16_t word = ((uint16_t)data[i] << 8) | data[i + 1];
@@ -108,37 +114,39 @@ int rom_info_compatible_count(const rom_info_t *info) {
 
 // Read an entire ROM file into a fresh buffer. Caller frees on success.
 static uint8_t *read_rom_file(const char *filename, size_t *out_size, bool quiet) {
+    // Size via stat — fseek(SEEK_END)+ftell on a binary stream is technically
+    // UB per ISO C (offset of end is implementation-defined). stat is portable
+    // and matches what the rest of the codebase uses for file sizing.
+    struct stat st;
+    if (stat(filename, &st) != 0 || st.st_size <= 0) {
+        if (!quiet)
+            printf("Failed to stat ROM file: %s\n", filename);
+        return NULL;
+    }
+    size_t file_size = (size_t)st.st_size;
+
     FILE *f = fopen(filename, "rb");
     if (!f) {
         if (!quiet)
             printf("Failed to open ROM file: %s\n", filename);
         return NULL;
     }
-    fseek(f, 0, SEEK_END);
-    long file_size = ftell(f);
-    fseek(f, 0, SEEK_SET);
-    if (file_size <= 0) {
-        fclose(f);
-        if (!quiet)
-            printf("Failed to read ROM file: %s\n", filename);
-        return NULL;
-    }
-    uint8_t *rom_data = malloc((size_t)file_size);
+    uint8_t *rom_data = malloc(file_size);
     if (!rom_data) {
         fclose(f);
         if (!quiet)
             printf("Failed to allocate memory for ROM\n");
         return NULL;
     }
-    size_t n = fread(rom_data, 1, (size_t)file_size, f);
+    size_t n = fread(rom_data, 1, file_size, f);
     fclose(f);
-    if ((long)n != file_size) {
+    if (n != file_size) {
         free(rom_data);
         if (!quiet)
             printf("Failed to read ROM file: %s\n", filename);
         return NULL;
     }
-    *out_size = (size_t)file_size;
+    *out_size = file_size;
     return rom_data;
 }
 
@@ -244,6 +252,12 @@ int rom_load_into_machine(const char *path) {
 
     memory_install_rom(mem, rom_data, file_size, path);
     free(rom_data);
+
+    // Invalidate any SoA / TLB entries that cached the old ROM bytes — without
+    // this, an SE/30 reload after the MMU is set up keeps stale host pointers
+    // until the next PFLUSH / _SwapMMUMode cycle.
+    if (g_mmu)
+        mmu_invalidate_tlb(g_mmu);
 
     // Reset CPU from the ROM reset vectors (SSP at offset 0, PC at offset 4).
     // Read directly from the ROM region — Plus has ROM at 0x400000, not

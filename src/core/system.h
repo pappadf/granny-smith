@@ -133,8 +133,7 @@ cpu_t *system_cpu(void);
 rtc_t *system_rtc(void);
 
 // System-level framebuffer accessor: returns pointer to video RAM buffer.
-// Equivalent to system_display()->bits; retained for back-compat with the
-// WebGL renderer until it gains full display_t awareness in step 5.
+// Equivalent to system_display()->bits.
 uint8_t *system_framebuffer(void);
 
 // Forward declaration; full definition in nubus/display.h.
