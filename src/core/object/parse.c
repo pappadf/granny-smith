@@ -396,9 +396,9 @@ value_t parse_literal(const char **p, const char *const *enum_table, size_t n_en
         const char *save = *p;
         value_t iv = parse_integer_literal(p);
         if (iv.kind == V_INT || iv.kind == V_UINT) {
-            // Optional bytes suffix: NUMBER:N → V_BYTES of N bytes
-            // big-endian little-endian? Proposal §4.2 spells
-            // "0xDEAD_BEEF:4" — N is the byte width. We emit big-endian.
+            // Optional bytes suffix: NUMBER:N → big-endian V_BYTES of N
+            // bytes. Proposal §4.2 spells "0xDEAD_BEEF:4" — N is the byte
+            // width.
             if (**p == ':') {
                 const char *r = *p + 1;
                 long long n = 0;

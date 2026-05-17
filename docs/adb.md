@@ -445,8 +445,6 @@ After startup:
 
 ## SE/30 OS-Level Interrupt Handler (FDBShiftInt)
 
-Source: `OS/IoPrimitives/ADBPrimitives.a` in the System 7.1 source tree.
-
 The ROM ADB handler uses a coroutine-style resume mechanism. Each wait routine
 saves its return address to `ShiftIntResume($138(A3))`. When the next SR
 interrupt fires, `FDBShiftInt` jumps directly to that saved address.
@@ -582,8 +580,6 @@ initiates every transaction through VIA port B and the shift register.
 
 ### How the ROM Drives Auto-Poll
 
-Source: `OS/ADBMgr/ADBMgr.a` in the System 7.1 source tree.
-
 After the boot scan's final Talk R0 completes, the ADB init code calls
 `RunADBRequest`. This function is the core of the auto-poll loop:
 
@@ -625,7 +621,7 @@ Explicit commands take priority: if the command queue is non-empty,
 ### SRQ During Auto-Poll
 
 The ROM checks vADBInt (bit 3) after receiving each Talk response to detect
-Service Requests from other devices. Source: `OS/IoPrimitives/ADBPrimitives.a`:
+Service Requests from other devices:
 
 ```
 BSR.W   @getNextByte              ; wait for the second byte

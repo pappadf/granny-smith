@@ -9,8 +9,8 @@
 // in-image path is what backend methods (stat/opendir/readdir/...)
 // consume — identical to how host_vfs handles ordinary POSIX paths.
 //
-// Read-only in Phase 2: mkdir/unlink/rename return -EROFS structurally,
-// never conditionally.
+// Read-only: mkdir/unlink/rename slots in the backend vtable are static
+// `-EROFS` rejecters, never conditionally writable.
 
 #pragma once
 

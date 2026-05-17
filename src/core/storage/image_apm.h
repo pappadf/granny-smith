@@ -2,10 +2,10 @@
 // Copyright (c) pappadf
 
 // image_apm.h
-// Apple Partition Map parser.  Reads the map at block 1 of a 512-byte-block
-// image, returns a table of parsed partitions ready for `image partmap` to
-// render or (in Phase 2) for the auto-mount cache to key per-partition
-// filesystem state on.
+// Apple Partition Map parser. Reads the map at block 1 of a 512-byte-block
+// image and returns a table of parsed partitions. Consumed by `image partmap`
+// (rendering) and by the VFS auto-mount cache (keying per-partition
+// filesystem state).
 
 #pragma once
 
@@ -56,9 +56,9 @@ typedef struct apm_table {
 } apm_table_t;
 
 // Return true if `block1` (a 512-byte buffer read from image offset 512)
-// carries the APM signature "PM" and a plausible pmMapBlkCnt.  This is
-// the cheap sniff the implicit-mount probe will call (Phase 2); parser
-// callers in Phase 1 can skip it and go straight to image_apm_parse.
+// carries the APM signature "PM" and a plausible pmMapBlkCnt. This is the
+// cheap sniff the implicit-mount probe calls before committing to a full
+// parse; direct callers can skip it and go straight to image_apm_parse.
 bool image_apm_probe_magic(const uint8_t *block1);
 
 // Parse the APM from an open image.  Returns NULL and leaves *errmsg

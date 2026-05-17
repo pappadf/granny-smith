@@ -51,10 +51,8 @@ LOG_USE_CATEGORY_NAME("se30");
 // Constants
 // ============================================================
 
-// SE/30 RAM region spans the first 1 GB of address space
-#define SE30_RAM_END 0x40000000UL
-
-// SE/30 ROM region: 256 KB mirrored across 256 MB
+// SE/30 ROM region: 256 KB mirrored across 256 MB.  RAM occupies the
+// first 1 GiB (so RAM_END == ROM_START).
 #define SE30_ROM_START 0x40000000UL
 #define SE30_ROM_END   0x50000000UL
 
@@ -102,10 +100,6 @@ LOG_USE_CATEGORY_NAME("se30");
 #define SE30_VROM_PHYS     0xFEFF8000UL // NuBus slot $E declaration ROM physical address
 #define SE30_VRAM_PHYS_ALT 0x50FE0000UL // page-table-mapped VRAM physical address
 #define SE30_VROM_PHYS_ALT 0x50FF8000UL // page-table-mapped VROM physical address
-
-// VROM selection: define SE30_FORCE_SYNTHETIC_VROM to always use the
-// synthesized fallback VROM, even when the real SE30.vrom is present.
-// #define SE30_FORCE_SYNTHETIC_VROM
 
 // Framebuffer offsets within the 64 KB VRAM
 #define SE30_FB_PRIMARY_OFFSET   0x8040 // main screen buffer
@@ -170,10 +164,6 @@ static void se30_via2_shift_out(void *context, uint8_t byte);
 static void se30_via2_irq(void *context, bool active);
 static void se30_scc_irq(void *context, bool active);
 static void se30_update_ipl(config_t *cfg, int source, bool active);
-
-// VROM loading / synth has moved to
-// src/core/peripherals/nubus/cards/builtin_se30_video.c — slot-$E is a
-// NuBus card now, and that driver owns the declaration-ROM bytes.
 
 // ============================================================
 // SoA page helper
@@ -665,20 +655,13 @@ static void se30_via1_irq(void *context, bool active) {
     se30_update_ipl((config_t *)context, SE30_IRQ_VIA1, active);
 }
 
-// VIA2 output callback: routes port B changes to ADB and RTC
+// VIA2 output callback: no SE/30 port-B output is observed here today
+// (sound-enable bit 7, VSync-IRQ-enable bit 6, ID bit 3 — none gated).
+// Port A is slot-IRQ inputs only.  Kept for the via_init callback shape.
 static void se30_via2_output(void *context, uint8_t port, uint8_t output) {
-    config_t *cfg = (config_t *)context;
-    se30_state_t *se30 = se30_state(cfg);
-
-    if (port == 1) {
-        // Port B outputs:
-        // Bit 7: sound enable (master mute)
-        // Bit 6: VSync IRQ enable
-        // Bit 3: SE/30 ID bit (input — not driven here)
-        (void)se30;
-        (void)output;
-    }
-    // Port A: no outputs on SE/30 VIA2 port A (slot IRQ inputs)
+    (void)context;
+    (void)port;
+    (void)output;
 }
 
 // VIA2 shift-out callback: not used on SE/30
@@ -727,7 +710,7 @@ static void se30_trigger_vbl(config_t *cfg) {
     // blanking duration. With deassert=50000 the slot stayed asserted
     // long enough for a second CA1 pulse to deliver into Mac OS's
     // empty-queue panic path during the MAE→A/UX kernel handoff window
-    // for some RTC values; see local/gs-docs/notes/71-aux3-irq-races-mmu-handoff.md.
+    // for some RTC values.
     scheduler_new_cpu_event(cfg->scheduler, &se30_vbl_slot_deassert, cfg, 0, 0, 15700);
 
     image_tick_all(cfg);

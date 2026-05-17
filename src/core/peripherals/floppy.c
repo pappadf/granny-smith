@@ -85,18 +85,23 @@ int floppy_disk_status(floppy_t *floppy, int drv) {
         // the SENSE line reflects raw GCR/MFM flux data as the disk spins
         // continuously.  Derive the byte position from scheduler time to
         // simulate disk rotation (the head sees different data over time).
+        // GCR flux timing constants: ~16.3 µs/byte at 489.6 kbit/s; ~2 µs/cell.
+        // Routed through uint64 to dodge `(int)` truncation when emulated time
+        // exceeds ~2.1 s (`now_ns` outgrows int32). The modulo lands on trk_len
+        // either way, so the high bits don't change observable behaviour, but
+        // the math is now wrap-free.
+        enum { GCR_NS_PER_BYTE = 16340, GCR_NS_PER_BIT = 2040 };
         uint8_t *data = iwm_track_data(drive, floppy->disk[drv], 0, floppy->scheduler);
         if (data) {
             size_t trk_len = iwm_track_length(drive->track);
-            double now_ns = scheduler_time_ns(floppy->scheduler);
-            double ns_per_byte = 16340.0; // ~16.3µs per GCR byte at 489.6 kbit/s
-            int byte_pos = (int)(now_ns / ns_per_byte) % (int)trk_len;
-            int bit_idx = (int)(now_ns / 2040.0) & 7; // ~2µs per flux cell
+            uint64_t now_ns = (uint64_t)scheduler_time_ns(floppy->scheduler);
+            size_t byte_pos = (size_t)((now_ns / GCR_NS_PER_BYTE) % trk_len);
+            unsigned bit_idx = (unsigned)((now_ns / GCR_NS_PER_BIT) & 7);
             ret = (data[byte_pos] >> bit_idx) & 1;
         } else {
             // HD (MFM) disk: no GCR track data, simulate time-varying flux
-            double now_ns = scheduler_time_ns(floppy->scheduler);
-            int bit_idx = (int)(now_ns / 2040.0) & 7;
+            uint64_t now_ns = (uint64_t)scheduler_time_ns(floppy->scheduler);
+            unsigned bit_idx = (unsigned)((now_ns / GCR_NS_PER_BIT) & 7);
             ret = (bit_idx < 4) ? 1 : 0;
         }
         desc = "RDDATA side0";
@@ -588,6 +593,12 @@ const char *floppy_drive_disk_path(const floppy_t *floppy, unsigned drive) {
     if (!floppy || drive >= NUM_DRIVES || !floppy->disk[drive])
         return NULL;
     return image_path(floppy->disk[drive]);
+}
+
+image_t *floppy_drive_image(const floppy_t *floppy, unsigned drive) {
+    if (!floppy || drive >= NUM_DRIVES)
+        return NULL;
+    return floppy->disk[drive];
 }
 
 bool floppy_drive_eject(floppy_t *floppy, unsigned drive) {

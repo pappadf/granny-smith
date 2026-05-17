@@ -28,7 +28,7 @@ struct {
     {"UTableBase",         0X011C, 4,   "Pointer to the unit I/O table"                              },
     {"MacJmp",             0x0120, 4,   "MacsBug jump table"                                         },
     {"DskRtnAdr",          0x0124, 4,   "Used by disk driver"                                        },
-    {"PollRtnAddr",        0x0128, 4,   "‘Other’ driver locals"                                  },
+    {"PollRtnAddr",        0x0128, 4,   "'Other' driver locals"                                      },
     {"DskVerify",          0X012C, 1,   "Flag for disk read/verify"                                  },
     {"LoadTrap",           0X012D, 1,   "Flag to trap before launch"                                 },
     {"MmInOK",             0X012E, 1,   "Memory Manager initial checks OK"                           },

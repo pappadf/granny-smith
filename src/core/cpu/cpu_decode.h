@@ -3,8 +3,10 @@
 
 // cpu_decode.h
 // Instruction decoder for MC68000 opcodes.
-// Note: this header is a template intended for multiple inclusion with different
-// macro parameters; it intentionally has no include guard.
+// Note: this header is a template intended for multiple inclusion with
+// different macro parameters; it intentionally has no include guard. Current
+// includers: cpu_68000.c, cpu_68030.c, cpu_disasm.c (which reuses the same
+// dispatch table with disassembly-printing macros instead of execution).
 
 // Required macro configuration (provided by includer):
 // - CPU_DECODER_NAME:     Symbol/name of the generated decoder function
@@ -483,6 +485,10 @@ CPU_DECODER_RETURN_TYPE CPU_DECODER_NAME(CPU_DECODER_ARGS) {
         break;
 
     case 0xF: // 1111.xxxx.xxxx.xxxx
+        // Bits 11:9 = CpID (coprocessor id), bits 8:6 = coprocessor opcode type.
+        // We pack them into a single 6-bit selector: CpID occupies bits 5:3 of
+        // the switch key, type occupies bits 2:0. So CpID=0,type=0 → 0x00 (PMMU
+        // general); CpID=1,type=0 → 0x08 (FPU general); etc.
         switch (((opcode) >> 6) & 0x3F) {
         case 0x00: OP_PMMU_GENERAL; break;  // CpID=0, type=0: PMOVE/PFLUSH/PTEST/PLOAD
         case 0x02: if (((opcode) & 0x3F) < 0x10) { OP_PBCC_W; } else { OP_FTRAP; } break;
@@ -537,6 +543,9 @@ CPU_DECODER_RETURN_TYPE CPU_DECODER_NAME(CPU_DECODER_ARGS) {
             break;
 
         default:
+            // Any F-line opcode whose CpID/type pair didn't match an
+            // implemented coprocessor instruction. Real hardware would dispatch
+            // here only if no coprocessor responds (line F trap).
             OP_FTRAP;
             break;
         }

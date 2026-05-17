@@ -15,7 +15,7 @@
 #define GS_SUCCESS 0
 #define GS_ERROR   -1
 
-// Project-wide assertions and diagnostics (folded from gs_assert.h)
+// Project-wide assertions and diagnostics
 #ifdef __cplusplus
 extern "C" {
 #endif

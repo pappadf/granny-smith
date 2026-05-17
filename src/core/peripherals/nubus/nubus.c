@@ -9,12 +9,15 @@
 
 #include "nubus.h"
 #include "card.h"
+#include "log.h"
 #include "system_config.h" // full config_t for VIA pointer access
 #include "via.h"
 
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+
+LOG_USE_CATEGORY_NAME("nubus");
 
 #define NUBUS_MAX_SLOTS 16 // slots are numbered $0..$F; we only populate $9..$E
 
@@ -88,8 +91,13 @@ nubus_bus_t *nubus_init(config_t *cfg, const nubus_slot_decl_t *slots, checkpoin
             if (!kind || !kind->factory)
                 continue;
             nubus_card_t *card = kind->factory(s->slot, cfg, cp);
-            if (!card)
+            if (!card) {
+                // Factory returned NULL — typically a missing/invalid VROM
+                // file or out-of-memory. Log so a silent boot-time failure
+                // doesn't manifest as "card is missing for unclear reasons".
+                LOG(1, "nubus: slot $%X card factory '%s' returned NULL", s->slot, (kind && kind->id) ? kind->id : "?");
                 continue;
+            }
             card->bus = bus;
             card->slot = s->slot;
             if (s->slot >= 0 && s->slot < NUBUS_MAX_SLOTS)
@@ -162,8 +170,14 @@ void nubus_assert_irq(nubus_card_t *card) {
     bus->slot_irq_mask |= (uint16_t)(1u << card->slot);
 
     via_t *via2 = bus->cfg ? bus->cfg->via2 : NULL;
-    if (!via2)
+    if (!via2) {
+        if (bus->cfg && bus->cfg->machine && bus->cfg->machine->update_ipl) {
+            int source = card->slot - 0x9;
+            if (source >= 0 && source <= 5)
+                bus->cfg->machine->update_ipl(bus->cfg, 1 << source, true);
+        }
         return;
+    }
     int pa_bit = card->slot - 0x9;
     if (pa_bit >= 0 && pa_bit <= 5)
         via_input(via2, /*port A*/ 0, pa_bit, /*active-low*/ 0);
@@ -179,8 +193,14 @@ void nubus_deassert_irq(nubus_card_t *card) {
     bus->slot_irq_mask &= (uint16_t) ~(1u << card->slot);
 
     via_t *via2 = bus->cfg ? bus->cfg->via2 : NULL;
-    if (!via2)
+    if (!via2) {
+        if (bus->cfg && bus->cfg->machine && bus->cfg->machine->update_ipl) {
+            int source = card->slot - 0x9;
+            if (source >= 0 && source <= 5)
+                bus->cfg->machine->update_ipl(bus->cfg, 1 << source, false);
+        }
         return;
+    }
     int pa_bit = card->slot - 0x9;
     if (pa_bit >= 0 && pa_bit <= 5)
         via_input(via2, 0, pa_bit, 1);

@@ -9,7 +9,6 @@
 
 #include "system_config.h" // full config_t definition (includes system.h transitively)
 
-#include "appletalk.h"
 #include "build_id.h"
 #include "checkpoint_machine.h"
 #include "cmd_io.h"
@@ -51,9 +50,6 @@ LOG_USE_CATEGORY_NAME("setup");
 // Global emulator pointer (definition)
 config_t *global_emulator = NULL;
 
-// Forward declarations for SCSI device attachment functions
-void add_scsi_cdrom(struct config *restrict config, const char *filename, int scsi_id);
-
 // Pending RAM override (KB). Set by `setup --ram` or headless `ram=` arg.
 // Consumed by system_create(); 0 means use machine default.
 static uint32_t g_pending_ram_kb = 0;
@@ -78,16 +74,25 @@ static const char *pick_delta_dir(const char *path) {
 
 // Config field accessors for opaque handle access
 image_t *config_get_image(config_t *cfg, int index) {
-    return cfg ? cfg->images[index] : NULL;
+    if (!cfg || index < 0 || index >= cfg->n_images)
+        return NULL;
+    return cfg->images[index];
 }
 int config_get_n_images(config_t *cfg) {
     return cfg ? cfg->n_images : 0;
 }
 
-// Add an image to the config's tracked image list
+// Add an image to the config's tracked image list.  Runtime-checked
+// rather than asserted because asserts compile out under release builds
+// and silent overflow into the next struct field would be a memory-
+// corruption bug.
 void config_add_image(config_t *cfg, image_t *image) {
-    assert(cfg != NULL);
-    assert(cfg->n_images < MAX_IMAGES);
+    if (!cfg || !image)
+        return;
+    if (cfg->n_images >= MAX_IMAGES) {
+        LOG(1, "config_add_image: image table full (max %d), dropping image", MAX_IMAGES);
+        return;
+    }
     cfg->images[cfg->n_images] = image;
     cfg->n_images++;
 }
@@ -187,8 +192,7 @@ rtc_t *system_rtc(void) {
 }
 
 // System-level framebuffer accessor: thin wrapper over system_display()
-// for the WebGL renderer's existing call sites.  Step 5 rewrites the
-// renderer to consume the descriptor directly.
+// for renderer call sites that want just the raw bits pointer.
 uint8_t *system_framebuffer(void) {
     display_t *d = system_display();
     return d ? (uint8_t *)d->bits : NULL;
@@ -235,7 +239,7 @@ int system_ensure_machine(const char *model_id) {
 
     const hw_profile_t *needed = machine_find(model_id);
     if (!needed) {
-        printf("system_ensure_machine: unknown model '%s'\n", model_id);
+        LOG(1, "system_ensure_machine: unknown model '%s'", model_id);
         return -1;
     }
 
@@ -246,7 +250,7 @@ int system_ensure_machine(const char *model_id) {
 
     // Teardown existing machine if wrong type
     if (global_emulator) {
-        printf("Switching machine from %s to %s\n", global_emulator->machine->id, model_id);
+        LOG(1, "Switching machine from %s to %s", global_emulator->machine->id, model_id);
         system_destroy(global_emulator);
         global_emulator = NULL;
     }
@@ -254,11 +258,11 @@ int system_ensure_machine(const char *model_id) {
     // Create the new machine
     config_t *cfg = system_create(needed, NULL);
     if (!cfg) {
-        printf("system_ensure_machine: failed to create %s\n", model_id);
+        LOG(1, "system_ensure_machine: failed to create %s", model_id);
         return -1;
     }
 
-    printf("Machine created: %s (%s)\n", needed->name, needed->id);
+    LOG(1, "Machine created: %s (%s)", needed->name, needed->id);
     return 0;
 }
 
@@ -736,10 +740,13 @@ static void cmd_hd_handler(struct cmd_context *ctx, struct cmd_result *res) {
         // Match against known drive models via catalog
         size_t sz = img->raw_size;
         const struct drive_model *best = drive_catalog_find_closest(sz);
-        if (sz == best->size)
+        if (!best) {
+            cmd_printf(ctx, "valid SCSI HD image: %zu bytes (no catalog entries)\n", sz);
+        } else if (sz == best->size) {
             cmd_printf(ctx, "valid SCSI HD image: %zu bytes, matches %s %s\n", sz, best->vendor, best->product);
-        else
+        } else {
             cmd_printf(ctx, "valid SCSI HD image: %zu bytes, nearest model %s %s\n", sz, best->vendor, best->product);
+        }
         image_close(img);
         cmd_bool(res, true);
         return;
@@ -831,7 +838,7 @@ static const struct subcmd_spec hd_subcmds[] = {
 };
 
 // image subcommands — inspect disk image contents without attaching to
-// a SCSI bus.  Phase 1: partmap + probe work; list + unmount are stubs.
+// a SCSI bus.
 static const struct arg_spec image_partmap_args[] = {
     {"path",   ARG_PATH,                  "image file path"                   },
     {"format", ARG_STRING | ARG_OPTIONAL, "--json for machine-readable output"},
@@ -862,15 +869,12 @@ void setup_init() {
     machine_register(&machine_se30);
     machine_register(&machine_iicx);
     machine_register(&machine_iix);
+    machine_register(&machine_iifx);
 
     // Ensure logging categories of interest appear in `log list` even before any messages are emitted.
     // shell_init() (called earlier) already invoked log_init(); categories default to level 0 (OFF).
     (void)log_register_category("appletalk");
 
-    // Phase 5c — legacy `register_command` calls retired. The typed
-    // object-model bridge (root.c) now provides every operation;
-    // the underlying handlers (cmd_fd_handler, cmd_hd_handler, …)
-    // remain so shell_fd_argv / shell_hd_argv can call them directly.
     image_init(NULL);
 }
 
@@ -1034,9 +1038,15 @@ void add_scsi_drive(struct config *restrict config, const char *filename, int sc
 
     // Find the closest drive model from the catalog
     const struct drive_model *best = drive_catalog_find_closest(sz);
+    if (!best) {
+        LOG(1, "add_scsi_drive: drive catalog is empty; cannot attach %s", filename);
+        image_close(img);
+        free(persistent_path);
+        return;
+    }
 
-    printf("Attaching SCSI drive: %s as %s %s (size: %zu bytes, SCSI ID: %d)\n", filename, best->vendor, best->product,
-           sz, scsi_id);
+    LOG(1, "Attaching SCSI drive: %s as %s %s (size: %zu bytes, SCSI ID: %d)", filename, best->vendor, best->product,
+        sz, scsi_id);
 
     add_image(config, img);
     scsi_add_device(config->scsi, scsi_id, best->vendor, best->product, "1.0", img, scsi_dev_hd, 512, false);
@@ -1297,6 +1307,3 @@ int shell_image_argv(int argc, char **argv) {
     };
     return run_subcmd_handler(cmd_image_handler, &reg, argc, argv);
 }
-
-// ---------------- AppleTalk command handlers ----------------
-// AppleTalk CLI lives in appletalk.c

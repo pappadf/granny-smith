@@ -182,7 +182,7 @@ static void host_mutex_unlock(host_mutex_t *mutex) {
 void platform_init_sound(void);
 
 // Play 8-bit PWM audio samples
-extern void platform_play_8bit_pwm(uint8_t *samples, int num_samples, unsigned int volume);
+extern void platform_play_8bit_pwm(const uint8_t *samples, int num_samples, unsigned int volume);
 
 // === Timing Functions ===
 

@@ -4,7 +4,6 @@
 // fpu.c
 // Motorola 68882 FPU emulation — soft-float core using native 80-bit register
 // type (float80_reg_t) and 128-bit mantissa unpacked format (fpu_unpacked_t).
-// Bug fixes: FPIAR update (Bug 1), FMOVECR dispatch (Bug 2), FMOVEM direction (Bug 3).
 
 #include "fpu.h"
 #include "cpu_internal.h"
@@ -366,7 +365,6 @@ float80_reg_t fpu_pack(fpu_state_t *fpu, fpu_unpacked_t val) {
         // Shift 128-bit mantissa right, preserving lost bits as sticky
         // (uint128_shr_sticky handles all shift amounts including >= 128)
         uint128_shr_sticky(&val.mantissa_hi, &val.mantissa_lo, shift);
-        val.exponent = min_exp;
         val.exponent = min_exp;
         // Signal underflow
         fpu->fpsr |= FPEXC_UNFL;
@@ -1239,13 +1237,25 @@ static float80_reg_t fpu_from_packed(fpu_state_t *fpu, uint32_t w0, uint32_t w1,
     // Subtract 16: mantissa is 17 integer digits, value = mant * 10^(exp-16)
     int32_t adj_exp = bcd_exp - 16;
 
-    // Extract 17 BCD mantissa digits → uint64_t
-    // d16 from w0[3:0], d15..d8 from w1, d7..d0 from w2
+    // Extract 17 BCD mantissa digits → uint64_t.
+    // d16 from w0[3:0], d15..d8 from w1, d7..d0 from w2.
+    // Per MC68882UM, any nibble > 9 is an invalid BCD operand and sets OPERR.
     uint64_t mant = w0 & 0xF; // d16 (MSD)
-    for (int i = 0; i < 8; i++) // d15..d8 from w1
-        mant = mant * 10 + bcd_nibble(w1, i);
-    for (int i = 0; i < 8; i++) // d7..d0 from w2
-        mant = mant * 10 + bcd_nibble(w2, i);
+    bool bcd_invalid = (mant > 9);
+    for (int i = 0; i < 8; i++) { // d15..d8 from w1
+        unsigned n = bcd_nibble(w1, i);
+        if (n > 9)
+            bcd_invalid = true;
+        mant = mant * 10 + n;
+    }
+    for (int i = 0; i < 8; i++) { // d7..d0 from w2
+        unsigned n = bcd_nibble(w2, i);
+        if (n > 9)
+            bcd_invalid = true;
+        mant = mant * 10 + n;
+    }
+    if (bcd_invalid)
+        fpu->fpsr |= FPEXC_OPERR;
 
     // Zero mantissa → signed zero
     if (mant == 0)
@@ -1307,8 +1317,15 @@ static void fpu_to_packed(fpu_state_t *fpu, float80_reg_t val, int k_factor, uin
         return;
     }
 
-    // NaN (YY=11, mantissa preserved)
+    // NaN (YY=11, mantissa preserved). Per MC68882UM, FMOVE.P FPn,<ea> must
+    // signal SNaN on a signaling NaN source and quiet the stored value, just
+    // like other FMOVE forms. The packed-decimal store path bypasses
+    // fpu_execute_op's SNAN check so handle it inline.
     if (fp80_is_nan(val)) {
+        if (fp80_is_snan(val)) {
+            fpu->fpsr |= FPEXC_SNAN;
+            val.mantissa |= 0x4000000000000000ULL; // quiet the NaN
+        }
         *w0 = ((uint32_t)sm << 31) | (3u << 28);
         *w1 = (uint32_t)(val.mantissa >> 32);
         *w2 = (uint32_t)(val.mantissa & 0xFFFFFFFF);
@@ -2273,7 +2290,14 @@ fpu_unpacked_t fpu_op_div(fpu_state_t *fpu, fpu_unpacked_t a, fpu_unpacked_t b) 
     return r;
 }
 
-// Square root
+// Square root.
+//
+// Uses native `__uint128_t` arithmetic for the Newton-Raphson refinement
+// loops below. The 128-bit divide is the load-bearing step we have no
+// portable fallback for, so pin the assumption at compile time.
+#ifndef __SIZEOF_INT128__
+#error "fpu_op_sqrt requires a compiler with __uint128_t (gcc/clang/emcc)"
+#endif
 fpu_unpacked_t fpu_op_sqrt(fpu_state_t *fpu, fpu_unpacked_t a) {
     // Handle specials
     if (a.exponent == FPU_EXP_INF && a.mantissa_hi != 0) {
@@ -2497,10 +2521,13 @@ static void fpu_execute_op(fpu_state_t *fpu, unsigned op, float80_reg_t src, uns
         }
     }
 
-    // For dyadic operations, also check destination register for SNaN
+    // For dyadic operations, also check destination register for SNaN.
+    // Opcodes (MC68882UM table 4-5): FDIV (0x20), FADD (0x22), FMUL (0x23),
+    // FSGLDIV (0x24), FSUB (0x28), FCMP (0x38), FREM (0x25), FSGLMUL (0x27),
+    // FMOD (0x21), FSCALE (0x26).
     {
-        bool dyadic = (op == 0x20 || op == 0x22 || op == 0x23 || op == 0x24 || op == 0x27 || op == 0x28 || op == 0x21 ||
-                       op == 0x25 || op == 0x38);
+        bool dyadic = (op == 0x20 || op == 0x21 || op == 0x22 || op == 0x23 || op == 0x24 || op == 0x25 || op == 0x26 ||
+                       op == 0x27 || op == 0x28 || op == 0x38);
         if (dyadic && fp80_is_snan(fpu->fp[dst])) {
             fpu->fpsr |= FPEXC_SNAN;
             if (fpu->fpcr & FPEXC_SNAN) {
@@ -2822,8 +2849,11 @@ static void fpu_execute_op(fpu_state_t *fpu, unsigned op, float80_reg_t src, uns
                         R.exponent = FPU_EXP_ZERO;
                         R.mantissa_hi = 0;
                         R.mantissa_lo = 0;
-                        // Account for remaining j iterations (each would Q <<= 1)
-                        Q <<= j;
+                        // Account for remaining j iterations (each would Q <<= 1).
+                        // Cap the shift at 32 since `j` can be much larger and
+                        // `uint32_t <<= 32+` is UB. After 32 shifts Q is already
+                        // zero, and the 7-bit mask further down preserves that.
+                        Q = (j >= 32) ? 0u : (Q << j);
                         break;
                     }
                 }
@@ -3024,9 +3054,11 @@ static void fpu_execute_op(fpu_state_t *fpu, unsigned op, float80_reg_t src, uns
             scale = 0;
         } else {
             int shift = 63 - b.exponent;
-            scale = (int32_t)(b.mantissa_hi >> shift);
-            if (b.sign)
-                scale = -scale;
+            // Build the magnitude as uint32_t so the sign flip can't trip
+            // signed-overflow UB (`-INT32_MIN` is UB; `-(uint32_t)magnitude`
+            // produces the two's-complement bit pattern).
+            uint32_t magnitude = (uint32_t)(b.mantissa_hi >> shift);
+            scale = b.sign ? (int32_t)(-magnitude) : (int32_t)magnitude;
         }
         // Add scale to exponent
         a.exponent += scale;

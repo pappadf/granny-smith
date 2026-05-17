@@ -1262,7 +1262,7 @@ int atalk_printer_enable(const char *object_name) {
 
     if (rc != 0) {
         LOG(1, "pap: failed to register printer NBP entry");
-        printf("atalk: failed to publish printer '%s'\n", g_printer.object_name);
+        LOG(1, "atalk: failed to publish printer '%s'", g_printer.object_name);
         return -1;
     }
 
@@ -1282,7 +1282,7 @@ int atalk_printer_disable(void) {
     g_printer.enabled = false;
     pap_session_abort("printer disabled");
     pap_printer_set_status_disabled();
-    printf("atalk: printer disabled\n");
+    LOG(1, "atalk: printer disabled");
     return 0;
 }
 

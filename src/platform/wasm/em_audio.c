@@ -243,7 +243,7 @@ void em_audio_resume(void) {
 }
 
 // Play 8-bit PWM audio samples
-void em_audio_play_8bit_pwm(uint8_t *samples, int num_samples, unsigned int volume) {
+void em_audio_play_8bit_pwm(const uint8_t *samples, int num_samples, unsigned int volume) {
     if (!samples || num_samples <= 0)
         return;
     mplus_audio_push((uint32_t)(uintptr_t)samples, num_samples, (int)volume);
@@ -259,12 +259,6 @@ void platform_init_sound(void) {
 }
 
 // Platform interface implementation for PWM playback
-void platform_play_8bit_pwm(uint8_t *samples, int num_samples, unsigned int volume) {
+void platform_play_8bit_pwm(const uint8_t *samples, int num_samples, unsigned int volume) {
     em_audio_play_8bit_pwm(samples, num_samples, volume);
 }
-
-// ============================================================================
-// Shell Commands
-// ============================================================================
-
-// Phase 5c — legacy `beep` shell command and its handler retired.

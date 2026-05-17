@@ -145,7 +145,9 @@ static inline void host_mutex_unlock(host_mutex_t *m) {
 static inline uint64_t platform_ticks(void) {
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
-    return (uint64_t)(ts.tv_sec * 1000 + ts.tv_nsec / 1000000);
+    // Cast tv_sec to uint64_t *before* the multiply so 32-bit time_t
+    // platforms don't overflow at ~25 days of uptime.
+    return (uint64_t)ts.tv_sec * 1000ULL + (uint64_t)(ts.tv_nsec / 1000000);
 }
 
 static inline double host_time(void) {
@@ -153,8 +155,6 @@ static inline double host_time(void) {
     clock_gettime(CLOCK_MONOTONIC, &ts);
     return (double)ts.tv_sec + (double)ts.tv_nsec / 1e9;
 }
-
-// Audio stub (no-op in headless)
 
 // Get current time in milliseconds
 static inline double host_time_ms(void) {
@@ -165,7 +165,9 @@ static inline double host_time_ms(void) {
 static inline void platform_print_host_callstack(void) {
     printf("(host callstack unavailable in headless mode)\n");
 }
-static inline void platform_play_8bit_pwm(uint8_t *samples, int num_samples, unsigned int volume) {
+
+// Audio stub (no-op in headless)
+static inline void platform_play_8bit_pwm(const uint8_t *samples, int num_samples, unsigned int volume) {
     (void)samples;
     (void)num_samples;
     (void)volume;

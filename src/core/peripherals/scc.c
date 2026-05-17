@@ -289,8 +289,6 @@ static void update_irqs(scc_t *scc) {
 
 // Check for incoming SDLC frames and move them to the receive buffer
 void check_rx(ch_t *ch) {
-    // ch_t* ch = &scc->ch[c];
-
     assert(SDLC_MODE(ch));
     assert(RX_ENABLED(ch));
 
@@ -327,10 +325,12 @@ void check_rx(ch_t *ch) {
         if (!(ch->wr[1] & 0x18))
             return;
 
-        ch->scc->ch[0].rr[3] |= ch ? RR3_CHANNEL_B_RX : RR3_CHANNEL_A_RX;
+        ch->scc->ch[0].rr[3] |= ch->index ? RR3_CHANNEL_B_RX : RR3_CHANNEL_A_RX;
 
-        // only support irq on first char for now
-        assert((ch->wr[1] >> 3 & 3) == 1);
+        // only support irq on first char for now; if the guest selected
+        // "interrupt on every char" (mode 2), behave like mode 1 and log.
+        if (irq_mode != 1)
+            LOG(1, "scc: rx irq_mode=%u not fully modeled — treating as mode 1", irq_mode);
 
         update_irqs(ch->scc);
     }
@@ -402,9 +402,11 @@ static uint8_t rr2(scc_t *scc, int ch) {
         return scc->ch[0].wr[2];
     }
 
-    // channel b: vector always includes status
-    // just support "low" (status in bit 0-2) for now
-    assert(!(scc->ch[0].wr[9] & WR9_STATUS_HIGH));
+    // Channel B: vector always includes status. We currently only model the
+    // "status low" placement (bits 0-2); WR9 bit 4 is guest-controllable so
+    // log and continue rather than aborting.
+    if (scc->ch[0].wr[9] & WR9_STATUS_HIGH)
+        LOG(1, "scc: WR9.STATUS_HIGH set but only STATUS_LOW is modeled");
 
     if (scc->ch[0].rr[3]) { // if interrups are pending...
 
@@ -426,8 +428,6 @@ static uint8_t rr2(scc_t *scc, int ch) {
 }
 
 static uint8_t rr8(ch_t *ch) {
-    // ch_t* ch = &scc->ch[c];
-
     // clear any pending rx interrupt
     ch->scc->ch[0].rr[3] &= ch->index ? ~RR3_CHANNEL_B_RX : ~RR3_CHANNEL_A_RX;
     update_irqs(ch->scc);
@@ -588,8 +588,11 @@ static void wr3(ch_t *ch, uint8_t value) {
 
 // transmit buffer
 static void wr8(ch_t *c, uint8_t value) {
-    // not yet implemented: we assume that the underrun interrupt is not enabled
-    assert(!(c->wr[15] & WR15_TX_UNDERRUN));
+    // TX underrun IRQ not yet implemented. WR15 bit is guest-controlled, so
+    // log instead of asserting; the worst observable consequence is a missed
+    // interrupt on a transmitter the guest set up specifically to expect one.
+    if (c->wr[15] & WR15_TX_UNDERRUN)
+        LOG(1, "scc: ch%d TX underrun IRQ enabled (WR15) but not modeled", c->index);
 
     c->rr[0] &= ~RR0_TX_UNDERRUN_EOM;
 
@@ -751,24 +754,19 @@ static uint8_t read_uint8(void *s, uint32_t addr) {
     }
 }
 
+// SCC registers are byte-only; wide reads come from misaligned guest code
+// (a buggy driver, a debugger probe, etc.). Log and return floating-bus 0xFF*
+// rather than aborting.
 static uint16_t scc_read_uint16(void *scc, uint32_t addr) {
-    // unused;
     (void)scc;
-    (void)addr;
-
-    assert(0);
-
-    return 0;
+    LOG(1, "scc: word read at 0x%08X — SCC is byte-only, returning 0xFFFF", addr);
+    return 0xFFFF;
 }
 
 static uint32_t scc_read_uint32(void *scc, uint32_t addr) {
-    // unused;
     (void)scc;
-    (void)addr;
-
-    assert(0);
-
-    return 0;
+    LOG(1, "scc: long read at 0x%08X — SCC is byte-only, returning 0xFFFFFFFF", addr);
+    return 0xFFFFFFFFu;
 }
 
 // write access from cpu bus
@@ -897,22 +895,15 @@ static void scc_write_uint8(void *s, uint32_t addr, uint8_t value) {
     }
 }
 
+// Wide writes — same rationale as the wide-read helpers: log and drop.
 static void scc_write_uint16(void *scc, uint32_t addr, uint16_t value) {
-    // unused;
     (void)scc;
-    (void)addr;
-    (void)value;
-
-    assert(0);
+    LOG(1, "scc: word write at 0x%08X = 0x%04X — SCC is byte-only, ignored", addr, value);
 }
 
 static void scc_write_uint32(void *scc, uint32_t addr, uint32_t value) {
-    // unused;
     (void)scc;
-    (void)addr;
-    (void)value;
-
-    assert(0);
+    LOG(1, "scc: long write at 0x%08X = 0x%08X — SCC is byte-only, ignored", addr, value);
 }
 
 int scc_sdlc_send(scc_t *restrict scc, uint8_t *buf, size_t len) {

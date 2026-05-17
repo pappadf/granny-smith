@@ -16,16 +16,16 @@
 
 ✅ is tested on every CI run. Some other combinations may also work - they just aren't continuously verified.
 
-| Software       |  Plus  | SE/30  |  IIcx  |  IIx   |
-| -------------- | :----: | :----: | :----: | :----: |
-| System 2.0     |   ✅   |    -   |    -   |    -   |
-| System 3.2     |   ✅   |    -   |    -   |    -   |
-| System 4.2     |   ✅   |    -   |    -   |    -   |
-| System 6.0.8   |   ✅   |   ✅   |    -   |    -   |
-| System 7.0.1 ‡ |    -   |   ✅   |   ✅   |   ✅   |
-| System 7.1     |   ✅   |   ✅   |    -   |    -   |
-| A/UX 3.0.1 †   |    -   |   ✅   |    -   |    -   |
-| MacTest        |   ✅   |   ✅   |   ✅   |    -   |
+| Software       |  Plus  | SE/30  |  IIcx  |  IIx   |  IIfx  |
+| -------------- | :----: | :----: | :----: | :----: | :----: |
+| System 2.0     |   ✅   |    -   |    -   |    -   |    -   |
+| System 3.2     |   ✅   |    -   |    -   |    -   |    -   |
+| System 4.2     |   ✅   |    -   |    -   |    -   |    -   |
+| System 6.0.8   |   ✅   |   ✅   |    -   |    -   |    -   |
+| System 7.0.1 ‡ |    -   |   ✅   |   ✅   |   ✅   |   ✅   |
+| System 7.1     |   ✅   |   ✅   |    -   |    -   |    -   |
+| A/UX 3.0.1 †   |    -   |   ✅   |    -   |    -   |    -   |
+| MacTest        |   ✅   |   ✅   |   ✅   |    -   |    -   |
 
 † On SE/30, boots from a pre-installed HD image to a shell *and* the full retail Installer flow runs from floppy + CD.
 ‡ On IIx, only a no-crash boot smoke test - JMFB colour modes on the IIx profile are still minimum-viable.

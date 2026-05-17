@@ -170,9 +170,10 @@ typedef struct {
 
 static void afp_release_volume(uint16_t vol_id);
 
-// Exported to appletalk.c (NBP and AFP helpers)
-int MAX_SHARES = 8;
-share_t g_shares[8];
+// Share table is module-private; appletalk.c reaches it only via the
+// atalk_share_* accessors declared in appletalk.h.
+#define MAX_SHARES 8
+static share_t g_shares[MAX_SHARES];
 static uint16_t g_next_vol_id = 1;
 
 static int find_share_index_by_name(const char *name) {

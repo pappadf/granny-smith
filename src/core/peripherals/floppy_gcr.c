@@ -106,7 +106,10 @@ int iwm_tach_signal(struct scheduler *scheduler, floppy_drive_t *drive, const ch
 // GCR Encoding
 // ============================================================================
 
-// GCR encoding helper macros
+// GCR encoding helper macros.
+// These rely on a caller-scope `uint8_t *dst` that gets advanced as bytes are
+// written. Only used inside `encode_sector` / `encode_track` below — do NOT
+// invoke from any function that doesn't have a `dst` in scope.
 #define RAW(x) (*dst++ = (x))
 #define GCR(x) (*dst++ = gcr_codewords[(x) & 0x3F])
 #define GCR3(a, b, c)                                                                                                  \
@@ -216,11 +219,21 @@ static void encode_track(uint8_t *dst, size_t trk_length, int track, int side, c
 
 #define NUM_SPEED_GROUPS 5
 
-    // [7]: sectors are typically interleaved 2:1 because of the write recovery time
-    // sector sequencing for 2:1 interleave is:
-    int interleave[NUM_SPEED_GROUPS][12] = {0, 6,  1, 7,  2, 8,  3,  9,  4, 10, 5, 11, 0, 6, 1,  7,  2,  8,  3,  9,
-                                            4, 10, 5, -1, 0, 5,  1,  6,  2, 7,  3, 8,  4, 9, -1, -1, 0,  5,  1,  6,
-                                            2, 7,  3, 8,  4, -1, -1, -1, 0, 4,  1, 5,  2, 6, 3,  7,  -1, -1, -1, -1};
+    // [7]: sectors are typically interleaved 2:1 because of the write recovery time.
+    // Sector sequencing for 2:1 interleave, by speed group. -1 is "sector not
+    // present at this radius" (outer tracks have more sectors than inner ones).
+    int interleave[NUM_SPEED_GROUPS][12] = {
+        // Group 0 (outermost, 12 sectors): tracks  0-15
+        {0, 6, 1, 7, 2, 8, 3, 9, 4,  10, 5,  11},
+        // Group 1 (11 sectors):              tracks 16-31
+        {0, 6, 1, 7, 2, 8, 3, 9, 4,  10, 5,  -1},
+        // Group 2 (10 sectors):              tracks 32-47
+        {0, 5, 1, 6, 2, 7, 3, 8, 4,  9,  -1, -1},
+        // Group 3 (9 sectors):               tracks 48-63
+        {0, 5, 1, 6, 2, 7, 3, 8, 4,  -1, -1, -1},
+        // Group 4 (innermost, 8 sectors):    tracks 64-79
+        {0, 4, 1, 5, 2, 6, 3, 7, -1, -1, -1, -1},
+    };
 
     // just assume an empty tag for now
     uint8_t tag[12] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};

@@ -39,8 +39,8 @@ extern const class_desc_t mem_poke_class;
 
 // Page table globals (defined here, declared extern in memory.h)
 page_entry_t *g_page_table = NULL;
-uint32_t g_address_mask = 0x00FFFFFFUL; // 24-bit default
-int g_page_count = 0; // number of pages in current page table
+uint32_t g_address_mask = 0; // set by memory_map_init; 0 here means "pre-init, do not use"
+uint32_t g_page_count = 0; // number of pages in current page table
 
 // SoA fast-path arrays (adjusted-base entries; zero = slow path)
 uintptr_t *g_supervisor_read = NULL;
@@ -54,9 +54,9 @@ uintptr_t *g_active_write = NULL;
 
 // Deferred bus error signal: set by slow paths on unmapped MMU accesses.
 // Zeroing *g_bus_error_instr_ptr forces the decoder loop to exit early.
-uint32_t g_bus_error_pending = 0;
+bool g_bus_error_pending = false;
 uint32_t g_bus_error_address = 0;
-uint32_t g_bus_error_rw = 0;
+bool g_bus_error_rw = false;
 // FC value (SSW[2:0]) of the faulting access.  Set alongside g_bus_error_pending
 // so exception frame reflects the FC the access was issued with — critical for
 // MOVES in a kernel that points DFC/SFC at user-data while in supervisor mode
@@ -69,7 +69,7 @@ uint32_t g_bus_error_fc = 5;
 // fault was a plain bus timeout (unmapped physical in a NuBus slot range)
 // where the handler expects skip-instruction semantics (e.g. Mac ROM RAM
 // and slot probes).  Selects Format $B vs Format $A dispatch.
-uint32_t g_bus_error_is_pmmu = 0;
+bool g_bus_error_is_pmmu = false;
 uint32_t *g_bus_error_instr_ptr = NULL;
 
 // I/O cycle penalty state: tracks extra bus wait-state cycles for I/O accesses.
@@ -112,26 +112,16 @@ void value_trap_check(uint32_t logical_addr, uint32_t value, unsigned size) {
 // Type Definitions
 // ============================================================================
 
-struct mapping;
-typedef struct mapping mapping_t;
-
-struct mapping {
-
-    mapping_t *next;
-
+typedef struct mapping {
+    struct mapping *next;
     char *name;
-
     void *device;
-
     uint32_t addr;
     uint32_t size;
-
     memory_interface_t memory_interface;
-};
+} mapping_t;
 
 typedef struct memory {
-
-    int i;
 
     mapping_t *map;
 
@@ -149,10 +139,6 @@ typedef struct memory {
     char *rom_filename;
 
     uint32_t checksum;
-
-    bool checksum_valid;
-
-    int version;
 
     // Object-tree binding — lifetime tied to memory_map_init / delete.
     struct object *memory_object;
@@ -260,9 +246,9 @@ uint8_t memory_read_uint8_slow(uint32_t addr) {
         } else {
             // MMU fault (invalid descriptor, unmapped physical, permission, etc.)
             if (!g_bus_error_pending) {
-                g_bus_error_pending = 1;
+                g_bus_error_pending = true;
                 g_bus_error_address = addr;
-                g_bus_error_rw = 1; // read
+                g_bus_error_rw = true; // read
                 g_bus_error_fc = (g_active_read == g_supervisor_read) ? 5 : 1;
                 if (g_bus_error_instr_ptr)
                     *g_bus_error_instr_ptr = 0; // force decoder loop exit
@@ -331,22 +317,12 @@ uint32_t memory_read_uint32_slow(uint32_t addr) {
     // Device I/O (single page, not crossing boundary)
     if (pe->dev && (addr & PAGE_MASK) <= MEM_PAGE_SIZE - 4) {
         uint32_t v = pe->dev->read_uint32(pe->dev_context, addr - pe->base_addr);
-        if (g_value_trap_active && addr == 0x50006000 && (v == 0x4244E607 || v == 0x004244E6)) {
-            fprintf(stderr, "[mem.read_uint32_slow MATCH] addr=$%08X dev_returned=$%08X\n", addr, v);
-        }
         return v;
     }
 
     // Cross-page: split into two 16-bit reads
     uint32_t hi = memory_read_uint16(addr);
     uint32_t lo = memory_read_uint16(addr + 2);
-    if (g_value_trap_active && addr == 0x50006000) {
-        static int t = 0;
-        if (t < 8) {
-            fprintf(stderr, "[mem.read_uint32_slow CROSS-PAGE] addr=$%08X hi=$%04X lo=$%04X\n", addr, hi, lo);
-            t++;
-        }
-    }
     return (hi << 16) | lo;
 }
 
@@ -396,9 +372,9 @@ void memory_write_uint8_slow(uint32_t addr, uint8_t value) {
         } else {
             // MMU fault (invalid descriptor, unmapped physical, permission, etc.)
             if (!g_bus_error_pending) {
-                g_bus_error_pending = 1;
+                g_bus_error_pending = true;
                 g_bus_error_address = addr;
-                g_bus_error_rw = 0; // write
+                g_bus_error_rw = false; // write
                 g_bus_error_fc = (g_active_write == g_supervisor_write) ? 5 : 1;
                 if (g_bus_error_instr_ptr)
                     *g_bus_error_instr_ptr = 0; // force decoder loop exit
@@ -524,7 +500,7 @@ void memory_write(unsigned int size, uint32_t addr, uint32_t value) {
 // no-ops when the page can't take a direct identity mapping (MMU enabled,
 // device page, unmapped page, or page covered by a memory logpoint).
 static void rebuild_soa_page(uint32_t p) {
-    if ((int)p >= g_page_count)
+    if (p >= g_page_count)
         return;
     page_entry_t *pe = &g_page_table[p];
     // MMU-mapped pages rebuild themselves via mmu_handle_fault on next access.
@@ -552,7 +528,7 @@ static void rebuild_soa_page(uint32_t p) {
 void memory_logpoint_install(uint32_t start_page, uint32_t end_page) {
     if (!g_mem_logpoint_page_count)
         return;
-    for (uint32_t p = start_page; p <= end_page && (int)p < g_page_count; p++) {
+    for (uint32_t p = start_page; p <= end_page && p < g_page_count; p++) {
         if (g_mem_logpoint_page_count[p] < 0xFF)
             g_mem_logpoint_page_count[p]++;
         // Zero the SoA entries to force slow path for this page
@@ -570,7 +546,7 @@ void memory_logpoint_install(uint32_t start_page, uint32_t end_page) {
 void memory_logpoint_uninstall(uint32_t start_page, uint32_t end_page) {
     if (!g_mem_logpoint_page_count)
         return;
-    for (uint32_t p = start_page; p <= end_page && (int)p < g_page_count; p++) {
+    for (uint32_t p = start_page; p <= end_page && p < g_page_count; p++) {
         if (g_mem_logpoint_page_count[p])
             g_mem_logpoint_page_count[p]--;
         if (g_mem_logpoint_page_count[p] == 0)
@@ -581,7 +557,7 @@ void memory_logpoint_uninstall(uint32_t start_page, uint32_t end_page) {
 void memory_logpoint_install_phys(uint32_t start_page, uint32_t end_page) {
     if (!g_mem_logpoint_phys_page_count)
         return;
-    for (uint32_t p = start_page; p <= end_page && (int)p < g_page_count; p++) {
+    for (uint32_t p = start_page; p <= end_page && p < g_page_count; p++) {
         if (g_mem_logpoint_phys_page_count[p] < 0xFF)
             g_mem_logpoint_phys_page_count[p]++;
     }
@@ -603,30 +579,11 @@ void memory_logpoint_install_phys(uint32_t start_page, uint32_t end_page) {
 void memory_logpoint_uninstall_phys(uint32_t start_page, uint32_t end_page) {
     if (!g_mem_logpoint_phys_page_count)
         return;
-    for (uint32_t p = start_page; p <= end_page && (int)p < g_page_count; p++) {
+    for (uint32_t p = start_page; p <= end_page && p < g_page_count; p++) {
         if (g_mem_logpoint_phys_page_count[p])
             g_mem_logpoint_phys_page_count[p]--;
     }
     // No need to rebuild SoA entries; they refill lazily on next access.
-}
-
-// ============================================================================
-// Static Helpers
-// ============================================================================
-
-// Placeholder read handler for unmapped memory (8-bit)
-static uint8_t phase_read_uint8(void *dev, uint32_t addr) {
-    return 0;
-}
-
-// Placeholder read handler for unmapped memory (16-bit)
-static uint16_t phase_read_uint16(void *dev, uint32_t addr) {
-    return 0;
-}
-
-// Placeholder read handler for unmapped memory (32-bit)
-static uint32_t phase_read_uint32(void *dev, uint32_t addr) {
-    return 0;
 }
 
 // ============================================================================
@@ -637,11 +594,11 @@ static uint32_t phase_read_uint32(void *dev, uint32_t addr) {
 void memory_map_add(memory_map_t *mem, uint32_t addr, uint32_t size, const char *name, memory_interface_t *iface,
                     void *device) {
     // Add to linked list (for memory_map_print / memory_map_remove)
-    mapping_t *map = (mapping_t *)malloc(sizeof(mapping_t));
+    mapping_t *map = (mapping_t *)calloc(1, sizeof(mapping_t));
+    GS_ASSERTF(map != NULL, "memory_map_add: out of memory allocating mapping for '%s'", name ? name : "?");
 
-    memset(map, 0, sizeof(mapping_t));
-
-    map->name = strdup(name);
+    map->name = strdup(name ? name : "");
+    GS_ASSERTF(map->name != NULL, "memory_map_add: out of memory duplicating name '%s'", name ? name : "?");
     map->device = device;
     map->addr = addr;
     map->size = size;
@@ -654,8 +611,8 @@ void memory_map_add(memory_map_t *mem, uint32_t addr, uint32_t size, const char 
     if (g_page_table) {
         uint32_t start_page = (addr & g_address_mask) >> PAGE_SHIFT;
         uint32_t end_page = ((addr + size - 1) & g_address_mask) >> PAGE_SHIFT;
-        assert((int)start_page < g_page_count && "device start address exceeds page table bounds");
-        for (uint32_t p = start_page; p <= end_page && (int)p < g_page_count; p++) {
+        assert(start_page < g_page_count && "device start address exceeds page table bounds");
+        for (uint32_t p = start_page; p <= end_page && p < g_page_count; p++) {
             // AoS cold-path: register device handler
             g_page_table[p].host_base = NULL;
             g_page_table[p].dev = &map->memory_interface;
@@ -676,12 +633,36 @@ void memory_map_add(memory_map_t *mem, uint32_t addr, uint32_t size, const char 
     }
 }
 
+// Clear page-table entries for [addr, addr+size) that point at `iface_ptr`.
+// Called by memory_map_remove before freeing the mapping so the page table
+// stops dereferencing a freed memory_interface.
+static void clear_page_table_for_mapping(uint32_t addr, uint32_t size, const memory_interface_t *iface_ptr) {
+    if (!g_page_table || size == 0)
+        return;
+    uint32_t start_page = (addr & g_address_mask) >> PAGE_SHIFT;
+    uint32_t end_page = ((addr + size - 1) & g_address_mask) >> PAGE_SHIFT;
+    for (uint32_t p = start_page; p <= end_page && p < g_page_count; p++) {
+        if (g_page_table[p].dev == iface_ptr) {
+            g_page_table[p].host_base = NULL;
+            g_page_table[p].dev = NULL;
+            g_page_table[p].dev_context = NULL;
+            g_page_table[p].base_addr = 0;
+            g_page_table[p].writable = false;
+        }
+    }
+}
+
 // Remove a memory-mapped device from the memory map
 void memory_map_remove(memory_map_t *memory_map, uint32_t addr, uint32_t size, const char *name,
                        memory_interface_t *iface, void *device) {
+    (void)name;
+    (void)iface;
+    if (!memory_map || !memory_map->map)
+        return; // empty list — nothing to remove
     mapping_t *map = memory_map->map;
 
     if (map->device == device && map->addr == addr) {
+        clear_page_table_for_mapping(map->addr, map->size, &map->memory_interface);
         free(map->name);
         memory_map->map = map->next;
         free(map);
@@ -689,6 +670,7 @@ void memory_map_remove(memory_map_t *memory_map, uint32_t addr, uint32_t size, c
         while (map->next != NULL) {
             if (map->next->device == device && map->next->addr == addr) {
                 mapping_t *tmp = map->next;
+                clear_page_table_for_mapping(tmp->addr, tmp->size, &tmp->memory_interface);
                 free(map->next->name);
                 map->next = map->next->next;
                 free(tmp);
@@ -706,15 +688,28 @@ const char *memory_rom_filename(memory_map_t *mem) {
     return mem ? mem->rom_filename : NULL;
 }
 
-// Forward declaration; defined further down.
-static void calculate_checksum(memory_map_t *rom);
+// Recompute the ROM checksum field. Reads the ROM region byte-by-byte so it
+// works regardless of host alignment / endianness.
+static void calculate_checksum(memory_map_t *rom) {
+    if (!rom || !rom->image || rom->rom_size < 8)
+        return;
+    const uint8_t *p = rom->image + rom->ram_size;
+    uint32_t sum = 0;
+    // Skip the first 4 bytes (the stored checksum word) and iterate the rest
+    // as big-endian 16-bit words. Matches the layout the Mac ROM's own
+    // self-check uses.
+    for (uint32_t i = 4; i + 1 < rom->rom_size; i += 2) {
+        sum += ((uint32_t)p[i] << 8) | p[i + 1];
+    }
+    rom->checksum = sum;
+}
 
 // Copy ROM bytes into the rom region (immediately after RAM) and refresh the
 // internal checksum. Truncates if size > mem->rom_size, drops nothing if
 // size < mem->rom_size (the trailing bytes keep whatever they had — for
 // freshly-allocated memory that's zero).
 size_t memory_install_rom(memory_map_t *mem, const uint8_t *data, size_t size, const char *filename) {
-    if (!mem || !data || size == 0)
+    if (!mem || !mem->image || !data || size == 0)
         return 0;
     size_t copy_size = size < mem->rom_size ? size : mem->rom_size;
     memcpy(mem->image + mem->ram_size, data, copy_size);
@@ -742,38 +737,6 @@ uint32_t memory_rom_checksum(memory_map_t *mem) {
     return mem ? mem->checksum : 0;
 }
 
-// Calculate and validate ROM checksum and identify ROM version
-static void calculate_checksum(memory_map_t *rom) {
-    int i;
-
-    // ROM content begins at ram_size offset in the flat buffer
-    uint16_t *image16 = (uint16_t *)(rom->image + rom->ram_size);
-    uint32_t *image32 = (uint32_t *)(rom->image + rom->ram_size);
-
-    rom->checksum = 0;
-
-    for (i = 2; i < (int)(rom->rom_size / 2); i++)
-        rom->checksum += BE16(image16[i]);
-
-    rom->checksum_valid = (rom->checksum == BE32(image32[0]));
-
-    switch (BE32(image32[0])) {
-
-    case 0x4D1EEEE1: // version 1 (Lonely Hearts)
-        rom->version = 1;
-        break;
-    case 0x4D1EEAE1: // version 2 (Lonely Heifers)
-        rom->version = 2;
-        break;
-    case 0x4D1F8172: // version 3 (Loud Harmonicas)
-        rom->version = 3;
-        break;
-    default:
-        rom->version = -1;
-        break;
-    }
-}
-
 // ============================================================================
 // Lifecycle: Page Table Population
 // ============================================================================
@@ -791,7 +754,7 @@ void memory_populate_pages(memory_map_t *mem, uint32_t rom_start_addr, uint32_t 
 
     // RAM pages: 0x000000 – ram_size (writable, direct access)
     uint32_t ram_pages = ram_size >> PAGE_SHIFT;
-    for (uint32_t p = 0; p < ram_pages && (int)p < g_page_count; p++) {
+    for (uint32_t p = 0; p < ram_pages && p < g_page_count; p++) {
         assert((p << PAGE_SHIFT) < ram_size && "RAM page index out of bounds");
         uint8_t *host_ptr = mem->image + (p << PAGE_SHIFT);
         uint32_t guest_base = p << PAGE_SHIFT;
@@ -829,7 +792,7 @@ void memory_populate_pages(memory_map_t *mem, uint32_t rom_start_addr, uint32_t 
     if (rom_pages == 0)
         return;
 
-    for (uint32_t p = rom_start_page; p < rom_end_page && (int)p < g_page_count; p++) {
+    for (uint32_t p = rom_start_page; p < rom_end_page && p < g_page_count; p++) {
         uint32_t offset_in_cycle = (p - rom_start_page) % mirror_stride;
         if (offset_in_cycle >= rom_pages)
             continue; // interleaved I/O / undefined range — leave page unmapped (returns 0)
@@ -869,7 +832,7 @@ void memory_populate_ram_mirror(memory_map_t *mem, uint32_t mirror_start, uint32
     uint32_t start_page = (mirror_start & g_address_mask) >> PAGE_SHIFT;
     uint32_t end_page = (mirror_end & g_address_mask) >> PAGE_SHIFT;
 
-    for (uint32_t p = start_page; p < end_page && (int)p < g_page_count; p++) {
+    for (uint32_t p = start_page; p < end_page && p < g_page_count; p++) {
         uint32_t guest_base = p << PAGE_SHIFT;
         uint32_t ram_off = guest_base % ram_size;
         uint8_t *host_ptr = mem->image + ram_off;
@@ -903,9 +866,17 @@ void memory_populate_ram_mirror(memory_map_t *mem, uint32_t mirror_start, uint32
 // Machine-specific memory layout (page table population) is done by the machine's
 // memory_layout_init callback, not here.
 memory_map_t *memory_map_init(int address_bits, uint32_t ram_size, uint32_t rom_size, checkpoint_t *checkpoint) {
-    memory_map_t *mem = (memory_map_t *)malloc(sizeof(memory_map_t));
+    // Validate address_bits before deciding the page-table shape so a 28 or 0
+    // doesn't silently default to the 24-bit layout.
+    GS_ASSERTF(address_bits == 24 || address_bits == 32, "memory_map_init: address_bits must be 24 or 32 (got %d)",
+               address_bits);
+    // A double-init without an intervening memory_map_delete would leak the
+    // previous tables. The current architecture only creates one map per
+    // machine, so flag the inconsistency.
+    GS_ASSERTF(g_page_table == NULL, "memory_map_init: previous memory map not torn down before re-init");
 
-    memset(mem, 0, sizeof(memory_map_t));
+    memory_map_t *mem = (memory_map_t *)calloc(1, sizeof(memory_map_t));
+    GS_ASSERTF(mem != NULL, "memory_map_init: out of memory allocating memory_map_t");
 
     // Store parameterised sizes for later use by layout, checkpoint, and cmd_rom
     mem->ram_size = ram_size;
@@ -913,15 +884,15 @@ memory_map_t *memory_map_init(int address_bits, uint32_t ram_size, uint32_t rom_
 
     // Allocate the flat RAM+ROM image (ram_size + rom_size bytes)
     size_t image_size = (size_t)ram_size + (size_t)rom_size;
-    mem->image = malloc(image_size);
-    memset(mem->image, 0, image_size);
+    mem->image = calloc(1, image_size);
+    GS_ASSERTF(mem->image != NULL, "memory_map_init: out of memory allocating %zu-byte image", image_size);
 
     // Allocate page table sized for the given address space
     if (address_bits == 32) {
         g_address_mask = 0xFFFFFFFFUL; // full 32-bit
         g_page_count = 1 << (32 - PAGE_SHIFT); // 1,048,576 pages
     } else {
-        // Default to 24-bit (Macintosh Plus)
+        // 24-bit (Macintosh Plus / SE)
         g_address_mask = 0x00FFFFFFUL;
         g_page_count = 1 << (24 - PAGE_SHIFT); // 4,096 pages
     }
@@ -1128,9 +1099,10 @@ static value_t method_mem_read_cstring(struct object *self, const member_t *m, i
     }
     char buf[8192];
     size_t out = 0;
-    if (out < sizeof(buf))
-        buf[out++] = '"';
-    for (int i = 0; i < max_chars && out + 4 < sizeof(buf); i++) {
+    buf[out++] = '"';
+    // Reserve 2 bytes for the closing quote and the NUL terminator so the
+    // body never lands the buffer in a state where the closing quote drops.
+    for (int i = 0; i < max_chars && out + 4 + 2 <= sizeof(buf); i++) {
         uint8_t b = memory_read_uint8(addr + (uint32_t)i);
         if (b == 0)
             break;
@@ -1143,8 +1115,7 @@ static value_t method_mem_read_cstring(struct object *self, const member_t *m, i
             out += (size_t)n;
         }
     }
-    if (out + 1 < sizeof(buf))
-        buf[out++] = '"';
+    buf[out++] = '"';
     buf[out] = '\0';
     return val_str(buf);
 }

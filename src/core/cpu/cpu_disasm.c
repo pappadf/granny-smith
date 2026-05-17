@@ -330,8 +330,11 @@ static const char *disasm_ea(int size, int mode, int reg, uint16_t **fetch_pos, 
             } else if (size == 1) {
                 buf = tmp_buf_printf("#$%X", (int)(pos[0]));
                 pos++;
-            } else
-                assert(0);
+            } else {
+                // Unknown immediate size — return an obvious placeholder so the
+                // disassembler stays alive on malformed input rather than aborting.
+                buf = "<illegal-size>";
+            }
             break;
         }
     }
@@ -401,8 +404,11 @@ static char *asm_movem(uint16_t opcode, uint16_t mask) {
         }
     }
 
-    if (s[strlen(s) - 1] == '/')
-        s[strlen(s) - 1] = 0;
+    // Strip the trailing '/' separator if one was appended. Guard against an
+    // empty buffer (mask == 0): `strlen(s) - 1` would wrap to SIZE_MAX.
+    size_t len = strlen(s);
+    if (len > 0 && s[len - 1] == '/')
+        s[len - 1] = 0;
 
     return s;
 }
@@ -938,7 +944,7 @@ static void disasm_fpu_sccdbcc(uint16_t opcode, uint16_t ext, char *buf, uint16_
 #define OP_BCHG_L_DX_DY       ASM("BCHG\t%s,%s", DX, DY)
 #define OP_BCLR_B_DATA_EA     ASM("BCLR\t#$%X,%s", SRC_WORD, DST_EA(1, 1, (ea_data & ea_alterable)))
 #define OP_BCLR_B_DN_EA       ASM("BCLR\t%s,%s", DN, DST_EA(1, 0, (ea_data & ea_alterable)))
-#define OP_BCLR_L_DATA_DN     ASM("BCLR\t#$%X,%s", SRC_WORD, DST_EA(1, 1, (ea_data & ea_alterable))) // ?
+#define OP_BCLR_L_DATA_DN     ASM("BCLR\t#$%X,%s", SRC_WORD, DST_EA(4, 1, (ea_data & ea_alterable)))
 #define OP_BCLR_L_DX_DY       ASM("BCLR\t%s,%s", DX, DY)
 #define OP_BKPT_DATA          ASM("BKPT\t#$%01x", (int)(opcode & 7))
 #define OP_BSET_B_DATA_EA     ASM("BSET\t#$%X,%s", SRC_WORD, DST_EA(1, 1, (ea_data & ea_alterable)))
@@ -1077,7 +1083,7 @@ static void disasm_fpu_sccdbcc(uint16_t opcode, uint16_t ext, char *buf, uint16_
 #define OP_NOT_L_EA         ASM("NOT.L\t%s", DST_EA(4, 0, (ea_data & ea_alterable)))
 #define OP_NOT_W_EA         ASM("NOT.W\t%s", DST_EA(2, 0, (ea_data & ea_alterable)))
 #define OP_OR_B_DN_EA       ASM("OR.B\t%s,%s", DN, DST_EA(1, 0, (ea_memory & ea_alterable)))
-#define OP_OR_B_EA_DN       ASM("OR.B\t%s,%s", SRC_EA(2, 0, ea_data), DN)
+#define OP_OR_B_EA_DN       ASM("OR.B\t%s,%s", SRC_EA(1, 0, ea_data), DN)
 #define OP_OR_L_DN_EA       ASM("OR.L\t%s,%s", DN, DST_EA(4, 0, (ea_memory & ea_alterable)))
 #define OP_OR_L_EA_DN       ASM("OR.L\t%s,%s", SRC_EA(4, 0, ea_data), DN)
 #define OP_OR_W_DN_EA       ASM("OR.W\t%s,%s", DN, DST_EA(2, 0, (ea_memory & ea_alterable)))
@@ -1195,7 +1201,6 @@ static void disasm_fpu_sccdbcc(uint16_t opcode, uint16_t ext, char *buf, uint16_
 #define OP_PFLUSHAN          ASM("PFLUSHAN")
 #define OP_PTESTR_AN         ASM("PTESTR\t(%s)", AY)
 #define OP_PTESTW_AN         ASM("PTESTW\t(%s)", AY)
-#define OP_MOVE16_AX_AY      ASM("MOVE16\t(%s)+,(%s)+", AY, AX)
 #define OP_MOVE16_AN_P_XXX_L ASM("MOVE16\t(%s)+,$%08X", AY, DST_LONG)
 #define OP_MOVE16_XXX_L_AN_P ASM("MOVE16\t$%08X,(%s)+", SRC_LONG, AY)
 #define OP_MOVE16_AN_XXX_L   ASM("MOVE16\t(%s),$%08X", AY, DST_LONG)

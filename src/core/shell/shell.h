@@ -15,7 +15,7 @@
 
 #include <stddef.h>
 
-// === Dispatch (Phase 5c — registry retired) ===
+// === Dispatch ===
 //
 // Free-form dispatch is gone; only the typed path-form remains. JS
 // callers use gs_eval() directly — including for free-form lines,

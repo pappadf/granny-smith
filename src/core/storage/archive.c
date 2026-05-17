@@ -28,9 +28,33 @@
 
 typedef struct {
     const char *output_dir;
-    int verbose;
     int file_count;
 } archive_ctx_t;
+
+// mkdir -p: create `path` and any missing parents.  Returns 0 on success or
+// when the leaf already exists; -1 on any other error.
+static int mkdir_p(const char *path) {
+    if (!path || !*path)
+        return -1;
+    char tmp[1024];
+    size_t len = strlen(path);
+    if (len >= sizeof(tmp))
+        return -1;
+    memcpy(tmp, path, len + 1);
+    if (tmp[len - 1] == '/')
+        tmp[len - 1] = '\0';
+    for (char *p = tmp + 1; *p; p++) {
+        if (*p == '/') {
+            *p = '\0';
+            if (mkdir(tmp, 0755) != 0 && errno != EEXIST)
+                return -1;
+            *p = '/';
+        }
+    }
+    if (mkdir(tmp, 0755) != 0 && errno != EEXIST)
+        return -1;
+    return 0;
+}
 
 // Recursively create the directory chain leading to `path` under
 // ctx->output_dir. Last component is treated as a directory.
@@ -80,9 +104,6 @@ static int write_extracted_file(const archive_ctx_t *ctx, const peel_file_t *fil
     const char *name = file->meta.name;
     if (!name[0])
         name = "untitled";
-
-    if (ctx->verbose)
-        printf("Extracting: %s\n", name);
 
     if (ensure_dir_exists(ctx, name) != 0)
         return -1;
@@ -168,10 +189,9 @@ int archive_extract_file(const char *path, const char *out_dir) {
         return -1;
     archive_ctx_t ctx = {
         .output_dir = (out_dir && *out_dir) ? out_dir : ".",
-        .verbose = 0,
         .file_count = 0,
     };
-    if (mkdir(ctx.output_dir, 0755) != 0 && errno != EEXIST) {
+    if (mkdir_p(ctx.output_dir) != 0) {
         fprintf(stderr, "archive: cannot create output directory '%s': %s\n", ctx.output_dir, strerror(errno));
         return -1;
     }

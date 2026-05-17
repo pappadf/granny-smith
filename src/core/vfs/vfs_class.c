@@ -32,14 +32,19 @@ static value_t vfs_method_ls(struct object *self, const member_t *m, int argc, c
     int rc = vfs_opendir(path, &dir, &be);
     if (rc < 0) {
         printf("ls: cannot open directory '%s': %s\n", path, strerror(-rc));
-        return val_bool(true);
+        return val_bool(false);
     }
     vfs_dirent_t entry;
     int r;
     while ((r = be->readdir(dir, &entry)) > 0)
         printf("%s\n", entry.name);
+    bool ok = (r == 0);
+    if (r < 0) {
+        // Surface readdir errors instead of silently truncating the listing.
+        printf("ls: readdir error in '%s': %s\n", path, strerror(-r));
+    }
     be->closedir(dir);
-    return val_bool(true);
+    return val_bool(ok);
 }
 
 static value_t vfs_method_mkdir(struct object *self, const member_t *m, int argc, const value_t *argv) {
@@ -47,6 +52,8 @@ static value_t vfs_method_mkdir(struct object *self, const member_t *m, int argc
     (void)m;
     (void)argc;
     const char *dir = argv[0].s;
+    if (!dir || !*dir)
+        return val_err("vfs.mkdir: expected a non-empty path");
     int rc = vfs_mkdir(dir);
     if (rc == 0) {
         printf("Directory '%s' created\n", dir);
@@ -61,6 +68,8 @@ static value_t vfs_method_cat(struct object *self, const member_t *m, int argc, 
     (void)m;
     (void)argc;
     const char *path = argv[0].s;
+    if (!path || !*path)
+        return val_err("vfs.cat: expected a non-empty path");
     vfs_file_t *f = NULL;
     const vfs_backend_t *be = NULL;
     int rc = vfs_open(path, &f, &be);
@@ -80,7 +89,14 @@ static value_t vfs_method_cat(struct object *self, const member_t *m, int argc, 
         }
         if (got == 0)
             break;
-        fwrite(buf, 1, got, stdout);
+        // Check fwrite return so a closed/redirected stdout doesn't silently
+        // drop bytes.
+        size_t wrote = fwrite(buf, 1, got, stdout);
+        if (wrote != got) {
+            printf("cat: write error on stdout (only %zu/%zu bytes)\n", wrote, got);
+            be->close(f);
+            return val_bool(false);
+        }
         off += got;
     }
     be->close(f);
@@ -105,7 +121,7 @@ static const member_t vfs_members[] = {
      .method = {.args = vfs_path_arg, .nargs = 1, .result = V_BOOL, .fn = vfs_method_mkdir}      },
     {.kind = M_METHOD,
      .name = "cat",
-     .doc = "Print the contents of a text file",
+     .doc = "Print the raw bytes of a file (data fork, rsrc, finder_info)",
      .method = {.args = vfs_path_arg, .nargs = 1, .result = V_BOOL, .fn = vfs_method_cat}        },
 };
 
@@ -117,8 +133,10 @@ const class_desc_t vfs_class = {
 
 // === Process-singleton lifecycle ============================================
 //
-// `vfs` is a stateless facade — its methods route through the global
-// VFS registry. Register once at shell_init.
+// `vfs` is a thin facade attached once to the object root. The methods route
+// through the file-level static state in vfs.c (`g_cwd`) and image_vfs.c
+// (`g_mounts`); the `vfs` object itself carries no instance data. Register
+// once at shell_init.
 
 static struct object *s_vfs_object = NULL;
 
@@ -126,8 +144,11 @@ void vfs_class_register(void) {
     if (s_vfs_object)
         return;
     s_vfs_object = object_new(&vfs_class, NULL, "vfs");
-    if (s_vfs_object)
-        object_attach(object_root(), s_vfs_object);
+    if (!s_vfs_object) {
+        fprintf(stderr, "vfs_class_register: object_new failed; vfs.* unavailable\n");
+        return;
+    }
+    object_attach(object_root(), s_vfs_object);
 }
 
 void vfs_class_unregister(void) {

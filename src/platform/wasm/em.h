@@ -39,7 +39,7 @@ void em_audio_init(void);
 void em_audio_resume(void);
 
 // Play 8-bit PWM audio samples
-void em_audio_play_8bit_pwm(uint8_t *samples, int num_samples, unsigned int volume);
+void em_audio_play_8bit_pwm(const uint8_t *samples, int num_samples, unsigned int volume);
 
 // === Main Loop and Control ===
 

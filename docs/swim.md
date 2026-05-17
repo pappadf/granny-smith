@@ -1743,7 +1743,7 @@ When the SWIM is in ISM mode with `ISM_MODE_MOTOR_ON` set, the same register
 switches to a **low-frequency INDEX signal**. This was discovered by Steve
 Chamberlin (Floppy Emu / Big Mess o' Wires) through logic analyzer traces of a
 Macintosh LC formatting a 1440K floppy disk, and independently corroborated by
-the System 7.1 source code (`SonyMFM.a` `mDoFormat` routine).
+the System 7.1 Sony floppy driver's `mDoFormat` routine.
 
 The SuperDrive produces **2 INDEX pulses per revolution** at a fixed 300 RPM,
 giving a **100 ms period** per complete pulse cycle.

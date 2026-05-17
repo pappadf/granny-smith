@@ -266,7 +266,14 @@ char *shell_var_expand(const char *input) {
                 return NULL;
             }
             // Extract the body verbatim into a NUL-terminated copy.
+            // Reject pathologically large bodies before malloc rather than
+            // letting an attacker drive an arbitrarily large allocation.
             size_t blen = (size_t)(q - body);
+            if (blen >= MAX_EXPAND_LEN) {
+                fprintf(stderr, "shell: ${...} body exceeds %d bytes\n", MAX_EXPAND_LEN);
+                free(buf);
+                return NULL;
+            }
             char *bcopy = (char *)malloc(blen + 1);
             if (!bcopy) {
                 free(buf);

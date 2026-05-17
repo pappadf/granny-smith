@@ -3,7 +3,6 @@
 
 // object.h
 // Object-model substrate: classes, members, objects, nodes, path resolution.
-// See local/gs-docs/notes/proposal-module-object-model.md §2–§3.
 //
 // M1 lands the substrate only — no concrete classes are populated yet.
 // Tests construct toy classes directly to exercise the resolver.

@@ -7,7 +7,7 @@
 // macros, includes cpu_ops.h (which #ifdef CPU_DECODER_IS_68030 overrides apply),
 // then includes cpu_decode.h to generate cpu_run_68030().
 
-#define CPU_MODEL_68030      68030
+// CPU_MODEL_68030 is defined in cpu.h (included via cpu_internal.h).
 #define CPU_DECODER_IS_68030 1
 
 #include "cpu_internal.h"
@@ -189,6 +189,15 @@ static void cpu_pmmu_general(cpu_t *cpu, uint16_t opcode) {
                 // EA → TC
                 uint32_t ea = calculate_ea(cpu, 4, ea_mode, ea_reg, true);
                 uint32_t val = memory_read_uint32(ea);
+                // FD (Force Descriptor) bit 8: when set, suppress ATC flush.
+                // Used by ROM "swap MMU state" sequences that need the OLD
+                // mapping to remain valid for the immediately following
+                // operand fetch (e.g. IIfx $40804C02 PMOVEFD CRP / $40804C06
+                // PMOVE TC — the TC operand at $8(A0) lives in the OLD
+                // mapping and a premature ATC flush in PMOVEFD CRP makes it
+                // unreachable, faulting the TC load and causing the boot's
+                // reset loop).
+                uint32_t fd = (ext >> 8) & 1u;
                 if (mmu) {
                     mmu->tc = val;
                     mmu->enabled = TC_ENABLE(val) != 0;
@@ -202,7 +211,8 @@ static void cpu_pmmu_general(cpu_t *cpu, uint16_t opcode) {
                             break;
                         }
                     }
-                    mmu_invalidate_tlb(mmu);
+                    if (!fd)
+                        mmu_invalidate_tlb(mmu);
                 }
             }
             break;
@@ -222,6 +232,7 @@ static void cpu_pmmu_general(cpu_t *cpu, uint16_t opcode) {
                 uint32_t ea = calculate_ea(cpu, 8, ea_mode, ea_reg, true);
                 uint32_t upper = memory_read_uint32(ea);
                 uint32_t lower = memory_read_uint32(ea + 4);
+                uint32_t fd = (ext >> 8) & 1u; // FD: suppress ATC flush (see TC case above)
                 if (mmu) {
                     uint64_t val = ((uint64_t)upper << 32) | lower;
                     // Validate DT field (bits 1:0 of upper word)
@@ -231,7 +242,8 @@ static void cpu_pmmu_general(cpu_t *cpu, uint16_t opcode) {
                         break;
                     }
                     mmu->srp = val;
-                    mmu_invalidate_tlb(mmu);
+                    if (!fd)
+                        mmu_invalidate_tlb(mmu);
                 }
             }
             break;
@@ -251,6 +263,7 @@ static void cpu_pmmu_general(cpu_t *cpu, uint16_t opcode) {
                 uint32_t ea = calculate_ea(cpu, 8, ea_mode, ea_reg, true);
                 uint32_t upper = memory_read_uint32(ea);
                 uint32_t lower = memory_read_uint32(ea + 4);
+                uint32_t fd = (ext >> 8) & 1u; // FD: suppress ATC flush (see TC case above)
                 if (mmu) {
                     uint64_t val = ((uint64_t)upper << 32) | lower;
                     // Validate DT field (bits 1:0 of upper word)
@@ -260,7 +273,8 @@ static void cpu_pmmu_general(cpu_t *cpu, uint16_t opcode) {
                         break;
                     }
                     mmu->crp = val;
-                    mmu_invalidate_tlb(mmu);
+                    if (!fd)
+                        mmu_invalidate_tlb(mmu);
                 }
             }
             break;
@@ -456,6 +470,11 @@ static __attribute__((noinline, cold)) void cpu_hardware_reset(cpu_t *restrict c
     cpu->trace = 0;
     cpu->vbr = 0;
     cpu->cacr = 0;
+    // Clear pre-halt latches so the reset doesn't inherit the state that
+    // caused the double-bus-error halt in the first place.
+    cpu->ipl = 0;
+    cpu->last_bus_error_pc = 0;
+    g_bus_error_pending = false;
     cpu->ssp = memory_read_uint32(0x00000000); // SSP from vector 0 (ROM via overlay)
     cpu->a[7] = cpu->ssp;
     cpu->pc = memory_read_uint32(0x00000004); // PC from vector 1 (ROM via overlay)
@@ -512,15 +531,11 @@ static __attribute__((noinline, cold)) void cpu_hardware_reset(cpu_t *restrict c
             (*instructions)--;
 #define CPU_DECODER_EPILOGUE                                                                                           \
     }                                                                                                                  \
-    /* Trace exception: fire if T1 was set at sprint start AND still set now. */                                       \
-    /* Checked outside the hot loop for zero per-instruction overhead. */                                              \
-    /* For SR-modifying instructions, uses new T1 value (per M68000 PRM 6.3.10). */                                    \
-    if (__builtin_expect((_saved_trace & 2) && (cpu->trace & 2), 0))                                                   \
-        exception(cpu, 0x024, cpu->pc, cpu_get_sr(cpu));                                                               \
-    /* Deferred bus error: handled outside the hot loop for zero overhead. */                                          \
-    /* The memory slow path set *instructions=0 to force the loop exit. */                                             \
+    /* Exception priority order (MC68030 UM §8.1): bus error > address error > reset > */                             \
+    /* trace > interrupt. Handle deferred bus error first so it preempts a trace */                                    \
+    /* that the same instruction would otherwise have raised. */                                                       \
     if (__builtin_expect(g_bus_error_pending, 0)) {                                                                    \
-        g_bus_error_pending = 0;                                                                                       \
+        g_bus_error_pending = false;                                                                                   \
         /* PMMU table-walk failures use Format $B (retry) so the kernel's                                              \
          * fault handler restarts the instruction after fixing the PTE.                                                \
          * Plain bus timeouts (unmapped physical in NuBus-probe range) use                                             \
@@ -533,6 +548,10 @@ static __attribute__((noinline, cold)) void cpu_hardware_reset(cpu_t *restrict c
             exception_bus_error(cpu, g_bus_error_address, g_bus_error_rw);                                             \
         g_active_read = cpu->supervisor ? g_supervisor_read : g_user_read;                                             \
         g_active_write = cpu->supervisor ? g_supervisor_write : g_user_write;                                          \
+    } else if (__builtin_expect((_saved_trace & 2) && (cpu->trace & 2), 0)) {                                          \
+        /* Trace exception: fire if T1 was set at sprint start AND still set now. */                                   \
+        /* For SR-modifying instructions, uses new T1 value (per M68000 PRM 6.3.10). */                                \
+        exception(cpu, 0x024, cpu->pc, cpu_get_sr(cpu));                                                               \
     }                                                                                                                  \
     cpu_check_interrupt(cpu);                                                                                          \
     assert(*instructions == 0)

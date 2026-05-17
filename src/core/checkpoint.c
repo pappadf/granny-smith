@@ -15,6 +15,7 @@
 #include "system.h"
 #include "value.h"
 
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -37,6 +38,12 @@ static const char CHECKPOINT_MAGIC_V3[] = "GSCHKPT3";
 // Pre-allocated buffer capacity for quick checkpoint accumulation (~8 MB)
 // Must exceed 4 MB RAM + ROM content + peripheral state + per-block headers.
 #define QUICK_BUF_CAPACITY (8 * 1024 * 1024)
+
+// Upper bound on a single read-path malloc driven by an on-disk size field.
+// Real checkpoints are bounded by RAM (max 128 MiB on supported machines)
+// plus headers; 256 MiB is roughly 2x worst-case.  A corrupt header claiming
+// > 256 MiB is rejected rather than driving an OOM on 32-bit (WASM) builds.
+#define CHECKPOINT_MAX_ALLOC ((size_t)256 * 1024 * 1024)
 
 // Persistent write buffer for quick checkpoints (allocated once, reused)
 static uint8_t *g_quick_write_buf = NULL;
@@ -267,7 +274,10 @@ void system_read_checkpoint_data_loc(checkpoint_t *checkpoint, void *data, size_
         return;
     }
 
-    if ((uint64_t)size != stored_size) {
+    // Reject sizes that can't fit in size_t before comparing — otherwise a
+    // 32-bit size_t may silently truncate a 5 GB stored_size and pretend
+    // it matches a 1 GB `size` request. (F-1012)
+    if (stored_size > (uint64_t)SIZE_MAX || (uint64_t)size != stored_size) {
         printf("Error: Checkpoint size mismatch: expected %zu at %s:%d but file contains %llu at %s:%d\n", size,
                file ? file : "(unknown)", line, (unsigned long long)stored_size, saved_file ? saved_file : "(unknown)",
                saved_line);
@@ -301,6 +311,14 @@ void system_read_checkpoint_data_loc(checkpoint_t *checkpoint, void *data, size_
         got = fread(&comp_size, 1, sizeof(comp_size), checkpoint->file);
         if (got != sizeof(comp_size)) {
             printf("Error: Failed to read RLE compressed size from checkpoint\n");
+            if (saved_file)
+                free(saved_file);
+            checkpoint->error = true;
+            return;
+        }
+        if (comp_size > CHECKPOINT_MAX_ALLOC) {
+            printf("Error: v2 RLE compressed size %llu exceeds CHECKPOINT_MAX_ALLOC (%zu)\n",
+                   (unsigned long long)comp_size, (size_t)CHECKPOINT_MAX_ALLOC);
             if (saved_file)
                 free(saved_file);
             checkpoint->error = true;
@@ -539,6 +557,14 @@ checkpoint_t *checkpoint_open_read(const char *filename) {
             free(cp);
             return NULL;
         }
+        if (compressed_size > CHECKPOINT_MAX_ALLOC || uncompressed_size > CHECKPOINT_MAX_ALLOC) {
+            printf("Error: v3 size header (%llu / %llu) exceeds CHECKPOINT_MAX_ALLOC (%zu)\n",
+                   (unsigned long long)uncompressed_size, (unsigned long long)compressed_size,
+                   (size_t)CHECKPOINT_MAX_ALLOC);
+            fclose(cp->file);
+            free(cp);
+            return NULL;
+        }
         // Allocate and read compressed data
         uint8_t *comp_buf = (uint8_t *)malloc((size_t)compressed_size);
         if (!comp_buf) {
@@ -655,10 +681,12 @@ checkpoint_t *checkpoint_open_write(const char *filename, checkpoint_kind_t kind
     cp->error = false;
     cp->kind = kind;
 
-    // Store model ID in the checkpoint handle (null-padded to MODEL_ID_LEN)
+    // Store model ID in the checkpoint handle (null-padded to MODEL_ID_LEN).
+    // snprintf into the prefix and then explicitly NUL-fill the tail; this
+    // avoids the strncpy `-Wstringop-truncation` warning on newer GCC.
     memset(cp->model_id, 0, MODEL_ID_LEN);
     if (model_id)
-        strncpy(cp->model_id, model_id, MODEL_ID_LEN - 1);
+        snprintf(cp->model_id, MODEL_ID_LEN, "%s", model_id);
 
     // Store RAM size in KB
     cp->ram_size_kb = ram_size_kb;
@@ -745,7 +773,10 @@ void checkpoint_close(checkpoint_t *checkpoint) {
     if (!checkpoint)
         return;
 
-    // v3 quick write: write buffer directly (RLE temporarily disabled for testing)
+    // v3 quick write: write buffer directly.  v3 deliberately skips RLE —
+    // the quick-save buffer is dominated by uncompressible RAM state, so the
+    // pass was never paying for itself.  Set compressed_size == uncompressed_size
+    // on disk to mark the payload as raw.  v2 still RLE-encodes per block.
     if (checkpoint->is_writing && checkpoint->buf && !checkpoint->error) {
         size_t raw_size = checkpoint->buf_used;
         // Write v3 header: magic + build ID + model ID + ram_size_kb + uncompressed_size + compressed_size
@@ -927,18 +958,13 @@ void checkpoint_write_file_loc(checkpoint_t *checkpoint, const char *path, const
         if (content_size > 0) {
             FILE *f = fopen(path, "rb");
             if (!f) {
-                size_t chunk = 4096;
-                static uint8_t zbuf[4096];
-                uint64_t remaining = content_size;
-                while (remaining > 0) {
-                    size_t to_write = (remaining > chunk) ? chunk : (size_t)remaining;
-                    size_t wr = fwrite(zbuf, 1, to_write, checkpoint->file);
-                    if (wr != to_write) {
-                        checkpoint->error = true;
-                        return;
-                    }
-                    remaining -= wr;
-                }
+                // The source file went away between probe and write — there's
+                // no honest payload to emit, and zero-padding the slot would
+                // silently corrupt restore (F-1017). Fail the checkpoint so
+                // the user sees the error rather than a half-written file.
+                printf("Error: cannot read '%s' for checkpoint write: source file missing\n", path);
+                checkpoint->error = true;
+                return;
             } else {
                 uint8_t buf[8192];
                 size_t r;
@@ -1022,6 +1048,13 @@ size_t checkpoint_read_file_loc(checkpoint_t *checkpoint, uint8_t *dest, size_t 
                 if (f) {
                     loaded = fread(dest, 1, capacity, f);
                     fclose(f);
+                } else {
+                    // The referenced file is gone (user wiped /opfs/images,
+                    // or the source image was deleted post-checkpoint).
+                    // Surface this rather than silently returning loaded=0,
+                    // which a caller can't distinguish from "zero-byte file".
+                    printf("Warning: checkpoint references missing file '%s'\n", *out_path);
+                    checkpoint->error = true;
                 }
             }
         }

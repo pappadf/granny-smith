@@ -375,7 +375,6 @@ static void setup_pointer_lock(void) {
 // ============================================================================
 
 #define PERF_UPDATE_INTERVAL 60 // Calculate performance every X ticks
-#define SHELL_POLL_INTERVAL  6 // Poll shell every Y ticks when idle
 #define CHECKPOINT_INTERVAL  900 // Background checkpoint every 900 ticks (~15 seconds at 60 ticks/sec)
 
 // Forward declaration
@@ -472,22 +471,11 @@ int shell_poll(void) {
     return 1;
 }
 
-// Startup command runner
-static void run_startup_command(const char *line) {
-    if (!line || !*line)
-        return;
-
-    size_t len = strlen(line);
-    char *buffer = (char *)malloc(len + 1);
-    if (!buffer) {
-        fprintf(stderr, "startup command alloc failed for '%s'\n", line);
-        return;
-    }
-
-    memcpy(buffer, line, len + 1);
-    shell_dispatch(buffer);
-    free(buffer);
-}
+// Tab-complete and shell-line dispatch used to live here behind separate
+// `pending` kinds. Both have been folded into gs_eval after the
+// proposal-shell-as-object-model-citizen refactor: tab completion goes
+// through `meta.complete`, free-form lines through `shell.run`. Nothing
+// in this file needs to know about them anymore.
 
 // Main tick function called by the Emscripten main loop
 void em_main_tick(void) {
@@ -508,9 +496,6 @@ void em_main_tick(void) {
     // Execute based on emulation state
     scheduler_t *sched = system_scheduler();
     if (sched && scheduler_is_running(sched)) {
-        static uint64_t last_total_instructions = 0;
-        static double last_print_time = 0.0;
-
         double now = emscripten_get_now(); // milliseconds
 
         // Trigger background checkpoint every CHECKPOINT_INTERVAL ticks while running (if enabled)
@@ -526,17 +511,6 @@ void em_main_tick(void) {
 
         // Update video if framebuffer changed
         em_video_update();
-
-        // Print rolling average of instructions per second once every second
-        if (last_print_time == 0.0) {
-            last_print_time = now;
-            last_total_instructions = cpu_instr_count();
-        } else if (now - last_print_time >= 1000.0) {
-            last_print_time = now;
-            last_total_instructions = cpu_instr_count();
-        }
-    } else {
-        assert(!sched || !scheduler_is_running(sched));
     }
 
     // Poll for pending shell commands every tick.  This must run regardless
@@ -678,32 +652,41 @@ int gs_find_media(const char *dir_path, const char *dest) {
 
 // Download command - save file to browser
 // Platform impl of gs_download (weak default in system.c stubs out).
+// Returns 0 on success, non-zero on any failure (so the typed
+// `download` attribute reports the real outcome rather than always-true).
 int gs_download(const char *path) {
     struct stat st;
     if (stat(path, &st) != 0) {
         printf("download: cannot access '%s': %s\n", path, strerror(errno));
-        return 0;
+        return -1;
     }
     if (!S_ISREG(st.st_mode)) {
         printf("download: '%s' is not a regular file\n", path);
-        return 0;
+        return -1;
     }
 
     // Read file on the worker thread (OPFS accessible here)
     FILE *f = fopen(path, "rb");
     if (!f) {
         printf("download: cannot open '%s': %s\n", path, strerror(errno));
-        return 0;
+        return -1;
     }
     size_t file_size = (size_t)st.st_size;
     uint8_t *buf = (uint8_t *)malloc(file_size);
     if (!buf) {
         fclose(f);
         printf("download: out of memory (%zu bytes)\n", file_size);
-        return 0;
+        return -1;
     }
     size_t nread = fread(buf, 1, file_size, f);
     fclose(f);
+    if (nread != file_size) {
+        // Short read silently truncating the download would corrupt the
+        // user's saved file.  Fail loudly instead. (F-1891)
+        printf("download: short read on '%s' (%zu of %zu bytes)\n", path, nread, file_size);
+        free(buf);
+        return -1;
+    }
 
     // Extract filename from path
     const char *name = strrchr(path, '/');
@@ -1049,8 +1032,12 @@ int main(int argc, char *argv[]) {
     if (model) {
         const hw_profile_t *profile = machine_find(model);
         if (profile) {
-            global_emulator = system_create(profile, NULL);
-            printf("%s (%u KB RAM)\n", profile->name, profile->ram_default / 1024);
+            // system_create assigns global_emulator internally on success.
+            // Don't shadow that here — a NULL return would clobber it.
+            if (system_create(profile, NULL))
+                printf("%s (%u KB RAM)\n", profile->name, profile->ram_default / 1024);
+            else
+                printf("Failed to create machine: %s\n", profile->name);
         } else {
             printf("Unknown model: %s\n", model);
         }
@@ -1085,11 +1072,6 @@ int main(int argc, char *argv[]) {
     em_video_init();
     em_audio_init();
     setup_pointer_lock();
-
-    // Phase 5c — legacy WASM-platform shell command registrations
-    // retired. Typed root methods (download, find_media, checkpoint_*,
-    // background_checkpoint, beep) replace them; cmd_* bodies are kept
-    // when the typed wrappers still call them.
 
     install_background_checkpoint_handlers();
 

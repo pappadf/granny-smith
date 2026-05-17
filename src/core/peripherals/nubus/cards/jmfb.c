@@ -49,7 +49,6 @@ LOG_USE_CATEGORY_NAME("jmfb");
 // further up needs to reach them.  Forward declarations here let the
 // factory call `monitor_for_sense` and read `s_pending_sense` /
 // `s_pending_sense_set` without reshuffling the file.
-typedef struct nubus_monitor nubus_monitor_t_fwd;
 static const struct nubus_monitor *monitor_for_sense(uint8_t sense);
 
 // Pending sense code consumed by the next JMFB factory call.  Set
@@ -1185,13 +1184,9 @@ const char *jmfb_pending_video_mode_get(void) {
 bool jmfb_video_mode_lookup(const char *id, const nubus_monitor_t **out_monitor, int *out_depth_bpp) {
     if (!id || !*id)
         return false;
-    const char *underscore_bpp = strstr(id, "_");
-    while (underscore_bpp) {
-        const char *next = strstr(underscore_bpp + 1, "_");
-        if (!next)
-            break;
-        underscore_bpp = next;
-    }
+    // Find the last underscore — that's the boundary between the monitor name
+    // and the "Nbpp" depth suffix.
+    const char *underscore_bpp = strrchr(id, '_');
     if (!underscore_bpp)
         return false;
     size_t mon_len = (size_t)(underscore_bpp - id);
@@ -1201,11 +1196,14 @@ bool jmfb_video_mode_lookup(const char *id, const nubus_monitor_t **out_monitor,
     memcpy(mon_id, id, mon_len);
     mon_id[mon_len] = '\0';
     // Trailing chunk should be e.g. "_8bpp" — strip the underscore and
-    // the "bpp" suffix.
+    // the "bpp" suffix. Validate the bpp value as 1..32 to avoid an
+    // implementation-defined `(int)` cast on out-of-range longs.
     const char *bpp_str = underscore_bpp + 1;
     char *end = NULL;
     long bpp = strtol(bpp_str, &end, 10);
     if (!end || end == bpp_str || strcmp(end, "bpp") != 0)
+        return false;
+    if (bpp < 1 || bpp > 32)
         return false;
     for (const nubus_monitor_t *m = mdc_8_24_monitors; m->id; m++) {
         if (strcmp(m->id, mon_id) != 0)

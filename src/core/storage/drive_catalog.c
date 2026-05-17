@@ -59,7 +59,17 @@ static int ends_with_ci(const char *str, const char *suffix) {
     return strcasecmp(str + slen - xlen, suffix) == 0;
 }
 
-// parse a human-friendly size string into exact drive model bytes
+// Parse a human-friendly size string into exact drive model bytes.
+//
+// Two unit conventions are accepted intentionally, matching how period
+// product brochures and Unix-side tooling each use them:
+//   - "mb" / "gb"  -> decimal (10^6 / 10^9) -- catalog lookup, snaps to
+//                     the closest known drive model size (>= target).
+//                     Apple advertised these drives by decimal MB.
+//   - "k" / "m"    -> binary  (2^10 / 2^20) -- exact byte count, no
+//                     model rounding.  Matches dd / mkfs / hdiutil
+//                     long-standing Unix tooling convention.
+// The two differ by ~5 % at "20mb" vs "20m"; this is deliberate.
 size_t drive_catalog_parse_size(const char *str) {
     if (!str || !*str)
         return 0;

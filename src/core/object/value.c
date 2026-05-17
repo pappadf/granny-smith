@@ -94,6 +94,7 @@ value_t val_enum(int idx, const char *const *table, size_t n_table) {
 }
 
 value_t val_list(value_t *items, size_t len) {
+    GS_ASSERT(len == 0 || items != NULL);
     value_t v = {0};
     v.kind = V_LIST;
     v.list.items = items;

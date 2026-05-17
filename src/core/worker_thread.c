@@ -9,6 +9,7 @@
 
 #include "common.h"
 
+#include <inttypes.h>
 #include <pthread.h>
 #include <stdint.h>
 
@@ -25,9 +26,9 @@ void worker_thread_assert(const char *where) {
         return; // pre-init: guard is open
     uintptr_t me = (uintptr_t)pthread_self();
     GS_ASSERTF(me == g_worker_tid,
-               "%s called from wrong thread (caller=0x%lx worker=0x%lx) — JS path "
+               "%s called from wrong thread (caller=0x%" PRIxPTR " worker=0x%" PRIxPTR ") — JS path "
                "must route through the SAB queue, not Module.ccall()",
-               where ? where : "(?)", (unsigned long)me, (unsigned long)g_worker_tid);
+               where ? where : "(?)", me, g_worker_tid);
 }
 
-#endif /* GS_DEBUG */
+#endif // GS_DEBUG
