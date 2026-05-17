@@ -157,8 +157,7 @@ static void iop_verify_firmware(iop_t *iop) {
 // Converts SCC IOP bypass offsets to the SCC chip's 4-register address
 // space.  The SCC's A/B × D/C universal bus is decoded from bits 0,1 of
 // the offset; the IIfx wires the SCC at /CS such that only offsets
-// $20,$22,$24,$26 are meaningful (rest are aliases — see IIFX_IOPS.md
-// §5.1).
+// $20,$22,$24,$26 are meaningful (rest are aliases).
 static int scc_bypass_addr(uint32_t offset) {
     switch (offset & 0x3e) {
     case 0x20:
@@ -283,7 +282,7 @@ static uint32_t iop_read_uint32(void *device, uint32_t addr) {
 // ============================================================================
 //  Host writes to iopStatCtl
 //
-// Per IIFX_IOPS.md §3.1, the write semantics are layered:
+// The write semantics are layered:
 //   1. iopRun edge-detected — only re-drives reset line on transition.
 //   2. iopGenInterrupt — write-1 kicks the 65C02 (firmware host-kick IRQ).
 //   3. iopInt0Active / iopInt1Active — write-1-to-clear.

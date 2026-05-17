@@ -590,6 +590,12 @@ const char *floppy_drive_disk_path(const floppy_t *floppy, unsigned drive) {
     return image_path(floppy->disk[drive]);
 }
 
+image_t *floppy_drive_image(const floppy_t *floppy, unsigned drive) {
+    if (!floppy || drive >= NUM_DRIVES)
+        return NULL;
+    return floppy->disk[drive];
+}
+
 bool floppy_drive_eject(floppy_t *floppy, unsigned drive) {
     if (!floppy || drive >= NUM_DRIVES || !floppy->disk[drive])
         return false;

@@ -62,4 +62,10 @@ const char *floppy_drive_disk_path(const floppy_t *floppy, unsigned drive);
 // removed, false if the drive was already empty / index invalid.
 bool floppy_drive_eject(floppy_t *floppy, unsigned drive);
 
+// Returns the disk image currently in the given drive (NULL when empty
+// or index is out of range). Used by the SWIM IOP behavioural model to
+// service block-level read/write/format requests issued by the host's
+// .Sony driver through XmtMsg[2].
+image_t *floppy_drive_image(const floppy_t *floppy, unsigned drive);
+
 #endif // FLOPPY_H
