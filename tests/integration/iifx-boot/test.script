@@ -1,14 +1,30 @@
-# Integration test: IIfx Boot
-# Exercises the IIfx-specific ROM, OSS interrupt controller, IOPs, and six-slot NuBus map.
+# Integration test: IIfx Boot to "?" Disk
+# Boots the Macintosh IIfx through its full POST + ADB device-table scan
+# to the "insert disk" prompt screen (no boot media attached).
+#
+# Exercises:
+#   - 68030 PMMU FD-bit handling (PMOVEFD CRP / PMOVE TC at $40804C02-$06)
+#   - IIfx FMC ROM-mirror invert (phase $90)
+#   - OSS interrupt controller (60 Hz pulse, source pending decode)
+#   - SCC IOP and SWIM IOP firmware load + behavioural models
+#   - SWIM IOP slot-3 (ADB) protocol over XmtMsg and RcvMsg/irSendRcvReply
 
-scheduler.run 100000000
+scheduler.run 1500000000
 
 assert ${machine.id == "iifx"} "machine.id != iifx"
 assert ${rom.checksum == "4147DD77"} "rom.checksum != 4147DD77"
 
-# The default IIfx slot table seats the same JMFB card in slot $9 as IIx.
+# Default IIfx slot table seats the same JMFB card in slot $9 as IIx.
 assert ${screen.width == 640} "screen.width != 640"
 assert ${screen.height == 480} "screen.height != 480"
-screen.match boot-640x480.png
+
+# fDBInit (bit 5 of $5405 in ADBVars) must be CLEAR after the ADB scan.
+# RAM scrub patterns (e.g. $20, $6D, $B6, $DB) leave $5405 with bit 5
+# arbitrary; only a real ADBVars allocation produces $04 (fDBQEmpty
+# set, fDBInit clear) once InitDevT's @PollNext loop has finished.
+assert ${memory.peek.b(0x5405) == 0x04} "fDBInit still set ($5405 != 0x04)"
+
+# Verify the "?" disk prompt screen matches the reference.
+screen.match question-mark-640x480.png
 
 quit
