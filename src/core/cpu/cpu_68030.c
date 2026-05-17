@@ -189,6 +189,15 @@ static void cpu_pmmu_general(cpu_t *cpu, uint16_t opcode) {
                 // EA → TC
                 uint32_t ea = calculate_ea(cpu, 4, ea_mode, ea_reg, true);
                 uint32_t val = memory_read_uint32(ea);
+                // FD (Force Descriptor) bit 8: when set, suppress ATC flush.
+                // Used by ROM "swap MMU state" sequences that need the OLD
+                // mapping to remain valid for the immediately following
+                // operand fetch (e.g. IIfx $40804C02 PMOVEFD CRP / $40804C06
+                // PMOVE TC — the TC operand at $8(A0) lives in the OLD
+                // mapping and a premature ATC flush in PMOVEFD CRP makes it
+                // unreachable, faulting the TC load and causing the boot's
+                // reset loop).
+                uint32_t fd = (ext >> 8) & 1u;
                 if (mmu) {
                     mmu->tc = val;
                     mmu->enabled = TC_ENABLE(val) != 0;
@@ -202,7 +211,8 @@ static void cpu_pmmu_general(cpu_t *cpu, uint16_t opcode) {
                             break;
                         }
                     }
-                    mmu_invalidate_tlb(mmu);
+                    if (!fd)
+                        mmu_invalidate_tlb(mmu);
                 }
             }
             break;
@@ -222,6 +232,7 @@ static void cpu_pmmu_general(cpu_t *cpu, uint16_t opcode) {
                 uint32_t ea = calculate_ea(cpu, 8, ea_mode, ea_reg, true);
                 uint32_t upper = memory_read_uint32(ea);
                 uint32_t lower = memory_read_uint32(ea + 4);
+                uint32_t fd = (ext >> 8) & 1u; // FD: suppress ATC flush (see TC case above)
                 if (mmu) {
                     uint64_t val = ((uint64_t)upper << 32) | lower;
                     // Validate DT field (bits 1:0 of upper word)
@@ -231,7 +242,8 @@ static void cpu_pmmu_general(cpu_t *cpu, uint16_t opcode) {
                         break;
                     }
                     mmu->srp = val;
-                    mmu_invalidate_tlb(mmu);
+                    if (!fd)
+                        mmu_invalidate_tlb(mmu);
                 }
             }
             break;
@@ -251,6 +263,7 @@ static void cpu_pmmu_general(cpu_t *cpu, uint16_t opcode) {
                 uint32_t ea = calculate_ea(cpu, 8, ea_mode, ea_reg, true);
                 uint32_t upper = memory_read_uint32(ea);
                 uint32_t lower = memory_read_uint32(ea + 4);
+                uint32_t fd = (ext >> 8) & 1u; // FD: suppress ATC flush (see TC case above)
                 if (mmu) {
                     uint64_t val = ((uint64_t)upper << 32) | lower;
                     // Validate DT field (bits 1:0 of upper word)
@@ -260,7 +273,8 @@ static void cpu_pmmu_general(cpu_t *cpu, uint16_t opcode) {
                         break;
                     }
                     mmu->crp = val;
-                    mmu_invalidate_tlb(mmu);
+                    if (!fd)
+                        mmu_invalidate_tlb(mmu);
                 }
             }
             break;

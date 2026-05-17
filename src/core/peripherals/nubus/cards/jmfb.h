@@ -80,7 +80,7 @@
 // bit clear = card raises slot IRQ on every VBL, bit set = VBL IRQ masked.
 // Confirmed against the Apple driver's InstallSlotInterrupt (writes $5,
 // bit 1 clear, to enable) / RemoveSlotInterrupt (writes $7, bit 1 set,
-// to disable) — see local/gs-docs/asm/Apple-341-0868-vrom.asm L3017,L3049.
+// to disable) in the slot's video ROM.
 #define VINT_DISABLE 0x0002u
 
 // Per-card kind descriptor — registered in nubus.c's g_card_registry.

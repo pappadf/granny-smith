@@ -2,8 +2,7 @@
 // Copyright (c) pappadf
 
 // checkpoint_machine.c
-// Implementation of per-machine checkpoint directory bookkeeping.  See
-// local/gs-docs/notes/proposal-checkpoint-storage-isolation.md.
+// Implementation of per-machine checkpoint directory bookkeeping.
 
 #include "checkpoint_machine.h"
 

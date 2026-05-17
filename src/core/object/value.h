@@ -3,7 +3,6 @@
 
 // value.h
 // Tagged-union value type used across every object-model boundary.
-// See local/gs-docs/notes/proposal-module-object-model.md §2.4–§2.6.
 //
 // Ownership rule (single-owner): the receiver of a value_t owns it.
 // value_free is safe to call on every kind, including inline kinds.

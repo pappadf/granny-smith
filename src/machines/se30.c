@@ -727,7 +727,7 @@ static void se30_trigger_vbl(config_t *cfg) {
     // blanking duration. With deassert=50000 the slot stayed asserted
     // long enough for a second CA1 pulse to deliver into Mac OS's
     // empty-queue panic path during the MAE→A/UX kernel handoff window
-    // for some RTC values; see local/gs-docs/notes/71-aux3-irq-races-mmu-handoff.md.
+    // for some RTC values.
     scheduler_new_cpu_event(cfg->scheduler, &se30_vbl_slot_deassert, cfg, 0, 0, 15700);
 
     image_tick_all(cfg);

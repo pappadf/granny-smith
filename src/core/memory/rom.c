@@ -33,6 +33,7 @@ static const char *const PLUS_COMPATIBLE[] = {"plus", NULL};
 // order so the *first* entry serves as a UI default (for tests that don't pick
 // explicitly), but the API never auto-selects.
 static const char *const UNIVERSAL_COMPATIBLE[] = {"se30", "iicx", "iix", NULL};
+static const char *const IIFX_COMPATIBLE[] = {"iifx", NULL};
 
 // Master ROM signature table.
 static const rom_info_t ROM_TABLE[] = {
@@ -40,6 +41,7 @@ static const rom_info_t ROM_TABLE[] = {
     {"Macintosh Plus (Rev 2, Lonely Heifers)",  PLUS_COMPATIBLE,      0x4D1EEAE1, 128 * 1024},
     {"Macintosh Plus (Rev 3, Loud Harmonicas)", PLUS_COMPATIBLE,      0x4D1F8172, 128 * 1024},
     {"Universal IIx/IIcx/SE/30 ROM",            UNIVERSAL_COMPATIBLE, 0x97221136, 256 * 1024},
+    {"Macintosh IIfx ROM",                      IIFX_COMPATIBLE,      0x4147DD77, 512 * 1024},
 };
 
 #define ROM_TABLE_COUNT (sizeof(ROM_TABLE) / sizeof(ROM_TABLE[0]))

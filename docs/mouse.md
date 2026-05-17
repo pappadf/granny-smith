@@ -542,22 +542,21 @@ After reading the status, the interrupt must be cleared:
 
 ## Source Code References
 
-The following source files from the System 7.1 sources contain relevant mouse code:
+Relevant Mac OS mouse-handling components (described by routine name only —
+this code is in the System ROM and the System Software, neither of which
+ships in this repo):
 
 ### Mouse Cursor Task
-- **OS/Mouse.a** - Mouse mapping/acceleration code for Mac Plus
-  - `PlusMouseInit` - Initialization for Mac Plus
-  - `MapCode` - Cursor task (jCrsrTask handler)
-  - `MickeyBytesHelper` - Acceleration table loading
+- `PlusMouseInit` — initialization for Mac Plus
+- `MapCode` — cursor task (jCrsrTask handler)
+- `MickeyBytesHelper` — acceleration table loading
 
-### ROM Patches (Macintosh Plus)
-- **Patches/PatchPlusROM.a** - Mac Plus ROM patches
-  - `SccDecode` - SCC interrupt dispatcher
-  - Serial driver patches that configure DCD interrupts
+### Mac Plus ROM Patches
+- `SccDecode` — SCC interrupt dispatcher
+- Serial driver patches that configure DCD interrupts
 
 ### Interrupt Handlers
-- **OS/InterruptHandlers.a** - General interrupt dispatch
-  - `Level4SccInt` - SCC interrupt entry
+- `Level4SccInt` — SCC interrupt entry
   - `SccDecode` - SCC interrupt dispatcher
   - `ExtAInt`, `ExtBInt` - External/status handlers
 

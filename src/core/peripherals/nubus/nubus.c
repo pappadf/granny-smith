@@ -162,8 +162,14 @@ void nubus_assert_irq(nubus_card_t *card) {
     bus->slot_irq_mask |= (uint16_t)(1u << card->slot);
 
     via_t *via2 = bus->cfg ? bus->cfg->via2 : NULL;
-    if (!via2)
+    if (!via2) {
+        if (bus->cfg && bus->cfg->machine && bus->cfg->machine->update_ipl) {
+            int source = card->slot - 0x9;
+            if (source >= 0 && source <= 5)
+                bus->cfg->machine->update_ipl(bus->cfg, 1 << source, true);
+        }
         return;
+    }
     int pa_bit = card->slot - 0x9;
     if (pa_bit >= 0 && pa_bit <= 5)
         via_input(via2, /*port A*/ 0, pa_bit, /*active-low*/ 0);
@@ -179,8 +185,14 @@ void nubus_deassert_irq(nubus_card_t *card) {
     bus->slot_irq_mask &= (uint16_t) ~(1u << card->slot);
 
     via_t *via2 = bus->cfg ? bus->cfg->via2 : NULL;
-    if (!via2)
+    if (!via2) {
+        if (bus->cfg && bus->cfg->machine && bus->cfg->machine->update_ipl) {
+            int source = card->slot - 0x9;
+            if (source >= 0 && source <= 5)
+                bus->cfg->machine->update_ipl(bus->cfg, 1 << source, false);
+        }
         return;
+    }
     int pa_bit = card->slot - 0x9;
     if (pa_bit >= 0 && pa_bit <= 5)
         via_input(via2, 0, pa_bit, 1);

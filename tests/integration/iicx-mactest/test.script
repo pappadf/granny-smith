@@ -220,9 +220,8 @@ screen.save "post-floppy-state.png"
 # leads to the success screen does not fire on IIcx in this build,
 # even though the analogous SE/30 path does.  Likely IIcx is
 # missing the IIcx-side equivalent of the SE/30 hardware-reset
-# wiring documented in `local/gs-docs/asm/MacTest-SE30.asm` (the
-# 5-part fix listed there at lines 963-978).  Filed as future
-# work — for now the test stops at the RAM-running display.
+# wiring exercised by MacTest.  Filed as future work — for now the
+# test stops at the RAM-running display.
 scheduler.run 4000000000
 screen.save "${WORK_DIR}/ram-running.png"
 screen.save "ram-running.png"
