@@ -19,6 +19,7 @@
 
 #include "value.h"
 
+#include <stdbool.h>
 #include <stddef.h>
 
 // Set a shell variable as a string (legacy / --var path).  Stores
@@ -46,6 +47,12 @@ int shell_var_unset(const char *name);
 // Expand ${...} references in a string.  Returns a malloc'd string;
 // caller must free.
 char *shell_var_expand(const char *input);
+
+// Iterate every shell variable in insertion order. The callback returns
+// true to continue, false to stop early. `v` is a borrowed view — do
+// not free it or hold it past the next set/unset.
+typedef bool (*shell_var_iter_fn)(const char *name, const value_t *v, void *ud);
+void shell_var_each(shell_var_iter_fn fn, void *ud);
 
 // Register the "var" command and seed built-in defaults.
 void shell_var_init(void);

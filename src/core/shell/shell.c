@@ -11,11 +11,14 @@
 #include "cmd_io.h"
 #include "cmd_parse.h"
 #include "cmd_types.h"
+#include "debug.h"
 #include "expr.h"
 #include "log.h"
+#include "meta.h"
 #include "object.h"
 #include "parse.h"
 #include "shell_var.h"
+#include "system.h"
 #include "value.h"
 #include "vfs.h"
 #include "worker_thread.h"
@@ -141,8 +144,19 @@ int tokenize(char *line, char *argv[], int max) {
 // grammar block. Returns 0 on success, -1 on error, 1 if unhandled.
 static int try_path_dispatch(int argc, char **argv);
 
-// Dispatch a command line through the typed path-form parser.
-void dispatch_command(char *line, struct cmd_result *res) {
+// Dispatch a command line. Phase 5c — the legacy registry is gone;
+// everything routes through the typed path-form parser. No longer in
+// shell.h's public surface (proposal-shell-as-object-model-citizen.md):
+// callers now go through `gs_eval("shell.run", [line])` which lands in
+// the Shell class's `run` method, which calls back here via
+// shell_internal_dispatch_command.
+static void dispatch_command(char *line, struct cmd_result *res);
+
+void shell_internal_dispatch_command(char *line, struct cmd_result *res) {
+    dispatch_command(line, res);
+}
+
+static void dispatch_command(char *line, struct cmd_result *res) {
     memset(res, 0, sizeof(*res));
     res->type = RES_OK;
 
@@ -569,6 +583,53 @@ void shell_tab_complete(const char *line, int cursor_pos, struct completion *out
     shell_complete(line, cursor_pos, out);
 }
 
+// Compose the current shell prompt: `<disasm> > ` when a machine is up
+// (matching the headless REPL and the legacy WASM `build_prompt_text`),
+// `gs> ` otherwise. Centralised here so the Shell class's `prompt`
+// attribute, the headless REPL's `print_prompt`, and any future
+// consumer share a single source of truth.
+void shell_build_prompt(char *buf, size_t buf_size) {
+    if (!buf || buf_size == 0)
+        return;
+    buf[0] = '\0';
+    if (!system_is_initialized()) {
+        snprintf(buf, buf_size, "gs> ");
+        return;
+    }
+    // Reserve 3 bytes for " > " suffix + 1 for terminator.
+    debugger_disasm_pc(buf, buf_size > 3 ? buf_size - 3 : 1);
+    size_t used = strnlen(buf, buf_size - 1);
+    if (used == 0) {
+        snprintf(buf, buf_size, "gs> ");
+        return;
+    }
+    if (used >= buf_size - 3)
+        used = buf_size - 4;
+    buf[used++] = ' ';
+    buf[used++] = '>';
+    buf[used++] = ' ';
+    buf[used] = '\0';
+}
+
+// Provider wired into the Meta class so `meta.complete(line, cursor)`
+// runs the shell's full tab-completion engine. The Meta layer treats a
+// missing provider as "completion service not available" (empty list);
+// shell_init registers this wrapper so the bridge has the engine wired
+// once the worker is ready.
+static value_t shell_meta_complete_provider(const char *line, int cursor) {
+    struct completion comp;
+    memset(&comp, 0, sizeof(comp));
+    shell_complete(line ? line : "", cursor, &comp);
+    if (comp.count <= 0)
+        return val_list(NULL, 0);
+    value_t *items = (value_t *)calloc((size_t)comp.count, sizeof(value_t));
+    if (!items)
+        return val_err("meta.complete: out of memory");
+    for (int i = 0; i < comp.count; i++)
+        items[i] = val_str(comp.items[i] ? comp.items[i] : "");
+    return val_list(items, (size_t)comp.count);
+}
+
 /* --- shell init ---------------------------------------------------------- */
 int shell_init(void) {
     if (shell_initialized)
@@ -576,6 +637,12 @@ int shell_init(void) {
 
     log_init();
     shell_var_init();
+
+    // Wire the Meta class's `complete(line, cursor)` method to the
+    // shell's tab-completion engine. Done early so any `gs_eval` that
+    // lands during init (vanishingly unlikely but cheap to guarantee)
+    // sees a live provider.
+    meta_set_complete_provider(shell_meta_complete_provider);
 
     // Install the top-level object-root methods (assert, echo, cp,
     // peeler, rom_probe, …) so JS callers (`gsEval`) and the typed

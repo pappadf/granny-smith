@@ -150,3 +150,50 @@ jobs:
           name: playwright-report
           path: playwright-report
           if-no-files-found: ignore
+
+  # New Svelte UI at app/web2 (see local/gs-docs/plans/new-ui-impl-plan.md).
+  # Phase 0 (Scaffold): typecheck + lint + Vitest (no tests yet) + Vite build.
+  # No WASM dependency — runs in parallel with the `test` job above.
+  ui:
+    runs-on: ubuntu-24.04
+    container:
+      image: ghcr.io/pappadf/granny-smith-dev:ubuntu24-emsdk4.0.10-node22
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Show tool versions
+        run: |
+          node -v
+          npm -v
+
+      - name: Install (app/web2)
+        working-directory: app/web2
+        run: npm ci
+
+      - name: svelte-check
+        working-directory: app/web2
+        run: npm run check
+
+      - name: Lint + format check
+        working-directory: app/web2
+        run: npm run lint
+
+      - name: Vitest
+        working-directory: app/web2
+        run: npm test
+
+      - name: Vite build
+        working-directory: app/web2
+        run: npm run build
+
+      - name: Upload UI build (on failure)
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: app-web2-dist
+          path: app/web2/dist
+          if-no-files-found: ignore

@@ -58,7 +58,9 @@ endif
 
 BUILD_DIR     := build
 OBJ_DIR       := $(BUILD_DIR)/wasm
-WEB_DIR       := app/web
+WEB_DIR       := app/web-legacy
+WEB2_DIR      := app/web2
+WEB2_DIST     := $(WEB2_DIR)/dist
 CORE_DIR      := src/core
 MACHINES_DIR  := src/machines
 PLATFORM_DIR  := src/platform/wasm
@@ -180,9 +182,10 @@ STATIC_JS_DIR := $(WEB_DIR)/js
 
 # -- Phony targets --
 
-.PHONY: all release debug sanitize copy-static run \
+.PHONY: all release debug sanitize copy-static run run-legacy \
         headless unit-test integration-test integration-test-valgrind \
-        e2e-test test clean help FORCE
+        e2e-test test clean help FORCE \
+        ui2 ui2-dev ui2-test ui2-check ui2-diag run2
 
 # -- WASM build --
 
@@ -285,12 +288,26 @@ ifneq ($(strip $(RUN_PARAMS)),)
 RUN_SERVER_FLAGS += --fallback-root .
 endif
 
-run: all
+# `make run` now serves the new UI (app/web2/dist/). Phase 7 flipped
+# the default; the legacy UI is reachable as `make run-legacy`. Depends
+# on `all` so the WASM build runs first; ui2 then copies the fresh
+# build artifacts into the dist directory.
+run: all ui2
 ifneq ($(strip $(RUN_PARAMS)),)
-	@echo "Starting dev server on http://localhost:8080"
+	@echo "Serving new UI on http://localhost:8080"
+	python3 scripts/dev_server.py --root $(WEB2_DIST) --port 8080 $(RUN_SERVER_FLAGS) --default-params '$(RUN_QS)'
+else
+	@echo "Serving new UI on http://localhost:8080"
+	python3 scripts/dev_server.py --root $(WEB2_DIST) --port 8080
+endif
+
+# Legacy UI (app/web-legacy/). Slated for removal after a soak period.
+run-legacy: all
+ifneq ($(strip $(RUN_PARAMS)),)
+	@echo "Serving legacy UI on http://localhost:8080"
 	python3 scripts/dev_server.py --root $(BUILD_DIR) --port 8080 $(RUN_SERVER_FLAGS) --default-params '$(RUN_QS)'
 else
-	@echo "Starting dev server on http://localhost:8080"
+	@echo "Serving legacy UI on http://localhost:8080"
 	python3 scripts/dev_server.py --root $(BUILD_DIR) --port 8080
 endif
 
@@ -324,6 +341,56 @@ e2e-test:
 # Run unit + integration tests
 test: unit-test integration-test
 
+# -- New UI (app/web2) — Svelte 5 + Vite + TypeScript --
+# See local/gs-docs/plans/new-ui-impl-plan.md. Phase 7 flipped
+# `make run` to serve this UI; `make run-legacy` keeps the old one
+# reachable while it soaks before removal.
+
+ui2:
+	cd $(WEB2_DIR) && npm ci --silent && npm run build
+	@# Phase 3: copy WASM build artifacts into the served dist directory.
+	@# Skipped silently if the WASM build hasn't run yet — `make` produces them.
+	@if [ -f $(BUILD_DIR)/main.mjs ]; then \
+		cp $(BUILD_DIR)/main.mjs $(BUILD_DIR)/main.wasm $(WEB2_DIST)/ ; \
+		if [ -f $(BUILD_DIR)/coi-serviceworker.js ]; then \
+			cp $(BUILD_DIR)/coi-serviceworker.js $(WEB2_DIST)/ ; \
+		fi ; \
+		if [ -d $(BUILD_DIR)/wasm ]; then \
+			cp -R $(BUILD_DIR)/wasm $(WEB2_DIST)/wasm ; \
+		fi ; \
+	else \
+		echo "Note: $(BUILD_DIR)/main.mjs not found; run 'make' first to produce WASM artifacts" ; \
+	fi
+
+ui2-dev:
+	cd $(WEB2_DIR) && npm run dev
+
+ui2-test:
+	cd $(WEB2_DIR) && npm test
+
+ui2-check:
+	cd $(WEB2_DIR) && npm run check && npm run lint
+
+# Headless diagnostic — spawns the dev server + drives Chromium via
+# Playwright, captures console output / pageerror / xterm contents,
+# and prints a JSON report. Useful for triaging "doesn't boot" bugs
+# without an interactive browser. Depends on tests/e2e's Playwright
+# install (chromium pre-fetched there).
+#
+# Environment knobs (forwarded to scripts/ui2-diag.mjs):
+#   GL=swiftshader (default) | native | disable   — WebGL backend
+#   COMMANDS='cpu.pc;rom list'                    — type these in
+#   SETTLE=8000                                   — wait ms after boot
+#   PORT=18181                                    — dev server port
+#   HEADLESS=0                                    — show the browser
+ui2-diag: ui2
+	@/usr/bin/env node scripts/ui2-diag.mjs
+
+# run2 is an alias for `run` for muscle-memory continuity. The Phase 7
+# retire pass made `run` itself serve the new UI; this alias can be
+# dropped in a future cleanup.
+run2: run
+
 # -- Clean (everything) --
 # Removes all build artifacts: wasm, headless, unit, integration, e2e
 
@@ -343,7 +410,15 @@ help:
 	@echo "  debug                      Build WASM emulator (debug)"
 	@echo "  sanitize                   Build WASM emulator (sanitizers)"
 	@echo "  headless                   Build native headless CLI"
-	@echo "  run                        Build and start HTTP server on :8080"
+	@echo "  run                        Build the new UI and serve on :8080 (default)"
+	@echo "  run-legacy                 Serve the legacy UI (app/web-legacy/) on :8080"
+	@echo ""
+	@echo "New UI targets (app/web2 — Svelte 5 + Vite + TS):"
+	@echo "  ui2                        Build the new Svelte UI (production)"
+	@echo "  ui2-dev                    Start Vite dev server (HMR) on :5173"
+	@echo "  ui2-check                  Run svelte-check + ESLint + Prettier"
+	@echo "  ui2-test                   Run Vitest"
+	@echo "  run2                       Alias for run (kept for muscle-memory)"
 	@echo ""
 	@echo "Test targets:"
 	@echo "  test                       Run unit + integration tests"

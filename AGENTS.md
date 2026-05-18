@@ -8,7 +8,8 @@ Granny Smith: a browser-based Motorola 68000 Macintosh Plus–style emulator com
 - `src/platform/`: Platform-specific code (wasm/, headless/)
   - `wasm/`: WebAssembly platform for browser (em_main.c, em_audio.c, em_video.c) — compiled with Emscripten
   - `headless/`: Native command-line platform for testing (headless_main.c)
-- `app/web/`: Browser frontend (HTML, JS, CSS)
+- `app/web2/`: Browser frontend (Svelte 5 + Vite + TypeScript) — default
+- `app/web-legacy/`: Previous browser frontend (vanilla HTML/JS/CSS) — reachable via `make run-legacy` while it soaks before removal
 - `docs/`: Design, architecture, and developer docs
 - `build/`: Generated artifacts — do not edit
 - `scripts/`: Tools and helpers
@@ -65,15 +66,63 @@ Emulator modules (e.g., scsi, cpu, via, scc, rtc) have `.c`/`.h` files in `src/c
   (~10–15 min, requires test data from `scripts/fetch-test-data.sh`)
 - In general, no need to run unit tests unless explicitly asked
 
-**Always capture test output to a file** so subsequent grep / re-analysis
-doesn't require re-running. Integration suites take 1–5 min, the e2e
-suite 10+ min — re-running just to filter is pure waste. Pattern:
+### STOP. READ THIS BEFORE RUNNING ANY TEST.
+
+> **ABSOLUTE RULE — NO EXCEPTIONS, EVER:**
+> **Every test command MUST write its full output to a file before you filter anything.**
+>
+> If you find yourself typing `| tail`, `| head`, `| grep`, `| sed`, or
+> `| awk` directly after a test command, **STOP**. You are about to
+> destroy data you will need 30 seconds from now, and you will be forced
+> to re-run a 1–15 minute test suite to get it back. This has happened.
+> It will keep happening unless you internalize this rule.
+
+**This applies to:**
+- `make integration-test`, `make integration-test-<name>`
+- `make -C tests/unit run`, any unit-test binary
+- `npx playwright test ...`, any e2e invocation
+- ANY command that runs tests, including one-off reproductions
+
+**No exceptions for:**
+- "I'll just peek at the tail" — NO. `tee` first, peek second.
+- "It's a quick test" — NO. Quick tests are still slower than `cat`.
+- "I only need the summary line" — NO. The moment something fails you
+  need the 200 lines above it.
+- "I'll redirect with `> file` instead of `tee`" — that is fine; the
+  rule is that **the full output must exist on disk**, not specifically
+  that `tee` be used.
+
+**The only acceptable patterns:**
+
 ```bash
-make integration-test 2>&1 | tee /tmp/it.log
-grep -E "PASS|FAIL|Error" /tmp/it.log
+# Pattern A — tee (you see live output AND capture)
+make integration-test 2>&1 | tee tmp/it.log
+grep -E "PASS|FAIL|Error" tmp/it.log
+
+# Pattern B — redirect (silent; capture only)
+make integration-test > tmp/it.log 2>&1
+grep -E "PASS|FAIL|Error" tmp/it.log
+
+# Pattern C — background task (the harness captures to a file for you)
+# Then Read or grep that file.
 ```
-Same for unit / e2e. Avoid piping straight into `tail`/`grep`/`head`
-without a `tee` first; you discard the data you need next.
+
+**Forbidden patterns:**
+
+```bash
+make integration-test 2>&1 | tail -50          # FORBIDDEN
+make integration-test 2>&1 | grep FAIL         # FORBIDDEN
+npx playwright test ... | head -100            # FORBIDDEN
+make integration-test | tee tmp/it.log | tail  # also FORBIDDEN
+                                               # (the tee saves but the
+                                               # exit code is tail's, so
+                                               # error detection breaks)
+```
+
+If you broke this rule and a test failed with information you can't see
+anymore, **do not retry the test as the fix**. Instead: apologize, add
+a note about it, and capture properly the second time. But the goal is
+to not break this rule in the first place.
 
 **Environment-specific Testing Guidelines:**
 
@@ -151,7 +200,8 @@ the root methods (`cp`, `peeler`, `rom_probe`, `rom_load`, `fd_insert`,
 `hd_models`, `dump_tree`, …).
 
 The browser frontend and the e2e helpers call into the tree via
-`window.gsEval(path, args?)` (see `app/web/js/emulator.js`). Inside the
+`gsEval(path, args?)` (see `app/web2/src/bus/emulator.ts`; the legacy
+helper still exists in `app/web-legacy/js/emulator.js`). Inside the
 shell, the same tree is reachable via four surface forms (proposal §4.1):
 
   cpu.pc                # bare path → read & print

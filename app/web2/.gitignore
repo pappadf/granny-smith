@@ -1,0 +1,7 @@
+node_modules/
+dist/
+.svelte-kit/
+*.tsbuildinfo
+.vite/
+coverage/
+.tsbuild-node/

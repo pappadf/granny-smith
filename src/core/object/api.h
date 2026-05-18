@@ -21,17 +21,13 @@ extern "C" {
 // path is an attribute and `args_json` carries exactly one value, the
 // call is a setter. Returns 0 on success, negative on error (the error
 // message is also serialised into `out_buf`).
+//
+// Introspection and completion are reached through the same call:
+// `gs_eval("cpu.meta")`, `gs_eval("cpu.meta.attributes")`, and
+// `gs_eval("meta.complete", "[\"cpu.d\", 5]")` replace the former
+// gs_inspect / gs_complete entry points. See
+// proposal-introspection-via-meta-attribute.md.
 int gs_eval(const char *path, const char *args_json, char *out_buf, size_t out_size);
-
-// Read a subtree's current values into JSON. Currently the same shape
-// as gs_eval (single value at `path`); the recursive subtree form is
-// reserved for the inspector UI.
-int gs_inspect(const char *path, char *out_buf, size_t out_size);
-
-// Path completion — returns a JSON array of candidate completions for
-// `partial`. Currently a placeholder that returns an empty array;
-// shell-level completion runs through the cmd_complete engine.
-int gs_complete(const char *partial, char *out_buf, size_t out_size);
 
 #ifdef __cplusplus
 }

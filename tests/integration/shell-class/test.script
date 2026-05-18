@@ -1,0 +1,52 @@
+# Smoke-test every method and attribute on `shell` so a regression in
+# the class registration or the dispatcher wrapper shows up at make
+# integration-test time.
+
+# === Attributes ===========================================================
+
+# `running` is false before scheduler.run; flips true while a long
+# command is in flight, but we don't exercise that here.
+assert ${shell.running == false} "shell.running should be false at boot"
+
+# `prompt` contains the disassembled-PC variant once a machine is up.
+# Don't assert exact text (depends on PC); just confirm it's non-empty.
+shell.prompt
+
+# `aliases` lists built-in `pc`/`d0`/... bindings. Pre-checked here so
+# alias_set / alias_unset assertions below have a known starting state.
+shell.aliases
+
+# `vars` lists every shell variable. shell_var_init seeds TMP_DIR.
+shell.vars
+
+# === Methods ==============================================================
+
+# expand: no-op when nothing to expand; passes through verbatim.
+assert ${shell.expand("hello") == "hello"} "expand pass-through"
+
+# complete: a known prefix returns a known candidate list. Visual
+# inspection rather than assert — the expression layer doesn't yet
+# support list-indexing inside ${...}.
+shell.complete "cpu.p" 5
+
+# alias_set / alias_unset round-trip. Adding "foo" -> "cpu.pc" should
+# make it show up in shell.aliases, and unset should remove it.
+shell.alias_set "foo" "cpu.pc"
+shell.aliases
+shell.alias_unset "foo"
+shell.aliases
+
+# run: dispatches a free-form line. Returns the new prompt text.
+shell.run "cpu.pc"
+
+# interrupt is a no-op while the scheduler is stopped, but it must
+# resolve and dispatch cleanly.
+shell.interrupt
+
+# === Meta self-introspection ============================================
+# Every method and attribute must appear on shell.meta — the new UI's
+# terminal-command browser uses this to build itself.
+shell.meta.attributes
+shell.meta.methods
+
+quit

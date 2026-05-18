@@ -487,10 +487,39 @@ void em_video_update(void) {
     display_t *d = system_display();
     if (!d || !d->bits)
         return;
-    // If the producer hasn't marked anything dirty, the GPU still holds
-    // the right pixels and the canvas already shows them — nothing to do.
-    if (!d->fb_dirty && !d->shape_dirty && !d->clut_dirty && !d->response_dirty)
+
+    // The producer-side dirty flags (fb_dirty / clut_dirty / response_dirty)
+    // are undercomplete: pixel writes that come straight from emulated
+    // CPU code (the ROM's RAM test, the OS painting between vsyncs,
+    // any direct framebuffer poke) bypass the producer entirely and
+    // never trip fb_dirty. Conversely, plus_use_video_buffer sets the
+    // flag on every VIA1 port-A write whether pixels moved or not.
+    // Either way, fb_dirty is a hint, not authority.
+    //
+    // We re-derive content change here by memcmp'ing the framebuffer
+    // against s_upload_scratch — which always holds the last contents
+    // we uploaded (upload_fb memcpy's into it on its way to the GPU).
+    // This recovers the pre-IIcx-refactor behaviour: render rate is
+    // coupled to actual byte-level change, never to producer signaling
+    // quirks. memcmp is well under a millisecond even at the largest
+    // mode (1152x870 @ 8 bpp = 1 MB) and is cache-friendly.
+    bool content_changed = false;
+    size_t bytes = (size_t)d->stride * d->height;
+    if (bytes > sizeof(s_upload_scratch))
+        bytes = sizeof(s_upload_scratch);
+    if (memcmp(s_upload_scratch, d->bits, bytes) != 0)
+        content_changed = true;
+
+    // shape_dirty signals a texture-allocation change (resolution /
+    // format / stride) — must always be honoured. clut_dirty /
+    // response_dirty change pixel mapping without changing fb bytes,
+    // so we trust those flags directly.
+    if (!content_changed && !d->shape_dirty && !d->clut_dirty && !d->response_dirty)
         return;
+
+    if (content_changed)
+        d->fb_dirty = true;
+
     if (refresh_from_display(d, /*force_full*/ false))
         draw();
 }

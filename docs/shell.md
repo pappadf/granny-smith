@@ -17,13 +17,15 @@ Two callers reach the emulator through the shell layer:
   script file (`script=...`) or stdin.
 
 Both go through the same tokeniser and the same path-form dispatcher.
-JavaScript callers in the web frontend bypass the shell layer for
-typed object-model calls and reach `gs_eval` directly through the
-shared-memory bridge described in [`web.md`](web.md); the xterm.js
-terminal is the only JS caller that goes through `dispatch_command`,
-and only because users type free-form lines into it. The shell is the
-*line-input* surface, not a separate command framework with its own
-registry.
+JavaScript callers in the web frontend reach the shell through the
+`Shell` class on the object root: typed object-model calls
+(`gs_eval('cpu.pc')`) stay on their typed paths, and free-form lines
+from the xterm.js terminal route through `gs_eval('shell.run', [line])`
+(see [`proposal-shell-as-object-model-citizen.md`](../local/gs-docs/proposals/proposal-shell-as-object-model-citizen.md)).
+No dedicated bridge kind for free-form lines, no
+`Module.onPromptChange` callback — the new prompt is the return value
+of `shell.run`. The shell is the *line-input* surface, not a separate
+command framework with its own registry.
 
 The earlier shell had its own command registry, dispatcher, parsed-
 argument framework, and JSON result protocol. All of that has moved
@@ -182,9 +184,11 @@ just return `value_t` and let the formatter handle output.
 
 ## REPL
 
-Both the interactive terminal and the headless REPL go through
-`dispatch_command(line, &result)` (or its uint64 wrapper
-`shell_dispatch(line)`). The function:
+Both the interactive terminal and the headless REPL ultimately reach
+the same static `dispatch_command(line, &result)` in `shell.c`. The
+web terminal invokes it through `gs_eval('shell.run', [line])` (the
+Shell class's `run` method); the headless REPL calls
+`shell_dispatch(line)` directly. Both paths run:
 
 1. Makes a mutable copy of the input.
 2. Tokenises it with quote / backslash / `$(...)` awareness (the

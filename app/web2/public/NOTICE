@@ -1,0 +1,86 @@
+Granny Smith UI — Third-Party Notices (icons)
+
+This directory bundles third-party icon assets. Each item below lists the
+work, its copyright holder, the license under which it is used, and a link
+to the upstream source. No item has been modified.
+
+================================================================================
+1. VS Code Codicons
+================================================================================
+
+The SVG icons embedded in `icons/sprite.svg` are copied verbatim from the
+Visual Studio Code Codicons project. The sprite uses prototype-style local
+ids (e.g. `i-play`, `i-stop`, `i-hd`, `i-floppy`); the upstream codicon
+names of the icons reproduced here are:
+
+    add                       (used as the "+" / new icon)
+    chevron-down              (tree/section twistie; CSS-rotated when collapsed)
+    chip                      (CPU/ROM/chip rows in trees and Images)
+    circle-large              ("empty slot" indicator in the Machine tree)
+    close                     (toast close button)
+    cloud-download            (Save State button, Download log button)
+    cloud-upload              (Upload ROM / Upload image actions)
+    color-mode                (theme toggle button)
+    debug-pause               (Run/Pause toolbar button when running, debug Pause)
+    debug-restart             (debug Restart action)
+    debug-step-into           (debug Step Into action)
+    debug-step-over           (debug Step Over action)
+    debug-stop                (debug Stop action, Display Toolbar Stop)
+    file                      (file rows in the Filesystem tree)
+    folder                    (folder rows in the Filesystem tree)
+    history                   (RTC clock node in the Machine tree)
+    layout-panel              (panel-bottom layout button, active state)
+    layout-panel-off          (panel-bottom layout button, inactive state)
+    layout-sidebar-left       (panel-left layout button, active state)
+    layout-sidebar-left-off   (panel-left layout button, inactive state)
+    layout-sidebar-right      (panel-right layout button, active state)
+    layout-sidebar-right-off  (panel-right layout button, inactive state)
+    play                      (Run/Pause toolbar button when paused, debug Continue)
+    plug                      (port nodes in the Machine tree)
+    record                    (CD-ROM rows in the Images section / Machine tree)
+    remove                    (Zoom Out toolbar button)
+    save                      (Floppy Disk rows; floppy = "save" icon)
+    screen-full               (Display Toolbar Full Screen button — enter)
+    screen-normal             (Display Toolbar Full Screen button — exit)
+    server                    (Hard Disk rows in trees and Images)
+    sign-out                  (Display Toolbar Shut Down button)
+    trash                     (Clear log button, Delete snapshot button)
+    unmute                    (Sound/PWM node in the Machine tree)
+    vm                        (Computer / Mac model icons)
+
+Source:
+    https://github.com/microsoft/vscode-codicons
+    Specifically: src/icons/<name>.svg in the upstream repository.
+
+Copyright (c) Microsoft Corporation.
+
+License:
+    The Codicons icons (graphical content) are licensed under the
+    Creative Commons Attribution 4.0 International Public License
+    (CC BY 4.0). The full license text is available at:
+
+        https://creativecommons.org/licenses/by/4.0/legalcode
+
+    A short-form summary is at:
+
+        https://creativecommons.org/licenses/by/4.0/
+
+    Note: the upstream codicons repository is dual-licensed —
+    documentation/icons under CC BY 4.0 (LICENSE), and code under MIT
+    (LICENSE-CODE). Granny Smith uses only the icons, hence CC BY 4.0
+    applies here.
+
+Modifications:
+    None. The icon paths are reproduced verbatim from the upstream SVG
+    files. Sizing and theming (color, scale) are applied via CSS at
+    render time without altering the path data.
+
+Trademark:
+    The CC BY 4.0 license does not grant any rights to use Microsoft's
+    or VS Code's trademarks, logos, or branding. Granny Smith does not
+    use any such marks.
+
+Disclaimer:
+    Per CC BY 4.0 §5, the Licensed Material is provided "as-is" and
+    "as-available", without warranties of any kind. See the full license
+    text at the URL above.

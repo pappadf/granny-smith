@@ -1,0 +1,38 @@
+/* Minimal global reset. Component styles are scoped via Svelte. */
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  background: var(--gs-bg);
+  color: var(--gs-fg);
+  font-family: var(--gs-font-ui);
+  font-size: 13px;
+  line-height: 1.4;
+  -webkit-font-smoothing: antialiased;
+  overflow: hidden;
+}
+
+button {
+  font-family: inherit;
+  color: inherit;
+}
+
+input,
+select {
+  font-family: inherit;
+}
+
+[hidden] {
+  display: none !important;
+}

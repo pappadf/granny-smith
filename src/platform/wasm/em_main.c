@@ -49,6 +49,7 @@
 #include "cmd_types.h"
 #include "cpu.h"
 #include "keyboard.h"
+#include "log.h"
 #include "machine.h"
 #include "mouse.h"
 #include "platform.h"
@@ -386,25 +387,9 @@ static bool checkpoint_auto_enabled = true; // Can be disabled for tests
 static double last_time = 0;
 static double ticks_per_second = 0;
 
-// Shell prompt helper
-static void build_prompt_text(char *dest, size_t dest_len) {
-    if (!dest || dest_len == 0)
-        return;
-    dest[0] = '\0';
-    if (!system_is_initialized())
-        return;
-    // Reserve 3 bytes for " > " suffix + 1 for terminator.
-    debugger_disasm_pc(dest, dest_len > 3 ? dest_len - 3 : 1);
-    size_t used = strnlen(dest, dest_len - 1);
-    if (used >= dest_len - 3)
-        used = dest_len - 4;
-    dest[used++] = ' ';
-    dest[used++] = '>';
-    dest[used++] = ' ';
-    dest[used] = '\0';
-}
-
-// Emscripten-specific shell stubs
+// Emscripten-specific shell stubs. Prompt composition lives in
+// src/core/shell/shell.c::shell_build_prompt now (callable from JS via
+// `shell.prompt` on the Shell class).
 void print_prompt(void) {}
 
 // ============================================================================
@@ -454,69 +439,28 @@ void print_prompt(void) {}
 // The single shared-memory region. Layout in em.h, mirrored in
 // emulator.js. Buffer sizes (path, args, output) are tuned for current
 // peak usage: longest paths are checkpoint paths under /opfs, args
-// carry JSON arrays of primitive values, output carries gs_inspect
-// dumps which dominate.
+// carry JSON arrays of primitive values, output carries `meta.*`
+// introspection dumps which dominate.
 static js_bridge_t g_bridge = {.version = JS_BRIDGE_VERSION};
 
 EMSCRIPTEN_KEEPALIVE js_bridge_t *get_js_bridge(void) {
     return &g_bridge;
 }
 
-static int dispatch_tab_complete(const char *line, int cursor_pos);
-
 int shell_poll(void) {
-    // Drain the bridge slot. `pending` selects the dispatch:
-    //   1 = gs_eval(path, args)        — typed object-model call
-    //   2 = gs_inspect(path)           — recursive JSON dump
-    //   3 = tab complete (line, pos)   — completion engine
-    //   4 = free-form shell line       — terminal onSubmit
+    // Drain the bridge slot. After folding the shell into the object
+    // model (proposal-shell-as-object-model-citizen.md), exactly one
+    // request kind remains:
+    //   1 = gs_eval(path, args)  — typed object-model call. Includes
+    //                              free-form shell lines via
+    //                              `shell.run`, schema queries via
+    //                              `<path>.meta.*`, and tab completion
+    //                              via `shell.complete` / `meta.complete`.
     if (!g_bridge.pending)
         return 0;
 
-    int kind = g_bridge.pending;
-    int rc;
-    if (kind == 2) {
-        rc = gs_inspect(g_bridge.path, g_bridge.output, JS_BRIDGE_OUTPUT_SIZE);
-    } else if (kind == 3) {
-        // Tab complete: line in `path`, cursor pos as decimal text in
-        // `args`, JSON match list written to `output`, count returned.
-        int cursor_pos = atoi(g_bridge.args);
-        rc = dispatch_tab_complete(g_bridge.path, cursor_pos);
-    } else if (kind == 4) {
-        // Free-form line — used by the xterm.js terminal. Output goes
-        // straight to stdout/stderr (the WASM Module's printFn routes
-        // those into the terminal); the integer result lands in
-        // `result` so the caller can branch on success/failure.
-        size_t len = strnlen(g_bridge.path, JS_BRIDGE_PATH_SIZE - 1);
-        while (len > 0 && (g_bridge.path[len - 1] == '\n' || g_bridge.path[len - 1] == '\r'))
-            g_bridge.path[--len] = '\0';
-        struct cmd_result res;
-        memset(&res, 0, sizeof(res));
-        dispatch_command(g_bridge.path, &res);
-        // Push the new prompt to JS via Module.onPromptChange. SYNC so
-        // the JS-side cache is updated before we set `done = 1`; the JS
-        // terminal reads the cached prompt immediately after gsEvalLine
-        // resolves, and ASYNC would race that read.
-        char prompt_buf[256];
-        build_prompt_text(prompt_buf, sizeof(prompt_buf));
-        // clang-format off
-        MAIN_THREAD_EM_ASM(
-            { if (typeof Module.onPromptChange === 'function') Module.onPromptChange(UTF8ToString($0)); },
-            prompt_buf);
-        // clang-format on
-        if (res.type == RES_INT)
-            rc = (int)res.as_int;
-        else if (res.type == RES_BOOL)
-            rc = res.as_bool;
-        else if (res.type == RES_ERR)
-            rc = -1;
-        else
-            rc = 0;
-        g_bridge.output[0] = '\0';
-    } else {
-        const char *args = (g_bridge.args[0] != '\0') ? g_bridge.args : NULL;
-        rc = gs_eval(g_bridge.path, args, g_bridge.output, JS_BRIDGE_OUTPUT_SIZE);
-    }
+    const char *args = (g_bridge.args[0] != '\0') ? g_bridge.args : NULL;
+    int rc = gs_eval(g_bridge.path, args, g_bridge.output, JS_BRIDGE_OUTPUT_SIZE);
     g_bridge.result = rc;
     g_bridge.pending = 0;
     // Atomic store + wake any JS thread parked in Atomics.waitAsync on
@@ -527,23 +471,11 @@ int shell_poll(void) {
     return 1;
 }
 
-static int dispatch_tab_complete(const char *line, int cursor_pos) {
-    struct completion comp;
-    memset(&comp, 0, sizeof(comp));
-
-    shell_tab_complete(line, cursor_pos, &comp);
-
-    int off = 0;
-    off += snprintf(g_bridge.output + off, JS_BRIDGE_OUTPUT_SIZE - off, "[");
-    for (int i = 0; i < comp.count && off < (int)JS_BRIDGE_OUTPUT_SIZE - 10; i++) {
-        if (i > 0)
-            off += snprintf(g_bridge.output + off, JS_BRIDGE_OUTPUT_SIZE - off, ",");
-        off += snprintf(g_bridge.output + off, JS_BRIDGE_OUTPUT_SIZE - off, "\"%s\"", comp.items[i]);
-    }
-    snprintf(g_bridge.output + off, JS_BRIDGE_OUTPUT_SIZE - off, "]");
-
-    return comp.count;
-}
+// Tab-complete and shell-line dispatch used to live here behind separate
+// `pending` kinds. Both have been folded into gs_eval after the
+// proposal-shell-as-object-model-citizen refactor: tab completion goes
+// through `meta.complete`, free-form lines through `shell.run`. Nothing
+// in this file needs to know about them anymore.
 
 // Main tick function called by the Emscripten main loop
 void em_main_tick(void) {
@@ -605,6 +537,23 @@ void em_main_tick(void) {
 // Exposed tick wrapper for Emscripten main loop
 void tick(void) {
     em_main_tick();
+}
+
+// Forward formatted log lines to the JS-side Module.onLogEmit callback.
+// Installed once at boot via log_set_sink so the new-UI Logs view can
+// fan emissions out to a per-category mirror without inferring them
+// from Module.print (which captures everything, not just LOG sites).
+// Same MAIN_THREAD_ASYNC_EM_ASM pattern as the onRunStateChange push
+// above so the worker thread never blocks on the main-thread invoke.
+static void js_log_sink(const char *line, void *user) {
+    (void)user;
+    if (!line)
+        return;
+    // clang-format off
+    MAIN_THREAD_ASYNC_EM_ASM(
+        { if (typeof Module.onLogEmit === 'function') Module.onLogEmit(UTF8ToString($0)); },
+        line);
+    // clang-format on
 }
 
 // Print usage
@@ -1062,6 +1011,12 @@ int main(int argc, char *argv[]) {
 
     shell_init();
     setup_init();
+
+    // Route every log_emit through Module.onLogEmit so the new-UI Logs
+    // view gets a structured stream parallel to stdout. shell_init has
+    // already called log_init; setting the sink here also forwards any
+    // categories registered later (setup_init, machine boot, …).
+    log_set_sink(js_log_sink, NULL);
 
     // Bridge is open for business. JS gates its first gsEval on this
     // flag so requests issued during the boot window don't dispatch

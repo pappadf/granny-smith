@@ -1228,23 +1228,59 @@ static value_t method_mem_peek_l(struct object *self, const member_t *m, int arg
     return v;
 }
 
+// `memory.peek.bytes(addr, count)` — bulk byte read. Returns a
+// V_BYTES blob, capped to 4 KB so the bridge output slot can hold the
+// JSON-encoded payload. Replaces the per-byte fan-out the debug UI's
+// memory pane used to do (128 separate gsEval calls → 128 bridge
+// round-trips → noticeable lag while stepping). One call now suffices.
+static value_t method_mem_peek_bytes(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)self;
+    (void)m;
+    (void)argc;
+    uint32_t addr = (uint32_t)argv[0].u;
+    uint64_t count = argv[1].u;
+    if (count == 0)
+        return val_bytes(NULL, 0);
+    // Cap at 4 KB. The bridge serialises V_BYTES as a base64-ish JSON
+    // string; 4 KB × 4/3 ≈ 5.5 KB, well under JS_BRIDGE_OUTPUT_SIZE.
+    if (count > 4096)
+        count = 4096;
+    uint8_t *buf = (uint8_t *)malloc(count);
+    if (!buf)
+        return val_err("memory.peek.bytes: out of memory");
+    for (uint64_t i = 0; i < count; i++)
+        buf[i] = memory_read_uint8((uint32_t)(addr + i));
+    value_t v = val_bytes(buf, (size_t)count);
+    free(buf);
+    return v;
+}
+
 static const arg_decl_t mem_peek_args[] = {
     {.name = "addr", .kind = V_UINT, .presentation_flags = VAL_HEX, .doc = "guest memory address"},
+};
+
+static const arg_decl_t mem_peek_bytes_args[] = {
+    {.name = "addr", .kind = V_UINT, .presentation_flags = VAL_HEX, .doc = "guest memory address"},
+    {.name = "count", .kind = V_UINT, .doc = "byte count (max 4096)"},
 };
 
 static const member_t mem_peek_members[] = {
     {.kind = M_METHOD,
      .name = "b",
      .doc = "Read 1 byte at addr",
-     .method = {.args = mem_peek_args, .nargs = 1, .result = V_UINT, .fn = method_mem_peek_b}},
+     .method = {.args = mem_peek_args, .nargs = 1, .result = V_UINT, .fn = method_mem_peek_b}           },
     {.kind = M_METHOD,
      .name = "w",
      .doc = "Read 2 bytes (big-endian word) at addr",
-     .method = {.args = mem_peek_args, .nargs = 1, .result = V_UINT, .fn = method_mem_peek_w}},
+     .method = {.args = mem_peek_args, .nargs = 1, .result = V_UINT, .fn = method_mem_peek_w}           },
     {.kind = M_METHOD,
      .name = "l",
      .doc = "Read 4 bytes (big-endian long) at addr",
-     .method = {.args = mem_peek_args, .nargs = 1, .result = V_UINT, .fn = method_mem_peek_l}},
+     .method = {.args = mem_peek_args, .nargs = 1, .result = V_UINT, .fn = method_mem_peek_l}           },
+    {.kind = M_METHOD,
+     .name = "bytes",
+     .doc = "Read `count` bytes at addr (bulk; max 4096 bytes per call)",
+     .method = {.args = mem_peek_bytes_args, .nargs = 2, .result = V_BYTES, .fn = method_mem_peek_bytes}},
 };
 
 const class_desc_t mem_peek_class = {

@@ -123,7 +123,8 @@ If the CI formatting check fails, the pre-commit hooks will catch it locally bef
 |-----------|----------|
 | `src/core/` | Platform-agnostic emulator (CPU, memory, peripherals, etc.) |
 | `src/platform/` | Platform-specific code (wasm/, headless/) |
-| `app/web/` | Browser frontend (HTML, JS, CSS) |
+| `app/web2/` | Browser frontend (Svelte 5 + Vite + TS) — default |
+| `app/web-legacy/` | Previous frontend (HTML/JS/CSS) — reachable via `make run-legacy` |
 | `docs/` | Architecture and hardware documentation |
 | `tests/` | Unit, integration, and end-to-end tests |
 | `scripts/` | Build and helper scripts |
