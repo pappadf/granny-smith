@@ -3613,6 +3613,12 @@ static const arg_decl_t debug_log_args[] = {
 // operation: same family as debug.breakpoints, debug.logpoints,
 // debug.mac.* — debugger affordances that *use* the CPU's encoding
 // knowledge but aren't themselves part of running the CPU.
+// Prints `count` disassembled instructions to stdout (one line each)
+// and returns V_BOOL so `${debug.disasm(5)}` is a truthy single-token
+// predicate for shell-script asserts. The web2 UI does NOT consume
+// this method's return value — it pulls a structured snapshot via
+// `debug.frame` instead — so this can keep the historical
+// printf-+-val_bool shape that scripts depend on.
 static value_t debug_method_disasm(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)self;
     (void)m;
@@ -3630,35 +3636,16 @@ static value_t debug_method_disasm(struct object *self, const member_t *m, int a
     }
     if (count <= 0)
         count = 16;
-    // Cap to keep the heap allocation predictable + well under the
-    // bridge's 16 KB output slot. 256 lines at ~160 bytes each is
-    // still ~40 KB worst case; the cap below bounds the result to a
-    // safe 12 KB.
     if (count > 256)
         count = 256;
 
-    // Each disasm line is bounded by `line_buf` (160 bytes including
-    // address, mnemonic, operands, optional comment, and trailing
-    // newline). Allocate enough for `count` lines plus a NUL.
-    const size_t line_max = 160;
-    size_t cap = (size_t)count * line_max + 1;
-    char *out = (char *)malloc(cap);
-    if (!out)
-        return val_err("debug.disasm: out of memory");
-    out[0] = '\0';
-    size_t used = 0;
-    char line_buf[160];
+    char buf[160];
     for (int i = 0; i < (int)count; i++) {
-        int instr_len = debugger_disasm(line_buf, sizeof(line_buf), addr);
-        int n = snprintf(out + used, cap - used, "%s\n", line_buf);
-        if (n < 0 || (size_t)n >= cap - used)
-            break; // truncate gracefully if a line is unexpectedly long
-        used += (size_t)n;
+        int instr_len = debugger_disasm(buf, sizeof(buf), addr);
+        printf("%s\n", buf);
         addr += 2 * instr_len;
     }
-    value_t r = val_str(out);
-    free(out);
-    return r;
+    return val_bool(true);
 }
 
 static const arg_decl_t debug_disasm_args[] = {
@@ -3921,7 +3908,7 @@ static const member_t debug_members[] = {
     {.kind = M_METHOD,
      .name = "disasm",
      .doc = "Disassemble forward. `disasm` from PC, `disasm <count>` from PC, `disasm <addr> <count>` from addr.",
-     .method = {.args = debug_disasm_args, .nargs = 2, .result = V_STRING, .fn = debug_method_disasm}                                                                                                            },
+     .method = {.args = debug_disasm_args, .nargs = 2, .result = V_BOOL, .fn = debug_method_disasm}                                                                                                              },
     {.kind = M_METHOD,
      .name = "frame",
      .doc = "Bundled snapshot for the debug UI: registers + disasm window + per-row MMU translation, "

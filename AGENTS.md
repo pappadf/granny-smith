@@ -66,15 +66,63 @@ Emulator modules (e.g., scsi, cpu, via, scc, rtc) have `.c`/`.h` files in `src/c
   (~10–15 min, requires test data from `scripts/fetch-test-data.sh`)
 - In general, no need to run unit tests unless explicitly asked
 
-**Always capture test output to a file** so subsequent grep / re-analysis
-doesn't require re-running. Integration suites take 1–5 min, the e2e
-suite 10+ min — re-running just to filter is pure waste. Pattern:
+### STOP. READ THIS BEFORE RUNNING ANY TEST.
+
+> **ABSOLUTE RULE — NO EXCEPTIONS, EVER:**
+> **Every test command MUST write its full output to a file before you filter anything.**
+>
+> If you find yourself typing `| tail`, `| head`, `| grep`, `| sed`, or
+> `| awk` directly after a test command, **STOP**. You are about to
+> destroy data you will need 30 seconds from now, and you will be forced
+> to re-run a 1–15 minute test suite to get it back. This has happened.
+> It will keep happening unless you internalize this rule.
+
+**This applies to:**
+- `make integration-test`, `make integration-test-<name>`
+- `make -C tests/unit run`, any unit-test binary
+- `npx playwright test ...`, any e2e invocation
+- ANY command that runs tests, including one-off reproductions
+
+**No exceptions for:**
+- "I'll just peek at the tail" — NO. `tee` first, peek second.
+- "It's a quick test" — NO. Quick tests are still slower than `cat`.
+- "I only need the summary line" — NO. The moment something fails you
+  need the 200 lines above it.
+- "I'll redirect with `> file` instead of `tee`" — that is fine; the
+  rule is that **the full output must exist on disk**, not specifically
+  that `tee` be used.
+
+**The only acceptable patterns:**
+
 ```bash
-make integration-test 2>&1 | tee /tmp/it.log
-grep -E "PASS|FAIL|Error" /tmp/it.log
+# Pattern A — tee (you see live output AND capture)
+make integration-test 2>&1 | tee tmp/it.log
+grep -E "PASS|FAIL|Error" tmp/it.log
+
+# Pattern B — redirect (silent; capture only)
+make integration-test > tmp/it.log 2>&1
+grep -E "PASS|FAIL|Error" tmp/it.log
+
+# Pattern C — background task (the harness captures to a file for you)
+# Then Read or grep that file.
 ```
-Same for unit / e2e. Avoid piping straight into `tail`/`grep`/`head`
-without a `tee` first; you discard the data you need next.
+
+**Forbidden patterns:**
+
+```bash
+make integration-test 2>&1 | tail -50          # FORBIDDEN
+make integration-test 2>&1 | grep FAIL         # FORBIDDEN
+npx playwright test ... | head -100            # FORBIDDEN
+make integration-test | tee tmp/it.log | tail  # also FORBIDDEN
+                                               # (the tee saves but the
+                                               # exit code is tail's, so
+                                               # error detection breaks)
+```
+
+If you broke this rule and a test failed with information you can't see
+anymore, **do not retry the test as the fix**. Instead: apologize, add
+a note about it, and capture properly the second time. But the goal is
+to not break this rule in the first place.
 
 **Environment-specific Testing Guidelines:**
 
