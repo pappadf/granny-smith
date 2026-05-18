@@ -27,10 +27,10 @@
   }
 </script>
 
-<Modal open={open} title="Granny Smith — preview build" dismissible={false}>
+<Modal {open} title="Granny Smith — preview build" dismissible={false}>
   <p>
-    This is a new UI for Granny Smith that's still under active development.
-    You may run into rough edges or missing features.
+    This is a new UI for Granny Smith that's still under active development. You may run into rough
+    edges or missing features.
   </p>
   <p>
     Looking for a stable version? Older releases are available at
