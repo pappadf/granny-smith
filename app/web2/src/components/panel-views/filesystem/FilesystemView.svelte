@@ -4,6 +4,7 @@
   import { openContextMenu, type ContextMenuItem } from '@/components/common/ContextMenu.svelte';
   import RenameDialog from './RenameDialog.svelte';
   import { opfs } from '@/bus/opfs';
+  import { acceptFilesRaw } from '@/bus/upload';
   import { showNotification } from '@/state/toasts.svelte';
   import {
     filesystem,
@@ -78,22 +79,31 @@
   function handleDragOver(path: string[], ev: DragEvent) {
     if (!ev.dataTransfer) return;
     const types = ev.dataTransfer.types;
-    if (!types || !Array.from(types).includes(DRAG_MIME)) return;
-    const sourceKey = filesystem.dragSourcePath;
-    if (!sourceKey) return;
-    const sourcePath = sourceKey.split(' ');
-    // Target must be a folder.
+    const isInternal = !!types && Array.from(types).includes(DRAG_MIME);
+    const isExternalFile = !!types && Array.from(types).includes('Files');
+    if (!isInternal && !isExternalFile) return;
+    // Target must be a folder for either kind of drop.
     const parentKey = pathKey(path.slice(0, -1));
     const cached = childrenCache[parentKey];
     const node = cached?.find((n) => n.id === path[path.length - 1]);
     const isFolder = node && node.leaf === false;
     if (!isFolder) return;
-    if (pathIsAncestorOrSelf(sourcePath, path)) return;
-    const sourceParent = sourcePath.slice(0, -1).join(' ');
-    if (sourceParent === pathKey(path)) return;
-    ev.preventDefault();
-    ev.dataTransfer.dropEffect = 'move';
-    dropTargetKey = pathKey(path);
+    if (isInternal) {
+      const sourceKey = filesystem.dragSourcePath;
+      if (!sourceKey) return;
+      const sourcePath = sourceKey.split(' ');
+      if (pathIsAncestorOrSelf(sourcePath, path)) return;
+      const sourceParent = sourcePath.slice(0, -1).join(' ');
+      if (sourceParent === pathKey(path)) return;
+      ev.preventDefault();
+      ev.dataTransfer.dropEffect = 'move';
+      dropTargetKey = pathKey(path);
+    } else {
+      // External file drop — copy into the folder, no validation.
+      ev.preventDefault();
+      ev.dataTransfer.dropEffect = 'copy';
+      dropTargetKey = pathKey(path);
+    }
   }
 
   function handleDragLeave(path: string[]) {
@@ -108,30 +118,48 @@
   async function handleDrop(path: string[], ev: DragEvent) {
     ev.preventDefault();
     const data = ev.dataTransfer?.getData(DRAG_MIME);
-    if (!data) {
+    const externalFiles = !data ? Array.from(ev.dataTransfer?.files ?? []) : [];
+    if (!data && externalFiles.length === 0) {
       handleDragEnd();
       return;
     }
-    let sourcePath: string[];
-    try {
-      sourcePath = JSON.parse(data) as string[];
-    } catch {
-      handleDragEnd();
-      return;
-    }
-    const src = sourcePath[sourcePath.length - 1];
-    const name = src.split('/').pop() ?? '';
     const dstParent = path[path.length - 1];
-    const dst = `${dstParent}/${name}`;
+
+    if (data) {
+      // Internal tree-to-tree move.
+      let sourcePath: string[];
+      try {
+        sourcePath = JSON.parse(data) as string[];
+      } catch {
+        handleDragEnd();
+        return;
+      }
+      const src = sourcePath[sourcePath.length - 1];
+      const name = src.split('/').pop() ?? '';
+      const dst = `${dstParent}/${name}`;
+      try {
+        await opfs.move(src, dst);
+        // Invalidate both parents.
+        delete childrenCache[pathKey(sourcePath.slice(0, -1))];
+        delete childrenCache[pathKey(path)];
+        await refresh();
+        showNotification(`Moved '${name}' to '${dstParent}'`, 'info');
+      } catch {
+        showNotification('Move failed', 'error');
+      } finally {
+        handleDragEnd();
+      }
+      return;
+    }
+
+    // External-file drop. The Filesystem view is the low-level OPFS
+    // browser, so we deliberately skip media-type validation here —
+    // the user can put any file anywhere. Use Path 2 (Display drop)
+    // or Path 4 (Images-tab category drop) if you want validation.
     try {
-      await opfs.move(src, dst);
-      // Invalidate both parents.
-      delete childrenCache[pathKey(sourcePath.slice(0, -1))];
+      await acceptFilesRaw(externalFiles, dstParent);
       delete childrenCache[pathKey(path)];
       await refresh();
-      showNotification(`Moved '${name}' to '${dstParent}'`, 'info');
-    } catch {
-      showNotification('Move failed', 'error');
     } finally {
       handleDragEnd();
     }

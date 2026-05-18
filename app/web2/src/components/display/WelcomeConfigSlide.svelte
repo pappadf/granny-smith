@@ -3,7 +3,8 @@
   import { setWelcomeSlide } from '@/state/layout.svelte';
   import { showNotification } from '@/state/toasts.svelte';
   import { initEmulator, opfs, gsEval, whenModuleReady } from '@/bus';
-  import { pickAndUpload } from '@/bus/upload';
+  import { pickAndUploadAs } from '@/bus/upload';
+  import type { MediaTypeId } from '@/lib/media';
   import { DEFAULT_CONFIG } from '@/lib/machine';
   import type { ImageCategory } from '@/bus/types';
 
@@ -195,9 +196,14 @@
 
   async function interceptIfUpload(value: string, category: ImageCategory): Promise<string | null> {
     if (value !== UPLOAD_SENTINEL) return value;
-    await pickAndUpload();
+    // Map the dropdown's category (uses 'cd' as the ImageCategory key)
+    // to the upload pipeline's MediaTypeId ('cdrom') and pick strictly:
+    // a file uploaded into the floppy slot must validate AS a floppy
+    // or it's rejected. Prevents accidentally classifying an HD image
+    // as a floppy via the auto-detect order.
+    const mediaId: MediaTypeId = category === 'cd' ? 'cdrom' : (category as MediaTypeId);
+    await pickAndUploadAs(mediaId);
     await refreshOpfs();
-    void category;
     return null;
   }
 

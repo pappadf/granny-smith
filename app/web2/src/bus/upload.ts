@@ -14,6 +14,8 @@ import { gsEval, isModuleReady, getModule } from './emulator';
 import { writeToOPFS, removeFromOPFS, opfs } from './opfs';
 import { showNotification } from '@/state/toasts.svelte';
 import { machine } from '@/state/machine.svelte';
+import { setMounted } from '@/state/images.svelte';
+import { startUpload, finishUpload } from '@/state/uploads.svelte';
 import { sanitizeName, isZipFile, isMacArchive } from '@/lib/archive';
 import { fileHasCheckpointSignature, ROMS_DIR, UPLOAD_DIR } from '@/lib/opfsPaths';
 import { MEDIA_TYPES, type MediaTypeId, type MediaTypeDescriptor } from '@/lib/media';
@@ -52,27 +54,132 @@ export async function acceptFiles(files: File[]): Promise<void> {
     return;
   }
 
-  let firstStagedPath: string | null = null;
-  for (const file of files) {
-    const safe = sanitizeName(file.name) || 'image.img';
-    const staging = `${UPLOAD_DIR}/${safe}`;
+  startUpload(files[0].name);
+  try {
+    let firstStagedPath: string | null = null;
+    for (const file of files) {
+      const safe = sanitizeName(file.name) || 'image.img';
+      const staging = `${UPLOAD_DIR}/${safe}`;
+      try {
+        await writeToOPFS(staging, file);
+        if (!firstStagedPath) firstStagedPath = staging;
+      } catch (err) {
+        console.error('upload: OPFS write failed', err);
+        showNotification(`Upload failed: ${file.name}`, 'error');
+        continue;
+      }
+    }
+    if (!firstStagedPath) return;
+
+    // For now, single-file flow only — multi-file drag is rare and the C side
+    // doesn't compose well with multiple images at once.
+    if (files.length === 1) {
+      await probeAndPersist(firstStagedPath, files[0]);
+    } else {
+      showNotification(`${files.length} files uploaded to ${UPLOAD_DIR}`, 'info');
+    }
+  } finally {
+    finishUpload();
+  }
+}
+
+// Category-strict entry — used by the New Machine dialog dropdowns and
+// the Images-tab per-category drop targets. Validates the staged file
+// AS THIS SPECIFIC category only; rejects (with a toast) anything that
+// doesn't match. Single-file flow.
+export async function acceptFilesAsCategory(
+  files: File[],
+  category: MediaTypeId,
+): Promise<boolean> {
+  if (!files.length) return false;
+  if (!isModuleReady()) {
+    showNotification('Emulator still starting; please retry', 'warning');
+    return false;
+  }
+  const file = files[0];
+  const safe = sanitizeName(file.name) || 'image.img';
+  const staging = `${UPLOAD_DIR}/${safe}`;
+  startUpload(file.name);
+  try {
     try {
       await writeToOPFS(staging, file);
-      if (!firstStagedPath) firstStagedPath = staging;
     } catch (err) {
       console.error('upload: OPFS write failed', err);
       showNotification(`Upload failed: ${file.name}`, 'error');
-      continue;
+      return false;
+    }
+    const descriptor = MEDIA_TYPES[category];
+    const result = await descriptor.validate(staging, gsEval);
+    if (!result.valid) {
+      showNotification(`'${file.name}' is not a valid ${descriptor.label}`, 'error');
+      await removeFromOPFS(staging);
+      return false;
+    }
+    const persisted = await persist(staging, file.name, descriptor, result.info);
+    if (!persisted) return false;
+    if (category === 'rom') await maybeBootFromRom(persisted);
+    else await autoMountIfEmpty(persisted, category);
+    return true;
+  } finally {
+    finishUpload();
+  }
+}
+
+// Raw entry — used by the Filesystem-tab external file drop. NO
+// validation, NO category routing; just writes the file at the given
+// OPFS directory. The Filesystem view exists precisely so the user can
+// poke at OPFS freely, including putting random files anywhere.
+export async function acceptFilesRaw(files: File[], targetDir: string): Promise<void> {
+  if (!files.length) return;
+  if (!isModuleReady()) {
+    showNotification('Emulator still starting; please retry', 'warning');
+    return;
+  }
+  for (const file of files) {
+    const safe = sanitizeName(file.name) || 'file.bin';
+    const finalPath = `${targetDir}/${safe}`;
+    startUpload(file.name);
+    try {
+      await writeToOPFS(finalPath, file);
+      showNotification(`'${file.name}' saved to ${targetDir}`, 'info');
+    } catch (err) {
+      console.error('upload: OPFS write failed', err);
+      showNotification(`Upload failed: ${file.name}`, 'error');
+    } finally {
+      finishUpload();
     }
   }
-  if (!firstStagedPath) return;
+}
 
-  // For now, single-file flow only — multi-file drag is rare and the C side
-  // doesn't compose well with multiple images at once.
-  if (files.length === 1) {
-    await probeAndPersist(firstStagedPath, files[0]);
-  } else {
-    showNotification(`${files.length} files uploaded to ${UPLOAD_DIR}`, 'info');
+// After a floppy / CD image lands in /opfs/images/{fd,cd}/, try to
+// auto-insert it into an empty drive. Mirrors the physical metaphor of
+// dropping a disk into a Mac — if a slot is free, the disk goes in.
+// ROM uses maybeBootFromRom instead (full cold boot); HD / VROM stay
+// on disk until explicitly mounted from the Images tab. Toast on the
+// outcome either way.
+async function autoMountIfEmpty(persistedPath: string, category: MediaTypeId): Promise<void> {
+  if (category === 'fd') {
+    for (let i = 0; i < 2; i++) {
+      const present = await gsEval(`floppy.drives[${i}].present`);
+      if (present === true) continue;
+      const ok = (await gsEval(`floppy.drives[${i}].insert`, [persistedPath, true])) !== null;
+      if (ok) {
+        setMounted(persistedPath, true);
+        showNotification(`Inserted into floppy drive ${i}`, 'info');
+        return;
+      }
+    }
+    showNotification('Both floppy drives are full — image saved but not mounted', 'warning');
+    return;
+  }
+  if (category === 'cdrom') {
+    const ok = (await gsEval('scsi.attach_cdrom', [persistedPath, 3])) !== null;
+    if (ok) {
+      setMounted(persistedPath, true);
+      showNotification('Mounted into CD-ROM drive', 'info');
+    } else {
+      showNotification('CD-ROM drive is occupied — image saved but not mounted', 'warning');
+    }
   }
 }
 
@@ -104,7 +211,10 @@ async function probeAndPersist(stagingPath: string, file: File): Promise<void> {
     const result = await descriptor.validate(stagingPath, gsEval);
     if (!result.valid) continue;
     const persisted = await persist(stagingPath, file.name, descriptor, result.info);
-    if (persisted && id === 'rom') await maybeBootFromRom(persisted);
+    if (persisted) {
+      if (id === 'rom') await maybeBootFromRom(persisted);
+      else await autoMountIfEmpty(persisted, id);
+    }
     return;
   }
 
@@ -134,7 +244,10 @@ async function probeAndPersist(stagingPath: string, file: File): Promise<void> {
       const result = await descriptor.validate(innerPath, gsEval);
       if (!result.valid) continue;
       const persisted = await persist(innerPath, file.name, descriptor, result.info);
-      if (persisted && id === 'rom') await maybeBootFromRom(persisted);
+      if (persisted) {
+        if (id === 'rom') await maybeBootFromRom(persisted);
+        else await autoMountIfEmpty(persisted, id);
+      }
       await removeFromOPFS(stagingPath);
       await removeFromOPFS(extractDir);
       return;
@@ -245,6 +358,17 @@ export async function pickAndUpload(accept = ''): Promise<void> {
   if (files.length) await acceptFiles(files);
   // Touch the recent list so consumers re-scan.
   void opfs.scanRoms().catch(() => undefined);
+}
+
+// Category-strict picker variant — the New Machine dialog uses this so
+// picking "Upload image..." in (say) the floppy slot only accepts a
+// floppy. Returns the persistDir-relative path of the persisted file
+// (when the upload succeeds), or null when the user cancelled or the
+// file was rejected.
+export async function pickAndUploadAs(category: MediaTypeId, accept = ''): Promise<boolean> {
+  const files = await openFilePicker(accept);
+  if (!files.length) return false;
+  return acceptFilesAsCategory(files, category);
 }
 
 export { ROMS_DIR };

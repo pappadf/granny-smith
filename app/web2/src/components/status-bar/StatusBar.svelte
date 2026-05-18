@@ -1,9 +1,12 @@
 <script lang="ts">
   import { machine, type MachineStatus } from '@/state/machine.svelte';
+  import { uploads } from '@/state/uploads.svelte';
   import DriveActivity from './DriveActivity.svelte';
 
-  // Spec §11: hidden before first machine start.
-  const visible = $derived(machine.status !== 'no-machine');
+  // Spec §11: hidden before first machine start. Also surfaces during
+  // pre-boot uploads so the user can see large-file progress in the
+  // status bar.
+  const visible = $derived(machine.status !== 'no-machine' || uploads.current !== null);
 
   const stateLabel: Record<MachineStatus, string> = {
     'no-machine': '',
@@ -38,6 +41,12 @@
       <DriveActivity label="CD" title="CD-ROM" activity={machine.driveActivity.cd} />
     </div>
     <div class="statusbar-right">
+      {#if uploads.current}
+        <div class="sb-item sb-upload" title="File upload in progress">
+          <span class="upload-spinner"></span>
+          <span class="upload-label">Uploading: {uploads.current}</span>
+        </div>
+      {/if}
       <div class="sb-item sb-desc">{desc}</div>
     </div>
   </div>
@@ -109,5 +118,32 @@
   }
   .gs-statusbar.stopped .sb-state .dot {
     background: #f14c4c;
+  }
+  .sb-upload {
+    gap: 6px;
+    font-size: 11px;
+  }
+  .upload-spinner {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: currentColor;
+    opacity: 0.6;
+    animation: gs-upload-pulse 1s ease-in-out infinite;
+  }
+  .upload-label {
+    max-width: 28ch;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  @keyframes gs-upload-pulse {
+    0%,
+    100% {
+      opacity: 0.3;
+    }
+    50% {
+      opacity: 1;
+    }
   }
 </style>

@@ -5,11 +5,18 @@
   import { openContextMenu, type ContextMenuItem } from '@/components/common/ContextMenu.svelte';
   import { CATEGORY_LABELS, CATEGORY_ACCEPT, iconForCategory } from '@/lib/iconForFsEntry';
   import { opfs } from '@/bus/opfs';
-  import { pickAndUpload } from '@/bus/upload';
+  import { pickAndUploadAs, acceptFilesAsCategory } from '@/bus/upload';
   import { gsEval } from '@/bus/emulator';
   import { showNotification } from '@/state/toasts.svelte';
   import type { OpfsEntry, ImageCategory } from '@/bus/types';
+  import type { MediaTypeId } from '@/lib/media';
   import { images, setMounted } from '@/state/images.svelte';
+
+  // Map the OpfsEntry category to the upload pipeline's MediaTypeId.
+  // The only mismatch is 'cd' (here) vs 'cdrom' (media id).
+  function mediaIdFor(cat: ImageCategory): MediaTypeId {
+    return cat === 'cd' ? 'cdrom' : (cat as MediaTypeId);
+  }
 
   interface Props {
     cat: ImageCategory;
@@ -44,8 +51,41 @@
 
   async function onUploadClick(ev: MouseEvent) {
     ev.stopPropagation();
-    await pickAndUpload(CATEGORY_ACCEPT[cat]);
+    // Category-strict picker: the user is in a specific category
+    // section, so we won't auto-route to a different one if the file's
+    // size happens to match another type.
+    await pickAndUploadAs(mediaIdFor(cat), CATEGORY_ACCEPT[cat]);
     await refresh();
+  }
+
+  // Drop target — accepts external file drops anywhere on the section.
+  // Validates AS this category and rejects (with a toast) on mismatch.
+  let dropActive = $state(false);
+
+  function onDragEnter(ev: DragEvent) {
+    if (!ev.dataTransfer) return;
+    const types = ev.dataTransfer.types;
+    if (!types || !Array.from(types).includes('Files')) return;
+    ev.preventDefault();
+    dropActive = true;
+  }
+  function onDragOver(ev: DragEvent) {
+    if (!ev.dataTransfer) return;
+    const types = ev.dataTransfer.types;
+    if (!types || !Array.from(types).includes('Files')) return;
+    ev.preventDefault();
+    ev.dataTransfer.dropEffect = 'copy';
+  }
+  function onDragLeave() {
+    dropActive = false;
+  }
+  async function onDrop(ev: DragEvent) {
+    dropActive = false;
+    if (!ev.dataTransfer?.files?.length) return;
+    ev.preventDefault();
+    const files = Array.from(ev.dataTransfer.files);
+    const ok = await acceptFilesAsCategory(files, mediaIdFor(cat));
+    if (ok) await refresh();
   }
 
   function onRowContext(entry: OpfsEntry, ev: MouseEvent) {
@@ -130,34 +170,46 @@
   }
 </script>
 
-<CollapsibleSection title={CATEGORY_LABELS[cat]} {open} {onToggle} count={entries.length}>
-  {#snippet actions()}
-    <!-- svelte-ignore a11y_click_events_have_key_events -->
-    <span
-      class="upload-btn"
-      role="button"
-      tabindex="-1"
-      title="Upload {CATEGORY_LABELS[cat]} image"
-      onclick={onUploadClick}
-    >
-      <Icon name="upload" size={14} />
-    </span>
-  {/snippet}
-  {#if loading && entries.length === 0}
-    <p class="empty">Loading…</p>
-  {:else if entries.length === 0}
-    <p class="empty">No {CATEGORY_LABELS[cat]} images. Click the upload button to add one.</p>
-  {:else}
-    {#each entries as entry (entry.path)}
-      <ImageRow
-        name={entry.name}
-        icon={iconForCategory(cat)}
-        mounted={isMounted(entry)}
-        onContextMenu={(ev) => onRowContext(entry, ev)}
-      />
-    {/each}
-  {/if}
-</CollapsibleSection>
+<!-- svelte-ignore a11y_no_static_element_interactions -->
+<div
+  class="drop-host"
+  class:drop-active={dropActive}
+  ondragenter={onDragEnter}
+  ondragover={onDragOver}
+  ondragleave={onDragLeave}
+  ondrop={onDrop}
+>
+  <CollapsibleSection title={CATEGORY_LABELS[cat]} {open} {onToggle} count={entries.length}>
+    {#snippet actions()}
+      <!-- svelte-ignore a11y_click_events_have_key_events -->
+      <span
+        class="upload-btn"
+        role="button"
+        tabindex="-1"
+        title="Upload {CATEGORY_LABELS[cat]} image"
+        onclick={onUploadClick}
+      >
+        <Icon name="upload" size={14} />
+      </span>
+    {/snippet}
+    {#if loading && entries.length === 0}
+      <p class="empty">Loading…</p>
+    {:else if entries.length === 0}
+      <p class="empty">
+        No {CATEGORY_LABELS[cat]} images. Drop a file here or click the upload button.
+      </p>
+    {:else}
+      {#each entries as entry (entry.path)}
+        <ImageRow
+          name={entry.name}
+          icon={iconForCategory(cat)}
+          mounted={isMounted(entry)}
+          onContextMenu={(ev) => onRowContext(entry, ev)}
+        />
+      {/each}
+    {/if}
+  </CollapsibleSection>
+</div>
 
 <style>
   .upload-btn {
@@ -183,5 +235,16 @@
     color: var(--gs-fg-muted);
     font-size: 12px;
     padding: 6px 28px;
+  }
+  /* Drop-target affordance — subtle inset border while a file is
+     being dragged over the section so the user sees which category
+     will accept the drop. */
+  .drop-host {
+    transition: background 80ms ease-out;
+  }
+  .drop-host.drop-active {
+    background: var(--gs-drop-bg);
+    outline: 1px dashed var(--gs-drop-border);
+    outline-offset: -2px;
   }
 </style>
