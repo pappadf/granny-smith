@@ -3,6 +3,7 @@
   import StatusBar from './components/status-bar/StatusBar.svelte';
   import ToastStack from './components/common/ToastStack.svelte';
   import CheckpointResumePrompt from './components/dialogs/CheckpointResumePrompt.svelte';
+  import PreviewNoticeDialog from './components/dialogs/PreviewNoticeDialog.svelte';
   import { theme, applyThemeToHtml, systemTheme } from '@/state/theme.svelte';
   import { startPersistEffects } from '@/state/persist.svelte';
 
@@ -30,6 +31,7 @@
 <StatusBar />
 <ToastStack />
 <CheckpointResumePrompt />
+<PreviewNoticeDialog />
 
 <style>
   :global(html),

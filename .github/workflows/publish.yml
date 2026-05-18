@@ -41,11 +41,13 @@ jobs:
           submodules: recursive
           path: source
 
-      # 2. Build the WASM emulator (release mode)
-      - name: Build WASM (release)
+      # 2. Build the WASM emulator + the new Svelte UI (release mode).
+      # `make ui2` runs `npm ci && npm run build` in app/web2/, then
+      # copies the WASM artifacts produced by `make` into app/web2/dist/.
+      - name: Build WASM + new UI (release)
         working-directory: ./source
         run: |
-          make clean && make
+          make clean && make && make ui2
 
       # 3. Checkout the deployment repository
       - name: Checkout gs-pages
@@ -55,28 +57,28 @@ jobs:
           token: ${{ secrets.DEPLOY_TOKEN }}
           path: deploy
 
-      # 4. Copy build artifacts into versioned folder + /latest/
+      # 4. Copy the new UI's dist/ tree into the versioned folder + /latest/.
+      # app/web2/dist/ is produced by `make ui2` and contains:
+      #   index.html, assets/, icons/, main.mjs, main.wasm,
+      #   coi-serviceworker.js, wasm/, NOTICE
+      # The Vite bundle is self-contained, so a whole-directory copy is
+      # both simpler and more robust than the legacy per-file list.
       - name: Place artifacts
         run: |
           VERSION="${{ github.event.release.tag_name }}"
           echo "Deploying version: $VERSION"
 
-          # Files to deploy (everything in build/ except intermediate objects
-          # and headless binaries)
-          DEPLOY_FILES="index.html main.mjs main.wasm style.css js coi-serviceworker.js"
+          SRC_DIST="source/app/web2/dist"
 
           # --- Versioned folder ---
+          rm -rf "deploy/$VERSION"
           mkdir -p "deploy/$VERSION"
-          for f in $DEPLOY_FILES; do
-            cp -r "source/build/$f" "deploy/$VERSION/"
-          done
+          cp -R "$SRC_DIST"/. "deploy/$VERSION/"
 
           # --- /latest/ (overwrite) ---
           rm -rf deploy/latest
           mkdir -p deploy/latest
-          for f in $DEPLOY_FILES; do
-            cp -r "source/build/$f" deploy/latest/
-          done
+          cp -R "$SRC_DIST"/. deploy/latest/
 
       # 5. Generate the landing page listing all deployed versions
       - name: Generate landing page

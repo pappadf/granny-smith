@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v0.4.0] — 2026-05-18
+
+### Added
+- **Macintosh IIcx, IIx, and IIfx** — first non-SE/30 68030 machines; boot 7.x to Finder
+- **Color graphics** — NuBus subsystem with the JMFB display adapter (8-bit and deeper modes)
+- **New browser UI** — Svelte 5 + Vite + TypeScript frontend with overhauled panels (Terminal, Logs, Machine, Filesystem, Images, Checkpoints, Debug)
+- **Typed object model** — `cpu.pc`, `memory.peek.bytes(...)`, etc. as a single dispatch tree replacing the legacy shell command surface
+
+### Changed
+- Legacy UI retained at `app/web-legacy/` (reachable via `make run-legacy`) during soak
+
+### Fixed
+- MMU hot-path performance: force-inlined `phys_to_host` / `phys_read32` / `phys_is_writable`; lazy identity-SoA install
+- Numerous smaller fixes uncovered by the IIcx / IIfx bring-up and a code-review sweep across CPU, SCSI, ASC, IOP, and scheduler
+
 ## [v0.3.0] — 2026-05-01
 
 ### Added
