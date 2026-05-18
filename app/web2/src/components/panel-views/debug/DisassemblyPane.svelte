@@ -1,29 +1,55 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
-  import { disasmAt, readRegisters, type DisasmRow } from '@/bus/debug';
+  import { onMount, tick } from 'svelte';
+  import { loadDebugFrame, addBreakpoint, removeBreakpoint, type DebugFrameRow } from '@/bus/debug';
   import { openContextMenu, type ContextMenuItem } from '@/components/common/ContextMenu.svelte';
+  import { showNotification } from '@/state/toasts.svelte';
   import { machine } from '@/state/machine.svelte';
   import { debug, inspectMmuWalk, inspectMemoryAt } from '@/state/debug.svelte';
-  import { mmuLookup } from '@/bus/mockMmu';
   import { fmtHex32 } from '@/lib/hex';
   import { cycleListSelection, listKeyFromEvent } from '@/lib/keyboardNav';
 
   const ROWS = 32;
-  // Naive instruction stride — 68K has variable-length instructions; we
-  // ask for ROWS rows centered on PC. The shell disasm honors `count`,
-  // and the WORD-aligned step approximation gets us close enough for
-  // the "centered" listing in Phase 6.
+  // Bytes to fetch *before* PC. 68K instructions are variable length so
+  // PC ends up at a variable row index (usually 4–8). The scroll
+  // anchor below normalises that visually — PC always sits at line 5
+  // from the top regardless of how many bytes the leading instructions
+  // consume.
   const BACK_BYTES = 16;
+  // Row position (1-indexed) where the PC row should appear after a
+  // refresh. Pre-PC rows stay scrollable for context.
+  const PC_ANCHOR_LINE = 5;
+  // Single source of truth for row height — must match `.row { height: ... }`.
+  const ROW_HEIGHT_PX = 22;
 
-  let rows = $state<DisasmRow[]>([]);
+  let rows = $state<DebugFrameRow[]>([]);
   let pc = $state(0);
 
   async function refresh() {
-    const regs = await readRegisters();
-    pc = regs?.pc ?? 0;
+    // One bridge round-trip: registers + disasm rows + real per-row
+    // MMU translation. Replaces the previous ~21-call fan-out
+    // (readRegisters + disasmAt + mockMmu lookups per row).
+    const start = pc > 0 ? Math.max(0, (pc - BACK_BYTES) >>> 0) : undefined;
+    const frame = await loadDebugFrame(start, ROWS);
+    if (!frame) return;
+    pc = frame.regs.pc;
     debug.currentPc = pc;
-    const start = Math.max(0, (pc - BACK_BYTES) >>> 0);
-    rows = await disasmAt(start, ROWS);
+    rows = frame.rows;
+    // Wait for the DOM to reflect the new rows, then anchor PC at the
+    // configured line. Without this, scrollTop is computed against
+    // stale layout.
+    await tick();
+    anchorPcRow();
+  }
+
+  // Scroll the pane so the PC row sits at the configured anchor line.
+  // No-op when PC isn't in the current window (start-of-day before the
+  // first frame loads).
+  function anchorPcRow(): void {
+    if (!paneEl) return;
+    const pcIdx = rows.findIndex((r) => r.addr === pc);
+    if (pcIdx < 0) return;
+    const target = (pcIdx - (PC_ANCHOR_LINE - 1)) * ROW_HEIGHT_PX;
+    paneEl.scrollTop = Math.max(0, target);
   }
 
   onMount(() => {
@@ -32,7 +58,10 @@
 
   $effect(() => {
     // Re-fetch on pause / running transitions and after each Step.
+    // `refreshGen` is bumped by stepInto so Steps trigger a refresh
+    // even when the status is unchanged (paused → paused).
     void machine.status;
+    void debug.refreshGen;
     void refresh();
   });
 
@@ -41,28 +70,43 @@
     if (!machine.mmuEnabled) {
       return `${model} · PC at $${fmtHex32(pc)}`;
     }
-    const r = mmuLookup(pc);
-    if (!r.valid) return `${model} · PC at L:$${fmtHex32(pc)} (no MMU mapping)`;
-    return `${model} · PC at L:$${fmtHex32(pc)} P:$${fmtHex32(r.phys ?? 0)} ${r.kind ?? 'PT'}`;
+    // Find the row at PC in the current frame — its phys/valid come
+    // straight from the C-side MMU walk, no second round-trip.
+    const pcRow = rows.find((r) => r.addr === pc);
+    if (!pcRow || !pcRow.valid) return `${model} · PC at L:$${fmtHex32(pc)} (no MMU mapping)`;
+    return `${model} · PC at L:$${fmtHex32(pc)} P:$${fmtHex32(pcRow.phys ?? 0)}`;
   }
 
-  function rowAddrLabel(row: DisasmRow): { logical: string; physical?: string; tag?: string } {
+  function rowAddrLabel(row: DebugFrameRow): { logical: string; physical?: string; tag?: string } {
     if (!machine.mmuEnabled) {
       return { logical: `$${fmtHex32(row.addr)}` };
     }
-    const r = mmuLookup(row.addr);
-    if (!r.valid) return { logical: `L:$${fmtHex32(row.addr)}`, tag: 'INVALID' };
+    if (!row.valid) return { logical: `L:$${fmtHex32(row.addr)}`, tag: 'INVALID' };
     return {
       logical: `L:$${fmtHex32(row.addr)}`,
-      physical: `P:$${fmtHex32(r.phys ?? 0)}`,
-      tag: r.kind ?? 'PT',
+      physical: `P:$${fmtHex32(row.phys ?? 0)}`,
     };
   }
 
-  function onRowContext(row: DisasmRow, ev: MouseEvent) {
+  function onRowContext(row: DebugFrameRow, ev: MouseEvent) {
     ev.preventDefault();
     const mmuOn = machine.mmuEnabled;
     const items: ContextMenuItem[] = [
+      {
+        label: `Add breakpoint at $${fmtHex32(row.addr)}`,
+        action: async () => {
+          const ok = await addBreakpoint(row.addr);
+          if (!ok) showNotification('Failed to add breakpoint', 'error');
+        },
+      },
+      {
+        label: `Remove breakpoint at $${fmtHex32(row.addr)}`,
+        action: async () => {
+          const ok = await removeBreakpoint(row.addr);
+          if (!ok) showNotification('Failed to remove breakpoint', 'error');
+        },
+      },
+      { sep: true },
       {
         label: 'Copy logical address',
         action: () => {
@@ -75,9 +119,8 @@
       items.push({
         label: 'Copy physical address',
         action: () => {
-          const r = mmuLookup(row.addr);
-          if (r.valid && r.phys !== undefined && navigator.clipboard?.writeText)
-            void navigator.clipboard.writeText(`$${fmtHex32(r.phys)}`);
+          if (row.valid && row.phys !== null && navigator.clipboard?.writeText)
+            void navigator.clipboard.writeText(`$${fmtHex32(row.phys)}`);
         },
       });
       items.push({
@@ -144,7 +187,9 @@
   onkeydown={onKey}
 >
   <div class="banner">{bannerLabel()}</div>
-  {#if rows.length === 0}
+  {#if machine.status === 'running'}
+    <p class="hint">Pause the machine to see the disasm listing.</p>
+  {:else if rows.length === 0}
     <p class="hint">Pause the machine to see the disasm listing.</p>
   {:else}
     {#each rows as row, i (row.addr * 100 + i)}
@@ -158,12 +203,17 @@
         oncontextmenu={(ev) => onRowContext(row, ev)}
       >
         <span class="marker">{isPc ? '►' : ''}</span>
-        <span class="addr-l">{addr.logical}</span>
-        {#if addr.physical}<span class="addr-p">{addr.physical}</span>{/if}
-        {#if addr.tag}<span class="tag tag-{addr.tag.toLowerCase()}">{addr.tag}</span>{/if}
+        <!-- Address group is one grid cell so the mnem/ops columns
+             stay aligned across rows even when addr-p / tag are
+             absent. Without the wrapper, missing optional spans
+             would shift mnem to an earlier column on some rows. -->
+        <span class="addr">
+          <span class="addr-l">{addr.logical}</span>
+          {#if addr.physical}<span class="addr-p">{addr.physical}</span>{/if}
+          {#if addr.tag}<span class="tag tag-{addr.tag.toLowerCase()}">{addr.tag}</span>{/if}
+        </span>
         <span class="mnem">{row.mnem}</span>
         <span class="ops">{row.ops}</span>
-        {#if row.cmt}<span class="cmt">; {row.cmt}</span>{/if}
       </div>
     {/each}
   {/if}
@@ -176,14 +226,20 @@
     overflow: auto;
     background: var(--gs-bg);
     font-family: var(--gs-font-mono, ui-monospace, Menlo, monospace);
-    font-size: 13px;
+    /* 11 px matches the body-text baseline used by section headers
+       and the MMU descriptor lines; disasm rows shouldn't read larger
+       than the surrounding chrome. */
+    font-size: 11px;
   }
   .banner {
     position: sticky;
     top: 0;
     z-index: 1;
-    background: rgba(0, 127, 212, 0.1);
+    /* Opaque so disasm rows scrolling underneath don't bleed
+       through; tinted border-left preserves the blue indicator. */
+    background: var(--gs-bg-alt);
     border-left: 2px solid var(--gs-focus, #0969da);
+    border-bottom: 1px solid var(--gs-border);
     color: var(--gs-fg);
     font-size: 11px;
     padding: 4px 12px;
@@ -191,11 +247,15 @@
   .hint {
     color: var(--gs-fg-muted);
     padding: 12px;
-    font-size: 12px;
+    font-size: 11px;
   }
   .row {
+    /* Four stable columns: PC marker, address group (logical / phys /
+       tag inline), mnemonic, operands. mnem auto-sizes to the longest
+       mnemonic across all rows, so operands always start at the same
+       x. ops gets `1fr` to take the rest. */
     display: grid;
-    grid-template-columns: 14px auto auto auto auto 1fr auto;
+    grid-template-columns: 14px auto auto 1fr;
     column-gap: 8px;
     align-items: center;
     height: 22px;
@@ -203,6 +263,11 @@
     line-height: 22px;
     cursor: default;
     white-space: nowrap;
+  }
+  .addr {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
   }
   .row:hover {
     background: var(--gs-row-hover, rgba(255, 255, 255, 0.05));

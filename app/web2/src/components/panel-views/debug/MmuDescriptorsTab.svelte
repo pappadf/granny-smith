@@ -99,7 +99,7 @@
     height: 22px;
     padding: 0 6px;
     font-family: var(--gs-font-mono, ui-monospace, Menlo, monospace);
-    font-size: 12px;
+    font-size: 11px;
     outline: none;
     text-transform: uppercase;
   }
@@ -127,7 +127,7 @@
     align-items: center;
     gap: 12px;
     font-family: var(--gs-font-mono, ui-monospace, Menlo, monospace);
-    font-size: 12px;
+    font-size: 11px;
     line-height: 1.7;
     color: var(--gs-fg);
   }

@@ -83,7 +83,7 @@
     height: 22px;
     padding: 0 6px;
     font-family: var(--gs-font-mono, ui-monospace, Menlo, monospace);
-    font-size: 12px;
+    font-size: 11px;
     width: 10ch;
     outline: none;
     text-transform: uppercase;
@@ -106,14 +106,14 @@
   }
   .hint {
     color: var(--gs-fg-muted);
-    font-size: 12px;
+    font-size: 11px;
   }
   .map-row {
     display: grid;
     grid-template-columns: auto auto 1fr;
     column-gap: 16px;
     font-family: var(--gs-font-mono, ui-monospace, Menlo, monospace);
-    font-size: 12px;
+    font-size: 11px;
     line-height: 1.7;
   }
   .map-l {

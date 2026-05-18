@@ -13,6 +13,7 @@ interface DebugState {
   mmuSupervisor: boolean;
   sections: {
     registers: boolean;
+    fpu: boolean;
     memory: boolean;
     mmu: boolean;
     breakpoints: boolean;
@@ -23,6 +24,12 @@ interface DebugState {
    *  by RegistersSection to flash changed values for ~800 ms after a
    *  Step. */
   registersPrev: Record<string, number>;
+  /** Monotonic counter bumped after every Step Into / Step Over. The
+   *  Debug panes watch this in their $effects in addition to
+   *  machine.status — stepping while paused doesn't change run-state
+   *  (paused → paused, no onRunStateChange push), so we need a
+   *  reactive signal of "PC moved, re-fetch" to trigger refreshes. */
+  refreshGen: number;
 }
 
 export const debug: DebugState = $state({
@@ -32,8 +39,13 @@ export const debug: DebugState = $state({
   mmuSubtab: 'state',
   mmuTransAddr: 0x00400000,
   mmuSupervisor: false,
+  // Only the Disassembly pane (rendered above the sections, not a
+  // CollapsibleSection) is visible by default; every collapsible
+  // section starts closed so first-paint stays compact. The user's
+  // expansion state is persisted in localStorage from then on.
   sections: {
-    registers: true,
+    registers: false,
+    fpu: false,
     memory: false,
     mmu: false,
     breakpoints: false,
@@ -41,7 +53,12 @@ export const debug: DebugState = $state({
     callstack: false,
   },
   registersPrev: {},
+  refreshGen: 0,
 });
+
+export function bumpDebugRefresh(): void {
+  debug.refreshGen++;
+}
 
 export function toggleSection(name: keyof DebugState['sections']): void {
   debug.sections[name] = !debug.sections[name];
@@ -71,7 +88,8 @@ export function inspectMemoryAt(addr: number): void {
 // handler if we want to reset orientations.
 export function resetDebugSections(): void {
   debug.sections = {
-    registers: true,
+    registers: false,
+    fpu: false,
     memory: false,
     mmu: false,
     breakpoints: false,

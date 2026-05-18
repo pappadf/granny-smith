@@ -5,13 +5,19 @@ import { debug } from '@/state/debug.svelte';
 
 const writes: Array<{ name: string; value: number }> = [];
 vi.mock('@/bus/debug', () => ({
-  readRegisters: vi.fn(async () => ({
-    d: [0, 1, 2, 3, 4, 5, 6, 7],
-    a: [0x100, 0x200, 0x300, 0x400, 0x500, 0x600, 0x700, 0x800],
-    pc: 0x40028e,
-    sr: 0x2700,
-    usp: 0x00fffe00,
-    ssp: 0x00fffc00,
+  // RegistersSection now consumes the bundled `loadDebugFrame()` —
+  // the section reads from `frame.regs`, so the mock returns a frame
+  // shape with empty `rows[]` and a populated `regs`.
+  loadDebugFrame: vi.fn(async () => ({
+    regs: {
+      d: [0, 1, 2, 3, 4, 5, 6, 7],
+      a: [0x100, 0x200, 0x300, 0x400, 0x500, 0x600, 0x700, 0x800],
+      pc: 0x40028e,
+      sr: 0x2700,
+      usp: 0x00fffe00,
+      ssp: 0x00fffc00,
+    },
+    rows: [],
   })),
   writeRegister: vi.fn(async (name: string, value: number) => {
     writes.push({ name, value });

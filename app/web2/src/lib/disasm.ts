@@ -1,9 +1,12 @@
 // Parses a line of `debug.disasm` output into a structured row. The
-// shell prints lines in the form:
-//   00400C  MOVE.L (A0)+,D1        ; comment text
-// We parse the leading address, the mnemonic (first word after the
-// address), the operand block (everything up to a trailing comment), and
-// any `; comment` tail. Unit-tested.
+// C-side `debugger_disasm` writes lines through
+//   snprintf("%s  %04x  %-10s%-12s", addr_str, word, mnem, operands)
+// so the concrete shapes are
+//   $00400C  4e75  RTS        D1,(A0)+
+//   L:$00400C P:$00400C  4e75  RTS        D1,(A0)+
+// (the `L:$… P:$…` pair is emitted by addr_format when the MMU is
+// active.) We capture the *logical* address, skip the hex instruction
+// word, then pick up the mnemonic and operands.
 
 export interface DisasmRow {
   addr: number;
@@ -12,10 +15,8 @@ export interface DisasmRow {
   cmt: string;
 }
 
-// Permissive — accept any number of leading-spaces, address optionally
-// prefixed with `$`, mnemonic word with optional `.size` suffix, and
-// the rest is treated as operands.
-const LINE_RE = /^\s*\$?([0-9a-fA-F]+)\s+([A-Z][A-Z0-9.]*)\s*([^;]*?)\s*(?:;\s*(.*))?\s*$/;
+const LINE_RE =
+  /^\s*(?:L:)?\$?([0-9a-fA-F]+)(?:\s+P:\$?[0-9a-fA-F?]+)?\s+(?:[0-9a-fA-F]+\s+)?([A-Z][A-Z0-9.]*)\s*([^;]*?)\s*(?:;\s*(.*))?\s*$/;
 
 export function parseDisasmLine(line: string): DisasmRow | null {
   if (!line) return null;

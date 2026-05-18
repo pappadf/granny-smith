@@ -90,6 +90,12 @@
   --gs-terminal-fg: #cccccc; /* terminal.foreground dark */
   --gs-terminal-cursor: #cccccc;
 
+  /* Diff highlight — applied to debug panes (registers / FPU / memory)
+     on cells whose value differs from the previous refresh. Persists
+     until the next refresh, so the user sees exactly what changed on
+     the last step. */
+  --gs-changed-bg: rgba(255, 220, 64, 0.18);
+
   --gs-menu-bg: #252526; /* menu.background dark */
   --gs-menu-fg: #cccccc; /* menu.foreground dark */
   --gs-menu-hover-bg: #04395e; /* menu.selectionBackground dark */
@@ -186,6 +192,9 @@
   --gs-terminal-bg: #f6f6f6; /* terminal.background light */
   --gs-terminal-fg: #333333; /* terminal.foreground light */
   --gs-terminal-cursor: #333333;
+
+  /* Diff highlight (see dark theme note). */
+  --gs-changed-bg: rgba(220, 170, 0, 0.22);
 
   --gs-menu-bg: #f8f8f8; /* menu.background light */
   --gs-menu-fg: #333333; /* menu.foreground light */

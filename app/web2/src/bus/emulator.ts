@@ -12,6 +12,7 @@ import { machine, type MachineStatus } from '@/state/machine.svelte';
 import { showNotification } from '@/state/toasts.svelte';
 import { getOrCreateMachine } from '@/lib/machineId';
 import { routePrintLine, routeLogEmit } from './logSink';
+import { resetDebugSections } from '@/state/debug.svelte';
 import type { MachineConfig } from './types';
 
 const BRIDGE_VERSION = 5;
@@ -285,6 +286,15 @@ export function getModule(): EmscriptenModule | null {
 
 // --- Lifecycle wrappers --------------------------------------------------
 
+// Remember the most recent boot config so `restart()` can re-apply it
+// without a C-side reset method. Cleared on shutdown so a stale config
+// from a previous machine doesn't restart unexpectedly.
+let lastBootConfig: MachineConfig | null = null;
+
+export function getLastBootConfig(): MachineConfig | null {
+  return lastBootConfig;
+}
+
 // Boot a machine from a config. Sequence mirrors app/web/js/config-dialog.js
 // bootFromConfig (the happy path; model-specific quirks land as bugs surface).
 export async function initEmulator(config: MachineConfig): Promise<void> {
@@ -328,12 +338,20 @@ export async function initEmulator(config: MachineConfig): Promise<void> {
   await gsEval('scheduler.run');
   // onRunStateChange will flip machine.status to 'running' once the
   // worker pushes the transition.
+  lastBootConfig = config;
+  // Every new boot starts with the Debug-tab sections collapsed —
+  // only the always-visible Disassembly pane shows by default.
+  // Persisted localStorage state is overwritten by this reset, which
+  // is the user-requested behaviour (each new machine gets a clean
+  // debug layout).
+  resetDebugSections();
   showNotification('Machine started', 'info');
 }
 
 export async function shutdownEmulator(): Promise<void> {
   await gsEval('scheduler.stop');
   machine.status = 'stopped' as MachineStatus;
+  lastBootConfig = null;
   showNotification('Machine stopped', 'info');
 }
 

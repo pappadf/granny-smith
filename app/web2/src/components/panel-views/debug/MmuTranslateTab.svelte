@@ -129,7 +129,7 @@
     height: 22px;
     padding: 0 6px;
     font-family: var(--gs-font-mono, ui-monospace, Menlo, monospace);
-    font-size: 12px;
+    font-size: 11px;
     width: 10ch;
     outline: none;
     text-transform: uppercase;
@@ -161,13 +161,13 @@
   .invalid {
     color: var(--gs-error-fg, #f48771);
     font-family: var(--gs-font-mono, ui-monospace, Menlo, monospace);
-    font-size: 12px;
+    font-size: 11px;
     margin: 6px 0 0;
   }
   .ok {
     color: var(--gs-fg);
     font-family: var(--gs-font-mono, ui-monospace, Menlo, monospace);
-    font-size: 12px;
+    font-size: 11px;
     margin: 6px 0 0;
   }
   .hex {

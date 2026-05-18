@@ -1,5 +1,6 @@
 <script lang="ts">
   import type { Snippet } from 'svelte';
+  import Icon from '@/components/common/Icon.svelte';
 
   interface Props {
     title: string;
@@ -16,7 +17,7 @@
 <section class="section gs-collapsible" class:open>
   <!-- svelte-ignore a11y_click_events_have_key_events -->
   <header class="header" onclick={onToggle} role="button" tabindex="-1" aria-expanded={open}>
-    <span class="twistie">{open ? '▼' : '▶'}</span>
+    <span class="twistie" class:open><Icon name="chevron" size={12} /></span>
     <span class="title">{title}</span>
     {#if typeof count === 'number'}
       <span class="count">{count}</span>
@@ -59,12 +60,19 @@
     background: var(--gs-row-hover, rgba(255, 255, 255, 0.05));
   }
   .twistie {
-    display: inline-block;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
     width: 14px;
-    text-align: center;
     color: var(--gs-fg-muted);
-    font-size: 9px;
     flex-shrink: 0;
+    /* Chevron points down when open, rotates to point right when
+       collapsed. Matches the codicon-driven VS Code tree pattern. */
+    transform: rotate(-90deg);
+    transition: transform 80ms ease-out;
+  }
+  .twistie.open {
+    transform: rotate(0deg);
   }
   .title {
     font-size: 11px;

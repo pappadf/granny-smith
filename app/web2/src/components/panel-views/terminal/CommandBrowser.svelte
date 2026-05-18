@@ -3,6 +3,7 @@
   import { showNotification } from '@/state/toasts.svelte';
   import { insertIntoTerminal } from './terminalBridge';
   import CommandBrowser from './CommandBrowser.svelte';
+  import Icon from '@/components/common/Icon.svelte';
   import { cycleListSelection, listKeyFromEvent } from '@/lib/keyboardNav';
 
   interface Props {
@@ -138,8 +139,9 @@
           role="button"
           tabindex="-1"
           aria-label={hasChildren ? (open ? 'Collapse' : 'Expand') : ''}
-          >{hasChildren ? (open ? '▼' : '▶') : ''}</span
         >
+          {#if hasChildren}<Icon name="chevron" size={12} />{/if}
+        </span>
         <span class="name">{node.name}</span>
         {#if node.insert}
           <span class="insert-hint" title="Click to insert into terminal prompt">↵</span>
@@ -202,12 +204,18 @@
     background: var(--gs-row-hover, rgba(255, 255, 255, 0.05));
   }
   .twistie {
-    display: inline-block;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
     width: 14px;
     color: var(--gs-fg-muted);
-    font-size: 9px;
-    text-align: center;
     flex-shrink: 0;
+    /* Chevron-style twistie matching CollapsibleSection / TreeRow. */
+    transform: rotate(-90deg);
+    transition: transform 80ms ease-out;
+  }
+  .twistie.open {
+    transform: rotate(0deg);
   }
   .twistie:not(.has) {
     visibility: hidden;

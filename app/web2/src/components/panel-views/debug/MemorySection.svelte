@@ -24,6 +24,7 @@
   // Re-fetch on pause/step transitions.
   $effect(() => {
     void machine.status;
+    void debug.refreshGen;
     if (debug.sections.memory) void refresh();
   });
 
@@ -124,7 +125,9 @@
     {/if}
   </div>
   <div class="mem-body">
-    {#if loading && !bytes}
+    {#if machine.status === 'running'}
+      <p class="mem-hint">Pause the machine to inspect memory.</p>
+    {:else if loading && !bytes}
       <p class="mem-hint">Reading…</p>
     {:else if !bytes}
       <p class="mem-hint">No machine running.</p>
@@ -164,7 +167,7 @@
     height: 22px;
     padding: 0 6px;
     font-family: var(--gs-font-mono, ui-monospace, Menlo, monospace);
-    font-size: 12px;
+    font-size: 11px;
     width: 10ch;
     outline: none;
     text-transform: uppercase;
@@ -215,14 +218,18 @@
   }
   .mem-hint {
     color: var(--gs-fg-muted);
-    font-size: 12px;
+    font-size: 11px;
   }
   .mem-row {
+    /* All three columns are content-width so the ASCII gutter sits
+       directly after the hex bytes instead of being pushed to the
+       right edge of a stretched 1fr column. */
     display: grid;
-    grid-template-columns: minmax(0, max-content) 1fr auto;
-    column-gap: 12px;
+    grid-template-columns: auto auto auto;
+    column-gap: 18px;
+    justify-content: start;
     font-family: var(--gs-font-mono, ui-monospace, Menlo, monospace);
-    font-size: 12px;
+    font-size: 11px;
     line-height: 1.6;
   }
   .mem-row-addr {

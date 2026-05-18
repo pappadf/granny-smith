@@ -2,7 +2,7 @@
   import { onMount } from 'svelte';
   import CollapsibleSection from '@/components/common/CollapsibleSection.svelte';
   import { openContextMenu, type ContextMenuItem } from '@/components/common/ContextMenu.svelte';
-  import { readRegisters, writeRegister, type Registers } from '@/bus/debug';
+  import { loadDebugFrame, writeRegister, type Registers } from '@/bus/debug';
   import { machine } from '@/state/machine.svelte';
   import { showNotification } from '@/state/toasts.svelte';
   import { debug, toggleSection, inspectMemoryAt } from '@/state/debug.svelte';
@@ -13,12 +13,24 @@
   let changed = $state<Record<string, boolean>>({});
 
   async function refresh() {
-    const next = await readRegisters();
-    if (!next) {
+    // Reuse the bundled debug.frame call (one bridge round-trip for
+    // registers + disasm + MMU). DisassemblyPane fires the same call
+    // independently — total per-pause cost is 2 bridge calls, down
+    // from ~40 (20 here, 20+1 there). Sharing a single fetch is a
+    // future polish; the duplicate response is small (~5 KB) and the
+    // C-side cost is sub-millisecond.
+    const frame = await loadDebugFrame();
+    if (!frame) {
       regs = null;
       return;
     }
+    const next = frame.regs;
     if (regs) {
+      // Highlight registers that just changed and KEEP the highlight
+      // until the next refresh — `changed` is fully replaced below,
+      // so the next step naturally clears the previous flash and
+      // marks only the newly-changed registers. No auto-decay timer,
+      // so single-stepping feels instant.
       const prevMap = flattenRegs(regs);
       const nextMap = flattenRegs(next);
       const flashed: Record<string, boolean> = {};
@@ -26,7 +38,6 @@
         if (prevMap[k] !== nextMap[k]) flashed[k] = true;
       }
       changed = flashed;
-      setTimeout(() => (changed = {}), 800);
     }
     regs = next;
     debug.registersPrev = flattenRegs(next);
@@ -48,8 +59,12 @@
   });
 
   // Re-fetch when the machine pauses (post-step / breakpoint hit).
+  // Also watches `debug.refreshGen` — Steps don't change run-state
+  // (paused → paused) so we need an explicit "PC moved" signal to
+  // trigger a re-fetch.
   $effect(() => {
     void machine.status;
+    void debug.refreshGen;
     if (machine.status === 'paused' || machine.status === 'running') {
       void refresh();
     }
@@ -127,7 +142,9 @@
   open={debug.sections.registers}
   onToggle={() => toggleSection('registers')}
 >
-  {#if !regs}
+  {#if machine.status === 'running'}
+    <p class="reg-hint">Pause the machine to inspect register state.</p>
+  {:else if !regs}
     <p class="reg-hint">No machine running.</p>
   {:else}
     {#each GROUPS as group (group.title)}
@@ -163,7 +180,7 @@
 <style>
   .reg-hint {
     color: var(--gs-fg-muted);
-    font-size: 12px;
+    font-size: 11px;
     padding: 8px 16px;
   }
   .reg-group {
@@ -178,18 +195,22 @@
     letter-spacing: 0.04em;
   }
   .reg-rows {
+    /* `auto auto` keeps both columns content-width so the right-hand
+       registers sit next to the left ones rather than drifting to the
+       far edge of a wide section. */
     display: grid;
     grid-auto-flow: column;
-    grid-template-columns: 1fr 1fr;
-    column-gap: 16px;
-    row-gap: 2px;
+    grid-template-columns: auto auto;
+    column-gap: 24px;
+    row-gap: 0;
+    justify-content: start;
   }
   .reg-row {
     display: inline-flex;
     align-items: center;
     gap: 8px;
     font-family: var(--gs-font-mono, ui-monospace, Menlo, monospace);
-    font-size: 13px;
+    font-size: 11px;
   }
   .reg-name {
     color: var(--gs-fg-muted);
@@ -198,12 +219,17 @@
     flex-shrink: 0;
   }
   .reg-value {
+    /* Reset to content-box so `width: 8ch` (set inline) reflects the
+       hex digit content area, not the total box. The global reset
+       applies border-box to everything, which truncates the value to
+       ~6.5 chars after subtracting 8 px of padding + 2 px of border. */
+    box-sizing: content-box;
     background: transparent;
     color: var(--gs-fg);
     border: 1px solid transparent;
     border-radius: 2px;
-    padding: 1px 4px;
-    height: 20px;
+    padding: 0 4px;
+    height: 18px;
     font-family: inherit;
     font-size: inherit;
     outline: none;
@@ -217,7 +243,7 @@
     background: var(--gs-input-bg, rgba(0, 0, 0, 0.2));
   }
   .reg-value.changed {
-    background: rgba(255, 220, 64, 0.18);
+    background: var(--gs-changed-bg);
   }
   .reg-value:global(.invalid) {
     border-color: var(--gs-error-fg, #f48771) !important;

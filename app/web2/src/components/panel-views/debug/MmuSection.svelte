@@ -20,47 +20,56 @@
 
 {#if visible}
   <CollapsibleSection title="MMU" open={debug.sections.mmu} onToggle={() => toggleSection('mmu')}>
-    <TabStrip
-      tabs={TABS}
-      active={debug.mmuSubtab}
-      onSelect={(k: MmuSubtab) => (debug.mmuSubtab = k)}
-    >
-      {#snippet accessory()}
-        <div class="su-toggle" role="group" aria-label="Supervisor / User root">
-          <button
-            type="button"
-            class="su-btn"
-            class:active={debug.mmuSupervisor}
-            onclick={() => (debug.mmuSupervisor = true)}
-            title="Supervisor root"
-          >
-            S
-          </button>
-          <button
-            type="button"
-            class="su-btn"
-            class:active={!debug.mmuSupervisor}
-            onclick={() => (debug.mmuSupervisor = false)}
-            title="User root"
-          >
-            U
-          </button>
-        </div>
-      {/snippet}
-    </TabStrip>
-    {#if debug.mmuSubtab === 'state'}
-      <MmuStateTab />
-    {:else if debug.mmuSubtab === 'translate'}
-      <MmuTranslateTab />
-    {:else if debug.mmuSubtab === 'map'}
-      <MmuMapTab />
+    {#if machine.status === 'running'}
+      <p class="mmu-hint">Pause the machine to inspect MMU state.</p>
     {:else}
-      <MmuDescriptorsTab />
+      <TabStrip
+        tabs={TABS}
+        active={debug.mmuSubtab}
+        onSelect={(k: MmuSubtab) => (debug.mmuSubtab = k)}
+      >
+        {#snippet accessory()}
+          <div class="su-toggle" role="group" aria-label="Supervisor / User root">
+            <button
+              type="button"
+              class="su-btn"
+              class:active={debug.mmuSupervisor}
+              onclick={() => (debug.mmuSupervisor = true)}
+              title="Supervisor root"
+            >
+              S
+            </button>
+            <button
+              type="button"
+              class="su-btn"
+              class:active={!debug.mmuSupervisor}
+              onclick={() => (debug.mmuSupervisor = false)}
+              title="User root"
+            >
+              U
+            </button>
+          </div>
+        {/snippet}
+      </TabStrip>
+      {#if debug.mmuSubtab === 'state'}
+        <MmuStateTab />
+      {:else if debug.mmuSubtab === 'translate'}
+        <MmuTranslateTab />
+      {:else if debug.mmuSubtab === 'map'}
+        <MmuMapTab />
+      {:else}
+        <MmuDescriptorsTab />
+      {/if}
     {/if}
   </CollapsibleSection>
 {/if}
 
 <style>
+  .mmu-hint {
+    color: var(--gs-fg-muted);
+    font-size: 11px;
+    padding: 8px 16px;
+  }
   .su-toggle {
     display: inline-flex;
     border: 1px solid var(--gs-border);

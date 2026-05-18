@@ -40,4 +40,33 @@ describe('parseDisasmBlock', () => {
     expect(rows[0].addr).toBe(0x40_0c);
     expect(rows[2].addr).toBe(0x40_1a);
   });
+
+  it('parses the C debug.disasm format ($addr  hex  MNEM  ops)', () => {
+    const text = `$00400C  4e75  RTS         D1,(A0)+
+$00400E  4cdf  MOVEM.L     (SP)+,D0-D7/A0-A6
+$004010  4e71  NOP         `;
+    const rows = parseDisasmBlock(text);
+    expect(rows.length).toBe(3);
+    expect(rows[0].mnem).toBe('RTS');
+    expect(rows[0].ops).toBe('D1,(A0)+');
+    expect(rows[1].mnem).toBe('MOVEM.L');
+    expect(rows[2].mnem).toBe('NOP');
+  });
+
+  it('parses the MMU-expanded format (L:$addr P:$addr  hex  MNEM  ops)', () => {
+    const text = `L:$00400C P:$00400C  4e75  RTS         D1,(A0)+`;
+    const rows = parseDisasmBlock(text);
+    expect(rows.length).toBe(1);
+    expect(rows[0].addr).toBe(0x40_0c);
+    expect(rows[0].mnem).toBe('RTS');
+    expect(rows[0].ops).toBe('D1,(A0)+');
+  });
+
+  it('tolerates an unresolved physical mapping (P:????????)', () => {
+    const text = `L:$DEAD0000 P:????????  4e75  RTS         `;
+    const rows = parseDisasmBlock(text);
+    expect(rows.length).toBe(1);
+    expect(rows[0].addr).toBe(0xdead_0000);
+    expect(rows[0].mnem).toBe('RTS');
+  });
 });

@@ -78,7 +78,7 @@
     tabindex="-1"
     aria-label={hasChildren ? (open ? 'Collapse' : 'Expand') : ''}
   >
-    {hasChildren ? (open ? '▼' : '▶') : ''}
+    {#if hasChildren}<Icon name="chevron" size={12} />{/if}
   </span>
   {#if icon}
     <span class="icon"><Icon name={icon} size={16} /></span>
@@ -116,12 +116,19 @@
     background: rgba(9, 105, 218, 0.15);
   }
   .twistie {
-    display: inline-block;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
     width: 14px;
-    text-align: center;
     color: var(--gs-fg-muted);
-    font-size: 9px;
     flex-shrink: 0;
+    /* Chevron points down when open, rotates to point right when
+       closed. Same pattern as the section twistie. */
+    transform: rotate(-90deg);
+    transition: transform 80ms ease-out;
+  }
+  .twistie.open {
+    transform: rotate(0deg);
   }
   .twistie:not(.has) {
     visibility: hidden;

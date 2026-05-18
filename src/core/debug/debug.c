@@ -23,6 +23,7 @@
 #include "display.h"
 #include "expr.h"
 #include "fpu.h"
+#include "json_encode.h"
 #include "log.h"
 #include "memory.h"
 #include "mmu.h"
@@ -3629,14 +3630,35 @@ static value_t debug_method_disasm(struct object *self, const member_t *m, int a
     }
     if (count <= 0)
         count = 16;
+    // Cap to keep the heap allocation predictable + well under the
+    // bridge's 16 KB output slot. 256 lines at ~160 bytes each is
+    // still ~40 KB worst case; the cap below bounds the result to a
+    // safe 12 KB.
+    if (count > 256)
+        count = 256;
 
-    char buf[160];
+    // Each disasm line is bounded by `line_buf` (160 bytes including
+    // address, mnemonic, operands, optional comment, and trailing
+    // newline). Allocate enough for `count` lines plus a NUL.
+    const size_t line_max = 160;
+    size_t cap = (size_t)count * line_max + 1;
+    char *out = (char *)malloc(cap);
+    if (!out)
+        return val_err("debug.disasm: out of memory");
+    out[0] = '\0';
+    size_t used = 0;
+    char line_buf[160];
     for (int i = 0; i < (int)count; i++) {
-        int instr_len = debugger_disasm(buf, sizeof(buf), addr);
-        printf("%s\n", buf);
+        int instr_len = debugger_disasm(line_buf, sizeof(line_buf), addr);
+        int n = snprintf(out + used, cap - used, "%s\n", line_buf);
+        if (n < 0 || (size_t)n >= cap - used)
+            break; // truncate gracefully if a line is unexpectedly long
+        used += (size_t)n;
         addr += 2 * instr_len;
     }
-    return val_bool(true);
+    value_t r = val_str(out);
+    free(out);
+    return r;
 }
 
 static const arg_decl_t debug_disasm_args[] = {
@@ -3648,6 +3670,226 @@ static const arg_decl_t debug_disasm_args[] = {
      .kind = V_INT,
      .validation_flags = OBJ_ARG_OPTIONAL,
      .doc = "Number of instructions when addr is given as the first argument."                    },
+};
+
+// Side-effect-free conversion of an 80-bit extended-precision register
+// to a host double for display. The FPU's own fpu_to_double helper sets
+// inexact / SNaN bits in fpsr — we don't want that for an observer that
+// just reads register state. Precision loss in normal range is fine for
+// human-readable display; tests/tools that need bit-exact bytes can
+// consume the hex form instead.
+static double fp80_to_display_double(float80_reg_t f) {
+    int sign = FP80_SIGN(f);
+    uint16_t exp = FP80_EXP(f);
+    if (exp == 0 && f.mantissa == 0)
+        return sign ? -0.0 : 0.0;
+    if (exp == 0x7FFF) {
+        if (f.mantissa == 0 || (f.mantissa & ~(1ULL << 63)) == 0)
+            return sign ? -((double)1.0 / 0.0) : ((double)1.0 / 0.0);
+        return (double)0.0 / 0.0;
+    }
+    int32_t true_exp = (int32_t)exp - 16383;
+    if (true_exp > 1023)
+        return sign ? -((double)1.0 / 0.0) : ((double)1.0 / 0.0);
+    if (true_exp < -1074)
+        return sign ? -0.0 : 0.0;
+    uint64_t mant52;
+    int double_exp;
+    if (true_exp >= -1022) {
+        mant52 = (f.mantissa >> 11) & 0x000FFFFFFFFFFFFFULL;
+        double_exp = true_exp + 1023;
+    } else {
+        // Subnormal in double precision.
+        int shift = -1022 - true_exp;
+        if (shift >= 53)
+            return sign ? -0.0 : 0.0;
+        mant52 = (f.mantissa >> (11 + shift)) & 0x000FFFFFFFFFFFFFULL;
+        double_exp = 0;
+    }
+    uint64_t bits = ((uint64_t)sign << 63) | ((uint64_t)double_exp << 52) | mant52;
+    double result;
+    memcpy(&result, &bits, sizeof(result));
+    return result;
+}
+
+// `debug.frame([addr], [count])` — one-shot bundled snapshot for the
+// debug UI. Bundles registers + a disassembly window + per-row MMU
+// translations into a single JSON payload so the JS-side panel can
+// render in one bridge round-trip instead of ~20 separate gsEval
+// calls (one per register + one per disasm + one per row translation).
+// Default: 32 rows starting at PC.
+//
+// Output shape (V_STRING containing JSON):
+//   {
+//     "regs": {
+//       "d0": 0, "d1": 0, ..., "a7": 0,
+//       "pc": <int>, "sr": <int>, "usp": <int>, "ssp": <int>
+//     },
+//     "rows": [
+//       { "addr": <int>, "phys": <int>|null, "valid": true|false,
+//         "mnem": "RTS", "ops": "" },
+//       ...
+//     ],
+//     "fpu": {                              // present only when cpu->fpu != NULL
+//       "fp": [
+//         { "hex": "0000_0000000000000000", "val": "0" },
+//         ...                                // 8 entries
+//       ],
+//       "fpcr": <int>, "fpsr": <int>, "fpiar": <int>
+//     }
+//   }
+//
+// Address values are emitted as JSON integers (not hex strings) so the
+// JS parser is JSON.parse + direct property access — no string→number
+// conversion per field.
+static value_t debug_method_frame(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)self;
+    (void)m;
+    cpu_t *cpu = system_cpu();
+    if (!cpu)
+        return val_err("debug.frame: CPU not initialised");
+
+    uint32_t addr = cpu_get_pc(cpu);
+    int64_t count = 32;
+    if (argc == 1) {
+        count = argv[0].i;
+    } else if (argc >= 2) {
+        addr = (uint32_t)argv[0].i;
+        count = argv[1].i;
+    }
+    if (count <= 0)
+        count = 32;
+    if (count > 256)
+        count = 256;
+
+    json_builder_t *b = json_builder_new();
+    if (!b)
+        return val_err("debug.frame: OOM");
+
+    json_open_obj(b);
+
+    // Registers — all 16 GPRs + control regs in one shot.
+    json_key(b, "regs");
+    json_open_obj(b);
+    char rname[4];
+    for (int i = 0; i < 8; i++) {
+        snprintf(rname, sizeof(rname), "d%d", i);
+        json_key(b, rname);
+        json_int(b, (int64_t)cpu_get_dn(cpu, i));
+    }
+    for (int i = 0; i < 8; i++) {
+        snprintf(rname, sizeof(rname), "a%d", i);
+        json_key(b, rname);
+        json_int(b, (int64_t)cpu_get_an(cpu, i));
+    }
+    json_key(b, "pc");
+    json_int(b, (int64_t)cpu_get_pc(cpu));
+    json_key(b, "sr");
+    json_int(b, (int64_t)cpu_get_sr(cpu));
+    json_key(b, "usp");
+    json_int(b, (int64_t)cpu_get_usp(cpu));
+    json_key(b, "ssp");
+    json_int(b, (int64_t)cpu_get_ssp(cpu));
+    json_close_obj(b);
+
+    // Disasm rows + per-row MMU translation. Each row carries logical
+    // addr, physical addr (or null when invalid), validity flag,
+    // mnemonic, and operands — everything the pane needs to render
+    // without further bridge round-trips.
+    json_key(b, "rows");
+    json_open_arr(b);
+    uint16_t words[16];
+    char mnem[32], ops[80];
+    for (int i = 0; i < (int)count; i++) {
+        json_open_obj(b);
+        json_key(b, "addr");
+        json_int(b, (int64_t)addr);
+
+        bool valid = true;
+        uint32_t phys = debug_translate_address(addr, NULL, NULL, &valid);
+        json_key(b, "phys");
+        if (valid)
+            json_int(b, (int64_t)phys);
+        else
+            json_null(b);
+        json_key(b, "valid");
+        json_bool(b, valid);
+
+        for (int j = 0; j < 16; j++)
+            words[j] = cpu_get_uint16(addr + j * 2);
+        int n = disasm(words, mnem, ops);
+
+        json_key(b, "mnem");
+        json_str(b, mnem);
+        json_key(b, "ops");
+        json_str(b, ops);
+        json_close_obj(b);
+
+        addr += 2 * n;
+    }
+    json_close_arr(b);
+
+    // FPU block — only emitted when the running CPU model has an FPU.
+    // Each fp[i] is the raw 80-bit register as a hex string plus a host
+    // double rendered as decimal, so the UI can show both side by side.
+    fpu_state_t *fpu = (fpu_state_t *)cpu->fpu;
+    if (fpu) {
+        json_key(b, "fpu");
+        json_open_obj(b);
+
+        json_key(b, "fp");
+        json_open_arr(b);
+        char hexbuf[24];
+        char valbuf[40];
+        for (int i = 0; i < 8; i++) {
+            json_open_obj(b);
+            // 4 hex digits of exponent (with sign bit) + underscore + 16
+            // hex digits of mantissa. Underscore makes scanning easier.
+            snprintf(hexbuf, sizeof(hexbuf), "%04X_%016llX", fpu->fp[i].exponent,
+                     (unsigned long long)fpu->fp[i].mantissa);
+            json_key(b, "hex");
+            json_str(b, hexbuf);
+
+            // Decimal display — handle special values explicitly so the
+            // JSON stays valid (Inf/NaN aren't legal JSON numbers, but
+            // we encode the value as a string anyway).
+            uint16_t e = FP80_EXP(fpu->fp[i]);
+            int sign = FP80_SIGN(fpu->fp[i]);
+            if (e == 0 && fpu->fp[i].mantissa == 0) {
+                snprintf(valbuf, sizeof(valbuf), sign ? "-0" : "0");
+            } else if (e == 0x7FFF) {
+                if (fpu->fp[i].mantissa == 0 || (fpu->fp[i].mantissa & ~(1ULL << 63)) == 0) {
+                    snprintf(valbuf, sizeof(valbuf), sign ? "-Inf" : "Inf");
+                } else {
+                    snprintf(valbuf, sizeof(valbuf), "NaN");
+                }
+            } else {
+                double d = fp80_to_display_double(fpu->fp[i]);
+                snprintf(valbuf, sizeof(valbuf), "%.17g", d);
+            }
+            json_key(b, "val");
+            json_str(b, valbuf);
+            json_close_obj(b);
+        }
+        json_close_arr(b);
+
+        json_key(b, "fpcr");
+        json_int(b, (int64_t)fpu->fpcr);
+        json_key(b, "fpsr");
+        json_int(b, (int64_t)fpu->fpsr);
+        json_key(b, "fpiar");
+        json_int(b, (int64_t)fpu->fpiar);
+
+        json_close_obj(b);
+    }
+
+    json_close_obj(b);
+    return json_finish(b);
+}
+
+static const arg_decl_t debug_frame_args[] = {
+    {.name = "addr",  .kind = V_INT, .validation_flags = OBJ_ARG_OPTIONAL, .doc = "Start address (default PC)" },
+    {.name = "count", .kind = V_INT, .validation_flags = OBJ_ARG_OPTIONAL, .doc = "Number of rows (default 32)"},
 };
 
 // `debug.step([n])` — single-step n instructions (default 1) and stop.
@@ -3675,15 +3917,19 @@ static const member_t debug_members[] = {
     {.kind = M_METHOD,
      .name = "log",
      .doc = "Set per-subsystem log level (or pass a full spec string)",
-     .method = {.args = debug_log_args, .nargs = 2, .result = V_BOOL, .fn = debug_method_log}      },
+     .method = {.args = debug_log_args, .nargs = 2, .result = V_BOOL, .fn = debug_method_log}                                                                                                                    },
     {.kind = M_METHOD,
      .name = "disasm",
      .doc = "Disassemble forward. `disasm` from PC, `disasm <count>` from PC, `disasm <addr> <count>` from addr.",
-     .method = {.args = debug_disasm_args, .nargs = 2, .result = V_BOOL, .fn = debug_method_disasm}},
+     .method = {.args = debug_disasm_args, .nargs = 2, .result = V_STRING, .fn = debug_method_disasm}                                                                                                            },
+    {.kind = M_METHOD,
+     .name = "frame",
+     .doc = "Bundled snapshot for the debug UI: registers + disasm window + per-row MMU translation, "
+            "returned as a single JSON V_STRING. Default: 32 rows starting at PC.",                                .method = {.args = debug_frame_args, .nargs = 2, .result = V_STRING, .fn = debug_method_frame}},
     {.kind = M_METHOD,
      .name = "step",
      .doc = "Single-step N instructions and stop (default 1)",
-     .method = {.args = debug_step_args, .nargs = 1, .result = V_BOOL, .fn = debug_method_step}    },
+     .method = {.args = debug_step_args, .nargs = 1, .result = V_BOOL, .fn = debug_method_step}                                                                                                                  },
 };
 
 const class_desc_t debug_class = {

@@ -170,7 +170,7 @@
     height: 22px;
     padding: 0 6px;
     font-family: var(--gs-font-mono, ui-monospace, Menlo, monospace);
-    font-size: 12px;
+    font-size: 11px;
     outline: none;
   }
   .add-addr:focus {
@@ -210,7 +210,7 @@
   }
   .hint {
     color: var(--gs-fg-muted);
-    font-size: 12px;
+    font-size: 11px;
     padding: 6px 12px;
   }
   .wp-row {
@@ -219,7 +219,7 @@
     gap: 12px;
     padding: 2px 12px;
     font-family: var(--gs-font-mono, ui-monospace, Menlo, monospace);
-    font-size: 12px;
+    font-size: 11px;
     color: var(--gs-fg);
   }
   .wp-row:hover {

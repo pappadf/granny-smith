@@ -58,7 +58,7 @@
   }
   .summary {
     color: var(--gs-fg-muted);
-    font-size: 12px;
+    font-size: 11px;
     margin: 0 0 4px 0;
   }
   .reg-block {
@@ -68,7 +68,7 @@
   }
   .reg-line {
     font-family: var(--gs-font-mono, ui-monospace, Menlo, monospace);
-    font-size: 12px;
+    font-size: 11px;
     color: var(--gs-fg);
   }
   .reg-name {

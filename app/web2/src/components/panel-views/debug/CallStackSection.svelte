@@ -46,6 +46,7 @@
 
   $effect(() => {
     void machine.status;
+    void debug.refreshGen;
     if (debug.sections.callstack) void refresh();
   });
 
@@ -63,7 +64,9 @@
   open={debug.sections.callstack}
   onToggle={() => toggleSection('callstack')}
 >
-  {#if loading && frames.length === 0}
+  {#if machine.status === 'running'}
+    <p class="hint">Pause the machine to inspect the call stack.</p>
+  {:else if loading && frames.length === 0}
     <p class="hint">Reading frames…</p>
   {:else if frames.length === 0}
     <p class="hint">No stack frames available.</p>
@@ -81,7 +84,7 @@
 <style>
   .hint {
     color: var(--gs-fg-muted);
-    font-size: 12px;
+    font-size: 11px;
     padding: 6px 12px;
   }
   .frame-row {
@@ -90,7 +93,7 @@
     gap: 12px;
     padding: 2px 12px;
     font-family: var(--gs-font-mono, ui-monospace, Menlo, monospace);
-    font-size: 12px;
+    font-size: 11px;
     color: var(--gs-fg);
   }
   .idx {
