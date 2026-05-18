@@ -190,10 +190,45 @@ jobs:
         working-directory: app/web2
         run: npm run build
 
+      # Cheap static check — catches origin-rooted URLs and missing
+      # COI service worker before they 404 on a real subpath deploy.
+      # Doesn't need WASM; runs against bare Vite output.
+      - name: check-dist (static validation of app/web2/dist/)
+        run: node scripts/check-dist.mjs
+
+      # Full WASM build, then copy artifacts into dist/ so the
+      # prod-smoke test below can actually bootstrap the bridge.
+      - name: WASM build (for prod-smoke)
+        run: make
+
+      - name: ui2 (copy WASM into app/web2/dist/)
+        run: make ui2
+
+      - name: Install Playwright (tests/e2e)
+        working-directory: tests/e2e
+        run: |
+          npm ci
+          npx playwright install --with-deps chromium
+
+      # End-to-end smoke: serves dist/ from a subpath WITHOUT
+      # COOP/COEP headers, asserts the page reaches __gsReady and
+      # crossOriginIsolated === true. This is the production env
+      # GitHub Pages provides; `make run` masks it.
+      - name: prod-smoke (Playwright)
+        run: make ui2-prod-smoke
+
       - name: Upload UI build (on failure)
         if: failure()
         uses: actions/upload-artifact@v7
         with:
           name: app-web2-dist
           path: app/web2/dist
+          if-no-files-found: ignore
+
+      - name: Upload prod-smoke traces (on failure)
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: prod-smoke-traces
+          path: tests/e2e/test-results
           if-no-files-found: ignore

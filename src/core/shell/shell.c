@@ -671,6 +671,7 @@ int shell_init(void) {
     extern void screen_class_register(void);
     extern void vfs_class_register(void);
     extern void find_class_register(void);
+    extern void scsi_class_register(void);
     rom_init();
     vrom_init();
     machine_init();
@@ -681,6 +682,7 @@ int shell_init(void) {
     screen_class_register();
     vfs_class_register();
     find_class_register();
+    scsi_class_register();
 
     // Install the cfg-scoped namespace stubs (storage, shell, mouse,
     // keyboard, screen, vfs, find) with a NULL cfg so their pre-boot

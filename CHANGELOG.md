@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v0.4.3] — 2026-05-18
+
+### Fixed
+- Welcome-view HD / CD-ROM upload validation no longer requires a running machine. The `scsi.identify_hd` and `scsi.identify_cdrom` methods are now mounted on a static `scsi` singleton at root (via `scsi_class_register` from `shell_init`), matching the pattern `rom.identify` already follows. Per-machine `scsi_init` swaps the singleton out for the full bus-bound object; `scsi_delete` restores it. Symptom in v0.4.2 was "'…' is not a valid Hard Disk image" on fresh deploys, because cold-boot pages have no machine on the tree yet.
+
+### Added
+- **Production-bundle smoke test** under `tests/e2e/ui-prod-smoke/`. Builds `app/web2/dist/`, serves it from a SUBPATH (`127.0.0.2:18181/sub/path/`) with NO COOP/COEP headers, then asserts the page reaches `window.__gsReady === true`, `crossOriginIsolated === true`, and produces no console errors or 4xx responses. Mirrors the GitHub Pages deploy environment — would have caught the v0.4.0, v0.4.1 and v0.4.2 deploy regressions on the original push. Runnable via `make ui2-prod-smoke` and wired into the `ui` CI job.
+- **Static dist validation** at `scripts/check-dist.mjs`: parses `dist/index.html`, fails on any origin-rooted `src=` / `href=` and on a missing COI service worker. Cheap (sub-second, no browser); runs immediately after Vite build in CI. Runnable locally via `make ui2-check-dist`.
+- `app/web2/public/coi-serviceworker.js` — copied into Vite's `public/` so the bundle is self-contained even without `make ui2`.
+
 ## [v0.4.2] — 2026-05-18
 
 ### Fixed

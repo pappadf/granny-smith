@@ -19,6 +19,12 @@ typedef struct scsi scsi_t;
 
 // === Lifecycle (Constructor / Destructor / Checkpoint) ===
 
+// Mount a pre-machine `scsi` singleton at root carrying just the static
+// helpers — hd_models, identify_hd, identify_cdrom — so file-shape
+// validation works before any machine has been booted. Called from
+// shell_init alongside rom_init. Idempotent.
+void scsi_class_register(void);
+
 scsi_t *scsi_init(memory_map_t *map, checkpoint_t *checkpoint);
 
 void scsi_delete(scsi_t *scsi);

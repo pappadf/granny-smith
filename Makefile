@@ -185,7 +185,7 @@ STATIC_JS_DIR := $(WEB_DIR)/js
 .PHONY: all release debug sanitize copy-static run run-legacy \
         headless unit-test integration-test integration-test-valgrind \
         e2e-test test clean help FORCE \
-        ui2 ui2-dev ui2-test ui2-check ui2-diag run2
+        ui2 ui2-dev ui2-test ui2-check ui2-check-dist ui2-prod-smoke ui2-diag run2
 
 # -- WASM build --
 
@@ -370,6 +370,24 @@ ui2-test:
 
 ui2-check:
 	cd $(WEB2_DIR) && npm run check && npm run lint
+
+# Static validation of app/web2/dist/ produced by `make ui2` (or a
+# bare `npm run build`). Catches origin-rooted URLs that 404 under
+# subpath deploys (the v0.4.0–v0.4.2 deploy-blocker class) and
+# verifies the COI service worker is wired up. Cheap — pure file
+# inspection, no browser.
+ui2-check-dist:
+	@/usr/bin/env node scripts/check-dist.mjs
+
+# Playwright smoke against the production-built bundle, served from
+# a subpath WITHOUT pre-set COOP/COEP headers. Forces the bundle to
+# bootstrap COI through its own service worker — the exact
+# environment GitHub Pages provides. Requires Playwright + chromium
+# already installed via tests/e2e/ (`cd tests/e2e && npm ci &&
+# npx playwright install chromium`). The webServer block in the
+# config starts scripts/prod-smoke-server.mjs automatically.
+ui2-prod-smoke: ui2 ui2-check-dist
+	cd tests/e2e && npx playwright test --config=playwright.prod-smoke.config.ts
 
 # Headless diagnostic — spawns the dev server + drives Chromium via
 # Playwright, captures console output / pageerror / xterm contents,

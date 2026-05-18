@@ -20,6 +20,11 @@
 
 extern config_t *global_emulator;
 
+// Forward declaration — defined alongside the static singleton near the
+// end of the file. scsi_init calls this to detach the pre-machine
+// singleton before mounting the per-machine `scsi` object at root.
+static void scsi_static_detach(void);
+
 // Forward declarations — class descriptors are at the bottom of the file but
 // scsi_init / scsi_delete reference them.
 extern const class_desc_t scsi_class;
@@ -1324,7 +1329,11 @@ scsi_t *scsi_init(memory_map_t *map, checkpoint_t *checkpoint) {
 
     // Object-tree binding — instance_data is the scsi itself, with bus
     // and devices children plus the per-slot device entries that the
-    // indexed-child get() returns on demand.
+    // indexed-child get() returns on demand. The pre-machine static
+    // singleton (mounted by scsi_class_register from shell_init) shares
+    // the "scsi" name at root — detach it first so dispatch on the new
+    // per-machine object isn't shadowed.
+    scsi_static_detach();
     scsi->object = object_new(&scsi_class, scsi, "scsi");
     if (scsi->object) {
         object_attach(object_root(), scsi->object);
@@ -1479,6 +1488,11 @@ void scsi_delete(scsi_t *scsi) {
         scsi->buf.data = NULL;
     }
     free(scsi);
+
+    // Restore the pre-machine static singleton so the next round of
+    // upload validation (e.g. the Welcome view after stopping a
+    // machine) keeps resolving `scsi.identify_hd` / `identify_cdrom`.
+    scsi_class_register();
 }
 
 // ============================================================================
@@ -1990,6 +2004,54 @@ static const arg_decl_t scsi_attach_args[] = {
     {.name = "path", .kind = V_STRING, .doc = "Image file path"    },
     {.name = "id",   .kind = V_INT,    .doc = "SCSI bus index 0..6"},
 };
+
+// Subset of `scsi_members` that doesn't depend on a live bus instance:
+// the drive catalog plus the two file-identification helpers. The static
+// singleton in `s_scsi_static_object` is mounted at root by
+// scsi_class_register so pre-machine code paths (e.g. the Welcome-view
+// HD / CD-ROM upload validation) resolve `scsi.identify_hd` /
+// `scsi.identify_cdrom` without needing a machine on the tree.
+static const member_t scsi_static_members[] = {
+    {.kind = M_ATTR,
+     .name = "hd_models",
+     .doc = "Known SCSI HD model catalog (list of JSON-encoded entries)",
+     .flags = VAL_RO,
+     .attr = {.type = V_LIST, .get = scsi_attr_hd_models, .set = NULL}},
+    {.kind = M_METHOD,
+     .name = "identify_hd",
+     .doc = "True if the file looks like a SCSI HD image",
+     .method = {.args = scsi_path_arg, .nargs = 1, .result = V_BOOL, .fn = scsi_method_identify_hd}},
+    {.kind = M_METHOD,
+     .name = "identify_cdrom",
+     .doc = "True if the file looks like a CD-ROM image",
+     .method = {.args = scsi_path_arg, .nargs = 1, .result = V_BOOL, .fn = scsi_method_identify_cdrom}},
+};
+
+static const class_desc_t scsi_static_class = {
+    .name = "scsi",
+    .members = scsi_static_members,
+    .n_members = sizeof(scsi_static_members) / sizeof(scsi_static_members[0]),
+};
+
+// Pre-machine singleton holding the static subset. Replaced by the
+// per-machine full `scsi` object on scsi_init; restored on scsi_delete.
+static struct object *s_scsi_static_object = NULL;
+
+void scsi_class_register(void) {
+    if (s_scsi_static_object)
+        return;
+    s_scsi_static_object = object_new(&scsi_static_class, NULL, "scsi");
+    if (s_scsi_static_object)
+        object_attach(object_root(), s_scsi_static_object);
+}
+
+static void scsi_static_detach(void) {
+    if (!s_scsi_static_object)
+        return;
+    object_detach(s_scsi_static_object);
+    object_delete(s_scsi_static_object);
+    s_scsi_static_object = NULL;
+}
 
 static const member_t scsi_members[] = {
     {.kind = M_ATTR,
