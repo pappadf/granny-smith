@@ -5,7 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v0.4.1] — 2026-05-18
+
+### Fixed
+- GitHub Pages deployment: Vite's default `/`-rooted asset paths 404 under the `gs-pages/<version>/` and `gs-pages/latest/` subpaths, so v0.4.0 loaded a blank page in production. Switched to relative asset URLs and re-registered the COOP/COEP service worker that the legacy UI shipped.
+
 ## [v0.4.0] — 2026-05-18
+
+> **Note:** v0.4.0 does not deploy correctly to GitHub Pages — the published bundle loads a blank page. Use [v0.4.1](#v041--2026-05-18) instead. The source code itself is unaffected; the issue is in the deploy step.
 
 ### Added
 - **Macintosh IIcx, IIx, and IIfx** — first non-SE/30 68030 machines; boot 7.x to Finder

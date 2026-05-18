@@ -71,6 +71,11 @@ const coiHeaders = {
 };
 
 export default defineConfig({
+  // Relative base so the production bundle works when hosted under any
+  // path. GitHub Pages deploys this under /gs-pages/<version>/ and
+  // /gs-pages/latest/ — with the default '/' base the emitted asset
+  // URLs are origin-rooted and 404 there.
+  base: './',
   plugins: [svelte(), serveBuildArtifacts()],
   resolve: {
     alias: {

@@ -8,6 +8,33 @@
   </head>
   <body>
     <div id="app"></div>
+
+    <!-- Cross-origin isolation service worker. Required on static hosts
+         like GitHub Pages that can't set COOP/COEP headers themselves.
+         Locally, scripts/dev_server.py and Vite's dev server send the
+         real headers, so the SW is unnecessary on localhost. -->
+    <script>
+      if ('serviceWorker' in navigator) {
+        const isLocalhost = ['localhost', '127.0.0.1', ''].includes(location.hostname);
+        if (!crossOriginIsolated && !isLocalhost) {
+          navigator.serviceWorker.register('./coi-serviceworker.js').then(
+            (reg) => {
+              if (reg.active && navigator.serviceWorker.controller) return;
+              const awaitActivated = (worker) => {
+                worker.addEventListener('statechange', () => {
+                  if (worker.state === 'activated') location.reload();
+                });
+              };
+              if (reg.installing) awaitActivated(reg.installing);
+              else if (reg.waiting) awaitActivated(reg.waiting);
+              else if (reg.active) location.reload();
+            },
+            (err) => console.warn('COI service worker registration failed:', err),
+          );
+        }
+      }
+    </script>
+
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>

@@ -87,17 +87,19 @@ let lastScreenH = 0;
 export async function bootstrap(canvas: HTMLCanvasElement, wasmArgs: string[] = []): Promise<void> {
   if (moduleReady) return;
   const bust = Date.now();
-  // The /main.mjs URL is served by the Vite middleware in vite.config.ts
-  // (dev) or copied into dist/ at build time (prod). Either way the path
-  // is stable from the browser's point of view.
-  const url = /* @vite-ignore */ `/main.mjs?v=${bust}`;
+  // Page-relative URLs so the bundle works both in dev (served from
+  // the Vite middleware in vite.config.ts) and in prod (Vite copies
+  // main.mjs / main.wasm into dist/ via `make ui2`, which is then
+  // deployed to e.g. /gs-pages/latest/). Origin-rooted '/main.mjs'
+  // 404s when hosted under any subpath.
+  const url = /* @vite-ignore */ `./main.mjs?v=${bust}`;
   const mod = (await import(/* @vite-ignore */ url)) as { default: CreateModule };
   const createModule = mod.default;
 
   Module = await createModule({
     canvas,
     arguments: wasmArgs,
-    locateFile: (p: string) => (p.endsWith('.wasm') ? `/main.wasm?v=${bust}` : p),
+    locateFile: (p: string) => (p.endsWith('.wasm') ? `./main.wasm?v=${bust}` : p),
     print: routePrintLine,
     printErr: routePrintLine,
     onRunStateChange: handleRunStateChange,
