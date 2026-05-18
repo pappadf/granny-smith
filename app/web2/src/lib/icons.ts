@@ -44,5 +44,8 @@ export type IconName =
   | 'screen-normal';
 
 export function iconHref(name: IconName): string {
-  return `/icons/sprite.svg#i-${name}`;
+  // Page-relative path so `<use href>` resolves against document.baseURI.
+  // Origin-rooted `/icons/...` 404s under deploy subpaths like
+  // /gs-pages/latest/.
+  return `icons/sprite.svg#i-${name}`;
 }

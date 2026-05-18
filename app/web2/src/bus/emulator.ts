@@ -87,19 +87,24 @@ let lastScreenH = 0;
 export async function bootstrap(canvas: HTMLCanvasElement, wasmArgs: string[] = []): Promise<void> {
   if (moduleReady) return;
   const bust = Date.now();
-  // Page-relative URLs so the bundle works both in dev (served from
-  // the Vite middleware in vite.config.ts) and in prod (Vite copies
-  // main.mjs / main.wasm into dist/ via `make ui2`, which is then
-  // deployed to e.g. /gs-pages/latest/). Origin-rooted '/main.mjs'
-  // 404s when hosted under any subpath.
-  const url = /* @vite-ignore */ `./main.mjs?v=${bust}`;
+  // Resolve main.mjs / main.wasm against the document base URL, not
+  // origin-rooted. Dynamic `import()` resolves relative URLs against
+  // the importing module's URL, not the document — so a bare
+  // `./main.mjs` from inside the Vite-bundled chunk under
+  // /gs-pages/latest/assets/ ends up at /gs-pages/latest/assets/main.mjs
+  // (404). Hand it a fully-qualified URL instead so it works under
+  // any deploy path. main.wasm is fetched via Emscripten's locateFile
+  // (regular fetch — resolves against document.baseURI naturally) but
+  // we treat it the same way for consistency.
+  const url = new URL(`main.mjs?v=${bust}`, document.baseURI).href;
   const mod = (await import(/* @vite-ignore */ url)) as { default: CreateModule };
   const createModule = mod.default;
 
   Module = await createModule({
     canvas,
     arguments: wasmArgs,
-    locateFile: (p: string) => (p.endsWith('.wasm') ? `./main.wasm?v=${bust}` : p),
+    locateFile: (p: string) =>
+      p.endsWith('.wasm') ? new URL(`main.wasm?v=${bust}`, document.baseURI).href : p,
     print: routePrintLine,
     printErr: routePrintLine,
     onRunStateChange: handleRunStateChange,
