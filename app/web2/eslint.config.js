@@ -5,7 +5,10 @@ import svelteParser from 'svelte-eslint-parser';
 import globals from 'globals';
 
 export default [
-  { ignores: ['dist/**', 'node_modules/**', '.svelte-kit/**', 'public/icons/sprite.svg'] },
+  // `public/**` is a static-asset tree that Vite copies into dist/
+  // verbatim — third-party shims (e.g. coi-serviceworker.js) live here
+  // and shouldn't be lint-checked against the app's TypeScript rules.
+  { ignores: ['dist/**', 'node_modules/**', '.svelte-kit/**', 'public/**'] },
   js.configs.recommended,
   ...tseslint.configs.recommended,
   ...svelte.configs['flat/recommended'],
