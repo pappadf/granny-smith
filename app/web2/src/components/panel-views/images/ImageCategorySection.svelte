@@ -60,27 +60,37 @@
 
   // Drop target — accepts external file drops anywhere on the section.
   // Validates AS this category and rejects (with a toast) on mismatch.
-  let dropActive = $state(false);
+  //
+  // dragenter / dragleave fire when the pointer crosses into ANY
+  // descendant of .drop-host (the header chevron, action button, each
+  // row, etc.), so a naive boolean would flicker on/off as the user
+  // dragged across the section. Use a depth counter and treat the
+  // visible state as `depth > 0`.
+  let dragDepth = $state(0);
+  const dropActive = $derived(dragDepth > 0);
+
+  function isFileDrag(ev: DragEvent): boolean {
+    const types = ev.dataTransfer?.types;
+    if (!types) return false;
+    return Array.from(types).includes('Files');
+  }
 
   function onDragEnter(ev: DragEvent) {
-    if (!ev.dataTransfer) return;
-    const types = ev.dataTransfer.types;
-    if (!types || !Array.from(types).includes('Files')) return;
+    if (!isFileDrag(ev)) return;
     ev.preventDefault();
-    dropActive = true;
+    dragDepth++;
   }
   function onDragOver(ev: DragEvent) {
-    if (!ev.dataTransfer) return;
-    const types = ev.dataTransfer.types;
-    if (!types || !Array.from(types).includes('Files')) return;
+    if (!isFileDrag(ev)) return;
     ev.preventDefault();
-    ev.dataTransfer.dropEffect = 'copy';
+    ev.dataTransfer!.dropEffect = 'copy';
   }
-  function onDragLeave() {
-    dropActive = false;
+  function onDragLeave(ev: DragEvent) {
+    if (!isFileDrag(ev)) return;
+    if (dragDepth > 0) dragDepth--;
   }
   async function onDrop(ev: DragEvent) {
-    dropActive = false;
+    dragDepth = 0;
     if (!ev.dataTransfer?.files?.length) return;
     ev.preventDefault();
     const files = Array.from(ev.dataTransfer.files);
@@ -214,6 +224,10 @@
 </div>
 
 <style>
+  /* Always-visible action affordance — drag-and-drop is the slick
+     path but click-to-upload still matters for touch / accessibility,
+     so the button shouldn't be hover-gated. Muted by default so it
+     doesn't compete with the section title; brightens on hover. */
   .upload-btn {
     display: inline-flex;
     align-items: center;
@@ -221,17 +235,16 @@
     width: 22px;
     height: 22px;
     color: var(--gs-fg-muted);
-    opacity: 0;
-    transition: opacity 100ms;
+    opacity: 0.6;
+    transition:
+      opacity 100ms,
+      color 100ms;
     cursor: pointer;
   }
-  .upload-btn:hover {
-    color: var(--gs-fg-bright);
-  }
-  /* Reveal the button when the user hovers the section header. */
-  :global(.section .header:hover) .upload-btn,
-  :global(.section .header:focus-within) .upload-btn {
+  .upload-btn:hover,
+  .upload-btn:focus-visible {
     opacity: 1;
+    color: var(--gs-fg-bright);
   }
   .empty {
     color: var(--gs-fg-muted);
