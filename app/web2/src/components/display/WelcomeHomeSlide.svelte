@@ -21,7 +21,11 @@
   }
 
   async function openUploadRom() {
-    await pickAndUpload();
+    // No auto-boot: the user is on the Welcome screen specifically to
+    // configure a machine. Auto-booting from this entry would strand
+    // them mid-setup (no VROM, no disks). The Display drag-and-drop
+    // path still auto-boots, which is where that shortcut belongs.
+    await pickAndUpload('', { autoBootOnRom: false });
   }
 
   function openCheckpointPicker() {

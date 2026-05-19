@@ -41,12 +41,23 @@ async function romIdentify(path: string): Promise<RomIdentifyResult | null> {
 }
 
 // Top-level entry. Caller supplies a flat list of File objects.
-export async function acceptFiles(files: File[]): Promise<void> {
+export interface AcceptFilesOptions {
+  // When true (default) and a freshly-uploaded file validates as a ROM,
+  // boot a default machine straight away. The Display drag-and-drop
+  // path keeps this on so dropping a ROM lands the user in a running
+  // emulator. The Welcome "Upload ROM..." button passes false: the user
+  // is on the Welcome screen specifically to configure a machine, and
+  // auto-booting strands them mid-setup (no VROM, no disks).
+  autoBootOnRom?: boolean;
+}
+
+export async function acceptFiles(files: File[], opts: AcceptFilesOptions = {}): Promise<void> {
   if (!files.length) return;
   if (!isModuleReady()) {
     showNotification('Emulator still starting; please retry', 'warning');
     return;
   }
+  const autoBootOnRom = opts.autoBootOnRom ?? true;
 
   // Checkpoint short-circuit on single-file drop.
   if (files.length === 1 && (await fileHasCheckpointSignature(files[0]))) {
@@ -74,7 +85,7 @@ export async function acceptFiles(files: File[]): Promise<void> {
     // For now, single-file flow only — multi-file drag is rare and the C side
     // doesn't compose well with multiple images at once.
     if (files.length === 1) {
-      await probeAndPersist(firstStagedPath, files[0]);
+      await probeAndPersist(firstStagedPath, files[0], { autoBootOnRom });
     } else {
       showNotification(`${files.length} files uploaded to ${UPLOAD_DIR}`, 'info');
     }
@@ -201,8 +212,15 @@ export async function processDataTransfer(dt: DataTransfer): Promise<void> {
 
 // Probe a freshly-staged upload to figure out what kind of media it is,
 // then persist it appropriately. If it looks like a ROM and no machine is
-// running, auto-boot from it (same heuristic the legacy drop.js used).
-async function probeAndPersist(stagingPath: string, file: File): Promise<void> {
+// running, auto-boot from it (same heuristic the legacy drop.js used)
+// — gated by autoBootOnRom so the Welcome "Upload ROM..." button can
+// keep the user on the Welcome screen instead of stranding them in a
+// VROM-less / disk-less mid-boot.
+async function probeAndPersist(
+  stagingPath: string,
+  file: File,
+  opts: { autoBootOnRom: boolean },
+): Promise<void> {
   // Try each media type until one validates. The order matters: ROM is
   // probed first so a fresh download lands the user in a runnable state.
   const ORDER: MediaTypeId[] = ['rom', 'fd', 'hd', 'cdrom', 'vrom'];
@@ -212,8 +230,9 @@ async function probeAndPersist(stagingPath: string, file: File): Promise<void> {
     if (!result.valid) continue;
     const persisted = await persist(stagingPath, file.name, descriptor, result.info);
     if (persisted) {
-      if (id === 'rom') await maybeBootFromRom(persisted);
-      else await autoMountIfEmpty(persisted, id);
+      if (id === 'rom') {
+        if (opts.autoBootOnRom) await maybeBootFromRom(persisted);
+      } else await autoMountIfEmpty(persisted, id);
     }
     return;
   }
@@ -245,8 +264,9 @@ async function probeAndPersist(stagingPath: string, file: File): Promise<void> {
       if (!result.valid) continue;
       const persisted = await persist(innerPath, file.name, descriptor, result.info);
       if (persisted) {
-        if (id === 'rom') await maybeBootFromRom(persisted);
-        else await autoMountIfEmpty(persisted, id);
+        if (id === 'rom') {
+          if (opts.autoBootOnRom) await maybeBootFromRom(persisted);
+        } else await autoMountIfEmpty(persisted, id);
       }
       await removeFromOPFS(stagingPath);
       await removeFromOPFS(extractDir);
@@ -353,9 +373,14 @@ export function openFilePicker(accept = ''): Promise<File[]> {
 
 // Used by Welcome's "Upload ROM..." button — opens the picker, runs the full
 // pipeline, then triggers a Recent refresh by re-reading OPFS.
-export async function pickAndUpload(accept = ''): Promise<void> {
+//
+// The Welcome button passes { autoBootOnRom: false }: that surface is a
+// configuration entry point, not a "boot now" shortcut. The Display
+// drag-and-drop path leaves the default on so dropping a ROM there
+// still cold-boots straight away.
+export async function pickAndUpload(accept = '', opts: AcceptFilesOptions = {}): Promise<void> {
   const files = await openFilePicker(accept);
-  if (files.length) await acceptFiles(files);
+  if (files.length) await acceptFiles(files, opts);
   // Touch the recent list so consumers re-scan.
   void opfs.scanRoms().catch(() => undefined);
 }
