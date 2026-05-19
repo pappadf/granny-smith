@@ -221,9 +221,17 @@ async function probeAndPersist(
   file: File,
   opts: { autoBootOnRom: boolean },
 ): Promise<void> {
-  // Try each media type until one validates. The order matters: ROM is
-  // probed first so a fresh download lands the user in a runnable state.
-  const ORDER: MediaTypeId[] = ['rom', 'fd', 'hd', 'cdrom', 'vrom'];
+  // Try each media type until one validates. Order matters: probe the
+  // strict-size / signature matchers first, fall through to HD last
+  // (the HD probe accepts anything that just opens and isn't floppy-
+  // sized, so it will happily classify a 32 KB VROM as a tiny "hard
+  // disk" if VROM hasn't already claimed the file).
+  //   rom    — exact size match against the ROM catalog
+  //   vrom   — exact 32 KB match
+  //   fd     — exact floppy sizes (400/800/1440 KB ± DC42 header)
+  //   cdrom  — ISO 9660 / HFS / APM signature inside the file
+  //   hd     — permissive fallback
+  const ORDER: MediaTypeId[] = ['rom', 'vrom', 'fd', 'cdrom', 'hd'];
   for (const id of ORDER) {
     const descriptor = MEDIA_TYPES[id];
     const result = await descriptor.validate(stagingPath, gsEval);
