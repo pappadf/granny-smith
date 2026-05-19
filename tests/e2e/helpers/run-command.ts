@@ -489,8 +489,10 @@ function translateToGsEval(line: string): Translation | null {
 
     if (head === 'vrom') {
       if (sub === 'probe' || sub === 'validate') {
+        // vrom.identify now returns a JSON map; consumers decide
+        // recognised/not by parsing rather than by the bool shape.
         if (subArgs.length === 1)
-          return { method: 'vrom.identify', args: subArgs, convention: 'cmd_bool' };
+          return { method: 'vrom.identify', args: subArgs, convention: 'cmd_str' };
       }
       if (sub === 'load' && subArgs.length === 1)
         return { method: 'vrom.load', args: subArgs, convention: 'cmd_int_bool' };

@@ -41,6 +41,17 @@ interface RomIdentifyResult {
   size?: number;
 }
 
+// Shape returned by C-side `vrom.identify` after the v0.4.5 upgrade.
+// Unrecognised files come back as { recognised: false, size, fnv1a }
+// — see src/core/memory/vrom.c. Used by the VROM media descriptor.
+interface VromIdentifyResult {
+  recognised: boolean;
+  canonical_name?: string;
+  card_name?: string;
+  size?: number;
+  fnv1a?: string;
+}
+
 async function parseRomIdentify(gsEval: GsEval, path: string): Promise<RomIdentifyResult | null> {
   const r = await gsEval('rom.identify', [path]);
   if (r === null || r === undefined) return null;
@@ -74,15 +85,30 @@ export const MEDIA_TYPES: Record<MediaTypeId, MediaTypeDescriptor> = {
     label: 'Video ROM image',
     persistDir: VROMS_DIR,
     async validate(path, gsEval) {
-      return { valid: (await gsEval('vrom.identify', [path])) === true };
+      const r = await gsEval('vrom.identify', [path]);
+      if (typeof r !== 'string') return { valid: false };
+      try {
+        const parsed = JSON.parse(r) as VromIdentifyResult;
+        if (!parsed.recognised) return { valid: false };
+        return {
+          valid: true,
+          info: {
+            canonicalName: parsed.canonical_name,
+            cardName: parsed.card_name,
+            checksum: parsed.fnv1a,
+          },
+        };
+      } catch {
+        return { valid: false };
+      }
     },
-    // Strip the browser-dedup " (N)" suffix from the persisted filename.
-    // The C side looks up VROMs by an EXACT filename (JMFB wants
-    // "Apple-341-0868.vrom", SE/30 onboard video wants "SE30.vrom", etc.)
-    // — when a user re-downloads via the browser, "Apple-341-0868.vrom"
-    // turns into "Apple-341-0868 (2).vrom" and the C-side lookup misses.
-    nameFn(originalName) {
-      return originalName.replace(/ \(\d+\)(\.[^.]+)?$/, '$1');
+    // VROMs are stored under the canonical filename the core's card
+    // factories look up (e.g. JMFB hardcodes "Apple-341-0868.vrom" in
+    // jmfb.c). The C-side `vrom.identify` derives the canonical name
+    // from the file's content hash; the UI doesn't carry any ROM
+    // knowledge of its own.
+    nameFn(originalName, info) {
+      return (info?.canonicalName as string) || originalName;
     },
   },
 

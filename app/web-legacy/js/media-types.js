@@ -41,7 +41,20 @@ export const MEDIA_TYPES = {
     label: 'Video ROM image',
     persistDir: VROMS_DIR,
     async validate(path) {
-      return { valid: (await window.gsEval('vrom.identify', [path])) === true };
+      // vrom.identify now returns JSON; mirror the new UI's parsing
+      // so the legacy upload pipeline keeps working during the soak.
+      const r = await window.gsEval('vrom.identify', [path]);
+      if (typeof r !== 'string') return { valid: false };
+      try {
+        const parsed = JSON.parse(r);
+        if (!parsed.recognised) return { valid: false };
+        return { valid: true, info: { canonicalName: parsed.canonical_name } };
+      } catch {
+        return { valid: false };
+      }
+    },
+    nameFn(originalName, info) {
+      return (info && info.canonicalName) || originalName;
     },
   },
 

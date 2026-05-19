@@ -294,7 +294,9 @@ async function persist(
   sourcePath: string,
   originalName: string,
   descriptor: MediaTypeDescriptor,
-  info: { persistDir?: string; checksum?: string } | undefined,
+  info:
+    | { persistDir?: string; checksum?: string; cardName?: string; [k: string]: unknown }
+    | undefined,
 ): Promise<string | null> {
   const finalName = descriptor.nameFn ? descriptor.nameFn(originalName, info) : originalName;
   const targetDir = info?.persistDir ?? descriptor.persistDir;
@@ -305,7 +307,11 @@ async function persist(
     return null;
   }
   await removeFromOPFS(sourcePath);
-  showNotification(`${originalName} uploaded`, 'info');
+  // For media that carries a human-readable label (VROM → card_name)
+  // surface it in the toast — gives the user feedback that we actually
+  // recognised the file, not just "it landed in OPFS".
+  const label = (info?.cardName as string | undefined) ?? originalName;
+  showNotification(info?.cardName ? `${label} VROM uploaded` : `${originalName} uploaded`, 'info');
   return finalPath;
 }
 

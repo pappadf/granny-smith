@@ -102,13 +102,96 @@ static value_t vrom_method_load(struct object *self, const member_t *m, int argc
     return val_bool(true);
 }
 
-// vrom.identify(path) — the only check today is "is the file 32 KB?". Returns
-// V_BOOL so callers can write `assert ${vrom.identify(...)} "..."`.
+// FNV-1a 32-bit hash, same constants the IOP firmware checks use
+// elsewhere in core. Cheap, content-derived, good enough to identify a
+// 32 KB VROM blob among a small known set.
+static uint32_t vrom_fnv1a32(const uint8_t *data, size_t n) {
+    uint32_t h = 0x811c9dc5u;
+    for (size_t i = 0; i < n; i++) {
+        h ^= data[i];
+        h *= 0x01000193u;
+    }
+    return h;
+}
+
+// Catalog of known VROM blobs. Maps FNV-1a32 over the whole file to the
+// canonical on-disk filename the C-side card factories expect (e.g.
+// jmfb.c hardcodes "Apple-341-0868.vrom") and a human-readable card
+// label that the UI can display. Adding a new VROM = one row here.
+struct vrom_known {
+    uint32_t fnv1a;
+    const char *canonical_name;
+    const char *card_name;
+};
+static const struct vrom_known VROM_CATALOG[] = {
+    // Macintosh Display Card 8•24 (ROM rev 341-0868). Drives the JMFB
+    // NuBus card on IIcx / IIx / IIfx; loaded by jmfb.c.
+    {0x00c90c2eu, "Apple-341-0868.vrom",    "Macintosh Display Card 8•24"},
+    // SE/30 onboard video declaration ROM; loaded by
+    // builtin_se30_video.c.
+    {0xe22959a9u, "SE30.vrom",              "Macintosh SE/30 onboard video"},
+    // Macintosh Display Card 4•8 (24AC variant).
+    {0x41135c6au, "display-card-24ac.vrom", "Macintosh Display Card 4•8" },
+};
+
+// vrom.identify(path) — returns a JSON map describing the file:
+//   {
+//     "recognised": bool,
+//     "canonical_name": "Apple-341-0868.vrom",    // present when recognised
+//     "card_name":      "Macintosh Display Card 8•24",
+//     "size":           32768,
+//     "fnv1a":          "0x00c90c2e"
+//   }
+// JS callers use canonical_name to persist the file under the path
+// the C-side card factories expect (rather than the user's original
+// browser-renamed filename), and card_name as the human-readable label.
+// Mirrors rom.identify's JSON-shape contract.
 static value_t vrom_method_identify(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)self;
     (void)m;
     (void)argc;
-    return val_bool(vrom_probe_file(argv[0].s, NULL));
+    const char *path = argv[0].s;
+    size_t size = 0;
+    bool size_ok = vrom_probe_file(path, &size);
+    if (!size_ok)
+        return val_str("{\"recognised\":false}");
+
+    // Read the whole VROM into memory and compute FNV-1a32. 32 KB is
+    // tiny — no need to stream.
+    FILE *f = fopen(path, "rb");
+    if (!f)
+        return val_err("vrom.identify: cannot open '%s'", path);
+    uint8_t *buf = (uint8_t *)malloc(size);
+    if (!buf) {
+        fclose(f);
+        return val_err("vrom.identify: out of memory");
+    }
+    size_t got = fread(buf, 1, size, f);
+    fclose(f);
+    if (got != size) {
+        free(buf);
+        return val_err("vrom.identify: short read from '%s'", path);
+    }
+    uint32_t h = vrom_fnv1a32(buf, size);
+    free(buf);
+
+    for (size_t i = 0; i < sizeof(VROM_CATALOG) / sizeof(VROM_CATALOG[0]); i++) {
+        if (VROM_CATALOG[i].fnv1a == h) {
+            char out[256];
+            snprintf(out, sizeof(out),
+                     "{\"recognised\":true,\"canonical_name\":\"%s\",\"card_name\":\"%s\",\"size\":%zu,\"fnv1a\":\"0x%"
+                     "08x\"}",
+                     VROM_CATALOG[i].canonical_name, VROM_CATALOG[i].card_name, size, h);
+            return val_str(out);
+        }
+    }
+
+    // Right size but unknown contents. Recognised=false so callers
+    // route into a normal "unrecognised file" path; still report the
+    // hash so the user (or a future catalog entry) can identify it.
+    char out[128];
+    snprintf(out, sizeof(out), "{\"recognised\":false,\"size\":%zu,\"fnv1a\":\"0x%08x\"}", size, h);
+    return val_str(out);
 }
 
 static const arg_decl_t vrom_path_arg[] = {
@@ -137,8 +220,8 @@ static const member_t vrom_members[] = {
      .method = {.args = vrom_path_arg, .nargs = 1, .result = V_BOOL, .fn = vrom_method_load}},
     {.kind = M_METHOD,
      .name = "identify",
-     .doc = "True if the file is a recognised VROM image (32 KB)",
-     .method = {.args = vrom_path_arg, .nargs = 1, .result = V_BOOL, .fn = vrom_method_identify}},
+     .doc = "JSON map: {recognised, canonical_name?, card_name?, size, fnv1a}.",
+     .method = {.args = vrom_path_arg, .nargs = 1, .result = V_STRING, .fn = vrom_method_identify}},
 };
 
 const class_desc_t vrom_class = {
