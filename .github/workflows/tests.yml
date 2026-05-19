@@ -163,7 +163,12 @@ jobs:
         password: ${{ secrets.GITHUB_TOKEN }}
 
     steps:
+      # `submodules: recursive` is required for the WASM build step
+      # later in this job — Makefile bails early if third-party/peeler
+      # is missing.
       - uses: actions/checkout@v6
+        with:
+          submodules: recursive
 
       - name: Show tool versions
         run: |
