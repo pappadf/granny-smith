@@ -435,7 +435,6 @@ void debug_mac_print_process_info_header(void) {
 static bool mouse_guard_active = false;
 static int16_t mouse_guard_h = 0; // target horizontal (x)
 static int16_t mouse_guard_v = 0; // target vertical (y)
-static bool mouse_guard_registered = false;
 // When true, the guard tick only re-pins MTemp when the CPU is in user
 // mode at the moment of the tick.  Used by --aux under A/UX, where
 // VA $0828 in supervisor mode points at A/UX kernel data and re-pinning
@@ -485,10 +484,12 @@ static void mouse_guard_start(int16_t h, int16_t v, bool user_only) {
     if (!sched)
         return;
 
-    if (!mouse_guard_registered) {
-        scheduler_new_event_type(sched, "test", NULL, "mouse_guard", &mouse_guard_tick);
-        mouse_guard_registered = true;
-    }
+    // Idempotent — scheduler_new_event_type updates an existing entry
+    // in place if (callback, source) is already present. Calling on
+    // every guard start is safe and also handles the multi-machine
+    // case (boot-matrix), where scheduler_init resets num_event_types
+    // to zero but this translation unit's state survives.
+    scheduler_new_event_type(sched, "test", NULL, "mouse_guard", &mouse_guard_tick);
 
     mouse_guard_h = h;
     mouse_guard_v = v;
@@ -789,11 +790,11 @@ void debug_mac_set_trace_mouse(bool enabled) {
     scheduler_t *sched = system_scheduler();
     if (!sched)
         return;
-    static bool registered = false;
-    if (!registered) {
-        scheduler_new_event_type(sched, "test", NULL, "trace_mouse", &trace_mouse_tick);
-        registered = true;
-    }
+    // Idempotent — scheduler_new_event_type updates an existing entry
+    // in place. Calling on every enable is safe and also handles
+    // multi-machine sequences (boot-matrix), where scheduler_init
+    // resets num_event_types to zero across machines.
+    scheduler_new_event_type(sched, "test", NULL, "trace_mouse", &trace_mouse_tick);
     if (enabled) {
         if (trace_mouse_active)
             return;

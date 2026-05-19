@@ -1077,7 +1077,6 @@ static atp_handler_slot_t g_atp_handlers[ATP_MAX_HANDLERS];
 static atp_request_handle_t g_atp_requests[ATP_MAX_OUTGOING];
 static atp_xo_entry_t g_xo_entries[ATP_MAX_XO_CACHE];
 static uint16_t g_next_tid = 0x2000;
-static bool g_atp_events_registered = false;
 static int g_atp_retry_event_token;
 static int g_atp_release_event_token;
 
@@ -1127,13 +1126,15 @@ static bool atp_decode_event_data(uint64_t data, uint16_t *index, uint32_t *gene
 }
 
 static void atp_register_scheduler_events(void) {
-    if (g_atp_events_registered)
-        return;
     if (!g_scheduler)
         return;
+    // Idempotent — scheduler_new_event_type updates an existing entry
+    // in place. The previous static `g_atp_events_registered` guard
+    // assumed a single scheduler lifetime, which broke when machine.boot
+    // tore down the scheduler and made a fresh one (num_event_types = 0)
+    // while this TU's state survived.
     scheduler_new_event_type(g_scheduler, "atp", &g_atp_retry_event_token, "retry_timeout", &atp_retry_timeout_cb);
     scheduler_new_event_type(g_scheduler, "atp", &g_atp_release_event_token, "xo_release", &atp_release_timeout_cb);
-    g_atp_events_registered = true;
 }
 
 // Handler registry ---------------------------------------------------------

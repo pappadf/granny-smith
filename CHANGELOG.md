@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v0.4.4] — 2026-05-19
+
+### Fixed
+- Macintosh IIfx scheduler-event registration: the SWIM IOP scheduled three periodic events (`swim_main_loop_tick`, `swim_drive_poll_tick`, `swim_adb_response`) but never registered them with the scheduler. Symptom was a recurring `scheduler_checkpoint` assertion ("event at timestamp N has no registered type") on every background-checkpoint save once IIfx booted to A/UX Startup. Added the missing `scheduler_new_event_type` calls via a new `register_events` callback in `iop_behavior_t`, wired from `iop_init`.
+- Cross-machine scheduler state leak in `debug_mac.c::mouse_guard_tick` / `trace_mouse` and `appletalk.c::atp_register_scheduler_events`: each guarded its registration with a translation-unit-local `static bool`, so the second `machine.boot` (boot-matrix style) hit a fresh scheduler with `num_event_types = 0` while the flag still said "already registered". Dropped the redundant guards — `scheduler_new_event_type` is idempotent and updates entries in place.
+
+### Added
+- Schedule-time assertion in `scheduler_new_cpu_event`: rejects calls for any `(callback, source)` pair that wasn't first registered with `scheduler_new_event_type`. Previously this class of bug surfaced ~30 s later at the next checkpoint save, with no useful provenance. The new assert fingers the offending caller at the actual schedule site. Caught three latent bugs the same commit fixes.
+- **Staging deployment workflow** at `.github/workflows/publish-staging.yml`. Manual (`workflow_dispatch`) trigger that builds the WASM + new UI bundle and pushes it to a SEMI-HIDDEN `/staging/` directory on `gs-pages`. Never touches `/latest/`, never rewrites the landing page — so it's reachable only via `https://pappadf.github.io/gs-pages/staging/` (which testers must know). New release process: merge → run `publish-staging` → exercise on real GitHub Pages → if good, cut a tagged Release to fire the existing `publish.yml`. Catches deploy-environment bugs (origin-rooted URLs, COI service worker handshake, etc.) BEFORE they land under a real version tag.
+
 ## [v0.4.3] — 2026-05-18
 
 ### Fixed

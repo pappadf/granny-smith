@@ -407,6 +407,12 @@ iop_t *iop_init(iop_kind_t kind, const memory_interface_t *bypass_iface, void *b
         system_read_checkpoint_data(checkpoint, &iop->stat_ctl, sizeof(iop->stat_ctl));
     }
 
+    // Register periodic-event types with the scheduler so checkpoint
+    // save / restore can name and resolve them. Done unconditionally,
+    // before scheduler_start runs the checkpoint-event resolution pass.
+    if (iop->behavior->register_events)
+        iop->behavior->register_events(iop);
+
     return iop;
 }
 

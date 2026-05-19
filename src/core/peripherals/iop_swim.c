@@ -1171,6 +1171,14 @@ static void swim_handle_rcv_slot(iop_t *iop, int slot) {
 //  Behaviour table
 // ============================================================================
 
+static void iop_swim_register_event_types(iop_t *iop) {
+    if (!iop || !iop->scheduler)
+        return;
+    scheduler_new_event_type(iop->scheduler, "swim", iop, "main_loop", &swim_main_loop_tick);
+    scheduler_new_event_type(iop->scheduler, "swim", iop, "drive_poll", &swim_drive_poll_tick);
+    scheduler_new_event_type(iop->scheduler, "swim", iop, "adb_response", &swim_adb_response);
+}
+
 const iop_behavior_t iop_swim_behavior = {
     .name = "SWIM IOP",
     .kind = SwimIopNum,
@@ -1178,4 +1186,5 @@ const iop_behavior_t iop_swim_behavior = {
     .expected_fnv1a = 0x10fd18fdu,
     .on_run_start = iop_swim_on_run_start,
     .on_host_kick = iop_swim_on_host_kick,
+    .register_events = iop_swim_register_event_types,
 };

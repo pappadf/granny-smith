@@ -1,0 +1,139 @@
+# Deploy WASM build to a SEMI-HIDDEN staging slot on GitHub Pages.
+#
+# Trigger: manual via the Actions UI (workflow_dispatch).
+#
+# Why: bugs that surface only on the real production environment (the
+# v0.4.0 / v0.4.1 / v0.4.2 origin-rooted-URL class, the COI service
+# worker not registering on a real subpath deploy, etc.) are invisible
+# to `make run` because it serves from root with COI headers pre-set.
+# This workflow lets us deploy an UNTAGGED build to a hidden directory
+# on the live gs-pages site and exercise it from a browser, before
+# tagging a real release and firing publish.yml.
+#
+# Layout on the deploy repo (`pappadf/gs-pages`):
+#   /                  ← landing page (NOT touched by this workflow)
+#   /latest/           ← stable release alias (NOT touched)
+#   /v0.4.X/           ← published tagged versions (NOT touched)
+#   /staging/          ← this workflow's destination; overwritten every run
+#   /staging/STAGING.txt   ← branch, SHA, deploy timestamp
+#
+# Required secrets:
+#   DEPLOY_TOKEN  — fine-grained PAT with Contents: Read & Write
+#                   permission on the pappadf/gs-pages repository
+#                   (same secret publish.yml uses).
+
+name: Publish staging to GitHub Pages
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: 'Git ref to deploy (branch, tag, or SHA). Leave empty to deploy the workflow triggering ref.'
+        required: false
+        default: ''
+
+# Independent of `publish` — a real-release deploy can run while a
+# staging deploy is in flight (or vice versa) without one cancelling
+# the other. But two staging deploys in flight at once would race on
+# the gs-pages push, so cancel the in-progress one.
+concurrency:
+  group: publish-staging
+  cancel-in-progress: true
+
+jobs:
+  build-and-deploy-staging:
+    runs-on: ubuntu-24.04
+    container:
+      image: ghcr.io/pappadf/granny-smith-dev:ubuntu24-emsdk4.0.10-nodeLTS
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+
+    steps:
+      # 1. Checkout source. If `inputs.ref` is empty, actions/checkout
+      #    falls back to the ref that triggered the workflow (typically
+      #    the default branch when workflow_dispatch is used from the
+      #    Actions UI).
+      - name: Checkout source
+        uses: actions/checkout@v6
+        with:
+          submodules: recursive
+          path: source
+          ref: ${{ inputs.ref }}
+
+      # 2. Build WASM + new UI (release mode). Same command publish.yml
+      #    uses, so what we deploy here is byte-identical to what a
+      #    real release would deploy from the same SHA.
+      - name: Build WASM + new UI (release)
+        working-directory: ./source
+        run: make clean && make && make ui2
+
+      # 3. Checkout the deployment repository.
+      - name: Checkout gs-pages
+        uses: actions/checkout@v6
+        with:
+          repository: pappadf/gs-pages
+          token: ${{ secrets.DEPLOY_TOKEN }}
+          path: deploy
+
+      # 4. Replace the /staging/ directory with the fresh build. We
+      #    deliberately do NOT touch /latest/ or rewrite the landing
+      #    page — staging is unlinked so users browsing the landing
+      #    page never see it.
+      - name: Place staging artifacts
+        run: |
+          SRC_DIST="source/app/web2/dist"
+
+          rm -rf deploy/staging
+          mkdir -p deploy/staging
+          cp -R "$SRC_DIST"/. deploy/staging/
+
+          # Traceability stamp at /staging/STAGING.txt — useful when
+          # a tester reports a bug against a staging URL and we need
+          # to map back to a commit.
+          {
+            echo "branch: $(cd source && git rev-parse --abbrev-ref HEAD 2>/dev/null || echo unknown)"
+            echo "ref:    ${{ inputs.ref || github.ref_name }}"
+            echo "sha:    $(cd source && git rev-parse HEAD)"
+            echo "deployed: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          } > deploy/staging/STAGING.txt
+
+      # 5. Ensure .nojekyll exists (so GitHub Pages serves .mjs / .wasm).
+      #    Same as publish.yml; safe to repeat.
+      - name: Ensure .nojekyll
+        working-directory: ./deploy
+        run: touch .nojekyll
+
+      # 6. Commit + push. Add only the staging/ subtree so a concurrent
+      #    real-release commit (which touches /latest/ and the landing
+      #    page) doesn't get caught up here.
+      - name: Push to gs-pages
+        working-directory: ./deploy
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add staging .nojekyll
+          if git diff --cached --quiet; then
+            echo "No changes to commit (staging already matches)."
+            exit 0
+          fi
+          SHORT_SHA="$(cd ../source && git rev-parse --short HEAD)"
+          git commit -m "Staging deploy: ${SHORT_SHA}"
+          git push origin main
+
+      # 7. Surface the staging URL prominently in the Actions UI so the
+      #    maintainer doesn't have to remember the path.
+      - name: Summary
+        run: |
+          SHORT_SHA="$(cd source && git rev-parse --short HEAD)"
+          {
+            echo "## Staging deploy ready"
+            echo ""
+            echo "**URL:** <https://pappadf.github.io/gs-pages/staging/>"
+            echo ""
+            echo "**SHA:** \`${SHORT_SHA}\`"
+            echo ""
+            echo "**Branch / ref:** \`${{ inputs.ref || github.ref_name }}\`"
+            echo ""
+            echo "Exercise the new UI live. If it works end-to-end, cut a tagged release to trigger publish.yml. If it doesn't, fix on the source branch and re-run this workflow."
+          } >> "$GITHUB_STEP_SUMMARY"
