@@ -76,6 +76,14 @@ export const MEDIA_TYPES: Record<MediaTypeId, MediaTypeDescriptor> = {
     async validate(path, gsEval) {
       return { valid: (await gsEval('vrom.identify', [path])) === true };
     },
+    // Strip the browser-dedup " (N)" suffix from the persisted filename.
+    // The C side looks up VROMs by an EXACT filename (JMFB wants
+    // "Apple-341-0868.vrom", SE/30 onboard video wants "SE30.vrom", etc.)
+    // — when a user re-downloads via the browser, "Apple-341-0868.vrom"
+    // turns into "Apple-341-0868 (2).vrom" and the C-side lookup misses.
+    nameFn(originalName) {
+      return originalName.replace(/ \(\d+\)(\.[^.]+)?$/, '$1');
+    },
   },
 
   fd: {
