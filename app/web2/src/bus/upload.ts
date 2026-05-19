@@ -14,7 +14,7 @@ import { gsEval, isModuleReady, getModule } from './emulator';
 import { writeToOPFS, removeFromOPFS, opfs } from './opfs';
 import { showNotification } from '@/state/toasts.svelte';
 import { machine } from '@/state/machine.svelte';
-import { setMounted } from '@/state/images.svelte';
+import { setMounted, bumpImagesRevision } from '@/state/images.svelte';
 import { startUpload, finishUpload } from '@/state/uploads.svelte';
 import { sanitizeName, isZipFile, isMacArchive } from '@/lib/archive';
 import { fileHasCheckpointSignature, ROMS_DIR, UPLOAD_DIR } from '@/lib/opfsPaths';
@@ -307,6 +307,9 @@ async function persist(
     return null;
   }
   await removeFromOPFS(sourcePath);
+  // Notify inventory watchers (e.g. WelcomeConfigSlide's dropdown
+  // refresh effect) that the OPFS image catalog has changed.
+  bumpImagesRevision();
   // For media that carries a human-readable label (VROM → card_name)
   // surface it in the toast — gives the user feedback that we actually
   // recognised the file, not just "it landed in OPFS".

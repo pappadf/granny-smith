@@ -7,6 +7,7 @@
   import type { MediaTypeId } from '@/lib/media';
   import { DEFAULT_CONFIG } from '@/lib/machine';
   import type { ImageCategory } from '@/bus/types';
+  import { images } from '@/state/images.svelte';
 
   const UPLOAD_SENTINEL = 'Upload image...';
   const NONE_SENTINEL = '(none)';
@@ -187,6 +188,20 @@
       await whenModuleReady();
       await refreshOpfs();
     })();
+  });
+
+  // Re-scan OPFS whenever the image catalog changes elsewhere — uploads
+  // via the Welcome "Upload ROM..." button on the Home slide, uploads /
+  // renames / deletes from the Images panel, etc. The slides in this
+  // view are kept mounted (just CSS-hidden), so onMount only fires once
+  // per page load; without this effect the dropdowns would stay stale
+  // and the user would have to reload to see new images.
+  let lastSeenRevision = -1;
+  $effect(() => {
+    const rev = images.revision;
+    if (rev === lastSeenRevision) return;
+    if (lastSeenRevision !== -1) void refreshOpfs();
+    lastSeenRevision = rev;
   });
 
   function onBack(e: Event) {

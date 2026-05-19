@@ -10,7 +10,7 @@
   import { showNotification } from '@/state/toasts.svelte';
   import type { OpfsEntry, ImageCategory } from '@/bus/types';
   import type { MediaTypeId } from '@/lib/media';
-  import { images, setMounted } from '@/state/images.svelte';
+  import { images, setMounted, bumpImagesRevision } from '@/state/images.svelte';
 
   // Map the OpfsEntry category to the upload pipeline's MediaTypeId.
   // The only mismatch is 'cd' (here) vs 'cdrom' (media id).
@@ -150,6 +150,7 @@
     try {
       await opfs.rename(entry.path, next);
       await refresh();
+      bumpImagesRevision();
       showNotification(`Renamed to '${next}'`, 'info');
     } catch {
       showNotification('Rename failed', 'error');
@@ -163,6 +164,7 @@
     try {
       await opfs.delete(entry.path);
       await refresh();
+      bumpImagesRevision();
       showNotification(`Deleted '${entry.name}'`, 'info');
     } catch {
       showNotification('Delete failed', 'error');
