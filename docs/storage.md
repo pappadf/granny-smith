@@ -126,3 +126,67 @@ Unit tests live in `tests/unit/suites/storage/test.c` and exercise:
 - State save/load round-trip
 - Delta persistence across close/reopen
 - Rollback (preimage journal replay)
+
+## 11. Resource forks as VFS paths
+
+The image-VFS backend (`src/core/vfs/image_vfs.c`) exposes the two-fork
+nature of classic-Mac HFS files in the path itself. For any HFS file
+`<file>` with a non-empty resource fork, the following synthetic paths
+resolve:
+
+| Path | Kind | Bytes |
+|---|---|---|
+| `<file>` | file | data fork |
+| `<file>/finf` | file (32 B) | Finder info blob (16 B FInfo + 16 B FXInfo) |
+| `<file>/rsrc` | directory | enumerates resource types and the `_raw` escape hatch |
+| `<file>/rsrc/_raw` | file | raw fork bytes (the entire resource fork) |
+| `<file>/rsrc/<TYPE>` | directory | enumerates resource IDs under a type |
+| `<file>/rsrc/<TYPE>/<id>` | file | the resource's bytes (verbatim, no length prefix) |
+| `<file>/rsrc/<TYPE>/<id>.info` | file | sidecar JSON: `{name, attrs[], size}` |
+
+`<TYPE>` is the four-byte resource type, MacRoman-transcoded to UTF-8 (so
+`CODE`, `vers`, `STR ` with trailing space, etc.). `<id>` is the signed
+int16 resource ID as base-10, including a leading `-` for negative values
+(common for system-reserved resources, e.g. `DRVR/-16` is `.Sony`).
+
+Example shell session:
+
+```
+> vfs.ls "/images/sys.img/System Folder/Finder/rsrc/"
+CODE
+MENU
+vers
+STR#
+…
+_raw
+
+> vfs.cat "/images/sys.img/System Folder/Finder/rsrc/vers/1.info"
+{"name":"","attrs":["purgeable"],"size":50}
+
+> storage.cp -r "/images/sys.img/System Folder/Finder/rsrc/" "/tmp/finder-rsrc/"
+```
+
+Eligibility rules:
+
+- **Files only.** HFS folders never gain a synthetic `/rsrc/` subtree.
+- **Non-empty fork only.** Files with `rsrc_fork.logical_size == 0`
+  resolve `<file>/rsrc` and any deeper path as ENOENT.
+- **HFS-backed only.** UFS partitions, host paths, and ISO 9660 images
+  have no resource forks; `<path>/rsrc/...` cleanly returns ENOENT on
+  those.
+- **Real HFS filenames named `rsrc` or `finf`.** Disambiguated by a
+  retry path in `image_vfs.c`: the synthetic interpretation is tried
+  first; on miss the full literal component list is retried.
+
+For binary data over the headless TCP shell or JS bridge, prefer
+`storage.cp <path> <dst>` over `vfs.cat <path>` — the latter streams
+non-printable bytes into the response stream, which is fine for small
+text resources but unsafe for arbitrary code/PICT/SND bytes.
+
+The parser lives in `src/core/storage/resource_fork.{c,h}` and exposes
+a small C API (`rfork_parse`, `rfork_num_types`, `rfork_id_at`,
+`rfork_lookup`, …) that downstream consumers (e.g. the `re`
+orchestrator under `src/core/re/`) call directly without routing
+through the VFS. Parsed maps are cached LRU-style under `image_vfs.c`
+keyed on `(mount, hfs_cnid)` with capacity 8; the cache is invalidated
+when the parent mount is destroyed.
