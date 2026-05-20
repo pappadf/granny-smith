@@ -7,6 +7,7 @@
 
 #include "annotate_disasm.h"
 #include "cpu.h"
+#include "symbols.h" // for the empty-ctx no-op; signature uses re_symbols_t*
 
 #include <errno.h>
 #include <getopt.h>

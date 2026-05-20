@@ -22,6 +22,12 @@ void debug_mac_print_process_info(void);
 // Looks up a global variable address by name, returns 0 if not found
 uint32_t debug_mac_lookup_global_address(const char *name);
 
+// Reverse-lookup: given an address, return the global's name (or NULL).
+// Used by the `re` disassembler to annotate absolute-address operands in
+// the low-memory globals range.  Returns a pointer to the static name
+// string (no caller-side free).
+const char *debug_mac_lookup_global_name(uint32_t address);
+
 // Prints target 68K backtrace by walking stack frames
 void debug_mac_print_target_backtrace(void);
 

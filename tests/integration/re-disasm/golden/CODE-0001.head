@@ -3,18 +3,18 @@
 ; model=near  header_bytes=4  jt_offset=0x0000  jt_count=171  code_bytes=20928
 ; ============================================================
 
+
+JT_0001_0000:
 $00000004  6100  BSR       *+$00D4	; -> $000000D8
-$00000008  4ead  JSR       $952(A5)
-$0000000C  486d  PEA       $952(A5)
+$00000008  4ead  JSR       $952(A5)	; xref JT[294] = CODE 3:0x0000
+$0000000C  486d  PEA       $952(A5)	; xref JT[294] = CODE 3:0x0000
 $00000010  a9f1  _UnloadSeg	; trap _UnloadSeg
-$00000012  4ead  JSR       $BA2(A5)
+$00000012  4ead  JSR       $BA2(A5)	; xref JT[368] = CODE 4:0x29A6
 $00000016  48e7  MOVEM.L   D0-D2/A0-A1,-(A7)
 $0000001A  2f3c  MOVE.L    #$1,-(A7)
-$00000020  4ead  JSR       $BAA(A5)
+$00000020  4ead  JSR       $BAA(A5)	; xref JT[369] = CODE 4:0x2A14
 $00000024  584f  ADDQ.W    #$4,A7
 $00000026  4cdf  MOVEM.L   (A7)+,D0-D2/A0-A1
 $0000002A  48e7  MOVEM.L   D0-D2/A0-A1,-(A7)
 $0000002E  2f3c  MOVE.L    #$23,-(A7)
-$00000034  4ead  JSR       $BAA(A5)
-$00000038  584f  ADDQ.W    #$4,A7
-$0000003A  4cdf  MOVEM.L   (A7)+,D0-D2/A0-A1
+$00000034  4ead  JSR       $BAA(A5)	; xref JT[369] = CODE 4:0x2A14

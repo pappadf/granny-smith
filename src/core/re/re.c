@@ -20,6 +20,7 @@
 #include "code_segment.h"
 #include "object.h"
 #include "resource_fork.h"
+#include "symbols.h"
 #include "value.h"
 #include "vfs.h"
 
@@ -380,7 +381,8 @@ static void write_jt_listing(FILE *fp, const re_jt_table_t *jt) {
         fprintf(fp, "JT[%zu]\tsegment=%u\toffset=0x%04X\n", i, jt->entries[i].segment, jt->entries[i].offset);
 }
 
-static void write_segment_listing(FILE *fp, int16_t code_id, const re_code_segment_t *seg) {
+static void write_segment_listing(FILE *fp, int16_t code_id, const re_code_segment_t *seg, const re_jt_table_t *jt,
+                                  re_symbols_t *symbols) {
     const char *model_str = (seg->model == RE_CODE_MODEL_FAR) ? "far" : "near";
     fprintf(fp, "; ============================================================\n");
     fprintf(fp, "; CODE %d\n", code_id);
@@ -389,11 +391,13 @@ static void write_segment_listing(FILE *fp, int16_t code_id, const re_code_segme
     fprintf(fp, "; ============================================================\n\n");
     // Addresses start at header_bytes so a JSR -X(A5) destination resolves
     // to a label inside the listing, matching the runtime loader's view.
-    re_annotate_disasm_write(fp, seg->insts, seg->insts_len, (uint32_t)seg->header_bytes, RE_DISASM_ALL);
+    re_annotate_ctx_t ctx = {.jt = jt, .code_id = code_id, .symbols = symbols};
+    re_annotate_disasm_write(fp, seg->insts, seg->insts_len, (uint32_t)seg->header_bytes, RE_DISASM_ALL, &ctx);
 }
 
 // Write disasm/CODE-NNNN.s for every CODE id != 0 (and disasm/jump-table.s
-// for CODE 0).  Returns the number of files written, or -1 on failure.
+// for CODE 0), plus a consolidated symbols.txt at dst_dir's root.
+// Returns the number of disasm files written, or -1 on failure.
 static int dump_disasm(const rfork_t *rf, const char *dst_dir) {
     static const uint8_t code_cc[4] = {'C', 'O', 'D', 'E'};
     size_t n_code = rfork_num_resources(rf, code_cc);
@@ -408,6 +412,23 @@ static int dump_disasm(const rfork_t *rf, const char *dst_dir) {
         return -1;
     }
 
+    // Parse CODE 0 up front (best effort).  Both the JT listing and the
+    // per-segment listings consume it for xref + label labelling.  When
+    // CODE 0 is missing or malformed we keep going with NULL — the
+    // listings still emit, just without the JT annotations.
+    re_jt_table_t jt;
+    bool jt_valid = false;
+    {
+        const uint8_t *c0_bytes = NULL;
+        size_t c0_sz = 0;
+        if (rfork_lookup(rf, code_cc, 0, &c0_bytes, &c0_sz, NULL, NULL) == 0) {
+            if (re_parse_code0(c0_bytes, c0_sz, &jt) == 0)
+                jt_valid = true;
+        }
+    }
+    re_symbols_t symbols;
+    re_symbols_init(&symbols);
+
     int written = 0;
     for (size_t i = 0; i < n_code; i++) {
         int16_t id = rfork_id_at(rf, code_cc, i);
@@ -421,29 +442,47 @@ static int dump_disasm(const rfork_t *rf, const char *dst_dir) {
         else
             n = snprintf(path, sizeof(path), "%s/CODE-%04d.s", dir, id);
         if (n < 0 || (size_t)n >= sizeof(path))
-            return -1;
+            goto fail;
         FILE *fp = open_out_file(path);
         if (!fp)
-            return -1;
+            goto fail;
         if (id == 0) {
-            re_jt_table_t jt;
-            if (re_parse_code0(bytes, sz, &jt) == 0) {
+            if (jt_valid)
                 write_jt_listing(fp, &jt);
-                re_jt_free(&jt);
-            } else {
+            else
                 fprintf(fp, "; CODE 0 malformed (%zu bytes)\n", sz);
-            }
         } else {
             re_code_segment_t seg;
             if (re_parse_code_n(bytes, sz, &seg) == 0)
-                write_segment_listing(fp, id, &seg);
+                write_segment_listing(fp, id, &seg, jt_valid ? &jt : NULL, &symbols);
             else
                 fprintf(fp, "; CODE %d malformed (%zu bytes)\n", id, sz);
         }
         fclose(fp);
         written++;
     }
+
+    // Consolidated symbol listing at the top of the dump.
+    char sym_path[PATH_MAX];
+    n = snprintf(sym_path, sizeof(sym_path), "%s/symbols.txt", dst_dir);
+    if (n > 0 && (size_t)n < sizeof(sym_path)) {
+        FILE *sfp = open_out_file(sym_path);
+        if (sfp) {
+            re_symbols_write_txt(&symbols, sfp);
+            fclose(sfp);
+        }
+    }
+
+    re_symbols_free(&symbols);
+    if (jt_valid)
+        re_jt_free(&jt);
     return written;
+
+fail:
+    re_symbols_free(&symbols);
+    if (jt_valid)
+        re_jt_free(&jt);
+    return -1;
 }
 
 // ============================================================================
@@ -470,21 +509,46 @@ int re_disasm_code(const char *vfs_path, int code_id, const char *dst_file) {
         free(bytes);
         return -EIO;
     }
+    // For a single-segment call we still want JT-xref annotation, so
+    // try to fetch and parse CODE 0 from the same resource fork.  Symbol
+    // recovery runs locally for this segment only (no shared symbols.txt).
+    re_jt_table_t jt;
+    bool jt_valid = false;
+    if (code_id != 0) {
+        char c0_path[PATH_MAX];
+        int cn = snprintf(c0_path, sizeof(c0_path), "%s/rsrc/CODE/0", vfs_path);
+        if (cn > 0 && (size_t)cn < sizeof(c0_path)) {
+            size_t c0_sz = 0;
+            uint8_t *c0_bytes = re_read_vfs_file(c0_path, &c0_sz);
+            if (c0_bytes) {
+                if (re_parse_code0(c0_bytes, c0_sz, &jt) == 0)
+                    jt_valid = true;
+                free(c0_bytes);
+            }
+        }
+    }
+    re_symbols_t symbols;
+    re_symbols_init(&symbols);
+
     if (code_id == 0) {
-        re_jt_table_t jt;
-        if (re_parse_code0(bytes, sz, &jt) == 0) {
-            write_jt_listing(fp, &jt);
-            re_jt_free(&jt);
+        re_jt_table_t local_jt;
+        if (re_parse_code0(bytes, sz, &local_jt) == 0) {
+            write_jt_listing(fp, &local_jt);
+            re_jt_free(&local_jt);
         } else {
             fprintf(fp, "; CODE 0 malformed (%zu bytes)\n", sz);
         }
     } else {
         re_code_segment_t seg;
         if (re_parse_code_n(bytes, sz, &seg) == 0)
-            write_segment_listing(fp, (int16_t)code_id, &seg);
+            write_segment_listing(fp, (int16_t)code_id, &seg, jt_valid ? &jt : NULL, &symbols);
         else
             fprintf(fp, "; CODE %d malformed (%zu bytes)\n", code_id, sz);
     }
+
+    re_symbols_free(&symbols);
+    if (jt_valid)
+        re_jt_free(&jt);
     if (fp != stdout)
         fclose(fp);
     free(bytes);
