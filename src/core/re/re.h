@@ -1,0 +1,52 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) pappadf
+
+// re.h
+// Reverse-engineering orchestrator for classic-Mac 68k applications.
+// `re` is a process-singleton root object that *consumes* the
+// resource-fork-as-VFS-paths convention (see resource_fork.{c,h} and
+// image_vfs.c) to produce self-contained, disassembled, decoded dumps.
+// Stateless path-based methods, attached at shell_init alongside
+// archive / vfs / storage.
+
+#pragma once
+
+#ifndef GS_RE_H
+#define GS_RE_H
+
+#include <stdbool.h>
+#include <stddef.h>
+#include <stdint.h>
+
+struct class_desc;
+
+// === Object-model class descriptor =========================================
+
+extern const struct class_desc re_class;
+
+void re_init(void);
+void re_delete(void);
+
+// === C-level entry points ==================================================
+//
+// The object-model methods are thin wrappers around these.  Tooling that
+// already lives in C (integration tests, future inspector backends) can
+// call them directly to skip the value_t round-trip.
+
+// Print a one-line identify summary to stdout.  Returns true if the path
+// resolves to a forked file we recognise, false otherwise.
+bool re_identify(const char *vfs_path);
+
+// Dump the forked file at `vfs_path` into `dst_dir`.  Creates dst_dir if
+// missing; writes `data.bin`, `finder.json`, and a `resources/<TYPE>/<id>`
+// + matching `.info` sidecar for every resource.  Returns 0 on success or
+// a negative errno-style code on failure (with details printed to stderr).
+int re_dump(const char *vfs_path, const char *dst_dir);
+
+// Read a whole VFS path into a freshly malloc'd buffer.  Returns NULL on
+// failure; on success `*out_len` is the byte count.  Caller frees with
+// free().  Exposed here because both re_identify and re_dump use it and
+// later PRs (re_disasm_code) will too.
+uint8_t *re_read_vfs_file(const char *vfs_path, size_t *out_len);
+
+#endif // GS_RE_H

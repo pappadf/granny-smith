@@ -83,6 +83,8 @@ CORE_SRC := $(wildcard $(CORE_DIR)/*.c) \
             $(wildcard $(CORE_DIR)/shell/*.c) \
             $(wildcard $(CORE_DIR)/object/*.c) \
             $(wildcard $(CORE_DIR)/vfs/*.c) \
+            $(wildcard $(CORE_DIR)/re/*.c) \
+            $(wildcard $(CORE_DIR)/re/decoders/*.c) \
             $(wildcard $(MACHINES_DIR)/*.c) \
             $(wildcard $(MACHINES_DIR)/glue030/*.c)
 
@@ -141,6 +143,7 @@ INCLUDES := -I$(CORE_DIR) \
             -I$(CORE_DIR)/shell \
             -I$(CORE_DIR)/object \
             -I$(CORE_DIR)/vfs \
+            -I$(CORE_DIR)/re \
             -I$(MACHINES_DIR) \
             -I$(MACHINES_DIR)/glue030 \
             -I$(PLATFORM_DIR)
