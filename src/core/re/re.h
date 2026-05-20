@@ -50,6 +50,20 @@ int re_dump(const char *vfs_path, const char *dst_dir);
 // `dst_file` is NULL/empty.  Returns 0 on success, negative on failure.
 int re_disasm_code(const char *vfs_path, int code_id, const char *dst_file);
 
+// Run the per-type decoder for one resource and emit its JSON to
+// `dst_file` (or stdout when NULL/empty).  Returns 0 on success, -ENOENT
+// when no decoder is registered for the type, -EIO on read/parse error.
+int re_decode_one(const char *vfs_path, const char *type_str, int id, const char *dst_file);
+
+// Flags steering re_dump's behaviour.  Each maps to a `--no-X` rest-arg
+// at the shell layer.
+#define RE_DUMP_NO_DECODE 0x01u // skip per-type decoders + decoded/ output
+#define RE_DUMP_NO_DISASM 0x02u // skip CODE disassembly + symbols.txt
+#define RE_DUMP_FORCE     0x04u // overwrite even when dst_dir is non-empty
+
+// Like re_dump but with a flag mask.  Equivalent to re_dump when flags = 0.
+int re_dump_with_flags(const char *vfs_path, const char *dst_dir, uint32_t flags);
+
 // Read a whole VFS path into a freshly malloc'd buffer.  Returns NULL on
 // failure; on success `*out_len` is the byte count.  Caller frees with
 // free().  Exposed here because both re_identify and re_dump use it and

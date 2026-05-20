@@ -23,6 +23,7 @@
 #include "symbols.h"
 #include "value.h"
 #include "vfs.h"
+#include "decoders/decoders.h"
 
 #include <errno.h>
 #include <limits.h>
@@ -292,12 +293,38 @@ static int dump_resources(const rfork_t *rf, const char *dst_dir) {
     return total;
 }
 
+// Forward decls for the new PR 5 helpers (decoded/ pass + manifest writer).
+// Both live below this function for readability.
+static int dump_decoded(const struct rfork *rf, const char *dst_dir);
+static int dump_manifest(const struct rfork *rf, const char *vfs_path, const char *dst_dir, size_t data_len,
+                         size_t rsrc_len, const uint8_t *finder_info, size_t finder_info_len);
+
 int re_dump(const char *vfs_path, const char *dst_dir) {
+    return re_dump_with_flags(vfs_path, dst_dir, 0);
+}
+
+int re_dump_with_flags(const char *vfs_path, const char *dst_dir, uint32_t flags) {
     if (!vfs_path || !dst_dir || !*vfs_path || !*dst_dir)
         return -EINVAL;
     if (re_mkdir_p(dst_dir) != 0) {
         fprintf(stderr, "re: cannot create output directory '%s': %s\n", dst_dir, strerror(errno));
         return -EIO;
+    }
+    // Refuse to overwrite a non-empty existing dir unless --force is set.
+    // Empty dirs (including freshly mkdir'd ones) are fine.
+    if (!(flags & RE_DUMP_FORCE)) {
+        // A quick non-empty check via stat on the data.bin we're about to
+        // create — if it already exists, treat the dir as non-empty.
+        char probe[PATH_MAX];
+        snprintf(probe, sizeof(probe), "%s/data.bin", dst_dir);
+        struct stat st;
+        if (stat(probe, &st) == 0) {
+            fprintf(stderr,
+                    "re: refusing to overwrite existing dump at '%s' (pass --force "
+                    "to override)\n",
+                    dst_dir);
+            return -EEXIST;
+        }
     }
 
     // Data fork (always present, even when zero bytes).
@@ -324,36 +351,43 @@ int re_dump(const char *vfs_path, const char *dst_dir) {
             finder_json_write(finf_bytes, finf_len, fp);
             fclose(fp);
         }
-        free(finf_bytes);
     }
 
     // Resource fork — parse, extract every resource, then disassemble
-    // any CODE segments.  rf stays alive across both passes so we don't
-    // pay the parse cost twice.
+    // any CODE segments.  rf stays alive across the three passes so we
+    // don't pay the parse cost three times.
     size_t rsrc_len = 0;
     uint8_t *rsrc_bytes = read_suffix(vfs_path, "rsrc/_raw", &rsrc_len);
     int total_resources = 0;
     int disasm_written = 0;
+    int decoded_written = 0;
     if (rsrc_bytes && rsrc_len > 0) {
         const char *errmsg = NULL;
         rfork_t *rf = rfork_parse(rsrc_bytes, rsrc_len, &errmsg);
         if (!rf) {
             fprintf(stderr, "re: corrupt resource fork in '%s': %s\n", vfs_path, errmsg ? errmsg : "unknown");
             free(rsrc_bytes);
+            free(finf_bytes);
             return -EIO;
         }
         total_resources = dump_resources(rf, dst_dir);
-        if (total_resources >= 0)
+        if (total_resources >= 0 && !(flags & RE_DUMP_NO_DISASM))
             disasm_written = dump_disasm(rf, dst_dir);
+        if (total_resources >= 0 && !(flags & RE_DUMP_NO_DECODE))
+            decoded_written = dump_decoded(rf, dst_dir);
+        // Always write the manifest — it consolidates every layer we did
+        // actually run.
+        dump_manifest(rf, vfs_path, dst_dir, data_len, rsrc_len, finf_bytes, finf_len);
         rfork_free(rf);
     }
     free(rsrc_bytes);
+    free(finf_bytes);
 
-    if (total_resources < 0 || disasm_written < 0)
+    if (total_resources < 0 || disasm_written < 0 || decoded_written < 0)
         return -EIO;
 
-    printf("re.dump: %s -> %s (%d resource%s, %d code segment%s)\n", vfs_path, dst_dir, total_resources,
-           total_resources == 1 ? "" : "s", disasm_written, disasm_written == 1 ? "" : "s");
+    printf("re.dump: %s -> %s (%d resource%s, %d code segment%s, %d decoded)\n", vfs_path, dst_dir, total_resources,
+           total_resources == 1 ? "" : "s", disasm_written, disasm_written == 1 ? "" : "s", decoded_written);
     return 0;
 }
 
@@ -556,6 +590,250 @@ int re_disasm_code(const char *vfs_path, int code_id, const char *dst_file) {
 }
 
 // ============================================================================
+// Decoded/ output and manifest.json (PR 5 helpers)
+// ============================================================================
+
+// Run re_decode_dispatch on every resource of every type.  Output:
+//   decoded/<TYPE>/<id>.json (always; the JSON object the decoder
+//                              produced, or a minimal stub when no
+//                              decoder is registered)
+//   decoded/<TYPE>/<id>.txt  (when the decoder also writes a plain-text
+//                              summary)
+// Returns the number of files written, or -1 on failure.
+static int dump_decoded(const rfork_t *rf, const char *dst_dir) {
+    char base[PATH_MAX];
+    int n = snprintf(base, sizeof(base), "%s/decoded", dst_dir);
+    if (n < 0 || (size_t)n >= sizeof(base))
+        return -1;
+    if (re_mkdir_p(base) != 0)
+        return -1;
+
+    int written = 0;
+    size_t n_types = rfork_num_types(rf);
+    for (size_t t = 0; t < n_types; t++) {
+        const uint8_t *type = rfork_type_at(rf, t);
+        if (!re_decode_dispatch_name(type))
+            continue; // skip types with no decoder
+        char type_path[16];
+        rfork_type_to_path(type, type_path, sizeof(type_path));
+        char type_dir[PATH_MAX];
+        n = snprintf(type_dir, sizeof(type_dir), "%s/%s", base, type_path);
+        if (n < 0 || (size_t)n >= sizeof(type_dir))
+            return -1;
+        if (re_mkdir_p(type_dir) != 0)
+            return -1;
+
+        size_t n_res = rfork_num_resources(rf, type);
+        for (size_t r = 0; r < n_res; r++) {
+            int16_t id = rfork_id_at(rf, type, r);
+            const uint8_t *bytes = NULL;
+            size_t sz = 0;
+            if (rfork_lookup(rf, type, id, &bytes, &sz, NULL, NULL) < 0)
+                continue;
+            char id_str[16];
+            rfork_id_to_path(id, id_str, sizeof(id_str));
+            char json_path[PATH_MAX];
+            char txt_path[PATH_MAX];
+            snprintf(json_path, sizeof(json_path), "%s/%s.json", type_dir, id_str);
+            snprintf(txt_path, sizeof(txt_path), "%s/%s.txt", type_dir, id_str);
+            FILE *jfp = fopen(json_path, "wb");
+            if (!jfp)
+                continue;
+            FILE *tfp = fopen(txt_path, "wb");
+            int rc = re_decode_dispatch(type, bytes, sz, jfp, tfp);
+            fclose(jfp);
+            if (tfp)
+                fclose(tfp);
+            if (rc > 0) {
+                written++;
+            } else if (rc == 0) {
+                // No decoder — shouldn't happen since we filtered above.
+                // Remove the empty json file.
+                remove(json_path);
+                remove(txt_path);
+            }
+            // On decoder error the JSON already carries an "error" object.
+        }
+    }
+    return written;
+}
+
+// Manifest writer.  Captures the source identity, fork sizes, resource
+// type/id list, and the recovered CODE-segment structure.  Resources
+// carry the relative paths of their bin / info / disasm / decoded files
+// so downstream tooling can navigate without re-walking the dir tree.
+static int dump_manifest(const rfork_t *rf, const char *vfs_path, const char *dst_dir, size_t data_len, size_t rsrc_len,
+                         const uint8_t *finder_info, size_t finder_info_len) {
+    char path[PATH_MAX];
+    snprintf(path, sizeof(path), "%s/manifest.json", dst_dir);
+    FILE *fp = fopen(path, "wb");
+    if (!fp) {
+        fprintf(stderr, "re: cannot create '%s': %s\n", path, strerror(errno));
+        return -1;
+    }
+
+    fprintf(fp, "{\n  \"schema_version\": 1,\n  \"generator\": \"granny-smith re v1\",\n");
+    fprintf(fp, "  \"source\": {\n    \"vfs_path\": ");
+    extern void re_json_write_string(FILE *, const char *);
+    re_json_write_string(fp, vfs_path);
+    fprintf(fp, ",\n    \"data_fork\": {\"size\": %zu},\n", data_len);
+    fprintf(fp, "    \"rsrc_fork\": {\"size\": %zu}", rsrc_len);
+    if (finder_info && finder_info_len == 32) {
+        fprintf(fp, ",\n    \"finder\": {\"type\":\"%c%c%c%c\",\"creator\":\"%c%c%c%c\",\"flags_hex\":\"0x%02x%02x\"}",
+                finder_info[0], finder_info[1], finder_info[2], finder_info[3], finder_info[4], finder_info[5],
+                finder_info[6], finder_info[7], finder_info[8], finder_info[9]);
+    }
+    fprintf(fp, "\n  },\n");
+
+    // Resource summary by type.
+    fprintf(fp, "  \"resource_fork\": {\n    \"attrs\": %u,\n    \"types\": [\n", rfork_attrs(rf));
+    size_t n_types = rfork_num_types(rf);
+    for (size_t t = 0; t < n_types; t++) {
+        const uint8_t *type = rfork_type_at(rf, t);
+        char type_path[16];
+        rfork_type_to_path(type, type_path, sizeof(type_path));
+        fprintf(fp, "      {\"type\": ");
+        re_json_write_string(fp, type_path);
+        fprintf(fp, ", \"ids\": [");
+        size_t nr = rfork_num_resources(rf, type);
+        for (size_t r = 0; r < nr; r++)
+            fprintf(fp, "%s%d", r ? "," : "", rfork_id_at(rf, type, r));
+        fprintf(fp, "]}%s\n", t + 1 < n_types ? "," : "");
+    }
+    fprintf(fp, "    ]\n  },\n");
+
+    // CODE segment summary (model + a5_world + per-segment metadata).
+    static const uint8_t code_cc[4] = {'C', 'O', 'D', 'E'};
+    size_t n_code = rfork_num_resources(rf, code_cc);
+    if (n_code > 0) {
+        fprintf(fp, "  \"code\": {\n");
+        const uint8_t *c0_bytes = NULL;
+        size_t c0_sz = 0;
+        rfork_lookup(rf, code_cc, 0, &c0_bytes, &c0_sz, NULL, NULL);
+        re_jt_table_t jt;
+        bool jt_valid = (c0_bytes && re_parse_code0(c0_bytes, c0_sz, &jt) == 0);
+        if (jt_valid) {
+            fprintf(fp, "    \"model\": \"near\",\n");
+            fprintf(fp, "    \"a5_world\": {\"above_a5\": %u, \"below_a5\": %u, \"jt_size\": %u, \"jt_offset\": %u},\n",
+                    jt.above_a5, jt.below_a5, jt.jt_size, jt.jt_offset);
+        } else {
+            fprintf(fp, "    \"model\": \"unknown\",\n");
+        }
+        fprintf(fp, "    \"segments\": [\n");
+        for (size_t r = 0; r < n_code; r++) {
+            int16_t id = rfork_id_at(rf, code_cc, r);
+            const uint8_t *bytes = NULL;
+            size_t sz = 0;
+            if (rfork_lookup(rf, code_cc, id, &bytes, &sz, NULL, NULL) < 0)
+                continue;
+            const char *kind = (id == 0) ? "jumptable" : "code";
+            uint16_t jt_off = 0, jt_count = 0;
+            const char *model = "near";
+            if (id != 0) {
+                re_code_segment_t seg;
+                if (re_parse_code_n(bytes, sz, &seg) == 0) {
+                    jt_off = seg.jt_offset;
+                    jt_count = seg.jt_count;
+                    model = (seg.model == RE_CODE_MODEL_FAR) ? "far" : "near";
+                }
+            }
+            fprintf(fp,
+                    "      {\"id\": %d, \"kind\": \"%s\", \"size\": %zu, \"model\": \"%s\", \"jt_offset\": "
+                    "%u, \"jt_count\": %u}%s\n",
+                    id, kind, sz, model, jt_off, jt_count, r + 1 < n_code ? "," : "");
+        }
+        fprintf(fp, "    ]\n  },\n");
+        if (jt_valid)
+            re_jt_free(&jt);
+    }
+
+    // Resources roll-up with per-file paths.
+    fprintf(fp, "  \"resources\": [\n");
+    bool first = true;
+    for (size_t t = 0; t < n_types; t++) {
+        const uint8_t *type = rfork_type_at(rf, t);
+        char type_path[16];
+        rfork_type_to_path(type, type_path, sizeof(type_path));
+        bool is_code = memcmp(type, code_cc, 4) == 0;
+        bool has_decoder = re_decode_dispatch_name(type) != NULL;
+        size_t nr = rfork_num_resources(rf, type);
+        for (size_t r = 0; r < nr; r++) {
+            int16_t id = rfork_id_at(rf, type, r);
+            const uint8_t *bytes = NULL;
+            size_t sz = 0;
+            const char *name = NULL;
+            uint8_t attrs = 0;
+            if (rfork_lookup(rf, type, id, &bytes, &sz, &name, &attrs) < 0)
+                continue;
+            if (!first)
+                fputs(",\n", fp);
+            first = false;
+            char id_str[16];
+            rfork_id_to_path(id, id_str, sizeof(id_str));
+            fprintf(fp, "    {\"type\": ");
+            re_json_write_string(fp, type_path);
+            fprintf(fp, ", \"id\": %d, \"name\": ", id);
+            re_json_write_string(fp, name ? name : "");
+            fprintf(fp, ", \"attrs\": %u, \"size\": %zu, \"files\": {\"bin\": \"resources/%s/%s\", \"info\": ", attrs,
+                    sz, type_path, id_str);
+            fprintf(fp, "\"resources/%s/%s.info\", \"disasm\": ", type_path, id_str);
+            if (is_code) {
+                if (id == 0)
+                    fprintf(fp, "\"disasm/jump-table.s\"");
+                else
+                    fprintf(fp, "\"disasm/CODE-%04d.s\"", (int)id);
+            } else {
+                fprintf(fp, "null");
+            }
+            fprintf(fp, ", \"decoded\": ");
+            if (has_decoder)
+                fprintf(fp, "\"decoded/%s/%s.json\"", type_path, id_str);
+            else
+                fprintf(fp, "null");
+            fprintf(fp, "}}");
+        }
+    }
+    fprintf(fp, "\n  ]\n}\n");
+    fclose(fp);
+    return 0;
+}
+
+// ============================================================================
+// re_decode_one — single-resource decode to dst_file (or stdout)
+// ============================================================================
+
+int re_decode_one(const char *vfs_path, const char *type_str, int id, const char *dst_file) {
+    if (!vfs_path || !type_str || !*vfs_path || !*type_str)
+        return -EINVAL;
+    uint8_t type[4];
+    if (rfork_type_from_path(type_str, type) != 0)
+        return -EINVAL;
+    if (!re_decode_dispatch_name(type))
+        return -ENOENT;
+    if (id < INT16_MIN || id > INT16_MAX)
+        return -EINVAL;
+
+    char rsrc_path[PATH_MAX];
+    int n = snprintf(rsrc_path, sizeof(rsrc_path), "%s/rsrc/%s/%d", vfs_path, type_str, id);
+    if (n < 0 || (size_t)n >= sizeof(rsrc_path))
+        return -ENAMETOOLONG;
+    size_t sz = 0;
+    uint8_t *bytes = re_read_vfs_file(rsrc_path, &sz);
+    if (!bytes)
+        return -ENOENT;
+    FILE *fp = (dst_file && *dst_file) ? fopen(dst_file, "wb") : stdout;
+    if (!fp) {
+        free(bytes);
+        return -EIO;
+    }
+    int rc = re_decode_dispatch(type, bytes, sz, fp, NULL);
+    if (fp != stdout)
+        fclose(fp);
+    free(bytes);
+    return (rc > 0) ? 0 : -EIO;
+}
+
+// ============================================================================
 // Object-model method wrappers
 // ============================================================================
 
@@ -566,11 +844,35 @@ static value_t re_method_identify(struct object *self, const member_t *m, int ar
     return val_bool(re_identify(argv[0].s));
 }
 
+// Iterate argv[start..argc) and OR in the matching RE_DUMP_* bits.
+// Each rest-arg item is its own argv slot (the dispatcher does NOT pack
+// them into a V_LIST — see storage.cp for the precedent).  Unknown
+// flags log a warning but don't fail the call.
+static uint32_t parse_dump_flags(int argc, const value_t *argv, int start) {
+    uint32_t flags = 0;
+    for (int i = start; i < argc; i++) {
+        if (argv[i].kind != V_STRING || !argv[i].s)
+            continue;
+        const char *s = argv[i].s;
+        if (strcmp(s, "--no-decode") == 0 || strcmp(s, "-D") == 0)
+            flags |= RE_DUMP_NO_DECODE;
+        else if (strcmp(s, "--no-disasm") == 0 || strcmp(s, "-S") == 0)
+            flags |= RE_DUMP_NO_DISASM;
+        else if (strcmp(s, "--force") == 0 || strcmp(s, "-f") == 0)
+            flags |= RE_DUMP_FORCE;
+        else
+            fprintf(stderr, "re.dump: unknown flag '%s' (ignoring)\n", s);
+    }
+    return flags;
+}
+
 static value_t re_method_dump(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)self;
     (void)m;
-    (void)argc;
-    return val_bool(re_dump(argv[0].s, argv[1].s) == 0);
+    const char *path = argv[0].s;
+    const char *dst = argv[1].s;
+    uint32_t flags = parse_dump_flags(argc, argv, 2);
+    return val_bool(re_dump_with_flags(path, dst, flags) == 0);
 }
 
 static value_t re_method_disasm_code(struct object *self, const member_t *m, int argc, const value_t *argv) {
@@ -582,16 +884,39 @@ static value_t re_method_disasm_code(struct object *self, const member_t *m, int
     return val_bool(re_disasm_code(path, code_id, dst) == 0);
 }
 
+static value_t re_method_decode(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)self;
+    (void)m;
+    const char *path = argv[0].s;
+    const char *type = argv[1].s;
+    int id = (int)argv[2].i;
+    const char *dst = (argc >= 4 && argv[3].s && *argv[3].s) ? argv[3].s : NULL;
+    return val_bool(re_decode_one(path, type, id, dst) == 0);
+}
+
 static const arg_decl_t re_identify_args[] = {
     {.name = "vfs_path", .kind = V_STRING, .doc = "VFS path to a forked Mac file"},
 };
 static const arg_decl_t re_dump_args[] = {
-    {.name = "vfs_path", .kind = V_STRING, .doc = "VFS path to a forked Mac file"        },
-    {.name = "dst_dir",  .kind = V_STRING, .doc = "Output directory (created if missing)"},
+    {.name = "vfs_path", .kind = V_STRING, .doc = "VFS path to a forked Mac file"},
+    {.name = "dst_dir", .kind = V_STRING, .doc = "Output directory (created if missing)"},
+    {.name = "flags",
+     .kind = V_STRING,
+     .validation_flags = OBJ_ARG_OPTIONAL | OBJ_ARG_REST,
+     .doc = "Optional flags: --no-decode, --no-disasm, --force"},
 };
 static const arg_decl_t re_disasm_code_args[] = {
     {.name = "vfs_path", .kind = V_STRING, .doc = "VFS path to a forked Mac file"},
     {.name = "code_id", .kind = V_INT, .width = 2, .doc = "CODE resource ID (0 = jump table)"},
+    {.name = "dst_file",
+     .kind = V_STRING,
+     .validation_flags = OBJ_ARG_OPTIONAL,
+     .doc = "Output file (defaults to stdout)"},
+};
+static const arg_decl_t re_decode_args[] = {
+    {.name = "vfs_path", .kind = V_STRING, .doc = "VFS path to a forked Mac file"},
+    {.name = "type", .kind = V_STRING, .doc = "Resource type 4-CC (e.g. \"vers\")"},
+    {.name = "id", .kind = V_INT, .width = 2, .doc = "Resource ID"},
     {.name = "dst_file",
      .kind = V_STRING,
      .validation_flags = OBJ_ARG_OPTIONAL,
@@ -605,12 +930,16 @@ static const member_t re_members[] = {
      .method = {.args = re_identify_args, .nargs = 1, .result = V_BOOL, .fn = re_method_identify}      },
     {.kind = M_METHOD,
      .name = "dump",
-     .doc = "Extract data fork, finder info, resources, and per-CODE disasm into dst_dir",
-     .method = {.args = re_dump_args, .nargs = 2, .result = V_BOOL, .fn = re_method_dump}              },
+     .doc = "Extract data/resources/disasm/decoded + manifest.json into dst_dir",
+     .method = {.args = re_dump_args, .nargs = 3, .result = V_BOOL, .fn = re_method_dump}              },
     {.kind = M_METHOD,
      .name = "disasm_code",
      .doc = "Disassemble one CODE resource to dst_file (or stdout)",
      .method = {.args = re_disasm_code_args, .nargs = 3, .result = V_BOOL, .fn = re_method_disasm_code}},
+    {.kind = M_METHOD,
+     .name = "decode",
+     .doc = "Run the per-type decoder for one resource (vers/MENU/STR#/...)",
+     .method = {.args = re_decode_args, .nargs = 4, .result = V_BOOL, .fn = re_method_decode}          },
 };
 
 const class_desc_t re_class = {
