@@ -38,10 +38,17 @@ void re_delete(void);
 bool re_identify(const char *vfs_path);
 
 // Dump the forked file at `vfs_path` into `dst_dir`.  Creates dst_dir if
-// missing; writes `data.bin`, `finder.json`, and a `resources/<TYPE>/<id>`
-// + matching `.info` sidecar for every resource.  Returns 0 on success or
-// a negative errno-style code on failure (with details printed to stderr).
+// missing; writes `data.bin`, `finder.json`, a `resources/<TYPE>/<id>` +
+// matching `.info` sidecar for every resource, and (when CODE 0 +
+// non-empty CODE N segments are present) per-segment disassembly under
+// `disasm/CODE-XXXX.s` plus `disasm/jump-table.s`.  Returns 0 on success
+// or a negative errno-style code on failure (with details on stderr).
 int re_dump(const char *vfs_path, const char *dst_dir);
+
+// Disassemble one CODE resource and stream the listing to either
+// `dst_file` (a host path that is created or truncated) or stdout when
+// `dst_file` is NULL/empty.  Returns 0 on success, negative on failure.
+int re_disasm_code(const char *vfs_path, int code_id, const char *dst_file);
 
 // Read a whole VFS path into a freshly malloc'd buffer.  Returns NULL on
 // failure; on success `*out_len` is the byte count.  Caller frees with

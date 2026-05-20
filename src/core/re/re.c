@@ -16,6 +16,8 @@
 
 #include "re.h"
 
+#include "annotate_disasm.h"
+#include "code_segment.h"
 #include "object.h"
 #include "resource_fork.h"
 #include "value.h"
@@ -28,6 +30,12 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+
+// Forward declaration: dump_disasm lives below re_dump for readability
+// (the disassembly helpers are conceptually a self-contained block) but
+// re_dump calls it as the final step.  The forward decl keeps that
+// ordering legal in C without cross-referencing surprises.
+static int dump_disasm(const struct rfork *rf, const char *dst_dir);
 
 // ============================================================================
 // Small filesystem helpers (mkdir -p + path joining)
@@ -318,10 +326,13 @@ int re_dump(const char *vfs_path, const char *dst_dir) {
         free(finf_bytes);
     }
 
-    // Resource fork — parse + extract.  Absence is silent (data-only files).
+    // Resource fork — parse, extract every resource, then disassemble
+    // any CODE segments.  rf stays alive across both passes so we don't
+    // pay the parse cost twice.
     size_t rsrc_len = 0;
     uint8_t *rsrc_bytes = read_suffix(vfs_path, "rsrc/_raw", &rsrc_len);
     int total_resources = 0;
+    int disasm_written = 0;
     if (rsrc_bytes && rsrc_len > 0) {
         const char *errmsg = NULL;
         rfork_t *rf = rfork_parse(rsrc_bytes, rsrc_len, &errmsg);
@@ -331,13 +342,152 @@ int re_dump(const char *vfs_path, const char *dst_dir) {
             return -EIO;
         }
         total_resources = dump_resources(rf, dst_dir);
+        if (total_resources >= 0)
+            disasm_written = dump_disasm(rf, dst_dir);
         rfork_free(rf);
     }
     free(rsrc_bytes);
 
-    if (total_resources < 0)
+    if (total_resources < 0 || disasm_written < 0)
         return -EIO;
-    printf("re.dump: %s -> %s (%d resource%s)\n", vfs_path, dst_dir, total_resources, total_resources == 1 ? "" : "s");
+
+    printf("re.dump: %s -> %s (%d resource%s, %d code segment%s)\n", vfs_path, dst_dir, total_resources,
+           total_resources == 1 ? "" : "s", disasm_written, disasm_written == 1 ? "" : "s");
+    return 0;
+}
+
+// ============================================================================
+// Disassembly helpers — CODE 0 jump table + CODE N segment listings
+// ============================================================================
+
+static FILE *open_out_file(const char *path) {
+    FILE *fp = fopen(path, "wb");
+    if (!fp)
+        fprintf(stderr, "re: cannot create '%s': %s\n", path, strerror(errno));
+    return fp;
+}
+
+static void write_jt_listing(FILE *fp, const re_jt_table_t *jt) {
+    fprintf(fp, "; ============================================================\n");
+    fprintf(fp, "; CODE 0 — application jump table\n");
+    fprintf(fp, "; above_a5 = %u (0x%X)\n", jt->above_a5, jt->above_a5);
+    fprintf(fp, "; below_a5 = %u (0x%X)\n", jt->below_a5, jt->below_a5);
+    fprintf(fp, "; jt_size  = %u (0x%X)\n", jt->jt_size, jt->jt_size);
+    fprintf(fp, "; jt_offset_from_A5 = 0x%X\n", jt->jt_offset);
+    fprintf(fp, "; entries  = %zu\n", jt->n_entries);
+    fprintf(fp, "; ============================================================\n\n");
+    for (size_t i = 0; i < jt->n_entries; i++)
+        fprintf(fp, "JT[%zu]\tsegment=%u\toffset=0x%04X\n", i, jt->entries[i].segment, jt->entries[i].offset);
+}
+
+static void write_segment_listing(FILE *fp, int16_t code_id, const re_code_segment_t *seg) {
+    const char *model_str = (seg->model == RE_CODE_MODEL_FAR) ? "far" : "near";
+    fprintf(fp, "; ============================================================\n");
+    fprintf(fp, "; CODE %d\n", code_id);
+    fprintf(fp, "; model=%s  header_bytes=%zu  jt_offset=0x%04X  jt_count=%u  code_bytes=%zu\n", model_str,
+            seg->header_bytes, seg->jt_offset, seg->jt_count, seg->insts_len);
+    fprintf(fp, "; ============================================================\n\n");
+    // Addresses start at header_bytes so a JSR -X(A5) destination resolves
+    // to a label inside the listing, matching the runtime loader's view.
+    re_annotate_disasm_write(fp, seg->insts, seg->insts_len, (uint32_t)seg->header_bytes, RE_DISASM_ALL);
+}
+
+// Write disasm/CODE-NNNN.s for every CODE id != 0 (and disasm/jump-table.s
+// for CODE 0).  Returns the number of files written, or -1 on failure.
+static int dump_disasm(const rfork_t *rf, const char *dst_dir) {
+    static const uint8_t code_cc[4] = {'C', 'O', 'D', 'E'};
+    size_t n_code = rfork_num_resources(rf, code_cc);
+    if (n_code == 0)
+        return 0;
+    char dir[PATH_MAX];
+    int n = snprintf(dir, sizeof(dir), "%s/disasm", dst_dir);
+    if (n < 0 || (size_t)n >= sizeof(dir))
+        return -1;
+    if (re_mkdir_p(dir) != 0) {
+        fprintf(stderr, "re: cannot create '%s': %s\n", dir, strerror(errno));
+        return -1;
+    }
+
+    int written = 0;
+    for (size_t i = 0; i < n_code; i++) {
+        int16_t id = rfork_id_at(rf, code_cc, i);
+        const uint8_t *bytes = NULL;
+        size_t sz = 0;
+        if (rfork_lookup(rf, code_cc, id, &bytes, &sz, NULL, NULL) < 0)
+            continue;
+        char path[PATH_MAX];
+        if (id == 0)
+            n = snprintf(path, sizeof(path), "%s/jump-table.s", dir);
+        else
+            n = snprintf(path, sizeof(path), "%s/CODE-%04d.s", dir, id);
+        if (n < 0 || (size_t)n >= sizeof(path))
+            return -1;
+        FILE *fp = open_out_file(path);
+        if (!fp)
+            return -1;
+        if (id == 0) {
+            re_jt_table_t jt;
+            if (re_parse_code0(bytes, sz, &jt) == 0) {
+                write_jt_listing(fp, &jt);
+                re_jt_free(&jt);
+            } else {
+                fprintf(fp, "; CODE 0 malformed (%zu bytes)\n", sz);
+            }
+        } else {
+            re_code_segment_t seg;
+            if (re_parse_code_n(bytes, sz, &seg) == 0)
+                write_segment_listing(fp, id, &seg);
+            else
+                fprintf(fp, "; CODE %d malformed (%zu bytes)\n", id, sz);
+        }
+        fclose(fp);
+        written++;
+    }
+    return written;
+}
+
+// ============================================================================
+// re_disasm_code — disassemble one CODE resource to dst_file (or stdout)
+// ============================================================================
+
+int re_disasm_code(const char *vfs_path, int code_id, const char *dst_file) {
+    if (!vfs_path || !*vfs_path)
+        return -EINVAL;
+    if (code_id < INT16_MIN || code_id > INT16_MAX)
+        return -EINVAL;
+    char rsrc_path[PATH_MAX];
+    int n = snprintf(rsrc_path, sizeof(rsrc_path), "%s/rsrc/CODE/%d", vfs_path, code_id);
+    if (n < 0 || (size_t)n >= sizeof(rsrc_path))
+        return -ENAMETOOLONG;
+    size_t sz = 0;
+    uint8_t *bytes = re_read_vfs_file(rsrc_path, &sz);
+    if (!bytes) {
+        fprintf(stderr, "re: cannot read '%s'\n", rsrc_path);
+        return -ENOENT;
+    }
+    FILE *fp = (dst_file && *dst_file) ? open_out_file(dst_file) : stdout;
+    if (!fp) {
+        free(bytes);
+        return -EIO;
+    }
+    if (code_id == 0) {
+        re_jt_table_t jt;
+        if (re_parse_code0(bytes, sz, &jt) == 0) {
+            write_jt_listing(fp, &jt);
+            re_jt_free(&jt);
+        } else {
+            fprintf(fp, "; CODE 0 malformed (%zu bytes)\n", sz);
+        }
+    } else {
+        re_code_segment_t seg;
+        if (re_parse_code_n(bytes, sz, &seg) == 0)
+            write_segment_listing(fp, (int16_t)code_id, &seg);
+        else
+            fprintf(fp, "; CODE %d malformed (%zu bytes)\n", code_id, sz);
+    }
+    if (fp != stdout)
+        fclose(fp);
+    free(bytes);
     return 0;
 }
 
@@ -359,6 +509,15 @@ static value_t re_method_dump(struct object *self, const member_t *m, int argc, 
     return val_bool(re_dump(argv[0].s, argv[1].s) == 0);
 }
 
+static value_t re_method_disasm_code(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)self;
+    (void)m;
+    const char *path = argv[0].s;
+    int code_id = (int)argv[1].i;
+    const char *dst = (argc >= 3 && argv[2].s && *argv[2].s) ? argv[2].s : NULL;
+    return val_bool(re_disasm_code(path, code_id, dst) == 0);
+}
+
 static const arg_decl_t re_identify_args[] = {
     {.name = "vfs_path", .kind = V_STRING, .doc = "VFS path to a forked Mac file"},
 };
@@ -366,16 +525,28 @@ static const arg_decl_t re_dump_args[] = {
     {.name = "vfs_path", .kind = V_STRING, .doc = "VFS path to a forked Mac file"        },
     {.name = "dst_dir",  .kind = V_STRING, .doc = "Output directory (created if missing)"},
 };
+static const arg_decl_t re_disasm_code_args[] = {
+    {.name = "vfs_path", .kind = V_STRING, .doc = "VFS path to a forked Mac file"},
+    {.name = "code_id", .kind = V_INT, .width = 2, .doc = "CODE resource ID (0 = jump table)"},
+    {.name = "dst_file",
+     .kind = V_STRING,
+     .validation_flags = OBJ_ARG_OPTIONAL,
+     .doc = "Output file (defaults to stdout)"},
+};
 
 static const member_t re_members[] = {
     {.kind = M_METHOD,
      .name = "identify",
      .doc = "Print a one-line summary of a forked Mac file",
-     .method = {.args = re_identify_args, .nargs = 1, .result = V_BOOL, .fn = re_method_identify}},
+     .method = {.args = re_identify_args, .nargs = 1, .result = V_BOOL, .fn = re_method_identify}      },
     {.kind = M_METHOD,
      .name = "dump",
-     .doc = "Extract data fork, finder info, and every resource into dst_dir",
-     .method = {.args = re_dump_args, .nargs = 2, .result = V_BOOL, .fn = re_method_dump}        },
+     .doc = "Extract data fork, finder info, resources, and per-CODE disasm into dst_dir",
+     .method = {.args = re_dump_args, .nargs = 2, .result = V_BOOL, .fn = re_method_dump}              },
+    {.kind = M_METHOD,
+     .name = "disasm_code",
+     .doc = "Disassemble one CODE resource to dst_file (or stdout)",
+     .method = {.args = re_disasm_code_args, .nargs = 3, .result = V_BOOL, .fn = re_method_disasm_code}},
 };
 
 const class_desc_t re_class = {
