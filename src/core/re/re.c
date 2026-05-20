@@ -298,6 +298,9 @@ static int dump_resources(const rfork_t *rf, const char *dst_dir) {
 static int dump_decoded(const struct rfork *rf, const char *dst_dir);
 static int dump_manifest(const struct rfork *rf, const char *vfs_path, const char *dst_dir, size_t data_len,
                          size_t rsrc_len, const uint8_t *finder_info, size_t finder_info_len);
+static void dump_readme(const struct rfork *rf, const char *vfs_path, const char *dst_dir, size_t data_len,
+                        size_t rsrc_len, const uint8_t *finder_info, size_t finder_info_len, int total_resources,
+                        int disasm_written, int decoded_written);
 
 int re_dump(const char *vfs_path, const char *dst_dir) {
     return re_dump_with_flags(vfs_path, dst_dir, 0);
@@ -376,8 +379,12 @@ int re_dump_with_flags(const char *vfs_path, const char *dst_dir, uint32_t flags
         if (total_resources >= 0 && !(flags & RE_DUMP_NO_DECODE))
             decoded_written = dump_decoded(rf, dst_dir);
         // Always write the manifest — it consolidates every layer we did
-        // actually run.
+        // actually run.  README.md mirrors the same data in human-readable
+        // form so a reader landing in the directory cold has a clear
+        // table of contents.
         dump_manifest(rf, vfs_path, dst_dir, data_len, rsrc_len, finf_bytes, finf_len);
+        dump_readme(rf, vfs_path, dst_dir, data_len, rsrc_len, finf_bytes, finf_len, total_resources, disasm_written,
+                    decoded_written);
         rfork_free(rf);
     }
     free(rsrc_bytes);
@@ -796,6 +803,152 @@ static int dump_manifest(const rfork_t *rf, const char *vfs_path, const char *ds
     fprintf(fp, "\n  ]\n}\n");
     fclose(fp);
     return 0;
+}
+
+// ============================================================================
+// README.md writer — human-readable table of contents
+// ============================================================================
+//
+// `manifest.json` is the machine-readable index; this file is the
+// hand-readable companion.  A reader who opens the dump directory cold
+// gets a one-page tour: source identity, what's in each subdirectory,
+// where to start, and what conventions to expect (raw bytes vs decoded
+// JSON, MacRoman in path components, etc.).
+
+static void dump_readme(const struct rfork *rf, const char *vfs_path, const char *dst_dir, size_t data_len,
+                        size_t rsrc_len, const uint8_t *finder_info, size_t finder_info_len, int total_resources,
+                        int disasm_written, int decoded_written) {
+    char path[PATH_MAX];
+    snprintf(path, sizeof(path), "%s/README.md", dst_dir);
+    FILE *fp = fopen(path, "wb");
+    if (!fp)
+        return;
+
+    // Header + identity table.  Finder OSTypes are rendered as the
+    // literal 4 ASCII bytes when printable, hex otherwise — same shape
+    // as finder.json.
+    fprintf(fp, "# re.dump — exploded classic-Mac binary\n\n");
+    fprintf(fp, "Self-contained dump of a classic-Mac forked file produced by `re.dump`\n");
+    fprintf(fp, "(see [docs/storage.md](../docs/storage.md) §11 and the\n");
+    fprintf(fp, "[proposal](../local/gs-docs/proposals/proposal-re-binary-explode.md) for the\n");
+    fprintf(fp, "convention).  Every directory here is a layer of progressively-decoded\n");
+    fprintf(fp, "data — raw bytes at the bottom, JSON / `.s` listings on top.\n\n");
+
+    fprintf(fp, "## Source\n\n");
+    fprintf(fp, "| Field | Value |\n|---|---|\n");
+    fprintf(fp, "| VFS path | `%s` |\n", vfs_path ? vfs_path : "?");
+    fprintf(fp, "| Data fork | %zu bytes |\n", data_len);
+    fprintf(fp, "| Resource fork | %zu bytes |\n", rsrc_len);
+    if (finder_info && finder_info_len == 32) {
+        bool t_ok = true, c_ok = true;
+        for (int i = 0; i < 4; i++) {
+            if (finder_info[i] < 0x20 || finder_info[i] > 0x7E)
+                t_ok = false;
+            if (finder_info[4 + i] < 0x20 || finder_info[4 + i] > 0x7E)
+                c_ok = false;
+        }
+        if (t_ok)
+            fprintf(fp, "| Finder type | `%c%c%c%c` |\n", finder_info[0], finder_info[1], finder_info[2],
+                    finder_info[3]);
+        else
+            fprintf(fp, "| Finder type | `0x%02x%02x%02x%02x` |\n", finder_info[0], finder_info[1], finder_info[2],
+                    finder_info[3]);
+        if (c_ok)
+            fprintf(fp, "| Finder creator | `%c%c%c%c` |\n", finder_info[4], finder_info[5], finder_info[6],
+                    finder_info[7]);
+        else
+            fprintf(fp, "| Finder creator | `0x%02x%02x%02x%02x` |\n", finder_info[4], finder_info[5], finder_info[6],
+                    finder_info[7]);
+        fprintf(fp, "| Finder flags | `0x%02x%02x` |\n", finder_info[8], finder_info[9]);
+    }
+    size_t n_types = rfork_num_types(rf);
+    fprintf(fp, "| Resource types | %zu |\n", n_types);
+    fprintf(fp, "| Resources extracted | %d |\n", total_resources);
+    fprintf(fp, "| CODE segments disassembled | %d |\n", disasm_written);
+    fprintf(fp, "| Resources decoded | %d |\n\n", decoded_written);
+
+    // Directory layout table.  This mirrors the on-disk shape but with
+    // intent annotations so the reader knows where to look for what.
+    fprintf(fp, "## Directory layout\n\n");
+    fprintf(fp, "| Path | What it contains |\n|---|---|\n");
+    fprintf(fp, "| `data.bin` | Data fork, verbatim (often empty on Mac apps). |\n");
+    if (finder_info && finder_info_len == 32)
+        fprintf(fp, "| `finder.json` | 32-byte Finder info decoded into type / creator / flags / folder. |\n");
+    fprintf(fp, "| `manifest.json` | Machine-readable index.  Schema v1; carries the full\n");
+    fprintf(fp, "  resource list with per-file paths and the parsed CODE-segment table. |\n");
+    fprintf(fp, "| `README.md` | This file — human-readable table of contents. |\n");
+    fprintf(fp, "| `resources/<TYPE>/<id>` | Raw resource bytes, verbatim. `<TYPE>` is the\n");
+    fprintf(fp, "  4-byte resource type (MacRoman → UTF-8 in the path component). `<id>` is\n");
+    fprintf(fp, "  the signed-16-bit ID as base-10 (with `-` for negatives). |\n");
+    fprintf(fp, "| `resources/<TYPE>/<id>.info` | JSON sidecar with the resource name (if\n");
+    fprintf(fp, "  any), attribute flag list (`preload`, `locked`, …), and size. |\n");
+    if (disasm_written > 0) {
+        fprintf(fp, "| `disasm/jump-table.s` | Decoded CODE 0 — A5 world dimensions plus the\n");
+        fprintf(fp, "  per-segment-and-offset jump table. |\n");
+        fprintf(fp, "| `disasm/CODE-NNNN.s` | Per-segment 68k disassembly with PC-relative\n");
+        fprintf(fp, "  branch resolution, trap-name annotations (`; trap _NewHandle`),\n");
+        fprintf(fp, "  JT cross-references (`; xref JT[i] = CODE s:offset`),\n");
+        fprintf(fp, "  low-memory global labels (`; global Ticks`), and recovered\n");
+        fprintf(fp, "  MacsBug / boundary labels (`MainEventLoop:` / `sub_01AE:`). |\n");
+        fprintf(fp, "| `symbols.txt` | Consolidated symbol table: `<code_id> <addr> <source> <name>`. |\n");
+    }
+    if (decoded_written > 0) {
+        fprintf(fp, "| `decoded/<TYPE>/<id>.json` | Per-type decoded form (vers, MENU, DLOG,\n");
+        fprintf(fp, "  STR#, SIZE, BNDL, …).  Hand-readable JSON; consumers should\n");
+        fprintf(fp, "  prefer this over `resources/<TYPE>/<id>` for any structured\n");
+        fprintf(fp, "  field access. |\n");
+        fprintf(fp, "| `decoded/<TYPE>/<id>.txt` | Plain-text summary where the decoder\n");
+        fprintf(fp, "  produces one (`vers`, `STR`/`STR#`, `MENU`, dialog templates). |\n");
+    }
+    fputc('\n', fp);
+
+    // Per-type resource counts so a reader can see the shape of the
+    // binary at a glance without opening manifest.json.
+    fprintf(fp, "## Resource types\n\n");
+    fprintf(fp, "| Type | Count | Decoded? |\n|---|---|---|\n");
+    for (size_t t = 0; t < n_types; t++) {
+        const uint8_t *cc = rfork_type_at(rf, t);
+        char type_path[16];
+        rfork_type_to_path(cc, type_path, sizeof(type_path));
+        size_t nr = rfork_num_resources(rf, cc);
+        const char *dec = re_decode_dispatch_name(cc);
+        bool is_code = memcmp(cc, "CODE", 4) == 0;
+        fprintf(fp, "| `%s` | %zu | %s |\n", type_path, nr,
+                dec       ? "yes (decoded/)"
+                : is_code ? "n/a (see disasm/)"
+                          : "no — raw bytes only");
+    }
+    fputc('\n', fp);
+
+    // Practical entry points.
+    fprintf(fp, "## Where to start\n\n");
+    fprintf(fp, "- `manifest.json` — start here for tooling.\n");
+    if (decoded_written > 0)
+        fprintf(fp, "- `decoded/vers/1.txt` — human-readable version string (when present).\n");
+    if (disasm_written > 0) {
+        fprintf(fp, "- `disasm/jump-table.s` — the application's main jump table, the index\n");
+        fprintf(fp, "  into the rest of the disassembly.\n");
+        fprintf(fp, "- `symbols.txt` — every label the recovery passes were able to name.\n");
+    }
+    fprintf(fp, "- `resources/<TYPE>/<id>.info` — quick metadata peek for any resource\n");
+    fprintf(fp, "  without opening the binary blob.\n\n");
+
+    fprintf(fp, "## Conventions\n\n");
+    fprintf(fp, "- Resource type `<TYPE>` is the literal four MacRoman bytes from the on-disk\n");
+    fprintf(fp, "  type list, transcoded to UTF-8.  Types with a trailing space (e.g. `STR `,\n");
+    fprintf(fp, "  `SND `) preserve it.\n");
+    fprintf(fp, "- Resource `<id>` is the signed 16-bit ID as a base-10 integer (`128`, `-16`,\n");
+    fprintf(fp, "  `0`, `32767`).\n");
+    fprintf(fp, "- `data.bin` is the *data fork*; resources live in the *resource fork* and\n");
+    fprintf(fp, "  appear under `resources/`.  Most classic-Mac applications have an empty\n");
+    fprintf(fp, "  data fork.\n");
+    fprintf(fp, "- Disassembly addresses start at the segment's first instruction (offset 4\n");
+    fprintf(fp, "  for near-model CODE), matching the runtime loader's view of the segment.\n");
+    fprintf(fp, "\n");
+    fprintf(fp, "Re-run any time with `re.dump <vfs_path> <dir>` (pass `--force` to overwrite,\n");
+    fprintf(fp, "`--no-decode` / `--no-disasm` to skip those layers).\n");
+
+    fclose(fp);
 }
 
 // ============================================================================
