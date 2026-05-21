@@ -18,6 +18,7 @@
 #include "resource_fork.h"
 
 #include "macroman.h"
+#include "rsrc_dcmp.h"
 
 #include <errno.h>
 #include <stdio.h>
@@ -42,12 +43,24 @@ typedef struct rfork_type {
     // Each resource carries: id, data slice, name slice, attrs.  Names are
     // resolved to UTF-8 once at parse time so callers don't repeat the
     // transcoding work per lookup.
+    //
+    // When the resource carries the System 7 compressed flag (attrs &
+    // RFORK_ATTR_COMPRESSED) AND its bytes start with the 0xA89F6572
+    // magic, we decompress eagerly at parse time and stash the inflated
+    // buffer in `inflated` / `inflated_size`.  rfork_lookup then returns
+    // the inflated bytes transparently so callers (CODE disassembler,
+    // per-type decoders) see real data.  `inflated` is NULL when the
+    // resource isn't compressed or when decompression failed (in which
+    // case we keep returning the raw bytes — the .info sidecar still
+    // surfaces the `compressed` flag so the caller can react).
     struct {
         int16_t id;
-        const uint8_t *bytes;
-        size_t size;
+        const uint8_t *bytes; // pointer into the fork buffer
+        size_t size; // raw (possibly compressed) size
         uint8_t attrs;
         char name_utf8[64]; // empty string when name_off == -1
+        uint8_t *inflated; // owned; NULL when not decompressed
+        size_t inflated_size;
     } *resources;
 } rfork_type_t;
 
@@ -177,6 +190,31 @@ rfork_t *rfork_parse(const uint8_t *fork_bytes, size_t fork_len, const char **er
                            sizeof(rf->types[t].resources[r].name_utf8))) {
                 FAIL("name list out of range");
             }
+
+            // System 7 compressed-resource auto-inflate.  Triggered when
+            // the attrs byte has the 0x01 (compressed) bit set AND the
+            // first 4 bytes are the dcmp magic.  Failure here is
+            // non-fatal: the .info sidecar still surfaces the
+            // compressed flag, and rfork_lookup falls through to the
+            // raw bytes — consumers that care can branch on attrs.
+            if ((attrs & RFORK_ATTR_COMPRESSED) &&
+                rsrc_dcmp_is_compressed(rf->types[t].resources[r].bytes, rf->types[t].resources[r].size)) {
+                size_t inflated_size = 0;
+                const char *derr = NULL;
+                uint8_t *inflated = rsrc_dcmp_decompress(rf->types[t].resources[r].bytes,
+                                                         rf->types[t].resources[r].size, &inflated_size, &derr);
+                if (inflated) {
+                    rf->types[t].resources[r].inflated = inflated;
+                    rf->types[t].resources[r].inflated_size = inflated_size;
+                }
+                // On decompression failure we leave inflated NULL.
+                // derr is intentionally ignored — the failure path is
+                // expected for any dcmp we don't implement yet (dcmp 2
+                // / GreggyBits, third-party compressors), and we don't
+                // want to noise up the parser caller with a per-
+                // resource warning stream.
+                (void)derr;
+            }
         }
     }
 
@@ -196,8 +234,13 @@ void rfork_free(rfork_t *rf) {
     if (!rf)
         return;
     if (rf->types) {
-        for (size_t t = 0; t < rf->num_types; t++)
-            free(rf->types[t].resources);
+        for (size_t t = 0; t < rf->num_types; t++) {
+            if (rf->types[t].resources) {
+                for (size_t r = 0; r < rf->types[t].num_resources; r++)
+                    free(rf->types[t].resources[r].inflated);
+                free(rf->types[t].resources);
+            }
+        }
         free(rf->types);
     }
     free(rf);
@@ -248,10 +291,18 @@ int rfork_lookup(const rfork_t *rf, const uint8_t type[4], int16_t id, const uin
         return -ENOENT;
     for (size_t r = 0; r < t->num_resources; r++) {
         if (t->resources[r].id == id) {
+            // Prefer the inflated bytes when present.  The .info sidecar
+            // (built by callers from `attrs`) still reports the
+            // compressed flag — that's a property of the resource record,
+            // not of the byte stream — so downstream tooling can tell
+            // "this was compressed on disk" even when we hand it the
+            // inflated form.
+            const uint8_t *bytes = t->resources[r].inflated ? t->resources[r].inflated : t->resources[r].bytes;
+            size_t size = t->resources[r].inflated ? t->resources[r].inflated_size : t->resources[r].size;
             if (bytes_out)
-                *bytes_out = t->resources[r].bytes;
+                *bytes_out = bytes;
             if (size_out)
-                *size_out = t->resources[r].size;
+                *size_out = size;
             if (name_out)
                 *name_out = t->resources[r].name_utf8;
             if (attrs_out)

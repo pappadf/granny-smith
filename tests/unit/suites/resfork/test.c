@@ -9,6 +9,7 @@
 // scenarios that must produce a defined error rather than a crash.
 
 #include "resource_fork.h"
+#include "rsrc_dcmp.h"
 #include "test_assert.h"
 
 #include <errno.h>
@@ -413,6 +414,130 @@ TEST(test_info_format) {
     ASSERT_TRUE(strstr(buf, "\\\\") != NULL);
 }
 
+// ---- dcmp 0 decompressor tests --------------------------------------------
+//
+// Build a minimal valid compressed payload by hand and confirm the
+// decompressor produces the expected output.  This exercises the
+// LiteralN opcode (variable-length literal copy) and the constant-word
+// emit table (three different table entries) plus the end-of-stream
+// terminator — covering the three most common opcode classes.
+
+TEST(test_dcmp_is_compressed) {
+    uint8_t magic[4] = {0xA8, 0x9F, 0x65, 0x72};
+    ASSERT_TRUE(rsrc_dcmp_is_compressed(magic, 4));
+    uint8_t notmagic[4] = {0xA8, 0x9F, 0x65, 0x71};
+    ASSERT_TRUE(!rsrc_dcmp_is_compressed(notmagic, 4));
+    ASSERT_TRUE(!rsrc_dcmp_is_compressed(NULL, 0));
+    ASSERT_TRUE(!rsrc_dcmp_is_compressed(magic, 3)); // too short
+}
+
+TEST(test_dcmp_roundtrip_minimal) {
+    // Header (18 bytes) + payload exercising LiteralN + constant-word emit.
+    // Payload semantics:
+    //   0x03 0x11 0x22 0x33 0x44 0x55 0x66   -> Literal6 emits 6 raw bytes
+    //   0x4C                                  -> const-word 0x4EBA (JSR.L)
+    //   0x4E                                  -> const-word 0x4E75 (RTS)
+    //   0x4D                                  -> const-word 0x0008
+    //   0xFF                                  -> end of stream
+    // Total emitted: 6 + 2 + 2 + 2 = 12 bytes.
+    uint8_t payload[18 + 11] = {
+        // Header
+        0xA8, 0x9F, 0x65, 0x72, // signature
+        0x00, 0x12, // header_length = 18
+        0x08, // version 8
+        0x00, // attrs
+        0x00, 0x00, 0x00, 0x0C, // actual_size = 12
+        0x40, // var_ratio (gives var table 12*0x40/256 = 3 → rounded up to 4)
+        0x00, // overrun
+        0x00, 0x00, // dcmp_id = 0
+        0x00, 0x00, // ctable_id
+        // Payload
+        0x03, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, // Literal6
+        0x4C, // const 0x4EBA
+        0x4E, // const 0x4E75
+        0x4D, // const 0x0008
+        0xFF, // end
+    };
+
+    size_t out_len = 0;
+    const char *err = NULL;
+    uint8_t *out = rsrc_dcmp_decompress(payload, sizeof(payload), &out_len, &err);
+    ASSERT_TRUE(out != NULL);
+    ASSERT_TRUE(err == NULL);
+    ASSERT_EQ_INT(12, (int)out_len);
+
+    uint8_t expected[12] = {0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x4E, 0xBA, 0x4E, 0x75, 0x00, 0x08};
+    ASSERT_EQ_INT(0, memcmp(out, expected, 12));
+    free(out);
+}
+
+TEST(test_dcmp_remember_then_reuse) {
+    // Exercise the var-table dictionary: Remember2 stores a 2-byte literal,
+    // then ReuseData0 emits it again.  `actual_size` is padded to 20 so the
+    // var table is big enough (var_ratio 0x80 ⇒ 20·128/256 = 10 bytes —
+    // room for the index list plus a 2-byte string at the tail).  The
+    // remaining 14 bytes of the output come back as zero padding.
+    //   0x11 0xAA 0xBB                       -> Remember2: emit + store "AA BB"
+    //   0x4B                                  -> emit const 0x0000
+    //   0x23                                  -> ReuseData0 — fetch entry 0 = "AA BB"
+    //   0xFF                                  -> end
+    uint8_t payload[18 + 6] = {
+        0xA8, 0x9F, 0x65, 0x72, 0x00, 0x12, 0x08, 0x00, 0x00, 0x00, 0x00, 0x14, // actual_size = 20
+        0x80, // var_ratio = 0x80 → 20·128/256 = 10 bytes
+        0x00, 0x00, 0x00, 0x00, 0x00,
+        // Payload
+        0x11, 0xAA, 0xBB, // Remember2
+        0x4B, // const 0x0000
+        0x23, // ReuseData0
+        0xFF, // end
+    };
+    size_t out_len = 0;
+    const char *err = NULL;
+    uint8_t *out = rsrc_dcmp_decompress(payload, sizeof(payload), &out_len, &err);
+    ASSERT_TRUE(out != NULL);
+    ASSERT_EQ_INT(20, (int)out_len);
+    uint8_t expected[20] = {0xAA, 0xBB, 0x00, 0x00, 0xAA, 0xBB, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+    ASSERT_EQ_INT(0, memcmp(out, expected, 20));
+    free(out);
+}
+
+TEST(test_dcmp_rejects_bad_magic) {
+    uint8_t bad[18] = {0xDE, 0xAD, 0xBE, 0xEF, 0x00, 0x12, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
+    const char *err = NULL;
+    uint8_t *out = rsrc_dcmp_decompress(bad, sizeof(bad), NULL, &err);
+    ASSERT_TRUE(out == NULL);
+    ASSERT_TRUE(err != NULL);
+}
+
+TEST(test_dcmp_rejects_wrong_dcmp_id) {
+    // Valid magic + header but dcmp_id = 2 (GreggyBits, not implemented).
+    uint8_t hdr[18] = {0xA8, 0x9F, 0x65, 0x72, 0x00, 0x12, 0x08, 0x00,
+                       0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02, // dcmp_id = 2
+                       0x00, 0x00};
+    const char *err = NULL;
+    uint8_t *out = rsrc_dcmp_decompress(hdr, sizeof(hdr), NULL, &err);
+    ASSERT_TRUE(out == NULL);
+    ASSERT_TRUE(err != NULL);
+}
+
+TEST(test_dcmp_zero_pads_short_streams) {
+    // actual_size = 10 but the stream emits 4 bytes before 0xFF — the
+    // remaining 6 bytes must come back as zeros so callers see a buffer
+    // of exactly actual_size.
+    uint8_t payload[] = {
+        0xA8, 0x9F, 0x65, 0x72, 0x00, 0x12, 0x08, 0x00, 0x00, 0x00, 0x00, 0x0A, // actual_size = 10
+        0x40, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02, 0x11, 0x22, 0x33, 0x44, // Literal4
+        0xFF, // end
+    };
+    size_t out_len = 0;
+    uint8_t *out = rsrc_dcmp_decompress(payload, sizeof(payload), &out_len, NULL);
+    ASSERT_TRUE(out != NULL);
+    ASSERT_EQ_INT(10, (int)out_len);
+    uint8_t expected[10] = {0x11, 0x22, 0x33, 0x44, 0, 0, 0, 0, 0, 0};
+    ASSERT_EQ_INT(0, memcmp(out, expected, 10));
+    free(out);
+}
+
 int main(void) {
     RUN(test_parse_empty_fork);
     RUN(test_parse_two_types_multi_ids);
@@ -426,6 +551,12 @@ int main(void) {
     RUN(test_id_path_parse);
     RUN(test_type_path_parse);
     RUN(test_info_format);
+    RUN(test_dcmp_is_compressed);
+    RUN(test_dcmp_roundtrip_minimal);
+    RUN(test_dcmp_remember_then_reuse);
+    RUN(test_dcmp_rejects_bad_magic);
+    RUN(test_dcmp_rejects_wrong_dcmp_id);
+    RUN(test_dcmp_zero_pads_short_streams);
     fprintf(stderr, "All resfork tests passed.\n");
     return 0;
 }
