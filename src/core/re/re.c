@@ -436,14 +436,150 @@ static void write_segment_listing(FILE *fp, int16_t code_id, const re_code_segme
     re_annotate_disasm_write(fp, seg->insts, seg->insts_len, (uint32_t)seg->header_bytes, RE_DISASM_ALL, &ctx);
 }
 
+// ---- Code-bearing types beyond CODE --------------------------------------
+//
+// Per proposal §2.11 — several resource types other than CODE carry 68k
+// instructions, each with a type-specific header.  We disassemble those
+// too so the dump covers patches, drivers, defprocs, and the System
+// file's linked-patch (lpch) machinery.  The header skip per type is
+// documented inline below.
+
+// Linked-patch resource — see
+//   gs-archive/sys71src-main/LinkedPatches/LinkedPatchLoader.a
+// for the full format.  Two flavours:
+//   single-ROM lpch: +0 u16 num_lpch, +2 u32 size_of_code, +6 code
+//   universal lpch:  +0 u16 num_rom_addrs, +2 u16 num_jt_entries,
+//                    +4 u32 size_of_code, +8 code
+// We pick the layout by trying single-ROM first and seeing whether the
+// declared code size fits inside the buffer; if not, we fall back to
+// universal.  Either way the rest of the resource (ROM tables, packed
+// jump table, patch table) follows the code — we ignore it here and
+// just disassemble the code region.
+static int parse_lpch(const uint8_t *bytes, size_t sz, size_t *header_bytes, size_t *code_len) {
+    if (sz < 8)
+        return -1;
+    // Try single-ROM layout: code_size at +2.
+    uint32_t code_size_a =
+        ((uint32_t)bytes[2] << 24) | ((uint32_t)bytes[3] << 16) | ((uint32_t)bytes[4] << 8) | bytes[5];
+    if (code_size_a > 0 && code_size_a <= sz - 6) {
+        *header_bytes = 6;
+        *code_len = code_size_a;
+        return 0;
+    }
+    // Try universal layout: code_size at +4.
+    uint32_t code_size_b =
+        ((uint32_t)bytes[4] << 24) | ((uint32_t)bytes[5] << 16) | ((uint32_t)bytes[6] << 8) | bytes[7];
+    if (code_size_b > 0 && code_size_b <= sz - 8) {
+        *header_bytes = 8;
+        *code_len = code_size_b;
+        return 0;
+    }
+    return -1;
+}
+
+// Generic code-bearing-resource disassembler — used for all non-CODE
+// types in g_code_bearing.  `header_label` is the file-header comment;
+// `header_bytes` is the offset where actual instructions begin; `code_len`
+// is the number of bytes to disassemble (defaults to the rest of the
+// resource when set to (size_t)-1).
+static void write_generic_code_listing(FILE *fp, const char *type_str, int16_t id, const char *header_label,
+                                       const uint8_t *bytes, size_t sz, size_t header_bytes, size_t code_len,
+                                       re_symbols_t *symbols) {
+    fprintf(fp, "; ============================================================\n");
+    fprintf(fp, "; %s %d\n", type_str, id);
+    if (header_label)
+        fprintf(fp, "; %s\n", header_label);
+    fprintf(fp, "; header_bytes=%zu  code_bytes=%zu  resource_bytes=%zu\n", header_bytes, code_len, sz);
+    fprintf(fp, "; ============================================================\n\n");
+    if (header_bytes > sz) {
+        fprintf(fp, "; resource shorter than its declared header — bailing out\n");
+        return;
+    }
+    if (code_len == (size_t)-1 || header_bytes + code_len > sz)
+        code_len = sz - header_bytes;
+    re_annotate_ctx_t ctx = {.jt = NULL, .code_id = id, .symbols = symbols};
+    re_annotate_disasm_write(fp, bytes + header_bytes, code_len, (uint32_t)header_bytes, RE_DISASM_ALL, &ctx);
+}
+
+// Table of code-bearing types we treat as disassembly fodder.  Per
+// proposal §2.11 — `CODE` gets full near/far-model parsing + jump-table
+// xref handling (the existing path); `lpch` parses the linked-patches
+// header to find the code region; `DRVR` skips an 18-byte fixed header
+// plus the driver-name pstring before disassembling.  Everything else
+// disassembles from offset 0 with a single `entry` label — that's the
+// generic fallback the proposal endorses for unrecognised code-bearing
+// types.
+//
+// Lowercase variants (`dcmp`, `boot`, `lmem`, `lmgr`, `mcky`, `proc`,
+// `scod`, `snth`, `ptch`) cover the System-file's wide spread of
+// patch / dispatch / boot code.
+typedef enum {
+    CBKIND_CODE,
+    CBKIND_LPCH,
+    CBKIND_DRVR,
+    CBKIND_GENERIC,
+} cbkind_t;
+
+typedef struct {
+    uint8_t cc[4];
+    cbkind_t kind;
+    const char *header_label;
+} cbtype_t;
+
+static const cbtype_t g_code_bearing[] = {
+    // 'CODE' takes the dedicated path; we still list it so the iteration
+    // below stays uniform.
+    {{'C', 'O', 'D', 'E'}, CBKIND_CODE,    NULL                                                                          },
+    {{'l', 'p', 'c', 'h'}, CBKIND_LPCH,    "linked-patch resource (per LinkedPatchLoader.a §lpch format)"               },
+    {{'D', 'R', 'V', 'R'}, CBKIND_DRVR,    "driver — 18-byte header + Pascal name; entry table at offsets 6/8/10/12/14"},
+    {{'I', 'N', 'I', 'T'}, CBKIND_GENERIC, "INIT — code starts at offset 0"                                            },
+    {{'M', 'D', 'E', 'F'}, CBKIND_GENERIC, "menu-definition proc"                                                        },
+    {{'M', 'B', 'D', 'F'}, CBKIND_GENERIC, "menu-bar definition"                                                         },
+    {{'W', 'D', 'E', 'F'}, CBKIND_GENERIC, "window-definition proc"                                                      },
+    {{'C', 'D', 'E', 'F'}, CBKIND_GENERIC, "control-definition proc"                                                     },
+    {{'L', 'D', 'E', 'F'}, CBKIND_GENERIC, "list-definition proc"                                                        },
+    {{'P', 'A', 'C', 'K'}, CBKIND_GENERIC, "standard package (selector-switch dispatcher at offset 0)"                   },
+    {{'F', 'K', 'E', 'Y'}, CBKIND_GENERIC, "function-key code"                                                           },
+    {{'A', 'D', 'B', 'S'}, CBKIND_GENERIC, "ADB service routine"                                                         },
+    {{'X', 'C', 'M', 'D'}, CBKIND_GENERIC, "HyperCard external command"                                                  },
+    {{'X', 'F', 'C', 'N'}, CBKIND_GENERIC, "HyperCard external function"                                                 },
+    {{'d', 'c', 'm', 'p'}, CBKIND_GENERIC, "resource decompressor"                                                       },
+    {{'P', 'T', 'C', 'H'}, CBKIND_GENERIC, "ROM patch (legacy format)"                                                   },
+    {{'p', 't', 'c', 'h'}, CBKIND_GENERIC, "ROM patch"                                                                   },
+    {{'s', 'c', 'o', 'd'}, CBKIND_GENERIC, "system code module"                                                          },
+    {{'b', 'o', 'o', 't'}, CBKIND_GENERIC, "boot block"                                                                  },
+    {{'l', 'm', 'g', 'r'}, CBKIND_GENERIC, "low-memory manager"                                                          },
+    {{'l', 'm', 'e', 'm'}, CBKIND_GENERIC, "low-memory code"                                                             },
+    {{'m', 'c', 'k', 'y'}, CBKIND_GENERIC, "mouse cursor / Mickey code"                                                  },
+    {{'p', 'r', 'o', 'c'}, CBKIND_GENERIC, "generic procedure"                                                           },
+    {{'s', 'n', 't', 'h'}, CBKIND_GENERIC, "Sound Manager synthesiser"                                                   },
+    {{'c', 'd', 'e', 'v'}, CBKIND_GENERIC, "Control Panel device"                                                        },
+    {{'d', 'c', 'm', 'd'}, CBKIND_GENERIC, "MacsBug dcmd"                                                                },
+};
+static const size_t g_code_bearing_count = sizeof(g_code_bearing) / sizeof(g_code_bearing[0]);
+
+static const cbtype_t *find_cbtype(const uint8_t cc[4]) {
+    for (size_t i = 0; i < g_code_bearing_count; i++) {
+        if (memcmp(g_code_bearing[i].cc, cc, 4) == 0)
+            return &g_code_bearing[i];
+    }
+    return NULL;
+}
+
 // Write disasm/CODE-NNNN.s for every CODE id != 0 (and disasm/jump-table.s
-// for CODE 0), plus a consolidated symbols.txt at dst_dir's root.
-// Returns the number of disasm files written, or -1 on failure.
+// for CODE 0), plus disasm/<TYPE>-NNNN.s for every other code-bearing
+// type in g_code_bearing, plus a consolidated symbols.txt at dst_dir's
+// root.  Returns the number of disasm files written, or -1 on failure.
 static int dump_disasm(const rfork_t *rf, const char *dst_dir) {
     static const uint8_t code_cc[4] = {'C', 'O', 'D', 'E'};
-    size_t n_code = rfork_num_resources(rf, code_cc);
-    if (n_code == 0)
+    // Count how many code-bearing resources we'll process.  Zero of any
+    // type means no disasm dir at all.
+    size_t total_cb = 0;
+    for (size_t i = 0; i < g_code_bearing_count; i++)
+        total_cb += rfork_num_resources(rf, g_code_bearing[i].cc);
+    if (total_cb == 0)
         return 0;
+
     char dir[PATH_MAX];
     int n = snprintf(dir, sizeof(dir), "%s/disasm", dst_dir);
     if (n < 0 || (size_t)n >= sizeof(dir))
@@ -471,36 +607,96 @@ static int dump_disasm(const rfork_t *rf, const char *dst_dir) {
     re_symbols_init(&symbols);
 
     int written = 0;
-    for (size_t i = 0; i < n_code; i++) {
-        int16_t id = rfork_id_at(rf, code_cc, i);
-        const uint8_t *bytes = NULL;
-        size_t sz = 0;
-        if (rfork_lookup(rf, code_cc, id, &bytes, &sz, NULL, NULL) < 0)
+    // Iterate every registered code-bearing type.  For each type we
+    // walk every resource ID, parse the type-specific header (if any),
+    // and write a per-resource .s file.
+    for (size_t cb_i = 0; cb_i < g_code_bearing_count; cb_i++) {
+        const cbtype_t *ct = &g_code_bearing[cb_i];
+        size_t n_res = rfork_num_resources(rf, ct->cc);
+        if (n_res == 0)
             continue;
-        char path[PATH_MAX];
-        if (id == 0)
-            n = snprintf(path, sizeof(path), "%s/jump-table.s", dir);
-        else
-            n = snprintf(path, sizeof(path), "%s/CODE-%04d.s", dir, id);
-        if (n < 0 || (size_t)n >= sizeof(path))
-            goto fail;
-        FILE *fp = open_out_file(path);
-        if (!fp)
-            goto fail;
-        if (id == 0) {
-            if (jt_valid)
-                write_jt_listing(fp, &jt);
-            else
-                fprintf(fp, "; CODE 0 malformed (%zu bytes)\n", sz);
-        } else {
-            re_code_segment_t seg;
-            if (re_parse_code_n(bytes, sz, &seg) == 0)
-                write_segment_listing(fp, id, &seg, jt_valid ? &jt : NULL, &symbols);
-            else
-                fprintf(fp, "; CODE %d malformed (%zu bytes)\n", id, sz);
+        char type_path[16];
+        rfork_type_to_path(ct->cc, type_path, sizeof(type_path));
+        // Sanitise for use in a filename — replace spaces with '_'.
+        char type_path_fs[16];
+        for (size_t k = 0; k < sizeof(type_path_fs); k++) {
+            char c = type_path[k];
+            type_path_fs[k] = (c == ' ') ? '_' : c;
+            if (c == '\0')
+                break;
         }
-        fclose(fp);
-        written++;
+        for (size_t r = 0; r < n_res; r++) {
+            int16_t id = rfork_id_at(rf, ct->cc, r);
+            const uint8_t *bytes = NULL;
+            size_t sz = 0;
+            if (rfork_lookup(rf, ct->cc, id, &bytes, &sz, NULL, NULL) < 0)
+                continue;
+            char path[PATH_MAX];
+            if (ct->kind == CBKIND_CODE && id == 0)
+                n = snprintf(path, sizeof(path), "%s/jump-table.s", dir);
+            else
+                n = snprintf(path, sizeof(path), "%s/%s-%04d.s", dir, type_path_fs, (int)id);
+            if (n < 0 || (size_t)n >= sizeof(path))
+                goto fail;
+            FILE *fp = open_out_file(path);
+            if (!fp)
+                goto fail;
+            switch (ct->kind) {
+            case CBKIND_CODE:
+                if (id == 0) {
+                    if (jt_valid)
+                        write_jt_listing(fp, &jt);
+                    else
+                        fprintf(fp, "; CODE 0 malformed (%zu bytes)\n", sz);
+                } else {
+                    re_code_segment_t seg;
+                    if (re_parse_code_n(bytes, sz, &seg) == 0)
+                        write_segment_listing(fp, id, &seg, jt_valid ? &jt : NULL, &symbols);
+                    else
+                        fprintf(fp, "; CODE %d malformed (%zu bytes)\n", id, sz);
+                }
+                break;
+            case CBKIND_LPCH: {
+                size_t hb = 0, cl = 0;
+                if (parse_lpch(bytes, sz, &hb, &cl) == 0) {
+                    write_generic_code_listing(fp, type_path, id, ct->header_label, bytes, sz, hb, cl, &symbols);
+                } else {
+                    fprintf(fp, "; lpch %d — could not detect single-ROM / universal header layout\n", id);
+                    fprintf(fp, "; disassembling from offset 0; expect garbage in the header bytes\n");
+                    write_generic_code_listing(fp, type_path, id, ct->header_label, bytes, sz, 0, (size_t)-1, &symbols);
+                }
+                break;
+            }
+            case CBKIND_DRVR: {
+                // 18-byte fixed header + driver name pstring (padded to
+                // even length), then code.  We extract the name into a
+                // comment but disasm from past the name; the per-entry
+                // offsets in the header give callable entry points.
+                if (sz < 19) {
+                    fprintf(fp, "; DRVR %d too short for header\n", id);
+                    break;
+                }
+                uint8_t pn = bytes[18];
+                size_t name_end = 19 + pn;
+                if (name_end & 1)
+                    name_end++;
+                if (name_end > sz)
+                    name_end = sz;
+                char name[64] = {0};
+                size_t copy = pn < sizeof(name) - 1 ? pn : sizeof(name) - 1;
+                memcpy(name, bytes + 19, copy);
+                char hdr[160];
+                snprintf(hdr, sizeof(hdr), "%s, driver name='%s'", ct->header_label, name);
+                write_generic_code_listing(fp, type_path, id, hdr, bytes, sz, name_end, (size_t)-1, &symbols);
+                break;
+            }
+            case CBKIND_GENERIC:
+                write_generic_code_listing(fp, type_path, id, ct->header_label, bytes, sz, 0, (size_t)-1, &symbols);
+                break;
+            }
+            fclose(fp);
+            written++;
+        }
     }
 
     // Consolidated symbol listing at the top of the dump.
