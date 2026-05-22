@@ -125,6 +125,7 @@ LOG_USE_CATEGORY_NAME("iifx");
 #define SCSIDMA_DTIME   0x140
 #define SCSIDMA_TEST    0x180
 #define SCSIDMA_INTREN  0x0002
+#define SCSIDMA_HSKEN   0x0008 // iHSKEN — hardware-handshake mode (Apple HardwarePrivateEqu.a)
 #define SCSIDMA_RESET   0x0010
 #define SCSIDMA_ARBIDEN 0x1000
 #define SCSIDMA_WONARB  0x2000
@@ -444,6 +445,21 @@ static void iifx_scsidma_write_uint8(config_t *cfg, uint32_t offset, uint8_t val
     iifx_state_t *st = iifx_state(cfg);
     uint32_t off = offset & 0x1fff;
     if (off < 0x80) {
+        // IIfx hardware-handshake (iHSKEN) write path: when the SCSI Mgr's
+        // FastWrite sets sDCTRL = iHSKEN, the wrapper auto-handshakes each
+        // CPU write to chip ODR onto the SCSI bus. Mirror that by pushing
+        // ODR-range writes directly into scsi->buf via scsi_hsken_data_out_byte
+        // (bypassing the pseudo-DMA primer-slot gate, which is an A/UX-
+        // specific heuristic that would otherwise drop a leading $00 byte).
+        // 5380 register decode uses (addr >> 4) & 7 so offsets 0..$0F all
+        // map to ODR; MOVE.L (A2)+,(hhsk5380) decomposes into four byte
+        // writes at offsets 0, 1, 2, 3. Without this routing, FastWrite's
+        // MOVE.L loops drop the kernel's data and every WRITE_10 commits
+        // stale reg.odr — corrupting the disk delta.
+        if (off < 0x10 && (st->scsi_dma_ctrl & SCSIDMA_HSKEN)) {
+            scsi_hsken_data_out_byte(cfg->scsi, value);
+            return;
+        }
         st->scsi_iface->write_uint8(cfg->scsi, off, value);
         return;
     }

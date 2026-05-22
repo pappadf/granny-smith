@@ -1367,6 +1367,24 @@ void scsi_set_via(scsi_t *scsi, via_t *via) {
     scsi->via = via;
 }
 
+// Push a single byte into scsi->buf for a data-out transfer, bypassing
+// the pseudo-DMA primer-slot gate. Used by the IIfx DMA wrapper when
+// iHSKEN is set — the wrapper hardware auto-handshakes each byte onto
+// the SCSI bus, so the A/UX primer-byte heuristic must not be applied.
+// Triggers command_complete when the buffer fills (mirrors the regular
+// ODR-alias path's end-of-transfer behavior).
+void scsi_hsken_data_out_byte(scsi_t *scsi, uint8_t byte) {
+    if (scsi->bus.phase != scsi_data_out)
+        return;
+    scsi->reg.odr = byte;
+    if ((scsi->reg.mr & MR_DMA) && !scsi->dma_write_armed)
+        return; // not yet primed; matches the regular alias-path gate
+    assert(scsi->buf.size < scsi->buf.max);
+    scsi->buf.data[scsi->buf.size++] = byte;
+    if (scsi->buf.size == scsi->buf.max)
+        command_complete(scsi);
+}
+
 // Enable or disable loopback mode (passive SCSI terminator / test card)
 void scsi_set_loopback(scsi_t *scsi, bool enable) {
     scsi->loopback = enable;

@@ -801,3 +801,244 @@ case. This is the only way to reach Finder without an out-of-band
 software patch to `AddrMapFlags`.
 
 ---
+
+## 20. SCSI subsystem (NCR 5380 + SCSI DMA wrapper)
+
+The IIfx pairs a stock NCR 5380 SCSI core (the same custom-marked die
+the Mac II / IIx ship with) with an **Apple custom "SCSI DMA" chip**
+that wraps it. The 5380 register set is unchanged from the Mac II;
+the wrapper layers a programmable bus-master DMA engine on top, with
+its own interrupt that feeds OSS source 9.
+
+Primary sources for this chapter: Apple's *Guide to the Macintosh
+Family Hardware* 2nd ed. §"SCSI DMA in the Macintosh IIfx" and
+§"Interrupts" (which says SCSI IRQ/DRQ in the IIfx is "enabled or
+disabled by setting bits in the Interrupt Enable register inside …
+OSS in the Macintosh IIfx"); the leaked SuperMario / System 7.1
+source tree (`SuperMarioProj.1994-02-09`), specifically
+`Internal/Asm/HardwarePrivateEqu.a` for register offsets and bit
+definitions and `OS/SCSIMgr/SCSIMgrHW.a` for the driver-side
+protocol; the SWIM Design Documents collection (`SWIMDesignDocs/04 -
+IIfx scsi chip`); and Apple Technical Note HW 09 "Macintosh IIfx:
+The Inside Story" (April 1990, Rich Collyer).
+
+### 20.1 Address space
+
+The SCSI subsystem occupies four contiguous windows in the canonical
+IIfx I/O island:
+
+| Range                            | Window           | What it is                                           |
+| -------------------------------- | ---------------- | ---------------------------------------------------- |
+| `$50F0_8000 – $50F0_9FFF`        | DMA wrapper      | Wrapper registers ($80–$1FF) **and** a 5380-register passthrough for the low 128 bytes ($00–$7F). |
+| `$50F0_A000 – $50F0_BFFF`        | 5380 polled regs | Direct access to the eight 5380 registers, $10-spaced (see §20.3). |
+| `$50F0_C000 – $50F0_CFFF`        | Pseudo-DMA read  | Every byte read from this window returns the next CDR byte from the chip — used by the CPU-driven pseudo-DMA loops in `FastRead`-class drivers on machines that don't use the wrapper, and as a status-poll address by some MAME-era reverse engineering. |
+| `$50F0_D000 – $50F0_DFFF`        | Pseudo-DMA write | Mirror of the read aperture for the host→target direction. Writes go to the chip's ODR with the pseudo-DMA flag set, so the byte enters the buffer when the 5380's DRQ is asserted. |
+
+Every byte in the I/O island is mirrored at the same offset within
+each subsequent 256 KB block per the IIfx's normal aliasing rules
+— the canonical addresses above suffice for any software-visible
+behaviour.
+
+### 20.2 SCSI DMA wrapper register layout
+
+Offsets within the `$50F0_8000` window, byte-addressable, but the
+control/state registers are **big-endian 32-bit** values written and
+read as longs. Apple's names match `HardwarePrivateEqu.a`:
+
+| Offset (hex) | Apple name | Direction | Notes |
+| ------------ | ---------- | --------- | ----- |
+| `$000 – $07F` | (5380 passthrough) | R/W | Same byte layout as the polled aperture in §20.3 — i.e. reads/writes of offset `$N0` hit 5380 register `N`. |
+| `$080` | `sDCTRL`   | R/W | Wrapper control + status (see §20.2.1). |
+| `$0C0` | `sDCNT`    | R/W | DMA byte count (24-bit field in a 32-bit register). Decrements as bytes transfer; the driver reads back zero on success. |
+| `$100` | `sDADDR`   | R/W | Physical destination address for read DMA / source address for write DMA. |
+| `$140` | `sDTIME`   | R/W | Watchdog timer reload value. The wrapper raises `iTIMEP` (and IRQ, if `INTREN` is set) when the timer fires before the transfer completes. |
+| `$180` | `sTEST`    | R/W | Chip self-test register; written `0` during SCSI Mgr init to leave test mode. |
+
+#### 20.2.1 `sDCTRL` bits
+
+Per `HardwarePrivateEqu.a` lines 399–419, names with `i*` prefix
+dropped for brevity:
+
+| Bit | Mask     | Name       | Direction | Meaning |
+| --- | -------- | ---------- | --------- | ------- |
+| 0   | `$0001`  | `DMAEN`    | W         | Enable the wrapper's bus-master DMA engine. Cleared after a transfer completes. |
+| 1   | `$0002`  | `INTREN`   | W         | Enable SCSI interrupts to OSS source 9. Stays set across transfers — SCSI Mgr init sets it once via `move.l #iINTREN, sDCTRL(a3)`. |
+| 2   | `$0004`  | `TIMEEN`   | W         | Enable the watchdog timer. The driver sets this together with `DMAEN`. |
+| 4   | `$0010`  | `RESET`    | W (self-clearing) | Soft-reset the wrapper. After this fires, `sDCTRL` is left with `INTREN` set and `sDCNT` is cleared. |
+| 7   | `$0080`  | `TIMEP`    | R         | Timer interrupt pending — set when the watchdog expired before the transfer finished. The driver checks `iDMABERR + iTIMEP` after `@waitForIntr`. |
+| 8   | `$0100`  | `DMABERR`  | R         | DMA bus error — set when a 68030 bus error fired during the transfer. Same `andi.w #iDMABERR+iTIMEP, d5` post-flight check. |
+| 12  | `$1000`  | `ARBIDEN`  | W         | Enable wrapper-side arbitration. Some Mac OS code paths set this to delegate the arbitration phase to the wrapper rather than driving it by hand through the 5380's MR_ARBITRATE bit. |
+| 13  | `$2000`  | `WONARB`   | R         | "Won arbitration" — readback indicator that the wrapper claims to have won. Required acknowledgement before the driver writes the 5380's ICR to start selection. |
+
+The driver's standard "start a DMA read" word is `iTIMEEN +
+iINTREN + iDMAEN = $0007`. Writing this kicks the watchdog,
+arms the wrapper IRQ, and arms the DMA engine — but no bytes
+transfer until `sIDMArx` (§20.3.1) is touched.
+
+### 20.3 NCR 5380 register passthrough
+
+The 5380 register file is exposed at both `$50F0_A000` (polled
+aperture) and `$50F0_8000` (the wrapper's low 128 bytes). At both
+windows, register selection uses address bits 4–6, so consecutive
+registers are 16 bytes apart:
+
+| Offset | Read name | Write name | Apple equ | NCR 5380 datasheet name |
+| ------ | --------- | ---------- | --------- | ----------------------- |
+| `$00`  | CDR (current data) | ODR (output data) | `sCDR`/`sODR` | Current SCSI Data / Output Data |
+| `$10`  | ICR | ICR | `sICR` | Initiator Command Register |
+| `$20`  | MR | MR | `sMR` | Mode Register |
+| `$30`  | TCR | TCR | `sTCR` | Target Command Register |
+| `$40`  | CSR | SER | `sCSR` / `sSER` | Current SCSI Bus Status / Select Enable |
+| `$50`  | BSR | `sDMAtx` | `sBSR` / `sDMAtx` | Bus and Status / Start DMA Send |
+| `$60`  | IDR | `sTDMArx` | `sIDR` / `sTDMArx` | Input Data / Start Target DMA Receive |
+| `$70`  | RESET (reset parity/IRQ) | **`sIDMArx`** | `sRESET` / `sIDMArx` | Reset Parity / **Start Initiator DMA Receive** |
+
+The two read/write names are different functions of the same
+4-bit register select; the chip uses /CS, A0–A2, and R/W to
+multiplex them. On the Mac bus those map to address bits 4–6
+plus the R/W line.
+
+#### 20.3.1 `sIDMArx` — Start Initiator DMA Receive
+
+A write to register 7 (offset `$70` from either passthrough base)
+tells the 5380 to begin DMA-mode handshaking for a data-in
+(target → initiator) transfer. On a stock 5380 the chip then
+drives `/DRQ` whenever a byte is in the IDR, and the host moves
+that byte by reading the pseudo-DMA aperture; the byte count is
+the host's responsibility.
+
+On the IIfx the wrapper hooks this differently: when `sIDMArx`
+is written **with `DCTRL.DMAEN` set**, the wrapper takes over
+the byte-move loop in hardware, copying bytes from the 5380 into
+RAM at `sDADDR`, decrementing `sDCNT`, and finally asserting
+the wrapper IRQ (gated by `INTREN`) when the count reaches zero
+or the watchdog fires. The CPU is free to run while the transfer
+happens.
+
+The driver's `@waitForIntr` loop in `FastReadOSS` polls
+`OSSIntStat` bit 9 (`OSSIntSCSI`) for the wrapper IRQ. Once it
+fires, it checks `sDCTRL` for `iDMABERR | iTIMEP` and `sDCNT`
+for zero — anything non-zero signals an error and routes to the
+`badAddrError` path.
+
+### 20.4 Interrupt routing
+
+The 5380 has two open-collector outputs, `/IRQ` and `/DRQ`. On the
+Mac II / SE/30 / IIcx these wire into VIA2 (CB2 and CA2 respectively).
+The IIfx breaks that pattern:
+
+- The 5380's `/IRQ` and the SCSI DMA wrapper's transfer-complete
+  signal are OR'd together into a single OSS interrupt source.
+- That source is **OSS source 9** (`OSSMskScsi EQU $009` in
+  `HardwarePrivateEqu.a`; `OSSIntSCSI EQU 9` is the bit number in
+  `OSSIntStat`).
+- The default IRQ level the boot ROM programs for source 9 is 2
+  (`irq_level[9] = 2` in the post-init OSS state).
+- There is **no Mac-II-style VIA2 IFR bit** for SCSI on the IIfx.
+  Code that polls VIA2 to detect SCSI interrupts will see nothing.
+
+The SCSI Mgr `FastReadOSS` path waits for the wrapper IRQ by
+polling `OSSIntStat`:
+
+```
+@waitForIntr
+        btst.b  #OSSIntSCSI-8, OSSIntStat(a1)
+        beq.s   @waitForIntr
+```
+
+`OSSIntStat` is a 16-bit register at OSS offset `$202`; bit 9
+lives in the upper byte, hence the `-8` in the bit number.
+
+### 20.5 Boot vs runtime access patterns
+
+The IIfx ROM and Mac OS access the SCSI subsystem through three
+distinct paths, in this order during a cold boot:
+
+1. **Boot ROM partition probe (PIO, 6-byte CDB)**. Before Mac OS
+   even loads, the ROM reads block 0 of the disk to find the
+   partition map, then iterates LBAs 1..N to enumerate the
+   partition records. Each read is a 6-byte `READ(6)` with tl=1.
+   These reads use the polled aperture (`$50F0_A000`) and the
+   pseudo-DMA read aperture (`$50F0_C000`); the ROM doesn't touch
+   the wrapper's DMA registers. The driver partition's first
+   sectors are loaded the same way once located.
+
+2. **SCSI Manager init (one-time wrapper handshake)**. Once the
+   in-RAM SCSI driver takes over, it runs `SCSIMgrInit.a`'s
+   `@DMAdone` branch:
+
+   ```
+       btst.b  #sSCSIDMAExists, G_Reserved0+3(a4)
+       beq.s   @DMAdone
+       movea.l SCSIBase, a3
+       move.l  #iINTREN, sDCTRL(a3)   ; INTREN only, clears test mode
+   ```
+
+   This single write is what produces the `DCTRL = $0000_0002`
+   pattern observable in a SCSI-write trace on the IIfx — Mac OS
+   leaves `INTREN` armed for the lifetime of the boot and only
+   adds `DMAEN+TIMEEN` for each bulk transfer.
+
+3. **Bulk reads (true DMA)**. Once Mac OS reaches `FastReadOSS`
+   (the OSS-aware variant of the SCSI Mgr's Fast Read helper),
+   bulk transfers go through the wrapper:
+
+   ```
+       move.l  G_Reserved1(a4), sDTIME(a3)   ; watchdog reload
+       move.l  #iTIMEEN+iINTREN+iDMAEN, sDCTRL(a3)
+       move.l  pAddr(a0), sDADDR(a3)
+       move.l  pCount(a0), sDCNT(a3)
+       move.b  #iIEOP+iDMA, sMR(a3)          ; arm 5380 DMA mode
+       move.b  zeroReg, sIDMArx(a3)          ; start the transfer
+   @waitForIntr
+       btst.b  #OSSIntSCSI-8, OSSIntStat(a1)
+       beq.s   @waitForIntr
+       ...
+   ```
+
+   Mac OS prefers 10-byte CDB (`READ_10`) here, so the volume
+   manager / HFS layer can request transfers up to 65535 blocks
+   in a single SCSI command.
+
+### 20.6 Emulator-side requirements
+
+To support the path above end-to-end, an IIfx emulator has to
+expose:
+
+- The polled aperture at `$50F0_A000` with the standard 5380
+  semantics (selection, arbitration, command/data/status phases,
+  ICR/MR/TCR/CSR/BSR/IDR/ODR).
+- The pseudo-DMA read/write apertures at `$50F0_C000` / `$50F0_D000`
+  that pull bytes through the 5380's data path one at a time. This
+  is enough to run the legacy `FastRead` paths used by ROM-resident
+  drivers and by every Mac OS version through 7.6.1 when the wrapper
+  is bypassed.
+- The DMA-wrapper register file at `$50F0_8080..$50F0_81FF` (DCTRL,
+  DCNT, DADDR, DTIME, TEST), including the 5380 passthrough for
+  offsets `$00..$7F` so the SCSI Mgr can address the chip through
+  the wrapper window too.
+- A wrapper-side burst-transfer engine triggered by a write to
+  `sIDMArx` (passthrough offset `$70`) when `DCTRL.DMAEN` is set:
+  it must pull `sDCNT` bytes from the 5380's CDR into RAM at
+  `sDADDR`, leave `sDCNT` at zero and `sDCTRL.DMAEN` cleared on
+  success, and assert OSS source 9 if `INTREN` is set.
+- Routing of the 5380's `/IRQ` line into OSS source 9 (not VIA2,
+  which the IIfx doesn't even have a software-visible second copy
+  of).
+
+Apple Technical Note HW 09 famously says shipping Mac OS (6.0.5
+through 7.6.1) "does not yet take advantage of" the wrapper's true
+DMA mode — that is at best out of date. Mac OS 7's universal SCSI
+Manager calls `FastReadOSS` on every machine that reports
+`sSCSIDMAExists` (see `SCSIMgrHW.a@1075` for the symmetric
+`FastWriteOSS` path), and a working IIfx emulator must service
+`sIDMArx` writes accordingly.
+
+A/UX 2.0+ additionally uses the wrapper for **scatter-gather** DMA
+(linked descriptor lists) and for write-direction transfers via
+`sDMAtx`. This document covers only the read-direction path — the
+write path mirrors it (write to `sDMAtx` instead of `sIDMArx`,
+pull bytes from RAM into the 5380's ODR, raise the same OSS
+source 9 IRQ on completion).
+
+---

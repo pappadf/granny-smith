@@ -10,6 +10,7 @@
 #include "common.h"
 #include "image.h"
 #include "memory.h"
+#include "scsi.h"
 #include "via.h"
 
 #include <stdbool.h>
@@ -235,6 +236,12 @@ struct scsi {
 
     // VIA2 for interrupt delivery (SE/30); NULL on Plus
     via_t *via;
+
+    // Machine-specific IRQ/DRQ delivery callback (IIfx routes through
+    // OSS source 9 instead of VIA2). NULL on machines that drive VIA2
+    // via the `via` pointer above (SE/30) or that poll SCSI (Plus).
+    scsi_irq_fn irq_cb;
+    void *irq_cb_ctx;
 
     // Tracked output pin states (active-low: true = asserted = pin driven low)
     bool irq_active;

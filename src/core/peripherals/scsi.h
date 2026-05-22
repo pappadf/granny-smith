@@ -46,6 +46,23 @@ const memory_interface_t *scsi_get_memory_interface(scsi_t *scsi);
 // On machines without VIA2 (e.g. Plus), this is not called and SCSI is polled.
 void scsi_set_via(scsi_t *scsi, via_t *via);
 
+// Machine-specific SCSI IRQ/DRQ delivery callback. Used by machines that
+// don't route SCSI through VIA2 (e.g. IIfx, whose SCSI interrupts feed
+// the OSS interrupt controller via source 9). Called whenever the SCSI
+// IRQ or DRQ output changes. Either set this OR scsi_set_via, not both —
+// the SE/30 path drives VIA2 CB2/CA2 directly, while machines using the
+// callback are expected to do the equivalent routing themselves.
+typedef void (*scsi_irq_fn)(void *context, bool irq, bool drq);
+void scsi_set_irq_callback(scsi_t *scsi, scsi_irq_fn cb, void *context);
+
+// Push a single byte into the SCSI data-out buffer, bypassing the
+// pseudo-DMA primer-slot gate. Used by the IIfx wrapper when the
+// hardware-handshake mode (iHSKEN) is active — the wrapper hardware
+// auto-handshakes every byte onto the SCSI bus, so the A/UX primer
+// heuristic (which drops a leading $00 byte that differs in PC from
+// the next byte) must not be applied.
+void scsi_hsken_data_out_byte(scsi_t *scsi, uint8_t byte);
+
 // Enable/disable SCSI loopback test card (passive bus terminator).
 // When enabled, initiator-driven signals are reflected back through
 // status registers, emulating a connected SCSI diagnostic card.
