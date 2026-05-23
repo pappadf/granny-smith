@@ -6,10 +6,13 @@
 
 #include "oss.h"
 
+#include "log.h"
 #include "system.h"
 
 #include <stdlib.h>
 #include <string.h>
+
+LOG_USE_CATEGORY_NAME("oss");
 
 // Number of software-visible OSS interrupt sources.
 #define OSS_NUM_SOURCES 15

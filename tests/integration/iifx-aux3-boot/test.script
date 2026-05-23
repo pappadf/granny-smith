@@ -1,0 +1,102 @@
+# IIfx A/UX 3.0.1 HD Boot — progress-pinning test.
+#
+# Drives the IIfx through the SCSI HD boot path.  On the SE/30 the boot
+# blocks reach Mac OS, the Set-Startup application "A/UX Startup" auto-
+# launches, "Welcome to A/UX. Loading..." paints, the kernel loads, the
+# A/UX login screen appears, root logs in, and the Mac-on-A/UX desktop
+# renders.
+#
+# HISTORY
+# -------
+# Earlier states pinned by this test (each replaced as the boot
+# advanced):
+#
+# 1. Pre-iHSKEN-write fix (doc-81 §10C): IIfx stuck at Mac OS Finder
+#    of MacPartition — A/UX Startup never even launched because the
+#    iHSKEN-armed wrapper-write loop dropped its data.  Reference:
+#    mac-finder.png (retained for archaeology).
+#
+# 2. Post-iHSKEN-write fix, pre-iHSKEN-command fix (doc-83): IIfx
+#    reached "Welcome to A/UX. Launching..." but immediately kernel-
+#    panicked "no root file system" because the iHSKEN COMMAND-phase
+#    write path silently dropped the INQUIRY CDB.  Test would have
+#    pinned a screenshot of the panic banner.
+#
+# 3. Post-iHSKEN-command fix + chip-side phase-transition fix
+#    (doc-83 + CSR/BSR deferred-phase-transition): IIfx now passes the
+#    SCSI INQUIRY probe, autoconfig populates disk_slots[0]=1, vfs_
+#    mountroot succeeds (no panic), but the kernel idle-loops at
+#    $0005489E after the mount — full /etc/init load not yet working.
+#    Reference: launching.png (retained for archaeology).
+#
+# 4. Post-BSR_INT-latch fix (doc-84 §6+ work):
+#    A/UX's scsiirq dispatch now sees BSR_INT set and routes to the
+#    state-decode block instead of "ignoring bogus irq".  Kernel
+#    issued multiple SDMA SCSI READs but mount-root fs-type probe
+#    still failed — kernel printed "panic: no root file system".
+#    Reference: no-root-fs-panic.png (retained for archaeology).
+#
+# 5. Post-continuation-offset fix (this session — TCR LBS bit set on
+#    EOP, continuation-arm detection in IIfx wrapper, dma_write_armed
+#    bypass for external bus-master writes, sDCTRL READ status bits):
+#    fs_types[3] (UFS) probe SUCCEEDS — kernel reaches the REAL MOUNT
+#    path at $10032C86 (= match_count > 0 path), completes the actual
+#    mount via SCSI WRITES, then enters Mac OS ROM space at $40843xxx
+#    bouncing in the ROM's interrupt dispatcher.  The boot framebuffer
+#    is cleared to gray (kernel transitioning to user-mode console).
+#    No A/UX text observed in low RAM up to 12 MB — kernel hasn't
+#    loaded /etc/init yet.
+#    Reference: post-mount-stuck.png (the current pin).
+#
+# CURRENT EXPECTED STATE
+# ----------------------
+# Screen: blank gray (framebuffer cleared, no panic text, no login).
+# Kernel reaches the actual UFS mount call, processes WRITES, then
+# spins in IIfx ROM's interrupt dispatcher at $40843xxx with IPL 7.
+# task.state field reads as $FFFF (likely MMU remap during user-mode
+# transition).  Autoconfig still completed (same as previous states):
+#   - disk_slots[0] = 1, type[0] = $00, probe_counter = 1
+#
+# When the next blocker is unblocked (likely a missing IRQ source or
+# IOP handshake), this screenshot will stop matching and the test
+# should be expanded to drive A/UX login.
+
+# Pin the wall clock so screenshot comparisons are reproducible.
+rtc.time = 2026-04-26T21:30:36
+
+# ~2G cycles takes the IIfx through Mac OS boot, A/UX Startup launch,
+# the A/UX kernel _start, autoconfig, vfs_mountroot's UFS probe
+# (success), the actual mount via SCSI WRITES, and into the post-mount
+# state where the kernel bounces in IIfx ROM's interrupt dispatcher.
+scheduler.run 2000000000
+
+assert ${machine.id == "iifx"} "machine.id != iifx"
+assert ${rom.checksum == "4147DD77"} "rom.checksum != 4147DD77"
+
+# Default IIfx slot table seats the same JMFB card the IIcx/IIx tests
+# use; the panel is 640x480 at 1 bpp.
+assert ${screen.width == 640} "screen.width != 640"
+assert ${screen.height == 480} "screen.height != 480"
+
+# Bitwise compare against the captured "post-mount-stuck" state — a
+# blank gray framebuffer reached after the actual UFS mount completes
+# and the kernel transitions toward user-mode.  When the next blocker
+# is fixed this will stop matching and the test should be expanded.
+screen.match post-mount-stuck.png
+
+# By the post-mount-stuck state, the kernel is past the UFS-probe
+# phase (multi-block SDMA SCSI READs succeeded, the actual mount
+# call was made via SCSI WRITES).  The kernel-init data structures
+# (probe_counter, disk_slots[], type[]) get overwritten or remapped
+# by then — they were asserted at the earlier "no-root-fs-panic"
+# pin but no longer carry their post-autoconfig values.  The
+# screen.match above is sufficient evidence of progress.
+
+# Diagnostic probe: succeeds when A/UX UNIX is alive (writes via the
+# MAE CRP), fails-soft otherwise (logs and returns).  Today the kernel
+# is past vfs_mountroot but hasn't reached user mode; this still
+# reports "no user-mode CRP observed yet".  Kept as a forward-looking
+# signal of "full A/UX boot".
+mouse.move 100 100 "aux"
+
+quit

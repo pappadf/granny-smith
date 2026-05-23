@@ -119,16 +119,28 @@ LOG_USE_CATEGORY_NAME("iifx");
 #define IIFX_OSS_IO_PENALTY  2
 
 // SCSI DMA register offsets.
-#define SCSIDMA_DCTRL   0x080
-#define SCSIDMA_DCNT    0x0c0
-#define SCSIDMA_DADDR   0x100
-#define SCSIDMA_DTIME   0x140
-#define SCSIDMA_TEST    0x180
-#define SCSIDMA_INTREN  0x0002
-#define SCSIDMA_HSKEN   0x0008 // iHSKEN — hardware-handshake mode (Apple HardwarePrivateEqu.a)
-#define SCSIDMA_RESET   0x0010
-#define SCSIDMA_ARBIDEN 0x1000
-#define SCSIDMA_WONARB  0x2000
+#define SCSIDMA_DCTRL 0x080
+#define SCSIDMA_DCNT  0x0c0
+#define SCSIDMA_DADDR 0x100
+#define SCSIDMA_DTIME 0x140
+#define SCSIDMA_TEST  0x180
+// sDCTRL bit names + values from Apple's HardwarePrivateEqu.a:385-435
+// (supermario-master/Internal/Asm/HardwarePrivateEqu.a).  Some bits have
+// asymmetric READ/WRITE semantics: e.g. bit 4 is iRESET on write but iFIFO
+// (= bytes-left-in-FIFO non-zero) on read.
+#define SCSIDMA_DMAEN   0x0001 // bit 0 (W): SCSI DMA enable
+#define SCSIDMA_INTREN  0x0002 // bit 1 (W): SCSI DMA interrupts enable
+#define SCSIDMA_TIMEEN  0x0004 // bit 2 (W): watchdog timer interrupt enable
+#define SCSIDMA_HSKEN   0x0008 // bit 3 (W): hardware-handshake (write) enable
+#define SCSIDMA_RESET   0x0010 // bit 4 (W): reset SCSI DMA chip
+#define SCSIDMA_FIFO    0x0010 // bit 4 (R): bytes-left-in-FIFO != 0
+#define SCSIDMA_TEST_EN 0x0020 // bit 5 (W): SCSI Test Mode enable
+#define SCSIDMA_SCSIP   0x0040 // bit 6 (R): SCSI interrupt pending
+#define SCSIDMA_TIMEP   0x0080 // bit 7 (R): watchdog timer interrupt pending
+#define SCSIDMA_DMABERR 0x0100 // bit 8 (R): DMA bus error pending
+#define SCSIDMA_ARBIDEN 0x1000 // bit 12 (W): hardware arbitration enable
+#define SCSIDMA_WONARB  0x2000 // bit 13 (R): hardware arbitration succeeded
+#define SCSIDMA_INFIFO  0xC000 // bits 14-15 (R): bytes left in FIFO (0..3)
 
 // Per-machine IIfx runtime state.
 typedef struct iifx_state {
@@ -173,6 +185,20 @@ typedef struct iifx_state {
     uint32_t scsi_dma_addr;
     uint32_t scsi_dma_timer;
     uint32_t scsi_dma_test;
+    // Continuation-arm detection: when the kernel issues two consecutive
+    // scsiin SDMA arms at the *same* sDADDR with the second having a
+    // smaller sDCNT, the second is a "continuation" of the first — the
+    // wrapper is expected to write the second batch of bytes at
+    // (sDADDR + bytes_already_done) rather than overwriting from the
+    // start.  See doc-85 §4.6.  We track the previous transfer's start
+    // address and initial count so the next arm can apply the offset.
+    // scsi_dma_last_was_in: set true when the previous pump's drain was
+    // data_in; reset on any data_out drain.  Continuation only applies
+    // when the prior pump was a read.
+    uint32_t scsi_dma_prev_addr;
+    uint32_t scsi_dma_prev_count_initial;
+    uint32_t scsi_dma_count_initial;
+    bool scsi_dma_last_was_in;
 
     memory_interface_t rom_interface;
     memory_interface_t io_interface;
@@ -417,6 +443,64 @@ static void iifx_write_reg32_byte(uint32_t *reg, uint32_t addr, uint8_t value) {
     *reg = (*reg & ~(0xffu << shift)) | ((uint32_t)value << shift);
 }
 
+// ============================================================================
+// IIfx SCSI DMA wrapper — bus-master pump
+// ============================================================================
+//
+// The IIfx ships a custom glue chip between the 68030 and the NCR 5380.
+// At wrapper offsets $0..$7F it passes register accesses straight through
+// to the 5380 (with a 16-byte register stride: $00=DATA, $10=ICR, $20=MR,
+// $30=TCR, $40=CSR, $50=BSR, $70=RST/PAR).  At offsets $80..$1FF it
+// exposes its own DMA-control registers:
+//
+//   $80  sDCTRL  control: iINTREN ($02), iHSKEN ($08), iRESET ($10),
+//                          iARBIDEN ($1000), iWONARB ($2000 read-only)
+//   $C0  sDCNT   bytes remaining (decrements per byte transferred)
+//   $100 sDADDR  RAM address (increments per byte transferred)
+//   $140 sDTIME  watchdog timeout (we treat as advisory; not modeled)
+//   $180 sTEST   diagnostic test register
+//
+// The wrapper has three byte-transport modes; from the chip's point of
+// view all three deliver bytes to/from its ODR via the same REQ/ACK
+// handshake, so they appear identical on the SCSI bus:
+//
+//   (1) Passthrough.  iHSKEN clear.  CPU writes byte to wrapper $0..$7F;
+//       wrapper forwards to chip register; CPU manually drives ACK via
+//       ICR.  Slow but spec-compliant — used in pre-iHSKEN boot code.
+//
+//   (2) iHSKEN.  iHSKEN set, no DMA.  CPU writes byte to wrapper $0..$F;
+//       wrapper auto-handshakes (waits for chip REQ, asserts ACK) so the
+//       CPU doesn't have to manage ICR.  Per-byte CPU PIO, faster than
+//       (1).  Modeled by scsi_hsken_data_out_byte() for writes; reads
+//       go through the chip's CDR-read path naturally.
+//
+//   (3) Bus-master DMA.  iHSKEN set, sDCNT > 0, chip MR_DMA on.  Wrapper
+//       transfers bytes between RAM[sDADDR..sDADDR+sDCNT-1] and the chip
+//       without CPU involvement.  When sDCNT hits zero it asserts EOP to
+//       the chip, which latches end_of_dma and (with MR_DMA on) raises
+//       /IRQ.  This is what iifx_scsidma_pump() implements.
+//
+// Pump driver
+// -----------
+// The pump runs whenever the wrapper might have work to do.  On real
+// hardware, transfers are triggered by the chip's DRQ line (one byte
+// per target REQ pulse); we model that by calling the pump from:
+//
+//   - The DRQ callback (iifx_scsi_irq → drq asserts means the chip has
+//     a byte ready / wants a byte).
+//   - Any write to sDCNT / sDADDR / sDCTRL (the CPU just programmed the
+//     transfer; if all preconditions are now met, start moving bytes).
+//
+// The pump itself is idempotent — calling when not armed is a no-op.
+// Re-entrancy: the pump can re-enter the chip (via push/pop helpers)
+// which can in turn trigger DRQ updates / phase transitions; we guard
+// against unbounded recursion by completing one direction's work in
+// one call and stopping on phase transition.
+
+// Forward decl: the pump needs to be callable from the DRQ callback
+// (which appears below in source order).
+static void iifx_scsidma_pump(config_t *cfg);
+
 // Reads one SCSI DMA wrapper byte.
 static uint8_t iifx_scsidma_read_uint8(config_t *cfg, uint32_t offset) {
     iifx_state_t *st = iifx_state(cfg);
@@ -424,9 +508,20 @@ static uint8_t iifx_scsidma_read_uint8(config_t *cfg, uint32_t offset) {
     if (off < 0x80)
         return st->scsi_iface->read_uint8(cfg->scsi, off);
     if (off >= SCSIDMA_DCTRL && off < SCSIDMA_DCTRL + 4) {
+        // sDCTRL has different READ vs WRITE bit layouts.  The kernel-
+        // written bits (DMAEN, INTREN, TIMEEN, HSKEN, TEST_EN, ARBIDEN)
+        // come back as-is; the read-side status bits (FIFO, SCSIP, TIMEP,
+        // DMABERR, WONARB, INFIFO) are computed from chip/wrapper state.
+        // We don't model the FIFO (drain is synchronous), the watchdog
+        // timer, or DMA bus errors, so iFIFO/iTIMEP/iDMABERR/iINFIFO are
+        // all 0.  iSCSIP reflects the chip's /IRQ state when the kernel-
+        // visible interrupt enable (iINTREN) is on — this is what a real
+        // wrapper would expose to scsiirq's readback at $1004A974.
         uint32_t value = st->scsi_dma_ctrl;
         if (value & SCSIDMA_ARBIDEN)
             value |= SCSIDMA_WONARB;
+        if ((value & SCSIDMA_INTREN) && scsi_get_irq_active(cfg->scsi))
+            value |= SCSIDMA_SCSIP;
         return iifx_read_reg32_byte(value, off);
     }
     if (off >= SCSIDMA_DCNT && off < SCSIDMA_DCNT + 4)
@@ -464,19 +559,83 @@ static void iifx_scsidma_write_uint8(config_t *cfg, uint32_t offset, uint8_t val
         return;
     }
     if (off >= SCSIDMA_DCTRL && off < SCSIDMA_DCTRL + 4) {
+        uint32_t prev = st->scsi_dma_ctrl;
         iifx_write_reg32_byte(&st->scsi_dma_ctrl, off, value);
         if (st->scsi_dma_ctrl & SCSIDMA_RESET) {
             st->scsi_dma_ctrl = SCSIDMA_INTREN;
             st->scsi_dma_count = 0;
         }
+        // If iINTREN just transitioned 0 -> 1 AND the chip's /IRQ is
+        // currently asserted, the wrapper's IRQ output should go high
+        // NOW (the chip's edge was missed while iINTREN was off, but
+        // the chip's /IRQ is level-sensitive — as long as it stays
+        // asserted, the wrapper's "enable" rising edge should latch
+        // it through).  Without this re-evaluation, the kernel's
+        // typical pattern (arm SDMA with iINTREN=0, wait for EOP,
+        // then enable iINTREN once the request is fully prepared)
+        // would miss the EOP IRQ that fires during the arm window.
+        // iINTREN rising edge with chip /IRQ still asserted: deliver the
+        // missed IRQ now.  Real hardware's IRQ output is level-sensitive
+        // through this enable bit — if the chip is still asserting /IRQ
+        // when the wrapper's enable transitions 0→1, the wrapper should
+        // immediately propagate it.  A/UX's typical SDMA pattern is to
+        // arm sDADDR/sDCNT with iINTREN off, fire MR_DMA which triggers
+        // the chip's EOP, then enable iINTREN once the request is fully
+        // recorded.  Without this re-eval, the EOP IRQ that fires during
+        // the arm window is gated away and the kernel waits forever.
+        bool intren_rising = !(prev & SCSIDMA_INTREN) && (st->scsi_dma_ctrl & SCSIDMA_INTREN);
+        if (intren_rising && scsi_get_irq_active(cfg->scsi))
+            oss_set_source(st->oss, IIFX_OSS_SCSI, true);
+        // Mode change may enable iHSKEN; re-evaluate whether the bus
+        // master should run.
+        iifx_scsidma_pump(cfg);
         return;
     }
     if (off >= SCSIDMA_DCNT && off < SCSIDMA_DCNT + 4) {
         iifx_write_reg32_byte(&st->scsi_dma_count, off, value);
+        // sDCNT becoming non-zero is the primary "arm" event — the
+        // kernel writes this register last when setting up a transfer.
+        //
+        // Continuation-arm detection: when the kernel writes a new sDCNT
+        // (low byte = offset 3) AND the current sDADDR matches the
+        // PREVIOUS transfer's start address AND the new sDCNT is smaller
+        // than the previous initial sDCNT, treat as a continuation.
+        // Offset the wrapper's effective sDADDR by (prev_initial -
+        // new_count) so the second transfer's bytes land *after* the
+        // first transfer's, not overwriting them.  This models A/UX's
+        // IIfx-SDMA SCSI strategy: it issues `lba=N tl=8` followed by
+        // `lba=N+1 tl=7` at the *same* RAM buffer, expecting the
+        // wrapper to remember where the first arm left off.  See
+        // doc-85 §4.6 for the trace.
+        if ((off & 3) == 3) {
+            uint32_t new_count = st->scsi_dma_count;
+            // Continuation detection: kernel re-arms at the same sDADDR
+            // with a smaller sDCNT (delta = exact multiple of 512 = block
+            // size) AND the previous SDMA drain was a READ (= the chip
+            // had filled buf via CMD_READ then we drained it).  This is
+            // A/UX's IIfx SDMA-SCSI strategy: it issues `lba=N tl=8`
+            // followed by `lba=N+1 tl=7` at the *same* RAM buffer,
+            // expecting the wrapper to remember where the first arm left
+            // off.  See doc-85 §4.6.
+            uint32_t prev_count = st->scsi_dma_prev_count_initial;
+            if (st->scsi_dma_last_was_in && new_count > 0 && new_count < prev_count &&
+                ((prev_count - new_count) & 0x1FF) == 0 && st->scsi_dma_addr == st->scsi_dma_prev_addr) {
+                uint32_t skipped = prev_count - new_count;
+                st->scsi_dma_addr += skipped;
+            }
+            st->scsi_dma_prev_addr = st->scsi_dma_addr;
+            st->scsi_dma_prev_count_initial = new_count;
+            st->scsi_dma_count_initial = new_count;
+            st->scsi_dma_last_was_in = false;
+        }
+        iifx_scsidma_pump(cfg);
         return;
     }
     if (off >= SCSIDMA_DADDR && off < SCSIDMA_DADDR + 4) {
         iifx_write_reg32_byte(&st->scsi_dma_addr, off, value);
+        // Address update may also imply (re-)arm; pump to cover all
+        // orderings of register programming.
+        iifx_scsidma_pump(cfg);
         return;
     }
     if (off >= SCSIDMA_DTIME && off < SCSIDMA_DTIME + 4) {
@@ -485,6 +644,104 @@ static void iifx_scsidma_write_uint8(config_t *cfg, uint32_t offset, uint8_t val
     }
     if (off >= SCSIDMA_TEST && off < SCSIDMA_TEST + 4)
         iifx_write_reg32_byte(&st->scsi_dma_test, off, value);
+}
+
+// ----------------------------------------------------------------------------
+// iifx_scsidma_pump — the bus-master DMA engine
+// ----------------------------------------------------------------------------
+//
+// Called whenever wrapper or chip state changes such that a byte might
+// move.  Walks one continuous run of bytes between RAM and the chip in
+// the current bus phase, then signals EOP if the count reaches zero.
+//
+// Idempotent on its preconditions: if the wrapper isn't armed or the
+// chip isn't in DMA mode, returns immediately.
+//
+// Note on memory access: we use memory_write_uint8_slow / _read_uint8_slow
+// rather than direct RAM access.  The kernel programs sDADDR with a
+// logical address visible to the chip's address bus on real hardware
+// (the IIfx wrapper participates in bus arbitration); going through the
+// memory-map abstraction respects the same routing the CPU sees.
+static void iifx_scsidma_pump(config_t *cfg) {
+    iifx_state_t *st = iifx_state(cfg);
+    scsi_t *scsi = cfg->scsi;
+
+    // --- wrapper-side preconditions -----------------------------------
+    // No bytes to move? Done.
+    if (st->scsi_dma_count == 0)
+        return;
+    // NOTE: iHSKEN is NOT a precondition for SDMA bus-master mode.
+    // iHSKEN gates the per-byte CPU-PIO auto-handshake path (offset
+    // $0..$F passthrough writes in iifx_scsidma_write_uint8).  The
+    // SDMA bus master operates independently: when sDCNT > 0,
+    // sDADDR is programmed, and the chip has MR_DMA set, the wrapper
+    // transfers bytes between RAM and the chip's data register via
+    // its own internal handshake (independent of iHSKEN's CPU-side
+    // gate).  Observed empirically: A/UX's io_type=5 scsiin SDMA
+    // path programs sDCNT/sDADDR/sDTIME, sets chip MR_DMA, but does
+    // NOT set iHSKEN (sDCTRL=$07 at SDMA-arm time).
+
+    // --- chip-side precondition ---------------------------------------
+    // MR_DMA must be set for the chip to participate in pseudo-DMA.
+    // (On real 5380 hardware this is what causes the chip to drive DRQ
+    // in response to target REQ; in our model it's the gate that lets
+    // BSR_DR assert and the auto-handshake byte commit.)
+    if (!scsi_get_mr_dma(scsi))
+        return;
+
+    int phase = scsi_get_bus_phase(scsi);
+
+    if (phase == scsi_data_in) {
+        // ── Target → Initiator ────────────────────────────────────────
+        // Chip has bytes ready in its data-in buffer.  Drain them into
+        // RAM[sDADDR..] until either the chip buffer empties or sDCNT
+        // hits zero.  Phase stays at data_in across the drain — the
+        // chip no longer auto-transitions to STATUS on buf-empty (see
+        // scsi_pop_data_in_byte commentary).  scsi_signal_eop below
+        // raises /IRQ with phase still data_in; the kernel handler's
+        // BSR/SBS_PHASE check then sees phase match preserved and takes
+        // the ST_READ success path, and the existing CSR-read deferred
+        // phase_status mechanism transitions to STATUS when the
+        // handler reads CSR.
+        uint8_t byte;
+        bool drained_any = false;
+        while (st->scsi_dma_count > 0 && scsi_pop_data_in_byte(scsi, &byte)) {
+            memory_write_uint8_slow(st->scsi_dma_addr, byte);
+            st->scsi_dma_addr++;
+            st->scsi_dma_count--;
+            drained_any = true;
+        }
+        // Mark this pump cycle as "data_in completed" so the next sDCNT
+        // write can detect a continuation pattern.
+        if (drained_any)
+            st->scsi_dma_last_was_in = true;
+    } else if (phase == scsi_data_out) {
+        // ── Initiator → Target ────────────────────────────────────────
+        // Pull bytes from RAM[sDADDR..] and feed them to the chip until
+        // either sDCNT hits zero or the chip's buffer fills (at which
+        // point command_complete fires and the chip leaves data_out —
+        // detected by the phase check below).
+        while (st->scsi_dma_count > 0) {
+            uint8_t byte = memory_read_uint8_slow(st->scsi_dma_addr);
+            scsi_push_data_out_byte(scsi, byte);
+            st->scsi_dma_addr++;
+            st->scsi_dma_count--;
+            if (scsi_get_bus_phase(scsi) != scsi_data_out)
+                break;
+        }
+    } else {
+        // Any other phase: nothing for the bus master to do.  The chip
+        // would simply not drive DRQ here on real hardware.
+        return;
+    }
+
+    // --- EOP signaling ------------------------------------------------
+    // When the programmed count exhausts, real wrappers assert the EOP
+    // pin into the chip.  The chip latches end_of_dma and (with MR_DMA
+    // on) raises /IRQ via scsi_update_irq, which our IRQ callback
+    // forwards to OSS source 9 — waking the kernel's scsidintr.
+    if (st->scsi_dma_count == 0)
+        scsi_signal_eop(scsi);
 }
 
 // Reads one byte from the IIfx I/O space.
@@ -810,6 +1067,31 @@ static void iifx_via1_irq(void *context, bool active) {
     oss_set_source(st->oss, IIFX_OSS_VIA1, active);
 }
 
+// Routes NCR 5380 /IRQ and /DRQ from the chip to the IIfx-specific
+// hardware around it.
+//
+//   /IRQ → OSS source 9 (IIFX_OSS_SCSI), gated by the wrapper's iINTREN
+//          enable bit in sDCTRL.  When set, the kernel's scsidintr fires
+//          and processes completion.
+//
+//   /DRQ → drives the wrapper's bus-master pump.  On real hardware, each
+//          DRQ pulse from the chip causes the wrapper to handshake one
+//          byte (ACK in, increment sDADDR, decrement sDCNT).  We model
+//          this by calling iifx_scsidma_pump on DRQ assertion; the pump
+//          drains as many bytes as it can in one shot rather than
+//          tracking per-byte DRQ pulses (the chip's emulator delivers
+//          buf contents in bulk).
+static void iifx_scsi_irq(void *context, bool irq, bool drq) {
+    config_t *cfg = (config_t *)context;
+    iifx_state_t *st = iifx_state(cfg);
+    if (!st || !st->oss)
+        return;
+    bool gated = irq && (st->scsi_dma_ctrl & SCSIDMA_INTREN);
+    oss_set_source(st->oss, IIFX_OSS_SCSI, gated);
+    if (drq)
+        iifx_scsidma_pump(cfg);
+}
+
 // Handles external machine IRQ requests such as NuBus slots.
 static void iifx_update_ipl(config_t *cfg, int source, bool active) {
     iifx_state_t *st = iifx_state(cfg);
@@ -983,6 +1265,7 @@ static void iifx_init(config_t *cfg, checkpoint_t *checkpoint) {
 
     st->oss = oss_init(iifx_oss_irq_changed, iifx_oss_control, cfg, checkpoint);
     st->oss_iface = oss_get_memory_interface(st->oss);
+    scsi_set_irq_callback(cfg->scsi, iifx_scsi_irq, cfg);
     st->scc_iop = iop_init(SccIopNum, st->scc_iface, cfg->scc, iifx_scc_iop_irq, cfg, cfg->scheduler, checkpoint);
     st->swim_iop =
         iop_init(SwimIopNum, st->floppy_iface, st->floppy, iifx_swim_iop_irq, cfg, cfg->scheduler, checkpoint);
