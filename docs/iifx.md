@@ -173,7 +173,7 @@ image. The host-visible parts are:
 | Range                    | Apple symbol         | Role                                                                                                |
 | ------------------------ | -------------------- | --------------------------------------------------------------------------------------------------- |
 | `$0000 — $01FF`          | (private)            | 65C02 zero-page and stack; opaque to the host.                                                       |
-| `$0200`                  | `IOPXmtMsgBase`      | `XmtMsg[0].state` byte. Seeded by the firmware to `MaxIopMsgNum` (`$07`) as the slot count.          |
+| `$0200`                  | `IOPXmtMsgBase`      | `XmtMsg[0].state` byte. Seeded by the firmware to the **active slot count** (image-specific — see below). |
 | `$0201 — $0207`          | (`XmtMsg[1..7].state`) | Per-slot state for the seven transmit slots (host → IOP messages). Encodings from §7.              |
 | `$021F`                  | `PatchReqAddr`       | Soft-restart request byte. See §14.                                                                  |
 | `$0220 — $023F`          | `XmtMsg[1].msg`      | 32-byte payload of transmit slot 1.                                                                  |
@@ -182,12 +182,21 @@ image. The host-visible parts are:
 | `$02E0 — $02FF`          | `XmtMsg[7].msg`      | 32-byte payload of transmit slot 7.                                                                  |
 | `$0300`                  | `IOPRcvMsgBase`      | `RcvMsg[0].state` byte. Same seeding convention as `XmtMsg[0]`.                                       |
 | `$0301 — $0307`          | (`RcvMsg[1..7].state`) | Per-slot state for the seven receive slots (IOP → host messages).                                    |
-| `$031F`                  | `IOPAliveAddr`       | Firmware-alive heartbeat. Written `$FF` on entry; host polls. See §8.                                |
+| `$031F`                  | `IOPAliveAddr`       | Firmware-alive heartbeat. Seeded `$FF` by the host before reset is released; firmware then maintains it. See §8. |
 | `$0320 — $0339`          | `RcvMsg[1].msg`      | 32-byte payload of receive slot 1. (Apple stride is 32; only the first 10 bytes are usually used.)   |
 | `$0340 — $035F`          | `RcvMsg[2].msg`      | 32-byte payload of receive slot 2.                                                                   |
 | …                        | …                    | …                                                                                                   |
 | `$03E0 — $03FF`          | `RcvMsg[7].msg`      | 32-byte payload of receive slot 7.                                                                   |
 | `$0400 — $7FFF`          | (firmware)           | 65C02 code, lookup tables, working buffers. Layout depends on `'iopc'` image; not host-visible.       |
+
+**Active slot count is image-specific.** The slot-count seed at `$0200` / `$0300` is written exactly once per cold boot, inside the per-image init routine:
+
+| Image     | `XmtMsg[0]` / `RcvMsg[0]` seed | Active slots                                       | Source                                                |
+| --------- | ------------------------------ | -------------------------------------------------- | ----------------------------------------------------- |
+| SWIM IOP  | `$03`                          | 1 (BlockCopy, RcvMsg only), 2 (Sony), 3 (ADB)      | `SWIMIOP.aii` `InitDrivers`, writes `RCVMsgMax`/`XMTMsgMax` |
+| SCC IOP   | `$07`                          | 1 (kernel commands, XmtMsg only)                   | `SCCIOP.aii` `Reset`, writes `RxMsgCnt`/`TxMsgCnt`     |
+
+Slots above the seeded count *exist* in shared RAM but the firmware will halt (BRK loop) if a host ever kicks them on the SWIM IOP. The SCC IOP's higher slots are reserved for host-downloaded driver code (see §15).
 
 ```
 MaxIopMsgNum    equ 7         ; transmit / receive slots are numbered 1..7
@@ -228,13 +237,28 @@ never write the same state byte concurrently.
 
 ## 8. Alive handshake
 
-The IOP manager polls `IOPAliveAddr` (`$031F`) for `$FF` after releasing the
-IOP from reset, with a timeout loop.
+The IOP manager polls `IOPAliveAddr` (`$031F`) for non-zero after releasing
+the IOP from reset, with a timeout loop. To get the very first iteration
+to pass, the host pre-seeds `$031F = $FF` while the IOP is still held in
+reset (see §9 step 4) — that byte is therefore "alive" as soon as the
+manager looks, regardless of whether the firmware has begun executing.
 
-The firmware writes `$FF` to `IOPAliveAddr` very early in its reset
-entry. After the boot-time handshake completes, the firmware writes
-this byte (or a sentinel sub-byte, depending on the image) on every
-main-loop iteration so the host can monitor the IOP's health later.
+After reset is released, the firmware's main loop overwrites the byte
+on every iteration with an image-specific sentinel:
+
+| Image     | Runtime heartbeat value | Written from                                                        |
+| --------- | ----------------------- | ------------------------------------------------------------------- |
+| SWIM IOP  | `'X'` (`$58`)           | `IdleLoop` in `IOPKernel.aii` — once per idle-task scan.            |
+| SCC IOP   | `$FF`                   | `Ev_Wait` task scheduler in `SCCIOP.aii` — once per task switch.    |
+
+So the host's actual liveness check is "`$031F` is non-zero **and** is
+being refreshed". An IOP that has wedged (BRK landing in
+`Unknown_Int` / `IdleStackError` / `IdleRegError`) will leave the byte
+frozen at whatever it last wrote — most likely the heartbeat value
+itself — so a single read cannot distinguish "alive" from "wedged".
+A real driver re-reads after a delay; an emulator should refresh the
+byte on every guest fetch from the appropriate firmware path so that
+guests using polling-with-timeout detect liveness correctly.
 
 ---
 
@@ -361,8 +385,11 @@ The key invariants:
 - `XmtMsg[N].state` transitions: `MsgIdle` → `NewMsgSent` (set by host)
   → `MsgReceived` (transiently, optional) → `MsgCompleted` (set by IOP)
   → `MsgIdle` (set by host).
-- `iopInt0Active` is the wake-up signal for the host. Always
-  acknowledged with `clrIopInt0`.
+- `iopInt0Active` is **always** the wake-up signal for completion of a
+  host-initiated request. The firmware's internal `MsgCompletedINT`
+  equate is bound to `INTHST0`, and every "I finished consuming an
+  XmtMsg, here is your reply" code path raises exactly this bit.
+  Always acknowledged with `clrIopInt0`.
 - The host always restores `iopRamAddr` before kicking the IOP, so
   concurrent host code that's mid-transfer doesn't see surprises.
 
@@ -382,9 +409,11 @@ events, etc.
 
 2. **IOP firmware decides to send.** It writes its payload into
    `RcvMsg[N].msg`, sets `RcvMsg[N].state = NewMsgSent`, and asserts
-   `iopInt1Active`. (The convention is Int0 for "I finished your
-   request, here is the reply", Int1 for "spontaneous message, please
-   handle it".)
+   `iopInt1Active`. The firmware's `NewMsgSentINT` equate is bound to
+   `INTHST1`, and **every** firmware-initiated RcvMsg post raises
+   exactly this bit. The "Int0 = reply, Int1 = unsolicited" framing is
+   not a heuristic — it's the firmware's hard rule, with one nuance on
+   the ADB slot (see §18.3).
 
 3. **OSS raises the 68030 IRQ.**
 
@@ -432,10 +461,22 @@ All three traps internally use `iopRamAddr`/`iopRamData` for the data
 movement and `iopStatCtl` for the kick/ack handshake. Clients of
 `IOPMgr` never touch the PIC register window directly.
 
-The kernel-message channel (slot 1 of each IOP) is reserved by
-`IOPMgr` for its own use and carries a `MoveReqInfo` message
- — a per-IOP "kernel" command channel used during
-boot for things like "scan drives" and "install ADB driver".
+The "kernel" mailbox channel on slot 1 of each IOP is reserved by
+`IOPMgr` for its own use, but its **direction and protocol differ per
+image** — slot 1 is not a single uniform channel:
+
+- **SWIM IOP slot 1** is firmware-initiated (`RcvMsg[1]` on the
+  host's side). The firmware uses it to ask the host to perform a
+  block copy between IOP shared RAM and main RAM — this is how all
+  bulk floppy data actually crosses the host/IOP boundary. The payload
+  is a `MoveReqInfo`-shaped BlockCopy descriptor (see §16.1).
+- **SCC IOP slot 1** is host-initiated (`XmtMsg[1]` on the host's
+  side). The host posts one of six fixed kernel commands (AllocDvr,
+  DeAllocDvr, InitDvr, ByPass, Versn, SCCCntl) and the firmware writes
+  its reply back into the same payload buffer (see §15.1).
+
+Slot 1 in the opposite direction is `Unimplemented` (BRK loop) on both
+images and must not be kicked.
 
 ---
 
@@ -473,25 +514,44 @@ clears the OSS pending bit.
 
 ---
 
-## 14. Soft restart via `PatchReqAddr`
+## 14. Soft-patch via `PatchReqAddr`
 
-`$021F` in shared RAM is reserved for a "soft restart" request:
+`$021F` in shared RAM is reserved for a "host wants to patch IOP
+memory" handshake. It is **not** a soft restart — internal state is not
+reinitialised. The handshake quiesces the IOP into a known idle state
+so the host can rewrite firmware bytes through `iopRamAddr` /
+`iopRamData` without racing the executing code.
 
-1. Host writes a non-zero byte to `$021F` via `iopRamAddr` +
-   `iopRamData`.
-2. The firmware's main loop polls this byte. On the next iteration,
-   non-zero is detected and the firmware jumps to its internal restart
-   trampoline near the top of code memory.
-3. The trampoline reinitialises internal state (free lists, callback
-   vectors), then waits for the host to clear `$021F` back to zero.
-4. Host clears `$021F` once it's done patching whatever it intended
-   to patch (typical use is via `_IOPMoveData` with `imPatchIop`).
-5. The trampoline returns to the main loop.
+The byte at `$021F` is itself the handshake state, encoded with the
+same `Msg*` values from §7:
 
-This avoids a full code reload, which would otherwise require pulsing
-`iopRun` and re-running the full `IOPMgr` install sequence (§9). The
-caller does this through `_IOPMoveData` with `imPatchIop`, which
-handles the handshake.
+1. **Host requests patch.** Writes `NewMsgSent` (`$01`) to `$021F`
+   via `iopRamAddr` + `iopRamData`. (Any non-zero value triggers the
+   transition — `NewMsgSent` is the canonical one.)
+
+2. **Firmware enters PatchWait.** On the next iteration of `IdleLoop`
+   (SWIM IOP) the firmware reads `$021F`, sees non-zero, and jumps to
+   the fixed-address trampoline `PatchWait` just below the interrupt
+   vectors. PatchWait disables interrupts (`SEI`), then writes
+   `MessageCompleted` (`$03`) to `$021F`.
+
+3. **Host observes "ready to patch".** Poll `$021F` until it reads
+   `$03`. At this point the IOP is parked in a 3-instruction loop with
+   interrupts disabled, holding all registers, and no other code is
+   running — the host can freely rewrite any byte in shared RAM.
+
+4. **Host patches and releases.** After applying its edits, the host
+   writes `MsgIdle` (`$00`) to `$021F`.
+
+5. **Firmware resumes.** PatchWait's inner loop notices `$00`, jumps
+   to `PatchDone` which re-enables interrupts and resumes `IdleLoop`.
+
+`_IOPMoveData` with `imPatchIop` is the host-side primitive that
+performs steps 1, 3, 4, 5 around a caller-supplied byte-range patch.
+This is purely a synchronisation handshake — no state is dropped, no
+callbacks are re-registered, no free lists are rebuilt. To rebuild
+state, the host has to pulse `iopRun` and re-run the full §9 install
+sequence.
 
 ---
 
@@ -507,15 +567,29 @@ handles the handshake.
 | Peripheral IRQ wired | Yes — Z8530 `/INT` → `iopBypassIntReq`.                          |
 
 The SCC IOP boots into **bypass mode** so that `IOPMgr` can drive the
-Z8530 directly during early initialisation, before the firmware-side
-driver is up. The host accesses the SCC chip through the
-`$50F04020-$50F0403F` passthrough window; the Z8530's `A/B`-`D/C`
-encoding decodes from offset bits 0 and 1.
+Z8530 directly during early initialisation. The host accesses the SCC
+chip through the `$50F04020-$50F0403F` passthrough window; the
+Z8530's `A/B`-`D/C` encoding decodes from offset bits 0 and 1.
 
-Once `IOPMgr` posts an "enhanced mode" XmtMsg, the firmware takes
-ownership: it programs the Z8530, enables its own DMA, and routes
-per-channel send/receive events to the host as Int0 mailbox
-completions.
+Critical architectural point that the existing literature gets wrong:
+**the SCC IOP firmware image as shipped contains no per-channel SCC
+driver code.** The resident firmware in `iop-scc.bin` is a minimal
+kernel that exposes only the six commands tabulated in §15.1 below.
+Per-channel byte-stream I/O, async event delivery, RX/TX interrupt
+handling — all of that lives in **downloadable driver code** that the
+host writes into the IOP's `$2D55..$56A9` (Driver A) and
+`$56AA..$7FEE` (Driver B) regions, then activates with the
+`AllocDvr` / `InitDvr` kernel commands. The resident firmware's
+default Z8530 ISR vector table points entirely at a `BRK` stub
+(`UnKnown_SCCInt`), so enabling any Z8530 interrupt source without
+first downloading a driver will hard-stop the IOP.
+
+For the IIfx specifically, Mac OS in PRAM-default bypass mode never
+downloads a driver — every serial byte goes through the
+`$50F04020-3F` passthrough window. "Enhanced mode" requires the OS
+to load A/UX-era driver code; an emulator that only needs to boot
+Mac OS doesn't have to model the AllocDvr/InitDvr path beyond
+returning sensible error replies.
 
 The low-memory variable `SCCIOPFlag` (`$0BFE`) tracks whether the OS
 currently prefers bypass mode or firmware-driven mode. `IOPMgr`
@@ -530,6 +604,163 @@ Bit interactions specific to the SCC IOP:
   outside bypass it always reads 0.
 - `iopSCCWrReq`: live Z8530 `WREQ`. Active-low; reads 0 when the SCC
   asserts request. Forced 1 outside bypass.
+
+### 15.1 SCC IOP slot-1 kernel-command protocol
+
+Slot 1 is the *only* mailbox slot the resident firmware uses, and only
+in the host→IOP direction (i.e. `XmtMsg[1]` on the host's side). The
+host writes a request byte at `$0220`, optional parameters at `$0221+`,
+sets `XmtMsg[1].state = NewMsgSent`, and pulses `iopGenInterrupt`.
+The firmware processes, **writes its reply back into the same
+`$0220..$023F` buffer**, sets `XmtMsg[1].state = MsgCompleted`, and
+raises `iopInt0Active`. There is no separate reply slot. The host
+acknowledges with `clrIopInt0`.
+
+The six accepted command codes (from `SCCIOPEqu.aii`):
+
+| Code  | Apple name    | Function                                       |
+| ----- | ------------- | ---------------------------------------------- |
+| `$01` | `AllocDvr`    | Claim driver A or B on behalf of a client.      |
+| `$02` | `DeAllocDvr`  | Release a previously-claimed driver.            |
+| `$03` | `InitDvr`     | Run the downloaded driver's init routine.       |
+| `$04` | `ByPass`      | Toggle bypass mode on or off (with ownership).   |
+| `$05` | `Versn`       | Return a pointer to a Pascal version string.     |
+| `$06` | `SCCCntl`     | Set per-channel SCC clock source (bypass only).  |
+
+In **bypass mode** (the boot default and the IIfx steady state), only
+`ByPass` (`$04`) and `SCCCntl` (`$06`) are accepted. Every other code
+returns an `InByPass` (`$FC`) reply.
+
+All replies share the convention: byte `+$00` is the result code
+(`$00 = NoErr`, otherwise a two's-complement negative error code).
+Negative results in two's-complement byte form:
+
+| Reply value | Apple name   | Meaning                                          |
+| ----------- | ------------ | ------------------------------------------------ |
+| `$00`       | `NoErr`      | Success.                                          |
+| `$FF`       | `Error`      | Generic / parameter out of range.                  |
+| `$FE`       | `UnKnwnMsg`  | Command code outside `$01..$06`.                  |
+| `$FD`       | `DvrInUse`   | Driver already allocated by another client.       |
+| `$FC`       | `InByPass`   | Operation not legal while in bypass mode.         |
+| `$FB`       | `NotAlloc`   | Driver not allocated yet.                         |
+| `$FA`       | `BadID`      | Client ID mismatch on bypass-off.                 |
+
+#### 15.1.1 `AllocDvr` (`$01`)
+
+Request:
+
+| Offset | Size | Name        | Notes                                             |
+| ------ | ---- | ----------- | ------------------------------------------------- |
+| `+$00` | byte | command     | `$01`.                                             |
+| `+$01` | byte | `Driver`    | `$00` = driver A (modem channel), `$01` = driver B (printer channel). |
+| `+$02` | byte | `ClientID`  | Host-chosen non-zero tag. Used to verify ownership on `DeAllocDvr` and `ByPass`-off. |
+
+Reply (overwrites the same buffer):
+
+| Offset | Size | Name        | Notes                                             |
+| ------ | ---- | ----------- | ------------------------------------------------- |
+| `+$00` | byte | result      | `NoErr` on success, `DvrInUse` if already held, `Error` if `Driver > 1`. |
+| `+$01` | byte | `OwnerID`   | On `DvrInUse`: the `ClientID` of the current owner. Otherwise `$00`. |
+| `+$02` | byte | `InitAddrHi`| High byte of the driver's init entry-point — for the resident firmware, `$2D` (driver A) or `$56` (driver B). |
+| `+$03` | byte | `InitAddrLo`| Low byte — `$54` or `$A9` respectively (the pre-init RAM addresses are `$2D55-1` / `$56AA-1`, conforming to an RTS-based jump convention). |
+
+#### 15.1.2 `DeAllocDvr` (`$02`)
+
+Request: `+$00 = $02`, `+$01 = Driver`.
+
+Reply: `+$00 = NoErr` or `Error` (driver out of range). Side effect:
+performs an indirect JSR through `Close_Vec[Driver]` (preset to
+`$2D58` / `$56AD`), giving the downloaded driver a chance to clean
+up before the slot is released.
+
+#### 15.1.3 `InitDvr` (`$03`)
+
+Request: `+$00 = $03`, `+$01 = Driver`.
+
+Reply: `+$00 = NoErr`, `NotAlloc`, or `Error`.
+
+This command synchronously runs the downloaded driver's init routine
+(at `Init_Vec[Driver]`, returned by `AllocDvr`) and blocks until that
+init signals `InitFin` ($02). If the downloaded code never signals
+back, no `MsgCompleted` is ever posted for this command — the host's
+timeout is the only escape. (The `$031F` alive byte continues to be
+refreshed by the kernel scheduler, so an emulator that watches only
+the alive byte cannot distinguish "init wedged" from "init running".)
+
+#### 15.1.4 `ByPass` (`$04`)
+
+Request:
+
+| Offset | Size | Name       | Notes                                                   |
+| ------ | ---- | ---------- | ------------------------------------------------------- |
+| `+$00` | byte | command    | `$04`.                                                  |
+| `+$01` | byte | `On_Off`   | `$00` = leave bypass, non-zero = enter bypass.           |
+| `+$02` | byte | `ClientID` | Non-zero tag. Must match the entering client when leaving bypass. |
+
+Reply:
+
+| Offset | Size | Name         | Notes                                                              |
+| ------ | ---- | ------------ | ------------------------------------------------------------------ |
+| `+$00` | byte | result       | `NoErr`, `DvrInUse` (a driver is still allocated), `InByPass`, or `BadID`. |
+| `+$01` | byte | `ClientAID`  | On `DvrInUse`: driver A's current owner. On `InByPass`/`BadID`: the bypass holder. Else `$00`. |
+| `+$02` | byte | `ClientBID`  | On `DvrInUse`: driver B's current owner. Else `$00`.                |
+
+Enter-bypass side effects: masks the IOP-internal Z8530 IRQ, resets
+both Z8530 channels (WR9 = ChanA_Reset | ChanB_Reset), reprograms a
+canonical idle config (WR4 = X16 clock + 2 stop bits = `$4C`, WR3 = Rx
+8-bit = `$C0`, etc.), and sets `SCC_Cntl ($F030) |= ByPass_Bit`.
+
+Leave-bypass side effects: clears `ByPass_Bit`, unmasks SCC IRQ at
+the IOP-internal level, and runs the same Z8530 reinit. The Z8530
+is then in a clean state for the downloaded driver to take over —
+but **no driver is auto-attached**; the host must `AllocDvr` +
+`InitDvr` to wire one up before useful traffic flows.
+
+#### 15.1.5 `Versn` (`$05`)
+
+Request: `+$00 = $05`, `+$01 = DriverID` (`$00 = DvrA`, `$01 = DvrB`,
+`$02 = Kern`).
+
+Reply: `+$00 = NoErr` or `Error`; `+$01` = high byte of a 16-bit IOP
+RAM pointer to a Pascal-style version string; `+$02` = low byte. The
+resident kernel registers exactly one string at boot:
+
+```
+"Enhanced Communications Controller"
+"Version 1.0A0 © Apple Computer Inc. 1988"
+```
+
+(Each segment is a separate Pascal-counted string in IOP RAM; the
+pointer returned by Versn points at the start of the kernel's
+registered block.)
+
+Note the asymmetry vs. `AllocDvr`: `AllocDvr` returns the address as
+(hi, lo) at `+$02 / +$03`, but `Versn` returns (hi, lo) at
+`+$01 / +$02`. This asymmetry is in the firmware as-written.
+
+#### 15.1.6 `SCCCntl` (`$06`)
+
+Request: `+$00 = $06`, `+$01 = Driver`, `+$02 = GPI` (0 = use 3.6864 MHz
+RTxC pin; non-zero = use GPIA as the RTxC clock source for that channel).
+
+Reply: `+$00 = NoErr` or `Error` (driver out of range, or not in
+bypass mode). Side effect: toggles either the `RTXCA_GPIA` (`%00011000`)
+or `RTXCB_GPIA` (`%01100000`) bits of `SCC_Cntl` ($F030).
+
+### 15.2 SCC IOP — interrupts the host actually sees
+
+`iopInt0Active` is **the only** host IRQ the resident firmware ever
+raises, and only as the completion signal of a slot-1 kernel
+command. `iopInt1Active` is never set by the resident firmware; if
+the host sees Int1 from an SCC IOP, downloaded driver code must be
+responsible.
+
+Bypass-mode SCC byte-level interrupts (RX-char-available, TX-buffer-
+empty, framing error, break received) reach the host directly via
+`iopBypassIntReq` as the OSS source 7 interrupt — they do **not**
+route through the mailbox or through `iopIntNActive`. The Z8530's
+own interrupt vector is the only thing the host's SCC driver
+inspects.
 
 ---
 
@@ -549,20 +780,69 @@ The SWIM IOP runs in firmware-driven mode at all times — there is no
 host-direct path to the SWIM1 chip. Floppy I/O and ADB transactions
 are entirely mailbox-driven.
 
-The firmware fronts two distinct functions through the same mailbox,
+The firmware fronts three distinct functions through the mailbox,
 each on its own dedicated slot:
 
-| Slot | Channel             | Direction(s)                     | Protocol           |
-| ---- | ------------------- | -------------------------------- | ------------------ |
-| 1    | IOPMgr kernel       | XmtMsg + RcvMsg                  | `MoveReqInfo` (§12)|
-| 2    | `.Sony` (SonyIOP)   | XmtMsg (host → IOP), RcvMsg (IOP → host) | `SwimIopMsg` (§17) |
-| 3    | ADB Mgr (ADBMsg)    | XmtMsg (host → IOP), RcvMsg (IOP → host) | `ADBMsg` (§18) |
+| Slot | Channel             | Direction                                | Protocol               |
+| ---- | ------------------- | ---------------------------------------- | ---------------------- |
+| 1    | BlockCopy / patch   | `RcvMsg` only (IOP → host)               | `MoveReqInfo` (§16.1)  |
+| 2    | `.Sony` (SonyIOP)   | XmtMsg (host → IOP), RcvMsg (IOP → host) | `SwimIopMsg` (§17)     |
+| 3    | ADB Mgr (ADBMsg)    | XmtMsg (host → IOP), RcvMsg (IOP → host) | `ADBMsg` (§18)         |
+
+Slot 1 of `XmtMsg` (host → IOP) is `Unimplemented` — the firmware
+will BRK-halt if the host kicks it. Slots 4-7 of both directions are
+also `Unimplemented`. So the SWIM IOP advertises 3 active slots
+(`XmtMsg[0]` and `RcvMsg[0]` seeded to `$03` — see §6).
 
 Bit interactions specific to the SWIM IOP:
 
 - `iopInBypassMode`: always reads 0 (firmware never enables bypass).
 - `iopBypassIntReq`: not wired; reads 0.
 - `iopSCCWrReq`: not wired; reads 1.
+
+### 16.1 Slot 1 — BlockCopy (`MoveReqInfo`)
+
+This slot is the *only* way bulk floppy data crosses the host/IOP
+boundary. The IOP has 32 KB of shared RAM but a single floppy I/O
+request can move many KB to or from main RAM; rather than streaming
+the data through `iopRamData`, the firmware buffers it in IOP RAM
+and asks the host to do the bus-master move. The host's response
+is a single `_IOPMoveData` invocation, so the per-byte cost is
+amortised across a whole sector batch.
+
+The protocol is the standard "RcvMsg" flow from §11 with this
+specific payload:
+
+| Offset  | Size  | Name             | Notes                                                                                      |
+| ------- | ----- | ---------------- | ------------------------------------------------------------------------------------------ |
+| `+$00`  | byte  | `bcReqCmd`       | `$00 = bcIOPtoHOST`, `$01 = bcHOSTtoIOP`, `$02 = bcCompare`.                                |
+| `+$01`  | byte  | (padding)        | Unused.                                                                                    |
+| `+$02`  | word  | `bcReqByteCount` | Big-endian; total transfer in bytes (typically a power-of-two multiple of 256).             |
+| `+$04`  | long  | `bcReqHostAddr`  | Big-endian 32-bit physical host RAM address (source for `bcHOSTtoIOP`, destination for `bcIOPtoHOST`). |
+| `+$08`  | word  | `bcReqIopAddr`   | Big-endian 16-bit IOP shared-RAM address.                                                  |
+| `+$0A`  | byte  | `bcReqCompRel`   | Output field, used only when `bcReqCmd = bcCompare`: host writes a non-zero "unequal" or zero "equal" result before completing the reply. |
+
+State-machine: firmware fills the payload, sets
+`RcvMsg[1].state = NewMsgSent`, raises Int1. Host's `IOPInterrupt`
+walks RcvMsg states, finds slot 1, performs the requested copy
+(or compare), writes the `bcReqCompRel` byte back for `bcCompare`,
+sets `RcvMsg[1].state = MsgCompleted`, kicks the IOP via
+`iopGenInterrupt`. The firmware reads back `bcReqCompRel` (if
+relevant), clears `RcvMsg[1].state` to `MsgIdle`, and resumes.
+
+The SWIM driver uses double-buffered BCPBs — two for data, two for
+tags (4 total at boot) — so while the host is moving track N-1 out
+of IOP RAM, the firmware can already be reading track N into a
+different IOP-RAM region. This is why `ReadReq` / `WriteReq` can
+sustain near-floppy-bandwidth without stalling on host-side ack
+latency.
+
+`ReadVerifyReq` reuses this slot with `bcCompare`: the firmware reads
+from disk into IOP RAM, then issues a BlockCopy with
+`bcReqCmd = bcCompare`. The host reads the host-side buffer, compares
+against IOP RAM, and reports equal/unequal via `bcReqCompRel`. A
+non-zero compare result becomes `dataVerErr` (-68) in the host's
+Sony-slot reply.
 
 ---
 
@@ -590,31 +870,41 @@ shapes (an `AdditionalParam` union in the original source):
 
 **Initialize reply** (`xmtReqInitialize`):
 
-| Offset | Size    | Name          | Notes                                          |
-| ------ | ------- | ------------- | ---------------------------------------------- |
-| `+$04` | 4 bytes | `DriveKinds[0..3]` | One `DriveKind` per logical drive index. |
+| Offset       | Size     | Name                | Notes                                                          |
+| ------------ | -------- | ------------------- | -------------------------------------------------------------- |
+| `+$04`       | 28 bytes | `DriveKinds[0..27]` | One `DriveKind` per logical drive index. The firmware always writes the full 28-byte block; the IIfx ROM only consumes the first four (qDrive table is 4 wide). For physical drive indexing on the IIfx, see §17.4. |
 
-**DriveStatus / ExtDriveStatus reply** (`xmtReqDriveStatus`):
+**DriveStatus / ExtDriveStatus reply** (`xmtReqDriveStatus`). Offsets
+inside the payload map one-for-one to the `Stat*` equates in
+`SWIMDefs.aii` — those equates are payload-relative, so `StatTrackH =
+$04` means `+$04` from the start of the payload at `$0340`:
 
-| Offset | Size | Name              | Notes                                              |
-| ------ | ---- | ----------------- | -------------------------------------------------- |
-| `+$04` | word | `Track`           | Current head track.                                |
-| `+$06` | byte | `WriteProtected`  | bit 7 set → write-protected.                       |
-| `+$07` | byte | `DiskInPlace`     | 0 = empty, 1/2 = disk present.                     |
-| `+$08` | byte | `DriveInstalled`  | 0 = unknown, 1 = installed, `$FF` = no drive.       |
-| `+$09` | byte | `Sides`           | bit 7 set → double-sided.                          |
-| `+$0A` | byte | `TwoSidedFormat`  | `$FF` = 2-sided disk, `$00` = 1-sided.              |
-| `+$0B` | byte | `NewInterface`    | `$FF` = 800K+ / SuperDrive.                         |
-| `+$0C` | word | `DiskErrors`      | Running disk-error count.                          |
-| `+$0E` | byte | `MfmDrive`        | `$FF` = SuperDrive.                                 |
-| `+$0F` | byte | `MfmDisk`         | `$FF` = MFM disk in drive.                          |
-| `+$10` | byte | `MfmFormat`       | `$FF` = 1440K, `$00` = 720K.                        |
-| `+$11` | byte | `DiskController`  | `$FF` = SWIM, `$00` = IWM.                          |
-| `+$12` | word | `CurrentFormat`   | Current-format bit mask.                           |
-| `+$14` | word | `FormatsAllowed`  | Allowable-format bit mask.                         |
+| Offset      | Size    | Name              | Notes                                                                                     |
+| ----------- | ------- | ----------------- | ----------------------------------------------------------------------------------------- |
+| `+$04`      | word    | `Track`           | Current head track.                                                                       |
+| `+$06`      | byte    | `WriteProtected`  | bit 7 set → write-protected.                                                              |
+| `+$07`      | byte    | `DiskInPlace`     | 0 = empty, 1/2 = disk present.                                                            |
+| `+$08`      | byte    | `DriveInstalled`  | 0 = unknown, 1 = installed, `$FF` = no drive.                                              |
+| `+$09`      | byte    | `Sides`           | bit 7 set → double-sided.                                                                 |
+| `+$0A`      | byte    | `TwoSidedFormat`  | `$FF` = 2-sided disk, `$00` = 1-sided.                                                    |
+| `+$0B`      | byte    | `NewInterface`    | `$FF` = 800K+ / SuperDrive.                                                               |
+| `+$0C`      | word    | `DiskErrors`      | Running disk-error count.                                                                  |
+| `+$0E`      | byte    | `DriveInfoB3`     | Drive-info control call byte 3 (high). `$00` for stock SuperDrives.                       |
+| `+$0F`      | byte    | `DriveInfoB2`     | Drive-info byte 2. `$00` for stock SuperDrives.                                            |
+| `+$10`      | byte    | `DriveAttr`       | Disk-drive attribute byte (filled from the firmware's per-drive `DriveAttributes` table). |
+| `+$11`      | byte    | `DriveType`       | Disk-drive-kind byte — same encoding as `DriveKind` (`$04 = DSMFMHD`, etc.).                |
+| `+$12`      | byte    | `MfmDrive`        | `$FF` = SuperDrive, else `$00`.                                                            |
+| `+$13`      | byte    | `MfmDisk`         | `$FF` = MFM media.                                                                         |
+| `+$14`      | byte    | `MfmFormat`       | `$FF` = 1440K, `$00` = 720K.                                                               |
+| `+$15`      | byte    | `DiskController`  | `$FF` = SWIM, `$00` = IWM.                                                                 |
+| `+$16`      | word    | `CurrentFormat`   | Big-endian bit mask of the current format.                                                |
+| `+$18`      | word    | `FormatsAllowed`  | Big-endian bit mask of allowable formats.                                                 |
+| `+$1A`      | long    | `DiskSize`        | Big-endian, fixed-media drive size in bytes (HD-20 only; `$00000000` for floppies).        |
+| `+$1E`      | byte    | `IconFlags`       | bit 0 = caller wants media icon, bit 1 = drive icon.                                       |
+| `+$1F`      | byte    | `Spare`           | Always `$00`.                                                                              |
 
 **Data-transfer request** (`xmtReqRead` / `xmtReqWrite` /
-`xmtReqReadVerify` / `xmtReqFormat`):
+`xmtReqReadVerify`):
 
 | Offset | Size     | Name          | Notes                                       |
 | ------ | -------- | ------------- | ------------------------------------------- |
@@ -623,12 +913,41 @@ shapes (an `AdditionalParam` union in the original source):
 | `+$0C` | long     | `BlockCount`  | Number of 512-byte blocks to transfer.      |
 | `+$10` | 12 bytes | `MfsTagData`  | MFS tag bytes (read/write).                  |
 
+`BufferAddr` is a host main-RAM physical address — the IOP never reads
+or writes that address directly. Instead it stages the data in its
+own shared RAM and uses the slot-1 BlockCopy protocol (§16.1) to ask
+the host to perform the actual move. Double-buffering inside the
+firmware overlaps disk I/O with host-side BlockCopy so that a
+multi-track read sustains close to floppy bandwidth.
+
+**Format request** (`xmtReqFormat`) uses a different `+$04` overlay:
+
+| Offset | Size | Name              | Notes                                                  |
+| ------ | ---- | ----------------- | ------------------------------------------------------ |
+| `+$04` | word | `FormatKind`      | Disk-format selector (one of the `*format` constants). |
+| `+$06` | byte | `HdrFmtKind`      | Per-sector header format byte (`$00` = firmware default). |
+| `+$07` | byte | `FmtInterleave`   | Sector interleave (`$00` = firmware default).           |
+| `+$08` | long | `FmtDataAddress`  | Host RAM address of format sector data.                |
+| `+$0C` | long | `FmtTagAddress`   | Host RAM address of format tag data.                    |
+
+**GetRawData request** (`xmtReqGetRawData`) uses yet another overlay:
+
+| Offset | Size | Name               | Notes                                                  |
+| ------ | ---- | ------------------ | ------------------------------------------------------ |
+| `+$04` | long | `RawClockAddress`  | Host RAM destination for packed MFM clock bits.        |
+| `+$08` | long | `RawDataAddress`   | Host RAM destination for the raw data bytes.            |
+| `+$0C` | long | `RawByteCount`     | Number of raw bytes to read.                            |
+| `+$10` | word | `RawSearchMode`    | `$00` immediate, `$01` after address mark, `$02` after data mark, `$03` after index. |
+| `+$12` | word | `RawCylinder`      | Cylinder number.                                       |
+| `+$14` | byte | `RawHead`          | Head number.                                           |
+| `+$15` | byte | `RawSector`        | Sector number.                                         |
+
 ### 17.2 xmtReq request codes (host → IOP, in `ReqKind`)
 
 | Code  | Apple name              | Meaning                                                       |
 | ----- | ----------------------- | ------------------------------------------------------------- |
-| `$01` | `xmtReqInitialize`      | Returns `DriveKinds[0..3]` in the reply.                       |
-| `$02` | `xmtReqShutdown`        | Stop driver activity.                                          |
+| `$01` | `xmtReqInitialize`      | Returns `DriveKinds[0..27]` (28 bytes) in the reply.            |
+| `$02` | `xmtReqShutdown`        | **Stub** — dispatches to `UnKnownSWIMReq`, returns `paramErr`. |
 | `$03` | `xmtReqStartPolling`    | Begin autonomous drive-presence polling.                       |
 | `$04` | `xmtReqStopPolling`     | Pause drive polling.                                           |
 | `$05` | `xmtReqSetHfsTagAddr`   | Stash a host RAM address for MFS tag bytes.                    |
@@ -638,12 +957,17 @@ shapes (an `AdditionalParam` union in the original source):
 | `$09` | `xmtReqFormatVerify`    | Verify formatting.                                             |
 | `$0A` | `xmtReqWrite`           | Write `BlockCount` × 512-byte blocks from `BufferAddr`.        |
 | `$0B` | `xmtReqRead`            | Read `BlockCount` × 512-byte blocks into `BufferAddr`.         |
-| `$0C` | `xmtReqReadVerify`      | Read + compare; no host buffer touched.                        |
+| `$0C` | `xmtReqReadVerify`      | Read + compare via BlockCopy slot 1 / `bcCompare`. No host buffer touched directly. |
 | `$0D` | `xmtReqCacheControl`    | Track-cache enable / disable.                                  |
 | `$0E` | `xmtReqTagBufControl`   | Tag-buffer enable / disable.                                   |
-| `$0F` | `xmtReqGetIcon`         | Fetch media/drive icon resource.                                |
+| `$0F` | `xmtReqGetIcon`         | **Stub** — dispatches to `UnKnownSWIMReq`, returns `paramErr`.  |
 | `$10` | `xmtReqDupInfo`         | Disk-duplicator info.                                          |
-| `$11` | `xmtReqGetRawData`      | Copy-protection raw read.                                      |
+| `$11` | `xmtReqGetRawData`      | Copy-protection raw read. Uses a different `+$04..+$15` overlay (clock-bits / data buffer pointers, search mode, cylinder, head, sector). |
+
+Codes `$12..$18` are slots in the dispatch table that all route to
+`UnKnownSWIMReq` (returning `paramErr`); they exist so a future
+firmware patch can drop new commands in without rebuilding the
+dispatch table.
 
 The IOP services every `ReqKind` it understands by writing the result
 into the same XmtMsg payload, setting `ErrorCode`, advancing
@@ -662,10 +986,20 @@ host must subscribe to slot 2 with `irWaitRcvMessage` at boot.
 
 ### 17.4 DriveKinds and the qDrive numbering convention
 
-The `DriveKinds[0..3]` byte table returned by `xmtReqInitialize` is
-**the** authoritative source of "which drive index is what." The Sony
-driver uses each index `N` as the `qDrive` argument when calling
-`_AddDrive`, which in turn becomes `ioVRefNum` for `_MountVol`.
+The `DriveKinds[]` byte table returned by `xmtReqInitialize` is
+**the** authoritative source of "which drive index is what." The
+firmware writes all 28 bytes; the Sony driver on the IIfx only
+consumes the first 4 (it uses each index `N` as the `qDrive` argument
+when calling `_AddDrive`, which in turn becomes `ioVRefNum` for
+`_MountVol`).
+
+The firmware populates indices according to *physical* drive numbering
+in `SWIMDefs.aii`:
+
+- index 1 = `intDriveNumber` (internal floppy)
+- index 2 = `extDriveNumber` (external floppy)
+- index 5..8 = `FirstHD20DriveNumber..` (up to 4 HD-20 drives)
+- all other indices = `noDriveKind` (`$00`)
 
 DriveKind values:
 
@@ -696,24 +1030,47 @@ payload layout is `ADBMsg`:
 | Offset | Size    | Name        | Notes                                              |
 | ------ | ------- | ----------- | -------------------------------------------------- |
 | `+$00` | byte    | `Flags`     | Bitfield; see §18.1.                                |
-| `+$01` | byte    | `DataCount` | Length of valid `ADBData[]` bytes (0..8).           |
+| `+$01` | byte    | `DataCount` | Length of valid `ADBData[]` bytes. Legal values are `{0, 2..8}` — 1 is never valid. |
 | `+$02` | byte    | `ADBCmd`    | The ADB command byte (Talk / Listen / Reset / Flush). |
 | `+$03` | 8 bytes | `ADBData`   | Up to 8 bytes of in/out payload.                    |
+
+(The firmware allocates an 11th byte at `+$0B` as receive-overflow
+margin, but this byte is firmware-internal and is not part of the
+host-visible payload.)
 
 ### 18.1 `Flags` bit semantics
 
 | Bit | Name              | Meaning                                                                                              |
 | --- | ----------------- | ---------------------------------------------------------------------------------------------------- |
-| 7   | `ExplicitCmd`     | Host-initiated command. Firmware must issue `ADBCmd` verbatim on the bus.                              |
-| 6   | `PollEnable`      | Autopoll mode. Firmware picks the next enabled device and Talk-R0s it; `ADBCmd` in request is ignored. |
-| 5   | `SetPollEnables`  | `ADBData[0..1]` carries a fresh 2-byte DevMap bitmap to replace the firmware's current poll mask.    |
-| 2   | `SRQ`             | Service-request pending — at least one device asserted SRQ during the last bus cycle.                |
-| 1   | `NoReply`         | Set on the reply when no device answered the issued command.                                          |
+| 7   | `ExplicitCmd`     | Host-initiated command. Firmware must issue `ADBCmd` verbatim on the bus. Firmware-internal label: same. |
+| 6   | `PollEnable`      | Autopoll mode. Firmware picks the next enabled device and Talk-R0s it; `ADBCmd` in request is ignored. Firmware-internal label: `AutoPollEnable`. |
+| 5   | `SetPollEnables`  | One-shot. `ADBData[0..1]` carries a fresh 2-byte big-endian DevMap to replace the firmware's poll mask; bit `N` of the 16-bit value (LSB at `ADBData[1]`, MSB at `ADBData[0]`) = "address `N` is enabled for autopoll". The firmware clears `SetPollEnables` after consuming it. |
+| 2   | `SRQ`             | Service-request pending — *some* device asserted SRQ during the gap after the last command's stop bit. **No device address is encoded anywhere.** Firmware-internal label: `ServiceRequest`. |
+| 1   | `NoReply`         | Set on the reply when the issued command did not produce a complete valid response. Covers four cases: (a) no device pulled the bus low within ≈260 µs of the command's stop bit, (b) reply started but stalled mid-byte, (c) reply was shorter than 2 bytes or longer than 8 bytes, (d) bus fight detected on either the host's command or its Listen-data phase. Firmware-internal label: `TimedOut`. |
+
+Bits 0, 3, 4 are unused — the firmware never reads or writes them.
 
 `ExplicitCmd` and `PollEnable` are mutually exclusive on a single
 request; the OS uses them to disambiguate routing in its `IOPReqDone`
 dispatch (one branch goes to `ExplicitRequestDone`, the other to
 `ImplicitRequestDone`).
+
+**Default state at cold boot:** `Flags = 0` in the firmware-internal
+storage (BSS); `DisableFlags[]` is also BSS-zero, which the firmware
+interprets as "all 16 addresses enabled" — i.e. **the default DevMap
+is `$FFFF`**. Autopoll itself is **off** at boot — the firmware
+performs no bus traffic until the host posts a request with
+`PollEnable` (or `ExplicitCmd`) set. The host's first slot-3 message
+can be either an Explicit command or an implicit `PollEnable` —
+there is no required ordering or init handshake.
+
+**Bus-Reset semantics.** The ADB spec encodes Bus Reset as a long
+low-level on the bus, not as a clocked-out command byte. The
+firmware triggers Bus Reset whenever the *low nibble* of `ADBCmd`
+is `$0` — masked with `$0F` and compared to `ResetCmd = $00`. So
+not just `$00` but also `$10`, `$20`, ... etc. produce a Bus Reset.
+This matches the ADB spec but is worth noting because it differs
+from how most Mac OS host code talks about "Reset".
 
 ### 18.2 The two transport paths
 
@@ -731,19 +1088,30 @@ OS posts an autopoll request when `fDBExpActive = 1` in ADBVars. The
 value the buffer happened to hold — because the firmware itself picks
 the next device. The firmware:
 
-1. Walks its `DevMap` (16-bit bitmap, bit `N` = address `N` enabled),
-   starting from the address after the previous autopoll cycle.
-2. Issues `Talk-Reg-0` (`$XC` where `X = addr`) to the first enabled
-   address with pending data.
-3. Returns the response in `ADBData` and sets the reply's `ADBCmd`
+1. Selects the device to poll **using its MRU (most-recently-used)
+   chain, not numeric address order**. The chain is maintained
+   per-device in IOP RAM (initialised to the identity 0→1→...→15→0 at
+   boot, then permuted as devices reply). The next poll target is
+   normally `AutoPollAddr` — the device that replied last cycle —
+   which means in steady state the firmware **re-polls the same
+   device** until either someone else replies (stealing the head of
+   the chain) or SRQ kicks in.
+2. When the previous reply asserted SRQ (bit 2), the firmware enters
+   an SRQ-search phase: it walks `MRUList[AutoPollAddr]`, then
+   `MRUList[MRUList[AutoPollAddr]]`, etc., **skipping addresses whose
+   `DevMap` bit is clear**. After one full pass (16 hops) it stops
+   skipping and polls whatever it lands on. The first non-disabled
+   address found becomes the new `AutoPollAddr` and is Talk-R0'd.
+3. Issues `Talk-Reg-0` (`(addr << 4) | $0C`) to that address.
+4. Returns the response in `ADBData` and sets the reply's `ADBCmd`
    to the actual Talk command that was issued, **not** to the stale
    value from the request.
 
-That last point matters: the host's `ADB Mgr` uses the reply's
-`ADBCmd` to update its `pollCmd` / `pollAddr` globals, which in turn
-feed mouse / keyboard event dispatch. A reply with the wrong `ADBCmd`
-either misdelivers data (e.g. mouse bytes look like keyboard events)
-or sends the OS into a stuck-state loop (e.g. retrying `Flush` on
+Step 4 matters: the host's `ADB Mgr` uses the reply's `ADBCmd` to
+update its `pollCmd` / `pollAddr` globals, which in turn feed mouse /
+keyboard event dispatch. A reply with the wrong `ADBCmd` either
+misdelivers data (e.g. mouse bytes look like keyboard events) or
+sends the OS into a stuck-state loop (e.g. retrying `Flush` on
 address 2 forever).
 
 When the OS sets `SetPollEnables` together with `PollEnable`, the
@@ -753,15 +1121,36 @@ latches it before the autopoll scan. The reply clears
 
 ### 18.3 Reply Int conventions
 
-Both explicit and autopoll completions land on `RcvMsg[3]` with
-`iopInt1Active` raised — **not** `iopInt0Active`. (The IOP firmware
-does post explicit replies on `XmtMsg[3]` completion initially, but
-once the OS has issued its first `irSendRcvReply` on slot 3 and set
-`fDBUseRcvMsg = 1`, all subsequent slot-3 traffic — including replies
-to host-posted explicit commands — flows over `RcvMsg[3]` via Int1.)
-This means the simple "Int0 = reply, Int1 = unsolicited" framing from
-§11 does not strictly apply to slot 3; the channel is steady-state
-Int1 once initialised.
+The firmware itself follows the rigid §10/§11 convention without
+exception:
+
+- When the host posts a command on `XmtMsg[3]` (`RCVMsg3` from the
+  firmware's POV), the firmware's `HandleRCVMsg3` handler copies the
+  payload, advances `XmtMsg[3].state` to `MsgCompleted`, and raises
+  **Int0** (`MsgCompletedINT`). This is the standard ack for a
+  host-initiated request.
+- When the firmware has an ADB reply to deliver (whether for an
+  earlier explicit command or for an autopoll cycle), it fills
+  `RcvMsg[3]`, sets `RcvMsg[3].state = NewMsgSent`, and raises
+  **Int1** (`NewMsgSentINT`). This is the standard unsolicited-from-
+  host's-perspective post on a RcvMsg slot.
+
+What looks like a violation of "Int0 = reply, Int1 = unsolicited" is
+actually an OS-side rebinding: once the OS sets `fDBUseRcvMsg = 1`
+(after its first `irSendRcvReply` on slot 3), it stops posting new
+explicit commands via `XmtMsg[3]` and instead puts the next request
+into the `RcvMsg[3]` payload buffer while acknowledging the prior
+reply. The firmware's `HandleXMTMsg3` (RcvMsg-ack path) runs
+`CopyMsg` on the *outgoing* buffer's `Flags` / `DataCount` headers,
+picks up the new request, and processes it identically to one that
+arrived on `XmtMsg[3]`. The next reply still travels back on
+`RcvMsg[3]` with Int1.
+
+So from the host's interrupt perspective, slot 3 is effectively
+"all Int1" once initialised — but the underlying firmware semantics
+are unchanged. An emulator that strictly enforces §10/§11 ints will
+work correctly; the OS's choice to multiplex request and ack-payload
+on the same slot is a software convention, not a protocol divergence.
 
 ---
 
@@ -831,7 +1220,7 @@ IIfx I/O island:
 | -------------------------------- | ---------------- | ---------------------------------------------------- |
 | `$50F0_8000 – $50F0_9FFF`        | DMA wrapper      | Wrapper registers ($80–$1FF) **and** a 5380-register passthrough for the low 128 bytes ($00–$7F). |
 | `$50F0_A000 – $50F0_BFFF`        | 5380 polled regs | Direct access to the eight 5380 registers, $10-spaced (see §20.3). |
-| `$50F0_C000 – $50F0_CFFF`        | Pseudo-DMA read  | Every byte read from this window returns the next CDR byte from the chip — used by the CPU-driven pseudo-DMA loops in `FastRead`-class drivers on machines that don't use the wrapper, and as a status-poll address by some MAME-era reverse engineering. |
+| `$50F0_C000 – $50F0_CFFF`        | Pseudo-DMA read  | Every byte read from this window returns the next CDR byte from the chip — used by the CPU-driven pseudo-DMA loops in `FastRead`-class drivers on machines that don't use the wrapper, and as a status-poll address. |
 | `$50F0_D000 – $50F0_DFFF`        | Pseudo-DMA write | Mirror of the read aperture for the host→target direction. Writes go to the chip's ODR with the pseudo-DMA flag set, so the byte enters the buffer when the 5380's DRQ is asserted. |
 
 Every byte in the I/O island is mirrored at the same offset within
