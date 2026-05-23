@@ -23,6 +23,7 @@
 
 #include "annotate_disasm.h"
 
+#include "aux_syscalls.h"
 #include "code_segment.h"
 #include "cpu.h"
 #include "debug_mac.h"
@@ -356,6 +357,28 @@ size_t re_annotate_disasm_write(FILE *out, const uint8_t *bytes, size_t bytes_le
             const char *name = macos_atrap_name(words[pos]);
             if (name && name[0])
                 snprintf(trap_note, sizeof(trap_note), "\t; trap %s", name);
+        }
+
+        // A/UX syscall annotation.  TRAP #0 (opcode 0x4E40) is the SVR2
+        // syscall entry; the number lives in D0.  We look back at the
+        // single preceding word for `MOVEQ #N,D0` (0x70NN, the most
+        // common idiom — covers syscall numbers 0..127, which is the
+        // entire SVR2 range we have names for).  `MOVE.W #N,D0` (0x303C
+        // + word) and `MOVE.L #N,D0` (0x203C + 2 words) need deeper
+        // lookback we don't track here; sites using those emit the
+        // raw "TRAP #0" without annotation but the symbol-table-driven
+        // labels at function entries usually give the syscall away
+        // anyway.
+        if ((flags & RE_DISASM_ANNOTATE_AUX_SYSC) && words[pos] == 0x4E40u && pos >= 1) {
+            uint16_t prev = words[pos - 1];
+            if ((prev & 0xFF00u) == 0x7000u) {
+                uint8_t n = (uint8_t)(prev & 0xFFu);
+                const char *name = aux_syscall_name(n);
+                if (name)
+                    snprintf(trap_note, sizeof(trap_note), "\t; syscall %s", name);
+                else
+                    snprintf(trap_note, sizeof(trap_note), "\t; syscall #%u", n);
+            }
         }
 
         fprintf(out, "$%08X  %04x  %-10s%s%s\n", (unsigned int)addr, (int)words[pos], mnemonic, annotated_buf,

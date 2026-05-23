@@ -18,6 +18,8 @@
 
 #include "annotate_disasm.h"
 #include "code_segment.h"
+#include "coff.h"
+#include "coff_dump.h"
 #include "object.h"
 #include "resource_fork.h"
 #include "symbols.h"
@@ -337,6 +339,19 @@ int re_dump_with_flags(const char *vfs_path, const char *dst_dir, uint32_t flags
         fprintf(stderr, "re: cannot read data fork from '%s'\n", vfs_path);
         return -EIO;
     }
+
+    // Auto-detect A/UX COFF binaries.  These are plain files (no
+    // resource fork), so the entire dump shape differs from the Mac
+    // path — different sections list, no decoded/, no manifest fork
+    // sizes.  Dispatch into coff_dump.c which produces the COFF dump
+    // layout described in coff_dump.h.  The Mac path stays untouched
+    // for any other magic.
+    if (coff_is_coff(data_bytes, data_len)) {
+        int crc = re_coff_dump(data_bytes, data_len, vfs_path, dst_dir);
+        free(data_bytes);
+        return crc;
+    }
+
     char path[PATH_MAX];
     snprintf(path, sizeof(path), "%s/data.bin", dst_dir);
     int rc = write_blob(path, data_bytes, data_len);

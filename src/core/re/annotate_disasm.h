@@ -24,15 +24,21 @@
 #include <stdio.h>
 
 // Bit flags steering which annotation passes are emitted.
-#define RE_DISASM_ANNOTATE_BRANCH  0x01u // append "; -> $addr" to PC-relative ops
-#define RE_DISASM_ANNOTATE_TRAPS   0x02u // append "; trap <name>" to Axxx opcodes
-#define RE_DISASM_ANNOTATE_GLOBALS 0x04u // map abs addrs < 0x800 to low-mem names
-#define RE_DISASM_ANNOTATE_JTXREF  0x08u // resolve (d16,A5) into JT[i] = CODE s:offset
-#define RE_DISASM_ANNOTATE_MACSBUG 0x10u // detect MacsBug name trailers after RTS
-#define RE_DISASM_ANNOTATE_LABELS  0x20u // emit "name:" lines at known symbol addrs
+#define RE_DISASM_ANNOTATE_BRANCH   0x01u // append "; -> $addr" to PC-relative ops
+#define RE_DISASM_ANNOTATE_TRAPS    0x02u // append "; trap <name>" to Axxx opcodes
+#define RE_DISASM_ANNOTATE_GLOBALS  0x04u // map abs addrs < 0x800 to low-mem names
+#define RE_DISASM_ANNOTATE_JTXREF   0x08u // resolve (d16,A5) into JT[i] = CODE s:offset
+#define RE_DISASM_ANNOTATE_MACSBUG  0x10u // detect MacsBug name trailers after RTS
+#define RE_DISASM_ANNOTATE_LABELS   0x20u // emit "name:" lines at known symbol addrs
+#define RE_DISASM_ANNOTATE_AUX_SYSC 0x40u // A/UX: resolve "TRAP #0" via preceding D0=N
 #define RE_DISASM_ALL                                                                                                  \
     (RE_DISASM_ANNOTATE_BRANCH | RE_DISASM_ANNOTATE_TRAPS | RE_DISASM_ANNOTATE_GLOBALS | RE_DISASM_ANNOTATE_JTXREF |   \
      RE_DISASM_ANNOTATE_MACSBUG | RE_DISASM_ANNOTATE_LABELS)
+// Annotation set tuned for A/UX COFF binaries: drops the Mac-toolbox
+// passes (no $Axxx traps, no jump-table xrefs, no low-mem globals) and
+// adds the TRAP #0 syscall-name pass.  Labels stay on so the symbol-
+// table-derived names show up at every function entry.
+#define RE_DISASM_AUX (RE_DISASM_ANNOTATE_BRANCH | RE_DISASM_ANNOTATE_LABELS | RE_DISASM_ANNOTATE_AUX_SYSC)
 
 // Context for the richer per-segment annotator.  All fields are optional;
 // passing NULL for any of them skips the matching annotation pass.
