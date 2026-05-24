@@ -615,6 +615,18 @@ bool mmu_handle_fault(mmu_state_t *mmu, uint32_t logical_addr, bool write, bool 
     // Perform table walk
     mmu_walk_result_t result = mmu_table_walk(mmu, logical_addr, write, supervisor);
 
+    // Publish the walk's MMUSR to mmu->mmusr so that any PMOVE MMUSR,EA the
+    // kernel issues from its bus-error handler reflects the actual fault
+    // condition (Invalid descriptor / Write-Protected / Supervisor-Only /
+    // Bus error during walk).  Real M68030 sets MMUSR as a side effect of
+    // the failing access; A/UX 3.0.1's bus-error path relies on this — it
+    // reads MMUSR ~8000 times during boot without ever issuing PTEST.
+    // Leaving mmu->mmusr stale (only mmu_test_address updated it) caused
+    // the kernel to misclassify every fault as the previous PTEST's
+    // condition and never reach the right page-allocator branch.
+    if (mmu)
+        mmu->mmusr = result.mmusr;
+
     if (!result.valid) {
         // Invalid descriptor: PMMU walk fault, retry semantics (Format $B)
         g_bus_error_is_pmmu = true;
