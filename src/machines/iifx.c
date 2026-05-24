@@ -657,11 +657,18 @@ static void iifx_scsidma_write_uint8(config_t *cfg, uint32_t offset, uint8_t val
 // Idempotent on its preconditions: if the wrapper isn't armed or the
 // chip isn't in DMA mode, returns immediately.
 //
-// Note on memory access: we use memory_write_uint8_slow / _read_uint8_slow
-// rather than direct RAM access.  The kernel programs sDADDR with a
-// logical address visible to the chip's address bus on real hardware
-// (the IIfx wrapper participates in bus arbitration); going through the
-// memory-map abstraction respects the same routing the CPU sees.
+// Note on memory access: real PSC SDMA is a true bus master — once it
+// wins arbitration it drives the physical address bus directly, with
+// no MMU between it and RAM.  A/UX's kernel converts virtual buffer
+// pointers to physical via realvtop before programming sDADDR, so the
+// value stored there is already a physical address.  Going through
+// memory_write/read_uint8_slow re-routes the address through the
+// CPU's MMU, which for kernel buffers in identity-mapped low RAM
+// happens to land correctly but mis-routes for any buffer whose
+// supervisor logical-to-physical mapping isn't identity (e.g. user-
+// mode pages reached during exec's binary load via a kernel alias
+// outside the identity-mapped range).  Use mmu_{read,write}_physical
+// to bypass translation and write to the byte the kernel asked for.
 static void iifx_scsidma_pump(config_t *cfg) {
     iifx_state_t *st = iifx_state(cfg);
     scsi_t *scsi = cfg->scsi;
@@ -706,7 +713,7 @@ static void iifx_scsidma_pump(config_t *cfg) {
         uint8_t byte;
         bool drained_any = false;
         while (st->scsi_dma_count > 0 && scsi_pop_data_in_byte(scsi, &byte)) {
-            memory_write_uint8_slow(st->scsi_dma_addr, byte);
+            mmu_write_physical_uint8(st->mmu, st->scsi_dma_addr, byte);
             st->scsi_dma_addr++;
             st->scsi_dma_count--;
             drained_any = true;
@@ -722,7 +729,7 @@ static void iifx_scsidma_pump(config_t *cfg) {
         // point command_complete fires and the chip leaves data_out —
         // detected by the phase check below).
         while (st->scsi_dma_count > 0) {
-            uint8_t byte = memory_read_uint8_slow(st->scsi_dma_addr);
+            uint8_t byte = mmu_read_physical_uint8(st->mmu, st->scsi_dma_addr);
             scsi_push_data_out_byte(scsi, byte);
             st->scsi_dma_addr++;
             st->scsi_dma_count--;
