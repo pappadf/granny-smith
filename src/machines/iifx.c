@@ -1279,7 +1279,7 @@ static void iifx_init(config_t *cfg, checkpoint_t *checkpoint) {
     st->mmu = mmu_init(ram_base, ram_size, cfg->machine->ram_max, rom_data, rom_size, IIFX_ROM_START, IIFX_ROM_END);
     assert(st->mmu != NULL);
     g_mmu = st->mmu;
-    cfg->cpu->mmu = st->mmu;
+    cpu_attach_mmu(cfg->cpu, st->mmu);
     st->mmu->tt1 = 0xF00F8043;
 
     cfg->nubus = nubus_init(cfg, iifx_slots, checkpoint);
@@ -1302,7 +1302,7 @@ static void iifx_init(config_t *cfg, checkpoint_t *checkpoint) {
         system_read_checkpoint_data(checkpoint, &st->mmu->enabled, sizeof(st->mmu->enabled));
         mmu_invalidate_tlb(st->mmu);
         g_mmu = st->mmu;
-        cfg->cpu->mmu = st->mmu;
+        cpu_attach_mmu(cfg->cpu, st->mmu);
         via_redrive_outputs(cfg->via1);
     }
 

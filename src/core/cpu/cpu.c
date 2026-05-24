@@ -20,6 +20,7 @@
 // cpu_init / cpu_delete reference them.
 extern const class_desc_t cpu_class;
 extern const class_desc_t fpu_class;
+extern const class_desc_t mmu_class;
 LOG_USE_CATEGORY_NAME("cpu");
 
 // Declare decoder functions (defined in cpu_68000.c and cpu_68030.c)
@@ -240,10 +241,31 @@ extern cpu_t *cpu_init(int cpu_model, checkpoint_t *checkpoint) {
     return cpu;
 }
 
+// Attach an MMU instance to the CPU and bind a `cpu.mmu` child object.
+// Called by machine setup after the MMU is constructed.  Idempotent —
+// safe to call again after a checkpoint restore that replants cpu->mmu.
+void cpu_attach_mmu(cpu_t *cpu, void *mmu) {
+    if (!cpu)
+        return;
+    cpu->mmu = mmu;
+    if (!cpu->cpu_object || !mmu)
+        return;
+    if (cpu->mmu_object)
+        return; // already attached (idempotent)
+    cpu->mmu_object = object_new(&mmu_class, mmu, "mmu");
+    if (cpu->mmu_object)
+        object_attach(cpu->cpu_object, cpu->mmu_object);
+}
+
 // Free resources associated with a CPU instance
 void cpu_delete(cpu_t *cpu) {
     if (!cpu)
         return;
+    if (cpu->mmu_object) {
+        object_detach(cpu->mmu_object);
+        object_delete(cpu->mmu_object);
+        cpu->mmu_object = NULL;
+    }
     if (cpu->fpu_object) {
         object_detach(cpu->fpu_object);
         object_delete(cpu->fpu_object);
@@ -678,4 +700,148 @@ const class_desc_t fpu_class = {
     .name = "fpu",
     .members = fpu_members,
     .n_members = sizeof(fpu_members) / sizeof(fpu_members[0]),
+};
+
+// === CPU.mmu child class ====================================================
+//
+// On M68030, the PMMU is integrated into the CPU.  Expose the MMU registers
+// (TC, CRP, SRP, TT0, TT1, MMUSR) as cpu.mmu.* attributes so debug probes
+// can compare translation state across machines without modifying the C
+// code.  instance_data on the mmu node is the mmu_state_t* directly.
+
+static mmu_state_t *mmu_from(struct object *self) {
+    return (mmu_state_t *)object_data(self);
+}
+
+static value_t attr_mmu_tc(struct object *self, const member_t *m) {
+    (void)m;
+    mmu_state_t *mmu = mmu_from(self);
+    if (!mmu)
+        return val_err("mmu not present");
+    value_t v = val_uint(4, mmu->tc);
+    v.flags |= VAL_HEX;
+    return v;
+}
+
+static value_t attr_mmu_crp_hi(struct object *self, const member_t *m) {
+    (void)m;
+    mmu_state_t *mmu = mmu_from(self);
+    if (!mmu)
+        return val_err("mmu not present");
+    value_t v = val_uint(4, (uint32_t)(mmu->crp >> 32));
+    v.flags |= VAL_HEX;
+    return v;
+}
+
+static value_t attr_mmu_crp_lo(struct object *self, const member_t *m) {
+    (void)m;
+    mmu_state_t *mmu = mmu_from(self);
+    if (!mmu)
+        return val_err("mmu not present");
+    value_t v = val_uint(4, (uint32_t)(mmu->crp & 0xFFFFFFFF));
+    v.flags |= VAL_HEX;
+    return v;
+}
+
+static value_t attr_mmu_srp_hi(struct object *self, const member_t *m) {
+    (void)m;
+    mmu_state_t *mmu = mmu_from(self);
+    if (!mmu)
+        return val_err("mmu not present");
+    value_t v = val_uint(4, (uint32_t)(mmu->srp >> 32));
+    v.flags |= VAL_HEX;
+    return v;
+}
+
+static value_t attr_mmu_srp_lo(struct object *self, const member_t *m) {
+    (void)m;
+    mmu_state_t *mmu = mmu_from(self);
+    if (!mmu)
+        return val_err("mmu not present");
+    value_t v = val_uint(4, (uint32_t)(mmu->srp & 0xFFFFFFFF));
+    v.flags |= VAL_HEX;
+    return v;
+}
+
+static value_t attr_mmu_tt0(struct object *self, const member_t *m) {
+    (void)m;
+    mmu_state_t *mmu = mmu_from(self);
+    if (!mmu)
+        return val_err("mmu not present");
+    value_t v = val_uint(4, mmu->tt0);
+    v.flags |= VAL_HEX;
+    return v;
+}
+
+static value_t attr_mmu_tt1(struct object *self, const member_t *m) {
+    (void)m;
+    mmu_state_t *mmu = mmu_from(self);
+    if (!mmu)
+        return val_err("mmu not present");
+    value_t v = val_uint(4, mmu->tt1);
+    v.flags |= VAL_HEX;
+    return v;
+}
+
+static value_t attr_mmu_mmusr(struct object *self, const member_t *m) {
+    (void)m;
+    mmu_state_t *mmu = mmu_from(self);
+    if (!mmu)
+        return val_err("mmu not present");
+    value_t v = val_uint(4, mmu->mmusr);
+    v.flags |= VAL_HEX;
+    return v;
+}
+
+static value_t attr_mmu_enabled(struct object *self, const member_t *m) {
+    (void)m;
+    mmu_state_t *mmu = mmu_from(self);
+    if (!mmu)
+        return val_err("mmu not present");
+    return val_uint(1, mmu->enabled ? 1 : 0);
+}
+
+static const member_t mmu_members[] = {
+    {.kind = M_ATTR,
+     .name = "tc",
+     .flags = VAL_RO,
+     .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = attr_mmu_tc, .set = NULL}    },
+    {.kind = M_ATTR,
+     .name = "crp_hi",
+     .flags = VAL_RO,
+     .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = attr_mmu_crp_hi, .set = NULL}},
+    {.kind = M_ATTR,
+     .name = "crp_lo",
+     .flags = VAL_RO,
+     .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = attr_mmu_crp_lo, .set = NULL}},
+    {.kind = M_ATTR,
+     .name = "srp_hi",
+     .flags = VAL_RO,
+     .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = attr_mmu_srp_hi, .set = NULL}},
+    {.kind = M_ATTR,
+     .name = "srp_lo",
+     .flags = VAL_RO,
+     .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = attr_mmu_srp_lo, .set = NULL}},
+    {.kind = M_ATTR,
+     .name = "tt0",
+     .flags = VAL_RO,
+     .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = attr_mmu_tt0, .set = NULL}   },
+    {.kind = M_ATTR,
+     .name = "tt1",
+     .flags = VAL_RO,
+     .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = attr_mmu_tt1, .set = NULL}   },
+    {.kind = M_ATTR,
+     .name = "mmusr",
+     .flags = VAL_RO,
+     .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = attr_mmu_mmusr, .set = NULL} },
+    {.kind = M_ATTR,
+     .name = "enabled",
+     .flags = VAL_RO,
+     .attr = {.type = V_UINT, .get = attr_mmu_enabled, .set = NULL}                              },
+};
+
+const class_desc_t mmu_class = {
+    .name = "mmu",
+    .members = mmu_members,
+    .n_members = sizeof(mmu_members) / sizeof(mmu_members[0]),
 };
