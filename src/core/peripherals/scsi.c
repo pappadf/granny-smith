@@ -1054,7 +1054,16 @@ static uint8_t read_uint8(void *s, uint32_t addr) {
         return scsi->reg.csr;
 
     case BSR:
-        // Phase match is computed dynamically from CSR vs TCR
+        // Phase match is computed dynamically from CSR vs TCR.  BSR_EDMA
+        // (bit 7, "End of DMA") reflects the chip's end_of_dma latch —
+        // A/UX's scsiirq state-decode reads this bit to distinguish an
+        // EOP IRQ ("DMA chunk done; more chunks expected if buf not yet
+        // empty") from a phase-mismatch panic.  Without setting BSR_EDMA,
+        // the state-decode at $1004AA22 (BSR_PM=1 + CSR_BSY=1 path) maps
+        // to SI_UNK → SG_DMA → SG_PANIC ("SCSI manager state table") —
+        // which is exactly the panic we hit when doc-92's "stay in
+        // data_in across partial arms" change left end_of_dma asserted
+        // without BSR_EDMA visible to the kernel.
         if (scsi->loopback) {
             uint8_t val = scsi->reg.bsr;
             // ICR-driven signals readable via BSR
@@ -1063,16 +1072,38 @@ static uint8_t read_uint8(void *s, uint32_t addr) {
             if (scsi->reg.icr & ICR_ATN)
                 val |= BSR_ATN;
             val |= (scsi_phase_match(scsi) ? BSR_PM : 0);
-            SCSI_TRACE("  SCSI RD BSR -> 0x%02X (icr=0x%02X bsr_stored=0x%02X pm=%d)", val, scsi->reg.icr,
-                       scsi->reg.bsr, scsi_phase_match(scsi));
+            if (scsi->end_of_dma)
+                val |= BSR_EDMA;
+            SCSI_TRACE("  SCSI RD BSR -> 0x%02X (icr=0x%02X bsr_stored=0x%02X pm=%d edma=%d)", val, scsi->reg.icr,
+                       scsi->reg.bsr, scsi_phase_match(scsi), scsi->end_of_dma);
             return val;
         }
-        return scsi->reg.bsr | (scsi_phase_match(scsi) ? BSR_PM : 0);
+        return scsi->reg.bsr | (scsi_phase_match(scsi) ? BSR_PM : 0) | (scsi->end_of_dma ? BSR_EDMA : 0);
 
     case RESET:
         // Reading the Reset Parity/Interrupt register clears BSR bits
-        // 5 (parity error), 4 (IRQ), and 2 (busy error)
+        // 5 (parity error), 4 (IRQ), and 2 (busy error).  On real NCR
+        // 5380 hardware, this read also clears the EOP latch (= the
+        // chip's "end of DMA" condition) — the kernel reads RESET to
+        // ACK the EOP IRQ so /IRQ deasserts and the chip can rearm.
+        //
+        // Without clearing end_of_dma here, the doc-92 fix
+        // (keep chip in data_in across partial DMA arms) causes an
+        // interrupt storm: scsi_update_irq keeps /IRQ asserted because
+        // (end_of_dma && MR_DMA) holds, the kernel's scsiirq runs,
+        // reads RESET (clears BSR_INT), returns — and /IRQ immediately
+        // re-asserts on the next instruction because end_of_dma was
+        // still true.  scsiirq fires every ~760 cycles in a tight loop,
+        // user-mode init never gets to run.
+        //
+        // Pre-doc-92, end_of_dma got cleared indirectly via the chip's
+        // phase transition to status → bus_free path (phase_free() in
+        // scsi.c clears end_of_dma).  Doc-92's fix removed that
+        // unconditional transition, so we need to clear end_of_dma here
+        // (on RESET-read) to mirror real-hardware EOP-ACK semantics.
         scsi->reg.bsr &= ~(0x04 | BSR_INT | 0x20);
+        scsi->end_of_dma = false;
+        scsi_update_irq(scsi);
         return 0xff;
     }
 
@@ -1719,19 +1750,24 @@ void scsi_signal_eop(scsi_t *scsi) {
     // CPU write to TCR (write_uint8 case TCR replaces the register).
     scsi->reg.tcr |= 0x80;
     // Wrapper EOP arrived during data_in or data_out: target's transfer is
-    // done from the wrapper's POV.  If the chip's buf is still non-empty
-    // (data_in: kernel programmed sDCNT smaller than chip's data; data_out:
-    // bytes already pushed past the wrapper's count), discard the residual
-    // so the chip can transition to status.  Without this, the chip stays
-    // in its current data phase with BSR_PM=1 set, and A/UX's scsiirq
-    // decode at $1004AA22 takes the BSR_PM=1 + CSR_BSY=1 path and keeps
-    // D2=SI_UNK, which transitions SG_DMA → SG_PANIC (dopanic at
-    // $1004A602, "SCSI manager state").
+    // done from the wrapper's POV.  Force transition to STATUS phase.
     //
-    // The buf-empty cases also benefit: pseudo-DMA paths trigger
-    // phase_status via CDR/CSR reads (line 994/1027), but the SDMA
-    // wrapper drains via scsi_pop_data_in_byte / scsi_push_data_out_byte
-    // which bypass those paths.  This call mirrors that transition.
+    // Note (doc-93 investigation): A/UX 3.0.1's IIfx scsiirq INTENTIONALLY
+    // clears task[$38] bit 13 at scsiirq entry ($1004A8C8), so the
+    // state-decode block's SI_EOP path ($1004A9E6, which requires that
+    // bit set) is NEVER reachable.  The kernel only handles wrapper EOPs
+    // via the SI_PHASE path ($1004AA2E) which is reached when BSR_PM=0
+    // (= chip's phase no longer matches TCR's data_in code).  So even for
+    // PARTIAL DMA arms within a single SCSI session, this code MUST
+    // transition the chip out of data_in/data_out — anything else makes
+    // the kernel panic with "SCSI manager state table" (SG_DMA + SI_UNK →
+    // SG_PANIC, dopanic at $1004A602).
+    //
+    // The overlapping-read pattern from doc-91 (lba=287680 tl=160 → tl=146
+    // → ...) is THE KERNEL'S INTENDED BEHAVIOR for chunked SDMA transfers,
+    // NOT a bug in this function.  The downstream "user pages zero-filled"
+    // issue is at a different layer — likely in how the kernel programs
+    // sDADDR for each reissued read.
     if (scsi->bus.phase == scsi_data_in || scsi->bus.phase == scsi_data_out) {
         scsi->buf.size = 0;
         phase_status(scsi, STATUS_GOOD);
