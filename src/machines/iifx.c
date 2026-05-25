@@ -220,6 +220,17 @@ typedef struct iifx_state {
     uint32_t scsi_dma_xfer_offset;
     bool scsi_dma_last_was_in;
 
+    // A/UX-driver kernel-credit shim — see doc-105/107.  Lives here
+    // (not in scsi.c) because it's IIfx-driver-specific behaviour, not
+    // 5380 chip behaviour.  Snapshots the previous CMD_READ_10's LBA
+    // so we can detect when a new READ overlaps the previous and
+    // compute the kernel-credited byte count for the chunked-SDMA
+    // continuation advance.  -1 = no previous READ tracked.
+    int scsi_dma_prev_read_lba;
+    uint16_t scsi_dma_prev_read_tl;
+    int scsi_dma_prev_read_target;
+    uint16_t scsi_dma_prev_read_blk_sz;
+
     memory_interface_t rom_interface;
     memory_interface_t io_interface;
 } iifx_state_t;
@@ -555,6 +566,40 @@ static uint8_t iifx_scsidma_read_uint8(config_t *cfg, uint32_t offset) {
     return 0;
 }
 
+// A/UX-driver kernel-credit shim — IIfx-driver-specific behaviour, not
+// chip behaviour.  See doc-105/107.  On every sDCNT-arm event, snapshot
+// the most-recent SCSI READ command and detect whether it overlaps the
+// previous READ.  If so, return the kernel-credited byte count for the
+// previous arm (= LBA delta * blk_sz).  Non-overlapping / non-READ /
+// fresh transfer returns 0.  Updates the prev_read_* tracker on the
+// iifx_state for the next call.
+static uint32_t iifx_scsidma_snapshot_credit(iifx_state_t *st, scsi_t *scsi) {
+    uint8_t opcode = scsi_get_cmd_opcode(scsi);
+    if (opcode != SCSI_OPCODE_READ_6 && opcode != SCSI_OPCODE_READ_10) {
+        st->scsi_dma_prev_read_lba = -1;
+        st->scsi_dma_prev_read_target = -1;
+        st->scsi_dma_prev_read_tl = 0;
+        st->scsi_dma_prev_read_blk_sz = 0;
+        return 0;
+    }
+    int new_target = scsi_get_cmd_target(scsi);
+    uint32_t new_lba = scsi_get_cmd_lba(scsi);
+    uint16_t new_tl = scsi_get_cmd_tl(scsi);
+    uint16_t blk_sz = scsi_get_cmd_blk_sz(scsi);
+
+    uint32_t credit = 0;
+    if (st->scsi_dma_prev_read_target == new_target && st->scsi_dma_prev_read_lba >= 0 &&
+        (int)new_lba > st->scsi_dma_prev_read_lba &&
+        (uint32_t)((int)new_lba - st->scsi_dma_prev_read_lba) < st->scsi_dma_prev_read_tl) {
+        credit = (uint32_t)((int)new_lba - st->scsi_dma_prev_read_lba) * (uint32_t)st->scsi_dma_prev_read_blk_sz;
+    }
+    st->scsi_dma_prev_read_lba = (int)new_lba;
+    st->scsi_dma_prev_read_target = new_target;
+    st->scsi_dma_prev_read_tl = new_tl;
+    st->scsi_dma_prev_read_blk_sz = blk_sz;
+    return credit;
+}
+
 // Writes one SCSI DMA wrapper byte.
 static void iifx_scsidma_write_uint8(config_t *cfg, uint32_t offset, uint8_t value) {
     iifx_state_t *st = iifx_state(cfg);
@@ -656,30 +701,26 @@ static void iifx_scsidma_write_uint8(config_t *cfg, uint32_t offset, uint8_t val
                 // SCSI READ to the same wrapper base address.  The chip's
                 // internal pointer advances by what the KERNEL credited
                 // for the previous arm (= delta_lba * blk_sz), NOT by
-                // the wrapper-drained byte count.
+                // the wrapper-drained byte count.  See doc-105/107 and
+                // the iifx_scsidma_snapshot_credit comment above.
                 //
-                // Why: doc-105.  A/UX's IIfx scsiirq, on SDMA EOP for a
-                // partial transfer, credits the kernel a "blocks
-                // delivered" count that's typically (prev_count - 2 blocks)
-                // for the first arm of a multi-arm exec-load.  It then
-                // re-issues a SCSI READ at lba+credit_blocks with
-                // tl=remaining_blocks.  If the wrapper advances by
-                // prev_count (= wrapper-drained), staging ends up with
-                // the wrong content at offset prev_count — the kernel's
-                // copy-to-user picks up text bytes from the wrong file
-                // offset, manifesting as +$400 shift starting at byte
-                // $1F58 of libc1_s (= 2-block overlap on first arm).
-                //
-                // Reading kernel_credit_bytes from the SCSI chip layer
-                // gives us the correct advance amount.  Falls back to
-                // prev_count (legacy behavior) when the chip layer
-                // reports 0 (= no overlap detected, e.g. first read in
-                // a session, different target, or non-overlapping LBA).
-                uint32_t credit = scsi_get_kernel_credit_bytes(cfg->scsi);
+                // Falls back to prev_count (= wrapper-drained) when the
+                // shim reports 0 = no overlap detected (e.g. first read
+                // in a session, different target, or non-overlapping
+                // LBA — i.e. the kernel credits the full drain).
+                uint32_t credit = iifx_scsidma_snapshot_credit(st, cfg->scsi);
                 uint32_t advance = (credit != 0) ? credit : (dec_cont ? (prev_count - new_count) : prev_count);
                 st->scsi_dma_xfer_offset += advance;
                 st->scsi_dma_addr = new_addr + st->scsi_dma_xfer_offset;
             }
+            // Always call the kernel-credit shim on FRESH transfers too —
+            // otherwise the prev_read_* tracker never gets the FIRST arm's
+            // SCSI READ recorded, so the SECOND arm's overlap detection
+            // fails (sees prev_lba = -1 → returns credit=0 → no override
+            // → +$400 shift).  Discard the return value on fresh arms;
+            // we only need the side-effect of updating the tracker.
+            if (!dec_cont && !eq_cont)
+                (void)iifx_scsidma_snapshot_credit(st, cfg->scsi);
             st->scsi_dma_prev_count_initial = new_count;
             st->scsi_dma_last_was_in = false;
         }
@@ -1270,6 +1311,11 @@ static void iifx_init(config_t *cfg, checkpoint_t *checkpoint) {
     iifx_state_t *st = calloc(1, sizeof(*st));
     assert(st != NULL);
     cfg->machine_context = st;
+
+    // A/UX kernel-credit tracker: "no previous READ" sentinels (calloc
+    // zeroed everything but we need -1 for the LBA / target fields).
+    st->scsi_dma_prev_read_lba = -1;
+    st->scsi_dma_prev_read_target = -1;
 
     cfg->mem_map = memory_map_init(cfg->machine->address_bits, cfg->ram_size, cfg->machine->rom_size, checkpoint);
     cfg->cpu = cpu_init(CPU_MODEL_68030, checkpoint);

@@ -127,14 +127,29 @@ void scsi_push_data_out_byte(scsi_t *scsi, uint8_t byte);
 // already set just re-evaluates the IRQ.
 void scsi_signal_eop(scsi_t *scsi);
 
-// Return the kernel-credited bytes for the most recent CMD_READ /
-// CMD_READ_10.  If the new read overlaps the previous one (same target,
-// new_lba strictly inside (prev_lba, prev_lba + prev_tl) — equal-to-end
-// is the next contiguous block, NOT an overlap), returns
-// (new_lba - prev_lba) * blk_sz.  Otherwise returns 0 (fresh transfer).
-// Used by IIfx SDMA wrapper to advance xfer_offset by kernel-credited
-// bytes rather than wrapper-drained bytes (doc-105).
-uint32_t scsi_get_kernel_credit_bytes(const scsi_t *scsi);
+// Read-only accessors for the most recent SCSI command's LBA / TL /
+// target / block size.  Used by machine-specific wrappers that need to
+// reason about overlap patterns across consecutive SCSI commands (e.g.
+// IIfx's A/UX-driver kernel-credit shim — doc-105/107).  Returns the
+// `scsi->cmd.*` fields set by run_cmd() on CMD_READ / CMD_READ_10 /
+// CMD_WRITE / CMD_WRITE_10.  Returns 0 / opcode 0 before any command
+// has been issued.
+//
+// The 5380 chip layer does NOT use these — they're a window for an
+// external party (the machine-specific bus-master wrapper) to read
+// chip-observed command state without reaching into the struct.
+uint8_t scsi_get_cmd_opcode(const scsi_t *scsi);
+int scsi_get_cmd_target(const scsi_t *scsi);
+uint32_t scsi_get_cmd_lba(const scsi_t *scsi);
+uint16_t scsi_get_cmd_tl(const scsi_t *scsi);
+uint16_t scsi_get_cmd_blk_sz(const scsi_t *scsi);
+
+// SCSI opcodes exposed for external wrappers that need to distinguish
+// READ vs other commands.  The full opcode table lives in
+// scsi_internal.h (chip-internal); only the few opcodes that wrappers
+// actually need to test against are exported here.
+#define SCSI_OPCODE_READ_6  0x08 // 6-byte READ CDB (CMD_READ)
+#define SCSI_OPCODE_READ_10 0x28 // 10-byte READ CDB (CMD_READ_10)
 
 // Query whether MR_DMA is currently set in the chip's mode register.
 // Used by bus-master pumps to gate transfers.
