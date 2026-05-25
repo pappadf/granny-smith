@@ -127,6 +127,15 @@ void scsi_push_data_out_byte(scsi_t *scsi, uint8_t byte);
 // already set just re-evaluates the IRQ.
 void scsi_signal_eop(scsi_t *scsi);
 
+// Return the kernel-credited bytes for the most recent CMD_READ /
+// CMD_READ_10.  If the new read overlaps the previous one (same target,
+// new_lba strictly inside (prev_lba, prev_lba + prev_tl) — equal-to-end
+// is the next contiguous block, NOT an overlap), returns
+// (new_lba - prev_lba) * blk_sz.  Otherwise returns 0 (fresh transfer).
+// Used by IIfx SDMA wrapper to advance xfer_offset by kernel-credited
+// bytes rather than wrapper-drained bytes (doc-105).
+uint32_t scsi_get_kernel_credit_bytes(const scsi_t *scsi);
+
 // Query whether MR_DMA is currently set in the chip's mode register.
 // Used by bus-master pumps to gate transfers.
 bool scsi_get_mr_dma(const scsi_t *scsi);

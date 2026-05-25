@@ -301,6 +301,52 @@ void scsi_check_condition(scsi_t *scsi, uint8_t sense_key, uint8_t asc, uint8_t 
     phase_status(scsi, STATUS_CHECK_CONDITION);
 }
 
+// Compute the kernel-credit (in bytes) for the next IIfx-style SDMA arm.
+// Called from CMD_READ / CMD_READ_10 *before* `cmd.lba`/`cmd.tl` are
+// overwritten so we can compare the new read's LBA against the previous
+// read tracked in `prev_read_*`.
+//
+// The IIfx SDMA wrapper advances its xfer_offset by this credit (instead
+// of by the wrapper-drained prev_count) so that the staging buffer ends
+// up with contiguous file content matching A/UX's expected layout for
+// chunked SDMA transfers (e.g. libc1_s exec-load — see doc-105).
+//
+// Returns (new_lba - prev_lba) * blk_sz when the new read overlaps the
+// previous (same target, new_lba strictly inside (prev_lba, prev_lba + prev_tl)
+// — equal-to-end means the next contiguous block, NOT an overlap).
+// Returns 0 for a fresh transfer (different target, non-overlapping
+// LBA, or no previous read tracked).
+static void update_kernel_credit(scsi_t *scsi, int target, uint32_t new_lba, uint16_t blk_sz) {
+    uint32_t credit = 0;
+    // Strict-less-than: a new read whose LBA equals (prev_lba + prev_tl)
+    // is the next CONTIGUOUS block, not an overlap.  Only treat it as a
+    // continuation when the new range starts INSIDE the previous read.
+    if (scsi->prev_read_target == target && scsi->prev_read_lba >= 0 && (int)new_lba > scsi->prev_read_lba &&
+        (uint32_t)((int)new_lba - scsi->prev_read_lba) < scsi->prev_read_tl) {
+        credit = (uint32_t)((int)new_lba - scsi->prev_read_lba) * (uint32_t)scsi->prev_read_blk_sz;
+    }
+    scsi->kernel_credit_bytes = credit;
+    scsi->prev_read_lba = (int)new_lba;
+    scsi->prev_read_target = target;
+    scsi->prev_read_blk_sz = blk_sz;
+    // prev_read_tl gets set by caller after this (cmd.tl computation may
+    // post-process the raw CDB tl value, e.g. 6-byte CDB tl=0 → 256).
+}
+
+// Reset kernel-credit tracking — call on any non-READ command (writes,
+// inquiry, etc.) so a subsequent READ starts fresh.
+static void reset_kernel_credit(scsi_t *scsi) {
+    scsi->kernel_credit_bytes = 0;
+    scsi->prev_read_lba = -1;
+    scsi->prev_read_tl = 0;
+    scsi->prev_read_target = -1;
+    scsi->prev_read_blk_sz = 0;
+}
+
+uint32_t scsi_get_kernel_credit_bytes(const scsi_t *scsi) {
+    return scsi ? scsi->kernel_credit_bytes : 0;
+}
+
 // Execute a SCSI command after receiving it from the initiator
 static void run_cmd(scsi_t *scsi) {
     scsi->cmd.opcode = scsi->buf.data[0];
@@ -314,6 +360,13 @@ static void run_cmd(scsi_t *scsi) {
         scsi_check_condition(scsi, SENSE_UNIT_ATTENTION, ASC_NOT_READY_TO_READY, 0x00);
         return;
     }
+
+    // Reset kernel-credit tracking on any non-READ command.  CMD_READ /
+    // CMD_READ_10 handlers compute and update credit themselves before
+    // overwriting prev_read_*; other commands break the IIfx-SDMA
+    // chunked-read continuation chain.
+    if (scsi->cmd.opcode != CMD_READ && scsi->cmd.opcode != CMD_READ_10)
+        reset_kernel_credit(scsi);
 
     switch (scsi->cmd.opcode) {
 
@@ -359,6 +412,15 @@ static void run_cmd(scsi_t *scsi) {
         // 6-byte CDB tl: 0 means 256 blocks (per SCSI-1). Compute (tl - 1) mod
         // 256 + 1 to convert; mask after the subtract to keep it inside uint8.
         scsi->cmd.tl = (uint16_t)((((uint16_t)scsi->buf.data[4] - 1) & 0xFF) + 1);
+
+        // Update kernel-credit tracking for chunked-SDMA continuation
+        // (see update_kernel_credit comment).  Only READs participate;
+        // WRITEs are already reset by the top-of-switch non-READ guard.
+        if (scsi->cmd.opcode == CMD_READ) {
+            uint16_t blk_sz_cur = scsi->devices[target].block_size;
+            update_kernel_credit(scsi, target, (uint32_t)scsi->cmd.lba, blk_sz_cur);
+            scsi->prev_read_tl = scsi->cmd.tl;
+        }
 
         // FLAG/LINK and non-zero LUN aren't modeled. Decline with CHECK
         // CONDITION rather than asserting — the guest may legitimately try.
@@ -418,6 +480,13 @@ static void run_cmd(scsi_t *scsi) {
         scsi->cmd.tl = (scsi->buf.data[7] << 8) | scsi->buf.data[8];
 
         uint16_t blk_sz = scsi->devices[target].block_size;
+
+        // Update kernel-credit tracking (see CMD_READ above).  WRITE_10
+        // is already reset by the top-of-switch non-READ guard.
+        if (scsi->cmd.opcode == CMD_READ_10) {
+            update_kernel_credit(scsi, target, (uint32_t)scsi->cmd.lba, blk_sz);
+            scsi->prev_read_tl = scsi->cmd.tl;
+        }
 
         // Reject writes on read-only devices
         if (scsi->cmd.opcode == CMD_WRITE_10 && scsi->devices[target].read_only) {
@@ -1532,6 +1601,12 @@ scsi_t *scsi_init(memory_map_t *map, checkpoint_t *checkpoint) {
     GS_ASSERTF(scsi->buf.data != NULL, "scsi_init: failed to allocate %zu-byte transfer buffer", (size_t)BUF_LIMIT);
     scsi->buf.max = MAX_CMD_SIZE;
     scsi->bus.initiator = INT_MAX;
+    // Initialize kernel-credit tracking: no previous READ.
+    scsi->prev_read_lba = -1;
+    scsi->prev_read_target = -1;
+    scsi->prev_read_tl = 0;
+    scsi->prev_read_blk_sz = 0;
+    scsi->kernel_credit_bytes = 0;
 
     // If checkpoint provided, restore plain-data portion first
     if (checkpoint) {

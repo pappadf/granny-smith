@@ -288,6 +288,33 @@ struct scsi {
     uint8_t cdr_pipeline[3];
     int cdr_idx;
 
+    // Kernel-credit tracking for IIfx-style chunked SDMA transfers.
+    // A/UX's IIfx scsiirq, on SDMA EOP for a PARTIAL transfer, credits
+    // the kernel a "blocks delivered" count that's smaller than what the
+    // wrapper actually drained (typically prev_count - 2 blocks for the
+    // first arm of a multi-arm libc1_s exec-load: doc-105).  It then
+    // re-issues a SCSI READ at lba+credit_blocks with tl=remaining_blocks.
+    //
+    // The wrapper's eq_cont/dec_cont logic must advance xfer_offset by
+    // the kernel-credited bytes (= delta_lba * blk_sz) — not by the
+    // wrapper-drained bytes — so the staging buffer ends up with
+    // contiguous file content matching the kernel's expected layout.
+    //
+    // These fields snapshot the LBA + TL of the previous READ command on
+    // the bus, allowing the next READ's lba_delta to be computed.  Updated
+    // in CMD_READ / CMD_READ_10.  Reset to (-1, 0, -1) on bus-free /
+    // SCSI reset.
+    int prev_read_lba;
+    uint16_t prev_read_tl;
+    int prev_read_target;
+    uint16_t prev_read_blk_sz;
+    // Cached credit for the most recent CMD_READ_10 / CMD_READ.  Set to
+    // (new_lba - prev_lba) * blk_sz when the new read overlaps the
+    // previous one (= same target, prev_lba < new_lba <= prev_lba + prev_tl).
+    // Set to 0 for a fresh transfer.  The IIfx SDMA wrapper reads this
+    // via scsi_get_kernel_credit_bytes() when computing eq_cont advance.
+    uint32_t kernel_credit_bytes;
+
     // Object-tree binding — lifetime tied to scsi_init / scsi_delete.
     struct object *object; // top-level scsi node
     struct object *bus_object; // scsi.bus child

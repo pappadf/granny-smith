@@ -185,19 +185,39 @@ typedef struct iifx_state {
     uint32_t scsi_dma_addr;
     uint32_t scsi_dma_timer;
     uint32_t scsi_dma_test;
-    // Continuation-arm detection: when the kernel issues two consecutive
-    // scsiin SDMA arms at the *same* sDADDR with the second having a
-    // smaller sDCNT, the second is a "continuation" of the first — the
-    // wrapper is expected to write the second batch of bytes at
-    // (sDADDR + bytes_already_done) rather than overwriting from the
-    // start.  See doc-85 §4.6.  We track the previous transfer's start
-    // address and initial count so the next arm can apply the offset.
-    // scsi_dma_last_was_in: set true when the previous pump's drain was
-    // data_in; reset on any data_out drain.  Continuation only applies
-    // when the prior pump was a read.
-    uint32_t scsi_dma_prev_addr;
+    // SDMA chip-state model.  Real OSS SCSIDMA at $50F08000 has a
+    // kernel-visible latched sDADDR (the value the kernel just wrote)
+    // and an *internal* current-address pointer that auto-advances as
+    // bytes are DMA'd to/from RAM.  These are normally the same — but
+    // they drift apart across multi-arm sequences where the kernel
+    // re-writes the same sDADDR while the chip's internal pointer has
+    // moved on.  We collapse both into `scsi_dma_addr` (auto-advanced
+    // by the pump) and recover the chip's internal pointer at each
+    // arm via xfer_base + xfer_offset:
+    //
+    //   scsi_dma_xfer_base   — kernel's last-programmed base sDADDR
+    //                          (= the start of the current logical
+    //                          transfer from the kernel's POV)
+    //   scsi_dma_xfer_offset — bytes drained so far from xfer_base;
+    //                          chip's internal pointer is
+    //                          (xfer_base + xfer_offset)
+    //
+    // When the kernel re-writes the SAME sDADDR mid-transfer (the
+    // continuation pattern observed in doc 104), xfer_offset preserves
+    // the chip's position so the new sDCNT picks up where the previous
+    // arm left off.  When the kernel writes a DIFFERENT sDADDR, we
+    // treat that as a fresh transfer: xfer_base := new addr, offset := 0.
+    //
+    // scsi_dma_last_was_in: latched true after a data-in drain so the
+    // next sDCNT arm can detect a read-continuation.  Resets on
+    // data-out drains.
+    //
+    // scsi_dma_prev_count_initial: the previous arm's initial sDCNT
+    // (used to distinguish decreasing-count vs equal-count continuation
+    // patterns and to size the offset delta for decreasing case).
     uint32_t scsi_dma_prev_count_initial;
-    uint32_t scsi_dma_count_initial;
+    uint32_t scsi_dma_xfer_base;
+    uint32_t scsi_dma_xfer_offset;
     bool scsi_dma_last_was_in;
 
     memory_interface_t rom_interface;
@@ -595,37 +615,72 @@ static void iifx_scsidma_write_uint8(config_t *cfg, uint32_t offset, uint8_t val
         iifx_write_reg32_byte(&st->scsi_dma_count, off, value);
         // sDCNT becoming non-zero is the primary "arm" event — the
         // kernel writes this register last when setting up a transfer.
+        // The chip-state model behind the continuation handling here is
+        // documented on iifx_state.scsi_dma_xfer_base/xfer_offset.
         //
-        // Continuation-arm detection: when the kernel writes a new sDCNT
-        // (low byte = offset 3) AND the current sDADDR matches the
-        // PREVIOUS transfer's start address AND the new sDCNT is smaller
-        // than the previous initial sDCNT, treat as a continuation.
-        // Offset the wrapper's effective sDADDR by (prev_initial -
-        // new_count) so the second transfer's bytes land *after* the
-        // first transfer's, not overwriting them.  This models A/UX's
-        // IIfx-SDMA SCSI strategy: it issues `lba=N tl=8` followed by
-        // `lba=N+1 tl=7` at the *same* RAM buffer, expecting the
-        // wrapper to remember where the first arm left off.  See
-        // doc-85 §4.6 for the trace.
+        // Two A/UX SDMA-arm patterns reuse the same xfer_base across
+        // consecutive arms, expecting the chip's internal pointer to
+        // advance rather than overwrite:
+        //
+        //   (a) DECREASING counts — `lba=N tl=8` then `lba=N+1 tl=7`
+        //       at the same base; second read covers the last
+        //       (prev_count - new_count)/512 blocks of the first.  Doc-85
+        //       §4.6 + ROM `FastReadOSS` partial-block tail handling.
+        //
+        //   (b) EQUAL counts — kernel issues a series of fixed-size
+        //       reads to fill a contiguous N-chunk buffer (libc1_s
+        //       exec-load: 11 × 8192-byte arms at sDADDR=$2EBA00).
+        //       Each arm should drain to the next chunk, not overwrite
+        //       the previous.  See doc 102/104 for the trace.
         if ((off & 3) == 3) {
             uint32_t new_count = st->scsi_dma_count;
-            // Continuation detection: kernel re-arms at the same sDADDR
-            // with a smaller sDCNT (delta = exact multiple of 512 = block
-            // size) AND the previous SDMA drain was a READ (= the chip
-            // had filled buf via CMD_READ then we drained it).  This is
-            // A/UX's IIfx SDMA-SCSI strategy: it issues `lba=N tl=8`
-            // followed by `lba=N+1 tl=7` at the *same* RAM buffer,
-            // expecting the wrapper to remember where the first arm left
-            // off.  See doc-85 §4.6.
             uint32_t prev_count = st->scsi_dma_prev_count_initial;
-            if (st->scsi_dma_last_was_in && new_count > 0 && new_count < prev_count &&
-                ((prev_count - new_count) & 0x1FF) == 0 && st->scsi_dma_addr == st->scsi_dma_prev_addr) {
-                uint32_t skipped = prev_count - new_count;
-                st->scsi_dma_addr += skipped;
+            uint32_t new_addr = st->scsi_dma_addr;
+            bool same_base = st->scsi_dma_last_was_in && new_addr == st->scsi_dma_xfer_base;
+            bool dec_cont =
+                same_base && new_count > 0 && new_count < prev_count && ((prev_count - new_count) & 0x1FF) == 0;
+            // Equal-count continuation only applies for "large chunk"
+            // arms (> 4096 bytes / 8 blocks).  Single-block reads
+            // (count=512, e.g. partition-map header polling at $2DD000)
+            // are re-reads — the kernel wants each to overwrite the
+            // buffer.  The libc1_s exec-load pattern uses 8192-byte
+            // chunks specifically.
+            bool eq_cont = same_base && new_count > 0 && new_count == prev_count && prev_count > 4096;
+            if (!dec_cont && !eq_cont) {
+                // Fresh transfer: chip's internal pointer resets to the
+                // new latched base.
+                st->scsi_dma_xfer_base = new_addr;
+                st->scsi_dma_xfer_offset = 0;
+            } else {
+                // Continuation (dec_cont OR eq_cont): A/UX issues a NEW
+                // SCSI READ to the same wrapper base address.  The chip's
+                // internal pointer advances by what the KERNEL credited
+                // for the previous arm (= delta_lba * blk_sz), NOT by
+                // the wrapper-drained byte count.
+                //
+                // Why: doc-105.  A/UX's IIfx scsiirq, on SDMA EOP for a
+                // partial transfer, credits the kernel a "blocks
+                // delivered" count that's typically (prev_count - 2 blocks)
+                // for the first arm of a multi-arm exec-load.  It then
+                // re-issues a SCSI READ at lba+credit_blocks with
+                // tl=remaining_blocks.  If the wrapper advances by
+                // prev_count (= wrapper-drained), staging ends up with
+                // the wrong content at offset prev_count — the kernel's
+                // copy-to-user picks up text bytes from the wrong file
+                // offset, manifesting as +$400 shift starting at byte
+                // $1F58 of libc1_s (= 2-block overlap on first arm).
+                //
+                // Reading kernel_credit_bytes from the SCSI chip layer
+                // gives us the correct advance amount.  Falls back to
+                // prev_count (legacy behavior) when the chip layer
+                // reports 0 (= no overlap detected, e.g. first read in
+                // a session, different target, or non-overlapping LBA).
+                uint32_t credit = scsi_get_kernel_credit_bytes(cfg->scsi);
+                uint32_t advance = (credit != 0) ? credit : (dec_cont ? (prev_count - new_count) : prev_count);
+                st->scsi_dma_xfer_offset += advance;
+                st->scsi_dma_addr = new_addr + st->scsi_dma_xfer_offset;
             }
-            st->scsi_dma_prev_addr = st->scsi_dma_addr;
             st->scsi_dma_prev_count_initial = new_count;
-            st->scsi_dma_count_initial = new_count;
             st->scsi_dma_last_was_in = false;
         }
         iifx_scsidma_pump(cfg);
