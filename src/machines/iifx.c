@@ -237,27 +237,25 @@ typedef struct iifx_state {
     //   The DMAEN gate naturally restricts the chip-internal cur_addr
     //   behaviour to A/UX-driven bus-master transfers.
     //
-    //   Once an A/UX bus-master session is armed, the kernel's
-    //   $020 = $0A re-arm on each scsi_in arm doesn't repeat the
-    //   reload because MR_DMA stayed 1 across arms (no edge).  Only
-    //   when scsiirq sees BSR_PM=0 and clears MR_DMA via the SI_PHASE
-    //   path (D2=3) does the next arm produce a fresh 0→1 edge.
+    //   A 2026-05-26 byte-level trace audit (see doc-111) ESTABLISHED
+    //   that this chip-faithful model alone CANNOT load libc1_s
+    //   correctly: A/UX writes $100 = $2EBA00 byte-identically before
+    //   every arm of the 10-arm exec-load, with no other chip-bus
+    //   signal (no $080 bit 4 reset, no ARBEN cycling, no different
+    //   $020 sequence) distinguishing arm 1 (must overwrite) from
+    //   arms 2..10 (must advance).  Arm 1 vs arm 9 diff = exactly the
+    //   3 CDB bytes containing the LBA field.  The 343S0064-A DMA
+    //   engine cannot decode CDBs.
     //
-    //   Pattern A (partition-map single-block probe): each arm's
-    //     1-block transfer drains scsi.buf; phase transitions to
-    //     status; scsiirq's BSR.PM=0 → clears MR_DMA → next arm's
-    //     $020 = $0A re-asserts MR_DMA (0→1 edge) → counter reloads
-    //     from $100 = $2DD000 → each block overwrites the buffer.
-    //
-    //   Pattern B (libc1_s chunked exec-load): the SCSI READ has
-    //     more data than one arm's $2000 transfer drains; phase
-    //     stays in data-in; scsiirq doesn't clear MR_DMA; next
-    //     arm's $020 = $0A is a no-op (MR_DMA stays 1) → no edge →
-    //     counter NOT reloaded → arms concatenate at advancing
-    //     physical addresses.
-    //
-    //   See local/gs-docs/notes/compass_artifact_*.md for the full
-    //   derivation against the ERS.
+    //   To get past libc1_s we run an A/UX-driver-specific software
+    //   shim on top of this chip-faithful model that inspects the
+    //   SCSI READ CDB's LBA field and computes a "credit offset"
+    //   added to the latch at MR_DMA-edge load.  See the big warning
+    //   header above iifx_scsidma_compute_credit_advance().  The shim
+    //   is a known dead-end; it lives here as scaffolding until we
+    //   find the real mechanism (most likely something invisible to
+    //   our current trace — e.g., FMC/OSS state, MMU activity, or a
+    //   second wrapper aperture we haven't mapped).
     uint32_t scsi_dma_ctrl;
     uint32_t scsi_dma_count;
     uint32_t scsi_dma_addr; // internal DMA Address Counter
@@ -274,6 +272,16 @@ typedef struct iifx_state {
     bool scsi_dma_wonarb_latch;
     bool scsi_dma_tri_state_test;
     bool scsi_dma_fifo_loopback_test;
+
+    // ─── A/UX kernel-credit shim state (see warning at the helper) ──
+    // Snapshot of previous SCSI READ command for overlap detection,
+    // plus the accumulated "credit offset" added to the chip's $100
+    // latch at the next MR_DMA-edge load.  -1 LBA / target = no prev.
+    int scsi_dma_prev_read_lba;
+    uint16_t scsi_dma_prev_read_tl;
+    int scsi_dma_prev_read_target;
+    uint16_t scsi_dma_prev_read_blk_sz;
+    uint32_t scsi_dma_credit_offset;
 
     memory_interface_t rom_interface;
     memory_interface_t io_interface;
@@ -590,6 +598,92 @@ static void iifx_write_reg32_byte(uint32_t *reg, uint32_t addr, uint8_t value) {
 static void iifx_scsidma_pump(config_t *cfg);
 static void iifx_scsidma_update_int(config_t *cfg);
 
+// ════════════════════════════════════════════════════════════════════
+//                  ╔══════════════════════════════════╗
+//                  ║   A/UX KERNEL-CREDIT SHIM        ║
+//                  ║   THIS IS A HEURISTIC HACK.      ║
+//                  ║   PROBABLY WRONG IN MANY CASES.  ║
+//                  ║   EXPECT TO REWRITE REPEATEDLY.  ║
+//                  ╚══════════════════════════════════╝
+//
+// What this is.  An A/UX-driver-specific software shim that inspects
+// the *SCSI READ CDB's LBA field* — a thing the real 343S0064-A DMA
+// engine demonstrably cannot see — to compute a "credit offset"
+// that gets added to the $100 latch at the next MR_DMA-edge load.
+// The shim is the only known way (as of 2026-05-26) to get past
+// the libc1_s exec-load on the IIfx A/UX boot.
+//
+// Why this is wrong.  The 2026-05-26 byte-level trace audit
+// showed that A/UX issues 10 SCSI READs at advancing LBAs but
+// writes $100 = $2EBA00 byte-identically every arm.  At the chip-bus level,
+// arm 1 (which must overwrite the buffer) is *byte-identical* to
+// arms 2..10 (which must auto-advance), except for the CDB LBA
+// bytes the kernel sends through the 53C80 ODR ($000).  No
+// chip-faithful rule based on register writes can distinguish the
+// two patterns.  Therefore we cheat by decoding the CDB ourselves.
+//
+// What we expect to keep breaking.
+//   • Any SCSI command sequence that the kernel issues with a
+//     "stable base pointer + advancing LBA" pattern but where the
+//     advance is *not* lba_delta * blk_sz (e.g., scatter-gather,
+//     short transfers, retry loops).
+//   • Bus-master WRITE paths.  This shim only credits READs.
+//   • Any kernel that issues a READ at a non-zero LBA offset for
+//     reasons unrelated to chunking (the shim will mis-credit).
+//   • Interleaved transfers from two different SCSI targets — the
+//     prev_target check helps but the logic still assumes one
+//     bus-master session at a time.
+//   • The transition between exec-load and runtime fs reads — we
+//     reset prev_lba aggressively but the heuristic still may not
+//     cover every disconnect/reselect pattern A/UX uses.
+//
+// What replacing this looks like.  Either (a) find the real chip
+// mechanism we're missing (something not visible in our current
+// trace — FMC/OSS state, MMU activity, an OSS-side aperture we
+// haven't mapped, or a chip behaviour the published ERS doesn't
+// document), or (b) accept it's a software shim, narrow its blast
+// radius (e.g., gate it on a "we are in the A/UX kernel" PC range
+// so Mac OS bus-master DMA — should it ever be added — bypasses it).
+// ════════════════════════════════════════════════════════════════════
+
+// On each per-arm count write ($0C0), snapshot the current SCSI
+// READ command and update scsi_dma_credit_offset.  The offset is
+// added to scsi_dma_addr_latch at the next MR_DMA-edge load (see
+// iifx_scsidma_observe_mr_dma).  Non-READ / non-overlapping arms
+// reset the offset and the prev tracker; overlapping arms
+// accumulate (delta_lba * blk_sz).
+static void iifx_scsidma_recompute_credit(iifx_state_t *st, scsi_t *scsi) {
+    uint8_t opcode = scsi_get_cmd_opcode(scsi);
+    if (opcode != SCSI_OPCODE_READ_6 && opcode != SCSI_OPCODE_READ_10) {
+        st->scsi_dma_prev_read_lba = -1;
+        st->scsi_dma_prev_read_target = -1;
+        st->scsi_dma_prev_read_tl = 0;
+        st->scsi_dma_prev_read_blk_sz = 0;
+        st->scsi_dma_credit_offset = 0;
+        return;
+    }
+    int new_target = scsi_get_cmd_target(scsi);
+    uint32_t new_lba = scsi_get_cmd_lba(scsi);
+    uint16_t new_tl = scsi_get_cmd_tl(scsi);
+    uint16_t blk_sz = scsi_get_cmd_blk_sz(scsi);
+
+    bool overlap = st->scsi_dma_prev_read_target == new_target && st->scsi_dma_prev_read_lba >= 0 &&
+                   (int)new_lba > st->scsi_dma_prev_read_lba &&
+                   (uint32_t)((int)new_lba - st->scsi_dma_prev_read_lba) < st->scsi_dma_prev_read_tl &&
+                   blk_sz == st->scsi_dma_prev_read_blk_sz;
+
+    if (overlap) {
+        uint32_t credit = (uint32_t)((int)new_lba - st->scsi_dma_prev_read_lba) * (uint32_t)blk_sz;
+        st->scsi_dma_credit_offset += credit;
+    } else {
+        st->scsi_dma_credit_offset = 0;
+    }
+    st->scsi_dma_prev_read_lba = (int)new_lba;
+    st->scsi_dma_prev_read_target = new_target;
+    st->scsi_dma_prev_read_tl = new_tl;
+    st->scsi_dma_prev_read_blk_sz = blk_sz;
+}
+
 // MR_DMA edge-load (ERS §6.5.1, §6.7.2.3): the chip's internal DMA
 // Address Counter is reloaded from the $100 latch on the rising
 // edge of 53C80 MR_DMA (bit 1 of $020 going 0 → 1).  We sample
@@ -597,10 +691,14 @@ static void iifx_scsidma_update_int(config_t *cfg);
 // OS pseudo-DMA / iHSKEN also sets MR_DMA on the chip but doesn't
 // arm the wrapper's bus-master engine, so the counter-load
 // semantics don't apply to its transfers.
+//
+// Shim hook: the credit-offset (set by iifx_scsidma_recompute_credit
+// on each $0C0 write) is added to the latch here.  For chip-faithful
+// behaviour the offset is 0 and the load is just `latch`.
 static inline void iifx_scsidma_observe_mr_dma(iifx_state_t *st, scsi_t *scsi) {
     bool now = scsi_get_mr_dma(scsi);
     if (now && !st->scsi_dma_prev_mr_dma && (st->scsi_dma_ctrl & SCSIDMA_DMAEN))
-        st->scsi_dma_addr = st->scsi_dma_addr_latch;
+        st->scsi_dma_addr = st->scsi_dma_addr_latch + st->scsi_dma_credit_offset;
     st->scsi_dma_prev_mr_dma = now;
 }
 
@@ -820,7 +918,7 @@ static void iifx_scsidma_write_uint8(config_t *cfg, uint32_t offset, uint8_t val
             bool prev = scsi_get_mr_dma(cfg->scsi);
             bool now = (value & 0x02) != 0;
             if (now && !prev && (st->scsi_dma_ctrl & SCSIDMA_DMAEN))
-                st->scsi_dma_addr = st->scsi_dma_addr_latch;
+                st->scsi_dma_addr = st->scsi_dma_addr_latch + st->scsi_dma_credit_offset;
             st->scsi_dma_prev_mr_dma = now;
         }
         st->scsi_iface->write_uint8(cfg->scsi, off, value);
@@ -860,6 +958,11 @@ static void iifx_scsidma_write_uint8(config_t *cfg, uint32_t offset, uint8_t val
             scsidma_fifo_clear(st);
             if (st->scsi_dma_count != 0 && (st->scsi_dma_ctrl & SCSIDMA_DMAEN))
                 st->scsi_dma_active = true;
+            // Per-arm hook for the kernel-credit shim — see the big
+            // warning at iifx_scsidma_recompute_credit().  Updates the
+            // credit_offset that the next MR_DMA-edge load will add
+            // to the $100 latch.
+            iifx_scsidma_recompute_credit(st, cfg->scsi);
         }
         iifx_scsidma_pump(cfg);
         return;
@@ -1442,6 +1545,13 @@ static void iifx_init(config_t *cfg, checkpoint_t *checkpoint) {
     iifx_state_t *st = calloc(1, sizeof(*st));
     assert(st != NULL);
     cfg->machine_context = st;
+
+    // Kernel-credit shim — calloc zeroed everything, but the prev-read
+    // tracker uses -1 as "no previous READ" sentinels for the LBA and
+    // target fields (so a legitimate lba=0 / target=0 doesn't spoof a
+    // continuation).  See the big warning at the helper.
+    st->scsi_dma_prev_read_lba = -1;
+    st->scsi_dma_prev_read_target = -1;
 
     cfg->mem_map = memory_map_init(cfg->machine->address_bits, cfg->ram_size, cfg->machine->rom_size, checkpoint);
     cfg->cpu = cpu_init(CPU_MODEL_68030, checkpoint);

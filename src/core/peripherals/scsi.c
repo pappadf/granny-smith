@@ -374,8 +374,6 @@ static void run_cmd(scsi_t *scsi) {
         LOG(1, "SCSI %s target=%d lba=%u tl=%u blk_sz=%u raw_size=%zu",
             scsi->cmd.opcode == CMD_WRITE ? "WRITE" : "READ", target, scsi->cmd.lba, scsi->cmd.tl, blk_sz,
             scsi->devices[target].image ? scsi->devices[target].image->raw_size : 0);
-        fprintf(stderr, "SCSI_%s_6 tgt=%d lba=%u tl=%u blk_sz=%u\n", scsi->cmd.opcode == CMD_WRITE ? "WR" : "RD",
-                target, scsi->cmd.lba, scsi->cmd.tl, blk_sz);
 
         // Reject writes on read-only devices (CD-ROM, etc.)
         if (scsi->cmd.opcode == CMD_WRITE && scsi->devices[target].read_only) {
@@ -420,8 +418,6 @@ static void run_cmd(scsi_t *scsi) {
         scsi->cmd.tl = (scsi->buf.data[7] << 8) | scsi->buf.data[8];
 
         uint16_t blk_sz = scsi->devices[target].block_size;
-        fprintf(stderr, "SCSI_%s_10 tgt=%d lba=%u tl=%u blk_sz=%u\n", scsi->cmd.opcode == CMD_WRITE_10 ? "WR" : "RD",
-                target, scsi->cmd.lba, scsi->cmd.tl, blk_sz);
 
         // Reject writes on read-only devices
         if (scsi->cmd.opcode == CMD_WRITE_10 && scsi->devices[target].read_only) {
