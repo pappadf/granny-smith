@@ -374,6 +374,8 @@ static void run_cmd(scsi_t *scsi) {
         LOG(1, "SCSI %s target=%d lba=%u tl=%u blk_sz=%u raw_size=%zu",
             scsi->cmd.opcode == CMD_WRITE ? "WRITE" : "READ", target, scsi->cmd.lba, scsi->cmd.tl, blk_sz,
             scsi->devices[target].image ? scsi->devices[target].image->raw_size : 0);
+        fprintf(stderr, "SCSI_%s_6 tgt=%d lba=%u tl=%u blk_sz=%u\n", scsi->cmd.opcode == CMD_WRITE ? "WR" : "RD",
+                target, scsi->cmd.lba, scsi->cmd.tl, blk_sz);
 
         // Reject writes on read-only devices (CD-ROM, etc.)
         if (scsi->cmd.opcode == CMD_WRITE && scsi->devices[target].read_only) {
@@ -418,6 +420,8 @@ static void run_cmd(scsi_t *scsi) {
         scsi->cmd.tl = (scsi->buf.data[7] << 8) | scsi->buf.data[8];
 
         uint16_t blk_sz = scsi->devices[target].block_size;
+        fprintf(stderr, "SCSI_%s_10 tgt=%d lba=%u tl=%u blk_sz=%u\n", scsi->cmd.opcode == CMD_WRITE_10 ? "WR" : "RD",
+                target, scsi->cmd.lba, scsi->cmd.tl, blk_sz);
 
         // Reject writes on read-only devices
         if (scsi->cmd.opcode == CMD_WRITE_10 && scsi->devices[target].read_only) {
@@ -1688,18 +1692,23 @@ bool scsi_pop_data_in_byte(scsi_t *scsi, uint8_t *out) {
     // set (real chip handshake gap).  Mirror that.
     if (scsi->reg.mr & MR_DMA)
         scsi->reg.csr &= ~CSR_REQ;
-    // Do NOT transition to STATUS here when the buffer drains.  On real
-    // hardware the target releases the bus phase only AFTER the chip has
-    // latched EOP and the initiator has acked the IRQ.  A/UX's scsiirq
-    // (retail $1004A882) reads BSR and walks a state-decode block: if
-    // BSR_PM (phase match) is clear at handler entry, it categorizes
-    // the IRQ as SI_PHASE (= phase change during DMA = "transfer is
-    // partial, more to read") and issues a follow-up SCSI READ for the
-    // 'remaining' blocks at the SAME buffer address — which overwrites
-    // the just-completed transfer.  Keep phase = data_in (= BSR_PM set)
-    // through the pop; the existing CSR-read deferred-phase-transition
-    // (see read_uint8 case CSR) fires the actual transition later when
-    // the handler reads CSR after the success path.
+    // Eagerly transition to STATUS when the SCSI command's data has
+    // been fully delivered (buf empty).  On real hardware the target
+    // releases data-in as soon as it has no more data to hand the
+    // initiator.  This matters specifically for A/UX's scsiirq on
+    // the IIfx wrapper: it reads BSR at entry and uses BSR_PM to
+    // distinguish "the chip just finished a command cleanly"
+    // (PM=0 → SI_PHASE → kernel clears MR_DMA, so the next SCSI
+    // READ produces a fresh MR_DMA 0→1 edge that reloads the
+    // 343S0064-A internal DMA Address Counter from $100) from
+    // "this DMA chunk is mid-transfer" (PM=1 → kernel leaves
+    // MR_DMA set → next chunk's $100 write does NOT cause a counter
+    // reload → chunks naturally concatenate at advancing physical
+    // addresses).  Only fires on the bus-master DMA pop path; the
+    // CPU's PIO/pseudo-DMA reads of $060 go through read_uint8
+    // case ODR (which calls next_byte directly) and are unaffected.
+    if (scsi->buf.size == 0)
+        phase_status(scsi, STATUS_GOOD);
     return true;
 }
 

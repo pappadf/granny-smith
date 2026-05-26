@@ -118,29 +118,40 @@ LOG_USE_CATEGORY_NAME("iifx");
 #define IIFX_ASC_IO_PENALTY  2
 #define IIFX_OSS_IO_PENALTY  2
 
-// SCSI DMA register offsets.
-#define SCSIDMA_DCTRL 0x080
-#define SCSIDMA_DCNT  0x0c0
-#define SCSIDMA_DADDR 0x100
-#define SCSIDMA_DTIME 0x140
-#define SCSIDMA_TEST  0x180
-// sDCTRL bit names + values from Apple's HardwarePrivateEqu.a:385-435
-// (supermario-master/Internal/Asm/HardwarePrivateEqu.a).  Some bits have
-// asymmetric READ/WRITE semantics: e.g. bit 4 is iRESET on write but iFIFO
-// (= bytes-left-in-FIFO non-zero) on read.
-#define SCSIDMA_DMAEN   0x0001 // bit 0 (W): SCSI DMA enable
-#define SCSIDMA_INTREN  0x0002 // bit 1 (W): SCSI DMA interrupts enable
-#define SCSIDMA_TIMEEN  0x0004 // bit 2 (W): watchdog timer interrupt enable
-#define SCSIDMA_HSKEN   0x0008 // bit 3 (W): hardware-handshake (write) enable
-#define SCSIDMA_RESET   0x0010 // bit 4 (W): reset SCSI DMA chip
-#define SCSIDMA_FIFO    0x0010 // bit 4 (R): bytes-left-in-FIFO != 0
-#define SCSIDMA_TEST_EN 0x0020 // bit 5 (W): SCSI Test Mode enable
-#define SCSIDMA_SCSIP   0x0040 // bit 6 (R): SCSI interrupt pending
-#define SCSIDMA_TIMEP   0x0080 // bit 7 (R): watchdog timer interrupt pending
-#define SCSIDMA_DMABERR 0x0100 // bit 8 (R): DMA bus error pending
-#define SCSIDMA_ARBIDEN 0x1000 // bit 12 (W): hardware arbitration enable
-#define SCSIDMA_WONARB  0x2000 // bit 13 (R): hardware arbitration succeeded
-#define SCSIDMA_INFIFO  0xC000 // bits 14-15 (R): bytes left in FIFO (0..3)
+// IIfx SCSI DMA controller — Apple 343S0064-A "IIfx Custom SCSI DMA
+// Controller, QFP-100". Full register/state spec lives in
+// local/gs-docs/iifx-scsi-dma/iifx-scsi-dma.md.
+//
+// Register offsets are spaced by $10 and decoded from A[8:4]; the
+// embedded NCR 53C80 cell occupies $000..$070 (one byte each on
+// D[31:24]), and Apple's wrapper registers occupy $080..$1FF (32-bit).
+#define SCSIDMA_DCTRL 0x080 // DMA control / status
+#define SCSIDMA_DCNT  0x0c0 // DMA byte count
+#define SCSIDMA_DADDR 0x100 // DMA address
+#define SCSIDMA_DTIME 0x140 // Watchdog timer reload
+#define SCSIDMA_FIFO  0x180 // FIFO register
+// $080 bits (spec §4). Bit 4 is asymmetric: write=RESET_53C80 strobe,
+// read=FIFO_BYTES_LEFT status. Bits 6/7/8/13 are read-only latches.
+#define SCSIDMA_DMAEN   0x0001 // bit 0 (R/W): Apple bus-master DMA enable
+#define SCSIDMA_INTREN  0x0002 // bit 1 (R/W): SCSI/DMA interrupt enable
+#define SCSIDMA_TIMEEN  0x0004 // bit 2 (R/W): watchdog interrupt enable
+#define SCSIDMA_HSKEN   0x0008 // bit 3 (R/W): HW-handshake / pseudo-DMA mode
+#define SCSIDMA_RESET   0x0010 // bit 4 (W):  reset embedded 53C80 (strobe)
+#define SCSIDMA_FIFONE  0x0010 // bit 4 (R):  FIFO not empty
+#define SCSIDMA_TEST    0x0020 // bit 5 (R/W): FIFO loopback test mode
+#define SCSIDMA_SCSIP   0x0040 // bit 6 (R):  53C80 IRQ or Apple DMA done
+#define SCSIDMA_TIMEP   0x0080 // bit 7 (R):  watchdog timeout pending
+#define SCSIDMA_DMABERR 0x0100 // bit 8 (R):  DMA halted by /BERR
+#define SCSIDMA_ID0     0x0200 // bit 9 (R/W): auto-arb SCSI ID bit 0
+#define SCSIDMA_ID1     0x0400 // bit 10 (R/W): auto-arb SCSI ID bit 1
+#define SCSIDMA_ID2     0x0800 // bit 11 (R/W): auto-arb SCSI ID bit 2
+#define SCSIDMA_ID_MASK 0x0E00 // bits 9..11
+#define SCSIDMA_ARBEN   0x1000 // bit 12 (R/W): auto-arbitration enable
+#define SCSIDMA_WONARB  0x2000 // bit 13 (R):  auto-arbitration won
+
+// Mask of bits the kernel can store via writes to $080.
+#define SCSIDMA_CTRL_WRITABLE                                                                                          \
+    (SCSIDMA_DMAEN | SCSIDMA_INTREN | SCSIDMA_TIMEEN | SCSIDMA_HSKEN | SCSIDMA_TEST | SCSIDMA_ID_MASK | SCSIDMA_ARBEN)
 
 // Per-machine IIfx runtime state.
 typedef struct iifx_state {
@@ -180,56 +191,89 @@ typedef struct iifx_state {
     uint8_t *fmc_inverted_rom; // pre-computed ~ROM image; lazy-alloc'd in iifx_apply_fmc_rom_invert
     bool fmc_prev_bit3; // last observed OSS_ROM_CTRL bit 3 (for edge detection)
 
+    // ── IIfx SCSI DMA controller state (Apple 343S0064-A spec) ──────
+    //
+    // Register-visible state ($080 / $0C0 / $100 / $140 / $180):
+    //   ctrl              — sticky writable bits of $080
+    //   count             — $0C0 byte count, auto-decrements per
+    //                       SCSI-side byte (spec §5.1, §15.1)
+    //   addr              — $100 current byte address, auto-increments
+    //                       per SCSI-side byte (spec §5.2)
+    //   watchdog_reload   — $140 stored reload value (spec §5.3)
+    //   fifo_word         — $180 FIFO byte-router word (spec §13)
+    //
+    // FIFO byte-router: one 32-bit word + per-lane validity. Bytes
+    // cross between the 53C80 data register and main memory through
+    // these four lanes. dma_addr's two low bits select the active
+    // lane on each side; refills/flushes align to longword
+    // boundaries (spec §15, §16).
+    //
+    // Read-side latches (composed into $080 reads):
+    //   done_latch         — bit 6: Apple DMA completed successfully
+    //                        (OR'd with chip /IRQ for SCSIP)
+    //   bus_error_latch    — bit 8: DMA halted by /BERR
+    //   watchdog_irq_latch — bit 7: watchdog timeout pending
+    //   wonarb_latch       — bit 13: auto-arb won
+    //   tri_state_test     — $010 bit 6 stored (manufacturing mode)
+    //   fifo_loopback_test — $080 bit 5 cached for fast checks
+    //
+    // Latch / counter split (ERS §6.1.1.1, §6.2.3.3, §6.5.1):
+    //
+    //   The chip has two physically distinct objects for the DMA
+    //   address: an "initial-value-holding register" exposed at
+    //   $100 (CPU latch, scsi_dma_addr_latch) AND an internal DMA
+    //   Address Counter (scsi_dma_addr) that advances per byte
+    //   transferred.  CPU reads of $100 return the live counter
+    //   through the Address Readback Buffer.
+    //
+    //   The counter is reloaded from the latch on the rising edge
+    //   (0 → 1) of MR_DMA — bit 1 of the 53C80 cell's Mode Register
+    //   at offset $020 — **and only when the wrapper is actually
+    //   in bus-master mode** ($080.DMAEN = 1).  Mac OS uses pseudo-
+    //   DMA / iHSKEN: it also sets MR_DMA on the 53C80 (it's the
+    //   same physical bit) but never touches the bus-master DMA
+    //   registers ($100 / $0C0 / $080.DMAEN stays 0), so the
+    //   counter-load semantics don't apply to its transfers.
+    //   The DMAEN gate naturally restricts the chip-internal cur_addr
+    //   behaviour to A/UX-driven bus-master transfers.
+    //
+    //   Once an A/UX bus-master session is armed, the kernel's
+    //   $020 = $0A re-arm on each scsi_in arm doesn't repeat the
+    //   reload because MR_DMA stayed 1 across arms (no edge).  Only
+    //   when scsiirq sees BSR_PM=0 and clears MR_DMA via the SI_PHASE
+    //   path (D2=3) does the next arm produce a fresh 0→1 edge.
+    //
+    //   Pattern A (partition-map single-block probe): each arm's
+    //     1-block transfer drains scsi.buf; phase transitions to
+    //     status; scsiirq's BSR.PM=0 → clears MR_DMA → next arm's
+    //     $020 = $0A re-asserts MR_DMA (0→1 edge) → counter reloads
+    //     from $100 = $2DD000 → each block overwrites the buffer.
+    //
+    //   Pattern B (libc1_s chunked exec-load): the SCSI READ has
+    //     more data than one arm's $2000 transfer drains; phase
+    //     stays in data-in; scsiirq doesn't clear MR_DMA; next
+    //     arm's $020 = $0A is a no-op (MR_DMA stays 1) → no edge →
+    //     counter NOT reloaded → arms concatenate at advancing
+    //     physical addresses.
+    //
+    //   See local/gs-docs/notes/compass_artifact_*.md for the full
+    //   derivation against the ERS.
     uint32_t scsi_dma_ctrl;
     uint32_t scsi_dma_count;
-    uint32_t scsi_dma_addr;
-    uint32_t scsi_dma_timer;
-    uint32_t scsi_dma_test;
-    // SDMA chip-state model.  Real OSS SCSIDMA at $50F08000 has a
-    // kernel-visible latched sDADDR (the value the kernel just wrote)
-    // and an *internal* current-address pointer that auto-advances as
-    // bytes are DMA'd to/from RAM.  These are normally the same — but
-    // they drift apart across multi-arm sequences where the kernel
-    // re-writes the same sDADDR while the chip's internal pointer has
-    // moved on.  We collapse both into `scsi_dma_addr` (auto-advanced
-    // by the pump) and recover the chip's internal pointer at each
-    // arm via xfer_base + xfer_offset:
-    //
-    //   scsi_dma_xfer_base   — kernel's last-programmed base sDADDR
-    //                          (= the start of the current logical
-    //                          transfer from the kernel's POV)
-    //   scsi_dma_xfer_offset — bytes drained so far from xfer_base;
-    //                          chip's internal pointer is
-    //                          (xfer_base + xfer_offset)
-    //
-    // When the kernel re-writes the SAME sDADDR mid-transfer (the
-    // continuation pattern observed in doc 104), xfer_offset preserves
-    // the chip's position so the new sDCNT picks up where the previous
-    // arm left off.  When the kernel writes a DIFFERENT sDADDR, we
-    // treat that as a fresh transfer: xfer_base := new addr, offset := 0.
-    //
-    // scsi_dma_last_was_in: latched true after a data-in drain so the
-    // next sDCNT arm can detect a read-continuation.  Resets on
-    // data-out drains.
-    //
-    // scsi_dma_prev_count_initial: the previous arm's initial sDCNT
-    // (used to distinguish decreasing-count vs equal-count continuation
-    // patterns and to size the offset delta for decreasing case).
-    uint32_t scsi_dma_prev_count_initial;
-    uint32_t scsi_dma_xfer_base;
-    uint32_t scsi_dma_xfer_offset;
-    bool scsi_dma_last_was_in;
-
-    // A/UX-driver kernel-credit shim — see doc-105/107.  Lives here
-    // (not in scsi.c) because it's IIfx-driver-specific behaviour, not
-    // 5380 chip behaviour.  Snapshots the previous CMD_READ_10's LBA
-    // so we can detect when a new READ overlaps the previous and
-    // compute the kernel-credited byte count for the chunked-SDMA
-    // continuation advance.  -1 = no previous READ tracked.
-    int scsi_dma_prev_read_lba;
-    uint16_t scsi_dma_prev_read_tl;
-    int scsi_dma_prev_read_target;
-    uint16_t scsi_dma_prev_read_blk_sz;
+    uint32_t scsi_dma_addr; // internal DMA Address Counter
+    uint32_t scsi_dma_addr_latch; // $100 CPU latch
+    bool scsi_dma_prev_mr_dma; // last-observed MR_DMA, for edge detect
+    uint32_t scsi_dma_watchdog_reload;
+    uint32_t scsi_dma_fifo_word;
+    bool scsi_dma_fifo_valid[4];
+    unsigned scsi_dma_fifo_count;
+    bool scsi_dma_active;
+    bool scsi_dma_done_latch;
+    bool scsi_dma_bus_error_latch;
+    bool scsi_dma_watchdog_irq_latch;
+    bool scsi_dma_wonarb_latch;
+    bool scsi_dma_tri_state_test;
+    bool scsi_dma_fifo_loopback_test;
 
     memory_interface_t rom_interface;
     memory_interface_t io_interface;
@@ -475,355 +519,446 @@ static void iifx_write_reg32_byte(uint32_t *reg, uint32_t addr, uint8_t value) {
 }
 
 // ============================================================================
-// IIfx SCSI DMA wrapper — bus-master pump
+// IIfx SCSI DMA controller — Apple 343S0064-A spec-compliant model
 // ============================================================================
 //
-// The IIfx ships a custom glue chip between the 68030 and the NCR 5380.
-// At wrapper offsets $0..$7F it passes register accesses straight through
-// to the 5380 (with a 16-byte register stride: $00=DATA, $10=ICR, $20=MR,
-// $30=TCR, $40=CSR, $50=BSR, $70=RST/PAR).  At offsets $80..$1FF it
-// exposes its own DMA-control registers:
+// The IIfx ships a custom QFP-100 SCSI controller built around an
+// enhanced NCR 53C80 cell. Apple's wrapper adds bus-master DMA, a
+// 32-bit FIFO byte-router, a watchdog, and auto-arbitration. Full
+// register/state spec: local/gs-docs/iifx-scsi-dma/iifx-scsi-dma.md.
 //
-//   $80  sDCTRL  control: iINTREN ($02), iHSKEN ($08), iRESET ($10),
-//                          iARBIDEN ($1000), iWONARB ($2000 read-only)
-//   $C0  sDCNT   bytes remaining (decrements per byte transferred)
-//   $100 sDADDR  RAM address (increments per byte transferred)
-//   $140 sDTIME  watchdog timeout (we treat as advisory; not modeled)
-//   $180 sTEST   diagnostic test register
+// Register layout (spec §2):
+//   $000..$070  embedded 53C80 (8-bit on D[31:24]), passed through
+//   $080        DMA control / status (32-bit)
+//   $0C0        DMA byte count    (32-bit, auto-decrements per byte)
+//   $100        DMA address       (32-bit, auto-increments per byte)
+//   $140        Watchdog reload   (32-bit)
+//   $180        FIFO              (32-bit, R/W only in loopback test)
 //
-// The wrapper has three byte-transport modes; from the chip's point of
-// view all three deliver bytes to/from its ODR via the same REQ/ACK
-// handshake, so they appear identical on the SCSI bus:
+// Three byte-transport modes coexist (spec §8):
 //
-//   (1) Passthrough.  iHSKEN clear.  CPU writes byte to wrapper $0..$7F;
-//       wrapper forwards to chip register; CPU manually drives ACK via
-//       ICR.  Slow but spec-compliant — used in pre-iHSKEN boot code.
+//   (1) Slave / PIO. CPU pokes 5380 registers via $000..$070; chip
+//       drives REQ/ACK and runs SCSI protocol directly.
 //
-//   (2) iHSKEN.  iHSKEN set, no DMA.  CPU writes byte to wrapper $0..$F;
-//       wrapper auto-handshakes (waits for chip REQ, asserts ACK) so the
-//       CPU doesn't have to manage ICR.  Per-byte CPU PIO, faster than
-//       (1).  Modeled by scsi_hsken_data_out_byte() for writes; reads
-//       go through the chip's CDR-read path naturally.
+//   (2) Hardware-handshake / pseudo-DMA. $080.HW_HANDSHAKE=1 + chip
+//       MR_DMA=1 + Start-DMA-Send/Recv. CPU writes/reads $000 or
+//       $060; wrapper blocks the bus cycle until the SCSI byte
+//       handshake completes. No bus mastering.
 //
-//   (3) Bus-master DMA.  iHSKEN set, sDCNT > 0, chip MR_DMA on.  Wrapper
-//       transfers bytes between RAM[sDADDR..sDADDR+sDCNT-1] and the chip
-//       without CPU involvement.  When sDCNT hits zero it asserts EOP to
-//       the chip, which latches end_of_dma and (with MR_DMA on) raises
-//       /IRQ.  This is what iifx_scsidma_pump() implements.
+//   (3) Apple direct DMA (bus-master). $080.DMAEN=1 + chip MR_DMA=1
+//       + Start-DMA-Send/Recv. Wrapper transfers bytes between main
+//       memory and the 53C80's data register through the FIFO
+//       byte-router. dma_addr and dma_count advance per SCSI-side
+//       byte, not per memory bus cycle (spec §15.1 "important").
 //
-// Pump driver
-// -----------
-// The pump runs whenever the wrapper might have work to do.  On real
-// hardware, transfers are triggered by the chip's DRQ line (one byte
-// per target REQ pulse); we model that by calling the pump from:
+// Bus-master byte-router (spec §13, §15, §16):
 //
-//   - The DRQ callback (iifx_scsi_irq → drq asserts means the chip has
-//     a byte ready / wants a byte).
-//   - Any write to sDCNT / sDADDR / sDCTRL (the CPU just programmed the
-//     transfer; if all preconditions are now met, start moving bytes).
+//   mem -> SCSI ("DMA Read"):
+//     refill: read 1..4 bytes from RAM[dma_addr..] into FIFO lanes,
+//             aligned to longword boundary (spec §15.1)
+//     drain : pop FIFO[lane = dma_addr & 3], hand to chip via auto-
+//             handshake; dma_addr++, dma_count--
 //
-// The pump itself is idempotent — calling when not armed is a no-op.
-// Re-entrancy: the pump can re-enter the chip (via push/pop helpers)
-// which can in turn trigger DRQ updates / phase transitions; we guard
-// against unbounded recursion by completing one direction's work in
-// one call and stopping on phase transition.
+//   SCSI -> mem ("DMA Write"):
+//     accept: byte from chip lands in FIFO[lane = dma_addr & 3];
+//             dma_addr++, dma_count--
+//     flush : write back when FIFO full or count exhausted, at
+//             address (dma_addr - fifo_count) (spec §16.2 / Apple
+//             write example)
+//
+// On completion (dma_count == 0 and FIFO drained):
+//   - done_latch <- true (composes into $080 bit 6)
+//   - signal EOP to chip (chip latches end_of_dma -> /IRQ)
+//   - /INT asserts if $080.SCSI_INT_EN
+//
+// Direction is inferred from the chip's bus phase: data_in implies
+// the kernel armed Start-DMA-Initiator-Receive ($070), data_out
+// implies Start-DMA-Send ($050). The kernel sets the chip's phase
+// expectation via $030/$010 before writing the Start-DMA register
+// (spec §11.2, §11.3).
+//
+// Pump trigger points:
+//   - DRQ assertion from chip (chip has/wants a byte)
+//   - Writes to ctrl/count/addr (post-arm state change)
+//
+// Memory access bypasses the CPU MMU: the chip is a bus master that
+// drives the physical address bus directly. A/UX converts virtual
+// buffer pointers via realvtop before programming sDADDR, so the
+// value stored there is a physical address.
 
-// Forward decl: the pump needs to be callable from the DRQ callback
-// (which appears below in source order).
+// Forward declarations.
 static void iifx_scsidma_pump(config_t *cfg);
+static void iifx_scsidma_update_int(config_t *cfg);
 
-// Reads one SCSI DMA wrapper byte.
+// MR_DMA edge-load (ERS §6.5.1, §6.7.2.3): the chip's internal DMA
+// Address Counter is reloaded from the $100 latch on the rising
+// edge of 53C80 MR_DMA (bit 1 of $020 going 0 → 1).  We sample
+// MR_DMA after every 53C80 register access.  Gated on DMAEN: Mac
+// OS pseudo-DMA / iHSKEN also sets MR_DMA on the chip but doesn't
+// arm the wrapper's bus-master engine, so the counter-load
+// semantics don't apply to its transfers.
+static inline void iifx_scsidma_observe_mr_dma(iifx_state_t *st, scsi_t *scsi) {
+    bool now = scsi_get_mr_dma(scsi);
+    if (now && !st->scsi_dma_prev_mr_dma && (st->scsi_dma_ctrl & SCSIDMA_DMAEN))
+        st->scsi_dma_addr = st->scsi_dma_addr_latch;
+    st->scsi_dma_prev_mr_dma = now;
+}
+
+// ── FIFO byte-router primitives (spec §13) ─────────────────────────
+// Big-endian byte lanes: addr bit pattern A1:A0 = 00 -> D[31:24]
+// (lane 0), 01 -> D[23:16] (lane 1), 10 -> D[15:8] (lane 2),
+// 11 -> D[7:0] (lane 3). "MSBs go in LS addresses."
+static inline unsigned scsidma_lane_shift(int lane) {
+    return (3u - (unsigned)lane) * 8u;
+}
+
+static void scsidma_fifo_clear(iifx_state_t *st) {
+    st->scsi_dma_fifo_count = 0;
+    for (int i = 0; i < 4; i++)
+        st->scsi_dma_fifo_valid[i] = false;
+}
+
+static void scsidma_fifo_put_lane(iifx_state_t *st, int lane, uint8_t byte) {
+    unsigned sh = scsidma_lane_shift(lane);
+    st->scsi_dma_fifo_word = (st->scsi_dma_fifo_word & ~(0xffu << sh)) | ((uint32_t)byte << sh);
+    if (!st->scsi_dma_fifo_valid[lane]) {
+        st->scsi_dma_fifo_valid[lane] = true;
+        st->scsi_dma_fifo_count++;
+    }
+}
+
+static uint8_t scsidma_fifo_get_lane(const iifx_state_t *st, int lane) {
+    return (uint8_t)(st->scsi_dma_fifo_word >> scsidma_lane_shift(lane));
+}
+
+// ── Reset & completion ────────────────────────────────────────────
+// Spec §6.2: "$080 bit 4 = 1" resets the embedded 53C80 cell only.
+// Apple DMA registers (addr, count, watchdog, FIFO) are NOT touched
+// by this strobe per spec, but in practice we also drop any pending
+// engine state — the kernel's reset path issues this before re-arming
+// from scratch, and not clearing the engine state would leave a
+// stale active flag and FIFO content.
+static void iifx_scsidma_reset_chip_only(config_t *cfg) {
+    iifx_state_t *st = iifx_state(cfg);
+    st->scsi_dma_active = false;
+    st->scsi_dma_done_latch = false;
+    st->scsi_dma_bus_error_latch = false;
+    scsidma_fifo_clear(st);
+}
+
+// Successful Apple DMA completion (spec §17).
+static void iifx_scsidma_finish_success(config_t *cfg) {
+    iifx_state_t *st = iifx_state(cfg);
+    st->scsi_dma_active = false;
+    st->scsi_dma_done_latch = true;
+    scsi_signal_eop(cfg->scsi);
+    iifx_scsidma_update_int(cfg);
+}
+
+// ── $080 read composition (spec §4.1) ─────────────────────────────
+// Compose the read-side value of $080 from the sticky writable bits
+// plus the read-only status latches and live status bits.
+static uint32_t iifx_scsidma_read_ctrl_status(const iifx_state_t *st, scsi_t *scsi) {
+    uint32_t v = st->scsi_dma_ctrl & SCSIDMA_CTRL_WRITABLE;
+    if (st->scsi_dma_fifo_count != 0)
+        v |= SCSIDMA_FIFONE;
+    if (st->scsi_dma_done_latch || scsi_get_irq_active(scsi))
+        v |= SCSIDMA_SCSIP;
+    if (st->scsi_dma_watchdog_irq_latch)
+        v |= SCSIDMA_TIMEP;
+    if (st->scsi_dma_bus_error_latch)
+        v |= SCSIDMA_DMABERR;
+    if (st->scsi_dma_wonarb_latch)
+        v |= SCSIDMA_WONARB;
+    return v;
+}
+
+// ── $080 write (spec §4.2) ────────────────────────────────────────
+// Store writable bits; if bit 4 strobed, reset embedded 53C80 only;
+// if DMAEN cleared, abort active DMA; if ARBEN cleared, clear
+// WONARB latch.
+static void iifx_scsidma_write_ctrl(config_t *cfg, uint32_t data) {
+    iifx_state_t *st = iifx_state(cfg);
+    uint32_t prev = st->scsi_dma_ctrl;
+
+    if (data & SCSIDMA_RESET)
+        iifx_scsidma_reset_chip_only(cfg);
+
+    st->scsi_dma_ctrl = data & SCSIDMA_CTRL_WRITABLE;
+    st->scsi_dma_fifo_loopback_test = (st->scsi_dma_ctrl & SCSIDMA_TEST) != 0;
+
+    if (!(st->scsi_dma_ctrl & SCSIDMA_DMAEN)) {
+        st->scsi_dma_active = false;
+        st->scsi_dma_done_latch = false;
+        st->scsi_dma_bus_error_latch = false;
+    }
+    if (!(st->scsi_dma_ctrl & SCSIDMA_ARBEN))
+        st->scsi_dma_wonarb_latch = false;
+
+    // Auto-arbitration model (spec §21): the embedded 53C80 already
+    // handles bus-free / BSY / ID-assertion mechanics under software
+    // control. When ARBEN is set, treat the wrapper as having won
+    // immediately — this matches the kernel's expectation of
+    // "ARBEN=1 -> WONARB will be true on next read" without requiring
+    // a separate state machine.
+    if (st->scsi_dma_ctrl & SCSIDMA_ARBEN)
+        st->scsi_dma_wonarb_latch = true;
+
+    // INTREN rising edge with chip /IRQ already asserted: the wrapper's
+    // IRQ output is level-sensitive through the enable gate. If the
+    // chip /IRQ is high when the gate transitions 0->1, propagate.
+    // (A/UX arms SDMA with INTREN=0, waits for chip EOP, then enables
+    //  INTREN once the request is fully recorded.)
+    bool intren_rising = !(prev & SCSIDMA_INTREN) && (st->scsi_dma_ctrl & SCSIDMA_INTREN);
+    bool timeen_rising = !(prev & SCSIDMA_TIMEEN) && (st->scsi_dma_ctrl & SCSIDMA_TIMEEN);
+    (void)intren_rising;
+    (void)timeen_rising;
+
+    iifx_scsidma_update_int(cfg);
+    iifx_scsidma_pump(cfg);
+}
+
+// ── IRQ aggregation (spec §20, A/UX-compatible) ───────────────────
+//
+// Spec §20 composes /INT from:
+//   (SCSI_INT_EN && (53C80 /IRQ || dma_done || dma_bus_err || wonarb))
+//     || (WD_INT_EN && watchdog_timeout)
+//
+// But A/UX's scsiirq cleanup only reads $070 to ack the chip's /IRQ;
+// it does NOT clear DMAEN between consecutive transfers (scsi_in just
+// reasserts DMAEN+TIMEEN on the next arm). Per the spec's recommended
+// `write_dma_control`, the wrapper's done/bus_err latches only clear
+// when DMAEN is dropped — so including them in the live /INT gate
+// would keep /INT asserted forever after the first completion,
+// causing infinite scsiirq re-entry.
+//
+// Resolution: the latches still compose into $080 reads (so polling
+// software can observe them), but the gated /INT output is driven by
+// the chip's level-sensitive /IRQ line only. A/UX clears /IRQ via the
+// $070 read in scsiirq — that's what releases the wrapper's gate.
+// The result is functionally what the kernel expects and what the
+// pre-rewrite heuristic model already did; the latches give the spec
+// model its register-visible behaviour without driving a redundant
+// IRQ source.
+static void iifx_scsidma_update_int(config_t *cfg) {
+    iifx_state_t *st = iifx_state(cfg);
+    bool scsi_side = scsi_get_irq_active(cfg->scsi);
+    bool wd_side = st->scsi_dma_watchdog_irq_latch;
+    bool asserted =
+        ((st->scsi_dma_ctrl & SCSIDMA_INTREN) && scsi_side) || ((st->scsi_dma_ctrl & SCSIDMA_TIMEEN) && wd_side);
+    if (st->oss)
+        oss_set_source(st->oss, IIFX_OSS_SCSI, asserted);
+}
+
+// ── Register access ───────────────────────────────────────────────
+//
+// Reads one SCSI DMA register byte. Offsets $000..$070 forward to
+// the embedded 53C80; $080..$1FF are wrapper-local.
 static uint8_t iifx_scsidma_read_uint8(config_t *cfg, uint32_t offset) {
     iifx_state_t *st = iifx_state(cfg);
     uint32_t off = offset & 0x1fff;
-    if (off < 0x80)
-        return st->scsi_iface->read_uint8(cfg->scsi, off);
+
+    if (off < 0x80) {
+        uint8_t v = st->scsi_iface->read_uint8(cfg->scsi, off);
+        // Reading $070 clears the 53C80 IRQ latch (spec §6.4 / §20).
+        // Re-evaluate the wrapper's gated /INT output.
+        if ((off & 0xf0) == 0x70)
+            iifx_scsidma_update_int(cfg);
+        return v;
+    }
     if (off >= SCSIDMA_DCTRL && off < SCSIDMA_DCTRL + 4) {
-        // sDCTRL has different READ vs WRITE bit layouts.  The kernel-
-        // written bits (DMAEN, INTREN, TIMEEN, HSKEN, TEST_EN, ARBIDEN)
-        // come back as-is; the read-side status bits (FIFO, SCSIP, TIMEP,
-        // DMABERR, WONARB, INFIFO) are computed from chip/wrapper state.
-        // We don't model the FIFO (drain is synchronous), the watchdog
-        // timer, or DMA bus errors, so iFIFO/iTIMEP/iDMABERR/iINFIFO are
-        // all 0.  iSCSIP reflects the chip's /IRQ state when the kernel-
-        // visible interrupt enable (iINTREN) is on — this is what a real
-        // wrapper would expose to scsiirq's readback at $1004A974.
-        uint32_t value = st->scsi_dma_ctrl;
-        if (value & SCSIDMA_ARBIDEN)
-            value |= SCSIDMA_WONARB;
-        if ((value & SCSIDMA_INTREN) && scsi_get_irq_active(cfg->scsi))
-            value |= SCSIDMA_SCSIP;
-        return iifx_read_reg32_byte(value, off);
+        uint32_t v = iifx_scsidma_read_ctrl_status(st, cfg->scsi);
+        return iifx_read_reg32_byte(v, off);
     }
     if (off >= SCSIDMA_DCNT && off < SCSIDMA_DCNT + 4)
         return iifx_read_reg32_byte(st->scsi_dma_count, off);
     if (off >= SCSIDMA_DADDR && off < SCSIDMA_DADDR + 4)
         return iifx_read_reg32_byte(st->scsi_dma_addr, off);
-    if (off >= SCSIDMA_DTIME && off < SCSIDMA_DTIME + 4)
-        return iifx_read_reg32_byte(st->scsi_dma_timer, off);
-    if (off >= SCSIDMA_TEST && off < SCSIDMA_TEST + 4)
-        return iifx_read_reg32_byte(st->scsi_dma_test, off);
+    if (off >= SCSIDMA_DTIME && off < SCSIDMA_DTIME + 4) {
+        // Reading $140 clears the watchdog IRQ latch (spec §19.3).
+        uint8_t v = iifx_read_reg32_byte(st->scsi_dma_watchdog_reload, off);
+        if ((off & 3) == 3 && st->scsi_dma_watchdog_irq_latch) {
+            st->scsi_dma_watchdog_irq_latch = false;
+            iifx_scsidma_update_int(cfg);
+        }
+        return v;
+    }
+    if (off >= SCSIDMA_FIFO && off < SCSIDMA_FIFO + 4)
+        return iifx_read_reg32_byte(st->scsi_dma_fifo_word, off);
     return 0;
 }
 
-// A/UX-driver kernel-credit shim — IIfx-driver-specific behaviour, not
-// chip behaviour.  See doc-105/107.  On every sDCNT-arm event, snapshot
-// the most-recent SCSI READ command and detect whether it overlaps the
-// previous READ.  If so, return the kernel-credited byte count for the
-// previous arm (= LBA delta * blk_sz).  Non-overlapping / non-READ /
-// fresh transfer returns 0.  Updates the prev_read_* tracker on the
-// iifx_state for the next call.
-static uint32_t iifx_scsidma_snapshot_credit(iifx_state_t *st, scsi_t *scsi) {
-    uint8_t opcode = scsi_get_cmd_opcode(scsi);
-    if (opcode != SCSI_OPCODE_READ_6 && opcode != SCSI_OPCODE_READ_10) {
-        st->scsi_dma_prev_read_lba = -1;
-        st->scsi_dma_prev_read_target = -1;
-        st->scsi_dma_prev_read_tl = 0;
-        st->scsi_dma_prev_read_blk_sz = 0;
-        return 0;
-    }
-    int new_target = scsi_get_cmd_target(scsi);
-    uint32_t new_lba = scsi_get_cmd_lba(scsi);
-    uint16_t new_tl = scsi_get_cmd_tl(scsi);
-    uint16_t blk_sz = scsi_get_cmd_blk_sz(scsi);
-
-    uint32_t credit = 0;
-    if (st->scsi_dma_prev_read_target == new_target && st->scsi_dma_prev_read_lba >= 0 &&
-        (int)new_lba > st->scsi_dma_prev_read_lba &&
-        (uint32_t)((int)new_lba - st->scsi_dma_prev_read_lba) < st->scsi_dma_prev_read_tl) {
-        credit = (uint32_t)((int)new_lba - st->scsi_dma_prev_read_lba) * (uint32_t)st->scsi_dma_prev_read_blk_sz;
-    }
-    st->scsi_dma_prev_read_lba = (int)new_lba;
-    st->scsi_dma_prev_read_target = new_target;
-    st->scsi_dma_prev_read_tl = new_tl;
-    st->scsi_dma_prev_read_blk_sz = blk_sz;
-    return credit;
-}
-
-// Writes one SCSI DMA wrapper byte.
+// Writes one SCSI DMA register byte.
 static void iifx_scsidma_write_uint8(config_t *cfg, uint32_t offset, uint8_t value) {
     iifx_state_t *st = iifx_state(cfg);
     uint32_t off = offset & 0x1fff;
+
     if (off < 0x80) {
-        // IIfx hardware-handshake (iHSKEN) write path: when the SCSI Mgr's
-        // FastWrite sets sDCTRL = iHSKEN, the wrapper auto-handshakes each
-        // CPU write to chip ODR onto the SCSI bus. Mirror that by pushing
-        // ODR-range writes directly into scsi->buf via scsi_hsken_data_out_byte
-        // (bypassing the pseudo-DMA primer-slot gate, which is an A/UX-
-        // specific heuristic that would otherwise drop a leading $00 byte).
-        // 5380 register decode uses (addr >> 4) & 7 so offsets 0..$0F all
-        // map to ODR; MOVE.L (A2)+,(hhsk5380) decomposes into four byte
-        // writes at offsets 0, 1, 2, 3. Without this routing, FastWrite's
-        // MOVE.L loops drop the kernel's data and every WRITE_10 commits
-        // stale reg.odr — corrupting the disk delta.
+        // Hardware-handshake write path: when HW_HANDSHAKE=1, byte
+        // writes to the chip's ODR ($000..$00F) auto-handshake onto
+        // the SCSI bus. Bypass the chip's pseudo-DMA primer-slot
+        // gate (which is an A/UX-driver heuristic that would drop a
+        // leading $00 byte). 5380 decodes (addr >> 4) & 7, so $00..$0F
+        // all map to ODR; MOVE.L (A2)+,(scsi_data) decomposes into
+        // four byte writes at offsets 0..3.
         if (off < 0x10 && (st->scsi_dma_ctrl & SCSIDMA_HSKEN)) {
             scsi_hsken_data_out_byte(cfg->scsi, value);
             return;
         }
-        st->scsi_iface->write_uint8(cfg->scsi, off, value);
-        return;
-    }
-    if (off >= SCSIDMA_DCTRL && off < SCSIDMA_DCTRL + 4) {
-        uint32_t prev = st->scsi_dma_ctrl;
-        iifx_write_reg32_byte(&st->scsi_dma_ctrl, off, value);
-        if (st->scsi_dma_ctrl & SCSIDMA_RESET) {
-            st->scsi_dma_ctrl = SCSIDMA_INTREN;
-            st->scsi_dma_count = 0;
+        // Track $010 bit 6 (TRI_STATE_TEST, spec §3.2 / §7.2).
+        if ((off & 0xf0) == 0x10)
+            st->scsi_dma_tri_state_test = (value & 0x40) != 0;
+        // MR_DMA edge-load (ERS §6.5.1 / §6.7.2.3) MUST happen BEFORE
+        // the write reaches scsi.c.  Reason: scsi.c's write_mr fires
+        // a DRQ callback (via scsi_update_drq) when MR_DMA goes 0→1,
+        // and that callback re-enters our pump (iifx_scsi_irq).  If
+        // the counter hasn't yet been reloaded from $100, the pump
+        // drains bytes to whatever stale cur_addr is left over from
+        // the previous arm.  Predict the new MR_DMA value from the
+        // write target + value before forwarding.
+        if ((off & 0xf0) == 0x20) {
+            bool prev = scsi_get_mr_dma(cfg->scsi);
+            bool now = (value & 0x02) != 0;
+            if (now && !prev && (st->scsi_dma_ctrl & SCSIDMA_DMAEN))
+                st->scsi_dma_addr = st->scsi_dma_addr_latch;
+            st->scsi_dma_prev_mr_dma = now;
         }
-        // If iINTREN just transitioned 0 -> 1 AND the chip's /IRQ is
-        // currently asserted, the wrapper's IRQ output should go high
-        // NOW (the chip's edge was missed while iINTREN was off, but
-        // the chip's /IRQ is level-sensitive — as long as it stays
-        // asserted, the wrapper's "enable" rising edge should latch
-        // it through).  Without this re-evaluation, the kernel's
-        // typical pattern (arm SDMA with iINTREN=0, wait for EOP,
-        // then enable iINTREN once the request is fully prepared)
-        // would miss the EOP IRQ that fires during the arm window.
-        // iINTREN rising edge with chip /IRQ still asserted: deliver the
-        // missed IRQ now.  Real hardware's IRQ output is level-sensitive
-        // through this enable bit — if the chip is still asserting /IRQ
-        // when the wrapper's enable transitions 0→1, the wrapper should
-        // immediately propagate it.  A/UX's typical SDMA pattern is to
-        // arm sDADDR/sDCNT with iINTREN off, fire MR_DMA which triggers
-        // the chip's EOP, then enable iINTREN once the request is fully
-        // recorded.  Without this re-eval, the EOP IRQ that fires during
-        // the arm window is gated away and the kernel waits forever.
-        bool intren_rising = !(prev & SCSIDMA_INTREN) && (st->scsi_dma_ctrl & SCSIDMA_INTREN);
-        if (intren_rising && scsi_get_irq_active(cfg->scsi))
-            oss_set_source(st->oss, IIFX_OSS_SCSI, true);
-        // Mode change may enable iHSKEN; re-evaluate whether the bus
-        // master should run.
+        st->scsi_iface->write_uint8(cfg->scsi, off, value);
+        // Writing $050 / $070 (Start DMA Send / Initiator Receive)
+        // arms the chip's DMA mode; if Apple bus-master DMA is also
+        // enabled, mark the engine active so the pump can run.
+        if (((off & 0xf0) == 0x50 || (off & 0xf0) == 0x70) && (st->scsi_dma_ctrl & SCSIDMA_DMAEN))
+            st->scsi_dma_active = true;
+        // Re-sample MR_DMA for non-MR writes (e.g. RESET via $010
+        // can clear MR_DMA chip-side).
+        if ((off & 0xf0) != 0x20)
+            iifx_scsidma_observe_mr_dma(st, cfg->scsi);
+        // Re-evaluate /INT (reset bit may have raised chip IRQ;
+        // mode/start writes can also change chip state) and pump
+        // any pending bytes.
+        iifx_scsidma_update_int(cfg);
         iifx_scsidma_pump(cfg);
         return;
     }
+    if (off >= SCSIDMA_DCTRL && off < SCSIDMA_DCTRL + 4) {
+        // Compose the new 32-bit value over the STORED writable bits
+        // (not the read-side status composition: FIFONE at bit 4
+        // would collide with the RESET strobe semantics on write).
+        // The kernel typically does a full MOVE.L; byte decomposition
+        // is an artifact of our I/O dispatch, so we treat the cumulative
+        // byte writes as overlays on the stored value.
+        uint32_t composed = st->scsi_dma_ctrl;
+        iifx_write_reg32_byte(&composed, off, value);
+        iifx_scsidma_write_ctrl(cfg, composed);
+        return;
+    }
     if (off >= SCSIDMA_DCNT && off < SCSIDMA_DCNT + 4) {
+        // sDCNT — direct-access counter (ERS §6.6.3): CPU writes
+        // load the counter, per-byte transfer decrements it.
         iifx_write_reg32_byte(&st->scsi_dma_count, off, value);
-        // sDCNT becoming non-zero is the primary "arm" event — the
-        // kernel writes this register last when setting up a transfer.
-        // The chip-state model behind the continuation handling here is
-        // documented on iifx_state.scsi_dma_xfer_base/xfer_offset.
-        //
-        // Two A/UX SDMA-arm patterns reuse the same xfer_base across
-        // consecutive arms, expecting the chip's internal pointer to
-        // advance rather than overwrite:
-        //
-        //   (a) DECREASING counts — `lba=N tl=8` then `lba=N+1 tl=7`
-        //       at the same base; second read covers the last
-        //       (prev_count - new_count)/512 blocks of the first.  Doc-85
-        //       §4.6 + ROM `FastReadOSS` partial-block tail handling.
-        //
-        //   (b) EQUAL counts — kernel issues a series of fixed-size
-        //       reads to fill a contiguous N-chunk buffer (libc1_s
-        //       exec-load: 11 × 8192-byte arms at sDADDR=$2EBA00).
-        //       Each arm should drain to the next chunk, not overwrite
-        //       the previous.  See doc 102/104 for the trace.
         if ((off & 3) == 3) {
-            uint32_t new_count = st->scsi_dma_count;
-            uint32_t prev_count = st->scsi_dma_prev_count_initial;
-            uint32_t new_addr = st->scsi_dma_addr;
-            bool same_base = st->scsi_dma_last_was_in && new_addr == st->scsi_dma_xfer_base;
-            bool dec_cont =
-                same_base && new_count > 0 && new_count < prev_count && ((prev_count - new_count) & 0x1FF) == 0;
-            // Equal-count continuation only applies for "large chunk"
-            // arms (> 4096 bytes / 8 blocks).  Single-block reads
-            // (count=512, e.g. partition-map header polling at $2DD000)
-            // are re-reads — the kernel wants each to overwrite the
-            // buffer.  The libc1_s exec-load pattern uses 8192-byte
-            // chunks specifically.
-            bool eq_cont = same_base && new_count > 0 && new_count == prev_count && prev_count > 4096;
-            if (!dec_cont && !eq_cont) {
-                // Fresh transfer: chip's internal pointer resets to the
-                // new latched base.
-                st->scsi_dma_xfer_base = new_addr;
-                st->scsi_dma_xfer_offset = 0;
-            } else {
-                // Continuation (dec_cont OR eq_cont): A/UX issues a NEW
-                // SCSI READ to the same wrapper base address.  The chip's
-                // internal pointer advances by what the KERNEL credited
-                // for the previous arm (= delta_lba * blk_sz), NOT by
-                // the wrapper-drained byte count.  See doc-105/107 and
-                // the iifx_scsidma_snapshot_credit comment above.
-                //
-                // Falls back to prev_count (= wrapper-drained) when the
-                // shim reports 0 = no overlap detected (e.g. first read
-                // in a session, different target, or non-overlapping
-                // LBA — i.e. the kernel credits the full drain).
-                uint32_t credit = iifx_scsidma_snapshot_credit(st, cfg->scsi);
-                uint32_t advance = (credit != 0) ? credit : (dec_cont ? (prev_count - new_count) : prev_count);
-                st->scsi_dma_xfer_offset += advance;
-                st->scsi_dma_addr = new_addr + st->scsi_dma_xfer_offset;
-            }
-            // Always call the kernel-credit shim on FRESH transfers too —
-            // otherwise the prev_read_* tracker never gets the FIRST arm's
-            // SCSI READ recorded, so the SECOND arm's overlap detection
-            // fails (sees prev_lba = -1 → returns credit=0 → no override
-            // → +$400 shift).  Discard the return value on fresh arms;
-            // we only need the side-effect of updating the tracker.
-            if (!dec_cont && !eq_cont)
-                (void)iifx_scsidma_snapshot_credit(st, cfg->scsi);
-            st->scsi_dma_prev_count_initial = new_count;
-            st->scsi_dma_last_was_in = false;
+            scsidma_fifo_clear(st);
+            if (st->scsi_dma_count != 0 && (st->scsi_dma_ctrl & SCSIDMA_DMAEN))
+                st->scsi_dma_active = true;
         }
         iifx_scsidma_pump(cfg);
         return;
     }
     if (off >= SCSIDMA_DADDR && off < SCSIDMA_DADDR + 4) {
-        iifx_write_reg32_byte(&st->scsi_dma_addr, off, value);
-        // Address update may also imply (re-)arm; pump to cover all
-        // orderings of register programming.
+        // sDADDR — "initial-value-holding register" (ERS §6.1.1.1,
+        // §6.2.3.3).  Writes update only the latch; the internal
+        // counter is reloaded from the latch on the MR_DMA 0→1
+        // rising edge (iifx_scsidma_observe_mr_dma).  Reads of $100
+        // return the live counter through the Address Readback
+        // Buffer.
+        iifx_write_reg32_byte(&st->scsi_dma_addr_latch, off, value);
+        if ((off & 3) == 3)
+            scsidma_fifo_clear(st);
         iifx_scsidma_pump(cfg);
         return;
     }
     if (off >= SCSIDMA_DTIME && off < SCSIDMA_DTIME + 4) {
-        iifx_write_reg32_byte(&st->scsi_dma_timer, off, value);
+        iifx_write_reg32_byte(&st->scsi_dma_watchdog_reload, off, value);
+        // Writing $140 loads the watchdog counter and clears its IRQ
+        // latch (spec §19.3). We don't actively tick the counter
+        // (DMA bytes complete synchronously here, so the watchdog
+        // would only matter across a true stall), but the latch
+        // semantics matter for the kernel.
+        if ((off & 3) == 3 && st->scsi_dma_watchdog_irq_latch) {
+            st->scsi_dma_watchdog_irq_latch = false;
+            iifx_scsidma_update_int(cfg);
+        }
         return;
     }
-    if (off >= SCSIDMA_TEST && off < SCSIDMA_TEST + 4)
-        iifx_write_reg32_byte(&st->scsi_dma_test, off, value);
+    if (off >= SCSIDMA_FIFO && off < SCSIDMA_FIFO + 4) {
+        // $180 writes are ignored unless FIFO loopback test mode is
+        // active (spec §5.4 / §7.3).
+        if (st->scsi_dma_fifo_loopback_test)
+            iifx_write_reg32_byte(&st->scsi_dma_fifo_word, off, value);
+        return;
+    }
 }
 
-// ----------------------------------------------------------------------------
-// iifx_scsidma_pump — the bus-master DMA engine
-// ----------------------------------------------------------------------------
+// ── Bus-master pump (spec §15, §16) ───────────────────────────────
 //
-// Called whenever wrapper or chip state changes such that a byte might
-// move.  Walks one continuous run of bytes between RAM and the chip in
-// the current bus phase, then signals EOP if the count reaches zero.
+// Walks the FIFO byte-router in whichever direction the chip phase
+// implies. Refill/drain (mem -> SCSI) or accept/flush (SCSI -> mem).
+// Bytes are moved one at a time through the FIFO lane addressed by
+// (dma_addr & 3); dma_addr and dma_count advance per byte.
 //
-// Idempotent on its preconditions: if the wrapper isn't armed or the
-// chip isn't in DMA mode, returns immediately.
-//
-// Note on memory access: real PSC SDMA is a true bus master — once it
-// wins arbitration it drives the physical address bus directly, with
-// no MMU between it and RAM.  A/UX's kernel converts virtual buffer
-// pointers to physical via realvtop before programming sDADDR, so the
-// value stored there is already a physical address.  Going through
-// memory_write/read_uint8_slow re-routes the address through the
-// CPU's MMU, which for kernel buffers in identity-mapped low RAM
-// happens to land correctly but mis-routes for any buffer whose
-// supervisor logical-to-physical mapping isn't identity (e.g. user-
-// mode pages reached during exec's binary load via a kernel alias
-// outside the identity-mapped range).  Use mmu_{read,write}_physical
-// to bypass translation and write to the byte the kernel asked for.
+// Idempotent: if not armed, MR_DMA not set, count=0, or phase has no
+// work, returns immediately. The chip-side helpers (push/pop) drive
+// REQ/ACK / EOP / phase transitions internally; we re-check phase
+// on each iteration so a phase change mid-burst cleanly exits.
 static void iifx_scsidma_pump(config_t *cfg) {
     iifx_state_t *st = iifx_state(cfg);
     scsi_t *scsi = cfg->scsi;
 
-    // --- wrapper-side preconditions -----------------------------------
-    // No bytes to move? Done.
-    if (st->scsi_dma_count == 0)
+    // Engine runs whenever:
+    //   - Apple DMA is enabled in $080
+    //   - There are bytes left to move (count > 0 or FIFO not empty)
+    //   - The 53C80 is in pseudo-DMA mode (MR_DMA set)
+    // The kernel may write the register set in different orders;
+    // the spec doesn't require a strict "Start-DMA" trigger to arm
+    // the byte-router beyond these preconditions.
+    if (!(st->scsi_dma_ctrl & SCSIDMA_DMAEN))
         return;
-    // NOTE: iHSKEN is NOT a precondition for SDMA bus-master mode.
-    // iHSKEN gates the per-byte CPU-PIO auto-handshake path (offset
-    // $0..$F passthrough writes in iifx_scsidma_write_uint8).  The
-    // SDMA bus master operates independently: when sDCNT > 0,
-    // sDADDR is programmed, and the chip has MR_DMA set, the wrapper
-    // transfers bytes between RAM and the chip's data register via
-    // its own internal handshake (independent of iHSKEN's CPU-side
-    // gate).  Observed empirically: A/UX's io_type=5 scsiin SDMA
-    // path programs sDCNT/sDADDR/sDTIME, sets chip MR_DMA, but does
-    // NOT set iHSKEN (sDCTRL=$07 at SDMA-arm time).
-
-    // --- chip-side precondition ---------------------------------------
-    // MR_DMA must be set for the chip to participate in pseudo-DMA.
-    // (On real 5380 hardware this is what causes the chip to drive DRQ
-    // in response to target REQ; in our model it's the gate that lets
-    // BSR_DR assert and the auto-handshake byte commit.)
+    if (st->scsi_dma_count == 0 && st->scsi_dma_fifo_count == 0)
+        return;
     if (!scsi_get_mr_dma(scsi))
+        return;
+    // ERS §6.7.2.3: the chip starts DMA only after one of the
+    // Start-DMA registers is written ($050 = Start DMA Send, $070
+    // = Start DMA Initiator Receive).  Without this gate the pump
+    // would drain bytes the moment MR_DMA is written — before the
+    // kernel has finished the rest of its setup sequence — and the
+    // resulting early EOP IRQ would race the kernel's sleep,
+    // dropping the wakeup.  scsi_dma_active is set when $050/$070
+    // is written with DMAEN already enabled (see SCSI register
+    // write path) and cleared on RESET, DMAEN-clear, or EOP
+    // completion.
+    if (!st->scsi_dma_active)
         return;
 
     int phase = scsi_get_bus_phase(scsi);
 
     if (phase == scsi_data_in) {
-        // ── Target → Initiator ────────────────────────────────────────
-        // Chip has bytes ready in its data-in buffer.  Drain them into
-        // RAM[sDADDR..] until either the chip buffer empties or sDCNT
-        // hits zero.  Phase stays at data_in across the drain — the
-        // chip no longer auto-transitions to STATUS on buf-empty (see
-        // scsi_pop_data_in_byte commentary).  scsi_signal_eop below
-        // raises /IRQ with phase still data_in; the kernel handler's
-        // BSR/SBS_PHASE check then sees phase match preserved and takes
-        // the ST_READ success path, and the existing CSR-read deferred
-        // phase_status mechanism transitions to STATUS when the
-        // handler reads CSR.
+        // SCSI -> mem. Direct byte-at-a-time transfer between chip
+        // and RAM. The spec describes a 4-byte FIFO byte-router that
+        // assembles longword bus cycles; its only externally visible
+        // side effects are $080 bit 4 (FIFONE) and $180 (FIFO word),
+        // both of which are zero / unread under A/UX's driver
+        // pattern (transfers complete before the kernel inspects
+        // them). The byte-router is therefore behaviourally
+        // equivalent to a direct byte path for this caller.
         uint8_t byte;
-        bool drained_any = false;
         while (st->scsi_dma_count > 0 && scsi_pop_data_in_byte(scsi, &byte)) {
             mmu_write_physical_uint8(st->mmu, st->scsi_dma_addr, byte);
             st->scsi_dma_addr++;
             st->scsi_dma_count--;
-            drained_any = true;
         }
-        // Mark this pump cycle as "data_in completed" so the next sDCNT
-        // write can detect a continuation pattern.
-        if (drained_any)
-            st->scsi_dma_last_was_in = true;
     } else if (phase == scsi_data_out) {
-        // ── Initiator → Target ────────────────────────────────────────
-        // Pull bytes from RAM[sDADDR..] and feed them to the chip until
-        // either sDCNT hits zero or the chip's buffer fills (at which
-        // point command_complete fires and the chip leaves data_out —
-        // detected by the phase check below).
+        // mem -> SCSI. Direct byte path, same reasoning as data-in.
         while (st->scsi_dma_count > 0) {
             uint8_t byte = mmu_read_physical_uint8(st->mmu, st->scsi_dma_addr);
             scsi_push_data_out_byte(scsi, byte);
@@ -833,18 +968,15 @@ static void iifx_scsidma_pump(config_t *cfg) {
                 break;
         }
     } else {
-        // Any other phase: nothing for the bus master to do.  The chip
-        // would simply not drive DRQ here on real hardware.
+        // Any other phase: the chip wouldn't be driving DRQ on real
+        // hardware. Nothing to do.
         return;
     }
 
-    // --- EOP signaling ------------------------------------------------
-    // When the programmed count exhausts, real wrappers assert the EOP
-    // pin into the chip.  The chip latches end_of_dma and (with MR_DMA
-    // on) raises /IRQ via scsi_update_irq, which our IRQ callback
-    // forwards to OSS source 9 — waking the kernel's scsidintr.
-    if (st->scsi_dma_count == 0)
-        scsi_signal_eop(scsi);
+    // Completion: count exhausted and FIFO drained. Signal EOP and
+    // latch the done bit.
+    if (st->scsi_dma_count == 0 && st->scsi_dma_fifo_count == 0)
+        iifx_scsidma_finish_success(cfg);
 }
 
 // Reads one byte from the IIfx I/O space.
@@ -1170,27 +1302,26 @@ static void iifx_via1_irq(void *context, bool active) {
     oss_set_source(st->oss, IIFX_OSS_VIA1, active);
 }
 
-// Routes NCR 5380 /IRQ and /DRQ from the chip to the IIfx-specific
+// Routes NCR 53C80 /IRQ and /DRQ from the chip to the IIfx-specific
 // hardware around it.
 //
-//   /IRQ → OSS source 9 (IIFX_OSS_SCSI), gated by the wrapper's iINTREN
-//          enable bit in sDCTRL.  When set, the kernel's scsidintr fires
-//          and processes completion.
+//   /IRQ → composed into the wrapper's gated /INT (spec §20). Routed
+//          to OSS source 9 (IIFX_OSS_SCSI) via iifx_scsidma_update_int,
+//          which also folds in the wrapper's own latches
+//          (done/bus-err/wonarb/watchdog).
 //
-//   /DRQ → drives the wrapper's bus-master pump.  On real hardware, each
-//          DRQ pulse from the chip causes the wrapper to handshake one
-//          byte (ACK in, increment sDADDR, decrement sDCNT).  We model
-//          this by calling iifx_scsidma_pump on DRQ assertion; the pump
-//          drains as many bytes as it can in one shot rather than
-//          tracking per-byte DRQ pulses (the chip's emulator delivers
-//          buf contents in bulk).
+//   /DRQ → drives the bus-master pump. On real hardware each DRQ pulse
+//          handshakes one byte; we model that by calling the pump on
+//          DRQ assertion, which drains as many bytes as it can in a
+//          single pass (the chip-side emulator delivers buffer
+//          contents in bulk, not one byte per REQ).
 static void iifx_scsi_irq(void *context, bool irq, bool drq) {
+    (void)irq;
     config_t *cfg = (config_t *)context;
     iifx_state_t *st = iifx_state(cfg);
     if (!st || !st->oss)
         return;
-    bool gated = irq && (st->scsi_dma_ctrl & SCSIDMA_INTREN);
-    oss_set_source(st->oss, IIFX_OSS_SCSI, gated);
+    iifx_scsidma_update_int(cfg);
     if (drq)
         iifx_scsidma_pump(cfg);
 }
@@ -1312,11 +1443,6 @@ static void iifx_init(config_t *cfg, checkpoint_t *checkpoint) {
     assert(st != NULL);
     cfg->machine_context = st;
 
-    // A/UX kernel-credit tracker: "no previous READ" sentinels (calloc
-    // zeroed everything but we need -1 for the LBA / target fields).
-    st->scsi_dma_prev_read_lba = -1;
-    st->scsi_dma_prev_read_target = -1;
-
     cfg->mem_map = memory_map_init(cfg->machine->address_bits, cfg->ram_size, cfg->machine->rom_size, checkpoint);
     cfg->cpu = cpu_init(CPU_MODEL_68030, checkpoint);
     cfg->scheduler = scheduler_init(cfg->cpu, checkpoint);
@@ -1399,8 +1525,8 @@ static void iifx_init(config_t *cfg, checkpoint_t *checkpoint) {
         system_read_checkpoint_data(checkpoint, &st->scsi_dma_ctrl, sizeof(st->scsi_dma_ctrl));
         system_read_checkpoint_data(checkpoint, &st->scsi_dma_count, sizeof(st->scsi_dma_count));
         system_read_checkpoint_data(checkpoint, &st->scsi_dma_addr, sizeof(st->scsi_dma_addr));
-        system_read_checkpoint_data(checkpoint, &st->scsi_dma_timer, sizeof(st->scsi_dma_timer));
-        system_read_checkpoint_data(checkpoint, &st->scsi_dma_test, sizeof(st->scsi_dma_test));
+        system_read_checkpoint_data(checkpoint, &st->scsi_dma_watchdog_reload, sizeof(st->scsi_dma_watchdog_reload));
+        system_read_checkpoint_data(checkpoint, &st->scsi_dma_fifo_word, sizeof(st->scsi_dma_fifo_word));
         system_read_checkpoint_data(checkpoint, &st->mmu->tc, sizeof(st->mmu->tc));
         system_read_checkpoint_data(checkpoint, &st->mmu->crp, sizeof(st->mmu->crp));
         system_read_checkpoint_data(checkpoint, &st->mmu->srp, sizeof(st->mmu->srp));
@@ -1523,8 +1649,8 @@ static void iifx_checkpoint_save(config_t *cfg, checkpoint_t *cp) {
     system_write_checkpoint_data(cp, &st->scsi_dma_ctrl, sizeof(st->scsi_dma_ctrl));
     system_write_checkpoint_data(cp, &st->scsi_dma_count, sizeof(st->scsi_dma_count));
     system_write_checkpoint_data(cp, &st->scsi_dma_addr, sizeof(st->scsi_dma_addr));
-    system_write_checkpoint_data(cp, &st->scsi_dma_timer, sizeof(st->scsi_dma_timer));
-    system_write_checkpoint_data(cp, &st->scsi_dma_test, sizeof(st->scsi_dma_test));
+    system_write_checkpoint_data(cp, &st->scsi_dma_watchdog_reload, sizeof(st->scsi_dma_watchdog_reload));
+    system_write_checkpoint_data(cp, &st->scsi_dma_fifo_word, sizeof(st->scsi_dma_fifo_word));
     system_write_checkpoint_data(cp, &st->mmu->tc, sizeof(st->mmu->tc));
     system_write_checkpoint_data(cp, &st->mmu->crp, sizeof(st->mmu->crp));
     system_write_checkpoint_data(cp, &st->mmu->srp, sizeof(st->mmu->srp));
