@@ -148,8 +148,10 @@ uint16_t scsi_get_cmd_blk_sz(const scsi_t *scsi);
 // READ vs other commands.  The full opcode table lives in
 // scsi_internal.h (chip-internal); only the few opcodes that wrappers
 // actually need to test against are exported here.
-#define SCSI_OPCODE_READ_6  0x08 // 6-byte READ CDB (CMD_READ)
-#define SCSI_OPCODE_READ_10 0x28 // 10-byte READ CDB (CMD_READ_10)
+#define SCSI_OPCODE_READ_6   0x08 // 6-byte READ CDB (CMD_READ)
+#define SCSI_OPCODE_READ_10  0x28 // 10-byte READ CDB (CMD_READ_10)
+#define SCSI_OPCODE_WRITE_6  0x0A // 6-byte WRITE CDB (CMD_WRITE)
+#define SCSI_OPCODE_WRITE_10 0x2A // 10-byte WRITE CDB (CMD_WRITE_10)
 
 // Query whether MR_DMA is currently set in the chip's mode register.
 // Used by bus-master pumps to gate transfers.

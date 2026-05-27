@@ -274,9 +274,11 @@ typedef struct iifx_state {
     bool scsi_dma_fifo_loopback_test;
 
     // ─── A/UX kernel-credit shim state (see warning at the helper) ──
-    // Snapshot of previous SCSI READ command for overlap detection,
-    // plus the accumulated "credit offset" added to the chip's $100
-    // latch at the next MR_DMA-edge load.  -1 LBA / target = no prev.
+    // Snapshot of previous SCSI READ-or-WRITE command for overlap
+    // detection, plus the accumulated "credit offset" added to the
+    // chip's $100 latch at the next MR_DMA-edge load.  -1 LBA /
+    // target = no previous data-transfer command.  The "_read_"
+    // suffix is historical from when the shim only handled READs.
     int scsi_dma_prev_read_lba;
     uint16_t scsi_dma_prev_read_tl;
     int scsi_dma_prev_read_target;
@@ -654,7 +656,11 @@ static void iifx_scsidma_update_int(config_t *cfg);
 // accumulate (delta_lba * blk_sz).
 static void iifx_scsidma_recompute_credit(iifx_state_t *st, scsi_t *scsi) {
     uint8_t opcode = scsi_get_cmd_opcode(scsi);
-    if (opcode != SCSI_OPCODE_READ_6 && opcode != SCSI_OPCODE_READ_10) {
+    bool is_read = (opcode == SCSI_OPCODE_READ_6 || opcode == SCSI_OPCODE_READ_10);
+    bool is_write = (opcode == SCSI_OPCODE_WRITE_6 || opcode == SCSI_OPCODE_WRITE_10);
+    if (!is_read && !is_write) {
+        if (getenv("GS_IIFX_SHIM_TRACE"))
+            fprintf(stderr, "SHIM reset (non-data opcode=$%02x)\n", opcode);
         st->scsi_dma_prev_read_lba = -1;
         st->scsi_dma_prev_read_target = -1;
         st->scsi_dma_prev_read_tl = 0;
@@ -667,6 +673,15 @@ static void iifx_scsidma_recompute_credit(iifx_state_t *st, scsi_t *scsi) {
     uint16_t new_tl = scsi_get_cmd_tl(scsi);
     uint16_t blk_sz = scsi_get_cmd_blk_sz(scsi);
 
+    // Overlap: same target + same block size + new lba in (prev_lba,
+    // prev_lba + prev_tl) — i.e. the new READ/WRITE picks up partway
+    // through the previous command's still-pending range.  We don't
+    // distinguish read vs. write for the test: the kernel uses the
+    // same chunked-arm pattern for both, and an interleaved
+    // read-then-write of the same range would normally reset because
+    // the kernel re-targets the buffer between them.  (When it
+    // doesn't, the wrong-direction overlap is the kind of false
+    // positive this shim is known to produce — see header.)
     bool overlap = st->scsi_dma_prev_read_target == new_target && st->scsi_dma_prev_read_lba >= 0 &&
                    (int)new_lba > st->scsi_dma_prev_read_lba &&
                    (uint32_t)((int)new_lba - st->scsi_dma_prev_read_lba) < st->scsi_dma_prev_read_tl &&
@@ -675,7 +690,18 @@ static void iifx_scsidma_recompute_credit(iifx_state_t *st, scsi_t *scsi) {
     if (overlap) {
         uint32_t credit = (uint32_t)((int)new_lba - st->scsi_dma_prev_read_lba) * (uint32_t)blk_sz;
         st->scsi_dma_credit_offset += credit;
+        if (getenv("GS_IIFX_SHIM_TRACE"))
+            fprintf(stderr,
+                    "SHIM credit  %s tgt=%d lba=%u tl=%u (prev lba=%d tl=%u) +%u  total_off=%u  latch=$%08x => "
+                    "addr=$%08x\n",
+                    is_read ? "RD" : "WR", new_target, new_lba, new_tl, st->scsi_dma_prev_read_lba,
+                    st->scsi_dma_prev_read_tl, credit, st->scsi_dma_credit_offset, st->scsi_dma_addr_latch,
+                    st->scsi_dma_addr_latch + st->scsi_dma_credit_offset);
     } else {
+        if (getenv("GS_IIFX_SHIM_TRACE"))
+            fprintf(stderr, "SHIM fresh   %s tgt=%d lba=%u tl=%u (prev lba=%d tl=%u)  offset=0  latch=$%08x\n",
+                    is_read ? "RD" : "WR", new_target, new_lba, new_tl, st->scsi_dma_prev_read_lba,
+                    st->scsi_dma_prev_read_tl, st->scsi_dma_addr_latch);
         st->scsi_dma_credit_offset = 0;
     }
     st->scsi_dma_prev_read_lba = (int)new_lba;
