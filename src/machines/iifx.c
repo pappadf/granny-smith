@@ -660,7 +660,7 @@ static void iifx_scsidma_recompute_credit(iifx_state_t *st, scsi_t *scsi) {
     bool is_write = (opcode == SCSI_OPCODE_WRITE_6 || opcode == SCSI_OPCODE_WRITE_10);
     if (!is_read && !is_write) {
         if (getenv("GS_IIFX_SHIM_TRACE"))
-            fprintf(stderr, "SHIM reset (non-data opcode=$%02x)\n", opcode);
+            fprintf(stdout, "SHIM reset (non-data opcode=$%02x)\n", opcode);
         st->scsi_dma_prev_read_lba = -1;
         st->scsi_dma_prev_read_target = -1;
         st->scsi_dma_prev_read_tl = 0;
@@ -699,7 +699,7 @@ static void iifx_scsidma_recompute_credit(iifx_state_t *st, scsi_t *scsi) {
                     st->scsi_dma_addr_latch + st->scsi_dma_credit_offset);
     } else {
         if (getenv("GS_IIFX_SHIM_TRACE"))
-            fprintf(stderr, "SHIM fresh   %s tgt=%d lba=%u tl=%u (prev lba=%d tl=%u)  offset=0  latch=$%08x\n",
+            fprintf(stdout, "SHIM fresh   %s tgt=%d lba=%u tl=%u (prev lba=%d tl=%u)  offset=0  latch=$%08x\n",
                     is_read ? "RD" : "WR", new_target, new_lba, new_tl, st->scsi_dma_prev_read_lba,
                     st->scsi_dma_prev_read_tl, st->scsi_dma_addr_latch);
         st->scsi_dma_credit_offset = 0;
@@ -916,6 +916,30 @@ static uint8_t iifx_scsidma_read_uint8(config_t *cfg, uint32_t offset) {
 static void iifx_scsidma_write_uint8(config_t *cfg, uint32_t offset, uint8_t value) {
     iifx_state_t *st = iifx_state(cfg);
     uint32_t off = offset & 0x1fff;
+
+    // Per-register PC trace for the discriminator investigation
+    // (env-gated, same toggle as the shim trace).  Emits one line per
+    // interesting wrapper-register write with the CPU PC at issue
+    // time.  $0C0/$100 emit only on the final byte so the assembled
+    // 32-bit value appears.  $020/$050/$070 are byte-wide registers.
+    if (getenv("GS_IIFX_SHIM_TRACE")) {
+        if (off == 0x020 || off == 0x050 || off == 0x070) {
+            fprintf(stdout, "REG W $%03x = $%02x  pc=$%08x  ctrl=$%08x\n", off, value, cpu_get_pc(cfg->cpu),
+                    st->scsi_dma_ctrl);
+        } else if ((off & 0xff0) == SCSIDMA_DCTRL && (off & 3) == 3) {
+            uint32_t composed = st->scsi_dma_ctrl;
+            iifx_write_reg32_byte(&composed, off, value);
+            fprintf(stdout, "REG W $080 = $%08x  pc=$%08x\n", composed, cpu_get_pc(cfg->cpu));
+        } else if ((off & 0xff0) == SCSIDMA_DCNT && (off & 3) == 3) {
+            uint32_t composed = st->scsi_dma_count;
+            iifx_write_reg32_byte(&composed, off, value);
+            fprintf(stdout, "REG W $0c0 = $%08x  pc=$%08x\n", composed, cpu_get_pc(cfg->cpu));
+        } else if ((off & 0xff0) == SCSIDMA_DADDR && (off & 3) == 3) {
+            uint32_t composed = st->scsi_dma_addr_latch;
+            iifx_write_reg32_byte(&composed, off, value);
+            fprintf(stdout, "REG W $100 = $%08x  pc=$%08x\n", composed, cpu_get_pc(cfg->cpu));
+        }
+    }
 
     if (off < 0x80) {
         // Hardware-handshake write path: when HW_HANDSHAKE=1, byte

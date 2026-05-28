@@ -376,7 +376,7 @@ static void run_cmd(scsi_t *scsi) {
             scsi->devices[target].image ? scsi->devices[target].image->raw_size : 0);
 
         if (getenv("GS_IIFX_SHIM_TRACE"))
-            fprintf(stderr, "SCSI_%s_6 tgt=%d lba=%u tl=%u blk_sz=%u\n", scsi->cmd.opcode == CMD_WRITE ? "WR" : "RD",
+            fprintf(stdout, "SCSI_%s_6 tgt=%d lba=%u tl=%u blk_sz=%u\n", scsi->cmd.opcode == CMD_WRITE ? "WR" : "RD",
                     target, scsi->cmd.lba, scsi->cmd.tl, blk_sz);
 
         // Reject writes on read-only devices (CD-ROM, etc.)
@@ -424,7 +424,7 @@ static void run_cmd(scsi_t *scsi) {
         uint16_t blk_sz = scsi->devices[target].block_size;
 
         if (getenv("GS_IIFX_SHIM_TRACE"))
-            fprintf(stderr, "SCSI_%s_10 tgt=%d lba=%u tl=%u blk_sz=%u\n",
+            fprintf(stdout, "SCSI_%s_10 tgt=%d lba=%u tl=%u blk_sz=%u\n",
                     scsi->cmd.opcode == CMD_WRITE_10 ? "WR" : "RD", target, scsi->cmd.lba, scsi->cmd.tl, blk_sz);
 
         // Reject writes on read-only devices
