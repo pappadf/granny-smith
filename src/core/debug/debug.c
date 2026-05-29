@@ -165,88 +165,66 @@ breakpoint_t *set_breakpoint(debug_t *debug, uint32_t addr, addr_space_t space) 
     return bp;
 }
 
-// Evaluate a condition expression.  Supports a small set of pseudo-variables
-// so breakpoints can be post-MMU only, etc.  Examples:
-//   mmu.enabled            — true when the 68030 MMU is on
-//   cpu.supervisor         — true in supervisor mode
-//   cpu.d0 == $12345678    — comparison (==, !=, <, >, <=, >=)
-//   $tc != 0               — register comparison
-// Unknown expressions evaluate to true (safer default — don't drop hits).
+// Evaluate a breakpoint condition expression using the full ${...}
+// expression grammar (see src/core/object/expr.c).  Supports anything
+// expr_eval supports — paths (cpu.pc, cpu.d0), method calls
+// (memory.peek.l(0x1201D420)), arithmetic/bitwise/comparison/logical
+// operators, ternary, etc.  Examples:
+//   cpu.pc == 0x40802A14
+//   cpu.d0 == 0
+//   memory.peek.l(0x1201D420) == 0xE000
+//   cpu.supervisor && cpu.pc >= 0x10000000
+//
+// Unknown / parse-failed / V_ERROR expressions evaluate to true so a
+// typo doesn't silently swallow hits.
 static bool eval_breakpoint_condition(const char *expr) {
     if (!expr || !*expr)
         return true;
-    // Skip leading whitespace
     while (*expr == ' ' || *expr == '\t')
         expr++;
+    if (!*expr)
+        return true;
 
-    // Bare flag shortcuts
-    if (strcmp(expr, "mmu.enabled") == 0)
-        return g_mmu && g_mmu->enabled;
-    if (strcmp(expr, "!mmu.enabled") == 0)
-        return !g_mmu || !g_mmu->enabled;
-    if (strcmp(expr, "cpu.supervisor") == 0) {
-        cpu_t *cpu = system_cpu();
-        return cpu && cpu->supervisor;
-    }
-    if (strcmp(expr, "!cpu.supervisor") == 0) {
-        cpu_t *cpu = system_cpu();
-        return !cpu || !cpu->supervisor;
-    }
+    expr_ctx_t ctx = {
+        .root = object_root(),
+        .alias = NULL, // bp conditions don't currently support shell aliases
+        .alias_ud = NULL,
+        .binding = NULL, // bp conditions don't currently support shell vars
+        .binding_ud = NULL,
+    };
 
-    // Parse "<lhs> <op> <rhs>"
-    char lhs[64], op[4], rhs[64];
-    if (sscanf(expr, " %63s %3s %63s", lhs, op, rhs) != 3)
-        return true; // unrecognised — default to firing
-    cpu_t *cpu = system_cpu();
-    uint32_t lv = 0, rv = 0;
-    // Resolve LHS
-    if (strcmp(lhs, "mmu.enabled") == 0)
-        lv = (g_mmu && g_mmu->enabled) ? 1 : 0;
-    else if (strcmp(lhs, "cpu.supervisor") == 0)
-        lv = (cpu && cpu->supervisor) ? 1 : 0;
-    else if (strncmp(lhs, "cpu.d", 5) == 0 && lhs[5] >= '0' && lhs[5] <= '7' && lhs[6] == '\0')
-        lv = cpu ? cpu->d[lhs[5] - '0'] : 0;
-    else if (strncmp(lhs, "cpu.a", 5) == 0 && lhs[5] >= '0' && lhs[5] <= '7' && lhs[6] == '\0')
-        lv = cpu ? cpu->a[lhs[5] - '0'] : 0;
-    else if (strcasecmp(lhs, "$tc") == 0 || strcasecmp(lhs, "tc") == 0)
-        lv = g_mmu ? g_mmu->tc : 0;
-    else if (strcasecmp(lhs, "$sr") == 0 || strcasecmp(lhs, "sr") == 0)
-        lv = cpu ? cpu_get_sr(cpu) : 0;
-    else if (strcasecmp(lhs, "$vbr") == 0 || strcasecmp(lhs, "vbr") == 0)
-        lv = cpu ? cpu->vbr : 0;
-    else {
-        // Try parse as number
-        const char *s = lhs;
-        if (*s == '$')
-            s++;
-        char *end;
-        lv = (uint32_t)strtoul(s, &end, 16);
-        if (*end != '\0')
-            return true;
+    value_t v = expr_eval(expr, &ctx);
+    bool result;
+    switch (v.kind) {
+    case V_BOOL:
+        result = v.b;
+        break;
+    case V_INT:
+        result = (v.i != 0);
+        break;
+    case V_UINT:
+        result = (v.u != 0);
+        break;
+    case V_FLOAT:
+        result = (v.f != 0.0);
+        break;
+    case V_STRING:
+        result = (v.s && *v.s);
+        break;
+    case V_NONE:
+        result = false;
+        break;
+    case V_ERROR:
+        // Parse / resolution error — safer default is to fire so the
+        // user notices the typo rather than missing the breakpoint.
+        result = true;
+        break;
+    default:
+        result = true;
+        break;
     }
-    // RHS
-    {
-        const char *s = rhs;
-        if (*s == '$')
-            s++;
-        char *end;
-        rv = (uint32_t)strtoul(s, &end, 16);
-        if (*end != '\0')
-            return true;
-    }
-    if (strcmp(op, "==") == 0)
-        return lv == rv;
-    if (strcmp(op, "!=") == 0)
-        return lv != rv;
-    if (strcmp(op, "<") == 0)
-        return lv < rv;
-    if (strcmp(op, ">") == 0)
-        return lv > rv;
-    if (strcmp(op, "<=") == 0)
-        return lv <= rv;
-    if (strcmp(op, ">=") == 0)
-        return lv >= rv;
-    return true;
+    value_free(&v);
+    return result;
 }
 
 // Set a logpoint at the specified address range (end_addr == addr for single address)
