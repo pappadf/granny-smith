@@ -137,19 +137,8 @@
 // Type Definitions
 // ============================================================================
 
-// SCSI bus phases
-typedef enum scsi_phase {
-    scsi_bus_free = 0,
-    scsi_arbitration,
-    scsi_selection,
-    scsi_reselection,
-    scsi_command,
-    scsi_data_in,
-    scsi_data_out,
-    scsi_status,
-    scsi_message_in,
-    scsi_message_out
-} scsi_phase_t;
+// SCSI bus phases are declared in the public scsi.h (external bus
+// masters need them for the bus-master helpers).
 
 // SCSI device type (HD vs CD-ROM)
 enum scsi_device_type {

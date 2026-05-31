@@ -843,7 +843,7 @@ static void se30_init(config_t *cfg, checkpoint_t *checkpoint) {
     se30->mmu = mmu_init(ram_base, ram_size, cfg->machine->ram_max, rom_data, rom_size, SE30_ROM_START, SE30_ROM_END);
     assert(se30->mmu != NULL);
     g_mmu = se30->mmu;
-    cfg->cpu->mmu = se30->mmu;
+    cpu_attach_mmu(cfg->cpu, se30->mmu);
 
     // Bring up the NuBus.  Slot $E is BUILTIN with the SE/30 video card;
     // slots $9..$B are the PDS pseudo-slots (EMPTY in v1, no card seated).
@@ -932,7 +932,7 @@ static void se30_init(config_t *cfg, checkpoint_t *checkpoint) {
 
         // Re-assign MMU pointers that checkpoint_restore overwrote with stale addresses
         g_mmu = se30->mmu;
-        cfg->cpu->mmu = se30->mmu;
+        cpu_attach_mmu(cfg->cpu, se30->mmu);
 
         via_redrive_outputs(cfg->via1);
         via_redrive_outputs(cfg->via2);

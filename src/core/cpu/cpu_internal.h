@@ -86,6 +86,7 @@ struct cpu {
     // after reading.
     struct object *cpu_object;
     struct object *fpu_object;
+    struct object *mmu_object;
 };
 
 // Read the condition code register from CPU flags

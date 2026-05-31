@@ -124,9 +124,25 @@ static void scsi_update_irq(scsi_t *scsi) {
         return;
     scsi->irq_active = irq;
 
+    // Latch BSR bit 4 (BSR_INT, "Interrupt Request Active") on the
+    // rising edge of /IRQ.  On real NCR 5380 hardware this bit
+    // reflects the chip's IRQ pin and is cleared by reading the RESET
+    // register ($70) — see read_uint8 case RESET.  A/UX's scsiirq
+    // dispatch (retail kernel $1004A95E BTST #4,$50(A2)) reads BSR
+    // and bails to the "bogus irq" path if BSR_INT is clear, so the
+    // chip MUST raise this bit when it asserts /IRQ.  Mac OS uses
+    // VIA2 CB2 for SCSI IRQs and doesn't observe BSR_INT, so adding
+    // this is invisible to Mac OS.  Do NOT clear on falling edge —
+    // real hardware latches until RESET-read.
+    if (irq)
+        scsi->reg.bsr |= BSR_INT;
+
     // Drive VIA2 CB2: active-low (0 = asserted)
     if (scsi->via)
         via_input_c(scsi->via, 1, 1, !irq);
+    // Or deliver via the machine-specific callback (IIfx → OSS source 9)
+    if (scsi->irq_cb)
+        scsi->irq_cb(scsi->irq_cb_ctx, irq, scsi->drq_active);
 }
 
 // Drive VIA2 CA2 (SCSI /DRQ) based on DMA data readiness.
@@ -141,6 +157,9 @@ static void scsi_update_drq(scsi_t *scsi) {
     // Drive VIA2 CA2: active-low (0 = asserted)
     if (scsi->via)
         via_input_c(scsi->via, 0, 1, !drq);
+    // Or deliver via the machine-specific callback (IIfx → OSS source 9)
+    if (scsi->irq_cb)
+        scsi->irq_cb(scsi->irq_cb_ctx, scsi->irq_active, drq);
 }
 
 // Pop the next byte from the SCSI buffer
@@ -356,6 +375,10 @@ static void run_cmd(scsi_t *scsi) {
             scsi->cmd.opcode == CMD_WRITE ? "WRITE" : "READ", target, scsi->cmd.lba, scsi->cmd.tl, blk_sz,
             scsi->devices[target].image ? scsi->devices[target].image->raw_size : 0);
 
+        if (getenv("GS_IIFX_SHIM_TRACE"))
+            fprintf(stdout, "SCSI_%s_6 tgt=%d lba=%u tl=%u blk_sz=%u\n", scsi->cmd.opcode == CMD_WRITE ? "WR" : "RD",
+                    target, scsi->cmd.lba, scsi->cmd.tl, blk_sz);
+
         // Reject writes on read-only devices (CD-ROM, etc.)
         if (scsi->cmd.opcode == CMD_WRITE && scsi->devices[target].read_only) {
             scsi_check_condition(scsi, SENSE_DATA_PROTECT, ASC_WRITE_PROTECTED, 0x00);
@@ -399,6 +422,10 @@ static void run_cmd(scsi_t *scsi) {
         scsi->cmd.tl = (scsi->buf.data[7] << 8) | scsi->buf.data[8];
 
         uint16_t blk_sz = scsi->devices[target].block_size;
+
+        if (getenv("GS_IIFX_SHIM_TRACE"))
+            fprintf(stdout, "SCSI_%s_10 tgt=%d lba=%u tl=%u blk_sz=%u\n",
+                    scsi->cmd.opcode == CMD_WRITE_10 ? "WR" : "RD", target, scsi->cmd.lba, scsi->cmd.tl, blk_sz);
 
         // Reject writes on read-only devices
         if (scsi->cmd.opcode == CMD_WRITE_10 && scsi->devices[target].read_only) {
@@ -1003,6 +1030,9 @@ static uint8_t read_uint8(void *s, uint32_t addr) {
         return scsi->reg.tcr;
 
     case CSR:
+        // Deferred phase transition (CSR-side only).
+        if (scsi->bus.phase == scsi_data_in && scsi->buf.size == 0)
+            phase_status(scsi, STATUS_GOOD);
         // Loopback: CSR reflects initiator-driven signals from ICR and
         // target-driven signals from TCR, as they appear on the bus
         if (scsi->loopback) {
@@ -1032,7 +1062,16 @@ static uint8_t read_uint8(void *s, uint32_t addr) {
         return scsi->reg.csr;
 
     case BSR:
-        // Phase match is computed dynamically from CSR vs TCR
+        // Phase match is computed dynamically from CSR vs TCR.  BSR_EDMA
+        // (bit 7, "End of DMA") reflects the chip's end_of_dma latch —
+        // A/UX's scsiirq state-decode reads this bit to distinguish an
+        // EOP IRQ ("DMA chunk done; more chunks expected if buf not yet
+        // empty") from a phase-mismatch panic.  Without setting BSR_EDMA,
+        // the state-decode at $1004AA22 (BSR_PM=1 + CSR_BSY=1 path) maps
+        // to SI_UNK → SG_DMA → SG_PANIC ("SCSI manager state table") —
+        // which is exactly the panic we hit when doc-92's "stay in
+        // data_in across partial arms" change left end_of_dma asserted
+        // without BSR_EDMA visible to the kernel.
         if (scsi->loopback) {
             uint8_t val = scsi->reg.bsr;
             // ICR-driven signals readable via BSR
@@ -1041,16 +1080,38 @@ static uint8_t read_uint8(void *s, uint32_t addr) {
             if (scsi->reg.icr & ICR_ATN)
                 val |= BSR_ATN;
             val |= (scsi_phase_match(scsi) ? BSR_PM : 0);
-            SCSI_TRACE("  SCSI RD BSR -> 0x%02X (icr=0x%02X bsr_stored=0x%02X pm=%d)", val, scsi->reg.icr,
-                       scsi->reg.bsr, scsi_phase_match(scsi));
+            if (scsi->end_of_dma)
+                val |= BSR_EDMA;
+            SCSI_TRACE("  SCSI RD BSR -> 0x%02X (icr=0x%02X bsr_stored=0x%02X pm=%d edma=%d)", val, scsi->reg.icr,
+                       scsi->reg.bsr, scsi_phase_match(scsi), scsi->end_of_dma);
             return val;
         }
-        return scsi->reg.bsr | (scsi_phase_match(scsi) ? BSR_PM : 0);
+        return scsi->reg.bsr | (scsi_phase_match(scsi) ? BSR_PM : 0) | (scsi->end_of_dma ? BSR_EDMA : 0);
 
     case RESET:
         // Reading the Reset Parity/Interrupt register clears BSR bits
-        // 5 (parity error), 4 (IRQ), and 2 (busy error)
+        // 5 (parity error), 4 (IRQ), and 2 (busy error).  On real NCR
+        // 5380 hardware, this read also clears the EOP latch (= the
+        // chip's "end of DMA" condition) — the kernel reads RESET to
+        // ACK the EOP IRQ so /IRQ deasserts and the chip can rearm.
+        //
+        // Without clearing end_of_dma here, the doc-92 fix
+        // (keep chip in data_in across partial DMA arms) causes an
+        // interrupt storm: scsi_update_irq keeps /IRQ asserted because
+        // (end_of_dma && MR_DMA) holds, the kernel's scsiirq runs,
+        // reads RESET (clears BSR_INT), returns — and /IRQ immediately
+        // re-asserts on the next instruction because end_of_dma was
+        // still true.  scsiirq fires every ~760 cycles in a tight loop,
+        // user-mode init never gets to run.
+        //
+        // Pre-doc-92, end_of_dma got cleared indirectly via the chip's
+        // phase transition to status → bus_free path (phase_free() in
+        // scsi.c clears end_of_dma).  Doc-92's fix removed that
+        // unconditional transition, so we need to clear end_of_dma here
+        // (on RESET-read) to mirror real-hardware EOP-ACK semantics.
         scsi->reg.bsr &= ~(0x04 | BSR_INT | 0x20);
+        scsi->end_of_dma = false;
+        scsi_update_irq(scsi);
         return 0xff;
     }
 
@@ -1072,6 +1133,268 @@ static uint32_t read_uint32(void *scsi, uint32_t addr) {
     (void)scsi;
     LOG(1, "scsi: long read at 0x%08X — NCR 5380 is byte-only, returning 0xFFFFFFFF", addr);
     return 0xFFFFFFFFu;
+}
+
+// ============================================================================
+// scsi_odr_auto_handshake_byte() — shared body for "byte arrives at ODR
+// with REQ/ACK auto-handshake"
+// ============================================================================
+//
+// Called from two places:
+//   1. The chip's own pseudo-DMA ODR alias write at offset $200 (write_uint8
+//      `case ODR` with `addr & 0x200`).  This is the "BLIND" port that
+//      Mac OS and SE/30 A/UX both use for fast PIO data transfer.
+//   2. The IIfx SCSI DMA wrapper's iHSKEN mode (src/machines/iifx.c
+//      `iifx_scsidma_write_uint8` offset < 0x10 with SCSIDMA_HSKEN set
+//      in sDCTRL).  This is the IIfx-specific glue that auto-handshakes
+//      CPU writes onto the SCSI bus.
+//
+// On real hardware these two paths produce identical chip-side behavior:
+// in both cases a byte lands in the NCR 5380's ODR latch with a successful
+// REQ/ACK handshake during whatever bus phase is currently active.  The
+// only difference is who drives the handshake — the chip itself (path 1)
+// vs the IIfx wrapper (path 2).  The chip is unaware which is the case.
+//
+// What the chip actually does with the byte depends on the bus phase:
+//
+//   - COMMAND phase  → byte is a CDB byte.  After cmd_size() bytes are
+//                       collected, run_cmd() executes the command.
+//   - DATA_OUT phase → byte is a payload byte.  After buf.max bytes are
+//                       collected, command_complete() finalizes.
+//   - Other phases   → byte just latches in ODR; never goes to the bus
+//                       (real chip silently absorbs it).
+//
+// THREE GATES sit between "byte arrives" and "byte joins scsi->buf":
+//
+// GATE 1 — Phase gate (real hardware behavior, applies to both paths)
+//   On a real 5380, a write to the ODR alias during a target-driven phase
+//   (DATA_IN, STATUS, MESSAGE_IN) latches into ODR but never transfers —
+//   the chip's bus drivers are tri-stated.  We model this by simply not
+//   touching scsi->buf in those phases.
+//
+// GATE 2 — DMA-write-armed gate (real hardware behavior, applies to both paths)
+//   NCR 5380 datasheet §6.8.1: in pseudo-DMA send mode (MR_DMA=1), bytes
+//   written to the ODR alias are queued but do NOT transmit until the
+//   host writes "Start DMA Send" (register 5).  Before that arming write,
+//   the chip absorbs ODR writes without committing them to the bus.  We
+//   model this as a one-bit gate `dma_write_armed` set in case DMA of
+//   write_uint8 and cleared on MR_DMA rising edge.
+//
+// GATE 3 — Primer-slot gate (***NOT real hardware behavior***)
+//   This is a WORKAROUND, not a hardware model.  See the long comment
+//   block over the gate itself below for the full explanation of what
+//   it does, why it's structurally wrong, and why we keep it for now.
+//   Callers from path 1 (the chip's own pseudo-DMA alias) pass
+//   apply_primer_gate=true; callers from path 2 (IIfx iHSKEN) pass
+//   apply_primer_gate=false.
+//
+static void scsi_odr_auto_handshake_byte(scsi_t *scsi, uint8_t value, bool apply_primer_gate) {
+    // ODR always latches the byte, regardless of phase.  This mirrors real
+    // chip behavior — the ODR is just an 8-bit register.  Whether anything
+    // happens NEXT depends on the gates below.
+    scsi->reg.odr = value;
+
+    // ── GATE 1: phase gate ──────────────────────────────────────────────
+    // Only initiator-driven phases (the host writes data onto the bus)
+    // care about the byte.  COMMAND = sending CDB; DATA_OUT = sending
+    // payload bytes.  Any other phase, drop on the floor.  This matches
+    // real hardware: in target-driven phases the chip's bus drivers are
+    // tri-stated and ODR writes go nowhere.
+    if (scsi->bus.phase != scsi_data_out && scsi->bus.phase != scsi_command)
+        return;
+
+    // ── GATE 2: DMA-write-armed gate ────────────────────────────────────
+    // Per NCR 5380 §6.8.1: in pseudo-DMA send mode, the host must arm the
+    // transfer by writing the "Start DMA Send" register (port 5, case DMA
+    // in write_uint8) before bytes will actually transmit.  Pre-arm writes
+    // are absorbed by the chip silently.  We honor that here.  When MR_DMA
+    // is OFF entirely (Mac OS's PIO command-byte path uses ICR/ACK rather
+    // than pseudo-DMA), this gate is bypassed — ICR.ACK assertion provides
+    // the handshake instead.
+    if ((scsi->reg.mr & MR_DMA) && !scsi->dma_write_armed)
+        return;
+
+    // ── GATE 3: primer-slot gate ────────────────────────────────────────
+    // ********************************************************************
+    // *  WORKAROUND — NOT A HARDWARE MODEL.  DO NOT TREAT AS REFERENCE.  *
+    // *  Background, mechanism, and exit plan documented below in full.  *
+    // ********************************************************************
+    //
+    // BACKGROUND
+    // ----------
+    // A/UX 3.0.1's SCSI driver, when about to send a DATA_OUT payload,
+    // executes a peculiar two-step pattern in its `scsiout` glue:
+    //
+    //     $1004B888  CLR.B  ([$5B20E,])         ; "primer" — write $00
+    //                                            ; to the BLIND port
+    //     $1004979C  MOVE.B (A2)+,([$5B20E,])   ; per-byte loop —
+    //                                            ; the real data
+    //
+    // On REAL hardware, the primer write does NOT make it to the bus:
+    // the BLIND port is the chip's pseudo-DMA alias.  A pseudo-DMA send
+    // doesn't transmit until the host writes "Start DMA Send", AND the
+    // target asserts REQ.  At the moment the kernel executes its CLR.B
+    // primer, the target has NOT yet asserted REQ — so the chip absorbs
+    // the byte into ODR and waits.  The next event is the target raising
+    // REQ for the FIRST real byte; the chip then transmits the held ODR
+    // ($00 from the primer) — but the kernel has ALREADY rewritten ODR
+    // with the first real byte via the MOVE.B loop.  Net result on real
+    // hardware: the primer byte is overwritten before it transmits;
+    // exactly one byte goes onto the bus per target REQ; everything
+    // lines up.
+    //
+    // In OUR emulator, the timing doesn't line up: we collapse "byte
+    // arrived in ODR" and "byte committed to the bus" into a single
+    // operation (the `scsi->buf.data[size++] = value` below).  So the
+    // primer $00 lands in buf.data[0], the first real byte lands in
+    // buf.data[1], everything shifts by one, and the last byte falls
+    // off the end at buf.size == buf.max.  Mac OS's "Untitled" dialog
+    // came out as "☐Untitled" (notes/60-aux3-volname-root-cause.md
+    // §6 documents the full chain).
+    //
+    // THE PROPER FIX
+    // --------------
+    // Model REQ/ACK/DRQ accurately:
+    //   - When a byte lands in ODR, do NOT push to buf.
+    //   - Push to buf only when the chip pulses ACK in response to a
+    //     target REQ.
+    //   - The target asserts REQ asynchronously (driven by the device
+    //     side's phase state machine), not by the host's writes.
+    // With that model, the primer write would naturally drop on its
+    // own — exactly as on real hardware — because the target hasn't
+    // asserted REQ yet at the moment the primer fires.
+    //
+    // Session 65 tried this (notes/60-aux3-volname-root-cause.md §7.4)
+    // and could not get it working in finite time: A/UX's pseudo-DMA
+    // byte loop is unrolled and writes multiple bytes per BSR poll,
+    // so any per-byte REQ-consumption scheme starved real data writes
+    // (17340 dropped bytes, "This disk is damaged" dialog).  A correct
+    // implementation needs an asynchronous REQ-pulse scheduler on the
+    // target side, which is a non-trivial chunk of new code.
+    //
+    // THE SHORTCUT WE TOOK (session 66, this gate)
+    // --------------------------------------------
+    // Instead of modeling hardware properly, we sniff the CPU's PC to
+    // identify the primer pattern by signature:
+    //
+    //   1. When the FIRST byte of a DATA_OUT phase arrives, don't push
+    //      it yet — hold it in `primer_byte` along with the writer's PC
+    //      in `primer_pc`.
+    //   2. When the SECOND byte arrives, compare the new PC against
+    //      `primer_pc`:
+    //       - If the held byte is $00 AND the new PC differs from the
+    //         held PC, treat the held byte as a primer and discard it.
+    //       - Otherwise the held byte was real data — push it to buf,
+    //         then push the new byte.
+    //   3. From the third byte onward, push directly (no holding).
+    //
+    // WHY THIS IS WRONG
+    // -----------------
+    // - **A real NCR 5380 cannot see the CPU's program counter.**  This
+    //   gate uses `cpu_get_pc()` from inside the chip emulator — a flat
+    //   layering violation that only works because the emulator happens
+    //   to have access to the CPU state.
+    // - **It's a pattern-matcher, not a state machine.**  It identifies
+    //   one specific guest-software shape ($00 byte from a different PC
+    //   than the next byte) and discards it.  Any other primer-byte
+    //   pattern — a non-zero primer, a primer-then-primer sequence, a
+    //   primer from the same PC as the first data byte — will not be
+    //   detected.
+    // - **It is brittle to compiler/loader changes.**  Anything that
+    //   shifts the PC of `$1004B888` (e.g. a different kernel build,
+    //   relocation, code patching) breaks the detection.  We hard-coded
+    //   the assumption that "first byte from PC X, second from PC Y,
+    //   X ≠ Y" indicates a primer.
+    // - **It applies even when the kernel writes a legitimate $00 first
+    //   byte** in some other DATA_OUT path.  As long as the next byte
+    //   comes from a different PC, that $00 will be silently dropped —
+    //   a corruption that's invisible to the guest.
+    //
+    // WHY IT WORKS SHORT-TERM
+    // -----------------------
+    // - Empirically the ONLY observed source of $00-first-byte DATA_OUT
+    //   writes on the SE/30 / IIcx code paths is A/UX's `$1004B888`
+    //   primer, and the observed real-data writes always come from a
+    //   different PC ($1004979C).  So the PC-discrimination correctly
+    //   separates "primer" from "real data" in every measured case.
+    // - The retail kernel binary is byte-stable across our test
+    //   configurations, so the PC assumption holds in practice.
+    // - It unblocked the A/UX 3.0.1 installer (notes/60 §13 "Session 66
+    //   FIXED") and we've shipped against it for many sessions.
+    //
+    // EXIT PLAN
+    // ---------
+    // Replace this whole block with proper REQ/ACK/DRQ modeling.  Notes
+    // for a future attempt:
+    //   - Add a `req_pending` flag set asynchronously by the target
+    //     side's bus phase state machine (one REQ per byte transferred).
+    //   - In this function, push to buf only when `req_pending == true`,
+    //     and clear `req_pending` after the push.
+    //   - The target side must emit REQs in time with what the real chip
+    //     would: one REQ pulse per buf-slot consumed during the
+    //     pseudo-DMA send.
+    //   - Be careful with A/UX's unrolled byte-write loop: it writes
+    //     several bytes per BSR poll, so REQ pulses must be queued or
+    //     batched, not strictly one-per-byte-instruction.
+    //   - When REQ/ACK is in place, this gate goes away entirely AND
+    //     `scsi_hsken_data_out_byte` becomes redundant — both paths just
+    //     deliver to ODR and let the handshake state machine decide.
+    //
+    // CALLERS
+    // -------
+    // - Chip's pseudo-DMA alias write (Mac OS / SE/30 A/UX path):
+    //     pass apply_primer_gate=true — primer pattern is observed here.
+    // - IIfx iHSKEN wrapper (scsi_hsken_data_out_byte):
+    //     pass apply_primer_gate=false — the IIfx kernel's iHSKEN write
+    //     loop does NOT exhibit the primer-then-data pattern (and we
+    //     don't have measurements showing it would benefit from the
+    //     gate; in fact applying it would risk dropping a legitimate
+    //     first $00 byte from that path).
+    //
+    if (apply_primer_gate && scsi->bus.phase == scsi_data_out) {
+        cpu_t *cpu = system_cpu();
+        uint32_t pc = cpu ? cpu_get_pc(cpu) : 0;
+        // First byte of this DATA_OUT phase: hold it, don't push yet.
+        if (!scsi->primer_held && scsi->buf.size == 0) {
+            scsi->primer_byte = value;
+            scsi->primer_pc = pc;
+            scsi->primer_held = true;
+            return;
+        }
+        // Second byte arriving: decide whether the held byte was a primer.
+        // A held byte is treated as a primer iff:
+        //   (a) it was $00 (matches the CLR.B kernel pattern)
+        //   (b) its writer PC differs from this byte's writer PC
+        //       (the kernel's primer site and data-loop site are
+        //       different instructions)
+        // Anything else: held byte was real data, push it before falling
+        // through to push the current byte.
+        if (scsi->primer_held) {
+            scsi->primer_held = false;
+            bool is_primer = (scsi->primer_byte == 0x00 && scsi->primer_pc != pc);
+            if (!is_primer) {
+                assert(scsi->buf.size < scsi->buf.max);
+                scsi->buf.data[scsi->buf.size++] = scsi->primer_byte;
+            }
+            // fall through to push current byte
+        }
+    }
+
+    // ── Commit the byte to the buffer ──────────────────────────────────
+    // After all three gates have either passed or been bypassed, the
+    // byte joins scsi->buf at the current buf.size index.  Once we have
+    // the expected number of bytes for the active phase, dispatch to
+    // run_cmd (CDB complete in COMMAND phase) or command_complete
+    // (payload complete in DATA_OUT phase).
+    assert(scsi->buf.size < scsi->buf.max);
+    scsi->buf.data[scsi->buf.size++] = value;
+
+    if (scsi->bus.phase == scsi_command) {
+        if (scsi->buf.size == cmd_size(scsi->buf.data[0]))
+            run_cmd(scsi);
+    } else if (scsi->buf.size == scsi->buf.max) {
+        command_complete(scsi);
+    }
 }
 
 // Write a byte to SCSI controller register
@@ -1097,63 +1420,13 @@ static void write_uint8(void *s, uint32_t addr, uint8_t value) {
     switch (addr >> 4 & 7) {
     case ODR:
         if (addr & 0x200) {
-            // Pseudo-DMA ODR alias: if the target expects a byte in the
-            // current phase (command or data-out), push into the buffer.
-            // In other phases, the write just latches into ODR — real
-            // NCR 5380 doesn't gate ODR writes on phase.
-            scsi->reg.odr = value;
-            if (scsi->bus.phase == scsi_data_out || scsi->bus.phase == scsi_command) {
-                // BLIND/DMA-write priming gate: when MR.DMA is active, only
-                // consume the byte if the host has armed the transfer by
-                // writing the "Start DMA Send" register (port 5, case DMA).
-                // Real NCR 5380 hardware latches ODR on every write but only
-                // transmits to the SCSI bus once the host has issued Start
-                // DMA Send and the target has asserted REQ.  Pre-Start
-                // writes — like A/UX's `CLR.B ([$5B20E,])` primer at PC
-                // $1004B888 — are absorbed by the chip but never reach the
-                // bus, so they must not land in our buf.data either.
-                // When MR.DMA is OFF (Mac OS PIO command-byte path uses
-                // ICR/ACK rather than pseudo-DMA), we always consume — the
-                // ICR.ACK assertion provides the handshake.
-                if ((scsi->reg.mr & MR_DMA) && !scsi->dma_write_armed)
-                    break;
-                // Primer-slot gate (data_out only): hold the first byte
-                // and decide on the second.  If the held byte is $00 and
-                // the second byte comes from a different PC, the held
-                // byte is a kernel primer (A/UX's CLR.B at $1004B888) —
-                // discard it and push only the second.  Otherwise the
-                // held byte is real data — push held + push current.
-                // See notes/60-aux3-volname-root-cause.md and
-                // scsi_internal.h `primer_held`.
-                if (scsi->bus.phase == scsi_data_out) {
-                    cpu_t *cpu = system_cpu();
-                    uint32_t pc = cpu ? cpu_get_pc(cpu) : 0;
-                    if (!scsi->primer_held && scsi->buf.size == 0) {
-                        scsi->primer_byte = value;
-                        scsi->primer_pc = pc;
-                        scsi->primer_held = true;
-                        break;
-                    }
-                    if (scsi->primer_held) {
-                        scsi->primer_held = false;
-                        bool is_primer = (scsi->primer_byte == 0x00 && scsi->primer_pc != pc);
-                        if (!is_primer) {
-                            assert(scsi->buf.size < scsi->buf.max);
-                            scsi->buf.data[scsi->buf.size++] = scsi->primer_byte;
-                        }
-                        // fall through to push current byte
-                    }
-                }
-                assert(scsi->buf.size < scsi->buf.max);
-                scsi->buf.data[scsi->buf.size++] = value;
-
-                if (scsi->bus.phase == scsi_command) {
-                    // Once we have all the command bytes, execute the command
-                    if (scsi->buf.size == cmd_size(scsi->buf.data[0]))
-                        run_cmd(scsi);
-                } else if (scsi->buf.size == scsi->buf.max)
-                    command_complete(scsi);
-            }
+            // Pseudo-DMA ODR alias: the host writes through the chip's
+            // BLIND/auto-handshake port.  Shared with the IIfx iHSKEN
+            // wrapper path — see scsi_odr_auto_handshake_byte() below.
+            // Apply the primer-slot gate here (the Mac-OS-specific
+            // CLR.B-then-real-data pattern at PC $1004B888); IIfx's
+            // wrapper-side call passes apply_primer_gate=false.
+            scsi_odr_auto_handshake_byte(scsi, value, /*apply_primer_gate=*/true);
         } else
             scsi->reg.odr = value;
         break;
@@ -1367,6 +1640,18 @@ void scsi_set_via(scsi_t *scsi, via_t *via) {
     scsi->via = via;
 }
 
+// Install a machine-specific IRQ/DRQ delivery callback (IIfx → OSS source 9).
+// Mutually exclusive with scsi_set_via; the chip emulator invokes whichever
+// is installed.
+void scsi_set_irq_callback(scsi_t *scsi, scsi_irq_fn cb, void *context) {
+    scsi->irq_cb = cb;
+    scsi->irq_cb_ctx = context;
+    // Replay current state so the machine wiring observes the chip's
+    // present IRQ/DRQ before any further transitions.
+    if (cb)
+        cb(context, scsi->irq_active, scsi->drq_active);
+}
+
 // Push a single byte into scsi->buf for a data-out transfer, bypassing
 // the pseudo-DMA primer-slot gate. Used by the IIfx DMA wrapper when
 // iHSKEN is set — the wrapper hardware auto-handshakes each byte onto
@@ -1374,15 +1659,141 @@ void scsi_set_via(scsi_t *scsi, via_t *via) {
 // Triggers command_complete when the buffer fills (mirrors the regular
 // ODR-alias path's end-of-transfer behavior).
 void scsi_hsken_data_out_byte(scsi_t *scsi, uint8_t byte) {
-    if (scsi->bus.phase != scsi_data_out)
+    // The IIfx wrapper's iHSKEN auto-handshake is, from the chip's
+    // point of view, indistinguishable from a pseudo-DMA alias write:
+    // a byte arrives at the chip's ODR with a successful REQ/ACK
+    // handshake during whatever bus phase is currently active.  Share
+    // the body via scsi_odr_auto_handshake_byte().  We pass
+    // apply_primer_gate=false because the kernel's iHSKEN write loop
+    // does not exhibit the CLR.B-then-real-data primer pattern that
+    // the gate exists to filter — see the gate's commentary above.
+    scsi_odr_auto_handshake_byte(scsi, byte, /*apply_primer_gate=*/false);
+}
+
+// ============================================================================
+// External bus-master pseudo-DMA helpers (see scsi.h commentary)
+// ============================================================================
+//
+// These mirror, at API level, the way real NCR 5380 hardware interacts with
+// an external DMA controller (e.g. the IIfx's SCSI DMA wrapper).  On real
+// hardware the chip exposes DRQ to request each byte transfer and accepts
+// DACK from the external DMA on completion; an EOP pulse from the external
+// DMA causes the chip to latch its "end of DMA" condition and assert /IRQ
+// if MR_DMA is set.  We expose the same semantics here as discrete calls.
+
+bool scsi_pop_data_in_byte(scsi_t *scsi, uint8_t *out) {
+    // Mirrors the chip's CDR-read code path inside read_uint8() — same
+    // sequence of side effects, so an external DMA pump produces the
+    // same chip-side state as a CPU-driven byte loop would have.
+    if (!scsi || !out)
+        return false;
+    if (scsi->bus.phase != scsi_data_in)
+        return false;
+    if (scsi->buf.size == 0)
+        return false;
+    *out = next_byte(scsi);
+    // CDR read path also deasserts CSR_REQ between bytes when MR_DMA is
+    // set (real chip handshake gap).  Mirror that.
+    if (scsi->reg.mr & MR_DMA)
+        scsi->reg.csr &= ~CSR_REQ;
+    // Eagerly transition to STATUS when the SCSI command's data has
+    // been fully delivered (buf empty).  On real hardware the target
+    // releases data-in as soon as it has no more data to hand the
+    // initiator.  This matters specifically for A/UX's scsiirq on
+    // the IIfx wrapper: it reads BSR at entry and uses BSR_PM to
+    // distinguish "the chip just finished a command cleanly"
+    // (PM=0 → SI_PHASE → kernel clears MR_DMA, so the next SCSI
+    // READ produces a fresh MR_DMA 0→1 edge that reloads the
+    // 343S0064-A internal DMA Address Counter from $100) from
+    // "this DMA chunk is mid-transfer" (PM=1 → kernel leaves
+    // MR_DMA set → next chunk's $100 write does NOT cause a counter
+    // reload → chunks naturally concatenate at advancing physical
+    // addresses).  Only fires on the bus-master DMA pop path; the
+    // CPU's PIO/pseudo-DMA reads of $060 go through read_uint8
+    // case ODR (which calls next_byte directly) and are unaffected.
+    if (scsi->buf.size == 0)
+        phase_status(scsi, STATUS_GOOD);
+    return true;
+}
+
+void scsi_push_data_out_byte(scsi_t *scsi, uint8_t byte) {
+    // External DMA-side push.  Same body and semantics as the iHSKEN-
+    // wrapper-driven path: ODR latches the byte, the auto-handshake gate
+    // model decides whether it commits to buf, and phase-completion
+    // dispatch fires when applicable.  apply_primer_gate=false: bus-
+    // master transfers don't generate the CLR.B-then-data primer pattern
+    // the gate exists to filter.
+    //
+    // Set dma_write_armed=true so scsi_odr_auto_handshake_byte's GATE 2
+    // ("Start DMA Send" arm gate) passes.  The IIfx SDMA wrapper does
+    // not write to the chip's $50 ("Start DMA Send") port — it transfers
+    // bytes via its own bus-master controller — so the chip-side arm
+    // flag would otherwise never be set, and every byte we push would
+    // be absorbed silently by GATE 2.  That would leave the chip's buf
+    // empty after a SCSI WRITE, command_complete would never fire,
+    // phase would stay at data_out, and scsiirq would see BSR_PM set +
+    // CSR_BSY set = SI_UNK = state-table panic.
+    if (!scsi)
         return;
-    scsi->reg.odr = byte;
-    if ((scsi->reg.mr & MR_DMA) && !scsi->dma_write_armed)
-        return; // not yet primed; matches the regular alias-path gate
-    assert(scsi->buf.size < scsi->buf.max);
-    scsi->buf.data[scsi->buf.size++] = byte;
-    if (scsi->buf.size == scsi->buf.max)
-        command_complete(scsi);
+    scsi->dma_write_armed = true;
+    scsi_odr_auto_handshake_byte(scsi, byte, /*apply_primer_gate=*/false);
+}
+
+void scsi_signal_eop(scsi_t *scsi) {
+    // External DMA controllers (IIfx wrapper, etc.) drive the chip's EOP
+    // input when their byte count reaches zero.  On real hardware the
+    // chip latches end_of_dma and asserts /IRQ via the same path used
+    // for phase-mismatch IRQs.  Idempotent: phase_status() may already
+    // have set end_of_dma during the last buffer-drain transition; this
+    // call just re-evaluates /IRQ.
+    if (!scsi)
+        return;
+    scsi->end_of_dma = true;
+    // Set TCR bit 7 (LBS — "Last Byte Sent/ACK'd") to indicate the chip
+    // has fully drained its DMA path.  A/UX's dma_ackdrop at $1004A24E
+    // reads `TCR & 0x80` to decide whether to subtract 1 from the
+    // bytes-transferred count: if bit 7 is clear, it assumes the last
+    // byte is still in flight (not yet ACK'd) and credits N-1 bytes to
+    // task.data_sent.  Without this, an SDMA read for 4 KB credits only
+    // 4095 bytes, the kernel sees data_sent < data_len, sets SST_MORE,
+    // and re-issues for `lba+1 tl-1` — overwriting the just-completed
+    // transfer's first block at the same RAM address.  Mac OS doesn't
+    // exercise this code path (uses VIA2-based pseudo-DMA), so setting
+    // TCR bit 7 is invisible to Mac OS.  The bit is cleared by the next
+    // CPU write to TCR (write_uint8 case TCR replaces the register).
+    scsi->reg.tcr |= 0x80;
+    // Wrapper EOP arrived during data_in or data_out: target's transfer is
+    // done from the wrapper's POV.  Force transition to STATUS phase.
+    //
+    // Note (doc-93 investigation): A/UX 3.0.1's IIfx scsiirq INTENTIONALLY
+    // clears task[$38] bit 13 at scsiirq entry ($1004A8C8), so the
+    // state-decode block's SI_EOP path ($1004A9E6, which requires that
+    // bit set) is NEVER reachable.  The kernel only handles wrapper EOPs
+    // via the SI_PHASE path ($1004AA2E) which is reached when BSR_PM=0
+    // (= chip's phase no longer matches TCR's data_in code).  So even for
+    // PARTIAL DMA arms within a single SCSI session, this code MUST
+    // transition the chip out of data_in/data_out — anything else makes
+    // the kernel panic with "SCSI manager state table" (SG_DMA + SI_UNK →
+    // SG_PANIC, dopanic at $1004A602).
+    //
+    // The overlapping-read pattern from doc-91 (lba=287680 tl=160 → tl=146
+    // → ...) is THE KERNEL'S INTENDED BEHAVIOR for chunked SDMA transfers,
+    // NOT a bug in this function.  The downstream "user pages zero-filled"
+    // issue is at a different layer — likely in how the kernel programs
+    // sDADDR for each reissued read.
+    if (scsi->bus.phase == scsi_data_in || scsi->bus.phase == scsi_data_out) {
+        scsi->buf.size = 0;
+        phase_status(scsi, STATUS_GOOD);
+    }
+    scsi_update_irq(scsi);
+}
+
+bool scsi_get_mr_dma(const scsi_t *scsi) {
+    return scsi && (scsi->reg.mr & MR_DMA) != 0;
+}
+
+bool scsi_get_irq_active(const scsi_t *scsi) {
+    return scsi && scsi->irq_active;
 }
 
 // Enable or disable loopback mode (passive SCSI terminator / test card)
@@ -1421,6 +1832,25 @@ int scsi_get_bus_target(const scsi_t *scsi) {
 }
 int scsi_get_bus_initiator(const scsi_t *scsi) {
     return scsi ? scsi->bus.initiator : -1;
+}
+
+uint8_t scsi_get_cmd_opcode(const scsi_t *scsi) {
+    return scsi ? scsi->cmd.opcode : 0;
+}
+int scsi_get_cmd_target(const scsi_t *scsi) {
+    return scsi ? (scsi->bus.target & 7) : -1;
+}
+uint32_t scsi_get_cmd_lba(const scsi_t *scsi) {
+    return scsi ? (uint32_t)scsi->cmd.lba : 0;
+}
+uint16_t scsi_get_cmd_tl(const scsi_t *scsi) {
+    return scsi ? scsi->cmd.tl : 0;
+}
+uint16_t scsi_get_cmd_blk_sz(const scsi_t *scsi) {
+    if (!scsi)
+        return 0;
+    int t = scsi->bus.target & 7;
+    return scsi->devices[t].block_size;
 }
 
 int scsi_device_type(const scsi_t *scsi, unsigned which) {

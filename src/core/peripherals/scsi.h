@@ -17,6 +17,26 @@
 struct scsi;
 typedef struct scsi scsi_t;
 
+// SCSI bus phase — observable state of the chip's bus phase logic.
+// External bus masters (e.g. the IIfx SCSI DMA wrapper) inspect this
+// to decide whether to transfer bytes into or out of the chip's data
+// register.  Values match the SCSI-1 wire encoding for the data-phase
+// transitions (data_out=0..status=3 use the chip's IO/CD/MSG bits
+// directly); the remaining values are emulator-internal sequencing
+// states.
+typedef enum scsi_phase {
+    scsi_bus_free = 0,
+    scsi_arbitration,
+    scsi_selection,
+    scsi_reselection,
+    scsi_command,
+    scsi_data_in,
+    scsi_data_out,
+    scsi_status,
+    scsi_message_in,
+    scsi_message_out
+} scsi_phase_t;
+
 // === Lifecycle (Constructor / Destructor / Checkpoint) ===
 
 // Mount a pre-machine `scsi` singleton at root carrying just the static
@@ -55,13 +75,95 @@ void scsi_set_via(scsi_t *scsi, via_t *via);
 typedef void (*scsi_irq_fn)(void *context, bool irq, bool drq);
 void scsi_set_irq_callback(scsi_t *scsi, scsi_irq_fn cb, void *context);
 
-// Push a single byte into the SCSI data-out buffer, bypassing the
-// pseudo-DMA primer-slot gate. Used by the IIfx wrapper when the
-// hardware-handshake mode (iHSKEN) is active — the wrapper hardware
-// auto-handshakes every byte onto the SCSI bus, so the A/UX primer
-// heuristic (which drops a leading $00 byte that differs in PC from
-// the next byte) must not be applied.
+// Push a single byte into the SCSI buffer, bypassing the pseudo-DMA
+// primer-slot gate. Used by the IIfx wrapper when the hardware-
+// handshake mode (iHSKEN) is active — the wrapper hardware auto-
+// handshakes every byte onto the SCSI bus during whatever phase is
+// currently active, so the A/UX primer heuristic (which drops a
+// leading $00 byte that differs in PC from the next byte) must not
+// be applied. Handles both COMMAND-phase CDB bytes and DATA-OUT-phase
+// data bytes — A/UX uses the same iHSKEN-armed write loop for both.
 void scsi_hsken_data_out_byte(scsi_t *scsi, uint8_t byte);
+
+// ============================================================================
+// External bus-master pseudo-DMA helpers
+// ============================================================================
+//
+// Used by machines whose SCSI architecture includes a custom DMA wrapper
+// that acts as a bus master between the host's RAM and the NCR 5380's
+// data register.  The IIfx SCSI DMA wrapper is one such device: with
+// sDADDR, sDCNT, and sDCTRL.iHSKEN programmed plus the chip's MR_DMA
+// set, the wrapper transfers bytes between RAM[sDADDR..sDADDR+sDCNT-1]
+// and the chip's data register over REQ/ACK without CPU involvement,
+// then asserts EOP (which the chip latches as end_of_dma → /IRQ).
+//
+// The wrapper code in src/machines/<machine>.c drives the transfer.
+// These helpers expose just enough of the chip's internal state for an
+// external pump function to do its job, modeled after how the real
+// 5380's DACK line + bus-side state interact with an external DMA
+// controller.
+
+// Pop one byte from the chip's data-in buffer.  Returns true if a byte
+// was available and writes it through `out`; false if the chip has no
+// byte to deliver (wrong phase, or buffer empty).  Phase stays at
+// data_in even when the buffer drains — the chip transitions to STATUS
+// lazily, via the existing CSR-read deferred-phase mechanism, when the
+// kernel handler reads CSR.  This models real hardware ordering: the
+// target keeps the phase asserted until *after* the chip has latched
+// EOP and the initiator has acked the IRQ.
+bool scsi_pop_data_in_byte(scsi_t *scsi, uint8_t *out);
+
+// Push one byte into the chip's data-out / command buffer.  Mirrors the
+// chip's auto-handshake ODR alias semantics (apply_primer_gate=false —
+// the bus master does not generate the primer-then-data pattern that
+// the gate exists to filter).  When the buffer fills, the chip
+// dispatches: run_cmd() if currently in COMMAND phase, command_complete()
+// if currently in DATA_OUT phase.
+void scsi_push_data_out_byte(scsi_t *scsi, uint8_t byte);
+
+// Signal "end of DMA" from an external bus master.  Equivalent to the
+// EOP pin being asserted in real hardware: the chip latches end_of_dma
+// and re-evaluates /IRQ.  Idempotent — calling when end_of_dma is
+// already set just re-evaluates the IRQ.
+void scsi_signal_eop(scsi_t *scsi);
+
+// Read-only accessors for the most recent SCSI command's LBA / TL /
+// target / block size.  Used by machine-specific wrappers that need to
+// reason about overlap patterns across consecutive SCSI commands (e.g.
+// IIfx's A/UX-driver kernel-credit shim — doc-105/107).  Returns the
+// `scsi->cmd.*` fields set by run_cmd() on CMD_READ / CMD_READ_10 /
+// CMD_WRITE / CMD_WRITE_10.  Returns 0 / opcode 0 before any command
+// has been issued.
+//
+// The 5380 chip layer does NOT use these — they're a window for an
+// external party (the machine-specific bus-master wrapper) to read
+// chip-observed command state without reaching into the struct.
+uint8_t scsi_get_cmd_opcode(const scsi_t *scsi);
+int scsi_get_cmd_target(const scsi_t *scsi);
+uint32_t scsi_get_cmd_lba(const scsi_t *scsi);
+uint16_t scsi_get_cmd_tl(const scsi_t *scsi);
+uint16_t scsi_get_cmd_blk_sz(const scsi_t *scsi);
+
+// SCSI opcodes exposed for external wrappers that need to distinguish
+// READ vs other commands.  The full opcode table lives in
+// scsi_internal.h (chip-internal); only the few opcodes that wrappers
+// actually need to test against are exported here.
+#define SCSI_OPCODE_READ_6   0x08 // 6-byte READ CDB (CMD_READ)
+#define SCSI_OPCODE_READ_10  0x28 // 10-byte READ CDB (CMD_READ_10)
+#define SCSI_OPCODE_WRITE_6  0x0A // 6-byte WRITE CDB (CMD_WRITE)
+#define SCSI_OPCODE_WRITE_10 0x2A // 10-byte WRITE CDB (CMD_WRITE_10)
+
+// Query whether MR_DMA is currently set in the chip's mode register.
+// Used by bus-master pumps to gate transfers.
+bool scsi_get_mr_dma(const scsi_t *scsi);
+
+// Query whether the chip's /IRQ output is currently asserted.  Used by
+// machine wrappers (IIfx) that re-evaluate their IRQ-enable gate on
+// writes to their own control registers: if /IRQ is level-sensitive
+// and the gate transitions from disable→enable, the wrapper should
+// latch the still-asserted IRQ now rather than waiting for the next
+// chip-side state change.
+bool scsi_get_irq_active(const scsi_t *scsi);
 
 // Enable/disable SCSI loopback test card (passive bus terminator).
 // When enabled, initiator-driven signals are reflected back through

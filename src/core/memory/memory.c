@@ -254,18 +254,44 @@ uint8_t memory_read_uint8_slow(uint32_t addr) {
         rebuild_soa_page(page);
         return LOAD_BE8(pe->host_base + (addr & PAGE_MASK));
     }
+    // Gate logical-device dispatch via dispatch_device_at_logical(): identity /
+    // MMU-off / non-identity-to-device cases dispatch immediately; non-identity-
+    // to-RAM (e.g. 24-bit Memory Manager flag-tagged master pointers $40xxxxxx
+    // → $00xxxxxx) falls through to the MMU walk below so the translated RAM
+    // is read instead of returning ROM bytes from the $40000000 device window.
     if (pe->dev && dispatch_device_at_logical(addr, g_active_read == g_supervisor_read))
         return pe->dev->read_uint8(pe->dev_context, addr - pe->base_addr);
-    // MMU TLB miss: try to resolve via table walk and retry
+    // When MMU is enabled, dispatch via PHYSICAL address (after table walk),
+    // not via the logical page-table entry — otherwise a user-virtual address
+    // whose upper byte coincides with a host-machine MMIO range (e.g. virtual
+    // $47f01000 hitting the IIfx ROM device window at $40000000-$4FFFFFFF)
+    // silently returns the device's read value instead of faulting.  A/UX's
+    // copyin depends on the fault to demand-page user pages.
+    //
+    // Fast path: TT (transparent translation) match means logical = physical,
+    // so the logical-page-table dev entry IS the correct dispatch.  Skip the
+    // expensive table walk for kernel I/O which is typically TT-mapped.
     if (g_mmu && g_mmu->enabled) {
-        if (mmu_handle_fault(g_mmu, addr, false, g_active_read == g_supervisor_read)) {
+        bool supervisor = g_active_read == g_supervisor_read;
+        if (pe->dev && mmu_check_tt(g_mmu, addr, false, supervisor))
+            return pe->dev->read_uint8(pe->dev_context, addr - pe->base_addr);
+        if (mmu_handle_fault(g_mmu, addr, false, supervisor)) {
             uintptr_t base = g_active_read[addr >> PAGE_SHIFT];
             if (base != 0)
                 return LOAD_BE8((uint8_t *)(base + addr));
-            // SoA still 0: either unmapped physical (no fault, e.g. TT-matched
-            // pseudo-slot) or a logpoint page where fill was suppressed.  Re-
-            // check the logpoint now that mmu_handle_fault has run (physical-
-            // space logpoints suppress the fill and require translation here).
+            // SoA still 0: physical page is device, unmapped, or logpointed.
+            // Translate to physical and dispatch on the PHYSICAL page-table
+            // entry.
+            uint32_t phys = mmu_translate_debug(g_mmu, addr, supervisor);
+            uint32_t phys_page = phys >> PAGE_SHIFT;
+            if ((int)phys_page < g_page_count) {
+                page_entry_t *phys_pe = &g_page_table[phys_page];
+                if (phys_pe->dev)
+                    return phys_pe->dev->read_uint8(phys_pe->dev_context, phys - phys_pe->base_addr);
+            }
+            // Re-check the logpoint now that mmu_handle_fault has run
+            // (physical-space logpoints suppress the fill and require
+            // translation here).
             if (logpoint_lookup(addr, &lp_host, &lp_writable) && lp_host) {
                 uint8_t v = LOAD_BE8(lp_host);
                 if (g_mem_logpoint_hook)
@@ -278,12 +304,17 @@ uint8_t memory_read_uint8_slow(uint32_t addr) {
                 g_bus_error_pending = true;
                 g_bus_error_address = addr;
                 g_bus_error_rw = true; // read
-                g_bus_error_fc = (g_active_read == g_supervisor_read) ? 5 : 1;
+                g_bus_error_fc = supervisor ? 5 : 1;
                 if (g_bus_error_instr_ptr)
                     *g_bus_error_instr_ptr = 0; // force decoder loop exit
             }
         }
+        // Unmapped physical memory returns $FF.
+        return 0xFF;
     }
+    // MMU disabled: logical == physical, dispatch by logical page-table entry.
+    if (pe->dev)
+        return pe->dev->read_uint8(pe->dev_context, addr - pe->base_addr);
     // Unmapped physical memory returns $FF (floating bus, pull-up resistors).
     // This matches real 68k Mac hardware behavior and is critical for:
     //   - ROM RAM sizing (write pattern / read-back $FF → detects boundary)
@@ -312,12 +343,51 @@ uint16_t memory_read_uint16_slow(uint32_t addr) {
         return LOAD_BE16(pe->host_base + (addr & PAGE_MASK));
     }
 
-    // Device I/O (single page, not crossing boundary).  Skip the dispatch
-    // when the MMU remaps this device-page logical address elsewhere (see
-    // dispatch_device_at_logical) and let the byte-split path below reach the
-    // translated physical memory.
+    // Gate logical-device dispatch (24-bit Mac OS master-pointer fix — see
+    // dispatch_device_at_logical above).
     if (pe->dev && (addr & PAGE_MASK) <= MEM_PAGE_SIZE - 2 &&
         dispatch_device_at_logical(addr, g_active_read == g_supervisor_read))
+        return pe->dev->read_uint16(pe->dev_context, addr - pe->base_addr);
+
+    // When MMU is enabled, dispatch via PHYSICAL address (see write_uint8_slow
+    // comment for the rationale).  Cross-page accesses fall through to byte
+    // reads which already handle MMU correctly.
+    if (g_mmu && g_mmu->enabled && (addr & PAGE_MASK) <= MEM_PAGE_SIZE - 2) {
+        bool supervisor = g_active_read == g_supervisor_read;
+        if (pe->dev && mmu_check_tt(g_mmu, addr, false, supervisor))
+            return pe->dev->read_uint16(pe->dev_context, addr - pe->base_addr);
+        if (mmu_handle_fault(g_mmu, addr, false, supervisor)) {
+            uintptr_t base = g_active_read[addr >> PAGE_SHIFT];
+            if (base != 0)
+                return LOAD_BE16((uint8_t *)(base + addr));
+            uint32_t phys = mmu_translate_debug(g_mmu, addr, supervisor);
+            uint32_t phys_page = phys >> PAGE_SHIFT;
+            if ((int)phys_page < g_page_count) {
+                page_entry_t *phys_pe = &g_page_table[phys_page];
+                if (phys_pe->dev)
+                    return phys_pe->dev->read_uint16(phys_pe->dev_context, phys - phys_pe->base_addr);
+            }
+            if (logpoint_lookup(addr, &lp_host, &lp_writable) && lp_host) {
+                uint16_t v = LOAD_BE16(lp_host);
+                if (g_mem_logpoint_hook)
+                    g_mem_logpoint_hook(addr, 2, v, false);
+                return v;
+            }
+        } else {
+            if (!g_bus_error_pending) {
+                g_bus_error_pending = true;
+                g_bus_error_address = addr;
+                g_bus_error_rw = true;
+                g_bus_error_fc = supervisor ? 5 : 1;
+                if (g_bus_error_instr_ptr)
+                    *g_bus_error_instr_ptr = 0;
+            }
+        }
+        return 0xFFFF;
+    }
+
+    // MMU-off fallback: dispatch device on logical page-table entry.
+    if (pe->dev && (addr & PAGE_MASK) <= MEM_PAGE_SIZE - 2)
         return pe->dev->read_uint16(pe->dev_context, addr - pe->base_addr);
 
     // Cross-page or host memory at page boundary: split into two byte reads
@@ -347,12 +417,51 @@ uint32_t memory_read_uint32_slow(uint32_t addr) {
         return LOAD_BE32(pe->host_base + (addr & PAGE_MASK));
     }
 
-    // Device I/O (single page, not crossing boundary).  Skip when the MMU
-    // remaps this device-page logical address elsewhere (see
-    // dispatch_device_at_logical); the 16-bit-split path below then reaches the
-    // translated physical memory.
+    // Gate logical-device dispatch (24-bit Mac OS master-pointer fix).
     if (pe->dev && (addr & PAGE_MASK) <= MEM_PAGE_SIZE - 4 &&
         dispatch_device_at_logical(addr, g_active_read == g_supervisor_read)) {
+        uint32_t v = pe->dev->read_uint32(pe->dev_context, addr - pe->base_addr);
+        return v;
+    }
+
+    // When MMU is enabled, dispatch via PHYSICAL address (see write_uint8_slow
+    // comment).  Cross-page accesses fall through to 16-bit reads.
+    if (g_mmu && g_mmu->enabled && (addr & PAGE_MASK) <= MEM_PAGE_SIZE - 4) {
+        bool supervisor = g_active_read == g_supervisor_read;
+        if (pe->dev && mmu_check_tt(g_mmu, addr, false, supervisor))
+            return pe->dev->read_uint32(pe->dev_context, addr - pe->base_addr);
+        if (mmu_handle_fault(g_mmu, addr, false, supervisor)) {
+            uintptr_t base = g_active_read[addr >> PAGE_SHIFT];
+            if (base != 0)
+                return LOAD_BE32((uint8_t *)(base + addr));
+            uint32_t phys = mmu_translate_debug(g_mmu, addr, supervisor);
+            uint32_t phys_page = phys >> PAGE_SHIFT;
+            if ((int)phys_page < g_page_count) {
+                page_entry_t *phys_pe = &g_page_table[phys_page];
+                if (phys_pe->dev)
+                    return phys_pe->dev->read_uint32(phys_pe->dev_context, phys - phys_pe->base_addr);
+            }
+            if (logpoint_lookup(addr, &lp_host, &lp_writable) && lp_host) {
+                uint32_t v = LOAD_BE32(lp_host);
+                if (g_mem_logpoint_hook)
+                    g_mem_logpoint_hook(addr, 4, v, false);
+                return v;
+            }
+        } else {
+            if (!g_bus_error_pending) {
+                g_bus_error_pending = true;
+                g_bus_error_address = addr;
+                g_bus_error_rw = true;
+                g_bus_error_fc = supervisor ? 5 : 1;
+                if (g_bus_error_instr_ptr)
+                    *g_bus_error_instr_ptr = 0;
+            }
+        }
+        return 0xFFFFFFFFu;
+    }
+
+    // MMU-off fallback: dispatch device on logical page-table entry.
+    if (pe->dev && (addr & PAGE_MASK) <= MEM_PAGE_SIZE - 4) {
         uint32_t v = pe->dev->read_uint32(pe->dev_context, addr - pe->base_addr);
         return v;
     }
@@ -384,21 +493,48 @@ void memory_write_uint8_slow(uint32_t addr, uint8_t value) {
             STORE_BE8(pe->host_base + (addr & PAGE_MASK), value);
         return;
     }
+    // Gate logical-device dispatch (24-bit Mac OS master-pointer fix — see
+    // dispatch_device_at_logical above).
     if (pe->dev && dispatch_device_at_logical(addr, g_active_write == g_supervisor_write)) {
         pe->dev->write_uint8(pe->dev_context, addr - pe->base_addr, value);
         return;
     }
-    // MMU TLB miss: try to resolve via table walk and retry
+    // When MMU is enabled, the page-table device lookup must use the PHYSICAL
+    // address — otherwise a user-virtual address whose upper byte coincides
+    // with a host-machine MMIO range (e.g. virtual $47f01000 hitting the IIfx
+    // ROM device window at physical $40000000-$4FFFFFFF) silently absorbs the
+    // write via the device's noop write handler, never reaching the MMU walk.
+    // A/UX's copyout depends on that walk faulting on unmapped user pages so
+    // its fault handler can demand-page them in.  Hide-the-fault → realvtop
+    // returns 0 → p_blt overwrites virtual $0 (the kernel exception vectors).
     if (g_mmu && g_mmu->enabled) {
-        if (mmu_handle_fault(g_mmu, addr, true, g_active_write == g_supervisor_write)) {
+        bool supervisor = g_active_write == g_supervisor_write;
+        // Fast path: TT match means logical = physical, so the logical pe->dev
+        // IS the correct dispatch — skip the table walk.
+        if (pe->dev && mmu_check_tt(g_mmu, addr, true, supervisor)) {
+            pe->dev->write_uint8(pe->dev_context, addr - pe->base_addr, value);
+            return;
+        }
+        if (mmu_handle_fault(g_mmu, addr, true, supervisor)) {
             uintptr_t base = g_active_write[addr >> PAGE_SHIFT];
             if (base != 0) {
                 STORE_BE8((uint8_t *)(base + addr), value);
                 return;
             }
-            // SoA still 0: either unmapped or suppressed for logpoint.  Re-
-            // check now that the fault has run — physical-space logpoints are
-            // only detectable after mmu_translate_debug can reach the page.
+            // SoA still 0: physical page is a device, unmapped, or covered by
+            // a logpoint.  Translate to physical and dispatch on the PHYSICAL
+            // page-table entry (mirrors the MMU-disabled path below).
+            uint32_t phys = mmu_translate_debug(g_mmu, addr, supervisor);
+            uint32_t phys_page = phys >> PAGE_SHIFT;
+            if ((int)phys_page < g_page_count) {
+                page_entry_t *phys_pe = &g_page_table[phys_page];
+                if (phys_pe->dev) {
+                    phys_pe->dev->write_uint8(phys_pe->dev_context, phys - phys_pe->base_addr, value);
+                    return;
+                }
+            }
+            // Re-check logpoint now that the fault has run — physical-space
+            // logpoints are only detectable after mmu_translate_debug.
             if (logpoint_lookup(addr, &lp_host, &lp_writable) && lp_host && lp_writable) {
                 STORE_BE8(lp_host, value);
                 if (g_mem_logpoint_hook)
@@ -412,11 +548,17 @@ void memory_write_uint8_slow(uint32_t addr, uint8_t value) {
                 g_bus_error_pending = true;
                 g_bus_error_address = addr;
                 g_bus_error_rw = false; // write
-                g_bus_error_fc = (g_active_write == g_supervisor_write) ? 5 : 1;
+                g_bus_error_fc = supervisor ? 5 : 1;
                 if (g_bus_error_instr_ptr)
                     *g_bus_error_instr_ptr = 0; // force decoder loop exit
             }
         }
+        return;
+    }
+    // MMU disabled: logical == physical, dispatch by logical page-table entry.
+    if (pe->dev) {
+        pe->dev->write_uint8(pe->dev_context, addr - pe->base_addr, value);
+        return;
     }
 }
 
@@ -444,11 +586,57 @@ void memory_write_uint16_slow(uint32_t addr, uint16_t value) {
         return;
     }
 
-    // Device I/O (single page, not crossing boundary).  Skip when the MMU
-    // remaps this device-page logical address elsewhere (see
-    // dispatch_device_at_logical).
+    // Gate logical-device dispatch (24-bit Mac OS master-pointer fix).
     if (pe->dev && (addr & PAGE_MASK) <= MEM_PAGE_SIZE - 2 &&
         dispatch_device_at_logical(addr, g_active_write == g_supervisor_write)) {
+        pe->dev->write_uint16(pe->dev_context, addr - pe->base_addr, value);
+        return;
+    }
+
+    // When MMU is enabled, dispatch via PHYSICAL address (see write_uint8_slow
+    // comment).  Cross-page accesses fall through to byte writes.
+    if (g_mmu && g_mmu->enabled && (addr & PAGE_MASK) <= MEM_PAGE_SIZE - 2) {
+        bool supervisor = g_active_write == g_supervisor_write;
+        if (pe->dev && mmu_check_tt(g_mmu, addr, true, supervisor)) {
+            pe->dev->write_uint16(pe->dev_context, addr - pe->base_addr, value);
+            return;
+        }
+        if (mmu_handle_fault(g_mmu, addr, true, supervisor)) {
+            uintptr_t base = g_active_write[addr >> PAGE_SHIFT];
+            if (base != 0) {
+                STORE_BE16((uint8_t *)(base + addr), value);
+                return;
+            }
+            uint32_t phys = mmu_translate_debug(g_mmu, addr, supervisor);
+            uint32_t phys_page = phys >> PAGE_SHIFT;
+            if ((int)phys_page < g_page_count) {
+                page_entry_t *phys_pe = &g_page_table[phys_page];
+                if (phys_pe->dev) {
+                    phys_pe->dev->write_uint16(phys_pe->dev_context, phys - phys_pe->base_addr, value);
+                    return;
+                }
+            }
+            if (logpoint_lookup(addr, &lp_host, &lp_writable) && lp_host && lp_writable) {
+                STORE_BE16(lp_host, value);
+                if (g_mem_logpoint_hook)
+                    g_mem_logpoint_hook(addr, 2, value, true);
+                return;
+            }
+        } else {
+            if (!g_bus_error_pending) {
+                g_bus_error_pending = true;
+                g_bus_error_address = addr;
+                g_bus_error_rw = false;
+                g_bus_error_fc = supervisor ? 5 : 1;
+                if (g_bus_error_instr_ptr)
+                    *g_bus_error_instr_ptr = 0;
+            }
+        }
+        return;
+    }
+
+    // MMU-off fallback: dispatch device on logical page-table entry.
+    if (pe->dev && (addr & PAGE_MASK) <= MEM_PAGE_SIZE - 2) {
         pe->dev->write_uint16(pe->dev_context, addr - pe->base_addr, value);
         return;
     }
@@ -482,11 +670,57 @@ void memory_write_uint32_slow(uint32_t addr, uint32_t value) {
         return;
     }
 
-    // Device I/O (single page, not crossing boundary).  Skip when the MMU
-    // remaps this device-page logical address elsewhere (see
-    // dispatch_device_at_logical).
+    // Gate logical-device dispatch (24-bit Mac OS master-pointer fix).
     if (pe->dev && (addr & PAGE_MASK) <= MEM_PAGE_SIZE - 4 &&
         dispatch_device_at_logical(addr, g_active_write == g_supervisor_write)) {
+        pe->dev->write_uint32(pe->dev_context, addr - pe->base_addr, value);
+        return;
+    }
+
+    // When MMU is enabled, dispatch via PHYSICAL address (see write_uint8_slow
+    // comment).  Cross-page accesses fall through to 16-bit writes.
+    if (g_mmu && g_mmu->enabled && (addr & PAGE_MASK) <= MEM_PAGE_SIZE - 4) {
+        bool supervisor = g_active_write == g_supervisor_write;
+        if (pe->dev && mmu_check_tt(g_mmu, addr, true, supervisor)) {
+            pe->dev->write_uint32(pe->dev_context, addr - pe->base_addr, value);
+            return;
+        }
+        if (mmu_handle_fault(g_mmu, addr, true, supervisor)) {
+            uintptr_t base = g_active_write[addr >> PAGE_SHIFT];
+            if (base != 0) {
+                STORE_BE32((uint8_t *)(base + addr), value);
+                return;
+            }
+            uint32_t phys = mmu_translate_debug(g_mmu, addr, supervisor);
+            uint32_t phys_page = phys >> PAGE_SHIFT;
+            if ((int)phys_page < g_page_count) {
+                page_entry_t *phys_pe = &g_page_table[phys_page];
+                if (phys_pe->dev) {
+                    phys_pe->dev->write_uint32(phys_pe->dev_context, phys - phys_pe->base_addr, value);
+                    return;
+                }
+            }
+            if (logpoint_lookup(addr, &lp_host, &lp_writable) && lp_host && lp_writable) {
+                STORE_BE32(lp_host, value);
+                if (g_mem_logpoint_hook)
+                    g_mem_logpoint_hook(addr, 4, value, true);
+                return;
+            }
+        } else {
+            if (!g_bus_error_pending) {
+                g_bus_error_pending = true;
+                g_bus_error_address = addr;
+                g_bus_error_rw = false;
+                g_bus_error_fc = supervisor ? 5 : 1;
+                if (g_bus_error_instr_ptr)
+                    *g_bus_error_instr_ptr = 0;
+            }
+        }
+        return;
+    }
+
+    // MMU-off fallback: dispatch device on logical page-table entry.
+    if (pe->dev && (addr & PAGE_MASK) <= MEM_PAGE_SIZE - 4) {
         pe->dev->write_uint32(pe->dev_context, addr - pe->base_addr, value);
         return;
     }

@@ -812,6 +812,12 @@ int main(int argc, char *argv[]) {
     // Setup signal handlers
     signal(SIGINT, sigint_handler);
     signal(SIGTERM, sigterm_handler);
+    // Ignore SIGPIPE: in daemon mode stdout/stderr are dup2'd to the
+    // client socket, so any printf after the client disconnects would
+    // otherwise kill the daemon.  With SIG_IGN, write() returns -1 /
+    // EPIPE and the existing daemon_client_poll disconnect detection
+    // (in pump_scheduler_with_heartbeat) handles the rest gracefully.
+    signal(SIGPIPE, SIG_IGN);
 
     if (!quiet) {
         printf("Granny Smith - Headless Macintosh Emulator\n");

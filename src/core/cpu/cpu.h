@@ -85,6 +85,11 @@ void cpu_delete(cpu_t *cpu);
 
 void cpu_checkpoint(cpu_t *restrict cpu, checkpoint_t *checkpoint);
 
+// Attach an MMU instance to the CPU.  Sets `cpu->mmu` and creates a `cpu.mmu`
+// child object so debug probes can read TC/CRP/SRP/TT0/TT1.  Called by
+// machine setup code after both CPU and MMU instances exist.  Idempotent.
+void cpu_attach_mmu(cpu_t *cpu, void *mmu);
+
 // === Operations ===
 
 extern void cpu_run_sprint(cpu_t *restrict cpu, uint32_t *instructions);
