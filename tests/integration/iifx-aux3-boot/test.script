@@ -48,6 +48,18 @@
 #    loaded /etc/init yet.
 #    Reference: post-mount-stuck.png (the current pin).
 #
+#    Note (2026-05-31): the on-disk post-mount-stuck.png was originally
+#    an accidental reuse of launching.png (identical md5 with the
+#    "Welcome to A/UX. Launching..." dialog).  Re-captured against the
+#    chip-faithful + kernel-credit-shim SCSI DMA model on this branch
+#    so the file content now matches the state-5 narrative above
+#    (truly blank gray framebuffer, no dialog).  Boot has since
+#    advanced through libc1_s exec-load, init fork, and MAE coming up,
+#    stalling later on a "bad dir ino 15360" kernel printf — but by
+#    that point the framebuffer is already cleared, so the pin still
+#    matches.  See local/gs-docs/notes/iifx-debug/ for the full
+#    handover.
+#
 # CURRENT EXPECTED STATE
 # ----------------------
 # Screen: blank gray (framebuffer cleared, no panic text, no login).
