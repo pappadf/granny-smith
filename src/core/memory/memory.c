@@ -206,6 +206,35 @@ static bool logpoint_lookup(uint32_t addr, uint8_t **host_out, bool *writable_ou
     return true;
 }
 
+// Decide whether a device registered at this logical page should be
+// dispatched directly, or whether the access must instead fall through to the
+// MMU table walk.
+//
+// The motivating case is the 24-bit Memory Manager: a master pointer's high
+// byte carries lock/purge/resource flags, so a relocatable block at physical
+// $00xxxxxx is dereferenced as logical $40xxxxxx.  The 24-bit MMU tree
+// (TC.IS=8) strips the flag byte back to $00xxxxxx (real RAM), but the static
+// page-table device mapping for the $40xxxxxx ROM/I-O window would otherwise
+// shadow that translation and return ROM garbage — corrupting the heap and
+// hanging the OS (observed booting the IIfx 8bpp under memory pressure, where
+// the Font Manager's purgeable strikes acquire the $40 purge flag).
+//
+// We must NOT, however, divert legitimate device I/O: in 24-bit mode the MMU
+// remaps essentially every access non-identically, so a plain "is it
+// identity?" test would strand the VIA/SCC/IOP registers.  Diversion is
+// therefore limited to the case that actually matters: the MMU points the
+// page at real host-backed RAM.  Anything still resolving to device or
+// unmapped space keeps its direct dispatch, leaving 24-bit I/O untouched.
+static inline bool dispatch_device_at_logical(uint32_t addr, bool supervisor) {
+    if (!(g_mmu && g_mmu->enabled))
+        return true; // MMU off: logical == physical
+    uint32_t phys = mmu_translate_debug(g_mmu, addr, supervisor);
+    if ((phys & ~(uint32_t)PAGE_MASK) == (addr & ~(uint32_t)PAGE_MASK))
+        return true; // identity mapping — dispatch as usual
+    // Non-identity: only divert to the table walk when the target is real RAM.
+    return mmu_phys_to_host(g_mmu, phys & ~(uint32_t)PAGE_MASK) == NULL;
+}
+
 // Slow path for 8-bit reads: device I/O, MMU TLB miss, or unmapped
 uint8_t memory_read_uint8_slow(uint32_t addr) {
     uint32_t page = addr >> PAGE_SHIFT;
@@ -225,7 +254,7 @@ uint8_t memory_read_uint8_slow(uint32_t addr) {
         rebuild_soa_page(page);
         return LOAD_BE8(pe->host_base + (addr & PAGE_MASK));
     }
-    if (pe->dev)
+    if (pe->dev && dispatch_device_at_logical(addr, g_active_read == g_supervisor_read))
         return pe->dev->read_uint8(pe->dev_context, addr - pe->base_addr);
     // MMU TLB miss: try to resolve via table walk and retry
     if (g_mmu && g_mmu->enabled) {
@@ -283,8 +312,12 @@ uint16_t memory_read_uint16_slow(uint32_t addr) {
         return LOAD_BE16(pe->host_base + (addr & PAGE_MASK));
     }
 
-    // Device I/O (single page, not crossing boundary)
-    if (pe->dev && (addr & PAGE_MASK) <= MEM_PAGE_SIZE - 2)
+    // Device I/O (single page, not crossing boundary).  Skip the dispatch
+    // when the MMU remaps this device-page logical address elsewhere (see
+    // dispatch_device_at_logical) and let the byte-split path below reach the
+    // translated physical memory.
+    if (pe->dev && (addr & PAGE_MASK) <= MEM_PAGE_SIZE - 2 &&
+        dispatch_device_at_logical(addr, g_active_read == g_supervisor_read))
         return pe->dev->read_uint16(pe->dev_context, addr - pe->base_addr);
 
     // Cross-page or host memory at page boundary: split into two byte reads
@@ -314,8 +347,12 @@ uint32_t memory_read_uint32_slow(uint32_t addr) {
         return LOAD_BE32(pe->host_base + (addr & PAGE_MASK));
     }
 
-    // Device I/O (single page, not crossing boundary)
-    if (pe->dev && (addr & PAGE_MASK) <= MEM_PAGE_SIZE - 4) {
+    // Device I/O (single page, not crossing boundary).  Skip when the MMU
+    // remaps this device-page logical address elsewhere (see
+    // dispatch_device_at_logical); the 16-bit-split path below then reaches the
+    // translated physical memory.
+    if (pe->dev && (addr & PAGE_MASK) <= MEM_PAGE_SIZE - 4 &&
+        dispatch_device_at_logical(addr, g_active_read == g_supervisor_read)) {
         uint32_t v = pe->dev->read_uint32(pe->dev_context, addr - pe->base_addr);
         return v;
     }
@@ -347,7 +384,7 @@ void memory_write_uint8_slow(uint32_t addr, uint8_t value) {
             STORE_BE8(pe->host_base + (addr & PAGE_MASK), value);
         return;
     }
-    if (pe->dev) {
+    if (pe->dev && dispatch_device_at_logical(addr, g_active_write == g_supervisor_write)) {
         pe->dev->write_uint8(pe->dev_context, addr - pe->base_addr, value);
         return;
     }
@@ -407,8 +444,11 @@ void memory_write_uint16_slow(uint32_t addr, uint16_t value) {
         return;
     }
 
-    // Device I/O (single page, not crossing boundary)
-    if (pe->dev && (addr & PAGE_MASK) <= MEM_PAGE_SIZE - 2) {
+    // Device I/O (single page, not crossing boundary).  Skip when the MMU
+    // remaps this device-page logical address elsewhere (see
+    // dispatch_device_at_logical).
+    if (pe->dev && (addr & PAGE_MASK) <= MEM_PAGE_SIZE - 2 &&
+        dispatch_device_at_logical(addr, g_active_write == g_supervisor_write)) {
         pe->dev->write_uint16(pe->dev_context, addr - pe->base_addr, value);
         return;
     }
@@ -442,8 +482,11 @@ void memory_write_uint32_slow(uint32_t addr, uint32_t value) {
         return;
     }
 
-    // Device I/O (single page, not crossing boundary)
-    if (pe->dev && (addr & PAGE_MASK) <= MEM_PAGE_SIZE - 4) {
+    // Device I/O (single page, not crossing boundary).  Skip when the MMU
+    // remaps this device-page logical address elsewhere (see
+    // dispatch_device_at_logical).
+    if (pe->dev && (addr & PAGE_MASK) <= MEM_PAGE_SIZE - 4 &&
+        dispatch_device_at_logical(addr, g_active_write == g_supervisor_write)) {
         pe->dev->write_uint32(pe->dev_context, addr - pe->base_addr, value);
         return;
     }
