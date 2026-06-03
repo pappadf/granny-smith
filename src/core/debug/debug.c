@@ -133,7 +133,7 @@ struct logpoint {
 static uint16_t cpu_get_uint16(uint32_t addr) {
     if (!system_memory())
         return 0;
-    return memory_read_uint16(addr);
+    return memory_debug_read_uint16(addr);
 }
 
 // ============================================================================
@@ -2378,14 +2378,14 @@ static void cmd_examine_handler(struct cmd_context *ctx, struct cmd_result *res)
         cmd_printf(ctx, "$%08X  ", addr + i);
         for (uint32_t j = 0; j < 16; j++) {
             if (i + j < nbytes)
-                cmd_printf(ctx, "%02x ", memory_read_uint8(addr + i + j));
+                cmd_printf(ctx, "%02x ", memory_debug_read_uint8(addr + i + j));
             else
                 cmd_printf(ctx, "   ");
         }
         cmd_printf(ctx, " ");
         for (uint32_t j = 0; j < 16; j++) {
             if (i + j < nbytes) {
-                uint8_t byte = memory_read_uint8(addr + i + j);
+                uint8_t byte = memory_debug_read_uint8(addr + i + j);
                 cmd_printf(ctx, "%c", (byte >= 0x20 && byte <= 0x7e) ? byte : '.');
             }
         }
@@ -3939,17 +3939,17 @@ static value_t method_mac_globals_read(struct object *self, const member_t *m, i
     int sz = mac_global_vars[idx].size;
     switch (sz) {
     case 1: {
-        value_t v = val_uint(1, memory_read_uint8(addr));
+        value_t v = val_uint(1, memory_debug_read_uint8(addr));
         v.flags |= VAL_HEX;
         return v;
     }
     case 2: {
-        value_t v = val_uint(2, memory_read_uint16(addr));
+        value_t v = val_uint(2, memory_debug_read_uint16(addr));
         v.flags |= VAL_HEX;
         return v;
     }
     case 4: {
-        value_t v = val_uint(4, memory_read_uint32(addr));
+        value_t v = val_uint(4, memory_debug_read_uint32(addr));
         v.flags |= VAL_HEX;
         return v;
     }
@@ -3958,7 +3958,7 @@ static value_t method_mac_globals_read(struct object *self, const member_t *m, i
             return val_err("debug.mac.globals.read: unexpected entry size %d", sz);
         uint8_t buf[256];
         for (int i = 0; i < sz; i++)
-            buf[i] = memory_read_uint8(addr + (uint32_t)i);
+            buf[i] = memory_debug_read_uint8(addr + (uint32_t)i);
         return val_bytes(buf, (size_t)sz);
     }
     }

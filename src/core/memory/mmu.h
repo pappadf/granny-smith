@@ -155,6 +155,15 @@ bool mmu_check_tt(mmu_state_t *mmu, uint32_t addr, bool write, bool supervisor);
 // Returns the physical address, or logical_addr if translation fails.
 uint32_t mmu_translate_debug(mmu_state_t *mmu, uint32_t logical_addr, bool supervisor);
 
+// Like mmu_translate_debug but reports whether the walk yielded a VALID
+// translation.  Side-effect-free (no SoA fill).  Writes the physical address
+// (or logical_addr on failure / MMU-off / TT match) to *pa_out and returns
+// true iff the address is genuinely translatable.  Callers need this to tell a
+// real identity mapping (phys==logical, valid) apart from a FAILED walk (which
+// mmu_translate_debug also reports as phys==logical) — the latter must fault,
+// not be treated as identity.
+bool mmu_translate_checked(mmu_state_t *mmu, uint32_t logical_addr, bool supervisor, uint32_t *pa_out);
+
 // Translate `logical_addr` against an arbitrary CRP root rather than the
 // current `mmu->crp`.  Used by the test harness to reach a known
 // user-process address space (e.g. MAE under A/UX) regardless of which

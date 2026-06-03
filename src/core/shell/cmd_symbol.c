@@ -295,16 +295,16 @@ static bool resolve_mac_global(const char *name, struct resolved_symbol *out) {
             if (system_memory()) {
                 switch (out->size) {
                 case 1:
-                    out->value = memory_read_uint8(out->address);
+                    out->value = memory_debug_read_uint8(out->address);
                     break;
                 case 2:
-                    out->value = memory_read_uint16(out->address);
+                    out->value = memory_debug_read_uint16(out->address);
                     break;
                 case 4:
-                    out->value = memory_read_uint32(out->address);
+                    out->value = memory_debug_read_uint32(out->address);
                     break;
                 default:
-                    out->value = memory_read_uint32(out->address);
+                    out->value = memory_debug_read_uint32(out->address);
                     break;
                 }
             } else {

@@ -760,6 +760,27 @@ uint32_t mmu_translate_debug(mmu_state_t *mmu, uint32_t logical_addr, bool super
     return logical_addr;
 }
 
+// Validity-reporting sibling of mmu_translate_debug.  Same side-effect-free
+// walk, but distinguishes a genuine identity mapping from a failed walk: both
+// leave *pa_out == logical_addr, yet only the former returns true.  A failed
+// walk MUST fault rather than be mistaken for identity-mapped device I/O.
+bool mmu_translate_checked(mmu_state_t *mmu, uint32_t logical_addr, bool supervisor, uint32_t *pa_out) {
+    if (!mmu || !mmu->enabled) {
+        if (pa_out)
+            *pa_out = logical_addr;
+        return true; // MMU off: identity, always valid
+    }
+    if (mmu_check_tt(mmu, logical_addr, false, supervisor)) {
+        if (pa_out)
+            *pa_out = logical_addr;
+        return true; // transparent translation: identity, valid
+    }
+    mmu_walk_result_t result = mmu_table_walk(mmu, logical_addr, false, supervisor);
+    if (pa_out)
+        *pa_out = result.valid ? result.physical_addr : logical_addr;
+    return result.valid;
+}
+
 // Translate against an explicit CRP root (e.g. a snapshot of MAE's CRP).
 // Side-effect-free: temporarily swaps `mmu->crp`, performs a user-mode walk,
 // restores the original CRP.  TT checks are skipped for the page offset only
