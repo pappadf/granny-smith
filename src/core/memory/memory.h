@@ -148,6 +148,14 @@ extern uintptr_t *g_user_write; // user-mode write mapping
 extern uintptr_t *g_active_read;
 extern uintptr_t *g_active_write;
 
+// TEMP DIAG (GS_PAGE0_TRACE): catch fast-path CPU writes that land on physical
+// page 0 (the kernel vector table) — the IIfx A/UX vector-table-zeroing bug.
+extern unsigned char g_trace_page0; // 1 = enabled (set from env at init)
+extern uintptr_t g_phys0_host_lo; // host base of physical page 0 (RAM[0])
+extern uintptr_t g_phys0_host_hi; // g_phys0_host_lo + MEM_PAGE_SIZE
+void memory_page0_write_trace(uint32_t logical_addr, unsigned size); // out-of-line logger
+void memory_page0_read_trace(uint32_t logical_addr, uintptr_t host_target); // stale vector read
+
 // Deferred bus error: slow paths signal unmapped MMU accesses by setting
 // the pending flag AND zeroing *g_bus_error_instr_ptr, which forces the
 // CPU decoder loop to exit after the current instruction completes.
@@ -287,8 +295,14 @@ static inline uint32_t memory_read_uint32(uint32_t addr) {
     uint32_t masked = addr & g_address_mask;
     uintptr_t base = g_active_read[masked >> PAGE_SHIFT];
     // Fast path: non-zero entry and access doesn't cross page boundary
-    if (__builtin_expect(base != 0 && (masked & PAGE_MASK) <= MEM_PAGE_SIZE - 4, 1))
+    if (__builtin_expect(base != 0 && (masked & PAGE_MASK) <= MEM_PAGE_SIZE - 4, 1)) {
+        if (__builtin_expect(g_trace_page0, 0) && masked < 0x400) {
+            uintptr_t t = base + masked;
+            if (t < g_phys0_host_lo || t >= g_phys0_host_hi)
+                memory_page0_read_trace(masked, t); // logger filters to supervisor-mode reads
+        }
         return LOAD_BE32((uint8_t *)(base + masked));
+    }
     return memory_read_uint32_slow(masked);
 }
 
@@ -299,6 +313,11 @@ static inline void memory_write_uint8(uint32_t addr, uint8_t value) {
                          0))
         value_trap_check(masked, value, 1);
     if (__builtin_expect(base != 0, 1)) {
+        if (__builtin_expect(g_trace_page0, 0)) {
+            uintptr_t t = base + masked;
+            if (t >= g_phys0_host_lo && t < g_phys0_host_hi)
+                memory_page0_write_trace(masked, 1);
+        }
         STORE_BE8((uint8_t *)(base + masked), value);
         return;
     }
@@ -313,6 +332,11 @@ static inline void memory_write_uint16(uint32_t addr, uint16_t value) {
         value_trap_check(masked, value, 2);
     // Fast path: non-zero entry and access doesn't cross page boundary
     if (__builtin_expect(base != 0 && (masked & PAGE_MASK) <= MEM_PAGE_SIZE - 2, 1)) {
+        if (__builtin_expect(g_trace_page0, 0)) {
+            uintptr_t t = base + masked;
+            if (t >= g_phys0_host_lo && t < g_phys0_host_hi)
+                memory_page0_write_trace(masked, 2);
+        }
         STORE_BE16((uint8_t *)(base + masked), value);
         return;
     }
@@ -326,6 +350,11 @@ static inline void memory_write_uint32(uint32_t addr, uint32_t value) {
         value_trap_check(masked, value, 4);
     // Fast path: non-zero entry and access doesn't cross page boundary
     if (__builtin_expect(base != 0 && (masked & PAGE_MASK) <= MEM_PAGE_SIZE - 4, 1)) {
+        if (__builtin_expect(g_trace_page0, 0)) {
+            uintptr_t t = base + masked;
+            if (t >= g_phys0_host_lo && t < g_phys0_host_hi)
+                memory_page0_write_trace(masked, 4);
+        }
         STORE_BE32((uint8_t *)(base + masked), value);
         return;
     }

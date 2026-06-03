@@ -40,14 +40,21 @@ typedef struct page_entry page_entry_t;
 #define TT_FC_BASE(tt) (((tt) >> 4) & 7) // function code base
 #define TT_FC_MASK(tt) ((tt) & 7) // function code mask
 
-// === MMUSR bit positions ===
+// === MMUSR (MC68030 PMMU status register) bit positions ===
+// Must match the hardware layout exactly: A/UX reads MMUSR after PTEST and
+// masks specific bits.  e.g. realvtop ($5A596) tests `MMUSR & $E400` =
+// {B(15), L(14), S(13), I(10)} to decide a translation failed; if I sits at
+// the wrong bit, an invalid page reads back as a valid translation to whatever
+// the (zero) descriptor encodes — physical 0 — and the kernel writes user data
+// onto the vector table.  Likewise W must be bit 11 (NOT in the $E400 mask) so
+// a write-protected page doesn't spuriously read as a failed translation.
 #define MMUSR_B       (1u << 15) // bus error during walk
 #define MMUSR_L       (1u << 14) // limit violation
 #define MMUSR_S       (1u << 13) // supervisor-only page
-#define MMUSR_W       (1u << 10) // write-protected
-#define MMUSR_I       (1u << 9) // invalid descriptor
-#define MMUSR_M       (1u << 8) // modified
+#define MMUSR_W       (1u << 11) // write-protected
+#define MMUSR_I       (1u << 10) // invalid descriptor
 #define MMUSR_T       (1u << 6) // transparent translation
+#define MMUSR_M       (1u << 4) // modified
 #define MMUSR_N_SHIFT 0 // number of levels traversed (bits 2:0)
 
 // Result of a table walk

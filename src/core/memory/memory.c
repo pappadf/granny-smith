@@ -52,6 +52,77 @@ uintptr_t *g_user_write = NULL;
 uintptr_t *g_active_read = NULL;
 uintptr_t *g_active_write = NULL;
 
+// TEMP DIAG (GS_PAGE0_TRACE): fast-path writes to physical page 0.
+unsigned char g_trace_page0 = 0;
+uintptr_t g_phys0_host_lo = 0;
+uintptr_t g_phys0_host_hi = 0;
+
+// Out-of-line logger for fast-path writes that land on physical page 0 (the
+// kernel vector table).  Gated to the corruption window (>155 M instr, past
+// the legitimate early vector-table setup) and capped to avoid flooding on a
+// page-sized bzero.  Prints the current PC, the logical address written, and
+// the SoA adjusted base so the aliasing logical page can be identified.
+// Logger for supervisor reads of the vector region (logical < $400) that
+// resolve to a host page OTHER than physical page 0 — i.e. a stale/wrong SoA
+// read entry for the vector table.  `host_target` is the resolved host pointer;
+// (host_target - g_phys0_host_lo) >> PAGE_SHIFT names the bogus physical page.
+void memory_page0_read_trace(uint32_t logical_addr, uintptr_t host_target) {
+    extern uint64_t cpu_instr_count(void);
+    cpu_t *cpu = system_cpu();
+    if (!cpu)
+        return;
+    uint16_t sr = cpu_get_sr(cpu);
+    if (!(sr & 0x2000))
+        return; // only care about SUPERVISOR reads of low memory resolving off-page-0
+    static int n = 0;
+    if (n++ >= 60)
+        return;
+    uint32_t pc = cpu_get_pc(cpu);
+    long delta = (long)((intptr_t)host_target - (intptr_t)g_phys0_host_lo);
+    bool active_super = (g_active_read == g_supervisor_read);
+    bool active_user = (g_active_read == g_user_read);
+    fprintf(stderr, "[VECRD] instr=%llu pc=%08x sr=%04x la=%08x phys~%08lx active=%s\n",
+            (unsigned long long)cpu_instr_count(), pc, sr, logical_addr, (unsigned long)delta,
+            active_super ? "SUP" : (active_user ? "USR(DESYNC!)" : "?"));
+}
+
+void memory_page0_write_trace(uint32_t logical_addr, unsigned size) {
+    extern uint64_t cpu_instr_count(void);
+    uint64_t ic = cpu_instr_count();
+    static int n = 0;
+    if (n++ >= 80)
+        return;
+    cpu_t *cpu = system_cpu();
+    uint32_t pc = cpu ? cpu_get_pc(cpu) : 0;
+    uintptr_t base = g_active_write[(logical_addr & g_address_mask) >> PAGE_SHIFT];
+    fprintf(stderr, "[PAGE0W] instr=%llu pc=%08x la=%08x off=%03x sz=%u super=%d soabase=%016llx\n",
+            (unsigned long long)ic, pc, logical_addr, logical_addr & 0xFFF, size,
+            (g_active_write == g_supervisor_write), (unsigned long long)base);
+}
+
+// TEMP DIAG: slow-path write whose RE-WALKED physical target is in the vector
+// table (phys < $400).  Catches writes that bypass the fast-path SoA entirely.
+void memory_slow_write_page0_check(uint32_t addr, unsigned size) {
+    if (!g_trace_page0)
+        return;
+    extern uint64_t cpu_instr_count(void);
+    uint64_t ic = cpu_instr_count();
+    if (ic < 155000000ull)
+        return;
+    bool supervisor = (g_active_write == g_supervisor_write);
+    uint32_t phys = (g_mmu && g_mmu->enabled) ? mmu_translate_debug(g_mmu, addr & g_address_mask, supervisor)
+                                              : (addr & g_address_mask);
+    if (phys >= 0x400)
+        return;
+    static int n = 0;
+    if (n++ >= 60)
+        return;
+    cpu_t *cpu = system_cpu();
+    uint32_t pc = cpu ? cpu_get_pc(cpu) : 0;
+    fprintf(stderr, "[SLOW0W] instr=%llu pc=%08x la=%08x phys=%08x sz=%u super=%d\n", (unsigned long long)ic, pc,
+            addr & g_address_mask, phys, size, supervisor);
+}
+
 // Deferred bus error signal: set by slow paths on unmapped MMU accesses.
 // Zeroing *g_bus_error_instr_ptr forces the decoder loop to exit early.
 bool g_bus_error_pending = false;
@@ -228,7 +299,20 @@ static bool logpoint_lookup(uint32_t addr, uint8_t **host_out, bool *writable_ou
 static inline bool dispatch_device_at_logical(uint32_t addr, bool supervisor) {
     if (!(g_mmu && g_mmu->enabled))
         return true; // MMU off: logical == physical
-    uint32_t phys = mmu_translate_debug(g_mmu, addr, supervisor);
+    uint32_t phys;
+    // A FAILED walk (invalid PTE) must fault, never dispatch to a device — even
+    // when a device is registered at this logical page.  This is not academic:
+    // a user virtual address can legitimately land in a host-machine device
+    // window (e.g. A/UX maps a process's image at virtual $47F00000, which sits
+    // inside the IIfx ROM device window $40000000-$4FFFFFFF).  When such a page
+    // is still demand-zero, copyout's touch must fault so the kernel pages it
+    // in — dispatching the write to the ROM device instead silently drops it,
+    // the page is never allocated, and the subsequent copy lands on physical 0
+    // (the vector table).  mmu_translate_debug can't catch this on its own: a
+    // failed walk returns phys==logical, indistinguishable from a true identity
+    // map, so use the validity-reporting walk here.
+    if (!mmu_translate_checked(g_mmu, addr, supervisor, &phys))
+        return false; // translation failed → fall through to the MMU fault path
     if ((phys & ~(uint32_t)PAGE_MASK) == (addr & ~(uint32_t)PAGE_MASK))
         return true; // identity mapping — dispatch as usual
     // Non-identity: only divert to the table walk when the target is real RAM.
@@ -398,6 +482,23 @@ uint16_t memory_read_uint16_slow(uint32_t addr) {
 
 // Slow path for 32-bit reads: cross-page or device I/O
 uint32_t memory_read_uint32_slow(uint32_t addr) {
+    // TEMP DIAG (GS_PAGE0_TRACE): slow-path read of the vector region.
+    if (__builtin_expect(g_trace_page0, 0) && (addr & g_address_mask) < 0x400) {
+        extern uint64_t cpu_instr_count(void);
+        uint64_t ic = cpu_instr_count();
+        if (ic > 155000000ull) {
+            static int n = 0;
+            if (n++ < 60) {
+                bool supervisor = (g_active_read == g_supervisor_read);
+                uint32_t la = addr & g_address_mask;
+                uint32_t phys = (g_mmu && g_mmu->enabled) ? mmu_translate_debug(g_mmu, la, supervisor) : la;
+                cpu_t *c = system_cpu();
+                fprintf(stderr, "[VECSLOW] instr=%llu pc=%08x la=%08x phys=%08x super=%d activeU=%d\n",
+                        (unsigned long long)ic, c ? cpu_get_pc(c) : 0, la, phys, supervisor,
+                        (g_active_read == g_user_read));
+            }
+        }
+    }
     uint32_t page = addr >> PAGE_SHIFT;
     page_entry_t *pe = &g_page_table[page];
 
@@ -625,6 +726,8 @@ bool memory_debug_write_uint32(uint32_t addr, uint32_t value) {
 
 // Slow path for 8-bit writes: device I/O, MMU TLB miss, or unmapped
 void memory_write_uint8_slow(uint32_t addr, uint8_t value) {
+    if (__builtin_expect(g_trace_page0, 0))
+        memory_slow_write_page0_check(addr, 1);
     uint32_t page = addr >> PAGE_SHIFT;
     page_entry_t *pe = &g_page_table[page];
     // Memory logpoint: forced slow path for RAM write on logged page
@@ -715,6 +818,8 @@ void memory_write_uint8_slow(uint32_t addr, uint8_t value) {
 
 // Slow path for 16-bit writes: cross-page or device I/O
 void memory_write_uint16_slow(uint32_t addr, uint16_t value) {
+    if (__builtin_expect(g_trace_page0, 0))
+        memory_slow_write_page0_check(addr, 2);
     uint32_t page = addr >> PAGE_SHIFT;
     page_entry_t *pe = &g_page_table[page];
 
@@ -799,6 +904,8 @@ void memory_write_uint16_slow(uint32_t addr, uint16_t value) {
 
 // Slow path for 32-bit writes: cross-page or device I/O
 void memory_write_uint32_slow(uint32_t addr, uint32_t value) {
+    if (__builtin_expect(g_trace_page0, 0))
+        memory_slow_write_page0_check(addr, 4);
     uint32_t page = addr >> PAGE_SHIFT;
     page_entry_t *pe = &g_page_table[page];
 
@@ -1314,6 +1421,14 @@ memory_map_t *memory_map_init(int address_bits, uint32_t ram_size, uint32_t rom_
     size_t image_size = (size_t)ram_size + (size_t)rom_size;
     mem->image = calloc(1, image_size);
     GS_ASSERTF(mem->image != NULL, "memory_map_init: out of memory allocating %zu-byte image", image_size);
+
+    // TEMP DIAG (GS_PAGE0_TRACE): physical page 0 = first MEM_PAGE_SIZE of RAM.
+    g_phys0_host_lo = (uintptr_t)mem->image;
+    g_phys0_host_hi = (uintptr_t)mem->image + MEM_PAGE_SIZE;
+    g_trace_page0 = getenv("GS_PAGE0_TRACE") ? 1 : 0;
+    if (g_trace_page0)
+        fprintf(stderr, "[PAGE0CFG] g_trace_page0=%d phys0_host=[%016llx,%016llx)\n", g_trace_page0,
+                (unsigned long long)g_phys0_host_lo, (unsigned long long)g_phys0_host_hi);
 
     // Allocate page table sized for the given address space
     if (address_bits == 32) {

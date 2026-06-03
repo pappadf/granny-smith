@@ -410,6 +410,14 @@ static void run_cmd(scsi_t *scsi) {
             }
             size_t n = disk_read_data(scsi->devices[target].image, byte_off, scsi->buf.data, byte_cnt);
             assert(n == byte_cnt);
+            // TEMP DIAG (GS_DEVDIR): dump what storage delivered for the /dev
+            // directory read (abs LBA 68698). Valid head: 00 00 3C 00 00 0C 00 01 2E.
+            if (getenv("GS_DEVDIR") && scsi->cmd.lba == 68698) {
+                fprintf(stderr, "[DEVDIR-STORAGE] lba=68698 n=%zu buf[0:24]=", n);
+                for (int i = 0; i < 24; i++)
+                    fprintf(stderr, "%02x ", scsi->buf.data[i]);
+                fprintf(stderr, "\n");
+            }
         }
         break;
     }

@@ -383,6 +383,16 @@ static void mmu_fill_soa_entry(mmu_state_t *mmu, uint32_t logical_page, uint32_t
     if (!tt_match && supervisor_only)
         fill_user = false;
 
+    // TEMP DIAG (GS_SOA0_TRACE): log any fill of the vector-table SoA entry
+    // (logical page 0).  A fill that points logical page 0 at a non-zero
+    // physical page = the supervisor vector mapping going stale/wrong.
+    if (g_trace_page0 && logical_page == 0) {
+        extern uint64_t cpu_instr_count(void);
+        fprintf(stderr, "[SOA0] instr=%llu lpage=0 ppage=%08x walk=%s fillS=%d fillU=%d sre=%d ttm=%d\n",
+                (unsigned long long)cpu_instr_count(), physical_page, supervisor ? "SUP" : "USR", fill_super, fill_user,
+                sre_split, tt_match);
+    }
+
     if (fill_super) {
         if (g_supervisor_read)
             g_supervisor_read[page_index] = adjusted;
@@ -627,6 +637,15 @@ bool mmu_handle_fault(mmu_state_t *mmu, uint32_t logical_addr, bool write, bool 
     if (mmu)
         mmu->mmusr = result.mmusr;
 
+    // TEMP DIAG: trace user-mode faults on page 0 (icode copyout to user VA 0).
+    if (getenv("GS_VA0_TRACE") && write && !supervisor && logical_addr < 0x1000) {
+        static int n = 0;
+        if (n++ < 30)
+            fprintf(stderr, "[VA0] la=%08x W usr valid=%d wp=%d suponly=%d phys=%08x mmusr=%08x crp=%08x:%08x\n",
+                    logical_addr, result.valid, result.write_protected, result.supervisor_only, result.physical_addr,
+                    result.mmusr, (unsigned)(mmu->crp >> 32), (unsigned)mmu->crp);
+    }
+
     if (!result.valid) {
         // Invalid descriptor: PMMU walk fault, retry semantics (Format $B)
         g_bus_error_is_pmmu = true;
@@ -858,6 +877,14 @@ bool mmu_write_physical_uint8(mmu_state_t *mmu, uint32_t phys_addr, uint8_t valu
     uint8_t *host = phys_to_host(mmu, phys_addr);
     if (!host)
         return false;
+    // TEMP DIAG (GS_PAGE0_TRACE): physical write to the kernel vector table.
+    if (g_trace_page0 && phys_addr < 0x400) {
+        extern uint64_t cpu_instr_count(void);
+        static int n = 0;
+        if (n++ < 80)
+            fprintf(stderr, "[PWRITE0] instr=%llu phys=%08x val=%02x\n", (unsigned long long)cpu_instr_count(),
+                    phys_addr, value);
+    }
     *host = value;
     return true;
 }

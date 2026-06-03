@@ -655,6 +655,7 @@ static void iifx_scsidma_update_int(config_t *cfg);
 // reset the offset and the prev tracker; overlapping arms
 // accumulate (delta_lba * blk_sz).
 static void iifx_scsidma_recompute_credit(iifx_state_t *st, scsi_t *scsi) {
+    extern uint64_t cpu_instr_count(void);
     uint8_t opcode = scsi_get_cmd_opcode(scsi);
     bool is_read = (opcode == SCSI_OPCODE_READ_6 || opcode == SCSI_OPCODE_READ_10);
     bool is_write = (opcode == SCSI_OPCODE_WRITE_6 || opcode == SCSI_OPCODE_WRITE_10);
@@ -692,16 +693,16 @@ static void iifx_scsidma_recompute_credit(iifx_state_t *st, scsi_t *scsi) {
         st->scsi_dma_credit_offset += credit;
         if (getenv("GS_IIFX_SHIM_TRACE"))
             fprintf(stderr,
-                    "SHIM credit  %s tgt=%d lba=%u tl=%u (prev lba=%d tl=%u) +%u  total_off=%u  latch=$%08x => "
+                    "SHIM credit i=%llu %s tgt=%d lba=%u tl=%u (prev lba=%d tl=%u) +%u  total_off=%u  latch=$%08x => "
                     "addr=$%08x\n",
-                    is_read ? "RD" : "WR", new_target, new_lba, new_tl, st->scsi_dma_prev_read_lba,
-                    st->scsi_dma_prev_read_tl, credit, st->scsi_dma_credit_offset, st->scsi_dma_addr_latch,
-                    st->scsi_dma_addr_latch + st->scsi_dma_credit_offset);
+                    (unsigned long long)cpu_instr_count(), is_read ? "RD" : "WR", new_target, new_lba, new_tl,
+                    st->scsi_dma_prev_read_lba, st->scsi_dma_prev_read_tl, credit, st->scsi_dma_credit_offset,
+                    st->scsi_dma_addr_latch, st->scsi_dma_addr_latch + st->scsi_dma_credit_offset);
     } else {
         if (getenv("GS_IIFX_SHIM_TRACE"))
-            fprintf(stdout, "SHIM fresh   %s tgt=%d lba=%u tl=%u (prev lba=%d tl=%u)  offset=0  latch=$%08x\n",
-                    is_read ? "RD" : "WR", new_target, new_lba, new_tl, st->scsi_dma_prev_read_lba,
-                    st->scsi_dma_prev_read_tl, st->scsi_dma_addr_latch);
+            fprintf(stderr, "SHIM fresh  i=%llu %s tgt=%d lba=%u tl=%u (prev lba=%d tl=%u)  offset=0  latch=$%08x\n",
+                    (unsigned long long)cpu_instr_count(), is_read ? "RD" : "WR", new_target, new_lba, new_tl,
+                    st->scsi_dma_prev_read_lba, st->scsi_dma_prev_read_tl, st->scsi_dma_addr_latch);
         st->scsi_dma_credit_offset = 0;
     }
     st->scsi_dma_prev_read_lba = (int)new_lba;
@@ -1025,8 +1026,17 @@ static void iifx_scsidma_write_uint8(config_t *cfg, uint32_t offset, uint8_t val
         // return the live counter through the Address Readback
         // Buffer.
         iifx_write_reg32_byte(&st->scsi_dma_addr_latch, off, value);
-        if ((off & 3) == 3)
+        if ((off & 3) == 3) {
             scsidma_fifo_clear(st);
+            // TEMP DIAG (GS_SDADDR): trace sDADDR ($100) latch writes in the
+            // /dev-buffer band to see if the kernel keeps a fixed base
+            // (contiguous auto-advance) or re-programs per chunk (scatter).
+            if (getenv("GS_SDADDR") && st->scsi_dma_addr_latch >= 0x002f0000 && st->scsi_dma_addr_latch <= 0x00310000) {
+                extern uint64_t cpu_instr_count(void);
+                fprintf(stderr, "[SDADDR] i=%llu latch=$%08x\n", (unsigned long long)cpu_instr_count(),
+                        st->scsi_dma_addr_latch);
+            }
+        }
         iifx_scsidma_pump(cfg);
         return;
     }
@@ -1104,9 +1114,68 @@ static void iifx_scsidma_pump(config_t *cfg) {
         // pattern (transfers complete before the kernel inspects
         // them). The byte-router is therefore behaviourally
         // equivalent to a direct byte path for this caller.
+        // TEMP DIAG: log SCSI DMA data-in bursts in the corruption window, or
+        // any burst whose [addr, addr+count) range touches/wraps into low
+        // memory (the kernel vector table lives at phys $0-$3FF).
+        if (getenv("GS_DMA_TRACE")) {
+            extern uint64_t cpu_instr_count(void);
+            uint64_t ic = cpu_instr_count();
+            uint32_t end = st->scsi_dma_addr + st->scsi_dma_count; // may wrap
+            bool wraps = end < st->scsi_dma_addr; // 32-bit overflow
+            if (ic > 156000000ull || st->scsi_dma_addr < 0x00100000 || wraps) {
+                fprintf(stderr, "[DMA-IN] instr=%llu cur_addr=%08x latch=%08x credit_off=%08x count=%u end=%08x%s\n",
+                        (unsigned long long)ic, st->scsi_dma_addr, st->scsi_dma_addr_latch, st->scsi_dma_credit_offset,
+                        st->scsi_dma_count, end, wraps ? " WRAPS" : "");
+            }
+        }
         uint8_t byte;
+        // TEMP DIAG (GS_CLUSTER_TRACE): when this DMA arm's write range covers the
+        // /dev buffer page phys $301a00, walk the kernel SCSI task (A6 -> scsi_vio
+        // frame -> task = $8(vioA6)) and dump task fields + the scatter-gather list,
+        // so we can identify WHAT buffer the kernel placed at $2fda00..$30ba00 and
+        // whether its SG entries genuinely include $301a00 (true double-alloc) vs the
+        // shim landing there.  Fires for both the /dev read (lba 68698) and the
+        // clobbering cluster arm (lba ~181984, curaddr $301a00 via credit).
+        if (getenv("GS_CLUSTER_TRACE") && st->scsi_dma_addr <= 0x00301a00 &&
+            0x00301a00 < st->scsi_dma_addr + st->scsi_dma_count) {
+            extern uint64_t cpu_instr_count(void);
+            extern cpu_t *system_cpu(void);
+            cpu_t *cpu = system_cpu();
+            uint32_t a6 = cpu_get_an(cpu, 6), pc = cpu_get_pc(cpu);
+            uint32_t vioA6 = memory_read_uint32(a6);
+            uint32_t task = memory_read_uint32(vioA6 + 8);
+            uint32_t t10 = memory_read_uint32(task + 0x10), t14 = memory_read_uint32(task + 0x14);
+            uint32_t t18 = memory_read_uint32(task + 0x18), t1c = memory_read_uint32(task + 0x1c);
+            fprintf(stderr,
+                    "[CLUSTER] i=%llu pc=%08x a6=%08x lba=%u tl=%u latch=%08x credit=%u curaddr=%08x firstbyte=%02x\n",
+                    (unsigned long long)cpu_instr_count(), pc, a6, scsi_get_cmd_lba(scsi), scsi_get_cmd_tl(scsi),
+                    st->scsi_dma_addr_latch, st->scsi_dma_credit_offset, st->scsi_dma_addr,
+                    mmu_read_physical_uint8(st->mmu, st->scsi_dma_addr));
+            fprintf(stderr, "    vioA6=%08x task=%08x T10buf=%08x T14tot=%08x T18off=%08x T1Csg=%08x\n", vioA6, task,
+                    t10, t14, t18, t1c);
+            uint16_t nent = (uint16_t)(memory_read_uint32(task + 0x30) >> 16);
+            fprintf(stderr, "    T10buf->phys=%08x  SGcount=%u:", mmu_translate_debug(st->mmu, t10, true), nent);
+            for (uint32_t e = 0; e < nent && e < 16; e++) {
+                uint32_t ea = task + 0x38 + e * 10;
+                fprintf(stderr, " [%u:padr=%08x len=%08x]", e, memory_read_uint32(ea), memory_read_uint32(ea + 4));
+            }
+            fprintf(stderr, "\n");
+        }
+        // TEMP DIAG (GS_DEVDIR): trace the /dev directory read (abs LBA 68698)
+        // byte-by-byte — value written, target physical addr, and a readback to
+        // confirm the store stuck.  Valid /dev dir starts 00 00 3C 00 00 0C 00 01 2E.
+        bool devdir = getenv("GS_DEVDIR") && scsi_get_cmd_lba(scsi) == 68698;
         while (st->scsi_dma_count > 0 && scsi_pop_data_in_byte(scsi, &byte)) {
             mmu_write_physical_uint8(st->mmu, st->scsi_dma_addr, byte);
+            if (devdir) {
+                static int dn = 0;
+                if (dn < 64) {
+                    uint8_t rb = mmu_read_physical_uint8(st->mmu, st->scsi_dma_addr);
+                    fprintf(stderr, "[DEVDIR] addr=%08x wrote=%02x readback=%02x%s\n", st->scsi_dma_addr, byte, rb,
+                            rb != byte ? "  WRITE-DROPPED" : "");
+                    dn++;
+                }
+            }
             st->scsi_dma_addr++;
             st->scsi_dma_count--;
         }
