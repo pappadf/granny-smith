@@ -1770,26 +1770,43 @@ void scsi_signal_eop(scsi_t *scsi) {
     // TCR bit 7 is invisible to Mac OS.  The bit is cleared by the next
     // CPU write to TCR (write_uint8 case TCR replaces the register).
     scsi->reg.tcr |= 0x80;
-    // Wrapper EOP arrived during data_in or data_out: target's transfer is
-    // done from the wrapper's POV.  Force transition to STATUS phase.
+    // A wrapper EOP means the SCSIDMA engine finished the byte COUNT it was
+    // armed with — i.e. ONE scatter-gather segment — NOT necessarily the whole
+    // SCSI command.  A SCSI READ streams its full transfer length (tl*blk_sz)
+    // across MULTIPLE DMA segments: the real A/UX driver is a state machine
+    // (scsisched) that, on each end-of-DMA interrupt, RE-ARMS the next SG
+    // segment and KEEPS the bus in data-in (SG_DMA -SI_EOP-> SG_EOP -SI_PHASE->
+    // SG_RUN, re-programming chip[$100]=SG[sg_idx].b_addr per segment via
+    // scsi_dmatype->scsi_vio->scsi_in).  Command completion (SI_DONE ->
+    // SG_NOTIFY) is reached only from SG_RUN; SI_DONE arriving in SG_EOP is an
+    // explicit SG_PANIC — i.e. the driver treats "command complete right after
+    // a DMA segment" as a hardware fault.
     //
-    // Note (doc-93 investigation): A/UX 3.0.1's IIfx scsiirq INTENTIONALLY
-    // clears task[$38] bit 13 at scsiirq entry ($1004A8C8), so the
-    // state-decode block's SI_EOP path ($1004A9E6, which requires that
-    // bit set) is NEVER reachable.  The kernel only handles wrapper EOPs
-    // via the SI_PHASE path ($1004AA2E) which is reached when BSR_PM=0
-    // (= chip's phase no longer matches TCR's data_in code).  So even for
-    // PARTIAL DMA arms within a single SCSI session, this code MUST
-    // transition the chip out of data_in/data_out — anything else makes
-    // the kernel panic with "SCSI manager state table" (SG_DMA + SI_UNK →
-    // SG_PANIC, dopanic at $1004A602).
+    // Therefore we must NOT fabricate a STATUS phase here on a per-segment EOP.
+    // (The earlier code did, which asserted command-complete every segment;
+    // that pushed the driver into re-issuing one overlapping READ_6 per segment
+    // with sg_idx reset to 0, so every segment re-used SG[0] and the data only
+    // landed correctly when the buffer happened to be physically contiguous —
+    // the bug behind `bad dir ino 15360` / the $301a00 overrun, and the reason
+    // the unfaithful kernel-credit "shim" appeared to be needed.)
     //
-    // The overlapping-read pattern from doc-91 (lba=287680 tl=160 → tl=146
-    // → ...) is THE KERNEL'S INTENDED BEHAVIOR for chunked SDMA transfers,
-    // NOT a bug in this function.  The downstream "user pages zero-filled"
-    // issue is at a different layer — likely in how the kernel programs
-    // sDADDR for each reissued read.
-    if (scsi->bus.phase == scsi_data_in || scsi->bus.phase == scsi_data_out) {
+    // READ (data_in): the target releases data-in to STATUS only when its data
+    // is exhausted, which scsi_pop_data_in_byte already does when buf.size hits
+    // 0 (the final segment).  So on a mid-transfer READ segment we leave the
+    // bus in data-in; the end_of_dma latch set above makes scsi_update_irq
+    // raise the end-of-DMA interrupt (BSR bit 7 + task[$38] bit 5 armed =
+    // SI_EOP) that drives the driver to re-arm the next SG segment.  This is
+    // the fix that makes the kernel program chip[$100]=SG[sg_idx] per segment
+    // itself (faithful scatter-gather), resolving the `bad dir ino 15360` /
+    // $301a00 overrun without any CDB-decoding shim on the read path.
+    //
+    // WRITE (data_out): NOT YET converted to the same per-segment model — it
+    // still force-completes here, and the IIfx wrapper's kernel-credit shim is
+    // still load-bearing for the write path (and for at least one fsck-stage
+    // transfer: removing the shim entirely currently regresses to a
+    // `bread: size 0` panic at ~i=298M).  Converting writes + removing the
+    // shim is the remaining faithfulness work — see notes/iifx-debug/113-*.md.
+    if (scsi->bus.phase == scsi_data_out) {
         scsi->buf.size = 0;
         phase_status(scsi, STATUS_GOOD);
     }
