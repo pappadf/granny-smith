@@ -233,6 +233,9 @@ void phase_data_out(scsi_t *scsi, int bytes) {
     scsi->buf.size = 0;
     // Arm the primer-slot gate.  See scsi_internal.h `primer_held` etc.
     scsi->primer_held = false;
+    // New command: the bus-master engine has not yet supplied any payload, so
+    // the next scsi_push_data_out_byte() will discard any iHSKEN primer first.
+    scsi->dma_out_engine_started = false;
     // Same rationale as phase_data_in.
 }
 
@@ -1672,9 +1675,11 @@ void scsi_hsken_data_out_byte(scsi_t *scsi, uint8_t byte) {
     // a byte arrives at the chip's ODR with a successful REQ/ACK
     // handshake during whatever bus phase is currently active.  Share
     // the body via scsi_odr_auto_handshake_byte().  We pass
-    // apply_primer_gate=false because the kernel's iHSKEN write loop
-    // does not exhibit the CLR.B-then-real-data primer pattern that
-    // the gate exists to filter — see the gate's commentary above.
+    // apply_primer_gate=false because a *pure* iHSKEN write loop (e.g.
+    // Mac OS) does not exhibit the CLR.B-then-real-data primer pattern
+    // that the gate exists to filter.  For A/UX bus-master writes the
+    // CLR.B primer that DOES precede the payload is discarded instead by
+    // the engine-supersedes-primer rule in scsi_push_data_out_byte().
     scsi_odr_auto_handshake_byte(scsi, byte, /*apply_primer_gate=*/false);
 }
 
@@ -1699,11 +1704,31 @@ bool scsi_pop_data_in_byte(scsi_t *scsi, uint8_t *out) {
         return false;
     if (scsi->buf.size == 0)
         return false;
-    *out = next_byte(scsi);
-    // CDR read path also deasserts CSR_REQ between bytes when MR_DMA is
-    // set (real chip handshake gap).  Mirror that.
-    if (scsi->reg.mr & MR_DMA)
-        scsi->reg.csr &= ~CSR_REQ;
+    *out = next_byte(scsi); // decrements buf.size
+    // REQ/ACK handshake (MR_DMA pop path only).  A real SCSI target in
+    // DATA IN asserts /REQ whenever it has another byte ready for the
+    // initiator: after each byte is ACK'd /REQ drops briefly and then
+    // re-asserts for the next byte, and only stays low for good once the
+    // target's data is exhausted (it then switches to STATUS).  We move
+    // bytes synchronously, so the only externally-visible REQ state is the
+    // *settled* one observed between DMA bursts — model that: /REQ stays
+    // asserted while data remains (buf.size>0), and clears when the target
+    // has nothing left.
+    //
+    // This is load-bearing for the IIfx bus-master scatter-gather READ:
+    // after one SG segment's end-of-DMA, the driver (scsitask, poll at
+    // $1004B2F4) waits for the target to still be REQ'ing before it reads
+    // the SCSI phase and re-arms the next SG segment.  If /REQ were left
+    // deasserted (the old unconditional clear), that poll times out, the
+    // driver aborts the transfer with only the first segment delivered,
+    // and the rest of a multi-page read is left as stale RAM — the source
+    // of the residual "bad block" garbage on large (>1 segment) reads.
+    if (scsi->reg.mr & MR_DMA) {
+        if (scsi->buf.size > 0)
+            scsi->reg.csr |= CSR_REQ;
+        else
+            scsi->reg.csr &= ~CSR_REQ;
+    }
     // Eagerly transition to STATUS when the SCSI command's data has
     // been fully delivered (buf empty).  On real hardware the target
     // releases data-in as soon as it has no more data to hand the
@@ -1743,6 +1768,21 @@ void scsi_push_data_out_byte(scsi_t *scsi, uint8_t byte) {
     // CSR_BSY set = SI_UNK = state-table panic.
     if (!scsi)
         return;
+    // Engine-supersedes-primer: the external SCSIDMA engine is the authoritative
+    // data source for a bus-master DATA OUT.  On its FIRST byte for this command,
+    // discard whatever is already in buf — the A/UX scsiout glue writes a CLR.B
+    // "primer" ($00) to the blind port (iHSKEN, committed via
+    // scsi_hsken_data_out_byte) before arming the engine.  On real hardware that
+    // primer sits in ODR and is overwritten by the engine's first byte before the
+    // target ever REQs, so it never lands on the bus.  Keeping it would shift the
+    // whole transfer one byte (scattered multi-block writes land misaligned →
+    // "bad block").  Fires once per command (first segment only): subsequent SG
+    // segments see dma_out_engine_started=true and append normally.  Pure-iHSKEN
+    // writes never run the engine, so this never disturbs them.
+    if (scsi->bus.phase == scsi_data_out && !scsi->dma_out_engine_started) {
+        scsi->dma_out_engine_started = true;
+        scsi->buf.size = 0;
+    }
     scsi->dma_write_armed = true;
     scsi_odr_auto_handshake_byte(scsi, byte, /*apply_primer_gate=*/false);
 }
@@ -1800,16 +1840,27 @@ void scsi_signal_eop(scsi_t *scsi) {
     // itself (faithful scatter-gather), resolving the `bad dir ino 15360` /
     // $301a00 overrun without any CDB-decoding shim on the read path.
     //
-    // WRITE (data_out): NOT YET converted to the same per-segment model — it
-    // still force-completes here, and the IIfx wrapper's kernel-credit shim is
-    // still load-bearing for the write path (and for at least one fsck-stage
-    // transfer: removing the shim entirely currently regresses to a
-    // `bread: size 0` panic at ~i=298M).  Converting writes + removing the
-    // shim is the remaining faithfulness work — see notes/iifx-debug/113-*.md.
-    if (scsi->bus.phase == scsi_data_out) {
-        scsi->buf.size = 0;
-        phase_status(scsi, STATUS_GOOD);
-    }
+    // WRITE (data_out): symmetric to the READ path.  A bus-master write
+    // streams its full transfer (tl*blk_sz) into the chip across multiple SG
+    // segments; the chip's ODR auto-handshake path accumulates the bytes and
+    // self-completes (command_complete → STATUS, writing buf to disk) only
+    // when the buffer is full (buf.size == buf.max, scsi.c ~L1411).  So on a
+    // mid-transfer write segment EOP we must NOT force STATUS here: doing so
+    // discarded the segment's bytes (buf.size = 0) and made the driver
+    // re-issue one overlapping WRITE_6 per SG segment with sg_idx reset — the
+    // write-side twin of the old read bug.  The kernel-credit shim then tried
+    // to "fix" each re-issue's source address with a contiguous offset, which
+    // is WRONG for a scattered source buffer: it read the next segment from
+    // (latch + Δlba*blk_sz) instead of the real scattered page and wrote
+    // GARBAGE to disk (e.g. WR lba=188800 sourced from $2e4200 instead of the
+    // true SG page → the inode block read back as garbage → "bad block").
+    //
+    // Leaving the bus in data_out (REQ stays asserted in the bus-master path,
+    // set by phase_data_out and never cleared per-byte) lets the driver re-arm
+    // each scattered SG segment itself, exactly as the READ path now does.
+    // command_complete fires once, when the last segment fills buf, writing
+    // the correctly-sourced bytes to disk.  This removes the write path's
+    // dependence on the kernel-credit shim.
     scsi_update_irq(scsi);
 }
 

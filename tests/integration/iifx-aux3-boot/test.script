@@ -15,27 +15,36 @@
 #   "/: bad dir ino 15360 ... mangled entry" (the /dev page $301a00 was
 #   overrun by a scattered bus-master SCSI READ).
 #
-# THE FIX (this pin): the IIfx bus-master SCSI driver does scatter-gather
-# by re-arming the SCSIDMA once per SG segment WITHIN a single SCSI command
-# (state machine SG_RUN->SG_DMA->SG_EOP->SG_RUN, re-programming
-# chip[$100]=SG[sg_idx].b_addr each segment).  Our 53C80 model wrongly
-# forced data_in->STATUS on every DMA-segment EOP, which made the driver
-# complete+re-issue one overlapping READ per segment with sg_idx reset to
-# 0 — so every segment re-used SG[0] and a physically-scattered buffer was
-# filled contiguously, overrunning /dev.  The fix (src/core/peripherals/
-# scsi.c scsi_signal_eop): a DMA-segment EOP keeps the bus in data_in and
-# raises end-of-DMA; the target releases to STATUS only when its data is
-# exhausted.  The kernel then programs each scattered segment itself, /dev
-# is intact, and the boot reaches login.
+# THE FIX: the IIfx bus-master SCSI driver does scatter-gather by re-arming
+# the SCSIDMA once per SG segment WITHIN a single SCSI command (state machine
+# SG_RUN->SG_DMA->SG_EOP->SG_RUN, programming a fresh chip[$100] per segment).
+# Three faithful 53C80/SCSIDMA model fixes make this work (see
+# notes/iifx-debug/ and src/core/peripherals/scsi.c, src/machines/iifx.c):
+#   1. READ: scsi_pop_data_in_byte keeps /REQ asserted while the target still
+#      has data, so the driver's between-segment poll re-arms each scattered
+#      SG segment instead of timing out (was: contiguous fill overran /dev).
+#   2. WRITE: scsi_signal_eop no longer force-completes data_out per segment;
+#      the bus-master engine streams the whole transfer and the driver re-arms
+#      each scattered source page (was: per-segment force-STATUS + a CDB-
+#      decoding "credit shim" that mis-sourced scattered writes -> garbage on
+#      disk -> "bad block").
+#   3. WRITE: the bus-master engine supersedes the iHSKEN CLR.B primer in
+#      scsi_push_data_out_byte, so a multi-block write isn't shifted one byte.
+# With these, the kernel-credit shim is inert and was removed.
 #
 # CURRENT EXPECTED STATE
 # ----------------------
-# Screen: the A/UX text console at the `login:` prompt
-#   "Apple Computer Inc. A/UX (notnamed) / login:"
-# (Reached via getty: /etc/macgetty is not executable on this image, so
-# A/UX launches the text getty instead of the graphical login that the
-# SE/30 reaches — a smaller residual tracked in the iifx-debug notes.
-# A few "bad block ..." fsck messages are also visible.)
+# Screen: the real A/UX *graphical* login window (same content the SE/30
+# oracle reaches): "Welcome to A/UX. / Log in as: Guest / Registered User /
+# Name: Password: / Login".  The boot runs Mac OS -> A/UX Startup -> the A/UX
+# kernel -> root mount -> init -> graphical fsck -> CommandShell login window,
+# with the disk image byte-identical to pristine afterwards.
+#
+# NOTE: the login window has a blinking text cursor, so the captured frame is
+# only deterministic at a FIXED cycle budget — keep scheduler.run at exactly
+# 1.5 G (the checksum oscillates ~every 100 M cycles between the cursor-on and
+# cursor-off frames).  The prior getty-fallback frame is kept as
+# getty-fallback.png for archaeology.
 
 # Pin the wall clock so screenshot comparisons are reproducible.
 rtc.time = 2026-04-26T21:30:36
