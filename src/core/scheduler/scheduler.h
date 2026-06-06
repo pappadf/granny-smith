@@ -71,34 +71,24 @@ extern double scheduler_time_ns(struct scheduler *restrict scheduler);
 
 // Execution control
 
-// Main loop iteration for real-time emulation with VBL-based timing
+// Main loop iteration for real-time emulation with VBL-based timing.  The
+// WASM/web2 RAF entry point: maps elapsed host time onto whole VBL frame-units
+// and runs them via scheduler_run_frame().
 void scheduler_main_loop(config_t *restrict config, double now_msecs);
+
+// Run one VBL frame-unit: pulse the machine's VBL line (trigger_vbl) then run
+// exactly one VBL period of emulated time.  This is the atomic unit shared by
+// every target's run loop — web2's scheduler_main_loop() calls it once per
+// host-clock VBL, the headless pump calls it once per synthetic tick — so the
+// guest sees an identical [VBL, run-period, VBL, run-period, …] sequence on all
+// targets, differing only in how fast the host issues the ticks.
+void scheduler_run_frame(struct scheduler *restrict s, config_t *config);
 
 // Run the scheduler for a specified number of instructions
 void scheduler_run_instructions(struct scheduler *restrict s, uint64_t n);
 
 // Run the scheduler for a specified number of microseconds
 void scheduler_run_usecs(struct scheduler *restrict s, uint64_t usecs);
-
-// Run the scheduler as fast as possible until s->running becomes false
-// (i.e. until run_stop_event fires or the event queue empties).  Used by
-// the headless platform — no host-time pacing, no VBL injection beyond
-// the cycle-driven recurring VBL event.
-void scheduler_run_until_idle(struct scheduler *restrict s);
-
-// Register a recurring cycle-driven VBL event that fires at the Mac VBL
-// frequency (~60 Hz of guest time) and pulses the machine's VBL line.
-// Must be called once during machine init, after the scheduler frequency
-// is set.  Replaces the host-time-driven trigger_vbl() that was previously
-// in scheduler_main_loop().
-void scheduler_start_vbl(struct scheduler *restrict s, config_t *config);
-
-// Register the cycle-driven VBL event TYPE without scheduling a fresh event.
-// Required on the checkpoint-restore path so scheduler_start can resolve a
-// saved 'scheduler.vbl_tick' event back to a live callback pointer.  Safe to
-// call on platforms (e.g. WASM) that never schedule a vbl_tick — registering
-// an unused type is harmless.
-void scheduler_register_vbl_type(struct scheduler *restrict s, config_t *config);
 
 // Complete deferred checkpoint restore after all devices have registered event types
 void scheduler_start(struct scheduler *restrict s);
