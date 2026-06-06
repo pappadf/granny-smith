@@ -310,6 +310,13 @@ export async function initEmulator(config: MachineConfig): Promise<void> {
   if (config.vrom && config.vrom !== '(auto)') {
     await gsEval('vrom.load', [config.vrom]);
   }
+  // Seed the JMFB video mode before machine.boot so the card factory consumes
+  // it (sets the sense lines + slot-PRAM/video defaults).  web-legacy's
+  // bootFromConfig does this; omitting it left the JMFB unseeded and A/UX hung
+  // enabling its device drivers on real hardware.
+  if (config.videoMode) {
+    await gsEval('nubus.video_mode', [config.videoMode]);
+  }
   // Map the human-readable RAM string ('4 MB') to KB the boot path wants.
   const ramKB = ramStringToKb(config.ram);
   if (config.model) {

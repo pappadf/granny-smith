@@ -897,11 +897,35 @@ static inline void f_trap(cpu_t *restrict cpu) {
     // address).  Detect this by checking:
     //   1. Bus error already pending from the fetch, OR
     //   2. The instruction page has no SoA read entry (unmapped after MMU walk)
-    // Convert to a bus error with retry semantics → double bus error → halt.
+    // Convert to a bus error.  CRITICAL: distinguish a PMMU descriptor fault
+    // (the instruction page is demand-pageable — the kernel will map it and the
+    // RTE re-fetches the SAME PC) from a genuine bus timeout (unmapped physical,
+    // e.g. ROM RAM-sizing probes with the MMU off).
+    //
+    //   - PMMU fault  → exception_bus_error_RETRY (Format $B retry).  A demand-
+    //     page fetch legitimately faults at the same PC repeatedly until the
+    //     page is paged in (e.g. A/UX exec'ing /etc/init: its text page at
+    //     VA 0 is read from disk, and the fetch at crt0 $148 re-faults until the
+    //     read completes).  The retry path does NOT treat a same-PC re-fault as
+    //     a double bus error, so a not-yet-ready page just retries — matching a
+    //     real 68030, which only halts on a fault DURING exception processing.
+    //   - Bus timeout → exception_bus_error (the same-PC-halt heuristic, which
+    //     genuine stuck fetch loops / RAM probes rely on for double-fault→reset).
+    //
+    // Routing PMMU instruction-fetch faults through the non-retry path was the
+    // IIfx 8bpp hang: under the WASM/RAF VBL timing the init text page wasn't
+    // resident on the first RTE retry, the second same-PC fetch fault was
+    // mis-detected as a double bus error → HALT → GLU reset → POST → SCC poll.
+    // (Headless scheduler.run happened to have the page ready on retry, so it
+    // booted — masking the bug.)  See memory project_iifx_aux_8bpp_scc_iop_hang.
     if (__builtin_expect(g_bus_error_pending, 0) && g_bus_error_address == cpu->instruction_pc) {
+        bool is_pmmu = g_bus_error_is_pmmu;
         g_bus_error_pending = false;
         cpu->pc = cpu->instruction_pc;
-        exception_bus_error(cpu, cpu->instruction_pc, 1);
+        if (is_pmmu)
+            exception_bus_error_retry(cpu, cpu->instruction_pc, 1);
+        else
+            exception_bus_error(cpu, cpu->instruction_pc, 1);
         return;
     }
     uint32_t fetch_page = cpu->instruction_pc >> PAGE_SHIFT;

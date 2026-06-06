@@ -897,6 +897,32 @@ static int card_init(nubus_card_t *card, config_t *cfg, checkpoint_t *cp) {
             rtc_pram_write(rtc, 0x0D, 0x75); // 'u'
             rtc_pram_write(rtc, 0x0E, 0x4D); // 'M'
             rtc_pram_write(rtc, 0x0F, 0x63); // 'c'
+            // Stamping 'NuMc' makes the boot ROM's CkNewPram (OS/SysUtil.a,
+            // part of _InitUtil) treat XPRAM as already valid, so it SKIPS
+            // its cold-init pass and never writes PRAMInitTbl ($76..$89).
+            // That table holds the default OS type and boot device the Start
+            // Manager reads (StartSearch.a EmbarkOnSearch via _GetOSDefault /
+            // _GetDefaultStartup): without it OSType=$77, DriveId=$78 and
+            // PartitionId=$79 stay 0, so D3 reaches SCSILoad as $00000000
+            // instead of $0001FFFF and the boot-driver DDM match never fires
+            // — A/UX won't boot from the SCSI HD (falls back to floppy).  So
+            // when we fake PRAM-valid to keep our slot record, we must also
+            // reproduce the ROM's PRAMInitTbl defaults.  Bytes $7C..$89 are
+            // zero (already cold-zero) but are written for an exact mirror.
+            static const uint8_t pram_init_tbl[] = {
+                0x00, // $76 reserved
+                0x01, // $77 default OS (Mac)
+                0xFF, 0xFF, // $78-$79 default boot drive / partition ("any")
+                0xFF, 0xDF, // $7A-$7B
+                0x00, 0x00, // $7C-$7D sound alert id
+                0x00, 0x00, // $7E-$7F hierarchical menu display / drag
+                0x00, 0x00, // $80-$81 default video
+                0x00, 0x00, 0x00, // $82-$87 default hilite colour (black)
+                0x00, 0x00, 0x00, //
+                0x00, 0x00, // $88-$89 reserved
+            };
+            for (size_t i = 0; i < sizeof(pram_init_tbl); i++)
+                rtc_pram_write(rtc, (uint8_t)(0x76 + i), pram_init_tbl[i]);
             // Per-slot sPRAMRec layout (8 bytes): each slot's record
             // lives at offset (0x46 + (slot - 9) * 8) in PRAM (see
             // docs/pram.md §6).  $46..$47 = BoardID, $48 = savedMode,

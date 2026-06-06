@@ -12,6 +12,12 @@ export interface MachineConfig {
    *  during early development). */
   rom?: string;
   vrom: string;
+  /** JMFB video-mode id (e.g. "13in_rgb_1bpp") seeded via `nubus.video_mode`
+   *  before `machine.boot`, matching web-legacy's bootFromConfig.  Without it
+   *  the JMFB card never seeds its slot-PRAM / video defaults and A/UX hangs
+   *  while enabling its device drivers on real hardware.  Unset on models with
+   *  no configurable video (Plus / SE/30). */
+  videoMode?: string;
   ram: string;
   /** Ordered list of floppy image paths, one per drive slot. Entries that
    *  are empty / '(none)' are skipped (no insertion into that slot). */
