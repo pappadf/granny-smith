@@ -3,9 +3,22 @@
 A reference for the abstraction level at which Granny Smith models the two
 I/O Processors used in the IIfx. Every register, command byte, shared-RAM
 offset, and state encoding here is host-visible: it is what the IIfx
-ROM and Mac OS software actually read and write. We do not model the
+ROM and Mac OS / A/UX software actually read and write. We do not model the
 internal 65C02 microcontroller or its on-die register file — those are
 firmware-internal and not exercised through any external interface.
+*Host-visible* includes effects the firmware produces autonomously: the
+SonyIOP drive-presence poll (§17.3) and the ADB Auto/SRQ poll (§18.3) both
+interrupt the host with no host request, and a complete model must
+reproduce them.
+
+**Primary sources.** This document is the cleaned-up, reconciled model;
+the ground-truth Apple engineering documents it is checked against live in
+[`local/gs-docs/iifx-iop`](../local/gs-docs/iifx-iop) — the *F19 Theory of
+Operation* (PIC silicon/registers), *IOP Manager ERS* (host traps + mailbox,
+§§10–12), *IOP Kernel ERS* (65C02 executive), *Serial / SWIM / ADB IOP
+Driver ERS* (the per-device protocols in §§15.3, 17, 18), and *PT 18* (A/UX
+serial errata) — plus the annotated firmware disassemblies in
+[`local/gs-docs/iop`](../local/gs-docs/iop) (`iop-scc`, `iop-swim`).
 
 ---
 
@@ -196,7 +209,7 @@ image. The host-visible parts are:
 | SWIM IOP  | `$03`                          | 1 (BlockCopy, RcvMsg only), 2 (Sony), 3 (ADB)      | `SWIMIOP.aii` `InitDrivers`, writes `RCVMsgMax`/`XMTMsgMax` |
 | SCC IOP   | `$07`                          | 1 (kernel commands, XmtMsg only)                   | `SCCIOP.aii` `Reset`, writes `RxMsgCnt`/`TxMsgCnt`     |
 
-Slots above the seeded count *exist* in shared RAM but the firmware will halt (BRK loop) if a host ever kicks them on the SWIM IOP. The SCC IOP's higher slots are reserved for host-downloaded driver code (see §15).
+Slots above the seeded count *exist* in shared RAM but the firmware will halt (BRK loop) if a host ever kicks them on the SWIM IOP. The SCC IOP's higher slots are reserved for host-downloaded serial-driver code — port A on slots 2-4, port B on slots 5-7 (see §15.3).
 
 ```
 MaxIopMsgNum    equ 7         ; transmit / receive slots are numbered 1..7
@@ -413,7 +426,7 @@ events, etc.
    `INTHST1`, and **every** firmware-initiated RcvMsg post raises
    exactly this bit. The "Int0 = reply, Int1 = unsolicited" framing is
    not a heuristic — it's the firmware's hard rule, with one nuance on
-   the ADB slot (see §18.3).
+   the ADB slot (see §18.4).
 
 3. **OSS raises the 68030 IRQ.**
 
@@ -579,7 +592,8 @@ Per-channel byte-stream I/O, async event delivery, RX/TX interrupt
 handling — all of that lives in **downloadable driver code** that the
 host writes into the IOP's `$2D55..$56A9` (Driver A) and
 `$56AA..$7FEE` (Driver B) regions, then activates with the
-`AllocDvr` / `InitDvr` kernel commands. The resident firmware's
+`AllocDvr` / `InitDvr` kernel commands. The downloaded-driver message
+protocol is documented in §15.3. The resident firmware's
 default Z8530 ISR vector table points entirely at a `BRK` stub
 (`UnKnown_SCCInt`), so enabling any Z8530 interrupt source without
 first downloading a driver will hard-stop the IOP.
@@ -761,6 +775,74 @@ empty, framing error, break received) reach the host directly via
 route through the mailbox or through `iopIntNActive`. The Z8530's
 own interrupt vector is the only thing the host's SCC driver
 inspects.
+
+### 15.3 Enhanced mode — the downloadable serial drivers
+
+The resident kernel (§15.1) only allocates, initialises, and bypasses;
+the actual byte-stream serial I/O lives in two **downloadable** drivers —
+one per port — shipped as `'SERD'` resources (id 60 = modem / port A,
+id 61 = printer / port B; the first two bytes are the driver length, the
+rest is the IOP image). The host claims a port with `AllocDvr`, downloads
+the `'SERD'` body into the region `AllocDvr` reported (driver A from
+`$2D55`, driver B from `$56AA`), and runs its init with `InitDvr`. From
+then on the driver presents the Inside-Macintosh serial-driver interface
+(`.AIn`/`.AOut`/`.BIn`/`.BOut`) and off-loads the SCC from the 68030.
+
+Granny Smith does **not** model this path — the IIfx boots Mac OS in
+PRAM-default bypass and never downloads a `'SERD'`. It is documented here
+for completeness, and because **A/UX** uses enhanced mode (see PT 18,
+below). Source: *Serial IOP Driver ERS*.
+
+Each active driver owns **six** mailbox slots — three host→IOP and three
+IOP→host — at fixed slot numbers: **port A = slots 2, 3, 4; port B =
+slots 5, 6, 7** (slot 1 stays the resident kernel-command channel of
+§15.1). Within a driver the three logical boxes map:
+
+| Driver box | Host→IOP (`XmtMsg`)        | IOP→host (`RcvMsg`)      |
+| ---------- | -------------------------- | ------------------------ |
+| 1          | Read                       | Event (status-change)    |
+| 2          | Write                      | —                        |
+| 3          | Open / Control / Close     | —                        |
+
+So for port A: `XmtMsg[2]` = Read, `XmtMsg[3]` = Write, `XmtMsg[4]` =
+Open/Control/Close, `RcvMsg[2]` = Event. Port B uses 5/6/7 identically.
+Every payload puts the IOP-written `Result code` at `+$00`.
+
+- **Open** (box 3, opcode `$01`): in — serial config word (`+$04`, the
+  *Inside Macintosh* vol II format) and the IOP-specific baud divisor
+  (`+$06`, host-converted from the config word's divisor); out — the IOP
+  addresses + lengths of the **write buffer** (`+$08`/`+$0A`) and the
+  **statistics buffer** (`+$0C`). The host fills the write buffer and
+  reads status straight out of those IOP-RAM buffers, not via messages.
+- **Read** (box 1): completes when ≥1 byte is in the IOP's RX ring buffer
+  (or on an abortable error); the reply hands back the ring-buffer
+  address/extent and byte count, and the *next* Read tells the IOP how
+  many bytes the host consumed. Data is moved by the host reading the IOP
+  ring buffer directly.
+- **Write** (box 2): host copies data into the Open-reported write buffer,
+  then sends a Write with the length (`+$04`); it completes when the last
+  byte clears the SCC transmitter.
+- **Control** (box 3, opcode `$00` + a sub-opcode): the full Macintosh
+  serial control set — Serial Reset (`$08`), Serial Handshake (`$0A`),
+  Clear/Set Break (`$0B`/`$0C`), Set Baud (`$0D`), Extended Handshake
+  (`$0E`), Control Options (`$10`), Assert/Clear DTR (`$11`/`$12`),
+  PE-substitution (`$13`/`$14`), Set/Clear XOff (`$15`/`$16`),
+  (Unconditional) Send XOn/XOff (`$17`–`$1A`), Reset SCC (`$1B`).
+- **Close** (box 3, opcode `$02`).
+- **Event** (IOP→host box 1, raised via Int1): posted on an SCC status
+  change the host armed via the Serial Handshake control call; carries
+  SCC RR0 at interrupt time (`+$04`) and the changed RR0 bits (`+$05`).
+
+Status (the six-byte Inside-Mac status block) is **not** a message: the
+driver maintains it in the statistics buffer whose address Open returned;
+the host reads it directly, with a one-byte valid/ack handshake at the
+head of that buffer.
+
+**A/UX caveat (PT 18).** Apple developer tech note *PT 18 — IOP-Based
+Serial Differences under A/UX* documents serial behaviour differences and
+bugs when A/UX drives the IOP serial path; an A/UX-accurate serial model
+must account for it. Granny Smith does not model IOP serial yet, so this
+is informational.
 
 ---
 
@@ -984,6 +1066,15 @@ host must subscribe to slot 2 with `irWaitRcvMessage` at boot.
 | `$02` | `rcvReqDiskEjected`        | Disk just removed from `DriveNumber`.                 |
 | `$03` | `rcvReqDiskStatusChanged`  | Drive status changed (e.g. write-protect tab moved).  |
 
+These are emitted by an **autonomous** drive-presence loop the firmware
+runs once the host sends `xmtReqStartPolling` (§17.2) — the SonyIOP
+analogue of the ADB autopoll loop (§18.3). The firmware scans the drives
+on its own and posts an event on `RcvMsg[2]` + Int1 only when one
+changes; the host need not poll. Granny Smith models this with a
+recurring scheduler event (`swim_drive_poll_tick`, ≈20 ms), gated so it
+re-arms only after the host has drained the previous `RcvMsg[2]` event,
+and quiesced by `xmtReqStopPolling`.
+
 ### 17.4 DriveKinds and the qDrive numbering convention
 
 The `DriveKinds[]` byte table returned by `xmtReqInitialize` is
@@ -1082,11 +1173,13 @@ reply preserves `ExplicitCmd` and echoes the same `ADBCmd`, with
 answered). The host's `ADB Mgr` routes the completion through
 `ExplicitRequestDone` and advances its command queue.
 
-**B. Implicit autopoll** (`PollEnable = 1`, `ExplicitCmd = 0`). The
-OS posts an autopoll request when `fDBExpActive = 1` in ADBVars. The
-`ADBCmd` field of the request is **meaningless** — whatever stale
-value the buffer happened to hold — because the firmware itself picks
-the next device. The firmware:
+**B. Implicit autopoll** (`PollEnable = 1`, `ExplicitCmd = 0`).
+Setting `PollEnable` puts the firmware into **autopoll mode**. The
+`ADBCmd` field of the request is **meaningless** — whatever stale value
+the buffer happened to hold — because the firmware picks the device
+itself. This is a *mode*, not a one-shot request: once enabled the
+firmware polls the bus autonomously (§18.3), and the device-selection
+rules below are what it runs on *each* autonomous cycle:
 
 1. Selects the device to poll **using its MRU (most-recently-used)
    chain, not numeric address order**. The chain is maintained
@@ -1119,38 +1212,91 @@ firmware also reads `ADBData[0..1]` as a big-endian 2-byte DevMap and
 latches it before the autopoll scan. The reply clears
 `SetPollEnables` (one-shot bit).
 
-### 18.3 Reply Int conventions
+### 18.3 Autonomous Auto/SRQ polling
 
-The firmware itself follows the rigid §10/§11 convention without
-exception:
+This is the single most important ADB behaviour to model correctly, and
+the one most easily mis-read from the host-side software flow alone.
+
+Per the *IOP ADB Driver ERS* (§"How the Messages are Used"): **once the
+host has enabled polling, the IOP polls the bus entirely on its own,
+"without intervention from the 68030", and interrupts the host only when
+a device actually has data — "one interrupt each time a device has data,
+and requires no interrupts to direct the service request polling".** The
+firmware free-runs the §18.2.B selection loop at roughly the documented
+ADB autopoll rate (≈10 ms per cycle; it calibrates this with a software
+fractional-time divider, the 65C02 having no hardware timer divider).
+When a polled device returns data, the firmware posts it on `RcvMsg[3]`
+with `Flags` = `PollEnable` set / `ExplicitCmd` clear / `NoReply` clear,
+`ADBCmd` = the `Talk-R0` it issued, `DataCount` + `ADBData` = the
+device's bytes, and raises **Int1**. A poll that finds no data produces
+*no* message and *no* interrupt — it is silent.
+
+There are therefore two host usage patterns, and a faithful model must
+serve **both**:
+
+- **Enable-once-then-wait (A/UX).** A/UX's ADB driver enables autopoll a
+  single time — its last slot-3 message at the end of boot is a *pure*
+  `PollEnable` reply (`Flags = $40`, no `ExplicitCmd`, no
+  `SetPollEnables`) — and then goes completely silent, relying on the
+  firmware to push input via Int1. A model that only acts when kicked by
+  the host delivers no input at all under A/UX (this was a real Granny
+  Smith bug: mouse and keyboard were dead under A/UX until the autonomous
+  loop was added).
+- **Re-post each cycle (Mac OS).** Mac OS's ADB Mgr re-issues an implicit
+  autopoll request every cycle (its `ImplicitRequestDone` path resumes
+  autopoll on each completion), so it keeps host→IOP traffic flowing.
+
+How the host acknowledges an autopoll push is the second subtlety. A/UX's
+receive handler is **bypass-style**: it reads `RcvMsg[3]` in its Int1 ISR
+and acknowledges purely by **clearing Int1** (write-1-to-clear on
+`iopStatCtl`) — it does *not* walk `RcvMsg[3].state` back through
+`MsgReceived` / `MsgCompleted`. So the "host has consumed the last push,
+the buffer is free again" signal is the **Int1 line going clear**, not the
+message-state byte (which stays at `NewMsgSent` indefinitely under A/UX).
+
+**Emulator model (`iop_swim.c`).** Granny Smith models this with a
+free-running scheduler event (`swim_adb_autopoll_tick`, ≈11 ms) that is
+armed when a slot-3 message arrives with `PollEnable` set and disarmed
+when one arrives with it clear. Each tick — while no explicit transaction
+is in flight and **no Int1 is still pending** (the bypass-style re-arm
+gate above) — it `Talk-R0`s the enabled `DevMap` devices in round-robin
+order through the ADB device model; on data it writes `RcvMsg[3]`
+(`Flags = $40`, `ADBCmd = Talk-R0`, the bytes) and raises Int1. To avoid
+racing a host that drives its *own* polling (Mac OS), each host-driven
+slot-3 transaction sets a short grace window during which the autonomous
+loop stands aside; it only takes over once the host has gone quiet (the
+A/UX case). One mechanism serves both OSes: Mac OS keeps its host-driven
+loop, A/UX gets autonomous delivery.
+
+### 18.4 Reply Int conventions
+
+The firmware's own Int usage follows the §10/§11 split:
 
 - When the host posts a command on `XmtMsg[3]` (`RCVMsg3` from the
   firmware's POV), the firmware's `HandleRCVMsg3` handler copies the
   payload, advances `XmtMsg[3].state` to `MsgCompleted`, and raises
   **Int0** (`MsgCompletedINT`). This is the standard ack for a
   host-initiated request.
-- When the firmware has an ADB reply to deliver (whether for an
-  earlier explicit command or for an autopoll cycle), it fills
-  `RcvMsg[3]`, sets `RcvMsg[3].state = NewMsgSent`, and raises
-  **Int1** (`NewMsgSentINT`). This is the standard unsolicited-from-
-  host's-perspective post on a RcvMsg slot.
+- When the firmware has an ADB reply to deliver — whether for an earlier
+  explicit command or for an autonomous autopoll cycle (§18.3) — it
+  fills `RcvMsg[3]`, sets `RcvMsg[3].state = NewMsgSent`, and raises
+  **Int1** (`NewMsgSentINT`).
 
-What looks like a violation of "Int0 = reply, Int1 = unsolicited" is
-actually an OS-side rebinding: once the OS sets `fDBUseRcvMsg = 1`
-(after its first `irSendRcvReply` on slot 3), it stops posting new
-explicit commands via `XmtMsg[3]` and instead puts the next request
-into the `RcvMsg[3]` payload buffer while acknowledging the prior
-reply. The firmware's `HandleXMTMsg3` (RcvMsg-ack path) runs
-`CopyMsg` on the *outgoing* buffer's `Flags` / `DataCount` headers,
-picks up the new request, and processes it identically to one that
-arrived on `XmtMsg[3]`. The next reply still travels back on
-`RcvMsg[3]` with Int1.
+Once the OS sets `fDBUseRcvMsg = 1` (after its first `irSendRcvReply` on
+slot 3) it stops posting explicit commands via `XmtMsg[3]` and instead
+puts the next request into the `RcvMsg[3]` payload buffer while
+acknowledging the prior reply; the firmware's `HandleXMTMsg3` (RcvMsg-ack
+path) picks it up and processes it identically. So from the host's
+interrupt perspective slot 3 is effectively "all Int1" once initialised.
 
-So from the host's interrupt perspective, slot 3 is effectively
-"all Int1" once initialised — but the underlying firmware semantics
-are unchanged. An emulator that strictly enforces §10/§11 ints will
-work correctly; the OS's choice to multiplex request and ack-payload
-on the same slot is a software convention, not a protocol divergence.
+**Caveat for emulator authors:** do **not** assume the host always drives
+the §11 receive handshake to completion. The §11 flow (host advances
+`RcvMsg[N].state` to `MsgReceived` / `MsgCompleted` and kicks the IOP) is
+what Mac OS does; A/UX's ADB receive path instead acks an autopoll push by
+clearing Int1 and never touches the state byte (§18.3). An emulator that
+gates "may I post the next autopoll message?" on `RcvMsg[3].state`
+returning to `MsgIdle` delivers exactly one input event under A/UX and
+then deadlocks — gate on the Int1-clear instead.
 
 ---
 
