@@ -279,6 +279,18 @@ struct scsi {
     uint32_t primer_pc; // PC at which the held byte was written
     bool primer_held; // true while a held first byte awaits decision
 
+    // Bus-master DATA OUT: true once the external SCSIDMA engine has begun
+    // supplying payload bytes for the current command (scsi_push_data_out_
+    // byte).  Reset by phase_data_out.  On the engine's FIRST byte we discard
+    // any bytes already in buf — those are the A/UX scsiout CLR.B "primer"
+    // ($00) written to the blind port (iHSKEN) before the bus-master transfer
+    // starts.  On real hardware that primer sits in ODR and is overwritten by
+    // the engine's first byte before the target REQs, so it never reaches the
+    // bus; committing it would shift the whole transfer one byte (mis-aligning
+    // scattered multi-block writes — the "bad block" corruption).  Pure-iHSKEN
+    // writes (e.g. Mac OS) never run the engine, so this never fires for them.
+    bool dma_out_engine_started;
+
     // Loopback mode: simulate passive SCSI terminator (test card)
     bool loopback;
 

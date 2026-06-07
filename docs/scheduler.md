@@ -558,81 +558,89 @@ and debugging, not for timing.
 
 ## 10. VBL injection and per-target pacing
 
-The emulator targets two platforms with very different timing requirements:
+Both targets run the **same execution model**, built from one atomic step — the *VBL
+frame-unit*. They differ only in **pacing**: how fast the run loop issues frame-units.
 
-| Target   | Goal                                              | VBL source                            | Execution driver                |
-|----------|---------------------------------------------------|---------------------------------------|---------------------------------|
-| Headless | Reproducibility — same script ⇒ identical output  | Cycle-driven recurring event          | `scheduler_run_until_idle`      |
-| WASM     | Real-time playback synced to the browser's render | Host-clock-driven, in `scheduler_main_loop` | `scheduler_main_loop` per `requestAnimationFrame` |
+| Target   | Goal                                              | Pacing                                | Run loop                          |
+|----------|---------------------------------------------------|---------------------------------------|-----------------------------------|
+| Headless | Reproducibility — same budget ⇒ identical output  | As fast as the host allows (unthrottled) | pump / REPL loop, one frame-unit per iteration |
+| WASM     | Real-time playback synced to the browser's render | Host-clock-driven                     | `scheduler_main_loop` per `requestAnimationFrame` |
 
-These two paths are **mutually exclusive**: a target picks exactly one. Each is
-described below.
+### 10.1 The VBL frame-unit
 
-### 10.1 Headless: cycle-driven VBL, run as fast as possible
+`scheduler_run_frame(s, config)`
+([scheduler.c](../src/core/scheduler/scheduler.c)) is the atomic step:
 
-The headless platform calls `scheduler_start_vbl(s, config)` once after machine setup
-([headless_main.c](../src/platform/headless/headless_main.c) right after `rom load`).
-That registers a recurring `scheduler_vbl_tick` event on the cycle queue at
-`frequency / MAC_VBL_FREQUENCY` cycles in the future. The callback calls the machine's
-`trigger_vbl` (which pulses VIA CA1 lines, increments `image_tick_all`, etc.) and
-reschedules itself at the same cycle interval.
+1. `trigger_vbl(config)` — pulse the machine's VBL line (VIA CA1, `image_tick_all`, …).
+2. `scheduler_run(s, MAC_VBL_PERIOD)` — run exactly one VBL period of emulated time.
 
-VBL is then just another event on the queue, treated identically to a VIA T1 underflow
-or an SCC RX completion. Sprint length is computed from the next event's timestamp
-(§6.1), so VBL fires on the exact cycle it was scheduled for, modulo the bounded
-overshoot of §8.
+So the VBL is **not** a scheduler event; it is injected imperatively, once at the start
+of every frame-unit. A run is just a sequence of frame-units:
 
-The execution loop is `scheduler_run_until_idle(s)`: it pumps
-`scheduler_run_instructions` chunks until `s->running` goes false (typically because
-`run_stop_event` from a `run N` shell command fired) or the event queue drains. No
-`host_time()` calls happen anywhere on the headless execution path.
+```
+[VBL, run 1/60.15 s] [VBL, run 1/60.15 s] [VBL, run 1/60.15 s] …
+```
 
-**Property:** because every input to guest execution is a function of cumulative
-cycles, the headless target is byte-deterministic. Two scripts that produce the same
-final cycle count produce identical guest state — including identical screenshots —
-regardless of script shape (`run 200M` vs `run 50M` four times) or where in the script
-read-only commands like `screenshot` are inserted.
+This is the sense in which **VBLs define frames** (see "Common misconceptions"): the
+loop drives VBLs, and the emulated time between two VBLs is one frame. Every target
+sees this identical sequence; only the wall-clock spacing between iterations differs.
 
-### 10.2 WASM: host-clock-driven VBL, paced for the browser
+### 10.2 Headless: unthrottled, one frame-unit at a time
 
-`scheduler_main_loop(config, now_msecs)` is called from the WASM platform's render loop
-(once per `requestAnimationFrame`,
-[em_main.c](../src/platform/wasm/em_main.c)). It decides how many emulated VBLs to
-inject this host tick, then for each one calls `trigger_vbl(config)` followed by
-`scheduler_run(s, MAC_VBL_PERIOD)`. **WASM does not register the cycle-driven VBL
-event** — its VBL pulses come from inside `scheduler_main_loop`.
+Headless does not arm any VBL event. Its run loops
+([headless_main.c](../src/platform/headless/headless_main.c)) call
+`scheduler_run_frame()` back-to-back as fast as the host CPU allows:
 
-Per-mode behavior
-([scheduler.c:1060-1087](../src/core/scheduler/scheduler.c#L1060)):
+- the daemon/script pump (`pump_scheduler_with_heartbeat`) runs one frame-unit per
+  iteration, yielding between them only to emit the ~1 Hz heartbeat and poll the daemon
+  socket for disconnect/`stop`;
+- the interactive REPL loop runs one frame-unit per iteration, staying responsive to
+  Ctrl-C and the `--max-cycles` cap.
 
-- **`schedule_max_speed`**: execute as many VBLs as fit in ~50% of the smoothed host
-  loop period. Emulated time runs faster than real time if the host is fast.
-- **`schedule_real_time`**: execute 1 VBL per host tick if the host loop period is
-  close to the Mac VBL period (±50%). Otherwise fall through to the accumulator path.
-- **`schedule_hw_accuracy`**: accumulate host elapsed time in `vbl_acc_error` and
-  execute `floor(vbl_acc_error / MAC_VBL_PERIOD)` emulated VBLs when enough has piled
-  up. Keeps emulated time in step with wall-clock over the long run.
+An instruction-budget `scheduler.run N` schedules a `run_stop_event`; the inner
+`scheduler_run` inside a frame-unit clamps to it (§6.1), so the budget stops mid-frame
+at exactly `N` instructions and the loop exits. `scheduler.run` with no argument runs
+until `scheduler.stop` (or client disconnect) — exactly what web2 does.
 
-A smoothed EWMA of host seconds per VBL (`host_secs_per_vbl`) and per loop
-(`host_secs_per_loop`) drives the scheduling heuristics. If the host tab is
-backgrounded for more than 1 second, the accumulator is reset to avoid fast-forwarding.
+No `host_time()` value ever feeds guest execution on the headless path.
 
-This path is **not** byte-deterministic by design — emulated VBL count tracks the
-host's render rhythm so the framebuffer stays synced to the user's display. That's the
-right trade-off for an interactive emulator.
+### 10.3 WASM: host-clock-driven, paced for the browser
 
-### 10.3 Why headless does not use `scheduler_main_loop`
+`scheduler_main_loop(config, now_msecs)` is called once per `requestAnimationFrame`
+([em_main.c](../src/platform/wasm/em_main.c)). It maps the elapsed host time onto a
+whole number of frame-units and runs that many via `scheduler_run_frame()`:
 
-Until recently, headless also went through `scheduler_main_loop`. Two host-clock inputs
-fed the per-iteration `vbls_to_execute` count: `host_secs_per_loop` and
-`host_secs_per_vbl`. Total VBL count for a run was therefore a function of host load,
-not a function of cycles. That made the guest's VBL-derived state (Mac OS Ticks,
-IRQ-handler side effects) depend on the host, and produced non-determinism between
-otherwise identical headless runs.
+- **`schedule_max_speed`**: as many frame-units as fit in ~50% of the smoothed host
+  loop period. Emulated time outruns real time on a fast host.
+- **`schedule_real_time`**: 1 frame-unit per host tick when the host loop period is
+  within ±50% of the Mac VBL period; otherwise the accumulator path.
+- **`schedule_hw_accuracy`**: accumulate host elapsed time in `vbl_acc_error` and run
+  `floor(vbl_acc_error / MAC_VBL_PERIOD)` frame-units, keeping emulated time in step
+  with wall-clock over the long run.
 
-The fix was the table above: headless gets cycle-driven VBL via `scheduler_start_vbl`,
-and the execution loop becomes `scheduler_run_until_idle` (no host_time on the hot
-path). WASM is unchanged.
+A smoothed EWMA of host seconds per VBL/loop drives the heuristics; a >1 s gap (tab
+backgrounded) is skipped to avoid fast-forwarding.
+
+### 10.4 Determinism
+
+Because the frame-unit sequence is fixed — a constant number of instructions per
+frame-unit, with the VBL always at the frame boundary — guest state at a given
+instruction budget is a pure function of the budget, on **both** targets. Pacing only
+changes *how many* frame-units a single host tick batches and *when* you observe the
+result; it never changes the guest sequence or the stop point.
+
+Headless makes this directly usable: a fixed `scheduler.run N` lands on the same guest
+state every run, regardless of host load or where read-only commands (`screenshot`,
+`screen.checksum`) sit in the script. The web2 e2e login test relies on the same
+property — a fixed budget in `max` mode reproduces, bit-for-bit, the framebuffer the
+headless integration test captures.
+
+> **History.** Earlier, headless used a *cycle-driven* recurring `scheduler_vbl_tick`
+> event (and `scheduler_run_until_idle`) while WASM used `scheduler_main_loop`. The two
+> VBL cadences differed in phase, so a boot could behave differently on the two targets
+> — headless could mask a WASM-only bug (it did, for the IIfx 8bpp `f_trap` double-fault
+> hang). Unifying on the frame-unit removed that divergence: headless now reproduces the
+> web2 boot exactly, differing only in pacing.
 
 ---
 
@@ -682,14 +690,11 @@ or misnamed event type cannot be silently dropped.
 
 ### 11.3 Cross-target checkpoints (headless ↔ WASM)
 
-The cycle-driven VBL event (§10.1) is registered only by the headless target, via
-`scheduler_start_vbl`. A headless checkpoint therefore contains a `scheduler.vbl_tick`
-event in its queue; a WASM checkpoint does not. Loading a headless checkpoint into the
-WASM build (or vice versa) does not mix VBL sources — but the WASM build will hard-assert
-on the unrecognised `scheduler.vbl_tick` event during phase-2 restore. Cross-target
-checkpoint compatibility is not currently a goal; if it becomes one, the WASM platform
-should register the same event type as a no-op so the saved entry can be resolved and
-either dropped or rewired.
+VBL is no longer a scheduler event on any target (§10) — it is injected imperatively
+per frame-unit — so no checkpoint's queue ever contains a `vbl_tick` entry, and there
+is no VBL-source mismatch to resolve. Both targets save and restore the same set of
+event types (VIA timers, SCC, the transient `run_stop`, …), so a checkpoint's event
+queue is target-agnostic with respect to VBL.
 
 ---
 

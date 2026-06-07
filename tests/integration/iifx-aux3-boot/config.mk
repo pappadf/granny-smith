@@ -2,19 +2,16 @@
 # Mirrors se30-aux3-boot but exercises the IIfx-specific boot path
 # (PMMU + FMC + OSS + SCC/SWIM IOPs) against the same A/UX 3 HD image.
 #
-# REGRESSION NOTE (2026-05-20): On the SE/30 the same HD image boots
-# through "Welcome to A/UX. Loading..." into the A/UX kernel, lands at
-# the A/UX login screen, and after `root + return + return` reaches the
-# Mac-on-A/UX desktop (see se30-aux3-boot).  On the IIfx the boot stops
-# at the Mac OS Finder of the MacPartition volume — the A/UX Startup
-# application is never launched and `g_last_user_crp` stays zero.
-# The user remembers this working on the (now-deleted) iifx branch,
-# i.e. before the code-review fix-pass landed.  This test pins the
-# current broken state so any future change that re-enables A/UX boot
-# on IIfx — or any further regression — is caught.
+# The IIfx now boots A/UX 3.0.1 all the way to the `login:` prompt
+# (text getty).  This was unblocked by the IIfx bus-master SCSI DMA
+# scatter-gather fix (src/core/peripherals/scsi.c scsi_signal_eop: a
+# DMA-segment EOP keeps the bus in data_in so the driver re-arms each
+# scatter-gather segment instead of completing per segment).  The test
+# pins the `login:` screen so any regression in the boot path — or
+# further progress past getty — is caught.  See test.script.
 
-TEST_NAME := IIfx A/UX 3.0.1 HD Boot (regression: stops at Mac Finder)
-TEST_DESC := Boot IIfx with 16 MB RAM from the A/UX 3.0.1 HD image; expect a stable Mac OS Finder (the A/UX Startup never runs — currently regressed).
+TEST_NAME := IIfx A/UX 3.0.1 HD Boot (reaches login)
+TEST_DESC := Boot IIfx with 16 MB RAM from the A/UX 3.0.1 HD image; expect the A/UX text `login:` prompt.
 
 # IIfx ROM (checksum 0x4147DD77).  JMFB declrom (Apple-341-0868.vrom) is
 # auto-discovered from the same directory as the ROM file; the content is

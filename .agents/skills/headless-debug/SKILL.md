@@ -79,6 +79,17 @@ files go to `/tmp/gs-headless-<port>.pid`.
 
 The emulator does not auto-run; it waits for commands.
 
+**Troubleshooting: daemon writes nothing / never prints `READY`.** The
+binary works (`--help` prints) but `--daemon` produces an empty log and
+never binds — the TCP `bind` is being blocked or the port is stuck.
+Causes seen in practice: (1) launched under a **sandboxed runner** that
+denies the socket bind — relaunch with the sandbox disabled; (2) a
+**stale daemon** still holding the port even though it's not obviously
+running — a *fresh port number* usually unsticks it; (3) inline,
+multi-line backgrounded launches that silently fail to start — put the
+launch in a standalone `.sh` script. The daemon binary itself is fine;
+this is a launch-environment problem.
+
 ### Example — SE/30, fast, no trailing prompt
 
 ```bash
@@ -354,6 +365,21 @@ Append `all` to lift the default 16-hit cap. Ranges are passed as a
 single `rest` string argument; quote them when in doubt:
 `find.str "Apple" "$0x40800000..$0x40810000 all"`.
 
+**Inspection is side-effect-free and crash-proof.** `peek` / `dump` /
+`poke` / `read_cstring` / `peek.bytes` and `find.*` use a debug
+translation path that never faults the guest, never crashes the daemon
+on a bad/unmapped address, and never injects a bus error into the
+running guest. So it is safe to inspect or poke garbage / unmapped
+addresses (e.g. while chasing a stale pointer at a breakpoint, or
+`find`-scanning across unmapped pages). Unmapped reads return all-ones
+(`0xFF…`); writes to ROM or unmapped pages are dropped silently; device
+registers are still dispatched — so peeking a *stateful* device
+register (a FIFO, or an IRQ-clear-on-read bit) can still trigger the
+normal device side effect. Prefer the device objects (`via1`, `scsi`,
+…) when you need a guaranteed-clean register read. (Before mid-2026
+these commands ran the full CPU memory path and *could* both crash the
+daemon and silently bus-error the guest you were inspecting.)
+
 ### 6.5 Memory logpoints (no-halt watchers)
 
 `debug.logpoints.add` takes a single string spec re-tokenised into the
@@ -372,6 +398,14 @@ debug.logpoints.clear
 Spec components: `[--write|--read|--rw]` (PC logpoint when omitted),
 `[L:|P:]<addr>[.b|.w|.l]`, `"message"`, `level=<n>`,
 `category=<name>` (default `logpoint` for PC, `memory` for read/write).
+
+**Memory logpoints only see CPU accesses.** They hook the CPU
+read/write path, so they do **not** fire on bus-master DMA or other
+device-engine writes (e.g. the IIfx SCSI DMA writes straight to host
+RAM, bypassing the hook). To catch a DMA writer of a physical byte, use
+a gdb hardware watchpoint on the host address (the RAM image base plus
+the physical offset) or an emulator-side trace in the device's transfer
+loop, not a logpoint.
 
 Single quotes opt out of `${...}` substitution entirely — the body is
 passed through to the logpoint parser verbatim, so deferred
@@ -443,6 +477,23 @@ scheduler.mode                                        # max / realtime / hardwar
 ```
 
 `debug.step N` is sugar for "run N instructions, then stop".
+
+**Execution is deterministic.** The emulator is single-threaded and
+cycle-driven; with a fixed `rtc.time` and `--speed=max`, a fresh boot
+reproduces bit-identical state for the same command sequence
+(instruction count, PC, registers, framebuffer checksum) — verified
+identical across runs out to hundreds of millions of instructions. So
+events land at reproducible instruction counts, and you can pinpoint
+where two scenarios diverge by running the same budget and diffing
+`cpu.pc` / registers / `screen.checksum`. (If you ever see apparent
+non-determinism, suspect the harness, not the core: a torn disk image
+from copying it while a daemon still holds it, a daemon crash that
+truncated a run, or a breakpoint condition matching a transient value.)
+
+**`scheduler.run N` can retire fewer than N instructions.** A guest
+idle `STOP` consumes the cycle budget without retiring instructions, so
+a bounded run may "undershoot" its target. Loop and check
+`cpu.instr_count` to reach a specific instruction count.
 
 ### 6.10 Logging
 
@@ -517,7 +568,18 @@ keyboard.press "Return"
 - **Assertions kill the daemon silently.** A C-level `assert()` fail
   terminates the process without notifying the TCP client. Check
   `kill -0 <pid>` (or just `objects | nc -w 2 localhost 6800`) if
-  responses dry up.
+  responses dry up. (Memory inspection — `peek`/`dump`/`poke`/`find` —
+  no longer crashes on bad addresses; see §6.4.)
+- **Conditional breakpoints fire on a *transient* match.** A condition
+  like `cpu.a2 == 0x1234` at a function-entry PC triggers whenever A2
+  *momentarily* equals the value — e.g. before the intended register
+  load, so you can stop on the "wrong" hit. Confirm with a second field
+  (`cpu.d2`, a count), or break at a PC where the register is known to
+  hold the value.
+- **Deep `${...}` nesting has a parser limit.** More than ~3 nested
+  levels (`${memory.peek.l(memory.peek.l(memory.peek.l(...)))}`) or many
+  `${}` groups on one line can error with `unterminated ${...}`. Capture
+  intermediate values across separate commands instead of one mega-expr.
 
 ## 8. Cross-references
 

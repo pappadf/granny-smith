@@ -1,6 +1,6 @@
 // Static catalogue of shell commands for the Terminal view's Command
-// Browser pane (spec §4.3.0). Lifted from local/gs-docs/prototypes/ui/app.js
-// lines 47-136. The plan slates runtime augmentation via
+// Browser pane (spec §4.3.0). Adapted from the original UI prototype.
+// The plan slates runtime augmentation via
 // gsEval('shell.meta.methods') / gsEval('shell.aliases') for a later
 // phase — this static set is the starting baseline.
 //

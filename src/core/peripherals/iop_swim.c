@@ -212,6 +212,8 @@ LOG_USE_CATEGORY_NAME("iop_swim");
 #define SWIM_MODEL_HFS_TAG_ADDR    (SWIM_MODEL_BASE + 8) // long: host RAM addr for MFS tags
 #define SWIM_MODEL_ADB_DATA        (SWIM_MODEL_BASE + 12) // 8 bytes: saved Listen-side ADBData
 #define SWIM_MODEL_DEVMAP          (SWIM_MODEL_BASE + 20) // 2 bytes: SetPollEnables DevMap bitmap
+#define SWIM_MODEL_ADB_AUTOPOLL    (SWIM_MODEL_BASE + 22) // 1 if autonomous Auto/SRQ polling is enabled
+#define SWIM_MODEL_ADB_HOSTGRACE   (SWIM_MODEL_BASE + 23) // ticks the autonomous poll defers after host-driven ADB
 
 // Number of floppy drives we model (must match floppy.c NUM_DRIVES).
 #define SWIM_NUM_DRIVES 2
@@ -233,6 +235,19 @@ LOG_USE_CATEGORY_NAME("iop_swim");
 #define ADB_TIMEOUT_NS     1000000ULL //  1 ms
 #define MAIN_LOOP_TICK_NS  10000000ULL // 10 ms
 #define DRIVE_POLL_TICK_NS 20000000ULL // 20 ms
+//   ADB autopoll tick: once the host enables Auto/SRQ polling (Flags bit 6),
+//     the IOP firmware autonomously Talk-R0 polls the enabled devices and
+//     interrupts the host only when one has data.  The documented cadence
+//     is ~10 ms; 11 ms matches the VIA-path autopoll.
+#define ADB_AUTOPOLL_TICK_NS 11000000ULL // 11 ms
+// After any host-driven ADB transaction, the autonomous poll loop steps aside
+// for this many ticks so a host that drives its own Auto/SRQ polling (Mac OS
+// re-issues a poll request per cycle) keeps exclusive ownership of the device
+// data — the autonomous loop only takes over once the host has gone quiet
+// (A/UX enables auto-polling once and then waits silently).  Generously larger
+// than any active-use host poll gap; A/UX's first input after going idle has at
+// most this much latency (~0.2 s) and then streams continuously.
+#define ADB_AUTOPOLL_HOST_GRACE 16
 
 // ============================================================================
 //  Forward declarations
@@ -240,6 +255,8 @@ LOG_USE_CATEGORY_NAME("iop_swim");
 
 static void swim_main_loop_tick(void *source, uint64_t data);
 static void swim_adb_response(void *source, uint64_t data);
+static void swim_adb_autopoll_tick(void *source, uint64_t data);
+static void swim_adb_update_autopoll(iop_t *iop, uint8_t flags);
 static void swim_drive_poll_tick(void *source, uint64_t data);
 static void swim_handle_xmt_slot(iop_t *iop, int slot);
 static void swim_handle_rcv_drain(iop_t *iop, int slot);
@@ -418,6 +435,8 @@ static void iop_swim_on_run_start(iop_t *iop) {
     iop->ram[SWIM_MODEL_DRIVE_PRESENT] = 0;
     iop->ram[SWIM_MODEL_DRIVE_ANNOUNCED] = 0;
     iop->ram[SWIM_MODEL_AUTOPOLL_ADDR] = 1;
+    iop->ram[SWIM_MODEL_ADB_AUTOPOLL] = 0;
+    iop->ram[SWIM_MODEL_ADB_HOSTGRACE] = 0;
     iop->ram[SWIM_MODEL_DEVMAP + 0] = 0;
     iop->ram[SWIM_MODEL_DEVMAP + 1] = 0;
     swim_ram_write_be32(iop, SWIM_MODEL_HFS_TAG_ADDR, 0);
@@ -455,6 +474,7 @@ static void iop_swim_on_run_start(iop_t *iop) {
     if (iop->scheduler) {
         remove_event(iop->scheduler, &swim_main_loop_tick, iop);
         remove_event(iop->scheduler, &swim_adb_response, iop);
+        remove_event(iop->scheduler, &swim_adb_autopoll_tick, iop);
         remove_event(iop->scheduler, &swim_drive_poll_tick, iop);
         scheduler_new_cpu_event(iop->scheduler, &swim_main_loop_tick, iop, 0, 0, MAIN_LOOP_TICK_NS);
     }
@@ -503,6 +523,9 @@ static void swim_handle_xmt_slot(iop_t *iop, int slot) {
         uint8_t count = iop->ram[pl + ADBMSG_DATACOUNT];
         uint8_t cmd = iop->ram[pl + ADBMSG_ADBCMD];
         LOG(3, "SWIM IOP: XmtMsg[3] ADB req: flags=$%02x count=%d cmd=$%02x", flags, count, cmd);
+
+        // PollEnable (bit 6) gates the IOP's autonomous Auto/SRQ poll loop.
+        swim_adb_update_autopoll(iop, flags);
 
         // Snapshot the Listen-side payload for the deferred response
         // builder.  XmtMsg[3].ADBData carries 0..8 bytes; for a Listen
@@ -576,8 +599,7 @@ static void swim_handle_initialize(iop_t *iop) {
     // number 0 as "no drive" / invalid, so the first physical floppy
     // must be registered at d1=1 to receive qDrive=1 in the drive
     // queue.  Without this shift, _MountVol(BootDrive=0) returns
-    // paramErr (-50) and the boot block code at $00400FA2 aborts
-    // (see local/gs-docs/asm/IIfx-ROM.asm §23 for the analysis).
+    // paramErr (-50) and the boot block code at $00400FA2 aborts.
     iop->ram[pl + SIM_DRIVE_KINDS + 0] = DRIVE_KIND_NONE;
     iop->ram[pl + SIM_DRIVE_KINDS + 1] = DRIVE_KIND_DSMFM_HD;
     iop->ram[pl + SIM_DRIVE_KINDS + 2] = DRIVE_KIND_DSMFM_HD;
@@ -946,6 +968,9 @@ static void swim_dispatch_slot2(iop_t *iop) {
 // ============================================================================
 
 static void swim_start_adb_send(iop_t *iop, uint8_t cmd, uint8_t flags) {
+    // The host is driving ADB itself this cycle — hold off the autonomous poll
+    // loop so it doesn't race the host for device data (see ADB_AUTOPOLL_HOST_GRACE).
+    iop->ram[SWIM_MODEL_ADB_HOSTGRACE] = ADB_AUTOPOLL_HOST_GRACE;
     iop->ram[SWIM_MODEL_ADB_BUSY] = 1;
     iop->ram[SWIM_MODEL_ADB_CMD] = cmd;
     iop->ram[SWIM_MODEL_ADB_FLAGS] = flags; // save for reply
@@ -1088,6 +1113,112 @@ static void swim_adb_response(void *source, uint64_t data) {
 }
 
 // ============================================================================
+//  Autonomous ADB Auto/SRQ poll — the firmware's $5800+ auto-poll loop
+//
+// Once the host enables Auto Polling (a slot-3 message with Flags bit 6 set),
+// the IOP firmware polls the enabled ADB devices ON ITS OWN, without the host
+// re-issuing a request per poll, and raises an IOP→CPU message (RcvMsg[3] +
+// Int1) only when a device actually has data — one interrupt each time a
+// device has data.  A/UX's
+// ADB driver relies on this: after boot it enables auto-polling once (Flags
+// $40, ExplicitCmd cleared) and then waits silently for these unsolicited
+// data messages.  Mac OS works the same way; without this loop neither sees
+// mouse/keyboard input.  The pushed message has ExplicitCmd cleared and
+// PollEnable set so the ADB Manager routes it through ImplicitRequestDone.
+// ============================================================================
+
+static void swim_adb_autopoll_tick(void *source, uint64_t data) {
+    (void)data;
+    iop_t *iop = (iop_t *)source;
+    if (!(iop->stat_ctl & iopRunBit))
+        return; // IOP stopped — let the timer lapse
+    if (!iop->ram[SWIM_MODEL_ADB_AUTOPOLL])
+        return; // auto-poll disabled — let the timer lapse
+
+    // Keep the autonomous poll cadence going.
+    if (iop->scheduler)
+        scheduler_new_cpu_event(iop->scheduler, &swim_adb_autopoll_tick, iop, 0, 0, ADB_AUTOPOLL_TICK_NS);
+
+    // Don't poll while an explicit host transaction is mid-flight.
+    if (iop->ram[SWIM_MODEL_ADB_BUSY])
+        return;
+    // Defer to a host that drives its own polling (Mac OS): count down the
+    // grace window set on each host-driven ADB transaction.  Only once it
+    // expires (the host has gone quiet — the A/UX case) does the IOP poll on
+    // its own.
+    if (iop->ram[SWIM_MODEL_ADB_HOSTGRACE] > 0) {
+        iop->ram[SWIM_MODEL_ADB_HOSTGRACE]--;
+        return;
+    }
+    // Don't clobber a slot-3 message the host hasn't consumed yet.  A/UX's ADB
+    // receive handler acknowledges an IOP→CPU message by clearing Int1 (W1C) in
+    // its ISR — it does NOT reset the IOP message-state byte (which stays
+    // NewMsgSent throughout autonomous polling) — so a still-asserted Int1, not
+    // the state byte, is the "previous reply not yet read" signal.  The host
+    // ISR drains all pending RcvMsg slots before clearing Int1, so once it is
+    // clear the buffer is free for the next autopoll push.
+    if (iop->stat_ctl & iopInt1ActiveBit)
+        return;
+    if (!global_emulator || !global_emulator->adb)
+        return;
+
+    // Talk-Reg-0 each enabled device in round-robin (MRU) order; the first
+    // with pending data wins.  Honour the DevMap when the host has installed
+    // one; otherwise probe every address.
+    uint16_t devmap = ((uint16_t)iop->ram[SWIM_MODEL_DEVMAP + 0] << 8) | iop->ram[SWIM_MODEL_DEVMAP + 1];
+    uint8_t start = iop->ram[SWIM_MODEL_AUTOPOLL_ADDR];
+    if (start < 1 || start > 15)
+        start = 1;
+    for (int step = 0; step < 15; step++) {
+        uint8_t addr = (uint8_t)(((start - 1 + step) % 15) + 1);
+        if (devmap != 0 && (devmap & (1u << addr)) == 0)
+            continue;
+        uint8_t talk_r0 = (uint8_t)((addr << 4) | 0x0C); // Talk-Reg-0
+        uint8_t buf[8] = {0};
+        int n = 0;
+        if (adb_iop_transact(global_emulator->adb, talk_r0, NULL, 0, buf, &n) && n > 0) {
+            // Push an unsolicited autopoll-data message: ExplicitCmd cleared,
+            // PollEnable set, Timeout cleared (data received).  ADBCmd carries
+            // the Talk-R0 the firmware issued so the host learns which device
+            // responded.
+            uint32_t pl = IOPMsgPayload(IOPRcvMsgBase, ADB_SLOT);
+            iop->ram[pl + ADBMSG_FLAGS] = ADBMSG_FLAG_POLL_EN;
+            iop->ram[pl + ADBMSG_DATACOUNT] = (uint8_t)n;
+            iop->ram[pl + ADBMSG_ADBCMD] = talk_r0;
+            for (int i = 0; i < n; i++)
+                iop->ram[pl + ADBMSG_ADBDATA + i] = buf[i];
+            iop->ram[IOPRcvMsgBase + IOPMsgState(ADB_SLOT)] = NewMsgSent;
+            iop_raise_int1(iop);
+            iop->ram[SWIM_MODEL_AUTOPOLL_ADDR] = (uint8_t)((addr % 15) + 1);
+            LOG(3, "SWIM IOP: autopoll push cmd=$%02x count=%d (autonomous)", talk_r0, n);
+            return;
+        }
+    }
+    // Nothing pending this cycle — advance the round-robin pointer.
+    iop->ram[SWIM_MODEL_AUTOPOLL_ADDR] = (uint8_t)((start % 15) + 1);
+}
+
+// Enable autonomous Auto/SRQ polling and (re)arm the poll timer.  Idempotent.
+static void swim_adb_autopoll_arm(iop_t *iop) {
+    iop->ram[SWIM_MODEL_ADB_AUTOPOLL] = 1;
+    if (iop->scheduler) {
+        remove_event(iop->scheduler, &swim_adb_autopoll_tick, iop);
+        scheduler_new_cpu_event(iop->scheduler, &swim_adb_autopoll_tick, iop, 0, 0, ADB_AUTOPOLL_TICK_NS);
+    }
+}
+
+// Track the host's Auto-Polling enable bit (Flags bit 6) seen on any slot-3
+// message and arm/disarm the autonomous poll loop accordingly.
+static void swim_adb_update_autopoll(iop_t *iop, uint8_t flags) {
+    if (flags & ADBMSG_FLAG_POLL_EN) {
+        if (!iop->ram[SWIM_MODEL_ADB_AUTOPOLL])
+            swim_adb_autopoll_arm(iop);
+    } else {
+        iop->ram[SWIM_MODEL_ADB_AUTOPOLL] = 0;
+    }
+}
+
+// ============================================================================
 //  RcvMsg drain handler — mirrors per-channel "$7D3E,x" routines
 //
 // For slot 2 (SWIM): the host's IOPMgr writes RcvMsg[2].state =
@@ -1145,10 +1276,19 @@ static void swim_handle_rcv_slot(iop_t *iop, int slot) {
     // Clear state to Idle (per firmware $552F: STZ $0303).
     iop->ram[IOPRcvMsgBase + IOPMsgState(slot)] = MsgIdle;
 
+    // The PollEnable flag (bit 6) on ANY slot-3 message turns the IOP's
+    // autonomous Auto/SRQ polling on or off.  A/UX enables it with a pure
+    // PollEnable reply (Flags=$40, no ExplicitCmd / SetPollEnables) and then
+    // waits silently for unsolicited input messages, so this must be honoured
+    // even on the "drain ack" path below.
+    swim_adb_update_autopoll(iop, flags);
+
     // Inspect Flags: if neither ExplicitCmd nor SetPollEnables, this is
-    // a pure drain ack (no actual request data).
+    // a pure drain ack (no actual request data) — the host re-arming
+    // auto-poll after draining a previous reply.
     if ((flags & (ADBMSG_FLAG_EXPLICIT | ADBMSG_FLAG_SETPOLL_EN)) == 0) {
-        LOG(3, "SWIM IOP: RcvMsg[%d] drain ack (Flags=$%02x — no request data)", slot, flags);
+        LOG(3, "SWIM IOP: RcvMsg[%d] drain ack (Flags=$%02x autopoll=%d)", slot, flags,
+            iop->ram[SWIM_MODEL_ADB_AUTOPOLL]);
         return;
     }
 
@@ -1177,6 +1317,7 @@ static void iop_swim_register_event_types(iop_t *iop) {
     scheduler_new_event_type(iop->scheduler, "swim", iop, "main_loop", &swim_main_loop_tick);
     scheduler_new_event_type(iop->scheduler, "swim", iop, "drive_poll", &swim_drive_poll_tick);
     scheduler_new_event_type(iop->scheduler, "swim", iop, "adb_response", &swim_adb_response);
+    scheduler_new_event_type(iop->scheduler, "swim", iop, "adb_autopoll", &swim_adb_autopoll_tick);
 }
 
 const iop_behavior_t iop_swim_behavior = {

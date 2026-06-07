@@ -147,13 +147,14 @@ static uint32_t scan_memory(struct cmd_context *ctx, uint32_t start, uint32_t en
         return 0;
     uint64_t stop = last - (plen - 1);
 
-    // Byte-by-byte rolling compare; good enough for PR1 (memory reads are fast path on RAM).
+    // Byte-by-byte rolling compare. Use the side-effect-free debug read so a
+    // scan that crosses unmapped pages can't latch a spurious guest bus error.
     for (uint64_t a = start; a <= stop; a++) {
-        if (memory_read_uint8((uint32_t)a) != pattern[0])
+        if (memory_debug_read_uint8((uint32_t)a) != pattern[0])
             continue;
         bool match = true;
         for (size_t k = 1; k < plen; k++) {
-            if (memory_read_uint8((uint32_t)(a + k)) != pattern[k]) {
+            if (memory_debug_read_uint8((uint32_t)(a + k)) != pattern[k]) {
                 match = false;
                 break;
             }

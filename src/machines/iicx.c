@@ -612,7 +612,6 @@ static void iicx_init(config_t *cfg, checkpoint_t *checkpoint) {
     }
 
     cfg->debugger = debug_init();
-    scheduler_register_vbl_type(cfg->scheduler, cfg);
     scheduler_start(cfg->scheduler);
     if (!checkpoint) {
         cfg->irq = 0;

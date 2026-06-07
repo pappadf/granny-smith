@@ -42,25 +42,11 @@ void frontend_force_redraw(void) {
     // No video in headless mode
 }
 
-// Headless target: VBL is driven by a recurring cycle event so timing
-// is a pure function of cumulative cycles, not host wall-clock.  Arm
-// it for every machine the system creates — the cold boot in main()
-// AND every `machine.boot` (which calls system_destroy + system_create
-// to swap models, resetting the scheduler in the process).  Without
-// this hook the rebooted machine never receives VBL ticks → Mac's
-// `Ticks` low-mem global never advances → the boot ROM's Tick-based
-// busy-wait at $40801652 spins forever.
-//
-// scheduler_start_vbl is idempotent (checks has_event), so re-calls
-// during checkpoint restore or repeated boots are safe.  WASM keeps
-// its own override that drives VBL on host rhythm via
-// scheduler_main_loop.  See docs/scheduler.md §10.
-void system_post_create(config_t *cfg) {
-    (void)cfg;
-    scheduler_t *s = system_scheduler();
-    if (s)
-        scheduler_start_vbl(s, global_emulator);
-}
+// Headless uses the default (no-op) system_post_create from system.c.  VBL is
+// no longer a scheduler event armed per machine: the run loop injects it
+// imperatively, one VBL pulse per frame-unit, via scheduler_run_frame() — the
+// same path web2's scheduler_main_loop() takes.  See pump_scheduler_with_heartbeat
+// / the main loop below, and docs/scheduler.md §10.
 
 // Signal handling for graceful shutdown
 static volatile sig_atomic_t g_running = 1;
@@ -301,19 +287,22 @@ static int daemon_client_poll(int client_fd) {
 // "stop" command), stop immediately so the next dispatch reads it.
 static void pump_scheduler_with_heartbeat(void) {
     scheduler_t *sched = system_scheduler();
+    config_t *cfg = global_emulator;
     double last_heartbeat = host_time();
     uint64_t start_instr = cpu_instr_count();
 
-    // Run instructions in fixed-size bursts so we can yield between bursts
-    // for the heartbeat and daemon-poll logic.  The burst size is large
-    // enough to amortise the per-burst overhead but small enough that the
-    // heartbeat fires at ~1 Hz on typical hosts.  Burst size is in
-    // instructions; chunk granularity does not affect determinism because
-    // scheduler_run_instructions clamps each sprint to the next event.
-    const uint64_t HEARTBEAT_BURST_INSTR = 2000000; // ~2 MIPS → ~1 burst/sec @ slow paths
+    // Drive execution exactly like web2's RAF loop: one VBL frame-unit at a
+    // time (trigger_vbl + one VBL-period run, via scheduler_run_frame), as fast
+    // as the host allows.  Yielding between frame-units lets the heartbeat fire
+    // and the daemon poll for disconnect/new-data.  The frame-unit is the same
+    // deterministic step web2 runs, so headless reproduces the web2 boot
+    // bit-for-bit (only the pacing — max speed here, host-clock there —
+    // differs).  An instruction-budget `scheduler.run N` schedules a
+    // run_stop_event; scheduler_run_frame's inner scheduler_run clamps to it, so
+    // the budget stops mid-frame at exactly N and the loop below exits.
 
-    while (sched && scheduler_is_running(sched) && !quit_requested) {
-        scheduler_run_instructions(sched, HEARTBEAT_BURST_INSTR);
+    while (sched && cfg && scheduler_is_running(sched) && !quit_requested) {
+        scheduler_run_frame(sched, cfg);
 
         // Heartbeat: once per second, print progress
         double now = host_time();
@@ -1080,11 +1069,14 @@ int main(int argc, char *argv[]) {
 
         // Run emulation if scheduler is active
         scheduler_t *loop_sched = system_scheduler();
-        if (loop_sched && scheduler_is_running(loop_sched)) {
-            // Headless: run as fast as possible until run_stop_event fires
-            // or scheduler_stop is called.  No host-time pacing.
+        if (loop_sched && global_emulator && scheduler_is_running(loop_sched)) {
+            // Headless: run one VBL frame-unit per iteration (trigger_vbl + one
+            // VBL-period run), as fast as the host allows — the same step web2's
+            // RAF loop runs, just unthrottled.  Looping one frame at a time keeps
+            // the REPL responsive to Ctrl+C (g_interrupted) and the max-cycles
+            // cap above; a run_stop_event / scheduler_stop ends the run.
             (void)now;
-            scheduler_run_until_idle(loop_sched);
+            scheduler_run_frame(loop_sched, global_emulator);
         } else {
             // Poll for shell input when idle
             shell_poll();

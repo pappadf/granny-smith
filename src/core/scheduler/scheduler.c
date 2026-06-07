@@ -353,46 +353,6 @@ static void run_stop_event(void *source, uint64_t data) {
     scheduler_stop(s);
 }
 
-// Recurring cycle-driven VBL event.  Fires at ~MAC_VBL_FREQUENCY Hz of guest time,
-// pulses the machine's VBL line (via trigger_vbl), and reschedules itself.
-// Cycle-driven so guest interrupt timing depends only on cumulative cycles, not
-// on host wall-clock — the property that makes split `run` commands diverge
-// from a single `run` of the same total length when VBL is host-time-driven.
-static void scheduler_vbl_tick(void *source, uint64_t data) {
-    config_t *cfg = (config_t *)source;
-    GS_ASSERT(cfg != NULL);
-    scheduler_t *s = system_scheduler();
-    GS_ASSERT(s != NULL);
-    trigger_vbl(cfg);
-    // Reschedule for the next VBL period.
-    uint64_t cycles_per_vbl = (uint64_t)((double)s->frequency / MAC_VBL_FREQUENCY);
-    scheduler_new_cpu_event(s, scheduler_vbl_tick, cfg, 0, cycles_per_vbl, 0);
-}
-
-// Public: register the VBL event type only.  Required on the checkpoint
-// restore path: scheduler_start() resolves saved 'scheduler.vbl_tick' events
-// against the registered types, so the type must exist before deferred restore
-// runs — but no fresh event should be scheduled (the saved one will be).
-void scheduler_register_vbl_type(struct scheduler *restrict s, config_t *config) {
-    GS_ASSERT(s != NULL);
-    GS_ASSERT(config != NULL);
-    scheduler_new_event_type(s, "scheduler", config, "vbl_tick", scheduler_vbl_tick);
-}
-
-// Public: register the VBL recurring event for this machine.  Call once during
-// machine init, after scheduler_set_frequency() has been called.
-void scheduler_start_vbl(struct scheduler *restrict s, config_t *config) {
-    GS_ASSERT(s != NULL);
-    GS_ASSERT(config != NULL);
-    GS_ASSERT(s->frequency > 0);
-    scheduler_register_vbl_type(s, config);
-    // If already scheduled (e.g. checkpoint restore), do nothing.
-    if (has_event(s, scheduler_vbl_tick))
-        return;
-    uint64_t cycles_per_vbl = (uint64_t)((double)s->frequency / MAC_VBL_FREQUENCY);
-    scheduler_new_cpu_event(s, scheduler_vbl_tick, config, 0, cycles_per_vbl, 0);
-}
-
 // Schedule a stop after `instructions` more instructions of execution.
 // Returns false on overflow / zero-count / scheduler not initialised.
 static bool scheduler_run_with_budget(scheduler_t *s, uint64_t instructions) {
@@ -533,11 +493,9 @@ struct scheduler *scheduler_init(struct cpu *cpu, checkpoint_t *checkpoint) {
     }
 
     scheduler_new_event_type(s, "scheduler", s, "run_stop", run_stop_event);
-    // Note: scheduler_vbl_tick uses config_t* as source, so its source is
-    // not knowable here.  Machine init calls scheduler_register_vbl_type()
-    // (so checkpoint restore can resolve a saved vbl_tick event), and the
-    // headless platform additionally calls scheduler_start_vbl() on cold
-    // boot to schedule the recurring event.
+    // VBL is no longer a scheduler event: every target injects it imperatively
+    // via scheduler_run_frame() (see scheduler_main_loop / the headless pump),
+    // so no 'vbl_tick' event type is registered and none is ever checkpointed.
 
     // Object-tree binding — instance_data is the scheduler itself.
     s->object = object_new(&scheduler_class, s, "scheduler");
@@ -995,37 +953,6 @@ void scheduler_run_instructions(struct scheduler *restrict s, uint64_t n) {
     CHECK_INVARIANTS(s);
 }
 
-// Run the scheduler as fast as possible until s->running goes false.
-// Used by the headless platform: no host-time pacing, no extra VBL injection
-// (VBL is handled by the cycle-driven scheduler_vbl_tick event registered
-// during machine init).  Stops when run_stop_event fires from cmd_run, or
-// when scheduler_stop is called from elsewhere, or when the event queue
-// drains (no further events to process).
-void scheduler_run_until_idle(struct scheduler *restrict s) {
-    GS_ASSERT(s != NULL);
-    GS_ASSERT(s->cpu != NULL);
-    CHECK_INVARIANTS(s);
-
-    // Run in chunks of one VBL period worth of cycles at a time.  The chunk
-    // size is purely an inner-loop bound — interrupts and events are handled
-    // at finer granularity inside scheduler_run_instructions, which clamps
-    // each sprint to the next event.  Total cycles executed are cumulative
-    // and chunk boundaries do NOT alter sprint clamping (unlike repeated
-    // cmd_run calls, which used to inject run_stop_event near boundaries).
-    uint64_t chunk_cycles = (uint64_t)((double)s->frequency / MAC_VBL_FREQUENCY);
-    uint64_t chunk_instr = chunk_cycles / avg_cycles_per_instr(s);
-    if (chunk_instr == 0)
-        chunk_instr = 1;
-
-    while (s->running) {
-        scheduler_run_instructions(s, chunk_instr);
-        // No event left? Nothing more can happen — exit.
-        if (s->cpu_events == NULL)
-            break;
-    }
-    CHECK_INVARIANTS(s);
-}
-
 // Run the scheduler for a specified amount of time (in seconds)
 void scheduler_run(struct scheduler *restrict s, double time) {
     GS_ASSERT(s != NULL);
@@ -1058,6 +985,19 @@ void scheduler_run_usecs(struct scheduler *restrict s, uint64_t usecs) {
 
     uint64_t instructions = (usecs * s->frequency) / (1000000ULL * avg_cycles_per_instr(s));
     scheduler_run_instructions(s, instructions);
+}
+
+// Run one VBL frame-unit: pulse the VBL line then run exactly one VBL period.
+// The atomic step every target's run loop is built from (see the header).  The
+// caller decides how many frame-units to run and at what pace; this just does
+// one.  scheduler_run() clamps to the next event, so a run_stop_event or a
+// breakpoint inside the period stops the frame early (running goes false), and
+// the caller's loop sees it.
+void scheduler_run_frame(struct scheduler *restrict s, config_t *config) {
+    GS_ASSERT(s != NULL);
+    GS_ASSERT(config != NULL);
+    trigger_vbl(config);
+    scheduler_run(s, MAC_VBL_PERIOD);
 }
 
 // Main loop iteration for real-time emulation with VBL-based timing
@@ -1124,15 +1064,13 @@ void scheduler_main_loop(config_t *restrict config, double now_msecs) {
 
     now = host_time();
 
-    // Execute VBLs.  scheduler_main_loop is the WASM/real-time entry point: it
-    // injects VBL pulses on host-clock rhythm so the displayed framebuffer
-    // stays synced to the host's render loop.  The headless platform uses a
-    // cycle-driven VBL event instead (see scheduler_start_vbl); both paths
-    // are mutually exclusive — a target picks one.
+    // Execute the VBL frame-units the host clock earned this tick.  Each is a
+    // trigger_vbl + one-VBL-period run (scheduler_run_frame) — the same unit the
+    // headless pump runs, so the guest execution sequence is identical across
+    // targets; only how many units a single host tick batches differs.
     int executed_vbls = 0;
     for (int i = 0; i < vbls_to_execute; i++) {
-        trigger_vbl(config);
-        scheduler_run(s, MAC_VBL_PERIOD);
+        scheduler_run_frame(s, config);
         executed_vbls++;
         if (!s->running)
             break;

@@ -548,11 +548,10 @@ Manager initializes).
 ### 6.1 VIA2 CB1 Connection
 
 The ASC hardware interrupt line connects directly to **VIA2 CB1** — not
-VIA1, and not a NuBus slot interrupt line. This is confirmed by the System
-7.1 source:
+VIA1, and not a NuBus slot interrupt line. This is shown by the interrupt equate:
 
 ```asm
-jASCInt  equ  Via2DT + 4*ifCB1    ; InterruptHandlers.a
+jASCInt  equ  Via2DT + 4*ifCB1
 ```
 
 `ifCB1 = 4`, so the sound interrupt dispatch entry lives at `Via2DT + 16`.

@@ -20,8 +20,7 @@ Both go through the same tokeniser and the same path-form dispatcher.
 JavaScript callers in the web frontend reach the shell through the
 `Shell` class on the object root: typed object-model calls
 (`gs_eval('cpu.pc')`) stay on their typed paths, and free-form lines
-from the xterm.js terminal route through `gs_eval('shell.run', [line])`
-(see [`proposal-shell-as-object-model-citizen.md`](../local/gs-docs/proposals/proposal-shell-as-object-model-citizen.md)).
+from the xterm.js terminal route through `gs_eval('shell.run', [line])`.
 No dedicated bridge kind for free-form lines, no
 `Module.onPromptChange` callback — the new prompt is the return value
 of `shell.run`. The shell is the *line-input* surface, not a separate

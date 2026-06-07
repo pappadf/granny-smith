@@ -261,19 +261,20 @@ detailed design and `docs/timing.md` for the practical timing rules.
 
 There are three execution modes (`schedule_max_speed`, `schedule_real_time`,
 `schedule_hw_accuracy`) that control the cycles-per-instruction (CPI) ratio
-and, on the WASM target, how many emulated VBL intervals run per host frame.
+and, on the WASM target, how many VBL frame-units run per host frame.
 
-VBL injection is **per target**:
+Both targets run the **same** model — a sequence of *VBL frame-units*
+(`scheduler_run_frame`: pulse VBL, then run one VBL period) — and differ only
+in **pacing**:
 
-- **Headless** registers a recurring cycle-driven `scheduler_vbl_tick` event
-  during platform init so VBL is just another event on the queue. The
-  execution loop runs as fast as possible with no host-time input. Result:
-  byte-deterministic — same script always produces the same output.
-- **WASM** drives VBL from `scheduler_main_loop`, which runs on the browser's
-  render rhythm and injects VBL pulses at host-clock cadence. Result: paced
-  to the user's display refresh, not byte-deterministic by design.
+- **Headless** issues frame-units back-to-back, as fast as the host allows, with
+  no host-time input. Result: a fixed `scheduler.run N` is byte-deterministic —
+  same budget always produces the same output.
+- **WASM** drives frame-units from `scheduler_main_loop` on the browser's render
+  rhythm. Result: paced to the user's display refresh. The guest sequence is the
+  same as headless; only how many frame-units a host tick batches differs.
 
-See `docs/scheduler.md` §10 for the per-target design.
+See `docs/scheduler.md` §10 for the full design.
 
 ## Checkpointing
 

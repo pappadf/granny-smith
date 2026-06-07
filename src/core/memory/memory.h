@@ -192,6 +192,21 @@ void memory_write_uint8_slow(uint32_t addr, uint8_t value);
 void memory_write_uint16_slow(uint32_t addr, uint16_t value);
 void memory_write_uint32_slow(uint32_t addr, uint32_t value);
 
+// Side-effect-free reads for debug/inspection commands (memory.peek/.dump,
+// find.*): translate via mmu_translate_checked, read host RAM/ROM or dispatch
+// the device read, return all-ones for unmapped/invalid, and NEVER fault,
+// touch the SoA cache, or latch g_bus_error_pending.  See memory.c.
+uint8_t memory_debug_read_uint8(uint32_t addr);
+uint16_t memory_debug_read_uint16(uint32_t addr);
+uint32_t memory_debug_read_uint32(uint32_t addr);
+
+// Side-effect-free writes for memory.poke: write host RAM (if writable) or
+// dispatch the device write; drop ROM/unmapped silently; never fault or latch
+// g_bus_error_pending.  Returns true if the value landed.
+bool memory_debug_write_uint8(uint32_t addr, uint8_t value);
+bool memory_debug_write_uint16(uint32_t addr, uint16_t value);
+bool memory_debug_write_uint32(uint32_t addr, uint32_t value);
+
 // === Memory Logpoint Support ===
 // When a memory logpoint covers a page, its SoA entries are forced to zero so
 // every access routes through the slow path.  The slow path then consults the
@@ -272,8 +287,9 @@ static inline uint32_t memory_read_uint32(uint32_t addr) {
     uint32_t masked = addr & g_address_mask;
     uintptr_t base = g_active_read[masked >> PAGE_SHIFT];
     // Fast path: non-zero entry and access doesn't cross page boundary
-    if (__builtin_expect(base != 0 && (masked & PAGE_MASK) <= MEM_PAGE_SIZE - 4, 1))
+    if (__builtin_expect(base != 0 && (masked & PAGE_MASK) <= MEM_PAGE_SIZE - 4, 1)) {
         return LOAD_BE32((uint8_t *)(base + masked));
+    }
     return memory_read_uint32_slow(masked);
 }
 

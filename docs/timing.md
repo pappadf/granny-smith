@@ -299,41 +299,34 @@ All three modes use the same sprint and event machinery. The mode only affects:
 
 ## Target-Specific Pacing
 
-The two platform targets pace execution differently because they have
-different goals.
+Both targets run the **same** execution model — a sequence of *VBL frame-units*,
+each `scheduler_run_frame()`: pulse the VBL line (`trigger_vbl()`), then run one
+VBL period (~16.63 ms) of guest time. They differ only in **pacing** — how fast
+the run loop issues frame-units.
 
 ### WASM target: host-clock-driven, real-time pacing
 
-`scheduler_main_loop()` is called from the WASM platform frontend once per
-`requestAnimationFrame` (~60 Hz). Each call:
+`scheduler_main_loop()` is called from the WASM frontend once per
+`requestAnimationFrame` (~60 Hz). Each call measures elapsed host time, decides
+how many frame-units to run this tick (per the current mode), and runs that many
+via `scheduler_run_frame()`. This keeps the emulated machine synced to the
+browser's render rhythm.
 
-1. Measures elapsed host time since the last call
-2. Determines how many VBL intervals to execute based on the current mode
-3. For each VBL: calls `trigger_vbl()` (which pulses VIA CA1 etc.), then
-   runs the scheduler for one VBL period (~16.63 ms) of guest time
+### Headless target: unthrottled, one frame-unit at a time
 
-This keeps the emulated machine synced to the browser's render rhythm. It is
-**not** byte-deterministic — VBL count tracks host load — and that is
-intentional for an interactive emulator.
+Headless arms no VBL event. Its run loops call `scheduler_run_frame()`
+back-to-back as fast as the host allows, yielding between frame-units only for
+the heartbeat / daemon-poll (pump) or Ctrl-C / `--max-cycles` (REPL). An
+instruction-budget `scheduler.run N` schedules a `run_stop_event` that the inner
+`scheduler_run` clamps to, stopping mid-frame at exactly `N`; no argument runs
+until `scheduler.stop`. No `host_time()` feeds guest execution.
 
-### Headless target: cycle-driven, run as fast as possible
-
-The headless platform calls `scheduler_start_vbl(scheduler, config)` once
-after machine setup, registering a recurring `scheduler_vbl_tick` event on
-the cycle queue at `frequency / MAC_VBL_FREQUENCY` cycles in the future. The
-callback calls `trigger_vbl()` and reschedules itself. VBL is then just
-another event on the same priority queue as VIA timers and SCC completions.
-
-Execution is driven by `scheduler_run_until_idle()`, which pumps
-`scheduler_run_instructions` chunks until `s->running` goes false (typically
-when `run_stop_event` from a `run N` shell command fires). No `host_time()`
-is called on the headless execution path.
-
-Property: because every input to guest execution is a function of cumulative
-cycles, the headless target is byte-deterministic. Two scripts that produce
-the same final cycle count produce identical guest state — including
-identical screenshots — regardless of script shape (`run 200M` vs four
-`run 50M` calls) or where read-only commands like `screenshot` are inserted.
+Property: a frame-unit is a constant number of instructions with the VBL at its
+boundary, so guest state at a given budget is a pure function of the budget on
+both targets. Headless makes this directly usable — a fixed `scheduler.run N`
+yields identical guest state (and screenshots) every run, regardless of script
+shape or where read-only commands like `screenshot` sit. Pacing changes only how
+many frame-units a host tick batches and when you observe, never the sequence.
 
 See `docs/scheduler.md` §10 for the full design.
 

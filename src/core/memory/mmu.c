@@ -627,6 +627,15 @@ bool mmu_handle_fault(mmu_state_t *mmu, uint32_t logical_addr, bool write, bool 
     if (mmu)
         mmu->mmusr = result.mmusr;
 
+    // TEMP DIAG: trace user-mode faults on page 0 (icode copyout to user VA 0).
+    if (getenv("GS_VA0_TRACE") && write && !supervisor && logical_addr < 0x1000) {
+        static int n = 0;
+        if (n++ < 30)
+            fprintf(stderr, "[VA0] la=%08x W usr valid=%d wp=%d suponly=%d phys=%08x mmusr=%08x crp=%08x:%08x\n",
+                    logical_addr, result.valid, result.write_protected, result.supervisor_only, result.physical_addr,
+                    result.mmusr, (unsigned)(mmu->crp >> 32), (unsigned)mmu->crp);
+    }
+
     if (!result.valid) {
         // Invalid descriptor: PMMU walk fault, retry semantics (Format $B)
         g_bus_error_is_pmmu = true;
@@ -758,6 +767,27 @@ uint32_t mmu_translate_debug(mmu_state_t *mmu, uint32_t logical_addr, bool super
         return result.physical_addr;
 
     return logical_addr;
+}
+
+// Validity-reporting sibling of mmu_translate_debug.  Same side-effect-free
+// walk, but distinguishes a genuine identity mapping from a failed walk: both
+// leave *pa_out == logical_addr, yet only the former returns true.  A failed
+// walk MUST fault rather than be mistaken for identity-mapped device I/O.
+bool mmu_translate_checked(mmu_state_t *mmu, uint32_t logical_addr, bool supervisor, uint32_t *pa_out) {
+    if (!mmu || !mmu->enabled) {
+        if (pa_out)
+            *pa_out = logical_addr;
+        return true; // MMU off: identity, always valid
+    }
+    if (mmu_check_tt(mmu, logical_addr, false, supervisor)) {
+        if (pa_out)
+            *pa_out = logical_addr;
+        return true; // transparent translation: identity, valid
+    }
+    mmu_walk_result_t result = mmu_table_walk(mmu, logical_addr, false, supervisor);
+    if (pa_out)
+        *pa_out = result.valid ? result.physical_addr : logical_addr;
+    return result.valid;
 }
 
 // Translate against an explicit CRP root (e.g. a snapshot of MAE's CRP).

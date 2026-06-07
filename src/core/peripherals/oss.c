@@ -212,8 +212,8 @@ oss_t *oss_init(oss_irq_fn irq_cb, oss_control_fn control_cb, void *context, che
     // level[10] = 0 default, the save/restore is a no-op and phase
     // $92 exits cleanly.
     //
-    // See IIfx-ROM.asm §16c (table-population) and §16f (phase $92)
-    // for the full discussion.
+    // This mirrors the IIfx ROM's POST table-population and phase-$92
+    // exit.
     for (int i = 0; i <= 5; i++)
         oss->level[i] = 2;
     oss->level[6] = 1;

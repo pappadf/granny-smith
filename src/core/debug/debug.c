@@ -133,7 +133,7 @@ struct logpoint {
 static uint16_t cpu_get_uint16(uint32_t addr) {
     if (!system_memory())
         return 0;
-    return memory_read_uint16(addr);
+    return memory_debug_read_uint16(addr);
 }
 
 // ============================================================================
@@ -459,6 +459,39 @@ void exc_trace_record(uint32_t vector, uint32_t faulting_pc, uint32_t saved_pc, 
     LOG_WITH(cat, 1, "[EXC] vec=$%03X fmt=$%X rw=%s addr=$%08X pc=$%08X saved_pc=$%08X sr=$%04X vbr=$%08X%s", vector,
              format_frame, rw ? "R" : "W", fault_addr, faulting_pc, saved_pc, sr, vbr,
              double_fault_kind ? "  [DOUBLE FAULT]" : "");
+}
+
+// Dump the exception trace ring buffer (most recent EXC_TRACE_RING_SIZE entries)
+// to stdout, oldest first.  Filters routine vectors when filter is non-zero:
+//   filter=0: print everything in ring
+//   filter=1: skip TRAP #0..15 ($080-$0BC), Line 1010 ($028), Line 1111 ($02C)
+//             and interrupt autovectors ($060-$07C)
+void debug_exc_trace_dump(int filter) {
+    uint32_t total = (uint32_t)s_exc_trace_count;
+    uint32_t count = total < EXC_TRACE_RING_SIZE ? total : EXC_TRACE_RING_SIZE;
+    printf("=== Exception trace ring (%u total events, showing %u%s) ===\n", total, count,
+           filter ? ", routine traps/IRQs filtered" : "");
+    if (count == 0) {
+        printf("(empty)\n");
+        return;
+    }
+    // Walk from oldest to newest. With s_exc_trace_count <= ring size, oldest is at idx 0.
+    // Otherwise oldest is at (s_exc_trace_head) which is the next-write slot (= oldest live).
+    uint32_t start_idx = (total <= EXC_TRACE_RING_SIZE) ? 0 : (s_exc_trace_head % EXC_TRACE_RING_SIZE);
+    for (uint32_t i = 0; i < count; i++) {
+        uint32_t idx = (start_idx + i) % EXC_TRACE_RING_SIZE;
+        exc_trace_entry_t *e = &s_exc_trace_ring[idx];
+        if (filter) {
+            // Filter routine: TRAP #N ($080-$0BC), Line 1010/1111 ($028, $02C),
+            // interrupt autovectors ($060-$07C), trace ($024)
+            if ((e->vector >= 0x080 && e->vector <= 0x0BC) || e->vector == 0x028 || e->vector == 0x02C ||
+                e->vector == 0x024 || (e->vector >= 0x060 && e->vector <= 0x07C))
+                continue;
+        }
+        printf("[%llu] vec=$%03X fmt=$%X rw=%s addr=$%08X pc=$%08X saved_pc=$%08X sr=$%04X vbr=$%08X%s\n",
+               (unsigned long long)e->ts, e->vector, e->format_frame, e->rw ? "R" : "W", e->fault_addr, e->faulting_pc,
+               e->saved_pc, e->sr, e->vbr, e->double_fault_kind ? "  [DOUBLE FAULT]" : "");
+    }
 }
 
 // Hook invoked from the memory slow path for every access on a logpoint page.
@@ -2378,14 +2411,14 @@ static void cmd_examine_handler(struct cmd_context *ctx, struct cmd_result *res)
         cmd_printf(ctx, "$%08X  ", addr + i);
         for (uint32_t j = 0; j < 16; j++) {
             if (i + j < nbytes)
-                cmd_printf(ctx, "%02x ", memory_read_uint8(addr + i + j));
+                cmd_printf(ctx, "%02x ", memory_debug_read_uint8(addr + i + j));
             else
                 cmd_printf(ctx, "   ");
         }
         cmd_printf(ctx, " ");
         for (uint32_t j = 0; j < 16; j++) {
             if (i + j < nbytes) {
-                uint8_t byte = memory_read_uint8(addr + i + j);
+                uint8_t byte = memory_debug_read_uint8(addr + i + j);
                 cmd_printf(ctx, "%c", (byte >= 0x20 && byte <= 0x7e) ? byte : '.');
             }
         }
@@ -3583,6 +3616,25 @@ static const arg_decl_t debug_log_args[] = {
     {.name = "level",    .kind = V_NONE,   .doc = "Integer level (0..5) or full named-arg spec string"},
 };
 
+// `debug.exceptions([filter])` — dump the always-on 256-entry exception ring.
+// filter=0 prints everything; filter=1 skips routine traps (A/F-line, TRAP #N,
+// IRQ autovectors, trace) so fatal exceptions (bus error/addr error/illegal/
+// privilege) stand out.
+static const arg_decl_t debug_exceptions_args[] = {
+    {.name = "filter",
+     .kind = V_INT,
+     .validation_flags = OBJ_ARG_OPTIONAL,
+     .doc = "0 = print all (default); 1 = filter out routine traps/IRQs"},
+};
+extern void debug_exc_trace_dump(int filter);
+static value_t debug_method_exceptions(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)self;
+    (void)m;
+    int filter = (argc >= 1) ? (int)argv[0].i : 0;
+    debug_exc_trace_dump(filter);
+    return val_bool(true);
+}
+
 // `debug.disasm([addr], [count])` — disassemble forward.
 //   debug.disasm                    PC, 16 instructions
 //   debug.disasm <count>            PC, <count> instructions
@@ -3895,6 +3947,10 @@ static const member_t debug_members[] = {
      .name = "step",
      .doc = "Single-step N instructions and stop (default 1)",
      .method = {.args = debug_step_args, .nargs = 1, .result = V_BOOL, .fn = debug_method_step}                                                                                                                  },
+    {.kind = M_METHOD,
+     .name = "exceptions",
+     .doc = "Dump the 256-entry exception trace ring (always-on). Optional filter=1 hides routine traps/IRQs.",
+     .method = {.args = debug_exceptions_args, .nargs = 1, .result = V_BOOL, .fn = debug_method_exceptions}                                                                                                      },
 };
 
 const class_desc_t debug_class = {
@@ -3939,17 +3995,17 @@ static value_t method_mac_globals_read(struct object *self, const member_t *m, i
     int sz = mac_global_vars[idx].size;
     switch (sz) {
     case 1: {
-        value_t v = val_uint(1, memory_read_uint8(addr));
+        value_t v = val_uint(1, memory_debug_read_uint8(addr));
         v.flags |= VAL_HEX;
         return v;
     }
     case 2: {
-        value_t v = val_uint(2, memory_read_uint16(addr));
+        value_t v = val_uint(2, memory_debug_read_uint16(addr));
         v.flags |= VAL_HEX;
         return v;
     }
     case 4: {
-        value_t v = val_uint(4, memory_read_uint32(addr));
+        value_t v = val_uint(4, memory_debug_read_uint32(addr));
         v.flags |= VAL_HEX;
         return v;
     }
@@ -3958,7 +4014,7 @@ static value_t method_mac_globals_read(struct object *self, const member_t *m, i
             return val_err("debug.mac.globals.read: unexpected entry size %d", sz);
         uint8_t buf[256];
         for (int i = 0; i < sz; i++)
-            buf[i] = memory_read_uint8(addr + (uint32_t)i);
+            buf[i] = memory_debug_read_uint8(addr + (uint32_t)i);
         return val_bytes(buf, (size_t)sz);
     }
     }

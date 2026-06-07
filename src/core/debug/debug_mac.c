@@ -86,26 +86,26 @@ const char *macos_atrap_name(uint16_t trap) {
 static uint8_t read_8bit_be(uint32_t addr) {
     if (!system_memory())
         return 0;
-    return memory_read_uint8(addr);
+    return memory_debug_read_uint8(addr);
 }
 
 static uint16_t read_16bit_be(uint32_t addr) {
     if (!system_memory())
         return 0;
-    return memory_read_uint16(addr);
+    return memory_debug_read_uint16(addr);
 }
 
 static uint32_t read_32bit_be(uint32_t addr) {
     if (!system_memory())
         return 0;
-    return memory_read_uint32(addr);
+    return memory_debug_read_uint32(addr);
 }
 
 static void read_bytes(uint32_t addr, uint8_t *buffer, size_t size) {
     if (!system_memory())
         return;
     for (size_t i = 0; i < size; ++i) {
-        buffer[i] = memory_read_uint8(addr + i);
+        buffer[i] = memory_debug_read_uint8(addr + i);
     }
 }
 
@@ -353,17 +353,17 @@ void debug_mac_print_process_info(void) {
 static uint8_t read8(uint32_t addr) {
     if (!system_memory())
         return 0;
-    return memory_read_uint8(addr);
+    return memory_debug_read_uint8(addr);
 }
 static uint16_t read16(uint32_t addr) {
     if (!system_memory())
         return 0;
-    return memory_read_uint16(addr);
+    return memory_debug_read_uint16(addr);
 }
 static uint32_t read32(uint32_t addr) {
     if (!system_memory())
         return 0;
-    return memory_read_uint32(addr);
+    return memory_debug_read_uint32(addr);
 }
 
 // Print target 68K backtrace by walking stack frames
@@ -460,8 +460,8 @@ static void mouse_guard_tick(void *source, uint64_t data) {
     }
 
     // Check if MTemp has drifted from the target position
-    int16_t cur_v = (int16_t)memory_read_uint16(0x0828);
-    int16_t cur_h = (int16_t)memory_read_uint16(0x082A);
+    int16_t cur_v = (int16_t)memory_debug_read_uint16(0x0828);
+    int16_t cur_h = (int16_t)memory_debug_read_uint16(0x082A);
 
     if (cur_v != mouse_guard_v || cur_h != mouse_guard_h) {
         // Restore all position globals to the target
@@ -541,7 +541,7 @@ static void set_mouse_global(long x, long y) {
 
     // Signal the cursor VBL task: copy CrsrCouple → CrsrNew (standard technique)
     if (addr_CrsrCouple) {
-        uint8_t couple = memory_read_uint8(addr_CrsrCouple);
+        uint8_t couple = memory_debug_read_uint8(addr_CrsrCouple);
         memory_write_uint8(addr_CrsrNew, couple);
     } else {
         memory_write_uint8(addr_CrsrNew, 0xFF);
@@ -691,8 +691,8 @@ static void set_mouse_default(long x, long y) {
     }
 
     // Read current cursor position from MTemp
-    int16_t cur_v = (int16_t)memory_read_uint16(addr_MTemp);
-    int16_t cur_h = (int16_t)memory_read_uint16(addr_MTemp + 2);
+    int16_t cur_v = (int16_t)memory_debug_read_uint16(addr_MTemp);
+    int16_t cur_h = (int16_t)memory_debug_read_uint16(addr_MTemp + 2);
     int dx = (int)x - (int)cur_h;
     int dy = (int)y - (int)cur_v;
 
@@ -766,8 +766,8 @@ static void trace_mouse_tick(void *source, uint64_t data) {
     if (!system_memory() || !sched)
         return;
     uint32_t addr_Mouse = debug_mac_lookup_global_address("Mouse");
-    uint16_t v_be = memory_read_uint16(addr_Mouse);
-    uint16_t h_be = memory_read_uint16(addr_Mouse + 2);
+    uint16_t v_be = memory_debug_read_uint16(addr_Mouse);
+    uint16_t h_be = memory_debug_read_uint16(addr_Mouse + 2);
     int16_t v = (int16_t)v_be;
     int16_t h = (int16_t)h_be;
     if (!trace_mouse_have_last || h != trace_mouse_last_h || v != trace_mouse_last_v) {
@@ -837,7 +837,7 @@ static void mouse_button_global(bool button_down) {
     // VIA ISR continuously polls the physical button.  Safe on ADB machines
     // too (the field is unused there).
     if (addr_MBTicks && addr_Ticks) {
-        uint32_t ticks = memory_read_uint32(addr_Ticks);
+        uint32_t ticks = memory_debug_read_uint32(addr_Ticks);
         memory_write_uint32(addr_MBTicks, ticks + 100);
     }
 }

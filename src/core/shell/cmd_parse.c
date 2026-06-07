@@ -184,13 +184,13 @@ static bool parse_one_arg(const char *token, const struct arg_spec *spec, struct
                 // Read value from memory
                 switch (val->as_sym.size) {
                 case 1:
-                    val->as_sym.value = memory_read_uint8(addr);
+                    val->as_sym.value = memory_debug_read_uint8(addr);
                     break;
                 case 2:
-                    val->as_sym.value = memory_read_uint16(addr);
+                    val->as_sym.value = memory_debug_read_uint16(addr);
                     break;
                 default:
-                    val->as_sym.value = memory_read_uint32(addr);
+                    val->as_sym.value = memory_debug_read_uint32(addr);
                     break;
                 }
                 return true;

@@ -561,17 +561,17 @@ ships in this repo):
   - `ExtAInt`, `ExtBInt` - External/status handlers
 
 ### Hardware Definitions
-- **Interfaces/AIncludes/HardwareEqu.a** - Hardware equates
+- **Hardware equates**
   - VIA register definitions
   - SCC base addresses
   - Bit definitions for vSW, vX2, vY2
 
-- **Interfaces/AIncludes/SysEqu.a** - System equates
+- **System equates**
   - Low-memory global definitions
   - Interrupt table definitions
 
 ### ADB Mouse (for comparison)
-- **OS/ADBMgr/ADBMgrPatch.a** - ADB manager
+- **ADB manager**
   - `MouseDrvr` - ADB mouse driver (SE and later)
   - Shows how MTemp/CrsrNew are used in ADB context
 

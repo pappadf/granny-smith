@@ -32,7 +32,7 @@ typedef enum pixel_format {
                       // uses this storage layout — QuickDraw and the JMFB
                       // driver agree the framebuffer is 4 bytes/pixel, but
                       // the RAMDAC scans only the RGB triple per pixel and
-                      // discards the X byte (per JMFBDriver.a's TFBM30
+                      // discards the X byte (per the JMFB driver's TFBM30
                       // mode-data and the Designing Cards & Drivers
                       // "24bpp packed-pixel" terminology).  The 24-bit name
                       // describes the visible colour depth, not the storage.
@@ -52,7 +52,7 @@ typedef struct rgba8 {
 // `crt_response` models the physical response curve of the monitor on the
 // far end of the cable.  Mac System 7's video drivers gamma-pre-correct
 // every CLUT write per a per-monitor gamma table (see the JMFB driver's
-// SetGamma / ProgramCLUT in Apple-341-0868-vrom.asm); on real hardware
+// SetGamma / ProgramCLUT); on real hardware
 // the CRT's phosphor/electron-gun gamma applies the inverse and the user
 // sees a perceptually-neutral image.  Software displays have no CRT to
 // cancel the pre-correction, so without modelling the monitor's response

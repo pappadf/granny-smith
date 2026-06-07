@@ -228,7 +228,20 @@ static bool logpoint_lookup(uint32_t addr, uint8_t **host_out, bool *writable_ou
 static inline bool dispatch_device_at_logical(uint32_t addr, bool supervisor) {
     if (!(g_mmu && g_mmu->enabled))
         return true; // MMU off: logical == physical
-    uint32_t phys = mmu_translate_debug(g_mmu, addr, supervisor);
+    uint32_t phys;
+    // A FAILED walk (invalid PTE) must fault, never dispatch to a device — even
+    // when a device is registered at this logical page.  This is not academic:
+    // a user virtual address can legitimately land in a host-machine device
+    // window (e.g. A/UX maps a process's image at virtual $47F00000, which sits
+    // inside the IIfx ROM device window $40000000-$4FFFFFFF).  When such a page
+    // is still demand-zero, copyout's touch must fault so the kernel pages it
+    // in — dispatching the write to the ROM device instead silently drops it,
+    // the page is never allocated, and the subsequent copy lands on physical 0
+    // (the vector table).  mmu_translate_debug can't catch this on its own: a
+    // failed walk returns phys==logical, indistinguishable from a true identity
+    // map, so use the validity-reporting walk here.
+    if (!mmu_translate_checked(g_mmu, addr, supervisor, &phys))
+        return false; // translation failed → fall through to the MMU fault path
     if ((phys & ~(uint32_t)PAGE_MASK) == (addr & ~(uint32_t)PAGE_MASK))
         return true; // identity mapping — dispatch as usual
     // Non-identity: only divert to the table walk when the target is real RAM.
@@ -470,6 +483,157 @@ uint32_t memory_read_uint32_slow(uint32_t addr) {
     uint32_t hi = memory_read_uint16(addr);
     uint32_t lo = memory_read_uint16(addr + 2);
     return (hi << 16) | lo;
+}
+
+// === Side-effect-free debug reads ==========================================
+//
+// Used by the shell's inspection commands (memory.peek/.dump/.read_cstring,
+// find.*).  Examining guest memory MUST NOT perturb guest execution and MUST
+// NOT crash on a bad address.  The normal memory_read_uint* helpers run the
+// full CPU path: mmu_handle_fault populates the SoA/TLB and, on a FAILED walk,
+// the caller latches g_bus_error_pending — which injects a spurious bus error
+// into the next instruction the guest runs (so a stray `memory.peek` of an
+// unmapped address silently corrupts execution).  These debug variants instead:
+//   - translate logical->physical via the side-effect-free mmu_translate_checked,
+//   - read host RAM/ROM directly, or dispatch the device read so device
+//     registers stay inspectable (e.g. NuBus video regs in iicx-video-modes),
+//   - return an all-ones sentinel for unmapped/invalid pages,
+//   - never call mmu_handle_fault, never touch the SoA cache or g_bus_error_pending.
+uint8_t memory_debug_read_uint8(uint32_t addr) {
+    addr &= g_address_mask;
+    uint32_t phys = addr;
+    if (g_mmu && g_mmu->enabled && !mmu_translate_checked(g_mmu, addr, g_active_read == g_supervisor_read, &phys))
+        return 0xFF;
+    uint32_t page = phys >> PAGE_SHIFT;
+    if ((int)page >= g_page_count)
+        return 0xFF;
+    page_entry_t *pe = &g_page_table[page];
+    if (pe->host_base)
+        return LOAD_BE8(pe->host_base + (phys & PAGE_MASK));
+    if (pe->dev)
+        return pe->dev->read_uint8(pe->dev_context, phys - pe->base_addr);
+    return 0xFF;
+}
+
+uint16_t memory_debug_read_uint16(uint32_t addr) {
+    addr &= g_address_mask;
+    // Single-page word reads hit the device's own width handler; byte-split
+    // only when the access straddles a page.
+    if ((addr & PAGE_MASK) <= MEM_PAGE_SIZE - 2) {
+        uint32_t phys = addr;
+        if (g_mmu && g_mmu->enabled && !mmu_translate_checked(g_mmu, addr, g_active_read == g_supervisor_read, &phys))
+            return 0xFFFF;
+        uint32_t page = phys >> PAGE_SHIFT;
+        if ((int)page < g_page_count) {
+            page_entry_t *pe = &g_page_table[page];
+            if (pe->host_base)
+                return LOAD_BE16(pe->host_base + (phys & PAGE_MASK));
+            if (pe->dev)
+                return pe->dev->read_uint16(pe->dev_context, phys - pe->base_addr);
+        }
+        return 0xFFFF;
+    }
+    return (uint16_t)((memory_debug_read_uint8(addr) << 8) | memory_debug_read_uint8(addr + 1));
+}
+
+uint32_t memory_debug_read_uint32(uint32_t addr) {
+    addr &= g_address_mask;
+    if ((addr & PAGE_MASK) <= MEM_PAGE_SIZE - 4) {
+        uint32_t phys = addr;
+        if (g_mmu && g_mmu->enabled && !mmu_translate_checked(g_mmu, addr, g_active_read == g_supervisor_read, &phys))
+            return 0xFFFFFFFFu;
+        uint32_t page = phys >> PAGE_SHIFT;
+        if ((int)page < g_page_count) {
+            page_entry_t *pe = &g_page_table[page];
+            if (pe->host_base)
+                return LOAD_BE32(pe->host_base + (phys & PAGE_MASK));
+            if (pe->dev)
+                return pe->dev->read_uint32(pe->dev_context, phys - pe->base_addr);
+        }
+        return 0xFFFFFFFFu;
+    }
+    return ((uint32_t)memory_debug_read_uint16(addr) << 16) | memory_debug_read_uint16(addr + 2);
+}
+
+// Side-effect-free debug writes (memory.poke) — symmetric to the debug reads:
+// translate via mmu_translate_checked, write host RAM (if writable) or dispatch
+// the device write, drop ROM/unmapped silently, and NEVER fault or latch
+// g_bus_error_pending (a stray poke must not inject a bus error into the guest).
+// Returns true if the byte landed in writable host RAM / a device.
+bool memory_debug_write_uint8(uint32_t addr, uint8_t value) {
+    addr &= g_address_mask;
+    uint32_t phys = addr;
+    if (g_mmu && g_mmu->enabled && !mmu_translate_checked(g_mmu, addr, g_active_write == g_supervisor_write, &phys))
+        return false;
+    uint32_t page = phys >> PAGE_SHIFT;
+    if ((int)page >= g_page_count)
+        return false;
+    page_entry_t *pe = &g_page_table[page];
+    if (pe->host_base) {
+        if (!pe->writable)
+            return false; // ROM/VROM — drop silently
+        STORE_BE8(pe->host_base + (phys & PAGE_MASK), value);
+        return true;
+    }
+    if (pe->dev) {
+        pe->dev->write_uint8(pe->dev_context, phys - pe->base_addr, value);
+        return true;
+    }
+    return false;
+}
+
+bool memory_debug_write_uint16(uint32_t addr, uint16_t value) {
+    addr &= g_address_mask;
+    if ((addr & PAGE_MASK) <= MEM_PAGE_SIZE - 2) {
+        uint32_t phys = addr;
+        if (g_mmu && g_mmu->enabled && !mmu_translate_checked(g_mmu, addr, g_active_write == g_supervisor_write, &phys))
+            return false;
+        uint32_t page = phys >> PAGE_SHIFT;
+        if ((int)page < g_page_count) {
+            page_entry_t *pe = &g_page_table[page];
+            if (pe->host_base) {
+                if (!pe->writable)
+                    return false;
+                STORE_BE16(pe->host_base + (phys & PAGE_MASK), value);
+                return true;
+            }
+            if (pe->dev) {
+                pe->dev->write_uint16(pe->dev_context, phys - pe->base_addr, value);
+                return true;
+            }
+        }
+        return false;
+    }
+    bool a = memory_debug_write_uint8(addr, (uint8_t)(value >> 8));
+    bool b = memory_debug_write_uint8(addr + 1, (uint8_t)value);
+    return a && b;
+}
+
+bool memory_debug_write_uint32(uint32_t addr, uint32_t value) {
+    addr &= g_address_mask;
+    if ((addr & PAGE_MASK) <= MEM_PAGE_SIZE - 4) {
+        uint32_t phys = addr;
+        if (g_mmu && g_mmu->enabled && !mmu_translate_checked(g_mmu, addr, g_active_write == g_supervisor_write, &phys))
+            return false;
+        uint32_t page = phys >> PAGE_SHIFT;
+        if ((int)page < g_page_count) {
+            page_entry_t *pe = &g_page_table[page];
+            if (pe->host_base) {
+                if (!pe->writable)
+                    return false;
+                STORE_BE32(pe->host_base + (phys & PAGE_MASK), value);
+                return true;
+            }
+            if (pe->dev) {
+                pe->dev->write_uint32(pe->dev_context, phys - pe->base_addr, value);
+                return true;
+            }
+        }
+        return false;
+    }
+    bool a = memory_debug_write_uint16(addr, (uint16_t)(value >> 16));
+    bool b = memory_debug_write_uint16(addr + 2, (uint16_t)value);
+    return a && b;
 }
 
 // Slow path for 8-bit writes: device I/O, MMU TLB miss, or unmapped
@@ -1380,7 +1544,7 @@ static value_t method_mem_read_cstring(struct object *self, const member_t *m, i
     // Reserve 2 bytes for the closing quote and the NUL terminator so the
     // body never lands the buffer in a state where the closing quote drops.
     for (int i = 0; i < max_chars && out + 4 + 2 <= sizeof(buf); i++) {
-        uint8_t b = memory_read_uint8(addr + (uint32_t)i);
+        uint8_t b = memory_debug_read_uint8(addr + (uint32_t)i);
         if (b == 0)
             break;
         if (b >= 0x20 && b <= 0x7E) {
@@ -1484,7 +1648,7 @@ static value_t method_mem_peek_b(struct object *self, const member_t *m, int arg
     (void)self;
     (void)m;
     (void)argc;
-    value_t v = val_uint(1, memory_read_uint8((uint32_t)argv[0].u));
+    value_t v = val_uint(1, memory_debug_read_uint8((uint32_t)argv[0].u));
     v.flags |= VAL_HEX;
     return v;
 }
@@ -1492,7 +1656,7 @@ static value_t method_mem_peek_w(struct object *self, const member_t *m, int arg
     (void)self;
     (void)m;
     (void)argc;
-    value_t v = val_uint(2, memory_read_uint16((uint32_t)argv[0].u));
+    value_t v = val_uint(2, memory_debug_read_uint16((uint32_t)argv[0].u));
     v.flags |= VAL_HEX;
     return v;
 }
@@ -1500,7 +1664,7 @@ static value_t method_mem_peek_l(struct object *self, const member_t *m, int arg
     (void)self;
     (void)m;
     (void)argc;
-    value_t v = val_uint(4, memory_read_uint32((uint32_t)argv[0].u));
+    value_t v = val_uint(4, memory_debug_read_uint32((uint32_t)argv[0].u));
     v.flags |= VAL_HEX;
     return v;
 }
@@ -1526,7 +1690,7 @@ static value_t method_mem_peek_bytes(struct object *self, const member_t *m, int
     if (!buf)
         return val_err("memory.peek.bytes: out of memory");
     for (uint64_t i = 0; i < count; i++)
-        buf[i] = memory_read_uint8((uint32_t)(addr + i));
+        buf[i] = memory_debug_read_uint8((uint32_t)(addr + i));
     value_t v = val_bytes(buf, (size_t)count);
     free(buf);
     return v;
@@ -1576,21 +1740,21 @@ static value_t method_mem_poke_b(struct object *self, const member_t *m, int arg
     (void)self;
     (void)m;
     (void)argc;
-    memory_write_uint8((uint32_t)argv[0].u, (uint8_t)argv[1].u);
+    memory_debug_write_uint8((uint32_t)argv[0].u, (uint8_t)argv[1].u);
     return val_none();
 }
 static value_t method_mem_poke_w(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)self;
     (void)m;
     (void)argc;
-    memory_write_uint16((uint32_t)argv[0].u, (uint16_t)argv[1].u);
+    memory_debug_write_uint16((uint32_t)argv[0].u, (uint16_t)argv[1].u);
     return val_none();
 }
 static value_t method_mem_poke_l(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)self;
     (void)m;
     (void)argc;
-    memory_write_uint32((uint32_t)argv[0].u, (uint32_t)argv[1].u);
+    memory_debug_write_uint32((uint32_t)argv[0].u, (uint32_t)argv[1].u);
     return val_none();
 }
 

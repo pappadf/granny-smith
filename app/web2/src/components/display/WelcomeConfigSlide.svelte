@@ -33,6 +33,10 @@
     ram_options?: number[]; // KB
     ram_default?: number; // KB
     floppy_slots?: Array<{ label?: string; kind?: string }>;
+    // JMFB video modes the model exposes; seeded via `nubus.video_mode` at
+    // boot (see initEmulator).  Empty on models with no configurable video.
+    video_modes?: Array<{ id: string; label?: string }>;
+    video_mode_default?: string;
   }
 
   // Local form state.
@@ -43,6 +47,7 @@
   let floppies = $state<string[]>([]);
   let hd = $state(NONE_SENTINEL);
   let cd = $state(NONE_SENTINEL);
+  let videoMode = $state('');
 
   // Discovery state.
   let scanning = $state(true);
@@ -73,6 +78,7 @@
     return ['1 MB', '2 MB', '4 MB', '8 MB', '16 MB'];
   });
   let floppySlots = $derived(currentProfile?.floppy_slots ?? []);
+  let videoModes = $derived(currentProfile?.video_modes ?? []);
 
   let vromOptions = $state<string[]>(['(auto)']);
   let fdOptions = $state<string[]>([NONE_SENTINEL]);
@@ -181,6 +187,7 @@
     const dflt = currentProfile.ram_default;
     ram = dflt ? formatRamKb(dflt) : (ramOptions[0] ?? DEFAULT_CONFIG.ram);
     floppies = new Array<string>(floppySlots.length).fill(NONE_SENTINEL);
+    videoMode = currentProfile.video_mode_default ?? currentProfile.video_modes?.[0]?.id ?? '';
   });
 
   onMount(() => {
@@ -258,6 +265,10 @@
       modelName,
       rom: selected.path,
       vrom: vromPath,
+      // Seed the selected JMFB video mode (matches web-legacy's bootFromConfig).
+      // Without it the JMFB never seeds its slot-PRAM/video defaults and A/UX
+      // hangs enabling its device drivers on real hardware.
+      videoMode: videoMode || undefined,
       ram,
       floppies: floppyPaths,
       hd: hdPath,
@@ -311,6 +322,16 @@
           <select id="cfg-vrom" bind:value={vrom}>
             {#each vromOptions as v (v)}
               <option>{v}</option>
+            {/each}
+          </select>
+        </div>
+      {/if}
+      {#if videoModes.length > 0}
+        <div class="form-row">
+          <label for="cfg-video-mode">Video Mode</label>
+          <select id="cfg-video-mode" bind:value={videoMode}>
+            {#each videoModes as m (m.id)}
+              <option value={m.id}>{m.label ?? m.id}</option>
             {/each}
           </select>
         </div>
