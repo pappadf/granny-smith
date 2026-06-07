@@ -403,8 +403,9 @@ Spec components: `[--write|--read|--rw]` (PC logpoint when omitted),
 read/write path, so they do **not** fire on bus-master DMA or other
 device-engine writes (e.g. the IIfx SCSI DMA writes straight to host
 RAM, bypassing the hook). To catch a DMA writer of a physical byte, use
-a gdb hardware watchpoint on the host address (`g_phys0_host_lo + phys`)
-or an emulator-side trace in the device's transfer loop, not a logpoint.
+a gdb hardware watchpoint on the host address (the RAM image base plus
+the physical offset) or an emulator-side trace in the device's transfer
+loop, not a logpoint.
 
 Single quotes opt out of `${...}` substitution entirely — the body is
 passed through to the logpoint parser verbatim, so deferred
