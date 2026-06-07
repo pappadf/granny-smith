@@ -521,14 +521,25 @@ static int collect_catalog_records(hfs_volume_t *vol, const uint8_t *cat_buf, si
 
 // HFS filenames compare case-insensitively (the native comparison folds
 // via the Macintosh Roman case table; ASCII-only volumes see plain toupper).
+// Fold a single byte for case-insensitive HFS comparison.  Also maps
+// '/' (HFS-legal in filenames) and ':' (Unix-side stand-in we expose
+// via the VFS) to the same canonical value so a file named
+// "MacTest cx/ci" on disk can be addressed as ".../MacTest cx:ci"
+// through Unix-style "/"-separated paths.  See `fill_dirent` for the
+// matching outbound swap.
+static uint8_t hfs_fold_byte(uint8_t c) {
+    if (c >= 'a' && c <= 'z')
+        c -= 32;
+    if (c == '/' || c == ':')
+        c = ':';
+    return c;
+}
+
 static int ci_compare_name(const uint8_t *a, size_t la, const uint8_t *b, size_t lb) {
     size_t n = la < lb ? la : lb;
     for (size_t i = 0; i < n; i++) {
-        uint8_t ca = a[i], cb = b[i];
-        if (ca >= 'a' && ca <= 'z')
-            ca -= 32;
-        if (cb >= 'a' && cb <= 'z')
-            cb -= 32;
+        uint8_t ca = hfs_fold_byte(a[i]);
+        uint8_t cb = hfs_fold_byte(b[i]);
         if (ca != cb)
             return (int)ca - (int)cb;
     }
@@ -559,13 +570,13 @@ static bool name_matches_utf8(const uint8_t *raw, size_t raw_len, const char *ut
     macroman_to_utf8(raw, raw_len, tmp, sizeof(tmp));
     if (strlen(tmp) != ul)
         return false;
-    // Case-insensitive ASCII fold on both sides (good enough for v1).
+    // Case-insensitive ASCII fold on both sides (good enough for v1),
+    // with the HFS↔Unix '/' ↔ ':' equivalence applied symmetrically so
+    // a name containing a slash on disk can be matched via a colon-
+    // separated path component on the way in.
     for (size_t i = 0; i < ul; i++) {
-        char a = tmp[i], b = utf8[i];
-        if (a >= 'a' && a <= 'z')
-            a -= 32;
-        if (b >= 'a' && b <= 'z')
-            b -= 32;
+        uint8_t a = hfs_fold_byte((uint8_t)tmp[i]);
+        uint8_t b = hfs_fold_byte((uint8_t)utf8[i]);
         if (a != b)
             return false;
     }
@@ -576,6 +587,16 @@ static bool name_matches_utf8(const uint8_t *raw, size_t raw_len, const char *ut
 static void fill_dirent(const cat_rec_t *r, hfs_dirent_t *out) {
     memset(out, 0, sizeof(*out));
     macroman_to_utf8(r->name_raw, r->name_len, out->name, sizeof(out->name));
+    // HFS↔Unix path-separator swap: HFS allows '/' in filenames and
+    // uses ':' as the on-disk separator.  Our VFS uses '/' as the
+    // path separator, so we expose any '/' bytes in HFS names as ':'
+    // instead — symmetric with the comparison fold in hfs_fold_byte().
+    // Callers that need the literal on-disk name can pull it from the
+    // raw record; this is the VFS-facing view.
+    for (char *p = out->name; *p; p++) {
+        if (*p == '/')
+            *p = ':';
+    }
     out->is_dir = (r->record_type == CAT_REC_FOLDER);
     out->cnid = r->cnid;
     out->valence = r->valence;
