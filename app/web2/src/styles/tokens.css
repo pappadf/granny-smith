@@ -1,6 +1,6 @@
 /* ====== Granny Smith UI — design tokens ======
-   Copied verbatim from the prototype (local/gs-docs/prototypes/ui/styles.css,
-   :root + :root[data-theme="light"] blocks). Source values are derived from
+   Copied verbatim from the original UI prototype (the :root +
+   :root[data-theme="light"] blocks). Source values are derived from
    VS Code workbench/platform color definitions:
        src/vs/workbench/common/theme.ts
        src/vs/platform/theme/common/colors/*

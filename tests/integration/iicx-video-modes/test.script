@@ -25,7 +25,7 @@
 #   $48      = spDepth (varies)   savedMode  = $80/$81/$82/$83
 #   $49..$4A = sister / sister    savedSRsrcID, savedRawSRsrcID
 #                                 (the ACTIVE Ax sister for this sense
-#                                  per Apple-341-0868-vrom.asm §6b)
+#                                  per the JMFB VROM mode catalog)
 #   $4B..$4D = 00 00 00           specialFlag / clock / pad
 #
 # `rtc.pram.validate` stamps the two boot-ROM validity tokens

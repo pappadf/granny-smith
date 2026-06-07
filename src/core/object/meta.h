@@ -13,8 +13,6 @@
 //     cpu.meta.methods         -> [...method names...]
 //     meta.complete(line, c)   -> tab-completion candidates
 //     meta.member("pc")        -> short description of the named member
-//
-// See local/gs-docs/proposals/proposal-introspection-via-meta-attribute.md.
 
 #ifndef GS_OBJECT_META_H
 #define GS_OBJECT_META_H

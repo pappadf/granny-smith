@@ -237,8 +237,8 @@ LOG_USE_CATEGORY_NAME("iop_swim");
 #define DRIVE_POLL_TICK_NS 20000000ULL // 20 ms
 //   ADB autopoll tick: once the host enables Auto/SRQ polling (Flags bit 6),
 //     the IOP firmware autonomously Talk-R0 polls the enabled devices and
-//     interrupts the host only when one has data (IOP_ADB_driver_ERS).  The
-//     documented cadence is ~10 ms; 11 ms matches the VIA-path autopoll.
+//     interrupts the host only when one has data.  The documented cadence
+//     is ~10 ms; 11 ms matches the VIA-path autopoll.
 #define ADB_AUTOPOLL_TICK_NS 11000000ULL // 11 ms
 // After any host-driven ADB transaction, the autonomous poll loop steps aside
 // for this many ticks so a host that drives its own Auto/SRQ polling (Mac OS
@@ -599,8 +599,7 @@ static void swim_handle_initialize(iop_t *iop) {
     // number 0 as "no drive" / invalid, so the first physical floppy
     // must be registered at d1=1 to receive qDrive=1 in the drive
     // queue.  Without this shift, _MountVol(BootDrive=0) returns
-    // paramErr (-50) and the boot block code at $00400FA2 aborts
-    // (see local/gs-docs/asm/IIfx-ROM.asm §23 for the analysis).
+    // paramErr (-50) and the boot block code at $00400FA2 aborts.
     iop->ram[pl + SIM_DRIVE_KINDS + 0] = DRIVE_KIND_NONE;
     iop->ram[pl + SIM_DRIVE_KINDS + 1] = DRIVE_KIND_DSMFM_HD;
     iop->ram[pl + SIM_DRIVE_KINDS + 2] = DRIVE_KIND_DSMFM_HD;
@@ -1119,8 +1118,8 @@ static void swim_adb_response(void *source, uint64_t data) {
 // Once the host enables Auto Polling (a slot-3 message with Flags bit 6 set),
 // the IOP firmware polls the enabled ADB devices ON ITS OWN, without the host
 // re-issuing a request per poll, and raises an IOP→CPU message (RcvMsg[3] +
-// Int1) only when a device actually has data — "one interrupt each time a
-// device has data" (IOP_ADB_driver_ERS, How the Messages are Used).  A/UX's
+// Int1) only when a device actually has data — one interrupt each time a
+// device has data.  A/UX's
 // ADB driver relies on this: after boot it enables auto-polling once (Flags
 // $40, ExplicitCmd cleared) and then waits silently for these unsolicited
 // data messages.  Mac OS works the same way; without this loop neither sees

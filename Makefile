@@ -342,7 +342,7 @@ e2e-test:
 test: unit-test integration-test
 
 # -- New UI (app/web2) — Svelte 5 + Vite + TypeScript --
-# See local/gs-docs/plans/new-ui-impl-plan.md. Phase 7 flipped
+# Phase 7 flipped
 # `make run` to serve this UI; `make run-legacy` keeps the old one
 # reachable while it soaks before removal.
 

@@ -32,12 +32,8 @@ reconstructed precisely from these sources:
 
 | Source                                                                               | What it covers                                                  |
 | ------------------------------------------------------------------------------------ | --------------------------------------------------------------- |
-| **System 7.1 OS source** — `OS/SysUtil.a` (`InitUtil`, `PRAMInit`, `PRAMInitTbl`)    | Validity check, default-value tables, and the cold-boot writer  |
-| **System 7.1 OS source** — `OS/SlotMgr/SlotMgrInit.a` (`InitsPRAM`)                  | Per-slot PRAM initialization and `BoardID` matching             |
-| **System 7.1 OS source** — `Interfaces/AIncludes/Slots.a`                            | `sPRAMRec` size, slot PRAM layout (`smPRAMTop`, `FirstPRAMSlot`)|
-| **System 7.1 driver sources** — `DeclData/DeclVideo/{Tim,V8,DAFB,CSC,Sonora,RBV}/*Driver.a` | Per-driver `SetDefaultMode` / `GetDefaultMode` PRAM access. The pattern is identical across all of them; we use V8 below as a representative multi-mode example. |
 | **Designing Cards and Drivers for the Macintosh Family, 3rd Edition (1992)**, ch. 8–9, pp. 5083, 5283, 5383 | Authoritative spec for slot PRAM and video-mode storage         |
-| **SE/30 Universal ROM disassembly** — `INIT_PRAM` at `$40800478`, `SCSI_MGR_INIT` at `$40826636` | ROM-side validation hooks (`_InitUtil`, SCSI XPRAM word)        |
+| **SE/30 Universal ROM** — `INIT_PRAM` at `$40800478`, `SCSI_MGR_INIT` at `$40826636` | ROM-side validation hooks (`_InitUtil`, SCSI XPRAM word)        |
 | **Inside Macintosh: Operating System Utilities** — Parameter RAM chapter            | Original 20-byte layout (Mac 128K..Plus); still used as the low region of XPRAM |
 
 ## 2. Two-region PRAM model
@@ -80,9 +76,8 @@ described in §6.
 ## 3. Validity-byte detection on cold boot
 
 The full detection-and-repair logic lives in `_InitUtil` (A-trap `$A03F`),
-implemented in `OS/SysUtil.a` lines 996–1068. The ROM dispatches into it
-from the post-PMMU init sequence at `$40800478`
-([SE30-ROM-v2.asm:770](../local/gs-docs/asm/SE30-ROM-v2.asm)).
+implemented in the OS's `_InitUtil`. The ROM dispatches into it
+from the post-PMMU init sequence at `$40800478`.
 
 The relevant excerpt, with offsets annotated:
 
@@ -144,8 +139,7 @@ Two points worth stressing:
 
 Beyond `_InitUtil`, the SE/30 ROM also performs a third, narrower
 validation on the SCSI configuration word at XPRAM `$02..$03`, run from
-`scsi_mgr_init` at ROM `$40826636`
-([SE30-ROM-v2.asm:10499](../local/gs-docs/asm/SE30-ROM-v2.asm)):
+`scsi_mgr_init` at ROM `$40826636`:
 
 ```asm
 MOVE.W (A7),D0          ; D0 = XPRAM[$02..$03] read by _ReadXPRam
@@ -181,7 +175,7 @@ The three values match `PRAMInit[$00]`, `'NuMc'`, the first six bytes of
 
 ### 4.1 Low PRAM defaults (`PRAMInit`, 20 bytes, written into `$00..$13`)
 
-From [SysUtil.a:1073-1116](../local/gs-docs/src/sys71src-main/OS/SysUtil.a):
+The default values:
 
 | Offset | Bytes      | Field                           | Default value                       |
 | ------ | ---------- | ------------------------------- | ----------------------------------- |
@@ -206,7 +200,7 @@ XPRAM region valid in the same physical bytes.
 
 ### 4.2 Start Manager defaults (`PRAMInitTbl`, 20 bytes, written into `$76..$89`)
 
-From [SysUtil.a:1119-1136](../local/gs-docs/src/sys71src-main/OS/SysUtil.a):
+The default values:
 
 | Offset    | Bytes | Field                                 | Default value           |
 | --------- | ----- | ------------------------------------- | ----------------------- |
@@ -221,7 +215,7 @@ From [SysUtil.a:1119-1136](../local/gs-docs/src/sys71src-main/OS/SysUtil.a):
 | $88..$89  | 2     | Reserved                              | `$0000`                 |
 
 The remaining XPRAM region is **stripe-zeroed** by the same routine: the
-loop at `SysUtil.a:1033-1042` walks an 8-byte address window from $20
+loop walks an 8-byte address window from $20
 upward in 4-byte writes, ensuring there is no stale junk left over from a
 previously-installed card configuration. The slot PRAM region (`$46..$75`,
 see §5) is included in this zero pass — slot PRAM is then re-populated by
@@ -289,7 +283,7 @@ follows the layout defined in *Designing Cards and Drivers*, ch. 8 §
 
 ### 6.1 Slot PRAM region
 
-From [Slots.a:100-105](../local/gs-docs/src/sys71src-main/Interfaces/AIncludes/Slots.a):
+The slot PRAM record (`sPRAMRec`):
 
 ```asm
 sizeSPRAMRec    EQU     8       ; size of an sPRAM record
@@ -349,7 +343,6 @@ sPRAMRec exercises both byte 2 (depth) and byte 3 (resolution) — this
 is the case the V8/DAFB/CSC/Sonora driver excerpt in §6.3 illustrates.
 
 Both machines run the same Slot Manager code path
-([SlotMgrInit.a:1057-1149](../local/gs-docs/src/sys71src-main/OS/SlotMgr/SlotMgrInit.a))
 and the same `_InitUtil` low-PRAM / XPRAM validators (§3) — the PRAM
 mechanism does not vary between the two. Only the *contents* of the
 slot $9 sPRAMRec differ in their typical range of values.
@@ -408,8 +401,7 @@ directly onto how the Apple Display Card 8•24 (JMFB, the IIcx's video
 card in our integration test) and any third-party
 SE/30 PDS video card behave.
 
-[V8Driver.a:1042-1075](../local/gs-docs/src/sys71src-main/DeclData/DeclVideo/V8/V8Driver.a),
-implementing control selector 9 (`SetDefaultMode`):
+Control selector 9 (`SetDefaultMode`) is implemented as:
 
 ```asm
 V8SetDefaultMode
@@ -428,8 +420,7 @@ V8SetDefaultMode
             BRA     V8CtlGood
 ```
 
-`V8GetDefaultMode` (status selector 9) is the symmetric read at
-[V8Driver.a:1422-1445](../local/gs-docs/src/sys71src-main/DeclData/DeclVideo/V8/V8Driver.a):
+`V8GetDefaultMode` (status selector 9) is the symmetric read:
 
 ```asm
 V8GetDefaultMode
@@ -446,12 +437,9 @@ Slot Manager `_SPutPRAMRec` trap as part of confirming the new mode.
 
 > Single-mode drivers (the SE/30 built-in pseudo-slot, the original
 > Apple Macintosh II Video Card / TFB / Tim) deliberately *don't*
-> implement selector 9 — see
-> [TimDriver.a:486-494](../local/gs-docs/src/sys71src-main/DeclData/DeclVideo/Tim/TimDriver.a),
-> which dispatches `SetDefaultMode` to a "control bad" stub on the grounds
+> implement selector 9: they dispatch `SetDefaultMode` to a "control bad" stub on the grounds
 > that "TIM only has one video sRsrc and it's already set." Their
-> `GetDefaultMode` simply returns the slot ID as the mode (see
-> [TimDriver.a:785-795](../local/gs-docs/src/sys71src-main/DeclData/DeclVideo/Tim/TimDriver.a)).
+> `GetDefaultMode` simply returns the slot ID as the mode.
 > The slot's sPRAMRec still exists and still has byte 2 set to the
 > single supported depth, but byte 3 is never touched by the driver
 > itself — only by the Slot Manager during BoardID-mismatch re-init.
@@ -466,7 +454,7 @@ typically a single bit in the driver's private `GFlags` storage — and
 nothing else. The pattern is identical across every multi-mode driver;
 this excerpt happens to be from the IIci's RBV driver (used here only
 because it has the most readable `GFlags` example — neither SE/30 nor
-IIcx uses RBV), [RBVDriver.a:816-844](../local/gs-docs/src/sys71src-main/DeclData/DeclVideo/RBV/RBVDriver.a):
+IIcx uses RBV):
 
 ```asm
 SetGray     BTST    #IsMono,GFlags(A3)       ; mono-only monitor?
@@ -504,8 +492,7 @@ The slot PRAM has no `$A8`-style validity byte. Instead, the Slot Manager
 treats the **first word (BoardID) as the validity token**: it must equal
 the value advertised by the card currently in the slot.
 
-[SlotMgrInit.a:1057-1149](../local/gs-docs/src/sys71src-main/OS/SlotMgr/SlotMgrInit.a)
-implements `InitsPRAM`, called once per slot during boot:
+`InitsPRAM` runs once per slot during boot:
 
 ```
 1.  Read the 8-byte sPRAMRec from PRAM.
@@ -619,8 +606,7 @@ video mode through PRAM needs to know about all four.
 
 ### 9.1 The 'NuMc' XPRAM signature is *not* present after a clean boot
 
-The doc text in §3 cites `_InitUtil` from System 7.1's
-`OS/SysUtil.a` — that source guards the XPRAM rewrite on a 4-byte
+Section 3's `_InitUtil` guards the XPRAM rewrite on a 4-byte
 'NuMc' literal at `$0C..$0F`. After a known-good cold boot in our
 emulator (IIcx, 8 MB, System 7.0.1 floppy, 250 M instructions to
 Finder), `pram[$0C..$0F]` reads `00 02 63 00`, **not** `4E 75 4D 63`.
@@ -719,7 +705,7 @@ opened, JMFBPrimaryInit unconditionally resets byte 2 if its own
 sense/clock checks fail — and for the typical "fresh machine, never
 configured before" state those checks always fail.
 
-[JMFBPrimaryInit.a, lines 305–435](../local/gs-docs/src/sys71src-main/Drivers/Video/JMFBPrimaryInit.a):
+The JMFB primary-init routine:
 
 ```asm
 SUBA   #sizesPRAMRec,SP

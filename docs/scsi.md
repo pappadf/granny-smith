@@ -415,9 +415,7 @@ at one PC).
 
 Visible symptom that this fixes: A/UX 3.0.1 Easy Install dialog
 now shows `(SCSI device 0 on bus 1) Untitled` instead of
-`☐Untitled`.  See
-[notes/60-aux3-volname-root-cause.md](../local/gs-docs/notes/60-aux3-volname-root-cause.md)
-for the full investigation history.
+`☐Untitled`.
 
 ---
 

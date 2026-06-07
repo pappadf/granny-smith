@@ -5,8 +5,7 @@
 # A/UX kernel _start → autoconfig → vfs_mountroot (UFS) → the real mount →
 # exec(/etc/init) → userland → fsck → the A/UX `login:` prompt.
 #
-# HISTORY (each pin replaced as the boot advanced — see
-# local/gs-docs/notes/iifx-debug/ for the full archaeology):
+# HISTORY (each pin replaced as the boot advanced):
 #   1. mac-finder.png        — stuck at Mac OS Finder (pre-iHSKEN-write fix).
 #   2. launching.png         — "Welcome to A/UX. Launching..." then idle.
 #   3. no-root-fs-panic.png  — "panic: no root file system".

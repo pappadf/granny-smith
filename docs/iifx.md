@@ -206,8 +206,8 @@ image. The host-visible parts are:
 
 | Image     | `XmtMsg[0]` / `RcvMsg[0]` seed | Active slots                                       | Source                                                |
 | --------- | ------------------------------ | -------------------------------------------------- | ----------------------------------------------------- |
-| SWIM IOP  | `$03`                          | 1 (BlockCopy, RcvMsg only), 2 (Sony), 3 (ADB)      | `SWIMIOP.aii` `InitDrivers`, writes `RCVMsgMax`/`XMTMsgMax` |
-| SCC IOP   | `$07`                          | 1 (kernel commands, XmtMsg only)                   | `SCCIOP.aii` `Reset`, writes `RxMsgCnt`/`TxMsgCnt`     |
+| SWIM IOP  | `$03`                          | 1 (BlockCopy, RcvMsg only), 2 (Sony), 3 (ADB)      | `InitDrivers` writes `RCVMsgMax` / `XMTMsgMax` |
+| SCC IOP   | `$07`                          | 1 (kernel commands, XmtMsg only)                   | `Reset` writes `RxMsgCnt` / `TxMsgCnt`     |
 
 Slots above the seeded count *exist* in shared RAM but the firmware will halt (BRK loop) if a host ever kicks them on the SWIM IOP. The SCC IOP's higher slots are reserved for host-downloaded serial-driver code — port A on slots 2-4, port B on slots 5-7 (see §15.3).
 
@@ -261,8 +261,8 @@ on every iteration with an image-specific sentinel:
 
 | Image     | Runtime heartbeat value | Written from                                                        |
 | --------- | ----------------------- | ------------------------------------------------------------------- |
-| SWIM IOP  | `'X'` (`$58`)           | `IdleLoop` in `IOPKernel.aii` — once per idle-task scan.            |
-| SCC IOP   | `$FF`                   | `Ev_Wait` task scheduler in `SCCIOP.aii` — once per task switch.    |
+| SWIM IOP  | `'X'` (`$58`)           | the firmware `IdleLoop` — once per idle-task scan.            |
+| SCC IOP   | `$FF`                   | the `Ev_Wait` task scheduler — once per task switch.    |
 
 So the host's actual liveness check is "`$031F` is non-zero **and** is
 being refreshed". An IOP that has wedged (BRK landing in
@@ -630,7 +630,7 @@ The firmware processes, **writes its reply back into the same
 raises `iopInt0Active`. There is no separate reply slot. The host
 acknowledges with `clrIopInt0`.
 
-The six accepted command codes (from `SCCIOPEqu.aii`):
+The six accepted command codes:
 
 | Code  | Apple name    | Function                                       |
 | ----- | ------------- | ---------------------------------------------- |
@@ -785,13 +785,12 @@ id 61 = printer / port B; the first two bytes are the driver length, the
 rest is the IOP image). The host claims a port with `AllocDvr`, downloads
 the `'SERD'` body into the region `AllocDvr` reported (driver A from
 `$2D55`, driver B from `$56AA`), and runs its init with `InitDvr`. From
-then on the driver presents the Inside-Macintosh serial-driver interface
+then on the driver presents the standard Macintosh serial-driver interface
 (`.AIn`/`.AOut`/`.BIn`/`.BOut`) and off-loads the SCC from the 68030.
 
 Granny Smith does **not** model this path — the IIfx boots Mac OS in
 PRAM-default bypass and never downloads a `'SERD'`. It is documented here
-for completeness, and because **A/UX** uses enhanced mode (see PT 18,
-below). Source: *Serial IOP Driver ERS*.
+for completeness, and because **A/UX** uses enhanced mode.
 
 Each active driver owns **six** mailbox slots — three host→IOP and three
 IOP→host — at fixed slot numbers: **port A = slots 2, 3, 4; port B =
@@ -809,7 +808,7 @@ Open/Control/Close, `RcvMsg[2]` = Event. Port B uses 5/6/7 identically.
 Every payload puts the IOP-written `Result code` at `+$00`.
 
 - **Open** (box 3, opcode `$01`): in — serial config word (`+$04`, the
-  *Inside Macintosh* vol II format) and the IOP-specific baud divisor
+  standard Macintosh serial config-word format) and the IOP-specific baud divisor
   (`+$06`, host-converted from the config word's divisor); out — the IOP
   addresses + lengths of the **write buffer** (`+$08`/`+$0A`) and the
   **statistics buffer** (`+$0C`). The host fills the write buffer and
@@ -838,11 +837,10 @@ driver maintains it in the statistics buffer whose address Open returned;
 the host reads it directly, with a one-byte valid/ack handshake at the
 head of that buffer.
 
-**A/UX caveat (PT 18).** Apple developer tech note *PT 18 — IOP-Based
-Serial Differences under A/UX* documents serial behaviour differences and
-bugs when A/UX drives the IOP serial path; an A/UX-accurate serial model
-must account for it. Granny Smith does not model IOP serial yet, so this
-is informational.
+**A/UX caveat.** A/UX's enhanced-mode serial path exercises behaviours (and
+bugs) the Mac OS bypass path never hits, so an A/UX-accurate serial model
+would have to account for them. Granny Smith does not model IOP serial yet,
+so this is informational.
 
 ---
 
@@ -957,8 +955,8 @@ shapes (an `AdditionalParam` union in the original source):
 | `+$04`       | 28 bytes | `DriveKinds[0..27]` | One `DriveKind` per logical drive index. The firmware always writes the full 28-byte block; the IIfx ROM only consumes the first four (qDrive table is 4 wide). For physical drive indexing on the IIfx, see §17.4. |
 
 **DriveStatus / ExtDriveStatus reply** (`xmtReqDriveStatus`). Offsets
-inside the payload map one-for-one to the `Stat*` equates in
-`SWIMDefs.aii` — those equates are payload-relative, so `StatTrackH =
+inside the payload map one-for-one to the firmware's `Stat*` equates, which are
+payload-relative, so `StatTrackH =
 $04` means `+$04` from the start of the payload at `$0340`:
 
 | Offset      | Size    | Name              | Notes                                                                                     |
@@ -1084,8 +1082,7 @@ consumes the first 4 (it uses each index `N` as the `qDrive` argument
 when calling `_AddDrive`, which in turn becomes `ioVRefNum` for
 `_MountVol`).
 
-The firmware populates indices according to *physical* drive numbering
-in `SWIMDefs.aii`:
+The firmware populates indices according to *physical* drive numbering:
 
 - index 1 = `intDriveNumber` (internal floppy)
 - index 2 = `extDriveNumber` (external floppy)
@@ -1217,11 +1214,10 @@ latches it before the autopoll scan. The reply clears
 This is the single most important ADB behaviour to model correctly, and
 the one most easily mis-read from the host-side software flow alone.
 
-Per the *IOP ADB Driver ERS* (§"How the Messages are Used"): **once the
-host has enabled polling, the IOP polls the bus entirely on its own,
-"without intervention from the 68030", and interrupts the host only when
-a device actually has data — "one interrupt each time a device has data,
-and requires no interrupts to direct the service request polling".** The
+**Once the host has enabled polling, the IOP polls the bus entirely on its
+own — without 68030 intervention — and interrupts the host only when a
+device actually has data: one interrupt per data event, with no interrupts
+needed to drive the SRQ search.** The
 firmware free-runs the §18.2.B selection loop at roughly the documented
 ADB autopoll rate (≈10 ms per cycle; it calibrates this with a software
 fractional-time divider, the 65C02 having no hardware timer divider).
@@ -1367,21 +1363,20 @@ behaviour.
 
 Offsets within the `$50F0_8000` window, byte-addressable, but the
 control/state registers are **big-endian 32-bit** values written and
-read as longs. Apple's names match `HardwarePrivateEqu.a`:
+read as longs, using Apple's register names:
 
 | Offset (hex) | Apple name | Direction | Notes |
 | ------------ | ---------- | --------- | ----- |
 | `$000 – $07F` | (5380 passthrough) | R/W | Same byte layout as the polled aperture in §3 — i.e. reads/writes of offset `$N0` hit 5380 register `N`. |
 | `$080` | `sDCTRL`   | R/W | Wrapper control + status (see §2.1). |
 | `$0C0` | `sDCNT`    | R/W | DMA byte count (24-bit field in a 32-bit register). Decrements as bytes transfer; the driver reads back zero on success. |
-| `$100` | `sDADDR`   | R/W | The DMA address. Per the chip ERS (§6.6.4) it holds the *current* address: the engine loads its internal counter from `$100` at DMA start and **auto-increments** as bytes move — it is not a static base (see §4). A **physical** address. |
+| `$100` | `sDADDR`   | R/W | The DMA address. It holds the *current* address: the engine loads its internal counter from `$100` at DMA start and **auto-increments** as bytes move — it is not a static base (see §4). A **physical** address. |
 | `$140` | `sDTIME`   | R/W | Watchdog timer reload value. The wrapper raises `iTIMEP` (and IRQ, if `INTREN` is set) when the timer fires before the transfer completes. |
 | `$180` | `sTEST`    | R/W | Chip self-test register; written `0` during SCSI Mgr init to leave test mode. |
 
 #### 2.1 `sDCTRL` bits
 
-Per `HardwarePrivateEqu.a` lines 399–419, names with `i*` prefix
-dropped for brevity:
+Bit layout (names with the `i*` prefix dropped for brevity):
 
 | Bit | Mask     | Name       | Direction | Meaning |
 | --- | -------- | ---------- | --------- | ------- |
@@ -1474,9 +1469,9 @@ runs only when that start register is touched **with `DMAEN` set**.
 obtained from `realvtop`, so the emulator's engine must use the physical
 memory path (`mmu_*_physical`), not the CPU's translated path. (An early
 model pumped through the CPU MMU and corrupted memory because the address
-is already physical — note 94.)
+is already physical.)
 
-**Current-address counter (chip ERS §6.6.4).** `$100` holds the *current*
+**Current-address counter.** `$100` holds the *current*
 DMA address: the engine loads its internal address counter from `$100` at
 DMA start and **auto-increments** it as bytes move, while `$0C0` decrements
 toward zero. The internal counter is distinct from the `$100` CPU latch
@@ -1505,7 +1500,7 @@ target keeps the command open. Between segments the driver polls the 5380,
 waiting for the target still to be REQ-ing, then arms the next page.
 
 Modelling this faithfully took three chip-level rules — no peeking at the
-kernel's CDB or page lists (note 114):
+kernel's CDB or page lists:
 
 - **Read re-arm — keep /REQ asserted while the target has data.** A real
   SCSI target in DATA IN holds `/REQ` asserted as long as it has another
@@ -1538,9 +1533,8 @@ The IIfx breaks that pattern:
 
 - The 5380's `/IRQ` and the SCSI DMA wrapper's transfer-complete
   signal are OR'd together into a single OSS interrupt source.
-- That source is **OSS source 9** (`OSSMskScsi EQU $009` in
-  `HardwarePrivateEqu.a`; `OSSIntSCSI EQU 9` is the bit number in
-  `OSSIntStat`).
+- That source is **OSS source 9** (`OSSMskScsi = $009`; `OSSIntSCSI = 9`
+  is the bit number in `OSSIntStat`).
 - The default IRQ level the boot ROM programs for source 9 is 2
   (`irq_level[9] = 2` in the post-init OSS state).
 - There is **no Mac-II-style VIA2 IFR bit** for SCSI on the IIfx.
@@ -1573,7 +1567,7 @@ distinct paths, in this order during a cold boot:
    sectors are loaded the same way once located.
 
 2. **SCSI Manager init (one-time wrapper handshake)**. Once the
-   in-RAM SCSI driver takes over, it runs `SCSIMgrInit.a`'s
+   in-RAM SCSI driver takes over, it runs the SCSI Manager init's
    `@DMAdone` branch:
 
    ```
@@ -1646,13 +1640,11 @@ expose:
   which the IIfx doesn't even have a software-visible second copy
   of).
 
-Apple Technical Note HW 09 famously says shipping Mac OS (6.0.5
-through 7.6.1) "does not yet take advantage of" the wrapper's true
-DMA mode — that is at best out of date. Mac OS 7's universal SCSI
-Manager calls `FastReadOSS` on every machine that reports
-`sSCSIDMAExists` (see `SCSIMgrHW.a@1075` for the symmetric
-`FastWriteOSS` path), and a working IIfx emulator must service
-`sIDMArx` writes accordingly.
+Despite a widespread belief that shipping Mac OS never used the wrapper's
+true DMA mode, Mac OS 7's universal SCSI Manager calls `FastReadOSS` (and
+the symmetric `FastWriteOSS`) on every machine that reports
+`sSCSIDMAExists`, so a working IIfx emulator must service `sIDMArx` /
+`sDMAtx` writes accordingly.
 
 A/UX drives the wrapper hardest: it uses the bus-master engine for **both**
 directions and for **scattered** multi-page transfers — not via a hardware
@@ -1665,24 +1657,25 @@ modelling bugs lived. See §9 for the history.
 
 ### 9. Modelling history & pitfalls
 
-The IIfx SCSI DMA path was the single hardest part of the A/UX bring-up;
+The IIfx SCSI DMA path was the single hardest part of the A/UX bring-up.
+The durable lessons:
 
 - **Apple disabled bus-master SCSI DMA under Mac OS on the IIfx** (it was
-  "trashing disks"; Tech Note HW 09). Mac OS therefore drives the chip in
+  reported to corrupt disks). Mac OS therefore drives the chip in
   pseudo-DMA / iHSKEN mode, while **A/UX is the only shipping OS that uses
   the bus-master engine** — including for writes. The two OSes exercise
   *different* paths through the same chip, and both must keep working: a
   change made for A/UX (e.g. the iHSKEN-primer rule, §5) must not regress
   the Mac OS pseudo-DMA path.
-- **The address is physical; pump the physical bus, not the CPU MMU**
-  (note 94). A/UX hands the engine a `realvtop` physical address.
+- **The address is physical; pump the physical bus, not the CPU MMU.**
+  A/UX hands the engine a `realvtop` physical address.
 - **The "kernel-credit shim" was a dead end — now removed.** While the
   write path was mis-modelled, the model carried a workaround that decoded
   the SCSI CDB's LBA (which the real 343S0064-A engine cannot see) to
   "credit" overlapping re-issued reads/writes. It papered over the missing
   per-segment re-arm (§5) and *caused* the on-disk corruption it appeared
   to fix. Once the three §5 rules were in place the shim was verified inert
-  (zero credits across a full boot) and **removed** (note 114). The general
+  (zero credits across a full boot) and **removed**. The general
   lesson: when a load-bearing workaround has to read guest state the
   hardware can't, the real bug is elsewhere — fix that and the workaround
   drops out cleanly.

@@ -81,8 +81,7 @@ LOG_USE_CATEGORY_NAME("iifx");
 // simple R/W backing store.
 //
 // $50F1E000 is the address of the optional RPU (RAM Parity Unit) chip —
-// see local/gs-docs/code/sys71src-main/OS/UniversalTables.a:7701 where
-// the IIfx DecoderInfo's RPUAddr field is listed as "RPU - (optional)".
+// the IIfx DecoderInfo's RPUAddr field lists it as "RPU - (optional)".
 // On real hardware the chip is only present if parity SIMMs are
 // installed; without it, the IIfx's BIU30 leaves the address undecoded
 // and every access bus-errors.  POST phase $93 ($408430DC) probes the
@@ -119,8 +118,7 @@ LOG_USE_CATEGORY_NAME("iifx");
 #define IIFX_OSS_IO_PENALTY  2
 
 // IIfx SCSI DMA controller — Apple 343S0064-A "IIfx Custom SCSI DMA
-// Controller, QFP-100". Full register/state spec lives in
-// local/gs-docs/iifx-scsi-dma/iifx-scsi-dma.md.
+// Controller, QFP-100".
 //
 // Register offsets are spaced by $10 and decoded from A[8:4]; the
 // embedded NCR 53C80 cell occupies $000..$070 (one byte each on
@@ -175,7 +173,7 @@ typedef struct iifx_state {
     const memory_interface_t *swim_iop_iface;
 
     // OSS-extension R/W backing store covering $50F1C000-$50F1FFFF
-    // (16 KB).  See `IIfx-ROM.asm` §16e-g.
+    // (16 KB).  Populated/probed by the IIfx ROM during POST.
     uint8_t oss_ext[0x4000];
 
     // 16-bit serial shift register at $50F1C000 (byte offset 0 of
@@ -522,8 +520,7 @@ static void iifx_write_reg32_byte(uint32_t *reg, uint32_t addr, uint8_t value) {
 //
 // The IIfx ships a custom QFP-100 SCSI controller built around an
 // enhanced NCR 53C80 cell. Apple's wrapper adds bus-master DMA, a
-// 32-bit FIFO byte-router, a watchdog, and auto-arbitration. Full
-// register/state spec: local/gs-docs/iifx-scsi-dma/iifx-scsi-dma.md.
+// 32-bit FIFO byte-router, a watchdog, and auto-arbitration.
 //
 // Register layout (spec §2):
 //   $000..$070  embedded 53C80 (8-bit on D[31:24]), passed through

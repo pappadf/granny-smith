@@ -51,11 +51,8 @@ at init and reads/writes fields by offset through `Module.HEAP32` /
 against `BRIDGE_VERSION` at startup so layout drift fails loudly.
 
 Every JS→C request rides on the single `pending=1` kind (`gs_eval`).
-Introspection rides on `<path>.meta.*`
-([`proposal-introspection-via-meta-attribute.md`](../local/gs-docs/proposals/proposal-introspection-via-meta-attribute.md));
-free-form shell lines and tab completion ride on the `Shell` class's
-`run` / `complete` methods
-([`proposal-shell-as-object-model-citizen.md`](../local/gs-docs/proposals/proposal-shell-as-object-model-citizen.md)).
+Introspection rides on `<path>.meta.*`; free-form shell lines and tab
+completion ride on the `Shell` class's `run` / `complete` methods.
 The `pending` slot is sized as a 32-bit field for future kinds, but
 only kind 1 is currently in use. JS writes `path` / `args`, sets
 `pending`, and parks on the `done` field via `Atomics.waitAsync`. The

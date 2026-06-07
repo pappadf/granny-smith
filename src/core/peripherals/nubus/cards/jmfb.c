@@ -80,8 +80,7 @@ typedef struct {
     // to CLUTDataReg load one palette entry.  After the third write,
     // the palette index auto-increments.  Apple's JMFB driver uses
     // TWO protocols here, picked at runtime via bit $C of
-    // driver_private+$10 (see Apple-341-0868-vrom.asm Section 11,
-    // Control case 2):
+    // driver_private+$10 (the JMFB driver's Control case 2):
     //
     //   * 8/16bpp variant (12"/13"/16" RGB monitors):  three long
     //     writes to (A3) where D2 = 0x00BBGGRR is shifted right by
@@ -278,7 +277,7 @@ static void handle_jmfb_write16(jmfb_priv_t *p, uint32_t off, uint16_t val) {
         // Byte offset into VRAM is depth-dependent.  For ≤8 bpp the
         // encoded value × 32 = byte offset.  For 24 bpp (PIXEL_32BPP_XRGB)
         // the JMFB driver writes `(defmBaseOffset * 3/4) >> 5 >> 1`
-        // (TFBM30Parms in JMFBDriver.a) — inverted, that's
+        // (the JMFB driver's TFBM30 parms) — inverted, that's
         // `value * 32 * 8/3`.  The factor matches the
         // `recompute_stride`'s `value * 32 / 3` formula scaled by 8 to
         // get from row-stride units back to byte offset.
@@ -897,11 +896,9 @@ static int card_init(nubus_card_t *card, config_t *cfg, checkpoint_t *cp) {
             rtc_pram_write(rtc, 0x0D, 0x75); // 'u'
             rtc_pram_write(rtc, 0x0E, 0x4D); // 'M'
             rtc_pram_write(rtc, 0x0F, 0x63); // 'c'
-            // Stamping 'NuMc' makes the boot ROM's CkNewPram (OS/SysUtil.a,
-            // part of _InitUtil) treat XPRAM as already valid, so it SKIPS
-            // its cold-init pass and never writes PRAMInitTbl ($76..$89).
-            // That table holds the default OS type and boot device the Start
-            // Manager reads (StartSearch.a EmbarkOnSearch via _GetOSDefault /
+            // Stamping 'NuMc' makes the boot ROM's CkNewPram (part of _InitUtil) treat XPRAM as already valid, so it
+            // SKIPS its cold-init pass and never writes PRAMInitTbl ($76..$89). That table holds the default OS type
+            // and boot device the Start Manager reads (StartSearch.a EmbarkOnSearch via _GetOSDefault /
             // _GetDefaultStartup): without it OSType=$77, DriveId=$78 and
             // PartitionId=$79 stay 0, so D3 reaches SCSILoad as $00000000
             // instead of $0001FFFF and the boot-driver DDM match never fires
@@ -1005,8 +1002,7 @@ static nubus_card_t *factory(int slot, config_t *cfg, checkpoint_t *cp) {
 }
 
 // Monitor types the Rev B ROM supports (proposal §3.2.5 + the mode
-// catalog Apple ships in chip[$4000..$502B] of the JMFB VROM, see
-// Apple-341-0868-vrom.asm §6b).
+// catalog Apple ships in chip[$4000..$502B] of the JMFB VROM).
 //
 // `depths` lists the supported bit-depths that are PRAM-reachable on
 // this card — i.e. modes the user could pick in the Monitors control
@@ -1028,9 +1024,8 @@ static const int mdc_8_24_4depths[] = {1, 2, 4, 8, 0};
 
 // CRT response curves for monitors whose JMFB gamma table is NOT
 // near-identity.  Mac System 7's JMFB driver gamma-pre-corrects CLUT
-// writes for each monitor via Apple's per-display 'gama' resource
-// (see Section 7 of Apple-341-0868-vrom.asm — six tables at
-// chip[$4A86..$502B]).  On real hardware the CRT phosphor/electron-
+// writes for each monitor via Apple's per-display 'gama' resource (six tables at
+// chip[$4A86..$502B] of the JMFB VROM).  On real hardware the CRT phosphor/electron-
 // gun gamma response cancels the pre-correction and the user sees a
 // neutral image.  In software we apply the inverse here.
 //

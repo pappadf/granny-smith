@@ -8,8 +8,7 @@
 # DMA-segment EOP keeps the bus in data_in so the driver re-arms each
 # scatter-gather segment instead of completing per segment).  The test
 # pins the `login:` screen so any regression in the boot path — or
-# further progress past getty — is caught.  See test.script and
-# local/gs-docs/notes/iifx-debug/ for the full history.
+# further progress past getty — is caught.  See test.script.
 
 TEST_NAME := IIfx A/UX 3.0.1 HD Boot (reaches login)
 TEST_DESC := Boot IIfx with 16 MB RAM from the A/UX 3.0.1 HD image; expect the A/UX text `login:` prompt.

@@ -151,7 +151,7 @@ jobs:
           path: playwright-report
           if-no-files-found: ignore
 
-  # New Svelte UI at app/web2 (see local/gs-docs/plans/new-ui-impl-plan.md).
+  # New Svelte UI at app/web2.
   # Phase 0 (Scaffold): typecheck + lint + Vitest (no tests yet) + Vite build.
   # No WASM dependency — runs in parallel with the `test` job above.
   ui:
