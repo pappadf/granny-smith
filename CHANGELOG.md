@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v0.5.0] — 2026-06-07
+
+### Added
+- **Macintosh IIfx boots A/UX 3.0.1 to a graphical login** — first A/UX on the IIfx, with working mouse and keyboard, in both 1-bit and 8-bit color modes.
+- Integration + E2E coverage for the IIfx A/UX login (8-bit), IIfx MacTest (8bpp), and IIcx MacTest.
+
+### Changed
+- Scheduler unified to a single frame-VBL run path (`run_wasm` and the separate cycle-VBL path removed), so headless runs are now bit-identical to the browser.
+- web2 UI: always-visible upload icon on the Images tab, drag-hover flicker fixed, Welcome config dropdowns re-scan after upload/rename/delete, `vrom.identify` returns canonical content-derived metadata, and "Upload ROM…" no longer auto-boots.
+
+### Fixed
+- IIfx SCSI: chip-faithful OSS SCSIDMA model — the A/UX kernel's chunked-DMA exec-loads and `FastReadOSS`/`FastWriteOSS` paths now work.
+- SWIM IOP ADB: autonomous Auto/SRQ polling, which A/UX relies on for mouse and keyboard input after enabling it once.
+- IIfx 8-bit boot hang: route PMMU instruction-fetch faults through bus-error *retry* (Format $B) instead of the same-PC double-fault HALT, which falsely fired on a demand-paged text page's first retry.
+- JMFB / WASM boot: seed `PRAMInitTbl` defaults when stamping video-mode PRAM tokens, so the ROM still selects the right boot driver instead of falling back to floppy.
+- Memory: strip 24-bit master-pointer flags before device dispatch, and fault (rather than identity-pass) a failed MMU walk in the IIfx ROM device window.
+
 ## [v0.4.4] — 2026-05-19
 
 ### Fixed
