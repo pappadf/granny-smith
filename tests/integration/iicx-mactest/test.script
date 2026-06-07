@@ -138,6 +138,17 @@ scheduler.run 5000000
 mouse.click false
 
 scheduler.run 300000000
+# Second OK-click for the 1.44 MB INTERNAL disk.  Under the unified frame-VBL
+# cadence the HD disk's read/verify keeps MacTest out of its modal click-poll
+# longer than the 800K case, so the first OK-click (above) lands during the
+# read window and is dropped; a follow-up click after the window registers and
+# starts the test.  (800K steps fit the poll window and need only one click.)
+mouse.move 454 245 "global"
+scheduler.run 5000000
+mouse.click true
+scheduler.run 5000000
+mouse.click false
+scheduler.run 150000000
 screen.match insert-800k-external.png
 
 mouse.click false "global"
@@ -163,6 +174,15 @@ scheduler.run 5000000
 mouse.click false
 
 scheduler.run 300000000
+# Second OK-click for the 1.44 MB EXTERNAL disk — same HD read-window timing as
+# the internal 1.44 MB step above; the first click lands too early under the
+# frame-VBL cadence, the follow-up click registers.
+mouse.move 454 245 "global"
+scheduler.run 5000000
+mouse.click true
+scheduler.run 5000000
+mouse.click false
+scheduler.run 150000000
 screen.match floppy-test-success.png
 
 
