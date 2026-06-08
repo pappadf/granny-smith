@@ -7,7 +7,7 @@
 
 > **See it:** [Screenshot gallery of A/UX, MacTest, and more](GALLERY.md) from the test system
 
-> **Try it:** [Run Granny Smith in your browser](https://pappadf.github.io/gs-pages/v0.3.0/)
+> **Try it:** [Run Granny Smith in your browser](https://pappadf.github.io/gs-pages/latest/)
 > Use Chromium browser (Safari and Firefox have known issues)
 
 ![A/UX 3.0.1 booting on SE/30](docs/assets/aux_boot.gif)
@@ -24,7 +24,7 @@
 | System 6.0.8   |   ✅   |   ✅   |    -   |    -   |    -   |
 | System 7.0.1 ‡ |    -   |   ✅   |   ✅   |   ✅   |   ✅   |
 | System 7.1     |   ✅   |   ✅   |    -   |    -   |    -   |
-| A/UX 3.0.1 †   |    -   |   ✅   |    -   |    -   |    -   |
+| A/UX 3.0.1 †   |    -   |   ✅   |    -   |    -   |   ✅   |
 | MacTest        |   ✅   |   ✅   |   ✅   |    -   |    -   |
 
 † On SE/30, boots from a pre-installed HD image to a shell *and* the full retail Installer flow runs from floppy + CD.
