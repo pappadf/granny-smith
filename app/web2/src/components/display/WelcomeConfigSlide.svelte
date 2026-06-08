@@ -8,8 +8,10 @@
   import { DEFAULT_CONFIG } from '@/lib/machine';
   import type { ImageCategory } from '@/bus/types';
   import { images } from '@/state/images.svelte';
+  import CreateImageDialog from './CreateImageDialog.svelte';
 
   const UPLOAD_SENTINEL = 'Upload image...';
+  const CREATE_SENTINEL = 'Create blank image...';
   const NONE_SENTINEL = '(none)';
 
   // One identified ROM in OPFS. `compatible` is the list of model ids that
@@ -85,6 +87,11 @@
   let hdOptions = $state<string[]>([NONE_SENTINEL]);
   let cdOptions = $state<string[]>([NONE_SENTINEL]);
 
+  // Create-blank-image dialog state.
+  let createOpen = $state(false);
+  let createKind = $state<'hd' | 'fd'>('hd');
+  let createFdSlot = $state(0);
+
   function formatRamKb(kb: number): string {
     if (kb >= 1024 && kb % 1024 === 0) return `${kb / 1024} MB`;
     if (kb >= 1024) return `${(kb / 1024).toFixed(1)} MB`;
@@ -159,8 +166,8 @@
     }
 
     vromOptions = ['(auto)', ...vroms.map((v) => v.name)];
-    fdOptions = [NONE_SENTINEL, ...fds.map((f) => f.name), UPLOAD_SENTINEL];
-    hdOptions = [NONE_SENTINEL, ...hds.map((h) => h.name), UPLOAD_SENTINEL];
+    fdOptions = [NONE_SENTINEL, ...fds.map((f) => f.name), UPLOAD_SENTINEL, CREATE_SENTINEL];
+    hdOptions = [NONE_SENTINEL, ...hds.map((h) => h.name), UPLOAD_SENTINEL, CREATE_SENTINEL];
     cdOptions = [NONE_SENTINEL, ...cds.map((c) => c.name), UPLOAD_SENTINEL];
     scanning = false;
   }
@@ -231,6 +238,16 @@
 
   async function onFdChange(e: Event, slotIndex: number) {
     const v = (e.target as HTMLSelectElement).value;
+    if (v === CREATE_SENTINEL) {
+      // Revert the dropdown off the sentinel, then open the create dialog.
+      const reverted = floppies.slice();
+      reverted[slotIndex] = NONE_SENTINEL;
+      floppies = reverted;
+      createKind = 'fd';
+      createFdSlot = slotIndex;
+      createOpen = true;
+      return;
+    }
     const result = await interceptIfUpload(v, 'fd');
     const next = floppies.slice();
     next[slotIndex] = result ?? NONE_SENTINEL;
@@ -238,8 +255,28 @@
   }
   async function onHdChange(e: Event) {
     const v = (e.target as HTMLSelectElement).value;
+    if (v === CREATE_SENTINEL) {
+      hd = NONE_SENTINEL;
+      createKind = 'hd';
+      createOpen = true;
+      return;
+    }
     const result = await interceptIfUpload(v, 'hd');
     hd = result ?? NONE_SENTINEL;
+  }
+
+  // A blank image was created in /opfs/images/{hd,fd}/. Re-scan so the
+  // dropdown lists it, then select it.
+  async function onImageCreated(name: string) {
+    createOpen = false;
+    await refreshOpfs();
+    if (createKind === 'hd') {
+      hd = name;
+    } else {
+      const next = floppies.slice();
+      next[createFdSlot] = name;
+      floppies = next;
+    }
   }
   async function onCdChange(e: Event) {
     const v = (e.target as HTMLSelectElement).value;
@@ -382,6 +419,13 @@
     </div>
   </form>
 </div>
+
+<CreateImageDialog
+  open={createOpen}
+  kind={createKind}
+  onClose={() => (createOpen = false)}
+  onCreated={onImageCreated}
+/>
 
 <style>
   .config-content {

@@ -14,6 +14,8 @@ export interface OpfsBackend {
   scanCheckpoints(): Promise<CheckpointEntry[]>;
   readJson<T>(path: string): Promise<T | null>;
   writeJson(path: string, value: unknown): Promise<void>;
+  /** Read a file's bytes as a Blob. Rejects if the path isn't a readable file. */
+  readFile(path: string): Promise<Blob>;
   /** Move a file or dir to a new path (recursive for dirs). */
   move(src: string, dst: string): Promise<void>;
   /** Recursive delete. */
@@ -136,6 +138,12 @@ class MockOpfs implements OpfsBackend {
     this.json.set(path, value);
   }
 
+  async readFile(path: string): Promise<Blob> {
+    const f = this.files.get(path);
+    if (!f) throw new Error(`no such file: ${path}`);
+    return new Blob([new Uint8Array(Math.min(f.size, 1024))]);
+  }
+
   async move(src: string, dst: string): Promise<void> {
     const moved = new Map<string, { size: number }>();
     for (const [p, v] of this.files.entries()) {
@@ -190,6 +198,7 @@ export const opfs: OpfsBackend = {
   scanCheckpoints: () => backend.scanCheckpoints(),
   readJson: (path) => backend.readJson(path),
   writeJson: (path, value) => backend.writeJson(path, value),
+  readFile: (path) => backend.readFile(path),
   move: (src, dst) => backend.move(src, dst),
   delete: (path) => backend.delete(path),
   rename: (path, newName) => backend.rename(path, newName),
@@ -311,6 +320,13 @@ export class BrowserOpfs implements OpfsBackend {
       });
     }
     return out;
+  }
+
+  async readFile(path: string): Promise<Blob> {
+    const dir = await getDirAtPath(path.replace(/\/[^/]+$/, ''));
+    const name = path.split('/').pop() ?? '';
+    const fh = await dir.getFileHandle(name);
+    return fh.getFile();
   }
 
   async move(src: string, dst: string): Promise<void> {

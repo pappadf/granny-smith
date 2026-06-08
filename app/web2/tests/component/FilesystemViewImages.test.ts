@@ -1,0 +1,310 @@
+import { render, waitFor, fireEvent } from '@testing-library/svelte';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
+
+// Mock the emulator bridge so vfs.list returns canned partition / volume
+// listings — exercises the Filesystem tree's descent into a disk image
+// without a running WASM module. Declared via vi.hoisted so the spy exists
+// before the (hoisted) vi.mock factory runs.
+const { gsEvalMock } = vi.hoisted(() => ({ gsEvalMock: vi.fn() }));
+
+vi.mock('@/bus/emulator', () => ({
+  gsEval: (path: string, args?: unknown[]) => gsEvalMock(path, args),
+  isModuleReady: () => true,
+  getModule: () => null,
+}));
+
+import FilesystemView from '@/components/panel-views/filesystem/FilesystemView.svelte';
+import { setOpfsBackend, MockOpfs } from '@/bus/opfs';
+import type { OpfsEntry } from '@/bus/types';
+import { filesystem, setFsExpanded } from '@/state/filesystem.svelte';
+
+// Backend whose /opfs root holds a disk image, a plain file, and a target
+// folder. Tracks readFile / delete / move so the download and drag tests can
+// assert the flow.
+class ImgRootOpfs extends MockOpfs {
+  readFileCalls: string[] = [];
+  deleteCalls: string[] = [];
+  moveCalls: [string, string][] = [];
+  async list(dir: string): Promise<OpfsEntry[]> {
+    if (dir === '/opfs') {
+      return [
+        { name: 'extracted', path: '/opfs/extracted', kind: 'directory' },
+        { name: 'disk.img', path: '/opfs/disk.img', kind: 'file' },
+        { name: 'notes.txt', path: '/opfs/notes.txt', kind: 'file' },
+      ];
+    }
+    return [];
+  }
+  async readFile(path: string): Promise<Blob> {
+    this.readFileCalls.push(path);
+    return new Blob(['payload']);
+  }
+  async delete(path: string): Promise<void> {
+    this.deleteCalls.push(path);
+  }
+  async move(src: string, dst: string): Promise<void> {
+    this.moveCalls.push([src, dst]);
+  }
+}
+
+const createObjectURL = vi.fn(() => 'blob:mock');
+
+// Minimal stand-in for DataTransfer (jsdom's is incomplete for drag tests).
+function makeDataTransfer(): DataTransfer {
+  const store: Record<string, string> = {};
+  return {
+    setData: (type: string, val: string) => {
+      store[type] = val;
+    },
+    getData: (type: string) => store[type] ?? '',
+    get types() {
+      return Object.keys(store);
+    },
+    files: [] as unknown as FileList,
+    items: [] as unknown as DataTransferItemList,
+    dropEffect: 'none',
+    effectAllowed: 'all',
+    setDragImage: () => {},
+  } as unknown as DataTransfer;
+}
+
+function labels(container: HTMLElement): (string | null)[] {
+  return Array.from(container.querySelectorAll('.label')).map((e) => e.textContent);
+}
+
+function rowFor(container: HTMLElement, label: string): HTMLElement {
+  const row = Array.from(container.querySelectorAll('.tree-row')).find(
+    (r) => r.querySelector('.label')?.textContent === label,
+  );
+  if (!row) throw new Error(`row '${label}' not found`);
+  return row as HTMLElement;
+}
+
+let backend: ImgRootOpfs;
+
+beforeEach(() => {
+  backend = new ImgRootOpfs();
+  setOpfsBackend(backend);
+  filesystem.expanded = { '/opfs': true };
+  filesystem.dragSourcePath = null;
+  filesystem.selectedPath = null;
+  createObjectURL.mockClear();
+  // jsdom lacks these; stub so saveBlob() runs without navigating.
+  (URL as unknown as { createObjectURL: unknown }).createObjectURL = createObjectURL;
+  (URL as unknown as { revokeObjectURL: unknown }).revokeObjectURL = () => {};
+  vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {});
+  gsEvalMock.mockReset();
+  gsEvalMock.mockImplementation(async (path: string, args?: unknown[]) => {
+    if (path === 'storage.cp') return true;
+    if (path !== 'vfs.list') return null;
+    const dir = (args?.[0] as string) ?? '';
+    if (dir === '/opfs/disk.img') {
+      return JSON.stringify([
+        { name: 'partition1', kind: 'directory', size: 0 },
+        { name: 'partition2', kind: 'directory', size: 0 },
+      ]);
+    }
+    if (dir === '/opfs/disk.img/partition1') {
+      return JSON.stringify([
+        { name: 'System Folder', kind: 'directory', size: 0 },
+        { name: 'Read Me', kind: 'file', size: 4522 },
+      ]);
+    }
+    return JSON.stringify([]);
+  });
+});
+
+describe('FilesystemView — disk-image descent', () => {
+  it('expands a disk image into its partitions, then the volume contents', async () => {
+    const { container } = render(FilesystemView);
+    setFsExpanded('/opfs', true);
+    await waitFor(() => expect(labels(container)).toContain('disk.img'));
+
+    // disk.img is expandable (a twistie row), notes.txt is a plain leaf.
+    await fireEvent.click(rowFor(container, 'disk.img'));
+    await waitFor(() => {
+      expect(labels(container)).toContain('partition1');
+      expect(labels(container)).toContain('partition2');
+    });
+    expect(gsEvalMock).toHaveBeenCalledWith('vfs.list', ['/opfs/disk.img']);
+
+    await fireEvent.click(rowFor(container, 'partition1'));
+    await waitFor(() => {
+      expect(labels(container)).toContain('System Folder');
+      expect(labels(container)).toContain('Read Me');
+    });
+    expect(gsEvalMock).toHaveBeenCalledWith('vfs.list', ['/opfs/disk.img/partition1']);
+  });
+
+  it('shows no context menu for a read-only node inside an image', async () => {
+    const { container } = render(FilesystemView);
+    setFsExpanded('/opfs', true);
+    await waitFor(() => expect(labels(container)).toContain('disk.img'));
+    await fireEvent.click(rowFor(container, 'disk.img'));
+    await waitFor(() => expect(labels(container)).toContain('partition1'));
+
+    await fireEvent.contextMenu(rowFor(container, 'partition1'));
+    // Give any menu a chance to mount, then assert none did.
+    await Promise.resolve();
+    expect(document.querySelector('.context-menu')).toBeNull();
+  });
+
+  it('still offers a full context menu on the image file itself', async () => {
+    const { container } = render(FilesystemView);
+    setFsExpanded('/opfs', true);
+    await waitFor(() => expect(labels(container)).toContain('disk.img'));
+
+    await fireEvent.contextMenu(rowFor(container, 'disk.img'));
+    await waitFor(() => expect(document.querySelector('.context-menu')).not.toBeNull());
+    const items = Array.from(document.querySelectorAll('.context-menu .item')).map((e) =>
+      e.textContent?.trim(),
+    );
+    expect(items).toContain('Delete');
+    expect(items).toContain('Rename');
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
+  });
+
+  it('downloads a file inside an image by extracting it via storage.cp', async () => {
+    const { container } = render(FilesystemView);
+    setFsExpanded('/opfs', true);
+    await waitFor(() => expect(labels(container)).toContain('disk.img'));
+    await fireEvent.click(rowFor(container, 'disk.img'));
+    await waitFor(() => expect(labels(container)).toContain('partition1'));
+    await fireEvent.click(rowFor(container, 'partition1'));
+    await waitFor(() => expect(labels(container)).toContain('Read Me'));
+
+    await fireEvent.contextMenu(rowFor(container, 'Read Me'));
+    await waitFor(() => expect(document.querySelector('.context-menu')).not.toBeNull());
+    const download = Array.from(document.querySelectorAll('.context-menu .item')).find(
+      (e) => e.textContent?.trim() === 'Download',
+    ) as HTMLElement;
+    expect(download).toBeTruthy();
+    await fireEvent.click(download);
+
+    await waitFor(() => {
+      const cp = gsEvalMock.mock.calls.find((c) => c[0] === 'storage.cp');
+      expect(cp).toBeTruthy();
+      const [src, scratch] = cp![1] as [string, string];
+      expect(src).toBe('/opfs/disk.img/partition1/Read Me');
+      // The data fork is copied to a scratch path, read, then cleaned up.
+      expect(backend.readFileCalls).toContain(scratch);
+      expect(backend.deleteCalls).toContain(scratch);
+      expect(createObjectURL).toHaveBeenCalled();
+    });
+  });
+
+  it('downloads a plain OPFS file by reading it directly (no storage.cp)', async () => {
+    const { container } = render(FilesystemView);
+    setFsExpanded('/opfs', true);
+    await waitFor(() => expect(labels(container)).toContain('notes.txt'));
+
+    await fireEvent.contextMenu(rowFor(container, 'notes.txt'));
+    await waitFor(() => expect(document.querySelector('.context-menu')).not.toBeNull());
+    const download = Array.from(document.querySelectorAll('.context-menu .item')).find(
+      (e) => e.textContent?.trim() === 'Download',
+    ) as HTMLElement;
+    expect(download).toBeTruthy();
+    await fireEvent.click(download);
+
+    await waitFor(() => {
+      expect(backend.readFileCalls).toContain('/opfs/notes.txt');
+      expect(createObjectURL).toHaveBeenCalled();
+    });
+    expect(gsEvalMock.mock.calls.find((c) => c[0] === 'storage.cp')).toBeUndefined();
+  });
+
+  it('copies a file OUT of an image when dragged to an OPFS folder', async () => {
+    const { container } = render(FilesystemView);
+    setFsExpanded('/opfs', true);
+    await waitFor(() => expect(labels(container)).toContain('disk.img'));
+    await fireEvent.click(rowFor(container, 'disk.img'));
+    await waitFor(() => expect(labels(container)).toContain('partition1'));
+    await fireEvent.click(rowFor(container, 'partition1'));
+    await waitFor(() => expect(labels(container)).toContain('Read Me'));
+
+    const dt = makeDataTransfer();
+    await fireEvent.dragStart(rowFor(container, 'Read Me'), { dataTransfer: dt });
+    // A read-only image source copies (it can't be moved out).
+    expect(dt.effectAllowed).toBe('copy');
+    await fireEvent.drop(rowFor(container, 'extracted'), { dataTransfer: dt });
+
+    await waitFor(() => {
+      const cp = gsEvalMock.mock.calls.find((c) => c[0] === 'storage.cp');
+      expect(cp).toBeTruthy();
+      expect(cp![1]).toEqual(['/opfs/disk.img/partition1/Read Me', '/opfs/extracted/Read Me']);
+    });
+    // The source is never deleted — the image is read-only.
+    expect(backend.deleteCalls).toHaveLength(0);
+  });
+
+  it('copies a folder OUT of an image recursively (-r)', async () => {
+    const { container } = render(FilesystemView);
+    setFsExpanded('/opfs', true);
+    await waitFor(() => expect(labels(container)).toContain('disk.img'));
+    await fireEvent.click(rowFor(container, 'disk.img'));
+    await waitFor(() => expect(labels(container)).toContain('partition1'));
+    await fireEvent.click(rowFor(container, 'partition1'));
+    await waitFor(() => expect(labels(container)).toContain('System Folder'));
+
+    const dt = makeDataTransfer();
+    await fireEvent.dragStart(rowFor(container, 'System Folder'), { dataTransfer: dt });
+    await fireEvent.drop(rowFor(container, 'extracted'), { dataTransfer: dt });
+
+    await waitFor(() => {
+      const cp = gsEvalMock.mock.calls.find((c) => c[0] === 'storage.cp');
+      expect(cp).toBeTruthy();
+      expect(cp![1]).toEqual([
+        '-r',
+        '/opfs/disk.img/partition1/System Folder',
+        '/opfs/extracted/System Folder',
+      ]);
+    });
+  });
+
+  it('moves (not copies) a plain OPFS file dragged within OPFS', async () => {
+    const { container } = render(FilesystemView);
+    setFsExpanded('/opfs', true);
+    await waitFor(() => expect(labels(container)).toContain('notes.txt'));
+
+    const dt = makeDataTransfer();
+    await fireEvent.dragStart(rowFor(container, 'notes.txt'), { dataTransfer: dt });
+    expect(dt.effectAllowed).toBe('move');
+    await fireEvent.drop(rowFor(container, 'extracted'), { dataTransfer: dt });
+
+    await waitFor(() => {
+      expect(backend.moveCalls).toContainEqual(['/opfs/notes.txt', '/opfs/extracted/notes.txt']);
+    });
+    expect(gsEvalMock.mock.calls.find((c) => c[0] === 'storage.cp')).toBeUndefined();
+  });
+
+  // Regression: dragOver must set a dropEffect compatible with the dragStart
+  // effectAllowed, or the browser silently rejects the drop. The source path
+  // here ("Read Me") contains a space, which previously got mangled when the
+  // path was re-derived from the space-joined key, flipping copy → move.
+  it('sets dropEffect=copy when dragging a spaced in-image file over OPFS', async () => {
+    const { container } = render(FilesystemView);
+    setFsExpanded('/opfs', true);
+    await waitFor(() => expect(labels(container)).toContain('disk.img'));
+    await fireEvent.click(rowFor(container, 'disk.img'));
+    await waitFor(() => expect(labels(container)).toContain('partition1'));
+    await fireEvent.click(rowFor(container, 'partition1'));
+    await waitFor(() => expect(labels(container)).toContain('Read Me'));
+
+    const dt = makeDataTransfer();
+    await fireEvent.dragStart(rowFor(container, 'Read Me'), { dataTransfer: dt });
+    expect(dt.effectAllowed).toBe('copy');
+    await fireEvent.dragOver(rowFor(container, 'extracted'), { dataTransfer: dt });
+    expect(dt.dropEffect).toBe('copy');
+  });
+
+  it('sets dropEffect=move when dragging an OPFS file over an OPFS folder', async () => {
+    const { container } = render(FilesystemView);
+    setFsExpanded('/opfs', true);
+    await waitFor(() => expect(labels(container)).toContain('notes.txt'));
+
+    const dt = makeDataTransfer();
+    await fireEvent.dragStart(rowFor(container, 'notes.txt'), { dataTransfer: dt });
+    await fireEvent.dragOver(rowFor(container, 'extracted'), { dataTransfer: dt });
+    expect(dt.dropEffect).toBe('move');
+  });
+});

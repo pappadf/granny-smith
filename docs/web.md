@@ -219,7 +219,12 @@ through [`app/web2/src/bus/upload.ts`](../app/web2/src/bus/upload.ts):
    floppy / HD / CD / ROM / VROM slot calls
    `pickAndUploadAs(mediaId)` →
    `acceptFilesAsCategory(files, mediaId)`. Strict per-category
-   validation; rejects mismatched files with a toast.
+   validation; rejects mismatched files with a toast. The floppy / HD
+   slots also offer "Create blank image…", which opens
+   [`CreateImageDialog.svelte`](../app/web2/src/components/display/CreateImageDialog.svelte)
+   and creates a blank image directly in OPFS via `storage.fd_create`
+   (800 KB / 1.4 MB) or `storage.hd_create` (size from
+   `scsi.hd_models`).
 2. **Drag-and-drop onto the Display** —
    [`DropOverlay.svelte`](../app/web2/src/components/display/DropOverlay.svelte)
    captures drops, calls `processDataTransfer` →

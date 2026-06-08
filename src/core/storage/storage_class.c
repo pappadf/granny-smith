@@ -334,6 +334,25 @@ static value_t storage_method_hd_create(struct object *self, const member_t *m, 
     return val_bool(shell_hd_argv(targc, targv) == 0);
 }
 
+// `storage.fd_create(path, [high_density])` — create a blank (unformatted)
+// floppy image: 800 KB by default, 1.4 MB when high_density is true. Unlike
+// the `fd create` shell command this does NOT insert the disk into a drive —
+// the New Machine dialog persists the file and lets the user select it.
+static value_t storage_method_fd_create(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)self;
+    (void)m;
+    const char *path = argv[0].s;
+    if (!path || !*path)
+        return val_err("storage.fd_create: empty path");
+    bool high_density = (argc >= 2 && argv[1].kind == V_BOOL) ? argv[1].b : false;
+    int rc = image_create_blank_floppy(path, false, high_density);
+    if (rc == -2)
+        return val_err("storage.fd_create: file already exists: %s", path);
+    if (rc != 0)
+        return val_err("storage.fd_create: failed to create blank floppy '%s'", path);
+    return val_bool(true);
+}
+
 // `storage.hd_download(src, dst)` — export a hard disk image (base + delta).
 static value_t storage_method_hd_download(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)self;
@@ -517,6 +536,13 @@ static const arg_decl_t storage_hd_create_args[] = {
     {.name = "path", .kind = V_STRING, .doc = "Image output path"                                   },
     {.name = "size", .kind = V_NONE,   .doc = "Size string (e.g. \"HD20SC\", \"40M\") or byte count"},
 };
+static const arg_decl_t storage_fd_create_args[] = {
+    {.name = "path", .kind = V_STRING, .doc = "Image output path"},
+    {.name = "high_density",
+     .kind = V_BOOL,
+     .validation_flags = OBJ_ARG_OPTIONAL,
+     .doc = "true = 1.4 MB, false (default) = 800 KB"},
+};
 static const arg_decl_t storage_hd_download_args[] = {
     {.name = "src", .kind = V_STRING, .doc = "Mounted HD image path"},
     {.name = "dst", .kind = V_STRING, .doc = "Output flat-file path"},
@@ -552,6 +578,10 @@ static const member_t storage_members[] = {
      .name = "hd_create",
      .doc = "Create a blank SCSI HD image",
      .method = {.args = storage_hd_create_args, .nargs = 2, .result = V_BOOL, .fn = storage_method_hd_create}    },
+    {.kind = M_METHOD,
+     .name = "fd_create",
+     .doc = "Create a blank floppy image (800 KB, or 1.4 MB when high_density)",
+     .method = {.args = storage_fd_create_args, .nargs = 2, .result = V_BOOL, .fn = storage_method_fd_create}    },
     {.kind = M_METHOD,
      .name = "hd_download",
      .doc = "Export a hard-disk image (base + delta) to a flat file",

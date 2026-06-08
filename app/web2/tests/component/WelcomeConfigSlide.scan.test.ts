@@ -91,6 +91,9 @@ class StubOpfs implements OpfsBackend {
   async writeJson(): Promise<void> {
     /* no-op */
   }
+  async readFile(): Promise<Blob> {
+    return new Blob([]);
+  }
   async move(): Promise<void> {
     /* no-op */
   }
