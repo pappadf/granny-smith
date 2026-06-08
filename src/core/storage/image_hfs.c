@@ -13,6 +13,7 @@
 
 #include "image_hfs.h"
 #include "image.h"
+#include "macroman.h"
 #include "storage.h"
 
 #include <errno.h>
@@ -60,56 +61,8 @@ static uint32_t be32(const uint8_t *p) {
     return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) | ((uint32_t)p[2] << 8) | (uint32_t)p[3];
 }
 
-// ---- MacRoman -> UTF-8 transcoder -----------------------------------------
-
-// MacRoman codepoints for 0x80..0xFF, from Apple's legacy encoding table.
-// Stored as Unicode code points; converted on demand to UTF-8.
-static const uint16_t macroman_hi[128] = {
-    0x00C4, 0x00C5, 0x00C7, 0x00C9, 0x00D1, 0x00D6, 0x00DC, 0x00E1, 0x00E0, 0x00E2, 0x00E4, 0x00E3, 0x00E5,
-    0x00E7, 0x00E9, 0x00E8, 0x00EA, 0x00EB, 0x00ED, 0x00EC, 0x00EE, 0x00EF, 0x00F1, 0x00F3, 0x00F2, 0x00F4,
-    0x00F6, 0x00F5, 0x00FA, 0x00F9, 0x00FB, 0x00FC, 0x2020, 0x00B0, 0x00A2, 0x00A3, 0x00A7, 0x2022, 0x00B6,
-    0x00DF, 0x00AE, 0x00A9, 0x2122, 0x00B4, 0x00A8, 0x2260, 0x00C6, 0x00D8, 0x221E, 0x00B1, 0x2264, 0x2265,
-    0x00A5, 0x00B5, 0x2202, 0x2211, 0x220F, 0x03C0, 0x222B, 0x00AA, 0x00BA, 0x03A9, 0x00E6, 0x00F8, 0x00BF,
-    0x00A1, 0x00AC, 0x221A, 0x0192, 0x2248, 0x2206, 0x00AB, 0x00BB, 0x2026, 0x00A0, 0x00C0, 0x00C3, 0x00D5,
-    0x0152, 0x0153, 0x2013, 0x2014, 0x201C, 0x201D, 0x2018, 0x2019, 0x00F7, 0x25CA, 0x00FF, 0x0178, 0x2044,
-    0x20AC, 0x2039, 0x203A, 0xFB01, 0xFB02, 0x2021, 0x00B7, 0x201A, 0x201E, 0x2030, 0x00C2, 0x00CA, 0x00C1,
-    0x00CB, 0x00C8, 0x00CD, 0x00CE, 0x00CF, 0x00CC, 0x00D3, 0x00D4, 0xF8FF, 0x00D2, 0x00DA, 0x00DB, 0x00D9,
-    0x0131, 0x02C6, 0x02DC, 0x00AF, 0x02D8, 0x02D9, 0x02DA, 0x00B8, 0x02DD, 0x02DB, 0x02C7,
-};
-
-// Transcode a MacRoman pstring-style buffer (raw bytes + length) into UTF-8
-// into `dst` of capacity `dst_cap`.  Always NUL-terminates.  Replaces
-// unsupported bytes with '?'.
-static void macroman_to_utf8(const uint8_t *src, size_t src_len, char *dst, size_t dst_cap) {
-    if (dst_cap == 0)
-        return;
-    size_t o = 0;
-    for (size_t i = 0; i < src_len && o + 1 < dst_cap; i++) {
-        uint8_t c = src[i];
-        uint32_t cp;
-        if (c < 0x80) {
-            cp = c;
-        } else {
-            cp = macroman_hi[c - 0x80];
-        }
-        // Encode codepoint as UTF-8.
-        if (cp < 0x80) {
-            dst[o++] = (char)cp;
-        } else if (cp < 0x800) {
-            if (o + 2 >= dst_cap)
-                break;
-            dst[o++] = (char)(0xC0 | (cp >> 6));
-            dst[o++] = (char)(0x80 | (cp & 0x3F));
-        } else {
-            if (o + 3 >= dst_cap)
-                break;
-            dst[o++] = (char)(0xE0 | (cp >> 12));
-            dst[o++] = (char)(0x80 | ((cp >> 6) & 0x3F));
-            dst[o++] = (char)(0x80 | (cp & 0x3F));
-        }
-    }
-    dst[o] = '\0';
-}
+// MacRoman -> UTF-8 transcoder lives in macroman.{c,h} so future
+// consumers can share the table without depending on image_hfs.c.
 
 // ---- HFS on-disk offsets --------------------------------------------------
 
@@ -121,6 +74,8 @@ static void macroman_to_utf8(const uint8_t *src, size_t src_len, char *dst, size
 #define MDB_OFF_AL_BLK_SIZ 20
 #define MDB_OFF_AL_BL_ST   28
 #define MDB_OFF_VN         36 // pstring up to 28 bytes
+#define MDB_OFF_XT_FL_SIZE 130 // extents overflow file size (u32)
+#define MDB_OFF_XT_EXT_REC 134 // 3 x (startABlk:2, numABlks:2) for the EO file
 #define MDB_OFF_CT_FL_SIZE 146
 #define MDB_OFF_CT_EXT_REC 150 // 3 x (startABlk:2, numABlks:2)
 
@@ -178,6 +133,23 @@ typedef struct cat_rec {
     uint8_t finder_info[32];
 } cat_rec_t;
 
+// One leaf record from the Extents Overflow file.  Each one supplies an
+// additional 3 extents for some (fork, file) past its inline extents.
+// HFS specifies that the EO file is keyed by (forkType, fileNumber,
+// startBlock) where startBlock is the *logical* block number within the
+// fork where this set of extents begins.  Multiple EO records per fork
+// chain together: their startBlock values cover [startBlock, startBlock
+// + sum(num_ablocks across the 3 extents)).
+typedef struct hfs_xt_rec {
+    uint8_t fork_type; // 0x00 = data fork, 0xFF = resource fork
+    uint32_t file_id; // CNID of the owning file
+    uint16_t start_block; // logical allocation-block index within the fork
+    struct {
+        uint32_t start_ablock; // allocation block on volume
+        uint32_t num_ablocks;
+    } extents[HFS_INLINE_EXTENTS];
+} hfs_xt_rec_t;
+
 struct hfs_volume {
     image_t *img;
     uint64_t partition_off; // byte offset of the partition inside the image
@@ -187,6 +159,14 @@ struct hfs_volume {
     char volume_name[128];
     cat_rec_t *records;
     size_t n_records;
+    // Extents Overflow snapshot.  Loaded eagerly at hfs_open time using
+    // the EO file's own inline extents (drXTExtRec in the MDB); the EO
+    // file is small enough in practice (usually < 8 KB) that walking it
+    // linearly per lookup is fine.  When the EO file *itself* is
+    // fragmented beyond 3 extents we fall back to whatever we managed to
+    // load — same compromise as the catalog file.
+    hfs_xt_rec_t *xt_records;
+    size_t n_xt_records;
 };
 
 struct hfs_dir_iter {
@@ -198,8 +178,14 @@ struct hfs_dir_iter {
 // ---- Helpers --------------------------------------------------------------
 
 // Populate a fork descriptor from a file record's length + extents field.
-static void parse_fork(const uint8_t *rec_data, size_t logical_off, size_t ext_off, hfs_fork_t *out) {
+// `file_id` and `fork_type` are the inputs to the Extents Overflow file
+// lookup that hfs_read_fork performs when a request spills past the
+// inline extents.
+static void parse_fork(const uint8_t *rec_data, size_t logical_off, size_t ext_off, uint32_t file_id, uint8_t fork_type,
+                       hfs_fork_t *out) {
     out->logical_size = be32(rec_data + logical_off);
+    out->file_id = file_id;
+    out->fork_type = fork_type;
     for (int i = 0; i < HFS_INLINE_EXTENTS; i++) {
         out->extents[i].start_ablock = be16(rec_data + ext_off + i * 4);
         out->extents[i].num_ablocks = be16(rec_data + ext_off + i * 4 + 2);
@@ -324,8 +310,10 @@ static int parse_leaf_node(const uint8_t *node, size_t node_size, cat_rec_t **ds
             r->cnid = be32(rec_data + FOLDER_OFF_DIRID);
         } else if (type == CAT_REC_FILE && data_size >= 98) {
             r->cnid = be32(rec_data + FILE_OFF_FILEID);
-            parse_fork(rec_data, FILE_OFF_DATA_LGLEN, FILE_OFF_DATA_EXT, &r->data_fork);
-            parse_fork(rec_data, FILE_OFF_RSRC_LGLEN, FILE_OFF_RSRC_EXT, &r->rsrc_fork);
+            // 0x00 = data fork, 0xFF = resource fork (HFS convention,
+            // matches the EO-file key's forkType byte).
+            parse_fork(rec_data, FILE_OFF_DATA_LGLEN, FILE_OFF_DATA_EXT, r->cnid, 0x00, &r->data_fork);
+            parse_fork(rec_data, FILE_OFF_RSRC_LGLEN, FILE_OFF_RSRC_EXT, r->cnid, 0xFF, &r->rsrc_fork);
             // FInfo (16 bytes) + FXInfo (16 bytes) form a contiguous 32-byte
             // Finder info block in the on-disk record.
             memcpy(r->finder_info, rec_data + FILE_OFF_FINFO, 16);
@@ -335,6 +323,166 @@ static int parse_leaf_node(const uint8_t *node, size_t node_size, cat_rec_t **ds
         }
     }
     return 0;
+}
+
+// ---- Extents Overflow file --------------------------------------------------
+//
+// Loads the EO file's three inline extents into memory at hfs_open time
+// (the same compromise as the catalog file — the EO file's own
+// fragmentation past 3 extents falls through unreached, but in practice
+// the EO file is tiny).  Walks its leaf chain and builds a flat sorted
+// list of (forkType, fileID, startBlock, extents[3]) records that
+// hfs_read_fork can binary-search when a request spills past a fork's
+// inline extents.
+
+// Read up to 3 extents of the extents-overflow file into a freshly
+// allocated buffer.  Behaves like load_catalog_file but reads
+// drXTFlSize / drXTExtRec instead.  Returns 0 on success, negated
+// errno on failure; caller frees *out_buf.  If the file is empty
+// (drXTFlSize == 0) this returns 0 with *out_size == 0.
+static int load_xt_file(hfs_volume_t *vol, const uint8_t *mdb, uint8_t **out_buf, size_t *out_size) {
+    uint32_t xt_size = be32(mdb + MDB_OFF_XT_FL_SIZE);
+    *out_buf = NULL;
+    *out_size = 0;
+    if (xt_size == 0)
+        return 0;
+    if (xt_size > 8 * 1024 * 1024)
+        return -EINVAL; // sanity cap
+    uint8_t *buf = malloc(xt_size);
+    if (!buf)
+        return -ENOMEM;
+    uint64_t filled = 0;
+    for (int i = 0; i < HFS_INLINE_EXTENTS && filled < xt_size; i++) {
+        uint32_t start = be16(mdb + MDB_OFF_XT_EXT_REC + i * 4);
+        uint32_t count = be16(mdb + MDB_OFF_XT_EXT_REC + i * 4 + 2);
+        if (count == 0)
+            continue;
+        uint64_t ext_bytes = (uint64_t)count * vol->alloc_block_size;
+        uint64_t byte_off = vol->alloc_block0_byte_off + (uint64_t)start * vol->alloc_block_size;
+        uint64_t take = xt_size - filled;
+        if (take > ext_bytes)
+            take = ext_bytes;
+        if (byte_off + take > vol->partition_size)
+            break;
+        int rc = disk_read_bytes(vol->img, vol->partition_off + byte_off, buf + filled, (size_t)take);
+        if (rc < 0) {
+            free(buf);
+            return rc;
+        }
+        filled += take;
+    }
+    if (filled == 0) {
+        free(buf);
+        return 0; // empty after all (corrupt header)
+    }
+    *out_buf = buf;
+    *out_size = (size_t)filled;
+    return 0;
+}
+
+// Parse one EO leaf node into the volume's xt_records list.  Each record
+// in the EO B-tree has:
+//   key: keyLen(1) + forkType(1) + reserved(1?) + fileNumber(4) + startBlock(2)
+//   data: 3 × (startBlock(2) + numBlocks(2))
+// Inside Macintosh: Files §2-72 documents keyLen = 7 (the byte after it
+// is the forkType; reserved byte may or may not be present — in HFS the
+// "reserved" byte is the high byte of the keyLen field, so keyLen of 7
+// implies a 7-byte key body of forkType(1) + fileNumber(4) + startBlock(2)).
+static int parse_xt_leaf_node(const uint8_t *node, size_t node_size, hfs_xt_rec_t **dst, size_t *dst_n,
+                              size_t *dst_cap) {
+    uint16_t nrecs = be16(node + NODE_OFF_NRECS);
+    if (node_size < 14 + (size_t)(nrecs + 1) * 2)
+        return -EINVAL;
+    for (uint16_t i = 0; i < nrecs; i++) {
+        uint16_t off = be16(node + node_size - (i + 1) * 2);
+        uint16_t next = be16(node + node_size - (i + 2) * 2);
+        if (off < 14 || next > node_size || next <= off)
+            continue;
+        size_t rec_size = next - off;
+        const uint8_t *rec = node + off;
+        uint8_t key_len = rec[0];
+        // EO key is exactly 7 bytes: forkType + fileNumber + startBlock.
+        if (key_len != 7)
+            continue;
+        // Key body starts at rec+1.
+        uint8_t fork_type = rec[1];
+        uint32_t file_id = be32(rec + 2);
+        uint16_t start_block = be16(rec + 6);
+        // Key storage rounds up to even.
+        size_t key_bytes = 1 + key_len; // == 8, already even
+        if (key_bytes & 1)
+            key_bytes++;
+        if (key_bytes + 12 > rec_size)
+            continue; // need 12 bytes of extent data
+        const uint8_t *rec_data = rec + key_bytes;
+
+        if (*dst_n == *dst_cap) {
+            size_t ncap = (*dst_cap == 0) ? 32 : *dst_cap * 2;
+            hfs_xt_rec_t *nb = realloc(*dst, ncap * sizeof(hfs_xt_rec_t));
+            if (!nb)
+                return -ENOMEM;
+            *dst = nb;
+            *dst_cap = ncap;
+        }
+        hfs_xt_rec_t *r = &(*dst)[(*dst_n)++];
+        memset(r, 0, sizeof(*r));
+        r->fork_type = fork_type;
+        r->file_id = file_id;
+        r->start_block = start_block;
+        for (int e = 0; e < HFS_INLINE_EXTENTS; e++) {
+            r->extents[e].start_ablock = be16(rec_data + e * 4);
+            r->extents[e].num_ablocks = be16(rec_data + e * 4 + 2);
+        }
+    }
+    return 0;
+}
+
+// Walk the EO B-tree's leaf chain and populate vol->xt_records.
+static int collect_xt_records(hfs_volume_t *vol, const uint8_t *xt_buf, size_t xt_size, size_t node_size,
+                              uint32_t first_leaf) {
+    hfs_xt_rec_t *dst = NULL;
+    size_t n = 0, cap = 0;
+    uint32_t node_idx = first_leaf;
+    size_t max_nodes = node_size ? (xt_size / node_size) + 1 : 0;
+    size_t visited = 0;
+    while (node_idx != 0 && visited++ < max_nodes) {
+        uint64_t off = (uint64_t)node_idx * node_size;
+        if (off + node_size > xt_size)
+            break;
+        const uint8_t *node = xt_buf + off;
+        uint8_t kind = node[NODE_OFF_KIND];
+        if (kind != NODE_KIND_LEAF)
+            break;
+        int rc = parse_xt_leaf_node(node, node_size, &dst, &n, &cap);
+        if (rc < 0) {
+            free(dst);
+            return rc;
+        }
+        node_idx = be32(node + NODE_OFF_F_LINK);
+    }
+    vol->xt_records = dst;
+    vol->n_xt_records = n;
+    return 0;
+}
+
+// Find the EO record that covers the requested logical-block offset for
+// a (forkType, fileID).  Multiple EO records can chain together; the
+// matching one is the highest-start_block record with start_block <=
+// `need_block`.  Returns NULL when no overflow extent covers the
+// request (the caller falls through to zero-padding).
+static const hfs_xt_rec_t *find_xt_record(const hfs_volume_t *vol, uint8_t fork_type, uint32_t file_id,
+                                          uint32_t need_block) {
+    const hfs_xt_rec_t *best = NULL;
+    for (size_t i = 0; i < vol->n_xt_records; i++) {
+        const hfs_xt_rec_t *r = &vol->xt_records[i];
+        if (r->fork_type != fork_type || r->file_id != file_id)
+            continue;
+        if (r->start_block > need_block)
+            continue;
+        if (!best || r->start_block > best->start_block)
+            best = r;
+    }
+    return best;
 }
 
 // Walk the catalog B-tree's leaf chain starting from firstLeaf.
@@ -373,14 +521,25 @@ static int collect_catalog_records(hfs_volume_t *vol, const uint8_t *cat_buf, si
 
 // HFS filenames compare case-insensitively (the native comparison folds
 // via the Macintosh Roman case table; ASCII-only volumes see plain toupper).
+// Fold a single byte for case-insensitive HFS comparison.  Also maps
+// '/' (HFS-legal in filenames) and ':' (Unix-side stand-in we expose
+// via the VFS) to the same canonical value so a file named
+// "MacTest cx/ci" on disk can be addressed as ".../MacTest cx:ci"
+// through Unix-style "/"-separated paths.  See `fill_dirent` for the
+// matching outbound swap.
+static uint8_t hfs_fold_byte(uint8_t c) {
+    if (c >= 'a' && c <= 'z')
+        c -= 32;
+    if (c == '/' || c == ':')
+        c = ':';
+    return c;
+}
+
 static int ci_compare_name(const uint8_t *a, size_t la, const uint8_t *b, size_t lb) {
     size_t n = la < lb ? la : lb;
     for (size_t i = 0; i < n; i++) {
-        uint8_t ca = a[i], cb = b[i];
-        if (ca >= 'a' && ca <= 'z')
-            ca -= 32;
-        if (cb >= 'a' && cb <= 'z')
-            cb -= 32;
+        uint8_t ca = hfs_fold_byte(a[i]);
+        uint8_t cb = hfs_fold_byte(b[i]);
         if (ca != cb)
             return (int)ca - (int)cb;
     }
@@ -411,13 +570,13 @@ static bool name_matches_utf8(const uint8_t *raw, size_t raw_len, const char *ut
     macroman_to_utf8(raw, raw_len, tmp, sizeof(tmp));
     if (strlen(tmp) != ul)
         return false;
-    // Case-insensitive ASCII fold on both sides (good enough for v1).
+    // Case-insensitive ASCII fold on both sides (good enough for v1),
+    // with the HFS↔Unix '/' ↔ ':' equivalence applied symmetrically so
+    // a name containing a slash on disk can be matched via a colon-
+    // separated path component on the way in.
     for (size_t i = 0; i < ul; i++) {
-        char a = tmp[i], b = utf8[i];
-        if (a >= 'a' && a <= 'z')
-            a -= 32;
-        if (b >= 'a' && b <= 'z')
-            b -= 32;
+        uint8_t a = hfs_fold_byte((uint8_t)tmp[i]);
+        uint8_t b = hfs_fold_byte((uint8_t)utf8[i]);
         if (a != b)
             return false;
     }
@@ -428,6 +587,16 @@ static bool name_matches_utf8(const uint8_t *raw, size_t raw_len, const char *ut
 static void fill_dirent(const cat_rec_t *r, hfs_dirent_t *out) {
     memset(out, 0, sizeof(*out));
     macroman_to_utf8(r->name_raw, r->name_len, out->name, sizeof(out->name));
+    // HFS↔Unix path-separator swap: HFS allows '/' in filenames and
+    // uses ':' as the on-disk separator.  Our VFS uses '/' as the
+    // path separator, so we expose any '/' bytes in HFS names as ':'
+    // instead — symmetric with the comparison fold in hfs_fold_byte().
+    // Callers that need the literal on-disk name can pull it from the
+    // raw record; this is the VFS-facing view.
+    for (char *p = out->name; *p; p++) {
+        if (*p == '/')
+            *p = ':';
+    }
     out->is_dir = (r->record_type == CAT_REC_FOLDER);
     out->cnid = r->cnid;
     out->valence = r->valence;
@@ -510,6 +679,26 @@ hfs_volume_t *hfs_open(image_t *img, uint64_t partition_byte_offset, uint64_t pa
         free(vol);
         return NULL;
     }
+
+    // Extents Overflow file — populates vol->xt_records for any fork
+    // that spills past its 3 inline extents.  Empty / missing EO file is
+    // not an error; many small volumes have nothing in it.  We tolerate
+    // partial reads of the EO file itself for the same reason we
+    // tolerate partial reads of the catalog: realistic volumes keep
+    // these special files small enough to fit in their inline extents.
+    uint8_t *xt = NULL;
+    size_t xt_size = 0;
+    if (load_xt_file(vol, mdb, &xt, &xt_size) == 0 && xt != NULL && xt_size >= 14 + HDR_OFF_NODE_SIZE + 2) {
+        size_t xt_node_size = be16(xt + 14 + HDR_OFF_NODE_SIZE);
+        if (xt_node_size > 0 && xt_node_size <= xt_size) {
+            uint32_t xt_first_leaf = be32(xt + 14 + HDR_OFF_FIRST_LEAF);
+            if (collect_xt_records(vol, xt, xt_size, xt_node_size, xt_first_leaf) < 0) {
+                // Non-fatal — fall through with whatever (if anything)
+                // we did manage to collect.
+            }
+        }
+    }
+    free(xt);
     return vol;
 }
 
@@ -517,6 +706,7 @@ void hfs_close(hfs_volume_t *vol) {
     if (!vol)
         return;
     free(vol->records);
+    free(vol->xt_records);
     free(vol);
 }
 
@@ -617,33 +807,85 @@ int hfs_read_fork(hfs_volume_t *vol, const hfs_fork_t *fork, uint64_t off, void 
     uint8_t *dst = buf;
     size_t done = 0;
     uint64_t cursor = 0; // logical byte offset at start of extent
+    uint32_t blocks_consumed = 0; // logical allocation blocks consumed so far
 
+    // Helper closure: read from one extent if it overlaps the request,
+    // updating `done` and `cursor`/`blocks_consumed`.  Returns 0 on
+    // success, negated errno on read failure.
+#define APPLY_EXTENT(START, COUNT)                                                                                     \
+    do {                                                                                                               \
+        uint64_t ext_bytes = (uint64_t)(COUNT) * vol->alloc_block_size;                                                \
+        if (ext_bytes != 0) {                                                                                          \
+            uint64_t ext_end = cursor + ext_bytes;                                                                     \
+            if (off + done < ext_end) {                                                                                \
+                uint64_t rel = (off + done > cursor) ? (off + done - cursor) : 0;                                      \
+                uint64_t take = ext_bytes - rel;                                                                       \
+                if (take > n - done)                                                                                   \
+                    take = n - done;                                                                                   \
+                uint64_t ext_start_byte = vol->alloc_block0_byte_off + (uint64_t)(START) * vol->alloc_block_size;      \
+                int _rc = read_partition(vol, ext_start_byte + rel, dst + done, (size_t)take);                         \
+                if (_rc < 0)                                                                                           \
+                    return _rc;                                                                                        \
+                done += (size_t)take;                                                                                  \
+            }                                                                                                          \
+            cursor = ext_end;                                                                                          \
+            blocks_consumed += (uint32_t)(COUNT);                                                                      \
+        }                                                                                                              \
+    } while (0)
+
+    // 1) Inline extents from the catalog record.
     for (int i = 0; i < HFS_INLINE_EXTENTS && done < n; i++) {
-        uint64_t ext_bytes = (uint64_t)fork->extents[i].num_ablocks * vol->alloc_block_size;
-        if (ext_bytes == 0)
-            continue;
-        uint64_t ext_end = cursor + ext_bytes;
-        if (off + done >= ext_end) {
-            cursor = ext_end;
-            continue; // request starts past this extent
-        }
-        // Overlap with this extent.
-        uint64_t rel = (off + done > cursor) ? (off + done - cursor) : 0;
-        uint64_t take = ext_bytes - rel;
-        if (take > n - done)
-            take = n - done;
-        uint64_t ext_start_byte =
-            vol->alloc_block0_byte_off + (uint64_t)fork->extents[i].start_ablock * vol->alloc_block_size;
-        int rc = read_partition(vol, ext_start_byte + rel, dst + done, (size_t)take);
-        if (rc < 0)
-            return rc;
-        done += (size_t)take;
-        cursor = ext_end;
+        APPLY_EXTENT(fork->extents[i].start_ablock, fork->extents[i].num_ablocks);
     }
 
-    // If the fork extends beyond the inline extents (overflow file), the
-    // trailing bytes fall through as zero.  v1 does not consult the extent
-    // overflow B-tree; see header comment.
+    // 2) Extents Overflow file — repeatedly look up the next EO record
+    // for (fork_type, file_id) whose start_block matches our current
+    // logical position.  Each EO record supplies 3 more extents; chain
+    // them together until either the request is satisfied or no more
+    // records cover us (in which case the tail zero-fills, same as the
+    // pre-EO behaviour).
+    while (done < n && fork->file_id != 0) {
+        const hfs_xt_rec_t *xt = find_xt_record(vol, fork->fork_type, fork->file_id, blocks_consumed);
+        if (!xt)
+            break;
+        // Skip past any blocks within this EO record that lie before
+        // our logical cursor (defensive — find_xt_record returns the
+        // record whose start_block <= blocks_consumed, so the first
+        // extent in the record covers blocks [start_block, start_block
+        // + extents[0].num_ablocks), and we may need to skip some of
+        // those if the previous record's extents stopped mid-coverage).
+        uint32_t rec_block = xt->start_block;
+        if (rec_block > blocks_consumed)
+            break; // gap — should not happen on a well-formed volume
+        size_t inflight_done = done;
+        for (int i = 0; i < HFS_INLINE_EXTENTS && done < n; i++) {
+            uint32_t ext_count = xt->extents[i].num_ablocks;
+            if (ext_count == 0)
+                continue;
+            uint32_t ext_start_block = xt->extents[i].start_ablock;
+            if (rec_block + ext_count <= blocks_consumed) {
+                // Already past this extent (shouldn't really happen
+                // since find_xt_record picks the latest applicable
+                // record, but be defensive).
+                rec_block += ext_count;
+                continue;
+            }
+            uint32_t skip_blocks = (blocks_consumed > rec_block) ? (blocks_consumed - rec_block) : 0;
+            APPLY_EXTENT(ext_start_block + skip_blocks, ext_count - skip_blocks);
+            rec_block += ext_count;
+        }
+        if (done == inflight_done) {
+            // Didn't make any forward progress; bail to avoid infinite loop
+            // on a malformed EO record.
+            break;
+        }
+    }
+
+#undef APPLY_EXTENT
+
+    // Whatever isn't covered by inline + overflow extents (typically:
+    // the EO file itself is fragmented past 3 extents, or the volume
+    // is corrupt) zero-pads to satisfy the logical_size contract.
     if (done < n)
         memset(dst + done, 0, n - done);
     if (nread)

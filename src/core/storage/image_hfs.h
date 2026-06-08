@@ -35,9 +35,15 @@
 // Max extents captured inline in a catalog file record.  HFS uses exactly 3.
 #define HFS_INLINE_EXTENTS 3
 
-// Fork descriptor extracted from a catalog file record.
+// Fork descriptor extracted from a catalog file record.  `file_id` and
+// `fork_type` are needed so hfs_read_fork can look up the rest of a
+// fragmented fork's extents in the Extents Overflow file when the
+// inline 3 don't cover the whole logical_size.  fork_type uses the HFS
+// convention: 0x00 = data fork, 0xFF = resource fork.
 typedef struct hfs_fork {
     uint64_t logical_size;
+    uint32_t file_id; // CNID of the owning file (0 for ad-hoc forks)
+    uint8_t fork_type; // 0x00 = data, 0xFF = resource
     struct {
         uint32_t start_ablock; // allocation block number within volume
         uint32_t num_ablocks;
