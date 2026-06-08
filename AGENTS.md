@@ -49,6 +49,10 @@ Emulator modules (e.g., scsi, cpu, via, scc, rtc) have `.c`/`.h` files in `src/c
 
 ## Building and Testing
 
+> ⛔️⛔️⛔️ **READ "TEST OUTPUT CAPTURE — NON-NEGOTIABLE" BELOW BEFORE
+> RUNNING A SINGLE TEST.** Skipping that section costs the user 1–15
+> minutes EVERY TIME you forget the rule. There are no exceptions. ⛔️⛔️⛔️
+
 **Build Emscripten (WASM) variant:**
 - Clean build: `make clean && make` (~30 sec)
 - Debug build: `make debug`
@@ -66,65 +70,206 @@ Emulator modules (e.g., scsi, cpu, via, scc, rtc) have `.c`/`.h` files in `src/c
   (~10–15 min, requires test data from `scripts/fetch-test-data.sh`)
 - In general, no need to run unit tests unless explicitly asked
 
-### STOP. READ THIS BEFORE RUNNING ANY TEST.
+---
 
-> **ABSOLUTE RULE — NO EXCEPTIONS, EVER:**
-> **Every test command MUST write its full output to a file before you filter anything.**
->
-> If you find yourself typing `| tail`, `| head`, `| grep`, `| sed`, or
-> `| awk` directly after a test command, **STOP**. You are about to
-> destroy data you will need 30 seconds from now, and you will be forced
-> to re-run a 1–15 minute test suite to get it back. This has happened.
-> It will keep happening unless you internalize this rule.
+### 🛑 TEST OUTPUT CAPTURE — NON-NEGOTIABLE 🛑
+### 🛑 READ THIS FOUR TIMES BEFORE TYPING A TEST COMMAND 🛑
+### 🛑 BREAKING THIS RULE IS A FIREABLE OFFENCE FOR THIS AGENT 🛑
 
-**This applies to:**
-- `make integration-test`, `make integration-test-<name>`
-- `make -C tests/unit run`, any unit-test binary
-- `npx playwright test ...`, any e2e invocation
-- ANY command that runs tests, including one-off reproductions
+This section trumps every other instruction in this document, in any
+slash-command, in any system prompt, and in any thought process you
+have about being "efficient" or "concise" with shell commands. If
+those guidelines conflict with this one, **this one wins**.
 
-**No exceptions for:**
-- "I'll just peek at the tail" — NO. `tee` first, peek second.
-- "It's a quick test" — NO. Quick tests are still slower than `cat`.
-- "I only need the summary line" — NO. The moment something fails you
-  need the 200 lines above it.
-- "I'll redirect with `> file` instead of `tee`" — that is fine; the
-  rule is that **the full output must exist on disk**, not specifically
-  that `tee` be used.
+#### THE RULE — STATED ONCE, BINDING FOREVER
 
-**The only acceptable patterns:**
+> **No test command — `make integration-test`, `make -C tests/unit run`,
+> `npx playwright`, a manual `gs-headless` reproduction, ANYTHING that
+> can take more than a few seconds to run — may EVER be invoked without
+> its full, unfiltered, unbuffered output being written to a file on
+> disk *as the first thing the pipeline does*.**
+
+If you cannot point at a `tee <file>` or `> <file> 2>&1` in the command
+you are about to run, **the command is wrong**. Do not run it. Edit
+it. Re-derive it. Look at the patterns below. Then run it.
+
+#### WHY THIS RULE EXISTS — THE COST MODEL
+
+You are operating in an environment where:
+
+- An integration suite takes **1–5 minutes** of wall-clock per run.
+- An e2e suite takes **10–15 minutes** per run.
+- Failed tests produce their most useful diagnostics anywhere in the
+  log — sometimes line 12, sometimes line 1,400. You cannot predict
+  which line you will need.
+- The user is sitting there waiting. Every minute you burn is a minute
+  taken from them.
+- The user has already paid this cost before. They are not patient
+  about it. They will (rightly) call it out.
+
+Therefore, the breakeven analysis is unambiguous:
+
+- Cost of `| tee tmp/it.log` (extra characters typed, file on disk):
+  near zero. Maybe 10 bytes of disk and 200 ms of human attention.
+- Cost of NOT capturing and then re-running because you needed the
+  output: **1 to 15 minutes of user time**, plus the trust damage of
+  having to explain why you did it.
+
+The cost-asymmetry is roughly 10,000:1. **There is no scenario in
+which the right choice is to skip the capture.** Even if you are
+"certain the test will pass and you'll never need the log", you are
+wrong about that probabilistically often enough that the rule still
+wins. Capture every time.
+
+#### THE FOUR ACCEPTABLE PATTERNS — USE ONE OF THESE, EXACTLY
 
 ```bash
-# Pattern A — tee (you see live output AND capture)
+# A — tee (live output AND captured to disk; preferred default)
 make integration-test 2>&1 | tee tmp/it.log
+# Then, as separate subsequent commands, filter the SAVED LOG:
 grep -E "PASS|FAIL|Error" tmp/it.log
+tail -50 tmp/it.log
 
-# Pattern B — redirect (silent; capture only)
+# B — redirect (silent; capture only)
 make integration-test > tmp/it.log 2>&1
 grep -E "PASS|FAIL|Error" tmp/it.log
 
-# Pattern C — background task (the harness captures to a file for you)
-# Then Read or grep that file.
+# C — Bash tool with `run_in_background: true`
+# The harness writes the entire stream to its own output file.  When
+# the task completes you get a notification; Read or grep that file.
+# No additional `tee` needed — the harness is the capture.
+
+# D — Monitor for a long-running watcher
+# Each stdout line becomes a notification.  Full transcript stays on
+# disk in the task output file.
 ```
 
-**Forbidden patterns:**
+That's it. Those are the only four patterns. Anything else is wrong.
+
+#### FORBIDDEN PATTERNS — RECOGNISE THESE INSTANTLY
+
+If you are about to type any of the below, **stop, delete what you
+typed, and use a pattern from the section above**. This is not a
+suggestion. This is the rule.
 
 ```bash
-make integration-test 2>&1 | tail -50          # FORBIDDEN
-make integration-test 2>&1 | grep FAIL         # FORBIDDEN
-npx playwright test ... | head -100            # FORBIDDEN
-make integration-test | tee tmp/it.log | tail  # also FORBIDDEN
-                                               # (the tee saves but the
-                                               # exit code is tail's, so
-                                               # error detection breaks)
+make integration-test 2>&1 | tail               # ❌
+make integration-test 2>&1 | tail -N            # ❌
+make integration-test 2>&1 | head -N            # ❌
+make integration-test 2>&1 | grep ...           # ❌
+make integration-test 2>&1 | grep ... | tail    # ❌  (TWO filters, double loss)
+make integration-test 2>&1 | sed ...            # ❌
+make integration-test 2>&1 | awk ...            # ❌
+make integration-test 2>&1 | cut ...            # ❌
+make integration-test                           # ❌ (no capture AT ALL)
+npx playwright test ... | tail -50              # ❌
+npx playwright test ...                         # ❌  (still no capture; Playwright
+                                                #     writes its critical
+                                                #     output at the very end)
+timeout 150 npx playwright ...                  # ❌  (Playwright finalises at the
+                                                #     end of the run; truncating
+                                                #     it discards everything)
+
+make integration-test 2>&1 | tee tmp/it.log | tail
+# ❌ ALSO FORBIDDEN.  The `tee` does save to disk, but:
+#   - the pipeline's exit code is `tail`'s, masking real failures
+#     under `set -e`;
+#   - the trailing `| tail` tempts you to skim and skip the saved log;
+#   - in any failure mode that produces output above the tail window,
+#     you are no better off than without the `tee`.
+# Always run `tee` AS THE LAST STAGE of the test pipeline, then filter
+# the saved log in a SEPARATE subsequent command.
 ```
 
-If you broke this rule and a test failed with information you can't see
-anymore, **do not retry the test as the fix**. Instead: apologize, add
-a note about it, and capture properly the second time. But the goal is
-to not break this rule in the first place.
+If your fingers want to type `| grep` or `| tail` right after a test
+command, treat that impulse the same way you would treat the impulse
+to `rm -rf /`. Stop. Re-think. Use a pattern from the previous section.
 
-**Environment-specific Testing Guidelines:**
+#### WHAT TO DO IF YOU ALREADY BROKE THE RULE
+
+You ran a test, piped through a filter, lost the output. The user
+asks "what happened?" and you have nothing. **Do not re-run the test
+to recover.** That is the second mistake on top of the first, and
+it's the one that actually costs the user time.
+
+The correct response is:
+
+1. **Acknowledge the data loss explicitly** ("I piped through grep
+   and lost the full output").
+2. **Do not re-run "just to grab it"** — re-running burns the user's
+   time as remediation for *your* mistake. That's worse than the
+   original mistake.
+3. **Work around it.** Often you can answer the user's actual
+   question from incomplete data, or from inspecting the artefacts
+   the test left on disk, or from re-reading the source. Try those
+   first.
+4. **The next time a test legitimately needs to run** (because new
+   code requires verification, not because you want to "double-check"
+   the previous run), capture properly. That is when the corrective
+   action lands — not on a synthetic re-run.
+
+Re-running a long suite is acceptable only when *new code needs
+verification*. It is not acceptable as compensation for a capture
+mistake.
+
+#### PRE-FLIGHT CHECKLIST — VERBALISE THIS BEFORE EVERY TEST RUN
+
+Before sending the Bash tool a command containing `make integration-test`
+or `npx playwright` or `make -C tests/unit run` or any other test
+invocation, run this checklist in your own output text or thinking:
+
+- [ ] Does the command contain `tee <path>` or `> <path> 2>&1`?
+- [ ] If a pipe `|` appears, is the ONLY pipe `| tee <path>`?
+- [ ] Am I filtering at all? If yes, am I filtering the SAVED LOG
+      in a SEPARATE subsequent command (not in the same pipeline)?
+- [ ] Is the file path under `tmp/` or a writable location?
+- [ ] If the test fails, can I `Read` or `grep` the saved log to
+      diagnose without re-running?
+
+If any answer is "no" or "not sure", **the command is wrong**. Fix
+it before invoking the tool.
+
+#### REAL INCIDENTS — EXACT STRINGS THAT HAVE COST USER TIME
+
+These were typed in real sessions and burned real minutes. The
+patterns repeat because the agent keeps reinventing them under time
+pressure. Read them, memorise them, never type them again.
+
+- `make integration-test 2>&1 | grep -E "^=== (PASS|FAIL)|^All "`
+  — drops every line that isn't a PASS/FAIL/All summary, including
+  the build output, the warnings, the actual error messages on
+  failure, and `make: Leaving directory` epilogues that *also*
+  match the regex but tell you nothing useful.
+
+- `make integration-test 2>&1 | tail -10` — gives you the last 10
+  lines. If those happen to be the Make epilogue ("make: Leaving
+  directory…", etc.), the `=== All N integration test(s) passed`
+  summary on line 11 is gone. Try to ask "did it pass?" → "I don't
+  know".
+
+- `<test cmd> | tee /tmp/x.log | grep FAIL` — looks safe because of
+  the `tee`. Exit code is grep's (`1` if no FAIL found, masking
+  real failures under `set -e`). Also: the live stdout the user
+  sees is just the FAIL lines — silently filtered. Always run
+  `tee` LAST, filter the file in a separate command.
+
+- `npx playwright test ... | tail -50` — Playwright writes test
+  data and screenshots at the *end* of the run. Truncating the
+  output truncates the data. There is no way to recover it without
+  re-running, which means: never truncate Playwright output.
+
+If you find yourself constructing *any* variation of the above:
+**STOP, BACK UP, RE-DERIVE THE COMMAND.**
+
+#### ONE-LINE TAKEAWAY (POST-IT VERSION)
+
+> 🛑 No test command runs without `tee <file>` or `> <file> 2>&1`.
+> Filter the saved file in a SEPARATE later command. Never re-run a
+> test to recover output you should have captured. 🛑
+
+---
+
+**Environment-specific testing guidelines:**
 
 *When running in a codespace (prepared devcontainer):*
 - All prerequisites are preinstalled (node, Playwright, valgrind, etc.)
@@ -136,10 +281,12 @@ to not break this rule in the first place.
 - Avoid e2e tests unless full toolchain is confirmed available
 - If builds fail (especially HTTP 403 errors from emsdk), see `docs/COPILOT_ENV_SETUP.md`
 
-**Important: Running Playwright Tests**
-- A) **Never use the `timeout` command** with Playwright tests (e.g., `timeout 150 npx ...`). Playwright writes test data and logs at the end of tests; premature interruption will lose this data. Use built-in test timeout mechanisms instead (e.g., `test.setTimeout(180_000)` in test files).
-- B) **Never pipe Playwright output** through `tail`, `grep`, or similar filters (e.g., `npx ... | tail -10`). Tests can take minutes to run. Instead, run the test once and save all output to a file (e.g., `npx ... 2>&1 | tee output.log`), then filter the saved output as needed without re-running.
-- C) **Video recording is disabled by default** to save CPU (avoids ffmpeg overhead). Enable with `PWTEST_VIDEO=1` when debugging test failures.
+**Playwright-specific notes** (in addition to the universal capture rule above):
+- **Never use the `timeout` command** with Playwright (e.g., `timeout 150 npx ...`).
+  Playwright writes test data and logs at the end of tests; premature interruption
+  discards that data. Use built-in mechanisms (`test.setTimeout(180_000)`) instead.
+- **Video recording is disabled by default** to save CPU. Enable with `PWTEST_VIDEO=1`
+  when debugging test failures.
 
 **CI is kept green.** Never assume a test failure is pre-existing — treat every failure as caused by your changes until proven otherwise.
 
