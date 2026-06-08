@@ -3,6 +3,7 @@
   import Tree, { type TreeNode, type SelectMods } from '@/components/common/Tree.svelte';
   import { openContextMenu, type ContextMenuItem } from '@/components/common/ContextMenu.svelte';
   import RenameDialog from './RenameDialog.svelte';
+  import ConfirmDialog from '@/components/dialogs/ConfirmDialog.svelte';
   import { opfs } from '@/bus/opfs';
   import { gsEval } from '@/bus/emulator';
   import { vfsList } from '@/bus/vfs';
@@ -55,6 +56,11 @@
   let renameOpen = $state(false);
   let renameTarget = $state<string | null>(null);
 
+  // Delete-confirmation dialog state.
+  let confirmOpen = $state(false);
+  let confirmMessage = $state('');
+  let pendingDelete = $state<string[][]>([]);
+
   // Bumped by refresh() to remount the tree after a mutation. The Tree
   // shares childrenCache (below), so a remount re-reads whatever keys we
   // invalidated and leaves untouched ones cached.
@@ -93,7 +99,24 @@
     // Paths that cross a disk-image boundary (the image file itself, or any
     // partition / directory inside it) are listed through the read-only VFS;
     // everything else is plain OPFS.
-    const entries = listViaVfs(dir) ? await vfsList(dir) : await opfs.list(dir);
+    let entries: { name: string; path: string; kind: 'file' | 'directory' }[];
+    if (listViaVfs(dir)) {
+      entries = await vfsList(dir);
+      // A floppy (or any raw, unpartitioned HFS volume) has no partition map —
+      // the VFS synthesises a single "partition1". Skip that redundant level
+      // and show the volume contents directly under the image. Real multi-
+      // partition images (HD / CD with an APM) keep their partition list.
+      if (
+        !isInImageSpace(dir) &&
+        entries.length === 1 &&
+        entries[0].kind === 'directory' &&
+        /^partition\d+$/i.test(entries[0].name)
+      ) {
+        entries = await vfsList(entries[0].path);
+      }
+    } else {
+      entries = await opfs.list(dir);
+    }
     const nodes = entriesToNodes(entries);
     childrenCache[k] = nodes;
     return nodes;
@@ -480,13 +503,23 @@
     }
   }
 
-  async function doDelete(targets: string[][]) {
+  // Open the styled confirmation; the actual delete runs on confirm.
+  function doDelete(targets: string[][]) {
+    if (!targets.length) return;
+    const names = targets.map((t) => t[t.length - 1].split('/').pop() ?? '');
+    confirmMessage =
+      targets.length === 1
+        ? `Delete '${names[0]}'? This can't be undone.`
+        : `Delete these ${targets.length} items? This can't be undone.`;
+    pendingDelete = targets;
+    confirmOpen = true;
+  }
+
+  async function performDelete(targets: string[][]) {
+    confirmOpen = false;
     if (!targets.length) return;
     const names = targets.map((t) => t[t.length - 1].split('/').pop() ?? '');
     const label = targets.length === 1 ? `'${names[0]}'` : `${targets.length} items`;
-    if (typeof window !== 'undefined' && typeof window.confirm === 'function') {
-      if (!window.confirm(`Delete ${label}?`)) return;
-    }
     let failed = 0;
     try {
       for (let i = 0; i < targets.length; i++) {
@@ -617,6 +650,16 @@
     renameOpen = false;
     renameTarget = null;
   }}
+/>
+
+<ConfirmDialog
+  open={confirmOpen}
+  title="Delete"
+  message={confirmMessage}
+  confirmText="Delete"
+  danger
+  onConfirm={() => void performDelete(pendingDelete)}
+  onClose={() => (confirmOpen = false)}
 />
 
 <style>

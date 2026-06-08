@@ -123,6 +123,16 @@ describe('FilesystemView — multi-select', () => {
     expect(del).toBeTruthy();
     await fireEvent.click(del);
 
+    // Confirm in the styled dialog.
+    const confirmBtn = await waitFor(() => {
+      const b = Array.from(container.querySelectorAll('.modal-actions button')).find(
+        (e) => e.textContent?.trim() === 'Delete',
+      );
+      expect(b).toBeTruthy();
+      return b as HTMLElement;
+    });
+    await fireEvent.click(confirmBtn);
+
     await waitFor(() => {
       const labels = Array.from(container.querySelectorAll('.label')).map((e) => e.textContent);
       expect(labels).not.toContain('a.txt');

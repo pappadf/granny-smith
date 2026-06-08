@@ -117,6 +117,35 @@ beforeEach(() => {
 });
 
 describe('FilesystemView — disk-image descent', () => {
+  it('collapses a lone synthetic partition (floppy shows volume contents directly)', async () => {
+    // A floppy has no partition map — the VFS reports a single partition1.
+    gsEvalMock.mockImplementation(async (path: string, args?: unknown[]) => {
+      if (path !== 'vfs.list') return null;
+      const dir = (args?.[0] as string) ?? '';
+      if (dir === '/opfs/disk.img')
+        return JSON.stringify([{ name: 'partition1', kind: 'directory', size: 0 }]);
+      if (dir === '/opfs/disk.img/partition1')
+        return JSON.stringify([
+          { name: 'System Folder', kind: 'directory', size: 0 },
+          { name: 'Read Me', kind: 'file', size: 4522 },
+        ]);
+      return JSON.stringify([]);
+    });
+
+    const { container } = render(FilesystemView);
+    setFsExpanded('/opfs', true);
+    await waitFor(() => expect(labels(container)).toContain('disk.img'));
+    await fireEvent.click(rowFor(container, 'disk.img'));
+
+    await waitFor(() => {
+      const l = labels(container);
+      expect(l).toContain('System Folder');
+      expect(l).toContain('Read Me');
+    });
+    // The redundant partition level is hidden.
+    expect(labels(container)).not.toContain('partition1');
+  });
+
   it('expands a disk image into its partitions, then the volume contents', async () => {
     const { container } = render(FilesystemView);
     setFsExpanded('/opfs', true);
@@ -311,9 +340,9 @@ describe('FilesystemView — disk-image descent', () => {
     const { container } = render(FilesystemView);
     setFsExpanded('/opfs', true);
     await waitFor(() => expect(labels(container)).toContain('disk.img'));
+    // Single synthetic partition → collapsed, so the volume contents (Read Me)
+    // appear directly under disk.img.
     await fireEvent.click(rowFor(container, 'disk.img'));
-    await waitFor(() => expect(labels(container)).toContain('partition1'));
-    await fireEvent.click(rowFor(container, 'partition1'));
     await waitFor(() => expect(labels(container)).toContain('Read Me'));
 
     const dt = makeDataTransfer();

@@ -6,6 +6,18 @@ import type { OpfsEntry } from '@/bus/types';
 import { filesystem, setFsExpanded, clearFsSelection } from '@/state/filesystem.svelte';
 import { images } from '@/state/images.svelte';
 
+// Click the "Delete" button in the styled confirmation dialog.
+async function confirmDeleteDialog(container: HTMLElement) {
+  const btn = await waitFor(() => {
+    const b = Array.from(container.querySelectorAll('.modal-actions button')).find(
+      (e) => e.textContent?.trim() === 'Delete',
+    );
+    expect(b).toBeTruthy();
+    return b as HTMLElement;
+  });
+  await fireEvent.click(btn);
+}
+
 beforeEach(() => {
   setOpfsBackend(new MockOpfs());
   filesystem.expanded = { '/opfs': true };
@@ -160,6 +172,7 @@ describe('FilesystemView — live refresh after mutation', () => {
       (e) => e.textContent?.trim() === 'Delete',
     ) as HTMLElement;
     await fireEvent.click(del);
+    await confirmDeleteDialog(container);
 
     await waitFor(() => {
       const labels = Array.from(container.querySelectorAll('.label')).map((e) => e.textContent);
@@ -185,6 +198,7 @@ describe('FilesystemView — live refresh after mutation', () => {
       (e) => e.textContent?.trim() === 'Delete',
     ) as HTMLElement;
     await fireEvent.click(del);
+    await confirmDeleteDialog(container);
     await waitFor(() => expect(images.revision).toBeGreaterThan(before));
   });
 });
