@@ -42,9 +42,9 @@
     </div>
     <div class="statusbar-right">
       {#if uploads.current}
-        <div class="sb-item sb-upload" title="File upload in progress">
+        <div class="sb-item sb-upload" title="{uploads.verb} in progress">
           <span class="upload-spinner"></span>
-          <span class="upload-label">Uploading: {uploads.current}</span>
+          <span class="upload-label">{uploads.verb}: {uploads.current}</span>
         </div>
       {/if}
       <div class="sb-item sb-desc">{desc}</div>

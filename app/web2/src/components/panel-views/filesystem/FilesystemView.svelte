@@ -12,6 +12,7 @@
   import { UPLOAD_DIR } from '@/lib/opfsPaths';
   import { showNotification } from '@/state/toasts.svelte';
   import { bumpImagesRevision } from '@/state/images.svelte';
+  import { startUpload, finishUpload } from '@/state/uploads.svelte';
   import {
     filesystem,
     toggleFsExpanded,
@@ -216,12 +217,17 @@
       // Sources share a parent, so they're uniformly in-image (copy out) or
       // OPFS (move).
       const fromImage = isInImageSpace(sources[0][sources[0].length - 1]);
+      const verb = fromImage ? 'Copying' : 'Moving';
       const failures: string[] = [];
       let firstReason = '';
       try {
-        for (const s of sources) {
+        for (let i = 0; i < sources.length; i++) {
+          const s = sources[i];
           const src = s[s.length - 1];
           const name = src.split('/').pop() ?? '';
+          // Surface progress immediately and per item — copying a large image
+          // out can take a few seconds.
+          startUpload(sources.length > 1 ? `${name} (${i + 1}/${sources.length})` : name, verb);
           if (fromImage) {
             // Copy OUT of a read-only image. Sanitise the destination name:
             // classic-Mac names routinely contain '/' (surfaced as ':' by the
@@ -262,6 +268,7 @@
         await refresh();
         bulkToast(fromImage ? 'Copied' : 'Moved', dstParent, sources.length, failures, firstReason);
       } finally {
+        finishUpload();
         handleDragEnd();
       }
       return;
@@ -433,12 +440,14 @@
     const parentDir = target.replace(/\/[^/]+$/, '');
     const base = name.replace(/\.[^.]+$/, '') || name;
     const outDir = `${parentDir}/${base}_unpacked`;
-    showNotification(`Unpacking '${name}'…`, 'info');
+    startUpload(name, 'Unpacking');
     let ok = false;
     try {
       ok = (await gsEval('archive.extract', [target, outDir])) === true;
     } catch {
       ok = false;
+    } finally {
+      finishUpload();
     }
     if (!ok) {
       showNotification(`Failed to unpack '${name}'`, 'error');
@@ -479,12 +488,22 @@
       if (!window.confirm(`Delete ${label}?`)) return;
     }
     let failed = 0;
-    for (const t of targets) {
-      try {
-        await opfs.delete(t[t.length - 1]);
-      } catch {
-        failed++;
+    try {
+      for (let i = 0; i < targets.length; i++) {
+        const t = targets[i];
+        const tname = t[t.length - 1].split('/').pop() ?? '';
+        startUpload(
+          targets.length > 1 ? `${tname} (${i + 1}/${targets.length})` : tname,
+          'Deleting',
+        );
+        try {
+          await opfs.delete(t[t.length - 1]);
+        } catch {
+          failed++;
+        }
       }
+    } finally {
+      finishUpload();
     }
     delete childrenCache[pathKey(targets[0].slice(0, -1))];
     clearFsSelection();
@@ -519,7 +538,18 @@
       return;
     }
     let failed = 0;
-    for (const t of files) if (!(await downloadOne(t))) failed++;
+    try {
+      for (let i = 0; i < files.length; i++) {
+        const fname = files[i][files[i].length - 1].split('/').pop() ?? '';
+        startUpload(
+          files.length > 1 ? `${fname} (${i + 1}/${files.length})` : fname,
+          'Downloading',
+        );
+        if (!(await downloadOne(files[i]))) failed++;
+      }
+    } finally {
+      finishUpload();
+    }
     const ok = files.length - failed;
     if (failed) {
       showNotification(`Downloaded ${ok}/${files.length}`, ok ? 'warning' : 'error');
