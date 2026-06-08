@@ -16,7 +16,7 @@ vi.mock('@/bus/emulator', () => ({
 import FilesystemView from '@/components/panel-views/filesystem/FilesystemView.svelte';
 import { setOpfsBackend, MockOpfs } from '@/bus/opfs';
 import type { OpfsEntry } from '@/bus/types';
-import { filesystem, setFsExpanded } from '@/state/filesystem.svelte';
+import { filesystem, setFsExpanded, clearFsSelection } from '@/state/filesystem.svelte';
 
 // Backend whose /opfs root holds a disk image, a plain file, and a target
 // folder. Tracks readFile / delete / move so the download and drag tests can
@@ -87,7 +87,7 @@ beforeEach(() => {
   setOpfsBackend(backend);
   filesystem.expanded = { '/opfs': true };
   filesystem.dragSourcePath = null;
-  filesystem.selectedPath = null;
+  clearFsSelection();
   createObjectURL.mockClear();
   // jsdom lacks these; stub so saveBlob() runs without navigating.
   (URL as unknown as { createObjectURL: unknown }).createObjectURL = createObjectURL;
@@ -108,6 +108,8 @@ beforeEach(() => {
       return JSON.stringify([
         { name: 'System Folder', kind: 'directory', size: 0 },
         { name: 'Read Me', kind: 'file', size: 4522 },
+        // A name the HFS reader surfaced from an in-name '/': OPFS rejects ':'.
+        { name: 'Install 1:2.img', kind: 'file', size: 819200 },
       ]);
     }
     return JSON.stringify([]);
@@ -259,6 +261,72 @@ describe('FilesystemView — disk-image descent', () => {
         '/opfs/extracted/System Folder',
       ]);
     });
+  });
+
+  it('sanitises an OPFS-hostile name (colon) when copying out of an image', async () => {
+    const { container } = render(FilesystemView);
+    setFsExpanded('/opfs', true);
+    await waitFor(() => expect(labels(container)).toContain('disk.img'));
+    await fireEvent.click(rowFor(container, 'disk.img'));
+    await waitFor(() => expect(labels(container)).toContain('partition1'));
+    await fireEvent.click(rowFor(container, 'partition1'));
+    await waitFor(() => expect(labels(container)).toContain('Install 1:2.img'));
+
+    const dt = makeDataTransfer();
+    await fireEvent.dragStart(rowFor(container, 'Install 1:2.img'), { dataTransfer: dt });
+    await fireEvent.drop(rowFor(container, 'extracted'), { dataTransfer: dt });
+
+    await waitFor(() => {
+      const cp = gsEvalMock.mock.calls.find((c) => c[0] === 'storage.cp');
+      expect(cp).toBeTruthy();
+      // Source keeps its ':'; destination is sanitised so the OPFS write
+      // succeeds instead of silently failing.
+      expect(cp![1]).toEqual([
+        '/opfs/disk.img/partition1/Install 1:2.img',
+        '/opfs/extracted/Install 1_2.img',
+      ]);
+    });
+  });
+
+  it('recovers a wedged copy-out by force-unmounting the image and retrying', async () => {
+    let cp = 0;
+    gsEvalMock.mockImplementation(async (path: string, args?: unknown[]) => {
+      if (path === 'storage.cp') {
+        cp += 1;
+        // First attempt fails as if the cached mount were stale; retry succeeds.
+        return cp === 1 ? { error: 'cp: cannot open (stale mount)' } : true;
+      }
+      if (path === 'storage.unmount') return true;
+      if (path === 'vfs.list') {
+        const dir = (args?.[0] as string) ?? '';
+        if (dir === '/opfs/disk.img')
+          return JSON.stringify([{ name: 'partition1', kind: 'directory', size: 0 }]);
+        if (dir === '/opfs/disk.img/partition1')
+          return JSON.stringify([{ name: 'Read Me', kind: 'file', size: 4522 }]);
+        return JSON.stringify([]);
+      }
+      return null;
+    });
+
+    const { container } = render(FilesystemView);
+    setFsExpanded('/opfs', true);
+    await waitFor(() => expect(labels(container)).toContain('disk.img'));
+    await fireEvent.click(rowFor(container, 'disk.img'));
+    await waitFor(() => expect(labels(container)).toContain('partition1'));
+    await fireEvent.click(rowFor(container, 'partition1'));
+    await waitFor(() => expect(labels(container)).toContain('Read Me'));
+
+    const dt = makeDataTransfer();
+    await fireEvent.dragStart(rowFor(container, 'Read Me'), { dataTransfer: dt });
+    await fireEvent.drop(rowFor(container, 'extracted'), { dataTransfer: dt });
+
+    await waitFor(() => {
+      const unmount = gsEvalMock.mock.calls.find((c) => c[0] === 'storage.unmount');
+      expect(unmount).toBeTruthy();
+      expect(unmount![1]).toEqual(['/opfs/disk.img']);
+    });
+    // First cp failed → unmount → second cp succeeded.
+    expect(gsEvalMock.mock.calls.filter((c) => c[0] === 'storage.cp')).toHaveLength(2);
   });
 
   it('moves (not copies) a plain OPFS file dragged within OPFS', async () => {

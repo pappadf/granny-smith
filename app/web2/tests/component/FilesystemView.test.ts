@@ -3,14 +3,14 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import FilesystemView from '@/components/panel-views/filesystem/FilesystemView.svelte';
 import { setOpfsBackend, MockOpfs } from '@/bus/opfs';
 import type { OpfsEntry } from '@/bus/types';
-import { filesystem, setFsExpanded } from '@/state/filesystem.svelte';
+import { filesystem, setFsExpanded, clearFsSelection } from '@/state/filesystem.svelte';
 import { images } from '@/state/images.svelte';
 
 beforeEach(() => {
   setOpfsBackend(new MockOpfs());
   filesystem.expanded = { '/opfs': true };
   filesystem.dragSourcePath = null;
-  filesystem.selectedPath = null;
+  clearFsSelection();
 });
 
 describe('FilesystemView', () => {
@@ -66,7 +66,7 @@ describe('FilesystemView — Unpack context action', () => {
     setOpfsBackend(new ArchiveFixtureOpfs());
     filesystem.expanded = { '/opfs': true };
     filesystem.dragSourcePath = null;
-    filesystem.selectedPath = null;
+    clearFsSelection();
   });
 
   function menuLabels(): string[] {
@@ -138,7 +138,7 @@ describe('FilesystemView — live refresh after mutation', () => {
     setOpfsBackend(new MutableRootOpfs());
     filesystem.expanded = { '/opfs': true };
     filesystem.dragSourcePath = null;
-    filesystem.selectedPath = null;
+    clearFsSelection();
     window.confirm = () => true;
   });
 

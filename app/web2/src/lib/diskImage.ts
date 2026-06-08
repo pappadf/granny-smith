@@ -44,3 +44,12 @@ export function isInImageSpace(fullPath: string): boolean {
   if (i < 0) return false;
   return i < fullPath.split('/').length - 1;
 }
+
+// The disk-image file portion of a path — everything up to and including the
+// first image-extension segment — or null when the path doesn't cross an
+// image boundary. Used to address the image for a force-unmount.
+export function imageRootOf(fullPath: string): string | null {
+  const segs = fullPath.split('/');
+  const i = segs.findIndex((s) => isDiskImage(s));
+  return i < 0 ? null : segs.slice(0, i + 1).join('/');
+}

@@ -19,10 +19,13 @@
 #include "value.h"
 #include "vfs.h"
 
+#include <dirent.h>
 #include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
+#include <unistd.h>
 
 // === Object-model class descriptors =========================================
 //
@@ -334,6 +337,48 @@ static value_t storage_method_hd_create(struct object *self, const member_t *m, 
     return val_bool(shell_hd_argv(targc, targv) == 0);
 }
 
+// Recursively remove a file or directory tree (best-effort). Returns 0 when
+// the path is gone afterwards, or a negative errno.
+static int storage_rm_tree(const char *path) {
+    DIR *dir = opendir(path);
+    if (!dir) {
+        if (unlink(path) == 0 || errno == ENOENT)
+            return 0;
+        return -errno;
+    }
+    struct dirent *e;
+    while ((e = readdir(dir)) != NULL) {
+        const char *name = e->d_name;
+        if (!name || strcmp(name, ".") == 0 || strcmp(name, "..") == 0)
+            continue;
+        char child[VFS_PATH_MAX];
+        if (snprintf(child, sizeof(child), "%s/%s", path, name) >= (int)sizeof(child))
+            continue;
+        struct stat st;
+        if (lstat(child, &st) == 0 && S_ISDIR(st.st_mode))
+            storage_rm_tree(child);
+        else
+            unlink(child);
+    }
+    closedir(dir);
+    return rmdir(path) == 0 || errno == ENOENT ? 0 : -errno;
+}
+
+// `storage.rm(path)` — recursively remove a file or directory. Routing the
+// web UI's deletes through here (the worker) instead of the browser's
+// main-thread OPFS API keeps the worker's WasmFS inode cache coherent, so a
+// later worker-side create at the same path (e.g. re-copying a file out of an
+// image after deleting it) doesn't hit a dangling inode.
+static value_t storage_method_rm(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)self;
+    (void)m;
+    (void)argc;
+    const char *path = argv[0].s;
+    if (!path || !*path || strcmp(path, "/") == 0)
+        return val_err("storage.rm: refusing to remove '%s'", path ? path : "(null)");
+    return val_bool(storage_rm_tree(path) == 0);
+}
+
 // `storage.fd_create(path, [high_density])` — create a blank (unformatted)
 // floppy image: 800 KB by default, 1.4 MB when high_density is true. Unlike
 // the `fd create` shell command this does NOT insert the disk into a drive —
@@ -536,6 +581,9 @@ static const arg_decl_t storage_hd_create_args[] = {
     {.name = "path", .kind = V_STRING, .doc = "Image output path"                                   },
     {.name = "size", .kind = V_NONE,   .doc = "Size string (e.g. \"HD20SC\", \"40M\") or byte count"},
 };
+static const arg_decl_t storage_rm_args[] = {
+    {.name = "path", .kind = V_STRING, .doc = "Path to remove (recursive)"},
+};
 static const arg_decl_t storage_fd_create_args[] = {
     {.name = "path", .kind = V_STRING, .doc = "Image output path"},
     {.name = "high_density",
@@ -582,6 +630,10 @@ static const member_t storage_members[] = {
      .name = "fd_create",
      .doc = "Create a blank floppy image (800 KB, or 1.4 MB when high_density)",
      .method = {.args = storage_fd_create_args, .nargs = 2, .result = V_BOOL, .fn = storage_method_fd_create}    },
+    {.kind = M_METHOD,
+     .name = "rm",
+     .doc = "Recursively remove a file or directory (keeps the worker FS coherent)",
+     .method = {.args = storage_rm_args, .nargs = 1, .result = V_BOOL, .fn = storage_method_rm}                  },
     {.kind = M_METHOD,
      .name = "hd_download",
      .doc = "Export a hard-disk image (base + delta) to a flat file",

@@ -58,7 +58,10 @@ export {
   toggleFsExpanded,
   setFsExpanded,
   setFsDragSource,
-  setFsSelected,
+  selectOnly,
+  toggleSelected,
+  setFsSelection,
+  clearFsSelection,
 } from './filesystem.svelte';
 export { images, toggleCategory, setMounted } from './images.svelte';
 export {

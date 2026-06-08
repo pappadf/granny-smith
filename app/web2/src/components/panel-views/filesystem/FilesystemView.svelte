@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import Tree, { type TreeNode } from '@/components/common/Tree.svelte';
+  import Tree, { type TreeNode, type SelectMods } from '@/components/common/Tree.svelte';
   import { openContextMenu, type ContextMenuItem } from '@/components/common/ContextMenu.svelte';
   import RenameDialog from './RenameDialog.svelte';
   import { opfs } from '@/bus/opfs';
@@ -8,7 +8,7 @@
   import { vfsList } from '@/bus/vfs';
   import { acceptFilesRaw } from '@/bus/upload';
   import { isMacArchive, sanitizeName } from '@/lib/archive';
-  import { isDiskImage, isInImageSpace, listViaVfs } from '@/lib/diskImage';
+  import { isDiskImage, isInImageSpace, listViaVfs, imageRootOf } from '@/lib/diskImage';
   import { UPLOAD_DIR } from '@/lib/opfsPaths';
   import { showNotification } from '@/state/toasts.svelte';
   import { bumpImagesRevision } from '@/state/images.svelte';
@@ -16,7 +16,10 @@
     filesystem,
     toggleFsExpanded,
     setFsDragSource,
-    setFsSelected,
+    selectOnly,
+    toggleSelected,
+    setFsSelection,
+    clearFsSelection,
   } from '@/state/filesystem.svelte';
   import { iconForFsEntry } from '@/lib/iconForFsEntry';
   import { pathIsAncestorOrSelf, pathKey } from '@/lib/treePath';
@@ -36,11 +39,11 @@
   // of a read-only image for download.
   let downloadSeq = 0;
 
-  // The path array of the node currently being dragged. Kept verbatim (not
-  // re-derived from the space-joined pathKey) because in-image names routinely
-  // contain spaces — splitting the key on ' ' would corrupt the path and, in
-  // turn, the copy-vs-move drop effect.
-  let draggedPath: string[] | null = null;
+  // Path arrays of the node(s) currently being dragged — one, or the whole
+  // multi-selection. Kept verbatim (not re-derived from the space-joined
+  // pathKey) because in-image names routinely contain spaces, which would
+  // corrupt the path and the copy-vs-move drop effect.
+  let draggedPaths: string[][] | null = null;
 
   // /opfs is the root.
   let rootNodes = $state<TreeNode[]>([
@@ -115,11 +118,19 @@
 
   function handleDragStart(path: string[], ev: DragEvent) {
     if (!ev.dataTransfer) return;
-    draggedPath = path;
-    ev.dataTransfer.setData(DRAG_MIME, JSON.stringify(path));
-    // A node inside a read-only image is copied out; an OPFS node is moved.
+    const key = pathKey(path);
+    // Dragging a row that's part of a multi-selection drags the whole set;
+    // dragging anything else drags just that row.
+    const sources =
+      filesystem.selected.has(key) && filesystem.selected.size > 1
+        ? effectiveTargets(path)
+        : [path];
+    draggedPaths = sources;
+    ev.dataTransfer.setData(DRAG_MIME, JSON.stringify(sources));
+    // Sources share a parent, so they're uniformly in-image or not: a
+    // read-only image source copies out, an OPFS source moves.
     ev.dataTransfer.effectAllowed = isInImageSpace(path[path.length - 1]) ? 'copy' : 'move';
-    setFsDragSource(pathKey(path));
+    setFsDragSource(key);
   }
 
   function handleDragOver(path: string[], ev: DragEvent) {
@@ -139,15 +150,16 @@
     // OPFS entries under the image path).
     if (listViaVfs(path[path.length - 1])) return;
     if (isInternal) {
-      const sourcePath = draggedPath;
-      if (!sourcePath) return;
-      if (pathIsAncestorOrSelf(sourcePath, path)) return;
-      if (pathKey(sourcePath.slice(0, -1)) === pathKey(path)) return;
+      const sources = draggedPaths;
+      if (!sources || !sources.length) return;
+      // Don't drop into the dragged subtree, or back into the sources' parent.
+      for (const s of sources) if (pathIsAncestorOrSelf(s, path)) return;
+      if (pathKey(sources[0].slice(0, -1)) === pathKey(path)) return;
       ev.preventDefault();
       // Copy out of an image; move within OPFS. dropEffect MUST agree with the
       // effectAllowed set at dragstart, or the browser silently rejects the
       // drop (this is what broke dragging out files with spaces in the name).
-      ev.dataTransfer.dropEffect = isInImageSpace(sourcePath[sourcePath.length - 1])
+      ev.dataTransfer.dropEffect = isInImageSpace(sources[0][sources[0].length - 1])
         ? 'copy'
         : 'move';
       dropTargetKey = pathKey(path);
@@ -166,7 +178,7 @@
   function handleDragEnd() {
     setFsDragSource(null);
     dropTargetKey = null;
-    draggedPath = null;
+    draggedPaths = null;
   }
 
   async function handleDrop(path: string[], ev: DragEvent) {
@@ -185,50 +197,70 @@
     }
 
     if (data) {
-      // Internal tree-to-tree drag.
-      let sourcePath: string[];
+      // Internal tree-to-tree drag (one source, or a same-parent selection).
+      let sources: string[][];
       try {
-        sourcePath = JSON.parse(data) as string[];
+        const parsed = JSON.parse(data) as unknown;
+        sources =
+          Array.isArray(parsed) && Array.isArray(parsed[0])
+            ? (parsed as string[][])
+            : [parsed as string[]];
       } catch {
         handleDragEnd();
         return;
       }
-      const src = sourcePath[sourcePath.length - 1];
-      const name = src.split('/').pop() ?? '';
-      const dst = `${dstParent}/${name}`;
-
-      if (isInImageSpace(src)) {
-        // The source lives in a read-only image — copy it OUT to the OPFS
-        // drop target via the VFS-backed storage.cp (recursive for a folder)
-        // rather than moving it.
-        const recursive = nodeKind[src] === 'directory';
-        try {
-          const args = recursive ? ['-r', src, dst] : [src, dst];
-          const ok = (await gsEval('storage.cp', args)) === true;
-          if (ok) {
-            delete childrenCache[pathKey(path)];
-            await refresh();
-            showNotification(`Copied '${name}' to '${dstParent}'`, 'info');
-          } else {
-            showNotification(`Failed to copy '${name}' out of the disk image`, 'error');
-          }
-        } catch {
-          showNotification('Copy failed', 'error');
-        } finally {
-          handleDragEnd();
-        }
+      if (!sources.length) {
+        handleDragEnd();
         return;
       }
-
+      // Sources share a parent, so they're uniformly in-image (copy out) or
+      // OPFS (move).
+      const fromImage = isInImageSpace(sources[0][sources[0].length - 1]);
+      const failures: string[] = [];
+      let firstReason = '';
       try {
-        await opfs.move(src, dst);
-        // Invalidate both parents.
-        delete childrenCache[pathKey(sourcePath.slice(0, -1))];
+        for (const s of sources) {
+          const src = s[s.length - 1];
+          const name = src.split('/').pop() ?? '';
+          if (fromImage) {
+            // Copy OUT of a read-only image. Sanitise the destination name:
+            // classic-Mac names routinely contain '/' (surfaced as ':' by the
+            // HFS reader) and other characters OPFS rejects, which otherwise
+            // makes the write fail for that item.
+            const dst = `${dstParent}/${opfsSafeName(name)}`;
+            const args = nodeKind[src] === 'directory' ? ['-r', src, dst] : [src, dst];
+            let res = await gsEval('storage.cp', args);
+            if (res !== true) {
+              // A cached image auto-mount can wedge after intervening OPFS
+              // changes (e.g. deleting an earlier copy). Drop it and retry once.
+              const root = imageRootOf(src);
+              if (root) {
+                await gsEval('storage.unmount', [root]);
+                res = await gsEval('storage.cp', args);
+              }
+            }
+            if (res !== true) {
+              failures.push(name);
+              const reason = errText(res);
+              if (!firstReason) firstReason = reason;
+              console.error('drag copy-out failed:', src, '->', dst, '|', reason);
+            }
+          } else {
+            const dst = `${dstParent}/${name}`;
+            try {
+              await opfs.move(src, dst);
+            } catch (err) {
+              failures.push(name);
+              if (!firstReason) firstReason = String(err);
+              console.error('drag move failed:', src, '->', dst, '|', err);
+            }
+          }
+        }
+        if (!fromImage) delete childrenCache[pathKey(sources[0].slice(0, -1))];
         delete childrenCache[pathKey(path)];
+        clearFsSelection();
         await refresh();
-        showNotification(`Moved '${name}' to '${dstParent}'`, 'info');
-      } catch {
-        showNotification('Move failed', 'error');
+        bulkToast(fromImage ? 'Copied' : 'Moved', dstParent, sources.length, failures, firstReason);
       } finally {
         handleDragEnd();
       }
@@ -254,36 +286,143 @@
     return nodeKind[path[path.length - 1]] === 'file';
   }
 
+  // --- Multi-selection (siblings only) ---------------------------------
+  //
+  // Selection state lives in filesystem.selected (a Set of pathKeys) with
+  // filesystem.anchor as the shift-range anchor. All selected nodes share a
+  // parent, so they can be reconstructed from any one of them plus the
+  // parent's cached child list.
+
+  // Full path arrays for the rows an action should affect: the whole
+  // selection when `path` is part of a multi-selection, else just `path`.
+  function effectiveTargets(path: string[]): string[][] {
+    const key = pathKey(path);
+    if (!filesystem.selected.has(key) || filesystem.selected.size <= 1) return [path];
+    const parentArr = path.slice(0, -1);
+    const siblings = childrenCache[pathKey(parentArr)] ?? [];
+    const targets = siblings
+      .filter((n) => filesystem.selected.has(pathKey([...parentArr, n.id])))
+      .map((n) => [...parentArr, n.id]);
+    return targets.length ? targets : [path];
+  }
+
+  // True when every selected key is a sibling of `path` — keeps Cmd/Ctrl
+  // toggling within one level.
+  function sameParentAsSelection(path: string[]): boolean {
+    if (filesystem.selected.size === 0) return true;
+    const parentArr = path.slice(0, -1);
+    const siblings = childrenCache[pathKey(parentArr)];
+    if (!siblings) return false;
+    const siblingKeys = new Set(siblings.map((n) => pathKey([...parentArr, n.id])));
+    for (const k of filesystem.selected) if (!siblingKeys.has(k)) return false;
+    return true;
+  }
+
+  // Mouse selection: plain = single; Cmd/Ctrl = toggle (same level only);
+  // Shift = contiguous sibling range from the anchor.
+  function handleSelect(path: string[], mods?: SelectMods) {
+    const key = pathKey(path);
+    if (mods?.shift && filesystem.anchor) {
+      const parentArr = path.slice(0, -1);
+      const siblings = childrenCache[pathKey(parentArr)];
+      if (siblings) {
+        const keys = siblings.map((n) => pathKey([...parentArr, n.id]));
+        const a = keys.indexOf(filesystem.anchor);
+        const b = keys.indexOf(key);
+        if (a >= 0 && b >= 0) {
+          const [lo, hi] = a <= b ? [a, b] : [b, a];
+          setFsSelection(keys.slice(lo, hi + 1), filesystem.anchor);
+          return;
+        }
+      }
+      selectOnly(key); // anchor isn't a sibling → fresh single selection
+    } else if (mods?.meta) {
+      if (sameParentAsSelection(path)) toggleSelected(key);
+      else selectOnly(key);
+    } else {
+      selectOnly(key);
+    }
+  }
+
   function handleContextMenu(path: string[], ev: MouseEvent) {
     ev.preventDefault();
-    setFsSelected(pathKey(path));
-    const target = path[path.length - 1];
-    const name = target.split('/').pop() ?? '';
+    // Right-clicking outside the selection selects just that row; right-
+    // clicking within it keeps the multi-selection.
+    if (!filesystem.selected.has(pathKey(path))) selectOnly(pathKey(path));
+    const targets = effectiveTargets(path);
+    const multi = targets.length > 1;
+    const name = path[path.length - 1].split('/').pop() ?? '';
 
-    // Inside a disk image everything is read-only — the only sensible action
-    // is downloading a file's contents out of the image. Directories and
-    // partitions offer nothing, so no menu opens for them.
-    if (isInImageSpace(target)) {
-      if (!isFile(path)) return;
+    // Inside a disk image everything is read-only — only Download applies, and
+    // only to file targets. (Targets share a parent, so they're uniformly
+    // in-image or not.)
+    if (isInImageSpace(path[path.length - 1])) {
+      const files = targets.filter((t) => isFile(t));
+      if (!files.length) return;
       openContextMenu(
-        [{ label: 'Download', action: () => doDownload(path) }],
+        [
+          {
+            label: files.length > 1 ? `Download ${files.length} files` : 'Download',
+            action: () => doDownload(targets),
+          },
+        ],
         ev.clientX,
         ev.clientY,
       );
       return;
     }
 
-    // Plain OPFS node.
-    const items: ContextMenuItem[] = [{ label: 'Rename', action: () => beginRename(path) }];
-    if (isFile(path)) {
-      items.push({ label: 'Download', action: () => doDownload(path) });
-      // "Unpack" only for files whose extension peeler recognises
-      // (.sit / .hqx / .cpt / .bin / .sea).
-      if (isMacArchive(name)) items.push({ label: 'Unpack', action: () => doUnpack(path) });
-    }
+    // Plain OPFS nodes.
+    const items: ContextMenuItem[] = [];
+    if (!multi) items.push({ label: 'Rename', action: () => beginRename(path) });
+    if (targets.some((t) => isFile(t)))
+      items.push({
+        label: multi ? 'Download files' : 'Download',
+        action: () => doDownload(targets),
+      });
+    if (!multi && isFile(path) && isMacArchive(name))
+      items.push({ label: 'Unpack', action: () => doUnpack(path) });
     items.push({ sep: true });
-    items.push({ label: 'Delete', action: () => doDelete(path), danger: true });
+    items.push({
+      label: multi ? `Delete ${targets.length} items` : 'Delete',
+      action: () => doDelete(targets),
+      danger: true,
+    });
     openContextMenu(items, ev.clientX, ev.clientY);
+  }
+
+  // Extract a human-readable reason from a gsEval result. The bridge encodes a
+  // C-side V_ERROR as {"error": "..."}; anything else stringifies as-is.
+  function errText(res: unknown): string {
+    if (res && typeof res === 'object' && 'error' in res) {
+      return String((res as { error: unknown }).error);
+    }
+    return String(res);
+  }
+
+  // Toast for a bulk move/copy, naming the items that failed (if any) and the
+  // first failure's reason.
+  function bulkToast(verb: string, dst: string, total: number, failures: string[], reason = '') {
+    if (failures.length) {
+      const ok = total - failures.length;
+      const list = failures.slice(0, 3).join(', ') + (failures.length > 3 ? '…' : '');
+      const why = reason ? ` (${reason})` : '';
+      showNotification(
+        `${verb} ${ok}/${total} to '${dst}'. Failed: ${list}${why}`,
+        ok ? 'warning' : 'error',
+      );
+    } else {
+      showNotification(`${verb} ${total} item${total === 1 ? '' : 's'} to '${dst}'`, 'info');
+    }
+  }
+
+  // Make a name safe for an OPFS / cross-platform destination: replace
+  // characters OPFS or Windows reject (notably ':' which the HFS reader
+  // produces from an in-name '/') and trim trailing dots/spaces. Spaces and
+  // leading dots are kept. Used when copying OUT of a read-only image.
+  function opfsSafeName(name: string): string {
+    const safe = name.replace(/[\\/:*?"<>|]/g, '_').replace(/[ .]+$/g, '');
+    return safe || 'untitled';
   }
 
   // Extract a peeler-recognised archive into a sibling "<name>_unpacked"
@@ -332,20 +471,31 @@
     }
   }
 
-  async function doDelete(path: string[]) {
-    const target = path[path.length - 1];
-    const name = target.split('/').pop() ?? '';
+  async function doDelete(targets: string[][]) {
+    if (!targets.length) return;
+    const names = targets.map((t) => t[t.length - 1].split('/').pop() ?? '');
+    const label = targets.length === 1 ? `'${names[0]}'` : `${targets.length} items`;
     if (typeof window !== 'undefined' && typeof window.confirm === 'function') {
-      if (!window.confirm(`Delete '${name}'?`)) return;
+      if (!window.confirm(`Delete ${label}?`)) return;
     }
-    try {
-      await opfs.delete(target);
-      delete childrenCache[pathKey(path.slice(0, -1))];
-      await refresh();
-      showNotification(`Deleted '${name}'`, 'info');
-    } catch {
-      showNotification('Delete failed', 'error');
+    let failed = 0;
+    for (const t of targets) {
+      try {
+        await opfs.delete(t[t.length - 1]);
+      } catch {
+        failed++;
+      }
     }
+    delete childrenCache[pathKey(targets[0].slice(0, -1))];
+    clearFsSelection();
+    await refresh();
+    const ok = targets.length - failed;
+    if (failed)
+      showNotification(
+        `Deleted ${ok}/${targets.length}; ${failed} failed`,
+        ok ? 'warning' : 'error',
+      );
+    else showNotification(`Deleted ${label}`, 'info');
   }
 
   // Save a Blob to the user's machine via a transient object-URL anchor.
@@ -361,25 +511,36 @@
     URL.revokeObjectURL(url);
   }
 
-  // Download a file to the host. For a plain OPFS file the bytes are read
-  // straight from OPFS. For a file inside a (read-only) disk image we first
-  // copy its data fork out to a scratch OPFS path via the VFS-backed
-  // storage.cp, read that, then delete the scratch file.
-  async function doDownload(path: string[]) {
-    const target = path[path.length - 1];
-    const name = target.split('/').pop() ?? 'download';
-    if (!isFile(path)) {
+  // Download the file targets to the host (folders/partitions are skipped).
+  async function doDownload(targets: string[][]) {
+    const files = targets.filter((t) => isFile(t));
+    if (!files.length) {
       showNotification('Only files can be downloaded', 'warning');
       return;
     }
+    let failed = 0;
+    for (const t of files) if (!(await downloadOne(t))) failed++;
+    const ok = files.length - failed;
+    if (failed) {
+      showNotification(`Downloaded ${ok}/${files.length}`, ok ? 'warning' : 'error');
+    } else if (files.length === 1) {
+      showNotification(`Downloading '${files[0][files[0].length - 1].split('/').pop()}'`, 'info');
+    } else {
+      showNotification(`Downloading ${files.length} files`, 'info');
+    }
+  }
+
+  // Download one file. For a plain OPFS file the bytes are read straight from
+  // OPFS. For a file inside a (read-only) disk image we first copy its data
+  // fork out to a scratch OPFS path via the VFS-backed storage.cp, read that,
+  // then delete the scratch file. Returns false on failure.
+  async function downloadOne(path: string[]): Promise<boolean> {
+    const target = path[path.length - 1];
+    const name = target.split('/').pop() ?? 'download';
     try {
       if (isInImageSpace(target)) {
         const scratch = `${UPLOAD_DIR}/.dl-${downloadSeq++}-${sanitizeName(name)}`;
-        const copied = (await gsEval('storage.cp', [target, scratch])) === true;
-        if (!copied) {
-          showNotification(`Failed to read '${name}' from the disk image`, 'error');
-          return;
-        }
+        if ((await gsEval('storage.cp', [target, scratch])) !== true) return false;
         try {
           saveBlob(await opfs.readFile(scratch), name);
         } finally {
@@ -388,10 +549,10 @@
       } else {
         saveBlob(await opfs.readFile(target), name);
       }
-      showNotification(`Downloading '${name}'`, 'info');
+      return true;
     } catch (err) {
       console.error('download failed', err);
-      showNotification(`Download failed: ${name}`, 'error');
+      return false;
     }
   }
 </script>
@@ -402,11 +563,11 @@
       nodes={rootNodes}
       lazyCache={childrenCache}
       expanded={filesystem.expanded}
-      selectedKey={filesystem.selectedPath}
+      selectedKeys={filesystem.selected}
       dragSourceKey={filesystem.dragSourcePath}
       {dropTargetKey}
       onToggle={(p) => toggleFsExpanded(pathKey(p))}
-      onSelect={(p) => setFsSelected(pathKey(p))}
+      onSelect={handleSelect}
       onContextMenu={handleContextMenu}
       onDragStart={handleDragStart}
       onDragOver={handleDragOver}

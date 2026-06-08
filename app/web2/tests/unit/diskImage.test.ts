@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { isDiskImage, isInImageSpace, listViaVfs } from '@/lib/diskImage';
+import { isDiskImage, isInImageSpace, listViaVfs, imageRootOf } from '@/lib/diskImage';
 
 describe('disk-image path helpers', () => {
   it('isDiskImage recognises image extensions, case-insensitive', () => {
@@ -29,5 +29,14 @@ describe('disk-image path helpers', () => {
     // Plain OPFS paths are never image space.
     expect(isInImageSpace('/opfs/images/hd/notes.txt')).toBe(false);
     expect(isInImageSpace('/opfs')).toBe(false);
+  });
+
+  it('imageRootOf returns the image-file portion, or null off-image', () => {
+    expect(imageRootOf('/opfs/images/hd/disk.img/partition1/etc/motd')).toBe(
+      '/opfs/images/hd/disk.img',
+    );
+    expect(imageRootOf('/opfs/images/hd/disk.img')).toBe('/opfs/images/hd/disk.img');
+    expect(imageRootOf('/opfs/images/hd/notes.txt')).toBeNull();
+    expect(imageRootOf('/opfs')).toBeNull();
   });
 });

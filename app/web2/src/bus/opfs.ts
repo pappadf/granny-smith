@@ -6,6 +6,7 @@
 import type { CheckpointEntry, ImageCategory, OpfsEntry, RecentEntry, RomInfo } from './types';
 import { CHECKPOINT_DIR, ROMS_DIR } from '@/lib/opfsPaths';
 import { parseCheckpointDirName, formatCheckpointLabel } from '@/lib/checkpointMeta';
+import { gsEval, isModuleReady } from './emulator';
 
 export interface OpfsBackend {
   list(dir: string): Promise<OpfsEntry[]>;
@@ -381,6 +382,15 @@ export class BrowserOpfs implements OpfsBackend {
   }
 
   async delete(path: string): Promise<void> {
+    // Route through the worker (WasmFS) so its inode cache stays coherent with
+    // OPFS. A main-thread navigator.storage delete is invisible to the worker,
+    // leaving a dangling inode that breaks a later worker-side create at the
+    // same path (e.g. re-copying a file out of an image after deleting it).
+    try {
+      if (isModuleReady() && (await gsEval('storage.rm', [path])) === true) return;
+    } catch {
+      // Fall through to a direct OPFS delete.
+    }
     try {
       const parent = await getDirAtPath(path.replace(/\/[^/]+$/, ''));
       const name = path.split('/').pop() ?? '';
