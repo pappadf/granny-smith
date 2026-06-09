@@ -47,6 +47,13 @@ struct rtc {
     struct scheduler *scheduler;
     struct object *object; // object-tree node; lifetime tied to this rtc
     struct object *pram_object; // rtc.pram child node (peek/poke/dump/...)
+
+    // Chip variant — set at construction, NOT checkpointed (it is a fixed
+    // machine property, restored from the constructor arg).  true = the
+    // 256-byte "extended" RTC (SE/30 + Mac II family); false = the 20-byte
+    // RTC of the Plus/SE.  Selects how the legacy one-byte PRAM commands map
+    // onto physical PRAM bytes (see read_cmd/write_cmd).
+    bool extended;
 };
 
 extern const class_desc_t rtc_pram_class;
@@ -66,6 +73,25 @@ extern const class_desc_t rtc_pram_class;
 #define CMD_WRITE_PROTECT 0x35
 
 void rtc_input(rtc_t *rtc, bool disable, bool clock, bool data);
+
+// Map a legacy one-byte PRAM command to its physical PRAM byte index, or -1
+// if `cmd` is not a PRAM register command.  The classic 20-byte SysParam
+// block is addressed as two register groups whose physical base differs by
+// chip variant (Inside Macintosh Vol. III, "The Real-Time Clock"; confirmed
+// by the Mini-vMac-derived macsehw MacRTC.c):
+//   group "A" (z010aa01, 4 bytes)  -> $08..$0B (extended) / $10..$13 (pre-Plus)
+//   group "B" (z1aaaa01, 16 bytes) -> $10..$1F (extended) / $00..$0F (pre-Plus)
+// On the extended chip this leaves physical $0C..$0F free for the XPRAM
+// 'NuMc' validity signature (reached only by the two-byte extended command),
+// so stamping 'NuMc' no longer collides with SysParam bytes such as SPKbd
+// (auto-key, physical $1E) or SPClikCaret (caret/double-click, physical $08).
+static int legacy_pram_addr(const rtc_t *rtc, uint8_t cmd) {
+    if ((cmd & 0x70) == 0x20) // group "A": z010aa01 (4 bytes)
+        return (rtc->extended ? 0x08 : 0x10) + ((cmd >> 2) & 0x03);
+    if ((cmd & 0x40) == 0x40) // group "B": z1aaaa01 (16 bytes)
+        return (rtc->extended ? 0x10 : 0x00) + ((cmd >> 2) & 0x0F);
+    return -1;
+}
 
 static uint8_t read_cmd(rtc_t *rtc, uint8_t cmd) {
     // high bits set equals read operation
@@ -99,17 +125,13 @@ static uint8_t read_cmd(rtc_t *rtc, uint8_t cmd) {
         LOG(2, "Unexpected read from write-only WRITE_PROTECT register");
         return 0x00;
 
-    default:
-        // Pattern for addresses 0x10-0x13: z010aa01 where aa are address bits
-        // Fixed bits: 6=0, 5=1, 4=0. Bit 3 is an address bit, not checked.
-        // Mask: 0x70 (0111 0000) checks only bits 6-5-4
-        if ((cmd & 0x70) == 0x20)
-            return rtc->pram[0x10 + ((cmd >> 2) & 0x03)];
-        // Pattern for addresses 0x00-0x0F: z1aaaa01 where aaaa are address bits
-        // Fixed bit: 6=1. Bits 5-2 are address bits, not checked.
-        // Mask: 0x40 (0100 0000) checks only bit 6
-        else if ((cmd & 0x40) == 0x40)
-            return rtc->pram[(cmd >> 2) & 0x0F];
+    default: {
+        // PRAM register read (group A: z010aa01, group B: z1aaaa01).
+        // legacy_pram_addr() resolves the physical byte per chip variant.
+        int addr = legacy_pram_addr(rtc, cmd);
+        if (addr >= 0)
+            return rtc->pram[addr];
+    }
     }
 
     LOG(1, "Unknown read command: 0x%02X", cmd);
@@ -165,22 +187,15 @@ static void write_cmd(rtc_t *rtc, uint8_t cmd, uint8_t pram) {
         LOG(3, "Write protection %s", rtc->read_only ? "enabled" : "disabled");
         return;
 
-    default:
-        // Pattern for addresses 0x10-0x13: z010aa01 where aa are address bits
-        // Fixed bits: 6=0, 5=1, 4=0. Bit 3 is an address bit, not checked.
-        // Mask: 0x70 (0111 0000) checks only bits 6-5-4
-        if ((cmd & 0x70) == 0x20) {
-            uint8_t wa = 0x10 + ((cmd >> 2) & 0x03);
+    default: {
+        // PRAM register write (group A: z010aa01, group B: z1aaaa01).
+        // legacy_pram_addr() resolves the physical byte per chip variant.
+        int wa = legacy_pram_addr(rtc, cmd);
+        if (wa >= 0)
             rtc->pram[wa] = pram;
-        }
-        // Pattern for addresses 0x00-0x0F: z1aaaa01 where aaaa are address bits
-        // Fixed bit: 6=1. Bits 5-2 are address bits, not checked.
-        // Mask: 0x40 (0100 0000) checks only bit 6
-        else if ((cmd & 0x40) == 0x40) {
-            uint8_t wa = (cmd >> 2) & 0x0F;
-            rtc->pram[wa] = pram;
-        } else
+        else
             LOG(1, "Unknown write command: 0x%02X data=0x%02X", cmd, pram);
+    }
     }
 
     return;
@@ -356,7 +371,7 @@ bool rtc_pram_write(rtc_t *rtc, uint8_t addr, uint8_t value) {
     return true;
 }
 
-rtc_t *rtc_init(struct scheduler *restrict scheduler, checkpoint_t *checkpoint) {
+rtc_t *rtc_init(struct scheduler *restrict scheduler, checkpoint_t *checkpoint, bool extended) {
     rtc_t *rtc = (rtc_t *)malloc(sizeof(rtc_t));
     if (rtc == NULL)
         return NULL;
@@ -364,6 +379,7 @@ rtc_t *rtc_init(struct scheduler *restrict scheduler, checkpoint_t *checkpoint) 
     memset(rtc, 0, sizeof(rtc_t));
 
     rtc->scheduler = scheduler;
+    rtc->extended = extended; // fixed machine property; set after any checkpoint restore below
 
     rtc->seconds = wall_clock_seconds();
 

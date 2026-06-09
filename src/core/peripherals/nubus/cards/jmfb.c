@@ -888,23 +888,30 @@ static int card_init(nubus_card_t *card, config_t *cfg, checkpoint_t *cp) {
                 LOG(1, "jmfb: unexpected video-mode depth=%d; PRAM seed using $80 (1bpp)", seeded_depth_bpp);
                 break;
             }
-            // Boot-ROM cold-init validity tokens (docs/pram.md §3) —
-            // without these `_InitUtil` rewrites low-PRAM and zeroes
-            // XPRAM at boot, clobbering our slot-9 sPRAMRec seed.
-            rtc_pram_write(rtc, 0x00, 0xA8);
+            // Stamp ONLY the XPRAM 'NuMc' validity signature ($0C..$0F) so
+            // the boot ROM's CkNewPram skips its XPRAM cold-init pass and
+            // preserves the slot-9 sPRAMRec we seed below (plus PRAMInitTbl).
+            // We deliberately do NOT stamp the low-PRAM validity byte: leaving
+            // it invalid lets `_InitUtil` cold-init the 20-byte SysParam block,
+            // so caret-blink / double-click (SPClikCaret), key-repeat (SPKbd)
+            // and the application font come up at their correct ROM defaults.
+            // On the extended RTC the SysParam block lives at physical
+            // $08..$0B / $10..$1F (see rtc.c legacy_pram_addr), well clear of
+            // the 'NuMc' bytes at $0C..$0F — so the validity signature and the
+            // SysParam settings coexist with no overlap, exactly as on real
+            // hardware.  (Stamping low-PRAM valid here instead would skip the
+            // SysParam cold-init and leave those fields junk — that was the
+            // cause of the IIcx/IIfx strobing-caret / dead-double-click bug.)
             rtc_pram_write(rtc, 0x0C, 0x4E); // 'N'
             rtc_pram_write(rtc, 0x0D, 0x75); // 'u'
             rtc_pram_write(rtc, 0x0E, 0x4D); // 'M'
             rtc_pram_write(rtc, 0x0F, 0x63); // 'c'
-            // Stamping 'NuMc' makes the boot ROM's CkNewPram (part of _InitUtil) treat XPRAM as already valid, so it
-            // SKIPS its cold-init pass and never writes PRAMInitTbl ($76..$89). That table holds the default OS type
-            // and boot device the Start Manager reads (StartSearch.a EmbarkOnSearch via _GetOSDefault /
-            // _GetDefaultStartup): without it OSType=$77, DriveId=$78 and
-            // PartitionId=$79 stay 0, so D3 reaches SCSILoad as $00000000
-            // instead of $0001FFFF and the boot-driver DDM match never fires
-            // — A/UX won't boot from the SCSI HD (falls back to floppy).  So
-            // when we fake PRAM-valid to keep our slot record, we must also
-            // reproduce the ROM's PRAMInitTbl defaults.  Bytes $7C..$89 are
+            // The Start Manager reads the default OS type and boot device from
+            // PRAMInitTbl ($76..$89); CkNewPram skips writing it once 'NuMc'
+            // is present, so reproduce it here.  Without it OSType=$77,
+            // DriveId=$78 and PartitionId=$79 stay 0, so D3 reaches SCSILoad as
+            // $00000000 instead of $0001FFFF and the boot-driver DDM match
+            // never fires (A/UX falls back to floppy).  Bytes $7C..$89 are
             // zero (already cold-zero) but are written for an exact mirror.
             static const uint8_t pram_init_tbl[] = {
                 0x00, // $76 reserved

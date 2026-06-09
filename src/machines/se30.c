@@ -760,7 +760,7 @@ static void se30_init(config_t *cfg, checkpoint_t *checkpoint) {
         system_read_checkpoint_data(checkpoint, &cfg->irq, sizeof(cfg->irq));
 
     // Initialise RTC (not yet wired to VIA — deferred until VIA2 exists)
-    cfg->rtc = rtc_init(cfg->scheduler, checkpoint);
+    cfg->rtc = rtc_init(cfg->scheduler, checkpoint, true);
 
     // Initialise SCC (NULL map: SE/30 I/O dispatcher handles addressing)
     cfg->scc = scc_init(NULL, cfg->scheduler, se30_scc_irq, cfg, checkpoint);
