@@ -5,12 +5,19 @@
   import RenameDialog from './RenameDialog.svelte';
   import ConfirmDialog from '@/components/dialogs/ConfirmDialog.svelte';
   import { opfs } from '@/bus/opfs';
-  import { gsEval } from '@/bus/emulator';
   import { vfsList } from '@/bus/vfs';
   import { acceptFilesRaw } from '@/bus/upload';
-  import { isMacArchive, sanitizeName } from '@/lib/archive';
-  import { isDiskImage, isInImageSpace, listViaVfs, imageRootOf } from '@/lib/diskImage';
-  import { UPLOAD_DIR } from '@/lib/opfsPaths';
+  import {
+    copyOutOfImage,
+    moveItems,
+    deleteItems,
+    downloadFiles,
+    unpackArchive,
+    type BulkResult,
+    type ProgressFn,
+  } from '@/bus/fsOps';
+  import { isMacArchive } from '@/lib/archive';
+  import { isDiskImage, isInImageSpace, listViaVfs } from '@/lib/diskImage';
   import { showNotification } from '@/state/toasts.svelte';
   import { bumpImagesRevision } from '@/state/images.svelte';
   import { startUpload, finishUpload } from '@/state/uploads.svelte';
@@ -30,10 +37,6 @@
 
   // Cache: pathKey → loaded children. Cleared on user-initiated mutations.
   const childrenCache = $state<Record<string, TreeNode[]>>({});
-
-  // Monotonic suffix for unique scratch filenames when extracting a file out
-  // of a read-only image for download.
-  let downloadSeq = 0;
 
   // Path arrays of the node(s) currently being dragged — one, or the whole
   // multi-selection. Kept verbatim (not re-derived from the space-joined
@@ -237,55 +240,28 @@
       // OPFS (move).
       const fromImage = isInImageSpace(sources[0][sources[0].length - 1]);
       const verb = fromImage ? 'Copying' : 'Moving';
-      const failures: string[] = [];
-      let firstReason = '';
+      const progress: ProgressFn = (name, i, total) =>
+        startUpload(total > 1 ? `${name} (${i + 1}/${total})` : name, verb);
       try {
-        for (let i = 0; i < sources.length; i++) {
-          const s = sources[i];
-          const src = s[s.length - 1];
-          const name = src.split('/').pop() ?? '';
-          // Surface progress immediately and per item — copying a large image
-          // out can take a few seconds.
-          startUpload(sources.length > 1 ? `${name} (${i + 1}/${sources.length})` : name, verb);
-          if (fromImage) {
-            // Copy OUT of a read-only image. Sanitise the destination name:
-            // classic-Mac names routinely contain '/' (surfaced as ':' by the
-            // HFS reader) and other characters OPFS rejects, which otherwise
-            // makes the write fail for that item.
-            const dst = `${dstParent}/${opfsSafeName(name)}`;
-            const args = nodeForPath(s)?.kind === 'directory' ? ['-r', src, dst] : [src, dst];
-            let res = await gsEval('storage.cp', args);
-            if (res !== true) {
-              // A cached image auto-mount can wedge after intervening OPFS
-              // changes (e.g. deleting an earlier copy). Drop it and retry once.
-              const root = imageRootOf(src);
-              if (root) {
-                await gsEval('storage.unmount', [root]);
-                res = await gsEval('storage.cp', args);
-              }
-            }
-            if (res !== true) {
-              failures.push(name);
-              const reason = errText(res);
-              if (!firstReason) firstReason = reason;
-              console.error('drag copy-out failed:', src, '->', dst, '|', reason);
-            }
-          } else {
-            const dst = `${dstParent}/${name}`;
-            try {
-              await opfs.move(src, dst);
-            } catch (err) {
-              failures.push(name);
-              if (!firstReason) firstReason = String(err);
-              console.error('drag move failed:', src, '->', dst, '|', err);
-            }
-          }
-        }
+        const result = fromImage
+          ? await copyOutOfImage(
+              sources.map((s) => ({
+                path: s[s.length - 1],
+                isDir: nodeForPath(s)?.kind === 'directory',
+              })),
+              dstParent,
+              progress,
+            )
+          : await moveItems(
+              sources.map((s) => s[s.length - 1]),
+              dstParent,
+              progress,
+            );
         if (!fromImage) delete childrenCache[pathKey(sources[0].slice(0, -1))];
         delete childrenCache[pathKey(path)];
         clearFsSelection();
         await refresh();
-        bulkToast(fromImage ? 'Copied' : 'Moved', dstParent, sources.length, failures, firstReason);
+        bulkToast(fromImage ? 'Copied' : 'Moved', dstParent, result);
       } finally {
         finishUpload();
         handleDragEnd();
@@ -424,22 +400,13 @@
     openContextMenu(items, ev.clientX, ev.clientY);
   }
 
-  // Extract a human-readable reason from a gsEval result. The bridge encodes a
-  // C-side V_ERROR as {"error": "..."}; anything else stringifies as-is.
-  function errText(res: unknown): string {
-    if (res && typeof res === 'object' && 'error' in res) {
-      return String((res as { error: unknown }).error);
-    }
-    return String(res);
-  }
-
   // Toast for a bulk move/copy, naming the items that failed (if any) and the
   // first failure's reason.
-  function bulkToast(verb: string, dst: string, total: number, failures: string[], reason = '') {
+  function bulkToast(verb: string, dst: string, { total, failures, firstError }: BulkResult) {
     if (failures.length) {
       const ok = total - failures.length;
       const list = failures.slice(0, 3).join(', ') + (failures.length > 3 ? '…' : '');
-      const why = reason ? ` (${reason})` : '';
+      const why = firstError ? ` (${firstError})` : '';
       showNotification(
         `${verb} ${ok}/${total} to '${dst}'. Failed: ${list}${why}`,
         ok ? 'warning' : 'error',
@@ -449,40 +416,26 @@
     }
   }
 
-  // Make a name safe for an OPFS / cross-platform destination: replace
-  // characters OPFS or Windows reject (notably ':' which the HFS reader
-  // produces from an in-name '/') and trim trailing dots/spaces. Spaces and
-  // leading dots are kept. Used when copying OUT of a read-only image.
-  function opfsSafeName(name: string): string {
-    const safe = name.replace(/[\\/:*?"<>|]/g, '_').replace(/[ .]+$/g, '');
-    return safe || 'untitled';
-  }
-
   // Extract a peeler-recognised archive into a sibling "<name>_unpacked"
-  // folder via the C-side archive module, then reveal it in the tree.
+  // folder, then reveal it in the tree.
   async function doUnpack(path: string[]) {
     const target = path[path.length - 1];
     const name = target.split('/').pop() ?? '';
-    const parentDir = target.replace(/\/[^/]+$/, '');
-    const base = name.replace(/\.[^.]+$/, '') || name;
-    const outDir = `${parentDir}/${base}_unpacked`;
     startUpload(name, 'Unpacking');
-    let ok = false;
+    let result: { ok: boolean; base: string };
     try {
-      ok = (await gsEval('archive.extract', [target, outDir])) === true;
-    } catch {
-      ok = false;
+      result = await unpackArchive(target);
     } finally {
       finishUpload();
     }
-    if (!ok) {
+    if (!result.ok) {
       showNotification(`Failed to unpack '${name}'`, 'error');
       return;
     }
     // Reveal the new folder: invalidate the parent listing and refresh.
     delete childrenCache[pathKey(path.slice(0, -1))];
     await refresh();
-    showNotification(`Unpacked '${name}' to '${base}_unpacked'`, 'info');
+    showNotification(`Unpacked '${name}' to '${result.base}_unpacked'`, 'info');
   }
 
   function beginRename(path: string[]) {
@@ -521,104 +474,54 @@
   async function performDelete(targets: string[][]) {
     confirmOpen = false;
     if (!targets.length) return;
-    const names = targets.map((t) => t[t.length - 1].split('/').pop() ?? '');
-    const label = targets.length === 1 ? `'${names[0]}'` : `${targets.length} items`;
-    let failed = 0;
+    const label =
+      targets.length === 1
+        ? `'${targets[0][targets[0].length - 1].split('/').pop()}'`
+        : `${targets.length} items`;
+    let result: BulkResult;
     try {
-      for (let i = 0; i < targets.length; i++) {
-        const t = targets[i];
-        const tname = t[t.length - 1].split('/').pop() ?? '';
-        startUpload(
-          targets.length > 1 ? `${tname} (${i + 1}/${targets.length})` : tname,
-          'Deleting',
-        );
-        try {
-          await opfs.delete(t[t.length - 1]);
-        } catch {
-          failed++;
-        }
-      }
+      result = await deleteItems(
+        targets.map((t) => t[t.length - 1]),
+        (name, i, total) =>
+          startUpload(total > 1 ? `${name} (${i + 1}/${total})` : name, 'Deleting'),
+      );
     } finally {
       finishUpload();
     }
     delete childrenCache[pathKey(targets[0].slice(0, -1))];
     clearFsSelection();
     await refresh();
-    const ok = targets.length - failed;
-    if (failed)
+    const ok = result.total - result.failures.length;
+    if (result.failures.length)
       showNotification(
-        `Deleted ${ok}/${targets.length}; ${failed} failed`,
+        `Deleted ${ok}/${result.total}; ${result.failures.length} failed`,
         ok ? 'warning' : 'error',
       );
     else showNotification(`Deleted ${label}`, 'info');
   }
 
-  // Save a Blob to the user's machine via a transient object-URL anchor.
-  function saveBlob(blob: Blob, filename: string) {
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = filename;
-    a.style.display = 'none';
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-    URL.revokeObjectURL(url);
-  }
-
   // Download the file targets to the host (folders/partitions are skipped).
   async function doDownload(targets: string[][]) {
-    const files = targets.filter((t) => isFile(t));
+    const files = targets.filter((t) => isFile(t)).map((t) => t[t.length - 1]);
     if (!files.length) {
       showNotification('Only files can be downloaded', 'warning');
       return;
     }
-    let failed = 0;
+    let result: BulkResult;
     try {
-      for (let i = 0; i < files.length; i++) {
-        const fname = files[i][files[i].length - 1].split('/').pop() ?? '';
-        startUpload(
-          files.length > 1 ? `${fname} (${i + 1}/${files.length})` : fname,
-          'Downloading',
-        );
-        if (!(await downloadOne(files[i]))) failed++;
-      }
+      result = await downloadFiles(files, (name, i, total) =>
+        startUpload(total > 1 ? `${name} (${i + 1}/${total})` : name, 'Downloading'),
+      );
     } finally {
       finishUpload();
     }
-    const ok = files.length - failed;
-    if (failed) {
-      showNotification(`Downloaded ${ok}/${files.length}`, ok ? 'warning' : 'error');
+    const ok = result.total - result.failures.length;
+    if (result.failures.length) {
+      showNotification(`Downloaded ${ok}/${result.total}`, ok ? 'warning' : 'error');
     } else if (files.length === 1) {
-      showNotification(`Downloading '${files[0][files[0].length - 1].split('/').pop()}'`, 'info');
+      showNotification(`Downloading '${files[0].split('/').pop()}'`, 'info');
     } else {
       showNotification(`Downloading ${files.length} files`, 'info');
-    }
-  }
-
-  // Download one file. For a plain OPFS file the bytes are read straight from
-  // OPFS. For a file inside a (read-only) disk image we first copy its data
-  // fork out to a scratch OPFS path via the VFS-backed storage.cp, read that,
-  // then delete the scratch file. Returns false on failure.
-  async function downloadOne(path: string[]): Promise<boolean> {
-    const target = path[path.length - 1];
-    const name = target.split('/').pop() ?? 'download';
-    try {
-      if (isInImageSpace(target)) {
-        const scratch = `${UPLOAD_DIR}/.dl-${downloadSeq++}-${sanitizeName(name)}`;
-        if ((await gsEval('storage.cp', [target, scratch])) !== true) return false;
-        try {
-          saveBlob(await opfs.readFile(scratch), name);
-        } finally {
-          await opfs.delete(scratch);
-        }
-      } else {
-        saveBlob(await opfs.readFile(target), name);
-      }
-      return true;
-    } catch (err) {
-      console.error('download failed', err);
-      return false;
     }
   }
 </script>
