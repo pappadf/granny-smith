@@ -12,6 +12,10 @@
     desc?: string;
     /** True for non-expandable rows; children won't be requested. */
     leaf?: boolean;
+    /** Underlying entry kind, when distinct from `leaf` (e.g. a disk image is
+     *  a file yet rendered expandable). Optional; consumers that don't need it
+     *  leave it unset. */
+    kind?: 'file' | 'directory';
     draggable?: boolean;
     /** Pre-computed children (static mode). When omitted + !leaf, children
      *  are fetched lazily via loadChildren on first expand. */

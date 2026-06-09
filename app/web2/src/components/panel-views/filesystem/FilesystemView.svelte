@@ -31,12 +31,6 @@
   // Cache: pathKey → loaded children. Cleared on user-initiated mutations.
   const childrenCache = $state<Record<string, TreeNode[]>>({});
 
-  // Node id (full path) → entry kind. The TreeNode `leaf` flag can't carry
-  // this: a disk image is a file yet rendered expandable (leaf=false), so we
-  // track kind separately to decide what's downloadable. Read imperatively in
-  // the context-menu handler, so it doesn't need to be reactive.
-  const nodeKind: Record<string, 'file' | 'directory'> = {};
-
   // Monotonic suffix for unique scratch filenames when extracting a file out
   // of a read-only image for download.
   let downloadSeq = 0;
@@ -76,7 +70,6 @@
         return a.name.localeCompare(b.name);
       })
       .map((e) => {
-        nodeKind[e.path] = e.kind;
         // A disk image that is a real OPFS file (not itself inside another
         // image) is expandable: expanding it lists its partitions via VFS.
         const expandableImage = e.kind === 'file' && isDiskImage(e.name) && !isInImageSpace(e.path);
@@ -85,6 +78,9 @@
           label: e.name,
           icon: iconForFsEntry(e),
           leaf: e.kind === 'file' && !expandableImage,
+          // Keep the true kind: `leaf` is repurposed for expandable images, so
+          // it can't tell us whether a node is downloadable / needs -r.
+          kind: e.kind,
           // Every entry is draggable. An OPFS node moves; a node inside a
           // (read-only) image is instead copied out to the drop target.
           draggable: true,
@@ -257,7 +253,7 @@
             // HFS reader) and other characters OPFS rejects, which otherwise
             // makes the write fail for that item.
             const dst = `${dstParent}/${opfsSafeName(name)}`;
-            const args = nodeKind[src] === 'directory' ? ['-r', src, dst] : [src, dst];
+            const args = nodeForPath(s)?.kind === 'directory' ? ['-r', src, dst] : [src, dst];
             let res = await gsEval('storage.cp', args);
             if (res !== true) {
               // A cached image auto-mount can wedge after intervening OPFS
@@ -310,10 +306,17 @@
     }
   }
 
-  // True when the row at `path` is a file (has bytes), per its tracked entry
-  // kind. Note a disk-image node is a file even though it renders expandable.
+  // The cached tree node for a path, looked up from its parent's listing.
+  function nodeForPath(path: string[]): TreeNode | undefined {
+    const id = path[path.length - 1];
+    return childrenCache[pathKey(path.slice(0, -1))]?.find((n) => n.id === id);
+  }
+
+  // True when the row at `path` is a file (has bytes). Note a disk-image node
+  // is a file even though it renders expandable, so this reads the node's
+  // `kind`, not `leaf`.
   function isFile(path: string[]): boolean {
-    return nodeKind[path[path.length - 1]] === 'file';
+    return nodeForPath(path)?.kind === 'file';
   }
 
   // --- Multi-selection (siblings only) ---------------------------------
