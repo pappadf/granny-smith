@@ -24,7 +24,12 @@ typedef struct rtc rtc_t;
 
 // === Lifecycle (Constructor / Destructor / Checkpoint) ===
 
-rtc_t *rtc_init(struct scheduler *scheduler, checkpoint_t *checkpoint);
+// `extended` selects the chip variant: true for the 256-byte XPRAM RTC used
+// by the Plus, SE, SE/30 and the whole Mac II family; false only for the
+// pre-Plus 20-byte RTC (128K/512K — not currently emulated).  It changes how
+// the legacy one-byte PRAM commands map onto physical PRAM bytes so the XPRAM
+// 'NuMc' signature ($0C..$0F) doesn't collide with the SysParam block.
+rtc_t *rtc_init(struct scheduler *scheduler, checkpoint_t *checkpoint, bool extended);
 
 void rtc_delete(rtc_t *rtc);
 

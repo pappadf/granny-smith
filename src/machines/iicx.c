@@ -530,7 +530,7 @@ static void iicx_init(config_t *cfg, checkpoint_t *checkpoint) {
     if (checkpoint)
         system_read_checkpoint_data(checkpoint, &cfg->irq, sizeof(cfg->irq));
 
-    cfg->rtc = rtc_init(cfg->scheduler, checkpoint);
+    cfg->rtc = rtc_init(cfg->scheduler, checkpoint, true);
     cfg->scc = scc_init(NULL, cfg->scheduler, iicx_scc_irq, cfg, checkpoint);
     scc_set_clocks(cfg->scc, 7833600, 3686400);
 

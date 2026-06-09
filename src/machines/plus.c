@@ -186,7 +186,7 @@ static void plus_init(config_t *cfg, checkpoint_t *checkpoint) {
         system_read_checkpoint_data(checkpoint, &cfg->irq, sizeof(cfg->irq));
     }
 
-    cfg->rtc = rtc_init(cfg->scheduler, checkpoint);
+    cfg->rtc = rtc_init(cfg->scheduler, checkpoint, true);
 
     cfg->scc = scc_init(cfg->mem_map, cfg->scheduler, plus_scc_irq, cfg, checkpoint);
 

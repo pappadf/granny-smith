@@ -57,15 +57,40 @@ its **own independent validity token**:
 +----------------------------------------------------------------+
 ```
 
-**Note the overlap.** The 'NuMc' XPRAM signature is stored at offsets
-`$0C..$0F`, which are **inside** the 20-byte low region. This is intentional:
-the ROM writes the `$A8` validity byte first via the "old" PRAM trap
-(`_WriteParam`), then writes 'NuMc' at $0C..$0F via `_WriteXPRam`,
-overwriting four of the low-PRAM bytes. The original 20-byte spec
-designated those overlapping bytes as the AppleTalk node hint and serial
-port settings; on machines with the new clock chip those four bytes
-are repurposed as the XPRAM signature, and the AppleTalk/serial config
-is moved into XPRAM proper.
+**Logical view vs. physical layout — there is NO overlap.** The `$00..$13`
+addresses above are the **logical** offsets used by `_ReadParam` /
+`_WriteParam` (the 20-byte SysParam record) and by the byte-addressed
+`_ReadXPRam` / `_WriteXPRam` view. They are *not* the physical RTC PRAM
+addresses. In the logical SysParam record the 'NuMc'-bearing bytes
+(`$0C..$0F` = app-font / auto-key / printer) appear to sit "inside" the
+20-byte region, which historically led to the belief that 'NuMc' overwrites
+them. **It does not.** On the **extended RTC** (256-byte chip — Plus, SE,
+SE/30 and the whole Mac II family) the legacy one-byte PRAM commands map the
+20-byte block onto *non-contiguous* physical bytes:
+
+| legacy group (cmd) | logical SysParam bytes | physical PRAM bytes |
+|---|---|---|
+| group "B" (`z1aaaa01`, 16 bytes) | `$00..$0F` | **`$10..$1F`** |
+| group "A" (`z010aa01`, 4 bytes)  | `$10..$13` | **`$08..$0B`** |
+
+The XPRAM 'NuMc' signature lives at **physical** `$0C..$0F`, which the legacy
+20-byte path never reaches — it falls in the gap between the two groups. So
+`SPClikCaret` (caret/double-click) lands at physical `$08..$09`, `SPKbd`
+(auto-key) at physical `$1E`, the app font at physical `$1C..$1D`, and 'NuMc'
+at physical `$0C..$0F` — all distinct. The validity signature and the
+keyboard/caret/font settings coexist with no collision (matching real
+hardware: a Mac keeps monitor depth *and* keyboard repeat at once).
+Pre-Plus RTCs (128K/512K — not emulated here) have only the 20-byte chip and
+pack group "B" at `$00..$0F` / group "A" at `$10..$13`, with no XPRAM and no
+'NuMc'. See `rtc.c` `legacy_pram_addr()` and `rtc_init(..., extended)`.
+
+> **Emulator note.** Granny Smith originally modelled the legacy block at the
+> *pre-Plus* contiguous physical layout (`$00..$13`) for every machine, so
+> 'NuMc' at physical `$0C..$0F` did collide with `SPKbd`/`SPFont`/`SPClikCaret`.
+> On the IIcx/IIfx (which stamp 'NuMc' to seed the boot video mode) that
+> corrupted the SysParam bytes — strobing caret, impossible double-click,
+> wrong key-repeat, wrong app font. Fixed by mapping the extended-RTC legacy
+> groups to `$10..$1F` / `$08..$0B`.
 
 Both validity tokens are **literal byte patterns**, not checksums. The ROM
 makes no attempt to checksum or CRC the PRAM — bit rot or a partial write
@@ -194,9 +219,10 @@ The default values:
 | $12    | 1          | Disk-cache size in 32 KB blocks | `3` (= 96 KB)                        |
 | $13    | 1          | Misc bits (color desktop, mouse scaling, cache active, preferred boot, menu blink) | `(1<<7)|(1<<6)|(0<<5)|(0<<4)|(3<<2)` |
 
-Note that `$0C..$0F` from this table are immediately **overwritten** by
-the 'NuMc' XPRAM signature — that is normal and is how the ROM marks the
-XPRAM region valid in the same physical bytes.
+Note that `$0C..$0F` here are *logical* SysParam offsets (app-font /
+auto-key / printer). They are **not** overwritten by the 'NuMc' signature:
+on the extended RTC the legacy block maps to *physical* `$08..$0B` / `$10..$1F`,
+while 'NuMc' occupies *physical* `$0C..$0F` (see §2). The two never collide.
 
 ### 4.2 Start Manager defaults (`PRAMInitTbl`, 20 bytes, written into `$76..$89`)
 
