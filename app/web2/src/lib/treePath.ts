@@ -10,9 +10,10 @@
 export type TreePath = readonly string[];
 
 // String-form of a path, used as a Map/Record key (e.g. for `expanded`).
-// Separator is a literal space — Filesystem segments are slash-prefixed
-// absolute paths, so spaces don't collide with anything inside an id.
-const SEP = ' ';
+// Separator is the ASCII Unit Separator (U+001F): it can't occur in a
+// filesystem path or an object-model path, so keys are lossless even for
+// in-image names that contain spaces ("System Folder") or other punctuation.
+const SEP = '\x1f';
 
 export function pathKey(path: TreePath): string {
   return path.join(SEP);

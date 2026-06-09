@@ -3,6 +3,7 @@
   import Tree, { type TreeNode } from '@/components/common/Tree.svelte';
   import { loadMachineRoots, loadMachineChildren } from '@/bus/machineTree';
   import { machine } from '@/state/machine.svelte';
+  import { pathKey } from '@/lib/treePath';
 
   let rootNodes = $state<TreeNode[]>([]);
   let expanded = $state<Record<string, boolean>>({});
@@ -42,7 +43,7 @@
       nodes={rootNodes}
       {expanded}
       onToggle={(p) => {
-        const k = p.join(' ');
+        const k = pathKey(p);
         expanded[k] = !expanded[k];
       }}
       {loadChildren}
