@@ -379,6 +379,27 @@ static value_t storage_method_rm(struct object *self, const member_t *m, int arg
     return val_bool(storage_rm_tree(path) == 0);
 }
 
+// `storage.mv(src, dst)` — move/rename within the host filesystem. Like
+// storage.rm, routing the web UI's moves through the worker (rather than the
+// browser's main-thread OPFS API) keeps WasmFS coherent. Tries rename() first
+// (fast / atomic on the same volume); falls back to a recursive copy + remove.
+static value_t storage_method_mv(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)self;
+    (void)m;
+    (void)argc;
+    const char *src = argv[0].s;
+    const char *dst = argv[1].s;
+    if (!src || !*src || !dst || !*dst)
+        return val_err("storage.mv: expected (src, dst)");
+    if (rename(src, dst) == 0)
+        return val_bool(true);
+    char err[256] = {0};
+    if (shell_cp(src, dst, true, err, sizeof(err)) < 0)
+        return val_err("storage.mv: %s", err[0] ? err : "move failed");
+    storage_rm_tree(src);
+    return val_bool(true);
+}
+
 // `storage.fd_create(path, [high_density])` — create a blank (unformatted)
 // floppy image: 800 KB by default, 1.4 MB when high_density is true. Unlike
 // the `fd create` shell command this does NOT insert the disk into a drive —
@@ -584,6 +605,10 @@ static const arg_decl_t storage_hd_create_args[] = {
 static const arg_decl_t storage_rm_args[] = {
     {.name = "path", .kind = V_STRING, .doc = "Path to remove (recursive)"},
 };
+static const arg_decl_t storage_mv_args[] = {
+    {.name = "src", .kind = V_STRING, .doc = "Source path"     },
+    {.name = "dst", .kind = V_STRING, .doc = "Destination path"},
+};
 static const arg_decl_t storage_fd_create_args[] = {
     {.name = "path", .kind = V_STRING, .doc = "Image output path"},
     {.name = "high_density",
@@ -634,6 +659,10 @@ static const member_t storage_members[] = {
      .name = "rm",
      .doc = "Recursively remove a file or directory (keeps the worker FS coherent)",
      .method = {.args = storage_rm_args, .nargs = 1, .result = V_BOOL, .fn = storage_method_rm}                  },
+    {.kind = M_METHOD,
+     .name = "mv",
+     .doc = "Move/rename a file or directory (keeps the worker FS coherent)",
+     .method = {.args = storage_mv_args, .nargs = 2, .result = V_BOOL, .fn = storage_method_mv}                  },
     {.kind = M_METHOD,
      .name = "hd_download",
      .doc = "Export a hard-disk image (base + delta) to a flat file",

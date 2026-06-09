@@ -4,6 +4,7 @@ import FilesystemView from '@/components/panel-views/filesystem/FilesystemView.s
 import { setOpfsBackend, MockOpfs } from '@/bus/opfs';
 import type { OpfsEntry } from '@/bus/types';
 import { filesystem, setFsExpanded, clearFsSelection } from '@/state/filesystem.svelte';
+import { makeDataTransfer, rowFor } from '../helpers/fsTree';
 
 // Root with four sibling files plus a destination folder. Tracks delete/move.
 class MultiOpfs extends MockOpfs {
@@ -28,32 +29,6 @@ class MultiOpfs extends MockOpfs {
   async move(src: string, dst: string): Promise<void> {
     this.moveCalls.push([src, dst]);
   }
-}
-
-function makeDataTransfer(): DataTransfer {
-  const store: Record<string, string> = {};
-  return {
-    setData: (t: string, v: string) => {
-      store[t] = v;
-    },
-    getData: (t: string) => store[t] ?? '',
-    get types() {
-      return Object.keys(store);
-    },
-    files: [] as unknown as FileList,
-    items: [] as unknown as DataTransferItemList,
-    dropEffect: 'none',
-    effectAllowed: 'all',
-    setDragImage: () => {},
-  } as unknown as DataTransfer;
-}
-
-function rowFor(container: HTMLElement, label: string): HTMLElement {
-  const row = Array.from(container.querySelectorAll('.tree-row')).find(
-    (r) => r.querySelector('.label')?.textContent === label,
-  );
-  if (!row) throw new Error(`row '${label}' not found`);
-  return row as HTMLElement;
 }
 
 function selectedLabels(container: HTMLElement): string[] {

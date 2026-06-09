@@ -62,10 +62,11 @@ static int copy_file(const char *src, const char *dst, struct cp_stats *s) {
 
     FILE *out = fopen(dst, "wb");
     if (!out) {
-        // A stale WasmFS inode makes "wb" fail to (re)create the path: the web
-        // UI deletes files through the browser's OPFS API on the main thread,
-        // which the worker's WasmFS doesn't observe, so its cached inode for a
-        // since-deleted file dangles. Drop any stale entry and retry once.
+        // Defensive: drop a possibly-stale destination entry and retry the
+        // create once. The web UI now routes its OPFS mutations through the
+        // worker (storage.rm / storage.mv) so WasmFS stays coherent, but a
+        // dangling inode from any out-of-band removal would otherwise make "wb"
+        // fail to recreate the same path.
         remove(dst);
         out = fopen(dst, "wb");
     }

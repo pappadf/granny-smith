@@ -7,7 +7,7 @@
 import { gsEval } from './emulator';
 import { opfs } from './opfs';
 import { sanitizeName } from '@/lib/archive';
-import { isInImageSpace, imageRootOf } from '@/lib/diskImage';
+import { isInImageSpace } from '@/lib/diskImage';
 import { UPLOAD_DIR } from '@/lib/opfsPaths';
 
 // Per-item progress hook (e.g. to drive the status-bar indicator).
@@ -50,8 +50,7 @@ function basename(path: string): string {
 }
 
 // Copy items OUT of a read-only image into an OPFS folder (recursive for
-// directories). Destination names are sanitised for OPFS. On a copy failure a
-// stale image auto-mount is dropped and the copy retried once.
+// directories). Destination names are sanitised for OPFS.
 export async function copyOutOfImage(
   sources: CopySource[],
   dstDir: string,
@@ -65,16 +64,7 @@ export async function copyOutOfImage(
     onItem?.(name, i, sources.length);
     const dst = `${dstDir}/${opfsSafeName(name)}`;
     const args = sources[i].isDir ? ['-r', src, dst] : [src, dst];
-    let res = await gsEval('storage.cp', args);
-    if (res !== true) {
-      // A cached image auto-mount can wedge after intervening OPFS changes;
-      // drop it and retry once.
-      const root = imageRootOf(src);
-      if (root) {
-        await gsEval('storage.unmount', [root]);
-        res = await gsEval('storage.cp', args);
-      }
-    }
+    const res = await gsEval('storage.cp', args);
     if (res !== true) {
       failures.push(name);
       if (!firstError) firstError = errText(res);

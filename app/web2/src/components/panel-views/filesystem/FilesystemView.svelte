@@ -5,7 +5,7 @@
   import RenameDialog from './RenameDialog.svelte';
   import ConfirmDialog from '@/components/dialogs/ConfirmDialog.svelte';
   import { opfs } from '@/bus/opfs';
-  import { vfsList } from '@/bus/vfs';
+  import { listDir } from '@/bus/vfs';
   import { acceptFilesRaw } from '@/bus/upload';
   import {
     copyOutOfImage,
@@ -20,7 +20,7 @@
   import { isDiskImage, isInImageSpace, listViaVfs } from '@/lib/diskImage';
   import { showNotification } from '@/state/toasts.svelte';
   import { bumpImagesRevision } from '@/state/images.svelte';
-  import { startUpload, finishUpload } from '@/state/uploads.svelte';
+  import { startActivity, endActivity } from '@/state/activity.svelte';
   import {
     filesystem,
     toggleFsExpanded,
@@ -95,28 +95,7 @@
     const dir = path[path.length - 1];
     const k = pathKey(path);
     if (childrenCache[k]) return childrenCache[k];
-    // Paths that cross a disk-image boundary (the image file itself, or any
-    // partition / directory inside it) are listed through the read-only VFS;
-    // everything else is plain OPFS.
-    let entries: { name: string; path: string; kind: 'file' | 'directory' }[];
-    if (listViaVfs(dir)) {
-      entries = await vfsList(dir);
-      // A floppy (or any raw, unpartitioned HFS volume) has no partition map —
-      // the VFS synthesises a single "partition1". Skip that redundant level
-      // and show the volume contents directly under the image. Real multi-
-      // partition images (HD / CD with an APM) keep their partition list.
-      if (
-        !isInImageSpace(dir) &&
-        entries.length === 1 &&
-        entries[0].kind === 'directory' &&
-        /^partition\d+$/i.test(entries[0].name)
-      ) {
-        entries = await vfsList(entries[0].path);
-      }
-    } else {
-      entries = await opfs.list(dir);
-    }
-    const nodes = entriesToNodes(entries);
+    const nodes = entriesToNodes(await listDir(dir));
     childrenCache[k] = nodes;
     return nodes;
   }
@@ -220,19 +199,16 @@
     }
 
     if (data) {
-      // Internal tree-to-tree drag (one source, or a same-parent selection).
+      // Internal tree-to-tree drag — the payload is always an array of source
+      // path arrays (one element for a single drag, more for a selection).
       let sources: string[][];
       try {
-        const parsed = JSON.parse(data) as unknown;
-        sources =
-          Array.isArray(parsed) && Array.isArray(parsed[0])
-            ? (parsed as string[][])
-            : [parsed as string[]];
+        sources = JSON.parse(data) as string[][];
       } catch {
         handleDragEnd();
         return;
       }
-      if (!sources.length) {
+      if (!Array.isArray(sources) || !sources.length) {
         handleDragEnd();
         return;
       }
@@ -241,7 +217,7 @@
       const fromImage = isInImageSpace(sources[0][sources[0].length - 1]);
       const verb = fromImage ? 'Copying' : 'Moving';
       const progress: ProgressFn = (name, i, total) =>
-        startUpload(total > 1 ? `${name} (${i + 1}/${total})` : name, verb);
+        startActivity(total > 1 ? `${name} (${i + 1}/${total})` : name, verb);
       try {
         const result = fromImage
           ? await copyOutOfImage(
@@ -263,7 +239,7 @@
         await refresh();
         bulkToast(fromImage ? 'Copied' : 'Moved', dstParent, result);
       } finally {
-        finishUpload();
+        endActivity();
         handleDragEnd();
       }
       return;
@@ -421,12 +397,12 @@
   async function doUnpack(path: string[]) {
     const target = path[path.length - 1];
     const name = target.split('/').pop() ?? '';
-    startUpload(name, 'Unpacking');
+    startActivity(name, 'Unpacking');
     let result: { ok: boolean; base: string };
     try {
       result = await unpackArchive(target);
     } finally {
-      finishUpload();
+      endActivity();
     }
     if (!result.ok) {
       showNotification(`Failed to unpack '${name}'`, 'error');
@@ -483,10 +459,10 @@
       result = await deleteItems(
         targets.map((t) => t[t.length - 1]),
         (name, i, total) =>
-          startUpload(total > 1 ? `${name} (${i + 1}/${total})` : name, 'Deleting'),
+          startActivity(total > 1 ? `${name} (${i + 1}/${total})` : name, 'Deleting'),
       );
     } finally {
-      finishUpload();
+      endActivity();
     }
     delete childrenCache[pathKey(targets[0].slice(0, -1))];
     clearFsSelection();
@@ -510,10 +486,10 @@
     let result: BulkResult;
     try {
       result = await downloadFiles(files, (name, i, total) =>
-        startUpload(total > 1 ? `${name} (${i + 1}/${total})` : name, 'Downloading'),
+        startActivity(total > 1 ? `${name} (${i + 1}/${total})` : name, 'Downloading'),
       );
     } finally {
-      finishUpload();
+      endActivity();
     }
     const ok = result.total - result.failures.length;
     if (result.failures.length) {

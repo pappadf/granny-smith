@@ -17,6 +17,7 @@ import FilesystemView from '@/components/panel-views/filesystem/FilesystemView.s
 import { setOpfsBackend, MockOpfs } from '@/bus/opfs';
 import type { OpfsEntry } from '@/bus/types';
 import { filesystem, setFsExpanded, clearFsSelection } from '@/state/filesystem.svelte';
+import { makeDataTransfer, labels, rowFor } from '../helpers/fsTree';
 
 // Backend whose /opfs root holds a disk image, a plain file, and a target
 // folder. Tracks readFile / delete / move so the download and drag tests can
@@ -48,37 +49,6 @@ class ImgRootOpfs extends MockOpfs {
 }
 
 const createObjectURL = vi.fn(() => 'blob:mock');
-
-// Minimal stand-in for DataTransfer (jsdom's is incomplete for drag tests).
-function makeDataTransfer(): DataTransfer {
-  const store: Record<string, string> = {};
-  return {
-    setData: (type: string, val: string) => {
-      store[type] = val;
-    },
-    getData: (type: string) => store[type] ?? '',
-    get types() {
-      return Object.keys(store);
-    },
-    files: [] as unknown as FileList,
-    items: [] as unknown as DataTransferItemList,
-    dropEffect: 'none',
-    effectAllowed: 'all',
-    setDragImage: () => {},
-  } as unknown as DataTransfer;
-}
-
-function labels(container: HTMLElement): (string | null)[] {
-  return Array.from(container.querySelectorAll('.label')).map((e) => e.textContent);
-}
-
-function rowFor(container: HTMLElement, label: string): HTMLElement {
-  const row = Array.from(container.querySelectorAll('.tree-row')).find(
-    (r) => r.querySelector('.label')?.textContent === label,
-  );
-  if (!row) throw new Error(`row '${label}' not found`);
-  return row as HTMLElement;
-}
 
 let backend: ImgRootOpfs;
 
@@ -315,47 +285,6 @@ describe('FilesystemView — disk-image descent', () => {
         '/opfs/extracted/Install 1_2.img',
       ]);
     });
-  });
-
-  it('recovers a wedged copy-out by force-unmounting the image and retrying', async () => {
-    let cp = 0;
-    gsEvalMock.mockImplementation(async (path: string, args?: unknown[]) => {
-      if (path === 'storage.cp') {
-        cp += 1;
-        // First attempt fails as if the cached mount were stale; retry succeeds.
-        return cp === 1 ? { error: 'cp: cannot open (stale mount)' } : true;
-      }
-      if (path === 'storage.unmount') return true;
-      if (path === 'vfs.list') {
-        const dir = (args?.[0] as string) ?? '';
-        if (dir === '/opfs/disk.img')
-          return JSON.stringify([{ name: 'partition1', kind: 'directory', size: 0 }]);
-        if (dir === '/opfs/disk.img/partition1')
-          return JSON.stringify([{ name: 'Read Me', kind: 'file', size: 4522 }]);
-        return JSON.stringify([]);
-      }
-      return null;
-    });
-
-    const { container } = render(FilesystemView);
-    setFsExpanded('/opfs', true);
-    await waitFor(() => expect(labels(container)).toContain('disk.img'));
-    // Single synthetic partition → collapsed, so the volume contents (Read Me)
-    // appear directly under disk.img.
-    await fireEvent.click(rowFor(container, 'disk.img'));
-    await waitFor(() => expect(labels(container)).toContain('Read Me'));
-
-    const dt = makeDataTransfer();
-    await fireEvent.dragStart(rowFor(container, 'Read Me'), { dataTransfer: dt });
-    await fireEvent.drop(rowFor(container, 'extracted'), { dataTransfer: dt });
-
-    await waitFor(() => {
-      const unmount = gsEvalMock.mock.calls.find((c) => c[0] === 'storage.unmount');
-      expect(unmount).toBeTruthy();
-      expect(unmount![1]).toEqual(['/opfs/disk.img']);
-    });
-    // First cp failed → unmount → second cp succeeded.
-    expect(gsEvalMock.mock.calls.filter((c) => c[0] === 'storage.cp')).toHaveLength(2);
   });
 
   it('moves (not copies) a plain OPFS file dragged within OPFS', async () => {

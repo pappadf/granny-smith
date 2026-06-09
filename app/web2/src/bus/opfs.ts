@@ -331,6 +331,14 @@ export class BrowserOpfs implements OpfsBackend {
   }
 
   async move(src: string, dst: string): Promise<void> {
+    // Route through the worker (storage.mv) so its WasmFS inode cache stays
+    // coherent with OPFS — same rationale as delete(). Fall back to a
+    // main-thread copy + delete if the worker is unavailable.
+    try {
+      if (isModuleReady() && (await gsEval('storage.mv', [src, dst])) === true) return;
+    } catch {
+      // Fall through to the direct OPFS implementation.
+    }
     // OPFS has no native rename — copy then delete. For dirs, walk
     // recursively. For files, single-shot stream copy.
     const srcParent = src.replace(/\/[^/]+$/, '');
