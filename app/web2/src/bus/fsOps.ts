@@ -4,7 +4,7 @@
 // refresh, toasts, and progress (via the optional `onItem` callback). Keeping
 // them here makes the operations unit-testable without rendering a component.
 
-import { gsEval } from './emulator';
+import { gsEval, gsErrorText } from './emulator';
 import { opfs } from './opfs';
 import { sanitizeName } from '@/lib/archive';
 import { isInImageSpace } from '@/lib/diskImage';
@@ -36,21 +36,17 @@ export function opfsSafeName(name: string): string {
   return name.replace(/[\\/:*?"<>|]/g, '_').replace(/[ .]+$/g, '') || 'untitled';
 }
 
-// Extract a human-readable reason from a gsEval result. The bridge encodes a
-// C-side V_ERROR as {"error": "..."}; anything else stringifies.
-function errText(res: unknown): string {
-  if (res && typeof res === 'object' && 'error' in res) {
-    return String((res as { error: unknown }).error);
-  }
-  return String(res);
-}
-
 function basename(path: string): string {
   return path.split('/').pop() ?? '';
 }
 
 // Copy items OUT of a read-only image into an OPFS folder (recursive for
-// directories). Destination names are sanitised for OPFS.
+// directories). Destination names are sanitised for OPFS. Existing entries
+// are never overwritten: a collision — with an existing file, or between two
+// batch items whose names sanitise identically — fails that item. The
+// alternative silently truncates data; in the worst case the destination
+// resolves to the very image being read (a file inside X.img named "X.img"
+// dropped into the image's own folder) and destroys it.
 export async function copyOutOfImage(
   sources: CopySource[],
   dstDir: string,
@@ -58,17 +54,34 @@ export async function copyOutOfImage(
 ): Promise<BulkResult> {
   const failures: string[] = [];
   let firstError = '';
+  const taken = new Set((await opfs.list(dstDir)).map((e) => e.name));
   for (let i = 0; i < sources.length; i++) {
     const src = sources[i].path;
     const name = basename(src);
     onItem?.(name, i, sources.length);
-    const dst = `${dstDir}/${opfsSafeName(name)}`;
+    const safe = opfsSafeName(name);
+    const dst = `${dstDir}/${safe}`;
+    // Hard guard independent of the listing: a destination that is a path
+    // prefix of the source IS the container image — writing it would
+    // truncate the image mid-read.
+    if (src === dst || src.startsWith(`${dst}/`)) {
+      failures.push(name);
+      if (!firstError) firstError = `'${safe}' is the image being copied from`;
+      continue;
+    }
+    if (taken.has(safe)) {
+      failures.push(name);
+      if (!firstError) firstError = `'${safe}' already exists in destination`;
+      continue;
+    }
     const args = sources[i].isDir ? ['-r', src, dst] : [src, dst];
     const res = await gsEval('storage.cp', args);
     if (res !== true) {
       failures.push(name);
-      if (!firstError) firstError = errText(res);
-      console.error('copy-out failed:', src, '->', dst, '|', errText(res));
+      if (!firstError) firstError = gsErrorText(res);
+      console.error('copy-out failed:', src, '->', dst, '|', gsErrorText(res));
+    } else {
+      taken.add(safe);
     }
   }
   return { total: sources.length, failures, firstError };
@@ -135,7 +148,12 @@ async function downloadOne(target: string): Promise<boolean> {
       const scratch = `${UPLOAD_DIR}/.dl-${downloadSeq++}-${sanitizeName(name)}`;
       if ((await gsEval('storage.cp', [target, scratch])) !== true) return false;
       try {
-        saveBlob(await opfs.readFile(scratch), name);
+        // readFile returns a lazy File backed by the OPFS entry; the browser
+        // streams it AFTER the anchor click. Materialise the bytes before
+        // deleting the scratch file or the download races its own backing
+        // store and fails/truncates.
+        const bytes = await (await opfs.readFile(scratch)).arrayBuffer();
+        saveBlob(new Blob([bytes]), name);
       } finally {
         await opfs.delete(scratch);
       }

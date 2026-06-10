@@ -25,18 +25,31 @@
   let creating = $state(false);
   let error = $state('');
 
-  // Load the SCSI drive catalog the first time the HD dialog opens. The list
-  // comes back as JSON strings (V_LIST<V_STRING>); dedupe by label keeping the
+  // Catalog-load state machine. The effect fires the load exactly once per
+  // 'idle' — it must NOT key off hdModels.length, because loadHdModels
+  // reassigns hdModels (a fresh proxy even when empty), which would re-run
+  // the effect immediately: with the emulator still starting (gsEval → null)
+  // that loop spins on the microtask queue and freezes the tab.
+  let modelsState = $state<'idle' | 'loading' | 'error' | 'ready'>('idle');
+
+  // Load the SCSI drive catalog when the HD dialog opens. The list comes
+  // back as JSON strings (V_LIST<V_STRING>); dedupe by label keeping the
   // largest size, matching the legacy dialog.
   $effect(() => {
-    if (open && kind === 'hd' && hdModels.length === 0) void loadHdModels();
+    if (open && kind === 'hd' && modelsState === 'idle') {
+      modelsState = 'loading';
+      void loadHdModels();
+    }
   });
 
   async function loadHdModels() {
     const raw = await gsEval('scsi.hd_models');
-    const entries = Array.isArray(raw) ? raw : [];
+    if (!Array.isArray(raw)) {
+      modelsState = 'error';
+      return;
+    }
     const list: HdModel[] = [];
-    for (const entry of entries) {
+    for (const entry of raw) {
       if (typeof entry !== 'string') continue;
       try {
         const m = JSON.parse(entry) as { label?: string; size?: number };
@@ -56,6 +69,7 @@
     }
     hdModels = list;
     hdSize = list[0]?.sizeBytes ?? 0;
+    modelsState = list.length ? 'ready' : 'error';
   }
 
   // Timestamp keeps generated names unique without a manual rename step.
@@ -96,7 +110,12 @@
 <Modal {open} title={kind === 'hd' ? 'Create Blank Hard Disk' : 'Create Blank Floppy'} {onClose}>
   {#if kind === 'hd'}
     <p class="dlg-help">Choose a size for the new hard disk image.</p>
-    {#if hdModels.length === 0}
+    {#if modelsState === 'error'}
+      <div class="dlg-error">
+        Could not load drive sizes.
+        <button type="button" class="dlg-btn" onclick={() => (modelsState = 'idle')}>Retry</button>
+      </div>
+    {:else if hdModels.length === 0}
       <div class="dlg-help">Loading drive sizes…</div>
     {:else}
       <div class="dlg-options" role="radiogroup">

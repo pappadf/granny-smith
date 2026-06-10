@@ -95,7 +95,22 @@
     const dir = path[path.length - 1];
     const k = pathKey(path);
     if (childrenCache[k]) return childrenCache[k];
-    const nodes = entriesToNodes(await listDir(dir));
+    let entries;
+    try {
+      entries = await listDir(dir);
+    } catch (err) {
+      // Don't cache a failed listing — an empty array is indistinguishable
+      // from a genuinely empty dir and would pin e.g. an image expanded
+      // before the module was ready as permanently empty. Uncached, the next
+      // expand retries.
+      const name = dir.split('/').pop() ?? dir;
+      showNotification(
+        `Cannot list '${name}': ${err instanceof Error ? err.message : err}`,
+        'error',
+      );
+      return [];
+    }
+    const nodes = entriesToNodes(entries);
     childrenCache[k] = nodes;
     return nodes;
   }
@@ -331,6 +346,9 @@
 
   function handleContextMenu(path: string[], ev: MouseEvent) {
     ev.preventDefault();
+    // The '/opfs' root is the storage mount itself — never offer Rename or
+    // Delete on it (the C side refuses too, but don't even show the menu).
+    if (path.length <= 1) return;
     // Right-clicking outside the selection selects just that row; right-
     // clicking within it keeps the multi-selection.
     if (!filesystem.selected.has(pathKey(path))) selectOnly(pathKey(path));
@@ -430,13 +448,16 @@
     const old = renameTarget;
     renameOpen = false;
     renameTarget = null;
+    // Unchanged name is a no-op, not an error (storage.mv would refuse it as
+    // an existing destination).
+    if (newName === (old.split('/').pop() ?? '')) return;
     try {
       await opfs.rename(old, newName);
       delete childrenCache[renameParentKey];
       await refresh();
       showNotification(`Renamed to '${newName}'`, 'info');
-    } catch {
-      showNotification('Rename failed', 'error');
+    } catch (err) {
+      showNotification(`Rename failed: ${err instanceof Error ? err.message : err}`, 'error');
     }
   }
 

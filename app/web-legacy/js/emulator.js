@@ -44,7 +44,7 @@ let isRunningUI = false;
 // the offsets below whenever the C struct changes.
 let bridgePtr = 0;
 
-const BRIDGE_VERSION = 5;
+const BRIDGE_VERSION = 6;
 const OFF_VERSION     = 0;
 const OFF_READY = 4;
 const OFF_PENDING     = 8;

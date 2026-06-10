@@ -1,5 +1,6 @@
-// Reactive state for the Filesystem panel view. UI-only — not persisted.
-// `expanded` is keyed by pathKey (treePath.ts joins with a space).
+// Reactive state for the Filesystem panel view. `expanded` is keyed by
+// pathKey (treePath.ts joins with U+001F) and is persisted to localStorage by
+// persist.svelte.ts; the rest is UI-only session state.
 // `dragSourcePath` is set when a drag starts and cleared on dragend / drop.
 //
 // Selection supports multi-select restricted to one parent (all selected

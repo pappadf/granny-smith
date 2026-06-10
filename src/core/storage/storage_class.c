@@ -364,6 +364,19 @@ static int storage_rm_tree(const char *path) {
     return rmdir(path) == 0 || errno == ENOENT ? 0 : -errno;
 }
 
+// Paths storage.rm / storage.mv must never destroy: the filesystem root and
+// the OPFS mount root (all persisted browser state lives under /opfs — a
+// recursive rm there wipes every ROM, image and checkpoint). Tolerates a
+// trailing slash.
+static bool storage_path_is_protected(const char *p) {
+    if (!p || !*p)
+        return true;
+    size_t n = strlen(p);
+    while (n > 1 && p[n - 1] == '/')
+        n--;
+    return (n == 1 && p[0] == '/') || (n == 5 && strncmp(p, "/opfs", 5) == 0);
+}
+
 // `storage.rm(path)` — recursively remove a file or directory. Routing the
 // web UI's deletes through here (the worker) instead of the browser's
 // main-thread OPFS API keeps the worker's WasmFS inode cache coherent, so a
@@ -374,9 +387,12 @@ static value_t storage_method_rm(struct object *self, const member_t *m, int arg
     (void)m;
     (void)argc;
     const char *path = argv[0].s;
-    if (!path || !*path || strcmp(path, "/") == 0)
+    if (storage_path_is_protected(path))
         return val_err("storage.rm: refusing to remove '%s'", path ? path : "(null)");
-    return val_bool(storage_rm_tree(path) == 0);
+    int rc = storage_rm_tree(path);
+    if (rc < 0)
+        return val_err("storage.rm: cannot remove '%s': %s", path, strerror(-rc));
+    return val_bool(true);
 }
 
 // `storage.mv(src, dst)` — move/rename within the host filesystem. Like
@@ -391,12 +407,30 @@ static value_t storage_method_mv(struct object *self, const member_t *m, int arg
     const char *dst = argv[1].s;
     if (!src || !*src || !dst || !*dst)
         return val_err("storage.mv: expected (src, dst)");
+    if (storage_path_is_protected(src) || storage_path_is_protected(dst))
+        return val_err("storage.mv: refusing to move '%s'", src);
+    // Moving a directory into its own subtree would recurse forever in the
+    // copy fallback (the copy lists the source after creating dst inside it).
+    size_t sl = strlen(src);
+    if (strncmp(dst, src, sl) == 0 && (dst[sl] == '/' || dst[sl] == '\0'))
+        return val_err("storage.mv: cannot move '%s' into itself", src);
+    // Refuse an existing destination outright. rename() would overwrite a
+    // file silently, and the copy fallback would nest a directory under an
+    // existing same-named one (dst/X/X) — both surprise the user; make them
+    // delete the target first.
+    vfs_stat_t st;
+    if (vfs_stat(dst, &st) == 0)
+        return val_err("storage.mv: destination '%s' already exists", dst);
     if (rename(src, dst) == 0)
         return val_bool(true);
     char err[256] = {0};
     if (shell_cp(src, dst, true, err, sizeof(err)) < 0)
         return val_err("storage.mv: %s", err[0] ? err : "move failed");
-    storage_rm_tree(src);
+    // The copy succeeded; if the source can't be fully removed the operation
+    // is a copy, not a move — report that instead of pretending success.
+    int rc = storage_rm_tree(src);
+    if (rc < 0)
+        return val_err("storage.mv: copied, but failed to remove source '%s': %s", src, strerror(-rc));
     return val_bool(true);
 }
 

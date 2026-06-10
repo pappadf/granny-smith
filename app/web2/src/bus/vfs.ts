@@ -4,7 +4,7 @@
 // returns a JSON array [{name, kind, size}]. The Filesystem tree uses this
 // for image descent; plain OPFS paths keep going through opfs.ts.
 
-import { gsEval } from './emulator';
+import { gsEval, gsErrorText } from './emulator';
 import { opfs } from './opfs';
 import { listViaVfs, isInImageSpace } from '@/lib/diskImage';
 import type { OpfsEntry } from './types';
@@ -18,19 +18,20 @@ interface VfsRawEntry {
 // List a directory that descends into a disk image. `dir` is the full
 // extended path (e.g. /opfs/images/hd/disk.img or
 // .../disk.img/partition1/etc). Returns entries shaped like opfs.list so the
-// tree renders them uniformly. Returns [] on any failure (unreadable or
-// non-mountable image, a partition with no filesystem, a read error) — the
-// node simply shows no children.
+// tree renders them uniformly. THROWS on failure (module not up, unreadable
+// or busy image, oversized/corrupt listing) — failures must be
+// distinguishable from a genuinely empty directory so the tree doesn't cache
+// them as permanent emptiness.
 export async function vfsList(dir: string): Promise<OpfsEntry[]> {
   const raw = await gsEval('vfs.list', [dir]);
-  if (typeof raw !== 'string') return [];
+  if (typeof raw !== 'string') throw new Error(gsErrorText(raw));
   let parsed: unknown;
   try {
     parsed = JSON.parse(raw);
   } catch {
-    return [];
+    throw new Error(`vfs.list: unparseable listing for '${dir}'`);
   }
-  if (!Array.isArray(parsed)) return [];
+  if (!Array.isArray(parsed)) throw new Error(`vfs.list: unexpected result for '${dir}'`);
   return (parsed as VfsRawEntry[]).map((e) => ({
     name: e.name,
     path: `${dir}/${e.name}`,

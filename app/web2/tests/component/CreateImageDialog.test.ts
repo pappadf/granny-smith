@@ -80,6 +80,27 @@ describe('CreateImageDialog', () => {
     expect(cp[1][1]).toBe('40061952');
   });
 
+  it('shows an error with Retry — and does not spin — when the catalog is unavailable', async () => {
+    // gsEval returns null while the module is still starting. The old
+    // hdModels.length-keyed $effect re-triggered itself on every reassignment
+    // and froze the tab in a microtask loop; the modelsState machine must
+    // settle in 'error' instead (this test completing at all proves no spin).
+    gsEvalMock.mockResolvedValue(null);
+    const { container, getByText } = render(CreateImageDialog, {
+      open: true,
+      kind: 'hd',
+      onClose: () => {},
+      onCreated: () => {},
+    });
+    await waitFor(() => expect(container.textContent).toContain('Could not load drive sizes'));
+    // Retry with the module now "ready" loads the catalog.
+    gsEvalMock.mockImplementation(async (p: string) =>
+      p === 'scsi.hd_models' ? [JSON.stringify({ label: 'HD20SC', size: 21411840 })] : null,
+    );
+    await fireEvent.click(getByText('Retry'));
+    await waitFor(() => expect(container.textContent).toContain('HD20SC'));
+  });
+
   it('shows an error and does not fire onCreated when creation fails', async () => {
     gsEvalMock.mockImplementation(async (p: string) => (p === 'storage.fd_create' ? false : null));
     const onCreated = vi.fn();

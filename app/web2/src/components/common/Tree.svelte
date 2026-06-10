@@ -193,11 +193,24 @@
     return out;
   }
 
+  // The row keyboard navigation starts from. Single-select consumers pass
+  // selectedKey; multi-select consumers pass only the selectedKeys set, where
+  // the most recently inserted key is the click/toggle/range-end the user
+  // touched last — the natural focus row.
+  function currentNavKey(): string | null {
+    if (selectedKey) return selectedKey;
+    if (!selectedKeys || selectedKeys.size === 0) return null;
+    let last: string | null = null;
+    for (const k of selectedKeys) last = k;
+    return last;
+  }
+
   function onRootKey(ev: KeyboardEvent) {
     if (depth !== 0) return;
     const flat = flatten();
     if (!flat.length) return;
-    const currentIdx = selectedKey ? flat.findIndex((r) => pathKey(r.path) === selectedKey) : -1;
+    const navKey = currentNavKey();
+    const currentIdx = navKey ? flat.findIndex((r) => pathKey(r.path) === navKey) : -1;
 
     // ←/→: collapse/expand the current row.
     if (ev.key === 'ArrowLeft' || ev.key === 'ArrowRight') {

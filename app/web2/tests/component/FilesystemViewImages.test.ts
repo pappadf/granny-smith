@@ -9,6 +9,7 @@ const { gsEvalMock } = vi.hoisted(() => ({ gsEvalMock: vi.fn() }));
 
 vi.mock('@/bus/emulator', () => ({
   gsEval: (path: string, args?: unknown[]) => gsEvalMock(path, args),
+  gsErrorText: (res: unknown) => String(res),
   isModuleReady: () => true,
   getModule: () => null,
 }));
@@ -38,7 +39,14 @@ class ImgRootOpfs extends MockOpfs {
   }
   async readFile(path: string): Promise<Blob> {
     this.readFileCalls.push(path);
-    return new Blob(['payload']);
+    const blob = new Blob(['payload']);
+    // jsdom's Blob lacks arrayBuffer(); downloadOne materialises the bytes
+    // through it before deleting the scratch file, so shim the one method.
+    if (typeof blob.arrayBuffer !== 'function') {
+      (blob as unknown as { arrayBuffer: () => Promise<ArrayBuffer> }).arrayBuffer = async () =>
+        new TextEncoder().encode('payload').buffer as ArrayBuffer;
+    }
+    return blob;
   }
   async delete(path: string): Promise<void> {
     this.deleteCalls.push(path);

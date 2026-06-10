@@ -141,4 +141,19 @@ describe('FilesystemView — multi-select', () => {
     await waitFor(() => expect(selectedLabels(container)).toEqual(['d.txt']));
     document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
   });
+
+  it('arrow keys navigate from the clicked row (multi-select trees pass only selectedKeys)', async () => {
+    const container = await renderExpanded();
+    await fireEvent.click(rowFor(container, 'a.txt'));
+    expect(selectedLabels(container)).toEqual(['a.txt']);
+    // Keyboard nav must derive the current row from the selection set — the
+    // Filesystem tree no longer passes the legacy single-select selectedKey.
+    const tree = container.querySelector('ul[role="tree"]') as HTMLElement;
+    await fireEvent.keyDown(tree, { key: 'ArrowDown' });
+    await waitFor(() => expect(selectedLabels(container)).toEqual(['b.txt']));
+    await fireEvent.keyDown(tree, { key: 'ArrowDown' });
+    await waitFor(() => expect(selectedLabels(container)).toEqual(['c.txt']));
+    await fireEvent.keyDown(tree, { key: 'ArrowUp' });
+    await waitFor(() => expect(selectedLabels(container)).toEqual(['b.txt']));
+  });
 });

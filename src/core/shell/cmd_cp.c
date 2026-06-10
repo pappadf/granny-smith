@@ -23,6 +23,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 
 // Per-run counters so the final summary is useful at scale.
 struct cp_stats {
@@ -61,14 +62,17 @@ static int copy_file(const char *src, const char *dst, struct cp_stats *s) {
     }
 
     FILE *out = fopen(dst, "wb");
-    if (!out) {
-        // Defensive: drop a possibly-stale destination entry and retry the
-        // create once. The web UI now routes its OPFS mutations through the
-        // worker (storage.rm / storage.mv) so WasmFS stays coherent, but a
-        // dangling inode from any out-of-band removal would otherwise make "wb"
-        // fail to recreate the same path.
-        remove(dst);
-        out = fopen(dst, "wb");
+    if (!out && errno == EIO) {
+        // WasmFS stale-inode recovery: a dangling cached inode from an
+        // out-of-band OPFS removal makes "wb" fail with EIO even though the
+        // path is recreatable — drop the stale entry and retry once. Gated on
+        // EIO and never applied to directories, so genuine failures (EISDIR,
+        // EACCES, quota) report cleanly with the existing destination intact.
+        struct stat st;
+        if (stat(dst, &st) != 0 || !S_ISDIR(st.st_mode)) {
+            remove(dst);
+            out = fopen(dst, "wb");
+        }
     }
     if (!out) {
         int e = errno;

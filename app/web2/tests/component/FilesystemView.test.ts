@@ -45,16 +45,30 @@ describe('FilesystemView', () => {
 
   it('right-click opens a context menu (mounted on document.body)', async () => {
     const { container } = render(FilesystemView);
+    // /opfs starts expanded; use one of its children — the root row itself
+    // deliberately has no context menu.
     await waitFor(() => {
-      expect(container.querySelector('.tree-row')).not.toBeNull();
+      expect(container.querySelectorAll('.tree-row').length).toBeGreaterThan(1);
     });
-    const row = container.querySelector('.tree-row') as HTMLElement;
-    await fireEvent.contextMenu(row);
+    const rows = Array.from(container.querySelectorAll('.tree-row')) as HTMLElement[];
+    await fireEvent.contextMenu(rows[1]);
     await waitFor(() => {
       expect(document.querySelector('.context-menu')).not.toBeNull();
     });
     // Cleanup — dismiss the menu so the next test starts clean.
     document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
+  });
+
+  it('offers no context menu on the /opfs root row (Delete there would wipe storage)', async () => {
+    const { container } = render(FilesystemView);
+    await waitFor(() => {
+      expect(container.querySelector('.tree-row')).not.toBeNull();
+    });
+    const root = container.querySelector('.tree-row') as HTMLElement;
+    await fireEvent.contextMenu(root);
+    // Give the menu a tick to (not) appear.
+    await new Promise((r) => setTimeout(r, 20));
+    expect(document.querySelector('.context-menu')).toBeNull();
   });
 });
 

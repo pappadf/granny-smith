@@ -110,23 +110,34 @@ export async function collapse(page: Page, label: string): Promise<void> {
 // DataTransfer so the component's real handleDragStart populates it and
 // handleDrop reads it. Only the gesture is synthetic — the move/copy that
 // follows (bus/fsOps → worker → OPFS) is entirely real.
+//
+// A real browser fires `drop` only if a `dragover` handler accepted the
+// target with preventDefault — so this helper enforces the same contract:
+// if the app's handleDragOver rejects the target, it throws instead of
+// dropping anyway, keeping the e2e honest about the drop-acceptance gate.
 export async function treeDrag(page: Page, source: Locator, target: Locator): Promise<void> {
   const src = await source.elementHandle();
   const tgt = await target.elementHandle();
   if (!src || !tgt) throw new Error('treeDrag: source or target row not found');
-  await page.evaluate(
+  const accepted = await page.evaluate(
     ({ s, t }) => {
       const dt = new DataTransfer();
       const fire = (el: Element, type: string) =>
         el.dispatchEvent(new DragEvent(type, { bubbles: true, cancelable: true, dataTransfer: dt }));
       fire(s, 'dragstart'); // real handleDragStart writes the payload into dt
       fire(t, 'dragenter');
-      fire(t, 'dragover'); // real handleDragOver sets dropEffect + preventDefault
-      fire(t, 'drop'); // real handleDrop runs the copy/move
+      // dispatchEvent returns false iff a handler called preventDefault —
+      // i.e. handleDragOver accepted this drop target.
+      const ok = !t.dispatchEvent(
+        new DragEvent('dragover', { bubbles: true, cancelable: true, dataTransfer: dt }),
+      );
+      if (ok) fire(t, 'drop'); // real handleDrop runs the copy/move
       fire(s, 'dragend');
+      return ok;
     },
     { s: src, t: tgt },
   );
+  if (!accepted) throw new Error('treeDrag: target rejected the drop (dragover not accepted)');
 }
 
 // Synthesise an external file drop onto a real folder row: a DataTransfer

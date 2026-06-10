@@ -6,7 +6,7 @@
 import type { CheckpointEntry, ImageCategory, OpfsEntry, RecentEntry, RomInfo } from './types';
 import { CHECKPOINT_DIR, ROMS_DIR } from '@/lib/opfsPaths';
 import { parseCheckpointDirName, formatCheckpointLabel } from '@/lib/checkpointMeta';
-import { gsEval, isModuleReady } from './emulator';
+import { gsEval, gsErrorText, isModuleReady } from './emulator';
 
 export interface OpfsBackend {
   list(dir: string): Promise<OpfsEntry[]>;
@@ -332,13 +332,16 @@ export class BrowserOpfs implements OpfsBackend {
 
   async move(src: string, dst: string): Promise<void> {
     // Route through the worker (storage.mv) so its WasmFS inode cache stays
-    // coherent with OPFS — same rationale as delete(). Fall back to a
-    // main-thread copy + delete if the worker is unavailable.
-    try {
-      if (isModuleReady() && (await gsEval('storage.mv', [src, dst])) === true) return;
-    } catch {
-      // Fall through to the direct OPFS implementation.
+    // coherent with OPFS — same rationale as delete(). Once the module is up
+    // a worker-reported failure must NOT fall back to a main-thread mutation:
+    // that would change OPFS behind the worker's cache and recreate the exact
+    // stale-inode bug this routing exists to prevent — propagate it instead.
+    if (isModuleReady()) {
+      const res = await gsEval('storage.mv', [src, dst]);
+      if (res !== true) throw new Error(gsErrorText(res));
+      return;
     }
+    // Module not up yet (no worker cache to desync) — direct OPFS fallback.
     // OPFS has no native rename — copy then delete. For dirs, walk
     // recursively. For files, single-shot stream copy.
     const srcParent = src.replace(/\/[^/]+$/, '');
@@ -394,17 +397,22 @@ export class BrowserOpfs implements OpfsBackend {
     // OPFS. A main-thread navigator.storage delete is invisible to the worker,
     // leaving a dangling inode that breaks a later worker-side create at the
     // same path (e.g. re-copying a file out of an image after deleting it).
-    try {
-      if (isModuleReady() && (await gsEval('storage.rm', [path])) === true) return;
-    } catch {
-      // Fall through to a direct OPFS delete.
+    // As with move(): once the module is up, a worker-reported failure is
+    // propagated, never retried main-thread — and propagating is also what
+    // makes the UI's per-item failure accounting real instead of dead code.
+    if (isModuleReady()) {
+      const res = await gsEval('storage.rm', [path]);
+      if (res !== true) throw new Error(gsErrorText(res));
+      return;
     }
+    // Module not up yet (no worker cache to desync) — direct OPFS fallback.
+    const parent = await getDirAtPath(path.replace(/\/[^/]+$/, ''));
+    const name = path.split('/').pop() ?? '';
     try {
-      const parent = await getDirAtPath(path.replace(/\/[^/]+$/, ''));
-      const name = path.split('/').pop() ?? '';
       await parent.removeEntry(name, { recursive: true });
-    } catch {
-      // Best-effort.
+    } catch (err) {
+      // Deleting something already gone is success; anything else surfaces.
+      if ((err as DOMException)?.name !== 'NotFoundError') throw err;
     }
   }
 

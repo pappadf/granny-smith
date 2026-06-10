@@ -15,7 +15,7 @@ import { routePrintLine, routeLogEmit } from './logSink';
 import { resetDebugSections } from '@/state/debug.svelte';
 import type { MachineConfig } from './types';
 
-const BRIDGE_VERSION = 5;
+const BRIDGE_VERSION = 6;
 const OFF_VERSION = 0;
 const OFF_READY = 4;
 const OFF_PENDING = 8;
@@ -144,6 +144,18 @@ export async function gsEval(path: string, args?: unknown[]): Promise<unknown> {
   } catch {
     return null;
   }
+}
+
+// Human-readable reason from a gsEval result. The bridge encodes a C-side
+// V_ERROR as {"error": "..."}; null means the worker/module wasn't available;
+// anything else stringifies. Single home for the error-shape knowledge so
+// callers don't each re-implement the check.
+export function gsErrorText(res: unknown): string {
+  if (res === null) return 'emulator not ready';
+  if (res && typeof res === 'object' && 'error' in res) {
+    return String((res as { error: unknown }).error);
+  }
+  return String(res);
 }
 
 // --- Shell line surface (Terminal pane only) ----------------------------

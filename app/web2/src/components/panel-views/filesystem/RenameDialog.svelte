@@ -15,10 +15,12 @@
   // svelte-ignore state_referenced_locally
   let value = $state(initial);
   let inputEl = $state<HTMLInputElement | null>(null);
+  let error = $state('');
 
   $effect(() => {
     if (open) {
       value = initial;
+      error = '';
       // Focus + select after mount.
       requestAnimationFrame(() => {
         inputEl?.focus();
@@ -27,10 +29,24 @@
     }
   });
 
+  // A rename target is a single path component. A '/' would silently turn
+  // the rename into a move (worst case into the item's own subtree), and
+  // '.'/'..' resolve to other directories entirely.
+  function validate(v: string): string {
+    if (v.includes('/') || v.includes('\\')) return 'Name cannot contain slashes';
+    if (v === '.' || v === '..') return 'Invalid name';
+    return '';
+  }
+
   function commit() {
     const v = value.trim();
     if (!v) {
       onClose();
+      return;
+    }
+    const why = validate(v);
+    if (why) {
+      error = why;
       return;
     }
     onSubmit(v);
@@ -57,7 +73,11 @@
       bind:value
       bind:this={inputEl}
       onkeydown={onKey}
+      oninput={() => (error = '')}
     />
+    {#if error}
+      <div class="rename-error" role="alert">{error}</div>
+    {/if}
   </div>
   {#snippet actions()}
     <button type="button" class="btn" onclick={onClose}>Cancel</button>
@@ -75,6 +95,10 @@
   .rename-label {
     font-size: 12px;
     color: var(--gs-fg-muted);
+  }
+  .rename-error {
+    font-size: 12px;
+    color: var(--gs-error, #e5534b);
   }
   .rename-input {
     background: var(--gs-input-bg);
