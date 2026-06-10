@@ -414,8 +414,14 @@
     showNotification(`Unpacked '${name}' to '${result.base}_unpacked'`, 'info');
   }
 
+  // Cache key of the renamed node's parent dir, captured at begin so commit
+  // can invalidate exactly the listing the tree rendered. Must be the
+  // cumulative-path key (same as every other mutation), not pathKey([parent]).
+  let renameParentKey = '';
+
   function beginRename(path: string[]) {
     renameTarget = path[path.length - 1];
+    renameParentKey = pathKey(path.slice(0, -1));
     renameOpen = true;
   }
 
@@ -426,8 +432,7 @@
     renameTarget = null;
     try {
       await opfs.rename(old, newName);
-      const parent = old.replace(/\/[^/]+$/, '');
-      delete childrenCache[pathKey([parent])];
+      delete childrenCache[renameParentKey];
       await refresh();
       showNotification(`Renamed to '${newName}'`, 'info');
     } catch {

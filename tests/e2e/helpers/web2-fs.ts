@@ -48,6 +48,39 @@ export async function stageOpfsFile(page: Page, opfsPath: string, hostFile: stri
   );
 }
 
+// Stage inline bytes as an OPFS file (for plain-file tests that need no real
+// host fixture). Same navigator.storage write the upload path uses.
+export async function stageOpfsText(page: Page, opfsPath: string, text: string): Promise<void> {
+  await page.evaluate(
+    async ({ path, text }: { path: string; text: string }) => {
+      const rel = path.replace(/^\/opfs\/?/, '').split('/').filter(Boolean);
+      const fileName = rel.pop() as string;
+      let dir = await navigator.storage.getDirectory();
+      for (const part of rel) dir = await dir.getDirectoryHandle(part, { create: true });
+      const fh = await dir.getFileHandle(fileName, { create: true });
+      const w = await fh.createWritable();
+      await w.write(new TextEncoder().encode(text));
+      await w.close();
+    },
+    { path: opfsPath, text },
+  );
+}
+
+// Create an empty OPFS directory (e.g. a move destination).
+export async function mkdirOpfs(page: Page, opfsPath: string): Promise<void> {
+  await page.evaluate(async (path: string) => {
+    const rel = path.replace(/^\/opfs\/?/, '').split('/').filter(Boolean);
+    let dir = await navigator.storage.getDirectory();
+    for (const part of rel) dir = await dir.getDirectoryHandle(part, { create: true });
+  }, opfsPath);
+}
+
+// Open the Filesystem panel tab and wait for the /opfs root row.
+export async function openFilesystemTab(page: Page): Promise<void> {
+  await page.locator('button.ptab[data-tab="filesystem"]').click();
+  await row(page, '/opfs').first().waitFor({ state: 'visible' });
+}
+
 // Anchor a label to a full, exact match so "Installer" can't also match
 // "Installer Script".
 function exact(text: string): RegExp {
@@ -93,5 +126,33 @@ export async function treeDrag(page: Page, source: Locator, target: Locator): Pr
       fire(s, 'dragend');
     },
     { s: src, t: tgt },
+  );
+}
+
+// Synthesise an external file drop onto a real folder row: a DataTransfer
+// carrying the File, dispatched as dragenter/dragover/drop. Exercises the real
+// acceptFilesRaw upload path (writeToOPFS) — only the gesture is synthetic.
+export async function dropFileOnRow(
+  page: Page,
+  target: Locator,
+  fileName: string,
+  text: string,
+): Promise<void> {
+  const el = await target.elementHandle();
+  if (!el) throw new Error('dropFileOnRow: target row not found');
+  await page.evaluate(
+    ({ el, name, text }) => {
+      const file = new File([new TextEncoder().encode(text)], name, {
+        type: 'application/octet-stream',
+      });
+      const dt = new DataTransfer();
+      dt.items.add(file);
+      const fire = (type: string) =>
+        el.dispatchEvent(new DragEvent(type, { bubbles: true, cancelable: true, dataTransfer: dt }));
+      fire('dragenter');
+      fire('dragover');
+      fire('drop');
+    },
+    { el, name: fileName, text },
   );
 }
