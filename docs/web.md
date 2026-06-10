@@ -35,6 +35,19 @@ memory-backed because `wasmfs_create_opfs_backend()` deadlocks on the
 browser main thread; the web app only writes under `/opfs/`. All OPFS
 writes are immediately durable — no explicit sync step needed.
 
+**Two views of OPFS, kept coherent.** The browser main thread reaches OPFS
+directly through `navigator.storage` (reads, and the upload staging writes),
+while the emulator worker reaches it through WasmFS. WasmFS keeps its own
+inode cache layered over OPFS and does **not** observe out-of-band changes:
+it lazily *sees* a newly created file on first access, but a file the worker
+created and then has cached goes stale if the main thread deletes it — so a
+later worker-side create at that path fails (`I/O error`). To stay coherent,
+the Filesystem tab routes its **mutations through the worker**
+(`storage.rm` / `storage.mv` / `storage.cp`), reserving `navigator.storage`
+for reads. (This is why `BrowserOpfs.delete` / `.move` in
+[`bus/opfs.ts`](../app/web2/src/bus/opfs.ts) call `gsEval` rather than
+`removeEntry` directly.)
+
 **Core / frontend separation.** The emulator core is path-agnostic: it
 accepts paths as command arguments. The web app owns the directory
 layout under `/opfs/`. The C side creates `/opfs/images/{rom,vrom,fd,
@@ -238,18 +251,23 @@ through [`app/web2/src/bus/upload.ts`](../app/web2/src/bus/upload.ts):
    [`FilesystemView.svelte`](../app/web2/src/components/panel-views/filesystem/FilesystemView.svelte)
    accepts external file drops on folder rows, calls
    `acceptFilesRaw(files, targetDir)`. **No validation** — the
-   Filesystem view is the low-level OPFS browser.
+   Filesystem view is the low-level OPFS browser. The same tab also does
+   *internal* drags — move within OPFS, and **copy a file/folder out of a
+   disk image** to an OPFS folder — through the operations in
+   [`bus/fsOps.ts`](../app/web2/src/bus/fsOps.ts).
 4. **Drag-and-drop onto an Images-tab category** —
    [`ImageCategorySection.svelte`](../app/web2/src/components/panel-views/images/ImageCategorySection.svelte)
    wraps each section in a drop host. Drop calls
    `acceptFilesAsCategory(files, mediaIdFor(cat))`. Same strict
    per-category validation as path 1.
 
-All four paths run through `startUpload` / `finishUpload`
-([`state/uploads.svelte.ts`](../app/web2/src/state/uploads.svelte.ts))
-so the status bar shows a "Uploading: \<name\>" pulse during long
-writes. Confirmation toasts are centralised in
-[`state/toasts.svelte.ts`](../app/web2/src/state/toasts.svelte.ts).
+All four paths run through `startActivity` / `endActivity`
+([`state/activity.svelte.ts`](../app/web2/src/state/activity.svelte.ts)) so
+the status bar shows a spinner with a "\<verb>: \<name>" label during long
+operations. The verb is general — uploads show "Uploading", and the
+Filesystem-tab worker ops reuse the same indicator ("Copying", "Moving",
+"Deleting", "Unpacking", "Downloading"). Confirmation toasts are centralised
+in [`state/toasts.svelte.ts`](../app/web2/src/state/toasts.svelte.ts).
 
 ## C-side surfaces the UI consumes
 
@@ -264,7 +282,19 @@ full surface.
   `1.4MB`); empty if not a floppy.
 - **`scsi.identify_hd(path)` / `scsi.identify_cdrom(path)`** → bool.
 - **`archive.identify(path)`** → JSON for `.sit` / `.hqx` / `.cpt` /
-  `.bin` / `.sea`.
+  `.bin` / `.sea`. **`archive.extract(path, out_dir)`** → bool; powers the
+  Filesystem-tab "Unpack" action.
+- **`vfs.list(path)`** → JSON `[{name, kind, size}]`, descending into a disk
+  image (partitions, then HFS/UFS contents). The Filesystem tree calls this to
+  browse inside images; see [`target-filesystems.md`](target-filesystems.md).
+- **`storage.cp([-r], src, dst)`** — copy, including *out of* an image into
+  OPFS (backs copy-out and Download). **`storage.rm(path)`** /
+  **`storage.mv(src, dst)`** — recursive remove / move, run worker-side so
+  WasmFS stays coherent (see Persistence above).
+- **`storage.hd_create(path, size)`** / **`storage.fd_create(path,
+  high_density)`** — create a blank HD / floppy image; **`scsi.hd_models`** →
+  drive-size catalog. These drive the New Machine dialog's "Create blank
+  image…" option.
 - **`machine.profile(id)`** → JSON profile with `name`, `needs_vrom`,
   `ram_options[]`, `ram_default`, `floppy_slots[]`, `scsi_slots[]`,
   `has_cdrom`, … — drives the slot-specific rows in the New Machine
