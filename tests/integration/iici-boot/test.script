@@ -1,0 +1,44 @@
+# Integration test: Macintosh IIci Floppy Boot + About box
+# Boots the IIci from a System 7.1 floppy, verifies the Finder desktop, then
+# brings up the "About the Macintosh Finder" dialog via the Apple menu.
+#
+# The IIci's RBV chip ($50F26000) replaces the IIcx VIA2 and drives built-in
+# video: the boot ROM waits on the RvIRQ0 vertical-blank interrupt during
+# video init, then QuickDraw draws to ScrnBase $FBB08000 (the slot-$B
+# framebuffer aperture).  A single fixed instruction budget reaches a stable
+# desktop deterministically (no boot-drive-discovery poke needed, unlike the
+# Universal-ROM se30-floppy test).
+
+scheduler.run 360000000
+
+assert ${machine.id == "iici"} "machine.id != iici"
+assert ${rom.checksum == "368CADFE"} "rom.checksum != 368CADFE"
+assert ${screen.width == 640} "screen.width != 640"
+assert ${screen.height == 480} "screen.height != 480"
+
+# Verify the Finder desktop matches the reference (System menu bar, the
+# Disk Tools volume window, Trash icon, gray desktop).
+screen.match finder.png
+
+# Bring up "About the Macintosh Finder" via the Apple menu.  The mouse
+# *geometry* matches the other models (Apple menu at 25,10; the first menu
+# item at 25,30), but positioning uses "global" mode (direct MTemp writes +
+# guard, as in iifx-boot) — the IIci's classic VIA1 ADB delta path does not
+# land the cursor precisely enough for a pixel-exact menu pick.  The button
+# press/release still goes through the ADB (default mouse.click).
+mouse.move 50 50 "global"
+scheduler.run 5000000
+mouse.move 25 10 "global"
+scheduler.run 3000000
+mouse.click true
+scheduler.run 6000000
+mouse.move 25 30 "global"
+scheduler.run 6000000
+mouse.click false
+scheduler.run 45000000
+
+# The About box shows "Total Memory 8,192K" (RAM pinned in config.mk), so
+# the rendered dialog is reproducible.
+screen.match about.png
+
+quit
