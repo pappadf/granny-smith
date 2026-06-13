@@ -130,6 +130,18 @@ Recognised archives are extracted to a staging directory and their
 contents are re-probed for media. See [`web.md`](web.md) for the full
 upload pipeline.
 
+### Web Filesystem-tab "Unpack"
+
+In the web2 Filesystem panel, right-clicking a file whose extension
+peeler recognises (`.sit` / `.hqx` / `.cpt` / `.bin` / `.sea`) adds an
+**Unpack** entry to the context menu. It calls `archive.extract` with
+the file and a sibling `<name>_unpacked/` output directory, then
+refreshes the tree to reveal the extracted contents. The gate is the
+`isMacArchive` extension check in
+[`app/web2/src/lib/archive.ts`](../app/web2/src/lib/archive.ts); the
+menu wiring lives in
+[`FilesystemView.svelte`](../app/web2/src/components/panel-views/filesystem/FilesystemView.svelte).
+
 ## Implementation details
 
 ### File extraction flow

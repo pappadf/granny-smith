@@ -5,6 +5,7 @@ import {
   parentPath,
   lastSegment,
   pathKey,
+  pathKeyToArray,
   pathToLabel,
 } from '@/lib/treePath';
 
@@ -53,8 +54,22 @@ describe('treePath', () => {
   });
 
   describe('pathKey / pathToLabel', () => {
-    it('pathKey joins with a space (collision-free for filenames)', () => {
-      expect(pathKey(['/opfs', '/opfs/images'])).toBe('/opfs /opfs/images');
+    it('pathKey round-trips losslessly, even for segments with spaces', () => {
+      const cases: string[][] = [
+        ['/opfs', '/opfs/images'],
+        // In-image names routinely contain spaces and punctuation; the key
+        // must still round-trip to the exact same segments.
+        ['/opfs', '/opfs/disk.img', '/opfs/disk.img/partition1/System Folder/Read Me'],
+        [],
+      ];
+      for (const p of cases) {
+        expect(pathKeyToArray(pathKey(p))).toEqual(p);
+      }
+    });
+    it('distinct sibling paths with spaces produce distinct keys', () => {
+      const a = pathKey(['/opfs', '/opfs/A B']);
+      const b = pathKey(['/opfs', '/opfs/A', 'B']);
+      expect(a).not.toBe(b);
     });
     it('pathToLabel returns terminal segment, or "/" for empty', () => {
       expect(pathToLabel([])).toBe('/');

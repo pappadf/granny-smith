@@ -129,7 +129,16 @@ export function loadPersistedState(): void {
   if (typeof autoscroll === 'boolean') logs.autoscroll = autoscroll;
 
   const fsExp = readEnvelope<Record<string, boolean>>(KEYS.fsExpanded);
-  if (fsExp) filesystem.expanded = fsExp;
+  if (fsExp) {
+    // Migration: pathKey's separator changed from ' ' to '\x1f'. Old
+    // multi-segment keys (space-joined, no \x1f) can never match again —
+    // drop them so they aren't re-persisted forever. New-format keys
+    // without \x1f are only the single-segment root, which has no space.
+    for (const k of Object.keys(fsExp)) {
+      if (!k.includes('\x1f') && k.includes(' ')) delete fsExp[k];
+    }
+    filesystem.expanded = fsExp;
+  }
 
   const imgsColl = readEnvelope<Record<ImageCategory, boolean>>(KEYS.imagesCollapsed);
   if (imgsColl) Object.assign(images.collapsed, imgsColl);

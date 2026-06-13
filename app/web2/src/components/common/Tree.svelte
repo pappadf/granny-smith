@@ -12,16 +12,32 @@
     desc?: string;
     /** True for non-expandable rows; children won't be requested. */
     leaf?: boolean;
+    /** Underlying entry kind, when distinct from `leaf` (e.g. a disk image is
+     *  a file yet rendered expandable). Optional; consumers that don't need it
+     *  leave it unset. */
+    kind?: 'file' | 'directory';
     draggable?: boolean;
     /** Pre-computed children (static mode). When omitted + !leaf, children
      *  are fetched lazily via loadChildren on first expand. */
     children?: TreeNode[];
   }
 
+  /** Modifier keys carried to onSelect so a consumer can implement
+   *  multi-select (shift = range, meta = toggle). */
+  export interface SelectMods {
+    shift: boolean;
+    meta: boolean;
+  }
+
   interface Props {
     nodes: TreeNode[];
     expanded: Record<string, boolean>;
+    /** Single-selection key (legacy single-select consumers). */
     selectedKey?: string | null;
+    /** Multi-selection set of pathKeys. When provided it takes precedence
+     *  over selectedKey for highlighting, and a modified click (shift/meta)
+     *  selects rather than expanding/activating. */
+    selectedKeys?: Set<string> | null;
     dragSourceKey?: string | null;
     dropTargetKey?: string | null;
     /** Parent path of this Tree instance (root passes []; recursion appends). */
@@ -32,7 +48,7 @@
      *  visible list for keyboard navigation. */
     lazyCache?: Record<string, TreeNode[]>;
     onToggle: (path: string[]) => void;
-    onSelect?: (path: string[]) => void;
+    onSelect?: (path: string[], mods?: SelectMods) => void;
     onActivate?: (path: string[]) => void;
     onContextMenu?: (path: string[], ev: MouseEvent) => void;
     onDragStart?: (path: string[], ev: DragEvent) => void;
@@ -47,6 +63,7 @@
     nodes,
     expanded,
     selectedKey = null,
+    selectedKeys = null,
     dragSourceKey = null,
     dropTargetKey = null,
     parentPath = [],
@@ -111,9 +128,19 @@
     return !!expanded[pathKey(pathOf(node))];
   }
 
-  function handleRowClick(node: TreeNode) {
+  function isSelected(k: string): boolean {
+    return selectedKeys ? selectedKeys.has(k) : selectedKey === k;
+  }
+
+  function handleRowClick(node: TreeNode, ev?: MouseEvent) {
     const p = pathOf(node);
-    onSelect?.(p);
+    const mods: SelectMods | undefined = ev
+      ? { shift: ev.shiftKey, meta: ev.metaKey || ev.ctrlKey }
+      : undefined;
+    onSelect?.(p, mods);
+    // In multi-select mode a modified click only adjusts the selection —
+    // it must not also expand/collapse or activate the row.
+    if (selectedKeys && mods && (mods.shift || mods.meta)) return;
     if (hasChildren(node)) {
       onToggle(p);
       if (!isOpen(node)) {
@@ -166,11 +193,24 @@
     return out;
   }
 
+  // The row keyboard navigation starts from. Single-select consumers pass
+  // selectedKey; multi-select consumers pass only the selectedKeys set, where
+  // the most recently inserted key is the click/toggle/range-end the user
+  // touched last — the natural focus row.
+  function currentNavKey(): string | null {
+    if (selectedKey) return selectedKey;
+    if (!selectedKeys || selectedKeys.size === 0) return null;
+    let last: string | null = null;
+    for (const k of selectedKeys) last = k;
+    return last;
+  }
+
   function onRootKey(ev: KeyboardEvent) {
     if (depth !== 0) return;
     const flat = flatten();
     if (!flat.length) return;
-    const currentIdx = selectedKey ? flat.findIndex((r) => pathKey(r.path) === selectedKey) : -1;
+    const navKey = currentNavKey();
+    const currentIdx = navKey ? flat.findIndex((r) => pathKey(r.path) === navKey) : -1;
 
     // ←/→: collapse/expand the current row.
     if (ev.key === 'ArrowLeft' || ev.key === 'ArrowRight') {
@@ -230,11 +270,11 @@
           {depth}
           hasChildren={branch}
           {open}
-          selected={selectedKey === k}
+          selected={isSelected(k)}
           draggable={!!node.draggable}
           dragSource={dragSourceKey === k}
           dropTarget={dropTargetKey === k}
-          onClick={() => handleRowClick(node)}
+          onClick={(ev) => handleRowClick(node, ev)}
           onTwistieClick={(ev) => handleTwistieClick(node, ev)}
           onContextMenu={onContextMenu ? (ev) => onContextMenu(p, ev) : undefined}
           onDoubleClick={onActivate ? () => onActivate(p) : undefined}
@@ -249,6 +289,7 @@
             nodes={kids}
             {expanded}
             {selectedKey}
+            {selectedKeys}
             {dragSourceKey}
             {dropTargetKey}
             parentPath={p}
@@ -285,11 +326,11 @@
           {depth}
           hasChildren={branch}
           {open}
-          selected={selectedKey === k}
+          selected={isSelected(k)}
           draggable={!!node.draggable}
           dragSource={dragSourceKey === k}
           dropTarget={dropTargetKey === k}
-          onClick={() => handleRowClick(node)}
+          onClick={(ev) => handleRowClick(node, ev)}
           onTwistieClick={(ev) => handleTwistieClick(node, ev)}
           onContextMenu={onContextMenu ? (ev) => onContextMenu(p, ev) : undefined}
           onDoubleClick={onActivate ? () => onActivate(p) : undefined}
@@ -304,6 +345,7 @@
             nodes={kids}
             {expanded}
             {selectedKey}
+            {selectedKeys}
             {dragSourceKey}
             {dropTargetKey}
             parentPath={p}

@@ -73,10 +73,14 @@ void em_print_host_callstack(void);
 // JS clears `done`, fills `path` / `args`, writes `pending`, and polls
 // `done`. `shell_poll()` (worker pthread, every tick) drains the slot.
 
-#define JS_BRIDGE_VERSION     5
-#define JS_BRIDGE_PATH_SIZE   1024
-#define JS_BRIDGE_ARGS_SIZE   8192
-#define JS_BRIDGE_OUTPUT_SIZE 16384
+#define JS_BRIDGE_VERSION   6
+#define JS_BRIDGE_PATH_SIZE 1024
+#define JS_BRIDGE_ARGS_SIZE 8192
+// 256 KB: a vfs.list of a large in-image directory is returned as one JSON
+// document; 16 KB silently truncated at ~250 entries (the JS side then saw
+// unparseable JSON and rendered the directory as empty). gs_eval now also
+// reports truncation as an explicit error instead of returning garbage.
+#define JS_BRIDGE_OUTPUT_SIZE 262144
 
 typedef struct {
     int32_t version; // offset 0;  must equal JS_BRIDGE_VERSION
@@ -87,6 +91,6 @@ typedef struct {
     char path[JS_BRIDGE_PATH_SIZE]; // offset 20
     char args[JS_BRIDGE_ARGS_SIZE]; // offset 1044
     char output[JS_BRIDGE_OUTPUT_SIZE]; // offset 9236
-} js_bridge_t; // total: 25620 bytes
+} js_bridge_t; // total: 271380 bytes
 
 #endif // EM_H

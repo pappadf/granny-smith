@@ -185,7 +185,7 @@ STATIC_JS_DIR := $(WEB_DIR)/js
 .PHONY: all release debug sanitize copy-static run run-legacy \
         headless unit-test integration-test integration-test-valgrind \
         e2e-test test clean help FORCE \
-        ui2 ui2-dev ui2-test ui2-check ui2-check-dist ui2-prod-smoke ui2-diag run2
+        ui2 ui2-dev ui2-test ui2-check ui2-check-dist ui2-prod-smoke ui2-e2e ui2-diag run2
 
 # -- WASM build --
 
@@ -389,6 +389,15 @@ ui2-check-dist:
 ui2-prod-smoke: ui2 ui2-check-dist
 	cd tests/e2e && npx playwright test --config=playwright.prod-smoke.config.ts
 
+# Playwright end-to-end test for the web2 (Svelte) Filesystem tab. Drives the
+# real UI — descend a disk image, multi-select, copy out, delete, copy again —
+# against the served dist; the webServer block builds (`make ui2`) and serves
+# app/web2/dist with the COOP/COEP headers the worker needs. No machine boot;
+# the only synthesised step is the HTML5 drag gesture (Playwright/CDP can't
+# drive native DnD). Requires Playwright + chromium installed under tests/e2e.
+ui2-e2e:
+	cd tests/e2e && npx playwright test --config=playwright.web2.config.ts
+
 # Headless diagnostic — spawns the dev server + drives Chromium via
 # Playwright, captures console output / pageerror / xterm contents,
 # and prints a JSON report. Useful for triaging "doesn't boot" bugs
@@ -436,6 +445,7 @@ help:
 	@echo "  ui2-dev                    Start Vite dev server (HMR) on :5173"
 	@echo "  ui2-check                  Run svelte-check + ESLint + Prettier"
 	@echo "  ui2-test                   Run Vitest"
+	@echo "  ui2-e2e                    Run the web2 Filesystem-tab Playwright e2e"
 	@echo "  run2                       Alias for run (kept for muscle-memory)"
 	@echo ""
 	@echo "Test targets:"

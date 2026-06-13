@@ -19,10 +19,13 @@
 #include "value.h"
 #include "vfs.h"
 
+#include <dirent.h>
 #include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
+#include <unistd.h>
 
 // === Object-model class descriptors =========================================
 //
@@ -334,6 +337,122 @@ static value_t storage_method_hd_create(struct object *self, const member_t *m, 
     return val_bool(shell_hd_argv(targc, targv) == 0);
 }
 
+// Recursively remove a file or directory tree (best-effort). Returns 0 when
+// the path is gone afterwards, or a negative errno.
+static int storage_rm_tree(const char *path) {
+    DIR *dir = opendir(path);
+    if (!dir) {
+        if (unlink(path) == 0 || errno == ENOENT)
+            return 0;
+        return -errno;
+    }
+    struct dirent *e;
+    while ((e = readdir(dir)) != NULL) {
+        const char *name = e->d_name;
+        if (!name || strcmp(name, ".") == 0 || strcmp(name, "..") == 0)
+            continue;
+        char child[VFS_PATH_MAX];
+        if (snprintf(child, sizeof(child), "%s/%s", path, name) >= (int)sizeof(child))
+            continue;
+        struct stat st;
+        if (lstat(child, &st) == 0 && S_ISDIR(st.st_mode))
+            storage_rm_tree(child);
+        else
+            unlink(child);
+    }
+    closedir(dir);
+    return rmdir(path) == 0 || errno == ENOENT ? 0 : -errno;
+}
+
+// Paths storage.rm / storage.mv must never destroy: the filesystem root and
+// the OPFS mount root (all persisted browser state lives under /opfs — a
+// recursive rm there wipes every ROM, image and checkpoint). Tolerates a
+// trailing slash.
+static bool storage_path_is_protected(const char *p) {
+    if (!p || !*p)
+        return true;
+    size_t n = strlen(p);
+    while (n > 1 && p[n - 1] == '/')
+        n--;
+    return (n == 1 && p[0] == '/') || (n == 5 && strncmp(p, "/opfs", 5) == 0);
+}
+
+// `storage.rm(path)` — recursively remove a file or directory. Routing the
+// web UI's deletes through here (the worker) instead of the browser's
+// main-thread OPFS API keeps the worker's WasmFS inode cache coherent, so a
+// later worker-side create at the same path (e.g. re-copying a file out of an
+// image after deleting it) doesn't hit a dangling inode.
+static value_t storage_method_rm(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)self;
+    (void)m;
+    (void)argc;
+    const char *path = argv[0].s;
+    if (storage_path_is_protected(path))
+        return val_err("storage.rm: refusing to remove '%s'", path ? path : "(null)");
+    int rc = storage_rm_tree(path);
+    if (rc < 0)
+        return val_err("storage.rm: cannot remove '%s': %s", path, strerror(-rc));
+    return val_bool(true);
+}
+
+// `storage.mv(src, dst)` — move/rename within the host filesystem. Like
+// storage.rm, routing the web UI's moves through the worker (rather than the
+// browser's main-thread OPFS API) keeps WasmFS coherent. Tries rename() first
+// (fast / atomic on the same volume); falls back to a recursive copy + remove.
+static value_t storage_method_mv(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)self;
+    (void)m;
+    (void)argc;
+    const char *src = argv[0].s;
+    const char *dst = argv[1].s;
+    if (!src || !*src || !dst || !*dst)
+        return val_err("storage.mv: expected (src, dst)");
+    if (storage_path_is_protected(src) || storage_path_is_protected(dst))
+        return val_err("storage.mv: refusing to move '%s'", src);
+    // Moving a directory into its own subtree would recurse forever in the
+    // copy fallback (the copy lists the source after creating dst inside it).
+    size_t sl = strlen(src);
+    if (strncmp(dst, src, sl) == 0 && (dst[sl] == '/' || dst[sl] == '\0'))
+        return val_err("storage.mv: cannot move '%s' into itself", src);
+    // Refuse an existing destination outright. rename() would overwrite a
+    // file silently, and the copy fallback would nest a directory under an
+    // existing same-named one (dst/X/X) — both surprise the user; make them
+    // delete the target first.
+    vfs_stat_t st;
+    if (vfs_stat(dst, &st) == 0)
+        return val_err("storage.mv: destination '%s' already exists", dst);
+    if (rename(src, dst) == 0)
+        return val_bool(true);
+    char err[256] = {0};
+    if (shell_cp(src, dst, true, err, sizeof(err)) < 0)
+        return val_err("storage.mv: %s", err[0] ? err : "move failed");
+    // The copy succeeded; if the source can't be fully removed the operation
+    // is a copy, not a move — report that instead of pretending success.
+    int rc = storage_rm_tree(src);
+    if (rc < 0)
+        return val_err("storage.mv: copied, but failed to remove source '%s': %s", src, strerror(-rc));
+    return val_bool(true);
+}
+
+// `storage.fd_create(path, [high_density])` — create a blank (unformatted)
+// floppy image: 800 KB by default, 1.4 MB when high_density is true. Unlike
+// the `fd create` shell command this does NOT insert the disk into a drive —
+// the New Machine dialog persists the file and lets the user select it.
+static value_t storage_method_fd_create(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)self;
+    (void)m;
+    const char *path = argv[0].s;
+    if (!path || !*path)
+        return val_err("storage.fd_create: empty path");
+    bool high_density = (argc >= 2 && argv[1].kind == V_BOOL) ? argv[1].b : false;
+    int rc = image_create_blank_floppy(path, false, high_density);
+    if (rc == -2)
+        return val_err("storage.fd_create: file already exists: %s", path);
+    if (rc != 0)
+        return val_err("storage.fd_create: failed to create blank floppy '%s'", path);
+    return val_bool(true);
+}
+
 // `storage.hd_download(src, dst)` — export a hard disk image (base + delta).
 static value_t storage_method_hd_download(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)self;
@@ -517,6 +636,20 @@ static const arg_decl_t storage_hd_create_args[] = {
     {.name = "path", .kind = V_STRING, .doc = "Image output path"                                   },
     {.name = "size", .kind = V_NONE,   .doc = "Size string (e.g. \"HD20SC\", \"40M\") or byte count"},
 };
+static const arg_decl_t storage_rm_args[] = {
+    {.name = "path", .kind = V_STRING, .doc = "Path to remove (recursive)"},
+};
+static const arg_decl_t storage_mv_args[] = {
+    {.name = "src", .kind = V_STRING, .doc = "Source path"     },
+    {.name = "dst", .kind = V_STRING, .doc = "Destination path"},
+};
+static const arg_decl_t storage_fd_create_args[] = {
+    {.name = "path", .kind = V_STRING, .doc = "Image output path"},
+    {.name = "high_density",
+     .kind = V_BOOL,
+     .validation_flags = OBJ_ARG_OPTIONAL,
+     .doc = "true = 1.4 MB, false (default) = 800 KB"},
+};
 static const arg_decl_t storage_hd_download_args[] = {
     {.name = "src", .kind = V_STRING, .doc = "Mounted HD image path"},
     {.name = "dst", .kind = V_STRING, .doc = "Output flat-file path"},
@@ -552,6 +685,18 @@ static const member_t storage_members[] = {
      .name = "hd_create",
      .doc = "Create a blank SCSI HD image",
      .method = {.args = storage_hd_create_args, .nargs = 2, .result = V_BOOL, .fn = storage_method_hd_create}    },
+    {.kind = M_METHOD,
+     .name = "fd_create",
+     .doc = "Create a blank floppy image (800 KB, or 1.4 MB when high_density)",
+     .method = {.args = storage_fd_create_args, .nargs = 2, .result = V_BOOL, .fn = storage_method_fd_create}    },
+    {.kind = M_METHOD,
+     .name = "rm",
+     .doc = "Recursively remove a file or directory (keeps the worker FS coherent)",
+     .method = {.args = storage_rm_args, .nargs = 1, .result = V_BOOL, .fn = storage_method_rm}                  },
+    {.kind = M_METHOD,
+     .name = "mv",
+     .doc = "Move/rename a file or directory (keeps the worker FS coherent)",
+     .method = {.args = storage_mv_args, .nargs = 2, .result = V_BOOL, .fn = storage_method_mv}                  },
     {.kind = M_METHOD,
      .name = "hd_download",
      .doc = "Export a hard-disk image (base + delta) to a flat file",

@@ -30,8 +30,10 @@
 //   list                → JSON array, recurse
 //   object              → {"object": "<class>", "name": "<name>"}
 //   none                → null
-// Caller passes a buffer; we truncate (with a trailing "..." marker) on
-// overflow rather than failing — easier for shell consumption.
+// Caller passes a buffer; the formatter truncates on overflow rather than
+// failing. gs_eval detects the full buffer afterwards and replaces the
+// payload with an explicit {"error": ...} so no consumer parses a
+// truncated document.
 
 static void buf_append(char *buf, size_t size, size_t *pos, const char *src, size_t n) {
     if (!buf || !size || *pos >= size - 1)
@@ -450,6 +452,20 @@ int gs_eval(const char *path, const char *args_json, char *out_buf, size_t out_s
 
     format_value_json(&v, out_buf, out_size, &pos);
     int rc = val_is_error(&v) ? -1 : 0;
+    if (pos >= out_size - 1) {
+        // The formatted result hit the buffer cap. A silently truncated
+        // payload is worse than a failure — the consumer would parse garbage
+        // (or, for a string result, a shorter valid-looking document) —
+        // so replace it with an explicit error.
+        size_t p = 0;
+        out_buf[0] = '\0';
+        buf_append(out_buf, out_size, &p, "{\"error\":", 9);
+        char msg[192];
+        snprintf(msg, sizeof(msg), "result for '%s' exceeds the %zu-byte output buffer", path, out_size);
+        buf_append_jstring(out_buf, out_size, &p, msg);
+        buf_append(out_buf, out_size, &p, "}", 1);
+        rc = -1;
+    }
     value_free(&v);
     free_args(argv, argc);
     return rc;

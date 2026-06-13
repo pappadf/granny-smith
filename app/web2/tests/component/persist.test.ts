@@ -43,11 +43,18 @@ describe('loadPersistedState — Phase 7 keys', () => {
     expect(logs.autoscroll).toBe(false);
   });
 
-  it('restores filesystem.expanded', () => {
-    localStorage.setItem('gs-fs-expanded', V1({ '/opfs': true, '/opfs /opfs/images': true }));
+  it('restores filesystem.expanded, dropping pre-U+001F space-joined keys', () => {
+    const newKey = '/opfs\x1f/opfs/My Folder'; // current format; spaces in names are fine
+    localStorage.setItem(
+      'gs-fs-expanded',
+      V1({ '/opfs': true, '/opfs /opfs/images': true, [newKey]: true }),
+    );
     loadPersistedState();
     expect(filesystem.expanded['/opfs']).toBe(true);
-    expect(filesystem.expanded['/opfs /opfs/images']).toBe(true);
+    expect(filesystem.expanded[newKey]).toBe(true);
+    // Old separator was ' '; such keys can never match again — migration
+    // drops them instead of re-persisting them forever.
+    expect(filesystem.expanded['/opfs /opfs/images']).toBeUndefined();
   });
 
   it('restores images.collapsed', () => {

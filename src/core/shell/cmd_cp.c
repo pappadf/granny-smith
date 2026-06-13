@@ -23,12 +23,16 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 
 // Per-run counters so the final summary is useful at scale.
 struct cp_stats {
     uint64_t files_copied;
     uint64_t bytes_copied;
     uint64_t dirs_created;
+    // Precise failure detail (which side failed, path, offset) set on the
+    // first error so callers can distinguish a source read from a dest write.
+    char detail[320];
 };
 
 // Concatenate two path components with exactly one separator.
@@ -52,13 +56,29 @@ static int copy_file(const char *src, const char *dst, struct cp_stats *s) {
     vfs_file_t *in = NULL;
     const vfs_backend_t *in_be = NULL;
     int rc = vfs_open(src, &in, &in_be);
-    if (rc < 0)
+    if (rc < 0) {
+        snprintf(s->detail, sizeof(s->detail), "cannot open source '%s': %s", src, strerror(-rc));
         return rc;
+    }
 
     FILE *out = fopen(dst, "wb");
+    if (!out && errno == EIO) {
+        // WasmFS stale-inode recovery: a dangling cached inode from an
+        // out-of-band OPFS removal makes "wb" fail with EIO even though the
+        // path is recreatable — drop the stale entry and retry once. Gated on
+        // EIO and never applied to directories, so genuine failures (EISDIR,
+        // EACCES, quota) report cleanly with the existing destination intact.
+        struct stat st;
+        if (stat(dst, &st) != 0 || !S_ISDIR(st.st_mode)) {
+            remove(dst);
+            out = fopen(dst, "wb");
+        }
+    }
     if (!out) {
+        int e = errno;
+        snprintf(s->detail, sizeof(s->detail), "cannot create '%s': %s", dst, strerror(e));
         in_be->close(in);
-        return -errno;
+        return e ? -e : -EIO;
     }
 
     uint8_t buf[64 * 1024];
@@ -67,6 +87,10 @@ static int copy_file(const char *src, const char *dst, struct cp_stats *s) {
         size_t got = 0;
         rc = in_be->read(in, off, buf, sizeof(buf), &got);
         if (rc < 0) {
+            // Distinguish a source-read failure from a destination-write one so
+            // browser/OPFS issues can be told apart from image-read issues.
+            snprintf(s->detail, sizeof(s->detail), "read error on '%s' at offset %llu: %s", src,
+                     (unsigned long long)off, strerror(-rc));
             fclose(out);
             in_be->close(in);
             return rc;
@@ -74,10 +98,12 @@ static int copy_file(const char *src, const char *dst, struct cp_stats *s) {
         if (got == 0)
             break;
         if (fwrite(buf, 1, got, out) != got) {
-            int werr = -errno;
+            int e = errno;
+            snprintf(s->detail, sizeof(s->detail), "write error on '%s' at offset %llu: %s", dst,
+                     (unsigned long long)off, strerror(e));
             fclose(out);
             in_be->close(in);
-            return werr;
+            return e ? -e : -EIO;
         }
         off += got;
     }
@@ -196,8 +222,12 @@ int shell_cp(const char *src, const char *dst, bool recursive, char *err_buf, si
     struct cp_stats s = {0};
     rc = copy_recursive(src, final_dst, &s);
     if (rc < 0) {
-        if (err_buf && err_cap)
-            snprintf(err_buf, err_cap, "cp: copy failed: %s", strerror(-rc));
+        if (err_buf && err_cap) {
+            if (s.detail[0])
+                snprintf(err_buf, err_cap, "cp: %s", s.detail);
+            else
+                snprintf(err_buf, err_cap, "cp: copy failed: %s", strerror(-rc));
+        }
         return rc;
     }
     if (s.dirs_created > 0)

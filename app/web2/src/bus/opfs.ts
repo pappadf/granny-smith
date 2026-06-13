@@ -6,6 +6,7 @@
 import type { CheckpointEntry, ImageCategory, OpfsEntry, RecentEntry, RomInfo } from './types';
 import { CHECKPOINT_DIR, ROMS_DIR } from '@/lib/opfsPaths';
 import { parseCheckpointDirName, formatCheckpointLabel } from '@/lib/checkpointMeta';
+import { gsEval, gsErrorText, isModuleReady } from './emulator';
 
 export interface OpfsBackend {
   list(dir: string): Promise<OpfsEntry[]>;
@@ -14,6 +15,8 @@ export interface OpfsBackend {
   scanCheckpoints(): Promise<CheckpointEntry[]>;
   readJson<T>(path: string): Promise<T | null>;
   writeJson(path: string, value: unknown): Promise<void>;
+  /** Read a file's bytes as a Blob. Rejects if the path isn't a readable file. */
+  readFile(path: string): Promise<Blob>;
   /** Move a file or dir to a new path (recursive for dirs). */
   move(src: string, dst: string): Promise<void>;
   /** Recursive delete. */
@@ -136,6 +139,12 @@ class MockOpfs implements OpfsBackend {
     this.json.set(path, value);
   }
 
+  async readFile(path: string): Promise<Blob> {
+    const f = this.files.get(path);
+    if (!f) throw new Error(`no such file: ${path}`);
+    return new Blob([new Uint8Array(Math.min(f.size, 1024))]);
+  }
+
   async move(src: string, dst: string): Promise<void> {
     const moved = new Map<string, { size: number }>();
     for (const [p, v] of this.files.entries()) {
@@ -190,6 +199,7 @@ export const opfs: OpfsBackend = {
   scanCheckpoints: () => backend.scanCheckpoints(),
   readJson: (path) => backend.readJson(path),
   writeJson: (path, value) => backend.writeJson(path, value),
+  readFile: (path) => backend.readFile(path),
   move: (src, dst) => backend.move(src, dst),
   delete: (path) => backend.delete(path),
   rename: (path, newName) => backend.rename(path, newName),
@@ -313,7 +323,25 @@ export class BrowserOpfs implements OpfsBackend {
     return out;
   }
 
+  async readFile(path: string): Promise<Blob> {
+    const dir = await getDirAtPath(path.replace(/\/[^/]+$/, ''));
+    const name = path.split('/').pop() ?? '';
+    const fh = await dir.getFileHandle(name);
+    return fh.getFile();
+  }
+
   async move(src: string, dst: string): Promise<void> {
+    // Route through the worker (storage.mv) so its WasmFS inode cache stays
+    // coherent with OPFS — same rationale as delete(). Once the module is up
+    // a worker-reported failure must NOT fall back to a main-thread mutation:
+    // that would change OPFS behind the worker's cache and recreate the exact
+    // stale-inode bug this routing exists to prevent — propagate it instead.
+    if (isModuleReady()) {
+      const res = await gsEval('storage.mv', [src, dst]);
+      if (res !== true) throw new Error(gsErrorText(res));
+      return;
+    }
+    // Module not up yet (no worker cache to desync) — direct OPFS fallback.
     // OPFS has no native rename — copy then delete. For dirs, walk
     // recursively. For files, single-shot stream copy.
     const srcParent = src.replace(/\/[^/]+$/, '');
@@ -365,12 +393,26 @@ export class BrowserOpfs implements OpfsBackend {
   }
 
   async delete(path: string): Promise<void> {
+    // Route through the worker (WasmFS) so its inode cache stays coherent with
+    // OPFS. A main-thread navigator.storage delete is invisible to the worker,
+    // leaving a dangling inode that breaks a later worker-side create at the
+    // same path (e.g. re-copying a file out of an image after deleting it).
+    // As with move(): once the module is up, a worker-reported failure is
+    // propagated, never retried main-thread — and propagating is also what
+    // makes the UI's per-item failure accounting real instead of dead code.
+    if (isModuleReady()) {
+      const res = await gsEval('storage.rm', [path]);
+      if (res !== true) throw new Error(gsErrorText(res));
+      return;
+    }
+    // Module not up yet (no worker cache to desync) — direct OPFS fallback.
+    const parent = await getDirAtPath(path.replace(/\/[^/]+$/, ''));
+    const name = path.split('/').pop() ?? '';
     try {
-      const parent = await getDirAtPath(path.replace(/\/[^/]+$/, ''));
-      const name = path.split('/').pop() ?? '';
       await parent.removeEntry(name, { recursive: true });
-    } catch {
-      // Best-effort.
+    } catch (err) {
+      // Deleting something already gone is success; anything else surfaces.
+      if ((err as DOMException)?.name !== 'NotFoundError') throw err;
     }
   }
 

@@ -1,12 +1,12 @@
 <script lang="ts">
   import { machine, type MachineStatus } from '@/state/machine.svelte';
-  import { uploads } from '@/state/uploads.svelte';
+  import { activity } from '@/state/activity.svelte';
   import DriveActivity from './DriveActivity.svelte';
 
   // Spec §11: hidden before first machine start. Also surfaces during
   // pre-boot uploads so the user can see large-file progress in the
   // status bar.
-  const visible = $derived(machine.status !== 'no-machine' || uploads.current !== null);
+  const visible = $derived(machine.status !== 'no-machine' || activity.current !== null);
 
   const stateLabel: Record<MachineStatus, string> = {
     'no-machine': '',
@@ -41,10 +41,10 @@
       <DriveActivity label="CD" title="CD-ROM" activity={machine.driveActivity.cd} />
     </div>
     <div class="statusbar-right">
-      {#if uploads.current}
-        <div class="sb-item sb-upload" title="File upload in progress">
+      {#if activity.current}
+        <div class="sb-item sb-upload" title="{activity.verb} in progress">
           <span class="upload-spinner"></span>
-          <span class="upload-label">Uploading: {uploads.current}</span>
+          <span class="upload-label">{activity.verb}: {activity.current}</span>
         </div>
       {/if}
       <div class="sb-item sb-desc">{desc}</div>

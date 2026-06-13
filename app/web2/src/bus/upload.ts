@@ -15,7 +15,7 @@ import { writeToOPFS, removeFromOPFS, opfs } from './opfs';
 import { showNotification } from '@/state/toasts.svelte';
 import { machine } from '@/state/machine.svelte';
 import { setMounted, bumpImagesRevision } from '@/state/images.svelte';
-import { startUpload, finishUpload } from '@/state/uploads.svelte';
+import { startActivity, endActivity } from '@/state/activity.svelte';
 import { sanitizeName, isZipFile, isMacArchive } from '@/lib/archive';
 import { fileHasCheckpointSignature, ROMS_DIR, UPLOAD_DIR } from '@/lib/opfsPaths';
 import { MEDIA_TYPES, type MediaTypeId, type MediaTypeDescriptor } from '@/lib/media';
@@ -65,7 +65,7 @@ export async function acceptFiles(files: File[], opts: AcceptFilesOptions = {}):
     return;
   }
 
-  startUpload(files[0].name);
+  startActivity(files[0].name);
   try {
     let firstStagedPath: string | null = null;
     for (const file of files) {
@@ -90,7 +90,7 @@ export async function acceptFiles(files: File[], opts: AcceptFilesOptions = {}):
       showNotification(`${files.length} files uploaded to ${UPLOAD_DIR}`, 'info');
     }
   } finally {
-    finishUpload();
+    endActivity();
   }
 }
 
@@ -110,7 +110,7 @@ export async function acceptFilesAsCategory(
   const file = files[0];
   const safe = sanitizeName(file.name) || 'image.img';
   const staging = `${UPLOAD_DIR}/${safe}`;
-  startUpload(file.name);
+  startActivity(file.name);
   try {
     try {
       await writeToOPFS(staging, file);
@@ -132,7 +132,7 @@ export async function acceptFilesAsCategory(
     else await autoMountIfEmpty(persisted, category);
     return true;
   } finally {
-    finishUpload();
+    endActivity();
   }
 }
 
@@ -149,7 +149,7 @@ export async function acceptFilesRaw(files: File[], targetDir: string): Promise<
   for (const file of files) {
     const safe = sanitizeName(file.name) || 'file.bin';
     const finalPath = `${targetDir}/${safe}`;
-    startUpload(file.name);
+    startActivity(file.name);
     try {
       await writeToOPFS(finalPath, file);
       showNotification(`'${file.name}' saved to ${targetDir}`, 'info');
@@ -157,7 +157,7 @@ export async function acceptFilesRaw(files: File[], targetDir: string): Promise<
       console.error('upload: OPFS write failed', err);
       showNotification(`Upload failed: ${file.name}`, 'error');
     } finally {
-      finishUpload();
+      endActivity();
     }
   }
 }

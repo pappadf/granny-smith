@@ -9,6 +9,7 @@
 #include "vfs.h"
 
 #include "image_vfs.h"
+#include "json_encode.h"
 #include "object.h"
 #include "value.h"
 
@@ -45,6 +46,74 @@ static value_t vfs_method_ls(struct object *self, const member_t *m, int argc, c
     }
     be->closedir(dir);
     return val_bool(ok);
+}
+
+// `vfs.list([path])` — like `vfs.ls`, but returns a structured listing the
+// GUI can render instead of printing names to stdout. Result is a JSON array
+//   [{"name": "...", "kind": "file"|"directory", "size": <bytes>}, ...]
+// Descends into disk images through the same resolver as `vfs.ls`, so a bare
+// image path lists its partitions and a partition path lists the HFS/UFS
+// volume. Read-only throughout. Returns V_ERROR (falsy via the bridge) when
+// the path can't be opened as a directory.
+static value_t vfs_method_list(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)self;
+    (void)m;
+    const char *path = (argc >= 1 && argv[0].s && *argv[0].s) ? argv[0].s : vfs_get_cwd();
+    vfs_dir_t *dir = NULL;
+    const vfs_backend_t *be = NULL;
+    int rc = vfs_opendir(path, &dir, &be);
+    if (rc < 0)
+        return val_err("vfs.list: cannot open directory '%s': %s", path, strerror(-rc));
+
+    json_builder_t *b = json_builder_new();
+    if (!b) {
+        be->closedir(dir);
+        return val_err("vfs.list: out of memory");
+    }
+    json_open_arr(b);
+
+    vfs_dirent_t entry;
+    int r;
+    while ((r = be->readdir(dir, &entry)) > 0) {
+        // The image backend fills `st` during readdir; the host backend leaves
+        // has_stat=false, so stat the child path to classify it (dir vs file)
+        // and read its size.
+        uint16_t mode = 0;
+        uint64_t size = 0;
+        if (entry.has_stat) {
+            mode = entry.st.mode;
+            size = entry.st.size;
+        } else {
+            char child[VFS_PATH_MAX];
+            if (snprintf(child, sizeof(child), "%s/%s", path, entry.name) < (int)sizeof(child)) {
+                vfs_stat_t st;
+                if (vfs_stat(child, &st) == 0) {
+                    mode = st.mode;
+                    size = st.size;
+                }
+            }
+        }
+        json_open_obj(b);
+        json_key(b, "name");
+        json_str(b, entry.name);
+        json_key(b, "kind");
+        json_str(b, (mode & VFS_MODE_DIR) ? "directory" : "file");
+        json_key(b, "size");
+        json_int(b, (int64_t)size);
+        json_close_obj(b);
+    }
+    be->closedir(dir);
+
+    if (r < 0) {
+        // readdir failed mid-iteration — discard the partial document and
+        // surface the error rather than returning a truncated listing.
+        value_t partial = json_finish(b);
+        value_free(&partial);
+        return val_err("vfs.list: readdir error in '%s': %s", path, strerror(-r));
+    }
+
+    json_close_arr(b);
+    return json_finish(b);
 }
 
 static value_t vfs_method_mkdir(struct object *self, const member_t *m, int argc, const value_t *argv) {
@@ -114,15 +183,19 @@ static const member_t vfs_members[] = {
     {.kind = M_METHOD,
      .name = "ls",
      .doc = "List directory contents (or current directory)",
-     .method = {.args = vfs_path_arg_optional, .nargs = 1, .result = V_BOOL, .fn = vfs_method_ls}},
+     .method = {.args = vfs_path_arg_optional, .nargs = 1, .result = V_BOOL, .fn = vfs_method_ls}    },
+    {.kind = M_METHOD,
+     .name = "list",
+     .doc = "List a directory as JSON [{name,kind,size}] (descends into disk images)",
+     .method = {.args = vfs_path_arg_optional, .nargs = 1, .result = V_STRING, .fn = vfs_method_list}},
     {.kind = M_METHOD,
      .name = "mkdir",
      .doc = "Create a directory",
-     .method = {.args = vfs_path_arg, .nargs = 1, .result = V_BOOL, .fn = vfs_method_mkdir}      },
+     .method = {.args = vfs_path_arg, .nargs = 1, .result = V_BOOL, .fn = vfs_method_mkdir}          },
     {.kind = M_METHOD,
      .name = "cat",
      .doc = "Print the raw bytes of a file (data fork, rsrc, finder_info)",
-     .method = {.args = vfs_path_arg, .nargs = 1, .result = V_BOOL, .fn = vfs_method_cat}        },
+     .method = {.args = vfs_path_arg, .nargs = 1, .result = V_BOOL, .fn = vfs_method_cat}            },
 };
 
 const class_desc_t vfs_class = {
