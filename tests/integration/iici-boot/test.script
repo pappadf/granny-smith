@@ -1,6 +1,7 @@
 # Integration test: Macintosh IIci Floppy Boot + About box
-# Boots the IIci from a System 7.1 floppy, verifies the Finder desktop, then
-# brings up the "About the Macintosh Finder" dialog via the Apple menu.
+# Boots the IIci from the System 7.0.1 1.44MB HD floppy (same image as
+# se30-floppy-hd / iifx-boot), verifies the Finder desktop, then brings up
+# the "About This Macintosh" dialog via the Apple menu.
 #
 # The IIci's RBV chip ($50F26000) replaces the IIcx VIA2 and drives built-in
 # video: the boot ROM waits on the RvIRQ0 vertical-blank interrupt during
@@ -16,11 +17,11 @@ assert ${rom.checksum == "368CADFE"} "rom.checksum != 368CADFE"
 assert ${screen.width == 640} "screen.width != 640"
 assert ${screen.height == 480} "screen.height != 480"
 
-# Verify the Finder desktop matches the reference (System menu bar, the
-# Disk Tools volume window, Trash icon, gray desktop).
+# Verify the Finder desktop matches the reference (System 7 menu bar, the
+# Disk Tools floppy icon, Trash icon, gray desktop).
 screen.match finder.png
 
-# Bring up "About the Macintosh Finder" via the Apple menu.  The mouse
+# Bring up "About This Macintosh" via the Apple menu.  The mouse
 # *geometry* matches the other models (Apple menu at 25,10; the first menu
 # item at 25,30), but positioning uses "global" mode (direct MTemp writes +
 # guard, as in iifx-boot) — the IIci's classic VIA1 ADB delta path does not
