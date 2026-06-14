@@ -32,6 +32,7 @@ LOG_USE_CATEGORY_NAME("rbvvid");
 typedef struct {
     rbv_t *rbv; // RBV chip — set post-init by the machine (slot-0 IRQ)
     uint8_t *fb; // framebuffer buffer (registered by the machine at $FBB00000)
+    bool fb_external; // true if fb points at machine-owned memory (don't free)
     rgba8_t clut[256]; // 256-entry palette fed by the VDAC
     display_t display;
 
@@ -125,7 +126,8 @@ static void card_teardown(nubus_card_t *card, config_t *cfg) {
     rbv_video_priv_t *p = card->priv;
     if (!p)
         return;
-    free(p->fb);
+    if (!p->fb_external)
+        free(p->fb); // machine-owned (IIsi main-RAM) framebuffers are not ours to free
     free(p);
     card->priv = NULL;
 }
@@ -169,6 +171,23 @@ static const nubus_card_ops_t builtin_rbv_video_ops = {
 uint8_t *builtin_rbv_video_framebuffer(nubus_card_t *card) {
     rbv_video_priv_t *p = card ? card->priv : NULL;
     return p ? p->fb : NULL;
+}
+
+void builtin_rbv_video_set_framebuffer(nubus_card_t *card, uint8_t *aperture, uint32_t screen_offset) {
+    rbv_video_priv_t *p = card ? card->priv : NULL;
+    if (!p || !aperture)
+        return;
+    // The IIsi reads its framebuffer directly out of main DRAM (the V8 DMAs
+    // Bank A starting at physical 0).  Point the card's framebuffer at the
+    // machine-supplied aperture (a window into main RAM) instead of the private
+    // buffer, so the renderer and the guest's screen writes share the same
+    // storage.  `screen_offset` locates the active screen within the aperture.
+    if (!p->fb_external)
+        free(p->fb);
+    p->fb = aperture;
+    p->fb_external = true;
+    p->display.bits = p->fb + screen_offset;
+    p->display.fb_dirty = true;
 }
 
 void builtin_rbv_video_set_rbv(nubus_card_t *card, rbv_t *rbv) {

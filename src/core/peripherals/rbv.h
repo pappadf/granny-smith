@@ -26,10 +26,15 @@
 struct rbv;
 typedef struct rbv rbv_t;
 
-// RBV silicon variant.  Only the IIci's RBV is modelled in v1; the IIsi's
-// V8 superset is a future addition selected here.
+// RBV silicon variant.  The IIci uses the original RBV; the IIsi uses the
+// "V8" superset (called VISA in the IIsi ROM).  The register file is identical
+// in size and layout (eight 8-bit registers at the same offsets); only a few
+// bit names and the companion VDAC part (Bt450 vs Bt478) differ, none of which
+// changes the functional model — so the variant is carried for naming /
+// inspection and to gate any future V8-only side effects.
 typedef enum rbv_variant {
     RBV_VARIANT_IICI = 0,
+    RBV_VARIANT_V8_IISI = 1,
 } rbv_variant_t;
 
 // === Lifecycle ==============================================================

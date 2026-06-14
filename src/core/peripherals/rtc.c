@@ -311,8 +311,14 @@ static void one_second_interrupt(void *source, uint64_t data) {
 
     LOG(1, "one_second_interrupt: seconds=%u", rtc->seconds);
 
-    via_input_c(rtc->via, 0, 1, 0);
-    via_input_c(rtc->via, 0, 1, 1);
+    // The RTC crystal increments `seconds` independently every second.  Its
+    // 1 Hz output pin drives VIA1 CA2 only on the classic transceiver-RTC
+    // machines; Egret-class machines (IIsi) leave it unwired (rtc->via NULL)
+    // and source their 1-second tick from Egret instead.
+    if (rtc->via) {
+        via_input_c(rtc->via, 0, 1, 0);
+        via_input_c(rtc->via, 0, 1, 1);
+    }
 
     scheduler_new_cpu_event(rtc->scheduler, &one_second_interrupt, rtc, 0, 0, 1000000000ULL);
 }

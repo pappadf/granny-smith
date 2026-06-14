@@ -88,8 +88,21 @@ typedef struct mmu_state {
 
     // Host-side state for table walks
     uint8_t *physical_ram; // base of physical RAM buffer
-    uint32_t physical_ram_size; // size of installed RAM in bytes
+    uint32_t physical_ram_size; // size of installed RAM in bytes (total, or Bank A in two-bank mode)
     uint32_t ram_size_max; // max RAM the controller supports (e.g. 128MB on SE/30)
+
+    // Optional second physical RAM bank (Macintosh IIsi: Bank A soldered at
+    // physical 0 holding the video frame buffer at its bottom; Bank B SIMM
+    // expansion at physical $04000000 which the OS makes system "low memory").
+    // When ram_b_size==0 (all other machines) RAM is a single contiguous bank
+    // and the resolvers use the simple `phys < physical_ram_size` path.  When
+    // set, RAM is two discontiguous banks, each mirroring within a 64 MB window
+    // (the boot ROM sizes each bank by that wrap).
+    uint8_t *physical_ram_b; // host base of Bank B (NULL = single-bank machine)
+    uint32_t ram_a_size; // Bank A size in bytes (mirror modulus for [0, ram_b_phys_base))
+    uint32_t ram_b_phys_base; // physical address where Bank B begins ($04000000)
+    uint32_t ram_b_size; // Bank B size in bytes (mirror modulus); 0 = single-bank
+    uint32_t ram_b_window; // size of Bank B's mirror window ($04000000 = 64 MB)
     uint8_t *physical_rom; // base of physical ROM buffer
     uint32_t physical_rom_size; // size of ROM in bytes
     uint32_t rom_phys_base; // physical address where ROM region starts
@@ -204,6 +217,15 @@ bool mmu_phys_is_writable(mmu_state_t *mmu, uint32_t phys_addr);
 // Register a VRAM region so table walks and TT matches can resolve it
 void mmu_register_vram(mmu_state_t *mmu, uint8_t *vram, uint32_t phys_base, uint32_t size);
 void mmu_register_vrom(mmu_state_t *mmu, uint8_t *vrom, uint32_t phys_base, uint32_t size);
+
+// Configure a second physical RAM bank (e.g. the Macintosh IIsi's SIMM Bank B
+// at physical $04000000).  After this, Bank A is [0, ram_a_size) host-backed by
+// `physical_ram` and mirroring within [0, bank_b_phys_base); Bank B is host-
+// backed by `bank_b_host` and mirrors `bank_b_size` within
+// [bank_b_phys_base, bank_b_phys_base + bank_b_window).  `physical_ram_size` is
+// reset to ram_a_size so the single-bank paths never shadow Bank B.
+void mmu_set_ram_bank_b(mmu_state_t *mmu, uint32_t ram_a_size, uint8_t *bank_b_host, uint32_t bank_b_phys_base,
+                        uint32_t bank_b_size, uint32_t bank_b_window);
 
 // Global MMU state pointer (set by machine init, NULL for 68000 machines)
 extern struct mmu_state *g_mmu;

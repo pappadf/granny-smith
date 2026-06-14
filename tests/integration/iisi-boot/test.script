@@ -1,0 +1,39 @@
+# Integration test: Macintosh IIsi Floppy Boot
+# Boots the IIsi from the System 7.0.1 1.44 MB HD floppy and verifies the
+# Finder desktop, exercising the two defining IIsi fixes:
+#   1. Egret XPRAM via Read6805/Write6805 ($02/$08) — without it the heap
+#      derails on a black-hole MMFlags.
+#   2. On-board V8 video reads its frame buffer from the BOTTOM of Bank A
+#      (physical 0); system RAM lives in Bank B at physical $04000000.  The OS's
+#      24-bit PMMU maps the slot-$E screen base ($FEE08000 / $00E08000) to
+#      physical 0 and logical-0 system RAM into Bank B, so QuickDraw's screen
+#      writes land in Bank A — not on the vector table (which would reset-loop).
+#
+# NOTE on the re-insert: the IIsi ROM ejects a floppy that is already in the
+# drive at power-on during its first boot-device scan (deterministically, well
+# before instr 195M), then parks at the blinking-"?" disk.  Re-mounting the
+# image makes the ROM mount and boot it.  (The IIci boots a pre-inserted floppy
+# without this — the IIsi-specific eject is a separate, known follow-up.)  The
+# sequence is fully deterministic: a fixed instruction budget reaches the eject,
+# the re-insert mounts the same image, and a second fixed budget reaches a
+# stable Finder desktop.
+
+# Boot far enough for the ROM to scan + eject the pre-inserted floppy and settle
+# at the blinking-"?" disk (retires ~195M; STOP-idle consumes the rest).
+scheduler.run 230000000
+
+# Re-mount the same System 7.0.1 image; the ROM detects it and boots.
+floppy.drives[0].insert "../../data/systems/System_7_0_1.image"
+scheduler.run 160000000
+
+assert ${machine.id == "iisi"} "machine.id != iisi"
+assert ${rom.checksum == "36B7FB6C"} "rom.checksum != 36B7FB6C"
+assert ${screen.width == 640} "screen.width != 640"
+assert ${screen.height == 480} "screen.height != 480"
+
+# Verify the Finder desktop matches the reference (System 7 menu bar, the
+# Disk Tools floppy icon, the Trash icon, gray desktop) — rendered by the V8
+# straight out of Bank A at physical 0.
+screen.match finder.png
+
+quit

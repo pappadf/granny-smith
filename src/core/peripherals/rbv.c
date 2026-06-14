@@ -328,6 +328,7 @@ rbv_t *rbv_init(rbv_variant_t variant, checkpoint_t *cp) {
     if (!rbv)
         return NULL;
     rbv->variant = variant;
+    LOG(1, "RBV init (variant=%s)", variant == RBV_VARIANT_V8_IISI ? "V8/IIsi" : "RBV/IIci");
 
     // Reset defaults: cache enabled, power on, sound to internal speaker.
     // RvPowerOff (bit 2) idles high (= powered on); the detector arms on it.
