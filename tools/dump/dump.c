@@ -1,44 +1,41 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) pappadf
 
-// re.c
-// Reverse-engineering orchestrator: identify + dump for forked Mac files.
-// PR 2 scope is the skeleton — extract data fork, finder info, and every
-// raw resource (with .info sidecar).  Disassembly, per-type decoding, and
-// manifest consolidation land in subsequent PRs.
+// dump.c
+// Standalone reverse-engineering tool for classic-Mac forked files and
+// A/UX COFF binaries.  Reads buffers passed by main() (loaded from host
+// files via plain stdio) and produces a self-contained dump directory:
+// raw data fork, every resource under resources/<TYPE>/<id>, per-segment
+// disassembly with symbol annotation, per-type decoded JSON/text, a
+// manifest.json, and a top-level README.md.
 //
-// The path argument flows through the VFS so host files, image-vfs HFS
-// paths, and any future backend route uniformly.  Resource-fork parsing
-// uses the C API in resource_fork.h directly (rfork_parse +
-// rfork_lookup); we do NOT round-trip through `storage.cp` on the
-// per-resource extract path — that would push every byte through the
-// shell dispatcher and defeat the point.
+// Resource-fork parsing uses the C API in src/core/storage/resource_fork.h
+// (rfork_parse + rfork_lookup); compressed resources are auto-inflated
+// via rsrc_dcmp.  COFF binaries are detected by their 0x0150 magic and
+// dispatched into coff_dump.c.
 
-#include "re.h"
+#include "dump.h"
 
 #include "annotate_disasm.h"
 #include "code_segment.h"
 #include "coff.h"
 #include "coff_dump.h"
-#include "object.h"
 #include "resource_fork.h"
 #include "symbols.h"
-#include "value.h"
-#include "vfs.h"
 #include "decoders/decoders.h"
 
 #include <errno.h>
+#include <getopt.h>
 #include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <unistd.h>
 
-// Forward declaration: dump_disasm lives below re_dump for readability
-// (the disassembly helpers are conceptually a self-contained block) but
-// re_dump calls it as the final step.  The forward decl keeps that
-// ordering legal in C without cross-referencing surprises.
+// Forward declaration: dump_disasm lives below dump_run for readability
+// but dump_run calls it as the final step.
 static int dump_disasm(const struct rfork *rf, const char *dst_dir);
 
 // ============================================================================
@@ -71,65 +68,48 @@ static int re_mkdir_p(const char *path) {
 }
 
 // ============================================================================
-// Reading a VFS file into a malloc'd buffer
+// Reading a host file into a malloc'd buffer
 // ============================================================================
 
-uint8_t *re_read_vfs_file(const char *vfs_path, size_t *out_len) {
+// Read the entire contents of `path` into a freshly malloc'd buffer.
+// Returns NULL on any error (with errno preserved); on success the byte
+// count is written to *out_len.  Caller frees with free().
+static uint8_t *read_host_file(const char *path, size_t *out_len) {
     if (out_len)
         *out_len = 0;
-    if (!vfs_path)
+    if (!path || !*path)
         return NULL;
-    vfs_stat_t st = {0};
-    if (vfs_stat(vfs_path, &st) < 0)
+    FILE *fp = fopen(path, "rb");
+    if (!fp)
         return NULL;
-    if (!(st.mode & VFS_MODE_FILE))
+    if (fseek(fp, 0, SEEK_END) != 0) {
+        fclose(fp);
         return NULL;
-    size_t sz = (size_t)st.size;
+    }
+    long sz_signed = ftell(fp);
+    if (sz_signed < 0) {
+        fclose(fp);
+        return NULL;
+    }
+    size_t sz = (size_t)sz_signed;
+    if (fseek(fp, 0, SEEK_SET) != 0) {
+        fclose(fp);
+        return NULL;
+    }
     uint8_t *buf = malloc(sz > 0 ? sz : 1);
-    if (!buf)
+    if (!buf) {
+        fclose(fp);
         return NULL;
-    if (sz == 0) {
-        if (out_len)
-            *out_len = 0;
-        return buf;
     }
-    vfs_file_t *vf = NULL;
-    const vfs_backend_t *be = NULL;
-    if (vfs_open(vfs_path, &vf, &be) < 0) {
+    if (sz > 0 && fread(buf, 1, sz, fp) != sz) {
         free(buf);
+        fclose(fp);
         return NULL;
     }
-    size_t got_total = 0;
-    while (got_total < sz) {
-        size_t got = 0;
-        int rc = be->read(vf, got_total, buf + got_total, sz - got_total, &got);
-        if (rc < 0 || got == 0) {
-            if (rc < 0)
-                got_total = 0; // signal failure below
-            break;
-        }
-        got_total += got;
-    }
-    be->close(vf);
-    if (got_total != sz) {
-        free(buf);
-        return NULL;
-    }
+    fclose(fp);
     if (out_len)
         *out_len = sz;
     return buf;
-}
-
-// Same shape, but for the optional `<file>/<suffix>` companion paths
-// (`/rsrc/_raw`, `/finf`).  Returns NULL silently when the suffix
-// doesn't resolve — empty fork / non-HFS backing — so callers can
-// treat "no resource fork" as a normal outcome rather than an error.
-static uint8_t *read_suffix(const char *base_path, const char *suffix, size_t *out_len) {
-    char full[PATH_MAX];
-    int n = snprintf(full, sizeof(full), "%s/%s", base_path, suffix);
-    if (n < 0 || (size_t)n >= sizeof(full))
-        return NULL;
-    return re_read_vfs_file(full, out_len);
 }
 
 // ============================================================================
@@ -175,27 +155,17 @@ static int finder_json_write(const uint8_t *finf, size_t finf_len, FILE *fp) {
 }
 
 // ============================================================================
-// re_identify — one-line summary
+// dump_identify — one-line summary
 // ============================================================================
 
-bool re_identify(const char *vfs_path) {
-    if (!vfs_path || !*vfs_path)
-        return false;
-    vfs_stat_t st = {0};
-    if (vfs_stat(vfs_path, &st) < 0)
-        return false;
-    if (!(st.mode & VFS_MODE_FILE)) {
-        printf("not-a-file\n");
-        return false;
+bool dump_identify(const uint8_t *data_bytes, size_t data_len, const uint8_t *rsrc_bytes, size_t rsrc_len,
+                   const char *label) {
+    (void)label;
+    // A/UX COFF is auto-detected first; takes precedence over Mac-fork shape.
+    if (coff_is_coff(data_bytes, data_len)) {
+        printf("a-ux-coff: bytes=%zu\n", data_len);
+        return true;
     }
-    size_t data_len = (size_t)st.size;
-
-    size_t rsrc_len = 0;
-    uint8_t *rsrc_bytes = read_suffix(vfs_path, "rsrc/_raw", &rsrc_len);
-
-    size_t finf_len = 0;
-    uint8_t *finf_bytes = read_suffix(vfs_path, "finf", &finf_len);
-
     if (rsrc_bytes && rsrc_len > 0) {
         const char *errmsg = NULL;
         rfork_t *rf = rfork_parse(rsrc_bytes, rsrc_len, &errmsg);
@@ -206,16 +176,17 @@ bool re_identify(const char *vfs_path) {
         printf("mac-forked-file: data_fork=%zu rsrc_fork=%zu types=%zu resources=%zu\n", data_len, rsrc_len, n_types,
                n_res);
         rfork_free(rf);
-    } else {
-        printf("data-only: data_fork=%zu\n", data_len);
+        return true;
     }
-    free(rsrc_bytes);
-    free(finf_bytes);
-    return true;
+    if (data_bytes && data_len > 0) {
+        printf("data-only: data_fork=%zu\n", data_len);
+        return true;
+    }
+    return false;
 }
 
 // ============================================================================
-// re_dump — full extract of data fork, finder info, and every resource
+// dump_run — full extract of data fork, finder info, and every resource
 // ============================================================================
 
 // Write `len` bytes from `bytes` to `out_path` (host filesystem).  Returns
@@ -298,26 +269,25 @@ static int dump_resources(const rfork_t *rf, const char *dst_dir) {
 // Forward decls for the new PR 5 helpers (decoded/ pass + manifest writer).
 // Both live below this function for readability.
 static int dump_decoded(const struct rfork *rf, const char *dst_dir);
-static int dump_manifest(const struct rfork *rf, const char *vfs_path, const char *dst_dir, size_t data_len,
+static int dump_manifest(const struct rfork *rf, const char *src_label, const char *dst_dir, size_t data_len,
                          size_t rsrc_len, const uint8_t *finder_info, size_t finder_info_len);
-static void dump_readme(const struct rfork *rf, const char *vfs_path, const char *dst_dir, size_t data_len,
+static void dump_readme(const struct rfork *rf, const char *src_label, const char *dst_dir, size_t data_len,
                         size_t rsrc_len, const uint8_t *finder_info, size_t finder_info_len, int total_resources,
                         int disasm_written, int decoded_written);
 
-int re_dump(const char *vfs_path, const char *dst_dir) {
-    return re_dump_with_flags(vfs_path, dst_dir, 0);
-}
-
-int re_dump_with_flags(const char *vfs_path, const char *dst_dir, uint32_t flags) {
-    if (!vfs_path || !dst_dir || !*vfs_path || !*dst_dir)
+int dump_run(const uint8_t *data_bytes, size_t data_len, const uint8_t *rsrc_bytes, size_t rsrc_len,
+             const uint8_t *finf_bytes, size_t finf_len, const char *src_label, const char *dst_dir, uint32_t flags) {
+    if (!dst_dir || !*dst_dir)
         return -EINVAL;
+    if (!src_label)
+        src_label = "(unnamed)";
     if (re_mkdir_p(dst_dir) != 0) {
-        fprintf(stderr, "re: cannot create output directory '%s': %s\n", dst_dir, strerror(errno));
+        fprintf(stderr, "dump: cannot create output directory '%s': %s\n", dst_dir, strerror(errno));
         return -EIO;
     }
     // Refuse to overwrite a non-empty existing dir unless --force is set.
     // Empty dirs (including freshly mkdir'd ones) are fine.
-    if (!(flags & RE_DUMP_FORCE)) {
+    if (!(flags & DUMP_FORCE)) {
         // A quick non-empty check via stat on the data.bin we're about to
         // create — if it already exists, treat the dir as non-empty.
         char probe[PATH_MAX];
@@ -325,19 +295,11 @@ int re_dump_with_flags(const char *vfs_path, const char *dst_dir, uint32_t flags
         struct stat st;
         if (stat(probe, &st) == 0) {
             fprintf(stderr,
-                    "re: refusing to overwrite existing dump at '%s' (pass --force "
+                    "dump: refusing to overwrite existing dump at '%s' (pass --force "
                     "to override)\n",
                     dst_dir);
             return -EEXIST;
         }
-    }
-
-    // Data fork (always present, even when zero bytes).
-    size_t data_len = 0;
-    uint8_t *data_bytes = re_read_vfs_file(vfs_path, &data_len);
-    if (!data_bytes) {
-        fprintf(stderr, "re: cannot read data fork from '%s'\n", vfs_path);
-        return -EIO;
     }
 
     // Auto-detect A/UX COFF binaries.  These are plain files (no
@@ -347,22 +309,17 @@ int re_dump_with_flags(const char *vfs_path, const char *dst_dir, uint32_t flags
     // layout described in coff_dump.h.  The Mac path stays untouched
     // for any other magic.
     if (coff_is_coff(data_bytes, data_len)) {
-        int crc = re_coff_dump(data_bytes, data_len, vfs_path, dst_dir);
-        free(data_bytes);
-        return crc;
+        return re_coff_dump(data_bytes, data_len, src_label, dst_dir);
     }
 
     char path[PATH_MAX];
     snprintf(path, sizeof(path), "%s/data.bin", dst_dir);
-    int rc = write_blob(path, data_bytes, data_len);
-    free(data_bytes);
-    if (rc != 0)
+    if (write_blob(path, data_bytes ? data_bytes : (const uint8_t *)"", data_len) != 0)
         return -EIO;
 
-    // Finder info — present only on HFS-backed paths.  Absence is silent.
-    size_t finf_len = 0;
-    uint8_t *finf_bytes = read_suffix(vfs_path, "finf", &finf_len);
-    if (finf_bytes) {
+    // Finder info sidecar — caller supplies the 32-byte blob (typically
+    // read from the file's `finf` companion sidecar).  Absence is silent.
+    if (finf_bytes && finf_len > 0) {
         snprintf(path, sizeof(path), "%s/finder.json", dst_dir);
         FILE *fp = fopen(path, "wb");
         if (fp) {
@@ -374,8 +331,6 @@ int re_dump_with_flags(const char *vfs_path, const char *dst_dir, uint32_t flags
     // Resource fork — parse, extract every resource, then disassemble
     // any CODE segments.  rf stays alive across the three passes so we
     // don't pay the parse cost three times.
-    size_t rsrc_len = 0;
-    uint8_t *rsrc_bytes = read_suffix(vfs_path, "rsrc/_raw", &rsrc_len);
     int total_resources = 0;
     int disasm_written = 0;
     int decoded_written = 0;
@@ -383,32 +338,28 @@ int re_dump_with_flags(const char *vfs_path, const char *dst_dir, uint32_t flags
         const char *errmsg = NULL;
         rfork_t *rf = rfork_parse(rsrc_bytes, rsrc_len, &errmsg);
         if (!rf) {
-            fprintf(stderr, "re: corrupt resource fork in '%s': %s\n", vfs_path, errmsg ? errmsg : "unknown");
-            free(rsrc_bytes);
-            free(finf_bytes);
+            fprintf(stderr, "dump: corrupt resource fork in '%s': %s\n", src_label, errmsg ? errmsg : "unknown");
             return -EIO;
         }
         total_resources = dump_resources(rf, dst_dir);
-        if (total_resources >= 0 && !(flags & RE_DUMP_NO_DISASM))
+        if (total_resources >= 0 && !(flags & DUMP_NO_DISASM))
             disasm_written = dump_disasm(rf, dst_dir);
-        if (total_resources >= 0 && !(flags & RE_DUMP_NO_DECODE))
+        if (total_resources >= 0 && !(flags & DUMP_NO_DECODE))
             decoded_written = dump_decoded(rf, dst_dir);
         // Always write the manifest — it consolidates every layer we did
         // actually run.  README.md mirrors the same data in human-readable
         // form so a reader landing in the directory cold has a clear
         // table of contents.
-        dump_manifest(rf, vfs_path, dst_dir, data_len, rsrc_len, finf_bytes, finf_len);
-        dump_readme(rf, vfs_path, dst_dir, data_len, rsrc_len, finf_bytes, finf_len, total_resources, disasm_written,
+        dump_manifest(rf, src_label, dst_dir, data_len, rsrc_len, finf_bytes, finf_len);
+        dump_readme(rf, src_label, dst_dir, data_len, rsrc_len, finf_bytes, finf_len, total_resources, disasm_written,
                     decoded_written);
         rfork_free(rf);
     }
-    free(rsrc_bytes);
-    free(finf_bytes);
 
     if (total_resources < 0 || disasm_written < 0 || decoded_written < 0)
         return -EIO;
 
-    printf("re.dump: %s -> %s (%d resource%s, %d code segment%s, %d decoded)\n", vfs_path, dst_dir, total_resources,
+    printf("dump: %s -> %s (%d resource%s, %d code segment%s, %d decoded)\n", src_label, dst_dir, total_resources,
            total_resources == 1 ? "" : "s", disasm_written, disasm_written == 1 ? "" : "s", decoded_written);
     return 0;
 }
@@ -738,27 +689,33 @@ fail:
 }
 
 // ============================================================================
-// re_disasm_code — disassemble one CODE resource to dst_file (or stdout)
+// dump_disasm_code — disassemble one CODE resource to dst_file (or stdout)
 // ============================================================================
 
-int re_disasm_code(const char *vfs_path, int code_id, const char *dst_file) {
-    if (!vfs_path || !*vfs_path)
+int dump_disasm_code(const uint8_t *rsrc_bytes, size_t rsrc_len, int code_id, const char *dst_file) {
+    if (!rsrc_bytes || rsrc_len == 0)
         return -EINVAL;
     if (code_id < INT16_MIN || code_id > INT16_MAX)
         return -EINVAL;
-    char rsrc_path[PATH_MAX];
-    int n = snprintf(rsrc_path, sizeof(rsrc_path), "%s/rsrc/CODE/%d", vfs_path, code_id);
-    if (n < 0 || (size_t)n >= sizeof(rsrc_path))
-        return -ENAMETOOLONG;
+
+    const char *errmsg = NULL;
+    rfork_t *rf = rfork_parse(rsrc_bytes, rsrc_len, &errmsg);
+    if (!rf) {
+        fprintf(stderr, "dump: corrupt resource fork: %s\n", errmsg ? errmsg : "unknown");
+        return -EIO;
+    }
+    const uint8_t code_cc[4] = {'C', 'O', 'D', 'E'};
+    const uint8_t *bytes = NULL;
     size_t sz = 0;
-    uint8_t *bytes = re_read_vfs_file(rsrc_path, &sz);
-    if (!bytes) {
-        fprintf(stderr, "re: cannot read '%s'\n", rsrc_path);
+    if (rfork_lookup(rf, code_cc, (int16_t)code_id, &bytes, &sz, NULL, NULL) < 0) {
+        fprintf(stderr, "dump: no CODE %d in resource fork\n", code_id);
+        rfork_free(rf);
         return -ENOENT;
     }
+
     FILE *fp = (dst_file && *dst_file) ? open_out_file(dst_file) : stdout;
     if (!fp) {
-        free(bytes);
+        rfork_free(rf);
         return -EIO;
     }
     // For a single-segment call we still want JT-xref annotation, so
@@ -767,16 +724,11 @@ int re_disasm_code(const char *vfs_path, int code_id, const char *dst_file) {
     re_jt_table_t jt;
     bool jt_valid = false;
     if (code_id != 0) {
-        char c0_path[PATH_MAX];
-        int cn = snprintf(c0_path, sizeof(c0_path), "%s/rsrc/CODE/0", vfs_path);
-        if (cn > 0 && (size_t)cn < sizeof(c0_path)) {
-            size_t c0_sz = 0;
-            uint8_t *c0_bytes = re_read_vfs_file(c0_path, &c0_sz);
-            if (c0_bytes) {
-                if (re_parse_code0(c0_bytes, c0_sz, &jt) == 0)
-                    jt_valid = true;
-                free(c0_bytes);
-            }
+        const uint8_t *c0_bytes = NULL;
+        size_t c0_sz = 0;
+        if (rfork_lookup(rf, code_cc, 0, &c0_bytes, &c0_sz, NULL, NULL) == 0) {
+            if (re_parse_code0(c0_bytes, c0_sz, &jt) == 0)
+                jt_valid = true;
         }
     }
     re_symbols_t symbols;
@@ -803,7 +755,7 @@ int re_disasm_code(const char *vfs_path, int code_id, const char *dst_file) {
         re_jt_free(&jt);
     if (fp != stdout)
         fclose(fp);
-    free(bytes);
+    rfork_free(rf);
     return 0;
 }
 
@@ -880,8 +832,8 @@ static int dump_decoded(const rfork_t *rf, const char *dst_dir) {
 // type/id list, and the recovered CODE-segment structure.  Resources
 // carry the relative paths of their bin / info / disasm / decoded files
 // so downstream tooling can navigate without re-walking the dir tree.
-static int dump_manifest(const rfork_t *rf, const char *vfs_path, const char *dst_dir, size_t data_len, size_t rsrc_len,
-                         const uint8_t *finder_info, size_t finder_info_len) {
+static int dump_manifest(const rfork_t *rf, const char *src_label, const char *dst_dir, size_t data_len,
+                         size_t rsrc_len, const uint8_t *finder_info, size_t finder_info_len) {
     char path[PATH_MAX];
     snprintf(path, sizeof(path), "%s/manifest.json", dst_dir);
     FILE *fp = fopen(path, "wb");
@@ -890,10 +842,10 @@ static int dump_manifest(const rfork_t *rf, const char *vfs_path, const char *ds
         return -1;
     }
 
-    fprintf(fp, "{\n  \"schema_version\": 1,\n  \"generator\": \"granny-smith re v1\",\n");
-    fprintf(fp, "  \"source\": {\n    \"vfs_path\": ");
+    fprintf(fp, "{\n  \"schema_version\": 1,\n  \"generator\": \"granny-smith dump v1\",\n");
+    fprintf(fp, "  \"source\": {\n    \"label\": ");
     extern void re_json_write_string(FILE *, const char *);
-    re_json_write_string(fp, vfs_path);
+    re_json_write_string(fp, src_label);
     fprintf(fp, ",\n    \"data_fork\": {\"size\": %zu},\n", data_len);
     fprintf(fp, "    \"rsrc_fork\": {\"size\": %zu}", rsrc_len);
     if (finder_info && finder_info_len == 32) {
@@ -1026,7 +978,7 @@ static int dump_manifest(const rfork_t *rf, const char *vfs_path, const char *ds
 // where to start, and what conventions to expect (raw bytes vs decoded
 // JSON, MacRoman in path components, etc.).
 
-static void dump_readme(const struct rfork *rf, const char *vfs_path, const char *dst_dir, size_t data_len,
+static void dump_readme(const struct rfork *rf, const char *src_label, const char *dst_dir, size_t data_len,
                         size_t rsrc_len, const uint8_t *finder_info, size_t finder_info_len, int total_resources,
                         int disasm_written, int decoded_written) {
     char path[PATH_MAX];
@@ -1047,7 +999,7 @@ static void dump_readme(const struct rfork *rf, const char *vfs_path, const char
 
     fprintf(fp, "## Source\n\n");
     fprintf(fp, "| Field | Value |\n|---|---|\n");
-    fprintf(fp, "| VFS path | `%s` |\n", vfs_path ? vfs_path : "?");
+    fprintf(fp, "| Source | `%s` |\n", src_label ? src_label : "?");
     fprintf(fp, "| Data fork | %zu bytes |\n", data_len);
     fprintf(fp, "| Resource fork | %zu bytes |\n", rsrc_len);
     if (finder_info && finder_info_len == 32) {
@@ -1156,18 +1108,18 @@ static void dump_readme(const struct rfork *rf, const char *vfs_path, const char
     fprintf(fp, "- Disassembly addresses start at the segment's first instruction (offset 4\n");
     fprintf(fp, "  for near-model CODE), matching the runtime loader's view of the segment.\n");
     fprintf(fp, "\n");
-    fprintf(fp, "Re-run any time with `re.dump <vfs_path> <dir>` (pass `--force` to overwrite,\n");
+    fprintf(fp, "Re-run any time with `dump --rsrc <file> <dir>` (pass `--force` to overwrite,\n");
     fprintf(fp, "`--no-decode` / `--no-disasm` to skip those layers).\n");
 
     fclose(fp);
 }
 
 // ============================================================================
-// re_decode_one — single-resource decode to dst_file (or stdout)
+// dump_decode_one — single-resource decode to dst_file (or stdout)
 // ============================================================================
 
-int re_decode_one(const char *vfs_path, const char *type_str, int id, const char *dst_file) {
-    if (!vfs_path || !type_str || !*vfs_path || !*type_str)
+int dump_decode_one(const uint8_t *rsrc_bytes, size_t rsrc_len, const char *type_str, int id, const char *dst_file) {
+    if (!rsrc_bytes || rsrc_len == 0 || !type_str || !*type_str)
         return -EINVAL;
     uint8_t type[4];
     if (rfork_type_from_path(type_str, type) != 0)
@@ -1177,159 +1129,270 @@ int re_decode_one(const char *vfs_path, const char *type_str, int id, const char
     if (id < INT16_MIN || id > INT16_MAX)
         return -EINVAL;
 
-    char rsrc_path[PATH_MAX];
-    int n = snprintf(rsrc_path, sizeof(rsrc_path), "%s/rsrc/%s/%d", vfs_path, type_str, id);
-    if (n < 0 || (size_t)n >= sizeof(rsrc_path))
-        return -ENAMETOOLONG;
+    const char *errmsg = NULL;
+    rfork_t *rf = rfork_parse(rsrc_bytes, rsrc_len, &errmsg);
+    if (!rf) {
+        fprintf(stderr, "dump: corrupt resource fork: %s\n", errmsg ? errmsg : "unknown");
+        return -EIO;
+    }
+    const uint8_t *bytes = NULL;
     size_t sz = 0;
-    uint8_t *bytes = re_read_vfs_file(rsrc_path, &sz);
-    if (!bytes)
+    if (rfork_lookup(rf, type, (int16_t)id, &bytes, &sz, NULL, NULL) < 0) {
+        rfork_free(rf);
         return -ENOENT;
+    }
     FILE *fp = (dst_file && *dst_file) ? fopen(dst_file, "wb") : stdout;
     if (!fp) {
-        free(bytes);
+        rfork_free(rf);
         return -EIO;
     }
     int rc = re_decode_dispatch(type, bytes, sz, fp, NULL);
     if (fp != stdout)
         fclose(fp);
-    free(bytes);
+    rfork_free(rf);
     return (rc > 0) ? 0 : -EIO;
 }
 
 // ============================================================================
-// Object-model method wrappers
+// CLI
 // ============================================================================
 
-static value_t re_method_identify(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
-    (void)argc;
-    return val_bool(re_identify(argv[0].s));
+static void print_usage(const char *progname) {
+    fprintf(stderr,
+            "Usage:\n"
+            "  %s [--data <data-file>] --rsrc <rsrc-file> [--finf <finf-file>] [<dst-dir>]\n"
+            "      Full dump of a classic-Mac forked file.  --rsrc is required; --data\n"
+            "      and --finf are optional (data fork and 32-byte Finder info sidecar).\n"
+            "      <dst-dir> defaults to './dump-out'.\n"
+            "\n"
+            "  %s --coff <coff-file> [<dst-dir>]\n"
+            "      Full dump of an A/UX COFF binary.  COFF magic (0x0150) is also\n"
+            "      auto-detected when the file is passed via --data without --rsrc.\n"
+            "\n"
+            "  %s --identify --rsrc <rsrc-file> [--data <data-file>]\n"
+            "  %s --identify --coff <coff-file>\n"
+            "      Print a one-line identify summary and exit.\n"
+            "\n"
+            "  %s --disasm-code <id> --rsrc <rsrc-file> [-o <out-file>]\n"
+            "      Disassemble one CODE resource by ID (0 = jump table).  Streams to\n"
+            "      stdout unless -o is given.\n"
+            "\n"
+            "  %s --decode <type>:<id> --rsrc <rsrc-file> [-o <out-file>]\n"
+            "      Run the per-type decoder on one resource (e.g. --decode vers:1).\n"
+            "      Streams JSON to stdout unless -o is given.\n"
+            "\n"
+            "Behaviour flags (full-dump mode only):\n"
+            "  --no-decode, -D    Skip per-type decoders + decoded/ output\n"
+            "  --no-disasm, -S    Skip CODE disassembly + symbols.txt\n"
+            "  --force,     -f    Overwrite an existing non-empty <dst-dir>\n"
+            "\n"
+            "  -h, --help         Show this help and exit\n",
+            progname, progname, progname, progname, progname, progname);
 }
 
-// Iterate argv[start..argc) and OR in the matching RE_DUMP_* bits.
-// Each rest-arg item is its own argv slot (the dispatcher does NOT pack
-// them into a V_LIST — see storage.cp for the precedent).  Unknown
-// flags log a warning but don't fail the call.
-static uint32_t parse_dump_flags(int argc, const value_t *argv, int start) {
+typedef enum {
+    MODE_DUMP = 0,
+    MODE_IDENTIFY,
+    MODE_DISASM_CODE,
+    MODE_DECODE,
+} cli_mode_t;
+
+int main(int argc, char *argv[]) {
+    const char *data_path = NULL;
+    const char *rsrc_path = NULL;
+    const char *finf_path = NULL;
+    const char *coff_path = NULL;
+    const char *out_file = NULL;
+    cli_mode_t mode = MODE_DUMP;
+    int disasm_id = 0;
+    char decode_type[16] = {0};
+    int decode_id = 0;
     uint32_t flags = 0;
-    for (int i = start; i < argc; i++) {
-        if (argv[i].kind != V_STRING || !argv[i].s)
-            continue;
-        const char *s = argv[i].s;
-        if (strcmp(s, "--no-decode") == 0 || strcmp(s, "-D") == 0)
-            flags |= RE_DUMP_NO_DECODE;
-        else if (strcmp(s, "--no-disasm") == 0 || strcmp(s, "-S") == 0)
-            flags |= RE_DUMP_NO_DISASM;
-        else if (strcmp(s, "--force") == 0 || strcmp(s, "-f") == 0)
-            flags |= RE_DUMP_FORCE;
-        else
-            fprintf(stderr, "re.dump: unknown flag '%s' (ignoring)\n", s);
+
+    enum {
+        OPT_DATA = 1000,
+        OPT_RSRC,
+        OPT_FINF,
+        OPT_COFF,
+        OPT_IDENTIFY,
+        OPT_DISASM_CODE,
+        OPT_DECODE,
+        OPT_NO_DECODE,
+        OPT_NO_DISASM,
+        OPT_FORCE,
+    };
+    static struct option long_options[] = {
+        {"data",        required_argument, NULL, OPT_DATA       },
+        {"rsrc",        required_argument, NULL, OPT_RSRC       },
+        {"finf",        required_argument, NULL, OPT_FINF       },
+        {"coff",        required_argument, NULL, OPT_COFF       },
+        {"identify",    no_argument,       NULL, OPT_IDENTIFY   },
+        {"disasm-code", required_argument, NULL, OPT_DISASM_CODE},
+        {"decode",      required_argument, NULL, OPT_DECODE     },
+        {"no-decode",   no_argument,       NULL, OPT_NO_DECODE  },
+        {"no-disasm",   no_argument,       NULL, OPT_NO_DISASM  },
+        {"force",       no_argument,       NULL, OPT_FORCE      },
+        {"output",      required_argument, NULL, 'o'            },
+        {"help",        no_argument,       NULL, 'h'            },
+        {NULL,          0,                 NULL, 0              },
+    };
+
+    int opt;
+    while ((opt = getopt_long(argc, argv, "o:DSfh", long_options, NULL)) != -1) {
+        switch (opt) {
+        case OPT_DATA:
+            data_path = optarg;
+            break;
+        case OPT_RSRC:
+            rsrc_path = optarg;
+            break;
+        case OPT_FINF:
+            finf_path = optarg;
+            break;
+        case OPT_COFF:
+            coff_path = optarg;
+            break;
+        case OPT_IDENTIFY:
+            mode = MODE_IDENTIFY;
+            break;
+        case OPT_DISASM_CODE:
+            mode = MODE_DISASM_CODE;
+            disasm_id = (int)strtol(optarg, NULL, 0);
+            break;
+        case OPT_DECODE: {
+            mode = MODE_DECODE;
+            const char *colon = strchr(optarg, ':');
+            if (!colon) {
+                fprintf(stderr, "dump: --decode expects <type>:<id> (e.g. vers:1)\n");
+                return 2;
+            }
+            size_t tlen = (size_t)(colon - optarg);
+            if (tlen == 0 || tlen >= sizeof(decode_type)) {
+                fprintf(stderr, "dump: --decode type too long\n");
+                return 2;
+            }
+            memcpy(decode_type, optarg, tlen);
+            decode_type[tlen] = '\0';
+            decode_id = (int)strtol(colon + 1, NULL, 0);
+            break;
+        }
+        case OPT_NO_DECODE:
+        case 'D':
+            flags |= DUMP_NO_DECODE;
+            break;
+        case OPT_NO_DISASM:
+        case 'S':
+            flags |= DUMP_NO_DISASM;
+            break;
+        case OPT_FORCE:
+        case 'f':
+            flags |= DUMP_FORCE;
+            break;
+        case 'o':
+            out_file = optarg;
+            break;
+        case 'h':
+            print_usage(argv[0]);
+            return 0;
+        default:
+            print_usage(argv[0]);
+            return 2;
+        }
     }
-    return flags;
-}
 
-static value_t re_method_dump(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
-    const char *path = argv[0].s;
-    const char *dst = argv[1].s;
-    uint32_t flags = parse_dump_flags(argc, argv, 2);
-    return val_bool(re_dump_with_flags(path, dst, flags) == 0);
-}
+    const char *dst_dir = (optind < argc) ? argv[optind] : "dump-out";
 
-static value_t re_method_disasm_code(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
-    const char *path = argv[0].s;
-    int code_id = (int)argv[1].i;
-    const char *dst = (argc >= 3 && argv[2].s && *argv[2].s) ? argv[2].s : NULL;
-    return val_bool(re_disasm_code(path, code_id, dst) == 0);
-}
+    // Load whichever buffers the mode + flags require.
+    uint8_t *data_buf = NULL;
+    size_t data_len = 0;
+    uint8_t *rsrc_buf = NULL;
+    size_t rsrc_len = 0;
+    uint8_t *finf_buf = NULL;
+    size_t finf_len = 0;
+    uint8_t *coff_buf = NULL;
+    size_t coff_len = 0;
 
-static value_t re_method_decode(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
-    const char *path = argv[0].s;
-    const char *type = argv[1].s;
-    int id = (int)argv[2].i;
-    const char *dst = (argc >= 4 && argv[3].s && *argv[3].s) ? argv[3].s : NULL;
-    return val_bool(re_decode_one(path, type, id, dst) == 0);
-}
-
-static const arg_decl_t re_identify_args[] = {
-    {.name = "vfs_path", .kind = V_STRING, .doc = "VFS path to a forked Mac file"},
-};
-static const arg_decl_t re_dump_args[] = {
-    {.name = "vfs_path", .kind = V_STRING, .doc = "VFS path to a forked Mac file"},
-    {.name = "dst_dir", .kind = V_STRING, .doc = "Output directory (created if missing)"},
-    {.name = "flags",
-     .kind = V_STRING,
-     .validation_flags = OBJ_ARG_OPTIONAL | OBJ_ARG_REST,
-     .doc = "Optional flags: --no-decode, --no-disasm, --force"},
-};
-static const arg_decl_t re_disasm_code_args[] = {
-    {.name = "vfs_path", .kind = V_STRING, .doc = "VFS path to a forked Mac file"},
-    {.name = "code_id", .kind = V_INT, .width = 2, .doc = "CODE resource ID (0 = jump table)"},
-    {.name = "dst_file",
-     .kind = V_STRING,
-     .validation_flags = OBJ_ARG_OPTIONAL,
-     .doc = "Output file (defaults to stdout)"},
-};
-static const arg_decl_t re_decode_args[] = {
-    {.name = "vfs_path", .kind = V_STRING, .doc = "VFS path to a forked Mac file"},
-    {.name = "type", .kind = V_STRING, .doc = "Resource type 4-CC (e.g. \"vers\")"},
-    {.name = "id", .kind = V_INT, .width = 2, .doc = "Resource ID"},
-    {.name = "dst_file",
-     .kind = V_STRING,
-     .validation_flags = OBJ_ARG_OPTIONAL,
-     .doc = "Output file (defaults to stdout)"},
-};
-
-static const member_t re_members[] = {
-    {.kind = M_METHOD,
-     .name = "identify",
-     .doc = "Print a one-line summary of a forked Mac file",
-     .method = {.args = re_identify_args, .nargs = 1, .result = V_BOOL, .fn = re_method_identify}      },
-    {.kind = M_METHOD,
-     .name = "dump",
-     .doc = "Extract data/resources/disasm/decoded + manifest.json into dst_dir",
-     .method = {.args = re_dump_args, .nargs = 3, .result = V_BOOL, .fn = re_method_dump}              },
-    {.kind = M_METHOD,
-     .name = "disasm_code",
-     .doc = "Disassemble one CODE resource to dst_file (or stdout)",
-     .method = {.args = re_disasm_code_args, .nargs = 3, .result = V_BOOL, .fn = re_method_disasm_code}},
-    {.kind = M_METHOD,
-     .name = "decode",
-     .doc = "Run the per-type decoder for one resource (vers/MENU/STR#/...)",
-     .method = {.args = re_decode_args, .nargs = 4, .result = V_BOOL, .fn = re_method_decode}          },
-};
-
-const class_desc_t re_class = {
-    .name = "re",
-    .members = re_members,
-    .n_members = sizeof(re_members) / sizeof(re_members[0]),
-};
-
-// ============================================================================
-// Lifecycle (process-singleton, idempotent)
-// ============================================================================
-
-static struct object *s_re_object = NULL;
-
-void re_init(void) {
-    if (s_re_object)
-        return;
-    s_re_object = object_new(&re_class, NULL, "re");
-    if (s_re_object)
-        object_attach(object_root(), s_re_object);
-}
-
-void re_delete(void) {
-    if (s_re_object) {
-        object_detach(s_re_object);
-        object_delete(s_re_object);
-        s_re_object = NULL;
+    if (data_path) {
+        data_buf = read_host_file(data_path, &data_len);
+        if (!data_buf) {
+            fprintf(stderr, "dump: cannot read --data '%s': %s\n", data_path, strerror(errno));
+            return 1;
+        }
     }
+    if (rsrc_path) {
+        rsrc_buf = read_host_file(rsrc_path, &rsrc_len);
+        if (!rsrc_buf) {
+            fprintf(stderr, "dump: cannot read --rsrc '%s': %s\n", rsrc_path, strerror(errno));
+            free(data_buf);
+            return 1;
+        }
+    }
+    if (finf_path) {
+        finf_buf = read_host_file(finf_path, &finf_len);
+        if (!finf_buf) {
+            fprintf(stderr, "dump: cannot read --finf '%s': %s\n", finf_path, strerror(errno));
+            free(data_buf);
+            free(rsrc_buf);
+            return 1;
+        }
+    }
+    if (coff_path) {
+        coff_buf = read_host_file(coff_path, &coff_len);
+        if (!coff_buf) {
+            fprintf(stderr, "dump: cannot read --coff '%s': %s\n", coff_path, strerror(errno));
+            free(data_buf);
+            free(rsrc_buf);
+            free(finf_buf);
+            return 1;
+        }
+    }
+
+    // COFF takes precedence: --coff or a --data file whose magic identifies it.
+    const uint8_t *id_data = coff_buf ? coff_buf : data_buf;
+    size_t id_data_len = coff_buf ? coff_len : data_len;
+    const char *src_label = coff_path ? coff_path : (data_path ? data_path : (rsrc_path ? rsrc_path : "(unnamed)"));
+
+    int rc = 0;
+    switch (mode) {
+    case MODE_IDENTIFY:
+        rc = dump_identify(id_data, id_data_len, rsrc_buf, rsrc_len, src_label) ? 0 : 1;
+        break;
+    case MODE_DISASM_CODE:
+        if (!rsrc_buf) {
+            fprintf(stderr, "dump: --disasm-code requires --rsrc\n");
+            rc = 2;
+            break;
+        }
+        rc = dump_disasm_code(rsrc_buf, rsrc_len, disasm_id, out_file);
+        if (rc < 0)
+            rc = 1;
+        break;
+    case MODE_DECODE:
+        if (!rsrc_buf) {
+            fprintf(stderr, "dump: --decode requires --rsrc\n");
+            rc = 2;
+            break;
+        }
+        rc = dump_decode_one(rsrc_buf, rsrc_len, decode_type, decode_id, out_file);
+        if (rc < 0)
+            rc = 1;
+        break;
+    case MODE_DUMP:
+        if (!coff_buf && !rsrc_buf && !coff_is_coff(data_buf, data_len)) {
+            fprintf(stderr, "dump: nothing to dump — pass --rsrc, --coff, or a COFF file via --data\n");
+            print_usage(argv[0]);
+            rc = 2;
+            break;
+        }
+        rc = dump_run(id_data, id_data_len, rsrc_buf, rsrc_len, finf_buf, finf_len, src_label, dst_dir, flags);
+        if (rc < 0)
+            rc = 1;
+        break;
+    }
+
+    free(data_buf);
+    free(rsrc_buf);
+    free(finf_buf);
+    free(coff_buf);
+    return rc;
 }

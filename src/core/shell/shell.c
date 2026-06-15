@@ -666,7 +666,6 @@ int shell_init(void) {
     extern void machine_init(void);
     extern void checkpoint_init(void);
     extern void archive_init(void);
-    extern void re_init(void);
     extern void mouse_class_register(void);
     extern void keyboard_class_register(void);
     extern void screen_class_register(void);
@@ -678,7 +677,6 @@ int shell_init(void) {
     machine_init();
     checkpoint_init();
     archive_init();
-    re_init();
     mouse_class_register();
     keyboard_class_register();
     screen_class_register();

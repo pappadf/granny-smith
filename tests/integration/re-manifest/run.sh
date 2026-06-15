@@ -1,5 +1,5 @@
 #!/bin/bash
-# Drive the full re.dump pipeline and validate four things:
+# Drive the full dump pipeline and validate four things:
 #   1. manifest.json validates as well-formed JSON via python -m json.tool.
 #   2. Required top-level keys are present.
 #   3. decoded/vers/1.json round-trips through json.tool and contains the
@@ -11,21 +11,31 @@ set -euo pipefail
 IMG="$TEST_DATA/systems/System_6_0_8.dsk"
 FINDER="$IMG/partition1/System Folder/Finder"
 
+EXTRACT="$WORK_DIR/extract"
 FULL="$WORK_DIR/full"
 NODISASM="$WORK_DIR/no-disasm"
 NODECODE="$WORK_DIR/no-decode"
-rm -rf "$FULL" "$NODISASM" "$NODECODE"
+rm -rf "$EXTRACT" "$FULL" "$NODISASM" "$NODECODE"
+mkdir -p "$EXTRACT"
 
+# Extract data + resource fork + Finder info once.
 GS_STORAGE_CACHE="$STORAGE_CACHE" "$HEADLESS_BIN" \
     rom="$ROM_PATH" \
     --no-prompt --script-stdin --speed=max <<EOF
 storage.probe $IMG
-re.dump "$FINDER" "$FULL"
-re.dump "$FINDER" "$NODISASM" --no-disasm
-re.dump "$FINDER" "$NODECODE" --no-decode
+storage.cp "$FINDER" "$EXTRACT/data"
+storage.cp "$FINDER/rsrc/_raw" "$EXTRACT/rsrc"
+storage.cp "$FINDER/finf" "$EXTRACT/finf"
 storage.unmount $IMG
 quit
 EOF
+
+[ -f "$EXTRACT/rsrc" ] || { echo "FAIL: storage.cp did not produce $EXTRACT/rsrc"; exit 1; }
+
+# Three dumps: full, --no-disasm, --no-decode.
+"$DUMP_BIN" --data "$EXTRACT/data" --rsrc "$EXTRACT/rsrc" --finf "$EXTRACT/finf" "$FULL"
+"$DUMP_BIN" --data "$EXTRACT/data" --rsrc "$EXTRACT/rsrc" --finf "$EXTRACT/finf" --no-disasm "$NODISASM"
+"$DUMP_BIN" --data "$EXTRACT/data" --rsrc "$EXTRACT/rsrc" --finf "$EXTRACT/finf" --no-decode "$NODECODE"
 
 assert_file() {
     [ -f "$1" ] || { echo "FAIL: missing $1"; exit 1; }

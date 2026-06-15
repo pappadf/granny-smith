@@ -9,6 +9,15 @@
 #include <stdio.h>
 #include <stdlib.h>
 
+// aux_syscall_name() is called by the shared annotate_disasm.c when the
+// A/UX syscall annotation pass fires (TRAP #0).  The standalone disasm
+// tool never produces A/UX-aware output so a NULL stub is sufficient —
+// the annotator drops the annotation silently and renders the raw TRAP.
+const char *aux_syscall_name(uint32_t num) {
+    (void)num;
+    return NULL;
+}
+
 // gs_assert_fail referenced by common.h / GS_ASSERT macros — should never fire
 // during pure disassembly, but we provide a stub to satisfy the linker.
 void gs_assert_fail(const char *expr, const char *file, int line, const char *func, const char *fmt, ...) {
