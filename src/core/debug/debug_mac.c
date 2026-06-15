@@ -49,19 +49,6 @@ uint32_t debug_mac_lookup_global_address(const char *name) {
     return 0; // Not found
 }
 
-const char *debug_mac_lookup_global_name(uint32_t address) {
-    // Mac low-memory globals live in 0..0x800.  Skip the scan outside
-    // that range so an arbitrary 32-bit operand doesn't burn ~471
-    // string compares per disassembled instruction.
-    if (address >= 0x800)
-        return NULL;
-    for (size_t i = 0; i < mac_global_vars_count; i++) {
-        if (mac_global_vars[i].address == address)
-            return mac_global_vars[i].name;
-    }
-    return NULL;
-}
-
 static const char *lookup_atrap(uint16_t trap) {
     for (int i = 0; i < macos_atraps_count; i++) {
         if (macos_atraps[i].trap == trap) {

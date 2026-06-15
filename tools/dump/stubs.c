@@ -23,17 +23,6 @@ void gs_assert_fail(const char *expr, const char *file, int line, const char *fu
     __builtin_trap();
 }
 
-// annotate_disasm.c calls debug_mac_lookup_global_name() to label
-// low-memory globals when a referenced address falls in the system
-// globals range.  We don't link the real lookup table (it lives in
-// src/core/debug/mac_globals_data.c alongside heavy emulator-only
-// state); the dump tool produces correct disassembly without that
-// extra annotation.  Return NULL = "no name available".
-const char *debug_mac_lookup_global_name(uint32_t address) {
-    (void)address;
-    return NULL;
-}
-
 // A-trap name lookup.  cpu_disasm.c and annotate_disasm.c both call
 // macos_atrap_name() to render `_DoSomething`-style annotations.  The
 // data table is in src/core/debug/mac_traps_data.c (already linked); the
