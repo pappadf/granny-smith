@@ -520,7 +520,18 @@ static void swim_ism_phase_control(floppy_t *floppy, uint8_t old_phase) {
     bool old_lstrb = (old_phase & 0x08) && (old_phase & 0x80);
     bool new_lstrb = (new_phase & 0x08) && (new_phase & 0x80);
 
-    if (new_lstrb && !old_lstrb) {
+    // An LSTRB strobe only reaches a drive that is enabled (ENBL1/ENBL2 in the
+    // ISM mode register).  With no drive enabled the phase lines are still
+    // latched (for read-back), but no drive command executes.  This matters for
+    // the ROM's SWIM self-test (Chk4SWIM/ISMModeTest): it disables the drives
+    // ($BF -> wZeros, clearing ENBL1/ENBL2) and then runs a phase-register
+    // read-back loop that writes $F2..$FF — and $FF is CA0/CA1/CA2=1 + LSTRB,
+    // i.e. the EJECT command.  Without this gate that read-back spuriously
+    // ejects a pre-inserted boot floppy (real hardware does not, because the
+    // drives are disabled), parking the machine at the blinking-"?" disk.
+    bool drive_enabled = (floppy->ism_mode & (ISM_MODE_DRIVE1 | ISM_MODE_DRIVE2)) != 0;
+
+    if (new_lstrb && !old_lstrb && drive_enabled) {
         // LSTRB went high: execute drive command
         floppy->iwm_lines = (floppy->iwm_lines & ~(IWM_LINE_CA0 | IWM_LINE_CA1 | IWM_LINE_CA2 | IWM_LINE_LSTRB)) |
                             ((new_phase & 0x01) ? IWM_LINE_CA0 : 0) | ((new_phase & 0x02) ? IWM_LINE_CA1 : 0) |

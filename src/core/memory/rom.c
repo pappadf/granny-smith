@@ -38,6 +38,8 @@ static const char *const UNIVERSAL_COMPATIBLE[] = {"se30", "iicx", "iix", NULL};
 static const char *const IIFX_COMPATIBLE[] = {"iifx", NULL};
 // Dedicated 512 KB Macintosh IIci ("Aurora") ROM — not the universal ROM.
 static const char *const IICI_COMPATIBLE[] = {"iici", NULL};
+// Dedicated 512 KB Macintosh IIsi ("Erickson") ROM — not the universal ROM.
+static const char *const IISI_COMPATIBLE[] = {"iisi", NULL};
 
 // Master ROM signature table.
 static const rom_info_t ROM_TABLE[] = {
@@ -47,6 +49,7 @@ static const rom_info_t ROM_TABLE[] = {
     {"Universal IIx/IIcx/SE/30 ROM",            UNIVERSAL_COMPATIBLE, 0x97221136, 256 * 1024},
     {"Macintosh IIfx ROM",                      IIFX_COMPATIBLE,      0x4147DD77, 512 * 1024},
     {"Macintosh IIci ROM",                      IICI_COMPATIBLE,      0x368CADFE, 512 * 1024},
+    {"Macintosh IIsi ROM",                      IISI_COMPATIBLE,      0x36B7FB6C, 512 * 1024},
 };
 
 #define ROM_TABLE_COUNT (sizeof(ROM_TABLE) / sizeof(ROM_TABLE[0]))

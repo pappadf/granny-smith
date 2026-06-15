@@ -43,6 +43,15 @@ extern const nubus_card_kind_t builtin_rbv_video_kind;
 // se30_init registers the SE/30 VRAM).  NULL if `card` is NULL.
 uint8_t *builtin_rbv_video_framebuffer(nubus_card_t *card);
 
+// Point the card's framebuffer at a machine-owned aperture (a window into main
+// RAM) rather than the card's private buffer.  Used by the IIsi, whose V8 reads
+// the framebuffer directly out of main DRAM.  `aperture` is the base of the
+// framebuffer in host memory; `screen_offset` is where the active screen begins
+// within it (the IIsi V8 puts the screen at the very start of Bank A — physical
+// 0 — so its offset is 0, unlike the IIci's separate $8000-offset buffer).  The
+// machine owns the memory (not freed by the card).
+void builtin_rbv_video_set_framebuffer(nubus_card_t *card, uint8_t *aperture, uint32_t screen_offset);
+
 // Wire the RBV chip to the card so the card can assert the slot-0 video
 // VBL interrupt and read the current depth.  Called from iici_init after
 // both the card and the RBV exist.

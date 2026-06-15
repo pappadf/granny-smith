@@ -136,5 +136,6 @@ extern const hw_profile_t machine_iicx;
 extern const hw_profile_t machine_iix;
 extern const hw_profile_t machine_iifx;
 extern const hw_profile_t machine_iici;
+extern const hw_profile_t machine_iisi;
 
 #endif // MACHINE_H
