@@ -10,17 +10,28 @@
 // © 1990-1991 Apple Computer (Donn Denman), released as part of the
 // System 7 source drop.
 //
-// On-disk layout of a compressed resource (header version 8):
-//   +0   signature (u32 BE) = 0xA89F6572
-//   +4   header_length (u16 BE) = 0x12 (18 bytes)
-//   +6   header_version (u8) = 8
-//   +7   extended_attrs (u8) — compression sub-flags (unused here)
-//   +8   actual_size (u32 BE) — uncompressed byte count
-//   +12  var_table_ratio (u8) — 256ths-of-actual_size sized for var table
-//   +13  overrun (u8) — extra bytes the decompressor may write
-//   +14  dcmp_id (i16 BE) — 0 = DonnBits, 2 = GreggyBits, ...
-//   +16  ctable_id (i16 BE) — auxiliary table (unused for dcmp 0)
-//   +18  compressed payload starts here
+// On-disk layout of a compressed resource:
+//
+//   Common header (bytes 0..11, both versions):
+//     +0   signature (u32 BE) = 0xA89F6572
+//     +4   header_length (u16 BE) = 0x12 (18 bytes)
+//     +6   header_version (u8) = 8 (DonnBits) or 9 (GreggyBits)
+//     +7   extended_attrs (u8)
+//     +8   actual_size (u32 BE) — uncompressed byte count
+//
+//   Version-8 extension (bytes 12..17 — DonnBits format):
+//     +12  var_table_ratio (u8) — 256ths-of-actual_size sized for var table
+//     +13  overrun (u8) — extra bytes the decompressor may write
+//     +14  dcmp_id (i16 BE) — 0 = DonnBits
+//     +16  ctable_id (i16 BE) — auxiliary table
+//
+//   Version-9 extension (bytes 12..17 — GreggyBits and later formats):
+//     +12  dcmp_id (i16 BE) — 2 = GreggyBits, others = custom
+//     +14  decompress_slop (i16 BE)
+//     +16  byte_table_size (u8) — number-of-words minus 1
+//     +17  compress_flags (u8) — bit 0 = byteTableSaved, bit 1 = bitmappedData
+//
+//   +18  compressed payload starts here (both versions)
 //
 // The payload is a stream of single-byte opcodes; each opcode either
 // emits 16-bit words into the output buffer, slurps additional bytes
@@ -587,6 +598,207 @@ static int unpack_loop(ic_t *ic, oc_t *oc, vt_t *vt) {
     }
 }
 
+// ===========================================================================
+// dcmp 2 — GreggyBits (Greg Marriott, 1990-1991)
+// ===========================================================================
+//
+// Ported from gs-archive/sys71src-main/Patches/GreggyBitsDefProc.a.
+// The algorithm:
+//   1. Each output word is either looked up via a byte->word translation
+//      table, or copied verbatim (two raw input bytes -> one output word).
+//   2. The table is either the 256-entry static_table baked in below
+//      (when compressFlags bit 0 is clear), or read from the start of
+//      the payload as `byte_table_size + 1` 16-bit words (bit 0 set).
+//   3. Two encoding modes:
+//      - Non-bitmapped (bit 1 clear): every input byte is an index into
+//        the table; payload length == output word count.  If actual_size
+//        is odd, the very last byte of the payload becomes the final
+//        odd output byte verbatim.
+//      - Bitmapped (bit 1 set): payload is a sequence of "8-word runs".
+//        Each run starts with one bitmap byte; bits 7..0 of that bitmap
+//        choose, for each of the next 8 output words: bit set = 1 input
+//        byte indexed into the table; bit clear = 2 input bytes copied
+//        verbatim.  The final run may be shorter than 8 words (size mod
+//        8); odd `actual_size` adds a final literal byte as above.
+
+// The 256-entry static byte->word table, lifted verbatim from
+// GreggyBitsDefProc.a (StaticTable + DC.W rows).  Each byte index
+// produces one 16-bit big-endian output word; the table holds the most
+// common 16-bit values observed by Greg's analysis (small constants,
+// frequent 68k opcodes, common A-line traps).
+static const uint16_t g_greggy_static[256] = {
+    0x0000, 0x0008, 0x4EBA, 0x206E, 0x4E75, 0x000C, 0x0004, 0x7000, // 0x00..0x07
+    0x0010, 0x0002, 0x486E, 0xFFFC, 0x6000, 0x0001, 0x48E7, 0x2F2E, // 0x08..0x0F
+    0x4E56, 0x0006, 0x4E5E, 0x2F00, 0x6100, 0xFFF8, 0x2F0B, 0xFFFF, // 0x10..0x17
+    0x0014, 0x000A, 0x0018, 0x205F, 0x000E, 0x2050, 0x3F3C, 0xFFF4, // 0x18..0x1F
+    0x4CEE, 0x302E, 0x6700, 0x4CDF, 0x266E, 0x0012, 0x001C, 0x4267, // 0x20..0x27
+    0xFFF0, 0x303C, 0x2F0C, 0x0003, 0x4ED0, 0x0020, 0x7001, 0x0016, // 0x28..0x2F
+    0x2D40, 0x48C0, 0x2078, 0x7200, 0x588F, 0x6600, 0x4FEF, 0x42A7, // 0x30..0x37
+    0x6706, 0xFFFA, 0x558F, 0x286E, 0x3F00, 0xFFFE, 0x2F3C, 0x6704, // 0x38..0x3F
+    0x598F, 0x206B, 0x0024, 0x201F, 0x41FA, 0x81E1, 0x6604, 0x6708, // 0x40..0x47
+    0x001A, 0x4EB9, 0x508F, 0x202E, 0x0007, 0x4EB0, 0xFFF2, 0x3D40, // 0x48..0x4F
+    0x001E, 0x2068, 0x6606, 0xFFF6, 0x4EF9, 0x0800, 0x0C40, 0x3D7C, // 0x50..0x57
+    0xFFEC, 0x0005, 0x203C, 0xFFE8, 0xDEFC, 0x4A2E, 0x0030, 0x0028, // 0x58..0x5F
+    0x2F08, 0x200B, 0x6002, 0x426E, 0x2D48, 0x2053, 0x2040, 0x1800, // 0x60..0x67
+    0x6004, 0x41EE, 0x2F28, 0x2F01, 0x670A, 0x4840, 0x2007, 0x6608, // 0x68..0x6F
+    0x0118, 0x2F07, 0x3028, 0x3F2E, 0x302B, 0x226E, 0x2F2B, 0x002C, // 0x70..0x77
+    0x670C, 0x225F, 0x6006, 0x00FF, 0x3007, 0xFFEE, 0x5340, 0x0040, // 0x78..0x7F
+    0xFFE4, 0x4A40, 0x660A, 0x000F, 0x4EAD, 0x70FF, 0x22D8, 0x486B, // 0x80..0x87
+    0x0022, 0x204B, 0x670E, 0x4AAE, 0x4E90, 0xFFE0, 0xFFC0, 0x002A, // 0x88..0x8F
+    0x2740, 0x6702, 0x51C8, 0x02B6, 0x487A, 0x2278, 0xB06E, 0xFFE6, // 0x90..0x97
+    0x0009, 0x322E, 0x3E00, 0x4841, 0xFFEA, 0x43EE, 0x4E71, 0x7400, // 0x98..0x9F
+    0x2F2C, 0x206C, 0x003C, 0x0026, 0x0050, 0x1880, 0x301F, 0x2200, // 0xA0..0xA7
+    0x660C, 0xFFDA, 0x0038, 0x6602, 0x302C, 0x200C, 0x2D6E, 0x4240, // 0xA8..0xAF
+    0xFFE2, 0xA9F0, 0xFF00, 0x377C, 0xE580, 0xFFDC, 0x4868, 0x594F, // 0xB0..0xB7
+    0x0034, 0x3E1F, 0x6008, 0x2F06, 0xFFDE, 0x600A, 0x7002, 0x0032, // 0xB8..0xBF
+    0xFFCC, 0x0080, 0x2251, 0x101F, 0x317C, 0xA029, 0xFFD8, 0x5240, // 0xC0..0xC7
+    0x0100, 0x6710, 0xA023, 0xFFCE, 0xFFD4, 0x2006, 0x4878, 0x002E, // 0xC8..0xCF
+    0x504F, 0x43FA, 0x6712, 0x7600, 0x41E8, 0x4A6E, 0x20D9, 0x005A, // 0xD0..0xD7
+    0x7FFF, 0x51CA, 0x005C, 0x2E00, 0x0240, 0x48C7, 0x6714, 0x0C80, // 0xD8..0xDF
+    0x2E9F, 0xFFD6, 0x8000, 0x1000, 0x4842, 0x4A6B, 0xFFD2, 0x0048, // 0xE0..0xE7
+    0x4A47, 0x4ED1, 0x206F, 0x0041, 0x600C, 0x2A78, 0x422E, 0x3200, // 0xE8..0xEF
+    0x6574, 0x6716, 0x0044, 0x486D, 0x2008, 0x486C, 0x0B7C, 0x2640, // 0xF0..0xF7
+    0x0400, 0x0068, 0x206D, 0x000D, 0x2A40, 0x000B, 0x003E, 0x0220, // 0xF8..0xFF
+};
+
+#define GREGGY_BYTE_TABLE_SAVED 0x01u // payload begins with a dynamic table
+#define GREGGY_BITMAPPED_DATA   0x02u // mixed compressed/uncompressed runs
+
+// Run the GreggyBits (dcmp 2) decompression.  `payload`/`payload_len`
+// are the bytes *after* the 18-byte common header.  `actual_size` is
+// the target output byte count; `byte_table_size_field` is the raw
+// `byte_table_size` byte from the header (interpreted as +1 -> word
+// count when the dynamic-table flag is set); `compress_flags` is the
+// header's compressFlags byte.  Returns 0 on success and fills
+// `out_uncompressed` (caller-provided, capacity `actual_size`).
+static int dcmp2_decompress(const uint8_t *payload, size_t payload_len, uint8_t *out, size_t actual_size,
+                            uint8_t byte_table_size_field, uint8_t compress_flags) {
+    // Decide which table to read indices through.
+    const uint16_t *table = g_greggy_static;
+    uint16_t dyn_table[256];
+    ic_t ic = {payload, payload_len, 0};
+    if (compress_flags & GREGGY_BYTE_TABLE_SAVED) {
+        // Dynamic table: read (byte_table_size_field + 1) 16-bit words
+        // from the payload into dyn_table[0..N-1].  Entries past that
+        // stay at zero, matching the assembly's BlockMove of exactly
+        // the declared word count.
+        size_t nwords = (size_t)byte_table_size_field + 1;
+        if (nwords > 256)
+            nwords = 256;
+        memset(dyn_table, 0, sizeof(dyn_table));
+        for (size_t i = 0; i < nwords; i++) {
+            uint8_t hi, lo;
+            if (ic_get_u8(&ic, &hi) < 0)
+                return -1;
+            if (ic_get_u8(&ic, &lo) < 0)
+                return -1;
+            dyn_table[i] = (uint16_t)((hi << 8) | lo);
+        }
+        table = dyn_table;
+    }
+
+    // Output cursor.
+    oc_t oc = {out, actual_size, 0};
+    size_t total_words = actual_size / 2;
+    bool odd_extra = (actual_size & 1) != 0;
+
+    if (!(compress_flags & GREGGY_BITMAPPED_DATA)) {
+        // Non-bitmapped: every input byte is a table index.
+        for (size_t w = 0; w < total_words; w++) {
+            uint8_t idx;
+            if (ic_get_u8(&ic, &idx) < 0)
+                return -1;
+            if (oc_put_u16_be(&oc, table[idx]) < 0)
+                return -1;
+        }
+        if (odd_extra) {
+            uint8_t b;
+            if (ic_get_u8(&ic, &b) < 0)
+                return -1;
+            if (oc_put_u8(&oc, b) < 0)
+                return -1;
+        }
+        return 0;
+    }
+
+    // Bitmapped: process 8-word runs.  Each run begins with one bitmap
+    // byte (high bit = first word).  Set bit => 1 input byte indexed into
+    // the table; clear bit => 2 raw input bytes copied verbatim.
+    size_t full_runs = total_words / 8;
+    size_t last_run_words = total_words % 8;
+    for (size_t r = 0; r < full_runs; r++) {
+        uint8_t bitmap;
+        if (ic_get_u8(&ic, &bitmap) < 0)
+            return -1;
+        if (bitmap == 0) {
+            // Fast path: all 8 words are raw 2-byte literals.
+            for (int i = 0; i < 16; i++) {
+                uint8_t b;
+                if (ic_get_u8(&ic, &b) < 0)
+                    return -1;
+                if (oc_put_u8(&oc, b) < 0)
+                    return -1;
+            }
+            continue;
+        }
+        for (int i = 0; i < 8; i++) {
+            bool compressed = (bitmap & 0x80) != 0;
+            bitmap = (uint8_t)(bitmap << 1);
+            if (compressed) {
+                uint8_t idx;
+                if (ic_get_u8(&ic, &idx) < 0)
+                    return -1;
+                if (oc_put_u16_be(&oc, table[idx]) < 0)
+                    return -1;
+            } else {
+                uint8_t b0, b1;
+                if (ic_get_u8(&ic, &b0) < 0)
+                    return -1;
+                if (ic_get_u8(&ic, &b1) < 0)
+                    return -1;
+                if (oc_put_u8(&oc, b0) < 0)
+                    return -1;
+                if (oc_put_u8(&oc, b1) < 0)
+                    return -1;
+            }
+        }
+    }
+    if (last_run_words > 0) {
+        uint8_t bitmap;
+        if (ic_get_u8(&ic, &bitmap) < 0)
+            return -1;
+        for (size_t i = 0; i < last_run_words; i++) {
+            bool compressed = (bitmap & 0x80) != 0;
+            bitmap = (uint8_t)(bitmap << 1);
+            if (compressed) {
+                uint8_t idx;
+                if (ic_get_u8(&ic, &idx) < 0)
+                    return -1;
+                if (oc_put_u16_be(&oc, table[idx]) < 0)
+                    return -1;
+            } else {
+                uint8_t b0, b1;
+                if (ic_get_u8(&ic, &b0) < 0)
+                    return -1;
+                if (ic_get_u8(&ic, &b1) < 0)
+                    return -1;
+                if (oc_put_u8(&oc, b0) < 0)
+                    return -1;
+                if (oc_put_u8(&oc, b1) < 0)
+                    return -1;
+            }
+        }
+    }
+    if (odd_extra) {
+        uint8_t b;
+        if (ic_get_u8(&ic, &b) < 0)
+            return -1;
+        if (oc_put_u8(&oc, b) < 0)
+            return -1;
+    }
+    return 0;
+}
+
 // ---- Public entry point ---------------------------------------------------
 
 uint8_t *rsrc_dcmp_decompress(const uint8_t *compressed, size_t compressed_len, size_t *out_len, const char **errmsg) {
@@ -613,62 +825,88 @@ uint8_t *rsrc_dcmp_decompress(const uint8_t *compressed, size_t compressed_len, 
     uint16_t hdr_len = be_u16(compressed + 4);
     uint8_t hdr_ver = compressed[6];
     uint32_t actual_size = be_u32(compressed + 8);
-    uint8_t var_ratio = compressed[12];
-    uint8_t overrun = compressed[13];
-    int16_t dcmp_id = (int16_t)be_u16(compressed + 14);
 
     if (hdr_len < 18 || hdr_len > compressed_len)
         FAIL("truncated header");
-    if (hdr_ver != 8)
-        FAIL("unsupported version"); // GreggyBits (header version 9) routes here too
-    if (dcmp_id != 0)
-        FAIL("unsupported dcmp");
 
-    // Output buffer: actual_size + overrun (the assembly explicitly
-    // permits the decompressor to overshoot by `overrun` bytes during
-    // operation; we honour that for byte-identical behaviour).
-    size_t out_cap = (size_t)actual_size + (size_t)overrun;
-    uncompressed = malloc(out_cap > 0 ? out_cap : 1);
-    if (!uncompressed)
-        FAIL("out of memory");
-
-    // Var table: actual_size * var_ratio / 256, rounded up to even.
-    // The original code allocates "VarTableSize" bytes; the ratio comes
-    // straight from the header.  Apple's compressor sets this so the
-    // table is large enough to hold every Remember* literal plus the
-    // index list.
-    size_t vt_size = ((size_t)actual_size * (size_t)var_ratio) / 256;
-    if (vt_size < 4)
-        vt_size = 4; // minimum to hold NextVarIndex + VarsList[0]
-    if (vt_size & 1)
-        vt_size++;
-    vtbuf = malloc(vt_size);
-    if (!vtbuf)
-        FAIL("out of memory");
-
-    vt_t vt;
-    vt_init(&vt, vtbuf, vt_size);
-    ic_t ic = {compressed + hdr_len, compressed_len - hdr_len, 0};
-    oc_t oc = {uncompressed, out_cap, 0};
-
-    if (unpack_loop(&ic, &oc, &vt) < 0)
-        FAIL("corrupt stream");
-
-    // The assembly's compressor pads the output to `actual_size`, so
-    // any difference indicates either truncated input or a parser bug.
-    // Truncate to actual_size for the caller — overrun is a working-
-    // buffer concession, not part of the resource's contract.
-    free(vtbuf);
-    vtbuf = NULL;
-
-    if (oc.off < actual_size) {
-        // Pad with zeros — the assembly leaves the trailing buffer as
-        // whatever was already there, but defined zero is friendlier
-        // for callers.
-        memset(uncompressed + oc.off, 0, actual_size - oc.off);
+    // v8 puts dcmp_id at +14; v9 puts it at +12 (overlaying v8's
+    // var_table_ratio + overrun fields — see the header docs at the
+    // top of this file).
+    int16_t dcmp_id;
+    if (hdr_ver == 8) {
+        dcmp_id = (int16_t)be_u16(compressed + 14);
+    } else if (hdr_ver == 9) {
+        dcmp_id = (int16_t)be_u16(compressed + 12);
+    } else {
+        FAIL("unsupported version");
     }
-    if (out_len)
-        *out_len = actual_size;
-    return uncompressed;
+
+    // ---- dcmp 0 — DonnBits (v8) ------------------------------------------
+    if (dcmp_id == 0 && hdr_ver == 8) {
+        uint8_t var_ratio = compressed[12];
+        uint8_t overrun = compressed[13];
+
+        // Output buffer: actual_size + overrun (the assembly explicitly
+        // permits the decompressor to overshoot by `overrun` bytes during
+        // operation; we honour that for byte-identical behaviour).
+        size_t out_cap = (size_t)actual_size + (size_t)overrun;
+        uncompressed = malloc(out_cap > 0 ? out_cap : 1);
+        if (!uncompressed)
+            FAIL("out of memory");
+
+        // Var table: actual_size * var_ratio / 256, rounded up to even.
+        // The original code allocates "VarTableSize" bytes; the ratio comes
+        // straight from the header.  Apple's compressor sets this so the
+        // table is large enough to hold every Remember* literal plus the
+        // index list.
+        size_t vt_size = ((size_t)actual_size * (size_t)var_ratio) / 256;
+        if (vt_size < 4)
+            vt_size = 4;
+        if (vt_size & 1)
+            vt_size++;
+        vtbuf = malloc(vt_size);
+        if (!vtbuf)
+            FAIL("out of memory");
+
+        vt_t vt;
+        vt_init(&vt, vtbuf, vt_size);
+        ic_t ic = {compressed + hdr_len, compressed_len - hdr_len, 0};
+        oc_t oc = {uncompressed, out_cap, 0};
+
+        if (unpack_loop(&ic, &oc, &vt) < 0)
+            FAIL("corrupt stream");
+
+        free(vtbuf);
+        vtbuf = NULL;
+        if (oc.off < actual_size)
+            memset(uncompressed + oc.off, 0, actual_size - oc.off);
+        if (out_len)
+            *out_len = actual_size;
+        return uncompressed;
+    }
+
+    // ---- dcmp 2 — GreggyBits (v9) ----------------------------------------
+    if (dcmp_id == 2 && hdr_ver == 9) {
+        uint8_t byte_table_size = compressed[16];
+        uint8_t compress_flags = compressed[17];
+        uncompressed = calloc(actual_size > 0 ? actual_size : 1, 1);
+        if (!uncompressed)
+            FAIL("out of memory");
+        if (dcmp2_decompress(compressed + hdr_len, compressed_len - hdr_len, uncompressed, actual_size, byte_table_size,
+                             compress_flags) < 0)
+            FAIL("corrupt stream");
+        if (out_len)
+            *out_len = actual_size;
+        return uncompressed;
+    }
+
+    // Any other (dcmp_id, version) combo is currently unsupported.  This
+    // includes dcmp 0 in a v9 wrapper (custom Donn variant) and the various
+    // third-party dcmp ids (1, 3, 7, 8, 0x10+) that ship in System file
+    // extensions.  The caller falls through to raw compressed bytes —
+    // .info still surfaces the compressed flag, and re.dump's disasm pass
+    // shows compressed-payload garbage in the .s file (with a header
+    // comment) but does not crash.
+    FAIL("unsupported dcmp");
 #undef FAIL
 }

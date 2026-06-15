@@ -5,18 +5,24 @@
 // Decompression for Apple System 7 compressed resources (the format
 // signalled by the 0xA89F6572 signature in the resource bytes).
 //
-// Supports the two stock Apple decompressors that ship with System 7:
-//   - dcmp 0 — "DonnBits" (Donn Denman), the default decompressor
-// (GreggyBits / dcmp 2 is not yet implemented; surfaces as an error
-// so callers can fall through to the raw bytes rather than feed
-// garbage into a disassembler.)
+// Supports the two stock Apple decompressors that ship with System 7
+// (and the two header layouts they pair with):
+//   - header version 8 + dcmp 0 — DonnBits (Donn Denman, 1990-1991)
+//   - header version 9 + dcmp 2 — GreggyBits (Greg Marriott, 1990-1991)
 //
-// Algorithm and tables are ported from Apple's open-sourced assembly
-// in `Patches/DeCompressDefProc.a` + `Patches/DeCompressCommon.A` (©
-// 1990-1991 Apple, released as part of the Mac OS / System 7 source
-// drops).  Op-code dispatch, encoded-value layout, var-table mechanics,
-// and the 179-entry constant-word emit table are reproduced verbatim;
-// the assembly's `Bsr` / `Bra` flow is rewritten as a plain C switch.
+// Algorithms ported from Apple's open-sourced assembly in
+//   Patches/DeCompressDefProc.a + Patches/DeCompressCommon.A  (dcmp 0)
+//   Patches/GreggyBitsDefProc.a                                (dcmp 2)
+// (© 1990-1991 Apple, released as part of the Mac OS / System 7 source
+// drops).  Constant-word emit tables, opcode dispatch, var-table
+// mechanics, and the 256-word GreggyBits static table are reproduced
+// verbatim; the assembly's `Bsr` / `Bra` flow is rewritten as a plain
+// C switch.
+//
+// Other dcmp ids (1, 3, 7, 8, custom dcmps shipped in extensions) are
+// not implemented and produce an "unsupported dcmp" error so callers
+// can fall through to the raw bytes rather than feed garbage to a
+// disassembler.
 
 #pragma once
 

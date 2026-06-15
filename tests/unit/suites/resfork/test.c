@@ -520,6 +520,71 @@ TEST(test_dcmp_rejects_wrong_dcmp_id) {
     ASSERT_TRUE(err != NULL);
 }
 
+TEST(test_dcmp2_greggy_static_nonbitmapped) {
+    // Header version 9 + dcmp 2 (GreggyBits), non-bitmapped, no dynamic
+    // table.  Each input byte indexes the static table.  We choose two
+    // known entries: index 0x00 -> 0x0000, index 0x04 -> 0x4E75 (RTS).
+    uint8_t payload[18 + 2] = {
+        0xA8, 0x9F, 0x65, 0x72, // signature
+        0x00, 0x12, // header_length = 18
+        0x09, // version 9 (GreggyBits)
+        0x00, // attrs
+        0x00, 0x00, 0x00, 0x04, // actual_size = 4 bytes (2 words)
+        0x00, 0x02, // dcmp_id = 2 (GreggyBits)
+        0x00, 0x00, // decompress_slop
+        0x00, // byte_table_size (irrelevant — no dynamic table)
+        0x00, // compress_flags: 0 = static table, non-bitmapped
+        // Payload: 2 bytes producing 2 output words.
+        0x00, // -> static[0x00] = 0x0000
+        0x04, // -> static[0x04] = 0x4E75
+    };
+    size_t out_len = 0;
+    const char *err = NULL;
+    uint8_t *out = rsrc_dcmp_decompress(payload, sizeof(payload), &out_len, &err);
+    ASSERT_TRUE(out != NULL);
+    ASSERT_EQ_INT(4, (int)out_len);
+    // Output: 0x0000 (BE) then 0x4E75 (BE) = 00 00 4E 75
+    uint8_t expected[4] = {0x00, 0x00, 0x4E, 0x75};
+    ASSERT_EQ_INT(0, memcmp(out, expected, 4));
+    free(out);
+}
+
+TEST(test_dcmp2_greggy_bitmapped) {
+    // GreggyBits with bitmapped data: one bitmap byte 0xC0 (bits 7+6 set)
+    // controls 8 output words: first 2 are compressed (1-byte index), next 6
+    // are uncompressed (2 bytes each).  We pad actual_size to exactly 8
+    // words so the run-loop hits the full-run path.
+    // Expected output: static[0x04] + static[0x05] + then 6 raw words.
+    uint8_t payload[] = {
+        0xA8, 0x9F, 0x65, 0x72, 0x00, 0x12, 0x09, 0x00, 0x00, 0x00, 0x00, 0x10, // actual_size = 16 bytes (8 words)
+        0x00, 0x02, // dcmp_id = 2
+        0x00, 0x00, // slop
+        0x00, // byte_table_size
+        0x02, // compress_flags: bitmappedData
+        // Payload: one bitmap byte, then mixed compressed/uncompressed.
+        0xC0, // bitmap: 11000000 — first 2 words compressed, next 6 raw
+        0x04, // -> static[0x04] = 0x4E75
+        0x05, // -> static[0x05] = 0x000C
+        0xAA, 0xBB, // raw word 0xAABB
+        0xCC, 0xDD, // raw word 0xCCDD
+        0xEE, 0xFF, // raw word 0xEEFF
+        0x11, 0x22, // raw word 0x1122
+        0x33, 0x44, // raw word 0x3344
+        0x55, 0x66, // raw word 0x5566
+    };
+    size_t out_len = 0;
+    uint8_t *out = rsrc_dcmp_decompress(payload, sizeof(payload), &out_len, NULL);
+    ASSERT_TRUE(out != NULL);
+    ASSERT_EQ_INT(16, (int)out_len);
+    uint8_t expected[16] = {
+        0x4E, 0x75, // static[0x04]
+        0x00, 0x0C, // static[0x05]
+        0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66,
+    };
+    ASSERT_EQ_INT(0, memcmp(out, expected, 16));
+    free(out);
+}
+
 TEST(test_dcmp_zero_pads_short_streams) {
     // actual_size = 10 but the stream emits 4 bytes before 0xFF — the
     // remaining 6 bytes must come back as zeros so callers see a buffer
@@ -556,6 +621,8 @@ int main(void) {
     RUN(test_dcmp_remember_then_reuse);
     RUN(test_dcmp_rejects_bad_magic);
     RUN(test_dcmp_rejects_wrong_dcmp_id);
+    RUN(test_dcmp2_greggy_static_nonbitmapped);
+    RUN(test_dcmp2_greggy_bitmapped);
     RUN(test_dcmp_zero_pads_short_streams);
     fprintf(stderr, "All resfork tests passed.\n");
     return 0;
