@@ -10,7 +10,7 @@
 > **Try it:** [Run Granny Smith in your browser](https://pappadf.github.io/gs-pages/latest/)
 > Use Chromium browser (Safari and Firefox have known issues)
 
-![A/UX 3.0.1 booting on SE/30](docs/assets/aux_boot.gif)
+![A/UX 3.0.1 running on Macintosh IIfx](docs/assets/iifx_aux3.png)
 
 ## Tested Configurations
 
