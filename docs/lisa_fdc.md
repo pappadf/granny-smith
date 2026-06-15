@@ -30,6 +30,20 @@ data is served with `disk_read_data` / `disk_write_data`. Completion raises
 `hw_profile_t.fd_insert` / `fd_present` hooks route floppy insertion here
 instead of the IWM/SWIM `cfg->floppy`.
 
+### Disk-type byte (byte 10) — drives the loader's geometry
+
+Controller RAM **byte 10** reports the geometry of the media currently in the
+drive.  The MacWorks PREBOOT loader's block→(track, sector) converter reads it
+(`MOVE.B $15(A0),D1` against the `$FCC000` window) and selects the disk's total
+block count from it: `0` → 1702 blocks (the original Lisa Twiggy/FileWare
+default), non-zero with bit 0 set → 800 blocks (Sony 400 KB single-sided),
+bit 0 clear → 1600 blocks (Sony 800 KB double-sided).  We therefore set byte 10
+to `$01` (400 KB) or `$02` (800 KB) whenever media is present.  **Without this
+the loader assumes 1702-block Twiggy geometry, computes out-of-range
+(track, sector) pairs for any block past track 0, and aborts with its own
+"DISK READ ERROR".**  With it, MacWorks reads the whole boot disk (through
+track 38+) and loads the Mac environment into high RAM.
+
 ## Bring-up status
 
 With the segment MMU, video, the two VIAs, the COPS (incl. keyboard scan, clock

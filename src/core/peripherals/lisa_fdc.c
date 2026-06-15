@@ -26,18 +26,28 @@ LOG_USE_CATEGORY_NAME("floppy");
 
 // Command-block byte indices within the shared RAM (docs/lisa.md §13.2; offsets
 // in the source are address-space, halved here to RAM byte indices).
-#define FDC_CMDREG  0 // command-issue register
-#define FDC_RWTS    1 // RWTS sub-command (CMD)
-#define FDC_DRIVE   2 // drive ($00 = drive 2, $80 = drive 1)
-#define FDC_SIDE    3 // side
-#define FDC_SECTOR  4 // sector
-#define FDC_TRACK   5 // track
-#define FDC_SPEED   6 // motor speed
-#define FDC_CONFIRM 7 // format confirm
-#define FDC_STATUS  8 // error status (0 = OK)
-#define FDC_DRVSTAT 47 // drive status byte ($00C05F: present/eject/complete)
-#define FDC_HDR     500 // 12-byte sector tag/header (DSKBUFF)
-#define FDC_DATA    512 // 512-byte data sector (DSKDATA)
+#define FDC_CMDREG   0 // command-issue register
+#define FDC_RWTS     1 // RWTS sub-command (CMD)
+#define FDC_DRIVE    2 // drive ($00 = drive 2, $80 = drive 1)
+#define FDC_SIDE     3 // side
+#define FDC_SECTOR   4 // sector
+#define FDC_TRACK    5 // track
+#define FDC_SPEED    6 // motor speed
+#define FDC_CONFIRM  7 // format confirm
+#define FDC_STATUS   8 // error status (0 = OK)
+#define FDC_DISKTYPE 10 // disk geometry/type the controller reports for the media in the drive
+#define FDC_DRVSTAT  47 // drive status byte ($00C05F: present/eject/complete)
+
+// FDC_DISKTYPE encoding the boot loader's block->(track,sector) converter reads
+// ($21028 in MacWorks PREBOOT: reads byte 10, then picks the disk's total block
+// count from it).  0 = Twiggy/FileWare (1702 blocks, the original Lisa default);
+// non-zero with bit0=1 = Sony 400 KB single-sided (800 blocks); bit0=0 = Sony
+// 800 KB double-sided (1600 blocks).  Without this the converter defaults to the
+// 1702-block Twiggy geometry and computes out-of-range (track, sector) pairs.
+#define DISKTYPE_SONY_400K 0x01 // odd  -> bit0=1 -> 800 blocks
+#define DISKTYPE_SONY_800K 0x02 // even -> bit0=0 -> 1600 blocks
+#define FDC_HDR            500 // 12-byte sector tag/header (DSKBUFF)
+#define FDC_DATA           512 // 512-byte data sector (DSKDATA)
 
 // Command-issue values (docs/lisa.md §13.1).
 #define CMD_EXEC     0x81 // execute the RWTS command
@@ -84,6 +94,8 @@ static void fdc_update_drvstat(lisa_fdc_t *fdc) {
     if (fdc->image)
         s |= DRVSTAT_PRESENT1 | DRVSTAT_OR1;
     fdc->ram[FDC_DRVSTAT] = s;
+    // Report the Sony disk geometry the boot loader's converter reads (byte 10).
+    fdc->ram[FDC_DISKTYPE] = fdc->image ? (fdc->num_sides == 1 ? DISKTYPE_SONY_400K : DISKTYPE_SONY_800K) : 0;
 }
 
 // Map (track, side, sector) to a byte offset in the image (Sony 5-zone layout).
@@ -104,6 +116,7 @@ static void fdc_execute_rwts(lisa_fdc_t *fdc) {
     }
     if (track < 0 || track > 79 || sector < 0 || sector >= iwm_sectors_per_track(track)) {
         fdc->ram[FDC_STATUS] = 0x17; // unreadable
+        LOG(2, "fdc unreadable: rwts=%02x trk=%d sec=%d side=%d (out of Sony geometry)", rwts, track, sector, side);
         return;
     }
 
