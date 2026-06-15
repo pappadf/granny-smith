@@ -14,6 +14,7 @@
 // Forward declarations
 struct config;
 struct nubus_slot_decl;
+struct image;
 
 // Floppy drive capabilities form a strict superset hierarchy:
 //   FLOPPY_400K reads 400K only.
@@ -113,6 +114,12 @@ typedef struct hw_profile {
     // Machine-specific VBL handling
     void (*trigger_vbl)(struct config *cfg);
 
+    // Optional: per-machine floppy insertion for non-IWM controllers (the Lisa
+    // intelligent FDC).  When cfg->floppy is NULL the framework routes floppy
+    // insert/present queries here instead.  NULL on IWM/SWIM machines.
+    int (*fd_insert)(struct config *cfg, int drive, struct image *disk);
+    bool (*fd_present)(struct config *cfg, int drive);
+
     // Optional: per-machine primary display.  Used by system_display()
     // when cfg->nubus is NULL (Plus and any future non-NuBus machine);
     // glue030-family machines leave this NULL because their display
@@ -136,5 +143,7 @@ extern const hw_profile_t machine_iicx;
 extern const hw_profile_t machine_iix;
 extern const hw_profile_t machine_iifx;
 extern const hw_profile_t machine_iici;
+extern const hw_profile_t machine_lisa;
+extern const hw_profile_t machine_macxl;
 
 #endif // MACHINE_H

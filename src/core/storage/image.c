@@ -195,6 +195,7 @@ void image_close(image_t *image) {
         return;
     if (image->storage)
         storage_delete(image->storage);
+    free(image->tags);
     // Ghost (read-only) instances were placed in a scratch dir; remove their
     // delta+journal so we don't leave clutter behind.
     if (image->ghost_instance) {
@@ -293,6 +294,43 @@ static int probe_base_image(const char *base_path, size_t *out_raw_size, bool *o
 // Common storage-engine wiring for all image_* entry points.  The caller has
 // already populated image->filename, image->instance_path, image->delta_path,
 // image->journal_path, image->raw_size, image->writable, image->from_diskcopy.
+// Load the DiskCopy 4.2 tag section (after the data) into image->tags.  These
+// are read-only per-sector tags the Lisa boot ROM/OS read (e.g. the boot
+// block's FILEID = $AAAA).  Best-effort: on any failure the image simply has no
+// tags (disk_read_tag returns 0).
+static void image_load_diskcopy_tags(image_t *image) {
+    FILE *f = fopen(image->filename, "rb");
+    if (!f)
+        return;
+    uint8_t header[DISKCOPY_HEADER_SIZE];
+    if (fread(header, 1, sizeof(header), f) != sizeof(header)) {
+        fclose(f);
+        return;
+    }
+    uint32_t data_size = read_be32(header + 0x40);
+    uint32_t tag_size = read_be32(header + 0x44);
+    uint32_t count = (uint32_t)(image->raw_size / STORAGE_BLOCK_SIZE);
+    if (tag_size == 0 || count == 0 || (tag_size % count) != 0) {
+        fclose(f);
+        return; // no tags (or unexpected layout)
+    }
+    uint8_t *tags = (uint8_t *)malloc(tag_size);
+    if (!tags) {
+        fclose(f);
+        return;
+    }
+    if (fseek(f, (long)DISKCOPY_HEADER_SIZE + (long)data_size, SEEK_SET) != 0 ||
+        fread(tags, 1, tag_size, f) != tag_size) {
+        free(tags);
+        fclose(f);
+        return;
+    }
+    fclose(f);
+    image->tags = tags;
+    image->tag_bytes = tag_size / count;
+    image->tag_count = count;
+}
+
 static int image_attach_storage(image_t *image, bool is_diskcopy) {
     storage_config_t config = {0};
     config.base_path = image->filename;
@@ -301,7 +339,18 @@ static int image_attach_storage(image_t *image, bool is_diskcopy) {
     config.block_count = image->raw_size / STORAGE_BLOCK_SIZE;
     config.block_size = STORAGE_BLOCK_SIZE;
     config.base_data_offset = is_diskcopy ? DISKCOPY_HEADER_SIZE : 0;
-    return storage_new(&config, &image->storage);
+    int rc = storage_new(&config, &image->storage);
+    if (rc == GS_SUCCESS && is_diskcopy)
+        image_load_diskcopy_tags(image);
+    return rc;
+}
+
+size_t disk_read_tag(image_t *disk, size_t sector, uint8_t *buf, size_t size) {
+    if (!disk || !disk->tags || !buf || sector >= disk->tag_count)
+        return 0;
+    size_t n = size < disk->tag_bytes ? size : disk->tag_bytes;
+    memcpy(buf, disk->tags + sector * disk->tag_bytes, n);
+    return n;
 }
 
 // Scratch directory for read-only image deltas (kept volatile).

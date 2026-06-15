@@ -1,0 +1,549 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) pappadf
+
+// lisa.c
+// Apple Lisa 2 machine implementation (and, later, the Macintosh XL variant).
+//
+// The Lisa is the first non-Mac machine: a 68000 with a custom segment MMU
+// (lisa_mmu.c), the COPS keyboard/mouse/clock microcontroller, an intelligent
+// 6504A floppy controller, and a parallel-port hard disk — none of which are
+// Mac architecture.  See docs/lisa.md for the hardware reference and
+// local/gs-docs/proposals/proposal-machine-lisa-xl.md for the staged plan.
+//
+// This first cut (Step 2) is intentionally minimal: 68000 + RAM + 16 KB boot
+// ROM + the segment MMU, enough to run the power-on self-tests headlessly.
+// Video, COPS, floppy, and the parallel disk arrive in later steps.
+
+#include "machine.h"
+#include "system_config.h"
+
+#include "cops.h"
+#include "cpu.h"
+#include "debug.h"
+#include "display.h"
+#include "image.h"
+#include "lisa_fdc.h"
+#include "lisa_mmu.h"
+#include "log.h"
+#include "memory.h"
+#include "scc.h"
+#include "scheduler.h"
+#include "via.h"
+
+#include <assert.h>
+#include <stdint.h>
+#include <stdlib.h>
+#include <string.h>
+
+LOG_USE_CATEGORY_NAME("lisa");
+
+// The two 6522 VIAs use Lisa register strides (VIA1 = 2, VIA2 = 8) rather than
+// the Mac's 0x200; via.c selects its register from address bits 9-12, so this
+// adapter remaps a Lisa byte offset into the (reg << 9) form via.c expects.
+typedef struct lisa_via_port {
+    via_t *via; // the VIA instance
+    const memory_interface_t *vif; // via.c's own memory interface
+    uint32_t reg_shift; // offset >> reg_shift = register number (1 for VIA1, 3 for VIA2)
+} lisa_via_port_t;
+
+// Lisa-specific peripheral state (reached via config_t.machine_context).
+typedef struct lisa_state {
+    lisa_mmu_t *mmu; // custom segment MMU
+    cops_t *cops; // keyboard/mouse/clock/power microcontroller on VIA1 port A
+    lisa_fdc_t *fdc; // intelligent 6504A floppy controller (shared RAM @ $C001)
+    lisa_via_port_t via1_map; // VIA1 (keyboard / COPS), base $00DD81, stride 2
+    lisa_via_port_t via2_map; // VIA2 (parallel disk / contrast), base $00D901, stride 8
+    display_t display; // 720x364 1bpp framebuffer (direct, in main RAM)
+} lisa_state_t;
+
+// Lisa video geometry (docs/lisa.md §8): 720x364, 1 bpp MSB-first.
+#define LISA_SCREEN_W      720
+#define LISA_SCREEN_H      364
+#define LISA_SCREEN_STRIDE (LISA_SCREEN_W / 8) // 90 bytes/row
+
+static inline lisa_state_t *lisa_state(config_t *cfg) {
+    return (lisa_state_t *)cfg->machine_context;
+}
+
+// ============================================================
+// Video (direct 1bpp framebuffer in main RAM, base from the $E800 latch)
+// ============================================================
+
+// Point the display at the current framebuffer, which the Video Address Latch
+// relocates anywhere in RAM (docs/lisa.md §8).  Re-read each frame so a latch
+// write (the ROM moves the screen during sizing) takes effect.  Marks the
+// framebuffer dirty only when the base actually moves.
+static void lisa_refresh_framebuffer(config_t *cfg) {
+    lisa_state_t *ls = lisa_state(cfg);
+    uint32_t base = lisa_mmu_video_base(ls->mmu);
+    const uint8_t *bits = ram_native_pointer(cfg->mem_map, base);
+    ls->display.fb_dirty = true; // contents change every frame
+    if (ls->display.bits != bits) {
+        ls->display.bits = bits;
+        ls->display.shape_dirty = true;
+    }
+}
+
+static void lisa_display_init(config_t *cfg) {
+    lisa_state_t *ls = lisa_state(cfg);
+    ls->display.width = LISA_SCREEN_W;
+    ls->display.height = LISA_SCREEN_H;
+    ls->display.stride = LISA_SCREEN_STRIDE;
+    ls->display.format = PIXEL_1BPP_MSB;
+    ls->display.bits = NULL;
+    ls->display.clut = NULL;
+    ls->display.clut_len = 0;
+    ls->display.shape_dirty = true;
+    lisa_refresh_framebuffer(cfg);
+}
+
+// hw_profile_t.display callback — surface the framebuffer on the non-NuBus path.
+static display_t *lisa_display(config_t *cfg) {
+    lisa_state_t *ls = lisa_state(cfg);
+    return ls && ls->display.bits ? &ls->display : NULL;
+}
+
+// ============================================================
+// Interrupt routing (fixed 68000 IPL levels — docs/lisa.md §7.1)
+// ============================================================
+
+// Set the CPU IPL from the per-level interrupt bitmask.  Lisa sources sit on
+// fixed levels: SCC=6, COPS(VIA1)=2, floppy/parallel(VIA2)/VBL=1.
+static void lisa_update_ipl(config_t *cfg, int level, bool active) {
+    if (active)
+        cfg->irq |= (1u << level);
+    else
+        cfg->irq &= ~(1u << level);
+    int ipl = 0;
+    for (int l = 7; l >= 1; l--) {
+        if (cfg->irq & (1u << l)) {
+            ipl = l;
+            break;
+        }
+    }
+    cpu_set_ipl(cfg->cpu, ipl);
+    cpu_reschedule();
+}
+
+// ============================================================
+// Parity NMI (level 7)
+// ============================================================
+
+// Deassert the parity NMI a short time after asserting it.  The level-based IPL
+// model would otherwise re-fire forever; the boot ROM's idempotent parity
+// handler tolerates the few NMIs that occur in this window.
+static void lisa_nmi_off(void *source, uint64_t data) {
+    (void)data;
+    config_t *cfg = (config_t *)source;
+    lisa_update_ipl(cfg, 7, false);
+}
+
+// MMU parity-error callback → CPU level-7 NMI (one-shot via scheduled clear).
+static void lisa_parity_nmi(void *ctx, bool active) {
+    config_t *cfg = (config_t *)ctx;
+    if (active) {
+        lisa_update_ipl(cfg, 7, true);
+        scheduler_new_cpu_event(cfg->scheduler, &lisa_nmi_off, cfg, 0, 40, 0);
+    } else {
+        lisa_update_ipl(cfg, 7, false);
+    }
+}
+
+// ============================================================
+// VIA address-stride adapters + callbacks
+// ============================================================
+
+static uint8_t lisa_via_read8(void *dev, uint32_t off) {
+    lisa_via_port_t *p = (lisa_via_port_t *)dev;
+    uint32_t reg = (off >> p->reg_shift) & 15;
+    return p->vif->read_uint8(p->via, reg << 9);
+}
+static void lisa_via_write8(void *dev, uint32_t off, uint8_t v) {
+    lisa_via_port_t *p = (lisa_via_port_t *)dev;
+    uint32_t reg = (off >> p->reg_shift) & 15;
+    p->vif->write_uint8(p->via, reg << 9, v);
+}
+// The Lisa addresses its VIAs with byte accesses on odd addresses; word/long
+// forms just defer to the byte register so an unexpected wide access is safe.
+static uint16_t lisa_via_read16(void *dev, uint32_t off) {
+    return lisa_via_read8(dev, off);
+}
+static uint32_t lisa_via_read32(void *dev, uint32_t off) {
+    return lisa_via_read8(dev, off);
+}
+static void lisa_via_write16(void *dev, uint32_t off, uint16_t v) {
+    lisa_via_write8(dev, off, (uint8_t)v);
+}
+static void lisa_via_write32(void *dev, uint32_t off, uint32_t v) {
+    lisa_via_write8(dev, off, (uint8_t)v);
+}
+
+static memory_interface_t lisa_via_iface = {
+    .read_uint8 = lisa_via_read8,
+    .read_uint16 = lisa_via_read16,
+    .read_uint32 = lisa_via_read32,
+    .write_uint8 = lisa_via_write8,
+    .write_uint16 = lisa_via_write16,
+    .write_uint32 = lisa_via_write32,
+};
+
+// SCC aggregates to IPL 6 (autovectored).
+static void lisa_scc_irq(void *ctx, bool active) {
+    lisa_update_ipl((config_t *)ctx, 6, active);
+}
+
+// VIA1 (COPS) aggregates to IPL 2; VIA2 (parallel) to IPL 1.
+static void lisa_via1_irq(void *ctx, bool active) {
+    lisa_update_ipl((config_t *)ctx, 2, active);
+}
+static void lisa_via2_irq(void *ctx, bool active) {
+    lisa_update_ipl((config_t *)ctx, 1, active);
+}
+// VIA1 port output → COPS (port A command jam / port B reset line).
+static void lisa_via1_output(void *ctx, uint8_t port, uint8_t value) {
+    cops_via_output(lisa_state((config_t *)ctx)->cops, port, value);
+}
+// VIA2 port output → parallel disk / contrast DAC (wired in Step 7).
+static void lisa_via2_output(void *ctx, uint8_t port, uint8_t value) {
+    (void)ctx;
+    (void)port;
+    (void)value;
+}
+static void lisa_via_shift_out(void *ctx, uint8_t byte) {
+    (void)ctx;
+    (void)byte;
+}
+
+// ============================================================
+// Floppy controller (6504A) wiring
+// ============================================================
+
+// FDC I/O adapter: lisa_mmu dispatches with dev = the lisa_fdc_t and offset =
+// physical address − $C001.
+static uint8_t lisa_fdc_io_read8(void *dev, uint32_t off) {
+    return lisa_fdc_read8((lisa_fdc_t *)dev, off);
+}
+static uint16_t lisa_fdc_io_read16(void *dev, uint32_t off) {
+    return lisa_fdc_read16((lisa_fdc_t *)dev, off);
+}
+static uint32_t lisa_fdc_io_read32(void *dev, uint32_t off) {
+    return lisa_fdc_read32((lisa_fdc_t *)dev, off);
+}
+static void lisa_fdc_io_write8(void *dev, uint32_t off, uint8_t v) {
+    lisa_fdc_write8((lisa_fdc_t *)dev, off, v);
+}
+static void lisa_fdc_io_write16(void *dev, uint32_t off, uint16_t v) {
+    lisa_fdc_write16((lisa_fdc_t *)dev, off, v);
+}
+static void lisa_fdc_io_write32(void *dev, uint32_t off, uint32_t v) {
+    lisa_fdc_write32((lisa_fdc_t *)dev, off, v);
+}
+static memory_interface_t lisa_fdc_iface = {
+    .read_uint8 = lisa_fdc_io_read8,
+    .read_uint16 = lisa_fdc_io_read16,
+    .read_uint32 = lisa_fdc_io_read32,
+    .write_uint8 = lisa_fdc_io_write8,
+    .write_uint16 = lisa_fdc_io_write16,
+    .write_uint32 = lisa_fdc_io_write32,
+};
+
+// FDIR (drive interrupt request) → VIA1 PB4, which the boot ROM polls (CHKFIN).
+static void lisa_fdc_fdir(void *ctx, bool asserted) {
+    config_t *cfg = (config_t *)ctx;
+    if (cfg->via1)
+        via_input(cfg->via1, 1, 4, asserted); // PB4 = FDIR
+}
+
+// hw_profile_t.fd_insert / fd_present — the Lisa uses lisa_fdc, not cfg->floppy.
+static int lisa_fd_insert(config_t *cfg, int drive, struct image *disk) {
+    lisa_state_t *ls = lisa_state(cfg);
+    if (drive != 0 || !ls || !ls->fdc)
+        return -1; // one Sony drive
+    lisa_fdc_insert(ls->fdc, (image_t *)disk);
+    return 0;
+}
+static bool lisa_fd_present(config_t *cfg, int drive) {
+    lisa_state_t *ls = lisa_state(cfg);
+    if (drive != 0)
+        return true; // only drive 0 exists; report others "occupied"
+    return ls && ls->fdc && lisa_fdc_disk_present(ls->fdc);
+}
+
+// ============================================================
+// Init / Teardown
+// ============================================================
+
+static void lisa_vbl_off(void *source, uint64_t data); // defined in the VBL section
+
+static void lisa_init(config_t *cfg, checkpoint_t *checkpoint) {
+    lisa_state_t *ls = (lisa_state_t *)malloc(sizeof(lisa_state_t));
+    assert(ls != NULL);
+    memset(ls, 0, sizeof(*ls));
+    cfg->machine_context = ls;
+
+    // 24-bit address space, configured RAM, 16 KB interleaved boot ROM.
+    cfg->mem_map = memory_map_init(cfg->machine->address_bits, cfg->ram_size, cfg->machine->rom_size, checkpoint);
+
+    cfg->cpu = cpu_init(CPU_MODEL_68000, checkpoint);
+    cfg->scheduler = scheduler_init(cfg->cpu, checkpoint);
+
+    if (checkpoint)
+        system_read_checkpoint_data(checkpoint, &cfg->irq, sizeof(cfg->irq));
+
+    // The segment MMU owns all translation; it reads/writes directly into the
+    // flat RAM+ROM image the memory map allocated.  The ROM region is filled
+    // later by rom.load_lisa(); the host pointer stays valid (same buffer).
+    ls->mmu = lisa_mmu_init(ram_native_pointer(cfg->mem_map, 0), cfg->ram_size,
+                            (uint8_t *)memory_rom_bytes(cfg->mem_map), memory_rom_size(cfg->mem_map), checkpoint);
+    lisa_mmu_set_nmi(ls->mmu, lisa_parity_nmi, cfg); // level-7 parity NMI (PARTST)
+
+    // Two 6522 VIAs (reused unchanged).  map=NULL: the machine registers the
+    // interface itself.  freq_factor 4 = 68000/4 ≈ 1.27 MHz (docs/lisa.md §10).
+    cfg->via1 =
+        via_init(NULL, cfg->scheduler, 4, "via1", lisa_via1_output, lisa_via_shift_out, lisa_via1_irq, cfg, checkpoint);
+    cfg->via2 =
+        via_init(NULL, cfg->scheduler, 4, "via2", lisa_via2_output, lisa_via_shift_out, lisa_via2_irq, cfg, checkpoint);
+
+    // Register each VIA at its Lisa physical I/O base through the stride
+    // adapter.  16 registers: VIA1 spans 16*2=32 bytes from $DD81, VIA2
+    // 16*8=128 bytes from $D901 (docs/lisa.md §10.1/§10.2).
+    ls->via1_map = (lisa_via_port_t){.via = cfg->via1, .vif = via_get_memory_interface(cfg->via1), .reg_shift = 1};
+    ls->via2_map = (lisa_via_port_t){.via = cfg->via2, .vif = via_get_memory_interface(cfg->via2), .reg_shift = 3};
+    lisa_mmu_map_io(ls->mmu, 0xDD81, 16 * 2, &lisa_via_iface, &ls->via1_map);
+    lisa_mmu_map_io(ls->mmu, 0xD901, 16 * 8, &lisa_via_iface, &ls->via2_map);
+
+    // COPS keyboard/mouse/clock/power microcontroller on VIA1 port A.
+    ls->cops = cops_init(cfg->via1, cfg->scheduler, checkpoint);
+
+    // Intelligent floppy controller: shared RAM at physical $00C001-$00C7FF
+    // (docs/lisa.md §13).  FDIR completion is signalled on VIA1 PB4.
+    ls->fdc = lisa_fdc_init(cfg->scheduler, lisa_fdc_fdir, cfg, checkpoint);
+    lisa_mmu_map_io(ls->mmu, 0xC001, 0x7FF, &lisa_fdc_iface, ls->fdc);
+
+    // Z8530 SCC (reused as-is): physical $00D241/43/45/47 decode from base
+    // $00D240 via the standard A1/A2 convention (docs/lisa.md §15).  PCLK 4 MHz
+    // (chan A) / 3.6864 MHz (chan B).  Autovectored at IPL 6.
+    cfg->scc = scc_init(NULL, cfg->scheduler, lisa_scc_irq, cfg, checkpoint);
+    scc_set_clocks(cfg->scc, 4000000, 3686400);
+    lisa_mmu_map_io(ls->mmu, 0xD240, 8, (memory_interface_t *)scc_get_memory_interface(cfg->scc), cfg->scc);
+
+    lisa_display_init(cfg);
+    scheduler_new_event_type(cfg->scheduler, "lisa", cfg, "vbl_off", &lisa_vbl_off);
+    scheduler_new_event_type(cfg->scheduler, "lisa", cfg, "nmi_off", &lisa_nmi_off);
+
+    cfg->debugger = debug_init();
+
+    scheduler_start(cfg->scheduler);
+
+    if (!checkpoint) {
+        cfg->irq = 0;
+        cpu_set_ipl(cfg->cpu, 0);
+    }
+}
+
+static void lisa_teardown(config_t *cfg) {
+    if (cfg->scheduler)
+        scheduler_stop(cfg->scheduler);
+
+    lisa_state_t *ls0 = lisa_state(cfg);
+    if (ls0 && ls0->fdc) {
+        lisa_fdc_delete(ls0->fdc);
+        ls0->fdc = NULL;
+    }
+    if (ls0 && ls0->cops) {
+        cops_delete(ls0->cops);
+        ls0->cops = NULL;
+    }
+    if (cfg->via1) {
+        via_delete(cfg->via1);
+        cfg->via1 = NULL;
+    }
+    if (cfg->via2) {
+        via_delete(cfg->via2);
+        cfg->via2 = NULL;
+    }
+    if (cfg->scc) {
+        scc_delete(cfg->scc);
+        cfg->scc = NULL;
+    }
+    lisa_state_t *ls = lisa_state(cfg);
+    if (ls && ls->mmu) {
+        lisa_mmu_delete(ls->mmu);
+        ls->mmu = NULL;
+    }
+    if (cfg->scheduler) {
+        scheduler_delete(cfg->scheduler);
+        cfg->scheduler = NULL;
+    }
+    if (cfg->cpu) {
+        cpu_delete(cfg->cpu);
+        cfg->cpu = NULL;
+    }
+    if (cfg->mem_map) {
+        memory_map_delete(cfg->mem_map);
+        cfg->mem_map = NULL;
+    }
+    if (cfg->debugger) {
+        debug_cleanup(cfg->debugger);
+        cfg->debugger = NULL;
+    }
+    if (ls) {
+        free(ls);
+        cfg->machine_context = NULL;
+    }
+}
+
+// ============================================================
+// Checkpoint
+// ============================================================
+
+static void lisa_checkpoint_save(config_t *cfg, checkpoint_t *cp) {
+    memory_map_checkpoint(cfg->mem_map, cp);
+    cpu_checkpoint(cfg->cpu, cp);
+    scheduler_checkpoint(cfg->scheduler, cp);
+    system_write_checkpoint_data(cp, &cfg->irq, sizeof(cfg->irq));
+    lisa_state_t *ls = lisa_state(cfg);
+    lisa_mmu_checkpoint(ls ? ls->mmu : NULL, cp);
+    // Same order as the restore path in lisa_init (via1, via2, cops, fdc).
+    via_checkpoint(cfg->via1, cp);
+    via_checkpoint(cfg->via2, cp);
+    cops_checkpoint(ls ? ls->cops : NULL, cp);
+    lisa_fdc_checkpoint(ls ? ls->fdc : NULL, cp);
+    scc_checkpoint(cfg->scc, cp);
+}
+
+// ============================================================
+// VBL
+// ============================================================
+
+// Pulse the Status Register vertical-retrace bit each frame so the ROM video
+// test and (later) the OS VBL handler observe a retrace.  Video interrupt
+// delivery is wired in Step 3 along with the display.
+// End of the vertical-retrace window: clear the Status Register VBL bit.
+static void lisa_vbl_off(void *source, uint64_t data) {
+    (void)data;
+    config_t *cfg = (config_t *)source;
+    lisa_state_t *ls = lisa_state(cfg);
+    if (ls && ls->mmu)
+        lisa_mmu_set_vbl_active(ls->mmu, false);
+}
+
+// ~90 µs retrace window (docs/lisa.md §8) at 5.09375 MHz ≈ 458 cycles.  Holding
+// the Status Register VBL bit this long lets the ROM's video self-test (VIDTST)
+// observe the low→high retrace edge instead of timing out (boot error 42).
+#define LISA_VBL_HOLD_CYCLES 458
+
+static void lisa_trigger_vbl(config_t *cfg) {
+    lisa_state_t *ls = lisa_state(cfg);
+    if (ls && ls->mmu) {
+        lisa_mmu_set_vbl_active(ls->mmu, true);
+        scheduler_new_cpu_event(cfg->scheduler, &lisa_vbl_off, cfg, 0, LISA_VBL_HOLD_CYCLES, 0);
+        lisa_refresh_framebuffer(cfg);
+    }
+}
+
+// ============================================================
+// Machine descriptor
+// ============================================================
+
+// Lisa 2 supports 512 KB / 1 MB / 2 MB (in 128 KB-granular increments the
+// boot ROM's memory sizing walks); the ROM's MAXADR ceiling is 2 MB.
+static const uint32_t lisa_ram_options_kb[] = {512, 1024, 2048, 0};
+
+// One Sony 400 KB 3.5" mechanism (the intelligent 6504A controller arrives in
+// Step 5).  Lisa 1's Twiggy drives are out of scope.
+static const struct floppy_slot lisa_floppy_slots[] = {
+    {.label = "Internal FD0", .kind = FLOPPY_400K},
+    {0},
+};
+
+// The Lisa hard disk is parallel-port ProFile/Widget, NOT SCSI; this table is
+// present only because the registry requires it (the parallel disk lands in
+// Step 7 as its own device, not on a SCSI bus).
+static const struct scsi_slot lisa_scsi_slots[] = {
+    {0},
+};
+
+// Apple Lisa 2 hardware profile.
+const hw_profile_t machine_lisa = {
+    .name = "Apple Lisa 2",
+    .id = "lisa",
+
+    // 68000 at 5.09375 MHz (20.375 MHz crystal / 4).
+    .cpu_model = 68000,
+    .freq = 5093750,
+    .mmu_present = false, // custom segment MMU, not a Motorola PMMU
+    .fpu_present = false,
+
+    .address_bits = 24,
+    .ram_default = 0x100000, // 1 MB
+    .ram_max = 0x200000, // 2 MB
+    .rom_size = 0x004000, // 16 KB interleaved boot ROM
+
+    .ram_options = lisa_ram_options_kb,
+    .floppy_slots = lisa_floppy_slots,
+    .scsi_slots = lisa_scsi_slots,
+    .has_cdrom = false,
+    .cdrom_id = 0,
+    .needs_vrom = false,
+
+    .via_count = 2, // VIA1 (COPS) + VIA2 (parallel disk) — wired in Steps 4/7
+    .has_adb = false,
+    .has_nubus = false,
+    .nubus_slot_count = 0,
+
+    .init = lisa_init,
+    .teardown = lisa_teardown,
+    .checkpoint_save = lisa_checkpoint_save,
+    .checkpoint_restore = NULL, // restore handled by lisa_init when checkpoint != NULL
+    .memory_layout_init = NULL, // segment MMU owns all translation; no page-table setup
+    .update_ipl = NULL, // interrupt routing wired with the peripherals (Step 4+)
+    .trigger_vbl = lisa_trigger_vbl,
+    .display = lisa_display,
+    .fd_insert = lisa_fd_insert,
+    .fd_present = lisa_fd_present,
+};
+
+// Macintosh XL: the same Lisa 2 hardware sold with the "3A" boot ROM and the
+// screen-mod (square-pixel) kit, running MacWorks XL.  For the emulator it is
+// the Lisa 2 profile with a different ROM-compatibility id and name — the chip
+// models, callbacks, and 720×364 framebuffer are identical (the square-pixel
+// kit only changes the dot clock, which a frame-accurate model ignores).
+// docs/lisa.md §1.1 / proposal-machine-lisa-xl.md §3.2.
+const hw_profile_t machine_macxl = {
+    .name = "Macintosh XL",
+    .id = "macxl",
+
+    .cpu_model = 68000,
+    .freq = 5093750,
+    .mmu_present = false,
+    .fpu_present = false,
+
+    .address_bits = 24,
+    .ram_default = 0x100000, // 1 MB
+    .ram_max = 0x200000, // 2 MB
+    .rom_size = 0x004000, // 16 KB interleaved "3A" boot ROM
+
+    .ram_options = lisa_ram_options_kb,
+    .floppy_slots = lisa_floppy_slots,
+    .scsi_slots = lisa_scsi_slots,
+    .has_cdrom = false,
+    .cdrom_id = 0,
+    .needs_vrom = false,
+
+    .via_count = 2,
+    .has_adb = false,
+    .has_nubus = false,
+    .nubus_slot_count = 0,
+
+    .init = lisa_init,
+    .teardown = lisa_teardown,
+    .checkpoint_save = lisa_checkpoint_save,
+    .checkpoint_restore = NULL,
+    .memory_layout_init = NULL,
+    .update_ipl = NULL,
+    .trigger_vbl = lisa_trigger_vbl,
+    .display = lisa_display,
+    .fd_insert = lisa_fd_insert,
+    .fd_present = lisa_fd_present,
+};

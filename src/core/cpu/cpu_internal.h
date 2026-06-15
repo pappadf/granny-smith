@@ -799,9 +799,11 @@ static __attribute__((noinline, cold)) void exception_bus_error(cpu_t *restrict 
     exc_trace_record(0x008, faulting_pc, saved_pc, fault_addr, rw, cpu->vbr, saved_sr, 0xB, 0);
 }
 
-// Check if a pending interrupt should be serviced
+// Check if a pending interrupt should be serviced.  Level 7 is non-maskable on
+// the 68000 (taken even when the interrupt mask is 7) — the Lisa's parity-error
+// NMI relies on this; levels 1-6 are gated by the mask as usual.
 static inline void cpu_check_interrupt(cpu_t *restrict cpu) {
-    if (cpu->ipl > cpu->interrupt_mask) {
+    if (cpu->ipl > cpu->interrupt_mask || cpu->ipl == 7) {
         uint16_t sr = cpu_get_sr(cpu);
         cpu->interrupt_mask = cpu->ipl;
         exception(cpu, 0x60 + 4 * cpu->ipl, cpu->pc, sr); // vector includes VBR on 68030

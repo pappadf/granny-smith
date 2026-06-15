@@ -270,12 +270,16 @@ int system_ensure_machine(const char *model_id) {
 static bool sys_fd_is_inserted(config_t *cfg, int drive) {
     if (cfg->floppy)
         return floppy_is_inserted(cfg->floppy, drive);
+    if (cfg->machine && cfg->machine->fd_present)
+        return cfg->machine->fd_present(cfg, drive);
     return true; // no controller → treat as occupied
 }
 
 static int sys_fd_insert(config_t *cfg, int drive, image_t *disk) {
     if (cfg->floppy)
         return floppy_insert(cfg->floppy, drive, disk);
+    if (cfg->machine && cfg->machine->fd_insert)
+        return cfg->machine->fd_insert(cfg, drive, disk);
     return -1;
 }
 
@@ -871,6 +875,8 @@ void setup_init() {
     machine_register(&machine_iix);
     machine_register(&machine_iifx);
     machine_register(&machine_iici);
+    machine_register(&machine_lisa);
+    machine_register(&machine_macxl);
 
     // Ensure logging categories of interest appear in `log list` even before any messages are emitted.
     // shell_init() (called earlier) already invoked log_init(); categories default to level 0 (OFF).
