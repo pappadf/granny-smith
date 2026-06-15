@@ -523,6 +523,55 @@ mouse.click
 keyboard.press "Return"
 ```
 
+### 6.12 Reading individual resources (synthetic /rsrc tree)
+
+The image-VFS exposes each HFS file's resource fork as a directory tree
+addressable as `<file>/rsrc/<TYPE>/<id>`. The data fork stays at `<file>`,
+the Finder info stays at `<file>/finf`, and the raw fork bytes are
+still available at `<file>/rsrc/_raw` (the previous `<file>/rsrc`
+semantics, relocated under the new directory).
+
+```
+# Mount an image without auto-mounting via path-walk.
+storage.probe "tests/data/systems/System_6_0_8.dsk"
+
+# What resource types does the Finder carry?
+vfs.ls "tests/data/systems/System_6_0_8.dsk/partition1/System Folder/Finder/rsrc/"
+
+# How many CODE resources, and what are their IDs?
+vfs.ls "tests/data/systems/System_6_0_8.dsk/partition1/System Folder/Finder/rsrc/CODE/"
+# 5
+# 5.info
+# 9
+# 9.info
+# ...
+
+# Read a `vers` resource's bytes.
+vfs.cat "tests/data/systems/System_6_0_8.dsk/partition1/System Folder/Finder/rsrc/vers/1"
+
+# Read the matching .info sidecar (small JSON, safe over TCP).
+vfs.cat "tests/data/systems/System_6_0_8.dsk/partition1/System Folder/Finder/rsrc/vers/1.info"
+# {"name":"","attrs":["purgeable"],"size":50}
+
+# For binary resources (CODE, PICT, SND), use storage.cp rather than vfs.cat
+# so the bytes don't go through the TCP response stream.
+storage.cp "tests/data/.../Finder/rsrc/CODE/1" "/tmp/code1.bin"
+
+# Recursive dump of the whole fork as ordinary files.
+storage.cp -r "tests/data/.../Finder/rsrc/" "/tmp/finder-rsrc/"
+```
+
+Conventions:
+
+- `<TYPE>` is the 4-byte resource type, MacRoman-transcoded to UTF-8.
+  Quote the path when the type has a trailing space: `"…/rsrc/STR /128"`.
+- `<id>` is the signed int16 resource ID as base-10 with a leading `-`
+  for negatives: `"…/rsrc/DRVR/-16"`.
+- `<file>/rsrc/_raw` is the entire raw resource fork (use this for
+  format-level inspection or as a hand-off to an external parser).
+- Files with an empty resource fork have *no* synthetic tree —
+  `storage.path_exists "<file>/rsrc"` returns false rather than true.
+
 ## 7. Pitfalls
 
 - **Operators only work inside `${...}`.** `cpu.d0 = cpu.pc + 4` at the

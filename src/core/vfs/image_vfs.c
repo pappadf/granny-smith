@@ -17,6 +17,7 @@
 #include "image_apm.h"
 #include "image_hfs.h"
 #include "image_ufs.h"
+#include "resource_fork.h"
 
 #include <errno.h>
 #include <limits.h>
@@ -60,6 +61,105 @@ struct image_mount {
 };
 
 static image_mount_t g_mounts[IMAGE_VFS_MAX_MOUNTS];
+
+// ---- Resource-fork LRU cache ---------------------------------------------
+// Parsed resource maps are held here so repeated reads through the
+// synthetic /rsrc/<TYPE>/<id> tree don't re-parse the fork each time.
+// Capacity is intentionally small — typical workflows touch one app at a
+// time, occasionally a handful, so eight slots cover the common cases
+// without holding entire fork buffers around forever.  The cache is
+// invalidated when the parent mount is destroyed; image_vfs is otherwise
+// read-only, so no other invalidation hooks are needed today.
+
+#define RSRC_CACHE_CAPACITY 8
+
+typedef struct rsrc_cache_entry {
+    const image_mount_t *mount; // identity (NULL = slot empty)
+    uint32_t hfs_cnid; // file CNID within the volume
+    uint8_t *fork_buf; // owned: the read fork bytes
+    size_t fork_len;
+    rfork_t *parsed; // owned: parsed map index
+    uint64_t lru_tick; // monotonic last-touch counter
+} rsrc_cache_entry_t;
+
+static rsrc_cache_entry_t g_rsrc_cache[RSRC_CACHE_CAPACITY];
+static uint64_t g_rsrc_lru_counter;
+
+// Drop one cache entry.  Safe on an empty slot.
+static void rsrc_cache_evict(rsrc_cache_entry_t *e) {
+    if (!e || !e->mount)
+        return;
+    rfork_free(e->parsed);
+    free(e->fork_buf);
+    memset(e, 0, sizeof(*e));
+}
+
+// Drop every entry associated with `m`.  Called from mount_destroy().
+static void rsrc_cache_drop_for_mount(const image_mount_t *m) {
+    for (size_t i = 0; i < RSRC_CACHE_CAPACITY; i++) {
+        if (g_rsrc_cache[i].mount == m)
+            rsrc_cache_evict(&g_rsrc_cache[i]);
+    }
+}
+
+// Find an existing cache entry for (mount, cnid).  Bumps the LRU tick on
+// hit.  Returns NULL on miss.
+static rsrc_cache_entry_t *rsrc_cache_find(const image_mount_t *m, uint32_t cnid) {
+    for (size_t i = 0; i < RSRC_CACHE_CAPACITY; i++) {
+        if (g_rsrc_cache[i].mount == m && g_rsrc_cache[i].hfs_cnid == cnid) {
+            g_rsrc_cache[i].lru_tick = ++g_rsrc_lru_counter;
+            return &g_rsrc_cache[i];
+        }
+    }
+    return NULL;
+}
+
+// Pick a slot to use for a new entry: prefer empty, otherwise evict the LRU.
+static rsrc_cache_entry_t *rsrc_cache_pick(void) {
+    rsrc_cache_entry_t *victim = &g_rsrc_cache[0];
+    for (size_t i = 0; i < RSRC_CACHE_CAPACITY; i++) {
+        if (!g_rsrc_cache[i].mount)
+            return &g_rsrc_cache[i];
+        if (g_rsrc_cache[i].lru_tick < victim->lru_tick)
+            victim = &g_rsrc_cache[i];
+    }
+    rsrc_cache_evict(victim);
+    return victim;
+}
+
+// Read+parse the resource fork for (mount, hfs, dirent.rsrc_fork) and
+// return the cache entry.  cnid is used as the cache key.  Returns NULL on
+// any failure (read error, OOM, corrupt fork).
+static rsrc_cache_entry_t *rsrc_cache_acquire(image_mount_t *m, hfs_volume_t *hfs, const hfs_dirent_t *d) {
+    if (!d || d->rsrc_fork.logical_size == 0)
+        return NULL;
+    rsrc_cache_entry_t *e = rsrc_cache_find(m, d->cnid);
+    if (e)
+        return e;
+    size_t flen = (size_t)d->rsrc_fork.logical_size;
+    uint8_t *buf = malloc(flen);
+    if (!buf)
+        return NULL;
+    size_t got = 0;
+    if (hfs_read_fork(hfs, &d->rsrc_fork, 0, buf, flen, &got) != 0 || got != flen) {
+        free(buf);
+        return NULL;
+    }
+    const char *errmsg = NULL;
+    rfork_t *rf = rfork_parse(buf, flen, &errmsg);
+    if (!rf) {
+        free(buf);
+        return NULL;
+    }
+    e = rsrc_cache_pick();
+    e->mount = m;
+    e->hfs_cnid = d->cnid;
+    e->fork_buf = buf;
+    e->fork_len = flen;
+    e->parsed = rf;
+    e->lru_tick = ++g_rsrc_lru_counter;
+    return e;
+}
 
 // ---- Helpers --------------------------------------------------------------
 
@@ -149,6 +249,7 @@ static void release_fs_state(image_mount_t *m) {
 
 // Tear down a mount without regard for refcount (callers must guard).
 static void mount_destroy(image_mount_t *m) {
+    rsrc_cache_drop_for_mount(m);
     release_fs_state(m);
     if (m->apm)
         image_apm_free(m->apm);
@@ -462,12 +563,117 @@ static int parse_image_path(const char *path, image_path_t *out) {
     return 0;
 }
 
+// ---- Synthetic resource-tree path classification --------------------------
+//
+// Classifies the *suffix* of an in-image HFS path.  Given the full split
+// component list, we look for the first occurrence of "rsrc" or "finf" and,
+// if found, treat the components after it as either a fork suffix or a
+// walk into the synthetic /rsrc/<TYPE>/<id>[.info] tree.  Callers retry
+// with a literal HFS interpretation when this lookup misses, mirroring
+// the pre-existing fork-suffix retry path.
+
+typedef enum {
+    SYNTH_NONE = 0, // No synthetic suffix; treat whole path literally.
+    SYNTH_FINF, // <file>/finf — 32-byte Finder info blob (existing).
+    SYNTH_RSRC_DIR, // <file>/rsrc — directory enumerating resource types.
+    SYNTH_RSRC_RAW, // <file>/rsrc/_raw — raw fork bytes (previously /rsrc).
+    SYNTH_RSRC_TYPE_DIR, // <file>/rsrc/<TYPE> — directory of IDs.
+    SYNTH_RSRC_DATA, // <file>/rsrc/<TYPE>/<id> — resource bytes.
+    SYNTH_RSRC_INFO, // <file>/rsrc/<TYPE>/<id>.info — JSON sidecar.
+} synth_kind_t;
+
+// Classify trailing components.  `n_components` is the full count; on
+// success `*file_core_count` is the number of leading components that
+// make up the HFS file path, `*type_out` (4 bytes) is the resource type
+// for type-scoped kinds, and `*id_out` is the resource ID for resource-
+// scoped kinds.  Returns SYNTH_NONE if the path looks literal.
+static synth_kind_t classify_synth(const char *const *components, size_t n_components, size_t *file_core_count,
+                                   uint8_t type_out[4], int16_t *id_out) {
+    if (file_core_count)
+        *file_core_count = n_components;
+    if (n_components == 0)
+        return SYNTH_NONE;
+
+    // Search left-to-right for "rsrc" or "finf"; the first hit anchors the
+    // synthetic split.  An HFS filename that literally equals "rsrc" or
+    // "finf" would match here too, but the caller retries with the full
+    // literal path on miss so the literal interpretation still wins when
+    // the synthetic one fails.
+    size_t anchor = n_components;
+    bool is_finf = false;
+    for (size_t i = 0; i < n_components; i++) {
+        const char *c = components[i];
+        if (strcmp(c, "rsrc") == 0) {
+            anchor = i;
+            is_finf = false;
+            break;
+        }
+        if (strcmp(c, "finf") == 0) {
+            anchor = i;
+            is_finf = true;
+            break;
+        }
+    }
+    if (anchor == n_components)
+        return SYNTH_NONE;
+    if (file_core_count)
+        *file_core_count = anchor;
+    size_t after = n_components - anchor - 1;
+
+    if (is_finf)
+        return (after == 0) ? SYNTH_FINF : SYNTH_NONE;
+
+    if (after == 0)
+        return SYNTH_RSRC_DIR;
+    if (after == 1) {
+        const char *next = components[anchor + 1];
+        if (strcmp(next, "_raw") == 0)
+            return SYNTH_RSRC_RAW;
+        if (type_out && rfork_type_from_path(next, type_out) == 0)
+            return SYNTH_RSRC_TYPE_DIR;
+        return SYNTH_NONE;
+    }
+    if (after == 2) {
+        const char *type_str = components[anchor + 1];
+        const char *id_str = components[anchor + 2];
+        if (!type_out || rfork_type_from_path(type_str, type_out) != 0)
+            return SYNTH_NONE;
+        size_t id_len = strlen(id_str);
+        const char *info_suffix = ".info";
+        const size_t info_suffix_len = 5;
+        if (id_len > info_suffix_len && strcmp(id_str + id_len - info_suffix_len, info_suffix) == 0) {
+            // Strip the ".info" suffix and parse the remainder as an ID.
+            char id_only[32];
+            if (id_len - info_suffix_len >= sizeof(id_only))
+                return SYNTH_NONE;
+            memcpy(id_only, id_str, id_len - info_suffix_len);
+            id_only[id_len - info_suffix_len] = '\0';
+            if (!id_out || rfork_id_from_path(id_only, id_out) != 0)
+                return SYNTH_NONE;
+            return SYNTH_RSRC_INFO;
+        }
+        if (!id_out || rfork_id_from_path(id_str, id_out) != 0)
+            return SYNTH_NONE;
+        return SYNTH_RSRC_DATA;
+    }
+    return SYNTH_NONE;
+}
+
 // ---- Backend method implementations --------------------------------------
 
-// Dir handle: either a partition-list enumerator (at image root) or an HFS
-// directory iterator.
+// Dir handle: partition-list enumerator at the image root, an HFS or UFS
+// directory iterator, or one of the two synthetic-resource directory kinds
+// (DIR_RSRC_ROOT for /rsrc, DIR_RSRC_TYPE for /rsrc/<TYPE>).  The resource
+// kinds borrow an rfork_t* from the LRU cache; the cache outlives the dir
+// handle because the parent mount holds a refcount while the dir is open.
 struct vfs_dir {
-    enum { DIR_PART_LIST, DIR_HFS, DIR_UFS } kind;
+    enum {
+        DIR_PART_LIST,
+        DIR_HFS,
+        DIR_UFS,
+        DIR_RSRC_ROOT,
+        DIR_RSRC_TYPE,
+    } kind;
     image_mount_t *mount;
     // partition list
     uint32_t next_partition;
@@ -475,20 +681,49 @@ struct vfs_dir {
     hfs_dir_iter_t *hfs_iter;
     // UFS directory
     ufs_dir_iter_t *ufs_iter;
+    // Synthetic resource tree (DIR_RSRC_ROOT / DIR_RSRC_TYPE)
+    const rfork_t *rfork; // borrowed (cache entry stays live via mount refcount)
+    uint8_t rsrc_type[4]; // DIR_RSRC_TYPE only
+    size_t rsrc_next_idx; // next type idx (root) or next resource idx (type)
+    // Two-emission state machines so a single readdir call can stream both
+    // the resource entry and the matching .info sidecar without losing
+    // its place.
+    bool rsrc_emit_info_next; // DIR_RSRC_TYPE: emit .info after the .bin
+    bool rsrc_emit_raw_next; // DIR_RSRC_ROOT: emit _raw entry at the end
+    // Cached "size" hint for the upcoming .info emission so we don't have
+    // to re-look-up the resource on the follow-up call.
+    int16_t rsrc_pending_id;
+    size_t rsrc_pending_info_size;
 };
 
 // HFS finder info is 16 bytes per fork + 16 bytes extended = 32 bytes total.
 #define HFS_FINDER_INFO_SIZE 32
 
-// File handle: data/resource fork, synthetic Finder-info blob, or UFS inode.
+// File handle: data/resource fork, synthetic Finder-info blob, UFS inode,
+// or one of the new synthetic-resource leaf kinds.  FILE_RSRC_DATA borrows
+// a slice of the cached fork buffer; FILE_RSRC_INFO precomputes the JSON
+// once and reads out of an inline buffer.
 struct vfs_file {
     image_mount_t *mount;
-    enum { FILE_HFS_FORK, FILE_FINDER_INFO, FILE_UFS } kind;
+    enum {
+        FILE_HFS_FORK,
+        FILE_FINDER_INFO,
+        FILE_UFS,
+        FILE_RSRC_DATA,
+        FILE_RSRC_INFO,
+    } kind;
     hfs_volume_t *hfs;
     hfs_fork_t fork; // used for FILE_HFS_FORK
     uint8_t finder_info[HFS_FINDER_INFO_SIZE];
     ufs_volume_t *ufs; // used for FILE_UFS
     uint32_t ufs_ino;
+    // FILE_RSRC_DATA: pointer into the cached fork buffer.
+    const uint8_t *rsrc_bytes;
+    size_t rsrc_size;
+    // FILE_RSRC_INFO: precomputed JSON.  512 bytes accommodates a maximally
+    // long resource name (255) plus the attrs list and brackets.
+    char rsrc_info_buf[512];
+    size_t rsrc_info_len;
 };
 
 // Forward declarations for backend functions.
@@ -544,19 +779,13 @@ static int img_stat(void *ctx, const char *path, vfs_stat_t *out) {
         return 0;
     }
 
-    // HFS lookup path: peel off optional fork suffix first. Guard the
-    // `components[core - 1]` read with `core >= 1` so a zero-component
-    // path doesn't index components[-1] (UB).
-    bool rsrc = false, finf = false;
-    size_t core = ip.n_components;
-    if (core >= 1) {
-        const char *last = ip.components[core - 1];
-        if (strcmp(last, "rsrc") == 0 || strcmp(last, "finf") == 0) {
-            rsrc = strcmp(last, "rsrc") == 0;
-            finf = strcmp(last, "finf") == 0;
-            core--;
-        }
-    }
+    // HFS lookup path: classify any synthetic suffix first.  classify_synth
+    // returns SYNTH_NONE for literal paths and lets the file_core_count
+    // tell us how many leading components belong to the HFS file.
+    uint8_t syn_type[4] = {0};
+    int16_t syn_id = 0;
+    size_t core = 0;
+    synth_kind_t synth = classify_synth(ip.components, ip.n_components, &core, syn_type, &syn_id);
 
     if (p->fs_kind != APM_FS_HFS)
         return -ENOTDIR;
@@ -565,41 +794,82 @@ static int img_stat(void *ctx, const char *path, vfs_stat_t *out) {
     if (!hfs)
         return -EIO;
     hfs_dirent_t d = {0};
-    if (core == 0) {
-        // Fork suffix on the partition root makes no sense.
-        if (rsrc || finf)
-            return -ENOENT;
+    if (core == 0 && synth != SYNTH_NONE)
+        return -ENOENT; // synthetic suffix anchored at the partition root makes no sense
+    if (ip.n_components == 0) {
         out->mode = VFS_MODE_DIR;
         return 0;
     }
-    rc = hfs_lookup(hfs, ip.components, core, &d);
+    rc = hfs_lookup(hfs, ip.components, core ? core : ip.n_components, &d);
     if (rc < 0) {
-        // If the suffix lookup fails, maybe the last component was part of
-        // the filename (not a fork).  Retry with the full component list.
-        if ((rsrc || finf) && core < ip.n_components) {
+        // Synthetic lookup missed (filename literally contains "rsrc" or
+        // "finf"); retry the whole thing as a literal HFS path.
+        if (synth != SYNTH_NONE) {
             rc = hfs_lookup(hfs, ip.components, ip.n_components, &d);
-            if (rc == 0) {
-                rsrc = finf = false;
-            }
+            if (rc == 0)
+                synth = SYNTH_NONE;
         }
         if (rc < 0)
             return rc;
     }
 
-    if (rsrc) {
+    if (synth != SYNTH_NONE) {
+        // All synthetic kinds require a file (forks live on files).
         if (d.is_dir)
             return -ENOENT;
-        out->mode = VFS_MODE_FILE;
-        out->size = d.rsrc_fork.logical_size;
-        return 0;
-    }
-    if (finf) {
-        if (d.is_dir)
+        if (synth == SYNTH_FINF) {
+            out->mode = VFS_MODE_FILE;
+            out->size = HFS_FINDER_INFO_SIZE;
+            return 0;
+        }
+        if (synth == SYNTH_RSRC_RAW) {
+            out->mode = VFS_MODE_FILE;
+            out->size = d.rsrc_fork.logical_size;
+            return 0;
+        }
+        // /rsrc directory entries require a non-empty fork to enumerate.
+        if (d.rsrc_fork.logical_size == 0)
             return -ENOENT;
+        if (synth == SYNTH_RSRC_DIR) {
+            out->mode = VFS_MODE_DIR;
+            return 0;
+        }
+        // /rsrc/<TYPE> and deeper need the parsed map.
+        rsrc_cache_entry_t *e = rsrc_cache_acquire(m, hfs, &d);
+        if (!e)
+            return -EIO;
+        size_t n_res = rfork_num_resources(e->parsed, syn_type);
+        if (synth == SYNTH_RSRC_TYPE_DIR) {
+            if (n_res == 0)
+                return -ENOENT;
+            out->mode = VFS_MODE_DIR;
+            return 0;
+        }
+        // Resource bytes or .info sidecar.
+        const uint8_t *bytes = NULL;
+        size_t sz = 0;
+        const char *name = NULL;
+        uint8_t attrs = 0;
+        if (rfork_lookup(e->parsed, syn_type, syn_id, &bytes, &sz, &name, &attrs) < 0)
+            return -ENOENT;
+        if (synth == SYNTH_RSRC_DATA) {
+            out->mode = VFS_MODE_FILE;
+            out->size = sz;
+            return 0;
+        }
+        // SYNTH_RSRC_INFO: format the JSON to a scratch buffer to take its
+        // length.  Identical to what img_open will later do — duplicating
+        // 512 bytes of stack work on stat is fine; the caller can avoid it
+        // entirely by reading the file directly.
+        char tmp[512];
+        int w = rfork_info_format(name, attrs, sz, tmp, sizeof(tmp));
+        if (w < 0)
+            return -EIO;
         out->mode = VFS_MODE_FILE;
-        out->size = HFS_FINDER_INFO_SIZE;
+        out->size = (uint64_t)w;
         return 0;
     }
+
     out->mode = d.is_dir ? VFS_MODE_DIR : VFS_MODE_FILE;
     out->size = d.is_dir ? 0 : d.data_fork.logical_size;
     return 0;
@@ -675,6 +945,61 @@ static int img_opendir(void *ctx, const char *path, vfs_dir_t **out) {
         free(d);
         return -EIO;
     }
+    // Classify any synthetic suffix and try the synthetic interpretation
+    // first.  Synthetic directories we care about are /rsrc (root) and
+    // /rsrc/<TYPE>.  Anything else (including the literal HFS case) flows
+    // through hfs_opendir_cnid below.
+    uint8_t syn_type[4] = {0};
+    int16_t syn_id = 0;
+    size_t core = 0;
+    synth_kind_t synth = classify_synth(ip.components, ip.n_components, &core, syn_type, &syn_id);
+    (void)syn_id; // unused at opendir; per-resource leaves are files not dirs
+
+    if (synth == SYNTH_RSRC_DIR || synth == SYNTH_RSRC_TYPE_DIR) {
+        if (core == 0) {
+            free(d);
+            return -ENOENT;
+        }
+        hfs_dirent_t de = {0};
+        int lr = hfs_lookup(hfs, ip.components, core, &de);
+        if (lr < 0) {
+            // Retry literal in case the path looked synthetic but isn't.
+            lr = hfs_lookup(hfs, ip.components, ip.n_components, &de);
+            if (lr == 0)
+                synth = SYNTH_NONE;
+            else {
+                free(d);
+                return lr;
+            }
+        }
+        if (synth != SYNTH_NONE) {
+            if (de.is_dir || de.rsrc_fork.logical_size == 0) {
+                free(d);
+                return -ENOENT;
+            }
+            rsrc_cache_entry_t *e = rsrc_cache_acquire(m, hfs, &de);
+            if (!e) {
+                free(d);
+                return -EIO;
+            }
+            if (synth == SYNTH_RSRC_TYPE_DIR) {
+                if (rfork_num_resources(e->parsed, syn_type) == 0) {
+                    free(d);
+                    return -ENOENT;
+                }
+                d->kind = DIR_RSRC_TYPE;
+                memcpy(d->rsrc_type, syn_type, 4);
+            } else {
+                d->kind = DIR_RSRC_ROOT;
+            }
+            d->rfork = e->parsed;
+            d->rsrc_next_idx = 0;
+            m->refcount++;
+            *out = d;
+            return 0;
+        }
+    }
+
     uint32_t parent_cnid = HFS_ROOT_CNID;
     if (ip.n_components > 0) {
         hfs_dirent_t de = {0};
@@ -748,6 +1073,81 @@ static int img_readdir(vfs_dir_t *d, vfs_dirent_t *out) {
         out->has_stat = true;
         return 1;
     }
+    if (d->kind == DIR_RSRC_ROOT) {
+        size_t n_types = rfork_num_types(d->rfork);
+        if (d->rsrc_next_idx < n_types) {
+            const uint8_t *cc = rfork_type_at(d->rfork, d->rsrc_next_idx);
+            d->rsrc_next_idx++;
+            char buf[16];
+            rfork_type_to_path(cc, buf, sizeof(buf));
+            int w = snprintf(out->name, sizeof(out->name), "%s", buf);
+            if (w < 0 || (size_t)w >= sizeof(out->name))
+                return -ENAMETOOLONG;
+            out->st.mode = VFS_MODE_DIR;
+            out->st.readonly = true;
+            out->has_stat = true;
+            return 1;
+        }
+        // Emit the "_raw" escape-hatch entry once after the types are
+        // exhausted, then EOF.
+        if (!d->rsrc_emit_raw_next) {
+            d->rsrc_emit_raw_next = true;
+            int w = snprintf(out->name, sizeof(out->name), "_raw");
+            if (w < 0 || (size_t)w >= sizeof(out->name))
+                return -ENAMETOOLONG;
+            out->st.mode = VFS_MODE_FILE;
+            out->st.readonly = true;
+            out->has_stat = true;
+            return 1;
+        }
+        return 0;
+    }
+    if (d->kind == DIR_RSRC_TYPE) {
+        // Interleave each `<id>` entry with its `<id>.info` sidecar so
+        // listings group naturally.  rsrc_emit_info_next flags the second
+        // emission; rsrc_pending_* carries the id+info-size across calls.
+        if (d->rsrc_emit_info_next) {
+            char id_str[16];
+            rfork_id_to_path(d->rsrc_pending_id, id_str, sizeof(id_str));
+            int w = snprintf(out->name, sizeof(out->name), "%s.info", id_str);
+            if (w < 0 || (size_t)w >= sizeof(out->name))
+                return -ENAMETOOLONG;
+            out->st.mode = VFS_MODE_FILE;
+            out->st.readonly = true;
+            out->st.size = d->rsrc_pending_info_size;
+            out->has_stat = true;
+            d->rsrc_emit_info_next = false;
+            return 1;
+        }
+        size_t n_res = rfork_num_resources(d->rfork, d->rsrc_type);
+        if (d->rsrc_next_idx >= n_res)
+            return 0;
+        int16_t id = rfork_id_at(d->rfork, d->rsrc_type, d->rsrc_next_idx);
+        d->rsrc_next_idx++;
+        const uint8_t *bytes = NULL;
+        size_t sz = 0;
+        const char *name = NULL;
+        uint8_t attrs = 0;
+        if (rfork_lookup(d->rfork, d->rsrc_type, id, &bytes, &sz, &name, &attrs) < 0)
+            return -EIO; // shouldn't happen — id came from the same fork
+        char id_str[16];
+        rfork_id_to_path(id, id_str, sizeof(id_str));
+        int w = snprintf(out->name, sizeof(out->name), "%s", id_str);
+        if (w < 0 || (size_t)w >= sizeof(out->name))
+            return -ENAMETOOLONG;
+        out->st.mode = VFS_MODE_FILE;
+        out->st.size = sz;
+        out->st.readonly = true;
+        out->has_stat = true;
+        // Compute the sidecar size now so the next readdir call can emit
+        // the .info entry without re-reading the fork.
+        char tmp[512];
+        int sidecar = rfork_info_format(name, attrs, sz, tmp, sizeof(tmp));
+        d->rsrc_pending_info_size = (sidecar > 0) ? (size_t)sidecar : 0;
+        d->rsrc_pending_id = id;
+        d->rsrc_emit_info_next = true;
+        return 1;
+    }
     return -EINVAL;
 }
 
@@ -809,32 +1209,27 @@ static int img_open(void *ctx, const char *path, vfs_file_t **out) {
     if (p->fs_kind != APM_FS_HFS)
         return -ENOTDIR;
 
-    // Same fork-suffix peel as img_stat. The earlier `if (ip.n_components == 0)
-    // return -EISDIR` (around line 747) keeps `core >= 1` here today, but
-    // bracket the read so an ASAN run wouldn't trip on a future caller.
-    bool rsrc = false, finf = false;
-    size_t core = ip.n_components;
-    if (core >= 1) {
-        const char *last = ip.components[core - 1];
-        if (strcmp(last, "rsrc") == 0 || strcmp(last, "finf") == 0) {
-            rsrc = strcmp(last, "rsrc") == 0;
-            finf = strcmp(last, "finf") == 0;
-            core--;
-        }
-    }
+    // Classify synthetic suffix.  /rsrc on its own is a directory now and
+    // returns -EISDIR below; /rsrc/_raw maps to the old raw-fork-bytes
+    // behaviour; /rsrc/<TYPE> is a directory; the leaf cases produce
+    // FILE_RSRC_DATA / FILE_RSRC_INFO handles.
+    uint8_t syn_type[4] = {0};
+    int16_t syn_id = 0;
+    size_t core = 0;
+    synth_kind_t synth = classify_synth(ip.components, ip.n_components, &core, syn_type, &syn_id);
 
     hfs_volume_t *hfs = get_partition_hfs(m, ip.partition_idx);
     if (!hfs)
         return -EIO;
     hfs_dirent_t d = {0};
-    if (core == 0)
-        return -EISDIR;
-    rc = hfs_lookup(hfs, ip.components, core, &d);
+    if (core == 0 && synth != SYNTH_NONE)
+        return -ENOENT;
+    rc = hfs_lookup(hfs, ip.components, core ? core : ip.n_components, &d);
     if (rc < 0) {
-        if ((rsrc || finf) && core < ip.n_components) {
+        if (synth != SYNTH_NONE) {
             rc = hfs_lookup(hfs, ip.components, ip.n_components, &d);
             if (rc == 0)
-                rsrc = finf = false;
+                synth = SYNTH_NONE;
         }
         if (rc < 0)
             return rc;
@@ -842,17 +1237,55 @@ static int img_open(void *ctx, const char *path, vfs_file_t **out) {
     if (d.is_dir)
         return -EISDIR;
 
+    if (synth == SYNTH_RSRC_DIR || synth == SYNTH_RSRC_TYPE_DIR)
+        return -EISDIR;
+
     vfs_file_t *f = calloc(1, sizeof(*f));
     if (!f)
         return -ENOMEM;
     f->mount = m;
     f->hfs = hfs;
-    if (finf) {
+
+    if (synth == SYNTH_FINF) {
         f->kind = FILE_FINDER_INFO;
         memcpy(f->finder_info, d.finder_info, HFS_FINDER_INFO_SIZE);
+    } else if (synth == SYNTH_RSRC_RAW) {
+        f->kind = FILE_HFS_FORK;
+        f->fork = d.rsrc_fork;
+    } else if (synth == SYNTH_RSRC_DATA || synth == SYNTH_RSRC_INFO) {
+        if (d.rsrc_fork.logical_size == 0) {
+            free(f);
+            return -ENOENT;
+        }
+        rsrc_cache_entry_t *e = rsrc_cache_acquire(m, hfs, &d);
+        if (!e) {
+            free(f);
+            return -EIO;
+        }
+        const uint8_t *bytes = NULL;
+        size_t sz = 0;
+        const char *name = NULL;
+        uint8_t attrs = 0;
+        if (rfork_lookup(e->parsed, syn_type, syn_id, &bytes, &sz, &name, &attrs) < 0) {
+            free(f);
+            return -ENOENT;
+        }
+        if (synth == SYNTH_RSRC_DATA) {
+            f->kind = FILE_RSRC_DATA;
+            f->rsrc_bytes = bytes;
+            f->rsrc_size = sz;
+        } else {
+            f->kind = FILE_RSRC_INFO;
+            int w = rfork_info_format(name, attrs, sz, f->rsrc_info_buf, sizeof(f->rsrc_info_buf));
+            if (w < 0) {
+                free(f);
+                return -EIO;
+            }
+            f->rsrc_info_len = (size_t)w;
+        }
     } else {
         f->kind = FILE_HFS_FORK;
-        f->fork = rsrc ? d.rsrc_fork : d.data_fork;
+        f->fork = d.data_fork;
     }
     m->refcount++;
     *out = f;
@@ -870,6 +1303,30 @@ static int img_read(vfs_file_t *f, uint64_t off, void *buf, size_t n, size_t *nr
             size_t avail = HFS_FINDER_INFO_SIZE - (size_t)off;
             size_t take = n < avail ? n : avail;
             memcpy(buf, f->finder_info + off, take);
+            got = take;
+        }
+        if (nread)
+            *nread = got;
+        return 0;
+    }
+    if (f->kind == FILE_RSRC_DATA) {
+        size_t got = 0;
+        if (off < f->rsrc_size) {
+            size_t avail = f->rsrc_size - (size_t)off;
+            size_t take = n < avail ? n : avail;
+            memcpy(buf, f->rsrc_bytes + off, take);
+            got = take;
+        }
+        if (nread)
+            *nread = got;
+        return 0;
+    }
+    if (f->kind == FILE_RSRC_INFO) {
+        size_t got = 0;
+        if (off < f->rsrc_info_len) {
+            size_t avail = f->rsrc_info_len - (size_t)off;
+            size_t take = n < avail ? n : avail;
+            memcpy(buf, f->rsrc_info_buf + off, take);
             got = take;
         }
         if (nread)
