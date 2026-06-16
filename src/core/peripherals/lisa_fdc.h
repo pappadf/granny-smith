@@ -53,6 +53,11 @@ void lisa_fdc_insert(lisa_fdc_t *fdc, image_t *image);
 void lisa_fdc_eject(lisa_fdc_t *fdc);
 bool lisa_fdc_disk_present(const lisa_fdc_t *fdc);
 
+// Queue the next disk to auto-feed when the current one is ejected (unclamp).
+// Models inserting the second disk of a multi-disk set (MacWorks XL boots from
+// a loader disk, then ejects and reads its system disk).
+void lisa_fdc_queue_disk(lisa_fdc_t *fdc, image_t *image);
+
 // === Shared-RAM access (offset = physical address − $00C001) ================
 uint8_t lisa_fdc_read8(lisa_fdc_t *fdc, uint32_t offset);
 uint16_t lisa_fdc_read16(lisa_fdc_t *fdc, uint32_t offset);

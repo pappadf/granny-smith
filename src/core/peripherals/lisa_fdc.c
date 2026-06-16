@@ -52,6 +52,7 @@ LOG_USE_CATEGORY_NAME("floppy");
 // Command-issue values (docs/lisa.md §13.1).
 #define CMD_EXEC     0x81 // execute the RWTS command
 #define CMD_SEEK     0x83 // seek
+#define CMD_JSR      0x84 // JSR to a host-downloaded routine in controller RAM ($00C003)
 #define CMD_CLRSTAT  0x85 // clear interrupt status
 #define CMD_SETMASK  0x86 // set interrupt mask
 #define CMD_CLRMASK  0x87 // clear interrupt mask
@@ -64,9 +65,14 @@ LOG_USE_CATEGORY_NAME("floppy");
 #define RWTS_UNCLAMP  0x02
 #define RWTS_READNOCK 0x07
 
-// Drive-status bits ($00C05F).
-#define DRVSTAT_PRESENT1  0x01 // disk present in drive 1
-#define DRVSTAT_COMPLETE1 0x04 // RWTS complete, drive 1
+// Drive-status / interrupt-event bits ($00C05F).  These are LATCHED events, not
+// live state: the controller raises FDIR and sets the matching bit, the host's
+// interrupt/drain handler reads them, and CLRSTAT ($85) clears them.  (The disk
+// stays physically attached via fdc->image regardless — reads don't depend on
+// these bits.)  MacWorks' startup drains events until ($C05F & $77) == 0, so a
+// persistently-set "present" bit here would loop forever (docs/lisa.md §13.3).
+#define DRVSTAT_DISKIN1   0x01 // drive 1 disk-inserted event
+#define DRVSTAT_COMPLETE1 0x04 // drive 1 RWTS complete
 #define DRVSTAT_OR1       0x08 // OR of bits 0-2
 
 struct lisa_fdc {
@@ -77,6 +83,7 @@ struct lisa_fdc {
 
     image_t *image; // attached floppy (NULL if none)
     int num_sides; // 1 (400 KB) or 2 (800 KB)
+    image_t *next_disk; // queued disk auto-fed on the next eject (NULL = none)
 
     uint8_t ram[FDC_RAM_BYTES];
 };
@@ -88,13 +95,9 @@ static void fdc_set_fdir(lisa_fdc_t *fdc, bool asserted) {
         fdc->fdir_cb(fdc->fdir_ctx, asserted);
 }
 
-// Refresh the drive-status byte from media presence.
-static void fdc_update_drvstat(lisa_fdc_t *fdc) {
-    uint8_t s = 0;
-    if (fdc->image)
-        s |= DRVSTAT_PRESENT1 | DRVSTAT_OR1;
-    fdc->ram[FDC_DRVSTAT] = s;
-    // Report the Sony disk geometry the boot loader's converter reads (byte 10).
+// Report the Sony disk geometry the boot loader's block->(track,sector)
+// converter reads (controller byte 10).
+static void fdc_update_disktype(lisa_fdc_t *fdc) {
     fdc->ram[FDC_DISKTYPE] = fdc->image ? (fdc->num_sides == 1 ? DISKTYPE_SONY_400K : DISKTYPE_SONY_800K) : 0;
 }
 
@@ -134,9 +137,27 @@ static void fdc_execute_rwts(lisa_fdc_t *fdc) {
     } else if (rwts == RWTS_WRITE) {
         size_t put = disk_write_data(fdc->image, offset, &fdc->ram[FDC_DATA], 512);
         fdc->ram[FDC_STATUS] = (put == 512) ? 0x00 : 0x18; // unwritable on short write
-    } else {
-        // unclamp / format / verify: acknowledge with OK for now
+    } else if (rwts == RWTS_UNCLAMP) {
+        // Unclamp releases/ejects the disk (the Lisa drive is software-eject).
+        // The Mac ROM's "no system, blink ?-disk" loop ejects the bad disk to
+        // get a system disk; if one is queued, auto-feed it (the 2-disk boot),
+        // otherwise the drive goes empty.
         fdc->ram[FDC_STATUS] = 0x00;
+        if (fdc->next_disk) {
+            image_t *next = fdc->next_disk;
+            fdc->next_disk = NULL;
+            lisa_fdc_insert(fdc, next); // sets image/num_sides/disktype + latches disk-in
+            LOG(2, "fdc unclamp -> auto-fed queued disk");
+        } else {
+            fdc->image = NULL;
+            fdc_update_disktype(fdc);
+            fdc->ram[FDC_DRVSTAT] = 0;
+            LOG(2, "fdc unclamp -> eject (drive now empty)");
+        }
+    } else {
+        // format / verify: acknowledge with OK for now
+        fdc->ram[FDC_STATUS] = 0x00;
+        LOG(2, "fdc rwts=%02x (format/verify) trk=%d sec=%d", rwts, track, sector);
     }
 }
 
@@ -154,9 +175,18 @@ static void fdc_command(lisa_fdc_t *fdc, uint8_t cmd) {
         fdc->ram[FDC_CMDREG] = 0;
         fdc_set_fdir(fdc, true);
         break;
+    case CMD_JSR:
+        // $84: the coprocessor JSRs to a routine the host downloaded into the
+        // shared RAM at $00C003.  We can't run 6504A code, so we emulate its
+        // observable effect: MacWorks uses byte 6 as a busy flag (sets it $FF,
+        // issues $84, polls it to 0) and reads the status byte afterwards.
+        fdc->ram[6] = 0; // clear the busy/completion flag the host polls
+        fdc->ram[FDC_STATUS] = 0; // report OK
+        fdc->ram[FDC_CMDREG] = 0;
+        LOG(2, "fdc $84 JSR-to-controller-RAM (acknowledged)");
+        break;
     case CMD_CLRSTAT:
-        fdc->ram[FDC_DRVSTAT] &= ~(DRVSTAT_COMPLETE1);
-        fdc_update_drvstat(fdc);
+        fdc->ram[FDC_DRVSTAT] = 0; // CLRSTAT acknowledges all latched drive events
         fdc->ram[FDC_CMDREG] = 0;
         fdc_set_fdir(fdc, false); // clear interrupt
         break;
@@ -208,11 +238,19 @@ void lisa_fdc_write32(lisa_fdc_t *fdc, uint32_t offset, uint32_t value) {
 void lisa_fdc_insert(lisa_fdc_t *fdc, image_t *image) {
     fdc->image = image;
     fdc->num_sides = (image && disk_size(image) > 500000) ? 2 : 1; // 400 KB = 1 side
-    fdc_update_drvstat(fdc);
+    fdc_update_disktype(fdc);
+    // Note: we deliberately do NOT latch a disk-in status bit here.  The host's
+    // drive-event drain (Mac ROM) only knows how to clear RWTS-complete events;
+    // a lingering disk-in bit it can't acknowledge would wedge that loop.  The
+    // disk is readable via fdc->image regardless of the status byte.
 }
 void lisa_fdc_eject(lisa_fdc_t *fdc) {
     fdc->image = NULL;
-    fdc_update_drvstat(fdc);
+    fdc_update_disktype(fdc);
+    fdc->ram[FDC_DRVSTAT] = 0; // no media → no pending drive events
+}
+void lisa_fdc_queue_disk(lisa_fdc_t *fdc, image_t *image) {
+    fdc->next_disk = image;
 }
 bool lisa_fdc_disk_present(const lisa_fdc_t *fdc) {
     return fdc && fdc->image != NULL;

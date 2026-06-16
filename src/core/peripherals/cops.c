@@ -42,6 +42,15 @@ LOG_USE_CATEGORY_NAME("cops");
 // never overruns an unread byte (the pump waits while IFR CA1 is still set).
 #define COPS_PUMP_CYCLES 48
 
+// CRDY (PB6) is the COPS's free-running ready/busy line: the COP421 loops
+// through its scan, periodically becoming "ready" (CRDY low) to accept a host
+// command and "busy" (CRDY high) otherwise.  Both the boot ROM's COPSCMD and
+// MacWorks' send routine synchronise to its edges (wait for a ready state, jam
+// the byte while driving port A, wait for the next edge).  We model it as a
+// steady toggle; the half-period must be well under the senders' ~10 ms
+// per-edge timeout so each wait catches an edge promptly.
+#define COPS_CRDY_HALF_CYCLES 1024
+
 #define COPS_FIFO 32 // response queue depth
 
 struct cops {
@@ -84,6 +93,16 @@ static void fifo_push(cops_t *c, uint8_t byte) {
 static void cops_set_crdy(cops_t *c, bool high) {
     c->crdy = high;
     via_input(c->via1, 1, COPS_CRDY_PIN, high);
+}
+
+// Free-running CRDY toggle: models the COPS scan loop cycling between ready
+// (low) and busy (high).  Senders poll for these edges before handing over a
+// command byte, so the line must keep toggling for the handshake to complete.
+static void cops_crdy_tick(void *source, uint64_t data) {
+    (void)data;
+    cops_t *c = (cops_t *)source;
+    cops_set_crdy(c, !c->crdy);
+    scheduler_new_cpu_event(c->sched, &cops_crdy_tick, c, 0, COPS_CRDY_HALF_CYCLES, 0);
 }
 
 // Present `byte` on port A (input pins) and pulse CA1 to flag data-available.
@@ -190,14 +209,13 @@ void cops_via_output(cops_t *c, uint8_t port, uint8_t value) {
         return;
     if (port == 0) {
         // Port A: the host jams a command only while driving the whole byte
-        // (DDRA = $FF).  At idle (DDRA = 0) we hold CRDY low (ready).
+        // (DDRA = $FF).  CRDY toggles independently (cops_crdy_tick); we just
+        // latch the command on the jam.  Writing DDRA fires this callback, so
+        // the command byte (already in ORA) is read at the moment it is driven.
         uint8_t ddra = via_port_direction(c->via1, 0);
         if (ddra == 0xFF) {
             uint8_t cmd = via_port_output(c->via1, 0); // ORA = the command byte
-            cops_set_crdy(c, true); // acknowledge: took the data
             cops_command(c, cmd);
-        } else {
-            cops_set_crdy(c, false); // released: ready for the next command
         }
     } else {
         // Port B: track PB0 reset line.  The low→high edge (CLRRST) makes the
@@ -225,8 +243,10 @@ cops_t *cops_init(via_t *via1, struct scheduler *scheduler, checkpoint_t *cp) {
     c->sched = scheduler;
     scheduler_new_event_type(scheduler, "cops", c, "pump", &cops_pump);
     scheduler_new_event_type(scheduler, "cops", c, "mouse", &cops_mouse_tick);
-    // Idle ready: drive CRDY (PB6) low so the host's COPSCMD ready-poll passes.
+    scheduler_new_event_type(scheduler, "cops", c, "crdy", &cops_crdy_tick);
+    // Start the free-running CRDY (PB6) toggle from the ready (low) state.
     cops_set_crdy(c, false);
+    scheduler_new_cpu_event(scheduler, &cops_crdy_tick, c, 0, COPS_CRDY_HALF_CYCLES, 0);
     if (cp)
         cops_checkpoint(c, cp); // restore (symmetric with save below)
     return c;
@@ -238,6 +258,7 @@ void cops_delete(cops_t *c) {
     if (c->sched) {
         remove_event(c->sched, &cops_pump, c);
         remove_event(c->sched, &cops_mouse_tick, c);
+        remove_event(c->sched, &cops_crdy_tick, c);
     }
     free(c);
 }

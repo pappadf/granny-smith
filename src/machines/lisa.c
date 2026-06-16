@@ -56,10 +56,14 @@ typedef struct lisa_state {
     display_t display; // 720x364 1bpp framebuffer (direct, in main RAM)
 } lisa_state_t;
 
-// Lisa video geometry (docs/lisa.md §8): 720x364, 1 bpp MSB-first.
-#define LISA_SCREEN_W      720
-#define LISA_SCREEN_H      364
-#define LISA_SCREEN_STRIDE (LISA_SCREEN_W / 8) // 90 bytes/row
+// Video geometry, 1 bpp MSB-first (docs/lisa.md §8).  The unmodified Lisa 2 has
+// a 720x364 rectangular-pixel raster; the Macintosh XL screen modification that
+// MacWorks XL targets is a 608x431 square-pixel raster.  Same framebuffer (~32
+// KB at the $E800 video latch base) — only the scan geometry differs.
+#define LISA_SCREEN_W  720
+#define LISA_SCREEN_H  364
+#define MACXL_SCREEN_W 608
+#define MACXL_SCREEN_H 431
 
 static inline lisa_state_t *lisa_state(config_t *cfg) {
     return (lisa_state_t *)cfg->machine_context;
@@ -86,9 +90,10 @@ static void lisa_refresh_framebuffer(config_t *cfg) {
 
 static void lisa_display_init(config_t *cfg) {
     lisa_state_t *ls = lisa_state(cfg);
-    ls->display.width = LISA_SCREEN_W;
-    ls->display.height = LISA_SCREEN_H;
-    ls->display.stride = LISA_SCREEN_STRIDE;
+    bool macxl = cfg->machine && cfg->machine->id && strcmp(cfg->machine->id, "macxl") == 0;
+    ls->display.width = macxl ? MACXL_SCREEN_W : LISA_SCREEN_W;
+    ls->display.height = macxl ? MACXL_SCREEN_H : LISA_SCREEN_H;
+    ls->display.stride = ls->display.width / 8;
     ls->display.format = PIXEL_1BPP_MSB;
     ls->display.bits = NULL;
     ls->display.clut = NULL;
@@ -319,6 +324,17 @@ static void lisa_init(config_t *cfg, checkpoint_t *checkpoint) {
     // (docs/lisa.md §13).  FDIR completion is signalled on VIA1 PB4.
     ls->fdc = lisa_fdc_init(cfg->scheduler, lisa_fdc_fdir, cfg, checkpoint);
     lisa_mmu_map_io(ls->mmu, 0xC001, 0x7FF, &lisa_fdc_iface, ls->fdc);
+
+    // Queue a second floppy to auto-feed when the boot disk ejects.  MacWorks XL
+    // boots from a loader disk, then ejects it and reads its system disk; this
+    // supplies that second disk.  (Interim feed via env until the config/UI
+    // multi-disk path lands.)
+    const char *swap = getenv("LISA_SWAP_DISK");
+    if (swap && *swap) {
+        image_t *next = image_open_readonly(swap);
+        if (next)
+            lisa_fdc_queue_disk(ls->fdc, next);
+    }
 
     // Z8530 SCC (reused as-is): physical $00D241/43/45/47 decode from base
     // $00D240 via the standard A1/A2 convention (docs/lisa.md §15).  PCLK 4 MHz
