@@ -7,17 +7,18 @@ can be built quickly. Goal: a Lisa 2 with a 10 MB ProFile so the Pascal Workshop
 
 ## Media reality (important)
 
-- **Pascal Workshop 3.0** (`local/lisa/images/Apple/Lisa/workshop_3.0/688-00xx*.dc42`)
-  is DiskCopy-4.2 (**has tags**) and **boots today** on `model=lisa` with the rev-H
-  ROM (verified: 323 reads to track 79, runs loaded code at `$2Exxxx`). This is the
-  install OS to target.
-- The only **Lisa Office System** 3.0/3.1 images on hand (inside
-  `Apple Lisa Software - Disk Images_vol_3.zip` → `LISA OFFICE SYSTEM 30 - 3.1.zip`)
-  are **raw, tagless** `.image` files (409600 = 800×512, no tag section). The Lisa
-  OS *requires* per-sector tags, so they hit the boot-failure recovery menu
-  (floppy-with-X, "CONTINUE / STARTUP FROM…"). Tags are real filesystem data and
-  cannot be synthesised. A *LOS* install needs tagged (DC42/BLU) media we don't have;
-  use the Workshop until such media is found.
+- **Lisa Office System (1984)** — `local/lisa/LisaOS/Lisa Office System (1984)(Apple)(Disk {1..5} of 5).image`
+  is **DiskCopy-4.2 with tags** (419284 B = 84 header + 409600 data + 9600 tags;
+  block-0 tag FILEID `$AAAA`) and **boots** on `model=lisa` + rev-H ROM (disk 1: 323
+  reads to track 58, runs loaded OS code at `$2Exxxx`). **This is the install OS to
+  target** — the real Office System.
+- **Pascal Workshop 3.0** (`local/lisa/images/Apple/Lisa/workshop_3.0/688-00xx*.dc42`,
+  tagged DC42) also boots — a fallback install OS.
+- Tagless trap: the *other* "Lisa Off Sys 30-31" images (inside
+  `Apple Lisa Software - Disk Images_vol_3.zip`) are **raw 409600 = 800×512, no tag
+  section** → they hit the boot-failure recovery menu. The Lisa OS *requires* tags
+  (real FS data, not synthesisable). Always use a 419284-byte DC42 image, not a
+  409600-byte raw one.
 - Build the rev-H ROM by interleaving `firmware/341-0175-H.BIN` (even) +
   `341-0176-H.BIN` (odd) → version `$0248` at offset `$3FFC`.
 
