@@ -79,15 +79,23 @@ from January 1985 with three changes:
    the Macintosh XL uses the "3A" ROM (**341-0346-A** + **341-0347-A**), which is
    MacWorks-only and assumes the screen-modification timing. The 3A ROM will not
    run the Lisa Office System.
-2. **Screen-modification kit.** Changes the video dot clock so pixels are square
-   (the stock Lisa has tall rectangular pixels). The displayed bitmap remains
-   720×364; only the pixel aspect/dot timing changes.
+2. **Screen-modification kit.** Rewires the video timing to a **608-pixel-wide
+   square-pixel** raster (the stock Lisa 2 is 720×364 with tall rectangular
+   pixels). The nominal Screen-Kit raster is **608 × 432**, but the framebuffer
+   is a single 32 KB page located by the `$00E800` latch (§8) and MacWorks
+   programs the base at the **top** 32 KB-aligned slot ($F8000 on a 1 MB
+   machine); that page holds 76 × 431 = 32 756 bytes, so the **framebuffer the
+   Finder actually paints is 608 × 431** — the 432nd scanline falls past the top
+   of the page. Either way the row stride is **76 bytes**, not the Lisa 2's 90.
+   (Verified empirically: a MacWorks Finder framebuffer auto-correlates to a
+   76-byte stride and fills all 431 rows; rendering it at 90 bytes shears the
+   desktop pattern diagonally.)
 3. **MacWorks XL software** (loaded from disk) turns the machine into a
    Macintosh-compatible environment (see §16).
 
 For an emulator, the Macintosh XL is the Lisa 2 model with a different ROM
-image, a square-pixel display flag, and (by convention) a different machine
-name. The chip models are identical.
+image, a **608×431 display** (vs the Lisa 2's 720×364), and (by convention) a
+different machine name. The chip models are identical.
 
 ---
 
@@ -452,9 +460,12 @@ Read by the bus-error handler to classify a fault:
 
 ## 8. Video
 
-- **Display:** **720 × 364** pixels, 1 bit per pixel (black/white), ~60 Hz. The
-  video state machine scans 379 total lines of 720 pixels, of which 364 are
-  displayed.
+- **Display:** **720 × 364** pixels, 1 bit per pixel (black/white), ~60 Hz, on
+  the stock Lisa 2. The video state machine scans 379 total lines of 720 pixels,
+  of which 364 are displayed. The **Macintosh XL** screen-modification kit
+  instead uses a **608**-wide square-pixel raster (76-byte rows); the framebuffer
+  the Finder paints is **608 × 431** (nominal Screen-Kit raster 608×432 — see the
+  model note above). Same framebuffer page, different scan dimensions.
 - **Framebuffer:** a **32 KB page in main RAM** (720 × 364 / 8 = 32,760 bytes,
   rounded to a 32 KB page). Bit ordering is MSB-first (leftmost pixel = bit 7 of
   the byte). The last displayed byte's least-significant bit must be 1 so retrace
@@ -580,6 +591,19 @@ The host writes a **command byte** to VIA1 ORA (`$00DD83`) and reads **response
 bytes** from the same register. Keyboard, mouse, clock, and reset events arrive
 as response bytes; the COPS raises VIA1's interrupt (IPL 2).
 
+**Send handshake — CRDY (VIA1 PB6).** Port A is shared (bidirectional), so the
+host must hand a command byte to the COPS in sync with the COPS's bus access.
+`CRDY` (VIA1 **PB6**, COPS-driven) is a **free-running ready/busy line**: the
+COP421 toggles it continuously as it cycles through its internal scan loop, not
+a static level. To send, the host (a) presents the byte on ORA, (b) spins until
+it sees a CRDY **edge** to a ready phase, (c) drives port A (`DDRA = $FF`) to
+clock the byte into the COPS, then (d) waits for the next CRDY edge and releases
+`DDRA`. The rev-H boot ROM's `COPSCMD` and MacWorks XL's own driver both
+synchronise to CRDY *edges* this way — so an emulator must **toggle CRDY
+continuously** (e.g. a steady period well under the senders' ~10 ms per-edge
+timeout); holding it at a fixed level lets one sender through but hangs the
+other while it waits for an edge that never comes.
+
 ### 11.1 Command byte format (written to VIA1 port A)
 
 | Bits 7…0 | Function |
@@ -699,12 +723,13 @@ and never deals with raw GCR cells.
 | `$FCC003` | command | `00` read, `01` write, `02` unclamp, `03` format, `04` verify, `05` format-track, `06` verify-track, `07` read-no-checksum, `08` write-no-checksum |
 | `$FCC005` | drive | `00` = drive 2 (lower), `80` = drive 1 (upper) |
 | `$FCC007` | side | `0x` = side 1, `1x` = side 2 |
-| `$FCC009` | sector | 0–22 (variable by track zone) |
-| `$FCC00B` | track | 0–44 |
-| `$FCC00D` | speed | motor-speed byte |
+| `$FCC009` | sector | Sony: 0–11 (variable by track zone); Twiggy: 0–22 |
+| `$FCC00B` | track | Sony: 0–79; Twiggy: 0–44 |
+| `$FCC00D` | speed | motor-speed byte. Also used by the `$84` (JSR) call as a host↔coprocessor **busy flag**: the host sets it `$FF`, issues `$84`, and polls it back to `0` for completion. |
 | `$FCC00F` | format-confirm | |
 | `$FCC011` | error status | result code (e.g. `$14` write-protect, `$17` unreadable, `$18` unwritable) |
 | `$FCC013` | disk ID | |
+| `$FCC015` | disk type / geometry | The controller reports the inserted media here, and the boot loader reads it to choose the block→(track,sector) conversion: `00` = Twiggy/FileWare (1702 blocks); non-zero with **bit 0 set** = Sony **400 KB** single-sided (800 blocks); **bit 0 clear** = Sony **800 KB** double-sided (1600 blocks). If this byte is left `0`, the loader assumes the 1702-block Twiggy geometry and computes out-of-range (track, sector) for any block past track 0. |
 
 Sectors are 512 bytes plus tag bytes; the I/O buffer the controller uses is 524
 bytes. The Sony 400 KB format uses Apple's 5-zone variable-speed GCR layout:
@@ -716,12 +741,21 @@ linear block offset using that zoning.
 
 | Bit | Meaning |
 | --- | --- |
-| 0 | disk present in drive 1 |
+| 0 | drive 1 disk-inserted event |
 | 1 | drive 1 eject button |
 | 2 | drive 1 RWTS complete |
 | 3 | OR of bits 0–2 |
 | 4–6 | same as 0–2 for drive 2 |
 | 7 | OR of bits 4–6 |
+
+These are **latched interrupt-event** bits — set when the event occurs (raising
+FDIR / IPL 1), *not* a live snapshot of drive state. **`CLRSTAT` ($85) clears
+them all.** Software drains pending events by issuing `CLRSTAT` until the byte
+reads `0`; consequently bit 0 is a one-shot *insertion* event, **not** a level
+held while media sits in the drive (a perpetually-set "present" bit would make
+that drain loop spin forever). "Unclamp" ($02 RWTS) ejects the disk — the Lisa
+drive is software-eject, so a host that wants to swap disks unclamps the current
+one and the drive then accepts new media.
 
 ---
 

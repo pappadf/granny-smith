@@ -83,7 +83,6 @@ struct lisa_fdc {
 
     image_t *image; // attached floppy (NULL if none)
     int num_sides; // 1 (400 KB) or 2 (800 KB)
-    image_t *next_disk; // queued disk auto-fed on the next eject (NULL = none)
 
     uint8_t ram[FDC_RAM_BYTES];
 };
@@ -139,21 +138,14 @@ static void fdc_execute_rwts(lisa_fdc_t *fdc) {
         fdc->ram[FDC_STATUS] = (put == 512) ? 0x00 : 0x18; // unwritable on short write
     } else if (rwts == RWTS_UNCLAMP) {
         // Unclamp releases/ejects the disk (the Lisa drive is software-eject).
-        // The Mac ROM's "no system, blink ?-disk" loop ejects the bad disk to
-        // get a system disk; if one is queued, auto-feed it (the 2-disk boot),
-        // otherwise the drive goes empty.
+        // The drive goes empty until the host inserts new media; that is how the
+        // Mac ROM's "no system, blink ?-disk" loop drains a non-system disk so a
+        // system disk can be inserted in its place.
+        fdc->image = NULL;
+        fdc_update_disktype(fdc);
+        fdc->ram[FDC_DRVSTAT] = 0;
         fdc->ram[FDC_STATUS] = 0x00;
-        if (fdc->next_disk) {
-            image_t *next = fdc->next_disk;
-            fdc->next_disk = NULL;
-            lisa_fdc_insert(fdc, next); // sets image/num_sides/disktype + latches disk-in
-            LOG(2, "fdc unclamp -> auto-fed queued disk");
-        } else {
-            fdc->image = NULL;
-            fdc_update_disktype(fdc);
-            fdc->ram[FDC_DRVSTAT] = 0;
-            LOG(2, "fdc unclamp -> eject (drive now empty)");
-        }
+        LOG(2, "fdc unclamp -> eject (drive now empty)");
     } else {
         // format / verify: acknowledge with OK for now
         fdc->ram[FDC_STATUS] = 0x00;
@@ -239,18 +231,19 @@ void lisa_fdc_insert(lisa_fdc_t *fdc, image_t *image) {
     fdc->image = image;
     fdc->num_sides = (image && disk_size(image) > 500000) ? 2 : 1; // 400 KB = 1 side
     fdc_update_disktype(fdc);
-    // Note: we deliberately do NOT latch a disk-in status bit here.  The host's
-    // drive-event drain (Mac ROM) only knows how to clear RWTS-complete events;
-    // a lingering disk-in bit it can't acknowledge would wedge that loop.  The
-    // disk is readable via fdc->image regardless of the status byte.
+    if (image) {
+        // Disk insertion raises FDIR (IPL 1) so the host re-examines the drive
+        // after a swap (docs/lisa.md §13).  We surface it as a completion event
+        // (the same status the host's drive-event handler drains after any
+        // operation); a raw disk-in bit cannot be acknowledged by that handler.
+        fdc->ram[FDC_DRVSTAT] |= DRVSTAT_COMPLETE1 | DRVSTAT_OR1;
+        fdc_set_fdir(fdc, true);
+    }
 }
 void lisa_fdc_eject(lisa_fdc_t *fdc) {
     fdc->image = NULL;
     fdc_update_disktype(fdc);
     fdc->ram[FDC_DRVSTAT] = 0; // no media → no pending drive events
-}
-void lisa_fdc_queue_disk(lisa_fdc_t *fdc, image_t *image) {
-    fdc->next_disk = image;
 }
 bool lisa_fdc_disk_present(const lisa_fdc_t *fdc) {
     return fdc && fdc->image != NULL;

@@ -26,12 +26,16 @@
 #include "lisa_mmu.h"
 #include "log.h"
 #include "memory.h"
+#include "object.h"
 #include "scc.h"
 #include "scheduler.h"
+#include "system.h"
+#include "value.h"
 #include "via.h"
 
 #include <assert.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -54,6 +58,7 @@ typedef struct lisa_state {
     lisa_via_port_t via1_map; // VIA1 (keyboard / COPS), base $00DD81, stride 2
     lisa_via_port_t via2_map; // VIA2 (parallel disk / contrast), base $00D901, stride 8
     display_t display; // 720x364 1bpp framebuffer (direct, in main RAM)
+    struct object *fd_obj, *fd_drives_obj, *fd_drive_obj; // `floppy` object tree
 } lisa_state_t;
 
 // Video geometry, 1 bpp MSB-first (docs/lisa.md §8).  The unmodified Lisa 2 has
@@ -275,6 +280,114 @@ static bool lisa_fd_present(config_t *cfg, int drive) {
 }
 
 // ============================================================
+// `floppy` object surface (insert/eject the one Sony drive at runtime)
+// ============================================================
+//
+// The Lisa's drive is the 6504A FDC, not the IWM, so it gets its own small
+// object tree (the IWM `floppy` object in floppy.c is bound to a floppy_t).
+// `insert` routes through the same shell_fd_argv → sys_fd_insert → fd_insert
+// path every other machine uses; `eject` and `present` go straight to the FDC.
+// Each object's instance_data is the config_t.
+
+static value_t lisa_fd_drive_insert(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)m;
+    bool writable = (argc >= 2) ? argv[1].b : false;
+    // Build an argv for shell_fd_argv (mutable buffers — it takes char**).
+    char fd[] = "fd", insert[] = "insert", drive[] = "0";
+    char wr[8];
+    snprintf(wr, sizeof(wr), "%s", writable ? "true" : "false");
+    char path[1024];
+    if ((size_t)snprintf(path, sizeof(path), "%s", argv[0].s) >= sizeof(path))
+        return val_err("floppy.drives.0.insert: path too long");
+    char *targv[] = {fd, insert, path, drive, wr};
+    return val_bool(shell_fd_argv(5, targv) == 0);
+}
+
+static value_t lisa_fd_drive_eject(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)m;
+    (void)argc;
+    (void)argv;
+    lisa_state_t *ls = lisa_state((config_t *)object_data(self));
+    if (!ls || !ls->fdc || !lisa_fdc_disk_present(ls->fdc))
+        return val_err("floppy.drives.0: no disk inserted");
+    lisa_fdc_eject(ls->fdc);
+    return val_none();
+}
+
+static value_t lisa_fd_drive_present(struct object *self, const member_t *m) {
+    (void)m;
+    lisa_state_t *ls = lisa_state((config_t *)object_data(self));
+    return val_bool(ls && ls->fdc && lisa_fdc_disk_present(ls->fdc));
+}
+
+static value_t lisa_fd_drive_index(struct object *self, const member_t *m) {
+    (void)self;
+    (void)m;
+    return val_int(0);
+}
+
+static const arg_decl_t lisa_fd_insert_args[] = {
+    {.name = "path", .kind = V_STRING, .doc = "Host path or storage URI of the image to mount"},
+    {.name = "writable", .kind = V_BOOL, .validation_flags = OBJ_ARG_OPTIONAL, .doc = "Mount writable (default false)"},
+};
+
+static const member_t lisa_fd_drive_members[] = {
+    {.kind = M_ATTR,   .name = "index",   .flags = VAL_RO, .attr = {.type = V_INT, .get = lisa_fd_drive_index}   },
+    {.kind = M_ATTR,   .name = "present", .flags = VAL_RO, .attr = {.type = V_BOOL, .get = lisa_fd_drive_present}},
+    {.kind = M_METHOD,
+     .name = "eject",
+     .doc = "Eject the disk (unclamp)",
+     .method = {.result = V_NONE, .fn = lisa_fd_drive_eject}                                                     },
+    {.kind = M_METHOD,
+     .name = "insert",
+     .doc = "Mount a disk image into the Sony drive",
+     .method = {.args = lisa_fd_insert_args, .nargs = 2, .result = V_BOOL, .fn = lisa_fd_drive_insert}           },
+};
+static const class_desc_t lisa_fd_drive_class = {
+    .name = "floppy_drive", .members = lisa_fd_drive_members, .n_members = 4};
+
+static struct object *lisa_fd_drives_get(struct object *self, int index) {
+    lisa_state_t *ls = lisa_state((config_t *)object_data(self));
+    return (ls && index == 0) ? ls->fd_drive_obj : NULL;
+}
+static int lisa_fd_drives_count(struct object *self) {
+    (void)self;
+    return 1; // one Sony drive
+}
+static int lisa_fd_drives_next(struct object *self, int prev) {
+    (void)self;
+    return prev + 1 < 1 ? prev + 1 : -1;
+}
+static const member_t lisa_fd_drives_members[] = {
+    {.kind = M_CHILD,
+     .name = "entries",
+     .child = {.cls = &lisa_fd_drive_class,
+               .indexed = true,
+               .get = lisa_fd_drives_get,
+               .count = lisa_fd_drives_count,
+               .next = lisa_fd_drives_next}},
+};
+static const class_desc_t lisa_fd_drives_class = {
+    .name = "floppy_drives", .members = lisa_fd_drives_members, .n_members = 1};
+
+static const member_t lisa_fd_members[] = {0}; // container only; the drives collection is the child
+static const class_desc_t lisa_fd_class = {.name = "floppy", .members = NULL, .n_members = 0};
+
+// Attach the `floppy` → `drives` → `drives[0]` object tree for this machine.
+static void lisa_register_floppy_object(config_t *cfg) {
+    lisa_state_t *ls = lisa_state(cfg);
+    (void)lisa_fd_members;
+    ls->fd_obj = object_new(&lisa_fd_class, cfg, "floppy");
+    if (!ls->fd_obj)
+        return;
+    object_attach(object_root(), ls->fd_obj);
+    ls->fd_drives_obj = object_new(&lisa_fd_drives_class, cfg, "drives");
+    if (ls->fd_drives_obj)
+        object_attach(ls->fd_obj, ls->fd_drives_obj);
+    ls->fd_drive_obj = object_new(&lisa_fd_drive_class, cfg, NULL); // returned by the indexed get
+}
+
+// ============================================================
 // Init / Teardown
 // ============================================================
 
@@ -325,16 +438,10 @@ static void lisa_init(config_t *cfg, checkpoint_t *checkpoint) {
     ls->fdc = lisa_fdc_init(cfg->scheduler, lisa_fdc_fdir, cfg, checkpoint);
     lisa_mmu_map_io(ls->mmu, 0xC001, 0x7FF, &lisa_fdc_iface, ls->fdc);
 
-    // Queue a second floppy to auto-feed when the boot disk ejects.  MacWorks XL
-    // boots from a loader disk, then ejects it and reads its system disk; this
-    // supplies that second disk.  (Interim feed via env until the config/UI
-    // multi-disk path lands.)
-    const char *swap = getenv("LISA_SWAP_DISK");
-    if (swap && *swap) {
-        image_t *next = image_open_readonly(swap);
-        if (next)
-            lisa_fdc_queue_disk(ls->fdc, next);
-    }
+    // Expose the Sony drive so disks can be inserted/ejected at runtime
+    // (floppy.drives[0].insert / .eject), e.g. swapping the MacWorks loader disk
+    // for its system disk.
+    lisa_register_floppy_object(cfg);
 
     // Z8530 SCC (reused as-is): physical $00D241/43/45/47 decode from base
     // $00D240 via the standard A1/A2 convention (docs/lisa.md §15).  PCLK 4 MHz
@@ -362,6 +469,24 @@ static void lisa_teardown(config_t *cfg) {
         scheduler_stop(cfg->scheduler);
 
     lisa_state_t *ls0 = lisa_state(cfg);
+    if (ls0) {
+        // Tear down the `floppy` object tree (entry is unattached, like the IWM
+        // floppy object, so delete it directly).
+        if (ls0->fd_drive_obj) {
+            object_delete(ls0->fd_drive_obj);
+            ls0->fd_drive_obj = NULL;
+        }
+        if (ls0->fd_drives_obj) {
+            object_detach(ls0->fd_drives_obj);
+            object_delete(ls0->fd_drives_obj);
+            ls0->fd_drives_obj = NULL;
+        }
+        if (ls0->fd_obj) {
+            object_detach(ls0->fd_obj);
+            object_delete(ls0->fd_obj);
+            ls0->fd_obj = NULL;
+        }
+    }
     if (ls0 && ls0->fdc) {
         lisa_fdc_delete(ls0->fdc);
         ls0->fdc = NULL;

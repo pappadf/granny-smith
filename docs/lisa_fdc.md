@@ -71,5 +71,22 @@ loader to `$00020000`, and hands off to it** — verified headless on the
 `lisa2_sys_dia_3.0` diagnostics disk: after the ROM's floppy reads the CPU runs
 the loaded code in RAM (PC `$0208xx`), pulls in further sectors across multiple
 tracks (status `00`), and renders the loaded tool's screen with no boot error.
-Driving the loaded software further (and booting Lisa Office System / MacWorks
-to the desktop) is the remaining UI/keyboard-injection work.
+
+## Media swap (the MacWorks XL two-disk boot)
+
+The Lisa drive is **software-eject**: the `unclamp` RWTS sub-command (`$02`)
+removes the disk, leaving the drive empty until new media is inserted. Insertion
+latches a drive event and raises **FDIR (IPL 1)** so the host re-examines the
+drive (`lisa_fdc_insert`). This is exactly the MacWorks XL boot flow: the loader
+disk is read, then unclamped/ejected; the Mac ROM sits on its "?" disk; and when
+a system disk is inserted the insertion interrupt prompts it to read the new
+disk and boot. There is **no swap queue or auto-feed** — a disk is inserted the
+normal way (`floppy.drives[0].insert`, routing through `sys_fd_insert`), which
+the Lisa machine exposes as a small object tree over its one Sony drive. The
+`tests/integration/xl-boot` test drives this: run to the eject point, insert the
+system disk, and verify the Finder desktop renders (608×431, §8).
+
+Two FDC behaviours this relies on: the `$C05F` status byte holds **latched
+interrupt events** that `CLRSTAT` ($85) drains (not live state — see
+docs/lisa.md §13.3); and controller byte 10 reports the **Sony disk type** so
+the loader picks the right block→(track,sector) geometry (see above).

@@ -54,6 +54,17 @@ Clock read/write (`$02`, `$1n`), set-modes (`$2x`), and NMI-key nibbles
 (`$5n`/`$6n`) are accepted today; the RTC protocol and key-driven NMI land with
 the input/clock work.
 
+### CRDY (VIA1 PB6) — free-running ready/busy toggle
+The host hands a command byte to the COPS in sync with `CRDY` (VIA1 **PB6**),
+which the COP421 drives as a **free-running ready/busy line** — it toggles
+continuously as the COPS cycles its scan loop, *not* a static level. A sender
+(the boot ROM's `COPSCMD`, or MacWorks XL's own bit-bang driver) presents the
+byte, spins for a CRDY **edge**, drives port A to clock it in, then waits for
+the next edge and releases. We therefore toggle CRDY on a fixed period
+(`cops_crdy_tick`) rather than deriving it from `DDRA`: a static level satisfied
+the boot ROM but hung MacWorks, which waits for a high edge before driving the
+bus. See docs/lisa.md §11.
+
 ## Bring-up status
 
 With the COPS attached, the rev-H boot ROM completes the **entire** power-on
