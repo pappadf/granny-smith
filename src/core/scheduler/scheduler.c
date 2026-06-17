@@ -870,6 +870,30 @@ void scheduler_run_instructions(struct scheduler *restrict s, uint64_t n) {
     while (remaining_cycles > 0) {
         GS_ASSERT(s->sprint_burndown <= s->sprint_total);
 
+        // If the CPU executed STOP (e.g. the Lisa OS scheduler's Pause), it has
+        // suspended instruction fetch until an interrupt.  Don't burn billions
+        // of instructions spinning — advance emulated time straight to the next
+        // scheduled event so its interrupt can wake the CPU.  Idle time consumes
+        // the cycle budget but executes no instructions (the correct behaviour).
+        if (cpu_is_stopped(cpu)) { // Take any interrupt already pending at entry FIRST — e.g. the VBL,
+            // which trigger_vbl asserts just before this loop for only a short
+            // retrace window.  Advancing to the next event before checking could
+            // skip past (and clear) that window, dropping the heartbeat.
+            cpu_poll_interrupt(cpu);
+            if (cpu_is_stopped(cpu)) { // still halted: sleep until the next event
+                if (s->cpu_events == NULL)
+                    break; // nothing scheduled can ever wake it; end the run
+                uint64_t cte =
+                    (s->cpu_events->timestamp > s->cpu_cycles) ? (s->cpu_events->timestamp - s->cpu_cycles) : 0;
+                uint64_t advance = MIN(cte, remaining_cycles);
+                remaining_cycles -= advance;
+                s->cpu_cycles += advance;
+                process_event_queue(&s->cpu_events, s->cpu_cycles);
+                cpu_poll_interrupt(cpu); // event may have raised the IPL → take it (clears stopped)
+            }
+            continue;
+        }
+
         uint64_t cycles_to_execute = remaining_cycles;
 
         // Clamp to next event if one exists

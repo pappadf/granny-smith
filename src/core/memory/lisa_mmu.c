@@ -26,9 +26,16 @@
 #include "lisa_mmu.h"
 
 #include "memory.h"
+#include "scheduler.h"
 
 #include <stdlib.h>
 #include <string.h>
+
+// Lisa video timing (docs/lisa.md §8): the state machine scans 379 lines of 720
+// pixels at the 5.09375 MHz CPU clock, ~60 Hz vertical.  The Status Register
+// vertical-retrace bit (bit 2) is held set for ~90 µs after retrace begins.
+#define LISA_FRAME_CYCLES   84896u // 5,093,750 Hz / 60 Hz ≈ one displayed frame
+#define LISA_RETRACE_CYCLES 458u // ~90 µs vertical-retrace window
 
 // SLR access/space codes (bits 11-8).
 #define ACC_MEM_RO_STK 0x4 // 0100 main memory, read-only, stack
@@ -83,8 +90,11 @@ struct lisa_mmu {
     bool vtir_enabled; // vertical-retrace interrupt enable (VTMSK)
     bool sfmsk; // soft memory-error detect enable
     bool hdmsk; // hard memory-error detect enable
-    bool vbl_active; // Status Register bit 2 forced set during a retrace window
-    uint8_t status_toggle; // alternates the retrace bit per read (frame-accurate VBL)
+    bool vbl_active; // legacy: forced retrace bit (still set by trigger_vbl; unused by status read)
+    uint8_t status_toggle; // unused (retrace bit is cycle-derived); kept for checkpoint layout
+    struct scheduler *sched; // clock source for the cycle-accurate retrace bit
+    bool vertical; // vertical-retrace latch: 1 while in retrace (Status Register bit 2 reads 0)
+    uint64_t last_retrace_frame; // frame index of the last retrace-window rising edge
     uint32_t serial_ctr; // serial-number PROM bit-stream read counter (RDSERN)
 
     // Parity-circuitry test (PARTST) support.
@@ -168,6 +178,11 @@ void lisa_mmu_set_vbl_active(lisa_mmu_t *m, bool active) {
         m->vbl_active = active;
 }
 
+void lisa_mmu_set_clock(lisa_mmu_t *m, struct scheduler *sched) {
+    if (m)
+        m->sched = sched;
+}
+
 // === Control-block strobes & registers ($00E000-$00FFFF physical) ==========
 
 // Strobe a control latch.  Triggered by ANY access (read or write) to a strobe
@@ -194,6 +209,7 @@ static void lisa_strobe(lisa_mmu_t *m, uint32_t phys) {
         break; // SETUP    $E012 (START off)
     case 0x18:
         m->vtir_enabled = false;
+        m->vertical = false; // VTIRDIS also clears the retrace latch (Status bit 2 → 1)
         break; // VTIRDIS $E018
     case 0x1A:
         m->vtir_enabled = true;
@@ -241,9 +257,27 @@ void lisa_mmu_set_nmi(lisa_mmu_t *m, void (*cb)(void *, bool), void *ctx) {
 // across a real retrace window for VBL-aware readers.  The rest read 0 (no
 // memory errors, diagnostics inactive).
 static uint8_t lisa_status_byte(lisa_mmu_t *m) {
-    m->status_toggle ^= 1;
-    bool vr = m->vbl_active || m->status_toggle;
-    return vr ? (uint8_t)(1u << 2) : 0u;
+    // Status Register bit 2 = vertical retrace, modelled as the real hardware
+    // (docs/lisa.md §7.4; cross-checked against LisaEm).  The bit is ACTIVE-LOW:
+    // the video state machine drives it 0 while in vertical retrace and 1 during
+    // active scan.  `vertical` is a latch set on the rising edge into each frame's
+    // ~90 µs retrace window (a pure function of the cycle counter), cleared during
+    // active scan and by the VTIR-disable strobe ($E018).  The ROM's VIDTST waits
+    // for bit 2 = 0 (retrace), then strobes VTIRDIS and expects bit 2 = 1 — which
+    // works precisely because VTIRDIS clears the latch.  No per-read toggle.
+    if (m->sched) {
+        uint64_t now = scheduler_cpu_cycles(m->sched);
+        uint64_t frame = now / LISA_FRAME_CYCLES;
+        if ((now % LISA_FRAME_CYCLES) < LISA_RETRACE_CYCLES) {
+            if (frame != m->last_retrace_frame) { // rising edge into a new frame's retrace
+                m->vertical = true;
+                m->last_retrace_frame = frame;
+            }
+        } else {
+            m->vertical = false; // active scan
+        }
+    }
+    return m->vertical ? 0u : (uint8_t)(1u << 2); // active-low: 0 in retrace, bit-2 set otherwise
 }
 
 // Dispatch an I/O-space read at physical I/O address `phys` (size bytes).

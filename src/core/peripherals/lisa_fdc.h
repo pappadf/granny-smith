@@ -42,6 +42,9 @@ typedef void (*lisa_fdc_fdir_fn)(void *ctx, bool asserted);
 // === Lifecycle =============================================================
 
 lisa_fdc_t *lisa_fdc_init(struct scheduler *scheduler, lisa_fdc_fdir_fn fdir_cb, void *fdir_ctx, checkpoint_t *cp);
+// Set the disk-controller ROM id ($FCC031) the boot ROM reads to detect the
+// machine type (Lisa 1 vs Lisa 2 / fast vs slow timers).  See lisa_fdc.c.
+void lisa_fdc_set_diskrom(lisa_fdc_t *fdc, uint8_t id);
 void lisa_fdc_delete(lisa_fdc_t *fdc);
 void lisa_fdc_checkpoint(lisa_fdc_t *fdc, checkpoint_t *cp);
 

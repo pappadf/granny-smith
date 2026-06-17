@@ -36,7 +36,11 @@ LOG_USE_CATEGORY_NAME("floppy");
 #define FDC_CONFIRM  7 // format confirm
 #define FDC_STATUS   8 // error status (0 = OK)
 #define FDC_DISKTYPE 10 // disk geometry/type the controller reports for the media in the drive
-#define FDC_DRVSTAT  47 // drive status byte ($00C05F: present/eject/complete)
+#define FDC_DISKIN                                                                                                     \
+    32 // $00FCC041: NON-ZERO = disk in drive.  LisaOS's Sony driver
+       // (SOURCE-SONYASM `ISDISKIN`/`DISKIN .EQU $41`) polls this byte at
+       // drive init; a zero here makes FS_Mount abort with nodiskpres (614).
+#define FDC_DRVSTAT 47 // drive status byte ($00C05F: present/eject/complete)
 
 // FDC_DISKTYPE encoding the boot loader's block->(track,sector) converter reads
 // ($21028 in MacWorks PREBOOT: reads byte 10, then picks the disk's total block
@@ -94,10 +98,29 @@ static void fdc_set_fdir(lisa_fdc_t *fdc, bool asserted) {
         fdc->fdir_cb(fdc->fdir_ctx, asserted);
 }
 
+// Deferred RWTS completion.  Real floppy reads take milliseconds; the OS Sony
+// driver (SOURCE-SONYASM) issues an interrupt-generating command and *blocks*
+// (WAIT_INT) waiting for the completion interrupt.  Signalling completion
+// synchronously (in the same instruction as the command-register write) raced
+// that block: the IPL-1 interrupt fired before the driver had blocked, so the
+// wakeup was lost and the reader process hung forever (the 4th-boot hang).  We
+// therefore latch the data immediately but raise COMPLETE + FDIR on a scheduler
+// event a sector-read time later.  (The boot ROM polls PB4, so it is unaffected
+// by the added latency.)
+#define FDC_COMPLETE_CYCLES 24000 // ~4.7 ms — a Sony 400K sector-read latency
+
+static void fdc_complete(void *source, uint64_t data) {
+    (void)data;
+    lisa_fdc_t *fdc = (lisa_fdc_t *)source;
+    fdc->ram[FDC_DRVSTAT] |= DRVSTAT_COMPLETE1 | DRVSTAT_OR1; // RWTS complete
+    fdc_set_fdir(fdc, true); // raise FDIR / IPL1 now that the driver has blocked
+}
+
 // Report the Sony disk geometry the boot loader's block->(track,sector)
 // converter reads (controller byte 10).
 static void fdc_update_disktype(lisa_fdc_t *fdc) {
     fdc->ram[FDC_DISKTYPE] = fdc->image ? (fdc->num_sides == 1 ? DISKTYPE_SONY_400K : DISKTYPE_SONY_800K) : 0;
+    fdc->ram[FDC_DISKIN] = fdc->image ? 0x01 : 0x00; // "disk in drive" the Sony driver's ISDISKIN polls
 }
 
 // Map (track, side, sector) to a byte offset in the image (Sony 5-zone layout).
@@ -111,7 +134,6 @@ static void fdc_execute_rwts(lisa_fdc_t *fdc) {
     int side = fdc->ram[FDC_SIDE] & 1;
     int sector = fdc->ram[FDC_SECTOR];
     int track = fdc->ram[FDC_TRACK];
-
     if (!fdc->image) {
         fdc->ram[FDC_STATUS] = 0x16; // no disk / not ready
         return;
@@ -123,7 +145,6 @@ static void fdc_execute_rwts(lisa_fdc_t *fdc) {
     }
 
     size_t offset = fdc_block_offset(fdc, track, side, sector);
-
     if (rwts == RWTS_READ || rwts == RWTS_READNOCK) {
         // Serve the sector's DiskCopy tag as the 12-byte header the boot ROM
         // validates (FILEID at offset 4 must be $AAAA for the boot block).
@@ -157,10 +178,12 @@ static void fdc_execute_rwts(lisa_fdc_t *fdc) {
 static void fdc_command(lisa_fdc_t *fdc, uint8_t cmd) {
     switch (cmd) {
     case CMD_EXEC:
-        fdc_execute_rwts(fdc);
-        fdc->ram[FDC_DRVSTAT] |= DRVSTAT_COMPLETE1 | DRVSTAT_OR1; // RWTS complete
+        fdc_execute_rwts(fdc); // latch the sector data into the buffer now
         fdc->ram[FDC_CMDREG] = 0; // command taken
-        fdc_set_fdir(fdc, true); // signal completion
+        // Signal COMPLETE + FDIR on a scheduler event, not synchronously, so
+        // the OS driver's WAIT_INT block is in place before the interrupt fires.
+        remove_event(fdc->sched, &fdc_complete, fdc); // coalesce any prior pending
+        scheduler_new_cpu_event(fdc->sched, &fdc_complete, fdc, 0, FDC_COMPLETE_CYCLES, 0);
         break;
     case CMD_SEEK:
         fdc->ram[FDC_STATUS] = 0;
@@ -256,12 +279,29 @@ lisa_fdc_t *lisa_fdc_init(struct scheduler *scheduler, lisa_fdc_fdir_fn fdir_cb,
     if (!fdc)
         return NULL;
     fdc->sched = scheduler;
+    if (scheduler)
+        scheduler_new_event_type(scheduler, "lisa_fdc", fdc, "complete", &fdc_complete);
     fdc->fdir_cb = fdir_cb;
     fdc->fdir_ctx = fdir_ctx;
     fdc->num_sides = 1;
+    {
+        fdc->ram[196] = 0x10;
+        fdc->ram[254] = 0xFE;
+        fdc->ram[255] = 0x00;
+    } // GSDIAG auto-boot
     if (cp)
         lisa_fdc_checkpoint(fdc, cp);
     return fdc;
+}
+
+// Set the disk-controller ROM id byte at $FCC031 (= ram[24]).  The boot ROM's
+// SETTYPE reads it to detect the machine: bit7 clear ⇒ Lisa 1 (twin Twiggy
+// drives), bit7 set ⇒ Lisa 2 with bit6 (FASTMR)=fast timers / bit5 (SLOTMR)=
+// slow timers.  A calloc-zeroed byte mis-identifies us as a Lisa 1 (two-floppy
+// STARTUP menu); the machine sets the value matching the board it models.
+void lisa_fdc_set_diskrom(lisa_fdc_t *fdc, uint8_t id) {
+    if (fdc)
+        fdc->ram[24] = id;
 }
 
 void lisa_fdc_delete(lisa_fdc_t *fdc) {

@@ -785,10 +785,16 @@
 #define OP_MOVEM_L_EA_LIST  OP(VALID_EA(ea_control + ea_an_plus); MOVEM_TO_REGISTER(opcode, 32))
 #define OP_TRAP_VECTOR      OP(EXC_TRAP(opcode & 0xF))
 #define OP_RESET            OP(SUPER())
-#define OP_STOP_DATA        OP(SUPER(uint16_t sr = FETCH16(); SET_SR(sr)))
-#define OP_RTS              OP(POP32(PC))
-#define OP_TRAPV            OP(if (CC_V) EXC_TRAPV())
-#define OP_RTR              OP(uint16_t ccr; POP16(ccr); WRITE_CCR(ccr); POP32(PC))
+// STOP: load SR and halt instruction fetch until an interrupt.  Set the stopped
+// flag AND drain the sprint budget (*instructions = 0) so the decoder loop exits
+// immediately — otherwise it would keep executing the instructions *after* the
+// STOP (e.g. fall through past the Lisa scheduler's Pause), corrupting state.
+// SET_SR runs cpu_check_interrupt last, so an already-pending interrupt clears
+// `stopped` and is taken normally on the next sprint.
+#define OP_STOP_DATA OP(SUPER(uint16_t sr = FETCH16(); cpu->stopped = 1; *instructions = 0; SET_SR(sr)))
+#define OP_RTS       OP(POP32(PC))
+#define OP_TRAPV     OP(if (CC_V) EXC_TRAPV())
+#define OP_RTR       OP(uint16_t ccr; POP16(ccr); WRITE_CCR(ccr); POP32(PC))
 // LINK: fetch the displacement word *before* mutating any register, so a
 // page-cross fault on the immediate restarts the instruction cleanly (the
 // pre-PUSH/AY-update state is untouched). M68000PRM §8.1: An is pushed,

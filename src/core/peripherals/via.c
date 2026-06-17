@@ -119,6 +119,11 @@ struct via {
     via_irq_fn irq_cb;
     void *cb_context;
 
+    // Optional port-A data hooks (Lisa parallel hard disk); NULL when unused.
+    via_porta_read_fn porta_read;
+    via_porta_write_fn porta_write;
+    void *porta_ctx;
+
     // CPU-to-VIA clock divisor: CPU_clock / freq_factor ≈ 783 kHz VIA φ2 clock
     uint8_t freq_factor;
 
@@ -342,7 +347,11 @@ static uint8_t via_read_uint8(void *v, uint32_t addr) {
         break;
 
     case ORA_IRA:
-        // Register 1: Read Port A WITH handshake — clears CA1/CA2 interrupt flags
+        // Register 1: Read Port A WITH handshake — clears CA1/CA2 interrupt flags.
+        // The handshaked access pulses CA2/PSTRB, so a hooked device advances to
+        // the next byte and drives it onto the input pins.
+        if (via->porta_read)
+            via->ports[PORT_A].input = via->porta_read(via->porta_ctx, true);
         ret = read_port(via, PORT_A);
         break;
 
@@ -408,7 +417,11 @@ static uint8_t via_read_uint8(void *v, uint32_t addr) {
         break;
 
     case ORA:
-        // Register 15: Read Port A WITHOUT handshake — no flag clearing
+        // Register 15: Read Port A WITHOUT handshake — no flag clearing.  No
+        // CA2/PSTRB pulse, so a hooked device presents a level byte (e.g. the
+        // ProFile state byte) without advancing.
+        if (via->porta_read)
+            via->ports[PORT_A].input = via->porta_read(via->porta_ctx, false);
         ret = (via->ports[PORT_A].output & via->ports[PORT_A].direction) |
               (via->ports[PORT_A].input & ~via->ports[PORT_A].direction);
         break;
@@ -545,16 +558,21 @@ static void via_write_uint8(void *v, uint32_t addr, uint8_t value) {
     }
 
     case ORA_IRA:
-        // Register 1: Write Port A WITH handshake — clears CA1/CA2 interrupt flags
+        // Register 1: Write Port A WITH handshake — clears CA1/CA2 interrupt flags.
+        // Handshaked access pulses CA2/PSTRB → a hooked device latches the byte.
         via->ports[PORT_A].output = value;
         via->output_cb(via->cb_context, 0, via->ports[PORT_A].output & via->ports[PORT_A].direction);
+        if (via->porta_write)
+            via->porta_write(via->porta_ctx, value, true);
         update_ifr(via, via->ifr & ~(IFR_CA1 | IFR_CA2));
         break;
 
     case ORA:
-        // Register 15: Write Port A WITHOUT handshake — no flag clearing
+        // Register 15: Write Port A WITHOUT handshake — no flag clearing, no PSTRB.
         via->ports[PORT_A].output = value;
         via->output_cb(via->cb_context, 0, via->ports[PORT_A].output & via->ports[PORT_A].direction);
+        if (via->porta_write)
+            via->porta_write(via->porta_ctx, value, false);
         break;
 
     default:
@@ -772,6 +790,14 @@ void via_redrive_outputs(via_t *via) {
         via->ports[PORT_B].output & via->ports[PORT_B].direction);
     via->output_cb(via->cb_context, PORT_A, via->ports[PORT_A].output & via->ports[PORT_A].direction);
     via->output_cb(via->cb_context, PORT_B, via->ports[PORT_B].output & via->ports[PORT_B].direction);
+}
+
+void via_set_porta_hooks(via_t *via, via_porta_read_fn read_fn, via_porta_write_fn write_fn, void *ctx) {
+    if (!via)
+        return;
+    via->porta_read = read_fn;
+    via->porta_write = write_fn;
+    via->porta_ctx = ctx;
 }
 
 // Read the current shift register value

@@ -42,4 +42,18 @@ void cops_checkpoint(cops_t *cops, checkpoint_t *cp);
 // driven output (ORx & DDRx).
 void cops_via_output(cops_t *cops, uint8_t port, uint8_t value);
 
+// === Host input injection ===================================================
+
+// Deliver a raw COPS code to the host (a keyboard scancode or the mouse-button
+// keycode).  Queued and delivered through the normal response path (CA1 + port
+// A), exactly like a key the COPS itself would report.
+void cops_inject_key(cops_t *cops, uint8_t code);
+
+// Inject host mouse movement: accumulate `dx`/`dy` (reported on the next mouse
+// tick, like the real COPS counting pulse edges) and, if `button` (-1 = no
+// change, 0 = up, 1 = down) differs from the current state, deliver the
+// mouse-button keycode.  Movement is only reported while the guest has enabled
+// mouse interrupts (command #111 ennn), as on real hardware.
+void cops_inject_mouse(cops_t *cops, int dx, int dy, int button);
+
 #endif // COPS_H

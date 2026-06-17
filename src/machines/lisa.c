@@ -24,6 +24,7 @@
 #include "image.h"
 #include "lisa_fdc.h"
 #include "lisa_mmu.h"
+#include "lisa_profile.h"
 #include "log.h"
 #include "memory.h"
 #include "object.h"
@@ -55,10 +56,19 @@ typedef struct lisa_state {
     lisa_mmu_t *mmu; // custom segment MMU
     cops_t *cops; // keyboard/mouse/clock/power microcontroller on VIA1 port A
     lisa_fdc_t *fdc; // intelligent 6504A floppy controller (shared RAM @ $C001)
+    lisa_profile_t *profile; // ProFile parallel hard disk on VIA2
+    bool via1_pb7; // last VIA1 PB7 (CRES/) level, for edge-detecting ProFile reset
+    // Level 1 is shared by VIA2 (parallel/floppy demux) and the video VBL
+    // (docs/lisa.md §7.1/§12).  Track each sub-source so deasserting one does
+    // not clear the other when recomputing the CPU IPL.
+    bool l1_via2; // VIA2 IRQ line currently asserted
+    bool l1_vbl; // video vertical-retrace interrupt currently asserted
+    bool l1_floppy; // floppy FDIR (RWTS-complete / disk-insert / eject) asserted
     lisa_via_port_t via1_map; // VIA1 (keyboard / COPS), base $00DD81, stride 2
     lisa_via_port_t via2_map; // VIA2 (parallel disk / contrast), base $00D901, stride 8
     display_t display; // 720x364 1bpp framebuffer (direct, in main RAM)
     struct object *fd_obj, *fd_drives_obj, *fd_drive_obj; // `floppy` object tree
+    struct object *hd_obj; // `profile` object (parallel hard disk)
 } lisa_state_t;
 
 // Video geometry, 1 bpp MSB-first (docs/lisa.md §8).  The unmodified Lisa 2 has
@@ -206,22 +216,129 @@ static void lisa_scc_irq(void *ctx, bool active) {
 static void lisa_via1_irq(void *ctx, bool active) {
     lisa_update_ipl((config_t *)ctx, 2, active);
 }
+// Level 1 is the OR of the VIA2 IRQ and the video VBL retrace interrupt.
+// Recompute it from the tracked sub-sources so neither clobbers the other.
+static void lisa_update_l1(config_t *cfg) {
+    lisa_state_t *ls = lisa_state(cfg);
+    lisa_update_ipl(cfg, 1, ls->l1_via2 || ls->l1_vbl || ls->l1_floppy);
+}
 static void lisa_via2_irq(void *ctx, bool active) {
-    lisa_update_ipl((config_t *)ctx, 1, active);
+    config_t *cfg = (config_t *)ctx;
+    lisa_state(cfg)->l1_via2 = active;
+    lisa_update_l1(cfg);
 }
-// VIA1 port output → COPS (port A command jam / port B reset line).
+// VIA1 port output → COPS (port A command jam / port B reset line).  VIA1 PB7
+// (CRES/, active low) also resets the ProFile controller (boot ROM DOCRES pulses
+// it low on handshake-retry); act on the falling edge.
 static void lisa_via1_output(void *ctx, uint8_t port, uint8_t value) {
-    cops_via_output(lisa_state((config_t *)ctx)->cops, port, value);
+    config_t *cfg = (config_t *)ctx;
+    lisa_state_t *ls = lisa_state(cfg);
+    cops_via_output(ls->cops, port, value);
+    if (port == 1) { // port B
+        bool pb7 = (value & 0x80) != 0;
+        if (ls->via1_pb7 && !pb7) // 1→0: CRES/ asserted
+            lisa_profile_reset(ls->profile);
+        ls->via1_pb7 = pb7;
+    }
 }
-// VIA2 port output → parallel disk / contrast DAC (wired in Step 7).
+// VIA2 port output → ProFile control lines (port B: CMD//DRW) / contrast DAC.
+// Port-A data bytes go through the dedicated port-A hooks (lisa_profile_porta_*).
+//
+// `value` (output & direction) cannot tell a pin driven low from one floating
+// (an undriven CMD/ reads 0 there but the open-collector line is pulled high).
+// Recompute the true levels — driven pins reflect the output latch, undriven
+// pins read high — so CMD/ is only "asserted" when actively driven low (i.e.
+// after PROINIT makes PB4 an output), not during early VIA2 setup.
 static void lisa_via2_output(void *ctx, uint8_t port, uint8_t value) {
-    (void)ctx;
-    (void)port;
     (void)value;
+    if (port != 1)
+        return;
+    config_t *cfg = (config_t *)ctx;
+    uint8_t dir = via_port_direction(cfg->via2, 1);
+    uint8_t out = via_port_output(cfg->via2, 1);
+    uint8_t level = (uint8_t)((out & dir) | ~dir); // undriven pins pull high
+    lisa_profile_portb(lisa_state(cfg)->profile, level);
 }
 static void lisa_via_shift_out(void *ctx, uint8_t byte) {
     (void)ctx;
     (void)byte;
+}
+
+// ProFile BSY line → VIA2 PB1 (level, polled by the boot ROM) and CA1 (edge,
+// used by the OS interrupt path).  BSY is active-low: busy → line low.
+static void lisa_profile_bsy(void *ctx, bool busy) {
+    config_t *cfg = (config_t *)ctx;
+    bool level = !busy; // 0 = busy, 1 = not busy
+    if (cfg->via2) {
+        via_input(cfg->via2, 1, 1, level); // PB1
+        via_input_c(cfg->via2, 0, 0, level); // CA1 (port A control line 0)
+    }
+}
+
+// VIA2 port-A data hooks → ProFile (handshake = the CA2/PSTRB-strobed register).
+static uint8_t lisa_profile_porta_read_cb(void *ctx, bool handshake) {
+    return lisa_profile_porta_read(lisa_state((config_t *)ctx)->profile, handshake);
+}
+static void lisa_profile_porta_write_cb(void *ctx, uint8_t value, bool handshake) {
+    lisa_profile_porta_write(lisa_state((config_t *)ctx)->profile, value, handshake);
+}
+
+// Drive the controller's static input lines: OCD/ (PB0, 0 = a disk is connected)
+// and the idle BSY level.  Called at init and after any attach/detach.
+static void lisa_profile_update_lines(config_t *cfg) {
+    lisa_state_t *ls = lisa_state(cfg);
+    bool connected = lisa_profile_connected(ls->profile);
+    if (cfg->via2)
+        via_input(cfg->via2, 1, 0, !connected); // PB0 = OCD/ (0 = connected)
+    lisa_profile_bsy(cfg, false); // idle: not busy
+}
+
+// ============================================================
+// Host input → COPS (keyboard scancodes, mouse deltas + button)
+// ============================================================
+//
+// hw_profile_t.input_* hooks: the `keyboard`/`mouse` object methods route here
+// (instead of the Mac ADB/Toolbox path) because the Lisa's input device is the
+// COPS, which uses its own keycodes and a relative-delta mouse (§11.4).
+
+// keyboard.press → a raw COPS scancode.  Accepts a "0xNN" keycode string (the
+// boot-menu keys, e.g. $EB = 'H'/ProFile, $F2 = '3').  The COPS reports a key on
+// its press edge, so we inject on `down` and treat the release as a no-op.
+static int lisa_input_key(config_t *cfg, const char *key, bool down) {
+    lisa_state_t *ls = lisa_state(cfg);
+    if (!ls || !ls->cops)
+        return -1;
+    if (!down)
+        return 0; // release: nothing to send (press edge already reported)
+    if (key && key[0] == '0' && (key[1] == 'x' || key[1] == 'X')) {
+        char *end = NULL;
+        long v = strtol(key, &end, 16);
+        if (end && *end == '\0' && v >= 0 && v <= 0xFF) {
+            cops_inject_key(ls->cops, (uint8_t)v);
+            return 0;
+        }
+    }
+    return -1; // unknown key (no Mac fallback on the Lisa)
+}
+
+// mouse.move → COPS mouse deltas.  The Lisa mouse is relative, so x/y are
+// treated as dx/dy here; absolute positioning via the LisaOS cursor global is a
+// later refinement.  mouse.click → the COPS mouse-button keycode.
+static int lisa_input_mouse_move(config_t *cfg, int x, int y, const char *mode) {
+    (void)mode;
+    lisa_state_t *ls = lisa_state(cfg);
+    if (!ls || !ls->cops)
+        return -1;
+    cops_inject_mouse(ls->cops, x, y, -1);
+    return 0;
+}
+static int lisa_input_mouse_button(config_t *cfg, bool down, const char *mode) {
+    (void)mode;
+    lisa_state_t *ls = lisa_state(cfg);
+    if (!ls || !ls->cops)
+        return -1;
+    cops_inject_mouse(ls->cops, 0, 0, down ? 1 : 0);
+    return 0;
 }
 
 // ============================================================
@@ -257,11 +374,19 @@ static memory_interface_t lisa_fdc_iface = {
     .write_uint32 = lisa_fdc_io_write32,
 };
 
-// FDIR (drive interrupt request) → VIA1 PB4, which the boot ROM polls (CHKFIN).
+// FDIR (drive interrupt request) → VIA1 PB4, which the boot ROM polls (CHKFIN),
+// AND a level-1 interrupt (docs/lisa.md §7.1/§13: the floppy shares IPL 1 with
+// VIA2/video; it fires on RWTS completion, disk insertion, and eject).  The boot
+// ROM masks IPL 1 and polls PB4; the OS Sony driver (SOURCE-SONYASM, WAIT_INT)
+// blocks and is woken by this interrupt — without it the OS reader hangs forever
+// after its first interrupt-driven read.  The level-1 handler reads $00C05F.
 static void lisa_fdc_fdir(void *ctx, bool asserted) {
     config_t *cfg = (config_t *)ctx;
+    lisa_state_t *ls = lisa_state(cfg);
     if (cfg->via1)
-        via_input(cfg->via1, 1, 4, asserted); // PB4 = FDIR
+        via_input(cfg->via1, 1, 4, asserted); // PB4 = FDIR (polled by the ROM)
+    ls->l1_floppy = asserted;
+    lisa_update_l1(cfg); // floppy aggregates to IPL 1 (used by the OS driver)
 }
 
 // hw_profile_t.fd_insert / fd_present — the Lisa uses lisa_fdc, not cfg->floppy.
@@ -388,6 +513,75 @@ static void lisa_register_floppy_object(config_t *cfg) {
 }
 
 // ============================================================
+// `profile` object surface (attach/detach the parallel hard disk)
+// ============================================================
+//
+// The ProFile is not on a SCSI bus and not the IWM floppy, so it gets its own
+// small object.  `attach` opens (or creates blank) a 532-bytes/block image and
+// drives the OCD/ line; `detach` flushes and disconnects.  instance_data = cfg.
+
+static value_t lisa_hd_attach(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)m;
+    config_t *cfg = (config_t *)object_data(self);
+    lisa_state_t *ls = lisa_state(cfg);
+    const char *path = (argc >= 1) ? argv[0].s : NULL; // NULL = blank in-memory disk
+    bool writable = (argc >= 2) ? argv[1].b : true;
+    if (!ls || !ls->profile)
+        return val_err("profile: no controller");
+    if (!lisa_profile_attach(ls->profile, path, writable))
+        return val_err("profile.attach: cannot open '%s'", path ? path : "(blank)");
+    lisa_profile_update_lines(cfg);
+    return val_bool(true);
+}
+
+static value_t lisa_hd_detach(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)m;
+    (void)argc;
+    (void)argv;
+    config_t *cfg = (config_t *)object_data(self);
+    lisa_state_t *ls = lisa_state(cfg);
+    if (!ls || !ls->profile || !lisa_profile_attached(ls->profile))
+        return val_err("profile: no disk attached");
+    lisa_profile_detach(ls->profile);
+    lisa_profile_update_lines(cfg);
+    return val_none();
+}
+
+static value_t lisa_hd_present(struct object *self, const member_t *m) {
+    (void)m;
+    lisa_state_t *ls = lisa_state((config_t *)object_data(self));
+    return val_bool(ls && lisa_profile_attached(ls->profile));
+}
+
+static const arg_decl_t lisa_hd_attach_args[] = {
+    {.name = "path",
+     .kind = V_STRING,
+     .validation_flags = OBJ_ARG_OPTIONAL,
+     .doc = "Host path of the ProFile image, created blank if missing (omit for a blank in-memory disk)"             },
+    {.name = "writable", .kind = V_BOOL, .validation_flags = OBJ_ARG_OPTIONAL, .doc = "Mount writable (default true)"},
+};
+
+static const member_t lisa_hd_members[] = {
+    {.kind = M_ATTR,   .name = "present", .flags = VAL_RO,                                             .attr = {.type = V_BOOL, .get = lisa_hd_present}},
+    {.kind = M_METHOD,
+     .name = "detach",
+     .doc = "Flush and disconnect the ProFile",
+     .method = {.result = V_NONE, .fn = lisa_hd_detach}                                                                                                },
+    {.kind = M_METHOD,
+     .name = "attach",
+     .doc = "Attach a ProFile image (created blank if missing; omit path for a blank in-memory disk)",
+     .method = {.args = lisa_hd_attach_args, .nargs = 2, .result = V_BOOL, .fn = lisa_hd_attach}                                                       },
+};
+static const class_desc_t lisa_hd_class = {.name = "profile", .members = lisa_hd_members, .n_members = 3};
+
+static void lisa_register_profile_object(config_t *cfg) {
+    lisa_state_t *ls = lisa_state(cfg);
+    ls->hd_obj = object_new(&lisa_hd_class, cfg, "profile");
+    if (ls->hd_obj)
+        object_attach(object_root(), ls->hd_obj);
+}
+
+// ============================================================
 // Init / Teardown
 // ============================================================
 
@@ -414,6 +608,7 @@ static void lisa_init(config_t *cfg, checkpoint_t *checkpoint) {
     ls->mmu = lisa_mmu_init(ram_native_pointer(cfg->mem_map, 0), cfg->ram_size,
                             (uint8_t *)memory_rom_bytes(cfg->mem_map), memory_rom_size(cfg->mem_map), checkpoint);
     lisa_mmu_set_nmi(ls->mmu, lisa_parity_nmi, cfg); // level-7 parity NMI (PARTST)
+    lisa_mmu_set_clock(ls->mmu, cfg->scheduler); // cycle source for the retrace status bit
 
     // Two 6522 VIAs (reused unchanged).  map=NULL: the machine registers the
     // interface itself.  freq_factor 4 = 68000/4 ≈ 1.27 MHz (docs/lisa.md §10).
@@ -437,11 +632,30 @@ static void lisa_init(config_t *cfg, checkpoint_t *checkpoint) {
     // (docs/lisa.md §13).  FDIR completion is signalled on VIA1 PB4.
     ls->fdc = lisa_fdc_init(cfg->scheduler, lisa_fdc_fdir, cfg, checkpoint);
     lisa_mmu_map_io(ls->mmu, 0xC001, 0x7FF, &lisa_fdc_iface, ls->fdc);
+    // Disk-controller ROM id ($FCC031 = adr_ioboard) selects the I/O-board model
+    // the boot ROM (SETTYPE/SYSTYPE) and LisaOS (SOURCE-STARTUP) detect.  LisaOS
+    // reads it as a SIGNED byte: >=0 (bit7 clear) ⇒ iob_lisa (Lisa 1, Twiggy) ⇒
+    // it installs the TWIGGY floppy driver — fatal on our Sony hardware.  A Lisa
+    // 2/5 (old "Lisa Lite" board + Sony + external ProFile) reports $A0..$BF ⇒
+    // iob_sony ⇒ the SONY driver (and boot-ROM SYSTYPE 1).  Left at 0 LisaOS
+    // mis-drives the floppy as a Twiggy and never completes boot.  The Macintosh
+    // XL path (MacWorks XL, iob_pepsi) keeps its empirically-correct 0: its
+    // loader-disk eject sequence only matches with SYSTYPE 0 (revisit when
+    // MacWorks's own machine-id handling is investigated).
+    if (strcmp(cfg->machine->id, "macxl") != 0)
+        lisa_fdc_set_diskrom(ls->fdc, 0xA0); // iob_sony — Lisa 2/5
 
     // Expose the Sony drive so disks can be inserted/ejected at runtime
     // (floppy.drives[0].insert / .eject), e.g. swapping the MacWorks loader disk
     // for its system disk.
     lisa_register_floppy_object(cfg);
+
+    // ProFile parallel hard disk on VIA2: control lines via the port-B output
+    // callback (lisa_via2_output), data via the port-A hooks, BSY back to PB1/CA1.
+    ls->profile = lisa_profile_init(lisa_profile_bsy, cfg, checkpoint);
+    via_set_porta_hooks(cfg->via2, lisa_profile_porta_read_cb, lisa_profile_porta_write_cb, cfg);
+    lisa_profile_update_lines(cfg); // no disk yet → OCD/ high (disconnected)
+    lisa_register_profile_object(cfg);
 
     // Z8530 SCC (reused as-is): physical $00D241/43/45/47 decode from base
     // $00D240 via the standard A1/A2 convention (docs/lisa.md §15).  PCLK 4 MHz
@@ -486,6 +700,15 @@ static void lisa_teardown(config_t *cfg) {
             object_delete(ls0->fd_obj);
             ls0->fd_obj = NULL;
         }
+        if (ls0->hd_obj) {
+            object_detach(ls0->hd_obj);
+            object_delete(ls0->hd_obj);
+            ls0->hd_obj = NULL;
+        }
+    }
+    if (ls0 && ls0->profile) {
+        lisa_profile_delete(ls0->profile);
+        ls0->profile = NULL;
     }
     if (ls0 && ls0->fdc) {
         lisa_fdc_delete(ls0->fdc);
@@ -550,6 +773,7 @@ static void lisa_checkpoint_save(config_t *cfg, checkpoint_t *cp) {
     via_checkpoint(cfg->via2, cp);
     cops_checkpoint(ls ? ls->cops : NULL, cp);
     lisa_fdc_checkpoint(ls ? ls->fdc : NULL, cp);
+    lisa_profile_checkpoint(ls ? ls->profile : NULL, cp);
     scc_checkpoint(cfg->scc, cp);
 }
 
@@ -565,8 +789,12 @@ static void lisa_vbl_off(void *source, uint64_t data) {
     (void)data;
     config_t *cfg = (config_t *)source;
     lisa_state_t *ls = lisa_state(cfg);
-    if (ls && ls->mmu)
+    if (ls && ls->mmu) {
         lisa_mmu_set_vbl_active(ls->mmu, false);
+        // Retrace window ended: drop the VBL contribution to level 1.
+        ls->l1_vbl = false;
+        lisa_update_l1(cfg);
+    }
 }
 
 // ~90 µs retrace window (docs/lisa.md §8) at 5.09375 MHz ≈ 458 cycles.  Holding
@@ -579,6 +807,16 @@ static void lisa_trigger_vbl(config_t *cfg) {
     if (ls && ls->mmu) {
         lisa_mmu_set_vbl_active(ls->mmu, true);
         scheduler_new_cpu_event(cfg->scheduler, &lisa_vbl_off, cfg, 0, LISA_VBL_HOLD_CYCLES, 0);
+        // VBL is an IPL-1 interrupt source (docs/lisa.md §8) gated by the VTMSK
+        // latch ($E01A on / $E018 off).  The level-1 handler polls the Status
+        // Register retrace bit (§7.4) to identify the source; the line is held
+        // for the ~90 µs retrace window (LISA_VBL_HOLD_CYCLES), then dropped by
+        // lisa_vbl_off.  Without this the OS's interrupt-driven VBL handler
+        // (cursor + scheduler clock-tick soft-interrupt) never runs.
+        if (lisa_mmu_vbl_enabled(ls->mmu)) {
+            ls->l1_vbl = true;
+            lisa_update_l1(cfg);
+        }
         lisa_refresh_framebuffer(cfg);
     }
 }
@@ -643,6 +881,9 @@ const hw_profile_t machine_lisa = {
     .display = lisa_display,
     .fd_insert = lisa_fd_insert,
     .fd_present = lisa_fd_present,
+    .input_key = lisa_input_key,
+    .input_mouse_move = lisa_input_mouse_move,
+    .input_mouse_button = lisa_input_mouse_button,
 };
 
 // Macintosh XL: the same Lisa 2 hardware sold with the "3A" boot ROM and the
@@ -687,4 +928,7 @@ const hw_profile_t machine_macxl = {
     .display = lisa_display,
     .fd_insert = lisa_fd_insert,
     .fd_present = lisa_fd_present,
+    .input_key = lisa_input_key,
+    .input_mouse_move = lisa_input_mouse_move,
+    .input_mouse_button = lisa_input_mouse_button,
 };

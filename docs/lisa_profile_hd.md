@@ -1,9 +1,79 @@
-# Lisa parallel hard disk (ProFile / Widget) — implementation plan
+# Lisa parallel hard disk (ProFile / Widget) — implementation notes
 
-Status: **not yet implemented** (Step 7). This doc captures the protocol (extracted
-from the rev-H boot ROM source, `RM248.B.TEXT`) and a concrete plan, so the device
-can be built quickly. Goal: a Lisa 2 with a 10 MB ProFile so the Pascal Workshop
-3.0 can install a Lisa OS onto it, with an `xl`-style integration test.
+Status: **device implemented + verified** (Step 7). The read/write/device-info
+handshake is done (`src/core/peripherals/lisa_profile.{c,h}`), wired on VIA2 in
+`src/machines/lisa.c`, and verified end-to-end through Apple's own boot-ROM driver
+(see "Implemented & verified" below). COPS input and the Lisa-2 machine-type
+detection are now done too; what remains for the *OS install* test is getting
+LisaOS past **filesystem init** (error 10707) — see "Remaining" below. This doc
+captures the protocol (from the rev-H boot ROM `RM248.B.TEXT` and the OS driver
+`SOURCE-PROFILEASM`) and the implementation.
+
+## Implemented & verified
+
+- **`lisa_profile.{c,h}`** — behavioural ProFile controller. State machine driven
+  only by the real VIA2 pins: CMD/ (PB4) edges sequence the phases; the device
+  presents the state byte on the no-handshake port-A register and clocks
+  command/status/data bytes on the handshaked register; BSY (PB1 + CA1) follows.
+  Commands: read (0), write (1/2). On-wire block = **532 bytes (20-byte tag + 512
+  data)**; a read streams 4 status bytes + the block, a write streams the block
+  then (after a handshake) 4 status bytes. Block **$FFFFFF** returns the
+  controller's synthesized **device-info block** (name "PROFILE", drive type 0,
+  9728 blocks = 5 MB, 532 bytes/block) — the OS reads drive type at offset 14 and
+  the 24-bit block count at offsets 18..20 (`PROF_INIT`). Backed by an in-RAM
+  image (`nblocks × 532`), optionally persisted to a host file.
+- **`via.c` port-A hooks** — `via_set_porta_hooks()` adds a read/write callback on
+  the ORA/IRA (handshaked, CA2/PSTRB-strobed) and ORA-no-handshake registers, the
+  one infrastructure gap. NULL on every other VIA, so no other machine changes.
+- **`lisa.c` wiring** — VIA2 port-B output → CMD//DRW (computed from the true line
+  levels, so an undriven open-collector CMD/ reads high, not a spurious assert);
+  port-A hooks → the device; BSY → PB1 + CA1; OCD/ (PB0) driven low when a disk is
+  attached; VIA1 PB7 (CRES/) falling edge → controller reset. A `profile` object
+  (`profile.attach [path] [writable]` / `profile.detach` / `profile.present`)
+  attaches an image (blank in-memory if no path).
+- **Verification.** `tests/unit/suites/lisa_profile` drives the device API
+  directly (detection, device-info read, write→read round-trip, decline/abort).
+  `tests/integration/lisa-profile` boots the rev-H ROM, attaches a blank ProFile,
+  and calls Apple's own **`PROREAD`** ($FE1F70) to read block $FFFFFF over the real
+  VIA handshake — `PROREAD` returns D0=0 and the buffer holds "PROFILE"/9728/532.
+  This exercises the ROM driver → VIA hooks → device → BSY/OCD path with no
+  synthetic shortcuts. xl-boot (MacWorks→Finder) still passes — no regression.
+
+## Remaining (for the OS install test)
+
+- **COPS mouse + keyboard injection** — *done* (machine input hook → COPS;
+  `keyboard.press` / `mouse.move` / `mouse.click`). Bytes flow end-to-end.
+- **Machine-type detection** — *done* (the big one). LisaOS would not boot because
+  the disk-controller ROM id (`$FCC031`) was zero → read as a Lisa 1 → the OS
+  installed the **Twiggy** floppy driver on our **Sony** drive and startup
+  stranded (the "scheduler hang"). `machine_lisa` now sets `$FCC031 = $A0`
+  (`iob_sony`, Lisa 2/5) so the OS uses the Sony driver. See `docs/lisa.md` §16.2.
+- **Three boot fixes landed (sessions 8–9) — boot now runs the full OS.** The old
+  "scheduler hang" was **not** the machine type alone; it was masked by two CPU/IO
+  bugs. (1) **FDC completion is now interrupt-driven (IPL 1) + deferred** — the OS
+  Sony driver blocks on the completion interrupt, which our FDC previously only
+  exposed as the pollable PB4 level *and* raised synchronously (racing the block).
+  (2) **`STOP` now halts the CPU** — the OS scheduler's idle `Pause` (`STOP #$2000`)
+  was a no-op that spun forever. (3) **The vertical-retrace status bit is now
+  cycle-accurate + active-low** (VTIRDIS-cleared) — VIDTST passes and the OS clock
+  runs real-time. With these, LOS 3.1 **loads the entire OS, passes the ROM video
+  self-test, runs the OS scheduler healthily, and reads to the volume catalog
+  (lba 28).** See `docs/lisa.md` §7.1/§7.4/§13 and `docs/lisa_fdc.md`.
+- **Current blocker — FS-mount.** After the catalog read (lba 28) the OS
+  **FS-reader process never runs to issue the next read** (the LisaEm reference
+  reads lba 29 → writes lba 28 → continues to mount the whole disk; ours stops).
+  Narrowed via a LisaEm go-byte command-trace oracle: the lba-29 read is issued by
+  an OS process at seg96 `$c08fb4`, never reached in ours. **Ruled out:** the
+  `$00C05F` drive-status bits (our drive-1 `$0C` is correct; LisaEm's internal
+  `$C0` resets our early boot — see `docs/lisa.md` §13.3). This is the original
+  error-10707 (`FS_Mount` / `nodiskpres`) issue, now reached in a *healthy* running
+  system. **Next:** find why the FS-reader process is never scheduled (compare
+  scheduler queues / PCB `blk_state` vs the LisaEm `$cc5a46`-woken-per-read trace;
+  verify our segment-MMU slot assignment matches LisaEm's `$c0xxxx` before trusting
+  those PCs). The auto-boot PM seed in `lisa_fdc_init` is a temporary debug aid
+  (revert before commit; auto-boot needs a real PM `bootvol`, PM at `$FCC181`).
+- Once it boots: drive the install → write the OS to the ProFile → reboot from it.
+  The device write path is implemented and unit-tested but not yet OS-exercised.
 
 ## Media reality (important)
 

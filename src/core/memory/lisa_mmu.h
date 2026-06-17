@@ -75,6 +75,13 @@ void lisa_mmu_set_nmi(lisa_mmu_t *m, void (*cb)(void *ctx, bool active), void *c
 // machine's trigger_vbl.  Returns the prior bit state.
 void lisa_mmu_set_vbl_active(lisa_mmu_t *m, bool active);
 
+// Provide the cycle counter the Status Register's vertical-retrace bit is
+// derived from.  The video state machine scans continuously, so bit 2 is a pure
+// function of the cycle position within the ~60 Hz frame (high during the
+// retrace window, low during active scan) — modelled from this clock.
+struct scheduler;
+void lisa_mmu_set_clock(lisa_mmu_t *m, struct scheduler *sched);
+
 // === CPU slow-path delegates (called from memory.c) =========================
 //
 // `supervisor` selects the MMU context: supervisor mode forces context 0;

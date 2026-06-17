@@ -89,8 +89,15 @@ Decoded by `phys & 0x1E`:
 
 - `$E800` Video Address Latch (write): holds A15-A20; framebuffer base =
   `latch << 15` (consumed by the display in Step 3).
-- `$F800` Status Register (read): bit 2 = vertical retrace (pulsed per frame by
-  the machine's `trigger_vbl`); other bits 0 for now.
+- `$F800` Status Register (read): bit 2 = vertical retrace, modelled
+  cycle-accurately and **active-low** — `lisa_status_byte()` derives it from the
+  cycle counter (84896-cycle frame, 458-cycle retrace window; clock supplied by
+  `lisa_mmu_set_clock()`), with the `vertical` latch set on the retrace-window edge
+  and cleared during active scan **and by the VTIRDIS strobe (`$E018`)**. This
+  matches the real hardware the ROM's VIDTST expects (wait bit 2 = 0 → strobe
+  VTIRDIS → bit 2 = 1) and gives the OS a real-time retrace cadence. (Earlier this
+  was an active-high per-read toggle — a hack that passed VIDTST but ran the OS
+  clock ~150× fast; see docs/lisa.md §7.4.) Other status bits read 0 for now.
 - `$F000` Memory Error Address latch (read): 0 (no error model yet).
 - Peripheral devices (VIA/SCC/floppy/Widget) register physical I/O ranges via
   `lisa_mmu_map_io()`; unmapped I/O currently reads all-ones (a faithful

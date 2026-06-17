@@ -25,10 +25,37 @@ bytes of the 68000 bus; the ROM accesses it with `MOVEP`). Command block:
 
 `(track, side, sector)` maps to an image byte offset via the Sony 5-zone
 geometry helpers (`iwm_disk_image_offset` / `iwm_sectors_per_track`), and the
-data is served with `disk_read_data` / `disk_write_data`. Completion raises
-**FDIR** on VIA1 PB4, which the boot ROM polls (`CHKFIN`). The per-machine
+data is served with `disk_read_data` / `disk_write_data`. The per-machine
 `hw_profile_t.fd_insert` / `fd_present` hooks route floppy insertion here
 instead of the IWM/SWIM `cfg->floppy`.
+
+### Completion — interrupt-driven (IPL 1) and deferred
+
+Completion raises **FDIR**, which goes to **two** places (docs/lisa.md §7.1/§13):
+
+1. **VIA1 PB4** — a pollable level the boot ROM watches (`CHKFIN`). The ROM runs
+   with IPL ≥ 1, so it polls PB4 rather than taking the interrupt.
+2. **IPL 1** — the floppy is a level-1 interrupt source (shared with VIA2/video).
+   The Lisa OS Sony driver (`SOURCE-SONYASM`, `WAIT_INT`) issues an
+   interrupt-generating command and **blocks the reader process** waiting for the
+   completion interrupt; the level-1 handler reads `$00C05F` (§13.3) to service it.
+   `lisa.c` therefore aggregates a third level-1 sub-source (`l1_floppy`) alongside
+   the VIA2 IRQ and the video VBL.
+
+Crucially the completion is **deferred**, not synchronous. Real floppy reads take
+milliseconds; the OS driver blocks *after* issuing the command, then waits for the
+interrupt. If the controller raised FDIR in the same instruction as the
+command-register write, the IPL-1 interrupt would fire *before* the driver had
+blocked — the wake-up would be lost and the reader process would hang forever (the
+LisaOS "scheduler idles" symptom). So `lisa_fdc.c` latches the sector data
+immediately but signals `COMPLETE` + FDIR on a scheduler event a sector-read time
+later (`fdc_complete`, `FDC_COMPLETE_CYCLES` ≈ 4.7 ms). The boot ROM (which polls
+PB4) is unaffected by the latency.
+
+> Note: a faithful `STOP` instruction is a prerequisite for the deferred model to
+> matter — the OS scheduler's idle `Pause` is `STOP #$2000`, and the CPU must
+> actually halt there until the floppy IPL-1 interrupt arrives. See docs/lisa.md
+> §7.1 and the CPU core's `STOP` handling.
 
 ### Disk-type byte (byte 10) — drives the loader's geometry
 
@@ -43,6 +70,30 @@ the loader assumes 1702-block Twiggy geometry, computes out-of-range
 (track, sector) pairs for any block past track 0, and aborts with its own
 "DISK READ ERROR".**  With it, MacWorks reads the whole boot disk (through
 track 38+) and loads the Mac environment into high RAM.
+
+### Disk-in-drive byte (byte 32, `$FCC041`) — Sony driver presence check
+
+Controller RAM **byte 32** (`$FCC041`) is **non-zero when a disk is in the drive**.
+LisaOS's Sony driver polls it at drive init (`SOURCE-SONYASM` `ISDISKIN`:
+`MOVE.B DISKIN(A2),D0`, `DISKIN .EQU $41`) and only marks the volume present
+(`disk_present := gooddisk`) when it reads non-zero; otherwise `FS_Mount` aborts
+the boot-volume mount with `nodiskpres` (614), surfaced as startup error **10707**
+(`stup_fsinit`).  We set it (with the disk-type byte) whenever media is present.
+This is separate from the latched `$C05F` event bits (§13.3) — it is a live
+presence flag, not a one-shot event.
+
+### Disk-controller ROM id (byte 24, `$FCC031`) — machine type
+
+Controller RAM **byte 24** (`$FCC031`, `idx = (offset>>1)`) is the disk-controller
+ROM id the boot ROM (`SETTYPE`) and Lisa OS (`SOURCE-STARTUP`, `adr_ioboard`) read
+to detect the machine and choose the **Twiggy vs Sony floppy driver** (see
+`docs/lisa.md` §16.2 for the full byte→model table). It is **not** a command-block
+field. A `calloc`-zeroed value reads as a Lisa 1 ⇒ the OS installs the Twiggy
+driver on our Sony hardware and OS startup strands. `machine_lisa` therefore sets
+it to `$A0` (`iob_sony`, Lisa 2/5) in `lisa_init` via `lisa_fdc_set_diskrom()`;
+`machine_macxl` leaves it `0` (MacWorks XL's loader-eject only matches SYSTYPE 0).
+Parameter memory (boot volume, contrast, etc.) also lives in this shared RAM at
+`$FCC181` (= byte 192, 32 words, `CHKPM` rotate-sum checksum; `docs/lisa.md` §13.4).
 
 ## Bring-up status
 

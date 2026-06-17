@@ -27,6 +27,16 @@ typedef void (*via_output_fn)(void *context, uint8_t port, uint8_t value);
 typedef void (*via_shift_out_fn)(void *context, uint8_t byte);
 typedef void (*via_irq_fn)(void *context, bool active);
 
+// Optional per-instance port-A data hooks (used by the Lisa parallel hard disk,
+// whose ProFile/Widget controller clocks a byte over port A on every access).
+// `handshake` is true for register 1 (ORA/IRA — the access pulses CA2/PSTRB, so
+// the device advances its data pointer) and false for register 15 (the
+// no-handshake port — a plain level read/write of the state/reply byte).
+//  - read hook: returns the byte the device drives onto the port-A input pins.
+//  - write hook: receives the byte the host drove onto the port-A output pins.
+typedef uint8_t (*via_porta_read_fn)(void *context, bool handshake);
+typedef void (*via_porta_write_fn)(void *context, uint8_t value, bool handshake);
+
 // === Lifecycle (Constructor / Destructor / Checkpoint) ===
 
 // Create a VIA instance with per-instance callback routing.
@@ -57,6 +67,10 @@ extern void via_input_c(via_t *via, int port, int c, bool value);
 
 // Re-drive outputs after initialization of dependent devices (e.g., floppy)
 void via_redrive_outputs(via_t *via);
+
+// Install optional port-A data hooks (see via_porta_read_fn / via_porta_write_fn).
+// Pass NULL hooks to detach.  `ctx` is passed to both.
+void via_set_porta_hooks(via_t *via, via_porta_read_fn read_fn, via_porta_write_fn write_fn, void *ctx);
 
 // Read the current shift register value (used by ADB to capture command bytes)
 uint8_t via_read_sr(via_t *via);

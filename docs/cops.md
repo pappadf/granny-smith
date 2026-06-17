@@ -46,8 +46,32 @@ enabled, the COPS reports `$00 dx dy` every interval **even when idle** — the
 boot ROM's input loop (`WT4INPUT`/`COPS0`) blocks on `ReadCOPS`, so these
 periodic reports are what keep the boot/monitor loop alive between keypresses.
 The model schedules a recurring "mouse" event and enqueues the marker + the
-(currently always-zero) accumulated deltas. Live mouse-delta and keyboard
-scancode injection layer onto this same path in a later step.
+accumulated `dx`/`dy` (host-injected via `cops_inject_mouse`, below).
+
+Unlike the Mac (whose CPU reads raw mouse **quadrature** off the VIA/SCC), the
+Lisa mouse plugs into the COPS, which decodes the pulse edges itself and reports
+**cooked signed `dx`/`dy` deltas** to the CPU (HM §6.6.3, §11.4). So the
+faithful injection point is the delta the COPS would have counted — not
+quadrature — which is exactly what `cops_inject_mouse` feeds.
+
+### Host input injection
+`cops.h` exposes two entry points so the host can drive the guest:
+- `cops_inject_key(code)` — queue a raw COPS scancode (a keyboard key, or the
+  mouse-button keycode `$86` down / `$06` up) onto the same response FIFO the
+  COPS delivers through (CA1 + port A).
+- `cops_inject_mouse(dx, dy, button)` — accumulate `dx`/`dy` (reported on the
+  next mouse tick, as the real COPS reports counted edges) and, on a button-state
+  change, queue the button keycode.
+
+These are wired generically: `machine.h`'s `hw_profile_t.input_key /
+input_mouse_move / input_mouse_button` hooks let the standard `keyboard` /
+`mouse` object methods (`keyboard.press`, `mouse.move`, `mouse.click`) route to
+the Lisa COPS (via `system_input_*` in `system.c`) instead of the default Mac
+ADB/Toolbox path — which is untouched, so Mac machines are unaffected.  Verified:
+keycodes and `[$00,dx,dy]` reports are delivered to and consumed by the OS's
+COPS state machine, and `MouseMovement` updates the OS cursor globals.  (Note: the
+Lisa boot **menu** is mouse-driven — its input loop watches for the mouse-button
+code, not keyboard.)
 
 ### Clock / NMI key / power
 Clock read/write (`$02`, `$1n`), set-modes (`$2x`), and NMI-key nibbles

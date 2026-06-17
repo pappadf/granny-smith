@@ -53,6 +53,13 @@ struct cpu {
     // The machine's GLU/PAL detects HALT and asserts RESET.
     uint32_t halted;
 
+    // CPU stopped by the STOP instruction: it has loaded SR and suspended
+    // instruction fetch until an interrupt of level > the mask arrives (or a
+    // reset).  The scheduler fast-forwards to the next event instead of
+    // executing instructions while this is set.  Cleared when an interrupt is
+    // taken (cpu_check_interrupt) or on reset.
+    uint32_t stopped;
+
     // Last bus error PC: used to detect double bus error (same instruction
     // faulting twice = format $B retry failed).  On real 68030, RTE from a
     // bus error retries the faulting instruction; if the retry faults, the
@@ -805,6 +812,7 @@ static __attribute__((noinline, cold)) void exception_bus_error(cpu_t *restrict 
 static inline void cpu_check_interrupt(cpu_t *restrict cpu) {
     if (cpu->ipl > cpu->interrupt_mask || cpu->ipl == 7) {
         uint16_t sr = cpu_get_sr(cpu);
+        cpu->stopped = 0; // an interrupt resumes a STOP-halted CPU
         cpu->interrupt_mask = cpu->ipl;
         exception(cpu, 0x60 + 4 * cpu->ipl, cpu->pc, sr); // vector includes VBR on 68030
     }

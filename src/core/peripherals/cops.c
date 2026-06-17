@@ -31,6 +31,13 @@ LOG_USE_CATEGORY_NAME("cops");
 #define COPS_KBD_ID     0x3F // final-US keyboard layout id (≤ $DF ⇒ "connected")
 #define COPS_MOUSE_MARK 0x00 // "mouse data follows" marker (docs §11.4)
 
+// Mouse-button keycode `d000 0110` (docs §11.4): d = 1 pressed, 0 released.
+#define COPS_BTN_DOWN 0x86
+#define COPS_BTN_UP   0x06
+
+// Clamp accumulated mouse movement to the signed-byte report range.
+#define COPS_DELTA_CLAMP(v) ((v) > 127 ? 127 : ((v) < -127 ? -127 : (v)))
+
 // Mouse report interval: nnn (command low 3 bits) × 4 ms.  At the Lisa's
 // 5.09375 MHz CPU, 4 ms ≈ 20375 cycles.  Once enabled, the COPS reports every
 // interval even when idle (dx=dy=0) — the boot ROM's COPS input loop (WT4INPUT)
@@ -71,6 +78,7 @@ struct cops {
     bool mouse_scheduled;
     int8_t mouse_dx; // accumulated movement, reset on each report
     int8_t mouse_dy;
+    bool mouse_button; // last host-injected button state (for edge detection)
 };
 
 // === Response FIFO ==========================================================
@@ -175,6 +183,33 @@ static void cops_set_mouse(cops_t *c, bool enable, int nnn) {
         remove_event(c->sched, &cops_mouse_tick, c);
         c->mouse_scheduled = false;
     }
+}
+
+// === Host input injection ===================================================
+
+void cops_inject_key(cops_t *c, uint8_t code) {
+    if (!c)
+        return;
+    fifo_push(c, code);
+    cops_kick_pump(c);
+    LOG(2, "cops inject key 0x%02x", code);
+}
+
+void cops_inject_mouse(cops_t *c, int dx, int dy, int button) {
+    if (!c)
+        return;
+    // Accumulate deltas the way the real COPS sums pulse edges between reports;
+    // cops_mouse_tick emits them (guest must have enabled mouse interrupts).
+    c->mouse_dx = (int8_t)COPS_DELTA_CLAMP((int)c->mouse_dx + dx);
+    c->mouse_dy = (int8_t)COPS_DELTA_CLAMP((int)c->mouse_dy + dy);
+    if (button >= 0) {
+        bool down = button != 0;
+        if (down != c->mouse_button) {
+            c->mouse_button = down;
+            cops_inject_key(c, down ? COPS_BTN_DOWN : COPS_BTN_UP);
+        }
+    }
+    LOG(2, "cops inject mouse dx=%d dy=%d button=%d", dx, dy, button);
 }
 
 // === Command handling =======================================================
