@@ -18,7 +18,21 @@
 #include <assert.h>
 #include <stdbool.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <stdlib.h>
+
+// GSBUSERR: append-mode bus-error trace (worker-thread stderr is lost after
+// daemonize, so write to a file). Inert unless env GSBUSERR is set.
+#define GSBE_LOG(...)                                                                                                  \
+    do {                                                                                                               \
+        if (getenv("GSBUSERR")) {                                                                                      \
+            FILE *_f = fopen("/tmp/gsbuserr.out", "a");                                                                \
+            if (_f) {                                                                                                  \
+                fprintf(_f, __VA_ARGS__);                                                                              \
+                fclose(_f);                                                                                            \
+            }                                                                                                          \
+        }                                                                                                              \
+    } while (0)
 #include <string.h>
 
 // CPU internal state
@@ -75,6 +89,12 @@ struct cpu {
     uint32_t msp; // Master Stack Pointer (M=1 supervisor stack)
     uint32_t m; // M bit: 0=ISP active, 1=MSP active (supervisor only)
     uint32_t instruction_pc; // address of current instruction (for Format $2 frames)
+    uint16_t ir; // instruction register: opcode of the last successfully-fetched
+                 // instruction.  On a code-fetch bus error the faulting fetch does
+                 // NOT overwrite it, so it holds the control-transfer op (JMP/JSR/
+                 // RTS/...) that branched into the absent page — the MC68000 group-0
+                 // frame's instruction-register word, which the Lisa OS BUS_ERR
+                 // handler reads to classify a recoverable demand-segment fault.
 
     // 68030 deferred bus error: set by memory slow paths, checked after each instruction
     uint32_t bus_error_pending; // 0=none, 1=pending
@@ -661,6 +681,9 @@ static inline void exception(cpu_t *restrict cpu, uint32_t vector, uint32_t pc, 
 static __attribute__((noinline, cold)) void exception_bus_error_retry(cpu_t *restrict cpu, uint32_t fault_addr,
                                                                       uint32_t rw) {
     uint32_t faulting_pc = cpu->instruction_pc;
+    GSBE_LOG("RETRY-enter fpc=%06x faddr=%06x bep=%d bea=%06x sup=%d ssp=%06x a7=%06x\n", faulting_pc & 0xffffff,
+             fault_addr & 0xffffff, g_bus_error_pending, g_bus_error_address & 0xffffff, cpu->supervisor,
+             cpu->ssp & 0xffffff, cpu->a[7] & 0xffffff);
 
     uint16_t saved_sr = cpu_get_sr(cpu);
     uint32_t saved_pc = faulting_pc; // retry: RTE restarts the instruction
@@ -681,13 +704,61 @@ static __attribute__((noinline, cold)) void exception_bus_error_retry(cpu_t *res
         cpu->m = 0;
     }
 
+    uint16_t fc = (uint16_t)(g_bus_error_fc & 0x7);
+
+    // MC68000 (Lisa) group-0 bus-error stack frame: 7 words = 14 bytes.  The
+    // 68000 has no format word; its frame is { status word, access address,
+    // instruction register, SR, PC }.  The Lisa OS's segment-fault / BUS_ERR
+    // handler reads the access address (+$2) to locate the faulting segment to
+    // demand-load and the saved SR (+$8) to tell a user fault (recoverable
+    // segment swap-in) from a system fault (fatal e_hardsyscode).  Pushing the
+    // 68030 Format-$B frame here made that handler read the SR from the wrong
+    // offset → it mis-classified the user-mode installer-segment fault as
+    // e_hardsyscode and never loaded the segment, and the 92-byte frame
+    // overflowed the 14-byte-expecting supervisor stack.
+    if (cpu->cpu_model == CPU_MODEL_68000) {
+        uint16_t ssw0 = (uint16_t)(((rw ? 1 : 0) << 4) | (1 << 3) | fc); // R/W, I/N, FC
+        cpu->a[7] -= 14;
+        uint32_t f0 = cpu->a[7];
+        memory_write_uint16(f0 + 0x00, ssw0);
+        memory_write_uint32(f0 + 0x02, fault_addr);
+        memory_write_uint16(f0 + 0x06, cpu->ir); // instruction register (faulting/branching opcode)
+        memory_write_uint16(f0 + 0x08, saved_sr);
+        memory_write_uint32(f0 + 0x0A, saved_pc);
+        if (g_bus_error_pending) {
+            GSBE_LOG("  FRAME-PUSH faulted (kind1) f0=%06x fpc=%06x bea=%06x\n", f0 & 0xffffff, faulting_pc & 0xffffff,
+                     g_bus_error_address & 0xffffff);
+            cpu->halted = 1;
+            g_bus_error_pending = false;
+            if (g_bus_error_instr_ptr)
+                *g_bus_error_instr_ptr = 0;
+            exc_trace_record(0x008, faulting_pc, saved_pc, fault_addr, rw, cpu->vbr, saved_sr, 0, 1);
+            return;
+        }
+        cpu->pc = memory_read_uint32(cpu->vbr + 0x008);
+        GSBE_LOG("  vecread fpc=%06x faddr=%06x spc=%06x sr=%04x -> vec8=%08x bep=%d\n", faulting_pc & 0xffffff,
+                 fault_addr & 0xffffff, saved_pc & 0xffffff, saved_sr, cpu->pc, g_bus_error_pending);
+        if (g_bus_error_pending) {
+            cpu->halted = 1;
+            g_bus_error_pending = false;
+            if (g_bus_error_instr_ptr)
+                *g_bus_error_instr_ptr = 0;
+            exc_trace_record(0x008, faulting_pc, saved_pc, fault_addr, rw, cpu->vbr, saved_sr, 0, 2);
+            return;
+        }
+        cpu->trace = 0;
+        if (saved_pc != faulting_pc)
+            cpu->last_bus_error_pc = 0;
+        exc_trace_record(0x008, faulting_pc, saved_pc, fault_addr, rw, cpu->vbr, saved_sr, 0, 0);
+        return;
+    }
+
     // Push 68030 Format $B (long bus cycle fault) frame: 46 words = 92 bytes.
     // FC comes from g_bus_error_fc (set by the slow path when raising the
     // fault) so the frame reflects the FC the access was actually issued
     // with — vital for MOVES from kernel mode with DFC=1 (A/UX copyin/
     // copyout): the kernel's page-fault arbiter uses SSW[2:0] to decide
     // whether the fault was against the user or kernel address space.
-    uint16_t fc = (uint16_t)(g_bus_error_fc & 0x7);
     uint16_t ssw = (1 << 8) | ((rw ? 1 : 0) << 6) | (0x01 << 4) | fc;
 
     cpu->a[7] -= 92;
@@ -741,7 +812,11 @@ static __attribute__((noinline, cold)) void exception_bus_error(cpu_t *restrict 
     // via f_trap), where a tight fetch loop genuinely makes no progress.
     // The faulting instruction's address (before PC was advanced by the decoder)
     uint32_t faulting_pc = cpu->instruction_pc;
+    GSBE_LOG("SKIP-enter fpc=%06x faddr=%06x bep=%d bea=%06x sup=%d ssp=%06x a7=%06x lastbe=%06x\n",
+             faulting_pc & 0xffffff, fault_addr & 0xffffff, g_bus_error_pending, g_bus_error_address & 0xffffff,
+             cpu->supervisor, cpu->ssp & 0xffffff, cpu->a[7] & 0xffffff, cpu->last_bus_error_pc & 0xffffff);
     if (cpu->last_bus_error_pc != 0 && cpu->last_bus_error_pc == faulting_pc) {
+        GSBE_LOG("  SKIP halt: same-pc double fault fpc=%06x\n", faulting_pc & 0xffffff);
         cpu->halted = 1;
         cpu->last_bus_error_pc = 0;
         g_bus_error_pending = false;
@@ -773,13 +848,61 @@ static __attribute__((noinline, cold)) void exception_bus_error(cpu_t *restrict 
         cpu->m = 0;
     }
 
+    uint16_t fc = (uint16_t)(g_bus_error_fc & 0x7);
+
+    // MC68000 (Lisa) group-0 bus-error stack frame: 7 words = 14 bytes.  The
+    // 68000 has no format word; its frame is { status word, access address,
+    // instruction register, SR, PC }.  The Lisa OS's segment-fault / BUS_ERR
+    // handler reads the access address (+$2) to locate the faulting segment to
+    // demand-load and the saved SR (+$8) to tell a user fault (recoverable
+    // segment swap-in) from a system fault (fatal e_hardsyscode).  Pushing the
+    // 68030 Format-$B frame here made that handler read the SR from the wrong
+    // offset → it mis-classified the user-mode installer-segment fault as
+    // e_hardsyscode and never loaded the segment, and the 92-byte frame
+    // overflowed the 14-byte-expecting supervisor stack.
+    if (cpu->cpu_model == CPU_MODEL_68000) {
+        uint16_t ssw0 = (uint16_t)(((rw ? 1 : 0) << 4) | (1 << 3) | fc); // R/W, I/N, FC
+        cpu->a[7] -= 14;
+        uint32_t f0 = cpu->a[7];
+        memory_write_uint16(f0 + 0x00, ssw0);
+        memory_write_uint32(f0 + 0x02, fault_addr);
+        memory_write_uint16(f0 + 0x06, cpu->ir); // instruction register (faulting/branching opcode)
+        memory_write_uint16(f0 + 0x08, saved_sr);
+        memory_write_uint32(f0 + 0x0A, saved_pc);
+        if (g_bus_error_pending) {
+            GSBE_LOG("  FRAME-PUSH faulted (kind1) f0=%06x fpc=%06x bea=%06x\n", f0 & 0xffffff, faulting_pc & 0xffffff,
+                     g_bus_error_address & 0xffffff);
+            cpu->halted = 1;
+            g_bus_error_pending = false;
+            if (g_bus_error_instr_ptr)
+                *g_bus_error_instr_ptr = 0;
+            exc_trace_record(0x008, faulting_pc, saved_pc, fault_addr, rw, cpu->vbr, saved_sr, 0, 1);
+            return;
+        }
+        cpu->pc = memory_read_uint32(cpu->vbr + 0x008);
+        GSBE_LOG("  vecread fpc=%06x faddr=%06x spc=%06x sr=%04x -> vec8=%08x bep=%d\n", faulting_pc & 0xffffff,
+                 fault_addr & 0xffffff, saved_pc & 0xffffff, saved_sr, cpu->pc, g_bus_error_pending);
+        if (g_bus_error_pending) {
+            cpu->halted = 1;
+            g_bus_error_pending = false;
+            if (g_bus_error_instr_ptr)
+                *g_bus_error_instr_ptr = 0;
+            exc_trace_record(0x008, faulting_pc, saved_pc, fault_addr, rw, cpu->vbr, saved_sr, 0, 2);
+            return;
+        }
+        cpu->trace = 0;
+        if (saved_pc != faulting_pc)
+            cpu->last_bus_error_pc = 0;
+        exc_trace_record(0x008, faulting_pc, saved_pc, fault_addr, rw, cpu->vbr, saved_sr, 0, 0);
+        return;
+    }
+
     // Push 68030 Format $B (long bus cycle fault) frame: 46 words = 92 bytes.
     // FC comes from g_bus_error_fc (set by the slow path when raising the
     // fault) so the frame reflects the FC the access was actually issued
     // with — vital for MOVES from kernel mode with DFC=1 (A/UX copyin/
     // copyout): the kernel's page-fault arbiter uses SSW[2:0] to decide
     // whether the fault was against the user or kernel address space.
-    uint16_t fc = (uint16_t)(g_bus_error_fc & 0x7);
     uint16_t ssw = (1 << 8) | ((rw ? 1 : 0) << 6) | (0x01 << 4) | fc;
 
     cpu->a[7] -= 92;
@@ -864,6 +987,7 @@ static inline void write_sr(cpu_t *restrict cpu, uint16_t sr) {
         }
     } else {
         // 68000: no M bit, no T0
+        bool old_s = cpu->supervisor;
         if (new_s && !cpu->supervisor) {
             cpu->usp = cpu->a[7];
             cpu->a[7] = cpu->ssp;
@@ -872,6 +996,20 @@ static inline void write_sr(cpu_t *restrict cpu, uint16_t sr) {
             cpu->a[7] = cpu->usp;
         }
         cpu->trace = (sr >> 15) & 1; // only T1
+        // Repoint the SoA active tables on a supervisor-bit change (e.g. RTE back
+        // to user, or MOVE/ANDI to SR).  The Lisa segment MMU keys the active
+        // translation context off whether g_active_read is the supervisor table
+        // (supervisor mode forces context 0) or the user table (use the latched
+        // process context).  The 68030 path switches these above; the 68000 path
+        // previously omitted it, so user code resumed after an RTE kept running
+        // through the supervisor view — forced to context 0 — and a process's
+        // private code segment (mapped only in its own domain) faulted forever
+        // (e.g. SYSTEM.SHELL's segment 24).  For machines with no MMU the two
+        // tables hold identical entries, so this is a no-op there.
+        if ((bool)new_s != old_s) {
+            g_active_read = new_s ? g_supervisor_read : g_user_read;
+            g_active_write = new_s ? g_supervisor_write : g_user_write;
+        }
     }
 
     cpu->supervisor = new_s;
@@ -898,6 +1036,37 @@ static inline void trap(cpu_t *restrict cpu, int trap_num) {
 }
 static inline void a_trap(cpu_t *restrict cpu) {
     exception(cpu, 0x28, cpu->pc - 2, cpu_get_sr(cpu));
+}
+// MC68000 code-fetch bus error: the prefetch that faulted left the PC advanced
+// past the start of the control-transfer instruction that branched into the
+// absent page.  The Lisa OS BUS_ERR handler (SOURCE-EXCEPASM.TEXT) reads the
+// instruction-register word, recognises a recoverable JMP/JSR/RTS/RTE/TST, backs
+// the saved PC up by a per-opcode amount (SUBQ), then RTEs to re-enter the
+// now-demand-loaded target.  Reproduce that advance from the opcode so that
+// (pushed_PC - OS SUBQ) lands on the fault target.  Mirrors the per-opcode table
+// in LisaEm reg68k.c:reg68k_internal_vector (the proven oracle).
+static inline uint32_t m68k_fetch_fault_pc_advance(uint16_t ir) {
+    if ((ir & 0xFF00) == 0x4A00)
+        return 2; // TST <ea>
+    if ((ir & 0xFF00) == 0x4E00) {
+        if ((ir & 0x00F8) == 0x00D0)
+            return 2; // JMP (An)
+        if ((ir & 0x00F8) == 0x00A8)
+            return 4; // JSR d16(An)
+        if ((ir & 0x00F8) == 0x0090)
+            return 2; // JSR (An)
+        switch (ir & 0x00FF) {
+        case 0x75:
+            return 2; // RTS
+        case 0x73:
+            return 0; // RTE (handler overwrites PC with the access address)
+        case 0xF9:
+            return 2; // JMP.L abs
+        case 0xB9:
+            return 6; // JSR.L abs
+        }
+    }
+    return 2; // best-effort default (non-recoverable opcode → handler aborts anyway)
 }
 static inline void f_trap(cpu_t *restrict cpu) {
     // Check for spurious F-line from unmapped instruction fetch.
@@ -932,6 +1101,12 @@ static inline void f_trap(cpu_t *restrict cpu) {
         bool is_pmmu = g_bus_error_is_pmmu;
         g_bus_error_pending = false;
         cpu->pc = cpu->instruction_pc;
+        // 68000 group-0 (skip) bus error: advance the saved PC by the faulting
+        // control-transfer instruction's prefetch amount so the Lisa OS handler's
+        // SUBQ back-up resumes on the fault target.  The PMMU retry path (68030
+        // A/UX) restarts at the faulting PC and ignores this.
+        if (cpu->cpu_model == CPU_MODEL_68000 && !is_pmmu)
+            cpu->pc += m68k_fetch_fault_pc_advance(cpu->ir);
         if (is_pmmu)
             exception_bus_error_retry(cpu, cpu->instruction_pc, 1);
         else

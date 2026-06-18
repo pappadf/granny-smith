@@ -38,8 +38,19 @@ physical page number) and 12-bit **SLR** (bits 11-8 = access/space code, bits
 - **Limit check** (non-stack): the hardware adds the page displacement to the
   two's-complement length byte and faults on an 8-bit carry — i.e. valid iff
   `(page + limit_byte) < 256`. `MEMLMT = $0700` → length byte `$00` → all 256
-  pages valid (a full 128 KB segment). Stack segments invert the carry sense
-  (best-effort today; refined when Lisa OS exercises stack growth).
+  pages valid (a full 128 KB segment). Stack segments invert the carry sense:
+  the *top* `(limit_byte + 1)` pages of the segment are valid and it grows
+  downward (limit byte `$00` ⇒ 1 page valid, `$FF` ⇒ all 128 KB) — `lisa_mmu.c`
+  approximates this as `(page + limit_byte) >= 256`.
+  - **The Lisa OS does exercise stack segments.** `superstkmmu = 101`
+    (`source-MMPRIM.TEXT:78`, *"mmu used to map the supervisor's stack"*) makes
+    **logical segment 101 (`$ca0000–$cc0000`) the supervisor stack**, mapped in
+    context 0 (supervisor); the kernel SSP base is `$cc0000` and grows down into
+    it. So a wrong stack-limit sense (or an unmapped seg 101) makes every
+    supervisor-mode exception-frame push fault — watch this when debugging
+    post-mount faults. (The 68000 group-0 exception frame is only 14 bytes; do
+    not push the 68030 92-byte Format-$B frame on the Lisa — see
+    `local/lisa/debug/HANDOVER.md` §0★.3 fix B.)
 - `physical_page = (SOR + page) & 0xFFF` (high nibble forced to 0);
   `physical = (physical_page << 9) | byte`.
 

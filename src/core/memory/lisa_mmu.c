@@ -25,9 +25,12 @@
 
 #include "lisa_mmu.h"
 
+#include "cpu.h"
 #include "memory.h"
 #include "scheduler.h"
+#include "system.h"
 
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -76,6 +79,8 @@ typedef struct {
 struct lisa_mmu {
     uint8_t *ram;
     uint32_t ram_size;
+    uint32_t ram_min; // physical base of installed RAM (Lisa memory boards sit high)
+    uint32_t ram_max; // physical end (exclusive); RAM occupies [ram_min, ram_max)
     uint8_t *rom;
     uint32_t rom_size; // 16 KB
 
@@ -104,6 +109,8 @@ struct lisa_mmu {
     uint32_t mealtch; // Memory Error Address latch (physical addr >> 5)
     void (*nmi_cb)(void *ctx, bool active); // assert/clear the level-7 parity NMI
     void *nmi_ctx;
+    void (*vbl_ack_cb)(void *ctx); // OS read of the Status Register acks the latched VBL IRQ
+    void *vbl_ack_ctx;
 
     lisa_io_dev_t io[LISA_MAX_IO_DEVS];
     int io_count;
@@ -119,6 +126,18 @@ lisa_mmu_t *lisa_mmu_init(uint8_t *ram, uint32_t ram_size, uint8_t *rom, uint32_
         return NULL;
     m->ram = ram;
     m->ram_size = ram_size;
+    // Lisa memory boards populate the address space from 512 KB upward, not from
+    // physical 0 (verified vs LisaEm: 512 KB → [$80000,$100000), 1 MB →
+    // [$80000,$180000), 2 MB → [0,$200000)).  The boot ROM's MEMSIZ scans up from 0
+    // and reports this base as MINMEM ($2A4); the OS lays out real memory (and the
+    // kernel stack at the top of it) relative to that base.  With RAM wrongly based
+    // at 0, the OS placed the kernel stack on a non-existent high page.
+    // Lisa memory boards populate [$80000 .. min($80000+installed, $200000)) — verified
+    // against LisaEm (boots LOS 3.1 to the Install menu with RAM [$80000,$200000)).
+    m->ram_min = getenv("GSRAMMIN") ? 0x80000u : 0u;
+    m->ram_max = m->ram_min + ram_size;
+    if (m->ram_max > 0x200000u)
+        m->ram_max = 0x200000u;
     m->rom = rom;
     m->rom_size = rom_size;
     // Power-on: START set, descriptor RAM cleared. Cleared descriptors read
@@ -162,10 +181,13 @@ void lisa_mmu_map_io(lisa_mmu_t *m, uint32_t phys_base, uint32_t size, memory_in
 uint32_t lisa_mmu_video_base(const lisa_mmu_t *m) {
     if (!m)
         return 0;
-    // Latch holds A15-A20; framebuffer base = latch << 15, kept within RAM.
+    // Latch holds A15-A20; framebuffer physical base = latch << 15.  Return the
+    // offset into the installed-RAM buffer (RAM is based at ram_min, not 0).
     uint32_t base = (uint32_t)m->vidlatch << 15;
-    if (m->ram_size && base >= m->ram_size)
-        base &= (m->ram_size - 1);
+    if (base >= m->ram_min && base < m->ram_max)
+        return base - m->ram_min;
+    if (m->ram_size) // fallback: keep within the buffer
+        return base & (m->ram_size - 1);
     return base;
 }
 
@@ -176,6 +198,13 @@ bool lisa_mmu_vbl_enabled(const lisa_mmu_t *m) {
 void lisa_mmu_set_vbl_active(lisa_mmu_t *m, bool active) {
     if (m)
         m->vbl_active = active;
+}
+
+void lisa_mmu_set_vbl_ack(lisa_mmu_t *m, void (*cb)(void *), void *ctx) {
+    if (m) {
+        m->vbl_ack_cb = cb;
+        m->vbl_ack_ctx = ctx;
+    }
 }
 
 void lisa_mmu_set_clock(lisa_mmu_t *m, struct scheduler *sched) {
@@ -258,7 +287,7 @@ void lisa_mmu_set_nmi(lisa_mmu_t *m, void (*cb)(void *, bool), void *ctx) {
 // memory errors, diagnostics inactive).
 static uint8_t lisa_status_byte(lisa_mmu_t *m) {
     // Status Register bit 2 = vertical retrace, modelled as the real hardware
-    // (docs/lisa.md §7.4; cross-checked against LisaEm).  The bit is ACTIVE-LOW:
+    // (docs/lisa.md §7.4).  The bit is ACTIVE-LOW:
     // the video state machine drives it 0 while in vertical retrace and 1 during
     // active scan.  `vertical` is a latch set on the rising edge into each frame's
     // ~90 µs retrace window (a pure function of the cycle counter), cleared during
@@ -277,7 +306,21 @@ static uint8_t lisa_status_byte(lisa_mmu_t *m) {
             m->vertical = false; // active scan
         }
     }
-    return m->vertical ? 0u : (uint8_t)(1u << 2); // active-low: 0 in retrace, bit-2 set otherwise
+    // A latched VBL interrupt (vbl_active) forces "in retrace" so the OS's IPL-1
+    // handler, which reads this bit to identify the source, confirms the VBL even
+    // if it is serviced past the cycle-accurate retrace window (the kernel was
+    // masked).  Reading the Status Register is the OS's VBL acknowledge: clear the
+    // latch and drop the IRQ.  This matches LisaEm's edge-fired latched video IRQ
+    // (reg68k_external_autovector(IRQ_VIDEO)) — our prior 458-cycle pulse dropped
+    // the VBL whenever the kernel was masked through the window, so a freshly
+    // dispatched process ran before the VBL-driven segment load.
+    bool in_retrace = m->vertical || m->vbl_active;
+    if (m->vbl_active) {
+        m->vbl_active = false;
+        if (m->vbl_ack_cb)
+            m->vbl_ack_cb(m->vbl_ack_ctx);
+    }
+    return in_retrace ? 0u : (uint8_t)(1u << 2); // active-low: 0 in retrace, bit-2 set otherwise
 }
 
 // Dispatch an I/O-space read at physical I/O address `phys` (size bytes).
@@ -320,6 +363,10 @@ static void lisa_io_write(lisa_mmu_t *m, uint32_t phys, unsigned size, uint32_t 
             return;
         }
         if (phys >= 0xE800 && phys < 0xF000) { // Video Address Latch
+            if (getenv("GSFB") && m->vidlatch != (uint8_t)value)
+                fprintf(stderr, "GSVID latch=%02x fb_phys=%06x pc=%06x i=%llu\n", (uint8_t)value,
+                        ((uint32_t)(uint8_t)value) << 15, cpu_get_pc(system_cpu()) & 0xffffff,
+                        (unsigned long long)cpu_instr_count());
             m->vidlatch = (uint8_t)value;
             return;
         }
@@ -493,11 +540,21 @@ static uint32_t lisa_ram_read(lisa_mmu_t *m, uint32_t phys, unsigned size) {
         if (m->nmi_cb)
             m->nmi_cb(m->nmi_ctx, true); // parity NMI (level 7)
     }
-    if (phys + size > m->ram_size)
+    if (phys < m->ram_min || phys + size > m->ram_max) {
+        if (getenv("GSOOB")) {
+            uint32_t pc = cpu_get_pc(system_cpu()) & 0xffffff;
+            static int n = 0;
+            if (pc < 0xfe0000 && cpu_instr_count() > 19886000 && n < 80) { // post-R56, non-ROM
+                n++;
+                fprintf(stderr, "GSOOB read phys=%06x size=%u pc=%06x i=%llu\n", phys, size, pc,
+                        (unsigned long long)cpu_instr_count());
+            }
+        }
         return 0xFFFFFFFFu >> ((4 - size) * 8);
-    uint32_t v = 0;
+    }
+    uint32_t off = phys - m->ram_min, v = 0;
     for (unsigned i = 0; i < size; i++)
-        v = (v << 8) | m->ram[phys + i];
+        v = (v << 8) | m->ram[off + i];
     return v;
 }
 
@@ -508,10 +565,21 @@ static void lisa_ram_write(lisa_mmu_t *m, uint32_t phys, unsigned size, uint32_t
         m->bad_par_gran = phys >> 5;
     else if ((phys >> 5) == m->bad_par_gran)
         m->bad_par_gran = 0xFFFFFFFFu;
-    if (phys + size > m->ram_size)
-        return; // beyond installed RAM: dropped
+    if (phys < m->ram_min || phys + size > m->ram_min + m->ram_size) {
+        if (getenv("GSWILD")) {
+            uint32_t pc = cpu_get_pc(system_cpu()) & 0xffffff;
+            static int n = 0;
+            if (pc < 0xfe0000 && n < 60) { // skip the boot ROM's memory-sizing probe
+                n++;
+                fprintf(stderr, "GSWILD write phys=%06x val=%08x pc=%06x i=%llu\n", phys, value, pc,
+                        (unsigned long long)cpu_instr_count());
+            }
+        }
+        return; // outside installed RAM: dropped
+    }
+    uint32_t off = phys - m->ram_min;
     for (unsigned i = 0; i < size; i++)
-        m->ram[phys + i] = (uint8_t)(value >> ((size - 1 - i) * 8));
+        m->ram[off + i] = (uint8_t)(value >> ((size - 1 - i) * 8));
 }
 
 // 12-bit descriptor register read (word-sized on real hardware).
@@ -525,6 +593,24 @@ static void lisa_mmureg_write(lisa_mmu_t *m, const lisa_resolved_t *r, uint16_t 
         m->sor[r->ctx][r->seg] = value & 0x0FFF;
     else
         m->slr[r->ctx][r->seg] = value & 0x0FFF;
+    if (getenv("GSSEG24") && r->seg == 24) {
+        extern uint64_t cpu_instr_count(void);
+        FILE *_f = fopen("/tmp/gsseg24.out", "a");
+        if (_f) {
+            fprintf(_f, "WR seg24 ctx=%d %s=%03x acc=%x lim=%02x pc=%06x i=%llu\n", r->ctx,
+                    r->reg_is_sor ? "SOR" : "SLR", value & 0xFFF, r->reg_is_sor ? 0 : ((value >> 8) & 0xF),
+                    r->reg_is_sor ? 0 : (value & 0xFF), cpu_get_pc(system_cpu()) & 0xffffff,
+                    (unsigned long long)cpu_instr_count());
+            fclose(_f);
+        }
+    }
+    if (getenv("GSSEG101") && (r->seg == 100 || r->seg == 101 || r->seg == 102)) {
+        extern uint64_t cpu_instr_count(void);
+        fprintf(stderr, "GSSEG seg=%d ctx=%d %s=%03x acc=%x lim=%02x pc=%06x i=%llu\n", r->seg, r->ctx,
+                r->reg_is_sor ? "SOR" : "SLR", value & 0xFFF, r->reg_is_sor ? 0 : ((value >> 8) & 0xF),
+                r->reg_is_sor ? 0 : (value & 0xFF), cpu_get_pc(system_cpu()) & 0xffffff,
+                (unsigned long long)cpu_instr_count());
+    }
 }
 
 // === CPU slow-path delegates ===============================================
@@ -533,7 +619,30 @@ static uint32_t lisa_read(uint32_t addr, unsigned size, bool supervisor) {
     lisa_mmu_t *m = g_lisa_mmu;
     if (__builtin_expect(lisa_is_serial(m, addr & 0x00FFFFFFu), 0))
         return lisa_serial_read(m, size); // serial-number PROM bit-stream
+    if (getenv("GSMAXMEM") && (addr & 0x00FFFFFF) == 0x294 && size == 4) {
+        uint32_t pc = cpu_get_pc(system_cpu()) & 0xffffff;
+        if (pc < 0xfe0000) { // reserve the 32 KB screen below MAXMEM (non-ROM reads only)
+            uint32_t top = m->ram_min + m->ram_size;
+            if (top > 0x200000u)
+                top = 0x200000u;
+            return top - 0x8000u;
+        }
+    }
     lisa_resolved_t r = lisa_resolve(m, addr, supervisor, false);
+    if (getenv("GSSEG17") && (addr & 0x00FFFFFF) >= 0x220000 && (addr & 0x00FFFFFF) < 0x240000) {
+        extern uint64_t cpu_instr_count(void);
+        int latch = (m->seg2 << 1) | m->seg1;
+        int ctx = supervisor ? 0 : latch;
+        int seg = (addr >> 17) & 0x7F;
+        FILE *_f = fopen("/tmp/gsseg17.out", "a");
+        if (_f) {
+            fprintf(_f,
+                    "RD addr=%06x sz=%u sup=%d latch=%d ctx=%d seg=%d route=%d sor=%03x slr=%03x phys=%06x i=%llu\n",
+                    addr & 0xFFFFFF, size, supervisor, latch, ctx, seg, (int)r.route, m->sor[ctx][seg],
+                    m->slr[ctx][seg], r.phys, (unsigned long long)cpu_instr_count());
+            fclose(_f);
+        }
+    }
     switch (r.route) {
     case L_RAM:
         return lisa_ram_read(m, r.phys, size);
@@ -545,6 +654,20 @@ static uint32_t lisa_read(uint32_t addr, unsigned size, bool supervisor) {
         return lisa_mmureg_read(m, &r);
     case L_FAULT:
     default:
+        if (getenv("GSSEG24") && (addr & 0x00FFFFFF) >= 0x300000 && (addr & 0x00FFFFFF) < 0x320000) {
+            extern uint64_t cpu_instr_count(void);
+            int latch = (m->seg2 << 1) | m->seg1;
+            int ctx = supervisor ? 0 : latch;
+            int seg = ((addr >> 17) & 0x7F);
+            uint16_t slr = m->slr[ctx][seg];
+            FILE *_f = fopen("/tmp/gsseg24.out", "a");
+            if (_f) {
+                fprintf(_f, "FLT addr=%06x sup=%d latch=%d ctx=%d seg=%d slr=%03x acc=%x sor=%03x i=%llu\n",
+                        addr & 0xFFFFFF, supervisor, latch, ctx, seg, slr, (slr >> 8) & 0xF, m->sor[ctx][seg],
+                        (unsigned long long)cpu_instr_count());
+                fclose(_f);
+            }
+        }
         lisa_raise_bus_error(addr, true, supervisor);
         return 0xFFFFFFFFu >> ((4 - size) * 8);
     }

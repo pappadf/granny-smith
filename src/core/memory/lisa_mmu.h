@@ -74,6 +74,7 @@ void lisa_mmu_set_nmi(lisa_mmu_t *m, void (*cb)(void *ctx, bool active), void *c
 // ROM's video test / the OS VBL handler observe a retrace.  Called by the
 // machine's trigger_vbl.  Returns the prior bit state.
 void lisa_mmu_set_vbl_active(lisa_mmu_t *m, bool active);
+void lisa_mmu_set_vbl_ack(lisa_mmu_t *m, void (*cb)(void *ctx), void *ctx);
 
 // Provide the cycle counter the Status Register's vertical-retrace bit is
 // derived from.  The video state machine scans continuously, so bit 2 is a pure

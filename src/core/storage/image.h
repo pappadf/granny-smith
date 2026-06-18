@@ -89,6 +89,7 @@ size_t disk_read_data(image_t *disk, size_t offset, uint8_t *buf, size_t size);
 // sector is out of range).  Used by the Lisa floppy controller to populate the
 // boot-block header the ROM validates (FILEID = $AAAA).
 size_t disk_read_tag(image_t *disk, size_t sector, uint8_t *buf, size_t size);
+size_t disk_write_tag(image_t *disk, size_t sector, const uint8_t *buf, size_t size);
 
 size_t disk_write_data(image_t *disk, size_t offset, uint8_t *buf, size_t size);
 

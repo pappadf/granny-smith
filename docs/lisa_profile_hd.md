@@ -59,19 +59,34 @@ captures the protocol (from the rev-H boot ROM `RM248.B.TEXT` and the OS driver
   runs real-time. With these, LOS 3.1 **loads the entire OS, passes the ROM video
   self-test, runs the OS scheduler healthily, and reads to the volume catalog
   (lba 28).** See `docs/lisa.md` §7.1/§7.4/§13 and `docs/lisa_fdc.md`.
-- **Current blocker — FS-mount.** After the catalog read (lba 28) the OS
-  **FS-reader process never runs to issue the next read** (the LisaEm reference
-  reads lba 29 → writes lba 28 → continues to mount the whole disk; ours stops).
-  Narrowed via a LisaEm go-byte command-trace oracle: the lba-29 read is issued by
-  an OS process at seg96 `$c08fb4`, never reached in ours. **Ruled out:** the
-  `$00C05F` drive-status bits (our drive-1 `$0C` is correct; LisaEm's internal
-  `$C0` resets our early boot — see `docs/lisa.md` §13.3). This is the original
-  error-10707 (`FS_Mount` / `nodiskpres`) issue, now reached in a *healthy* running
-  system. **Next:** find why the FS-reader process is never scheduled (compare
-  scheduler queues / PCB `blk_state` vs the LisaEm `$cc5a46`-woken-per-read trace;
-  verify our segment-MMU slot assignment matches LisaEm's `$c0xxxx` before trusting
-  those PCs). The auto-boot PM seed in `lisa_fdc_init` is a temporary debug aid
-  (revert before commit; auto-boot needs a real PM `bootvol`, PM at `$FCC181`).
+- **FS-mount FIXED + boot now mounts the volume (sessions 11–12).** The FS-reader
+  was never woken because `$00C05F` (DISKSTAT) must encode *which drive* completed:
+  `INT_STAT |= (drive_id & $88)>>1` + summary bit 7, so the lower Sony drive yields
+  `$C05F = $C0` (bit 6 = `bot_done`), which the OS `DISK_INT` reads to wake the
+  reader. (The earlier note that "`$C0` resets our early boot / ruled out" was
+  **WRONG** — `$C0` is the fix; the legacy `$0C` left `bot_done` clear → no wake.
+  See `docs/lisa_fdc.md`.) Three further fixes then took the boot through mounting:
+  **RAM is based high at `[$80000,$200000)`** (not at 0 — kernel stack was landing
+  on a non-existent page; `docs/lisa.md §3.1`, gated `GSRAMMIN`); the **68000
+  bus-error exception frame** (must be the 14-byte group-0 frame, not the 68030
+  92-byte Format-$B — the wrong frame mis-classified a user demand-segment fault as
+  `e_hardsyscode` and stormed; `docs/lisa.md §6.1`); and the **VBL interrupt must be
+  edge-latched** (not a 458-cycle pulse — else it's lost while the kernel is masked;
+  `docs/lisa.md §8`). With these the boot reads/loads the whole OS, **mounts the
+  boot volume** (writes back the MDDF/catalog), and launches the install shell.
+- **Current blocker — `SYSTEM.SHELL` code-load.** After mounting, the OS root
+  process (`source-PMSPROCS.text`) runs `SYSTEM.SHELL` (the Install/Repair/Restore
+  **menu**) via `CreateShell`→`Make_Process`, and **shuts the system down when the
+  shell exits** (→ `GiveUpGhost`, `source-fsinit.text:1066` — the 6-second wait
+  loop + `reset_machine`). Ours fails to load/run `SYSTEM.SHELL`'s code segment
+  (the `$f7fffa = JMP $30553A` trampoline into logical segment 24, demand-loaded
+  from `R 626→786`), so the shell exits and the OS resets; the reference (LisaEm)
+  loads it (reads to lba 799) and shows the menu. **The true remaining root is the
+  segment-loader / `Make_Process` not loading the shell's code.** Full chain, source
+  citations, repro, and next steps: **`local/lisa/debug/HANDOVER.md` §0★.** The
+  auto-boot PM seed in `lisa_fdc_init` and the `GS*` trace env-gates are temporary
+  debug aids (revert before commit; auto-boot needs a real PM `bootvol`, PM at
+  `$FCC181`).
 - Once it boots: drive the install → write the OS to the ProFile → reboot from it.
   The device write path is implemented and unit-tested but not yet OS-exercised.
 

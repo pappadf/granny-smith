@@ -353,6 +353,18 @@ size_t disk_read_tag(image_t *disk, size_t sector, uint8_t *buf, size_t size) {
     return n;
 }
 
+// Persist a sector's tag (pagelabel).  The Lisa Sony controller writes the
+// 512-byte data sector *and* its tag together; modelling only the data drops
+// the FS pagelabel updates the OS makes on every write.  Tags live in the
+// in-memory image->tags buffer (per-run; the read-only base file is untouched).
+size_t disk_write_tag(image_t *disk, size_t sector, const uint8_t *buf, size_t size) {
+    if (!disk || !disk->tags || !buf || sector >= disk->tag_count)
+        return 0;
+    size_t n = size < disk->tag_bytes ? size : disk->tag_bytes;
+    memcpy(disk->tags + sector * disk->tag_bytes, buf, n);
+    return n;
+}
+
 // Scratch directory for read-only image deltas (kept volatile).
 #define IMAGE_RO_SCRATCH_DIR "/tmp/gs-image-ro"
 

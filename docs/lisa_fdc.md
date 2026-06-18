@@ -52,6 +52,19 @@ immediately but signals `COMPLETE` + FDIR on a scheduler event a sector-read tim
 later (`fdc_complete`, `FDC_COMPLETE_CYCLES` ≈ 4.7 ms). The boot ROM (which polls
 PB4) is unaffected by the latency.
 
+**`$C05F` (DISKSTAT) must encode WHICH drive completed.** On completion the
+controller ORs `INT_STAT |= (drive_id & $88) >> 1` and sets summary **bit 7** if
+any drive-done bit (`& $70`) is present — so the lower Sony drive (`drive_id =
+$80`) yields `$C05F = $C0` (bit 6 = `int_stat.bot_done`, bit 7 = summary). The OS
+Sony driver's `DISK_INT` (`SOURCE-SONY`) reads **bit 6 = `bot_done`** (MSB-first
+Pascal bit packing) and only runs `IODONE` → wakes the blocked reader process
+(`$cc5a46`, glob `$abc`) when it is set. A fixed bits-2/3 value (`$0C`) leaves
+`bot_done` clear ⇒ the reader is never woken ⇒ the OS idles at its first
+interrupt-driven read (lba 28). Verified against LisaEm `io_board/floppy.c`
+`fix_intstat` / `RWTS_IRQ_SIGNAL`. (Drive 0 / MacWorks keep a legacy bits-2/3
+fallback; the Mac ROM drains `$C05F & $77`, which includes bit 6, so it is
+unaffected — `xl-boot` still pixel-matches.)
+
 > Note: a faithful `STOP` instruction is a prerequisite for the deferred model to
 > matter — the OS scheduler's idle `Pause` is `STOP #$2000`, and the CPU must
 > actually halt there until the floppy IPL-1 interrupt arrives. See docs/lisa.md
@@ -114,6 +127,14 @@ layer now loads that section (`image_load_diskcopy_tags`) and exposes
 sector tag on every read. So the boot block validates (its tag is all `$AA` →
 `FILEID = $AAAA`) and other blocks carry their true file-ids — exactly what the
 loaded OS expects.
+
+**Writes persist the tag too.** The Sony controller writes the 512-byte data
+sector **and** its 12-byte tag (pagelabel) together; modelling only the data
+would drop the FS's pagelabel updates (the OS writes a sector's tag on every
+write). So `RWTS_WRITE` calls `disk_write_tag()` (a `disk_read_tag` mirror that
+updates the in-memory `image->tags`) in addition to `disk_write_data()`. (The
+read-only base image is never touched — both data and tag writes land in the
+per-run delta / in-memory tag buffer.)
 
 ## Result: the Lisa boots from the floppy
 

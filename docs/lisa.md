@@ -139,11 +139,23 @@ The MMU's output drives a 3-way space decode. The three spaces are **disjoint**
 
 | Physical range | Contents |
 | --- | --- |
-| `$000000 – $1FFFFF` | RAM (≤ 2 MB). Base machines have 512 KB; Lisa 2 supports 1 MB / 2 MB. |
-| (within RAM) | the 32 KB video page, located by the Video Address Latch (§8) |
+| `$000000 – $07FFFF` | **unpopulated** (no RAM here — the memory boards sit *high*) |
+| `$080000 – $1FFFFF` | RAM. Boards are based at `$080000`: 512 KB ⇒ `[$80000,$100000)`, 1 MB ⇒ `[$80000,$180000)`, 2 MB ⇒ `[$80000,$200000)` (= 1.5 MB usable in the 2 MB / 21-bit space). |
+| (within RAM) | the 32 KB video page, located by the Video Address Latch (§8) — near the top of RAM (e.g. `$1F8000` on a 2 MB machine) |
 
-Physical addresses are 21 bits (2 MB). RAM begins at physical 0; the boot ROM
-programs the MMU so that logical and physical RAM are contiguous from 0.
+Physical addresses are 21 bits (2 MB). **RAM is based HIGH at `$080000`, NOT at
+physical 0** (a long-standing error to watch for): physical `[0, $80000)` is
+unpopulated. Evidence: the boot ROM's `MEMSIZ` (RM248.K) scans **up from physical
+0** for the first RAM (so RAM cannot be at 0), and the OS's "minimum physical
+address" `MINMEM` (`[$2A4]`) / `realmemmmu`/`logrealmem` reflect the high base;
+cross-checked against LisaEm (`lisaem_wx.cpp` RAM-board table: `minlisaram =
+$80000` for every config without the undefined `ALLOW2MBRAM`, `maxlisaram` per
+size). The boot ROM then programs the MMU so logical RAM is contiguous *from this
+high physical base*. With RAM modelled at 0 the OS placed the kernel stack on a
+non-existent page → wild `RTS`/reset and screen-junk wild writes. The emulator
+implements the high base in `lisa_mmu.c` (`ram_min`/`ram_max`, currently behind
+the `GSRAMMIN` gate pending the `macxl` timing re-baseline — see
+`local/lisa/debug/HANDOVER.md` §0★).
 
 ### 3.2 I/O space map (physical `$00C000–$00FFFF`)
 
@@ -471,7 +483,7 @@ Read by the bus-error handler to classify a fault:
 
 > **Bit 2 (vertical retrace) — model + polarity.** The bit is **active-low** (it
 > reads 0 *while* the video state machine is in vertical retrace, 1 during active
-> scan; cross-checked against LisaEm). `lisa_mmu.c` models it as a pure function of
+> scan). `lisa_mmu.c` models it as a pure function of
 > the cycle counter: a `vertical` latch is set on the rising edge into each frame's
 > ~90 µs retrace window (84896-cycle frame at 5.09375 MHz ≈ 60 Hz, 458-cycle
 > window), cleared during active scan **and by the VTIRDIS strobe (`$00E018`)**.
@@ -481,6 +493,15 @@ Read by the bus-error handler to classify a fault:
 > An earlier active-high + per-read-toggle hack passed VIDTST by luck but broke the
 > OS's retrace-paced software clock (it ran ~150× fast); the cycle-accurate model
 > fixes both. `lisa_mmu_set_clock()` supplies the cycle source.
+>
+> **Interaction with the latched VBL interrupt (§8):** the bit is *no longer
+> purely* cycle-derived. While a latched VBL IRQ is pending (`vbl_active`), the bit
+> is *forced* to read 0 (in-retrace) so the level-1 handler — which reads this bit
+> to identify the source — confirms the VBL even when it is serviced past the
+> cycle-accurate retrace window (the kernel having been masked). The first read of
+> the Status Register clears `vbl_active` and drops the IRQ (the OS's VBL ack);
+> outside that window the bit reverts to the cycle-derived value above. VIDTST is
+> unaffected because it runs with VTMSK off (no `vbl_active` is ever set).
 
 ---
 
@@ -507,6 +528,20 @@ Read by the bus-error handler to classify a fault:
   Status Register** (`$00F800`) — **active-low**, asserted (= 0) for the ~90 µs
   retrace window each frame; see §7.4 for the cycle-accurate model and the
   VTIRDIS-clears-the-latch behaviour the ROM's VIDTST depends on.
+  - **The VBL interrupt is EDGE-triggered and LATCHED — model it as a held level,
+    NOT a fixed-width pulse.** VTIR fires once at the rising edge into each retrace
+    and stays asserted at IPL 1 until the CPU services it (LisaEm models it as a
+    latched autovector: `reg68k_external_autovector(IRQ_VIDEO)`). This matters
+    because the kernel is routinely interrupt-masked through the *entire* ~90 µs
+    retrace window: a pulse that de-asserted at the window's end would be **lost**
+    whenever the kernel was masked across it, and retrace-paced OS work would
+    stall. (Concrete symptom: after mounting the boot volume the OS resumes a
+    process that expects a *pending* VBL to drive the install-shell segment load;
+    with a dropped VBL it ran ahead into a non-resident segment and the boot
+    derailed.) The emulator (`lisa.c`) therefore asserts the level-1 VBL source at
+    the retrace edge and holds it until the OS reads the Status Register — the
+    level-1 handler's first action, which identifies *and* acknowledges the VBL
+    (`lisa_vbl_ack` / `lisa_mmu_set_vbl_ack`); the old 458-cycle auto-drop is gone.
 - **Contrast:** software-controlled. A value written to VIA2's A-port is latched
   in a 74C174 and summed to a DC level driving the CRT (output ~+2 V full black
   to ~+7 V full white). This is cosmetic; an emulator may model it as a stored
@@ -805,10 +840,10 @@ one and the drive then accepts new media.
 > **Drive-1 bit layout — verified (session 9).** Lisa 2's single Sony is **drive 1**
 > (bits 0–3 here; `DRIVE` byte `$80`, `LOWER` in `SOURCE-SONYASM`). A drive-1 RWTS
 > completion therefore sets **bit 2 + bit 3** (`$0C`), which is what `lisa_fdc.c`
-> writes — and both the ROM/loader and the OS Sony driver accept it. (LisaEm uses a
-> *different internal* encoding — drive-1 = bit 6 + bit 7 = `$C0`; forcing our
-> `$00C05F` to `$C0` **resets the early ROM/loader boot**, confirming the bits-0–3
-> layout above is correct for the rev-H ROM. Don't re-try `$C0`.)
+> writes — and both the ROM/loader and the OS Sony driver accept it. (A plausible
+> alternative encoding — drive-1 = bit 6 + bit 7 = `$C0` — was tested and **resets
+> the early ROM/loader boot**, confirming the bits-0–3 layout above is correct for
+> the rev-H ROM. Don't re-try `$C0`.)
 
 ### 13.4 Controller ROM id and parameter memory
 

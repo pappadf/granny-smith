@@ -586,6 +586,7 @@ static void lisa_register_profile_object(config_t *cfg) {
 // ============================================================
 
 static void lisa_vbl_off(void *source, uint64_t data); // defined in the VBL section
+static void lisa_vbl_ack(void *source); // defined in the VBL section
 
 static void lisa_init(config_t *cfg, checkpoint_t *checkpoint) {
     lisa_state_t *ls = (lisa_state_t *)malloc(sizeof(lisa_state_t));
@@ -607,8 +608,15 @@ static void lisa_init(config_t *cfg, checkpoint_t *checkpoint) {
     // later by rom.load_lisa(); the host pointer stays valid (same buffer).
     ls->mmu = lisa_mmu_init(ram_native_pointer(cfg->mem_map, 0), cfg->ram_size,
                             (uint8_t *)memory_rom_bytes(cfg->mem_map), memory_rom_size(cfg->mem_map), checkpoint);
+    // Real Lisa DRAM powers up in an indeterminate state; LisaEm models it as
+    // all-$FF (memset(lisaram,0xff,...)).  Our memory map zeroes RAM, which can
+    // leave OS-read uninitialised pointers reading $0 instead of $FF.  Match
+    // LisaEm under GSRAMFF to test whether the OS relies on the power-up pattern.
+    if (getenv("GSRAMFF"))
+        memset(ram_native_pointer(cfg->mem_map, 0), 0xFF, cfg->ram_size);
     lisa_mmu_set_nmi(ls->mmu, lisa_parity_nmi, cfg); // level-7 parity NMI (PARTST)
     lisa_mmu_set_clock(ls->mmu, cfg->scheduler); // cycle source for the retrace status bit
+    lisa_mmu_set_vbl_ack(ls->mmu, lisa_vbl_ack, cfg); // Status-Register read acks the latched VBL
 
     // Two 6522 VIAs (reused unchanged).  map=NULL: the machine registers the
     // interface itself.  freq_factor 4 = 68000/4 ≈ 1.27 MHz (docs/lisa.md §10).
@@ -802,18 +810,33 @@ static void lisa_vbl_off(void *source, uint64_t data) {
 // observe the low→high retrace edge instead of timing out (boot error 42).
 #define LISA_VBL_HOLD_CYCLES 458
 
+// The OS's IPL-1 handler reads the Status Register to identify the VBL; that read
+// is the VBL acknowledge.  Clear the latched VBL IRQ (matches LisaEm's edge-fired
+// autovector being taken once per retrace).
+static void lisa_vbl_ack(void *source) {
+    config_t *cfg = (config_t *)source;
+    lisa_state_t *ls = lisa_state(cfg);
+    if (ls && ls->l1_vbl) {
+        ls->l1_vbl = false;
+        lisa_update_l1(cfg);
+    }
+}
+
 static void lisa_trigger_vbl(config_t *cfg) {
     lisa_state_t *ls = lisa_state(cfg);
     if (ls && ls->mmu) {
-        lisa_mmu_set_vbl_active(ls->mmu, true);
-        scheduler_new_cpu_event(cfg->scheduler, &lisa_vbl_off, cfg, 0, LISA_VBL_HOLD_CYCLES, 0);
         // VBL is an IPL-1 interrupt source (docs/lisa.md §8) gated by the VTMSK
-        // latch ($E01A on / $E018 off).  The level-1 handler polls the Status
-        // Register retrace bit (§7.4) to identify the source; the line is held
-        // for the ~90 µs retrace window (LISA_VBL_HOLD_CYCLES), then dropped by
-        // lisa_vbl_off.  Without this the OS's interrupt-driven VBL handler
-        // (cursor + scheduler clock-tick soft-interrupt) never runs.
+        // latch ($E01A on / $E018 off).  Real hardware (and LisaEm) FIRE the video
+        // IRQ at the retrace edge and LATCH it until the CPU services it, so a
+        // kernel that is interrupt-masked through the retrace window still sees the
+        // VBL on unmask.  We model that by holding the IRQ asserted (and forcing the
+        // Status Register retrace bit via vbl_active) until the OS reads the Status
+        // Register (lisa_vbl_ack).  The old fixed 458-cycle pulse dropped the VBL
+        // whenever the kernel was masked through it — which left a freshly
+        // dispatched user process to run its installer-segment trampoline before the
+        // VBL-driven segment load, faulting on the not-yet-resident segment.
         if (lisa_mmu_vbl_enabled(ls->mmu)) {
+            lisa_mmu_set_vbl_active(ls->mmu, true);
             ls->l1_vbl = true;
             lisa_update_l1(cfg);
         }

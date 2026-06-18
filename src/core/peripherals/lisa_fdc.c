@@ -17,6 +17,7 @@
 #include "image.h"
 #include "log.h"
 
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -112,8 +113,33 @@ static void fdc_set_fdir(lisa_fdc_t *fdc, bool asserted) {
 static void fdc_complete(void *source, uint64_t data) {
     (void)data;
     lisa_fdc_t *fdc = (lisa_fdc_t *)source;
-    fdc->ram[FDC_DRVSTAT] |= DRVSTAT_COMPLETE1 | DRVSTAT_OR1; // RWTS complete
+    // The Sony controller's interrupt-source byte ($C05F = DISKSTAT) reports WHICH
+    // drive completed: the controller ORs in (drive_id & 0x88) >> 1, then sets the
+    // summary bit 7 if any drive-done bit (0x70) is present (verified against
+    // LisaEm io_board/floppy.c fix_intstat / RWTS_IRQ_SIGNAL).  The Lisa drive
+    // id is $80 (lower) ⇒ bit 6 + bit 7 = $C0; the OS Sony driver's DISK_INT
+    // reads bit 6 as int_stat.bot_done (MSB-first packing) and only unblocks the
+    // waiting reader process when it is set — a fixed bits-2/3 value left bot_done
+    // clear, so the interrupt-driven OS reader hung after its first read.  The
+    // Mac ROM (MacWorks) drains ($C05F & $77), which includes bit 6, so it is
+    // unaffected.
+    uint8_t ist = (uint8_t)((fdc->ram[FDC_DRIVE] & 0x88) >> 1); // $80→bit6, $08→bit2
+    if (ist & 0x70)
+        ist |= 0x80; // summary/OR bit
+    if (ist == 0)
+        ist = DRVSTAT_COMPLETE1 | DRVSTAT_OR1; // drive 0: fall back to legacy bits 2/3
+    fdc->ram[FDC_DRVSTAT] |= ist; // RWTS complete (drive-encoded interrupt source)
     fdc_set_fdir(fdc, true); // raise FDIR / IPL1 now that the driver has blocked
+    if (getenv("GSTRACE")) {
+        extern uint64_t cpu_instr_count(void);
+        extern int g_lisa_trace;
+        uint64_t ic = cpu_instr_count();
+        fprintf(stderr, "GSCOMPLETE i=%llu\n", (unsigned long long)ic);
+        if (getenv("GSTRACE_AT") == 0 && ic > 19886100 && !g_lisa_trace) {
+            g_lisa_trace = 1;
+            fprintf(stderr, "GSTRACE ON i=%llu\n", (unsigned long long)ic);
+        }
+    }
 }
 
 // Report the Sony disk geometry the boot loader's block->(track,sector)
@@ -154,9 +180,23 @@ static void fdc_execute_rwts(lisa_fdc_t *fdc) {
         fdc->ram[FDC_STATUS] = (got == 512) ? 0x00 : 0x17;
         LOG(2, "fdc read trk=%d side=%d sec=%d off=%zu -> status=%02x", track, side, sector, offset,
             fdc->ram[FDC_STATUS]);
+        if (getenv("GSTRACE")) {
+            extern uint64_t cpu_instr_count(void);
+            fprintf(stderr, "GSRWTS read lba=%zu trk=%d sec=%d drive=%02x i=%llu\n", (size_t)offset / 512, track,
+                    sector, fdc->ram[FDC_DRIVE], (unsigned long long)cpu_instr_count());
+        }
     } else if (rwts == RWTS_WRITE) {
         size_t put = disk_write_data(fdc->image, offset, &fdc->ram[FDC_DATA], 512);
+        // The Sony controller writes the data sector AND its tag (pagelabel)
+        // together; persist the 12-byte tag the OS staged in DSKBUFF so later
+        // reads see the FS's updated pagelabels.
+        disk_write_tag(fdc->image, (size_t)offset / 512, &fdc->ram[FDC_HDR], 12);
         fdc->ram[FDC_STATUS] = (put == 512) ? 0x00 : 0x18; // unwritable on short write
+        if (getenv("GSTRACE")) {
+            extern uint64_t cpu_instr_count(void);
+            fprintf(stderr, "GSRWTS WRITE lba=%zu trk=%d sec=%d drive=%02x i=%llu\n", (size_t)offset / 512, track,
+                    sector, fdc->ram[FDC_DRIVE], (unsigned long long)cpu_instr_count());
+        }
     } else if (rwts == RWTS_UNCLAMP) {
         // Unclamp releases/ejects the disk (the Lisa drive is software-eject).
         // The drive goes empty until the host inserts new media; that is how the

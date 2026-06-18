@@ -10,6 +10,15 @@
 
 #include "log.h"
 #include "system.h"
+
+#include <stdio.h>
+#include <stdlib.h>
+
+int g_lisa_trace = 0;
+long g_lisa_trace_n = 0;
+FILE *g_lisa_trace_fp = NULL;
+unsigned long long g_lisa_ic = 0;
+unsigned long long g_lisa_trace_start = 0;
 LOG_USE_CATEGORY_NAME("cpu");
 
 // 68000 memory access: direct (no MMU translation)
@@ -71,9 +80,81 @@ LOG_USE_CATEGORY_NAME("cpu");
 #define CPU_DECODER_PROLOGUE                                                                                           \
     cpu_check_interrupt(cpu);                                                                                          \
     while (*instructions > 0) {                                                                                        \
+        extern int g_lisa_trace;                                                                                       \
+        extern long g_lisa_trace_n;                                                                                    \
+        extern FILE *g_lisa_trace_fp;                                                                                  \
+        extern unsigned long long g_lisa_ic, g_lisa_trace_start;                                                       \
+        {                                                                                                              \
+            static int gs_env_init = 0;                                                                                \
+            if (!gs_env_init) {                                                                                        \
+                gs_env_init = 1;                                                                                       \
+                const char *e = getenv("GSTRACE_AT");                                                                  \
+                if (e)                                                                                                 \
+                    g_lisa_trace_start = strtoull(e, 0, 10);                                                           \
+            }                                                                                                          \
+        }                                                                                                              \
+        g_lisa_ic++;                                                                                                   \
+        if (g_lisa_trace_start && g_lisa_ic >= g_lisa_trace_start && !g_lisa_trace)                                    \
+            g_lisa_trace = 1;                                                                                          \
+        if (g_lisa_trace && g_lisa_trace_n < 200000) {                                                                 \
+            if (!g_lisa_trace_fp)                                                                                      \
+                g_lisa_trace_fp = fopen("/tmp/gstrace.out", "w");                                                      \
+            if (g_lisa_trace_fp)                                                                                       \
+                fprintf(g_lisa_trace_fp, "T %06x a7=%06x\n", cpu->pc & 0xffffff, cpu->a[7] & 0xffffff);                \
+            g_lisa_trace_n++;                                                                                          \
+            if (g_lisa_trace_n == 200000 && g_lisa_trace_fp)                                                           \
+                fflush(g_lisa_trace_fp);                                                                               \
+        }                                                                                                              \
+        if ((cpu->pc & 0xffffff) == 0x2e01f8) {                                                                        \
+            static int gsdisp = -1, gsdn = 0;                                                                          \
+            if (gsdisp < 0)                                                                                            \
+                gsdisp = getenv("GSDISP") ? 1 : 0;                                                                     \
+            extern uint64_t cpu_instr_count(void);                                                                     \
+            if (gsdisp && gsdn < 60) {                                                                                 \
+                gsdn++;                                                                                                \
+                fprintf(stderr, "GSDISP i=%llu A0=%08x restorePC=%08x A1=%08x\n",                                      \
+                        (unsigned long long)cpu_instr_count(), cpu->a[0], memory_read_uint32(cpu->a[0]), cpu->a[1]);   \
+            }                                                                                                          \
+        }                                                                                                              \
+        if ((cpu->pc & 0xffffff) == 0xfe1d90) {                                                                        \
+            static int gsfdc = -1;                                                                                     \
+            if (gsfdc < 0)                                                                                             \
+                gsfdc = getenv("GSFDC") ? 1 : 0;                                                                       \
+            if (gsfdc) {                                                                                               \
+                extern uint64_t cpu_instr_count(void);                                                                 \
+                fprintf(stderr, "GSFDCREAD i=%llu a0=%08x ret=%08x d0=%08x d1=%08x a1=%08x\n",                         \
+                        (unsigned long long)cpu_instr_count(), cpu->a[0], memory_read_uint32(cpu->a[7] + 22),          \
+                        cpu->d[0], cpu->d[1], cpu->a[1]);                                                              \
+            }                                                                                                          \
+        }                                                                                                              \
+        /* The MC68000 has a 24-bit address bus (A0-A23); bits 24-31 of the PC are                                     \
+         * not driven.  Control transfers through a pointer whose high byte is a                                       \
+         * tag (e.g. the Lisa OS inter-segment jump-table entries, $A0xxxxxx) rely                                     \
+         * on this truncation.  Keep cpu->pc 24-bit so instruction_pc matches the                                      \
+         * 24-bit fault address a demand-segment bus error reports (otherwise                                          \
+         * f_trap's g_bus_error_address==instruction_pc check fails and the fault is                                   \
+         * mis-delivered as a line-F instead of demand-loading the segment).  No-op                                    \
+         * for the Mac Plus, whose PC never exceeds 24 bits. */                                                        \
+        cpu->pc &= 0x00FFFFFFu;                                                                                        \
         uint32_t fetch = memory_read_uint32(cpu->pc);                                                                  \
         uint16_t opcode = fetch >> 16;                                                                                 \
         uint16_t ext_word = fetch & 0xFFFF;                                                                            \
+        /* Record the address of the instruction being decoded.  The group-0                                           \
+         * exception path (bus/address error, f_trap demand-segment fault on the                                       \
+         * Lisa) reads cpu->instruction_pc to build the stack frame and to match                                       \
+         * the faulting fetch address in f_trap.  The 68030 decoder sets this;                                         \
+         * the 68000 decoder previously omitted it, so a demand-segment fetch                                          \
+         * fault (Lisa SYSTEM.SHELL seg-24 load) built its frame with a stale PC                                       \
+         * (0) and mis-routed the fault.  Mirror the 68030 prologue exactly. */                                        \
+        cpu->instruction_pc = cpu->pc;                                                                                 \
+        /* Latch the instruction register only on a non-faulting fetch.  When the                                      \
+         * fetch bus-errors (jump/call into an absent code segment), cpu->ir keeps                                     \
+         * the control-transfer opcode that branched here, which the group-0 frame                                     \
+         * must carry so the Lisa OS demand-segment handler can recognise it. */                                       \
+        if (__builtin_expect(!g_bus_error_pending, 1))                                                                 \
+            cpu->ir = opcode;                                                                                          \
+        if (__builtin_expect(cpu->last_bus_error_pc != 0 && !cpu->supervisor && cpu->last_bus_error_pc != cpu->pc, 0)) \
+            cpu->last_bus_error_pc = 0;                                                                                \
         cpu->pc += 2;                                                                                                  \
         if (*instructions > 0)                                                                                         \
             (*instructions)--;
