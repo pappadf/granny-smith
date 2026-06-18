@@ -164,9 +164,11 @@ $80000` for every config without the undefined `ALLOW2MBRAM`, `maxlisaram` per
 size). The boot ROM then programs the MMU so logical RAM is contiguous *from this
 high physical base*. With RAM modelled at 0 the OS placed the kernel stack on a
 non-existent page → wild `RTS`/reset and screen-junk wild writes. The emulator
-implements the high base in `lisa_mmu.c` (`ram_min`/`ram_max`, currently behind
-the `GSRAMMIN` gate pending the `macxl` timing re-baseline — see
-`local/lisa/debug/HANDOVER.md` §0★).
+implements the high base in `lisa_mmu.c` (`ram_min`/`ram_max`); `lisa_mmu_init`
+takes a `ram_high` flag set per machine — **`model=lisa` defaults to the high
+base** (`$80000`), while `model=macxl` keeps RAM low (based at 0), since
+MacWorks XL's framebuffer and boot path live in low memory. (`GSRAMMIN=1`
+remains as a debug override that forces the high base on any model.)
 
 ### 3.2 I/O space map (physical `$00C000–$00FFFF`)
 
@@ -415,6 +417,22 @@ opcode) so the OS re-executes it; and keep the PC 24-bit (§2) so `+$02` (24-bit
 matches the fetch PC. Getting any of these wrong makes the OS mis-classify the
 fault (`e_hardsyscode`/line-F) instead of demand-loading, or corrupt the user
 stack on an `RTS`-into-absent-segment recovery.
+
+**Data faults must be delivered, not only fetch faults.** An instruction-fetch
+fault is self-announcing — the unmapped page reads back as `$FFFF`, decodes as a
+line-F opcode, and is delivered the moment that opcode is executed. A **data**
+read/write fault (a write to a read-only segment, or a demand-loaded data
+segment) has no such inline trigger: the memory layer can only flag it, so the
+emulator **must defer the group-0 bus error and deliver it at instruction
+completion** — exactly where a 68030 delivers its deferred bus error, and a step
+the 68000 decode loop is just as responsible for. Dropping it is not benign: the
+pending-fault flag that `−(A7)`/`LINK`/`MOVEM`/`JSR` consult (to roll back a
+push whose store faulted mid-instruction) stays set, so every later push
+silently skips its stack-pointer update and the supervisor stack corrupts — which
+surfaces much later as a wild inter-segment jump, not as the original write
+fault. The OS relies on data faults for write-protect detection and demand-loaded
+data segments (e.g. the installer's `Read_PMem` writes its status through a VAR
+pointer that may target a not-yet-resident or read-only segment).
 
 ---
 

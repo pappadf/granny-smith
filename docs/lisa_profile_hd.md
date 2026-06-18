@@ -67,28 +67,29 @@ captures the protocol (from the rev-H boot ROM `RM248.B.TEXT` and the OS driver
   **WRONG** — `$C0` is the fix; the legacy `$0C` left `bot_done` clear → no wake.
   See `docs/lisa_fdc.md`.) Three further fixes then took the boot through mounting:
   **RAM is based high at `[$80000,$200000)`** (not at 0 — kernel stack was landing
-  on a non-existent page; `docs/lisa.md §3.1`, gated `GSRAMMIN`); the **68000
+  on a non-existent page; `docs/lisa.md §3.1`, now the `model=lisa` default); the **68000
   bus-error exception frame** (must be the 14-byte group-0 frame, not the 68030
   92-byte Format-$B — the wrong frame mis-classified a user demand-segment fault as
   `e_hardsyscode` and stormed; `docs/lisa.md §6.1`); and the **VBL interrupt must be
   edge-latched** (not a 458-cycle pulse — else it's lost while the kernel is masked;
   `docs/lisa.md §8`). With these the boot reads/loads the whole OS, **mounts the
   boot volume** (writes back the MDDF/catalog), and launches the install shell.
-- **Current blocker — `SYSTEM.SHELL` code-load.** After mounting, the OS root
-  process (`source-PMSPROCS.text`) runs `SYSTEM.SHELL` (the Install/Repair/Restore
-  **menu**) via `CreateShell`→`Make_Process`, and **shuts the system down when the
-  shell exits** (→ `GiveUpGhost`, `source-fsinit.text:1066` — the 6-second wait
-  loop + `reset_machine`). Ours fails to load/run `SYSTEM.SHELL`'s code segment
-  (the `$f7fffa = JMP $30553A` trampoline into logical segment 24, demand-loaded
-  from `R 626→786`), so the shell exits and the OS resets; the reference (LisaEm)
-  loads it (reads to lba 799) and shows the menu. **The true remaining root is the
-  segment-loader / `Make_Process` not loading the shell's code.** Full chain, source
-  citations, repro, and next steps: **`local/lisa/debug/HANDOVER.md` §0★.** The
-  auto-boot PM seed in `lisa_fdc_init` and the `GS*` trace env-gates are temporary
-  debug aids (revert before commit; auto-boot needs a real PM `bootvol`, PM at
-  `$FCC181`).
-- Once it boots: drive the install → write the OS to the ProFile → reboot from it.
-  The device write path is implemented and unit-tested but not yet OS-exercised.
+- **BOOTS TO THE INSTALL MENU (sessions 13–14).** `SYSTEM.SHELL` (the
+  Install/Repair/Restore **menu**) now demand-loads its code and runs to the menu —
+  the same screen LisaEm reaches. This took **six MC68000 fixes** in the
+  demand-segment / segment-MMU path: the saved `instruction_pc`, the group-0 frame's
+  instruction-register + per-opcode PC advance, the `write_sr` context switch, the
+  24-bit PC mask (sessions 13, C1–C4); plus (session 14) **delivering DATA bus
+  errors** (not just fetch faults — a dropped data fault left the bus-error-pending
+  flag stuck and corrupted the supervisor stack) and **saving the RTS instruction's
+  PC** on an RTS-into-absent-segment fault (the OS recovers RTS by re-executing it).
+  See `docs/lisa.md` §2 / §4.5 / §4.8 for the contract and
+  `local/lisa/debug/HANDOVER.md` §0★★/§0★★★ for the full chain. Covered by the
+  `tests/integration/lisa-los-boot` integration test (boots LOS 3.1 → pixel-matches
+  the menu).
+- **Remaining:** drive the menu buttons (mouse) → run the install → write the OS to
+  the ProFile → reboot from it. The device write path is implemented and unit-tested
+  but not yet OS-exercised.
 
 ## Media reality (important)
 
