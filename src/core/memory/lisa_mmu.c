@@ -120,7 +120,8 @@ lisa_mmu_t *g_lisa_mmu = NULL;
 
 // === Lifecycle =============================================================
 
-lisa_mmu_t *lisa_mmu_init(uint8_t *ram, uint32_t ram_size, uint8_t *rom, uint32_t rom_size, checkpoint_t *cp) {
+lisa_mmu_t *lisa_mmu_init(uint8_t *ram, uint32_t ram_size, uint8_t *rom, uint32_t rom_size, bool ram_high,
+                          checkpoint_t *cp) {
     lisa_mmu_t *m = (lisa_mmu_t *)calloc(1, sizeof(*m));
     if (!m)
         return NULL;
@@ -134,7 +135,10 @@ lisa_mmu_t *lisa_mmu_init(uint8_t *ram, uint32_t ram_size, uint8_t *rom, uint32_
     // at 0, the OS placed the kernel stack on a non-existent high page.
     // Lisa memory boards populate [$80000 .. min($80000+installed, $200000)) — verified
     // against LisaEm (boots LOS 3.1 to the Install menu with RAM [$80000,$200000)).
-    m->ram_min = getenv("GSRAMMIN") ? 0x80000u : 0u;
+    // The Macintosh XL (ram_high=false) keeps RAM at 0: MacWorks' framebuffer and
+    // boot path live in low memory.  GSRAMMIN forces the high layout regardless (a
+    // debug override; harmless on the Lisa, which already defaults high).
+    m->ram_min = (ram_high || getenv("GSRAMMIN")) ? 0x80000u : 0u;
     m->ram_max = m->ram_min + ram_size;
     if (m->ram_max > 0x200000u)
         m->ram_max = 0x200000u;
@@ -629,7 +633,8 @@ static uint32_t lisa_read(uint32_t addr, unsigned size, bool supervisor) {
         }
     }
     lisa_resolved_t r = lisa_resolve(m, addr, supervisor, false);
-    if (getenv("GSSEG17") && (addr & 0x00FFFFFF) >= 0x220000 && (addr & 0x00FFFFFF) < 0x240000) {
+    if (getenv("GSSEG17") && (((addr & 0x00FFFFFF) >= 0x220000 && (addr & 0x00FFFFFF) < 0x240000) ||
+                              ((addr & 0x00FFFFFF) >= 0xf78000 && (addr & 0x00FFFFFF) < 0xf78400))) {
         extern uint64_t cpu_instr_count(void);
         int latch = (m->seg2 << 1) | m->seg1;
         int ctx = supervisor ? 0 : latch;

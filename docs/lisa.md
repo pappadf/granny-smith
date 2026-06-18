@@ -104,6 +104,17 @@ different machine name. The chip models are identical.
 - **CPU:** Motorola **68000**, 16/32-bit, with a 24-bit external address bus.
   No FPU. No on-chip MMU — memory management is performed by the external
   segment MMU (§4).
+- **24-bit program counter (emulation-critical).** Because only A0–A23 are
+  driven, the PC and every pointer are effectively 24-bit; the upper byte
+  (A24–A31) is ignored on the bus. The Lisa OS exploits this — its inter-segment
+  **jump-table** entries (§4.5) carry tag bits in the high byte of the 32-bit
+  code pointer and jump to it directly (`JMP/RTS` through the raw entry), relying
+  on the CPU to truncate. An emulator that keeps a full 32-bit PC **must mask the
+  PC to 24 bits** (`pc &= 0x00FFFFFF`) on every instruction; otherwise a jump
+  through such a tagged entry fetches/faults at the wrong (un-truncated) address
+  and a demand-segment fault is mis-delivered (the faulting-address compare in
+  the fetch-fault path fails — see §4.8). This is a no-op for the Mac Plus / Mac
+  XL, whose code never sets the high byte.
 - **Clock:** a 20.375 MHz master crystal divided by 4 gives a CPU clock of
   **5.09375 MHz** (~196 ns/cycle). The Hardware Manual rounds this to "5 MHz,
   200 ns."
@@ -291,7 +302,16 @@ The descriptor RAM holds **four** complete 128-segment tables (4 × 128 × 2
 
 - **Supervisor mode (FC2 asserted) forces context 0** regardless of the latch
   bits. A trap from a user process into the OS therefore auto-switches to the OS
-  segment table.
+  segment table. **Emulation note:** the effective context follows FC2 *live*,
+  so an emulator must re-select the active translation (supervisor → context 0;
+  user → the latch context) on **every** supervisor-bit change — not only on
+  exception entry but also on `RTE` / `MOVE`/`ANDI`-to-SR back to user. If the
+  active context is only switched on exception *entry*, user code resumed by an
+  `RTE` keeps running through the OS (context-0) view, and a user process's
+  private segment (mapped in its own context, e.g. `SYSTEM.SHELL`'s code) faults
+  forever. OS/system code segments live in context 0; a user process reaches them
+  through the inter-segment jump table (§2), which faults them into the process's
+  own context on first use via the demand-load path (§4.8).
 - The latch bits are set/reset by *strobing* (a read or write, value ignored)
   addresses in the CPU-board control block (§6.1):
 
@@ -345,6 +365,56 @@ a read-only segment terminates the bus cycle with CAS suppressed and raises a
 reads the Status Register (§7.4) and the Memory Error Address latch (§7.3) to
 classify the fault. An emulator should route these through the same bus-error
 path used for genuine timeouts.
+
+**Demand-loaded segments (the OS's main use of the Bus Error).** Code and data
+segments are *demand-loaded* on first reference: the OS leaves a not-yet-resident
+segment's descriptor **invalid** (`1100`), so a `JMP`/`JSR`/`RTS` into it — or a
+data access to it — faults. The Lisa OS `BUS_ERR` handler
+(`OS/SOURCE-EXCEPASM.TEXT`) recovers it, and the contract on the **MC68000
+group-0 stack frame** is exact — an emulator's 68000 *must* push the genuine
+68000 group-0 frame (not a 68010+/68030 long frame):
+
+```
++$00  special status word  (R/W, I/N, function-code bits)
++$02  access address (long) = the faulting logical address  ("BADADDR")
++$06  instruction register (word)                            ("B1/B2")
++$08  status register (word)
++$0A  program counter (long)                                 ("PCX")
+```
+
+The handler:
+
+1. reads the **instruction register** (`+$06`) — on a real 68000 this holds the
+   opcode of the instruction *executing* when the prefetch faulted, i.e. the
+   control-transfer op that branched into the absent segment (`JMP.L $4EF9`,
+   `JSR.L $4EB9`, `JMP/JSR (An)`, `RTS $4E75`, `RTE $4E73`, `TST`). It uses this
+   to recognise a **recoverable code-segment fault** vs. a fatal one
+   (`e_hardsyscode`);
+2. reads the **access address** (`+$02`) to find which segment/offset to load;
+3. **backs the saved PC up** by a per-opcode amount (the prefetch advance: `−2`
+   for `JMP.L`/`JMP(An)`/`JSR(An)`/`RTS`, `−6` for `JSR.L`, `−4` for `JSR d(An)`;
+   `RTE` resumes at the access address). For `JMP`/`JSR` (no stack side effect)
+   this re-enters at the fault target, so the emulator's saved PC may be the
+   target + advance. **`RTS` is special:** the handler *also* does `USP −= 4`
+   (undo the pop) and then `−2`, i.e. it **re-executes the RTS** so the pop
+   re-runs after the segment is in. The saved PC therefore must point at the
+   **`RTS` instruction itself**, not at its (absent-segment) target — otherwise
+   the OS backs `USP` up by 4 without the pop re-running and the user stack is
+   left one long too low (a stale word then surfaces as the next routine's first
+   argument);
+4. validates and maps the segment (`CHECK_CS`/`MAP_SEGMENT`, demand-reading the
+   code from disk if not in memory) and enters the scheduler / `RTE`s to retry.
+
+Emulator requirements this implies: record the address of the instruction being
+decoded each cycle (for `+$0A`/`+$02` and the fetch-fault PC match); on a
+code-fetch fault, push the **opcode of the branching instruction** (kept from the
+last successful fetch — the faulting fetch must *not* overwrite it) as `+$06` and
+advance the saved PC by the per-opcode prefetch amount — except for `RTS`, whose
+saved PC is the **`RTS` instruction's own address** (latched alongside the kept
+opcode) so the OS re-executes it; and keep the PC 24-bit (§2) so `+$02` (24-bit)
+matches the fetch PC. Getting any of these wrong makes the OS mis-classify the
+fault (`e_hardsyscode`/line-F) instead of demand-loading, or corrupt the user
+stack on an `RTS`-into-absent-segment recovery.
 
 ---
 

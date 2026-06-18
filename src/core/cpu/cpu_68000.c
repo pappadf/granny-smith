@@ -99,8 +99,10 @@ LOG_USE_CATEGORY_NAME("cpu");
         if (g_lisa_trace && g_lisa_trace_n < 200000) {                                                                 \
             if (!g_lisa_trace_fp)                                                                                      \
                 g_lisa_trace_fp = fopen("/tmp/gstrace.out", "w");                                                      \
-            if (g_lisa_trace_fp)                                                                                       \
+            if (g_lisa_trace_fp) {                                                                                     \
                 fprintf(g_lisa_trace_fp, "T %06x a7=%06x\n", cpu->pc & 0xffffff, cpu->a[7] & 0xffffff);                \
+                fflush(g_lisa_trace_fp);                                                                               \
+            }                                                                                                          \
             g_lisa_trace_n++;                                                                                          \
             if (g_lisa_trace_n == 200000 && g_lisa_trace_fp)                                                           \
                 fflush(g_lisa_trace_fp);                                                                               \
@@ -151,14 +153,34 @@ LOG_USE_CATEGORY_NAME("cpu");
          * fetch bus-errors (jump/call into an absent code segment), cpu->ir keeps                                     \
          * the control-transfer opcode that branched here, which the group-0 frame                                     \
          * must carry so the Lisa OS demand-segment handler can recognise it. */                                       \
-        if (__builtin_expect(!g_bus_error_pending, 1))                                                                 \
+        if (__builtin_expect(!g_bus_error_pending, 1)) {                                                               \
             cpu->ir = opcode;                                                                                          \
+            cpu->ir_pc = cpu->instruction_pc;                                                                          \
+        }                                                                                                              \
         if (__builtin_expect(cpu->last_bus_error_pc != 0 && !cpu->supervisor && cpu->last_bus_error_pc != cpu->pc, 0)) \
             cpu->last_bus_error_pc = 0;                                                                                \
         cpu->pc += 2;                                                                                                  \
         if (*instructions > 0)                                                                                         \
             (*instructions)--;
 #define CPU_DECODER_EPILOGUE                                                                                           \
+    }                                                                                                                  \
+    /* Deferred DATA bus error.  A memory access during the instruction faulted    */                                  \
+    /* (the memory layer set g_bus_error_pending and zeroed *instructions to break  */                                 \
+    /* out of the sprint).  Unlike an instruction-FETCH fault — which decodes as a   */                              \
+    /* line-F opcode and is delivered inline via f_trap — a data read/write fault     */                             \
+    /* has no delivery point on the 68000 path.  The 68030 decoder delivers it in     */                               \
+    /* its epilogue (cpu_68030.c); the 68000 path omitted this, so a Lisa demand-      */                              \
+    /* segment / write-protect DATA fault left g_bus_error_pending stuck true.  Every   */                             \
+    /* later -(A7)/LINK/MOVEM/JSR push then skipped its SP update — the restart-safety  */                           \
+    /* guards (PUSH, write_ea, movem_from_register) treat a still-pending flag as "this */                             \
+    /* push faulted, roll back" — corrupting the supervisor stack until SET_DOMAIN      */                           \
+    /* popped a stale frame pointer and jumped into it.  Deliver it here as a group-0   */                             \
+    /* bus error; the Lisa OS BUS_ERR handler classifies/recovers (or terminates) it.   */                             \
+    if (__builtin_expect(g_bus_error_pending, 0)) {                                                                    \
+        g_bus_error_pending = false;                                                                                   \
+        exception_bus_error(cpu, g_bus_error_address, g_bus_error_rw);                                                 \
+        g_active_read = cpu->supervisor ? g_supervisor_read : g_user_read;                                             \
+        g_active_write = cpu->supervisor ? g_supervisor_write : g_user_write;                                          \
     }                                                                                                                  \
     cpu_check_interrupt(cpu);                                                                                          \
     assert(*instructions == 0)

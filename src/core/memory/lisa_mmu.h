@@ -39,7 +39,12 @@ extern lisa_mmu_t *g_lisa_mmu;
 // Create the segment MMU over the machine's physical RAM and 16 KB boot ROM.
 // Installs itself as g_lisa_mmu.  Power-on state: START set, descriptors
 // cleared (so contexts 1-3 read back as "unprogrammed").
-lisa_mmu_t *lisa_mmu_init(uint8_t *ram, uint32_t ram_size, uint8_t *rom, uint32_t rom_size, checkpoint_t *cp);
+// ram_high: true for the Lisa 2 / Office-System layout (DRAM based at $80000,
+// the way Lisa memory boards actually populate the space — required for LOS to
+// lay out its real-memory segments and kernel stack); false for the Macintosh
+// XL, whose MacWorks framebuffer and boot path live in low RAM (based at 0).
+lisa_mmu_t *lisa_mmu_init(uint8_t *ram, uint32_t ram_size, uint8_t *rom, uint32_t rom_size, bool ram_high,
+                          checkpoint_t *cp);
 
 // Tear down and clear g_lisa_mmu.
 void lisa_mmu_delete(lisa_mmu_t *m);

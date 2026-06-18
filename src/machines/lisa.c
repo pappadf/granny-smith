@@ -606,8 +606,11 @@ static void lisa_init(config_t *cfg, checkpoint_t *checkpoint) {
     // The segment MMU owns all translation; it reads/writes directly into the
     // flat RAM+ROM image the memory map allocated.  The ROM region is filled
     // later by rom.load_lisa(); the host pointer stays valid (same buffer).
-    ls->mmu = lisa_mmu_init(ram_native_pointer(cfg->mem_map, 0), cfg->ram_size,
-                            (uint8_t *)memory_rom_bytes(cfg->mem_map), memory_rom_size(cfg->mem_map), checkpoint);
+    // Lisa 2 DRAM is based high ($80000); the Macintosh XL keeps it low (0).
+    bool ram_high = !(cfg->machine && cfg->machine->id && strcmp(cfg->machine->id, "macxl") == 0);
+    ls->mmu =
+        lisa_mmu_init(ram_native_pointer(cfg->mem_map, 0), cfg->ram_size, (uint8_t *)memory_rom_bytes(cfg->mem_map),
+                      memory_rom_size(cfg->mem_map), ram_high, checkpoint);
     // Real Lisa DRAM powers up in an indeterminate state; LisaEm models it as
     // all-$FF (memset(lisaram,0xff,...)).  Our memory map zeroes RAM, which can
     // leave OS-read uninitialised pointers reading $0 instead of $FF.  Match

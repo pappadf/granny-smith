@@ -95,6 +95,13 @@ struct cpu {
                  // RTS/...) that branched into the absent page — the MC68000 group-0
                  // frame's instruction-register word, which the Lisa OS BUS_ERR
                  // handler reads to classify a recoverable demand-segment fault.
+    uint32_t ir_pc; // address of the instruction whose opcode is in `ir` (latched
+                    // alongside it).  When a control transfer prefetches its target
+                    // into an absent segment, the faulting fetch keeps `ir`/`ir_pc`
+                    // pointing at the *transfer instruction*, not the target — needed
+                    // to build the group-0 frame for the one case the Lisa OS recovers
+                    // by RE-EXECUTING the instruction (RTS: it backs USP up 4 and the
+                    // PC by 2, so the saved PC must point at the RTS, not the target).
 
     // 68030 deferred bus error: set by memory slow paths, checked after each instruction
     uint32_t bus_error_pending; // 0=none, 1=pending
@@ -1105,8 +1112,20 @@ static inline void f_trap(cpu_t *restrict cpu) {
         // control-transfer instruction's prefetch amount so the Lisa OS handler's
         // SUBQ back-up resumes on the fault target.  The PMMU retry path (68030
         // A/UX) restarts at the faulting PC and ignores this.
-        if (cpu->cpu_model == CPU_MODEL_68000 && !is_pmmu)
-            cpu->pc += m68k_fetch_fault_pc_advance(cpu->ir);
+        if (cpu->cpu_model == CPU_MODEL_68000 && !is_pmmu) {
+            // RTS is the one transfer the Lisa OS recovers by RE-EXECUTING it: its
+            // BUS_ERR handler does USP -= 4 (undo the pop) then PC -= 2, so the saved
+            // PC must point at the RTS instruction, not its (absent-segment) target —
+            // otherwise the OS backs USP up by 4 but resumes at the target without
+            // re-executing the pop, leaving the stack one long too low (a stale word
+            // shows up as the next routine's first argument).  For every other
+            // transfer (JMP/JSR/...) the OS continues at the target with the stack
+            // intact, so the target-relative advance is correct.
+            if (cpu->ir == 0x4E75) // RTS
+                cpu->pc = cpu->ir_pc + 2;
+            else
+                cpu->pc += m68k_fetch_fault_pc_advance(cpu->ir);
+        }
         if (is_pmmu)
             exception_bus_error_retry(cpu, cpu->instruction_pc, 1);
         else

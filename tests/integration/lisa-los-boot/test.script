@@ -1,0 +1,32 @@
+# Integration test: Apple Lisa 2 — Lisa Office System 3.1 boot to the Install menu
+#
+# Boots the Lisa 2 (rev-H boot ROM) from the LOS 3.1 install floppy (Disk 1) and
+# verifies it reaches the Install/Repair/Restore menu, the same screen LisaEm
+# reaches.  This exercises the full Lisa stack end to end:
+#   - boot ROM RAM sizing + segment-MMU setup, OS load off the Sony 400K floppy;
+#   - the FDC / VBL interrupt path that wakes the FS reader (the $C05F drive-done
+#     encoding and the edge-latched VBL);
+#   - the MC68000 custom segment MMU with per-process domains;
+#   - demand-loading SYSTEM.SHELL + its ~25 code segments via group-0 bus errors
+#     (the demand-segment fault contract: fetch faults recover by re-fetching,
+#     RTS faults recover by re-executing — both saved-PC cases the OS BUS_ERR
+#     handler relies on).
+# The installer shell renders the menu by ~i=33M and then idles polling for a
+# mouse click; a fixed 80M-instruction budget reaches a stable menu
+# deterministically (the framebuffer is identical from ~48M onward).
+
+scheduler.run 80000000
+
+assert ${machine.id == "lisa"} "machine.id != lisa"
+assert ${rom.checksum == "098917B2"} "rom.checksum != 098917B2 (rev-H)"
+assert ${screen.width == 720} "screen.width != 720"
+assert ${screen.height == 364} "screen.height != 364"
+
+# Verify the LOS 3.1 Install/Repair/Restore menu matches the reference:
+#   "Lisa 7/7  Office System 3.0  (c)1983, 1984 apple computer, inc."
+#   "This micro diskette is used to repair the Lisa Office System startup disk
+#    and to install the startup software. ..."
+#   buttons: Finished / Repair / Install / Restore.
+screen.match expected.png
+
+quit
