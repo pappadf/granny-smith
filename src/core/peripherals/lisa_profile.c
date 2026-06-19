@@ -326,6 +326,26 @@ bool lisa_profile_flush(lisa_profile_t *pf) {
     return put == bytes;
 }
 
+bool lisa_profile_save_as(const lisa_profile_t *pf, const char *path) {
+    if (!pf || !pf->data || !path || !*path)
+        return false;
+    FILE *f = fopen(path, "wb");
+    if (!f) {
+        LOG(1, "save_as: cannot open %s", path);
+        return false;
+    }
+    size_t bytes = (size_t)pf->nblocks * PRO_BLOCK;
+    size_t put = fwrite(pf->data, 1, bytes, f);
+    fclose(f);
+    if (put != bytes) {
+        LOG(1, "save_as: short write to %s (%zu/%zu)", path, put, bytes);
+        remove(path); // don't leave a truncated image behind
+        return false;
+    }
+    LOG(2, "save_as: wrote %u-block image to %s", pf->nblocks, path);
+    return true;
+}
+
 bool lisa_profile_attach(lisa_profile_t *pf, const char *path, bool writable) {
     if (!pf)
         return false;

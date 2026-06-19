@@ -126,4 +126,10 @@ scheduler.run 20000000
 # Install complete: back at the Install/Repair menu with the ProFile as the startup
 # disk ("the disk attached to the parallel connector").
 screen.match expected_installed.png
+
+# Save a consolidated, self-contained single-file image of the freshly installed
+# ProFile so the LOS-on-HD artifact can be booted/inspected outside the test.  The
+# ProFile is a flat 532-bytes/block image (not a base+delta pair), so this is just
+# its current contents written to one file.
+assert ${profile.save("${WORK_DIR}/lisa-los-installed.image")} "profile.save failed"
 quit

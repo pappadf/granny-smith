@@ -47,6 +47,12 @@ void lisa_profile_detach(lisa_profile_t *pf); // flushes if writable+dirty
 bool lisa_profile_attached(const lisa_profile_t *pf);
 bool lisa_profile_flush(lisa_profile_t *pf); // write dirty data back to the file
 
+// Write the current contents to a new, self-contained single-file image at
+// `path`, independent of the attached path and the writable/dirty flags.  The
+// ProFile image is already a flat 532-bytes/block file (it is not a base+delta
+// pair), so this is simply the consolidated disk.  Returns false on I/O error.
+bool lisa_profile_save_as(const lisa_profile_t *pf, const char *path);
+
 // True when a disk is attached (the machine drives OCD/ low → "connected").
 bool lisa_profile_connected(const lisa_profile_t *pf);
 

@@ -564,6 +564,24 @@ static value_t lisa_hd_present(struct object *self, const member_t *m) {
     return val_bool(ls && lisa_profile_attached(ls->profile));
 }
 
+static value_t lisa_hd_save(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)m;
+    config_t *cfg = (config_t *)object_data(self);
+    lisa_state_t *ls = lisa_state(cfg);
+    if (!ls || !ls->profile || !lisa_profile_attached(ls->profile))
+        return val_err("profile: no disk attached");
+    const char *path = (argc >= 1) ? argv[0].s : NULL;
+    if (!path || !*path)
+        return val_err("profile.save: a destination path is required");
+    if (!lisa_profile_save_as(ls->profile, path))
+        return val_err("profile.save: cannot write '%s'", path);
+    return val_bool(true);
+}
+
+static const arg_decl_t lisa_hd_save_args[] = {
+    {.name = "path", .kind = V_STRING, .doc = "Destination path for the consolidated single-file ProFile image"},
+};
+
 static const arg_decl_t lisa_hd_attach_args[] = {
     {.name = "path",
      .kind = V_STRING,
@@ -573,17 +591,21 @@ static const arg_decl_t lisa_hd_attach_args[] = {
 };
 
 static const member_t lisa_hd_members[] = {
-    {.kind = M_ATTR,   .name = "present", .flags = VAL_RO,                                             .attr = {.type = V_BOOL, .get = lisa_hd_present}},
+    {.kind = M_ATTR,   .name = "present", .flags = VAL_RO,                                             .attr = {.type = V_BOOL, .get = lisa_hd_present}                                       },
     {.kind = M_METHOD,
      .name = "detach",
      .doc = "Flush and disconnect the ProFile",
-     .method = {.result = V_NONE, .fn = lisa_hd_detach}                                                                                                },
+     .method = {.result = V_NONE, .fn = lisa_hd_detach}                                                                                                                                       },
     {.kind = M_METHOD,
      .name = "attach",
      .doc = "Attach a ProFile image (created blank if missing; omit path for a blank in-memory disk)",
-     .method = {.args = lisa_hd_attach_args, .nargs = 2, .result = V_BOOL, .fn = lisa_hd_attach}                                                       },
+     .method = {.args = lisa_hd_attach_args, .nargs = 2, .result = V_BOOL, .fn = lisa_hd_attach}                                                                                              },
+    {.kind = M_METHOD,
+     .name = "save",
+     .doc = "Write the current ProFile contents to a new self-contained single-file image (consolidated; not a "
+            "base+delta pair)",                                                                        .method = {.args = lisa_hd_save_args, .nargs = 1, .result = V_BOOL, .fn = lisa_hd_save}},
 };
-static const class_desc_t lisa_hd_class = {.name = "profile", .members = lisa_hd_members, .n_members = 3};
+static const class_desc_t lisa_hd_class = {.name = "profile", .members = lisa_hd_members, .n_members = 4};
 
 static void lisa_register_profile_object(config_t *cfg) {
     lisa_state_t *ls = lisa_state(cfg);
