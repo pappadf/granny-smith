@@ -56,6 +56,12 @@ void lisa_fdc_insert(lisa_fdc_t *fdc, image_t *image);
 void lisa_fdc_eject(lisa_fdc_t *fdc);
 bool lisa_fdc_disk_present(const lisa_fdc_t *fdc);
 
+// Parameter memory (battery-backed NVRAM, 64 bytes at $FCC181): persist/restore
+// the OS's boot-volume + device-configuration table across launches.  Returns
+// false on I/O error.  Load before booting (the ROM reads it during startup).
+bool lisa_fdc_pram_save(const lisa_fdc_t *fdc, const char *path);
+bool lisa_fdc_pram_load(lisa_fdc_t *fdc, const char *path);
+
 // === Shared-RAM access (offset = physical address − $00C001) ================
 uint8_t lisa_fdc_read8(lisa_fdc_t *fdc, uint32_t offset);
 uint16_t lisa_fdc_read16(lisa_fdc_t *fdc, uint32_t offset);

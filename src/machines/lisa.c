@@ -582,6 +582,41 @@ static const arg_decl_t lisa_hd_save_args[] = {
     {.name = "path", .kind = V_STRING, .doc = "Destination path for the consolidated single-file ProFile image"},
 };
 
+// The Lisa's battery-backed parameter memory ($FCC181 in the FDC shared RAM)
+// holds the OS's boot volume + device-configuration table.  The installer adds
+// the ProFile to that table at clean shutdown ("Finished" -> turn off / start
+// up); persisting it lets an installed system boot from the ProFile on a later
+// (cold) launch.  Load before booting (the ROM reads PRAM during startup).
+static value_t lisa_hd_pram_save(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)m;
+    lisa_state_t *ls = lisa_state((config_t *)object_data(self));
+    const char *path = (argc >= 1) ? argv[0].s : NULL;
+    if (!ls || !ls->fdc)
+        return val_err("pram: no controller");
+    if (!path || !*path)
+        return val_err("profile.pram_save: a destination path is required");
+    if (!lisa_fdc_pram_save(ls->fdc, path))
+        return val_err("profile.pram_save: cannot write '%s'", path);
+    return val_bool(true);
+}
+
+static value_t lisa_hd_pram_load(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)m;
+    lisa_state_t *ls = lisa_state((config_t *)object_data(self));
+    const char *path = (argc >= 1) ? argv[0].s : NULL;
+    if (!ls || !ls->fdc)
+        return val_err("pram: no controller");
+    if (!path || !*path)
+        return val_err("profile.pram_load: a source path is required");
+    if (!lisa_fdc_pram_load(ls->fdc, path))
+        return val_err("profile.pram_load: cannot read '%s'", path);
+    return val_bool(true);
+}
+
+static const arg_decl_t lisa_hd_pram_args[] = {
+    {.name = "path", .kind = V_STRING, .doc = "Parameter-memory (PRAM) file path"},
+};
+
 static const arg_decl_t lisa_hd_attach_args[] = {
     {.name = "path",
      .kind = V_STRING,
@@ -604,8 +639,16 @@ static const member_t lisa_hd_members[] = {
      .name = "save",
      .doc = "Write the current ProFile contents to a new self-contained single-file image (consolidated; not a "
             "base+delta pair)",                                                                        .method = {.args = lisa_hd_save_args, .nargs = 1, .result = V_BOOL, .fn = lisa_hd_save}},
+    {.kind = M_METHOD,
+     .name = "pram_save",
+     .doc = "Save the machine parameter memory (battery-backed NVRAM at $FCC181) to a file",
+     .method = {.args = lisa_hd_pram_args, .nargs = 1, .result = V_BOOL, .fn = lisa_hd_pram_save}                                                                                             },
+    {.kind = M_METHOD,
+     .name = "pram_load",
+     .doc = "Load the machine parameter memory from a file (call before booting)",
+     .method = {.args = lisa_hd_pram_args, .nargs = 1, .result = V_BOOL, .fn = lisa_hd_pram_load}                                                                                             },
 };
-static const class_desc_t lisa_hd_class = {.name = "profile", .members = lisa_hd_members, .n_members = 4};
+static const class_desc_t lisa_hd_class = {.name = "profile", .members = lisa_hd_members, .n_members = 6};
 
 static void lisa_register_profile_object(config_t *cfg) {
     lisa_state_t *ls = lisa_state(cfg);

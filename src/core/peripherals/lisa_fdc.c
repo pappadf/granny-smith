@@ -365,6 +365,40 @@ bool lisa_fdc_disk_present(const lisa_fdc_t *fdc) {
     return fdc && fdc->image != NULL;
 }
 
+// === Parameter memory (battery-backed NVRAM) ================================
+//
+// The Lisa's parameter memory (boot volume + device-configuration table + UI
+// settings, 64 bytes = 32 words) lives at $FCC181 in the controller's shared
+// RAM and is battery/standby-backed on real hardware (docs/lisa.md §13.4).  Our
+// fdc->ram is volatile, so the OS's installed configuration (e.g. a ProFile
+// added to the device table at clean shutdown) is lost across launches.  These
+// save/load the 64-byte PM region to a host file, modelling the battery backup
+// so an installed system can be booted from a persisted image.
+#define FDC_PM_IDX 192 // $FCC181 → ram index (offset $180 >> 1)
+#define FDC_PM_LEN 64 // 32 words
+
+bool lisa_fdc_pram_save(const lisa_fdc_t *fdc, const char *path) {
+    if (!fdc || !path || !*path)
+        return false;
+    FILE *f = fopen(path, "wb");
+    if (!f)
+        return false;
+    size_t put = fwrite(&fdc->ram[FDC_PM_IDX], 1, FDC_PM_LEN, f);
+    fclose(f);
+    return put == FDC_PM_LEN;
+}
+
+bool lisa_fdc_pram_load(lisa_fdc_t *fdc, const char *path) {
+    if (!fdc || !path || !*path)
+        return false;
+    FILE *f = fopen(path, "rb");
+    if (!f)
+        return false;
+    size_t got = fread(&fdc->ram[FDC_PM_IDX], 1, FDC_PM_LEN, f);
+    fclose(f);
+    return got == FDC_PM_LEN;
+}
+
 // === Lifecycle =============================================================
 
 lisa_fdc_t *lisa_fdc_init(struct scheduler *scheduler, lisa_fdc_fdir_fn fdir_cb, void *fdir_ctx, checkpoint_t *cp) {

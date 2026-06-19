@@ -1,0 +1,23 @@
+# Boot LOS from the installed ProFile hard disk (no floppy), using a synthetic
+# parameter memory.  See config.mk + docs/lisa_pram_format.md.
+#
+# The ProFile image is the one the lisa-los-profile install test produces (copied
+# to a writable scratch path by TEST_SETUP).  The PRAM (also from TEST_SETUP, via
+# seed_pram.py) carries the device-configuration table with the ProFile + BootVol=2,
+# exactly as the installer writes at clean shutdown — so the ROM auto-boots the
+# ProFile and the OS's FIND_PM_IDS resolves its driver.
+
+profile.attach "${WORK_DIR}/profile.image"
+assert ${machine.id == "lisa"} "machine.id != lisa"
+assert ${rom.checksum == "098917B2"} "rom.checksum != 098917B2 (rev-H)"
+assert ${profile.present == true} "ProFile should be attached"
+
+# Seed parameter memory before the ROM reads it at startup.
+assert ${profile.pram_load("${WORK_DIR}/profile.pram")} "pram_load failed"
+
+# The ROM reads PRAM -> BootVol=2 -> PROBOOT the ProFile -> loader -> SYSTEM.OS;
+# FIND_PM_IDS finds the ProFile (cd_paraport) in the seeded device table.  By
+# ~60M instructions the OS has come up and settles into its idle event loop.
+scheduler.run 100000000
+screen.match expected.png
+quit
