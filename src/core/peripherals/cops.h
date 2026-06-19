@@ -56,4 +56,10 @@ void cops_inject_key(cops_t *cops, uint8_t code);
 // mouse interrupts (command #111 ennn), as on real hardware.
 void cops_inject_mouse(cops_t *cops, int dx, int dy, int button);
 
+// Absolute cursor positioning for `mouse.move x y "global"`: steer the OS cursor
+// to screen pixel (x,y) by closed-loop corrective deltas on each mouse report
+// (reads the OS cursor globals $486/$488).  Converges over several reports, so
+// follow with scheduler.run.  A subsequent relative cops_inject_mouse cancels it.
+void cops_set_warp(cops_t *cops, int x, int y);
+
 #endif // COPS_H

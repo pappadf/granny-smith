@@ -1,0 +1,45 @@
+# Integration test: Apple Lisa 2 — LOS 3.1 mouse-driven Install click
+#
+# Boots the Lisa 2 (rev-H boot ROM) from the LOS 3.1 install floppy to the
+# Install/Repair/Restore menu (as lisa-los-boot does), then exercises the COPS
+# mouse end to end:
+#   - "global" warp: cops_set_warp drives a closed loop that reads the OS's live
+#     cursor globals ($CC00F0 = X, $CC00F2 = Y, supervisor context) each 16 ms
+#     mouse report and emits a scale-corrected delta (the OS scales mouse X by 3/2
+#     for the 720x364 pixel aspect, Y by 1) toward the target — converging to the
+#     exact target pixel in a handful of reports;
+#   - the mouse-button keycode (COPS $86 down / $06 up), which the OS hit-tests
+#     against the cursor it has tracked onto the Install button.
+# Clicking Install takes the installer to its disk-selection step.  With no hard
+# disk attached, that step is the "There are no usable disks attached to the Lisa"
+# dialog (Restart / Off) — a deterministic screen that proves the click reached
+# and was acted on by the installer.  (Installing onto a ProFile additionally
+# needs OS-side parallel-disk discovery, which is separate, unfinished work.)
+
+# Boot to the Install menu (same budget as lisa-los-boot; menu stable from ~48M).
+scheduler.run 50000000
+
+assert ${machine.id == "lisa"} "machine.id != lisa"
+assert ${rom.checksum == "098917B2"} "rom.checksum != 098917B2 (rev-H)"
+assert ${screen.width == 720} "screen.width != 720"
+assert ${screen.height == 364} "screen.height != 364"
+
+# Warp the cursor onto the Install button (right column, third from top) and let
+# the closed loop converge over the next several mouse reports.
+mouse.move 648 211 "global"
+scheduler.run 3000000
+
+# Press and release the mouse button over Install.
+mouse.click true
+scheduler.run 600000
+mouse.click false
+
+# The installer transitions to its disk-selection screen and the cursor settles;
+# the framebuffer is stable from ~12M instructions after the click onward.
+scheduler.run 14000000
+
+# Verify the installer's disk-selection screen ("no usable disks", Restart/Off) —
+# i.e. the Install button click was received and acted upon.
+screen.match expected.png
+
+quit

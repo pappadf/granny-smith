@@ -76,7 +76,7 @@ captures the protocol (from the rev-H boot ROM `RM248.B.TEXT` and the OS driver
   boot volume** (writes back the MDDF/catalog), and launches the install shell.
 - **BOOTS TO THE INSTALL MENU (sessions 13–14).** `SYSTEM.SHELL` (the
   Install/Repair/Restore **menu**) now demand-loads its code and runs to the menu —
-  the same screen LisaEm reaches. This took **six MC68000 fixes** in the
+  the documented Office-System Install screen. This took **six MC68000 fixes** in the
   demand-segment / segment-MMU path: the saved `instruction_pc`, the group-0 frame's
   instruction-register + per-opcode PC advance, the `write_sr` context switch, the
   24-bit PC mask (sessions 13, C1–C4); plus (session 14) **delivering DATA bus
@@ -87,9 +87,48 @@ captures the protocol (from the rev-H boot ROM `RM248.B.TEXT` and the OS driver
   `local/lisa/debug/HANDOVER.md` §0★★/§0★★★ for the full chain. Covered by the
   `tests/integration/lisa-los-boot` integration test (boots LOS 3.1 → pixel-matches
   the menu).
-- **Remaining:** drive the menu buttons (mouse) → run the install → write the OS to
-  the ProFile → reboot from it. The device write path is implemented and unit-tested
-  but not yet OS-exercised.
+- **MOUSE-DRIVEN BUTTON CLICKS WORK (session 15).** `mouse.move x y "global"` now
+  warps the cursor to an exact screen pixel and `mouse.click` activates the button
+  under it: clicking **Install** drives the installer to its disk-selection step
+  (covered by the new `tests/integration/lisa-los-install` test). The fix was the
+  cursor-globals address + the OS's mouse scaling: the live on-screen cursor is at
+  OS globals **`$CC00F0` = X, `$CC00F2` = Y** (supervisor context, re-asserted every
+  VBL — *not* the `$486`/`$488` globals some references cite, which are a stale copy
+  in our model and never move), and the OS scales COPS mouse deltas to pixels by a fixed **X ×3/2**
+  (the 720×364 pixel aspect), **Y ×1**. The COPS "warp" is a closed loop: each mouse
+  report it reads `$CC00F0/$CC00F2` and injects a scale-corrected delta (`dx = errX×2/3`,
+  `dy = errY`) toward the target, converging to the exact pixel in a few reports. See
+  `docs/lisa.md` §11.4 and `src/core/peripherals/cops.c` (`cops_set_warp` /
+  `cops_mouse_tick`). NB: the OS does **not** draw the cursor sprite on the idle menu,
+  so a menu screenshot looks cursor-less; the click still hit-tests against the tracked
+  position, and the cursor becomes visible once a dialog appears.
+- **🎉 INSTALLER NOW DETECTS THE ProFile (session 16) — root-caused from the LisaOS
+  source + floppy-I/O analysis.** Clicking Install with a ProFile attached now
+  reaches *"Do you want to use the disk attached to the parallel connector?"*
+  (Cancel / OK / More) instead of *"no usable
+  disks"*. Covered by `tests/integration/lisa-los-profile`. **Root cause = the VIA2
+  I/O decode was too narrow.** The chain: the installer (`APIN-OFFICE.SetDevices`)
+  *does* build the slot-11 ProFile entry, `CDMake`s it, and `MountDisk`→`Mount`
+  **loads `SYSTEM.CD_PROFILE` and runs its `PROF_INIT`** — but `PROF_INIT`'s first
+  hardware writes never reached the VIA2. PROF_INIT addresses VIA2 off base **`$D801`**
+  (`MOVE.B #$3B,IER(A3)` → `$D871`), but the parallel VIA2 was mapped only at
+  `$D901` (size `0x80`), so every `$D8xx` register write fell below the window and
+  was silently dropped (the boot ROM `VIA2BASE=$00FCD901` and the OS clock use the
+  `$D9xx` alias, so they worked — masking the bug). On real hardware the VIA2
+  chip-select ignores address bit 8, so `$D800-$D9FF` all decode to VIA2
+  (register `= (addr>>3)&15`). **Fix:** `lisa.c` maps VIA2 over the full
+  `$D800-$D9FF` window for `model=lisa` (macxl keeps the narrow `$D901` — MacWorks XL
+  uses its own Mac-side driver and depends on `$D8xx` staying unmapped). The `&15`
+  decode makes the two halves aliases, so existing `$D9xx` accesses are unchanged;
+  see `docs/lisa.md` §10.2. (How it was found: the install-scan floppy I/O showed an
+  11-block re-read of `SYSTEM.CD_PROFILE` (blocks 218-228; PROF_INIT's `0011 00A0` is
+  at block 224) — proving the OS loaded the driver, so the failure had to be in the
+  driver's hardware init silently missing the VIA2.)
+- **Remaining for a full install (the /goal):** detection is done; next is to click
+  **OK** to select the ProFile, drive the initialize/format step, copy the OS
+  (feed install disks 2–5 via the disk-swap path), write the OS to the ProFile, and
+  reboot from it. The device write path is implemented and unit-tested but not yet
+  fully OS-exercised through the install.
 
 ## Media reality (important)
 

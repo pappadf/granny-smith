@@ -115,8 +115,8 @@ static void fdc_complete(void *source, uint64_t data) {
     lisa_fdc_t *fdc = (lisa_fdc_t *)source;
     // The Sony controller's interrupt-source byte ($C05F = DISKSTAT) reports WHICH
     // drive completed: the controller ORs in (drive_id & 0x88) >> 1, then sets the
-    // summary bit 7 if any drive-done bit (0x70) is present (verified against
-    // LisaEm io_board/floppy.c fix_intstat / RWTS_IRQ_SIGNAL).  The Lisa drive
+    // summary bit 7 if any drive-done bit (0x70) is present (the real Lisa FDC
+    // interrupt-status encoding).  The Lisa drive
     // id is $80 (lower) ⇒ bit 6 + bit 7 = $C0; the OS Sony driver's DISK_INT
     // reads bit 6 as int_stat.bot_done (MSB-first packing) and only unblocks the
     // waiting reader process when it is set — a fixed bits-2/3 value left bot_done

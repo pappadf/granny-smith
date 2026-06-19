@@ -49,6 +49,12 @@ lisa_mmu_t *lisa_mmu_init(uint8_t *ram, uint32_t ram_size, uint8_t *rom, uint32_
 // Tear down and clear g_lisa_mmu.
 void lisa_mmu_delete(lisa_mmu_t *m);
 
+// Read the live LisaOS on-screen cursor X/Y (OS globals $CC00F0 / $CC00F2, read
+// in supervisor context) for the COPS absolute-positioning "warp" closed loop.
+// Returns false if the globals block is not currently mapped.  `ctx` is accepted
+// for API compatibility but ignored (the cursor lives in supervisor space).
+bool lisa_mmu_get_cursor(int ctx, int *x, int *y);
+
 // Save / restore descriptor RAM + latches (checkpoint parity).
 void lisa_mmu_checkpoint(lisa_mmu_t *m, checkpoint_t *cp);
 

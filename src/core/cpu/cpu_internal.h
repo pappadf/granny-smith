@@ -1050,8 +1050,8 @@ static inline void a_trap(cpu_t *restrict cpu) {
 // instruction-register word, recognises a recoverable JMP/JSR/RTS/RTE/TST, backs
 // the saved PC up by a per-opcode amount (SUBQ), then RTEs to re-enter the
 // now-demand-loaded target.  Reproduce that advance from the opcode so that
-// (pushed_PC - OS SUBQ) lands on the fault target.  Mirrors the per-opcode table
-// in LisaEm reg68k.c:reg68k_internal_vector (the proven oracle).
+// (pushed_PC - OS SUBQ) lands on the fault target — the per-opcode prefetch
+// advance the MC68000 makes on a group-0 fault.
 static inline uint32_t m68k_fetch_fault_pc_advance(uint16_t ir) {
     if ((ir & 0xFF00) == 0x4A00)
         return 2; // TST <ea>

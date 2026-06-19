@@ -60,8 +60,8 @@ Sony driver's `DISK_INT` (`SOURCE-SONY`) reads **bit 6 = `bot_done`** (MSB-first
 Pascal bit packing) and only runs `IODONE` → wakes the blocked reader process
 (`$cc5a46`, glob `$abc`) when it is set. A fixed bits-2/3 value (`$0C`) leaves
 `bot_done` clear ⇒ the reader is never woken ⇒ the OS idles at its first
-interrupt-driven read (lba 28). Verified against LisaEm `io_board/floppy.c`
-`fix_intstat` / `RWTS_IRQ_SIGNAL`. (Drive 0 / MacWorks keep a legacy bits-2/3
+interrupt-driven read (lba 28), matching the real Lisa FDC interrupt-status
+encoding. (Drive 0 / MacWorks keep a legacy bits-2/3
 fallback; the Mac ROM drains `$C05F & $77`, which includes bit 6, so it is
 unaffected — `xl-boot` still pixel-matches.)
 

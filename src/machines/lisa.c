@@ -65,7 +65,7 @@ typedef struct lisa_state {
     bool l1_vbl; // video vertical-retrace interrupt currently asserted
     bool l1_floppy; // floppy FDIR (RWTS-complete / disk-insert / eject) asserted
     lisa_via_port_t via1_map; // VIA1 (keyboard / COPS), base $00DD81, stride 2
-    lisa_via_port_t via2_map; // VIA2 (parallel disk / contrast), base $00D901, stride 8
+    lisa_via_port_t via2_map; // VIA2 (parallel disk / contrast), $D800-$D9FF window, stride 8
     display_t display; // 720x364 1bpp framebuffer (direct, in main RAM)
     struct object *fd_obj, *fd_drives_obj, *fd_drive_obj; // `floppy` object tree
     struct object *hd_obj; // `profile` object (parallel hard disk)
@@ -321,14 +321,25 @@ static int lisa_input_key(config_t *cfg, const char *key, bool down) {
     return -1; // unknown key (no Mac fallback on the Lisa)
 }
 
-// mouse.move → COPS mouse deltas.  The Lisa mouse is relative, so x/y are
-// treated as dx/dy here; absolute positioning via the LisaOS cursor global is a
-// later refinement.  mouse.click → the COPS mouse-button keycode.
+// mouse.move → COPS mouse deltas (default/relative), or absolute screen-pixel
+// positioning in "global" mode.  The Lisa mouse hardware is relative and the OS
+// scales the deltas into screen pixels, so absolute placement uses a closed-loop
+// "warp": the COPS reads the OS's live cursor globals ($CC00F0 = X, $CC00F2 = Y)
+// each mouse report and emits a corrective delta toward the target, converging
+// regardless of the scaling.  This lets a test place the cursor on a button by
+// pixel coordinate.  mouse.click → the COPS button keycode, which the OS hit-tests
+// against the cursor it has tracked there.
 static int lisa_input_mouse_move(config_t *cfg, int x, int y, const char *mode) {
-    (void)mode;
     lisa_state_t *ls = lisa_state(cfg);
     if (!ls || !ls->cops)
         return -1;
+    if (mode && strcmp(mode, "global") == 0) {
+        // Absolute: steer the OS cursor to screen pixel (x,y) via the COPS
+        // closed-loop warp.  Converges over the next several mouse reports, so the
+        // caller follows with scheduler.run.
+        cops_set_warp(ls->cops, x, y);
+        return 0;
+    }
     cops_inject_mouse(ls->cops, x, y, -1);
     return 0;
 }
@@ -611,10 +622,10 @@ static void lisa_init(config_t *cfg, checkpoint_t *checkpoint) {
     ls->mmu =
         lisa_mmu_init(ram_native_pointer(cfg->mem_map, 0), cfg->ram_size, (uint8_t *)memory_rom_bytes(cfg->mem_map),
                       memory_rom_size(cfg->mem_map), ram_high, checkpoint);
-    // Real Lisa DRAM powers up in an indeterminate state; LisaEm models it as
-    // all-$FF (memset(lisaram,0xff,...)).  Our memory map zeroes RAM, which can
-    // leave OS-read uninitialised pointers reading $0 instead of $FF.  Match
-    // LisaEm under GSRAMFF to test whether the OS relies on the power-up pattern.
+    // Real Lisa DRAM powers up in an indeterminate state (commonly all-$FF).  Our
+    // memory map zeroes RAM, which can leave OS-read uninitialised pointers reading
+    // $0 instead of $FF.  GSRAMFF forces the $FF power-up fill to test whether the
+    // OS relies on the power-up pattern.
     if (getenv("GSRAMFF"))
         memset(ram_native_pointer(cfg->mem_map, 0), 0xFF, cfg->ram_size);
     lisa_mmu_set_nmi(ls->mmu, lisa_parity_nmi, cfg); // level-7 parity NMI (PARTST)
@@ -629,12 +640,27 @@ static void lisa_init(config_t *cfg, checkpoint_t *checkpoint) {
         via_init(NULL, cfg->scheduler, 4, "via2", lisa_via2_output, lisa_via_shift_out, lisa_via2_irq, cfg, checkpoint);
 
     // Register each VIA at its Lisa physical I/O base through the stride
-    // adapter.  16 registers: VIA1 spans 16*2=32 bytes from $DD81, VIA2
-    // 16*8=128 bytes from $D901 (docs/lisa.md §10.1/§10.2).
+    // adapter.  16 registers: VIA1 spans 16*2=32 bytes from $DD81, VIA2 uses an
+    // 8-byte register stride.  The canonical VIA2 base is $D901 (docs/lisa.md
+    // §10.2, the boot ROM VIA2BASE), but the chip-select ignores address bit 8,
+    // so the whole range $D800–$D9FF decodes to VIA2 (register = (addr>>3)&15).
+    // The boot ROM and the OS clock use the $D9xx alias, but the LisaOS parallel
+    // hard-disk driver (SYSTEM.CD_PROFILE, PROF_INIT) addresses its VIA2 registers
+    // off base $D801 (IER at $D871) — so the device must be decoded over the full
+    // $D800–$D9FF window or the driver's accesses are silently dropped and the
+    // ProFile is never detected.  The &15 register decode makes the two aliases
+    // identical, so widening the window leaves the existing $D9xx accesses
+    // unchanged.
     ls->via1_map = (lisa_via_port_t){.via = cfg->via1, .vif = via_get_memory_interface(cfg->via1), .reg_shift = 1};
     ls->via2_map = (lisa_via_port_t){.via = cfg->via2, .vif = via_get_memory_interface(cfg->via2), .reg_shift = 3};
     lisa_mmu_map_io(ls->mmu, 0xDD81, 16 * 2, &lisa_via_iface, &ls->via1_map);
-    lisa_mmu_map_io(ls->mmu, 0xD901, 16 * 8, &lisa_via_iface, &ls->via2_map);
+    // LisaOS addresses VIA2 over the full $D800-$D9FF window (its ProFile driver
+    // uses base $D801); MacWorks XL uses only the $D901 alias and depends on the
+    // rest of that window staying unmapped, so give macxl the narrow $D901 region.
+    if (strcmp(cfg->machine->id, "macxl") == 0)
+        lisa_mmu_map_io(ls->mmu, 0xD901, 16 * 8, &lisa_via_iface, &ls->via2_map);
+    else
+        lisa_mmu_map_io(ls->mmu, 0xD800, 0x200, &lisa_via_iface, &ls->via2_map);
 
     // COPS keyboard/mouse/clock/power microcontroller on VIA1 port A.
     ls->cops = cops_init(cfg->via1, cfg->scheduler, checkpoint);
@@ -814,8 +840,8 @@ static void lisa_vbl_off(void *source, uint64_t data) {
 #define LISA_VBL_HOLD_CYCLES 458
 
 // The OS's IPL-1 handler reads the Status Register to identify the VBL; that read
-// is the VBL acknowledge.  Clear the latched VBL IRQ (matches LisaEm's edge-fired
-// autovector being taken once per retrace).
+// is the VBL acknowledge.  Clear the latched VBL IRQ (the real hardware's edge-fired
+// autovector is taken once per retrace).
 static void lisa_vbl_ack(void *source) {
     config_t *cfg = (config_t *)source;
     lisa_state_t *ls = lisa_state(cfg);
@@ -829,8 +855,8 @@ static void lisa_trigger_vbl(config_t *cfg) {
     lisa_state_t *ls = lisa_state(cfg);
     if (ls && ls->mmu) {
         // VBL is an IPL-1 interrupt source (docs/lisa.md §8) gated by the VTMSK
-        // latch ($E01A on / $E018 off).  Real hardware (and LisaEm) FIRE the video
-        // IRQ at the retrace edge and LATCH it until the CPU services it, so a
+        // latch ($E01A on / $E018 off).  Real hardware FIREs the video
+        // IRQ at the retrace edge and LATCHes it until the CPU services it, so a
         // kernel that is interrupt-masked through the retrace window still sees the
         // VBL on unmask.  We model that by holding the IRQ asserted (and forcing the
         // Status Register retrace bit via vbl_active) until the OS reads the Status

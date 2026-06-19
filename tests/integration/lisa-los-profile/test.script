@@ -1,0 +1,36 @@
+# Integration test: Apple Lisa 2 — LOS 3.1 installer detects the ProFile
+#
+# Attaches a blank ProFile, boots LOS 3.1 to the Install/Repair/Restore menu, warps
+# the cursor onto the Install button and clicks it.  With the ProFile decoded over
+# its full VIA2 chip-select window ($D800-$D9FF), the OS ProFile driver's PROF_INIT
+# reaches the hardware and the installer detects the disk — reaching the
+# "Do you want to use the disk attached to the parallel connector?" prompt
+# (Cancel / OK / More).  Before the VIA2-decode fix
+# the driver's register writes (off base $D801) were dropped and this screen instead
+# read "There are no usable disks attached to the Lisa".
+
+# Attach a blank in-memory ProFile (created on the fly; OCD/ driven connected).
+profile.attach
+
+# Boot to the Install menu (menu stable from ~48M, as in lisa-los-boot).
+scheduler.run 50000000
+
+assert ${machine.id == "lisa"} "machine.id != lisa"
+assert ${rom.checksum == "098917B2"} "rom.checksum != 098917B2 (rev-H)"
+assert ${profile.present == true} "ProFile should be attached"
+
+# Warp the cursor to the Install button and click it.
+mouse.move 648 211 "global"
+scheduler.run 3000000
+mouse.click true
+scheduler.run 600000
+mouse.click false
+
+# The installer probes the parallel port, finds the ProFile, and shows the
+# parallel-connector disk prompt; the framebuffer settles by ~12M after the click.
+scheduler.run 14000000
+
+# Verify the installer detected the ProFile (NOT "no usable disks").
+screen.match expected.png
+
+quit

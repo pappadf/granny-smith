@@ -159,9 +159,8 @@ physical 0** (a long-standing error to watch for): physical `[0, $80000)` is
 unpopulated. Evidence: the boot ROM's `MEMSIZ` (RM248.K) scans **up from physical
 0** for the first RAM (so RAM cannot be at 0), and the OS's "minimum physical
 address" `MINMEM` (`[$2A4]`) / `realmemmmu`/`logrealmem` reflect the high base;
-cross-checked against LisaEm (`lisaem_wx.cpp` RAM-board table: `minlisaram =
-$80000` for every config without the undefined `ALLOW2MBRAM`, `maxlisaram` per
-size). The boot ROM then programs the MMU so logical RAM is contiguous *from this
+matching the real Lisa RAM-board layout (minimum RAM base `$80000` for every
+config, maximum per installed size). The boot ROM then programs the MMU so logical RAM is contiguous *from this
 high physical base*. With RAM modelled at 0 the OS placed the kernel stack on a
 non-existent page → wild `RTS`/reset and screen-junk wild writes. The emulator
 implements the high base in `lisa_mmu.c` (`ram_min`/`ram_max`); `lisa_mmu_init`
@@ -618,8 +617,8 @@ Read by the bus-error handler to classify a fault:
   VTIRDIS-clears-the-latch behaviour the ROM's VIDTST depends on.
   - **The VBL interrupt is EDGE-triggered and LATCHED — model it as a held level,
     NOT a fixed-width pulse.** VTIR fires once at the rising edge into each retrace
-    and stays asserted at IPL 1 until the CPU services it (LisaEm models it as a
-    latched autovector: `reg68k_external_autovector(IRQ_VIDEO)`). This matters
+    and stays asserted at IPL 1 until the CPU services it (a latched autovector
+    on real hardware). This matters
     because the kernel is routinely interrupt-masked through the *entire* ~90 µs
     retrace window: a pulse that de-asserted at the window's end would be **lost**
     whenever the kernel was masked across it, and retrace-paced OS work would
@@ -738,6 +737,16 @@ disk (and the contrast DAC). The handshake uses CA1/CA2/CB2 and several PB lines
 CA1 pulses on each A-port read/write; CA1 feeds CA2 to allow A-port latch mode.
 VIA2 aggregates to **IPL 1** (shared with floppy and video).
 
+> **⚠️ VIA2 chip-select ignores address bit 8 — the whole `$00D800-$00D9FF`
+> window decodes to VIA2** (register = `(addr>>3) & 15`, so the `$D8xx` and `$D9xx`
+> halves are aliases). The boot ROM (`VIA2BASE = $00FCD901`) and the OS clock use
+> the `$D9xx` alias, but **the LisaOS parallel hard-disk driver
+> (`SYSTEM.CD_PROFILE` / `PROF_INIT`) addresses VIA2 off base `$00D801`** (e.g. IER
+> at `$00D871`). The emulator must therefore decode the full `$D800-$D9FF` range;
+> a narrow `$D901`-only mapping silently drops the driver's register writes and the
+> ProFile is never detected by the Office-System installer. (MacWorks XL uses only
+> the `$D9xx` alias.)
+
 ---
 
 ## 11. COPS Microcontroller (Keyboard / Mouse / RTC / Soft-Power)
@@ -826,6 +835,29 @@ polls the pulse edges through a multiplexer and counts them itself (HM §6.6.3),
 handing the CPU these **cooked signed deltas**. The CPU never sees quadrature, so
 host input injection feeds `dx`/`dy` directly to the COPS report path (see
 [cops.md](cops.md)), not quadrature pulses.
+
+**Absolute positioning (`mouse.move x y "global"`).** Because the mouse is relative
+and the OS scales the deltas, the emulator can't place the cursor with one report.
+Instead the COPS runs a **closed-loop "warp"** (`cops_set_warp`): on each mouse
+report it reads the OS's live on-screen cursor position and emits a corrective
+delta toward the target pixel, converging in a handful of reports — the standard
+closed-loop technique for positioning a relative mouse. Two LOS facts make it exact:
+
+* The live cursor is in OS globals **`$CC00F0` = X, `$CC00F2` = Y** (word, signed),
+  written by the cursor tracker in **supervisor** mode (context 0) and re-asserted
+  every VBL — so a supervisor read always returns the current cursor. (These are
+  *not* the `$486`/`$488` globals other references mention; those are a separate copy
+  that stays stale in this model.)
+* The OS scales each COPS delta to screen pixels by a fixed per-axis factor —
+  **X × 3/2** (the 720×364 non-square pixel aspect) and **Y × 1** — linearly, with no
+  acceleration threshold. So to close an error `(errX, errY)` the warp injects
+  `dx = errX × 2/3`, `dy = errY`; the loop re-reads each report, so integer-division
+  residue self-corrects.
+
+A `mouse.click` is then the mouse-button keycode, which the OS hit-tests against the
+cursor it has tracked onto the target. (The OS does not blit the cursor sprite on the
+idle Install menu, so a menu screenshot is cursor-less even though the position is
+tracked; the cursor becomes visible once a dialog opens.)
 
 ### 11.5 Real-time clock
 

@@ -1,8 +1,8 @@
 # Integration test: Apple Lisa 2 — Lisa Office System 3.1 boot to the Install menu
 #
 # Boots the Lisa 2 (rev-H boot ROM) from the LOS 3.1 install floppy (Disk 1) and
-# verifies it reaches the Install/Repair/Restore menu, the same screen LisaEm
-# reaches.  This exercises the full Lisa stack end to end:
+# verifies it reaches the Install/Repair/Restore menu.
+# This exercises the full Lisa stack end to end:
 #   - boot ROM RAM sizing + segment-MMU setup, OS load off the Sony 400K floppy;
 #   - the FDC / VBL interrupt path that wakes the FS reader (the $C05F drive-done
 #     encoding and the edge-latched VBL);

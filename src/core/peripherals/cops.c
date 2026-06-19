@@ -79,6 +79,16 @@ struct cops {
     int8_t mouse_dx; // accumulated movement, reset on each report
     int8_t mouse_dy;
     bool mouse_button; // last host-injected button state (for edge detection)
+
+    // Absolute-positioning "warp" (mouse.move x y "global").  The Lisa mouse is
+    // relative and the OS scales deltas to pixels, so we can't place the cursor
+    // with one delta.  Instead, each mouse report we read the OS's live cursor
+    // globals ($CC00F0 = X, $CC00F2 = Y) and emit a corrective delta toward the
+    // target — a closed loop that re-reads the cursor each report and corrects, so
+    // it converges regardless of the OS's fixed per-axis scale (X×3/2, Y×1).
+    bool warp_active;
+    int warp_x, warp_y; // target screen pixel
+    int warp_ticks; // convergence-loop safety counter
 };
 
 // === Response FIFO ==========================================================
@@ -162,6 +172,49 @@ static void cops_mouse_tick(void *source, uint64_t data) {
     c->mouse_scheduled = false;
     if (!c->mouse_enabled || c->mouse_interval == 0)
         return;
+    // Closed-loop absolute positioning: steer the OS cursor toward warp_x/warp_y
+    // by emitting a small corrective delta each report (small chunks stay under
+    // the OS's acceleration threshold, so movement is ~1:1 and the loop converges).
+    if (c->warp_active) {
+        extern bool lisa_mmu_get_cursor(int ctx, int *x, int *y);
+        // Read the live on-screen cursor (OS globals $CC00F0/$CC00F2, supervisor
+        // context).  The OS scales COPS mouse deltas into screen pixels by a fixed
+        // per-axis factor — X ×3/2 (the 720×364 pixel aspect), Y ×1 — measured
+        // exactly and linearly (no acceleration threshold).  So to move the cursor
+        // toward the target we inject err/scale mickeys: dx = errX×2/3, dy = errY.
+        // The loop re-reads each report, so integer-division residue self-corrects.
+        int cx = 0, cy = 0;
+        bool got = lisa_mmu_get_cursor(0, &cx, &cy);
+        if (got && cx >= -64 && cx <= 1023 && cy >= -64 && cy <= 511) {
+            int ex = c->warp_x - cx, ey = c->warp_y - cy;
+            const int tol = 3;
+            if ((ex >= -tol && ex <= tol && ey >= -tol && ey <= tol) || ++c->warp_ticks > 120) {
+                c->warp_active = false; // arrived (sub-pixel) or timed out
+            } else {
+                int idx = (ex * 2) / 3; // undo the ×3/2 X scaling
+                int idy = ey; // Y is 1:1
+                const int cap = 120; // stay within the signed-byte report range
+                if (idx > cap)
+                    idx = cap;
+                else if (idx < -cap)
+                    idx = -cap;
+                if (idy > cap)
+                    idy = cap;
+                else if (idy < -cap)
+                    idy = -cap;
+                // Nudge past the dead reckoning when the residual error rounds to a
+                // zero inject but is still outside tolerance (small X errors).
+                if (idx == 0 && ex > tol)
+                    idx = 1;
+                else if (idx == 0 && ex < -tol)
+                    idx = -1;
+                c->mouse_dx = (int8_t)idx;
+                c->mouse_dy = (int8_t)idy;
+            }
+        } else {
+            c->warp_active = false; // cursor globals unreadable; give up
+        }
+    }
     fifo_push(c, COPS_MOUSE_MARK);
     fifo_push(c, (uint8_t)c->mouse_dx);
     fifo_push(c, (uint8_t)c->mouse_dy);
@@ -195,9 +248,24 @@ void cops_inject_key(cops_t *c, uint8_t code) {
     LOG(2, "cops inject key 0x%02x", code);
 }
 
+// Begin an absolute "warp" of the OS cursor to screen pixel (x,y).  The mouse
+// report tick (cops_mouse_tick) does the convergence by reading $CC00F0/$CC00F2
+// and emitting corrective deltas.  Requires the OS to have enabled mouse reports.
+void cops_set_warp(cops_t *c, int x, int y) {
+    if (!c)
+        return;
+    c->warp_x = x;
+    c->warp_y = y;
+    c->warp_active = true;
+    c->warp_ticks = 0;
+    c->mouse_dx = 0;
+    c->mouse_dy = 0;
+}
+
 void cops_inject_mouse(cops_t *c, int dx, int dy, int button) {
     if (!c)
         return;
+    c->warp_active = false; // an explicit relative move cancels any pending warp
     // Accumulate deltas the way the real COPS sums pulse edges between reports;
     // cops_mouse_tick emits them (guest must have enabled mouse interrupts).
     c->mouse_dx = (int8_t)COPS_DELTA_CLAMP((int)c->mouse_dx + dx);

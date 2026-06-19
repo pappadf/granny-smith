@@ -1,7 +1,6 @@
 # Integration test configuration: Apple Lisa 2 — Lisa Office System 3.1 boot
 # Boots the Lisa 2 (rev-H boot ROM) from the LOS 3.1 install floppy (Disk 1) all
-# the way to the Install/Repair/Restore menu — the same screen the LisaEm
-# reference emulator reaches.
+# the way to the Install/Repair/Restore menu.
 
 TEST_NAME := Apple Lisa 2 LOS 3.1 boot
 TEST_DESC := Boots the Lisa 2 from the Lisa Office System 3.1 install floppy to the Install/Repair/Restore menu

@@ -128,13 +128,13 @@ lisa_mmu_t *lisa_mmu_init(uint8_t *ram, uint32_t ram_size, uint8_t *rom, uint32_
     m->ram = ram;
     m->ram_size = ram_size;
     // Lisa memory boards populate the address space from 512 KB upward, not from
-    // physical 0 (verified vs LisaEm: 512 KB → [$80000,$100000), 1 MB →
-    // [$80000,$180000), 2 MB → [0,$200000)).  The boot ROM's MEMSIZ scans up from 0
+    // physical 0 (512 KB → [$80000,$100000), 1 MB → [$80000,$180000),
+    // 2 MB → [0,$200000)).  The boot ROM's MEMSIZ scans up from 0
     // and reports this base as MINMEM ($2A4); the OS lays out real memory (and the
     // kernel stack at the top of it) relative to that base.  With RAM wrongly based
     // at 0, the OS placed the kernel stack on a non-existent high page.
-    // Lisa memory boards populate [$80000 .. min($80000+installed, $200000)) — verified
-    // against LisaEm (boots LOS 3.1 to the Install menu with RAM [$80000,$200000)).
+    // Lisa memory boards populate [$80000 .. min($80000+installed, $200000)) (LOS 3.1
+    // boots to the Install menu with RAM [$80000,$200000)).
     // The Macintosh XL (ram_high=false) keeps RAM at 0: MacWorks' framebuffer and
     // boot path live in low memory.  GSRAMMIN forces the high layout regardless (a
     // debug override; harmless on the Lisa, which already defaults high).
@@ -314,8 +314,8 @@ static uint8_t lisa_status_byte(lisa_mmu_t *m) {
     // handler, which reads this bit to identify the source, confirms the VBL even
     // if it is serviced past the cycle-accurate retrace window (the kernel was
     // masked).  Reading the Status Register is the OS's VBL acknowledge: clear the
-    // latch and drop the IRQ.  This matches LisaEm's edge-fired latched video IRQ
-    // (reg68k_external_autovector(IRQ_VIDEO)) — our prior 458-cycle pulse dropped
+    // latch and drop the IRQ.  This matches the real hardware's edge-fired latched
+    // video IRQ — our prior 458-cycle pulse dropped
     // the VBL whenever the kernel was masked through the window, so a freshly
     // dispatched process ran before the VBL-driven segment load.
     bool in_retrace = m->vertical || m->vbl_active;
@@ -584,6 +584,39 @@ static void lisa_ram_write(lisa_mmu_t *m, uint32_t phys, unsigned size, uint32_t
     uint32_t off = phys - m->ram_min;
     for (unsigned i = 0; i < size; i++)
         m->ram[off + i] = (uint8_t)(value >> ((size - 1 - i) * 8));
+}
+
+// === Absolute cursor positioning (mouse.move ... "global") =================
+//
+// The LisaOS keeps the live on-screen cursor position in two word globals in the
+// OS globals block: $CC00F0 = X (horizontal pixel) and $CC00F2 = Y (vertical
+// pixel).  They are written by the cursor tracker (rev-H LOS 3.1 routine at
+// $520DA2/$520DA8) in SUPERVISOR mode — i.e. context 0 — and re-asserted on every
+// VBL, so a supervisor read always returns the live cursor.  (These were found by
+// instrumenting the writes that track injected COPS deltas; the $486/$488 globals
+// some references cite are a different, stale copy in our model and never move.)  The COPS
+// "warp" closed loop reads these and emits corrective deltas to reach a target.
+#define LISA_CURSOR_X_ADDR 0x00CC00F0u
+#define LISA_CURSOR_Y_ADDR 0x00CC00F2u
+
+// Read the live LisaOS cursor X/Y in supervisor context.  Returns false if the
+// globals block is not currently mapped (e.g. before the OS is up).  `ctx` is
+// accepted for API compatibility but ignored — the cursor lives in supervisor
+// (context 0) space.
+bool lisa_mmu_get_cursor(int ctx, int *x, int *y) {
+    (void)ctx;
+    lisa_mmu_t *m = g_lisa_mmu;
+    if (!m)
+        return false;
+    lisa_resolved_t rx = lisa_resolve(m, LISA_CURSOR_X_ADDR, /*supervisor=*/true, /*is_write=*/false);
+    lisa_resolved_t ry = lisa_resolve(m, LISA_CURSOR_Y_ADDR, /*supervisor=*/true, /*is_write=*/false);
+    if (rx.route != L_RAM || ry.route != L_RAM)
+        return false;
+    if (x)
+        *x = (int)(int16_t)lisa_ram_read(m, rx.phys, 2);
+    if (y)
+        *y = (int)(int16_t)lisa_ram_read(m, ry.phys, 2);
+    return true;
 }
 
 // 12-bit descriptor register read (word-sized on real hardware).
