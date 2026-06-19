@@ -17,6 +17,7 @@
 #include "image.h"
 #include "log.h"
 
+#include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -76,9 +77,12 @@ LOG_USE_CATEGORY_NAME("floppy");
 // stays physically attached via fdc->image regardless — reads don't depend on
 // these bits.)  MacWorks' startup drains events until ($C05F & $77) == 0, so a
 // persistently-set "present" bit here would loop forever (docs/lisa.md §13.3).
-#define DRVSTAT_DISKIN1   0x01 // drive 1 disk-inserted event
-#define DRVSTAT_COMPLETE1 0x04 // drive 1 RWTS complete
-#define DRVSTAT_OR1       0x08 // OR of bits 0-2
+#define DRVSTAT_DISKIN1   0x01 // drive 1 (lower) disk-inserted event
+#define DRVSTAT_COMPLETE1 0x04 // drive 1 (lower) RWTS complete
+#define DRVSTAT_OR1       0x08 // OR of bits 0-2 (lower-drive summary)
+#define DRVSTAT_DISKIN2   0x10 // drive 2 (upper / Lisa-2 internal Sony) disk-inserted
+#define DRVSTAT_COMPLETE2 0x40 // drive 2 (upper) RWTS complete
+#define DRVSTAT_OR2       0x80 // OR of bits 4-6 (upper-drive summary)
 
 struct lisa_fdc {
     struct scheduler *sched;
@@ -88,6 +92,17 @@ struct lisa_fdc {
 
     image_t *image; // attached floppy (NULL if none)
     int num_sides; // 1 (400 KB) or 2 (800 KB)
+
+    // Faithful disk reinsert: a physical micro-diskette retains the writes made
+    // to it across an eject + reinsert.  The OS overmount protocol relies on this
+    // (it writes an overmount_stamp to the boot diskette when it temporarily
+    // unmounts it, then verifies that stamp when the user reinserts it to finish
+    // the install — LisaOS SOURCE-FSINIT2 rbd / boot_remount).  Our host reinsert
+    // opens a fresh image (a new delta) each time, which would lose the write.  So
+    // we cache every inserted image by base path and re-use it (with its delta)
+    // when the same disk is reinserted.  See docs/lisa_disk_insertion_los.md §5.
+    image_t *disk_cache[8];
+    int n_cache;
 
     uint8_t ram[FDC_RAM_BYTES];
 };
@@ -291,15 +306,53 @@ void lisa_fdc_write32(lisa_fdc_t *fdc, uint32_t offset, uint32_t value) {
 // === Media ==================================================================
 
 void lisa_fdc_insert(lisa_fdc_t *fdc, image_t *image) {
+    // Faithful reinsert: if this disk was inserted before, re-use the retained
+    // image (it carries any writes — e.g. the boot diskette's overmount_stamp);
+    // the freshly-opened `image` is redundant.  Otherwise retain it for future
+    // reinserts.  Match by CANONICAL path so the same physical image is
+    // recognised whether its path was given absolute or relative.
+    if (image) {
+        const char *fn = image_get_filename(image);
+        char fnreal[PATH_MAX];
+        const char *fnc = (fn && realpath(fn, fnreal)) ? fnreal : fn;
+        image_t *cached = NULL;
+        for (int i = 0; i < fdc->n_cache; i++) {
+            const char *cfn = image_get_filename(fdc->disk_cache[i]);
+            char creal[PATH_MAX];
+            const char *cfnc = (cfn && realpath(cfn, creal)) ? creal : cfn;
+            if (fnc && cfnc && strcmp(fnc, cfnc) == 0) {
+                cached = fdc->disk_cache[i];
+                break;
+            }
+        }
+        if (cached) {
+            // Re-point to the retained image so its writes (the boot
+            // diskette's overmount_stamp) survive the eject+reinsert.  Do
+            // NOT close the redundant fresh `image`: images are owned by the
+            // system's tracked list (config->images[]) and freed exactly once
+            // at shutdown.  The boot disk's absolute fd= path and this
+            // relative reinsert path are tracked as two separate entries, so
+            // closing it here would leave a dangling entry that shutdown
+            // double-frees (segfault on quit).
+            image = cached;
+        } else if (fdc->n_cache < (int)(sizeof(fdc->disk_cache) / sizeof(fdc->disk_cache[0]))) {
+            fdc->disk_cache[fdc->n_cache++] = image;
+        }
+    }
     fdc->image = image;
     fdc->num_sides = (image && disk_size(image) > 500000) ? 2 : 1; // 400 KB = 1 side
     fdc_update_disktype(fdc);
     if (image) {
-        // Disk insertion raises FDIR (IPL 1) so the host re-examines the drive
-        // after a swap (docs/lisa.md §13).  We surface it as a completion event
-        // (the same status the host's drive-event handler drains after any
-        // operation); a raw disk-in bit cannot be acknowledged by that handler.
-        fdc->ram[FDC_DRVSTAT] |= DRVSTAT_COMPLETE1 | DRVSTAT_OR1;
+        // Disk insertion raises FDIR (IPL 1) so the OS Sony driver's DISK_INT runs,
+        // reads $C05F, sees the disk-inserted event, and sets disk_present:=gooddisk
+        // (LisaOS SOURCE-SONY DISK_INT; see docs/lisa_disk_insertion_los.md §2.2).
+        // The Lisa-2 internal Sony is the UPPER drive ($80): its disk-in event is
+        // DISKIN2 (bit4) + the upper-drive summary (bit7) = $90 (the $C05F per-drive
+        // nibble layout — docs/lisa_disk_insertion_los.md §1.1).  (The earlier
+        // COMPLETE1|OR1=$0c was the lower-drive nibble, which the OS never matched to
+        // the upper drive, so Mount kept returning nodiskpres/614 and the installer
+        // silently re-prompted.)
+        fdc->ram[FDC_DRVSTAT] |= DRVSTAT_DISKIN2 | DRVSTAT_OR2;
         fdc_set_fdir(fdc, true);
     }
 }

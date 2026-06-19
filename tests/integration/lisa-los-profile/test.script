@@ -1,36 +1,111 @@
-# Integration test: Apple Lisa 2 — LOS 3.1 installer detects the ProFile
+# Integration test: Apple Lisa 2 — LOS 3.1 INSTALL onto the ProFile hard disk.
 #
-# Attaches a blank ProFile, boots LOS 3.1 to the Install/Repair/Restore menu, warps
-# the cursor onto the Install button and clicks it.  With the ProFile decoded over
-# its full VIA2 chip-select window ($D800-$D9FF), the OS ProFile driver's PROF_INIT
-# reaches the hardware and the installer detects the disk — reaching the
-# "Do you want to use the disk attached to the parallel connector?" prompt
-# (Cancel / OK / More).  Before the VIA2-decode fix
-# the driver's register writes (off base $D801) were dropped and this screen instead
-# read "There are no usable disks attached to the Lisa".
+# Boots the Lisa 2 (rev-H ROM) from the LOS 3.1 install floppy with a blank ProFile
+# attached, then warps+clicks through the WHOLE Office System install and verifies
+# it completes onto the ProFile:
+#   Install -> "use parallel disk?" (ProFile DETECTED) -> OK -> Continue (erase/init)
+#   -> Don't Share -> "insert Office System 2" -> copy diskettes 2,3,4,5 -> reinsert
+#   diskette 1 (boot_remount writes the boot tracks) -> back at the menu, now with the
+#   ProFile as the startup disk.
+#
+# Exercises the full host->OS path AND the two fixes that make the install run:
+#   (a) VIA2 decoded over $D800-$D9FF so the OS ProFile driver's PROF_INIT reaches
+#       the hardware (the ProFile is detected, not "no usable disks");
+#   (b) the FDC disk-in event uses the upper-drive $C05F bits (DISKIN2|summary=$90)
+#       so the OS detects each inserted diskette (else Mount returns 614 and the
+#       installer silently re-prompts);
+#   (c) faithful disk reinsert: the boot diskette retains its overmount_stamp across
+#       the eject+reinsert so boot_remount accepts it and finishes the install.
+# Diskette paths are relative to this test directory.
 
-# Attach a blank in-memory ProFile (created on the fly; OCD/ driven connected).
 profile.attach
-
-# Boot to the Install menu (menu stable from ~48M, as in lisa-los-boot).
 scheduler.run 50000000
 
 assert ${machine.id == "lisa"} "machine.id != lisa"
 assert ${rom.checksum == "098917B2"} "rom.checksum != 098917B2 (rev-H)"
 assert ${profile.present == true} "ProFile should be attached"
 
-# Warp the cursor to the Install button and click it.
+# (1) Install.
 mouse.move 648 211 "global"
 scheduler.run 3000000
 mouse.click true
 scheduler.run 600000
 mouse.click false
-
-# The installer probes the parallel port, finds the ProFile, and shows the
-# parallel-connector disk prompt; the framebuffer settles by ~12M after the click.
 scheduler.run 14000000
-
-# Verify the installer detected the ProFile (NOT "no usable disks").
+# (2) ProFile detected -> "use the disk attached to the parallel connector?"
 screen.match expected.png
 
+# (3) OK (use this disk).
+mouse.move 607 120 "global"
+scheduler.run 3000000
+mouse.click true
+scheduler.run 600000
+mouse.click false
+scheduler.run 16000000
+
+# (4) Continue (erase / initialise the blank ProFile).
+mouse.move 611 172 "global"
+scheduler.run 3000000
+mouse.click true
+scheduler.run 600000
+mouse.click false
+scheduler.run 30000000
+
+# (5) Don't Share (whole disk to the Lisa Office System).
+mouse.move 603 70 "global"
+scheduler.run 3000000
+mouse.click true
+scheduler.run 600000
+mouse.click false
+scheduler.run 40000000
+# (6) Installer initialised the ProFile and asks for Office System 2.
+screen.match expected_insert2.png
+# --- copy Office System 2 ---
+floppy.drives.0.insert "../../data/systems/LisaOfficeSystem-3.1/Install2.image"
+scheduler.run 4000000
+mouse.move 604 118 "global"
+scheduler.run 3000000
+mouse.click true
+scheduler.run 600000
+mouse.click false
+scheduler.run 80000000
+# --- copy Office System 3 ---
+floppy.drives.0.insert "../../data/systems/LisaOfficeSystem-3.1/Install3.image"
+scheduler.run 4000000
+mouse.move 604 118 "global"
+scheduler.run 3000000
+mouse.click true
+scheduler.run 600000
+mouse.click false
+scheduler.run 80000000
+# --- copy Office System 4 ---
+floppy.drives.0.insert "../../data/systems/LisaOfficeSystem-3.1/Install4.image"
+scheduler.run 4000000
+mouse.move 604 118 "global"
+scheduler.run 3000000
+mouse.click true
+scheduler.run 600000
+mouse.click false
+scheduler.run 80000000
+# --- copy Office System 5 ---
+floppy.drives.0.insert "../../data/systems/LisaOfficeSystem-3.1/Install5.image"
+scheduler.run 4000000
+mouse.move 604 118 "global"
+scheduler.run 3000000
+mouse.click true
+scheduler.run 600000
+mouse.click false
+scheduler.run 80000000
+# (8) Reinsert Office System 1 -> boot_remount writes boot tracks, finishing the install.
+floppy.drives.0.insert "../../data/systems/LisaOfficeSystem-3.1/Install1.image"
+scheduler.run 4000000
+mouse.move 604 118 "global"
+scheduler.run 3000000
+mouse.click true
+scheduler.run 600000
+mouse.click false
+scheduler.run 120000000
+# (9) Install complete: back at the Install/Repair menu with the ProFile as the
+# startup disk ("the disk attached to the parallel connector").
+screen.match expected_installed.png
 quit
