@@ -215,12 +215,22 @@ static void cops_mouse_tick(void *source, uint64_t data) {
             c->warp_active = false; // cursor globals unreadable; give up
         }
     }
-    fifo_push(c, COPS_MOUSE_MARK);
-    fifo_push(c, (uint8_t)c->mouse_dx);
-    fifo_push(c, (uint8_t)c->mouse_dy);
-    c->mouse_dx = 0; // deltas reset once reported
-    c->mouse_dy = 0;
-    cops_kick_pump(c);
+    // Emit a report only when there is accumulated motion.  The real COPS detects
+    // movement by quadrature pulse edges (Hardware Manual 1983, §8.x "Mouse
+    // Movement Waveforms") and reports it; it does NOT stream idle (0,0,0) updates.
+    // Flooding idle reports corrupts the host's multi-byte COPS protocol decoder:
+    // the 0x00 mouse marker repeatedly re-enters the "expect dx/dy" state, so a
+    // keystroke that lands off the 3-byte report boundary is consumed as a
+    // coordinate.  This made the keyboard unusable at the Xenix boot-loader prompt.
+    // LOS cursor warp/move still works — it sets non-zero deltas while converging.
+    if (c->mouse_dx != 0 || c->mouse_dy != 0) {
+        fifo_push(c, COPS_MOUSE_MARK);
+        fifo_push(c, (uint8_t)c->mouse_dx);
+        fifo_push(c, (uint8_t)c->mouse_dy);
+        c->mouse_dx = 0; // deltas reset once reported
+        c->mouse_dy = 0;
+        cops_kick_pump(c);
+    }
     scheduler_new_cpu_event(c->sched, &cops_mouse_tick, c, 0, c->mouse_interval, 0);
     c->mouse_scheduled = true;
 }
