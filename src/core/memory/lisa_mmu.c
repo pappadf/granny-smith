@@ -656,7 +656,13 @@ static uint32_t lisa_read(uint32_t addr, unsigned size, bool supervisor) {
     lisa_mmu_t *m = g_lisa_mmu;
     if (__builtin_expect(lisa_is_serial(m, addr & 0x00FFFFFFu), 0))
         return lisa_serial_read(m, size); // serial-number PROM bit-stream
-    if (getenv("GSMAXMEM") && (addr & 0x00FFFFFF) == 0x294 && size == 4) {
+    // getenv() scans the whole environment, so cache the diagnostic gates: this
+    // is the hot read path, run on every Lisa memory read.  (env is fixed for
+    // the process lifetime, so a one-time lookup is safe.)
+    static signed char gsmaxmem = -1;
+    if (gsmaxmem < 0)
+        gsmaxmem = getenv("GSMAXMEM") != NULL;
+    if (gsmaxmem && (addr & 0x00FFFFFF) == 0x294 && size == 4) {
         uint32_t pc = cpu_get_pc(system_cpu()) & 0xffffff;
         if (pc < 0xfe0000) { // reserve the 32 KB screen below MAXMEM (non-ROM reads only)
             uint32_t top = m->ram_min + m->ram_size;
@@ -666,8 +672,11 @@ static uint32_t lisa_read(uint32_t addr, unsigned size, bool supervisor) {
         }
     }
     lisa_resolved_t r = lisa_resolve(m, addr, supervisor, false);
-    if (getenv("GSSEG17") && (((addr & 0x00FFFFFF) >= 0x220000 && (addr & 0x00FFFFFF) < 0x240000) ||
-                              ((addr & 0x00FFFFFF) >= 0xf78000 && (addr & 0x00FFFFFF) < 0xf78400))) {
+    static signed char gsseg17 = -1;
+    if (gsseg17 < 0)
+        gsseg17 = getenv("GSSEG17") != NULL;
+    if (gsseg17 && (((addr & 0x00FFFFFF) >= 0x220000 && (addr & 0x00FFFFFF) < 0x240000) ||
+                    ((addr & 0x00FFFFFF) >= 0xf78000 && (addr & 0x00FFFFFF) < 0xf78400))) {
         extern uint64_t cpu_instr_count(void);
         int latch = (m->seg2 << 1) | m->seg1;
         int ctx = supervisor ? 0 : latch;
