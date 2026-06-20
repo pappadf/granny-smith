@@ -819,9 +819,11 @@ static __attribute__((noinline, cold)) void exception_bus_error(cpu_t *restrict 
     // via f_trap), where a tight fetch loop genuinely makes no progress.
     // The faulting instruction's address (before PC was advanced by the decoder)
     uint32_t faulting_pc = cpu->instruction_pc;
-    GSBE_LOG("SKIP-enter fpc=%06x faddr=%06x bep=%d bea=%06x sup=%d ssp=%06x a7=%06x lastbe=%06x\n",
-             faulting_pc & 0xffffff, fault_addr & 0xffffff, g_bus_error_pending, g_bus_error_address & 0xffffff,
-             cpu->supervisor, cpu->ssp & 0xffffff, cpu->a[7] & 0xffffff, cpu->last_bus_error_pc & 0xffffff);
+    extern uint64_t cpu_instr_count(void);
+    GSBE_LOG("SKIP-enter ic=%llu fpc=%06x faddr=%06x bep=%d bea=%06x sup=%d ssp=%06x a7=%06x lastbe=%06x\n",
+             (unsigned long long)cpu_instr_count(), faulting_pc & 0xffffff, fault_addr & 0xffffff, g_bus_error_pending,
+             g_bus_error_address & 0xffffff, cpu->supervisor, cpu->ssp & 0xffffff, cpu->a[7] & 0xffffff,
+             cpu->last_bus_error_pc & 0xffffff);
     if (cpu->last_bus_error_pc != 0 && cpu->last_bus_error_pc == faulting_pc) {
         GSBE_LOG("  SKIP halt: same-pc double fault fpc=%06x\n", faulting_pc & 0xffffff);
         cpu->halted = 1;

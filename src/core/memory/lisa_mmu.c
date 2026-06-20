@@ -471,13 +471,19 @@ static lisa_resolved_t lisa_resolve(lisa_mmu_t *m, uint32_t addr, bool superviso
     bool stack = is_mem && !(acc & 0x1); // bit0=0 → stack segment
     bool read_only = is_mem && !(acc & 0x2); // bit1=0 → read-only
 
-    // Limit check: the hardware adds the page displacement to the (two's-
-    // complement) length byte and faults on a carry mismatch.  Non-stack:
-    // valid iff page + limit does not overflow 8 bits (limit $00 = 256 pages).
-    // Stack segments grow downward; the carry sense inverts.
+    // Limit check.  The SLR low byte is the segment length encoded so the valid
+    // page window pivots on the boundary page B = (limit ^ 0xFF) = 0xFF - limit:
+    //   - Non-stack (grows up):   valid pages [0, B]      → page <= 0xFF - limit
+    //   - Stack    (grows down):  valid pages [B, 0xFF]   → page >= 0xFF - limit
+    // The boundary page B itself is valid in both senses (cf. LisaEm
+    // get_slr_page_range: MEM pageend=B, STK pagestart=B, pageend=255).  A
+    // stack with limit $00 (B=0xFF) therefore has exactly the top page valid —
+    // which is where the Xenix boot loader relocates and jumps (seg 122,
+    // SLR=400: page 0xFF).  The previous stack test (page+limit >= 0x100) was
+    // one page too strict and faulted that jump.
     bool in_range;
     if (stack)
-        in_range = (page + limit) >= 0x100; // best-effort; refined with LOS
+        in_range = (page + limit) >= 0xFF;
     else
         in_range = (page + limit) < 0x100;
     if (!in_range) {
