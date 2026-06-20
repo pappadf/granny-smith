@@ -734,6 +734,16 @@ static void lisa_init(config_t *cfg, checkpoint_t *checkpoint) {
     // (docs/lisa.md §13).  FDIR completion is signalled on VIA1 PB4.
     ls->fdc = lisa_fdc_init(cfg->scheduler, lisa_fdc_fdir, cfg, checkpoint);
     lisa_mmu_map_io(ls->mmu, 0xC001, 0x7FF, &lisa_fdc_iface, ls->fdc);
+    // PB4 carries the FDC's FDIR (drive interrupt request) line.  The 6504A drives
+    // it — it is not a floating/pulled-up input — and at reset there is no pending
+    // interrupt, so FDIR is deasserted (low).  The 6522 powers port B up idle-high
+    // (0xFF), which would leave PB4 reading a phantom "floppy interrupt asserted";
+    // on a diskless boot (booting the ProFile with no floppy) nothing ever drives
+    // PB4, so that phantom would trap the OS's level-1 interrupt handler forever
+    // (it re-reads PB4 high every pass and never finishes its source scan, so the
+    // floppy driver's own INITDISK — which would clear the line — never runs).
+    // Establish FDIR's true deasserted reset level here.
+    via_input(cfg->via1, 1, 4, false);
     // Disk-controller ROM id ($FCC031 = adr_ioboard) selects the I/O-board model
     // the boot ROM (SETTYPE/SYSTYPE) and LisaOS (SOURCE-STARTUP) detect.  LisaOS
     // reads it as a SIGNED byte: >=0 (bit7 clear) ⇒ iob_lisa (Lisa 1, Twiggy) ⇒

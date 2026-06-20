@@ -16,8 +16,11 @@ assert ${profile.present == true} "ProFile should be attached"
 assert ${profile.pram_load("${WORK_DIR}/profile.pram")} "pram_load failed"
 
 # The ROM reads PRAM -> BootVol=2 -> PROBOOT the ProFile -> loader -> SYSTEM.OS;
-# FIND_PM_IDS finds the ProFile (cd_paraport) in the seeded device table.  By
-# ~60M instructions the OS has come up and settles into its idle event loop.
+# FIND_PM_IDS finds the ProFile (cd_paraport) in the seeded device table.  By ~100M
+# instructions LOS has booted to the Office System DESKTOP: the menu bar (Desk /
+# File-Print / Edit / Housekeeping) with the Preferences/Wastebasket/Clipboard/Disk
+# icons.  (The small "Lisa clock/calendar is not set properly" note is expected and
+# benign — the emulated COPS real-time clock reads zero, so the OS offers to set it.)
 scheduler.run 100000000
 screen.match expected.png
 quit

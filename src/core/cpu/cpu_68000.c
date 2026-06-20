@@ -79,6 +79,15 @@ LOG_USE_CATEGORY_NAME("cpu");
  * instruction on a slow I/O access. */
 #define CPU_DECODER_PROLOGUE                                                                                           \
     cpu_check_interrupt(cpu);                                                                                          \
+    /* Let a memory-layer fault (lisa_raise_bus_error / memory.c) force this sprint                                    \
+     * to exit immediately by zeroing the burndown counter, so a deferred DATA bus                                     \
+     * error is delivered at the FAULTING instruction's epilogue.  The 68030 decoder                                   \
+     * sets this; the 68000 decoder omitted it, so *g_bus_error_instr_ptr=0 wrote                                      \
+     * through a stale pointer and the sprint ran on — a user-mode data fault (e.g. a                                \
+     * Lisa stack-growth fault) then leaked across ~hundreds of instructions into                                      \
+     * unrelated (supervisor / MMU-setup) code, where it was delivered with the wrong                                  \
+     * context and vectored through the ROM, resetting the machine. */                                                 \
+    g_bus_error_instr_ptr = instructions;                                                                              \
     while (*instructions > 0) {                                                                                        \
         extern int g_lisa_trace;                                                                                       \
         extern long g_lisa_trace_n;                                                                                    \
