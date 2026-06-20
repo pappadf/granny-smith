@@ -24,11 +24,29 @@
 
 #include "log.h"
 
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
 LOG_USE_CATEGORY_NAME("profile")
+
+// GSPRO: env-gated handshake trace (control events only), to /tmp/gspro.out.
+static void gspro_log(const char *fmt, ...) {
+    static signed char on = -1;
+    if (on < 0)
+        on = getenv("GSPRO") != NULL;
+    if (!on)
+        return;
+    FILE *f = fopen("/tmp/gspro.out", "a");
+    if (!f)
+        return;
+    va_list ap;
+    __builtin_va_start(ap, fmt);
+    vfprintf(f, fmt, ap);
+    __builtin_va_end(ap);
+    fclose(f);
+}
 
 // On-the-wire block geometry (docs/lisa.md §14): 20-byte tag/header + 512 data.
 #define PRO_TAG    20
@@ -165,6 +183,8 @@ static uint32_t pro_cmd_block(const lisa_profile_t *pf) {
 static void pro_parse_command(lisa_profile_t *pf) {
     uint8_t op = pf->cmd[0];
     uint32_t block = pro_cmd_block(pf);
+    gspro_log("PARSE cmd=[%02x %02x %02x %02x %02x %02x] op=%02x block=%u\n", pf->cmd[0], pf->cmd[1], pf->cmd[2],
+              pf->cmd[3], pf->cmd[4], pf->cmd[5], op, block);
     if (op == PRO_OP_READ) {
         pro_fill_read(pf, block);
         pf->state_byte = ST_READ;
@@ -224,10 +244,12 @@ void lisa_profile_portb(lisa_profile_t *pf, uint8_t portb) {
         }
         pf->phase = PH_HS;
         pro_set_busy(pf, true);
+        gspro_log("CMD/ assert  -> phase=HS present state=$%02x (after_hs=%d)\n", pf->state_byte, pf->after_hs);
         LOG(3, "CMD/ asserted, present state $%02x", pf->state_byte);
     } else {
         // CMD/ rising edge: the host has read the state byte and sent its reply.
         pro_set_busy(pf, false);
+        gspro_log("CMD/ deassert reply=$%02x phase=%d\n", pf->reply, pf->phase);
         LOG(3, "CMD/ deasserted, reply $%02x", pf->reply);
         if (pf->phase == PH_HS) {
             if (pf->reply == 0x55)
@@ -246,9 +268,13 @@ uint8_t lisa_profile_porta_read(lisa_profile_t *pf, bool handshake) {
 
     if (!handshake) {
         // No-handshake register: the host samples the current state byte.
-        return (pf->phase == PH_HS) ? pf->state_byte : 0xFF;
+        uint8_t v = (pf->phase == PH_HS) ? pf->state_byte : 0xFF;
+        gspro_log("STATE-rd     -> $%02x (phase=%d)\n", v, pf->phase);
+        return v;
     }
 
+    if (pf->phase != PH_READ && pf->phase != PH_RD_STATUS)
+        gspro_log("HS-rd        (phase=%d buf=%d/%d)\n", pf->phase, pf->buf_idx, pf->buf_len);
     // Handshaked register: clock out the next data byte.
     if ((pf->phase == PH_READ || pf->phase == PH_RD_STATUS) && pf->buf_idx < pf->buf_len) {
         uint8_t b = pf->buf[pf->buf_idx++];
@@ -270,6 +296,8 @@ void lisa_profile_porta_write(lisa_profile_t *pf, uint8_t value, bool handshake)
     }
 
     // Handshaked register: a command byte or a write-data byte.
+    if (pf->phase != PH_WRITE)
+        gspro_log("HS-wr $%02x   (phase=%d)\n", value, pf->phase);
     if (pf->phase == PH_RECV_CMD) {
         if (pf->cmd_idx < (int)sizeof(pf->cmd)) {
             pf->cmd[pf->cmd_idx++] = value;
