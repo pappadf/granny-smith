@@ -92,6 +92,7 @@ else ifeq ($(TEST_HARNESS),cpu)
                $(UNIT_ROOT)/support/stub_system.c \
                $(UNIT_ROOT)/support/stub_debugger.c \
                $(UNIT_ROOT)/support/stub_peripherals.c \
+               $(UNIT_ROOT)/support/stub_lisa_mmu.c \
                $(UNIT_ROOT)/support/stub_assert.c
   EMU_SRCS += $(EMU_ROOT)/core/cpu/cpu.c \
               $(EMU_ROOT)/core/cpu/cpu_68000.c \

@@ -49,6 +49,7 @@ SRCS := $(CURDIR)/test.c \
         $(UNIT_ROOT)/support/stub_peripherals.c \
         $(UNIT_ROOT)/support/stub_assert.c \
         $(UNIT_ROOT)/support/stub_cpu.c \
+        $(UNIT_ROOT)/support/stub_lisa_mmu.c \
         $(EMU_ROOT)/core/memory/memory.c \
         $(EMU_ROOT)/core/memory/mmu.c \
         $(EMU_ROOT)/core/object/meta.c \
