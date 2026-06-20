@@ -161,7 +161,10 @@ static void fdc_complete(void *source, uint64_t data) {
 // converter reads (controller byte 10).
 static void fdc_update_disktype(lisa_fdc_t *fdc) {
     fdc->ram[FDC_DISKTYPE] = fdc->image ? (fdc->num_sides == 1 ? DISKTYPE_SONY_400K : DISKTYPE_SONY_800K) : 0;
-    fdc->ram[FDC_DISKIN] = fdc->image ? 0x01 : 0x00; // "disk in drive" the Sony driver's ISDISKIN polls
+    // "disk in drive": LisaOS's ISDISKIN polls for NON-ZERO, while Xenix's boot
+    // loader compares the byte against $FF ("CMPI #$FF") to decide a drive is
+    // loaded — so report the full-byte present flag $FF, which satisfies both.
+    fdc->ram[FDC_DISKIN] = fdc->image ? 0xFF : 0x00;
 }
 
 // Map (track, side, sector) to a byte offset in the image (Sony 5-zone layout).
@@ -277,30 +280,70 @@ static void fdc_command(lisa_fdc_t *fdc, uint8_t cmd) {
 
 // === Shared-RAM access ======================================================
 
+// The 6504's 1 KB buffer RAM is shared with the 68000 on the ODD bus bytes of
+// $00FCC000-$00FCC7FF (even bytes float — the 6504 is an 8-bit part on the odd
+// half of the 16-bit bus).  The iface is mapped from base $00FCC000, so the
+// offset parity equals the physical parity: an ODD offset is a RAM byte
+// (off>>1); an EVEN offset floats.  Multi-byte (word/long) accesses compose
+// big-endian from the constituent bytes — the LisaOS Sony driver pokes the
+// command block one odd byte at a time, but Xenix's boot loader reads/writes
+// the block with word/long ops at the even base (MOVE.L $00FCC000 to issue a
+// command and poll byte 0), so the controller must honour both.
+static uint8_t fdc_read_byte(lisa_fdc_t *fdc, uint32_t off) {
+    if (off & 1) {
+        uint32_t idx = off >> 1;
+        return idx < FDC_RAM_BYTES ? fdc->ram[idx] : 0xFF;
+    }
+    return 0xFF; // even byte: no shared RAM on this half of the bus
+}
+
 uint8_t lisa_fdc_read8(lisa_fdc_t *fdc, uint32_t offset) {
-    uint32_t idx = offset >> 1; // controller RAM lives on the odd bus bytes
-    return idx < FDC_RAM_BYTES ? fdc->ram[idx] : 0xFF;
+    return fdc_read_byte(fdc, offset);
 }
 uint16_t lisa_fdc_read16(lisa_fdc_t *fdc, uint32_t offset) {
-    return lisa_fdc_read8(fdc, offset);
+    return (uint16_t)((fdc_read_byte(fdc, offset) << 8) | fdc_read_byte(fdc, offset + 1));
 }
 uint32_t lisa_fdc_read32(lisa_fdc_t *fdc, uint32_t offset) {
-    return lisa_fdc_read8(fdc, offset);
+    uint32_t v = 0;
+    for (unsigned i = 0; i < 4; i++)
+        v = (v << 8) | fdc_read_byte(fdc, offset + i);
+    return v;
+}
+
+// Apply a `size`-byte big-endian write to the shared RAM (odd bytes only), then
+// issue a command if byte 0 (the command-issue register, $00FCC001) was set
+// non-zero.  The command is issued only AFTER the whole block is in place, so a
+// single long write carrying both the command and its parameters services the
+// parameters first.
+static void fdc_write_bytes(lisa_fdc_t *fdc, uint32_t off, uint32_t value, unsigned size) {
+    bool cmd_written = false;
+    uint8_t cmd_val = 0;
+    for (unsigned i = 0; i < size; i++) {
+        uint32_t a = off + i;
+        uint8_t b = (uint8_t)(value >> (8 * (size - 1 - i)));
+        if (!(a & 1))
+            continue; // even byte: 6504 RAM is on the odd bus bytes only
+        uint32_t idx = a >> 1;
+        if (idx >= FDC_RAM_BYTES)
+            continue;
+        fdc->ram[idx] = b;
+        if (idx == FDC_CMDREG) {
+            cmd_written = true;
+            cmd_val = b;
+        }
+    }
+    if (cmd_written && cmd_val != 0)
+        fdc_command(fdc, cmd_val);
 }
 
 void lisa_fdc_write8(lisa_fdc_t *fdc, uint32_t offset, uint8_t value) {
-    uint32_t idx = offset >> 1;
-    if (idx >= FDC_RAM_BYTES)
-        return;
-    fdc->ram[idx] = value;
-    if (idx == FDC_CMDREG && value != 0)
-        fdc_command(fdc, value); // writing byte 0 issues a command
+    fdc_write_bytes(fdc, offset, value, 1);
 }
 void lisa_fdc_write16(lisa_fdc_t *fdc, uint32_t offset, uint16_t value) {
-    lisa_fdc_write8(fdc, offset, (uint8_t)value);
+    fdc_write_bytes(fdc, offset, value, 2);
 }
 void lisa_fdc_write32(lisa_fdc_t *fdc, uint32_t offset, uint32_t value) {
-    lisa_fdc_write8(fdc, offset, (uint8_t)value);
+    fdc_write_bytes(fdc, offset, value, 4);
 }
 
 // === Media ==================================================================

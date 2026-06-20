@@ -730,10 +730,13 @@ static void lisa_init(config_t *cfg, checkpoint_t *checkpoint) {
     // COPS keyboard/mouse/clock/power microcontroller on VIA1 port A.
     ls->cops = cops_init(cfg->via1, cfg->scheduler, checkpoint);
 
-    // Intelligent floppy controller: shared RAM at physical $00C001-$00C7FF
-    // (docs/lisa.md §13).  FDIR completion is signalled on VIA1 PB4.
+    // Intelligent floppy controller: 6504 + 1 KB shared RAM on the ODD bus
+    // bytes of physical $00C000-$00C7FF (docs/lisa.md §13).  Mapped from the
+    // even base $00C000 so word/long accesses at the even base (used by Xenix's
+    // boot loader) reach the controller; the iface models the odd-byte RAM.
+    // FDIR completion is signalled on VIA1 PB4.
     ls->fdc = lisa_fdc_init(cfg->scheduler, lisa_fdc_fdir, cfg, checkpoint);
-    lisa_mmu_map_io(ls->mmu, 0xC001, 0x7FF, &lisa_fdc_iface, ls->fdc);
+    lisa_mmu_map_io(ls->mmu, 0xC000, 0x800, &lisa_fdc_iface, ls->fdc);
     // PB4 carries the FDC's FDIR (drive interrupt request) line.  The 6504A drives
     // it — it is not a floating/pulled-up input — and at reset there is no pending
     // interrupt, so FDIR is deasserted (low).  The 6522 powers port B up idle-high
