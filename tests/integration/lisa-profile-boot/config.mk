@@ -16,11 +16,11 @@
 # Input (gitignored proprietary data, staged by a maintainer for CI): the
 # installed ProFile image — produced by running lisa-los-profile and copying its
 # lisa-los-installed.image to
-# tests/data/systems/LisaOfficeSystem-3.1/los-installed.image.
+# tests/data/Lisa/LisaOfficeSystem-3.1/LOS-3.1-ProFile.image.
 
 TEST_NAME := Apple Lisa 2 boot LOS from the ProFile
 TEST_DESC := Boots the installed ProFile via a synthetic PRAM (auto-boot, no floppy)
 
-TEST_ROM := roms/098917B2-LisaH.rom
+TEST_ROM := Lisa/roms/098917B2-LisaH.rom
 TEST_ARGS := model=lisa ram=2048
-TEST_SETUP := cp "$(TEST_DATA)/systems/LisaOfficeSystem-3.1/los-installed.image" "$(WORK_DIR)/profile.image" && python3 lisa-profile-boot/seed_pram.py "$(WORK_DIR)/profile.pram"
+TEST_SETUP := cp "$(TEST_DATA)/Lisa/LisaOfficeSystem-3.1/LOS-3.1-ProFile.image" "$(WORK_DIR)/profile.image" && python3 lisa-profile-boot/seed_pram.py "$(WORK_DIR)/profile.pram"

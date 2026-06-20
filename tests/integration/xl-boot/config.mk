@@ -10,9 +10,9 @@ TEST_DESC := Boots the Macintosh XL via MacWorks XL (loader disk, then scripted 
 
 # Interleaved Macintosh XL "3A" boot ROM (341-0346-A / 341-0347-A), 16 KB,
 # checksum 0x094C82F0.
-TEST_ROM := roms/094C82F0-MacXL.rom
+TEST_ROM := Lisa/roms/094C82F0-MacXL.rom
 
 # Boot from the MacWorks XL loader disk.  RAM is pinned at 1 MB (the macxl
 # profile default) so the 608x431 framebuffer sits at $F8000 and the rendered
 # desktop is reproducible.  The system disk is inserted at runtime by the script.
-TEST_ARGS := model=macxl ram=1024 fd=$(TEST_DATA)/systems/MacWorksXL/Loader.dc42
+TEST_ARGS := model=macxl ram=1024 fd=$(TEST_DATA)/Lisa/MacWorksXL/MacWorksXL_3.0_May1985.dc42

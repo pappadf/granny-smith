@@ -21,5 +21,5 @@
 TEST_NAME := Apple Lisa 2 LOS 3.1 ProFile install
 TEST_DESC := Full LOS 3.1 install onto the ProFile (detect, init, copy all diskettes, write boot tracks)
 
-TEST_ROM := roms/098917B2-LisaH.rom
-TEST_ARGS := model=lisa ram=2048 fd=$(TEST_DATA)/systems/LisaOfficeSystem-3.1/Install1.image
+TEST_ROM := Lisa/roms/098917B2-LisaH.rom
+TEST_ARGS := model=lisa ram=2048 fd=$(TEST_DATA)/Lisa/LisaOfficeSystem-3.1/LOS-3.1-1.image

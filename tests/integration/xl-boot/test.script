@@ -21,7 +21,7 @@ assert ${screen.height == 431} "screen.height != 431"
 assert ${floppy.drives[0].present == false} "loader disk should have ejected"
 
 # Insert the MacWorks XL system disk, as a user would at the "?" prompt.
-floppy.drives[0].insert "../../data/systems/MacWorksXL/System.dc42"
+floppy.drives[0].insert "../../data/Lisa/MacWorksXL/MacWorksXL_Sys_Disk.dc42"
 assert ${floppy.drives[0].present == true} "system disk should be inserted"
 
 # Boot the Mac System + Finder from the system disk.
