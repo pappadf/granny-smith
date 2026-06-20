@@ -5,7 +5,9 @@
 // Standalone 68000/68030 disassembler tool for binary files.
 // Uses the existing cpu_disasm.c decoder with minimal dependencies.
 
+#include "annotate_disasm.h"
 #include "cpu.h"
+#include "symbols.h" // for the empty-ctx no-op; signature uses re_symbols_t*
 
 #include <errno.h>
 #include <getopt.h>
@@ -22,42 +24,9 @@ static uint32_t parse_hex_arg(const char *s) {
     return (uint32_t)strtoul(s, NULL, 0);
 }
 
-// Annotate operands with the absolute target address for PC-relative references.
-// mnemonic: the instruction mnemonic (e.g. "BNE.S", "LEA", "JSR")
-// operands_text: the operand string (e.g. "*-$0006", "D0,*+$1234")
-// instr_addr: the virtual address of the instruction
-// Writes annotated operands into buf.
-static void annotate_branch_destination(char *buf, size_t buf_size, const char *mnemonic, const char *operands_text,
-                                        uint32_t instr_addr) {
-    (void)mnemonic; // annotate all PC-relative operands
-
-    // copy raw operands into output buffer first
-    snprintf(buf, buf_size, "%s", operands_text);
-
-    // find the asterisk indicating a PC-relative operand
-    const char *star = strchr(operands_text, '*');
-    if (!star)
-        return;
-
-    // parse sign and hex value after the asterisk
-    char sign;
-    unsigned int hex_val;
-    if (sscanf(star, "*%c$%x", &sign, &hex_val) != 2)
-        return;
-    if (sign != '+' && sign != '-')
-        return;
-
-    // the displayed offset is relative to the instruction address
-    uint32_t dest;
-    if (sign == '+')
-        dest = instr_addr + hex_val;
-    else
-        dest = instr_addr - hex_val;
-
-    // append annotation
-    size_t cur_len = strlen(buf);
-    snprintf(buf + cur_len, buf_size - cur_len, "\t; -> $%08X", dest);
-}
+// Branch-destination annotation has moved into
+// src/core/re/annotate_disasm.c so the `re` orchestrator and this
+// standalone tool share one implementation. Use the helper directly.
 
 // Print usage information
 static void print_usage(const char *progname) {
@@ -234,7 +203,7 @@ int main(int argc, char *argv[]) {
         }
 
         // annotate branch destinations on the operands string
-        annotate_branch_destination(annotated_buf, sizeof(annotated_buf), mnemonic, operands, addr);
+        re_annotate_branch_destination(annotated_buf, sizeof(annotated_buf), mnemonic, operands, addr);
 
         // format exactly like the emulator: "%08x  %04x  %-10s%-12s"
         // then append the branch annotation (if any) after the base output

@@ -13,13 +13,13 @@
 #include "worker_thread.h"
 
 #include <ctype.h>
-#include <dirent.h>
 #include <stdbool.h>
 #include <string.h>
 #include <strings.h>
 
 #include "../object/object.h"
 #include "../object/value.h"
+#include "../vfs/vfs.h"
 
 // Phase 5c — legacy command registry deleted; no more `cmd_head`. The
 // completion code below skips the legacy branch entirely.
@@ -88,19 +88,27 @@ static void complete_paths(const char *prefix, struct completion *out) {
         partial = last_slash + 1;
     }
 
-    DIR *d = opendir(dir);
-    if (!d)
+    // Route through the VFS so completion works uniformly on host paths,
+    // image-vfs HFS directories, and the synthetic /rsrc/<TYPE> trees added
+    // by the resource-fork-as-VFS-tree proposal. Skip dotfiles unless the
+    // user has typed at least one '.' (same UX as the old host-only path).
+    vfs_dir_t *vd = NULL;
+    const vfs_backend_t *be = NULL;
+    if (vfs_opendir(dir, &vd, &be) < 0)
         return;
-    struct dirent *ent;
-    while ((ent = readdir(d)) != NULL && out->count < CMD_MAX_COMPLETIONS) {
-        if (ent->d_name[0] == '.' && partial[0] != '.')
+    vfs_dirent_t ent;
+    while (out->count < CMD_MAX_COMPLETIONS) {
+        int rc = be->readdir(vd, &ent);
+        if (rc <= 0)
+            break;
+        if (ent.name[0] == '.' && partial[0] != '.')
             continue;
-        const char *copy = pool_strdup(ent->d_name);
+        const char *copy = pool_strdup(ent.name);
         if (!copy)
             break;
         push_match(out, copy, partial);
     }
-    closedir(d);
+    be->closedir(vd);
 }
 
 // === Enum / bool helpers ====================================================

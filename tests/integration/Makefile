@@ -15,6 +15,7 @@
 # Paths
 ROOT_DIR := ../..
 HEADLESS_BIN := $(ROOT_DIR)/build/headless/gs-headless
+DUMP_BIN := $(ROOT_DIR)/tools/dump/dump
 TEST_DATA := $(ROOT_DIR)/tests/data
 STORAGE_CACHE := $(ROOT_DIR)/build/storage-cache
 TEST_RESULTS_BASE := $(ROOT_DIR)/tests/integration/test-results
@@ -79,12 +80,17 @@ build:
 
 # Ensure headless binary exists and is up to date
 # Mark as PHONY so Make always checks if rebuild is needed
-.PHONY: $(HEADLESS_BIN)
+.PHONY: $(HEADLESS_BIN) $(DUMP_BIN)
 $(HEADLESS_BIN):
 	@$(MAKE) -C $(ROOT_DIR) -f Makefile.headless
 
+# The dump tool — used by the re-* tests for resource-fork extraction.
+# Each test runner can depend on it via $(DUMP_BIN) in its config.mk.
+$(DUMP_BIN):
+	@$(MAKE) -C $(ROOT_DIR)/tools/dump
+
 # Run all integration tests (checks for test data first)
-test: check-data $(HEADLESS_BIN)
+test: check-data $(HEADLESS_BIN) $(DUMP_BIN)
 	@echo "========================================"
 	@echo "Running $(words $(TEST_DIRS)) integration test(s)"
 	@echo "========================================"
@@ -160,6 +166,7 @@ test-%: $(HEADLESS_BIN) FORCE
 	EXPANDED_ARGS=$$(echo "$$TEST_ARGS" | sed "s|\$$(TEST_DATA)|$$ABS_TEST_DATA|g" | sed "s|\$$(TEST_TMPDIR)|$$TEST_TMPDIR|g"); \
 	if [ -n "$$TEST_RUNNER" ]; then \
 		cd $* && HEADLESS_BIN=$(abspath $(HEADLESS_BIN)) ROM_PATH="$$ROM_PATH" \
+			DUMP_BIN=$(abspath $(DUMP_BIN)) \
 			TEST_DATA="$$ABS_TEST_DATA" TEST_TMPDIR="$$TEST_TMPDIR" \
 			TEST_RESULTS_DIR="$$TEST_RESULTS_DIR" \
 			WORK_DIR="$$WORK_DIR" \

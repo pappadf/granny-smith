@@ -64,9 +64,23 @@ void tlb_track_page(uint32_t page_index) {
 // 2–3 descriptors per fault).  Out-of-line, it costs ~9% of SE/30 boot time
 // in function-call overhead alone (gprof).
 static inline __attribute__((always_inline)) uint32_t phys_read32(mmu_state_t *mmu, uint32_t phys_addr) {
+    // Two-bank RAM (e.g. IIsi): resolve through the bank windows.  Page tables
+    // the walker reads from live in Bank B (system RAM), so this must cover it.
+    if (mmu->ram_b_size) {
+        if (phys_addr < mmu->ram_b_phys_base) {
+            uint32_t off = phys_addr % mmu->ram_a_size;
+            if (off <= mmu->ram_a_size - 4)
+                return LOAD_BE32(mmu->physical_ram + off);
+        } else if (phys_addr - mmu->ram_b_phys_base < mmu->ram_b_window) {
+            uint32_t off = (phys_addr - mmu->ram_b_phys_base) % mmu->ram_b_size;
+            if (off <= mmu->ram_b_size - 4)
+                return LOAD_BE32(mmu->physical_ram_b + off);
+        }
+        // fall through to ROM mirror handling below
+    }
     // Subtract before adding so a phys_addr near UINT32_MAX can't wrap past
     // the bound check.
-    if (mmu->physical_ram_size >= 4 && phys_addr <= mmu->physical_ram_size - 4) {
+    else if (mmu->physical_ram_size >= 4 && phys_addr <= mmu->physical_ram_size - 4) {
         return LOAD_BE32(mmu->physical_ram + phys_addr);
     }
     // Check if address falls in ROM mirror region and wrap to actual ROM data
@@ -85,8 +99,17 @@ static inline __attribute__((always_inline)) uint32_t phys_read32(mmu_state_t *m
 // Forced inline: hot-path called from mmu_fill_soa_entry on every TLB miss.
 // Out-of-line, it was the top gprof entry at ~13% of SE/30 boot time.
 static inline __attribute__((always_inline)) uint8_t *phys_to_host(mmu_state_t *mmu, uint32_t phys_addr) {
-    if (phys_addr < mmu->physical_ram_size)
+    if (mmu->ram_b_size) {
+        // Two physical RAM banks (Macintosh IIsi).  Bank A mirrors within
+        // [0, ram_b_phys_base); Bank B mirrors within its 64 MB window.
+        if (phys_addr < mmu->ram_b_phys_base)
+            return mmu->physical_ram + (phys_addr % mmu->ram_a_size);
+        if (phys_addr - mmu->ram_b_phys_base < mmu->ram_b_window)
+            return mmu->physical_ram_b + ((phys_addr - mmu->ram_b_phys_base) % mmu->ram_b_size);
+        // not RAM — fall through to ROM/VRAM/VROM
+    } else if (phys_addr < mmu->physical_ram_size) {
         return mmu->physical_ram + phys_addr;
+    }
     if (mmu->physical_rom && phys_addr >= mmu->rom_phys_base && phys_addr < mmu->rom_region_end) {
         uint32_t offset = (phys_addr - mmu->rom_phys_base) % mmu->physical_rom_size;
         return mmu->physical_rom + offset;
@@ -114,8 +137,16 @@ static inline __attribute__((always_inline)) uint8_t *phys_to_host(mmu_state_t *
 
 // Check if physical address is in writable RAM or VRAM (not ROM)
 static inline __attribute__((always_inline)) bool phys_is_writable(mmu_state_t *mmu, uint32_t phys_addr) {
-    if (phys_addr < mmu->physical_ram_size)
+    if (mmu->ram_b_size) {
+        // Two physical RAM banks (IIsi): both are writable DRAM.
+        if (phys_addr < mmu->ram_b_phys_base)
+            return true;
+        if (phys_addr - mmu->ram_b_phys_base < mmu->ram_b_window)
+            return true;
+        // not RAM — fall through to ROM/VRAM checks
+    } else if (phys_addr < mmu->physical_ram_size) {
         return true;
+    }
     // ROM mirror region is read-only
     if (mmu->physical_rom && phys_addr >= mmu->rom_phys_base && phys_addr < mmu->rom_region_end)
         return false;
@@ -447,6 +478,21 @@ void mmu_register_vram(mmu_state_t *mmu, uint8_t *vram, uint32_t phys_base, uint
     mmu->physical_vram = vram;
     mmu->vram_phys_base = phys_base;
     mmu->physical_vram_size = size;
+}
+
+void mmu_set_ram_bank_b(mmu_state_t *mmu, uint32_t ram_a_size, uint8_t *bank_b_host, uint32_t bank_b_phys_base,
+                        uint32_t bank_b_size, uint32_t bank_b_window) {
+    if (!mmu)
+        return;
+    mmu->ram_a_size = ram_a_size;
+    mmu->physical_ram_b = bank_b_host;
+    mmu->ram_b_phys_base = bank_b_phys_base;
+    mmu->ram_b_size = bank_b_size;
+    mmu->ram_b_window = bank_b_window;
+    // From here on the single-bank resolvers must not shadow Bank B: cap the
+    // contiguous RAM size at Bank A so any stray `phys < physical_ram_size`
+    // path can only ever reach Bank A.
+    mmu->physical_ram_size = ram_a_size;
 }
 
 // Register a VROM region so table walks and TT matches can resolve it

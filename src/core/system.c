@@ -901,6 +901,7 @@ void setup_init() {
     machine_register(&machine_iici);
     machine_register(&machine_lisa);
     machine_register(&machine_macxl);
+    machine_register(&machine_iisi);
 
     // Ensure logging categories of interest appear in `log list` even before any messages are emitted.
     // shell_init() (called earlier) already invoked log_init(); categories default to level 0 (OFF).

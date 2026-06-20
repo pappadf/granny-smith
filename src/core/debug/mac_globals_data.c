@@ -488,3 +488,20 @@ struct {
 };
 
 const size_t mac_global_vars_count = sizeof(mac_global_vars) / sizeof(mac_global_vars[0]);
+
+// Reverse-lookup: address -> name.  Lives here rather than in debug_mac.c
+// because tools/dump links this data file directly without pulling in
+// the rest of debug_mac.c's emulator-only header chain.  Declared in
+// debug_mac.h (see debug_mac_lookup_global_name).
+const char *debug_mac_lookup_global_name(uint32_t address) {
+    // Mac low-memory globals live in 0..0x800.  Skip the scan outside
+    // that range so an arbitrary 32-bit operand doesn't burn ~471
+    // string compares per disassembled instruction.
+    if (address >= 0x800)
+        return NULL;
+    for (size_t i = 0; i < mac_global_vars_count; i++) {
+        if (mac_global_vars[i].address == address)
+            return mac_global_vars[i].name;
+    }
+    return NULL;
+}

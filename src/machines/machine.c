@@ -23,7 +23,7 @@ LOG_USE_CATEGORY_NAME("setup");
 #include <stdlib.h>
 #include <string.h>
 
-#define MAX_MACHINES 8
+#define MAX_MACHINES 12
 
 // Registry of known machine profiles
 static const hw_profile_t *g_machines[MAX_MACHINES];

@@ -43,6 +43,8 @@ static const char *const IICI_COMPATIBLE[] = {"iici", NULL};
 // into a 16 KB image; see rom_load_lisa_pair / rom_identify_lisa below.
 static const char *const LISA_COMPATIBLE[] = {"lisa", NULL};
 static const char *const MACXL_COMPATIBLE[] = {"macxl", NULL};
+// Dedicated 512 KB Macintosh IIsi ("Erickson") ROM — not the universal ROM.
+static const char *const IISI_COMPATIBLE[] = {"iisi", NULL};
 
 // Master ROM signature table.
 static const rom_info_t ROM_TABLE[] = {
@@ -52,6 +54,7 @@ static const rom_info_t ROM_TABLE[] = {
     {"Universal IIx/IIcx/SE/30 ROM",            UNIVERSAL_COMPATIBLE, 0x97221136, 256 * 1024},
     {"Macintosh IIfx ROM",                      IIFX_COMPATIBLE,      0x4147DD77, 512 * 1024},
     {"Macintosh IIci ROM",                      IICI_COMPATIBLE,      0x368CADFE, 512 * 1024},
+    {"Macintosh IIsi ROM",                      IISI_COMPATIBLE,      0x36B7FB6C, 512 * 1024},
 };
 
 #define ROM_TABLE_COUNT (sizeof(ROM_TABLE) / sizeof(ROM_TABLE[0]))

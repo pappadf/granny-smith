@@ -1,6 +1,9 @@
 # ── Build output ──────────────────────────────────────────────────
 build/
 
+# ── Standalone tool binaries (rebuilt by `make -C tools/<tool>`) ─
+tools/dump/dump
+
 # ── Emscripten / WASM artifacts ──────────────────────────────────
 *.wasm.map
 *.debug.wasm
