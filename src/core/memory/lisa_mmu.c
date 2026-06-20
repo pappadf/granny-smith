@@ -461,6 +461,14 @@ static lisa_resolved_t lisa_resolve(lisa_mmu_t *m, uint32_t addr, bool superviso
     uint32_t limit = slr & 0xFF;
 
     if (acc == ACC_INVALID || acc < ACC_MEM_RO_STK) {
+        if (getenv("GSFLT")) {
+            FILE *_f = fopen("/tmp/gsflt.out", "a");
+            if (_f) {
+                fprintf(_f, "FAULT-acc  addr=%06x seg=%d page=%02x ctx=%d sup=%d slr=%03x acc=%x lim=%02x\n", addr, seg,
+                        page, ctx, supervisor, slr, acc, limit);
+                fclose(_f);
+            }
+        }
         r.route = L_FAULT; // invalid / unprogrammed segment
         return r;
     }
@@ -487,6 +495,14 @@ static lisa_resolved_t lisa_resolve(lisa_mmu_t *m, uint32_t addr, bool superviso
     else
         in_range = (page + limit) < 0x100;
     if (!in_range) {
+        if (getenv("GSFLT")) {
+            FILE *_f = fopen("/tmp/gsflt.out", "a");
+            if (_f) {
+                fprintf(_f, "FAULT-lim  addr=%06x seg=%d page=%02x ctx=%d sup=%d slr=%03x acc=%x lim=%02x stack=%d\n",
+                        addr, seg, page, ctx, supervisor, slr, acc, limit, stack);
+                fclose(_f);
+            }
+        }
         r.route = L_FAULT;
         return r;
     }
