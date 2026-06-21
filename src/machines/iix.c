@@ -70,13 +70,7 @@ static void iix_trigger_vbl(config_t *cfg);
 
 static void iix_reset(config_t *cfg) {
     iicx_state_t *st = iicx_state(cfg);
-    st->rom_overlay = false;
-    iicx_set_rom_overlay(cfg, true);
-    if (st->mmu) {
-        st->mmu->enabled = false;
-        st->mmu->tc = 0;
-        mmu_invalidate_tlb(st->mmu);
-    }
+    mac030_glue_reset(cfg, &st->rom_overlay, st->mmu);
 }
 
 // ============================================================

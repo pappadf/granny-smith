@@ -148,34 +148,6 @@ static void se30_via2_shift_out(void *context, uint8_t byte);
 
 // Populate both the AoS page_entry_t and the SoA fast-path arrays for one page.
 // For read-only pages (writable=false), write SoA entries stay zero (slow-path).
-static void se30_fill_page(uint32_t page_index, uint8_t *host_ptr, bool writable) {
-    if ((int)page_index >= g_page_count)
-        return;
-
-    // AoS cold-path entry
-    g_page_table[page_index].host_base = host_ptr;
-    g_page_table[page_index].dev = NULL;
-    g_page_table[page_index].dev_context = NULL;
-    g_page_table[page_index].writable = writable;
-
-    // Compute adjusted base for the SoA fast-path
-    uint32_t guest_base = page_index << PAGE_SHIFT;
-    uintptr_t adjusted = (uintptr_t)host_ptr - guest_base;
-
-    // All pages are readable by supervisor and user
-    if (g_supervisor_read)
-        g_supervisor_read[page_index] = adjusted;
-    if (g_user_read)
-        g_user_read[page_index] = adjusted;
-
-    // Only writable pages get write entries
-    if (writable) {
-        if (g_supervisor_write)
-            g_supervisor_write[page_index] = adjusted;
-        if (g_user_write)
-            g_user_write[page_index] = adjusted;
-    }
-}
 
 // ============================================================
 // ROM overlay
@@ -185,30 +157,7 @@ static void se30_fill_page(uint32_t page_index, uint8_t *host_ptr, bool writable
 // On reset, ROM is overlaid at $00000000 for the initial vector fetch.
 // The ROM boot code disables the overlay by writing 0 to VIA1 PA4.
 static void se30_set_rom_overlay(config_t *cfg, bool overlay) {
-    se30_state_t *se30 = se30_state(cfg);
-    if (se30->rom_overlay == overlay)
-        return;
-    se30->rom_overlay = overlay;
-
-    uint32_t rom_size = cfg->machine->rom_size;
-    uint32_t rom_pages = rom_size >> PAGE_SHIFT;
-    uint32_t rom_start_page = SE30_ROM_START >> PAGE_SHIFT;
-
-    if (overlay) {
-        // Map ROM at $00000000 (copy from ROM region at $40000000)
-        for (uint32_t p = 0; p < rom_pages && (int)p < g_page_count; p++) {
-            uint8_t *host_ptr = g_page_table[rom_start_page + p].host_base;
-            se30_fill_page(p, host_ptr, false); // read-only
-        }
-        LOG(1, "ROM overlay enabled: ROM at $00000000");
-    } else {
-        // Map RAM back at $00000000
-        uint8_t *ram_base = ram_native_pointer(cfg->mem_map, 0);
-        for (uint32_t p = 0; p < rom_pages && (int)p < g_page_count; p++) {
-            se30_fill_page(p, ram_base + (p << PAGE_SHIFT), true); // writable
-        }
-        LOG(1, "ROM overlay disabled: RAM at $00000000");
-    }
+    mac030_glue_set_rom_overlay(cfg, &se30_state(cfg)->rom_overlay, overlay);
 }
 
 // ============================================================
@@ -222,19 +171,7 @@ static void se30_set_rom_overlay(config_t *cfg, bool overlay) {
 // This runs BEFORE the CPU reads SSP/PC from $0/$4.
 static void se30_reset(config_t *cfg) {
     se30_state_t *se30 = se30_state(cfg);
-
-    // VIA1 reset: re-enable ROM overlay (VIA1 port A bit 4 goes high on reset)
-    se30->rom_overlay = false; // force toggle
-    se30_set_rom_overlay(cfg, true);
-
-    // MMU reset: disable translation and flush TLB
-    if (se30->mmu) {
-        se30->mmu->enabled = false;
-        se30->mmu->tc = 0;
-        mmu_invalidate_tlb(se30->mmu);
-    }
-
-    LOG(1, "SE/30 RESET: ROM overlay active, MMU disabled");
+    mac030_glue_reset(cfg, &se30->rom_overlay, se30->mmu);
 }
 
 // ============================================================
@@ -294,7 +231,7 @@ static void se30_memory_layout_init(config_t *cfg) {
     uint32_t map_end_page = standard_bank ? ram_pages : (ram_pages * 2);
 
     for (uint32_t p = 0; p < map_end_page && (int)p < g_page_count; p++)
-        se30_fill_page(p, ram_base + ((p % ram_pages) << PAGE_SHIFT), true);
+        mac030_fill_page(p, ram_base + ((p % ram_pages) << PAGE_SHIFT), true);
 
     // --- ROM pages: $40000000 - $4FFFFFFF (256 KB mirrored, read-only) ---
     uint32_t rom_pages = rom_size >> PAGE_SHIFT;
@@ -304,7 +241,7 @@ static void se30_memory_layout_init(config_t *cfg) {
     if (rom_pages > 0) {
         for (uint32_t p = rom_start_page; p < rom_end_page && (int)p < g_page_count; p++) {
             uint32_t offset_in_rom = (p - rom_start_page) % rom_pages;
-            se30_fill_page(p, rom_data + (offset_in_rom << PAGE_SHIFT), false);
+            mac030_fill_page(p, rom_data + (offset_in_rom << PAGE_SHIFT), false);
         }
     }
 
@@ -320,7 +257,7 @@ static void se30_memory_layout_init(config_t *cfg) {
         uint32_t vram_mirror_end = (SE30_VRAM_BASE + 0x100000) >> PAGE_SHIFT; // 1 MB window
         for (uint32_t p = vram_start_page; p < vram_mirror_end && (int)p < g_page_count; p++) {
             uint32_t offset_in_vram = ((p - vram_start_page) % vram_pages) << PAGE_SHIFT;
-            se30_fill_page(p, se30->vram + offset_in_vram, true);
+            mac030_fill_page(p, se30->vram + offset_in_vram, true);
         }
     }
 
@@ -329,7 +266,7 @@ static void se30_memory_layout_init(config_t *cfg) {
         uint32_t vrom_pages = SE30_VROM_SIZE >> PAGE_SHIFT; // 8 pages
         uint32_t vrom_start_page = SE30_VROM_BASE >> PAGE_SHIFT;
         for (uint32_t p = 0; p < vrom_pages && (int)(vrom_start_page + p) < g_page_count; p++)
-            se30_fill_page(vrom_start_page + p, se30->vrom + (p << PAGE_SHIFT), false);
+            mac030_fill_page(vrom_start_page + p, se30->vrom + (p << PAGE_SHIFT), false);
     }
 
     // --- ROM overlay: map ROM at $00000000 on reset ---

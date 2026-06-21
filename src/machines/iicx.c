@@ -79,49 +79,12 @@ static void iicx_via2_shift_out(void *context, uint8_t byte);
 // SoA page helper (mirrors the SE/30 helper — same logic)
 // ============================================================
 
-void iicx_fill_page(uint32_t page_index, uint8_t *host_ptr, bool writable) {
-    if ((int)page_index >= g_page_count)
-        return;
-    g_page_table[page_index].host_base = host_ptr;
-    g_page_table[page_index].dev = NULL;
-    g_page_table[page_index].dev_context = NULL;
-    g_page_table[page_index].writable = writable;
-    uint32_t guest_base = page_index << PAGE_SHIFT;
-    uintptr_t adjusted = (uintptr_t)host_ptr - guest_base;
-    if (g_supervisor_read)
-        g_supervisor_read[page_index] = adjusted;
-    if (g_user_read)
-        g_user_read[page_index] = adjusted;
-    if (writable) {
-        if (g_supervisor_write)
-            g_supervisor_write[page_index] = adjusted;
-        if (g_user_write)
-            g_user_write[page_index] = adjusted;
-    }
-}
-
 // ============================================================
 // ROM overlay
 // ============================================================
 
 void iicx_set_rom_overlay(config_t *cfg, bool overlay) {
-    iicx_state_t *st = iicx_state(cfg);
-    if (st->rom_overlay == overlay)
-        return;
-    st->rom_overlay = overlay;
-    uint32_t rom_size = cfg->machine->rom_size;
-    uint32_t rom_pages = rom_size >> PAGE_SHIFT;
-    uint32_t rom_start_page = IICX_ROM_START >> PAGE_SHIFT;
-    if (overlay) {
-        for (uint32_t p = 0; p < rom_pages && (int)p < g_page_count; p++) {
-            uint8_t *host_ptr = g_page_table[rom_start_page + p].host_base;
-            iicx_fill_page(p, host_ptr, false);
-        }
-    } else {
-        uint8_t *ram_base = ram_native_pointer(cfg->mem_map, 0);
-        for (uint32_t p = 0; p < rom_pages && (int)p < g_page_count; p++)
-            iicx_fill_page(p, ram_base + (p << PAGE_SHIFT), true);
-    }
+    mac030_glue_set_rom_overlay(cfg, &iicx_state(cfg)->rom_overlay, overlay);
 }
 
 // ============================================================
@@ -130,13 +93,7 @@ void iicx_set_rom_overlay(config_t *cfg, bool overlay) {
 
 static void iicx_reset(config_t *cfg) {
     iicx_state_t *st = iicx_state(cfg);
-    st->rom_overlay = false;
-    iicx_set_rom_overlay(cfg, true);
-    if (st->mmu) {
-        st->mmu->enabled = false;
-        st->mmu->tc = 0;
-        mmu_invalidate_tlb(st->mmu);
-    }
+    mac030_glue_reset(cfg, &st->rom_overlay, st->mmu);
 }
 
 // ============================================================
@@ -162,7 +119,7 @@ void iicx_memory_layout_init(config_t *cfg) {
     bool standard_bank = (ram_size == 1 * 1024 * 1024 || ram_size == 4 * 1024 * 1024 || ram_size == 16 * 1024 * 1024);
     uint32_t map_end_page = standard_bank ? ram_pages : (ram_pages * 2);
     for (uint32_t p = 0; p < map_end_page && (int)p < g_page_count; p++)
-        iicx_fill_page(p, ram_base + ((p % ram_pages) << PAGE_SHIFT), true);
+        mac030_fill_page(p, ram_base + ((p % ram_pages) << PAGE_SHIFT), true);
 
     uint32_t rom_pages = rom_size >> PAGE_SHIFT;
     uint32_t rom_start_page = IICX_ROM_START >> PAGE_SHIFT;
@@ -170,7 +127,7 @@ void iicx_memory_layout_init(config_t *cfg) {
     if (rom_pages > 0) {
         for (uint32_t p = rom_start_page; p < rom_end_page && (int)p < g_page_count; p++) {
             uint32_t offset_in_rom = (p - rom_start_page) % rom_pages;
-            iicx_fill_page(p, rom_data + (offset_in_rom << PAGE_SHIFT), false);
+            mac030_fill_page(p, rom_data + (offset_in_rom << PAGE_SHIFT), false);
         }
     }
 
@@ -187,13 +144,13 @@ void iicx_memory_layout_init(config_t *cfg) {
             uint32_t pages = st->mmu->physical_vram_size >> PAGE_SHIFT;
             uint32_t start = st->mmu->vram_phys_base >> PAGE_SHIFT;
             for (uint32_t i = 0; i < pages && (int)(start + i) < g_page_count; i++)
-                iicx_fill_page(start + i, st->mmu->physical_vram + (i << PAGE_SHIFT), /*writable*/ true);
+                mac030_fill_page(start + i, st->mmu->physical_vram + (i << PAGE_SHIFT), /*writable*/ true);
         }
         if (st->mmu->physical_vrom && st->mmu->physical_vrom_size > 0) {
             uint32_t pages = st->mmu->physical_vrom_size >> PAGE_SHIFT;
             uint32_t start = st->mmu->vrom_phys_base >> PAGE_SHIFT;
             for (uint32_t i = 0; i < pages && (int)(start + i) < g_page_count; i++)
-                iicx_fill_page(start + i, st->mmu->physical_vrom + (i << PAGE_SHIFT), /*writable*/ false);
+                mac030_fill_page(start + i, st->mmu->physical_vrom + (i << PAGE_SHIFT), /*writable*/ false);
         }
 
         // Mode-24 (24-bit Memory Manager) NuBus slot windows: each slot s
@@ -216,7 +173,7 @@ void iicx_memory_layout_init(config_t *cfg) {
                 uint32_t alias_pages = alias_bytes >> PAGE_SHIFT;
                 uint32_t start = mode24_base >> PAGE_SHIFT;
                 for (uint32_t i = 0; i < alias_pages && (int)(start + i) < g_page_count; i++)
-                    iicx_fill_page(start + i, st->mmu->physical_vram + (i << PAGE_SHIFT), /*writable*/ true);
+                    mac030_fill_page(start + i, st->mmu->physical_vram + (i << PAGE_SHIFT), /*writable*/ true);
             }
         }
     }

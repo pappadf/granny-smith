@@ -32,6 +32,21 @@ void mac030_glue_scc_irq(void *context, bool active);
 void mac030_glue_via1_irq(void *context, bool active);
 void mac030_glue_via2_irq(void *context, bool active);
 
+// Populate the AoS page entry + SoA fast-path arrays for one page.  Pure
+// (touches only the global page table), identical across se30/iicx/iici/iisi.
+// (iifx keeps its own variant, which additionally zeroes the write entries
+// of read-only pages.)
+void mac030_fill_page(uint32_t page_index, uint8_t *host_ptr, bool writable);
+
+// Toggle the ROM/RAM overlay at $00000000 for a GLUE machine (ROM region at
+// $40000000).  `overlay_flag` points at the machine's own rom_overlay bool.
+void mac030_glue_set_rom_overlay(config_t *cfg, bool *overlay_flag, bool on);
+
+// Hardware RESET: re-enable the ROM overlay and disable the MMU (TC/E off,
+// TLB flushed).  `overlay_flag` points at the machine's rom_overlay bool;
+// `mmu` may be NULL.
+void mac030_glue_reset(config_t *cfg, bool *overlay_flag, struct mmu_state *mmu);
+
 // IRQ source bits driven into cfg->irq.  GLUE routes them to fixed IPLs:
 // VIA1→1, VIA2→2, SCC→4, NMI→7.  The per-machine SE30_IRQ_* / IICX_IRQ_*
 // aliases carry the same values and remain valid `source` arguments.
