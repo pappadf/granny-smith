@@ -1865,7 +1865,13 @@ static int load_png_to_framebuffer(const char *filename, uint8_t *fb_out, int ex
 // uploaded a palette) the live conversion will see clut_len == 0 and
 // the colour bytes will be zero, which won't match a real reference
 // — that's intentional, the test should screenshot post-CLUT-load.
-int match_framebuffer_with_png(const display_t *d, const char *filename) {
+//
+// `exclude_rect`, when non-NULL, points to {top, left, bottom, right}
+// (half-open).  Those pixels are zeroed in BOTH the live and reference
+// buffers before the compare, so any phase-dependent content there (a
+// blinking text caret, a ticking clock digit) is ignored.  Callers must
+// validate the bounds; out-of-range values are clamped defensively here.
+int match_framebuffer_with_png(const display_t *d, const char *filename, const int *exclude_rect) {
     if (!d || !d->bits) {
         printf("Error: No active display.\n");
         return -1;
@@ -1903,6 +1909,26 @@ int match_framebuffer_with_png(const display_t *d, const char *filename) {
         free(fb_rgba);
         free(ref_rgba);
         return -1;
+    }
+    // Mask the excluded region (if any) in both buffers so phase-dependent
+    // pixels there don't affect the compare.  Clamp to the framebuffer.
+    if (exclude_rect) {
+        int top = exclude_rect[0], left = exclude_rect[1];
+        int bottom = exclude_rect[2], right = exclude_rect[3];
+        if (top < 0)
+            top = 0;
+        if (left < 0)
+            left = 0;
+        if (bottom > (int)d->height)
+            bottom = (int)d->height;
+        if (right > (int)d->width)
+            right = (int)d->width;
+        for (int y = top; y < bottom; y++) {
+            size_t off = ((size_t)y * d->width + left) * 4;
+            size_t span = (size_t)(right - left) * 4;
+            memset(fb_rgba + off, 0, span);
+            memset(ref_rgba + off, 0, span);
+        }
     }
     int match = (memcmp(fb_rgba, ref_rgba, rgba_bytes) == 0);
     free(fb_rgba);
@@ -4181,12 +4207,28 @@ static value_t screen_method_save(struct object *self, const member_t *m, int ar
 static value_t screen_method_match(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)self;
     (void)m;
-    (void)argc;
     const char *ref = argv[0].s;
     const display_t *d = system_display();
     if (!d || !d->bits)
         return val_err("screen.match: framebuffer not available");
-    int result = match_framebuffer_with_png(d, ref);
+    // Optional exclude rectangle: ref + (top, left, bottom, right).  Either
+    // just the reference (whole-screen compare, exactly as before) or the
+    // reference plus all four region edges — reject anything in between.
+    int rect[4];
+    const int *exclude_rect = NULL;
+    if (argc == 5) {
+        int top = (int)argv[1].i, left = (int)argv[2].i, bottom = (int)argv[3].i, right = (int)argv[4].i;
+        if (top < 0 || left < 0 || bottom <= top || right <= left || bottom > (int)d->height || right > (int)d->width)
+            return val_err("screen.match: invalid exclude region for (0,0)-(%u,%u)", d->width, d->height);
+        rect[0] = top;
+        rect[1] = left;
+        rect[2] = bottom;
+        rect[3] = right;
+        exclude_rect = rect;
+    } else if (argc != 1) {
+        return val_err("screen.match: expected (reference) or (reference, top, left, bottom, right)");
+    }
+    int result = match_framebuffer_with_png(d, ref, exclude_rect);
     if (result < 0) {
         printf("MATCH FAILED: Error loading reference image '%s'.\n", ref);
         return val_err("screen.match: cannot load reference '%s'", ref);
@@ -4207,7 +4249,7 @@ static value_t screen_method_match_or_save(struct object *self, const member_t *
     const display_t *d = system_display();
     if (!d || !d->bits)
         return val_err("screen.match_or_save: framebuffer not available");
-    int result = match_framebuffer_with_png(d, ref);
+    int result = match_framebuffer_with_png(d, ref, NULL);
     if (result < 0) {
         printf("MATCH FAILED: Error loading reference image.\n");
         if (actual)
@@ -4265,6 +4307,10 @@ static const arg_decl_t screen_save_args[] = {
 };
 static const arg_decl_t screen_match_args[] = {
     {.name = "reference", .kind = V_STRING, .doc = "Reference PNG path"},
+    {.name = "top", .kind = V_INT, .validation_flags = OBJ_ARG_OPTIONAL, .doc = "Exclude-region top edge"},
+    {.name = "left", .kind = V_INT, .validation_flags = OBJ_ARG_OPTIONAL, .doc = "Exclude-region left edge"},
+    {.name = "bottom", .kind = V_INT, .validation_flags = OBJ_ARG_OPTIONAL, .doc = "Exclude-region bottom edge"},
+    {.name = "right", .kind = V_INT, .validation_flags = OBJ_ARG_OPTIONAL, .doc = "Exclude-region right edge"},
 };
 static const arg_decl_t screen_match_or_save_args[] = {
     {.name = "reference", .kind = V_STRING, .doc = "Reference PNG path"},
@@ -4296,8 +4342,8 @@ static const member_t screen_members[] = {
      .method = {.args = screen_save_args, .nargs = 1, .result = V_BOOL, .fn = screen_method_save}},
     {.kind = M_METHOD,
      .name = "match",
-     .doc = "Compare the framebuffer against a reference PNG (true if identical)",
-     .method = {.args = screen_match_args, .nargs = 1, .result = V_BOOL, .fn = screen_method_match}},
+     .doc = "Compare the framebuffer against a reference PNG (true if identical); optional "
+            "(top, left, bottom, right) excludes a region from the compare", .method = {.args = screen_match_args, .nargs = 5, .result = V_BOOL, .fn = screen_method_match}},
     {.kind = M_METHOD,
      .name = "match_or_save",
      .doc = "Like `match`, but also write the current screen to `actual` on mismatch",

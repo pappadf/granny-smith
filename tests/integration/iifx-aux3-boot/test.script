@@ -66,6 +66,6 @@ assert ${screen.height == 480} "screen.height != 480"
 # advances further (e.g. past getty to the graphical login once the write
 # path / residual is fixed) this will stop matching and the pin should be
 # updated.
-screen.match login.png
+screen.match login.png 240 318 258 323
 
 quit
