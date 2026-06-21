@@ -1,0 +1,229 @@
+# Full SCO Xenix 3.0 OS install onto the ProFile (Apple Lisa 2).
+# See config.mk for the procedure (XENIX Installation Guide May-1984 §1.5.1-1.5.4).
+#
+# Keyboard input is raw Lisa COPS scancodes via keyboard.press: key down (0x80|kc)
+# then release (kc), pairs adjacent to avoid Xenix's auto-repeat.  Shifted keys
+# (the parens in "pf(0,0)xenix") hold SHIFT (kc 0x7e) around the digit with a short
+# settle so the modifier registers.  Keycodes: h=6b d=7b i=53 n=6f t=66 y=67 5=64
+# p=44 f=69 e=60 x=7a 0=51 9=50 comma=5d Return=48 shift=7e.
+
+profile.attach
+assert ${machine.id == "lisa"} "machine.id != lisa"
+assert ${rom.checksum == "098917B2"} "rom.checksum != 098917B2 (rev-H)"
+assert ${profile.present == true} "ProFile should be attached"
+
+# === (§1.5.1) Boot the floppy to the <BootFloppy> shell ======================
+scheduler.run 60000000
+keyboard.press 0xC8
+scheduler.run 3000000
+keyboard.press 0xC8
+keyboard.press 0x48
+scheduler.run 120000000
+screen.match expected_bootfloppy.png
+
+# === (§1.5.2) hdinit: type "hdinit" + RETURN, answer y, answer 5 ============
+keyboard.press 0xEB
+keyboard.press 0x6B
+scheduler.run 600000
+keyboard.press 0xFB
+keyboard.press 0x7B
+scheduler.run 600000
+keyboard.press 0xD3
+keyboard.press 0x53
+scheduler.run 600000
+keyboard.press 0xEF
+keyboard.press 0x6F
+scheduler.run 600000
+keyboard.press 0xD3
+keyboard.press 0x53
+scheduler.run 600000
+keyboard.press 0xE6
+keyboard.press 0x66
+scheduler.run 600000
+keyboard.press 0xC8
+keyboard.press 0x48
+scheduler.run 30000000
+keyboard.press 0xE7
+keyboard.press 0x67
+keyboard.press 0xC8
+keyboard.press 0x48
+scheduler.run 20000000
+keyboard.press 0xE4
+keyboard.press 0x64
+keyboard.press 0xC8
+keyboard.press 0x48
+scheduler.run 150000000
+screen.match expected_hdinit.png
+
+# === (§1.5.3) Reboot and boot the hard-disk kernel =========================
+# Persist the freshly-initialized ProFile, power-cycle the machine (machine.boot
+# re-instantiates it; rom.reload reloads the boot ROM), reattach the same ProFile
+# image, and re-insert the boot floppy so the ROM auto-boots its loader.
+profile.save "${WORK_DIR}/xenix_hd.image"
+machine.boot "lisa" 2048
+rom.reload
+profile.attach "${WORK_DIR}/xenix_hd.image"
+floppy.drives.0.insert "../../data/Lisa/Xenix-3.0/Xenix-3.0-Boot-XProFile.dc42"
+scheduler.run 60000000
+# At the loader "boot :" prompt, type "pf(0,0)xenix" to load the kernel from the
+# hard disk (instead of the floppy's fd(2,0)xenix).
+keyboard.press 0xC8
+scheduler.run 3000000
+keyboard.press 0xC4
+keyboard.press 0x44
+scheduler.run 600000
+keyboard.press 0xE9
+keyboard.press 0x69
+scheduler.run 600000
+keyboard.press 0xFE
+scheduler.run 300000
+keyboard.press 0xD0
+keyboard.press 0x50
+scheduler.run 300000
+keyboard.press 0x7E
+scheduler.run 600000
+keyboard.press 0xD1
+keyboard.press 0x51
+scheduler.run 600000
+keyboard.press 0xDD
+keyboard.press 0x5D
+scheduler.run 600000
+keyboard.press 0xD1
+keyboard.press 0x51
+scheduler.run 600000
+keyboard.press 0xFE
+scheduler.run 300000
+keyboard.press 0xD1
+keyboard.press 0x51
+scheduler.run 300000
+keyboard.press 0x7E
+scheduler.run 600000
+keyboard.press 0xFA
+keyboard.press 0x7A
+scheduler.run 600000
+keyboard.press 0xE0
+keyboard.press 0x60
+scheduler.run 600000
+keyboard.press 0xEF
+keyboard.press 0x6F
+scheduler.run 600000
+keyboard.press 0xD3
+keyboard.press 0x53
+scheduler.run 600000
+keyboard.press 0xFA
+keyboard.press 0x7A
+scheduler.run 600000
+keyboard.press 0xC8
+keyboard.press 0x48
+scheduler.run 120000000
+# firsttime auto-runs: "Hard Disk Installation / Do you want /usr on a second
+# profile <y/n>?"
+screen.match expected_firsttime.png
+
+# === (§1.5.4) firsttime: copy the seven OS distribution floppies ===========
+# "/usr on a second profile?" -> n
+keyboard.press 0xEF
+keyboard.press 0x6F
+keyboard.press 0xC8
+keyboard.press 0x48
+scheduler.run 8000000
+# "Install operating system distribution?" -> y
+keyboard.press 0xE7
+keyboard.press 0x67
+keyboard.press 0xC8
+keyboard.press 0x48
+scheduler.run 8000000
+
+# disk 1 (First Floppy? y)
+floppy.drives.0.eject
+scheduler.run 2000000
+floppy.drives.0.insert "../../data/Lisa/Xenix-3.0/Xenix-3.0-1.dc42"
+scheduler.run 6000000
+keyboard.press 0xE7
+keyboard.press 0x67
+keyboard.press 0xC8
+keyboard.press 0x48
+scheduler.run 90000000
+# disk 2
+floppy.drives.0.eject
+scheduler.run 2000000
+floppy.drives.0.insert "../../data/Lisa/Xenix-3.0/Xenix-3.0-2.dc42"
+scheduler.run 6000000
+keyboard.press 0xE7
+keyboard.press 0x67
+keyboard.press 0xC8
+keyboard.press 0x48
+scheduler.run 90000000
+# disk 3
+floppy.drives.0.eject
+scheduler.run 2000000
+floppy.drives.0.insert "../../data/Lisa/Xenix-3.0/Xenix-3.0-3.dc42"
+scheduler.run 6000000
+keyboard.press 0xE7
+keyboard.press 0x67
+keyboard.press 0xC8
+keyboard.press 0x48
+scheduler.run 90000000
+# disk 4
+floppy.drives.0.eject
+scheduler.run 2000000
+floppy.drives.0.insert "../../data/Lisa/Xenix-3.0/Xenix-3.0-4.dc42"
+scheduler.run 6000000
+keyboard.press 0xE7
+keyboard.press 0x67
+keyboard.press 0xC8
+keyboard.press 0x48
+scheduler.run 90000000
+# disk 5
+floppy.drives.0.eject
+scheduler.run 2000000
+floppy.drives.0.insert "../../data/Lisa/Xenix-3.0/Xenix-3.0-5.dc42"
+scheduler.run 6000000
+keyboard.press 0xE7
+keyboard.press 0x67
+keyboard.press 0xC8
+keyboard.press 0x48
+scheduler.run 90000000
+# disk 6
+floppy.drives.0.eject
+scheduler.run 2000000
+floppy.drives.0.insert "../../data/Lisa/Xenix-3.0/Xenix-3.0-6.dc42"
+scheduler.run 6000000
+keyboard.press 0xE7
+keyboard.press 0x67
+keyboard.press 0xC8
+keyboard.press 0x48
+scheduler.run 90000000
+# disk 7
+floppy.drives.0.eject
+scheduler.run 2000000
+floppy.drives.0.insert "../../data/Lisa/Xenix-3.0/Xenix-3.0-7.dc42"
+scheduler.run 6000000
+keyboard.press 0xE7
+keyboard.press 0x67
+keyboard.press 0xC8
+keyboard.press 0x48
+scheduler.run 90000000
+
+# "Next Floppy?" after the last OS disk -> n
+keyboard.press 0xEF
+keyboard.press 0x6F
+keyboard.press 0xC8
+keyboard.press 0x48
+scheduler.run 20000000
+# "Install software development distribution?" -> n
+keyboard.press 0xEF
+keyboard.press 0x6F
+keyboard.press 0xC8
+keyboard.press 0x48
+scheduler.run 8000000
+# "Install text processing distribution?" -> n  (then lost+found, complete)
+keyboard.press 0xEF
+keyboard.press 0x6F
+keyboard.press 0xC8
+keyboard.press 0x48
+scheduler.run 40000000
+# "Xenix Installation complete. / ** Normal System Shutdown **"
+screen.match expected_complete.png
+
+quit
