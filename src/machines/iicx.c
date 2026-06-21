@@ -24,16 +24,17 @@
 // caller arrives.
 
 #include "machine.h"
+#include "mmu_checkpoint.h"
 #include "system_config.h" // full config_t
 
 #include "adb.h"
 #include "asc.h"
+#include "checkpoint_images.h"
 #include "checkpoint_machine.h"
 #include "cpu.h"
 #include "cpu_internal.h" // for cpu->mmu field
 #include "debug.h"
 #include "floppy.h"
-#include "glue030.h" // family-shared image-list checkpoint helpers
 #include "iicx_internal.h" // shared IIcx/IIx internals
 #include "image.h"
 #include "log.h"
@@ -63,26 +64,8 @@ LOG_USE_CATEGORY_NAME("iicx");
 // ============================================================
 //
 // Most address-space and IRQ constants live in iicx_internal.h so iix.c
-// reuses them.  These IO_* offsets are private to the dispatcher.
-
-#define IICX_IO_MIRROR 0x0001FFFFUL
-
-#define IO_VIA1           0x00000
-#define IO_VIA1_END       0x02000
-#define IO_VIA2           0x02000
-#define IO_VIA2_END       0x04000
-#define IO_SCC            0x04000
-#define IO_SCC_END        0x06000
-#define IO_SCSI_DRQ       0x06000
-#define IO_SCSI_DRQ_END   0x08000
-#define IO_SCSI_REG       0x10000
-#define IO_SCSI_REG_END   0x12000
-#define IO_SCSI_BLIND     0x12000
-#define IO_SCSI_BLIND_END 0x14000
-#define IO_ASC            0x14000
-#define IO_ASC_END        0x16000
-#define IO_SWIM           0x16000
-#define IO_SWIM_END       0x18000
+// reuses them.  The I/O window offsets + dispatch now live with the shared
+// GLUE dispatcher (mac030_glue_io.c).
 
 // ============================================================
 // Forward declarations
@@ -157,150 +140,11 @@ static void iicx_reset(config_t *cfg) {
 }
 
 // ============================================================
-// I/O dispatcher (same address map as SE/30 — shared GLUE chip)
+// I/O dispatcher
 // ============================================================
-// IICX_*_IO_PENALTY values live in iicx_internal.h so iix.c shares them.
-
-uint8_t iicx_io_read_uint8(void *ctx, uint32_t addr) {
-    config_t *cfg = (config_t *)ctx;
-    iicx_state_t *st = iicx_state(cfg);
-    uint32_t offset = addr & IICX_IO_MIRROR;
-    if (offset < IO_VIA1_END) {
-        memory_io_penalty(IICX_VIA_IO_PENALTY);
-        return st->via1_iface->read_uint8(cfg->via1, (offset - IO_VIA1) & ~1u);
-    }
-    if (offset < IO_VIA2_END) {
-        memory_io_penalty(IICX_VIA_IO_PENALTY);
-        return st->via2_iface->read_uint8(cfg->via2, (offset - IO_VIA2) & ~1u);
-    }
-    if (offset < IO_SCC_END) {
-        memory_io_penalty(IICX_SCC_IO_PENALTY);
-        return st->scc_iface->read_uint8(cfg->scc, offset - IO_SCC);
-    }
-    if (offset < IO_SCSI_DRQ_END) {
-        memory_io_penalty(IICX_SCSI_IO_PENALTY);
-        return st->scsi_iface->read_uint8(cfg->scsi, 0);
-    }
-    if (offset >= IO_SCSI_REG && offset < IO_SCSI_REG_END) {
-        memory_io_penalty(IICX_SCSI_IO_PENALTY);
-        return st->scsi_iface->read_uint8(cfg->scsi, offset - IO_SCSI_REG);
-    }
-    if (offset >= IO_SCSI_BLIND && offset < IO_SCSI_BLIND_END) {
-        memory_io_penalty(IICX_SCSI_IO_PENALTY);
-        return st->scsi_iface->read_uint8(cfg->scsi, 0);
-    }
-    if (offset >= IO_ASC && offset < IO_ASC_END) {
-        memory_io_penalty(IICX_ASC_IO_PENALTY);
-        return st->asc_iface->read_uint8(st->asc, offset - IO_ASC);
-    }
-    if (offset >= IO_SWIM && offset < IO_SWIM_END) {
-        memory_io_penalty(IICX_SWIM_IO_PENALTY);
-        return st->floppy_iface->read_uint8(st->floppy, offset - IO_SWIM);
-    }
-    return 0;
-}
-
-uint16_t iicx_io_read_uint16(void *ctx, uint32_t addr) {
-    return ((uint16_t)iicx_io_read_uint8(ctx, addr) << 8) | iicx_io_read_uint8(ctx, addr + 1);
-}
-
-uint32_t iicx_io_read_uint32(void *ctx, uint32_t addr) {
-    config_t *cfg = (config_t *)ctx;
-    iicx_state_t *st = iicx_state(cfg);
-    uint32_t offset = addr & IICX_IO_MIRROR;
-    if (offset >= IO_SCSI_DRQ && offset < IO_SCSI_DRQ_END) {
-        memory_io_penalty(IICX_SCSI_IO_PENALTY * 4);
-        uint8_t b0 = st->scsi_iface->read_uint8(cfg->scsi, 0);
-        uint8_t b1 = st->scsi_iface->read_uint8(cfg->scsi, 0);
-        uint8_t b2 = st->scsi_iface->read_uint8(cfg->scsi, 0);
-        uint8_t b3 = st->scsi_iface->read_uint8(cfg->scsi, 0);
-        return ((uint32_t)b0 << 24) | ((uint32_t)b1 << 16) | ((uint32_t)b2 << 8) | (uint32_t)b3;
-    }
-    if (offset >= IO_SCSI_BLIND && offset < IO_SCSI_BLIND_END) {
-        memory_io_penalty(IICX_SCSI_IO_PENALTY * 4);
-        uint8_t b0 = st->scsi_iface->read_uint8(cfg->scsi, 0);
-        uint8_t b1 = st->scsi_iface->read_uint8(cfg->scsi, 0);
-        uint8_t b2 = st->scsi_iface->read_uint8(cfg->scsi, 0);
-        uint8_t b3 = st->scsi_iface->read_uint8(cfg->scsi, 0);
-        return ((uint32_t)b0 << 24) | ((uint32_t)b1 << 16) | ((uint32_t)b2 << 8) | (uint32_t)b3;
-    }
-    return ((uint32_t)iicx_io_read_uint16(ctx, addr) << 16) | iicx_io_read_uint16(ctx, addr + 2);
-}
-
-void iicx_io_write_uint8(void *ctx, uint32_t addr, uint8_t value) {
-    config_t *cfg = (config_t *)ctx;
-    iicx_state_t *st = iicx_state(cfg);
-    uint32_t offset = addr & IICX_IO_MIRROR;
-    if (offset < IO_VIA1_END) {
-        memory_io_penalty(IICX_VIA_IO_PENALTY);
-        st->via1_iface->write_uint8(cfg->via1, (offset - IO_VIA1) & ~1u, value);
-        return;
-    }
-    if (offset < IO_VIA2_END) {
-        memory_io_penalty(IICX_VIA_IO_PENALTY);
-        st->via2_iface->write_uint8(cfg->via2, (offset - IO_VIA2) & ~1u, value);
-        return;
-    }
-    if (offset < IO_SCC_END) {
-        memory_io_penalty(IICX_SCC_IO_PENALTY);
-        st->scc_iface->write_uint8(cfg->scc, offset - IO_SCC, value);
-        return;
-    }
-    if (offset < IO_SCSI_DRQ_END) {
-        memory_io_penalty(IICX_SCSI_IO_PENALTY);
-        st->scsi_iface->write_uint8(cfg->scsi, 0x201, value);
-        return;
-    }
-    if (offset >= IO_SCSI_REG && offset < IO_SCSI_REG_END) {
-        memory_io_penalty(IICX_SCSI_IO_PENALTY);
-        st->scsi_iface->write_uint8(cfg->scsi, offset - IO_SCSI_REG, value);
-        return;
-    }
-    if (offset >= IO_SCSI_BLIND && offset < IO_SCSI_BLIND_END) {
-        memory_io_penalty(IICX_SCSI_IO_PENALTY);
-        st->scsi_iface->write_uint8(cfg->scsi, 0x201, value);
-        return;
-    }
-    if (offset >= IO_ASC && offset < IO_ASC_END) {
-        memory_io_penalty(IICX_ASC_IO_PENALTY);
-        st->asc_iface->write_uint8(st->asc, offset - IO_ASC, value);
-        return;
-    }
-    if (offset >= IO_SWIM && offset < IO_SWIM_END) {
-        memory_io_penalty(IICX_SWIM_IO_PENALTY);
-        st->floppy_iface->write_uint8(st->floppy, offset - IO_SWIM, value);
-        return;
-    }
-}
-
-void iicx_io_write_uint16(void *ctx, uint32_t addr, uint16_t value) {
-    iicx_io_write_uint8(ctx, addr, (uint8_t)(value >> 8));
-    iicx_io_write_uint8(ctx, addr + 1, (uint8_t)(value & 0xFF));
-}
-
-void iicx_io_write_uint32(void *ctx, uint32_t addr, uint32_t value) {
-    config_t *cfg = (config_t *)ctx;
-    iicx_state_t *st = iicx_state(cfg);
-    uint32_t offset = addr & IICX_IO_MIRROR;
-    if (offset >= IO_SCSI_DRQ && offset < IO_SCSI_DRQ_END) {
-        memory_io_penalty(IICX_SCSI_IO_PENALTY * 4);
-        st->scsi_iface->write_uint8(cfg->scsi, 0x201, (uint8_t)(value >> 24));
-        st->scsi_iface->write_uint8(cfg->scsi, 0x201, (uint8_t)(value >> 16));
-        st->scsi_iface->write_uint8(cfg->scsi, 0x201, (uint8_t)(value >> 8));
-        st->scsi_iface->write_uint8(cfg->scsi, 0x201, (uint8_t)(value));
-        return;
-    }
-    if (offset >= IO_SCSI_BLIND && offset < IO_SCSI_BLIND_END) {
-        memory_io_penalty(IICX_SCSI_IO_PENALTY * 4);
-        st->scsi_iface->write_uint8(cfg->scsi, 0x201, (uint8_t)(value >> 24));
-        st->scsi_iface->write_uint8(cfg->scsi, 0x201, (uint8_t)(value >> 16));
-        st->scsi_iface->write_uint8(cfg->scsi, 0x201, (uint8_t)(value >> 8));
-        st->scsi_iface->write_uint8(cfg->scsi, 0x201, (uint8_t)(value));
-        return;
-    }
-    iicx_io_write_uint16(ctx, addr, (uint16_t)(value >> 16));
-    iicx_io_write_uint16(ctx, addr + 2, (uint16_t)(value & 0xFFFF));
-}
+// The GLUE I/O dispatcher is shared with SE/30 and IIx — see
+// mac030_glue_io.c.  This machine fills a mac030_glue_io_t at init and
+// registers it as the I/O region's device context.
 
 // ============================================================
 // Memory layout
@@ -330,13 +174,8 @@ void iicx_memory_layout_init(config_t *cfg) {
         }
     }
 
-    st->io_interface.read_uint8 = iicx_io_read_uint8;
-    st->io_interface.read_uint16 = iicx_io_read_uint16;
-    st->io_interface.read_uint32 = iicx_io_read_uint32;
-    st->io_interface.write_uint8 = iicx_io_write_uint8;
-    st->io_interface.write_uint16 = iicx_io_write_uint16;
-    st->io_interface.write_uint32 = iicx_io_write_uint32;
-    memory_map_add(cfg->mem_map, IICX_IO_BASE, IICX_IO_SIZE, "IIcx I/O", &st->io_interface, cfg);
+    mac030_glue_io_fill_interface(&st->io_interface);
+    memory_map_add(cfg->mem_map, IICX_IO_BASE, IICX_IO_SIZE, "IIcx I/O", &st->io_interface, &st->glue_io);
 
     // Populate page-table entries for any host-backed slot regions
     // registered by NuBus cards (matches the SE/30 pattern of explicit
@@ -560,7 +399,7 @@ static void iicx_init(config_t *cfg, checkpoint_t *checkpoint) {
     cfg->adb = st->adb;
 
     if (checkpoint)
-        glue030_checkpoint_restore_images(cfg, checkpoint);
+        mac_checkpoint_restore_images(cfg, checkpoint);
 
     cfg->scsi = scsi_init(NULL, checkpoint);
     scsi_set_via(cfg->scsi, cfg->via2);
@@ -571,12 +410,7 @@ static void iicx_init(config_t *cfg, checkpoint_t *checkpoint) {
     st->floppy = floppy_init(FLOPPY_TYPE_SWIM, NULL, cfg->scheduler, checkpoint);
     cfg->floppy = st->floppy;
 
-    st->via1_iface = via_get_memory_interface(cfg->via1);
-    st->via2_iface = via_get_memory_interface(cfg->via2);
-    st->scc_iface = scc_get_memory_interface(cfg->scc);
-    st->scsi_iface = scsi_get_memory_interface(cfg->scsi);
-    st->asc_iface = asc_get_memory_interface(st->asc);
-    st->floppy_iface = floppy_get_memory_interface(st->floppy);
+    mac030_glue_io_bind(&st->glue_io, cfg, st->asc, st->floppy);
 
     uint8_t *ram_base = ram_native_pointer(cfg->mem_map, 0);
     uint32_t ram_size = cfg->ram_size;
@@ -597,13 +431,7 @@ static void iicx_init(config_t *cfg, checkpoint_t *checkpoint) {
     iicx_memory_layout_init(cfg);
 
     if (checkpoint) {
-        system_read_checkpoint_data(checkpoint, &st->mmu->tc, sizeof(st->mmu->tc));
-        system_read_checkpoint_data(checkpoint, &st->mmu->crp, sizeof(st->mmu->crp));
-        system_read_checkpoint_data(checkpoint, &st->mmu->srp, sizeof(st->mmu->srp));
-        system_read_checkpoint_data(checkpoint, &st->mmu->tt0, sizeof(st->mmu->tt0));
-        system_read_checkpoint_data(checkpoint, &st->mmu->tt1, sizeof(st->mmu->tt1));
-        system_read_checkpoint_data(checkpoint, &st->mmu->mmusr, sizeof(st->mmu->mmusr));
-        system_read_checkpoint_data(checkpoint, &st->mmu->enabled, sizeof(st->mmu->enabled));
+        mmu_checkpoint_restore(st->mmu, checkpoint);
         mmu_invalidate_tlb(st->mmu);
         g_mmu = st->mmu;
         cpu_attach_mmu(cfg->cpu, st->mmu);
@@ -700,17 +528,11 @@ static void iicx_checkpoint_save(config_t *cfg, checkpoint_t *cp) {
     via_checkpoint(cfg->via1, cp);
     via_checkpoint(cfg->via2, cp);
     adb_checkpoint(st->adb, cp);
-    glue030_checkpoint_save_images(cfg, cp);
+    mac_checkpoint_save_images(cfg, cp);
     scsi_checkpoint(cfg->scsi, cp);
     asc_checkpoint(st->asc, cp);
     floppy_checkpoint(st->floppy, cp);
-    system_write_checkpoint_data(cp, &st->mmu->tc, sizeof(st->mmu->tc));
-    system_write_checkpoint_data(cp, &st->mmu->crp, sizeof(st->mmu->crp));
-    system_write_checkpoint_data(cp, &st->mmu->srp, sizeof(st->mmu->srp));
-    system_write_checkpoint_data(cp, &st->mmu->tt0, sizeof(st->mmu->tt0));
-    system_write_checkpoint_data(cp, &st->mmu->tt1, sizeof(st->mmu->tt1));
-    system_write_checkpoint_data(cp, &st->mmu->mmusr, sizeof(st->mmu->mmusr));
-    system_write_checkpoint_data(cp, &st->mmu->enabled, sizeof(st->mmu->enabled));
+    mmu_checkpoint_save(st->mmu, cp);
 }
 
 // ============================================================

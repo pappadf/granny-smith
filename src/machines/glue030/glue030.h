@@ -86,18 +86,7 @@ int glue030_init(const glue030_init_t *spec);
 // owned peripherals in inverse init order.
 void glue030_teardown(config_t *cfg);
 
-// Image-list checkpoint helpers — extracted from se30.c, identical loop
-// today appears in plus.c too (proposal §1.1).  Per §3.1.1 the Plus stays
-// standalone for now, so v1 only se30.c calls these; folding plus.c onto
-// them is a follow-up once the 24-bit / 68000 conditionals are tractable.
-//
-// _save writes (count, [name_len, name, writable, raw_size, instance_len,
-// instance_path] x count) into the checkpoint stream.  _restore reads the
-// same shape, opens / creates the corresponding image_t, and attaches it
-// to cfg->images via add_image().  Both fail loudly via
-// checkpoint_set_error on partial reads / failed image opens so the caller
-// sees a marked-error checkpoint.
-void glue030_checkpoint_save_images(config_t *cfg, checkpoint_t *cp);
-void glue030_checkpoint_restore_images(config_t *cfg, checkpoint_t *cp);
+// (The image-list checkpoint helpers moved to runtime/checkpoint_images.h —
+// mac_checkpoint_{save,restore}_images — since they were never GLUE-specific.)
 
 #endif // GLUE030_H

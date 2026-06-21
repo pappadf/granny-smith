@@ -14,6 +14,7 @@
 #define IICX_INTERNAL_H
 
 #include "common.h"
+#include "mac030_glue_io.h"
 #include "memory.h"
 #include "mmu.h"
 #include "system_config.h" // for config_t.machine_context
@@ -34,12 +35,7 @@ typedef struct iicx_state {
     bool rom_overlay;
     mmu_state_t *mmu;
 
-    const memory_interface_t *via1_iface;
-    const memory_interface_t *via2_iface;
-    const memory_interface_t *scc_iface;
-    const memory_interface_t *scsi_iface;
-    const memory_interface_t *asc_iface;
-    const memory_interface_t *floppy_iface;
+    mac030_glue_io_t glue_io; // device handles for the shared GLUE dispatcher
 
     uint8_t last_port_b; // ADB ST filtering on VIA1 PB
     uint8_t last_via2_port_b; // last seen VIA2 port-B output
@@ -65,13 +61,7 @@ void iicx_fill_page(uint32_t page_index, uint8_t *host_ptr, bool writable);
 void iicx_set_rom_overlay(struct config *cfg, bool overlay);
 void iicx_update_ipl(struct config *cfg, int source, bool active);
 
-// I/O dispatcher (same address map for IIcx and IIx).
-uint8_t iicx_io_read_uint8(void *ctx, uint32_t addr);
-uint16_t iicx_io_read_uint16(void *ctx, uint32_t addr);
-uint32_t iicx_io_read_uint32(void *ctx, uint32_t addr);
-void iicx_io_write_uint8(void *ctx, uint32_t addr, uint8_t value);
-void iicx_io_write_uint16(void *ctx, uint32_t addr, uint16_t value);
-void iicx_io_write_uint32(void *ctx, uint32_t addr, uint32_t value);
+// I/O dispatch is the shared GLUE dispatcher (mac030_glue_io.h).
 
 // VIA1 callbacks — identical between IIcx and IIx (no PA6 buffer-select).
 void iicx_via1_output(void *context, uint8_t port, uint8_t output);
@@ -90,12 +80,7 @@ void iicx_memory_layout_init(struct config *cfg);
 #define IICX_IRQ_SCC  (1 << 2)
 #define IICX_IRQ_NMI  (1 << 3)
 
-// I/O bus penalty equates (used only by the dispatcher).
-#define IICX_VIA_IO_PENALTY  16
-#define IICX_SCC_IO_PENALTY  2
-#define IICX_SCSI_IO_PENALTY 2
-#define IICX_ASC_IO_PENALTY  2
-#define IICX_SWIM_IO_PENALTY 2
+// (I/O bus penalties now live with the shared dispatcher, mac030_glue_io.c.)
 
 // Address-space constants.
 #define IICX_ROM_START 0x40000000UL

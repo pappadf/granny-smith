@@ -13,18 +13,20 @@
 // mirrors the device block every $20000 bytes, as implemented by the GLUE
 // ASIC (344S0602).
 
+#include "mac030_glue_io.h"
 #include "machine.h"
+#include "mmu_checkpoint.h"
 #include "system_config.h" // full config_t definition
 
 #include "adb.h"
 #include "asc.h"
 #include "builtin_se30_video.h" // SE/30 built-in video as a NuBus card (slot $E)
+#include "checkpoint_images.h"
 #include "checkpoint_machine.h"
 #include "cpu.h"
 #include "cpu_internal.h" // for cpu->mmu field
 #include "debug.h"
 #include "floppy.h"
-#include "glue030.h" // family-shared lifecycle helpers
 #include "image.h"
 #include "log.h"
 #include "memory.h"
@@ -57,27 +59,10 @@ LOG_USE_CATEGORY_NAME("se30");
 #define SE30_ROM_END   0x50000000UL
 
 // SE/30 I/O region: 256 MB, mirrored every $20000
-#define SE30_IO_BASE   0x50000000UL
-#define SE30_IO_SIZE   0x10000000UL
-#define SE30_IO_MIRROR 0x0001FFFFUL // 17-bit mask for $20000 mirroring
-
-// I/O device offsets within the $20000 block
-#define IO_VIA1           0x00000 // VIA1: ADB, RTC, ROM overlay
-#define IO_VIA1_END       0x02000
-#define IO_VIA2           0x02000 // VIA2: interrupt aggregation
-#define IO_VIA2_END       0x04000
-#define IO_SCC            0x04000 // Zilog 8530 SCC
-#define IO_SCC_END        0x06000
-#define IO_SCSI_DRQ       0x06000 // SCSI pseudo-DMA with DRQ handshaking
-#define IO_SCSI_DRQ_END   0x08000
-#define IO_SCSI_REG       0x10000 // NCR 5380 direct register access
-#define IO_SCSI_REG_END   0x12000
-#define IO_SCSI_BLIND     0x12000 // SCSI pseudo-DMA without DRQ
-#define IO_SCSI_BLIND_END 0x14000
-#define IO_ASC            0x14000 // Apple Sound Chip
-#define IO_ASC_END        0x16000
-#define IO_SWIM           0x16000 // SWIM floppy controller
-#define IO_SWIM_END       0x18000
+#define SE30_IO_BASE 0x50000000UL
+#define SE30_IO_SIZE 0x10000000UL
+// (I/O window offsets + the dispatcher are shared with IIcx/IIx — see
+// mac030_glue_io.c.)
 
 // Interrupt source bits for se30_update_ipl()
 #define SE30_IRQ_VIA1 (1 << 0) // IPL level 1
@@ -132,13 +117,8 @@ typedef struct se30_state {
     // MMU state (NULL until se30_init creates it)
     mmu_state_t *mmu;
 
-    // Cached device interfaces for I/O dispatch
-    const memory_interface_t *via1_iface;
-    const memory_interface_t *via2_iface;
-    const memory_interface_t *scc_iface;
-    const memory_interface_t *scsi_iface;
-    const memory_interface_t *asc_iface;
-    const memory_interface_t *floppy_iface;
+    // Device handles for the shared GLUE dispatcher (mac030_glue_io.c)
+    mac030_glue_io_t glue_io;
 
     // Previous VIA1 port B output value for filtering ADB ST transitions
     uint8_t last_port_b;
@@ -263,205 +243,8 @@ static void se30_reset(config_t *cfg) {
 // ============================================================
 // I/O dispatcher
 // ============================================================
-
-// I/O bus cycle penalties: extra CPU clocks per byte beyond the CPI baseline.
-// The GLUE ASIC holds DSACK during I/O accesses, stalling the 68030.
-// VIA penalty dominates due to E-clock synchronization (~19-23 avg vs 4 for RAM).
-// Set to 0 to disable penalties (preserves existing timing behaviour).
-#define SE30_VIA_IO_PENALTY  16 // VIA E-clock sync: ~19-23 avg, minus ~4 baseline
-#define SE30_SCC_IO_PENALTY  2 // SCC with own 3.672 MHz PCLK: ~6 total, minus ~4
-#define SE30_SCSI_IO_PENALTY 2 // NCR 5380: ~6 total, minus ~4
-#define SE30_ASC_IO_PENALTY  2 // Apple Sound Chip: ~6 total, minus ~4
-#define SE30_SWIM_IO_PENALTY 2 // Floppy controller: ~6 total, minus ~4
-
-// Read a byte from the SE/30 I/O space.
-// Masks address with $1FFFF for GLUE mirroring, then dispatches to device.
-static uint8_t se30_io_read_uint8(void *ctx, uint32_t addr) {
-    config_t *cfg = (config_t *)ctx;
-    se30_state_t *se30 = se30_state(cfg);
-
-    // Mirror: take lower 17 bits of the offset from I/O base
-    uint32_t offset = addr & SE30_IO_MIRROR;
-
-    // 6522 is an 8-bit port on lane 0 (D31..D24); 68030 dynamic bus sizing
-    // routes byte accesses through this lane regardless of A0/A1, and the
-    // chip's RS0..RS3 lines decode only A9..A12, so any byte in the 8 KB
-    // decode window aliases to the same register. Mask A0 before handing
-    // the offset to the 6522 core.
-    if (offset < IO_VIA1_END) {
-        memory_io_penalty(SE30_VIA_IO_PENALTY);
-        return se30->via1_iface->read_uint8(cfg->via1, (offset - IO_VIA1) & ~1u);
-    }
-    if (offset < IO_VIA2_END) {
-        memory_io_penalty(SE30_VIA_IO_PENALTY);
-        return se30->via2_iface->read_uint8(cfg->via2, (offset - IO_VIA2) & ~1u);
-    }
-    if (offset < IO_SCC_END) {
-        memory_io_penalty(SE30_SCC_IO_PENALTY);
-        return se30->scc_iface->read_uint8(cfg->scc, offset - IO_SCC);
-    }
-    if (offset < IO_SCSI_DRQ_END) {
-        // Pseudo-DMA: 8-bit read from SCSI data register with DRQ
-        memory_io_penalty(SE30_SCSI_IO_PENALTY);
-        return se30->scsi_iface->read_uint8(cfg->scsi, 0);
-    }
-    if (offset >= IO_SCSI_REG && offset < IO_SCSI_REG_END) {
-        memory_io_penalty(SE30_SCSI_IO_PENALTY);
-        return se30->scsi_iface->read_uint8(cfg->scsi, offset - IO_SCSI_REG);
-    }
-    if (offset >= IO_SCSI_BLIND && offset < IO_SCSI_BLIND_END) {
-        // Blind pseudo-DMA: 8-bit read without DRQ check
-        memory_io_penalty(SE30_SCSI_IO_PENALTY);
-        return se30->scsi_iface->read_uint8(cfg->scsi, 0);
-    }
-    if (offset >= IO_ASC && offset < IO_ASC_END) {
-        memory_io_penalty(SE30_ASC_IO_PENALTY);
-        return se30->asc_iface->read_uint8(se30->asc, offset - IO_ASC);
-    }
-    if (offset >= IO_SWIM && offset < IO_SWIM_END) {
-        memory_io_penalty(SE30_SWIM_IO_PENALTY);
-        return se30->floppy_iface->read_uint8(se30->floppy, offset - IO_SWIM);
-    }
-
-    return 0; // unmapped I/O space
-}
-
-// Read a 16-bit word from the SE/30 I/O space
-static uint16_t se30_io_read_uint16(void *ctx, uint32_t addr) {
-    // Most SE/30 devices are 8-bit; split into two byte reads
-    uint8_t hi = se30_io_read_uint8(ctx, addr);
-    uint8_t lo = se30_io_read_uint8(ctx, addr + 1);
-    return (uint16_t)((hi << 8) | lo);
-}
-
-// Read a 32-bit longword from the SE/30 I/O space.
-// Handles SCSI pseudo-DMA: a 32-bit read at $50006000 coalesces
-// four 8-bit reads from the NCR 5380 data register.
-static uint32_t se30_io_read_uint32(void *ctx, uint32_t addr) {
-    config_t *cfg = (config_t *)ctx;
-    se30_state_t *se30 = se30_state(cfg);
-
-    uint32_t offset = addr & SE30_IO_MIRROR;
-
-    // SCSI pseudo-DMA: coalesce 4 byte reads from data register
-    if (offset >= IO_SCSI_DRQ && offset < IO_SCSI_DRQ_END) {
-        memory_io_penalty(SE30_SCSI_IO_PENALTY * 4); // 4 sequential 8-bit bus cycles
-        uint8_t b0 = se30->scsi_iface->read_uint8(cfg->scsi, 0);
-        uint8_t b1 = se30->scsi_iface->read_uint8(cfg->scsi, 0);
-        uint8_t b2 = se30->scsi_iface->read_uint8(cfg->scsi, 0);
-        uint8_t b3 = se30->scsi_iface->read_uint8(cfg->scsi, 0);
-        return ((uint32_t)b0 << 24) | ((uint32_t)b1 << 16) | ((uint32_t)b2 << 8) | (uint32_t)b3;
-    }
-    // Blind pseudo-DMA: same coalescing without DRQ check
-    if (offset >= IO_SCSI_BLIND && offset < IO_SCSI_BLIND_END) {
-        memory_io_penalty(SE30_SCSI_IO_PENALTY * 4); // 4 sequential 8-bit bus cycles
-        uint8_t b0 = se30->scsi_iface->read_uint8(cfg->scsi, 0);
-        uint8_t b1 = se30->scsi_iface->read_uint8(cfg->scsi, 0);
-        uint8_t b2 = se30->scsi_iface->read_uint8(cfg->scsi, 0);
-        uint8_t b3 = se30->scsi_iface->read_uint8(cfg->scsi, 0);
-        return ((uint32_t)b0 << 24) | ((uint32_t)b1 << 16) | ((uint32_t)b2 << 8) | (uint32_t)b3;
-    }
-
-    // Default: split into two 16-bit reads
-    uint32_t hi = se30_io_read_uint16(ctx, addr);
-    uint32_t lo = se30_io_read_uint16(ctx, addr + 2);
-    return (hi << 16) | lo;
-}
-
-// Write a byte to the SE/30 I/O space
-static void se30_io_write_uint8(void *ctx, uint32_t addr, uint8_t value) {
-    config_t *cfg = (config_t *)ctx;
-    se30_state_t *se30 = se30_state(cfg);
-
-    uint32_t offset = addr & SE30_IO_MIRROR;
-
-    // See the read path for the full rationale: 6522 RS lines decode only
-    // A9..A12, and 68030 dynamic bus sizing routes byte writes through the
-    // 8-bit port's fixed lane regardless of A0/A1, so odd-byte writes land
-    // on the same register as their even-byte counterpart.
-    if (offset < IO_VIA1_END) {
-        memory_io_penalty(SE30_VIA_IO_PENALTY);
-        se30->via1_iface->write_uint8(cfg->via1, (offset - IO_VIA1) & ~1u, value);
-        return;
-    }
-    if (offset < IO_VIA2_END) {
-        memory_io_penalty(SE30_VIA_IO_PENALTY);
-        se30->via2_iface->write_uint8(cfg->via2, (offset - IO_VIA2) & ~1u, value);
-        return;
-    }
-    if (offset < IO_SCC_END) {
-        memory_io_penalty(SE30_SCC_IO_PENALTY);
-        se30->scc_iface->write_uint8(cfg->scc, offset - IO_SCC, value);
-        return;
-    }
-    if (offset < IO_SCSI_DRQ_END) {
-        // Pseudo-DMA: 8-bit write to SCSI data register (DMA mode: bit 0x200 + odd)
-        memory_io_penalty(SE30_SCSI_IO_PENALTY);
-        se30->scsi_iface->write_uint8(cfg->scsi, 0x201, value);
-        return;
-    }
-    if (offset >= IO_SCSI_REG && offset < IO_SCSI_REG_END) {
-        memory_io_penalty(SE30_SCSI_IO_PENALTY);
-        se30->scsi_iface->write_uint8(cfg->scsi, offset - IO_SCSI_REG, value);
-        return;
-    }
-    if (offset >= IO_SCSI_BLIND && offset < IO_SCSI_BLIND_END) {
-        // Blind pseudo-DMA write
-        memory_io_penalty(SE30_SCSI_IO_PENALTY);
-        se30->scsi_iface->write_uint8(cfg->scsi, 0x201, value);
-        return;
-    }
-    if (offset >= IO_ASC && offset < IO_ASC_END) {
-        memory_io_penalty(SE30_ASC_IO_PENALTY);
-        se30->asc_iface->write_uint8(se30->asc, offset - IO_ASC, value);
-        return;
-    }
-    if (offset >= IO_SWIM && offset < IO_SWIM_END) {
-        memory_io_penalty(SE30_SWIM_IO_PENALTY);
-        se30->floppy_iface->write_uint8(se30->floppy, offset - IO_SWIM, value);
-        return;
-    }
-    // unmapped — ignore
-}
-
-// Write a 16-bit word to the SE/30 I/O space
-static void se30_io_write_uint16(void *ctx, uint32_t addr, uint16_t value) {
-    se30_io_write_uint8(ctx, addr, (uint8_t)(value >> 8));
-    se30_io_write_uint8(ctx, addr + 1, (uint8_t)(value & 0xFF));
-}
-
-// Write a 32-bit longword to the SE/30 I/O space.
-// Handles SCSI pseudo-DMA: a 32-bit write at $50006000 splits into
-// four 8-bit writes to the NCR 5380 data register.
-static void se30_io_write_uint32(void *ctx, uint32_t addr, uint32_t value) {
-    config_t *cfg = (config_t *)ctx;
-    se30_state_t *se30 = se30_state(cfg);
-
-    uint32_t offset = addr & SE30_IO_MIRROR;
-
-    // SCSI pseudo-DMA: split longword into 4 byte writes (DMA mode)
-    if (offset >= IO_SCSI_DRQ && offset < IO_SCSI_DRQ_END) {
-        memory_io_penalty(SE30_SCSI_IO_PENALTY * 4); // 4 sequential 8-bit bus cycles
-        se30->scsi_iface->write_uint8(cfg->scsi, 0x201, (uint8_t)(value >> 24));
-        se30->scsi_iface->write_uint8(cfg->scsi, 0x201, (uint8_t)(value >> 16));
-        se30->scsi_iface->write_uint8(cfg->scsi, 0x201, (uint8_t)(value >> 8));
-        se30->scsi_iface->write_uint8(cfg->scsi, 0x201, (uint8_t)(value));
-        return;
-    }
-    // Blind pseudo-DMA write
-    if (offset >= IO_SCSI_BLIND && offset < IO_SCSI_BLIND_END) {
-        memory_io_penalty(SE30_SCSI_IO_PENALTY * 4); // 4 sequential 8-bit bus cycles
-        se30->scsi_iface->write_uint8(cfg->scsi, 0x201, (uint8_t)(value >> 24));
-        se30->scsi_iface->write_uint8(cfg->scsi, 0x201, (uint8_t)(value >> 16));
-        se30->scsi_iface->write_uint8(cfg->scsi, 0x201, (uint8_t)(value >> 8));
-        se30->scsi_iface->write_uint8(cfg->scsi, 0x201, (uint8_t)(value));
-        return;
-    }
-
-    // Default: split into two 16-bit writes
-    se30_io_write_uint16(ctx, addr, (uint16_t)(value >> 16));
-    se30_io_write_uint16(ctx, addr + 2, (uint16_t)(value & 0xFFFF));
-}
+// Shared with IIcx/IIx — see mac030_glue_io.c.  se30_init fills a
+// mac030_glue_io_t and registers it as the I/O region's context.
 
 // ============================================================
 // Memory layout
@@ -529,14 +312,8 @@ static void se30_memory_layout_init(config_t *cfg) {
     }
 
     // --- I/O dispatcher: $50000000 - $5FFFFFFF ---
-    se30->io_interface.read_uint8 = se30_io_read_uint8;
-    se30->io_interface.read_uint16 = se30_io_read_uint16;
-    se30->io_interface.read_uint32 = se30_io_read_uint32;
-    se30->io_interface.write_uint8 = se30_io_write_uint8;
-    se30->io_interface.write_uint16 = se30_io_write_uint16;
-    se30->io_interface.write_uint32 = se30_io_write_uint32;
-
-    memory_map_add(cfg->mem_map, SE30_IO_BASE, SE30_IO_SIZE, "SE/30 I/O", &se30->io_interface, cfg);
+    mac030_glue_io_fill_interface(&se30->io_interface);
+    memory_map_add(cfg->mem_map, SE30_IO_BASE, SE30_IO_SIZE, "SE/30 I/O", &se30->io_interface, &se30->glue_io);
 
     // --- VRAM: $FEE00000 - $FEE0FFFF (64 KB writable) ---
     // Mirror the 64 KB across the 1 MB decode window $FEE00000-$FEEFFFFF
@@ -805,10 +582,10 @@ static void se30_init(config_t *cfg, checkpoint_t *checkpoint) {
     cfg->adb = se30->adb; // expose ADB to system-level input routing
 
     // Restore image list from checkpoint before devices that reference them.
-    // Loop body lives in glue030_checkpoint_restore_images so future glue030
+    // Loop body lives in mac_checkpoint_restore_images so future glue030
     // family members (IIcx, IIx) reuse the same serialisation.
     if (checkpoint)
-        glue030_checkpoint_restore_images(cfg, checkpoint);
+        mac_checkpoint_restore_images(cfg, checkpoint);
 
     // Initialise SCSI (NULL map: I/O dispatcher handles addressing)
     cfg->scsi = scsi_init(NULL, checkpoint);
@@ -824,13 +601,8 @@ static void se30_init(config_t *cfg, checkpoint_t *checkpoint) {
     se30->floppy = floppy_init(FLOPPY_TYPE_SWIM, NULL, cfg->scheduler, checkpoint);
     cfg->floppy = se30->floppy; // expose floppy to generic floppy commands
 
-    // Cache device memory interfaces for the I/O dispatcher
-    se30->via1_iface = via_get_memory_interface(cfg->via1);
-    se30->via2_iface = via_get_memory_interface(cfg->via2);
-    se30->scc_iface = scc_get_memory_interface(cfg->scc);
-    se30->scsi_iface = scsi_get_memory_interface(cfg->scsi);
-    se30->asc_iface = asc_get_memory_interface(se30->asc);
-    se30->floppy_iface = floppy_get_memory_interface(se30->floppy);
+    // Bind device handles for the shared GLUE I/O dispatcher.
+    mac030_glue_io_bind(&se30->glue_io, cfg, se30->asc, se30->floppy);
 
     // ---- MMU + NuBus + VRAM/VROM wiring ----
 
@@ -919,13 +691,7 @@ static void se30_init(config_t *cfg, checkpoint_t *checkpoint) {
         checkpoint_read_file(checkpoint, se30->vrom, SE30_VROM_SIZE, NULL);
 
         // Restore MMU guest registers (must match save order in se30_checkpoint_save)
-        system_read_checkpoint_data(checkpoint, &se30->mmu->tc, sizeof(se30->mmu->tc));
-        system_read_checkpoint_data(checkpoint, &se30->mmu->crp, sizeof(se30->mmu->crp));
-        system_read_checkpoint_data(checkpoint, &se30->mmu->srp, sizeof(se30->mmu->srp));
-        system_read_checkpoint_data(checkpoint, &se30->mmu->tt0, sizeof(se30->mmu->tt0));
-        system_read_checkpoint_data(checkpoint, &se30->mmu->tt1, sizeof(se30->mmu->tt1));
-        system_read_checkpoint_data(checkpoint, &se30->mmu->mmusr, sizeof(se30->mmu->mmusr));
-        system_read_checkpoint_data(checkpoint, &se30->mmu->enabled, sizeof(se30->mmu->enabled));
+        mmu_checkpoint_restore(se30->mmu, checkpoint);
 
         // Flush TLB so page table walks use the restored CRP/SRP/TC
         mmu_invalidate_tlb(se30->mmu);
@@ -1049,8 +815,8 @@ static void se30_checkpoint_save(config_t *cfg, checkpoint_t *cp) {
     adb_checkpoint(se30->adb, cp);
 
     // Checkpoint list of images before devices that reference them.
-    // Family-shared serialisation lives in glue030_checkpoint_save_images.
-    glue030_checkpoint_save_images(cfg, cp);
+    // Family-shared serialisation lives in mac_checkpoint_save_images.
+    mac_checkpoint_save_images(cfg, cp);
 
     scsi_checkpoint(cfg->scsi, cp);
     asc_checkpoint(se30->asc, cp);
@@ -1068,13 +834,7 @@ static void se30_checkpoint_save(config_t *cfg, checkpoint_t *cp) {
     checkpoint_write_file(cp, vrom_path ? vrom_path : "");
 
     // Save MMU guest registers (TC, CRP, SRP, TT0, TT1, MMUSR, enabled flag)
-    system_write_checkpoint_data(cp, &se30->mmu->tc, sizeof(se30->mmu->tc));
-    system_write_checkpoint_data(cp, &se30->mmu->crp, sizeof(se30->mmu->crp));
-    system_write_checkpoint_data(cp, &se30->mmu->srp, sizeof(se30->mmu->srp));
-    system_write_checkpoint_data(cp, &se30->mmu->tt0, sizeof(se30->mmu->tt0));
-    system_write_checkpoint_data(cp, &se30->mmu->tt1, sizeof(se30->mmu->tt1));
-    system_write_checkpoint_data(cp, &se30->mmu->mmusr, sizeof(se30->mmu->mmusr));
-    system_write_checkpoint_data(cp, &se30->mmu->enabled, sizeof(se30->mmu->enabled));
+    mmu_checkpoint_save(se30->mmu, cp);
 }
 
 // ============================================================

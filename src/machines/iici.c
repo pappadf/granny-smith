@@ -20,17 +20,18 @@
 //   * ADB / RTC use the classic VIA1 path (no Egret) — identical to IIcx.
 
 #include "machine.h"
+#include "mmu_checkpoint.h"
 #include "system_config.h"
 
 #include "adb.h"
 #include "asc.h"
 #include "builtin_rbv_video.h"
+#include "checkpoint_images.h"
 #include "checkpoint_machine.h"
 #include "cpu.h"
 #include "cpu_internal.h" // for cpu->mmu field
 #include "debug.h"
 #include "floppy.h"
-#include "glue030.h" // family-shared image-list checkpoint helpers
 #include "iici_internal.h"
 #include "image.h"
 #include "log.h"
@@ -538,7 +539,7 @@ static void iici_init(config_t *cfg, checkpoint_t *checkpoint) {
     cfg->adb = st->adb;
 
     if (checkpoint)
-        glue030_checkpoint_restore_images(cfg, checkpoint);
+        mac_checkpoint_restore_images(cfg, checkpoint);
 
     cfg->scsi = scsi_init(NULL, checkpoint);
     scsi_set_irq_callback(cfg->scsi, iici_scsi_irq, cfg);
@@ -595,13 +596,7 @@ static void iici_init(config_t *cfg, checkpoint_t *checkpoint) {
     iici_memory_layout_init(cfg);
 
     if (checkpoint) {
-        system_read_checkpoint_data(checkpoint, &st->mmu->tc, sizeof(st->mmu->tc));
-        system_read_checkpoint_data(checkpoint, &st->mmu->crp, sizeof(st->mmu->crp));
-        system_read_checkpoint_data(checkpoint, &st->mmu->srp, sizeof(st->mmu->srp));
-        system_read_checkpoint_data(checkpoint, &st->mmu->tt0, sizeof(st->mmu->tt0));
-        system_read_checkpoint_data(checkpoint, &st->mmu->tt1, sizeof(st->mmu->tt1));
-        system_read_checkpoint_data(checkpoint, &st->mmu->mmusr, sizeof(st->mmu->mmusr));
-        system_read_checkpoint_data(checkpoint, &st->mmu->enabled, sizeof(st->mmu->enabled));
+        mmu_checkpoint_restore(st->mmu, checkpoint);
         mmu_invalidate_tlb(st->mmu);
         g_mmu = st->mmu;
         cpu_attach_mmu(cfg->cpu, st->mmu);
@@ -698,18 +693,12 @@ static void iici_checkpoint_save(config_t *cfg, checkpoint_t *cp) {
     scc_checkpoint(cfg->scc, cp);
     via_checkpoint(cfg->via1, cp);
     adb_checkpoint(st->adb, cp);
-    glue030_checkpoint_save_images(cfg, cp);
+    mac_checkpoint_save_images(cfg, cp);
     scsi_checkpoint(cfg->scsi, cp);
     asc_checkpoint(st->asc, cp);
     floppy_checkpoint(st->floppy, cp);
     rbv_checkpoint(st->rbv, cp);
-    system_write_checkpoint_data(cp, &st->mmu->tc, sizeof(st->mmu->tc));
-    system_write_checkpoint_data(cp, &st->mmu->crp, sizeof(st->mmu->crp));
-    system_write_checkpoint_data(cp, &st->mmu->srp, sizeof(st->mmu->srp));
-    system_write_checkpoint_data(cp, &st->mmu->tt0, sizeof(st->mmu->tt0));
-    system_write_checkpoint_data(cp, &st->mmu->tt1, sizeof(st->mmu->tt1));
-    system_write_checkpoint_data(cp, &st->mmu->mmusr, sizeof(st->mmu->mmusr));
-    system_write_checkpoint_data(cp, &st->mmu->enabled, sizeof(st->mmu->enabled));
+    mmu_checkpoint_save(st->mmu, cp);
 }
 
 // ============================================================
