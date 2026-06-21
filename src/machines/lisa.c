@@ -444,9 +444,14 @@ static value_t lisa_fd_drive_eject(struct object *self, const member_t *m, int a
     (void)argc;
     (void)argv;
     lisa_state_t *ls = lisa_state((config_t *)object_data(self));
-    if (!ls || !ls->fdc || !lisa_fdc_disk_present(ls->fdc))
-        return val_err("floppy.drives.0: no disk inserted");
-    lisa_fdc_eject(ls->fdc);
+    if (!ls || !ls->fdc)
+        return val_err("floppy.drives.0: no controller");
+    // Ejecting an empty drive is a harmless no-op (idempotent): a multi-disk
+    // install script can eject-then-insert each floppy without first knowing
+    // whether the OS already ejected the previous one (e.g. Xenix's hard-disk
+    // boot ejects the boot floppy before firsttime asks for the first disk).
+    if (lisa_fdc_disk_present(ls->fdc))
+        lisa_fdc_eject(ls->fdc);
     return val_none();
 }
 
