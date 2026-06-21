@@ -1,21 +1,35 @@
-# SE/30 A/UX 3.0.1 Boot (retail SE floppy).
+# SE/30 A/UX 3.0.1 Boot (retail SE floppy + CD).
 #
-# Verifies the volname-shift fix renders "Untitled" correctly, and that
-# clicks on "Easy Install" and "OK" both land on their targets.
+# Boots the SE/30 from the retail A/UX 3.0.1 Installation Boot Disk (SE) with
+# the retail Install CD attached, and reaches the A/UX Easy Install screen.
+# Reaching that screen proves the kernel booted and mounted its root from the
+# CD-ROM (the installer GUI runs from the CD).  The test then drives the
+# installer: it clicks "Easy Install", confirms the overwrite dialog with
+# "OK", and verifies the install begins.
 #
-# Mouse positioning under A/UX uses --aux mode (not --global): A/UX is
-# Unix, and the 1ms guard tick installed by --global stomps A/UX kernel
-# data at PA $0828 whenever the CPU happens to be in supervisor mode at
-# the tick boundary.  --aux uses a user-mode-only guard tick, so it pins
-# MAE's MTemp without corrupting the kernel.
+# The wall clock is pinned so the boot trajectory — and therefore every
+# rendered screen — is reproducible.
+#
+# Mouse positioning under A/UX uses --aux mode (not --global): A/UX is Unix,
+# and the 1 ms guard tick installed by --global stomps A/UX kernel data at
+# PA $0828 whenever the CPU happens to be in supervisor mode at the tick
+# boundary.  --aux uses a user-mode-only guard tick, so it pins MAE's MTemp
+# without corrupting the kernel.
+rtc.time = 2026-04-26T21:30:36
 
-scheduler.run 200000000
+# Boot the floppy + CD to the A/UX Easy Install screen (~600M instructions).
+# A/UX is interrupt-driven: the kernel sleeps for each CD read and is woken by
+# the SCSI DRQ "data ready" interrupt the NCR 5380 model raises autonomously
+# from the scheduler (scsi.c scsi_drq_service).  Run in chunks so the per-frame
+# VBL heartbeat is injected across the boot.
+scheduler.run 300000000
+scheduler.run 300000000
 
 screen.match installer.png
 
-# Click "Easy Install" (button center ~(380, 80)) — opens a confirm
-# dialog asking "...will be overwritten by the installation process.
-# Do you wish to continue?" with Cancel / OK buttons.
+# Click "Easy Install" (button center ~(380, 80)) — opens a confirm dialog
+# asking "...will be overwritten by the installation process. Do you wish to
+# continue?" with Cancel / OK buttons.
 mouse.move 380 80 "aux"
 mouse.click true
 scheduler.run 5000000
@@ -24,27 +38,17 @@ scheduler.run 25000000
 
 screen.match confirm.png
 
-# Click "OK" (button center ~(337, 185)) — confirms and dismisses the
-# dialog, transitioning to the install-progress screen.  The cursor is
-# hidden by the dialog, but the click still hit-tests against MTemp
-# (which --aux keeps pinned at our target), so the click lands on OK.
+# Click "OK" (button center ~(337, 185)) — confirms and dismisses the dialog.
+# The cursor is hidden by the dialog, but the click still hit-tests against
+# MTemp (which --aux keeps pinned at our target), so the click lands on OK.
 mouse.move 337 185 "aux"
 mouse.click true
 scheduler.run 1000000
 mouse.click false
-scheduler.run 2000000
+scheduler.run 3000000
 
-# At this point the confirm dialog has been dismissed.  The install
-# progress screen briefly flashes "Determining which files will be
-# needed..." and then transitions to a gray screen with a wait cursor
-# while the installer scans the CD.  We capture the brief gray-screen
-# state right after dismissal — confirm dialog is gone and the
-# installer hasn't yet drawn the progress UI.
+# The confirm dialog has been dismissed; the installer shows a gray screen
+# with a wait cursor while it begins scanning the CD.
 screen.match dialog-dismissed.png
-
-scheduler.run 750000000
-
-# This is an UNWANTED match -> match does NOT equal success
-screen.match error.png
 
 quit
