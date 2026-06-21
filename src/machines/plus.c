@@ -547,6 +547,7 @@ const hw_profile_t machine_plus = {
     .freq = 7833600,
     .mmu_present = false,
     .fpu_present = false,
+    .mmu_kind = MMU_NONE,
 
     // 24-bit address space
     .address_bits = 24,

@@ -9,11 +9,20 @@ export type DriveActivity = 'idle' | 'read' | 'write';
 
 export type SchedulerMode = 'strict' | 'live' | 'fast';
 
+// Typed MMU kind, sourced from `machine.profile(id).capabilities.mmu.kind`
+// (no longer guessed from the model's display name). The debug panels gate
+// their PMMU register views on this so the Lisa's segment MMU never shows
+// the wrong (68030) panels.
+export type MmuKind = 'none' | '68030_pmmu' | 'lisa_segment';
+
 interface MachineState {
   status: MachineStatus;
   model: string | null;
   ram: string | null;
+  // True iff the active machine has a 68030 PMMU (i.e. the panels that show
+  // TC/CRP/SRP/TT0/TT1/MMUSR are meaningful). Derived from mmuKind.
   mmuEnabled: boolean;
+  mmuKind: MmuKind;
   screen: { width: number; height: number };
   driveActivity: { hd: DriveActivity; fd: DriveActivity; cd: DriveActivity };
   scheduler: SchedulerMode;
@@ -25,6 +34,7 @@ export const machine: MachineState = $state({
   model: null,
   ram: null,
   mmuEnabled: false,
+  mmuKind: 'none',
   screen: { width: 512, height: 342 },
   driveActivity: { hd: 'idle', fd: 'idle', cd: 'idle' },
   scheduler: 'live',

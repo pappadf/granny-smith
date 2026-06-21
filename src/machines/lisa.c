@@ -981,6 +981,7 @@ const hw_profile_t machine_lisa = {
     .freq = 5093750,
     .mmu_present = false, // custom segment MMU, not a Motorola PMMU
     .fpu_present = false,
+    .mmu_kind = MMU_LISA_SEGMENT,
 
     .address_bits = 24,
     .ram_default = 0x100000, // 1 MB
@@ -1028,6 +1029,7 @@ const hw_profile_t machine_macxl = {
     .freq = 5093750,
     .mmu_present = false,
     .fpu_present = false,
+    .mmu_kind = MMU_LISA_SEGMENT,
 
     .address_bits = 24,
     .ram_default = 0x100000, // 1 MB

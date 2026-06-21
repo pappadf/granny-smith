@@ -6,6 +6,7 @@
 
 #include "machine.h"
 
+#include "cpu.h"
 #include "json_encode.h"
 #include "log.h"
 #include "nubus.h"
@@ -40,6 +41,21 @@ const char *floppy_kind_to_string(floppy_kind_t kind) {
         return "hd";
     }
     return "";
+}
+
+// Convert an mmu_kind_t to its wire string ("none" / "68030_pmmu" /
+// "lisa_segment").  This is the value the capability probe exports as
+// `mmu.kind` so the debug UI can pick the right register views.
+const char *mmu_kind_to_string(mmu_kind_t kind) {
+    switch (kind) {
+    case MMU_NONE:
+        return "none";
+    case MMU_68030_PMMU:
+        return "68030_pmmu";
+    case MMU_LISA_SEGMENT:
+        return "lisa_segment";
+    }
+    return "none";
 }
 
 // Validate that a profile has every declarative field populated.  Profiles
@@ -154,6 +170,129 @@ static value_t attr_machine_created(struct object *self, const member_t *m) {
     (void)m;
     config_t *cfg = global_emulator;
     return val_bool(cfg && cfg->machine != NULL);
+}
+
+// Emit the `capabilities` object into the open profile map.  Every field is
+// DERIVED from the hardware facts + mmu_kind so it can never drift from
+// behaviour (proposal §4.4): the frontend probes this instead of guessing
+// from the model's display name.
+static void encode_capabilities(json_builder_t *b, const hw_profile_t *p) {
+    json_key(b, "capabilities");
+    json_open_obj(b);
+
+    json_key(b, "cpu");
+    json_open_obj(b);
+    json_key(b, "model");
+    json_int(b, (int64_t)p->cpu_model); // 68000 / 68030
+    json_key(b, "address_bits");
+    json_int(b, (int64_t)p->address_bits);
+    json_key(b, "fpu");
+    json_bool(b, cpu_has_fpu(p->cpu_model));
+    json_close_obj(b);
+
+    json_key(b, "mmu");
+    json_open_obj(b);
+    // Typed, not a bool: the debug panels must tell a 68030 PMMU (show
+    // TC/CRP/SRP/TT0/TT1/MMUSR) from the Lisa segment MMU (don't) from none.
+    json_key(b, "present");
+    json_bool(b, p->mmu_kind != MMU_NONE);
+    json_key(b, "kind");
+    json_str(b, mmu_kind_to_string(p->mmu_kind));
+    json_close_obj(b);
+
+    // NOTE: video configurability is the video_slots block, NOT "nubus
+    // exists" — the two are deliberately not conflated.
+    json_key(b, "nubus");
+    json_bool(b, p->nubus_slots != NULL);
+
+    json_close_obj(b);
+}
+
+// Emit one video card object (id, display_name, requires_vrom, monitors)
+// into an open array.  requires_vrom is read straight off the card kind —
+// the property the dialog drives its VROM row from (proposal §4.4).
+static void encode_video_card(json_builder_t *b, const char *card_id) {
+    const nubus_card_kind_t *kind = card_id ? nubus_card_find(card_id) : NULL;
+    json_open_obj(b);
+    json_key(b, "id");
+    json_str(b, card_id ? card_id : "");
+    json_key(b, "display_name");
+    json_str(b, (kind && kind->display_name) ? kind->display_name : (card_id ? card_id : ""));
+    json_key(b, "requires_vrom");
+    json_bool(b, kind ? kind->requires_vrom : false);
+    json_key(b, "monitors");
+    json_open_arr(b);
+    if (kind && kind->monitors) {
+        for (const nubus_monitor_t *mon = kind->monitors; mon->id; mon++) {
+            json_open_obj(b);
+            json_key(b, "id");
+            json_str(b, mon->id);
+            json_key(b, "name");
+            json_str(b, mon->name ? mon->name : mon->id);
+            json_key(b, "width");
+            json_int(b, (int64_t)mon->width);
+            json_key(b, "height");
+            json_int(b, (int64_t)mon->height);
+            json_key(b, "depths");
+            json_open_arr(b);
+            if (mon->depths) {
+                for (const int *d = mon->depths; *d; d++)
+                    json_int(b, (int64_t)*d);
+            }
+            json_close_arr(b);
+            json_close_obj(b);
+        }
+    }
+    json_close_arr(b); // monitors
+    json_close_obj(b); // card
+}
+
+// Emit the `video_slots` block: the real shape the user navigates — slot →
+// card → monitor/depth.  VROM-required-ness is per *card* (the SE/30-vs-IIci
+// asymmetry), so the dialog shows the VROM row iff the selected card needs
+// one.  Replaces the flat `video_modes` array once the frontend consumes it
+// (kept additively alongside for now — proposal §6 phase 1).
+static void encode_video_slots(json_builder_t *b, const hw_profile_t *p) {
+    json_key(b, "video_slots");
+    json_open_arr(b);
+    if (!p->nubus_slots) {
+        json_close_arr(b);
+        return;
+    }
+    for (const struct nubus_slot_decl *s = p->nubus_slots; s->slot; s++) {
+        // Only slots that can carry a video card appear here.
+        if (s->kind != NUBUS_SLOT_BUILTIN && s->kind != NUBUS_SLOT_VIDEO)
+            continue;
+        const char *default_card = (s->kind == NUBUS_SLOT_BUILTIN) ? s->builtin_card_id : s->default_card;
+
+        json_open_obj(b);
+        json_key(b, "slot");
+        if (s->kind == NUBUS_SLOT_BUILTIN) {
+            json_str(b, "builtin");
+        } else {
+            char slot_buf[8];
+            snprintf(slot_buf, sizeof slot_buf, "%X", s->slot); // "9".."E"
+            json_str(b, slot_buf);
+        }
+        json_key(b, "fixed");
+        json_bool(b, s->kind == NUBUS_SLOT_BUILTIN);
+        json_key(b, "default_card");
+        json_str(b, default_card ? default_card : "");
+
+        json_key(b, "cards");
+        json_open_arr(b);
+        if (s->kind == NUBUS_SLOT_BUILTIN) {
+            encode_video_card(b, s->builtin_card_id);
+        } else if (s->available_cards) {
+            for (const char *const *c = s->available_cards; *c; c++)
+                encode_video_card(b, *c);
+        } else if (default_card) {
+            encode_video_card(b, default_card);
+        }
+        json_close_arr(b);
+        json_close_obj(b);
+    }
+    json_close_arr(b);
 }
 
 // Build the JSON-encoded profile map for a registered hw_profile_t.
@@ -300,6 +439,12 @@ static value_t encode_profile(const hw_profile_t *p) {
         }
         json_str(b, first_id ? first_id : "");
     }
+
+    // Derived capability probe + per-card video-slot shape (proposal §4.4).
+    // Added additively alongside the legacy needs_vrom / video_modes fields,
+    // which the frontend is switched off in phase 1 and which phase 6 deletes.
+    encode_capabilities(b, p);
+    encode_video_slots(b, p);
 
     json_close_obj(b);
     return json_finish(b);

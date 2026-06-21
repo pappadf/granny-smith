@@ -1106,6 +1106,7 @@ const hw_profile_t machine_se30 = {
     .freq = 15667200,
     .mmu_present = true,
     .fpu_present = true, // 68882 FPU standard on SE/30
+    .mmu_kind = MMU_68030_PMMU,
 
     // 32-bit address space
     .address_bits = 32,

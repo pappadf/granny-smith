@@ -1,15 +1,32 @@
 import { describe, it, expect } from 'vitest';
-import { modelHasMmu, shortModel, DEFAULT_CONFIG } from '@/lib/machine';
+import { readFileSync, readdirSync, statSync } from 'node:fs';
+import { join } from 'node:path';
+import { shortModel, DEFAULT_CONFIG } from '@/lib/machine';
 
-describe('modelHasMmu', () => {
-  it.each([
-    ['Macintosh SE/30', true],
-    ['Macintosh IIci', true],
-    ['Macintosh IIcx', true],
-    ['Macintosh Plus', false],
-    ['Macintosh SE', false],
-  ] as const)('%s -> %s', (model, expected) => {
-    expect(modelHasMmu(model)).toBe(expected);
+// MMU presence (and every other per-model decision) must come from the C
+// capability probe — `machine.profile(id).capabilities` — never from a
+// regex on the model's display name. This lint guards against the old
+// `/SE\/30|II/i` pattern (and its variants) creeping back into frontend
+// logic; see proposal §1.4 / §6.1.
+describe('no model-name regex in frontend logic', () => {
+  // vitest runs with cwd = the web2 package root.
+  const srcDir = join(process.cwd(), 'src');
+  // Matches the historical MMU-by-name regex and close variants.
+  const banned = /\/\s*SE\\?\/?30\s*\|\s*II/i;
+
+  function walk(dir: string): string[] {
+    const out: string[] = [];
+    for (const entry of readdirSync(dir)) {
+      const p = join(dir, entry);
+      if (statSync(p).isDirectory()) out.push(...walk(p));
+      else if (/\.(ts|svelte)$/.test(entry)) out.push(p);
+    }
+    return out;
+  }
+
+  it('contains no /SE\\/30|II/ style model-name matching', () => {
+    const offenders = walk(srcDir).filter((f) => banned.test(readFileSync(f, 'utf8')));
+    expect(offenders).toEqual([]);
   });
 });
 

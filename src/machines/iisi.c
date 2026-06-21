@@ -759,6 +759,7 @@ const hw_profile_t machine_iisi = {
     .freq = 20000000, // 20 MHz
     .mmu_present = true,
     .fpu_present = true, // FPU adapter present by default
+    .mmu_kind = MMU_68030_PMMU,
 
     .address_bits = 32,
     .ram_default = 0x1100000, // 17 MB (1 MB Bank A + 16 MB Bank B)

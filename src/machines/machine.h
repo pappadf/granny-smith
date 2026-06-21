@@ -32,6 +32,21 @@ typedef enum floppy_kind {
 // Convert a floppy_kind_t to its wire string ("400k" / "800k" / "hd").
 const char *floppy_kind_to_string(floppy_kind_t kind);
 
+// Kind of memory-management unit a machine carries.  Deliberately typed
+// (not a bool): the debug UI must tell a 68030 PMMU (which has TC/CRP/SRP/
+// TT0/TT1/MMUSR register views) apart from the Lisa's segment MMU (which
+// does not) and from a machine with no MMU at all.  This is the single
+// source of truth the capability probe exports as `mmu.kind`; it migrates
+// onto the machine_substrate vtable when that lands (proposal §4.4).
+typedef enum mmu_kind {
+    MMU_NONE = 0, // no MMU (compact 68000 Macs)
+    MMU_68030_PMMU, // Motorola 68030 integrated PMMU
+    MMU_LISA_SEGMENT, // Apple Lisa custom segment MMU
+} mmu_kind_t;
+
+// Wire string for an mmu_kind_t ("none" / "68030_pmmu" / "lisa_segment").
+const char *mmu_kind_to_string(mmu_kind_t kind);
+
 // One floppy drive slot on a machine.  Sentinel-terminated arrays end at
 // the first entry whose `label` is NULL.
 struct floppy_slot {
@@ -56,6 +71,10 @@ typedef struct hw_profile {
     uint32_t freq; // CPU clock in Hz
     bool mmu_present;
     bool fpu_present;
+    // Typed MMU kind — the single source of truth behind the exported
+    // `mmu.kind` capability (proposal §4.4).  `mmu_present` is the legacy
+    // bool kept until phase 6 deletes it; new code reads mmu_kind.
+    mmu_kind_t mmu_kind;
 
     // Address space
     int address_bits; // 24 or 32

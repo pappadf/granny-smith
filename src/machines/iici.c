@@ -738,6 +738,7 @@ const hw_profile_t machine_iici = {
     .freq = 25000000, // 25 MHz
     .mmu_present = true,
     .fpu_present = true,
+    .mmu_kind = MMU_68030_PMMU,
 
     .address_bits = 32,
     .ram_default = 0x800000, // 8 MB

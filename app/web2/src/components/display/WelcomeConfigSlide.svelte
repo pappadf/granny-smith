@@ -31,14 +31,24 @@
   // rows to render (with what label).
   interface MachineProfile {
     name?: string;
-    needs_vrom?: boolean;
+    needs_vrom?: boolean; // legacy machine-level flag (fallback; see needsVrom)
     ram_options?: number[]; // KB
     ram_default?: number; // KB
     floppy_slots?: Array<{ label?: string; kind?: string }>;
+    scsi_slots?: Array<{ label?: string; id?: number }>;
     // JMFB video modes the model exposes; seeded via `nubus.video_mode` at
     // boot (see initEmulator).  Empty on models with no configurable video.
     video_modes?: Array<{ id: string; label?: string }>;
     video_mode_default?: string;
+    // Per-card video slot shape (proposal §4.4).  VROM-required-ness is a
+    // property of the *card*, so the VROM row is driven off the selected
+    // card's requires_vrom — see needsVrom.
+    video_slots?: Array<{
+      slot: string;
+      fixed: boolean;
+      default_card: string;
+      cards: Array<{ id: string; requires_vrom: boolean }>;
+    }>;
   }
 
   // Local form state.
@@ -73,7 +83,24 @@
   let needsRomPicker = $derived(romsForCurrentModel.length > 1);
   let currentProfile = $derived(modelId ? profiles[modelId] : undefined);
   let modelName = $derived(currentProfile?.name ?? modelId);
-  let needsVrom = $derived(currentProfile?.needs_vrom === true);
+  // VROM row visibility is driven by the *selected card* (the SE/30-vs-IIci
+  // asymmetry): a card declares requires_vrom, not the machine. When the
+  // profile exposes video_slots we ask the slot's default card; otherwise we
+  // fall back to the legacy machine-level needs_vrom flag (e.g. the SE/30,
+  // whose built-in video is not exposed as a profile slot).
+  let needsVrom = $derived.by(() => {
+    const slots = currentProfile?.video_slots ?? [];
+    if (slots.length) {
+      return slots.some((s) => {
+        const card = s.cards?.find((c) => c.id === s.default_card) ?? s.cards?.[0];
+        return card?.requires_vrom === true;
+      });
+    }
+    return currentProfile?.needs_vrom === true;
+  });
+  // SCSI HD row label comes from the profile's first SCSI slot, not a
+  // hardcoded string.
+  let hdSlotLabel = $derived(currentProfile?.scsi_slots?.[0]?.label ?? 'SCSI HD 0');
   let ramOptions = $derived.by(() => {
     const opts = currentProfile?.ram_options ?? [];
     if (opts.length) return opts.map(formatRamKb);
@@ -397,7 +424,7 @@
         </div>
       {/each}
       <div class="form-row">
-        <label for="cfg-hd">SCSI HD 0</label>
+        <label for="cfg-hd">{hdSlotLabel}</label>
         <select id="cfg-hd" value={hd} onchange={onHdChange}>
           {#each hdOptions as opt (opt)}
             <option>{opt}</option>

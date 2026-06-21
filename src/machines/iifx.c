@@ -1716,6 +1716,7 @@ const hw_profile_t machine_iifx = {
     .freq = 40000000,
     .mmu_present = true,
     .fpu_present = true,
+    .mmu_kind = MMU_68030_PMMU,
 
     .address_bits = 32,
     .ram_default = 0x800000,
