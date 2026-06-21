@@ -692,12 +692,6 @@ static void lisa_init(config_t *cfg, checkpoint_t *checkpoint) {
     ls->mmu =
         lisa_mmu_init(ram_native_pointer(cfg->mem_map, 0), cfg->ram_size, (uint8_t *)memory_rom_bytes(cfg->mem_map),
                       memory_rom_size(cfg->mem_map), ram_high, checkpoint);
-    // Real Lisa DRAM powers up in an indeterminate state (commonly all-$FF).  Our
-    // memory map zeroes RAM, which can leave OS-read uninitialised pointers reading
-    // $0 instead of $FF.  GSRAMFF forces the $FF power-up fill to test whether the
-    // OS relies on the power-up pattern.
-    if (getenv("GSRAMFF"))
-        memset(ram_native_pointer(cfg->mem_map, 0), 0xFF, cfg->ram_size);
     lisa_mmu_set_nmi(ls->mmu, lisa_parity_nmi, cfg); // level-7 parity NMI (PARTST)
     lisa_mmu_set_clock(ls->mmu, cfg->scheduler); // cycle source for the retrace status bit
     lisa_mmu_set_vbl_ack(ls->mmu, lisa_vbl_ack, cfg); // Status-Register read acks the latched VBL

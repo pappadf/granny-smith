@@ -145,16 +145,6 @@ static void fdc_complete(void *source, uint64_t data) {
         ist = DRVSTAT_COMPLETE1 | DRVSTAT_OR1; // drive 0: fall back to legacy bits 2/3
     fdc->ram[FDC_DRVSTAT] |= ist; // RWTS complete (drive-encoded interrupt source)
     fdc_set_fdir(fdc, true); // raise FDIR / IPL1 now that the driver has blocked
-    if (getenv("GSTRACE")) {
-        extern uint64_t cpu_instr_count(void);
-        extern int g_lisa_trace;
-        uint64_t ic = cpu_instr_count();
-        fprintf(stderr, "GSCOMPLETE i=%llu\n", (unsigned long long)ic);
-        if (getenv("GSTRACE_AT") == 0 && ic > 19886100 && !g_lisa_trace) {
-            g_lisa_trace = 1;
-            fprintf(stderr, "GSTRACE ON i=%llu\n", (unsigned long long)ic);
-        }
-    }
 }
 
 // Report the Sony disk geometry the boot loader's block->(track,sector)
@@ -198,11 +188,6 @@ static void fdc_execute_rwts(lisa_fdc_t *fdc) {
         fdc->ram[FDC_STATUS] = (got == 512) ? 0x00 : 0x17;
         LOG(2, "fdc read trk=%d side=%d sec=%d off=%zu -> status=%02x", track, side, sector, offset,
             fdc->ram[FDC_STATUS]);
-        if (getenv("GSTRACE")) {
-            extern uint64_t cpu_instr_count(void);
-            fprintf(stderr, "GSRWTS read lba=%zu trk=%d sec=%d drive=%02x i=%llu\n", (size_t)offset / 512, track,
-                    sector, fdc->ram[FDC_DRIVE], (unsigned long long)cpu_instr_count());
-        }
     } else if (rwts == RWTS_WRITE) {
         size_t put = disk_write_data(fdc->image, offset, &fdc->ram[FDC_DATA], 512);
         // The Sony controller writes the data sector AND its tag (pagelabel)
@@ -210,11 +195,6 @@ static void fdc_execute_rwts(lisa_fdc_t *fdc) {
         // reads see the FS's updated pagelabels.
         disk_write_tag(fdc->image, (size_t)offset / 512, &fdc->ram[FDC_HDR], 12);
         fdc->ram[FDC_STATUS] = (put == 512) ? 0x00 : 0x18; // unwritable on short write
-        if (getenv("GSTRACE")) {
-            extern uint64_t cpu_instr_count(void);
-            fprintf(stderr, "GSRWTS WRITE lba=%zu trk=%d sec=%d drive=%02x i=%llu\n", (size_t)offset / 512, track,
-                    sector, fdc->ram[FDC_DRIVE], (unsigned long long)cpu_instr_count());
-        }
     } else if (rwts == RWTS_UNCLAMP) {
         // Unclamp releases/ejects the disk (the Lisa drive is software-eject).
         // The drive goes empty until the host inserts new media; that is how the
@@ -454,11 +434,15 @@ lisa_fdc_t *lisa_fdc_init(struct scheduler *scheduler, lisa_fdc_fdir_fn fdir_cb,
     fdc->fdir_cb = fdir_cb;
     fdc->fdir_ctx = fdir_ctx;
     fdc->num_sides = 1;
-    {
-        fdc->ram[196] = 0x10;
-        fdc->ram[254] = 0xFE;
-        fdc->ram[255] = 0x00;
-    } // GSDIAG auto-boot
+    // Power-up parameter-memory default.  The COPS clock/PM region is battery-backed
+    // on real hardware; with no persisted PRAM the boot ROM still needs a boot-device
+    // selection.  Seed BootVol=1 (PM byte 4 high nibble = built-in Sony floppy;
+    // docs/lisa_pram_format.md §4) plus the checksum word so the ROM auto-boots the
+    // built-in floppy.  ProFile-boot tests override this with a full PRAM image
+    // (profile.pram_load); see lisa-profile-boot.
+    fdc->ram[196] = 0x10; // PM byte 4: BootVol=1 (built-in Sony), NormCont=0
+    fdc->ram[254] = 0xFE; // PM bytes 62-63: PRAM validity checksum word
+    fdc->ram[255] = 0x00;
     if (cp)
         lisa_fdc_checkpoint(fdc, cp);
     return fdc;
