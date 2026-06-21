@@ -21,6 +21,7 @@
 // Everything else (MDU I/O map, RBV interrupt → IPL 2, soft power-off, SCSI via
 // RBV, Mode-24 framebuffer aliasing) matches the IIci.
 
+#include "mac030_glue.h"
 #include "machine.h"
 #include "mmu_checkpoint.h"
 #include "system_config.h"
@@ -502,11 +503,8 @@ static void iisi_init(config_t *cfg, checkpoint_t *checkpoint) {
     assert(st != NULL);
     cfg->machine_context = st;
 
-    cfg->mem_map = memory_map_init(cfg->machine->address_bits, cfg->ram_size, cfg->machine->rom_size, checkpoint);
-    cfg->cpu = cpu_init(CPU_MODEL_68030, checkpoint);
-    cfg->scheduler = scheduler_init(cfg->cpu, checkpoint);
-    scheduler_set_frequency(cfg->scheduler, cfg->machine->freq);
-    scheduler_set_cpi(cfg->scheduler, 4, 4);
+    // Build the shared II-family core (mem_map, cpu-from-profile, scheduler).
+    mac030_build_core(cfg, checkpoint);
     if (checkpoint)
         system_read_checkpoint_data(checkpoint, &cfg->irq, sizeof(cfg->irq));
 
