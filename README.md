@@ -3,7 +3,7 @@
 [![CI](https://github.com/pappadf/granny-smith/actions/workflows/tests.yml/badge.svg)](https://github.com/pappadf/granny-smith/actions/workflows/tests.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-**Granny Smith** is a browser-first Macintosh emulator running Mac OS (System 2 through System 7) and A/UX.
+**Granny Smith** is a browser-first Macintosh and Apple Lisa emulator, running Mac OS (System 2 through System 7) and A/UX on the Macintosh, and the Lisa Office System, MacWorks XL, and Xenix on the Lisa 2 / Macintosh XL.
 
 > **See it:** [Screenshot gallery of A/UX, MacTest, and more](GALLERY.md) from the test system
 
@@ -16,19 +16,24 @@
 
 ✅ is tested on every CI run. Some other combinations may also work - they just aren't continuously verified.
 
-| Software       |  Plus  | SE/30  |  IIcx  |  IIx   |  IIci  |  IIsi  |  IIfx  |
-| -------------- | :----: | :----: | :----: | :----: | :----: | :----: | :----: |
-| System 2.0     |   ✅   |    -   |    -   |    -   |    -   |    -   |    -   |
-| System 3.2     |   ✅   |    -   |    -   |    -   |    -   |    -   |    -   |
-| System 4.2     |   ✅   |    -   |    -   |    -   |    -   |    -   |    -   |
-| System 6.0.8   |   ✅   |   ✅   |    -   |    -   |    -   |    -   |    -   |
-| System 7.0.1 ‡ |    -   |   ✅   |   ✅   |   ✅   |   ✅   |   ✅   |   ✅   |
-| System 7.1     |   ✅   |   ✅   |    -   |    -   |    -   |    -   |    -   |
-| A/UX 3.0.1 †   |    -   |   ✅   |    -   |    -   |    -   |    -   |   ✅   |
-| MacTest        |   ✅   |   ✅   |   ✅   |    -   |    -   |    -   |    -   |
+| Software           | Lisa 2 |   XL   |  Plus  | SE/30  |  IIcx  |  IIx   |  IIci  |  IIsi  |  IIfx  |
+| ------------------ | :----: | :----: | :----: | :----: | :----: | :----: | :----: | :----: | :----: |
+| System 2.0         |    -   |    -   |   ✅   |    -   |    -   |    -   |    -   |    -   |    -   |
+| System 3.2         |    -   |    -   |   ✅   |    -   |    -   |    -   |    -   |    -   |    -   |
+| System 4.2         |    -   |    -   |   ✅   |    -   |    -   |    -   |    -   |    -   |    -   |
+| System 6.0.8       |    -   |    -   |   ✅   |   ✅   |    -   |    -   |    -   |    -   |    -   |
+| System 7.0.1 ‡     |    -   |    -   |    -   |   ✅   |   ✅   |   ✅   |   ✅   |   ✅   |   ✅   |
+| System 7.1         |    -   |    -   |   ✅   |   ✅   |    -   |    -   |    -   |    -   |    -   |
+| A/UX 3.0.1 †       |    -   |    -   |    -   |   ✅   |    -   |    -   |    -   |    -   |   ✅   |
+| MacTest            |    -   |    -   |   ✅   |   ✅   |   ✅   |    -   |    -   |    -   |    -   |
+| MacWorks XL        |    -   |   ✅   |    -   |    -   |    -   |    -   |    -   |    -   |    -   |
+| Lisa Office System |   ✅   |    -   |    -   |    -   |    -   |    -   |    -   |    -   |    -   |
+| Xenix 3.0          |   ✅   |    -   |    -   |    -   |    -   |    -   |    -   |    -   |    -   |
 
 † On SE/30, boots from a pre-installed HD image to a shell *and* the full retail Installer flow runs from floppy + CD.
 ‡ On IIx, only a no-crash boot smoke test - JMFB colour modes on the IIx profile are still minimum-viable.
+
+The Lisa 2 / Macintosh XL software is exercised end-to-end: MacWorks XL boots to the Mac Finder, while the Lisa Office System (LOS 3.1) and SCO Xenix 3.0 each run their full multi-floppy install onto the ProFile hard disk and then boot from it.
 
 ## Design Principles
 
