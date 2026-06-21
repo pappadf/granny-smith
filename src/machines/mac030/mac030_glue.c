@@ -22,6 +22,27 @@
 
 LOG_USE_CATEGORY_NAME("setup");
 
+// Build the shared II-family construction prefix.  Reads the CPU model from
+// the profile (single source of truth — §1.3), not a hardcoded constant.
+void mac030_build_core(config_t *cfg, checkpoint_t *cp) {
+    cfg->mem_map = memory_map_init(cfg->machine->address_bits, cfg->ram_size, cfg->machine->rom_size, cp);
+    cfg->cpu = cpu_init(cfg->machine->cpu_model, cp);
+    cfg->scheduler = scheduler_init(cfg->cpu, cp);
+    scheduler_set_frequency(cfg->scheduler, cfg->machine->freq);
+    scheduler_set_cpi(cfg->scheduler, 4, 4);
+}
+
+// Shared IRQ callbacks — route a device's interrupt line to the CPU IPL.
+void mac030_glue_scc_irq(void *context, bool active) {
+    mac030_glue_update_ipl((config_t *)context, MAC030_GLUE_IRQ_SCC, active);
+}
+void mac030_glue_via1_irq(void *context, bool active) {
+    mac030_glue_update_ipl((config_t *)context, MAC030_GLUE_IRQ_VIA1, active);
+}
+void mac030_glue_via2_irq(void *context, bool active) {
+    mac030_glue_update_ipl((config_t *)context, MAC030_GLUE_IRQ_VIA2, active);
+}
+
 // Set/clear an IRQ source bit and re-derive the CPU IPL.  Verbatim from the
 // (identical) se30_update_ipl / iicx_update_ipl.
 void mac030_glue_update_ipl(config_t *cfg, int source, bool active) {

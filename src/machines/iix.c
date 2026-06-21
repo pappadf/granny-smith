@@ -58,7 +58,6 @@ LOG_USE_CATEGORY_NAME("iix");
 
 static void iix_via2_output(void *context, uint8_t port, uint8_t output);
 static void iix_via2_shift_out(void *context, uint8_t byte);
-static void iix_via2_irq(void *context, bool active);
 static void iix_init(config_t *cfg, checkpoint_t *checkpoint);
 static void iix_teardown(config_t *cfg);
 static void iix_reset(config_t *cfg);
@@ -97,10 +96,6 @@ static void iix_via2_output(void *context, uint8_t port, uint8_t output) {
 static void iix_via2_shift_out(void *context, uint8_t byte) {
     (void)context;
     (void)byte;
-}
-
-static void iix_via2_irq(void *context, bool active) {
-    mac030_glue_update_ipl((config_t *)context, IICX_IRQ_VIA2, active);
 }
 
 // ============================================================
@@ -143,22 +138,19 @@ static void iix_init(config_t *cfg, checkpoint_t *checkpoint) {
     st->last_port_b = 0x30;
     st->last_via2_port_b = 0xFF;
 
-    cfg->mem_map = memory_map_init(cfg->machine->address_bits, cfg->ram_size, cfg->machine->rom_size, checkpoint);
-    cfg->cpu = cpu_init(CPU_MODEL_68030, checkpoint);
-    cfg->scheduler = scheduler_init(cfg->cpu, checkpoint);
-    scheduler_set_frequency(cfg->scheduler, cfg->machine->freq);
-    scheduler_set_cpi(cfg->scheduler, 4, 4);
+    // Build the shared II-family core (mem_map, cpu-from-profile, scheduler).
+    mac030_build_core(cfg, checkpoint);
     if (checkpoint)
         system_read_checkpoint_data(checkpoint, &cfg->irq, sizeof(cfg->irq));
 
     cfg->rtc = rtc_init(cfg->scheduler, checkpoint, true);
-    cfg->scc = scc_init(NULL, cfg->scheduler, iicx_scc_irq, cfg, checkpoint);
+    cfg->scc = scc_init(NULL, cfg->scheduler, mac030_glue_scc_irq, cfg, checkpoint);
     scc_set_clocks(cfg->scc, 7833600, 3686400);
 
-    cfg->via1 = via_init(NULL, cfg->scheduler, 20, "via1", iicx_via1_output, iicx_via1_shift_out, iicx_via1_irq, cfg,
-                         checkpoint);
-    cfg->via2 =
-        via_init(NULL, cfg->scheduler, 20, "via2", iix_via2_output, iix_via2_shift_out, iix_via2_irq, cfg, checkpoint);
+    cfg->via1 = via_init(NULL, cfg->scheduler, 20, "via1", iicx_via1_output, iicx_via1_shift_out, mac030_glue_via1_irq,
+                         cfg, checkpoint);
+    cfg->via2 = via_init(NULL, cfg->scheduler, 20, "via2", iix_via2_output, iix_via2_shift_out, mac030_glue_via2_irq,
+                         cfg, checkpoint);
     rtc_set_via(cfg->rtc, cfg->via1);
 
     // Machine ID: PA6 = 0, PB3 = 0 (IIx).  Default port-A input is

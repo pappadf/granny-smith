@@ -139,11 +139,8 @@ static inline se30_state_t *se30_state(config_t *cfg) {
 
 static void se30_via1_output(void *context, uint8_t port, uint8_t output);
 static void se30_via1_shift_out(void *context, uint8_t byte);
-static void se30_via1_irq(void *context, bool active);
 static void se30_via2_output(void *context, uint8_t port, uint8_t output);
 static void se30_via2_shift_out(void *context, uint8_t byte);
-static void se30_via2_irq(void *context, bool active);
-static void se30_scc_irq(void *context, bool active);
 
 // ============================================================
 // SoA page helper
@@ -400,9 +397,6 @@ static void se30_via1_shift_out(void *context, uint8_t byte) {
 }
 
 // VIA1 IRQ callback: VIA1 drives IPL level 1
-static void se30_via1_irq(void *context, bool active) {
-    mac030_glue_update_ipl((config_t *)context, SE30_IRQ_VIA1, active);
-}
 
 // VIA2 output callback: no SE/30 port-B output is observed here today
 // (sound-enable bit 7, VSync-IRQ-enable bit 6, ID bit 3 — none gated).
@@ -420,15 +414,8 @@ static void se30_via2_shift_out(void *context, uint8_t byte) {
 }
 
 // VIA2 IRQ callback: VIA2 drives IPL level 2
-static void se30_via2_irq(void *context, bool active) {
-    config_t *cfg = (config_t *)context;
-    mac030_glue_update_ipl(cfg, SE30_IRQ_VIA2, active);
-}
 
 // SCC IRQ callback: SCC drives IPL level 4
-static void se30_scc_irq(void *context, bool active) {
-    mac030_glue_update_ipl((config_t *)context, SE30_IRQ_SCC, active);
-}
 
 // ============================================================
 // VBL trigger
@@ -488,18 +475,8 @@ static void se30_init(config_t *cfg, checkpoint_t *checkpoint) {
     se30->last_port_b = 0x30;
 
     // Initialise parameterised memory: 32-bit address space, configured RAM, 256 KB ROM
-    cfg->mem_map = memory_map_init(cfg->machine->address_bits, cfg->ram_size, cfg->machine->rom_size, checkpoint);
-
-    // Initialise CPU (68030)
-    cfg->cpu = cpu_init(CPU_MODEL_68030, checkpoint);
-
-    cfg->scheduler = scheduler_init(cfg->cpu, checkpoint);
-
-    // Set SE/30 CPU clock frequency (15.6672 MHz = 2x Plus clock)
-    scheduler_set_frequency(cfg->scheduler, cfg->machine->freq);
-
-    // SE/30 68030: 4 cycles/instr (hw accuracy), 4 cycle/instr (fast)
-    scheduler_set_cpi(cfg->scheduler, 4, 4);
+    // Build the shared II-family core (mem_map, cpu-from-profile, scheduler).
+    mac030_build_core(cfg, checkpoint);
 
     // Register VBL slot deassert event type for checkpoint save/restore
     scheduler_new_event_type(cfg->scheduler, "se30", cfg, "vbl_slot_deassert", &se30_vbl_slot_deassert);
@@ -512,7 +489,7 @@ static void se30_init(config_t *cfg, checkpoint_t *checkpoint) {
     cfg->rtc = rtc_init(cfg->scheduler, checkpoint, true);
 
     // Initialise SCC (NULL map: SE/30 I/O dispatcher handles addressing)
-    cfg->scc = scc_init(NULL, cfg->scheduler, se30_scc_irq, cfg, checkpoint);
+    cfg->scc = scc_init(NULL, cfg->scheduler, mac030_glue_scc_irq, cfg, checkpoint);
 
     // SCC PCLK = C8M (7.8336 MHz), RTxC = 3.6864 MHz baud-rate crystal
     scc_set_clocks(cfg->scc, 7833600, 3686400);
@@ -520,13 +497,13 @@ static void se30_init(config_t *cfg, checkpoint_t *checkpoint) {
     // Initialise VIA1 (NULL map: I/O dispatcher handles addressing)
     // VIA1: system events — VBL, ADB data (shift register), timers
     // freq_factor=20: SE/30 CPU runs at 15.6672 MHz, VIA φ2 clock is ~783 kHz (CPU/20)
-    cfg->via1 = via_init(NULL, cfg->scheduler, 20, "via1", se30_via1_output, se30_via1_shift_out, se30_via1_irq, cfg,
-                         checkpoint);
+    cfg->via1 = via_init(NULL, cfg->scheduler, 20, "via1", se30_via1_output, se30_via1_shift_out, mac030_glue_via1_irq,
+                         cfg, checkpoint);
 
     // Initialise VIA2 (NULL map: I/O dispatcher handles addressing)
     // VIA2: expansion — NuBus/PDS slots, SCSI, ASC interrupts, ADB control, RTC
-    cfg->via2 = via_init(NULL, cfg->scheduler, 20, "via2", se30_via2_output, se30_via2_shift_out, se30_via2_irq, cfg,
-                         checkpoint);
+    cfg->via2 = via_init(NULL, cfg->scheduler, 20, "via2", se30_via2_output, se30_via2_shift_out, mac030_glue_via2_irq,
+                         cfg, checkpoint);
 
     // Wire RTC 1-second tick to VIA1 CA2
     rtc_set_via(cfg->rtc, cfg->via1);

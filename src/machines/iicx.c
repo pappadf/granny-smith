@@ -74,7 +74,6 @@ LOG_USE_CATEGORY_NAME("iicx");
 
 static void iicx_via2_output(void *context, uint8_t port, uint8_t output);
 static void iicx_via2_shift_out(void *context, uint8_t byte);
-static void iicx_via2_irq(void *context, bool active);
 
 // ============================================================
 // SoA page helper (mirrors the SE/30 helper — same logic)
@@ -265,10 +264,6 @@ void iicx_via1_shift_out(void *context, uint8_t byte) {
         adb_shift_byte(st->adb, byte);
 }
 
-void iicx_via1_irq(void *context, bool active) {
-    mac030_glue_update_ipl((config_t *)context, IICX_IRQ_VIA1, active);
-}
-
 // VIA2 outputs.  Adds the IIcx-specific soft-power-off on PB2.  When the
 // OS pulls v2PowerOff low the PSU shuts down — v1 emulator equivalent:
 // stop the scheduler so the headless run exits cleanly.
@@ -292,14 +287,6 @@ static void iicx_via2_output(void *context, uint8_t port, uint8_t output) {
 static void iicx_via2_shift_out(void *context, uint8_t byte) {
     (void)context;
     (void)byte;
-}
-
-static void iicx_via2_irq(void *context, bool active) {
-    mac030_glue_update_ipl((config_t *)context, IICX_IRQ_VIA2, active);
-}
-
-void iicx_scc_irq(void *context, bool active) {
-    mac030_glue_update_ipl((config_t *)context, IICX_IRQ_SCC, active);
 }
 
 // ============================================================
@@ -342,22 +329,19 @@ static void iicx_init(config_t *cfg, checkpoint_t *checkpoint) {
     st->last_port_b = 0x30; // ADB ST1:ST0 idle = 11
     st->last_via2_port_b = 0xFF; // PB2 starts high (no power-off)
 
-    cfg->mem_map = memory_map_init(cfg->machine->address_bits, cfg->ram_size, cfg->machine->rom_size, checkpoint);
-    cfg->cpu = cpu_init(CPU_MODEL_68030, checkpoint);
-    cfg->scheduler = scheduler_init(cfg->cpu, checkpoint);
-    scheduler_set_frequency(cfg->scheduler, cfg->machine->freq);
-    scheduler_set_cpi(cfg->scheduler, 4, 4);
+    // Build the shared II-family core (mem_map, cpu-from-profile, scheduler).
+    mac030_build_core(cfg, checkpoint);
     if (checkpoint)
         system_read_checkpoint_data(checkpoint, &cfg->irq, sizeof(cfg->irq));
 
     cfg->rtc = rtc_init(cfg->scheduler, checkpoint, true);
-    cfg->scc = scc_init(NULL, cfg->scheduler, iicx_scc_irq, cfg, checkpoint);
+    cfg->scc = scc_init(NULL, cfg->scheduler, mac030_glue_scc_irq, cfg, checkpoint);
     scc_set_clocks(cfg->scc, 7833600, 3686400);
 
-    cfg->via1 = via_init(NULL, cfg->scheduler, 20, "via1", iicx_via1_output, iicx_via1_shift_out, iicx_via1_irq, cfg,
-                         checkpoint);
-    cfg->via2 = via_init(NULL, cfg->scheduler, 20, "via2", iicx_via2_output, iicx_via2_shift_out, iicx_via2_irq, cfg,
-                         checkpoint);
+    cfg->via1 = via_init(NULL, cfg->scheduler, 20, "via1", iicx_via1_output, iicx_via1_shift_out, mac030_glue_via1_irq,
+                         cfg, checkpoint);
+    cfg->via2 = via_init(NULL, cfg->scheduler, 20, "via2", iicx_via2_output, iicx_via2_shift_out, mac030_glue_via2_irq,
+                         cfg, checkpoint);
     rtc_set_via(cfg->rtc, cfg->via1);
 
     // Machine ID: PA6 = 1 (default high), PB3 = 1 (IIcx).

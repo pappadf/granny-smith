@@ -9,6 +9,7 @@
 #ifndef GS_MACHINES_MAC030_GLUE_H
 #define GS_MACHINES_MAC030_GLUE_H
 
+#include "checkpoint.h"
 #include "system_config.h"
 
 #include <stdbool.h>
@@ -17,6 +18,19 @@ struct adb;
 struct asc;
 struct floppy;
 struct mmu_state;
+
+// The II-family construction prefix shared by every GLUE machine: build the
+// memory map, the CPU (model read FROM THE PROFILE — closing the §1.3 drift
+// where every init hardcoded CPU_MODEL_68030), the scheduler, and its
+// frequency/CPI.  The caller continues with any machine-specific scheduler
+// event types, IRQ-state restore, and device construction.
+void mac030_build_core(config_t *cfg, checkpoint_t *cp);
+
+// Shared GLUE IRQ callbacks: route the SCC / VIA1 / VIA2 interrupt line to
+// the CPU IPL via mac030_glue_update_ipl.  Identical across se30/iicx/iix.
+void mac030_glue_scc_irq(void *context, bool active);
+void mac030_glue_via1_irq(void *context, bool active);
+void mac030_glue_via2_irq(void *context, bool active);
 
 // IRQ source bits driven into cfg->irq.  GLUE routes them to fixed IPLs:
 // VIA1→1, VIA2→2, SCC→4, NMI→7.  The per-machine SE30_IRQ_* / IICX_IRQ_*
