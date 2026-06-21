@@ -4,8 +4,7 @@
 the first non-Motorola memory translator in the emulator. This document records
 the *implementation* decisions and the hardware facts verified against the
 rev-H boot ROM source; [docs/lisa.md](lisa.md) §4–7 is the hardware reference of
-record, and `local/gs-docs/proposals/proposal-machine-lisa-xl.md` §4.2 is the
-design rationale.
+record.
 
 ## Where it plugs in
 
@@ -49,8 +48,7 @@ physical page number) and 12-bit **SLR** (bits 11-8 = access/space code, bits
     it. So a wrong stack-limit sense (or an unmapped seg 101) makes every
     supervisor-mode exception-frame push fault — watch this when debugging
     post-mount faults. (The 68000 group-0 exception frame is only 14 bytes; do
-    not push the 68030 92-byte Format-$B frame on the Lisa — see
-    `local/lisa/debug/HANDOVER.md` §0★.3 fix B.)
+    not push the 68030 92-byte Format-$B frame on the Lisa.)
 - `physical_page = (SOR + page) & 0xFFF` (high nibble forced to 0);
   `physical = (physical_page << 9) | byte`.
 

@@ -83,8 +83,7 @@ captures the protocol (from the rev-H boot ROM `RM248.B.TEXT` and the OS driver
   errors** (not just fetch faults — a dropped data fault left the bus-error-pending
   flag stuck and corrupted the supervisor stack) and **saving the RTS instruction's
   PC** on an RTS-into-absent-segment fault (the OS recovers RTS by re-executing it).
-  See `docs/lisa.md` §2 / §4.5 / §4.8 for the contract and
-  `local/lisa/debug/HANDOVER.md` §0★★/§0★★★ for the full chain. Covered by the
+  See `docs/lisa.md` §2 / §4.5 / §4.8 for the contract. Covered by the
   `tests/integration/lisa-los-boot` integration test (boots LOS 3.1 → pixel-matches
   the menu).
 - **MOUSE-DRIVEN BUTTON CLICKS WORK (session 15).** `mouse.move x y "global"` now
@@ -132,13 +131,12 @@ captures the protocol (from the rev-H boot ROM `RM248.B.TEXT` and the OS driver
 
 ## Media reality (important)
 
-- **Lisa Office System (1984)** — `local/lisa/LisaOS/Lisa Office System (1984)(Apple)(Disk {1..5} of 5).image`
+- **Lisa Office System (1984)** — `Lisa Office System (1984)(Apple)(Disk {1..5} of 5).image`
   is **DiskCopy-4.2 with tags** (419284 B = 84 header + 409600 data + 9600 tags;
   block-0 tag FILEID `$AAAA`) and **boots** on `model=lisa` + rev-H ROM (disk 1: 323
   reads to track 58, runs loaded OS code at `$2Exxxx`). **This is the install OS to
   target** — the real Office System.
-- **Pascal Workshop 3.0** (`local/lisa/images/Apple/Lisa/workshop_3.0/688-00xx*.dc42`,
-  tagged DC42) also boots — a fallback install OS.
+- **Pascal Workshop 3.0** (`688-00xx*.dc42`, tagged DC42) also boots — a fallback install OS.
 - Tagless trap: the *other* "Lisa Off Sys 30-31" images (inside
   `Apple Lisa Software - Disk Images_vol_3.zip`) are **raw 409600 = 800×512, no tag
   section** → they hit the boot-failure recovery menu. The Lisa OS *requires* tags
@@ -221,6 +219,6 @@ already work through the existing `output_cb` (fires on port-A/B writes).
 
 ## References
 
-- Protocol routines in `local/lisa/AppleLisa - Boot ROM Source/Lisa Boot ROM RM248.B.TEXT`:
+- Protocol routines in the AppleLisa Boot ROM source (`Lisa Boot ROM RM248.B.TEXT`):
   `PROINIT`, `FINDD2`, `WFBSY`/`WFNBSY`, `SENDRSP`, `READIT`, `STRTRD`/`STAT01`, `DOCRES`.
 - docs/lisa.md §14 (parallel HD), §10 (VIA2).

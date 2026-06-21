@@ -18,7 +18,8 @@
 # tar-from-floppy distribution reads with eject/insert disk swaps.
 #
 # Heavy by design (~1.1B instructions): a full multi-disk OS install.  The Xenix
-# media lives in the private gs-test-data repo under Lisa/Xenix-3.0/.
+# media is gitignored proprietary data, staged by a maintainer for CI under
+# Lisa/Xenix-3.0/.
 
 TEST_NAME := Apple Lisa 2 SCO Xenix 3.0 full install
 TEST_DESC := Full Xenix 3.0 OS install onto the ProFile (hdinit, reboot, firsttime, 7 floppies)

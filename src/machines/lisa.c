@@ -7,8 +7,7 @@
 // The Lisa is the first non-Mac machine: a 68000 with a custom segment MMU
 // (lisa_mmu.c), the COPS keyboard/mouse/clock microcontroller, an intelligent
 // 6504A floppy controller, and a parallel-port hard disk — none of which are
-// Mac architecture.  See docs/lisa.md for the hardware reference and
-// local/gs-docs/proposals/proposal-machine-lisa-xl.md for the staged plan.
+// Mac architecture.  See docs/lisa.md for the hardware reference.
 //
 // This first cut (Step 2) is intentionally minimal: 68000 + RAM + 16 KB boot
 // ROM + the segment MMU, enough to run the power-on self-tests headlessly.

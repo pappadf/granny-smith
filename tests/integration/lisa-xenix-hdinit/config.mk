@@ -17,7 +17,8 @@
 #       the kernel recognises mkfs's `TST.B d16(A7)` stack-growth probe and grows
 #       the stack instead of killing the process ("Memory fault - core dumped").
 #
-# The Xenix media lives in the private gs-test-data repo under Lisa/Xenix-3.0/.
+# The Xenix media is gitignored proprietary data, staged by a maintainer for CI
+# under Lisa/Xenix-3.0/.
 
 TEST_NAME := Apple Lisa 2 SCO Xenix 3.0 hdinit
 TEST_DESC := Boot Xenix and run hdinit to initialize the ProFile (mkfs + fsck + boot block)

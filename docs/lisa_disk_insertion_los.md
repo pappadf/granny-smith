@@ -1,13 +1,12 @@
 # How Lisa Office System (LOS 3.1) handles floppy disk insertion, detection, the mouse, and modal-alert clicks
 
-Reverse-engineered from the LisaOS source (`local/lisa/Lisa_Source/`). This is the
+Reverse-engineered from the LisaOS source. This is the
 "how it is *supposed* to work" reference for the disk-swap-during-install
 investigation (the installer's "insert Office System N diskette" prompt). The
 **Divergence & fix** section at the end of *this* file reconciles the documented
 behaviour with our emulator.
 
-All line numbers are exact for the `*.TEXT.unix.txt` copies under
-`local/lisa/Lisa_Source/`.
+All line numbers are exact for the `*.TEXT.unix.txt` copies of the LisaOS source.
 
 ---
 

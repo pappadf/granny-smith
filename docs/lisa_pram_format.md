@@ -5,8 +5,8 @@ where it lives, what each byte means, how the device-configuration table is
 packed, and how the validity checksum is computed — enough to **synthesize** a
 PRAM image by hand (e.g. to make the OS boot from a ProFile hard disk).
 
-It was reverse-engineered from the LisaOS and boot-ROM source under `local/lisa/`
-(authoritative) and verified byte-for-byte against two PRAM images captured from
+It was reverse-engineered from the (authoritative) LisaOS and boot-ROM source
+and verified byte-for-byte against two PRAM images captured from
 our own emulator (a floppy-only system and a system with a ProFile installed).
 See [docs/lisa.md §13.4](lisa.md) for the surrounding controller-RAM context and
 [docs/lisa_profile_hd.md](lisa_profile_hd.md) for the ProFile device.
@@ -215,14 +215,14 @@ entry is guaranteed consistent with that system's `SYSTEM.CDD`.
 
 ## 8. Sources and notes
 
-- **LisaOS** (`local/lisa/Lisa_Source/LISA_OS/`): `OS/SOURCE-STARTUP.TEXT`
+- **LisaOS source**: `OS/SOURCE-STARTUP.TEXT`
   (`pmem` record, `find_boot`, `FIND_PM_IDS`, `cd_pm_version`), `OS/SOURCE-PMEM.TEXT`
   (`GetNxtConfig`/`PutNxtConfig`), `OS/SOURCE-CDCONFIGASM.TEXT` (`pack_pm`/`crak_pm`),
   `OS/SOURCE-CD.TEXT` (`MAKE_INTERNAL`, `emptychan`/`emptydev`),
   `OS/source-DRIVERDEFS.TEXT` (`cd_*` slot codes), `OS/source-STARASM2.TEXT`
   (`VERIFY_CKSUM`), `LIBS/LIBPM/LibPM-PMM.TEXT` (`pm_BootVol`↔byte-4 mapping),
   `APPS/APPW/apPW-PMCONFIG.text` (BootVol code table).
-- **Boot ROM** (`local/lisa/AppleLisa - Boot ROM Source/`, CR line endings):
+- **Boot ROM source** (the "AppleLisa Boot ROM Source", CR line endings):
   `VFYCHKSM`/`WRTSUM`/`CHKPM` (the checksum), `PMWRDS=32`, `PMSTRT=$FCC181`,
   `DVCCODE=$FCC189`, `SAV2PM` (device code → `DVCCODE` upper nibble).
 - **Cross-check — other emulators.** Other open-source emulators of this machine
