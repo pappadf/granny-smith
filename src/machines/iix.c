@@ -15,6 +15,7 @@
 //   * Otherwise identical: same VIA1 callbacks, same I/O dispatcher,
 //     same memory layout, same VBL trigger.
 
+#include "mac030_glue.h"
 #include "machine.h"
 #include "mmu_checkpoint.h"
 #include "system_config.h"
@@ -99,7 +100,7 @@ static void iix_via2_shift_out(void *context, uint8_t byte) {
 }
 
 static void iix_via2_irq(void *context, bool active) {
-    iicx_update_ipl((config_t *)context, IICX_IRQ_VIA2, active);
+    mac030_glue_update_ipl((config_t *)context, IICX_IRQ_VIA2, active);
 }
 
 // ============================================================
@@ -227,65 +228,9 @@ static void iix_init(config_t *cfg, checkpoint_t *checkpoint) {
 }
 
 static void iix_teardown(config_t *cfg) {
-    if (cfg->scheduler)
-        scheduler_stop(cfg->scheduler);
     iicx_state_t *st = iicx_state(cfg);
-    if (st) {
-        if (st->mmu) {
-            mmu_delete(st->mmu);
-            st->mmu = NULL;
-        }
-        if (st->floppy) {
-            floppy_delete(st->floppy);
-            st->floppy = NULL;
-            cfg->floppy = NULL;
-        }
-        if (st->asc) {
-            asc_delete(st->asc);
-            st->asc = NULL;
-        }
-        if (st->adb) {
-            adb_delete(st->adb);
-            st->adb = NULL;
-            cfg->adb = NULL;
-        }
-    }
-    if (cfg->scsi) {
-        scsi_delete(cfg->scsi);
-        cfg->scsi = NULL;
-    }
-    if (cfg->via2) {
-        via_delete(cfg->via2);
-        cfg->via2 = NULL;
-    }
-    if (cfg->via1) {
-        via_delete(cfg->via1);
-        cfg->via1 = NULL;
-    }
-    if (cfg->scc) {
-        scc_delete(cfg->scc);
-        cfg->scc = NULL;
-    }
-    if (cfg->rtc) {
-        rtc_delete(cfg->rtc);
-        cfg->rtc = NULL;
-    }
-    if (cfg->scheduler) {
-        scheduler_delete(cfg->scheduler);
-        cfg->scheduler = NULL;
-    }
-    if (cfg->cpu) {
-        cpu_delete(cfg->cpu);
-        cfg->cpu = NULL;
-    }
-    if (cfg->mem_map) {
-        memory_map_delete(cfg->mem_map);
-        cfg->mem_map = NULL;
-    }
-    if (cfg->debugger) {
-        debug_cleanup(cfg->debugger);
-        cfg->debugger = NULL;
-    }
+    // Shared GLUE delete-chain (see mac030_glue_teardown).
+    mac030_glue_teardown(cfg, st ? st->adb : NULL, st ? st->asc : NULL, st ? st->floppy : NULL, st ? st->mmu : NULL);
     if (st) {
         free(st);
         cfg->machine_context = NULL;
@@ -369,7 +314,7 @@ const hw_profile_t machine_iix = {
     .checkpoint_save = iix_checkpoint_save,
     .checkpoint_restore = NULL,
     .memory_layout_init = iicx_memory_layout_init,
-    .update_ipl = iicx_update_ipl,
+    .update_ipl = mac030_glue_update_ipl,
     .trigger_vbl = iix_trigger_vbl,
     .display = NULL,
 };

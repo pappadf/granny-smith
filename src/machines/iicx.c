@@ -23,6 +23,7 @@
 // IIcx now, factor out the duplication when iix.c lands and the third
 // caller arrives.
 
+#include "mac030_glue.h"
 #include "machine.h"
 #include "mmu_checkpoint.h"
 #include "system_config.h" // full config_t
@@ -229,26 +230,6 @@ void iicx_memory_layout_init(config_t *cfg) {
 // Interrupt routing
 // ============================================================
 
-void iicx_update_ipl(config_t *cfg, int source, bool active) {
-    if (active)
-        cfg->irq |= source;
-    else
-        cfg->irq &= ~source;
-    uint32_t new_ipl;
-    if (cfg->irq & IICX_IRQ_NMI)
-        new_ipl = 7;
-    else if (cfg->irq & IICX_IRQ_SCC)
-        new_ipl = 4;
-    else if (cfg->irq & IICX_IRQ_VIA2)
-        new_ipl = 2;
-    else if (cfg->irq & IICX_IRQ_VIA1)
-        new_ipl = 1;
-    else
-        new_ipl = 0;
-    cpu_set_ipl(cfg->cpu, new_ipl);
-    cpu_reschedule();
-}
-
 // ============================================================
 // VIA / SCC callbacks
 // ============================================================
@@ -285,7 +266,7 @@ void iicx_via1_shift_out(void *context, uint8_t byte) {
 }
 
 void iicx_via1_irq(void *context, bool active) {
-    iicx_update_ipl((config_t *)context, IICX_IRQ_VIA1, active);
+    mac030_glue_update_ipl((config_t *)context, IICX_IRQ_VIA1, active);
 }
 
 // VIA2 outputs.  Adds the IIcx-specific soft-power-off on PB2.  When the
@@ -314,11 +295,11 @@ static void iicx_via2_shift_out(void *context, uint8_t byte) {
 }
 
 static void iicx_via2_irq(void *context, bool active) {
-    iicx_update_ipl((config_t *)context, IICX_IRQ_VIA2, active);
+    mac030_glue_update_ipl((config_t *)context, IICX_IRQ_VIA2, active);
 }
 
 void iicx_scc_irq(void *context, bool active) {
-    iicx_update_ipl((config_t *)context, IICX_IRQ_SCC, active);
+    mac030_glue_update_ipl((config_t *)context, IICX_IRQ_SCC, active);
 }
 
 // ============================================================
@@ -448,65 +429,10 @@ static void iicx_init(config_t *cfg, checkpoint_t *checkpoint) {
 }
 
 static void iicx_teardown(config_t *cfg) {
-    if (cfg->scheduler)
-        scheduler_stop(cfg->scheduler);
     iicx_state_t *st = iicx_state(cfg);
-    if (st) {
-        if (st->mmu) {
-            mmu_delete(st->mmu);
-            st->mmu = NULL;
-        }
-        if (st->floppy) {
-            floppy_delete(st->floppy);
-            st->floppy = NULL;
-            cfg->floppy = NULL;
-        }
-        if (st->asc) {
-            asc_delete(st->asc);
-            st->asc = NULL;
-        }
-        if (st->adb) {
-            adb_delete(st->adb);
-            st->adb = NULL;
-            cfg->adb = NULL;
-        }
-    }
-    if (cfg->scsi) {
-        scsi_delete(cfg->scsi);
-        cfg->scsi = NULL;
-    }
-    if (cfg->via2) {
-        via_delete(cfg->via2);
-        cfg->via2 = NULL;
-    }
-    if (cfg->via1) {
-        via_delete(cfg->via1);
-        cfg->via1 = NULL;
-    }
-    if (cfg->scc) {
-        scc_delete(cfg->scc);
-        cfg->scc = NULL;
-    }
-    if (cfg->rtc) {
-        rtc_delete(cfg->rtc);
-        cfg->rtc = NULL;
-    }
-    if (cfg->scheduler) {
-        scheduler_delete(cfg->scheduler);
-        cfg->scheduler = NULL;
-    }
-    if (cfg->cpu) {
-        cpu_delete(cfg->cpu);
-        cfg->cpu = NULL;
-    }
-    if (cfg->mem_map) {
-        memory_map_delete(cfg->mem_map);
-        cfg->mem_map = NULL;
-    }
-    if (cfg->debugger) {
-        debug_cleanup(cfg->debugger);
-        cfg->debugger = NULL;
-    }
+    // Shared GLUE delete-chain (scheduler_stop → mmu → floppy → asc → adb →
+    // scsi → via2 → via1 → scc → rtc → scheduler → cpu → mem_map → debugger).
+    mac030_glue_teardown(cfg, st ? st->adb : NULL, st ? st->asc : NULL, st ? st->floppy : NULL, st ? st->mmu : NULL);
     if (st) {
         free(st);
         cfg->machine_context = NULL;
@@ -595,7 +521,7 @@ const hw_profile_t machine_iicx = {
     .checkpoint_save = iicx_checkpoint_save,
     .checkpoint_restore = NULL,
     .memory_layout_init = iicx_memory_layout_init,
-    .update_ipl = iicx_update_ipl,
+    .update_ipl = mac030_glue_update_ipl,
     .trigger_vbl = iicx_trigger_vbl,
     .display = NULL, // primary display sourced from cfg->nubus
 };

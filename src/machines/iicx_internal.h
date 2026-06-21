@@ -59,7 +59,6 @@ static inline iicx_state_t *iicx_state(config_t *cfg) {
 
 void iicx_fill_page(uint32_t page_index, uint8_t *host_ptr, bool writable);
 void iicx_set_rom_overlay(struct config *cfg, bool overlay);
-void iicx_update_ipl(struct config *cfg, int source, bool active);
 
 // I/O dispatch is the shared GLUE dispatcher (mac030_glue_io.h).
 

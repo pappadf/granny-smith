@@ -13,6 +13,7 @@
 // mirrors the device block every $20000 bytes, as implemented by the GLUE
 // ASIC (344S0602).
 
+#include "mac030_glue.h"
 #include "mac030_glue_io.h"
 #include "machine.h"
 #include "mmu_checkpoint.h"
@@ -64,7 +65,7 @@ LOG_USE_CATEGORY_NAME("se30");
 // (I/O window offsets + the dispatcher are shared with IIcx/IIx — see
 // mac030_glue_io.c.)
 
-// Interrupt source bits for se30_update_ipl()
+// Interrupt source bits for mac030_glue_update_ipl()
 #define SE30_IRQ_VIA1 (1 << 0) // IPL level 1
 #define SE30_IRQ_VIA2 (1 << 1) // IPL level 2
 #define SE30_IRQ_SCC  (1 << 2) // IPL level 4
@@ -143,7 +144,6 @@ static void se30_via2_output(void *context, uint8_t port, uint8_t output);
 static void se30_via2_shift_out(void *context, uint8_t byte);
 static void se30_via2_irq(void *context, bool active);
 static void se30_scc_irq(void *context, bool active);
-static void se30_update_ipl(config_t *cfg, int source, bool active);
 
 // ============================================================
 // SoA page helper
@@ -346,34 +346,6 @@ static void se30_memory_layout_init(config_t *cfg) {
 
 // SE/30 dual-VIA interrupt routing: combines active sources and drives CPU IPL.
 // VIA1 → IPL 1, VIA2 → IPL 2, SCC → IPL 4, NMI → IPL 7.
-static void se30_update_ipl(config_t *cfg, int source, bool active) {
-    int old_irq = cfg->irq;
-
-    if (active)
-        cfg->irq |= source;
-    else
-        cfg->irq &= ~source;
-
-    // Determine highest active IPL
-    uint32_t new_ipl;
-    if (cfg->irq & SE30_IRQ_NMI)
-        new_ipl = 7;
-    else if (cfg->irq & SE30_IRQ_SCC)
-        new_ipl = 4;
-    else if (cfg->irq & SE30_IRQ_VIA2)
-        new_ipl = 2;
-    else if (cfg->irq & SE30_IRQ_VIA1)
-        new_ipl = 1;
-    else
-        new_ipl = 0;
-
-    cpu_set_ipl(cfg->cpu, new_ipl);
-
-    LOG(2, "se30_update_ipl: source=%d active=%d irq:%d->%d ipl->%d", source, active ? 1 : 0, old_irq, cfg->irq,
-        new_ipl);
-
-    cpu_reschedule();
-}
 
 // ============================================================
 // VIA callbacks
@@ -429,7 +401,7 @@ static void se30_via1_shift_out(void *context, uint8_t byte) {
 
 // VIA1 IRQ callback: VIA1 drives IPL level 1
 static void se30_via1_irq(void *context, bool active) {
-    se30_update_ipl((config_t *)context, SE30_IRQ_VIA1, active);
+    mac030_glue_update_ipl((config_t *)context, SE30_IRQ_VIA1, active);
 }
 
 // VIA2 output callback: no SE/30 port-B output is observed here today
@@ -450,12 +422,12 @@ static void se30_via2_shift_out(void *context, uint8_t byte) {
 // VIA2 IRQ callback: VIA2 drives IPL level 2
 static void se30_via2_irq(void *context, bool active) {
     config_t *cfg = (config_t *)context;
-    se30_update_ipl(cfg, SE30_IRQ_VIA2, active);
+    mac030_glue_update_ipl(cfg, SE30_IRQ_VIA2, active);
 }
 
 // SCC IRQ callback: SCC drives IPL level 4
 static void se30_scc_irq(void *context, bool active) {
-    se30_update_ipl((config_t *)context, SE30_IRQ_SCC, active);
+    mac030_glue_update_ipl((config_t *)context, SE30_IRQ_SCC, active);
 }
 
 // ============================================================
@@ -717,75 +689,18 @@ static void se30_init(config_t *cfg, checkpoint_t *checkpoint) {
 
 // Tear down all SE/30 resources in reverse init order.
 static void se30_teardown(config_t *cfg) {
-    if (cfg->scheduler)
-        scheduler_stop(cfg->scheduler);
-
     se30_state_t *se30 = se30_state(cfg);
-
     if (se30) {
-        if (se30->mmu) {
-            mmu_delete(se30->mmu); // also clears g_mmu if it matches
-            se30->mmu = NULL;
-        }
         // VRAM, VROM, and the borrowed video_card pointer all live on the
         // slot-$E card; system_destroy calls nubus_delete before us, which
-        // in turn calls the card's teardown — we just clear our borrowed
-        // references here.
+        // tears the card down — we just clear our borrowed references here.
         se30->vram = NULL;
         se30->vrom = NULL;
         se30->video_card = NULL;
-        if (se30->floppy) {
-            floppy_delete(se30->floppy);
-            se30->floppy = NULL;
-        }
-        if (se30->asc) {
-            asc_delete(se30->asc);
-            se30->asc = NULL;
-        }
-        if (se30->adb) {
-            adb_delete(se30->adb);
-            se30->adb = NULL;
-            cfg->adb = NULL;
-        }
     }
-
-    if (cfg->scsi) {
-        scsi_delete(cfg->scsi);
-        cfg->scsi = NULL;
-    }
-    if (cfg->via2) {
-        via_delete(cfg->via2);
-        cfg->via2 = NULL;
-    }
-    if (cfg->via1) {
-        via_delete(cfg->via1);
-        cfg->via1 = NULL;
-    }
-    if (cfg->scc) {
-        scc_delete(cfg->scc);
-        cfg->scc = NULL;
-    }
-    if (cfg->rtc) {
-        rtc_delete(cfg->rtc);
-        cfg->rtc = NULL;
-    }
-    if (cfg->scheduler) {
-        scheduler_delete(cfg->scheduler);
-        cfg->scheduler = NULL;
-    }
-    if (cfg->cpu) {
-        cpu_delete(cfg->cpu);
-        cfg->cpu = NULL;
-    }
-    if (cfg->mem_map) {
-        memory_map_delete(cfg->mem_map);
-        cfg->mem_map = NULL;
-    }
-    if (cfg->debugger) {
-        debug_cleanup(cfg->debugger);
-        cfg->debugger = NULL;
-    }
-
+    // Shared GLUE delete-chain (see mac030_glue_teardown).
+    mac030_glue_teardown(cfg, se30 ? se30->adb : NULL, se30 ? se30->asc : NULL, se30 ? se30->floppy : NULL,
+                         se30 ? se30->mmu : NULL);
     if (se30) {
         free(se30);
         cfg->machine_context = NULL;
@@ -895,6 +810,6 @@ const hw_profile_t machine_se30 = {
     .checkpoint_save = se30_checkpoint_save,
     .checkpoint_restore = NULL, // restore handled by se30_init when checkpoint != NULL
     .memory_layout_init = se30_memory_layout_init,
-    .update_ipl = se30_update_ipl,
+    .update_ipl = mac030_glue_update_ipl,
     .trigger_vbl = se30_trigger_vbl,
 };
