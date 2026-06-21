@@ -186,6 +186,30 @@ cpu_t *system_cpu(void) {
     return global_emulator ? global_emulator->cpu : NULL;
 }
 
+// The active machine configuration (what host-input/object methods act on).
+config_t *system_config(void) {
+    return global_emulator;
+}
+
+// Host-input dispatch to a machine-specific hook (the Lisa COPS).  Each returns
+// 1 if the machine hook handled it, 0 if there is no hook (caller uses the
+// default Mac path), or -1 if the hook was present but rejected the request.
+int system_input_key(const char *key, bool down) {
+    if (!global_emulator || !global_emulator->machine || !global_emulator->machine->input_key)
+        return 0;
+    return global_emulator->machine->input_key(global_emulator, key, down) == 0 ? 1 : -1;
+}
+int system_input_mouse_move(int x, int y, const char *mode) {
+    if (!global_emulator || !global_emulator->machine || !global_emulator->machine->input_mouse_move)
+        return 0;
+    return global_emulator->machine->input_mouse_move(global_emulator, x, y, mode) == 0 ? 1 : -1;
+}
+int system_input_mouse_button(bool down, const char *mode) {
+    if (!global_emulator || !global_emulator->machine || !global_emulator->machine->input_mouse_button)
+        return 0;
+    return global_emulator->machine->input_mouse_button(global_emulator, down, mode) == 0 ? 1 : -1;
+}
+
 // System-level RTC accessor: returns the current RTC object
 rtc_t *system_rtc(void) {
     return global_emulator ? global_emulator->rtc : NULL;
@@ -270,12 +294,16 @@ int system_ensure_machine(const char *model_id) {
 static bool sys_fd_is_inserted(config_t *cfg, int drive) {
     if (cfg->floppy)
         return floppy_is_inserted(cfg->floppy, drive);
+    if (cfg->machine && cfg->machine->fd_present)
+        return cfg->machine->fd_present(cfg, drive);
     return true; // no controller → treat as occupied
 }
 
 static int sys_fd_insert(config_t *cfg, int drive, image_t *disk) {
     if (cfg->floppy)
         return floppy_insert(cfg->floppy, drive, disk);
+    if (cfg->machine && cfg->machine->fd_insert)
+        return cfg->machine->fd_insert(cfg, drive, disk);
     return -1;
 }
 
@@ -871,6 +899,8 @@ void setup_init() {
     machine_register(&machine_iix);
     machine_register(&machine_iifx);
     machine_register(&machine_iici);
+    machine_register(&machine_lisa);
+    machine_register(&machine_macxl);
     machine_register(&machine_iisi);
 
     // Ensure logging categories of interest appear in `log list` even before any messages are emitted.

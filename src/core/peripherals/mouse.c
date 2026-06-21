@@ -212,6 +212,11 @@ static value_t mouse_method_move(struct object *self, const member_t *m, int arg
     (void)m;
     int64_t x = argv[0].i;
     int64_t y = argv[1].i;
+    const char *modestr = (argc >= 3 && argv[2].kind == V_STRING && argv[2].s) ? argv[2].s : "default";
+    // Machine-specific path first (the Lisa drives its COPS); else the Mac path.
+    int handled = system_input_mouse_move((int)x, (int)y, modestr);
+    if (handled != 0)
+        return handled < 0 ? val_err("mouse.move: machine rejected request") : val_bool(true);
     char mode = (argc >= 3) ? mouse_mode_char(&argv[2]) : 'd';
     if (!mode)
         return val_err("mouse.move: mode must be one of \"default\"/\"global\"/\"hw\"/\"aux\"");
@@ -224,6 +229,10 @@ static value_t mouse_method_click(struct object *self, const member_t *m, int ar
     (void)self;
     (void)m;
     bool down = (argc >= 1) ? argv[0].b : true;
+    const char *modestr = (argc >= 2 && argv[1].kind == V_STRING && argv[1].s) ? argv[1].s : "default";
+    int handled = system_input_mouse_button(down, modestr);
+    if (handled != 0)
+        return handled < 0 ? val_err("mouse.click: machine rejected request") : val_bool(true);
     char mode = (argc >= 2) ? mouse_mode_char(&argv[1]) : 'd';
     if (!mode)
         return val_err("mouse.click: mode must be one of \"default\"/\"global\"/\"hw\"");

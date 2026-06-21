@@ -47,6 +47,24 @@ bool rom_validate(const uint8_t *data, size_t size);
 // unrecognised checksums. *out_checksum (if non-NULL) is set unconditionally.
 const rom_info_t *rom_identify_data(const uint8_t *data, size_t size, uint32_t *out_checksum);
 
+// Identify an interleaved 16 KB Apple Lisa 2 / Macintosh XL boot ROM by size +
+// the version word at offset $3FFC ($0248 = Lisa 2 rev H, $0341 = Mac XL "3A").
+// Returns a static rom_info_t, or NULL if `data`/`size` aren't a Lisa ROM.
+const rom_info_t *rom_identify_lisa(const uint8_t *data, size_t size);
+
+// === Lisa / Macintosh XL two-chip ROM interleaving ==========================
+
+// Interleave two byte-slice chips into a 16-bit-wide ROM image: even bytes ←
+// `hi` (high data byte), odd bytes ← `lo` (low data byte). `out` must hold
+// 2 * min(hi_size, lo_size) bytes.
+void rom_interleave_pair(const uint8_t *hi, size_t hi_size, const uint8_t *lo, size_t lo_size, uint8_t *out);
+
+// Read two Lisa/XL ROM chip files and interleave them into a fresh 16 KB image.
+// Order-independent: tries both high/low orientations and keeps the one that
+// identifies as a Lisa ROM. Returns a malloc'd buffer (caller frees) of
+// *out_size bytes, or NULL on read/size failure.
+uint8_t *rom_load_lisa_pair(const char *path_a, const char *path_b, size_t *out_size);
+
 // Number of entries in info->compatible (NULL-terminated walk).
 int rom_info_compatible_count(const rom_info_t *info);
 
@@ -71,6 +89,11 @@ int rom_probe_file(const char *path, rom_file_info_t *out);
 // machine's expected ROM size produces a warning but is not fatal — the
 // truncating copy matches historical behaviour for Plus ROMs.
 int rom_load_into_machine(const char *path);
+
+// Like rom_load_into_machine, but for the Lisa/XL two-chip boot ROM: interleave
+// `path_a` and `path_b` (either order) into 16 KB and install. Returns 0 on
+// success, -1 on failure (no machine, unreadable/wrong-size chips).
+int rom_load_lisa_into_machine(const char *path_a, const char *path_b);
 
 // Path of the ROM passed to the most recent rom_load_into_machine().
 // Used by SE/30 init to auto-discover a sibling SE30.vrom file.

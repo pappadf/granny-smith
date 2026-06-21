@@ -129,6 +129,17 @@ debug_t *system_debug(void);
 // System-level CPU accessor: returns the current CPU object
 cpu_t *system_cpu(void);
 
+// The active machine configuration (NULL before setup).  Used by the keyboard /
+// mouse object methods to find a machine-specific host-input hook.
+config_t *system_config(void);
+
+// Host-input dispatch to a machine-specific hook (e.g. the Lisa COPS).  Each
+// returns 1 if the machine hook handled the request, 0 if there is no hook (the
+// caller should use the default Mac path), or -1 if the hook rejected it.
+int system_input_key(const char *key, bool down);
+int system_input_mouse_move(int x, int y, const char *mode);
+int system_input_mouse_button(bool down, const char *mode);
+
 // System-level RTC accessor: returns the current RTC object (or NULL)
 rtc_t *system_rtc(void);
 

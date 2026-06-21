@@ -103,6 +103,18 @@ void cpu_set_ipl(cpu_t *restrict cpu, uint32_t value) {
     cpu->ipl = value;
 }
 
+// True if the CPU is halted by a STOP instruction (awaiting an interrupt).
+bool cpu_is_stopped(cpu_t *restrict cpu) {
+    return cpu->stopped != 0;
+}
+
+// Service a pending interrupt if one is now eligible.  Used by the scheduler to
+// wake a STOP-halted CPU after an event raises the IPL (the check normally runs
+// only at instruction boundaries, which a stopped CPU never reaches).
+void cpu_poll_interrupt(cpu_t *restrict cpu) {
+    cpu_check_interrupt(cpu);
+}
+
 // Get the vector base register (68010+)
 uint32_t cpu_get_vbr(cpu_t *restrict cpu) {
     return cpu->vbr;

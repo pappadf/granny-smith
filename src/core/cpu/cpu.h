@@ -131,6 +131,11 @@ uint32_t cpu_get_ipl(cpu_t *restrict cpu);
 
 void cpu_set_ipl(cpu_t *restrict cpu, uint32_t value);
 
+// STOP-halt support: query the halt state and let the scheduler service an
+// interrupt that should wake a halted CPU (see cpu.c).
+bool cpu_is_stopped(cpu_t *restrict cpu);
+void cpu_poll_interrupt(cpu_t *restrict cpu);
+
 // Get/set vector base register (68010+)
 uint32_t cpu_get_vbr(cpu_t *restrict cpu);
 

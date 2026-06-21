@@ -959,23 +959,32 @@ static value_t keyboard_method_press(struct object *self, const member_t *m, int
     (void)m;
     (void)argc;
     // key is V_NONE-kind: body discriminates V_STRING vs V_INT/V_UINT.
-    int keycode = -1;
     char hexbuf[8];
     const char *display_name = NULL;
     if (argv[0].kind == V_STRING) {
-        const char *name = argv[0].s ? argv[0].s : "";
-        keycode = debug_mac_resolve_key_name(name);
-        display_name = name;
+        display_name = argv[0].s ? argv[0].s : "";
     } else if (argv[0].kind == V_INT || argv[0].kind == V_UINT) {
         long long raw = (argv[0].kind == V_INT) ? (long long)argv[0].i : (long long)argv[0].u;
         snprintf(hexbuf, sizeof(hexbuf), "0x%02llx", raw);
-        keycode = debug_mac_resolve_key_name(hexbuf);
         display_name = hexbuf;
     } else {
         return val_err("keyboard.press: key must be a string name or integer keycode");
     }
+
+    // Machine-specific path first (the Lisa drives its COPS, whose keycodes are
+    // not ADB codes); fall back to the default Mac (ADB / Toolbox) path.
+    int handled = system_input_key(display_name, true);
+    if (handled != 0) {
+        if (handled < 0)
+            return val_err("keyboard.press: unknown key '%s'", display_name);
+        system_input_key(display_name, false);
+        LOG(3, "keyboard.press: key=%s (machine hook)", display_name);
+        return val_bool(true);
+    }
+
+    int keycode = debug_mac_resolve_key_name(display_name);
     if (keycode < 0)
-        return val_err("keyboard.press: unknown key '%s'", display_name ? display_name : "(?)");
+        return val_err("keyboard.press: unknown key '%s'", display_name);
     system_keyboard_update(key_down, keycode);
     system_keyboard_update(key_up, keycode);
     LOG(3, "keyboard.press: key=0x%02X (%s)", keycode, display_name);

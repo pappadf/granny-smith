@@ -236,6 +236,13 @@ struct scsi {
     bool irq_active;
     bool drq_active;
 
+    // One-time guard: the autonomous DRQ service scheduler event type has been
+    // registered with the scheduler (see scsi_schedule_drq_service).
+    bool drq_evt_registered;
+    // Buffer size at the last DRQ re-pulse; used to detect the host beginning to
+    // drain a block so the re-pulse stops (one wake per block).
+    size_t drq_pulse_last_size;
+
     // Internal end-of-DMA flag (phase changed while DMA active)
     bool end_of_dma;
 

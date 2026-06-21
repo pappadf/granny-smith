@@ -134,7 +134,12 @@ struct display;
 typedef struct display display_t;
 uint32_t framebuffer_checksum(const display_t *d);
 uint32_t framebuffer_region_checksum(const display_t *d, int top, int left, int bottom, int right);
-int match_framebuffer_with_png(const display_t *d, const char *filename);
+// Compare the framebuffer against a reference PNG.  `exclude_rect`, when
+// non-NULL, points to {top, left, bottom, right} (half-open) — pixels inside
+// that region are masked out of the comparison in both images (used to ignore
+// blinking carets and other incidental, phase-dependent pixels).  Pass NULL to
+// compare the whole screen.
+int match_framebuffer_with_png(const display_t *d, const char *filename, const int *exclude_rect);
 int save_framebuffer_as_png(const display_t *d, const char *filename);
 
 // === M6: object-model accessors ============================================

@@ -510,7 +510,10 @@ TEST(test_dcmp_rejects_bad_magic) {
 }
 
 TEST(test_dcmp_rejects_wrong_dcmp_id) {
-    // Valid magic + header but dcmp_id = 2 (GreggyBits, not implemented).
+    // Valid magic + header, but an unsupported (version, dcmp_id) combination:
+    // header_version 8 (DonnBits) with dcmp_id 2 (GreggyBits, which requires
+    // version 9).  Hits the "unsupported dcmp" reject path.  (For v8 the dcmp_id
+    // is read from offset +14, so the 0x02 below lands there as dcmp_id = 2.)
     uint8_t hdr[18] = {0xA8, 0x9F, 0x65, 0x72, 0x00, 0x12, 0x08, 0x00,
                        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02, // dcmp_id = 2
                        0x00, 0x00};

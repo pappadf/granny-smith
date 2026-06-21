@@ -38,6 +38,11 @@ static const char *const UNIVERSAL_COMPATIBLE[] = {"se30", "iicx", "iix", NULL};
 static const char *const IIFX_COMPATIBLE[] = {"iifx", NULL};
 // Dedicated 512 KB Macintosh IIci ("Aurora") ROM — not the universal ROM.
 static const char *const IICI_COMPATIBLE[] = {"iici", NULL};
+// Apple Lisa 2 (rev H) and Macintosh XL ("3A") interleaved boot ROMs (§4.11 of
+// proposal-machine-lisa-xl.md). Each is two 8 KB byte-slice chips interleaved
+// into a 16 KB image; see rom_load_lisa_pair / rom_identify_lisa below.
+static const char *const LISA_COMPATIBLE[] = {"lisa", NULL};
+static const char *const MACXL_COMPATIBLE[] = {"macxl", NULL};
 // Dedicated 512 KB Macintosh IIsi ("Erickson") ROM — not the universal ROM.
 static const char *const IISI_COMPATIBLE[] = {"iisi", NULL};
 
@@ -54,6 +59,31 @@ static const rom_info_t ROM_TABLE[] = {
 
 #define ROM_TABLE_COUNT (sizeof(ROM_TABLE) / sizeof(ROM_TABLE[0]))
 
+// === Lisa 2 / Macintosh XL boot-ROM signatures ============================
+//
+// The Lisa boot ROM does NOT follow the Mac checksum convention: its first
+// longword is the reset SSP ($00000480), identical across revisions, so it
+// cannot be told apart by rom_stored_checksum(). Identify the interleaved
+// 16 KB image instead by (size == 16 KB) + the version word at offset $3FFC
+// (proposal §4.11 / docs/lisa.md §16). The `info.checksum` field carries the
+// Mac-style *computed* checksum of the combined image so the rom.* object
+// surface (rom.checksum, OPFS naming) still has a unique content identifier.
+#define LISA_ROM_SIZE           (16 * 1024) // interleaved image size
+#define LISA_ROM_VERSION_OFFSET 0x3FFC // version word location
+#define LISA_RESET_SSP          0x00000480u // first longword of every Lisa ROM
+
+typedef struct lisa_rom_sig {
+    rom_info_t info; // family_name / compatible / computed checksum / size
+    uint16_t version_word; // value at LISA_ROM_VERSION_OFFSET
+} lisa_rom_sig_t;
+
+static const lisa_rom_sig_t LISA_ROM_TABLE[] = {
+    {{"Apple Lisa 2 Boot ROM (rev H)", LISA_COMPATIBLE, 0x098917B2, LISA_ROM_SIZE},   0x0248},
+    {{"Macintosh XL Boot ROM (\"3A\")", MACXL_COMPATIBLE, 0x094C82F0, LISA_ROM_SIZE}, 0x0341},
+};
+
+#define LISA_ROM_TABLE_COUNT (sizeof(LISA_ROM_TABLE) / sizeof(LISA_ROM_TABLE[0]))
+
 // ============================================================================
 // ID helpers
 // ============================================================================
@@ -62,6 +92,22 @@ const rom_info_t *rom_identify(uint32_t checksum) {
     for (size_t i = 0; i < ROM_TABLE_COUNT; i++) {
         if (ROM_TABLE[i].checksum == checksum)
             return &ROM_TABLE[i];
+    }
+    return NULL;
+}
+
+const rom_info_t *rom_identify_lisa(const uint8_t *data, size_t size) {
+    // Lisa/XL ROMs are exactly 16 KB and start with the reset SSP $00000480;
+    // require both before trusting the version word (cheap false-positive guard
+    // against an unrelated 16 KB blob).
+    if (!data || size != LISA_ROM_SIZE)
+        return NULL;
+    if (rom_stored_checksum(data) != LISA_RESET_SSP)
+        return NULL;
+    uint16_t version = ((uint16_t)data[LISA_ROM_VERSION_OFFSET] << 8) | data[LISA_ROM_VERSION_OFFSET + 1];
+    for (size_t i = 0; i < LISA_ROM_TABLE_COUNT; i++) {
+        if (LISA_ROM_TABLE[i].version_word == version)
+            return &LISA_ROM_TABLE[i].info;
     }
     return NULL;
 }
@@ -103,6 +149,16 @@ const rom_info_t *rom_identify_data(const uint8_t *data, size_t size, uint32_t *
         if (computed != stored)
             printf("Warning: ROM checksum mismatch (stored=%08X, computed=%08X)\n", stored, computed);
         return info;
+    }
+
+    // Not a Mac ROM — try the Lisa/XL signature path. Lisa ROMs are matched by
+    // size + version word, so report the Mac-style *computed* checksum (a
+    // stable, unique content id) rather than the meaningless reset-SSP word.
+    const rom_info_t *lisa = rom_identify_lisa(data, size);
+    if (lisa) {
+        if (out_checksum)
+            *out_checksum = rom_compute_checksum(data, size);
+        return lisa;
     }
     return NULL;
 }
@@ -180,6 +236,66 @@ int rom_probe_file(const char *path, rom_file_info_t *out) {
 }
 
 // ============================================================================
+// Lisa / Macintosh XL two-chip ROM interleaving
+// ============================================================================
+
+// Interleave two 8 KB byte-slice chips into a 16-bit-wide ROM image:
+// even bytes ← high-byte chip (D8–D15), odd bytes ← low-byte chip (D0–D7).
+// `out` must hold 2 * min(hi_size, lo_size) bytes. (docs/lisa.md §16)
+void rom_interleave_pair(const uint8_t *hi, size_t hi_size, const uint8_t *lo, size_t lo_size, uint8_t *out) {
+    size_t n = hi_size < lo_size ? hi_size : lo_size;
+    for (size_t i = 0; i < n; i++) {
+        out[2 * i] = hi[i]; // even byte = high data byte
+        out[2 * i + 1] = lo[i]; // odd byte = low data byte
+    }
+}
+
+// Read two Lisa/XL ROM chip files and interleave them into a fresh 16 KB image.
+// The two chips' high/low roles differ between the H pair (0175=HI, 0176=LO)
+// and the 3A pair (0347=HI, 0346=LO), so this loader is order-independent: it
+// tries path_a as the high-byte chip first and, if the result is not a valid
+// Lisa ROM, swaps the roles. Returns a malloc'd buffer (caller frees) of
+// *out_size bytes, or NULL on any read/size/identification failure.
+uint8_t *rom_load_lisa_pair(const char *path_a, const char *path_b, size_t *out_size) {
+    if (!path_a || !path_b || !out_size)
+        return NULL;
+
+    size_t a_size = 0, b_size = 0;
+    uint8_t *a = read_rom_file(path_a, &a_size, false);
+    if (!a)
+        return NULL;
+    uint8_t *b = read_rom_file(path_b, &b_size, false);
+    if (!b) {
+        free(a);
+        return NULL;
+    }
+
+    uint8_t *combined = NULL;
+    // Each chip must be exactly half the 16 KB image.
+    if (a_size == LISA_ROM_SIZE / 2 && b_size == LISA_ROM_SIZE / 2) {
+        combined = malloc(LISA_ROM_SIZE);
+        if (combined) {
+            // Try a=HI/b=LO; if that orientation doesn't identify as a Lisa
+            // ROM, reinterleave with the chips swapped.
+            rom_interleave_pair(a, a_size, b, b_size, combined);
+            if (!rom_identify_lisa(combined, LISA_ROM_SIZE))
+                rom_interleave_pair(b, b_size, a, a_size, combined);
+        }
+    } else {
+        printf("rom.load_lisa: each chip must be %d bytes (got %zu and %zu)\n", LISA_ROM_SIZE / 2, a_size, b_size);
+    }
+
+    free(a);
+    free(b);
+    if (!combined)
+        return NULL;
+    if (!rom_identify_lisa(combined, LISA_ROM_SIZE))
+        printf("Warning: interleaved image is not a recognised Lisa/XL ROM\n");
+    *out_size = LISA_ROM_SIZE;
+    return combined;
+}
+
+// ============================================================================
 // Pending-path tracking (consumed by SE/30 vrom auto-discovery)
 // ============================================================================
 
@@ -209,22 +325,17 @@ void rom_pending_clear(void) {
 // Load into active machine
 // ============================================================================
 
-int rom_load_into_machine(const char *path) {
-    if (!path || !*path) {
-        printf("rom.load: expected a path\n");
-        return -1;
-    }
-
+// Install already-loaded ROM bytes into the active machine: identify, warn on
+// incompatibility / size mismatch, remember the path (for SE/30 vrom
+// discovery), copy into the ROM region, invalidate stale SoA/TLB entries, and
+// reset the CPU from the ROM's reset vectors. `rom_data` is owned by the
+// caller. Returns 0 on success, -1 if no machine is active.
+static int install_rom_into_machine(const uint8_t *rom_data, size_t file_size, const char *path) {
     memory_map_t *mem = system_memory();
     if (!mem) {
         printf("rom.load: no machine — call machine.boot(model) first\n");
         return -1;
     }
-
-    size_t file_size = 0;
-    uint8_t *rom_data = read_rom_file(path, &file_size, false);
-    if (!rom_data)
-        return -1;
 
     uint32_t checksum = 0;
     const rom_info_t *info = rom_identify_data(rom_data, file_size, &checksum);
@@ -259,7 +370,6 @@ int rom_load_into_machine(const char *path) {
     rom_pending_set(path);
 
     memory_install_rom(mem, rom_data, file_size, path);
-    free(rom_data);
 
     // Invalidate any SoA / TLB entries that cached the old ROM bytes — without
     // this, an SE/30 reload after the MMU is set up keeps stale host pointers
@@ -284,6 +394,44 @@ int rom_load_into_machine(const char *path) {
 
     printf("ROM loaded successfully from %s\n", path);
     return 0;
+}
+
+int rom_load_into_machine(const char *path) {
+    if (!path || !*path) {
+        printf("rom.load: expected a path\n");
+        return -1;
+    }
+    if (!system_memory()) {
+        printf("rom.load: no machine — call machine.boot(model) first\n");
+        return -1;
+    }
+    size_t file_size = 0;
+    uint8_t *rom_data = read_rom_file(path, &file_size, false);
+    if (!rom_data)
+        return -1;
+    int rc = install_rom_into_machine(rom_data, file_size, path);
+    free(rom_data);
+    return rc;
+}
+
+int rom_load_lisa_into_machine(const char *path_a, const char *path_b) {
+    if (!path_a || !*path_a || !path_b || !*path_b) {
+        printf("rom.load_lisa: expected two chip paths\n");
+        return -1;
+    }
+    if (!system_memory()) {
+        printf("rom.load_lisa: no machine — call machine.boot(model) first\n");
+        return -1;
+    }
+    size_t size = 0;
+    uint8_t *combined = rom_load_lisa_pair(path_a, path_b, &size);
+    if (!combined)
+        return -1;
+    // Record the high-byte chip path so SE/30-style sibling discovery is inert
+    // (Lisa has no vrom) but the pending-path bookkeeping stays populated.
+    int rc = install_rom_into_machine(combined, size, path_a);
+    free(combined);
+    return rc;
 }
 
 // ============================================================================
@@ -332,7 +480,10 @@ static value_t rom_attr_name(struct object *self, const member_t *m) {
     memory_map_t *mem = system_memory();
     if (!mem || !memory_rom_filename(mem))
         return val_str("");
-    const rom_info_t *info = rom_identify(memory_rom_checksum(mem));
+    // Identify from ROM content rather than the computed checksum: Lisa/XL
+    // ROMs aren't keyed by checksum (rom_identify_lisa uses size + version
+    // word), and content-based ID gives the same answer for Mac ROMs.
+    const rom_info_t *info = rom_identify_data(memory_rom_bytes(mem), memory_rom_size(mem), NULL);
     return val_str(info ? info->family_name : "");
 }
 
@@ -342,6 +493,19 @@ static value_t rom_method_load(struct object *self, const member_t *m, int argc,
     (void)argc;
     if (rom_load_into_machine(argv[0].s) != 0)
         return val_err("rom.load: failed");
+    return val_bool(true);
+}
+
+// rom.load_lisa(chip_a, chip_b) — interleave two 8 KB Lisa/XL byte-slice chip
+// files into the 16 KB boot ROM and load it into the active machine. The two
+// chips may be given in either order (the loader detects the high/low byte
+// orientation by checking for a valid Lisa signature).
+static value_t rom_method_load_lisa(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)self;
+    (void)m;
+    (void)argc;
+    if (rom_load_lisa_into_machine(argv[0].s, argv[1].s) != 0)
+        return val_err("rom.load_lisa: failed");
     return val_bool(true);
 }
 
@@ -410,6 +574,11 @@ static const arg_decl_t rom_path_arg[] = {
     {.name = "path", .kind = V_STRING, .doc = "ROM file path"},
 };
 
+static const arg_decl_t rom_lisa_pair_args[] = {
+    {.name = "chip_a", .kind = V_STRING, .doc = "First Lisa/XL ROM chip file (8 KB)" },
+    {.name = "chip_b", .kind = V_STRING, .doc = "Second Lisa/XL ROM chip file (8 KB)"},
+};
+
 static const member_t rom_members[] = {
     {.kind = M_ATTR,
      .name = "path",
@@ -440,6 +609,10 @@ static const member_t rom_members[] = {
      .name = "load",
      .doc = "Load ROM bytes into the active machine and reset the CPU",
      .method = {.args = rom_path_arg, .nargs = 1, .result = V_BOOL, .fn = rom_method_load}},
+    {.kind = M_METHOD,
+     .name = "load_lisa",
+     .doc = "Interleave two Lisa/XL ROM chip files into the 16 KB boot ROM and load it",
+     .method = {.args = rom_lisa_pair_args, .nargs = 2, .result = V_BOOL, .fn = rom_method_load_lisa}},
     {.kind = M_METHOD,
      .name = "reload",
      .doc = "Reload the startup-time ROM (path remembered from launch)",

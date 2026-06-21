@@ -1,0 +1,34 @@
+# Integration test: Macintosh XL — MacWorks XL boot to the Finder desktop.
+#
+# MacWorks XL ships as a two-disk set.  The loader disk (inserted via config.mk)
+# brings up the Mac environment on the Lisa hardware, then EJECTS itself (the
+# 6504A "unclamp" command — the Lisa drive is software-eject) and the Mac ROM
+# sits on its blinking-"?" disk, waiting for a system disk.  We drive that the
+# way a person would: run until the drive is empty, then insert the system disk.
+# Inserting raises the controller's disk-insertion interrupt (FDIR/IPL 1), the
+# Mac ROM re-reads the new disk, finds a valid boot block, and boots its System
+# and Finder.  Nothing special triggers the boot — just the plain insert.
+
+# Run until MacWorks has loaded and ejected the loader disk (drive empty).
+scheduler.run 200000000
+
+assert ${machine.id == "macxl"} "machine.id != macxl"
+assert ${rom.checksum == "094C82F0"} "rom.checksum != 094C82F0"
+# Macintosh XL screen-modification raster (square pixels), not the Lisa 2's 720x364.
+assert ${screen.width == 608} "screen.width != 608"
+assert ${screen.height == 431} "screen.height != 431"
+# The loader disk has ejected itself and the machine is waiting for a system disk.
+assert ${floppy.drives[0].present == false} "loader disk should have ejected"
+
+# Insert the MacWorks XL system disk, as a user would at the "?" prompt.
+floppy.drives[0].insert "../../data/Lisa/MacWorksXL/MacWorksXL_Sys_Disk.dc42"
+assert ${floppy.drives[0].present == true} "system disk should be inserted"
+
+# Boot the Mac System + Finder from the system disk.
+scheduler.run 550000000
+
+# Verify the Finder desktop: menu bar (File/Edit/View/Special), the open
+# "MacWorks System Disk" window with its icons, the Trash, and the gray desktop.
+screen.match finder.png
+
+quit

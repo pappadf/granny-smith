@@ -9,6 +9,7 @@
 // ============================================================================
 
 #include "memory.h"
+#include "lisa_mmu.h"
 #include "mmu.h"
 
 #include "common.h"
@@ -250,6 +251,10 @@ static inline bool dispatch_device_at_logical(uint32_t addr, bool supervisor) {
 
 // Slow path for 8-bit reads: device I/O, MMU TLB miss, or unmapped
 uint8_t memory_read_uint8_slow(uint32_t addr) {
+    // Lisa segment MMU owns translation, routing, and bus errors for Lisa/XL
+    // machines (its SoA stays empty so every access reaches here).
+    if (__builtin_expect(g_lisa_mmu != NULL, 0))
+        return lisa_mmu_read8(addr, g_active_read == g_supervisor_read);
     uint32_t page = addr >> PAGE_SHIFT;
     page_entry_t *pe = &g_page_table[page];
     // Memory logpoint: page is forced to slow path but backed by RAM/ROM.
@@ -337,6 +342,8 @@ uint8_t memory_read_uint8_slow(uint32_t addr) {
 
 // Slow path for 16-bit reads: cross-page or device I/O
 uint16_t memory_read_uint16_slow(uint32_t addr) {
+    if (__builtin_expect(g_lisa_mmu != NULL, 0))
+        return lisa_mmu_read16(addr, g_active_read == g_supervisor_read);
     uint32_t page = addr >> PAGE_SHIFT;
     page_entry_t *pe = &g_page_table[page];
 
@@ -411,6 +418,8 @@ uint16_t memory_read_uint16_slow(uint32_t addr) {
 
 // Slow path for 32-bit reads: cross-page or device I/O
 uint32_t memory_read_uint32_slow(uint32_t addr) {
+    if (__builtin_expect(g_lisa_mmu != NULL, 0))
+        return lisa_mmu_read32(addr, g_active_read == g_supervisor_read);
     uint32_t page = addr >> PAGE_SHIFT;
     page_entry_t *pe = &g_page_table[page];
 
@@ -501,6 +510,8 @@ uint32_t memory_read_uint32_slow(uint32_t addr) {
 //   - never call mmu_handle_fault, never touch the SoA cache or g_bus_error_pending.
 uint8_t memory_debug_read_uint8(uint32_t addr) {
     addr &= g_address_mask;
+    if (__builtin_expect(g_lisa_mmu != NULL, 0))
+        return (uint8_t)lisa_mmu_debug_read(addr, 1, g_active_read == g_supervisor_read);
     uint32_t phys = addr;
     if (g_mmu && g_mmu->enabled && !mmu_translate_checked(g_mmu, addr, g_active_read == g_supervisor_read, &phys))
         return 0xFF;
@@ -517,6 +528,8 @@ uint8_t memory_debug_read_uint8(uint32_t addr) {
 
 uint16_t memory_debug_read_uint16(uint32_t addr) {
     addr &= g_address_mask;
+    if (__builtin_expect(g_lisa_mmu != NULL, 0))
+        return (uint16_t)lisa_mmu_debug_read(addr, 2, g_active_read == g_supervisor_read);
     // Single-page word reads hit the device's own width handler; byte-split
     // only when the access straddles a page.
     if ((addr & PAGE_MASK) <= MEM_PAGE_SIZE - 2) {
@@ -538,6 +551,8 @@ uint16_t memory_debug_read_uint16(uint32_t addr) {
 
 uint32_t memory_debug_read_uint32(uint32_t addr) {
     addr &= g_address_mask;
+    if (__builtin_expect(g_lisa_mmu != NULL, 0))
+        return lisa_mmu_debug_read(addr, 4, g_active_read == g_supervisor_read);
     if ((addr & PAGE_MASK) <= MEM_PAGE_SIZE - 4) {
         uint32_t phys = addr;
         if (g_mmu && g_mmu->enabled && !mmu_translate_checked(g_mmu, addr, g_active_read == g_supervisor_read, &phys))
@@ -562,6 +577,8 @@ uint32_t memory_debug_read_uint32(uint32_t addr) {
 // Returns true if the byte landed in writable host RAM / a device.
 bool memory_debug_write_uint8(uint32_t addr, uint8_t value) {
     addr &= g_address_mask;
+    if (__builtin_expect(g_lisa_mmu != NULL, 0))
+        return lisa_mmu_debug_write(addr, 1, g_active_write == g_supervisor_write, value);
     uint32_t phys = addr;
     if (g_mmu && g_mmu->enabled && !mmu_translate_checked(g_mmu, addr, g_active_write == g_supervisor_write, &phys))
         return false;
@@ -584,6 +601,8 @@ bool memory_debug_write_uint8(uint32_t addr, uint8_t value) {
 
 bool memory_debug_write_uint16(uint32_t addr, uint16_t value) {
     addr &= g_address_mask;
+    if (__builtin_expect(g_lisa_mmu != NULL, 0))
+        return lisa_mmu_debug_write(addr, 2, g_active_write == g_supervisor_write, value);
     if ((addr & PAGE_MASK) <= MEM_PAGE_SIZE - 2) {
         uint32_t phys = addr;
         if (g_mmu && g_mmu->enabled && !mmu_translate_checked(g_mmu, addr, g_active_write == g_supervisor_write, &phys))
@@ -611,6 +630,8 @@ bool memory_debug_write_uint16(uint32_t addr, uint16_t value) {
 
 bool memory_debug_write_uint32(uint32_t addr, uint32_t value) {
     addr &= g_address_mask;
+    if (__builtin_expect(g_lisa_mmu != NULL, 0))
+        return lisa_mmu_debug_write(addr, 4, g_active_write == g_supervisor_write, value);
     if ((addr & PAGE_MASK) <= MEM_PAGE_SIZE - 4) {
         uint32_t phys = addr;
         if (g_mmu && g_mmu->enabled && !mmu_translate_checked(g_mmu, addr, g_active_write == g_supervisor_write, &phys))
@@ -638,6 +659,10 @@ bool memory_debug_write_uint32(uint32_t addr, uint32_t value) {
 
 // Slow path for 8-bit writes: device I/O, MMU TLB miss, or unmapped
 void memory_write_uint8_slow(uint32_t addr, uint8_t value) {
+    if (__builtin_expect(g_lisa_mmu != NULL, 0)) {
+        lisa_mmu_write8(addr, g_active_write == g_supervisor_write, value);
+        return;
+    }
     uint32_t page = addr >> PAGE_SHIFT;
     page_entry_t *pe = &g_page_table[page];
     // Memory logpoint: forced slow path for RAM write on logged page
@@ -728,6 +753,10 @@ void memory_write_uint8_slow(uint32_t addr, uint8_t value) {
 
 // Slow path for 16-bit writes: cross-page or device I/O
 void memory_write_uint16_slow(uint32_t addr, uint16_t value) {
+    if (__builtin_expect(g_lisa_mmu != NULL, 0)) {
+        lisa_mmu_write16(addr, g_active_write == g_supervisor_write, value);
+        return;
+    }
     uint32_t page = addr >> PAGE_SHIFT;
     page_entry_t *pe = &g_page_table[page];
 
@@ -812,6 +841,10 @@ void memory_write_uint16_slow(uint32_t addr, uint16_t value) {
 
 // Slow path for 32-bit writes: cross-page or device I/O
 void memory_write_uint32_slow(uint32_t addr, uint32_t value) {
+    if (__builtin_expect(g_lisa_mmu != NULL, 0)) {
+        lisa_mmu_write32(addr, g_active_write == g_supervisor_write, value);
+        return;
+    }
     uint32_t page = addr >> PAGE_SHIFT;
     page_entry_t *pe = &g_page_table[page];
 

@@ -12,6 +12,7 @@
 #include "log.h"
 #include "object.h"
 #include "platform.h"
+#include "scheduler.h"
 #include "scsi_internal.h"
 #include "shell.h"
 #include "system.h"
@@ -162,6 +163,61 @@ static void scsi_update_drq(scsi_t *scsi) {
         scsi->irq_cb(scsi->irq_cb_ctx, scsi->irq_active, drq);
 }
 
+// DRQ "data ready" wake delay, in CPU cycles.  Per the Guide to the Macintosh
+// Family Hardware, the NCR 5380 raises a DRQ interrupt to VIA2 "when the first
+// byte of a block of data is ready to be transferred" — used to drive
+// interrupt-driven transfers under A/UX.  Our model fills the whole block buffer
+// synchronously, so we re-assert DRQ (a fresh VIA2 CA2 edge) once, from a
+// scheduler event, shortly after the host arms the transfer.  Running from the
+// scheduler is the key: it wakes a STOP-halted A/UX kernel that has gone to
+// sleep waiting for the block.  The delay is large enough that the host has
+// reached its sleep before the wake lands.
+#define SCSI_DRQ_PULSE_CYCLES 1024
+
+static void scsi_schedule_drq_service(scsi_t *scsi);
+
+// Raise a single DRQ "data ready" CA2 edge for a pending DMA data-in block so a
+// sleeping host is woken to drain it.  Real hardware raises exactly ONE DRQ
+// interrupt per block, so this is strictly one-shot: re-pulsing repeatedly
+// floods an interrupt-driven host with CA2 edges it cannot service (A/UX panics
+// "unserviceable slot interrupt").  The host drains the whole block off this one
+// wake; the next block re-arms a fresh service from write_mr.
+static void scsi_drq_service(void *source, uint64_t data) {
+    scsi_t *scsi = (scsi_t *)source;
+    (void)data;
+    if (!(scsi->reg.mr & MR_DMA) || scsi->bus.phase != scsi_data_in || scsi->buf.size == 0)
+        return; // transfer drained / DMA off / phase changed → nothing to wake for
+
+    if (scsi->buf.size != scsi->drq_pulse_last_size)
+        return; // host has already started draining the block → no wake needed
+
+    // Create a single fresh CA2 edge: drop then re-assert DRQ (host reads pop
+    // bytes regardless of the DRQ level, so the momentary drop is harmless).
+    scsi->reg.bsr &= ~BSR_DR;
+    scsi_update_drq(scsi);
+    scsi->reg.bsr |= BSR_DR;
+    scsi_update_drq(scsi); // false→true ⇒ active CA2 edge ⇒ VIA2 IFR ⇒ SCSI IRQ
+}
+
+static void scsi_schedule_drq_service(scsi_t *scsi) {
+    scheduler_t *s = system_scheduler();
+    if (!s)
+        return; // no scheduler (unit tests): fall back to poll-driven behaviour
+    if (!scsi->drq_evt_registered) {
+        scheduler_new_event_type(s, "scsi", scsi, "drq_service", &scsi_drq_service);
+        scsi->drq_evt_registered = true;
+    }
+    scsi->drq_pulse_last_size = scsi->buf.size;
+    remove_event(s, &scsi_drq_service, scsi);
+    scheduler_new_cpu_event(s, &scsi_drq_service, scsi, 0, SCSI_DRQ_PULSE_CYCLES, 0);
+}
+
+static void scsi_cancel_drq_service(scsi_t *scsi) {
+    scheduler_t *s = system_scheduler();
+    if (s)
+        remove_event(s, &scsi_drq_service, scsi);
+}
+
 // Pop the next byte from the SCSI buffer
 static uint8_t next_byte(scsi_t *scsi) {
     assert(scsi->buf.size > 0);
@@ -177,6 +233,7 @@ static void phase_free(scsi_t *scsi) {
     scsi->bus.phase = scsi_bus_free;
     scsi->reg.csr = 0;
     scsi->end_of_dma = false;
+    scsi_cancel_drq_service(scsi);
     scsi_update_drq(scsi);
     scsi_update_irq(scsi);
 }
@@ -955,8 +1012,14 @@ static void write_mr(scsi_t *scsi, uint8_t val) {
                scsi->bus.phase == scsi_status || scsi->bus.phase == scsi_message_in);
 
         // if we're reading in data, and there is more in the buffer - then assert request signal
-        if (scsi->bus.phase == scsi_data_in && scsi->buf.size != 0)
+        if (scsi->bus.phase == scsi_data_in && scsi->buf.size != 0) {
             scsi->reg.bsr |= BSR_DR;
+            // Arm the autonomous DRQ "data ready" service so an interrupt-driven
+            // host (A/UX) that sleeps waiting for the block is woken even when
+            // the CPU is STOP-halted.  No effect on poll/byte-count hosts (Mac
+            // OS), which read the block regardless of DRQ.
+            scsi_schedule_drq_service(scsi);
+        }
 
         // if we're writing out data (command bytes or data-out), and there is
         // room in the buffer, assert request signal

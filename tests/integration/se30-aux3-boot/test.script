@@ -1,7 +1,7 @@
 # SE/30 A/UX 3.0.1 HD Boot.
 #
-# Boots the SE/30 from a pre-installed A/UX 3.0.1 HD image and runs long
-# enough to clear the early kernel boot phase.
+# Boots the SE/30 from a pre-installed A/UX 3.0.1 HD image, logs in as root,
+# opens a CommandShell, and runs `ls` — verifying the full boot-to-shell path.
 
 # Pin the wall clock so screenshot comparisons are reproducible. This
 # specific seed used to panic with "Sorry, a system error occurred."
@@ -9,14 +9,22 @@
 # at this seed proves the fix.
 rtc.time = 2026-04-26T21:30:36
 
-# Skip the Universal ROM's ~13 s boot-drive-discovery wait at $40801610
-# (poke $8805 into $017A, clear it after one inner-poll cycle).  See
+# Skip the Universal ROM's boot-drive-discovery key-scan at $40801610 (poke
+# $8805 into $017A, clear it after one inner-poll cycle).  See
 # tests/integration/iicx-video-modes/test.script for the mechanics.
 scheduler.run 40000000
 memory.poke.w 0x017A 0x8805
 scheduler.run 2000000
 memory.poke.w 0x017A 0
+
+# Boot to the A/UX login window (~692M instructions).  A/UX is interrupt-
+# driven: the kernel sleeps for each disk read and is woken by the SCSI DRQ
+# "data ready" interrupt, which the NCR 5380 model raises autonomously from
+# the scheduler (scsi.c scsi_drq_service) so a STOP-halted kernel resumes.
+# Run in chunks so the per-frame VBL heartbeat is injected across the boot.
 scheduler.run 250000000
+scheduler.run 200000000
+scheduler.run 200000000
 
 # enter user "root"
 keyboard.press 0x0F
@@ -32,15 +40,15 @@ scheduler.run 100000000
 
 screen.match desktop.png
 
-# select "CommandShell" via Special menu
+# open the Apple menu and select the CommandShell desk accessory
 mouse.move 20 10 "aux"
-scheduler.run 10000000
+scheduler.run 15000000
 mouse.click true
-scheduler.run 10000000
+scheduler.run 15000000
 mouse.move 20 110 "aux"
-scheduler.run 10000000
+scheduler.run 15000000
 mouse.click false
-scheduler.run 10000000
+scheduler.run 20000000
 
 # The command shell should now be open
 screen.match shell.png
@@ -50,7 +58,7 @@ keyboard.press 0x25
 keyboard.press 0x01
 keyboard.press return
 
-scheduler.run 10000000
+scheduler.run 20000000
 
 # The shell should have run `ls` and printed a directory listing
 screen.match ls.png

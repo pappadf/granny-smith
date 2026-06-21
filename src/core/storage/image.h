@@ -33,6 +33,13 @@ struct image {
     bool ghost_instance; // True when delta+journal are ephemeral scratch (read-only mounts)
     enum image_type type; // Detected image type (floppy, hd, ...)
     bool from_diskcopy; // True if the source file was DiskCopy 4.2
+
+    // DiskCopy 4.2 per-sector tags (read-only metadata).  The Lisa boot ROM and
+    // OS read these (e.g. the boot block's FILEID = $AAAA); loaded from the
+    // file's tag section at open time.  NULL when the image has no tags.
+    uint8_t *tags; // tag_count * tag_bytes bytes, or NULL
+    uint32_t tag_bytes; // tag bytes per sector (12 on a Lisa 400 KB disk)
+    uint32_t tag_count; // number of tagged sectors
 };
 
 struct image;
@@ -76,6 +83,13 @@ void image_checkpoint(const image_t *image, checkpoint_t *checkpoint);
 
 // Read/write raw data from/to the disk image
 size_t disk_read_data(image_t *disk, size_t offset, uint8_t *buf, size_t size);
+
+// Read a logical sector's DiskCopy tag (per-sector metadata) into `buf`.
+// Returns the number of tag bytes copied (0 if the image has no tags or the
+// sector is out of range).  Used by the Lisa floppy controller to populate the
+// boot-block header the ROM validates (FILEID = $AAAA).
+size_t disk_read_tag(image_t *disk, size_t sector, uint8_t *buf, size_t size);
+size_t disk_write_tag(image_t *disk, size_t sector, const uint8_t *buf, size_t size);
 
 size_t disk_write_data(image_t *disk, size_t offset, uint8_t *buf, size_t size);
 

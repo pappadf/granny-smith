@@ -410,8 +410,8 @@ static void write_segment_listing(FILE *fp, int16_t code_id, const re_code_segme
 // file's linked-patch (lpch) machinery.  The header skip per type is
 // documented inline below.
 
-// Linked-patch resource — see
-//   gs-archive/sys71src-main/LinkedPatches/LinkedPatchLoader.a
+// Linked-patch resource — see the System 7.1 source drop,
+//   LinkedPatches/LinkedPatchLoader.a
 // for the full format.  Two flavours:
 //   single-ROM lpch: +0 u16 num_lpch, +2 u32 size_of_code, +6 code
 //   universal lpch:  +0 u16 num_rom_addrs, +2 u16 num_jt_entries,
@@ -992,9 +992,8 @@ static void dump_readme(const struct rfork *rf, const char *src_label, const cha
     // as finder.json.
     fprintf(fp, "# re.dump — exploded classic-Mac binary\n\n");
     fprintf(fp, "Self-contained dump of a classic-Mac forked file produced by `re.dump`\n");
-    fprintf(fp, "(see [docs/storage.md](../docs/storage.md) §11 and the\n");
-    fprintf(fp, "[proposal](../local/gs-docs/proposals/proposal-re-binary-explode.md) for the\n");
-    fprintf(fp, "convention).  Every directory here is a layer of progressively-decoded\n");
+    fprintf(fp, "(see [docs/storage.md](../docs/storage.md) §11 for the convention).\n");
+    fprintf(fp, "Every directory here is a layer of progressively-decoded\n");
     fprintf(fp, "data — raw bytes at the bottom, JSON / `.s` listings on top.\n\n");
 
     fprintf(fp, "## Source\n\n");

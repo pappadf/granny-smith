@@ -3,10 +3,10 @@
 
 // rsrc_dcmp.c
 // Apple System 7 "DonnBits" (dcmp 0) decompressor, ported from the
-// open-sourced Apple assembly in
-//   gs-archive/sys71src-main/Patches/DeCompressDefProc.a
-//   gs-archive/sys71src-main/Patches/DeCompressCommon.A
-//   gs-archive/sys71src-main/Internal/Asm/Decompression.a
+// open-sourced Apple assembly in the System 7.1 source drop:
+//   Patches/DeCompressDefProc.a
+//   Patches/DeCompressCommon.A
+//   Internal/Asm/Decompression.a
 // © 1990-1991 Apple Computer (Donn Denman), released as part of the
 // System 7 source drop.
 //
@@ -602,7 +602,7 @@ static int unpack_loop(ic_t *ic, oc_t *oc, vt_t *vt) {
 // dcmp 2 — GreggyBits (Greg Marriott, 1990-1991)
 // ===========================================================================
 //
-// Ported from gs-archive/sys71src-main/Patches/GreggyBitsDefProc.a.
+// Ported from the System 7.1 source drop, Patches/GreggyBitsDefProc.a.
 // The algorithm:
 //   1. Each output word is either looked up via a byte->word translation
 //      table, or copied verbatim (two raw input bytes -> one output word).

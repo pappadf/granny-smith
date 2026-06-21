@@ -14,6 +14,7 @@
 // Forward declarations
 struct config;
 struct nubus_slot_decl;
+struct image;
 
 // Floppy drive capabilities form a strict superset hierarchy:
 //   FLOPPY_400K reads 400K only.
@@ -113,6 +114,24 @@ typedef struct hw_profile {
     // Machine-specific VBL handling
     void (*trigger_vbl)(struct config *cfg);
 
+    // Optional: per-machine floppy insertion for non-IWM controllers (the Lisa
+    // intelligent FDC).  When cfg->floppy is NULL the framework routes floppy
+    // insert/present queries here instead.  NULL on IWM/SWIM machines.
+    int (*fd_insert)(struct config *cfg, int drive, struct image *disk);
+    bool (*fd_present)(struct config *cfg, int drive);
+
+    // Optional: per-machine host-input injection.  When present, the `keyboard`
+    // and `mouse` object methods route here instead of the default Mac (ADB /
+    // Toolbox-globals) path — the Lisa uses these to drive its COPS, which has
+    // its own keycodes and a relative-delta mouse.  Return 0 on success, <0 if
+    // unhandled (the caller then falls back to the default path).
+    //   input_key:          `key` is a key name or "0xNN" keycode string.
+    //   input_mouse_move:   move/position the cursor; `mode` as for mouse.move.
+    //   input_mouse_button: press/release the button; `mode` as for mouse.click.
+    int (*input_key)(struct config *cfg, const char *key, bool down);
+    int (*input_mouse_move)(struct config *cfg, int x, int y, const char *mode);
+    int (*input_mouse_button)(struct config *cfg, bool down, const char *mode);
+
     // Optional: per-machine primary display.  Used by system_display()
     // when cfg->nubus is NULL (Plus and any future non-NuBus machine);
     // glue030-family machines leave this NULL because their display
@@ -136,6 +155,8 @@ extern const hw_profile_t machine_iicx;
 extern const hw_profile_t machine_iix;
 extern const hw_profile_t machine_iifx;
 extern const hw_profile_t machine_iici;
+extern const hw_profile_t machine_lisa;
+extern const hw_profile_t machine_macxl;
 extern const hw_profile_t machine_iisi;
 
 #endif // MACHINE_H
