@@ -87,27 +87,6 @@ LOG_USE_CATEGORY_NAME("iisi");
 // SoA page helper (same logic as the IIci helper)
 // ============================================================
 
-static void iisi_fill_page(uint32_t page_index, uint8_t *host_ptr, bool writable) {
-    if ((int)page_index >= g_page_count)
-        return;
-    g_page_table[page_index].host_base = host_ptr;
-    g_page_table[page_index].dev = NULL;
-    g_page_table[page_index].dev_context = NULL;
-    g_page_table[page_index].writable = writable;
-    uint32_t guest_base = page_index << PAGE_SHIFT;
-    uintptr_t adjusted = (uintptr_t)host_ptr - guest_base;
-    if (g_supervisor_read)
-        g_supervisor_read[page_index] = adjusted;
-    if (g_user_read)
-        g_user_read[page_index] = adjusted;
-    if (writable) {
-        if (g_supervisor_write)
-            g_supervisor_write[page_index] = adjusted;
-        if (g_user_write)
-            g_user_write[page_index] = adjusted;
-    }
-}
-
 // ============================================================
 // ROM overlay
 // ============================================================
@@ -123,12 +102,12 @@ static void iisi_set_rom_overlay(config_t *cfg, bool overlay) {
     if (overlay) {
         for (uint32_t p = 0; p < rom_pages && (int)p < g_page_count; p++) {
             uint8_t *host_ptr = g_page_table[rom_start_page + p].host_base;
-            iisi_fill_page(p, host_ptr, false);
+            mac030_fill_page(p, host_ptr, false);
         }
     } else {
         uint8_t *ram_base = ram_native_pointer(cfg->mem_map, 0);
         for (uint32_t p = 0; p < rom_pages && (int)p < g_page_count; p++)
-            iisi_fill_page(p, ram_base + (p << PAGE_SHIFT), true);
+            mac030_fill_page(p, ram_base + (p << PAGE_SHIFT), true);
     }
 }
 
@@ -322,7 +301,7 @@ static void iisi_memory_layout_init(config_t *cfg) {
     uint32_t bank_a_pages = IISI_BANK_A_SIZE >> PAGE_SHIFT; // 1 MB / 4 KB = 256
     uint32_t bank_a_window_pages = IISI_BANK_B_PHYS >> PAGE_SHIFT; // [0, $04000000)
     for (uint32_t p = 0; p < bank_a_window_pages && (int)p < g_page_count; p++)
-        iisi_fill_page(p, ram_base + ((p % bank_a_pages) << PAGE_SHIFT), true);
+        mac030_fill_page(p, ram_base + ((p % bank_a_pages) << PAGE_SHIFT), true);
 
     uint8_t *bank_b = ram_base + IISI_BANK_A_SIZE;
     uint32_t bank_b_size = (ram_size > IISI_BANK_A_SIZE) ? (ram_size - IISI_BANK_A_SIZE) : 0;
@@ -330,7 +309,7 @@ static void iisi_memory_layout_init(config_t *cfg) {
     uint32_t bank_b_start_page = IISI_BANK_B_PHYS >> PAGE_SHIFT;
     uint32_t bank_b_window_pages = IISI_BANK_WINDOW >> PAGE_SHIFT;
     for (uint32_t i = 0; bank_b_pages && i < bank_b_window_pages && (int)(bank_b_start_page + i) < g_page_count; i++)
-        iisi_fill_page(bank_b_start_page + i, bank_b + ((i % bank_b_pages) << PAGE_SHIFT), true);
+        mac030_fill_page(bank_b_start_page + i, bank_b + ((i % bank_b_pages) << PAGE_SHIFT), true);
 
     uint32_t rom_pages = rom_size >> PAGE_SHIFT;
     uint32_t rom_start_page = IISI_ROM_START >> PAGE_SHIFT;
@@ -338,7 +317,7 @@ static void iisi_memory_layout_init(config_t *cfg) {
     if (rom_pages > 0) {
         for (uint32_t p = rom_start_page; p < rom_end_page && (int)p < g_page_count; p++) {
             uint32_t offset_in_rom = (p - rom_start_page) % rom_pages;
-            iisi_fill_page(p, rom_data + (offset_in_rom << PAGE_SHIFT), false);
+            mac030_fill_page(p, rom_data + (offset_in_rom << PAGE_SHIFT), false);
         }
     }
 
