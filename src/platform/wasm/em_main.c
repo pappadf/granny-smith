@@ -75,6 +75,25 @@ static bool g_deferred_speed_set = false;
 static volatile int pointer_locked = 0;
 static bool mouse_button_down = false;
 
+// True when the active machine is a Lisa-family box (Lisa 2 / Macintosh XL),
+// whose keyboard/mouse live on the COPS rather than the Mac ADB/quadrature
+// devices.  Host input is then routed through the machine substrate's COPS path
+// (system_input_*) instead of the Mac-direct system_keyboard_update/
+// system_mouse_update, which have no device to talk to on the Lisa.
+static bool host_machine_is_lisa(void) {
+    const char *id = system_machine_model_id();
+    return id && (strcmp(id, "lisa") == 0 || strcmp(id, "macxl") == 0);
+}
+
+// Inject a raw Lisa COPS key byte through the substrate (system_input_key parses
+// the "0xNN" form and queues it on the COPS).  A down code is 0xC0-0xFF; the
+// matching up code is the same byte with bit 7 cleared (code & 0x7F).
+static void host_lisa_key(uint8_t code) {
+    char buf[8];
+    snprintf(buf, sizeof(buf), "0x%02X", code);
+    system_input_key(buf, true);
+}
+
 // Forward declarations for input callbacks
 static void setup_pointer_lock(void);
 static EM_BOOL mouse_down_cb(int, const EmscriptenMouseEvent *, void *);
@@ -89,6 +108,16 @@ static void emulator_mouse_move(bool button, int dx, int dy) {
     if (!pointer_locked)
         return; // Ignore mouse movement if pointer is not locked
 
+    // Lisa/Mac XL: the mouse hangs off the COPS, which the Mac-direct
+    // system_mouse_update (ADB / quadrature) can't reach.  Feed the signed
+    // pointer-lock deltas to the COPS report path; the button is injected
+    // separately on its edges (below), matching the COPS keycode model.
+    if (host_machine_is_lisa()) {
+        if (dx || dy)
+            system_input_mouse_move(dx, dy, NULL);
+        return;
+    }
+
     // Call the actual mouse update routine
     system_mouse_update(button, dx, dy);
 }
@@ -100,6 +129,8 @@ static EM_BOOL mouse_down_cb(int type, const EmscriptenMouseEvent *e, void *ud) 
     if (!pointer_locked)
         emscripten_request_pointerlock("#screen", EM_FALSE);
     mouse_button_down = true;
+    if (pointer_locked && host_machine_is_lisa())
+        system_input_mouse_button(true, NULL); // COPS mouse-button keycode
     emulator_mouse_move(mouse_button_down, e->movementX, e->movementY);
     return EM_TRUE;
 }
@@ -109,6 +140,8 @@ static EM_BOOL mouse_up_cb(int type, const EmscriptenMouseEvent *e, void *ud) {
     (void)type;
     (void)ud;
     mouse_button_down = false;
+    if (pointer_locked && host_machine_is_lisa())
+        system_input_mouse_button(false, NULL);
     emulator_mouse_move(mouse_button_down, e->movementX, e->movementY);
     return EM_TRUE;
 }
@@ -334,12 +367,161 @@ static int map_dom_code_to_mac(const char *code, const char *key) {
     return -1; // unmapped key
 }
 
+// ============================================================================
+// Keyboard Mapping (DOM to Lisa COPS)
+// ============================================================================
+
+// Map a DOM physical-key code to the Lisa COPS key-DOWN scancode (final-US
+// layout, id $3F — see lisa.md §11.3).  Returns the down byte (0xC0-0xFF) or -1
+// if unmapped; the matching up byte is (down & 0x7F).  Codes are from LisaEm's
+// keytable.h cross-checked against the boot ROM (KEY1=$F4 '1', KEY2=$F1 '2',
+// KEY3=$F2 '3', Command=$FF), which the boot menu compares directly.
+static int map_dom_code_to_lisa(const char *code) {
+    if (!code)
+        return -1;
+
+    // ── Letters ─────────────────────────────────────────────────────────────
+    if (!strcmp(code, "KeyA"))
+        return 0xF0;
+    if (!strcmp(code, "KeyB"))
+        return 0xEE;
+    if (!strcmp(code, "KeyC"))
+        return 0xED;
+    if (!strcmp(code, "KeyD"))
+        return 0xFB;
+    if (!strcmp(code, "KeyE"))
+        return 0xE0;
+    if (!strcmp(code, "KeyF"))
+        return 0xE9;
+    if (!strcmp(code, "KeyG"))
+        return 0xEA;
+    if (!strcmp(code, "KeyH"))
+        return 0xEB;
+    if (!strcmp(code, "KeyI"))
+        return 0xD3;
+    if (!strcmp(code, "KeyJ"))
+        return 0xD4;
+    if (!strcmp(code, "KeyK"))
+        return 0xD5;
+    if (!strcmp(code, "KeyL"))
+        return 0xD9;
+    if (!strcmp(code, "KeyM"))
+        return 0xD8;
+    if (!strcmp(code, "KeyN"))
+        return 0xEF;
+    if (!strcmp(code, "KeyO"))
+        return 0xDF;
+    if (!strcmp(code, "KeyP"))
+        return 0xC4;
+    if (!strcmp(code, "KeyQ"))
+        return 0xF5;
+    if (!strcmp(code, "KeyR"))
+        return 0xE5;
+    if (!strcmp(code, "KeyS"))
+        return 0xF6;
+    if (!strcmp(code, "KeyT"))
+        return 0xE6;
+    if (!strcmp(code, "KeyU"))
+        return 0xD2;
+    if (!strcmp(code, "KeyV"))
+        return 0xEC;
+    if (!strcmp(code, "KeyW"))
+        return 0xF7;
+    if (!strcmp(code, "KeyX"))
+        return 0xFA;
+    if (!strcmp(code, "KeyY"))
+        return 0xE7;
+    if (!strcmp(code, "KeyZ"))
+        return 0xF9;
+
+    // ── Number row ──────────────────────────────────────────────────────────
+    if (!strcmp(code, "Digit1"))
+        return 0xF4;
+    if (!strcmp(code, "Digit2"))
+        return 0xF1;
+    if (!strcmp(code, "Digit3"))
+        return 0xF2;
+    if (!strcmp(code, "Digit4"))
+        return 0xF3;
+    if (!strcmp(code, "Digit5"))
+        return 0xE4;
+    if (!strcmp(code, "Digit6"))
+        return 0xE1;
+    if (!strcmp(code, "Digit7"))
+        return 0xE2;
+    if (!strcmp(code, "Digit8"))
+        return 0xE3;
+    if (!strcmp(code, "Digit9"))
+        return 0xD0;
+    if (!strcmp(code, "Digit0"))
+        return 0xD1;
+    if (!strcmp(code, "Minus"))
+        return 0xC0; // - / _
+    if (!strcmp(code, "Equal"))
+        return 0xC1; // = / +
+
+    // ── Punctuation ─────────────────────────────────────────────────────────
+    if (!strcmp(code, "BracketLeft"))
+        return 0xD6; // [ / {
+    if (!strcmp(code, "BracketRight"))
+        return 0xD7; // ] / }
+    if (!strcmp(code, "Backslash"))
+        return 0xC2; // \ / |
+    if (!strcmp(code, "Semicolon"))
+        return 0xDA; // ; / :
+    if (!strcmp(code, "Quote"))
+        return 0xDB; // ' / "
+    if (!strcmp(code, "Comma"))
+        return 0xDD; // , / <
+    if (!strcmp(code, "Period"))
+        return 0xDE; // . / >
+    if (!strcmp(code, "Slash"))
+        return 0xCC; // / / ?
+    if (!strcmp(code, "Backquote"))
+        return 0xE8; // ` / ~
+
+    // ── Control keys ────────────────────────────────────────────────────────
+    if (!strcmp(code, "Space"))
+        return 0xDC;
+    if (!strcmp(code, "Enter"))
+        return 0xC8; // Return
+    if (!strcmp(code, "Tab"))
+        return 0xF8;
+    if (!strcmp(code, "Backspace"))
+        return 0xC5; // Backspace / Delete
+
+    // ── Modifiers ───────────────────────────────────────────────────────────
+    if (!strcmp(code, "ShiftLeft"))
+        return 0xFE;
+    if (!strcmp(code, "ShiftRight"))
+        return 0xFE;
+    if (!strcmp(code, "CapsLock"))
+        return 0xFD; // Caps Lock (Alpha Lock)
+    if (!strcmp(code, "MetaLeft"))
+        return 0xFF; // Command (Apple) key
+    if (!strcmp(code, "MetaRight"))
+        return 0xFF;
+    if (!strcmp(code, "OSLeft"))
+        return 0xFF; // Command (Windows key)
+    if (!strcmp(code, "OSRight"))
+        return 0xFF;
+
+    return -1; // unmapped key
+}
+
 // Key down callback
 static EM_BOOL key_down_cb(int type, const EmscriptenKeyboardEvent *e, void *ud) {
     (void)type;
     (void)ud;
     if (!pointer_locked)
         return EM_FALSE;
+    if (host_machine_is_lisa()) {
+        int code = map_dom_code_to_lisa(e->code);
+        if (code < 0)
+            return EM_FALSE;
+        host_lisa_key((uint8_t)code); // COPS down byte (bit 7 set)
+        return EM_TRUE;
+    }
     int k = map_dom_code_to_mac(e->code, e->key);
     if (k < 0)
         return EM_FALSE;
@@ -353,6 +535,13 @@ static EM_BOOL key_up_cb(int type, const EmscriptenKeyboardEvent *e, void *ud) {
     (void)ud;
     if (!pointer_locked)
         return EM_FALSE;
+    if (host_machine_is_lisa()) {
+        int code = map_dom_code_to_lisa(e->code);
+        if (code < 0)
+            return EM_FALSE;
+        host_lisa_key((uint8_t)code & 0x7F); // COPS up byte (bit 7 clear)
+        return EM_TRUE;
+    }
     int k = map_dom_code_to_mac(e->code, e->key);
     if (k < 0)
         return EM_FALSE;
