@@ -191,23 +191,28 @@ config_t *system_config(void) {
     return global_emulator;
 }
 
-// Host-input dispatch to a machine-specific hook (the Lisa COPS).  Each returns
-// 1 if the machine hook handled it, 0 if there is no hook (caller uses the
-// default Mac path), or -1 if the hook was present but rejected the request.
+// Host-input dispatch through the machine substrate (proposal §4.4).  Every
+// substrate implements these — Macs route to the shared mac_input_* helpers
+// (keyboard / Toolbox cursor), the Lisa to its COPS — so there is one uniform
+// path and no caller-side fallback.  Each returns 0 on success, <0 on failure
+// (unknown key/mode, uninitialised memory, no machine).
 int system_input_key(const char *key, bool down) {
-    if (!global_emulator || !global_emulator->machine || !global_emulator->machine->substrate->input_key)
-        return 0;
-    return global_emulator->machine->substrate->input_key(global_emulator, key, down) == 0 ? 1 : -1;
+    config_t *cfg = global_emulator;
+    if (!cfg || !cfg->machine || !cfg->machine->substrate->input_key)
+        return -1;
+    return cfg->machine->substrate->input_key(cfg, key, down);
 }
 int system_input_mouse_move(int x, int y, const char *mode) {
-    if (!global_emulator || !global_emulator->machine || !global_emulator->machine->substrate->input_mouse_move)
-        return 0;
-    return global_emulator->machine->substrate->input_mouse_move(global_emulator, x, y, mode) == 0 ? 1 : -1;
+    config_t *cfg = global_emulator;
+    if (!cfg || !cfg->machine || !cfg->machine->substrate->input_mouse_move)
+        return -1;
+    return cfg->machine->substrate->input_mouse_move(cfg, x, y, mode);
 }
 int system_input_mouse_button(bool down, const char *mode) {
-    if (!global_emulator || !global_emulator->machine || !global_emulator->machine->substrate->input_mouse_button)
-        return 0;
-    return global_emulator->machine->substrate->input_mouse_button(global_emulator, down, mode) == 0 ? 1 : -1;
+    config_t *cfg = global_emulator;
+    if (!cfg || !cfg->machine || !cfg->machine->substrate->input_mouse_button)
+        return -1;
+    return cfg->machine->substrate->input_mouse_button(cfg, down, mode);
 }
 
 // System-level RTC accessor: returns the current RTC object
@@ -290,18 +295,17 @@ int system_ensure_machine(const char *model_id) {
     return 0;
 }
 
-// Helpers to abstract floppy insertion
+// Floppy insertion through the machine substrate (proposal §4.4): every
+// substrate implements fd_present/fd_insert — Macs route to mac_fd_* (their
+// IWM/SWIM via cfg->floppy), the Lisa to its parallel FDC — so there is one
+// uniform path and no cfg->floppy special-case here.
 static bool sys_fd_is_inserted(config_t *cfg, int drive) {
-    if (cfg->floppy)
-        return floppy_is_inserted(cfg->floppy, drive);
     if (cfg->machine && cfg->machine->substrate->fd_present)
         return cfg->machine->substrate->fd_present(cfg, drive);
     return true; // no controller → treat as occupied
 }
 
 static int sys_fd_insert(config_t *cfg, int drive, image_t *disk) {
-    if (cfg->floppy)
-        return floppy_insert(cfg->floppy, drive, disk);
     if (cfg->machine && cfg->machine->substrate->fd_insert)
         return cfg->machine->substrate->fd_insert(cfg, drive, disk);
     return -1;

@@ -8,6 +8,7 @@
 // init, teardown, checkpoint save/restore, VIA/SCC interrupt callbacks,
 // VBL trigger, and the static hw_profile_t descriptor.
 
+#include "mac_host_io.h"
 #include "machine.h"
 #include "system_config.h" // full config_t definition
 
@@ -543,6 +544,11 @@ static const machine_substrate_t plus_substrate = {
     .teardown = plus_teardown,
     .checkpoint_save = plus_checkpoint_save,
     .trigger_vbl = plus_trigger_vbl,
+    .fd_insert = mac_fd_insert,
+    .fd_present = mac_fd_present,
+    .input_key = mac_input_key,
+    .input_mouse_move = mac_input_mouse_move,
+    .input_mouse_button = mac_input_mouse_button,
     .display = plus_display,
 };
 

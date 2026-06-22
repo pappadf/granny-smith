@@ -15,6 +15,7 @@
 
 #include "mac030_glue.h"
 #include "mac030_glue_io.h"
+#include "mac_host_io.h"
 #include "machine.h"
 #include "mmu_checkpoint.h"
 #include "system_config.h" // full config_t definition
@@ -546,6 +547,11 @@ static const machine_substrate_t se30_substrate = {
     .checkpoint_save = se30_checkpoint_save,
     .update_ipl = mac030_glue_update_ipl,
     .trigger_vbl = se30_trigger_vbl,
+    .fd_insert = mac_fd_insert,
+    .fd_present = mac_fd_present,
+    .input_key = mac_input_key,
+    .input_mouse_move = mac_input_mouse_move,
+    .input_mouse_button = mac_input_mouse_button,
 };
 
 const hw_profile_t machine_se30 = {

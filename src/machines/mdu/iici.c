@@ -20,6 +20,7 @@
 //   * ADB / RTC use the classic VIA1 path (no Egret) — identical to IIcx.
 
 #include "mac030_glue.h"
+#include "mac_host_io.h"
 #include "machine.h"
 #include "mmu_checkpoint.h"
 #include "system_config.h"
@@ -479,6 +480,11 @@ static const machine_substrate_t iici_substrate = {
     .checkpoint_save = iici_checkpoint_save,
     .update_ipl = mac030_glue_update_ipl,
     .trigger_vbl = iici_trigger_vbl,
+    .fd_insert = mac_fd_insert,
+    .fd_present = mac_fd_present,
+    .input_key = mac_input_key,
+    .input_mouse_move = mac_input_mouse_move,
+    .input_mouse_button = mac_input_mouse_button,
 };
 
 const hw_profile_t machine_iici = {
