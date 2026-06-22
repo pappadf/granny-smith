@@ -486,8 +486,6 @@ const hw_profile_t machine_iici = {
 
     .cpu_model = 68030,
     .freq = 25000000, // 25 MHz
-    .mmu_present = true,
-    .fpu_present = true,
     .mmu_kind = MMU_68030_PMMU,
 
     .address_bits = 32,
@@ -504,10 +502,6 @@ const hw_profile_t machine_iici = {
     // drives it from the hard-coded VideoInfoMDU record.
     .needs_vrom = false,
 
-    .via_count = 1, // VIA2 is replaced by the RBV
-    .has_adb = true,
-    .has_nubus = true,
-    .nubus_slot_count = 3, // $C, $D, $E user-visible
     .nubus_slots = iici_slots,
 
     .init = iici_init,

@@ -69,11 +69,9 @@ typedef struct hw_profile {
     // Processor
     int cpu_model; // 68000, 68030
     uint32_t freq; // CPU clock in Hz
-    bool mmu_present;
-    bool fpu_present;
     // Typed MMU kind — the single source of truth behind the exported
-    // `mmu.kind` capability (proposal §4.4).  `mmu_present` is the legacy
-    // bool kept until phase 6 deletes it; new code reads mmu_kind.
+    // `mmu.kind` capability (proposal §4.4).  FPU presence is derived from
+    // cpu_model via cpu_has_fpu(); neither is a separate descriptor field.
     mmu_kind_t mmu_kind;
 
     // Address space
@@ -101,12 +99,6 @@ typedef struct hw_profile {
     // non-empty selection.  Dialog-only: machine init still pulls
     // vrom_pending_path() per-machine; this flag exists solely to drive UX.
     bool needs_vrom;
-
-    // Peripheral counts
-    int via_count; // 1 (Plus) or 2 (IIcx)
-    bool has_adb;
-    bool has_nubus;
-    int nubus_slot_count;
 
     // NuBus slot declarations — sentinel-terminated array of
     // nubus_slot_decl_t (slot id, kind, builtin/available card list).

@@ -400,8 +400,6 @@ const hw_profile_t machine_iicx = {
 
     .cpu_model = 68030,
     .freq = 15667200,
-    .mmu_present = true,
-    .fpu_present = true,
     .mmu_kind = MMU_68030_PMMU,
 
     .address_bits = 32,
@@ -424,10 +422,6 @@ const hw_profile_t machine_iicx = {
     // by its canonical name during card init.
     .needs_vrom = true,
 
-    .via_count = 2,
-    .has_adb = true,
-    .has_nubus = true,
-    .nubus_slot_count = 3,
     .nubus_slots = iicx_slots,
 
     .init = iicx_init,

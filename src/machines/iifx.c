@@ -1701,8 +1701,6 @@ const hw_profile_t machine_iifx = {
 
     .cpu_model = 68030,
     .freq = 40000000,
-    .mmu_present = true,
-    .fpu_present = true,
     .mmu_kind = MMU_68030_PMMU,
 
     .address_bits = 32,
@@ -1717,10 +1715,6 @@ const hw_profile_t machine_iifx = {
     .cdrom_id = 3,
     .needs_vrom = true,
 
-    .via_count = 1,
-    .has_adb = true,
-    .has_nubus = true,
-    .nubus_slot_count = 6,
     .nubus_slots = iifx_slots,
 
     .init = iifx_init,

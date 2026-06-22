@@ -545,8 +545,6 @@ const hw_profile_t machine_plus = {
     // 68000 at 7.8336 MHz (actual Plus clock)
     .cpu_model = 68000,
     .freq = 7833600,
-    .mmu_present = false,
-    .fpu_present = false,
     .mmu_kind = MMU_NONE,
 
     // 24-bit address space
@@ -564,10 +562,6 @@ const hw_profile_t machine_plus = {
     .needs_vrom = false,
 
     // Single VIA, no ADB, no NuBus
-    .via_count = 1,
-    .has_adb = false,
-    .has_nubus = false,
-    .nubus_slot_count = 0,
 
     // Lifecycle callbacks wired to Plus-specific implementations
     .init = plus_init,

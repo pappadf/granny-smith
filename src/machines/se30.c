@@ -625,8 +625,6 @@ const hw_profile_t machine_se30 = {
     // 68030 at 15.6672 MHz
     .cpu_model = 68030,
     .freq = 15667200,
-    .mmu_present = true,
-    .fpu_present = true, // 68882 FPU standard on SE/30
     .mmu_kind = MMU_68030_PMMU,
 
     // 32-bit address space
@@ -644,10 +642,6 @@ const hw_profile_t machine_se30 = {
     .needs_vrom = true,
 
     // Two VIAs, ADB present, one PDS slot (no NuBus)
-    .via_count = 2,
-    .has_adb = true,
-    .has_nubus = false,
-    .nubus_slot_count = 0,
 
     // Lifecycle callbacks
     .init = se30_init,

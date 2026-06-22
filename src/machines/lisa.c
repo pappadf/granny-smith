@@ -979,8 +979,6 @@ const hw_profile_t machine_lisa = {
     // 68000 at 5.09375 MHz (20.375 MHz crystal / 4).
     .cpu_model = 68000,
     .freq = 5093750,
-    .mmu_present = false, // custom segment MMU, not a Motorola PMMU
-    .fpu_present = false,
     .mmu_kind = MMU_LISA_SEGMENT,
 
     .address_bits = 24,
@@ -994,11 +992,6 @@ const hw_profile_t machine_lisa = {
     .has_cdrom = false,
     .cdrom_id = 0,
     .needs_vrom = false,
-
-    .via_count = 2, // VIA1 (COPS) + VIA2 (parallel disk) — wired in Steps 4/7
-    .has_adb = false,
-    .has_nubus = false,
-    .nubus_slot_count = 0,
 
     .init = lisa_init,
     .teardown = lisa_teardown,
@@ -1027,8 +1020,6 @@ const hw_profile_t machine_macxl = {
 
     .cpu_model = 68000,
     .freq = 5093750,
-    .mmu_present = false,
-    .fpu_present = false,
     .mmu_kind = MMU_LISA_SEGMENT,
 
     .address_bits = 24,
@@ -1042,11 +1033,6 @@ const hw_profile_t machine_macxl = {
     .has_cdrom = false,
     .cdrom_id = 0,
     .needs_vrom = false,
-
-    .via_count = 2,
-    .has_adb = false,
-    .has_nubus = false,
-    .nubus_slot_count = 0,
 
     .init = lisa_init,
     .teardown = lisa_teardown,

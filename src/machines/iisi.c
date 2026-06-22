@@ -507,8 +507,6 @@ const hw_profile_t machine_iisi = {
 
     .cpu_model = 68030,
     .freq = 20000000, // 20 MHz
-    .mmu_present = true,
-    .fpu_present = true, // FPU adapter present by default
     .mmu_kind = MMU_68030_PMMU,
 
     .address_bits = 32,
@@ -525,10 +523,6 @@ const hw_profile_t machine_iisi = {
     // it from the hard-coded VideoInfoMacIIsi record.
     .needs_vrom = false,
 
-    .via_count = 1, // VIA2 is replaced by the RBV
-    .has_adb = true,
-    .has_nubus = true,
-    .nubus_slot_count = 0, // no user-visible expansion slots in v1
     .nubus_slots = iisi_slots,
 
     .init = iisi_init,
