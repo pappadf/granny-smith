@@ -5,10 +5,9 @@
 // Shared internals for the IIcx / IIx pair.  Both machines run the same
 // GLUE-driven I/O map, share dual-VIA / 68030 / Universal-ROM peripherals,
 // and only diverge in a handful of decisions: slot table, machine-ID bits,
-// soft-power policy, sound-jack policy.  iix.c reuses iicx.c's internals
-// via this header so the family-shared code lives in one place — a
-// pragmatic stand-in for the proper §3.1 glue030 extraction that lands
-// when a third caller arrives.
+// soft-power policy, sound-jack policy.  iix.c reuses iicx.c's internals via
+// this header; the family-shared lifecycle + I/O engine live in mac030/ (the
+// §4.2 GLUE substrate).
 
 #ifndef IICX_INTERNAL_H
 #define IICX_INTERNAL_H

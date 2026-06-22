@@ -17,11 +17,9 @@
 //   * Sound-jack-detect via VIA2 PB6 (`v2SndJck`) — input only.
 //   * No buffer-select handling on VIA1 PA6 (no built-in framebuffer).
 //
-// The bulk of this file mirrors se30.c — the proper §3.1 glue030
-// extraction (which would slim iicx down to ~150 LOC) is deliberately
-// deferred per the proposal's "ratchet refactor" stance: ship working
-// IIcx now, factor out the duplication when iix.c lands and the third
-// caller arrives.
+// The family-shared lifecycle + I/O dispatch live in mac030/ (the §4.2 GLUE
+// substrate); this file is the IIcx's per-machine deltas (board descriptor +
+// VIA/ID hooks) on top of it.  iix.c reuses these via iicx_internal.h.
 
 #include "mac030_glue.h"
 #include "mac_host_io.h"

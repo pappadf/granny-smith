@@ -141,7 +141,6 @@ INCLUDES := -I$(CORE_DIR) \
             -I$(CORE_DIR)/object \
             -I$(CORE_DIR)/vfs \
             -I$(MACHINES_DIR) \
-            -I$(MACHINES_DIR)/glue030 \
             -I$(MACHINES_DIR)/runtime \
             -I$(MACHINES_DIR)/mac030 \
             -I$(MACHINES_DIR)/glue \
