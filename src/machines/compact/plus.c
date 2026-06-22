@@ -538,6 +538,14 @@ static const struct scsi_slot plus_scsi_slots[] = {
 };
 
 // Macintosh Plus hardware profile descriptor
+static const machine_substrate_t plus_substrate = {
+    .init = plus_init,
+    .teardown = plus_teardown,
+    .checkpoint_save = plus_checkpoint_save,
+    .trigger_vbl = plus_trigger_vbl,
+    .display = plus_display,
+};
+
 const hw_profile_t machine_plus = {
     .name = "Macintosh Plus",
     .id = "plus",
@@ -564,12 +572,5 @@ const hw_profile_t machine_plus = {
     // Single VIA, no ADB, no NuBus
 
     // Lifecycle callbacks wired to Plus-specific implementations
-    .init = plus_init,
-    .teardown = plus_teardown,
-    .checkpoint_save = plus_checkpoint_save,
-    .checkpoint_restore = NULL, // restore is handled by plus_init when checkpoint != NULL
-    .memory_layout_init = plus_memory_layout_init,
-    .update_ipl = NULL, // internal: plus_update_ipl() called directly by VIA/SCC callbacks
-    .trigger_vbl = plus_trigger_vbl,
-    .display = plus_display,
+    .substrate = &plus_substrate,
 };

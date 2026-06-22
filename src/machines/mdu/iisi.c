@@ -501,6 +501,15 @@ static const struct scsi_slot iisi_scsi_slots[] = {
     {0},
 };
 
+static const machine_substrate_t iisi_substrate = {
+    .init = iisi_init,
+    .reset = iisi_reset,
+    .teardown = iisi_teardown,
+    .checkpoint_save = iisi_checkpoint_save,
+    .update_ipl = mac030_glue_update_ipl,
+    .trigger_vbl = iisi_trigger_vbl,
+};
+
 const hw_profile_t machine_iisi = {
     .name = "Macintosh IIsi",
     .id = "iisi",
@@ -525,13 +534,5 @@ const hw_profile_t machine_iisi = {
 
     .nubus_slots = iisi_slots,
 
-    .init = iisi_init,
-    .reset = iisi_reset,
-    .teardown = iisi_teardown,
-    .checkpoint_save = iisi_checkpoint_save,
-    .checkpoint_restore = NULL,
-    .memory_layout_init = iisi_memory_layout_init,
-    .update_ipl = mac030_glue_update_ipl,
-    .trigger_vbl = iisi_trigger_vbl,
-    .display = NULL, // primary display sourced from cfg->nubus
+    .substrate = &iisi_substrate,
 };

@@ -394,6 +394,15 @@ static const struct scsi_slot iicx_scsi_slots[] = {
     {0},
 };
 
+static const machine_substrate_t iicx_substrate = {
+    .init = iicx_init,
+    .reset = iicx_reset,
+    .teardown = iicx_teardown,
+    .checkpoint_save = iicx_checkpoint_save,
+    .update_ipl = mac030_glue_update_ipl,
+    .trigger_vbl = iicx_trigger_vbl,
+};
+
 const hw_profile_t machine_iicx = {
     .name = "Macintosh IIcx",
     .id = "iicx",
@@ -424,13 +433,5 @@ const hw_profile_t machine_iicx = {
 
     .nubus_slots = iicx_slots,
 
-    .init = iicx_init,
-    .reset = iicx_reset,
-    .teardown = iicx_teardown,
-    .checkpoint_save = iicx_checkpoint_save,
-    .checkpoint_restore = NULL,
-    .memory_layout_init = iicx_memory_layout_init,
-    .update_ipl = mac030_glue_update_ipl,
-    .trigger_vbl = iicx_trigger_vbl,
-    .display = NULL, // primary display sourced from cfg->nubus
+    .substrate = &iicx_substrate,
 };

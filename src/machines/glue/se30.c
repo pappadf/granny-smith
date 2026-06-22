@@ -618,6 +618,15 @@ static const struct scsi_slot se30_scsi_slots[] = {
 };
 
 // Macintosh SE/30 hardware profile descriptor
+static const machine_substrate_t se30_substrate = {
+    .init = se30_init,
+    .reset = se30_reset,
+    .teardown = se30_teardown,
+    .checkpoint_save = se30_checkpoint_save,
+    .update_ipl = mac030_glue_update_ipl,
+    .trigger_vbl = se30_trigger_vbl,
+};
+
 const hw_profile_t machine_se30 = {
     .name = "Macintosh SE/30",
     .id = "se30",
@@ -644,12 +653,5 @@ const hw_profile_t machine_se30 = {
     // Two VIAs, ADB present, one PDS slot (no NuBus)
 
     // Lifecycle callbacks
-    .init = se30_init,
-    .reset = se30_reset,
-    .teardown = se30_teardown,
-    .checkpoint_save = se30_checkpoint_save,
-    .checkpoint_restore = NULL, // restore handled by se30_init when checkpoint != NULL
-    .memory_layout_init = se30_memory_layout_init,
-    .update_ipl = mac030_glue_update_ipl,
-    .trigger_vbl = se30_trigger_vbl,
+    .substrate = &se30_substrate,
 };

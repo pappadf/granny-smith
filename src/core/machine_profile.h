@@ -68,7 +68,33 @@ struct scsi_slot {
     int id; // Conventional SCSI bus id for this slot
 };
 
-// Machine descriptor: static metadata and callbacks for each emulated machine model
+// Machine lifecycle + host-input vtable.  The behavior half of a machine
+// (proposal §4.4): hw_profile_t is pure descriptor DATA and points at one of
+// these.  system.c / nubus.c dispatch through it; every hook is NULL-safe.
+// (memory_layout_init and checkpoint_restore are deliberately absent — they
+// were never dispatched: each init runs its own layout directly and restore
+// is folded into init.)
+typedef struct machine_substrate {
+    void (*init)(struct config *cfg, checkpoint_t *cp);
+    void (*reset)(struct config *cfg); // hardware RESET line
+    void (*teardown)(struct config *cfg);
+    void (*checkpoint_save)(struct config *cfg, checkpoint_t *cp);
+
+    void (*update_ipl)(struct config *cfg, int source, bool active); // NuBus IRQ routing
+    void (*trigger_vbl)(struct config *cfg);
+
+    // Non-IWM floppy insertion (Lisa FDC); host-input injection (Lisa COPS);
+    // and the primary display on the non-NuBus path.  NULL where unused.
+    int (*fd_insert)(struct config *cfg, int drive, struct image *disk);
+    bool (*fd_present)(struct config *cfg, int drive);
+    int (*input_key)(struct config *cfg, const char *key, bool down);
+    int (*input_mouse_move)(struct config *cfg, int x, int y, const char *mode);
+    int (*input_mouse_button)(struct config *cfg, bool down, const char *mode);
+    struct display *(*display)(struct config *cfg);
+} machine_substrate_t;
+
+// Machine descriptor: static metadata for each emulated machine model.  The
+// behavior (lifecycle + host input) lives on the bound machine_substrate_t.
 typedef struct hw_profile {
     // Identity
     const char *name; // Human-readable, e.g. "Macintosh Plus"
@@ -117,42 +143,8 @@ typedef struct hw_profile {
     // runtime view and the profile view are guaranteed identical.
     const struct nubus_slot_decl *nubus_slots;
 
-    // Callbacks: machine-specific setup/teardown
-    void (*init)(struct config *cfg, checkpoint_t *cp);
-    void (*reset)(struct config *cfg); // hardware RESET line: re-init VIAs, overlay, MMU
-    void (*teardown)(struct config *cfg);
-    void (*checkpoint_save)(struct config *cfg, checkpoint_t *cp);
-    void (*checkpoint_restore)(struct config *cfg, checkpoint_t *cp);
-
-    // Machine-specific memory layout setup
-    void (*memory_layout_init)(struct config *cfg);
-
-    // Machine-specific interrupt routing
-    void (*update_ipl)(struct config *cfg, int source, bool active);
-
-    // Machine-specific VBL handling
-    void (*trigger_vbl)(struct config *cfg);
-
-    // Optional: per-machine floppy insertion for non-IWM controllers (the Lisa
-    // intelligent FDC).  When cfg->floppy is NULL the framework routes floppy
-    // insert/present queries here instead.  NULL on IWM/SWIM machines.
-    int (*fd_insert)(struct config *cfg, int drive, struct image *disk);
-    bool (*fd_present)(struct config *cfg, int drive);
-
-    // Optional: per-machine host-input injection.  When present, the `keyboard`
-    // and `mouse` object methods route here instead of the default Mac (ADB /
-    // Toolbox-globals) path — the Lisa uses these to drive its COPS, which has
-    // its own keycodes and a relative-delta mouse.  Return 0 on success, <0 if
-    // unhandled (the caller then falls back to the default path).
-    int (*input_key)(struct config *cfg, const char *key, bool down);
-    int (*input_mouse_move)(struct config *cfg, int x, int y, const char *mode);
-    int (*input_mouse_button)(struct config *cfg, bool down, const char *mode);
-
-    // Optional: per-machine primary display.  Used by system_display()
-    // when cfg->nubus is NULL (Plus and any future non-NuBus machine);
-    // NuBus-video machines leave this NULL because their display comes from a
-    // NuBus card via cfg->nubus.  Forward declaration of display_t in system.h.
-    struct display *(*display)(struct config *cfg);
+    // Behavior: the lifecycle + host-input vtable for this machine.
+    const machine_substrate_t *substrate;
 } hw_profile_t;
 
 // Registry: find a machine profile by id (NULL if unknown).

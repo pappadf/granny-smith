@@ -237,6 +237,15 @@ static const struct scsi_slot iix_scsi_slots[] = {
     {0},
 };
 
+static const machine_substrate_t iix_substrate = {
+    .init = iix_init,
+    .reset = iix_reset,
+    .teardown = iix_teardown,
+    .checkpoint_save = iix_checkpoint_save,
+    .update_ipl = mac030_glue_update_ipl,
+    .trigger_vbl = iix_trigger_vbl,
+};
+
 const hw_profile_t machine_iix = {
     .name = "Macintosh IIx",
     .id = "iix",
@@ -262,13 +271,5 @@ const hw_profile_t machine_iix = {
 
     .nubus_slots = iix_slots,
 
-    .init = iix_init,
-    .reset = iix_reset,
-    .teardown = iix_teardown,
-    .checkpoint_save = iix_checkpoint_save,
-    .checkpoint_restore = NULL,
-    .memory_layout_init = iicx_memory_layout_init,
-    .update_ipl = mac030_glue_update_ipl,
-    .trigger_vbl = iix_trigger_vbl,
-    .display = NULL,
+    .substrate = &iix_substrate,
 };

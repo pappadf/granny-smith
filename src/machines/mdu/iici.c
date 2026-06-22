@@ -480,6 +480,15 @@ static const struct scsi_slot iici_scsi_slots[] = {
     {0},
 };
 
+static const machine_substrate_t iici_substrate = {
+    .init = iici_init,
+    .reset = iici_reset,
+    .teardown = iici_teardown,
+    .checkpoint_save = iici_checkpoint_save,
+    .update_ipl = mac030_glue_update_ipl,
+    .trigger_vbl = iici_trigger_vbl,
+};
+
 const hw_profile_t machine_iici = {
     .name = "Macintosh IIci",
     .id = "iici",
@@ -504,13 +513,5 @@ const hw_profile_t machine_iici = {
 
     .nubus_slots = iici_slots,
 
-    .init = iici_init,
-    .reset = iici_reset,
-    .teardown = iici_teardown,
-    .checkpoint_save = iici_checkpoint_save,
-    .checkpoint_restore = NULL,
-    .memory_layout_init = iici_memory_layout_init,
-    .update_ipl = mac030_glue_update_ipl,
-    .trigger_vbl = iici_trigger_vbl,
-    .display = NULL, // primary display sourced from cfg->nubus
+    .substrate = &iici_substrate,
 };

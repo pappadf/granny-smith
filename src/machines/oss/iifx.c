@@ -1695,6 +1695,15 @@ static const struct scsi_slot iifx_scsi_slots[] = {
     {0},
 };
 
+static const machine_substrate_t iifx_substrate = {
+    .init = iifx_init,
+    .reset = iifx_reset,
+    .teardown = iifx_teardown,
+    .checkpoint_save = iifx_checkpoint_save,
+    .update_ipl = iifx_update_ipl,
+    .trigger_vbl = iifx_trigger_vbl,
+};
+
 const hw_profile_t machine_iifx = {
     .name = "Macintosh IIfx",
     .id = "iifx",
@@ -1717,13 +1726,5 @@ const hw_profile_t machine_iifx = {
 
     .nubus_slots = iifx_slots,
 
-    .init = iifx_init,
-    .reset = iifx_reset,
-    .teardown = iifx_teardown,
-    .checkpoint_save = iifx_checkpoint_save,
-    .checkpoint_restore = NULL,
-    .memory_layout_init = iifx_memory_layout_init,
-    .update_ipl = iifx_update_ipl,
-    .trigger_vbl = iifx_trigger_vbl,
-    .display = NULL,
+    .substrate = &iifx_substrate,
 };

@@ -173,10 +173,10 @@ void nubus_assert_irq(nubus_card_t *card) {
 
     via_t *via2 = bus->cfg ? bus->cfg->via2 : NULL;
     if (!via2) {
-        if (bus->cfg && bus->cfg->machine && bus->cfg->machine->update_ipl) {
+        if (bus->cfg && bus->cfg->machine && bus->cfg->machine->substrate->update_ipl) {
             int source = card->slot - 0x9;
             if (source >= 0 && source <= 5)
-                bus->cfg->machine->update_ipl(bus->cfg, 1 << source, true);
+                bus->cfg->machine->substrate->update_ipl(bus->cfg, 1 << source, true);
         }
         return;
     }
@@ -196,10 +196,10 @@ void nubus_deassert_irq(nubus_card_t *card) {
 
     via_t *via2 = bus->cfg ? bus->cfg->via2 : NULL;
     if (!via2) {
-        if (bus->cfg && bus->cfg->machine && bus->cfg->machine->update_ipl) {
+        if (bus->cfg && bus->cfg->machine && bus->cfg->machine->substrate->update_ipl) {
             int source = card->slot - 0x9;
             if (source >= 0 && source <= 5)
-                bus->cfg->machine->update_ipl(bus->cfg, 1 << source, false);
+                bus->cfg->machine->substrate->update_ipl(bus->cfg, 1 << source, false);
         }
         return;
     }

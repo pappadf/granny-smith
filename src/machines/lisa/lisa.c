@@ -972,6 +972,19 @@ static const struct scsi_slot lisa_scsi_slots[] = {
 };
 
 // Apple Lisa 2 hardware profile.
+static const machine_substrate_t lisa_substrate = {
+    .init = lisa_init,
+    .teardown = lisa_teardown,
+    .checkpoint_save = lisa_checkpoint_save,
+    .trigger_vbl = lisa_trigger_vbl,
+    .display = lisa_display,
+    .fd_insert = lisa_fd_insert,
+    .fd_present = lisa_fd_present,
+    .input_key = lisa_input_key,
+    .input_mouse_move = lisa_input_mouse_move,
+    .input_mouse_button = lisa_input_mouse_button,
+};
+
 const hw_profile_t machine_lisa = {
     .name = "Apple Lisa 2",
     .id = "lisa",
@@ -993,19 +1006,7 @@ const hw_profile_t machine_lisa = {
     .cdrom_id = 0,
     .needs_vrom = false,
 
-    .init = lisa_init,
-    .teardown = lisa_teardown,
-    .checkpoint_save = lisa_checkpoint_save,
-    .checkpoint_restore = NULL, // restore handled by lisa_init when checkpoint != NULL
-    .memory_layout_init = NULL, // segment MMU owns all translation; no page-table setup
-    .update_ipl = NULL, // interrupt routing wired with the peripherals (Step 4+)
-    .trigger_vbl = lisa_trigger_vbl,
-    .display = lisa_display,
-    .fd_insert = lisa_fd_insert,
-    .fd_present = lisa_fd_present,
-    .input_key = lisa_input_key,
-    .input_mouse_move = lisa_input_mouse_move,
-    .input_mouse_button = lisa_input_mouse_button,
+    .substrate = &lisa_substrate,
 };
 
 // Macintosh XL: the same Lisa 2 hardware sold with the "3A" boot ROM and the
@@ -1034,17 +1035,5 @@ const hw_profile_t machine_macxl = {
     .cdrom_id = 0,
     .needs_vrom = false,
 
-    .init = lisa_init,
-    .teardown = lisa_teardown,
-    .checkpoint_save = lisa_checkpoint_save,
-    .checkpoint_restore = NULL,
-    .memory_layout_init = NULL,
-    .update_ipl = NULL,
-    .trigger_vbl = lisa_trigger_vbl,
-    .display = lisa_display,
-    .fd_insert = lisa_fd_insert,
-    .fd_present = lisa_fd_present,
-    .input_key = lisa_input_key,
-    .input_mouse_move = lisa_input_mouse_move,
-    .input_mouse_button = lisa_input_mouse_button,
+    .substrate = &lisa_substrate,
 };
