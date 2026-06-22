@@ -16,6 +16,7 @@
 #include "log.h"
 #include "memory.h"
 #include "mmu.h"
+#include "mmu_checkpoint.h"
 #include "nubus.h"
 #include "rtc.h"
 #include "scc.h"
