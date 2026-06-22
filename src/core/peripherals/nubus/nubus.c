@@ -10,8 +10,8 @@
 #include "nubus.h"
 #include "card.h"
 #include "log.h"
-#include "system_config.h" // full config_t for VIA pointer access
-#include "via.h"
+#include "machine_profile.h" // machine_substrate_t (slot-IRQ routing)
+#include "system_config.h"
 
 #include <stdint.h>
 #include <stdlib.h>
@@ -164,28 +164,22 @@ void nubus_tick_vbl(nubus_bus_t *bus) {
 // umbrella transition (no slot asserted → any slot asserted).  Pure
 // skeleton at step 3 — no card calls into here yet.
 
+// Drive a slot's /NMRQ line through the machine substrate (proposal §4.4): the
+// bus owns the slot-IRQ aggregate mask and the umbrella transition, the chipset
+// owns HOW the line reaches the CPU (GLUE → VIA2; MDU/OSS → its own IRQ
+// controller).  nubus.c stays machine-agnostic — no cfg->via2 here.
+static void nubus_route_slot_irq(config_t *cfg, int slot, bool active, bool umbrella_edge) {
+    if (cfg && cfg->machine && cfg->machine->substrate->nubus_slot_irq)
+        cfg->machine->substrate->nubus_slot_irq(cfg, slot, active, umbrella_edge);
+}
+
 void nubus_assert_irq(nubus_card_t *card) {
     if (!card || !card->bus)
         return;
     nubus_bus_t *bus = card->bus;
     bool any_was_asserted = (bus->slot_irq_mask != 0);
     bus->slot_irq_mask |= (uint16_t)(1u << card->slot);
-
-    via_t *via2 = bus->cfg ? bus->cfg->via2 : NULL;
-    if (!via2) {
-        if (bus->cfg && bus->cfg->machine && bus->cfg->machine->update_ipl) {
-            int source = card->slot - 0x9;
-            if (source >= 0 && source <= 5)
-                bus->cfg->machine->update_ipl(bus->cfg, 1 << source, true);
-        }
-        return;
-    }
-    int pa_bit = card->slot - 0x9;
-    if (pa_bit >= 0 && pa_bit <= 5)
-        via_input(via2, /*port A*/ 0, pa_bit, /*active-low*/ 0);
-
-    if (!any_was_asserted)
-        via_input_c(via2, /*CA1*/ 0, /*pin*/ 0, /*falling*/ 0);
+    nubus_route_slot_irq(bus->cfg, card->slot, /*active*/ true, /*umbrella_edge*/ !any_was_asserted);
 }
 
 void nubus_deassert_irq(nubus_card_t *card) {
@@ -193,20 +187,5 @@ void nubus_deassert_irq(nubus_card_t *card) {
         return;
     nubus_bus_t *bus = card->bus;
     bus->slot_irq_mask &= (uint16_t) ~(1u << card->slot);
-
-    via_t *via2 = bus->cfg ? bus->cfg->via2 : NULL;
-    if (!via2) {
-        if (bus->cfg && bus->cfg->machine && bus->cfg->machine->update_ipl) {
-            int source = card->slot - 0x9;
-            if (source >= 0 && source <= 5)
-                bus->cfg->machine->update_ipl(bus->cfg, 1 << source, false);
-        }
-        return;
-    }
-    int pa_bit = card->slot - 0x9;
-    if (pa_bit >= 0 && pa_bit <= 5)
-        via_input(via2, 0, pa_bit, 1);
-
-    if (bus->slot_irq_mask == 0)
-        via_input_c(via2, 0, 0, 1);
+    nubus_route_slot_irq(bus->cfg, card->slot, /*active*/ false, /*umbrella_edge*/ bus->slot_irq_mask == 0);
 }

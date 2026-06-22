@@ -10,14 +10,17 @@ Granny Smith: a browser-based Motorola 68000 Macintosh Plus–style emulator com
   - `headless/`: Native command-line platform for testing (headless_main.c)
 - `app/web2/`: Browser frontend (Svelte 5 + Vite + TypeScript) — default
 - `app/web-legacy/`: Previous browser frontend (vanilla HTML/JS/CSS) — reachable via `make run-legacy` while it soaks before removal
-- `docs/`: Design, architecture, and developer docs
+- `docs/`: Design, architecture, and developer docs, mirroring the code tree:
+  `docs/guide/` (dev/process), `docs/core/<subsystem>/` (mirrors `src/core/`),
+  `docs/machines/<family>/` (mirrors `src/machines/`), `docs/notes/` (dated
+  investigation logs, not reference)
 - `build/`: Generated artifacts — do not edit
 - `scripts/`: Tools and helpers
 - `tests/unit`: Unit tests (native, suites in `suites/`, infrastructure in `support/`)
 - `tests/e2e`: Playwright end-to-end tests (specs in `specs/`, helpers in `helpers/`)
 - `third-party/`: External libraries
 
-Emulator modules (e.g., scsi, cpu, via, scc, rtc) have `.c`/`.h` files in `src/core/*/` and documentation in `docs/`.
+Emulator modules (e.g., scsi, cpu, via, scc, rtc) have `.c`/`.h` files in `src/core/*/` and documentation under `docs/core/<subsystem>/`; machine/family docs live under `docs/machines/<family>/`.
   
   - `third-party/peeler` is a required git submodule for a full build. To clone with submodules, use:
     - `git clone --recurse-submodules <repo-url>`
@@ -134,7 +137,7 @@ to not break this rule in the first place.
 - Focus on headless target and integration tests (`make integration-test`)—these are portable C programs
 - Only install valgrind if needed for memory checking
 - Avoid e2e tests unless full toolchain is confirmed available
-- If builds fail (especially HTTP 403 errors from emsdk), see `docs/COPILOT_ENV_SETUP.md`
+- If builds fail (especially HTTP 403 errors from emsdk), see `docs/guide/COPILOT_ENV_SETUP.md`
 
 **Important: Running Playwright Tests**
 - A) **Never use the `timeout` command** with Playwright tests (e.g., `timeout 150 npx ...`). Playwright writes test data and logs at the end of tests; premature interruption will lose this data. Use built-in test timeout mechanisms instead (e.g., `test.setTimeout(180_000)` in test files).
@@ -170,7 +173,7 @@ to not break this rule in the first place.
   - Default category is `memory` (enable with `log memory 1`)
   - Messages may reference `$pc`, `$value`, `$instruction_pc`, `$cpu.d0..d7`, `$cpu.a0..a7`, `$addr`
   - Implemented without slowing the fast path: covered pages are zeroed in the
-    SoA arrays so only logged pages take the slow-path penalty (see `docs/memory.md`)
+    SoA arrays so only logged pages take the slow-path penalty (see `docs/core/memory/memory.md`)
 - Bus-error / exception trace ring is always on; dump with `info exceptions [N]`,
   stream live with `log exceptions 1`
 
@@ -187,7 +190,7 @@ to not break this rule in the first place.
 - For each significant statement or calculation, add a concise one-line comment
 - Each function and structure needs a one-line comment above describing its purpose
 - Do not change or remove existing comments unnecessarily
-- Refer to `docs/STYLE_GUIDE.md` for conventions when unsure
+- Refer to `docs/guide/STYLE_GUIDE.md` for conventions when unsure
 
 ## Object model (`gs_eval`)
 

@@ -16,6 +16,7 @@ BASE_CFLAGS := -O0 -g -Wall -Wextra
 INCLUDE_FLAGS := -I$(UNIT_ROOT)/support \
                  -I$(EMU_ROOT)/core \
                  -I$(EMU_ROOT)/core/peripherals \
+                 -I$(EMU_ROOT)/machines/lisa \
                  -DUNIT_TEST_PLATFORM_OVERRIDE \
                  -include $(UNIT_ROOT)/support/platform.h \
                  -include $(UNIT_ROOT)/support/log.h
@@ -24,7 +25,7 @@ CFLAGS := $(BASE_CFLAGS) $(INCLUDE_FLAGS)
 LDFLAGS ?=
 
 SRCS := $(CURDIR)/test.c \
-        $(EMU_ROOT)/core/peripherals/lisa_profile.c
+        $(EMU_ROOT)/machines/lisa/lisa_profile.c
 
 ALL_SRCS := $(abspath $(SRCS))
 

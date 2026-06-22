@@ -1,0 +1,5 @@
+# The real test logic lives in run.sh (it dumps machine.profile for each
+# model, normalizes to a shape string via schema.mjs, and diffs the golden).
+# The harness requires a test.script to exist; this stub is unused by the
+# TEST_RUNNER path.
+quit

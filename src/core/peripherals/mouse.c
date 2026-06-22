@@ -213,15 +213,13 @@ static value_t mouse_method_move(struct object *self, const member_t *m, int arg
     int64_t x = argv[0].i;
     int64_t y = argv[1].i;
     const char *modestr = (argc >= 3 && argv[2].kind == V_STRING && argv[2].s) ? argv[2].s : "default";
-    // Machine-specific path first (the Lisa drives its COPS); else the Mac path.
-    int handled = system_input_mouse_move((int)x, (int)y, modestr);
-    if (handled != 0)
-        return handled < 0 ? val_err("mouse.move: machine rejected request") : val_bool(true);
-    char mode = (argc >= 3) ? mouse_mode_char(&argv[2]) : 'd';
-    if (!mode)
+    // Validate the cursor mode up front so a bad mode gives a clear error.
+    if ((argc >= 3) && !mouse_mode_char(&argv[2]))
         return val_err("mouse.move: mode must be one of \"default\"/\"global\"/\"hw\"/\"aux\"");
-    if (debug_mac_set_mouse_mode((long)x, (long)y, mode) < 0)
-        return val_err("mouse.move: memory not initialised");
+    // Inject through the machine substrate: Mac Toolbox cursor / Lisa COPS —
+    // one uniform path (proposal §4.4).
+    if (system_input_mouse_move((int)x, (int)y, modestr) < 0)
+        return val_err("mouse.move: machine rejected request");
     return val_bool(true);
 }
 
@@ -230,13 +228,12 @@ static value_t mouse_method_click(struct object *self, const member_t *m, int ar
     (void)m;
     bool down = (argc >= 1) ? argv[0].b : true;
     const char *modestr = (argc >= 2 && argv[1].kind == V_STRING && argv[1].s) ? argv[1].s : "default";
-    int handled = system_input_mouse_button(down, modestr);
-    if (handled != 0)
-        return handled < 0 ? val_err("mouse.click: machine rejected request") : val_bool(true);
-    char mode = (argc >= 2) ? mouse_mode_char(&argv[1]) : 'd';
-    if (!mode)
+    // Validate the cursor mode up front so a bad mode gives a clear error.
+    if ((argc >= 2) && !mouse_mode_char(&argv[1]))
         return val_err("mouse.click: mode must be one of \"default\"/\"global\"/\"hw\"");
-    debug_mac_mouse_button_mode(down, mode);
+    // Inject through the machine substrate (Mac Toolbox cursor / Lisa COPS).
+    if (system_input_mouse_button(down, modestr) < 0)
+        return val_err("mouse.click: machine rejected request");
     return val_bool(true);
 }
 

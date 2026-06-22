@@ -51,11 +51,11 @@ export default async function globalSetup(_config: FullConfig) {
     console.error('  (requires GS_TEST_DATA_TOKEN environment variable)');
     console.error('');
     console.error('For contributors:');
-    console.error('  See docs/TEST_DATA.md for information on obtaining or');
+    console.error('  See docs/guide/TEST_DATA.md for information on obtaining or');
     console.error('  providing your own test data.');
     console.error('');
     console.error('='.repeat(70) + '\n');
-    throw new Error('Test data not available. See docs/TEST_DATA.md for details.');
+    throw new Error('Test data not available. See docs/guide/TEST_DATA.md for details.');
   }
   console.log('[globalSetup] test data available');
 

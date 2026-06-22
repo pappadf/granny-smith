@@ -8,7 +8,7 @@
 # auto-boots the ProFile, the OS loader loads SYSTEM.OS, FIND_PM_IDS resolves the
 # ProFile driver from the seeded device table (no "can't find boot cd"/10738
 # fallback), and LOS boots to the Office System desktop.  PRAM format + synthesis:
-# docs/lisa_pram_format.md.
+# docs/machines/lisa/pram_format.md.
 #
 # Setup copies the installed image to a writable scratch copy (so the staged
 # input is never modified) and synthesizes the PRAM with seed_pram.py.

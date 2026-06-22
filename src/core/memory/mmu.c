@@ -625,7 +625,7 @@ void mmu_invalidate_tlb(mmu_state_t *mmu) {
     // rebuild_soa_page. The eager repopulate that used to live here did a
     // linear scan of all g_page_count AoS slots (32 MB for SE/30) to find
     // ~1500 host-backed pages — that scan dominated SE/30 boot at 37% of
-    // CPU time. See docs/mmu-tlb-invalidate-perf.md.
+    // CPU time. See docs/notes/mmu-tlb-invalidate-perf.md.
 }
 
 // Handle a TLB miss: perform table walk or TT check, fill SoA entry.

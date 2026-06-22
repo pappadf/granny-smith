@@ -22,7 +22,7 @@
 #include "image_vfs.h"
 #include "keyboard.h"
 #include "log.h"
-#include "machine.h"
+#include "machine_profile.h"
 #include "memory.h"
 #include "mouse.h"
 #include "nubus.h"
@@ -162,8 +162,8 @@ void system_keyboard_update(key_event_t event, int key) {
 // Hardware RESET line: calls the machine's reset handler to reinitialize
 // peripherals.  On SE/30: VIA1 re-enables ROM overlay, MMU disabled.
 void system_hardware_reset(void) {
-    if (global_emulator && global_emulator->machine && global_emulator->machine->reset)
-        global_emulator->machine->reset(global_emulator);
+    if (global_emulator && global_emulator->machine && global_emulator->machine->substrate->reset)
+        global_emulator->machine->substrate->reset(global_emulator);
 }
 
 // System-level scheduler accessor: returns the current scheduler object
@@ -191,23 +191,28 @@ config_t *system_config(void) {
     return global_emulator;
 }
 
-// Host-input dispatch to a machine-specific hook (the Lisa COPS).  Each returns
-// 1 if the machine hook handled it, 0 if there is no hook (caller uses the
-// default Mac path), or -1 if the hook was present but rejected the request.
+// Host-input dispatch through the machine substrate (proposal §4.4).  Every
+// substrate implements these — Macs route to the shared mac_input_* helpers
+// (keyboard / Toolbox cursor), the Lisa to its COPS — so there is one uniform
+// path and no caller-side fallback.  Each returns 0 on success, <0 on failure
+// (unknown key/mode, uninitialised memory, no machine).
 int system_input_key(const char *key, bool down) {
-    if (!global_emulator || !global_emulator->machine || !global_emulator->machine->input_key)
-        return 0;
-    return global_emulator->machine->input_key(global_emulator, key, down) == 0 ? 1 : -1;
+    config_t *cfg = global_emulator;
+    if (!cfg || !cfg->machine || !cfg->machine->substrate->input_key)
+        return -1;
+    return cfg->machine->substrate->input_key(cfg, key, down);
 }
 int system_input_mouse_move(int x, int y, const char *mode) {
-    if (!global_emulator || !global_emulator->machine || !global_emulator->machine->input_mouse_move)
-        return 0;
-    return global_emulator->machine->input_mouse_move(global_emulator, x, y, mode) == 0 ? 1 : -1;
+    config_t *cfg = global_emulator;
+    if (!cfg || !cfg->machine || !cfg->machine->substrate->input_mouse_move)
+        return -1;
+    return cfg->machine->substrate->input_mouse_move(cfg, x, y, mode);
 }
 int system_input_mouse_button(bool down, const char *mode) {
-    if (!global_emulator || !global_emulator->machine || !global_emulator->machine->input_mouse_button)
-        return 0;
-    return global_emulator->machine->input_mouse_button(global_emulator, down, mode) == 0 ? 1 : -1;
+    config_t *cfg = global_emulator;
+    if (!cfg || !cfg->machine || !cfg->machine->substrate->input_mouse_button)
+        return -1;
+    return cfg->machine->substrate->input_mouse_button(cfg, down, mode);
 }
 
 // System-level RTC accessor: returns the current RTC object
@@ -237,8 +242,8 @@ display_t *system_display(void) {
         if (d)
             return d;
     }
-    if (cfg->machine->display)
-        return cfg->machine->display(cfg);
+    if (cfg->machine->substrate->display)
+        return cfg->machine->substrate->display(cfg);
     return NULL;
 }
 
@@ -290,27 +295,26 @@ int system_ensure_machine(const char *model_id) {
     return 0;
 }
 
-// Helpers to abstract floppy insertion
+// Floppy insertion through the machine substrate (proposal §4.4): every
+// substrate implements fd_present/fd_insert — Macs route to mac_fd_* (their
+// IWM/SWIM via cfg->floppy), the Lisa to its parallel FDC — so there is one
+// uniform path and no cfg->floppy special-case here.
 static bool sys_fd_is_inserted(config_t *cfg, int drive) {
-    if (cfg->floppy)
-        return floppy_is_inserted(cfg->floppy, drive);
-    if (cfg->machine && cfg->machine->fd_present)
-        return cfg->machine->fd_present(cfg, drive);
+    if (cfg->machine && cfg->machine->substrate->fd_present)
+        return cfg->machine->substrate->fd_present(cfg, drive);
     return true; // no controller → treat as occupied
 }
 
 static int sys_fd_insert(config_t *cfg, int drive, image_t *disk) {
-    if (cfg->floppy)
-        return floppy_insert(cfg->floppy, drive, disk);
-    if (cfg->machine && cfg->machine->fd_insert)
-        return cfg->machine->fd_insert(cfg, drive, disk);
+    if (cfg->machine && cfg->machine->substrate->fd_insert)
+        return cfg->machine->substrate->fd_insert(cfg, drive, disk);
     return -1;
 }
 
 // Trigger a vertical blanking interval event (delegates to machine callback)
 void trigger_vbl(struct config *restrict config) {
-    if (config && config->machine && config->machine->trigger_vbl) {
-        config->machine->trigger_vbl(config);
+    if (config && config->machine && config->machine->substrate->trigger_vbl) {
+        config->machine->substrate->trigger_vbl(config);
     }
 }
 
@@ -892,16 +896,8 @@ extern void cmd_image_handler(struct cmd_context *ctx, struct cmd_result *res);
 void setup_init() {
     printf("Granny Smith build %s\n", get_build_id());
 
-    // Register built-in machine profiles so machine_find() can look them up
-    machine_register(&machine_plus);
-    machine_register(&machine_se30);
-    machine_register(&machine_iicx);
-    machine_register(&machine_iix);
-    machine_register(&machine_iifx);
-    machine_register(&machine_iici);
-    machine_register(&machine_lisa);
-    machine_register(&machine_macxl);
-    machine_register(&machine_iisi);
+    // Built-in machine profiles are a static const array in machine.c
+    // (machine_find / machine_list walk it) — no runtime registration needed.
 
     // Ensure logging categories of interest appear in `log list` even before any messages are emitted.
     // shell_init() (called earlier) already invoked log_init(); categories default to level 0 (OFF).
@@ -960,10 +956,10 @@ __attribute__((weak)) int gs_find_media(const char *dir_path, const char *dest) 
 }
 
 // Create an emulator instance for the given machine profile.
-// Allocates config_t, wires the machine descriptor, and calls profile->init().
+// Allocates config_t, wires the machine descriptor, and calls profile->substrate->init().
 config_t *system_create(const hw_profile_t *profile, checkpoint_t *checkpoint) {
     assert(profile != NULL);
-    assert(profile->init != NULL);
+    assert(profile->substrate != NULL && profile->substrate->init != NULL);
 
     config_t *cfg = malloc(sizeof(config_t));
     if (!cfg)
@@ -984,7 +980,7 @@ config_t *system_create(const hw_profile_t *profile, checkpoint_t *checkpoint) {
     }
 
     // Delegate all machine-specific initialisation to the profile
-    profile->init(cfg, checkpoint);
+    profile->substrate->init(cfg, checkpoint);
 
     // Stand up the object-model root (M2): attaches stub classes for
     // cpu/memory/scheduler/machine/shell/storage so `eval` can read
@@ -1031,8 +1027,8 @@ void system_destroy(config_t *config) {
     }
 
     // Delegate machine-specific teardown to the profile
-    if (config->machine && config->machine->teardown) {
-        config->machine->teardown(config);
+    if (config->machine && config->machine->substrate->teardown) {
+        config->machine->substrate->teardown(config);
     }
 
     // Free all tracked images (managed at the system level)
@@ -1121,7 +1117,7 @@ int system_checkpoint(const char *filename, checkpoint_kind_t kind) {
         printf("Error: No emulator instance to checkpoint\n");
         return GS_ERROR;
     }
-    if (!global_emulator->machine || !global_emulator->machine->checkpoint_save) {
+    if (!global_emulator->machine || !global_emulator->machine->substrate->checkpoint_save) {
         printf("Error: Machine has no checkpoint_save callback\n");
         return GS_ERROR;
     }
@@ -1144,7 +1140,7 @@ int system_checkpoint(const char *filename, checkpoint_kind_t kind) {
     }
 
     // Delegate all state serialisation to the machine profile
-    global_emulator->machine->checkpoint_save(global_emulator, checkpoint);
+    global_emulator->machine->substrate->checkpoint_save(global_emulator, checkpoint);
 
     if (checkpoint_has_error(checkpoint)) {
         printf("Error: Failed to write checkpoint\n");
@@ -1180,8 +1176,6 @@ config_t *system_restore(const char *filename) {
         profile = machine_find(saved_model_id);
     if (!profile)
         profile = (prev && prev->machine) ? prev->machine : machine_find("plus");
-    if (!profile)
-        profile = &machine_plus;
 
     // Restore the RAM size from the checkpoint so system_create uses the
     // correct size instead of the machine default.

@@ -5,7 +5,7 @@ installed ProFile.
 This writes the exact 64-byte PRAM image the Office System installer leaves at a
 clean shutdown (the device-configuration table with the ProFile as a configured
 device), plus BootVol=2 so the boot ROM auto-boots the ProFile rather than the
-(absent) floppy.  Format is documented in docs/lisa_pram_format.md.
+(absent) floppy.  Format is documented in docs/machines/lisa/pram_format.md.
 
 Usage:  seed_pram.py <output-path>
 """

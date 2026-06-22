@@ -6,7 +6,7 @@
 # supported monitor sense (12" RGB / 15" Portrait B&W / 21" RGB
 # Kong) without boot media and verifies the boot-icon screen at
 # each resolution at 1bpp.  See test.script for the detailed setup
-# and docs/pram.md §3/§6 for the validator + sPRAMRec layout.
+# and docs/core/memory/pram.md §3/§6 for the validator + sPRAMRec layout.
 
 TEST_NAME := IIcx Video Modes
 TEST_DESC := Cold-boot Finder-at-N-bpp via PRAM seeding + resolution sweep on the JMFB.

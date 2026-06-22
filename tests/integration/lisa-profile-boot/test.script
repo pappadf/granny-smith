@@ -1,5 +1,5 @@
 # Boot LOS from the installed ProFile hard disk (no floppy), using a synthetic
-# parameter memory.  See config.mk + docs/lisa_pram_format.md.
+# parameter memory.  See config.mk + docs/machines/lisa/pram_format.md.
 #
 # The ProFile image is the one the lisa-los-profile install test produces (copied
 # to a writable scratch path by TEST_SETUP).  The PRAM (also from TEST_SETUP, via

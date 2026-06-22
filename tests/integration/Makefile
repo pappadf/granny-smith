@@ -62,7 +62,7 @@ check-data:
 		echo "  (requires GS_TEST_DATA_TOKEN environment variable)"; \
 		echo ""; \
 		echo "For contributors:"; \
-		echo "  See docs/TEST_DATA.md for information on obtaining or"; \
+		echo "  See docs/guide/TEST_DATA.md for information on obtaining or"; \
 		echo "  providing your own test data."; \
 		echo ""; \
 		echo "========================================"; \

@@ -31,7 +31,7 @@
 # `rtc.pram.validate` stamps the two boot-ROM validity tokens
 # ($00=$A8 + $0C-$0F='NuMc') so `_InitUtil` skips its cold-init pass;
 # without those tokens the seeded slot-PRAM gets clobbered (see
-# docs/pram.md §3).
+# docs/core/memory/pram.md §3).
 #
 # (sense → sister sRsrcID) mapping derived empirically — see Section
 # 6b of the JMFB VROM disasm for the full catalog.  PrimaryInit picks

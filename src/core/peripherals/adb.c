@@ -971,23 +971,13 @@ static value_t keyboard_method_press(struct object *self, const member_t *m, int
         return val_err("keyboard.press: key must be a string name or integer keycode");
     }
 
-    // Machine-specific path first (the Lisa drives its COPS, whose keycodes are
-    // not ADB codes); fall back to the default Mac (ADB / Toolbox) path.
-    int handled = system_input_key(display_name, true);
-    if (handled != 0) {
-        if (handled < 0)
-            return val_err("keyboard.press: unknown key '%s'", display_name);
-        system_input_key(display_name, false);
-        LOG(3, "keyboard.press: key=%s (machine hook)", display_name);
-        return val_bool(true);
-    }
-
-    int keycode = debug_mac_resolve_key_name(display_name);
-    if (keycode < 0)
+    // Tap (down then up) through the machine substrate: Macs inject via the
+    // keyboard / Toolbox path, the Lisa via its COPS — one uniform path
+    // (proposal §4.4).  A negative result means the key name didn't resolve.
+    if (system_input_key(display_name, true) < 0)
         return val_err("keyboard.press: unknown key '%s'", display_name);
-    system_keyboard_update(key_down, keycode);
-    system_keyboard_update(key_up, keycode);
-    LOG(3, "keyboard.press: key=0x%02X (%s)", keycode, display_name);
+    system_input_key(display_name, false);
+    LOG(3, "keyboard.press: key=%s", display_name);
     return val_bool(true);
 }
 

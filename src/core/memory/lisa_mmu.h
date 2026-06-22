@@ -7,7 +7,7 @@
 // A 1K x 12-bit descriptor RAM mapping 128 logical segments x 4 contexts onto
 // three disjoint physical spaces (main RAM / I/O / special-I/O), with 512-byte
 // pages and a power-on START (setup) mode that bypasses translation.  See
-// docs/lisa.md §4-5 and proposal-machine-lisa-xl.md §4.2 for the model.
+// docs/machines/lisa/lisa.md §4-5 and proposal-machine-lisa-xl.md §4.2 for the model.
 //
 // Integration seam: the Lisa machine routes ALL CPU memory accesses through
 // this module via the slow path in memory.c (gated on g_lisa_mmu != NULL).
@@ -70,7 +70,7 @@ void lisa_mmu_map_io(lisa_mmu_t *m, uint32_t phys_base, uint32_t size, memory_in
 // Current video framebuffer physical base, derived from the Video Address
 // Latch ($00E800): the latch holds A15-A20, i.e. base = latch << 15, masked
 // into installed RAM.  The machine reads this each frame to locate the
-// framebuffer (docs/lisa.md §8 / §6.2).
+// framebuffer (docs/machines/lisa/lisa.md §8 / §6.2).
 uint32_t lisa_mmu_video_base(const lisa_mmu_t *m);
 
 // True when the vertical-retrace (VBL) interrupt is enabled (VTMSK latch).

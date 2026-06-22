@@ -83,8 +83,7 @@ CORE_SRC := $(wildcard $(CORE_DIR)/*.c) \
             $(wildcard $(CORE_DIR)/shell/*.c) \
             $(wildcard $(CORE_DIR)/object/*.c) \
             $(wildcard $(CORE_DIR)/vfs/*.c) \
-            $(wildcard $(MACHINES_DIR)/*.c) \
-            $(wildcard $(MACHINES_DIR)/glue030/*.c)
+            $(shell find $(MACHINES_DIR) -name '*.c')
 
 # Platform-specific sources (WASM/Emscripten)
 PLATFORM_SRC := $(wildcard $(PLATFORM_DIR)/*.c)
@@ -142,7 +141,13 @@ INCLUDES := -I$(CORE_DIR) \
             -I$(CORE_DIR)/object \
             -I$(CORE_DIR)/vfs \
             -I$(MACHINES_DIR) \
-            -I$(MACHINES_DIR)/glue030 \
+            -I$(MACHINES_DIR)/runtime \
+            -I$(MACHINES_DIR)/mac030 \
+            -I$(MACHINES_DIR)/glue \
+            -I$(MACHINES_DIR)/mdu \
+            -I$(MACHINES_DIR)/oss \
+            -I$(MACHINES_DIR)/compact \
+            -I$(MACHINES_DIR)/lisa \
             -I$(PLATFORM_DIR)
 
 # -- Compile flags (source -> object) --

@@ -6,6 +6,7 @@
 
 #include "machine.h"
 
+#include "cpu.h"
 #include "json_encode.h"
 #include "log.h"
 #include "nubus.h"
@@ -23,11 +24,15 @@ LOG_USE_CATEGORY_NAME("setup");
 #include <stdlib.h>
 #include <string.h>
 
-#define MAX_MACHINES 12
-
-// Registry of known machine profiles
-static const hw_profile_t *g_machines[MAX_MACHINES];
-static int g_machine_count = 0;
+// Registry of built-in machine profiles.  A static const array iterated
+// directly (proposal §4.6): adding a machine is one line here, no runtime
+// machine_register(), no MAX_MACHINES cap.  The profiles are defined in each
+// family's machine file (glue/se30.c, mdu/iici.c, …).
+static const hw_profile_t *const builtin_machines[] = {
+    &machine_plus, &machine_se30, &machine_iicx, &machine_iix,   &machine_iifx,
+    &machine_iici, &machine_iisi, &machine_lisa, &machine_macxl,
+};
+static const size_t builtin_machine_count = sizeof(builtin_machines) / sizeof(builtin_machines[0]);
 
 // Convert a floppy_kind_t to its wire string ("400k" / "800k" / "hd").
 const char *floppy_kind_to_string(floppy_kind_t kind) {
@@ -42,51 +47,37 @@ const char *floppy_kind_to_string(floppy_kind_t kind) {
     return "";
 }
 
-// Validate that a profile has every declarative field populated.  Profiles
-// missing any of these are rejected from the registry — see proposal §3.1's
-// "no partial profiles" rule.
-static bool profile_is_complete(const hw_profile_t *p) {
-    if (!p)
-        return false;
-    if (!p->id || !*p->id)
-        return false;
-    if (!p->name || !*p->name)
-        return false;
-    if (p->freq == 0)
-        return false;
-    if (p->ram_default == 0 || p->ram_max == 0)
-        return false;
-    if (!p->ram_options)
-        return false;
-    if (!p->floppy_slots)
-        return false;
-    if (!p->scsi_slots)
-        return false;
-    if (!p->init)
-        return false;
-    return true;
-}
-
-// Register a machine profile with the registry.  Rejects partial profiles.
-void machine_register(const hw_profile_t *profile) {
-    if (!profile_is_complete(profile)) {
-        LOG(1, "machine_register: rejected partial profile '%s'", (profile && profile->id) ? profile->id : "(null)");
-        return;
+// Convert an mmu_kind_t to its wire string ("none" / "68030_pmmu" /
+// "lisa_segment").  This is the value the capability probe exports as
+// `mmu.kind` so the debug UI can pick the right register views.
+const char *mmu_kind_to_string(mmu_kind_t kind) {
+    switch (kind) {
+    case MMU_NONE:
+        return "none";
+    case MMU_68030_PMMU:
+        return "68030_pmmu";
+    case MMU_LISA_SEGMENT:
+        return "lisa_segment";
     }
-    if (g_machine_count >= MAX_MACHINES)
-        return;
-    g_machines[g_machine_count++] = profile;
+    return "none";
 }
 
 // Find a machine profile by its id string
 const hw_profile_t *machine_find(const char *id) {
     if (!id)
         return NULL;
-    for (int i = 0; i < g_machine_count; ++i) {
-        if (g_machines[i] && strcmp(g_machines[i]->id, id) == 0)
-            return g_machines[i];
+    for (size_t i = 0; i < builtin_machine_count; ++i) {
+        if (strcmp(builtin_machines[i]->id, id) == 0)
+            return builtin_machines[i];
     }
     return NULL;
+}
+
+// Enumerate the built-in profiles (out_count receives the array length).
+const hw_profile_t *const *machine_list(size_t *out_count) {
+    if (out_count)
+        *out_count = builtin_machine_count;
+    return builtin_machines;
 }
 
 // === Object-model class descriptor =========================================
@@ -156,6 +147,241 @@ static value_t attr_machine_created(struct object *self, const member_t *m) {
     return val_bool(cfg && cfg->machine != NULL);
 }
 
+// Emit the `capabilities` object into the open profile map.  Every field is
+// DERIVED from the hardware facts + mmu_kind so it can never drift from
+// behaviour (proposal §4.4): the frontend probes this instead of guessing
+// from the model's display name.
+static void encode_capabilities(json_builder_t *b, const hw_profile_t *p) {
+    json_key(b, "capabilities");
+    json_open_obj(b);
+
+    json_key(b, "cpu");
+    json_open_obj(b);
+    json_key(b, "model");
+    json_int(b, (int64_t)p->cpu_model); // 68000 / 68030
+    json_key(b, "address_bits");
+    json_int(b, (int64_t)p->address_bits);
+    json_key(b, "fpu");
+    json_bool(b, cpu_has_fpu(p->cpu_model));
+    json_close_obj(b);
+
+    json_key(b, "mmu");
+    json_open_obj(b);
+    // Typed, not a bool: the debug panels must tell a 68030 PMMU (show
+    // TC/CRP/SRP/TT0/TT1/MMUSR) from the Lisa segment MMU (don't) from none.
+    json_key(b, "present");
+    json_bool(b, p->mmu_kind != MMU_NONE);
+    json_key(b, "kind");
+    json_str(b, mmu_kind_to_string(p->mmu_kind));
+    json_close_obj(b);
+
+    // NOTE: video configurability is the video_slots block, NOT "nubus
+    // exists" — the two are deliberately not conflated.
+    json_key(b, "nubus");
+    json_bool(b, p->nubus_slots != NULL);
+
+    json_close_obj(b);
+}
+
+// Emit one video card object (id, display_name, requires_vrom, monitors)
+// into an open array.  requires_vrom is read straight off the card kind —
+// the property the dialog drives its VROM row from (proposal §4.4).
+static void encode_video_card(json_builder_t *b, const char *card_id) {
+    const nubus_card_kind_t *kind = card_id ? nubus_card_find(card_id) : NULL;
+    json_open_obj(b);
+    json_key(b, "id");
+    json_str(b, card_id ? card_id : "");
+    json_key(b, "display_name");
+    json_str(b, (kind && kind->display_name) ? kind->display_name : (card_id ? card_id : ""));
+    json_key(b, "requires_vrom");
+    json_bool(b, kind ? kind->requires_vrom : false);
+    json_key(b, "monitors");
+    json_open_arr(b);
+    if (kind && kind->monitors) {
+        for (const nubus_monitor_t *mon = kind->monitors; mon->id; mon++) {
+            json_open_obj(b);
+            json_key(b, "id");
+            json_str(b, mon->id);
+            json_key(b, "name");
+            json_str(b, mon->name ? mon->name : mon->id);
+            json_key(b, "width");
+            json_int(b, (int64_t)mon->width);
+            json_key(b, "height");
+            json_int(b, (int64_t)mon->height);
+            json_key(b, "depths");
+            json_open_arr(b);
+            if (mon->depths) {
+                for (const int *d = mon->depths; *d; d++)
+                    json_int(b, (int64_t)*d);
+            }
+            json_close_arr(b);
+            json_close_obj(b);
+        }
+    }
+    json_close_arr(b); // monitors
+    json_close_obj(b); // card
+}
+
+// Emit the `video_slots` block: the real shape the user navigates — slot →
+// card → monitor/depth.  VROM-required-ness is per *card* (the SE/30-vs-IIci
+// asymmetry), so the dialog shows the VROM row iff the selected card needs
+// one.  Replaces the flat `video_modes` array once the frontend consumes it
+// (kept additively alongside for now — proposal §6 phase 1).
+static void encode_video_slots(json_builder_t *b, const hw_profile_t *p) {
+    json_key(b, "video_slots");
+    json_open_arr(b);
+    if (!p->nubus_slots) {
+        json_close_arr(b);
+        return;
+    }
+    for (const struct nubus_slot_decl *s = p->nubus_slots; s->slot; s++) {
+        // Only slots that can carry a video card appear here.
+        if (s->kind != NUBUS_SLOT_BUILTIN && s->kind != NUBUS_SLOT_VIDEO)
+            continue;
+        const char *default_card = (s->kind == NUBUS_SLOT_BUILTIN) ? s->builtin_card_id : s->default_card;
+
+        json_open_obj(b);
+        json_key(b, "slot");
+        if (s->kind == NUBUS_SLOT_BUILTIN) {
+            json_str(b, "builtin");
+        } else {
+            char slot_buf[8];
+            snprintf(slot_buf, sizeof slot_buf, "%X", s->slot); // "9".."E"
+            json_str(b, slot_buf);
+        }
+        json_key(b, "fixed");
+        json_bool(b, s->kind == NUBUS_SLOT_BUILTIN);
+        json_key(b, "default_card");
+        json_str(b, default_card ? default_card : "");
+
+        json_key(b, "cards");
+        json_open_arr(b);
+        if (s->kind == NUBUS_SLOT_BUILTIN) {
+            encode_video_card(b, s->builtin_card_id);
+        } else if (s->available_cards) {
+            for (const char *const *c = s->available_cards; *c; c++)
+                encode_video_card(b, *c);
+        } else if (default_card) {
+            encode_video_card(b, default_card);
+        }
+        json_close_arr(b);
+        json_close_obj(b);
+    }
+    json_close_arr(b);
+}
+
+// The card id a slot exposes to the dialog: BUILTIN → its single card,
+// VIDEO → its default card, anything else → NULL.  Mirrors encode_video_slots.
+static const char *legacy_slot_card_id(const struct nubus_slot_decl *s) {
+    return (s->kind == NUBUS_SLOT_BUILTIN) ? s->builtin_card_id
+           : (s->kind == NUBUS_SLOT_VIDEO) ? s->default_card
+                                           : NULL;
+}
+
+// Count the (monitor, depth) tuples a card kind offers.
+static int legacy_card_tuple_count(const nubus_card_kind_t *kind) {
+    int n = 0;
+    if (kind && kind->monitors) {
+        for (const nubus_monitor_t *mon = kind->monitors; mon->id; mon++) {
+            if (!mon->depths)
+                continue;
+            for (const int *d = mon->depths; *d; d++)
+                n++;
+        }
+    }
+    return n;
+}
+
+// LEGACY COMPAT (web-legacy only): the old `needs_vrom` flag and the flat
+// `video_modes` / `video_mode_default` arrays.  web2 derives all of this from
+// `video_slots` (per-card requires_vrom + monitors/depths) and ignores these
+// keys; web-legacy's config-dialog.js still reads them directly.  They are
+// DERIVED here from the same nubus_slots/card data — there is no longer a
+// stored hw_profile_t.needs_vrom field — so video_slots remains the single
+// source of truth.  Delete this whole helper (and its call) when web-legacy is
+// removed; that is the only thing blocking the proposal §4.4 schema cleanup.
+//
+// A fixed single-mode built-in display (e.g. the SE/30's 1-bpp internal video)
+// offers no user choice, so it contributes to needs_vrom but NOT to the
+// selectable video_modes list — preserving web-legacy's original contract
+// ("SE/30 returns an empty video_modes list").  A slot contributes modes only
+// when it offers more than one (monitor, depth) tuple.
+static void encode_legacy_video_compat(json_builder_t *b, const hw_profile_t *p) {
+    // needs_vrom: true iff any populated video card declares requires_vrom.
+    bool needs_vrom = false;
+    if (p->nubus_slots) {
+        for (const struct nubus_slot_decl *s = p->nubus_slots; s->slot; s++) {
+            const char *card_id = legacy_slot_card_id(s);
+            const nubus_card_kind_t *kind = card_id ? nubus_card_find(card_id) : NULL;
+            if (kind && kind->requires_vrom)
+                needs_vrom = true;
+        }
+    }
+    json_key(b, "needs_vrom");
+    json_bool(b, needs_vrom);
+
+    // video_modes: flat per-(monitor, depth) catalog across every populated
+    // video slot offering a *choice* (>1 tuple).  Empty for non-video machines
+    // and for fixed single-mode built-in displays.
+    json_key(b, "video_modes");
+    json_open_arr(b);
+    if (p->nubus_slots) {
+        for (const struct nubus_slot_decl *s = p->nubus_slots; s->slot; s++) {
+            const char *card_id = legacy_slot_card_id(s);
+            const nubus_card_kind_t *kind = card_id ? nubus_card_find(card_id) : NULL;
+            if (!kind || !kind->monitors || legacy_card_tuple_count(kind) <= 1)
+                continue;
+            for (const nubus_monitor_t *mon = kind->monitors; mon->id; mon++) {
+                if (!mon->depths)
+                    continue;
+                for (const int *d = mon->depths; *d; d++) {
+                    char id_buf[64];
+                    char label_buf[128];
+                    snprintf(id_buf, sizeof id_buf, "%s_%dbpp", mon->id, *d);
+                    snprintf(label_buf, sizeof label_buf, "%s · %u\xc3\x97%u · %d bpp", mon->name, mon->width,
+                             mon->height, *d);
+                    json_open_obj(b);
+                    json_key(b, "id");
+                    json_str(b, id_buf);
+                    json_key(b, "label");
+                    json_str(b, label_buf);
+                    json_key(b, "width");
+                    json_int(b, (int64_t)mon->width);
+                    json_key(b, "height");
+                    json_int(b, (int64_t)mon->height);
+                    json_key(b, "depth_bpp");
+                    json_int(b, (int64_t)*d);
+                    json_close_obj(b);
+                }
+            }
+        }
+    }
+    json_close_arr(b);
+
+    // video_mode_default: first (monitor, depth) tuple of the first slot that
+    // contributed modes.  "" when no video_modes were emitted.
+    json_key(b, "video_mode_default");
+    {
+        const char *first_id = NULL;
+        char first_buf[64];
+        if (p->nubus_slots) {
+            for (const struct nubus_slot_decl *s = p->nubus_slots; s->slot && !first_id; s++) {
+                const char *card_id = legacy_slot_card_id(s);
+                const nubus_card_kind_t *kind = card_id ? nubus_card_find(card_id) : NULL;
+                if (!kind || !kind->monitors || legacy_card_tuple_count(kind) <= 1)
+                    continue;
+                for (const nubus_monitor_t *mon = kind->monitors; mon->id && !first_id; mon++) {
+                    if (!mon->depths || !*mon->depths)
+                        continue;
+                    snprintf(first_buf, sizeof first_buf, "%s_%dbpp", mon->id, *mon->depths);
+                    first_id = first_buf;
+                }
+            }
+        }
+        json_str(b, first_id ? first_id : "");
+    }
+}
+
 // Build the JSON-encoded profile map for a registered hw_profile_t.
 static value_t encode_profile(const hw_profile_t *p) {
     json_builder_t *b = json_builder_new();
@@ -215,91 +441,14 @@ static value_t encode_profile(const hw_profile_t *p) {
     json_bool(b, p->has_cdrom);
     json_key(b, "cdrom_id");
     json_int(b, (int64_t)p->cdrom_id);
-    json_key(b, "needs_vrom");
-    json_bool(b, p->needs_vrom);
 
-    // video_modes: flat per-(monitor, depth) catalog aggregated across
-    // every populated NuBus slot whose card-kind has a non-NULL
-    // monitor list.  Each entry carries the data the configuration
-    // dialog needs (id, human label, dimensions, depth in bpp); the
-    // bytes the JMFB factory needs (sense_code, srsrc_sister) stay
-    // C-side and are looked up at machine.boot time when the dialog
-    // sets `machine.video_mode = "<id>"`.  Empty array for machines
-    // without configurable video.
-    json_key(b, "video_modes");
-    json_open_arr(b);
-    if (p->nubus_slots) {
-        for (const struct nubus_slot_decl *s = p->nubus_slots; s->slot; s++) {
-            // Slot card-kind ids to query for monitors:
-            //   BUILTIN: builtin_card_id (single)
-            //   VIDEO:   default_card    (the monitor list is per-card-kind, not
-            //                             per-instance, so default_card is enough
-            //                             to enumerate the catalog the user can pick)
-            const char *card_id = NULL;
-            if (s->kind == NUBUS_SLOT_BUILTIN)
-                card_id = s->builtin_card_id;
-            else if (s->kind == NUBUS_SLOT_VIDEO)
-                card_id = s->default_card;
-            if (!card_id)
-                continue;
-            const nubus_card_kind_t *kind = nubus_card_find(card_id);
-            if (!kind || !kind->monitors)
-                continue;
-            for (const nubus_monitor_t *mon = kind->monitors; mon->id; mon++) {
-                if (!mon->depths)
-                    continue;
-                for (const int *d = mon->depths; *d; d++) {
-                    char id_buf[64];
-                    char label_buf[128];
-                    snprintf(id_buf, sizeof id_buf, "%s_%dbpp", mon->id, *d);
-                    snprintf(label_buf, sizeof label_buf, "%s · %u\xc3\x97%u · %d bpp", mon->name, mon->width,
-                             mon->height, *d);
-                    json_open_obj(b);
-                    json_key(b, "id");
-                    json_str(b, id_buf);
-                    json_key(b, "label");
-                    json_str(b, label_buf);
-                    json_key(b, "width");
-                    json_int(b, (int64_t)mon->width);
-                    json_key(b, "height");
-                    json_int(b, (int64_t)mon->height);
-                    json_key(b, "depth_bpp");
-                    json_int(b, (int64_t)*d);
-                    json_close_obj(b);
-                }
-            }
-        }
-    }
-    json_close_arr(b);
-
-    // Default mode id matches the first (monitor, depth) tuple — i.e.
-    // the card's first monitor at its lowest supported depth.  For the
-    // JMFB this is "12in_rgb_1bpp"; the dialog can override.  If no
-    // video_modes were emitted (non-video machine) the field is "".
-    json_key(b, "video_mode_default");
-    {
-        const char *first_id = NULL;
-        char first_buf[64];
-        if (p->nubus_slots) {
-            for (const struct nubus_slot_decl *s = p->nubus_slots; s->slot && !first_id; s++) {
-                const char *card_id = (s->kind == NUBUS_SLOT_BUILTIN) ? s->builtin_card_id
-                                      : (s->kind == NUBUS_SLOT_VIDEO) ? s->default_card
-                                                                      : NULL;
-                if (!card_id)
-                    continue;
-                const nubus_card_kind_t *kind = nubus_card_find(card_id);
-                if (!kind || !kind->monitors)
-                    continue;
-                for (const nubus_monitor_t *mon = kind->monitors; mon->id && !first_id; mon++) {
-                    if (!mon->depths || !*mon->depths)
-                        continue;
-                    snprintf(first_buf, sizeof first_buf, "%s_%dbpp", mon->id, *mon->depths);
-                    first_id = first_buf;
-                }
-            }
-        }
-        json_str(b, first_id ? first_id : "");
-    }
+    // Derived capability probe + per-card video-slot shape (proposal §4.4) —
+    // the source of truth web2 consumes.  The legacy needs_vrom / video_modes /
+    // video_mode_default keys are emitted too (derived from the same data) for
+    // as long as web-legacy reads them; see encode_legacy_video_compat.
+    encode_capabilities(b, p);
+    encode_video_slots(b, p);
+    encode_legacy_video_compat(b, p);
 
     json_close_obj(b);
     return json_finish(b);

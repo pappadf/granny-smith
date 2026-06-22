@@ -1,0 +1,581 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) pappadf
+
+// plus.c
+// Macintosh Plus machine implementation.
+//
+// This file owns the full lifecycle of a Plus emulator instance:
+// init, teardown, checkpoint save/restore, VIA/SCC interrupt callbacks,
+// VBL trigger, and the static hw_profile_t descriptor.
+
+#include "mac_host_io.h"
+#include "machine.h"
+#include "system_config.h" // full config_t definition
+
+#include "appletalk.h"
+#include "checkpoint_machine.h"
+#include "cpu.h"
+#include "debug.h"
+#include "display.h"
+#include "floppy.h"
+#include "image.h"
+#include "keyboard.h"
+#include "log.h"
+#include "memory.h"
+#include "mouse.h"
+#include "rtc.h"
+#include "scc.h"
+#include "scheduler.h"
+#include "scsi.h"
+#include "shell.h"
+#include "sound.h"
+#include "via.h"
+
+#include <assert.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+LOG_USE_CATEGORY_NAME("plus");
+
+// Plus-specific peripheral state not shared with other machines.
+// Accessed through config_t.machine_context.
+typedef struct plus_state {
+    sound_t *sound; // PWM sound (VIA-driven)
+    // Plus owns its display descriptor directly — no NuBus involved.
+    // bits flips between the main and alternate framebuffer addresses
+    // each time VIA1 PA6 toggles; fb_dirty is set on every change so
+    // the renderer re-uploads.
+    display_t display;
+} plus_state_t;
+
+// Helper: return the Plus-specific state from a config handle
+static inline plus_state_t *plus_state(config_t *cfg) {
+    return (plus_state_t *)cfg->machine_context;
+}
+
+// ============================================================
+// Forward declarations for Plus callbacks
+// ============================================================
+
+static void plus_via_output(void *context, uint8_t port, uint8_t output);
+static void plus_via_shift_out(void *context, uint8_t byte);
+static void plus_via_irq(void *context, bool active);
+static void plus_scc_irq(void *context, bool active);
+static void plus_update_ipl(config_t *sim, int level, bool value);
+
+// ============================================================
+// Video buffer helper (Plus-specific address constants)
+// ============================================================
+
+// Plus ROM start in the 24-bit address space (== Plus RAM top of 4 MB)
+#define PLUS_ROM_START 0x400000UL
+// Plus ROM region end (1.5 MB window covers all ROM mirrors)
+#define PLUS_ROM_END 0x580000UL
+
+// Switch between main and alternate video buffer addresses for the Plus.
+// Main buffer is at top of RAM minus 0x5900; alternate is 0x8000 bytes lower.
+// Both addresses scale with installed RAM — `ScrnBase`/`ScrnAlt` on a real
+// Plus are computed from physical RAM size by the ROM boot code, so a Plus
+// with 1 MB has its framebuffer at $FA700, not $3FA700.  Updates the
+// descriptor's `bits` field and marks the framebuffer dirty so the
+// renderer re-uploads on the next frame.
+static void plus_use_video_buffer(config_t *cfg, bool main) {
+    plus_state_t *ps = plus_state(cfg);
+    uint32_t top = cfg->ram_size;
+    uint32_t addr = main ? (top - 0x5900) : (top - 0x5900 - 0x8000);
+    ps->display.bits = ram_native_pointer(cfg->mem_map, addr);
+    ps->display.fb_dirty = true;
+}
+
+// Initialise the Plus display descriptor.  Called once during plus_init,
+// before plus_use_video_buffer fills in `bits`.
+static void plus_display_init(config_t *cfg) {
+    plus_state_t *ps = plus_state(cfg);
+    ps->display.width = 512;
+    ps->display.height = 342;
+    ps->display.stride = 512 / 8;
+    ps->display.format = PIXEL_1BPP_MSB;
+    ps->display.bits = NULL;
+    ps->display.clut = NULL;
+    ps->display.clut_len = 0;
+    ps->display.shape_dirty = true;
+}
+
+// hw_profile_t.display callback — surface the Plus framebuffer to
+// system_display() on the non-NuBus path.
+static display_t *plus_display(config_t *cfg) {
+    plus_state_t *ps = plus_state(cfg);
+    return ps && ps->display.bits ? &ps->display : NULL;
+}
+
+// ============================================================
+// Memory layout
+// ============================================================
+
+// Memory read placeholder for the Plus Phase Read area
+static uint8_t plus_phase_read_uint8(void *dev, uint32_t addr) {
+    (void)dev;
+    (void)addr;
+    return 0;
+}
+static uint16_t plus_phase_read_uint16(void *dev, uint32_t addr) {
+    (void)dev;
+    (void)addr;
+    return 0;
+}
+static uint32_t plus_phase_read_uint32(void *dev, uint32_t addr) {
+    (void)dev;
+    (void)addr;
+    return 0;
+}
+
+// Populate the Plus memory layout in the page table.
+// Called from plus_init() after memory_map_init() and cpu_init().
+// Guide to the Macintosh Family Hardware, 2nd edition, page 122:
+// At system startup, the OS reads an address in $F00000–$F7FFFF ("Phase Read")
+// to verify that high-frequency timing signals are in phase.
+static void plus_memory_layout_init(config_t *cfg) {
+    // Map RAM and ROM pages into the global page table
+    memory_populate_pages(cfg->mem_map, PLUS_ROM_START, PLUS_ROM_END);
+
+    // Mirror RAM into the unmapped gap [ram_size, PLUS_ROM_START).  On real
+    // Plus hardware the address decoder doesn't gate accesses in this range,
+    // so they wrap physically into installed RAM.  The Plus ROM's exception
+    // save area at $3FFC80 (close to the 4 MB ceiling) relies on this — on
+    // a 1 MB Plus that address physically refers to RAM at $0FFC80.  Without
+    // the mirror, the first interrupt/exception corrupts CPU state on any
+    // sub-4-MB configuration.
+    if (cfg->ram_size < PLUS_ROM_START)
+        memory_populate_ram_mirror(cfg->mem_map, cfg->ram_size, PLUS_ROM_START);
+
+    // Register the Phase Read device for the Plus I/O region
+    memory_interface_t phase_read;
+    memset(&phase_read, 0, sizeof(phase_read));
+    phase_read.read_uint8 = &plus_phase_read_uint8;
+    phase_read.read_uint16 = &plus_phase_read_uint16;
+    phase_read.read_uint32 = &plus_phase_read_uint32;
+    memory_map_add(cfg->mem_map, 0x00F00000, 0x00080000, "Phase Read", &phase_read, NULL);
+}
+
+// ============================================================
+// Init / Teardown
+// ============================================================
+
+// Initialise all Plus subsystems.
+// If checkpoint is non-NULL, each device restores state from it (same order as checkpoint_save).
+static void plus_init(config_t *cfg, checkpoint_t *checkpoint) {
+    // Allocate Plus-specific peripheral state
+    plus_state_t *ps = malloc(sizeof(plus_state_t));
+    assert(ps != NULL);
+    memset(ps, 0, sizeof(plus_state_t));
+    cfg->machine_context = ps;
+
+    // Initialise parameterised memory: 24-bit address space, configured RAM, 128 KB ROM
+    cfg->mem_map = memory_map_init(cfg->machine->address_bits, cfg->ram_size, cfg->machine->rom_size, checkpoint);
+
+    // Populate Plus-specific memory layout (RAM/ROM page table + Phase Read)
+    plus_memory_layout_init(cfg);
+
+    cfg->cpu = cpu_init(CPU_MODEL_68000, checkpoint);
+
+    cfg->scheduler = scheduler_init(cfg->cpu, checkpoint);
+
+    // Restore global interrupt state after scheduler (same order as checkpoint_save)
+    if (checkpoint) {
+        system_read_checkpoint_data(checkpoint, &cfg->irq, sizeof(cfg->irq));
+    }
+
+    cfg->rtc = rtc_init(cfg->scheduler, checkpoint, true);
+
+    cfg->scc = scc_init(cfg->mem_map, cfg->scheduler, plus_scc_irq, cfg, checkpoint);
+
+    // SCC PCLK = C8M (7.8336 MHz = CPU clock), RTxC = 3.6864 MHz
+    scc_set_clocks(cfg->scc, 7833600, 3686400);
+
+    // Initialise AppleTalk with scheduler and SCC dependencies (registers shell commands)
+    appletalk_init(cfg->scheduler, cfg->scc, NULL);
+
+    ps->sound = sound_init(cfg->mem_map, checkpoint);
+    cfg->sound = ps->sound; // mirror onto cfg so the object-model `sound`
+                            // class can find it via cfg->sound (M7f)
+
+    cfg->via1 = via_init(cfg->mem_map, cfg->scheduler, 10, "via1", plus_via_output, plus_via_shift_out, plus_via_irq,
+                         cfg, checkpoint);
+
+    rtc_set_via(cfg->rtc, cfg->via1);
+
+    cfg->mouse = mouse_init(cfg->scheduler, cfg->scc, cfg->via1, checkpoint);
+
+    // Restore image list from checkpoint before devices that may reference them
+    if (checkpoint) {
+        uint32_t count = 0;
+        system_read_checkpoint_data(checkpoint, &count, sizeof(count));
+        for (uint32_t i = 0; i < count; ++i) {
+            uint32_t len = 0;
+            system_read_checkpoint_data(checkpoint, &len, sizeof(len));
+            char *name = NULL;
+            if (len > 0) {
+                name = (char *)malloc(len);
+                if (!name) {
+                    char tmp;
+                    for (uint32_t k = 0; k < len; ++k)
+                        system_read_checkpoint_data(checkpoint, &tmp, 1);
+                } else {
+                    system_read_checkpoint_data(checkpoint, name, len);
+                }
+            }
+            char writable = 0;
+            system_read_checkpoint_data(checkpoint, &writable, sizeof(writable));
+            // Read raw image size (written by image_checkpoint)
+            uint64_t raw_size = 0;
+            system_read_checkpoint_data(checkpoint, &raw_size, sizeof(raw_size));
+            // Read instance path (added by image_checkpoint, §2.8)
+            uint32_t instance_len = 0;
+            system_read_checkpoint_data(checkpoint, &instance_len, sizeof(instance_len));
+            char *instance_path = NULL;
+            if (instance_len > 0) {
+                instance_path = (char *)malloc(instance_len);
+                if (instance_path)
+                    system_read_checkpoint_data(checkpoint, instance_path, instance_len);
+                else {
+                    char tmp;
+                    for (uint32_t k = 0; k < instance_len; ++k)
+                        system_read_checkpoint_data(checkpoint, &tmp, 1);
+                }
+            }
+            image_t *img = NULL;
+            if (name) {
+                bool consolidated = checkpoint_get_kind(checkpoint) == CHECKPOINT_KIND_CONSOLIDATED;
+                // For consolidated checkpoints the embedded data is authoritative
+                if (raw_size > 0 && consolidated)
+                    image_create_empty(name, (size_t)raw_size);
+                if (writable && consolidated) {
+                    // Fresh writable instance — embedded blocks will fill it.
+                    img = image_create(name, checkpoint_machine_dir());
+                } else if (writable && instance_path && instance_path[0]) {
+                    // Quick checkpoint: reopen the same delta files referenced
+                    // by the saved instance_path.
+                    img = image_open(name, instance_path);
+                } else if (writable) {
+                    // Old checkpoint without instance_path — fall back to a
+                    // fresh instance.  This degrades on quick checkpoints (the
+                    // bitmap will not match) but avoids hard failure.
+                    img = image_create(name, checkpoint_machine_dir());
+                } else {
+                    img = image_open_readonly(name);
+                }
+                if (!img) {
+                    LOG(0, "image_open failed for %s while restoring checkpoint", name);
+                    checkpoint_set_error(checkpoint);
+                }
+            }
+            if (storage_restore_from_checkpoint(img ? img->storage : NULL, checkpoint) != GS_SUCCESS) {
+                LOG(0, "storage_restore_from_checkpoint failed for %s", name ? name : "<unnamed>");
+                checkpoint_set_error(checkpoint);
+            }
+            if (img) {
+                add_image(cfg, img);
+            }
+            if (name) {
+                free(name);
+            }
+            if (instance_path) {
+                free(instance_path);
+            }
+        }
+    }
+
+    cfg->scsi = scsi_init(cfg->mem_map, checkpoint);
+
+    setup_images(cfg);
+
+    cfg->keyboard = keyboard_init(cfg->scheduler, cfg->scc, cfg->via1, checkpoint);
+
+    // Initialise floppy last to match checkpoint save order
+    cfg->floppy = floppy_init(FLOPPY_TYPE_IWM, cfg->mem_map, cfg->scheduler, checkpoint);
+
+    // Initialise the display descriptor before anything that might call
+    // plus_use_video_buffer().  Both the cold-boot default and the
+    // checkpoint-driven via_redrive_outputs path mutate ps->display.
+    plus_display_init(cfg);
+
+    // After floppy exists, if restoring from a checkpoint, re-drive VIA outputs
+    // so SEL and other external signals propagate to the floppy.
+    if (checkpoint) {
+        via_redrive_outputs(cfg->via1);
+    }
+
+    // On cold boot, default to main video buffer.
+    // When restoring from a checkpoint, VIA outputs will re-drive the selection.
+    if (!checkpoint) {
+        plus_use_video_buffer(cfg, true);
+    }
+
+    cfg->debugger = debug_init();
+
+    scheduler_start(cfg->scheduler);
+
+    // Initialise IRQ/IPL only for cold boot; on restore, devices already re-assert.
+    if (!checkpoint) {
+        cfg->irq = 0;
+        cpu_set_ipl(cfg->cpu, 0);
+    }
+}
+
+// Tear down all Plus resources in reverse init order.
+static void plus_teardown(config_t *cfg) {
+    // Stop scheduler if running (best effort)
+    if (cfg->scheduler) {
+        scheduler_stop(cfg->scheduler);
+    }
+
+    if (cfg->keyboard) {
+        keyboard_delete(cfg->keyboard);
+        cfg->keyboard = NULL;
+    }
+    if (cfg->scsi) {
+        scsi_delete(cfg->scsi);
+        cfg->scsi = NULL;
+    }
+    if (cfg->mouse) {
+        mouse_delete(cfg->mouse);
+        cfg->mouse = NULL;
+    }
+    if (cfg->via1) {
+        via_delete(cfg->via1);
+        cfg->via1 = NULL;
+    }
+
+    plus_state_t *ps = plus_state(cfg);
+    if (ps && ps->sound) {
+        sound_delete(ps->sound);
+        ps->sound = NULL;
+        cfg->sound = NULL;
+    }
+
+    if (cfg->scc) {
+        scc_delete(cfg->scc);
+        cfg->scc = NULL;
+    }
+    if (cfg->rtc) {
+        rtc_delete(cfg->rtc);
+        cfg->rtc = NULL;
+    }
+    if (cfg->scheduler) {
+        scheduler_delete(cfg->scheduler);
+        cfg->scheduler = NULL;
+    }
+    if (cfg->floppy) {
+        floppy_delete(cfg->floppy);
+        cfg->floppy = NULL;
+    }
+    if (cfg->cpu) {
+        cpu_delete(cfg->cpu);
+        cfg->cpu = NULL;
+    }
+    if (cfg->mem_map) {
+        memory_map_delete(cfg->mem_map);
+        cfg->mem_map = NULL;
+    }
+    if (cfg->debugger) {
+        debug_cleanup(cfg->debugger);
+        cfg->debugger = NULL;
+    }
+
+    // Free machine-specific state; images are freed by system_destroy()
+    if (ps) {
+        free(ps);
+        cfg->machine_context = NULL;
+    }
+}
+
+// ============================================================
+// Checkpoint
+// ============================================================
+
+// Save complete Plus machine state to an open checkpoint stream.
+// Order must match the restore path in plus_init().
+static void plus_checkpoint_save(config_t *cfg, checkpoint_t *cp) {
+    memory_map_checkpoint(cfg->mem_map, cp);
+    cpu_checkpoint(cfg->cpu, cp);
+    scheduler_checkpoint(cfg->scheduler, cp);
+
+    // Save global interrupt state (irq) after scheduler/cpu
+    system_write_checkpoint_data(cp, &cfg->irq, sizeof(cfg->irq));
+
+    rtc_checkpoint(cfg->rtc, cp);
+    scc_checkpoint(cfg->scc, cp);
+
+    plus_state_t *ps = plus_state(cfg);
+    sound_checkpoint(ps ? ps->sound : NULL, cp);
+
+    via_checkpoint(cfg->via1, cp);
+    mouse_checkpoint(cfg->mouse, cp);
+
+    // Checkpoint list of images (path + writable) before devices that reference them
+    {
+        uint32_t count = (uint32_t)cfg->n_images;
+        system_write_checkpoint_data(cp, &count, sizeof(count));
+        for (uint32_t i = 0; i < count; ++i) {
+            image_checkpoint(cfg->images[i], cp);
+        }
+    }
+
+    scsi_checkpoint(cfg->scsi, cp);
+    keyboard_checkpoint(cfg->keyboard, cp);
+    floppy_checkpoint(cfg->floppy, cp);
+}
+
+// ============================================================
+// VIA / SCC callbacks
+// ============================================================
+
+// Plus-specific interrupt routing: update CPU IPL from VIA or SCC IRQ changes
+static void plus_update_ipl(config_t *sim, int level, bool value) {
+    int old_irq = sim->irq;
+    int old_ipl = cpu_get_ipl(sim->cpu);
+    if (value)
+        sim->irq |= level;
+    else
+        sim->irq &= ~level;
+
+    // Guide to the Macintosh Family Hardware, chapter 3:
+    // The interrupt request line from the VIA goes to the PALs,
+    // which can assert an interrupt to the processor on line /IPL0.
+    // The PALs also monitor interrupt line /IPL1,
+    // and deassert /IPL0 whenever /IPL1 is asserted.
+
+    uint32_t new_ipl;
+    if (sim->irq > 1)
+        new_ipl = 2;
+    else if (sim->irq == 1)
+        new_ipl = 1;
+    else
+        new_ipl = 0;
+    cpu_set_ipl(sim->cpu, new_ipl);
+
+    LOG(1, "plus_update_ipl: level=%d value=%d irq:%d->%d ipl:%d->%d", level, value ? 1 : 0, old_irq, sim->irq, old_ipl,
+        new_ipl);
+
+    cpu_reschedule();
+}
+
+// Plus-specific VIA output callback: routes port changes to floppy, video, sound, RTC
+static void plus_via_output(void *context, uint8_t port, uint8_t output) {
+    config_t *sim = (config_t *)context;
+    plus_state_t *ps = plus_state(sim);
+
+    if (port == 0) {
+        floppy_set_sel_signal(sim->floppy, (output & 0x20) != 0);
+
+        plus_use_video_buffer(sim, (output >> 6) & 1);
+
+        sound_use_buffer(ps->sound, (output >> 3) & 1);
+
+        sound_volume(ps->sound, output & 7);
+    } else {
+        rtc_input(sim->rtc, (output >> 2) & 1, (output >> 1) & 1, output & 1);
+
+        sound_enable(ps->sound, (output & 0x80) == 0);
+    }
+}
+
+// Plus-specific VIA shift-out callback: routes keyboard data to keyboard device
+static void plus_via_shift_out(void *context, uint8_t byte) {
+    config_t *sim = (config_t *)context;
+    keyboard_input(sim->keyboard, byte);
+}
+
+// Plus-specific VIA IRQ callback: VIA uses IPL level 1
+static void plus_via_irq(void *context, bool active) {
+    plus_update_ipl((config_t *)context, 1, active);
+}
+
+// Plus-specific SCC IRQ callback: SCC uses IPL level 2
+static void plus_scc_irq(void *context, bool active) {
+    plus_update_ipl((config_t *)context, 2, active);
+}
+
+// ============================================================
+// VBL trigger
+// ============================================================
+
+// Trigger vertical blanking interval for the Plus.
+static void plus_trigger_vbl(config_t *cfg) {
+    plus_state_t *ps = plus_state(cfg);
+
+    // Assert then deassert VIA CA1 to signal VBL to the CPU
+    via_input_c(cfg->via1, 0, 0, 0);
+    via_input_c(cfg->via1, 0, 0, 1);
+
+    // Advance the sound DMA phase
+    if (ps && ps->sound) {
+        sound_vbl(ps->sound);
+    }
+
+    image_tick_all(cfg);
+}
+
+// ============================================================
+// Machine descriptor
+// ============================================================
+
+// Plus configuration-dialog metadata.  Plus accepts a 2.5 MB stepping in
+// addition to the powers of two — historically valid on real hardware.
+static const uint32_t plus_ram_options_kb[] = {1024, 2048, 2560, 4096, 0};
+
+static const struct floppy_slot plus_floppy_slots[] = {
+    {.label = "Internal FD0", .kind = FLOPPY_800K},
+    {.label = "External FD1", .kind = FLOPPY_800K},
+    {0},
+};
+
+static const struct scsi_slot plus_scsi_slots[] = {
+    {.label = "SCSI HD0", .id = 0},
+    {.label = "SCSI HD1", .id = 1},
+    {0},
+};
+
+// Macintosh Plus hardware profile descriptor
+static const machine_substrate_t plus_substrate = {
+    .init = plus_init,
+    .teardown = plus_teardown,
+    .checkpoint_save = plus_checkpoint_save,
+    .trigger_vbl = plus_trigger_vbl,
+    .fd_insert = mac_fd_insert,
+    .fd_present = mac_fd_present,
+    .input_key = mac_input_key,
+    .input_mouse_move = mac_input_mouse_move,
+    .input_mouse_button = mac_input_mouse_button,
+    .display = plus_display,
+};
+
+const hw_profile_t machine_plus = {
+    .name = "Macintosh Plus",
+    .id = "plus",
+
+    // 68000 at 7.8336 MHz (actual Plus clock)
+    .cpu_model = 68000,
+    .freq = 7833600,
+    .mmu_kind = MMU_NONE,
+
+    // 24-bit address space
+    .address_bits = 24,
+    .ram_default = 0x400000, // 4 MB
+    .ram_max = 0x400000, // 4 MB max
+    .rom_size = 0x020000, // 128 KB
+
+    // Configuration-dialog shape
+    .ram_options = plus_ram_options_kb,
+    .floppy_slots = plus_floppy_slots,
+    .scsi_slots = plus_scsi_slots,
+    .has_cdrom = false, // Plus CD-ROM driver chain not yet integrated
+    .cdrom_id = 3,
+
+    // Single VIA, no ADB, no NuBus
+
+    // Lifecycle callbacks wired to Plus-specific implementations
+    .substrate = &plus_substrate,
+};

@@ -25,20 +25,43 @@
   }
 
   // Static configuration shape per model, returned by `machine.profile(id)`.
-  // The slide reads `name` for the dropdown label, `needs_vrom` to decide
-  // whether to show the Video ROM row, `ram_options` / `ram_default` to
-  // build the RAM dropdown, and `floppy_slots` to know how many floppy
-  // rows to render (with what label).
+  // The slide reads `name` for the dropdown label, `video_slots` to decide
+  // whether to show the Video ROM row (per-card requires_vrom) and to build
+  // the video-mode list, `ram_options` / `ram_default` to build the RAM
+  // dropdown, and `floppy_slots` for the floppy rows.
   interface MachineProfile {
     name?: string;
-    needs_vrom?: boolean;
     ram_options?: number[]; // KB
     ram_default?: number; // KB
     floppy_slots?: Array<{ label?: string; kind?: string }>;
-    // JMFB video modes the model exposes; seeded via `nubus.video_mode` at
-    // boot (see initEmulator).  Empty on models with no configurable video.
-    video_modes?: Array<{ id: string; label?: string }>;
-    video_mode_default?: string;
+    scsi_slots?: Array<{ label?: string; id?: number }>;
+    has_cdrom?: boolean; // documented UX gate: show the SCSI CD-ROM row iff true
+    // Derived capability probe (proposal §4.4): the typed facts the UI reads
+    // instead of guessing from the model name.
+    capabilities?: {
+      cpu?: { model?: number; address_bits?: number; fpu?: boolean };
+      mmu?: { present?: boolean; kind?: string };
+      nubus?: boolean;
+    };
+    // Per-card video slot shape (proposal §4.4) — the single source for both
+    // the VROM requirement (per-card requires_vrom; see needsVrom) and the
+    // video-mode list (each card's monitors × depths; see videoModes).
+    video_slots?: Array<{
+      slot: string;
+      fixed: boolean;
+      default_card: string;
+      cards: Array<{
+        id: string;
+        requires_vrom: boolean;
+        monitors?: Array<{
+          id: string;
+          name?: string;
+          width?: number;
+          height?: number;
+          depths?: number[];
+        }>;
+      }>;
+    }>;
   }
 
   // Local form state.
@@ -73,14 +96,45 @@
   let needsRomPicker = $derived(romsForCurrentModel.length > 1);
   let currentProfile = $derived(modelId ? profiles[modelId] : undefined);
   let modelName = $derived(currentProfile?.name ?? modelId);
-  let needsVrom = $derived(currentProfile?.needs_vrom === true);
+  // VROM row visibility is driven entirely by the *selected card* (the
+  // SE/30-vs-IIci asymmetry): a card declares requires_vrom, not the machine.
+  let needsVrom = $derived(
+    (currentProfile?.video_slots ?? []).some((s) => {
+      const card = s.cards?.find((c) => c.id === s.default_card) ?? s.cards?.[0];
+      return card?.requires_vrom === true;
+    }),
+  );
+  // SCSI HD row label comes from the profile's first SCSI slot, not a
+  // hardcoded string.
+  let hdSlotLabel = $derived(currentProfile?.scsi_slots?.[0]?.label ?? 'SCSI HD 0');
+  // Only machines whose profile advertises a CD-ROM (has_cdrom) show the CD row.
+  let hasCdrom = $derived(currentProfile?.has_cdrom === true);
   let ramOptions = $derived.by(() => {
     const opts = currentProfile?.ram_options ?? [];
     if (opts.length) return opts.map(formatRamKb);
     return ['1 MB', '2 MB', '4 MB', '8 MB', '16 MB'];
   });
   let floppySlots = $derived(currentProfile?.floppy_slots ?? []);
-  let videoModes = $derived(currentProfile?.video_modes ?? []);
+  // Video-mode list derived from video_slots: each selectable card's
+  // monitors × supported depths.  Ids/labels match what the C side used to
+  // emit as the flat video_modes array ("<monitor>_<depth>bpp"), so the
+  // boot-time `nubus.video_mode` seed is unchanged.
+  let videoModes = $derived.by(() => {
+    const out: Array<{ id: string; label: string }> = [];
+    for (const s of currentProfile?.video_slots ?? []) {
+      for (const c of s.cards ?? []) {
+        for (const m of c.monitors ?? []) {
+          for (const d of m.depths ?? []) {
+            out.push({
+              id: `${m.id}_${d}bpp`,
+              label: `${m.name ?? m.id} · ${m.width}×${m.height} · ${d} bpp`,
+            });
+          }
+        }
+      }
+    }
+    return out;
+  });
 
   let vromOptions = $state<string[]>(['(auto)']);
   let fdOptions = $state<string[]>([NONE_SENTINEL]);
@@ -194,7 +248,7 @@
     const dflt = currentProfile.ram_default;
     ram = dflt ? formatRamKb(dflt) : (ramOptions[0] ?? DEFAULT_CONFIG.ram);
     floppies = new Array<string>(floppySlots.length).fill(NONE_SENTINEL);
-    videoMode = currentProfile.video_mode_default ?? currentProfile.video_modes?.[0]?.id ?? '';
+    videoMode = videoModes[0]?.id ?? '';
   });
 
   onMount(() => {
@@ -363,7 +417,7 @@
           </select>
         </div>
       {/if}
-      {#if videoModes.length > 0}
+      {#if videoModes.length > 1}
         <div class="form-row">
           <label for="cfg-video-mode">Video Mode</label>
           <select id="cfg-video-mode" bind:value={videoMode}>
@@ -397,21 +451,23 @@
         </div>
       {/each}
       <div class="form-row">
-        <label for="cfg-hd">SCSI HD 0</label>
+        <label for="cfg-hd">{hdSlotLabel}</label>
         <select id="cfg-hd" value={hd} onchange={onHdChange}>
           {#each hdOptions as opt (opt)}
             <option>{opt}</option>
           {/each}
         </select>
       </div>
-      <div class="form-row">
-        <label for="cfg-cd">SCSI CD-ROM</label>
-        <select id="cfg-cd" value={cd} onchange={onCdChange}>
-          {#each cdOptions as opt (opt)}
-            <option>{opt}</option>
-          {/each}
-        </select>
-      </div>
+      {#if hasCdrom}
+        <div class="form-row">
+          <label for="cfg-cd">SCSI CD-ROM</label>
+          <select id="cfg-cd" value={cd} onchange={onCdChange}>
+            {#each cdOptions as opt (opt)}
+              <option>{opt}</option>
+            {/each}
+          </select>
+        </div>
+      {/if}
     {/if}
     <div class="form-divider"></div>
     <div class="form-actions">

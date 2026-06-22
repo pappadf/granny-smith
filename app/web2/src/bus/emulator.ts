@@ -8,7 +8,7 @@
 // races that state. Every JS→C call MUST route through the SAB-backed
 // bridge slot (`pending=1`, single in-flight). See docs/web.md.
 
-import { machine, type MachineStatus } from '@/state/machine.svelte';
+import { machine, type MachineStatus, type MmuKind } from '@/state/machine.svelte';
 import { showNotification } from '@/state/toasts.svelte';
 import { getOrCreateMachine } from '@/lib/machineId';
 import { routePrintLine, routeLogEmit } from './logSink';
@@ -314,6 +314,34 @@ export function getLastBootConfig(): MachineConfig | null {
   return lastBootConfig;
 }
 
+// Read a model's capability probe from `machine.profile().capabilities` and
+// apply it to the shared machine state. Replaces the old display-name regex
+// that silently misclassified any MMU machine whose name didn't match the
+// hardcoded pattern. `mmuEnabled` stays the boolean the debug panels gate on,
+// but it is now derived from the typed kind (only a 68030 PMMU enables the
+// register views; the Lisa segment MMU and "none" leave them off); `mmuKind`
+// carries the full typed kind for display, and `fpu` gates the FPU panel.
+export async function applyCapabilities(model: string): Promise<void> {
+  let kind: MmuKind = 'none';
+  let fpu = false;
+  try {
+    const r = await gsEval('machine.profile', [model]);
+    if (typeof r === 'string') {
+      const parsed = JSON.parse(r) as {
+        capabilities?: { mmu?: { kind?: string }; cpu?: { fpu?: boolean } };
+      };
+      const k = parsed.capabilities?.mmu?.kind;
+      if (k === '68030_pmmu' || k === 'lisa_segment') kind = k;
+      fpu = parsed.capabilities?.cpu?.fpu === true;
+    }
+  } catch {
+    /* leave kind = 'none', fpu = false */
+  }
+  machine.mmuKind = kind;
+  machine.mmuEnabled = kind === '68030_pmmu';
+  machine.fpu = fpu;
+}
+
 // Boot a machine from a config. Sequence mirrors app/web/js/config-dialog.js
 // bootFromConfig (the happy path; model-specific quirks land as bugs surface).
 export async function initEmulator(config: MachineConfig): Promise<void> {
@@ -359,7 +387,7 @@ export async function initEmulator(config: MachineConfig): Promise<void> {
 
   machine.model = config.modelName ?? config.model;
   machine.ram = config.ram;
-  machine.mmuEnabled = /SE\/30|II/i.test(machine.model);
+  await applyCapabilities(config.model);
 
   await gsEval('scheduler.run');
   // onRunStateChange will flip machine.status to 'running' once the
