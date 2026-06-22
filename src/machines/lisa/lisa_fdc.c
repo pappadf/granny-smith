@@ -169,7 +169,11 @@ static void fdc_execute_rwts(lisa_fdc_t *fdc) {
     int sector = fdc->ram[FDC_SECTOR];
     int track = fdc->ram[FDC_TRACK];
     if (!fdc->image) {
-        fdc->ram[FDC_STATUS] = 0x16; // no disk / not ready
+        // Empty drive: the Sony 6504A controller reports DRVERR ($07 = "no disk
+        // in drive"), which the boot ROM maps to its "insert a diskette" prompt.
+        // NOT $16: $16 is decimal 22 = CLMPERR (clamp error), which the boot ROM
+        // treats as an I/O-board fault and paints as a crossed I/O-board icon.
+        fdc->ram[FDC_STATUS] = 0x07; // DRVERR: no disk in drive
         return;
     }
     if (track < 0 || track > 79 || sector < 0 || sector >= iwm_sectors_per_track(track)) {
