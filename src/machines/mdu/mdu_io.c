@@ -49,15 +49,15 @@ static const memory_interface_t mdu_vdac_iface = {
 //
 //   base     end      device            penalty              xform               rd  wr     name
 static const mac030_io_range_t mdu_io_ranges_tbl[] = {
-    {0x00000, 0x02000, MAC030_DEV_VIA1, MDU_VIA_IO_PENALTY, MAC030_IO_MASK_A0, 0, 0, "via1"},
-    {0x04000, 0x06000, MAC030_DEV_SCC, MDU_SCC_IO_PENALTY, MAC030_IO_NORMAL, 0, 0, "scc"},
-    {0x06000, 0x08000, MAC030_DEV_SCSI, MDU_SCSI_IO_PENALTY, MAC030_IO_FIXED, 0, 0x201, "scsi_drq"},
-    {0x10000, 0x12000, MAC030_DEV_SCSI, MDU_SCSI_IO_PENALTY, MAC030_IO_NORMAL, 0, 0, "scsi_reg"},
-    {0x12000, 0x14000, MAC030_DEV_SCSI, MDU_SCSI_IO_PENALTY, MAC030_IO_FIXED, 0, 0x201, "scsi_blind"},
-    {0x14000, 0x16000, MAC030_DEV_ASC, MDU_ASC_IO_PENALTY, MAC030_IO_NORMAL, 0, 0, "asc"},
-    {0x16000, 0x18000, MAC030_DEV_FLOPPY, MDU_SWIM_IO_PENALTY, MAC030_IO_NORMAL, 0, 0, "swim"},
-    {0x24000, 0x26000, MAC030_DEV_VDAC, MDU_VDAC_IO_PENALTY, MAC030_IO_NORMAL, 0, 0, "vdac"},
-    {0x26000, 0x28000, MAC030_DEV_RBV, MDU_RBV_IO_PENALTY, MAC030_IO_NORMAL, 0, 0, "rbv"},
+    {0x00000, 0x02000, MAC030_DEV_VIA1, MDU_VIA_IO_PENALTY, MAC030_IO_MASK_A0, 0, 0, NULL, NULL, "via1"},
+    {0x04000, 0x06000, MAC030_DEV_SCC, MDU_SCC_IO_PENALTY, MAC030_IO_NORMAL, 0, 0, NULL, NULL, "scc"},
+    {0x06000, 0x08000, MAC030_DEV_SCSI, MDU_SCSI_IO_PENALTY, MAC030_IO_FIXED, 0, 0x201, NULL, NULL, "scsi_drq"},
+    {0x10000, 0x12000, MAC030_DEV_SCSI, MDU_SCSI_IO_PENALTY, MAC030_IO_NORMAL, 0, 0, NULL, NULL, "scsi_reg"},
+    {0x12000, 0x14000, MAC030_DEV_SCSI, MDU_SCSI_IO_PENALTY, MAC030_IO_FIXED, 0, 0x201, NULL, NULL, "scsi_blind"},
+    {0x14000, 0x16000, MAC030_DEV_ASC, MDU_ASC_IO_PENALTY, MAC030_IO_NORMAL, 0, 0, NULL, NULL, "asc"},
+    {0x16000, 0x18000, MAC030_DEV_FLOPPY, MDU_SWIM_IO_PENALTY, MAC030_IO_NORMAL, 0, 0, NULL, NULL, "swim"},
+    {0x24000, 0x26000, MAC030_DEV_VDAC, MDU_VDAC_IO_PENALTY, MAC030_IO_NORMAL, 0, 0, NULL, NULL, "vdac"},
+    {0x26000, 0x28000, MAC030_DEV_RBV, MDU_RBV_IO_PENALTY, MAC030_IO_NORMAL, 0, 0, NULL, NULL, "rbv"},
     {0}, // sentinel: end == 0
 };
 
@@ -88,4 +88,6 @@ void mdu_io_bind(mdu_io_t *io, config_t *cfg, void *asc, void *floppy, void *rbv
 
     io->ranges = mdu_io_ranges_tbl;
     io->mirror_mask = MDU_IO_MIRROR;
+    io->cfg = cfg;
+    io->unmapped_read = 0; // MDU reads 0 on an unmapped I/O access
 }

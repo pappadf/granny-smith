@@ -53,10 +53,12 @@ uint8_t mac030_io_read_uint8(void *ctx, uint32_t addr) {
     for (const mac030_io_range_t *r = io->ranges; r->end; r++) {
         if (offset >= r->base && offset < r->end) {
             memory_io_penalty(r->penalty);
+            if (r->read_fn)
+                return r->read_fn(io->cfg, addr);
             return io->iface[r->device]->read_uint8(io->handle[r->device], io_sub_offset(r, offset, true));
         }
     }
-    return 0;
+    return io->unmapped_read;
 }
 
 uint16_t mac030_io_read_uint16(void *ctx, uint32_t addr) {
@@ -78,7 +80,10 @@ void mac030_io_write_uint8(void *ctx, uint32_t addr, uint8_t value) {
     for (const mac030_io_range_t *r = io->ranges; r->end; r++) {
         if (offset >= r->base && offset < r->end) {
             memory_io_penalty(r->penalty);
-            io->iface[r->device]->write_uint8(io->handle[r->device], io_sub_offset(r, offset, false), value);
+            if (r->write_fn)
+                r->write_fn(io->cfg, addr, value);
+            else
+                io->iface[r->device]->write_uint8(io->handle[r->device], io_sub_offset(r, offset, false), value);
             return;
         }
     }
@@ -125,14 +130,14 @@ void mac030_io_fill_interface(memory_interface_t *iface) {
 //
 //   base     end      device            penalty               xform               rd  wr     name
 static const mac030_io_range_t glue_io_ranges[] = {
-    {0x00000, 0x02000, MAC030_DEV_VIA1, GLUE_VIA_IO_PENALTY, MAC030_IO_MASK_A0, 0, 0, "via1"},
-    {0x02000, 0x04000, MAC030_DEV_VIA2, GLUE_VIA_IO_PENALTY, MAC030_IO_MASK_A0, 0, 0, "via2"},
-    {0x04000, 0x06000, MAC030_DEV_SCC, GLUE_SCC_IO_PENALTY, MAC030_IO_NORMAL, 0, 0, "scc"},
-    {0x06000, 0x08000, MAC030_DEV_SCSI, GLUE_SCSI_IO_PENALTY, MAC030_IO_FIXED, 0, 0x201, "scsi_drq"},
-    {0x10000, 0x12000, MAC030_DEV_SCSI, GLUE_SCSI_IO_PENALTY, MAC030_IO_NORMAL, 0, 0, "scsi_reg"},
-    {0x12000, 0x14000, MAC030_DEV_SCSI, GLUE_SCSI_IO_PENALTY, MAC030_IO_FIXED, 0, 0x201, "scsi_blind"},
-    {0x14000, 0x16000, MAC030_DEV_ASC, GLUE_ASC_IO_PENALTY, MAC030_IO_NORMAL, 0, 0, "asc"},
-    {0x16000, 0x18000, MAC030_DEV_FLOPPY, GLUE_SWIM_IO_PENALTY, MAC030_IO_NORMAL, 0, 0, "swim"},
+    {0x00000, 0x02000, MAC030_DEV_VIA1, GLUE_VIA_IO_PENALTY, MAC030_IO_MASK_A0, 0, 0, NULL, NULL, "via1"},
+    {0x02000, 0x04000, MAC030_DEV_VIA2, GLUE_VIA_IO_PENALTY, MAC030_IO_MASK_A0, 0, 0, NULL, NULL, "via2"},
+    {0x04000, 0x06000, MAC030_DEV_SCC, GLUE_SCC_IO_PENALTY, MAC030_IO_NORMAL, 0, 0, NULL, NULL, "scc"},
+    {0x06000, 0x08000, MAC030_DEV_SCSI, GLUE_SCSI_IO_PENALTY, MAC030_IO_FIXED, 0, 0x201, NULL, NULL, "scsi_drq"},
+    {0x10000, 0x12000, MAC030_DEV_SCSI, GLUE_SCSI_IO_PENALTY, MAC030_IO_NORMAL, 0, 0, NULL, NULL, "scsi_reg"},
+    {0x12000, 0x14000, MAC030_DEV_SCSI, GLUE_SCSI_IO_PENALTY, MAC030_IO_FIXED, 0, 0x201, NULL, NULL, "scsi_blind"},
+    {0x14000, 0x16000, MAC030_DEV_ASC, GLUE_ASC_IO_PENALTY, MAC030_IO_NORMAL, 0, 0, NULL, NULL, "asc"},
+    {0x16000, 0x18000, MAC030_DEV_FLOPPY, GLUE_SWIM_IO_PENALTY, MAC030_IO_NORMAL, 0, 0, NULL, NULL, "swim"},
     {0}, // sentinel: end == 0
 };
 
@@ -161,6 +166,8 @@ void mac030_glue_io_bind(mac030_io_t *io, config_t *cfg, void *asc, void *floppy
 
     io->ranges = glue_io_ranges;
     io->mirror_mask = MAC030_GLUE_IO_MIRROR;
+    io->cfg = cfg;
+    io->unmapped_read = 0; // GLUE reads 0 on an unmapped I/O access
 }
 
 // ============================================================

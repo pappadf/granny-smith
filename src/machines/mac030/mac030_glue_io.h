@@ -41,6 +41,9 @@ typedef enum {
     MAC030_DEV_FLOPPY,
     MAC030_DEV_RBV, // MDU only (VIA2 replacement)
     MAC030_DEV_VDAC, // MDU only (Bt450 fronting the built-in RBV video)
+    MAC030_DEV_SCC_IOP, // OSS only (IIfx SCC I/O processor)
+    MAC030_DEV_SWIM_IOP, // OSS only (IIfx SWIM I/O processor)
+    MAC030_DEV_OSS, // OSS only (the OSS interrupt/glue controller)
     MAC030_DEV_COUNT,
 } mac030_dev_t;
 
@@ -58,22 +61,32 @@ typedef enum {
 // reproduces the former per-window penalty arithmetic).
 typedef struct mac030_io_range {
     uint32_t base, end; // [base, end) within the I/O mirror
-    mac030_dev_t device; // which device handles this window
+    mac030_dev_t device; // which device handles this window (when read_fn/write_fn NULL)
     uint16_t penalty; // memory_io_penalty cycles per byte access
     mac030_io_xform_t xform; // offset transform
     uint16_t read_off, write_off; // sub-offsets for MAC030_IO_FIXED windows
+    // Optional code hooks for windows a (device, offset) row can't express —
+    // bus-error windows, DMA engines, stateful shift registers (proposal
+    // §4.2.2 "the few things a table can't express are code hooks").  When set,
+    // the engine calls them with the machine config + the FULL bus address
+    // (so a handler can report the faulting address) instead of routing to a
+    // device.  NULL on every GLUE/MDU row (those are pure device routes).
+    uint8_t (*read_fn)(struct config *cfg, uint32_t addr);
+    void (*write_fn)(struct config *cfg, uint32_t addr, uint8_t value);
     const char *debug_name; // for the address-map unit test + tracing
 } mac030_io_range_t;
 
 // Device handles + cached memory interfaces the engine routes to, indexed by
 // mac030_dev_t.  Plus the ordered window table + mirror mask for this family.
-// Filled by a family bind (mac030_glue_io_bind / mac030_mdu_io_bind); used as
-// the I/O region's device context.
+// Filled by a family bind (mac030_glue_io_bind / mac030_mdu_io_bind /
+// mac030_oss_io_bind); used as the I/O region's device context.
 typedef struct mac030_io {
     void *handle[MAC030_DEV_COUNT]; // device-object pointers
     const memory_interface_t *iface[MAC030_DEV_COUNT]; // their memory interfaces
     const mac030_io_range_t *ranges; // ordered, sentinel-terminated
     uint32_t mirror_mask; // addr & mask before decode
+    struct config *cfg; // for handler-row (read_fn/write_fn) dispatch
+    uint8_t unmapped_read; // value returned on a no-match read (0 GLUE/MDU; 0xFF OSS)
 } mac030_io_t;
 
 // Backwards-compatible alias: the GLUE state struct calls its field's type

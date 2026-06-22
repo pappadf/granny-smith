@@ -276,6 +276,7 @@ typedef struct iifx_state {
 
     memory_interface_t rom_interface;
     memory_interface_t io_interface;
+    mac030_io_t iifx_io; // device context for the shared mac030 I/O engine
 } iifx_state_t;
 
 // Returns the IIfx state for a config.
@@ -1016,242 +1017,149 @@ static void iifx_scsidma_pump(config_t *cfg) {
         iifx_scsidma_finish_success(cfg);
 }
 
-// Reads one byte from the IIfx I/O space.
-static uint8_t iifx_io_read_uint8(void *ctx, uint32_t addr) {
-    config_t *cfg = (config_t *)ctx;
-    iifx_state_t *st = iifx_state(cfg);
-    uint32_t raw = addr;
-    uint8_t v;
+// ============================================================
+// IIfx I/O dispatch — table-driven on the shared mac030 engine
+// ============================================================
+//
+// The OSS+FMC I/O map runs on the shared mac030_io engine (mac030_glue_io.c).
+// Straightforward device windows are device-rows; the windows a (device,
+// offset) row can't express are handler-rows (read_fn/write_fn) — the FMC and
+// RPU bus-error windows (which must report the faulting address), the SCSI-DMA
+// engine, the OSS serial-shift / extension registers, and the BIU stub.  The
+// one thing even a handler-row can't carry is the machine-ID register at the
+// very top of the I/O space (above the $3FFFF mirror), so the read entry-points
+// keep a tiny pre-check for it before delegating to the engine.
 
-    if (raw >= 0x0ffffffc) {
-        uint32_t value = 0xa55a000d;
-        v = iifx_read_reg32_byte(value, raw);
-        LOG(5, "io_r8 @%08x ->%02x [machID]", IIFX_IO_BASE + raw, v);
-        return v;
-    }
+// --- Handler-rows -----------------------------------------------------------
 
-    uint32_t offset = raw & IIFX_IO_MIRROR;
-    if (offset >= IO_FMC_BERR && offset < IO_FMC_BERR_END) {
-        iifx_bus_error(IIFX_IO_BASE + raw, true);
-        return 0xff;
-    }
-    if (offset < IO_VIA1_END) {
-        memory_io_penalty(IIFX_VIA_IO_PENALTY);
-        v = st->via1_iface->read_uint8(cfg->via1, (offset - IO_VIA1) & ~1u);
-        uint32_t reg = (offset >> 9) & 0x0F;
-        LOG(5, "io_r8 @%08x ->%02x [VIA1 r%x]", IIFX_IO_BASE + raw, v, reg);
-        return v;
-    }
-    if (offset >= IO_SCC_IOP && offset < IO_SCC_IOP_END) {
-        memory_io_penalty(IIFX_IOP_IO_PENALTY);
-        v = st->scc_iop_iface->read_uint8(st->scc_iop, offset - IO_SCC_IOP);
-        LOG(5, "io_r8 @%08x ->%02x [SCC_IOP+%x]", IIFX_IO_BASE + raw, v, offset - IO_SCC_IOP);
-        return v;
-    }
-    if (offset >= IO_SCSI_DMA && offset < IO_SCSI_DMA_END) {
-        memory_io_penalty(IIFX_SCSI_IO_PENALTY);
-        v = iifx_scsidma_read_uint8(cfg, offset - IO_SCSI_DMA);
-        LOG(5, "io_r8 @%08x ->%02x [SCSIDMA+%x]", IIFX_IO_BASE + raw, v, offset - IO_SCSI_DMA);
-        return v;
-    }
-    if (offset >= IO_SCSI_REG && offset < IO_SCSI_REG_END) {
-        memory_io_penalty(IIFX_SCSI_IO_PENALTY);
-        v = st->scsi_iface->read_uint8(cfg->scsi, offset - IO_SCSI_REG);
-        LOG(5, "io_r8 @%08x ->%02x [SCSI r%x]", IIFX_IO_BASE + raw, v, (offset - IO_SCSI_REG) >> 4);
-        return v;
-    }
-    if (offset >= IO_SCSI_DRQ_R && offset < IO_SCSI_DRQ_R_END) {
-        memory_io_penalty(IIFX_SCSI_IO_PENALTY);
-        v = st->scsi_iface->read_uint8(cfg->scsi, 0);
-        LOG(5, "io_r8 @%08x ->%02x [SCSI_DRQR]", IIFX_IO_BASE + raw, v);
-        return v;
-    }
-    if (offset >= IO_SCSI_DRQ_W && offset < IO_SCSI_DRQ_W_END) {
-        memory_io_penalty(IIFX_SCSI_IO_PENALTY);
-        v = st->scsi_iface->read_uint8(cfg->scsi, 0);
-        LOG(5, "io_r8 @%08x ->%02x [SCSI_DRQW]", IIFX_IO_BASE + raw, v);
-        return v;
-    }
-    if (offset >= IO_ASC && offset < IO_ASC_END) {
-        memory_io_penalty(IIFX_ASC_IO_PENALTY);
-        v = st->asc_iface->read_uint8(st->asc, offset - IO_ASC);
-        LOG(5, "io_r8 @%08x ->%02x [ASC]", IIFX_IO_BASE + raw, v);
-        return v;
-    }
-    if (offset >= IO_SWIM_IOP && offset < IO_SWIM_IOP_END) {
-        memory_io_penalty(IIFX_IOP_IO_PENALTY);
-        v = st->swim_iop_iface->read_uint8(st->swim_iop, offset - IO_SWIM_IOP);
-        LOG(5, "io_r8 @%08x ->%02x [SWIM_IOP+%x]", IIFX_IO_BASE + raw, v, offset - IO_SWIM_IOP);
-        return v;
-    }
-    if (offset >= IO_OSS && offset < IO_OSS_END) {
-        memory_io_penalty(IIFX_OSS_IO_PENALTY);
-        v = st->oss_iface->read_uint8(st->oss, offset - IO_OSS);
-        LOG(5, "io_r8 @%08x ->%02x [OSS+%x]", IIFX_IO_BASE + raw, v, offset - IO_OSS);
-        return v;
-    }
-    if (offset >= IO_RPU_PROBE && offset < IO_RPU_PROBE_END) {
-        // Optional RPU chip not installed — bus-error like real BIU30
-        // does when the parity SIMMs / parity controller are absent.
-        iifx_bus_error(IIFX_IO_BASE + raw, true);
-        return 0xff;
-    }
-    if (offset >= IO_OSS_EXT_START && offset < IO_OSS_EXT_END) {
-        memory_io_penalty(IIFX_OSS_IO_PENALTY);
-        if (offset == IO_OSS_EXT_SHIFT) {
-            v = (uint8_t)(st->oss_ext_shift & 1u);
-            st->oss_ext_shift >>= 1;
-            LOG(5, "io_r8 @%08x ->%02x [OSSx_SHIFT]", IIFX_IO_BASE + raw, v);
-            return v;
-        }
-        v = st->oss_ext[offset - IO_OSS_EXT_START];
-        LOG(5, "io_r8 @%08x ->%02x [OSSx+%x]", IIFX_IO_BASE + raw, v, offset - IO_OSS_EXT_START);
-        return v;
-    }
-    if (offset >= IO_BIU && offset < IO_BIU_END) {
-        LOG(5, "io_r8 @%08x ->00 [BIU]", IIFX_IO_BASE + raw);
-        return 0;
-    }
-    LOG(5, "io_r8 @%08x ->FF [UNMAPPED]", IIFX_IO_BASE + raw);
+// FMC ($24000) + RPU-probe ($1e000): no chip present — bus-error like the real
+// BIU30 does when the parity controller / RPU is absent, reporting the address.
+static uint8_t iifx_io_berr_read(config_t *cfg, uint32_t addr) {
+    (void)cfg;
+    iifx_bus_error(IIFX_IO_BASE + addr, true);
     return 0xff;
 }
+static void iifx_io_berr_write(config_t *cfg, uint32_t addr, uint8_t value) {
+    (void)cfg;
+    (void)value;
+    iifx_bus_error(IIFX_IO_BASE + addr, false);
+}
 
-// Reads one word from the IIfx I/O space.
+// SCSI-DMA engine ($08000).
+static uint8_t iifx_io_scsidma_read(config_t *cfg, uint32_t addr) {
+    return iifx_scsidma_read_uint8(cfg, (addr & IIFX_IO_MIRROR) - IO_SCSI_DMA);
+}
+static void iifx_io_scsidma_write(config_t *cfg, uint32_t addr, uint8_t value) {
+    iifx_scsidma_write_uint8(cfg, (addr & IIFX_IO_MIRROR) - IO_SCSI_DMA, value);
+}
+
+// BIU ($18000): reads 0, writes ignored.
+static uint8_t iifx_io_biu_read(config_t *cfg, uint32_t addr) {
+    (void)cfg;
+    (void)addr;
+    return 0;
+}
+static void iifx_io_biu_write(config_t *cfg, uint32_t addr, uint8_t value) {
+    (void)cfg;
+    (void)addr;
+    (void)value;
+}
+
+// OSS extension / serial-shift register ($1c000-$1ffff).  Offset 0 is a 16-bit
+// right-shifting serial register (POST phase $8F: writes insert at bit 15,
+// reads take bit 0 and shift right); the rest is a plain R/W backing array.
+static uint8_t iifx_io_ossext_read(config_t *cfg, uint32_t addr) {
+    iifx_state_t *st = iifx_state(cfg);
+    uint32_t offset = addr & IIFX_IO_MIRROR;
+    if (offset == IO_OSS_EXT_SHIFT) {
+        uint8_t v = (uint8_t)(st->oss_ext_shift & 1u);
+        st->oss_ext_shift >>= 1;
+        return v;
+    }
+    return st->oss_ext[offset - IO_OSS_EXT_START];
+}
+static void iifx_io_ossext_write(config_t *cfg, uint32_t addr, uint8_t value) {
+    iifx_state_t *st = iifx_state(cfg);
+    uint32_t offset = addr & IIFX_IO_MIRROR;
+    if (offset == IO_OSS_EXT_SHIFT) {
+        st->oss_ext_shift = (uint16_t)((st->oss_ext_shift >> 1) | ((value & 1u) << 15));
+        return;
+    }
+    st->oss_ext[offset - IO_OSS_EXT_START] = value;
+}
+
+// --- The IIfx I/O window table ----------------------------------------------
+// Ordered; RPU-probe precedes OSS-ext (it is a sub-window).  Device-rows route
+// to the engine's (handle, iface) slots; handler-rows carry read_fn/write_fn
+// (device field unused).  Penalties + decode are the prior dispatcher verbatim.
+//   base           end                device              penalty              xform              rd  wr
+//   read_fn/write_fn                       name
+static const mac030_io_range_t iifx_io_ranges_tbl[] = {
+    {IO_VIA1, IO_VIA1_END, MAC030_DEV_VIA1, IIFX_VIA_IO_PENALTY, MAC030_IO_MASK_A0, 0, 0, NULL, NULL, "via1"},
+    {IO_SCC_IOP, IO_SCC_IOP_END, MAC030_DEV_SCC_IOP, IIFX_IOP_IO_PENALTY, MAC030_IO_NORMAL, 0, 0, NULL, NULL,
+     "scc_iop"},
+    {IO_SCSI_DMA, IO_SCSI_DMA_END, MAC030_DEV_VIA1, IIFX_SCSI_IO_PENALTY, MAC030_IO_NORMAL, 0, 0, iifx_io_scsidma_read,
+     iifx_io_scsidma_write, "scsi_dma"},
+    {IO_SCSI_REG, IO_SCSI_REG_END, MAC030_DEV_SCSI, IIFX_SCSI_IO_PENALTY, MAC030_IO_NORMAL, 0, 0, NULL, NULL,
+     "scsi_reg"},
+    {IO_SCSI_DRQ_R, IO_SCSI_DRQ_R_END, MAC030_DEV_SCSI, IIFX_SCSI_IO_PENALTY, MAC030_IO_FIXED, 0, 0x201, NULL, NULL,
+     "scsi_drq_r"},
+    {IO_SCSI_DRQ_W, IO_SCSI_DRQ_W_END, MAC030_DEV_SCSI, IIFX_SCSI_IO_PENALTY, MAC030_IO_FIXED, 0, 0x201, NULL, NULL,
+     "scsi_drq_w"},
+    {IO_ASC, IO_ASC_END, MAC030_DEV_ASC, IIFX_ASC_IO_PENALTY, MAC030_IO_NORMAL, 0, 0, NULL, NULL, "asc"},
+    {IO_SWIM_IOP, IO_SWIM_IOP_END, MAC030_DEV_SWIM_IOP, IIFX_IOP_IO_PENALTY, MAC030_IO_NORMAL, 0, 0, NULL, NULL,
+     "swim_iop"},
+    {IO_BIU, IO_BIU_END, MAC030_DEV_VIA1, 0, MAC030_IO_NORMAL, 0, 0, iifx_io_biu_read, iifx_io_biu_write, "biu"},
+    {IO_OSS, IO_OSS_END, MAC030_DEV_OSS, IIFX_OSS_IO_PENALTY, MAC030_IO_NORMAL, 0, 0, NULL, NULL, "oss"},
+    {IO_RPU_PROBE, IO_RPU_PROBE_END, MAC030_DEV_VIA1, 0, MAC030_IO_NORMAL, 0, 0, iifx_io_berr_read, iifx_io_berr_write,
+     "rpu_probe"},
+    {IO_OSS_EXT_START, IO_OSS_EXT_END, MAC030_DEV_VIA1, IIFX_OSS_IO_PENALTY, MAC030_IO_NORMAL, 0, 0,
+     iifx_io_ossext_read, iifx_io_ossext_write, "oss_ext"},
+    {IO_FMC_BERR, IO_FMC_BERR_END, MAC030_DEV_VIA1, 0, MAC030_IO_NORMAL, 0, 0, iifx_io_berr_read, iifx_io_berr_write,
+     "fmc_berr"},
+    {0}, // sentinel
+};
+
+// Cache device handles/interfaces and install the IIfx table.  Call after the
+// devices + their cached interfaces (st->*_iface) are up.
+static void iifx_io_bind(mac030_io_t *io, config_t *cfg, iifx_state_t *st) {
+    for (int i = 0; i < MAC030_DEV_COUNT; i++) {
+        io->handle[i] = NULL;
+        io->iface[i] = NULL;
+    }
+    io->handle[MAC030_DEV_VIA1] = cfg->via1;
+    io->handle[MAC030_DEV_SCC_IOP] = st->scc_iop;
+    io->handle[MAC030_DEV_SCSI] = cfg->scsi;
+    io->handle[MAC030_DEV_ASC] = st->asc;
+    io->handle[MAC030_DEV_SWIM_IOP] = st->swim_iop;
+    io->handle[MAC030_DEV_OSS] = st->oss;
+
+    io->iface[MAC030_DEV_VIA1] = st->via1_iface;
+    io->iface[MAC030_DEV_SCC_IOP] = st->scc_iop_iface;
+    io->iface[MAC030_DEV_SCSI] = st->scsi_iface;
+    io->iface[MAC030_DEV_ASC] = st->asc_iface;
+    io->iface[MAC030_DEV_SWIM_IOP] = st->swim_iop_iface;
+    io->iface[MAC030_DEV_OSS] = st->oss_iface;
+
+    io->ranges = iifx_io_ranges_tbl;
+    io->mirror_mask = IIFX_IO_MIRROR;
+    io->cfg = cfg;
+    io->unmapped_read = 0xff; // IIfx reads 0xFF on an unmapped I/O access
+}
+
+// Read entry-points: the machine-ID register sits above the I/O mirror, so it
+// is resolved here before delegating to the shared engine.  Writes have no such
+// special case and use the engine directly (see the substrate registration).
+static uint8_t iifx_io_read_uint8(void *ctx, uint32_t addr) {
+    if (addr >= 0x0ffffffc) // machine-ID register at the top of the I/O space
+        return iifx_read_reg32_byte(0xa55a000d, addr);
+    return mac030_io_read_uint8(ctx, addr);
+}
 static uint16_t iifx_io_read_uint16(void *ctx, uint32_t addr) {
     return (uint16_t)(((uint16_t)iifx_io_read_uint8(ctx, addr) << 8) | iifx_io_read_uint8(ctx, addr + 1));
 }
-
-// Reads one long from the IIfx I/O space.
 static uint32_t iifx_io_read_uint32(void *ctx, uint32_t addr) {
-    config_t *cfg = (config_t *)ctx;
-    iifx_state_t *st = iifx_state(cfg);
-    uint32_t offset = addr & IIFX_IO_MIRROR;
-    if (offset >= IO_SCSI_DRQ_R && offset < IO_SCSI_DRQ_R_END) {
-        memory_io_penalty(IIFX_SCSI_IO_PENALTY * 4);
-        uint8_t b0 = st->scsi_iface->read_uint8(cfg->scsi, 0);
-        uint8_t b1 = st->scsi_iface->read_uint8(cfg->scsi, 0);
-        uint8_t b2 = st->scsi_iface->read_uint8(cfg->scsi, 0);
-        uint8_t b3 = st->scsi_iface->read_uint8(cfg->scsi, 0);
-        return ((uint32_t)b0 << 24) | ((uint32_t)b1 << 16) | ((uint32_t)b2 << 8) | b3;
-    }
     return ((uint32_t)iifx_io_read_uint16(ctx, addr) << 16) | iifx_io_read_uint16(ctx, addr + 2);
-}
-
-// Writes one byte to the IIfx I/O space.
-static void iifx_io_write_uint8(void *ctx, uint32_t addr, uint8_t value) {
-    config_t *cfg = (config_t *)ctx;
-    iifx_state_t *st = iifx_state(cfg);
-    uint32_t raw = addr;
-    uint32_t offset = raw & IIFX_IO_MIRROR;
-
-    if (offset >= IO_FMC_BERR && offset < IO_FMC_BERR_END) {
-        LOG(5, "io_w8 @%08x =%02x [FMC-BERR]", IIFX_IO_BASE + raw, value);
-        iifx_bus_error(IIFX_IO_BASE + raw, false);
-        return;
-    }
-    if (offset < IO_VIA1_END) {
-        memory_io_penalty(IIFX_VIA_IO_PENALTY);
-        uint32_t reg = (offset >> 9) & 0x0F;
-        LOG(5, "io_w8 @%08x =%02x [VIA1 r%x]", IIFX_IO_BASE + raw, value, reg);
-        st->via1_iface->write_uint8(cfg->via1, (offset - IO_VIA1) & ~1u, value);
-        return;
-    }
-    if (offset >= IO_SCC_IOP && offset < IO_SCC_IOP_END) {
-        memory_io_penalty(IIFX_IOP_IO_PENALTY);
-        LOG(5, "io_w8 @%08x =%02x [SCC_IOP+%x]", IIFX_IO_BASE + raw, value, offset - IO_SCC_IOP);
-        st->scc_iop_iface->write_uint8(st->scc_iop, offset - IO_SCC_IOP, value);
-        return;
-    }
-    if (offset >= IO_SCSI_DMA && offset < IO_SCSI_DMA_END) {
-        memory_io_penalty(IIFX_SCSI_IO_PENALTY);
-        LOG(5, "io_w8 @%08x =%02x [SCSIDMA+%x]", IIFX_IO_BASE + raw, value, offset - IO_SCSI_DMA);
-        iifx_scsidma_write_uint8(cfg, offset - IO_SCSI_DMA, value);
-        return;
-    }
-    if (offset >= IO_SCSI_REG && offset < IO_SCSI_REG_END) {
-        memory_io_penalty(IIFX_SCSI_IO_PENALTY);
-        LOG(5, "io_w8 @%08x =%02x [SCSI r%x]", IIFX_IO_BASE + raw, value, (offset - IO_SCSI_REG) >> 4);
-        st->scsi_iface->write_uint8(cfg->scsi, offset - IO_SCSI_REG, value);
-        return;
-    }
-    if (offset >= IO_SCSI_DRQ_R && offset < IO_SCSI_DRQ_R_END) {
-        memory_io_penalty(IIFX_SCSI_IO_PENALTY);
-        st->scsi_iface->write_uint8(cfg->scsi, 0x201, value);
-        return;
-    }
-    if (offset >= IO_SCSI_DRQ_W && offset < IO_SCSI_DRQ_W_END) {
-        memory_io_penalty(IIFX_SCSI_IO_PENALTY);
-        st->scsi_iface->write_uint8(cfg->scsi, 0x201, value);
-        return;
-    }
-    if (offset >= IO_ASC && offset < IO_ASC_END) {
-        memory_io_penalty(IIFX_ASC_IO_PENALTY);
-        LOG(5, "io_w8 @%08x =%02x [ASC]", IIFX_IO_BASE + raw, value);
-        st->asc_iface->write_uint8(st->asc, offset - IO_ASC, value);
-        return;
-    }
-    if (offset >= IO_SWIM_IOP && offset < IO_SWIM_IOP_END) {
-        memory_io_penalty(IIFX_IOP_IO_PENALTY);
-        LOG(5, "io_w8 @%08x =%02x [SWIM_IOP+%x]", IIFX_IO_BASE + raw, value, offset - IO_SWIM_IOP);
-        st->swim_iop_iface->write_uint8(st->swim_iop, offset - IO_SWIM_IOP, value);
-        return;
-    }
-    if (offset >= IO_OSS && offset < IO_OSS_END) {
-        memory_io_penalty(IIFX_OSS_IO_PENALTY);
-        LOG(5, "io_w8 @%08x =%02x [OSS+%x]", IIFX_IO_BASE + raw, value, offset - IO_OSS);
-        st->oss_iface->write_uint8(st->oss, offset - IO_OSS, value);
-        return;
-    }
-    if (offset >= IO_RPU_PROBE && offset < IO_RPU_PROBE_END) {
-        // Same as the read side: optional RPU chip absent → bus-error
-        // every access so POST phase $93 sees a clean "no RPU" result
-        // and System 7's gestaltParityAttr returns "no capability".
-        iifx_bus_error(IIFX_IO_BASE + raw, false);
-        return;
-    }
-    if (offset >= IO_OSS_EXT_START && offset < IO_OSS_EXT_END) {
-        memory_io_penalty(IIFX_OSS_IO_PENALTY);
-        if (offset == IO_OSS_EXT_SHIFT) {
-            st->oss_ext_shift = (uint16_t)((st->oss_ext_shift >> 1) | ((value & 1u) << 15));
-            LOG(5, "io_w8 @%08x =%02x [OSSx_SHIFT, reg=%04x]", IIFX_IO_BASE + raw, value, st->oss_ext_shift);
-            return;
-        }
-        LOG(5, "io_w8 @%08x =%02x [OSSx+%x]", IIFX_IO_BASE + raw, value, offset - IO_OSS_EXT_START);
-        st->oss_ext[offset - IO_OSS_EXT_START] = value;
-        return;
-    }
-    LOG(5, "io_w8 @%08x =%02x [UNMAPPED]", IIFX_IO_BASE + raw, value);
-}
-
-// Writes one word to the IIfx I/O space.
-static void iifx_io_write_uint16(void *ctx, uint32_t addr, uint16_t value) {
-    iifx_io_write_uint8(ctx, addr, (uint8_t)(value >> 8));
-    iifx_io_write_uint8(ctx, addr + 1, (uint8_t)value);
-}
-
-// Writes one long to the IIfx I/O space.
-static void iifx_io_write_uint32(void *ctx, uint32_t addr, uint32_t value) {
-    config_t *cfg = (config_t *)ctx;
-    iifx_state_t *st = iifx_state(cfg);
-    uint32_t offset = addr & IIFX_IO_MIRROR;
-    if (offset >= IO_SCSI_DRQ_R && offset < IO_SCSI_DRQ_R_END) {
-        memory_io_penalty(IIFX_SCSI_IO_PENALTY * 4);
-        st->scsi_iface->write_uint8(cfg->scsi, 0x201, (uint8_t)(value >> 24));
-        st->scsi_iface->write_uint8(cfg->scsi, 0x201, (uint8_t)(value >> 16));
-        st->scsi_iface->write_uint8(cfg->scsi, 0x201, (uint8_t)(value >> 8));
-        st->scsi_iface->write_uint8(cfg->scsi, 0x201, (uint8_t)value);
-        return;
-    }
-    if (offset >= IO_SCSI_DRQ_W && offset < IO_SCSI_DRQ_W_END) {
-        memory_io_penalty(IIFX_SCSI_IO_PENALTY * 4);
-        st->scsi_iface->write_uint8(cfg->scsi, 0x201, (uint8_t)(value >> 24));
-        st->scsi_iface->write_uint8(cfg->scsi, 0x201, (uint8_t)(value >> 16));
-        st->scsi_iface->write_uint8(cfg->scsi, 0x201, (uint8_t)(value >> 8));
-        st->scsi_iface->write_uint8(cfg->scsi, 0x201, (uint8_t)value);
-        return;
-    }
-    iifx_io_write_uint16(ctx, addr, (uint16_t)(value >> 16));
-    iifx_io_write_uint16(ctx, addr + 2, (uint16_t)value);
 }
 
 // Recomputes the CPU IPL from OSS state.
@@ -1405,15 +1313,18 @@ static void iifx_memory_layout_init(config_t *cfg) {
     memory_map_add(cfg->mem_map, IIFX_ROM_START, IIFX_ROM_END - IIFX_ROM_START, "IIfx ROM switch", &st->rom_interface,
                    cfg);
 
+    // Reads keep the machID pre-check (above the mirror) then delegate to the
+    // shared engine; writes go straight to the engine.  ctx is the engine's
+    // mac030_io_t (bound below, once the device interfaces are cached).
     st->io_interface = (memory_interface_t){
         .read_uint8 = iifx_io_read_uint8,
         .read_uint16 = iifx_io_read_uint16,
         .read_uint32 = iifx_io_read_uint32,
-        .write_uint8 = iifx_io_write_uint8,
-        .write_uint16 = iifx_io_write_uint16,
-        .write_uint32 = iifx_io_write_uint32,
+        .write_uint8 = mac030_io_write_uint8,
+        .write_uint16 = mac030_io_write_uint16,
+        .write_uint32 = mac030_io_write_uint32,
     };
-    memory_map_add(cfg->mem_map, IIFX_IO_BASE, IIFX_IO_SIZE, "IIfx I/O", &st->io_interface, cfg);
+    memory_map_add(cfg->mem_map, IIFX_IO_BASE, IIFX_IO_SIZE, "IIfx I/O", &st->io_interface, &st->iifx_io);
 
     if (st->mmu) {
         if (st->mmu->physical_vram && st->mmu->physical_vram_size > 0) {
@@ -1539,6 +1450,10 @@ static void iifx_init(config_t *cfg, checkpoint_t *checkpoint) {
         iop_init(SwimIopNum, st->floppy_iface, st->floppy, iifx_swim_iop_irq, cfg, cfg->scheduler, checkpoint);
     st->scc_iop_iface = iop_get_memory_interface(st->scc_iop);
     st->swim_iop_iface = iop_get_memory_interface(st->swim_iop);
+
+    // All device interfaces are cached — install the IIfx I/O window table into
+    // the shared-engine context registered above.
+    iifx_io_bind(&st->iifx_io, cfg, st);
 
     uint8_t *ram_base = ram_native_pointer(cfg->mem_map, 0);
     uint32_t ram_size = cfg->ram_size;
