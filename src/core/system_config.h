@@ -20,7 +20,7 @@
 #include "floppy.h"
 #include "image.h"
 #include "keyboard.h"
-#include "machine.h"
+#include "machine_profile.h"
 #include "memory.h"
 #include "mouse.h"
 #include "rtc.h"

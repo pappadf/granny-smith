@@ -22,7 +22,7 @@
 #include "image_vfs.h"
 #include "keyboard.h"
 #include "log.h"
-#include "machine.h"
+#include "machine_profile.h"
 #include "memory.h"
 #include "mouse.h"
 #include "nubus.h"
