@@ -85,12 +85,12 @@ void mac030_glue_reset(config_t *cfg, bool *overlay_flag, uint32_t rom_start, st
 // order: ADB, (checkpoint image restore), SCSI (+VIA2), images, ASC (+VIA2),
 // SWIM floppy, then bind the I/O dispatcher.  Stores the device handles in
 // the unified state and on config_t.  Call after VIA1/VIA2 exist.
-void mac030_glue_build_peripherals(config_t *cfg, checkpoint_t *cp, mac030_glue_state_t *st);
+struct mac030_board_desc;
+void mac030_glue_build_peripherals(config_t *cfg, checkpoint_t *cp, mac030_glue_state_t *st,
+                                   const struct mac030_board_desc *desc);
 
-// Create the 68030 PMMU over the GLUE address map (ROM at $40000000), make it
-// the global MMU, and attach it to the CPU.  Returns the new MMU; the caller
-// stores it and sets any transparent-translation registers (e.g. TT1).
-struct mmu_state *mac030_glue_build_mmu(config_t *cfg);
+// (mac030_build_mmu — the board-parameterised PMMU builder — is declared below,
+// next to mac030_board_desc_t which carries the ROM window it uses.)
 
 // Finish init: create the debugger, start the scheduler, and zero the IRQ/IPL
 // on a cold boot (left intact on checkpoint restore).
@@ -98,20 +98,40 @@ void mac030_glue_finish(config_t *cfg, checkpoint_t *cp);
 
 struct nubus_slot_decl;
 
-// A GLUE machine expressed as data + a few hooks (proposal §4.2.2).  The
-// shared mac030_glue_init() walks this in canonical order; the per-machine
-// deltas are the VIA output/shift callbacks, the machine-ID strap sequence,
-// the slot table, the bus-error window, the memory layout, and (SE/30 only)
-// the built-in-video wiring.  NULL hooks are skipped.
+// The mac030 board descriptor (proposal §4.2.2): the per-machine HARDWARE DATA,
+// chipset-neutral, instantiated by EVERY II-family machine (GLUE se30/iicx/iix,
+// MDU+RBV iici/iisi, OSS+FMC iifx) and consumed at init time by the shared
+// helpers — mac030_build_mmu (ROM window), the family I/O bind (io_ranges +
+// mirror + unmapped), nubus_init (slots) and the bus-error range.  Pure data;
+// the family-specific device construction stays a code path (see each init).
+typedef struct mac030_board_desc {
+    const char *chipset; // "GLUE" / "MDU+RBV" / "OSS+FMC" (tracing/diagnostics)
+    uint32_t rom_base, rom_end; // MMU ROM window (GLUE $40000000-$50000000; MDU/OSS differ)
+    const mac030_io_range_t *io_ranges; // the shared engine's ordered window table
+    uint32_t io_mirror_mask; // I/O island mirror mask (GLUE $1FFFF; MDU/OSS $3FFFF)
+    uint8_t io_unmapped_read; // value returned on an unmapped read (0 GLUE/MDU; 0xFF OSS)
+    const struct nubus_slot_decl *slots; // NuBus slot table
+    uint32_t bus_err_lo, bus_err_hi; // unmapped-region bus-error window
+} mac030_board_desc_t;
+
+// Create the 68030 PMMU over a board's ROM window, make it the global MMU and
+// attach it to the CPU.  Returns the MMU; the caller sets any TT registers.
+struct mmu_state *mac030_build_mmu(config_t *cfg, uint32_t rom_base, uint32_t rom_end);
+
+// A GLUE machine = its board descriptor (data) + a few hooks (proposal §4.2.2).
+// The shared mac030_glue_init() walks this in canonical order; the per-machine
+// deltas are the VIA output/shift callbacks, the machine-ID strap sequence, the
+// memory layout, and (SE/30 only) the built-in-video wiring.  NULL hooks are
+// skipped.
 typedef struct mac030_glue_board {
+    const mac030_board_desc_t *desc; // hardware data (rom window, io map, slots, bus-error)
+
     void (*via1_output)(void *context, uint8_t port, uint8_t value);
     void (*via1_shift_out)(void *context, uint8_t byte);
     void (*via2_output)(void *context, uint8_t port, uint8_t value);
     void (*via2_shift_out)(void *context, uint8_t byte);
 
     void (*setup_id)(config_t *cfg); // machine-ID strap + VIA2 idle lines
-    const struct nubus_slot_decl *slots; // NuBus slot table
-    uint32_t bus_err_lo, bus_err_hi; // unmapped-slot bus-error window
 
     void (*memory_layout)(config_t *cfg); // RAM/ROM/IO page-table setup + overlay
 

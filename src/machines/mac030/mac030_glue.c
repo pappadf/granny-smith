@@ -30,7 +30,8 @@
 LOG_USE_CATEGORY_NAME("setup");
 
 // Construct the GLUE peripheral set in canonical order — see header.
-void mac030_glue_build_peripherals(config_t *cfg, checkpoint_t *cp, mac030_glue_state_t *st) {
+void mac030_glue_build_peripherals(config_t *cfg, checkpoint_t *cp, mac030_glue_state_t *st,
+                                   const mac030_board_desc_t *desc) {
     st->adb = adb_init(cfg->via1, cfg->scheduler, cp);
     cfg->adb = st->adb;
 
@@ -48,17 +49,16 @@ void mac030_glue_build_peripherals(config_t *cfg, checkpoint_t *cp, mac030_glue_
     st->floppy = floppy_init(FLOPPY_TYPE_SWIM, NULL, cfg->scheduler, cp);
     cfg->floppy = st->floppy;
 
-    mac030_glue_io_bind(&st->glue_io, cfg, st->asc, st->floppy);
+    mac030_glue_io_bind(&st->glue_io, cfg, desc, st->asc, st->floppy);
 }
 
-// Create + attach the 68030 PMMU over the GLUE map — see header.
-struct mmu_state *mac030_glue_build_mmu(config_t *cfg) {
+// Create + attach the 68030 PMMU over a board's ROM window — see header.
+struct mmu_state *mac030_build_mmu(config_t *cfg, uint32_t rom_base, uint32_t rom_end) {
     uint8_t *ram_base = ram_native_pointer(cfg->mem_map, 0);
     uint32_t ram_size = cfg->ram_size;
     uint8_t *rom_data = ram_native_pointer(cfg->mem_map, ram_size);
     uint32_t rom_size = cfg->machine->rom_size;
-    mmu_state_t *mmu =
-        mmu_init(ram_base, ram_size, cfg->machine->ram_max, rom_data, rom_size, 0x40000000UL, 0x50000000UL);
+    mmu_state_t *mmu = mmu_init(ram_base, ram_size, cfg->machine->ram_max, rom_data, rom_size, rom_base, rom_end);
     assert(mmu != NULL);
     g_mmu = mmu;
     cpu_attach_mmu(cfg->cpu, mmu);
@@ -105,16 +105,16 @@ void mac030_glue_init(config_t *cfg, checkpoint_t *cp, const mac030_glue_board_t
 
     board->setup_id(cfg);
 
-    mac030_glue_build_peripherals(cfg, cp, st);
+    mac030_glue_build_peripherals(cfg, cp, st, board->desc);
 
-    st->mmu = mac030_glue_build_mmu(cfg);
+    st->mmu = mac030_build_mmu(cfg, board->desc->rom_base, board->desc->rom_end);
     st->mmu->tt1 = 0xF00F8043; // supervisor-only identity map for NuBus $F0..$FF
 
-    cfg->nubus = nubus_init(cfg, board->slots, cp);
+    cfg->nubus = nubus_init(cfg, board->desc->slots, cp);
     if (board->post_nubus)
         board->post_nubus(cfg);
 
-    memory_set_bus_error_range(cfg->mem_map, board->bus_err_lo, board->bus_err_hi);
+    memory_set_bus_error_range(cfg->mem_map, board->desc->bus_err_lo, board->desc->bus_err_hi);
     board->memory_layout(cfg);
 
     if (cp) {

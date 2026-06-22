@@ -112,12 +112,16 @@ void mac030_io_fill_interface(memory_interface_t *iface);
 
 // --- The GLUE family's tables ----------------------------------------------
 
-// Cache the GLUE device interfaces and install the GLUE window table + mirror.
-// Call after rtc/scc/via/scsi/asc/floppy are up, before installing the map.
-void mac030_glue_io_bind(mac030_io_t *io, config_t *cfg, void *asc, void *floppy);
+struct mac030_board_desc;
+
+// Cache the GLUE device interfaces and install the board's window table +
+// mirror + unmapped-read value.  Call after rtc/scc/via/scsi/asc/floppy are up,
+// before installing the map.
+void mac030_glue_io_bind(mac030_io_t *io, config_t *cfg, const struct mac030_board_desc *desc, void *asc, void *floppy);
 
 // The GLUE family's ordered window table (sentinel-terminated).  Exposed for
-// the address-map unit test.
+// the address-map unit test and for GLUE machines' board descriptors.
+extern const mac030_io_range_t glue_io_ranges[];
 const mac030_io_range_t *mac030_glue_io_ranges(void);
 
 #endif // GS_MACHINES_MAC030_GLUE_IO_H

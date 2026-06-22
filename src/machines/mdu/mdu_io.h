@@ -36,11 +36,16 @@ struct mmu_state;
 // its field's type mdu_io_t.)
 typedef mac030_io_t mdu_io_t;
 
-// Cache the MDU device interfaces and install the MDU window table + mirror.
-void mdu_io_bind(mdu_io_t *io, config_t *cfg, void *asc, void *floppy, void *rbv, struct nubus_card *video_card);
+struct mac030_board_desc;
+
+// Cache the MDU device interfaces and install the board's window table + mirror
+// + unmapped-read value.
+void mdu_io_bind(mdu_io_t *io, config_t *cfg, const struct mac030_board_desc *desc, void *asc, void *floppy, void *rbv,
+                 struct nubus_card *video_card);
 
 // The MDU family's ordered window table (sentinel-terminated).  Exposed for the
-// address-map unit test (§6.1).
+// address-map unit test (§6.1) and for MDU machines' board descriptors.
+extern const mac030_io_range_t mdu_io_ranges_tbl[];
 const mac030_io_range_t *mdu_io_ranges(void);
 
 // Unified MDU+RBV machine state — the single struct shared by the IIci and

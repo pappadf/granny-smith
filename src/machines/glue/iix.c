@@ -142,15 +142,25 @@ static void iix_setup_id(config_t *cfg) {
 }
 
 // IIx board: GLUE family, six NuBus slots, no soft-power / sound-jack.
+static const mac030_board_desc_t iix_desc = {
+    .chipset = "GLUE",
+    .rom_base = 0x40000000UL,
+    .rom_end = 0x50000000UL,
+    .io_ranges = glue_io_ranges,
+    .io_mirror_mask = MAC030_GLUE_IO_MIRROR,
+    .io_unmapped_read = 0,
+    .slots = iix_slots,
+    .bus_err_lo = 0xF9000000,
+    .bus_err_hi = 0xFEFFFFFF,
+};
+
 static const mac030_glue_board_t iix_board = {
+    .desc = &iix_desc,
     .via1_output = iicx_via1_output,
     .via1_shift_out = iicx_via1_shift_out,
     .via2_output = iix_via2_output,
     .via2_shift_out = iix_via2_shift_out,
     .setup_id = iix_setup_id,
-    .slots = iix_slots,
-    .bus_err_lo = 0xF9000000,
-    .bus_err_hi = 0xFEFFFFFF,
     .memory_layout = iicx_memory_layout_init,
 };
 

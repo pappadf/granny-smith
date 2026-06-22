@@ -129,7 +129,7 @@ void mac030_io_fill_interface(memory_interface_t *iface) {
 // 6522 rides lane 0 and ignores it (MAC030_IO_MASK_A0).
 //
 //   base     end      device            penalty               xform               rd  wr     name
-static const mac030_io_range_t glue_io_ranges[] = {
+const mac030_io_range_t glue_io_ranges[] = {
     {0x00000, 0x02000, MAC030_DEV_VIA1, GLUE_VIA_IO_PENALTY, MAC030_IO_MASK_A0, 0, 0, NULL, NULL, "via1"},
     {0x02000, 0x04000, MAC030_DEV_VIA2, GLUE_VIA_IO_PENALTY, MAC030_IO_MASK_A0, 0, 0, NULL, NULL, "via2"},
     {0x04000, 0x06000, MAC030_DEV_SCC, GLUE_SCC_IO_PENALTY, MAC030_IO_NORMAL, 0, 0, NULL, NULL, "scc"},
@@ -145,7 +145,8 @@ const mac030_io_range_t *mac030_glue_io_ranges(void) {
     return glue_io_ranges;
 }
 
-void mac030_glue_io_bind(mac030_io_t *io, config_t *cfg, void *asc, void *floppy) {
+void mac030_glue_io_bind(mac030_io_t *io, config_t *cfg, const struct mac030_board_desc *desc, void *asc,
+                         void *floppy) {
     for (int i = 0; i < MAC030_DEV_COUNT; i++) {
         io->handle[i] = NULL;
         io->iface[i] = NULL;
@@ -164,10 +165,10 @@ void mac030_glue_io_bind(mac030_io_t *io, config_t *cfg, void *asc, void *floppy
     io->iface[MAC030_DEV_ASC] = asc_get_memory_interface((asc_t *)asc);
     io->iface[MAC030_DEV_FLOPPY] = floppy_get_memory_interface((floppy_t *)floppy);
 
-    io->ranges = glue_io_ranges;
-    io->mirror_mask = MAC030_GLUE_IO_MIRROR;
+    io->ranges = desc->io_ranges;
+    io->mirror_mask = desc->io_mirror_mask;
     io->cfg = cfg;
-    io->unmapped_read = 0; // GLUE reads 0 on an unmapped I/O access
+    io->unmapped_read = desc->io_unmapped_read;
 }
 
 // ============================================================

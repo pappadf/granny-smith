@@ -1122,7 +1122,7 @@ static const mac030_io_range_t iifx_io_ranges_tbl[] = {
 
 // Cache device handles/interfaces and install the IIfx table.  Call after the
 // devices + their cached interfaces (st->*_iface) are up.
-static void iifx_io_bind(mac030_io_t *io, config_t *cfg, iifx_state_t *st) {
+static void iifx_io_bind(mac030_io_t *io, config_t *cfg, iifx_state_t *st, const mac030_board_desc_t *desc) {
     for (int i = 0; i < MAC030_DEV_COUNT; i++) {
         io->handle[i] = NULL;
         io->iface[i] = NULL;
@@ -1141,10 +1141,10 @@ static void iifx_io_bind(mac030_io_t *io, config_t *cfg, iifx_state_t *st) {
     io->iface[MAC030_DEV_SWIM_IOP] = st->swim_iop_iface;
     io->iface[MAC030_DEV_OSS] = st->oss_iface;
 
-    io->ranges = iifx_io_ranges_tbl;
-    io->mirror_mask = IIFX_IO_MIRROR;
+    io->ranges = desc->io_ranges;
+    io->mirror_mask = desc->io_mirror_mask;
     io->cfg = cfg;
-    io->unmapped_read = 0xff; // IIfx reads 0xFF on an unmapped I/O access
+    io->unmapped_read = desc->io_unmapped_read;
 }
 
 // Read entry-points: the machine-ID register sits above the I/O mirror, so it
@@ -1385,6 +1385,22 @@ static const nubus_slot_decl_t iifx_slots[] = {
     {0},
 };
 
+// The IIfx board descriptor (proposal §4.2.2): OSS+FMC hardware data, consumed
+// at init by the shared helpers.  ROM at $40000000; the 18-bit $40000 I/O
+// mirror; the IIfx window table (device-rows + handler-rows); 0xFF on an
+// unmapped read.
+static const mac030_board_desc_t iifx_board = {
+    .chipset = "OSS+FMC",
+    .rom_base = IIFX_ROM_START,
+    .rom_end = IIFX_ROM_END,
+    .io_ranges = iifx_io_ranges_tbl,
+    .io_mirror_mask = IIFX_IO_MIRROR,
+    .io_unmapped_read = 0xff,
+    .slots = iifx_slots,
+    .bus_err_lo = 0xF9000000,
+    .bus_err_hi = 0xFEFFFFFF,
+};
+
 // Initializes a Macintosh IIfx machine.
 static void iifx_init(config_t *cfg, checkpoint_t *checkpoint) {
     iifx_state_t *st = calloc(1, sizeof(*st));
@@ -1451,22 +1467,15 @@ static void iifx_init(config_t *cfg, checkpoint_t *checkpoint) {
     st->scc_iop_iface = iop_get_memory_interface(st->scc_iop);
     st->swim_iop_iface = iop_get_memory_interface(st->swim_iop);
 
-    // All device interfaces are cached — install the IIfx I/O window table into
-    // the shared-engine context registered above.
-    iifx_io_bind(&st->iifx_io, cfg, st);
+    // All device interfaces are cached — install the board's I/O window table
+    // into the shared-engine context registered above.
+    iifx_io_bind(&st->iifx_io, cfg, st, &iifx_board);
 
-    uint8_t *ram_base = ram_native_pointer(cfg->mem_map, 0);
-    uint32_t ram_size = cfg->ram_size;
-    uint8_t *rom_data = ram_native_pointer(cfg->mem_map, ram_size);
-    uint32_t rom_size = cfg->machine->rom_size;
-    st->mmu = mmu_init(ram_base, ram_size, cfg->machine->ram_max, rom_data, rom_size, IIFX_ROM_START, IIFX_ROM_END);
-    assert(st->mmu != NULL);
-    g_mmu = st->mmu;
-    cpu_attach_mmu(cfg->cpu, st->mmu);
+    st->mmu = mac030_build_mmu(cfg, iifx_board.rom_base, iifx_board.rom_end);
     st->mmu->tt1 = 0xF00F8043;
 
-    cfg->nubus = nubus_init(cfg, iifx_slots, checkpoint);
-    memory_set_bus_error_range(cfg->mem_map, 0xF9000000, 0xFEFFFFFF);
+    cfg->nubus = nubus_init(cfg, iifx_board.slots, checkpoint);
+    memory_set_bus_error_range(cfg->mem_map, iifx_board.bus_err_lo, iifx_board.bus_err_hi);
 
     iifx_memory_layout_init(cfg);
 

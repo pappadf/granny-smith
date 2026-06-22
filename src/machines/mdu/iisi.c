@@ -254,6 +254,22 @@ static const nubus_slot_decl_t iisi_slots[] = {
     {0},
 };
 
+// The IIsi board descriptor (proposal §4.2.2): MDU+RBV hardware data, consumed
+// at init by the shared helpers.  Shares the MDU window table + 18-bit mirror
+// with the IIci; ROM at $40800000.  (The IIsi's two-bank RAM layout is set up
+// in iisi_init after mac030_build_mmu — it isn't board-descriptor data.)
+static const mac030_board_desc_t iisi_board = {
+    .chipset = "MDU+RBV",
+    .rom_base = IISI_ROM_START,
+    .rom_end = IISI_ROM_END,
+    .io_ranges = mdu_io_ranges_tbl,
+    .io_mirror_mask = 0x0003FFFFUL,
+    .io_unmapped_read = 0,
+    .slots = iisi_slots,
+    .bus_err_lo = 0xF9000000,
+    .bus_err_hi = 0xFEFFFFFF,
+};
+
 // ============================================================
 // Init / Teardown
 // ============================================================
@@ -320,12 +336,7 @@ static void iisi_init(config_t *cfg, checkpoint_t *checkpoint) {
 
     uint8_t *ram_base = ram_native_pointer(cfg->mem_map, 0);
     uint32_t ram_size = cfg->ram_size;
-    uint8_t *rom_data = ram_native_pointer(cfg->mem_map, ram_size);
-    uint32_t rom_size = cfg->machine->rom_size;
-    st->mmu = mmu_init(ram_base, ram_size, cfg->machine->ram_max, rom_data, rom_size, IISI_ROM_START, IISI_ROM_END);
-    assert(st->mmu != NULL);
-    g_mmu = st->mmu;
-    cpu_attach_mmu(cfg->cpu, st->mmu);
+    st->mmu = mac030_build_mmu(cfg, iisi_board.rom_base, iisi_board.rom_end);
     // TT1 identity-maps NuBus space $F0-$FF for supervisor FCs (same as IIci).
     st->mmu->tt1 = 0xF00F8043;
 
@@ -338,13 +349,13 @@ static void iisi_init(config_t *cfg, checkpoint_t *checkpoint) {
     mmu_set_ram_bank_b(st->mmu, IISI_BANK_A_SIZE, ram_base + IISI_BANK_A_SIZE, IISI_BANK_B_PHYS,
                        (ram_size > IISI_BANK_A_SIZE) ? (ram_size - IISI_BANK_A_SIZE) : 0, IISI_BANK_WINDOW);
 
-    cfg->nubus = nubus_init(cfg, iisi_slots, checkpoint);
+    cfg->nubus = nubus_init(cfg, iisi_board.slots, checkpoint);
     st->video_card = nubus_card(cfg->nubus, 0xE);
     assert(st->video_card != NULL);
     builtin_rbv_video_set_rbv(st->video_card, st->rbv);
 
-    // Bind device handles for the shared MDU I/O dispatcher.
-    mdu_io_bind(&st->mdu_io, cfg, st->asc, st->floppy, st->rbv, st->video_card);
+    // Bind device handles + the board's I/O window table for the shared engine.
+    mdu_io_bind(&st->mdu_io, cfg, &iisi_board, st->asc, st->floppy, st->rbv, st->video_card);
 
     // On-board video reads its frame buffer from the BOTTOM of Bank A — physical
     // 0 (Developer Note §8.2; VideoInfoMacIIsi screen physical base = 0).  Point
@@ -358,7 +369,7 @@ static void iisi_init(config_t *cfg, checkpoint_t *checkpoint) {
     // NuBus expansion / slot space bus-errors on unmapped reads.  There is no
     // addressable card in slot $E (built-in video is main DRAM mapped by the OS),
     // so the $FExxxxxx slot aperture legitimately bus-errors when probed.
-    memory_set_bus_error_range(cfg->mem_map, 0xF9000000, 0xFEFFFFFF);
+    memory_set_bus_error_range(cfg->mem_map, iisi_board.bus_err_lo, iisi_board.bus_err_hi);
 
     iisi_memory_layout_init(cfg);
 

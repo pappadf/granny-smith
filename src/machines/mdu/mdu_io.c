@@ -9,6 +9,8 @@
 
 #include "mdu_io.h"
 
+#include "mac030_glue.h" // mac030_board_desc_t
+
 #include "asc.h"
 #include "builtin_rbv_video.h"
 #include "floppy.h"
@@ -48,7 +50,7 @@ static const memory_interface_t mdu_vdac_iface = {
 // and the RBV control registers ($26000).  Gaps decode to nothing.
 //
 //   base     end      device            penalty              xform               rd  wr     name
-static const mac030_io_range_t mdu_io_ranges_tbl[] = {
+const mac030_io_range_t mdu_io_ranges_tbl[] = {
     {0x00000, 0x02000, MAC030_DEV_VIA1, MDU_VIA_IO_PENALTY, MAC030_IO_MASK_A0, 0, 0, NULL, NULL, "via1"},
     {0x04000, 0x06000, MAC030_DEV_SCC, MDU_SCC_IO_PENALTY, MAC030_IO_NORMAL, 0, 0, NULL, NULL, "scc"},
     {0x06000, 0x08000, MAC030_DEV_SCSI, MDU_SCSI_IO_PENALTY, MAC030_IO_FIXED, 0, 0x201, NULL, NULL, "scsi_drq"},
@@ -65,7 +67,8 @@ const mac030_io_range_t *mdu_io_ranges(void) {
     return mdu_io_ranges_tbl;
 }
 
-void mdu_io_bind(mdu_io_t *io, config_t *cfg, void *asc, void *floppy, void *rbv, struct nubus_card *video_card) {
+void mdu_io_bind(mdu_io_t *io, config_t *cfg, const struct mac030_board_desc *desc, void *asc, void *floppy, void *rbv,
+                 struct nubus_card *video_card) {
     for (int i = 0; i < MAC030_DEV_COUNT; i++) {
         io->handle[i] = NULL;
         io->iface[i] = NULL;
@@ -86,8 +89,8 @@ void mdu_io_bind(mdu_io_t *io, config_t *cfg, void *asc, void *floppy, void *rbv
     io->iface[MAC030_DEV_RBV] = rbv_get_memory_interface((rbv_t *)rbv);
     io->iface[MAC030_DEV_VDAC] = &mdu_vdac_iface;
 
-    io->ranges = mdu_io_ranges_tbl;
-    io->mirror_mask = MDU_IO_MIRROR;
+    io->ranges = desc->io_ranges;
+    io->mirror_mask = desc->io_mirror_mask;
     io->cfg = cfg;
-    io->unmapped_read = 0; // MDU reads 0 on an unmapped I/O access
+    io->unmapped_read = desc->io_unmapped_read;
 }

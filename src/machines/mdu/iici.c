@@ -259,6 +259,21 @@ static const nubus_slot_decl_t iici_slots[] = {
     {0},
 };
 
+// The IIci board descriptor (proposal §4.2.2): MDU+RBV hardware data, consumed
+// at init by the shared helpers.  ROM at $40800000; the 18-bit $40000 I/O
+// mirror; the shared MDU window table.
+static const mac030_board_desc_t iici_board = {
+    .chipset = "MDU+RBV",
+    .rom_base = IICI_ROM_START,
+    .rom_end = IICI_ROM_END,
+    .io_ranges = mdu_io_ranges_tbl,
+    .io_mirror_mask = 0x0003FFFFUL,
+    .io_unmapped_read = 0,
+    .slots = iici_slots,
+    .bus_err_lo = 0xF9000000,
+    .bus_err_hi = 0xFEFFFFFF,
+};
+
 // ============================================================
 // Init / Teardown
 // ============================================================
@@ -316,24 +331,17 @@ static void iici_init(config_t *cfg, checkpoint_t *checkpoint) {
     rbv_set_mode_callback(st->rbv, iici_rbv_mode, cfg);
     rbv_set_monitor_sense(st->rbv, 6);
 
-    uint8_t *ram_base = ram_native_pointer(cfg->mem_map, 0);
-    uint32_t ram_size = cfg->ram_size;
-    uint8_t *rom_data = ram_native_pointer(cfg->mem_map, ram_size);
-    uint32_t rom_size = cfg->machine->rom_size;
-    st->mmu = mmu_init(ram_base, ram_size, cfg->machine->ram_max, rom_data, rom_size, IICI_ROM_START, IICI_ROM_END);
-    assert(st->mmu != NULL);
-    g_mmu = st->mmu;
-    cpu_attach_mmu(cfg->cpu, st->mmu);
+    st->mmu = mac030_build_mmu(cfg, iici_board.rom_base, iici_board.rom_end);
     // TT1 identity-maps NuBus space $F0-$FF for supervisor FCs (same as SE/30).
     st->mmu->tt1 = 0xF00F8043;
 
-    cfg->nubus = nubus_init(cfg, iici_slots, checkpoint);
+    cfg->nubus = nubus_init(cfg, iici_board.slots, checkpoint);
     st->video_card = nubus_card(cfg->nubus, 0xB);
     assert(st->video_card != NULL);
     builtin_rbv_video_set_rbv(st->video_card, st->rbv);
 
-    // Bind device handles for the shared MDU I/O dispatcher.
-    mdu_io_bind(&st->mdu_io, cfg, st->asc, st->floppy, st->rbv, st->video_card);
+    // Bind device handles + the board's I/O window table for the shared engine.
+    mdu_io_bind(&st->mdu_io, cfg, &iici_board, st->asc, st->floppy, st->rbv, st->video_card);
 
     // Register the built-in framebuffer at the slot-$B aperture so the boot
     // ROM's VideoInfoMDU screen base ($FBB08000) and its Mode-24 alias land
@@ -345,7 +353,7 @@ static void iici_init(config_t *cfg, checkpoint_t *checkpoint) {
 
     // NuBus expansion slots $9..$E bus-error on unmapped reads; the mapped
     // built-in video aperture at $FBxxxxxx resolves ahead of this range.
-    memory_set_bus_error_range(cfg->mem_map, 0xF9000000, 0xFEFFFFFF);
+    memory_set_bus_error_range(cfg->mem_map, iici_board.bus_err_lo, iici_board.bus_err_hi);
 
     iici_memory_layout_init(cfg);
 
