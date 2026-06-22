@@ -64,25 +64,6 @@ LOG_USE_CATEGORY_NAME("iisi");
 // I/O island offsets (private to the dispatcher) — MDU map
 // ============================================================
 
-#define IO_VIA1           0x00000
-#define IO_VIA1_END       0x02000
-#define IO_SCC            0x04000
-#define IO_SCC_END        0x06000
-#define IO_SCSI_DRQ       0x06000
-#define IO_SCSI_DRQ_END   0x08000
-#define IO_SCSI_REG       0x10000
-#define IO_SCSI_REG_END   0x12000
-#define IO_SCSI_BLIND     0x12000
-#define IO_SCSI_BLIND_END 0x14000
-#define IO_ASC            0x14000
-#define IO_ASC_END        0x16000
-#define IO_SWIM           0x16000
-#define IO_SWIM_END       0x18000
-#define IO_VDAC           0x24000
-#define IO_VDAC_END       0x26000
-#define IO_RBV            0x26000
-#define IO_RBV_END        0x28000
-
 // ============================================================
 // SoA page helper (same logic as the IIci helper)
 // ============================================================
@@ -130,155 +111,9 @@ static void iisi_reset(config_t *cfg) {
 // I/O dispatcher (MDU island — IIci map: VIA1/SCC/SCSI/ASC/SWIM/VDAC/RBV)
 // ============================================================
 
-static uint8_t iisi_io_read_uint8(void *ctx, uint32_t addr) {
-    config_t *cfg = (config_t *)ctx;
-    iisi_state_t *st = iisi_state(cfg);
-    uint32_t offset = addr & IISI_IO_MIRROR;
-    if (offset < IO_VIA1_END) {
-        memory_io_penalty(IISI_VIA_IO_PENALTY);
-        return st->via1_iface->read_uint8(cfg->via1, (offset - IO_VIA1) & ~1u);
-    }
-    if (offset >= IO_SCC && offset < IO_SCC_END) {
-        memory_io_penalty(IISI_SCC_IO_PENALTY);
-        return st->scc_iface->read_uint8(cfg->scc, offset - IO_SCC);
-    }
-    if (offset >= IO_SCSI_DRQ && offset < IO_SCSI_DRQ_END) {
-        memory_io_penalty(IISI_SCSI_IO_PENALTY);
-        return st->scsi_iface->read_uint8(cfg->scsi, 0);
-    }
-    if (offset >= IO_SCSI_REG && offset < IO_SCSI_REG_END) {
-        memory_io_penalty(IISI_SCSI_IO_PENALTY);
-        return st->scsi_iface->read_uint8(cfg->scsi, offset - IO_SCSI_REG);
-    }
-    if (offset >= IO_SCSI_BLIND && offset < IO_SCSI_BLIND_END) {
-        memory_io_penalty(IISI_SCSI_IO_PENALTY);
-        return st->scsi_iface->read_uint8(cfg->scsi, 0);
-    }
-    if (offset >= IO_ASC && offset < IO_ASC_END) {
-        memory_io_penalty(IISI_ASC_IO_PENALTY);
-        return st->asc_iface->read_uint8(st->asc, offset - IO_ASC);
-    }
-    if (offset >= IO_SWIM && offset < IO_SWIM_END) {
-        memory_io_penalty(IISI_SWIM_IO_PENALTY);
-        return st->floppy_iface->read_uint8(st->floppy, offset - IO_SWIM);
-    }
-    if (offset >= IO_VDAC && offset < IO_VDAC_END) {
-        memory_io_penalty(IISI_VDAC_IO_PENALTY);
-        return builtin_rbv_video_vdac_read(st->video_card, offset - IO_VDAC);
-    }
-    if (offset >= IO_RBV && offset < IO_RBV_END) {
-        memory_io_penalty(IISI_RBV_IO_PENALTY);
-        return st->rbv_iface->read_uint8(st->rbv, offset - IO_RBV);
-    }
-    return 0;
-}
-
-static uint16_t iisi_io_read_uint16(void *ctx, uint32_t addr) {
-    return ((uint16_t)iisi_io_read_uint8(ctx, addr) << 8) | iisi_io_read_uint8(ctx, addr + 1);
-}
-
-static uint32_t iisi_io_read_uint32(void *ctx, uint32_t addr) {
-    config_t *cfg = (config_t *)ctx;
-    iisi_state_t *st = iisi_state(cfg);
-    uint32_t offset = addr & IISI_IO_MIRROR;
-    if (offset >= IO_SCSI_DRQ && offset < IO_SCSI_DRQ_END) {
-        memory_io_penalty(IISI_SCSI_IO_PENALTY * 4);
-        uint8_t b0 = st->scsi_iface->read_uint8(cfg->scsi, 0);
-        uint8_t b1 = st->scsi_iface->read_uint8(cfg->scsi, 0);
-        uint8_t b2 = st->scsi_iface->read_uint8(cfg->scsi, 0);
-        uint8_t b3 = st->scsi_iface->read_uint8(cfg->scsi, 0);
-        return ((uint32_t)b0 << 24) | ((uint32_t)b1 << 16) | ((uint32_t)b2 << 8) | (uint32_t)b3;
-    }
-    if (offset >= IO_SCSI_BLIND && offset < IO_SCSI_BLIND_END) {
-        memory_io_penalty(IISI_SCSI_IO_PENALTY * 4);
-        uint8_t b0 = st->scsi_iface->read_uint8(cfg->scsi, 0);
-        uint8_t b1 = st->scsi_iface->read_uint8(cfg->scsi, 0);
-        uint8_t b2 = st->scsi_iface->read_uint8(cfg->scsi, 0);
-        uint8_t b3 = st->scsi_iface->read_uint8(cfg->scsi, 0);
-        return ((uint32_t)b0 << 24) | ((uint32_t)b1 << 16) | ((uint32_t)b2 << 8) | (uint32_t)b3;
-    }
-    return ((uint32_t)iisi_io_read_uint16(ctx, addr) << 16) | iisi_io_read_uint16(ctx, addr + 2);
-}
-
-static void iisi_io_write_uint8(void *ctx, uint32_t addr, uint8_t value) {
-    config_t *cfg = (config_t *)ctx;
-    iisi_state_t *st = iisi_state(cfg);
-    uint32_t offset = addr & IISI_IO_MIRROR;
-    if (offset < IO_VIA1_END) {
-        memory_io_penalty(IISI_VIA_IO_PENALTY);
-        st->via1_iface->write_uint8(cfg->via1, (offset - IO_VIA1) & ~1u, value);
-        return;
-    }
-    if (offset >= IO_SCC && offset < IO_SCC_END) {
-        memory_io_penalty(IISI_SCC_IO_PENALTY);
-        st->scc_iface->write_uint8(cfg->scc, offset - IO_SCC, value);
-        return;
-    }
-    if (offset >= IO_SCSI_DRQ && offset < IO_SCSI_DRQ_END) {
-        memory_io_penalty(IISI_SCSI_IO_PENALTY);
-        st->scsi_iface->write_uint8(cfg->scsi, 0x201, value);
-        return;
-    }
-    if (offset >= IO_SCSI_REG && offset < IO_SCSI_REG_END) {
-        memory_io_penalty(IISI_SCSI_IO_PENALTY);
-        st->scsi_iface->write_uint8(cfg->scsi, offset - IO_SCSI_REG, value);
-        return;
-    }
-    if (offset >= IO_SCSI_BLIND && offset < IO_SCSI_BLIND_END) {
-        memory_io_penalty(IISI_SCSI_IO_PENALTY);
-        st->scsi_iface->write_uint8(cfg->scsi, 0x201, value);
-        return;
-    }
-    if (offset >= IO_ASC && offset < IO_ASC_END) {
-        memory_io_penalty(IISI_ASC_IO_PENALTY);
-        st->asc_iface->write_uint8(st->asc, offset - IO_ASC, value);
-        return;
-    }
-    if (offset >= IO_SWIM && offset < IO_SWIM_END) {
-        memory_io_penalty(IISI_SWIM_IO_PENALTY);
-        st->floppy_iface->write_uint8(st->floppy, offset - IO_SWIM, value);
-        return;
-    }
-    if (offset >= IO_VDAC && offset < IO_VDAC_END) {
-        memory_io_penalty(IISI_VDAC_IO_PENALTY);
-        builtin_rbv_video_vdac_write(st->video_card, offset - IO_VDAC, value);
-        return;
-    }
-    if (offset >= IO_RBV && offset < IO_RBV_END) {
-        memory_io_penalty(IISI_RBV_IO_PENALTY);
-        st->rbv_iface->write_uint8(st->rbv, offset - IO_RBV, value);
-        return;
-    }
-}
-
-static void iisi_io_write_uint16(void *ctx, uint32_t addr, uint16_t value) {
-    iisi_io_write_uint8(ctx, addr, (uint8_t)(value >> 8));
-    iisi_io_write_uint8(ctx, addr + 1, (uint8_t)(value & 0xFF));
-}
-
-static void iisi_io_write_uint32(void *ctx, uint32_t addr, uint32_t value) {
-    config_t *cfg = (config_t *)ctx;
-    iisi_state_t *st = iisi_state(cfg);
-    uint32_t offset = addr & IISI_IO_MIRROR;
-    if (offset >= IO_SCSI_DRQ && offset < IO_SCSI_DRQ_END) {
-        memory_io_penalty(IISI_SCSI_IO_PENALTY * 4);
-        st->scsi_iface->write_uint8(cfg->scsi, 0x201, (uint8_t)(value >> 24));
-        st->scsi_iface->write_uint8(cfg->scsi, 0x201, (uint8_t)(value >> 16));
-        st->scsi_iface->write_uint8(cfg->scsi, 0x201, (uint8_t)(value >> 8));
-        st->scsi_iface->write_uint8(cfg->scsi, 0x201, (uint8_t)(value));
-        return;
-    }
-    if (offset >= IO_SCSI_BLIND && offset < IO_SCSI_BLIND_END) {
-        memory_io_penalty(IISI_SCSI_IO_PENALTY * 4);
-        st->scsi_iface->write_uint8(cfg->scsi, 0x201, (uint8_t)(value >> 24));
-        st->scsi_iface->write_uint8(cfg->scsi, 0x201, (uint8_t)(value >> 16));
-        st->scsi_iface->write_uint8(cfg->scsi, 0x201, (uint8_t)(value >> 8));
-        st->scsi_iface->write_uint8(cfg->scsi, 0x201, (uint8_t)(value));
-        return;
-    }
-    iisi_io_write_uint16(ctx, addr, (uint16_t)(value >> 16));
-    iisi_io_write_uint16(ctx, addr + 2, (uint16_t)(value & 0xFFFF));
-}
+// The MDU I/O dispatcher is shared with the IIci — see mdu_io.c.  This
+// machine fills an mdu_io_t at init and registers it as the I/O region's
+// device context.
 
 // ============================================================
 // Memory layout
@@ -321,13 +156,8 @@ static void iisi_memory_layout_init(config_t *cfg) {
         }
     }
 
-    st->io_interface.read_uint8 = iisi_io_read_uint8;
-    st->io_interface.read_uint16 = iisi_io_read_uint16;
-    st->io_interface.read_uint32 = iisi_io_read_uint32;
-    st->io_interface.write_uint8 = iisi_io_write_uint8;
-    st->io_interface.write_uint16 = iisi_io_write_uint16;
-    st->io_interface.write_uint32 = iisi_io_write_uint32;
-    memory_map_add(cfg->mem_map, IISI_IO_BASE, IISI_IO_SIZE, "IIsi I/O", &st->io_interface, cfg);
+    mdu_io_fill_interface(&st->io_interface);
+    memory_map_add(cfg->mem_map, IISI_IO_BASE, IISI_IO_SIZE, "IIsi I/O", &st->io_interface, &st->mdu_io);
 
     // No separate VRAM aperture to wire: the on-board frame buffer IS the bottom
     // of Bank A (physical 0).  The OS reaches the screen through its PMMU tree
@@ -537,13 +367,6 @@ static void iisi_init(config_t *cfg, checkpoint_t *checkpoint) {
     rbv_set_mode_callback(st->rbv, iisi_rbv_mode, cfg);
     rbv_set_monitor_sense(st->rbv, 6);
 
-    st->via1_iface = via_get_memory_interface(cfg->via1);
-    st->scc_iface = scc_get_memory_interface(cfg->scc);
-    st->scsi_iface = scsi_get_memory_interface(cfg->scsi);
-    st->asc_iface = asc_get_memory_interface(st->asc);
-    st->floppy_iface = floppy_get_memory_interface(st->floppy);
-    st->rbv_iface = rbv_get_memory_interface(st->rbv);
-
     uint8_t *ram_base = ram_native_pointer(cfg->mem_map, 0);
     uint32_t ram_size = cfg->ram_size;
     uint8_t *rom_data = ram_native_pointer(cfg->mem_map, ram_size);
@@ -568,6 +391,9 @@ static void iisi_init(config_t *cfg, checkpoint_t *checkpoint) {
     st->video_card = nubus_card(cfg->nubus, 0xE);
     assert(st->video_card != NULL);
     builtin_rbv_video_set_rbv(st->video_card, st->rbv);
+
+    // Bind device handles for the shared MDU I/O dispatcher.
+    mdu_io_bind(&st->mdu_io, cfg, st->asc, st->floppy, st->rbv, st->video_card);
 
     // On-board video reads its frame buffer from the BOTTOM of Bank A — physical
     // 0 (Developer Note §8.2; VideoInfoMacIIsi screen physical base = 0).  Point

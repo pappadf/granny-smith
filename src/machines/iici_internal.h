@@ -15,6 +15,7 @@
 #define IICI_INTERNAL_H
 
 #include "common.h"
+#include "mdu_io.h"
 #include "memory.h"
 #include "mmu.h"
 #include "system_config.h" // for config_t.machine_context
@@ -38,12 +39,7 @@ typedef struct iici_state {
     bool rom_overlay;
     mmu_state_t *mmu;
 
-    const memory_interface_t *via1_iface;
-    const memory_interface_t *scc_iface;
-    const memory_interface_t *scsi_iface;
-    const memory_interface_t *asc_iface;
-    const memory_interface_t *floppy_iface;
-    const memory_interface_t *rbv_iface;
+    mdu_io_t mdu_io; // device handles for the shared MDU dispatcher
 
     uint8_t last_port_b; // ADB ST filtering on VIA1 PB
 
@@ -60,14 +56,7 @@ static inline iici_state_t *iici_state(config_t *cfg) {
 #define IICI_IRQ_SCC  (1 << 2)
 #define IICI_IRQ_NMI  (1 << 3)
 
-// I/O bus penalty equates (match the IIcx dispatcher).
-#define IICI_VIA_IO_PENALTY  16
-#define IICI_SCC_IO_PENALTY  2
-#define IICI_SCSI_IO_PENALTY 2
-#define IICI_ASC_IO_PENALTY  2
-#define IICI_SWIM_IO_PENALTY 2
-#define IICI_RBV_IO_PENALTY  2
-#define IICI_VDAC_IO_PENALTY 2
+// (I/O penalties + window offsets live with the shared dispatcher, mdu_io.c.)
 
 // Address-space constants.  The IIci ROM lives at $40800000 (MDUtable;
 // confirmed by the reset PC $4080002A), NOT the IIcx's $40000000.  The
