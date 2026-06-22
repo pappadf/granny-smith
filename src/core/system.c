@@ -892,16 +892,8 @@ extern void cmd_image_handler(struct cmd_context *ctx, struct cmd_result *res);
 void setup_init() {
     printf("Granny Smith build %s\n", get_build_id());
 
-    // Register built-in machine profiles so machine_find() can look them up
-    machine_register(&machine_plus);
-    machine_register(&machine_se30);
-    machine_register(&machine_iicx);
-    machine_register(&machine_iix);
-    machine_register(&machine_iifx);
-    machine_register(&machine_iici);
-    machine_register(&machine_lisa);
-    machine_register(&machine_macxl);
-    machine_register(&machine_iisi);
+    // Built-in machine profiles are a static const array in machine.c
+    // (machine_find / machine_list walk it) — no runtime registration needed.
 
     // Ensure logging categories of interest appear in `log list` even before any messages are emitted.
     // shell_init() (called earlier) already invoked log_init(); categories default to level 0 (OFF).
@@ -1180,8 +1172,6 @@ config_t *system_restore(const char *filename) {
         profile = machine_find(saved_model_id);
     if (!profile)
         profile = (prev && prev->machine) ? prev->machine : machine_find("plus");
-    if (!profile)
-        profile = &machine_plus;
 
     // Restore the RAM size from the checkpoint so system_create uses the
     // correct size instead of the machine default.

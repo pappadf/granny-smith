@@ -9,6 +9,7 @@
 
 #include "common.h"
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 
 // Forward declarations
@@ -151,15 +152,15 @@ typedef struct hw_profile {
     struct display *(*display)(struct config *cfg);
 } hw_profile_t;
 
-// Registry: find a machine profile by id
+// Registry: find a machine profile by id (NULL if unknown).
 const hw_profile_t *machine_find(const char *id);
 
-// Registry: register a machine profile.  Profiles missing any required
-// declarative field (name, id, freq, ram_default, ram_max, ram_options,
-// floppy_slots, scsi_slots) are rejected.
-void machine_register(const hw_profile_t *profile);
+// Registry: enumerate the built-in profiles.  *out_count receives the count.
+const hw_profile_t *const *machine_list(size_t *out_count);
 
-// Built-in machine profiles (defined in plus.c, iicx.c, iix.c, se30.c, etc.)
+// Built-in machine profiles (defined in each family's machine file:
+// compact/plus.c, glue/{se30,iicx,iix}.c, mdu/{iici,iisi}.c, oss/iifx.c,
+// lisa/lisa.c).
 extern const hw_profile_t machine_plus;
 extern const hw_profile_t machine_se30;
 extern const hw_profile_t machine_iicx;

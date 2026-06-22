@@ -24,11 +24,15 @@ LOG_USE_CATEGORY_NAME("setup");
 #include <stdlib.h>
 #include <string.h>
 
-#define MAX_MACHINES 12
-
-// Registry of known machine profiles
-static const hw_profile_t *g_machines[MAX_MACHINES];
-static int g_machine_count = 0;
+// Registry of built-in machine profiles.  A static const array iterated
+// directly (proposal §4.6): adding a machine is one line here, no runtime
+// machine_register(), no MAX_MACHINES cap.  The profiles are defined in each
+// family's machine file (glue/se30.c, mdu/iici.c, …).
+static const hw_profile_t *const builtin_machines[] = {
+    &machine_plus, &machine_se30, &machine_iicx, &machine_iix,   &machine_iifx,
+    &machine_iici, &machine_iisi, &machine_lisa, &machine_macxl,
+};
+static const size_t builtin_machine_count = sizeof(builtin_machines) / sizeof(builtin_machines[0]);
 
 // Convert a floppy_kind_t to its wire string ("400k" / "800k" / "hd").
 const char *floppy_kind_to_string(floppy_kind_t kind) {
@@ -58,51 +62,22 @@ const char *mmu_kind_to_string(mmu_kind_t kind) {
     return "none";
 }
 
-// Validate that a profile has every declarative field populated.  Profiles
-// missing any of these are rejected from the registry — see proposal §3.1's
-// "no partial profiles" rule.
-static bool profile_is_complete(const hw_profile_t *p) {
-    if (!p)
-        return false;
-    if (!p->id || !*p->id)
-        return false;
-    if (!p->name || !*p->name)
-        return false;
-    if (p->freq == 0)
-        return false;
-    if (p->ram_default == 0 || p->ram_max == 0)
-        return false;
-    if (!p->ram_options)
-        return false;
-    if (!p->floppy_slots)
-        return false;
-    if (!p->scsi_slots)
-        return false;
-    if (!p->init)
-        return false;
-    return true;
-}
-
-// Register a machine profile with the registry.  Rejects partial profiles.
-void machine_register(const hw_profile_t *profile) {
-    if (!profile_is_complete(profile)) {
-        LOG(1, "machine_register: rejected partial profile '%s'", (profile && profile->id) ? profile->id : "(null)");
-        return;
-    }
-    if (g_machine_count >= MAX_MACHINES)
-        return;
-    g_machines[g_machine_count++] = profile;
-}
-
 // Find a machine profile by its id string
 const hw_profile_t *machine_find(const char *id) {
     if (!id)
         return NULL;
-    for (int i = 0; i < g_machine_count; ++i) {
-        if (g_machines[i] && strcmp(g_machines[i]->id, id) == 0)
-            return g_machines[i];
+    for (size_t i = 0; i < builtin_machine_count; ++i) {
+        if (strcmp(builtin_machines[i]->id, id) == 0)
+            return builtin_machines[i];
     }
     return NULL;
+}
+
+// Enumerate the built-in profiles (out_count receives the array length).
+const hw_profile_t *const *machine_list(size_t *out_count) {
+    if (out_count)
+        *out_count = builtin_machine_count;
+    return builtin_machines;
 }
 
 // === Object-model class descriptor =========================================
