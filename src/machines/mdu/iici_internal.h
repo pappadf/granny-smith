@@ -28,23 +28,9 @@ struct floppy;
 struct rbv;
 struct nubus_card;
 
-// Per-machine state.
-typedef struct iici_state {
-    struct adb *adb;
-    struct asc *asc;
-    struct floppy *floppy;
-    struct rbv *rbv; // RBV chip (VIA2 replacement + video control)
-    struct nubus_card *video_card; // built-in RBV video pseudo-card (slot 0)
-
-    bool rom_overlay;
-    mmu_state_t *mmu;
-
-    mdu_io_t mdu_io; // device handles for the shared MDU dispatcher
-
-    uint8_t last_port_b; // ADB ST filtering on VIA1 PB
-
-    memory_interface_t io_interface;
-} iici_state_t;
+// IIci state is the unified MDU+RBV state struct (mdu_io.h).  The IIci uses
+// last_port_b and leaves the egret member NULL.
+typedef mac030_mdu_state_t iici_state_t;
 
 static inline iici_state_t *iici_state(config_t *cfg) {
     return (iici_state_t *)cfg->machine_context;

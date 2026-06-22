@@ -30,24 +30,9 @@ struct floppy;
 struct rbv;
 struct nubus_card;
 
-// Per-machine state.
-typedef struct iisi_state {
-    struct adb *adb;
-    struct asc *asc;
-    struct egret *egret; // Egret companion (ADB/RTC/PRAM/tick/power via VIA1 SR)
-    struct floppy *floppy;
-    struct rbv *rbv; // RBV chip in V8 variant (VIA2 replacement + video control)
-    struct nubus_card *video_card; // built-in V8 video pseudo-card (slot $E aperture)
-
-    bool rom_overlay;
-    mmu_state_t *mmu;
-
-    mdu_io_t mdu_io; // device handles for the shared MDU dispatcher
-
-    uint8_t last_port_a; // floppy/overlay filtering on VIA1 PA
-
-    memory_interface_t io_interface;
-} iisi_state_t;
+// IIsi state is the unified MDU+RBV state struct (mdu_io.h).  The IIsi uses
+// the egret companion + last_port_a.
+typedef mac030_mdu_state_t iisi_state_t;
 
 static inline iisi_state_t *iisi_state(config_t *cfg) {
     return (iisi_state_t *)cfg->machine_context;

@@ -18,9 +18,16 @@
 #include "memory.h"
 #include "system_config.h"
 
+#include <stdbool.h>
 #include <stdint.h>
 
 struct nubus_card;
+struct adb;
+struct asc;
+struct egret;
+struct floppy;
+struct rbv;
+struct mmu_state;
 
 // Device handles + cached interfaces the MDU dispatcher routes to.
 typedef struct mdu_io {
@@ -50,5 +57,27 @@ void mdu_io_write_uint32(void *ctx, uint32_t addr, uint32_t value);
 
 // Fill `iface` with the six dispatch function pointers.
 void mdu_io_fill_interface(memory_interface_t *iface);
+
+// Unified MDU+RBV machine state — the single struct shared by the IIci and
+// IIsi (mirrors the GLUE-family unification).  Superset: the IIsi uses egret +
+// last_port_a; the IIci uses last_port_b and leaves egret NULL.
+typedef struct mac030_mdu_state {
+    struct adb *adb;
+    struct asc *asc;
+    struct egret *egret; // IIsi companion (ADB/RTC/PRAM/power); NULL on IIci
+    struct floppy *floppy;
+    struct rbv *rbv; // RBV chip (VIA2 replacement + video control)
+    struct nubus_card *video_card; // built-in RBV video pseudo-card
+
+    bool rom_overlay;
+    struct mmu_state *mmu;
+
+    mdu_io_t mdu_io; // device handles for the shared MDU dispatcher
+
+    uint8_t last_port_a; // IIsi: floppy/overlay filtering on VIA1 PA
+    uint8_t last_port_b; // IIci: ADB ST filtering on VIA1 PB
+
+    memory_interface_t io_interface; // registered at the $50000000 I/O region
+} mac030_mdu_state_t;
 
 #endif // GS_MACHINES_MDU_IO_H

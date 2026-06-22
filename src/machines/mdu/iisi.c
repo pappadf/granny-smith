@@ -222,14 +222,6 @@ static void iisi_via1_shift_out(void *context, uint8_t byte) {
         egret_via1_shift_input(st->egret, byte);
 }
 
-static void iisi_via1_irq(void *context, bool active) {
-    mac030_glue_update_ipl((config_t *)context, IISI_IRQ_VIA1, active);
-}
-
-static void iisi_scc_irq(void *context, bool active) {
-    mac030_glue_update_ipl((config_t *)context, IISI_IRQ_SCC, active);
-}
-
 // ============================================================
 // VBL trigger
 // ============================================================
@@ -279,11 +271,11 @@ static void iisi_init(config_t *cfg, checkpoint_t *checkpoint) {
     // VIA1 PB0-2 (the IIsi has no classic transceiver path), so we do not call
     // rtc_set_via.
     cfg->rtc = rtc_init(cfg->scheduler, checkpoint, true);
-    cfg->scc = scc_init(NULL, cfg->scheduler, iisi_scc_irq, cfg, checkpoint);
+    cfg->scc = scc_init(NULL, cfg->scheduler, mac030_glue_scc_irq, cfg, checkpoint);
     scc_set_clocks(cfg->scc, 7833600, 3686400);
 
-    cfg->via1 = via_init(NULL, cfg->scheduler, 20, "via1", iisi_via1_output, iisi_via1_shift_out, iisi_via1_irq, cfg,
-                         checkpoint);
+    cfg->via1 = via_init(NULL, cfg->scheduler, 20, "via1", iisi_via1_output, iisi_via1_shift_out, mac030_glue_via1_irq,
+                         cfg, checkpoint);
 
     // Machine-ID readback on VIA1 port A: PA6/PA4/PA2/PA1 = 0/1/1/1 for the
     // IIsi ("Erickson") — mask $56, value $16 per InfoMacIIsi.

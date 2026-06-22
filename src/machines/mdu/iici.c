@@ -225,14 +225,6 @@ static void iici_via1_shift_out(void *context, uint8_t byte) {
         adb_shift_byte(st->adb, byte);
 }
 
-static void iici_via1_irq(void *context, bool active) {
-    mac030_glue_update_ipl((config_t *)context, IICI_IRQ_VIA1, active);
-}
-
-static void iici_scc_irq(void *context, bool active) {
-    mac030_glue_update_ipl((config_t *)context, IICI_IRQ_SCC, active);
-}
-
 // ============================================================
 // VBL trigger
 // ============================================================
@@ -282,11 +274,11 @@ static void iici_init(config_t *cfg, checkpoint_t *checkpoint) {
         system_read_checkpoint_data(checkpoint, &cfg->irq, sizeof(cfg->irq));
 
     cfg->rtc = rtc_init(cfg->scheduler, checkpoint, true);
-    cfg->scc = scc_init(NULL, cfg->scheduler, iici_scc_irq, cfg, checkpoint);
+    cfg->scc = scc_init(NULL, cfg->scheduler, mac030_glue_scc_irq, cfg, checkpoint);
     scc_set_clocks(cfg->scc, 7833600, 3686400);
 
-    cfg->via1 = via_init(NULL, cfg->scheduler, 20, "via1", iici_via1_output, iici_via1_shift_out, iici_via1_irq, cfg,
-                         checkpoint);
+    cfg->via1 = via_init(NULL, cfg->scheduler, 20, "via1", iici_via1_output, iici_via1_shift_out, mac030_glue_via1_irq,
+                         cfg, checkpoint);
     rtc_set_via(cfg->rtc, cfg->via1);
 
     // Machine-ID readback on VIA1 port A: PA6/PA4/PA2/PA1 = 1/0/1/1 for the
