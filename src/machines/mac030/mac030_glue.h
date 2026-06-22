@@ -134,6 +134,26 @@ void mac030_glue_init(config_t *cfg, checkpoint_t *cp, const mac030_glue_board_t
 #define MAC030_GLUE_IRQ_SCC  (1 << 2)
 #define MAC030_GLUE_IRQ_NMI  (1 << 3)
 
+// One IRQ source → CPU-IPL routing rule (proposal §4.2.2).  A family's routing
+// is an ordered table of these, highest IPL first; the resolver returns the
+// IPL of the highest-priority currently-active source.  GLUE routes the
+// level-2 source through VIA2, MDU through RBV, OSS through the OSS controller
+// — three different tables, one resolver.
+typedef struct mac030_irq_route {
+    int source; // IRQ source bit (MAC030_GLUE_IRQ_*)
+    int ipl; // CPU IPL it raises
+} mac030_irq_route_t;
+
+// Resolve a set of active IRQ source bits to a CPU IPL by walking `routes`
+// (ordered highest-IPL-first, sentinel source == 0) and returning the first
+// match — i.e. the highest-priority active source.  0 when none active.  Pure;
+// exposed for the IRQ-routing unit test (§6.1).
+int mac030_irq_resolve_ipl(const mac030_irq_route_t *routes, uint32_t irq);
+
+// The GLUE family's IRQ routing table (sentinel-terminated).  Exposed for the
+// IRQ-routing unit test.
+const mac030_irq_route_t *mac030_glue_irq_routes(void);
+
 // Set/clear an IRQ source bit and re-derive the CPU IPL (highest active wins).
 void mac030_glue_update_ipl(config_t *cfg, int source, bool active);
 

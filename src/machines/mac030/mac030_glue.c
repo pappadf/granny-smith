@@ -205,8 +205,9 @@ void mac030_glue_via2_irq(void *context, bool active) {
     mac030_glue_update_ipl((config_t *)context, MAC030_GLUE_IRQ_VIA2, active);
 }
 
-// Set/clear an IRQ source bit and re-derive the CPU IPL.  Verbatim from the
-// (identical) se30_update_ipl / iicx_update_ipl.
+// Set/clear an IRQ source bit and re-derive the CPU IPL.  The routing itself
+// is the data-driven glue_irq_routes table + mac030_irq_resolve_ipl engine
+// (both in mac030_glue_io.c — the GLUE family's dispatch tables, §4.2.2).
 void mac030_glue_update_ipl(config_t *cfg, int source, bool active) {
     int old_irq = cfg->irq;
     if (active)
@@ -214,18 +215,8 @@ void mac030_glue_update_ipl(config_t *cfg, int source, bool active) {
     else
         cfg->irq &= ~source;
 
-    // Highest active source wins.
-    uint32_t new_ipl;
-    if (cfg->irq & MAC030_GLUE_IRQ_NMI)
-        new_ipl = 7;
-    else if (cfg->irq & MAC030_GLUE_IRQ_SCC)
-        new_ipl = 4;
-    else if (cfg->irq & MAC030_GLUE_IRQ_VIA2)
-        new_ipl = 2;
-    else if (cfg->irq & MAC030_GLUE_IRQ_VIA1)
-        new_ipl = 1;
-    else
-        new_ipl = 0;
+    // Highest-priority active source wins (table ordered high→low IPL).
+    int new_ipl = mac030_irq_resolve_ipl(mac030_glue_irq_routes(), (uint32_t)cfg->irq);
 
     cpu_set_ipl(cfg->cpu, new_ipl);
     LOG(2, "mac030_glue_update_ipl: source=%d active=%d irq:%d->%d ipl->%d", source, active ? 1 : 0, old_irq, cfg->irq,

@@ -2,11 +2,16 @@
 // Copyright (c) pappadf
 
 // mac030_glue_io.c
-// Shared GLUE-family I/O dispatcher — see mac030_glue_io.h.  Logic is the
-// SE/30 / IIcx dispatcher verbatim (those were byte-identical); only the
-// state access is now via mac030_glue_io_t instead of each machine's struct.
+// The GLUE family's dispatch tables (proposal §4.2.2), with their generic
+// engines.  Both the I/O address map (glue_io_ranges) and the IRQ→IPL routing
+// (glue_irq_routes) are expressed as DATA walked by small engines, rather than
+// the former hand-written if-ladders.  The decode, per-window bus penalties,
+// and IRQ priority are the SE/30 / IIcx logic verbatim (those were byte- and
+// behaviour-identical); only the state access is via mac030_glue_io_t.
 
 #include "mac030_glue_io.h"
+
+#include "mac030_glue.h" // mac030_irq_route_t + MAC030_GLUE_IRQ_*
 
 #include "asc.h"
 #include "floppy.h"
@@ -14,24 +19,7 @@
 #include "scsi.h"
 #include "via.h"
 
-// Mirror mask + window offsets (the canonical GLUE $50Fxxxxx island).
-#define GLUE_IO_MIRROR    0x0001FFFFUL
-#define IO_VIA1           0x00000
-#define IO_VIA1_END       0x02000
-#define IO_VIA2           0x02000
-#define IO_VIA2_END       0x04000
-#define IO_SCC            0x04000
-#define IO_SCC_END        0x06000
-#define IO_SCSI_DRQ       0x06000
-#define IO_SCSI_DRQ_END   0x08000
-#define IO_SCSI_REG       0x10000
-#define IO_SCSI_REG_END   0x12000
-#define IO_SCSI_BLIND     0x12000
-#define IO_SCSI_BLIND_END 0x14000
-#define IO_ASC            0x14000
-#define IO_ASC_END        0x16000
-#define IO_SWIM           0x16000
-#define IO_SWIM_END       0x18000
+#include <stdbool.h>
 
 // Per-window access penalties (cycles): VIA syncs to the E-clock (~16),
 // everything else costs ~2 on top of the ~4 baseline.
@@ -41,56 +29,81 @@
 #define GLUE_ASC_IO_PENALTY  2
 #define GLUE_SWIM_IO_PENALTY 2
 
-// Cache the device interfaces for the dispatcher.
+// The canonical GLUE $50Fxxxxx decode, expressed as data.  Windows are
+// half-open [base, end); the gap [$08000,$10000) and anything past $18000 are
+// unmapped (read 0 / write ignored).  SCSI {DRQ,BLIND} are the pseudo-DMA
+// "blind" registers: every access hits one fixed NCR5380 register — reads pop
+// the FIFO at reg 0, writes push at reg $201 — regardless of the byte offset
+// within the window (MAC030_IO_FIXED).  The two VIA windows mask A0 because the
+// 6522 rides lane 0 and ignores it (MAC030_IO_MASK_A0).
+//
+//   base     end      device            penalty               xform               rd  wr     name
+static const mac030_io_range_t glue_io_ranges[] = {
+    {0x00000, 0x02000, MAC030_DEV_VIA1, GLUE_VIA_IO_PENALTY, MAC030_IO_MASK_A0, 0, 0, "via1"},
+    {0x02000, 0x04000, MAC030_DEV_VIA2, GLUE_VIA_IO_PENALTY, MAC030_IO_MASK_A0, 0, 0, "via2"},
+    {0x04000, 0x06000, MAC030_DEV_SCC, GLUE_SCC_IO_PENALTY, MAC030_IO_NORMAL, 0, 0, "scc"},
+    {0x06000, 0x08000, MAC030_DEV_SCSI, GLUE_SCSI_IO_PENALTY, MAC030_IO_FIXED, 0, 0x201, "scsi_drq"},
+    {0x10000, 0x12000, MAC030_DEV_SCSI, GLUE_SCSI_IO_PENALTY, MAC030_IO_NORMAL, 0, 0, "scsi_reg"},
+    {0x12000, 0x14000, MAC030_DEV_SCSI, GLUE_SCSI_IO_PENALTY, MAC030_IO_FIXED, 0, 0x201, "scsi_blind"},
+    {0x14000, 0x16000, MAC030_DEV_ASC, GLUE_ASC_IO_PENALTY, MAC030_IO_NORMAL, 0, 0, "asc"},
+    {0x16000, 0x18000, MAC030_DEV_FLOPPY, GLUE_SWIM_IO_PENALTY, MAC030_IO_NORMAL, 0, 0, "swim"},
+    {0}, // sentinel: end == 0
+};
+
+const mac030_io_range_t *mac030_glue_io_ranges(void) {
+    return glue_io_ranges;
+}
+
+// Walk the ordered table for the window containing `offset`.
+const mac030_io_range_t *mac030_glue_io_decode(uint32_t offset) {
+    offset &= MAC030_GLUE_IO_MIRROR;
+    for (const mac030_io_range_t *r = glue_io_ranges; r->end; r++) {
+        if (offset >= r->base && offset < r->end)
+            return r;
+    }
+    return NULL;
+}
+
+// The device sub-register offset a window maps `offset` to, for read vs write.
+static inline uint32_t io_sub_offset(const mac030_io_range_t *r, uint32_t offset, bool is_read) {
+    switch (r->xform) {
+    case MAC030_IO_MASK_A0:
+        return (offset - r->base) & ~1u;
+    case MAC030_IO_FIXED:
+        return is_read ? r->read_off : r->write_off;
+    case MAC030_IO_NORMAL:
+    default:
+        return offset - r->base;
+    }
+}
+
+// Cache the device interfaces for the dispatcher and install the GLUE table.
 void mac030_glue_io_bind(mac030_glue_io_t *io, config_t *cfg, void *asc, void *floppy) {
-    io->cfg = cfg;
-    io->via1_iface = via_get_memory_interface(cfg->via1);
-    io->via2_iface = via_get_memory_interface(cfg->via2);
-    io->scc_iface = scc_get_memory_interface(cfg->scc);
-    io->scsi_iface = scsi_get_memory_interface(cfg->scsi);
-    io->asc_iface = asc_get_memory_interface((asc_t *)asc);
-    io->floppy_iface = floppy_get_memory_interface((floppy_t *)floppy);
-    io->asc = asc;
-    io->floppy = floppy;
+    io->handle[MAC030_DEV_VIA1] = cfg->via1;
+    io->handle[MAC030_DEV_VIA2] = cfg->via2;
+    io->handle[MAC030_DEV_SCC] = cfg->scc;
+    io->handle[MAC030_DEV_SCSI] = cfg->scsi;
+    io->handle[MAC030_DEV_ASC] = asc;
+    io->handle[MAC030_DEV_FLOPPY] = floppy;
+
+    io->iface[MAC030_DEV_VIA1] = via_get_memory_interface(cfg->via1);
+    io->iface[MAC030_DEV_VIA2] = via_get_memory_interface(cfg->via2);
+    io->iface[MAC030_DEV_SCC] = scc_get_memory_interface(cfg->scc);
+    io->iface[MAC030_DEV_SCSI] = scsi_get_memory_interface(cfg->scsi);
+    io->iface[MAC030_DEV_ASC] = asc_get_memory_interface((asc_t *)asc);
+    io->iface[MAC030_DEV_FLOPPY] = floppy_get_memory_interface((floppy_t *)floppy);
+
+    io->ranges = glue_io_ranges;
 }
 
 uint8_t mac030_glue_io_read_uint8(void *ctx, uint32_t addr) {
     mac030_glue_io_t *io = (mac030_glue_io_t *)ctx;
-    config_t *cfg = io->cfg;
-    // 6522 decodes only A9..A12 and rides lane 0, so mask A0 before handing
-    // the offset to the VIA core (any byte in the 8 KB window aliases).
-    uint32_t offset = addr & GLUE_IO_MIRROR;
-    if (offset < IO_VIA1_END) {
-        memory_io_penalty(GLUE_VIA_IO_PENALTY);
-        return io->via1_iface->read_uint8(cfg->via1, (offset - IO_VIA1) & ~1u);
-    }
-    if (offset < IO_VIA2_END) {
-        memory_io_penalty(GLUE_VIA_IO_PENALTY);
-        return io->via2_iface->read_uint8(cfg->via2, (offset - IO_VIA2) & ~1u);
-    }
-    if (offset < IO_SCC_END) {
-        memory_io_penalty(GLUE_SCC_IO_PENALTY);
-        return io->scc_iface->read_uint8(cfg->scc, offset - IO_SCC);
-    }
-    if (offset < IO_SCSI_DRQ_END) {
-        memory_io_penalty(GLUE_SCSI_IO_PENALTY);
-        return io->scsi_iface->read_uint8(cfg->scsi, 0);
-    }
-    if (offset >= IO_SCSI_REG && offset < IO_SCSI_REG_END) {
-        memory_io_penalty(GLUE_SCSI_IO_PENALTY);
-        return io->scsi_iface->read_uint8(cfg->scsi, offset - IO_SCSI_REG);
-    }
-    if (offset >= IO_SCSI_BLIND && offset < IO_SCSI_BLIND_END) {
-        memory_io_penalty(GLUE_SCSI_IO_PENALTY);
-        return io->scsi_iface->read_uint8(cfg->scsi, 0);
-    }
-    if (offset >= IO_ASC && offset < IO_ASC_END) {
-        memory_io_penalty(GLUE_ASC_IO_PENALTY);
-        return io->asc_iface->read_uint8(io->asc, offset - IO_ASC);
-    }
-    if (offset >= IO_SWIM && offset < IO_SWIM_END) {
-        memory_io_penalty(GLUE_SWIM_IO_PENALTY);
-        return io->floppy_iface->read_uint8(io->floppy, offset - IO_SWIM);
+    uint32_t offset = addr & MAC030_GLUE_IO_MIRROR;
+    for (const mac030_io_range_t *r = io->ranges; r->end; r++) {
+        if (offset >= r->base && offset < r->end) {
+            memory_io_penalty(r->penalty);
+            return io->iface[r->device]->read_uint8(io->handle[r->device], io_sub_offset(r, offset, true));
+        }
     }
     return 0;
 }
@@ -100,71 +113,23 @@ uint16_t mac030_glue_io_read_uint16(void *ctx, uint32_t addr) {
 }
 
 uint32_t mac030_glue_io_read_uint32(void *ctx, uint32_t addr) {
-    mac030_glue_io_t *io = (mac030_glue_io_t *)ctx;
-    config_t *cfg = io->cfg;
-    uint32_t offset = addr & GLUE_IO_MIRROR;
-    if (offset >= IO_SCSI_DRQ && offset < IO_SCSI_DRQ_END) {
-        memory_io_penalty(GLUE_SCSI_IO_PENALTY * 4);
-        uint8_t b0 = io->scsi_iface->read_uint8(cfg->scsi, 0);
-        uint8_t b1 = io->scsi_iface->read_uint8(cfg->scsi, 0);
-        uint8_t b2 = io->scsi_iface->read_uint8(cfg->scsi, 0);
-        uint8_t b3 = io->scsi_iface->read_uint8(cfg->scsi, 0);
-        return ((uint32_t)b0 << 24) | ((uint32_t)b1 << 16) | ((uint32_t)b2 << 8) | (uint32_t)b3;
-    }
-    if (offset >= IO_SCSI_BLIND && offset < IO_SCSI_BLIND_END) {
-        memory_io_penalty(GLUE_SCSI_IO_PENALTY * 4);
-        uint8_t b0 = io->scsi_iface->read_uint8(cfg->scsi, 0);
-        uint8_t b1 = io->scsi_iface->read_uint8(cfg->scsi, 0);
-        uint8_t b2 = io->scsi_iface->read_uint8(cfg->scsi, 0);
-        uint8_t b3 = io->scsi_iface->read_uint8(cfg->scsi, 0);
-        return ((uint32_t)b0 << 24) | ((uint32_t)b1 << 16) | ((uint32_t)b2 << 8) | (uint32_t)b3;
-    }
+    // 16/32-bit accesses decompose into bytes.  This reproduces the former
+    // explicit SCSI 32-bit "blind burst" exactly: a 4-byte read of a DRQ/BLIND
+    // window byte-decomposes to four reads of the same fixed register, and the
+    // bus penalty is identical (memory_io_penalty accumulation is split-
+    // invariant, so 4×2 == the old single ×4).
     return ((uint32_t)mac030_glue_io_read_uint16(ctx, addr) << 16) | mac030_glue_io_read_uint16(ctx, addr + 2);
 }
 
 void mac030_glue_io_write_uint8(void *ctx, uint32_t addr, uint8_t value) {
     mac030_glue_io_t *io = (mac030_glue_io_t *)ctx;
-    config_t *cfg = io->cfg;
-    uint32_t offset = addr & GLUE_IO_MIRROR;
-    if (offset < IO_VIA1_END) {
-        memory_io_penalty(GLUE_VIA_IO_PENALTY);
-        io->via1_iface->write_uint8(cfg->via1, (offset - IO_VIA1) & ~1u, value);
-        return;
-    }
-    if (offset < IO_VIA2_END) {
-        memory_io_penalty(GLUE_VIA_IO_PENALTY);
-        io->via2_iface->write_uint8(cfg->via2, (offset - IO_VIA2) & ~1u, value);
-        return;
-    }
-    if (offset < IO_SCC_END) {
-        memory_io_penalty(GLUE_SCC_IO_PENALTY);
-        io->scc_iface->write_uint8(cfg->scc, offset - IO_SCC, value);
-        return;
-    }
-    if (offset < IO_SCSI_DRQ_END) {
-        memory_io_penalty(GLUE_SCSI_IO_PENALTY);
-        io->scsi_iface->write_uint8(cfg->scsi, 0x201, value);
-        return;
-    }
-    if (offset >= IO_SCSI_REG && offset < IO_SCSI_REG_END) {
-        memory_io_penalty(GLUE_SCSI_IO_PENALTY);
-        io->scsi_iface->write_uint8(cfg->scsi, offset - IO_SCSI_REG, value);
-        return;
-    }
-    if (offset >= IO_SCSI_BLIND && offset < IO_SCSI_BLIND_END) {
-        memory_io_penalty(GLUE_SCSI_IO_PENALTY);
-        io->scsi_iface->write_uint8(cfg->scsi, 0x201, value);
-        return;
-    }
-    if (offset >= IO_ASC && offset < IO_ASC_END) {
-        memory_io_penalty(GLUE_ASC_IO_PENALTY);
-        io->asc_iface->write_uint8(io->asc, offset - IO_ASC, value);
-        return;
-    }
-    if (offset >= IO_SWIM && offset < IO_SWIM_END) {
-        memory_io_penalty(GLUE_SWIM_IO_PENALTY);
-        io->floppy_iface->write_uint8(io->floppy, offset - IO_SWIM, value);
-        return;
+    uint32_t offset = addr & MAC030_GLUE_IO_MIRROR;
+    for (const mac030_io_range_t *r = io->ranges; r->end; r++) {
+        if (offset >= r->base && offset < r->end) {
+            memory_io_penalty(r->penalty);
+            io->iface[r->device]->write_uint8(io->handle[r->device], io_sub_offset(r, offset, false), value);
+            return;
+        }
     }
 }
 
@@ -174,25 +139,6 @@ void mac030_glue_io_write_uint16(void *ctx, uint32_t addr, uint16_t value) {
 }
 
 void mac030_glue_io_write_uint32(void *ctx, uint32_t addr, uint32_t value) {
-    mac030_glue_io_t *io = (mac030_glue_io_t *)ctx;
-    config_t *cfg = io->cfg;
-    uint32_t offset = addr & GLUE_IO_MIRROR;
-    if (offset >= IO_SCSI_DRQ && offset < IO_SCSI_DRQ_END) {
-        memory_io_penalty(GLUE_SCSI_IO_PENALTY * 4);
-        io->scsi_iface->write_uint8(cfg->scsi, 0x201, (uint8_t)(value >> 24));
-        io->scsi_iface->write_uint8(cfg->scsi, 0x201, (uint8_t)(value >> 16));
-        io->scsi_iface->write_uint8(cfg->scsi, 0x201, (uint8_t)(value >> 8));
-        io->scsi_iface->write_uint8(cfg->scsi, 0x201, (uint8_t)(value));
-        return;
-    }
-    if (offset >= IO_SCSI_BLIND && offset < IO_SCSI_BLIND_END) {
-        memory_io_penalty(GLUE_SCSI_IO_PENALTY * 4);
-        io->scsi_iface->write_uint8(cfg->scsi, 0x201, (uint8_t)(value >> 24));
-        io->scsi_iface->write_uint8(cfg->scsi, 0x201, (uint8_t)(value >> 16));
-        io->scsi_iface->write_uint8(cfg->scsi, 0x201, (uint8_t)(value >> 8));
-        io->scsi_iface->write_uint8(cfg->scsi, 0x201, (uint8_t)(value));
-        return;
-    }
     mac030_glue_io_write_uint16(ctx, addr, (uint16_t)(value >> 16));
     mac030_glue_io_write_uint16(ctx, addr + 2, (uint16_t)(value & 0xFFFF));
 }
@@ -205,4 +151,31 @@ void mac030_glue_io_fill_interface(memory_interface_t *iface) {
     iface->write_uint8 = mac030_glue_io_write_uint8;
     iface->write_uint16 = mac030_glue_io_write_uint16;
     iface->write_uint32 = mac030_glue_io_write_uint32;
+}
+
+// ============================================================
+// IRQ→IPL routing (the GLUE family's second dispatch table)
+// ============================================================
+
+// Ordered highest-IPL-first: NMI→7, SCC→4, VIA2→2, VIA1→1 (proposal §4.2.2).
+static const mac030_irq_route_t glue_irq_routes[] = {
+    {MAC030_GLUE_IRQ_NMI,  7},
+    {MAC030_GLUE_IRQ_SCC,  4},
+    {MAC030_GLUE_IRQ_VIA2, 2},
+    {MAC030_GLUE_IRQ_VIA1, 1},
+    {0,                    0}, // sentinel
+};
+
+const mac030_irq_route_t *mac030_glue_irq_routes(void) {
+    return glue_irq_routes;
+}
+
+// Walk an ordered (high→low IPL) routing table; return the IPL of the
+// highest-priority active source, or 0 if none.  Pure; unit-tested (§6.1).
+int mac030_irq_resolve_ipl(const mac030_irq_route_t *routes, uint32_t irq) {
+    for (; routes->source; routes++) {
+        if (irq & (uint32_t)routes->source)
+            return routes->ipl;
+    }
+    return 0;
 }
