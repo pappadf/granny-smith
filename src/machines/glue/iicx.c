@@ -131,7 +131,7 @@ void iicx_memory_layout_init(config_t *cfg) {
         }
     }
 
-    mac030_glue_io_fill_interface(&st->io_interface);
+    mac030_io_fill_interface(&st->io_interface);
     memory_map_add(cfg->mem_map, IICX_IO_BASE, IICX_IO_SIZE, "IIcx I/O", &st->io_interface, &st->glue_io);
 
     // Populate page-table entries for any host-backed slot regions

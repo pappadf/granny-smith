@@ -119,7 +119,7 @@ static void iici_memory_layout_init(config_t *cfg) {
         }
     }
 
-    mdu_io_fill_interface(&st->io_interface);
+    mac030_io_fill_interface(&st->io_interface);
     memory_map_add(cfg->mem_map, IICI_IO_BASE, IICI_IO_SIZE, "IIci I/O", &st->io_interface, &st->mdu_io);
 
     // Wire the built-in framebuffer (registered via mmu_register_vram) and

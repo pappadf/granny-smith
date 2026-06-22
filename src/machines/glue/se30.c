@@ -218,7 +218,7 @@ static void se30_memory_layout_init(config_t *cfg) {
     }
 
     // --- I/O dispatcher: $50000000 - $5FFFFFFF ---
-    mac030_glue_io_fill_interface(&se30->io_interface);
+    mac030_io_fill_interface(&se30->io_interface);
     memory_map_add(cfg->mem_map, SE30_IO_BASE, SE30_IO_SIZE, "SE/30 I/O", &se30->io_interface, &se30->glue_io);
 
     // --- VRAM: $FEE00000 - $FEE0FFFF (64 KB writable) ---

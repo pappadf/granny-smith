@@ -2,12 +2,12 @@
 // Copyright (c) pappadf
 
 // mac030_glue_io.c
-// The GLUE family's dispatch tables (proposal §4.2.2), with their generic
-// engines.  Both the I/O address map (glue_io_ranges) and the IRQ→IPL routing
-// (glue_irq_routes) are expressed as DATA walked by small engines, rather than
-// the former hand-written if-ladders.  The decode, per-window bus penalties,
-// and IRQ priority are the SE/30 / IIcx logic verbatim (those were byte- and
-// behaviour-identical); only the state access is via mac030_glue_io_t.
+// The mac030 II-family I/O dispatch engine + the GLUE family's dispatch tables
+// (proposal §4.2.2).  The engine (mac030_io_*) walks the ordered window table
+// in a mac030_io_t; GLUE (here) and MDU+RBV (mdu_io.c) each install their own
+// table + mirror + device set.  The decode, per-window bus penalties, and IRQ
+// priority are the SE/30 / IIcx logic verbatim (those were byte- and
+// behaviour-identical); only the dispatch is now table-driven.
 
 #include "mac030_glue_io.h"
 
@@ -20,6 +20,92 @@
 #include "via.h"
 
 #include <stdbool.h>
+
+// ============================================================
+// The engine
+// ============================================================
+
+const mac030_io_range_t *mac030_io_decode(const mac030_io_range_t *ranges, uint32_t mirror, uint32_t offset) {
+    offset &= mirror;
+    for (const mac030_io_range_t *r = ranges; r->end; r++) {
+        if (offset >= r->base && offset < r->end)
+            return r;
+    }
+    return NULL;
+}
+
+// The device sub-register offset a window maps `offset` to, for read vs write.
+static inline uint32_t io_sub_offset(const mac030_io_range_t *r, uint32_t offset, bool is_read) {
+    switch (r->xform) {
+    case MAC030_IO_MASK_A0:
+        return (offset - r->base) & ~1u;
+    case MAC030_IO_FIXED:
+        return is_read ? r->read_off : r->write_off;
+    case MAC030_IO_NORMAL:
+    default:
+        return offset - r->base;
+    }
+}
+
+uint8_t mac030_io_read_uint8(void *ctx, uint32_t addr) {
+    mac030_io_t *io = (mac030_io_t *)ctx;
+    uint32_t offset = addr & io->mirror_mask;
+    for (const mac030_io_range_t *r = io->ranges; r->end; r++) {
+        if (offset >= r->base && offset < r->end) {
+            memory_io_penalty(r->penalty);
+            return io->iface[r->device]->read_uint8(io->handle[r->device], io_sub_offset(r, offset, true));
+        }
+    }
+    return 0;
+}
+
+uint16_t mac030_io_read_uint16(void *ctx, uint32_t addr) {
+    return ((uint16_t)mac030_io_read_uint8(ctx, addr) << 8) | mac030_io_read_uint8(ctx, addr + 1);
+}
+
+uint32_t mac030_io_read_uint32(void *ctx, uint32_t addr) {
+    // 16/32-bit accesses decompose into bytes.  This reproduces the former
+    // explicit SCSI 32-bit "blind burst" exactly: a 4-byte read of a DRQ/BLIND
+    // window byte-decomposes to four reads of the same fixed register, and the
+    // bus penalty is identical (memory_io_penalty accumulation is split-
+    // invariant, so 4×2 == the old single ×4).
+    return ((uint32_t)mac030_io_read_uint16(ctx, addr) << 16) | mac030_io_read_uint16(ctx, addr + 2);
+}
+
+void mac030_io_write_uint8(void *ctx, uint32_t addr, uint8_t value) {
+    mac030_io_t *io = (mac030_io_t *)ctx;
+    uint32_t offset = addr & io->mirror_mask;
+    for (const mac030_io_range_t *r = io->ranges; r->end; r++) {
+        if (offset >= r->base && offset < r->end) {
+            memory_io_penalty(r->penalty);
+            io->iface[r->device]->write_uint8(io->handle[r->device], io_sub_offset(r, offset, false), value);
+            return;
+        }
+    }
+}
+
+void mac030_io_write_uint16(void *ctx, uint32_t addr, uint16_t value) {
+    mac030_io_write_uint8(ctx, addr, (uint8_t)(value >> 8));
+    mac030_io_write_uint8(ctx, addr + 1, (uint8_t)(value & 0xFF));
+}
+
+void mac030_io_write_uint32(void *ctx, uint32_t addr, uint32_t value) {
+    mac030_io_write_uint16(ctx, addr, (uint16_t)(value >> 16));
+    mac030_io_write_uint16(ctx, addr + 2, (uint16_t)(value & 0xFFFF));
+}
+
+void mac030_io_fill_interface(memory_interface_t *iface) {
+    iface->read_uint8 = mac030_io_read_uint8;
+    iface->read_uint16 = mac030_io_read_uint16;
+    iface->read_uint32 = mac030_io_read_uint32;
+    iface->write_uint8 = mac030_io_write_uint8;
+    iface->write_uint16 = mac030_io_write_uint16;
+    iface->write_uint32 = mac030_io_write_uint32;
+}
+
+// ============================================================
+// GLUE family tables
+// ============================================================
 
 // Per-window access penalties (cycles): VIA syncs to the E-clock (~16),
 // everything else costs ~2 on top of the ~4 baseline.
@@ -54,31 +140,11 @@ const mac030_io_range_t *mac030_glue_io_ranges(void) {
     return glue_io_ranges;
 }
 
-// Walk the ordered table for the window containing `offset`.
-const mac030_io_range_t *mac030_glue_io_decode(uint32_t offset) {
-    offset &= MAC030_GLUE_IO_MIRROR;
-    for (const mac030_io_range_t *r = glue_io_ranges; r->end; r++) {
-        if (offset >= r->base && offset < r->end)
-            return r;
+void mac030_glue_io_bind(mac030_io_t *io, config_t *cfg, void *asc, void *floppy) {
+    for (int i = 0; i < MAC030_DEV_COUNT; i++) {
+        io->handle[i] = NULL;
+        io->iface[i] = NULL;
     }
-    return NULL;
-}
-
-// The device sub-register offset a window maps `offset` to, for read vs write.
-static inline uint32_t io_sub_offset(const mac030_io_range_t *r, uint32_t offset, bool is_read) {
-    switch (r->xform) {
-    case MAC030_IO_MASK_A0:
-        return (offset - r->base) & ~1u;
-    case MAC030_IO_FIXED:
-        return is_read ? r->read_off : r->write_off;
-    case MAC030_IO_NORMAL:
-    default:
-        return offset - r->base;
-    }
-}
-
-// Cache the device interfaces for the dispatcher and install the GLUE table.
-void mac030_glue_io_bind(mac030_glue_io_t *io, config_t *cfg, void *asc, void *floppy) {
     io->handle[MAC030_DEV_VIA1] = cfg->via1;
     io->handle[MAC030_DEV_VIA2] = cfg->via2;
     io->handle[MAC030_DEV_SCC] = cfg->scc;
@@ -94,63 +160,7 @@ void mac030_glue_io_bind(mac030_glue_io_t *io, config_t *cfg, void *asc, void *f
     io->iface[MAC030_DEV_FLOPPY] = floppy_get_memory_interface((floppy_t *)floppy);
 
     io->ranges = glue_io_ranges;
-}
-
-uint8_t mac030_glue_io_read_uint8(void *ctx, uint32_t addr) {
-    mac030_glue_io_t *io = (mac030_glue_io_t *)ctx;
-    uint32_t offset = addr & MAC030_GLUE_IO_MIRROR;
-    for (const mac030_io_range_t *r = io->ranges; r->end; r++) {
-        if (offset >= r->base && offset < r->end) {
-            memory_io_penalty(r->penalty);
-            return io->iface[r->device]->read_uint8(io->handle[r->device], io_sub_offset(r, offset, true));
-        }
-    }
-    return 0;
-}
-
-uint16_t mac030_glue_io_read_uint16(void *ctx, uint32_t addr) {
-    return ((uint16_t)mac030_glue_io_read_uint8(ctx, addr) << 8) | mac030_glue_io_read_uint8(ctx, addr + 1);
-}
-
-uint32_t mac030_glue_io_read_uint32(void *ctx, uint32_t addr) {
-    // 16/32-bit accesses decompose into bytes.  This reproduces the former
-    // explicit SCSI 32-bit "blind burst" exactly: a 4-byte read of a DRQ/BLIND
-    // window byte-decomposes to four reads of the same fixed register, and the
-    // bus penalty is identical (memory_io_penalty accumulation is split-
-    // invariant, so 4×2 == the old single ×4).
-    return ((uint32_t)mac030_glue_io_read_uint16(ctx, addr) << 16) | mac030_glue_io_read_uint16(ctx, addr + 2);
-}
-
-void mac030_glue_io_write_uint8(void *ctx, uint32_t addr, uint8_t value) {
-    mac030_glue_io_t *io = (mac030_glue_io_t *)ctx;
-    uint32_t offset = addr & MAC030_GLUE_IO_MIRROR;
-    for (const mac030_io_range_t *r = io->ranges; r->end; r++) {
-        if (offset >= r->base && offset < r->end) {
-            memory_io_penalty(r->penalty);
-            io->iface[r->device]->write_uint8(io->handle[r->device], io_sub_offset(r, offset, false), value);
-            return;
-        }
-    }
-}
-
-void mac030_glue_io_write_uint16(void *ctx, uint32_t addr, uint16_t value) {
-    mac030_glue_io_write_uint8(ctx, addr, (uint8_t)(value >> 8));
-    mac030_glue_io_write_uint8(ctx, addr + 1, (uint8_t)(value & 0xFF));
-}
-
-void mac030_glue_io_write_uint32(void *ctx, uint32_t addr, uint32_t value) {
-    mac030_glue_io_write_uint16(ctx, addr, (uint16_t)(value >> 16));
-    mac030_glue_io_write_uint16(ctx, addr + 2, (uint16_t)(value & 0xFFFF));
-}
-
-// Fill an interface struct with the six dispatch entry-points.
-void mac030_glue_io_fill_interface(memory_interface_t *iface) {
-    iface->read_uint8 = mac030_glue_io_read_uint8;
-    iface->read_uint16 = mac030_glue_io_read_uint16;
-    iface->read_uint32 = mac030_glue_io_read_uint32;
-    iface->write_uint8 = mac030_glue_io_write_uint8;
-    iface->write_uint16 = mac030_glue_io_write_uint16;
-    iface->write_uint32 = mac030_glue_io_write_uint32;
+    io->mirror_mask = MAC030_GLUE_IO_MIRROR;
 }
 
 // ============================================================

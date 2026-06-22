@@ -134,7 +134,7 @@ static void iisi_memory_layout_init(config_t *cfg) {
         }
     }
 
-    mdu_io_fill_interface(&st->io_interface);
+    mac030_io_fill_interface(&st->io_interface);
     memory_map_add(cfg->mem_map, IISI_IO_BASE, IISI_IO_SIZE, "IIsi I/O", &st->io_interface, &st->mdu_io);
 
     // No separate VRAM aperture to wire: the on-board frame buffer IS the bottom

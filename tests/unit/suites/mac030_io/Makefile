@@ -29,6 +29,7 @@ INCLUDE_FLAGS := -I$(UNIT_ROOT)/support \
                  -I$(EMU_ROOT)/core/vfs \
                  -I$(EMU_ROOT)/machines \
                  -I$(EMU_ROOT)/machines/mac030 \
+                 -I$(EMU_ROOT)/machines/mdu \
                  -DUNIT_TEST_PLATFORM_OVERRIDE \
                  -include $(UNIT_ROOT)/support/platform.h \
                  -include $(UNIT_ROOT)/support/log.h
@@ -37,7 +38,8 @@ CFLAGS := $(BASE_CFLAGS) $(INCLUDE_FLAGS)
 LDFLAGS ?=
 
 SRCS := $(CURDIR)/test.c \
-        $(EMU_ROOT)/machines/mac030/mac030_glue_io.c
+        $(EMU_ROOT)/machines/mac030/mac030_glue_io.c \
+        $(EMU_ROOT)/machines/mdu/mdu_io.c
 
 ALL_SRCS := $(abspath $(SRCS))
 
