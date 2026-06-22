@@ -14,7 +14,7 @@
 #define IICX_INTERNAL_H
 
 #include "common.h"
-#include "mac030_glue_io.h"
+#include "mac030_glue.h"
 #include "memory.h"
 #include "mmu.h"
 #include "system_config.h" // for config_t.machine_context
@@ -25,31 +25,10 @@ struct adb;
 struct asc;
 struct floppy;
 
-// Per-machine state.  Layout is shared between IIcx and IIx — the IIx's
-// missing PB2 / PB6 quirks just leave their state fields unused.
-typedef struct iicx_state {
-    struct adb *adb;
-    struct asc *asc;
-    struct floppy *floppy;
-
-    bool rom_overlay;
-    mmu_state_t *mmu;
-
-    mac030_glue_io_t glue_io; // device handles for the shared GLUE dispatcher
-
-    uint8_t last_port_b; // ADB ST filtering on VIA1 PB
-    uint8_t last_via2_port_b; // last seen VIA2 port-B output
-
-    // IIcx soft-power detection (unused on IIx).  The Universal ROM
-    // touches VIA2 port B many times during early init with PB2 = 0
-    // simply because nothing in the OS has written it yet, so we can't
-    // fire on the first 1→0 transition.  The detector arms on the first
-    // observed PB2 = 1 (the OS asserting "stay powered on") and only
-    // then watches for the falling edge that means "shut down".
-    bool soft_power_armed;
-
-    memory_interface_t io_interface;
-} iicx_state_t;
+// IIcx/IIx state is the unified GLUE state struct (mac030_glue.h).  The IIcx
+// uses last_via2_port_b / soft_power_armed for its PB2 soft-power detector;
+// both machines leave the SE/30 vram/vrom/video_card members NULL.
+typedef mac030_glue_state_t iicx_state_t;
 
 static inline iicx_state_t *iicx_state(config_t *cfg) {
     return (iicx_state_t *)cfg->machine_context;

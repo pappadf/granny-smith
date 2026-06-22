@@ -10,14 +10,47 @@
 #define GS_MACHINES_MAC030_GLUE_H
 
 #include "checkpoint.h"
+#include "mac030_glue_io.h"
+#include "memory.h" // memory_interface_t
 #include "system_config.h"
 
 #include <stdbool.h>
+#include <stdint.h>
 
 struct adb;
 struct asc;
 struct floppy;
 struct mmu_state;
+struct nubus_card;
+struct via;
+
+// Unified GLUE-family machine state — the single struct shared by SE/30,
+// IIcx and IIx (collapsing the former se30_state_t and iicx_state_t; proposal
+// §4.2.3 "the three _internal.h clone headers collapse into one substrate
+// state struct").  It is a superset: the SE/30 uses vram/vrom/video_card and
+// leaves the IIcx soft-power fields unused; the IIcx/IIx use the soft-power
+// fields and leave the video pointers NULL.
+typedef struct mac030_glue_state {
+    struct adb *adb;
+    struct asc *asc;
+    struct floppy *floppy;
+
+    bool rom_overlay; // true = ROM mapped at $00000000
+    struct mmu_state *mmu; // 68030 PMMU
+
+    mac030_glue_io_t glue_io; // device handles for the shared dispatcher
+
+    uint8_t last_port_b; // VIA1 PB output, for ADB ST-transition filtering
+    uint8_t last_via2_port_b; // IIcx soft-power detect (unused on se30/iix)
+    bool soft_power_armed; // IIcx soft-power detect (unused on se30/iix)
+
+    // SE/30 built-in video (slot $E); NULL on IIcx/IIx (they use NuBus cards).
+    uint8_t *vram;
+    uint8_t *vrom;
+    struct nubus_card *video_card;
+
+    memory_interface_t io_interface; // registered at the $50000000 I/O region
+} mac030_glue_state_t;
 
 // The II-family construction prefix shared by every GLUE machine: build the
 // memory map, the CPU (model read FROM THE PROFILE — closing the §1.3 drift

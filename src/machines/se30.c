@@ -95,38 +95,10 @@ LOG_USE_CATEGORY_NAME("se30");
 // SE/30-specific state
 // ============================================================
 
-// SE/30-specific peripheral state not shared with other machines.
-// Accessed through config_t.machine_context.
-typedef struct se30_state {
-    // SE/30-specific peripherals (not in config_t)
-    adb_t *adb;
-    asc_t *asc;
-    floppy_t *floppy;
-
-    // ROM overlay state (true = ROM mapped at $00000000)
-    bool rom_overlay;
-
-    // VRAM / VROM live on the slot-$E NuBus card (cards/builtin_se30_video.c).
-    // These are borrowed pointers, set after nubus_init returns; the card
-    // owns the storage and frees it during nubus_delete.  `video_card` is
-    // the card handle used by se30_via1_output to toggle the on-screen
-    // buffer when the OS writes VIA1 PA6.
-    uint8_t *vram;
-    uint8_t *vrom;
-    nubus_card_t *video_card;
-
-    // MMU state (NULL until se30_init creates it)
-    mmu_state_t *mmu;
-
-    // Device handles for the shared GLUE dispatcher (mac030_glue_io.c)
-    mac030_glue_io_t glue_io;
-
-    // Previous VIA1 port B output value for filtering ADB ST transitions
-    uint8_t last_port_b;
-
-    // I/O dispatcher registered at $50000000
-    memory_interface_t io_interface;
-} se30_state_t;
+// SE/30 state is the unified GLUE state struct (mac030_glue.h).  The SE/30
+// uses the vram/vrom/video_card members for its slot-$E built-in video and
+// leaves the IIcx soft-power members unused.
+typedef mac030_glue_state_t se30_state_t;
 
 // Helper: return the SE/30-specific state from a config handle
 static inline se30_state_t *se30_state(config_t *cfg) {
