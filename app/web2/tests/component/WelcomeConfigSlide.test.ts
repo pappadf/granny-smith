@@ -42,7 +42,7 @@ vi.mock('@/bus/emulator', async (importOriginal) => {
         const byId: Record<string, object> = {
           plus: {
             name: 'Macintosh Plus',
-            needs_vrom: false,
+            // No video_slots → no card declares requires_vrom → VROM row hidden.
             ram_options: [1024, 2048, 4096],
             ram_default: 4096,
             floppy_slots: [
@@ -52,7 +52,15 @@ vi.mock('@/bus/emulator', async (importOriginal) => {
           },
           se30: {
             name: 'Macintosh SE/30',
-            needs_vrom: true,
+            // Built-in video card declares requires_vrom → VROM row shown.
+            video_slots: [
+              {
+                slot: 'builtin',
+                fixed: true,
+                default_card: 'builtin_se30_video',
+                cards: [{ id: 'builtin_se30_video', requires_vrom: true, monitors: [] }],
+              },
+            ],
             ram_options: [2048, 4096, 8192, 16384],
             ram_default: 8192,
             floppy_slots: [{ label: 'Internal Floppy', kind: 'hd' }],
@@ -96,28 +104,28 @@ describe('WelcomeConfigSlide', () => {
       const sel = container.querySelector('#cfg-model') as HTMLSelectElement | null;
       if (!sel || sel.options.length === 0) throw new Error('not ready');
     });
-    // Default model is 'plus' (first scanned). Its profile reports
-    // needs_vrom=false (VROM row hidden), ram_default=4096 KB, and two
-    // floppy slots.
+    // Default model is 'plus' (first scanned). Its profile has no video_slots
+    // (so no card requires a VROM → VROM row hidden), ram_default=4096 KB, and
+    // two floppy slots.
     expect(container.querySelector('#cfg-vrom')).toBeNull();
     expect((container.querySelector('#cfg-ram') as HTMLSelectElement).value).toBe('4 MB');
     expect(container.querySelectorAll('select[id^="cfg-fd"]').length).toBe(2);
     expect((container.querySelector('#cfg-cd') as HTMLSelectElement).value).toBe('(none)');
   });
 
-  it('shows the Video ROM row only for models whose profile reports needs_vrom', async () => {
+  it('shows the Video ROM row only for models whose video card requires a VROM', async () => {
     const { container } = render(WelcomeConfigSlide);
     await waitFor(() => {
       const sel = container.querySelector('#cfg-model') as HTMLSelectElement | null;
       if (!sel || sel.options.length === 0) throw new Error('not ready');
     });
-    // Plus: needs_vrom=false → hidden.
+    // Plus: no requires_vrom card → hidden.
     expect(container.querySelector('#cfg-vrom')).toBeNull();
     const modelSel = container.querySelector('#cfg-model') as HTMLSelectElement;
     modelSel.value = 'se30';
     modelSel.dispatchEvent(new Event('change', { bubbles: true }));
     await waitFor(() => {
-      // SE/30: needs_vrom=true → visible.
+      // SE/30: built-in video card requires_vrom → visible.
       if (!container.querySelector('#cfg-vrom')) throw new Error('vrom not shown yet');
     });
   });

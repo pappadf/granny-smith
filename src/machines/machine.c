@@ -270,6 +270,118 @@ static void encode_video_slots(json_builder_t *b, const hw_profile_t *p) {
     json_close_arr(b);
 }
 
+// The card id a slot exposes to the dialog: BUILTIN → its single card,
+// VIDEO → its default card, anything else → NULL.  Mirrors encode_video_slots.
+static const char *legacy_slot_card_id(const struct nubus_slot_decl *s) {
+    return (s->kind == NUBUS_SLOT_BUILTIN) ? s->builtin_card_id
+           : (s->kind == NUBUS_SLOT_VIDEO) ? s->default_card
+                                           : NULL;
+}
+
+// Count the (monitor, depth) tuples a card kind offers.
+static int legacy_card_tuple_count(const nubus_card_kind_t *kind) {
+    int n = 0;
+    if (kind && kind->monitors) {
+        for (const nubus_monitor_t *mon = kind->monitors; mon->id; mon++) {
+            if (!mon->depths)
+                continue;
+            for (const int *d = mon->depths; *d; d++)
+                n++;
+        }
+    }
+    return n;
+}
+
+// LEGACY COMPAT (web-legacy only): the old `needs_vrom` flag and the flat
+// `video_modes` / `video_mode_default` arrays.  web2 derives all of this from
+// `video_slots` (per-card requires_vrom + monitors/depths) and ignores these
+// keys; web-legacy's config-dialog.js still reads them directly.  They are
+// DERIVED here from the same nubus_slots/card data — there is no longer a
+// stored hw_profile_t.needs_vrom field — so video_slots remains the single
+// source of truth.  Delete this whole helper (and its call) when web-legacy is
+// removed; that is the only thing blocking the proposal §4.4 schema cleanup.
+//
+// A fixed single-mode built-in display (e.g. the SE/30's 1-bpp internal video)
+// offers no user choice, so it contributes to needs_vrom but NOT to the
+// selectable video_modes list — preserving web-legacy's original contract
+// ("SE/30 returns an empty video_modes list").  A slot contributes modes only
+// when it offers more than one (monitor, depth) tuple.
+static void encode_legacy_video_compat(json_builder_t *b, const hw_profile_t *p) {
+    // needs_vrom: true iff any populated video card declares requires_vrom.
+    bool needs_vrom = false;
+    if (p->nubus_slots) {
+        for (const struct nubus_slot_decl *s = p->nubus_slots; s->slot; s++) {
+            const char *card_id = legacy_slot_card_id(s);
+            const nubus_card_kind_t *kind = card_id ? nubus_card_find(card_id) : NULL;
+            if (kind && kind->requires_vrom)
+                needs_vrom = true;
+        }
+    }
+    json_key(b, "needs_vrom");
+    json_bool(b, needs_vrom);
+
+    // video_modes: flat per-(monitor, depth) catalog across every populated
+    // video slot offering a *choice* (>1 tuple).  Empty for non-video machines
+    // and for fixed single-mode built-in displays.
+    json_key(b, "video_modes");
+    json_open_arr(b);
+    if (p->nubus_slots) {
+        for (const struct nubus_slot_decl *s = p->nubus_slots; s->slot; s++) {
+            const char *card_id = legacy_slot_card_id(s);
+            const nubus_card_kind_t *kind = card_id ? nubus_card_find(card_id) : NULL;
+            if (!kind || !kind->monitors || legacy_card_tuple_count(kind) <= 1)
+                continue;
+            for (const nubus_monitor_t *mon = kind->monitors; mon->id; mon++) {
+                if (!mon->depths)
+                    continue;
+                for (const int *d = mon->depths; *d; d++) {
+                    char id_buf[64];
+                    char label_buf[128];
+                    snprintf(id_buf, sizeof id_buf, "%s_%dbpp", mon->id, *d);
+                    snprintf(label_buf, sizeof label_buf, "%s · %u\xc3\x97%u · %d bpp", mon->name, mon->width,
+                             mon->height, *d);
+                    json_open_obj(b);
+                    json_key(b, "id");
+                    json_str(b, id_buf);
+                    json_key(b, "label");
+                    json_str(b, label_buf);
+                    json_key(b, "width");
+                    json_int(b, (int64_t)mon->width);
+                    json_key(b, "height");
+                    json_int(b, (int64_t)mon->height);
+                    json_key(b, "depth_bpp");
+                    json_int(b, (int64_t)*d);
+                    json_close_obj(b);
+                }
+            }
+        }
+    }
+    json_close_arr(b);
+
+    // video_mode_default: first (monitor, depth) tuple of the first slot that
+    // contributed modes.  "" when no video_modes were emitted.
+    json_key(b, "video_mode_default");
+    {
+        const char *first_id = NULL;
+        char first_buf[64];
+        if (p->nubus_slots) {
+            for (const struct nubus_slot_decl *s = p->nubus_slots; s->slot && !first_id; s++) {
+                const char *card_id = legacy_slot_card_id(s);
+                const nubus_card_kind_t *kind = card_id ? nubus_card_find(card_id) : NULL;
+                if (!kind || !kind->monitors || legacy_card_tuple_count(kind) <= 1)
+                    continue;
+                for (const nubus_monitor_t *mon = kind->monitors; mon->id && !first_id; mon++) {
+                    if (!mon->depths || !*mon->depths)
+                        continue;
+                    snprintf(first_buf, sizeof first_buf, "%s_%dbpp", mon->id, *mon->depths);
+                    first_id = first_buf;
+                }
+            }
+        }
+        json_str(b, first_id ? first_id : "");
+    }
+}
+
 // Build the JSON-encoded profile map for a registered hw_profile_t.
 static value_t encode_profile(const hw_profile_t *p) {
     json_builder_t *b = json_builder_new();
@@ -330,13 +442,13 @@ static value_t encode_profile(const hw_profile_t *p) {
     json_key(b, "cdrom_id");
     json_int(b, (int64_t)p->cdrom_id);
 
-    // Derived capability probe + per-card video-slot shape (proposal §4.4).
-    // The frontend derives both the VROM requirement and the video-mode list
-    // from video_slots' per-card requires_vrom + monitors/depths, so the
-    // former machine-level needs_vrom flag and the flat video_modes/
-    // video_mode_default arrays are gone.
+    // Derived capability probe + per-card video-slot shape (proposal §4.4) —
+    // the source of truth web2 consumes.  The legacy needs_vrom / video_modes /
+    // video_mode_default keys are emitted too (derived from the same data) for
+    // as long as web-legacy reads them; see encode_legacy_video_compat.
     encode_capabilities(b, p);
     encode_video_slots(b, p);
+    encode_legacy_video_compat(b, p);
 
     json_close_obj(b);
     return json_finish(b);
