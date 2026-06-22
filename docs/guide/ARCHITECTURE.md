@@ -67,7 +67,7 @@ approach promotes encapsulation, testability, and code reuse.
 
 Key subsystems (modules) include:
 
-- **CPU** (`cpu`) — Motorola 68000 emulation core (with 68030 stub for IIcx)
+- **CPU** (`cpu`) — Motorola 68000 and 68030 emulation cores (the 68030 with integrated PMMU/FPU), template-instantiated from a shared decoder
 - **Checkpoint** (`checkpoint`) — Checkpoint file I/O and serialization
 - **Scheduler** (`scheduler`) — Event scheduling and timing
 - **VIA** (`via`) — Versatile Interface Adapter (I/O controller)
@@ -189,14 +189,15 @@ interactions are handled cleanly.
     constructor parameters or referencing global state for read-only needs.
 
 - **Lifecycle management:**
-  - `setup_init()`: Performs one-time setup, including registration of log
-    categories and module-owned commands, as well as cross-module command
-    registration.
-  - `setup_plus(checkpoint_t)`: Allocates and initializes the `config_t`
-    structure, constructs all modules in dependency order, and optionally
-    restores state from a checkpoint.
-  - `setup_teardown(config_t *)`: Tears down all modules in reverse order and
-    frees the global configuration.
+  - `setup_init()`: Performs one-time, machine-independent setup — log
+    category and process-singleton class registration — run once at startup.
+  - `system_create(const hw_profile_t *profile, checkpoint_t *)`: Allocates the
+    `config_t`, wires the selected machine descriptor, and dispatches to
+    `profile->substrate->init(cfg, cp)`; the machine's substrate constructs all
+    modules in dependency order and optionally restores from a checkpoint.
+  - `system_destroy(config_t *)`: Deletes the NuBus cards, calls
+    `profile->substrate->teardown(cfg)` (the family delete-chain, reverse
+    order), closes images, and frees the configuration.
 
 - **Module interconnection via callbacks:**
   - Peripherals use function pointer callbacks for hardware signal routing,
@@ -205,12 +206,17 @@ interactions are handled cleanly.
       callbacks during construction, used to control floppy drive selection,
       video buffer switching, sound lines, and interrupt routing.
     - SCC accepts a `scc_irq_fn` callback for interrupt routing.
-    - `trigger_vbl(config)`: Toggles VIA vertical blanking lines and invokes
-      `sound_vbl()` for audio output.
-  - Machine-specific callbacks (e.g., `plus_via_output`, `plus_scc_irq`) are
-    defined in `system.c` and passed to peripherals during construction. This
-    allows different machines to route signals differently without changing
-    peripheral code.
+  - These signal callbacks live in the owning machine or family file under
+    `src/machines/` (e.g. `plus_via_output`/`plus_scc_irq`, or a GLUE family's
+    shared `mac030_glue_via1_irq`) — not in `system.c` — and are passed to
+    peripherals at construction, so machines route signals differently without
+    changing peripheral code.
+  - Machine *behavior* (init, teardown, reset, checkpoint, IRQ→IPL, VBL,
+    NuBus-slot IRQ, and host floppy/keyboard/mouse/display input) is itself a
+    vtable — `machine_substrate_t`, bound by the profile's `.substrate` field.
+    `system.c` and `nubus.c` dispatch every per-machine action through it, so
+    neither carries `if (model == …)` branches. See **Multi-machine support**
+    below.
 
 This design centralizes system wiring and cross-module logic, keeping individual
 modules focused and decoupled, while ensuring accurate emulation of
@@ -328,12 +334,16 @@ that backs it.
 The repository is organized as follows:
 
 - **src/** — Emulator source code
-  - **core/** — Platform-agnostic emulator core (CPU, memory, devices,
-    scheduler, etc.)
+  - **core/** — Platform-agnostic emulator core (CPU, memory, *generic*
+    devices, scheduler, etc.). Single-machine silicon (RBV, Egret, OSS, IOP,
+    COPS, the Lisa FDC/ProFile, the built-in video cards) lives with its family
+    under `src/machines/`, not here. The public machine descriptor + capability
+    types are in `core/machine_profile.h` (the one machine header core may
+    include).
     - **cpu/** — CPU emulation
       - _cpu.c_ — Lifecycle, public API, runtime dispatch
       - _cpu_68000.c_ — 68000 instruction decoder instantiation
-      - _cpu_68030.c_ — 68030 decoder stub (IIcx placeholder)
+      - _cpu_68030.c_ — 68030 decoder instantiation (integrated PMMU/FPU)
       - _cpu_internal.h_ — Shared struct and static inline helpers
       - _cpu_ops.h_ / _cpu_decode.h_ — Template-based decoder generation
       - _cpu_disasm.c_ — Disassembler
@@ -347,10 +357,18 @@ The repository is organized as follows:
     - **network/** — AppleTalk and networking modules
     - **shell/** — Command framework (types, parser, symbol resolver, I/O
       capture, completion, JSON bridge, dispatcher)
-  - **machines/** — Machine profile definitions
-    - _machine.h/c_ — Profile struct and registry
-    - _plus.c_ — Macintosh Plus hardware profile
-    - _iicx.c_ — Macintosh IIcx hardware profile (stub)
+  - **machines/** — Machine profiles, substrates, and chipset families
+    (machine *implementations* — the platform-agnostic core must not include
+    these; the public types live in `core/machine_profile.h`)
+    - _machine.c_ — Static `const` profile registry + the `machine.*` object surface
+    - _runtime/_ — Family-agnostic helpers (image + MMU checkpoint, host I/O)
+    - _mac030/_ — Macintosh II-family 68030 substrate (lifecycle spine,
+      table-driven I/O dispatch engine, ROM overlay, MMU register block)
+    - _glue/_ — GLUE chipset family (se30, iicx, iix) + built-in SE/30 video
+    - _mdu/_ — MDU+RBV chipset family (iici, iisi) + rbv, egret, built-in RBV video
+    - _oss/_ — OSS+FMC chipset family (iifx) + oss, iop\*
+    - _compact/_ — Compact-68000 substrate (plus; Mac SE assumed next)
+    - _lisa/_ — Lisa segment-MMU substrate (lisa, macxl) + cops, lisa_fdc, lisa_profile
   - **platform/** — Platform abstraction layer (PAL)
     - **wasm/** — Emscripten/WebAssembly-specific implementation (browser
       target)
@@ -366,35 +384,81 @@ The repository is organized as follows:
   - **headless/** — Native headless binary and outputs
 
 - **tests/** — Test suites and data
-  - **unit/** — Native unit tests (C, portable); see `docs/tests.md` for architecture
+  - **unit/** — Native unit tests (C, portable); see `docs/guide/TESTING.md` for architecture
   - **e2e/** — Playwright end-to-end (browser) tests
   - **integration/** — Headless integration tests (native CLI)
   - **data/** — Shared test data (ROMs, disk images, etc.)
 
 - **third-party/** — External dependencies (e.g., peeler archive library)
 
-- **docs/** — Documentation, architecture, and developer notes
+- **docs/** — Reference documentation, mirroring the code tree: `guide/`
+  (dev/process), `core/<subsystem>/` (mirrors `src/core/`), `machines/<family>/`
+  (mirrors `src/machines/`), and `notes/` (dated investigation logs)
 
 - **scripts/** — Build helpers, dev tools, and automation scripts
 
 ### Multi-machine support
 
-The emulator supports multiple machine profiles built on the same shared core.
-The `src/machines/` layer defines hardware profiles that describe each machine's
-characteristics:
+The emulator runs nine models — `plus`, `se30`, `iicx`, `iix`, `iifx`, `iici`,
+`iisi`, `lisa`, and `macxl` — on one shared core. Hardware is shared **by
+subsystem**, not by cloning a file per machine, across three layers. (The
+precedent is the NuBus card subsystem: a static descriptor that advertises its
+own capabilities, a vtable of NULL-safe hooks, and an explicit registry.)
 
-- **`machine.h`** — Defines `hw_profile_t` with CPU model, clock speed, address
-  bus width, RAM/ROM sizes, VIA count, and callback hooks
-- **`plus.c`** — Macintosh Plus profile (68000, 7.8 MHz, 24-bit, fully implemented)
-- **`iicx.c`** — Macintosh IIcx profile (68030, 15.7 MHz, 32-bit, stub/placeholder)
-- **`machine.c`** — Profile registry for lookup by name
+- **Tier 1 — generic chips** (`src/core/peripherals/`): the platform-agnostic
+  silicon every family reuses — VIA, SCC, RTC, ADB, ASC, SWIM/IWM floppy,
+  NCR-5380 SCSI, sound, the NuBus subtree. Single-machine chips do **not** live
+  here.
+- **Tier 2 — substrates** (`src/machines/<substrate>/`): a substrate owns a
+  machine's lifecycle. Three exist: **`mac030`** (the Macintosh II-family 68030
+  core — lifecycle spine, a table-driven `$50Fxxxxx` I/O dispatch engine, the
+  ROM overlay, and the 68030 MMU register block), **`compact`** (the compact
+  68000 Macs — Plus today, Mac SE assumed next), and **`lisa`** (the Lisa
+  segment-MMU machines).
+- **Tier 3 — chipset families** compose `mac030` as *siblings* (not as
+  descendants of any one chipset): **GLUE** (`glue/` — se30/iicx/iix), **MDU+RBV**
+  (`mdu/` — iici/iisi), and **OSS+FMC** (`oss/` — iifx). Each family supplies its
+  own I/O window table, IRQ routing, and the few code hooks a data table can't
+  express; the shared `mac030` engine drives all three.
+
+**A machine is mostly data.** Each model is a `hw_profile_t` (defined in
+`core/machine_profile.h`) holding identity, the CPU/MMU facts the init reads as
+the single source of truth (`cpu_model`, `freq`, `address_bits`, `mmu_kind`,
+RAM/ROM sizes), and the slot tables that shape the config dialog. It binds two
+behavior pointers:
+
+- **`.substrate`** — a `machine_substrate_t` lifecycle + host-input vtable
+  (`init`/`reset`/`teardown`/`checkpoint_save`/`update_ipl`/`trigger_vbl`/
+  `nubus_slot_irq`/`fd_*`/`input_*`/`display`), shared **per family**: all three
+  GLUE machines bind the same `glue_substrate`, both MDU machines bind
+  `mdu_substrate`, and the bespoke IIfx binds `iifx_substrate`. `system.c` and
+  `nubus.c` dispatch through this vtable, so they hold no machine knowledge.
+- **`.board`** — a typed-by-convention board descriptor (e.g.
+  `mac030_glue_board_t`) the family substrate interprets: the ROM window, the
+  I/O window table, NuBus slots, and per-machine hooks (VIA output, machine-ID
+  strap, memory layout, optional checkpoint/VBL deltas). Adding a same-family
+  machine is a new profile + board descriptor and one registry line — no new
+  lifecycle code.
+
+**Layout rule:** a chip lives with the narrowest scope that uses it — generic →
+`core/peripherals/`; one family → that family's dir (`rbv`/`egret` → `mdu/`,
+`oss`/`iop*` → `oss/`, `cops`/`lisa_fdc`/`lisa_profile` → `lisa/`, the built-in
+video cards with their family); one machine → that machine's file. The core may
+include the public `core/machine_profile.h` but **not** any machine
+*implementation* header — a CI layering check enforces this
+(`tests/integration/core-layering/`).
+
+**Capability probe (no machine knowledge in the UI).** `machine.profile(id)`
+returns a JSON map that includes a *derived* `capabilities` block
+(`cpu.{model,address_bits,fpu}`, a **typed** `mmu.{present,kind}` —
+`none`/`68030_pmmu`/`lisa_segment` — and `nubus`) plus a per-slot/per-card
+`video_slots` block carrying each card's `requires_vrom`. The frontend probes
+these instead of regex-matching the model's display name, so the debug panels,
+the VROM prompt, and the slot labels all follow from data. Because capabilities
+are *derived* from the facts, they can never drift from behavior.
 
 The CPU is split into template-instantiated decoders (`cpu_68000.c`,
 `cpu_68030.c`) sharing helpers via `cpu_internal.h`. The memory subsystem uses a
-page-table architecture that supports both the Plus (static page table) and the
-IIcx (page table rebuilt by the 68030 MMU). See `docs/core/memory/memory.md` for details.
-
-Peripherals use callback-based signal routing (function pointers passed at
-construction time) rather than hard-coded global functions, enabling different
-machines to wire signals differently. Checkpoint I/O is factored into a
-standalone `checkpoint.c` module.
+page-table architecture serving the static map of the 68000 machines and the
+PMMU-rebuilt map of the 68030 machines alike. See `docs/core/memory/memory.md`
+for details. Checkpoint I/O is factored into a standalone `checkpoint.c` module.
