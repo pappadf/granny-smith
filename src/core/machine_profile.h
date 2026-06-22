@@ -128,12 +128,6 @@ typedef struct hw_profile {
     bool has_cdrom;
     int cdrom_id; // SCSI bus id for the CD bay; conventionally 3.
 
-    // SE/30 needs a 32 KB Apple SE/30 video ROM at machine-init time.  When
-    // true, the configuration dialog adds a VROM row and gates Start on a
-    // non-empty selection.  Dialog-only: machine init still pulls
-    // vrom_pending_path() per-machine; this flag exists solely to drive UX.
-    bool needs_vrom;
-
     // NuBus slot declarations — sentinel-terminated array of
     // nubus_slot_decl_t (slot id, kind, builtin/available card list).
     // Used by machine.profile to enumerate cards per slot and build

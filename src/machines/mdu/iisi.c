@@ -522,7 +522,6 @@ const hw_profile_t machine_iisi = {
     .cdrom_id = 3,
     // Built-in V8 video has no separate declaration ROM — the boot ROM drives
     // it from the hard-coded VideoInfoMacIIsi record.
-    .needs_vrom = false,
 
     .nubus_slots = iisi_slots,
 

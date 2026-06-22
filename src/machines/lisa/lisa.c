@@ -1004,7 +1004,6 @@ const hw_profile_t machine_lisa = {
     .scsi_slots = lisa_scsi_slots,
     .has_cdrom = false,
     .cdrom_id = 0,
-    .needs_vrom = false,
 
     .substrate = &lisa_substrate,
 };
@@ -1033,7 +1032,6 @@ const hw_profile_t machine_macxl = {
     .scsi_slots = lisa_scsi_slots,
     .has_cdrom = false,
     .cdrom_id = 0,
-    .needs_vrom = false,
 
     .substrate = &lisa_substrate,
 };

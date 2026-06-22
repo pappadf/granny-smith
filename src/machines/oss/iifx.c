@@ -1722,7 +1722,6 @@ const hw_profile_t machine_iifx = {
     .scsi_slots = iifx_scsi_slots,
     .has_cdrom = true,
     .cdrom_id = 3,
-    .needs_vrom = true,
 
     .nubus_slots = iifx_slots,
 

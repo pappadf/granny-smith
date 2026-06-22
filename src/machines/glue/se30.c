@@ -569,10 +569,11 @@ const hw_profile_t machine_se30 = {
     .scsi_slots = se30_scsi_slots,
     .has_cdrom = true,
     .cdrom_id = 3,
-    .needs_vrom = true,
 
-    // Two VIAs, ADB present, one PDS slot (no NuBus)
+    // Built-in slot-$E video card.  Exposed in the profile so the config
+    // dialog reads the VROM requirement from the card (it needs SE30.vrom);
+    // this is the same table the substrate passes to nubus_init().
+    .nubus_slots = se30_slots,
 
-    // Lifecycle callbacks
     .substrate = &se30_substrate,
 };

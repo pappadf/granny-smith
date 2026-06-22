@@ -501,7 +501,6 @@ const hw_profile_t machine_iici = {
     .cdrom_id = 3,
     // Built-in RBV video has no separate declaration ROM — the boot ROM
     // drives it from the hard-coded VideoInfoMDU record.
-    .needs_vrom = false,
 
     .nubus_slots = iici_slots,
 

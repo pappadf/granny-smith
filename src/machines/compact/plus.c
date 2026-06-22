@@ -567,7 +567,6 @@ const hw_profile_t machine_plus = {
     .scsi_slots = plus_scsi_slots,
     .has_cdrom = false, // Plus CD-ROM driver chain not yet integrated
     .cdrom_id = 3,
-    .needs_vrom = false,
 
     // Single VIA, no ADB, no NuBus
 

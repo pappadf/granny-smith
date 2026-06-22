@@ -398,7 +398,6 @@ const hw_profile_t machine_iicx = {
     // needs_vrom = true so the config dialog asks the user for a VROM
     // file; the JMFB card driver picks it up from /opfs/images/vrom/
     // by its canonical name during card init.
-    .needs_vrom = true,
 
     .nubus_slots = iicx_slots,
 
