@@ -10,7 +10,14 @@
   import { showNotification } from '@/state/toasts.svelte';
   import type { OpfsEntry, ImageCategory } from '@/bus/types';
   import type { MediaTypeId } from '@/lib/media';
-  import { images, setMounted, bumpImagesRevision } from '@/state/images.svelte';
+  import {
+    images,
+    setMounted,
+    isMounted as isPathMounted,
+    mountBadge,
+    detectFdDriveCount,
+    bumpImagesRevision,
+  } from '@/state/images.svelte';
 
   // Map the OpfsEntry category to the upload pipeline's MediaTypeId.
   // The only mismatch is 'cd' (here) vs 'cdrom' (media id).
@@ -42,12 +49,16 @@
     if (open) void refresh();
   });
 
-  // Mounted-state mirror, kept in state/images.svelte.ts. The C side
-  // doesn't push mount/unmount events yet (Phase 7), so this view's own
-  // mount/unmount actions are the only source of truth for the badge.
+  // Mounted-state mirror, kept in state/images.svelte.ts. This view's own
+  // insert/eject actions set it, and C's Module.onFloppyChange event clears a
+  // floppy badge when the guest ejects the disk on its own.
   function isMounted(entry: OpfsEntry): boolean {
-    return !!images.mounted[entry.path];
+    return isPathMounted(entry.path);
   }
+
+  // Removable media (floppy / CD) is "inserted" / "ejected"; a fixed hard
+  // disk is "mounted" / "unmounted".
+  const isRemovable = $derived(cat === 'fd' || cat === 'cd');
 
   async function onUploadClick(ev: MouseEvent) {
     ev.stopPropagation();
@@ -103,8 +114,9 @@
     const mounted = isMounted(entry);
     const items: ContextMenuItem[] = [];
     if (cat === 'fd' || cat === 'hd' || cat === 'cd') {
+      const verb = isRemovable ? (mounted ? 'Eject' : 'Insert') : mounted ? 'Unmount' : 'Mount';
       items.push({
-        label: mounted ? 'Unmount' : 'Mount',
+        label: verb,
         action: () => (mounted ? unmount(entry) : mount(entry)),
       });
       items.push({ sep: true });
@@ -118,34 +130,52 @@
   async function mount(entry: OpfsEntry) {
     try {
       if (cat === 'fd') {
-        await gsEval('floppy.drives[0].insert', [entry.path, false]);
+        // Insert into the first empty drive, like dropping a disk into a Mac.
+        const n = (await detectFdDriveCount()) || 1;
+        let drive = -1;
+        for (let i = 0; i < n; i++) {
+          if ((await gsEval(`floppy.drives[${i}].present`)) === true) continue;
+          if ((await gsEval(`floppy.drives[${i}].insert`, [entry.path, false])) === true) {
+            drive = i;
+            break;
+          }
+        }
+        if (drive < 0) {
+          showNotification('All floppy drives are full', 'warning');
+          return;
+        }
+        setMounted(entry.path, { kind: 'fd', drive });
+        showNotification(`Inserted '${entry.name}'`, 'info');
       } else if (cat === 'hd') {
         await gsEval('scsi.attach_hd', [entry.path, 0]);
+        setMounted(entry.path, { kind: 'hd', drive: 0 });
+        showNotification(`Mounted '${entry.name}'`, 'info');
       } else if (cat === 'cd') {
         await gsEval('scsi.attach_cdrom', [entry.path, 3]);
+        setMounted(entry.path, { kind: 'cd', drive: 3 });
+        showNotification(`Inserted '${entry.name}'`, 'info');
       }
-      setMounted(entry.path, true);
-      showNotification(`Mounted '${entry.name}'`, 'info');
       onMountedChange?.();
     } catch {
-      showNotification('Mount failed', 'error');
+      showNotification(isRemovable ? 'Insert failed' : 'Mount failed', 'error');
     }
   }
 
   async function unmount(entry: OpfsEntry) {
+    const drive = images.mounted[entry.path]?.drive ?? 0;
     try {
       if (cat === 'fd') {
-        await gsEval('floppy.drives[0].eject');
+        await gsEval(`floppy.drives[${drive}].eject`);
       } else if (cat === 'hd') {
         await gsEval('scsi.detach_hd', [0]);
       } else if (cat === 'cd') {
         await gsEval('scsi.detach_cdrom', [3]);
       }
-      setMounted(entry.path, false);
-      showNotification(`Unmounted '${entry.name}'`, 'info');
+      setMounted(entry.path, null);
+      showNotification(`${isRemovable ? 'Ejected' : 'Unmounted'} '${entry.name}'`, 'info');
       onMountedChange?.();
     } catch {
-      showNotification('Unmount failed', 'error');
+      showNotification(isRemovable ? 'Eject failed' : 'Unmount failed', 'error');
     }
   }
 
@@ -215,7 +245,7 @@
         <ImageRow
           name={entry.name}
           icon={iconForCategory(cat)}
-          mounted={isMounted(entry)}
+          badge={mountBadge(entry.path)}
           onContextMenu={(ev) => onRowContext(entry, ev)}
         />
       {/each}

@@ -311,6 +311,11 @@ static int sys_fd_insert(config_t *cfg, int drive, image_t *disk) {
     return -1;
 }
 
+// Public present-state accessor for the active machine's floppy drive `drive`.
+bool system_fd_present(int drive) {
+    return global_emulator ? sys_fd_is_inserted(global_emulator, drive) : false;
+}
+
 // Trigger a vertical blanking interval event (delegates to machine callback)
 void trigger_vbl(struct config *restrict config) {
     if (config && config->machine && config->machine->substrate->trigger_vbl) {

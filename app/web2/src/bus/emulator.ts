@@ -9,6 +9,7 @@
 // bridge slot (`pending=1`, single in-flight). See docs/web.md.
 
 import { machine, type MachineStatus, type MmuKind } from '@/state/machine.svelte';
+import { onFloppyDriveChange } from '@/state/images.svelte';
 import { showNotification } from '@/state/toasts.svelte';
 import { getOrCreateMachine } from '@/lib/machineId';
 import { routePrintLine, routeLogEmit } from './logSink';
@@ -52,6 +53,7 @@ interface EmscriptenModuleConfig {
   onRunStateChange?(running: boolean): void;
   onScreenResize?(w: number, h: number): void;
   onLogEmit?(line: string): void;
+  onFloppyChange?(drive: number, present: boolean): void;
 }
 
 type CreateModule = (config: EmscriptenModuleConfig) => Promise<EmscriptenModule>;
@@ -110,6 +112,7 @@ export async function bootstrap(canvas: HTMLCanvasElement, wasmArgs: string[] = 
     onRunStateChange: handleRunStateChange,
     onScreenResize: handleScreenResize,
     onLogEmit: routeLogEmit,
+    onFloppyChange: onFloppyDriveChange,
   });
 
   bridgePtr = Module._get_js_bridge();

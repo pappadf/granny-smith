@@ -6,7 +6,9 @@
     name: string;
     desc?: string;
     icon: IconName;
-    mounted?: boolean;
+    /** Mount badge text (e.g. "Inserted", "Inserted · Drive 2", "Mounted").
+     *  Null/empty when the image isn't mounted. */
+    badge?: string | null;
     selected?: boolean;
     onClick?: (ev: MouseEvent) => void;
     onDoubleClick?: (ev: MouseEvent) => void;
@@ -16,7 +18,7 @@
     name,
     desc,
     icon,
-    mounted = false,
+    badge = null,
     selected = false,
     onClick,
     onDoubleClick,
@@ -28,7 +30,7 @@
 <div
   class="image-row"
   class:selected
-  class:mounted
+  class:mounted={!!badge}
   role="row"
   tabindex="-1"
   onclick={onClick}
@@ -37,8 +39,8 @@
 >
   <span class="icon"><Icon name={icon} size={16} /></span>
   <span class="name">{name}</span>
-  {#if mounted}
-    <span class="badge">mounted</span>
+  {#if badge}
+    <span class="badge">{badge}</span>
   {/if}
   {#if desc}
     <span class="desc">{desc}</span>

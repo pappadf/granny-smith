@@ -721,6 +721,24 @@ void em_main_tick(void) {
             running);
         // clang-format on
     }
+
+    // Push floppy drive present-state transitions to JS (Module.onFloppyChange),
+    // same diff-and-async-invoke pattern as the run-state push above. This lets
+    // the Images view clear an "Inserted" badge the instant the guest ejects a
+    // disk on its own (e.g. the MacWorks loader eject) — no JS-side polling. Two
+    // drives is the platform's fixed floppy maximum (see system.c do_insert_fd).
+    static int last_fd_present[2] = {-1, -1};
+    for (int d = 0; d < 2; d++) {
+        int present = system_fd_present(d) ? 1 : 0;
+        if (present != last_fd_present[d]) {
+            last_fd_present[d] = present;
+            // clang-format off
+            MAIN_THREAD_ASYNC_EM_ASM(
+                { if (typeof Module.onFloppyChange === 'function') Module.onFloppyChange($0, !!$1); },
+                d, present);
+            // clang-format on
+        }
+    }
 }
 
 // Exposed tick wrapper for Emscripten main loop

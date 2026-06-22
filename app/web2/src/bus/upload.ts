@@ -173,10 +173,10 @@ async function autoMountIfEmpty(persistedPath: string, category: MediaTypeId): P
     for (let i = 0; i < 2; i++) {
       const present = await gsEval(`floppy.drives[${i}].present`);
       if (present === true) continue;
-      const ok = (await gsEval(`floppy.drives[${i}].insert`, [persistedPath, true])) !== null;
+      const ok = (await gsEval(`floppy.drives[${i}].insert`, [persistedPath, true])) === true;
       if (ok) {
-        setMounted(persistedPath, true);
-        showNotification(`Inserted into floppy drive ${i}`, 'info');
+        setMounted(persistedPath, { kind: 'fd', drive: i });
+        showNotification(`Inserted into floppy drive ${i + 1}`, 'info');
         return;
       }
     }
@@ -186,8 +186,8 @@ async function autoMountIfEmpty(persistedPath: string, category: MediaTypeId): P
   if (category === 'cdrom') {
     const ok = (await gsEval('scsi.attach_cdrom', [persistedPath, 3])) !== null;
     if (ok) {
-      setMounted(persistedPath, true);
-      showNotification('Mounted into CD-ROM drive', 'info');
+      setMounted(persistedPath, { kind: 'cd', drive: 3 });
+      showNotification('Inserted into CD-ROM drive', 'info');
     } else {
       showNotification('CD-ROM drive is occupied — image saved but not mounted', 'warning');
     }

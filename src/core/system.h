@@ -187,6 +187,11 @@ void add_scsi_cdrom(struct config *restrict config, const char *filename, int sc
 // Returns 0 if the image is a recognised floppy, non-zero otherwise.
 int system_probe_floppy(const char *path);
 
+// Whether a disk is in floppy drive `drive` (routes through the machine
+// substrate's fd_present hook — Mac IWM/SWIM or the Lisa FDC).  Used by the
+// platform tick to push drive-present changes to the UI.
+bool system_fd_present(int drive);
+
 // Export a SCSI HD image (base + delta) as a single flat file at `dest_path`.
 // Returns 0 on success, non-zero on failure.
 int system_download_hd(const char *src_path, const char *dest_path);
