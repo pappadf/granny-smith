@@ -7,7 +7,7 @@
 // origin), staged to /tmp/url_<slot>, optionally archive-extracted via the
 // C-side `archive.extract`, then mounted into the machine.
 
-import { gsEval, getModule, isModuleReady, applyMmuCapability } from './emulator';
+import { gsEval, getModule, isModuleReady, applyCapabilities } from './emulator';
 import { showNotification } from '@/state/toasts.svelte';
 import { machine } from '@/state/machine.svelte';
 import { sanitizeName, isZipMagic, unzipFirstFile, isMacArchive } from '@/lib/archive';
@@ -104,7 +104,7 @@ export async function processUrlMedia(rawParams: URLSearchParams): Promise<boole
 
   machine.model = chosen;
   machine.ram = `${ramKb / 1024} MB`;
-  await applyMmuCapability(chosen);
+  await applyCapabilities(chosen);
 
   await gsEval('scheduler.run');
   showNotification(`Booted ${chosen} from URL parameters`, 'info');

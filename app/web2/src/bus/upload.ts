@@ -10,7 +10,7 @@
 //   5. Persist to the right /opfs/images/<category>/ via gsEval('storage.cp').
 //   6. Cleanup /opfs/upload/.
 
-import { gsEval, isModuleReady, getModule, applyMmuCapability } from './emulator';
+import { gsEval, isModuleReady, getModule, applyCapabilities } from './emulator';
 import { writeToOPFS, removeFromOPFS, opfs } from './opfs';
 import { showNotification } from '@/state/toasts.svelte';
 import { machine } from '@/state/machine.svelte';
@@ -341,7 +341,7 @@ async function maybeBootFromRom(romPath: string): Promise<void> {
   await gsEval('rom.load', [romPath]);
   machine.model = model;
   machine.ram = `${ramKb / 1024} MB`;
-  await applyMmuCapability(model);
+  await applyCapabilities(model);
   await gsEval('scheduler.run');
   showNotification(`Booted ${model} from uploaded ROM`, 'info');
 }

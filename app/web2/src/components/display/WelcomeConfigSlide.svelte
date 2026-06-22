@@ -35,6 +35,14 @@
     ram_default?: number; // KB
     floppy_slots?: Array<{ label?: string; kind?: string }>;
     scsi_slots?: Array<{ label?: string; id?: number }>;
+    has_cdrom?: boolean; // documented UX gate: show the SCSI CD-ROM row iff true
+    // Derived capability probe (proposal §4.4): the typed facts the UI reads
+    // instead of guessing from the model name.
+    capabilities?: {
+      cpu?: { model?: number; address_bits?: number; fpu?: boolean };
+      mmu?: { present?: boolean; kind?: string };
+      nubus?: boolean;
+    };
     // Per-card video slot shape (proposal §4.4) — the single source for both
     // the VROM requirement (per-card requires_vrom; see needsVrom) and the
     // video-mode list (each card's monitors × depths; see videoModes).
@@ -99,6 +107,8 @@
   // SCSI HD row label comes from the profile's first SCSI slot, not a
   // hardcoded string.
   let hdSlotLabel = $derived(currentProfile?.scsi_slots?.[0]?.label ?? 'SCSI HD 0');
+  // Only machines whose profile advertises a CD-ROM (has_cdrom) show the CD row.
+  let hasCdrom = $derived(currentProfile?.has_cdrom === true);
   let ramOptions = $derived.by(() => {
     const opts = currentProfile?.ram_options ?? [];
     if (opts.length) return opts.map(formatRamKb);
@@ -448,14 +458,16 @@
           {/each}
         </select>
       </div>
-      <div class="form-row">
-        <label for="cfg-cd">SCSI CD-ROM</label>
-        <select id="cfg-cd" value={cd} onchange={onCdChange}>
-          {#each cdOptions as opt (opt)}
-            <option>{opt}</option>
-          {/each}
-        </select>
-      </div>
+      {#if hasCdrom}
+        <div class="form-row">
+          <label for="cfg-cd">SCSI CD-ROM</label>
+          <select id="cfg-cd" value={cd} onchange={onCdChange}>
+            {#each cdOptions as opt (opt)}
+              <option>{opt}</option>
+            {/each}
+          </select>
+        </div>
+      {/if}
     {/if}
     <div class="form-divider"></div>
     <div class="form-actions">

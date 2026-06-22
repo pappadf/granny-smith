@@ -15,7 +15,12 @@
     { key: 'descriptors', label: 'Descriptors' },
   ] as const;
 
-  const visible = $derived(machine.mmuEnabled);
+  // Gate the MMU register panel on the typed capability kind directly: the
+  // TC/CRP/SRP/TT0/TT1/MMUSR views are a 68030 PMMU concept (the Lisa segment
+  // MMU and "none" never show them).  The other debug panels gate on the
+  // derived machine.mmuEnabled bool, which is the same condition expressed as
+  // the logical-vs-physical addressing flag they need.
+  const visible = $derived(machine.mmuKind === '68030_pmmu');
 </script>
 
 {#if visible}

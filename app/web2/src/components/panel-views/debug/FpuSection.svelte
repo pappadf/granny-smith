@@ -6,10 +6,11 @@
   import { debug, toggleSection } from '@/state/debug.svelte';
   import { fmtHex32 } from '@/lib/hex';
 
-  // FPU data lands in debug.frame's optional `fpu` block; absent for
-  // 68000 machines (Plus / SE). The section is mounted unconditionally
-  // but renders nothing when the running CPU lacks an FPU — that way
-  // collapse state persists naturally across machine changes.
+  // The section's presence is gated on the static capability machine.fpu
+  // (capabilities.cpu.fpu), so it appears immediately for FPU machines and
+  // never for 68000 machines (Plus / SE) — no waiting for the first debug
+  // frame to carry an `fpu` block. The register data still comes from the
+  // frame's optional `fpu` block once the machine is paused.
   let fpu = $state<FpuFrame | null>(null);
   // Per-register diff masks vs the previous refresh. Persist until the
   // next refresh produces a new diff.
@@ -56,11 +57,11 @@
   });
 </script>
 
-{#if fpu}
+{#if machine.fpu}
   <CollapsibleSection title="FPU" open={debug.sections.fpu} onToggle={() => toggleSection('fpu')}>
     {#if machine.status === 'running'}
       <p class="fpu-hint">Pause the machine to inspect FPU state.</p>
-    {:else}
+    {:else if fpu}
       <div class="fpu-group">
         <h4 class="fpu-group-title">Data</h4>
         <div class="fpu-rows">

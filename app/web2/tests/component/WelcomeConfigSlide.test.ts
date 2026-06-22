@@ -64,6 +64,7 @@ vi.mock('@/bus/emulator', async (importOriginal) => {
             ram_options: [2048, 4096, 8192, 16384],
             ram_default: 8192,
             floppy_slots: [{ label: 'Internal Floppy', kind: 'hd' }],
+            has_cdrom: true, // SE/30 advertises a CD-ROM → the CD row is shown
           },
         };
         return JSON.stringify(byId[id] ?? { name: id });
@@ -105,12 +106,29 @@ describe('WelcomeConfigSlide', () => {
       if (!sel || sel.options.length === 0) throw new Error('not ready');
     });
     // Default model is 'plus' (first scanned). Its profile has no video_slots
-    // (so no card requires a VROM → VROM row hidden), ram_default=4096 KB, and
-    // two floppy slots.
+    // (so no card requires a VROM → VROM row hidden), ram_default=4096 KB, two
+    // floppy slots, and no has_cdrom (→ the SCSI CD-ROM row is hidden).
     expect(container.querySelector('#cfg-vrom')).toBeNull();
     expect((container.querySelector('#cfg-ram') as HTMLSelectElement).value).toBe('4 MB');
     expect(container.querySelectorAll('select[id^="cfg-fd"]').length).toBe(2);
-    expect((container.querySelector('#cfg-cd') as HTMLSelectElement).value).toBe('(none)');
+    expect(container.querySelector('#cfg-cd')).toBeNull();
+  });
+
+  it('shows the SCSI CD-ROM row only for models whose profile reports has_cdrom', async () => {
+    const { container } = render(WelcomeConfigSlide);
+    await waitFor(() => {
+      const sel = container.querySelector('#cfg-model') as HTMLSelectElement | null;
+      if (!sel || sel.options.length === 0) throw new Error('not ready');
+    });
+    // Plus: has_cdrom unset → CD row hidden.
+    expect(container.querySelector('#cfg-cd')).toBeNull();
+    const modelSel = container.querySelector('#cfg-model') as HTMLSelectElement;
+    modelSel.value = 'se30';
+    modelSel.dispatchEvent(new Event('change', { bubbles: true }));
+    await waitFor(() => {
+      // SE/30: has_cdrom true → CD row shown.
+      if (!container.querySelector('#cfg-cd')) throw new Error('cd row not shown yet');
+    });
   });
 
   it('shows the Video ROM row only for models whose video card requires a VROM', async () => {

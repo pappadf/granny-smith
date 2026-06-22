@@ -6,6 +6,7 @@ import { debug } from '@/state/debug.svelte';
 
 beforeEach(() => {
   machine.mmuEnabled = true;
+  machine.mmuKind = '68030_pmmu'; // MmuSection gates on the typed capability kind
   debug.sections.mmu = true;
   debug.mmuSubtab = 'state';
   debug.mmuSupervisor = false;
@@ -14,6 +15,7 @@ beforeEach(() => {
 describe('MmuSection', () => {
   it('is hidden when the machine has no MMU', () => {
     machine.mmuEnabled = false;
+    machine.mmuKind = 'none';
     const { container } = render(MmuSection);
     // The CollapsibleSection isn't rendered at all when MMU is off.
     expect(container.querySelector('.section')).toBeNull();

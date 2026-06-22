@@ -23,6 +23,10 @@ interface MachineState {
   // TC/CRP/SRP/TT0/TT1/MMUSR are meaningful). Derived from mmuKind.
   mmuEnabled: boolean;
   mmuKind: MmuKind;
+  // True iff the active machine has an FPU (capabilities.cpu.fpu). The FPU
+  // debug panel gates its presence on this static capability rather than
+  // waiting for the first debug frame to carry an `fpu` block.
+  fpu: boolean;
   screen: { width: number; height: number };
   driveActivity: { hd: DriveActivity; fd: DriveActivity; cd: DriveActivity };
   scheduler: SchedulerMode;
@@ -35,6 +39,7 @@ export const machine: MachineState = $state({
   ram: null,
   mmuEnabled: false,
   mmuKind: 'none',
+  fpu: false,
   screen: { width: 512, height: 342 },
   driveActivity: { hd: 'idle', fd: 'idle', cd: 'idle' },
   scheduler: 'live',
