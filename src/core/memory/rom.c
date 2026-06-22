@@ -65,7 +65,7 @@ static const rom_info_t ROM_TABLE[] = {
 // longword is the reset SSP ($00000480), identical across revisions, so it
 // cannot be told apart by rom_stored_checksum(). Identify the interleaved
 // 16 KB image instead by (size == 16 KB) + the version word at offset $3FFC
-// (proposal §4.11 / docs/lisa.md §16). The `info.checksum` field carries the
+// (proposal §4.11 / docs/machines/lisa/lisa.md §16). The `info.checksum` field carries the
 // Mac-style *computed* checksum of the combined image so the rom.* object
 // surface (rom.checksum, OPFS naming) still has a unique content identifier.
 #define LISA_ROM_SIZE           (16 * 1024) // interleaved image size
@@ -241,7 +241,7 @@ int rom_probe_file(const char *path, rom_file_info_t *out) {
 
 // Interleave two 8 KB byte-slice chips into a 16-bit-wide ROM image:
 // even bytes ← high-byte chip (D8–D15), odd bytes ← low-byte chip (D0–D7).
-// `out` must hold 2 * min(hi_size, lo_size) bytes. (docs/lisa.md §16)
+// `out` must hold 2 * min(hi_size, lo_size) bytes. (docs/machines/lisa/lisa.md §16)
 void rom_interleave_pair(const uint8_t *hi, size_t hi_size, const uint8_t *lo, size_t lo_size, uint8_t *out) {
     size_t n = hi_size < lo_size ? hi_size : lo_size;
     for (size_t i = 0; i < n; i++) {

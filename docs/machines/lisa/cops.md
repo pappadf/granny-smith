@@ -2,7 +2,7 @@
 
 `src/core/peripherals/cops.{c,h}` models the Apple Lisa **COPS** (National
 COP421-class) microcontroller, which services the keyboard, mouse, real-time
-clock, and soft-power through the A-port of VIA1. [docs/lisa.md](lisa.md) §11 is
+clock, and soft-power through the A-port of VIA1. [docs/machines/lisa/lisa.md](lisa.md) §11 is
 the hardware reference; this note records the implementation and the host-side
 protocol verified against the rev-H boot ROM (`Lisa Boot ROM RM248.{K,S,M}`).
 
@@ -87,7 +87,7 @@ byte, spins for a CRDY **edge**, drives port A to clock it in, then waits for
 the next edge and releases. We therefore toggle CRDY on a fixed period
 (`cops_crdy_tick`) rather than deriving it from `DDRA`: a static level satisfied
 the boot ROM but hung MacWorks, which waits for a high edge before driving the
-bus. See docs/lisa.md §11.
+bus. See docs/machines/lisa/lisa.md §11.
 
 ## Bring-up status
 

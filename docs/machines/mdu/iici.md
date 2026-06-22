@@ -16,7 +16,7 @@ the IIcx dispatcher with three changes.
 
 | Aspect | IIcx | IIci |
 |--------|------|------|
-| 2nd VIA | VIA2 @ `$50F02000` | **RBV** @ `$50F26000` (see [docs/rbv.md](rbv.md)) |
+| 2nd VIA | VIA2 @ `$50F02000` | **RBV** @ `$50F26000` (see [docs/machines/mdu/rbv.md](rbv.md)) |
 | Video | NuBus Display Card 8•24 (slot $9) | **Built-in RBV video**, framebuffer at `$FBB08000` |
 | VDAC | (on the card) | Bt450 @ `$50F24000` |
 | CPU clock | 15.6672 MHz | 25.0 MHz |
@@ -93,5 +93,5 @@ IIfx's ASC), and user-installable NuBus cards in slots `$C/$D/$E`.
 
 ## See also
 
-- [docs/rbv.md](rbv.md) — the RBV chip.
+- [docs/machines/mdu/rbv.md](rbv.md) — the RBV chip.
 - [src/machines/iicx.c](../src/machines/iicx.c) — the closest template.

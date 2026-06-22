@@ -8,8 +8,8 @@ PRAM image by hand (e.g. to make the OS boot from a ProFile hard disk).
 It was reverse-engineered from the (authoritative) LisaOS and boot-ROM source
 and verified byte-for-byte against two PRAM images captured from
 our own emulator (a floppy-only system and a system with a ProFile installed).
-See [docs/lisa.md §13.4](lisa.md) for the surrounding controller-RAM context and
-[docs/lisa_profile_hd.md](lisa_profile_hd.md) for the ProFile device.
+See [docs/machines/lisa/lisa.md §13.4](lisa.md) for the surrounding controller-RAM context and
+[docs/machines/lisa/profile.md](lisa_profile_hd.md) for the ProFile device.
 
 > **Why this matters.** On a cold boot the OS reads the PRAM to find the boot
 > volume and its driver. If the ProFile isn't listed there, `FIND_PM_IDS` fails,

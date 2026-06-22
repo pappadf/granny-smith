@@ -7,7 +7,7 @@
 // time over VIA2 port A while VIA2 port B carries the CMD//BSY//OCD control
 // lines.  Modeled behaviourally, driven only by the real VIA pins, following
 // Apple's own driver frame (boot ROM RM248.B PROINIT/STRTRD/READIT and OS
-// SOURCE-PROFILEASM).  See docs/lisa.md §14 and docs/lisa_profile_hd.md.
+// SOURCE-PROFILEASM).  See docs/machines/lisa/lisa.md §14 and docs/machines/lisa/profile.md.
 //
 // On-the-wire block = 532 bytes: a 20-byte tag/header followed by 512 data
 // bytes.  A read streams 4 status bytes then the 532-byte block; a write

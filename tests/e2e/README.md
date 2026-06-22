@@ -81,7 +81,7 @@ Global setup automatically builds the project and starts a test server on port
 ## Prerequisites
 
 Tests require proprietary test data (ROM images, disk images) fetched via
-`scripts/fetch-test-data.sh`. See [docs/TEST_DATA.md](../../docs/TEST_DATA.md).
+`scripts/fetch-test-data.sh`. See [docs/guide/TEST_DATA.md](../../docs/guide/TEST_DATA.md).
 
 Install Playwright and browsers:
 

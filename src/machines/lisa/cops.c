@@ -2,7 +2,7 @@
 // Copyright (c) pappadf
 
 // cops.c
-// Apple Lisa COPS microcontroller. See cops.h and docs/lisa.md §11.
+// Apple Lisa COPS microcontroller. See cops.h and docs/machines/lisa/lisa.md §11.
 //
 // This first cut models the host↔COPS handshake faithfully (it acts only on
 // VIA1 pin traffic — port-A jam, CRDY, CA1, PB0 reset) and emits the power-up
@@ -21,12 +21,12 @@
 
 LOG_USE_CATEGORY_NAME("cops");
 
-// VIA1 line assignments (docs/lisa.md §10.1, §11).
+// VIA1 line assignments (docs/machines/lisa/lisa.md §10.1, §11).
 #define COPS_CRDY_PIN  6 // VIA1 PB6: COPS-driven ready line
 #define COPS_RESET_PIN 0 // VIA1 PB0: host-driven keyboard reset (active low)
 #define IFR_CA1_BIT    0x02 // VIA1 IFR bit 1: port-A data-available (CA1)
 
-// Reset/status response codes (docs/lisa.md §11.2).
+// Reset/status response codes (docs/machines/lisa/lisa.md §11.2).
 #define COPS_RSTCODE    0x80 // reset lead-in byte
 #define COPS_KBD_ID     0x3F // final-US keyboard layout id (≤ $DF ⇒ "connected")
 #define COPS_MOUSE_MARK 0x00 // "mouse data follows" marker (docs §11.4)
@@ -292,7 +292,7 @@ void cops_inject_mouse(cops_t *c, int dx, int dy, int button) {
 
 // === Command handling =======================================================
 
-// Process a command byte jammed by the host (docs/lisa.md §11.1).  POST only
+// Process a command byte jammed by the host (docs/machines/lisa/lisa.md §11.1).  POST only
 // requires that we accept these; the effects matter once input is injected.
 static void cops_command(cops_t *c, uint8_t cmd) {
     if (cmd == 0x00) {

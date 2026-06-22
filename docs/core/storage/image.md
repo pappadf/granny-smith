@@ -49,7 +49,7 @@ static const char *pick_delta_dir(const char *path) {
     if (path && strncmp(path, "/tmp/", 5) == 0)
         return NULL;
     // Otherwise route deltas under the active per-machine directory so they
-    // share lifetime with state.checkpoint (see docs/checkpointing.md).
+    // share lifetime with state.checkpoint (see docs/core/storage/checkpointing.md).
     return checkpoint_machine_dir();
 }
 ```

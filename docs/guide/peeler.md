@@ -208,5 +208,5 @@ appear in OPFS. The library itself ships unit tests in
 
 - peeler repository: <https://github.com/pappadf/peeler>
 - peeler documentation: `third-party/peeler/docs/`
-- [`docs/object-model.md`](object-model.md) — the surface
+- [`docs/core/shell/object-model.md`](object-model.md) — the surface
   `archive.*` participates in.

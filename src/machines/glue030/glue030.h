@@ -63,7 +63,7 @@ typedef struct glue030_init {
     uint32_t rom_end; // typically 0x50000000
 
     // Machine-ID inputs driven into the VIA shadow so the ROM identifies
-    // this model on PA6 / PB3 reads (see docs/iicx.md §"Machine
+    // this model on PA6 / PB3 reads (see docs/machines/glue/iicx.md §"Machine
     // Identification").
     bool machine_id_pa6;
     bool machine_id_pb3;

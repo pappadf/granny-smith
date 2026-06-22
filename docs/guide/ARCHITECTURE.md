@@ -120,7 +120,7 @@ consistent pattern to maximize encapsulation, maintainability, and testability:
     and the inspector UI all walk the same tree, so a new class is
     visible everywhere as soon as it's attached. There is no separate
     "command registry" or "JS API" layer to maintain in lock-step.
-  - See [`docs/object-model.md`](object-model.md) for the substrate
+  - See [`docs/core/shell/object-model.md`](object-model.md) for the substrate
     and the conventions modules follow when adding a class.
 
 - **Checkpointing (optional):**
@@ -166,11 +166,11 @@ There is no separate command framework, no parallel JS API. Adding a
 new operation is one act — declare a member on the right class — and
 every caller sees it.
 
-See [`docs/object-model.md`](object-model.md) for the substrate, the
+See [`docs/core/shell/object-model.md`](object-model.md) for the substrate, the
 path forms in detail, the lifecycle invariants (process-singleton vs.
 cfg-scoped), and the recipe for adding a new class.
 
-See [`docs/shell.md`](shell.md) for the line-input layer specifically:
+See [`docs/core/shell/shell.md`](shell.md) for the line-input layer specifically:
 tokenisation, `$alias` expansion, `${expr}` interpolation, shell
 variables, scripts, and tab completion.
 
@@ -256,8 +256,8 @@ can access what they need without depending on internal struct layout.
 
 The scheduler is the core component responsible for managing emulated time. It
 tracks clock cycles, schedules time-based events on a single priority queue,
-and runs the CPU in event-bounded sprints. See `docs/scheduler.md` for the
-detailed design and `docs/timing.md` for the practical timing rules.
+and runs the CPU in event-bounded sprints. See `docs/core/scheduler/scheduler.md` for the
+detailed design and `docs/core/scheduler/timing.md` for the practical timing rules.
 
 There are three execution modes (`schedule_max_speed`, `schedule_real_time`,
 `schedule_hw_accuracy`) that control the cycles-per-instruction (CPI) ratio
@@ -274,7 +274,7 @@ in **pacing**:
   rhythm. Result: paced to the user's display refresh. The guest sequence is the
   same as headless; only how many frame-units a host tick batches differs.
 
-See `docs/scheduler.md` §10 for the full design.
+See `docs/core/scheduler/scheduler.md` §10 for the full design.
 
 ## Checkpointing
 
@@ -319,8 +319,8 @@ strictly read-only base content; nothing writable lands there any more.
 `<machine_id>` is a 16-hex-char opaque token in `localStorage`; it rotates only
 on explicit "new machine" actions and is pushed to the C side once per process
 via `checkpoint --machine <id> <created>`. A startup sweep deletes any sibling
-machine directories whose name does not match. See [`docs/checkpointing.md`](checkpointing.md)
-for the full design and [`docs/image.md`](image.md) for the image-layer API
+machine directories whose name does not match. See [`docs/core/storage/checkpointing.md`](checkpointing.md)
+for the full design and [`docs/core/storage/image.md`](image.md) for the image-layer API
 that backs it.
 
 ## Repository Layout
@@ -337,7 +337,7 @@ The repository is organized as follows:
       - _cpu_internal.h_ — Shared struct and static inline helpers
       - _cpu_ops.h_ / _cpu_decode.h_ — Template-based decoder generation
       - _cpu_disasm.c_ — Disassembler
-    - **memory/** — Page-table-based memory map (see `docs/memory.md`)
+    - **memory/** — Page-table-based memory map (see `docs/core/memory/memory.md`)
     - **peripherals/** — VIA, SCC, SCSI, floppy, RTC, keyboard, mouse, sound
     - **scheduler/** — Event scheduling and timing
     - **debug/** — Debugger, logging, and diagnostics
@@ -392,7 +392,7 @@ characteristics:
 The CPU is split into template-instantiated decoders (`cpu_68000.c`,
 `cpu_68030.c`) sharing helpers via `cpu_internal.h`. The memory subsystem uses a
 page-table architecture that supports both the Plus (static page table) and the
-IIcx (page table rebuilt by the 68030 MMU). See `docs/memory.md` for details.
+IIcx (page table rebuilt by the 68030 MMU). See `docs/core/memory/memory.md` for details.
 
 Peripherals use callback-based signal routing (function pointers passed at
 construction time) rather than hard-coded global functions, enabling different

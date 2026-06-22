@@ -3,7 +3,7 @@
 `src/core/memory/lisa_mmu.{c,h}` implements the Apple Lisa custom segment MMU,
 the first non-Motorola memory translator in the emulator. This document records
 the *implementation* decisions and the hardware facts verified against the
-rev-H boot ROM source; [docs/lisa.md](lisa.md) §4–7 is the hardware reference of
+rev-H boot ROM source; [docs/machines/lisa/lisa.md](lisa.md) §4–7 is the hardware reference of
 record.
 
 ## Where it plugs in
@@ -86,12 +86,12 @@ Decoded by `phys & 0x1E`:
 | `$E010` | **START = 1** | `$E012` | **START = 0** |
 | `$E018` | VTMSK = 0 | `$E01A` | VTMSK = 1 |
 
-> **Doc discrepancy (flagged).** [docs/lisa.md](lisa.md) §6.1 lists `$E010` as
+> **Doc discrepancy (flagged).** [docs/machines/lisa/lisa.md](lisa.md) §6.1 lists `$E010` as
 > "reset SETUP/START" and `$E012` as "set" — the **reverse** of reality. The
 > rev-H ROM equates are authoritative: `SETUPON .EQU $00FCE010` ("turn SETUP
 > on") and `SETUP .EQU $00FCE012` ("turn SETUP bit off"), and `WRTMMU` does
 > `TST.B SETUPON` (enable MMU-reg access) … `CLR.B SETUP` (back to map land).
-> This module implements the ROM's polarity. docs/lisa.md §6.1 should be
+> This module implements the ROM's polarity. docs/machines/lisa/lisa.md §6.1 should be
 > corrected.
 
 ## Status / video / I/O
@@ -106,7 +106,7 @@ Decoded by `phys & 0x1E`:
   matches the real hardware the ROM's VIDTST expects (wait bit 2 = 0 → strobe
   VTIRDIS → bit 2 = 1) and gives the OS a real-time retrace cadence. (Earlier this
   was an active-high per-read toggle — a hack that passed VIDTST but ran the OS
-  clock ~150× fast; see docs/lisa.md §7.4.) Other status bits read 0 for now.
+  clock ~150× fast; see docs/machines/lisa/lisa.md §7.4.) Other status bits read 0 for now.
 - `$F000` Memory Error Address latch (read): 0 (no error model yet).
 - Peripheral devices (VIA/SCC/floppy/Widget) register physical I/O ranges via
   `lisa_mmu_map_io()`; unmapped I/O currently reads all-ones (a faithful

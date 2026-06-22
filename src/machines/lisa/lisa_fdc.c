@@ -2,14 +2,14 @@
 // Copyright (c) pappadf
 
 // lisa_fdc.c
-// Apple Lisa intelligent floppy controller. See lisa_fdc.h and docs/lisa.md §13.
+// Apple Lisa intelligent floppy controller. See lisa_fdc.h and docs/machines/lisa/lisa.md §13.
 //
 // Behavioural model: the 6504A coprocessor is represented by its 1 KB shared
 // RAM plus a synchronous command engine.  When the 68000 writes the command-
 // issue register (byte 0), the engine reads the command block, services it with
 // disk_read_data / disk_write_data against the image_t, fills the data buffer,
 // sets the status byte, and raises FDIR.  No GCR cell modelling — the
-// controller returns logical 512-byte sectors (docs/lisa.md §13).
+// controller returns logical 512-byte sectors (docs/machines/lisa/lisa.md §13).
 
 #include "lisa_fdc.h"
 
@@ -26,7 +26,7 @@ LOG_USE_CATEGORY_NAME("floppy");
 
 #define FDC_RAM_BYTES 1024 // controller RAM addressable by the 68000 (odd bytes)
 
-// Command-block byte indices within the shared RAM (docs/lisa.md §13.2; offsets
+// Command-block byte indices within the shared RAM (docs/machines/lisa/lisa.md §13.2; offsets
 // in the source are address-space, halved here to RAM byte indices).
 #define FDC_CMDREG   0 // command-issue register
 #define FDC_RWTS     1 // RWTS sub-command (CMD)
@@ -55,7 +55,7 @@ LOG_USE_CATEGORY_NAME("floppy");
 #define FDC_HDR            500 // 12-byte sector tag/header (DSKBUFF)
 #define FDC_DATA           512 // 512-byte data sector (DSKDATA)
 
-// Command-issue values (docs/lisa.md §13.1).
+// Command-issue values (docs/machines/lisa/lisa.md §13.1).
 #define CMD_EXEC     0x81 // execute the RWTS command
 #define CMD_SEEK     0x83 // seek
 #define CMD_JSR      0x84 // JSR to a host-downloaded routine in controller RAM ($00C003)
@@ -65,7 +65,7 @@ LOG_USE_CATEGORY_NAME("floppy");
 #define CMD_COLDWAIT 0x88 // wait in ROM for cold start
 #define CMD_LOOP     0x89 // loop in ROM
 
-// RWTS sub-commands (docs/lisa.md §13.2): 0/7 read, 1 write, 2 unclamp, …
+// RWTS sub-commands (docs/machines/lisa/lisa.md §13.2): 0/7 read, 1 write, 2 unclamp, …
 #define RWTS_READ     0x00
 #define RWTS_WRITE    0x01
 #define RWTS_UNCLAMP  0x02
@@ -76,7 +76,7 @@ LOG_USE_CATEGORY_NAME("floppy");
 // interrupt/drain handler reads them, and CLRSTAT ($85) clears them.  (The disk
 // stays physically attached via fdc->image regardless — reads don't depend on
 // these bits.)  MacWorks' startup drains events until ($C05F & $77) == 0, so a
-// persistently-set "present" bit here would loop forever (docs/lisa.md §13.3).
+// persistently-set "present" bit here would loop forever (docs/machines/lisa/lisa.md §13.3).
 #define DRVSTAT_DISKIN1   0x01 // drive 1 (lower) disk-inserted event
 #define DRVSTAT_COMPLETE1 0x04 // drive 1 (lower) RWTS complete
 #define DRVSTAT_OR1       0x08 // OR of bits 0-2 (lower-drive summary)
@@ -100,7 +100,7 @@ struct lisa_fdc {
     // the install — LisaOS SOURCE-FSINIT2 rbd / boot_remount).  Our host reinsert
     // opens a fresh image (a new delta) each time, which would lose the write.  So
     // we cache every inserted image by base path and re-use it (with its delta)
-    // when the same disk is reinserted.  See docs/lisa_disk_insertion_los.md §5.
+    // when the same disk is reinserted.  See docs/notes/lisa_disk_insertion_los.md §5.
     image_t *disk_cache[8];
     int n_cache;
 
@@ -368,10 +368,10 @@ void lisa_fdc_insert(lisa_fdc_t *fdc, image_t *image) {
     if (image) {
         // Disk insertion raises FDIR (IPL 1) so the OS Sony driver's DISK_INT runs,
         // reads $C05F, sees the disk-inserted event, and sets disk_present:=gooddisk
-        // (LisaOS SOURCE-SONY DISK_INT; see docs/lisa_disk_insertion_los.md §2.2).
+        // (LisaOS SOURCE-SONY DISK_INT; see docs/notes/lisa_disk_insertion_los.md §2.2).
         // The Lisa-2 internal Sony is the UPPER drive ($80): its disk-in event is
         // DISKIN2 (bit4) + the upper-drive summary (bit7) = $90 (the $C05F per-drive
-        // nibble layout — docs/lisa_disk_insertion_los.md §1.1).  (The earlier
+        // nibble layout — docs/notes/lisa_disk_insertion_los.md §1.1).  (The earlier
         // COMPLETE1|OR1=$0c was the lower-drive nibble, which the OS never matched to
         // the upper drive, so Mount kept returning nodiskpres/614 and the installer
         // silently re-prompted.)
@@ -392,7 +392,7 @@ bool lisa_fdc_disk_present(const lisa_fdc_t *fdc) {
 //
 // The Lisa's parameter memory (boot volume + device-configuration table + UI
 // settings, 64 bytes = 32 words) lives at $FCC181 in the controller's shared
-// RAM and is battery/standby-backed on real hardware (docs/lisa.md §13.4).  Our
+// RAM and is battery/standby-backed on real hardware (docs/machines/lisa/lisa.md §13.4).  Our
 // fdc->ram is volatile, so the OS's installed configuration (e.g. a ProFile
 // added to the device table at clean shutdown) is lost across launches.  These
 // save/load the 64-byte PM region to a host file, modelling the battery backup
@@ -437,7 +437,7 @@ lisa_fdc_t *lisa_fdc_init(struct scheduler *scheduler, lisa_fdc_fdir_fn fdir_cb,
     // Power-up parameter-memory default.  The COPS clock/PM region is battery-backed
     // on real hardware; with no persisted PRAM the boot ROM still needs a boot-device
     // selection.  Seed BootVol=1 (PM byte 4 high nibble = built-in Sony floppy;
-    // docs/lisa_pram_format.md §4) plus the checksum word so the ROM auto-boots the
+    // docs/machines/lisa/pram_format.md §4) plus the checksum word so the ROM auto-boots the
     // built-in floppy.  ProFile-boot tests override this with a full PRAM image
     // (profile.pram_load); see lisa-profile-boot.
     fdc->ram[196] = 0x10; // PM byte 4: BootVol=1 (built-in Sony), NormCont=0

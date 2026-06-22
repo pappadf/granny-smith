@@ -5,7 +5,7 @@
 // Macintosh IIci ("Aurora", 25 MHz 68030, 1989) machine implementation.
 // Architecturally the IIcx with VIA2 replaced by the RBV chip and built-in
 // video reading from the slot-$B framebuffer aperture.  See
-// proposal-machine-iici-iisi.md and docs/iici.md.
+// proposal-machine-iici-iisi.md and docs/machines/mdu/iici.md.
 //
 // Diff vs iicx.c at a glance:
 //   * I/O island: VIA2 ($2000) dropped; VDAC ($24000) and RBV ($26000)

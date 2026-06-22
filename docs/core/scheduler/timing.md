@@ -328,7 +328,7 @@ yields identical guest state (and screenshots) every run, regardless of script
 shape or where read-only commands like `screenshot` sit. Pacing changes only how
 many frame-units a host tick batches and when you observe, never the sequence.
 
-See `docs/scheduler.md` §10 for the full design.
+See `docs/core/scheduler/scheduler.md` §10 for the full design.
 
 ## Clock Frequencies
 
@@ -388,11 +388,11 @@ magnitude is bounded by CPI-1 and the impact of losing it is negligible.
 | `src/core/memory/memory.h` | `memory_io_penalty()` inline, penalty globals |
 | `src/core/memory/memory.c` | Penalty global definitions, slow-path device dispatch |
 | `src/machines/se30.c` | SE/30 I/O dispatcher with per-device penalty constants |
-| `docs/scheduler.md` | Detailed scheduler internals (sprint model, event lifecycle) |
+| `docs/core/scheduler/scheduler.md` | Detailed scheduler internals (sprint model, event lifecycle) |
 
 ## See Also
 
-- `docs/scheduler.md` — Sprint model internals, event queue details, assertion
+- `docs/core/scheduler/scheduler.md` — Sprint model internals, event queue details, assertion
   strategy
-- `docs/memory.md` — Memory subsystem architecture, fast/slow path, MMU
+- `docs/core/memory/memory.md` — Memory subsystem architecture, fast/slow path, MMU
   integration

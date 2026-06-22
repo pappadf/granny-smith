@@ -343,7 +343,7 @@ void rtc_set_seconds(rtc_t *restrict rtc, uint32_t mac_seconds) {
     LOG(1, "rtc_set_seconds: seconds=%u", rtc->seconds);
 }
 
-// === Validity tokens — see docs/pram.md §2..§3 ==============================
+// === Validity tokens — see docs/core/memory/pram.md §2..§3 ==============================
 // `_InitUtil` checks two independent tokens at cold boot.  If either is
 // missing it re-initialises the relevant region from a hardcoded default
 // table, which clobbers any seeded slot-PRAM bytes the test wanted to
@@ -666,7 +666,7 @@ static value_t rtc_pram_method_restore(struct object *self, const member_t *m, i
 }
 
 // Stamp both validity tokens that the boot ROM's `_InitUtil` checks
-// at cold-boot (see docs/pram.md §3).  Without these, `_InitUtil` will
+// at cold-boot (see docs/core/memory/pram.md §3).  Without these, `_InitUtil` will
 // rewrite low-PRAM and/or zero out the XPRAM region — destroying any
 // seeded slot-PRAM bytes the test wanted to preserve.
 static value_t rtc_pram_method_validate(struct object *self, const member_t *m, int argc, const value_t *argv) {

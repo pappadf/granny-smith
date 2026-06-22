@@ -4,7 +4,7 @@
 // cops.h
 // Apple Lisa COPS microcontroller (National COP421-class) — keyboard, mouse,
 // real-time clock, and soft-power, reached through VIA1 port A.  See
-// docs/lisa.md §11 and proposal-machine-lisa-xl.md §4.6.
+// docs/machines/lisa/lisa.md §11 and proposal-machine-lisa-xl.md §4.6.
 //
 // Host interface (verified against the rev-H boot ROM, RM248.K.TEXT):
 //  * Command path (COPSCMD): the host writes a command byte to VIA1 port A,

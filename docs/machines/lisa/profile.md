@@ -47,7 +47,7 @@ captures the protocol (from the rev-H boot ROM `RM248.B.TEXT` and the OS driver
   the disk-controller ROM id (`$FCC031`) was zero → read as a Lisa 1 → the OS
   installed the **Twiggy** floppy driver on our **Sony** drive and startup
   stranded (the "scheduler hang"). `machine_lisa` now sets `$FCC031 = $A0`
-  (`iob_sony`, Lisa 2/5) so the OS uses the Sony driver. See `docs/lisa.md` §16.2.
+  (`iob_sony`, Lisa 2/5) so the OS uses the Sony driver. See `docs/machines/lisa/lisa.md` §16.2.
 - **Three boot fixes landed (sessions 8–9) — boot now runs the full OS.** The old
   "scheduler hang" was **not** the machine type alone; it was masked by two CPU/IO
   bugs. (1) **FDC completion is now interrupt-driven (IPL 1) + deferred** — the OS
@@ -58,21 +58,21 @@ captures the protocol (from the rev-H boot ROM `RM248.B.TEXT` and the OS driver
   cycle-accurate + active-low** (VTIRDIS-cleared) — VIDTST passes and the OS clock
   runs real-time. With these, LOS 3.1 **loads the entire OS, passes the ROM video
   self-test, runs the OS scheduler healthily, and reads to the volume catalog
-  (lba 28).** See `docs/lisa.md` §7.1/§7.4/§13 and `docs/lisa_fdc.md`.
+  (lba 28).** See `docs/machines/lisa/lisa.md` §7.1/§7.4/§13 and `docs/machines/lisa/fdc.md`.
 - **FS-mount FIXED + boot now mounts the volume (sessions 11–12).** The FS-reader
   was never woken because `$00C05F` (DISKSTAT) must encode *which drive* completed:
   `INT_STAT |= (drive_id & $88)>>1` + summary bit 7, so the lower Sony drive yields
   `$C05F = $C0` (bit 6 = `bot_done`), which the OS `DISK_INT` reads to wake the
   reader. (The earlier note that "`$C0` resets our early boot / ruled out" was
   **WRONG** — `$C0` is the fix; the legacy `$0C` left `bot_done` clear → no wake.
-  See `docs/lisa_fdc.md`.) Three further fixes then took the boot through mounting:
+  See `docs/machines/lisa/fdc.md`.) Three further fixes then took the boot through mounting:
   **RAM is based high at `[$80000,$200000)`** (not at 0 — kernel stack was landing
-  on a non-existent page; `docs/lisa.md §3.1`, now the `model=lisa` default); the **68000
+  on a non-existent page; `docs/machines/lisa/lisa.md §3.1`, now the `model=lisa` default); the **68000
   bus-error exception frame** (must be the 14-byte group-0 frame, not the 68030
   92-byte Format-$B — the wrong frame mis-classified a user demand-segment fault as
-  `e_hardsyscode` and stormed; `docs/lisa.md §6.1`); and the **VBL interrupt must be
+  `e_hardsyscode` and stormed; `docs/machines/lisa/lisa.md §6.1`); and the **VBL interrupt must be
   edge-latched** (not a 458-cycle pulse — else it's lost while the kernel is masked;
-  `docs/lisa.md §8`). With these the boot reads/loads the whole OS, **mounts the
+  `docs/machines/lisa/lisa.md §8`). With these the boot reads/loads the whole OS, **mounts the
   boot volume** (writes back the MDDF/catalog), and launches the install shell.
 - **BOOTS TO THE INSTALL MENU (sessions 13–14).** `SYSTEM.SHELL` (the
   Install/Repair/Restore **menu**) now demand-loads its code and runs to the menu —
@@ -83,7 +83,7 @@ captures the protocol (from the rev-H boot ROM `RM248.B.TEXT` and the OS driver
   errors** (not just fetch faults — a dropped data fault left the bus-error-pending
   flag stuck and corrupted the supervisor stack) and **saving the RTS instruction's
   PC** on an RTS-into-absent-segment fault (the OS recovers RTS by re-executing it).
-  See `docs/lisa.md` §2 / §4.5 / §4.8 for the contract. Covered by the
+  See `docs/machines/lisa/lisa.md` §2 / §4.5 / §4.8 for the contract. Covered by the
   `tests/integration/lisa-los-boot` integration test (boots LOS 3.1 → pixel-matches
   the menu).
 - **MOUSE-DRIVEN BUTTON CLICKS WORK (session 15).** `mouse.move x y "global"` now
@@ -97,7 +97,7 @@ captures the protocol (from the rev-H boot ROM `RM248.B.TEXT` and the OS driver
   (the 720×364 pixel aspect), **Y ×1**. The COPS "warp" is a closed loop: each mouse
   report it reads `$CC00F0/$CC00F2` and injects a scale-corrected delta (`dx = errX×2/3`,
   `dy = errY`) toward the target, converging to the exact pixel in a few reports. See
-  `docs/lisa.md` §11.4 and `src/core/peripherals/cops.c` (`cops_set_warp` /
+  `docs/machines/lisa/lisa.md` §11.4 and `src/core/peripherals/cops.c` (`cops_set_warp` /
   `cops_mouse_tick`). NB: the OS does **not** draw the cursor sprite on the idle menu,
   so a menu screenshot looks cursor-less; the click still hit-tests against the tracked
   position, and the cursor becomes visible once a dialog appears.
@@ -119,7 +119,7 @@ captures the protocol (from the rev-H boot ROM `RM248.B.TEXT` and the OS driver
   `$D800-$D9FF` window for `model=lisa` (macxl keeps the narrow `$D901` — MacWorks XL
   uses its own Mac-side driver and depends on `$D8xx` staying unmapped). The `&15`
   decode makes the two halves aliases, so existing `$D9xx` accesses are unchanged;
-  see `docs/lisa.md` §10.2. (How it was found: the install-scan floppy I/O showed an
+  see `docs/machines/lisa/lisa.md` §10.2. (How it was found: the install-scan floppy I/O showed an
   11-block re-read of `SYSTEM.CD_PROFILE` (blocks 218-228; PROF_INIT's `0011 00A0` is
   at block 224) — proving the OS loaded the driver, so the failure had to be in the
   driver's hardware init silently missing the VIA2.)
@@ -153,7 +153,7 @@ captures the protocol (from the rev-H boot ROM `RM248.B.TEXT` and the OS driver
 ProFile as a boot device and try to boot block 0 from it. So *detection* is a
 two-line stub; the real work is the read/write **handshake + block I/O**.
 
-## VIA2 pin map (docs/lisa.md §14)
+## VIA2 pin map (docs/machines/lisa/lisa.md §14)
 
 | Line | Signal | Dir | Polarity / notes |
 | --- | --- | --- | --- |
@@ -221,4 +221,4 @@ already work through the existing `output_cb` (fires on port-A/B writes).
 
 - Protocol routines in the AppleLisa Boot ROM source (`Lisa Boot ROM RM248.B.TEXT`):
   `PROINIT`, `FINDD2`, `WFBSY`/`WFNBSY`, `SENDRSP`, `READIT`, `STRTRD`/`STAT01`, `DOCRES`.
-- docs/lisa.md §14 (parallel HD), §10 (VIA2).
+- docs/machines/lisa/lisa.md §14 (parallel HD), §10 (VIA2).

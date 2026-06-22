@@ -276,7 +276,7 @@ standard log pipeline:
   (`logpoint --write|--read <addr> [msg]`). Each event reports `addr`, `size`,
   `value`, `pc`, and optionally a substituted user message that may reference
   `$pc`, `$value`, `$instruction_pc`, `$cpu.d0..d7`, `$cpu.a0..a7`, `$addr`.
-  See `docs/memory.md` for the fast-path-preserving mechanism that backs these.
+  See `docs/core/memory/memory.md` for the fast-path-preserving mechanism that backs these.
 - **`exceptions`** — emitted by the CPU exception trace ring
   (`info exceptions` dumps the ring; `log exceptions 1` streams every event).
   Each line includes vector, frame format, faulting/stacked PC, fault address,

@@ -1663,7 +1663,7 @@ static void atp_in(const ddp_header_t *ddp, const uint8_t *buf, int len) {
 
 // =============================== ASP (AppleTalk Session Protocol) ===============================
 
-// ASP Commands / SPFunction (values per docs/appletalk.md)
+// ASP Commands / SPFunction (values per docs/core/network/appletalk.md)
 #define ASP_CLOSE_SESS     1
 #define ASP_COMMAND        2
 #define ASP_GET_STAT       3

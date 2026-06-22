@@ -2,7 +2,7 @@
 
 This document specifies the SCSI CD-ROM device emulation for the Granny Smith emulator. It covers the device identity, SCSI command set, mode pages, sense data, block addressing, Apple-specific protocol quirks, and A/UX compatibility requirements. It is the authoritative reference for implementing the CD-ROM device in `scsi_cdrom.c`.
 
-For the NCR 5380 host controller, bus phases, register model, and hard disk command handling, see `docs/scsi.md`.
+For the NCR 5380 host controller, bus phases, register model, and hard disk command handling, see `docs/core/peripherals/scsi.md`.
 
 ---
 

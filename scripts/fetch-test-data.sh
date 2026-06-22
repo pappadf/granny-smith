@@ -83,7 +83,7 @@ show_status() {
         log_warn "Test data is NOT available"
         echo ""
         echo "To run full test suite, you need proprietary test data."
-        echo "See docs/TEST_DATA.md for details."
+        echo "See docs/guide/TEST_DATA.md for details."
     fi
 }
 
@@ -132,7 +132,7 @@ if [[ -z "$TOKEN" ]]; then
     echo ""
     echo "The token needs 'contents:read' access to: $REPO"
     echo ""
-    echo "For external contributors: See docs/TEST_DATA.md for how to obtain"
+    echo "For external contributors: See docs/guide/TEST_DATA.md for how to obtain"
     echo "or provide your own test data."
     exit 1
 fi

@@ -85,4 +85,4 @@ bit, Bt478 VDAC layout) is reserved for a future IIsi addition.
 
 ## See also
 
-- [docs/iici.md](iici.md) — the machine that uses the RBV.
+- [docs/machines/mdu/iici.md](iici.md) — the machine that uses the RBV.

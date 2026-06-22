@@ -39,7 +39,7 @@ These tests use the open source [ProcessorTests](https://github.com/SingleStepTe
 
 ### Option 2: Provide Your Own Test Data
 
-You can legally obtain the required software and create your own test data. See [docs/TEST_DATA.md](../../docs/TEST_DATA.md) for the required file structure and specifications.
+You can legally obtain the required software and create your own test data. See [docs/guide/TEST_DATA.md](../../docs/guide/TEST_DATA.md) for the required file structure and specifications.
 
 ## Expected Structure
 
@@ -60,7 +60,7 @@ tests/data/
 
 ## More Information
 
-See [docs/TEST_DATA.md](../../docs/TEST_DATA.md) for complete details on:
+See [docs/guide/TEST_DATA.md](../../docs/guide/TEST_DATA.md) for complete details on:
 - Required files and their specifications
 - How to obtain test data legally
 - Setting up the private repository (for maintainers)

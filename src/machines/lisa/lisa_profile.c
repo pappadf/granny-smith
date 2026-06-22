@@ -2,7 +2,7 @@
 // Copyright (c) pappadf
 
 // lisa_profile.c
-// Apple ProFile parallel hard disk.  See lisa_profile.h and docs/lisa.md §14.
+// Apple ProFile parallel hard disk.  See lisa_profile.h and docs/machines/lisa/lisa.md §14.
 //
 // Behavioural model of the ProFile controller's byte-at-a-time handshake,
 // reverse-engineered from Apple's own drivers (boot ROM RM248.B and OS
@@ -30,7 +30,7 @@
 
 LOG_USE_CATEGORY_NAME("profile")
 
-// On-the-wire block geometry (docs/lisa.md §14): 20-byte tag/header + 512 data.
+// On-the-wire block geometry (docs/machines/lisa/lisa.md §14): 20-byte tag/header + 512 data.
 #define PRO_TAG    20
 #define PRO_DATA   512
 #define PRO_BLOCK  (PRO_TAG + PRO_DATA) // 532
@@ -45,7 +45,7 @@ LOG_USE_CATEGORY_NAME("profile")
 // The controller's reserved device-info / spare-table block.
 #define PRO_INFO_BLOCK 0xFFFFFFu
 
-// Port-B control lines (docs/lisa.md §14): CMD/ = PB4 (0 = asserted), DRW = PB3.
+// Port-B control lines (docs/machines/lisa/lisa.md §14): CMD/ = PB4 (0 = asserted), DRW = PB3.
 #define PB_CMD 0x10
 #define PB_DRW 0x08
 

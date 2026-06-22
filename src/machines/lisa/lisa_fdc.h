@@ -6,7 +6,7 @@
 // RAM).  NOT an Apple IWM: the 68000 issues high-level commands by writing a
 // command block into the shared RAM and the coprocessor returns logical
 // 512-byte sectors.  Modeled behaviourally (the iop_swim.c pattern), reusing
-// disk_read_data / the Sony geometry helpers.  See docs/lisa.md §13 and
+// disk_read_data / the Sony geometry helpers.  See docs/machines/lisa/lisa.md §13 and
 // proposal-machine-lisa-xl.md §4.7.
 //
 // Shared RAM at physical $00C001 (logical $00FCC001), byte N at $C001 + 2*N

@@ -5,7 +5,7 @@ controller (a 6504A coprocessor + 1 KB shared RAM), reached at physical
 `$00C001`. It is **not** an Apple IWM: the 68000 writes a high-level command
 block into the shared RAM and the coprocessor returns logical 512-byte sectors,
 so the model is behavioural (the iop_swim.c pattern) and never touches GCR
-cells. See [docs/lisa.md](lisa.md) §13 for the hardware reference.
+cells. See [docs/machines/lisa/lisa.md](lisa.md) §13 for the hardware reference.
 
 ## Shared-RAM layout (verified against the rev-H boot ROM, `RM248.B.TEXT`)
 
@@ -31,7 +31,7 @@ instead of the IWM/SWIM `cfg->floppy`.
 
 ### Completion — interrupt-driven (IPL 1) and deferred
 
-Completion raises **FDIR**, which goes to **two** places (docs/lisa.md §7.1/§13):
+Completion raises **FDIR**, which goes to **two** places (docs/machines/lisa/lisa.md §7.1/§13):
 
 1. **VIA1 PB4** — a pollable level the boot ROM watches (`CHKFIN`). The ROM runs
    with IPL ≥ 1, so it polls PB4 rather than taking the interrupt.
@@ -67,7 +67,7 @@ unaffected — `xl-boot` still pixel-matches.)
 
 > Note: a faithful `STOP` instruction is a prerequisite for the deferred model to
 > matter — the OS scheduler's idle `Pause` is `STOP #$2000`, and the CPU must
-> actually halt there until the floppy IPL-1 interrupt arrives. See docs/lisa.md
+> actually halt there until the floppy IPL-1 interrupt arrives. See docs/machines/lisa/lisa.md
 > §7.1 and the CPU core's `STOP` handling.
 
 ### Disk-type byte (byte 10) — drives the loader's geometry
@@ -100,13 +100,13 @@ presence flag, not a one-shot event.
 Controller RAM **byte 24** (`$FCC031`, `idx = (offset>>1)`) is the disk-controller
 ROM id the boot ROM (`SETTYPE`) and Lisa OS (`SOURCE-STARTUP`, `adr_ioboard`) read
 to detect the machine and choose the **Twiggy vs Sony floppy driver** (see
-`docs/lisa.md` §16.2 for the full byte→model table). It is **not** a command-block
+`docs/machines/lisa/lisa.md` §16.2 for the full byte→model table). It is **not** a command-block
 field. A `calloc`-zeroed value reads as a Lisa 1 ⇒ the OS installs the Twiggy
 driver on our Sony hardware and OS startup strands. `machine_lisa` therefore sets
 it to `$A0` (`iob_sony`, Lisa 2/5) in `lisa_init` via `lisa_fdc_set_diskrom()`;
 `machine_macxl` leaves it `0` (MacWorks XL's loader-eject only matches SYSTYPE 0).
 Parameter memory (boot volume, contrast, etc.) also lives in this shared RAM at
-`$FCC181` (= byte 192, 32 words, `CHKPM` rotate-sum checksum; `docs/lisa.md` §13.4).
+`$FCC181` (= byte 192, 32 words, `CHKPM` rotate-sum checksum; `docs/machines/lisa/lisa.md` §13.4).
 
 ## Bring-up status
 
@@ -160,5 +160,5 @@ system disk, and verify the Finder desktop renders (608×431, §8).
 
 Two FDC behaviours this relies on: the `$C05F` status byte holds **latched
 interrupt events** that `CLRSTAT` ($85) drains (not live state — see
-docs/lisa.md §13.3); and controller byte 10 reports the **Sony disk type** so
+docs/machines/lisa/lisa.md §13.3); and controller byte 10 reports the **Sony disk type** so
 the loader picks the right block→(track,sector) geometry (see above).

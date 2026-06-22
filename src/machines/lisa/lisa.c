@@ -7,7 +7,7 @@
 // The Lisa is the first non-Mac machine: a 68000 with a custom segment MMU
 // (lisa_mmu.c), the COPS keyboard/mouse/clock microcontroller, an intelligent
 // 6504A floppy controller, and a parallel-port hard disk — none of which are
-// Mac architecture.  See docs/lisa.md for the hardware reference.
+// Mac architecture.  See docs/machines/lisa/lisa.md for the hardware reference.
 //
 // This first cut (Step 2) is intentionally minimal: 68000 + RAM + 16 KB boot
 // ROM + the segment MMU, enough to run the power-on self-tests headlessly.
@@ -58,7 +58,7 @@ typedef struct lisa_state {
     lisa_profile_t *profile; // ProFile parallel hard disk on VIA2
     bool via1_pb7; // last VIA1 PB7 (CRES/) level, for edge-detecting ProFile reset
     // Level 1 is shared by VIA2 (parallel/floppy demux) and the video VBL
-    // (docs/lisa.md §7.1/§12).  Track each sub-source so deasserting one does
+    // (docs/machines/lisa/lisa.md §7.1/§12).  Track each sub-source so deasserting one does
     // not clear the other when recomputing the CPU IPL.
     bool l1_via2; // VIA2 IRQ line currently asserted
     bool l1_vbl; // video vertical-retrace interrupt currently asserted
@@ -70,7 +70,7 @@ typedef struct lisa_state {
     struct object *hd_obj; // `profile` object (parallel hard disk)
 } lisa_state_t;
 
-// Video geometry, 1 bpp MSB-first (docs/lisa.md §8).  The unmodified Lisa 2 has
+// Video geometry, 1 bpp MSB-first (docs/machines/lisa/lisa.md §8).  The unmodified Lisa 2 has
 // a 720x364 rectangular-pixel raster; the Macintosh XL screen modification that
 // MacWorks XL targets is a 608x431 square-pixel raster.  Same framebuffer (~32
 // KB at the $E800 video latch base) — only the scan geometry differs.
@@ -88,7 +88,7 @@ static inline lisa_state_t *lisa_state(config_t *cfg) {
 // ============================================================
 
 // Point the display at the current framebuffer, which the Video Address Latch
-// relocates anywhere in RAM (docs/lisa.md §8).  Re-read each frame so a latch
+// relocates anywhere in RAM (docs/machines/lisa/lisa.md §8).  Re-read each frame so a latch
 // write (the ROM moves the screen during sizing) takes effect.  Marks the
 // framebuffer dirty only when the base actually moves.
 static void lisa_refresh_framebuffer(config_t *cfg) {
@@ -123,7 +123,7 @@ static display_t *lisa_display(config_t *cfg) {
 }
 
 // ============================================================
-// Interrupt routing (fixed 68000 IPL levels — docs/lisa.md §7.1)
+// Interrupt routing (fixed 68000 IPL levels — docs/machines/lisa/lisa.md §7.1)
 // ============================================================
 
 // Set the CPU IPL from the per-level interrupt bitmask.  Lisa sources sit on
@@ -385,7 +385,7 @@ static memory_interface_t lisa_fdc_iface = {
 };
 
 // FDIR (drive interrupt request) → VIA1 PB4, which the boot ROM polls (CHKFIN),
-// AND a level-1 interrupt (docs/lisa.md §7.1/§13: the floppy shares IPL 1 with
+// AND a level-1 interrupt (docs/machines/lisa/lisa.md §7.1/§13: the floppy shares IPL 1 with
 // VIA2/video; it fires on RWTS completion, disk insertion, and eject).  The boot
 // ROM masks IPL 1 and polls PB4; the OS Sony driver (SOURCE-SONYASM, WAIT_INT)
 // blocks and is woken by this interrupt — without it the OS reader hangs forever
@@ -696,7 +696,7 @@ static void lisa_init(config_t *cfg, checkpoint_t *checkpoint) {
     lisa_mmu_set_vbl_ack(ls->mmu, lisa_vbl_ack, cfg); // Status-Register read acks the latched VBL
 
     // Two 6522 VIAs (reused unchanged).  map=NULL: the machine registers the
-    // interface itself.  freq_factor 4 = 68000/4 ≈ 1.27 MHz (docs/lisa.md §10).
+    // interface itself.  freq_factor 4 = 68000/4 ≈ 1.27 MHz (docs/machines/lisa/lisa.md §10).
     cfg->via1 =
         via_init(NULL, cfg->scheduler, 4, "via1", lisa_via1_output, lisa_via_shift_out, lisa_via1_irq, cfg, checkpoint);
     cfg->via2 =
@@ -704,7 +704,7 @@ static void lisa_init(config_t *cfg, checkpoint_t *checkpoint) {
 
     // Register each VIA at its Lisa physical I/O base through the stride
     // adapter.  16 registers: VIA1 spans 16*2=32 bytes from $DD81, VIA2 uses an
-    // 8-byte register stride.  The canonical VIA2 base is $D901 (docs/lisa.md
+    // 8-byte register stride.  The canonical VIA2 base is $D901 (docs/machines/lisa/lisa.md
     // §10.2, the boot ROM VIA2BASE), but the chip-select ignores address bit 8,
     // so the whole range $D800–$D9FF decodes to VIA2 (register = (addr>>3)&15).
     // The boot ROM and the OS clock use the $D9xx alias, but the LisaOS parallel
@@ -729,7 +729,7 @@ static void lisa_init(config_t *cfg, checkpoint_t *checkpoint) {
     ls->cops = cops_init(cfg->via1, cfg->scheduler, checkpoint);
 
     // Intelligent floppy controller: 6504 + 1 KB shared RAM on the ODD bus
-    // bytes of physical $00C000-$00C7FF (docs/lisa.md §13).  Mapped from the
+    // bytes of physical $00C000-$00C7FF (docs/machines/lisa/lisa.md §13).  Mapped from the
     // even base $00C000 so word/long accesses at the even base (used by Xenix's
     // boot loader) reach the controller; the iface models the odd-byte RAM.
     // FDIR completion is signalled on VIA1 PB4.
@@ -771,7 +771,7 @@ static void lisa_init(config_t *cfg, checkpoint_t *checkpoint) {
     lisa_register_profile_object(cfg);
 
     // Z8530 SCC (reused as-is): physical $00D241/43/45/47 decode from base
-    // $00D240 via the standard A1/A2 convention (docs/lisa.md §15).  PCLK 4 MHz
+    // $00D240 via the standard A1/A2 convention (docs/machines/lisa/lisa.md §15).  PCLK 4 MHz
     // (chan A) / 3.6864 MHz (chan B).  Autovectored at IPL 6.
     cfg->scc = scc_init(NULL, cfg->scheduler, lisa_scc_irq, cfg, checkpoint);
     scc_set_clocks(cfg->scc, 4000000, 3686400);
@@ -910,7 +910,7 @@ static void lisa_vbl_off(void *source, uint64_t data) {
     }
 }
 
-// ~90 µs retrace window (docs/lisa.md §8) at 5.09375 MHz ≈ 458 cycles.  Holding
+// ~90 µs retrace window (docs/machines/lisa/lisa.md §8) at 5.09375 MHz ≈ 458 cycles.  Holding
 // the Status Register VBL bit this long lets the ROM's video self-test (VIDTST)
 // observe the low→high retrace edge instead of timing out (boot error 42).
 #define LISA_VBL_HOLD_CYCLES 458
@@ -930,7 +930,7 @@ static void lisa_vbl_ack(void *source) {
 static void lisa_trigger_vbl(config_t *cfg) {
     lisa_state_t *ls = lisa_state(cfg);
     if (ls && ls->mmu) {
-        // VBL is an IPL-1 interrupt source (docs/lisa.md §8) gated by the VTMSK
+        // VBL is an IPL-1 interrupt source (docs/machines/lisa/lisa.md §8) gated by the VTMSK
         // latch ($E01A on / $E018 off).  Real hardware FIREs the video
         // IRQ at the retrace edge and LATCHes it until the CPU services it, so a
         // kernel that is interrupt-masked through the retrace window still sees the
@@ -1013,7 +1013,7 @@ const hw_profile_t machine_lisa = {
 // the Lisa 2 profile with a different ROM-compatibility id and name — the chip
 // models, callbacks, and 720×364 framebuffer are identical (the square-pixel
 // kit only changes the dot clock, which a frame-accurate model ignores).
-// docs/lisa.md §1.1 / proposal-machine-lisa-xl.md §3.2.
+// docs/machines/lisa/lisa.md §1.1 / proposal-machine-lisa-xl.md §3.2.
 const hw_profile_t machine_macxl = {
     .name = "Macintosh XL",
     .id = "macxl",

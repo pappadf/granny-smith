@@ -514,5 +514,5 @@ The web frontend runs these through the **terminal pane**
 | `src/core/shell/cmd_cp.c` | `cp` (VFS-backed, supports image→host) |
 | `src/core/storage/image.{c,h}` | Underlying disk image + `disk_read_data` / `disk_read_bytes` |
 
-See also: `docs/image.md` (image container & delta storage), `docs/scsi.md`
-(attaching images to the guest), and `docs/shell.md` (the object-model shell).
+See also: `docs/core/storage/image.md` (image container & delta storage), `docs/core/peripherals/scsi.md`
+(attaching images to the guest), and `docs/core/shell/shell.md` (the object-model shell).

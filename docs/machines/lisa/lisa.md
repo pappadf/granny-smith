@@ -520,7 +520,7 @@ Status Register's vertical-retrace bit (§7.4) to identify the source.
 > (FDC completion / disk insert / eject)** — recomputed on each change so none
 > clobbers the others. The FDC's FDIR is therefore *both* the pollable VIA1 PB4
 > level (for the ROM) and an IPL-1 interrupt (for the OS's blocking Sony driver);
-> see docs/lisa_fdc.md. **This requires a faithful `STOP` instruction:** the OS
+> see docs/machines/lisa/fdc.md. **This requires a faithful `STOP` instruction:** the OS
 > scheduler idles in `Pause` = `STOP #$2000`, so the CPU must genuinely halt there
 > until the floppy (or timer/COPS) interrupt arrives. The 68000 core implements
 > `STOP` as a real halt (sets a `stopped` flag and drains the current sprint; the

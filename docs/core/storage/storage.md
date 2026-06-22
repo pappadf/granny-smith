@@ -20,7 +20,7 @@ Delta and journal files are created adjacent to the disk image:
 └── a3f7c012.img.journal      # Preimage journal (crash recovery, cleared on checkpoint)
 ```
 
-In the browser, images uploaded via drag-and-drop initially land in volatile `/tmp/` (memory-backed). The C-side `image_persist_volatile()` function copies them to `/images/<hash>.img` (OPFS-backed, content-addressed) before the storage engine opens them. This ensures delta and journal files are also on OPFS and survive page reloads. See `docs/checkpointing.md` for details.
+In the browser, images uploaded via drag-and-drop initially land in volatile `/tmp/` (memory-backed). The C-side `image_persist_volatile()` function copies them to `/images/<hash>.img` (OPFS-backed, content-addressed) before the storage engine opens them. This ensures delta and journal files are also on OPFS and survive page reloads. See `docs/core/storage/checkpointing.md` for details.
 
 ## 3. Delta File Format
 
