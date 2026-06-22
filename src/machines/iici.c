@@ -71,23 +71,7 @@ LOG_USE_CATEGORY_NAME("iici");
 // ============================================================
 
 static void iici_set_rom_overlay(config_t *cfg, bool overlay) {
-    iici_state_t *st = iici_state(cfg);
-    if (st->rom_overlay == overlay)
-        return;
-    st->rom_overlay = overlay;
-    uint32_t rom_size = cfg->machine->rom_size;
-    uint32_t rom_pages = rom_size >> PAGE_SHIFT;
-    uint32_t rom_start_page = IICI_ROM_START >> PAGE_SHIFT;
-    if (overlay) {
-        for (uint32_t p = 0; p < rom_pages && (int)p < g_page_count; p++) {
-            uint8_t *host_ptr = g_page_table[rom_start_page + p].host_base;
-            mac030_fill_page(p, host_ptr, false);
-        }
-    } else {
-        uint8_t *ram_base = ram_native_pointer(cfg->mem_map, 0);
-        for (uint32_t p = 0; p < rom_pages && (int)p < g_page_count; p++)
-            mac030_fill_page(p, ram_base + (p << PAGE_SHIFT), true);
-    }
+    mac030_glue_set_rom_overlay(cfg, &iici_state(cfg)->rom_overlay, IICI_ROM_START, overlay);
 }
 
 // ============================================================
@@ -96,13 +80,7 @@ static void iici_set_rom_overlay(config_t *cfg, bool overlay) {
 
 static void iici_reset(config_t *cfg) {
     iici_state_t *st = iici_state(cfg);
-    st->rom_overlay = false;
-    iici_set_rom_overlay(cfg, true);
-    if (st->mmu) {
-        st->mmu->enabled = false;
-        st->mmu->tc = 0;
-        mmu_invalidate_tlb(st->mmu);
-    }
+    mac030_glue_reset(cfg, &st->rom_overlay, IICI_ROM_START, st->mmu);
 }
 
 // ============================================================
@@ -179,33 +157,13 @@ static void iici_memory_layout_init(config_t *cfg) {
 // Interrupt routing
 // ============================================================
 
-static void iici_update_ipl(config_t *cfg, int source, bool active) {
-    if (active)
-        cfg->irq |= source;
-    else
-        cfg->irq &= ~source;
-    uint32_t new_ipl;
-    if (cfg->irq & IICI_IRQ_NMI)
-        new_ipl = 7;
-    else if (cfg->irq & IICI_IRQ_SCC)
-        new_ipl = 4;
-    else if (cfg->irq & IICI_IRQ_RBV)
-        new_ipl = 2;
-    else if (cfg->irq & IICI_IRQ_VIA1)
-        new_ipl = 1;
-    else
-        new_ipl = 0;
-    cpu_set_ipl(cfg->cpu, new_ipl);
-    cpu_reschedule();
-}
-
 // ============================================================
 // RBV / SCC / SCSI callbacks
 // ============================================================
 
 // RBV combined interrupt → 68030 IPL 2 (replaces the IIcx VIA2 source).
 static void iici_rbv_irq(void *context, bool active) {
-    iici_update_ipl((config_t *)context, IICI_IRQ_RBV, active);
+    mac030_glue_update_ipl((config_t *)context, IICI_IRQ_RBV, active);
 }
 
 // RBV soft power-off (RvPowerOff falling edge) — stop the scheduler so the
@@ -268,11 +226,11 @@ static void iici_via1_shift_out(void *context, uint8_t byte) {
 }
 
 static void iici_via1_irq(void *context, bool active) {
-    iici_update_ipl((config_t *)context, IICI_IRQ_VIA1, active);
+    mac030_glue_update_ipl((config_t *)context, IICI_IRQ_VIA1, active);
 }
 
 static void iici_scc_irq(void *context, bool active) {
-    iici_update_ipl((config_t *)context, IICI_IRQ_SCC, active);
+    mac030_glue_update_ipl((config_t *)context, IICI_IRQ_SCC, active);
 }
 
 // ============================================================
@@ -558,7 +516,7 @@ const hw_profile_t machine_iici = {
     .checkpoint_save = iici_checkpoint_save,
     .checkpoint_restore = NULL,
     .memory_layout_init = iici_memory_layout_init,
-    .update_ipl = iici_update_ipl,
+    .update_ipl = mac030_glue_update_ipl,
     .trigger_vbl = iici_trigger_vbl,
     .display = NULL, // primary display sourced from cfg->nubus
 };

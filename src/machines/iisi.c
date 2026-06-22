@@ -73,23 +73,7 @@ LOG_USE_CATEGORY_NAME("iisi");
 // ============================================================
 
 static void iisi_set_rom_overlay(config_t *cfg, bool overlay) {
-    iisi_state_t *st = iisi_state(cfg);
-    if (st->rom_overlay == overlay)
-        return;
-    st->rom_overlay = overlay;
-    uint32_t rom_size = cfg->machine->rom_size;
-    uint32_t rom_pages = rom_size >> PAGE_SHIFT;
-    uint32_t rom_start_page = IISI_ROM_START >> PAGE_SHIFT;
-    if (overlay) {
-        for (uint32_t p = 0; p < rom_pages && (int)p < g_page_count; p++) {
-            uint8_t *host_ptr = g_page_table[rom_start_page + p].host_base;
-            mac030_fill_page(p, host_ptr, false);
-        }
-    } else {
-        uint8_t *ram_base = ram_native_pointer(cfg->mem_map, 0);
-        for (uint32_t p = 0; p < rom_pages && (int)p < g_page_count; p++)
-            mac030_fill_page(p, ram_base + (p << PAGE_SHIFT), true);
-    }
+    mac030_glue_set_rom_overlay(cfg, &iisi_state(cfg)->rom_overlay, IISI_ROM_START, overlay);
 }
 
 // ============================================================
@@ -98,13 +82,7 @@ static void iisi_set_rom_overlay(config_t *cfg, bool overlay) {
 
 static void iisi_reset(config_t *cfg) {
     iisi_state_t *st = iisi_state(cfg);
-    st->rom_overlay = false;
-    iisi_set_rom_overlay(cfg, true);
-    if (st->mmu) {
-        st->mmu->enabled = false;
-        st->mmu->tc = 0;
-        mmu_invalidate_tlb(st->mmu);
-    }
+    mac030_glue_reset(cfg, &st->rom_overlay, IISI_ROM_START, st->mmu);
 }
 
 // ============================================================
@@ -172,33 +150,13 @@ static void iisi_memory_layout_init(config_t *cfg) {
 // Interrupt routing
 // ============================================================
 
-static void iisi_update_ipl(config_t *cfg, int source, bool active) {
-    if (active)
-        cfg->irq |= source;
-    else
-        cfg->irq &= ~source;
-    uint32_t new_ipl;
-    if (cfg->irq & IISI_IRQ_NMI)
-        new_ipl = 7;
-    else if (cfg->irq & IISI_IRQ_SCC)
-        new_ipl = 4;
-    else if (cfg->irq & IISI_IRQ_RBV)
-        new_ipl = 2;
-    else if (cfg->irq & IISI_IRQ_VIA1)
-        new_ipl = 1;
-    else
-        new_ipl = 0;
-    cpu_set_ipl(cfg->cpu, new_ipl);
-    cpu_reschedule();
-}
-
 // ============================================================
 // RBV / SCC / SCSI / Egret callbacks
 // ============================================================
 
 // RBV combined interrupt → 68030 IPL 2.
 static void iisi_rbv_irq(void *context, bool active) {
-    iisi_update_ipl((config_t *)context, IISI_IRQ_RBV, active);
+    mac030_glue_update_ipl((config_t *)context, IISI_IRQ_RBV, active);
 }
 
 // Soft power-off — from either RBV RvPowerOff or Egret PwrDown.  Stop the
@@ -265,11 +223,11 @@ static void iisi_via1_shift_out(void *context, uint8_t byte) {
 }
 
 static void iisi_via1_irq(void *context, bool active) {
-    iisi_update_ipl((config_t *)context, IISI_IRQ_VIA1, active);
+    mac030_glue_update_ipl((config_t *)context, IISI_IRQ_VIA1, active);
 }
 
 static void iisi_scc_irq(void *context, bool active) {
-    iisi_update_ipl((config_t *)context, IISI_IRQ_SCC, active);
+    mac030_glue_update_ipl((config_t *)context, IISI_IRQ_SCC, active);
 }
 
 // ============================================================
@@ -579,7 +537,7 @@ const hw_profile_t machine_iisi = {
     .checkpoint_save = iisi_checkpoint_save,
     .checkpoint_restore = NULL,
     .memory_layout_init = iisi_memory_layout_init,
-    .update_ipl = iisi_update_ipl,
+    .update_ipl = mac030_glue_update_ipl,
     .trigger_vbl = iisi_trigger_vbl,
     .display = NULL, // primary display sourced from cfg->nubus
 };

@@ -129,7 +129,7 @@ static void se30_via2_shift_out(void *context, uint8_t byte);
 // On reset, ROM is overlaid at $00000000 for the initial vector fetch.
 // The ROM boot code disables the overlay by writing 0 to VIA1 PA4.
 static void se30_set_rom_overlay(config_t *cfg, bool overlay) {
-    mac030_glue_set_rom_overlay(cfg, &se30_state(cfg)->rom_overlay, overlay);
+    mac030_glue_set_rom_overlay(cfg, &se30_state(cfg)->rom_overlay, SE30_ROM_START, overlay);
 }
 
 // ============================================================
@@ -143,7 +143,7 @@ static void se30_set_rom_overlay(config_t *cfg, bool overlay) {
 // This runs BEFORE the CPU reads SSP/PC from $0/$4.
 static void se30_reset(config_t *cfg) {
     se30_state_t *se30 = se30_state(cfg);
-    mac030_glue_reset(cfg, &se30->rom_overlay, se30->mmu);
+    mac030_glue_reset(cfg, &se30->rom_overlay, SE30_ROM_START, se30->mmu);
 }
 
 // ============================================================

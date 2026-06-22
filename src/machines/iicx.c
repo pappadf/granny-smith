@@ -84,7 +84,7 @@ static void iicx_via2_shift_out(void *context, uint8_t byte);
 // ============================================================
 
 void iicx_set_rom_overlay(config_t *cfg, bool overlay) {
-    mac030_glue_set_rom_overlay(cfg, &iicx_state(cfg)->rom_overlay, overlay);
+    mac030_glue_set_rom_overlay(cfg, &iicx_state(cfg)->rom_overlay, IICX_ROM_START, overlay);
 }
 
 // ============================================================
@@ -93,7 +93,7 @@ void iicx_set_rom_overlay(config_t *cfg, bool overlay) {
 
 static void iicx_reset(config_t *cfg) {
     iicx_state_t *st = iicx_state(cfg);
-    mac030_glue_reset(cfg, &st->rom_overlay, st->mmu);
+    mac030_glue_reset(cfg, &st->rom_overlay, IICX_ROM_START, st->mmu);
 }
 
 // ============================================================

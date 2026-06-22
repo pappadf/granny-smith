@@ -70,7 +70,7 @@ static void iix_trigger_vbl(config_t *cfg);
 
 static void iix_reset(config_t *cfg) {
     iicx_state_t *st = iicx_state(cfg);
-    mac030_glue_reset(cfg, &st->rom_overlay, st->mmu);
+    mac030_glue_reset(cfg, &st->rom_overlay, IICX_ROM_START, st->mmu);
 }
 
 // ============================================================

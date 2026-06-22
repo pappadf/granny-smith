@@ -71,14 +71,15 @@ void mac030_glue_via2_irq(void *context, bool active);
 // of read-only pages.)
 void mac030_fill_page(uint32_t page_index, uint8_t *host_ptr, bool writable);
 
-// Toggle the ROM/RAM overlay at $00000000 for a GLUE machine (ROM region at
-// $40000000).  `overlay_flag` points at the machine's own rom_overlay bool.
-void mac030_glue_set_rom_overlay(config_t *cfg, bool *overlay_flag, bool on);
+// Toggle the ROM/RAM overlay at $00000000.  `overlay_flag` points at the
+// machine's own rom_overlay bool; `rom_start` is the machine's ROM region
+// base (GLUE $40000000, MDU $40800000).
+void mac030_glue_set_rom_overlay(config_t *cfg, bool *overlay_flag, uint32_t rom_start, bool on);
 
 // Hardware RESET: re-enable the ROM overlay and disable the MMU (TC/E off,
 // TLB flushed).  `overlay_flag` points at the machine's rom_overlay bool;
-// `mmu` may be NULL.
-void mac030_glue_reset(config_t *cfg, bool *overlay_flag, struct mmu_state *mmu);
+// `rom_start` is the ROM region base; `mmu` may be NULL.
+void mac030_glue_reset(config_t *cfg, bool *overlay_flag, uint32_t rom_start, struct mmu_state *mmu);
 
 // Construct the GLUE peripheral set shared by se30/iicx/iix in canonical
 // order: ADB, (checkpoint image restore), SCSI (+VIA2), images, ASC (+VIA2),

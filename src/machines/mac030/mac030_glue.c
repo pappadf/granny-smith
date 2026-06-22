@@ -82,9 +82,6 @@ void mac030_build_core(config_t *cfg, checkpoint_t *cp) {
     scheduler_set_cpi(cfg->scheduler, 4, 4);
 }
 
-// GLUE ROM region base (SE30_ROM_START == IICX_ROM_START).
-#define MAC030_GLUE_ROM_START 0x40000000UL
-
 // Populate one page in the AoS table + SoA fast-path arrays.  Read-only pages
 // leave the write SoA entries at their zero-initialised value (slow path).
 void mac030_fill_page(uint32_t page_index, uint8_t *host_ptr, bool writable) {
@@ -110,13 +107,13 @@ void mac030_fill_page(uint32_t page_index, uint8_t *host_ptr, bool writable) {
 
 // Toggle the ROM overlay at $00000000.  overlay=true maps the ROM image
 // (read-only); overlay=false restores RAM (writable).  No-op if unchanged.
-void mac030_glue_set_rom_overlay(config_t *cfg, bool *overlay_flag, bool on) {
+void mac030_glue_set_rom_overlay(config_t *cfg, bool *overlay_flag, uint32_t rom_start, bool on) {
     if (*overlay_flag == on)
         return;
     *overlay_flag = on;
     uint32_t rom_size = cfg->machine->rom_size;
     uint32_t rom_pages = rom_size >> PAGE_SHIFT;
-    uint32_t rom_start_page = MAC030_GLUE_ROM_START >> PAGE_SHIFT;
+    uint32_t rom_start_page = rom_start >> PAGE_SHIFT;
     if (on) {
         for (uint32_t p = 0; p < rom_pages && (int)p < g_page_count; p++)
             mac030_fill_page(p, g_page_table[rom_start_page + p].host_base, false);
@@ -128,9 +125,9 @@ void mac030_glue_set_rom_overlay(config_t *cfg, bool *overlay_flag, bool on) {
 }
 
 // Hardware RESET: ROM overlay back on, MMU disabled.
-void mac030_glue_reset(config_t *cfg, bool *overlay_flag, struct mmu_state *mmu) {
+void mac030_glue_reset(config_t *cfg, bool *overlay_flag, uint32_t rom_start, struct mmu_state *mmu) {
     *overlay_flag = false; // force the set_rom_overlay toggle below
-    mac030_glue_set_rom_overlay(cfg, overlay_flag, true);
+    mac030_glue_set_rom_overlay(cfg, overlay_flag, rom_start, true);
     if (mmu) {
         mmu->enabled = false;
         mmu->tc = 0;
