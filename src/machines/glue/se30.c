@@ -374,88 +374,41 @@ static void se30_vbl_slot_deassert(void *context, uint64_t data) {
 
 // Initialise all SE/30 subsystems.
 // If checkpoint is non-NULL, each device restores state from it.
-static void se30_init(config_t *cfg, checkpoint_t *checkpoint) {
-    // Allocate SE/30-specific peripheral state
-    se30_state_t *se30 = calloc(1, sizeof(se30_state_t));
-    assert(se30 != NULL);
-    cfg->machine_context = se30;
-
-    // ADB bus starts in IDLE state (ST1:ST0 = 11, bits 5:4 = 0x30)
-    se30->last_port_b = 0x30;
-
-    // Initialise parameterised memory: 32-bit address space, configured RAM, 256 KB ROM
-    // Build the shared II-family core (mem_map, cpu-from-profile, scheduler).
-    mac030_build_core(cfg, checkpoint);
-
-    // Register VBL slot deassert event type for checkpoint save/restore
+// SE/30 registers its built-in-video VBL slot-deassert event type before
+// device construction (keeps checkpoint event-type ordering stable).
+static void se30_pre_devices(config_t *cfg) {
     scheduler_new_event_type(cfg->scheduler, "se30", cfg, "vbl_slot_deassert", &se30_vbl_slot_deassert);
+}
 
-    // Restore global interrupt state after scheduler
-    if (checkpoint)
-        system_read_checkpoint_data(checkpoint, &cfg->irq, sizeof(cfg->irq));
-
-    // Initialise RTC (not yet wired to VIA — deferred until VIA2 exists)
-    cfg->rtc = rtc_init(cfg->scheduler, checkpoint, true);
-
-    // Initialise SCC (NULL map: SE/30 I/O dispatcher handles addressing)
-    cfg->scc = scc_init(NULL, cfg->scheduler, mac030_glue_scc_irq, cfg, checkpoint);
-
-    // SCC PCLK = C8M (7.8336 MHz), RTxC = 3.6864 MHz baud-rate crystal
-    scc_set_clocks(cfg->scc, 7833600, 3686400);
-
-    // Initialise VIA1 (NULL map: I/O dispatcher handles addressing)
-    // VIA1: system events — VBL, ADB data (shift register), timers
-    // freq_factor=20: SE/30 CPU runs at 15.6672 MHz, VIA φ2 clock is ~783 kHz (CPU/20)
-    cfg->via1 = via_init(NULL, cfg->scheduler, 20, "via1", se30_via1_output, se30_via1_shift_out, mac030_glue_via1_irq,
-                         cfg, checkpoint);
-
-    // Initialise VIA2 (NULL map: I/O dispatcher handles addressing)
-    // VIA2: expansion — NuBus/PDS slots, SCSI, ASC interrupts, ADB control, RTC
-    cfg->via2 = via_init(NULL, cfg->scheduler, 20, "via2", se30_via2_output, se30_via2_shift_out, mac030_glue_via2_irq,
-                         cfg, checkpoint);
-
-    // Wire RTC 1-second tick to VIA1 CA2
-    rtc_set_via(cfg->rtc, cfg->via1);
-
-    // Set hardware ID bits:
-    // VIA1 PA6 = 1 (SE/30 identification) — already 1 in default port A input (0xF7)
-    // VIA2 PB3 = 0 (SE/30 identification) — ROM reads PA6 and PB3 to identify the board:
-    //   PA6=0, PB3=0 → IIx; PA6=1, PB3=0 → SE/30; PA6=1, PB3=1 → IIcx
+// Machine-ID straps: PA6 = 1 / PB3 = 0 (SE/30 signature); VIA2 PA3 high; PB6
+// reports the sound jack inserted; control lines idle high.
+static void se30_setup_id(config_t *cfg) {
     via_input(cfg->via2, 1, 3, 0);
-    // VIA2 PA3 = 1 — fix default port A input (0xF7 has bit 3 = 0)
-    // All VIA2 port A inputs should be 1 (NuBus slot IRQs are active-low, 1 = no IRQ)
     via_input(cfg->via2, 0, 3, 1);
-
-    // VIA2 PB6 (vSndJck) = 0: SE/30 always reports sound jack inserted
     via_input(cfg->via2, 1, 6, 0);
+    via_input_c(cfg->via2, 0, 0, 1); // CA1: NuBus slot IRQ
+    via_input_c(cfg->via2, 0, 1, 1); // CA2: SCSI DRQ
+    via_input_c(cfg->via2, 1, 1, 1); // CB2: SCSI IRQ
+}
 
-    // VIA2 control lines default to deasserted (HIGH) state.
-    // These are active-low signals; 1 = idle / no interrupt pending.
-    via_input_c(cfg->via2, 0, 0, 1); // CA1: NuBus slot IRQ (no IRQ)
-    via_input_c(cfg->via2, 0, 1, 1); // CA2: SCSI DRQ (no DMA request)
-    via_input_c(cfg->via2, 1, 1, 1); // CB2: SCSI IRQ (no SCSI interrupt)
+// SE/30 slot table: slot $E is the built-in video card; $9..$B are empty PDS
+// pseudo-slots.
+static const nubus_slot_decl_t se30_slots[] = {
+    {.slot = 0x9, .kind = NUBUS_SLOT_EMPTY},
+    {.slot = 0xA, .kind = NUBUS_SLOT_EMPTY},
+    {.slot = 0xB, .kind = NUBUS_SLOT_EMPTY},
+    {.slot = 0xE, .kind = NUBUS_SLOT_BUILTIN, .builtin_card_id = "builtin_se30_video"},
+    {0},
+};
 
-    // ADB, SCSI, ASC, SWIM floppy + I/O dispatcher bind (shared GLUE order).
-    mac030_glue_build_peripherals(cfg, checkpoint, se30);
-
-    // ---- MMU + NuBus + VRAM/VROM wiring ----
-
-    // Create the 68030 PMMU and make it globally reachable.
-    se30->mmu = mac030_glue_build_mmu(cfg);
-
-    // Bring up the NuBus.  Slot $E is BUILTIN with the SE/30 video card;
-    // slots $9..$B are the PDS pseudo-slots (EMPTY in v1, no card seated).
-    // The card factory allocates VRAM/VROM and loads SE30.vrom from disk;
-    // we expose its buffers via borrowed pointers below for the
-    // memory_map_host_region calls and the I/O dispatcher's VRAM mirror.
-    static const nubus_slot_decl_t se30_slots[] = {
-        {.slot = 0x9, .kind = NUBUS_SLOT_EMPTY},
-        {.slot = 0xA, .kind = NUBUS_SLOT_EMPTY},
-        {.slot = 0xB, .kind = NUBUS_SLOT_EMPTY},
-        {.slot = 0xE, .kind = NUBUS_SLOT_BUILTIN, .builtin_card_id = "builtin_se30_video"},
-        {0},
-    };
-    cfg->nubus = nubus_init(cfg, se30_slots, checkpoint);
+// After nubus_init: borrow the slot-$E card's VRAM/VROM and wire them into the
+// memory map at both their TT-identity bases and their page-table-mapped
+// physical aliases, so the PMMU and the I/O dispatcher resolve the apertures.
+// TT1 itself is set by mac030_glue_init right after the PMMU is built (the SE/30
+// ROM never writes TT registers; the GLUE chip routes $F0-$FF to NuBus, and TT1
+// identity-maps that for supervisor FCs so phys_to_host resolves the VRAM).
+static void se30_post_nubus(config_t *cfg) {
+    se30_state_t *se30 = se30_state(cfg);
     se30->video_card = nubus_card(cfg->nubus, 0xE);
     assert(se30->video_card != NULL);
     se30->vram = builtin_se30_video_vram(se30->video_card);
@@ -466,71 +419,39 @@ static void se30_init(config_t *cfg, checkpoint_t *checkpoint) {
                         "Place SE30.vrom next to the ROM file or in tests/data/roms/.\n");
         exit(1);
     }
-
-    // Let the MMU resolve VRAM physical addresses during table walks.
-    // VRAM stays identity-mapped at its logical base for MMU resolution.
     memory_map_host_region(cfg->mem_map, "se30_vram", se30->vram, SE30_VRAM_BASE, SE30_VRAM_SIZE, /*writable*/ true);
-
-    // Let the MMU resolve VROM physical addresses during table walks.
-    // TT identity-maps NuBus addresses, so physical $FEFF8000 = logical $FEFF8000.
     memory_map_host_region(cfg->mem_map, "se30_vrom", se30->vrom, SE30_VROM_PHYS, SE30_VROM_SIZE, /*writable*/ false);
-
-    // Emulate the GLUE chip's transparent NuBus slot address decoding.
-    // The SE/30 ROM never writes TT registers (confirmed by ROM binary scan);
-    // real hardware routes $F0-$FF to the NuBus bus controller, bypassing the
-    // PMMU entirely. Set TT1 so the MMU identity-maps NuBus slot space, which
-    // lets phys_to_host() resolve $FE000000 to the VRAM buffer.
-    //
-    // TT1 is restricted to supervisor FCs (FC_BASE=4 FC_MASK=3 → FC=4..7) so
-    // user-mode accesses in $F0000000-$FFFFFFFF fall through to the CRP walk.
-    // A/UX 3.0.1 retail places USRSTACK at $FFFFFFE0 (top of 32-bit VA) and
-    // maps it to real RAM via the user CRP; a user-FC-matching TT1 would
-    // short-circuit that walk and silently drop stack pushes (identity phys
-    // $FFFFFxxx is unmapped RAM).
-    // TT1: base=$F0, mask=$0F (match $F0-$FF), E=1, FC_BASE=4 FC_MASK=3
-    se30->mmu->tt1 = 0xF00F8043;
-
-    // Register alternate physical addresses for page-table-mapped access.
-    // After the ROM sets up MMU page tables, logical $FExxxxxx maps to
-    // physical $50Fxxxxx. Both VRAM and VROM must be accessible at their
-    // page-table-mapped physical addresses in addition to their TT addresses.
     memory_map_host_region_alias(cfg->mem_map, SE30_VRAM_PHYS_ALT, SE30_VRAM_BASE);
     memory_map_host_region_alias(cfg->mem_map, SE30_VROM_PHYS_ALT, SE30_VROM_PHYS);
+}
 
-    // Only NuBus expansion slots $9-$D generate bus errors on unmapped reads.
-    // Slot $E is built-in video (mapped). Slot $F and $0-$8 are internal/absent
-    // and return 0 without bus error, matching SE/30 GLUE chip behavior.
-    memory_set_bus_error_range(cfg->mem_map, 0xF9000000, 0xFDFFFFFF);
+// Restore the card-owned VRAM/VROM bytes from a checkpoint (before the shared
+// MMU-register restore that mac030_glue_init performs).
+static void se30_ckpt_restore_extra(config_t *cfg, checkpoint_t *cp) {
+    se30_state_t *se30 = se30_state(cfg);
+    system_read_checkpoint_data(cp, se30->vram, SE30_VRAM_SIZE);
+    checkpoint_read_file(cp, se30->vrom, SE30_VROM_SIZE, NULL);
+}
 
-    // Populate SE/30 memory layout (RAM, ROM, VRAM, VROM, I/O, overlay).
-    // The card-owned VRAM/VROM bytes are wired into the page table here;
-    // the framebuffer pointer the renderer reads lives on the card's
-    // display_t and is reached via system_display() / cfg->nubus.
-    se30_memory_layout_init(cfg);
+// SE/30 board: GLUE family with built-in slot-$E video; bus-error window covers
+// only slots $9..$D (slot $E is the mapped built-in video).
+static const mac030_glue_board_t se30_board = {
+    .via1_output = se30_via1_output,
+    .via1_shift_out = se30_via1_shift_out,
+    .via2_output = se30_via2_output,
+    .via2_shift_out = se30_via2_shift_out,
+    .setup_id = se30_setup_id,
+    .slots = se30_slots,
+    .bus_err_lo = 0xF9000000,
+    .bus_err_hi = 0xFDFFFFFF,
+    .memory_layout = se30_memory_layout_init,
+    .pre_devices = se30_pre_devices,
+    .post_nubus = se30_post_nubus,
+    .ckpt_restore_extra = se30_ckpt_restore_extra,
+};
 
-    // Re-drive VIA outputs on checkpoint restore (also restores alt-buffer state)
-    if (checkpoint) {
-        // Restore VRAM contents
-        system_read_checkpoint_data(checkpoint, se30->vram, SE30_VRAM_SIZE);
-
-        // Restore VROM from checkpoint (content for consolidated, file ref for quick)
-        checkpoint_read_file(checkpoint, se30->vrom, SE30_VROM_SIZE, NULL);
-
-        // Restore MMU guest registers (must match save order in se30_checkpoint_save)
-        mmu_checkpoint_restore(se30->mmu, checkpoint);
-
-        // Flush TLB so page table walks use the restored CRP/SRP/TC
-        mmu_invalidate_tlb(se30->mmu);
-
-        // Re-assign MMU pointers that checkpoint_restore overwrote with stale addresses
-        g_mmu = se30->mmu;
-        cpu_attach_mmu(cfg->cpu, se30->mmu);
-
-        via_redrive_outputs(cfg->via1);
-        via_redrive_outputs(cfg->via2);
-    }
-
-    mac030_glue_finish(cfg, checkpoint);
+static void se30_init(config_t *cfg, checkpoint_t *checkpoint) {
+    mac030_glue_init(cfg, checkpoint, &se30_board);
 }
 
 // Tear down all SE/30 resources in reverse init order.

@@ -125,33 +125,10 @@ static const nubus_slot_decl_t iix_slots[] = {
 // Init / Teardown
 // ============================================================
 
-static void iix_init(config_t *cfg, checkpoint_t *checkpoint) {
-    iicx_state_t *st = calloc(1, sizeof(*st));
-    assert(st != NULL);
-    cfg->machine_context = st;
-    st->last_port_b = 0x30;
-    st->last_via2_port_b = 0xFF;
-
-    // Build the shared II-family core (mem_map, cpu-from-profile, scheduler).
-    mac030_build_core(cfg, checkpoint);
-    if (checkpoint)
-        system_read_checkpoint_data(checkpoint, &cfg->irq, sizeof(cfg->irq));
-
-    cfg->rtc = rtc_init(cfg->scheduler, checkpoint, true);
-    cfg->scc = scc_init(NULL, cfg->scheduler, mac030_glue_scc_irq, cfg, checkpoint);
-    scc_set_clocks(cfg->scc, 7833600, 3686400);
-
-    cfg->via1 = via_init(NULL, cfg->scheduler, 20, "via1", iicx_via1_output, iicx_via1_shift_out, mac030_glue_via1_irq,
-                         cfg, checkpoint);
-    cfg->via2 = via_init(NULL, cfg->scheduler, 20, "via2", iix_via2_output, iix_via2_shift_out, mac030_glue_via2_irq,
-                         cfg, checkpoint);
-    rtc_set_via(cfg->rtc, cfg->via1);
-
-    // Machine ID: PA6 = 0, PB3 = 0 (IIx).  Default port-A input is
-    // 0xF7 (bit 6 = 1); pull bit 6 low via via_input.
+// Machine-ID straps: PA6 = 0, PB3 = 0 (IIx); VIA2 slot-IRQ PA lines idle high.
+static void iix_setup_id(config_t *cfg) {
     via_input(cfg->via1, 0, 6, 0);
     via_input(cfg->via2, 1, 3, 0);
-    // VIA2 PA bits idle high (no slot IRQ).
     via_input(cfg->via2, 0, 0, 1);
     via_input(cfg->via2, 0, 1, 1);
     via_input(cfg->via2, 0, 2, 1);
@@ -161,30 +138,23 @@ static void iix_init(config_t *cfg, checkpoint_t *checkpoint) {
     via_input_c(cfg->via2, 0, 0, 1);
     via_input_c(cfg->via2, 0, 1, 1);
     via_input_c(cfg->via2, 1, 1, 1);
+}
 
-    // ADB, SCSI, ASC, SWIM floppy + I/O dispatcher bind (shared GLUE order).
-    mac030_glue_build_peripherals(cfg, checkpoint, st);
+// IIx board: GLUE family, six NuBus slots, no soft-power / sound-jack.
+static const mac030_glue_board_t iix_board = {
+    .via1_output = iicx_via1_output,
+    .via1_shift_out = iicx_via1_shift_out,
+    .via2_output = iix_via2_output,
+    .via2_shift_out = iix_via2_shift_out,
+    .setup_id = iix_setup_id,
+    .slots = iix_slots,
+    .bus_err_lo = 0xF9000000,
+    .bus_err_hi = 0xFEFFFFFF,
+    .memory_layout = iicx_memory_layout_init,
+};
 
-    st->mmu = mac030_glue_build_mmu(cfg);
-    st->mmu->tt1 = 0xF00F8043;
-
-    cfg->nubus = nubus_init(cfg, iix_slots, checkpoint);
-
-    // Bus error window covers all six slots.
-    memory_set_bus_error_range(cfg->mem_map, 0xF9000000, 0xFEFFFFFF);
-
-    iicx_memory_layout_init(cfg);
-
-    if (checkpoint) {
-        mmu_checkpoint_restore(st->mmu, checkpoint);
-        mmu_invalidate_tlb(st->mmu);
-        g_mmu = st->mmu;
-        cpu_attach_mmu(cfg->cpu, st->mmu);
-        via_redrive_outputs(cfg->via1);
-        via_redrive_outputs(cfg->via2);
-    }
-
-    mac030_glue_finish(cfg, checkpoint);
+static void iix_init(config_t *cfg, checkpoint_t *checkpoint) {
+    mac030_glue_init(cfg, checkpoint, &iix_board);
 }
 
 static void iix_teardown(config_t *cfg) {

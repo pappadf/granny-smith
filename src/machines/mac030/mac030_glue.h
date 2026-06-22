@@ -96,6 +96,36 @@ struct mmu_state *mac030_glue_build_mmu(config_t *cfg);
 // on a cold boot (left intact on checkpoint restore).
 void mac030_glue_finish(config_t *cfg, checkpoint_t *cp);
 
+struct nubus_slot_decl;
+
+// A GLUE machine expressed as data + a few hooks (proposal §4.2.2).  The
+// shared mac030_glue_init() walks this in canonical order; the per-machine
+// deltas are the VIA output/shift callbacks, the machine-ID strap sequence,
+// the slot table, the bus-error window, the memory layout, and (SE/30 only)
+// the built-in-video wiring.  NULL hooks are skipped.
+typedef struct mac030_glue_board {
+    void (*via1_output)(void *context, uint8_t port, uint8_t value);
+    void (*via1_shift_out)(void *context, uint8_t byte);
+    void (*via2_output)(void *context, uint8_t port, uint8_t value);
+    void (*via2_shift_out)(void *context, uint8_t byte);
+
+    void (*setup_id)(config_t *cfg); // machine-ID strap + VIA2 idle lines
+    const struct nubus_slot_decl *slots; // NuBus slot table
+    uint32_t bus_err_lo, bus_err_hi; // unmapped-slot bus-error window
+
+    void (*memory_layout)(config_t *cfg); // RAM/ROM/IO page-table setup + overlay
+
+    void (*pre_devices)(config_t *cfg); // optional: before device construction (SE/30 VBL event type)
+    void (*post_nubus)(config_t *cfg); // optional: after nubus_init (SE/30 VRAM/VROM wiring)
+    void (*ckpt_restore_extra)(config_t *cfg, checkpoint_t *cp); // optional: extra restore (SE/30 VRAM/VROM)
+} mac030_glue_board_t;
+
+// The shared GLUE init: allocates the unified state, builds the II-family
+// core + RTC/SCC/VIA1/VIA2 + peripherals + PMMU + NuBus in canonical order,
+// applies the board's deltas via its hooks, and finishes.  A GLUE machine's
+// substrate.init is a one-liner that calls this with its board.
+void mac030_glue_init(config_t *cfg, checkpoint_t *cp, const mac030_glue_board_t *board);
+
 // IRQ source bits driven into cfg->irq.  GLUE routes them to fixed IPLs:
 // VIA1→1, VIA2→2, SCC→4, NMI→7.  The per-machine SE30_IRQ_* / IICX_IRQ_*
 // aliases carry the same values and remain valid `source` arguments.

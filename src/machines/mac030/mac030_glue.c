@@ -16,6 +16,7 @@
 #include "log.h"
 #include "memory.h"
 #include "mmu.h"
+#include "nubus.h"
 #include "rtc.h"
 #include "scc.h"
 #include "scheduler.h"
@@ -23,6 +24,7 @@
 #include "via.h"
 
 #include <assert.h>
+#include <stdlib.h>
 
 LOG_USE_CATEGORY_NAME("setup");
 
@@ -70,6 +72,62 @@ void mac030_glue_finish(config_t *cfg, checkpoint_t *cp) {
         cfg->irq = 0;
         cpu_set_ipl(cfg->cpu, 0);
     }
+}
+
+// The shared GLUE init — board-driven (see header).  Order is the canonical
+// se30/iicx/iix init spine; per-machine deltas come from the board's data and
+// hooks.  TT1 is uniform across the GLUE family ($F0..$FF supervisor identity);
+// it is set right after the PMMU is built (no MMU walk happens before
+// scheduler_start, so the exact moment is immaterial).
+void mac030_glue_init(config_t *cfg, checkpoint_t *cp, const mac030_glue_board_t *board) {
+    mac030_glue_state_t *st = calloc(1, sizeof(*st));
+    assert(st != NULL);
+    cfg->machine_context = st;
+    st->last_port_b = 0x30; // ADB ST1:ST0 idle = 11
+    st->last_via2_port_b = 0xFF; // PB2 starts high (IIcx soft-power; unused elsewhere)
+
+    mac030_build_core(cfg, cp);
+    if (board->pre_devices)
+        board->pre_devices(cfg);
+    if (cp)
+        system_read_checkpoint_data(cp, &cfg->irq, sizeof(cfg->irq));
+
+    cfg->rtc = rtc_init(cfg->scheduler, cp, true);
+    cfg->scc = scc_init(NULL, cfg->scheduler, mac030_glue_scc_irq, cfg, cp);
+    scc_set_clocks(cfg->scc, 7833600, 3686400);
+
+    cfg->via1 = via_init(NULL, cfg->scheduler, 20, "via1", board->via1_output, board->via1_shift_out,
+                         mac030_glue_via1_irq, cfg, cp);
+    cfg->via2 = via_init(NULL, cfg->scheduler, 20, "via2", board->via2_output, board->via2_shift_out,
+                         mac030_glue_via2_irq, cfg, cp);
+    rtc_set_via(cfg->rtc, cfg->via1);
+
+    board->setup_id(cfg);
+
+    mac030_glue_build_peripherals(cfg, cp, st);
+
+    st->mmu = mac030_glue_build_mmu(cfg);
+    st->mmu->tt1 = 0xF00F8043; // supervisor-only identity map for NuBus $F0..$FF
+
+    cfg->nubus = nubus_init(cfg, board->slots, cp);
+    if (board->post_nubus)
+        board->post_nubus(cfg);
+
+    memory_set_bus_error_range(cfg->mem_map, board->bus_err_lo, board->bus_err_hi);
+    board->memory_layout(cfg);
+
+    if (cp) {
+        if (board->ckpt_restore_extra)
+            board->ckpt_restore_extra(cfg, cp);
+        mmu_checkpoint_restore(st->mmu, cp);
+        mmu_invalidate_tlb(st->mmu);
+        g_mmu = st->mmu;
+        cpu_attach_mmu(cfg->cpu, st->mmu);
+        via_redrive_outputs(cfg->via1);
+        via_redrive_outputs(cfg->via2);
+    }
+
+    mac030_glue_finish(cfg, cp);
 }
 
 // Build the shared II-family construction prefix.  Reads the CPU model from
