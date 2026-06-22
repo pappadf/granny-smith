@@ -162,31 +162,10 @@ static void iix_init(config_t *cfg, checkpoint_t *checkpoint) {
     via_input_c(cfg->via2, 0, 1, 1);
     via_input_c(cfg->via2, 1, 1, 1);
 
-    st->adb = adb_init(cfg->via1, cfg->scheduler, checkpoint);
-    cfg->adb = st->adb;
+    // ADB, SCSI, ASC, SWIM floppy + I/O dispatcher bind (shared GLUE order).
+    mac030_glue_build_peripherals(cfg, checkpoint, st);
 
-    if (checkpoint)
-        mac_checkpoint_restore_images(cfg, checkpoint);
-
-    cfg->scsi = scsi_init(NULL, checkpoint);
-    scsi_set_via(cfg->scsi, cfg->via2);
-    setup_images(cfg);
-
-    st->asc = asc_init(NULL, cfg->scheduler, checkpoint);
-    asc_set_via(st->asc, cfg->via2);
-    st->floppy = floppy_init(FLOPPY_TYPE_SWIM, NULL, cfg->scheduler, checkpoint);
-    cfg->floppy = st->floppy;
-
-    mac030_glue_io_bind(&st->glue_io, cfg, st->asc, st->floppy);
-
-    uint8_t *ram_base = ram_native_pointer(cfg->mem_map, 0);
-    uint32_t ram_size = cfg->ram_size;
-    uint8_t *rom_data = ram_native_pointer(cfg->mem_map, ram_size);
-    uint32_t rom_size = cfg->machine->rom_size;
-    st->mmu = mmu_init(ram_base, ram_size, cfg->machine->ram_max, rom_data, rom_size, IICX_ROM_START, IICX_ROM_END);
-    assert(st->mmu != NULL);
-    g_mmu = st->mmu;
-    cpu_attach_mmu(cfg->cpu, st->mmu);
+    st->mmu = mac030_glue_build_mmu(cfg);
     st->mmu->tt1 = 0xF00F8043;
 
     cfg->nubus = nubus_init(cfg, iix_slots, checkpoint);
@@ -205,12 +184,7 @@ static void iix_init(config_t *cfg, checkpoint_t *checkpoint) {
         via_redrive_outputs(cfg->via2);
     }
 
-    cfg->debugger = debug_init();
-    scheduler_start(cfg->scheduler);
-    if (!checkpoint) {
-        cfg->irq = 0;
-        cpu_set_ipl(cfg->cpu, 0);
-    }
+    mac030_glue_finish(cfg, checkpoint);
 }
 
 static void iix_teardown(config_t *cfg) {

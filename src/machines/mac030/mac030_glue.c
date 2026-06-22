@@ -8,9 +8,11 @@
 
 #include "adb.h"
 #include "asc.h"
+#include "checkpoint_images.h"
 #include "cpu.h"
 #include "debug.h"
 #include "floppy.h"
+#include "image.h"
 #include "log.h"
 #include "memory.h"
 #include "mmu.h"
@@ -20,7 +22,55 @@
 #include "scsi.h"
 #include "via.h"
 
+#include <assert.h>
+
 LOG_USE_CATEGORY_NAME("setup");
+
+// Construct the GLUE peripheral set in canonical order — see header.
+void mac030_glue_build_peripherals(config_t *cfg, checkpoint_t *cp, mac030_glue_state_t *st) {
+    st->adb = adb_init(cfg->via1, cfg->scheduler, cp);
+    cfg->adb = st->adb;
+
+    // Restore the image list before devices that reference it.
+    if (cp)
+        mac_checkpoint_restore_images(cfg, cp);
+
+    cfg->scsi = scsi_init(NULL, cp);
+    scsi_set_via(cfg->scsi, cfg->via2);
+    setup_images(cfg);
+
+    st->asc = asc_init(NULL, cfg->scheduler, cp);
+    asc_set_via(st->asc, cfg->via2);
+
+    st->floppy = floppy_init(FLOPPY_TYPE_SWIM, NULL, cfg->scheduler, cp);
+    cfg->floppy = st->floppy;
+
+    mac030_glue_io_bind(&st->glue_io, cfg, st->asc, st->floppy);
+}
+
+// Create + attach the 68030 PMMU over the GLUE map — see header.
+struct mmu_state *mac030_glue_build_mmu(config_t *cfg) {
+    uint8_t *ram_base = ram_native_pointer(cfg->mem_map, 0);
+    uint32_t ram_size = cfg->ram_size;
+    uint8_t *rom_data = ram_native_pointer(cfg->mem_map, ram_size);
+    uint32_t rom_size = cfg->machine->rom_size;
+    mmu_state_t *mmu =
+        mmu_init(ram_base, ram_size, cfg->machine->ram_max, rom_data, rom_size, 0x40000000UL, 0x50000000UL);
+    assert(mmu != NULL);
+    g_mmu = mmu;
+    cpu_attach_mmu(cfg->cpu, mmu);
+    return mmu;
+}
+
+// Finish init: debugger, scheduler start, cold-boot IRQ/IPL reset.
+void mac030_glue_finish(config_t *cfg, checkpoint_t *cp) {
+    cfg->debugger = debug_init();
+    scheduler_start(cfg->scheduler);
+    if (!cp) {
+        cfg->irq = 0;
+        cpu_set_ipl(cfg->cpu, 0);
+    }
+}
 
 // Build the shared II-family construction prefix.  Reads the CPU model from
 // the profile (single source of truth — §1.3), not a hardcoded constant.

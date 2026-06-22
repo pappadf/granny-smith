@@ -80,6 +80,21 @@ void mac030_glue_set_rom_overlay(config_t *cfg, bool *overlay_flag, bool on);
 // `mmu` may be NULL.
 void mac030_glue_reset(config_t *cfg, bool *overlay_flag, struct mmu_state *mmu);
 
+// Construct the GLUE peripheral set shared by se30/iicx/iix in canonical
+// order: ADB, (checkpoint image restore), SCSI (+VIA2), images, ASC (+VIA2),
+// SWIM floppy, then bind the I/O dispatcher.  Stores the device handles in
+// the unified state and on config_t.  Call after VIA1/VIA2 exist.
+void mac030_glue_build_peripherals(config_t *cfg, checkpoint_t *cp, mac030_glue_state_t *st);
+
+// Create the 68030 PMMU over the GLUE address map (ROM at $40000000), make it
+// the global MMU, and attach it to the CPU.  Returns the new MMU; the caller
+// stores it and sets any transparent-translation registers (e.g. TT1).
+struct mmu_state *mac030_glue_build_mmu(config_t *cfg);
+
+// Finish init: create the debugger, start the scheduler, and zero the IRQ/IPL
+// on a cold boot (left intact on checkpoint restore).
+void mac030_glue_finish(config_t *cfg, checkpoint_t *cp);
+
 // IRQ source bits driven into cfg->irq.  GLUE routes them to fixed IPLs:
 // VIA1→1, VIA2→2, SCC→4, NMI→7.  The per-machine SE30_IRQ_* / IICX_IRQ_*
 // aliases carry the same values and remain valid `source` arguments.

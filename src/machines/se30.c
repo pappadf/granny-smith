@@ -435,45 +435,13 @@ static void se30_init(config_t *cfg, checkpoint_t *checkpoint) {
     via_input_c(cfg->via2, 0, 1, 1); // CA2: SCSI DRQ (no DMA request)
     via_input_c(cfg->via2, 1, 1, 1); // CB2: SCSI IRQ (no SCSI interrupt)
 
-    // Initialise ADB controller (uses VIA1 for shift register and port B: ST0/ST1, vADBInt)
-    se30->adb = adb_init(cfg->via1, cfg->scheduler, checkpoint);
-    cfg->adb = se30->adb; // expose ADB to system-level input routing
-
-    // Restore image list from checkpoint before devices that reference them.
-    // Loop body lives in mac_checkpoint_restore_images so future glue030
-    // family members (IIcx, IIx) reuse the same serialisation.
-    if (checkpoint)
-        mac_checkpoint_restore_images(cfg, checkpoint);
-
-    // Initialise SCSI (NULL map: I/O dispatcher handles addressing)
-    cfg->scsi = scsi_init(NULL, checkpoint);
-    scsi_set_via(cfg->scsi, cfg->via2);
-
-    setup_images(cfg);
-
-    // Initialise ASC (NULL map: I/O dispatcher handles addressing)
-    se30->asc = asc_init(NULL, cfg->scheduler, checkpoint);
-    asc_set_via(se30->asc, cfg->via2);
-
-    // Initialise SWIM floppy controller (NULL map: I/O dispatcher)
-    se30->floppy = floppy_init(FLOPPY_TYPE_SWIM, NULL, cfg->scheduler, checkpoint);
-    cfg->floppy = se30->floppy; // expose floppy to generic floppy commands
-
-    // Bind device handles for the shared GLUE I/O dispatcher.
-    mac030_glue_io_bind(&se30->glue_io, cfg, se30->asc, se30->floppy);
+    // ADB, SCSI, ASC, SWIM floppy + I/O dispatcher bind (shared GLUE order).
+    mac030_glue_build_peripherals(cfg, checkpoint, se30);
 
     // ---- MMU + NuBus + VRAM/VROM wiring ----
 
-    // Create the 68030 PMMU and make it globally reachable
-    uint8_t *ram_base = ram_native_pointer(cfg->mem_map, 0);
-    uint32_t ram_size = cfg->ram_size;
-    uint8_t *rom_data = ram_native_pointer(cfg->mem_map, ram_size);
-    uint32_t rom_size = cfg->machine->rom_size;
-
-    se30->mmu = mmu_init(ram_base, ram_size, cfg->machine->ram_max, rom_data, rom_size, SE30_ROM_START, SE30_ROM_END);
-    assert(se30->mmu != NULL);
-    g_mmu = se30->mmu;
-    cpu_attach_mmu(cfg->cpu, se30->mmu);
+    // Create the 68030 PMMU and make it globally reachable.
+    se30->mmu = mac030_glue_build_mmu(cfg);
 
     // Bring up the NuBus.  Slot $E is BUILTIN with the SE/30 video card;
     // slots $9..$B are the PDS pseudo-slots (EMPTY in v1, no card seated).
@@ -562,15 +530,7 @@ static void se30_init(config_t *cfg, checkpoint_t *checkpoint) {
         via_redrive_outputs(cfg->via2);
     }
 
-    cfg->debugger = debug_init();
-
-    scheduler_start(cfg->scheduler);
-
-    // Initialise IRQ/IPL only for cold boot
-    if (!checkpoint) {
-        cfg->irq = 0;
-        cpu_set_ipl(cfg->cpu, 0);
-    }
+    mac030_glue_finish(cfg, checkpoint);
 }
 
 // Tear down all SE/30 resources in reverse init order.
