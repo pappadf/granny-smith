@@ -22,6 +22,7 @@
 #include "mac030_glue.h"
 #include "mac_host_io.h"
 #include "machine.h"
+#include "mdu.h" // mdu_substrate + mac030_mdu_board_t
 #include "mmu_checkpoint.h"
 #include "system_config.h"
 
@@ -73,15 +74,6 @@ LOG_USE_CATEGORY_NAME("iici");
 
 static void iici_set_rom_overlay(config_t *cfg, bool overlay) {
     mac030_glue_set_rom_overlay(cfg, &iici_state(cfg)->rom_overlay, IICI_ROM_START, overlay);
-}
-
-// ============================================================
-// Hardware reset
-// ============================================================
-
-static void iici_reset(config_t *cfg) {
-    iici_state_t *st = iici_state(cfg);
-    mac030_glue_reset(cfg, &st->rom_overlay, IICI_ROM_START, st->mmu);
 }
 
 // ============================================================
@@ -227,19 +219,6 @@ static void iici_via1_shift_out(void *context, uint8_t byte) {
 }
 
 // ============================================================
-// VBL trigger
-// ============================================================
-
-// No VIA2: pulse only the VIA1 CA1 heartbeat, then fan out to the NuBus
-// cards (the built-in video card marks its framebuffer dirty on_vbl).
-static void iici_trigger_vbl(config_t *cfg) {
-    via_input_c(cfg->via1, 0, 0, 0);
-    via_input_c(cfg->via1, 0, 0, 1);
-    nubus_tick_vbl(cfg->nubus);
-    image_tick_all(cfg);
-}
-
-// ============================================================
 // Slot table
 // ============================================================
 //
@@ -278,23 +257,12 @@ static const mac030_board_desc_t iici_board = {
 // Init / Teardown
 // ============================================================
 
-static void iici_init(config_t *cfg, checkpoint_t *checkpoint) {
-    iici_state_t *st = calloc(1, sizeof(*st));
-    assert(st != NULL);
-    cfg->machine_context = st;
+// IIci device construction (mac030_mdu_board_t.build_devices): everything after
+// the shared core/RTC/SCC/VIA1 prefix and before mac030_glue_finish.
+static void iici_build_devices(config_t *cfg, checkpoint_t *checkpoint) {
+    iici_state_t *st = iici_state(cfg);
     st->last_port_b = 0x30; // ADB ST1:ST0 idle = 11
-
-    // Build the shared II-family core (mem_map, cpu-from-profile, scheduler).
-    mac030_build_core(cfg, checkpoint);
-    if (checkpoint)
-        system_read_checkpoint_data(checkpoint, &cfg->irq, sizeof(cfg->irq));
-
-    cfg->rtc = rtc_init(cfg->scheduler, checkpoint, true);
-    cfg->scc = scc_init(NULL, cfg->scheduler, mac030_glue_scc_irq, cfg, checkpoint);
-    scc_set_clocks(cfg->scc, 7833600, 3686400);
-
-    cfg->via1 = via_init(NULL, cfg->scheduler, 20, "via1", iici_via1_output, iici_via1_shift_out, mac030_glue_via1_irq,
-                         cfg, checkpoint);
+    // The IIci bit-bangs the RTC on VIA1 (classic transceiver path).
     rtc_set_via(cfg->rtc, cfg->via1);
 
     // Machine-ID readback on VIA1 port A: PA6/PA4/PA2/PA1 = 1/0/1/1 for the
@@ -364,103 +332,6 @@ static void iici_init(config_t *cfg, checkpoint_t *checkpoint) {
         cpu_attach_mmu(cfg->cpu, st->mmu);
         via_redrive_outputs(cfg->via1);
     }
-
-    cfg->debugger = debug_init();
-    scheduler_start(cfg->scheduler);
-    if (!checkpoint) {
-        cfg->irq = 0;
-        cpu_set_ipl(cfg->cpu, 0);
-    }
-}
-
-static void iici_teardown(config_t *cfg) {
-    if (cfg->scheduler)
-        scheduler_stop(cfg->scheduler);
-    iici_state_t *st = iici_state(cfg);
-    if (st) {
-        if (st->rbv) {
-            rbv_delete(st->rbv);
-            st->rbv = NULL;
-        }
-        if (st->mmu) {
-            mmu_delete(st->mmu);
-            st->mmu = NULL;
-        }
-        if (st->floppy) {
-            floppy_delete(st->floppy);
-            st->floppy = NULL;
-            cfg->floppy = NULL;
-        }
-        if (st->asc) {
-            asc_delete(st->asc);
-            st->asc = NULL;
-        }
-        if (st->adb) {
-            adb_delete(st->adb);
-            st->adb = NULL;
-            cfg->adb = NULL;
-        }
-    }
-    // cfg->nubus is freed by system_destroy (which calls nubus_delete before
-    // the machine teardown), matching the SE/30 and IIcx lifecycle.
-    if (cfg->scsi) {
-        scsi_delete(cfg->scsi);
-        cfg->scsi = NULL;
-    }
-    if (cfg->via1) {
-        via_delete(cfg->via1);
-        cfg->via1 = NULL;
-    }
-    if (cfg->scc) {
-        scc_delete(cfg->scc);
-        cfg->scc = NULL;
-    }
-    if (cfg->rtc) {
-        rtc_delete(cfg->rtc);
-        cfg->rtc = NULL;
-    }
-    if (cfg->scheduler) {
-        scheduler_delete(cfg->scheduler);
-        cfg->scheduler = NULL;
-    }
-    if (cfg->cpu) {
-        cpu_delete(cfg->cpu);
-        cfg->cpu = NULL;
-    }
-    if (cfg->mem_map) {
-        memory_map_delete(cfg->mem_map);
-        cfg->mem_map = NULL;
-    }
-    if (cfg->debugger) {
-        debug_cleanup(cfg->debugger);
-        cfg->debugger = NULL;
-    }
-    if (st) {
-        free(st);
-        cfg->machine_context = NULL;
-    }
-}
-
-// ============================================================
-// Checkpoint
-// ============================================================
-
-static void iici_checkpoint_save(config_t *cfg, checkpoint_t *cp) {
-    iici_state_t *st = iici_state(cfg);
-    memory_map_checkpoint(cfg->mem_map, cp);
-    cpu_checkpoint(cfg->cpu, cp);
-    scheduler_checkpoint(cfg->scheduler, cp);
-    system_write_checkpoint_data(cp, &cfg->irq, sizeof(cfg->irq));
-    rtc_checkpoint(cfg->rtc, cp);
-    scc_checkpoint(cfg->scc, cp);
-    via_checkpoint(cfg->via1, cp);
-    adb_checkpoint(st->adb, cp);
-    mac_checkpoint_save_images(cfg, cp);
-    scsi_checkpoint(cfg->scsi, cp);
-    asc_checkpoint(st->asc, cp);
-    floppy_checkpoint(st->floppy, cp);
-    rbv_checkpoint(st->rbv, cp);
-    mmu_checkpoint_save(st->mmu, cp);
 }
 
 // ============================================================
@@ -481,19 +352,13 @@ static const struct scsi_slot iici_scsi_slots[] = {
     {0},
 };
 
-static const machine_substrate_t iici_substrate = {
-    .init = iici_init,
-    .reset = iici_reset,
-    .teardown = iici_teardown,
-    .checkpoint_save = iici_checkpoint_save,
-    .update_ipl = mac030_glue_update_ipl,
-    .trigger_vbl = iici_trigger_vbl,
-    .nubus_slot_irq = mac030_nubus_slot_irq_via_ipl,
-    .fd_insert = mac_fd_insert,
-    .fd_present = mac_fd_present,
-    .input_key = mac_input_key,
-    .input_mouse_move = mac_input_mouse_move,
-    .input_mouse_button = mac_input_mouse_button,
+// IIci board: the shared mdu_substrate reads its data descriptor + VIA1 hooks
+// + the device-construction body.
+static const mac030_mdu_board_t iici_mdu_board = {
+    .desc = &iici_board,
+    .via1_output = iici_via1_output,
+    .via1_shift_out = iici_via1_shift_out,
+    .build_devices = iici_build_devices,
 };
 
 const hw_profile_t machine_iici = {
@@ -519,5 +384,6 @@ const hw_profile_t machine_iici = {
 
     .nubus_slots = iici_slots,
 
-    .substrate = &iici_substrate,
+    .substrate = &mdu_substrate, // shared MDU+RBV-family substrate
+    .board = &iici_mdu_board,
 };

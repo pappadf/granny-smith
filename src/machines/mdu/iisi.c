@@ -24,6 +24,7 @@
 #include "mac030_glue.h"
 #include "mac_host_io.h"
 #include "machine.h"
+#include "mdu.h" // mdu_substrate + mac030_mdu_board_t
 #include "mmu_checkpoint.h"
 #include "system_config.h"
 
@@ -75,15 +76,6 @@ LOG_USE_CATEGORY_NAME("iisi");
 
 static void iisi_set_rom_overlay(config_t *cfg, bool overlay) {
     mac030_glue_set_rom_overlay(cfg, &iisi_state(cfg)->rom_overlay, IISI_ROM_START, overlay);
-}
-
-// ============================================================
-// Hardware reset
-// ============================================================
-
-static void iisi_reset(config_t *cfg) {
-    iisi_state_t *st = iisi_state(cfg);
-    mac030_glue_reset(cfg, &st->rom_overlay, IISI_ROM_START, st->mmu);
 }
 
 // ============================================================
@@ -227,18 +219,6 @@ static void iisi_via1_shift_out(void *context, uint8_t byte) {
 // VBL trigger
 // ============================================================
 
-// VBL.  VIA1 CA1 carries the 60.15 Hz vertical-blank interrupt (IPL 1) — the
-// ROM's VIATest waits on exactly this (it counts 10 CA1 interrupts) and the OS
-// VBL manager runs off it, so we must pulse CA1 every frame just like the
-// classic-ADB machines.  The RBV/V8 slot-0 (RvIRQ0 → IPL 2) interrupt is fanned
-// out to the NuBus card on_vbl below.  The 1-second tick is delivered by Egret.
-static void iisi_trigger_vbl(config_t *cfg) {
-    via_input_c(cfg->via1, 0, 0, 0);
-    via_input_c(cfg->via1, 0, 0, 1);
-    nubus_tick_vbl(cfg->nubus);
-    image_tick_all(cfg);
-}
-
 // ============================================================
 // Slot table
 // ============================================================
@@ -274,25 +254,11 @@ static const mac030_board_desc_t iisi_board = {
 // Init / Teardown
 // ============================================================
 
-static void iisi_init(config_t *cfg, checkpoint_t *checkpoint) {
-    iisi_state_t *st = calloc(1, sizeof(*st));
-    assert(st != NULL);
-    cfg->machine_context = st;
-
-    // Build the shared II-family core (mem_map, cpu-from-profile, scheduler).
-    mac030_build_core(cfg, checkpoint);
-    if (checkpoint)
-        system_read_checkpoint_data(checkpoint, &cfg->irq, sizeof(cfg->irq));
-
-    // RTC backs Egret's clock + PRAM pseudo-commands; it is NOT bit-banged on
-    // VIA1 PB0-2 (the IIsi has no classic transceiver path), so we do not call
-    // rtc_set_via.
-    cfg->rtc = rtc_init(cfg->scheduler, checkpoint, true);
-    cfg->scc = scc_init(NULL, cfg->scheduler, mac030_glue_scc_irq, cfg, checkpoint);
-    scc_set_clocks(cfg->scc, 7833600, 3686400);
-
-    cfg->via1 = via_init(NULL, cfg->scheduler, 20, "via1", iisi_via1_output, iisi_via1_shift_out, mac030_glue_via1_irq,
-                         cfg, checkpoint);
+// IIsi device construction (mac030_mdu_board_t.build_devices): everything after
+// the shared core/RTC/SCC/VIA1 prefix and before mac030_glue_finish.  No
+// rtc_set_via — the IIsi drives the RTC through Egret, not the VIA1 transceiver.
+static void iisi_build_devices(config_t *cfg, checkpoint_t *checkpoint) {
+    iisi_state_t *st = iisi_state(cfg);
 
     // Machine-ID readback on VIA1 port A: PA6/PA4/PA2/PA1 = 0/1/1/1 for the
     // IIsi ("Erickson") — mask $56, value $16 per InfoMacIIsi.
@@ -380,107 +346,6 @@ static void iisi_init(config_t *cfg, checkpoint_t *checkpoint) {
         cpu_attach_mmu(cfg->cpu, st->mmu);
         via_redrive_outputs(cfg->via1);
     }
-
-    cfg->debugger = debug_init();
-    scheduler_start(cfg->scheduler);
-    if (!checkpoint) {
-        cfg->irq = 0;
-        cpu_set_ipl(cfg->cpu, 0);
-    }
-}
-
-static void iisi_teardown(config_t *cfg) {
-    if (cfg->scheduler)
-        scheduler_stop(cfg->scheduler);
-    iisi_state_t *st = iisi_state(cfg);
-    if (st) {
-        if (st->egret) {
-            egret_delete(st->egret);
-            st->egret = NULL;
-        }
-        if (st->rbv) {
-            rbv_delete(st->rbv);
-            st->rbv = NULL;
-        }
-        if (st->mmu) {
-            mmu_delete(st->mmu);
-            st->mmu = NULL;
-        }
-        if (st->floppy) {
-            floppy_delete(st->floppy);
-            st->floppy = NULL;
-            cfg->floppy = NULL;
-        }
-        if (st->asc) {
-            asc_delete(st->asc);
-            st->asc = NULL;
-        }
-        if (st->adb) {
-            adb_delete(st->adb);
-            st->adb = NULL;
-            cfg->adb = NULL;
-        }
-    }
-    // cfg->nubus is freed by system_destroy (before the machine teardown).
-    if (cfg->scsi) {
-        scsi_delete(cfg->scsi);
-        cfg->scsi = NULL;
-    }
-    if (cfg->via1) {
-        via_delete(cfg->via1);
-        cfg->via1 = NULL;
-    }
-    if (cfg->scc) {
-        scc_delete(cfg->scc);
-        cfg->scc = NULL;
-    }
-    if (cfg->rtc) {
-        rtc_delete(cfg->rtc);
-        cfg->rtc = NULL;
-    }
-    if (cfg->scheduler) {
-        scheduler_delete(cfg->scheduler);
-        cfg->scheduler = NULL;
-    }
-    if (cfg->cpu) {
-        cpu_delete(cfg->cpu);
-        cfg->cpu = NULL;
-    }
-    if (cfg->mem_map) {
-        memory_map_delete(cfg->mem_map);
-        cfg->mem_map = NULL;
-    }
-    if (cfg->debugger) {
-        debug_cleanup(cfg->debugger);
-        cfg->debugger = NULL;
-    }
-    if (st) {
-        free(st);
-        cfg->machine_context = NULL;
-    }
-}
-
-// ============================================================
-// Checkpoint
-// ============================================================
-
-static void iisi_checkpoint_save(config_t *cfg, checkpoint_t *cp) {
-    iisi_state_t *st = iisi_state(cfg);
-    memory_map_checkpoint(cfg->mem_map, cp);
-    cpu_checkpoint(cfg->cpu, cp);
-    scheduler_checkpoint(cfg->scheduler, cp);
-    system_write_checkpoint_data(cp, &cfg->irq, sizeof(cfg->irq));
-    rtc_checkpoint(cfg->rtc, cp);
-    scc_checkpoint(cfg->scc, cp);
-    via_checkpoint(cfg->via1, cp);
-    adb_checkpoint(st->adb, cp);
-    egret_checkpoint(st->egret, cp);
-    mac_checkpoint_save_images(cfg, cp);
-    scsi_checkpoint(cfg->scsi, cp);
-    asc_checkpoint(st->asc, cp);
-    floppy_checkpoint(st->floppy, cp);
-    rbv_checkpoint(st->rbv, cp);
-    mmu_checkpoint_save(st->mmu, cp);
 }
 
 // ============================================================
@@ -505,19 +370,13 @@ static const struct scsi_slot iisi_scsi_slots[] = {
     {0},
 };
 
-static const machine_substrate_t iisi_substrate = {
-    .init = iisi_init,
-    .reset = iisi_reset,
-    .teardown = iisi_teardown,
-    .checkpoint_save = iisi_checkpoint_save,
-    .update_ipl = mac030_glue_update_ipl,
-    .trigger_vbl = iisi_trigger_vbl,
-    .nubus_slot_irq = mac030_nubus_slot_irq_via_ipl,
-    .fd_insert = mac_fd_insert,
-    .fd_present = mac_fd_present,
-    .input_key = mac_input_key,
-    .input_mouse_move = mac_input_mouse_move,
-    .input_mouse_button = mac_input_mouse_button,
+// IIsi board: the shared mdu_substrate reads its data descriptor + VIA1 hooks
+// + the device-construction body (Egret + 2-bank RAM live inside build_devices).
+static const mac030_mdu_board_t iisi_mdu_board = {
+    .desc = &iisi_board,
+    .via1_output = iisi_via1_output,
+    .via1_shift_out = iisi_via1_shift_out,
+    .build_devices = iisi_build_devices,
 };
 
 const hw_profile_t machine_iisi = {
@@ -543,5 +402,6 @@ const hw_profile_t machine_iisi = {
 
     .nubus_slots = iisi_slots,
 
-    .substrate = &iisi_substrate,
+    .substrate = &mdu_substrate, // shared MDU+RBV-family substrate
+    .board = &iisi_mdu_board,
 };
