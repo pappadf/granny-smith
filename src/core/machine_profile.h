@@ -83,8 +83,19 @@ typedef struct machine_substrate {
     void (*update_ipl)(struct config *cfg, int source, bool active); // NuBus IRQ routing
     void (*trigger_vbl)(struct config *cfg);
 
-    // Non-IWM floppy insertion (Lisa FDC); host-input injection (Lisa COPS);
-    // and the primary display on the non-NuBus path.  NULL where unused.
+    // Drive NuBus slot `slot` ($9..$E) /NMRQ active/inactive.  `umbrella_edge`
+    // is true when this transition flips the "any slot asserted" aggregate.
+    // Every NuBus machine implements it (GLUE → VIA2 port-A bit + CA1 on the
+    // umbrella edge; MDU/OSS → the chipset's own IRQ controller via update_ipl);
+    // keeps nubus.c machine-agnostic — no cfg->via2 poke (proposal §4.4).  NULL
+    // on non-NuBus machines (Plus / Lisa), which never reach it.
+    void (*nubus_slot_irq)(struct config *cfg, int slot, bool active, bool umbrella_edge);
+
+    // Floppy insertion + host-input injection + primary display, implemented by
+    // EVERY substrate (Macs route to the shared mac_* helpers / NuBus video;
+    // Lisa to its FDC / COPS) — one uniform path, no NULL-and-fallback
+    // (proposal §4.4).  `display` may still be NULL on machines that surface
+    // their framebuffer through the NuBus primary-display path instead.
     int (*fd_insert)(struct config *cfg, int drive, struct image *disk);
     bool (*fd_present)(struct config *cfg, int drive);
     int (*input_key)(struct config *cfg, const char *key, bool down);

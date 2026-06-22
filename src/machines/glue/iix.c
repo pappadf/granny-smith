@@ -215,6 +215,7 @@ static const machine_substrate_t iix_substrate = {
     .checkpoint_save = iix_checkpoint_save,
     .update_ipl = mac030_glue_update_ipl,
     .trigger_vbl = iix_trigger_vbl,
+    .nubus_slot_irq = mac030_glue_nubus_slot_irq,
     .fd_insert = mac_fd_insert,
     .fd_present = mac_fd_present,
     .input_key = mac_input_key,

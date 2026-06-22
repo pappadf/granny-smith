@@ -224,6 +224,32 @@ void mac030_glue_update_ipl(config_t *cfg, int source, bool active) {
     cpu_reschedule();
 }
 
+// substrate.nubus_slot_irq (GLUE): each NuBus slot's /NMRQ line maps to a VIA2
+// port-A bit (active-low; slot $9→PA0 .. $E→PA5); the umbrella OR-line edge
+// (no slot asserted ↔ any slot asserted) pulses CA1.  Verbatim from the former
+// nubus.c VIA2 fast-path — now reached uniformly through the substrate so
+// nubus.c carries no cfg->via2 (proposal §4.4).
+void mac030_glue_nubus_slot_irq(config_t *cfg, int slot, bool active, bool umbrella_edge) {
+    int pa_bit = slot - 0x9;
+    if (pa_bit < 0 || pa_bit > 5)
+        return;
+    via_input(cfg->via2, /*port A*/ 0, pa_bit, active ? 0 : 1); // active-low
+    if (umbrella_edge)
+        via_input_c(cfg->via2, /*CA1*/ 0, /*pin*/ 0, active ? 0 : 1);
+}
+
+// substrate.nubus_slot_irq for chipsets whose own controller aggregates the
+// slots (MDU's RBV, OSS): route the slot source through the substrate's own
+// update_ipl, exactly as the former nubus.c non-VIA2 path did.
+void mac030_nubus_slot_irq_via_ipl(config_t *cfg, int slot, bool active, bool umbrella_edge) {
+    (void)umbrella_edge; // the controller aggregates internally
+    int source = slot - 0x9;
+    if (source < 0 || source > 5)
+        return;
+    if (cfg->machine->substrate->update_ipl)
+        cfg->machine->substrate->update_ipl(cfg, 1 << source, active);
+}
+
 // Family-shared teardown delete-chain.  Order matches the (identical)
 // per-machine teardowns; NuBus cards are already gone (system_destroy calls
 // nubus_delete before machine teardown — §6.2 ownership invariant).
