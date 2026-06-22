@@ -87,15 +87,6 @@ void iicx_set_rom_overlay(config_t *cfg, bool overlay) {
 }
 
 // ============================================================
-// Hardware reset
-// ============================================================
-
-static void iicx_reset(config_t *cfg) {
-    iicx_state_t *st = iicx_state(cfg);
-    mac030_glue_reset(cfg, &st->rom_overlay, IICX_ROM_START, st->mmu);
-}
-
-// ============================================================
 // I/O dispatcher
 // ============================================================
 // The GLUE I/O dispatcher is shared with SE/30 and IIx — see
@@ -245,21 +236,8 @@ static void iicx_via2_shift_out(void *context, uint8_t byte) {
     (void)byte;
 }
 
-// ============================================================
-// VBL trigger
-// ============================================================
-
-// Unlike SE/30 we do not directly poke a slot-IRQ bit on VIA2 PA — the
-// per-card on_vbl handler does that via nubus_assert_irq.  The family
-// CA1 heartbeat still fires on every VBL.
-static void iicx_trigger_vbl(config_t *cfg) {
-    via_input_c(cfg->via1, 0, 0, 0);
-    via_input_c(cfg->via2, 0, 0, 0);
-    via_input_c(cfg->via1, 0, 0, 1);
-    via_input_c(cfg->via2, 0, 0, 1);
-    nubus_tick_vbl(cfg->nubus);
-    image_tick_all(cfg);
-}
+// (VBL is the default GLUE NuBus VBL in glue_substrate — CA1 heartbeat +
+// nubus_tick_vbl; the per-card on_vbl handler raises slot IRQs.  No override.)
 
 // ============================================================
 // Slot table
@@ -317,43 +295,6 @@ static const mac030_glue_board_t iicx_board = {
     .memory_layout = iicx_memory_layout_init,
 };
 
-static void iicx_init(config_t *cfg, checkpoint_t *checkpoint) {
-    mac030_glue_init(cfg, checkpoint, &iicx_board);
-}
-
-static void iicx_teardown(config_t *cfg) {
-    iicx_state_t *st = iicx_state(cfg);
-    // Shared GLUE delete-chain (scheduler_stop → mmu → floppy → asc → adb →
-    // scsi → via2 → via1 → scc → rtc → scheduler → cpu → mem_map → debugger).
-    mac030_glue_teardown(cfg, st ? st->adb : NULL, st ? st->asc : NULL, st ? st->floppy : NULL, st ? st->mmu : NULL);
-    if (st) {
-        free(st);
-        cfg->machine_context = NULL;
-    }
-}
-
-// ============================================================
-// Checkpoint
-// ============================================================
-
-static void iicx_checkpoint_save(config_t *cfg, checkpoint_t *cp) {
-    iicx_state_t *st = iicx_state(cfg);
-    memory_map_checkpoint(cfg->mem_map, cp);
-    cpu_checkpoint(cfg->cpu, cp);
-    scheduler_checkpoint(cfg->scheduler, cp);
-    system_write_checkpoint_data(cp, &cfg->irq, sizeof(cfg->irq));
-    rtc_checkpoint(cfg->rtc, cp);
-    scc_checkpoint(cfg->scc, cp);
-    via_checkpoint(cfg->via1, cp);
-    via_checkpoint(cfg->via2, cp);
-    adb_checkpoint(st->adb, cp);
-    mac_checkpoint_save_images(cfg, cp);
-    scsi_checkpoint(cfg->scsi, cp);
-    asc_checkpoint(st->asc, cp);
-    floppy_checkpoint(st->floppy, cp);
-    mmu_checkpoint_save(st->mmu, cp);
-}
-
 // ============================================================
 // Machine descriptor
 // ============================================================
@@ -370,21 +311,6 @@ static const struct scsi_slot iicx_scsi_slots[] = {
     {.label = "SCSI HD0", .id = 0},
     {.label = "SCSI HD1", .id = 1},
     {0},
-};
-
-static const machine_substrate_t iicx_substrate = {
-    .init = iicx_init,
-    .reset = iicx_reset,
-    .teardown = iicx_teardown,
-    .checkpoint_save = iicx_checkpoint_save,
-    .update_ipl = mac030_glue_update_ipl,
-    .trigger_vbl = iicx_trigger_vbl,
-    .nubus_slot_irq = mac030_glue_nubus_slot_irq,
-    .fd_insert = mac_fd_insert,
-    .fd_present = mac_fd_present,
-    .input_key = mac_input_key,
-    .input_mouse_move = mac_input_mouse_move,
-    .input_mouse_button = mac_input_mouse_button,
 };
 
 const hw_profile_t machine_iicx = {
@@ -416,5 +342,6 @@ const hw_profile_t machine_iicx = {
 
     .nubus_slots = iicx_slots,
 
-    .substrate = &iicx_substrate,
+    .substrate = &glue_substrate, // shared GLUE-family substrate
+    .board = &iicx_board,
 };

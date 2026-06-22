@@ -138,7 +138,15 @@ typedef struct mac030_glue_board {
     void (*pre_devices)(config_t *cfg); // optional: before device construction (SE/30 VBL event type)
     void (*post_nubus)(config_t *cfg); // optional: after nubus_init (SE/30 VRAM/VROM wiring)
     void (*ckpt_restore_extra)(config_t *cfg, checkpoint_t *cp); // optional: extra restore (SE/30 VRAM/VROM)
+    void (*ckpt_save_extra)(config_t *cfg, checkpoint_t *cp); // optional: extra save, symmetric (SE/30 VRAM/VROM)
+    void (*trigger_vbl)(config_t *cfg); // optional VBL override; NULL → the default GLUE NuBus VBL
 } mac030_glue_board_t;
+
+// The one GLUE-family substrate (proposal §4.2.2): SE/30, IIcx and IIx all bind
+// this; their per-machine deltas live entirely in their mac030_glue_board_t
+// (named via hw_profile_t.board) and profile.  The lifecycle methods read the
+// board from cfg->machine->board.
+extern const machine_substrate_t glue_substrate;
 
 // The shared GLUE init: allocates the unified state, builds the II-family
 // core + RTC/SCC/VIA1/VIA2 + peripherals + PMMU + NuBus in canonical order,

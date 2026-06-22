@@ -138,15 +138,6 @@ static void se30_set_rom_overlay(config_t *cfg, bool overlay) {
 // ============================================================
 
 // Called when the RESET line is asserted (e.g., double bus error → HALT → GLU
-// asserts RESET).  Resets peripherals to their power-on state:
-//   - VIA1: ROM overlay re-enabled (ROM visible at $0 for reset vector fetch)
-//   - MMU: disabled, TLB invalidated (page table may be corrupted)
-// This runs BEFORE the CPU reads SSP/PC from $0/$4.
-static void se30_reset(config_t *cfg) {
-    se30_state_t *se30 = se30_state(cfg);
-    mac030_glue_reset(cfg, &se30->rom_overlay, SE30_ROM_START, se30->mmu);
-}
-
 // ============================================================
 // I/O dispatcher
 // ============================================================
@@ -448,6 +439,9 @@ static const mac030_board_desc_t se30_desc = {
     .bus_err_hi = 0xFDFFFFFF,
 };
 
+// VRAM + VROM save (symmetric with se30_ckpt_restore_extra); defined below.
+static void se30_ckpt_save_extra(config_t *cfg, checkpoint_t *cp);
+
 static const mac030_glue_board_t se30_board = {
     .desc = &se30_desc,
     .via1_output = se30_via1_output,
@@ -459,75 +453,30 @@ static const mac030_glue_board_t se30_board = {
     .pre_devices = se30_pre_devices,
     .post_nubus = se30_post_nubus,
     .ckpt_restore_extra = se30_ckpt_restore_extra,
+    .ckpt_save_extra = se30_ckpt_save_extra, // built-in slot-$E video VRAM + VROM
+    .trigger_vbl = se30_trigger_vbl, // built-in video VBL (slot-$E assert)
 };
-
-static void se30_init(config_t *cfg, checkpoint_t *checkpoint) {
-    mac030_glue_init(cfg, checkpoint, &se30_board);
-}
-
-// Tear down all SE/30 resources in reverse init order.
-static void se30_teardown(config_t *cfg) {
-    se30_state_t *se30 = se30_state(cfg);
-    if (se30) {
-        // VRAM, VROM, and the borrowed video_card pointer all live on the
-        // slot-$E card; system_destroy calls nubus_delete before us, which
-        // tears the card down — we just clear our borrowed references here.
-        se30->vram = NULL;
-        se30->vrom = NULL;
-        se30->video_card = NULL;
-    }
-    // Shared GLUE delete-chain (see mac030_glue_teardown).
-    mac030_glue_teardown(cfg, se30 ? se30->adb : NULL, se30 ? se30->asc : NULL, se30 ? se30->floppy : NULL,
-                         se30 ? se30->mmu : NULL);
-    if (se30) {
-        free(se30);
-        cfg->machine_context = NULL;
-    }
-}
 
 // ============================================================
 // Checkpoint
 // ============================================================
 
-// Save complete SE/30 machine state to a checkpoint stream.
-// Order must match the restore path in se30_init().
-static void se30_checkpoint_save(config_t *cfg, checkpoint_t *cp) {
+// SE/30 board ckpt_save_extra hook: the built-in slot-$E video's VRAM + VROM,
+// written immediately before the MMU block — symmetric with the restore order
+// in se30_ckpt_restore_extra (the shared glue_checkpoint_save handles the rest
+// of the machine state).
+static void se30_ckpt_save_extra(config_t *cfg, checkpoint_t *cp) {
     se30_state_t *se30 = se30_state(cfg);
 
-    memory_map_checkpoint(cfg->mem_map, cp);
-    cpu_checkpoint(cfg->cpu, cp);
-    scheduler_checkpoint(cfg->scheduler, cp);
-
-    system_write_checkpoint_data(cp, &cfg->irq, sizeof(cfg->irq));
-
-    rtc_checkpoint(cfg->rtc, cp);
-    scc_checkpoint(cfg->scc, cp);
-    via_checkpoint(cfg->via1, cp);
-    via_checkpoint(cfg->via2, cp);
-
-    adb_checkpoint(se30->adb, cp);
-
-    // Checkpoint list of images before devices that reference them.
-    // Family-shared serialisation lives in mac_checkpoint_save_images.
-    mac_checkpoint_save_images(cfg, cp);
-
-    scsi_checkpoint(cfg->scsi, cp);
-    asc_checkpoint(se30->asc, cp);
-    floppy_checkpoint(se30->floppy, cp);
-
-    // Save VRAM contents (must match restore order in se30_init).  The
-    // bytes are owned by the slot-$E card; se30->vram is a borrowed
-    // pointer into that buffer, so the existing memcpy still hits the
-    // right backing store.
+    // Save VRAM contents.  The bytes are owned by the slot-$E card; se30->vram
+    // is a borrowed pointer into that buffer, so the memcpy hits the right
+    // backing store.
     system_write_checkpoint_data(cp, se30->vram, SE30_VRAM_SIZE);
 
-    // Save VROM (content embedded in consolidated checkpoints, path
-    // reference in quick).  The path lives on the card too.
+    // Save VROM (content embedded in consolidated checkpoints, path reference in
+    // quick).  The path lives on the card too.
     const char *vrom_path = builtin_se30_video_vrom_path(se30->video_card);
     checkpoint_write_file(cp, vrom_path ? vrom_path : "");
-
-    // Save MMU guest registers (TC, CRP, SRP, TT0, TT1, MMUSR, enabled flag)
-    mmu_checkpoint_save(se30->mmu, cp);
 }
 
 // ============================================================
@@ -547,22 +496,6 @@ static const struct scsi_slot se30_scsi_slots[] = {
     {.label = "SCSI HD0", .id = 0},
     {.label = "SCSI HD1", .id = 1},
     {0},
-};
-
-// Macintosh SE/30 hardware profile descriptor
-static const machine_substrate_t se30_substrate = {
-    .init = se30_init,
-    .reset = se30_reset,
-    .teardown = se30_teardown,
-    .checkpoint_save = se30_checkpoint_save,
-    .update_ipl = mac030_glue_update_ipl,
-    .trigger_vbl = se30_trigger_vbl,
-    .nubus_slot_irq = mac030_glue_nubus_slot_irq,
-    .fd_insert = mac_fd_insert,
-    .fd_present = mac_fd_present,
-    .input_key = mac_input_key,
-    .input_mouse_move = mac_input_mouse_move,
-    .input_mouse_button = mac_input_mouse_button,
 };
 
 const hw_profile_t machine_se30 = {
@@ -592,5 +525,6 @@ const hw_profile_t machine_se30 = {
     // this is the same table the substrate passes to nubus_init().
     .nubus_slots = se30_slots,
 
-    .substrate = &se30_substrate,
+    .substrate = &glue_substrate, // shared GLUE-family substrate
+    .board = &se30_board,
 };

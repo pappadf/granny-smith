@@ -59,20 +59,6 @@ LOG_USE_CATEGORY_NAME("iix");
 
 static void iix_via2_output(void *context, uint8_t port, uint8_t output);
 static void iix_via2_shift_out(void *context, uint8_t byte);
-static void iix_init(config_t *cfg, checkpoint_t *checkpoint);
-static void iix_teardown(config_t *cfg);
-static void iix_reset(config_t *cfg);
-static void iix_checkpoint_save(config_t *cfg, checkpoint_t *cp);
-static void iix_trigger_vbl(config_t *cfg);
-
-// ============================================================
-// Hardware reset
-// ============================================================
-
-static void iix_reset(config_t *cfg) {
-    iicx_state_t *st = iicx_state(cfg);
-    mac030_glue_reset(cfg, &st->rom_overlay, IICX_ROM_START, st->mmu);
-}
 
 // ============================================================
 // VIA2 / SCC callbacks
@@ -93,18 +79,7 @@ static void iix_via2_shift_out(void *context, uint8_t byte) {
     (void)byte;
 }
 
-// ============================================================
-// VBL trigger
-// ============================================================
-
-static void iix_trigger_vbl(config_t *cfg) {
-    via_input_c(cfg->via1, 0, 0, 0);
-    via_input_c(cfg->via2, 0, 0, 0);
-    via_input_c(cfg->via1, 0, 0, 1);
-    via_input_c(cfg->via2, 0, 0, 1);
-    nubus_tick_vbl(cfg->nubus);
-    image_tick_all(cfg);
-}
+// (VBL is the default GLUE NuBus VBL in glue_substrate; no IIx override.)
 
 // ============================================================
 // Slot table
@@ -164,42 +139,6 @@ static const mac030_glue_board_t iix_board = {
     .memory_layout = iicx_memory_layout_init,
 };
 
-static void iix_init(config_t *cfg, checkpoint_t *checkpoint) {
-    mac030_glue_init(cfg, checkpoint, &iix_board);
-}
-
-static void iix_teardown(config_t *cfg) {
-    iicx_state_t *st = iicx_state(cfg);
-    // Shared GLUE delete-chain (see mac030_glue_teardown).
-    mac030_glue_teardown(cfg, st ? st->adb : NULL, st ? st->asc : NULL, st ? st->floppy : NULL, st ? st->mmu : NULL);
-    if (st) {
-        free(st);
-        cfg->machine_context = NULL;
-    }
-}
-
-// ============================================================
-// Checkpoint
-// ============================================================
-
-static void iix_checkpoint_save(config_t *cfg, checkpoint_t *cp) {
-    iicx_state_t *st = iicx_state(cfg);
-    memory_map_checkpoint(cfg->mem_map, cp);
-    cpu_checkpoint(cfg->cpu, cp);
-    scheduler_checkpoint(cfg->scheduler, cp);
-    system_write_checkpoint_data(cp, &cfg->irq, sizeof(cfg->irq));
-    rtc_checkpoint(cfg->rtc, cp);
-    scc_checkpoint(cfg->scc, cp);
-    via_checkpoint(cfg->via1, cp);
-    via_checkpoint(cfg->via2, cp);
-    adb_checkpoint(st->adb, cp);
-    mac_checkpoint_save_images(cfg, cp);
-    scsi_checkpoint(cfg->scsi, cp);
-    asc_checkpoint(st->asc, cp);
-    floppy_checkpoint(st->floppy, cp);
-    mmu_checkpoint_save(st->mmu, cp);
-}
-
 // ============================================================
 // Machine descriptor
 // ============================================================
@@ -216,21 +155,6 @@ static const struct scsi_slot iix_scsi_slots[] = {
     {.label = "SCSI HD0", .id = 0},
     {.label = "SCSI HD1", .id = 1},
     {0},
-};
-
-static const machine_substrate_t iix_substrate = {
-    .init = iix_init,
-    .reset = iix_reset,
-    .teardown = iix_teardown,
-    .checkpoint_save = iix_checkpoint_save,
-    .update_ipl = mac030_glue_update_ipl,
-    .trigger_vbl = iix_trigger_vbl,
-    .nubus_slot_irq = mac030_glue_nubus_slot_irq,
-    .fd_insert = mac_fd_insert,
-    .fd_present = mac_fd_present,
-    .input_key = mac_input_key,
-    .input_mouse_move = mac_input_mouse_move,
-    .input_mouse_button = mac_input_mouse_button,
 };
 
 const hw_profile_t machine_iix = {
@@ -257,5 +181,6 @@ const hw_profile_t machine_iix = {
 
     .nubus_slots = iix_slots,
 
-    .substrate = &iix_substrate,
+    .substrate = &glue_substrate, // shared GLUE-family substrate
+    .board = &iix_board,
 };

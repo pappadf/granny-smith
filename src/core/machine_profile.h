@@ -148,8 +148,17 @@ typedef struct hw_profile {
     // runtime view and the profile view are guaranteed identical.
     const struct nubus_slot_decl *nubus_slots;
 
-    // Behavior: the lifecycle + host-input vtable for this machine.
+    // Behavior: the lifecycle + host-input vtable for this machine.  Machines
+    // of the same chipset family SHARE one substrate (glue_substrate /
+    // mdu_substrate; iifx is bespoke).
     const machine_substrate_t *substrate;
+
+    // Per-machine board descriptor — chipset-family data the shared substrate
+    // interprets (proposal §4.2.2/§4.4).  Typed by convention: the family
+    // substrate casts it to its concrete type (mac030_glue_board_t for
+    // GLUE/MDU).  NULL for families whose substrate needs no board (Plus,
+    // Lisa, and the bespoke IIfx, which carry their data directly).
+    const void *board;
 } hw_profile_t;
 
 // Registry: find a machine profile by id (NULL if unknown).

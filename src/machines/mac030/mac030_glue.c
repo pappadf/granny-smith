@@ -6,6 +6,9 @@
 
 #include "mac030_glue.h"
 
+#include "mac_host_io.h" // mac_fd_*/mac_input_* substrate methods (shared by all Macs)
+#include "machine_profile.h" // machine_substrate_t
+
 #include "adb.h"
 #include "asc.h"
 #include "checkpoint_images.h"
@@ -310,3 +313,94 @@ void mac030_glue_teardown(config_t *cfg, struct adb *adb, struct asc *asc, struc
         cfg->debugger = NULL;
     }
 }
+
+// ============================================================
+// The shared GLUE-family substrate (proposal §4.2.2)
+// ============================================================
+//
+// SE/30, IIcx and IIx all bind this one substrate.  Each machine's deltas live
+// in its mac030_glue_board_t (reached via cfg->machine->board) + its profile;
+// the per-machine init/reset/teardown/checkpoint clones are gone.
+
+static inline const mac030_glue_board_t *glue_board(config_t *cfg) {
+    return (const mac030_glue_board_t *)cfg->machine->board;
+}
+
+static void glue_init(config_t *cfg, checkpoint_t *cp) {
+    mac030_glue_init(cfg, cp, glue_board(cfg));
+}
+
+static void glue_reset(config_t *cfg) {
+    mac030_glue_state_t *st = (mac030_glue_state_t *)cfg->machine_context;
+    mac030_glue_reset(cfg, &st->rom_overlay, glue_board(cfg)->desc->rom_base, st->mmu);
+}
+
+static void glue_teardown(config_t *cfg) {
+    mac030_glue_state_t *st = (mac030_glue_state_t *)cfg->machine_context;
+    if (st) {
+        // Borrowed slot-$E video pointers (SE/30 only; already NULL on IIcx/IIx).
+        // system_destroy ran nubus_delete first, so the card buffer is gone.
+        st->vram = NULL;
+        st->vrom = NULL;
+        st->video_card = NULL;
+    }
+    mac030_glue_teardown(cfg, st ? st->adb : NULL, st ? st->asc : NULL, st ? st->floppy : NULL, st ? st->mmu : NULL);
+    if (st) {
+        free(st);
+        cfg->machine_context = NULL;
+    }
+}
+
+static void glue_checkpoint_save(config_t *cfg, checkpoint_t *cp) {
+    mac030_glue_state_t *st = (mac030_glue_state_t *)cfg->machine_context;
+    memory_map_checkpoint(cfg->mem_map, cp);
+    cpu_checkpoint(cfg->cpu, cp);
+    scheduler_checkpoint(cfg->scheduler, cp);
+    system_write_checkpoint_data(cp, &cfg->irq, sizeof(cfg->irq));
+    rtc_checkpoint(cfg->rtc, cp);
+    scc_checkpoint(cfg->scc, cp);
+    via_checkpoint(cfg->via1, cp);
+    via_checkpoint(cfg->via2, cp);
+    adb_checkpoint(st->adb, cp);
+    mac_checkpoint_save_images(cfg, cp);
+    scsi_checkpoint(cfg->scsi, cp);
+    asc_checkpoint(st->asc, cp);
+    floppy_checkpoint(st->floppy, cp);
+    // SE/30 inserts its VRAM + VROM here, symmetric with ckpt_restore_extra,
+    // immediately before the MMU block.
+    const mac030_glue_board_t *board = glue_board(cfg);
+    if (board->ckpt_save_extra)
+        board->ckpt_save_extra(cfg, cp);
+    mmu_checkpoint_save(st->mmu, cp);
+}
+
+static void glue_trigger_vbl(config_t *cfg) {
+    const mac030_glue_board_t *board = glue_board(cfg);
+    if (board->trigger_vbl) {
+        board->trigger_vbl(cfg); // SE/30: built-in slot-$E video VBL
+        return;
+    }
+    // Default GLUE VBL (IIcx/IIx, NuBus video): pulse both VIA CA1 lines as the
+    // GLUE chip does, then fan the VBL out to the NuBus cards.
+    via_input_c(cfg->via1, 0, 0, 0);
+    via_input_c(cfg->via2, 0, 0, 0);
+    via_input_c(cfg->via1, 0, 0, 1);
+    via_input_c(cfg->via2, 0, 0, 1);
+    nubus_tick_vbl(cfg->nubus);
+    image_tick_all(cfg);
+}
+
+const machine_substrate_t glue_substrate = {
+    .init = glue_init,
+    .reset = glue_reset,
+    .teardown = glue_teardown,
+    .checkpoint_save = glue_checkpoint_save,
+    .update_ipl = mac030_glue_update_ipl,
+    .trigger_vbl = glue_trigger_vbl,
+    .nubus_slot_irq = mac030_glue_nubus_slot_irq,
+    .fd_insert = mac_fd_insert,
+    .fd_present = mac_fd_present,
+    .input_key = mac_input_key,
+    .input_mouse_move = mac_input_mouse_move,
+    .input_mouse_button = mac_input_mouse_button,
+};
