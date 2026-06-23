@@ -320,17 +320,25 @@ static void upload_clut(const display_t *d) {
 // letterboxed framebuffer (this surfaced for the IIcx when the JMFB
 // driver flipped from the SE/30-default 512×342 to 640×480).  Mirrors
 // the change-only pattern used by em_main_tick's onRunStateChange push.
-static void resize_canvas(uint32_t width, uint32_t height) {
+static void resize_canvas(uint32_t width, uint32_t height, uint32_t par_w, uint32_t par_h) {
+    // The canvas's intrinsic resolution is always the raw framebuffer size; the
+    // pixel aspect ratio only changes the CSS display size, applied JS-side.
+    if (par_w == 0)
+        par_w = 1;
+    if (par_h == 0)
+        par_h = 1;
     emscripten_set_canvas_element_size("#screen", (int)width, (int)height);
     glViewport(0, 0, (int)width, (int)height);
-    static uint32_t last_w = 0, last_h = 0;
-    if (width != last_w || height != last_h) {
+    static uint32_t last_w = 0, last_h = 0, last_pw = 0, last_ph = 0;
+    if (width != last_w || height != last_h || par_w != last_pw || par_h != last_ph) {
         last_w = width;
         last_h = height;
+        last_pw = par_w;
+        last_ph = par_h;
         // clang-format off
         MAIN_THREAD_ASYNC_EM_ASM(
-            { if (typeof Module.onScreenResize === 'function') Module.onScreenResize($0, $1); },
-            (int)width, (int)height);
+            { if (typeof Module.onScreenResize === 'function') Module.onScreenResize($0, $1, $2, $3); },
+            (int)width, (int)height, (int)par_w, (int)par_h);
         // clang-format on
     }
 }
@@ -448,7 +456,7 @@ static bool refresh_from_display(display_t *d, bool force_full) {
             glUniform1i(u->u_response, 2);
         }
         allocate_fb_texture(d->format, d->stride, d->height);
-        resize_canvas(d->width, d->height);
+        resize_canvas(d->width, d->height, d->par_w, d->par_h);
     }
 
     if (fb)

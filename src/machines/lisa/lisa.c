@@ -110,6 +110,13 @@ static void lisa_display_init(config_t *cfg) {
     ls->display.height = macxl ? MACXL_SCREEN_H : LISA_SCREEN_H;
     ls->display.stride = ls->display.width / 8;
     ls->display.format = PIXEL_1BPP_MSB;
+    // Pixel aspect ratio (display.h).  The XL's 608x431 raster is square (1:1);
+    // the Lisa 2's native 720x364 raster has taller-than-wide pixels.  Use a 2:3
+    // pixel (2 host px wide, 3 high) so at the 200% default zoom every Lisa-2
+    // pixel maps to an exact 2x3 host block — sharp integer scaling and a
+    // close match to the true ~0.71 ratio of the unmodified raster.
+    ls->display.par_w = macxl ? 1 : 2;
+    ls->display.par_h = macxl ? 1 : 3;
     ls->display.bits = NULL;
     ls->display.clut = NULL;
     ls->display.clut_len = 0;

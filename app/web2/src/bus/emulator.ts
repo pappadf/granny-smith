@@ -51,7 +51,7 @@ interface EmscriptenModuleConfig {
   print?(s: string): void;
   printErr?(s: string): void;
   onRunStateChange?(running: boolean): void;
-  onScreenResize?(w: number, h: number): void;
+  onScreenResize?(w: number, h: number, parW?: number, parH?: number): void;
   onLogEmit?(line: string): void;
   onFloppyChange?(drive: number, present: boolean): void;
 }
@@ -81,6 +81,8 @@ export function whenModuleReady(): Promise<void> {
 let isRunningUI = false;
 let lastScreenW = 0;
 let lastScreenH = 0;
+let lastScreenParW = 0;
+let lastScreenParH = 0;
 
 // --- Bootstrap ----------------------------------------------------------
 
@@ -290,14 +292,27 @@ function handleRunStateChange(running: boolean): void {
   else if (machine.status === 'running') machine.status = 'paused';
 }
 
-function handleScreenResize(w: number, h: number): void {
+function handleScreenResize(w: number, h: number, parW?: number, parH?: number): void {
   const width = w | 0;
   const height = h | 0;
-  if (width === lastScreenW && height === lastScreenH) return;
+  // Pixel aspect ratio (display pixel width:height). 0/undefined => square 1:1.
+  const pw = (parW ?? 0) | 0 || 1;
+  const ph = (parH ?? 0) | 0 || 1;
+  if (
+    width === lastScreenW &&
+    height === lastScreenH &&
+    pw === lastScreenParW &&
+    ph === lastScreenParH
+  )
+    return;
   lastScreenW = width;
   lastScreenH = height;
+  lastScreenParW = pw;
+  lastScreenParH = ph;
   machine.screen.width = width;
   machine.screen.height = height;
+  machine.screen.parW = pw;
+  machine.screen.parH = ph;
 }
 
 // --- Module access for upload pipeline (FS writes to /tmp) -------------

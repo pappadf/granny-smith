@@ -4329,6 +4329,24 @@ static value_t screen_attr_height(struct object *self, const member_t *m) {
     return val_int(d ? (int64_t)d->height : 0);
 }
 
+// `screen.par_w` / `screen.par_h` — the active display's pixel aspect ratio
+// (one display pixel's width:height in host units; see display.h).  1:1 is
+// square (every Mac); the Lisa 2's 720x364 raster reports 2:3 so the frontend
+// can stretch it vertically.  0 in the descriptor normalizes to 1 here.
+static value_t screen_attr_par_w(struct object *self, const member_t *m) {
+    (void)self;
+    (void)m;
+    const display_t *d = system_display();
+    return val_int(d && d->par_w ? (int64_t)d->par_w : 1);
+}
+
+static value_t screen_attr_par_h(struct object *self, const member_t *m) {
+    (void)self;
+    (void)m;
+    const display_t *d = system_display();
+    return val_int(d && d->par_h ? (int64_t)d->par_h : 1);
+}
+
 static const arg_decl_t screen_save_args[] = {
     {.name = "path", .kind = V_STRING, .doc = "Output PNG path (must end in .png)"},
 };
@@ -4363,6 +4381,16 @@ static const member_t screen_members[] = {
      .flags = VAL_RO,
      .doc = "Active display height in pixels",
      .attr = {.type = V_INT, .get = screen_attr_height, .set = NULL}},
+    {.kind = M_ATTR,
+     .name = "par_w",
+     .flags = VAL_RO,
+     .doc = "Pixel aspect ratio numerator (display pixel width; 1 = square)",
+     .attr = {.type = V_INT, .get = screen_attr_par_w, .set = NULL}},
+    {.kind = M_ATTR,
+     .name = "par_h",
+     .flags = VAL_RO,
+     .doc = "Pixel aspect ratio denominator (display pixel height; 1 = square)",
+     .attr = {.type = V_INT, .get = screen_attr_par_h, .set = NULL}},
     {.kind = M_METHOD,
      .name = "save",
      .doc = "Save the current framebuffer to a PNG file",

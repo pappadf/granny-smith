@@ -10,8 +10,18 @@
   // attributes) stays at the emulator's framebuffer dimensions; the CSS
   // width/height scale by zoom percentage. image-rendering: pixelated keeps
   // pixels sharp.
+  //
+  // Non-square pixels: the core reports a pixel aspect ratio (parW:parH = the
+  // display pixel's width:height). Horizontal scale stays at the zoom factor;
+  // the vertical scale is multiplied by parH/parW so each source pixel occupies
+  // its true shape. Square pixels (1:1) leave height unchanged; the Lisa 2 (2:3)
+  // renders each pixel 1.5x taller — an exact 2x3 host block at the 200% default.
   const cssWidth = $derived(Math.round(machine.screen.width * (machine.zoom / 100)));
-  const cssHeight = $derived(Math.round(machine.screen.height * (machine.zoom / 100)));
+  const cssHeight = $derived(
+    Math.round(
+      machine.screen.height * (machine.zoom / 100) * (machine.screen.parH / machine.screen.parW),
+    ),
+  );
 
   // Input handling lives entirely on the worker side via Emscripten's
   // built-in proxied callbacks (emscripten_set_mousemove_callback("#screen",

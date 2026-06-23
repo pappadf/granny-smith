@@ -79,6 +79,20 @@ typedef struct display {
     uint32_t height; // pixels
     uint32_t stride; // bytes per row in `bits`
     pixel_format_t format; // pixel encoding
+
+    // Pixel aspect ratio: the physical shape of ONE framebuffer pixel on the
+    // real monitor, as host-pixel width:height (par_w : par_h).  Most displays
+    // are square (1:1) — the Macintosh XL screen mod even reshaped the raster to
+    // 608x431 specifically to get square pixels.  The Lisa 2's native 720x364
+    // raster is NOT square: its pixels are taller than wide, so the renderer
+    // must stretch the vertical axis to avoid a squashed image.  0 in either
+    // field means "square" (the consumer normalizes 0 -> 1), so producers that
+    // don't care leave both zero.  This is display metadata only — `bits`,
+    // `width`, `height`, and `stride` are unaffected, so PNG capture and
+    // pixel-exact matching see the raw framebuffer regardless.
+    uint32_t par_w; // pixel-aspect numerator (display pixel width);  0 => 1
+    uint32_t par_h; // pixel-aspect denominator (display pixel height); 0 => 1
+
     const uint8_t *bits; // primary framebuffer; stride * height bytes
     const rgba8_t *clut; // 0/4/16/256-entry palette; NULL for direct formats
     uint32_t clut_len; // entries in clut (0 for direct formats)

@@ -27,7 +27,11 @@ interface MachineState {
   // debug panel gates its presence on this static capability rather than
   // waiting for the first debug frame to carry an `fpu` block.
   fpu: boolean;
-  screen: { width: number; height: number };
+  // width/height are the framebuffer pixel dimensions; parW/parH are the
+  // monitor's pixel aspect ratio (display pixel width:height), so the renderer
+  // can show non-square pixels correctly (the Lisa 2's 720x364 raster is 2:3,
+  // most everything else is square 1:1). Reported by the core via onScreenResize.
+  screen: { width: number; height: number; parW: number; parH: number };
   driveActivity: { hd: DriveActivity; fd: DriveActivity; cd: DriveActivity };
   scheduler: SchedulerMode;
   zoom: number;
@@ -40,7 +44,7 @@ export const machine: MachineState = $state({
   mmuEnabled: false,
   mmuKind: 'none',
   fpu: false,
-  screen: { width: 512, height: 342 },
+  screen: { width: 512, height: 342, parW: 1, parH: 1 },
   driveActivity: { hd: 'idle', fd: 'idle', cd: 'idle' },
   scheduler: 'live',
   zoom: 200,
