@@ -152,3 +152,21 @@ const rom_info_t *rom_identify_data(const uint8_t *data, size_t size, uint32_t *
     (void)out_checksum;
     return NULL;
 }
+
+// Image-tracking stubs: tests that link image.c (but not system.c) need these
+// to resolve add_image()/image_tick_all().  No real image list in the harness.
+struct config;
+struct image;
+void config_add_image(struct config *cfg, struct image *image) {
+    (void)cfg;
+    (void)image;
+}
+int config_get_n_images(struct config *cfg) {
+    (void)cfg;
+    return 0;
+}
+struct image *config_get_image(struct config *cfg, int index) {
+    (void)cfg;
+    (void)index;
+    return NULL;
+}

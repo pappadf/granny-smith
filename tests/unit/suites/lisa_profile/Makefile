@@ -1,55 +1,20 @@
 # Lisa ProFile parallel hard disk unit test.
-# Exercises the device handshake/state machine directly (no emulator/ROM/MMU).
+# Exercises the device handshake/state machine driving the shared base+delta
+# image subsystem (real image.c + storage.c; no emulator/ROM/MMU).
 
-TEST_NAME := lisa_profile
+TEST_NAME    := lisa_profile
+TEST_SRCS    := test.c
+TEST_HARNESS := isolated
+# checkpoint_stubs.c supplies the two checkpoint/restore symbols the ProFile now
+# references (checkpoint_machine_dir, mac_checkpoint_restore_one_image) without
+# dragging in checkpoint_machine.c / checkpoint_images.c — this suite never
+# checkpoints (always inits with a NULL checkpoint).
+EXTRA_SRCS   := ../../../../src/machines/lisa/lisa_profile.c \
+                ../../../../src/core/storage/image.c \
+                ../../../../src/core/storage/storage.c \
+                checkpoint_stubs.c
+# lisa_profile.h lives under machines/lisa; checkpoint_images.h under
+# machines/runtime — neither is on common.mk's default include path.
+EXTRA_CFLAGS  = -I$(EMU_ROOT)/machines/lisa -I$(EMU_ROOT)/machines/runtime
 
-UNIT_ROOT      := $(abspath ../../)
-WORKSPACE_ROOT := $(abspath $(UNIT_ROOT)/../..)
-EMU_ROOT       := $(WORKSPACE_ROOT)/src
-
-BUILD_DIR := $(UNIT_ROOT)/build
-OBJ_DIR   := $(BUILD_DIR)/obj/$(TEST_NAME)
-TARGET    := $(BUILD_DIR)/$(TEST_NAME)
-
-CC ?= gcc
-BASE_CFLAGS := -O0 -g -Wall -Wextra
-INCLUDE_FLAGS := -I$(UNIT_ROOT)/support \
-                 -I$(EMU_ROOT)/core \
-                 -I$(EMU_ROOT)/core/peripherals \
-                 -I$(EMU_ROOT)/machines/lisa \
-                 -DUNIT_TEST_PLATFORM_OVERRIDE \
-                 -include $(UNIT_ROOT)/support/platform.h \
-                 -include $(UNIT_ROOT)/support/log.h
-
-CFLAGS := $(BASE_CFLAGS) $(INCLUDE_FLAGS)
-LDFLAGS ?=
-
-SRCS := $(CURDIR)/test.c \
-        $(EMU_ROOT)/machines/lisa/lisa_profile.c
-
-ALL_SRCS := $(abspath $(SRCS))
-
-OBJ := $(foreach s,$(ALL_SRCS),$(OBJ_DIR)/$(patsubst $(WORKSPACE_ROOT)/%,%,$(patsubst %.c,%.o,$(s))))
-DEP := $(OBJ:.o=.d)
-
-.PHONY: all run clean
-
-all: $(TARGET)
-
-$(OBJ_DIR)/%.o: $(WORKSPACE_ROOT)/%.c
-	@mkdir -p $(dir $@)
-	$(CC) $(CFLAGS) -MMD -MP -c $< -o $@
-
-$(TARGET): $(OBJ)
-	@mkdir -p $(dir $@)
-	@echo "[LD ] $@"
-	$(CC) $(OBJ) -o $@ $(LDFLAGS)
-
--include $(DEP)
-
-run: $(TARGET)
-	$(TARGET)
-
-clean:
-	rm -f $(TARGET)
-	rm -rf $(OBJ_DIR)
+include ../../common.mk

@@ -29,13 +29,19 @@ In the browser, images uploaded via drag-and-drop initially land in volatile `/t
   [0..3]   magic: "GSDL"
   [4..7]   version: uint32_t = 1
   [8..15]  block_count: uint64_t
-  [16..19] block_size: uint32_t (512)
+  [16..19] block_size: uint32_t (512 default; 532 for a Lisa ProFile)
   [20..23] reserved: uint32_t
 
 [24 .. 24+bm-1]             Current bitmap (1 bit per block)
 [24+bm .. 24+2*bm-1]        Committed bitmap
-[24+2*bm .. EOF]             Block data area (block_count × 512 bytes, sparse)
+[24+2*bm .. EOF]             Block data area (block_count × block_size bytes, sparse)
 ```
+
+The header records `block_size`, so a delta is self-describing: reopen validates
+the size it was written with and a future device with a different block geometry
+needs no format change. `block_size` is a multiple of 4 in `[512,
+STORAGE_MAX_BLOCK_SIZE]` (1024). 512 covers flat disks (Mac SCSI HD, floppy
+data); 532 is the Lisa ProFile's block (512 data + 20 inline tag).
 
 Where `bm = ceil(block_count / 8)`. For an 800K floppy: bm = 200 bytes. For a 40MB HD: bm ≈ 10 KB.
 
@@ -46,8 +52,12 @@ The current bitmap tracks which blocks have been modified. The committed bitmap 
 The journal is an append-only file of preimage entries:
 
 ```
-[uint32_t LBA][512 bytes block data]   # 516 bytes per entry
+[uint32_t LBA][block_size bytes block data]   # 4 + block_size bytes per entry
 ```
+
+The entry stride follows the instance's `block_size` (516 bytes for a 512-byte
+disk, 536 for a 532-byte ProFile); the header's `block_size` lets a reopen
+recompute it.
 
 Before overwriting a committed block in the delta, the storage engine appends the old data to the journal. This enables crash recovery: if the browser closes between checkpoints, the journal can be replayed to restore the delta to its last committed state.
 
@@ -56,8 +66,8 @@ Before overwriting a committed block in the delta, the storage engine appends th
 ```c
 int storage_new(const storage_config_t*, storage_t**);
 int storage_delete(storage_t*);
-int storage_read_block(storage_t*, size_t byte_offset, void* out512);
-int storage_write_block(storage_t*, size_t byte_offset, const void* in512);
+int storage_read_block(storage_t*, size_t byte_offset, void* out_block);  // block_size bytes
+int storage_write_block(storage_t*, size_t byte_offset, const void* in_block);
 int storage_tick(storage_t*);          // no-op
 int storage_checkpoint(storage_t*, checkpoint_t*);
 int storage_restore_from_checkpoint(storage_t*, checkpoint_t*);
@@ -74,17 +84,17 @@ int storage_load_state(storage_t*, void* ctx, storage_read_callback_t cb);
 | `base_path` | Path to original image file (read-only). |
 | `delta_path` | Path to delta file (created if missing). |
 | `journal_path` | Path to preimage journal (created if missing). |
-| `block_count` | Number of 512-byte logical blocks. |
-| `block_size` | Must be 512. |
+| `block_count` | Number of logical blocks. |
+| `block_size` | Bytes per block: a multiple of 4 in `[512, STORAGE_MAX_BLOCK_SIZE]` (512 default, 532 for a ProFile). |
 | `base_data_offset` | Byte offset to data in base file (e.g. DiskCopy header skip). |
 
 ## 6. Reads & Writes
 
-**Read:** Validate alignment, compute the LBA. If the bitmap bit is set, seek into the delta's data area and read 512 bytes. Otherwise, seek into the base file and read. If no base file exists, return zeros.
+**Read:** Validate alignment, compute the LBA. If the bitmap bit is set, seek into the delta's data area and read one block (`block_size` bytes). Otherwise, seek into the base file and read. If no base file exists, return zeros.
 
 **Write:**
 1. If the block is committed (bit set in committed bitmap) and not yet journaled, read the old data from the delta and append it to the journal.
-2. Seek into the delta's data area and write 512 bytes.
+2. Seek into the delta's data area and write one block (`block_size` bytes).
 3. Set the bitmap bit (in memory only — flushed at checkpoint time).
 
 Common case (no preimage needed): one seek + one write.
@@ -104,7 +114,7 @@ Common case (no preimage needed): one seek + one write.
 If the browser closes between checkpoints, the delta may contain uncommitted modifications. The journal captures preimages of committed blocks that were overwritten.
 
 `storage_apply_rollback()`:
-1. Read each journal entry (LBA + 512-byte preimage).
+1. Read each journal entry (LBA + `block_size`-byte preimage).
 2. Write the preimage back to the delta at the corresponding offset.
 3. Set current bitmap = committed bitmap.
 4. Flush bitmaps to delta header.

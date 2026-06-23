@@ -26,8 +26,16 @@
 extern "C" {
 #endif
 
-// Fixed block size in bytes.  All offsets must be aligned to this value.
+// Default block size in bytes.  Most disks (Mac SCSI HD, floppy data) use this;
+// it is also the value every existing delta/checkpoint was written with.  A
+// storage instance honours its own runtime block_size (see storage_config_t),
+// so this is the default, not a universal truth.
 #define STORAGE_BLOCK_SIZE 512
+
+// Upper bound on a storage block.  Bounds the stack buffers used for journal
+// preimages and block streaming so a variable block_size stays stack-safe.
+// 512 (flat disks) and 532 (Lisa ProFile: 512 data + 20 inline tag) both fit.
+#define STORAGE_MAX_BLOCK_SIZE 1024
 
 // Opaque handle to a storage instance.
 typedef struct storage_t storage_t;
@@ -37,8 +45,8 @@ typedef struct {
     const char *base_path; // Path to original image (read-only)
     const char *delta_path; // Path to delta file (read-write, created if missing)
     const char *journal_path; // Path to preimage journal (created if missing)
-    uint64_t block_count; // Number of 512-byte logical blocks
-    uint32_t block_size; // Must be 512
+    uint64_t block_count; // Number of logical blocks
+    uint32_t block_size; // Bytes per block: a multiple of 4 in [512, STORAGE_MAX_BLOCK_SIZE] (512 default, 532 ProFile)
     size_t base_data_offset; // Byte offset to data in base file (e.g. DiskCopy header)
 } storage_config_t;
 
@@ -74,10 +82,10 @@ int storage_restore_from_checkpoint(storage_t *storage, checkpoint_t *checkpoint
 
 // === Block I/O ===
 
-// Reads one 512-byte block at the given byte offset.
+// Reads one block (block_size bytes) at the given byte offset.
 int storage_read_block(storage_t *storage, size_t offset, void *buffer);
 
-// Writes one 512-byte block at the given byte offset.
+// Writes one block (block_size bytes) at the given byte offset.
 int storage_write_block(storage_t *storage, size_t offset, const void *buffer);
 
 // === Rollback ===

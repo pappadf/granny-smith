@@ -22,6 +22,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <time.h>
 #include <unistd.h>
 
 #if defined(_WIN32)
@@ -271,8 +272,9 @@ static char *dirname_of(const char *path) {
 
 // Probe a base image for size and DiskCopy framing; return 0 on success,
 // negative on failure.  `out_raw_size` and `out_is_diskcopy` are populated
-// even if the file is not a DiskCopy archive.
-static int probe_base_image(const char *base_path, size_t *out_raw_size, bool *out_is_diskcopy) {
+// even if the file is not a DiskCopy archive.  The raw size must be a whole
+// number of `block_size`-byte blocks.
+static int probe_base_image(const char *base_path, uint32_t block_size, size_t *out_raw_size, bool *out_is_diskcopy) {
     size_t file_size = 0;
     if (read_file_size(base_path, &file_size) != 0) {
         printf("image: cannot read file size: %s\n", base_path);
@@ -284,11 +286,16 @@ static int probe_base_image(const char *base_path, size_t *out_raw_size, bool *o
         return -1;
     bool is_diskcopy = (dc_probe > 0);
     size_t raw_size = is_diskcopy ? (size_t)diskcopy_size : file_size;
-    if ((raw_size % STORAGE_BLOCK_SIZE) != 0)
+    if ((raw_size % block_size) != 0)
         return -1;
     *out_raw_size = raw_size;
     *out_is_diskcopy = is_diskcopy;
     return 0;
+}
+
+// Normalise a geometry's block size, treating 0 as the default (512).
+static uint32_t geometry_block_size(image_geometry_t geom) {
+    return geom.block_size ? geom.block_size : STORAGE_BLOCK_SIZE;
 }
 
 // Common storage-engine wiring for all image_* entry points.  The caller has
@@ -333,11 +340,11 @@ static void image_load_diskcopy_tags(image_t *image) {
 
 static int image_attach_storage(image_t *image, bool is_diskcopy) {
     storage_config_t config = {0};
-    config.base_path = image->filename;
+    config.base_path = image->filename; // NULL for a blank no-base image
     config.delta_path = image->delta_path;
     config.journal_path = image->journal_path;
-    config.block_count = image->raw_size / STORAGE_BLOCK_SIZE;
-    config.block_size = STORAGE_BLOCK_SIZE;
+    config.block_count = image->raw_size / image->block_size;
+    config.block_size = image->block_size;
     config.base_data_offset = is_diskcopy ? DISKCOPY_HEADER_SIZE : 0;
     int rc = storage_new(&config, &image->storage);
     if (rc == GS_SUCCESS && is_diskcopy)
@@ -369,12 +376,17 @@ size_t disk_write_tag(image_t *disk, size_t sector, const uint8_t *buf, size_t s
 #define IMAGE_RO_SCRATCH_DIR "/tmp/gs-image-ro"
 
 image_t *image_open_readonly(const char *base_path) {
+    return image_open_readonly_with_geometry(base_path, (image_geometry_t){.block_size = STORAGE_BLOCK_SIZE});
+}
+
+image_t *image_open_readonly_with_geometry(const char *base_path, image_geometry_t geom) {
     if (!base_path || !*base_path)
         return NULL;
+    uint32_t block_size = geometry_block_size(geom);
 
     size_t raw_size = 0;
     bool is_diskcopy = false;
-    if (probe_base_image(base_path, &raw_size, &is_diskcopy) != 0)
+    if (probe_base_image(base_path, block_size, &raw_size, &is_diskcopy) != 0)
         return NULL;
 
     image_t *image = (image_t *)calloc(1, sizeof(image_t));
@@ -382,6 +394,7 @@ image_t *image_open_readonly(const char *base_path) {
         return NULL;
     image->filename = dup_string(base_path);
     image->raw_size = raw_size;
+    image->block_size = block_size;
     image->type = classify_image(raw_size);
     image->writable = false;
     image->from_diskcopy = is_diskcopy;
@@ -410,8 +423,13 @@ image_t *image_open_readonly(const char *base_path) {
 }
 
 image_t *image_create(const char *base_path, const char *delta_dir) {
+    return image_create_with_geometry(base_path, delta_dir, (image_geometry_t){.block_size = STORAGE_BLOCK_SIZE});
+}
+
+image_t *image_create_with_geometry(const char *base_path, const char *delta_dir, image_geometry_t geom) {
     if (!base_path || !*base_path)
         return NULL;
+    uint32_t block_size = geometry_block_size(geom);
 
     // No write-access probe: only the delta needs to be writable, and the
     // base can legitimately live on a read-only FS (some tests, distribution
@@ -420,7 +438,7 @@ image_t *image_create(const char *base_path, const char *delta_dir) {
 
     size_t raw_size = 0;
     bool is_diskcopy = false;
-    if (probe_base_image(base_path, &raw_size, &is_diskcopy) != 0)
+    if (probe_base_image(base_path, block_size, &raw_size, &is_diskcopy) != 0)
         return NULL;
 
     // Default delta_dir to the directory containing the base image.  Headless
@@ -446,6 +464,7 @@ image_t *image_create(const char *base_path, const char *delta_dir) {
     }
     image->filename = dup_string(base_path);
     image->raw_size = raw_size;
+    image->block_size = block_size;
     image->type = classify_image(raw_size);
     image->writable = true;
     image->from_diskcopy = is_diskcopy;
@@ -468,12 +487,17 @@ image_t *image_create(const char *base_path, const char *delta_dir) {
 }
 
 image_t *image_open(const char *base_path, const char *instance_path) {
+    return image_open_with_geometry(base_path, instance_path, (image_geometry_t){.block_size = STORAGE_BLOCK_SIZE});
+}
+
+image_t *image_open_with_geometry(const char *base_path, const char *instance_path, image_geometry_t geom) {
     if (!base_path || !*base_path || !instance_path || !*instance_path)
         return NULL;
+    uint32_t block_size = geometry_block_size(geom);
 
     size_t raw_size = 0;
     bool is_diskcopy = false;
-    if (probe_base_image(base_path, &raw_size, &is_diskcopy) != 0)
+    if (probe_base_image(base_path, block_size, &raw_size, &is_diskcopy) != 0)
         return NULL;
 
     image_t *image = (image_t *)calloc(1, sizeof(image_t));
@@ -481,6 +505,7 @@ image_t *image_open(const char *base_path, const char *instance_path) {
         return NULL;
     image->filename = dup_string(base_path);
     image->raw_size = raw_size;
+    image->block_size = block_size;
     image->type = classify_image(raw_size);
     image->writable = true;
     image->from_diskcopy = is_diskcopy;
@@ -501,6 +526,46 @@ image_t *image_open(const char *base_path, const char *instance_path) {
     return image;
 }
 
+image_t *image_create_blank(uint64_t block_count, image_geometry_t geom) {
+    uint32_t block_size = geometry_block_size(geom);
+    if (block_count == 0)
+        return NULL;
+
+    image_t *image = (image_t *)calloc(1, sizeof(image_t));
+    if (!image)
+        return NULL;
+    image->filename = NULL; // no backing base file: unwritten blocks read as zeros
+    image->raw_size = (size_t)block_count * block_size;
+    image->block_size = block_size;
+    image->type = image_hd;
+    image->writable = true;
+    image->from_diskcopy = false;
+    image->ghost_instance = true; // delta+journal are scratch, removed on close
+
+    // Place the delta+journal in the read-only scratch dir so the blank disk's
+    // sidecars don't clutter any user directory; ghost_instance unlinks them on
+    // image_close.  The image is ephemeral unless exported via image_export_to.
+    mkdir_recursive(IMAGE_RO_SCRATCH_DIR);
+    char id[17];
+    mint_random_hex_id(id, sizeof(id));
+    image->instance_path = NULL; // never serialized
+    image->delta_path = str_printf("%s/%s.delta", IMAGE_RO_SCRATCH_DIR, id);
+    image->journal_path = str_printf("%s/%s.journal", IMAGE_RO_SCRATCH_DIR, id);
+    if (!image->delta_path || !image->journal_path) {
+        image_close(image);
+        return NULL;
+    }
+
+    int err = image_attach_storage(image, false);
+    if (err != GS_SUCCESS) {
+        printf("image_create_blank: storage engine failed (%llu x %u, error %d)\n", (unsigned long long)block_count,
+               block_size, err);
+        image_close(image);
+        return NULL;
+    }
+    return image;
+}
+
 const char *image_path(const image_t *image) {
     if (!image || !image->writable)
         return NULL;
@@ -514,8 +579,8 @@ const char *image_path(const image_t *image) {
 size_t disk_read_data(image_t *disk, size_t offset, uint8_t *buf, size_t size) {
     if (!disk || !disk->storage || !buf || size == 0)
         return 0;
-    GS_ASSERT((offset % STORAGE_BLOCK_SIZE) == 0);
-    GS_ASSERT((size % STORAGE_BLOCK_SIZE) == 0);
+    GS_ASSERT((offset % disk->block_size) == 0);
+    GS_ASSERT((size % disk->block_size) == 0);
     GS_ASSERT(offset + size <= disk->raw_size);
     size_t transferred = 0;
     while (transferred < size) {
@@ -523,7 +588,7 @@ size_t disk_read_data(image_t *disk, size_t offset, uint8_t *buf, size_t size) {
         GS_ASSERTF(rc == GS_SUCCESS, "storage_read_block failed (%d)", rc);
         if (rc != GS_SUCCESS)
             break;
-        transferred += STORAGE_BLOCK_SIZE;
+        transferred += disk->block_size;
     }
     return transferred;
 }
@@ -531,8 +596,8 @@ size_t disk_read_data(image_t *disk, size_t offset, uint8_t *buf, size_t size) {
 size_t disk_write_data(image_t *disk, size_t offset, uint8_t *buf, size_t size) {
     if (!disk || !disk->storage || !buf || size == 0)
         return 0;
-    GS_ASSERT((offset % STORAGE_BLOCK_SIZE) == 0);
-    GS_ASSERT((size % STORAGE_BLOCK_SIZE) == 0);
+    GS_ASSERT((offset % disk->block_size) == 0);
+    GS_ASSERT((size % disk->block_size) == 0);
     GS_ASSERT(offset + size <= disk->raw_size);
     size_t transferred = 0;
     while (transferred < size) {
@@ -540,7 +605,7 @@ size_t disk_write_data(image_t *disk, size_t offset, uint8_t *buf, size_t size) 
         GS_ASSERTF(rc == GS_SUCCESS, "storage_write_block failed (%d)", rc);
         if (rc != GS_SUCCESS)
             break;
-        transferred += STORAGE_BLOCK_SIZE;
+        transferred += disk->block_size;
     }
     return transferred;
 }

@@ -624,25 +624,47 @@ static void lisa_mmureg_write(lisa_mmu_t *m, const lisa_resolved_t *r, uint16_t 
 
 // === CPU slow-path delegates ===============================================
 
+// Fire a memory logpoint (debug.logpoints --read/--write) for a CPU access.
+// The Lisa CPU path bypasses the generic memory.c slow path (memory.c routes
+// everything here when g_lisa_mmu != NULL), so the logpoint hook is invoked
+// here instead.  Gated on the per-(logical-)page refcount the install path
+// maintains, so it costs one array lookup per access when no logpoint is set
+// and nothing more.  (Like the generic path, this only sees CPU accesses, not
+// the device engines' own writes — there are none on the Lisa.)
+static inline void lisa_logpoint_notify(uint32_t addr, unsigned size, uint32_t value, bool is_write) {
+    if (!g_mem_logpoint_hook || !g_mem_logpoint_page_count)
+        return;
+    uint32_t page = addr >> PAGE_SHIFT;
+    if (page < g_page_count && g_mem_logpoint_page_count[page])
+        g_mem_logpoint_hook(addr, size, value, is_write);
+}
+
 static uint32_t lisa_read(uint32_t addr, unsigned size, bool supervisor) {
     lisa_mmu_t *m = g_lisa_mmu;
     if (__builtin_expect(lisa_is_serial(m, addr & 0x00FFFFFFu), 0))
         return lisa_serial_read(m, size); // serial-number PROM bit-stream
     lisa_resolved_t r = lisa_resolve(m, addr, supervisor, false);
+    uint32_t v;
     switch (r.route) {
     case L_RAM:
-        return lisa_ram_read(m, r.phys, size);
+        v = lisa_ram_read(m, r.phys, size);
+        break;
     case L_ROM:
-        return lisa_rom_read(m, r.phys, size);
+        v = lisa_rom_read(m, r.phys, size);
+        break;
     case L_IO:
-        return lisa_io_read(m, r.phys, size);
+        v = lisa_io_read(m, r.phys, size);
+        break;
     case L_MMUREG:
-        return lisa_mmureg_read(m, &r);
+        v = lisa_mmureg_read(m, &r);
+        break;
     case L_FAULT:
     default:
         lisa_raise_bus_error(addr, true, supervisor);
         return 0xFFFFFFFFu >> ((4 - size) * 8);
     }
+    lisa_logpoint_notify(addr, size, v, false);
+    return v;
 }
 
 static void lisa_write(uint32_t addr, unsigned size, bool supervisor, uint32_t value) {
@@ -651,13 +673,13 @@ static void lisa_write(uint32_t addr, unsigned size, bool supervisor, uint32_t v
     switch (r.route) {
     case L_RAM:
         lisa_ram_write(m, r.phys, size, value);
-        return;
+        break;
     case L_IO:
         lisa_io_write(m, r.phys, size, value);
-        return;
+        break;
     case L_MMUREG:
         lisa_mmureg_write(m, &r, (uint16_t)value);
-        return;
+        break;
     case L_ROM:
         return; // writes to ROM space are ignored
     case L_FAULT:
@@ -665,6 +687,7 @@ static void lisa_write(uint32_t addr, unsigned size, bool supervisor, uint32_t v
         lisa_raise_bus_error(addr, false, supervisor);
         return;
     }
+    lisa_logpoint_notify(addr, size, value, true);
 }
 
 uint8_t lisa_mmu_read8(uint32_t addr, bool supervisor) {

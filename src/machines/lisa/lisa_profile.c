@@ -22,6 +22,10 @@
 
 #include "lisa_profile.h"
 
+#include "checkpoint.h"
+#include "checkpoint_images.h"
+#include "checkpoint_machine.h"
+#include "image.h"
 #include "log.h"
 
 #include <stdio.h>
@@ -75,11 +79,13 @@ struct lisa_profile {
     lisa_profile_bsy_fn bsy_cb;
     void *bsy_ctx;
 
-    uint8_t *data; // nblocks * PRO_BLOCK, or NULL when detached
-    uint32_t nblocks;
-    char *path;
-    bool writable;
-    bool dirty;
+    // Backing store: the shared base+delta image subsystem, opened with a
+    // 532-byte block so each on-disk ProFile block (512 data + 20 inline tag)
+    // is one storage block.  The base file is never mutated; writes land in a
+    // per-instance delta.  NULL when no disk is attached.  Owned here (closed
+    // on detach/teardown).
+    image_t *image;
+    uint32_t nblocks; // disk_size(image) / PRO_BLOCK
 
     // Handshake / transfer state.
     pro_phase_t phase;
@@ -103,7 +109,7 @@ static void pro_set_busy(lisa_profile_t *pf, bool busy) {
         pf->bsy_cb(pf->bsy_ctx, busy);
 }
 
-// === Block I/O against the in-RAM image =====================================
+// === Block I/O against the base+delta image =================================
 
 // Fill `pf->buf` with [4 status][532 block] for a read of `block`.  Block
 // $FFFFFF returns the synthesized device-info block (capacity + drive type),
@@ -130,8 +136,10 @@ static void pro_fill_read(lisa_profile_t *pf, uint32_t block) {
         info[22] = (uint8_t)(PRO_BLOCK);
         info[23] = 32; // 23: spare-block count (cosmetic)
         LOG(2, "device-info: %u blocks", pf->nblocks);
-    } else if (pf->data && block < pf->nblocks) {
-        memcpy(&pf->buf[PRO_STATUS], &pf->data[(size_t)block * PRO_BLOCK], PRO_BLOCK);
+    } else if (pf->image && block < pf->nblocks) {
+        // The whole 532-byte block is opaque (data + inline tag): one aligned
+        // storage read, base or delta, no de-interleave.
+        disk_read_data(pf->image, (size_t)block * PRO_BLOCK, &pf->buf[PRO_STATUS], PRO_BLOCK);
     } else {
         pf->buf[1] = 0x02; // out-of-range → flag in status (non-fatal here)
         LOG(1, "read block %u out of range (%u blocks)", block, pf->nblocks);
@@ -140,18 +148,17 @@ static void pro_fill_read(lisa_profile_t *pf, uint32_t block) {
     pf->buf_idx = 0;
 }
 
-// Commit the 532-byte write buffer to `block`.
+// Commit the 532-byte write buffer to `block` (lands in the delta, not the base).
 static void pro_commit_write(lisa_profile_t *pf, uint32_t block) {
     if (block == PRO_INFO_BLOCK) {
         LOG(1, "ignoring write to device-info block");
         return;
     }
-    if (!pf->data || block >= pf->nblocks) {
+    if (!pf->image || block >= pf->nblocks) {
         LOG(1, "write block %u out of range (%u blocks)", block, pf->nblocks);
         return;
     }
-    memcpy(&pf->data[(size_t)block * PRO_BLOCK], pf->buf, PRO_BLOCK);
-    pf->dirty = true;
+    disk_write_data(pf->image, (size_t)block * PRO_BLOCK, pf->buf, PRO_BLOCK);
     LOG(2, "wrote block %u", block);
 }
 
@@ -207,7 +214,7 @@ static void pro_enter(lisa_profile_t *pf, pro_phase_t phase) {
 }
 
 void lisa_profile_portb(lisa_profile_t *pf, uint8_t portb) {
-    if (!pf || !pf->data)
+    if (!pf || !pf->image)
         return;
     bool asserted = (portb & PB_CMD) == 0; // CMD/ active low
 
@@ -241,7 +248,7 @@ void lisa_profile_portb(lisa_profile_t *pf, uint8_t portb) {
 // === Port-A data ============================================================
 
 uint8_t lisa_profile_porta_read(lisa_profile_t *pf, bool handshake) {
-    if (!pf || !pf->data)
+    if (!pf || !pf->image)
         return 0xFF;
 
     if (!handshake) {
@@ -261,7 +268,7 @@ uint8_t lisa_profile_porta_read(lisa_profile_t *pf, bool handshake) {
 }
 
 void lisa_profile_porta_write(lisa_profile_t *pf, uint8_t value, bool handshake) {
-    if (!pf || !pf->data)
+    if (!pf || !pf->image)
         return;
 
     if (!handshake) {
@@ -304,47 +311,35 @@ void lisa_profile_reset(lisa_profile_t *pf) {
 // === Media ==================================================================
 
 bool lisa_profile_attached(const lisa_profile_t *pf) {
-    return pf && pf->data != NULL;
+    return pf && pf->image != NULL;
 }
 bool lisa_profile_connected(const lisa_profile_t *pf) {
     return lisa_profile_attached(pf);
 }
 
-bool lisa_profile_flush(lisa_profile_t *pf) {
-    if (!pf || !pf->data || !pf->path || !pf->writable || !pf->dirty)
-        return true;
-    FILE *f = fopen(pf->path, "r+b");
-    if (!f)
-        f = fopen(pf->path, "wb");
-    if (!f) {
-        LOG(1, "flush: cannot open %s", pf->path);
-        return false;
-    }
-    size_t bytes = (size_t)pf->nblocks * PRO_BLOCK;
-    size_t put = fwrite(pf->data, 1, bytes, f);
-    fclose(f);
-    pf->dirty = (put != bytes);
-    return put == bytes;
-}
-
 bool lisa_profile_save_as(const lisa_profile_t *pf, const char *path) {
-    if (!pf || !pf->data || !path || !*path)
+    if (!pf || !pf->image || !path || !*path)
         return false;
-    FILE *f = fopen(path, "wb");
-    if (!f) {
-        LOG(1, "save_as: cannot open %s", path);
-        return false;
-    }
-    size_t bytes = (size_t)pf->nblocks * PRO_BLOCK;
-    size_t put = fwrite(pf->data, 1, bytes, f);
-    fclose(f);
-    if (put != bytes) {
-        LOG(1, "save_as: short write to %s (%zu/%zu)", path, put, bytes);
-        remove(path); // don't leave a truncated image behind
+    // The consolidated 532-bytes/block disk = base merged with the delta.
+    // image_export_to refuses to overwrite an existing file.
+    if (image_export_to(pf->image, path) != 0) {
+        LOG(1, "save_as: cannot write %s", path);
         return false;
     }
     LOG(2, "save_as: wrote %u-block image to %s", pf->nblocks, path);
     return true;
+}
+
+// Where a writable mount's delta+journal live.  Mirrors system.c's
+// pick_delta_dir: a volatile /tmp base keeps its delta adjacent (NULL ⇒
+// image_create derives the dir); everything else routes the delta under the
+// active per-machine checkpoint directory so it shares state.checkpoint's
+// lifetime (docs/core/storage/checkpointing.md).  checkpoint_machine_dir() is
+// NULL when no machine dir is active (headless tests) → adjacent-to-base.
+static const char *pro_delta_dir(const char *base) {
+    if (base && strncmp(base, "/tmp/", 5) == 0)
+        return NULL;
+    return checkpoint_machine_dir();
 }
 
 bool lisa_profile_attach(lisa_profile_t *pf, const char *path, bool writable) {
@@ -352,52 +347,47 @@ bool lisa_profile_attach(lisa_profile_t *pf, const char *path, bool writable) {
         return false;
     lisa_profile_detach(pf);
 
-    uint32_t nblocks = PRO_DEFAULT_BLOCKS;
-    uint8_t *data = NULL;
-
-    FILE *f = path ? fopen(path, "rb") : NULL;
-    if (f) {
-        fseek(f, 0, SEEK_END);
-        long sz = ftell(f);
-        fseek(f, 0, SEEK_SET);
-        if (sz > 0 && (sz % PRO_BLOCK) == 0)
-            nblocks = (uint32_t)(sz / PRO_BLOCK);
-        data = (uint8_t *)calloc((size_t)nblocks * PRO_BLOCK, 1);
-        if (data && sz > 0) {
-            size_t want = (size_t)nblocks * PRO_BLOCK;
-            if (fread(data, 1, want, f) != want)
-                LOG(1, "attach: short read of %s", path);
-        }
-        fclose(f);
+    // Open through the shared base+delta subsystem with a 532-byte block, so the
+    // base image is never mutated (the boot-time mountinfo/MDDF dirtying lands in
+    // the delta, leaving the user's pristine image to cold-boot cleanly).
+    const image_geometry_t geom = {.block_size = PRO_BLOCK};
+    image_t *img = NULL;
+    if (!path) {
+        // Blank disk: an all-zero base+delta of the canonical 5 MB geometry.
+        img = image_create_blank(PRO_DEFAULT_BLOCKS, geom);
     } else {
-        // No existing file → blank disk of the default geometry.
-        data = (uint8_t *)calloc((size_t)nblocks * PRO_BLOCK, 1);
+        // Persist volatile (/tmp, /fd) images to OPFS so they survive a reload,
+        // then open base+delta: a writable mount gets a persistent delta under
+        // the per-machine checkpoint dir (pro_delta_dir, mirroring system.c's
+        // pick_delta_dir, so the delta shares state.checkpoint's lifetime and
+        // gets cleaned with it), a read-only mount an ephemeral scratch delta.
+        // Either way the base is immutable.
+        char *persistent = image_persist_volatile(path);
+        const char *base = persistent ? persistent : path;
+        img = writable ? image_create_with_geometry(base, pro_delta_dir(base), geom)
+                       : image_open_readonly_with_geometry(base, geom);
+        free(persistent);
     }
-    if (!data) {
-        LOG(1, "attach: out of memory");
+    if (!img) {
+        LOG(1, "attach: cannot open %s", path ? path : "(blank)");
         return false;
     }
 
-    pf->data = data;
-    pf->nblocks = nblocks;
-    pf->writable = writable;
-    pf->dirty = false;
-    pf->path = path ? strdup(path) : NULL;
+    pf->image = img;
+    pf->nblocks = (uint32_t)(disk_size(img) / PRO_BLOCK);
     lisa_profile_reset(pf);
-    LOG(2, "attach %s (%u blocks, %s)", path ? path : "(blank)", nblocks, writable ? "rw" : "ro");
+    LOG(2, "attach %s (%u blocks, %s)", path ? path : "(blank)", pf->nblocks, writable ? "rw" : "ro");
     return true;
 }
 
 void lisa_profile_detach(lisa_profile_t *pf) {
-    if (!pf || !pf->data)
+    if (!pf || !pf->image)
         return;
-    lisa_profile_flush(pf);
-    free(pf->data);
-    pf->data = NULL;
-    free(pf->path);
-    pf->path = NULL;
+    // Closing the image flushes the delta and (for read-only/blank mounts)
+    // removes the ephemeral scratch sidecars.  The base file is never written.
+    image_close(pf->image);
+    pf->image = NULL;
     pf->nblocks = 0;
-    pf->dirty = false;
     pf->phase = PH_IDLE;
 }
 
@@ -410,8 +400,22 @@ lisa_profile_t *lisa_profile_init(lisa_profile_bsy_fn bsy_cb, void *bsy_ctx, che
     pf->bsy_cb = bsy_cb;
     pf->bsy_ctx = bsy_ctx;
     pf->phase = PH_IDLE;
-    if (cp)
-        lisa_profile_checkpoint(pf, cp);
+    // Checkpoint restore (init-reads convention): lisa_profile_checkpoint wrote
+    // an "attached" flag and, when a disk was present, the image blob.  Read it
+    // back and reopen the ProFile image at its 532-byte geometry so the disk
+    // content (base + delta) is restored — not the default-512 misread the
+    // generic restore would do.
+    if (cp) {
+        uint8_t attached = 0;
+        system_read_checkpoint_data(cp, &attached, sizeof(attached));
+        if (attached) {
+            pf->image = mac_checkpoint_restore_one_image(cp, (image_geometry_t){.block_size = PRO_BLOCK});
+            if (pf->image) {
+                pf->nblocks = (uint32_t)(disk_size(pf->image) / PRO_BLOCK);
+                lisa_profile_reset(pf);
+            }
+        }
+    }
     return pf;
 }
 
@@ -423,8 +427,13 @@ void lisa_profile_delete(lisa_profile_t *pf) {
 }
 
 void lisa_profile_checkpoint(lisa_profile_t *pf, checkpoint_t *cp) {
-    // Symmetric no-op (same discipline as lisa_fdc/MMU): the handshake state is
-    // re-derived by the next transaction; image bytes live in the backing file.
-    (void)pf;
-    (void)cp;
+    // Save path (lisa_checkpoint_save).  The handshake state is transient (it
+    // re-derives on the next transaction); the disk CONTENT is the durable part,
+    // so persist the image (base reference + delta) exactly the way the generic
+    // image list does.  A leading "attached" flag keeps the stream aligned when
+    // no disk is present.  The matching restore read lives in lisa_profile_init.
+    uint8_t attached = (pf && pf->image) ? 1u : 0u;
+    system_write_checkpoint_data(cp, &attached, sizeof(attached));
+    if (attached)
+        image_checkpoint(pf->image, cp);
 }

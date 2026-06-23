@@ -282,11 +282,130 @@ TEST(storage_rollback) {
     teardown_sandbox();
 }
 
+// --- Variable block size -------------------------------------------------
+// The engine is block-size-agnostic: 512 (flat disks), 532 (Lisa ProFile:
+// 512 data + 20 inline tag), or any multiple of 4 in [512, STORAGE_MAX_BLOCK_SIZE].
+// The journal stride and delta data area follow the runtime block_size, and the
+// size is recorded in the delta header so a reopen self-describes its geometry.
+
+// Create a base image of `blocks` blocks of `bsize` bytes; byte[i] = salt+lba+i.
+static void create_base_image_bs(const char *path, uint64_t blocks, uint32_t bsize, uint8_t salt) {
+    FILE *f = fopen(path, "wb");
+    ASSERT_TRUE(f != NULL);
+    uint8_t buf[STORAGE_MAX_BLOCK_SIZE];
+    for (uint64_t lba = 0; lba < blocks; lba++) {
+        for (uint32_t i = 0; i < bsize; i++)
+            buf[i] = (uint8_t)(salt + lba + i);
+        ASSERT_TRUE(fwrite(buf, bsize, 1, f) == 1);
+    }
+    fclose(f);
+}
+
+static void fill_block_bs(size_t lba, uint32_t bsize, uint8_t salt, uint8_t *buffer) {
+    for (uint32_t i = 0; i < bsize; i++)
+        buffer[i] = (uint8_t)(salt + lba + i);
+}
+
+static void expect_block_bs(size_t lba, uint32_t bsize, uint8_t salt, const uint8_t *buffer) {
+    for (uint32_t i = 0; i < bsize; i++)
+        ASSERT_TRUE(buffer[i] == (uint8_t)(salt + lba + i));
+}
+
+// Round-trip read/write + commit/reopen at a given non-default block size.
+static void run_block_size_roundtrip(uint32_t bsize) {
+    const uint64_t blocks = 16;
+    const uint8_t base_salt = 0x55;
+    setup_sandbox();
+    create_base_image_bs(BASE_FILE, blocks, bsize, base_salt);
+
+    storage_config_t config = make_config(BASE_FILE, DELTA_FILE, JOURNAL_FILE, blocks);
+    config.block_size = bsize;
+    storage_t *storage = NULL;
+    ASSERT_OK(storage_new(&config, &storage));
+
+    uint8_t buffer[STORAGE_MAX_BLOCK_SIZE];
+    uint8_t verify[STORAGE_MAX_BLOCK_SIZE];
+
+    // Unmodified block comes from the base image.
+    ASSERT_OK(storage_read_block(storage, 0, buffer));
+    expect_block_bs(0, bsize, base_salt, buffer);
+
+    // Write block 4 (offset = 4 * bsize), read it back.
+    fill_block_bs(4, bsize, 0x11, buffer);
+    ASSERT_OK(storage_write_block(storage, (size_t)4 * bsize, buffer));
+    ASSERT_OK(storage_read_block(storage, (size_t)4 * bsize, verify));
+    expect_block_bs(4, bsize, 0x11, verify);
+
+    // Commit, overwrite (journals a preimage), then roll back to the committed
+    // value — exercises the variable-stride journal path.
+    ASSERT_OK(storage_clear_rollback(storage));
+    fill_block_bs(4, bsize, 0x99, buffer);
+    ASSERT_OK(storage_write_block(storage, (size_t)4 * bsize, buffer));
+    ASSERT_OK(storage_read_block(storage, (size_t)4 * bsize, verify));
+    expect_block_bs(4, bsize, 0x99, verify);
+    ASSERT_OK(storage_apply_rollback(storage));
+    ASSERT_OK(storage_read_block(storage, (size_t)4 * bsize, verify));
+    expect_block_bs(4, bsize, 0x11, verify);
+
+    ASSERT_OK(storage_delete(storage));
+
+    // Reopen — the delta header records block_size, so the modified block
+    // persists and unmodified blocks still read from the base.
+    storage = NULL;
+    config = make_config(BASE_FILE, DELTA_FILE, JOURNAL_FILE, blocks);
+    config.block_size = bsize;
+    ASSERT_OK(storage_new(&config, &storage));
+    ASSERT_OK(storage_read_block(storage, (size_t)4 * bsize, verify));
+    expect_block_bs(4, bsize, 0x11, verify);
+    ASSERT_OK(storage_read_block(storage, 0, verify));
+    expect_block_bs(0, bsize, base_salt, verify);
+
+    // A delta written at one block size must be rejected when reopened with a
+    // different one (the header validates block_size).
+    ASSERT_OK(storage_delete(storage));
+    storage = NULL;
+    config = make_config(BASE_FILE, DELTA_FILE, JOURNAL_FILE, blocks);
+    config.block_size = (bsize == STORAGE_BLOCK_SIZE) ? 532 : STORAGE_BLOCK_SIZE;
+    ASSERT_ERR(storage_new(&config, &storage), GS_ERROR);
+
+    teardown_sandbox();
+}
+
+TEST(storage_block_size_532) {
+    // The Lisa ProFile geometry: 512 data + 20 inline tag.
+    run_block_size_roundtrip(532);
+}
+
+TEST(storage_block_size_other) {
+    // A non-512, non-532 size proves the engine is not special-cased to either.
+    run_block_size_roundtrip(1024);
+}
+
+TEST(storage_block_size_validation) {
+    setup_sandbox();
+    create_base_image_bs(BASE_FILE, 4, 512, 0x00);
+    storage_t *storage = NULL;
+
+    // Too small, too large, or not a multiple of 4 are all rejected.
+    storage_config_t config = make_config(BASE_FILE, DELTA_FILE, JOURNAL_FILE, 4);
+    config.block_size = 256; // < 512
+    ASSERT_ERR(storage_new(&config, &storage), GS_ERROR);
+    config.block_size = STORAGE_MAX_BLOCK_SIZE + 4; // > max
+    ASSERT_ERR(storage_new(&config, &storage), GS_ERROR);
+    config.block_size = 530; // not a multiple of 4
+    ASSERT_ERR(storage_new(&config, &storage), GS_ERROR);
+
+    teardown_sandbox();
+}
+
 int main(void) {
     RUN(storage_invalid_arguments);
     RUN(storage_basic_read_write);
     RUN(storage_state_roundtrip);
     RUN(storage_delta_persistence);
     RUN(storage_rollback);
+    RUN(storage_block_size_532);
+    RUN(storage_block_size_other);
+    RUN(storage_block_size_validation);
     return 0;
 }

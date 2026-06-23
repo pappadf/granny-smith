@@ -11,7 +11,8 @@ The image subsystem speaks **paths only**. It does not know about machine ids, s
 	- `instance_path`: stem `<dir>/<id>` for the per-instance delta+journal pair, where `<id>` is a 16-hex-char opaque id minted by the image layer. `NULL` for read-only mounts.
 	- `delta_path`: `<instance_path>.delta`.
 	- `journal_path`: `<instance_path>.journal`.
-	- `raw_size`: logical size in bytes (`block_count * 512`).
+	- `raw_size`: logical size in bytes (`block_count * block_size`).
+	- `block_size`: bytes per logical block — 512 for flat disks (the default openers), 532 for a Lisa ProFile (512 data + 20 inline tag).
 	- `writable`: true when the caller asked for write access.
 	- `ghost_instance`: true when delta+journal live in a process-local scratch dir (read-only mounts); they are deleted on `image_close`.
 	- `type`: detected category (`image_fd_ds`, `image_hd`, ...).
@@ -29,6 +30,8 @@ The single old `image_open(filename, writable)` is replaced by three explicit op
 - **`image_open(const char *base_path, const char *instance_path)`** — reopens an existing writable instance. `instance_path` is the stem returned by `image_path()` when the instance was first created; the image layer appends `.delta` and `.journal` itself. Used by checkpoint restore.
 
 After construction the caller queries the instance stem with **`image_path(const image_t *image)`** and persists it (in a checkpoint or in the higher-layer slot table) so a future `image_open(base, instance_path)` can find the same delta files. Returns `NULL` for read-only mounts.
+
+**Non-512 block geometries** — each of the three openers has a `*_with_geometry(..., image_geometry_t geom)` variant that interprets the base as `geom.block_size`-byte blocks (0 ⇒ 512); the default openers are thin wrappers passing `{ .block_size = 512 }`, so existing call sites are unchanged. The Lisa ProFile opens with `{ .block_size = 532 }`. For a disk with **no source file**, **`image_create_blank(uint64_t block_count, image_geometry_t geom)`** makes a writable, all-zero image (no base; unwritten blocks read as zeros) whose scratch delta+journal are removed on `image_close` — used for a blank ProFile, exportable via `image_export_to()`.
 
 Common steps (shared by all three openers):
 
@@ -61,7 +64,7 @@ static const char *pick_delta_dir(const char *path) {
 When a disk image resides in volatile storage (`/tmp/` or `/fd/`), this function copies it to `/opfs/images/<hash>.img` (OPFS-backed, content-addressed via FNV-1a hash). This runs on the worker thread where OPFS is accessible. The `fd insert` and `hd attach` commands call this automatically before opening the image. Returns a persistent path that the caller must free.
 
 **Reading/Writing image data**
-- **`disk_read_data(image_t *disk, size_t offset, uint8_t *buf, size_t size)`** and **`disk_write_data(...)`** enforce 512-byte alignment and forward to `storage_read_block` / `storage_write_block` in a loop.
+- **`disk_read_data(image_t *disk, size_t offset, uint8_t *buf, size_t size)`** and **`disk_write_data(...)`** enforce `disk->block_size` alignment (512 for flat disks, 532 for a ProFile) and forward to `storage_read_block` / `storage_write_block` in a loop.
 
 **Background work**
 - **`image_tick_all(config_t *config)`** calls `storage_tick()` for each registered image. With the delta model, `storage_tick()` is a no-op (no consolidation needed).

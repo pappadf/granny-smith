@@ -39,18 +39,20 @@ void lisa_profile_checkpoint(lisa_profile_t *pf, checkpoint_t *cp);
 
 // === Media ==================================================================
 
-// Attach a 532-bytes/block image file; created blank (zero-filled) if missing.
-// Geometry (block count) is taken from the file size, or PRO_DEFAULT_BLOCKS for
-// a fresh image.  Returns false on I/O error.
+// Attach a 532-bytes/block image through the shared base+delta subsystem.  A
+// NULL path makes a blank (all-zero) disk of the canonical 5 MB geometry; a
+// real path opens that file as an immutable base, all writes going to a
+// per-instance delta (the base is never modified).  Geometry (block count) is
+// taken from the file size, or PRO_DEFAULT_BLOCKS for a blank disk.  `writable`
+// selects a persistent delta (true) or an ephemeral scratch one (false).
+// Returns false on I/O error.
 bool lisa_profile_attach(lisa_profile_t *pf, const char *path, bool writable);
-void lisa_profile_detach(lisa_profile_t *pf); // flushes if writable+dirty
+void lisa_profile_detach(lisa_profile_t *pf); // close the image (no base writeback)
 bool lisa_profile_attached(const lisa_profile_t *pf);
-bool lisa_profile_flush(lisa_profile_t *pf); // write dirty data back to the file
 
-// Write the current contents to a new, self-contained single-file image at
-// `path`, independent of the attached path and the writable/dirty flags.  The
-// ProFile image is already a flat 532-bytes/block file (it is not a base+delta
-// pair), so this is simply the consolidated disk.  Returns false on I/O error.
+// Write the current contents (base merged with the delta) to a new,
+// self-contained single-file 532-bytes/block image at `path`.  Refuses to
+// overwrite an existing file.  Returns false on I/O error.
 bool lisa_profile_save_as(const lisa_profile_t *pf, const char *path);
 
 // True when a disk is attached (the machine drives OCD/ low → "connected").

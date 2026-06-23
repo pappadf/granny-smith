@@ -21,6 +21,14 @@ typedef struct config config_t;
 // === Type Definitions ===
 enum image_type { image_other, image_fd_ss, image_fd_ds, image_fd_hd, image_hd, image_cdrom };
 
+// Per-image geometry.  The default openers use { .block_size = 512 }; devices
+// with a different on-disk block (e.g. the Lisa ProFile's 532-byte block) open
+// with the matching size via the *_with_geometry variants.  Has room to grow
+// (tag size, sector-header layout) without churning the opener signatures.
+typedef struct image_geometry {
+    uint32_t block_size; // Bytes per block; 0 is treated as STORAGE_BLOCK_SIZE (512)
+} image_geometry_t;
+
 // Image structure (exposed for performance-critical access in floppy controller)
 struct image {
     storage_t *storage; // Backing storage engine instance
@@ -29,6 +37,7 @@ struct image {
     char *delta_path; // Path to delta file (<instance_path>.delta)
     char *journal_path; // Path to preimage journal (<instance_path>.journal)
     size_t raw_size; // Logical size of the image in bytes
+    uint32_t block_size; // Bytes per logical block (512 default, 532 for a ProFile)
     bool writable; // True when the caller requested write access
     bool ghost_instance; // True when delta+journal are ephemeral scratch (read-only mounts)
     enum image_type type; // Detected image type (floppy, hd, ...)
@@ -67,6 +76,21 @@ image_t *image_create(const char *base_path, const char *delta_dir);
 // (no extension) returned by image_path() when the instance was created.
 // Fails if the delta+journal files are missing.
 image_t *image_open(const char *base_path, const char *instance_path);
+
+// Geometry-aware variants of the three openers above.  Identical behaviour but
+// the base is interpreted as `geom.block_size`-byte blocks (0 ⇒ 512).  The
+// default openers are thin wrappers over these with { .block_size = 512 }.
+image_t *image_open_readonly_with_geometry(const char *base_path, image_geometry_t geom);
+image_t *image_create_with_geometry(const char *base_path, const char *delta_dir, image_geometry_t geom);
+image_t *image_open_with_geometry(const char *base_path, const char *instance_path, image_geometry_t geom);
+
+// Create a brand-new, writable, all-zero image with NO backing base file:
+// `block_count` blocks of geom.block_size bytes, every block reading back as
+// zeros until written.  The delta+journal live in a process-local scratch dir
+// and are removed when the image is closed (like a read-only ghost mount), so
+// the image is ephemeral unless its contents are written out via
+// image_export_to().  Used for a blank ProFile (no source file to open).
+image_t *image_create_blank(uint64_t block_count, image_geometry_t geom);
 
 // Returns the instance path stem for a writable image, suitable for
 // persisting in checkpoints and feeding back into image_open().

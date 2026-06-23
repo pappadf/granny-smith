@@ -13,9 +13,11 @@
 
 #include "lisa_fdc.h"
 
+#include "cpu.h" // cpu_get_pc — guest PC for the floppy command trace
 #include "floppy_internal.h" // iwm_sectors_per_track / iwm_disk_image_offset (Sony geometry)
 #include "image.h"
 #include "log.h"
+#include "system.h" // system_cpu — current CPU for the floppy command trace
 
 #include <limits.h>
 #include <stdio.h>
@@ -106,6 +108,16 @@ struct lisa_fdc {
 
     uint8_t ram[FDC_RAM_BYTES];
 };
+
+// Guest PC for the floppy command/access trace (LOG level 1, category
+// "floppy").  Only evaluated when the trace is enabled (the LOG macro guards
+// its arguments), so this costs nothing in normal operation.  Marked unused so
+// builds whose LOG macro drops its variadic arguments (the unit-test harness)
+// don't warn — it is genuinely referenced wherever LOG expands its arguments.
+__attribute__((unused)) static uint32_t fdc_guest_pc(void) {
+    cpu_t *cpu = system_cpu();
+    return cpu ? cpu_get_pc(cpu) : 0;
+}
 
 // Set FDIR (VIA1 PB4) and notify the machine.
 static void fdc_set_fdir(lisa_fdc_t *fdc, bool asserted) {
@@ -218,6 +230,16 @@ static void fdc_execute_rwts(lisa_fdc_t *fdc) {
 
 // Service a command-issue register write (byte 0).
 static void fdc_command(lisa_fdc_t *fdc, uint8_t cmd) {
+    // The 6504A reports a fresh completion code (DISKERR, byte 8) for each
+    // command it runs.  Only a media-access command (EXEC/RWTS) can fail with a
+    // disk error; every control command — CLRSTAT, ENBLDRV, SEEK, COLDWAIT, … —
+    // completes with status OK.  Start each command at OK so a prior read's error
+    // never leaks forward: the boot ROM probes an empty drive with EXEC (leaving
+    // $07 "no disk"), then the OS Sony driver runs INITDISK (CLRSTAT+ENBLDRV) and
+    // reads DISKERR to confirm the drive came up.  Without this reset it saw the
+    // stale $07, concluded init failed, and looped INITDISK / raised the spurious
+    // "disk not in standard format" alert even though it never read any media.
+    fdc->ram[FDC_STATUS] = 0;
     switch (cmd) {
     case CMD_EXEC:
         fdc_execute_rwts(fdc); // latch the sector data into the buffer now
@@ -260,6 +282,13 @@ static void fdc_command(lisa_fdc_t *fdc, uint8_t cmd) {
         fdc->ram[FDC_CMDREG] = 0; // accept unknown command issues
         break;
     }
+    // Floppy command trace (enable: `debug.log "floppy" 1`).  One line per
+    // command issued, with the resulting status, whether media is present, and
+    // the guest PC — so a ROM-vs-OS floppy access can be told apart on a real
+    // boot.  $81=EXEC(RWTS) $83=SEEK $84=JSR $85=CLRSTAT $86=ENBLDRV $87=COLDWAIT.
+    LOG(1, "fdc cmd=$%02x rwts=$%02x trk=%d sec=%d drv=$%02x img=%d status=$%02x pc=$%06x", cmd, fdc->ram[FDC_RWTS],
+        fdc->ram[FDC_TRACK], fdc->ram[FDC_SECTOR], fdc->ram[FDC_DRIVE], fdc->image != NULL, fdc->ram[FDC_STATUS],
+        fdc_guest_pc());
 }
 
 // === Shared-RAM access ======================================================
@@ -276,7 +305,15 @@ static void fdc_command(lisa_fdc_t *fdc, uint8_t cmd) {
 static uint8_t fdc_read_byte(lisa_fdc_t *fdc, uint32_t off) {
     if (off & 1) {
         uint32_t idx = off >> 1;
-        return idx < FDC_RAM_BYTES ? fdc->ram[idx] : 0xFF;
+        uint8_t v = idx < FDC_RAM_BYTES ? fdc->ram[idx] : 0xFF;
+        // Trace the disk-presence reads (enable: `debug.log "floppy" 1`): the OS
+        // Sony driver polls DISKIN ($41) for "media present" and reads DRVSTAT
+        // ($5F) as the interrupt source.  Seeing whether/when these are read,
+        // and their value, tells us how the OS decides a disk is in the drive.
+        if (idx == FDC_DISKIN || idx == FDC_DRVSTAT)
+            LOG(1, "fdc read %s val=$%02x img=%d pc=$%06x", idx == FDC_DISKIN ? "DISKIN" : "DRVSTAT", v,
+                fdc->image != NULL, fdc_guest_pc());
+        return v;
     }
     return 0xFF; // even byte: no shared RAM on this half of the bus
 }

@@ -8,10 +8,12 @@
 //   [0..23]                      Fixed header (magic, version, block_count, block_size)
 //   [24 .. 24+bm-1]             Current bitmap (1 bit per block)
 //   [24+bm .. 24+2*bm-1]        Committed bitmap
-//   [24+2*bm .. EOF]             Block data area (block_count * 512 bytes, sparse)
+//   [24+2*bm .. EOF]             Block data area (block_count * block_size bytes, sparse)
 //
 // Journal format (append-only):
-//   Each entry: [uint32_t LBA][512 bytes data] = 516 bytes per entry.
+//   Each entry: [uint32_t LBA][block_size bytes data] = 4 + block_size bytes per
+//   entry.  The header records block_size, so reopen self-describes the entry
+//   stride — no fixed entry size.
 
 #include "storage.h"
 
@@ -34,11 +36,14 @@ LOG_USE_CATEGORY_NAME("storage");
 // Constants
 // ============================================================================
 
-#define DELTA_MAGIC        "GSDL"
-#define DELTA_MAGIC_SIZE   4
-#define DELTA_VERSION      1
-#define DELTA_HEADER_SIZE  24 // magic(4) + version(4) + block_count(8) + block_size(4) + reserved(4)
-#define JOURNAL_ENTRY_SIZE (4 + STORAGE_BLOCK_SIZE) // LBA(4) + data(512) = 516
+#define DELTA_MAGIC       "GSDL"
+#define DELTA_MAGIC_SIZE  4
+#define DELTA_VERSION     1
+#define DELTA_HEADER_SIZE 24 // magic(4) + version(4) + block_count(8) + block_size(4) + reserved(4)
+
+// One journal entry = LBA(4) + one block of data.  Block size is per-instance
+// (storage->block_size), so the stride is computed at runtime, not fixed.
+#define JOURNAL_ENTRY_SIZE(s) (4 + (size_t)(s)->block_size)
 
 #define STORAGE_SNAPSHOT_VERSION 2
 
@@ -70,7 +75,7 @@ struct storage_t {
     uint8_t *committed_bitmap; // Bitmap at last successful checkpoint
 
     uint64_t block_count;
-    uint32_t block_size; // Always 512
+    uint32_t block_size; // Bytes per block (512 default, 532 ProFile); fixed for this instance
     size_t bitmap_bytes; // ceil(block_count / 8)
 
     size_t base_data_offset; // Byte offset to data in base file
@@ -127,7 +132,7 @@ static int journal_append(storage_t *s, uint32_t lba, const uint8_t *data) {
     if (fwrite(&lba, sizeof(lba), 1, s->journal_fp) != 1)
         return GS_ERROR;
     // Write block data
-    if (fwrite(data, STORAGE_BLOCK_SIZE, 1, s->journal_fp) != 1)
+    if (fwrite(data, s->block_size, 1, s->journal_fp) != 1)
         return GS_ERROR;
     fflush(s->journal_fp);
 
@@ -151,7 +156,7 @@ static int journal_load_index(storage_t *s) {
 
     if (fseeko(s->journal_fp, 0, SEEK_SET) != 0)
         return GS_ERROR;
-    size_t entries = (size_t)size / JOURNAL_ENTRY_SIZE;
+    size_t entries = (size_t)size / JOURNAL_ENTRY_SIZE(s);
 
     for (size_t i = 0; i < entries; i++) {
         uint32_t lba;
@@ -162,7 +167,7 @@ static int journal_load_index(storage_t *s) {
             return GS_ERROR;
         }
         // Skip block data
-        if (fseek(s->journal_fp, STORAGE_BLOCK_SIZE, SEEK_CUR) != 0)
+        if (fseek(s->journal_fp, (long)s->block_size, SEEK_CUR) != 0)
             return GS_ERROR;
         if (journal_index_add(s, lba) != GS_SUCCESS)
             return GS_ERROR; // OOM growing the index
@@ -282,7 +287,11 @@ static int checkpoint_storage_read_cb(void *ctx, void *data, size_t size) {
 int storage_new(const storage_config_t *config, storage_t **out_storage) {
     if (!config || !out_storage || !config->delta_path || !config->journal_path)
         return GS_ERROR;
-    if (config->block_size != STORAGE_BLOCK_SIZE)
+    // Block size must be word-aligned (the Lisa parallel bus is word-addressed)
+    // and bounded so the journal/streaming stack buffers stay safe.  512 (flat
+    // disks) and 532 (ProFile: 512 data + 20 inline tag) both pass.
+    if (config->block_size < STORAGE_BLOCK_SIZE || config->block_size > STORAGE_MAX_BLOCK_SIZE ||
+        (config->block_size % 4) != 0)
         return GS_ERROR;
     if (config->block_count == 0)
         return GS_ERROR;
@@ -424,7 +433,7 @@ int storage_write_block(storage_t *storage, size_t offset, const void *buffer) {
 
     // Capture preimage if this block was committed and not yet journaled
     if (bitmap_test(storage->committed_bitmap, lba) && !journal_has_lba(storage, lba)) {
-        uint8_t old[STORAGE_BLOCK_SIZE];
+        uint8_t old[STORAGE_MAX_BLOCK_SIZE];
         fseek(storage->delta_fp, (long)(storage->data_offset + (size_t)lba * storage->block_size), SEEK_SET);
         if (fread(old, storage->block_size, 1, storage->delta_fp) != 1) {
             return GS_ERROR;
@@ -459,11 +468,11 @@ int storage_apply_rollback(storage_t *storage) {
     fseek(storage->journal_fp, 0, SEEK_SET);
     for (size_t i = 0; i < storage->journal_count; i++) {
         uint32_t lba;
-        uint8_t data[STORAGE_BLOCK_SIZE];
+        uint8_t data[STORAGE_MAX_BLOCK_SIZE];
 
         if (fread(&lba, sizeof(lba), 1, storage->journal_fp) != 1)
             return GS_ERROR;
-        if (fread(data, STORAGE_BLOCK_SIZE, 1, storage->journal_fp) != 1)
+        if (fread(data, storage->block_size, 1, storage->journal_fp) != 1)
             return GS_ERROR;
 
         // Write preimage back to delta
@@ -563,7 +572,7 @@ int storage_checkpoint(storage_t *storage, checkpoint_t *checkpoint) {
 static int storage_skip_snapshot(checkpoint_t *checkpoint, const storage_snapshot_header_t *header) {
     if (header->has_data) {
         // Skip all block data
-        uint8_t discard[STORAGE_BLOCK_SIZE];
+        uint8_t discard[STORAGE_MAX_BLOCK_SIZE];
         for (uint64_t i = 0; i < header->block_count; i++) {
             system_read_checkpoint_data(checkpoint, discard, header->block_size);
             if (checkpoint_has_error(checkpoint))
@@ -656,7 +665,7 @@ int storage_save_state(storage_t *storage, void *context, storage_write_callback
     if (!storage || !context || !write_cb)
         return GS_ERROR;
 
-    uint8_t buffer[STORAGE_BLOCK_SIZE];
+    uint8_t buffer[STORAGE_MAX_BLOCK_SIZE];
     for (uint64_t block = 0; block < storage->block_count; block++) {
         size_t offset = (size_t)block * storage->block_size;
         int rc = storage_read_block(storage, offset, buffer);
@@ -677,7 +686,7 @@ int storage_load_state(storage_t *storage, void *context, storage_read_callback_
     if (!storage || !context || !read_cb)
         return GS_ERROR;
 
-    uint8_t buffer[STORAGE_BLOCK_SIZE];
+    uint8_t buffer[STORAGE_MAX_BLOCK_SIZE];
     for (uint64_t block = 0; block < storage->block_count; block++) {
         if (read_exact(read_cb, context, buffer, storage->block_size) != GS_SUCCESS)
             return GS_ERROR;

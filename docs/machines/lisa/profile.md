@@ -20,8 +20,17 @@ captures the protocol (from the rev-H boot ROM `RM248.B.TEXT` and the OS driver
   then (after a handshake) 4 status bytes. Block **$FFFFFF** returns the
   controller's synthesized **device-info block** (name "PROFILE", drive type 0,
   9728 blocks = 5 MB, 532 bytes/block) — the OS reads drive type at offset 14 and
-  the 24-bit block count at offsets 18..20 (`PROF_INIT`). Backed by an in-RAM
-  image (`nblocks × 532`), optionally persisted to a host file.
+  the 24-bit block count at offsets 18..20 (`PROF_INIT`). Backed by the shared
+  **base+delta image subsystem** opened with a **532-byte block** (the whole
+  on-wire block — data + inline tag — is one opaque storage block): the source
+  file is an immutable read-only base, all writes land in a per-instance delta,
+  and each block read/written is one aligned `disk_read_data`/`disk_write_data`
+  call. The base is never mutated, so booting a ProFile no longer dirties the
+  user's image (the boot-time `mountinfo`/MDDF write goes to the delta) — every
+  cold boot starts from the pristine base, fixing the spurious "startup disk was
+  in use" scavenge prompt. A blank attach (no path) is an all-zero ephemeral
+  image (`image_create_blank`); `profile.save` consolidates base+delta into a new
+  single-file image via `image_export_to`. See `docs/core/storage/image.md`.
 - **`via.c` port-A hooks** — `via_set_porta_hooks()` adds a read/write callback on
   the ORA/IRA (handshaked, CA2/PSTRB-strobed) and ORA-no-handshake registers, the
   one infrastructure gap. NULL on every other VIA, so no other machine changes.

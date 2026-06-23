@@ -37,69 +37,77 @@ void mac_checkpoint_save_images(config_t *cfg, checkpoint_t *cp) {
 // back onto cfg->images.  Mirrors save layout; fails loudly via
 // checkpoint_set_error on partial reads / failed image opens so the
 // caller's restore loop sees a marked-error checkpoint.
+image_t *mac_checkpoint_restore_one_image(checkpoint_t *cp, image_geometry_t geom) {
+    uint32_t len = 0;
+    system_read_checkpoint_data(cp, &len, sizeof(len));
+    char *name = NULL;
+    if (len > 0) {
+        name = (char *)malloc(len);
+        if (!name) {
+            char tmp;
+            for (uint32_t k = 0; k < len; ++k)
+                system_read_checkpoint_data(cp, &tmp, 1);
+        } else {
+            system_read_checkpoint_data(cp, name, len);
+        }
+    }
+    char writable = 0;
+    system_read_checkpoint_data(cp, &writable, sizeof(writable));
+    uint64_t raw_size = 0;
+    system_read_checkpoint_data(cp, &raw_size, sizeof(raw_size));
+    uint32_t instance_len = 0;
+    system_read_checkpoint_data(cp, &instance_len, sizeof(instance_len));
+    char *instance_path = NULL;
+    if (instance_len > 0) {
+        instance_path = (char *)malloc(instance_len);
+        if (instance_path) {
+            system_read_checkpoint_data(cp, instance_path, instance_len);
+        } else {
+            char tmp;
+            for (uint32_t k = 0; k < instance_len; ++k)
+                system_read_checkpoint_data(cp, &tmp, 1);
+        }
+    }
+
+    image_t *img = NULL;
+    if (name) {
+        // Consolidated checkpoints carry the raw image bytes inline; quick
+        // checkpoints reference the on-disk file and just need it reopened.  The
+        // base is reopened with `geom` so a non-512 device (the ProFile) restores
+        // at its real block size rather than the default 512.
+        bool consolidated = checkpoint_get_kind(cp) == CHECKPOINT_KIND_CONSOLIDATED;
+        if (raw_size > 0 && consolidated)
+            image_create_empty(name, (size_t)raw_size);
+        if (writable && consolidated) {
+            img = image_create_with_geometry(name, checkpoint_machine_dir(), geom);
+        } else if (writable && instance_path && instance_path[0]) {
+            img = image_open_with_geometry(name, instance_path, geom);
+        } else if (writable) {
+            img = image_create_with_geometry(name, checkpoint_machine_dir(), geom);
+        } else {
+            img = image_open_readonly_with_geometry(name, geom);
+        }
+        if (!img) {
+            printf("Error: image_open failed for %s while restoring checkpoint\n", name);
+            checkpoint_set_error(cp);
+        }
+    }
+    if (storage_restore_from_checkpoint(img ? img->storage : NULL, cp) != GS_SUCCESS) {
+        printf("Error: storage_restore_from_checkpoint failed for %s\n", name ? name : "<unnamed>");
+        checkpoint_set_error(cp);
+    }
+    free(name);
+    free(instance_path);
+    return img;
+}
+
 void mac_checkpoint_restore_images(config_t *cfg, checkpoint_t *cp) {
     uint32_t count = 0;
     system_read_checkpoint_data(cp, &count, sizeof(count));
     for (uint32_t i = 0; i < count; ++i) {
-        uint32_t len = 0;
-        system_read_checkpoint_data(cp, &len, sizeof(len));
-        char *name = NULL;
-        if (len > 0) {
-            name = (char *)malloc(len);
-            if (!name) {
-                char tmp;
-                for (uint32_t k = 0; k < len; ++k)
-                    system_read_checkpoint_data(cp, &tmp, 1);
-            } else {
-                system_read_checkpoint_data(cp, name, len);
-            }
-        }
-        char writable = 0;
-        system_read_checkpoint_data(cp, &writable, sizeof(writable));
-        uint64_t raw_size = 0;
-        system_read_checkpoint_data(cp, &raw_size, sizeof(raw_size));
-        uint32_t instance_len = 0;
-        system_read_checkpoint_data(cp, &instance_len, sizeof(instance_len));
-        char *instance_path = NULL;
-        if (instance_len > 0) {
-            instance_path = (char *)malloc(instance_len);
-            if (instance_path) {
-                system_read_checkpoint_data(cp, instance_path, instance_len);
-            } else {
-                char tmp;
-                for (uint32_t k = 0; k < instance_len; ++k)
-                    system_read_checkpoint_data(cp, &tmp, 1);
-            }
-        }
-
-        image_t *img = NULL;
-        if (name) {
-            // Consolidated checkpoints carry the raw image bytes inline; quick
-            // checkpoints reference the on-disk file and just need it reopened.
-            bool consolidated = checkpoint_get_kind(cp) == CHECKPOINT_KIND_CONSOLIDATED;
-            if (raw_size > 0 && consolidated)
-                image_create_empty(name, (size_t)raw_size);
-            if (writable && consolidated) {
-                img = image_create(name, checkpoint_machine_dir());
-            } else if (writable && instance_path && instance_path[0]) {
-                img = image_open(name, instance_path);
-            } else if (writable) {
-                img = image_create(name, checkpoint_machine_dir());
-            } else {
-                img = image_open_readonly(name);
-            }
-            if (!img) {
-                printf("Error: image_open failed for %s while restoring checkpoint\n", name);
-                checkpoint_set_error(cp);
-            }
-        }
-        if (storage_restore_from_checkpoint(img ? img->storage : NULL, cp) != GS_SUCCESS) {
-            printf("Error: storage_restore_from_checkpoint failed for %s\n", name ? name : "<unnamed>");
-            checkpoint_set_error(cp);
-        }
+        // Generic image list is all flat 512-byte disks (block_size 0 ⇒ 512).
+        image_t *img = mac_checkpoint_restore_one_image(cp, (image_geometry_t){0});
         if (img)
             add_image(cfg, img);
-        free(name);
-        free(instance_path);
     }
 }
