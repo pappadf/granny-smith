@@ -55,6 +55,20 @@ typedef enum mmu_kind {
 // Wire string for an mmu_kind_t ("none" / "68030_pmmu" / "lisa_segment").
 const char *mmu_kind_to_string(mmu_kind_t kind);
 
+// How a machine attaches a hard-disk image.  Every Mac hangs its HD off the
+// SCSI bus (scsi.attach_hd(path, id)); the Lisa 2 / Macintosh XL use the
+// parallel-port ProFile instead (profile.attach(path, writable)).  This is the
+// typed fact the config UI reads to label the HD row and pick the attach call —
+// no model-name guessing (proposal §4.4).  Default 0 = SCSI, so every existing
+// profile keeps its behavior without an explicit field.
+typedef enum hd_bus {
+    HD_BUS_SCSI = 0, // SCSI bus: scsi.attach_hd
+    HD_BUS_PROFILE, // Lisa/XL parallel-port ProFile: profile.attach
+} hd_bus_t;
+
+// Wire string for an hd_bus_t ("scsi" / "profile").
+const char *hd_bus_to_string(hd_bus_t bus);
+
 // One floppy drive slot on a machine.  Sentinel-terminated arrays end at
 // the first entry whose `label` is NULL.
 struct floppy_slot {
@@ -132,6 +146,12 @@ typedef struct hw_profile {
     // Floppy / SCSI slot tables.  Sentinel-terminated.
     const struct floppy_slot *floppy_slots;
     const struct scsi_slot *scsi_slots;
+
+    // Hard-disk attach interface (see hd_bus_t).  Default HD_BUS_SCSI (0): the
+    // HD row attaches via scsi.attach_hd and takes its label from scsi_slots.
+    // The Lisa/XL set HD_BUS_PROFILE — their parallel ProFile is not on the
+    // SCSI bus (scsi_slots stays empty) and the UI attaches via profile.attach.
+    hd_bus_t hd_bus;
 
     // CD-ROM availability is a build-time flag, not a model-level UX policy:
     // every emulated Mac architecturally supports a SCSI CD bay; the flag

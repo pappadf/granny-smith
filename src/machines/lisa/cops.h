@@ -62,4 +62,10 @@ void cops_inject_mouse(cops_t *cops, int dx, int dy, int button);
 // follow with scheduler.run.  A subsequent relative cops_inject_mouse cancels it.
 void cops_set_warp(cops_t *cops, int x, int y);
 
+// Report a press of the Lisa's soft power-off switch.  The COPS delivers it as
+// the $80 lead-in + $FB status code (docs/machines/lisa/lisa.md §11.2); LOS
+// catches $FB and runs its orderly shutdown (FS_Shutdown → the boot volume's
+// MDDF mountinfo := unmounted), so a saved image boots clean afterwards.
+void cops_soft_power_off(cops_t *cops);
+
 #endif // COPS_H

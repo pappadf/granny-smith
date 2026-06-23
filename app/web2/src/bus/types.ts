@@ -23,6 +23,10 @@ export interface MachineConfig {
    *  are empty / '(none)' are skipped (no insertion into that slot). */
   floppies: string[];
   hd: string;
+  /** How to attach `hd`: 'scsi' (default — scsi.attach_hd) or 'profile' (the
+   *  Lisa/XL parallel-port ProFile — profile.attach). Sourced from the model's
+   *  `machine.profile(id).hd_bus`. */
+  hdBus?: 'scsi' | 'profile';
   cd: string;
 }
 

@@ -382,7 +382,12 @@ export async function initEmulator(config: MachineConfig): Promise<void> {
     await gsEval(`floppy.drives[${i}].insert`, [path, true]);
   }
   if (config.hd && config.hd !== '(none)') {
-    await gsEval('scsi.attach_hd', [config.hd, 0]);
+    if (config.hdBus === 'profile') {
+      // Lisa/XL: the hard disk is the parallel-port ProFile, not a SCSI device.
+      await gsEval('profile.attach', [config.hd, true]);
+    } else {
+      await gsEval('scsi.attach_hd', [config.hd, 0]);
+    }
   }
   if (config.cd && config.cd !== '(none)') {
     await gsEval('scsi.attach_cdrom', [config.cd, 3]);

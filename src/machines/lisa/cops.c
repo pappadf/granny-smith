@@ -29,6 +29,7 @@ LOG_USE_CATEGORY_NAME("cops");
 // Reset/status response codes (docs/machines/lisa/lisa.md §11.2).
 #define COPS_RSTCODE    0x80 // reset lead-in byte
 #define COPS_KBD_ID     0x3F // final-US keyboard layout id (≤ $DF ⇒ "connected")
+#define COPS_PWROFF     0xFB // soft power-off switch pressed (status response)
 #define COPS_MOUSE_MARK 0x00 // "mouse data follows" marker (docs §11.4)
 
 // Mouse-button keycode `d000 0110` (docs §11.4): d = 1 pressed, 0 released.
@@ -256,6 +257,17 @@ void cops_inject_key(cops_t *c, uint8_t code) {
     fifo_push(c, code);
     cops_kick_pump(c);
     LOG(2, "cops inject key 0x%02x", code);
+}
+
+void cops_soft_power_off(cops_t *c) {
+    if (!c)
+        return;
+    // The soft power-off switch is reported like a reset/status response: the
+    // $80 lead-in byte followed by the $FB code (docs/machines/lisa/lisa.md §11.2).
+    fifo_push(c, COPS_RSTCODE);
+    fifo_push(c, COPS_PWROFF);
+    cops_kick_pump(c);
+    LOG(1, "cops soft power-off ($80 $FB)");
 }
 
 // Begin an absolute "warp" of the OS cursor to screen pixel (x,y).  The mouse

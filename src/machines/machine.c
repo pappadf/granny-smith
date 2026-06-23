@@ -62,6 +62,18 @@ const char *mmu_kind_to_string(mmu_kind_t kind) {
     return "none";
 }
 
+// Convert an hd_bus_t to its wire string ("scsi" / "profile").  The config UI
+// reads this to label the HD row and choose the attach call.
+const char *hd_bus_to_string(hd_bus_t bus) {
+    switch (bus) {
+    case HD_BUS_SCSI:
+        return "scsi";
+    case HD_BUS_PROFILE:
+        return "profile";
+    }
+    return "scsi";
+}
+
 // Find a machine profile by its id string
 const hw_profile_t *machine_find(const char *id) {
     if (!id)
@@ -436,6 +448,9 @@ static value_t encode_profile(const hw_profile_t *p) {
         }
     }
     json_close_arr(b);
+
+    json_key(b, "hd_bus");
+    json_str(b, hd_bus_to_string(p->hd_bus));
 
     json_key(b, "has_cdrom");
     json_bool(b, p->has_cdrom);

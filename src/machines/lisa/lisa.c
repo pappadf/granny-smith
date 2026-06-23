@@ -68,6 +68,7 @@ typedef struct lisa_state {
     display_t display; // 720x364 1bpp framebuffer (direct, in main RAM)
     struct object *fd_obj, *fd_drives_obj, *fd_drive_obj; // `floppy` object tree
     struct object *hd_obj; // `profile` object (parallel hard disk)
+    struct object *power_obj; // `power` object (soft power-off switch)
 } lisa_state_t;
 
 // Video geometry, 1 bpp MSB-first (docs/machines/lisa/lisa.md §8).  The unmodified Lisa 2 has
@@ -662,6 +663,41 @@ static void lisa_register_profile_object(config_t *cfg) {
 }
 
 // ============================================================
+// `power` object — the Lisa's soft power-off switch (on the COPS)
+// ============================================================
+
+// Press the soft power-off switch.  The COPS reports it ($80 $FB) and LOS runs
+// its orderly shutdown, cleanly unmounting the boot volume (mountinfo :=
+// unmounted) — so a `profile.save` afterwards yields an image that cold-boots
+// without the "startup disk was in use" scavenge prompt.  No-op pre-boot / on a
+// machine whose OS isn't listening; harmless either way (the code just queues).
+static value_t lisa_power_off(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)m;
+    (void)argc;
+    (void)argv;
+    lisa_state_t *ls = lisa_state((config_t *)object_data(self));
+    if (!ls || !ls->cops)
+        return val_err("power: no COPS");
+    cops_soft_power_off(ls->cops);
+    return val_none();
+}
+
+static const member_t lisa_power_members[] = {
+    {.kind = M_METHOD,
+     .name = "off",
+     .doc = "Press the soft power-off switch (COPS $FB); LOS does an orderly shutdown",
+     .method = {.result = V_NONE, .fn = lisa_power_off}},
+};
+static const class_desc_t lisa_power_class = {.name = "power", .members = lisa_power_members, .n_members = 1};
+
+static void lisa_register_power_object(config_t *cfg) {
+    lisa_state_t *ls = lisa_state(cfg);
+    ls->power_obj = object_new(&lisa_power_class, cfg, "power");
+    if (ls->power_obj)
+        object_attach(object_root(), ls->power_obj);
+}
+
+// ============================================================
 // Init / Teardown
 // ============================================================
 
@@ -776,6 +812,7 @@ static void lisa_init(config_t *cfg, checkpoint_t *checkpoint) {
     via_set_porta_hooks(cfg->via2, lisa_profile_porta_read_cb, lisa_profile_porta_write_cb, cfg);
     lisa_profile_update_lines(cfg); // no disk yet → OCD/ high (disconnected)
     lisa_register_profile_object(cfg);
+    lisa_register_power_object(cfg); // soft power-off switch (COPS) → `power.off`
 
     // Z8530 SCC (reused as-is): physical $00D241/43/45/47 decode from base
     // $00D240 via the standard A1/A2 convention (docs/machines/lisa/lisa.md §15).  PCLK 4 MHz
@@ -824,6 +861,11 @@ static void lisa_teardown(config_t *cfg) {
             object_detach(ls0->hd_obj);
             object_delete(ls0->hd_obj);
             ls0->hd_obj = NULL;
+        }
+        if (ls0->power_obj) {
+            object_detach(ls0->power_obj);
+            object_delete(ls0->power_obj);
+            ls0->power_obj = NULL;
         }
     }
     if (ls0 && ls0->profile) {
@@ -971,9 +1013,11 @@ static const struct floppy_slot lisa_floppy_slots[] = {
     {0},
 };
 
-// The Lisa hard disk is parallel-port ProFile/Widget, NOT SCSI; this table is
-// present only because the registry requires it (the parallel disk lands in
-// Step 7 as its own device, not on a SCSI bus).
+// The Lisa hard disk is parallel-port ProFile/Widget, NOT SCSI, so this SCSI
+// table stays empty: the parallel disk is its own device (lisa_profile.c), and
+// the profile advertises it via `.hd_bus = HD_BUS_PROFILE`.  The config UI reads
+// hd_bus to label the HD row "ProFile" and attach through profile.attach rather
+// than scsi.attach_hd.
 static const struct scsi_slot lisa_scsi_slots[] = {
     {0},
 };
@@ -1009,6 +1053,7 @@ const hw_profile_t machine_lisa = {
     .ram_options = lisa_ram_options_kb,
     .floppy_slots = lisa_floppy_slots,
     .scsi_slots = lisa_scsi_slots,
+    .hd_bus = HD_BUS_PROFILE, // parallel-port ProFile, not SCSI
     .has_cdrom = false,
     .cdrom_id = 0,
 
@@ -1037,6 +1082,7 @@ const hw_profile_t machine_macxl = {
     .ram_options = lisa_ram_options_kb,
     .floppy_slots = lisa_floppy_slots,
     .scsi_slots = lisa_scsi_slots,
+    .hd_bus = HD_BUS_PROFILE, // parallel-port ProFile, not SCSI
     .has_cdrom = false,
     .cdrom_id = 0,
 

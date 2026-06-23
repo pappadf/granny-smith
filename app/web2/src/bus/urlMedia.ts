@@ -95,8 +95,13 @@ export async function processUrlMedia(rawParams: URLSearchParams): Promise<boole
     await gsEval('floppy.drives[0].insert', [`/tmp/url_${fd.slot}`, true]);
   }
   for (const hd of params.hardDisks) {
-    const id = parseInt(hd.slot.replace('hd', ''), 10);
-    await gsEval('scsi.attach_hd', [`/tmp/url_${hd.slot}`, id]);
+    if (profile?.hd_bus === 'profile') {
+      // Lisa/XL: parallel-port ProFile, attached off the SCSI bus.
+      await gsEval('profile.attach', [`/tmp/url_${hd.slot}`, true]);
+    } else {
+      const id = parseInt(hd.slot.replace('hd', ''), 10);
+      await gsEval('scsi.attach_hd', [`/tmp/url_${hd.slot}`, id]);
+    }
   }
   if (params.cd) {
     await gsEval('scsi.attach_cdrom', ['/tmp/url_cd', 3]);
@@ -131,11 +136,13 @@ async function romIdentify(path: string): Promise<RomIdentifyResult | null> {
   return null;
 }
 
-async function parseProfile(model: string): Promise<{ ram_default?: number } | null> {
+async function parseProfile(
+  model: string,
+): Promise<{ ram_default?: number; hd_bus?: string } | null> {
   const r = await gsEval('machine.profile', [model]);
   if (typeof r !== 'string') return null;
   try {
-    return JSON.parse(r) as { ram_default?: number };
+    return JSON.parse(r) as { ram_default?: number; hd_bus?: string };
   } catch {
     return null;
   }

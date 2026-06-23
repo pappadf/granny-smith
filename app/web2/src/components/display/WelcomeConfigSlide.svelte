@@ -35,6 +35,9 @@
     ram_default?: number; // KB
     floppy_slots?: Array<{ label?: string; kind?: string }>;
     scsi_slots?: Array<{ label?: string; id?: number }>;
+    // How the hard disk attaches: 'scsi' (default) or 'profile' (Lisa/XL
+    // parallel-port ProFile). Drives the HD row label and the attach call.
+    hd_bus?: string;
     has_cdrom?: boolean; // documented UX gate: show the SCSI CD-ROM row iff true
     // Derived capability probe (proposal §4.4): the typed facts the UI reads
     // instead of guessing from the model name.
@@ -104,9 +107,14 @@
       return card?.requires_vrom === true;
     }),
   );
-  // SCSI HD row label comes from the profile's first SCSI slot, not a
-  // hardcoded string.
-  let hdSlotLabel = $derived(currentProfile?.scsi_slots?.[0]?.label ?? 'SCSI HD 0');
+  // HD row label: the Lisa/XL parallel-port ProFile (hd_bus === 'profile') is
+  // not on the SCSI bus, so its label comes from the bus, not scsi_slots (which
+  // is empty for those machines). SCSI machines keep their profile slot label.
+  let hdSlotLabel = $derived(
+    currentProfile?.hd_bus === 'profile'
+      ? 'ProFile'
+      : (currentProfile?.scsi_slots?.[0]?.label ?? 'SCSI HD 0'),
+  );
   // Only machines whose profile advertises a CD-ROM (has_cdrom) show the CD row.
   let hasCdrom = $derived(currentProfile?.has_cdrom === true);
   let ramOptions = $derived.by(() => {
@@ -363,6 +371,7 @@
       ram,
       floppies: floppyPaths,
       hd: hdPath,
+      hdBus: currentProfile?.hd_bus === 'profile' ? 'profile' : 'scsi',
       cd: cdPath,
     });
     setWelcomeSlide('home');
