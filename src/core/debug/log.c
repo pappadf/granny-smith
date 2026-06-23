@@ -287,6 +287,14 @@ int log_set_level(log_category_t *cat, int level) {
     return prev;
 }
 
+// Visit every registered category in registration order.
+void log_foreach_category(void (*fn)(const log_category_t *cat, void *ud), void *ud) {
+    if (!fn)
+        return;
+    for (const struct log_category *c = s_registry_head; c; c = c->next)
+        fn(c, ud);
+}
+
 // Sets the output sink (or defaults to stdout when fn == NULL).
 void log_set_sink(log_sink_fn fn, void *user) {
     s_sink_fn = fn ? fn : NULL; // when NULL, only per-category sinks are used

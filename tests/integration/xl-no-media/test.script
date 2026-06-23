@@ -1,0 +1,35 @@
+# Integration test: Macintosh XL — no startup device ("insert a diskette" prompt).
+#
+# Start the Macintosh XL with nothing to boot from: no floppy in the drive and no
+# ProFile on the parallel port.  The "3A" boot ROM runs its startup-device scan,
+# the Sony floppy controller reports DRVERR ("no disk in drive"), and the ROM
+# settles on its no-media prompt — a disk-drive icon with an insert arrow and the
+# drive id (2 = the internal upper Sony), with NO numeric error code, over the
+# CONTINUE (Cmd-2) and STARTUP FROM... (Cmd-3) recovery buttons.  This is the
+# no-media counterpart to xl-boot: same hardware and ROM, but with the media
+# removed, so the ROM asks for a diskette instead of handing off to MacWorks XL.
+#
+# (An empty drive must report DRVERR/$07, not $16 = clamp error — the latter is an
+# I/O-board fault the ROM would paint as a crossed I/O-board icon.  See
+# src/machines/lisa/lisa_fdc.c, fdc_execute_rwts.)
+
+# Confirm we are on the Macintosh XL, on the "3A" boot ROM, before there is any media.
+assert ${machine.id == "macxl"} "machine.id != macxl"
+assert ${rom.checksum == "094C82F0"} "rom.checksum != 094C82F0"
+# Macintosh XL screen-modification raster (square pixels), not the Lisa 2's 720x364.
+assert ${screen.width == 608} "screen.width != 608"
+assert ${screen.height == 431} "screen.height != 431"
+# Nothing to boot from: the drive is empty and no ProFile is attached.
+assert ${floppy.drives[0].present == false} "no floppy should be present"
+assert ${profile.present == false} "no ProFile should be attached"
+
+# Let the boot ROM run its startup scan and give up.  The prompt renders and stays
+# put (a static idle loop) well before this budget; it is stable through 300M+
+# instructions, so 120M leaves a comfortable margin while staying cheap.
+scheduler.run 120000000
+
+# The "insert a diskette" prompt: disk-drive icon + insert arrow + drive id 2, no
+# error code, with the CONTINUE and STARTUP FROM... buttons.  Pixel-exact match.
+screen.match no-media.png
+
+quit

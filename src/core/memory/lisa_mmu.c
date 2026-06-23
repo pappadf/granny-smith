@@ -329,7 +329,9 @@ static uint32_t lisa_io_read(lisa_mmu_t *m, uint32_t phys, unsigned size) {
     // Control / video / status block ($E000-$FFFF).
     if (phys >= 0xE000) {
         if ((phys & 0xFFE0) == 0xE000) { // control strobes $E000-$E01F
-            lisa_strobe(m, phys);
+            lisa_strobe(m, phys); // a long access is two word bus cycles → two strobes
+            if (size == 4)
+                lisa_strobe(m, phys + 2);
             return 0xFFFFFFFFu >> ((4 - size) * 8);
         }
         if (phys >= 0xF800) // Status Register ($F800/$F801)
@@ -360,7 +362,15 @@ static uint32_t lisa_io_read(lisa_mmu_t *m, uint32_t phys, unsigned size) {
 static void lisa_io_write(lisa_mmu_t *m, uint32_t phys, unsigned size, uint32_t value) {
     if (phys >= 0xE000) {
         if ((phys & 0xFFE0) == 0xE000) { // control strobes
+            // A control strobe fires on the address decode of each bus cycle.  A
+            // 68000 long access is two word bus cycles (phys, then phys+2), so a
+            // MOVE.L to a strobe pair fires BOTH strobes — e.g. MacWorks' VBL
+            // re-arm `MOVE.L D0,$FCE018` strobes VTIRDIS ($E018) then VTIRENB
+            // ($E01A), net-enabling the video interrupt.  Modelling it as one
+            // strobe left the video VBL stuck disabled.
             lisa_strobe(m, phys);
+            if (size == 4)
+                lisa_strobe(m, phys + 2);
             return;
         }
         if (phys >= 0xE800 && phys < 0xF000) { // Video Address Latch

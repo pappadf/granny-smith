@@ -111,17 +111,20 @@ function compactStamp(): string {
 export async function refreshCatLevels(): Promise<void> {
   const { gsEval, isModuleReady } = await import('@/bus/emulator');
   if (!isModuleReady()) return;
-  const children = await gsEval('log.meta.children');
-  if (!Array.isArray(children)) return;
+  // debug.log_levels returns a JSON object {"<category>": <level>, ...} of every
+  // registered category. (Categories register lazily as subsystems first log, so
+  // the set grows over a session.)
+  const json = await gsEval('debug.log_levels');
+  if (typeof json !== 'string') return;
+  let map: Record<string, unknown>;
+  try {
+    map = JSON.parse(json);
+  } catch {
+    return;
+  }
   const next: Record<string, number> = {};
-  for (const name of children) {
-    if (typeof name !== 'string') continue;
-    const lvl = await gsEval(`log.${name}.level`);
+  for (const [name, lvl] of Object.entries(map)) {
     if (typeof lvl === 'number') next[name] = lvl;
-    else if (typeof lvl === 'string') {
-      const n = parseInt(lvl, 10);
-      if (Number.isFinite(n)) next[name] = n;
-    }
   }
   logs.catLevels = next;
 }
@@ -130,9 +133,9 @@ export async function refreshCatLevels(): Promise<void> {
 export async function setCatLevel(cat: string, level: number): Promise<boolean> {
   const { gsEval, isModuleReady } = await import('@/bus/emulator');
   if (!isModuleReady()) return false;
-  // Use the typed setter form. gsEval accepts a `path = value` shape
-  // via the bridge dispatcher (see docs/shell.md "Path forms").
-  await gsEval(`log.${cat}.level = ${level}`);
+  // debug.log(category, level) adjusts the per-subsystem level (and registers
+  // the category if it didn't exist yet).
+  await gsEval('debug.log', [cat, level]);
   logs.catLevels[cat] = level;
   return true;
 }

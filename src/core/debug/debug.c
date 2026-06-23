@@ -3637,6 +3637,29 @@ static value_t debug_method_log(struct object *self, const member_t *m, int argc
     return val_bool(cmd_log(targc, targv) == 0);
 }
 
+// json_open_obj callback: emit "<category>": <level> for one category.
+static void debug_log_level_json_cb(const log_category_t *cat, void *ud) {
+    json_builder_t *b = (json_builder_t *)ud;
+    json_key(b, log_category_name(cat));
+    json_int(b, log_get_level(cat));
+}
+
+// `debug.log_levels()` — every registered category and its current level, as a
+// JSON object {"<category>": <level>, ...}.  The Logs view's level editor reads
+// this to populate its list (the categories register lazily, so the set grows
+// as subsystems first log; a freshly booted machine has registered its own).
+static value_t debug_method_log_levels(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)self;
+    (void)m;
+    (void)argc;
+    (void)argv;
+    json_builder_t *b = json_builder_new();
+    json_open_obj(b);
+    log_foreach_category(debug_log_level_json_cb, b);
+    json_close_obj(b);
+    return json_finish(b);
+}
+
 static const arg_decl_t debug_log_args[] = {
     {.name = "category", .kind = V_STRING, .doc = "Subsystem name (memory, logpoint, ...)"            },
     {.name = "level",    .kind = V_NONE,   .doc = "Integer level (0..5) or full named-arg spec string"},
@@ -3977,6 +4000,10 @@ static const member_t debug_members[] = {
      .name = "exceptions",
      .doc = "Dump the 256-entry exception trace ring (always-on). Optional filter=1 hides routine traps/IRQs.",
      .method = {.args = debug_exceptions_args, .nargs = 1, .result = V_BOOL, .fn = debug_method_exceptions}                                                                                                      },
+    {.kind = M_METHOD,
+     .name = "log_levels",
+     .doc = "Every registered log category and its level as a JSON object {\"<cat>\": <level>}.",
+     .method = {.args = NULL, .nargs = 0, .result = V_STRING, .fn = debug_method_log_levels}                                                                                                                     },
 };
 
 const class_desc_t debug_class = {

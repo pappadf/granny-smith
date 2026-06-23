@@ -679,6 +679,13 @@ static void lisa_init(config_t *cfg, checkpoint_t *checkpoint) {
 
     cfg->cpu = cpu_init(CPU_MODEL_68000, checkpoint);
     cfg->scheduler = scheduler_init(cfg->cpu, checkpoint);
+    // Run at the Lisa's real 5.09375 MHz, not the scheduler's Mac-Plus default
+    // (7.8336 MHz).  Set before the VIAs init: their timer clock is CPU/4, so the
+    // wrong CPU frequency would skew every VIA-timer-derived rate — including the
+    // ~250 Hz tick MacWorks XL programs into VIA2 T1 — and inflate the real-time
+    // CPU budget ~1.5x, which on a throughput-bound host shows up as a sluggish
+    // "?" blink and a choppy cursor.
+    scheduler_set_frequency(cfg->scheduler, cfg->machine->freq);
 
     if (checkpoint)
         system_read_checkpoint_data(checkpoint, &cfg->irq, sizeof(cfg->irq));

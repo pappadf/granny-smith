@@ -32,6 +32,9 @@ const char *log_category_name(const log_category_t *cat);
 int log_get_level(const log_category_t *cat);
 int log_set_level(log_category_t *cat, int level); // returns previous level or negative on error
 
+// Visit every registered category in registration order (for UI enumeration).
+void log_foreach_category(void (*fn)(const log_category_t *cat, void *ud), void *ud);
+
 // Output sink ---------------------------------------------------------------
 // Sink invoked for each fully formatted line (including trailing '\n').
 typedef void (*log_sink_fn)(const char *line, void *user);
