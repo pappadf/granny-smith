@@ -78,3 +78,41 @@ test('configure a Lisa 2 with the Xenix ProFile and boot', async ({ page }) => {
   });
   await expect(page.locator('.welcome-layer')).toHaveCount(0);
 });
+
+// The ProFile hard-disk row offers "Create blank image..." just like the SCSI
+// row, but it must open the *ProFile* creator (532-byte/block raw image, 5 MB
+// or 10 MB) rather than the SCSI drive-catalog dialog.
+test('create a blank ProFile from the config dialog', async ({ page }) => {
+  test.setTimeout(120_000);
+  await gotoWeb2(page);
+
+  const [romChooser] = await Promise.all([
+    page.waitForEvent('filechooser'),
+    page.getByRole('button', { name: 'Upload ROM...' }).click(),
+  ]);
+  await romChooser.setFiles(LISA_ROM);
+
+  await page.getByRole('button', { name: 'New Machine...' }).click();
+  const model = page.locator('#cfg-model');
+  await expect(model.locator('option[value="lisa"]')).toHaveCount(1, { timeout: 30_000 });
+  await model.selectOption('lisa');
+  await expect(page.locator('label[for="cfg-hd"]')).toHaveText('ProFile');
+
+  // Selecting the "Create blank image..." sentinel on the ProFile row opens the
+  // create dialog. It must be the ProFile creator, offering 5 MB / 10 MB — NOT
+  // the SCSI drive catalog.
+  const hd = page.locator('#cfg-hd');
+  await hd.selectOption('Create blank image...');
+  const dlg = page.getByRole('dialog', { name: 'Create Blank ProFile' });
+  await expect(dlg).toBeVisible();
+  await expect(dlg.getByText('5 MB ProFile')).toBeVisible();
+  await expect(dlg.getByText('10 MB Widget')).toBeVisible();
+
+  // Create the 10 MB Widget; the dialog closes and the new image is selected in
+  // the ProFile row (storage.profile_create wrote a raw 19448×532 image, which
+  // the OPFS rescan now lists).
+  await dlg.getByText('10 MB Widget').click();
+  await dlg.getByRole('button', { name: 'Create' }).click();
+  await expect(dlg).toBeHidden();
+  await expect(hd).toHaveValue(/^blank_profile_10MB_\d+\.image$/, { timeout: 30_000 });
+});

@@ -488,6 +488,7 @@
 <CreateImageDialog
   open={createOpen}
   kind={createKind}
+  bus={currentProfile?.hd_bus === 'profile' ? 'profile' : 'scsi'}
   onClose={() => (createOpen = false)}
   onCreated={onImageCreated}
 />

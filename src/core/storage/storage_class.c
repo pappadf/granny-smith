@@ -453,6 +453,41 @@ static value_t storage_method_fd_create(struct object *self, const member_t *m, 
     return val_bool(true);
 }
 
+// `storage.profile_create(path, blocks)` — create a blank Lisa/XL ParaPort
+// ProFile image: a raw, all-zero file of `blocks` 532-byte blocks. Unlike
+// hd_create (which builds a 512-byte/block SCSI image), the ProFile is a
+// parallel-port disk with 532-byte blocks, a distinct on-disk format. `blocks`
+// is a V_NONE slot accepting an integer or numeric string. Standard sizes:
+// 5 MB = 9728 blocks; 10 MB ≈ 19448 (the LOS-documented full Widget capacity).
+static value_t storage_method_profile_create(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)self;
+    (void)m;
+    (void)argc;
+    const char *path = argv[0].s;
+    if (!path || !*path)
+        return val_err("storage.profile_create: empty path");
+    unsigned long blocks;
+    if (argv[1].kind == V_STRING) {
+        if (!argv[1].s)
+            return val_err("storage.profile_create: missing block count");
+        blocks = strtoul(argv[1].s, NULL, 10);
+    } else if (argv[1].kind == V_INT) {
+        blocks = (argv[1].i > 0) ? (unsigned long)argv[1].i : 0;
+    } else if (argv[1].kind == V_UINT) {
+        blocks = (unsigned long)argv[1].u;
+    } else {
+        return val_err("storage.profile_create: blocks must be an integer");
+    }
+    if (blocks == 0)
+        return val_err("storage.profile_create: block count must be positive");
+    int rc = image_create_blank_profile(path, (uint32_t)blocks);
+    if (rc == -2)
+        return val_err("storage.profile_create: file already exists: %s", path);
+    if (rc != 0)
+        return val_err("storage.profile_create: failed to create blank ProFile '%s'", path);
+    return val_bool(true);
+}
+
 // `storage.hd_download(src, dst)` — export a hard disk image (base + delta).
 static value_t storage_method_hd_download(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)self;
@@ -650,6 +685,10 @@ static const arg_decl_t storage_fd_create_args[] = {
      .validation_flags = OBJ_ARG_OPTIONAL,
      .doc = "true = 1.4 MB, false (default) = 800 KB"},
 };
+static const arg_decl_t storage_profile_create_args[] = {
+    {.name = "path",   .kind = V_STRING, .doc = "Image output path"                                 },
+    {.name = "blocks", .kind = V_NONE,   .doc = "ProFile block count (532-byte blocks; 5 MB = 9728)"},
+};
 static const arg_decl_t storage_hd_download_args[] = {
     {.name = "src", .kind = V_STRING, .doc = "Mounted HD image path"},
     {.name = "dst", .kind = V_STRING, .doc = "Output flat-file path"},
@@ -689,6 +728,11 @@ static const member_t storage_members[] = {
      .name = "fd_create",
      .doc = "Create a blank floppy image (800 KB, or 1.4 MB when high_density)",
      .method = {.args = storage_fd_create_args, .nargs = 2, .result = V_BOOL, .fn = storage_method_fd_create}    },
+    {.kind = M_METHOD,
+     .name = "profile_create",
+     .doc = "Create a blank Lisa/XL ProFile image (raw 532-byte/block zero file)",
+     .method =
+         {.args = storage_profile_create_args, .nargs = 2, .result = V_BOOL, .fn = storage_method_profile_create}},
     {.kind = M_METHOD,
      .name = "rm",
      .doc = "Recursively remove a file or directory (keeps the worker FS coherent)",

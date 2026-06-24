@@ -707,6 +707,32 @@ int image_create_blank_floppy(const char *filename, bool overwrite, bool high_de
     return 0;
 }
 
+int image_create_blank_profile(const char *filename, uint32_t block_count) {
+    if (!filename || !*filename || block_count == 0)
+        return -1;
+    FILE *exist = fopen(filename, "rb");
+    if (exist) {
+        fclose(exist);
+        return -2;
+    }
+    ensure_parent_dirs(filename);
+    FILE *f = fopen(filename, "wb");
+    if (!f)
+        return -1;
+    // A blank ProFile is just zeros — block_count × 532.  ftruncate leaves the
+    // new bytes reading as zero, so the controller serves an all-zero disk the
+    // OS then formats; the device-info block reports block_count as capacity.
+    const off_t total = (off_t)block_count * (off_t)PROFILE_BLOCK_BYTES;
+    int fd = fileno(f);
+    if (fd < 0 || ftruncate(fd, total) != 0) {
+        fclose(f);
+        remove(filename);
+        return -1;
+    }
+    fclose(f);
+    return 0;
+}
+
 // ============================================================================
 // Volatile → persistent image copy
 // ============================================================================

@@ -5,13 +5,21 @@
 
   interface Props {
     open: boolean;
-    /** 'hd' creates a blank SCSI hard disk; 'fd' creates a blank floppy. */
+    /** 'hd' creates a blank hard disk; 'fd' creates a blank floppy. */
     kind: 'hd' | 'fd';
+    /**
+     * For kind==='hd': which hard-disk bus the target machine uses. 'scsi'
+     * builds a 512-byte/block SCSI image from the drive catalog; 'profile'
+     * builds a raw 532-byte/block Lisa/XL ParaPort ProFile image.
+     */
+    bus?: 'scsi' | 'profile';
     onClose: () => void;
     /** Called with the bare filename of the newly created image. */
     onCreated: (name: string) => void;
   }
-  let { open, kind, onClose, onCreated }: Props = $props();
+  let { open, kind, bus = 'scsi', onClose, onCreated }: Props = $props();
+
+  let isProfile = $derived(kind === 'hd' && bus === 'profile');
 
   interface HdModel {
     label: string;
@@ -19,8 +27,19 @@
     mb: number;
   }
 
+  // Standard ProFile capacities, in 532-byte blocks (verified against the Lisa
+  // OS source): the 5 MB ProFile is 9728 blocks (the canonical device); the
+  // 10 MB drive is the Widget, whose "full disk size is 19448 blocks (pages)"
+  // per the LOS installer (APIN-OFFICE.TEXT). Both fall in the LOS ProFile
+  // driver's "use actual capacity" range so the OS sizes the volume from them.
+  const PROFILE_MODELS = [
+    { label: '5 MB ProFile', blocks: 9728, mb: 5 },
+    { label: '10 MB Widget', blocks: 19448, mb: 10 },
+  ];
+
   let hdModels = $state<HdModel[]>([]);
   let hdSize = $state(0); // selected size in bytes
+  let profileBlocks = $state(PROFILE_MODELS[0].blocks); // selected ProFile size (blocks)
   let fdDensity = $state<'800K' | '1440K'>('800K');
   let creating = $state(false);
   let error = $state('');
@@ -36,7 +55,7 @@
   // back as JSON strings (V_LIST<V_STRING>); dedupe by label keeping the
   // largest size, matching the legacy dialog.
   $effect(() => {
-    if (open && kind === 'hd' && modelsState === 'idle') {
+    if (open && kind === 'hd' && bus === 'scsi' && modelsState === 'idle') {
       modelsState = 'loading';
       void loadHdModels();
     }
@@ -83,7 +102,15 @@
     try {
       let name: string;
       let ok: boolean;
-      if (kind === 'hd') {
+      if (isProfile) {
+        const model = PROFILE_MODELS.find((p) => p.blocks === profileBlocks) ?? PROFILE_MODELS[0];
+        name = `blank_profile_${model.mb}MB_${stamp()}.image`;
+        ok =
+          (await gsEval('storage.profile_create', [
+            `${HD_DIR}/${name}`,
+            String(model.blocks),
+          ])) === true;
+      } else if (kind === 'hd') {
         if (!hdSize) {
           error = 'No drive sizes available.';
           return;
@@ -107,8 +134,26 @@
   }
 </script>
 
-<Modal {open} title={kind === 'hd' ? 'Create Blank Hard Disk' : 'Create Blank Floppy'} {onClose}>
-  {#if kind === 'hd'}
+<Modal
+  {open}
+  title={kind === 'hd'
+    ? isProfile
+      ? 'Create Blank ProFile'
+      : 'Create Blank Hard Disk'
+    : 'Create Blank Floppy'}
+  {onClose}
+>
+  {#if isProfile}
+    <p class="dlg-help">Choose a capacity for the new (unformatted) ProFile image.</p>
+    <div class="dlg-options" role="radiogroup">
+      {#each PROFILE_MODELS as m (m.blocks)}
+        <label class="dlg-option">
+          <input type="radio" name="pf-size" value={m.blocks} bind:group={profileBlocks} />
+          <span>{m.label} ({m.blocks.toLocaleString()} blocks)</span>
+        </label>
+      {/each}
+    </div>
+  {:else if kind === 'hd'}
     <p class="dlg-help">Choose a size for the new hard disk image.</p>
     {#if modelsState === 'error'}
       <div class="dlg-error">
@@ -148,7 +193,7 @@
       type="button"
       class="dlg-btn dlg-btn-primary"
       onclick={create}
-      disabled={creating || (kind === 'hd' && hdModels.length === 0)}
+      disabled={creating || (kind === 'hd' && !isProfile && hdModels.length === 0)}
     >
       {creating ? 'Creating…' : 'Create'}
     </button>

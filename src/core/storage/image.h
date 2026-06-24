@@ -138,6 +138,19 @@ int image_create_empty(const char *filename, size_t size);
 // Create a new blank floppy image file (800K or 1440K)
 int image_create_blank_floppy(const char *filename, bool overwrite, bool high_density);
 
+// On-the-wire ProFile block size: 512 data bytes + a 20-byte inline tag (see
+// src/machines/lisa/lisa_profile.c).  A raw ProFile image is simply
+// block_count × this, all zero for a blank disk.
+#define PROFILE_BLOCK_BYTES 532u
+
+// Create a new blank ProFile (Lisa/XL parallel hard disk) image file: a raw,
+// all-zero file of block_count × PROFILE_BLOCK_BYTES bytes.  The controller's
+// synthesized device-info block reports this block count, so the OS sizes the
+// volume from it (5 MB ProFile = 9728 blocks; 10 MB Widget ≈ 19448 blocks).
+// Refuses to overwrite an existing file.  Returns 0 on success, -2 if the file
+// already exists, -1 on any other error.
+int image_create_blank_profile(const char *filename, uint32_t block_count);
+
 // Export the full disk content (base + delta) of an open image to a new file.
 // Returns 0 on success, -1 on failure.
 int image_export_to(image_t *image, const char *dest_path);

@@ -211,19 +211,19 @@ already work through the existing `output_cb` (fires on port-A/B writes).
 
 1. `via.c`: add a port-A-read (IRA) hook; wire it on the Lisa VIA2.
 2. `lisa_profile.{c,h}`: behavioural device — state machine (IDLE → CMD → status →
-   data-read / data-write), backed by an `image_t` (10 MB = ~9728 × (512+tag)).
+   data-read / data-write), backed by an `image_t` (5 MB ProFile = 9728 × (512+tag)).
    Drive BSY (PB1/CA1) and port-A input; consume the 6-byte command; service block
    read/write. Detection = OCD already-connected.
 3. `lisa.c`: wire VIA2 PB0/PB1/CA1/CA2 + the read hook to the device; add it to the
    `floppy`-style object surface or a `hd` object so a test/UI can attach an image.
-   Create a blank 10 MB ProFile image (storage.hd_create-style).
+   Create a blank 5 MB ProFile image (storage.profile_create-style).
 4. Bring-up milestones: (a) ROM lists the ProFile in "STARTUP FROM…"; (b) ROM reads
    block 0; (c) Workshop boots from floppy and *sees* the ProFile.
 5. **COPS keyboard injection** (separate, also needed): the Workshop install is
    keyboard-driven; today the COPS only does autonomous polling. Add host→COPS key
    events (present scancodes on VIA1 port A + pulse CA1, like the mouse path).
 6. `tests/integration/xl-install` (or `lisa-install`): boot the Workshop floppy,
-   attach a blank 10 MB ProFile, drive the install (keyboard + disk swaps), then
+   attach a blank 5 MB ProFile, drive the install (keyboard + disk swaps), then
    verify the HD is bootable / `screen.match` the installed desktop.
 
 ## References
