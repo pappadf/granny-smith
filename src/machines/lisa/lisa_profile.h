@@ -23,6 +23,8 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+struct scheduler;
+
 typedef struct lisa_profile lisa_profile_t;
 
 // Drives the BSY handshake line, which the machine wires to VIA2 PB1 (level,
@@ -33,7 +35,8 @@ typedef void (*lisa_profile_bsy_fn)(void *ctx, bool busy);
 
 // === Lifecycle =============================================================
 
-lisa_profile_t *lisa_profile_init(lisa_profile_bsy_fn bsy_cb, void *bsy_ctx, checkpoint_t *cp);
+lisa_profile_t *lisa_profile_init(struct scheduler *scheduler, lisa_profile_bsy_fn bsy_cb, void *bsy_ctx,
+                                  checkpoint_t *cp);
 void lisa_profile_delete(lisa_profile_t *pf);
 void lisa_profile_checkpoint(lisa_profile_t *pf, checkpoint_t *cp);
 

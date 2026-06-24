@@ -5,6 +5,7 @@
   import CheckpointResumePrompt from './components/dialogs/CheckpointResumePrompt.svelte';
   import PreviewNoticeDialog from './components/dialogs/PreviewNoticeDialog.svelte';
   import { theme, applyThemeToHtml, systemTheme } from '@/state/theme.svelte';
+  import { layout } from '@/state/layout.svelte';
   import { startPersistEffects } from '@/state/persist.svelte';
 
   // Keep <html data-theme> in sync with the theme state. Initial set is done
@@ -24,11 +25,25 @@
     return () => mq.removeEventListener('change', handler);
   });
 
+  // Keep layout.fullscreen in sync with the browser's native fullscreen state.
+  // This lives here (not in DisplayToolbar) so the listener survives the
+  // toolbar being unmounted while fullscreen — otherwise pressing Esc would
+  // exit fullscreen but never flip the flag back, leaving the chrome hidden.
+  $effect(() => {
+    const handler = () => {
+      layout.fullscreen = !!document.fullscreenElement;
+    };
+    document.addEventListener('fullscreenchange', handler);
+    return () => document.removeEventListener('fullscreenchange', handler);
+  });
+
   startPersistEffects();
 </script>
 
 <Workbench />
-<StatusBar />
+{#if !layout.fullscreen}
+  <StatusBar />
+{/if}
 <ToastStack />
 <CheckpointResumePrompt />
 <PreviewNoticeDialog />

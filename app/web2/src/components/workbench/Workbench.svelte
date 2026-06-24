@@ -15,7 +15,9 @@
   style="--gs-panel-size: {panelSizeVar}"
 >
   <section class="gs-display">
-    <DisplayToolbar />
+    {#if !layout.fullscreen}
+      <DisplayToolbar />
+    {/if}
     <DisplayContent />
   </section>
   <WorkbenchSash />

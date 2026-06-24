@@ -27,6 +27,7 @@
 #include "checkpoint_machine.h"
 #include "image.h"
 #include "log.h"
+#include "scheduler.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -40,6 +41,16 @@ LOG_USE_CATEGORY_NAME("profile")
 #define PRO_BLOCK  (PRO_TAG + PRO_DATA) // 532
 #define PRO_STATUS 4 // status bytes preceding a read block
 #define PRO_RDLEN  (PRO_STATUS + PRO_BLOCK)
+
+// Modeled controller latency for reading a block off the disk.  After a read
+// command is accepted the controller holds BSY low while it fetches the block,
+// then raises BSY — a low→high transition the host's CA1 edge sees as
+// "data ready".  Deferring this (rather than raising BSY synchronously at the
+// command handshake) is what lets an edge-waiting driver — the SCO Xenix
+// on-disk loader, which clears CA1 right after the handshake and then polls for
+// a fresh edge — actually complete; see lisa_profile_portb and
+// docs/machines/lisa/profile.md.  A few ms, in the FDC's ballpark.
+#define PRO_READ_CYCLES 24000u
 
 // Standard 5 MB ProFile: 9728 logical blocks (the canonical device the Lisa
 // Office System and boot ROM were written for).  A pre-existing image's size
@@ -79,6 +90,10 @@ struct lisa_profile {
     lisa_profile_bsy_fn bsy_cb;
     void *bsy_ctx;
 
+    // Scheduler for the deferred read-completion event (NULL in the unit tests,
+    // which drive the device API directly and want synchronous completion).
+    struct scheduler *sched;
+
     // Backing store: the shared base+delta image subsystem, opened with a
     // 532-byte block so each on-disk ProFile block (512 data + 20 inline tag)
     // is one storage block.  The base file is never mutated; writes land in a
@@ -107,6 +122,17 @@ struct lisa_profile {
 static void pro_set_busy(lisa_profile_t *pf, bool busy) {
     if (pf->bsy_cb)
         pf->bsy_cb(pf->bsy_ctx, busy);
+}
+
+// Deferred read-completion event: the controller has finished fetching the
+// block off the disk.  Raise BSY (low→high = a CA1 edge), which is the
+// "data ready" signal the host's read poll waits for.  Scheduled by
+// lisa_profile_portb when a read command is accepted.
+static void pro_complete(void *source, uint64_t data) {
+    (void)data;
+    lisa_profile_t *pf = (lisa_profile_t *)source;
+    if (pf)
+        pro_set_busy(pf, false);
 }
 
 // === Block I/O against the base+delta image =================================
@@ -234,13 +260,30 @@ void lisa_profile_portb(lisa_profile_t *pf, uint8_t portb) {
         LOG(3, "CMD/ asserted, present state $%02x", pf->state_byte);
     } else {
         // CMD/ rising edge: the host has read the state byte and sent its reply.
-        pro_set_busy(pf, false);
         LOG(3, "CMD/ deasserted, reply $%02x", pf->reply);
-        if (pf->phase == PH_HS) {
-            if (pf->reply == 0x55)
-                pro_enter(pf, (pro_phase_t)pf->after_hs); // proceed
-            else
-                pf->phase = PH_IDLE; // host declined / probe handshake
+        if (pf->phase == PH_HS && pf->reply == 0x55 && pf->after_hs == PH_READ && pf->sched) {
+            // A read command was accepted.  Model the disk-read latency: keep
+            // BSY LOW (still busy) and raise it on a deferred event instead of
+            // here.  A host that polls the BSY *level* (the boot ROM) just waits
+            // a little longer; a host that waits on the CA1 *edge* and clears
+            // CA1 right after this handshake (the SCO Xenix on-disk loader) then
+            // sees a fresh data-ready transition rather than an edge that
+            // already fired during the handshake — without which it spins
+            // forever (docs/machines/lisa/profile.md).
+            pro_enter(pf, PH_READ); // buffer already filled by pro_parse_command
+            remove_event(pf->sched, &pro_complete, pf); // coalesce any prior pending
+            scheduler_new_cpu_event(pf->sched, &pro_complete, pf, 0, PRO_READ_CYCLES, 0);
+        } else {
+            // Every other handshake (state-$01 ready, write command/done): the
+            // controller is ready immediately, so raise BSY synchronously.  The
+            // unit suite drives the API with no scheduler and relies on this.
+            pro_set_busy(pf, false);
+            if (pf->phase == PH_HS) {
+                if (pf->reply == 0x55)
+                    pro_enter(pf, (pro_phase_t)pf->after_hs); // proceed
+                else
+                    pf->phase = PH_IDLE; // host declined / probe handshake
+            }
         }
     }
 }
@@ -300,6 +343,8 @@ void lisa_profile_porta_write(lisa_profile_t *pf, uint8_t value, bool handshake)
 void lisa_profile_reset(lisa_profile_t *pf) {
     if (!pf)
         return;
+    if (pf->sched)
+        remove_event(pf->sched, &pro_complete, pf); // drop any in-flight read completion
     pf->phase = PH_IDLE;
     pf->cmd_asserted = false;
     pf->cmd_idx = 0;
@@ -383,6 +428,8 @@ bool lisa_profile_attach(lisa_profile_t *pf, const char *path, bool writable) {
 void lisa_profile_detach(lisa_profile_t *pf) {
     if (!pf || !pf->image)
         return;
+    if (pf->sched)
+        remove_event(pf->sched, &pro_complete, pf); // drop any in-flight read completion
     // Closing the image flushes the delta and (for read-only/blank mounts)
     // removes the ephemeral scratch sidecars.  The base file is never written.
     image_close(pf->image);
@@ -393,13 +440,19 @@ void lisa_profile_detach(lisa_profile_t *pf) {
 
 // === Lifecycle =============================================================
 
-lisa_profile_t *lisa_profile_init(lisa_profile_bsy_fn bsy_cb, void *bsy_ctx, checkpoint_t *cp) {
+lisa_profile_t *lisa_profile_init(struct scheduler *scheduler, lisa_profile_bsy_fn bsy_cb, void *bsy_ctx,
+                                  checkpoint_t *cp) {
     lisa_profile_t *pf = (lisa_profile_t *)calloc(1, sizeof(*pf));
     if (!pf)
         return NULL;
     pf->bsy_cb = bsy_cb;
     pf->bsy_ctx = bsy_ctx;
+    pf->sched = scheduler;
     pf->phase = PH_IDLE;
+    // Register the deferred read-completion event so the scheduler saves/restores
+    // a pending completion across checkpoints (mirrors lisa_fdc's "complete").
+    if (scheduler)
+        scheduler_new_event_type(scheduler, "lisa_profile", pf, "complete", &pro_complete);
     // Checkpoint restore (init-reads convention): lisa_profile_checkpoint wrote
     // an "attached" flag and, when a disk was present, the image blob.  Read it
     // back and reopen the ProFile image at its 532-byte geometry so the disk

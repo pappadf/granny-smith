@@ -226,4 +226,11 @@ scheduler.run 40000000
 # "Xenix Installation complete. / ** Normal System Shutdown **"
 screen.match expected_complete.png
 
+# Xenix has just run its own orderly "** Normal System Shutdown **" (sync + halt),
+# so the ProFile root filesystem is left clean — the next boot's fsck finds it
+# consistent and comes straight up multi-user.  Unlike the Lisa Office System there
+# is no soft power-off to press here: the OS has already halted itself.  Persist the
+# fully-installed, cleanly-shut-down image as the bootable artifact (consumed by the
+# lisa-xenix-boot test).
+assert ${profile.save("${WORK_DIR}/xenix-installed.image")} "profile.save failed"
 quit

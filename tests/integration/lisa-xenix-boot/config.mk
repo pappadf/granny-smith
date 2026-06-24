@@ -16,8 +16,9 @@
 # whole OS are read from the installed ProFile (pf(0,0)xenix).
 #
 # Input (gitignored proprietary data, staged by a maintainer for CI): the
-# installed Xenix ProFile image, produced by running lisa-xenix-install with a
-# trailing `profile.save` and copying the result to
+# installed Xenix ProFile image, produced by running lisa-xenix-install (which
+# ends with a `profile.save` of its cleanly-shut-down image to
+# "$(WORK_DIR)/xenix-installed.image") and copying that result to
 # tests/data/Lisa/Xenix-3.0/Xenix-3.0-ProFile.image.
 
 TEST_NAME := Apple Lisa 2 boot Xenix from the ProFile

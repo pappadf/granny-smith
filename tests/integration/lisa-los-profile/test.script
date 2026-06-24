@@ -127,9 +127,41 @@ scheduler.run 20000000
 # disk ("the disk attached to the parallel connector").
 screen.match expected_installed.png
 
-# Save a consolidated, self-contained single-file image of the freshly installed
-# ProFile so the LOS-on-HD artifact can be booted/inspected outside the test.  The
-# ProFile is a flat 532-bytes/block image (not a base+delta pair), so this is just
-# its current contents written to one file.
+# === Reboot off the installed ProFile and cleanly power off ==================
+# The install ran from the floppy, so the running OS's boot volume is the floppy,
+# not the ProFile — pressing power-off here would be a no-op (the floppy-booted
+# installer ignores the COPS $FB switch).  To leave the ProFile cleanly unmounted
+# we must run the OS FROM it: persist the just-installed image, power-cycle into it
+# (machine.boot re-creates the machine, rom.reload reloads the boot ROM), and
+# re-attach the SAME image with the clean-shutdown PRAM (TEST_SETUP) so the ROM
+# auto-boots the ProFile with no floppy — exactly lisa-profile-boot's cold boot.
+profile.save "${WORK_DIR}/lisa-los-installed-raw.image"
+machine.boot "lisa" 2048
+rom.reload
+profile.attach "${WORK_DIR}/lisa-los-installed-raw.image"
+assert ${profile.pram_load("${WORK_DIR}/profile.pram")} "pram_load failed"
+
+# Boot to the Office System desktop; the first boot opens a "clock not set" note,
+# which we dismiss (warp onto OK — closed-loop on $CC00F0/F2 — and click), leaving
+# the clean desktop (menu bar + Preferences/Wastebasket/Clipboard/Disk icons).
+scheduler.run 100000000
+mouse.move 622 108 "global"
+scheduler.run 2000000
+mouse.click true
+scheduler.run 600000
+mouse.click false
+scheduler.run 12000000
+screen.match expected_desktop.png
+
+# Press the soft power-off switch.  LOS catches the COPS $FB, runs its orderly
+# FS_Shutdown (boot volume MDDF mountinfo := unmounted), and the screen blanks as
+# the machine powers off.  After this the saved image cold-boots clean (no
+# "startup disk was in use" scavenge).
+power.off
+scheduler.run 40000000
+screen.match expected_poweroff.png
+
+# Save the cleanly-unmounted, self-contained single-file image (flat 532-byte
+# blocks) as the bootable LOS-on-HD artifact (lisa-profile-boot consumes it).
 assert ${profile.save("${WORK_DIR}/lisa-los-installed.image")} "profile.save failed"
 quit

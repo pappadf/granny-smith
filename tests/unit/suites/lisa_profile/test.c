@@ -73,7 +73,7 @@ static void write_block(lisa_profile_t *pf, uint32_t block, const uint8_t *data)
 // ============================================================================
 
 TEST(test_attach_detection) {
-    lisa_profile_t *pf = lisa_profile_init(bsy_cb, NULL, NULL);
+    lisa_profile_t *pf = lisa_profile_init(NULL, bsy_cb, NULL, NULL);
     ASSERT_TRUE(pf != NULL);
     ASSERT_TRUE(!lisa_profile_connected(pf)); // nothing attached yet
     ASSERT_TRUE(lisa_profile_attach(pf, NULL, true)); // blank in-memory image
@@ -85,7 +85,7 @@ TEST(test_attach_detection) {
 }
 
 TEST(test_device_info_block) {
-    lisa_profile_t *pf = lisa_profile_init(bsy_cb, NULL, NULL);
+    lisa_profile_t *pf = lisa_profile_init(NULL, bsy_cb, NULL, NULL);
     ASSERT_TRUE(lisa_profile_attach(pf, NULL, true));
 
     uint8_t buf[PRO_RDLEN];
@@ -105,7 +105,7 @@ TEST(test_device_info_block) {
 }
 
 TEST(test_write_read_roundtrip) {
-    lisa_profile_t *pf = lisa_profile_init(bsy_cb, NULL, NULL);
+    lisa_profile_t *pf = lisa_profile_init(NULL, bsy_cb, NULL, NULL);
     ASSERT_TRUE(lisa_profile_attach(pf, NULL, true));
 
     // A distinctive 532-byte block (20-byte tag + 512 data).
@@ -131,7 +131,7 @@ TEST(test_write_read_roundtrip) {
 TEST(test_decline_aborts) {
     // A handshake reply other than $55 (e.g. the boot ROM's $00 "probe") must
     // abort the transaction, leaving the controller idle for the next command.
-    lisa_profile_t *pf = lisa_profile_init(bsy_cb, NULL, NULL);
+    lisa_profile_t *pf = lisa_profile_init(NULL, bsy_cb, NULL, NULL);
     ASSERT_TRUE(lisa_profile_attach(pf, NULL, true));
     ASSERT_EQ_INT(handshake(pf, 0x00), 0x01); // probe: present $01, decline
     // A following real read still works from a clean state.

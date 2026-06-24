@@ -1,25 +1,29 @@
-# Boot LOS from the installed ProFile hard disk (no floppy), using a synthetic
-# parameter memory.  See config.mk + docs/machines/lisa/pram_format.md.
+# Cold-boot LOS from the installed ProFile hard disk (no floppy), relying on the
+# image's OWN on-disk PRAM snapshot.  See config.mk + docs/machines/lisa/pram_format.md.
 #
 # The ProFile image is the one the lisa-los-profile install test produces (copied
 # to a writable scratch path by TEST_SETUP).  The PRAM (also from TEST_SETUP, via
-# seed_pram.py) carries the device-configuration table with the ProFile + BootVol=2,
-# exactly as the installer writes at clean shutdown — so the ROM auto-boots the
-# ProFile and the OS's FIND_PM_IDS resolves its driver.
+# `seed_pram.py --coldboot`) is intentionally invalid: BootVol=2 so the ROM boots
+# the ProFile, but an empty device table + corrupted checksum so the OS computes
+# pm_good=false and restores the device configuration from the boot volume's MDDF
+# snapshot (the copy written at a clean shutdown FROM the ProFile).  A good image
+# resolves the ProFile from that snapshot and boots; a non-clean-shutdown image
+# leaves a floppy-only snapshot and fails with error 10738.
 
 profile.attach "${WORK_DIR}/profile.image"
 assert ${machine.id == "lisa"} "machine.id != lisa"
 assert ${rom.checksum == "098917B2"} "rom.checksum != 098917B2 (rev-H)"
 assert ${profile.present == true} "ProFile should be attached"
 
-# Seed parameter memory before the ROM reads it at startup.
+# Seed (invalid) parameter memory before the ROM reads it at startup.
 assert ${profile.pram_load("${WORK_DIR}/profile.pram")} "pram_load failed"
 
 # The ROM reads PRAM -> BootVol=2 -> PROBOOT the ProFile -> loader -> SYSTEM.OS;
-# FIND_PM_IDS finds the ProFile (cd_paraport) in the seeded device table.  By ~100M
-# instructions LOS has booted to the Office System desktop, which opens a first-boot
-# "Lisa clock/calendar is not set properly" note (the emulated COPS real-time clock
-# reads zero, so the OS offers to set it).
+# pm_good=false, so INIT_CONFIG restores the on-disk MDDF snapshot and FIND_PM_IDS
+# resolves the ProFile (cd_paraport) from it.  By ~100M instructions LOS has booted
+# to the Office System desktop, which opens a first-boot "Lisa clock/calendar is not
+# set properly" note (the emulated COPS real-time clock reads zero, so the OS offers
+# to set it).
 scheduler.run 100000000
 
 # Dismiss the note: warp the cursor onto its OK button (closed-loop on the OS cursor

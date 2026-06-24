@@ -2,14 +2,27 @@
 """Synthesize the Lisa parameter memory (PRAM) that makes the OS boot from the
 installed ProFile.
 
-This writes the exact 64-byte PRAM image the Office System installer leaves at a
-clean shutdown (the device-configuration table with the ProFile as a configured
-device), plus BootVol=2 so the boot ROM auto-boots the ProFile rather than the
-(absent) floppy.  Format is documented in docs/machines/lisa/pram_format.md.
+Default mode writes the exact 64-byte PRAM image the Office System installer
+leaves at a clean shutdown (the device-configuration table with the ProFile as a
+configured device), plus BootVol=2 so the boot ROM auto-boots the ProFile rather
+than the (absent) floppy.  Format is documented in docs/machines/lisa/pram_format.md.
 
-Usage:  seed_pram.py <output-path>
+  --coldboot  Emit a *deliberately invalid* PRAM: BootVol=2 (so the ROM still
+              boots the ProFile) but an empty device table and a corrupted
+              checksum.  The OS computes pm_good=false (SOURCE-STARTUP INIT_CONFIG),
+              so it ignores hardware PRAM and *restores the device configuration
+              from the boot volume's own on-disk MDDF snapshot*.  This makes the
+              boot depend on the image carrying a good clean-shutdown PRAM
+              snapshot — a broken image (e.g. one saved without an orderly
+              shutdown from the ProFile) then fails with error 10738 instead of
+              being masked by a fully-seeded hardware PRAM.
+
+Usage:  seed_pram.py <output-path> [--coldboot]
 """
 import sys
+
+coldboot = "--coldboot" in sys.argv[1:]
+out_path = next(a for a in sys.argv[1:] if not a.startswith("-"))
 
 
 def rotl16(v):
@@ -65,8 +78,19 @@ for i in range(10 + len(cfg), 60):      # 0xFF filler doubles as the end-of-list
     pm[i] = 0xFF
 pm[60:62] = (0x004C).to_bytes(2, "big")  # MemLoss
 
-words = [(pm[i] << 8) | pm[i + 1] for i in range(0, 62, 2)]  # words 0..30
-pm[62:64] = checksum(words).to_bytes(2, "big")
+if coldboot:
+    # Empty the device table so the ProFile can ONLY come from the on-disk
+    # snapshot (a broken image can't be masked by a seeded hardware entry).
+    pm[9] = 0
+    for i in range(10, 60):
+        pm[i] = 0xFF
 
-with open(sys.argv[1], "wb") as f:
+words = [(pm[i] << 8) | pm[i + 1] for i in range(0, 62, 2)]  # words 0..30
+valid = checksum(words)
+# Default: a valid checksum (pm_good=true) → hardware PRAM carries the boot.
+# --coldboot: the bitwise complement, guaranteed != valid, so VERIFY_CKSUM fails
+# (pm_good=false) and INIT_CONFIG restores PRAM from the boot volume's snapshot.
+pm[62:64] = (valid ^ 0xFFFF if coldboot else valid).to_bytes(2, "big")
+
+with open(out_path, "wb") as f:
     f.write(pm)

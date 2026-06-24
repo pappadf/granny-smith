@@ -815,7 +815,7 @@ static void lisa_init(config_t *cfg, checkpoint_t *checkpoint) {
 
     // ProFile parallel hard disk on VIA2: control lines via the port-B output
     // callback (lisa_via2_output), data via the port-A hooks, BSY back to PB1/CA1.
-    ls->profile = lisa_profile_init(lisa_profile_bsy, cfg, checkpoint);
+    ls->profile = lisa_profile_init(cfg->scheduler, lisa_profile_bsy, cfg, checkpoint);
     via_set_porta_hooks(cfg->via2, lisa_profile_porta_read_cb, lisa_profile_porta_write_cb, cfg);
     lisa_profile_update_lines(cfg); // no disk yet → OCD/ high (disconnected)
     lisa_register_profile_object(cfg);

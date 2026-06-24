@@ -47,14 +47,9 @@
     }
   }
 
-  $effect(() => {
-    const handler = () => {
-      layout.fullscreen = !!document.fullscreenElement;
-    };
-    document.addEventListener('fullscreenchange', handler);
-    return () => document.removeEventListener('fullscreenchange', handler);
-  });
-
+  // Note: layout.fullscreen is kept in sync with the browser's native
+  // fullscreen state by a listener in App.svelte (not here) so it survives
+  // this toolbar being unmounted while fullscreen is active.
   const fullscreenIcon: IconName = $derived(layout.fullscreen ? 'screen-normal' : 'screen-full');
   const fullscreenTitle = $derived(
     layout.fullscreen ? 'Exit full screen' : 'Enter full screen — hide panel and chrome',
