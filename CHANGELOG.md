@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v0.6.1] — 2026-06-24
+
+### Added
+- **SCO Xenix 3.0** boots from the Lisa 2 ProFile with no floppy — ProFile reads now complete on a deferred data-ready edge, as the OS disk driver expects.
+- web2: create blank ProFile hard-disk images (5 / 10 MB) directly from the New Machine dialog.
+
+### Fixed
+- web2 Lisa keyboard: host Control maps to Apple/Command (so SCO Xenix Ctrl-D works), and held keys are released on focus/pointer-lock loss so a browser accelerator can't strand a key down.
+- Lisa Office System install now produces a cleanly-unmounted ProFile image (no scavenge prompt on the next boot).
+
 ## [v0.6.0] — 2026-06-24
 
 ### Added
