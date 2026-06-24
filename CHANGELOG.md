@@ -5,6 +5,25 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v0.6.0] — 2026-06-24
+
+### Added
+- **Apple Lisa 2 / Macintosh XL** — boots MacWorks XL to the Mac Finder and Lisa Office System 3.1 to the desktop, including the parallel-port ProFile hard disk (install and boot).
+- **Macintosh IIci** (RBV built-in video) and **Macintosh IIsi** (Egret + V8 built-in video) — both boot System 7.1 to the Finder.
+- Mac resource-fork support: parser, `/rsrc/<TYPE>/<id>` VFS paths, and System 7 resource decompression; plus `tools/dump`, a standalone tool for forked files and A/UX COFF.
+- web2: Filesystem-tab image tools (browse, copy-out, multi-select).
+
+### Changed
+- Multi-machine architecture refresh — 68030 Macs are modeled as sibling chipset families on a shared substrate, with a capability probe the UI and debugger read instead of guessing from the model name.
+- Storage now supports non-512 block geometries; the Lisa ProFile shares the same base+delta image engine as the Macs (immutable read-only source, writes land in a per-instance delta) and is captured through checkpoints.
+- Lisa 2 reports its non-square (2:3) pixel aspect ratio to the frontend so its 720×364 raster renders undistorted; the Lisa also models a soft power-off.
+
+### Fixed
+- Lisa Office System: spurious "micro diskette is not in the standard format" alert when booting the ProFile with no floppy (the floppy controller leaked a stale status code into the OS drive-init check).
+- Lisa/XL: mouse and keyboard input, the no-floppy boot screen, and cursor/blink timing.
+- RTC: map legacy PRAM to the extended-RTC layout (fixes IIcx/IIfx caret blink, double-click, and keyboard).
+- VFS: HFS extents-overflow walker and slash/colon name handling.
+
 ## [v0.5.0] — 2026-06-07
 
 ### Added
