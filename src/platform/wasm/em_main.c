@@ -94,6 +94,25 @@ static void host_lisa_key(uint8_t code) {
     system_input_key(buf, true);
 }
 
+// Track which Lisa COPS keys we've sent a down for but not yet an up, indexed by
+// the down code (0xC0-0xFF; bit 7 set).  Used to (a) deliver a key-up even if the
+// browser swallowed the keyup event — e.g. a Ctrl/Cmd chord the browser claimed
+// as an accelerator, which steals focus and the key-up, leaving the guest's
+// keyboard driver typematic-repeating a stuck key forever — and (b) release
+// everything when the page loses input focus.
+static bool lisa_key_held[256];
+
+// Send key-ups for every still-held Lisa key (down & 0x7F clears bit 7).  Called
+// on focus/pointer-lock loss so a lost keyup can't strand a key down.
+static void lisa_release_all_keys(void) {
+    for (int i = 0xC0; i <= 0xFF; i++) {
+        if (lisa_key_held[i]) {
+            lisa_key_held[i] = false;
+            host_lisa_key((uint8_t)i & 0x7F);
+        }
+    }
+}
+
 // Forward declarations for input callbacks
 static void setup_pointer_lock(void);
 static EM_BOOL mouse_down_cb(int, const EmscriptenMouseEvent *, void *);
@@ -151,7 +170,19 @@ static EM_BOOL plock_change_cb(int type, const EmscriptenPointerlockChangeEvent 
     (void)type;
     (void)ud;
     pointer_locked = e->isActive;
+    if (!e->isActive)
+        lisa_release_all_keys(); // lock lost (Esc, a browser dialog stealing focus) → don't strand keys
     return EM_TRUE;
+}
+
+// Window blur: the page lost focus (tab switch, OS accelerator, alt-tab), so any
+// key-up will land elsewhere.  Release everything we're holding down.
+static EM_BOOL blur_cb(int type, const EmscriptenFocusEvent *e, void *ud) {
+    (void)type;
+    (void)e;
+    (void)ud;
+    lisa_release_all_keys();
+    return EM_FALSE; // observe only; don't consume the blur
 }
 
 // Mouse move callback
@@ -505,6 +536,15 @@ static int map_dom_code_to_lisa(const char *code) {
         return 0xFF; // Command (Windows key)
     if (!strcmp(code, "OSRight"))
         return 0xFF;
+    // The Lisa keyboard has no Control key — software that needs Control uses the
+    // Apple/Command key (e.g. SCO Xenix: Apple-D = Ctrl-D).  Map the host Control
+    // key to it so the natural browser Ctrl chord works, and so the keydown is
+    // preventDefault'd (we return EM_TRUE for mapped keys) — otherwise the
+    // browser eats Ctrl-D as a bookmark and steals the key-up, sticking the key.
+    if (!strcmp(code, "ControlLeft"))
+        return 0xFF; // Control → Apple/Command
+    if (!strcmp(code, "ControlRight"))
+        return 0xFF;
 
     return -1; // unmapped key
 }
@@ -513,15 +553,26 @@ static int map_dom_code_to_lisa(const char *code) {
 static EM_BOOL key_down_cb(int type, const EmscriptenKeyboardEvent *e, void *ud) {
     (void)type;
     (void)ud;
-    if (!pointer_locked)
-        return EM_FALSE;
     if (host_machine_is_lisa()) {
+        // Keyboard goes to the emulated Lisa only while the screen has grabbed
+        // input (pointer lock) — otherwise keys belong to the web2 UI (config
+        // dialog, debug fields, the gs terminal).  Gate on the C-side
+        // pointer_locked flag, NOT on document.activeElement: these html5 input
+        // callbacks run on the emscripten worker thread (PROXY_TO_PTHREAD), where
+        // `document` is undefined — querying it throws "document is not defined"
+        // and drops every key.
+        if (!pointer_locked)
+            return EM_FALSE;
         int code = map_dom_code_to_lisa(e->code);
         if (code < 0)
             return EM_FALSE;
+        lisa_key_held[code & 0xFF] = true; // remember it so the up is guaranteed
         host_lisa_key((uint8_t)code); // COPS down byte (bit 7 set)
         return EM_TRUE;
     }
+    // Mac (ADB): keep the pointer-lock focus gate.
+    if (!pointer_locked)
+        return EM_FALSE;
     int k = map_dom_code_to_mac(e->code, e->key);
     if (k < 0)
         return EM_FALSE;
@@ -533,15 +584,21 @@ static EM_BOOL key_down_cb(int type, const EmscriptenKeyboardEvent *e, void *ud)
 static EM_BOOL key_up_cb(int type, const EmscriptenKeyboardEvent *e, void *ud) {
     (void)type;
     (void)ud;
-    if (!pointer_locked)
-        return EM_FALSE;
+    // Always deliver the up for a key we sent down — even if focus moved to a
+    // web2 field meanwhile, or a browser accelerator stole the keyup — otherwise
+    // the key sticks down and the guest typematic-repeats it forever.
     if (host_machine_is_lisa()) {
         int code = map_dom_code_to_lisa(e->code);
         if (code < 0)
             return EM_FALSE;
+        if (!lisa_key_held[code & 0xFF])
+            return EM_TRUE; // we never delivered this down — nothing to release
+        lisa_key_held[code & 0xFF] = false;
         host_lisa_key((uint8_t)code & 0x7F); // COPS up byte (bit 7 clear)
         return EM_TRUE;
     }
+    if (!pointer_locked)
+        return EM_FALSE;
     int k = map_dom_code_to_mac(e->code, e->key);
     if (k < 0)
         return EM_FALSE;
@@ -557,6 +614,9 @@ static void setup_pointer_lock(void) {
     emscripten_set_mousemove_callback(EMSCRIPTEN_EVENT_TARGET_DOCUMENT, NULL, EM_TRUE, mouse_move_cb);
     emscripten_set_keydown_callback(EMSCRIPTEN_EVENT_TARGET_DOCUMENT, NULL, EM_TRUE, key_down_cb);
     emscripten_set_keyup_callback(EMSCRIPTEN_EVENT_TARGET_DOCUMENT, NULL, EM_TRUE, key_up_cb);
+    // Release any held keys if the page loses focus, so a key-up that lands
+    // elsewhere (browser accelerator, tab switch) can't strand a key down.
+    emscripten_set_blur_callback(EMSCRIPTEN_EVENT_TARGET_WINDOW, NULL, EM_TRUE, blur_cb);
 }
 
 // ============================================================================
