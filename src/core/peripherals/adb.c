@@ -160,6 +160,16 @@ struct adb {
     // transceiver's behaviour.
     uint8_t last_poll_addr;
 
+    // Aborted-keyboard-Talk recovery.  prepare_kbd_reply destructively dequeues
+    // up to 2 bytes whenever the ROM issues a Talk R0 to the keyboard — but the
+    // ROM probes the keyboard during its SRQ scan and may transition CMD->IDLE
+    // without ever fetching those bytes.  These two fields let the IDLE handler
+    // un-do the dequeue (dequeue only advances tail; the bytes are still in the
+    // ring buffer) so the key transitions are re-presented on the next poll
+    // instead of being silently lost.  Real ADB keyboards retain unread data.
+    bool reply_from_kbd_queue; // reply_buf holds freshly-dequeued keyboard bytes
+    unsigned int kbd_reply_tail; // kbd_queue.tail snapshot taken before the dequeue
+
     // === Pointers last (not checkpointed) ===
     via_t *via;
     struct scheduler *scheduler;
@@ -319,10 +329,15 @@ static void flush_device(adb_t *adb, uint8_t addr) {
 
 // Populates reply_buf with up to 2 pending keyboard key bytes, or 0xFF 0xFF if none
 static void prepare_kbd_reply(adb_t *adb) {
+    // Savepoint so an aborted Talk (ROM probes during its SRQ scan but never
+    // fetches the reply) can restore the queue rather than drop the bytes.
+    adb->kbd_reply_tail = adb->kbd_queue.tail;
+    adb->reply_from_kbd_queue = true;
     if (kbd_queue_empty(adb)) {
         // No pending events: return the idle/null response
         adb->reply_buf[0] = KBD_NO_KEY;
         adb->reply_buf[1] = KBD_NO_KEY;
+        adb->reply_from_kbd_queue = false; // nothing dequeued, nothing to restore
     } else {
         adb->reply_buf[0] = kbd_dequeue(adb);
         // Pad with 0xFF if only one key is queued; otherwise deliver the second
@@ -374,6 +389,8 @@ static void prepare_no_device_reply(adb_t *adb) {
 // Prepares the reply buffer for a Talk command targeting the given address + register
 static void prepare_talk_reply(adb_t *adb, uint8_t addr, uint8_t reg) {
     adb->reply_index = 0;
+    // Cleared here; prepare_kbd_reply re-sets it when it dequeues keyboard bytes.
+    adb->reply_from_kbd_queue = false;
 
     if (reg == 0) {
         // On real ADB hardware, a device with no new data does not drive the
@@ -798,11 +815,22 @@ void adb_port_b_output(adb_t *adb, uint8_t value) {
         // bytes were fetched by the ROM (reply_index == 0 and no dummy sent),
         // the ROM went CMD→IDLE without reading the data.  This happens during
         // the SE/30 ROM's SRQ scan when timing doesn't match the ROM's
-        // expectations.  Re-mark mouse data as pending so the next auto-poll
-        // can deliver it.  Without this, a button-up event can be lost forever.
+        // expectations.  Recover the un-fetched data so the next auto-poll can
+        // re-present it; without this a transition is lost forever.
         if (adb->reply_len > 0 && adb->reply_index == 0 && !adb->dummy_sent) {
-            LOG(2, "IDLE: aborted Talk detected (reply_len=%d), re-marking pending", adb->reply_len);
-            adb->mouse_data_pending = true;
+            if (adb->reply_from_kbd_queue) {
+                // The aborted Talk was a Talk R0 to the keyboard, which already
+                // dequeued up to 2 key bytes.  dequeue() only advances tail, so
+                // restoring the saved tail puts those exact bytes back at the
+                // front of the queue to be re-presented next poll.  This is the
+                // keyboard's discrete-event analogue of the mouse re-mark below:
+                // a real ADB keyboard keeps unread data until the host reads it.
+                LOG(2, "IDLE: aborted kbd Talk, restoring queue tail (re-present %d byte(s))", adb->reply_len);
+                adb->kbd_queue.tail = adb->kbd_reply_tail;
+            } else {
+                LOG(2, "IDLE: aborted Talk detected (reply_len=%d), re-marking pending", adb->reply_len);
+                adb->mouse_data_pending = true;
+            }
         }
         remove_event(adb->scheduler, &adb_autopoll_deferred, adb);
         set_adb_int(adb, !has_pending_data(adb));
