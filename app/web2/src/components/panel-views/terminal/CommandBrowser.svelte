@@ -1,10 +1,11 @@
 <script lang="ts">
-  import { commandsTree, type CommandNode } from '@/lib/commandsTree';
+  import { buildCommandsTree, type CommandNode } from '@/lib/commandsTree';
   import { showNotification } from '@/state/toasts.svelte';
   import { insertIntoTerminal } from './terminalBridge';
   import CommandBrowser from './CommandBrowser.svelte';
   import Icon from '@/components/common/Icon.svelte';
   import { cycleListSelection, listKeyFromEvent } from '@/lib/keyboardNav';
+  import { machine } from '@/state/machine.svelte';
 
   interface Props {
     nodes?: CommandNode[];
@@ -15,7 +16,7 @@
     onSelect?: (k: string) => void;
   }
   let {
-    nodes = commandsTree,
+    nodes,
     depth = 0,
     expandedState,
     selectedKey = $bindable(''),
@@ -25,6 +26,17 @@
   const localExpanded: Record<string, boolean> = $state({});
   // svelte-ignore state_referenced_locally
   const expanded = expandedState ?? localExpanded;
+
+  // The root instance generates the catalogue from the live model
+  // (proposal §8.6); recursive instances receive their slice via the `nodes`
+  // prop. Rebuild when a machine boots so the surface stays faithful.
+  let loaded = $state<CommandNode[]>([]);
+  const renderNodes = $derived(nodes ?? loaded);
+  $effect(() => {
+    if (depth !== 0 || nodes !== undefined) return;
+    void machine.status;
+    void buildCommandsTree().then((t) => (loaded = t));
+  });
 
   function keyOf(n: CommandNode, atDepth = depth): string {
     return n.insert ? `${atDepth}:${n.insert}` : `${atDepth}:${n.name}`;
@@ -67,7 +79,7 @@
         if (n.children?.length && expanded[k]) walk(n.children, d + 1);
       }
     };
-    walk(commandsTree, 0);
+    walk(renderNodes, 0);
     return out;
   }
 
@@ -116,7 +128,7 @@
   tabindex={depth === 0 ? 0 : undefined}
   onkeydown={depth === 0 ? onRootKey : undefined}
 >
-  {#each nodes as node (keyOf(node))}
+  {#each renderNodes as node (keyOf(node))}
     {@const hasChildren = !!node.children?.length}
     {@const open = isOpen(node)}
     {@const k = keyOf(node)}
