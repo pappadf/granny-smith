@@ -115,7 +115,11 @@ export async function loadSystemChildren(
     }
   }
 
-  // Child objects → expandable branches.
+  // Child objects → expandable branches. An indexed-child member (a sparse
+  // collection like scsi `device` / floppy `drive`) is expanded into its live
+  // entries — `${target}[i]` — rather than shown as the bare collection member
+  // (proposal §5.3); meta.indices returns the live indices for such members and
+  // errors for a plain named child.
   const children = await gsEval(`${target}.meta.children`);
   if (Array.isArray(children)) {
     const seen = new Set(out.map((n) => n.label));
@@ -123,6 +127,16 @@ export async function loadSystemChildren(
       if (typeof name !== 'string' || seen.has(name)) continue;
       const cat = await gsEval(`${target}.meta.member_category`, [name]);
       if (!visible(cat)) continue;
+      const indices = await gsEval(`${target}.meta.indices`, [name]);
+      if (Array.isArray(indices)) {
+        // Indexed collection: enumerate occupied slots. The bare integer routes
+        // to this member, so `${target}[i]` is the canonical entry path.
+        for (const i of indices) {
+          if (typeof i !== 'number') continue;
+          out.push({ id: `${target}[${i}]`, label: `[${i}]` });
+        }
+        continue;
+      }
       const label = await gsEval(`${target}.meta.member_label`, [name]);
       out.push({ id: `${target}.${name}`, label: asString(label, name) });
     }

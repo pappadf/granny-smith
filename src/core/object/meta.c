@@ -346,6 +346,40 @@ static value_t meta_method_method_info(struct object *self, const member_t *m, i
     return json_finish(b);
 }
 
+// `indices(name)` — the live indices of an indexed-child member (proposal
+// §5.3). Lets a tree walker enumerate a sparse collection's occupants
+// (machine.scsi.device[0], [3], …) instead of stopping at the bare collection
+// member. Returns a V_LIST<V_INT> for an indexed member (possibly empty), or
+// a V_ERROR for a non-indexed / unknown member — so a caller can use the
+// error/list distinction to tell "indexed collection" from "named child".
+static value_t meta_method_indices(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)m;
+    if (argc < 1 || argv[0].kind != V_STRING || !argv[0].s)
+        return val_err("indices: expected (name)");
+    struct object *insp = meta_inspected(self);
+    const member_t *mb = class_find_member(insp ? object_class(insp) : NULL, argv[0].s);
+    if (!mb || mb->kind != M_CHILD || !mb->child.indexed)
+        return val_err("indices: '%s' is not an indexed child", argv[0].s);
+    // Walk the member's sparse-index iterator (start at -1). next() returns the
+    // next live index or -1 when exhausted; holes are skipped by the callback.
+    value_t *items = NULL;
+    size_t len = 0, cap = 0;
+    if (mb->child.next) {
+        for (int i = mb->child.next(insp, -1); i >= 0; i = mb->child.next(insp, i)) {
+            if (len + 1 > cap) {
+                size_t ncap = cap ? cap * 2 : 8;
+                value_t *t = (value_t *)realloc(items, ncap * sizeof(value_t));
+                if (!t)
+                    break;
+                items = t;
+                cap = ncap;
+            }
+            items[len++] = val_int(i);
+        }
+    }
+    return val_list(items, len);
+}
+
 // === Class table =========================================================
 
 static const arg_decl_t meta_complete_args[] = {
@@ -425,6 +459,10 @@ static const member_t meta_members[] = {
      .name = "method_info",
      .doc = "JSON UI metadata for a method (verb, task, destructive, mutate, hidden, nargs)",
      .method = {.args = meta_named_member_args, .nargs = 1, .result = V_STRING, .fn = meta_method_method_info}},
+    {.kind = M_METHOD,
+     .name = "indices",
+     .doc = "Live indices of an indexed-child member (errors if not indexed)",
+     .method = {.args = meta_named_member_args, .nargs = 1, .result = V_LIST, .fn = meta_method_indices}},
 };
 
 // Special class name — would normally trip the `meta`-is-reserved check
