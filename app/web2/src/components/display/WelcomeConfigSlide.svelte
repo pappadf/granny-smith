@@ -126,7 +126,7 @@
   // Video-mode list derived from video_slots: each selectable card's
   // monitors × supported depths.  Ids/labels match what the C side used to
   // emit as the flat video_modes array ("<monitor>_<depth>bpp"), so the
-  // boot-time `nubus.video_mode` seed is unchanged.
+  // boot-time `machine.nubus.video_mode` seed is unchanged.
   let videoModes = $derived.by(() => {
     const out: Array<{ id: string; label: string }> = [];
     for (const s of currentProfile?.video_slots ?? []) {
@@ -161,7 +161,7 @@
   }
 
   async function identifyRom(path: string): Promise<RomEntry | null> {
-    const r = await gsEval('rom.identify', [path]);
+    const r = await gsEval('machine.rom.identify', [path]);
     if (typeof r !== 'string') return null;
     try {
       const parsed = JSON.parse(r) as {
