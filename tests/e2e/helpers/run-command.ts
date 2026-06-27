@@ -177,13 +177,13 @@ function resolveDebugTarget(rawTarget: string): DebugTarget | null {
     const addr = parseHexOrDec(mem[1]);
     if (addr === null) return null;
     const size = mem[2].toLowerCase();
-    return { kind: 'method', method: `memory.peek.${size}`, args: [addr] };
+    return { kind: 'method', method: `machine.memory.peek.${size}`, args: [addr] };
   }
 
   const lower = target.toLowerCase();
 
   // Instruction counter.
-  if (lower === 'instr') return { kind: 'attr', method: 'cpu.instr_count' };
+  if (lower === 'instr') return { kind: 'attr', method: 'machine.cpu.instr_count' };
 
   // CPU registers / CCR bits — every name maps directly to a cpu.* attr.
   const cpuAttrs = new Set([
@@ -192,7 +192,7 @@ function resolveDebugTarget(rawTarget: string): DebugTarget | null {
     'a0', 'a1', 'a2', 'a3', 'a4', 'a5', 'a6', 'a7',
     'c', 'v', 'z', 'n', 'x',
   ]);
-  if (cpuAttrs.has(lower)) return { kind: 'attr', method: `cpu.${lower}` };
+  if (cpuAttrs.has(lower)) return { kind: 'attr', method: `machine.cpu.${lower}` };
 
   return null;
 }
@@ -255,14 +255,14 @@ function translateToGsEval(line: string): Translation | null {
   // returns the polynomial hash as V_INT; pass it through unchanged.
   if (head === 'screenshot' && tail.length >= 1 && tail[0] === 'checksum') {
     if (tail.length === 1)
-      return { method: 'screen.checksum', args: [], convention: 'pass_through' };
+      return { method: 'machine.screen.checksum', args: [], convention: 'pass_through' };
     if (tail.length === 5) {
       const t = parseInt10(tail[1]);
       const l = parseInt10(tail[2]);
       const b = parseInt10(tail[3]);
       const r = parseInt10(tail[4]);
       if (t !== null && l !== null && b !== null && r !== null)
-        return { method: 'screen.checksum', args: [t, l, b, r], convention: 'pass_through' };
+        return { method: 'machine.screen.checksum', args: [t, l, b, r], convention: 'pass_through' };
     }
   }
 
@@ -311,7 +311,7 @@ function translateToGsEval(line: string): Translation | null {
       const c = parseInt10(tail[1]);
       if (c !== null) args.push(c);
     }
-    return { method: 'memory.dump', args, convention: 'cmd_int_bool' };
+    return { method: 'machine.memory.dump', args, convention: 'cmd_int_bool' };
   }
 
 
@@ -331,7 +331,7 @@ function translateToGsEval(line: string): Translation | null {
       if (x !== null && y !== null) {
         const args: unknown[] = [x, y];
         if (mode) args.push(mode);
-        return { method: 'mouse.move', args, convention: 'cmd_int_bool' };
+        return { method: 'machine.adb.mouse.move', args, convention: 'cmd_int_bool' };
       }
     }
   }
@@ -348,7 +348,7 @@ function translateToGsEval(line: string): Translation | null {
     if (downStr !== null) {
       const args: unknown[] = [downStr === 'down'];
       if (mode) args.push(mode);
-      return { method: 'mouse.click', args, convention: 'cmd_int_bool' };
+      return { method: 'machine.adb.mouse.click', args, convention: 'cmd_int_bool' };
     }
   }
 
@@ -476,15 +476,15 @@ function translateToGsEval(line: string): Translation | null {
     if (head === 'rom') {
       if (sub === 'probe' || sub === 'validate') {
         if (subArgs.length === 1)
-          return { method: 'rom.identify', args: subArgs, convention: 'rom_recognised_cmd_int' };
+          return { method: 'machine.rom.identify', args: subArgs, convention: 'rom_recognised_cmd_int' };
         // bare `rom probe` (no path) → "is something loaded?"
         if (sub === 'probe' && subArgs.length === 0)
-          return { method: 'rom.loaded', args: [], convention: 'cmd_bool' };
+          return { method: 'machine.rom.loaded', args: [], convention: 'cmd_bool' };
       }
       if (sub === 'checksum' && subArgs.length === 1)
-        return { method: 'rom.identify', args: subArgs, convention: 'rom_checksum_string_nonempty' };
+        return { method: 'machine.rom.identify', args: subArgs, convention: 'rom_checksum_string_nonempty' };
       if (sub === 'load' && subArgs.length === 1)
-        return { method: 'rom.load', args: subArgs, convention: 'cmd_int_bool' };
+        return { method: 'machine.rom.load', args: subArgs, convention: 'cmd_int_bool' };
     }
 
     if (head === 'vrom') {
@@ -492,10 +492,10 @@ function translateToGsEval(line: string): Translation | null {
         // vrom.identify now returns a JSON map; consumers decide
         // recognised/not by parsing rather than by the bool shape.
         if (subArgs.length === 1)
-          return { method: 'vrom.identify', args: subArgs, convention: 'cmd_str' };
+          return { method: 'machine.vrom.identify', args: subArgs, convention: 'cmd_str' };
       }
       if (sub === 'load' && subArgs.length === 1)
-        return { method: 'vrom.load', args: subArgs, convention: 'cmd_int_bool' };
+        return { method: 'machine.vrom.load', args: subArgs, convention: 'cmd_int_bool' };
     }
 
     if (head === 'fd') {
@@ -504,12 +504,12 @@ function translateToGsEval(line: string): Translation | null {
       // floppy.identify). `fd validate` is shaped to mirror the bool
       // attribute style — kept on string_nonempty for backwards-compat.
       if (sub === 'probe' && subArgs.length === 1)
-        return { method: 'floppy.identify', args: subArgs, convention: 'string_to_cmd_int' };
+        return { method: 'machine.floppy.identify', args: subArgs, convention: 'string_to_cmd_int' };
       if (sub === 'validate' && subArgs.length === 1)
-        return { method: 'floppy.identify', args: subArgs, convention: 'string_nonempty' };
+        return { method: 'machine.floppy.identify', args: subArgs, convention: 'string_nonempty' };
       if (sub === 'create' && subArgs.length >= 1)
         return {
-          method: 'floppy.create',
+          method: 'machine.floppy.create',
           args: subArgs.length >= 2 ? [subArgs[0], subArgs[1]] : [subArgs[0]],
           convention: 'cmd_int_bool',
         };
@@ -517,7 +517,7 @@ function translateToGsEval(line: string): Translation | null {
         const slot = parseInt10(subArgs[1]) ?? 0;
         const writable = subArgs.length >= 3 ? parseBool(subArgs[2]) : false;
         return {
-          method: `floppy.drives[${slot}].insert`,
+          method: `machine.floppy.drives[${slot}].insert`,
           args: [subArgs[0], writable],
           convention: 'cmd_int_bool',
         };
@@ -526,33 +526,33 @@ function translateToGsEval(line: string): Translation | null {
 
     if (head === 'hd') {
       if (sub === 'validate' && subArgs.length === 1)
-        return { method: 'scsi.identify_hd', args: subArgs, convention: 'cmd_bool' };
+        return { method: 'machine.scsi.identify_hd', args: subArgs, convention: 'cmd_bool' };
       if (sub === 'attach' && subArgs.length === 2) {
         const id = parseInt10(subArgs[1]) ?? 0;
-        return { method: 'scsi.attach_hd', args: [subArgs[0], id], convention: 'cmd_int_bool' };
+        return { method: 'machine.scsi.attach_hd', args: [subArgs[0], id], convention: 'cmd_int_bool' };
       }
       if (sub === 'create' && subArgs.length === 2)
         return { method: 'storage.hd_create', args: subArgs, convention: 'cmd_int_bool' };
       if (sub === 'loopback' && subArgs.length === 1 && (subArgs[0] === 'on' || subArgs[0] === 'off'))
-        return { method: 'scsi.loopback', args: [subArgs[0] === 'on'], convention: 'void_or_error' };
+        return { method: 'machine.scsi.loopback', args: [subArgs[0] === 'on'], convention: 'void_or_error' };
     }
 
     // cdrom: id is now mandatory at the API level. Fall back to 3 for the
     // legacy shell-form callers that omit it; the typed path requires it.
     if (head === 'cdrom') {
       if (sub === 'validate' && subArgs.length === 1)
-        return { method: 'scsi.identify_cdrom', args: subArgs, convention: 'cmd_bool' };
+        return { method: 'machine.scsi.identify_cdrom', args: subArgs, convention: 'cmd_bool' };
       if (sub === 'attach' && subArgs.length >= 1) {
         const id = subArgs.length >= 2 ? (parseInt10(subArgs[1]) ?? 3) : 3;
-        return { method: 'scsi.attach_cdrom', args: [subArgs[0], id], convention: 'cmd_int_bool' };
+        return { method: 'machine.scsi.attach_cdrom', args: [subArgs[0], id], convention: 'cmd_int_bool' };
       }
       if (sub === 'eject') {
         const id = subArgs.length >= 1 ? (parseInt10(subArgs[0]) ?? 3) : 3;
-        return { method: `scsi.devices[${id}].eject`, args: [], convention: 'cmd_int_bool' };
+        return { method: `machine.scsi.devices[${id}].eject`, args: [], convention: 'cmd_int_bool' };
       }
       if (sub === 'info') {
         const id = subArgs.length >= 1 ? (parseInt10(subArgs[0]) ?? 3) : 3;
-        return { method: `scsi.devices[${id}].info`, args: [], convention: 'cmd_int_bool' };
+        return { method: `machine.scsi.devices[${id}].info`, args: [], convention: 'cmd_int_bool' };
       }
     }
 
@@ -562,9 +562,9 @@ function translateToGsEval(line: string): Translation | null {
       // new value (true → cmd_int_bool 0 = success).
       if (sub === 'loopback') {
         if (subArgs.length === 0)
-          return { method: 'scc.loopback', args: [], convention: 'void_or_error' };
+          return { method: 'machine.scc.loopback', args: [], convention: 'void_or_error' };
         if (subArgs.length === 1 && (subArgs[0] === 'on' || subArgs[0] === 'off'))
-          return { method: 'scc.loopback', args: [subArgs[0] === 'on'], convention: 'void_or_error' };
+          return { method: 'machine.scc.loopback', args: [subArgs[0] === 'on'], convention: 'void_or_error' };
       }
     }
 

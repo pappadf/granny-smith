@@ -69,7 +69,7 @@ export async function processUrlMedia(rawParams: URLSearchParams): Promise<boole
     // Without a ROM there's no machine to boot; insert floppies into the
     // existing machine if one is running (matches url-media.js:230-237).
     for (const fd of params.floppies) {
-      await gsEval('floppy.drives[0].insert', [`/tmp/url_${fd.slot}`, true]);
+      await gsEval('machine.floppy.drives[0].insert', [`/tmp/url_${fd.slot}`, true]);
     }
     return false;
   }
@@ -89,22 +89,22 @@ export async function processUrlMedia(rawParams: URLSearchParams): Promise<boole
   const ramKb = profile?.ram_default ?? 4096;
 
   await gsEval('machine.boot', [chosen, ramKb]);
-  await gsEval('rom.load', [tmpRomPath]);
+  await gsEval('machine.rom.load', [tmpRomPath]);
 
   for (const fd of params.floppies) {
-    await gsEval('floppy.drives[0].insert', [`/tmp/url_${fd.slot}`, true]);
+    await gsEval('machine.floppy.drives[0].insert', [`/tmp/url_${fd.slot}`, true]);
   }
   for (const hd of params.hardDisks) {
     if (profile?.hd_bus === 'profile') {
       // Lisa/XL: parallel-port ProFile, attached off the SCSI bus.
-      await gsEval('profile.attach', [`/tmp/url_${hd.slot}`, true]);
+      await gsEval('machine.hd.attach', [`/tmp/url_${hd.slot}`, true]);
     } else {
       const id = parseInt(hd.slot.replace('hd', ''), 10);
-      await gsEval('scsi.attach_hd', [`/tmp/url_${hd.slot}`, id]);
+      await gsEval('machine.scsi.attach_hd', [`/tmp/url_${hd.slot}`, id]);
     }
   }
   if (params.cd) {
-    await gsEval('scsi.attach_cdrom', ['/tmp/url_cd', 3]);
+    await gsEval('machine.scsi.attach_cdrom', ['/tmp/url_cd', 3]);
   }
 
   machine.model = chosen;
@@ -125,7 +125,7 @@ interface RomIdentifyResult {
 }
 
 async function romIdentify(path: string): Promise<RomIdentifyResult | null> {
-  const r = await gsEval('rom.identify', [path]);
+  const r = await gsEval('machine.rom.identify', [path]);
   if (typeof r !== 'string') return null;
   try {
     const parsed = JSON.parse(r) as Partial<RomIdentifyResult>;

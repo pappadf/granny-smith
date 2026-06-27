@@ -29,7 +29,7 @@ interface RomIdentifyResult {
 }
 
 async function romIdentify(path: string): Promise<RomIdentifyResult | null> {
-  const r = await gsEval('rom.identify', [path]);
+  const r = await gsEval('machine.rom.identify', [path]);
   if (typeof r !== 'string') return null;
   try {
     const parsed = JSON.parse(r) as Partial<RomIdentifyResult>;
@@ -171,9 +171,9 @@ export async function acceptFilesRaw(files: File[], targetDir: string): Promise<
 async function autoMountIfEmpty(persistedPath: string, category: MediaTypeId): Promise<void> {
   if (category === 'fd') {
     for (let i = 0; i < 2; i++) {
-      const present = await gsEval(`floppy.drives[${i}].present`);
+      const present = await gsEval(`machine.floppy.drives[${i}].present`);
       if (present === true) continue;
-      const ok = (await gsEval(`floppy.drives[${i}].insert`, [persistedPath, true])) === true;
+      const ok = (await gsEval(`machine.floppy.drives[${i}].insert`, [persistedPath, true])) === true;
       if (ok) {
         setMounted(persistedPath, { kind: 'fd', drive: i });
         showNotification(`Inserted into floppy drive ${i + 1}`, 'info');
@@ -184,7 +184,7 @@ async function autoMountIfEmpty(persistedPath: string, category: MediaTypeId): P
     return;
   }
   if (category === 'cdrom') {
-    const ok = (await gsEval('scsi.attach_cdrom', [persistedPath, 3])) !== null;
+    const ok = (await gsEval('machine.scsi.attach_cdrom', [persistedPath, 3])) !== null;
     if (ok) {
       setMounted(persistedPath, { kind: 'cd', drive: 3 });
       showNotification('Inserted into CD-ROM drive', 'info');
@@ -338,7 +338,7 @@ async function maybeBootFromRom(romPath: string): Promise<void> {
     }
   }
   await gsEval('machine.boot', [model, ramKb]);
-  await gsEval('rom.load', [romPath]);
+  await gsEval('machine.rom.load', [romPath]);
   machine.model = model;
   machine.ram = `${ramKb / 1024} MB`;
   await applyCapabilities(model);

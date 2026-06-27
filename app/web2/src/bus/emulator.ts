@@ -366,14 +366,14 @@ export async function initEmulator(config: MachineConfig): Promise<void> {
   // VROM and video-mode setup happen before machine.boot so card factories
   // can consume the sense lines during boot.
   if (config.vrom && config.vrom !== '(auto)') {
-    await gsEval('vrom.load', [config.vrom]);
+    await gsEval('machine.vrom.load', [config.vrom]);
   }
   // Seed the JMFB video mode before machine.boot so the card factory consumes
   // it (sets the sense lines + slot-PRAM/video defaults).  web-legacy's
   // bootFromConfig does this; omitting it left the JMFB unseeded and A/UX hung
   // enabling its device drivers on real hardware.
   if (config.videoMode) {
-    await gsEval('nubus.video_mode', [config.videoMode]);
+    await gsEval('machine.nubus.video_mode', [config.videoMode]);
   }
   // Map the human-readable RAM string ('4 MB') to KB the boot path wants.
   const ramKB = ramStringToKb(config.ram);
@@ -385,7 +385,7 @@ export async function initEmulator(config: MachineConfig): Promise<void> {
   // with paths). When the path is missing or '(auto)' we skip the load —
   // useful for the URL-media path where rom.load happens elsewhere.
   if (config.rom && config.rom !== '(auto)') {
-    const ok = await gsEval('rom.load', [config.rom]);
+    const ok = await gsEval('machine.rom.load', [config.rom]);
     if (ok !== true) {
       showNotification('Failed to load ROM', 'error');
       return;
@@ -394,18 +394,18 @@ export async function initEmulator(config: MachineConfig): Promise<void> {
   for (let i = 0; i < (config.floppies?.length ?? 0); i++) {
     const path = config.floppies[i];
     if (!path || path === '(none)') continue;
-    await gsEval(`floppy.drives[${i}].insert`, [path, true]);
+    await gsEval(`machine.floppy.drives[${i}].insert`, [path, true]);
   }
   if (config.hd && config.hd !== '(none)') {
     if (config.hdBus === 'profile') {
       // Lisa/XL: the hard disk is the parallel-port ProFile, not a SCSI device.
-      await gsEval('profile.attach', [config.hd, true]);
+      await gsEval('machine.hd.attach', [config.hd, true]);
     } else {
-      await gsEval('scsi.attach_hd', [config.hd, 0]);
+      await gsEval('machine.scsi.attach_hd', [config.hd, 0]);
     }
   }
   if (config.cd && config.cd !== '(none)') {
-    await gsEval('scsi.attach_cdrom', [config.cd, 3]);
+    await gsEval('machine.scsi.attach_cdrom', [config.cd, 3]);
   }
 
   machine.model = config.modelName ?? config.model;

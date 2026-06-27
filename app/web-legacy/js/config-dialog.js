@@ -239,7 +239,7 @@ export async function showConfigDialog(scanResults) {
 
       // Row 4: Video Mode — driven by profile.video_modes when the
       // model has configurable video (IIcx / IIx with a JMFB).  Each
-      // entry's id round-trips back to `nubus.video_mode = "<id>"`
+      // entry's id round-trips back to `machine.nubus.video_mode = "<id>"`
       // before machine.boot; the JMFB factory consumes it and seeds
       // PRAM so the Slot Manager's GET_SLOT_DEPTH lands on the
       // chosen (monitor, depth).  Skipped for machines whose profile
@@ -423,7 +423,7 @@ export async function showConfigDialog(scanResults) {
         // query available drive models from the emulator
         let models = [];
         try {
-          const json = await window.gsEval('scsi.hd_models');
+          const json = await window.gsEval('machine.scsi.hd_models');
           if (typeof json === 'string') {
             models = JSON.parse(json);
           }
@@ -661,7 +661,7 @@ export async function bootFromConfig(config, tmpRomPath) {
   // Set VROM path before machine creation, because SE/30 init reads it
   // during the boot sequence.
   if (vromPath) {
-    await window.gsEval('vrom.load', [vromPath]);
+    await window.gsEval('machine.vrom.load', [vromPath]);
   }
 
   // Stage the user's pending video-mode selection on the NuBus root
@@ -672,7 +672,7 @@ export async function bootFromConfig(config, tmpRomPath) {
   // boot.  Empty / null is a no-op (machines without configurable
   // video, or first-run defaults).
   if (videoMode) {
-    await window.gsEval('nubus.video_mode', [videoMode]);
+    await window.gsEval('machine.nubus.video_mode', [videoMode]);
   }
 
   // Create the machine with the user-selected model and RAM.  Under the
@@ -685,9 +685,9 @@ export async function bootFromConfig(config, tmpRomPath) {
   // Load ROM — try persisted OPFS path first, fall back to /tmp.
   if (romChecksum) {
     const persistedPath = romPathForChecksum(romChecksum);
-    let ok = (await window.gsEval('rom.load', [persistedPath])) === true;
+    let ok = (await window.gsEval('machine.rom.load', [persistedPath])) === true;
     if (!ok && tmpRomPath) {
-      ok = (await window.gsEval('rom.load', [tmpRomPath])) === true;
+      ok = (await window.gsEval('machine.rom.load', [tmpRomPath])) === true;
     }
     if (!ok) {
       toast('Failed to load ROM');
@@ -698,21 +698,21 @@ export async function bootFromConfig(config, tmpRomPath) {
   // Mount floppies into successive drive slots.
   if (floppies) {
     for (let i = 0; i < floppies.length; i++) {
-      await window.gsEval(`floppy.drives[${i}].insert`, [floppies[i], true]);
+      await window.gsEval(`machine.floppy.drives[${i}].insert`, [floppies[i], true]);
     }
   }
 
   // Attach SCSI hard disks at the bus ids declared by the profile.
   if (hdImages) {
     for (const { path, id } of hdImages) {
-      await window.gsEval('scsi.attach_hd', [path, id]);
+      await window.gsEval('machine.scsi.attach_hd', [path, id]);
     }
   }
 
   // Attach CD-ROM at the profile's cdrom_id (universally 3 today; the
   // value comes from the C side rather than being hardcoded here).
   if (cdImage) {
-    await window.gsEval('scsi.attach_cdrom', [cdImage, cdId ?? 3]);
+    await window.gsEval('machine.scsi.attach_cdrom', [cdImage, cdId ?? 3]);
   }
 
   hideRomOverlay();

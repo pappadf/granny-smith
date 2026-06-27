@@ -21,15 +21,16 @@ test.describe('Object inspector', () => {
     await page.evaluate(() => (window as any).__gsInspector.expand());
     await page.evaluate(() => (window as any).__gsInspector.refresh());
     const names = await page.evaluate(() => (window as any).__gsInspector.getTreeNames());
-    // Plus boots cpu/memory/storage as a minimum — the tree must show
-    // at least these.
-    expect(names).toEqual(expect.arrayContaining(['cpu', 'memory', 'storage']));
+    // The root's children are the machine container plus the meta service
+    // objects; hardware now lives under `machine`. The tree must show at
+    // least these top-level entries.
+    expect(names).toEqual(expect.arrayContaining(['machine', 'storage']));
   });
 
   test('selecting a path renders its attributes and methods', async ({ page }) => {
     await page.evaluate(() => (window as any).__gsInspector.expand());
     await page.evaluate(() => (window as any).__gsInspector.refresh());
-    await page.evaluate(() => (window as any).__gsInspector.select('cpu'));
+    await page.evaluate(() => (window as any).__gsInspector.select('machine.cpu'));
     const detail = await page.evaluate(() =>
       (window as any).__gsInspector.getDetailText()
     );
@@ -42,15 +43,15 @@ test.describe('Object inspector', () => {
 
   test('refresh re-reads attribute values after a write', async ({ page }) => {
     await page.evaluate(() => (window as any).__gsInspector.expand());
-    await page.evaluate(() => (window as any).__gsInspector.select('sound'));
+    await page.evaluate(() => (window as any).__gsInspector.select('machine.sound'));
     const before = await page.evaluate(() =>
       (window as any).__gsInspector.getDetailText()
     );
     // Toggle sound.enabled via gsEval, then refresh and verify the
     // panel picked up the new value.
     await page.evaluate(async () => {
-      const cur = await (window as any).gsEval('sound.enabled');
-      await (window as any).gsEval('sound.enabled', [!cur]);
+      const cur = await (window as any).gsEval('machine.sound.enabled');
+      await (window as any).gsEval('machine.sound.enabled', [!cur]);
     });
     await page.evaluate(() => (window as any).__gsInspector.refresh());
     const after = await page.evaluate(() =>
@@ -60,8 +61,8 @@ test.describe('Object inspector', () => {
     expect(after).not.toBe(before);
     // Restore for hygiene.
     await page.evaluate(async () => {
-      const cur = await (window as any).gsEval('sound.enabled');
-      await (window as any).gsEval('sound.enabled', [!cur]);
+      const cur = await (window as any).gsEval('machine.sound.enabled');
+      await (window as any).gsEval('machine.sound.enabled', [!cur]);
     });
   });
 });

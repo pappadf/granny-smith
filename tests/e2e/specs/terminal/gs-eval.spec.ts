@@ -20,7 +20,7 @@ test.describe('gsEval bridge', () => {
   });
 
   test('attribute read returns the current value as JSON', async ({ page }) => {
-    const pc = await page.evaluate(async () => await (window as any).gsEval('cpu.pc'));
+    const pc = await page.evaluate(async () => await (window as any).gsEval('machine.cpu.pc'));
     // Plus boots with cpu.pc inside ROM space; the value formats as a
     // hex string per VAL_HEX (gs_api JSON serializer rule).
     expect(typeof pc).toBe('string');
@@ -31,11 +31,11 @@ test.describe('gsEval bridge', () => {
     // sound.enabled is a writable V_BOOL mirror of the mute gate.
     const round = await page.evaluate(async () => {
       const ge = (window as any).gsEval;
-      const before = await ge('sound.enabled');
-      const w = await ge('sound.enabled', [!before]);
-      const after = await ge('sound.enabled');
+      const before = await ge('machine.sound.enabled');
+      const w = await ge('machine.sound.enabled', [!before]);
+      const after = await ge('machine.sound.enabled');
       // Restore the original so the next test isn't perturbed.
-      await ge('sound.enabled', [before]);
+      await ge('machine.sound.enabled', [before]);
       return { before, w, after };
     });
     // Setter returns V_NONE (formatted as null); reader returns the new bool.

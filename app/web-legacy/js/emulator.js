@@ -258,7 +258,7 @@ export async function tabComplete(line, cursorPos) {
 //   gsEval(path)            → attribute read or zero-arg method call
 //   gsEval(path, [v0, v1])  → method call, or attribute write when path
 //                             is an attribute and the array has one entry
-//   gsEval('cpu.meta.*')    → schema introspection (children, attributes,
+//   gsEval('machine.cpu.meta.*')    → schema introspection (children, attributes,
 //                             methods, path, class, doc) on the synthetic
 //                             `meta` overlay — see
 //                             proposal-introspection-via-meta-attribute.md
@@ -334,7 +334,7 @@ export async function gsEval(path, args) {
 // recognised==false (with empty compatible / name) is a successful probe of
 // an unrecognised ROM and is *not* an error.
 export async function romIdentify(path) {
-  const r = await gsEval('rom.identify', [path]);
+  const r = await gsEval('machine.rom.identify', [path]);
   if (r === null || r === undefined) return null;
   if (typeof r === 'object' && 'error' in r) return null;
   if (typeof r !== 'string') return null;

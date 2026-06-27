@@ -41,7 +41,7 @@ interface RomIdentifyResult {
   size?: number;
 }
 
-// Shape returned by C-side `vrom.identify` after the v0.4.5 upgrade.
+// Shape returned by C-side `machine.vrom.identify` after the v0.4.5 upgrade.
 // Unrecognised files come back as { recognised: false, size, fnv1a }
 // — see src/core/memory/vrom.c. Used by the VROM media descriptor.
 interface VromIdentifyResult {
@@ -53,7 +53,7 @@ interface VromIdentifyResult {
 }
 
 async function parseRomIdentify(gsEval: GsEval, path: string): Promise<RomIdentifyResult | null> {
-  const r = await gsEval('rom.identify', [path]);
+  const r = await gsEval('machine.rom.identify', [path]);
   if (r === null || r === undefined) return null;
   if (typeof r === 'object' && r !== null && 'error' in (r as object)) return null;
   if (typeof r !== 'string') return null;
@@ -85,7 +85,7 @@ export const MEDIA_TYPES: Record<MediaTypeId, MediaTypeDescriptor> = {
     label: 'Video ROM image',
     persistDir: VROMS_DIR,
     async validate(path, gsEval) {
-      const r = await gsEval('vrom.identify', [path]);
+      const r = await gsEval('machine.vrom.identify', [path]);
       if (typeof r !== 'string') return { valid: false };
       try {
         const parsed = JSON.parse(r) as VromIdentifyResult;
@@ -104,7 +104,7 @@ export const MEDIA_TYPES: Record<MediaTypeId, MediaTypeDescriptor> = {
     },
     // VROMs are stored under the canonical filename the core's card
     // factories look up (e.g. JMFB hardcodes "Apple-341-0868.vrom" in
-    // jmfb.c). The C-side `vrom.identify` derives the canonical name
+    // jmfb.c). The C-side `machine.vrom.identify` derives the canonical name
     // from the file's content hash; the UI doesn't carry any ROM
     // knowledge of its own.
     nameFn(originalName, info) {
@@ -140,7 +140,7 @@ export const MEDIA_TYPES: Record<MediaTypeId, MediaTypeDescriptor> = {
     label: 'Hard Disk image',
     persistDir: HD_DIR,
     async validate(path, gsEval) {
-      return { valid: (await gsEval('scsi.identify_hd', [path])) === true };
+      return { valid: (await gsEval('machine.scsi.identify_hd', [path])) === true };
     },
   },
 
@@ -149,7 +149,7 @@ export const MEDIA_TYPES: Record<MediaTypeId, MediaTypeDescriptor> = {
     label: 'CD-ROM image',
     persistDir: CD_DIR,
     async validate(path, gsEval) {
-      return { valid: (await gsEval('scsi.identify_cdrom', [path])) === true };
+      return { valid: (await gsEval('machine.scsi.identify_cdrom', [path])) === true };
     },
   },
 };

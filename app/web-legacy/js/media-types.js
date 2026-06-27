@@ -43,7 +43,7 @@ export const MEDIA_TYPES = {
     async validate(path) {
       // vrom.identify now returns JSON; mirror the new UI's parsing
       // so the legacy upload pipeline keeps working during the soak.
-      const r = await window.gsEval('vrom.identify', [path]);
+      const r = await window.gsEval('machine.vrom.identify', [path]);
       if (typeof r !== 'string') return { valid: false };
       try {
         const parsed = JSON.parse(r);
@@ -65,7 +65,7 @@ export const MEDIA_TYPES = {
     async validate(path) {
       // The config dialog runs *before* machine.boot — at that point the
       // per-machine `floppy` object has not been registered on the
-      // object root, so `floppy.identify` would fail with "did not
+      // object root, so `machine.floppy.identify` would fail with "did not
       // resolve".  Match the C-side classifier (image.c::classify_image
       // + detect_diskcopy) using only the file size, which is the
       // single discriminator for raw and DiskCopy 4.2 wrapped floppies
@@ -92,7 +92,7 @@ export const MEDIA_TYPES = {
     label: 'Hard Disk image',
     persistDir: HD_DIR,
     async validate(path) {
-      return { valid: (await window.gsEval('scsi.identify_hd', [path])) === true };
+      return { valid: (await window.gsEval('machine.scsi.identify_hd', [path])) === true };
     },
   },
 
@@ -101,7 +101,7 @@ export const MEDIA_TYPES = {
     label: 'CD-ROM image',
     persistDir: CD_DIR,
     async validate(path) {
-      return { valid: (await window.gsEval('scsi.identify_cdrom', [path])) === true };
+      return { valid: (await window.gsEval('machine.scsi.identify_cdrom', [path])) === true };
     },
   },
 };

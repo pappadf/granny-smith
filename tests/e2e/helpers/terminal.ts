@@ -145,7 +145,7 @@ export async function installTestShim(page: Page) {
 								// without teaching every spec the typed-call API.  Method names
 								// are normalised to their legacy spelling: `_` → ` ` for the
 								// pre-typed `rom_load` style, and `.` → ` ` for the typed
-								// `rom.load` / `floppy.drives[0].insert` style.  Positional
+								// `machine.rom.load` / `machine.floppy.drives[0].insert` style.  Positional
 								// args are stringified inline.
 								(window as any).__commandLog = (window as any).__commandLog || [];
 								const logCommand = (cmd: string) => {

@@ -207,7 +207,7 @@ async function probeAndMountDiskImage(path, isDirectory, displayName) {
         await window.gsEval('machine.boot', [compatible[0], ramKB]);
 
         // Load the ROM into the freshly created machine.
-        if ((await window.gsEval('rom.load', [imagePath])) !== true) {
+        if ((await window.gsEval('machine.rom.load', [imagePath])) !== true) {
           toast('Failed to load ROM');
           return;
         }
@@ -229,7 +229,7 @@ async function probeAndMountDiskImage(path, isDirectory, displayName) {
       }
     } else if (kind === 'floppy') {
       toast(`Mounting disk image: ${imagePath.split('/').pop()}`);
-      const mounted = (await window.gsEval('floppy.drives[0].insert', [imagePath, true])) === true;
+      const mounted = (await window.gsEval('machine.floppy.drives[0].insert', [imagePath, true])) === true;
       if (mounted) {
         toast(`Disk image mounted successfully`);
       } else {
