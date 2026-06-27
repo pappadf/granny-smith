@@ -218,12 +218,30 @@ static void scsi_cancel_drq_service(scsi_t *scsi) {
         remove_event(s, &scsi_drq_service, scsi);
 }
 
-// Pop the next byte from the SCSI buffer
+// Ensure the staging buffer can hold at least `bytes`.  The buffer starts at
+// BUF_LIMIT and grows (never shrinks) so a single READ/WRITE larger than 256
+// blocks — e.g. the Apple SCSI driver's multi-block writes during a System 7.1
+// install — is staged whole rather than tripping a fixed-size assert.  The bus
+// handshake is still byte-by-byte, so this is invisible to the guest; only the
+// host-side staging area changes size.
+static void scsi_buf_ensure(scsi_t *scsi, size_t bytes) {
+    if (bytes <= scsi->buf.cap)
+        return;
+    uint8_t *grown = realloc(scsi->buf.data, bytes);
+    GS_ASSERTF(grown != NULL, "scsi_buf_ensure: failed to grow transfer buffer to %zu bytes", bytes);
+    scsi->buf.data = grown;
+    scsi->buf.cap = bytes;
+}
+
+// Pop the next byte from the SCSI buffer.  Data-in is drained front-to-back via
+// a read cursor (buf.pos) rather than memmove-ing the remainder down on every
+// byte — the latter is O(n^2) and stalls multi-hundred-KB transfers.  buf.size
+// still tracks remaining bytes so every "drained" (size == 0) check is unchanged.
 static uint8_t next_byte(scsi_t *scsi) {
     assert(scsi->buf.size > 0);
 
-    uint8_t byte = scsi->buf.data[0];
-    memmove(scsi->buf.data, scsi->buf.data + 1, --scsi->buf.size);
+    uint8_t byte = scsi->buf.data[scsi->buf.pos++];
+    scsi->buf.size--;
 
     return byte;
 }
@@ -273,7 +291,9 @@ void phase_data_in(scsi_t *scsi, int bytes) {
 
     scsi->bus.phase = scsi_data_in;
     scsi->reg.csr = CSR_IO + CSR_REQ + CSR_BSY;
+    scsi_buf_ensure(scsi, (size_t)bytes);
     scsi->buf.size = scsi->buf.max = bytes;
+    scsi->buf.pos = 0; // fresh fill: deliver from the front
     // Skip scsi_update_irq: prevents spurious phase-mismatch IRQ when
     // run_cmd fires during pseudo-DMA ODR write with MR_DMA still set
     // for command phase.
@@ -282,10 +302,10 @@ void phase_data_in(scsi_t *scsi, int bytes) {
 // Transition SCSI bus to data-out phase (initiator to target)
 void phase_data_out(scsi_t *scsi, int bytes) {
     assert(scsi->bus.phase == scsi_command);
-    assert(bytes <= BUF_LIMIT);
 
     scsi->bus.phase = scsi_data_out;
     scsi->reg.csr = CSR_REQ + CSR_BSY;
+    scsi_buf_ensure(scsi, (size_t)bytes);
     scsi->buf.max = bytes;
     scsi->buf.size = 0;
     // Arm the primer-slot gate.  See scsi_internal.h `primer_held` etc.
@@ -507,7 +527,15 @@ static void run_cmd(scsi_t *scsi) {
             break;
         }
 
-        assert(scsi->cmd.tl * blk_sz <= BUF_LIMIT);
+        // A 10-byte CDB carries a 16-bit transfer length, so a single command
+        // can move far more than the 256-block (BUF_LIMIT) staging buffer holds
+        // — the Apple SCSI driver does exactly this writing the System file
+        // during a System 7.1 install.  The staging buffer grows to fit (see
+        // scsi_buf_ensure in phase_data_in/out); no cap, no assert.
+        if ((size_t)scsi->cmd.tl * (size_t)blk_sz > BUF_LIMIT)
+            LOG(2, "SCSI %s_10 large transfer: tl=%u blk_sz=%u (%zu bytes > BUF_LIMIT)",
+                scsi->cmd.opcode == CMD_WRITE_10 ? "WRITE" : "READ", scsi->cmd.tl, blk_sz,
+                (size_t)scsi->cmd.tl * blk_sz);
 
         if (scsi->cmd.opcode == CMD_WRITE_10) {
             phase_data_out(scsi, blk_sz * scsi->cmd.tl);
@@ -1612,6 +1640,8 @@ scsi_t *scsi_init(memory_map_t *map, checkpoint_t *checkpoint) {
 
     scsi->buf.data = malloc(BUF_LIMIT);
     GS_ASSERTF(scsi->buf.data != NULL, "scsi_init: failed to allocate %zu-byte transfer buffer", (size_t)BUF_LIMIT);
+    scsi->buf.cap = BUF_LIMIT;
+    scsi->buf.pos = 0;
     scsi->buf.max = MAX_CMD_SIZE;
     scsi->bus.initiator = INT_MAX;
 
@@ -1663,14 +1693,17 @@ scsi_t *scsi_init(memory_map_t *map, checkpoint_t *checkpoint) {
             }
         }
 
-        // Restore buffer contents (if any). The buf.data has been allocated above. Restore its max/size first.
+        // Restore buffer contents (if any). The buf.data has been allocated above. Restore its max/size/pos first.
         system_read_checkpoint_data(checkpoint, &scsi->buf.max, sizeof(scsi->buf.max));
         system_read_checkpoint_data(checkpoint, &scsi->buf.size, sizeof(scsi->buf.size));
-        if (scsi->buf.size && scsi->buf.data) {
-            size_t to_read = scsi->buf.size;
-            if (to_read > BUF_LIMIT)
-                to_read = BUF_LIMIT;
-            system_read_checkpoint_data(checkpoint, scsi->buf.data, to_read);
+        system_read_checkpoint_data(checkpoint, &scsi->buf.pos, sizeof(scsi->buf.pos));
+        // The meaningful staged region is [0 .. pos + size): data-out fills
+        // [0..size); data-in keeps undelivered bytes at [pos..pos+size).  Grow
+        // the buffer first so transfers larger than BUF_LIMIT round-trip.
+        size_t used = scsi->buf.pos + scsi->buf.size;
+        if (used && scsi->buf.data) {
+            scsi_buf_ensure(scsi, used);
+            system_read_checkpoint_data(checkpoint, scsi->buf.data, used);
         }
     }
 
@@ -2118,15 +2151,15 @@ void scsi_checkpoint(scsi_t *restrict scsi, checkpoint_t *checkpoint) {
         }
     }
 
-    // Save buf metadata and contents
+    // Save buf metadata and contents.  Persist the full staged region
+    // [0 .. pos + size) and the read cursor so an in-flight transfer (now
+    // possibly larger than BUF_LIMIT) round-trips exactly.
     system_write_checkpoint_data(checkpoint, &scsi->buf.max, sizeof(scsi->buf.max));
     system_write_checkpoint_data(checkpoint, &scsi->buf.size, sizeof(scsi->buf.size));
-    if (scsi->buf.size && scsi->buf.data) {
-        size_t to_write = scsi->buf.size;
-        if (to_write > BUF_LIMIT)
-            to_write = BUF_LIMIT;
-        system_write_checkpoint_data(checkpoint, scsi->buf.data, to_write);
-    }
+    system_write_checkpoint_data(checkpoint, &scsi->buf.pos, sizeof(scsi->buf.pos));
+    size_t used = scsi->buf.pos + scsi->buf.size;
+    if (used && scsi->buf.data)
+        system_write_checkpoint_data(checkpoint, scsi->buf.data, used);
 }
 
 // === Object-model class descriptors =========================================

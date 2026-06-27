@@ -215,8 +215,10 @@ struct scsi {
      */
     struct { // buffer to hold incoming/outgoing data
         uint8_t *data; // byte array
-        size_t max; // max size
-        size_t size; // current size
+        size_t max; // expected byte count for the active phase
+        size_t size; // bytes currently staged (data-out) / remaining (data-in)
+        size_t cap; // allocated capacity of `data` (>= BUF_LIMIT, grows on demand)
+        size_t pos; // data-in read cursor: index of the next byte to deliver
     } buf;
 
     /* Runtime-only pointers and interfaces last */
