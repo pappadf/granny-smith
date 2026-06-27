@@ -30,7 +30,9 @@ describe('SystemView', () => {
       expect(labels).toContain('Storage');
     });
     // Meta objects sit under the non-interactive "Emulator" divider (§8.2).
-    const dividers = Array.from(container.querySelectorAll('.group-divider')).map((e) => e.textContent);
+    const dividers = Array.from(container.querySelectorAll('.group-divider')).map(
+      (e) => e.textContent,
+    );
     expect(dividers).toContain('Emulator');
   });
 });

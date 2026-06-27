@@ -17,6 +17,17 @@ memory_map_t *system_memory(void) {
     return NULL;
 }
 
+// Machine-container stub (see support/stub_system.c). rom.c / memory.c call
+// machine_object() to find their parent node; NULL is safe because
+// object_attach(NULL, child) is a no-op and these tests never walk the tree.
+struct object;
+struct object *machine_object(void) {
+    return NULL;
+}
+void machine_set_active_label(const char *name) {
+    (void)name;
+}
+
 // memory.c's slow path delegates to the Lisa segment MMU when g_lisa_mmu is
 // set.  These tests never install one (g_lisa_mmu stays NULL, so the delegate
 // branch is never taken), but the symbols must resolve at link time.

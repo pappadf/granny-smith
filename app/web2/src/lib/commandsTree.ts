@@ -67,7 +67,11 @@ function bucketFor(path: string, info: MethodInfo): string {
 
 // Recursively collect methods under `path` via named children only (indexed
 // collections are explored in the SYSTEM tab; here we keep the walk bounded).
-async function walk(path: string, depth: number, into: Record<string, CommandNode[]>): Promise<void> {
+async function walk(
+  path: string,
+  depth: number,
+  into: Record<string, CommandNode[]>,
+): Promise<void> {
   if (depth > WALK_MAX_DEPTH) return;
   for (const info of await methodInfos(path)) {
     const full = path ? `${path}.${info.name}` : info.name;

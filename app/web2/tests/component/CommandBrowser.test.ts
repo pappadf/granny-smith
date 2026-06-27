@@ -9,14 +9,25 @@ import { registerTerminalInsert } from '@/components/panel-views/terminal/termin
 // Language keywords group), not a hand-listed catalogue.
 vi.mock('@/bus/emulator', () => {
   const methodInfo = (name: string, doc = '') =>
-    JSON.stringify({ name, verb: name, category: 'basic', task: '', doc, destructive: false, mutate: false, hidden: false, nargs: 0 });
+    JSON.stringify({
+      name,
+      verb: name,
+      category: 'basic',
+      task: '',
+      doc,
+      destructive: false,
+      mutate: false,
+      hidden: false,
+      nargs: 0,
+    });
   return {
     isModuleReady: () => true,
     gsEval: async (path: string, args?: unknown[]) => {
       if (path === 'meta.methods') return []; // no root verbs in this fixture
       if (path === 'objects') return ['cpu'];
       if (path === 'cpu.meta.methods') return ['step'];
-      if (path === 'cpu.meta.method_info') return methodInfo(String(args?.[0]), 'run N instructions');
+      if (path === 'cpu.meta.method_info')
+        return methodInfo(String(args?.[0]), 'run N instructions');
       if (path === 'cpu.meta.children') return [];
       if (path === 'shell.aliases') return [];
       return null;
@@ -36,7 +47,7 @@ describe('CommandBrowser (model-generated)', () => {
     const { container } = render(CommandBrowser);
     await waitFor(() => {
       const names = Array.from(
-        container.querySelectorAll('.cmd-row.category > .cmd-line > .name')
+        container.querySelectorAll('.cmd-row.category > .cmd-line > .name'),
       ).map((c) => c.textContent);
       expect(names).toContain('cpu'); // subsystem bucket
       expect(names).toContain('Language'); // shell keywords group
@@ -47,7 +58,7 @@ describe('CommandBrowser (model-generated)', () => {
     const { container } = render(CommandBrowser);
     const cpuCat = await waitFor(() => {
       const el = Array.from(container.querySelectorAll('.cmd-row.category > .cmd-line')).find((l) =>
-        l.textContent?.includes('cpu')
+        l.textContent?.includes('cpu'),
       ) as HTMLElement | undefined;
       if (!el) throw new Error('cpu category not rendered yet');
       return el;
@@ -55,7 +66,7 @@ describe('CommandBrowser (model-generated)', () => {
     await fireEvent.click(cpuCat);
     await waitFor(() => {
       const leaf = Array.from(container.querySelectorAll('.cmd-line .name')).some(
-        (e) => e.textContent === 'cpu.step'
+        (e) => e.textContent === 'cpu.step',
       );
       expect(leaf).toBe(true);
     });
@@ -67,7 +78,7 @@ describe('CommandBrowser (model-generated)', () => {
     const { container } = render(CommandBrowser);
     const cpuCat = await waitFor(() => {
       const el = Array.from(container.querySelectorAll('.cmd-row.category > .cmd-line')).find((l) =>
-        l.textContent?.includes('cpu')
+        l.textContent?.includes('cpu'),
       ) as HTMLElement | undefined;
       if (!el) throw new Error('cpu category not rendered yet');
       return el;
@@ -75,7 +86,7 @@ describe('CommandBrowser (model-generated)', () => {
     await fireEvent.click(cpuCat);
     const stepLine = await waitFor(() => {
       const el = Array.from(container.querySelectorAll('.cmd-line')).find(
-        (line) => line.querySelector('.name')?.textContent === 'cpu.step'
+        (line) => line.querySelector('.name')?.textContent === 'cpu.step',
       ) as HTMLElement | undefined;
       if (!el) throw new Error('cpu.step row not rendered yet');
       return el;

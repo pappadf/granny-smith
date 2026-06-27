@@ -173,7 +173,8 @@ async function autoMountIfEmpty(persistedPath: string, category: MediaTypeId): P
     for (let i = 0; i < 2; i++) {
       const present = await gsEval(`machine.floppy.drive[${i}].present`);
       if (present === true) continue;
-      const ok = (await gsEval(`machine.floppy.drive[${i}].insert`, [persistedPath, true])) === true;
+      const ok =
+        (await gsEval(`machine.floppy.drive[${i}].insert`, [persistedPath, true])) === true;
       if (ok) {
         setMounted(persistedPath, { kind: 'fd', drive: i });
         showNotification(`Inserted into floppy drive ${i + 1}`, 'info');

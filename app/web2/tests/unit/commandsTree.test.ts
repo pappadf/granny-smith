@@ -7,7 +7,17 @@ import { buildCommandsTree, type CommandNode } from '@/lib/commandsTree';
 //   plus one alias. We assert the generated shape, not a hand-listed set.
 vi.mock('@/bus/emulator', () => {
   const methodInfo = (name: string, doc = '', task = '') =>
-    JSON.stringify({ name, verb: name, category: 'basic', task, doc, destructive: false, mutate: false, hidden: false, nargs: 0 });
+    JSON.stringify({
+      name,
+      verb: name,
+      category: 'basic',
+      task,
+      doc,
+      destructive: false,
+      mutate: false,
+      hidden: false,
+      nargs: 0,
+    });
   return {
     isModuleReady: () => true,
     gsEval: async (path: string, args?: unknown[]) => {
@@ -21,7 +31,8 @@ vi.mock('@/bus/emulator', () => {
       if (path === 'machine.meta.children') return ['cpu'];
       // cpu: a `step` method, no children.
       if (path === 'machine.cpu.meta.methods') return ['step'];
-      if (path === 'machine.cpu.meta.method_info') return methodInfo(String(args?.[0]), 'run N instructions');
+      if (path === 'machine.cpu.meta.method_info')
+        return methodInfo(String(args?.[0]), 'run N instructions');
       if (path === 'machine.cpu.meta.children') return [];
       if (path === 'shell.aliases') return ['pc=machine.cpu.pc'];
       return null;
@@ -31,7 +42,11 @@ vi.mock('@/bus/emulator', () => {
 
 function flatten(nodes: CommandNode[]): CommandNode[] {
   const out: CommandNode[] = [];
-  const walk = (ns: CommandNode[]) => ns.forEach((n) => { out.push(n); if (n.children) walk(n.children); });
+  const walk = (ns: CommandNode[]) =>
+    ns.forEach((n) => {
+      out.push(n);
+      if (n.children) walk(n.children);
+    });
   walk(nodes);
   return out;
 }

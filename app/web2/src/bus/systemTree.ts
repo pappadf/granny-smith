@@ -77,7 +77,12 @@ export async function loadSystemRoots(): Promise<SystemTreeNode[]> {
     const cat = await gsEval(`${name}.meta.category`);
     if (cat === 'internal') continue; // never show internal nodes
     const label = await gsEval(`${name}.meta.label`);
-    out.push({ id: name, label: asString(label, name), icon: iconFor(name), group: groupFor(name) });
+    out.push({
+      id: name,
+      label: asString(label, name),
+      icon: iconFor(name),
+      group: groupFor(name),
+    });
   }
   // machine first, network last, meta in the middle (stable within group).
   const rank = (g?: string) => (g === 'machine' ? 0 : g === 'network' ? 2 : 1);
@@ -90,7 +95,7 @@ export async function loadSystemRoots(): Promise<SystemTreeNode[]> {
 // never shown; advanced members appear only when `showAdvanced` is on.
 export async function loadSystemChildren(
   path: readonly string[],
-  showAdvanced: boolean
+  showAdvanced: boolean,
 ): Promise<SystemTreeNode[]> {
   if (!isModuleReady() || !path.length) return [];
   const target = path[path.length - 1];
@@ -111,7 +116,12 @@ export async function loadSystemChildren(
       if (!visible(cat)) continue;
       const label = await gsEval(`${target}.meta.member_label`, [name]);
       const v = await gsEval(`${target}.${name}`);
-      out.push({ id: `${target}.${name}`, label: asString(label, name), desc: formatValue(v), leaf: true });
+      out.push({
+        id: `${target}.${name}`,
+        label: asString(label, name),
+        desc: formatValue(v),
+        leaf: true,
+      });
     }
   }
 

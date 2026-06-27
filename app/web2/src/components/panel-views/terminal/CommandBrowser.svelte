@@ -15,13 +15,7 @@
     selectedKey?: string;
     onSelect?: (k: string) => void;
   }
-  let {
-    nodes,
-    depth = 0,
-    expandedState,
-    selectedKey = $bindable(''),
-    onSelect,
-  }: Props = $props();
+  let { nodes, depth = 0, expandedState, selectedKey = $bindable(''), onSelect }: Props = $props();
 
   const localExpanded: Record<string, boolean> = $state({});
   // svelte-ignore state_referenced_locally

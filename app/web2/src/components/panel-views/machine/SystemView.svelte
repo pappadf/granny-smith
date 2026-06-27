@@ -1,7 +1,12 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import Tree, { type TreeNode } from '@/components/common/Tree.svelte';
-  import { loadSystemRoots, loadSystemChildren, loadNodeMethods, type SystemTreeNode } from '@/bus/systemTree';
+  import {
+    loadSystemRoots,
+    loadSystemChildren,
+    loadNodeMethods,
+    type SystemTreeNode,
+  } from '@/bus/systemTree';
   import { gsEval } from '@/bus/emulator';
   import { machine } from '@/state/machine.svelte';
   import { pathKey } from '@/lib/treePath';
@@ -96,7 +101,10 @@
           }
           let args: unknown[] = [];
           if (info.nargs > 0) {
-            const raw = window.prompt(`${info.verb}\n${info.doc}\n\nArguments (space-separated):`, '');
+            const raw = window.prompt(
+              `${info.verb}\n${info.doc}\n\nArguments (space-separated):`,
+              '',
+            );
             if (raw === null) return;
             args = raw.length ? raw.split(/\s+/) : [];
           }
