@@ -38,6 +38,18 @@
 // Passive framebuffer VRAM at offset 0 (4 MB — covers 832×624 at 32 bpp).
 #define RADIUS24AC_VRAM_SIZE 0x00400000u // 4 MB
 
+// CPU-visible extent of the passive bank, and the 24-bit-mode framebuffer
+// alias.  In 24-bit Memory Manager mode the vrom driver reports the screen
+// base as slot+0x900000 (ScrnBase=$F9900000) and QuickDraw dereferences that
+// flag-tagged pointer literally, so the card mirrors its VRAM there — same as
+// the 8•24.  The visible extent is sized so the alias ends exactly at the
+// first register page (0x900000 + 0x380000 = 0xC80000 = the CLUT block) and
+// therefore never shadows a card register.  The bytes above it
+// (RADIUS24AC_VRAM_VISIBLE .. the engine alias) are served by the operand
+// region's passive fall-through, so the whole 4 MB bank stays addressable.
+#define RADIUS24AC_VRAM_VISIBLE    0x00380000u // host-mapped + aliased passive bank
+#define RADIUS24AC_FB_ALIAS_OFFSET 0x00900000u // 24-bit-mode framebuffer mirror
+
 // The engine's transforming alias of the passive bank, 4 MB higher.  A
 // write to (passiveAddr + this) is interpreted by the engine per the
 // latched CONTROL mode (fill / copy / ROP).

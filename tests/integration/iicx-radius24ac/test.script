@@ -28,9 +28,10 @@ machine.nubus.video_card = "radius_24ac"
 machine.boot "iicx" 8192
 assert ${machine.id == "iicx"}                                   "machine.id != iicx"
 
-# Card present + engine status: STATUS[2:0]=depth code 3 (8 bpp default),
-# STATUS[3]=class bit (large-VRAM) → low nibble 0x0B.  CONFIG[0]=variant.
-assert ${(machine.memory.peek.b(0xF9D00402) & 0x0F) == 0x0B}     "STATUS low nibble != 0x0B (card absent / wrong depth)"
+# Card present + engine status: STATUS[2:0]=depth code 0 (1 bpp default —
+# the sensed monitor comes up at 1 bpp), STATUS[3]=class bit (large-VRAM) →
+# low nibble 0x08.  CONFIG[0]=variant.
+assert ${(machine.memory.peek.b(0xF9D00402) & 0x0F) == 0x08}     "STATUS low nibble != 0x08 (card absent / wrong depth)"
 assert ${machine.memory.peek.b(0xF9D40402) == 0x01}             "CONFIG (geometry variant) != 0x01"
 
 # --- Fill: load a 4-byte pattern operand, commit, then run-length fill ---
@@ -65,21 +66,30 @@ assert ${machine.memory.peek.l(0xF9000204) == 0x55667788}        "copy: long 1"
 assert ${machine.memory.peek.l(0xF9400200) == 0x11223344}        "active-bank alias read != passive VRAM"
 
 # =====================================================================
-# Part B — Phase-1 boot smoke: Slot Manager finds the card and the vrom's
-# PrimaryInit configures it.  We do NOT screenshot-match a desktop yet —
-# the standard video driver's GDevice setup needs further monitor-sense /
-# sResource RE (proposal §6).  Asserting that PrimaryInit drove the card
-# to 640×480 / 1 bpp is a real, deterministic regression guard that the
-# card is discovered and its driver runs.
+# Part B — Phase-1 boot to the Finder desktop.  Cold-boot System 7.0.1 on
+# the IIcx with the radius_24ac card; the vrom's PrimaryInit senses the
+# monitor (sRsrc id $40 = 1152×870), passes its board self-test (so the
+# DRVR Open succeeds), and the OS builds a real GDevice whose framebuffer is
+# the slot+0x900000 24-bit-mode alias.  The Finder paints its menu bar, the
+# boot floppy ("Disk Tool"), and the Trash; we match that frame pixel-exact.
+#
+# Boot budget: 50M (past the Universal-ROM wait-routine entry) + the $017A
+# Cmd-Shift-Power poke that short-circuits boot-drive discovery + 70M to land
+# in the stable Finder window.  (Same mechanics as iicx-video-modes.)
 # =====================================================================
 machine.nubus.video_card = "radius_24ac"
 machine.boot "iicx" 8192
 machine.rom.reload
 machine.floppy.drive[0].insert "../../data/systems/System_7_0_1.image"
 scheduler.run 50000000
-assert ${machine.screen.width == 640}                            "boot: screen width != 640"
-assert ${machine.screen.height == 480}                           "boot: screen height != 480"
+machine.memory.poke.w 0x017A 0x8805
+scheduler.run 1500000
+machine.memory.poke.w 0x017A 0
+scheduler.run 70000000
+assert ${machine.screen.width == 1152}                           "boot: screen width != 1152"
+assert ${machine.screen.height == 870}                           "boot: screen height != 870"
 # PrimaryInit latched 1 bpp into the MODE register (depth bits 7-5 == 0).
 assert ${(machine.memory.peek.b(0xF9D80001) & 0xE0) == 0x00}     "boot: PrimaryInit did not set the MODE depth latch"
+machine.screen.match finder-1152x870-1bpp.png
 
 quit

@@ -308,12 +308,13 @@ static uint32_t reg_read(radius24ac_priv_t *p, uint32_t off, unsigned width) {
     default:
         break;
     }
-    // Top-of-bank carve-out [operand aperture .. active alias): the VRAM host
-    // region stops just below the operand aperture (so the aperture page is a
-    // pure device region, not shadowed by the MMU VRAM slot).  Every byte here
-    // other than the operand longword is still plain passive VRAM, so serve it
-    // from p->vram — otherwise this range would be an unmapped hole.
-    if (off >= RADIUS24AC_OPERAND_APERTURE && off < RADIUS24AC_ENGINE_ALIAS_OFFSET) {
+    // Top-of-bank carve-out [VRAM_VISIBLE .. active alias): the VRAM host
+    // region stops at RADIUS24AC_VRAM_VISIBLE (so the framebuffer alias clears
+    // the register pages and the operand aperture isn't shadowed by the MMU
+    // VRAM slot).  Every byte here other than the operand longword is still
+    // plain passive VRAM, so serve it from p->vram — otherwise this range
+    // would be an unmapped hole.
+    if (off >= RADIUS24AC_VRAM_VISIBLE && off < RADIUS24AC_ENGINE_ALIAS_OFFSET) {
         if (width == 4 && off + 4 <= RADIUS24AC_VRAM_SIZE)
             return LOAD_BE32(p->vram + off);
         if (off < RADIUS24AC_VRAM_SIZE)
@@ -395,10 +396,10 @@ static void reg_write(radius24ac_priv_t *p, uint32_t off, uint32_t val, unsigned
         LOG(3, "CRTC[$%06x] = $%02x (accept-and-log)", off, (uint8_t)val);
         return;
     }
-    // Top-of-bank carve-out [operand aperture .. active alias): the operand
+    // Top-of-bank carve-out [VRAM_VISIBLE .. active alias): the operand
     // longword is intercepted above; every other byte is plain passive VRAM
-    // (the VRAM host region stops below the aperture — see reg_read).
-    if (off >= RADIUS24AC_OPERAND_APERTURE && off < RADIUS24AC_ENGINE_ALIAS_OFFSET) {
+    // (the VRAM host region stops at RADIUS24AC_VRAM_VISIBLE — see reg_read).
+    if (off >= RADIUS24AC_VRAM_VISIBLE && off < RADIUS24AC_ENGINE_ALIAS_OFFSET) {
         if (width == 4 && off + 4 <= RADIUS24AC_VRAM_SIZE)
             STORE_BE32(p->vram + off, val);
         else if (off < RADIUS24AC_VRAM_SIZE)
@@ -516,7 +517,15 @@ static int card_init(nubus_card_t *card, config_t *cfg, checkpoint_t *cp) {
 
     // Phase-1 starting state: 8 bpp, 640×480, framebuffer at VRAM offset 0.
     // The vrom's video driver re-programs depth/CLUT/timing at boot.
-    p->vidctl = RADIUS24AC_VIDCTL_VBL_MASK; // VBL IRQ starts masked
+    //
+    // VIDCTL power-on default: low 3 bits = 2.  PrimaryInit's monitor-sense
+    // path reads VIDCTL ($D00403) at vrom chip 0x176 and, if its low 3 bits
+    // are NOT 2, forces the monitor id to the "$47 standard-monitor" marker —
+    // which makes the board self-test (vrom 0x3A2) get skipped, leaving
+    // BOARDCFG[0]=0, which makes the driver's Open routine return openErr(-23)
+    // (vrom 0x1AC6).  Seeding low bits = 2 here lets the sensed monitor stand,
+    // the self-test run, and the driver open.  (Bit 7 = VBL IRQ masked.)
+    p->vidctl = RADIUS24AC_VIDCTL_VBL_MASK | 0x02u;
     p->vbl_enabled = false;
     p->mode_reg = 0xA0u; // 8 bpp depth code in bits 7-5
     p->sense_raw = 0xE0u; // monitor-sense readback (primary 0 → default mode)
@@ -525,14 +534,19 @@ static int card_init(nubus_card_t *card, config_t *cfg, checkpoint_t *cp) {
     // we present (hardware spec §3/§5).
     p->engine_enabled = true;
     p->engine_mode = RADIUS24AC_MODE_COPY;
-    p->status_depth_code = depth_code_for_format(PIXEL_8BPP);
+    p->status_depth_code = depth_code_for_format(PIXEL_1BPP_MSB);
     p->status_class_bit = true; // large-VRAM organisation
     p->config_variant_bit = true; // large-VRAM geometry variant
 
-    p->display.width = 640;
-    p->display.height = 480;
-    p->display.format = PIXEL_8BPP;
-    recompute_stride(p); // 640 bytes/row at 8 bpp
+    // The monitor the vrom driver senses by default (sense_raw → primary 0 →
+    // sRsrc id $40) is a 1152×870 display, and PrimaryInit brings it up at
+    // 1 bpp.  Present that geometry; cscSetMode (→ apply_mode_depth) re-derives
+    // the pixel format and stride as the OS changes depth.  The framebuffer
+    // sits at VRAM offset 0 (ScrnBase = slot+0x900000 → the alias → VRAM[0]).
+    p->display.width = 1152;
+    p->display.height = 870;
+    p->display.format = PIXEL_1BPP_MSB;
+    recompute_stride(p); // 144 bytes/row at 1 bpp
     p->display.bits = p->vram;
     p->display.clut = p->clut;
     p->display.clut_len = 256;
@@ -554,24 +568,30 @@ static int card_init(nubus_card_t *card, config_t *cfg, checkpoint_t *cp) {
     card->priv = p;
 
     // Host-backed regions: VRAM (writable), declaration ROM (read-only).
-    // The board-config scratch at 0xFFFD8 is left inside the VRAM aperture
-    // (it sits above any framebuffer) and reads back what the driver wrote —
-    // the simplest faithful model for a scratch block (see RE doc).
     //
-    // The VRAM host region stops just below the operand aperture
-    // (0x3FE000): the MMU models VRAM as one contiguous range whose
-    // translation is re-filled on every _SwapMMUMode TLB flush (PrimaryInit
-    // does thousands), which would otherwise SHADOW the operand-aperture
-    // device page that lives inside the passive bank.  The JMFB sidesteps
-    // this by putting its registers above its VRAM; the 24AC's aperture is
-    // genuinely inside the bank, so we carve the bank off at the aperture.
-    // The framebuffer (≤ a few MB) sits well below 0x3FE000, so nothing
-    // visible is lost; the engine still reaches the full p->vram buffer
-    // directly through the active-bank alias.
-    memory_map_host_region(cfg->mem_map, "radius24ac_vram", p->vram, p->slot_base, RADIUS24AC_OPERAND_APERTURE,
+    // The VRAM host region covers only RADIUS24AC_VRAM_VISIBLE (the
+    // framebuffer area).  Two reasons it stops short of the full 4 MB:
+    //   * the MMU models VRAM as one contiguous range whose translation is
+    //     re-filled on every _SwapMMUMode TLB flush (PrimaryInit does
+    //     thousands), which would SHADOW the operand-aperture device page if
+    //     that page were inside the host range (the JMFB sidesteps this by
+    //     putting its registers above its VRAM; the 24AC's aperture is inside
+    //     the bank); and
+    //   * the 24-bit framebuffer alias below mirrors this same extent at
+    //     slot+0x900000, and it must end at/below the first register page
+    //     (0xC80000) so it never shadows a card register.
+    // The board-config scratch at 0xFFFD8 and the operand aperture both sit
+    // above RADIUS24AC_VRAM_VISIBLE and are served by the operand device
+    // region's passive fall-through (reg_read/reg_write), so the whole bank
+    // remains addressable.
+    memory_map_host_region(cfg->mem_map, "radius24ac_vram", p->vram, p->slot_base, RADIUS24AC_VRAM_VISIBLE,
                            /*writable*/ true);
     memory_map_host_region(cfg->mem_map, "radius24ac_declrom", p->vrom, p->slot_base + RADIUS24AC_DECLROM_BUS_OFFSET,
                            RADIUS24AC_DECLROM_BUS_SIZE, /*writable*/ false);
+    // 24-bit Memory Manager mode framebuffer alias (mirrors VRAM at
+    // slot+0x900000 = ScrnBase).  Same mechanism the 8•24 uses.  Sized by the
+    // host region above (RADIUS24AC_VRAM_VISIBLE), so it ends at 0xC80000.
+    memory_map_host_region_alias(cfg->mem_map, p->slot_base + RADIUS24AC_FB_ALIAS_OFFSET, p->slot_base);
 
     // Register/engine regions share the one dispatcher; each region's
     // reg_ctx carries its slot-relative base so reg_read/reg_write see full
@@ -581,7 +601,7 @@ static int card_init(nubus_card_t *card, config_t *cfg, checkpoint_t *cp) {
     p->ctx_d00 = (reg_ctx_t){.p = p, .region_off = RADIUS24AC_D00_PAGE};
     p->ctx_d40 = (reg_ctx_t){.p = p, .region_off = RADIUS24AC_D40_PAGE};
     p->ctx_d80 = (reg_ctx_t){.p = p, .region_off = RADIUS24AC_D80_PAGE};
-    p->ctx_operand = (reg_ctx_t){.p = p, .region_off = RADIUS24AC_OPERAND_APERTURE};
+    p->ctx_operand = (reg_ctx_t){.p = p, .region_off = RADIUS24AC_VRAM_VISIBLE};
     p->ctx_active = (reg_ctx_t){.p = p, .region_off = RADIUS24AC_ENGINE_ALIAS_OFFSET};
 
     memory_map_add(cfg->mem_map, p->slot_base + RADIUS24AC_CLUT_PAGE, MEM_PAGE_SIZE, "radius24ac_clut",
@@ -592,13 +612,14 @@ static int card_init(nubus_card_t *card, config_t *cfg, checkpoint_t *cp) {
                    &s_radius24ac_mem_iface, &p->ctx_d40);
     memory_map_add(cfg->mem_map, p->slot_base + RADIUS24AC_D80_PAGE, MEM_PAGE_SIZE, "radius24ac_d80",
                    &s_radius24ac_mem_iface, &p->ctx_d80);
-    // Operand aperture + the carved-off top of the passive bank
-    // [0x3FE000, 0x400000): the VRAM host region stops at the aperture, so
-    // this device region both intercepts the operand longword and serves the
-    // remaining passive-VRAM bytes (reg_read/reg_write fall through to
-    // p->vram), leaving no unmapped hole below the active alias.
-    memory_map_add(cfg->mem_map, p->slot_base + RADIUS24AC_OPERAND_APERTURE,
-                   RADIUS24AC_ENGINE_ALIAS_OFFSET - RADIUS24AC_OPERAND_APERTURE, "radius24ac_operand",
+    // Carved-off top of the passive bank [RADIUS24AC_VRAM_VISIBLE,
+    // 0x400000): the VRAM host region stops at RADIUS24AC_VRAM_VISIBLE so the
+    // framebuffer alias clears the register pages.  This device region covers
+    // the rest of the bank up to the active alias — it intercepts the operand
+    // longword (0x3FE000) and serves every other byte as plain passive VRAM
+    // (reg_read/reg_write fall through to p->vram), leaving no unmapped hole.
+    memory_map_add(cfg->mem_map, p->slot_base + RADIUS24AC_VRAM_VISIBLE,
+                   RADIUS24AC_ENGINE_ALIAS_OFFSET - RADIUS24AC_VRAM_VISIBLE, "radius24ac_operand",
                    &s_radius24ac_mem_iface, &p->ctx_operand);
     // Active-bank alias: the engine-transforming mirror of the passive bank
     // (covers the operand commit window at +0x400000 too).
@@ -665,19 +686,20 @@ static nubus_card_t *factory(int slot, config_t *cfg, checkpoint_t *cp) {
     return card;
 }
 
-// Advertised modes (from the vrom mode strings).  Sense codes / sister IDs
-// are not yet pinned to specific pin patterns (proposal §6 / RE doc) — start
-// with the default 640×480 mode to reach a desktop, then fill the table
-// from observation.
+// Advertised modes.  The vrom's default-sensed monitor (sRsrc id $40) is a
+// 1152×870 "two-page" display, which is what the card boots to; the vrom's
+// mode strings additionally name 640×480 / 800×600 / 832×624 multisync modes
+// (reachable via the extended-sense codes 0x6B/0x6C/0x6D — see the RE doc).
+// Only the default is modelled so far; the rest await the stateful ext-sense.
 static const int radius_24ac_depths[] = {1, 2, 4, 8, 0};
 static const nubus_monitor_t radius_24ac_monitors[] = {
-    {.id = "rgb_640x480",
-     .name = "640 × 480 (60 Hz)",
-     .width = 640,
-     .height = 480,
+    {.id = "rgb_1152x870",
+     .name = "1152 × 870 (75 Hz)",
+     .width = 1152,
+     .height = 870,
      .depths = radius_24ac_depths,
      .sense_code = 0x0,
-     .srsrc_sister = 0x00},
+     .srsrc_sister = 0x40},
     {0},
 };
 
