@@ -67,4 +67,32 @@ void declrom_install(nubus_card_t *card, const declrom_builder_t *b);
 // builder on miss.  v1 stub — body lands in step 6.
 uint8_t *declrom_load(const char *path, size_t expected_size);
 
+// Expand a chip image whose byteLanes value is `$78` (lane 3 only — the
+// layout every Apple/Radius 32 KB display-card declaration ROM uses) into
+// a 4×-larger bus-space buffer.  Each chip byte at offset i lands at bus
+// offset i*4 + 3 (lane 3 of longword i); lanes 0..2 stay zero.  This is
+// what the Slot Manager expects when it reads the format block at the high
+// end of slot space.  `bus_buf` must hold at least chip_size*4 bytes.
+void declrom_expand_lane3(const uint8_t *chip, size_t chip_size, uint8_t *bus_buf);
+
+// Lay a freshly-read chip image into a bus-space buffer according to its
+// byteLanes byte (the chip's last byte): `$78` → lane-3 sparse expand
+// (chip occupies bus_size = chip_size*4); `$0F` → flat copy into the top
+// chip_size bytes (all four lanes carry data, e.g. a synthesised ROM).
+// Returns true on a recognised layout, false otherwise (caller logs).
+bool declrom_layout_chip(const uint8_t *chip, size_t chip_size, uint8_t *bus_buf, size_t bus_size, uint8_t byte_lanes);
+
+// Find a display-card declaration-ROM chip image named `filename`, read
+// its chip_size bytes, and lay it out into `bus_buf` (bus_size bytes) per
+// its byteLanes byte (see declrom_layout_chip).  Searches, in order:
+//   1. the directory of the pending CPU ROM (rom_pending_path()), which is
+//      where the integration-test harness drops sibling vrom files;
+//   2. `/opfs/images/vrom/<filename>` (browser OPFS mount);
+//   3. `tests/data/roms/<filename>`;
+//   4. `<filename>` (current working directory).
+// On success returns true and stores a freshly-strdup'd copy of the path it
+// loaded from in *out_path (caller frees); on miss returns false and leaves
+// *out_path NULL.  Shared by every real-ROM display card (JMFB, 24AC).
+bool declrom_load_vrom(const char *filename, size_t chip_size, uint8_t *bus_buf, size_t bus_size, char **out_path);
+
 #endif // NUBUS_DECLROM_H

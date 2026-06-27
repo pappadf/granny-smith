@@ -29,7 +29,6 @@
 #include "log.h"
 #include "memory.h"
 #include "nubus.h"
-#include "rom.h"
 #include "rtc.h"
 #include "system.h"
 #include "system_config.h"
@@ -641,102 +640,18 @@ static memory_interface_t s_jmfb_mem_iface = {
 
 // === Card vtable ============================================================
 
-// Try the explicit pending path first, then a small set of well-known
-// search paths.  Returns true on success.  `buf` must hold at least
-// JMFB_DECLROM_CHIP_SIZE bytes; the loader reads the raw chip data
-// (32 KB).  The byte-lane expansion happens later in load_vrom().
-static bool try_load_vrom(const char *path, uint8_t *buf) {
-    FILE *f = fopen(path, "rb");
-    if (!f)
-        return false;
-    size_t n = fread(buf, 1, JMFB_DECLROM_CHIP_SIZE, f);
-    fclose(f);
-    return n == JMFB_DECLROM_CHIP_SIZE;
-}
-
-// Expand a 32 KB chip image with byteLanes = $78 (lane 3 only) into a
-// 128 KB bus-space buffer.  Each chip byte at offset i ends up at bus
-// offset i*4 + 3 (lane 3 of longword i); lanes 0..2 stay zero.  This is
-// what the OS Slot Manager expects when it reads the format block at
-// the high end of slot space.
-static void expand_lane3(const uint8_t *chip, size_t chip_size, uint8_t *bus_buf) {
-    for (size_t i = 0; i < chip_size; i++)
-        bus_buf[i * 4 + 3] = chip[i];
-}
-
-// Try the well-known search paths and the directory of the loaded ROM
-// (which is what the integration test harness sets via the absolute
-// `rom=...` arg, so the relative-path entries below don't resolve once
-// the harness has cd'd into the per-test directory).  `rom_path` is the
-// absolute ROM path the user passed on the command line; we look for
-// `Apple-341-0868.vrom` next to it.  Returns true on success.
-static bool try_load_vrom_in_rom_dir(uint8_t *chip, char **out_path) {
-    const char *rom_path = rom_pending_path();
-    if (!rom_path)
-        return false;
-    const char *slash = strrchr(rom_path, '/');
-    if (!slash)
-        return false;
-    size_t dir_len = (size_t)(slash - rom_path + 1);
-    char path[1024];
-    if (dir_len + sizeof("Apple-341-0868.vrom") > sizeof(path))
-        return false;
-    memcpy(path, rom_path, dir_len);
-    memcpy(path + dir_len, "Apple-341-0868.vrom", sizeof("Apple-341-0868.vrom"));
-    if (try_load_vrom(path, chip)) {
-        *out_path = strdup(path);
-        return true;
-    }
-    return false;
-}
-
-// Load Apple-341-0868.vrom (32 KB chip image), validate its byteLanes
-// byte, and produce the bus-space layout into p->vrom (which is sized
-// JMFB_DECLROM_BUS_SIZE = 128 KB).  Returns true on success.
+// Load Apple-341-0868.vrom (32 KB chip image) through the shared
+// declrom loader, which searches the standard vrom paths + the ROM
+// directory, validates the byteLanes byte, and lays the chip out into
+// p->vrom (sized JMFB_DECLROM_BUS_SIZE = 128 KB).  Returns true on
+// success.
 static bool load_vrom(jmfb_priv_t *p) {
-    static const char *search_paths[] = {
-        "/opfs/images/vrom/Apple-341-0868.vrom",
-        "tests/data/roms/Apple-341-0868.vrom",
-        "Apple-341-0868.vrom",
-        NULL,
-    };
-    uint8_t *chip = calloc(1, JMFB_DECLROM_CHIP_SIZE);
-    if (!chip)
+    char *path = NULL;
+    if (!declrom_load_vrom("Apple-341-0868.vrom", JMFB_DECLROM_CHIP_SIZE, p->vrom, JMFB_DECLROM_BUS_SIZE, &path))
         return false;
-    char *rom_dir_path = NULL;
-    bool found = try_load_vrom_in_rom_dir(chip, &rom_dir_path);
-    for (const char **q = search_paths; !found && *q; q++) {
-        if (try_load_vrom(*q, chip)) {
-            rom_dir_path = strdup(*q);
-            found = true;
-        }
-    }
-    if (!found) {
-        free(chip);
-        free(rom_dir_path);
-        return false;
-    }
-    // The chip's last byte is the byteLanes value (per spec, the
-    // byteLanes byte sits at the highest address of the active lanes —
-    // for lane-3-only that's the chip's last byte).
-    uint8_t byteLanes = chip[JMFB_DECLROM_CHIP_SIZE - 1];
-    if (byteLanes == 0x78u) {
-        // Standard 8·24 layout — sparse-expand.
-        expand_lane3(chip, JMFB_DECLROM_CHIP_SIZE, p->vrom);
-    } else if (byteLanes == 0x0Fu) {
-        // 4-lane layout (e.g. a synth ROM) — flat copy into the last
-        // 32 KB of the bus buffer; lanes 0..3 all carry data.
-        memcpy(p->vrom + JMFB_DECLROM_BUS_SIZE - JMFB_DECLROM_CHIP_SIZE, chip, JMFB_DECLROM_CHIP_SIZE);
-    } else {
-        LOG(0, "Apple-341-0868.vrom: unsupported byteLanes $%02x (only $78 and $0F handled)", byteLanes);
-        free(chip);
-        free(rom_dir_path);
-        return false;
-    }
     free(p->vrom_path);
-    p->vrom_path = rom_dir_path;
+    p->vrom_path = path;
     p->vrom_size = JMFB_DECLROM_BUS_SIZE;
-    free(chip);
     return true;
 }
 

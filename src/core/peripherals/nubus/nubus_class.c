@@ -11,11 +11,13 @@
 
 #include "card.h"
 #include "jmfb.h"
+#include "nubus.h"
 #include "object.h"
 #include "value.h"
 
 #include <stddef.h>
 #include <stdlib.h>
+#include <string.h>
 
 // `nubus.cards()` — list every registered card-driver id.  Returns
 // V_LIST<V_STRING>.  Used by the config dialog in step 5 to populate
@@ -110,11 +112,51 @@ static value_t nubus_attr_video_mode_set(struct object *self, const member_t *m,
     return val_none();
 }
 
+// `nubus.video_card` — get/set the card id to install into the next
+// machine.boot's VIDEO slot.  Writes stage a pending pick that nubus_init
+// honours iff it is one of the slot's available_cards (else it falls back
+// to the slot default).  Reads return the pending id, or "" when none is
+// staged.  Settable from integration scripts via
+// `machine.nubus.video_card = "radius_24ac"` before machine.boot.  The id
+// is validated against the registered card drivers so a typo is caught at
+// set time rather than silently falling back at boot.
+static value_t nubus_attr_video_card_get(struct object *self, const member_t *m) {
+    (void)self;
+    (void)m;
+    const char *id = nubus_pending_video_card_get();
+    return val_str(id ? id : "");
+}
+
+static value_t nubus_attr_video_card_set(struct object *self, const member_t *m, value_t in) {
+    (void)self;
+    (void)m;
+    if (in.kind != V_STRING) {
+        value_free(&in);
+        return val_err("nubus.video_card: expected card-id string (e.g. \"radius_24ac\")");
+    }
+    const char *id = in.s ? in.s : "";
+    // Empty clears the pending pick; a non-empty id must name a registered
+    // card driver (nubus.cards() lists them).
+    if (*id && !nubus_card_find(id)) {
+        value_t err = val_err("nubus.video_card: unknown card id '%s' (see nubus.cards())", id);
+        value_free(&in);
+        return err;
+    }
+    nubus_pending_video_card_set(id);
+    value_free(&in);
+    return val_none();
+}
+
 static const member_t nubus_members[] = {
     {.kind = M_METHOD,
      .name = "cards",
      .doc = "List the ids of all registered NuBus card drivers",
      .method = {.args = NULL, .nargs = 0, .result = V_LIST, .fn = nubus_method_cards}},
+    {.kind = M_ATTR,
+     .name = "video_card",
+     .doc = "Pending video-slot card id for next machine.boot (e.g. \"radius_24ac\")",
+     .flags = 0,
+     .attr = {.type = V_STRING, .get = nubus_attr_video_card_get, .set = nubus_attr_video_card_set}},
     {.kind = M_ATTR,
      .name = "video_sense",
      .doc = "Pending JMFB monitor sense (0..6, 7 = no connect)",

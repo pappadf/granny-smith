@@ -66,6 +66,15 @@ static inline uint32_t nubus_super_slot_base(int slot) {
 nubus_bus_t *nubus_init(config_t *cfg, const nubus_slot_decl_t *slots, checkpoint_t *cp);
 void nubus_delete(nubus_bus_t *bus);
 
+// Pending user-selected video card id for the next machine.boot's VIDEO
+// slot.  Set via `machine.nubus.video_card = "radius_24ac"` before boot;
+// nubus_init honours it iff it appears in that slot's available_cards
+// list (else it logs and falls back to the slot's default_card).  Cleared
+// after consumption so a stale pick doesn't leak into the next boot.
+// Passing NULL or "" clears the pending selection.
+void nubus_pending_video_card_set(const char *id);
+const char *nubus_pending_video_card_get(void);
+
 // Per-slot IRQ assertion.  The bus aggregates and drives VIA2 PA[0..5]
 // (active-low) plus pulses CA1 on the umbrella transition.
 void nubus_assert_irq(nubus_card_t *card);

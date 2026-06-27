@@ -1,0 +1,85 @@
+# Integration test: IIcx + Radius "Apple Macintosh 24AC" NuBus display card
+#
+# See proposal-nubus-card-radius-24ac.md.  The card is a framebuffer +
+# CLUT + VBL display card (Phase 1) plus a hardware QuickDraw fill/raster
+# accelerator (Phase 2).  This test exercises both halves on the IIcx with
+# the genuine display-card-24ac.vrom.
+#
+# Slot-space layout (slot $9 → base 0xF9000000), from the dossier hardware
+# spec + the vrom-driver RE:
+#   0xF9000000          passive framebuffer VRAM (flat aperture)
+#   0xF93FE000          engine operand aperture (latched 32-bit operand)
+#   0xF9400000..0xF97FFFFF  engine active-bank alias (transforming writes)
+#   0xF97FE000          operand-commit window (active alias of the aperture)
+#   0xF9D00402 / 0xF9D40402 / 0xF9D40403  STATUS / CONFIG / CONTROL
+#   0xF9D80001          MODE (bits 7-5 = pixel-depth code) — set by PrimaryInit
+#   0xF9FE0000          declaration ROM (128 KB, byte-lane-3 expanded)
+
+# =====================================================================
+# Part A — acceleration engine register/aperture decode (no OS boot).
+#
+# The debug memory.poke/peek path dispatches to device callbacks, so we
+# can drive the engine exactly as the Radius cdev would and check the
+# resulting VRAM against hand-computed values — the driver's own software
+# fallback is the oracle (proposal §3.5); here we verify the decode
+# directly.  A fresh machine.boot leaves the card at its 8 bpp default.
+# =====================================================================
+machine.nubus.video_card = "radius_24ac"
+machine.boot "iicx" 8192
+assert ${machine.id == "iicx"}                                   "machine.id != iicx"
+
+# Card present + engine status: STATUS[2:0]=depth code 3 (8 bpp default),
+# STATUS[3]=class bit (large-VRAM) → low nibble 0x0B.  CONFIG[0]=variant.
+assert ${(machine.memory.peek.b(0xF9D00402) & 0x0F) == 0x0B}     "STATUS low nibble != 0x0B (card absent / wrong depth)"
+assert ${machine.memory.peek.b(0xF9D40402) == 0x01}             "CONFIG (geometry variant) != 0x01"
+
+# --- Fill: load a 4-byte pattern operand, commit, then run-length fill ---
+# CONTROL=$01 (fill); operand=$AABBCCDD; commit ($4 written twice through
+# the aperture's +0x400000 alias); then write the run length (16) through
+# the active bank at dest 0 → 16 bytes filled with the operand pattern.
+machine.memory.poke.b 0xF9D40403 0x01
+machine.memory.poke.l 0xF93FE000 0xAABBCCDD
+machine.memory.poke.l 0xF97FE000 0x04
+machine.memory.poke.l 0xF97FE000 0x04
+assert ${machine.memory.peek.l(0xF93FE000) == 0xAABBCCDD}        "operand aperture read-back mismatch"
+machine.memory.poke.l 0xF9400000 0x10
+assert ${machine.memory.peek.l(0xF9000000) == 0xAABBCCDD}        "fill: word 0 not operand pattern"
+assert ${machine.memory.peek.l(0xF900000C) == 0xAABBCCDD}        "fill: word 3 not operand pattern"
+assert ${machine.memory.peek.l(0xF9000010) == 0x00000000}        "fill: overran the 16-byte run"
+
+# --- Solid fill at a non-zero destination (operand = colour ×4) ---
+machine.memory.poke.l 0xF93FE000 0xCCCCCCCC
+machine.memory.poke.l 0xF97FE000 0x04
+machine.memory.poke.l 0xF9401000 0x08
+assert ${machine.memory.peek.l(0xF9001000) == 0xCCCCCCCC}        "solid fill: word 0"
+assert ${machine.memory.peek.l(0xF9001004) == 0xCCCCCCCC}        "solid fill: word 1"
+assert ${machine.memory.peek.l(0xF9001008) == 0x00000000}        "solid fill: overran the 8-byte run"
+
+# --- Block copy: CONTROL=$7F streams source longwords straight through ---
+machine.memory.poke.b 0xF9D40403 0x7F
+machine.memory.poke.l 0xF9400200 0x11223344
+machine.memory.poke.l 0xF9400204 0x55667788
+assert ${machine.memory.peek.l(0xF9000200) == 0x11223344}        "copy: long 0"
+assert ${machine.memory.peek.l(0xF9000204) == 0x55667788}        "copy: long 1"
+# Reading the active-bank alias returns the underlying passive VRAM.
+assert ${machine.memory.peek.l(0xF9400200) == 0x11223344}        "active-bank alias read != passive VRAM"
+
+# =====================================================================
+# Part B — Phase-1 boot smoke: Slot Manager finds the card and the vrom's
+# PrimaryInit configures it.  We do NOT screenshot-match a desktop yet —
+# the standard video driver's GDevice setup needs further monitor-sense /
+# sResource RE (proposal §6).  Asserting that PrimaryInit drove the card
+# to 640×480 / 1 bpp is a real, deterministic regression guard that the
+# card is discovered and its driver runs.
+# =====================================================================
+machine.nubus.video_card = "radius_24ac"
+machine.boot "iicx" 8192
+machine.rom.reload
+machine.floppy.drive[0].insert "../../data/systems/System_7_0_1.image"
+scheduler.run 50000000
+assert ${machine.screen.width == 640}                            "boot: screen width != 640"
+assert ${machine.screen.height == 480}                           "boot: screen height != 480"
+# PrimaryInit latched 1 bpp into the MODE register (depth bits 7-5 == 0).
+assert ${(machine.memory.peek.b(0xF9D80001) & 0xE0) == 0x00}     "boot: PrimaryInit did not set the MODE depth latch"
+
+quit
