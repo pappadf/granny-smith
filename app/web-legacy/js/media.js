@@ -132,7 +132,7 @@ export async function probeRom(filePath) {
 // "is a floppy".
 export async function probeFloppy(filePath) {
   try {
-    const density = await window.gsEval('floppy.identify', [filePath]);
+    const density = await window.gsEval('machine.floppy.identify', [filePath]);
     return typeof density === 'string' && density.length > 0;
   } catch {
     return false;

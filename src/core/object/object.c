@@ -38,12 +38,22 @@ struct object {
     const class_desc_t *cls;
     void *instance_data;
     const char *name;
+    const char *label; // optional display label (proposal §7.1); NULL = use name
+    int order; // ordering weight for the SYSTEM tree (proposal §7.4); default 0
+    int attach_seq; // monotonic attach sequence; the stable tiebreak for order
+    uint16_t category; // M_CAT_* visibility for attached nodes (proposal §7.2)
+    object_dtor_fn dtor; // optional destructor for instance_data (default NULL)
     struct object *parent;
     struct object *first_child;
     struct object *next_sibling;
     struct invalidator *invalidators; // weak-ref callbacks for held nodes
     struct object *meta_node; // lazily-created Meta node bound to this object (see meta.c)
 };
+
+// Monotonic counter handed out at each object_attach, giving attached
+// children a stable insertion order independent of the head-push storage.
+// Used as the tiebreak in object_each_attached_ordered.
+static int g_attach_seq = 0;
 
 struct object *object_get_meta(struct object *o) {
     return o ? o->meta_node : NULL;
@@ -116,9 +126,34 @@ void object_delete(struct object *o) {
     // cached meta_node cannot outlive its inspected target. The release
     // helper short-circuits when there is nothing cached.
     meta_node_release(o);
+    // Let the module release the C struct behind instance_data (and any
+    // unattached collection-item wrappers it owns) before the substrate
+    // frees the wrapper. Default NULL → no-op, so existing callers that
+    // free their own structs are unaffected.
+    if (o->dtor)
+        o->dtor(o);
     if (o->parent)
         object_detach(o);
     free(o);
+}
+
+void object_delete_tree(struct object *o) {
+    if (!o)
+        return;
+    // Post-order: tear down every owned (attached) child first, depth-first.
+    // Each recursive call detaches the child from `o`, so the loop drains
+    // first_child until none remain. Reference edges and indexed-collection
+    // items are callback-backed (never attached) and so are never visited.
+    while (o->first_child)
+        object_delete_tree(o->first_child);
+    // Now `o` has no owned children; tear `o` itself down via the shared path
+    // (fires invalidators, releases meta, runs the destructor, frees).
+    object_delete(o);
+}
+
+void object_set_destructor(struct object *o, object_dtor_fn dtor) {
+    if (o)
+        o->dtor = dtor;
 }
 
 void object_register_invalidator(struct object *o, node_invalidate_fn cb, void *ud) {
@@ -172,6 +207,9 @@ void object_attach(struct object *parent, struct object *child) {
     child->parent = parent;
     child->next_sibling = parent->first_child;
     parent->first_child = child;
+    // Stamp a monotonic sequence so ordered iteration has a stable tiebreak
+    // even though storage is head-push (LIFO).
+    child->attach_seq = ++g_attach_seq;
 }
 
 void object_detach(struct object *child) {
@@ -206,6 +244,75 @@ void object_each_attached(struct object *o, void (*fn)(struct object *parent, st
         return;
     for (struct object *c = o->first_child; c; c = c->next_sibling)
         fn(o, c, ud);
+}
+
+void object_set_label(struct object *o, const char *label) {
+    if (o)
+        o->label = label;
+}
+
+const char *object_label(struct object *o) {
+    if (!o)
+        return NULL;
+    return o->label ? o->label : o->name;
+}
+
+void object_set_order(struct object *o, int order) {
+    if (o)
+        o->order = order;
+}
+
+int object_order(struct object *o) {
+    return o ? o->order : 0;
+}
+
+void object_set_category(struct object *o, uint16_t category) {
+    if (o)
+        o->category = (uint16_t)(category & M_CAT_MASK);
+}
+
+uint16_t object_category(struct object *o) {
+    return o ? o->category : (uint16_t)M_CAT_BASIC;
+}
+
+// Visit attached children in ascending (order, attach_seq). Fan-out is
+// small (≤ tens), so a gather-then-insertion-sort into a fixed scratch
+// array is fine; we fall back to raw order if the count exceeds the
+// scratch capacity (no heap allocation on this path).
+void object_each_attached_ordered(struct object *o, void (*fn)(struct object *parent, struct object *child, void *ud),
+                                  void *ud) {
+    if (!o || !fn)
+        return;
+    enum { MAX_SORTED = 128 };
+    struct object *buf[MAX_SORTED];
+    size_t n = 0;
+    bool overflow = false;
+    for (struct object *c = o->first_child; c; c = c->next_sibling) {
+        if (n >= MAX_SORTED) {
+            overflow = true;
+            break;
+        }
+        buf[n++] = c;
+    }
+    if (overflow) {
+        // Degenerate fan-out: keep it correct (visit all) even if unsorted.
+        for (struct object *c = o->first_child; c; c = c->next_sibling)
+            fn(o, c, ud);
+        return;
+    }
+    // Stable insertion sort by (order, attach_seq).
+    for (size_t i = 1; i < n; i++) {
+        struct object *key = buf[i];
+        size_t j = i;
+        while (j > 0 && (buf[j - 1]->order > key->order ||
+                         (buf[j - 1]->order == key->order && buf[j - 1]->attach_seq > key->attach_seq))) {
+            buf[j] = buf[j - 1];
+            j--;
+        }
+        buf[j] = key;
+    }
+    for (size_t i = 0; i < n; i++)
+        fn(o, buf[i], ud);
 }
 
 const member_t *class_find_member(const class_desc_t *cls, const char *name) {

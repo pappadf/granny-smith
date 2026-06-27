@@ -170,33 +170,33 @@ static void register_alias_or_warn(const char *name, const char *path) {
 }
 
 static void register_cpu_aliases(void) {
-    register_alias_or_warn("pc", "cpu.pc");
-    register_alias_or_warn("sr", "cpu.sr");
-    register_alias_or_warn("ccr", "cpu.ccr");
-    register_alias_or_warn("ssp", "cpu.ssp");
-    register_alias_or_warn("usp", "cpu.usp");
-    register_alias_or_warn("msp", "cpu.msp");
-    register_alias_or_warn("vbr", "cpu.vbr");
-    register_alias_or_warn("sp", "cpu.sp");
+    register_alias_or_warn("pc", "machine.cpu.pc");
+    register_alias_or_warn("sr", "machine.cpu.sr");
+    register_alias_or_warn("ccr", "machine.cpu.ccr");
+    register_alias_or_warn("ssp", "machine.cpu.ssp");
+    register_alias_or_warn("usp", "machine.cpu.usp");
+    register_alias_or_warn("msp", "machine.cpu.msp");
+    register_alias_or_warn("vbr", "machine.cpu.vbr");
+    register_alias_or_warn("sp", "machine.cpu.sp");
     static const char *const dnames[] = {"d0", "d1", "d2", "d3", "d4", "d5", "d6", "d7"};
     static const char *const anames[] = {"a0", "a1", "a2", "a3", "a4", "a5", "a6", "a7"};
     for (int i = 0; i < 8; i++) {
-        char path[16];
-        snprintf(path, sizeof(path), "cpu.%s", dnames[i]);
+        char path[24];
+        snprintf(path, sizeof(path), "machine.cpu.%s", dnames[i]);
         register_alias_or_warn(dnames[i], path);
-        snprintf(path, sizeof(path), "cpu.%s", anames[i]);
+        snprintf(path, sizeof(path), "machine.cpu.%s", anames[i]);
         register_alias_or_warn(anames[i], path);
     }
 }
 
 static void register_fpu_aliases(void) {
-    register_alias_or_warn("fpcr", "cpu.fpu.fpcr");
-    register_alias_or_warn("fpsr", "cpu.fpu.fpsr");
-    register_alias_or_warn("fpiar", "cpu.fpu.fpiar");
+    register_alias_or_warn("fpcr", "machine.cpu.fpu.fpcr");
+    register_alias_or_warn("fpsr", "machine.cpu.fpu.fpsr");
+    register_alias_or_warn("fpiar", "machine.cpu.fpu.fpiar");
     static const char *const fpnames[] = {"fp0", "fp1", "fp2", "fp3", "fp4", "fp5", "fp6", "fp7"};
     for (int i = 0; i < 8; i++) {
-        char path[24];
-        snprintf(path, sizeof(path), "cpu.fpu.%s", fpnames[i]);
+        char path[32];
+        snprintf(path, sizeof(path), "machine.cpu.fpu.%s", fpnames[i]);
         register_alias_or_warn(fpnames[i], path);
     }
 }
@@ -235,7 +235,9 @@ extern cpu_t *cpu_init(int cpu_model, checkpoint_t *checkpoint) {
     // itself, on the fpu node it's the fpu_state_t* directly.
     cpu->cpu_object = object_new(&cpu_class, cpu, "cpu");
     if (cpu->cpu_object) {
-        object_attach(object_root(), cpu->cpu_object);
+        object_set_label(cpu->cpu_object, "CPU");
+        object_set_order(cpu->cpu_object, 10);
+        object_attach(machine_object(), cpu->cpu_object);
         if (cpu->fpu) {
             cpu->fpu_object = object_new(&fpu_class, cpu->fpu, "fpu");
             if (cpu->fpu_object)

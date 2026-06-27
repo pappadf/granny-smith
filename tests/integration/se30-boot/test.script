@@ -5,5 +5,5 @@
 scheduler.run 335000000
 
 # Verify the screen matches the floppy icon reference image
-screen.match floppy.png
+machine.screen.match floppy.png
 quit

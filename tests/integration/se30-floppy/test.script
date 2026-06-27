@@ -6,28 +6,28 @@
 # (poke $8805 into $017A, clear it after one inner-poll cycle).  See
 # tests/integration/iicx-video-modes/test.script for the mechanics.
 scheduler.run 40000000
-memory.poke.w 0x017A 0x8805
+machine.memory.poke.w 0x017A 0x8805
 scheduler.run 2000000
-memory.poke.w 0x017A 0
+machine.memory.poke.w 0x017A 0
 scheduler.run 700000000
 
 # Verify the screen matches the reference image
-screen.match finder.png
+machine.screen.match finder.png
 
-mouse.move 50 50
+machine.adb.mouse.move 50 50
 
 scheduler.run 5000000
 
-mouse.move 25 10
+machine.adb.mouse.move 25 10
 scheduler.run 2000000
-mouse.click true
+machine.adb.mouse.click true
 scheduler.run 4000000
-mouse.move 25 30
+machine.adb.mouse.move 25 30
 scheduler.run 2000000
-mouse.click false
+machine.adb.mouse.click false
 
 scheduler.run 45000000
 
-screen.match about.png
+machine.screen.match about.png
 
 quit

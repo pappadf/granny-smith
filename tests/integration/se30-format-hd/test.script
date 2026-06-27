@@ -12,92 +12,93 @@
 storage.hd_create ${WORK_DIR}/blank80.img HD20SC
 
 # Attach the blank image at SCSI ID 0
-scsi.attach_hd ${WORK_DIR}/blank80.img 0
+machine.scsi.attach_hd ${WORK_DIR}/blank80.img 0
 
 # Boot to Finder desktop (SE/30 with 8 MB RAM)
 scheduler.run 80000000
 
-screen.match desktop.png
+machine.screen.match desktop.png
 
 # Double click the "Disk Tools" icon to open the floppy
-mouse.move 480 55 "global"
+machine.adb.mouse.move 480 55 "global"
 scheduler.run 5000000
-mouse.click true
+machine.adb.mouse.click true
 scheduler.run 1000000
-mouse.click false
+machine.adb.mouse.click false
 scheduler.run 1000000
-mouse.click true
+machine.adb.mouse.click true
 scheduler.run 1000000
-mouse.click false
+machine.adb.mouse.click false
 
 # Run a bit so that the floppy has time to open
 scheduler.run 50000000
 
-screen.match floppy.png
+machine.screen.match floppy.png
 
 # Double-click Apple HD SC Setup icon in the Disk Tools window
-mouse.move 167 83 "global"
+machine.adb.mouse.move 167 83 "global"
 scheduler.run 5000000
-mouse.click true
+machine.adb.mouse.click true
 scheduler.run 1000000
-mouse.click false
+machine.adb.mouse.click false
 scheduler.run 1000000
-mouse.click true
+machine.adb.mouse.click true
 scheduler.run 1000000
-mouse.click false
+machine.adb.mouse.click false
 
 # Run a bit so that the Apple HD SC Setup app opens
 scheduler.run 50000000
 
 # Verify Apple HD SC Setup recognizes the blank drive
-screen.match ready.png
+machine.screen.match ready.png
 
 # Click "Initialize"
-mouse.move 167 115 "global"
+machine.adb.mouse.move 167 115 "global"
 scheduler.run 5000000
-mouse.click true
+machine.adb.mouse.click true
 scheduler.run 1000000
-mouse.click false
+machine.adb.mouse.click false
 scheduler.run 5000000
 
-mouse.move 360 190 "global"
+machine.adb.mouse.move 360 190 "global"
 scheduler.run 5000000
-mouse.click true
+machine.adb.mouse.click true
 scheduler.run 1000000
-mouse.click false
+machine.adb.mouse.click false
 
 scheduler.run 500000000
 
 # Click ok re. name
-mouse.move 200 180 "global"
+machine.adb.mouse.move 200 180 "global"
 scheduler.run 5000000
-mouse.click true
+machine.adb.mouse.click true
 scheduler.run 1000000
-mouse.click false
+machine.adb.mouse.click false
 scheduler.run 50000000
 
 # quit app
-mouse.move 167 230 "global"
+machine.adb.mouse.move 167 230 "global"
 scheduler.run 5000000
-mouse.click true
+machine.adb.mouse.click true
 scheduler.run 1000000
-mouse.click false
+machine.adb.mouse.click false
 scheduler.run 5000000
 
 # Shutdown computer
-mouse.move 250 10 "global"
+machine.adb.mouse.move 250 10 "global"
 scheduler.run 5000000
-mouse.click true
+machine.adb.mouse.click true
 scheduler.run 1000000
-mouse.move 250 140 "global"
+machine.adb.mouse.move 250 140 "global"
 scheduler.run 5000000
-mouse.click false
+machine.adb.mouse.click false
 scheduler.run 50000000
 
-screen.match shutdown.png
+machine.screen.match shutdown.png
 
-# Download (export) the formatted HD image to a flat file
-storage.hd_download ${WORK_DIR}/blank80.img ${WORK_DIR}/downloaded.img
+# Export the formatted HD (base + delta) to a flat file, keyed on the device
+# that owns the image rather than a filename (proposal §5.4).
+machine.scsi.device[0].image.export ${WORK_DIR}/downloaded.img
 
 quit
 

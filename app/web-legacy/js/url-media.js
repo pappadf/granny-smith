@@ -37,7 +37,7 @@ export async function loadRomAndMaybeRun() {
   if (!Array.isArray(entries) || entries.length === 0) { showRomOverlay(); return; }
 
   // rom.loaded is true if a ROM has already been loaded (e.g. via checkpoint).
-  if ((await window.gsEval('rom.loaded')) === true) {
+  if ((await window.gsEval('machine.rom.loaded')) === true) {
     // ROM already loaded (from a previous session or checkpoint)
     romLoaded = true;
     hideRomOverlay();
@@ -202,7 +202,7 @@ export async function processUrlMedia(params) {
     const ramKB = profile ? profile.ram_default : 4096;
     console.log(`[url-media] booting machine: ${chosenModel} ram=${ramKB}KB`);
     await window.gsEval('machine.boot', [chosenModel, ramKB]);
-    await window.gsEval('rom.load', [tmpPath]);
+    await window.gsEval('machine.rom.load', [tmpPath]);
     romLoaded = true;
     hideRomOverlay();
     enableRunButton();
@@ -212,7 +212,7 @@ export async function processUrlMedia(params) {
       if (/^fd\d+$/.test(k)) {
         const fdPath = `/tmp/url_${k}`;
         console.log(`[url-media] inserting floppy: ${fdPath}`);
-        const ok = await window.gsEval('floppy.drives[0].insert', [fdPath, true]);
+        const ok = await window.gsEval('machine.floppy.drive[0].insert', [fdPath, true]);
         console.log(`[url-media] fd insert result: ${ok}`);
       }
     }
@@ -222,7 +222,7 @@ export async function processUrlMedia(params) {
       if (/^hd\d+$/.test(k)) {
         const hdPath = `/tmp/url_${k}`;
         const id = parseInt(k.replace('hd', ''), 10);
-        await window.gsEval('scsi.attach_hd', [hdPath, id]);
+        await window.gsEval('machine.scsi.attach_hd', [hdPath, id]);
       }
     }
 
@@ -231,7 +231,7 @@ export async function processUrlMedia(params) {
     // No ROM in URL params — insert floppies if machine already exists.
     for (const [k] of params.entries()) {
       if (/^fd\d+$/.test(k)) {
-        await window.gsEval('floppy.drives[0].insert', [`/tmp/url_${k}`, true]);
+        await window.gsEval('machine.floppy.drive[0].insert', [`/tmp/url_${k}`, true]);
       }
     }
   }

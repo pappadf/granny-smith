@@ -8,30 +8,30 @@
 # (poke $8805 into $017A, clear it after one inner-poll cycle).  See
 # tests/integration/iicx-video-modes/test.script for the mechanics.
 scheduler.run 40000000
-memory.poke.w 0x017A 0x8805
+machine.memory.poke.w 0x017A 0x8805
 scheduler.run 2000000
-memory.poke.w 0x017A 0
+machine.memory.poke.w 0x017A 0
 scheduler.run 1900000000
 
 # Verify the screen matches the Finder desktop reference image.
 # The CD-ROM is on the bus but System 7.0.1 floppy does not include
 # the Apple CD-ROM extension, so no disc icon appears — this proves
 # the CD-ROM device does not break normal boot.
-screen.match finder.png
+machine.screen.match finder.png
 
 # Verify cdrom info reports the attached disc
-scsi.devices[3].info
+machine.scsi.device[3].info
 
 # Eject the disc
-scsi.devices[3].eject
+machine.scsi.device[3].eject
 
 # Verify cdrom info shows no disc after eject
-scsi.devices[3].info
+machine.scsi.device[3].info
 
 # Run briefly to let the OS process the SCSI bus change
 scheduler.run 100000000
 
 # Verify the desktop is still stable after CD-ROM eject
-screen.match finder.png
+machine.screen.match finder.png
 
 quit

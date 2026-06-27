@@ -15,6 +15,7 @@
 
 #include "cpu.h"
 #include "json_encode.h"
+#include "machine_profile.h"
 #include "memory.h"
 #include "mmu.h"
 #include "object.h"
@@ -645,8 +646,11 @@ void rom_init(void) {
     if (s_rom_object)
         return;
     s_rom_object = object_new(&rom_class, NULL, "rom");
-    if (s_rom_object)
-        object_attach(object_root(), s_rom_object);
+    if (s_rom_object) {
+        object_set_label(s_rom_object, "ROM");
+        object_set_order(s_rom_object, 30);
+        object_attach(machine_object(), s_rom_object);
+    }
 }
 
 void rom_delete(void) {

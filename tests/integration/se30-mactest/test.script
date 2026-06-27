@@ -4,78 +4,78 @@
 # AS THEY HAVE A SIGNIFICANT PERFORMANCE IMPACT
 
 # Enable external loopback cable emulation between SCC ports
-scc.loopback = true
+machine.scc.loopback = true
 
 # Enable SCSI loopback test card before boot.
 # MacTest detects the card during startup and skips the SCSI warning dialog.
-scsi.loopback = true
+machine.scsi.loopback = true
 
 # Boot past Happy Mac through splash screens
 scheduler.run 200000000
 
 # Match the MacTest main screen
-screen.match main.png
+machine.screen.match main.png
 
 # Start the test
-mouse.move 100 121 "global"
+machine.adb.mouse.move 100 121 "global"
 scheduler.run 5000000
-mouse.click true
+machine.adb.mouse.click true
 scheduler.run 5000000
-mouse.click false
+machine.adb.mouse.click false
 scheduler.run 20000000
 
 # We should be running the VIA tests now
-screen.match via.png
+machine.screen.match via.png
 
 scheduler.run 150000000
 
 # The test now asks us to insert a 800K floppy
-screen.match insert-800k-floppy.png
+machine.screen.match insert-800k-floppy.png
 
 # Insert 800K floppy
-floppy.create "${WORK_DIR}/blank800.dsk" 0
+machine.floppy.create "${WORK_DIR}/blank800.dsk" 0
 
 # Let it run a short bit - detect the floppy
 scheduler.run 10000000
 
 # Click the OK button on the "insert floppy" dialog
-mouse.move 370 185 "global"
+machine.adb.mouse.move 370 185 "global"
 scheduler.run 5000000
-mouse.click true
+machine.adb.mouse.click true
 scheduler.run 5000000
-mouse.click false
+machine.adb.mouse.click false
 
 scheduler.run 250000000
 
 # The test now asks us to insert a 1.4MB floppy
-screen.match insert-1.4mb-floppy.png
+machine.screen.match insert-1.4mb-floppy.png
 
 # Reset MBState: the mouse guard from the 800K set-mouse --global kept the
 # cursor pinned at the OK button position during the 250M-cycle run above.
 # Intermediate dialogs (Phase 2 boot-disk-reinsert, error dialogs) were
 # auto-clicked by the guard + stale MBState, leaving MBState stuck at 0x00.
 # Force it back to 0x80 (button up) before our click.
-mouse.click false "global"
+machine.adb.mouse.click false "global"
 
 # Insert 1.4MB HD floppy and click immediately (before .Sony VBL auto-mounts)
-floppy.create "${WORK_DIR}/blankHD.dsk" "hd"
-mouse.move 370 185 "global"
+machine.floppy.create "${WORK_DIR}/blankHD.dsk" "hd"
+machine.adb.mouse.move 370 185 "global"
 scheduler.run 5000000
-mouse.click true
+machine.adb.mouse.click true
 scheduler.run 5000000
-mouse.click false
+machine.adb.mouse.click false
 
 scheduler.run 100000000
 
 # Screen should now say that floppy tests succeeded and prompt us to re-insert app disk
-screen.match floppy-test-success.png
+machine.screen.match floppy-test-success.png
 
 # Insert the original application disk
-floppy.drives[0].insert ../../data/apps/MacTest-SE30.image true
+machine.floppy.drive[0].insert ../../data/apps/MacTest-SE30.image true
 
 # Stop the mouse guard before the RAM test — it writes to RAM every 1ms,
 # corrupting test patterns and causing verify failures.
-mouse.move 0 0
+machine.adb.mouse.move 0 0
 
 # Switch to max speed for the destructive RAM test (avoid realtime throttle).
 # The test fills + verifies all 4 MB with multiple patterns (~4 min at 16 MHz).
@@ -88,6 +88,6 @@ scheduler.run 7000000000
 # After the reboot, MacTest should have reloaded from the floppy and reached
 # its main screen.  It reads the PRAM flag set before the test and knows the
 # memory test passed.
-screen.match main-after-reboot.png
+machine.screen.match main-after-reboot.png
 
 quit

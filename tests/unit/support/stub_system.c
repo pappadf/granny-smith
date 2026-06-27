@@ -13,6 +13,21 @@ typedef struct debug debug_t;
 typedef struct rtc rtc_t;
 typedef void (*event_callback_t)(void *source, uint64_t data);
 
+// Machine-container stub. The real machine_object() lives in
+// machines/machine.c, which unit suites do not link; hardware *_init code
+// (cpu.c, memory.c) calls it to find its parent node. Returning NULL is safe:
+// object_attach(NULL, child) is a no-op, so the cpu/memory objects simply go
+// unattached in unit tests (which exercise them via their C structs, not the
+// object tree). Kept free of object_root() so suites that link this stub
+// without object.c (e.g. coff) still link.
+struct object;
+struct object *machine_object(void) {
+    return NULL;
+}
+void machine_set_active_label(const char *name) {
+    (void)name;
+}
+
 // System accessor stubs that use the harness context
 memory_map_t *system_memory(void) {
     test_context_t *ctx = test_get_active_context();

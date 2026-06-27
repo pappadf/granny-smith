@@ -118,7 +118,7 @@ test.describe('IIfx A/UX 3.0.1 boot to login — real-time (faithful UI run)', (
     // A/UX login window (bitwise), failing hard if it never gets there.
     log('[rt] waiting for the A/UX login (real-time boot)…');
     await expect
-      .poll(() => page.evaluate(() => (window as any).gsEval('screen.match', ['/tmp/login-ref.png'])),
+      .poll(() => page.evaluate(() => (window as any).gsEval('machine.screen.match', ['/tmp/login-ref.png'])),
             { timeout: 5 * 60 * 1000, intervals: [2000] })
       .toBe(true);
   });

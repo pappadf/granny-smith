@@ -21,6 +21,7 @@
 // floppy_init / floppy_delete reference them.
 extern const class_desc_t floppy_class;
 extern const class_desc_t floppy_drive_class;
+extern const class_desc_t floppy_disk_class;
 extern const class_desc_t floppy_drives_collection_class;
 
 #include <assert.h>
@@ -717,14 +718,20 @@ floppy_t *floppy_init(int type, memory_map_t *map, struct scheduler *scheduler, 
     // drives collection child and per-drive entries follow.
     floppy->object = object_new(&floppy_class, floppy, "floppy");
     if (floppy->object) {
-        object_attach(object_root(), floppy->object);
-        floppy->drives_object = object_new(&floppy_drives_collection_class, floppy, "drives");
-        if (floppy->drives_object)
+        object_set_label(floppy->object, "Floppy");
+        object_set_order(floppy->object, 80);
+        object_attach(machine_object(), floppy->object);
+        floppy->drives_object = object_new(&floppy_drives_collection_class, floppy, "drive");
+        if (floppy->drives_object) {
+            object_set_label(floppy->drives_object, "Drives");
             object_attach(floppy->object, floppy->drives_object);
+        }
         for (int i = 0; i < NUM_DRIVES; i++) {
             floppy->drive_links[i].floppy = floppy;
             floppy->drive_links[i].slot = i;
             floppy->drive_objects[i] = object_new(&floppy_drive_class, &floppy->drive_links[i], NULL);
+            // Per-drive medium node, sharing the same drive link (proposal §5.6).
+            floppy->disk_objects[i] = object_new(&floppy_disk_class, &floppy->drive_links[i], "disk");
         }
     }
 
@@ -740,6 +747,12 @@ void floppy_delete(floppy_t *floppy) {
     // Tear down per-drive entry objects (never attached), then the
     // drives collection, then the top-level node.
     for (int i = 0; i < NUM_DRIVES; i++) {
+        // Medium nodes (children of the entries) first, then the entries.
+        // Neither is attached, so cascade does not reach them.
+        if (floppy->disk_objects[i]) {
+            object_delete(floppy->disk_objects[i]);
+            floppy->disk_objects[i] = NULL;
+        }
         if (floppy->drive_objects[i]) {
             object_delete(floppy->drive_objects[i]);
             floppy->drive_objects[i] = NULL;
@@ -982,12 +995,80 @@ static value_t floppy_drive_attr_motor_on(struct object *self, const member_t *m
     return val_bool(floppy_drive_motor_on(floppy, slot));
 }
 
-static value_t floppy_drive_attr_disk(struct object *self, const member_t *m) {
+// --- Medium (disk) node: machine.floppy.drive[N].disk ----------------------
+//
+// First-class node for the disk currently in this drive (proposal §5.6),
+// mirroring machine.scsi.device[N].image. instance_data is the same drive
+// link as the parent entry; present/path are read live. Returned by the
+// drive's `disk` child lookup only when a disk is inserted.
+
+static value_t floppy_disk_attr_present(struct object *self, const member_t *m) {
+    (void)m;
+    unsigned slot = 0;
+    floppy_t *floppy = floppy_drive_floppy(self, &slot);
+    return val_bool(floppy && floppy_is_inserted(floppy, (int)slot));
+}
+
+static value_t floppy_disk_attr_path(struct object *self, const member_t *m) {
     (void)m;
     unsigned slot = 0;
     floppy_t *floppy = floppy_drive_floppy(self, &slot);
     const char *p = floppy_drive_disk_path(floppy, slot);
     return val_str(p ? p : "");
+}
+
+// `eject()` — proxy to the owning drive's eject.
+static value_t floppy_disk_method_eject(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)m;
+    (void)argc;
+    (void)argv;
+    unsigned slot = 0;
+    floppy_t *floppy = floppy_drive_floppy(self, &slot);
+    if (!floppy)
+        return val_err("floppy not available");
+    if (!floppy_drive_eject(floppy, slot))
+        return val_err("drive %u: no disk inserted", slot);
+    return val_none();
+}
+
+static const member_t floppy_disk_members[] = {
+    {.kind = M_ATTR,
+     .name = "present",
+     .doc = "True if a disk is inserted",
+     .flags = VAL_RO,
+     .attr = {.type = V_BOOL, .get = floppy_disk_attr_present, .set = NULL}},
+    {.kind = M_ATTR,
+     .name = "path",
+     .doc = "Path / storage URI of the inserted image",
+     .flags = VAL_RO,
+     .attr = {.type = V_STRING, .get = floppy_disk_attr_path, .set = NULL}},
+    {.kind = M_METHOD,
+     .name = "eject",
+     .doc = "Eject the disk from the owning drive",
+     .method = {.args = NULL,
+                .nargs = 0,
+                .result = V_NONE,
+                .fn = floppy_disk_method_eject,
+                .ui_flags = MM_DESTRUCTIVE | MM_MUTATE,
+                .task_category = "storage"}},
+};
+
+const class_desc_t floppy_disk_class = {
+    .name = "disk",
+    .members = floppy_disk_members,
+    .n_members = sizeof(floppy_disk_members) / sizeof(floppy_disk_members[0]),
+};
+
+// `disk` child lookup — the medium node, present only when a disk is inserted.
+static struct object *floppy_drive_disk_lookup(struct object *self, const char *name) {
+    (void)name;
+    unsigned slot = 0;
+    floppy_t *floppy = floppy_drive_floppy(self, &slot);
+    if (!floppy || !floppy_is_inserted(floppy, (int)slot))
+        return NULL;
+    if (slot >= NUM_DRIVES)
+        return NULL;
+    return floppy->disk_objects[slot];
 }
 
 static value_t floppy_drive_method_eject(struct object *self, const member_t *m, int argc, const value_t *argv) {
@@ -1049,15 +1130,15 @@ static const member_t floppy_drive_members[] = {
      .name = "motor_on",
      .flags = VAL_RO,
      .attr = {.type = V_BOOL, .get = floppy_drive_attr_motor_on, .set = NULL}},
-    {.kind = M_ATTR,
-     .name = "disk",
-     .doc = "Path to currently inserted image (empty when no disk)",
-     .flags = VAL_RO,
-     .attr = {.type = V_STRING, .get = floppy_drive_attr_disk, .set = NULL}},
     {.kind = M_METHOD,
      .name = "eject",
      .doc = "Remove the inserted disk",
      .method = {.args = NULL, .nargs = 0, .result = V_NONE, .fn = floppy_drive_method_eject}},
+    {.kind = M_CHILD,
+     .name = "disk",
+     .doc = "The disk currently in this drive (present only when inserted)",
+     .label = "Disk",
+     .child = {.cls = &floppy_disk_class, .lookup = floppy_drive_disk_lookup}},
     {.kind = M_METHOD,
      .name = "insert",
      .doc = "Mount a disk image into this drive",

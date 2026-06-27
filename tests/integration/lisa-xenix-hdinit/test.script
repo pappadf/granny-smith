@@ -9,68 +9,68 @@
 
 # Attach a blank in-memory ProFile to the parallel port (the Lisa 2/5 install
 # target).  Without it the kernel panics "pf0 not on line".
-profile.attach
+machine.hd.attach
 assert ${machine.id == "lisa"} "machine.id != lisa"
-assert ${rom.checksum == "098917B2"} "rom.checksum != 098917B2 (rev-H)"
-assert ${profile.present == true} "ProFile should be attached"
+assert ${machine.rom.checksum == "098917B2"} "rom.checksum != 098917B2 (rev-H)"
+assert ${machine.hd.present == true} "ProFile should be attached"
 
 # (§1.5.1) Boot the floppy to the loader's "boot :" prompt (a COPS poll loop).
 scheduler.run 60000000
-screen.match expected_bootprompt.png
+machine.screen.match expected_bootprompt.png
 
 # The ROM's pre-handoff COPS re-init leaves the loader's protocol decoder in its
 # 3-byte-report state, so the first injected key is swallowed; send a dummy key to
 # clear it, then RETURN to load the kernel from fd(2,0)xenix.
-keyboard.press 0xC8
+machine.adb.keyboard.press 0xC8
 scheduler.run 3000000
-keyboard.press 0xC8
-keyboard.press 0x48
+machine.adb.keyboard.press 0xC8
+machine.adb.keyboard.press 0x48
 scheduler.run 120000000
 # Kernel booted to the boot-floppy single-user shell ("<BootFloppy>").
-screen.match expected_bootfloppy.png
+machine.screen.match expected_bootfloppy.png
 
 # (§1.5.2) Type "hdinit" + RETURN.
-keyboard.press 0xEB
-keyboard.press 0x6B
+machine.adb.keyboard.press 0xEB
+machine.adb.keyboard.press 0x6B
 scheduler.run 600000
-keyboard.press 0xFB
-keyboard.press 0x7B
+machine.adb.keyboard.press 0xFB
+machine.adb.keyboard.press 0x7B
 scheduler.run 600000
-keyboard.press 0xD3
-keyboard.press 0x53
+machine.adb.keyboard.press 0xD3
+machine.adb.keyboard.press 0x53
 scheduler.run 600000
-keyboard.press 0xEF
-keyboard.press 0x6F
+machine.adb.keyboard.press 0xEF
+machine.adb.keyboard.press 0x6F
 scheduler.run 600000
-keyboard.press 0xD3
-keyboard.press 0x53
+machine.adb.keyboard.press 0xD3
+machine.adb.keyboard.press 0x53
 scheduler.run 600000
-keyboard.press 0xE6
-keyboard.press 0x66
+machine.adb.keyboard.press 0xE6
+machine.adb.keyboard.press 0x66
 scheduler.run 600000
-keyboard.press 0xC8
-keyboard.press 0x48
+machine.adb.keyboard.press 0xC8
+machine.adb.keyboard.press 0x48
 scheduler.run 30000000
 # "WARNING: ... Do you want to continue <y/n>?"
-screen.match expected_continue.png
+machine.screen.match expected_continue.png
 
 # Answer "y" + RETURN.
-keyboard.press 0xE7
-keyboard.press 0x67
-keyboard.press 0xC8
-keyboard.press 0x48
+machine.adb.keyboard.press 0xE7
+machine.adb.keyboard.press 0x67
+machine.adb.keyboard.press 0xC8
+machine.adb.keyboard.press 0x48
 scheduler.run 20000000
 # "Enter size of hard disk (5 or 10):"
-screen.match expected_size.png
+machine.screen.match expected_size.png
 
 # Answer "5" (5 MB ProFile) + RETURN.  hdinit builds the filesystem, runs fsck,
 # writes the boot block, then shuts the system down.
-keyboard.press 0xE4
-keyboard.press 0x64
-keyboard.press 0xC8
-keyboard.press 0x48
+machine.adb.keyboard.press 0xE4
+machine.adb.keyboard.press 0x64
+machine.adb.keyboard.press 0xC8
+machine.adb.keyboard.press 0x48
 scheduler.run 150000000
 # "Disk initialization complete. / ** Normal System Shutdown **"
-screen.match expected_complete.png
+machine.screen.match expected_complete.png
 
 quit

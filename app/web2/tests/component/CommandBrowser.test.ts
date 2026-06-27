@@ -3,39 +3,72 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import CommandBrowser from '@/components/panel-views/terminal/CommandBrowser.svelte';
 import { registerTerminalInsert } from '@/components/panel-views/terminal/terminalBridge';
 
+// The browser is now generated from the model (proposal §8.6), so mock the
+// bus to feed buildCommandsTree a tiny tree: one subsystem (`cpu`) with a
+// `step` method. Categories are model-derived (subsystem bucket + the static
+// Language keywords group), not a hand-listed catalogue.
+vi.mock('@/bus/emulator', () => {
+  const methodInfo = (name: string, doc = '') =>
+    JSON.stringify({
+      name,
+      verb: name,
+      category: 'basic',
+      task: '',
+      doc,
+      destructive: false,
+      mutate: false,
+      hidden: false,
+      nargs: 0,
+    });
+  return {
+    isModuleReady: () => true,
+    gsEval: async (path: string, args?: unknown[]) => {
+      if (path === 'meta.methods') return []; // no root verbs in this fixture
+      if (path === 'objects') return ['cpu'];
+      if (path === 'cpu.meta.methods') return ['step'];
+      if (path === 'cpu.meta.method_info')
+        return methodInfo(String(args?.[0]), 'run N instructions');
+      if (path === 'cpu.meta.children') return [];
+      if (path === 'shell.aliases') return [];
+      return null;
+    },
+  };
+});
+
+// machine.status is read by the rebuild effect.
+vi.mock('@/state/machine.svelte', () => ({ machine: { status: 'idle' } }));
+
 beforeEach(() => {
   registerTerminalInsert(null);
 });
 
-describe('CommandBrowser', () => {
-  it('renders every top-level category as a category row', () => {
+describe('CommandBrowser (model-generated)', () => {
+  it('renders model-derived top-level categories', async () => {
     const { container } = render(CommandBrowser);
-    const cats = Array.from(container.querySelectorAll('.cmd-row.category > .cmd-line > .name'));
-    const names = cats.map((c) => c.textContent);
-    expect(names).toContain('Scheduler');
-    expect(names).toContain('Debugger');
-    expect(names).toContain('Logging');
-    expect(names).toContain('Storage');
-  });
-
-  it('categories start collapsed (no description visible)', () => {
-    const { container } = render(CommandBrowser);
-    expect(container.querySelector('.desc')).toBeNull();
+    await waitFor(() => {
+      const names = Array.from(
+        container.querySelectorAll('.cmd-row.category > .cmd-line > .name'),
+      ).map((c) => c.textContent);
+      expect(names).toContain('cpu'); // subsystem bucket
+      expect(names).toContain('Language'); // shell keywords group
+    });
   });
 
   it('clicking a category expands it and reveals its commands', async () => {
     const { container } = render(CommandBrowser);
-    const schedulerName = Array.from(
-      container.querySelectorAll('.cmd-row.category > .cmd-line'),
-    ).find((line) => line.textContent?.includes('Scheduler')) as HTMLElement;
-    await fireEvent.click(schedulerName);
-    // After expansion, the description block appears, plus the `run` row.
+    const cpuCat = await waitFor(() => {
+      const el = Array.from(container.querySelectorAll('.cmd-row.category > .cmd-line')).find((l) =>
+        l.textContent?.includes('cpu'),
+      ) as HTMLElement | undefined;
+      if (!el) throw new Error('cpu category not rendered yet');
+      return el;
+    });
+    await fireEvent.click(cpuCat);
     await waitFor(() => {
-      expect(container.querySelector('.desc')).not.toBeNull();
-      const runLeaf = Array.from(container.querySelectorAll('.cmd-line .name')).some(
-        (e) => e.textContent === 'run',
+      const leaf = Array.from(container.querySelectorAll('.cmd-line .name')).some(
+        (e) => e.textContent === 'cpu.step',
       );
-      expect(runLeaf).toBe(true);
+      expect(leaf).toBe(true);
     });
   });
 
@@ -43,18 +76,22 @@ describe('CommandBrowser', () => {
     const setter = vi.fn();
     registerTerminalInsert(setter);
     const { container } = render(CommandBrowser);
-    const schedulerName = Array.from(
-      container.querySelectorAll('.cmd-row.category > .cmd-line'),
-    ).find((line) => line.textContent?.includes('Scheduler')) as HTMLElement;
-    await fireEvent.click(schedulerName);
-    const runLine = await waitFor(() => {
-      const el = Array.from(container.querySelectorAll('.cmd-line')).find(
-        (line) => line.querySelector('.name')?.textContent === 'run',
+    const cpuCat = await waitFor(() => {
+      const el = Array.from(container.querySelectorAll('.cmd-row.category > .cmd-line')).find((l) =>
+        l.textContent?.includes('cpu'),
       ) as HTMLElement | undefined;
-      if (!el) throw new Error('run row not rendered yet');
+      if (!el) throw new Error('cpu category not rendered yet');
       return el;
     });
-    await fireEvent.click(runLine);
-    expect(setter).toHaveBeenCalledWith('run');
+    await fireEvent.click(cpuCat);
+    const stepLine = await waitFor(() => {
+      const el = Array.from(container.querySelectorAll('.cmd-line')).find(
+        (line) => line.querySelector('.name')?.textContent === 'cpu.step',
+      ) as HTMLElement | undefined;
+      if (!el) throw new Error('cpu.step row not rendered yet');
+      return el;
+    });
+    await fireEvent.click(stepLine);
+    expect(setter).toHaveBeenCalledWith('cpu.step');
   });
 });

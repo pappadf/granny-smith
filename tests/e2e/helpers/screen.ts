@@ -159,7 +159,7 @@ export function calculateScreenChecksum(png: Buffer | PNG, region?: MatchRegion)
 
 /**
  * Get the current screen checksum from the emulator.
- * Calls the typed `screen.checksum` root method directly via gsEval.
+ * Calls the typed `machine.screen.checksum` root method directly via gsEval.
  * @param page Playwright page
  * @param region Optional region bounds (top, left, bottom, right)
  */
@@ -168,7 +168,7 @@ export async function getScreenChecksum(page: Page, region?: MatchRegion): Promi
 		? [region.top, region.left, region.bottom, region.right]
 		: [];
 	const result = await page.evaluate(
-		(args) => (window as any).gsEval('screen.checksum', args),
+		(args) => (window as any).gsEval('machine.screen.checksum', args),
 		args
 	);
 	const n = typeof result === 'bigint' ? Number(result) : Number(result);

@@ -6,20 +6,20 @@
 scheduler.run 50000
 
 # Top-level object + read-only attrs.
-sound
-sound.sample_rate
+machine.sound
+machine.sound.sample_rate
 
 # enabled / volume — values depend on boot timing, just verify the
 # paths resolve to a usable JSON shape.
-sound.enabled
-sound.volume
+machine.sound.enabled
+machine.sound.volume
 
 # Mute via the method, assert `enabled` flipped to false.
-echo ${sound.mute(true)}
-assert ${sound.enabled == false}
+echo ${machine.sound.mute(true)}
+assert ${machine.sound.enabled == false}
 
 # Unmute and assert `enabled` flips back to true.
-echo ${sound.mute(false)}
-assert ${sound.enabled == true}
+echo ${machine.sound.mute(false)}
+assert ${machine.sound.enabled == true}
 
 quit

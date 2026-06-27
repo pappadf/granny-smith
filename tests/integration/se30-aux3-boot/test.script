@@ -7,15 +7,15 @@
 # specific seed used to panic with "Sorry, a system error occurred."
 # before the se30 slot-deassert fix (commit db03c13). Booting cleanly
 # at this seed proves the fix.
-rtc.time = 2026-04-26T21:30:36
+machine.rtc.time = 2026-04-26T21:30:36
 
 # Skip the Universal ROM's boot-drive-discovery key-scan at $40801610 (poke
 # $8805 into $017A, clear it after one inner-poll cycle).  See
 # tests/integration/iicx-video-modes/test.script for the mechanics.
 scheduler.run 40000000
-memory.poke.w 0x017A 0x8805
+machine.memory.poke.w 0x017A 0x8805
 scheduler.run 2000000
-memory.poke.w 0x017A 0
+machine.memory.poke.w 0x017A 0
 
 # Boot to the A/UX login window (~692M instructions).  A/UX is interrupt-
 # driven: the kernel sleeps for each disk read and is woken by the SCSI DRQ
@@ -27,40 +27,40 @@ scheduler.run 200000000
 scheduler.run 200000000
 
 # enter user "root"
-keyboard.press 0x0F
-keyboard.press 0x1F
-keyboard.press 0x1F
-keyboard.press 0x11
-keyboard.press return
+machine.adb.keyboard.press 0x0F
+machine.adb.keyboard.press 0x1F
+machine.adb.keyboard.press 0x1F
+machine.adb.keyboard.press 0x11
+machine.adb.keyboard.press return
 
 # enter empty password
-keyboard.press return
+machine.adb.keyboard.press return
 
 scheduler.run 100000000
 
-screen.match desktop.png
+machine.screen.match desktop.png
 
 # open the Apple menu and select the CommandShell desk accessory
-mouse.move 20 10 "aux"
+machine.adb.mouse.move 20 10 "aux"
 scheduler.run 15000000
-mouse.click true
+machine.adb.mouse.click true
 scheduler.run 15000000
-mouse.move 20 110 "aux"
+machine.adb.mouse.move 20 110 "aux"
 scheduler.run 15000000
-mouse.click false
+machine.adb.mouse.click false
 scheduler.run 20000000
 
 # The command shell should now be open
-screen.match shell.png
+machine.screen.match shell.png
 
 # enter command "ls"
-keyboard.press 0x25
-keyboard.press 0x01
-keyboard.press return
+machine.adb.keyboard.press 0x25
+machine.adb.keyboard.press 0x01
+machine.adb.keyboard.press return
 
 scheduler.run 20000000
 
 # The shell should have run `ls` and printed a directory listing
-screen.match ls.png
+machine.screen.match ls.png
 
 quit

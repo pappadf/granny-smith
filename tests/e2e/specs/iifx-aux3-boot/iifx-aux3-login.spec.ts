@@ -123,15 +123,15 @@ test.describe('IIfx A/UX 3.0.1 boot to login via web UI', () => {
     await page.click('#config-start-btn');
     await page.waitForFunction(() => (window as any).__gsBootReady === true, { timeout: 90_000 });
     await page.evaluate(() => (window as any).gsEval('scheduler.stop'));
-    await page.evaluate(() => (window as any).gsEval('rtc.time', ['2026-04-26T21:30:36']));
+    await page.evaluate(() => (window as any).gsEval('machine.rtc.time', ['2026-04-26T21:30:36']));
     // Max speed: let the RAF loop batch many frame-units per tick so the fixed
     // budget completes quickly.  Determinism is unaffected — batching only
     // changes how many whole frame-units a tick runs, not the guest sequence.
     await page.evaluate(() => (window as any).gsEval('scheduler.mode', ['max']));
 
     expect(await page.evaluate(() => (window as any).gsEval('machine.id'))).toBe('iifx');
-    expect(Number(await page.evaluate(() => (window as any).gsEval('screen.width')))).toBe(640);
-    expect(Number(await page.evaluate(() => (window as any).gsEval('screen.height')))).toBe(480);
+    expect(Number(await page.evaluate(() => (window as any).gsEval('machine.screen.width')))).toBe(640);
+    expect(Number(await page.evaluate(() => (window as any).gsEval('machine.screen.height')))).toBe(480);
 
     // Deterministically drive Mac OS → A/UX Startup → kernel → root mount → init →
     // fsck → the CommandShell login window.  scheduler.run with a fixed budget
@@ -144,7 +144,7 @@ test.describe('IIfx A/UX 3.0.1 boot to login via web UI', () => {
       .poll(() => page.evaluate(() => (window as any).gsEval('scheduler.running')),
             { timeout: 5 * 60 * 1000, intervals: [1000] })
       .toBe(false);
-    await page.evaluate(() => (window as any).gsEval('screen.save', ['/tmp/aux-login.png']));
+    await page.evaluate(() => (window as any).gsEval('machine.screen.save', ['/tmp/aux-login.png']));
     const png = await page.evaluate(() => Array.from((window as any).__Module.FS.readFile('/tmp/aux-login.png') as Uint8Array));
 
     expect(Buffer.from(png)).toMatchSnapshot('aux-login.png', { maxDiffPixels: 0, threshold: 0 });

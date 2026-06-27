@@ -5,6 +5,7 @@
 // Implements Macintosh Plus mouse quadrature signal generation for the SCC (X1/Y1) and VIA (X2/Y2).
 
 #include "mouse.h"
+#include "adb.h"
 #include "cpu.h"
 #include "debug_mac.h"
 #include "object.h"
@@ -300,8 +301,11 @@ void mouse_class_register(void) {
     if (s_mouse_object)
         return;
     s_mouse_object = object_new(&mouse_class, NULL, "mouse");
-    if (s_mouse_object)
-        object_attach(object_root(), s_mouse_object);
+    if (s_mouse_object) {
+        object_set_label(s_mouse_object, "Mouse");
+        object_set_order(s_mouse_object, 20);
+        object_attach(adb_bus_object(), s_mouse_object);
+    }
 }
 
 void mouse_class_unregister(void) {

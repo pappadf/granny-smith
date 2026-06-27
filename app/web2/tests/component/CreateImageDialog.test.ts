@@ -54,7 +54,7 @@ describe('CreateImageDialog', () => {
 
   it('lists HD sizes from scsi.hd_models and creates via storage.hd_create', async () => {
     gsEvalMock.mockImplementation(async (p: string) => {
-      if (p === 'scsi.hd_models') {
+      if (p === 'machine.scsi.hd_models') {
         return [
           JSON.stringify({ label: 'HD20SC', vendor: 'X', product: 'Y', size: 21411840 }),
           JSON.stringify({ label: 'HD40SC', vendor: 'X', product: 'Y', size: 40061952 }),
@@ -95,7 +95,7 @@ describe('CreateImageDialog', () => {
     await waitFor(() => expect(container.textContent).toContain('Could not load drive sizes'));
     // Retry with the module now "ready" loads the catalog.
     gsEvalMock.mockImplementation(async (p: string) =>
-      p === 'scsi.hd_models' ? [JSON.stringify({ label: 'HD20SC', size: 21411840 })] : null,
+      p === 'machine.scsi.hd_models' ? [JSON.stringify({ label: 'HD20SC', size: 21411840 })] : null,
     );
     await fireEvent.click(getByText('Retry'));
     await waitFor(() => expect(container.textContent).toContain('HD20SC'));

@@ -144,8 +144,11 @@ sound_t *sound_init(memory_map_t *map, checkpoint_t *checkpoint) {
 
     // Object-tree binding — instance_data is the sound itself.
     sound->object = object_new(&sound_class, sound, "sound");
-    if (sound->object)
-        object_attach(object_root(), sound->object);
+    if (sound->object) {
+        object_set_label(sound->object, "Sound");
+        object_set_order(sound->object, 110);
+        object_attach(machine_object(), sound->object);
+    }
 
     return sound;
 }

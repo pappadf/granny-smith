@@ -192,10 +192,6 @@ int system_probe_floppy(const char *path);
 // platform tick to push drive-present changes to the UI.
 bool system_fd_present(int drive);
 
-// Export a SCSI HD image (base + delta) as a single flat file at `dest_path`.
-// Returns 0 on success, non-zero on failure.
-int system_download_hd(const char *src_path, const char *dest_path);
-
 // argv-driven entry points for the legacy `fd` / `hd` shell commands.
 // Used by the typed object-model bridge (fd_insert, hd_create, hd_attach
 // wrappers) to bypass shell_dispatch / find_cmd registry lookup.

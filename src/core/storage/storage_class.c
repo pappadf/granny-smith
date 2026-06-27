@@ -488,15 +488,6 @@ static value_t storage_method_profile_create(struct object *self, const member_t
     return val_bool(true);
 }
 
-// `storage.hd_download(src, dst)` — export a hard disk image (base + delta).
-static value_t storage_method_hd_download(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
-    (void)argc;
-    int rc = system_download_hd(argv[0].s, argv[1].s);
-    return val_bool(rc == 0);
-}
-
 static const char *apm_fs_kind_label(enum apm_fs_kind k) {
     switch (k) {
     case APM_FS_HFS:
@@ -689,10 +680,6 @@ static const arg_decl_t storage_profile_create_args[] = {
     {.name = "path",   .kind = V_STRING, .doc = "Image output path"                                 },
     {.name = "blocks", .kind = V_NONE,   .doc = "ProFile block count (532-byte blocks; 5 MB = 9728)"},
 };
-static const arg_decl_t storage_hd_download_args[] = {
-    {.name = "src", .kind = V_STRING, .doc = "Mounted HD image path"},
-    {.name = "dst", .kind = V_STRING, .doc = "Output flat-file path"},
-};
 static const arg_decl_t storage_path_arg[] = {
     {.name = "path", .kind = V_STRING, .doc = "Image path"},
 };
@@ -741,10 +728,6 @@ static const member_t storage_members[] = {
      .name = "mv",
      .doc = "Move/rename a file or directory (keeps the worker FS coherent)",
      .method = {.args = storage_mv_args, .nargs = 2, .result = V_BOOL, .fn = storage_method_mv}                  },
-    {.kind = M_METHOD,
-     .name = "hd_download",
-     .doc = "Export a hard-disk image (base + delta) to a flat file",
-     .method = {.args = storage_hd_download_args, .nargs = 2, .result = V_BOOL, .fn = storage_method_hd_download}},
     {.kind = M_METHOD,
      .name = "partmap",
      .doc = "Print the Apple Partition Map of an image",

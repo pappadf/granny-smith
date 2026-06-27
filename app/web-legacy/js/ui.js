@@ -98,7 +98,7 @@ export async function insertFloppyWithResume(path) {
     await waitForRunState(false, 1200);
     await sleep(40);
   }
-  await window.gsEval('floppy.drives[0].insert', [path, true]);
+  await window.gsEval('machine.floppy.drive[0].insert', [path, true]);
   if (wasRunning) {
     await sleep(30);
     await window.gsEval('scheduler.run');

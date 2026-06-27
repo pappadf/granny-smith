@@ -6,7 +6,7 @@ description: >
   shell-form and call-form method invocation, ${...} expression
   interpolation), introspection (objects/attributes/methods/help), and the
   command surfaces for cpu, memory, debug.breakpoints/logpoints,
-  debug.mac.globals, scheduler, screen, machine.profile, rom.identify,
+  debug.mac.globals, scheduler, screen, machine.profile, machine.rom.identify,
   scsi/floppy/scc/via/rtc/nubus, mouse/keyboard/find, and common workflows.
 triggers:
   - single step
@@ -37,8 +37,8 @@ exposes its interactive shell over a TCP socket so an agent can start the
 emulator, send commands, and capture output reliably.
 
 The shell is a typed object-model REPL. Every emulator subsystem is an
-object reachable by a dotted path: `cpu.pc`, `memory.peek.l 0x400`,
-`debug.breakpoints.add 0x40802A14`, `screen.save "/tmp/x.png"`,
+object reachable by a dotted path: `machine.cpu.pc`, `machine.memory.peek.l 0x400`,
+`debug.breakpoints.add 0x40802A14`, `machine.screen.save "/tmp/x.png"`,
 `machine.profile "se30"`.
 
 ## 1. Building
@@ -105,7 +105,7 @@ Each command is one or more newline-delimited lines on a TCP connection:
 
 ```bash
 echo "<command>" | nc -w 2 localhost 6800
-printf "cpu.pc\ndebug.step\ncpu.pc\n" | nc -w 5 localhost 6800
+printf "machine.cpu.pc\ndebug.step\ncpu.pc\n" | nc -w 5 localhost 6800
 ```
 
 Always use `nc -w <secs>` (timeout for both connect and idle), not
@@ -133,27 +133,27 @@ budget.
 
 The shell accepts exactly four shapes:
 
-1. **Bare path read** — `cpu.pc`, `memory.ram_size`, `machine.id`,
-   `scsi.bus.phase`. Prints the value using the attribute's declared
-   formatter (e.g. `cpu.pc` → `0x40826cc6` because the attribute has a
+1. **Bare path read** — `machine.cpu.pc`, `machine.memory.ram_size`, `machine.id`,
+   `machine.scsi.bus.phase`. Prints the value using the attribute's declared
+   formatter (e.g. `machine.cpu.pc` → `0x40826cc6` because the attribute has a
    hex flag).
-2. **Setter** — `cpu.d0 = 0x1234`, `sound.enabled = false`. The RHS is
+2. **Setter** — `machine.cpu.d0 = 0x1234`, `machine.sound.enabled = false`. The RHS is
    parsed using the attribute's declared kind. Hex / decimal /
    `true`/`false` are accepted as literals; computed values go inside
    `${...}` (see 4.2).
 3. **Shell-form method call** — `path arg1 arg2`, whitespace-separated:
-   `debug.breakpoints.add 0x40802A14`, `screen.save "/tmp/x.png"`,
+   `debug.breakpoints.add 0x40802A14`, `machine.screen.save "/tmp/x.png"`,
    `find.str "Apple" $0x40800000..$0x40810000`. Strings with spaces are
    double-quoted. Top-level call form `path(arg, arg)` is not accepted
    — that syntax is reserved for inside `${...}`.
 4. **Expression in argument or interpolation** — `${expr}` evaluates and
    is spliced into the surrounding context. Use it as a method argument
-   (`cpu.d0 = ${cpu.pc + 4}`), inside a string
-   (`echo "pc=${cpu.pc}"`), or as the predicate to `assert`/the source
+   (`machine.cpu.d0 = ${machine.cpu.pc + 4}`), inside a string
+   (`echo "pc=${machine.cpu.pc}"`), or as the predicate to `assert`/the source
    for `echo`. A bare `${expr}` typed as a whole line does not print —
    the daemon re-dispatches the substituted text as a command and
    errors with "Unknown command" on the value. To print an expression,
-   wrap it: `echo ${cpu.pc + 4}`.
+   wrap it: `echo ${machine.cpu.pc + 4}`.
 
 ### 4.2 `${expr}` interpolation
 
@@ -161,29 +161,29 @@ The shell accepts exactly four shapes:
 in two places:
 
 - **As an argument**: the result is spliced into the command line.
-  `cpu.d0 = ${cpu.pc + 4}`, `assert ${cpu.pc == 0x40800090}`,
-  `echo ${cpu.pc + 4}`.
+  `machine.cpu.d0 = ${machine.cpu.pc + 4}`, `assert ${machine.cpu.pc == 0x40800090}`,
+  `echo ${machine.cpu.pc + 4}`.
 - **Inside a double-quoted string literal**: the result is
-  interpolated textually. `echo "pc=${cpu.pc} d0=${cpu.d0}"`.
+  interpolated textually. `echo "pc=${machine.cpu.pc} d0=${machine.cpu.d0}"`.
 
 Inside `${...}` the body is a typed expression:
 
 - arithmetic / bitwise / comparison / logical / ternary operators with
   C-like precedence: `+ - * / % << >> & | ^ == != < > <= >= && || ! ~ ?:`.
-  Operators only work inside `${...}` — `cpu.d0 = cpu.pc + 4` at the
+  Operators only work inside `${...}` — `machine.cpu.d0 = machine.cpu.pc + 4` at the
   top level is a syntax error.
 - literals: `42`, `0x1234`, `0b1010`, `0o17`, `$1234`, `0d100`, `1.0`,
   `"text"`, `true`/`false`/`on`/`off`/`yes`/`no`.
-- bare identifiers are paths (`cpu.pc`, `memory.ram_size`); they are
+- bare identifiers are paths (`machine.cpu.pc`, `machine.memory.ram_size`); they are
   not alias-resolved here. Aliases require an explicit `$` prefix even
   inside `${...}`: `${$pc + 4}` works, `${pc + 4}` errors with "path
   'pc' did not resolve."
 - method calls use call form with parens and commas:
-  `${memory.peek.l(0x400)}`, `${debug.breakpoints.add(0x400100)}`,
+  `${machine.memory.peek.l(0x400)}`, `${debug.breakpoints.add(0x400100)}`,
   `${debug.mac.globals.read("MBState")}`. Shell-form is not accepted
   here.
 - indexed children use brackets:
-  `${debug.breakpoints[3].addr}`, `${floppy.drives[0].present}`.
+  `${debug.breakpoints[3].addr}`, `${machine.floppy.drive[0].present}`.
   Indices are stable global IDs (sparse, never reused) — the first
   breakpoint added in a fresh process is `[0]`, the next `[1]`, and
   removing one leaves a hole.
@@ -198,12 +198,12 @@ Inside `${...}` the body is a typed expression:
 
   | Spec        | Effect                                           |
   |-------------|--------------------------------------------------|
-  | (none)      | native formatter (e.g. `cpu.pc` → `0x4080002a`)  |
+  | (none)      | native formatter (e.g. `machine.cpu.pc` → `0x4080002a`)  |
   | `:d`        | force decimal                                    |
   | `:x` / `:X` | force lowercase / uppercase hex (no `$` prefix)  |
   | `:s`        | string passthrough (rejects non-strings)         |
   | `:<W>d`     | space-padded decimal: `${42:5d}` → `"   42"`     |
-  | `:0<W>x`    | zero-padded hex: `${cpu.pc:08x}` → `"4080002a"`  |
+  | `:0<W>x`    | zero-padded hex: `${machine.cpu.pc:08x}` → `"4080002a"`  |
   | `:%<printf>`| printf-style escape hatch: `${name:%-10s}`       |
 
   Padding-sensitive specs need to be quoted at the call site if the
@@ -222,7 +222,7 @@ globals are not aliased — read them via
 User aliases:
 
 ```
-shell.alias.add foo cpu.d0
+shell.alias.add foo machine.cpu.d0
 shell.alias.remove foo
 ```
 
@@ -238,9 +238,9 @@ Shown by `methods emu` (or `methods` with no argument):
 
 ```
 echo "hello"                              # → hello
-echo "pc=${cpu.pc} d0=${cpu.d0}"          # → pc=0x40826cc6 d0=0x0
-assert ${cpu.pc == 0x40826cc6}            # → ASSERT OK: true
-assert ${cpu.pc == 0} "boot stalled"      # → ASSERT FAILED: boot stalled
+echo "pc=${machine.cpu.pc} d0=${machine.cpu.d0}"          # → pc=0x40826cc6 d0=0x0
+assert ${machine.cpu.pc == 0x40826cc6}            # → ASSERT OK: true
+assert ${machine.cpu.pc == 0} "boot stalled"      # → ASSERT FAILED: boot stalled
 time                                      # → 1778263528 (Unix epoch)
 ```
 
@@ -264,10 +264,10 @@ Sample (will drift; treat as illustration):
 | Object       | Children         | Selected attributes                                       | Selected methods                                            |
 |--------------|------------------|-----------------------------------------------------------|-------------------------------------------------------------|
 | `cpu`        | `fpu`            | `pc sr ccr ssp usp msp vbr sp d0..d7 a0..a7 c v z n x instr_count` | (none)                                              |
-| `cpu.fpu`    | —                | `fp0..fp7 fpcr fpsr fpiar`                                | (none)                                                      |
+| `machine.cpu.fpu`    | —                | `fp0..fp7 fpcr fpsr fpiar`                                | (none)                                                      |
 | `memory`     | `peek poke`      | `ram_size rom_size`                                       | `read_cstring(addr) dump(addr, n)`                          |
-| `memory.peek`| —                | —                                                         | `b(addr) w(addr) l(addr)`                                   |
-| `memory.poke`| —                | —                                                         | `b(addr,v) w(addr,v) l(addr,v)`                             |
+| `machine.memory.peek`| —                | —                                                         | `b(addr) w(addr) l(addr)`                                   |
+| `machine.memory.poke`| —                | —                                                         | `b(addr,v) w(addr,v) l(addr,v)`                             |
 | `scheduler`  | —                | `running mode cpi cycles instr_count frequency`           | `run([n]) stop()`                                           |
 | `debug`      | `mac breakpoints logpoints` | —                                              | `log(cat, level) disasm([addr], [count]) step([n])`         |
 | `debug.breakpoints` | indexed entries (by id) | —                                          | `add(addr, [cond], [space]) clear() list()`                 |
@@ -280,18 +280,18 @@ Sample (will drift; treat as illustration):
 | `screen`     | —                | `width height`                                            | `save(path) match(ref) match_or_save(ref, [actual]) checksum([t l b r])` |
 | `find`       | —                | —                                                         | `str(text, [range]) bytes(hex, [range]) long(v, [range]) word(v, [range])` |
 | `scsi`       | `devices bus`    | `loopback hd_models`                                      | `identify_hd(p) identify_cdrom(p) attach_hd(p, [id]) attach_cdrom(p, [id])` |
-| `scsi.bus`   | —                | `phase target initiator`                                  | (none)                                                      |
+| `machine.scsi.bus`   | —                | `phase target initiator`                                  | (none)                                                      |
 | `floppy`     | `drives`         | `type sel`                                                | `identify(path) create(path)`                               |
-| `floppy.drives` | indexed (`[0]`, `[1]`) | per-entry: `index present track side motor_on disk` | per-entry: `eject() insert(path)`                |
+| `machine.floppy.drive` | indexed (`[0]`, `[1]`) | per-entry: `index present track side motor_on disk` | per-entry: `eject() insert(path)`                |
 | `scc`        | `a b`            | `loopback pclk_hz rtxc_hz`                                | `reset()`                                                   |
-| `scc.a` / `scc.b` | —           | `index dcd tx_empty rx_pending`                           | (none)                                                      |
+| `machine.scc.a` / `machine.scc.b` | —           | `index dcd tx_empty rx_pending`                           | (none)                                                      |
 | `rtc`        | —                | `time read_only pram`                                     | `pram_read pram_write`                                      |
 | `via1` / `via2` | `port_a port_b` | `ifr ier acr pcr sr freq_factor`                       | (none)                                                      |
 | `nubus`      | —                | —                                                         | `cards()`                                                   |
 | `mouse`      | —                | —                                                         | `move(x, y) click([button], [mode]) trace(start\|stop)`     |
 | `keyboard`   | —                | —                                                         | `press(key)` (named keys like `"Return"`, single letters not accepted) |
 | `checkpoint` | —                | `auto`                                                    | `probe() clear() load([path]) save([path]) snapshot()`      |
-| `storage`    | `images`         | —                                                         | `import cp list_dir find_media hd_create hd_download partmap probe list_partitions mounts unmount path_exists path_size` |
+| `storage`    | `images`         | —                                                         | `import cp list_dir find_media hd_create partmap probe list_partitions mounts unmount path_exists path_size` (save a mounted disk via `machine.scsi.device[N].image.export`) |
 | `vfs`        | —                | —                                                         | `ls([path]) mkdir(path) cat(path)`                          |
 | `archive`    | —                | —                                                         | `identify(path) extract(path, dst)`                         |
 | `shell.alias`| —                | —                                                         | `add(name, path) remove(name) list()`                       |
@@ -304,11 +304,11 @@ When in doubt, run `objects` / `attributes <path>` / `methods <path>` /
 ### 6.1 Inspect CPU state
 
 ```
-cpu.pc                         # 0x40826cc6
-cpu.d0                         # 0x0
-cpu.sp                         # via the alias; same as cpu.a7
-cpu.fpu.fpcr                   # FPU control reg
-echo "pc=${cpu.pc} sp=${cpu.sp}"
+machine.cpu.pc                         # 0x40826cc6
+machine.cpu.d0                         # 0x0
+machine.cpu.sp                         # via the alias; same as machine.cpu.a7
+machine.cpu.fpu.fpcr                   # FPU control reg
+echo "pc=${machine.cpu.pc} sp=${machine.cpu.sp}"
 ```
 
 ### 6.2 Single-step
@@ -316,7 +316,7 @@ echo "pc=${cpu.pc} sp=${cpu.sp}"
 ```
 debug.step                     # one instruction
 debug.step 100                 # 100 instructions, no per-step output
-cpu.pc                         # see where we ended up
+machine.cpu.pc                         # see where we ended up
 debug.disasm                   # 16 instructions forward from PC (default)
 debug.disasm 5                 # 5 instructions forward from PC
 debug.disasm 0x40802A14 5      # 5 instructions forward from an explicit addr
@@ -331,16 +331,16 @@ you peek at code anywhere without moving PC first.
 
 ```
 debug.breakpoints.add 0x40802A14                   # plain
-debug.breakpoints.add 0x40802A14 "cpu.d0 == 0"     # conditional
+debug.breakpoints.add 0x40802A14 "machine.cpu.d0 == 0"     # conditional
 debug.breakpoints.add 0x40802A14 "" "physical"     # physical-space
 debug.breakpoints.list
 scheduler.run                                      # runs to break or stop
 scheduler.run 1000000                              # bounded run (instruction budget)
-cpu.pc
+machine.cpu.pc
 debug.breakpoints.clear
 ```
 
-Conditional predicates are expression strings — `cpu.d0 == 0`,
+Conditional predicates are expression strings — `machine.cpu.d0 == 0`,
 `mmu.enabled` (when an MMU object exists), etc.; they share the
 expression grammar. Inspect a live entry inside an expression:
 `${debug.breakpoints[<id>].hit_count}`.
@@ -348,12 +348,12 @@ expression grammar. Inspect a live entry inside an expression:
 ### 6.4 Memory poke / peek / dump / search
 
 ```
-memory.ram_size                                       # 8388608 (SE/30 default)
-memory.peek.l 0x400                                   # 32-bit BE long
-memory.peek.b 0x400                                   # one byte
-memory.poke.l 0x10000 0xdeadbeef                      # write
-memory.dump 0x100 32                                  # hex+ASCII
-memory.read_cstring 0x40800030                        # null-terminated string
+machine.memory.ram_size                                       # 8388608 (SE/30 default)
+machine.memory.peek.l 0x400                                   # 32-bit BE long
+machine.memory.peek.b 0x400                                   # one byte
+machine.memory.poke.l 0x10000 0xdeadbeef                      # write
+machine.memory.dump 0x100 32                                  # hex+ASCII
+machine.memory.read_cstring 0x40800030                        # null-terminated string
 
 find.str "Apple" $0x40800000..$0x40810000             # half-open range
 find.long 0x4170706c $0x40800000..$0x40810000         # 32-bit BE
@@ -388,8 +388,8 @@ leaves any `${...}` placeholders intact for the logpoint parser to
 expand at fire time:
 
 ```
-debug.logpoints.add '0x40800090 "hello pc=${cpu.pc}"'
-debug.logpoints.add '--write 0x16A.l "Ticks bumped pc=${cpu.pc} val=${lp.value}"'
+debug.logpoints.add '0x40800090 "hello pc=${machine.cpu.pc}"'
+debug.logpoints.add '--write 0x16A.l "Ticks bumped pc=${machine.cpu.pc} val=${lp.value}"'
 debug.logpoints.add '--read  L:0x1200D0C3.b'
 debug.logpoints.list
 debug.logpoints.clear
@@ -411,10 +411,10 @@ Single quotes opt out of `${...}` substitution entirely — the body is
 passed through to the logpoint parser verbatim, so deferred
 placeholders survive. Inside double quotes `${...}` is expanded
 immediately (useful only when you want the *current* value baked into
-the message text). Available placeholders at fire time: `${cpu.pc}`,
-`${cpu.d0}`, …, `${lp.value}`, `${lp.addr}`, `${lp.size}`,
-`${lp.instruction_pc}`, `${memory.peek.b(addr)}`,
-`${memory.read_cstring(addr)}`. Streaming output requires the matching
+the message text). Available placeholders at fire time: `${machine.cpu.pc}`,
+`${machine.cpu.d0}`, …, `${lp.value}`, `${lp.addr}`, `${lp.size}`,
+`${lp.instruction_pc}`, `${machine.memory.peek.b(addr)}`,
+`${machine.memory.read_cstring(addr)}`. Streaming output requires the matching
 log category to be enabled — `debug.log "memory" 1`.
 
 ### 6.6 Mac low-memory globals
@@ -433,11 +433,11 @@ Sizes: 1/2/4-byte globals come back as unsigned ints; larger blobs
 ### 6.7 Screen capture and matching
 
 ```
-screen.save "/tmp/now.png"
-screen.checksum                                       # whole framebuffer
-screen.checksum 0 0 100 100                           # rectangle
-screen.match "tests/integration/<test>/expected.png"
-screen.match_or_save "ref.png" "/tmp/actual.png"
+machine.screen.save "/tmp/now.png"
+machine.screen.checksum                                       # whole framebuffer
+machine.screen.checksum 0 0 100 100                           # rectangle
+machine.screen.match "tests/integration/<test>/expected.png"
+machine.screen.match_or_save "ref.png" "/tmp/actual.png"
 ```
 
 Screenshot path must end in `.png`. `match` returns true on
@@ -452,15 +452,15 @@ machine.freq                                          # 15667200 (Hz)
 machine.profile "se30"                                # full profile (JSON string)
 machine.profile "plus"                                # ditto
 
-rom.path                                              # currently loaded ROM
-rom.checksum                                          # "97221136" (8-hex string)
-rom.name                                              # "Universal IIx/IIcx/SE/30 ROM"
-rom.identify "tests/data/roms/Plus_v3.rom"            # full info map (JSON)
+machine.rom.path                                              # currently loaded ROM
+machine.rom.checksum                                          # "97221136" (8-hex string)
+machine.rom.name                                              # "Universal IIx/IIcx/SE/30 ROM"
+machine.rom.identify "tests/data/roms/Plus_v3.rom"            # full info map (JSON)
 ```
 
 `machine.profile(id)` returns a JSON-string carrying `id`, `name`,
 `freq`, `ram_options`, `ram_default`, `ram_max`, `floppy_slots`,
-`scsi_slots`, `has_cdrom`, `cdrom_id`, `needs_vrom`. `rom.identify(path)`
+`scsi_slots`, `has_cdrom`, `cdrom_id`, `needs_vrom`. `machine.rom.identify(path)`
 returns `{recognised, compatible, checksum, name, size}`. For
 unreadable paths both return an error.
 
@@ -479,13 +479,13 @@ scheduler.mode                                        # max / realtime / hardwar
 `debug.step N` is sugar for "run N instructions, then stop".
 
 **Execution is deterministic.** The emulator is single-threaded and
-cycle-driven; with a fixed `rtc.time` and `--speed=max`, a fresh boot
+cycle-driven; with a fixed `machine.rtc.time` and `--speed=max`, a fresh boot
 reproduces bit-identical state for the same command sequence
 (instruction count, PC, registers, framebuffer checksum) — verified
 identical across runs out to hundreds of millions of instructions. So
 events land at reproducible instruction counts, and you can pinpoint
 where two scenarios diverge by running the same budget and diffing
-`cpu.pc` / registers / `screen.checksum`. (If you ever see apparent
+`machine.cpu.pc` / registers / `machine.screen.checksum`. (If you ever see apparent
 non-determinism, suspect the harness, not the core: a torn disk image
 from copying it while a daemon still holds it, a daemon crash that
 truncated a run, or a breakpoint condition matching a transient value.)
@@ -493,7 +493,7 @@ truncated a run, or a breakpoint condition matching a transient value.)
 **`scheduler.run N` can retire fewer than N instructions.** A guest
 idle `STOP` consumes the cycle budget without retiring instructions, so
 a bounded run may "undershoot" its target. Loop and check
-`cpu.instr_count` to reach a specific instruction count.
+`machine.cpu.instr_count` to reach a specific instruction count.
 
 ### 6.10 Logging
 
@@ -510,17 +510,17 @@ spec string (`level=5 file=/tmp/cpu.log ts=on`).
 ### 6.11 Floppy / SCSI / input
 
 ```
-floppy.create "/tmp/blank.dsk"                        # 800K blank, auto-mounts
-floppy.drives[0].insert "/tmp/blank.dsk"              # mount into drive 0
-echo ${floppy.drives[0].present}                      # true
-floppy.drives[0].eject                                # zero-arg call
+machine.floppy.create "/tmp/blank.dsk"                        # 800K blank, auto-mounts
+machine.floppy.drive[0].insert "/tmp/blank.dsk"              # mount into drive 0
+echo ${machine.floppy.drive[0].present}                      # true
+machine.floppy.drive[0].eject                                # zero-arg call
 
-scsi.attach_hd "tests/data/hd/system.img" 0
-scsi.bus.phase                                        # bus_free / cmd / data / ...
+machine.scsi.attach_hd "tests/data/hd/system.img" 0
+machine.scsi.bus.phase                                        # bus_free / cmd / data / ...
 
-mouse.move 100 100
-mouse.click
-keyboard.press "Return"
+machine.adb.mouse.move 100 100
+machine.adb.mouse.click
+machine.adb.keyboard.press "Return"
 ```
 
 ### 6.12 Reading individual resources (synthetic /rsrc tree)
@@ -574,12 +574,12 @@ Conventions:
 
 ## 7. Pitfalls
 
-- **Operators only work inside `${...}`.** `cpu.d0 = cpu.pc + 4` at the
-  top level is a syntax error; write `cpu.d0 = ${cpu.pc + 4}`.
+- **Operators only work inside `${...}`.** `machine.cpu.d0 = machine.cpu.pc + 4` at the
+  top level is a syntax error; write `machine.cpu.d0 = ${machine.cpu.pc + 4}`.
 - **Top-level `path(arg)` is rejected** — the call form is reserved for
-  inside `${...}`. At the prompt use shell form: `cpu.step 1000`,
+  inside `${...}`. At the prompt use shell form: `machine.cpu.step 1000`,
   `debug.breakpoints.add 0x400`. Inside `${...}` use call form:
-  `${cpu.step(1000)}`, `${debug.breakpoints.add(0x400)}`.
+  `${machine.cpu.step(1000)}`, `${debug.breakpoints.add(0x400)}`.
 - **Aliases require `$`.** `${pc}` errors; `${$pc}` works. Bare `pc`
   is treated as a path against the root, which fails.
 - **Padding-sensitive format specs need quoting.** An unquoted
@@ -594,16 +594,16 @@ Conventions:
   use that.
 - **Indexed-child reads of attributes work both at the top level and
   inside `${...}`** (`debug.breakpoints[<id>].addr`,
-  `floppy.drives[0].present`), but the index must resolve to a live
+  `machine.floppy.drive[0].present`), but the index must resolve to a live
   entry: a stale id gives "entries[N] is empty" rather than
   dispatching. Method calls on indexed entries also work in both forms
-  — shell-form at the prompt (`floppy.drives[0].insert "/tmp/x.dsk"`,
+  — shell-form at the prompt (`machine.floppy.drive[0].insert "/tmp/x.dsk"`,
   `debug.breakpoints[<id>].remove`) and call-form inside expressions
   (`${debug.breakpoints[<id>].remove()}`).
 - **Logpoint specs need single quotes for deferred `${...}`.** The
   shell substitutor expands `${...}` immediately inside double-quoted
   strings; wrap the whole logpoint spec in `'...'` so placeholders
-  reach the logpoint parser intact (`debug.logpoints.add '0x... "${cpu.pc}"'`).
+  reach the logpoint parser intact (`debug.logpoints.add '0x... "${machine.cpu.pc}"'`).
 - **VIA timer interrupts don't fire during single-step.** Use
   `scheduler.run N` instead of `debug.step N` if timer-driven code
   needs to make progress.
@@ -620,13 +620,13 @@ Conventions:
   responses dry up. (Memory inspection — `peek`/`dump`/`poke`/`find` —
   no longer crashes on bad addresses; see §6.4.)
 - **Conditional breakpoints fire on a *transient* match.** A condition
-  like `cpu.a2 == 0x1234` at a function-entry PC triggers whenever A2
+  like `machine.cpu.a2 == 0x1234` at a function-entry PC triggers whenever A2
   *momentarily* equals the value — e.g. before the intended register
   load, so you can stop on the "wrong" hit. Confirm with a second field
-  (`cpu.d2`, a count), or break at a PC where the register is known to
+  (`machine.cpu.d2`, a count), or break at a PC where the register is known to
   hold the value.
 - **Deep `${...}` nesting has a parser limit.** More than ~3 nested
-  levels (`${memory.peek.l(memory.peek.l(memory.peek.l(...)))}`) or many
+  levels (`${machine.memory.peek.l(machine.memory.peek.l(machine.memory.peek.l(...)))}`) or many
   `${}` groups on one line can error with `unterminated ${...}`. Capture
   intermediate values across separate commands instead of one mega-expr.
 

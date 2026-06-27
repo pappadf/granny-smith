@@ -134,8 +134,8 @@
         const n = (await detectFdDriveCount()) || 1;
         let drive = -1;
         for (let i = 0; i < n; i++) {
-          if ((await gsEval(`floppy.drives[${i}].present`)) === true) continue;
-          if ((await gsEval(`floppy.drives[${i}].insert`, [entry.path, false])) === true) {
+          if ((await gsEval(`machine.floppy.drive[${i}].present`)) === true) continue;
+          if ((await gsEval(`machine.floppy.drive[${i}].insert`, [entry.path, false])) === true) {
             drive = i;
             break;
           }
@@ -147,11 +147,11 @@
         setMounted(entry.path, { kind: 'fd', drive });
         showNotification(`Inserted '${entry.name}'`, 'info');
       } else if (cat === 'hd') {
-        await gsEval('scsi.attach_hd', [entry.path, 0]);
+        await gsEval('machine.scsi.attach_hd', [entry.path, 0]);
         setMounted(entry.path, { kind: 'hd', drive: 0 });
         showNotification(`Mounted '${entry.name}'`, 'info');
       } else if (cat === 'cd') {
-        await gsEval('scsi.attach_cdrom', [entry.path, 3]);
+        await gsEval('machine.scsi.attach_cdrom', [entry.path, 3]);
         setMounted(entry.path, { kind: 'cd', drive: 3 });
         showNotification(`Inserted '${entry.name}'`, 'info');
       }
@@ -165,11 +165,11 @@
     const drive = images.mounted[entry.path]?.drive ?? 0;
     try {
       if (cat === 'fd') {
-        await gsEval(`floppy.drives[${drive}].eject`);
+        await gsEval(`machine.floppy.drive[${drive}].eject`);
       } else if (cat === 'hd') {
-        await gsEval('scsi.detach_hd', [0]);
+        await gsEval('machine.scsi.detach_hd', [0]);
       } else if (cat === 'cd') {
-        await gsEval('scsi.detach_cdrom', [3]);
+        await gsEval('machine.scsi.detach_cdrom', [3]);
       }
       setMounted(entry.path, null);
       showNotification(`${isRemovable ? 'Ejected' : 'Unmounted'} '${entry.name}'`, 'info');

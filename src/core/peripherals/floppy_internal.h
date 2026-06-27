@@ -251,8 +251,9 @@ struct floppy {
 
     // Object-tree binding — lifetime tied to floppy_init / floppy_delete.
     struct object *object; // top-level floppy node
-    struct object *drives_object; // floppy.drives collection child
+    struct object *drives_object; // floppy.drive collection child
     struct object *drive_objects[NUM_DRIVES]; // per-drive entry objects
+    struct object *disk_objects[NUM_DRIVES]; // per-drive medium (disk) nodes — drive[N].disk
     // Per-drive back-link used as instance_data for each drive entry.
     floppy_drive_link_t drive_links[NUM_DRIVES];
 };

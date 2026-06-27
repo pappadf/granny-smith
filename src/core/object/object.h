@@ -40,6 +40,29 @@ struct class_desc;
 #define OBJ_ARG_NONEMPTY    0x0004u // V_STRING value must be non-NULL and non-empty
 #define OBJ_ARG_STRICT_KIND 0x0008u // disable int↔uint, int→float, string→enum coercion
 
+// === Member visibility category (proposal-system-object-model.md §7.2) =======
+//
+// A three-tier visibility classification, stored in the high bits of
+// member_t.flags (the low bits hold VAL_RO/VAL_HEX/… from value.h, which
+// occupy 0x0001..0x0020). Every consumer (SYSTEM tab, command browser)
+// reads the category off the model so visibility cannot drift the way a
+// hand-maintained allowlist did:
+//   basic    — always shown in the tree; the default (0).
+//   advanced — shown only with the "Advanced" toggle on.
+//   internal — never shown in the tree, but fully scriptable.
+#define M_CAT_BASIC    0x0000u // default — always shown
+#define M_CAT_ADVANCED 0x0100u // shown only under the Advanced toggle
+#define M_CAT_INTERNAL 0x0200u // never shown in UI; still scriptable
+#define M_CAT_MASK     0x0300u // mask to extract the category bits
+
+// === Method UI metadata (proposal-system-object-model.md §7.3) ===============
+//
+// Flags on a method member that steer context menus and the command
+// browser. They hang off the existing method descriptor; no new subsystem.
+#define MM_DESTRUCTIVE 0x0001u // confirm before invoking (eject, rm, …)
+#define MM_MUTATE      0x0002u // changes state (vs a pure query)
+#define MM_HIDDEN      0x0004u // not surfaced in UI menus / browser
+
 // One declared parameter on a method. Mirrors proposal §3.
 //
 // Two flag fields (proposal §3.3):
@@ -90,7 +113,14 @@ typedef struct member {
     member_kind_t kind;
     const char *name;
     const char *doc;
-    uint16_t flags; // VAL_RO (read-only marker — per-member, not per-slot)
+    uint16_t flags; // VAL_RO + M_CAT_* visibility (per-member, not per-slot)
+    // Optional display label (proposal §7.1). The path segment stays
+    // `name`; the tree shows `label` when present, else `name`. NULL = use
+    // the name.
+    const char *label;
+    // Ordering weight for a faithful, deterministic tree (proposal §7.4).
+    // Lower sorts earlier; ties break on declaration order. Default 0.
+    int16_t order;
     union {
         struct {
             value_kind_t type;
@@ -107,10 +137,24 @@ typedef struct member {
             int nargs;
             value_kind_t result;
             method_fn fn;
+            // UI metadata (proposal §7.3): MM_DESTRUCTIVE | MM_MUTATE | MM_HIDDEN.
+            uint16_t ui_flags;
+            // Short verb shown in menus ("Save image…") when distinct from
+            // the method name ("export"). NULL = use the method name.
+            const char *verb_label;
+            // By-task grouping for the command browser ("storage", "debugger",
+            // "mac", …); a different axis from the structural tree (§7.3/§8.6).
+            const char *task_category;
         } method;
         struct {
             const struct class_desc *cls;
             bool indexed;
+            // A non-owning reference edge (proposal §6.2/§6.3): the child is a
+            // cross-reference the parent points at but does not own. It does
+            // not cascade-delete and renders as a clickable link, not an
+            // expandable child. Reference children are always callback-backed
+            // (never in the attached/owning list) so cascade never frees them.
+            bool reference;
             // Indexed children: get(i)→object|NULL (NULL = hole), count→live,
             //                   next(prev)→next live index or -1. Pass -1 to start.
             // Named children:   lookup(name)→object|NULL.
@@ -167,9 +211,32 @@ void object_root_set_class(const class_desc_t *cls);
 // object. Returns NULL on allocation failure.
 struct object *object_new(const class_desc_t *cls, void *instance_data, const char *name);
 
-// Detach if attached, then free. Children of statically-described
-// classes are not auto-deleted (they belong to the parent's storage).
+// Detach if attached, then free. Runs the per-object destructor (if set,
+// see object_set_destructor) first so a module can release the C struct
+// behind instance_data. Attached children are NOT recursively freed here;
+// use object_delete_tree for cascade teardown.
 void object_delete(struct object *o);
+
+// Cascade-delete: free `o` and its entire owned subtree in post-order
+// (deepest children first, then `o`). "Owned" means the attached-child
+// (object_attach) edges, which form the spanning tree and the canonical
+// path (proposal §6.1). Reference edges (member_t.child.reference, always
+// callback-backed and never attached) are not followed. Indexed-collection
+// item objects produced by member get/next callbacks are likewise not
+// attached, so they are not freed here — their owning module frees them in
+// its own destructor. Each object's destructor (object_set_destructor)
+// runs before its wrapper memory is freed.
+void object_delete_tree(struct object *o);
+
+// Per-object destructor, run by object_delete / object_delete_tree just
+// before the wrapper memory is freed (after invalidators fire and the meta
+// node is released). The substrate always frees the object wrapper itself;
+// the destructor only frees the module state behind instance_data (the
+// cpu_t/scsi_t/image_t the wrapper points at) and any unattached
+// collection-item wrappers the module owns. Default NULL (no-op), so
+// existing callers that free their own structs are unaffected.
+typedef void (*object_dtor_fn)(struct object *o);
+void object_set_destructor(struct object *o, object_dtor_fn dtor);
 
 // Tree topology. Both object_attach and object_detach are O(1).
 // object_attach asserts that child is not already attached elsewhere.
@@ -185,11 +252,41 @@ const char *object_name(const struct object *o);
 void *object_data(struct object *o);
 struct object *object_parent(struct object *o);
 
+// === Display label & ordering (proposal §7.1 / §7.4) ========================
+//
+// An object's `name` is its stable path segment (`machine`); its `label`
+// is the human-facing display string ("Macintosh IIcx"). Hardware nodes
+// are attached at runtime, so their label is set per-object here rather
+// than on a static member. object_label falls back to the name when no
+// label was set. The label string is borrowed and must outlive the object.
+void object_set_label(struct object *o, const char *label);
+const char *object_label(struct object *o); // label if set, else name
+
+// Ordering weight for a deterministic SYSTEM tree. Lower sorts earlier;
+// ties break on attach order. Default 0. Honoured by
+// object_each_attached_ordered (and thus meta.children).
+void object_set_order(struct object *o, int order);
+int object_order(struct object *o);
+
+// Visibility category for an attached child object (proposal §7.2). Per-
+// member visibility lives in member_t.flags (M_CAT_*); attached hardware
+// nodes carry it per-object here instead, since they are not declared
+// members. Pass one of M_CAT_BASIC / M_CAT_ADVANCED / M_CAT_INTERNAL.
+// Default M_CAT_BASIC (always shown).
+void object_set_category(struct object *o, uint16_t category);
+uint16_t object_category(struct object *o);
+
 // Iterate this object's statically-attached children (named children
 // added via object_attach). Calls fn for each. Indexed children declared
 // via member_t.child.get/next are not visited here.
 void object_each_attached(struct object *o, void (*fn)(struct object *parent, struct object *child, void *ud),
                           void *ud);
+
+// Like object_each_attached, but visits children in ascending object_order
+// (ties break on attach order), so the SYSTEM tab and meta.children render
+// in a stable, meaningful sequence (proposal §7.4).
+void object_each_attached_ordered(struct object *o, void (*fn)(struct object *parent, struct object *child, void *ud),
+                                  void *ud);
 
 // Linear lookup of a member by name. Returns NULL if not found.
 const member_t *class_find_member(const class_desc_t *cls, const char *name);

@@ -31,7 +31,7 @@
 //
 // Why a separate test, not an extension of the headless integration run:
 //
-//   * The integration test compares `screen.save` PNGs — i.e. fb bytes
+//   * The integration test compares `machine.screen.save` PNGs — i.e. fb bytes
 //     run through the live CLUT, no monitor model.  Kong's gamma-pre-
 //     corrected CLUT shows through as a yellow tint in those refs.
 //
@@ -253,8 +253,8 @@ test.describe('IIcx video-mode matrix via web UI', () => {
 
       // Confirm the JMFB landed on the requested resolution.
       expect(await page.evaluate(() => (window as any).gsEval('machine.id'))).toBe('iicx');
-      expect(Number(await page.evaluate(() => (window as any).gsEval('screen.width')))).toBe(mode.width);
-      expect(Number(await page.evaluate(() => (window as any).gsEval('screen.height')))).toBe(mode.height);
+      expect(Number(await page.evaluate(() => (window as any).gsEval('machine.screen.width')))).toBe(mode.width);
+      expect(Number(await page.evaluate(() => (window as any).gsEval('machine.screen.height')))).toBe(mode.height);
 
       // Bring the toolbar zoom down to 100% so the canvas-screenshot
       // dimensions match the framebuffer (and the reference baseline).
@@ -274,10 +274,10 @@ test.describe('IIcx video-mode matrix via web UI', () => {
       // file-header.
       await runCommand(page, 'run 40000000');
       await waitForPrompt(page);
-      await page.evaluate(() => (window as any).gsEval('memory.poke.w', [0x017A, 0x8805]));
+      await page.evaluate(() => (window as any).gsEval('machine.memory.poke.w', [0x017A, 0x8805]));
       await runCommand(page, 'run 2000000');
       await waitForPrompt(page);
-      await page.evaluate(() => (window as any).gsEval('memory.poke.w', [0x017A, 0]));
+      await page.evaluate(() => (window as any).gsEval('machine.memory.poke.w', [0x017A, 0]));
       await runCommand(page, 'run 15000000');
       await waitForPrompt(page);
 

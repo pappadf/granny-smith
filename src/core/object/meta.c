@@ -19,6 +19,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "json_encode.h"
 #include "object.h"
 #include "value.h"
 
@@ -158,7 +159,9 @@ static value_t meta_get_children(struct object *self, const member_t *m) {
             if (cls->members[i].kind == M_CHILD)
                 name_list_push(&acc, cls->members[i].name);
     }
-    object_each_attached(insp, each_attached_collect, &acc);
+    // Attached (runtime) children in deterministic (order, attach_seq)
+    // sequence so the SYSTEM tab renders stably (proposal §7.4).
+    object_each_attached_ordered(insp, each_attached_collect, &acc);
     return val_list(acc.items, acc.len);
 }
 
@@ -190,6 +193,37 @@ static value_t meta_get_methods(struct object *self, const member_t *m) {
                 name_list_push(&acc, cls->members[i].name);
     }
     return val_list(acc.items, acc.len);
+}
+
+// Map a visibility-category bitfield (M_CAT_*) to its string name. Used by
+// the SYSTEM tab / command browser to honour the §7.2 three-tier model.
+static const char *category_name(uint16_t flags) {
+    switch (flags & M_CAT_MASK) {
+    case M_CAT_ADVANCED:
+        return "advanced";
+    case M_CAT_INTERNAL:
+        return "internal";
+    default:
+        return "basic";
+    }
+}
+
+// `label` — the inspected node's display label (proposal §7.1). Falls back
+// to its path-segment name when no explicit label was set.
+static value_t meta_get_label(struct object *self, const member_t *m) {
+    (void)m;
+    struct object *insp = meta_inspected(self);
+    const char *label = object_label(insp);
+    return val_str(label ? label : "");
+}
+
+// `category` — the inspected node's own visibility tier (basic / advanced /
+// internal). Lets the SYSTEM tab decide whether to show a child object
+// without a separate allowlist (proposal §7.2 / §8.2).
+static value_t meta_get_category(struct object *self, const member_t *m) {
+    (void)m;
+    struct object *insp = meta_inspected(self);
+    return val_str(category_name(object_category(insp)));
 }
 
 // === Methods ==============================================================
@@ -248,6 +282,104 @@ static value_t meta_method_member(struct object *self, const member_t *m, int ar
     return val_str(buf);
 }
 
+// `member_category(name)` — visibility tier of a named member on the
+// inspected class: "basic" / "advanced" / "internal" (proposal §7.2). The
+// SYSTEM tab reads this to decide whether to show an attribute/method row.
+// Unknown names default to "basic" (faithful-by-default, §P6).
+static value_t meta_method_member_category(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)m;
+    if (argc < 1 || argv[0].kind != V_STRING || !argv[0].s)
+        return val_err("member_category: expected (name)");
+    struct object *insp = meta_inspected(self);
+    const member_t *mb = class_find_member(insp ? object_class(insp) : NULL, argv[0].s);
+    return val_str(category_name(mb ? mb->flags : 0));
+}
+
+// `member_label(name)` — display label of a named member, falling back to the
+// name itself (proposal §7.1).
+static value_t meta_method_member_label(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)m;
+    if (argc < 1 || argv[0].kind != V_STRING || !argv[0].s)
+        return val_err("member_label: expected (name)");
+    struct object *insp = meta_inspected(self);
+    const member_t *mb = class_find_member(insp ? object_class(insp) : NULL, argv[0].s);
+    const char *label = (mb && mb->label) ? mb->label : argv[0].s;
+    return val_str(label);
+}
+
+// `method_info(name)` — UI metadata for a method member, JSON-encoded so the
+// context menu and command browser render it without a static catalogue
+// (proposal §7.3/§8.3/§8.6): verb label, task category, destructive/mutate/
+// hidden flags, declared arg count, and doc. Returns a V_ERROR if the member
+// is not a method.
+static value_t meta_method_method_info(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)m;
+    if (argc < 1 || argv[0].kind != V_STRING || !argv[0].s)
+        return val_err("method_info: expected (name)");
+    struct object *insp = meta_inspected(self);
+    const member_t *mb = class_find_member(insp ? object_class(insp) : NULL, argv[0].s);
+    if (!mb || mb->kind != M_METHOD)
+        return val_err("method_info: '%s' is not a method", argv[0].s);
+    json_builder_t *b = json_builder_new();
+    if (!b)
+        return val_err("method_info: out of memory");
+    json_open_obj(b);
+    json_key(b, "name");
+    json_str(b, mb->name ? mb->name : "");
+    json_key(b, "verb");
+    json_str(b, mb->method.verb_label ? mb->method.verb_label : (mb->name ? mb->name : ""));
+    json_key(b, "category");
+    json_str(b, category_name(mb->flags));
+    json_key(b, "task");
+    json_str(b, mb->method.task_category ? mb->method.task_category : "");
+    json_key(b, "doc");
+    json_str(b, mb->doc ? mb->doc : "");
+    json_key(b, "destructive");
+    json_bool(b, (mb->method.ui_flags & MM_DESTRUCTIVE) != 0);
+    json_key(b, "mutate");
+    json_bool(b, (mb->method.ui_flags & MM_MUTATE) != 0);
+    json_key(b, "hidden");
+    json_bool(b, (mb->method.ui_flags & MM_HIDDEN) != 0);
+    json_key(b, "nargs");
+    json_int(b, (int64_t)mb->method.nargs);
+    json_close_obj(b);
+    return json_finish(b);
+}
+
+// `indices(name)` — the live indices of an indexed-child member (proposal
+// §5.3). Lets a tree walker enumerate a sparse collection's occupants
+// (machine.scsi.device[0], [3], …) instead of stopping at the bare collection
+// member. Returns a V_LIST<V_INT> for an indexed member (possibly empty), or
+// a V_ERROR for a non-indexed / unknown member — so a caller can use the
+// error/list distinction to tell "indexed collection" from "named child".
+static value_t meta_method_indices(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)m;
+    if (argc < 1 || argv[0].kind != V_STRING || !argv[0].s)
+        return val_err("indices: expected (name)");
+    struct object *insp = meta_inspected(self);
+    const member_t *mb = class_find_member(insp ? object_class(insp) : NULL, argv[0].s);
+    if (!mb || mb->kind != M_CHILD || !mb->child.indexed)
+        return val_err("indices: '%s' is not an indexed child", argv[0].s);
+    // Walk the member's sparse-index iterator (start at -1). next() returns the
+    // next live index or -1 when exhausted; holes are skipped by the callback.
+    value_t *items = NULL;
+    size_t len = 0, cap = 0;
+    if (mb->child.next) {
+        for (int i = mb->child.next(insp, -1); i >= 0; i = mb->child.next(insp, i)) {
+            if (len + 1 > cap) {
+                size_t ncap = cap ? cap * 2 : 8;
+                value_t *t = (value_t *)realloc(items, ncap * sizeof(value_t));
+                if (!t)
+                    break;
+                items = t;
+                cap = ncap;
+            }
+            items[len++] = val_int(i);
+        }
+    }
+    return val_list(items, len);
+}
+
 // === Class table =========================================================
 
 static const arg_decl_t meta_complete_args[] = {
@@ -260,6 +392,10 @@ static const arg_decl_t meta_complete_args[] = {
 
 static const arg_decl_t meta_member_args[] = {
     {.name = "name", .kind = V_STRING, .doc = "Member name on the inspected class"},
+};
+
+static const arg_decl_t meta_named_member_args[] = {
+    {.name = "name", .kind = V_STRING, .validation_flags = OBJ_ARG_NONEMPTY, .doc = "Member name"},
 };
 
 static const member_t meta_members[] = {
@@ -278,6 +414,16 @@ static const member_t meta_members[] = {
      .doc = "Absolute dotted path of the inspected node",
      .flags = VAL_RO,
      .attr = {.type = V_STRING, .get = meta_get_path, .set = NULL}},
+    {.kind = M_ATTR,
+     .name = "label",
+     .doc = "Human-facing display label of the inspected node (falls back to name)",
+     .flags = VAL_RO,
+     .attr = {.type = V_STRING, .get = meta_get_label, .set = NULL}},
+    {.kind = M_ATTR,
+     .name = "category",
+     .doc = "Visibility tier of the inspected node: basic | advanced | internal",
+     .flags = VAL_RO,
+     .attr = {.type = V_STRING, .get = meta_get_category, .set = NULL}},
     {.kind = M_ATTR,
      .name = "children",
      .doc = "Names of sub-objects on the inspected node",
@@ -301,6 +447,22 @@ static const member_t meta_members[] = {
      .name = "member",
      .doc = "Short description of one named member",
      .method = {.args = meta_member_args, .nargs = 1, .result = V_STRING, .fn = meta_method_member}},
+    {.kind = M_METHOD,
+     .name = "member_category",
+     .doc = "Visibility tier of a named member: basic | advanced | internal",
+     .method = {.args = meta_named_member_args, .nargs = 1, .result = V_STRING, .fn = meta_method_member_category}},
+    {.kind = M_METHOD,
+     .name = "member_label",
+     .doc = "Display label of a named member (falls back to its name)",
+     .method = {.args = meta_named_member_args, .nargs = 1, .result = V_STRING, .fn = meta_method_member_label}},
+    {.kind = M_METHOD,
+     .name = "method_info",
+     .doc = "JSON UI metadata for a method (verb, task, destructive, mutate, hidden, nargs)",
+     .method = {.args = meta_named_member_args, .nargs = 1, .result = V_STRING, .fn = meta_method_method_info}},
+    {.kind = M_METHOD,
+     .name = "indices",
+     .doc = "Live indices of an indexed-child member (errors if not indexed)",
+     .method = {.args = meta_named_member_args, .nargs = 1, .result = V_LIST, .fn = meta_method_indices}},
 };
 
 // Special class name — would normally trip the `meta`-is-reserved check

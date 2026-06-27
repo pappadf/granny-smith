@@ -6,7 +6,7 @@
 scheduler.run 100
 
 # Bare-read of cpu prints all integer registers as a name=value table.
-cpu
+machine.cpu
 
 # Bare-read of cpu.fpu prints the floating-point register file (Plus
 # has no FPU so this is an "fpu not present" V_ERROR; SE/30 would

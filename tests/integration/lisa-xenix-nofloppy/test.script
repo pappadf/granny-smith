@@ -6,35 +6,35 @@
 # "boot :" prompt is pre-filled with the default pf(0,0)xenix, so a bare Return
 # (0xC8/0x48) boots it.
 
-profile.attach "${WORK_DIR}/profile.image"
+machine.hd.attach "${WORK_DIR}/profile.image"
 assert ${machine.id == "lisa"} "machine.id != lisa"
-assert ${rom.checksum == "098917B2"} "rom.checksum != 098917B2 (rev-H)"
-assert ${profile.present == true} "ProFile should be attached"
+assert ${machine.rom.checksum == "098917B2"} "rom.checksum != 098917B2 (rev-H)"
+assert ${machine.hd.present == true} "ProFile should be attached"
 
 # === No floppy: the ROM "insert diskette / STARTUP FROM…" screen =============
 scheduler.run 200000000
-screen.match expected_nofloppy.png
+machine.screen.match expected_nofloppy.png
 
 # === Apple-3 → the ROM STARTUP FROM device picker ===========================
-keyboard.press 0xFF
+machine.adb.keyboard.press 0xFF
 scheduler.run 200000
-keyboard.press 0xF2
+machine.adb.keyboard.press 0xF2
 scheduler.run 200000
-keyboard.press 0x72
+machine.adb.keyboard.press 0x72
 scheduler.run 200000
-keyboard.press 0x7F
+machine.adb.keyboard.press 0x7F
 scheduler.run 5000000
 # Picker shows two boot devices: ▣2 (floppy) and ▣3 (the parallel-port ProFile).
-screen.match expected_startupfrom.png
+machine.screen.match expected_startupfrom.png
 
 # === Apple-3 → select the ProFile (▣3); its on-disk loader boots ============
-keyboard.press 0xFF
+machine.adb.keyboard.press 0xFF
 scheduler.run 200000
-keyboard.press 0xF2
+machine.adb.keyboard.press 0xF2
 scheduler.run 200000
-keyboard.press 0x72
+machine.adb.keyboard.press 0x72
 scheduler.run 200000
-keyboard.press 0x7F
+machine.adb.keyboard.press 0x7F
 # The ProFile's loader reaches its "boot :" prompt (default cmd: pf(0,0)xenix).
 scheduler.run 60000000
 
@@ -42,16 +42,16 @@ scheduler.run 60000000
 # Dummy Return first clears the loader's COPS state-3, then Return boots the
 # kernel off the ProFile.  Completing the read depends on the deferred BSY/CA1
 # data-ready edge (lisa_profile.c pro_complete); without it this hangs forever.
-keyboard.press 0xC8
+machine.adb.keyboard.press 0xC8
 scheduler.run 300000
-keyboard.press 0x48
+machine.adb.keyboard.press 0x48
 scheduler.run 5000000
-keyboard.press 0xC8
+machine.adb.keyboard.press 0xC8
 scheduler.run 300000
-keyboard.press 0x48
+machine.adb.keyboard.press 0x48
 
 # Xenix boots to its multi-user startup prompt ("Type CONTROL-d to proceed with
 # normal startup, / or give root password for system maintenance").
 scheduler.run 120000000
-screen.match expected_startup.png
+machine.screen.match expected_startup.png
 quit

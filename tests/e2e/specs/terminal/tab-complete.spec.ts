@@ -31,40 +31,41 @@ test.describe('Tab completion', () => {
   test('line-start lists root children and root methods', async ({ page }) => {
     const all = await complete(page, '');
     expect(Array.isArray(all)).toBeTruthy();
-    // Top-level objects attached to the root.
-    expect(all).toEqual(expect.arrayContaining(['cpu', 'memory', 'storage']));
+    // Top-level objects attached to the root: the machine container plus the
+    // meta service objects. Hardware (cpu/memory/…) now lives under `machine`.
+    expect(all).toEqual(expect.arrayContaining(['machine', 'storage']));
     // Root methods on the emu root class: help, quit, time, echo, …
     expect(all).toEqual(expect.arrayContaining(['help', 'quit']));
   });
 
   test('line-start prefix narrows the suggestions', async ({ page }) => {
-    const matches = await complete(page, 'cp');
-    // `cpu` (root child) starts with "cp".
-    expect(matches).toEqual(expect.arrayContaining(['cpu']));
-    // Anything that doesn't start with `cp` must be filtered out.
-    expect(matches.every((m: string) => m.toLowerCase().startsWith('cp'))).toBeTruthy();
+    const matches = await complete(page, 'mach');
+    // `machine` (root child) starts with "mach".
+    expect(matches).toEqual(expect.arrayContaining(['machine']));
+    // Anything that doesn't start with `mach` must be filtered out.
+    expect(matches.every((m: string) => m.toLowerCase().startsWith('mach'))).toBeTruthy();
   });
 
   test('mid-path lists members of the resolved object', async ({ page }) => {
-    const matches = await complete(page, 'cpu.');
+    const matches = await complete(page, 'machine.cpu.');
     // CPU has pc / sr / d0..d7 / a0..a7 etc. Composed names carry the
     // head so the terminal performs one full-token replace.
-    expect(matches).toEqual(expect.arrayContaining(['cpu.pc', 'cpu.sr']));
+    expect(matches).toEqual(expect.arrayContaining(['machine.cpu.pc', 'machine.cpu.sr']));
     // Every candidate must keep the head.
-    expect(matches.every((m: string) => m.startsWith('cpu.'))).toBeTruthy();
+    expect(matches.every((m: string) => m.startsWith('machine.cpu.'))).toBeTruthy();
   });
 
   test('mid-path prefix narrows by tail', async ({ page }) => {
-    const matches = await complete(page, 'cpu.p');
-    expect(matches).toEqual(expect.arrayContaining(['cpu.pc']));
-    // No `cpu.sr` (does not start with `p`).
-    expect(matches.every((m: string) => m.startsWith('cpu.p'))).toBeTruthy();
+    const matches = await complete(page, 'machine.cpu.p');
+    expect(matches).toEqual(expect.arrayContaining(['machine.cpu.pc']));
+    // No `machine.cpu.sr` (does not start with `p`).
+    expect(matches.every((m: string) => m.startsWith('machine.cpu.p'))).toBeTruthy();
   });
 
   test('method-arg position dispatches V_BOOL → on/off/true/false', async ({ page }) => {
     // sound.mute(muted: V_BOOL) — proposal §4.6 says method-arg
     // position dispatches by arg_decl[i].
-    const matches = await complete(page, 'sound.mute ');
+    const matches = await complete(page, 'machine.sound.mute ');
     expect(matches).toEqual(expect.arrayContaining(['on', 'off', 'true', 'false']));
   });
 
@@ -77,7 +78,7 @@ test.describe('Tab completion', () => {
   });
 
   test('cursor inside "..." returns no suggestions', async ({ page }) => {
-    const line = 'echo "cpu.';
+    const line = 'echo "machine.cpu.';
     const matches = await complete(page, line, line.length);
     expect(matches).toEqual([]);
   });

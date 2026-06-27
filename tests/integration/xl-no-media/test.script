@@ -15,13 +15,13 @@
 
 # Confirm we are on the Macintosh XL, on the "3A" boot ROM, before there is any media.
 assert ${machine.id == "macxl"} "machine.id != macxl"
-assert ${rom.checksum == "094C82F0"} "rom.checksum != 094C82F0"
+assert ${machine.rom.checksum == "094C82F0"} "rom.checksum != 094C82F0"
 # Macintosh XL screen-modification raster (square pixels), not the Lisa 2's 720x364.
-assert ${screen.width == 608} "screen.width != 608"
-assert ${screen.height == 431} "screen.height != 431"
+assert ${machine.screen.width == 608} "screen.width != 608"
+assert ${machine.screen.height == 431} "screen.height != 431"
 # Nothing to boot from: the drive is empty and no ProFile is attached.
-assert ${floppy.drives[0].present == false} "no floppy should be present"
-assert ${profile.present == false} "no ProFile should be attached"
+assert ${machine.floppy.drive[0].present == false} "no floppy should be present"
+assert ${machine.hd.present == false} "no ProFile should be attached"
 
 # Let the boot ROM run its startup scan and give up.  The prompt renders and stays
 # put (a static idle loop) well before this budget; it is stable through 300M+
@@ -30,6 +30,6 @@ scheduler.run 120000000
 
 # The "insert a diskette" prompt: disk-drive icon + insert arrow + drive id 2, no
 # error code, with the CONTINUE and STARTUP FROM... buttons.  Pixel-exact match.
-screen.match no-media.png
+machine.screen.match no-media.png
 
 quit

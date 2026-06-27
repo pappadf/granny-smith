@@ -183,12 +183,12 @@ export async function loadDebugFrame(addr?: number, count = 32): Promise<DebugFr
 export async function readRegisters(): Promise<Registers | null> {
   if (!isModuleReady()) return null;
   const reads = await Promise.all([
-    ...REG_DS.map((n) => gsEval(`cpu.${n}`)),
-    ...REG_AS.map((n) => gsEval(`cpu.${n}`)),
-    gsEval('cpu.pc'),
-    gsEval('cpu.sr'),
-    gsEval('cpu.usp'),
-    gsEval('cpu.ssp'),
+    ...REG_DS.map((n) => gsEval(`machine.cpu.${n}`)),
+    ...REG_AS.map((n) => gsEval(`machine.cpu.${n}`)),
+    gsEval('machine.cpu.pc'),
+    gsEval('machine.cpu.sr'),
+    gsEval('machine.cpu.usp'),
+    gsEval('machine.cpu.ssp'),
   ]);
   if (reads.some((x) => x === null || x === undefined)) {
     // Treat as not-ready; the C side may not have a machine yet.
@@ -209,25 +209,25 @@ export async function writeRegister(name: string, value: number): Promise<boolea
   const hex = `0x${(value >>> 0).toString(16)}`;
   // Use the typed setter form via gsEval — the bridge dispatcher parses
   // `path = value` per docs/shell.md.
-  const r = await gsEval(`cpu.${name} = ${hex}`);
+  const r = await gsEval(`machine.cpu.${name} = ${hex}`);
   return r !== null;
 }
 
 export async function peekL(addr: number): Promise<number | null> {
   if (!isModuleReady()) return null;
-  const r = await gsEval('memory.peek.l', [addr >>> 0]);
+  const r = await gsEval('machine.memory.peek.l', [addr >>> 0]);
   if (r === null || r === undefined) return null;
   return coerceNum(r);
 }
 
 export async function peekBytes(addr: number, count: number): Promise<Uint8Array | null> {
   if (!isModuleReady()) return null;
-  // Single bridge round-trip via `memory.peek.bytes(addr, count)`. The
+  // Single bridge round-trip via `machine.memory.peek.bytes(addr, count)`. The
   // C side serialises V_BYTES as the string "0x<hex>", which we
   // decode into a Uint8Array. This replaces the previous per-byte
   // fan-out (128 round-trips for a 128-byte window) that made the
   // Memory pane drag noticeably while single-stepping.
-  const r = await gsEval('memory.peek.bytes', [addr >>> 0, count]);
+  const r = await gsEval('machine.memory.peek.bytes', [addr >>> 0, count]);
   if (typeof r !== 'string') return null;
   const hex = r.startsWith('0x') ? r.slice(2) : r;
   const bytes = hex.length / 2;

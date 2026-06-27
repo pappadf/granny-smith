@@ -7,35 +7,35 @@
 scheduler.run 100000
 
 # via1 attributes.
-via1
-via1.ifr
-via1.ier
-via1.acr
-via1.pcr
-via1.sr
-via1.freq_factor
+machine.via1
+machine.via1.ifr
+machine.via1.ier
+machine.via1.acr
+machine.via1.pcr
+machine.via1.sr
+machine.via1.freq_factor
 
 # via1 port children.
-via1.port_a
-via1.port_a.output
-via1.port_a.input
-via1.port_a.direction
-via1.port_b.output
-via1.port_b.input
-via1.port_b.direction
+machine.via1.port_a
+machine.via1.port_a.output
+machine.via1.port_a.input
+machine.via1.port_a.direction
+machine.via1.port_b.output
+machine.via1.port_b.input
+machine.via1.port_b.direction
 
 # via2 — only present on SE/30 / IIcx, which is what this test boots.
-via2
-via2.ifr
-via2.ier
-via2.acr
-via2.port_a.output
-via2.port_b.direction
+machine.via2
+machine.via2.ifr
+machine.via2.ier
+machine.via2.acr
+machine.via2.port_a.output
+machine.via2.port_b.direction
 
 # Sanity: Universal-ROM machines (this test boots IIcx) clock both
 # VIAs with a divisor of 20. Plus would be 10. Pin the value so a
 # regression in either machine's clock plumbing fails fast.
-assert ${via1.freq_factor == 20} "IIcx via1 freq_factor regressed"
-assert ${via2.freq_factor == 20} "IIcx via2 freq_factor regressed"
+assert ${machine.via1.freq_factor == 20} "IIcx via1 freq_factor regressed"
+assert ${machine.via2.freq_factor == 20} "IIcx via2 freq_factor regressed"
 
 quit

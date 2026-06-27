@@ -62,7 +62,7 @@
   });
 
   async function loadHdModels() {
-    const raw = await gsEval('scsi.hd_models');
+    const raw = await gsEval('machine.scsi.hd_models');
     if (!Array.isArray(raw)) {
       modelsState = 'error';
       return;

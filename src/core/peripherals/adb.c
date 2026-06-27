@@ -20,6 +20,7 @@
 #include "debug_mac.h"
 #include "keyboard.h"
 #include "log.h"
+#include "machine_profile.h"
 #include "object.h"
 #include "system.h"
 #include "value.h"
@@ -1027,6 +1028,34 @@ const class_desc_t keyboard_class = {
     .n_members = sizeof(keyboard_members) / sizeof(keyboard_members[0]),
 };
 
+// === ADB bus container ======================================================
+//
+// `machine.adb` is the logical ADB bus node (proposal-system-object-model.md
+// §5.6). The physical transport (VIA shift register / Egret / CUDA / IOP) is
+// an implementation detail; this node just groups the two well-known devices
+// — keyboard and mouse — as named children, the shape the user expects. It is
+// a namespace-only process-singleton (like the keyboard/mouse facades it
+// parents), created lazily under machine_object().
+static const class_desc_t adb_class = {
+    .name = "adb",
+    .members = NULL,
+    .n_members = 0,
+};
+
+static struct object *s_adb_object = NULL;
+
+struct object *adb_bus_object(void) {
+    if (!s_adb_object) {
+        s_adb_object = object_new(&adb_class, NULL, "adb");
+        if (s_adb_object) {
+            object_set_label(s_adb_object, "ADB");
+            object_set_order(s_adb_object, 70);
+            object_attach(machine_object(), s_adb_object);
+        }
+    }
+    return s_adb_object;
+}
+
 // === Process-singleton lifecycle ============================================
 //
 // `keyboard` is a stateless facade — its press() method routes through
@@ -1038,8 +1067,11 @@ void keyboard_class_register(void) {
     if (s_keyboard_object)
         return;
     s_keyboard_object = object_new(&keyboard_class, NULL, "keyboard");
-    if (s_keyboard_object)
-        object_attach(object_root(), s_keyboard_object);
+    if (s_keyboard_object) {
+        object_set_label(s_keyboard_object, "Keyboard");
+        object_set_order(s_keyboard_object, 10);
+        object_attach(adb_bus_object(), s_keyboard_object);
+    }
 }
 
 void keyboard_class_unregister(void) {

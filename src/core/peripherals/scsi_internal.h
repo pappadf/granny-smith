@@ -312,8 +312,9 @@ struct scsi {
     // Object-tree binding — lifetime tied to scsi_init / scsi_delete.
     struct object *object; // top-level scsi node
     struct object *bus_object; // scsi.bus child
-    struct object *devices_object; // scsi.devices collection
+    struct object *devices_object; // scsi.device collection
     struct object *device_objects[8]; // per-slot entry objects
+    struct object *image_objects[8]; // per-slot medium (image) nodes — device[N].image
     // Per-slot back-link used as instance_data on each device entry
     // object so accessors can recover (scsi, slot) cheaply.
     scsi_device_link_t device_links[8];

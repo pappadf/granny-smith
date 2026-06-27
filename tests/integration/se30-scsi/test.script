@@ -5,7 +5,7 @@
 scheduler.run 120000000
 
 # Compare screen against reference desktop image
-screen.match desktop.png
+machine.screen.match desktop.png
 
 # Exit with success (screenshot match sets exit code)
 quit

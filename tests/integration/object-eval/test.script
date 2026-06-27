@@ -8,15 +8,15 @@ scheduler.run 50000
 # we mix both forms below to exercise each.
 assert ${machine.id == "plus"} "expected Plus machine"
 assert ${machine.freq == 7833600} "Plus runs at 7.83 MHz"
-assert ${memory.ram_size == 4194304} "Plus has 4 MiB RAM"
-assert ${memory.rom_size == 131072} "Plus has 128 KiB ROM"
+assert ${machine.memory.ram_size == 4194304} "Plus has 4 MiB RAM"
+assert ${machine.memory.rom_size == 131072} "Plus has 128 KiB ROM"
 machine.name
-cpu.pc
-cpu.d0
-cpu.a7
+machine.cpu.pc
+machine.cpu.d0
+machine.cpu.a7
 
 # Bare object reads return an object reference.
-cpu
+machine.cpu
 scheduler
 
 # Mac low-memory globals via debug.mac.globals.read — value lookup
@@ -24,19 +24,19 @@ scheduler
 echo ${debug.mac.globals.read("MBState")}
 echo ${debug.mac.globals.read("Ticks")}
 echo ${debug.mac.globals.read("ROMBase")}
-cpu.ccr
-cpu.sp
+machine.cpu.ccr
+machine.cpu.sp
 
 # Setter form — write through node_set, then assert the round-trip.
 # sound.enabled is a writable V_BOOL attribute; the assert form is a
 # stronger check than a bare-read whose output used to be eyeballed.
-sound.enabled = false
-assert ${sound.enabled == false}
-sound.enabled = true
-assert ${sound.enabled == true}
+machine.sound.enabled = false
+assert ${machine.sound.enabled == false}
+machine.sound.enabled = true
+assert ${machine.sound.enabled == true}
 
 # Legacy `eval` continues to work in parallel for the JSON shape.
 machine.id
-cpu.pc
+machine.cpu.pc
 
 quit

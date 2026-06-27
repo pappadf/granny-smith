@@ -1422,7 +1422,9 @@ memory_map_t *memory_map_init(int address_bits, uint32_t ram_size, uint32_t rom_
     // directly so its instance_data is unused.
     mem->memory_object = object_new(&memory_class, mem, "memory");
     if (mem->memory_object) {
-        object_attach(object_root(), mem->memory_object);
+        object_set_label(mem->memory_object, "Memory");
+        object_set_order(mem->memory_object, 20);
+        object_attach(machine_object(), mem->memory_object);
         mem->peek_object = object_new(&mem_peek_class, NULL, "peek");
         if (mem->peek_object)
             object_attach(mem->memory_object, mem->peek_object);

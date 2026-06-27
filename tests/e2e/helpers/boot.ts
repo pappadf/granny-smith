@@ -171,24 +171,24 @@ export async function bootWithUploadedMedia(
 		// encoded info map; the parsed map exposes the compatible-models list.
 		// First entry matches the old auto-pick behaviour: Plus ROM → Plus,
 		// Universal → SE/30.
-		const infoRaw = await ev('rom.identify', ['/tmp/rom']);
+		const infoRaw = await ev('machine.rom.identify', ['/tmp/rom']);
 		const info = (typeof infoRaw === 'string') ? JSON.parse(infoRaw) : null;
 		const compatible = info && info.recognised ? info.compatible : null;
 		if (!Array.isArray(compatible) || compatible.length === 0)
-			throw new Error('rom.identify: no compatible machines for /tmp/rom');
+			throw new Error('machine.rom.identify: no compatible machines for /tmp/rom');
 		// vrom.load only stages a pending path; the bytes are read by
 		// machine.boot during SE/30 peripheral init. Stage it first so the
 		// SE/30 init can find the file.
-		if (hasVrom) await ev('vrom.load', ['/tmp/vrom']);
+		if (hasVrom) await ev('machine.vrom.load', ['/tmp/vrom']);
 		// Look up the model's default RAM through machine.profile so the
 		// machine.boot ram-options check accepts the value.
 		const profileRaw = await ev('machine.profile', [compatible[0]]);
 		const profile = (typeof profileRaw === 'string') ? JSON.parse(profileRaw) : null;
 		const ramKB = profile && typeof profile.ram_default === 'number' ? profile.ram_default : 4096;
 		await ev('machine.boot', [compatible[0], ramKB]);
-		await ev('rom.load', ['/tmp/rom']);
-		if (hasFd) await ev('floppy.drives[0].insert', ['/tmp/fd0', fdWritable]);
-		if (hasHd) await ev('scsi.attach_hd', [`/tmp/hd${hdSlot}`, hdSlot]);
+		await ev('machine.rom.load', ['/tmp/rom']);
+		if (hasFd) await ev('machine.floppy.drive[0].insert', ['/tmp/fd0', fdWritable]);
+		if (hasHd) await ev('machine.scsi.attach_hd', [`/tmp/hd${hdSlot}`, hdSlot]);
 	}, { hasFd: Boolean(fd0), hasHd: Boolean(hdZip), hasVrom: Boolean(vrom), hdSlot, fdWritable });
 }
 
