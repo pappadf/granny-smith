@@ -158,7 +158,9 @@ static value_t meta_get_children(struct object *self, const member_t *m) {
             if (cls->members[i].kind == M_CHILD)
                 name_list_push(&acc, cls->members[i].name);
     }
-    object_each_attached(insp, each_attached_collect, &acc);
+    // Attached (runtime) children in deterministic (order, attach_seq)
+    // sequence so the SYSTEM tab renders stably (proposal §7.4).
+    object_each_attached_ordered(insp, each_attached_collect, &acc);
     return val_list(acc.items, acc.len);
 }
 
@@ -190,6 +192,37 @@ static value_t meta_get_methods(struct object *self, const member_t *m) {
                 name_list_push(&acc, cls->members[i].name);
     }
     return val_list(acc.items, acc.len);
+}
+
+// Map a visibility-category bitfield (M_CAT_*) to its string name. Used by
+// the SYSTEM tab / command browser to honour the §7.2 three-tier model.
+static const char *category_name(uint16_t flags) {
+    switch (flags & M_CAT_MASK) {
+    case M_CAT_ADVANCED:
+        return "advanced";
+    case M_CAT_INTERNAL:
+        return "internal";
+    default:
+        return "basic";
+    }
+}
+
+// `label` — the inspected node's display label (proposal §7.1). Falls back
+// to its path-segment name when no explicit label was set.
+static value_t meta_get_label(struct object *self, const member_t *m) {
+    (void)m;
+    struct object *insp = meta_inspected(self);
+    const char *label = object_label(insp);
+    return val_str(label ? label : "");
+}
+
+// `category` — the inspected node's own visibility tier (basic / advanced /
+// internal). Lets the SYSTEM tab decide whether to show a child object
+// without a separate allowlist (proposal §7.2 / §8.2).
+static value_t meta_get_category(struct object *self, const member_t *m) {
+    (void)m;
+    struct object *insp = meta_inspected(self);
+    return val_str(category_name(object_category(insp)));
 }
 
 // === Methods ==============================================================
@@ -278,6 +311,16 @@ static const member_t meta_members[] = {
      .doc = "Absolute dotted path of the inspected node",
      .flags = VAL_RO,
      .attr = {.type = V_STRING, .get = meta_get_path, .set = NULL}},
+    {.kind = M_ATTR,
+     .name = "label",
+     .doc = "Human-facing display label of the inspected node (falls back to name)",
+     .flags = VAL_RO,
+     .attr = {.type = V_STRING, .get = meta_get_label, .set = NULL}},
+    {.kind = M_ATTR,
+     .name = "category",
+     .doc = "Visibility tier of the inspected node: basic | advanced | internal",
+     .flags = VAL_RO,
+     .attr = {.type = V_STRING, .get = meta_get_category, .set = NULL}},
     {.kind = M_ATTR,
      .name = "children",
      .doc = "Names of sub-objects on the inspected node",
