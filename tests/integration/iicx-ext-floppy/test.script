@@ -1,0 +1,83 @@
+# Integration test: IIcx External Floppy Insert — System 7.1
+#
+# Regression guard for the "external floppy never mounts / machine hangs" report
+# on a IIcx booted from the System 7.1 (1.4 MB) "Disk Tools" floppy.  The test:
+#
+#   1. Cold-boots the IIcx from "Disk Tools.img" (drive FD0) to the Finder
+#      desktop and confirms a clean desktop (matches `desktop.png`).
+#   2. Inserts "Install.img" into the EXTERNAL drive (FD1) — exactly the user
+#      gesture — then runs and confirms the Install disk mounts and its icon
+#      appears on the desktop (matches `install-mounted.png`).
+#
+# ---------------------------------------------------------------------------
+# BUG THIS GUARDS (fixed 2026-06-27, see src/core/peripherals/floppy.c):
+#
+#   Inserting a floppy into the EXTERNAL drive (FD1) used to bomb the Finder
+#   with "Sorry, a system error occurred. Finder error type 41" — the disk
+#   never mounted and the machine looked hung.
+#
+#   Root cause was a drive-selection mismatch in the SWIM emulation.  In ISM
+#   (MFM/1.4 MB) mode the active drive is chosen by the ISM mode register's
+#   DRIVE1/DRIVE2 enable bits, but floppy_disk_control selected the drive from
+#   the (now stale) IWM SELECT line.  After FD1 activity the SELECT line still
+#   pointed at FD1, so when the Finder drove FD0 (DRIVE1) to load a CODE
+#   resource, the head-step commands went to FD1 while /TKO was polled on FD0.
+#   FD0's recalibrate-to-track-0 therefore never completed, the read timed out
+#   (ioErr), the resource length came back garbage, NewHandle failed with
+#   memFull, the CODE segment load failed, and the Finder bombed (type 41).
+#
+#   The fix makes floppy_disk_control select the drive by the ISM DRIVE bits in
+#   ISM mode (matching the read/sense path), so FD0 and FD1 stay independent.
+#
+# If this match ever fails again with the bomb dialog, the FD1 mount path has
+# regressed.
+# ---------------------------------------------------------------------------
+#
+# Video: seed nubus.video_sense=$6 (13" RGB) + a matching slot-9 sPRAMRec so
+# the Slot Manager picks 640x480 @ 2bpp at boot — same mechanism as the
+# boot-matrix IIcx rows, iicx-video-modes, and the sibling iicx-keyboard test.
+
+nubus.video_sense = 0x6
+machine.boot "iicx" 8192
+rom.reload
+floppy.drives[0].insert "../../data/systems/SSW-7.1-1.4M/Disk Tools.img"
+rtc.pram.validate
+rtc.pram.poke 0x46 0x002781a6a6000000:8
+
+# Boot to the Finder desktop.  The poke/clear of $017A mid-boot skips the
+# Universal ROM's boot-drive-discovery key-scan at $40801610 — see
+# tests/integration/iicx-video-modes/test.script for the mechanics.
+scheduler.run 30000000
+memory.poke.w 0x017A 0x8805
+scheduler.run 2000000
+memory.poke.w 0x017A 0
+scheduler.run 45000000
+
+assert ${machine.id == "iicx"}  "machine.id != iicx"
+assert ${machine.ram == 8192}   "machine.ram != 8192"
+assert ${screen.width == 640}   "screen.width != 640 (JMFB not seated?)"
+assert ${screen.height == 480}  "screen.height != 480"
+# Clean Finder desktop with only the boot floppy (FD0) mounted.
+screen.match desktop.png
+
+# --- Insert a floppy into the EXTERNAL drive (FD1) -------------------------
+# This is the reported gesture.  The Install disk must mount and its icon must
+# appear on the desktop (it used to bomb the Finder — see BUG THIS GUARDS).
+floppy.drives[1].insert "../../data/systems/SSW-7.1-1.4M/Install.img"
+assert ${floppy.drives[1].present}  "Install.img not present in FD1"
+
+# The mount completes and the desktop settles within ~60 M instructions of the
+# insert; the screen is then static (verified identical at 60/90/120 M), so the
+# match below is stable.
+scheduler.run 60000000
+
+# No system error must have been raised (DSErrCode/$AF0 == 0): a Finder bomb
+# would have written 41 (dsFinderErr) here.
+assert ${memory.peek.w(0xaf0) == 0}  "system error raised on FD1 insert (Finder bomb?)"
+
+# Save the actual result as an artifact, then assert the desktop now shows the
+# mounted Install disk icon next to Disk Tools.
+screen.save "${WORK_DIR}/after-ext-insert.png"
+screen.match install-mounted.png
+
+quit

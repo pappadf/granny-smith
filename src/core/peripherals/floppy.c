@@ -236,8 +236,19 @@ int floppy_disk_status(floppy_t *floppy, int drv) {
 
 // Processes disk control commands when LSTRB is high
 void floppy_disk_control(floppy_t *floppy) {
-    floppy_drive_t *drive = current_drive(floppy);
-    int drv = DRIVE_INDEX(floppy);
+    // Drive selection.  In ISM (SWIM MFM) mode the active drive comes from the
+    // ISM mode register's DRIVE1/DRIVE2 enable bits — the same selector the ISM
+    // read/sense path uses (floppy_swim.c).  Only in IWM mode does the IWM
+    // SELECT line choose the drive.  Using IWM_SELECT unconditionally steps/
+    // seeks the WRONG drive whenever the OS drives one floppy via ISM (e.g. FD0
+    // = DRIVE1) while the stale IWM SELECT line still points at the other (FD1):
+    // the step commands went to FD1 while /TKO was polled on FD0, so FD0's
+    // recalibrate-to-track-0 never completed → endless seek → ioErr → the
+    // external-floppy Finder bomb.
+    int drv = (floppy->type == FLOPPY_TYPE_SWIM && (floppy->ism_mode & ISM_MODE_ISM_IWM))
+                  ? ((floppy->ism_mode & ISM_MODE_DRIVE2) ? 1 : 0)
+                  : DRIVE_INDEX(floppy);
+    floppy_drive_t *drive = &floppy->drives[drv];
 
     // Determine the correct motor callback based on controller type
     event_callback_t spinup_cb =
