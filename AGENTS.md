@@ -195,22 +195,36 @@ to not break this rule in the first place.
 ## Object model (`gs_eval`)
 
 Every emulator subsystem is exposed through a single tagged-union value
-type and an opaque `object_t` tree rooted at `emu`. Top-level paths are
-`cpu`, `memory`, `scc`, `via1`/`via2`, `rtc`, `scsi`, `floppy`, `sound`,
-`storage`, `network.appletalk`, `input.mouse`, `debugger`, `mac`, plus
-the root methods (`cp`, `peeler`, `rom_probe`, `rom_load`, `fd_insert`,
-`hd_attach`, `run`, `checkpoint_*`, `register_machine`, `running`,
-`hd_models`, `dump_tree`, …).
+type and an opaque `object_t` tree rooted at the implicit `emu` root (never
+typed). Emulated hardware nests under one `machine` node
+(proposal-system-object-model.md); the emulator's own services and the
+simulated network are its siblings at the root:
+
+- **`machine`** (the emulated computer): `machine.cpu` (+ `.mmu`, `.fpu`),
+  `machine.memory`, `machine.rom`, `machine.vrom`, `machine.via1`/`via2`,
+  `machine.scc`, `machine.rtc`, `machine.adb.keyboard` / `machine.adb.mouse`,
+  `machine.floppy.drive[N].disk`, `machine.scsi.device[N].image`,
+  `machine.sound`, `machine.screen`, `machine.nubus`. (Lisa adds
+  `machine.hd` (ProFile) and `machine.power`.)
+- **meta services** (siblings of `machine`): `scheduler`, `debug` (+ `.mac`),
+  `storage`, `vfs`, `checkpoint`, `archive`, `find`, `shell`.
+- **network**: `appletalk` (+ `shares`, `printer`).
+- **root verbs**: `objects`, `attributes`, `methods`, `help`, `echo`,
+  `download`, `quit`, `assert`, `time`.
+
+Hardware paths are model-independent: `machine.scsi.device[0]` means the
+same on a Plus, a IIcx, and a Lisa. The `$reg` aliases (`$pc`, `$d0`, …)
+still resolve (now to `machine.cpu.*`).
 
 The browser frontend and the e2e helpers call into the tree via
 `gsEval(path, args?)` (see `app/web2/src/bus/emulator.ts`; the legacy
 helper still exists in `app/web-legacy/js/emulator.js`). Inside the
 shell, the same tree is reachable via four surface forms (proposal §4.1):
 
-  cpu.pc                # bare path → read & print
-  cpu.d0 = 0x1234        # path = value → write
-  cpu.step 1000          # path arg → method call (shell form)
-  $(cpu.step(1000))      # path(args) → method call (call form, expressions)
+  machine.cpu.pc            # bare path → read & print
+  machine.cpu.d0 = 0x1234   # path = value → write
+  machine.cpu.step 1000     # path arg → method call (shell form)
+  $(machine.cpu.step(1000)) # path(args) → method call (call form, expressions)
 
 The legacy `eval <path>` and `runCommand`/`runCommandJSON` JS helpers
 remain only as the terminal-input bridge and the two pre-main-loop

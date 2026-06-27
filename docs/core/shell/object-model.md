@@ -70,7 +70,7 @@ Display flags follow the value: an attribute declared with `VAL_HEX`
 emits values that the JSON encoder serialises as `"0x12345678"`; the
 shell formatter prints them in hex; the inspector panel renders them
 the same way. Each layer reads the intent off the value, not off the
-attribute, so passing a `cpu.pc` reading through a function still
+attribute, so passing a `machine.cpu.pc` reading through a function still
 formats correctly.
 
 ### Classes describe what a node can do
@@ -101,7 +101,7 @@ table. Each `member_t` is one of three kinds:
   name with its own class) or *indexed* (a sparse, stable-id
   collection accessed via `child.get(i)` / `child.count` / `child.next`
   callbacks). Indexed children are how `debug.breakpoints[7]` and
-  `floppy.drives[0]` work without the framework needing to know a
+  `machine.floppy.drive[0]` work without the framework needing to know a
   collection's storage shape.
 
 Member tables are static `const`. The framework walks them linearly
@@ -136,10 +136,10 @@ same language:
 
 | Form | Meaning | Example |
 |------|---------|---------|
-| `path` | Read the attribute, format the result, return / print | `cpu.pc` |
-| `path = value` | Write the attribute (setter) | `cpu.d0 = 0x1234` |
-| `path arg arg …` | Call the method, shell form (whitespace-separated args) | `floppy.drives[0].insert /tmp/fd0 false` |
-| `path(arg, arg, …)` | Call the method, expression form (used inside `${…}`) | `${memory.peek.l(0x1000)}` |
+| `path` | Read the attribute, format the result, return / print | `machine.cpu.pc` |
+| `path = value` | Write the attribute (setter) | `machine.cpu.d0 = 0x1234` |
+| `path arg arg …` | Call the method, shell form (whitespace-separated args) | `machine.floppy.drive[0].insert /tmp/fd0 false` |
+| `path(arg, arg, …)` | Call the method, expression form (used inside `${…}`) | `${machine.memory.peek.l(0x1000)}` |
 
 Shell form is what users type interactively. Expression form is what
 appears inside `${…}` interpolation in scripts and logpoint messages.
@@ -155,7 +155,7 @@ falsy rules (empty string, "false", "0", any error).
 `$name` is the alias surface. Two tiers:
 
 - **Built-in aliases** are registered by subsystems at `*_init` time.
-  `cpu_init` sets up `$pc` → `cpu.pc`, `$d0` → `cpu.d0`, … . Re-
+  `cpu_init` sets up `$pc` → `machine.cpu.pc`, `$d0` → `machine.cpu.d0`, … . Re-
   registering with the same target is a no-op, so repeated machine
   boots are safe.
 - **User aliases** are added at runtime via `shell.alias.add`. They
@@ -187,7 +187,7 @@ arrived from.
   reject values whose bit pattern doesn't fit. Width `0` (or `10`,
   used by FPU extended-precision attributes) means "no explicit
   bound". Catches the silent truncation problem that used to hide
-  in `cpu.pc = 0x100000000` style writes.
+  in `machine.cpu.pc = 0x100000000` style writes.
 - **Non-empty strings.** Slots flagged `OBJ_ARG_NONEMPTY` require a
   non-NULL, non-empty `V_STRING`.
 - **Enum membership.** `V_ENUM` slots validate the index is in
@@ -206,8 +206,8 @@ The body always sees a value matching the declared slot kind:
 
 - **`V_INT` ↔ `V_UINT`.** Width fit is checked under the input's
   signedness, then the bit pattern is reinterpreted under the
-  declared signedness. So `cpu.pc = -1` succeeds and stores
-  `0xFFFFFFFF`; `cpu.d0 = 0xDEADBEEFCAFE` against `width=4` is
+  declared signedness. So `machine.cpu.pc = -1` succeeds and stores
+  `0xFFFFFFFF`; `machine.cpu.d0 = 0xDEADBEEFCAFE` against `width=4` is
   rejected.
 - **`V_INT` / `V_UINT` → `V_FLOAT`.** Numeric input widens to
   double. The reverse (`V_FLOAT` to integer slot) is rejected;
@@ -226,9 +226,9 @@ The body always sees a value matching the declared slot kind:
 A slot declared with `kind = V_NONE` is the explicit "accept any
 kind" sentinel — the framework skips kind / width / enum checks
 and the body discriminates the input. Used for legitimately
-multi-kind attributes and parameters: `rtc.time` accepts either an
-ISO-8601 string or a Mac-epoch integer; `keyboard.press` accepts
-either a key name or an ADB keycode; `memory.dump.addr` accepts
+multi-kind attributes and parameters: `machine.rtc.time` accepts either an
+ISO-8601 string or a Mac-epoch integer; `machine.adb.keyboard.press` accepts
+either a key name or an ADB keycode; `machine.memory.dump.addr` accepts
 either an address integer or an alias / expression string. Most
 slots should declare a concrete kind; `V_NONE` is reserved for
 genuine dual-input shapes.
@@ -286,8 +286,8 @@ configure, and what the JS frontend operates on:
 - **Scripts (headless).** Integration tests and reproducible boot
   scripts contain exactly the same path forms users type. `assert`,
   `echo`, and `${…}` interpolation are root methods on `emu`.
-  Scripted machine setup (`machine.boot('plus')`, `rom.load(...)`,
-  `floppy.drives[0].insert(...)`, `scsi.attach_hd(...)`) is the same
+  Scripted machine setup (`machine.boot('plus')`, `machine.rom.load(...)`,
+  `machine.floppy.drive[0].insert(...)`, `machine.scsi.attach_hd(...)`) is the same
   call sequence whether it runs from a script, from the user's
   terminal, or from the URL-media auto-boot path on the web.
 - **JS / WASM bridge.** `gs_eval(path, args_json, out_buf, size)`
@@ -339,7 +339,7 @@ cfg before attaching the new ones, and the destroy path no-ops when
 the installed cfg is no longer "its" cfg. This invariant lives in
 `root.c`.
 
-The result is that paths like `cpu.pc` resolve as soon as a machine is
+The result is that paths like `machine.cpu.pc` resolve as soon as a machine is
 booted and disappear cleanly when the machine is torn down, without
 the caller having to track machine-lifetime explicitly.
 
@@ -395,7 +395,7 @@ To see what's actually exposed at any given moment, walk the tree:
 objects()           # children of the root
 attributes(cpu)     # all readable/writable attributes on cpu
 methods(scsi)       # all callable methods on scsi
-help(cpu.pc)        # the doc string declared on the member
+help(machine.cpu.pc)        # the doc string declared on the member
 ```
 
 Those four root methods are themselves part of the object model, so
