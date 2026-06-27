@@ -68,7 +68,7 @@ export async function detectFdDriveCount(refresh = false): Promise<number> {
   if (images.fdDriveCount >= 0 && !refresh) return images.fdDriveCount;
   let count = 0;
   for (let i = 0; i < 4; i++) {
-    const present = await gsEval(`floppy.drives[${i}].present`);
+    const present = await gsEval(`machine.floppy.drive[${i}].present`);
     if (typeof present !== 'boolean') break; // index out of range → no more drives
     count++;
   }

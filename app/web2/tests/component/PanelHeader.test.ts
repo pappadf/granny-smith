@@ -21,7 +21,7 @@ describe('PanelHeader', () => {
     );
     expect(labels).toEqual([
       'TERMINAL',
-      'MACHINE',
+      'SYSTEM',
       'FILESYSTEM',
       'IMAGES',
       'CHECKPOINTS',

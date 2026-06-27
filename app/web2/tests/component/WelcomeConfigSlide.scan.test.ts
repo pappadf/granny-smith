@@ -17,7 +17,7 @@ vi.mock('@/bus/emulator', async (importOriginal) => {
     ...actual,
     whenModuleReady: () => Promise.resolve(),
     gsEval: async (path: string, args?: unknown[]) => {
-      if (path === 'rom.identify') {
+      if (path === 'machine.rom.identify') {
         const p = (args?.[0] as string) ?? '';
         // Default behavior: a ROM named *Plus* matches model 'plus', *SE30*
         // matches 'se30'. Tests that need finer control swap in a

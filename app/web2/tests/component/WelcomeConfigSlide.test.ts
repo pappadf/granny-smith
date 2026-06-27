@@ -7,7 +7,7 @@ import { _resetForTests } from '@/state/toasts.svelte';
 import { setOpfsBackend, MockOpfs } from '@/bus/opfs';
 
 // The Configuration slide drives the model dropdown by calling
-// `rom.identify` on every ROM in OPFS, then `machine.profile` to get the
+// `machine.rom.identify` on every ROM in OPFS, then `machine.profile` to get the
 // human-readable name. Mock both so tests don't need a live WASM module.
 vi.mock('@/bus/emulator', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/bus/emulator')>();
@@ -15,7 +15,7 @@ vi.mock('@/bus/emulator', async (importOriginal) => {
     ...actual,
     whenModuleReady: () => Promise.resolve(),
     gsEval: async (path: string, args?: unknown[]) => {
-      if (path === 'rom.identify') {
+      if (path === 'machine.rom.identify') {
         const p = (args?.[0] as string) ?? '';
         if (p.endsWith('Plus_v3.rom')) {
           return JSON.stringify({

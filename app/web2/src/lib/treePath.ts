@@ -2,7 +2,7 @@
 // an array of string ids identifying one node from the root downward, e.g.
 //   ['/opfs', '/opfs/images', '/opfs/images/rom', '/opfs/images/rom/Plus.rom']
 // for a Filesystem node, or
-//   ['cpu', 'cpu.pc'] for a Machine node.
+//   ['cpu', 'machine.cpu.pc'] for a Machine node.
 //
 // Keeping the helpers pure (no Svelte state) makes them unit-testable and
 // reusable from the Filesystem drag-drop validator.
