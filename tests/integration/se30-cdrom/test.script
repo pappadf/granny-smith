@@ -20,13 +20,13 @@ scheduler.run 1900000000
 machine.screen.match finder.png
 
 # Verify cdrom info reports the attached disc
-machine.scsi.devices[3].info
+machine.scsi.device[3].info
 
 # Eject the disc
-machine.scsi.devices[3].eject
+machine.scsi.device[3].eject
 
 # Verify cdrom info shows no disc after eject
-machine.scsi.devices[3].info
+machine.scsi.device[3].info
 
 # Run briefly to let the OS process the SCSI bus change
 scheduler.run 100000000

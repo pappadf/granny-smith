@@ -71,7 +71,7 @@ scheduler.run 100000000
 machine.screen.match floppy-test-success.png
 
 # Insert the original application disk
-machine.floppy.drives[0].insert ../../data/apps/MacTest-SE30.image true
+machine.floppy.drive[0].insert ../../data/apps/MacTest-SE30.image true
 
 # Stop the mouse guard before the RAM test — it writes to RAM every 1ms,
 # corrupting test patterns and causing verify failures.

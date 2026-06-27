@@ -212,7 +212,7 @@ export async function processUrlMedia(params) {
       if (/^fd\d+$/.test(k)) {
         const fdPath = `/tmp/url_${k}`;
         console.log(`[url-media] inserting floppy: ${fdPath}`);
-        const ok = await window.gsEval('machine.floppy.drives[0].insert', [fdPath, true]);
+        const ok = await window.gsEval('machine.floppy.drive[0].insert', [fdPath, true]);
         console.log(`[url-media] fd insert result: ${ok}`);
       }
     }
@@ -231,7 +231,7 @@ export async function processUrlMedia(params) {
     // No ROM in URL params — insert floppies if machine already exists.
     for (const [k] of params.entries()) {
       if (/^fd\d+$/.test(k)) {
-        await window.gsEval('machine.floppy.drives[0].insert', [`/tmp/url_${k}`, true]);
+        await window.gsEval('machine.floppy.drive[0].insert', [`/tmp/url_${k}`, true]);
       }
     }
   }

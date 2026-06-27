@@ -504,54 +504,6 @@ static int do_create_hd(const char *path, const char *size_str) {
     return 0;
 }
 
-// Find an already-attached image by path, or NULL if not found.
-static image_t *find_attached_image(const char *path) {
-    config_t *cfg = global_emulator;
-    if (!cfg)
-        return NULL;
-    int n = config_get_n_images(cfg);
-    for (int i = 0; i < n; i++) {
-        image_t *img = config_get_image(cfg, i);
-        if (img && img->filename && strcmp(img->filename, path) == 0)
-            return img;
-    }
-    return NULL;
-}
-
-// Download (export) a hard disk image: merge base + delta into a new file.
-// Prefers the live attached image (has current in-memory bitmaps) over
-// opening a fresh instance (which may have stale on-disk bitmaps).
-// Returns 0 on success, -1 on failure.
-int system_download_hd(const char *src_path, const char *dest_path) {
-    // Try the live attached image first (has up-to-date bitmaps)
-    image_t *live = find_attached_image(src_path);
-    if (live) {
-        size_t size = live->raw_size;
-        int rc = image_export_to(live, dest_path);
-        if (rc != 0) {
-            printf("hd download: failed to export %s to %s\n", src_path, dest_path);
-            return -1;
-        }
-        printf("hd download: exported %s to %s (%zu bytes)\n", src_path, dest_path, size);
-        return 0;
-    }
-    // Fall back to opening a fresh image (for detached / offline images)
-    image_t *img = image_open_readonly(src_path);
-    if (!img) {
-        printf("hd download: cannot open image: %s\n", src_path);
-        return -1;
-    }
-    size_t size = img->raw_size;
-    int rc = image_export_to(img, dest_path);
-    image_close(img);
-    if (rc != 0) {
-        printf("hd download: failed to export %s to %s\n", src_path, dest_path);
-        return -1;
-    }
-    printf("hd download: exported %s to %s (%zu bytes)\n", src_path, dest_path, size);
-    return 0;
-}
-
 // Attach a SCSI hard disk image. Delegates to add_scsi_drive().
 // Returns 0 on success, -1 on error.
 static int do_attach_hd(const char *path, int scsi_id) {
@@ -788,15 +740,9 @@ static void cmd_hd_handler(struct cmd_context *ctx, struct cmd_result *res) {
         cmd_bool(res, true);
         return;
     }
-    if (strcmp(subcmd, "download") == 0) {
-        if (!ctx->args[0].present || !ctx->args[1].present) {
-            cmd_err(res, "usage: hd download <source> <dest>");
-            return;
-        }
-        int rc = system_download_hd(ctx->args[0].as_str, ctx->args[1].as_str);
-        cmd_int(res, (int64_t)rc);
-        return;
-    }
+    // `hd download` removed (proposal-system-object-model.md §5.4): the
+    // canonical "save this disk" action is machine.scsi.device[N].image.export,
+    // keyed on device identity rather than a (possibly non-unique) filename.
     if (strcmp(subcmd, "models") == 0) {
         // list known drive models as human-readable table or JSON
         const char *fmt = ctx->args[0].present ? ctx->args[0].as_str : NULL;
@@ -858,20 +804,15 @@ static const struct arg_spec hd_create_args[] = {
     {"path", ARG_PATH,   "image file path"                             },
     {"size", ARG_STRING, "size: model (HD20SC), human (40mb), or bytes"},
 };
-static const struct arg_spec hd_download_args[] = {
-    {"source", ARG_PATH, "source hard disk image path"},
-    {"dest",   ARG_PATH, "destination file path"      },
-};
 static const struct arg_spec hd_models_args[] = {
     {"format", ARG_STRING | ARG_OPTIONAL, "--json for machine-readable output"},
 };
 static const struct subcmd_spec hd_subcmds[] = {
-    {"create",   NULL, hd_create_args,   2, "create a blank hard disk image"        },
-    {"attach",   NULL, hd_attach_args,   2, "attach hard disk image"                },
-    {"loopback", NULL, loopback_args,    1, "passive terminator"                    },
-    {"validate", NULL, hd_attach_args,   1, "validate a hard disk image"            },
-    {"models",   NULL, hd_models_args,   1, "list known drive models and sizes"     },
-    {"download", NULL, hd_download_args, 2, "export disk image (base+delta) to file"},
+    {"create",   NULL, hd_create_args, 2, "create a blank hard disk image"   },
+    {"attach",   NULL, hd_attach_args, 2, "attach hard disk image"           },
+    {"loopback", NULL, loopback_args,  1, "passive terminator"               },
+    {"validate", NULL, hd_attach_args, 1, "validate a hard disk image"       },
+    {"models",   NULL, hd_models_args, 1, "list known drive models and sizes"},
 };
 
 // image subcommands — inspect disk image contents without attaching to

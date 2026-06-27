@@ -69,7 +69,7 @@ export async function processUrlMedia(rawParams: URLSearchParams): Promise<boole
     // Without a ROM there's no machine to boot; insert floppies into the
     // existing machine if one is running (matches url-media.js:230-237).
     for (const fd of params.floppies) {
-      await gsEval('machine.floppy.drives[0].insert', [`/tmp/url_${fd.slot}`, true]);
+      await gsEval('machine.floppy.drive[0].insert', [`/tmp/url_${fd.slot}`, true]);
     }
     return false;
   }
@@ -92,7 +92,7 @@ export async function processUrlMedia(rawParams: URLSearchParams): Promise<boole
   await gsEval('machine.rom.load', [tmpRomPath]);
 
   for (const fd of params.floppies) {
-    await gsEval('machine.floppy.drives[0].insert', [`/tmp/url_${fd.slot}`, true]);
+    await gsEval('machine.floppy.drive[0].insert', [`/tmp/url_${fd.slot}`, true]);
   }
   for (const hd of params.hardDisks) {
     if (profile?.hd_bus === 'profile') {

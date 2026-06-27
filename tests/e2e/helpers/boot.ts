@@ -187,7 +187,7 @@ export async function bootWithUploadedMedia(
 		const ramKB = profile && typeof profile.ram_default === 'number' ? profile.ram_default : 4096;
 		await ev('machine.boot', [compatible[0], ramKB]);
 		await ev('machine.rom.load', ['/tmp/rom']);
-		if (hasFd) await ev('machine.floppy.drives[0].insert', ['/tmp/fd0', fdWritable]);
+		if (hasFd) await ev('machine.floppy.drive[0].insert', ['/tmp/fd0', fdWritable]);
 		if (hasHd) await ev('machine.scsi.attach_hd', [`/tmp/hd${hdSlot}`, hdSlot]);
 	}, { hasFd: Boolean(fd0), hasHd: Boolean(hdZip), hasVrom: Boolean(vrom), hdSlot, fdWritable });
 }

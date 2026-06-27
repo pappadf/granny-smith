@@ -171,9 +171,9 @@ export async function acceptFilesRaw(files: File[], targetDir: string): Promise<
 async function autoMountIfEmpty(persistedPath: string, category: MediaTypeId): Promise<void> {
   if (category === 'fd') {
     for (let i = 0; i < 2; i++) {
-      const present = await gsEval(`machine.floppy.drives[${i}].present`);
+      const present = await gsEval(`machine.floppy.drive[${i}].present`);
       if (present === true) continue;
-      const ok = (await gsEval(`machine.floppy.drives[${i}].insert`, [persistedPath, true])) === true;
+      const ok = (await gsEval(`machine.floppy.drive[${i}].insert`, [persistedPath, true])) === true;
       if (ok) {
         setMounted(persistedPath, { kind: 'fd', drive: i });
         showNotification(`Inserted into floppy drive ${i + 1}`, 'info');

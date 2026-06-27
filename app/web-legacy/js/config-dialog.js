@@ -698,7 +698,7 @@ export async function bootFromConfig(config, tmpRomPath) {
   // Mount floppies into successive drive slots.
   if (floppies) {
     for (let i = 0; i < floppies.length; i++) {
-      await window.gsEval(`machine.floppy.drives[${i}].insert`, [floppies[i], true]);
+      await window.gsEval(`machine.floppy.drive[${i}].insert`, [floppies[i], true]);
     }
   }
 

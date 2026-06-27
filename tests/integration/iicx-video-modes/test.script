@@ -90,7 +90,7 @@
 machine.nubus.video_sense = 0x6
 machine.boot "iicx" 8192
 machine.rom.reload
-machine.floppy.drives[0].insert "../../data/systems/System_7_0_1.image"
+machine.floppy.drive[0].insert "../../data/systems/System_7_0_1.image"
 machine.rtc.pram.validate
 machine.rtc.pram.poke 0x46 0x002780a6a6000000:8
 scheduler.run 50000000
@@ -109,7 +109,7 @@ machine.screen.match welcome-13in_rgb-640x480-1bpp.png
 machine.nubus.video_sense = 0x6
 machine.boot "iicx" 8192
 machine.rom.reload
-machine.floppy.drives[0].insert "../../data/systems/System_7_0_1.image"
+machine.floppy.drive[0].insert "../../data/systems/System_7_0_1.image"
 machine.rtc.pram.validate
 machine.rtc.pram.poke 0x46 0x002781a6a6000000:8
 scheduler.run 50000000
@@ -125,7 +125,7 @@ machine.screen.match welcome-13in_rgb-640x480-2bpp.png
 machine.nubus.video_sense = 0x6
 machine.boot "iicx" 8192
 machine.rom.reload
-machine.floppy.drives[0].insert "../../data/systems/System_7_0_1.image"
+machine.floppy.drive[0].insert "../../data/systems/System_7_0_1.image"
 machine.rtc.pram.validate
 machine.rtc.pram.poke 0x46 0x002782a6a6000000:8
 scheduler.run 50000000
@@ -141,7 +141,7 @@ machine.screen.match welcome-13in_rgb-640x480-4bpp.png
 machine.nubus.video_sense = 0x6
 machine.boot "iicx" 8192
 machine.rom.reload
-machine.floppy.drives[0].insert "../../data/systems/System_7_0_1.image"
+machine.floppy.drive[0].insert "../../data/systems/System_7_0_1.image"
 machine.rtc.pram.validate
 machine.rtc.pram.poke 0x46 0x002783a6a6000000:8
 scheduler.run 50000000
@@ -158,7 +158,7 @@ machine.screen.match welcome-13in_rgb-640x480-8bpp.png
 machine.nubus.video_sense = 0x2
 machine.boot "iicx" 8192
 machine.rom.reload
-machine.floppy.drives[0].insert "../../data/systems/System_7_0_1.image"
+machine.floppy.drive[0].insert "../../data/systems/System_7_0_1.image"
 machine.rtc.pram.validate
 machine.rtc.pram.poke 0x46 0x002780a2a2000000:8
 scheduler.run 50000000
@@ -174,7 +174,7 @@ machine.screen.match welcome-12in_rgb-512x384-1bpp.png
 machine.nubus.video_sense = 0x2
 machine.boot "iicx" 8192
 machine.rom.reload
-machine.floppy.drives[0].insert "../../data/systems/System_7_0_1.image"
+machine.floppy.drive[0].insert "../../data/systems/System_7_0_1.image"
 machine.rtc.pram.validate
 machine.rtc.pram.poke 0x46 0x002781a2a2000000:8
 scheduler.run 50000000
@@ -188,7 +188,7 @@ machine.screen.match welcome-12in_rgb-512x384-2bpp.png
 machine.nubus.video_sense = 0x2
 machine.boot "iicx" 8192
 machine.rom.reload
-machine.floppy.drives[0].insert "../../data/systems/System_7_0_1.image"
+machine.floppy.drive[0].insert "../../data/systems/System_7_0_1.image"
 machine.rtc.pram.validate
 machine.rtc.pram.poke 0x46 0x002782a2a2000000:8
 scheduler.run 50000000
@@ -202,7 +202,7 @@ machine.screen.match welcome-12in_rgb-512x384-4bpp.png
 machine.nubus.video_sense = 0x2
 machine.boot "iicx" 8192
 machine.rom.reload
-machine.floppy.drives[0].insert "../../data/systems/System_7_0_1.image"
+machine.floppy.drive[0].insert "../../data/systems/System_7_0_1.image"
 machine.rtc.pram.validate
 machine.rtc.pram.poke 0x46 0x002783a2a2000000:8
 scheduler.run 50000000
@@ -217,7 +217,7 @@ machine.screen.match welcome-12in_rgb-512x384-8bpp.png
 machine.nubus.video_sense = 0x1
 machine.boot "iicx" 8192
 machine.rom.reload
-machine.floppy.drives[0].insert "../../data/systems/System_7_0_1.image"
+machine.floppy.drive[0].insert "../../data/systems/System_7_0_1.image"
 machine.rtc.pram.validate
 machine.rtc.pram.poke 0x46 0x002780a1a1000000:8
 scheduler.run 50000000
@@ -233,7 +233,7 @@ machine.screen.match welcome-15in_bw-640x870-1bpp.png
 machine.nubus.video_sense = 0x1
 machine.boot "iicx" 8192
 machine.rom.reload
-machine.floppy.drives[0].insert "../../data/systems/System_7_0_1.image"
+machine.floppy.drive[0].insert "../../data/systems/System_7_0_1.image"
 machine.rtc.pram.validate
 machine.rtc.pram.poke 0x46 0x002781a1a1000000:8
 scheduler.run 50000000
@@ -247,7 +247,7 @@ machine.screen.match welcome-15in_bw-640x870-2bpp.png
 machine.nubus.video_sense = 0x1
 machine.boot "iicx" 8192
 machine.rom.reload
-machine.floppy.drives[0].insert "../../data/systems/System_7_0_1.image"
+machine.floppy.drive[0].insert "../../data/systems/System_7_0_1.image"
 machine.rtc.pram.validate
 machine.rtc.pram.poke 0x46 0x002782a1a1000000:8
 scheduler.run 50000000
@@ -261,7 +261,7 @@ machine.screen.match welcome-15in_bw-640x870-4bpp.png
 machine.nubus.video_sense = 0x1
 machine.boot "iicx" 8192
 machine.rom.reload
-machine.floppy.drives[0].insert "../../data/systems/System_7_0_1.image"
+machine.floppy.drive[0].insert "../../data/systems/System_7_0_1.image"
 machine.rtc.pram.validate
 machine.rtc.pram.poke 0x46 0x002783a1a1000000:8
 scheduler.run 50000000
@@ -277,7 +277,7 @@ machine.screen.match welcome-15in_bw-640x870-8bpp.png
 machine.nubus.video_sense = 0x0
 machine.boot "iicx" 8192
 machine.rom.reload
-machine.floppy.drives[0].insert "../../data/systems/System_7_0_1.image"
+machine.floppy.drive[0].insert "../../data/systems/System_7_0_1.image"
 machine.rtc.pram.validate
 machine.rtc.pram.poke 0x46 0x002780a7a7000000:8
 scheduler.run 50000000
@@ -293,7 +293,7 @@ machine.screen.match welcome-21in_rgb-1152x870-1bpp.png
 machine.nubus.video_sense = 0x0
 machine.boot "iicx" 8192
 machine.rom.reload
-machine.floppy.drives[0].insert "../../data/systems/System_7_0_1.image"
+machine.floppy.drive[0].insert "../../data/systems/System_7_0_1.image"
 machine.rtc.pram.validate
 machine.rtc.pram.poke 0x46 0x002781a7a7000000:8
 scheduler.run 50000000
@@ -307,7 +307,7 @@ machine.screen.match welcome-21in_rgb-1152x870-2bpp.png
 machine.nubus.video_sense = 0x0
 machine.boot "iicx" 8192
 machine.rom.reload
-machine.floppy.drives[0].insert "../../data/systems/System_7_0_1.image"
+machine.floppy.drive[0].insert "../../data/systems/System_7_0_1.image"
 machine.rtc.pram.validate
 machine.rtc.pram.poke 0x46 0x002782a7a7000000:8
 scheduler.run 50000000
@@ -321,7 +321,7 @@ machine.screen.match welcome-21in_rgb-1152x870-4bpp.png
 machine.nubus.video_sense = 0x0
 machine.boot "iicx" 8192
 machine.rom.reload
-machine.floppy.drives[0].insert "../../data/systems/System_7_0_1.image"
+machine.floppy.drive[0].insert "../../data/systems/System_7_0_1.image"
 machine.rtc.pram.validate
 machine.rtc.pram.poke 0x46 0x002783a7a7000000:8
 scheduler.run 50000000

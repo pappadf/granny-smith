@@ -20,7 +20,7 @@ assert ${machine.rom.checksum == "094C82F0"} "rom.checksum != 094C82F0"
 assert ${machine.screen.width == 608} "screen.width != 608"
 assert ${machine.screen.height == 431} "screen.height != 431"
 # Nothing to boot from: the drive is empty and no ProFile is attached.
-assert ${machine.floppy.drives[0].present == false} "no floppy should be present"
+assert ${machine.floppy.drive[0].present == false} "no floppy should be present"
 assert ${machine.hd.present == false} "no ProFile should be attached"
 
 # Let the boot ROM run its startup scan and give up.  The prompt renders and stays

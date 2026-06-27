@@ -71,7 +71,7 @@ scheduler.run 40000000
 machine.screen.match expected_insert2.png
 
 # --- copy Office System 2 -> "insert Office System 3" ---
-machine.floppy.drives.0.insert "../../data/Lisa/LisaOfficeSystem-3.1/LOS-3.1-2.image"
+machine.floppy.drive.0.insert "../../data/Lisa/LisaOfficeSystem-3.1/LOS-3.1-2.image"
 scheduler.run 4000000
 machine.adb.mouse.move 604 118 "global"
 scheduler.run 3000000
@@ -82,7 +82,7 @@ scheduler.run 15000000
 machine.screen.match expected_insert3.png
 
 # --- copy Office System 3 -> "insert Office System 4" ---
-machine.floppy.drives.0.insert "../../data/Lisa/LisaOfficeSystem-3.1/LOS-3.1-3.image"
+machine.floppy.drive.0.insert "../../data/Lisa/LisaOfficeSystem-3.1/LOS-3.1-3.image"
 scheduler.run 4000000
 machine.adb.mouse.move 604 118 "global"
 scheduler.run 3000000
@@ -93,7 +93,7 @@ scheduler.run 15000000
 machine.screen.match expected_insert4.png
 
 # --- copy Office System 4 -> "insert Office System 5" ---
-machine.floppy.drives.0.insert "../../data/Lisa/LisaOfficeSystem-3.1/LOS-3.1-4.image"
+machine.floppy.drive.0.insert "../../data/Lisa/LisaOfficeSystem-3.1/LOS-3.1-4.image"
 scheduler.run 4000000
 machine.adb.mouse.move 604 118 "global"
 scheduler.run 3000000
@@ -104,7 +104,7 @@ scheduler.run 25000000
 machine.screen.match expected_insert5.png
 
 # --- copy Office System 5 -> "reinsert Office System 1" ---
-machine.floppy.drives.0.insert "../../data/Lisa/LisaOfficeSystem-3.1/LOS-3.1-5.image"
+machine.floppy.drive.0.insert "../../data/Lisa/LisaOfficeSystem-3.1/LOS-3.1-5.image"
 scheduler.run 4000000
 machine.adb.mouse.move 604 118 "global"
 scheduler.run 3000000
@@ -115,7 +115,7 @@ scheduler.run 15000000
 machine.screen.match expected_reinsert1.png
 
 # --- reinsert Office System 1 -> boot_remount writes the boot tracks, finishing ---
-machine.floppy.drives.0.insert "../../data/Lisa/LisaOfficeSystem-3.1/LOS-3.1-1.image"
+machine.floppy.drive.0.insert "../../data/Lisa/LisaOfficeSystem-3.1/LOS-3.1-1.image"
 scheduler.run 4000000
 machine.adb.mouse.move 604 118 "global"
 scheduler.run 3000000

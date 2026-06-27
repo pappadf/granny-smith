@@ -96,8 +96,9 @@ scheduler.run 50000000
 
 machine.screen.match shutdown.png
 
-# Download (export) the formatted HD image to a flat file
-storage.hd_download ${WORK_DIR}/blank80.img ${WORK_DIR}/downloaded.img
+# Export the formatted HD (base + delta) to a flat file, keyed on the device
+# that owns the image rather than a filename (proposal §5.4).
+machine.scsi.device[0].image.export ${WORK_DIR}/downloaded.img
 
 quit
 

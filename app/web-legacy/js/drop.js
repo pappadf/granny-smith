@@ -229,7 +229,7 @@ async function probeAndMountDiskImage(path, isDirectory, displayName) {
       }
     } else if (kind === 'floppy') {
       toast(`Mounting disk image: ${imagePath.split('/').pop()}`);
-      const mounted = (await window.gsEval('machine.floppy.drives[0].insert', [imagePath, true])) === true;
+      const mounted = (await window.gsEval('machine.floppy.drive[0].insert', [imagePath, true])) === true;
       if (mounted) {
         toast(`Disk image mounted successfully`);
       } else {

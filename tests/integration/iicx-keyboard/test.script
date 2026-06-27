@@ -45,7 +45,7 @@
 machine.nubus.video_sense = 0x6
 machine.boot "iicx" 8192
 machine.rom.reload
-machine.floppy.drives[0].insert "../../data/systems/SSW-7.1-1.4M/Disk Tools.img"
+machine.floppy.drive[0].insert "../../data/systems/SSW-7.1-1.4M/Disk Tools.img"
 machine.rtc.pram.validate
 machine.rtc.pram.poke 0x46 0x002781a6a6000000:8
 

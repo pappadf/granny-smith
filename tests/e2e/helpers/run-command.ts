@@ -517,7 +517,7 @@ function translateToGsEval(line: string): Translation | null {
         const slot = parseInt10(subArgs[1]) ?? 0;
         const writable = subArgs.length >= 3 ? parseBool(subArgs[2]) : false;
         return {
-          method: `machine.floppy.drives[${slot}].insert`,
+          method: `machine.floppy.drive[${slot}].insert`,
           args: [subArgs[0], writable],
           convention: 'cmd_int_bool',
         };
@@ -548,11 +548,11 @@ function translateToGsEval(line: string): Translation | null {
       }
       if (sub === 'eject') {
         const id = subArgs.length >= 1 ? (parseInt10(subArgs[0]) ?? 3) : 3;
-        return { method: `machine.scsi.devices[${id}].eject`, args: [], convention: 'cmd_int_bool' };
+        return { method: `machine.scsi.device[${id}].eject`, args: [], convention: 'cmd_int_bool' };
       }
       if (sub === 'info') {
         const id = subArgs.length >= 1 ? (parseInt10(subArgs[0]) ?? 3) : 3;
-        return { method: `machine.scsi.devices[${id}].info`, args: [], convention: 'cmd_int_bool' };
+        return { method: `machine.scsi.device[${id}].info`, args: [], convention: 'cmd_int_bool' };
       }
     }
 

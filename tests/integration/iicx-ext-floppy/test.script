@@ -40,7 +40,7 @@
 machine.nubus.video_sense = 0x6
 machine.boot "iicx" 8192
 machine.rom.reload
-machine.floppy.drives[0].insert "../../data/systems/SSW-7.1-1.4M/Disk Tools.img"
+machine.floppy.drive[0].insert "../../data/systems/SSW-7.1-1.4M/Disk Tools.img"
 machine.rtc.pram.validate
 machine.rtc.pram.poke 0x46 0x002781a6a6000000:8
 
@@ -63,8 +63,8 @@ machine.screen.match desktop.png
 # --- Insert a floppy into the EXTERNAL drive (FD1) -------------------------
 # This is the reported gesture.  The Install disk must mount and its icon must
 # appear on the desktop (it used to bomb the Finder — see BUG THIS GUARDS).
-machine.floppy.drives[1].insert "../../data/systems/SSW-7.1-1.4M/Install.img"
-assert ${machine.floppy.drives[1].present}  "Install.img not present in FD1"
+machine.floppy.drive[1].insert "../../data/systems/SSW-7.1-1.4M/Install.img"
+assert ${machine.floppy.drive[1].present}  "Install.img not present in FD1"
 
 # The mount completes and the desktop settles within ~60 M instructions of the
 # insert; the screen is then static (verified identical at 60/90/120 M), so the

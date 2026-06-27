@@ -32,6 +32,7 @@ extern const class_desc_t scsi_class;
 extern const class_desc_t scsi_bus_class;
 extern const class_desc_t scsi_devices_collection_class;
 extern const class_desc_t scsi_device_class;
+extern const class_desc_t scsi_image_class;
 
 #include <assert.h>
 #include <limits.h>
@@ -1722,13 +1723,19 @@ scsi_t *scsi_init(memory_map_t *map, checkpoint_t *checkpoint) {
         scsi->bus_object = object_new(&scsi_bus_class, scsi, "bus");
         if (scsi->bus_object)
             object_attach(scsi->object, scsi->bus_object);
-        scsi->devices_object = object_new(&scsi_devices_collection_class, scsi, "devices");
-        if (scsi->devices_object)
+        scsi->devices_object = object_new(&scsi_devices_collection_class, scsi, "device");
+        if (scsi->devices_object) {
+            object_set_label(scsi->devices_object, "Devices");
             object_attach(scsi->object, scsi->devices_object);
+        }
         for (int i = 0; i < 8; i++) {
             scsi->device_links[i].scsi = scsi;
             scsi->device_links[i].slot = i;
             scsi->device_objects[i] = object_new(&scsi_device_class, &scsi->device_links[i], NULL);
+            // The per-slot medium node shares the same device link so it can
+            // fetch the live image_t lazily (proposal §5.4). Returned by the
+            // device's `image` child lookup only when a medium is present.
+            scsi->image_objects[i] = object_new(&scsi_image_class, &scsi->device_links[i], "image");
         }
     }
 
@@ -2085,6 +2092,13 @@ void scsi_delete(scsi_t *scsi) {
     // Tear down per-slot entry objects (never attached to the tree),
     // then the named children, then the top-level node.
     for (int i = 0; i < 8; i++) {
+        // Medium nodes first (children of the entry objects), then the
+        // entries. Neither is attached to the tree, so cascade does not reach
+        // them — free them explicitly here.
+        if (scsi->image_objects[i]) {
+            object_delete(scsi->image_objects[i]);
+            scsi->image_objects[i] = NULL;
+        }
         if (scsi->device_objects[i]) {
             object_delete(scsi->device_objects[i]);
             scsi->device_objects[i] = NULL;
@@ -2319,45 +2333,192 @@ static const arg_decl_t scsi_dev_insert_args[] = {
     {.name = "path", .kind = V_STRING, .doc = "Host path or storage URI of the image to mount"},
 };
 
+// --- Medium (image) node: machine.scsi.device[N].image ---------------------
+//
+// The first-class node for the medium currently in this device
+// (proposal-system-object-model.md §5.4). instance_data is the same
+// device-link as the parent entry, so the live image_t is fetched lazily via
+// scsi_device_image(scsi, slot). The node carries the canonical "save this
+// disk" action — export(path) — keyed on device identity, not a filename. It
+// is returned by the device's `image` child lookup only when a medium is
+// present; the device owns the node (freed in scsi_delete).
+
+static value_t scsi_image_attr_path(struct object *self, const member_t *m) {
+    (void)m;
+    unsigned slot = 0;
+    scsi_t *scsi = scsi_dev_scsi(self, &slot);
+    image_t *img = scsi ? scsi_device_image(scsi, slot) : NULL;
+    const char *s = img ? image_path(img) : NULL;
+    return val_str(s ? s : "");
+}
+static value_t scsi_image_attr_filename(struct object *self, const member_t *m) {
+    (void)m;
+    unsigned slot = 0;
+    scsi_t *scsi = scsi_dev_scsi(self, &slot);
+    image_t *img = scsi ? scsi_device_image(scsi, slot) : NULL;
+    const char *s = img ? image_get_filename(img) : NULL;
+    return val_str(s ? s : "");
+}
+static value_t scsi_image_attr_raw_size(struct object *self, const member_t *m) {
+    (void)m;
+    unsigned slot = 0;
+    scsi_t *scsi = scsi_dev_scsi(self, &slot);
+    image_t *img = scsi ? scsi_device_image(scsi, slot) : NULL;
+    return val_uint(8, img ? (uint64_t)disk_size(img) : 0);
+}
+static value_t scsi_image_attr_writable(struct object *self, const member_t *m) {
+    (void)m;
+    unsigned slot = 0;
+    scsi_t *scsi = scsi_dev_scsi(self, &slot);
+    return val_bool(scsi ? !scsi_device_read_only(scsi, slot) : false);
+}
+static value_t scsi_image_attr_present(struct object *self, const member_t *m) {
+    (void)m;
+    unsigned slot = 0;
+    scsi_t *scsi = scsi_dev_scsi(self, &slot);
+    return val_bool(scsi ? scsi_device_medium_present(scsi, slot) : false);
+}
+
+// `export(path)` — flatten this device's live image (base + delta) into a
+// NEW file. image_export_to refuses to overwrite, so this is always a
+// "Save As…" and never mutates the source image (proposal §5.4, export-only).
+static value_t scsi_image_method_export(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)m;
+    (void)argc;
+    unsigned slot = 0;
+    scsi_t *scsi = scsi_dev_scsi(self, &slot);
+    image_t *img = scsi ? scsi_device_image(scsi, slot) : NULL;
+    if (!img)
+        return val_err("image.export: no medium present in this device");
+    int rc = image_export_to(img, argv[0].s);
+    if (rc != 0)
+        return val_err("image.export: failed to write '%s' (refuses to overwrite an existing file)", argv[0].s);
+    return val_bool(true);
+}
+
+// `eject()` — proxy to the owning device's eject.
+static value_t scsi_image_method_eject(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    return scsi_dev_method_eject(self, m, argc, argv);
+}
+
+static const arg_decl_t scsi_image_export_args[] = {
+    {.name = "path",
+     .kind = V_STRING,
+     .validation_flags = OBJ_ARG_NONEMPTY,
+     .doc = "Destination host path for the flattened image (must not exist)"},
+};
+
+static const member_t scsi_image_members[] = {
+    {.kind = M_ATTR,
+     .name = "present",
+     .doc = "True if a medium is loaded",
+     .flags = VAL_RO,
+     .attr = {.type = V_BOOL, .get = scsi_image_attr_present, .set = NULL}},
+    {.kind = M_ATTR,
+     .name = "path",
+     .doc = "Source path / storage URI backing the medium",
+     .flags = VAL_RO,
+     .attr = {.type = V_STRING, .get = scsi_image_attr_path, .set = NULL}},
+    {.kind = M_ATTR,
+     .name = "filename",
+     .doc = "Display filename of the medium",
+     .flags = VAL_RO,
+     .attr = {.type = V_STRING, .get = scsi_image_attr_filename, .set = NULL}},
+    {.kind = M_ATTR,
+     .name = "raw_size",
+     .doc = "Medium size in bytes",
+     .flags = VAL_RO,
+     .attr = {.type = V_UINT, .get = scsi_image_attr_raw_size, .set = NULL}},
+    {.kind = M_ATTR,
+     .name = "writable",
+     .doc = "True if the medium accepts writes",
+     .flags = VAL_RO,
+     .attr = {.type = V_BOOL, .get = scsi_image_attr_writable, .set = NULL}},
+    {.kind = M_METHOD,
+     .name = "export",
+     .doc = "Save a flattened copy (base + delta) of this disk to a new file",
+     .method = {.args = scsi_image_export_args,
+                .nargs = 1,
+                .result = V_BOOL,
+                .fn = scsi_image_method_export,
+                .ui_flags = MM_MUTATE,
+                .verb_label = "Save image…",
+                .task_category = "storage"}},
+    {.kind = M_METHOD,
+     .name = "eject",
+     .doc = "Eject the medium from the owning device",
+     .method = {.args = NULL,
+                .nargs = 0,
+                .result = V_BOOL,
+                .fn = scsi_image_method_eject,
+                .ui_flags = MM_DESTRUCTIVE | MM_MUTATE,
+                .task_category = "storage"}},
+};
+
+const class_desc_t scsi_image_class = {
+    .name = "image",
+    .members = scsi_image_members,
+    .n_members = sizeof(scsi_image_members) / sizeof(scsi_image_members[0]),
+};
+
+// `image` child lookup — return this device's medium node, but only when a
+// medium is actually loaded (so device[N].image resolves to nothing on an
+// empty/absent device, matching the "no medium" state).
+static struct object *scsi_dev_image_lookup(struct object *self, const char *name) {
+    (void)name;
+    unsigned slot = 0;
+    scsi_t *scsi = scsi_dev_scsi(self, &slot);
+    if (!scsi || !scsi_device_medium_present(scsi, slot))
+        return NULL;
+    if (slot >= 8)
+        return NULL;
+    return scsi->image_objects[slot];
+}
+
 static const member_t scsi_device_members[] = {
-    {.kind = M_ATTR,   .name = "id",   .flags = VAL_RO,                       .attr = {.type = V_INT, .get = scsi_dev_attr_id, .set = NULL}   },
-    {.kind = M_ATTR,   .name = "type", .flags = VAL_RO,                       .attr = {.type = V_ENUM, .get = scsi_dev_attr_type, .set = NULL}},
+    {.kind = M_ATTR, .name = "id", .flags = VAL_RO, .attr = {.type = V_INT, .get = scsi_dev_attr_id, .set = NULL}},
+    {.kind = M_ATTR, .name = "type", .flags = VAL_RO, .attr = {.type = V_ENUM, .get = scsi_dev_attr_type, .set = NULL}},
     {.kind = M_ATTR,
      .name = "vendor",
      .flags = VAL_RO,
-     .attr = {.type = V_STRING, .get = scsi_dev_attr_vendor, .set = NULL}                                                                     },
+     .attr = {.type = V_STRING, .get = scsi_dev_attr_vendor, .set = NULL}},
     {.kind = M_ATTR,
      .name = "product",
      .flags = VAL_RO,
-     .attr = {.type = V_STRING, .get = scsi_dev_attr_product, .set = NULL}                                                                    },
+     .attr = {.type = V_STRING, .get = scsi_dev_attr_product, .set = NULL}},
     {.kind = M_ATTR,
      .name = "revision",
      .flags = VAL_RO,
-     .attr = {.type = V_STRING, .get = scsi_dev_attr_revision, .set = NULL}                                                                   },
+     .attr = {.type = V_STRING, .get = scsi_dev_attr_revision, .set = NULL}},
     {.kind = M_ATTR,
      .name = "block_size",
      .flags = VAL_RO,
-     .attr = {.type = V_UINT, .get = scsi_dev_attr_block_size, .set = NULL}                                                                   },
+     .attr = {.type = V_UINT, .get = scsi_dev_attr_block_size, .set = NULL}},
     {.kind = M_ATTR,
      .name = "read_only",
      .flags = VAL_RO,
-     .attr = {.type = V_BOOL, .get = scsi_dev_attr_read_only, .set = NULL}                                                                    },
+     .attr = {.type = V_BOOL, .get = scsi_dev_attr_read_only, .set = NULL}},
     {.kind = M_ATTR,
      .name = "medium_present",
      .flags = VAL_RO,
-     .attr = {.type = V_BOOL, .get = scsi_dev_attr_medium_present, .set = NULL}                                                               },
+     .attr = {.type = V_BOOL, .get = scsi_dev_attr_medium_present, .set = NULL}},
     {.kind = M_METHOD,
      .name = "eject",
      .doc = "Eject the medium (CD-ROMs leave the slot attached, HDs detach)",
-     .method = {.args = NULL, .nargs = 0, .result = V_BOOL, .fn = scsi_dev_method_eject}                                                      },
+     .method = {.args = NULL, .nargs = 0, .result = V_BOOL, .fn = scsi_dev_method_eject}},
     {.kind = M_METHOD,
      .name = "insert",
      .doc = "Mount a CD-ROM image into this slot",
-     .method = {.args = scsi_dev_insert_args, .nargs = 1, .result = V_BOOL, .fn = scsi_dev_method_insert}                                     },
+     .method = {.args = scsi_dev_insert_args, .nargs = 1, .result = V_BOOL, .fn = scsi_dev_method_insert}},
     {.kind = M_METHOD,
      .name = "info",
      .doc = "Print a human-readable summary of the device contents",
-     .method = {.args = NULL, .nargs = 0, .result = V_BOOL, .fn = scsi_dev_method_info}                                                       },
+     .method = {.args = NULL, .nargs = 0, .result = V_BOOL, .fn = scsi_dev_method_info}},
+    {.kind = M_CHILD,
+     .name = "image",
+     .doc = "The medium currently in this device (present only when loaded)",
+     .label = "Image",
+     .child = {.cls = &scsi_image_class, .lookup = scsi_dev_image_lookup}},
 };
 
 const class_desc_t scsi_device_class = {

@@ -46,7 +46,7 @@
 # --- System Software 2.0 (400K) @ 1 MB RAM --------------------------
 machine.boot "plus" 1024
 machine.rom.reload
-machine.floppy.drives[0].insert "../../data/systems/SSW-2.0-400K/System Disk.image"
+machine.floppy.drive[0].insert "../../data/systems/SSW-2.0-400K/System Disk.image"
 t0 = ${scheduler.host_user_ns}
 scheduler.run 17000000
 assert ${machine.id == "plus"}    "ssw-2.0/1M: machine.id != plus"
@@ -60,7 +60,7 @@ assert ${scheduler.instr_count * 1000000000 / (scheduler.host_user_ns - t0) > 50
 # --- System Software 3.2 (400K) @ 2 MB RAM --------------------------
 machine.boot "plus" 2048
 machine.rom.reload
-machine.floppy.drives[0].insert "../../data/systems/SSW-3.2-400K/System Installation v1.0.image"
+machine.floppy.drive[0].insert "../../data/systems/SSW-3.2-400K/System Installation v1.0.image"
 t0 = ${scheduler.host_user_ns}
 scheduler.run 24000000
 assert ${machine.id == "plus"}    "ssw-3.2/2M: machine.id != plus"
@@ -74,7 +74,7 @@ assert ${scheduler.instr_count * 1000000000 / (scheduler.host_user_ns - t0) > 50
 # --- System Software 4.2 (800K) @ 2.5 MB RAM ------------------------
 machine.boot "plus" 2560
 machine.rom.reload
-machine.floppy.drives[0].insert "../../data/systems/SSW-4.2-800K/System Tools 1.image"
+machine.floppy.drive[0].insert "../../data/systems/SSW-4.2-800K/System Tools 1.image"
 t0 = ${scheduler.host_user_ns}
 scheduler.run 33000000
 assert ${machine.id == "plus"}    "ssw-4.2/2.5M: machine.id != plus"
@@ -88,7 +88,7 @@ assert ${scheduler.instr_count * 1000000000 / (scheduler.host_user_ns - t0) > 50
 # --- System Software 6.0.8 (800K) @ 4 MB RAM ------------------------
 machine.boot "plus" 4096
 machine.rom.reload
-machine.floppy.drives[0].insert "../../data/systems/SSW-6.08-800K/SSW 6.0.8-800k Disk1of4"
+machine.floppy.drive[0].insert "../../data/systems/SSW-6.08-800K/SSW 6.0.8-800k Disk1of4"
 t0 = ${scheduler.host_user_ns}
 scheduler.run 40000000
 assert ${machine.id == "plus"}    "ssw-6.0.8/4M: machine.id != plus"
@@ -117,7 +117,7 @@ assert ${scheduler.instr_count * 1000000000 / (scheduler.host_user_ns - t0) > 50
 # --- SE/30 + System Software 6.0.8 (800K) @ 4 MB RAM ----------------
 machine.boot "se30" 4096
 machine.rom.load "../../data/roms/IIcx.rom"
-machine.floppy.drives[0].insert "../../data/systems/SSW-6.08-800K/SSW 6.0.8-800k Disk1of4"
+machine.floppy.drive[0].insert "../../data/systems/SSW-6.08-800K/SSW 6.0.8-800k Disk1of4"
 t0 = ${scheduler.host_user_ns}
 scheduler.run 40000000
 machine.memory.poke.w 0x017A 0x8805
@@ -157,7 +157,7 @@ assert ${scheduler.instr_count * 1000000000 / (scheduler.host_user_ns - t0) > 10
 machine.nubus.video_sense = 0x6
 machine.boot "iicx" 4096
 machine.rom.load "../../data/roms/IIcx.rom"
-machine.floppy.drives[0].insert "../../data/systems/SSW-6.08-800K/SSW 6.0.8-800k Disk1of4"
+machine.floppy.drive[0].insert "../../data/systems/SSW-6.08-800K/SSW 6.0.8-800k Disk1of4"
 machine.rtc.pram.validate
 machine.rtc.pram.poke 0x46 0x002780a6a6000000:8
 t0 = ${scheduler.host_user_ns}
@@ -199,7 +199,7 @@ assert ${scheduler.instr_count * 1000000000 / (scheduler.host_user_ns - t0) > 50
 machine.nubus.video_sense = 0x6
 machine.boot "iicx" 8192
 machine.rom.load "../../data/roms/IIcx.rom"
-machine.floppy.drives[0].insert "../../data/systems/SSW-7.0-800K/Disk Tools.image"
+machine.floppy.drive[0].insert "../../data/systems/SSW-7.0-800K/Disk Tools.image"
 machine.rtc.pram.validate
 machine.rtc.pram.poke 0x46 0x002781a6a6000000:8
 t0 = ${scheduler.host_user_ns}

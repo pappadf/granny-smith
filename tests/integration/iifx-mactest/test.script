@@ -25,7 +25,7 @@
 machine.nubus.video_mode = "13in_rgb_8bpp"
 machine.boot "iifx" 16384
 machine.rom.reload
-machine.floppy.drives[0].insert "../../data/apps/MacTest-IIfx.image" true
+machine.floppy.drive[0].insert "../../data/apps/MacTest-IIfx.image" true
 
 # Boot to the Happy Mac, run MacTest's launch-time hardware probe, and draw
 # the main window.  At 8 bpp the window is painted and stable by ~340M

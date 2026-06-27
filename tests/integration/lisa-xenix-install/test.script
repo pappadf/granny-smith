@@ -63,7 +63,7 @@ machine.hd.save "${WORK_DIR}/xenix_hd.image"
 machine.boot "lisa" 2048
 machine.rom.reload
 machine.hd.attach "${WORK_DIR}/xenix_hd.image"
-machine.floppy.drives.0.insert "../../data/Lisa/Xenix-3.0/Xenix-3.0-Boot-XProFile.dc42"
+machine.floppy.drive.0.insert "../../data/Lisa/Xenix-3.0/Xenix-3.0-Boot-XProFile.dc42"
 scheduler.run 60000000
 # At the loader "boot :" prompt, type "pf(0,0)xenix" to load the kernel from the
 # hard disk (instead of the floppy's fd(2,0)xenix).
@@ -135,9 +135,9 @@ machine.adb.keyboard.press 0x48
 scheduler.run 8000000
 
 # disk 1 (First Floppy? y)
-machine.floppy.drives.0.eject
+machine.floppy.drive.0.eject
 scheduler.run 2000000
-machine.floppy.drives.0.insert "../../data/Lisa/Xenix-3.0/Xenix-3.0-1.dc42"
+machine.floppy.drive.0.insert "../../data/Lisa/Xenix-3.0/Xenix-3.0-1.dc42"
 scheduler.run 6000000
 machine.adb.keyboard.press 0xE7
 machine.adb.keyboard.press 0x67
@@ -145,9 +145,9 @@ machine.adb.keyboard.press 0xC8
 machine.adb.keyboard.press 0x48
 scheduler.run 90000000
 # disk 2
-machine.floppy.drives.0.eject
+machine.floppy.drive.0.eject
 scheduler.run 2000000
-machine.floppy.drives.0.insert "../../data/Lisa/Xenix-3.0/Xenix-3.0-2.dc42"
+machine.floppy.drive.0.insert "../../data/Lisa/Xenix-3.0/Xenix-3.0-2.dc42"
 scheduler.run 6000000
 machine.adb.keyboard.press 0xE7
 machine.adb.keyboard.press 0x67
@@ -155,9 +155,9 @@ machine.adb.keyboard.press 0xC8
 machine.adb.keyboard.press 0x48
 scheduler.run 90000000
 # disk 3
-machine.floppy.drives.0.eject
+machine.floppy.drive.0.eject
 scheduler.run 2000000
-machine.floppy.drives.0.insert "../../data/Lisa/Xenix-3.0/Xenix-3.0-3.dc42"
+machine.floppy.drive.0.insert "../../data/Lisa/Xenix-3.0/Xenix-3.0-3.dc42"
 scheduler.run 6000000
 machine.adb.keyboard.press 0xE7
 machine.adb.keyboard.press 0x67
@@ -165,9 +165,9 @@ machine.adb.keyboard.press 0xC8
 machine.adb.keyboard.press 0x48
 scheduler.run 90000000
 # disk 4
-machine.floppy.drives.0.eject
+machine.floppy.drive.0.eject
 scheduler.run 2000000
-machine.floppy.drives.0.insert "../../data/Lisa/Xenix-3.0/Xenix-3.0-4.dc42"
+machine.floppy.drive.0.insert "../../data/Lisa/Xenix-3.0/Xenix-3.0-4.dc42"
 scheduler.run 6000000
 machine.adb.keyboard.press 0xE7
 machine.adb.keyboard.press 0x67
@@ -175,9 +175,9 @@ machine.adb.keyboard.press 0xC8
 machine.adb.keyboard.press 0x48
 scheduler.run 90000000
 # disk 5
-machine.floppy.drives.0.eject
+machine.floppy.drive.0.eject
 scheduler.run 2000000
-machine.floppy.drives.0.insert "../../data/Lisa/Xenix-3.0/Xenix-3.0-5.dc42"
+machine.floppy.drive.0.insert "../../data/Lisa/Xenix-3.0/Xenix-3.0-5.dc42"
 scheduler.run 6000000
 machine.adb.keyboard.press 0xE7
 machine.adb.keyboard.press 0x67
@@ -185,9 +185,9 @@ machine.adb.keyboard.press 0xC8
 machine.adb.keyboard.press 0x48
 scheduler.run 90000000
 # disk 6
-machine.floppy.drives.0.eject
+machine.floppy.drive.0.eject
 scheduler.run 2000000
-machine.floppy.drives.0.insert "../../data/Lisa/Xenix-3.0/Xenix-3.0-6.dc42"
+machine.floppy.drive.0.insert "../../data/Lisa/Xenix-3.0/Xenix-3.0-6.dc42"
 scheduler.run 6000000
 machine.adb.keyboard.press 0xE7
 machine.adb.keyboard.press 0x67
@@ -195,9 +195,9 @@ machine.adb.keyboard.press 0xC8
 machine.adb.keyboard.press 0x48
 scheduler.run 90000000
 # disk 7
-machine.floppy.drives.0.eject
+machine.floppy.drive.0.eject
 scheduler.run 2000000
-machine.floppy.drives.0.insert "../../data/Lisa/Xenix-3.0/Xenix-3.0-7.dc42"
+machine.floppy.drive.0.insert "../../data/Lisa/Xenix-3.0/Xenix-3.0-7.dc42"
 scheduler.run 6000000
 machine.adb.keyboard.press 0xE7
 machine.adb.keyboard.press 0x67

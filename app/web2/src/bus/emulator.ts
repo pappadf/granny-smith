@@ -394,7 +394,7 @@ export async function initEmulator(config: MachineConfig): Promise<void> {
   for (let i = 0; i < (config.floppies?.length ?? 0); i++) {
     const path = config.floppies[i];
     if (!path || path === '(none)') continue;
-    await gsEval(`machine.floppy.drives[${i}].insert`, [path, true]);
+    await gsEval(`machine.floppy.drive[${i}].insert`, [path, true]);
   }
   if (config.hd && config.hd !== '(none)') {
     if (config.hdBus === 'profile') {

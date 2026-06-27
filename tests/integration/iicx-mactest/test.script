@@ -19,7 +19,7 @@ machine.nubus.video_mode = "13in_rgb_8bpp"
 
 machine.boot "iicx" 4096
 machine.rom.reload
-machine.floppy.drives[0].insert "../../data/apps/MacTest-IIcx-IIci.image" true
+machine.floppy.drive[0].insert "../../data/apps/MacTest-IIcx-IIci.image" true
 
 machine.scc.loopback = true
 machine.scsi.loopback = true
@@ -164,8 +164,8 @@ machine.screen.match insert-1.4mb-external.png
 
 machine.adb.mouse.click false "global"
 machine.floppy.create "${WORK_DIR}/blankHD-ext.dsk" "hd"
-machine.floppy.drives[0].eject
-machine.floppy.drives[1].insert "${WORK_DIR}/blankHD-ext.dsk" true
+machine.floppy.drive[0].eject
+machine.floppy.drive[1].insert "${WORK_DIR}/blankHD-ext.dsk" true
 
 machine.adb.mouse.move 454 245 "global"
 scheduler.run 5000000
@@ -196,7 +196,7 @@ machine.screen.match floppy-test-success.png
 # all that's left.  fd0 was ejected during the External-HD swap so
 # inserting back there matches what a real user would do.
 machine.adb.mouse.click false "global"
-machine.floppy.drives[0].insert "../../data/apps/MacTest-IIcx-IIci.image" true
+machine.floppy.drive[0].insert "../../data/apps/MacTest-IIcx-IIci.image" true
 
 # Click OK on the "Please insert the disk" dialog (same OK button
 # position as the earlier insert-disk dialogs at this dialog kind).
