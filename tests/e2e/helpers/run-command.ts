@@ -272,8 +272,9 @@ function translateToGsEval(line: string): Translation | null {
   // debug.mac.globals.read / write.
   if (head === 'print') {
     if (tail.length === 0)
-      // Bare `print` — surface as an unresolved path so mapResult returns 1.
-      return { method: 'cpu', args: [''], convention: 'pass_through' };
+      // Bare `print` — call an object path with an arg; an object is not
+      // callable, so this errors and mapResult returns 1 (usage-error shape).
+      return { method: 'machine.cpu', args: [''], convention: 'pass_through' };
     const target = tail[0];
     const t = resolveDebugTarget(target);
     if (t === null) return null;
@@ -285,9 +286,10 @@ function translateToGsEval(line: string): Translation | null {
   }
   if (head === 'set') {
     if (tail.length === 0)
-      // Bare `set` — pass an unresolvable path; mapResult turns the error
-      // into a non-zero exit, matching the legacy "usage" exit shape.
-      return { method: 'cpu', args: [], convention: 'void_or_error' };
+      // Bare `set` — read an object path (empty args = read, not call); it
+      // resolves to the cpu node, so void_or_error yields exit 0, matching the
+      // legacy "command returns 0 even on usage errors" shape.
+      return { method: 'machine.cpu', args: [], convention: 'void_or_error' };
     if (tail.length === 2) {
       const target = tail[0];
       const value = parseSetValue(tail[1]);
