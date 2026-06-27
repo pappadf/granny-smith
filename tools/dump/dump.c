@@ -455,14 +455,16 @@ static void write_generic_code_listing(FILE *fp, const char *type_str, int16_t i
     fprintf(fp, "; %s %d\n", type_str, id);
     if (header_label)
         fprintf(fp, "; %s\n", header_label);
+    // Resolve the (size_t)-1 "rest of resource" sentinel before printing so
+    // the header comment shows the real byte count, not SIZE_MAX.
+    if (header_bytes <= sz && (code_len == (size_t)-1 || header_bytes + code_len > sz))
+        code_len = sz - header_bytes;
     fprintf(fp, "; header_bytes=%zu  code_bytes=%zu  resource_bytes=%zu\n", header_bytes, code_len, sz);
     fprintf(fp, "; ============================================================\n\n");
     if (header_bytes > sz) {
         fprintf(fp, "; resource shorter than its declared header — bailing out\n");
         return;
     }
-    if (code_len == (size_t)-1 || header_bytes + code_len > sz)
-        code_len = sz - header_bytes;
     re_annotate_ctx_t ctx = {.jt = NULL, .code_id = id, .symbols = symbols};
     re_annotate_disasm_write(fp, bytes + header_bytes, code_len, (uint32_t)header_bytes, RE_DISASM_ALL, &ctx);
 }
@@ -495,32 +497,44 @@ typedef struct {
 static const cbtype_t g_code_bearing[] = {
     // 'CODE' takes the dedicated path; we still list it so the iteration
     // below stays uniform.
-    {{'C', 'O', 'D', 'E'}, CBKIND_CODE,    NULL                                                                          },
-    {{'l', 'p', 'c', 'h'}, CBKIND_LPCH,    "linked-patch resource (per LinkedPatchLoader.a §lpch format)"               },
-    {{'D', 'R', 'V', 'R'}, CBKIND_DRVR,    "driver — 18-byte header + Pascal name; entry table at offsets 6/8/10/12/14"},
-    {{'I', 'N', 'I', 'T'}, CBKIND_GENERIC, "INIT — code starts at offset 0"                                            },
-    {{'M', 'D', 'E', 'F'}, CBKIND_GENERIC, "menu-definition proc"                                                        },
-    {{'M', 'B', 'D', 'F'}, CBKIND_GENERIC, "menu-bar definition"                                                         },
-    {{'W', 'D', 'E', 'F'}, CBKIND_GENERIC, "window-definition proc"                                                      },
-    {{'C', 'D', 'E', 'F'}, CBKIND_GENERIC, "control-definition proc"                                                     },
-    {{'L', 'D', 'E', 'F'}, CBKIND_GENERIC, "list-definition proc"                                                        },
-    {{'P', 'A', 'C', 'K'}, CBKIND_GENERIC, "standard package (selector-switch dispatcher at offset 0)"                   },
-    {{'F', 'K', 'E', 'Y'}, CBKIND_GENERIC, "function-key code"                                                           },
-    {{'A', 'D', 'B', 'S'}, CBKIND_GENERIC, "ADB service routine"                                                         },
-    {{'X', 'C', 'M', 'D'}, CBKIND_GENERIC, "HyperCard external command"                                                  },
-    {{'X', 'F', 'C', 'N'}, CBKIND_GENERIC, "HyperCard external function"                                                 },
-    {{'d', 'c', 'm', 'p'}, CBKIND_GENERIC, "resource decompressor"                                                       },
-    {{'P', 'T', 'C', 'H'}, CBKIND_GENERIC, "ROM patch (legacy format)"                                                   },
-    {{'p', 't', 'c', 'h'}, CBKIND_GENERIC, "ROM patch"                                                                   },
-    {{'s', 'c', 'o', 'd'}, CBKIND_GENERIC, "system code module"                                                          },
-    {{'b', 'o', 'o', 't'}, CBKIND_GENERIC, "boot block"                                                                  },
-    {{'l', 'm', 'g', 'r'}, CBKIND_GENERIC, "low-memory manager"                                                          },
-    {{'l', 'm', 'e', 'm'}, CBKIND_GENERIC, "low-memory code"                                                             },
-    {{'m', 'c', 'k', 'y'}, CBKIND_GENERIC, "mouse cursor / Mickey code"                                                  },
-    {{'p', 'r', 'o', 'c'}, CBKIND_GENERIC, "generic procedure"                                                           },
-    {{'s', 'n', 't', 'h'}, CBKIND_GENERIC, "Sound Manager synthesiser"                                                   },
-    {{'c', 'd', 'e', 'v'}, CBKIND_GENERIC, "Control Panel device"                                                        },
-    {{'d', 'c', 'm', 'd'}, CBKIND_GENERIC, "MacsBug dcmd"                                                                },
+    {{'C', 'O', 'D', 'E'},  CBKIND_CODE,    NULL                                                                          },
+    {{'l', 'p', 'c', 'h'},  CBKIND_LPCH,    "linked-patch resource (per LinkedPatchLoader.a §lpch format)"               },
+    {{'D', 'R', 'V', 'R'},  CBKIND_DRVR,    "driver — 18-byte header + Pascal name; entry table at offsets 6/8/10/12/14"},
+    {{'I', 'N', 'I', 'T'},  CBKIND_GENERIC, "INIT — code starts at offset 0"                                            },
+    {{'M', 'D', 'E', 'F'},  CBKIND_GENERIC, "menu-definition proc"                                                        },
+    {{'M', 'B', 'D', 'F'},  CBKIND_GENERIC, "menu-bar definition"                                                         },
+    {{'W', 'D', 'E', 'F'},  CBKIND_GENERIC, "window-definition proc"                                                      },
+    {{'C', 'D', 'E', 'F'},  CBKIND_GENERIC, "control-definition proc"                                                     },
+    {{'L', 'D', 'E', 'F'},  CBKIND_GENERIC, "list-definition proc"                                                        },
+    {{'P', 'A', 'C', 'K'},  CBKIND_GENERIC, "standard package (selector-switch dispatcher at offset 0)"                   },
+    {{'F', 'K', 'E', 'Y'},  CBKIND_GENERIC, "function-key code"                                                           },
+    {{'A', 'D', 'B', 'S'},  CBKIND_GENERIC, "ADB service routine"                                                         },
+    {{'X', 'C', 'M', 'D'},  CBKIND_GENERIC, "HyperCard external command"                                                  },
+    {{'X', 'F', 'C', 'N'},  CBKIND_GENERIC, "HyperCard external function"                                                 },
+    {{'d', 'c', 'm', 'p'},  CBKIND_GENERIC, "resource decompressor"                                                       },
+    {{'P', 'T', 'C', 'H'},  CBKIND_GENERIC, "ROM patch (legacy format)"                                                   },
+    {{'p', 't', 'c', 'h'},  CBKIND_GENERIC, "ROM patch"                                                                   },
+    {{'s', 'c', 'o', 'd'},  CBKIND_GENERIC, "system code module"                                                          },
+    {{'b', 'o', 'o', 't'},  CBKIND_GENERIC, "boot block"                                                                  },
+    {{'l', 'm', 'g', 'r'},  CBKIND_GENERIC, "low-memory manager"                                                          },
+    {{'l', 'm', 'e', 'm'},  CBKIND_GENERIC, "low-memory code"                                                             },
+    {{'m', 'c', 'k', 'y'},  CBKIND_GENERIC, "mouse cursor / Mickey code"                                                  },
+    {{'p', 'r', 'o', 'c'},  CBKIND_GENERIC, "generic procedure"                                                           },
+    {{'s', 'n', 't', 'h'},  CBKIND_GENERIC, "Sound Manager synthesiser"                                                   },
+    {{'c', 'd', 'e', 'v'},  CBKIND_GENERIC, "Control Panel device"                                                        },
+    {{'d', 'c', 'm', 'd'},  CBKIND_GENERIC, "MacsBug dcmd"                                                                },
+    // Display-accelerator / Monitors-extension control panels (e.g. the
+    // Radius "Apple Macintosh 24AC" QuickDraw accelerator) carry their 68K
+    // code in these non-Apple resource types instead of CODE.  All are
+    // plain code from offset 0; 'QCOD' additionally prefixes an 8-byte
+    // header + a trap-patch table (trap-word/patch-offset/saved-original
+    // 8-byte entries, see notes/2026-06-26-apple-macintosh-24ac-*) ahead of
+    // its routine bodies, so its leading bytes decode as table data.
+    {{'Q', 'C', 'O', 'D'},  CBKIND_GENERIC, "QuickDraw-accelerator code + trap-patch table (header @0, table @+8)"        },
+    {{'Q', 'D', 'P', 'A'},  CBKIND_GENERIC, "QuickDraw-accelerator patch routine (stScanLoop / bMAIN0 / bEND0 bodies)"    },
+    {{'B', 0x9F, 't', 't'}, CBKIND_GENERIC, "accelerator card-probe selector dispatch ('Butt')"                           },
+    {{'G', 'D', 'E', 'F'},  CBKIND_GENERIC, "accelerator GDevice helper proc"                                             },
+    {{'m', 'n', 't', 'r'},  CBKIND_GENERIC, "Monitors control-panel device routine"                                       },
 };
 static const size_t g_code_bearing_count = sizeof(g_code_bearing) / sizeof(g_code_bearing[0]);
 
@@ -924,7 +938,7 @@ static int dump_manifest(const rfork_t *rf, const char *src_label, const char *d
         const uint8_t *type = rfork_type_at(rf, t);
         char type_path[16];
         rfork_type_to_path(type, type_path, sizeof(type_path));
-        bool is_code = memcmp(type, code_cc, 4) == 0;
+        const cbtype_t *cb = find_cbtype(type);
         bool has_decoder = re_decode_dispatch_name(type) != NULL;
         size_t nr = rfork_num_resources(rf, type);
         for (size_t r = 0; r < nr; r++) {
@@ -947,11 +961,24 @@ static int dump_manifest(const rfork_t *rf, const char *src_label, const char *d
             fprintf(fp, ", \"attrs\": %u, \"size\": %zu, \"files\": {\"bin\": \"resources/%s/%s\", \"info\": ", attrs,
                     sz, type_path, id_str);
             fprintf(fp, "\"resources/%s/%s.info\", \"disasm\": ", type_path, id_str);
-            if (is_code) {
+            // Link the disasm listing for every code-bearing type, matching
+            // the filename dump_disasm() emits (CODE keeps jump-table.s /
+            // CODE-NNNN.s; all other code types use <type>-NNNN.s with spaces
+            // in the type mapped to '_').
+            if (cb && cb->kind == CBKIND_CODE) {
                 if (id == 0)
                     fprintf(fp, "\"disasm/jump-table.s\"");
                 else
                     fprintf(fp, "\"disasm/CODE-%04d.s\"", (int)id);
+            } else if (cb) {
+                char fs[16];
+                for (size_t k = 0; k < sizeof(fs); k++) {
+                    char c = type_path[k];
+                    fs[k] = (c == ' ') ? '_' : c;
+                    if (c == '\0')
+                        break;
+                }
+                fprintf(fp, "\"disasm/%s-%04d.s\"", fs, (int)id);
             } else {
                 fprintf(fp, "null");
             }
