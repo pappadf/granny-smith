@@ -531,7 +531,9 @@ static void lisa_register_floppy_object(config_t *cfg) {
     object_set_label(ls->fd_obj, "Floppy");
     object_set_order(ls->fd_obj, 80);
     object_attach(machine_object(), ls->fd_obj);
-    ls->fd_drives_obj = object_new(&lisa_fd_drives_class, cfg, "drives");
+    // Named "drive" (singular) to match the standard floppy collection
+    // (machine.floppy.drive[N]) after the proposal-system-object-model rename.
+    ls->fd_drives_obj = object_new(&lisa_fd_drives_class, cfg, "drive");
     if (ls->fd_drives_obj)
         object_attach(ls->fd_obj, ls->fd_drives_obj);
     ls->fd_drive_obj = object_new(&lisa_fd_drive_class, cfg, NULL); // returned by the indexed get
