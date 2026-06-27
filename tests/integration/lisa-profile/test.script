@@ -24,41 +24,41 @@
 debug.breakpoints.add 0x00FE2DC6
 scheduler.run 40000000
 assert ${machine.id == "lisa"} "machine.id != lisa"
-assert ${rom.checksum == "098917B2"} "rom.checksum != 098917B2 (rev-H)"
-assert ${cpu.pc == 0x00FE2DC6} "did not reach the boot-menu input wait"
+assert ${machine.rom.checksum == "098917B2"} "rom.checksum != 098917B2 (rev-H)"
+assert ${machine.cpu.pc == 0x00FE2DC6} "did not reach the boot-menu input wait"
 
 # Attach a blank in-memory ProFile (drives OCD/ low; the ROM now sees it connected).
-profile.attach
-assert ${profile.present == true} "ProFile should be attached"
+machine.hd.attach
+assert ${machine.hd.present == true} "ProFile should be attached"
 
 # Set up the PROREAD call: D1 = block $FFFFFF (device-info), D2 = timeout,
 # D3 = retry, D4 = sparing threshold; A1 = 20-byte header buffer, A2 = data buffer.
-cpu.d1 = 0x00FFFFFF
-cpu.d2 = 0x00100000
-cpu.d3 = 0x04
-cpu.d4 = 0x00
-cpu.a1 = 0x00000400
-cpu.a2 = 0x00000420
-cpu.pc = 0x00FE1F70
+machine.cpu.d1 = 0x00FFFFFF
+machine.cpu.d2 = 0x00100000
+machine.cpu.d3 = 0x04
+machine.cpu.d4 = 0x00
+machine.cpu.a1 = 0x00000400
+machine.cpu.a2 = 0x00000420
+machine.cpu.pc = 0x00FE1F70
 scheduler.run 8000000
 
 # PROREAD read the block successfully (D0 = 0: the 4 status bytes were all OK and
 # the 532-byte block streamed through) and returned cleanly to the menu loop.
-assert ${cpu.pc == 0x00FE2DC6} "PROREAD did not return cleanly to the boot menu"
-assert ${cpu.d0 == 0} "PROREAD returned an error (D0 != 0)"
+assert ${machine.cpu.pc == 0x00FE2DC6} "PROREAD did not return cleanly to the boot menu"
+assert ${machine.cpu.d0 == 0} "PROREAD returned an error (D0 != 0)"
 
 # The device-info header buffer at $400 holds the controller's identity:
 #   "PROFILE      " (13-byte name), device number 0 -> drive type 0 = ProFile,
 #   firmware rev, then the 24-bit block count (9728 = $002600).
-assert ${memory.peek.l(0x400) == 0x50524F46} "header[0..3] != 'PROF'"
-assert ${memory.peek.l(0x404) == 0x494C4520} "header[4..7] != 'ILE '"
+assert ${machine.memory.peek.l(0x400) == 0x50524F46} "header[0..3] != 'PROF'"
+assert ${machine.memory.peek.l(0x404) == 0x494C4520} "header[4..7] != 'ILE '"
 # Block-count high/mid bytes (offsets 18..19 within the 20-byte header).
-assert ${memory.peek.b(0x412) == 0x00} "block-count MSB != 0x00"
-assert ${memory.peek.b(0x413) == 0x26} "block-count mid != 0x26 (9728 blocks)"
+assert ${machine.memory.peek.b(0x412) == 0x00} "block-count MSB != 0x00"
+assert ${machine.memory.peek.b(0x413) == 0x26} "block-count mid != 0x26 (9728 blocks)"
 # Block-count LSB (offset 20) and bytes/block (offsets 21..22 = 532 = $0214)
 # land in the data buffer at $420.
-assert ${memory.peek.b(0x420) == 0x00} "block-count LSB != 0x00"
-assert ${memory.peek.b(0x421) == 0x02} "bytes/block hi != 0x02"
-assert ${memory.peek.b(0x422) == 0x14} "bytes/block lo != 0x14 (532)"
+assert ${machine.memory.peek.b(0x420) == 0x00} "block-count LSB != 0x00"
+assert ${machine.memory.peek.b(0x421) == 0x02} "bytes/block hi != 0x02"
+assert ${machine.memory.peek.b(0x422) == 0x14} "bytes/block lo != 0x14 (532)"
 
 quit

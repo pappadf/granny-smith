@@ -12,6 +12,7 @@
 
 #include "vrom.h"
 
+#include "machine_profile.h"
 #include "object.h"
 #include "value.h"
 
@@ -240,8 +241,11 @@ void vrom_init(void) {
     if (s_vrom_object)
         return;
     s_vrom_object = object_new(&vrom_class, NULL, "vrom");
-    if (s_vrom_object)
-        object_attach(object_root(), s_vrom_object);
+    if (s_vrom_object) {
+        object_set_label(s_vrom_object, "Video ROM");
+        object_set_order(s_vrom_object, 95);
+        object_attach(machine_object(), s_vrom_object);
+    }
 }
 
 void vrom_delete(void) {

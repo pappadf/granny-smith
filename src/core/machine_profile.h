@@ -24,6 +24,7 @@
 struct config;
 struct nubus_slot_decl;
 struct image;
+struct object;
 
 // Floppy drive capabilities form a strict superset hierarchy:
 //   FLOPPY_400K reads 400K only.
@@ -186,5 +187,18 @@ const hw_profile_t *machine_find(const char *id);
 
 // Registry: enumerate the built-in profiles.  *out_count receives the count.
 const hw_profile_t *const *machine_list(size_t *out_count);
+
+// === Object-model topology (proposal-system-object-model.md §5.1) ==========
+// The single `machine` container node — all emulated hardware nests under it
+// (machine.cpu, machine.scsi.device[0].image, …).  Defined in
+// machines/machine.c but declared here (the one machine header core may
+// include) so subsystem *_init code can attach hardware to it instead of the
+// root.  Lazily created; a process-singleton that outlives every cfg.
+struct object *machine_object(void);
+
+// Set the machine node's display label to the active model name
+// ("Macintosh IIcx"), or NULL to clear it back to the bare "machine" segment.
+// Called from system_create / system_destroy.
+void machine_set_active_label(const char *name);
 
 #endif // GS_CORE_MACHINE_PROFILE_H

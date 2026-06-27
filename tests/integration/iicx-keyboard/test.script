@@ -42,60 +42,60 @@
 # the Slot Manager picks 640x480 @ 2bpp at boot — same mechanism as the
 # boot-matrix IIcx rows and tests/integration/iicx-video-modes.
 
-nubus.video_sense = 0x6
+machine.nubus.video_sense = 0x6
 machine.boot "iicx" 8192
-rom.reload
-floppy.drives[0].insert "../../data/systems/SSW-7.1-1.4M/Disk Tools.img"
-rtc.pram.validate
-rtc.pram.poke 0x46 0x002781a6a6000000:8
+machine.rom.reload
+machine.floppy.drives[0].insert "../../data/systems/SSW-7.1-1.4M/Disk Tools.img"
+machine.rtc.pram.validate
+machine.rtc.pram.poke 0x46 0x002781a6a6000000:8
 
 # Boot to the Finder desktop.  The poke/clear of $017A mid-boot skips the
 # Universal ROM's boot-drive-discovery key-scan at $40801610 — see
 # tests/integration/iicx-video-modes/test.script for the mechanics.
 scheduler.run 30000000
-memory.poke.w 0x017A 0x8805
+machine.memory.poke.w 0x017A 0x8805
 scheduler.run 2000000
-memory.poke.w 0x017A 0
+machine.memory.poke.w 0x017A 0
 scheduler.run 45000000
 
 assert ${machine.id == "iicx"}  "machine.id != iicx"
 assert ${machine.ram == 8192}   "machine.ram != 8192"
-assert ${screen.width == 640}   "screen.width != 640 (JMFB not seated?)"
-assert ${screen.height == 480}  "screen.height != 480"
-screen.match desktop.png
+assert ${machine.screen.width == 640}   "screen.width != 640 (JMFB not seated?)"
+assert ${machine.screen.height == 480}  "screen.height != 480"
+machine.screen.match desktop.png
 
 # --- Open File > Find... with the MOUSE (proves the mouse path works) ------
 # Pull-down pattern: move onto the "File" title (~x=38) in the menu bar,
 # mousedown to draw the menu, move down to "Find..." (y=200, verified by
 # highlight), mouseup to fire it.
-mouse.move 38 7 "global"
+machine.adb.mouse.move 38 7 "global"
 scheduler.run 3000000
-mouse.click true
+machine.adb.mouse.click true
 scheduler.run 6000000
-mouse.move 38 200 "global"
+machine.adb.mouse.move 38 200 "global"
 scheduler.run 4000000
-mouse.click false
+machine.adb.mouse.click false
 scheduler.run 30000000
-screen.match find-dialog.png
+machine.screen.match find-dialog.png
 
 # --- Type "macintosh" into the (auto-focused) Find field -------------------
 # Back-to-back presses, mirroring the keyboard.press cadence sibling tests
 # use (e.g. se30-aux3-boot typing "root").  All nine keys must land.
-keyboard.press 0x2E
-keyboard.press 0x00
-keyboard.press 0x08
-keyboard.press 0x22
-keyboard.press 0x2D
-keyboard.press 0x11
-keyboard.press 0x1F
-keyboard.press 0x01
-keyboard.press 0x04
+machine.adb.keyboard.press 0x2E
+machine.adb.keyboard.press 0x00
+machine.adb.keyboard.press 0x08
+machine.adb.keyboard.press 0x22
+machine.adb.keyboard.press 0x2D
+machine.adb.keyboard.press 0x11
+machine.adb.keyboard.press 0x1F
+machine.adb.keyboard.press 0x01
+machine.adb.keyboard.press 0x04
 scheduler.run 60000000
 
 # Save the actual result as an artifact, then assert the field reads exactly
 # "macintosh".  See the bug note above — a mismatch with fewer characters
 # means the every-other-key drop has regressed.
-screen.save "${WORK_DIR}/typed-macintosh.png"
-screen.match typed-macintosh.png
+machine.screen.save "${WORK_DIR}/typed-macintosh.png"
+machine.screen.match typed-macintosh.png
 
 quit

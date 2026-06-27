@@ -7,24 +7,24 @@
 # (poke $8805 into $017A, clear it after one inner-poll cycle).  See
 # tests/integration/iicx-video-modes/test.script for the mechanics.
 scheduler.run 40000000
-memory.poke.w 0x017A 0x8805
+machine.memory.poke.w 0x017A 0x8805
 scheduler.run 2000000
-memory.poke.w 0x017A 0
+machine.memory.poke.w 0x017A 0
 scheduler.run 1900000000
 
 # Verify the screen matches the Finder desktop reference image
-screen.match finder.png
+machine.screen.match finder.png
 
 # Bring up the "About..." window
-mouse.move 25 10 "global"
+machine.adb.mouse.move 25 10 "global"
 scheduler.run 4000000
-mouse.click true
+machine.adb.mouse.click true
 scheduler.run 20000000
-mouse.move 25 30 "global"
+machine.adb.mouse.move 25 30 "global"
 scheduler.run 40000000
-mouse.click false
+machine.adb.mouse.click false
 scheduler.run 100000000
 
-screen.match about.png
+machine.screen.match about.png
 
 quit

@@ -22,10 +22,10 @@
 
 # Configure the JMFB for 13" RGB at 8 bpp before boot (same mechanism as
 # iicx-mactest); the pending mode is applied by the following machine.boot.
-nubus.video_mode = "13in_rgb_8bpp"
+machine.nubus.video_mode = "13in_rgb_8bpp"
 machine.boot "iifx" 16384
-rom.reload
-floppy.drives[0].insert "../../data/apps/MacTest-IIfx.image" true
+machine.rom.reload
+machine.floppy.drives[0].insert "../../data/apps/MacTest-IIfx.image" true
 
 # Boot to the Happy Mac, run MacTest's launch-time hardware probe, and draw
 # the main window.  At 8 bpp the window is painted and stable by ~340M
@@ -34,20 +34,20 @@ floppy.drives[0].insert "../../data/apps/MacTest-IIfx.image" true
 scheduler.run 360000000
 
 assert ${machine.id == "iifx"}              "machine.id != iifx"
-assert ${rom.checksum == "4147DD77"}        "rom.checksum != 4147DD77"
+assert ${machine.rom.checksum == "4147DD77"}        "rom.checksum != 4147DD77"
 
 # JMFB seated for 13" RGB 8 bpp: 640x480, savedMode $83, and the slot-9 JMFB
 # CLUTPBCR / RowWords registers match the iicx-video-modes 8 bpp baseline.
-assert ${screen.width == 640}               "screen.width != 640"
-assert ${screen.height == 480}              "screen.height != 480"
-assert ${rtc.pram.peek(0x48) == 0x83}       "savedMode != 0x83 (8bpp)"
-assert ${memory.peek.l(0xf9200208) == 0x98} "JMFB CLUTPBCR != 0x98 (8bpp)"
-assert ${memory.peek.l(0xf920000c) == 0xa0} "JMFB RowWords != 0xa0 (640*8/8/8)"
+assert ${machine.screen.width == 640}               "screen.width != 640"
+assert ${machine.screen.height == 480}              "screen.height != 480"
+assert ${machine.rtc.pram.peek(0x48) == 0x83}       "savedMode != 0x83 (8bpp)"
+assert ${machine.memory.peek.l(0xf9200208) == 0x98} "JMFB CLUTPBCR != 0x98 (8bpp)"
+assert ${machine.memory.peek.l(0xf920000c) == 0xa0} "JMFB RowWords != 0xa0 (640*8/8/8)"
 
 # Verify the MacTest main window matches the reference: MacTest menu bar, the
 # Start/Stop/Pause/Log toolbar, and the hardware-identification panel reporting
 # System type "Macintosh IIfx", CPU 68030, FPU 68882, ROM size 512 KB, RAM
 # size 16 MB, rendered in 256 colours.
-screen.match main.png
+machine.screen.match main.png
 
 quit

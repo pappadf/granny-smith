@@ -10,21 +10,21 @@ assert ${checkpoint.load("checkpoint.gs")} "checkpoint2 step2 load failed"
 scheduler.run 100000000
 
 #
-screen.match ../../checkpoint2/desktop.png
+machine.screen.match ../../checkpoint2/desktop.png
 
 scheduler.run 100000000
 
-mouse.move 25 10
+machine.adb.mouse.move 25 10
 scheduler.run 1000000
-mouse.click true
+machine.adb.mouse.click true
 scheduler.run 1000000
-mouse.move 25 30
+machine.adb.mouse.move 25 30
 scheduler.run 1000000
-mouse.click false
+machine.adb.mouse.click false
 
 scheduler.run 100000000
 
 # Save screenshot for debugging, then verify against reference
-screen.save screenshot-step2.png
+machine.screen.save screenshot-step2.png
 
 quit

@@ -974,6 +974,12 @@ config_t *system_create(const hw_profile_t *profile, checkpoint_t *checkpoint) {
     cfg->machine = profile;
     global_emulator = cfg;
 
+    // Label the machine container node with the active model name so the
+    // SYSTEM tab shows "Macintosh IIcx" rather than the bare "machine"
+    // segment (proposal-system-object-model.md §7.1). Covers cold boot and
+    // checkpoint restore — both land here.
+    machine_set_active_label(profile->name);
+
     // Compute RAM size: use pending override if set, otherwise machine default
     if (g_pending_ram_kb > 0) {
         cfg->ram_size = g_pending_ram_kb * 1024;

@@ -8,66 +8,66 @@
 # parens in "pf(0,0)xenix" hold SHIFT (kc 0x7e) around the digit with a short
 # settle.  Keycodes: p=44 f=69 e=60 x=7a 0=51 9=50 comma=5d Return=48 shift=7e.
 
-profile.attach "${WORK_DIR}/profile.image"
+machine.hd.attach "${WORK_DIR}/profile.image"
 assert ${machine.id == "lisa"} "machine.id != lisa"
-assert ${rom.checksum == "098917B2"} "rom.checksum != 098917B2 (rev-H)"
-assert ${profile.present == true} "ProFile should be attached"
+assert ${machine.rom.checksum == "098917B2"} "rom.checksum != 098917B2 (rev-H)"
+assert ${machine.hd.present == true} "ProFile should be attached"
 
 # Boot the floppy loader to its "boot :" prompt.
 scheduler.run 60000000
 
 # Dummy key clears the loader's COPS state-3, then type "pf(0,0)xenix" + RETURN.
-keyboard.press 0xC8
+machine.adb.keyboard.press 0xC8
 scheduler.run 3000000
-keyboard.press 0xC4
-keyboard.press 0x44
+machine.adb.keyboard.press 0xC4
+machine.adb.keyboard.press 0x44
 scheduler.run 600000
-keyboard.press 0xE9
-keyboard.press 0x69
+machine.adb.keyboard.press 0xE9
+machine.adb.keyboard.press 0x69
 scheduler.run 600000
-keyboard.press 0xFE
+machine.adb.keyboard.press 0xFE
 scheduler.run 300000
-keyboard.press 0xD0
-keyboard.press 0x50
+machine.adb.keyboard.press 0xD0
+machine.adb.keyboard.press 0x50
 scheduler.run 300000
-keyboard.press 0x7E
+machine.adb.keyboard.press 0x7E
 scheduler.run 600000
-keyboard.press 0xD1
-keyboard.press 0x51
+machine.adb.keyboard.press 0xD1
+machine.adb.keyboard.press 0x51
 scheduler.run 600000
-keyboard.press 0xDD
-keyboard.press 0x5D
+machine.adb.keyboard.press 0xDD
+machine.adb.keyboard.press 0x5D
 scheduler.run 600000
-keyboard.press 0xD1
-keyboard.press 0x51
+machine.adb.keyboard.press 0xD1
+machine.adb.keyboard.press 0x51
 scheduler.run 600000
-keyboard.press 0xFE
+machine.adb.keyboard.press 0xFE
 scheduler.run 300000
-keyboard.press 0xD1
-keyboard.press 0x51
+machine.adb.keyboard.press 0xD1
+machine.adb.keyboard.press 0x51
 scheduler.run 300000
-keyboard.press 0x7E
+machine.adb.keyboard.press 0x7E
 scheduler.run 600000
-keyboard.press 0xFA
-keyboard.press 0x7A
+machine.adb.keyboard.press 0xFA
+machine.adb.keyboard.press 0x7A
 scheduler.run 600000
-keyboard.press 0xE0
-keyboard.press 0x60
+machine.adb.keyboard.press 0xE0
+machine.adb.keyboard.press 0x60
 scheduler.run 600000
-keyboard.press 0xEF
-keyboard.press 0x6F
+machine.adb.keyboard.press 0xEF
+machine.adb.keyboard.press 0x6F
 scheduler.run 600000
-keyboard.press 0xD3
-keyboard.press 0x53
+machine.adb.keyboard.press 0xD3
+machine.adb.keyboard.press 0x53
 scheduler.run 600000
-keyboard.press 0xFA
-keyboard.press 0x7A
+machine.adb.keyboard.press 0xFA
+machine.adb.keyboard.press 0x7A
 scheduler.run 600000
-keyboard.press 0xC8
-keyboard.press 0x48
+machine.adb.keyboard.press 0xC8
+machine.adb.keyboard.press 0x48
 scheduler.run 120000000
 # The installed Xenix has booted to its multi-user startup prompt
 # ("Type CONTROL-d to proceed with normal startup, / or give root password ...").
-screen.match expected_startup.png
+machine.screen.match expected_startup.png
 
 quit

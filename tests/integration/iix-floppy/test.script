@@ -4,16 +4,16 @@
 # (poke $8805 into $017A, clear it after one inner-poll cycle).  See
 # tests/integration/iicx-video-modes/test.script for the mechanics.
 scheduler.run 40000000
-memory.poke.w 0x017A 0x8805
+machine.memory.poke.w 0x017A 0x8805
 scheduler.run 2000000
-memory.poke.w 0x017A 0
+machine.memory.poke.w 0x017A 0
 scheduler.run 100000000
 
 assert ${machine.id == "iix"} "machine.id != iix"
-assert ${screen.width == 640} "screen.width != 640"
-assert ${screen.height == 480} "screen.height != 480"
+assert ${machine.screen.width == 640} "screen.width != 640"
+assert ${machine.screen.height == 480} "screen.height != 480"
 
 # Real screen content must be present.
-assert ${screen.checksum() != 0} "screen.checksum == 0 — JMFB never painted"
+assert ${machine.screen.checksum() != 0} "screen.checksum == 0 — JMFB never painted"
 
 quit

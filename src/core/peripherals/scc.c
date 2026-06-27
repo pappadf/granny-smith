@@ -1102,7 +1102,9 @@ scc_t *scc_init(memory_map_t *map, struct scheduler *scheduler, scc_irq_fn irq_c
     // Object-tree binding — instance_data is the scc itself.
     scc->object = object_new(&scc_class, scc, "scc");
     if (scc->object) {
-        object_attach(object_root(), scc->object);
+        object_set_label(scc->object, "SCC");
+        object_set_order(scc->object, 50);
+        object_attach(machine_object(), scc->object);
         scc->channel_a = object_new(&scc_channel_a_class, scc, "a");
         if (scc->channel_a)
             object_attach(scc->object, scc->channel_a);

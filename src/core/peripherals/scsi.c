@@ -1716,7 +1716,9 @@ scsi_t *scsi_init(memory_map_t *map, checkpoint_t *checkpoint) {
     scsi_static_detach();
     scsi->object = object_new(&scsi_class, scsi, "scsi");
     if (scsi->object) {
-        object_attach(object_root(), scsi->object);
+        object_set_label(scsi->object, "SCSI");
+        object_set_order(scsi->object, 90);
+        object_attach(machine_object(), scsi->object);
         scsi->bus_object = object_new(&scsi_bus_class, scsi, "bus");
         if (scsi->bus_object)
             object_attach(scsi->object, scsi->bus_object);
@@ -2661,8 +2663,11 @@ void scsi_class_register(void) {
     if (s_scsi_static_object)
         return;
     s_scsi_static_object = object_new(&scsi_static_class, NULL, "scsi");
-    if (s_scsi_static_object)
-        object_attach(object_root(), s_scsi_static_object);
+    if (s_scsi_static_object) {
+        object_set_label(s_scsi_static_object, "SCSI");
+        object_set_order(s_scsi_static_object, 90);
+        object_attach(machine_object(), s_scsi_static_object);
+    }
 }
 
 static void scsi_static_detach(void) {

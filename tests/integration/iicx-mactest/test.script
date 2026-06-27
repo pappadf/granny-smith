@@ -15,59 +15,59 @@
 
 # Configure JMFB for 13" RGB at 8 bpp.  Equivalent to the explicit
 # nubus.video_sense + rtc.pram.poke pair used by iicx-video-modes.
-nubus.video_mode = "13in_rgb_8bpp"
+machine.nubus.video_mode = "13in_rgb_8bpp"
 
 machine.boot "iicx" 4096
-rom.reload
-floppy.drives[0].insert "../../data/apps/MacTest-IIcx-IIci.image" true
+machine.rom.reload
+machine.floppy.drives[0].insert "../../data/apps/MacTest-IIcx-IIci.image" true
 
-scc.loopback = true
-scsi.loopback = true
+machine.scc.loopback = true
+machine.scsi.loopback = true
 
 # Boot past Happy Mac through splash screens to MacTest main UI.
 scheduler.run 200000000
 
 assert ${machine.id == "iicx"}              "machine.id != iicx"
-assert ${screen.width == 640}               "screen.width != 640 (JMFB not seated?)"
-assert ${screen.height == 480}              "screen.height != 480"
-assert ${rtc.pram.peek(0x48) == 0x83}       "savedMode != 0x83 (8bpp)"
-assert ${memory.peek.l(0xf9200208) == 0x98} "JMFB CLUTPBCR != 0x98 (8bpp)"
-assert ${memory.peek.l(0xf920000c) == 0xa0} "JMFB RowWords != 0xa0 (640*8/8/8)"
+assert ${machine.screen.width == 640}               "screen.width != 640 (JMFB not seated?)"
+assert ${machine.screen.height == 480}              "screen.height != 480"
+assert ${machine.rtc.pram.peek(0x48) == 0x83}       "savedMode != 0x83 (8bpp)"
+assert ${machine.memory.peek.l(0xf9200208) == 0x98} "JMFB CLUTPBCR != 0x98 (8bpp)"
+assert ${machine.memory.peek.l(0xf920000c) == 0xa0} "JMFB RowWords != 0xa0 (640*8/8/8)"
 
-screen.match main.png
+machine.screen.match main.png
 
 # --- Open Options > Test Selections and uncheck ADB sub-tests --------------
 # Pull-down menu pattern: move + 4M, mousedown + 20M to draw the menu,
 # move to highlight item + 8M, mouseup + 100M to fire the action.  Menu
 # bar x-coords (verified empirically in iicx-mactest-options): Options
 # title sits at x~115.  "Test Selections..." is the first item at y~28.
-mouse.move 115 10 "global"
+machine.adb.mouse.move 115 10 "global"
 scheduler.run 4000000
-mouse.click true
+machine.adb.mouse.click true
 scheduler.run 20000000
 
-mouse.move 115 28 "global"
+machine.adb.mouse.move 115 28 "global"
 scheduler.run 8000000
 
-mouse.click false
+machine.adb.mouse.click false
 scheduler.run 100000000
 # Extra settle so the dialog finishes painting.
 scheduler.run 60000000
 
 # Uncheck "Keyboard" — ADB Communication checkbox column, y=305.
-mouse.move 130 305 "global"
+machine.adb.mouse.move 130 305 "global"
 scheduler.run 5000000
-mouse.click true
+machine.adb.mouse.click true
 scheduler.run 5000000
-mouse.click false
+machine.adb.mouse.click false
 scheduler.run 10000000
 
 # Uncheck "Mouse" — directly below Keyboard at y=325.
-mouse.move 130 325 "global"
+machine.adb.mouse.move 130 325 "global"
 scheduler.run 5000000
-mouse.click true
+machine.adb.mouse.click true
 scheduler.run 5000000
-mouse.click false
+machine.adb.mouse.click false
 scheduler.run 10000000
 
 # Verify both ADB items are now unchecked.  This baseline was captured
@@ -75,7 +75,7 @@ scheduler.run 10000000
 # same two clicks at the same coordinates — so a mismatch here means
 # the dialog DITL layout drifted or one of the clicks landed off the
 # checkbox row.
-screen.match test-selections-adb-unchecked.png
+machine.screen.match test-selections-adb-unchecked.png
 
 # Click OK to commit and close the dialog.
 #
@@ -96,46 +96,46 @@ screen.match test-selections-adb-unchecked.png
 # 0 → the modal loop re-enters.  Use the rect-derived coords below,
 # not the rendered-glyph centre, when targeting Mac OS dialog
 # buttons in tests.
-mouse.move 560 385 "global"
+machine.adb.mouse.move 560 385 "global"
 scheduler.run 5000000
-mouse.click true
+machine.adb.mouse.click true
 scheduler.run 5000000
-mouse.click false
+machine.adb.mouse.click false
 scheduler.run 60000000
 
 # --- Continue with the normal MacTest flow ---------------------------------
 # Click Start (button center ~(188, 153)) — same coords as iicx-mactest.
-mouse.move 188 153 "global"
+machine.adb.mouse.move 188 153 "global"
 scheduler.run 5000000
-mouse.click true
+machine.adb.mouse.click true
 scheduler.run 5000000
-mouse.click false
+machine.adb.mouse.click false
 
 # VIA -> ASC -> clock/PRAM -> SCSI tests run, then MacTest asks for the
 # first blank 800K diskette.
 scheduler.run 100000000
-screen.match insert-800k-internal.png
+machine.screen.match insert-800k-internal.png
 
-floppy.create "${WORK_DIR}/blank800-int.dsk" 0
+machine.floppy.create "${WORK_DIR}/blank800-int.dsk" 0
 scheduler.run 10000000
 
 # OK on the "insert disk" dialog (~454, 245).
-mouse.move 454 245 "global"
+machine.adb.mouse.move 454 245 "global"
 scheduler.run 5000000
-mouse.click true
+machine.adb.mouse.click true
 scheduler.run 5000000
-mouse.click false
+machine.adb.mouse.click false
 
 scheduler.run 300000000
-screen.match insert-1.4mb-internal.png
+machine.screen.match insert-1.4mb-internal.png
 
-mouse.click false "global"
-floppy.create "${WORK_DIR}/blankHD-int.dsk" "hd"
-mouse.move 454 245 "global"
+machine.adb.mouse.click false "global"
+machine.floppy.create "${WORK_DIR}/blankHD-int.dsk" "hd"
+machine.adb.mouse.move 454 245 "global"
 scheduler.run 5000000
-mouse.click true
+machine.adb.mouse.click true
 scheduler.run 5000000
-mouse.click false
+machine.adb.mouse.click false
 
 scheduler.run 300000000
 # Second OK-click for the 1.44 MB INTERNAL disk.  Under the unified frame-VBL
@@ -143,47 +143,47 @@ scheduler.run 300000000
 # longer than the 800K case, so the first OK-click (above) lands during the
 # read window and is dropped; a follow-up click after the window registers and
 # starts the test.  (800K steps fit the poll window and need only one click.)
-mouse.move 454 245 "global"
+machine.adb.mouse.move 454 245 "global"
 scheduler.run 5000000
-mouse.click true
+machine.adb.mouse.click true
 scheduler.run 5000000
-mouse.click false
+machine.adb.mouse.click false
 scheduler.run 150000000
-screen.match insert-800k-external.png
+machine.screen.match insert-800k-external.png
 
-mouse.click false "global"
-floppy.create "${WORK_DIR}/blank800-ext.dsk" 1
-mouse.move 454 245 "global"
+machine.adb.mouse.click false "global"
+machine.floppy.create "${WORK_DIR}/blank800-ext.dsk" 1
+machine.adb.mouse.move 454 245 "global"
 scheduler.run 5000000
-mouse.click true
+machine.adb.mouse.click true
 scheduler.run 5000000
-mouse.click false
+machine.adb.mouse.click false
 
 scheduler.run 300000000
-screen.match insert-1.4mb-external.png
+machine.screen.match insert-1.4mb-external.png
 
-mouse.click false "global"
-floppy.create "${WORK_DIR}/blankHD-ext.dsk" "hd"
-floppy.drives[0].eject
-floppy.drives[1].insert "${WORK_DIR}/blankHD-ext.dsk" true
+machine.adb.mouse.click false "global"
+machine.floppy.create "${WORK_DIR}/blankHD-ext.dsk" "hd"
+machine.floppy.drives[0].eject
+machine.floppy.drives[1].insert "${WORK_DIR}/blankHD-ext.dsk" true
 
-mouse.move 454 245 "global"
+machine.adb.mouse.move 454 245 "global"
 scheduler.run 5000000
-mouse.click true
+machine.adb.mouse.click true
 scheduler.run 5000000
-mouse.click false
+machine.adb.mouse.click false
 
 scheduler.run 300000000
 # Second OK-click for the 1.44 MB EXTERNAL disk — same HD read-window timing as
 # the internal 1.44 MB step above; the first click lands too early under the
 # frame-VBL cadence, the follow-up click registers.
-mouse.move 454 245 "global"
+machine.adb.mouse.move 454 245 "global"
 scheduler.run 5000000
-mouse.click true
+machine.adb.mouse.click true
 scheduler.run 5000000
-mouse.click false
+machine.adb.mouse.click false
 scheduler.run 150000000
-screen.match floppy-test-success.png
+machine.screen.match floppy-test-success.png
 
 
 
@@ -195,16 +195,16 @@ screen.match floppy-test-success.png
 # disabled Keyboard and Mouse in the Options dialog earlier, so RAM is
 # all that's left.  fd0 was ejected during the External-HD swap so
 # inserting back there matches what a real user would do.
-mouse.click false "global"
-floppy.drives[0].insert "../../data/apps/MacTest-IIcx-IIci.image" true
+machine.adb.mouse.click false "global"
+machine.floppy.drives[0].insert "../../data/apps/MacTest-IIcx-IIci.image" true
 
 # Click OK on the "Please insert the disk" dialog (same OK button
 # position as the earlier insert-disk dialogs at this dialog kind).
-mouse.move 454 245 "global"
+machine.adb.mouse.move 454 245 "global"
 scheduler.run 5000000
-mouse.click true
+machine.adb.mouse.click true
 scheduler.run 5000000
-mouse.click false
+machine.adb.mouse.click false
 
 # Stop the MTemp guard NOW — before any further scheduler.run, because
 # MacTest enters the destructive RAM phase quickly after the reinsert
@@ -213,14 +213,14 @@ mouse.click false
 # ROM POST's pattern-mismatch error path (reset → SCC error-dispatch
 # loop at $40802EC0-$40803304 → "Testing RAM1..." hang).
 # Same fix sibling `se30-mactest` applies before its RAM phase.
-mouse.move 0 0
+machine.adb.mouse.move 0 0
 
 # Run for a while to let MacTest read the app disk, skip the
 # disabled Keyboard/Mouse phases, and reach the RAM-test "Testing
 # RAM1..." status display.
 scheduler.run 600000000
-screen.save "${WORK_DIR}/post-floppy-state.png"
-screen.save "post-floppy-state.png"
+machine.screen.save "${WORK_DIR}/post-floppy-state.png"
+machine.screen.save "post-floppy-state.png"
 
 # Let the RAM test run.  On real IIcx hardware MacTest's RAM test
 # fills + verifies all 4 MB with several patterns (~4 min @ 16 MHz),
@@ -243,7 +243,7 @@ screen.save "post-floppy-state.png"
 # wiring exercised by MacTest.  Filed as future work — for now the
 # test stops at the RAM-running display.
 scheduler.run 4000000000
-screen.save "${WORK_DIR}/ram-running.png"
-screen.save "ram-running.png"
+machine.screen.save "${WORK_DIR}/ram-running.png"
+machine.screen.save "ram-running.png"
 
 quit

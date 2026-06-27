@@ -58,7 +58,7 @@ assert \${checkpoint.load("$CHECKPOINT_FILE")} "step2 checkpoint load failed"
 # Run 50M more instructions (should reach desktop just like step 1 would)
 scheduler.run 50000000
 # Save screenshot for debugging, then verify
-screen.match desktop.png
+machine.screen.match desktop.png
 quit
 INNER_EOF
 

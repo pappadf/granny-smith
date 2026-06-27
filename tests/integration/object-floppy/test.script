@@ -7,32 +7,32 @@ scheduler.run 50000
 
 # Top-level floppy. Plus uses the IWM controller; sel is the active
 # drive selector.
-floppy
-assert ${floppy.type == "iwm"} "Plus floppy controller is iwm"
-floppy.sel
+machine.floppy
+assert ${machine.floppy.type == "iwm"} "Plus floppy controller is iwm"
+machine.floppy.sel
 
 # Drives collection.
-floppy.drives
+machine.floppy.drives
 
 # Drive 0: populated by --fd0=. After 50K cycles the head is at
 # track 0, side 0, motor still spinning up. disk is a content-
 # hashed path so it stays a bare read.
-assert ${floppy.drives[0].index == 0}
-assert ${floppy.drives[0].present == true}
-assert ${floppy.drives[0].track == 0}
-assert ${floppy.drives[0].side == 0}
-floppy.drives[0].motor_on
-floppy.drives[0].disk
+assert ${machine.floppy.drives[0].index == 0}
+assert ${machine.floppy.drives[0].present == true}
+assert ${machine.floppy.drives[0].track == 0}
+assert ${machine.floppy.drives[0].side == 0}
+machine.floppy.drives[0].motor_on
+machine.floppy.drives[0].disk
 
 # Drive 1: empty.
-assert ${floppy.drives[1].index == 1}
-assert ${floppy.drives[1].present == false}
-floppy.drives[1].disk
+assert ${machine.floppy.drives[1].index == 1}
+assert ${machine.floppy.drives[1].present == false}
+machine.floppy.drives[1].disk
 
 # Eject drive 0 — present must flip to false, disk to empty string.
-echo ${floppy.drives[0].eject()}
-assert ${floppy.drives[0].present == false}
-assert ${floppy.drives[0].disk == ""}
+echo ${machine.floppy.drives[0].eject()}
+assert ${machine.floppy.drives[0].present == false}
+assert ${machine.floppy.drives[0].disk == ""}
 
 # Ejecting an already-empty drive is an error (the method is honest
 # rather than silently no-op'ing — the harness shouldn't fail on

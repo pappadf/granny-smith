@@ -626,16 +626,43 @@ const class_desc_t machine_class = {
 
 static struct object *s_machine_object = NULL;
 
+// The single `machine` container node (proposal-system-object-model.md §5.1).
+// All emulated hardware nests under it; the emulator's own service objects
+// (scheduler/debug/storage/…) and the simulated network (appletalk) stay at
+// the root as its siblings. Created lazily on first use because some
+// hardware singletons (rom_init, vrom_init) run before machine_init in
+// shell_init and attach to it. The node is a process-singleton: per-cfg
+// hardware attaches/detaches across machine.boot cycles, but the container
+// itself persists for the process lifetime.
+struct object *machine_object(void) {
+    if (!s_machine_object) {
+        s_machine_object = object_new(&machine_class, NULL, "machine");
+        if (s_machine_object) {
+            object_set_order(s_machine_object, -100); // machine sorts first under the root
+            object_attach(object_root(), s_machine_object);
+        }
+    }
+    return s_machine_object;
+}
+
+// Update the machine node's display label to the active model name
+// ("Macintosh IIcx"), or clear it back to the bare "machine" segment when no
+// machine is booted. The profile name is static for the process lifetime, so
+// the borrowed pointer stays valid. Called from system_create / system_destroy.
+void machine_set_active_label(const char *name) {
+    object_set_label(machine_object(), name);
+}
+
 void machine_init(void) {
-    if (s_machine_object)
-        return;
-    s_machine_object = object_new(&machine_class, NULL, "machine");
-    if (s_machine_object)
-        object_attach(object_root(), s_machine_object);
+    (void)machine_object();
 }
 
 void machine_delete(void) {
     if (s_machine_object) {
+        // Never cascade here: the hardware children are per-cfg and owned by
+        // their modules (freed in system_destroy). This only drops the
+        // persistent container wrapper. In practice machine_delete is never
+        // called — the container outlives every cfg.
         object_detach(s_machine_object);
         object_delete(s_machine_object);
         s_machine_object = NULL;

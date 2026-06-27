@@ -20,6 +20,12 @@
 // === Forward Declarations ===
 
 struct adb;
+struct object;
+
+// The `machine.adb` bus container node (proposal-system-object-model.md §5.6).
+// Lazily created under machine_object(); keyboard and mouse attach to it as
+// named children. Process-singleton, shared by adb.c (keyboard) and mouse.c.
+struct object *adb_bus_object(void);
 
 // === Type Definitions ===
 

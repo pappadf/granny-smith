@@ -4,68 +4,68 @@
 
 # Boot to MacTest UI
 scheduler.run 50000000
-screen.match mactest-booted.png
+machine.screen.match mactest-booted.png
 
 # Deselect short RAM test: drag from (100, 10) to (100, 90)
-mouse.move 100 10
+machine.adb.mouse.move 100 10
 scheduler.run 2000000
-mouse.click true
+machine.adb.mouse.click true
 scheduler.run 2000000
-mouse.move 100 90
+machine.adb.mouse.move 100 90
 scheduler.run 2000000
-mouse.click false
+machine.adb.mouse.click false
 scheduler.run 2000000
 
 # Deselect logic board 2 test: drag from (100, 10) to (100, 75)
-mouse.move 100 10
+machine.adb.mouse.move 100 10
 scheduler.run 2000000
-mouse.click true
+machine.adb.mouse.click true
 scheduler.run 2000000
-mouse.move 100 75
+machine.adb.mouse.move 100 75
 scheduler.run 2000000
-mouse.click false
+machine.adb.mouse.click false
 scheduler.run 2000000
 
 # Deselect serial loopback test: drag from (100, 10) to (100, 125)
-mouse.move 100 10
+machine.adb.mouse.move 100 10
 scheduler.run 2000000
-mouse.click true
+machine.adb.mouse.click true
 scheduler.run 2000000
-mouse.move 100 125
+machine.adb.mouse.move 100 125
 scheduler.run 2000000
-mouse.click false
+machine.adb.mouse.click false
 scheduler.run 2000000
 
 # Deselect SCSI loopback test: drag from (100, 10) to (100, 140)
-mouse.move 100 10
+machine.adb.mouse.move 100 10
 scheduler.run 2000000
-mouse.click true
+machine.adb.mouse.click true
 scheduler.run 2000000
-mouse.move 100 140
+machine.adb.mouse.move 100 140
 scheduler.run 2000000
-mouse.click false
+machine.adb.mouse.click false
 scheduler.run 2000000
 
 # Switch to hardware accuracy for the test run
 scheduler.mode = "hw"
 
 # Click START button at (340, 210)
-mouse.move 340 210
+machine.adb.mouse.move 340 210
 scheduler.run 2000000
-mouse.click true
+machine.adb.mouse.click true
 scheduler.run 2000000
-mouse.click false
+machine.adb.mouse.click false
 
 # Logic test completes within ~1M hw instructions of clicking START
 scheduler.run 2000000
-screen.match mactest-logic.png
+machine.screen.match mactest-logic.png
 
 # Floppy test completes within ~7M hw instructions of logic match
 scheduler.run 8000000
-screen.match mactest-floppy.png
+machine.screen.match mactest-floppy.png
 
 # Success screen within ~24M hw instructions of floppy match
 scheduler.run 25000000
-screen.match mactest-success.png
+machine.screen.match mactest-success.png
 
 quit

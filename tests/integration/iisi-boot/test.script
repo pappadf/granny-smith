@@ -17,13 +17,13 @@
 scheduler.run 370000000
 
 assert ${machine.id == "iisi"} "machine.id != iisi"
-assert ${rom.checksum == "36B7FB6C"} "rom.checksum != 36B7FB6C"
-assert ${screen.width == 640} "screen.width != 640"
-assert ${screen.height == 480} "screen.height != 480"
+assert ${machine.rom.checksum == "36B7FB6C"} "rom.checksum != 36B7FB6C"
+assert ${machine.screen.width == 640} "screen.width != 640"
+assert ${machine.screen.height == 480} "screen.height != 480"
 
 # Verify the Finder desktop matches the reference (System 7 menu bar, the
 # Disk Tools floppy icon, the Trash icon, gray desktop) — rendered by the V8
 # straight out of Bank A at physical 0.
-screen.match finder.png
+machine.screen.match finder.png
 
 quit

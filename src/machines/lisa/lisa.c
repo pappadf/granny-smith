@@ -528,7 +528,9 @@ static void lisa_register_floppy_object(config_t *cfg) {
     ls->fd_obj = object_new(&lisa_fd_class, cfg, "floppy");
     if (!ls->fd_obj)
         return;
-    object_attach(object_root(), ls->fd_obj);
+    object_set_label(ls->fd_obj, "Floppy");
+    object_set_order(ls->fd_obj, 80);
+    object_attach(machine_object(), ls->fd_obj);
     ls->fd_drives_obj = object_new(&lisa_fd_drives_class, cfg, "drives");
     if (ls->fd_drives_obj)
         object_attach(ls->fd_obj, ls->fd_drives_obj);
@@ -664,9 +666,16 @@ static const class_desc_t lisa_hd_class = {.name = "profile", .members = lisa_hd
 
 static void lisa_register_profile_object(config_t *cfg) {
     lisa_state_t *ls = lisa_state(cfg);
-    ls->hd_obj = object_new(&lisa_hd_class, cfg, "profile");
-    if (ls->hd_obj)
-        object_attach(object_root(), ls->hd_obj);
+    // Named "hd" (not "profile") under the machine node: a child named
+    // "profile" would be shadowed by the machine class's `profile` *method*
+    // (the resolver finds members before attached children). The ProFile is
+    // the Lisa's hard disk, so machine.hd reads correctly (proposal §2.2).
+    ls->hd_obj = object_new(&lisa_hd_class, cfg, "hd");
+    if (ls->hd_obj) {
+        object_set_label(ls->hd_obj, "ProFile");
+        object_set_order(ls->hd_obj, 90);
+        object_attach(machine_object(), ls->hd_obj);
+    }
 }
 
 // ============================================================
@@ -700,8 +709,11 @@ static const class_desc_t lisa_power_class = {.name = "power", .members = lisa_p
 static void lisa_register_power_object(config_t *cfg) {
     lisa_state_t *ls = lisa_state(cfg);
     ls->power_obj = object_new(&lisa_power_class, cfg, "power");
-    if (ls->power_obj)
-        object_attach(object_root(), ls->power_obj);
+    if (ls->power_obj) {
+        object_set_label(ls->power_obj, "Power");
+        object_set_order(ls->power_obj, 130);
+        object_attach(machine_object(), ls->power_obj);
+    }
 }
 
 // ============================================================

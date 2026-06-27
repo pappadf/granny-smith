@@ -415,7 +415,9 @@ rtc_t *rtc_init(struct scheduler *restrict scheduler, checkpoint_t *checkpoint, 
     // `pram_write` on the rtc root.
     rtc->object = object_new(&rtc_class, rtc, "rtc");
     if (rtc->object) {
-        object_attach(object_root(), rtc->object);
+        object_set_label(rtc->object, "RTC");
+        object_set_order(rtc->object, 60);
+        object_attach(machine_object(), rtc->object);
         rtc->pram_object = object_new(&rtc_pram_class, rtc, "pram");
         if (rtc->pram_object)
             object_attach(rtc->object, rtc->pram_object);

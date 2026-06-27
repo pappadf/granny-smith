@@ -402,11 +402,16 @@ void root_install(struct config *cfg) {
     if (shell_obj)
         attach_stub(shell_obj, &shell_alias_class, cfg, "alias");
 
-    // `nubus.*` namespace.  Step 3 attaches it whenever a config is
-    // present so `nubus.cards()` is reachable; the registry is empty
-    // until step 4, so the method returns [].  Once cfg->nubus exists
-    // (step 4) the surface gains slot.<n>/ children per proposal §3.5.3.
-    attach_stub(NULL, &nubus_class, cfg, "nubus");
+    // `machine.nubus.*` namespace.  Attached under the machine node — NuBus
+    // is emulated hardware, not a meta object (proposal-system-object-model.md
+    // §2.2/§5.5).  The registry is empty until cfg->nubus exists, so
+    // `machine.nubus.cards()` returns [] pre-population; once populated the
+    // surface gains slot.<n>/ children per proposal §3.5.3.
+    struct object *nubus_obj = attach_stub(machine_object(), &nubus_class, cfg, "nubus");
+    if (nubus_obj) {
+        object_set_label(nubus_obj, "NuBus");
+        object_set_order(nubus_obj, 100);
+    }
 }
 
 void root_uninstall(void) {

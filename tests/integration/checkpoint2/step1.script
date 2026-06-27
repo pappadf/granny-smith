@@ -16,6 +16,6 @@ scheduler.run 100000000
 assert ${checkpoint.save("checkpoint.gs")} "checkpoint2 step1 save failed"
 
 # Save screenshot for debugging
-screen.save screenshot-step1.png
+machine.screen.save screenshot-step1.png
 
 quit

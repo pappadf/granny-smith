@@ -13,22 +13,22 @@
 scheduler.run 200000000
 
 assert ${machine.id == "macxl"} "machine.id != macxl"
-assert ${rom.checksum == "094C82F0"} "rom.checksum != 094C82F0"
+assert ${machine.rom.checksum == "094C82F0"} "rom.checksum != 094C82F0"
 # Macintosh XL screen-modification raster (square pixels), not the Lisa 2's 720x364.
-assert ${screen.width == 608} "screen.width != 608"
-assert ${screen.height == 431} "screen.height != 431"
+assert ${machine.screen.width == 608} "screen.width != 608"
+assert ${machine.screen.height == 431} "screen.height != 431"
 # The loader disk has ejected itself and the machine is waiting for a system disk.
-assert ${floppy.drives[0].present == false} "loader disk should have ejected"
+assert ${machine.floppy.drives[0].present == false} "loader disk should have ejected"
 
 # Insert the MacWorks XL system disk, as a user would at the "?" prompt.
-floppy.drives[0].insert "../../data/Lisa/MacWorksXL/MacWorksXL_Sys_Disk.dc42"
-assert ${floppy.drives[0].present == true} "system disk should be inserted"
+machine.floppy.drives[0].insert "../../data/Lisa/MacWorksXL/MacWorksXL_Sys_Disk.dc42"
+assert ${machine.floppy.drives[0].present == true} "system disk should be inserted"
 
 # Boot the Mac System + Finder from the system disk.
 scheduler.run 550000000
 
 # Verify the Finder desktop: menu bar (File/Edit/View/Special), the open
 # "MacWorks System Disk" window with its icons, the Trash, and the gray desktop.
-screen.match finder.png
+machine.screen.match finder.png
 
 quit

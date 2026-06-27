@@ -10,13 +10,13 @@
 # resolves the ProFile from that snapshot and boots; a non-clean-shutdown image
 # leaves a floppy-only snapshot and fails with error 10738.
 
-profile.attach "${WORK_DIR}/profile.image"
+machine.hd.attach "${WORK_DIR}/profile.image"
 assert ${machine.id == "lisa"} "machine.id != lisa"
-assert ${rom.checksum == "098917B2"} "rom.checksum != 098917B2 (rev-H)"
-assert ${profile.present == true} "ProFile should be attached"
+assert ${machine.rom.checksum == "098917B2"} "rom.checksum != 098917B2 (rev-H)"
+assert ${machine.hd.present == true} "ProFile should be attached"
 
 # Seed (invalid) parameter memory before the ROM reads it at startup.
-assert ${profile.pram_load("${WORK_DIR}/profile.pram")} "pram_load failed"
+assert ${machine.hd.pram_load("${WORK_DIR}/profile.pram")} "pram_load failed"
 
 # The ROM reads PRAM -> BootVol=2 -> PROBOOT the ProFile -> loader -> SYSTEM.OS;
 # pm_good=false, so INIT_CONFIG restores the on-disk MDDF snapshot and FIND_PM_IDS
@@ -30,11 +30,11 @@ scheduler.run 100000000
 # globals $CC00F0/F2 — live on this modal) and click, leaving the clean Office System
 # desktop: the menu bar (Desk / File-Print / Edit / Housekeeping) with the
 # Preferences / Wastebasket / Clipboard / Disk icons.
-mouse.move 622 108 "global"
+machine.adb.mouse.move 622 108 "global"
 scheduler.run 2000000
-mouse.click true
+machine.adb.mouse.click true
 scheduler.run 600000
-mouse.click false
+machine.adb.mouse.click false
 scheduler.run 12000000
-screen.match expected.png
+machine.screen.match expected.png
 quit

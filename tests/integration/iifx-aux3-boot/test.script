@@ -46,7 +46,7 @@
 # getty-fallback.png for archaeology.
 
 # Pin the wall clock so screenshot comparisons are reproducible.
-rtc.time = 2026-04-26T21:30:36
+machine.rtc.time = 2026-04-26T21:30:36
 
 # ~1.5 G cycles takes the IIfx through Mac OS boot, A/UX launch, the A/UX
 # kernel, autoconfig, the UFS root mount, exec(/etc/init), fsck, and to the
@@ -56,16 +56,16 @@ rtc.time = 2026-04-26T21:30:36
 scheduler.run 1500000000
 
 assert ${machine.id == "iifx"} "machine.id != iifx"
-assert ${rom.checksum == "4147DD77"} "rom.checksum != 4147DD77"
+assert ${machine.rom.checksum == "4147DD77"} "rom.checksum != 4147DD77"
 
 # Default IIfx slot table seats the JMFB card; the panel is 640x480 at 1 bpp.
-assert ${screen.width == 640} "screen.width != 640"
-assert ${screen.height == 480} "screen.height != 480"
+assert ${machine.screen.width == 640} "screen.width != 640"
+assert ${machine.screen.height == 480} "screen.height != 480"
 
 # Bitwise compare against the captured A/UX `login:` prompt.  When the boot
 # advances further (e.g. past getty to the graphical login once the write
 # path / residual is fixed) this will stop matching and the pin should be
 # updated.
-screen.match login.png 240 318 258 323
+machine.screen.match login.png 240 318 258 323
 
 quit

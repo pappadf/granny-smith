@@ -717,7 +717,9 @@ floppy_t *floppy_init(int type, memory_map_t *map, struct scheduler *scheduler, 
     // drives collection child and per-drive entries follow.
     floppy->object = object_new(&floppy_class, floppy, "floppy");
     if (floppy->object) {
-        object_attach(object_root(), floppy->object);
+        object_set_label(floppy->object, "Floppy");
+        object_set_order(floppy->object, 80);
+        object_attach(machine_object(), floppy->object);
         floppy->drives_object = object_new(&floppy_drives_collection_class, floppy, "drives");
         if (floppy->drives_object)
             object_attach(floppy->object, floppy->drives_object);

@@ -87,249 +87,249 @@
 #   scheduler.run 11000000         # land in the Welcome splash stable window
 
 # --- 13" RGB (sense $6) at 1/2/4/8 bpp ---
-nubus.video_sense = 0x6
+machine.nubus.video_sense = 0x6
 machine.boot "iicx" 8192
-rom.reload
-floppy.drives[0].insert "../../data/systems/System_7_0_1.image"
-rtc.pram.validate
-rtc.pram.poke 0x46 0x002780a6a6000000:8
+machine.rom.reload
+machine.floppy.drives[0].insert "../../data/systems/System_7_0_1.image"
+machine.rtc.pram.validate
+machine.rtc.pram.poke 0x46 0x002780a6a6000000:8
 scheduler.run 50000000
-memory.poke.w 0x017A 0x8805
+machine.memory.poke.w 0x017A 0x8805
 scheduler.run 1500000
-memory.poke.w 0x017A 0
+machine.memory.poke.w 0x017A 0
 scheduler.run 11000000
 assert ${machine.id == "iicx"}              "machine.id != iicx"
-assert ${screen.width == 640}               "13in_rgb 1bpp width != 640"
-assert ${screen.height == 480}              "13in_rgb 1bpp height != 480"
-assert ${rtc.pram.peek(0x48) == 0x80}       "13in_rgb 1bpp savedMode rewritten by ROM"
-assert ${memory.peek.l(0xf9200208) == 0x80} "13in_rgb 1bpp CLUTPBCR != 0x80"
-assert ${memory.peek.l(0xf920000c) == 0x14} "13in_rgb 1bpp RowWords != 0x14"
-screen.match welcome-13in_rgb-640x480-1bpp.png
+assert ${machine.screen.width == 640}               "13in_rgb 1bpp width != 640"
+assert ${machine.screen.height == 480}              "13in_rgb 1bpp height != 480"
+assert ${machine.rtc.pram.peek(0x48) == 0x80}       "13in_rgb 1bpp savedMode rewritten by ROM"
+assert ${machine.memory.peek.l(0xf9200208) == 0x80} "13in_rgb 1bpp CLUTPBCR != 0x80"
+assert ${machine.memory.peek.l(0xf920000c) == 0x14} "13in_rgb 1bpp RowWords != 0x14"
+machine.screen.match welcome-13in_rgb-640x480-1bpp.png
 
-nubus.video_sense = 0x6
+machine.nubus.video_sense = 0x6
 machine.boot "iicx" 8192
-rom.reload
-floppy.drives[0].insert "../../data/systems/System_7_0_1.image"
-rtc.pram.validate
-rtc.pram.poke 0x46 0x002781a6a6000000:8
+machine.rom.reload
+machine.floppy.drives[0].insert "../../data/systems/System_7_0_1.image"
+machine.rtc.pram.validate
+machine.rtc.pram.poke 0x46 0x002781a6a6000000:8
 scheduler.run 50000000
-memory.poke.w 0x017A 0x8805
+machine.memory.poke.w 0x017A 0x8805
 scheduler.run 1500000
-memory.poke.w 0x017A 0
+machine.memory.poke.w 0x017A 0
 scheduler.run 11000000
-assert ${rtc.pram.peek(0x48) == 0x81}       "13in_rgb 2bpp savedMode rewritten by ROM"
-assert ${memory.peek.l(0xf9200208) == 0x88} "13in_rgb 2bpp CLUTPBCR != 0x88"
-assert ${memory.peek.l(0xf920000c) == 0x28} "13in_rgb 2bpp RowWords != 0x28"
-screen.match welcome-13in_rgb-640x480-2bpp.png
+assert ${machine.rtc.pram.peek(0x48) == 0x81}       "13in_rgb 2bpp savedMode rewritten by ROM"
+assert ${machine.memory.peek.l(0xf9200208) == 0x88} "13in_rgb 2bpp CLUTPBCR != 0x88"
+assert ${machine.memory.peek.l(0xf920000c) == 0x28} "13in_rgb 2bpp RowWords != 0x28"
+machine.screen.match welcome-13in_rgb-640x480-2bpp.png
 
-nubus.video_sense = 0x6
+machine.nubus.video_sense = 0x6
 machine.boot "iicx" 8192
-rom.reload
-floppy.drives[0].insert "../../data/systems/System_7_0_1.image"
-rtc.pram.validate
-rtc.pram.poke 0x46 0x002782a6a6000000:8
+machine.rom.reload
+machine.floppy.drives[0].insert "../../data/systems/System_7_0_1.image"
+machine.rtc.pram.validate
+machine.rtc.pram.poke 0x46 0x002782a6a6000000:8
 scheduler.run 50000000
-memory.poke.w 0x017A 0x8805
+machine.memory.poke.w 0x017A 0x8805
 scheduler.run 1500000
-memory.poke.w 0x017A 0
+machine.memory.poke.w 0x017A 0
 scheduler.run 11000000
-assert ${rtc.pram.peek(0x48) == 0x82}       "13in_rgb 4bpp savedMode rewritten by ROM"
-assert ${memory.peek.l(0xf9200208) == 0x90} "13in_rgb 4bpp CLUTPBCR != 0x90"
-assert ${memory.peek.l(0xf920000c) == 0x50} "13in_rgb 4bpp RowWords != 0x50"
-screen.match welcome-13in_rgb-640x480-4bpp.png
+assert ${machine.rtc.pram.peek(0x48) == 0x82}       "13in_rgb 4bpp savedMode rewritten by ROM"
+assert ${machine.memory.peek.l(0xf9200208) == 0x90} "13in_rgb 4bpp CLUTPBCR != 0x90"
+assert ${machine.memory.peek.l(0xf920000c) == 0x50} "13in_rgb 4bpp RowWords != 0x50"
+machine.screen.match welcome-13in_rgb-640x480-4bpp.png
 
-nubus.video_sense = 0x6
+machine.nubus.video_sense = 0x6
 machine.boot "iicx" 8192
-rom.reload
-floppy.drives[0].insert "../../data/systems/System_7_0_1.image"
-rtc.pram.validate
-rtc.pram.poke 0x46 0x002783a6a6000000:8
+machine.rom.reload
+machine.floppy.drives[0].insert "../../data/systems/System_7_0_1.image"
+machine.rtc.pram.validate
+machine.rtc.pram.poke 0x46 0x002783a6a6000000:8
 scheduler.run 50000000
-memory.poke.w 0x017A 0x8805
+machine.memory.poke.w 0x017A 0x8805
 scheduler.run 1500000
-memory.poke.w 0x017A 0
+machine.memory.poke.w 0x017A 0
 scheduler.run 11000000
-assert ${rtc.pram.peek(0x48) == 0x83}       "13in_rgb 8bpp savedMode rewritten by ROM"
-assert ${memory.peek.l(0xf9200208) == 0x98} "13in_rgb 8bpp CLUTPBCR != 0x98"
-assert ${memory.peek.l(0xf920000c) == 0xa0} "13in_rgb 8bpp RowWords != 0xa0"
-screen.match welcome-13in_rgb-640x480-8bpp.png
+assert ${machine.rtc.pram.peek(0x48) == 0x83}       "13in_rgb 8bpp savedMode rewritten by ROM"
+assert ${machine.memory.peek.l(0xf9200208) == 0x98} "13in_rgb 8bpp CLUTPBCR != 0x98"
+assert ${machine.memory.peek.l(0xf920000c) == 0xa0} "13in_rgb 8bpp RowWords != 0xa0"
+machine.screen.match welcome-13in_rgb-640x480-8bpp.png
 
 # --- 12" RGB (sense $2) at 1/2/4/8 bpp ---
-nubus.video_sense = 0x2
+machine.nubus.video_sense = 0x2
 machine.boot "iicx" 8192
-rom.reload
-floppy.drives[0].insert "../../data/systems/System_7_0_1.image"
-rtc.pram.validate
-rtc.pram.poke 0x46 0x002780a2a2000000:8
+machine.rom.reload
+machine.floppy.drives[0].insert "../../data/systems/System_7_0_1.image"
+machine.rtc.pram.validate
+machine.rtc.pram.poke 0x46 0x002780a2a2000000:8
 scheduler.run 50000000
-memory.poke.w 0x017A 0x8805
+machine.memory.poke.w 0x017A 0x8805
 scheduler.run 1500000
-memory.poke.w 0x017A 0
+machine.memory.poke.w 0x017A 0
 scheduler.run 11000000
-assert ${screen.width == 512}               "12in_rgb 1bpp width != 512"
-assert ${screen.height == 384}              "12in_rgb 1bpp height != 384"
-assert ${rtc.pram.peek(0x48) == 0x80}       "12in_rgb 1bpp savedMode rewritten by ROM"
-screen.match welcome-12in_rgb-512x384-1bpp.png
+assert ${machine.screen.width == 512}               "12in_rgb 1bpp width != 512"
+assert ${machine.screen.height == 384}              "12in_rgb 1bpp height != 384"
+assert ${machine.rtc.pram.peek(0x48) == 0x80}       "12in_rgb 1bpp savedMode rewritten by ROM"
+machine.screen.match welcome-12in_rgb-512x384-1bpp.png
 
-nubus.video_sense = 0x2
+machine.nubus.video_sense = 0x2
 machine.boot "iicx" 8192
-rom.reload
-floppy.drives[0].insert "../../data/systems/System_7_0_1.image"
-rtc.pram.validate
-rtc.pram.poke 0x46 0x002781a2a2000000:8
+machine.rom.reload
+machine.floppy.drives[0].insert "../../data/systems/System_7_0_1.image"
+machine.rtc.pram.validate
+machine.rtc.pram.poke 0x46 0x002781a2a2000000:8
 scheduler.run 50000000
-memory.poke.w 0x017A 0x8805
+machine.memory.poke.w 0x017A 0x8805
 scheduler.run 1500000
-memory.poke.w 0x017A 0
+machine.memory.poke.w 0x017A 0
 scheduler.run 11000000
-assert ${rtc.pram.peek(0x48) == 0x81}       "12in_rgb 2bpp savedMode rewritten by ROM"
-screen.match welcome-12in_rgb-512x384-2bpp.png
+assert ${machine.rtc.pram.peek(0x48) == 0x81}       "12in_rgb 2bpp savedMode rewritten by ROM"
+machine.screen.match welcome-12in_rgb-512x384-2bpp.png
 
-nubus.video_sense = 0x2
+machine.nubus.video_sense = 0x2
 machine.boot "iicx" 8192
-rom.reload
-floppy.drives[0].insert "../../data/systems/System_7_0_1.image"
-rtc.pram.validate
-rtc.pram.poke 0x46 0x002782a2a2000000:8
+machine.rom.reload
+machine.floppy.drives[0].insert "../../data/systems/System_7_0_1.image"
+machine.rtc.pram.validate
+machine.rtc.pram.poke 0x46 0x002782a2a2000000:8
 scheduler.run 50000000
-memory.poke.w 0x017A 0x8805
+machine.memory.poke.w 0x017A 0x8805
 scheduler.run 1500000
-memory.poke.w 0x017A 0
+machine.memory.poke.w 0x017A 0
 scheduler.run 11000000
-assert ${rtc.pram.peek(0x48) == 0x82}       "12in_rgb 4bpp savedMode rewritten by ROM"
-screen.match welcome-12in_rgb-512x384-4bpp.png
+assert ${machine.rtc.pram.peek(0x48) == 0x82}       "12in_rgb 4bpp savedMode rewritten by ROM"
+machine.screen.match welcome-12in_rgb-512x384-4bpp.png
 
-nubus.video_sense = 0x2
+machine.nubus.video_sense = 0x2
 machine.boot "iicx" 8192
-rom.reload
-floppy.drives[0].insert "../../data/systems/System_7_0_1.image"
-rtc.pram.validate
-rtc.pram.poke 0x46 0x002783a2a2000000:8
+machine.rom.reload
+machine.floppy.drives[0].insert "../../data/systems/System_7_0_1.image"
+machine.rtc.pram.validate
+machine.rtc.pram.poke 0x46 0x002783a2a2000000:8
 scheduler.run 50000000
-memory.poke.w 0x017A 0x8805
+machine.memory.poke.w 0x017A 0x8805
 scheduler.run 1500000
-memory.poke.w 0x017A 0
+machine.memory.poke.w 0x017A 0
 scheduler.run 11000000
-assert ${rtc.pram.peek(0x48) == 0x83}       "12in_rgb 8bpp savedMode rewritten by ROM"
-screen.match welcome-12in_rgb-512x384-8bpp.png
+assert ${machine.rtc.pram.peek(0x48) == 0x83}       "12in_rgb 8bpp savedMode rewritten by ROM"
+machine.screen.match welcome-12in_rgb-512x384-8bpp.png
 
 # --- 15" Portrait B&W (sense $1) at 1/2/4/8 bpp ---
-nubus.video_sense = 0x1
+machine.nubus.video_sense = 0x1
 machine.boot "iicx" 8192
-rom.reload
-floppy.drives[0].insert "../../data/systems/System_7_0_1.image"
-rtc.pram.validate
-rtc.pram.poke 0x46 0x002780a1a1000000:8
+machine.rom.reload
+machine.floppy.drives[0].insert "../../data/systems/System_7_0_1.image"
+machine.rtc.pram.validate
+machine.rtc.pram.poke 0x46 0x002780a1a1000000:8
 scheduler.run 50000000
-memory.poke.w 0x017A 0x8805
+machine.memory.poke.w 0x017A 0x8805
 scheduler.run 1500000
-memory.poke.w 0x017A 0
+machine.memory.poke.w 0x017A 0
 scheduler.run 11000000
-assert ${screen.width == 640}               "15in_bw 1bpp width != 640"
-assert ${screen.height == 870}              "15in_bw 1bpp height != 870"
-assert ${rtc.pram.peek(0x48) == 0x80}       "15in_bw 1bpp savedMode rewritten by ROM"
-screen.match welcome-15in_bw-640x870-1bpp.png
+assert ${machine.screen.width == 640}               "15in_bw 1bpp width != 640"
+assert ${machine.screen.height == 870}              "15in_bw 1bpp height != 870"
+assert ${machine.rtc.pram.peek(0x48) == 0x80}       "15in_bw 1bpp savedMode rewritten by ROM"
+machine.screen.match welcome-15in_bw-640x870-1bpp.png
 
-nubus.video_sense = 0x1
+machine.nubus.video_sense = 0x1
 machine.boot "iicx" 8192
-rom.reload
-floppy.drives[0].insert "../../data/systems/System_7_0_1.image"
-rtc.pram.validate
-rtc.pram.poke 0x46 0x002781a1a1000000:8
+machine.rom.reload
+machine.floppy.drives[0].insert "../../data/systems/System_7_0_1.image"
+machine.rtc.pram.validate
+machine.rtc.pram.poke 0x46 0x002781a1a1000000:8
 scheduler.run 50000000
-memory.poke.w 0x017A 0x8805
+machine.memory.poke.w 0x017A 0x8805
 scheduler.run 1500000
-memory.poke.w 0x017A 0
+machine.memory.poke.w 0x017A 0
 scheduler.run 11000000
-assert ${rtc.pram.peek(0x48) == 0x81}       "15in_bw 2bpp savedMode rewritten by ROM"
-screen.match welcome-15in_bw-640x870-2bpp.png
+assert ${machine.rtc.pram.peek(0x48) == 0x81}       "15in_bw 2bpp savedMode rewritten by ROM"
+machine.screen.match welcome-15in_bw-640x870-2bpp.png
 
-nubus.video_sense = 0x1
+machine.nubus.video_sense = 0x1
 machine.boot "iicx" 8192
-rom.reload
-floppy.drives[0].insert "../../data/systems/System_7_0_1.image"
-rtc.pram.validate
-rtc.pram.poke 0x46 0x002782a1a1000000:8
+machine.rom.reload
+machine.floppy.drives[0].insert "../../data/systems/System_7_0_1.image"
+machine.rtc.pram.validate
+machine.rtc.pram.poke 0x46 0x002782a1a1000000:8
 scheduler.run 50000000
-memory.poke.w 0x017A 0x8805
+machine.memory.poke.w 0x017A 0x8805
 scheduler.run 1500000
-memory.poke.w 0x017A 0
+machine.memory.poke.w 0x017A 0
 scheduler.run 11000000
-assert ${rtc.pram.peek(0x48) == 0x82}       "15in_bw 4bpp savedMode rewritten by ROM"
-screen.match welcome-15in_bw-640x870-4bpp.png
+assert ${machine.rtc.pram.peek(0x48) == 0x82}       "15in_bw 4bpp savedMode rewritten by ROM"
+machine.screen.match welcome-15in_bw-640x870-4bpp.png
 
-nubus.video_sense = 0x1
+machine.nubus.video_sense = 0x1
 machine.boot "iicx" 8192
-rom.reload
-floppy.drives[0].insert "../../data/systems/System_7_0_1.image"
-rtc.pram.validate
-rtc.pram.poke 0x46 0x002783a1a1000000:8
+machine.rom.reload
+machine.floppy.drives[0].insert "../../data/systems/System_7_0_1.image"
+machine.rtc.pram.validate
+machine.rtc.pram.poke 0x46 0x002783a1a1000000:8
 scheduler.run 50000000
-memory.poke.w 0x017A 0x8805
+machine.memory.poke.w 0x017A 0x8805
 scheduler.run 1500000
-memory.poke.w 0x017A 0
+machine.memory.poke.w 0x017A 0
 scheduler.run 11000000
-assert ${rtc.pram.peek(0x48) == 0x83}       "15in_bw 8bpp savedMode rewritten by ROM"
-screen.match welcome-15in_bw-640x870-8bpp.png
+assert ${machine.rtc.pram.peek(0x48) == 0x83}       "15in_bw 8bpp savedMode rewritten by ROM"
+machine.screen.match welcome-15in_bw-640x870-8bpp.png
 
 # --- 21" RGB Kong (sense $0) at 1/2/4/8 bpp ---
 # References at >= 2bpp show a yellow tint — see header comment.
-nubus.video_sense = 0x0
+machine.nubus.video_sense = 0x0
 machine.boot "iicx" 8192
-rom.reload
-floppy.drives[0].insert "../../data/systems/System_7_0_1.image"
-rtc.pram.validate
-rtc.pram.poke 0x46 0x002780a7a7000000:8
+machine.rom.reload
+machine.floppy.drives[0].insert "../../data/systems/System_7_0_1.image"
+machine.rtc.pram.validate
+machine.rtc.pram.poke 0x46 0x002780a7a7000000:8
 scheduler.run 50000000
-memory.poke.w 0x017A 0x8805
+machine.memory.poke.w 0x017A 0x8805
 scheduler.run 1500000
-memory.poke.w 0x017A 0
+machine.memory.poke.w 0x017A 0
 scheduler.run 11000000
-assert ${screen.width == 1152}              "21in_rgb 1bpp width != 1152"
-assert ${screen.height == 870}              "21in_rgb 1bpp height != 870"
-assert ${rtc.pram.peek(0x48) == 0x80}       "21in_rgb 1bpp savedMode rewritten by ROM"
-screen.match welcome-21in_rgb-1152x870-1bpp.png
+assert ${machine.screen.width == 1152}              "21in_rgb 1bpp width != 1152"
+assert ${machine.screen.height == 870}              "21in_rgb 1bpp height != 870"
+assert ${machine.rtc.pram.peek(0x48) == 0x80}       "21in_rgb 1bpp savedMode rewritten by ROM"
+machine.screen.match welcome-21in_rgb-1152x870-1bpp.png
 
-nubus.video_sense = 0x0
+machine.nubus.video_sense = 0x0
 machine.boot "iicx" 8192
-rom.reload
-floppy.drives[0].insert "../../data/systems/System_7_0_1.image"
-rtc.pram.validate
-rtc.pram.poke 0x46 0x002781a7a7000000:8
+machine.rom.reload
+machine.floppy.drives[0].insert "../../data/systems/System_7_0_1.image"
+machine.rtc.pram.validate
+machine.rtc.pram.poke 0x46 0x002781a7a7000000:8
 scheduler.run 50000000
-memory.poke.w 0x017A 0x8805
+machine.memory.poke.w 0x017A 0x8805
 scheduler.run 1500000
-memory.poke.w 0x017A 0
+machine.memory.poke.w 0x017A 0
 scheduler.run 11000000
-assert ${rtc.pram.peek(0x48) == 0x81}       "21in_rgb 2bpp savedMode rewritten by ROM"
-screen.match welcome-21in_rgb-1152x870-2bpp.png
+assert ${machine.rtc.pram.peek(0x48) == 0x81}       "21in_rgb 2bpp savedMode rewritten by ROM"
+machine.screen.match welcome-21in_rgb-1152x870-2bpp.png
 
-nubus.video_sense = 0x0
+machine.nubus.video_sense = 0x0
 machine.boot "iicx" 8192
-rom.reload
-floppy.drives[0].insert "../../data/systems/System_7_0_1.image"
-rtc.pram.validate
-rtc.pram.poke 0x46 0x002782a7a7000000:8
+machine.rom.reload
+machine.floppy.drives[0].insert "../../data/systems/System_7_0_1.image"
+machine.rtc.pram.validate
+machine.rtc.pram.poke 0x46 0x002782a7a7000000:8
 scheduler.run 50000000
-memory.poke.w 0x017A 0x8805
+machine.memory.poke.w 0x017A 0x8805
 scheduler.run 1500000
-memory.poke.w 0x017A 0
+machine.memory.poke.w 0x017A 0
 scheduler.run 11000000
-assert ${rtc.pram.peek(0x48) == 0x82}       "21in_rgb 4bpp savedMode rewritten by ROM"
-screen.match welcome-21in_rgb-1152x870-4bpp.png
+assert ${machine.rtc.pram.peek(0x48) == 0x82}       "21in_rgb 4bpp savedMode rewritten by ROM"
+machine.screen.match welcome-21in_rgb-1152x870-4bpp.png
 
-nubus.video_sense = 0x0
+machine.nubus.video_sense = 0x0
 machine.boot "iicx" 8192
-rom.reload
-floppy.drives[0].insert "../../data/systems/System_7_0_1.image"
-rtc.pram.validate
-rtc.pram.poke 0x46 0x002783a7a7000000:8
+machine.rom.reload
+machine.floppy.drives[0].insert "../../data/systems/System_7_0_1.image"
+machine.rtc.pram.validate
+machine.rtc.pram.poke 0x46 0x002783a7a7000000:8
 scheduler.run 50000000
-memory.poke.w 0x017A 0x8805
+machine.memory.poke.w 0x017A 0x8805
 scheduler.run 1500000
-memory.poke.w 0x017A 0
+machine.memory.poke.w 0x017A 0
 scheduler.run 11000000
-assert ${rtc.pram.peek(0x48) == 0x83}       "21in_rgb 8bpp savedMode rewritten by ROM"
-screen.match welcome-21in_rgb-1152x870-8bpp.png
+assert ${machine.rtc.pram.peek(0x48) == 0x83}       "21in_rgb 8bpp savedMode rewritten by ROM"
+machine.screen.match welcome-21in_rgb-1152x870-8bpp.png
 
 quit

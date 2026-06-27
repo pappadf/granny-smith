@@ -15,7 +15,7 @@
 # PA $0828 whenever the CPU happens to be in supervisor mode at the tick
 # boundary.  --aux uses a user-mode-only guard tick, so it pins MAE's MTemp
 # without corrupting the kernel.
-rtc.time = 2026-04-26T21:30:36
+machine.rtc.time = 2026-04-26T21:30:36
 
 # Boot the floppy + CD to the A/UX Easy Install screen (~600M instructions).
 # A/UX is interrupt-driven: the kernel sleeps for each CD read and is woken by
@@ -25,30 +25,30 @@ rtc.time = 2026-04-26T21:30:36
 scheduler.run 300000000
 scheduler.run 300000000
 
-screen.match installer.png
+machine.screen.match installer.png
 
 # Click "Easy Install" (button center ~(380, 80)) — opens a confirm dialog
 # asking "...will be overwritten by the installation process. Do you wish to
 # continue?" with Cancel / OK buttons.
-mouse.move 380 80 "aux"
-mouse.click true
+machine.adb.mouse.move 380 80 "aux"
+machine.adb.mouse.click true
 scheduler.run 5000000
-mouse.click false
+machine.adb.mouse.click false
 scheduler.run 25000000
 
-screen.match confirm.png
+machine.screen.match confirm.png
 
 # Click "OK" (button center ~(337, 185)) — confirms and dismisses the dialog.
 # The cursor is hidden by the dialog, but the click still hit-tests against
 # MTemp (which --aux keeps pinned at our target), so the click lands on OK.
-mouse.move 337 185 "aux"
-mouse.click true
+machine.adb.mouse.move 337 185 "aux"
+machine.adb.mouse.click true
 scheduler.run 1000000
-mouse.click false
+machine.adb.mouse.click false
 scheduler.run 3000000
 
 # The confirm dialog has been dismissed; the installer shows a gray screen
 # with a wait cursor while it begins scanning the CD.
-screen.match dialog-dismissed.png
+machine.screen.match dialog-dismissed.png
 
 quit

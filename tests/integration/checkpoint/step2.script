@@ -15,6 +15,6 @@ assert ${checkpoint.load("checkpoint")} "step2 checkpoint load failed"
 scheduler.run 70000000
 
 # Match against the boot test's desktop reference
-screen.match desktop.png
+machine.screen.match desktop.png
 
 quit

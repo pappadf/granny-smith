@@ -4427,8 +4427,11 @@ void screen_class_register(void) {
     if (s_screen_object)
         return;
     s_screen_object = object_new(&screen_class, NULL, "screen");
-    if (s_screen_object)
-        object_attach(object_root(), s_screen_object);
+    if (s_screen_object) {
+        object_set_label(s_screen_object, "Screen");
+        object_set_order(s_screen_object, 120);
+        object_attach(machine_object(), s_screen_object);
+    }
 }
 
 void screen_class_unregister(void) {

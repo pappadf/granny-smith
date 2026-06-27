@@ -20,19 +20,19 @@
 scheduler.run 50000000
 
 assert ${machine.id == "lisa"} "machine.id != lisa"
-assert ${rom.checksum == "098917B2"} "rom.checksum != 098917B2 (rev-H)"
-assert ${screen.width == 720} "screen.width != 720"
-assert ${screen.height == 364} "screen.height != 364"
+assert ${machine.rom.checksum == "098917B2"} "rom.checksum != 098917B2 (rev-H)"
+assert ${machine.screen.width == 720} "screen.width != 720"
+assert ${machine.screen.height == 364} "screen.height != 364"
 
 # Warp the cursor onto the Install button (right column, third from top) and let
 # the closed loop converge over the next several mouse reports.
-mouse.move 648 211 "global"
+machine.adb.mouse.move 648 211 "global"
 scheduler.run 3000000
 
 # Press and release the mouse button over Install.
-mouse.click true
+machine.adb.mouse.click true
 scheduler.run 600000
-mouse.click false
+machine.adb.mouse.click false
 
 # The installer transitions to its disk-selection screen and the cursor settles;
 # the framebuffer is stable from ~12M instructions after the click onward.
@@ -40,6 +40,6 @@ scheduler.run 14000000
 
 # Verify the installer's disk-selection screen ("no usable disks", Restart/Off) —
 # i.e. the Install button click was received and acted upon.
-screen.match expected.png
+machine.screen.match expected.png
 
 quit

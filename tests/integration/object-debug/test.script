@@ -39,9 +39,9 @@ assert ${debug.breakpoints[2].addr == 0x400300}
 assert ${debug.breakpoints[2].id == 2}
 
 # Conditional breakpoint via the method form (M6's predicate field).
-echo ${debug.breakpoints.add(0x400400, "cpu.d0 == 0")}
+echo ${debug.breakpoints.add(0x400400, "machine.cpu.d0 == 0")}
 assert ${debug.breakpoints[3].addr == 0x400400}
-assert ${debug.breakpoints[3].condition == "cpu.d0 == 0"}
+assert ${debug.breakpoints[3].condition == "machine.cpu.d0 == 0"}
 
 # Clear via the new collection method, verify legacy list is empty too.
 echo ${debug.breakpoints.clear()}

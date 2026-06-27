@@ -2,7 +2,7 @@
 #
 # The VBL handler bumps Ticks ($00016A.l) once per VBL — set a write
 # logpoint there with a message that exercises:
-#   ${cpu.pc}              — register read at fire time (object path)
+#   ${machine.cpu.pc}              — register read at fire time (object path)
 #   ${value:08x}           — per-fire bound name, format spec
 #   ${addr:08x}            — per-fire bound name
 #   ${size}                — default formatter
@@ -15,7 +15,7 @@
 debug.log memory 5
 debug.log logpoint 5
 
-debug.logpoints.add '--write 0x000016A.l "Ticks bumped pc=${cpu.pc} addr=${addr:08x} val=${value:08x} size=${size}" level=5'
+debug.logpoints.add '--write 0x000016A.l "Ticks bumped pc=${machine.cpu.pc} addr=${addr:08x} val=${value:08x} size=${size}" level=5'
 
 scheduler.run 5000000
 
