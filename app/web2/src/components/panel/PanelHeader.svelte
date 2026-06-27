@@ -9,7 +9,7 @@
   // Display labels — spec §4 fixes this order and casing.
   const LABELS: Record<PanelTab, string> = {
     terminal: 'TERMINAL',
-    machine: 'MACHINE',
+    machine: 'SYSTEM',
     filesystem: 'FILESYSTEM',
     images: 'IMAGES',
     checkpoints: 'CHECKPOINTS',

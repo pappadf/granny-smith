@@ -19,6 +19,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "json_encode.h"
 #include "object.h"
 #include "value.h"
 
@@ -281,6 +282,70 @@ static value_t meta_method_member(struct object *self, const member_t *m, int ar
     return val_str(buf);
 }
 
+// `member_category(name)` — visibility tier of a named member on the
+// inspected class: "basic" / "advanced" / "internal" (proposal §7.2). The
+// SYSTEM tab reads this to decide whether to show an attribute/method row.
+// Unknown names default to "basic" (faithful-by-default, §P6).
+static value_t meta_method_member_category(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)m;
+    if (argc < 1 || argv[0].kind != V_STRING || !argv[0].s)
+        return val_err("member_category: expected (name)");
+    struct object *insp = meta_inspected(self);
+    const member_t *mb = class_find_member(insp ? object_class(insp) : NULL, argv[0].s);
+    return val_str(category_name(mb ? mb->flags : 0));
+}
+
+// `member_label(name)` — display label of a named member, falling back to the
+// name itself (proposal §7.1).
+static value_t meta_method_member_label(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)m;
+    if (argc < 1 || argv[0].kind != V_STRING || !argv[0].s)
+        return val_err("member_label: expected (name)");
+    struct object *insp = meta_inspected(self);
+    const member_t *mb = class_find_member(insp ? object_class(insp) : NULL, argv[0].s);
+    const char *label = (mb && mb->label) ? mb->label : argv[0].s;
+    return val_str(label);
+}
+
+// `method_info(name)` — UI metadata for a method member, JSON-encoded so the
+// context menu and command browser render it without a static catalogue
+// (proposal §7.3/§8.3/§8.6): verb label, task category, destructive/mutate/
+// hidden flags, declared arg count, and doc. Returns a V_ERROR if the member
+// is not a method.
+static value_t meta_method_method_info(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)m;
+    if (argc < 1 || argv[0].kind != V_STRING || !argv[0].s)
+        return val_err("method_info: expected (name)");
+    struct object *insp = meta_inspected(self);
+    const member_t *mb = class_find_member(insp ? object_class(insp) : NULL, argv[0].s);
+    if (!mb || mb->kind != M_METHOD)
+        return val_err("method_info: '%s' is not a method", argv[0].s);
+    json_builder_t *b = json_builder_new();
+    if (!b)
+        return val_err("method_info: out of memory");
+    json_open_obj(b);
+    json_key(b, "name");
+    json_str(b, mb->name ? mb->name : "");
+    json_key(b, "verb");
+    json_str(b, mb->method.verb_label ? mb->method.verb_label : (mb->name ? mb->name : ""));
+    json_key(b, "category");
+    json_str(b, category_name(mb->flags));
+    json_key(b, "task");
+    json_str(b, mb->method.task_category ? mb->method.task_category : "");
+    json_key(b, "doc");
+    json_str(b, mb->doc ? mb->doc : "");
+    json_key(b, "destructive");
+    json_bool(b, (mb->method.ui_flags & MM_DESTRUCTIVE) != 0);
+    json_key(b, "mutate");
+    json_bool(b, (mb->method.ui_flags & MM_MUTATE) != 0);
+    json_key(b, "hidden");
+    json_bool(b, (mb->method.ui_flags & MM_HIDDEN) != 0);
+    json_key(b, "nargs");
+    json_int(b, (int64_t)mb->method.nargs);
+    json_close_obj(b);
+    return json_finish(b);
+}
+
 // === Class table =========================================================
 
 static const arg_decl_t meta_complete_args[] = {
@@ -293,6 +358,10 @@ static const arg_decl_t meta_complete_args[] = {
 
 static const arg_decl_t meta_member_args[] = {
     {.name = "name", .kind = V_STRING, .doc = "Member name on the inspected class"},
+};
+
+static const arg_decl_t meta_named_member_args[] = {
+    {.name = "name", .kind = V_STRING, .validation_flags = OBJ_ARG_NONEMPTY, .doc = "Member name"},
 };
 
 static const member_t meta_members[] = {
@@ -344,6 +413,18 @@ static const member_t meta_members[] = {
      .name = "member",
      .doc = "Short description of one named member",
      .method = {.args = meta_member_args, .nargs = 1, .result = V_STRING, .fn = meta_method_member}},
+    {.kind = M_METHOD,
+     .name = "member_category",
+     .doc = "Visibility tier of a named member: basic | advanced | internal",
+     .method = {.args = meta_named_member_args, .nargs = 1, .result = V_STRING, .fn = meta_method_member_category}},
+    {.kind = M_METHOD,
+     .name = "member_label",
+     .doc = "Display label of a named member (falls back to its name)",
+     .method = {.args = meta_named_member_args, .nargs = 1, .result = V_STRING, .fn = meta_method_member_label}},
+    {.kind = M_METHOD,
+     .name = "method_info",
+     .doc = "JSON UI metadata for a method (verb, task, destructive, mutate, hidden, nargs)",
+     .method = {.args = meta_named_member_args, .nargs = 1, .result = V_STRING, .fn = meta_method_method_info}},
 };
 
 // Special class name — would normally trip the `meta`-is-reserved check

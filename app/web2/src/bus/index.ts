@@ -17,7 +17,13 @@ export {
   type CompletionResult,
 } from './emulator';
 export { setTerminalSink, routePrintLine, routeLogEmit } from './logSink';
-export { loadMachineRoots, loadMachineChildren, type MachineTreeNode } from './machineTree';
+export {
+  loadSystemRoots,
+  loadSystemChildren,
+  loadNodeMethods,
+  type SystemTreeNode,
+  type MethodInfo,
+} from './systemTree';
 export {
   disasmAt,
   readRegisters,

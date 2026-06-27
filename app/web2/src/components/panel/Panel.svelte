@@ -2,7 +2,7 @@
   import { layout } from '@/state/layout.svelte';
   import PanelHeader from './PanelHeader.svelte';
   import TerminalView from '../panel-views/terminal/TerminalView.svelte';
-  import MachineView from '../panel-views/machine/MachineView.svelte';
+  import SystemView from '../panel-views/machine/SystemView.svelte';
   import FilesystemView from '../panel-views/filesystem/FilesystemView.svelte';
   import ImagesView from '../panel-views/images/ImagesView.svelte';
   import CheckpointsView from '../panel-views/checkpoints/CheckpointsView.svelte';
@@ -14,7 +14,7 @@
   <PanelHeader />
   <div class="gs-panel-content">
     {#if layout.activeTab === 'terminal'}<TerminalView />
-    {:else if layout.activeTab === 'machine'}<MachineView />
+    {:else if layout.activeTab === 'machine'}<SystemView />
     {:else if layout.activeTab === 'filesystem'}<FilesystemView />
     {:else if layout.activeTab === 'images'}<ImagesView />
     {:else if layout.activeTab === 'checkpoints'}<CheckpointsView />
