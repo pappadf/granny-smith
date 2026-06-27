@@ -261,19 +261,22 @@ static void mount_destroy(image_mount_t *m) {
 
 // ---- Mount open / probe ---------------------------------------------------
 
-// Try to probe an image_t as HFS at offset 0 (bare floppy, no APM).  On
-// success, populate the synthetic APM entry so the rest of the code can
-// treat this uniformly.
+// Try to probe an image_t as HFS or HFS+ at offset 0 (bare floppy / CD with
+// no APM).  On success, populate the synthetic APM entry so the rest of the
+// code can treat this uniformly.
 static bool probe_bare_hfs(image_mount_t *m) {
     size_t img_size = disk_size(m->img);
     if (img_size < 1024 + 512)
         return false;
-    // disk_read_data wants 512-aligned offset + length; read the full MDB
-    // block and just inspect the signature.
+    // disk_read_data wants 512-aligned offset + length; read the full
+    // MDB / Volume Header block and just inspect the signature.
     uint8_t mdb[512];
     if (disk_read_data(m->img, 1024, mdb, sizeof(mdb)) != sizeof(mdb))
         return false;
-    if (mdb[0] != 0x42 || mdb[1] != 0x44) // "BD"
+    // "BD" = classic HFS (possibly an HFS+ wrapper), "H+"/"HX" = bare HFS+.
+    // hfs_open handles all three; classify them all as APM_FS_HFS.
+    uint16_t sig = ((uint16_t)mdb[0] << 8) | mdb[1];
+    if (sig != HFS_SIG_BD && sig != HFS_SIG_HP && sig != HFS_SIG_HX)
         return false;
     m->synthetic_apm = true;
     memset(&m->synthetic_part, 0, sizeof(m->synthetic_part));

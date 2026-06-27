@@ -2,18 +2,21 @@
 // Copyright (c) pappadf
 
 // image_hfs.h
-// Read-only HFS catalog walker.  Given an image_t plus the byte offset and
-// size of a partition, opens the HFS Master Directory Block, loads the
-// catalog file into RAM, and exposes path-lookup, directory-enumerate, and
-// fork-read entry points for the image_vfs backend.
+// Read-only HFS / HFS+ catalog walker.  Given an image_t plus the byte
+// offset and size of a partition, opens the volume (classic HFS Master
+// Directory Block or an HFS Plus Volume Header), loads the catalog file
+// into RAM, and exposes path-lookup, directory-enumerate, and fork-read
+// entry points for the image_vfs backend.  HFS and HFS+ share the same
+// opaque handle and public types; hfs_open sniffs the on-disk signature
+// and routes to the right parser, so callers don't distinguish the two.
 //
 // Scope:
 //   - 400K / 800K / 1.4M floppies with no partition map (partition_offset=0).
-//   - HFS partitions inside an APM image.
-//   - Data and resource forks via the three-extent inline file record; the
-//     extent overflow file is not consulted, so fragmented large files will
-//     read only the portion captured in the catalog record.
-//   - MacRoman -> UTF-8 transcoding on enumeration.
+//   - HFS and HFS+ partitions inside an APM image, plus HFS+ embedded in a
+//     classic HFS wrapper (drEmbedSigWord) and bare HFS+/HFSX volumes.
+//   - Data and resource forks via the inline file-record extents (3 for
+//     HFS, 8 for HFS+) plus the extents-overflow file for fragmented forks.
+//   - MacRoman (HFS) / UTF-16 (HFS+) -> UTF-8 transcoding on enumeration.
 
 #pragma once
 
@@ -29,17 +32,22 @@
 // Root directory CNID per HFS convention.
 #define HFS_ROOT_CNID 2
 
-// HFS signature word "BD" at offset 0 of the MDB.
-#define HFS_SIG_BD 0x4244
+// Volume signature words at offset 0 of the MDB / Volume Header.
+#define HFS_SIG_BD 0x4244 // "BD" — classic HFS Master Directory Block
+#define HFS_SIG_HP 0x482B // "H+" — HFS Plus Volume Header
+#define HFS_SIG_HX 0x4858 // "HX" — HFSX Volume Header
 
-// Max extents captured inline in a catalog file record.  HFS uses exactly 3.
+// Inline extents captured in a catalog file record: HFS uses exactly 3,
+// HFS+ uses 8.  HFS_FORK_EXTENTS sizes the fork descriptor's array so a
+// single shared type holds both; classic HFS leaves the trailing 5 zero.
 #define HFS_INLINE_EXTENTS 3
+#define HFS_FORK_EXTENTS   8
 
 // Fork descriptor extracted from a catalog file record.  `file_id` and
 // `fork_type` are needed so hfs_read_fork can look up the rest of a
-// fragmented fork's extents in the Extents Overflow file when the
-// inline 3 don't cover the whole logical_size.  fork_type uses the HFS
-// convention: 0x00 = data fork, 0xFF = resource fork.
+// fragmented fork's extents in the Extents Overflow file when the inline
+// extents don't cover the whole logical_size.  fork_type uses the HFS
+// convention shared by HFS+: 0x00 = data fork, 0xFF = resource fork.
 typedef struct hfs_fork {
     uint64_t logical_size;
     uint32_t file_id; // CNID of the owning file (0 for ad-hoc forks)
@@ -47,7 +55,7 @@ typedef struct hfs_fork {
     struct {
         uint32_t start_ablock; // allocation block number within volume
         uint32_t num_ablocks;
-    } extents[HFS_INLINE_EXTENTS];
+    } extents[HFS_FORK_EXTENTS];
 } hfs_fork_t;
 
 // One catalog entry as seen by VFS-level callers.  `name` is UTF-8.
