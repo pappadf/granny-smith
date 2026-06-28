@@ -1,18 +1,21 @@
 # Integration test configuration: IIcx + Radius "Apple Macintosh 24AC" card
 #
-# Two independent parts (see test.script):
+# Three parts (see test.script):
 #   Part A — the acceleration engine's register/aperture decode (fill,
 #            solid fill, block copy, operand load/readback, STATUS/CONFIG),
 #            driven directly through memory.poke/peek against hand-computed
 #            expected VRAM.  No OS boot — deterministic and fast.
-#   Part B — a Phase-1 boot smoke: the Slot Manager finds the card and its
-#            vrom PrimaryInit configures it (CRTC/PLL/RAMDAC/depth) at
-#            640×480.  (Full color-desktop screenshot matching awaits the
-#            standard-video-driver GDevice/monitor-sense RE — see the
-#            proposal §6 open questions and notes/.)
+#   Part C — the engine-vs-fallback oracle (proposal §3.5): the engine's
+#            pattern fill must equal the software (CPU) fill, toggled via the
+#            object-model gate machine.nubus.slot[9].card.engine.enabled;
+#            plus the object-model surface (slot[N].card.{framebuffer,
+#            declrom,clut,mode,engine} + screen.source reference, §3.8).
+#   Part B — a full Phase-1/2 boot to an 8-bpp COLOUR Finder desktop: the
+#            vrom senses the 640x480 multisync monitor, the OS selects 8 bpp
+#            (savedMode $82) and the desktop is matched pixel-exact.
 
 TEST_NAME := IIcx Radius 24AC
-TEST_DESC := Radius 24AC card: acceleration-engine decode + Phase-1 boot/PrimaryInit smoke.
+TEST_DESC := Radius 24AC: engine decode + engine-vs-fallback oracle + object model + 8bpp colour desktop.
 
 TEST_ROM := roms/IIcx.rom
 

@@ -21,6 +21,7 @@
 struct config;
 struct checkpoint;
 struct display;
+struct object;
 typedef struct config config_t;
 typedef struct checkpoint checkpoint_t;
 typedef struct display display_t;
@@ -87,6 +88,25 @@ nubus_card_t *nubus_card(nubus_bus_t *bus, int slot);
 // canvas.  v1: first slot in declared order whose ops->display() returns
 // non-NULL.
 display_t *nubus_primary_display(nubus_bus_t *bus);
+
+// The card behind nubus_primary_display() (same selection rule), or NULL.
+// Used by the object model to wire `machine.screen.source` to the active
+// card's framebuffer node.
+nubus_card_t *nubus_primary_display_card(nubus_bus_t *bus);
+
+// === Object-model surface (proposal §3.8) ===================================
+//
+// Build / tear down the per-slot `slot[N].card.{framebuffer,declrom,clut,mode}`
+// object trees for every populated slot.  nubus_init calls _build after the
+// cards exist; nubus_delete calls _teardown before freeing them.  The node
+// objects are owned here (object_delete_tree on teardown), not by the bus.
+void nubus_objects_build(nubus_bus_t *bus);
+void nubus_objects_teardown(void);
+
+// The framebuffer node object of the active (primary-display) card, or NULL —
+// the target of the `machine.screen.source` reference edge.  Re-resolved on
+// demand so a card swap can never leave it dangling.
+struct object *nubus_active_framebuffer_object(void);
 
 // VBL fan-out.  Family code calls this from glue030_trigger_vbl after
 // pulsing the GLUE-driven CA1 lines; it iterates the slot table and

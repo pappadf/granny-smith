@@ -143,12 +143,17 @@ nubus_bus_t *nubus_init(config_t *cfg, const nubus_slot_decl_t *slots, checkpoin
     // Consume the pending video-card pick so a stale selection doesn't
     // leak into the next machine.boot (mirrors jmfb's pending-sense reset).
     nubus_pending_video_card_set(NULL);
+    // Project the populated slots into the object model (proposal §3.8):
+    // machine.nubus.slot[N].card.{framebuffer,declrom,clut,mode,…}.
+    nubus_objects_build(bus);
     return bus;
 }
 
 void nubus_delete(nubus_bus_t *bus) {
     if (!bus)
         return;
+    // Drop the object-model node trees before the cards they read go away.
+    nubus_objects_teardown();
     for (int i = 0; i < NUBUS_MAX_SLOTS; i++) {
         nubus_card_t *card = bus->cards[i];
         if (!card)
@@ -179,6 +184,19 @@ display_t *nubus_primary_display(nubus_bus_t *bus) {
         display_t *d = card->ops->display(card);
         if (d)
             return d;
+    }
+    return NULL;
+}
+
+nubus_card_t *nubus_primary_display_card(nubus_bus_t *bus) {
+    if (!bus)
+        return NULL;
+    for (int i = 0; i < NUBUS_MAX_SLOTS; i++) {
+        nubus_card_t *card = bus->cards[i];
+        if (!card || !card->ops || !card->ops->display)
+            continue;
+        if (card->ops->display(card))
+            return card;
     }
     return NULL;
 }

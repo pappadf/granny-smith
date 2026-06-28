@@ -27,6 +27,7 @@
 #include "log.h"
 #include "memory.h"
 #include "mmu.h"
+#include "nubus.h"
 #include "object.h"
 #include "root.h"
 #include "scheduler.h"
@@ -4347,6 +4348,19 @@ static value_t screen_attr_par_h(struct object *self, const member_t *m) {
     return val_int(d && d->par_h ? (int64_t)d->par_h : 1);
 }
 
+// `screen.source` — a non-owning reference edge to the active NuBus card's
+// framebuffer node (proposal §3.8: machine.screen.source → reference →
+// machine.nubus.slot[N].card.framebuffer).  Re-resolved on each access via
+// nubus_active_framebuffer_object(), so a card swap or machine teardown can
+// never leave it dangling (the proposal's pointer+invalidator hot-path concern
+// applies to per-frame rendering, which uses nubus_primary_display() directly —
+// not this navigational link).  NULL (no source) on builtin-video machines.
+static struct object *screen_source_lookup(struct object *self, const char *name) {
+    (void)self;
+    (void)name;
+    return nubus_active_framebuffer_object();
+}
+
 static const arg_decl_t screen_save_args[] = {
     {.name = "path", .kind = V_STRING, .doc = "Output PNG path (must end in .png)"},
 };
@@ -4407,6 +4421,11 @@ static const member_t screen_members[] = {
      .name = "checksum",
      .doc = "Polynomial hash of the framebuffer (full screen or top/left/bottom/right region)",
      .method = {.args = screen_checksum_args, .nargs = 4, .result = V_INT, .fn = screen_method_checksum}},
+    {.kind = M_CHILD,
+     .name = "source",
+     .doc = "Reference to the active card's framebuffer node driving this screen",
+     .label = "Source",
+     .child = {.cls = NULL, .reference = true, .lookup = screen_source_lookup}},
 };
 
 const class_desc_t screen_class = {

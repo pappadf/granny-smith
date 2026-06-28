@@ -3,16 +3,17 @@
 # See proposal-nubus-card-radius-24ac.md.  The card is a framebuffer +
 # CLUT + VBL display card (Phase 1) plus a hardware QuickDraw fill/raster
 # accelerator (Phase 2).  This test exercises both halves on the IIcx with
-# the genuine display-card-24ac.vrom.
+# the genuine display-card-24ac.vrom, plus the object-model surface
+# (proposal §3.8) and the 8-bpp colour desktop (proposal §2 exit criterion).
 #
-# Slot-space layout (slot $9 → base 0xF9000000), from the dossier hardware
+# Slot-space layout (slot $9 -> base 0xF9000000), from the dossier hardware
 # spec + the vrom-driver RE:
 #   0xF9000000          passive framebuffer VRAM (flat aperture)
 #   0xF93FE000          engine operand aperture (latched 32-bit operand)
 #   0xF9400000..0xF97FFFFF  engine active-bank alias (transforming writes)
 #   0xF97FE000          operand-commit window (active alias of the aperture)
 #   0xF9D00402 / 0xF9D40402 / 0xF9D40403  STATUS / CONFIG / CONTROL
-#   0xF9D80001          MODE (bits 7-5 = pixel-depth code) — set by PrimaryInit
+#   0xF9D80001          MODE (bits 7-5 = pixel-depth code) — set by the driver
 #   0xF9FE0000          declaration ROM (128 KB, byte-lane-3 expanded)
 
 # =====================================================================
@@ -20,18 +21,17 @@
 #
 # The debug memory.poke/peek path dispatches to device callbacks, so we
 # can drive the engine exactly as the Radius cdev would and check the
-# resulting VRAM against hand-computed values — the driver's own software
-# fallback is the oracle (proposal §3.5); here we verify the decode
-# directly.  A fresh machine.boot leaves the card at its 8 bpp default.
+# resulting VRAM against hand-computed values.  A fresh machine.boot
+# leaves the card at its 8 bpp power-on default.
 # =====================================================================
 machine.nubus.video_card = "radius_24ac"
 machine.boot "iicx" 8192
 assert ${machine.id == "iicx"}                                   "machine.id != iicx"
 
-# Card present + engine status: STATUS[2:0]=depth code 0 (1 bpp default —
-# the sensed monitor comes up at 1 bpp), STATUS[3]=class bit (large-VRAM) →
-# low nibble 0x08.  CONFIG[0]=variant.
-assert ${(machine.memory.peek.b(0xF9D00402) & 0x0F) == 0x08}     "STATUS low nibble != 0x08 (card absent / wrong depth)"
+# Card present + engine status: STATUS[2:0] = depth code 2 (8 bpp power-on
+# default — vrom RE depth ladder), STATUS[3] = class bit (large-VRAM) → low
+# nibble 0x0A.  CONFIG[0] = geometry variant.
+assert ${(machine.memory.peek.b(0xF9D00402) & 0x0F) == 0x0A}     "STATUS low nibble != 0x0A (card absent / wrong depth)"
 assert ${machine.memory.peek.b(0xF9D40402) == 0x01}             "CONFIG (geometry variant) != 0x01"
 
 # --- Fill: load a 4-byte pattern operand, commit, then run-length fill ---
@@ -66,12 +66,65 @@ assert ${machine.memory.peek.l(0xF9000204) == 0x55667788}        "copy: long 1"
 assert ${machine.memory.peek.l(0xF9400200) == 0x11223344}        "active-bank alias read != passive VRAM"
 
 # =====================================================================
-# Part B — Phase-1 boot to the Finder desktop.  Cold-boot System 7.0.1 on
-# the IIcx with the radius_24ac card; the vrom's PrimaryInit senses the
-# monitor (sRsrc id $40 = 1152×870), passes its board self-test (so the
-# DRVR Open succeeds), and the OS builds a real GDevice whose framebuffer is
-# the slot+0x900000 24-bit-mode alias.  The Finder paints its menu bar, the
-# boot floppy ("Disk Tool"), and the Trash; we match that frame pixel-exact.
+# Part C — engine-vs-fallback oracle (proposal §3.5) + object model (§3.8).
+#
+# The accelerator's result must equal what the driver's own software
+# fallback (plain CPU framebuffer writes) would produce.  We drive the
+# SAME pattern fill two ways and assert the bytes are identical:
+#   * region E — the engine fills it (engine.enabled = true), and
+#   * region F — with the engine force-disabled (engine.enabled = false,
+#     the gate the proposal calls for), the active-bank alias degrades to
+#     plain VRAM, so writing the operand longwords there IS the CPU path.
+# Both regions are 4-byte aligned and share the operand, so a correct
+# engine fill is byte-identical to the CPU fill.
+# =====================================================================
+# Engine ON, fill mode; operand $A1B2C3D4; commit (×2); fill 16 bytes at
+# dest 0x3000 (region E) through the active-bank alias.
+machine.nubus.slot[9].card.engine.enabled = true
+machine.memory.poke.b 0xF9D40403 0x01
+machine.memory.poke.l 0xF93FE000 0xA1B2C3D4
+machine.memory.poke.l 0xF97FE000 0x04
+machine.memory.poke.l 0xF97FE000 0x04
+machine.memory.poke.l 0xF9403000 0x10
+
+# Force the software fallback: with the engine off, the active bank is plain
+# VRAM — write the same operand longwords directly (the CPU path, region F).
+machine.nubus.slot[9].card.engine.enabled = false
+machine.memory.poke.l 0xF9403040 0xA1B2C3D4
+machine.memory.poke.l 0xF9403044 0xA1B2C3D4
+machine.memory.poke.l 0xF9403048 0xA1B2C3D4
+machine.memory.poke.l 0xF940304C 0xA1B2C3D4
+machine.nubus.slot[9].card.engine.enabled = true
+
+# Engine fill (region E) must equal the CPU fill (region F), byte for byte.
+assert ${machine.memory.peek.l(0xF9003000) == machine.memory.peek.l(0xF9003040)} "oracle: engine fill != CPU fallback (long 0)"
+assert ${machine.memory.peek.l(0xF9003004) == machine.memory.peek.l(0xF9003044)} "oracle: engine fill != CPU fallback (long 1)"
+assert ${machine.memory.peek.l(0xF900300C) == machine.memory.peek.l(0xF900304C)} "oracle: engine fill != CPU fallback (long 3)"
+assert ${machine.memory.peek.l(0xF9003000) == 0xA1B2C3D4}        "oracle: engine fill pattern wrong"
+
+# Object-model surface (proposal §3.8): the populated slot projects a card
+# node with framebuffer / declrom / clut / mode / engine children.
+assert ${machine.nubus.slot[9].number == 0x9}                    "object model: slot[9].number"
+assert ${machine.nubus.slot[9].card.name == "Apple Macintosh 24AC"} "object model: card.name"
+assert ${machine.nubus.slot[9].card.framebuffer.base == 0xF9000000}  "object model: framebuffer.base"
+assert ${machine.nubus.slot[9].card.framebuffer.depth == 8}      "object model: framebuffer.depth (8bpp power-on)"
+assert ${machine.nubus.slot[9].card.declrom.size == 0x20000}     "object model: declrom.size (128 KB)"
+assert ${machine.nubus.slot[9].card.declrom.present == true}     "object model: declrom.present"
+assert ${machine.nubus.slot[9].card.clut.len == 256}            "object model: clut.len"
+assert ${machine.nubus.slot[9].card.engine.enabled == true}     "object model: engine.enabled"
+# screen.source is a reference edge to the active card's framebuffer node.
+assert ${machine.screen.source.depth == 8}                       "object model: screen.source → framebuffer"
+
+# =====================================================================
+# Part B — Phase-1/2 boot to an 8-bpp COLOUR Finder desktop.  Cold-boot
+# System 7.0.1 on the IIcx with the radius_24ac card; the vrom's PrimaryInit
+# senses the 640×480 multisync monitor (sRsrc id $6B = primary sense 6 +
+# extended-sense $03), passes its board self-test (so the DRVR Open
+# succeeds), and the OS builds a real GDevice.  Seeding the slot sPRAMRec's
+# savedMode (+2) to $82 selects the 8-bpp depth sub-mode for that monitor
+# (vrom RE §2/§4); the driver writes MODE depth bits $40 (= 8 bpp) and loads
+# a 256-entry CLUT.  The Finder paints its menu bar, the boot floppy
+# ("Disk Tool") and the Trash in colour; we match that frame pixel-exact.
 #
 # Boot budget: 50M (past the Universal-ROM wait-routine entry) + the $017A
 # Cmd-Shift-Power poke that short-circuits boot-drive discovery + 70M to land
@@ -81,15 +134,20 @@ machine.nubus.video_card = "radius_24ac"
 machine.boot "iicx" 8192
 machine.rom.reload
 machine.floppy.drive[0].insert "../../data/systems/System_7_0_1.image"
+machine.rtc.pram.validate
+machine.rtc.pram.poke 0x46 0x05fa828202006b6b:8
 scheduler.run 50000000
 machine.memory.poke.w 0x017A 0x8805
 scheduler.run 1500000
 machine.memory.poke.w 0x017A 0
 scheduler.run 70000000
-assert ${machine.screen.width == 1152}                           "boot: screen width != 1152"
-assert ${machine.screen.height == 870}                           "boot: screen height != 870"
-# PrimaryInit latched 1 bpp into the MODE register (depth bits 7-5 == 0).
-assert ${(machine.memory.peek.b(0xF9D80001) & 0xE0) == 0x00}     "boot: PrimaryInit did not set the MODE depth latch"
-machine.screen.match finder-1152x870-1bpp.png
+assert ${machine.screen.width == 640}                            "boot: screen width != 640"
+assert ${machine.screen.height == 480}                           "boot: screen height != 480"
+# The OS selected 8 bpp: MODE depth bits 7-5 == 0x40 (vrom RE depth ladder).
+assert ${(machine.memory.peek.b(0xF9D80001) & 0xE0) == 0x40}     "boot: MODE depth latch != 8 bpp"
+assert ${machine.rtc.pram.peek(0x48) == 0x82}                    "boot: savedMode (8bpp) rewritten by ROM"
+# The colour desktop is the card's framebuffer at 8 bpp.
+assert ${machine.nubus.slot[9].card.framebuffer.depth == 8}      "boot: framebuffer not 8 bpp"
+machine.screen.match finder-640x480-8bpp.png
 
 quit

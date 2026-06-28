@@ -84,7 +84,14 @@ struct radius24ac_priv {
     uint8_t mode_reg; // 0xD80001 shadow (bits 7-5 depth code)
     uint8_t depth_reg; // 0xD80005 shadow (low nibble depth/clock)
     uint8_t status_busy; // toggling STATUS bit 4 (CLUT/VBL-sync poll)
-    uint8_t sense_raw; // raw byte 0xD8000D reads back (monitor sense)
+    // Monitor sense (0xD8000D).  The vrom driver does an Apple 3-line + extended
+    // sense: it drives the sense lines (writes here) and reads them back; the
+    // primary code (bits 7-5, inverted) plus a 6-bit extended code disambiguate
+    // the monitor.  We model the connected monitor as a (primary, ext) pair and
+    // synthesise the read-back the driver expects for each line it drives.
+    uint8_t sense_primary; // primary sense code 0-7 the monitor reports
+    uint8_t sense_ext; // 6-bit extended-sense code (for primary 6/7 monitors)
+    uint8_t sense_last_write; // last byte written to 0xD8000D (which lines driven)
     bool vbl_enabled; // slot VBL IRQ armed (VIDCTL bit 7 clear)
 
     // === Phase 2 acceleration engine ===
@@ -127,24 +134,24 @@ static uint32_t format_bpp(pixel_format_t f) {
     }
 }
 
-// The engine's STATUS[2:0] depth code matching a display format (the cdev
-// indexes its stride table by this).  Kept consistent with what we present.
+// The depth code (cscSetMode's csMode[2:0]) matching a display format.  The
+// 24AC's depth ladder has NO 2-bpp mode (vrom RE: cscSetMode depth table at
+// chip 0x1F88 + CountTbl 0x2A28): code 0/1/2/3/4 = 1/4/8/16/32 bpp.  STATUS[2:0]
+// and the cdev's stride-table index both follow this code, so keep them aligned.
 static uint8_t depth_code_for_format(pixel_format_t f) {
     switch (f) {
     case PIXEL_1BPP_MSB:
         return 0;
-    case PIXEL_2BPP_MSB:
-        return 1;
     case PIXEL_4BPP_MSB:
-        return 2;
+        return 1;
     case PIXEL_8BPP:
-        return 3;
+        return 2;
     case PIXEL_16BPP_555:
-        return 4;
-    case PIXEL_32BPP_XRGB:
-        return 5;
-    default:
         return 3;
+    case PIXEL_32BPP_XRGB:
+        return 4;
+    default:
+        return 2; // 8 bpp default (2-bpp is not a 24AC mode)
     }
 }
 
@@ -156,9 +163,14 @@ static void recompute_stride(radius24ac_priv_t *p) {
     p->display.stride = (p->display.width * bpp + 7u) / 8u;
 }
 
-// Apply the depth selected by the MODE register's top three bits.  The
-// observed depth table (vrom RE) maps MODE bits 7-5 → 1/2/4/8/16 bpp;
-// hi-res / direct modes (other values) keep the current format.
+// Apply the depth selected by the MODE register's top three bits.  The depth
+// ladder is the cscSetMode table the vrom video driver writes from (chip
+// 0x1F88; verified against the per-mode VPBlocks and the CountTbl 0x2A28):
+//   MODE[7:5]  0x00  0x20  0x40  0xA0  0xC0
+//   bpp           1     4     8    16    32
+// There is NO 2-bpp mode.  When System 7 selects 8-bpp colour it writes MODE
+// bits 0x40 (NOT 0xA0); mapping that to 8 bpp here is what makes the colour
+// desktop render.  Other (unlisted) values keep the current format.
 static void apply_mode_depth(radius24ac_priv_t *p, uint8_t mode_byte) {
     pixel_format_t f = p->display.format;
     switch (mode_byte & 0xE0u) {
@@ -166,19 +178,19 @@ static void apply_mode_depth(radius24ac_priv_t *p, uint8_t mode_byte) {
         f = PIXEL_1BPP_MSB;
         break;
     case 0x20u:
-        f = PIXEL_2BPP_MSB;
-        break;
-    case 0x40u:
         f = PIXEL_4BPP_MSB;
         break;
-    case 0xA0u:
+    case 0x40u:
         f = PIXEL_8BPP;
         break;
-    case 0xC0u:
+    case 0xA0u:
         f = PIXEL_16BPP_555;
         break;
+    case 0xC0u:
+        f = PIXEL_32BPP_XRGB;
+        break;
     default:
-        break; // hi-res / direct — leave format unchanged
+        break; // unlisted timing-only write — leave format unchanged
     }
     p->status_depth_code = depth_code_for_format(f);
     if (f != p->display.format) {
@@ -296,10 +308,27 @@ static uint32_t reg_read(radius24ac_priv_t *p, uint32_t off, unsigned width) {
         return p->mode_reg;
     case RADIUS24AC_DEPTH_REG:
         return p->depth_reg;
-    case RADIUS24AC_SENSE_CLK:
-        // Monitor sense: the driver drives the lines, then reads back; bits
-        // 7-5 are the (inverted) sense pins.  Return the configured raw byte.
-        return p->sense_raw;
+    case RADIUS24AC_SENSE_CLK: {
+        // Monitor sense read-back, keyed by which line the driver last drove
+        // (vrom chip 0x9C-0x13A).  Primary probe drives all lines low (last
+        // write 0) and expects (~read & 0xE0)>>5 == primary code.  The extended
+        // probe drives one line and reads the other two; each pair of read-back
+        // bits is inverted into two bits of the 6-bit ext code (see the disasm
+        // BTST/BSET sequence — bit set in the read ⇒ 0 in the ext code).
+        uint8_t e = p->sense_ext;
+        switch (p->sense_last_write & 0xE0u) {
+        case 0x00u: // primary probe
+            return (uint32_t)(((uint8_t)(~p->sense_primary) & 7u) << 5);
+        case 0x80u: // drove bit7 → ext bit5 = !read.bit6, ext bit4 = !read.bit5
+            return (uint32_t)(((e & 0x20u) ? 0u : 0x40u) | ((e & 0x10u) ? 0u : 0x20u));
+        case 0x40u: // drove bit6 → ext bit3 = !read.bit7, ext bit2 = !read.bit5
+            return (uint32_t)(((e & 0x08u) ? 0u : 0x80u) | ((e & 0x04u) ? 0u : 0x20u));
+        case 0x20u: // drove bit5 → ext bit1 = !read.bit7, ext bit0 = !read.bit6
+            return (uint32_t)(((e & 0x02u) ? 0u : 0x80u) | ((e & 0x01u) ? 0u : 0x40u));
+        default:
+            return 0;
+        }
+    }
     // --- Engine side --------------------------------------------------------
     case RADIUS24AC_CONFIG_OFFSET:
         return (uint32_t)(p->config_variant_bit ? 0x01u : 0x00u);
@@ -374,9 +403,12 @@ static void reg_write(radius24ac_priv_t *p, uint32_t off, uint32_t val, unsigned
         p->depth_reg = (uint8_t)val;
         return;
     case RADIUS24AC_SENSE_CLK:
-        // Serial PLL clock/data bit-bang + sense-line drive; no display
-        // state depends on the programmed clock, so accept-and-log.
-        LOG(3, "SENSE_CLK write $%02x (PLL/sense, accept-and-log)", (uint8_t)val);
+        // Drives the sense lines (bits 7-5, read back by the sense probe) and
+        // bit-bangs the serial PLL (low bits).  Track the driven lines so the
+        // sense read-back above can answer the probe; the clock program itself
+        // has no modelled effect.
+        p->sense_last_write = (uint8_t)val;
+        LOG(3, "SENSE_CLK write $%02x (sense drive / PLL)", (uint8_t)val);
         return;
     // --- Engine -------------------------------------------------------------
     case RADIUS24AC_CONTROL_OFFSET:
@@ -515,6 +547,12 @@ static int card_init(nubus_card_t *card, config_t *cfg, checkpoint_t *cp) {
         LOG(0, "display-card-24ac.vrom not found; declaration ROM is zero-filled");
     }
 
+    // Publish the declaration ROM on the generic card handle so the
+    // object-model `slot[N].card.declrom` node (proposal §3.8) reads it
+    // without reaching into card-private state.
+    card->declrom = p->vrom;
+    card->declrom_size = p->vrom_size;
+
     // Phase-1 starting state: 8 bpp, 640×480, framebuffer at VRAM offset 0.
     // The vrom's video driver re-programs depth/CLUT/timing at boot.
     //
@@ -527,26 +565,31 @@ static int card_init(nubus_card_t *card, config_t *cfg, checkpoint_t *cp) {
     // the self-test run, and the driver open.  (Bit 7 = VBL IRQ masked.)
     p->vidctl = RADIUS24AC_VIDCTL_VBL_MASK | 0x02u;
     p->vbl_enabled = false;
-    p->mode_reg = 0xA0u; // 8 bpp depth code in bits 7-5
-    p->sense_raw = 0xE0u; // monitor-sense readback (primary 0 → default mode)
+    p->mode_reg = 0x40u; // 8 bpp depth code in bits 7-5 (0x40 = code 2, vrom RE)
+    // Default monitor: 640×480 multisync (sRsrc id $6B = primary sense 6 +
+    // extended-sense code $03).  Unlike the $40 "two-page" monitor (1152×870,
+    // grayscale 1bpp only), the multisync display supports colour depths.
+    p->sense_primary = 6;
+    p->sense_ext = 0x03;
 
     // Engine geometry bits, kept consistent with the large-VRAM framebuffer
     // we present (hardware spec §3/§5).
     p->engine_enabled = true;
     p->engine_mode = RADIUS24AC_MODE_COPY;
-    p->status_depth_code = depth_code_for_format(PIXEL_1BPP_MSB);
+    p->status_depth_code = depth_code_for_format(PIXEL_8BPP);
     p->status_class_bit = true; // large-VRAM organisation
     p->config_variant_bit = true; // large-VRAM geometry variant
 
-    // The monitor the vrom driver senses by default (sense_raw → primary 0 →
-    // sRsrc id $40) is a 1152×870 display, and PrimaryInit brings it up at
-    // 1 bpp.  Present that geometry; cscSetMode (→ apply_mode_depth) re-derives
-    // the pixel format and stride as the OS changes depth.  The framebuffer
-    // sits at VRAM offset 0 (ScrnBase = slot+0x900000 → the alias → VRAM[0]).
-    p->display.width = 1152;
-    p->display.height = 870;
-    p->display.format = PIXEL_1BPP_MSB;
-    recompute_stride(p); // 144 bytes/row at 1 bpp
+    // Default 640×480 8 bpp (the sensed multisync monitor).  cscSetMode
+    // (→ apply_mode_depth) re-derives the pixel format and stride as the OS
+    // changes depth; the power-on default matches the MODE register seed above
+    // so the framebuffer alias has the right 8-bpp stride before the OS runs.
+    // The framebuffer sits at VRAM offset 0 (ScrnBase = slot+0x900000 → the
+    // alias → VRAM[0]).
+    p->display.width = 640;
+    p->display.height = 480;
+    p->display.format = PIXEL_8BPP;
+    recompute_stride(p); // 640 bytes/row at 8 bpp
     p->display.bits = p->vram;
     p->display.clut = p->clut;
     p->display.clut_len = 256;
@@ -635,7 +678,9 @@ static void card_teardown(nubus_card_t *card, config_t *cfg) {
     if (!p)
         return;
     free(p->vram);
-    free(p->vrom);
+    // p->vrom is published as card->declrom (for the object-model declrom
+    // node); nubus_delete owns and frees card->declrom after this teardown,
+    // so we must NOT free it here (doing so double-frees).
     free(p->vrom_path);
     free(p);
     card->priv = NULL;
@@ -686,20 +731,37 @@ static nubus_card_t *factory(int slot, config_t *cfg, checkpoint_t *cp) {
     return card;
 }
 
-// Advertised modes.  The vrom's default-sensed monitor (sRsrc id $40) is a
-// 1152×870 "two-page" display, which is what the card boots to; the vrom's
-// mode strings additionally name 640×480 / 800×600 / 832×624 multisync modes
-// (reachable via the extended-sense codes 0x6B/0x6C/0x6D — see the RE doc).
-// Only the default is modelled so far; the rest await the stateful ext-sense.
-static const int radius_24ac_depths[] = {1, 2, 4, 8, 0};
+// Advertised modes (vrom identity strings, proposal §3.1): 640×480,
+// 800×600, 832×624.  All are the multisync monitor family — primary sense
+// code 6 plus a per-mode extended-sense code that the vrom video driver
+// reads back from the SENSE_CLK line (0xD8000D); the resulting top-level
+// "sister" sResource ids are 0x6B / 0x6C / 0x6D (see the vrom RE doc and the
+// stateful sense model in reg_read).  The card is a 24-bit colour board (4 MB
+// VRAM), so every mode supports 1/2/4/8/16/32 bpp.  The default-sensed
+// monitor is the 640×480 multisync (sense_primary 6, ext 0x03 → sRsrc 0x6B).
+static const int radius_24ac_depths[] = {1, 2, 4, 8, 16, 32, 0};
 static const nubus_monitor_t radius_24ac_monitors[] = {
-    {.id = "rgb_1152x870",
-     .name = "1152 × 870 (75 Hz)",
-     .width = 1152,
-     .height = 870,
+    {.id = "rgb_640x480",
+     .name = "640 × 480 (67 Hz)",
+     .width = 640,
+     .height = 480,
      .depths = radius_24ac_depths,
-     .sense_code = 0x0,
-     .srsrc_sister = 0x40},
+     .sense_code = 6,
+     .srsrc_sister = 0x6B},
+    {.id = "rgb_800x600",
+     .name = "800 × 600 (60 Hz)",
+     .width = 800,
+     .height = 600,
+     .depths = radius_24ac_depths,
+     .sense_code = 6,
+     .srsrc_sister = 0x6C},
+    {.id = "rgb_832x624",
+     .name = "832 × 624 (75 Hz)",
+     .width = 832,
+     .height = 624,
+     .depths = radius_24ac_depths,
+     .sense_code = 6,
+     .srsrc_sister = 0x6D},
     {0},
 };
 
@@ -710,3 +772,38 @@ const nubus_card_kind_t radius_24ac_kind = {
     .monitors = radius_24ac_monitors,
     .factory = factory,
 };
+
+// === Engine introspection (object model) ====================================
+
+bool radius24ac_is_card(const nubus_card_t *card) {
+    return card && card->ops == &radius_24ac_ops;
+}
+
+bool radius24ac_engine_enabled(const nubus_card_t *card) {
+    if (!radius24ac_is_card(card))
+        return false;
+    const radius24ac_priv_t *p = card->priv;
+    return p && p->engine_enabled;
+}
+
+void radius24ac_engine_set_enabled(nubus_card_t *card, bool enabled) {
+    if (!radius24ac_is_card(card))
+        return;
+    radius24ac_priv_t *p = card->priv;
+    if (p)
+        p->engine_enabled = enabled;
+}
+
+uint8_t radius24ac_engine_mode(const nubus_card_t *card) {
+    if (!radius24ac_is_card(card))
+        return 0;
+    const radius24ac_priv_t *p = card->priv;
+    return p ? p->engine_mode : 0;
+}
+
+uint32_t radius24ac_engine_operand(const nubus_card_t *card) {
+    if (!radius24ac_is_card(card))
+        return 0;
+    const radius24ac_priv_t *p = card->priv;
+    return p ? p->engine_operand : 0;
+}

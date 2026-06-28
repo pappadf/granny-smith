@@ -126,4 +126,16 @@
 // Per-card kind descriptor — registered in nubus.c's g_card_registry.
 extern const nubus_card_kind_t radius_24ac_kind;
 
+// === Engine introspection (object model — slot[N].card.engine) ==============
+// True iff `card` is a radius_24ac.  The getters return 0/false and the
+// setter is a no-op for any other card kind, so the object-model layer can
+// call them without first knowing the card type.  `enabled` is the Phase-2
+// acceleration gate (proposal §4 step 4 / §3.5): clearing it forces the
+// active-bank alias to behave as plain VRAM (the software-fallback oracle).
+bool radius24ac_is_card(const nubus_card_t *card);
+bool radius24ac_engine_enabled(const nubus_card_t *card);
+void radius24ac_engine_set_enabled(nubus_card_t *card, bool enabled);
+uint8_t radius24ac_engine_mode(const nubus_card_t *card);
+uint32_t radius24ac_engine_operand(const nubus_card_t *card);
+
 #endif // NUBUS_CARDS_RADIUS24AC_H
