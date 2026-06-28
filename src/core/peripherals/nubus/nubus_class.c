@@ -88,7 +88,11 @@ static value_t nubus_attr_video_sense_set(struct object *self, const member_t *m
 static value_t nubus_attr_video_mode_get(struct object *self, const member_t *m) {
     (void)self;
     (void)m;
+    // Either card may hold the pending mode (the setter routes the id to the
+    // card whose catalog matched it); return whichever is set.
     const char *id = jmfb_pending_video_mode_get();
+    if (!id)
+        id = radius24ac_pending_video_mode_get();
     return val_str(id ? id : "");
 }
 
@@ -100,16 +104,24 @@ static value_t nubus_attr_video_mode_set(struct object *self, const member_t *m,
         return val_err("nubus.video_mode: expected string id (e.g. \"13in_rgb_8bpp\")");
     }
     const char *id = in.s ? in.s : "";
-    // Validate against the catalog so the user gets immediate
-    // feedback if they pass a typo instead of waiting until the next
-    // machine.boot to discover the id didn't match.  Empty string is
-    // permitted and clears any pending selection.
-    if (*id && !jmfb_video_mode_lookup(id, NULL, NULL)) {
+    // Route the id to whichever card's catalog matches it (the monitor-name
+    // prefixes don't collide between cards), and clear the other card's
+    // pending so a stale pick can't leak.  Validate up front so a typo is
+    // caught at set time.  Empty string clears both.
+    if (!*id) {
+        jmfb_pending_video_mode_set("");
+        radius24ac_pending_video_mode_set("");
+    } else if (jmfb_video_mode_lookup(id, NULL, NULL)) {
+        jmfb_pending_video_mode_set(id);
+        radius24ac_pending_video_mode_set("");
+    } else if (radius24ac_video_mode_lookup(id, NULL, NULL)) {
+        radius24ac_pending_video_mode_set(id);
+        jmfb_pending_video_mode_set("");
+    } else {
         value_t err = val_err("nubus.video_mode: unknown video-mode id '%s'", id);
         value_free(&in);
         return err;
     }
-    jmfb_pending_video_mode_set(id);
     value_free(&in);
     return val_none();
 }

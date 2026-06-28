@@ -40,10 +40,12 @@
 #include "log.h"
 #include "memory.h"
 #include "nubus.h"
+#include "rtc.h"
 #include "system.h"
 #include "system_config.h"
 
 #include <stdint.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -521,6 +523,80 @@ static bool load_vrom(radius24ac_priv_t *p) {
     return true;
 }
 
+// === Video-mode selection (machine.nubus.video_mode) ========================
+//
+// A pending "<monitor>_<N>bpp" id (e.g. "rgb_640x480_8bpp") set before
+// machine.boot; consumed by the next card_init, which sets the monitor sense +
+// depth and seeds PRAM so the OS boots at that mode (mirrors jmfb.c).  The id
+// is resolved against radius_24ac_monitors[] × its depth list.
+static char s_pending_video_mode_id[40] = "";
+
+// bpp → MODE register depth bits (vrom RE depth ladder; no 2-bpp mode).
+static uint8_t radius_modebits_for_format(pixel_format_t f) {
+    switch (f) {
+    case PIXEL_1BPP_MSB:
+        return 0x00u;
+    case PIXEL_4BPP_MSB:
+        return 0x20u;
+    case PIXEL_8BPP:
+        return 0x40u;
+    case PIXEL_16BPP_555:
+        return 0xA0u;
+    case PIXEL_32BPP_XRGB:
+        return 0xC0u;
+    default:
+        return 0x40u;
+    }
+}
+static pixel_format_t radius_format_for_bpp(int bpp) {
+    switch (bpp) {
+    case 1:
+        return PIXEL_1BPP_MSB;
+    case 4:
+        return PIXEL_4BPP_MSB;
+    case 8:
+        return PIXEL_8BPP;
+    case 16:
+        return PIXEL_16BPP_555;
+    case 32:
+        return PIXEL_32BPP_XRGB;
+    default:
+        return PIXEL_8BPP;
+    }
+}
+// bpp → slot sPRAMRec savedMode byte (the depth sub-resource id; vrom RE):
+// 1/4/8/16/32 bpp → 0x80/0x81/0x82/0x83/0x84 (no 0x?? for 2 bpp).
+static uint8_t radius_savedmode_for_bpp(int bpp) {
+    switch (bpp) {
+    case 1:
+        return 0x80u;
+    case 4:
+        return 0x81u;
+    case 8:
+        return 0x82u;
+    case 16:
+        return 0x83u;
+    case 32:
+        return 0x84u;
+    default:
+        return 0x82u;
+    }
+}
+// Monitor sister sRsrc id → the extended-sense code the card reports on
+// SENSE_CLK so PrimaryInit lands on that monitor (vrom RE).
+static uint8_t radius_ext_for_sister(uint8_t sister) {
+    switch (sister) {
+    case 0x6Bu:
+        return 0x03u; // 640×480
+    case 0x6Cu:
+        return 0x0Bu; // 800×600
+    case 0x6Du:
+        return 0x23u; // 832×624
+    default:
+        return 0x03u;
+    }
+}
+
 // === Card vtable ============================================================
 
 static int card_init(nubus_card_t *card, config_t *cfg, checkpoint_t *cp) {
@@ -530,6 +606,17 @@ static int card_init(nubus_card_t *card, config_t *cfg, checkpoint_t *cp) {
         return -1;
     p->card = card;
     p->slot_base = nubus_slot_base(card->slot);
+
+    // Consume a pending video-mode pick (machine.nubus.video_mode = "..."):
+    // it overrides the power-on sense/geometry/depth below and seeds PRAM at
+    // the end of init so the OS boots at the chosen monitor + depth.
+    const nubus_monitor_t *seeded_monitor = NULL;
+    int seeded_depth_bpp = 0;
+    if (s_pending_video_mode_id[0] &&
+        radius24ac_video_mode_lookup(s_pending_video_mode_id, &seeded_monitor, &seeded_depth_bpp))
+        s_pending_video_mode_id[0] = '\0'; // consume on match (ignore foreign ids)
+    else
+        seeded_monitor = NULL;
 
     p->vram = calloc(1, RADIUS24AC_VRAM_SIZE);
     p->vrom = calloc(1, RADIUS24AC_DECLROM_BUS_SIZE);
@@ -598,6 +685,22 @@ static int card_init(nubus_card_t *card, config_t *cfg, checkpoint_t *cp) {
     p->display.clut_dirty = true;
     p->display.fb_dirty = true;
     p->display.response_dirty = true;
+
+    // Apply a pending video-mode pick over the power-on defaults: report the
+    // chosen monitor on the sense lines and bring the framebuffer up at the
+    // chosen depth/geometry (the OS re-confirms both via the sResource + the
+    // PRAM seed below).
+    if (seeded_monitor) {
+        p->sense_primary = 6;
+        p->sense_ext = radius_ext_for_sister(seeded_monitor->srsrc_sister);
+        p->display.width = seeded_monitor->width;
+        p->display.height = seeded_monitor->height;
+        pixel_format_t f = radius_format_for_bpp(seeded_depth_bpp);
+        p->display.format = f;
+        p->mode_reg = radius_modebits_for_format(f);
+        p->status_depth_code = depth_code_for_format(f);
+        recompute_stride(p);
+    }
 
     // Initial CLUT — grayscale ramp so the canvas isn't blank before the OS
     // programs a palette; the driver's first cscSetEntries overwrites it.
@@ -669,6 +772,54 @@ static int card_init(nubus_card_t *card, config_t *cfg, checkpoint_t *cp) {
     memory_map_add(cfg->mem_map, p->slot_base + RADIUS24AC_ENGINE_ALIAS_OFFSET, RADIUS24AC_VRAM_SIZE,
                    "radius24ac_engine", &s_radius24ac_mem_iface, &p->ctx_active);
 
+    // Seed PRAM for the picked video mode (mirrors jmfb.c).  The key is a
+    // *complete* valid PRAM, not just the two validity tokens: stamp the
+    // 'NuMc' XPRAM signature so CkNewPram preserves what we write, reproduce
+    // PRAMInitTbl (OS type + boot drive = "any") so the Start Manager still
+    // finds and boots a SCSI volume, and write the slot sPRAMRec (savedMode =
+    // depth, saved monitor = sister) so GET_SLOT_DEPTH lands on the chosen
+    // depth.  This is exactly what lets the new-machine dialog set a graphics
+    // mode AND boot a configured SCSI HD in one shot.  (rtc.pram.validate
+    // writes only the validity tokens — an incomplete PRAM with a zeroed boot
+    // device, which is why a bare validate cannot SCSI-boot; see the dossier.)
+    if (seeded_monitor && seeded_depth_bpp > 0) {
+        rtc_t *rtc = system_rtc();
+        if (rtc) {
+            uint8_t saved_mode = radius_savedmode_for_bpp(seeded_depth_bpp);
+            // 'NuMc' XPRAM validity signature ($0C..$0F) only — leave the
+            // low-PRAM validity byte invalid so _InitUtil still cold-inits the
+            // SysParam block (caret-blink / double-click defaults).
+            rtc_pram_write(rtc, 0x0C, 0x4E); // 'N'
+            rtc_pram_write(rtc, 0x0D, 0x75); // 'u'
+            rtc_pram_write(rtc, 0x0E, 0x4D); // 'M'
+            rtc_pram_write(rtc, 0x0F, 0x63); // 'c'
+            // PRAMInitTbl ($76..$89): $77 = default OS (Mac), $78..$7B = boot
+            // drive/partition "any" ($FFFFFFDF).  CkNewPram skips writing this
+            // once 'NuMc' is present, so reproduce it or D3 reaches SCSILoad as
+            // $00000000 and the boot-driver match never fires (→ "?" floppy).
+            static const uint8_t pram_init_tbl[] = {
+                0x00, 0x01, 0xFF, 0xFF, 0xFF, 0xDF, 0x00, 0x00, 0x00, 0x00,
+                0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            };
+            for (size_t i = 0; i < sizeof(pram_init_tbl); i++)
+                rtc_pram_write(rtc, (uint8_t)(0x76 + i), pram_init_tbl[i]);
+            // Per-slot sPRAMRec at $46 + (slot-9)*8: $46/$47 BoardID ($05FA),
+            // $48 savedMode (depth), $4C/$4D saved monitor sister.  $4C/$4D
+            // must equal the sensed monitor or PrimaryInit resets the depth.
+            uint8_t off = (uint8_t)(0x46 + (card->slot - 9) * 8);
+            rtc_pram_write(rtc, off + 0, 0x05);
+            rtc_pram_write(rtc, off + 1, 0xFA);
+            rtc_pram_write(rtc, off + 2, saved_mode);
+            rtc_pram_write(rtc, off + 3, 0x00);
+            rtc_pram_write(rtc, off + 4, 0x00);
+            rtc_pram_write(rtc, off + 5, 0x00);
+            rtc_pram_write(rtc, off + 6, seeded_monitor->srsrc_sister);
+            rtc_pram_write(rtc, off + 7, seeded_monitor->srsrc_sister);
+            LOG(1, "radius24ac: seeded slot-%d PRAM for video mode '%s' (savedMode=$%02x sister=$%02x)", card->slot,
+                seeded_monitor->id, saved_mode, seeded_monitor->srsrc_sister);
+        }
+    }
+
     return 0;
 }
 
@@ -737,9 +888,10 @@ static nubus_card_t *factory(int slot, config_t *cfg, checkpoint_t *cp) {
 // reads back from the SENSE_CLK line (0xD8000D); the resulting top-level
 // "sister" sResource ids are 0x6B / 0x6C / 0x6D (see the vrom RE doc and the
 // stateful sense model in reg_read).  The card is a 24-bit colour board (4 MB
-// VRAM), so every mode supports 1/2/4/8/16/32 bpp.  The default-sensed
-// monitor is the 640×480 multisync (sense_primary 6, ext 0x03 → sRsrc 0x6B).
-static const int radius_24ac_depths[] = {1, 2, 4, 8, 16, 32, 0};
+// VRAM), so every mode supports 1/4/8/16/32 bpp — there is NO 2-bpp mode (vrom
+// RE depth ladder).  The default-sensed monitor is the 640×480 multisync
+// (sense_primary 6, ext 0x03 → sRsrc 0x6B).
+static const int radius_24ac_depths[] = {1, 4, 8, 16, 32, 0};
 static const nubus_monitor_t radius_24ac_monitors[] = {
     {.id = "rgb_640x480",
      .name = "640 × 480 (67 Hz)",
@@ -772,6 +924,61 @@ const nubus_card_kind_t radius_24ac_kind = {
     .monitors = radius_24ac_monitors,
     .factory = factory,
 };
+
+// === Video-mode selection (machine.nubus.video_mode) ========================
+
+void radius24ac_pending_video_mode_set(const char *id) {
+    if (!id || !*id) {
+        s_pending_video_mode_id[0] = '\0';
+        return;
+    }
+    snprintf(s_pending_video_mode_id, sizeof s_pending_video_mode_id, "%s", id);
+}
+
+const char *radius24ac_pending_video_mode_get(void) {
+    return s_pending_video_mode_id[0] ? s_pending_video_mode_id : NULL;
+}
+
+// Parse "<monitor>_<N>bpp" (e.g. "rgb_640x480_8bpp") into (monitor, N): the
+// monitor name is matched against radius_24ac_monitors[] and N validated
+// against that monitor's depth list.  Mirrors jmfb_video_mode_lookup.
+bool radius24ac_video_mode_lookup(const char *id, const nubus_monitor_t **out_monitor, int *out_depth_bpp) {
+    if (!id || !*id)
+        return false;
+    const char *underscore_bpp = strrchr(id, '_');
+    if (!underscore_bpp)
+        return false;
+    size_t mon_len = (size_t)(underscore_bpp - id);
+    if (mon_len == 0 || mon_len >= 32)
+        return false;
+    char mon_id[32];
+    memcpy(mon_id, id, mon_len);
+    mon_id[mon_len] = '\0';
+    const char *bpp_str = underscore_bpp + 1;
+    char *end = NULL;
+    long bpp = strtol(bpp_str, &end, 10);
+    if (!end || end == bpp_str || strcmp(end, "bpp") != 0)
+        return false;
+    if (bpp < 1 || bpp > 32)
+        return false;
+    for (const nubus_monitor_t *m = radius_24ac_monitors; m->id; m++) {
+        if (strcmp(m->id, mon_id) != 0)
+            continue;
+        if (!m->depths)
+            return false;
+        for (const int *d = m->depths; *d; d++) {
+            if ((int)bpp == *d) {
+                if (out_monitor)
+                    *out_monitor = m;
+                if (out_depth_bpp)
+                    *out_depth_bpp = (int)bpp;
+                return true;
+            }
+        }
+        return false; // monitor matched but depth didn't
+    }
+    return false;
+}
 
 // === Engine introspection (object model) ====================================
 

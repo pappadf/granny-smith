@@ -126,6 +126,16 @@
 // Per-card kind descriptor — registered in nubus.c's g_card_registry.
 extern const nubus_card_kind_t radius_24ac_kind;
 
+// === Video-mode selection (machine.nubus.video_mode) ========================
+// A pending "<monitor>_<N>bpp" id (e.g. "rgb_640x480_8bpp"), consumed by the
+// next card_init: it sets the monitor sense + depth and seeds a complete valid
+// PRAM so the OS boots at that mode (and still boots a configured SCSI HD).
+// nubus.video_mode dispatches here when the id names a 24AC mode.  Mirrors the
+// jmfb_* equivalents.
+void radius24ac_pending_video_mode_set(const char *id);
+const char *radius24ac_pending_video_mode_get(void);
+bool radius24ac_video_mode_lookup(const char *id, const nubus_monitor_t **out_monitor, int *out_depth_bpp);
+
 // === Engine introspection (object model — slot[N].card.engine) ==============
 // True iff `card` is a radius_24ac.  The getters return 0/false and the
 // setter is a no-op for any other card kind, so the object-model layer can

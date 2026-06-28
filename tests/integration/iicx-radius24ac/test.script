@@ -120,22 +120,27 @@ assert ${machine.screen.source.depth == 8}                       "object model: 
 # System 7.0.1 on the IIcx with the radius_24ac card; the vrom's PrimaryInit
 # senses the 640×480 multisync monitor (sRsrc id $6B = primary sense 6 +
 # extended-sense $03), passes its board self-test (so the DRVR Open
-# succeeds), and the OS builds a real GDevice.  Seeding the slot sPRAMRec's
-# savedMode (+2) to $82 selects the 8-bpp depth sub-mode for that monitor
-# (vrom RE §2/§4); the driver writes MODE depth bits $40 (= 8 bpp) and loads
-# a 256-entry CLUT.  The Finder paints its menu bar, the boot floppy
-# ("Disk Tool") and the Trash in colour; we match that frame pixel-exact.
+# succeeds), and the OS builds a real GDevice.
+#
+# The depth is selected the production way — `machine.nubus.video_mode =
+# "rgb_640x480_8bpp"` before boot.  The card's init resolves that against its
+# monitor catalog, reports the 640×480 monitor on the sense lines, and seeds a
+# COMPLETE valid PRAM (the 'NuMc' signature + PRAMInitTbl boot-device defaults
+# + the slot sPRAMRec with savedMode $82) — the same mechanism the new-machine
+# dialog uses to set a graphics mode (and, for a SCSI config, boot the HD) in
+# one shot.  The driver then writes MODE depth bits $40 (= 8 bpp) and loads a
+# 256-entry CLUT; the Finder paints its menu bar, the boot floppy ("Disk Tool")
+# and the Trash in colour; we match that frame pixel-exact.
 #
 # Boot budget: 50M (past the Universal-ROM wait-routine entry) + the $017A
 # Cmd-Shift-Power poke that short-circuits boot-drive discovery + 70M to land
 # in the stable Finder window.  (Same mechanics as iicx-video-modes.)
 # =====================================================================
 machine.nubus.video_card = "radius_24ac"
+machine.nubus.video_mode = "rgb_640x480_8bpp"
 machine.boot "iicx" 8192
 machine.rom.reload
 machine.floppy.drive[0].insert "../../data/systems/System_7_0_1.image"
-machine.rtc.pram.validate
-machine.rtc.pram.poke 0x46 0x05fa828202006b6b:8
 scheduler.run 50000000
 machine.memory.poke.w 0x017A 0x8805
 scheduler.run 1500000
