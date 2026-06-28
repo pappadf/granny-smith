@@ -68,7 +68,7 @@ void declrom_install(nubus_card_t *card, const declrom_builder_t *b);
 uint8_t *declrom_load(const char *path, size_t expected_size);
 
 // Expand a chip image whose byteLanes value is `$78` (lane 3 only — the
-// layout every Apple/Radius 32 KB display-card declaration ROM uses) into
+// layout every Apple 32 KB display-card declaration ROM uses) into
 // a 4×-larger bus-space buffer.  Each chip byte at offset i lands at bus
 // offset i*4 + 3 (lane 3 of longword i); lanes 0..2 stay zero.  This is
 // what the Slot Manager expects when it reads the format block at the high

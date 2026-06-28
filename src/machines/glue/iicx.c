@@ -243,7 +243,7 @@ static void iicx_via2_shift_out(void *context, uint8_t byte) {
 // Slot table
 // ============================================================
 
-static const char *const iicx_video_cards[] = {"mdc_8_24", "radius_24ac", NULL};
+static const char *const iicx_video_cards[] = {"mdc_8_24", "display_card_24ac", NULL};
 
 static const nubus_slot_decl_t iicx_slots[] = {
     {.slot = 0x9, .kind = NUBUS_SLOT_VIDEO, .available_cards = iicx_video_cards, .default_card = "mdc_8_24"},

@@ -11,10 +11,10 @@
 
 #include "card.h"
 #include "display.h"
+#include "display_card_24ac.h"
 #include "jmfb.h"
 #include "nubus.h"
 #include "object.h"
-#include "radius24ac.h"
 #include "value.h"
 
 #include <stddef.h>
@@ -92,7 +92,7 @@ static value_t nubus_attr_video_mode_get(struct object *self, const member_t *m)
     // card whose catalog matched it); return whichever is set.
     const char *id = jmfb_pending_video_mode_get();
     if (!id)
-        id = radius24ac_pending_video_mode_get();
+        id = display_card_24ac_pending_video_mode_get();
     return val_str(id ? id : "");
 }
 
@@ -110,12 +110,12 @@ static value_t nubus_attr_video_mode_set(struct object *self, const member_t *m,
     // caught at set time.  Empty string clears both.
     if (!*id) {
         jmfb_pending_video_mode_set("");
-        radius24ac_pending_video_mode_set("");
+        display_card_24ac_pending_video_mode_set("");
     } else if (jmfb_video_mode_lookup(id, NULL, NULL)) {
         jmfb_pending_video_mode_set(id);
-        radius24ac_pending_video_mode_set("");
-    } else if (radius24ac_video_mode_lookup(id, NULL, NULL)) {
-        radius24ac_pending_video_mode_set(id);
+        display_card_24ac_pending_video_mode_set("");
+    } else if (display_card_24ac_video_mode_lookup(id, NULL, NULL)) {
+        display_card_24ac_pending_video_mode_set(id);
         jmfb_pending_video_mode_set("");
     } else {
         value_t err = val_err("nubus.video_mode: unknown video-mode id '%s'", id);
@@ -131,7 +131,7 @@ static value_t nubus_attr_video_mode_set(struct object *self, const member_t *m,
 // honours iff it is one of the slot's available_cards (else it falls back
 // to the slot default).  Reads return the pending id, or "" when none is
 // staged.  Settable from integration scripts via
-// `machine.nubus.video_card = "radius_24ac"` before machine.boot.  The id
+// `machine.nubus.video_card = "display_card_24ac"` before machine.boot.  The id
 // is validated against the registered card drivers so a typo is caught at
 // set time rather than silently falling back at boot.
 static value_t nubus_attr_video_card_get(struct object *self, const member_t *m) {
@@ -146,7 +146,7 @@ static value_t nubus_attr_video_card_set(struct object *self, const member_t *m,
     (void)m;
     if (in.kind != V_STRING) {
         value_free(&in);
-        return val_err("nubus.video_card: expected card-id string (e.g. \"radius_24ac\")");
+        return val_err("nubus.video_card: expected card-id string (e.g. \"display_card_24ac\")");
     }
     const char *id = in.s ? in.s : "";
     // Empty clears the pending pick; a non-empty id must name a registered
@@ -168,7 +168,7 @@ static value_t nubus_attr_video_card_set(struct object *self, const member_t *m,
 // once the cards exist) and live here keyed by slot; nubus_objects_teardown()
 // (from nubus_delete) frees the trees before the cards they read go away.
 // Every node's instance_data is the nubus_card_t, so the accessors read live
-// card state (the display_t, the declrom, the radius engine) and copy nothing.
+// card state (the display_t, the declrom, the card engine) and copy nothing.
 // Resolution and SYSTEM-tab enumeration both work through object_attach: the
 // `slot` indexed member returns the slot wrapper, whose attached `card` child
 // (and its attached resource children) the resolver/meta-walker discover.
@@ -184,7 +184,7 @@ typedef struct {
     struct object *declrom; // declaration ROM
     struct object *clut; // palette
     struct object *mode; // current monitor / depth
-    struct object *engine; // accelerator (radius_24ac only; NULL otherwise)
+    struct object *engine; // accelerator (display_card_24ac only; NULL otherwise)
 } nubus_slot_nodes_t;
 
 static nubus_bus_t *g_obj_bus = NULL;
@@ -378,10 +378,10 @@ static const member_t mode_members[] = {
 static const class_desc_t nubus_mode_class = {
     .name = "mode", .members = mode_members, .n_members = sizeof(mode_members) / sizeof(mode_members[0])};
 
-// --- engine node (radius_24ac acceleration engine) --------------------------
+// --- engine node (display_card_24ac acceleration engine) --------------------------
 static value_t eng_attr_enabled_get(struct object *self, const member_t *m) {
     (void)m;
-    return val_bool(radius24ac_engine_enabled(node_card(self)));
+    return val_bool(display_card_24ac_engine_enabled(node_card(self)));
 }
 static value_t eng_attr_enabled_set(struct object *self, const member_t *m, value_t in) {
     (void)m;
@@ -389,17 +389,17 @@ static value_t eng_attr_enabled_set(struct object *self, const member_t *m, valu
         value_free(&in);
         return val_err("engine.enabled: expected a boolean");
     }
-    radius24ac_engine_set_enabled(node_card(self), in.b);
+    display_card_24ac_engine_set_enabled(node_card(self), in.b);
     value_free(&in);
     return val_none();
 }
 static value_t eng_attr_mode(struct object *self, const member_t *m) {
     (void)m;
-    return val_uint(1, radius24ac_engine_mode(node_card(self)));
+    return val_uint(1, display_card_24ac_engine_mode(node_card(self)));
 }
 static value_t eng_attr_operand(struct object *self, const member_t *m) {
     (void)m;
-    return val_uint(4, radius24ac_engine_operand(node_card(self)));
+    return val_uint(4, display_card_24ac_engine_operand(node_card(self)));
 }
 static const member_t engine_members[] = {
     {.kind = M_ATTR,
@@ -508,7 +508,7 @@ static const member_t nubus_members[] = {
      .method = {.args = NULL, .nargs = 0, .result = V_LIST, .fn = nubus_method_cards}},
     {.kind = M_ATTR,
      .name = "video_card",
-     .doc = "Pending video-slot card id for next machine.boot (e.g. \"radius_24ac\")",
+     .doc = "Pending video-slot card id for next machine.boot (e.g. \"display_card_24ac\")",
      .flags = 0,
      .attr = {.type = V_STRING, .get = nubus_attr_video_card_get, .set = nubus_attr_video_card_set}},
     {.kind = M_ATTR,
@@ -570,9 +570,9 @@ void nubus_objects_build(nubus_bus_t *bus) {
                 attach_resource(n->card, &nubus_declrom_class, card, "declrom", "Declaration ROM", 20, M_CAT_BASIC);
             n->clut = attach_resource(n->card, &nubus_clut_class, card, "clut", "CLUT", 30, M_CAT_BASIC);
             n->mode = attach_resource(n->card, &nubus_mode_class, card, "mode", "Mode", 40, M_CAT_BASIC);
-            // The accelerator is radius_24ac-specific; mark it Advanced so it
+            // The accelerator is display_card_24ac-specific; mark it Advanced so it
             // doesn't clutter the default SYSTEM tree.
-            if (radius24ac_is_card(card))
+            if (display_card_24ac_is_card(card))
                 n->engine =
                     attach_resource(n->card, &nubus_engine_class, card, "engine", "Accelerator", 50, M_CAT_ADVANCED);
         }

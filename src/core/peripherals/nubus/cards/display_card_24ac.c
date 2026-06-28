@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) pappadf
 
-// radius24ac.c
-// "Apple Macintosh 24AC" — Radius "Boogie" 24-bit colour NuBus display
+// display_card_24ac.c
+// "Apple Macintosh Display Card 24AC" — a 24-bit colour NuBus display
 // card with a hardware QuickDraw fill/raster accelerator.  See
-// proposal-nubus-card-radius-24ac.md and the dossier under
+// proposal-nubus-card-display-card-24ac.md and the dossier under
 // local/gs-docs/24AC/.  Cloned from the 8•24 (jmfb.c) shape, plus the
 // acceleration engine the dossier's hardware spec (doc 3) describes.
 //
@@ -16,7 +16,7 @@
 //     VBL mask/ACK, monitor sense) and accept-and-log the rest (CRTC
 //     timing file, RAMDAC command, serial PLL).  Register offsets and
 //     semantics were reverse-engineered from the vrom driver (see
-//     tmp/24ac-vrom-re.md / radius24ac.h).
+//     tmp/24ac-vrom-re.md / display_card_24ac.h).
 //   * Phase 2 (engine): STATUS/CONFIG/CONTROL registers, the operand
 //     aperture (+ commit alias), and the +0x400000 active-bank alias that
 //     transforms writes (run-length fill / block copy / ROP).  Modelled as
@@ -31,7 +31,7 @@
 //   * The standard video registers and the engine share the high slot
 //     pages (0xC8/0xD0/0xD4/0xD8xxxx); one dispatcher serves them all.
 
-#include "radius24ac.h"
+#include "display_card_24ac.h"
 
 #include "card.h"
 #include "checkpoint.h"
@@ -49,24 +49,24 @@
 #include <stdlib.h>
 #include <string.h>
 
-LOG_USE_CATEGORY_NAME("radius24ac");
+LOG_USE_CATEGORY_NAME("display_card_24ac");
 
 // === Per-card private state =================================================
 
-typedef struct radius24ac_priv radius24ac_priv_t;
+typedef struct display_card_24ac_priv display_card_24ac_priv_t;
 
 // A device-region callback context: binds the card to the slot-relative
 // base offset of the region it was registered for, so a single
 // memory_interface_t can serve every register/engine region and dispatch
 // on the full slot offset (region_off + region-relative addr).
 typedef struct {
-    radius24ac_priv_t *p;
+    display_card_24ac_priv_t *p;
     uint32_t region_off; // slot-relative base of this region
 } reg_ctx_t;
 
-struct radius24ac_priv {
+struct display_card_24ac_priv {
     nubus_card_t *card; // back-pointer for IRQ helpers
-    uint8_t *vram; // RADIUS24AC_VRAM_SIZE
+    uint8_t *vram; // DISPLAY_CARD_24AC_VRAM_SIZE
     uint8_t *vrom; // 128 KB bus-space declaration ROM
     char *vrom_path; // path the VROM was loaded from
     uint32_t vrom_size; // 128 KB; 0 if no VROM loaded
@@ -160,7 +160,7 @@ static uint8_t depth_code_for_format(pixel_format_t f) {
 // rowBytes for a flat framebuffer of the current width + depth.  The 24AC
 // has no RowWords register; the driver lays VRAM out tightly, so stride =
 // width × bpp / 8.
-static void recompute_stride(radius24ac_priv_t *p) {
+static void recompute_stride(display_card_24ac_priv_t *p) {
     uint32_t bpp = format_bpp(p->display.format);
     p->display.stride = (p->display.width * bpp + 7u) / 8u;
 }
@@ -173,7 +173,7 @@ static void recompute_stride(radius24ac_priv_t *p) {
 // There is NO 2-bpp mode.  When System 7 selects 8-bpp colour it writes MODE
 // bits 0x40 (NOT 0xA0); mapping that to 8 bpp here is what makes the colour
 // desktop render.  Other (unlisted) values keep the current format.
-static void apply_mode_depth(radius24ac_priv_t *p, uint8_t mode_byte) {
+static void apply_mode_depth(display_card_24ac_priv_t *p, uint8_t mode_byte) {
     pixel_format_t f = p->display.format;
     switch (mode_byte & 0xE0u) {
     case 0x00u:
@@ -207,14 +207,14 @@ static void apply_mode_depth(radius24ac_priv_t *p, uint8_t mode_byte) {
 
 // Index-register write: latch the palette index and reset the R/G/B
 // sub-counter so the next three data writes load that entry.
-static void clut_set_index(radius24ac_priv_t *p, uint8_t idx) {
+static void clut_set_index(display_card_24ac_priv_t *p, uint8_t idx) {
     p->clut_idx = idx;
     p->clut_phase = 0;
 }
 
 // Data-register write: accumulate R, G, B over three writes, commit, and
 // auto-increment the index for a run-write.
-static void clut_write_data(radius24ac_priv_t *p, uint8_t comp) {
+static void clut_write_data(display_card_24ac_priv_t *p, uint8_t comp) {
     switch (p->clut_phase) {
     case 0:
         p->clut_pending.r = comp;
@@ -248,11 +248,11 @@ static void clut_write_data(radius24ac_priv_t *p, uint8_t comp) {
 // (operand byte i lands wherever (addr & 3) == i).  This matches a hardware
 // pattern engine that aligns its 4-byte pattern to the framebuffer; for a
 // solid fill (operand = colour replicated ×4) the alignment is irrelevant.
-static void engine_fill_run(radius24ac_priv_t *p, uint32_t dest, uint32_t len) {
-    if (dest >= RADIUS24AC_VRAM_SIZE)
+static void engine_fill_run(display_card_24ac_priv_t *p, uint32_t dest, uint32_t len) {
+    if (dest >= DISPLAY_CARD_24AC_VRAM_SIZE)
         return;
-    if (len > RADIUS24AC_VRAM_SIZE - dest)
-        len = RADIUS24AC_VRAM_SIZE - dest; // clamp to VRAM
+    if (len > DISPLAY_CARD_24AC_VRAM_SIZE - dest)
+        len = DISPLAY_CARD_24AC_VRAM_SIZE - dest; // clamp to VRAM
     uint8_t pat[4] = {
         (uint8_t)(p->engine_operand >> 24),
         (uint8_t)(p->engine_operand >> 16),
@@ -272,13 +272,13 @@ static void engine_fill_run(radius24ac_priv_t *p, uint32_t dest, uint32_t len) {
 // its gates fail, a wrong ROP can only make the *accelerated* result
 // diverge — which the engine-vs-fallback oracle test (proposal §3.5) would
 // catch — never corrupt the displayed image.
-static void engine_store_long(radius24ac_priv_t *p, uint32_t dest, uint32_t src) {
-    if (dest + 4 > RADIUS24AC_VRAM_SIZE)
+static void engine_store_long(display_card_24ac_priv_t *p, uint32_t dest, uint32_t src) {
+    if (dest + 4 > DISPLAY_CARD_24AC_VRAM_SIZE)
         return; // out of VRAM — drop (driver never streams past the bank)
     uint32_t out;
     switch (p->engine_mode) {
-    case RADIUS24AC_MODE_COPY:
-    case RADIUS24AC_MODE_STRETCH:
+    case DISPLAY_CARD_24AC_MODE_COPY:
+    case DISPLAY_CARD_24AC_MODE_STRETCH:
         out = src; // straight transfer
         break;
     default:
@@ -294,23 +294,23 @@ static void engine_store_long(radius24ac_priv_t *p, uint32_t dest, uint32_t src)
 // === Unified register/engine dispatcher =====================================
 // `off` is the full slot-relative offset (region_off + region-relative addr).
 
-static uint32_t reg_read(radius24ac_priv_t *p, uint32_t off, unsigned width) {
+static uint32_t reg_read(display_card_24ac_priv_t *p, uint32_t off, unsigned width) {
     switch (off) {
     // --- Display side -------------------------------------------------------
-    case RADIUS24AC_STATUS_OFFSET: {
+    case DISPLAY_CARD_24AC_STATUS_OFFSET: {
         // STATUS byte: [2:0] depth (cdev), [3] class, [4] busy/sync toggle.
         // Toggle bit 4 each read so the driver's CLUT-safe / VBL-sync poll
         // always sees both edges and exits (mirrors jmfb's VBL toggle).
-        p->status_busy ^= RADIUS24AC_STATUS_BUSY;
+        p->status_busy ^= DISPLAY_CARD_24AC_STATUS_BUSY;
         return (uint32_t)((p->status_depth_code & 7u) | (p->status_class_bit ? 0x08u : 0x00u) | p->status_busy);
     }
-    case RADIUS24AC_VIDCTL_OFFSET:
+    case DISPLAY_CARD_24AC_VIDCTL_OFFSET:
         return p->vidctl;
-    case RADIUS24AC_MODE_REG:
+    case DISPLAY_CARD_24AC_MODE_REG:
         return p->mode_reg;
-    case RADIUS24AC_DEPTH_REG:
+    case DISPLAY_CARD_24AC_DEPTH_REG:
         return p->depth_reg;
-    case RADIUS24AC_SENSE_CLK: {
+    case DISPLAY_CARD_24AC_SENSE_CLK: {
         // Monitor sense read-back, keyed by which line the driver last drove
         // (vrom chip 0x9C-0x13A).  Primary probe drives all lines low (last
         // write 0) and expects (~read & 0xE0)>>5 == primary code.  The extended
@@ -332,32 +332,33 @@ static uint32_t reg_read(radius24ac_priv_t *p, uint32_t off, unsigned width) {
         }
     }
     // --- Engine side --------------------------------------------------------
-    case RADIUS24AC_CONFIG_OFFSET:
+    case DISPLAY_CARD_24AC_CONFIG_OFFSET:
         return (uint32_t)(p->config_variant_bit ? 0x01u : 0x00u);
-    case RADIUS24AC_OPERAND_APERTURE:
+    case DISPLAY_CARD_24AC_OPERAND_APERTURE:
         return p->engine_operand; // driver's 1-entry pattern cache read-back
     default:
         break;
     }
     // Top-of-bank carve-out [VRAM_VISIBLE .. active alias): the VRAM host
-    // region stops at RADIUS24AC_VRAM_VISIBLE (so the framebuffer alias clears
+    // region stops at DISPLAY_CARD_24AC_VRAM_VISIBLE (so the framebuffer alias clears
     // the register pages and the operand aperture isn't shadowed by the MMU
     // VRAM slot).  Every byte here other than the operand longword is still
     // plain passive VRAM, so serve it from p->vram — otherwise this range
     // would be an unmapped hole.
-    if (off >= RADIUS24AC_VRAM_VISIBLE && off < RADIUS24AC_ENGINE_ALIAS_OFFSET) {
-        if (width == 4 && off + 4 <= RADIUS24AC_VRAM_SIZE)
+    if (off >= DISPLAY_CARD_24AC_VRAM_VISIBLE && off < DISPLAY_CARD_24AC_ENGINE_ALIAS_OFFSET) {
+        if (width == 4 && off + 4 <= DISPLAY_CARD_24AC_VRAM_SIZE)
             return LOAD_BE32(p->vram + off);
-        if (off < RADIUS24AC_VRAM_SIZE)
+        if (off < DISPLAY_CARD_24AC_VRAM_SIZE)
             return p->vram[off];
         return 0;
     }
     // Active-bank alias reads are just the underlying passive VRAM.
-    if (off >= RADIUS24AC_ENGINE_ALIAS_OFFSET && off < RADIUS24AC_ENGINE_ALIAS_OFFSET + RADIUS24AC_VRAM_SIZE) {
-        uint32_t dest = off - RADIUS24AC_ENGINE_ALIAS_OFFSET;
-        if (width == 4 && dest + 4 <= RADIUS24AC_VRAM_SIZE)
+    if (off >= DISPLAY_CARD_24AC_ENGINE_ALIAS_OFFSET &&
+        off < DISPLAY_CARD_24AC_ENGINE_ALIAS_OFFSET + DISPLAY_CARD_24AC_VRAM_SIZE) {
+        uint32_t dest = off - DISPLAY_CARD_24AC_ENGINE_ALIAS_OFFSET;
+        if (width == 4 && dest + 4 <= DISPLAY_CARD_24AC_VRAM_SIZE)
             return LOAD_BE32(p->vram + dest);
-        if (dest < RADIUS24AC_VRAM_SIZE)
+        if (dest < DISPLAY_CARD_24AC_VRAM_SIZE)
             return p->vram[dest];
         return 0;
     }
@@ -365,46 +366,46 @@ static uint32_t reg_read(radius24ac_priv_t *p, uint32_t off, unsigned width) {
     return 0;
 }
 
-static void reg_write(radius24ac_priv_t *p, uint32_t off, uint32_t val, unsigned width) {
+static void reg_write(display_card_24ac_priv_t *p, uint32_t off, uint32_t val, unsigned width) {
     switch (off) {
     // --- CLUT / RAMDAC ------------------------------------------------------
-    case RADIUS24AC_CLUT0_ADDR:
-    case RADIUS24AC_CLUT_ADDR:
+    case DISPLAY_CARD_24AC_CLUT0_ADDR:
+    case DISPLAY_CARD_24AC_CLUT_ADDR:
         clut_set_index(p, (uint8_t)val);
         return;
-    case RADIUS24AC_CLUT0_DATA:
-    case RADIUS24AC_CLUT_DATA:
+    case DISPLAY_CARD_24AC_CLUT0_DATA:
+    case DISPLAY_CARD_24AC_CLUT_DATA:
         clut_write_data(p, (uint8_t)val);
         return;
-    case RADIUS24AC_RAMDAC_CMD:
+    case DISPLAY_CARD_24AC_RAMDAC_CMD:
         LOG(3, "RAMDAC command = $%02x (accept-and-log)", (uint8_t)val);
         return;
-    case RADIUS24AC_CLUT_CTL:
+    case DISPLAY_CARD_24AC_CLUT_CTL:
         LOG(3, "CLUT control strobe = $%02x (accept-and-log)", (uint8_t)val);
         return;
     // --- Display control ----------------------------------------------------
-    case RADIUS24AC_VIDCTL_OFFSET:
+    case DISPLAY_CARD_24AC_VIDCTL_OFFSET:
         // Central video latch.  Bit 7 = slot-VBL-IRQ mask (1 = masked).
         // The driver enables by clearing bit 7, disables by setting it, and
         // the ISR pulses set→clear to acknowledge the pending IRQ — so a set
         // bit 7 always means "release the line now" (deassert), and a clear
         // bit 7 re-arms it for the next VBL.
         p->vidctl = (uint8_t)val;
-        if (val & RADIUS24AC_VIDCTL_VBL_MASK) {
+        if (val & DISPLAY_CARD_24AC_VIDCTL_VBL_MASK) {
             p->vbl_enabled = false;
             nubus_deassert_irq(p->card);
         } else {
             p->vbl_enabled = true;
         }
         return;
-    case RADIUS24AC_MODE_REG:
+    case DISPLAY_CARD_24AC_MODE_REG:
         p->mode_reg = (uint8_t)val;
         apply_mode_depth(p, (uint8_t)val);
         return;
-    case RADIUS24AC_DEPTH_REG:
+    case DISPLAY_CARD_24AC_DEPTH_REG:
         p->depth_reg = (uint8_t)val;
         return;
-    case RADIUS24AC_SENSE_CLK:
+    case DISPLAY_CARD_24AC_SENSE_CLK:
         // Drives the sense lines (bits 7-5, read back by the sense probe) and
         // bit-bangs the serial PLL (low bits).  Track the driven lines so the
         // sense read-back above can answer the probe; the clock program itself
@@ -413,11 +414,11 @@ static void reg_write(radius24ac_priv_t *p, uint32_t off, uint32_t val, unsigned
         LOG(3, "SENSE_CLK write $%02x (sense drive / PLL)", (uint8_t)val);
         return;
     // --- Engine -------------------------------------------------------------
-    case RADIUS24AC_CONTROL_OFFSET:
+    case DISPLAY_CARD_24AC_CONTROL_OFFSET:
         p->engine_mode = (uint8_t)val; // latch op mode for active-bank writes
         LOG(3, "engine: CONTROL = $%02x", p->engine_mode);
         return;
-    case RADIUS24AC_OPERAND_APERTURE:
+    case DISPLAY_CARD_24AC_OPERAND_APERTURE:
         if (width == 4)
             p->engine_operand = val;
         LOG(3, "engine: operand load = $%08x", p->engine_operand);
@@ -426,28 +427,29 @@ static void reg_write(radius24ac_priv_t *p, uint32_t off, uint32_t val, unsigned
         break;
     }
     // CRTC timing register file (write-only) — accept-and-log.
-    if (off >= RADIUS24AC_CRTC_LO && off <= RADIUS24AC_CRTC_HI) {
+    if (off >= DISPLAY_CARD_24AC_CRTC_LO && off <= DISPLAY_CARD_24AC_CRTC_HI) {
         LOG(3, "CRTC[$%06x] = $%02x (accept-and-log)", off, (uint8_t)val);
         return;
     }
     // Top-of-bank carve-out [VRAM_VISIBLE .. active alias): the operand
     // longword is intercepted above; every other byte is plain passive VRAM
-    // (the VRAM host region stops at RADIUS24AC_VRAM_VISIBLE — see reg_read).
-    if (off >= RADIUS24AC_VRAM_VISIBLE && off < RADIUS24AC_ENGINE_ALIAS_OFFSET) {
-        if (width == 4 && off + 4 <= RADIUS24AC_VRAM_SIZE)
+    // (the VRAM host region stops at DISPLAY_CARD_24AC_VRAM_VISIBLE — see reg_read).
+    if (off >= DISPLAY_CARD_24AC_VRAM_VISIBLE && off < DISPLAY_CARD_24AC_ENGINE_ALIAS_OFFSET) {
+        if (width == 4 && off + 4 <= DISPLAY_CARD_24AC_VRAM_SIZE)
             STORE_BE32(p->vram + off, val);
-        else if (off < RADIUS24AC_VRAM_SIZE)
+        else if (off < DISPLAY_CARD_24AC_VRAM_SIZE)
             p->vram[off] = (uint8_t)val;
         p->display.fb_dirty = true;
         return;
     }
     // Active-bank alias (engine-transforming): off ∈ [0x400000, +VRAM).
-    if (off >= RADIUS24AC_ENGINE_ALIAS_OFFSET && off < RADIUS24AC_ENGINE_ALIAS_OFFSET + RADIUS24AC_VRAM_SIZE) {
-        uint32_t dest = off - RADIUS24AC_ENGINE_ALIAS_OFFSET;
+    if (off >= DISPLAY_CARD_24AC_ENGINE_ALIAS_OFFSET &&
+        off < DISPLAY_CARD_24AC_ENGINE_ALIAS_OFFSET + DISPLAY_CARD_24AC_VRAM_SIZE) {
+        uint32_t dest = off - DISPLAY_CARD_24AC_ENGINE_ALIAS_OFFSET;
         // The operand aperture's +0x400000 alias is the commit window: a
         // write of `4` here latches the loaded operand (driver writes twice).
-        if (dest == RADIUS24AC_OPERAND_APERTURE) {
-            if (val == RADIUS24AC_COMMIT_CMD)
+        if (dest == DISPLAY_CARD_24AC_OPERAND_APERTURE) {
+            if (val == DISPLAY_CARD_24AC_COMMIT_CMD)
                 LOG(3, "engine: operand commit ($%08x)", p->engine_operand);
             return;
         }
@@ -456,14 +458,14 @@ static void reg_write(radius24ac_priv_t *p, uint32_t off, uint32_t val, unsigned
             // issues through the active bank — behave as plain VRAM so
             // nothing bus-errors and the model can be compared to the
             // driver's software fallback.
-            if (width == 4 && dest + 4 <= RADIUS24AC_VRAM_SIZE)
+            if (width == 4 && dest + 4 <= DISPLAY_CARD_24AC_VRAM_SIZE)
                 STORE_BE32(p->vram + dest, val);
-            else if (dest < RADIUS24AC_VRAM_SIZE)
+            else if (dest < DISPLAY_CARD_24AC_VRAM_SIZE)
                 p->vram[dest] = (uint8_t)val;
             p->display.fb_dirty = true;
             return;
         }
-        if (p->engine_mode == RADIUS24AC_MODE_FILL)
+        if (p->engine_mode == DISPLAY_CARD_24AC_MODE_FILL)
             engine_fill_run(p, dest, val); // longword value == run length
         else
             engine_store_long(p, dest, val); // longword value == source pixels
@@ -499,7 +501,7 @@ static void io_write32(void *dev, uint32_t addr, uint32_t val) {
     reg_write(c->p, c->region_off + addr, val, 4);
 }
 
-static memory_interface_t s_radius24ac_mem_iface = {
+static memory_interface_t s_display_card_24ac_mem_iface = {
     .read_uint8 = io_read8,
     .read_uint16 = io_read16,
     .read_uint32 = io_read32,
@@ -512,14 +514,14 @@ static memory_interface_t s_radius24ac_mem_iface = {
 
 // Load display-card-24ac.vrom through the shared declrom loader (search
 // paths + byteLanes expansion).  Returns true on success.
-static bool load_vrom(radius24ac_priv_t *p) {
+static bool load_vrom(display_card_24ac_priv_t *p) {
     char *path = NULL;
-    if (!declrom_load_vrom("display-card-24ac.vrom", RADIUS24AC_DECLROM_CHIP_SIZE, p->vrom, RADIUS24AC_DECLROM_BUS_SIZE,
-                           &path))
+    if (!declrom_load_vrom("display-card-24ac.vrom", DISPLAY_CARD_24AC_DECLROM_CHIP_SIZE, p->vrom,
+                           DISPLAY_CARD_24AC_DECLROM_BUS_SIZE, &path))
         return false;
     free(p->vrom_path);
     p->vrom_path = path;
-    p->vrom_size = RADIUS24AC_DECLROM_BUS_SIZE;
+    p->vrom_size = DISPLAY_CARD_24AC_DECLROM_BUS_SIZE;
     return true;
 }
 
@@ -528,11 +530,11 @@ static bool load_vrom(radius24ac_priv_t *p) {
 // A pending "<monitor>_<N>bpp" id (e.g. "rgb_640x480_8bpp") set before
 // machine.boot; consumed by the next card_init, which sets the monitor sense +
 // depth and seeds PRAM so the OS boots at that mode (mirrors jmfb.c).  The id
-// is resolved against radius_24ac_monitors[] × its depth list.
+// is resolved against display_card_24ac_monitors[] × its depth list.
 static char s_pending_video_mode_id[40] = "";
 
 // bpp → MODE register depth bits (vrom RE depth ladder; no 2-bpp mode).
-static uint8_t radius_modebits_for_format(pixel_format_t f) {
+static uint8_t modebits_for_format(pixel_format_t f) {
     switch (f) {
     case PIXEL_1BPP_MSB:
         return 0x00u;
@@ -548,7 +550,7 @@ static uint8_t radius_modebits_for_format(pixel_format_t f) {
         return 0x40u;
     }
 }
-static pixel_format_t radius_format_for_bpp(int bpp) {
+static pixel_format_t format_for_bpp(int bpp) {
     switch (bpp) {
     case 1:
         return PIXEL_1BPP_MSB;
@@ -566,7 +568,7 @@ static pixel_format_t radius_format_for_bpp(int bpp) {
 }
 // bpp → slot sPRAMRec savedMode byte (the depth sub-resource id; vrom RE):
 // 1/4/8/16/32 bpp → 0x80/0x81/0x82/0x83/0x84 (no 0x?? for 2 bpp).
-static uint8_t radius_savedmode_for_bpp(int bpp) {
+static uint8_t savedmode_for_bpp(int bpp) {
     switch (bpp) {
     case 1:
         return 0x80u;
@@ -584,7 +586,7 @@ static uint8_t radius_savedmode_for_bpp(int bpp) {
 }
 // Monitor sister sRsrc id → the extended-sense code the card reports on
 // SENSE_CLK so PrimaryInit lands on that monitor (vrom RE).
-static uint8_t radius_ext_for_sister(uint8_t sister) {
+static uint8_t ext_for_sister(uint8_t sister) {
     switch (sister) {
     case 0x6Bu:
         return 0x03u; // 640×480
@@ -601,7 +603,7 @@ static uint8_t radius_ext_for_sister(uint8_t sister) {
 
 static int card_init(nubus_card_t *card, config_t *cfg, checkpoint_t *cp) {
     (void)cp;
-    radius24ac_priv_t *p = calloc(1, sizeof(*p));
+    display_card_24ac_priv_t *p = calloc(1, sizeof(*p));
     if (!p)
         return -1;
     p->card = card;
@@ -613,13 +615,13 @@ static int card_init(nubus_card_t *card, config_t *cfg, checkpoint_t *cp) {
     const nubus_monitor_t *seeded_monitor = NULL;
     int seeded_depth_bpp = 0;
     if (s_pending_video_mode_id[0] &&
-        radius24ac_video_mode_lookup(s_pending_video_mode_id, &seeded_monitor, &seeded_depth_bpp))
+        display_card_24ac_video_mode_lookup(s_pending_video_mode_id, &seeded_monitor, &seeded_depth_bpp))
         s_pending_video_mode_id[0] = '\0'; // consume on match (ignore foreign ids)
     else
         seeded_monitor = NULL;
 
-    p->vram = calloc(1, RADIUS24AC_VRAM_SIZE);
-    p->vrom = calloc(1, RADIUS24AC_DECLROM_BUS_SIZE);
+    p->vram = calloc(1, DISPLAY_CARD_24AC_VRAM_SIZE);
+    p->vrom = calloc(1, DISPLAY_CARD_24AC_DECLROM_BUS_SIZE);
     if (!p->vram || !p->vrom) {
         free(p->vram);
         free(p->vrom);
@@ -650,7 +652,7 @@ static int card_init(nubus_card_t *card, config_t *cfg, checkpoint_t *cp) {
     // BOARDCFG[0]=0, which makes the driver's Open routine return openErr(-23)
     // (vrom 0x1AC6).  Seeding low bits = 2 here lets the sensed monitor stand,
     // the self-test run, and the driver open.  (Bit 7 = VBL IRQ masked.)
-    p->vidctl = RADIUS24AC_VIDCTL_VBL_MASK | 0x02u;
+    p->vidctl = DISPLAY_CARD_24AC_VIDCTL_VBL_MASK | 0x02u;
     p->vbl_enabled = false;
     p->mode_reg = 0x40u; // 8 bpp depth code in bits 7-5 (0x40 = code 2, vrom RE)
     // Default monitor: 640×480 multisync (sRsrc id $6B = primary sense 6 +
@@ -662,7 +664,7 @@ static int card_init(nubus_card_t *card, config_t *cfg, checkpoint_t *cp) {
     // Engine geometry bits, kept consistent with the large-VRAM framebuffer
     // we present (hardware spec §3/§5).
     p->engine_enabled = true;
-    p->engine_mode = RADIUS24AC_MODE_COPY;
+    p->engine_mode = DISPLAY_CARD_24AC_MODE_COPY;
     p->status_depth_code = depth_code_for_format(PIXEL_8BPP);
     p->status_class_bit = true; // large-VRAM organisation
     p->config_variant_bit = true; // large-VRAM geometry variant
@@ -692,12 +694,12 @@ static int card_init(nubus_card_t *card, config_t *cfg, checkpoint_t *cp) {
     // PRAM seed below).
     if (seeded_monitor) {
         p->sense_primary = 6;
-        p->sense_ext = radius_ext_for_sister(seeded_monitor->srsrc_sister);
+        p->sense_ext = ext_for_sister(seeded_monitor->srsrc_sister);
         p->display.width = seeded_monitor->width;
         p->display.height = seeded_monitor->height;
-        pixel_format_t f = radius_format_for_bpp(seeded_depth_bpp);
+        pixel_format_t f = format_for_bpp(seeded_depth_bpp);
         p->display.format = f;
-        p->mode_reg = radius_modebits_for_format(f);
+        p->mode_reg = modebits_for_format(f);
         p->status_depth_code = depth_code_for_format(f);
         recompute_stride(p);
     }
@@ -715,7 +717,7 @@ static int card_init(nubus_card_t *card, config_t *cfg, checkpoint_t *cp) {
 
     // Host-backed regions: VRAM (writable), declaration ROM (read-only).
     //
-    // The VRAM host region covers only RADIUS24AC_VRAM_VISIBLE (the
+    // The VRAM host region covers only DISPLAY_CARD_24AC_VRAM_VISIBLE (the
     // framebuffer area).  Two reasons it stops short of the full 4 MB:
     //   * the MMU models VRAM as one contiguous range whose translation is
     //     re-filled on every _SwapMMUMode TLB flush (PrimaryInit does
@@ -727,50 +729,52 @@ static int card_init(nubus_card_t *card, config_t *cfg, checkpoint_t *cp) {
     //     slot+0x900000, and it must end at/below the first register page
     //     (0xC80000) so it never shadows a card register.
     // The board-config scratch at 0xFFFD8 and the operand aperture both sit
-    // above RADIUS24AC_VRAM_VISIBLE and are served by the operand device
+    // above DISPLAY_CARD_24AC_VRAM_VISIBLE and are served by the operand device
     // region's passive fall-through (reg_read/reg_write), so the whole bank
     // remains addressable.
-    memory_map_host_region(cfg->mem_map, "radius24ac_vram", p->vram, p->slot_base, RADIUS24AC_VRAM_VISIBLE,
+    memory_map_host_region(cfg->mem_map, "display_card_24ac_vram", p->vram, p->slot_base,
+                           DISPLAY_CARD_24AC_VRAM_VISIBLE,
                            /*writable*/ true);
-    memory_map_host_region(cfg->mem_map, "radius24ac_declrom", p->vrom, p->slot_base + RADIUS24AC_DECLROM_BUS_OFFSET,
-                           RADIUS24AC_DECLROM_BUS_SIZE, /*writable*/ false);
+    memory_map_host_region(cfg->mem_map, "display_card_24ac_declrom", p->vrom,
+                           p->slot_base + DISPLAY_CARD_24AC_DECLROM_BUS_OFFSET, DISPLAY_CARD_24AC_DECLROM_BUS_SIZE,
+                           /*writable*/ false);
     // 24-bit Memory Manager mode framebuffer alias (mirrors VRAM at
     // slot+0x900000 = ScrnBase).  Same mechanism the 8•24 uses.  Sized by the
-    // host region above (RADIUS24AC_VRAM_VISIBLE), so it ends at 0xC80000.
-    memory_map_host_region_alias(cfg->mem_map, p->slot_base + RADIUS24AC_FB_ALIAS_OFFSET, p->slot_base);
+    // host region above (DISPLAY_CARD_24AC_VRAM_VISIBLE), so it ends at 0xC80000.
+    memory_map_host_region_alias(cfg->mem_map, p->slot_base + DISPLAY_CARD_24AC_FB_ALIAS_OFFSET, p->slot_base);
 
     // Register/engine regions share the one dispatcher; each region's
     // reg_ctx carries its slot-relative base so reg_read/reg_write see full
     // slot offsets.  Registered AFTER the VRAM host region so the
     // operand-aperture page overlays it (last registration wins per page).
-    p->ctx_clut = (reg_ctx_t){.p = p, .region_off = RADIUS24AC_CLUT_PAGE};
-    p->ctx_d00 = (reg_ctx_t){.p = p, .region_off = RADIUS24AC_D00_PAGE};
-    p->ctx_d40 = (reg_ctx_t){.p = p, .region_off = RADIUS24AC_D40_PAGE};
-    p->ctx_d80 = (reg_ctx_t){.p = p, .region_off = RADIUS24AC_D80_PAGE};
-    p->ctx_operand = (reg_ctx_t){.p = p, .region_off = RADIUS24AC_VRAM_VISIBLE};
-    p->ctx_active = (reg_ctx_t){.p = p, .region_off = RADIUS24AC_ENGINE_ALIAS_OFFSET};
+    p->ctx_clut = (reg_ctx_t){.p = p, .region_off = DISPLAY_CARD_24AC_CLUT_PAGE};
+    p->ctx_d00 = (reg_ctx_t){.p = p, .region_off = DISPLAY_CARD_24AC_D00_PAGE};
+    p->ctx_d40 = (reg_ctx_t){.p = p, .region_off = DISPLAY_CARD_24AC_D40_PAGE};
+    p->ctx_d80 = (reg_ctx_t){.p = p, .region_off = DISPLAY_CARD_24AC_D80_PAGE};
+    p->ctx_operand = (reg_ctx_t){.p = p, .region_off = DISPLAY_CARD_24AC_VRAM_VISIBLE};
+    p->ctx_active = (reg_ctx_t){.p = p, .region_off = DISPLAY_CARD_24AC_ENGINE_ALIAS_OFFSET};
 
-    memory_map_add(cfg->mem_map, p->slot_base + RADIUS24AC_CLUT_PAGE, MEM_PAGE_SIZE, "radius24ac_clut",
-                   &s_radius24ac_mem_iface, &p->ctx_clut);
-    memory_map_add(cfg->mem_map, p->slot_base + RADIUS24AC_D00_PAGE, MEM_PAGE_SIZE, "radius24ac_d00",
-                   &s_radius24ac_mem_iface, &p->ctx_d00);
-    memory_map_add(cfg->mem_map, p->slot_base + RADIUS24AC_D40_PAGE, MEM_PAGE_SIZE, "radius24ac_d40",
-                   &s_radius24ac_mem_iface, &p->ctx_d40);
-    memory_map_add(cfg->mem_map, p->slot_base + RADIUS24AC_D80_PAGE, MEM_PAGE_SIZE, "radius24ac_d80",
-                   &s_radius24ac_mem_iface, &p->ctx_d80);
-    // Carved-off top of the passive bank [RADIUS24AC_VRAM_VISIBLE,
-    // 0x400000): the VRAM host region stops at RADIUS24AC_VRAM_VISIBLE so the
+    memory_map_add(cfg->mem_map, p->slot_base + DISPLAY_CARD_24AC_CLUT_PAGE, MEM_PAGE_SIZE, "display_card_24ac_clut",
+                   &s_display_card_24ac_mem_iface, &p->ctx_clut);
+    memory_map_add(cfg->mem_map, p->slot_base + DISPLAY_CARD_24AC_D00_PAGE, MEM_PAGE_SIZE, "display_card_24ac_d00",
+                   &s_display_card_24ac_mem_iface, &p->ctx_d00);
+    memory_map_add(cfg->mem_map, p->slot_base + DISPLAY_CARD_24AC_D40_PAGE, MEM_PAGE_SIZE, "display_card_24ac_d40",
+                   &s_display_card_24ac_mem_iface, &p->ctx_d40);
+    memory_map_add(cfg->mem_map, p->slot_base + DISPLAY_CARD_24AC_D80_PAGE, MEM_PAGE_SIZE, "display_card_24ac_d80",
+                   &s_display_card_24ac_mem_iface, &p->ctx_d80);
+    // Carved-off top of the passive bank [DISPLAY_CARD_24AC_VRAM_VISIBLE,
+    // 0x400000): the VRAM host region stops at DISPLAY_CARD_24AC_VRAM_VISIBLE so the
     // framebuffer alias clears the register pages.  This device region covers
     // the rest of the bank up to the active alias — it intercepts the operand
     // longword (0x3FE000) and serves every other byte as plain passive VRAM
     // (reg_read/reg_write fall through to p->vram), leaving no unmapped hole.
-    memory_map_add(cfg->mem_map, p->slot_base + RADIUS24AC_VRAM_VISIBLE,
-                   RADIUS24AC_ENGINE_ALIAS_OFFSET - RADIUS24AC_VRAM_VISIBLE, "radius24ac_operand",
-                   &s_radius24ac_mem_iface, &p->ctx_operand);
+    memory_map_add(cfg->mem_map, p->slot_base + DISPLAY_CARD_24AC_VRAM_VISIBLE,
+                   DISPLAY_CARD_24AC_ENGINE_ALIAS_OFFSET - DISPLAY_CARD_24AC_VRAM_VISIBLE, "display_card_24ac_operand",
+                   &s_display_card_24ac_mem_iface, &p->ctx_operand);
     // Active-bank alias: the engine-transforming mirror of the passive bank
     // (covers the operand commit window at +0x400000 too).
-    memory_map_add(cfg->mem_map, p->slot_base + RADIUS24AC_ENGINE_ALIAS_OFFSET, RADIUS24AC_VRAM_SIZE,
-                   "radius24ac_engine", &s_radius24ac_mem_iface, &p->ctx_active);
+    memory_map_add(cfg->mem_map, p->slot_base + DISPLAY_CARD_24AC_ENGINE_ALIAS_OFFSET, DISPLAY_CARD_24AC_VRAM_SIZE,
+                   "display_card_24ac_engine", &s_display_card_24ac_mem_iface, &p->ctx_active);
 
     // Seed PRAM for the picked video mode (mirrors jmfb.c).  The key is a
     // *complete* valid PRAM, not just the two validity tokens: stamp the
@@ -785,7 +789,7 @@ static int card_init(nubus_card_t *card, config_t *cfg, checkpoint_t *cp) {
     if (seeded_monitor && seeded_depth_bpp > 0) {
         rtc_t *rtc = system_rtc();
         if (rtc) {
-            uint8_t saved_mode = radius_savedmode_for_bpp(seeded_depth_bpp);
+            uint8_t saved_mode = savedmode_for_bpp(seeded_depth_bpp);
             // 'NuMc' XPRAM validity signature ($0C..$0F) only — leave the
             // low-PRAM validity byte invalid so _InitUtil still cold-inits the
             // SysParam block (caret-blink / double-click defaults).
@@ -815,8 +819,8 @@ static int card_init(nubus_card_t *card, config_t *cfg, checkpoint_t *cp) {
             rtc_pram_write(rtc, off + 5, 0x00);
             rtc_pram_write(rtc, off + 6, seeded_monitor->srsrc_sister);
             rtc_pram_write(rtc, off + 7, seeded_monitor->srsrc_sister);
-            LOG(1, "radius24ac: seeded slot-%d PRAM for video mode '%s' (savedMode=$%02x sister=$%02x)", card->slot,
-                seeded_monitor->id, saved_mode, seeded_monitor->srsrc_sister);
+            LOG(1, "display_card_24ac: seeded slot-%d PRAM for video mode '%s' (savedMode=$%02x sister=$%02x)",
+                card->slot, seeded_monitor->id, saved_mode, seeded_monitor->srsrc_sister);
         }
     }
 
@@ -825,7 +829,7 @@ static int card_init(nubus_card_t *card, config_t *cfg, checkpoint_t *cp) {
 
 static void card_teardown(nubus_card_t *card, config_t *cfg) {
     (void)cfg;
-    radius24ac_priv_t *p = card->priv;
+    display_card_24ac_priv_t *p = card->priv;
     if (!p)
         return;
     free(p->vram);
@@ -839,7 +843,7 @@ static void card_teardown(nubus_card_t *card, config_t *cfg) {
 
 static void card_on_vbl(nubus_card_t *card, config_t *cfg) {
     (void)cfg;
-    radius24ac_priv_t *p = card->priv;
+    display_card_24ac_priv_t *p = card->priv;
     if (!p)
         return;
     if (p->vbl_enabled)
@@ -850,16 +854,16 @@ static void card_on_vbl(nubus_card_t *card, config_t *cfg) {
 }
 
 static display_t *card_display(nubus_card_t *card) {
-    radius24ac_priv_t *p = card->priv;
+    display_card_24ac_priv_t *p = card->priv;
     return p ? &p->display : NULL;
 }
 
 static const char *card_name(const nubus_card_t *card) {
     (void)card;
-    return "Apple Macintosh 24AC";
+    return "Apple Macintosh Display Card 24AC";
 }
 
-static const nubus_card_ops_t radius_24ac_ops = {
+static const nubus_card_ops_t display_card_24ac_ops = {
     .init = card_init,
     .teardown = card_teardown,
     .on_vbl = card_on_vbl,
@@ -873,7 +877,7 @@ static nubus_card_t *factory(int slot, config_t *cfg, checkpoint_t *cp) {
     nubus_card_t *card = calloc(1, sizeof(*card));
     if (!card)
         return NULL;
-    card->ops = &radius_24ac_ops;
+    card->ops = &display_card_24ac_ops;
     card->slot = slot;
     if (card->ops->init(card, cfg, cp) != 0) {
         free(card);
@@ -891,43 +895,43 @@ static nubus_card_t *factory(int slot, config_t *cfg, checkpoint_t *cp) {
 // VRAM), so every mode supports 1/4/8/16/32 bpp — there is NO 2-bpp mode (vrom
 // RE depth ladder).  The default-sensed monitor is the 640×480 multisync
 // (sense_primary 6, ext 0x03 → sRsrc 0x6B).
-static const int radius_24ac_depths[] = {1, 4, 8, 16, 32, 0};
-static const nubus_monitor_t radius_24ac_monitors[] = {
+static const int display_card_24ac_depths[] = {1, 4, 8, 16, 32, 0};
+static const nubus_monitor_t display_card_24ac_monitors[] = {
     {.id = "rgb_640x480",
      .name = "640 × 480 (67 Hz)",
      .width = 640,
      .height = 480,
-     .depths = radius_24ac_depths,
+     .depths = display_card_24ac_depths,
      .sense_code = 6,
      .srsrc_sister = 0x6B},
     {.id = "rgb_800x600",
      .name = "800 × 600 (60 Hz)",
      .width = 800,
      .height = 600,
-     .depths = radius_24ac_depths,
+     .depths = display_card_24ac_depths,
      .sense_code = 6,
      .srsrc_sister = 0x6C},
     {.id = "rgb_832x624",
      .name = "832 × 624 (75 Hz)",
      .width = 832,
      .height = 624,
-     .depths = radius_24ac_depths,
+     .depths = display_card_24ac_depths,
      .sense_code = 6,
      .srsrc_sister = 0x6D},
     {0},
 };
 
-const nubus_card_kind_t radius_24ac_kind = {
-    .id = "radius_24ac",
-    .display_name = "Apple Macintosh 24AC",
+const nubus_card_kind_t display_card_24ac_kind = {
+    .id = "display_card_24ac",
+    .display_name = "Apple Macintosh Display Card 24AC",
     .requires_vrom = true,
-    .monitors = radius_24ac_monitors,
+    .monitors = display_card_24ac_monitors,
     .factory = factory,
 };
 
 // === Video-mode selection (machine.nubus.video_mode) ========================
 
-void radius24ac_pending_video_mode_set(const char *id) {
+void display_card_24ac_pending_video_mode_set(const char *id) {
     if (!id || !*id) {
         s_pending_video_mode_id[0] = '\0';
         return;
@@ -935,14 +939,14 @@ void radius24ac_pending_video_mode_set(const char *id) {
     snprintf(s_pending_video_mode_id, sizeof s_pending_video_mode_id, "%s", id);
 }
 
-const char *radius24ac_pending_video_mode_get(void) {
+const char *display_card_24ac_pending_video_mode_get(void) {
     return s_pending_video_mode_id[0] ? s_pending_video_mode_id : NULL;
 }
 
 // Parse "<monitor>_<N>bpp" (e.g. "rgb_640x480_8bpp") into (monitor, N): the
-// monitor name is matched against radius_24ac_monitors[] and N validated
+// monitor name is matched against display_card_24ac_monitors[] and N validated
 // against that monitor's depth list.  Mirrors jmfb_video_mode_lookup.
-bool radius24ac_video_mode_lookup(const char *id, const nubus_monitor_t **out_monitor, int *out_depth_bpp) {
+bool display_card_24ac_video_mode_lookup(const char *id, const nubus_monitor_t **out_monitor, int *out_depth_bpp) {
     if (!id || !*id)
         return false;
     const char *underscore_bpp = strrchr(id, '_');
@@ -961,7 +965,7 @@ bool radius24ac_video_mode_lookup(const char *id, const nubus_monitor_t **out_mo
         return false;
     if (bpp < 1 || bpp > 32)
         return false;
-    for (const nubus_monitor_t *m = radius_24ac_monitors; m->id; m++) {
+    for (const nubus_monitor_t *m = display_card_24ac_monitors; m->id; m++) {
         if (strcmp(m->id, mon_id) != 0)
             continue;
         if (!m->depths)
@@ -982,35 +986,35 @@ bool radius24ac_video_mode_lookup(const char *id, const nubus_monitor_t **out_mo
 
 // === Engine introspection (object model) ====================================
 
-bool radius24ac_is_card(const nubus_card_t *card) {
-    return card && card->ops == &radius_24ac_ops;
+bool display_card_24ac_is_card(const nubus_card_t *card) {
+    return card && card->ops == &display_card_24ac_ops;
 }
 
-bool radius24ac_engine_enabled(const nubus_card_t *card) {
-    if (!radius24ac_is_card(card))
+bool display_card_24ac_engine_enabled(const nubus_card_t *card) {
+    if (!display_card_24ac_is_card(card))
         return false;
-    const radius24ac_priv_t *p = card->priv;
+    const display_card_24ac_priv_t *p = card->priv;
     return p && p->engine_enabled;
 }
 
-void radius24ac_engine_set_enabled(nubus_card_t *card, bool enabled) {
-    if (!radius24ac_is_card(card))
+void display_card_24ac_engine_set_enabled(nubus_card_t *card, bool enabled) {
+    if (!display_card_24ac_is_card(card))
         return;
-    radius24ac_priv_t *p = card->priv;
+    display_card_24ac_priv_t *p = card->priv;
     if (p)
         p->engine_enabled = enabled;
 }
 
-uint8_t radius24ac_engine_mode(const nubus_card_t *card) {
-    if (!radius24ac_is_card(card))
+uint8_t display_card_24ac_engine_mode(const nubus_card_t *card) {
+    if (!display_card_24ac_is_card(card))
         return 0;
-    const radius24ac_priv_t *p = card->priv;
+    const display_card_24ac_priv_t *p = card->priv;
     return p ? p->engine_mode : 0;
 }
 
-uint32_t radius24ac_engine_operand(const nubus_card_t *card) {
-    if (!radius24ac_is_card(card))
+uint32_t display_card_24ac_engine_operand(const nubus_card_t *card) {
+    if (!display_card_24ac_is_card(card))
         return 0;
-    const radius24ac_priv_t *p = card->priv;
+    const display_card_24ac_priv_t *p = card->priv;
     return p ? p->engine_operand : 0;
 }

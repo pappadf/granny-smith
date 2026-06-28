@@ -68,7 +68,7 @@ nubus_bus_t *nubus_init(config_t *cfg, const nubus_slot_decl_t *slots, checkpoin
 void nubus_delete(nubus_bus_t *bus);
 
 // Pending user-selected video card id for the next machine.boot's VIDEO
-// slot.  Set via `machine.nubus.video_card = "radius_24ac"` before boot;
+// slot.  Set via `machine.nubus.video_card = "display_card_24ac"` before boot;
 // nubus_init honours it iff it appears in that slot's available_cards
 // list (else it logs and falls back to the slot's default_card).  Cleared
 // after consumption so a stale pick doesn't leak into the next boot.

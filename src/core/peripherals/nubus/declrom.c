@@ -116,7 +116,7 @@ uint8_t *declrom_load(const char *path, size_t expected_size) {
 
 // === Shared display-card VROM loader ========================================
 //
-// Factored out of jmfb.c so both the JMFB (8•24) and the Radius 24AC card
+// Factored out of jmfb.c so both the JMFB (8•24) and the Display Card 24AC
 // drivers share the same byte-lane expansion and search-path logic — the
 // only thing that differs between them is the file name and the chip/bus
 // sizes (both happen to be 32 KB → 128 KB today, but the loader is sized

@@ -1,6 +1,6 @@
-# Integration test: IIcx + Radius "Apple Macintosh 24AC" NuBus display card
+# Integration test: IIcx + Apple Macintosh Display Card 24AC NuBus display card
 #
-# See proposal-nubus-card-radius-24ac.md.  The card is a framebuffer +
+# See proposal-nubus-card-display-card-24ac.md.  The card is a framebuffer +
 # CLUT + VBL display card (Phase 1) plus a hardware QuickDraw fill/raster
 # accelerator (Phase 2).  This test exercises both halves on the IIcx with
 # the genuine display-card-24ac.vrom, plus the object-model surface
@@ -20,11 +20,11 @@
 # Part A — acceleration engine register/aperture decode (no OS boot).
 #
 # The debug memory.poke/peek path dispatches to device callbacks, so we
-# can drive the engine exactly as the Radius cdev would and check the
+# can drive the engine exactly as the cdev would and check the
 # resulting VRAM against hand-computed values.  A fresh machine.boot
 # leaves the card at its 8 bpp power-on default.
 # =====================================================================
-machine.nubus.video_card = "radius_24ac"
+machine.nubus.video_card = "display_card_24ac"
 machine.boot "iicx" 8192
 assert ${machine.id == "iicx"}                                   "machine.id != iicx"
 
@@ -105,7 +105,7 @@ assert ${machine.memory.peek.l(0xF9003000) == 0xA1B2C3D4}        "oracle: engine
 # Object-model surface (proposal §3.8): the populated slot projects a card
 # node with framebuffer / declrom / clut / mode / engine children.
 assert ${machine.nubus.slot[9].number == 0x9}                    "object model: slot[9].number"
-assert ${machine.nubus.slot[9].card.name == "Apple Macintosh 24AC"} "object model: card.name"
+assert ${machine.nubus.slot[9].card.name == "Apple Macintosh Display Card 24AC"} "object model: card.name"
 assert ${machine.nubus.slot[9].card.framebuffer.base == 0xF9000000}  "object model: framebuffer.base"
 assert ${machine.nubus.slot[9].card.framebuffer.depth == 8}      "object model: framebuffer.depth (8bpp power-on)"
 assert ${machine.nubus.slot[9].card.declrom.size == 0x20000}     "object model: declrom.size (128 KB)"
@@ -117,7 +117,7 @@ assert ${machine.screen.source.depth == 8}                       "object model: 
 
 # =====================================================================
 # Part B — Phase-1/2 boot to an 8-bpp COLOUR Finder desktop.  Cold-boot
-# System 7.0.1 on the IIcx with the radius_24ac card; the vrom's PrimaryInit
+# System 7.0.1 on the IIcx with the display_card_24ac card; the vrom's PrimaryInit
 # senses the 640×480 multisync monitor (sRsrc id $6B = primary sense 6 +
 # extended-sense $03), passes its board self-test (so the DRVR Open
 # succeeds), and the OS builds a real GDevice.
@@ -136,7 +136,7 @@ assert ${machine.screen.source.depth == 8}                       "object model: 
 # Cmd-Shift-Power poke that short-circuits boot-drive discovery + 70M to land
 # in the stable Finder window.  (Same mechanics as iicx-video-modes.)
 # =====================================================================
-machine.nubus.video_card = "radius_24ac"
+machine.nubus.video_card = "display_card_24ac"
 machine.nubus.video_mode = "rgb_640x480_8bpp"
 machine.boot "iicx" 8192
 machine.rom.reload
