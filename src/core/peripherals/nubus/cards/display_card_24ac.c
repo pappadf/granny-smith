@@ -207,14 +207,29 @@ static void apply_mode_depth(display_card_24ac_priv_t *p, uint8_t mode_byte) {
 
 // Index-register write: latch the palette index and reset the R/G/B
 // sub-counter so the next three data writes load that entry.
+//
+// The 24AC's RAMDAC port is active-low: the video driver writes the ONE'S-
+// COMPLEMENT of both the palette index and each RGB component, and the
+// RAMDAC inverts them back internally before they reach the colour store /
+// pixel-lookup.  See the vrom cscSetEntries body — the index is staged as
+// `NOT.B` ("CLUT loads inverted index byte", chip 0x203C) and each component
+// as `NOT.B` ("RAMDAC wants inverted", chip 0x206A/0x2078/0x2082).  We undo
+// the inversion at the port so clut[] holds true colours at true indices.
+// (Without it, white/black still round-trip — they're complementary in both
+// index AND colour, so the two missing inversions cancel — but every other
+// entry lands at the wrong index with inverted components, scrambling the
+// palette.)  At 8 bpp the driver's index pack-shift is 0 (shift table 0x2230
+// = `07 04 00 …`), so the staged index byte is a clean ~N.
 static void clut_set_index(display_card_24ac_priv_t *p, uint8_t idx) {
-    p->clut_idx = idx;
+    p->clut_idx = (uint8_t)~idx;
     p->clut_phase = 0;
 }
 
 // Data-register write: accumulate R, G, B over three writes, commit, and
 // auto-increment the index for a run-write.
 static void clut_write_data(display_card_24ac_priv_t *p, uint8_t comp) {
+    // Active-low RAMDAC: the driver writes ~component (see clut_set_index).
+    comp = (uint8_t)~comp;
     switch (p->clut_phase) {
     case 0:
         p->clut_pending.r = comp;
