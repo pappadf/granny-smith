@@ -101,6 +101,8 @@ struct display_card_24ac_priv {
     uint8_t engine_mode; // latched CONTROL byte ($01 fill / $03 stretch /
                          // $7F copy / computed ROP)
     uint32_t engine_operand; // latched 32-bit operand (fill colour / pattern)
+    uint32_t engine_copy_src; // block-copy handshake: latched source VRAM offset
+    uint32_t engine_copy_len; // block-copy handshake: latched length (low bits)
     uint8_t status_depth_code; // STATUS[2:0] — current depth/mode (for the cdev)
     bool status_class_bit; // STATUS[3] — card-class / VRAM-organisation
     bool config_variant_bit; // CONFIG[0] — geometry variant
@@ -258,12 +260,27 @@ static void clut_write_data(display_card_24ac_priv_t *p, uint8_t comp) {
 // engine synchronously and never polls a busy flag (hardware spec §7), so
 // there is no timing to model.
 
+// Command flag the live cdev OR-s (bit 30) into the longword it writes through
+// the active aperture, for BOTH the fill run-length and the copy length.  It
+// sits above the bank-width count counter, so the engine takes only the low
+// bits as the count and ignores the flag.  In the copy handshake it doubles as
+// the "execute" marker (see engine_store_long).  See errata E8/E9.
+#define DISPLAY_CARD_24AC_ENGINE_CMD_FLAG 0x40000000u
+
 // Replicate the latched 32-bit operand across `len` bytes of VRAM starting
 // at passive offset `dest`, phase-aligned to absolute 4-byte VRAM columns
 // (operand byte i lands wherever (addr & 3) == i).  This matches a hardware
 // pattern engine that aligns its 4-byte pattern to the framebuffer; for a
 // solid fill (operand = colour replicated ×4) the alignment is irrelevant.
 static void engine_fill_run(display_card_24ac_priv_t *p, uint32_t dest, uint32_t len) {
+    // Mask the command flag off the run length (errata E8): the cdev writes
+    // `$40000000 | L`, e.g. a 640-byte scanline fill as $40000280.  Without
+    // this the fill ran to end-of-VRAM; the boot desktop's top-to-bottom
+    // full-width fills self-corrected (each scanline finalised by its own
+    // fill), but the Apple menu's narrow bottom-up fills smeared into solid
+    // white/black bands.  (The Part-A unit test wrote raw small run lengths
+    // with no flag bit, so it never exercised this.)
+    len &= ~DISPLAY_CARD_24AC_ENGINE_CMD_FLAG;
     if (dest >= DISPLAY_CARD_24AC_VRAM_SIZE)
         return;
     if (len > DISPLAY_CARD_24AC_VRAM_SIZE - dest)
@@ -279,30 +296,55 @@ static void engine_fill_run(display_card_24ac_priv_t *p, uint32_t dest, uint32_t
     p->display.fb_dirty = true;
 }
 
-// Store one source longword through the active aperture in copy/ROP mode.
-// `dest` is the passive VRAM offset (active addr − 0x400000).  $7F (and
-// stretch $03) are a straight copy; computed raster-op codes are not yet
-// validated against the live-driver oracle, so they fall back to copy with
-// a log.  Because the cdev degrades to the (correct) software path whenever
-// its gates fail, a wrong ROP can only make the *accelerated* result
-// diverge — which the engine-vs-fallback oracle test (proposal §3.5) would
-// catch — never corrupt the displayed image.
-static void engine_store_long(display_card_24ac_priv_t *p, uint32_t dest, uint32_t src) {
-    if (dest + 4 > DISPLAY_CARD_24AC_VRAM_SIZE)
-        return; // out of VRAM — drop (driver never streams past the bank)
-    uint32_t out;
-    switch (p->engine_mode) {
-    case DISPLAY_CARD_24AC_MODE_COPY:
-    case DISPLAY_CARD_24AC_MODE_STRETCH:
-        out = src; // straight transfer
-        break;
-    default:
-        // Computed ROP code ($00..$3F) — semantics await oracle validation.
-        LOG(3, "engine: ROP mode $%02x streamed long $%08x → dest $%06x (copy fallback)", p->engine_mode, src, dest);
-        out = src;
-        break;
+// Copy / raster-op through the active aperture (`CONTROL=$7F` or computed ROP).
+// This is a VRAM→VRAM block copy driven by a two-write handshake (the path
+// ScrollRect and window CopyBits use, RE'd from the live cdev — errata E9):
+//
+//   * a write WITHOUT the command flag latches the SOURCE: source offset =
+//     (active addr − 0x400000), length = the low bits of the value;
+//   * a write WITH the flag copies that many bytes from the latched source to
+//     this dest (active addr − 0x400000).
+//
+// The engine's source pointer AUTO-INCREMENTS as it copies (errata E10): one
+// latch can feed several executes.  The driver exploits this to split a copy
+// that would straddle a 32 KB destination boundary into two executes from a
+// SINGLE latch — e.g. a 512-byte scanline copy whose dest crosses $008000 is
+// issued as `copy 120 → $7f88` then `copy 392 → $8000`, both reusing the one
+// latched source, with the engine advancing the source by 120 between them.
+// Pinning the source at the latched value (the original model) re-read the
+// first bytes for the second execute, dribbling stale pixels at every
+// boundary-crossing scanline — the dotted artifacts seen scrolling one line at
+// a time.  Page-jump scrolls hid it because their copies rarely straddle a
+// boundary.  So: advance engine_copy_src by every executed length.
+//
+// `val` is the raw longword written through the active alias.  The earlier
+// "the written longword IS the source pixels, store it at dest" model was an
+// over-broad reading of the §4.3 `[INFER]`: it stored the run-length/flag
+// *command words* as pixels, which tore scrolled windows apart.  Straight copy
+// for $7F / stretch $03; computed raster-op codes ($00..$3F) fall back to a
+// straight copy with a log (still oracle-checkable, never corrupts the image).
+static void engine_store_long(display_card_24ac_priv_t *p, uint32_t dest, uint32_t val) {
+    if (!(val & DISPLAY_CARD_24AC_ENGINE_CMD_FLAG)) {
+        // Source-latch: remember where to copy FROM (and how many bytes).
+        p->engine_copy_src = dest;
+        p->engine_copy_len = val;
+        return;
     }
-    STORE_BE32(p->vram + dest, out);
+    // Execute: copy `len` bytes from the latched source to dest, then advance
+    // the source pointer so a follow-on execute (same latch) continues on.
+    uint32_t len = val & ~DISPLAY_CARD_24AC_ENGINE_CMD_FLAG;
+    uint32_t src = p->engine_copy_src;
+    p->engine_copy_src = src + len; // auto-increment source pointer (hardware)
+    if (src >= DISPLAY_CARD_24AC_VRAM_SIZE || dest >= DISPLAY_CARD_24AC_VRAM_SIZE || len == 0)
+        return;
+    if (len > DISPLAY_CARD_24AC_VRAM_SIZE - src)
+        len = DISPLAY_CARD_24AC_VRAM_SIZE - src;
+    if (len > DISPLAY_CARD_24AC_VRAM_SIZE - dest)
+        len = DISPLAY_CARD_24AC_VRAM_SIZE - dest;
+    if (p->engine_mode != DISPLAY_CARD_24AC_MODE_COPY && p->engine_mode != DISPLAY_CARD_24AC_MODE_STRETCH)
+        LOG(3, "engine: ROP mode $%02x block-copy %u bytes src $%06x → dest $%06x (copy fallback)", p->engine_mode, len,
+            src, dest);
+    memmove(p->vram + dest, p->vram + src, len); // source/dest may overlap
     p->display.fb_dirty = true;
 }
 

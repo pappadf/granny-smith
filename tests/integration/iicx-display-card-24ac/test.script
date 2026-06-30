@@ -56,14 +56,24 @@ assert ${machine.memory.peek.l(0xF9001000) == 0xCCCCCCCC}        "solid fill: wo
 assert ${machine.memory.peek.l(0xF9001004) == 0xCCCCCCCC}        "solid fill: word 1"
 assert ${machine.memory.peek.l(0xF9001008) == 0x00000000}        "solid fill: overran the 8-byte run"
 
-# --- Block copy: CONTROL=$7F streams source longwords straight through ---
+# --- Block copy (CONTROL=$7F): VRAM→VRAM via the two-write handshake ---
+# The driver (ScrollRect / CopyBits) latches a SOURCE with a no-flag write to
+# the active alias, then triggers the copy with a bit-30-flagged write to the
+# DEST.  (NOT "the written longword is the source pixels" — that older model
+# stored the command words as pixels and tore scrolled windows; see the dossier
+# errata E9.)  Seed source pixels at 0x200, copy 8 bytes to 0x4000.
+machine.memory.poke.l 0xF9000200 0x11223344
+machine.memory.poke.l 0xF9000204 0x55667788
 machine.memory.poke.b 0xF9D40403 0x7F
-machine.memory.poke.l 0xF9400200 0x11223344
-machine.memory.poke.l 0xF9400204 0x55667788
-assert ${machine.memory.peek.l(0xF9000200) == 0x11223344}        "copy: long 0"
-assert ${machine.memory.peek.l(0xF9000204) == 0x55667788}        "copy: long 1"
+machine.memory.poke.l 0xF9400200 0x00000008
+machine.memory.poke.l 0xF9404000 0x40000008
+assert ${machine.memory.peek.l(0xF9004000) == 0x11223344}        "block copy: long 0"
+assert ${machine.memory.peek.l(0xF9004004) == 0x55667788}        "block copy: long 1"
+assert ${machine.memory.peek.l(0xF9004008) == 0x00000000}        "block copy: overran the 8-byte run"
+# A no-flag write only latches — it must NOT store its value as pixels.
+assert ${machine.memory.peek.l(0xF9000200) == 0x11223344}        "source-latch write must not corrupt VRAM"
 # Reading the active-bank alias returns the underlying passive VRAM.
-assert ${machine.memory.peek.l(0xF9400200) == 0x11223344}        "active-bank alias read != passive VRAM"
+assert ${machine.memory.peek.l(0xF9404000) == 0x11223344}        "active-bank alias read != passive VRAM"
 
 # =====================================================================
 # Part C — engine-vs-fallback oracle (proposal §3.5) + object model (§3.8).
