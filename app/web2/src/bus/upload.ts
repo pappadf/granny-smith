@@ -296,7 +296,7 @@ async function persist(
   originalName: string,
   descriptor: MediaTypeDescriptor,
   info:
-    | { persistDir?: string; checksum?: string; cardName?: string; [k: string]: unknown }
+    | { persistDir?: string; checksum?: string; canonicalName?: string; [k: string]: unknown }
     | undefined,
 ): Promise<string | null> {
   const finalName = descriptor.nameFn ? descriptor.nameFn(originalName, info) : originalName;
@@ -311,11 +311,14 @@ async function persist(
   // Notify inventory watchers (e.g. WelcomeConfigSlide's dropdown
   // refresh effect) that the OPFS image catalog has changed.
   bumpImagesRevision();
-  // For media that carries a human-readable label (VROM → card_name)
-  // surface it in the toast — gives the user feedback that we actually
-  // recognised the file, not just "it landed in OPFS".
-  const label = (info?.cardName as string | undefined) ?? originalName;
-  showNotification(info?.cardName ? `${label} VROM uploaded` : `${originalName} uploaded`, 'info');
+  // When the file was recognised and stored under a canonical name (VROM →
+  // its declaration-ROM canonical filename), surface that in the toast — it
+  // tells the user we actually identified the file, not just "it landed in
+  // OPFS". The card's human name is shown later in the config dialog (sourced
+  // from machine.profile), so we don't duplicate that knowledge here.
+  const canonical = info?.canonicalName as string | undefined;
+  const shown = canonical && canonical !== originalName ? canonical : originalName;
+  showNotification(`${shown} uploaded`, 'info');
   return finalPath;
 }
 

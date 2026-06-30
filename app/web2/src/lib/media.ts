@@ -41,15 +41,20 @@ interface RomIdentifyResult {
   size?: number;
 }
 
-// Shape returned by C-side `machine.vrom.identify` after the v0.4.5 upgrade.
-// Unrecognised files come back as { recognised: false, size, fnv1a }
-// — see src/core/memory/vrom.c. Used by the VROM media descriptor.
+// Shape returned by C-side `machine.vrom.identify`. Identity is keyed off the
+// declaration ROM's NuBus Format-Block CRC (the analog of rom.identify's
+// checksum); `card_id` is the nubus card-kind the blob provides and
+// `compatible` mirrors rom.identify's `compatible:[model_ids]` shape (the card
+// ids this vROM can drive, usually length 1). Unrecognised files come back as
+// { recognised: false, size?, crc? } — see src/core/memory/vrom.c. The
+// human-readable card name is owned by the card kind (machine.profile), not here.
 interface VromIdentifyResult {
   recognised: boolean;
   canonical_name?: string;
-  card_name?: string;
+  card_id?: string;
+  compatible?: string[];
   size?: number;
-  fnv1a?: string;
+  crc?: string;
 }
 
 async function parseRomIdentify(gsEval: GsEval, path: string): Promise<RomIdentifyResult | null> {
@@ -94,8 +99,9 @@ export const MEDIA_TYPES: Record<MediaTypeId, MediaTypeDescriptor> = {
           valid: true,
           info: {
             canonicalName: parsed.canonical_name,
-            cardName: parsed.card_name,
-            checksum: parsed.fnv1a,
+            cardId: parsed.card_id,
+            compatible: parsed.compatible,
+            checksum: parsed.crc,
           },
         };
       } catch {

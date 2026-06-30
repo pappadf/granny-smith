@@ -368,6 +368,13 @@ export async function initEmulator(config: MachineConfig): Promise<void> {
   if (config.vrom && config.vrom !== '(auto)') {
     await gsEval('machine.vrom.load', [config.vrom]);
   }
+  // Select the NuBus video card before boot. Without this the slot falls back
+  // to its default card (e.g. the IIcx's "mdc_8_24"), so an uploaded 24AC vROM
+  // would boot an 8•24 instead. The id comes from the dialog's probe of the
+  // chosen card; the card factory then finds its vROM on disk by canonical name.
+  if (config.videoCard) {
+    await gsEval('machine.nubus.video_card', [config.videoCard]);
+  }
   // Seed the JMFB video mode before machine.boot so the card factory consumes
   // it (sets the sense lines + slot-PRAM/video defaults).  web-legacy's
   // bootFromConfig does this; omitting it left the JMFB unseeded and A/UX hung

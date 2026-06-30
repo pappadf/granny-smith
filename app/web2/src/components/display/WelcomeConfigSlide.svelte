@@ -55,6 +55,7 @@
       default_card: string;
       cards: Array<{
         id: string;
+        display_name?: string;
         requires_vrom: boolean;
         monitors?: Array<{
           id: string;
@@ -67,9 +68,18 @@
     }>;
   }
 
+  // One identified VROM in OPFS: which card it provides (probed via
+  // vrom.identify) so the dialog can speak in cards, not filenames.
+  interface VromEntry {
+    path: string;
+    name: string; // canonical filename
+    cardId: string; // nubus card-kind id this blob provides
+    compatible: string[]; // card ids this vROM can drive (usually [cardId])
+  }
+
   // Local form state.
   let modelId = $state('');
-  let vrom = $state(DEFAULT_CONFIG.vrom);
+  let cardId = $state(''); // selected NuBus video card-kind id
   let ram = $state(DEFAULT_CONFIG.ram);
   let romPath = $state('');
   let floppies = $state<string[]>([]);
@@ -80,6 +90,8 @@
   // Discovery state.
   let scanning = $state(true);
   let allRoms = $state<RomEntry[]>([]);
+  // VROMs in OPFS, each identified to the card it provides.
+  let allVroms = $state<VromEntry[]>([]);
   // model id -> profile, populated lazily via gsEval('machine.profile').
   let profiles = $state<Record<string, MachineProfile>>({});
   // model id -> ROMs that boot this model.
@@ -99,14 +111,46 @@
   let needsRomPicker = $derived(romsForCurrentModel.length > 1);
   let currentProfile = $derived(modelId ? profiles[modelId] : undefined);
   let modelName = $derived(currentProfile?.name ?? modelId);
-  // VROM row visibility is driven entirely by the *selected card* (the
-  // SE/30-vs-IIci asymmetry): a card declares requires_vrom, not the machine.
-  let needsVrom = $derived(
-    (currentProfile?.video_slots ?? []).some((s) => {
-      const card = s.cards?.find((c) => c.id === s.default_card) ?? s.cards?.[0];
-      return card?.requires_vrom === true;
-    }),
+  // --- Video card selection (card-driven; the vROM is auto-resolved). ------
+  // The dialog speaks in *cards* (Apple Macintosh Display Card 24AC), not vROM
+  // filenames. The available cards + their requires_vrom / monitors come from
+  // machine.profile (the core owns this); each uploaded vROM is probed to the
+  // card it provides (vrom.identify → card_id), so we only offer cards whose
+  // vROM is actually present, and set machine.nubus.video_card at boot.
+
+  // card-id -> the OPFS VROM files that provide it.
+  let vromsByCardId = $derived.by(() => {
+    const out: Record<string, VromEntry[]> = {};
+    for (const v of allVroms) (out[v.cardId] ??= []).push(v);
+    return out;
+  });
+  // The current model's video-slot cards, flattened (machines have one slot).
+  let slotCards = $derived((currentProfile?.video_slots ?? []).flatMap((s) => s.cards ?? []));
+  // The slot's default card id (the C-side default pick).
+  let defaultCardId = $derived(
+    (currentProfile?.video_slots ?? []).find((s) => s.default_card)?.default_card ?? '',
   );
+  // A card is offerable iff it needs no vROM (builtin) or its vROM is present.
+  let availableCards = $derived(
+    slotCards.filter((c) => !c.requires_vrom || (vromsByCardId[c.id]?.length ?? 0) > 0),
+  );
+  let cardOptions = $derived(
+    availableCards.map((c) => ({ id: c.id, label: c.display_name ?? c.id })),
+  );
+  // Only surface the card picker when there's a real choice; a fixed/builtin
+  // single card (e.g. SE/30 onboard video) needs no dropdown.
+  let needsCardPicker = $derived(cardOptions.length > 1);
+  let selectedCard = $derived(availableCards.find((c) => c.id === cardId));
+  // VROM row/handling is driven by the *selected card* (the SE/30-vs-IIci
+  // asymmetry): a card declares requires_vrom, not the machine.
+  let needsVrom = $derived(selectedCard?.requires_vrom === true);
+  // The vROM file handed to the core for the selected card. The card factory
+  // finds its vROM on disk by canonical name, so this mainly feeds the SE/30
+  // builtin's pending-path and gates "is this card installable".
+  let resolvedVrom = $derived(needsVrom ? (vromsByCardId[cardId]?.[0] ?? null) : null);
+  // Model expects a video card but none is installable (every candidate card
+  // needs a vROM and none is present). Drives the "upload a Video ROM" hint.
+  let videoUnavailable = $derived(slotCards.length > 0 && availableCards.length === 0);
   // HD row label: the Lisa/XL parallel-port ProFile (hd_bus === 'profile') is
   // not on the SCSI bus, so its label comes from the bus, not scsi_slots (which
   // is empty for those machines). SCSI machines keep their profile slot label.
@@ -123,28 +167,22 @@
     return ['1 MB', '2 MB', '4 MB', '8 MB', '16 MB'];
   });
   let floppySlots = $derived(currentProfile?.floppy_slots ?? []);
-  // Video-mode list derived from video_slots: each selectable card's
-  // monitors × supported depths.  Ids/labels match what the C side used to
-  // emit as the flat video_modes array ("<monitor>_<depth>bpp"), so the
+  // Video-mode list for the *selected card*: its monitors × supported depths.
+  // Ids/labels match what the C side emits ("<monitor>_<depth>bpp"), so the
   // boot-time `machine.nubus.video_mode` seed is unchanged.
   let videoModes = $derived.by(() => {
     const out: Array<{ id: string; label: string }> = [];
-    for (const s of currentProfile?.video_slots ?? []) {
-      for (const c of s.cards ?? []) {
-        for (const m of c.monitors ?? []) {
-          for (const d of m.depths ?? []) {
-            out.push({
-              id: `${m.id}_${d}bpp`,
-              label: `${m.name ?? m.id} · ${m.width}×${m.height} · ${d} bpp`,
-            });
-          }
-        }
+    for (const m of selectedCard?.monitors ?? []) {
+      for (const d of m.depths ?? []) {
+        out.push({
+          id: `${m.id}_${d}bpp`,
+          label: `${m.name ?? m.id} · ${m.width}×${m.height} · ${d} bpp`,
+        });
       }
     }
     return out;
   });
 
-  let vromOptions = $state<string[]>(['(auto)']);
   let fdOptions = $state<string[]>([NONE_SENTINEL]);
   let hdOptions = $state<string[]>([NONE_SENTINEL]);
   let cdOptions = $state<string[]>([NONE_SENTINEL]);
@@ -182,6 +220,30 @@
     }
   }
 
+  // Probe one VROM file to the card it provides, mirroring identifyRom. The
+  // core (vrom.identify) owns the vROM→card mapping; the UI carries none.
+  async function identifyVrom(path: string): Promise<VromEntry | null> {
+    const r = await gsEval('machine.vrom.identify', [path]);
+    if (typeof r !== 'string') return null;
+    try {
+      const parsed = JSON.parse(r) as {
+        recognised?: boolean;
+        canonical_name?: string;
+        card_id?: string;
+        compatible?: string[];
+      };
+      if (!parsed.recognised || !parsed.card_id) return null;
+      return {
+        path,
+        name: parsed.canonical_name ?? path.split('/').pop() ?? path,
+        cardId: parsed.card_id,
+        compatible: Array.isArray(parsed.compatible) ? parsed.compatible : [parsed.card_id],
+      };
+    } catch {
+      return null;
+    }
+  }
+
   async function resolveProfile(id: string): Promise<MachineProfile> {
     if (profiles[id]) return profiles[id];
     const r = await gsEval('machine.profile', [id]);
@@ -213,6 +275,12 @@
     );
     allRoms = identified;
 
+    // Identify every VROM to the card it provides (drop unrecognised). The
+    // card picker is then built from machine.profile filtered to these.
+    allVroms = (await Promise.all(vroms.map((v) => identifyVrom(v.path)))).filter(
+      (e): e is VromEntry => e !== null,
+    );
+
     // Look up display names for every model surfaced by these ROMs.
     const seenIds: string[] = [];
     for (const r of identified) {
@@ -227,7 +295,6 @@
       modelId = seenIds[0] ?? '';
     }
 
-    vromOptions = ['(auto)', ...vroms.map((v) => v.name)];
     fdOptions = [NONE_SENTINEL, ...fds.map((f) => f.name), UPLOAD_SENTINEL, CREATE_SENTINEL];
     hdOptions = [NONE_SENTINEL, ...hds.map((h) => h.name), UPLOAD_SENTINEL, CREATE_SENTINEL];
     cdOptions = [NONE_SENTINEL, ...cds.map((c) => c.name), UPLOAD_SENTINEL];
@@ -245,6 +312,26 @@
     }
   });
 
+  // Keep cardId valid for the current model: prefer the slot's default card,
+  // else the first installable one. The picker may be hidden (single card),
+  // so this is what submit relies on.
+  $effect(() => {
+    const list = availableCards;
+    if (!list.length) {
+      cardId = '';
+    } else if (!list.find((c) => c.id === cardId)) {
+      cardId = list.find((c) => c.id === defaultCardId)?.id ?? list[0].id;
+    }
+  });
+
+  // Keep videoMode valid for the selected card (resets on model or card change).
+  $effect(() => {
+    const list = videoModes;
+    if (!list.find((m) => m.id === videoMode)) {
+      videoMode = list[0]?.id ?? '';
+    }
+  });
+
   // When the *selected model* changes, reset RAM to the new model's
   // ram_default (matches the legacy dialog — every model change rebuilds
   // the RAM dropdown around the profile's recommended value) and resize
@@ -256,7 +343,7 @@
     const dflt = currentProfile.ram_default;
     ram = dflt ? formatRamKb(dflt) : (ramOptions[0] ?? DEFAULT_CONFIG.ram);
     floppies = new Array<string>(floppySlots.length).fill(NONE_SENTINEL);
-    videoMode = videoModes[0]?.id ?? '';
+    // cardId / videoMode follow the card-selection effects above.
   });
 
   onMount(() => {
@@ -353,7 +440,9 @@
       return;
     }
     const selected = romsForCurrentModel.find((r) => r.path === romPath) ?? romsForCurrentModel[0];
-    const vromPath = !needsVrom || vrom === '(auto)' ? '(auto)' : `/opfs/images/vrom/${vrom}`;
+    // The chosen card auto-resolves its vROM (probed by card id); the card
+    // factory then finds it on disk by canonical name. '(auto)' = no vROM.
+    const vromPath = resolvedVrom ? resolvedVrom.path : '(auto)';
     const floppyPaths = floppies.map((f) =>
       f === NONE_SENTINEL || !f ? '' : `/opfs/images/fd/${f}`,
     );
@@ -364,8 +453,11 @@
       modelName,
       rom: selected.path,
       vrom: vromPath,
-      // Seed the selected JMFB video mode (matches web-legacy's bootFromConfig).
-      // Without it the JMFB never seeds its slot-PRAM/video defaults and A/UX
+      // The selected NuBus video card; applied via machine.nubus.video_card so
+      // the right card boots instead of the slot default (the 24AC-vs-8•24 bug).
+      videoCard: cardId || undefined,
+      // Seed the selected video mode (matches web-legacy's bootFromConfig).
+      // Without it the card never seeds its slot-PRAM/video defaults and A/UX
       // hangs enabling its device drivers on real hardware.
       videoMode: videoMode || undefined,
       ram,
@@ -416,14 +508,23 @@
           </select>
         </div>
       {/if}
-      {#if needsVrom}
+      {#if needsCardPicker}
         <div class="form-row">
-          <label for="cfg-vrom">Video ROM</label>
-          <select id="cfg-vrom" bind:value={vrom}>
-            {#each vromOptions as v (v)}
-              <option>{v}</option>
+          <label for="cfg-card">Display Card</label>
+          <select id="cfg-card" bind:value={cardId}>
+            {#each cardOptions as c (c.id)}
+              <option value={c.id}>{c.label}</option>
             {/each}
           </select>
+        </div>
+      {/if}
+      {#if videoUnavailable}
+        <div class="form-row">
+          <span class="form-label">Display Card</span>
+          <div class="form-help">
+            This model's display card needs a Video ROM. Drag-and-drop one (or add it via the Images
+            panel) to enable video.
+          </div>
         </div>
       {/if}
       {#if videoModes.length > 1}
