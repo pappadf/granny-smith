@@ -14,6 +14,7 @@
 #include "system_config.h"
 
 #include <stdint.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -37,12 +38,10 @@ struct nubus_bus {
 extern const nubus_card_kind_t builtin_se30_video_kind; // cards/builtin_se30_video.c
 extern const nubus_card_kind_t mdc_8_24_kind; // cards/jmfb.c
 extern const nubus_card_kind_t builtin_rbv_video_kind; // cards/builtin_rbv_video.c
+extern const nubus_card_kind_t display_card_24ac_kind; // cards/display_card_24ac.c
 
 static const nubus_card_kind_t *const g_card_registry[] = {
-    &builtin_se30_video_kind,
-    &mdc_8_24_kind,
-    &builtin_rbv_video_kind,
-    NULL,
+    &builtin_se30_video_kind, &mdc_8_24_kind, &builtin_rbv_video_kind, &display_card_24ac_kind, NULL,
 };
 
 const nubus_card_kind_t *const *nubus_card_registry(void) {
@@ -57,6 +56,41 @@ const nubus_card_kind_t *nubus_card_find(const char *id) {
             return *p;
     }
     return NULL;
+}
+
+// === Pending video-card selection ===========================================
+//
+// The VIDEO slot defaults to its declared default_card; this pending slot
+// lets the config dialog / a test override the pick for the next boot
+// without a machine-framework change.  At most 31 chars + NUL fits any
+// card id ("display_card_24ac" etc.).
+static char s_pending_video_card[32] = "";
+
+void nubus_pending_video_card_set(const char *id) {
+    if (!id || !*id) {
+        s_pending_video_card[0] = '\0';
+        return;
+    }
+    snprintf(s_pending_video_card, sizeof s_pending_video_card, "%s", id);
+}
+
+const char *nubus_pending_video_card_get(void) {
+    return s_pending_video_card[0] ? s_pending_video_card : NULL;
+}
+
+// Resolve the VIDEO slot's card id: honour the pending selection iff it is
+// listed in the slot's available_cards, else fall back to default_card.
+static const char *video_slot_card_id(const nubus_slot_decl_t *s) {
+    const char *pending = nubus_pending_video_card_get();
+    if (pending && s->available_cards) {
+        for (const char *const *c = s->available_cards; *c; c++) {
+            if (strcmp(*c, pending) == 0)
+                return pending;
+        }
+        LOG(1, "nubus: pending video_card '%s' not in slot $%X available_cards; using default '%s'", pending, s->slot,
+            s->default_card ? s->default_card : "(none)");
+    }
+    return s->default_card;
 }
 
 // === Bus controller =========================================================
@@ -82,9 +116,9 @@ nubus_bus_t *nubus_init(config_t *cfg, const nubus_slot_decl_t *slots, checkpoin
                 kind = nubus_card_find(s->builtin_card_id);
                 break;
             case NUBUS_SLOT_VIDEO:
-                // Step 3 falls back to the slot's default; step 5 adds the
-                // video.* pending-card lookup that lets the dialog pick.
-                kind = nubus_card_find(s->default_card);
+                // Honour a pending `nubus.video_card` pick if it is one of
+                // this slot's available_cards; otherwise the slot default.
+                kind = nubus_card_find(video_slot_card_id(s));
                 break;
             case NUBUS_SLOT_ABSENT:
             case NUBUS_SLOT_EMPTY:
@@ -106,12 +140,20 @@ nubus_bus_t *nubus_init(config_t *cfg, const nubus_slot_decl_t *slots, checkpoin
                 bus->cards[s->slot] = card;
         }
     }
+    // Consume the pending video-card pick so a stale selection doesn't
+    // leak into the next machine.boot (mirrors jmfb's pending-sense reset).
+    nubus_pending_video_card_set(NULL);
+    // Project the populated slots into the object model (proposal §3.8):
+    // machine.nubus.slot[N].card.{framebuffer,declrom,clut,mode,…}.
+    nubus_objects_build(bus);
     return bus;
 }
 
 void nubus_delete(nubus_bus_t *bus) {
     if (!bus)
         return;
+    // Drop the object-model node trees before the cards they read go away.
+    nubus_objects_teardown();
     for (int i = 0; i < NUBUS_MAX_SLOTS; i++) {
         nubus_card_t *card = bus->cards[i];
         if (!card)
@@ -142,6 +184,19 @@ display_t *nubus_primary_display(nubus_bus_t *bus) {
         display_t *d = card->ops->display(card);
         if (d)
             return d;
+    }
+    return NULL;
+}
+
+nubus_card_t *nubus_primary_display_card(nubus_bus_t *bus) {
+    if (!bus)
+        return NULL;
+    for (int i = 0; i < NUBUS_MAX_SLOTS; i++) {
+        nubus_card_t *card = bus->cards[i];
+        if (!card || !card->ops || !card->ops->display)
+            continue;
+        if (card->ops->display(card))
+            return card;
     }
     return NULL;
 }

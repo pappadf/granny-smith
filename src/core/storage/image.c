@@ -581,16 +581,32 @@ size_t disk_read_data(image_t *disk, size_t offset, uint8_t *buf, size_t size) {
         return 0;
     GS_ASSERT((offset % disk->block_size) == 0);
     GS_ASSERT((size % disk->block_size) == 0);
-    GS_ASSERT(offset + size <= disk->raw_size);
+    // An undersized / truncated image (a host file shorter than the media it
+    // backs) can be read past its end — e.g. the Finder reading high tracks
+    // while ejecting a 400K/800K-geometry floppy backed by a too-small file.
+    // Serve the unbacked tail as blank media (zeroes) rather than asserting,
+    // so the guest sees readable-but-empty sectors and the operation can
+    // finish.  `backed` is the in-bounds, whole-block byte count.
+    size_t backed = (offset < disk->raw_size) ? (disk->raw_size - offset) : 0;
+    if (backed > size)
+        backed = size;
+    backed -= backed % disk->block_size;
+    if (backed < size) {
+        memset(buf + backed, 0, size - backed);
+        LOG(1,
+            "disk_read_data: %zu-byte read at offset %zu runs past image end (raw_size=%zu); zero-filled %zu-byte tail",
+            size, offset, disk->raw_size, size - backed);
+    }
     size_t transferred = 0;
-    while (transferred < size) {
+    while (transferred < backed) {
         int rc = storage_read_block(disk->storage, offset + transferred, buf + transferred);
         GS_ASSERTF(rc == GS_SUCCESS, "storage_read_block failed (%d)", rc);
         if (rc != GS_SUCCESS)
-            break;
+            return transferred; // genuine in-bounds backing-store failure
         transferred += disk->block_size;
     }
-    return transferred;
+    // Buffer fully populated: real data plus any zero-filled tail past EOF.
+    return size;
 }
 
 size_t disk_write_data(image_t *disk, size_t offset, uint8_t *buf, size_t size) {
@@ -598,16 +614,28 @@ size_t disk_write_data(image_t *disk, size_t offset, uint8_t *buf, size_t size) 
         return 0;
     GS_ASSERT((offset % disk->block_size) == 0);
     GS_ASSERT((size % disk->block_size) == 0);
-    GS_ASSERT(offset + size <= disk->raw_size);
+    // Symmetric with disk_read_data: a write past the end of an undersized
+    // image targets sectors with no backing store.  Drop the unbacked tail
+    // (it cannot be stored) rather than asserting, so the guest's volume
+    // flush during eject completes; warn so the dropped write is visible.
+    size_t backed = (offset < disk->raw_size) ? (disk->raw_size - offset) : 0;
+    if (backed > size)
+        backed = size;
+    backed -= backed % disk->block_size;
+    if (backed < size)
+        LOG(1,
+            "disk_write_data: %zu-byte write at offset %zu runs past image end (raw_size=%zu); dropped %zu-byte tail",
+            size, offset, disk->raw_size, size - backed);
     size_t transferred = 0;
-    while (transferred < size) {
+    while (transferred < backed) {
         int rc = storage_write_block(disk->storage, offset + transferred, buf + transferred);
         GS_ASSERTF(rc == GS_SUCCESS, "storage_write_block failed (%d)", rc);
         if (rc != GS_SUCCESS)
-            break;
+            return transferred; // genuine in-bounds backing-store failure
         transferred += disk->block_size;
     }
-    return transferred;
+    // Accepted the write; any portion past EOF was intentionally dropped.
+    return size;
 }
 
 // ============================================================================

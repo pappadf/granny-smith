@@ -21,6 +21,7 @@
 struct config;
 struct checkpoint;
 struct display;
+struct object;
 typedef struct config config_t;
 typedef struct checkpoint checkpoint_t;
 typedef struct display display_t;
@@ -66,6 +67,15 @@ static inline uint32_t nubus_super_slot_base(int slot) {
 nubus_bus_t *nubus_init(config_t *cfg, const nubus_slot_decl_t *slots, checkpoint_t *cp);
 void nubus_delete(nubus_bus_t *bus);
 
+// Pending user-selected video card id for the next machine.boot's VIDEO
+// slot.  Set via `machine.nubus.video_card = "display_card_24ac"` before boot;
+// nubus_init honours it iff it appears in that slot's available_cards
+// list (else it logs and falls back to the slot's default_card).  Cleared
+// after consumption so a stale pick doesn't leak into the next boot.
+// Passing NULL or "" clears the pending selection.
+void nubus_pending_video_card_set(const char *id);
+const char *nubus_pending_video_card_get(void);
+
 // Per-slot IRQ assertion.  The bus aggregates and drives VIA2 PA[0..5]
 // (active-low) plus pulses CA1 on the umbrella transition.
 void nubus_assert_irq(nubus_card_t *card);
@@ -78,6 +88,25 @@ nubus_card_t *nubus_card(nubus_bus_t *bus, int slot);
 // canvas.  v1: first slot in declared order whose ops->display() returns
 // non-NULL.
 display_t *nubus_primary_display(nubus_bus_t *bus);
+
+// The card behind nubus_primary_display() (same selection rule), or NULL.
+// Used by the object model to wire `machine.screen.source` to the active
+// card's framebuffer node.
+nubus_card_t *nubus_primary_display_card(nubus_bus_t *bus);
+
+// === Object-model surface (proposal §3.8) ===================================
+//
+// Build / tear down the per-slot `slot[N].card.{framebuffer,declrom,clut,mode}`
+// object trees for every populated slot.  nubus_init calls _build after the
+// cards exist; nubus_delete calls _teardown before freeing them.  The node
+// objects are owned here (object_delete_tree on teardown), not by the bus.
+void nubus_objects_build(nubus_bus_t *bus);
+void nubus_objects_teardown(void);
+
+// The framebuffer node object of the active (primary-display) card, or NULL —
+// the target of the `machine.screen.source` reference edge.  Re-resolved on
+// demand so a card swap can never leave it dangling.
+struct object *nubus_active_framebuffer_object(void);
 
 // VBL fan-out.  Family code calls this from glue030_trigger_vbl after
 // pulsing the GLUE-driven CA1 lines; it iterates the slot table and

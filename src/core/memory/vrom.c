@@ -103,50 +103,62 @@ static value_t vrom_method_load(struct object *self, const member_t *m, int argc
     return val_bool(true);
 }
 
-// FNV-1a 32-bit hash, same constants the IOP firmware checks use
-// elsewhere in core. Cheap, content-derived, good enough to identify a
-// 32 KB VROM blob among a small known set.
-static uint32_t vrom_fnv1a32(const uint8_t *data, size_t n) {
-    uint32_t h = 0x811c9dc5u;
-    for (size_t i = 0; i < n; i++) {
-        h ^= data[i];
-        h *= 0x01000193u;
-    }
-    return h;
+// NuBus declaration-ROM Format Block CRC.  Every declaration ROM — the
+// genuine cards and the "fake" SE/30 onboard-video ROM alike — carries a
+// 20-byte Format Block at the top of the dense chip image; its 4-byte CRC
+// (preceded by the `$5A932BC7` TestPattern) is the intrinsic, Slot-Manager-
+// validated checksum.  See docs/core/peripherals/nubus_vrom.md §2.  We read
+// it as identity, the direct analog of rom.c keying on the main ROM's
+// checksum word — no emulator-invented hash.  Field offsets from EOF of the
+// dense chip (high address = end), per §2 / §12:
+//   buf[size-1]        ByteLanes
+//   buf[size-2]        Reserved
+//   buf[size-6..size-3] TestPattern (big-endian $5A 93 2B C7)
+//   buf[size-12..size-9] CRC (big-endian)
+#define VROM_TESTPATTERN_OFF 6 // bytes from EOF to the first TestPattern byte
+#define VROM_CRC_OFF         12 // bytes from EOF to the first (MSB) CRC byte
+
+static uint32_t vrom_be32(const uint8_t *p) {
+    return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) | ((uint32_t)p[2] << 8) | (uint32_t)p[3];
 }
 
-// Catalog of known VROM blobs. Maps FNV-1a32 over the whole file to the
-// canonical on-disk filename the C-side card factories expect (e.g.
-// jmfb.c hardcodes "Apple-341-0868.vrom") and a human-readable card
-// label that the UI can display. Adding a new VROM = one row here.
+// Catalog of known VROM blobs.  Maps the declaration ROM's Format-Block CRC
+// to the canonical on-disk filename the C-side card factories expect (e.g.
+// jmfb.c hardcodes "Apple-341-0868.vrom") and the nubus card-kind id the
+// blob provides.  The id is the machine-readable link a UI uses to pick the
+// card (machine.nubus.video_card); the human label is owned by the card kind
+// (nubus_card_find(id)->display_name) so it never drifts.  Adding a new VROM
+// = one row here.  Keyed exactly like rom.c's ROM_TABLE {checksum -> ...}.
 struct vrom_known {
-    uint32_t fnv1a;
+    uint32_t crc;
     const char *canonical_name;
-    const char *card_name;
+    const char *card_id;
 };
 static const struct vrom_known VROM_CATALOG[] = {
     // Macintosh Display Card 8•24 (ROM rev 341-0868). Drives the JMFB
-    // NuBus card on IIcx / IIx / IIfx; loaded by jmfb.c.
-    {0x00c90c2eu, "Apple-341-0868.vrom",    "Macintosh Display Card 8•24"},
-    // SE/30 onboard video declaration ROM; loaded by
-    // builtin_se30_video.c.
-    {0xe22959a9u, "SE30.vrom",              "Macintosh SE/30 onboard video"},
-    // Macintosh Display Card 4•8 (24AC variant).
-    {0x41135c6au, "display-card-24ac.vrom", "Macintosh Display Card 4•8" },
+    // NuBus card (id "mdc_8_24") on IIcx / IIx / IIfx; loaded by jmfb.c.
+    {0xD1629664u, "Apple-341-0868.vrom",    "mdc_8_24"          },
+    // SE/30 onboard video declaration ROM (byteLanes $0F, 4-lane); loaded
+    // by builtin_se30_video.c (id "builtin_se30_video").
+    {0x4F71FF1Au, "SE30.vrom",              "builtin_se30_video"},
+    // Apple Macintosh Display Card 24AC (id "display_card_24ac").
+    {0xD8DAAB87u, "display-card-24ac.vrom", "display_card_24ac" },
 };
 
-// vrom.identify(path) — returns a JSON map describing the file:
+// vrom.identify(path) — returns a JSON map describing the file, keyed off
+// the declaration ROM's Format-Block CRC:
 //   {
-//     "recognised": bool,
-//     "canonical_name": "Apple-341-0868.vrom",    // present when recognised
-//     "card_name":      "Macintosh Display Card 8•24",
+//     "recognised":     bool,
+//     "canonical_name": "display-card-24ac.vrom",     // present when recognised
+//     "card_id":        "display_card_24ac",          // nubus card-kind id
+//     "compatible":     ["display_card_24ac"],         // card ids this blob can drive
 //     "size":           32768,
-//     "fnv1a":          "0x00c90c2e"
+//     "crc":            "0xd8daab87"
 //   }
-// JS callers use canonical_name to persist the file under the path
-// the C-side card factories expect (rather than the user's original
-// browser-renamed filename), and card_name as the human-readable label.
-// Mirrors rom.identify's JSON-shape contract.
+// `compatible` mirrors rom.identify's `compatible:[model_ids]` shape (a list,
+// usually length 1).  JS callers use canonical_name to persist the file under
+// the path the C-side card factories expect, and card_id / compatible to pick
+// the card; the human-readable name comes from machine.profile, not here.
 static value_t vrom_method_identify(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)self;
     (void)m;
@@ -154,11 +166,17 @@ static value_t vrom_method_identify(struct object *self, const member_t *m, int 
     const char *path = argv[0].s;
     size_t size = 0;
     bool size_ok = vrom_probe_file(path, &size);
+    // Distinguish "can't read the file" from "present, but not a vROM",
+    // mirroring rom.identify: a missing/unreadable path is a V_ERROR, while a
+    // real file of the wrong size is simply unrecognised.  vrom_probe_file
+    // leaves *size == 0 only when stat failed (nonexistent / unreadable).
+    if (size == 0)
+        return val_err("vrom.identify: cannot read '%s'", path);
     if (!size_ok)
         return val_str("{\"recognised\":false}");
 
-    // Read the whole VROM into memory and compute FNV-1a32. 32 KB is
-    // tiny — no need to stream.
+    // size == VROM_EXPECTED_SIZE (32 KB) from here; slurp the chip image —
+    // the Format Block is its trailing 20 bytes.
     FILE *f = fopen(path, "rb");
     if (!f)
         return val_err("vrom.identify: cannot open '%s'", path);
@@ -173,25 +191,32 @@ static value_t vrom_method_identify(struct object *self, const member_t *m, int 
         free(buf);
         return val_err("vrom.identify: short read from '%s'", path);
     }
-    uint32_t h = vrom_fnv1a32(buf, size);
+
+    // Gate on the TestPattern: a right-sized blob without `$5A932BC7` in the
+    // Format Block is not a declaration ROM (don't trust a stray CRC match).
+    const uint8_t *tp = buf + size - VROM_TESTPATTERN_OFF;
+    bool is_declrom = tp[0] == 0x5Au && tp[1] == 0x93u && tp[2] == 0x2Bu && tp[3] == 0xC7u;
+    uint32_t crc = vrom_be32(buf + size - VROM_CRC_OFF);
     free(buf);
 
-    for (size_t i = 0; i < sizeof(VROM_CATALOG) / sizeof(VROM_CATALOG[0]); i++) {
-        if (VROM_CATALOG[i].fnv1a == h) {
-            char out[256];
-            snprintf(out, sizeof(out),
-                     "{\"recognised\":true,\"canonical_name\":\"%s\",\"card_name\":\"%s\",\"size\":%zu,\"fnv1a\":\"0x%"
-                     "08x\"}",
-                     VROM_CATALOG[i].canonical_name, VROM_CATALOG[i].card_name, size, h);
-            return val_str(out);
+    if (is_declrom) {
+        for (size_t i = 0; i < sizeof(VROM_CATALOG) / sizeof(VROM_CATALOG[0]); i++) {
+            if (VROM_CATALOG[i].crc == crc) {
+                char out[256];
+                snprintf(out, sizeof(out),
+                         "{\"recognised\":true,\"canonical_name\":\"%s\",\"card_id\":\"%s\",\"compatible\":[\"%s\"],"
+                         "\"size\":%zu,\"crc\":\"0x%08x\"}",
+                         VROM_CATALOG[i].canonical_name, VROM_CATALOG[i].card_id, VROM_CATALOG[i].card_id, size, crc);
+                return val_str(out);
+            }
         }
     }
 
-    // Right size but unknown contents. Recognised=false so callers
-    // route into a normal "unrecognised file" path; still report the
-    // hash so the user (or a future catalog entry) can identify it.
+    // Right size but not a known declaration ROM. Recognised=false so callers
+    // route into a normal "unrecognised file" path; still report the CRC so a
+    // future catalog entry (or the user) can identify it.
     char out[128];
-    snprintf(out, sizeof(out), "{\"recognised\":false,\"size\":%zu,\"fnv1a\":\"0x%08x\"}", size, h);
+    snprintf(out, sizeof(out), "{\"recognised\":false,\"size\":%zu,\"crc\":\"0x%08x\"}", size, crc);
     return val_str(out);
 }
 
@@ -221,7 +246,7 @@ static const member_t vrom_members[] = {
      .method = {.args = vrom_path_arg, .nargs = 1, .result = V_BOOL, .fn = vrom_method_load}},
     {.kind = M_METHOD,
      .name = "identify",
-     .doc = "JSON map: {recognised, canonical_name?, card_name?, size, fnv1a}.",
+     .doc = "JSON map: {recognised, canonical_name?, card_id?, compatible?, size, crc}.",
      .method = {.args = vrom_path_arg, .nargs = 1, .result = V_STRING, .fn = vrom_method_identify}},
 };
 

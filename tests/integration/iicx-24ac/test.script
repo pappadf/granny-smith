@@ -1,0 +1,102 @@
+# Integration test: IIcx + Display Card 24AC — boot the 32-bit SCSI cdev image
+# to an 8-bpp COLOUR Finder desktop.
+#
+# Unlike iicx-display-card-24ac (which boots the floppy System 7.0.1 with the
+# $017A boot-wait poke and exercises the engine via memory.poke/peek), this
+# boots the genuine "Step B" artifact: systems/system_7_1_20mb_24ac_cd_32bit.img
+# — a 20 MB System 7.1 SCSI HD with the 24AC cdev pre-installed and 32-bit
+# addressing on.  So the cdev binds at boot and drives the real card end-to-end
+# (proposal-nubus-card-display-card-24ac §3.7 Step B).
+#
+# The image is stored as a .7z in gs-test-data (systems/) and auto-extracted by
+# scripts/fetch-test-data.sh, so the raw .img is present under tests/data.
+
+# Select the 24AC card and an 8-bpp 640x480 mode BEFORE boot.  The video_mode
+# pick seeds a COMPLETE valid PRAM ('NuMc' validity + PRAMInitTbl boot-device
+# defaults + the slot sPRAMRec savedMode $82) — which both selects 8-bpp colour
+# AND arms the 32-bit SCSI HD boot in one shot (commit a08f30d).  (video_card
+# can't be an arg, so the harness booted the default card; we re-boot here.)
+machine.nubus.video_card = "display_card_24ac"
+machine.nubus.video_mode = "rgb_640x480_8bpp"
+machine.boot "iicx" 8192
+machine.rom.reload
+
+# Attach the cdev HD at SCSI ID 0 (the boot device) and run to the desktop.
+# The complete valid PRAM lets the ROM boot straight from SCSI (no cold-init
+# scan).  The image reaches a stable Finder by ~150M instr; 200M gives margin
+# and the frame is steady well beyond it.
+machine.scsi.attach_hd "../../data/systems/system_7_1_20mb_24ac_cd_32bit.img" 0
+scheduler.run 200000000
+
+# The card that booted into the IIcx video slot ($9) is the 24AC, not the
+# slot-default 8•24 — i.e. machine.nubus.video_card took effect.
+assert ${machine.nubus.slot[9].card.name == "Apple Macintosh Display Card 24AC"} "slot $9 card != 24AC"
+# 8-bpp colour at 640x480: MODE depth bits 7-5 == 0x40, framebuffer 8 bpp.
+assert ${machine.screen.width == 640}                        "boot: screen width != 640"
+assert ${machine.screen.height == 480}                       "boot: screen height != 480"
+assert ${(machine.memory.peek.b(0xF9D80001) & 0xE0) == 0x40} "boot: MODE depth latch != 8 bpp"
+assert ${machine.nubus.slot[9].card.framebuffer.depth == 8}  "boot: framebuffer not 8 bpp"
+# The 8-bpp colour Finder desktop, booted from the SCSI HD, pixel-exact.
+machine.screen.match finder-640x480-8bpp.png
+
+# Open the Apple menu with a held mouse-down (press and hold — the menu stays
+# down while the button is held), same global-mode geometry as iici-boot
+# (Apple menu at 25,10).  This drives the menu draw through the 24AC
+# acceleration engine's run-length fill — the first test that exercises the
+# engine end-to-end (32-bit mode + the cdev installed).
+#
+# Regression guard for the engine fill run-length flag bug (display_card_24ac.c
+# engine_fill_run): the live cdev OR-s a command flag (bit 30) into each fill's
+# run-length write; before the fix the engine took the whole longword as the
+# byte count and each fill ran to end-of-VRAM.  The boot desktop's top-to-bottom
+# full-width fills self-corrected, but the Apple menu's narrow bottom-up fills
+# smeared the desktop into solid white/black bands.  The baseline below is the
+# corrected render: the menu over an intact gray desktop.
+machine.adb.mouse.move 50 50 "global"
+scheduler.run 5000000
+machine.adb.mouse.move 25 10 "global"
+scheduler.run 3000000
+machine.adb.mouse.click true
+scheduler.run 8000000
+machine.screen.match applemenu-640x480-8bpp.png
+
+# --- Part 3: vertical scroll through the engine's block-copy ($7F) path. ---
+# Dismiss the Apple menu (release over the desktop → no selection), then open
+# Control Panels, switch to "by Name" (a list taller than the window → a real
+# vertical scrollbar) and hold the down-arrow.  Each scrolled line is a
+# VRAM→VRAM ScrollRect the cdev runs as an engine block copy (CONTROL=$7F).
+#
+# Regression guard for the engine block-copy bug (engine_store_long): $7F is a
+# two-write handshake (no-flag source-latch + bit-30-flagged copy trigger), NOT
+# "store the written longword as source pixels".  The old model stored the
+# command words as pixels, tearing the scrolled list into garbled rows; the
+# baseline is the correctly-scrolled list.
+machine.adb.mouse.move 320 350 "global"
+scheduler.run 2000000
+machine.adb.mouse.click false
+scheduler.run 6000000
+machine.adb.mouse.move 25 10 "global"
+scheduler.run 2000000
+machine.adb.mouse.click true
+scheduler.run 6000000
+machine.adb.mouse.move 25 132 "global"
+scheduler.run 5000000
+machine.adb.mouse.click false
+scheduler.run 80000000
+machine.adb.mouse.move 125 10 "global"
+scheduler.run 3000000
+machine.adb.mouse.click true
+scheduler.run 5000000
+machine.adb.mouse.move 140 62 "global"
+scheduler.run 4000000
+machine.adb.mouse.click false
+scheduler.run 40000000
+machine.adb.mouse.move 411 214 "global"
+scheduler.run 4000000
+machine.adb.mouse.click true
+scheduler.run 35000000
+machine.adb.mouse.click false
+scheduler.run 8000000
+machine.screen.match cp-scroll-640x480-8bpp.png
+
+quit

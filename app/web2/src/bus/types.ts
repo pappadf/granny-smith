@@ -12,6 +12,11 @@ export interface MachineConfig {
    *  during early development). */
   rom?: string;
   vrom: string;
+  /** NuBus video card-kind id to install (e.g. "display_card_24ac", "mdc_8_24"),
+   *  applied via `machine.nubus.video_card` before `machine.boot`. Unset = use the
+   *  slot's default card. The dialog derives this from the chosen card (whose vROM
+   *  it auto-resolves), so the right card boots instead of the slot default. */
+  videoCard?: string;
   /** JMFB video-mode id (e.g. "13in_rgb_1bpp") seeded via `machine.nubus.video_mode`
    *  before `machine.boot`, matching web-legacy's bootFromConfig.  Without it
    *  the JMFB card never seeds its slot-PRAM / video defaults and A/UX hangs
