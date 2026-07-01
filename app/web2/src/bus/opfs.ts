@@ -4,7 +4,7 @@
 // any object; tests can swap the backend via setOpfsBackend().
 
 import type { CheckpointEntry, ImageCategory, OpfsEntry, RecentEntry, RomInfo } from './types';
-import { CHECKPOINT_DIR, ROMS_DIR } from '@/lib/opfsPaths';
+import { CHECKPOINT_DIR, ROMS_DIR, FDHD_DIR } from '@/lib/opfsPaths';
 import { parseCheckpointDirName, formatCheckpointLabel } from '@/lib/checkpointMeta';
 import { gsEval, gsErrorText, isModuleReady } from './emulator';
 
@@ -258,7 +258,15 @@ export class BrowserOpfs implements OpfsBackend {
   }
 
   async scanImages(cat: ImageCategory): Promise<OpfsEntry[]> {
-    return this.list(`/opfs/images/${cat}`);
+    const entries = await this.list(`/opfs/images/${cat}`);
+    // Migration: an earlier build filed HD (1.44 MB) floppies under
+    // /opfs/images/fdhd/, a directory no category ever displayed — they
+    // became invisible. New uploads land in fd (see media.ts), but fold any
+    // stragglers already sitting in fdhd back into the fd listing so users
+    // can still see, insert, and delete them. list() returns [] if the dir
+    // doesn't exist, so this is a no-op on fresh profiles.
+    if (cat === 'fd') entries.push(...(await this.list(FDHD_DIR)));
+    return entries;
   }
 
   async readJson<T>(path: string): Promise<T | null> {

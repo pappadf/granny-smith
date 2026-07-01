@@ -133,15 +133,27 @@
         // Insert into the first empty drive, like dropping a disk into a Mac.
         const n = (await detectFdDriveCount()) || 1;
         let drive = -1;
+        let sawEmptyDrive = false;
         for (let i = 0; i < n; i++) {
           if ((await gsEval(`machine.floppy.drive[${i}].present`)) === true) continue;
+          // Empty slot found. A failed insert here is a real error (the image
+          // couldn't be opened), not "drives full" — track that so the two
+          // cases don't collapse into one misleading message.
+          sawEmptyDrive = true;
           if ((await gsEval(`machine.floppy.drive[${i}].insert`, [entry.path, false])) === true) {
             drive = i;
             break;
           }
         }
         if (drive < 0) {
-          showNotification('All floppy drives are full', 'warning');
+          if (sawEmptyDrive) {
+            showNotification(
+              `Couldn't insert '${entry.name}' — the image could not be opened`,
+              'error',
+            );
+          } else {
+            showNotification('All floppy drives are full', 'warning');
+          }
           return;
         }
         setMounted(entry.path, { kind: 'fd', drive });

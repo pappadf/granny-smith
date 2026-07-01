@@ -2,7 +2,7 @@
 // OPFS, how to validate a candidate file via gsEval, and how to derive its
 // final filename. Mirrors app/web/js/media-types.js.
 
-import { ROMS_DIR, VROMS_DIR, FD_DIR, FDHD_DIR, HD_DIR, CD_DIR } from './opfsPaths';
+import { ROMS_DIR, VROMS_DIR, FD_DIR, HD_DIR, CD_DIR } from './opfsPaths';
 
 export type MediaTypeId = 'rom' | 'vrom' | 'fd' | 'hd' | 'cdrom';
 
@@ -126,18 +126,23 @@ export const MEDIA_TYPES: Record<MediaTypeId, MediaTypeDescriptor> = {
       // The Configuration slide validates before machine.boot, so the
       // per-machine `floppy` object isn't on the root yet. Use the size-
       // based classifier (same as image.c::classify_image + detect_diskcopy).
+      // All floppy densities — 400 KB / 800 KB / 1.44 MB, with or without a
+      // DiskCopy 4.2 header — live together under FD_DIR so the Images tab's
+      // single "fd" section lists them all. (An earlier revision split HD
+      // floppies into a separate /opfs/images/fdhd/ that no category ever
+      // scanned, so they became invisible; see BrowserOpfs.scanImages, which
+      // still folds any stragglers from that directory back in.)
       const size = (await gsEval('storage.path_size', [path])) as number | null;
       if (typeof size !== 'number') return { valid: false };
-      let isHD = false;
-      let recognised = false;
-      if (size === FD_400 || size === FD_400 + DC42_HEADER) recognised = true;
-      else if (size === FD_800 || size === FD_800 + DC42_HEADER) recognised = true;
-      else if (size === FD_HD || size === FD_HD + DC42_HEADER) {
-        recognised = true;
-        isHD = true;
-      }
+      const recognised =
+        size === FD_400 ||
+        size === FD_400 + DC42_HEADER ||
+        size === FD_800 ||
+        size === FD_800 + DC42_HEADER ||
+        size === FD_HD ||
+        size === FD_HD + DC42_HEADER;
       if (!recognised) return { valid: false };
-      return { valid: true, info: { persistDir: isHD ? FDHD_DIR : FD_DIR } };
+      return { valid: true };
     },
   },
 

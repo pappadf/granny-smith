@@ -170,9 +170,13 @@ export async function acceptFilesRaw(files: File[], targetDir: string): Promise<
 // outcome either way.
 async function autoMountIfEmpty(persistedPath: string, category: MediaTypeId): Promise<void> {
   if (category === 'fd') {
+    let sawEmptyDrive = false;
     for (let i = 0; i < 2; i++) {
       const present = await gsEval(`machine.floppy.drive[${i}].present`);
       if (present === true) continue;
+      // A failed insert into an empty slot means the image couldn't be
+      // opened, not that the drives are full — keep the two apart.
+      sawEmptyDrive = true;
       const ok =
         (await gsEval(`machine.floppy.drive[${i}].insert`, [persistedPath, true])) === true;
       if (ok) {
@@ -181,7 +185,12 @@ async function autoMountIfEmpty(persistedPath: string, category: MediaTypeId): P
         return;
       }
     }
-    showNotification('Both floppy drives are full — image saved but not mounted', 'warning');
+    showNotification(
+      sawEmptyDrive
+        ? 'Image saved, but it could not be inserted (the image could not be opened)'
+        : 'Both floppy drives are full — image saved but not mounted',
+      'warning',
+    );
     return;
   }
   if (category === 'cdrom') {
