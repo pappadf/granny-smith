@@ -260,12 +260,27 @@ static void clut_write_data(display_card_24ac_priv_t *p, uint8_t comp) {
 // engine synchronously and never polls a busy flag (hardware spec §7), so
 // there is no timing to model.
 
-// Command flag the live cdev OR-s (bit 30) into the longword it writes through
-// the active aperture, for BOTH the fill run-length and the copy length.  It
-// sits above the bank-width count counter, so the engine takes only the low
-// bits as the count and ignores the flag.  In the copy handshake it doubles as
-// the "execute" marker (see engine_store_long).  See errata E8/E9.
+// Command flags the live cdev OR-s into the longword it writes through the
+// active aperture, for BOTH the fill run-length and the copy length.  They sit
+// above the bank-width count counter, so the engine takes only the low bits as
+// the count and ignores them.
+//   * bit 30 ($40000000) — "execute" marker: in the copy handshake it marks the
+//     execute write (vs. the no-flag source latch); the fill always sets it.
+//     See errata E8/E9.
+//   * bit 31 ($80000000) — "decrement / backward direction": the cdev sets it on
+//     an overlapping copy whose destination is ABOVE its source — a left-scroll
+//     (ScrollRect right), where the engine must copy high→low so it doesn't
+//     clobber the source before reading it.  Right-scrolls (dst<src, forward)
+//     leave it clear.  memmove() already picks that direction from src vs dest,
+//     so we only strip the flag from the count and step the source pointer in
+//     the copy direction — but we MUST strip it: a left-scroll count arrives as
+//     e.g. $8000017c, and taking that as the byte count copies ~2 GB (clamped to
+//     end-of-VRAM), shredding the window.  See errata E11 (QCOD backward-copy
+//     routine at $079E).
 #define DISPLAY_CARD_24AC_ENGINE_CMD_FLAG 0x40000000u
+#define DISPLAY_CARD_24AC_ENGINE_DIR_FLAG 0x80000000u
+// The count is what's left after both command flags are stripped.
+#define DISPLAY_CARD_24AC_ENGINE_COUNT_MASK (~(DISPLAY_CARD_24AC_ENGINE_CMD_FLAG | DISPLAY_CARD_24AC_ENGINE_DIR_FLAG))
 
 // Replicate the latched 32-bit operand across `len` bytes of VRAM starting
 // at passive offset `dest`, phase-aligned to absolute 4-byte VRAM columns
@@ -279,8 +294,9 @@ static void engine_fill_run(display_card_24ac_priv_t *p, uint32_t dest, uint32_t
     // full-width fills self-corrected (each scanline finalised by its own
     // fill), but the Apple menu's narrow bottom-up fills smeared into solid
     // white/black bands.  (The Part-A unit test wrote raw small run lengths
-    // with no flag bit, so it never exercised this.)
-    len &= ~DISPLAY_CARD_24AC_ENGINE_CMD_FLAG;
+    // with no flag bit, so it never exercised this.)  Strip the direction flag
+    // (bit 31) too — a fill's direction is immaterial (errata E11).
+    len &= DISPLAY_CARD_24AC_ENGINE_COUNT_MASK;
     if (dest >= DISPLAY_CARD_24AC_VRAM_SIZE)
         return;
     if (len > DISPLAY_CARD_24AC_VRAM_SIZE - dest)
@@ -315,7 +331,9 @@ static void engine_fill_run(display_card_24ac_priv_t *p, uint32_t dest, uint32_t
 // first bytes for the second execute, dribbling stale pixels at every
 // boundary-crossing scanline — the dotted artifacts seen scrolling one line at
 // a time.  Page-jump scrolls hid it because their copies rarely straddle a
-// boundary.  So: advance engine_copy_src by every executed length.
+// boundary.  So: step engine_copy_src by every executed length, IN the copy
+// direction — decrement for a backward copy (bit 31, dst>src), so a split
+// left-scroll scanline's follow-on execute lands on the right source (E11).
 //
 // `val` is the raw longword written through the active alias.  The earlier
 // "the written longword IS the source pixels, store it at dest" model was an
@@ -330,11 +348,15 @@ static void engine_store_long(display_card_24ac_priv_t *p, uint32_t dest, uint32
         p->engine_copy_len = val;
         return;
     }
-    // Execute: copy `len` bytes from the latched source to dest, then advance
-    // the source pointer so a follow-on execute (same latch) continues on.
-    uint32_t len = val & ~DISPLAY_CARD_24AC_ENGINE_CMD_FLAG;
+    // Execute: copy `len` bytes from the latched source to dest, then step the
+    // source pointer so a follow-on execute (same latch) continues on.  Strip
+    // BOTH command flags (bit 30 execute + bit 31 direction) from the count and
+    // step the source in the copy direction — decrement for a backward copy
+    // (bit 31, dst>src) (errata E11).
+    bool backward = (val & DISPLAY_CARD_24AC_ENGINE_DIR_FLAG) != 0;
+    uint32_t len = val & DISPLAY_CARD_24AC_ENGINE_COUNT_MASK;
     uint32_t src = p->engine_copy_src;
-    p->engine_copy_src = src + len; // auto-increment source pointer (hardware)
+    p->engine_copy_src = backward ? src - len : src + len; // step in copy direction
     if (src >= DISPLAY_CARD_24AC_VRAM_SIZE || dest >= DISPLAY_CARD_24AC_VRAM_SIZE || len == 0)
         return;
     if (len > DISPLAY_CARD_24AC_VRAM_SIZE - src)
