@@ -658,6 +658,78 @@ static uint8_t ext_for_sister(uint8_t sister) {
 
 // === Card vtable ============================================================
 
+// Power-on register/engine/display state, shared by card_init and the /RESET
+// hook (card_reset).  Restores exactly what the card's silicon presents at
+// power-on WITHOUT touching VRAM, the declaration ROM, or the host memory-map
+// regions — those persist across a warm /RESET, as the hardware does.  A
+// pending video-mode pick (card_init only) is applied over these defaults by
+// the caller; a warm reset keeps the power-on default because the mode is
+// re-selected from the (battery-backed, un-reset) PRAM as the ROM re-boots.
+static void set_poweron_defaults(display_card_24ac_priv_t *p) {
+    // VIDCTL power-on default: low 3 bits = 2.  PrimaryInit's monitor-sense
+    // path reads VIDCTL ($D00403) at vrom chip 0x176 and, if its low 3 bits
+    // are NOT 2, forces the monitor id to the "$47 standard-monitor" marker —
+    // which makes the board self-test (vrom 0x3A2) get skipped, leaving
+    // BOARDCFG[0]=0, which makes the driver's Open routine return openErr(-23)
+    // (vrom 0x1AC6).  Seeding low bits = 2 here lets the sensed monitor stand,
+    // the self-test run, and the driver open.  (Bit 7 = VBL IRQ masked.)
+    p->vidctl = DISPLAY_CARD_24AC_VIDCTL_VBL_MASK | 0x02u;
+    p->vbl_enabled = false;
+    p->mode_reg = 0x40u; // 8 bpp depth code in bits 7-5 (0x40 = code 2, vrom RE)
+    p->depth_reg = 0;
+    // Default monitor: 640×480 multisync (sRsrc id $6B = primary sense 6 +
+    // extended-sense code $03).  Unlike the $40 "two-page" monitor (1152×870,
+    // grayscale 1bpp only), the multisync display supports colour depths.
+    p->sense_primary = 6;
+    p->sense_ext = 0x03;
+    p->sense_last_write = 0;
+    p->status_busy = 0;
+
+    // CLUT write sub-state (index / R-G-B phase / accumulating entry).
+    p->clut_idx = 0;
+    p->clut_phase = 0;
+    p->clut_pending = (rgba8_t){0};
+
+    // Engine geometry bits, kept consistent with the large-VRAM framebuffer
+    // we present (hardware spec §3/§5); engine handshake latches idle.
+    p->engine_enabled = true;
+    p->engine_mode = DISPLAY_CARD_24AC_MODE_COPY;
+    p->engine_operand = 0;
+    p->engine_copy_src = 0;
+    p->engine_copy_len = 0;
+    p->status_depth_code = depth_code_for_format(PIXEL_8BPP);
+    p->status_class_bit = true; // large-VRAM organisation
+    p->config_variant_bit = true; // large-VRAM geometry variant
+
+    // Default 640×480 8 bpp (the sensed multisync monitor).  cscSetMode
+    // (→ apply_mode_depth) re-derives the pixel format and stride as the OS
+    // changes depth; the power-on default matches the MODE register seed above
+    // so the framebuffer alias has the right 8-bpp stride before the OS runs.
+    // The framebuffer sits at VRAM offset 0 (ScrnBase = slot+0x900000 → the
+    // alias → VRAM[0]).
+    p->display.width = 640;
+    p->display.height = 480;
+    p->display.format = PIXEL_8BPP;
+    recompute_stride(p); // 640 bytes/row at 8 bpp
+    p->display.bits = p->vram;
+    p->display.clut = p->clut;
+    p->display.clut_len = 256;
+    p->display.crt_response = NULL; // identity until a monitor needs gamma
+    p->display.shape_dirty = true;
+    p->display.clut_dirty = true;
+    p->display.fb_dirty = true;
+    p->display.response_dirty = true;
+
+    // Initial CLUT — grayscale ramp so the canvas isn't blank before the OS
+    // programs a palette; the driver's first cscSetEntries overwrites it.
+    for (int i = 0; i < 256; i++) {
+        p->clut[i].r = (uint8_t)i;
+        p->clut[i].g = (uint8_t)i;
+        p->clut[i].b = (uint8_t)i;
+        p->clut[i].a = 255;
+    }
+}
+
 static int card_init(nubus_card_t *card, config_t *cfg, checkpoint_t *cp) {
     (void)cp;
     display_card_24ac_priv_t *p = calloc(1, sizeof(*p));
@@ -700,50 +772,10 @@ static int card_init(nubus_card_t *card, config_t *cfg, checkpoint_t *cp) {
     card->declrom_size = p->vrom_size;
 
     // Phase-1 starting state: 8 bpp, 640×480, framebuffer at VRAM offset 0.
-    // The vrom's video driver re-programs depth/CLUT/timing at boot.
-    //
-    // VIDCTL power-on default: low 3 bits = 2.  PrimaryInit's monitor-sense
-    // path reads VIDCTL ($D00403) at vrom chip 0x176 and, if its low 3 bits
-    // are NOT 2, forces the monitor id to the "$47 standard-monitor" marker —
-    // which makes the board self-test (vrom 0x3A2) get skipped, leaving
-    // BOARDCFG[0]=0, which makes the driver's Open routine return openErr(-23)
-    // (vrom 0x1AC6).  Seeding low bits = 2 here lets the sensed monitor stand,
-    // the self-test run, and the driver open.  (Bit 7 = VBL IRQ masked.)
-    p->vidctl = DISPLAY_CARD_24AC_VIDCTL_VBL_MASK | 0x02u;
-    p->vbl_enabled = false;
-    p->mode_reg = 0x40u; // 8 bpp depth code in bits 7-5 (0x40 = code 2, vrom RE)
-    // Default monitor: 640×480 multisync (sRsrc id $6B = primary sense 6 +
-    // extended-sense code $03).  Unlike the $40 "two-page" monitor (1152×870,
-    // grayscale 1bpp only), the multisync display supports colour depths.
-    p->sense_primary = 6;
-    p->sense_ext = 0x03;
-
-    // Engine geometry bits, kept consistent with the large-VRAM framebuffer
-    // we present (hardware spec §3/§5).
-    p->engine_enabled = true;
-    p->engine_mode = DISPLAY_CARD_24AC_MODE_COPY;
-    p->status_depth_code = depth_code_for_format(PIXEL_8BPP);
-    p->status_class_bit = true; // large-VRAM organisation
-    p->config_variant_bit = true; // large-VRAM geometry variant
-
-    // Default 640×480 8 bpp (the sensed multisync monitor).  cscSetMode
-    // (→ apply_mode_depth) re-derives the pixel format and stride as the OS
-    // changes depth; the power-on default matches the MODE register seed above
-    // so the framebuffer alias has the right 8-bpp stride before the OS runs.
-    // The framebuffer sits at VRAM offset 0 (ScrnBase = slot+0x900000 → the
-    // alias → VRAM[0]).
-    p->display.width = 640;
-    p->display.height = 480;
-    p->display.format = PIXEL_8BPP;
-    recompute_stride(p); // 640 bytes/row at 8 bpp
-    p->display.bits = p->vram;
-    p->display.clut = p->clut;
-    p->display.clut_len = 256;
-    p->display.crt_response = NULL; // identity until a monitor needs gamma
-    p->display.shape_dirty = true;
-    p->display.clut_dirty = true;
-    p->display.fb_dirty = true;
-    p->display.response_dirty = true;
+    // The vrom's video driver re-programs depth/CLUT/timing at boot.  The
+    // power-on register/engine/display state (and the grayscale CLUT ramp)
+    // is shared with the /RESET hook — see set_poweron_defaults.
+    set_poweron_defaults(p);
 
     // Apply a pending video-mode pick over the power-on defaults: report the
     // chosen monitor on the sense lines and bring the framebuffer up at the
@@ -759,15 +791,6 @@ static int card_init(nubus_card_t *card, config_t *cfg, checkpoint_t *cp) {
         p->mode_reg = modebits_for_format(f);
         p->status_depth_code = depth_code_for_format(f);
         recompute_stride(p);
-    }
-
-    // Initial CLUT — grayscale ramp so the canvas isn't blank before the OS
-    // programs a palette; the driver's first cscSetEntries overwrites it.
-    for (int i = 0; i < 256; i++) {
-        p->clut[i].r = (uint8_t)i;
-        p->clut[i].g = (uint8_t)i;
-        p->clut[i].b = (uint8_t)i;
-        p->clut[i].a = 255;
     }
 
     card->priv = p;
@@ -898,6 +921,20 @@ static void card_teardown(nubus_card_t *card, config_t *cfg) {
     card->priv = NULL;
 }
 
+// Bus /RESET line (68k RESET instruction): return the card to power-on state.
+// The rebooting boot ROM re-programs depth/CLUT/timing via the declaration
+// ROM's video driver from here, and re-selects the configured mode from PRAM.
+// VRAM, the declaration ROM, and the host memory-map regions are untouched.
+static void card_reset(nubus_card_t *card, config_t *cfg) {
+    (void)cfg;
+    display_card_24ac_priv_t *p = card->priv;
+    if (!p)
+        return;
+    nubus_deassert_irq(card); // drop any pending slot VBL IRQ before re-arm
+    set_poweron_defaults(p);
+    LOG(2, "display_card_24ac: /RESET → power-on state (8 bpp 640×480)");
+}
+
 static void card_on_vbl(nubus_card_t *card, config_t *cfg) {
     (void)cfg;
     display_card_24ac_priv_t *p = card->priv;
@@ -923,6 +960,7 @@ static const char *card_name(const nubus_card_t *card) {
 static const nubus_card_ops_t display_card_24ac_ops = {
     .init = card_init,
     .teardown = card_teardown,
+    .reset = card_reset,
     .on_vbl = card_on_vbl,
     .display = card_display,
     .name = card_name,

@@ -825,6 +825,20 @@ static void scsi_reset(scsi_t *scsi) {
     scsi_update_irq(scsi);
 }
 
+// Chip /RESET: the 68k RESET instruction asserts the bus /RESET line, which
+// resets the NCR 5380 to its power-on state (registers cleared, bus back to
+// free).  Unlike a SCSI-bus RST *pulse* (write_icr ICR_RST) — which leaves the
+// surviving bus-reset NMI latched — a chip reset clears the IRQ latch too, so
+// the rebooting boot ROM sees a clean, idle controller.  Called from
+// system_reset_devices (the modelled /RESET line).
+void scsi_reset_pin(scsi_t *scsi) {
+    if (!scsi)
+        return;
+    scsi_reset(scsi);
+    scsi->reg.bsr &= ~BSR_INT; // chip reset clears the IRQ latch (no bus-RST NMI)
+    scsi_update_irq(scsi);
+}
+
 // ============================================================================
 // Memory Interface
 // ============================================================================

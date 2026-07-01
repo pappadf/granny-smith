@@ -211,6 +211,20 @@ void nubus_tick_vbl(nubus_bus_t *bus) {
     }
 }
 
+// Assert the NuBus /RESET line: reset every populated card to its power-on
+// state.  Called from the CPU RESET instruction (system_reset_devices) so a
+// warm restart brings the cards back to power-on, exactly as the /RESET pin
+// does in hardware.  Cards without a reset hook keep their state (safe).
+void nubus_reset(nubus_bus_t *bus) {
+    if (!bus)
+        return;
+    for (int i = 0; i < NUBUS_MAX_SLOTS; i++) {
+        nubus_card_t *card = bus->cards[i];
+        if (card && card->ops && card->ops->reset)
+            card->ops->reset(card, bus->cfg);
+    }
+}
+
 // === Slot-IRQ aggregation ===================================================
 //
 // Each NuBus slot's /NMRQ line maps to a VIA2 PA bit (active-low):

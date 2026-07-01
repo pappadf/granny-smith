@@ -38,6 +38,14 @@ typedef struct nubus_card_ops {
     // Called during machine teardown, in inverse init order.
     void (*teardown)(nubus_card_t *card, config_t *cfg);
 
+    // Called when the CPU asserts the bus /RESET line (the 68k RESET
+    // instruction; see nubus_reset / system_reset_devices).  The card
+    // returns its externally-visible registers to their power-on state,
+    // exactly as the /RESET pin does in silicon.  VRAM / declaration-ROM
+    // contents and the host memory-map regions persist (they are NOT
+    // re-allocated or re-registered).  NULL hooks are safe and skipped.
+    void (*reset)(nubus_card_t *card, config_t *cfg);
+
     // Called from the family VBL trigger (via nubus_tick_vbl) once per
     // VBL.  Cards that drive their own VSync IRQ call nubus_assert_irq()
     // here.

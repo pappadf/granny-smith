@@ -49,6 +49,10 @@ scsi_t *scsi_init(memory_map_t *map, checkpoint_t *checkpoint);
 
 void scsi_delete(scsi_t *scsi);
 
+// Chip /RESET (68k RESET instruction → bus /RESET line): reset the controller
+// to its power-on state, IRQ latch cleared.  See system_reset_devices.
+void scsi_reset_pin(scsi_t *scsi);
+
 void scsi_checkpoint(scsi_t *restrict scsi, checkpoint_t *checkpoint);
 
 // === Device Types ===

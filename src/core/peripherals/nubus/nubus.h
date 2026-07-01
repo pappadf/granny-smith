@@ -113,4 +113,8 @@ struct object *nubus_active_framebuffer_object(void);
 // calls each populated card's ops->on_vbl().
 void nubus_tick_vbl(nubus_bus_t *bus);
 
+// /RESET fan-out.  system_reset_devices calls this on the 68k RESET
+// instruction; it resets each populated card to power-on via ops->reset.
+void nubus_reset(nubus_bus_t *bus);
+
 #endif // NUBUS_H

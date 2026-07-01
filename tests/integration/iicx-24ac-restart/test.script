@@ -1,0 +1,81 @@
+# Integration test: IIcx + Display Card 24AC — Finder "Restart" reboots cleanly
+#
+# Regression guard for the warm-restart hang: on a IIcx with the 24AC card that
+# booted the 32-bit SCSI cdev image (systems/system_7_1_20mb_24ac_cd_32bit.img),
+# picking Special ▸ Restart in the Finder used to wedge with distorted VRAM.
+# The Mac restart runs the ROM warm-boot path (mask IRQs → 68k RESET → set up
+# MMU → jump to the boot entry); the RESET instruction is meant to reset the
+# external peripherals via the bus /RESET line.  That instruction was a no-op,
+# so the SCSI controller and the 24AC card kept stale OS-session state — the
+# rebooting ROM painted garbage and then aborted in scsi.c write_mr.  Fixed by
+# modelling the /RESET line (OP_RESET → system_reset_devices).  This test drives
+# the real Special ▸ Restart and confirms the machine reboots to the desktop.
+#
+# The boot half mirrors iicx-24ac (see that test for the full commentary): the
+# rgb_640x480_8bpp video_mode pick seeds a COMPLETE valid PRAM ('NuMc' validity
+# + PRAMInitTbl boot-device defaults + slot savedMode $82) so the ROM boots
+# straight from the SCSI HD to an 8-bpp COLOUR Finder desktop.
+
+# === Boot the 24AC 32-bit SCSI cdev image to the 8-bpp Finder desktop. ======
+machine.nubus.video_card = "display_card_24ac"
+machine.nubus.video_mode = "rgb_640x480_8bpp"
+machine.boot "iicx" 8192
+machine.rom.reload
+machine.scsi.attach_hd "../../data/systems/system_7_1_20mb_24ac_cd_32bit.img" 0
+scheduler.run 200000000
+
+# Sanity: the 24AC booted into the IIcx video slot ($9) at 8-bpp 640x480 and we
+# are sitting on the colour Finder desktop (pixel-exact, shared iicx-24ac baseline).
+assert ${machine.nubus.slot[9].card.name == "Apple Macintosh Display Card 24AC"} "boot: slot $9 card != 24AC"
+assert ${machine.screen.width == 640}                        "boot: screen width != 640"
+assert ${machine.screen.height == 480}                       "boot: screen height != 480"
+assert ${machine.nubus.slot[9].card.framebuffer.depth == 8}  "boot: framebuffer not 8 bpp"
+machine.screen.match finder-640x480-8bpp.png
+
+# === Pick Special ▸ Restart with a real press-and-hold-drag-release. =========
+# The Special menu title sits at (235,10); the "Restart" item is at (245,124)
+# in the open menu (see the geometry in the reproduction notes).  Press and
+# hold on the title to pull the menu down, drag to Restart, release to choose
+# it — exactly the user's interaction.
+machine.adb.mouse.move 235 10 "global"
+scheduler.run 2000000
+machine.adb.mouse.click true
+scheduler.run 4000000
+machine.adb.mouse.move 245 124 "global"
+scheduler.run 2000000
+machine.adb.mouse.click false
+scheduler.run 3000000
+
+# === A healthy restart reboots all the way back to the 8-bpp Finder. ========
+# The Finder tears down and the machine re-enters the boot ROM; the armed PRAM
+# boots the same SCSI HD again, back to the colour desktop.  Give it a full
+# boot budget (250M — the cold boot above reaches a stable Finder well inside
+# 200M).
+#
+# BUG (what this test reproduces): instead of rebooting, the machine hangs in
+# the ROM's QuickDraw bitBlt inner loop (PC parked around $4081ADE8) with a
+# corrupt destination bitmap, so the framebuffer fills with garbage and the
+# card is left in the ROM's 1-bpp power-on depth — it never gets back to the
+# 8-bpp desktop.  The two assertions below therefore FAIL on the current code
+# and PASS once the restart is fixed.
+scheduler.run 250000000
+
+# Robust signal: after a clean reboot the OS/cdev has re-selected 8-bpp colour.
+# The bug left the card in the ROM boot's 1-bpp mode (and then aborted in SCSI).
+assert ${machine.screen.width == 640}                        "restart: screen width != 640"
+assert ${machine.screen.height == 480}                       "restart: screen height != 480"
+assert ${machine.nubus.slot[9].card.framebuffer.depth == 8}  "restart: did not reboot to 8-bpp desktop (hung in 1-bpp ROM boot)"
+
+# Park the cursor back at the top-left boot position — the ADB mouse was left
+# over the Restart menu item, so the only thing separating the rebooted desktop
+# from the cold-boot baseline is where the cursor sprite sits.  Move it into the
+# top-left corner and exclude that small box (rows 12-34, cols 10-30) from the
+# compare, so the match turns on the desktop content, not the cursor hotspot.
+machine.adb.mouse.move 14 15 "global"
+scheduler.run 3000000
+machine.screen.save "${WORK_DIR}/after-restart.png"
+# Definitive end state: the machine is back on the 8-bpp colour Finder desktop,
+# pixel-exact against the same baseline the cold boot produces (iicx-24ac).
+machine.screen.match finder-640x480-8bpp.png 12 10 34 30
+
+quit
