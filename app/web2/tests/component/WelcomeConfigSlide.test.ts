@@ -106,9 +106,9 @@ describe('WelcomeConfigSlide', () => {
       if (!sel || sel.options.length === 0) throw new Error('not ready');
     });
     // Default model is 'plus' (first scanned). Its profile has no video_slots
-    // (so no card requires a VROM → VROM row hidden), ram_default=4096 KB, two
-    // floppy slots, and no has_cdrom (→ the SCSI CD-ROM row is hidden).
-    expect(container.querySelector('#cfg-vrom')).toBeNull();
+    // (so no display-card row is shown), ram_default=4096 KB, two floppy slots,
+    // and no has_cdrom (→ the SCSI CD-ROM row is hidden).
+    expect(container.querySelector('#cfg-card')).toBeNull();
     expect((container.querySelector('#cfg-ram') as HTMLSelectElement).value).toBe('4 MB');
     expect(container.querySelectorAll('select[id^="cfg-fd"]').length).toBe(2);
     expect(container.querySelector('#cfg-cd')).toBeNull();
@@ -131,20 +131,30 @@ describe('WelcomeConfigSlide', () => {
     });
   });
 
-  it('shows the Video ROM row only for models whose video card requires a VROM', async () => {
+  it('surfaces the Video ROM requirement only for models whose video card requires a VROM', async () => {
+    // The dialog is now card-centric: instead of a raw `#cfg-vrom` filename row,
+    // a model whose display card requires a vROM that isn't staged shows a
+    // "needs a Video ROM" hint (videoUnavailable); with a vROM present it becomes
+    // a `#cfg-card` picker. This mock stages no vROM, so SE/30's built-in card
+    // surfaces the hint.
     const { container } = render(WelcomeConfigSlide);
     await waitFor(() => {
       const sel = container.querySelector('#cfg-model') as HTMLSelectElement | null;
       if (!sel || sel.options.length === 0) throw new Error('not ready');
     });
-    // Plus: no requires_vrom card → hidden.
-    expect(container.querySelector('#cfg-vrom')).toBeNull();
+    const vromHintShown = () =>
+      [...container.querySelectorAll('.form-help')].some((n) =>
+        (n.textContent ?? '').includes('needs a Video ROM'),
+      );
+    // Plus: no video slot / no card that requires a vROM → no card row, no hint.
+    expect(container.querySelector('#cfg-card')).toBeNull();
+    expect(vromHintShown()).toBe(false);
     const modelSel = container.querySelector('#cfg-model') as HTMLSelectElement;
     modelSel.value = 'se30';
     modelSel.dispatchEvent(new Event('change', { bubbles: true }));
     await waitFor(() => {
-      // SE/30: built-in video card requires_vrom → visible.
-      if (!container.querySelector('#cfg-vrom')) throw new Error('vrom not shown yet');
+      // SE/30: built-in video card requires a vROM, none staged → hint shown.
+      if (!vromHintShown()) throw new Error('vrom hint not shown yet');
     });
   });
 
