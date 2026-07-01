@@ -117,6 +117,14 @@ void system_keyboard_update(key_event_t event, int key);
 // Weak: unit tests that don't link system.c get a no-op stub.
 __attribute__((weak)) void system_hardware_reset(void);
 
+// Bus /RESET line asserted by the 68k RESET instruction: reset the external
+// peripheral chips (SCSI, NuBus cards) to power-on state, leaving the CPU core
+// (registers / caches / MMU) untouched.  Called from OP_RESET; the boot ROM
+// relies on this during a warm restart.  Weak so the CPU can link standalone;
+// the single-step CPU unit test (which executes the RESET opcode) links a
+// no-op stub in tests/unit/support/stub_system.c.
+__attribute__((weak)) void system_reset_devices(void);
+
 // System-level scheduler accessor: returns the current scheduler object
 scheduler_t *system_scheduler(void);
 

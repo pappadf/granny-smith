@@ -126,6 +126,11 @@ uint64_t cpu_instr_count(void) {
     return 0;
 }
 
+// /RESET-line stub: the single-step CPU test executes the RESET opcode, which
+// calls system_reset_devices().  No emulator peripherals exist in the isolated
+// harness, so this is a no-op.
+void system_reset_devices(void) {}
+
 // Keyboard stub for key injection command
 typedef enum { key_up, key_down } key_event_t;
 void system_keyboard_update(key_event_t event, int key) {

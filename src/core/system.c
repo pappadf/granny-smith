@@ -166,6 +166,24 @@ void system_hardware_reset(void) {
         global_emulator->machine->substrate->reset(global_emulator);
 }
 
+// The 68k RESET instruction asserts the bus /RESET line, which resets the
+// external peripheral chips (SCSI, NuBus cards, …) to their power-on state.
+// It does NOT reset the CPU core (registers / caches / MMU) — that is why the
+// boot ROM reconfigures the MMU itself (PMOVE) right after executing RESET.
+// A Mac warm restart (Finder ▸ Restart) runs exactly this: mask interrupts →
+// RESET → set up the MMU → jump to the boot entry.  Without this, the SCSI
+// controller and the video card would carry stale OS-session state into the
+// reboot (a garbage-video hang + a write_mr phase assertion).
+void system_reset_devices(void) {
+    config_t *cfg = global_emulator;
+    if (!cfg)
+        return;
+    if (cfg->scsi)
+        scsi_reset_pin(cfg->scsi); // NCR 5380 → bus-free, registers cleared
+    if (cfg->nubus)
+        nubus_reset(cfg->nubus); // each populated card → power-on state
+}
+
 // System-level scheduler accessor: returns the current scheduler object
 scheduler_t *system_scheduler(void) {
     return global_emulator ? global_emulator->scheduler : NULL;

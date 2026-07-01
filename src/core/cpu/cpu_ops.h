@@ -784,7 +784,10 @@
 #define OP_MOVEM_W_EA_LIST  OP(VALID_EA(ea_control + ea_an_plus); MOVEM_TO_REGISTER(opcode, 16))
 #define OP_MOVEM_L_EA_LIST  OP(VALID_EA(ea_control + ea_an_plus); MOVEM_TO_REGISTER(opcode, 32))
 #define OP_TRAP_VECTOR      OP(EXC_TRAP(opcode & 0xF))
-#define OP_RESET            OP(SUPER())
+// RESET asserts the bus /RESET line → reset external peripherals (SCSI, NuBus
+// cards) to power-on; the CPU core (registers/caches/MMU) is left untouched.
+// The Mac warm-restart ROM path relies on this (see system_reset_devices).
+#define OP_RESET OP(SUPER(system_reset_devices()))
 // STOP: load SR and halt instruction fetch until an interrupt.  Set the stopped
 // flag AND drain the sprint budget (*instructions = 0) so the decoder loop exits
 // immediately — otherwise it would keep executing the instructions *after* the
