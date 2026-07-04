@@ -401,6 +401,22 @@ static value_t eng_attr_operand(struct object *self, const member_t *m) {
     (void)m;
     return val_uint(4, display_card_24ac_engine_operand(node_card(self)));
 }
+static value_t eng_attr_fill_ops(struct object *self, const member_t *m) {
+    (void)m;
+    return val_uint(8, display_card_24ac_engine_fill_ops(node_card(self)));
+}
+static value_t eng_attr_fill_bytes(struct object *self, const member_t *m) {
+    (void)m;
+    return val_uint(8, display_card_24ac_engine_fill_bytes(node_card(self)));
+}
+static value_t eng_attr_copy_ops(struct object *self, const member_t *m) {
+    (void)m;
+    return val_uint(8, display_card_24ac_engine_copy_ops(node_card(self)));
+}
+static value_t eng_attr_copy_bytes(struct object *self, const member_t *m) {
+    (void)m;
+    return val_uint(8, display_card_24ac_engine_copy_bytes(node_card(self)));
+}
 static const member_t engine_members[] = {
     {.kind = M_ATTR,
      .name = "enabled",
@@ -416,6 +432,26 @@ static const member_t engine_members[] = {
      .doc = "Latched 32-bit fill/pattern operand",
      .flags = VAL_RO,
      .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = eng_attr_operand}},
+    {.kind = M_ATTR,
+     .name = "fill_ops",
+     .doc = "Diagnostic: hardware run-length fills executed by the engine",
+     .flags = VAL_RO,
+     .attr = {.type = V_UINT, .get = eng_attr_fill_ops}},
+    {.kind = M_ATTR,
+     .name = "fill_bytes",
+     .doc = "Diagnostic: total bytes filled by the engine",
+     .flags = VAL_RO,
+     .attr = {.type = V_UINT, .get = eng_attr_fill_bytes}},
+    {.kind = M_ATTR,
+     .name = "copy_ops",
+     .doc = "Diagnostic: hardware block-copy/ROP executes by the engine",
+     .flags = VAL_RO,
+     .attr = {.type = V_UINT, .get = eng_attr_copy_ops}},
+    {.kind = M_ATTR,
+     .name = "copy_bytes",
+     .doc = "Diagnostic: total bytes copied by the engine",
+     .flags = VAL_RO,
+     .attr = {.type = V_UINT, .get = eng_attr_copy_bytes}},
 };
 static const class_desc_t nubus_engine_class = {
     .name = "engine", .members = engine_members, .n_members = sizeof(engine_members) / sizeof(engine_members[0])};

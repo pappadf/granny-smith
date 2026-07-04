@@ -147,5 +147,11 @@ bool display_card_24ac_engine_enabled(const nubus_card_t *card);
 void display_card_24ac_engine_set_enabled(nubus_card_t *card, bool enabled);
 uint8_t display_card_24ac_engine_mode(const nubus_card_t *card);
 uint32_t display_card_24ac_engine_operand(const nubus_card_t *card);
+// Diagnostic activity counters: how many hardware fills / copies the engine has
+// executed, and the total bytes each touched.  Exposed as engine.fill_ops etc.
+uint64_t display_card_24ac_engine_fill_ops(const nubus_card_t *card);
+uint64_t display_card_24ac_engine_fill_bytes(const nubus_card_t *card);
+uint64_t display_card_24ac_engine_copy_ops(const nubus_card_t *card);
+uint64_t display_card_24ac_engine_copy_bytes(const nubus_card_t *card);
 
 #endif // NUBUS_CARDS_DISPLAY_CARD_24AC_H

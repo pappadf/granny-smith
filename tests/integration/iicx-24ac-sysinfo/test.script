@@ -1,0 +1,156 @@
+# Integration test: IIcx + Display Card 24AC — floppy insert + launch System Info
+#
+# A variant of iicx-24ac.  Same boot: the genuine "Step B" artifact
+# (systems/system_7_1_20mb_24ac_cd_32bit.img — a 20 MB System 7.1 SCSI HD with
+# the 24AC cdev pre-installed and 32-bit addressing on) boots the IIcx + Display
+# Card 24AC to an 8-bpp COLOUR Finder desktop (640x480).  But rather than
+# driving the acceleration engine through the Apple menu and a Control-Panels
+# scroll, this test performs a real end-user workflow: insert a floppy, open its
+# window, and launch an application from it.
+#
+# The floppy is "Utilities Disk 2" (a Norton/Symantec Utilities disk); the app
+# is "System Info" (creator 'PNsi', a Symantec benchmark/inspector).  Launching
+# it draws its window through the 24AC framebuffer, and — as a bonus assertion —
+# System Info itself probes the machine and reports the display as
+# "Apple Macintosh 24AC (8 bit)", so a correct render is an end-to-end read-out
+# of the card by third-party guest software.
+#
+# The test then de-selects every benchmark suite except "Test Display" and
+# clicks "Run".  A configured PRAM (seeded below: 128 KB disk cache + AppleTalk
+# inactive) means Run skips System Info's "System Differences" advisory dialog
+# and runs the Display benchmark directly — a full-screen QuickDraw fill/line
+# stress test on the 24AC card — settling on the "System Ratings" (Video) result.
+
+# --- Boot to the 8-bpp colour Finder desktop (identical to iicx-24ac) --------
+# Select the 24AC card and an 8-bpp 640x480 mode BEFORE boot.  The video_mode
+# pick seeds a COMPLETE valid PRAM ('NuMc' validity + PRAMInitTbl boot-device
+# defaults + the slot sPRAMRec savedMode $82) — which both selects 8-bpp colour
+# AND arms the 32-bit SCSI HD boot in one shot.  (video_card can't be an arg, so
+# the harness booted the default card; we re-boot here.)
+machine.nubus.video_card = "display_card_24ac"
+machine.nubus.video_mode = "rgb_640x480_8bpp"
+machine.boot "iicx" 8192
+machine.rom.reload
+
+# Attach the cdev HD at SCSI ID 0 (the boot device).  The complete valid PRAM
+# lets the ROM boot straight from SCSI (no cold-init scan).
+machine.scsi.attach_hd "../../data/systems/system_7_1_20mb_24ac_cd_32bit.img" 0
+
+# --- Seed a configured low-PRAM: 128 KB disk cache + AppleTalk inactive -------
+# System Info (below) pops a modal "System Differences" dialog before running if
+# the machine's Disk Cache != 128 KB or AppleTalk != off vs its reference config.
+# Both settings live in the legacy 20-byte SysParam PRAM block (physical offsets
+# here; SysParam logical->physical map per docs/core/memory/pram.md §2):
+#   * Disk cache size  = SysParam $12 -> physical $0A, in 32 KB blocks -> 4 = 128 KB.
+#   * AppleTalk on/off = SysParam $03 (SPConfig) -> physical $13; active=$01,
+#     inactive=$22 (also SPPrint $0F -> physical $1F goes $00->$01 when inactive).
+# The catch: these survive only if the low-PRAM validity byte SPValid ($00 ->
+# physical $10) = $A8, so the ROM's _InitUtil SKIPS its cold-init (which would
+# otherwise rewrite the block, forcing cache=0 and re-normalising SPConfig to
+# active).  So we seed the WHOLE valid SysParam block (captured from this ROM's
+# own cold-init) with the two knobs applied — never touching $0C-$0F ('NuMc',
+# written by the 24AC card's seed) or the SCSI XPRAM word at $02-$03.  Result:
+# System Info sees the reference config and "Run" goes straight to the benchmark.
+#
+# NB: keep each poke on its own line with NO trailing comment — the script
+# reader only strips whole-line '#' comments, so a trailing '# ...' would be
+# parsed as extra poke arguments and the seed would silently fail.
+#   $08-$0B = SysParam $10-$13: SPVolCtl, SPClikCaret, cache=$04 (128 KB), SPMisc2
+#   $10-$17 = SysParam $00-$07: SPValid=$A8, ATalkA, ATalkB, SPConfig=$22, SPPortA/B
+#   $18-$1F = SysParam $08-$0F: SPAlarm, SPFont, SPKbd, SPPrint=$01
+machine.rtc.pram.poke 0x08 0x0388046c:4
+machine.rtc.pram.poke 0x10 0xa8000122cc0acc0a:8
+machine.rtc.pram.poke 0x18 0x0000000000026301:8
+
+# Run to the desktop.  The image reaches a stable Finder by ~150M instr; 200M
+# gives margin.
+scheduler.run 200000000
+
+# The card that booted into the IIcx video slot ($9) is the 24AC, at 8-bpp
+# colour 640x480 — i.e. machine.nubus.video_card took effect.
+assert ${machine.nubus.slot[9].card.name == "Apple Macintosh Display Card 24AC"} "slot $9 card != 24AC"
+assert ${machine.screen.width == 640}                        "boot: screen width != 640"
+assert ${machine.screen.height == 480}                       "boot: screen height != 480"
+assert ${(machine.memory.peek.b(0xF9D80001) & 0xE0) == 0x40} "boot: MODE depth latch != 8 bpp"
+assert ${machine.nubus.slot[9].card.framebuffer.depth == 8}  "boot: framebuffer not 8 bpp"
+# The 8-bpp colour Finder desktop, booted from the SCSI HD, pixel-exact.
+machine.screen.match finder-640x480-8bpp.png
+
+# --- Insert the "Utilities Disk 2" floppy into the internal drive (FD0) ------
+# (apps/Norton-Utils-Disk-2.image — the Norton/Symantec "Utilities Disk 2".)
+# The Finder mounts it and (its saved window state is "open") opens its window,
+# showing the disk's applications — including "System Info".  The window and
+# its icons are drawn through the 24AC framebuffer; ~60M instr is well past a
+# settled, static frame.
+machine.floppy.drive[0].insert "../../data/apps/Norton-Utils-Disk-2.image"
+assert ${machine.floppy.drive[0].present} "Utilities Disk 2 not present in FD0"
+scheduler.run 60000000
+# No system error must have been raised (DSErrCode/$AF0 == 0) mounting/opening.
+assert ${machine.memory.peek.w(0xaf0) == 0} "system error raised inserting Utilities Disk 2"
+# The mounted disk with its window open, showing the "System Info" app icon.
+machine.screen.match utilities-disk-640x480-8bpp.png
+
+# --- Launch "System Info" by double-clicking its icon -----------------------
+# The icon sits in the disk window at (264, 100) in screen (global) coordinates.
+# Double-click = down/up/down/up with 1M-instr gaps (same cadence as
+# se30-format-hd's mouseDoubleClick); 5M after the move lets the cursor VBL
+# propagate.  50M instr after the second release is well past System Info's
+# fully-drawn benchmark window.
+machine.adb.mouse.move 264 100 "global"
+scheduler.run 5000000
+machine.adb.mouse.click true
+scheduler.run 1000000
+machine.adb.mouse.click false
+scheduler.run 1000000
+machine.adb.mouse.click true
+scheduler.run 1000000
+machine.adb.mouse.click false
+scheduler.run 50000000
+# System Info's window is up and it has identified the machine + the 24AC card.
+# All four suites (Test CPU / Display / Volume / FPU) are checked by default.
+machine.screen.match system-info-640x480-8bpp.png
+
+# --- De-select every suite except "Test Display" -----------------------------
+# Single-click each checkbox (they toggle) to UNCHECK Test CPU, Test Volume and
+# Test FPU, leaving only Test Display.  The checkboxes are at screen x=187,
+# y=224 (CPU) / 264 (Volume) / 284 (FPU) — Test Display at y=244 is left alone.
+machine.adb.mouse.move 187 224 "global"
+scheduler.run 2000000
+machine.adb.mouse.click true
+scheduler.run 500000
+machine.adb.mouse.click false
+scheduler.run 1500000
+machine.adb.mouse.move 187 264 "global"
+scheduler.run 2000000
+machine.adb.mouse.click true
+scheduler.run 500000
+machine.adb.mouse.click false
+scheduler.run 1500000
+machine.adb.mouse.move 187 284 "global"
+scheduler.run 2000000
+machine.adb.mouse.click true
+scheduler.run 500000
+machine.adb.mouse.click false
+scheduler.run 3000000
+# Pixel-proof that ONLY Test Display is now checked (CPU/Volume/FPU cleared).
+machine.screen.match system-info-display-only-640x480-8bpp.png
+
+# --- Click "Run": the display benchmark starts immediately (no dialog) --------
+# Because PRAM was seeded with the reference config (128 KB cache + AppleTalk
+# off), clicking Run does NOT raise the "System Differences" dialog — it goes
+# straight into the Display benchmark.  Run button (stopwatch) at (456, 255).
+# The benchmark paints the full screen with QuickDraw fills/lines through the
+# 24AC card, then settles on the "System Ratings" window; it is static by ~350M
+# instr after the click (verified: identical frame at +350M and +400M), so 380M
+# lands on the stable result.
+machine.adb.mouse.move 456 255 "global"
+scheduler.run 3000000
+machine.adb.mouse.click true
+scheduler.run 1000000
+machine.adb.mouse.click false
+scheduler.run 380000000
+# The Display benchmark completed: "System Ratings" (Video) with a Current
+# System rating vs the Quadra 700 reference — only the Display suite ran.
+machine.screen.match system-info-video-rating-640x480-8bpp.png
+
+quit

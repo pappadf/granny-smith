@@ -103,6 +103,13 @@ struct display_card_24ac_priv {
     uint32_t engine_operand; // latched 32-bit operand (fill colour / pattern)
     uint32_t engine_copy_src; // block-copy handshake: latched source VRAM offset
     uint32_t engine_copy_len; // block-copy handshake: latched length (low bits)
+    // Engine activity counters (diagnostic; see engine.fill_ops/copy_ops object
+    // attrs).  Count hardware fills vs copies + total bytes the engine touched —
+    // used to measure which QuickDraw ops actually offload to the accelerator.
+    uint64_t fill_ops; // engine_fill_run invocations
+    uint64_t fill_bytes; // total bytes filled by the engine
+    uint64_t copy_ops; // engine_store_long execute invocations (copy/ROP)
+    uint64_t copy_bytes; // total bytes copied by the engine
     uint8_t status_depth_code; // STATUS[2:0] — current depth/mode (for the cdev)
     bool status_class_bit; // STATUS[3] — card-class / VRAM-organisation
     bool config_variant_bit; // CONFIG[0] — geometry variant
@@ -309,6 +316,8 @@ static void engine_fill_run(display_card_24ac_priv_t *p, uint32_t dest, uint32_t
     };
     for (uint32_t i = 0; i < len; i++)
         p->vram[dest + i] = pat[(dest + i) & 3];
+    p->fill_ops++;
+    p->fill_bytes += len;
     p->display.fb_dirty = true;
 }
 
@@ -367,6 +376,8 @@ static void engine_store_long(display_card_24ac_priv_t *p, uint32_t dest, uint32
         LOG(3, "engine: ROP mode $%02x block-copy %u bytes src $%06x → dest $%06x (copy fallback)", p->engine_mode, len,
             src, dest);
     memmove(p->vram + dest, p->vram + src, len); // source/dest may overlap
+    p->copy_ops++;
+    p->copy_bytes += len;
     p->display.fb_dirty = true;
 }
 
@@ -1134,4 +1145,32 @@ uint32_t display_card_24ac_engine_operand(const nubus_card_t *card) {
         return 0;
     const display_card_24ac_priv_t *p = card->priv;
     return p ? p->engine_operand : 0;
+}
+
+uint64_t display_card_24ac_engine_fill_ops(const nubus_card_t *card) {
+    if (!display_card_24ac_is_card(card))
+        return 0;
+    const display_card_24ac_priv_t *p = card->priv;
+    return p ? p->fill_ops : 0;
+}
+
+uint64_t display_card_24ac_engine_fill_bytes(const nubus_card_t *card) {
+    if (!display_card_24ac_is_card(card))
+        return 0;
+    const display_card_24ac_priv_t *p = card->priv;
+    return p ? p->fill_bytes : 0;
+}
+
+uint64_t display_card_24ac_engine_copy_ops(const nubus_card_t *card) {
+    if (!display_card_24ac_is_card(card))
+        return 0;
+    const display_card_24ac_priv_t *p = card->priv;
+    return p ? p->copy_ops : 0;
+}
+
+uint64_t display_card_24ac_engine_copy_bytes(const nubus_card_t *card) {
+    if (!display_card_24ac_is_card(card))
+        return 0;
+    const display_card_24ac_priv_t *p = card->priv;
+    return p ? p->copy_bytes : 0;
 }
