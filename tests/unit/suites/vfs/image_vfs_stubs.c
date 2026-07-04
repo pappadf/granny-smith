@@ -7,12 +7,19 @@
 #include "image_vfs.h"
 
 #include <errno.h>
+#include <stddef.h>
 
 int image_vfs_acquire_mount(const char *host_path, image_mount_t **out_mount) {
     (void)host_path;
     if (out_mount)
         *out_mount = NULL;
     return -ENOTDIR;
+}
+
+char *image_vfs_materialize_nested(image_mount_t *m, const char *in_image_file_path) {
+    (void)m;
+    (void)in_image_file_path;
+    return NULL; // no nested descent in the stubbed VFS unit test
 }
 
 int image_vfs_unmount(const char *host_path) {

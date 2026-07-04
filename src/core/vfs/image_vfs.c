@@ -16,6 +16,7 @@
 #include "image.h"
 #include "image_apm.h"
 #include "image_hfs.h"
+#include "image_ndif.h"
 #include "image_ufs.h"
 #include "resource_fork.h"
 
@@ -28,6 +29,7 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <unistd.h>
 
 // ---- Mount table ----------------------------------------------------------
 
@@ -1361,6 +1363,220 @@ static int img_readonly2(void *ctx, const char *a, const char *b) {
     (void)a;
     (void)b;
     return -EROFS;
+}
+
+// ---- Nested-image materialisation ----------------------------------------
+//
+// The auto-mount path (image_vfs_acquire_mount) opens a *host* file.  To let
+// the VFS descend into a disk image that itself lives inside another mounted
+// image (e.g. a Disk Copy 6.x / NDIF .img inside a Toast CD), we decode that
+// inner file to a host scratch file and mount that scratch normally.  NDIF
+// images are decoded here (bcem block map + ADC); any other nested file is
+// copied verbatim so a nested raw / Disk Copy 4.2 image mounts too.
+
+#define NESTED_SCRATCH_DIR "/tmp/gs-image-ro/nested"
+
+static int mkdir_p_nested(const char *path) {
+    char tmp[PATH_MAX];
+    int n = snprintf(tmp, sizeof(tmp), "%s", path);
+    if (n < 0 || (size_t)n >= sizeof(tmp))
+        return -1;
+    for (char *p = tmp + 1; *p; p++) {
+        if (*p == '/') {
+            *p = '\0';
+            if (mkdir(tmp, 0777) != 0 && errno != EEXIST)
+                return -1;
+            *p = '/';
+        }
+    }
+    if (mkdir(tmp, 0777) != 0 && errno != EEXIST)
+        return -1;
+    return 0;
+}
+
+static uint32_t fnv1a_update(const void *data, size_t n, uint32_t h) {
+    const uint8_t *p = (const uint8_t *)data;
+    for (size_t i = 0; i < n; i++) {
+        h ^= p[i];
+        h *= 0x01000193u;
+    }
+    return h;
+}
+
+// Read an entire in-image file (given its in-image subpath) into a malloc'd
+// buffer.  Returns 0 and sets *out_buf/*out_len (empty file → NULL/0), or a
+// negative errno.  Caller frees *out_buf.
+static int read_in_image_file(image_mount_t *m, const char *subpath, uint8_t **out_buf, size_t *out_len) {
+    *out_buf = NULL;
+    *out_len = 0;
+    vfs_stat_t st;
+    int rc = img_stat(m, subpath, &st);
+    if (rc)
+        return rc;
+    if (!(st.mode & VFS_MODE_FILE))
+        return -EINVAL;
+    size_t sz = (size_t)st.size;
+    if (sz == 0)
+        return 0;
+    uint8_t *buf = malloc(sz);
+    if (!buf)
+        return -ENOMEM;
+    vfs_file_t *f = NULL;
+    rc = img_open(m, subpath, &f);
+    if (rc) {
+        free(buf);
+        return rc;
+    }
+    size_t off = 0;
+    while (off < sz) {
+        size_t got = 0;
+        int r = img_read(f, off, buf + off, sz - off, &got);
+        if (r || got == 0) {
+            img_close(f);
+            free(buf);
+            return r ? r : -EIO;
+        }
+        off += got;
+    }
+    img_close(f);
+    *out_buf = buf;
+    *out_len = sz;
+    return 0;
+}
+
+// Decode an NDIF file (data fork `df` open on the inner file, block map
+// `map`) into the already-sized scratch file `out`.  Returns true on success.
+static bool write_ndif_to_scratch(image_mount_t *m, const char *file_subpath, ndif_map_t *map, FILE *out) {
+    if (ftruncate(fileno(out), (off_t)map->sectors * 512) != 0)
+        return false;
+    vfs_file_t *df = NULL;
+    if (img_open(m, file_subpath, &df) != 0)
+        return false;
+    bool ok = true;
+    for (size_t i = 0; i < map->n_chunks && ok; i++) {
+        ndif_chunk_t *c = &map->chunks[i];
+        if (c->type == NDIF_CHUNK_ZERO || c->count == 0)
+            continue; // ftruncate already zero-filled the gap
+        size_t need = (size_t)c->count * 512;
+        uint8_t *dbuf = malloc(need);
+        uint8_t *cbuf = c->length ? malloc(c->length) : NULL;
+        if (!dbuf || (c->length && !cbuf)) {
+            free(dbuf);
+            free(cbuf);
+            ok = false;
+            break;
+        }
+        size_t clen = 0;
+        if (c->length) {
+            size_t off = 0;
+            while (off < c->length) {
+                size_t got = 0;
+                if (img_read(df, c->offset + off, cbuf + off, c->length - off, &got) != 0 || got == 0) {
+                    ok = false;
+                    break;
+                }
+                off += got;
+            }
+            clen = off;
+        }
+        if (ok && ndif_decode_chunk(c, cbuf, clen, dbuf, need) == 0) {
+            if (fseek(out, (long)c->sector * 512, SEEK_SET) != 0 || fwrite(dbuf, 1, need, out) != need)
+                ok = false;
+        } else {
+            ok = false;
+        }
+        free(dbuf);
+        free(cbuf);
+    }
+    img_close(df);
+    return ok;
+}
+
+// Copy the data fork of an inner (non-NDIF) file verbatim to the scratch
+// file — handles a nested raw or Disk Copy 4.2 image.
+static bool copy_fork_to_scratch(image_mount_t *m, const char *file_subpath, uint64_t size, FILE *out) {
+    vfs_file_t *df = NULL;
+    if (img_open(m, file_subpath, &df) != 0)
+        return false;
+    bool ok = true;
+    uint8_t buf[65536];
+    uint64_t off = 0;
+    while (off < size) {
+        size_t want = (size - off > sizeof(buf)) ? sizeof(buf) : (size_t)(size - off);
+        size_t got = 0;
+        if (img_read(df, off, buf, want, &got) != 0 || got == 0) {
+            ok = false;
+            break;
+        }
+        if (fwrite(buf, 1, got, out) != got) {
+            ok = false;
+            break;
+        }
+        off += got;
+    }
+    img_close(df);
+    return ok;
+}
+
+char *image_vfs_materialize_nested(image_mount_t *m, const char *file_subpath) {
+    if (!m || !file_subpath)
+        return NULL;
+    vfs_stat_t st;
+    if (img_stat(m, file_subpath, &st) != 0 || !(st.mode & VFS_MODE_FILE))
+        return NULL;
+
+    // Deterministic scratch name from the outer file identity + subpath +
+    // mtime, so repeated descents reuse the same decoded file (and its cached
+    // mount) and a changed outer file re-decodes.
+    uint32_t h = 0x811c9dc5u;
+    if (m->host_path)
+        h = fnv1a_update(m->host_path, strlen(m->host_path), h);
+    h = fnv1a_update("\x1f", 1, h);
+    h = fnv1a_update(file_subpath, strlen(file_subpath), h);
+    uint32_t h2 = fnv1a_update(&m->mtime, sizeof(m->mtime), h);
+    char scratch[PATH_MAX];
+    if (snprintf(scratch, sizeof(scratch), "%s/%08x%08x.img", NESTED_SCRATCH_DIR, h, h2) >= (int)sizeof(scratch))
+        return NULL;
+
+    struct stat sb;
+    if (stat(scratch, &sb) == 0 && sb.st_size > 0)
+        return strdup(scratch); // already materialised
+
+    if (mkdir_p_nested(NESTED_SCRATCH_DIR) != 0)
+        return NULL;
+
+    // Read the inner file's resource fork (for NDIF detection).  Best-effort:
+    // a non-NDIF nested image simply has no bcem and is copied verbatim.
+    char rsrc_path[VFS_PATH_MAX];
+    uint8_t *rbuf = NULL;
+    size_t rlen = 0;
+    if (snprintf(rsrc_path, sizeof(rsrc_path), "%s/rsrc/_raw", file_subpath) < (int)sizeof(rsrc_path))
+        read_in_image_file(m, rsrc_path, &rbuf, &rlen);
+
+    FILE *out = fopen(scratch, "wb");
+    if (!out) {
+        free(rbuf);
+        return NULL;
+    }
+
+    bool ok = false;
+    if (rbuf && ndif_detect(rbuf, rlen)) {
+        ndif_map_t *map = NULL;
+        if (ndif_parse(rbuf, rlen, &map) == 0) {
+            ok = write_ndif_to_scratch(m, file_subpath, map, out);
+            ndif_map_free(map);
+        }
+    } else {
+        ok = copy_fork_to_scratch(m, file_subpath, st.size, out);
+    }
+
+    fclose(out);
+    free(rbuf);
+    if (!ok) {
+        remove(scratch);
+        return NULL;
+    }
+    return strdup(scratch);
 }
 
 static const vfs_backend_t image_backend = {

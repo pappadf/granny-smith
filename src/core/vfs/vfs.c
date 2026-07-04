@@ -15,6 +15,7 @@
 
 #include <errno.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
 
@@ -145,6 +146,72 @@ static image_mount_t *walk_for_descent(const char *resolved, size_t *out_prefix_
     return NULL;
 }
 
+// True if any '/'-separated component of the in-image path `tail` (which
+// starts with '/') is a synthetic fork keyword ("rsrc" or "finf").  Such
+// paths address the *outer* file's forks, not a nested image, so nested
+// descent must skip them.
+static bool tail_has_fork_component(const char *tail) {
+    const char *p = tail;
+    while (*p) {
+        while (*p == '/')
+            p++;
+        const char *start = p;
+        while (*p && *p != '/')
+            p++;
+        size_t len = (size_t)(p - start);
+        if ((len == 4 && strncmp(start, "rsrc", 4) == 0) || (len == 4 && strncmp(start, "finf", 4) == 0))
+            return true;
+    }
+    return false;
+}
+
+// True if the FIRST component of `rem` (which starts with '/') is a synthetic
+// fork keyword — i.e. `rem` addresses the just-matched file's own fork rather
+// than descending into it as a nested image.  Deeper "rsrc"/"finf" belong to
+// files *inside* a nested image and must not disqualify the descent.
+static bool first_component_is_fork(const char *rem) {
+    const char *p = rem;
+    while (*p == '/')
+        p++;
+    const char *start = p;
+    while (*p && *p != '/')
+        p++;
+    size_t len = (size_t)(p - start);
+    return len == 4 && (strncmp(start, "rsrc", 4) == 0 || strncmp(start, "finf", 4) == 0);
+}
+
+// Given an outer image mount `m` and its in-image tail (starting with '/'),
+// find whether the tail descends through a nested image FILE.  On success
+// returns true, sets *split to the byte length within `tail` of that file's
+// subpath, and *rem to `tail + split` (the remaining in-image path of the
+// nested image, starting with '/').  Fork-suffix tails are left to the image
+// backend and do not count as nested descent.
+static bool find_nested_split(image_mount_t *m, const char *tail, size_t *split, const char **rem) {
+    const vfs_backend_t *ib = vfs_image_backend();
+    size_t len = strlen(tail);
+    for (size_t j = 1; j < len; j++) {
+        if (tail[j] != '/')
+            continue;
+        char tmp[VFS_PATH_MAX];
+        if (j >= sizeof(tmp))
+            return false;
+        memcpy(tmp, tail, j);
+        tmp[j] = '\0';
+        vfs_stat_t st;
+        if (ib->stat(m, tmp, &st) != 0)
+            continue; // not resolvable at this prefix; keep walking
+        if (st.mode & VFS_MODE_FILE) {
+            const char *r = tail + j; // remaining path, starts with '/'
+            if (first_component_is_fork(r))
+                return false; // this file's own fork access, not a nested image
+            *split = j;
+            *rem = r;
+            return true;
+        }
+    }
+    return false;
+}
+
 // Shared body for vfs_resolve / vfs_resolve_descend.  `descend_bare`
 // controls the "ls/cd bare image path" rule.
 static int resolve_impl(const char *input, char *resolved, size_t resolved_len, const vfs_backend_t **be, void **ctx,
@@ -173,6 +240,54 @@ static int resolve_impl(const char *input, char *resolved, size_t resolved_len, 
                 prefix_len = strlen(resolved);
             } else if (pr == -EBUSY) {
                 return -EBUSY;
+            }
+        }
+    }
+
+    // Nested-image descent: the in-image tail may itself point through a
+    // disk image FILE (e.g. an NDIF .img inside a Toast CD).  For each such
+    // level, materialise the inner image to a host scratch file, mount it,
+    // and continue with the remaining in-image tail (a substring of
+    // `resolved`, so no reallocation is needed).  Bounded to avoid loops.
+    for (int depth = 0; mount && depth < 8; depth++) {
+        const char *ntail = resolved + prefix_len;
+        size_t split = 0;
+        const char *rem = NULL;
+        if (!find_nested_split(mount, ntail, &split, &rem))
+            break;
+        char sub[VFS_PATH_MAX];
+        if (split >= sizeof(sub))
+            break;
+        memcpy(sub, ntail, split);
+        sub[split] = '\0';
+        char *scratch = image_vfs_materialize_nested(mount, sub);
+        if (!scratch)
+            return -EIO; // inner image present but undecodable
+        image_mount_t *nested = NULL;
+        int pr = image_vfs_acquire_mount(scratch, &nested);
+        free(scratch);
+        if (pr != 0)
+            return (pr == -ENOTDIR || pr == -ENOENT) ? -ENOTDIR : pr;
+        mount = nested;
+        prefix_len = (size_t)(rem - resolved);
+    }
+
+    // Bare nested image (ls/cd on the inner .img itself): descend so the
+    // partition list is shown, mirroring the top-level bare-image rule.
+    if (mount && descend_bare) {
+        const char *ntail = resolved + prefix_len;
+        if (ntail[0] == '/' && ntail[1] && !tail_has_fork_component(ntail)) {
+            vfs_stat_t st;
+            if (vfs_image_backend()->stat(mount, ntail, &st) == 0 && (st.mode & VFS_MODE_FILE)) {
+                char *scratch = image_vfs_materialize_nested(mount, ntail);
+                if (scratch) {
+                    image_mount_t *nested = NULL;
+                    if (image_vfs_acquire_mount(scratch, &nested) == 0) {
+                        mount = nested;
+                        prefix_len = strlen(resolved);
+                    }
+                    free(scratch);
+                }
             }
         }
     }
