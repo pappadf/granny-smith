@@ -4,14 +4,25 @@
 //
 // Flow:
 //   1. Check first file for checkpoint signature — short-circuit to load.
-//   2. Stage each file into /opfs/upload/ via direct OPFS write.
+//   2. Stage each file into /opfs/upload/ (see stageUpload).
 //   3. Probe the staged file (ROM? floppy? archive? something else?).
 //   4. If a ROM was uploaded, also boot a default machine from it.
 //   5. Persist to the right /opfs/images/<category>/ via gsEval('storage.cp').
-//   6. Cleanup /opfs/upload/.
+//   6. Cleanup the staging copy.
+//
+// STAGING (see stageUpload): the write runs ON THE WORKER — Module.FS is proxied
+// to the runtime thread, whose WasmFS drives OPFS via createSyncAccessHandle,
+// the only browser-portable OPFS write path. Writing staging from the MAIN
+// thread — the old approach — failed two ways: Safari's OPFS rejects main-thread
+// createWritable() with "UnknownError", and on Chromium the worker's WasmFS
+// can't see a main-thread OPFS write, so the follow-up storage.cp can't find the
+// file and strands it in /opfs/upload. The file is sliced and written chunk by
+// chunk, so uploads of any size (including hundreds-of-MB CD-ROMs) never buffer
+// the whole file. This mirrors how move/delete route through the worker
+// (storage.mv/storage.rm).
 
 import { gsEval, isModuleReady, getModule, applyCapabilities } from './emulator';
-import { writeToOPFS, removeFromOPFS, opfs } from './opfs';
+import { opfs } from './opfs';
 import { showNotification } from '@/state/toasts.svelte';
 import { machine } from '@/state/machine.svelte';
 import { setMounted, bumpImagesRevision } from '@/state/images.svelte';
@@ -38,6 +49,60 @@ async function romIdentify(path: string): Promise<RomIdentifyResult | null> {
     // Fall through.
   }
   return null;
+}
+
+// Bytes copied to the worker per FS.write. Bounds peak memory (one slice in the
+// JS heap + one in the WASM heap at a time) so uploads of any size — including
+// hundreds-of-MB CD-ROM images — never buffer the whole file anywhere.
+const STAGE_CHUNK_BYTES = 4 * 1024 * 1024;
+
+// Write a File to an OPFS path, chunk by chunk, ON THE WORKER: Module.FS is
+// proxied to the runtime thread, whose WasmFS drives OPFS via
+// createSyncAccessHandle — the only browser-portable OPFS write path.
+// Main-thread createWritable() throws "UnknownError" on Safari, and a
+// main-thread OPFS write isn't visible to the worker's WasmFS on Chromium
+// (stranding the file). Slicing the File and writing chunk-by-chunk means
+// nothing buffers the whole file, so any size (incl. large CD-ROMs) works.
+// Returns true on success.
+async function streamFileToOpfs(opfsPath: string, file: File): Promise<boolean> {
+  const mod = getModule();
+  if (!mod) return false;
+  let stream: unknown;
+  try {
+    stream = mod.FS.open(opfsPath, 'w');
+    for (let pos = 0; pos < file.size; ) {
+      const end = Math.min(pos + STAGE_CHUNK_BYTES, file.size);
+      const chunk = new Uint8Array(await file.slice(pos, end).arrayBuffer());
+      mod.FS.write(stream, chunk, 0, chunk.length, pos);
+      pos = end;
+    }
+    return true;
+  } catch (err) {
+    console.error('upload: OPFS stream write failed', err);
+    return false;
+  } finally {
+    if (stream !== undefined) {
+      try {
+        mod.FS.close(stream);
+      } catch {
+        // Already closed / open failed — nothing to release.
+      }
+    }
+  }
+}
+
+// Stage an uploaded file into /opfs/upload for probing/persisting and return the
+// staged path (or null on failure). Callers cleanup via discardStaging().
+async function stageUpload(file: File): Promise<string | null> {
+  const path = `${UPLOAD_DIR}/${sanitizeName(file.name) || 'image.img'}`;
+  return (await streamFileToOpfs(path, file)) ? path : null;
+}
+
+// Best-effort removal of a staged file / unpacked-archive dir. Everything staging
+// touches is written by the worker (FS streaming above, archive.extract), so the
+// recursive rm runs worker-side too — keeping its WasmFS view coherent.
+async function discardStaging(path: string): Promise<void> {
+  await gsEval('storage.rm', [path]);
 }
 
 // Top-level entry. Caller supplies a flat list of File objects.
@@ -69,13 +134,10 @@ export async function acceptFiles(files: File[], opts: AcceptFilesOptions = {}):
   try {
     let firstStagedPath: string | null = null;
     for (const file of files) {
-      const safe = sanitizeName(file.name) || 'image.img';
-      const staging = `${UPLOAD_DIR}/${safe}`;
-      try {
-        await writeToOPFS(staging, file);
+      const staging = await stageUpload(file);
+      if (staging) {
         if (!firstStagedPath) firstStagedPath = staging;
-      } catch (err) {
-        console.error('upload: OPFS write failed', err);
+      } else {
         showNotification(`Upload failed: ${file.name}`, 'error');
         continue;
       }
@@ -87,7 +149,7 @@ export async function acceptFiles(files: File[], opts: AcceptFilesOptions = {}):
     if (files.length === 1) {
       await probeAndPersist(firstStagedPath, files[0], { autoBootOnRom });
     } else {
-      showNotification(`${files.length} files uploaded to ${UPLOAD_DIR}`, 'info');
+      showNotification(`${files.length} files uploaded`, 'info');
     }
   } finally {
     endActivity();
@@ -108,14 +170,10 @@ export async function acceptFilesAsCategory(
     return false;
   }
   const file = files[0];
-  const safe = sanitizeName(file.name) || 'image.img';
-  const staging = `${UPLOAD_DIR}/${safe}`;
   startActivity(file.name);
   try {
-    try {
-      await writeToOPFS(staging, file);
-    } catch (err) {
-      console.error('upload: OPFS write failed', err);
+    const staging = await stageUpload(file);
+    if (!staging) {
       showNotification(`Upload failed: ${file.name}`, 'error');
       return false;
     }
@@ -123,7 +181,7 @@ export async function acceptFilesAsCategory(
     const result = await descriptor.validate(staging, gsEval);
     if (!result.valid) {
       showNotification(`'${file.name}' is not a valid ${descriptor.label}`, 'error');
-      await removeFromOPFS(staging);
+      await discardStaging(staging);
       return false;
     }
     const persisted = await persist(staging, file.name, descriptor, result.info);
@@ -151,11 +209,13 @@ export async function acceptFilesRaw(files: File[], targetDir: string): Promise<
     const finalPath = `${targetDir}/${safe}`;
     startActivity(file.name);
     try {
-      await writeToOPFS(finalPath, file);
-      showNotification(`'${file.name}' saved to ${targetDir}`, 'info');
-    } catch (err) {
-      console.error('upload: OPFS write failed', err);
-      showNotification(`Upload failed: ${file.name}`, 'error');
+      // Write straight to the chosen folder on the worker (Safari-safe, coherent
+      // with its WasmFS). No staging/copy — targetDir may itself be /opfs/upload.
+      const ok = await streamFileToOpfs(finalPath, file);
+      showNotification(
+        ok ? `'${file.name}' saved to ${targetDir}` : `Upload failed: ${file.name}`,
+        ok ? 'info' : 'error',
+      );
     } finally {
       endActivity();
     }
@@ -264,15 +324,15 @@ async function probeAndPersist(
     const ok = (await gsEval('archive.extract', [stagingPath, extractDir])) === true;
     if (!ok) {
       showNotification(`Failed to extract ${file.name}`, 'error');
-      await removeFromOPFS(stagingPath);
+      await discardStaging(stagingPath);
       return;
     }
     const innerPath = `${extractDir}/_found_media.img`;
     const found = (await gsEval('storage.find_media', [extractDir, innerPath])) === true;
     if (!found) {
       showNotification(`No mountable media inside ${file.name}`, 'warning');
-      await removeFromOPFS(stagingPath);
-      await removeFromOPFS(extractDir);
+      await discardStaging(stagingPath);
+      await discardStaging(extractDir);
       return;
     }
     // Retry the descriptor probe on the extracted image.
@@ -286,18 +346,18 @@ async function probeAndPersist(
           if (opts.autoBootOnRom) await maybeBootFromRom(persisted);
         } else await autoMountIfEmpty(persisted, id);
       }
-      await removeFromOPFS(stagingPath);
-      await removeFromOPFS(extractDir);
+      await discardStaging(stagingPath);
+      await discardStaging(extractDir);
       return;
     }
     showNotification(`Extracted ${file.name} but no recognised image inside`, 'warning');
-    await removeFromOPFS(stagingPath);
-    await removeFromOPFS(extractDir);
+    await discardStaging(stagingPath);
+    await discardStaging(extractDir);
     return;
   }
 
   showNotification(`${file.name} doesn't look like a ROM, floppy, HD, CD, or archive`, 'warning');
-  await removeFromOPFS(stagingPath);
+  await discardStaging(stagingPath);
 }
 
 async function persist(
@@ -316,7 +376,7 @@ async function persist(
     showNotification(`Failed to save ${originalName}`, 'error');
     return null;
   }
-  await removeFromOPFS(sourcePath);
+  await discardStaging(sourcePath);
   // Notify inventory watchers (e.g. WelcomeConfigSlide's dropdown
   // refresh effect) that the OPFS image catalog has changed.
   bumpImagesRevision();

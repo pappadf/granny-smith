@@ -38,6 +38,19 @@ interface EmscriptenModule {
     stat(path: string): unknown;
     readdir(path: string): string[];
     readFile(path: string): Uint8Array<ArrayBufferLike>;
+    // Streaming write API (Emscripten legacy-compat FS surface). open() returns
+    // a stream handle; write() copies `length` bytes from `buffer[offset..]` to
+    // the file at `position`. Used to stage uploads chunk-by-chunk into OPFS on
+    // the worker without buffering the whole file. See bus/upload.ts.
+    open(path: string, flags: string): unknown;
+    write(
+      stream: unknown,
+      buffer: Uint8Array<ArrayBufferLike>,
+      offset: number,
+      length: number,
+      position?: number,
+    ): number;
+    close(stream: unknown): void;
   };
   _get_js_bridge(): number;
   stringToUTF8(s: string, ptr: number, max: number): void;
