@@ -295,6 +295,25 @@ static value_t storage_method_cp(struct object *self, const member_t *m, int arg
     return val_bool(true);
 }
 
+// `storage.export_raw(src, dst)` — write a disk image referenced by a VFS
+// path (a host raw/DC42 image, or an image nested inside a mounted image such
+// as an NDIF `.img` in a Toast CD) as a flat, decoded RAW image on the host.
+// Unlike `cp` — which copies a file's data fork verbatim (for an NDIF `.img`
+// that is the still-compressed data fork) — this decodes the image and emits
+// its logical block device, ready to re-mount or `dd`.  Refuses to overwrite.
+static value_t storage_method_export_raw(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)self;
+    (void)m;
+    (void)argc;
+    const char *src = argv[0].s;
+    const char *dst = argv[1].s;
+    char err[256] = {0};
+    int rc = vfs_export_raw_image(src, dst, err, sizeof(err));
+    if (rc < 0)
+        return val_err("%s", err[0] ? err : "storage.export_raw: failed");
+    return val_bool(true);
+}
+
 // `storage.find_media(dir, [dst])` — search a directory for a recognised
 // floppy image; if `dst` is given, the image is copied there.
 static value_t storage_method_find_media(struct object *self, const member_t *m, int argc, const value_t *argv) {
@@ -654,6 +673,10 @@ static const arg_decl_t storage_cp_args[] = {
     {.name = "dst", .kind = V_STRING, .doc = "Destination path"},
     {.name = "flag", .kind = V_STRING, .validation_flags = OBJ_ARG_OPTIONAL, .doc = "Optional -r / -R for recursive"},
 };
+static const arg_decl_t storage_export_raw_args[] = {
+    {.name = "src", .kind = V_STRING, .doc = "Source image path (host, or nested inside a mounted image)"},
+    {.name = "dst", .kind = V_STRING, .doc = "Destination host path for the decoded raw image"           },
+};
 static const arg_decl_t storage_find_media_args[] = {
     {.name = "dir", .kind = V_STRING, .doc = "Directory to scan"},
     {.name = "dst", .kind = V_STRING, .validation_flags = OBJ_ARG_OPTIONAL, .doc = "Optional path to copy match into"},
@@ -703,6 +726,10 @@ static const member_t storage_members[] = {
      .name = "cp",
      .doc = "Copy a host or VFS path to another VFS path",
      .method = {.args = storage_cp_args, .nargs = 3, .result = V_BOOL, .fn = storage_method_cp}                  },
+    {.kind = M_METHOD,
+     .name = "export_raw",
+     .doc = "Decode a disk image (incl. NDIF nested in a mounted image) to a flat raw image on the host",
+     .method = {.args = storage_export_raw_args, .nargs = 2, .result = V_BOOL, .fn = storage_method_export_raw}  },
     {.kind = M_METHOD,
      .name = "find_media",
      .doc = "Find a recognised floppy/disk image in a directory",

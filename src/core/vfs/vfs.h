@@ -104,6 +104,16 @@ int vfs_mkdir(const char *path);
 int vfs_unlink(const char *path);
 int vfs_rename(const char *src, const char *dst);
 
+// Export a disk image referenced by a VFS path as a flat **raw** image on
+// the host.  `src` may be a plain host image (raw / Disk Copy 4.2) or a disk
+// image nested inside a mounted image (e.g. an NDIF `.img` inside a Toast CD);
+// in the latter case it is decoded first (NDIF bcem/ADC → raw).  The result
+// is the decoded logical block device — single-fork, portable, directly
+// re-mountable.  Refuses to overwrite an existing `dst`.  Returns 0 on
+// success or a negated errno; on failure `err`/`err_cap` (optional) receives
+// a human-readable message.
+int vfs_export_raw_image(const char *src, const char *dst, char *err, size_t err_cap);
+
 // current_dir accessor + setter (backed by the shell's existing static).
 // Today the cwd is a host path string; an image-rooted cwd would need
 // extending this with the resolver's auto-mount state.

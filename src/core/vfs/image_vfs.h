@@ -44,6 +44,16 @@ int image_vfs_acquire_mount(const char *host_path, image_mount_t **out_mount);
 // dropped, -ENOENT if no match.
 int image_vfs_unmount(const char *host_path);
 
+// Materialise a disk image that lives *inside* an already-mounted image
+// (`m`) to a host scratch file, so it can be mounted via
+// image_vfs_acquire_mount().  `in_image_file_path` is the inner file's
+// in-image path (e.g. "/partition2/Foo/Bar.img").  Disk Copy 6.x / NDIF
+// images are decoded (bcem + ADC); other files are copied verbatim (nested
+// raw / Disk Copy 4.2).  Returns a malloc'd host path (caller frees) or NULL
+// if the file could not be decoded/extracted.  The scratch name is
+// deterministic, so repeated calls reuse the same file.
+char *image_vfs_materialize_nested(image_mount_t *m, const char *in_image_file_path);
+
 // Iteration over the current cache, for `image list`.  `cb` is called
 // once per live mount; return non-zero to stop early.
 typedef void (*image_vfs_list_cb)(const char *host_path, const char *format_name, uint32_t n_partitions,

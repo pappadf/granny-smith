@@ -4,15 +4,40 @@
 // vfs_resolve falls through to host resolution unchanged.  Production
 // code provides the real implementations in src/core/vfs/image_vfs.c.
 
+#include "image.h"
 #include "image_vfs.h"
 
 #include <errno.h>
+#include <stddef.h>
 
 int image_vfs_acquire_mount(const char *host_path, image_mount_t **out_mount) {
     (void)host_path;
     if (out_mount)
         *out_mount = NULL;
     return -ENOTDIR;
+}
+
+char *image_vfs_materialize_nested(image_mount_t *m, const char *in_image_file_path) {
+    (void)m;
+    (void)in_image_file_path;
+    return NULL; // no nested descent in the stubbed VFS unit test
+}
+
+// Image-layer symbols referenced by vfs_export_raw_image().  The stubbed VFS
+// unit test never exercises the export path, so these just satisfy the linker.
+image_t *image_open_readonly(const char *base_path) {
+    (void)base_path;
+    return NULL;
+}
+
+int image_export_to(image_t *image, const char *dest_path) {
+    (void)image;
+    (void)dest_path;
+    return -1;
+}
+
+void image_close(image_t *image) {
+    (void)image;
 }
 
 int image_vfs_unmount(const char *host_path) {
