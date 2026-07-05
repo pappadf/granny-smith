@@ -11,6 +11,7 @@
 
 #include "vfs.h"
 
+#include "image.h"
 #include "image_vfs.h"
 
 #include <errno.h>
@@ -409,6 +410,69 @@ int vfs_rename(const char *src, const char *dst) {
     if (!src_be->rename)
         return -EROFS;
     return src_be->rename(src_ctx, src_tail, dst_tail);
+}
+
+static void set_err(char *err, size_t cap, const char *msg) {
+    if (err && cap)
+        snprintf(err, cap, "%s", msg);
+}
+
+int vfs_export_raw_image(const char *src, const char *dst, char *err, size_t err_cap) {
+    if (!src || !dst) {
+        set_err(err, err_cap, "export_raw: missing src/dst");
+        return -EINVAL;
+    }
+
+    char resolved[VFS_PATH_MAX];
+    const vfs_backend_t *be = NULL;
+    void *ctx = NULL;
+    const char *tail = NULL;
+    // Strict resolve (not descend): a bare image path stays a "file" so a
+    // nested `.img` resolves to (image backend, outer mount, in-image tail)
+    // rather than descending into its partition list.
+    int rc = vfs_resolve(src, resolved, sizeof(resolved), &be, &ctx, &tail);
+    if (rc) {
+        set_err(err, err_cap, "export_raw: cannot resolve source path");
+        return rc;
+    }
+
+    // The host image path we ultimately open read-only and flatten to raw.
+    // For a nested image we first decode it to a scratch file.
+    const char *host_image_path = resolved;
+    char *scratch = NULL;
+
+    if (be == vfs_image_backend() && ctx) {
+        // Source lives inside a mounted image; `tail` is its in-image path.
+        vfs_stat_t st;
+        if (be->stat(ctx, tail, &st) != 0 || !(st.mode & VFS_MODE_FILE)) {
+            set_err(err, err_cap, "export_raw: source is not a file inside the image");
+            return -ENOENT;
+        }
+        scratch = image_vfs_materialize_nested((image_mount_t *)ctx, tail);
+        if (!scratch) {
+            set_err(err, err_cap, "export_raw: could not decode/extract the nested image");
+            return -EIO;
+        }
+        host_image_path = scratch;
+    }
+
+    // Open the (decoded) image read-only and flatten its logical media to a
+    // new raw file.  image_export_to refuses to overwrite and creates parent
+    // directories.
+    image_t *img = image_open_readonly(host_image_path);
+    if (!img) {
+        free(scratch);
+        set_err(err, err_cap, "export_raw: source is not a recognised disk image");
+        return -EIO;
+    }
+    int erc = image_export_to(img, dst);
+    image_close(img);
+    free(scratch);
+    if (erc != 0) {
+        set_err(err, err_cap, "export_raw: write failed (destination exists or not writable)");
+        return -EIO;
+    }
+    return 0;
 }
 
 const char *vfs_get_cwd(void) {
