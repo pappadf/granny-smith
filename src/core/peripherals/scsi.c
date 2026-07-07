@@ -1536,14 +1536,17 @@ static void write_uint8(void *s, uint32_t addr, uint8_t value) {
     // [5] : a0-a2  are connected to a4-a6 of the cpu bus
     switch (addr >> 4 & 7) {
     case ODR:
-        if (addr & 0x200) {
-            // Pseudo-DMA ODR alias: the host writes through the chip's
-            // BLIND/auto-handshake port.  Shared with the IIfx iHSKEN
-            // wrapper path — see scsi_odr_auto_handshake_byte() below.
-            // Apply the primer-slot gate here (the Mac-OS-specific
-            // CLR.B-then-real-data pattern at PC $1004B888); IIfx's
-            // wrapper-side call passes apply_primer_gate=false.
-            scsi_odr_auto_handshake_byte(scsi, value, /*apply_primer_gate=*/true);
+        if (addr & SCSI_PDMA_SEL) {
+            // Pseudo-DMA ODR alias.  The GLUE/MDU decode marks the BLIND
+            // window with SCSI_BLIND_SEL and leaves the DRQ window without
+            // it.  The primer-slot gate is applied to the BLIND window ONLY:
+            // classic Mac OS drives its zero-filled block writes through the
+            // /DTACK-paced DRQ window, whose leading $00 must NOT be dropped
+            // (doing so corrupted System 6.0.8's HD SC Setup volume init).
+            // Only A/UX's SE/30 BLIND-window CLR.B $00 primer needs the gate.
+            // The IIfx iHSKEN wrapper calls in with apply_primer_gate=false.
+            bool blind = (addr & SCSI_BLIND_SEL) != 0;
+            scsi_odr_auto_handshake_byte(scsi, value, /*apply_primer_gate=*/blind);
         } else
             scsi->reg.odr = value;
         break;

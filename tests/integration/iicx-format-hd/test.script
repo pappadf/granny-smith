@@ -1,0 +1,101 @@
+# Integration test: IIcx + 8•24 GC — format a blank HD under System 6.0.8
+#
+# Creates a blank HD20SC SCSI disk, boots a IIcx with the Apple Macintosh
+# Display Card 8•24 (JMFB) from the SSW 6.0.8 800K floppy (Disk2of4, volume
+# "Utilities"), opens Apple HD SC Setup v2.0.3 off the floppy, and initializes
+# the blank drive — verifying the guest OS reports the format succeeded.
+#
+# Regression guard for the NCR 5380 BLIND-vs-DRQ primer-gate fix: HD SC Setup's
+# HFS volume-init writes zero-filled bitmap / B-tree blocks whose first byte is
+# $00 via Mac OS's DRQ pseudo-DMA.  Before the fix the primer-slot gate (meant
+# only for A/UX's BLIND-window CLR.B primer) dropped that leading $00, corrupted
+# every such block, and the format aborted with "unable to mount volume".
+#
+# Mouse geometry is in screen ("global") pixels at 640x480, 8•24 GC 13" RGB.
+
+# Create a blank HD20SC hard-disk image (21,307,392 bytes, zero-filled).
+storage.hd_create ${WORK_DIR}/blank.img HD20SC
+
+# Select the 8•24 GC + 13" RGB 640x480 sense, boot the IIcx with 8 MB, and
+# reload the ROM so the card's declaration ROM (Apple-341-0868.vrom, found
+# next to IIcx.rom) binds.  video_card can't be passed as a boot arg.
+machine.nubus.video_card = "mdc_8_24"
+machine.nubus.video_sense = 0x6
+machine.boot "iicx" 8192
+machine.rom.reload
+
+# Attach the blank HD at SCSI ID 0 (unformatted → won't boot / won't mount),
+# and insert the SSW 6.0.8 boot floppy (Disk2of4 is the "Utilities" disk that
+# carries Apple HD SC Setup).
+machine.scsi.attach_hd ${WORK_DIR}/blank.img 0
+machine.floppy.drive[0].insert "../../data/systems/SSW-6.08-800K/SSW 6.0.8-800k Disk2of4"
+
+# Boot to the Finder desktop.  The IIcx Universal ROM otherwise burns ~16.8 s of
+# guest time in its boot-drive-discovery wait; synthesise Cmd-Shift-Power in the
+# KeyMap-modifiers low-memory global ($017A) to short-circuit it (same trick as
+# iicx-video-modes), then clear it so System 6's Finder doesn't see Cmd held.
+scheduler.run 50000000
+machine.memory.poke.w 0x017A 0x8805
+scheduler.run 1500000
+machine.memory.poke.w 0x017A 0
+scheduler.run 26000000
+machine.screen.match desktop.png
+
+# Double-click the "Utilities" floppy icon (top-right) to open its window.
+machine.adb.mouse.move 590 45 "global"
+scheduler.run 5000000
+machine.adb.mouse.click true
+scheduler.run 1000000
+machine.adb.mouse.click false
+scheduler.run 1000000
+machine.adb.mouse.click true
+scheduler.run 1000000
+machine.adb.mouse.click false
+scheduler.run 20000000
+
+# Double-click the "Apple HD SC Setup" label to launch it.  (The clickable
+# hit region is the text label, not the gap above it.)
+machine.adb.mouse.move 213 107 "global"
+scheduler.run 5000000
+machine.adb.mouse.click true
+scheduler.run 1000000
+machine.adb.mouse.click false
+scheduler.run 1000000
+machine.adb.mouse.click true
+scheduler.run 1000000
+machine.adb.mouse.click false
+scheduler.run 40000000
+# HD SC Setup recognises the uninitialised drive at SCSI Device 0.
+machine.screen.match ready.png
+
+# Click "Initialize".
+machine.adb.mouse.move 247 116 "global"
+scheduler.run 5000000
+machine.adb.mouse.click true
+scheduler.run 1000000
+machine.adb.mouse.click false
+scheduler.run 8000000
+
+# Click "Init" in the "erase all data" confirmation alert.
+machine.adb.mouse.move 417 192 "global"
+scheduler.run 5000000
+machine.adb.mouse.click true
+scheduler.run 1000000
+machine.adb.mouse.click false
+scheduler.run 40000000
+
+# Click "OK" to accept the default volume name ("Untitled").  This writes the
+# full HFS volume (MDB + bitmap + catalog/extents B-trees + alternate MDB).
+machine.adb.mouse.move 263 180 "global"
+scheduler.run 5000000
+machine.adb.mouse.click true
+scheduler.run 1000000
+machine.adb.mouse.click false
+scheduler.run 30000000
+# The guest OS reports the format completed and mounted the volume.
+machine.screen.match done.png
+
+# Export the formatted HD (base + delta flattened) for inspection.
+machine.scsi.device[0].image.export ${WORK_DIR}/formatted.img
+
+quit
