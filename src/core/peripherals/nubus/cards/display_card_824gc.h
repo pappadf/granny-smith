@@ -50,10 +50,18 @@
 // === Display half (standard slot space) =====================================
 #define GC824_VRAM_SIZE       0x200000u // 2 MB VRAM
 #define GC824_FB_ALIAS_OFFSET 0x900000u // 24-bit Memory Manager ScrnBase mirror
-// The GC's active framebuffer is NOT the standard-slot VRAM: the decl-ROM video
-// driver puts it in the card DRAM aperture.  QuickDraw's ScrnBase comes up as
-// NuBus 0x9C010000 = DRAM base (super-slot 0x0C000000) + 0x10000, so the host
-// display surfaces p->dram + this offset.  (Verified: low-mem ScrnBase $0824.)
+// The GC decl-ROM video driver (config 0 / 640×480) draws the desktop into card
+// VRAM: QuickDraw writes to the standard-slot VRAM at offset 0x11400 (stride
+// 1024, 8 bpp), and the CRTC scans it out.  ScrnBase ($0824) reads back as NuBus
+// 0x9C011400 — the 32-bit super-slot alias of the same VRAM offset.  (Verified
+// by dumping 0xF9011400 = desktop gray 0xAA; the DRAM aperture holds firmware
+// code, not pixels.)
+#define GC824_FB_VRAM_OFFSET 0x011400u
+// The CRTC scans out from the mode's FB pre-offset (programMode $3512 loads
+// #$10000); ScrnBase (QuickDraw's logical origin) sits 0x1400 into that — the
+// host display surfaces from ScrnBase (GC824_FB_VRAM_OFFSET).  The 0x10000
+// region just below it is the CRTC top-border strip.
+// (legacy) DRAM-aperture FB offset — kept for reference; not the active FB.
 #define GC824_FB_DRAM_OFFSET 0x010000u
 // JMFB-family register blocks (verbatim from JMFBDepVideoEqu.a; see jmfb.h).
 #define GC824_JMFB_BLOCK_OFFSET 0x200000u // JMFB / Stopwatch / CLUT / Endeavor
@@ -105,6 +113,12 @@
 // requires (read & 0x0F000000) == 0x06000000 to detect the ACDC (decl ROM
 // $4488).  0x46C00008 & 0x0FFFFFFF = 0x06C00008 (host card-local offset).
 #define GC824_REG_ACDC_ID 0x6C00008u
+// ACDC RAMDAC palette ports (card-local, super-slot).  A byte write to the ADDR
+// port sets the palette index and resets the R/G/B phase; three successive byte
+// writes to the DATA port are R, G, B (8-bit each), after which the index
+// auto-increments.  (decl-ROM SetEntries $2C86-$2CA6 / GetEntries $31E8-$3208.)
+#define GC824_REG_ACDC_ADDR 0x6C00000u
+#define GC824_REG_ACDC_DATA 0x6C00004u
 // Video "heartbeat" register in Am29000/RISC space at card-local 0x4C00000.
 // The decl-ROM video driver's cardSync primitive ($33C8) polls bit 31 of THIS
 // cell (via the delayTouch helper $3420, whose last read lands in D0) waiting

@@ -87,6 +87,10 @@ struct display_card_824gc_priv {
     uint32_t clut_pending[3];
     uint16_t clut_long_hi;
     uint8_t sense_code; // 3-bit monitor sense the card reports
+    // ACDC RAMDAC palette load state (GC decl-ROM SetEntries path).
+    uint8_t acdc_addr; // current palette index (auto-increments per entry)
+    uint8_t acdc_phase; // 0=R,1=G,2=B; reset on ADDR-port write
+    uint8_t acdc_rgb[3]; // R,G,B bytes accumulated for the current entry
 
     // --- Accelerator (super-slot space) ---
     uint8_t *sram; // GC824_SRAM_SIZE (firmware code sink; plain RAM)
@@ -542,6 +546,20 @@ static void buf_write(uint8_t *buf, uint32_t off, uint32_t size, uint32_t val, u
     }
 }
 
+// A longword MFB/ACDC register whose meaningful state lives in the high bits
+// (bit 31, or the ID nibble in bits 24-27) must present the big-endian MSB
+// byte/word to a narrow read.  gc_read hands the aligned register value up and
+// io_read8/16 slice its low bits, so without this a byte read of a longword
+// register (e.g. the strap probe's `BFEXTU {#0:#1}` = a byte read of bit 31)
+// would return the low byte (0) instead of the high byte.
+static inline uint32_t reg_narrow(uint32_t v, unsigned width) {
+    if (width == 1)
+        return v >> 24;
+    if (width == 2)
+        return v >> 16;
+    return v;
+}
+
 static uint32_t gc_read(display_card_824gc_priv_t *p, uint32_t phys, unsigned width) {
     // Display registers (standard slot space).
     uint32_t jmfb_base = p->slot_base + GC824_JMFB_BLOCK_OFFSET;
@@ -567,8 +585,30 @@ static uint32_t gc_read(display_card_824gc_priv_t *p, uint32_t phys, unsigned wi
         switch (cl) {
         case GC824_REG_ALIVE_A:
         case GC824_REG_ALIVE_B:
-        case GC824_REG_ALIVE_C:
-            return 0x80000000u; // bit 31 set = board alive (all three => alive)
+        case GC824_REG_ALIVE_C: {
+            // These MFB sense registers ($44/$48/$4C) serve triple duty:
+            //   (1) .GraphAccel "board alive" flags — bit 31 = 1 when idle;
+            //   (2) the video driver's 3-bit config strap — PrimaryInit reads
+            //       bit 31 of each ($1CFE-$1D24) → a config code 0..7;
+            //   (3) the VRAM-interconnect sense — vramProbe ($243C) drives
+            //       walking-ones into the bank-drive lines $2C/$30/$34 and reads
+            //       which sense bits respond, assembling a 6-bit signature.
+            // Idle (no bank line driven) → bit 31 = 1: satisfies the alive
+            // check AND makes the strap code 7 (→ the deep vramProbe path).
+            // While vramProbe is driving a bank line → read 0, so the assembled
+            // signature is 0, which the caller maps to **config 0** (a standard
+            // monitor mode) instead of the config-9 fixed mode the old constant
+            // 0x80000000 produced (open-issues.md §0.5 / decl ROM $243C).
+            uint32_t bank_drive = buf_read(p->regs, 0x2C, GC824_REGS_SIZE, 4) |
+                                  buf_read(p->regs, 0x30, GC824_REGS_SIZE, 4) |
+                                  buf_read(p->regs, 0x34, GC824_REGS_SIZE, 4);
+            uint32_t v = bank_drive ? 0u : 0x80000000u;
+            // The meaningful state is bit 31, so a narrow read must return the
+            // big-endian MSB byte/word (the strap probe BFEXTUs bit 31 via a
+            // BYTE read at offset 0 — returning the low byte read the strap as 0
+            // and mis-selected the config).
+            return reg_narrow(v, width);
+        }
         case GC824_REG_SYNC_HB: {
             // Video "heartbeat" the card-sync primitive actually polls.  Its
             // delayTouch helper (decl ROM $3420) reads this cell 10× and leaves
@@ -598,7 +638,7 @@ static uint32_t gc_read(display_card_824gc_priv_t *p, uint32_t phys, unsigned wi
             // (bits 24-27 = 6).  The video driver's ACDC probe writes then
             // reads this and requires (read & 0x0F000000) == 0x06000000 to
             // detect the ACDC (decl-ROM $4488); a RAM read-back would fail it.
-            return 0x06000000u;
+            return reg_narrow(0x06000000u, width);
         default:
             // Every other MFB/config/ACDC register is backed as RAM so the
             // driver's write-then-read-back hardware probes behave.
@@ -655,6 +695,23 @@ static void gc_write(display_card_824gc_priv_t *p, uint32_t phys, uint32_t val, 
             if (p->state < GC_ST_ON)
                 p->state = GC_ST_ON;
             LOG(1, "firmware kick ($04000050 = -1) -> GC ON");
+        } else if (cl == GC824_REG_ACDC_ADDR) {
+            // ACDC RAMDAC address port: a write sets the palette index and
+            // resets the R/G/B phase.  (The ACDC probe / loadCRTCandCLUT write
+            // this too — harmless: they never follow with DATA-port writes.)
+            p->acdc_addr = (uint8_t)(val & 0xFFu);
+            p->acdc_phase = 0;
+        } else if (cl == GC824_REG_ACDC_DATA) {
+            // ACDC RAMDAC data port: three successive byte writes are R, G, B
+            // (8 bpc); after B, commit clut[index] and auto-increment the index.
+            if (p->acdc_phase < 3)
+                p->acdc_rgb[p->acdc_phase] = (uint8_t)(val & 0xFFu);
+            if (++p->acdc_phase >= 3) {
+                p->clut[p->acdc_addr] = (rgba8_t){p->acdc_rgb[0], p->acdc_rgb[1], p->acdc_rgb[2], 255};
+                p->acdc_addr++;
+                p->acdc_phase = 0;
+                p->display.clut_dirty = true;
+            }
         }
         return;
     }
@@ -775,14 +832,21 @@ static void set_poweron_defaults(display_card_824gc_priv_t *p) {
     p->clut_idx = 0;
     p->clut_phase = 0;
     p->clut_pbcr = 0;
+    p->acdc_addr = 0;
+    p->acdc_phase = 0;
     p->clut_long_hi = 0;
 
-    // The GC decl-ROM video driver brings the screen up at 8 bpp in the card
-    // DRAM aperture (ScrnBase = NuBus 0x9C010000 = DRAM + 0x10000), not the
-    // standard-slot VRAM.  Surface that as the host framebuffer.
+    // The GC decl-ROM video driver (config 0, monitor sense → 640×480) brings
+    // the screen up at 8 bpp in card VRAM: QuickDraw draws the desktop into VRAM
+    // (standard-slot 0xF9011400 = VRAM + 0x11400) with a 1024-byte stride, and
+    // the CRTC scans that out.  (ScrnBase reads back as NuBus 0x9C011400 — the
+    // 32-bit super-slot alias of the same VRAM offset.)  Surface VRAM, not the
+    // DRAM aperture (which holds the Am29000 firmware / 68k driver code).
     p->display.format = PIXEL_8BPP;
-    p->display.stride = (p->display.width ? p->display.width : 640u); // 8 bpp: 1 byte/px
-    p->display.bits = p->dram + GC824_FB_DRAM_OFFSET;
+    p->display.width = 640u;
+    p->display.height = 480u;
+    p->display.stride = 1024u;
+    p->display.bits = p->vram + GC824_FB_VRAM_OFFSET;
     p->display.clut = p->clut;
     p->display.clut_len = 256;
     p->display.crt_response = NULL;
