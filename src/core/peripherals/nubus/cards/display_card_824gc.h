@@ -47,22 +47,23 @@
 #define GC824_DECLROM_BUS_OFFSET 0xFC0000u // slot top minus 256 KB
 #define GC824_VROM_CRC           0xD722B053u // v1.1 Format-Block CRC (vrom.identify)
 
-// === Display half (standard slot space) =====================================
-#define GC824_VRAM_SIZE       0x200000u // 2 MB VRAM
+// === Display half ===========================================================
+#define GC824_VRAM_SIZE       0x200000u // 2 MB standard-slot VRAM (early boot FB)
 #define GC824_FB_ALIAS_OFFSET 0x900000u // 24-bit Memory Manager ScrnBase mirror
-// The GC decl-ROM video driver (config 0 / 640×480) draws the desktop into card
-// VRAM: QuickDraw writes to the standard-slot VRAM at offset 0x11400 (stride
-// 1024, 8 bpp), and the CRTC scans it out.  ScrnBase ($0824) reads back as NuBus
-// 0x9C011400 — the 32-bit super-slot alias of the same VRAM offset.  (Verified
-// by dumping 0xF9011400 = desktop gray 0xAA; the DRAM aperture holds firmware
-// code, not pixels.)
-#define GC824_FB_VRAM_OFFSET 0x011400u
-// The CRTC scans out from the mode's FB pre-offset (programMode $3512 loads
-// #$10000); ScrnBase (QuickDraw's logical origin) sits 0x1400 into that — the
-// host display surfaces from ScrnBase (GC824_FB_VRAM_OFFSET).  The 0x10000
-// region just below it is the CRTC top-border strip.
-// (legacy) DRAM-aperture FB offset — kept for reference; not the active FB.
+// The active framebuffer lives in the card's super-slot DRAM aperture, NOT the
+// standard-slot VRAM.  System 6.0.8 has 32-bit QuickDraw, so the GC decl-ROM's
+// SecondaryInit (0x2690) swaps the video sResource to its 32-bit variant, moving
+// ScrnBase to the MajorBase (super-slot) aperture: ScrnBase ($0824) = WMgrPort
+// baseAddr = NuBus 0x9C011400 = DRAM aperture (super-slot 0x0C000000) + 0x11400,
+// stride 1024, 1 bpp (System 6 boot default).  QuickDraw / the Finder draw the
+// whole desktop there (verified: dumping 0x9C011400 → full menu bar + windows).
+// The standard-slot VRAM only holds the *early* "Welcome to Macintosh" startup
+// screen, drawn before SecondaryInit swapped the base — a red herring.  So the
+// host display surfaces p->dram + GC824_FB_OFFSET.
+#define GC824_FB_OFFSET 0x011400u
+// (legacy, unused) offsets kept for reference.
 #define GC824_FB_DRAM_OFFSET 0x010000u
+#define GC824_FB_VRAM_OFFSET 0x011400u
 // JMFB-family register blocks (verbatim from JMFBDepVideoEqu.a; see jmfb.h).
 #define GC824_JMFB_BLOCK_OFFSET 0x200000u // JMFB / Stopwatch / CLUT / Endeavor
 #define GC824_REGISTER_SIZE     0x000400u // covers all four 256-byte blocks

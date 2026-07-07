@@ -836,19 +836,19 @@ static void set_poweron_defaults(display_card_824gc_priv_t *p) {
     p->acdc_phase = 0;
     p->clut_long_hi = 0;
 
-    // The GC decl-ROM video driver (config 0, monitor sense → 640×480) brings
-    // the screen up at 1 bpp (the System 6 boot default) in card VRAM: QuickDraw
-    // draws into VRAM (standard-slot 0xF9011400 = VRAM + 0x11400) with a
-    // 1024-byte stride, and the CRTC scans that out.  (ScrnBase reads back as
-    // NuBus 0x9C011400 — the 32-bit super-slot alias of the same VRAM offset.)
-    // Surface VRAM, not the DRAM aperture (which holds the Am29000 firmware /
-    // 68k driver code).  TODO: track cscSetMode depth changes instead of the
-    // fixed 1 bpp so a Monitors-control-panel depth switch is reflected.
+    // The GC decl-ROM video driver (config 0 → 640×480) brings the screen up at
+    // 1 bpp (the System 6 boot default).  With 32-bit QuickDraw present, its
+    // SecondaryInit puts the framebuffer in the super-slot DRAM aperture:
+    // ScrnBase = NuBus 0x9C011400 = p->dram + GC824_FB_OFFSET, stride 1024.
+    // QuickDraw draws the entire Finder desktop there, so that is what the host
+    // display surfaces (NOT the standard-slot VRAM, which only holds the early
+    // "Welcome to Macintosh" startup screen).  TODO: track cscSetMode depth
+    // changes instead of the fixed 1 bpp so a Monitors depth switch is honoured.
     p->display.format = PIXEL_1BPP_MSB;
     p->display.width = 640u;
     p->display.height = 480u;
     p->display.stride = 1024u;
-    p->display.bits = p->vram + GC824_FB_VRAM_OFFSET;
+    p->display.bits = p->dram + GC824_FB_OFFSET;
     p->display.clut = p->clut;
     p->display.clut_len = 256;
     p->display.crt_response = NULL;
