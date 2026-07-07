@@ -110,7 +110,8 @@ struct display_card_824gc_priv {
     uint32_t queue_ack; // Transport-B bytes consumed so far
     uint64_t queue_bytes; // total Transport-B bytes drained
     int32_t error; // last posted error (0 = none)
-    uint32_t mfb_sync; // MFB heartbeat toggle (bit 31 flips each read)
+    uint32_t mfb_sync; // MFB 0x44001C0 bus-side-effect toggle (value discarded)
+    uint32_t sync_hb; // read counter for the 0x4C00000 video heartbeat (bit 31)
 
     // Region contexts.
     gc_reg_ctx_t ctx_jmfb; // slot+$200000 display registers (standard slot)
@@ -568,9 +569,28 @@ static uint32_t gc_read(display_card_824gc_priv_t *p, uint32_t phys, unsigned wi
         case GC824_REG_ALIVE_B:
         case GC824_REG_ALIVE_C:
             return 0x80000000u; // bit 31 set = board alive (all three => alive)
+        case GC824_REG_SYNC_HB: {
+            // Video "heartbeat" the card-sync primitive actually polls.  Its
+            // delayTouch helper (decl ROM $3420) reads this cell 10× and leaves
+            // the LAST read in D0; cardSync ($33C8) then waits for bit 31 to
+            // cycle set→clear→set (a full frame).  (The $44001C0 read in that
+            // loop is a discarded bus side-effect — see decl-rom-disasm and
+            // open-issues.md §0.)  So synthesize a heartbeat here: flip bit 31
+            // on a read counter, period > the 10-read delay loop so consecutive
+            // delayTouch results alternate and all three passes advance.
+            // Synthesized on read (not stored): delayTouch writes the value back
+            // each iteration, so a RAM cell would be frozen.
+            if (width != 4)
+                return buf_read(p->regs, cl - GC824_REGS_OFFSET, GC824_REGS_SIZE, width);
+            uint32_t v = buf_read(p->regs, cl - GC824_REGS_OFFSET, GC824_REGS_SIZE, 4) & ~0x80000000u;
+            if (((p->sync_hb++ >> 4) & 1u) != 0)
+                v |= 0x80000000u;
+            return v;
+        }
         case GC824_REG_MFB_SYNC:
-            // RISC liveness heartbeat: flip bit 31 each read so the video
-            // driver's card-sync primitive sees it cycle set→clear→set.
+            // MFB register the card-sync loop reads for its bus side-effect;
+            // its value is discarded (clobbered by delayTouch).  Toggle bit 31
+            // anyway in case other code polls it directly.
             p->mfb_sync ^= 0x80000000u;
             return p->mfb_sync;
         case GC824_REG_ACDC_ID:
@@ -757,9 +777,12 @@ static void set_poweron_defaults(display_card_824gc_priv_t *p) {
     p->clut_pbcr = 0;
     p->clut_long_hi = 0;
 
-    p->display.stride = (p->display.width ? p->display.width : 640u) / 8u; // 1 bpp
-    p->display.format = PIXEL_1BPP_MSB;
-    p->display.bits = p->vram + 0xA00;
+    // The GC decl-ROM video driver brings the screen up at 8 bpp in the card
+    // DRAM aperture (ScrnBase = NuBus 0x9C010000 = DRAM + 0x10000), not the
+    // standard-slot VRAM.  Surface that as the host framebuffer.
+    p->display.format = PIXEL_8BPP;
+    p->display.stride = (p->display.width ? p->display.width : 640u); // 8 bpp: 1 byte/px
+    p->display.bits = p->dram + GC824_FB_DRAM_OFFSET;
     p->display.clut = p->clut;
     p->display.clut_len = 256;
     p->display.crt_response = NULL;
@@ -786,6 +809,12 @@ static void set_poweron_defaults(display_card_824gc_priv_t *p) {
         p->clut[i].r = p->clut[i].g = p->clut[i].b = (uint8_t)i;
         p->clut[i].a = 255;
     }
+    // 1-bpp mono palette (Mac convention: pixel 0 = white, 1 = black).  The GC
+    // OS programs the real palette into the ACDC (0x6C00000), not this clut[],
+    // so seed the mono pair here so a B&W desktop reads correctly.  (Colour-
+    // depth CLUT capture from the ACDC is a follow-up.)
+    p->clut[0] = (rgba8_t){255, 255, 255, 255};
+    p->clut[1] = (rgba8_t){0, 0, 0, 255};
 }
 
 static int card_init(nubus_card_t *card, config_t *cfg, checkpoint_t *cp) {

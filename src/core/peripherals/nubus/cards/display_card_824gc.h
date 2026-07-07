@@ -50,6 +50,11 @@
 // === Display half (standard slot space) =====================================
 #define GC824_VRAM_SIZE       0x200000u // 2 MB VRAM
 #define GC824_FB_ALIAS_OFFSET 0x900000u // 24-bit Memory Manager ScrnBase mirror
+// The GC's active framebuffer is NOT the standard-slot VRAM: the decl-ROM video
+// driver puts it in the card DRAM aperture.  QuickDraw's ScrnBase comes up as
+// NuBus 0x9C010000 = DRAM base (super-slot 0x0C000000) + 0x10000, so the host
+// display surfaces p->dram + this offset.  (Verified: low-mem ScrnBase $0824.)
+#define GC824_FB_DRAM_OFFSET 0x010000u
 // JMFB-family register blocks (verbatim from JMFBDepVideoEqu.a; see jmfb.h).
 #define GC824_JMFB_BLOCK_OFFSET 0x200000u // JMFB / Stopwatch / CLUT / Endeavor
 #define GC824_REGISTER_SIZE     0x000400u // covers all four 256-byte blocks
@@ -100,6 +105,12 @@
 // requires (read & 0x0F000000) == 0x06000000 to detect the ACDC (decl ROM
 // $4488).  0x46C00008 & 0x0FFFFFFF = 0x06C00008 (host card-local offset).
 #define GC824_REG_ACDC_ID 0x6C00008u
+// Video "heartbeat" register in Am29000/RISC space at card-local 0x4C00000.
+// The decl-ROM video driver's cardSync primitive ($33C8) polls bit 31 of THIS
+// cell (via the delayTouch helper $3420, whose last read lands in D0) waiting
+// for a full set→clear→set cycle; the $44001C0 read in that loop is a discarded
+// bus side-effect.  The HLE synthesizes a toggling bit 31 here (see gc_read).
+#define GC824_REG_SYNC_HB 0x4C00000u
 
 // Comm regions — fixed card-local addresses inside DRAM bank 0 (protocol §4).
 // Expressed as DRAM-buffer offsets (card-local − 0x0C000000).
