@@ -837,12 +837,14 @@ static void set_poweron_defaults(display_card_824gc_priv_t *p) {
     p->clut_long_hi = 0;
 
     // The GC decl-ROM video driver (config 0, monitor sense → 640×480) brings
-    // the screen up at 8 bpp in card VRAM: QuickDraw draws the desktop into VRAM
-    // (standard-slot 0xF9011400 = VRAM + 0x11400) with a 1024-byte stride, and
-    // the CRTC scans that out.  (ScrnBase reads back as NuBus 0x9C011400 — the
-    // 32-bit super-slot alias of the same VRAM offset.)  Surface VRAM, not the
-    // DRAM aperture (which holds the Am29000 firmware / 68k driver code).
-    p->display.format = PIXEL_8BPP;
+    // the screen up at 1 bpp (the System 6 boot default) in card VRAM: QuickDraw
+    // draws into VRAM (standard-slot 0xF9011400 = VRAM + 0x11400) with a
+    // 1024-byte stride, and the CRTC scans that out.  (ScrnBase reads back as
+    // NuBus 0x9C011400 — the 32-bit super-slot alias of the same VRAM offset.)
+    // Surface VRAM, not the DRAM aperture (which holds the Am29000 firmware /
+    // 68k driver code).  TODO: track cscSetMode depth changes instead of the
+    // fixed 1 bpp so a Monitors-control-panel depth switch is reflected.
+    p->display.format = PIXEL_1BPP_MSB;
     p->display.width = 640u;
     p->display.height = 480u;
     p->display.stride = 1024u;
