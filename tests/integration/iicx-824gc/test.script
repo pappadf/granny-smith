@@ -1,0 +1,71 @@
+# Integration test: IIcx + "Macintosh Display Card 8•24 GC" ("Dolphin").
+#
+# Verifies the stage-0/1 card model:
+#   * the card is detected as an 8•24 GC (genuine v1.1 declaration ROM,
+#     341-0266, loaded via the new lane-0 byteLanes-$E1 support);
+#   * the object-model surface (slot[N].card.{name,declrom,framebuffer,gc});
+#   * the HLE accelerator bring-up state machine — the shared-memory command
+#     block (CB) protocol.  We drive it directly by writing the protocol bytes
+#     the .GraphAccel driver would write (into super-slot space, reached in the
+#     driver's 32-bit _SwapMMUMode window), and assert the card responds:
+#       - boot handshake: write the boot magic to PublicIn+0 → the card clears
+#         it, initializes the CB, fills PublicOu (signature 0x32100456), and
+#         publishes NuBus(CB) to PublicIn+0x40C;
+#       - RPC (Transport A): ring the CB doorbell for HELLO (func 1) → the card
+#         services it synchronously (result=1, status word = OK, doorbell
+#         cleared).
+#
+# NOTE (documented limitation): a *full* System 6.0.8 OS boot with this card
+# still hangs in the decl-ROM video driver's RISC-driven display bring-up
+# (cscSetMode + the MFB/ACDC hardware handshake), which requires modelling the
+# GC's Am29000-side video hardware — see
+# local/gs-docs/8-24GC/decl-rom-disasm/ and the investigation notes.  This test
+# therefore exercises the card model + the CB protocol engine directly rather
+# than booting the OS through the (as-yet-unmodelled) video handshake.
+
+# --- Select the 8•24 GC card and (re)boot the IIcx with it in slot $9. ---
+machine.nubus.video_card = "824gc"
+machine.boot "iicx" 8192
+machine.rom.reload
+
+# --- Card identity + declaration ROM (stage 0). ---
+assert ${machine.id == "iicx"}                                                    "machine.id != iicx"
+assert ${machine.nubus.slot[9].card.name == "Apple Macintosh Display Card 8•24 GC"} "slot $9 card != 8•24 GC"
+assert ${machine.nubus.slot[9].card.declrom.present}                              "declaration ROM not present"
+assert ${machine.nubus.slot[9].card.declrom.size == 0x40000}                      "declrom bus size != 256 KB"
+assert ${machine.screen.width == 640}                                             "power-on width != 640"
+assert ${machine.screen.height == 480}                                            "power-on height != 480"
+
+# --- Accelerator bring-up: fresh card is in the reset state. ---
+assert ${machine.nubus.slot[9].card.gc.state == "reset"}                          "gc.state != reset at power-on"
+assert ${machine.nubus.slot[9].card.gc.cb == 0}                                   "CB published before boot"
+
+# --- Boot handshake: write the boot magic to PublicIn+0 (card-local
+#     0x4C006400 -> super-slot 0x9C006400 for slot $9). ---
+machine.memory.poke.l 0x9C006400 0x42005300
+assert ${machine.nubus.slot[9].card.gc.state == "booted"}                         "boot handshake did not reach 'booted'"
+assert ${machine.nubus.slot[9].card.gc.cb == 0x9C007000}                          "CB address not published"
+assert ${machine.memory.peek.l(0x9C006400) == 0}                                  "boot magic not cleared by the card"
+assert ${machine.memory.peek.l(0x9C00680C) == 0x9C007000}                         "NuBus(CB) not published to PublicIn+0x40C"
+assert ${machine.memory.peek.l(0x9C006800) == 0x32100456}                         "PublicOu signature not initialized"
+assert ${machine.memory.peek.l(0x9C007000) == 0x01010000}                         "CB+0 not initialized to idle"
+
+# --- RPC (Transport A): HELLO (func 1) via the CB doorbell.
+#     cmd func @ CB+0x48, sequence @ CB+0x4C, ring doorbell @ CB+0x14 = -1. ---
+machine.memory.poke.l 0x9C007048 0x00000001
+machine.memory.poke.l 0x9C00704C 0x00000000
+machine.memory.poke.l 0x9C007014 0xFFFFFFFF
+assert ${machine.nubus.slot[9].card.gc.rpc_count == 1}                            "RPC not serviced"
+assert ${machine.nubus.slot[9].card.gc.lastfunc == 1}                             "last func != HELLO(1)"
+assert ${machine.memory.peek.l(0x9C00701C) == 1}                                  "HELLO result != 1"
+assert ${machine.memory.peek.l(0x9C007018) == 3}                                  "completion status word != OK(3)"
+assert ${machine.memory.peek.l(0x9C007014) == 0}                                  "doorbell not cleared after RPC"
+
+# --- A second RPC: liveness pass (func 2) must return 1 (Status $0A basis). ---
+machine.memory.poke.l 0x9C007048 0x00000002
+machine.memory.poke.l 0x9C00704C 0x00000001
+machine.memory.poke.l 0x9C007014 0xFFFFFFFF
+assert ${machine.nubus.slot[9].card.gc.rpc_count == 2}                            "second RPC not serviced"
+assert ${machine.memory.peek.l(0x9C00701C) == 1}                                  "liveness func(2) result != 1"
+
+quit

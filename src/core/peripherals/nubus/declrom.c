@@ -122,17 +122,37 @@ uint8_t *declrom_load(const char *path, size_t expected_size) {
 // sizes (both happen to be 32 KB → 128 KB today, but the loader is sized
 // from the arguments so a different card could use other sizes).
 
-void declrom_expand_lane3(const uint8_t *chip, size_t chip_size, uint8_t *bus_buf) {
+// Sparse-expand a single-lane chip into a 4×-larger bus-space buffer: each
+// chip byte at offset i lands at byte lane `lane` of longword i (bus offset
+// i*4 + lane); the other three lanes stay zero.  Apple display-card
+// declaration ROMs are 8-bit chips wired to one NuBus byte lane.
+void declrom_expand_lane(const uint8_t *chip, size_t chip_size, uint8_t *bus_buf, unsigned lane) {
     for (size_t i = 0; i < chip_size; i++)
-        bus_buf[i * 4 + 3] = chip[i];
+        bus_buf[i * 4 + (lane & 3u)] = chip[i];
+}
+
+// Back-compat lane-3 wrapper (the JMFB / 24AC layout, byteLanes $78).
+void declrom_expand_lane3(const uint8_t *chip, size_t chip_size, uint8_t *bus_buf) {
+    declrom_expand_lane(chip, chip_size, bus_buf, 3);
 }
 
 bool declrom_layout_chip(const uint8_t *chip, size_t chip_size, uint8_t *bus_buf, size_t bus_size, uint8_t byte_lanes) {
-    if (byte_lanes == 0x78u) {
-        // Standard display-card layout — lane 3 only; sparse-expand into 4×.
+    // Single active byte lane.  In the NuBus format-block convention the low
+    // nibble of byteLanes is the lane bitmask and the high nibble its ones-
+    // complement; a one-bit mask means the ROM lives entirely on lane N, so
+    // sparse-expand it into lane N of the 4× bus buffer.  $78 = lane 3
+    // (JMFB / 24AC), $E1 = lane 0 (Display Card 8•24 GC — a wider ROM wired
+    // to the low byte lane).
+    uint8_t lanes = (uint8_t)(byte_lanes & 0x0Fu);
+    bool complement_ok = (uint8_t)((~byte_lanes) & 0x0Fu) == (uint8_t)(byte_lanes >> 4);
+    bool single_lane = lanes != 0 && (lanes & (uint8_t)(lanes - 1)) == 0;
+    if (complement_ok && single_lane) {
         if (bus_size < chip_size * 4)
             return false;
-        declrom_expand_lane3(chip, chip_size, bus_buf);
+        unsigned lane = 0;
+        while (!(lanes & (1u << lane)))
+            lane++;
+        declrom_expand_lane(chip, chip_size, bus_buf, lane);
         return true;
     }
     if (byte_lanes == 0x0Fu) {

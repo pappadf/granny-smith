@@ -143,6 +143,13 @@ static const struct vrom_known VROM_CATALOG[] = {
     {0x4F71FF1Au, "SE30.vrom",              "builtin_se30_video"},
     // Apple Macintosh Display Card 24AC (id "display_card_24ac").
     {0xD8DAAB87u, "display-card-24ac.vrom", "display_card_24ac" },
+    // Apple Macintosh Display Card 8•24 GC ("Dolphin", id "824gc"): the
+    // accelerated card.  Its declaration ROMs are byteLanes $E1 (byte lane 0);
+    // v1.1 is a 64 KB chip, v1.0 / the alpha are 32 KB.  All three carry the
+    // same $5A932BC7 TestPattern, so they identify by Format-Block CRC.
+    {0xD722B053u, "Apple-341-0266.vrom",    "824gc"             }, // v1.1 (default)
+    {0x9E9857E8u, "341-0812-02_1.0.vrom",   "824gc"             }, // v1.0 (shipping)
+    {0x4740028Du, "Dolphin_1.0A16.vrom",    "824gc"             }, // 1.00a16 alpha
 };
 
 // vrom.identify(path) — returns a JSON map describing the file, keyed off
@@ -165,13 +172,17 @@ static value_t vrom_method_identify(struct object *self, const member_t *m, int 
     (void)argc;
     const char *path = argv[0].s;
     size_t size = 0;
-    bool size_ok = vrom_probe_file(path, &size);
+    vrom_probe_file(path, &size); // fills *size regardless of SE/30's 32 KB gate
     // Distinguish "can't read the file" from "present, but not a vROM",
     // mirroring rom.identify: a missing/unreadable path is a V_ERROR, while a
     // real file of the wrong size is simply unrecognised.  vrom_probe_file
     // leaves *size == 0 only when stat failed (nonexistent / unreadable).
     if (size == 0)
         return val_err("vrom.identify: cannot read '%s'", path);
+    // Declaration-ROM chips come in two sizes: 32 KB (SE/30, JMFB, 24AC, the
+    // 8•24 GC v1.0 / alpha) and 64 KB (the 8•24 GC v1.1).  The Format Block +
+    // CRC live in the trailing bytes either way, so accept both.
+    bool size_ok = (size == VROM_EXPECTED_SIZE) || (size == 2u * VROM_EXPECTED_SIZE);
     if (!size_ok)
         return val_str("{\"recognised\":false}");
 

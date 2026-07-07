@@ -39,9 +39,11 @@ extern const nubus_card_kind_t builtin_se30_video_kind; // cards/builtin_se30_vi
 extern const nubus_card_kind_t mdc_8_24_kind; // cards/jmfb.c
 extern const nubus_card_kind_t builtin_rbv_video_kind; // cards/builtin_rbv_video.c
 extern const nubus_card_kind_t display_card_24ac_kind; // cards/display_card_24ac.c
+extern const nubus_card_kind_t display_card_824gc_kind; // cards/display_card_824gc.c
 
 static const nubus_card_kind_t *const g_card_registry[] = {
-    &builtin_se30_video_kind, &mdc_8_24_kind, &builtin_rbv_video_kind, &display_card_24ac_kind, NULL,
+    &builtin_se30_video_kind, &mdc_8_24_kind,           &builtin_rbv_video_kind,
+    &display_card_24ac_kind,  &display_card_824gc_kind, NULL,
 };
 
 const nubus_card_kind_t *const *nubus_card_registry(void) {
