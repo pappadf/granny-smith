@@ -113,10 +113,27 @@ struct display_card_824gc_priv {
     uint32_t last_func; // last dispatched func code
     uint64_t rpc_count; // total RPCs serviced
     uint32_t queue_ack; // Transport-B bytes consumed so far
+    uint32_t queue_base; // gcp address of the queue buffer (carved from free list)
     uint64_t queue_bytes; // total Transport-B bytes drained
     int32_t error; // last posted error (0 = none)
     uint32_t mfb_sync; // MFB 0x44001C0 bus-side-effect toggle (value discarded)
     uint32_t sync_hb; // read counter for the 0x4C00000 video heartbeat (bit 31)
+
+    // --- Stage 2: DrawMultiObject interpreter state (proposal §3.7) ---
+    // The GCQD marshaller stages drawing as a queue of opcode records (§10.1);
+    // when func $2D (SetPort) is accepted the card interprets them.  State
+    // opcodes set these fields; the next primitive resolves them.
+    uint8_t gc_pat[4][8]; // pattern slots 1=pnPat 2=bkPat 3=fillPat (opPattern $71)
+    uint8_t gc_pat_slot; // active pattern slot selected by opWhichPat ($73)
+    uint16_t gc_mode; // current transfer mode (opMode $69); 8 = patCopy
+    uint8_t gc_fg, gc_bg; // 1-bpp fg/bg pixel (opFgColor $64 / opBkColor $6B)
+    int16_t gc_pen_x, gc_pen_y; // pen location (opPenLoc $68)
+    int16_t gc_pen_w, gc_pen_h; // pen size (opPenSize $6E)
+    int16_t gc_clip_t, gc_clip_l, gc_clip_b, gc_clip_r; // clip ∩ vis bbox
+    uint64_t draw_count; // primitives rasterized (introspection)
+    bool gc_accel; // func $2D accepted the port → interpret its queue (stage 2).
+                   // Currently always false (SetPort declines) until the accel
+                   // geometry/ROM-decline composition is solved — see func $2D.
 
     // Region contexts.
     gc_reg_ctx_t ctx_jmfb; // slot+$200000 display registers (standard slot)
@@ -132,6 +149,11 @@ static uint32_t dram_be32(display_card_824gc_priv_t *p, uint32_t off) {
     if (off + 4 > GC824_DRAM_SIZE)
         return 0;
     return LOAD_BE32(p->dram + off);
+}
+static uint16_t dram_be16(display_card_824gc_priv_t *p, uint32_t off) {
+    if (off + 2 > GC824_DRAM_SIZE)
+        return 0;
+    return LOAD_BE16(p->dram + off);
 }
 static void dram_set_be32(display_card_824gc_priv_t *p, uint32_t off, uint32_t val) {
     if (off + 4 > GC824_DRAM_SIZE)
@@ -364,6 +386,9 @@ static void gc_boot(display_card_824gc_priv_t *p) {
     // Queue-buffer one-block free list (protocol §9.2): {size, next=0}.
     uint32_t free_base = p->gcp_base + GC824_CB_FREEAREA;
     dram_set_be32(p, GC824_DRAM_CB + GC824_CB_FREEPTR, free_base);
+    // GCQD carves the drawing queue from this block, returning free_base + 8
+    // (past the {size,next} header) — the base the Transport-B stream lives at.
+    p->queue_base = free_base + 8;
     uint32_t cb_local = GC824_DRAM_OFFSET + GC824_DRAM_CB; // card-local 0x0C007000
     uint32_t free_size = (0x0C00FFFCu - (cb_local + GC824_CB_FREEAREA) - 8u);
     dram_set_be32(p, GC824_DRAM_CB + GC824_CB_FREEAREA + 0, free_size);
@@ -387,6 +412,315 @@ static void gc_boot(display_card_824gc_priv_t *p) {
     p->expected_seq = 0;
     p->state = GC_ST_BOOTED;
     LOG(1, "boot handshake: CB published at NuBus $%08x (free %uB)", p->cb_nubus, free_size);
+}
+
+// === Stage 2: DrawMultiObject interpreter + 1-bpp rasterizers (proposal §3.7) =
+// The GCQD marshaller stages drawing as a queue of opcode records
+// (gc-ipc-protocol.md §10.1) and submits it via func $26/$38.  When func $2D
+// (SetPort) is accepted the card interprets the stream over the port's device;
+// primitives rasterize into the 1-bpp framebuffer the display surfaces.  The
+// per-primitive algorithms follow gc-quickdraw-call-reference.md (§1 line,
+// §2 rect, §3 rrect, §7 region).  Depth: 1 bpp only for now (the boot mode);
+// other depths still decline (proposal §3.7).
+
+// Apply one source pixel `src` (0/1) at (x,y) under the current mode + clip
+// (1-bpp MSB; pixel 0 = white, 1 = black).  low 3 mode bits: 0=copy,1=or,2=xor,
+// 3=bic (pattern modes $8-$B share the low bits with the src modes $0-$3).
+static inline void gc_px(display_card_824gc_priv_t *p, int x, int y, int src) {
+    if (x < p->gc_clip_l || x >= p->gc_clip_r || y < p->gc_clip_t || y >= p->gc_clip_b)
+        return;
+    if (x < 0 || x >= (int)p->display.width || y < 0 || y >= (int)p->display.height)
+        return;
+    uint8_t *b = (uint8_t *)p->display.bits + (size_t)y * p->display.stride + (x >> 3);
+    uint8_t m = (uint8_t)(0x80u >> (x & 7));
+    switch (p->gc_mode & 7) {
+    case 1:
+        if (src)
+            *b |= m;
+        break; // Or  (leave 0-src)
+    case 2:
+        if (src)
+            *b ^= m;
+        break; // Xor
+    case 3:
+        if (src)
+            *b &= (uint8_t)~m;
+        break; // Bic
+    default:
+        if (src)
+            *b |= m;
+        else
+            *b &= (uint8_t)~m;
+        break; // Copy
+    }
+}
+// The source pixel at (x,y): the active pattern slot's bit selects fg (1) or
+// bg (0) colour.  (op $73 selects the slot; op $71 sets a slot's bytes.)
+static inline int gc_src(display_card_824gc_priv_t *p, int x, int y) {
+    const uint8_t *pat = p->gc_pat[p->gc_pat_slot & 3];
+    int patbit = (pat[y & 7] >> (7 - (x & 7))) & 1;
+    return patbit ? p->gc_fg : p->gc_bg;
+}
+static void gc_span(display_card_824gc_priv_t *p, int y, int l, int r) {
+    for (int x = l; x < r; x++)
+        gc_px(p, x, y, gc_src(p, x, y));
+}
+static void gc_fill_rect(display_card_824gc_priv_t *p, int t, int l, int b, int r) {
+    for (int y = t; y < b; y++)
+        gc_span(p, y, l, r);
+}
+// Frame ring inset by pen (call-reference §2 FrmRect): degenerate → solid fill.
+static void gc_frame_rect(display_card_824gc_priv_t *p, int t, int l, int b, int r) {
+    int pw = p->gc_pen_w ? p->gc_pen_w : 1, ph = p->gc_pen_h ? p->gc_pen_h : 1;
+    if (l + pw >= r - pw || t + ph >= b - ph) {
+        gc_fill_rect(p, t, l, b, r);
+        return;
+    }
+    gc_fill_rect(p, t, l, t + ph, r); // top bar
+    gc_fill_rect(p, b - ph, l, b, r); // bottom bar
+    gc_fill_rect(p, t + ph, l, b - ph, l + pw); // left bar
+    gc_fill_rect(p, t + ph, r - pw, b - ph, r); // right bar
+}
+// opLine ($01): pen-sized line from the pen loc to `pt`; pen := pt.  For the
+// axis-aligned lines the desktop draws this reduces to a pen-thick bar; a
+// general Bresenham covers the rest (call-reference §1).
+static void gc_line_to(display_card_824gc_priv_t *p, int x1, int y1) {
+    int x0 = p->gc_pen_x, y0 = p->gc_pen_y;
+    int pw = p->gc_pen_w ? p->gc_pen_w : 1, ph = p->gc_pen_h ? p->gc_pen_h : 1;
+    int dx = x1 - x0, dy = y1 - y0;
+    int adx = dx < 0 ? -dx : dx, ady = dy < 0 ? -dy : dy;
+    if (adx >= ady) {
+        int lo = dx >= 0 ? x0 : x1, hi = dx >= 0 ? x1 : x0, yy = dx >= 0 ? y0 : y1;
+        int sy = (dy != 0) ? ((dx >= 0) == (dy > 0) ? 1 : -1) : 0;
+        int err = adx / 2;
+        for (int x = lo; x < hi; x++) {
+            gc_fill_rect(p, yy, x, yy + ph, x + pw);
+            err += ady;
+            if (err >= adx) {
+                err -= adx;
+                yy += sy;
+            }
+        }
+    } else {
+        int lo = dy >= 0 ? y0 : y1, hi = dy >= 0 ? y1 : y0, xx = dy >= 0 ? x0 : x1;
+        int sx = (dx != 0) ? ((dy >= 0) == (dx > 0) ? 1 : -1) : 0;
+        int err = ady / 2;
+        for (int y = lo; y < hi; y++) {
+            gc_fill_rect(p, y, xx, y + ph, xx + pw);
+            err += adx;
+            if (err >= ady) {
+                err -= ady;
+                xx += sx;
+            }
+        }
+    }
+    p->gc_pen_x = x1;
+    p->gc_pen_y = y1;
+}
+// opRgn ($08): fill a QuickDraw region.  Rectangular regions (rgnSize 0x0A)
+// are their bbox; complex regions are the classic band/inversion list
+// {y, x-pairs, 0x7FFF, …, 0x7FFF} (call-reference §7).
+static void gc_fill_rgn(display_card_824gc_priv_t *p, uint32_t off) {
+    uint16_t size = (uint16_t)(dram_be32(p, off) >> 16);
+    int top = (int16_t)(dram_be32(p, off) & 0xFFFF);
+    int left = (int16_t)(dram_be32(p, off + 4) >> 16);
+    int bot = (int16_t)(dram_be32(p, off + 4) & 0xFFFF);
+    int right = (int16_t)(dram_be32(p, off + 8) >> 16);
+    if (size <= 0x0A) {
+        gc_fill_rect(p, top, left, bot, right);
+        return;
+    }
+    uint32_t d = off + 10; // band data follows the 10-byte header
+    uint32_t dend = off + size;
+    int inv[128];
+    int ninv = 0;
+    int y = (int16_t)dram_be16(p, d);
+    int guard = 0;
+    while (y != 0x7FFF && d + 2 <= dend && guard++ < 2000) {
+        d += 2;
+        for (;;) {
+            int x = (int16_t)dram_be16(p, d);
+            d += 2;
+            if (x == 0x7FFF)
+                break;
+            // XOR-toggle x into the sorted inversion set.
+            int i = 0;
+            while (i < ninv && inv[i] < x)
+                i++;
+            if (i < ninv && inv[i] == x) {
+                for (int k = i; k + 1 < ninv; k++)
+                    inv[k] = inv[k + 1];
+                ninv--;
+            } else if (ninv < 128) {
+                for (int k = ninv; k > i; k--)
+                    inv[k] = inv[k - 1];
+                inv[i] = x;
+                ninv++;
+            }
+        }
+        int ny = (int16_t)dram_be16(p, d);
+        int bandBot = (ny == 0x7FFF) ? bot : ny;
+        for (int yy = y; yy < bandBot; yy++)
+            for (int s = 0; s + 1 < ninv; s += 2)
+                gc_span(p, yy, inv[s], inv[s + 1]);
+        y = ny;
+    }
+}
+
+// Compute the byte advance for an opcode record at DRAM offset `off`.
+static uint32_t gc_op_adv(display_card_824gc_priv_t *p, uint32_t off, uint16_t op) {
+    uint16_t w2 = (uint16_t)(dram_be32(p, off) & 0xFFFF); // halfword at +2
+    uint16_t w4 = (uint16_t)(dram_be32(p, off + 4) >> 16); // halfword at +4
+    switch (op) {
+    case 0x69:
+    case 0x73:
+    case 0x6F:
+        return 4;
+    case 0x01:
+    case 0x68:
+    case 0x6E:
+    case 0x72:
+    case 0x75:
+        return 8;
+    case 0x03:
+    case 0x05:
+    case 0x64:
+    case 0x6B:
+    case 0x71:
+    case 0x74:
+        return 0xC;
+    case 0x02:
+    case 0x04:
+    case 0x66:
+    case 0x6D:
+    case 0x70:
+        return 0x10;
+    case 0x67:
+        return 0x20;
+    case 0x06:
+        return ((uint32_t)w2 + 0x13) & ~3u; // byteLen.w at +2
+    case 0x07:
+    case 0x08:
+        return ((uint32_t)w4 + 7) & ~3u; // poly/rgn size.w at +4
+    case 0x6A:
+    case 0x6C:
+        return ((uint32_t)w2 + 5) & ~3u; // rgnSize.w at +2
+    default:
+        return 0;
+    }
+}
+
+// Interpret a DrawMultiObject opcode stream at gcp address `base` for `count`
+// bytes.  The gcp window maps `base` → DRAM_CB + (base - gcp_base).
+static void gc_interp(display_card_824gc_priv_t *p, uint32_t base, uint32_t count) {
+    if (base < p->gcp_base || count == 0)
+        return;
+    uint32_t off = GC824_DRAM_CB + (base - p->gcp_base);
+    uint32_t end = off + count;
+    while (off + 2 <= end) {
+        uint16_t op = (uint16_t)(dram_be32(p, off) >> 16);
+        uint32_t adv = gc_op_adv(p, off, op);
+        if (adv == 0) {
+            LOG(1, "DrawMultiObject: unknown opCode $%02x @dram $%05x", op, off);
+            break;
+        }
+        switch (op) {
+        case 0x6F:
+            break; // buffer header — skip
+        case 0x69:
+            p->gc_mode = (uint16_t)(dram_be32(p, off) & 0xFFFF);
+            break; // opMode
+        case 0x68: // opPenLoc: Point at +4 = {v.w, h.w}
+            p->gc_pen_y = (int16_t)(dram_be32(p, off + 4) >> 16);
+            p->gc_pen_x = (int16_t)(dram_be32(p, off + 4) & 0xFFFF);
+            break;
+        case 0x6E: // opPenSize: Point at +4 = {v.w, h.w}
+            p->gc_pen_h = (int16_t)(dram_be32(p, off + 4) >> 16);
+            p->gc_pen_w = (int16_t)(dram_be32(p, off + 4) & 0xFFFF);
+            break;
+        case 0x71: { // opPattern: {which.w slot, 8-byte Pattern} — set slot bytes
+            int slot = (int)(dram_be32(p, off) & 0xFFFF) & 3;
+            for (int i = 0; i < 8; i++)
+                p->gc_pat[slot][i] = (uint8_t)(dram_be32(p, off + 4 + (i & ~3)) >> (24 - 8 * (i & 3)));
+            p->gc_pat_slot = (uint8_t)slot; // a fresh pattern becomes the active slot
+            break;
+        }
+        case 0x73: // opWhichPat: select the active pattern slot (1/2/3)
+            p->gc_pat_slot = (uint8_t)(dram_be32(p, off) & 0xFFFF) & 3;
+            break;
+        case 0x64:
+        case 0x66: { // opFgColor: {RGB at +2, pixValue.L at +8}
+            uint32_t lum = (uint32_t)dram_be16(p, off + 2) + dram_be16(p, off + 4) + dram_be16(p, off + 6);
+            p->gc_fg = (lum < 0x18000u) ? 1 : 0; // dark -> black(1), light -> white(0)
+            break;
+        }
+        case 0x6B:
+        case 0x6D: { // opBkColor
+            uint32_t lum = (uint32_t)dram_be16(p, off + 2) + dram_be16(p, off + 4) + dram_be16(p, off + 6);
+            p->gc_bg = (lum < 0x18000u) ? 1 : 0;
+            break;
+        }
+        case 0x6A:
+        case 0x6C: { // opClipRgn / opVisRgn: intersect the bbox
+            int t = (int16_t)(dram_be32(p, off + 4) >> 16);
+            int l = (int16_t)(dram_be32(p, off + 4) & 0xFFFF);
+            int b = (int16_t)(dram_be32(p, off + 8) >> 16);
+            int r = (int16_t)(dram_be32(p, off + 8) & 0xFFFF);
+            if (t > p->gc_clip_t)
+                p->gc_clip_t = (int16_t)t;
+            if (l > p->gc_clip_l)
+                p->gc_clip_l = (int16_t)l;
+            if (b < p->gc_clip_b)
+                p->gc_clip_b = (int16_t)b;
+            if (r < p->gc_clip_r)
+                p->gc_clip_r = (int16_t)r;
+            break;
+        }
+        case 0x01: { // opLine
+            int y = (int16_t)(dram_be32(p, off + 4) >> 16);
+            int x = (int16_t)(dram_be32(p, off + 4) & 0xFFFF);
+            gc_line_to(p, x, y);
+            p->draw_count++;
+            break;
+        }
+        case 0x05:
+        case 0x04: { // opRect / opRRect (corners TODO — fill as rect)
+            uint16_t frame = (uint16_t)(dram_be32(p, off) & 0xFFFF);
+            int t = (int16_t)(dram_be32(p, off + 4) >> 16);
+            int l = (int16_t)(dram_be32(p, off + 4) & 0xFFFF);
+            int b = (int16_t)(dram_be32(p, off + 8) >> 16);
+            int r = (int16_t)(dram_be32(p, off + 8) & 0xFFFF);
+            if (frame)
+                gc_frame_rect(p, t, l, b, r);
+            else
+                gc_fill_rect(p, t, l, b, r);
+            p->draw_count++;
+            break;
+        }
+        case 0x08: // opRgn
+            gc_fill_rgn(p, off + 4);
+            p->draw_count++;
+            break;
+        default:
+            break; // state/colour opcodes not yet modelled — no-op
+        }
+        off += adv;
+    }
+    p->display.fb_dirty = true;
+}
+
+// Reset the interpreter's per-cycle state to QuickDraw defaults at the start of
+// a drawing cycle (a fresh queue buffer / a new accepted port).  State opcodes
+// in the stream then set the live values; clip only ever narrows from full.
+static void gc_reset_draw_state(display_card_824gc_priv_t *p) {
+    p->gc_clip_t = 0;
+    p->gc_clip_l = 0;
+    p->gc_clip_b = (int16_t)p->display.height;
+    p->gc_clip_r = (int16_t)p->display.width;
+    p->gc_fg = 1; // black
+    p->gc_bg = 0; // white
+    p->gc_pat_slot = 1;
+    memset(p->gc_pat, 0, sizeof(p->gc_pat));
 }
 
 // RPC (Transport A) dispatch — executed synchronously inside the doorbell
@@ -428,11 +762,23 @@ static uint32_t gc_dispatch_func(display_card_824gc_priv_t *p, uint32_t func, ui
         result = 1;
         break;
     }
-    case 0x26: // submit / checkpoint — the queue is already drained
-    case 0x38:
+    case 0x26: // submit + sync (resets the queue) / $38 checkpoint (no reset)
+    case 0x38: {
+        // Args {bufferBase, byteCount}.  Most bytes are already drained
+        // incrementally (gc_drain_queue on CB+$1C0); catch up to the
+        // authoritative byteCount here in case the last append wasn't published.
+        uint32_t cnt = dram_be32(p, GC824_DRAM_CB + GC824_CB_ARGSAREA + 4);
+        if (p->gc_accel && cnt > p->queue_ack) {
+            if (p->queue_ack == 0)
+                gc_reset_draw_state(p);
+            gc_interp(p, p->queue_base + p->queue_ack, cnt - p->queue_ack);
+            p->queue_bytes += cnt - p->queue_ack;
+            p->queue_ack = cnt;
+        }
         dram_set_be32(p, GC824_DRAM_CB + GC824_CB_QUEUE_ACK, dram_be32(p, GC824_DRAM_CB + GC824_CB_QUEUE_PUB));
         result = 0;
         break;
+    }
     // --- Drawing surface: decline to the ROM path (stage 1 safety net) ---
     // The decline convention is result == 0 (protocol §9): for func $15 the host
     // reads "0 = declined → run the ROM blit" (1 = card drew it); for func $2D
@@ -443,9 +789,19 @@ static uint32_t gc_dispatch_func(display_card_824gc_priv_t *p, uint32_t func, ui
         result = 0;
         LOG(3, "func $15 StretchBits declined (stage 1) -> ROM blit");
         break;
-    case 0x2D: // SetPort — bit0 clear => port not accepted => ROM fallback
+    case 0x2D: // SetPort — bit0 clear => port not accepted => ROM fallback.
+        // Stage 2 WIP: the DrawMultiObject interpreter (gc_interp) renders the
+        // geometry correctly (rect/rrect-fill/line/region), but accepting the
+        // port batches accelerated geometry at func-$26 submit time, which does
+        // not interleave in temporal order with the ROM-declined ops (text via
+        // func $30, CopyBits via func $15) the Finder draws directly — so the
+        // menu-bar background and text/icons do not compose pixel-exact yet.
+        // Until that ordering/composition is solved, decline (Stage-1 safety
+        // net) so QuickDraw renders the whole desktop via ROM.  See
+        // debug/2026-07-09-*-stage2-interpreter.md.
         result = 0;
-        LOG(3, "func $2D SetPort not accepted (stage 1) -> ROM drawing");
+        p->gc_accel = (result != 0); // gate the interpreter on port acceptance
+        LOG(3, "func $2D SetPort declined (stage-2 WIP) -> ROM drawing");
         break;
     case 0x30: // FontDownload — returning 0 declines text cleanly (proposal §3.10)
         result = 0;
@@ -502,19 +858,28 @@ static void gc_rpc(display_card_824gc_priv_t *p) {
     LOG(3, "RPC func $%02x seq %u -> result $%08x status $%x", func, seq, result, statusw);
 }
 
-// Transport B (CB+0x1C0 bytes published): drain the opcode stream.  Stage 1
-// declines to the ROM path, so we mark it consumed (QDDone answers "done") and
-// log — a live stream here means GCQD engaged the async queue, which stage 2's
-// interpreter will service.
+// Transport B (CB+0x1C0 bytes published): drain the opcode stream.  Draining
+// happens INCREMENTALLY as the host publishes bytes (proposal §3.5) — not
+// batched at the func-$26 submit — so accelerated geometry lands in the FB in
+// the same temporal order as the ROM-declined ops (text, CopyBits) the Finder
+// draws between publishes; a later batch would paint over that ROM output.
+// The host resets the buffer (CB+$1C0 drops) after a func-$26 submit; we detect
+// that as the start of a new drawing cycle and reset the interpreter state.
 static void gc_drain_queue(display_card_824gc_priv_t *p) {
     uint32_t pub = dram_be32(p, GC824_DRAM_CB + GC824_CB_QUEUE_PUB);
+    if (pub < p->queue_ack)
+        p->queue_ack = 0; // buffer was reset → new drawing cycle
     if (pub == p->queue_ack)
         return;
     uint32_t n = pub - p->queue_ack;
+    if (p->gc_accel) {
+        if (p->queue_ack == 0)
+            gc_reset_draw_state(p); // start of a cycle: QuickDraw defaults
+        gc_interp(p, p->queue_base + p->queue_ack, n);
+    }
     p->queue_bytes += n;
     p->queue_ack = pub;
     dram_set_be32(p, GC824_DRAM_CB + GC824_CB_QUEUE_ACK, pub);
-    LOG(2, "Transport B: %u bytes published (drained, not interpreted — stage 1)", n);
 }
 
 // After any guest write into DRAM, check the watched comm-region longwords and
@@ -900,6 +1265,8 @@ static void set_poweron_defaults(display_card_824gc_priv_t *p) {
     p->last_func = 0;
     p->queue_ack = 0;
     p->error = 0;
+    p->gc_accel = false;
+    p->draw_count = 0;
 
     for (int i = 0; i < 256; i++) {
         p->clut[i].r = p->clut[i].g = p->clut[i].b = (uint8_t)i;
