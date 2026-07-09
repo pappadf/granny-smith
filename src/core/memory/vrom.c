@@ -131,26 +131,107 @@ static uint32_t vrom_be32(const uint8_t *p) {
 // = one row here.  Keyed exactly like rom.c's ROM_TABLE {checksum -> ...}.
 struct vrom_known {
     uint32_t crc;
+    size_t chip_size; // dense chip image size on disk
     const char *canonical_name;
     const char *card_id;
 };
 static const struct vrom_known VROM_CATALOG[] = {
     // Macintosh Display Card 8•24 (ROM rev 341-0868). Drives the JMFB
     // NuBus card (id "mdc_8_24") on IIcx / IIx / IIfx; loaded by jmfb.c.
-    {0xD1629664u, "Apple-341-0868.vrom",    "mdc_8_24"          },
+    {0xD1629664u, 0x08000, "Apple-341-0868.vrom",    "mdc_8_24"          },
     // SE/30 onboard video declaration ROM (byteLanes $0F, 4-lane); loaded
     // by builtin_se30_video.c (id "builtin_se30_video").
-    {0x4F71FF1Au, "SE30.vrom",              "builtin_se30_video"},
+    {0x4F71FF1Au, 0x08000, "SE30.vrom",              "builtin_se30_video"},
     // Apple Macintosh Display Card 24AC (id "display_card_24ac").
-    {0xD8DAAB87u, "display-card-24ac.vrom", "display_card_24ac" },
+    {0xD8DAAB87u, 0x08000, "display-card-24ac.vrom", "display_card_24ac" },
     // Apple Macintosh Display Card 8•24 GC ("Dolphin", id "824gc"): the
     // accelerated card.  Its declaration ROMs are byteLanes $E1 (byte lane 0);
     // v1.1 is a 64 KB chip, v1.0 / the alpha are 32 KB.  All three carry the
     // same $5A932BC7 TestPattern, so they identify by Format-Block CRC.
-    {0xD722B053u, "Apple-341-0266.vrom",    "824gc"             }, // v1.1 (default)
-    {0x9E9857E8u, "341-0812-02_1.0.vrom",   "824gc"             }, // v1.0 (shipping)
-    {0x4740028Du, "Dolphin_1.0A16.vrom",    "824gc"             }, // 1.00a16 alpha
+    {0xD722B053u, 0x10000, "Apple-341-0266.vrom",    "824gc"             }, // v1.1 (default)
+    {0x9E9857E8u, 0x08000, "341-0812-02_1.0.vrom",   "824gc"             }, // v1.0 (shipping)
+    {0x4740028Du, 0x08000, "Dolphin_1.0A16.vrom",    "824gc"             }, // 1.00a16 alpha
 };
+
+// Content-identification core shared by vrom.identify and the card factories'
+// loader (declrom_load_vrom_card).  Reads the file's trailing Format Block,
+// gates on the $5A932BC7 TestPattern, and looks the CRC up in the catalog.
+// Result codes let vrom.identify keep its error/unrecognised distinction.
+enum vrom_id_result {
+    VROM_ID_UNREADABLE, // stat/open/read failed
+    VROM_ID_WRONG_SIZE, // exists, but not a chip-sized blob
+    VROM_ID_UNKNOWN, // right size; *out_crc valid; not a catalog entry (or no TestPattern)
+    VROM_ID_KNOWN, // recognised: *out filled from the catalog row
+};
+static enum vrom_id_result vrom_identify_core(const char *path, vrom_id_t *out, size_t *out_size, uint32_t *out_crc) {
+    size_t size = 0;
+    vrom_probe_file(path, &size); // fills *size regardless of SE/30's 32 KB gate
+    if (out_size)
+        *out_size = size;
+    // vrom_probe_file leaves size == 0 only when stat failed (missing /
+    // unreadable).
+    if (size == 0)
+        return VROM_ID_UNREADABLE;
+    // Declaration-ROM chips come in two sizes: 32 KB (SE/30, JMFB, 24AC, the
+    // 8•24 GC v1.0 / alpha) and 64 KB (the 8•24 GC v1.1).  The Format Block +
+    // CRC live in the trailing bytes either way, so accept both.
+    if (size != VROM_EXPECTED_SIZE && size != 2u * VROM_EXPECTED_SIZE)
+        return VROM_ID_WRONG_SIZE;
+
+    FILE *f = fopen(path, "rb");
+    if (!f)
+        return VROM_ID_UNREADABLE;
+    // Only the trailing Format Block matters for identity.
+    uint8_t tail[VROM_CRC_OFF];
+    if (fseek(f, (long)(size - sizeof(tail)), SEEK_SET) != 0 || fread(tail, 1, sizeof(tail), f) != sizeof(tail)) {
+        fclose(f);
+        return VROM_ID_UNREADABLE;
+    }
+    fclose(f);
+
+    // Gate on the TestPattern: a right-sized blob without `$5A932BC7` in the
+    // Format Block is not a declaration ROM (don't trust a stray CRC match).
+    const uint8_t *tp = tail + sizeof(tail) - VROM_TESTPATTERN_OFF;
+    bool is_declrom = tp[0] == 0x5Au && tp[1] == 0x93u && tp[2] == 0x2Bu && tp[3] == 0xC7u;
+    uint32_t crc = vrom_be32(tail);
+    if (out_crc)
+        *out_crc = crc;
+    if (!is_declrom)
+        return VROM_ID_UNKNOWN;
+    for (size_t i = 0; i < sizeof(VROM_CATALOG) / sizeof(VROM_CATALOG[0]); i++) {
+        if (VROM_CATALOG[i].crc == crc) {
+            if (out) {
+                out->crc = crc;
+                out->chip_size = size;
+                out->canonical_name = VROM_CATALOG[i].canonical_name;
+                out->card_id = VROM_CATALOG[i].card_id;
+            }
+            return VROM_ID_KNOWN;
+        }
+    }
+    return VROM_ID_UNKNOWN;
+}
+
+bool vrom_identify_card(const char *path, vrom_id_t *out) {
+    if (!path || !*path)
+        return false;
+    return vrom_identify_core(path, out, NULL, NULL) == VROM_ID_KNOWN;
+}
+
+const char *vrom_catalog_name(const char *card_id, int idx, size_t *out_chip_size) {
+    if (!card_id)
+        return NULL;
+    for (size_t i = 0; i < sizeof(VROM_CATALOG) / sizeof(VROM_CATALOG[0]); i++) {
+        if (strcmp(VROM_CATALOG[i].card_id, card_id) != 0)
+            continue;
+        if (idx-- > 0)
+            continue;
+        if (out_chip_size)
+            *out_chip_size = VROM_CATALOG[i].chip_size;
+        return VROM_CATALOG[i].canonical_name;
+    }
+    return NULL;
+}
 
 // vrom.identify(path) — returns a JSON map describing the file, keyed off
 // the declaration ROM's Format-Block CRC:
@@ -164,71 +245,44 @@ static const struct vrom_known VROM_CATALOG[] = {
 //   }
 // `compatible` mirrors rom.identify's `compatible:[model_ids]` shape (a list,
 // usually length 1).  JS callers use canonical_name to persist the file under
-// the path the C-side card factories expect, and card_id / compatible to pick
-// the card; the human-readable name comes from machine.profile, not here.
+// a stable, human-meaningful name, and card_id / compatible to pick the card;
+// the human-readable name comes from machine.profile, not here.  (The card
+// factories load by CONTENT — declrom_load_vrom_card — so the canonical name
+// is a convention, not a requirement.)
 static value_t vrom_method_identify(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)self;
     (void)m;
     (void)argc;
     const char *path = argv[0].s;
+    vrom_id_t id;
     size_t size = 0;
-    vrom_probe_file(path, &size); // fills *size regardless of SE/30's 32 KB gate
-    // Distinguish "can't read the file" from "present, but not a vROM",
-    // mirroring rom.identify: a missing/unreadable path is a V_ERROR, while a
-    // real file of the wrong size is simply unrecognised.  vrom_probe_file
-    // leaves *size == 0 only when stat failed (nonexistent / unreadable).
-    if (size == 0)
+    uint32_t crc = 0;
+    switch (vrom_identify_core(path, &id, &size, &crc)) {
+    case VROM_ID_UNREADABLE:
+        // Distinguish "can't read the file" from "present, but not a vROM",
+        // mirroring rom.identify: a missing/unreadable path is a V_ERROR,
+        // while a real file of the wrong size is simply unrecognised.
         return val_err("vrom.identify: cannot read '%s'", path);
-    // Declaration-ROM chips come in two sizes: 32 KB (SE/30, JMFB, 24AC, the
-    // 8•24 GC v1.0 / alpha) and 64 KB (the 8•24 GC v1.1).  The Format Block +
-    // CRC live in the trailing bytes either way, so accept both.
-    bool size_ok = (size == VROM_EXPECTED_SIZE) || (size == 2u * VROM_EXPECTED_SIZE);
-    if (!size_ok)
+    case VROM_ID_WRONG_SIZE:
         return val_str("{\"recognised\":false}");
-
-    // size == VROM_EXPECTED_SIZE (32 KB) from here; slurp the chip image —
-    // the Format Block is its trailing 20 bytes.
-    FILE *f = fopen(path, "rb");
-    if (!f)
-        return val_err("vrom.identify: cannot open '%s'", path);
-    uint8_t *buf = (uint8_t *)malloc(size);
-    if (!buf) {
-        fclose(f);
-        return val_err("vrom.identify: out of memory");
+    case VROM_ID_KNOWN: {
+        char out[256];
+        snprintf(out, sizeof(out),
+                 "{\"recognised\":true,\"canonical_name\":\"%s\",\"card_id\":\"%s\",\"compatible\":[\"%s\"],"
+                 "\"size\":%zu,\"crc\":\"0x%08x\"}",
+                 id.canonical_name, id.card_id, id.card_id, size, crc);
+        return val_str(out);
     }
-    size_t got = fread(buf, 1, size, f);
-    fclose(f);
-    if (got != size) {
-        free(buf);
-        return val_err("vrom.identify: short read from '%s'", path);
+    case VROM_ID_UNKNOWN:
+    default: {
+        // Right size but not a known declaration ROM. Recognised=false so
+        // callers route into a normal "unrecognised file" path; still report
+        // the CRC so a future catalog entry (or the user) can identify it.
+        char out[128];
+        snprintf(out, sizeof(out), "{\"recognised\":false,\"size\":%zu,\"crc\":\"0x%08x\"}", size, crc);
+        return val_str(out);
     }
-
-    // Gate on the TestPattern: a right-sized blob without `$5A932BC7` in the
-    // Format Block is not a declaration ROM (don't trust a stray CRC match).
-    const uint8_t *tp = buf + size - VROM_TESTPATTERN_OFF;
-    bool is_declrom = tp[0] == 0x5Au && tp[1] == 0x93u && tp[2] == 0x2Bu && tp[3] == 0xC7u;
-    uint32_t crc = vrom_be32(buf + size - VROM_CRC_OFF);
-    free(buf);
-
-    if (is_declrom) {
-        for (size_t i = 0; i < sizeof(VROM_CATALOG) / sizeof(VROM_CATALOG[0]); i++) {
-            if (VROM_CATALOG[i].crc == crc) {
-                char out[256];
-                snprintf(out, sizeof(out),
-                         "{\"recognised\":true,\"canonical_name\":\"%s\",\"card_id\":\"%s\",\"compatible\":[\"%s\"],"
-                         "\"size\":%zu,\"crc\":\"0x%08x\"}",
-                         VROM_CATALOG[i].canonical_name, VROM_CATALOG[i].card_id, VROM_CATALOG[i].card_id, size, crc);
-                return val_str(out);
-            }
-        }
     }
-
-    // Right size but not a known declaration ROM. Recognised=false so callers
-    // route into a normal "unrecognised file" path; still report the CRC so a
-    // future catalog entry (or the user) can identify it.
-    char out[128];
-    snprintf(out, sizeof(out), "{\"recognised\":false,\"size\":%zu,\"crc\":\"0x%08x\"}", size, crc);
-    return val_str(out);
 }
 
 static const arg_decl_t vrom_path_arg[] = {

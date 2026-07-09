@@ -39,12 +39,12 @@
 #include <stdint.h>
 
 // === Declaration ROM ========================================================
-// Ship v1.1 (341-0266) as default (richest monitor table; proposal §3.1).
-// 64 KB chip, byteLanes $E1 (byte lane 0) → 256 KB bus-space footprint
-// (chip ×4), placed at the top of standard slot space.
-#define GC824_VROM_FILENAME      "Apple-341-0266.vrom"
-#define GC824_DECLROM_CHIP_SIZE  0x010000u // 64 KB raw chip data (file size)
-#define GC824_DECLROM_BUS_SIZE   0x040000u // 256 KB bus-space footprint (chip ×4)
+// Loaded by CONTENT via declrom_load_vrom_card (vrom.c catalog keyed on the
+// Format-Block CRC) — any of the three known GC ROMs works: v1.1 (341-0266,
+// 64 KB, richest monitor table; proposal §3.1), v1.0, or the alpha (32 KB).
+// All are byteLanes $E1 (byte lane 0) → chip ×4 bus-space footprint laid into
+// the tail of a 256 KB window at the top of standard slot space.
+#define GC824_DECLROM_BUS_SIZE   0x040000u // 256 KB bus window (64 KB chip ×4)
 #define GC824_DECLROM_BUS_OFFSET 0xFC0000u // slot top minus 256 KB
 #define GC824_VROM_CRC           0xD722B053u // v1.1 Format-Block CRC (vrom.identify)
 

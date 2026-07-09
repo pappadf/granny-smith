@@ -82,17 +82,23 @@ void declrom_expand_lane3(const uint8_t *chip, size_t chip_size, uint8_t *bus_bu
 // Returns true on a recognised layout, false otherwise (caller logs).
 bool declrom_layout_chip(const uint8_t *chip, size_t chip_size, uint8_t *bus_buf, size_t bus_size, uint8_t byte_lanes);
 
-// Find a display-card declaration-ROM chip image named `filename`, read
-// its chip_size bytes, and lay it out into `bus_buf` (bus_size bytes) per
-// its byteLanes byte (see declrom_layout_chip).  Searches, in order:
-//   1. the directory of the pending CPU ROM (rom_pending_path()), which is
-//      where the integration-test harness drops sibling vrom files;
-//   2. `/opfs/images/vrom/<filename>` (browser OPFS mount);
-//   3. `tests/data/roms/<filename>`;
-//   4. `<filename>` (current working directory).
+// Find the declaration-ROM chip image that provides the card `card_id` —
+// by CONTENT (the vrom.c Format-Block-CRC catalog), never by a hardcoded
+// filename — read it, and lay it out into the TAIL of `bus_buf` (bus_size
+// bytes) per its byteLanes byte (see declrom_layout_chip; the Format Block
+// always ends at the slot top, so a smaller ROM revision occupies the top of
+// a window sized for the largest one).  Tries, in order:
+//   0. the explicit `machine.vrom.load <path>` pending path (how the web UI
+//      hands over an uploaded file, whatever it is named), if it identifies
+//      to this card;
+//   1. each catalog canonical filename for this card, in each of:
+//      the pending CPU ROM's directory (where the integration-test harness
+//      keeps sibling vrom files), `/opfs/images/vrom/`, `tests/data/roms/`,
+//      and the current working directory — every hit content-verified before
+//      it is accepted.
 // On success returns true and stores a freshly-strdup'd copy of the path it
 // loaded from in *out_path (caller frees); on miss returns false and leaves
-// *out_path NULL.  Shared by every real-ROM display card (JMFB, 24AC).
-bool declrom_load_vrom(const char *filename, size_t chip_size, uint8_t *bus_buf, size_t bus_size, char **out_path);
+// *out_path NULL.  Shared by every real-ROM display card (JMFB, 24AC, 8•24 GC).
+bool declrom_load_vrom_card(const char *card_id, uint8_t *bus_buf, size_t bus_size, char **out_path);
 
 #endif // NUBUS_DECLROM_H
