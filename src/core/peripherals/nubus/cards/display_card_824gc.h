@@ -154,6 +154,16 @@
 #define GC824_DRAM_VIDCOMM  0x007300u // display-mode-change protocol
 #define GC824_DRAM_INPARGS  0x007800u // host launch args
 
+// GCQD per-context scratch (the "ctx" token func $17 publishes at CB+$608).
+// GCQD threads this pointer through its QuickDraw bottlenecks and builds
+// per-context structures off it — notably the offscreen-GWorld list lock at
+// ctx+$C0 (walked by GCQD sub_492E in 32-bit MMU mode).  It MUST NOT overlap
+// the CB window: the CB's own blit scratch lives at CB+$58.. and would corrupt
+// the lock's peer word (ctx+$C4), spinning GCQD forever.  Give it a private,
+// zero-initialized region high in DRAM, reached via the super-slot (32-bit).
+#define GC824_DRAM_GCTX 0x180000u // GCQD context object (private scratch)
+#define GC824_GCTX_SIZE 0x001000u // 4 KB — ample for GCQD's context fields
+
 // PublicIn field offsets (relative to PublicIn base).
 #define GC824_PI_MAGIC    0x000u // boot magic 0x42005300 (card clears it)
 #define GC824_PI_ENTRY    0x004u // firmware entry (0xF000)

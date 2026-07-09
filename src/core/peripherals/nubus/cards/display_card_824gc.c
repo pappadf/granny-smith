@@ -395,6 +395,11 @@ static void gc_boot(display_card_824gc_priv_t *p) {
     dram_set_be32(p, GC824_DRAM_CB + GC824_CB_FREEAREA + 0, free_size);
     dram_set_be32(p, GC824_DRAM_CB + GC824_CB_FREEAREA + 4, 0);
 
+    // Clear GCQD's private context region so its offscreen-list lock starts
+    // unlocked (myflag/peer 0, list head 0) — the Am29000 firmware would zero
+    // this shared scratch at GC-OS bring-up; the HLE must do the same.
+    memset(p->dram + GC824_DRAM_GCTX, 0, GC824_GCTX_SIZE);
+
     // Fill the runtime PublicOu fields the kernel would (sig/version already
     // arrived as stored ACEF bytes; synthesize the signature too so the check
     // passes regardless of which section carried it).
@@ -725,10 +730,13 @@ static void gc_interp(display_card_824gc_priv_t *p, uint32_t base, uint32_t coun
             p->gc_pen_w = (int16_t)(dram_be32(p, off + 4) & 0xFFFF);
             break;
         case 0x71: { // opPattern: {which.w slot, 8-byte Pattern} — set slot bytes
+            // Sets the named slot's bytes ONLY; the active slot is chosen solely
+            // by opWhichPat ($73).  (Setting the active slot here would let a
+            // later bkPat load steal the slot an earlier opWhichPat selected —
+            // e.g. the desktop's gray fillPat, painting the desktop black.)
             int slot = (int)(dram_be32(p, off) & 0xFFFF) & 3;
             for (int i = 0; i < 8; i++)
                 p->gc_pat[slot][i] = (uint8_t)(dram_be32(p, off + 4 + (i & ~3)) >> (24 - 8 * (i & 3)));
-            p->gc_pat_slot = (uint8_t)slot; // a fresh pattern becomes the active slot
             break;
         }
         case 0x73: // opWhichPat: select the active pattern slot (1/2/3)
@@ -910,10 +918,15 @@ static uint32_t gc_dispatch_func(display_card_824gc_priv_t *p, uint32_t func, ui
         break;
     case 0x17: { // PQDInit / register screen (CB+0x604 = {ScrnBase in, ctx out})
         uint32_t scrnbase = dram_be32(p, GC824_DRAM_CB + 0x604);
-        // ctx token GCQD stores as comm+$182 (its cache-descriptor handle): must
-        // be a non-zero card address GCQD can reach via the gcp window.
-        dram_set_be32(p, GC824_DRAM_CB + 0x604 + 4, p->gcp_base);
-        LOG(2, "func $17 PQDInit: ScrnBase=$%08x -> ctx=$%08x", scrnbase, p->gcp_base);
+        // ctx token GCQD stores as comm+$182 (its cache-descriptor handle) and
+        // threads through its bottlenecks, building per-context structures off
+        // it (the offscreen-GWorld list lock at ctx+$C0, walked in 32-bit mode).
+        // It must be a private card region — NOT the CB window (gcp_base), whose
+        // blit scratch at CB+$58.. would overwrite the lock's peer word and spin
+        // GCQD forever.  Hand out the dedicated super-slot GCTX region.
+        uint32_t ctx = p->super_base | (GC824_DRAM_OFFSET + GC824_DRAM_GCTX);
+        dram_set_be32(p, GC824_DRAM_CB + 0x604 + 4, ctx);
+        LOG(2, "func $17 PQDInit: ScrnBase=$%08x -> ctx=$%08x", scrnbase, ctx);
         // Result 1 = registered OK — sub_61B0 checks this (== 1) and $884A posts
         // error 4 ("having difficulty") otherwise.  Protocol §9.2.
         result = 1;
@@ -949,9 +962,9 @@ static uint32_t gc_dispatch_func(display_card_824gc_priv_t *p, uint32_t func, ui
         result = (p->gc_accel && gc_stretchbits(p)) ? 1 : 0;
         break;
     case 0x2D: // SetPort — accept the port so its geometry queue is interpreted.
-        result = 0;
+        result = 1;
         p->gc_accel = (result != 0); // gate the interpreter on port acceptance
-        LOG(3, "func $2D SetPort declined (stage-2 WIP) -> ROM drawing");
+        LOG(3, "func $2D SetPort accepted -> card interprets the geometry queue");
         break;
     case 0x30: // FontDownload — returning 0 declines text cleanly (proposal §3.10)
         result = 0;
