@@ -709,6 +709,75 @@ static void gc_interp(display_card_824gc_priv_t *p, uint32_t base, uint32_t coun
     p->display.fb_dirty = true;
 }
 
+// Read one 1-bpp pixel (MSB-first) at (x,y) from a guest bitmap.  `base` is a
+// QuickDraw baseAddr: a super-slot card address ($9xxxxxxx — read as-is) or a
+// host master pointer whose top byte carries HandleMgr lock/purge flags (strip
+// to the low 24 bits).  Reads go through the memory subsystem (host RAM or,
+// for cached GWorlds, card DRAM over NuBus) — the "copy callbacks elided"
+// model of proposal §3.9.
+static inline int gc_bmp_pixel(uint32_t base, int y, int x, int rowbytes) {
+    uint32_t a = ((base & 0xF0000000u) == 0x90000000u) ? base : (base & 0x00FFFFFFu);
+    uint8_t b = memory_debug_read_uint8(a + (uint32_t)y * (uint32_t)rowbytes + (uint32_t)(x >> 3));
+    return (b >> (7 - (x & 7))) & 1;
+}
+
+// func $15 StretchBits (CopyBits) — the blit.  Stage-2 accept envelope
+// (proposal §3.8 v1 + 1-bit masks): srcCopy, no stretch, 1-bpp, destination =
+// the screen framebuffer; everything else declines to the ROM path (result 0).
+// Request block at CB+$58 (protocol §9.1).  Returns 1 if drawn, 0 to decline.
+static int gc_stretchbits(display_card_824gc_priv_t *p) {
+    uint32_t rb = GC824_DRAM_CB + 0x58;
+    uint16_t mode = dram_be16(p, rb + 0x00);
+    uint32_t dstBase = dram_be32(p, rb + 0x02);
+    int dstRB = dram_be16(p, rb + 0x06) & 0x3FFF;
+    int dstBnT = (int16_t)dram_be16(p, rb + 0x08), dstBnL = (int16_t)dram_be16(p, rb + 0x0A);
+    uint32_t srcBase = dram_be32(p, rb + 0x36);
+    int srcRB = dram_be16(p, rb + 0x3A) & 0x3FFF;
+    int srcBnT = (int16_t)dram_be16(p, rb + 0x3C), srcBnL = (int16_t)dram_be16(p, rb + 0x3E);
+    uint32_t maskBase = dram_be32(p, rb + 0x6A);
+    int maskRB = dram_be16(p, rb + 0x6E) & 0x3FFF;
+    int maskBnT = (int16_t)dram_be16(p, rb + 0x70), maskBnL = (int16_t)dram_be16(p, rb + 0x72);
+    int dRt = (int16_t)dram_be16(p, rb + 0xA8), dRl = (int16_t)dram_be16(p, rb + 0xAA);
+    int dRb = (int16_t)dram_be16(p, rb + 0xAC), dRr = (int16_t)dram_be16(p, rb + 0xAE);
+    int sRt = (int16_t)dram_be16(p, rb + 0xB0), sRl = (int16_t)dram_be16(p, rb + 0xB2);
+    int mRt = (int16_t)dram_be16(p, rb + 0xB8), mRl = (int16_t)dram_be16(p, rb + 0xBA);
+
+    // Accept only: srcCopy, destination is the screen FB, 1:1 (no stretch).
+    uint32_t screen = p->super_base | (GC824_DRAM_OFFSET + GC824_FB_OFFSET);
+    if (mode != 0 || dstBase != screen) {
+        return 0;
+    }
+    if ((dRb - dRt) != (int16_t)dram_be16(p, rb + 0xB4) - sRt ||
+        (dRr - dRl) != (int16_t)dram_be16(p, rb + 0xB6) - sRl) {
+        return 0; // stretched → decline
+    }
+
+    for (int dy = dRt; dy < dRb; dy++) {
+        int y = dy - dstBnT;
+        if (y < 0 || y >= (int)p->display.height)
+            continue;
+        int sy = sRt + (dy - dRt) - srcBnT;
+        int my = mRt + (dy - dRt) - maskBnT;
+        uint8_t *row = (uint8_t *)p->display.bits + (size_t)y * p->display.stride;
+        for (int dx = dRl; dx < dRr; dx++) {
+            int x = dx - dstBnL;
+            if (x < 0 || x >= (int)p->display.width)
+                continue;
+            int sx = sRl + (dx - dRl) - srcBnL;
+            if (maskBase && !gc_bmp_pixel(maskBase, my, mRl + (dx - dRl) - maskBnL, maskRB))
+                continue; // outside the mask → leave the destination
+            uint8_t bit = (uint8_t)(0x80u >> (x & 7));
+            if (gc_bmp_pixel(srcBase, sy, sx, srcRB))
+                row[x >> 3] |= bit; // 1 = black (fg)
+            else
+                row[x >> 3] &= (uint8_t)~bit; // 0 = white (bg)
+        }
+    }
+    p->draw_count++;
+    p->display.fb_dirty = true;
+    return 1;
+}
+
 // Reset the interpreter's per-cycle state to QuickDraw defaults at the start of
 // a drawing cycle (a fresh queue buffer / a new accepted port).  State opcodes
 // in the stream then set the live values; clip only ever narrows from full.
@@ -785,20 +854,13 @@ static uint32_t gc_dispatch_func(display_card_824gc_priv_t *p, uint32_t func, ui
     // (SetPort) the result's bit 0 is "accept" (else fall back to ROM for the
     // whole port).  Returning 0 for both makes GCQD render every primitive via
     // QuickDraw's own ROM bottlenecks — the stage-1 safety net (proposal §4).
-    case 0x15: // StretchBits (CopyBits) — 0 declines → host runs the ROM blit
-        result = 0;
-        LOG(3, "func $15 StretchBits declined (stage 1) -> ROM blit");
+    case 0x15: // StretchBits (CopyBits): accelerate the accept-envelope, else
+        // decline (result 0 → host runs the ROM blit).  Runs synchronously here,
+        // so it lands in the framebuffer in RPC order relative to the queued
+        // geometry (drawn at the preceding func $26 submits).
+        result = (p->gc_accel && gc_stretchbits(p)) ? 1 : 0;
         break;
-    case 0x2D: // SetPort — bit0 clear => port not accepted => ROM fallback.
-        // Stage 2 WIP: the DrawMultiObject interpreter (gc_interp) renders the
-        // geometry correctly (rect/rrect-fill/line/region), but accepting the
-        // port batches accelerated geometry at func-$26 submit time, which does
-        // not interleave in temporal order with the ROM-declined ops (text via
-        // func $30, CopyBits via func $15) the Finder draws directly — so the
-        // menu-bar background and text/icons do not compose pixel-exact yet.
-        // Until that ordering/composition is solved, decline (Stage-1 safety
-        // net) so QuickDraw renders the whole desktop via ROM.  See
-        // debug/2026-07-09-*-stage2-interpreter.md.
+    case 0x2D: // SetPort — accept the port so its geometry queue is interpreted.
         result = 0;
         p->gc_accel = (result != 0); // gate the interpreter on port acceptance
         LOG(3, "func $2D SetPort declined (stage-2 WIP) -> ROM drawing");
