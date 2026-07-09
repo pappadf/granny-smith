@@ -1,0 +1,45 @@
+# IIcx + Display Card 8•24 GC — boot System 6.0.8 with the ACCELERATOR ON.
+#
+# Unlike iicx-824gc-boot (display-only image "8•24 GC SW", accelerator never
+# enabled) this uses the image whose support file is named exactly "8•24 GC", so
+# the Start-Manager ROM patch runs gc24-32 at boot → the real .GraphAccel driver
+# installs, opens, and turns the accelerator ON, and GCQD patches QuickDraw.
+#
+# The HLE card brings the accelerator up through its real command-block path:
+# GCQD reaches the CB via the standard-slot "gcp" window (card+$16C+$8C00 =
+# $F9908C00), aliased onto the DRAM CB; HELLO/ping/memory-config/PQDInit RPCs are
+# serviced, the per-VBL heartbeat ticks, and every drawing primitive DECLINES
+# (result 0 / SetPort not-accepted) so QuickDraw's own ROM bottlenecks render
+# the desktop — pixel-correct, with NO "Graphics accelerator is having
+# difficulty" dialog.  See debug/2026-07-09-*-gcp-window-fix.md.
+
+# Pin the RTC so the boot is deterministic run-to-run.
+machine.rtc.time = 3000000000
+
+machine.nubus.video_card = "824gc"
+machine.boot "iicx" 8192
+machine.rom.reload
+
+machine.scsi.attach_hd "../../data/systems/system_6_0_8_20mb_8_24gc_accel.img" 0
+scheduler.run 200000000
+
+# The card that booted into the IIcx video slot ($9) is the 8•24 GC.
+assert ${machine.nubus.slot[9].card.name == "Apple Macintosh Display Card 8•24 GC"} "slot $9 card != 8•24 GC"
+
+# --- The accelerator is ON and brought up cleanly by the REAL driver. ---
+assert ${machine.nubus.slot[9].card.gc.on == true}       "accelerator did not turn on"
+assert ${machine.nubus.slot[9].card.gc.state == "gc-on"} "accelerator state != gc-on"
+assert ${machine.nubus.slot[9].card.gc.error == 0}       "accelerator posted an error"
+# The driver rang real doorbell RPCs (HELLO/ping/memcfg/PQDInit/CopyBits/...),
+# proving the gcp command-block path works end-to-end (not just the poke path).
+assert ${machine.nubus.slot[9].card.gc.rpc_count > 0}    "no RPCs serviced (bring-up never engaged)"
+
+assert ${machine.screen.width == 640}  "boot: screen width != 640"
+assert ${machine.screen.height == 480} "boot: screen height != 480"
+
+# The 1-bpp B&W Finder desktop (menu bar + Macintosh HD + Trash), rendered via
+# the ROM fallback with the accelerator live, pixel-exact — and crucially with
+# NO "having difficulty" dialog present.
+machine.screen.match finder-824gc-accel-640x480-1bpp.png
+
+quit

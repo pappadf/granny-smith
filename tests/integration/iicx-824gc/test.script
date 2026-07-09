@@ -62,8 +62,10 @@ assert ${machine.memory.peek.l(0x9C007018) == 3}                                
 assert ${machine.memory.peek.l(0x9C007014) == 0}                                  "doorbell not cleared after RPC"
 
 # --- A second RPC: liveness pass (func 2) must return 1 (Status $0A basis). ---
+#     HELLO reset the sequence, so the first post-HELLO RPC carries seq 0 (the
+#     host zeroes its counter and post-increments) — the card expects 0 next.
 machine.memory.poke.l 0x9C007048 0x00000002
-machine.memory.poke.l 0x9C00704C 0x00000001
+machine.memory.poke.l 0x9C00704C 0x00000000
 machine.memory.poke.l 0x9C007014 0xFFFFFFFF
 assert ${machine.nubus.slot[9].card.gc.rpc_count == 2}                            "second RPC not serviced"
 assert ${machine.memory.peek.l(0x9C00701C) == 1}                                  "liveness func(2) result != 1"

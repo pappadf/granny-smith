@@ -96,6 +96,25 @@
 #define GC824_REGS_OFFSET 0x4000000u // card-local base of the register space
 #define GC824_REGS_SIZE   0x4000000u // 64 MB (covers 0x04000000..0x07FFFFFF)
 
+// GCQD "gcp" command-block window (STANDARD-slot space).  The QuickDraw
+// marshaller (GCQD, gc24 -4048) does NOT reach the command block through the
+// super-slot DRAM aperture — it uses the driver's "gcp" pointer, computed in
+// .GraphAccel Open (driver doc §5.1 step 5 / §7) as
+//     card+$16C = $F0000000 | (slot<<24) | (slot<<20)   (= std base + slot*1 MB)
+//     gcp       = card+$C = card+$16C + $8C00
+// Init29K's arm/CB-read+arm path is gated OFF for the normal config ($168 bit
+// 11 stays set — .GraphAccel sub_2A54 sets base $800 and only $128 bit 8 clears
+// it, and $128 = config-A $60 at that point), so the driver never reads
+// PublicIn+$40C nor writes the arm magic; GCQD drives the whole CB (doorbell,
+// status, heartbeat, args, queue-carve) through this fixed, slot-derived
+// STANDARD-slot window instead.  We alias it onto the SAME DRAM CB the
+// super-slot exposes at GC824_DRAM_CB, so the fields the marshaller polls hit
+// the live CB engine (and CB-internal pointers are published gcp-relative so
+// GCQD's `(gcp & $FFF00000) | (ptr & $FFFFF)` address reconstruction lands in
+// this window).  See debug/2026-07-09-*-gcp-window.md.
+#define GC824_GCP_OFFSET 0x8C00u // gcp offset within card+$16C
+#define GC824_GCP_WINDOW 0x2000u // CB header + carved queue (GCQD G+$268 = 4 KB)
+
 // Accelerator control registers (card-local low 28 bits).
 #define GC824_REG_ATTACH  0x4000028u // W: 0 detach / -1 attach (never read)
 #define GC824_REG_ALIVE_C 0x4000044u // R bit31 = alive flag C

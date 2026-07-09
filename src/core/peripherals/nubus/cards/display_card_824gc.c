@@ -67,6 +67,7 @@ struct display_card_824gc_priv {
     nubus_card_t *card; // back-pointer for IRQ helpers
     uint32_t slot_base; // standard slot space base ($Fs000000)
     uint32_t super_base; // super-slot space base ($s0000000)
+    uint32_t gcp_base; // GCQD "gcp" CB window (standard slot; = card+$16C+$8C00)
 
     // --- Display half (standard slot space) ---
     uint8_t *vram; // GC824_VRAM_SIZE
@@ -120,6 +121,7 @@ struct display_card_824gc_priv {
     // Region contexts.
     gc_reg_ctx_t ctx_jmfb; // slot+$200000 display registers (standard slot)
     gc_reg_ctx_t ctx_super; // whole super-slot space (SRAM/DRAM/ctl/comm)
+    gc_reg_ctx_t ctx_gcp; // GCQD CB window (standard slot; aliases DRAM CB)
 };
 
 // === DRAM big-endian accessors ==============================================
@@ -354,9 +356,13 @@ static void gc_boot(display_card_824gc_priv_t *p) {
     // Initialize the CB image.
     dram_set_be32(p, GC824_DRAM_CB + GC824_CB_STATUS, GC824_CB_INIT);
     p->cb_nubus = p->super_base | (GC824_DRAM_OFFSET + GC824_DRAM_CB); // NuBus(0x4C007000)
-    dram_set_be32(p, GC824_DRAM_CB + GC824_CB_ARGSOFF, p->cb_nubus + GC824_CB_ARGSAREA);
+    // The args area and free-list heap are addressed by GCQD relative to the
+    // gcp window (standard slot): it reconstructs card pointers as
+    // (gcp & $FFF00000) | (ptr & $FFFFF), so those pointers must be gcp-relative
+    // (not super-slot) to land inside GC824_GCP_WINDOW and reach the DRAM CB.
+    dram_set_be32(p, GC824_DRAM_CB + GC824_CB_ARGSOFF, p->gcp_base + GC824_CB_ARGSAREA);
     // Queue-buffer one-block free list (protocol §9.2): {size, next=0}.
-    uint32_t free_base = p->cb_nubus + GC824_CB_FREEAREA;
+    uint32_t free_base = p->gcp_base + GC824_CB_FREEAREA;
     dram_set_be32(p, GC824_DRAM_CB + GC824_CB_FREEPTR, free_base);
     uint32_t cb_local = GC824_DRAM_OFFSET + GC824_DRAM_CB; // card-local 0x0C007000
     uint32_t free_size = (0x0C00FFFCu - (cb_local + GC824_CB_FREEAREA) - 8u);
@@ -396,7 +402,7 @@ static uint32_t gc_dispatch_func(display_card_824gc_priv_t *p, uint32_t func, ui
     case 0x01: // HELLO — reset the sequence, return args-area offset
         p->expected_seq = 0;
         result = 1;
-        dram_set_be32(p, GC824_DRAM_CB + GC824_CB_ARGSOFF, p->cb_nubus + GC824_CB_ARGSAREA);
+        dram_set_be32(p, GC824_DRAM_CB + GC824_CB_ARGSOFF, p->gcp_base + GC824_CB_ARGSAREA);
         // Seed the comm-mode word from the HELLO param (CB+0x04 aliases arg0).
         break;
     case 0x02: // liveness pass — Status $0A returns this (must be 1)
@@ -413,9 +419,13 @@ static uint32_t gc_dispatch_func(display_card_824gc_priv_t *p, uint32_t func, ui
         break;
     case 0x17: { // PQDInit / register screen (CB+0x604 = {ScrnBase in, ctx out})
         uint32_t scrnbase = dram_be32(p, GC824_DRAM_CB + 0x604);
-        dram_set_be32(p, GC824_DRAM_CB + 0x604 + 4, p->cb_nubus); // ctx token (non-zero)
-        LOG(2, "func $17 PQDInit: ScrnBase=$%08x -> ctx=$%08x", scrnbase, p->cb_nubus);
-        result = 0;
+        // ctx token GCQD stores as comm+$182 (its cache-descriptor handle): must
+        // be a non-zero card address GCQD can reach via the gcp window.
+        dram_set_be32(p, GC824_DRAM_CB + 0x604 + 4, p->gcp_base);
+        LOG(2, "func $17 PQDInit: ScrnBase=$%08x -> ctx=$%08x", scrnbase, p->gcp_base);
+        // Result 1 = registered OK — sub_61B0 checks this (== 1) and $884A posts
+        // error 4 ("having difficulty") otherwise.  Protocol §9.2.
+        result = 1;
         break;
     }
     case 0x26: // submit / checkpoint — the queue is already drained
@@ -424,13 +434,18 @@ static uint32_t gc_dispatch_func(display_card_824gc_priv_t *p, uint32_t func, ui
         result = 0;
         break;
     // --- Drawing surface: decline to the ROM path (stage 1 safety net) ---
-    case 0x15: // StretchBits — any status > 0 declines (proposal §3.8)
-        result = 9; // firmware's own "decline" status
+    // The decline convention is result == 0 (protocol §9): for func $15 the host
+    // reads "0 = declined → run the ROM blit" (1 = card drew it); for func $2D
+    // (SetPort) the result's bit 0 is "accept" (else fall back to ROM for the
+    // whole port).  Returning 0 for both makes GCQD render every primitive via
+    // QuickDraw's own ROM bottlenecks — the stage-1 safety net (proposal §4).
+    case 0x15: // StretchBits (CopyBits) — 0 declines → host runs the ROM blit
+        result = 0;
         LOG(3, "func $15 StretchBits declined (stage 1) -> ROM blit");
         break;
-    case 0x2D: // SetPort / DrawMultiObject — decline (stage 2 interpreter)
-        result = 9;
-        LOG(3, "func $2D DrawMultiObject declined (stage 1) -> ROM");
+    case 0x2D: // SetPort — bit0 clear => port not accepted => ROM fallback
+        result = 0;
+        LOG(3, "func $2D SetPort not accepted (stage 1) -> ROM drawing");
         break;
     case 0x30: // FontDownload — returning 0 declines text cleanly (proposal §3.10)
         result = 0;
@@ -470,7 +485,11 @@ static void gc_rpc(display_card_824gc_priv_t *p) {
         statusw = GC824_STATUSW_ERR;
     } else {
         statusw = gc_dispatch_func(p, func, &result);
-        p->expected_seq = (func == 1) ? 1 : seq + 1;
+        // HELLO resets the sequence: the host zeroes its counter (comm+$20) and
+        // the *first* post-HELLO RPC therefore carries seq 0 (post-increment),
+        // so the card must expect 0 next — not 1.  (An off-by-one here desyncs
+        // that first ping → error bit → GCQD re-HELLOs forever.)
+        p->expected_seq = (func == 1) ? 0 : seq + 1;
     }
 
     // Complete: result, status word, host-side status mirror, clear doorbell.
@@ -561,6 +580,10 @@ static inline uint32_t reg_narrow(uint32_t v, unsigned width) {
 }
 
 static uint32_t gc_read(display_card_824gc_priv_t *p, uint32_t phys, unsigned width) {
+    // GCQD command-block window (standard slot): alias onto the DRAM CB so the
+    // marshaller's doorbell/status/heartbeat/args polls hit the live engine.
+    if (phys >= p->gcp_base && phys < p->gcp_base + GC824_GCP_WINDOW)
+        return buf_read(p->dram, GC824_DRAM_CB + (phys - p->gcp_base), GC824_DRAM_SIZE, width);
     // Display registers (standard slot space).
     uint32_t jmfb_base = p->slot_base + GC824_JMFB_BLOCK_OFFSET;
     if (phys >= jmfb_base && phys < jmfb_base + GC824_REGISTER_SIZE) {
@@ -654,6 +677,13 @@ static uint32_t gc_read(display_card_824gc_priv_t *p, uint32_t phys, unsigned wi
 }
 
 static void gc_write(display_card_824gc_priv_t *p, uint32_t phys, uint32_t val, unsigned width) {
+    // GCQD command-block window (standard slot): write into the DRAM CB and run
+    // the comm-region trigger check, exactly as a super-slot CB write would.
+    if (phys >= p->gcp_base && phys < p->gcp_base + GC824_GCP_WINDOW) {
+        buf_write(p->dram, GC824_DRAM_CB + (phys - p->gcp_base), GC824_DRAM_SIZE, val, width);
+        gc_check_triggers(p);
+        return;
+    }
     uint32_t jmfb_base = p->slot_base + GC824_JMFB_BLOCK_OFFSET;
     if (phys >= jmfb_base && phys < jmfb_base + GC824_REGISTER_SIZE) {
         uint32_t rel = phys - jmfb_base;
@@ -891,6 +921,8 @@ static int card_init(nubus_card_t *card, config_t *cfg, checkpoint_t *cp) {
     p->card = card;
     p->slot_base = nubus_slot_base(card->slot);
     p->super_base = nubus_super_slot_base(card->slot);
+    // GCQD command-block window: card+$16C = std base | (slot<<20); gcp = +$8C00.
+    p->gcp_base = (p->slot_base | ((uint32_t)card->slot << 20)) + GC824_GCP_OFFSET;
 
     // Consume a pending video-mode pick (machine.nubus.video_mode = "...").
     const nubus_monitor_t *seeded_monitor = NULL;
@@ -949,6 +981,11 @@ static int card_init(nubus_card_t *card, config_t *cfg, checkpoint_t *cp) {
     p->ctx_jmfb = (gc_reg_ctx_t){.p = p, .region_base = p->slot_base + GC824_JMFB_BLOCK_OFFSET};
     memory_map_add(cfg->mem_map, p->slot_base + GC824_JMFB_BLOCK_OFFSET, GC824_REGISTER_SIZE, "gc824_jmfb_regs",
                    &s_gc824_mem_iface, &p->ctx_jmfb);
+    // GCQD command-block window (standard slot, card+$16C+$8C00) — a device
+    // region so CB writes fire the trigger engine; added after the FB alias so
+    // its page-table entries win over the alias for the (unused) pages it spans.
+    p->ctx_gcp = (gc_reg_ctx_t){.p = p, .region_base = p->gcp_base};
+    memory_map_add(cfg->mem_map, p->gcp_base, GC824_GCP_WINDOW, "gc824_gcp", &s_gc824_mem_iface, &p->ctx_gcp);
 
     // --- Super-slot space: one catch-all device region over the whole
     // 256 MB slot super-space.  The driver reaches the accelerator (SRAM,
