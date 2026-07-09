@@ -38,16 +38,12 @@ assert ${machine.nubus.slot[9].card.gc.rpc_count > 0}    "no RPCs serviced (brin
 assert ${machine.screen.width == 640}  "boot: screen width != 640"
 assert ${machine.screen.height == 480} "boot: screen height != 480"
 
-# The 1-bpp B&W Finder desktop, now drawn by the CARD (func $2D accepted → the
-# DrawMultiObject interpreter rasterizes the geometry, func $15 CopyBits blits
-# the icons) with NO "having difficulty" dialog.  Menu bar, Apple + menu titles,
-# Macintosh HD icon+label, Trash icon+label, cursor and the gray 50%-dither
-# desktop all render pixel-identical to the ROM reference EXCEPT the menu-bar
-# top-left rounded corner (~119 px): the RRect corner bevel (DrawArc conic, not
-# yet ported) and a rows-14..19 gray bleed under investigation (likely the
-# $4842/$48FE direct-screen-access bracket).  Until that corner is finished this
-# is a non-fatal diagnostic match (the actual render is saved for inspection);
-# flip back to the strict `machine.screen.match` once it is pixel-exact.
-machine.screen.match_or_save finder-824gc-accel-640x480-1bpp.png "${WORK_DIR}/accel-desktop-actual.png"
+# The 1-bpp B&W Finder desktop, drawn by the CARD (func $2D accepted → the
+# DrawMultiObject interpreter rasterizes the geometry — including the RRect
+# rounded corners that form the screen-corner bevel — func $15 CopyBits blits
+# the icons, and the interpreter's cursor shield keeps the ROM software cursor
+# coherent), with NO "having difficulty" dialog.  PIXEL-EXACT against the
+# ROM-fallback reference.
+machine.screen.match finder-824gc-accel-640x480-1bpp.png
 
 quit

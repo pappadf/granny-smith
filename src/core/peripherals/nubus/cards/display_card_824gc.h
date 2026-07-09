@@ -201,6 +201,15 @@
 #define GC824_CB_HEARTBEAT 0x1C4u // card heartbeat counter (ticked per VBL)
 #define GC824_CB_ARGSAREA  0x64Cu // default command args area
 #define GC824_CB_FREEAREA  0x6CCu // default free-list base
+// Cursor-protocol fields (gc-cursor-protocol.md §3): the driver deposits the
+// HOST addresses of the low-memory cursor globals so the card can bus-master-
+// read them; the card raises the two status flags, which the host cursor stubs
+// and GACursorTask consume (clear-on-read) to keep the ROM's software-cursor
+// state coherent with card drawing.
+#define GC824_CB_CRSRHID   0x5F0u // card→host: "card hid the cursor" → CrsrVis=0
+#define GC824_CB_CRSRNEW   0x5F4u // card→host: "cursor changed" → CrsrNew=1
+#define GC824_CB_CRSRRECTP 0x5F8u // host→card: host addr of CrsrRect ($083C)
+#define GC824_CB_CRSRVISP  0x5FCu // host→card: host addr of CrsrVis ($08CC)
 
 // Protocol magic values.
 #define GC824_BOOT_MAGIC   0x42005300u // PublicIn+0: 'B\0S\0'

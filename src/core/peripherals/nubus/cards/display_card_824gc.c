@@ -473,7 +473,84 @@ static void gc_span(display_card_824gc_priv_t *p, int y, int l, int r) {
     for (int x = l; x < r; x++)
         gc_px(p, x, y, gc_src(p, x, y));
 }
+// Cursor shield (gc-cursor-protocol.md §6-§8).  The real card brackets every
+// screen-touching op with erase-cursor / redraw-cursor (text_2e7e0/text_2ead0):
+// it bus-master-reads the live CrsrRect/CrsrVis through the host addresses the
+// driver deposited at CB+$5F8/$5FC, erases the on-screen sprite by restoring
+// the ROM's saved under-cursor bits, and reports through two flags the host
+// cursor stubs and GACursorTask consume — CB+$5F0 "card hid the cursor" (host
+// clears CrsrVis) and CB+$5F4 "cursor changed" (host sets CrsrNew, making the
+// ROM redraw with a FRESH under-cursor save).  Both halves matter: without the
+// flags the ROM later restores its STALE under-cursor bits over whatever the
+// card drew (a 32×6 px desktop-pattern bleed in the menu bar at the boot
+// cursor position), and without the erase the part of the sprite the op does
+// not repaint stays baked into the framebuffer (a watch-cursor fragment).
+static void gc_cursor_shield(display_card_824gc_priv_t *p, int t, int l, int b, int r) {
+    uint32_t rect_addr = dram_be32(p, GC824_DRAM_CB + GC824_CB_CRSRRECTP);
+    uint32_t vis_addr = dram_be32(p, GC824_DRAM_CB + GC824_CB_CRSRVISP);
+    if (!rect_addr || !vis_addr) {
+        // The driver seeds these at the end of Open (sub_101A) with the
+        // physical addresses of the fixed low-memory cursor globals — but the
+        // cursor block at CB+$5F0..$603 lies inside the Boot ACEF's InitMap
+        // BSS section ($7400..$77FF), so a post-Open firmware reload zero-fills
+        // it (our bring-up provokes one; see findings.md).  The seeded values
+        // are architecturally fixed, so recover them — but only once GCQD's
+        // cursor patches are armed (L1 anchor at CrsrAddr $0888 carries the
+        // magic $075BCD15 at +$20), i.e. the cursor contract is actually live.
+        uint32_t l1 = memory_debug_read_uint32(0x0888) & 0x00FFFFFFu;
+        if (!l1 || memory_debug_read_uint32(l1 + 0x20) != 0x075BCD15u)
+            return; // cursor protocol not armed
+        rect_addr = 0x083C; // CrsrRect
+        vis_addr = 0x08CC; // CrsrVis
+    }
+    if (dram_be32(p, GC824_DRAM_CB + GC824_CB_CRSRHID))
+        return; // already hidden by us and not yet re-shown (card gate, §6 step 2)
+    if (!memory_debug_read_uint8(vis_addr))
+        return; // cursor not on screen — nothing to shield
+    int ct = (int16_t)memory_debug_read_uint16(rect_addr);
+    int cl = (int16_t)memory_debug_read_uint16(rect_addr + 2);
+    int cb = (int16_t)memory_debug_read_uint16(rect_addr + 4);
+    int cr = (int16_t)memory_debug_read_uint16(rect_addr + 6);
+    if (b <= ct || t >= cb || r <= cl || l >= cr)
+        return; // op doesn't overlap the sprite
+    // Erase the sprite the way the card's text_2e7e0 does: restore the ROM's
+    // own saved under-cursor bits.  The CrsrPtr save record holds a DBF-style
+    // blit descriptor of the LAST save — +$3E.w rows−1, +$42.w rowLongs−1,
+    // +$44.l dest stride advance per row, +$48.l the screen address saved at,
+    // and **(rec+$12) = the CCSAVE under-bits buffer.  Restoring the whole
+    // cell (not just the op's overlap) is essential: a flags-only hide leaves
+    // the un-repainted part of the sprite baked into the framebuffer.
+    uint32_t rec = dram_be32(p, GC824_DRAM_CB + 0x1E4); // host addr of the save record
+    if (!rec) {
+        uint32_t pp = memory_debug_read_uint32(0x0D62) & 0x00FFFFFFu; // CrsrPtr
+        if (pp)
+            rec = memory_debug_read_uint32(pp);
+    }
+    rec &= 0x00FFFFFFu; // strip master-pointer flag bits
+    if (rec) {
+        int rows = (int)(int16_t)memory_debug_read_uint16(rec + 0x3E) + 1;
+        int rowlongs = (int)(int16_t)memory_debug_read_uint16(rec + 0x42) + 1;
+        uint32_t stride = memory_debug_read_uint32(rec + 0x44);
+        uint32_t dest = memory_debug_read_uint32(rec + 0x48);
+        uint32_t bufp = memory_debug_read_uint32(rec + 0x12) & 0x00FFFFFFu;
+        uint32_t buf = bufp ? (memory_debug_read_uint32(bufp) & 0x00FFFFFFu) : 0;
+        uint32_t doff = (dest & 0x0FFFFFFFu) - GC824_DRAM_OFFSET; // ScrnBase is super-slot
+        uint32_t pitch = 4u * (uint32_t)rowlongs + stride;
+        if (buf && rows > 0 && rows <= 64 && rowlongs > 0 && rowlongs <= 8 &&
+            (dest & 0xF0000000u) == (p->super_base & 0xF0000000u) && doff >= GC824_FB_OFFSET &&
+            doff + (uint32_t)(rows - 1) * pitch + 4u * (uint32_t)rowlongs <= GC824_DRAM_SIZE) {
+            for (int i = 0; i < rows; i++)
+                for (int j = 0; j < 4 * rowlongs; j++)
+                    p->dram[doff + (uint32_t)i * pitch + (uint32_t)j] =
+                        memory_debug_read_uint8(buf + (uint32_t)(i * 4 * rowlongs + j));
+            p->display.fb_dirty = true;
+        }
+    }
+    dram_set_be32(p, GC824_DRAM_CB + GC824_CB_CRSRHID, 1);
+    dram_set_be32(p, GC824_DRAM_CB + GC824_CB_CRSRNEW, 1);
+}
 static void gc_fill_rect(display_card_824gc_priv_t *p, int t, int l, int b, int r) {
+    gc_cursor_shield(p, t, l, b, r);
     for (int y = t; y < b; y++)
         gc_span(p, y, l, r);
 }
@@ -488,6 +565,86 @@ static void gc_frame_rect(display_card_824gc_priv_t *p, int t, int l, int b, int
     gc_fill_rect(p, b - ph, l, b, r); // bottom bar
     gc_fill_rect(p, t + ph, l, b - ph, l + pw); // left bar
     gc_fill_rect(p, t + ph, r - pw, b - ph, r); // right bar
+}
+// Rounded-rect row inset (call-reference §3 DrawArc conic).  For a corner oval
+// of ovW×ovH, row dy (0-based within the oval's vertical extent) starts ovW/2
+// minus the widest dx whose pixel CENTRE lies inside the ellipse — QuickDraw's
+// InitOval/BumpOval march evaluates the conic at half-pixel offsets, which in
+// integer form is (2dx+1−W)²·H² + (2dy+1−H)²·W² ≤ W²·H².  Verified pixel-exact
+// against the ROM-rendered menu-bar corners (ov 16 fill + ov 22 frame ring).
+static int gc_rrect_inset(int ovW, int ovH, int dy) {
+    int64_t W = ovW, H = ovH;
+    int64_t ny = 2 * dy + 1 - H;
+    int64_t lim = W * W * H * H - ny * ny * W * W;
+    if (lim < 0)
+        return ovW / 2; // row entirely outside the oval
+    for (int dx = 0; dx < ovW / 2; dx++) {
+        int64_t nx = 2 * dx + 1 - W;
+        if (nx * nx * H * H <= lim)
+            return dx; // first pixel centre inside the ellipse
+    }
+    return ovW / 2;
+}
+// The row inset for a rounded rect (t..b) at row y: nonzero only in the top and
+// bottom corner bands (each ovH/2 rows deep).  Radii are pinned to the rect
+// dimensions exactly as DrawArc's InitOval does (negative → 0).
+static int gc_rrect_row_inset(int t, int b, int ovW, int ovH, int y) {
+    if (ovW <= 0 || ovH <= 0)
+        return 0;
+    if (y - t < (ovH + 1) / 2)
+        return gc_rrect_inset(ovW, ovH, y - t);
+    if ((b - 1 - y) < (ovH + 1) / 2)
+        return gc_rrect_inset(ovW, ovH, ovH - 1 - (b - 1 - y));
+    return 0;
+}
+// opRRect ($04): fill / frame with true rounded corners.  The wire record
+// carries ovWd/ovHt (call-reference §3: 16-byte record); the frame's inner
+// rrect is the rect inset by the pen with radii shrunk by 2·pen, an empty
+// inner degenerating to a solid fill — exactly ROM DrawArc's frame path.
+static void gc_fill_rrect(display_card_824gc_priv_t *p, int t, int l, int b, int r, int ovW, int ovH) {
+    gc_cursor_shield(p, t, l, b, r);
+    if (ovW > r - l)
+        ovW = r - l;
+    if (ovH > b - t)
+        ovH = b - t;
+    for (int y = t; y < b; y++) {
+        int in = gc_rrect_row_inset(t, b, ovW, ovH, y);
+        gc_span(p, y, l + in, r - in);
+    }
+}
+static void gc_frame_rrect(display_card_824gc_priv_t *p, int t, int l, int b, int r, int ovW, int ovH) {
+    gc_cursor_shield(p, t, l, b, r);
+    int pw = p->gc_pen_w ? p->gc_pen_w : 1, ph = p->gc_pen_h ? p->gc_pen_h : 1;
+    int it = t + ph, il = l + pw, ib = b - ph, ir = r - pw;
+    if (il >= ir || it >= ib) {
+        gc_fill_rrect(p, t, l, b, r, ovW, ovH);
+        return;
+    }
+    if (ovW > r - l)
+        ovW = r - l;
+    if (ovH > b - t)
+        ovH = b - t;
+    int iovW = ovW - 2 * pw, iovH = ovH - 2 * ph;
+    if (iovW < 0)
+        iovW = 0;
+    if (iovH < 0)
+        iovH = 0;
+    if (iovW > ir - il)
+        iovW = ir - il;
+    if (iovH > ib - it)
+        iovH = ib - it;
+    for (int y = t; y < b; y++) {
+        int oin = gc_rrect_row_inset(t, b, ovW, ovH, y);
+        int ol = l + oin, or_ = r - oin;
+        if (y < it || y >= ib) {
+            gc_span(p, y, ol, or_); // above/below the inner rect: full outer row
+            continue;
+        }
+        int iin = gc_rrect_row_inset(it, ib, iovW, iovH, y);
+        int lo = il + iin, ri = ir - iin;
+        gc_span(p, y, ol, lo); // left arm of the ring
+        gc_span(p, y, ri, or_); // right arm
+    }
 }
 // opLine ($01): pen-sized line from the pen loc to `pt`; pen := pt.  For the
 // axis-aligned lines the desktop draws this reduces to a pen-thick bar; a
@@ -538,6 +695,7 @@ static void gc_fill_rgn(display_card_824gc_priv_t *p, uint32_t off) {
         gc_fill_rect(p, top, left, bot, right);
         return;
     }
+    gc_cursor_shield(p, top, left, bot, right);
     uint32_t d = off + 10; // band data follows the 10-byte header
     uint32_t dend = off + size;
     int inv[128];
@@ -778,8 +936,7 @@ static void gc_interp(display_card_824gc_priv_t *p, uint32_t base, uint32_t coun
             p->draw_count++;
             break;
         }
-        case 0x05:
-        case 0x04: { // opRect / opRRect (corners TODO — fill as rect)
+        case 0x05: { // opRect
             uint16_t frame = (uint16_t)(dram_be32(p, off) & 0xFFFF);
             int t = (int16_t)(dram_be32(p, off + 4) >> 16);
             int l = (int16_t)(dram_be32(p, off + 4) & 0xFFFF);
@@ -789,6 +946,25 @@ static void gc_interp(display_card_824gc_priv_t *p, uint32_t base, uint32_t coun
                 gc_frame_rect(p, t, l, b, r);
             else
                 gc_fill_rect(p, t, l, b, r);
+            p->draw_count++;
+            break;
+        }
+        case 0x04: { // opRRect: {frameFlag.w, Rect, ovWd.w, ovHt.w} (§3)
+            uint16_t frame = (uint16_t)(dram_be32(p, off) & 0xFFFF);
+            int t = (int16_t)(dram_be32(p, off + 4) >> 16);
+            int l = (int16_t)(dram_be32(p, off + 4) & 0xFFFF);
+            int b = (int16_t)(dram_be32(p, off + 8) >> 16);
+            int r = (int16_t)(dram_be32(p, off + 8) & 0xFFFF);
+            int ovW = (int16_t)(dram_be32(p, off + 12) >> 16);
+            int ovH = (int16_t)(dram_be32(p, off + 12) & 0xFFFF);
+            if (ovW < 0)
+                ovW = 0; // DrawArc pins negative radii to 0
+            if (ovH < 0)
+                ovH = 0;
+            if (frame)
+                gc_frame_rrect(p, t, l, b, r, ovW, ovH);
+            else
+                gc_fill_rrect(p, t, l, b, r, ovW, ovH);
             p->draw_count++;
             break;
         }
@@ -847,6 +1023,7 @@ static int gc_stretchbits(display_card_824gc_priv_t *p) {
         return 0; // stretched → decline
     }
 
+    gc_cursor_shield(p, dRt - dstBnT, dRl - dstBnL, dRb - dstBnT, dRr - dstBnL);
     for (int dy = dRt; dy < dRb; dy++) {
         int y = dy - dstBnT;
         if (y < 0 || y >= (int)p->display.height)
