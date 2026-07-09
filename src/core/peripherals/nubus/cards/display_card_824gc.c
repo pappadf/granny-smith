@@ -129,7 +129,8 @@ struct display_card_824gc_priv {
     uint8_t gc_fg, gc_bg; // 1-bpp fg/bg pixel (opFgColor $64 / opBkColor $6B)
     int16_t gc_pen_x, gc_pen_y; // pen location (opPenLoc $68)
     int16_t gc_pen_w, gc_pen_h; // pen size (opPenSize $6E)
-    int16_t gc_clip_t, gc_clip_l, gc_clip_b, gc_clip_r; // clip ∩ vis bbox
+    int16_t gc_clip_t, gc_clip_l, gc_clip_b, gc_clip_r; // clip ∩ vis bounding box
+    uint8_t *gc_clipmask; // 1 bit/pixel drawable mask (clipRgn ∩ visRgn), stride 80
     uint64_t draw_count; // primitives rasterized (introspection)
     bool gc_accel; // func $2D accepted the port → interpret its queue (stage 2).
                    // Currently always false (SetPort declines) until the accel
@@ -427,9 +428,11 @@ static void gc_boot(display_card_824gc_priv_t *p) {
 // (1-bpp MSB; pixel 0 = white, 1 = black).  low 3 mode bits: 0=copy,1=or,2=xor,
 // 3=bic (pattern modes $8-$B share the low bits with the src modes $0-$3).
 static inline void gc_px(display_card_824gc_priv_t *p, int x, int y, int src) {
-    if (x < p->gc_clip_l || x >= p->gc_clip_r || y < p->gc_clip_t || y >= p->gc_clip_b)
+    if (x < 0 || x >= (int)p->display.width || y < 0 || y >= (int)p->display.height || y >= 480)
         return;
-    if (x < 0 || x >= (int)p->display.width || y < 0 || y >= (int)p->display.height)
+    // Clip to the drawable mask (clipRgn ∩ visRgn ∩ device) — region-accurate,
+    // so a fill clipped to the desktop region does not paint over icons/windows.
+    if (!(p->gc_clipmask[y * 80 + (x >> 3)] & (0x80u >> (x & 7))))
         return;
     uint8_t *b = (uint8_t *)p->display.bits + (size_t)y * p->display.stride + (x >> 3);
     uint8_t m = (uint8_t)(0x80u >> (x & 7));
@@ -567,6 +570,89 @@ static void gc_fill_rgn(display_card_824gc_priv_t *p, uint32_t off) {
     }
 }
 
+// === Clip mask (region-accurate) ============================================
+// gc_clipmask is 1 bit/pixel over 640x480 (stride 80): 1 = drawable.  Reset to
+// all-drawable at a cycle start, then AND'd by opClipRgn/opVisRgn so a fill
+// clipped to the desktop region leaves icons/windows untouched (call-ref §2:
+// "rect ∩ device rect then the cached clip/vis region masks").
+#define GC824_CLIP_STRIDE 80
+#define GC824_CLIP_ROWS   480
+static void gc_clip_reset(display_card_824gc_priv_t *p) {
+    memset(p->gc_clipmask, 0xFF, (size_t)GC824_CLIP_STRIDE * GC824_CLIP_ROWS);
+}
+static inline void gc_clip_clear_span(display_card_824gc_priv_t *p, int y, int x0, int x1) {
+    if (x0 < 0)
+        x0 = 0;
+    if (x1 > GC824_CLIP_STRIDE * 8)
+        x1 = GC824_CLIP_STRIDE * 8;
+    uint8_t *row = &p->gc_clipmask[(size_t)y * GC824_CLIP_STRIDE];
+    for (int x = x0; x < x1; x++)
+        row[x >> 3] &= (uint8_t) ~(0x80u >> (x & 7));
+}
+// Intersect the clip mask with a QuickDraw region (clear pixels outside it).
+static void gc_clip_and_region(display_card_824gc_priv_t *p, uint32_t off) {
+    uint16_t size = (uint16_t)(dram_be32(p, off) >> 16);
+    int top = (int16_t)(dram_be32(p, off) & 0xFFFF);
+    int left = (int16_t)(dram_be32(p, off + 4) >> 16);
+    int bot = (int16_t)(dram_be32(p, off + 4) & 0xFFFF);
+    int right = (int16_t)(dram_be32(p, off + 8) >> 16);
+    if (top < 0)
+        top = 0;
+    if (bot > GC824_CLIP_ROWS)
+        bot = GC824_CLIP_ROWS;
+    // Everything outside the bounding box is outside the region.
+    for (int y = 0; y < top && y < GC824_CLIP_ROWS; y++)
+        memset(&p->gc_clipmask[(size_t)y * GC824_CLIP_STRIDE], 0, GC824_CLIP_STRIDE);
+    for (int y = bot; y < GC824_CLIP_ROWS; y++)
+        memset(&p->gc_clipmask[(size_t)y * GC824_CLIP_STRIDE], 0, GC824_CLIP_STRIDE);
+    if (size <= 0x0A) { // rectangular region: clear the columns outside [left,right)
+        for (int y = top; y < bot; y++) {
+            gc_clip_clear_span(p, y, 0, left);
+            gc_clip_clear_span(p, y, right, GC824_CLIP_STRIDE * 8);
+        }
+        return;
+    }
+    // Complex region: band/inversion list — clear the gaps between spans.
+    uint32_t d = off + 10, dend = off + size;
+    int inv[128], ninv = 0, guard = 0;
+    int y = (int16_t)dram_be16(p, d);
+    while (y != 0x7FFF && d + 2 <= dend && guard++ < 2000) {
+        d += 2;
+        for (;;) {
+            int x = (int16_t)dram_be16(p, d);
+            d += 2;
+            if (x == 0x7FFF)
+                break;
+            int i = 0;
+            while (i < ninv && inv[i] < x)
+                i++;
+            if (i < ninv && inv[i] == x) {
+                for (int k = i; k + 1 < ninv; k++)
+                    inv[k] = inv[k + 1];
+                ninv--;
+            } else if (ninv < 128) {
+                for (int k = ninv; k > i; k--)
+                    inv[k] = inv[k - 1];
+                inv[i] = x;
+                ninv++;
+            }
+        }
+        int ny = (int16_t)dram_be16(p, d);
+        int bandBot = (ny == 0x7FFF) ? bot : ny;
+        if (bandBot > GC824_CLIP_ROWS)
+            bandBot = GC824_CLIP_ROWS;
+        for (int yy = (y < 0 ? 0 : y); yy < bandBot; yy++) {
+            int prev = 0; // clear the gap [prev, inv[s]) then jump past the span
+            for (int s = 0; s + 1 < ninv; s += 2) {
+                gc_clip_clear_span(p, yy, prev, inv[s]);
+                prev = inv[s + 1];
+            }
+            gc_clip_clear_span(p, yy, prev, GC824_CLIP_STRIDE * 8);
+        }
+        y = ny;
+    }
+}
+
 // Compute the byte advance for an opcode record at DRAM offset `off`.
 static uint32_t gc_op_adv(display_card_824gc_priv_t *p, uint32_t off, uint16_t op) {
     uint16_t w2 = (uint16_t)(dram_be32(p, off) & 0xFFFF); // halfword at +2
@@ -661,7 +747,7 @@ static void gc_interp(display_card_824gc_priv_t *p, uint32_t base, uint32_t coun
             break;
         }
         case 0x6A:
-        case 0x6C: { // opClipRgn / opVisRgn: intersect the bbox
+        case 0x6C: { // opClipRgn / opVisRgn: intersect the region into the mask
             int t = (int16_t)(dram_be32(p, off + 4) >> 16);
             int l = (int16_t)(dram_be32(p, off + 4) & 0xFFFF);
             int b = (int16_t)(dram_be32(p, off + 8) >> 16);
@@ -674,6 +760,7 @@ static void gc_interp(display_card_824gc_priv_t *p, uint32_t base, uint32_t coun
                 p->gc_clip_b = (int16_t)b;
             if (r < p->gc_clip_r)
                 p->gc_clip_r = (int16_t)r;
+            gc_clip_and_region(p, off + 2); // region data starts after the opcode word
             break;
         }
         case 0x01: { // opLine
@@ -786,6 +873,7 @@ static void gc_reset_draw_state(display_card_824gc_priv_t *p) {
     p->gc_clip_l = 0;
     p->gc_clip_b = (int16_t)p->display.height;
     p->gc_clip_r = (int16_t)p->display.width;
+    gc_clip_reset(p); // all-drawable; opClipRgn/opVisRgn narrow it
     p->gc_fg = 1; // black
     p->gc_bg = 0; // white
     p->gc_pat_slot = 1;
@@ -1367,12 +1455,14 @@ static int card_init(nubus_card_t *card, config_t *cfg, checkpoint_t *cp) {
     p->sram = calloc(1, GC824_SRAM_SIZE);
     p->dram = calloc(1, GC824_DRAM_SIZE);
     p->regs = calloc(1, GC824_REGS_SIZE);
-    if (!p->vram || !p->vrom || !p->sram || !p->dram || !p->regs) {
+    p->gc_clipmask = calloc(1, (size_t)GC824_CLIP_STRIDE * GC824_CLIP_ROWS);
+    if (!p->vram || !p->vrom || !p->sram || !p->dram || !p->regs || !p->gc_clipmask) {
         free(p->vram);
         free(p->vrom);
         free(p->sram);
         free(p->dram);
         free(p->regs);
+        free(p->gc_clipmask);
         free(p);
         return -1;
     }
@@ -1470,6 +1560,7 @@ static void card_teardown(nubus_card_t *card, config_t *cfg) {
     free(p->sram);
     free(p->dram);
     free(p->regs);
+    free(p->gc_clipmask);
     free(p->vrom_path);
     free(p);
     card->priv = NULL;
