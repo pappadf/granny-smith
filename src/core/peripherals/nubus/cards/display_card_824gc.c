@@ -7,15 +7,18 @@
 // local/gs-docs/proposals/proposal-8-24gc-hle-acceleration.md, and the dossier
 // under local/gs-docs/8-24GC/ (protocol §§3-9/14, driver §§2-6, kernel §§1/7).
 //
-// Stage 0/1 scope (this file): the card presents the genuine v1.1 declaration
-// ROM (BoardId $2C), its JMFB-family display half boots a desktop, and the
-// accelerator bring-up state machine makes the `.GraphAccel` driver believe a
-// live Am29000 card booted — SRAM/DRAM windows, alive registers, the ACEFload
-// byte sink, the boot handshake, CB arming, the RPC (doorbell) transport for
-// the trivial/bring-up funcs, and the per-VBL heartbeat.  Drawing funcs and
-// the DrawMultiObject queue *decline* (proposal §4 safety net): QuickDraw's own
-// ROM path renders every primitive, so the desktop is pixel-correct while the
-// accelerator's own rasterizers (stage 2, gcqd/) are still a follow-up.
+// Scope (this file): stage 0/1 — the card presents the genuine v1.1
+// declaration ROM (BoardId $2C), its JMFB-family display half boots a desktop,
+// and the accelerator bring-up state machine makes the `.GraphAccel` driver
+// believe a live Am29000 card booted (SRAM/DRAM windows, alive registers, the
+// ACEFload byte sink, the boot handshake, CB arming, the RPC doorbell
+// transport, the per-VBL heartbeat) — plus stage 2: SetPort is accepted and
+// the DrawMultiObject interpreter rasterizes the 1-bpp geometry (line, rect,
+// rrect, oval, arc, poly, region; boolean modes; region-accurate clip; cursor
+// shield) and func $15 blits within its accept envelope.  Anything outside
+// that envelope *declines* (proposal §4 safety net): QuickDraw's own ROM path
+// renders it, so the desktop stays pixel-correct.  gc.force_decline forces
+// every drawing func down the ROM path — the differential test oracle.
 //
 // The firmware bytes are *stored, not executed*: SRAM/DRAM simply accept the
 // driver's ACEFload writes into their backing buffers, which automatically
@@ -131,10 +134,13 @@ struct display_card_824gc_priv {
     int16_t gc_pen_w, gc_pen_h; // pen size (opPenSize $6E)
     int16_t gc_clip_t, gc_clip_l, gc_clip_b, gc_clip_r; // clip ∩ vis bounding box
     uint8_t *gc_clipmask; // 1 bit/pixel drawable mask (clipRgn ∩ visRgn), stride 80
+    uint8_t *gc_blitmask; // 1 bit/pixel per-blit mask (func $15 rgnA∩rgnB∩rgnC)
     uint64_t draw_count; // primitives rasterized (introspection)
-    bool gc_accel; // func $2D accepted the port → interpret its queue (stage 2).
-                   // Currently always false (SetPort declines) until the accel
-                   // geometry/ROM-decline composition is solved — see func $2D.
+    bool gc_accel; // func $2D accepted the port → interpret its queue (stage 2)
+    bool force_decline; // harness switch (gc.force_decline): decline the drawing
+                        // funcs ($2D/$15/$30) so the ROM path renders everything —
+                        // the differential test oracle (proposal §4.1).  Not guest
+                        // state: survives /RESET, cleared only at card_init.
 
     // Region contexts.
     gc_reg_ctx_t ctx_jmfb; // slot+$200000 display registers (standard slot)
@@ -429,10 +435,15 @@ static void gc_boot(display_card_824gc_priv_t *p) {
 // §2 rect, §3 rrect, §7 region).  Depth: 1 bpp only for now (the boot mode);
 // other depths still decline (proposal §3.7).
 
-// Apply one source pixel `src` (0/1) at (x,y) under the current mode + clip
-// (1-bpp MSB; pixel 0 = white, 1 = black).  low 3 mode bits: 0=copy,1=or,2=xor,
-// 3=bic (pattern modes $8-$B share the low bits with the src modes $0-$3).
-static inline void gc_px(display_card_824gc_priv_t *p, int x, int y, int src) {
+// Apply one source/pattern INK bit `s` (0/1, pre-invert) at (x,y) under the
+// current mode + clip (1-bpp MSB; pixel 0 = white, 1 = black).  The classic
+// boolean cores of qd-transfer-modes.md §2.1, colorized at 1 bpp: the invert
+// bit (modes 4-7 / 12-15) flips the source first, then Copy paints fg on ink
+// and bg elsewhere, Or paints fg where the source has ink, Bic paints bg where
+// the source has ink, and Xor flips ink pixels (never colorized).  fg/bg are
+// the 1-bpp pixel values from opFg/BkColor.  Arithmetic modes ($20+) have no
+// invert bit and are not remapped (they never reach a 1-bpp screen).
+static inline void gc_px(display_card_824gc_priv_t *p, int x, int y, int s) {
     if (x < 0 || x >= (int)p->display.width || y < 0 || y >= (int)p->display.height || y >= 480)
         return;
     // Clip to the drawable mask (clipRgn ∩ visRgn ∩ device) — region-accurate,
@@ -441,33 +452,42 @@ static inline void gc_px(display_card_824gc_priv_t *p, int x, int y, int src) {
         return;
     uint8_t *b = (uint8_t *)p->display.bits + (size_t)y * p->display.stride + (x >> 3);
     uint8_t m = (uint8_t)(0x80u >> (x & 7));
-    switch (p->gc_mode & 7) {
+    if ((p->gc_mode & 0x24) == 0x04)
+        s ^= 1; // notSrc/notPat: invert the source before colorizing
+    switch (p->gc_mode & 3) {
     case 1:
-        if (src)
-            *b |= m;
-        break; // Or  (leave 0-src)
+        if (s) {
+            if (p->gc_fg)
+                *b |= m;
+            else
+                *b &= (uint8_t)~m;
+        }
+        break; // Or: fg where ink
     case 2:
-        if (src)
+        if (s)
             *b ^= m;
-        break; // Xor
+        break; // Xor: flip where ink
     case 3:
-        if (src)
-            *b &= (uint8_t)~m;
-        break; // Bic
+        if (s) {
+            if (p->gc_bg)
+                *b |= m;
+            else
+                *b &= (uint8_t)~m;
+        }
+        break; // Bic: bg where ink
     default:
-        if (src)
+        if (s ? p->gc_fg : p->gc_bg)
             *b |= m;
         else
             *b &= (uint8_t)~m;
-        break; // Copy
+        break; // Copy: fg on ink, bg elsewhere
     }
 }
-// The source pixel at (x,y): the active pattern slot's bit selects fg (1) or
-// bg (0) colour.  (op $73 selects the slot; op $71 sets a slot's bytes.)
+// The source INK bit at (x,y): the active pattern slot's bit.  (op $73 selects
+// the slot; op $71 sets a slot's bytes; gc_px colorizes with fg/bg.)
 static inline int gc_src(display_card_824gc_priv_t *p, int x, int y) {
     const uint8_t *pat = p->gc_pat[p->gc_pat_slot & 3];
-    int patbit = (pat[y & 7] >> (7 - (x & 7))) & 1;
-    return patbit ? p->gc_fg : p->gc_bg;
+    return (pat[y & 7] >> (7 - (x & 7))) & 1;
 }
 static void gc_span(display_card_824gc_priv_t *p, int y, int l, int r) {
     for (int x = l; x < r; x++)
@@ -646,6 +666,218 @@ static void gc_frame_rrect(display_card_824gc_priv_t *p, int t, int l, int b, in
         gc_span(p, y, ri, or_); // right arm
     }
 }
+// === Ovals & arcs (opOval $03 / opArc $02) — ROM DrawArc port =================
+// QuickDraw/DrawArc.a is the single curve engine: ovals and arcs are rrects
+// whose corner-oval radii are the RECT DIMENSIONS (Ovals.a:97-128, Arcs.a:107-
+// 131), so every row's span bounds come from the same conic gc_rrect_inset
+// evaluates.  Arcs add the wedge machinery (DrawArc.a:286-447, 727-907): each
+// of start/stop angle becomes a line through the rect centre whose horizontal
+// coordinate at the rect top is LINE = midH·64K − slope·(height div 2), bumped
+// by slope every row; slope = FixMul(SlopeFromAngle(angle), FixRatio(w,h)).
+// FLAG = angle<180 ? angle−90 : 270−angle marks the vertical half the edge is
+// active in (negative = active), negated as the scan crosses the middle.  The
+// wedge edges only CLIP each row's spans (frame strokes just the curve band;
+// paint fills the wedge to the centre) — they are never stroked themselves.
+
+// SlopeFromAngle (QuickDraw/Angles.a): Fixed −65536·tan(angle), angle mod 180.
+// Table-driven exactly like the ROM so the wedge edges land on the ROM's
+// pixels: fraction words for 0°..90° (45°+ get an integer part: +1 for
+// 45..63, the byte table for 64..90; 90° yields the ±$7FFFFFFF/$80000001
+// "infinity" sentinel, whose value is never consumed — a 90°/270° edge has
+// FLAG 0 and is never active).
+static const uint16_t gc_slope_frac[91] = {
+    0x0000, 0x0478, 0x08F1, 0x0D6B, 0x11E7, 0x1666, 0x1AE8, 0x1F6F, 0x23FA, 0x288C, 0x2D24, 0x31C3, 0x366A,
+    0x3B1A, 0x3FD4, 0x4498, 0x4968, 0x4E44, 0x532E, 0x5826, 0x5D2D, 0x6245, 0x676E, 0x6CAA, 0x71FB, 0x7760,
+    0x7CDC, 0x8270, 0x881E, 0x8DE7, 0x93CD, 0x99D2, 0x9FF7, 0xA640, 0xACAD, 0xB341, 0xB9FF, 0xC0E9, 0xC802,
+    0xCF4E, 0xD6CF, 0xDE8A, 0xE681, 0xEEB9, 0xF737, 0x0000, 0x0919, 0x1287, 0x1C51, 0x267F, 0x3117, 0x3C22,
+    0x47AA, 0x53B9, 0x605B, 0x6D9B, 0x7B89, 0x8A35, 0x99AF, 0xAA0E, 0xBB68, 0xCDD6, 0xE177, 0xF66E, 0x0CE1,
+    0x24FE, 0x3EFC, 0x5B19, 0x799F, 0x9AE7, 0xBF5B, 0xE77A, 0x13E3, 0x4556, 0x7CC7, 0xBB68, 0x02C2, 0x54DB,
+    0xB462, 0x2501, 0xABD9, 0x5051, 0x1D88, 0x24F3, 0x83AD, 0x6E17, 0x4CF5, 0x14BD, 0xA2D7, 0x4A30, 0xFFFF,
+};
+static const uint8_t gc_slope_int[28] = {
+    // integer part of tan(a) for a = 63..90 (Angles.a byte table)
+    0x01, 0x02, 0x02, 0x02, 0x02, 0x02, 0x02, 0x02, 0x02, 0x03, 0x03, 0x03, 0x03, 0x04,
+    0x04, 0x04, 0x05, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0B, 0x0E, 0x13, 0x1C, 0x39, 0xFF,
+};
+static int32_t gc_slope_from_angle(int angle) {
+    int a = angle % 180;
+    if (a < 0)
+        a += 180;
+    int neg = 1; // 0..90 → negative result (the $8000 flag in Angles.a)
+    if (a > 90) {
+        neg = 0;
+        a = 180 - a;
+    }
+    if (a == 90)
+        return neg ? (int32_t)0x80000001 : INT32_MAX; // "infinity" sentinel
+    uint32_t mag = gc_slope_frac[a];
+    if (a >= 64)
+        mag |= (uint32_t)gc_slope_int[a - 63] << 16;
+    else if (a >= 45)
+        mag |= 0x10000u;
+    return neg ? -(int32_t)mag : (int32_t)mag;
+}
+// FixMul: middle 32 bits of the 64-bit product, rounded with the 33rd bit
+// (FixMathAsm.a header).  Overflow wraps (the only overflowing input is the
+// 90° sentinel, whose product is never consumed).
+static int32_t gc_fix_mul(int32_t a, int32_t b) {
+    return (int32_t)(uint32_t)(((int64_t)a * b + 0x8000) >> 16);
+}
+// FixRatio: (n<<16)/d, DIVS semantics — truncation toward zero, div-by-zero
+// pins to ±$7FFFFFFF by sign of the numerator.
+static int32_t gc_fix_ratio(int n, int d) {
+    if (d == 0)
+        return n >= 0 ? INT32_MAX : INT32_MIN;
+    return (int32_t)(((int64_t)n << 16) / d);
+}
+
+// The DrawArc body: fill/frame the arc of the oval inscribed in (t,l,b,r) from
+// `start` spanning `arc` degrees (oval = 0/360).  Faithful transcription of
+// DrawArc.a's DOARC/HARC/SARC/SOVAL/HOVAL row cases; span bounds and LINE
+// comparisons use the 16-bit-wrapped high word exactly like the ROM's .W
+// arithmetic.  Rows outside the clip are masked per-pixel by gc_px (the ROM
+// pre-clips via MINRECT — same pixels).
+static void gc_draw_arc(display_card_824gc_priv_t *p, int t, int l, int b, int r, int start, int arc, int frame) {
+    if (r <= l || b <= t)
+        return; // empty dst rect
+    // Angle normalization (DrawArc.a:286-297): quit on 0, flip negative arcs.
+    if (arc == 0)
+        return;
+    if (arc < 0) {
+        start += arc;
+        arc = -arc;
+    }
+    int arcflag = arc < 360;
+    int32_t line1 = 0, line2 = 0, slope1 = 0, slope2 = 0;
+    int flag1 = 0, flag2 = 0, skip = 0;
+    if (arcflag) {
+        start %= 360;
+        if (start < 0)
+            start += 360; // DIVS remainder fixup (DrawArc.a:304-311)
+        int stop = start + arc;
+        if (stop >= 360)
+            stop -= 360; // single subtract suffices: start+arc < 720
+        int w = r - l, h = b - t;
+        int32_t ratio = gc_fix_ratio(w, h); // aspect: 45° points at the corner
+        slope1 = gc_fix_mul(gc_slope_from_angle(start), ratio);
+        slope2 = gc_fix_mul(gc_slope_from_angle(stop), ratio);
+        int midh = (l + r) >> 1, hd2 = h >> 1;
+        line1 = (int32_t)((uint32_t)midh << 16) - (int32_t)(uint32_t)((int64_t)slope1 * hd2);
+        line2 = (int32_t)((uint32_t)midh << 16) - (int32_t)(uint32_t)((int64_t)slope2 * hd2);
+        flag1 = (start < 180) ? start - 90 : 270 - start;
+        flag2 = (stop < 180) ? stop - 90 : 270 - stop;
+        if (arc > 180)
+            skip = 0;
+        else if (arc == 180)
+            skip = (start == 90); // bottom-half wedge: skip the top half
+        else
+            skip = (flag1 >= 0 && flag2 >= 0);
+    }
+    int midv = (t + b) >> 1;
+    int ovW = r - l, ovH = b - t; // radii = rect dims (Ovals.a:97-103)
+    // Inner oval (frame): rect inset by the pen, radii shrunk by 2·pen; an
+    // empty inner rect degenerates to a solid fill (DrawArc.a:482-510).
+    int pw = p->gc_pen_w ? p->gc_pen_w : 1, ph = p->gc_pen_h ? p->gc_pen_h : 1;
+    int it = t + ph, il = l + pw, ib = b - ph, ir = r - pw;
+    int hollow = frame && il < ir && it < ib;
+    int iovW = 0, iovH = 0;
+    if (hollow) {
+        iovW = ovW - 2 * pw;
+        iovH = ovH - 2 * ph;
+        if (iovW < 0)
+            iovW = 0;
+        if (iovH < 0)
+            iovH = 0;
+        if (iovW > ir - il)
+            iovW = ir - il;
+        if (iovH > ib - it)
+            iovH = ib - it;
+    }
+    gc_cursor_shield(p, t, l, b, r);
+    for (int y = t; y < b; y++) {
+        // Mid-crossing (DrawArc.a:727-757): negate the flags, recompute
+        // SKIPFLAG (arc==180 keys on start==270 here — the top-half wedge is
+        // finished), quit if it trips, then swap the line/slope/flag pairs.
+        if (arcflag && y == midv) {
+            flag1 = -flag1;
+            flag2 = -flag2;
+            skip = 0;
+            if (arc == 180) {
+                if (start == 270)
+                    break;
+            } else if (arc < 180) {
+                if (flag1 >= 0 && flag2 >= 0)
+                    break;
+            }
+            int tf = flag1;
+            flag1 = flag2;
+            flag2 = tf;
+            int32_t tv = line1;
+            line1 = line2;
+            line2 = tv;
+            tv = slope1;
+            slope1 = slope2;
+            slope2 = tv;
+        }
+        if (!skip) {
+            int in = gc_rrect_row_inset(t, b, ovW, ovH, y);
+            int oOvL = l + in, oOvR = r - in; // the row's outer oval bounds
+            int l1i = (int16_t)((uint32_t)line1 >> 16); // .W compares, as ROM
+            int l2i = (int16_t)((uint32_t)line2 >> 16);
+            int oL = oOvL, oR = oOvR;
+            if (arcflag) { // DOARC: clip to the active wedge edges
+                if (flag1 < 0 && oL < l1i)
+                    oL = l1i;
+                if (flag2 < 0 && oR > l2i)
+                    oR = l2i;
+            }
+            int inner_row = hollow && y >= it && y < ib;
+            int iOvL = 0, iOvR = 0;
+            if (inner_row) {
+                int iin = gc_rrect_row_inset(it, ib, iovW, iovH, y);
+                iOvL = il + iin;
+                iOvR = ir - iin;
+            }
+            if (!arcflag) {
+                if (inner_row) { // HOVAL: ring row, two slabs
+                    gc_span(p, y, oOvL, iOvL);
+                    gc_span(p, y, iOvR, oOvR);
+                } else { // SOVAL
+                    gc_span(p, y, oOvL, oOvR);
+                }
+            } else if (!inner_row) { // SARC
+                if (oL < oR)
+                    gc_span(p, y, oL, oR);
+                else if (flag1 < 0 && flag2 < 0 && arc > 180) {
+                    // wedge wraps the vertical midline: two slabs
+                    gc_span(p, y, oOvL, oR);
+                    gc_span(p, y, oL, oOvR);
+                }
+            } else { // HARC: ring row clipped by the wedge edges
+                int iL = iOvL, iR = iOvR;
+                if (flag2 < 0 && iL > l2i)
+                    iL = l2i;
+                if (flag1 < 0 && iR < l1i)
+                    iR = l1i;
+                if (oL < oR) {
+                    gc_span(p, y, oL, iL);
+                    gc_span(p, y, iR, oR);
+                } else if (flag1 < 0 && flag2 < 0 && arc > 180) {
+                    // wraparound, with the ROM's third-slab coalescing
+                    if (oR == iL)
+                        gc_span(p, y, oL, iOvL);
+                    else if (oL == iR)
+                        gc_span(p, y, iOvR, oR);
+                    gc_span(p, y, oOvL, iL);
+                    gc_span(p, y, iR, oOvR);
+                }
+            }
+        }
+        line1 += slope1; // bumped EVERY row, drawn or not (DrawArc.a NODRAW)
+        line2 += slope2;
+    }
+}
+
 // opLine ($01): pen-sized line from the pen loc to `pt`; pen := pt.  For the
 // axis-aligned lines the desktop draws this reduces to a pen-thick bar; a
 // general Bresenham covers the rest (call-reference §1).
@@ -733,6 +965,147 @@ static void gc_fill_rgn(display_card_824gc_priv_t *p, uint32_t off) {
     }
 }
 
+// === Polygons (opPoly $07) — ROM DrawPoly/PaintVector port ====================
+// Fill = the vector scan converter of QuickDraw/QuickPolys.a ("does not use
+// QuickDraw regions"): one {upperPoint, dy, dx} vector per NON-horizontal edge
+// (QuickPolys.a:1009-1026), auto-closed if the poly is open (1028-1049), sorted
+// by (y,x); then an X-sorted active-edge-list walk per row with hard-wired
+// even-odd toggling.  Edges enter with the PutLine bias — "excerpted from the
+// PutLine code … to match the old polygon code precisely" (630-653):
+//   XValue = (x<<16) + $8000 + slope/2,  slope = FixRatio(dx,dy)
+//   + slope  if 0 <= slope < 1.0
+//   + 1.0    if slope < -1.0
+// Slab bounds are the .W high words; a slab draws only when right > left; an
+// edge leaves the list when LastY (= upperY + |dy|) <= currentY; after each
+// row's use XValue += slope with a backward re-sort on crossing.
+
+typedef struct {
+    int16_t y, x; // upper endpoint
+    int16_t dy, dx; // directed deltas (old → new), dy ≠ 0
+} gc_pvec_t;
+
+static int gc_pvec_cmp(const void *a, const void *b) {
+    // SortVectors: ascending by the packed {y,x} long (y major, x minor).
+    const gc_pvec_t *va = a, *vb = b;
+    int32_t ka = ((int32_t)va->y << 16) | (uint16_t)va->x;
+    int32_t kb = ((int32_t)vb->y << 16) | (uint16_t)vb->x;
+    return (ka > kb) - (ka < kb);
+}
+
+#define GC_POLY_MAXPTS 1024 // > any poly record the 4 KB queue can carry
+
+static void gc_fill_poly(display_card_824gc_priv_t *p, uint32_t off, int npts) {
+    // `off` = DRAM offset of the Polygon record: size.w, bbox Rect, points.
+    int bbT = (int16_t)dram_be16(p, off + 2), bbB = (int16_t)dram_be16(p, off + 6);
+    int bbL = (int16_t)dram_be16(p, off + 4), bbR = (int16_t)dram_be16(p, off + 8);
+    if (npts > GC_POLY_MAXPTS)
+        return; // can't happen off the wire; guard the stack
+    gc_pvec_t v[GC_POLY_MAXPTS + 1];
+    int nv = 0;
+    int16_t oy = (int16_t)dram_be16(p, off + 10), ox = (int16_t)dram_be16(p, off + 12);
+    int16_t fy = oy, fx = ox;
+    for (int i = 1; i <= npts; i++) {
+        int16_t ny, nx;
+        if (i < npts) {
+            ny = (int16_t)dram_be16(p, off + 10 + 4 * i);
+            nx = (int16_t)dram_be16(p, off + 12 + 4 * i);
+        } else { // auto-close (skipped when already closed)
+            if (oy == fy && ox == fx)
+                break;
+            ny = fy;
+            nx = fx;
+        }
+        int dy = ny - oy, dx = nx - ox;
+        if (dy != 0) { // horizontal edges dropped; store the upper endpoint
+            v[nv].y = dy > 0 ? oy : ny;
+            v[nv].x = dy > 0 ? ox : nx;
+            v[nv].dy = (int16_t)dy;
+            v[nv].dx = (int16_t)dx;
+            nv++;
+        }
+        oy = ny;
+        ox = nx;
+    }
+    if (nv == 0)
+        return;
+    qsort(v, (size_t)nv, sizeof(v[0]), gc_pvec_cmp);
+    gc_cursor_shield(p, bbT, bbL, bbB, bbR);
+    // Active edge list: doubly linked by index, ascending 32-bit XValue.
+    int32_t xv[GC_POLY_MAXPTS + 1], xs[GC_POLY_MAXPTS + 1];
+    int lasty[GC_POLY_MAXPTS + 1], nxt[GC_POLY_MAXPTS + 1], prv[GC_POLY_MAXPTS + 1];
+    int head = -1, iv = 0;
+    int y = v[0].y;
+    while (y < bbB) {
+        // Enter the edges starting on this row, insertion-sorted by XValue.
+        for (; iv < nv && v[iv].y == y; iv++) {
+            int32_t slope = gc_fix_ratio(v[iv].dx, v[iv].dy);
+            int32_t x = (int32_t)(((uint32_t)(uint16_t)v[iv].x << 16) | 0x8000u) + (slope >> 1);
+            if (slope >= 0 && slope < 0x10000)
+                x += slope;
+            else if (slope < -0x10000)
+                x += 0x10000;
+            xv[iv] = x;
+            xs[iv] = slope;
+            lasty[iv] = y + (v[iv].dy < 0 ? -v[iv].dy : v[iv].dy);
+            int q = head, pr = -1;
+            while (q != -1 && xv[q] <= x) {
+                pr = q;
+                q = nxt[q];
+            }
+            prv[iv] = pr;
+            nxt[iv] = q;
+            if (pr == -1)
+                head = iv;
+            else
+                nxt[pr] = iv;
+            if (q != -1)
+                prv[q] = iv;
+        }
+        // Walk the list: even-odd toggle, slab, bump + backward re-sort.
+        int parity = 0, sx = 0;
+        for (int e = head, nx_ = -1; e != -1; e = nx_) {
+            nx_ = nxt[e]; // captured, as the ROM's A4 (re-sorts don't disturb it)
+            if (lasty[e] <= y) { // expire the edge
+                if (prv[e] != -1)
+                    nxt[prv[e]] = nxt[e];
+                else
+                    head = nxt[e];
+                if (nxt[e] != -1)
+                    prv[nxt[e]] = prv[e];
+                continue;
+            }
+            int xi = (int16_t)((uint32_t)xv[e] >> 16); // .W high word, as ROM
+            if ((parity ^= 1) != 0)
+                sx = xi; // slab opens
+            else if (xi > sx)
+                gc_span(p, y, sx, xi); // slab closes: [sx, xi)
+            xv[e] += xs[e]; // bump to the next row
+            if (prv[e] != -1 && xv[e] < xv[prv[e]]) { // crossing: re-sort backward
+                int q = prv[e];
+                nxt[q] = nxt[e];
+                if (nxt[e] != -1)
+                    prv[nxt[e]] = q;
+                while (prv[q] != -1 && xv[prv[q]] > xv[e])
+                    q = prv[q];
+                prv[e] = prv[q];
+                nxt[e] = q;
+                if (prv[q] == -1)
+                    head = e;
+                else
+                    nxt[prv[q]] = e;
+                prv[q] = e;
+            }
+        }
+        y++;
+        if (head == -1) { // list drained: hop to the next vector's start row
+            if (iv >= nv)
+                break;
+            if (v[iv].y > y)
+                y = v[iv].y;
+        }
+    }
+}
+
 // === Clip mask (region-accurate) ============================================
 // gc_clipmask is 1 bit/pixel over 640x480 (stride 80): 1 = drawable.  Reset to
 // all-drawable at a cycle start, then AND'd by opClipRgn/opVisRgn so a fill
@@ -743,46 +1116,53 @@ static void gc_fill_rgn(display_card_824gc_priv_t *p, uint32_t off) {
 static void gc_clip_reset(display_card_824gc_priv_t *p) {
     memset(p->gc_clipmask, 0xFF, (size_t)GC824_CLIP_STRIDE * GC824_CLIP_ROWS);
 }
-static inline void gc_clip_clear_span(display_card_824gc_priv_t *p, int y, int x0, int x1) {
+// AND a QuickDraw region (raw bytes: rgnSize.w, bbox Rect, band data) into a
+// 1-bpp mask (stride GC824_CLIP_STRIDE, GC824_CLIP_ROWS rows): clear every
+// pixel OUTSIDE the region.  Serves both the queue's opClipRgn/opVisRgn (region
+// bytes in card DRAM) and func $15's rgnA/B/C (bytes fetched from guest RAM).
+static void gc_mask_and_region_row(uint8_t *mask, int y, int x0, int x1) {
     if (x0 < 0)
         x0 = 0;
     if (x1 > GC824_CLIP_STRIDE * 8)
         x1 = GC824_CLIP_STRIDE * 8;
-    uint8_t *row = &p->gc_clipmask[(size_t)y * GC824_CLIP_STRIDE];
+    uint8_t *row = &mask[(size_t)y * GC824_CLIP_STRIDE];
     for (int x = x0; x < x1; x++)
         row[x >> 3] &= (uint8_t) ~(0x80u >> (x & 7));
 }
-// Intersect the clip mask with a QuickDraw region (clear pixels outside it).
-static void gc_clip_and_region(display_card_824gc_priv_t *p, uint32_t off) {
-    uint16_t size = (uint16_t)(dram_be32(p, off) >> 16);
-    int top = (int16_t)(dram_be32(p, off) & 0xFFFF);
-    int left = (int16_t)(dram_be32(p, off + 4) >> 16);
-    int bot = (int16_t)(dram_be32(p, off + 4) & 0xFFFF);
-    int right = (int16_t)(dram_be32(p, off + 8) >> 16);
+static void gc_mask_and_region(uint8_t *mask, const uint8_t *rgn, uint32_t maxlen) {
+    if (maxlen < 10)
+        return;
+    uint16_t size = LOAD_BE16(rgn);
+    int top = (int16_t)LOAD_BE16(rgn + 2);
+    int left = (int16_t)LOAD_BE16(rgn + 4);
+    int bot = (int16_t)LOAD_BE16(rgn + 6);
+    int right = (int16_t)LOAD_BE16(rgn + 8);
     if (top < 0)
         top = 0;
     if (bot > GC824_CLIP_ROWS)
         bot = GC824_CLIP_ROWS;
     // Everything outside the bounding box is outside the region.
     for (int y = 0; y < top && y < GC824_CLIP_ROWS; y++)
-        memset(&p->gc_clipmask[(size_t)y * GC824_CLIP_STRIDE], 0, GC824_CLIP_STRIDE);
-    for (int y = bot; y < GC824_CLIP_ROWS; y++)
-        memset(&p->gc_clipmask[(size_t)y * GC824_CLIP_STRIDE], 0, GC824_CLIP_STRIDE);
+        memset(&mask[(size_t)y * GC824_CLIP_STRIDE], 0, GC824_CLIP_STRIDE);
+    for (int y = (bot < 0 ? 0 : bot); y < GC824_CLIP_ROWS; y++)
+        memset(&mask[(size_t)y * GC824_CLIP_STRIDE], 0, GC824_CLIP_STRIDE);
     if (size <= 0x0A) { // rectangular region: clear the columns outside [left,right)
         for (int y = top; y < bot; y++) {
-            gc_clip_clear_span(p, y, 0, left);
-            gc_clip_clear_span(p, y, right, GC824_CLIP_STRIDE * 8);
+            gc_mask_and_region_row(mask, y, 0, left);
+            gc_mask_and_region_row(mask, y, right, GC824_CLIP_STRIDE * 8);
         }
         return;
     }
     // Complex region: band/inversion list — clear the gaps between spans.
-    uint32_t d = off + 10, dend = off + size;
+    uint32_t d = 10, dend = size < maxlen ? size : maxlen;
     int inv[128], ninv = 0, guard = 0;
-    int y = (int16_t)dram_be16(p, d);
+    int y = (int16_t)LOAD_BE16(rgn + d);
     while (y != 0x7FFF && d + 2 <= dend && guard++ < 2000) {
         d += 2;
         for (;;) {
-            int x = (int16_t)dram_be16(p, d);
+            if (d + 2 > dend)
+                return;
+            int x = (int16_t)LOAD_BE16(rgn + d);
             d += 2;
             if (x == 0x7FFF)
                 break;
@@ -800,20 +1180,28 @@ static void gc_clip_and_region(display_card_824gc_priv_t *p, uint32_t off) {
                 ninv++;
             }
         }
-        int ny = (int16_t)dram_be16(p, d);
+        if (d + 2 > dend)
+            return;
+        int ny = (int16_t)LOAD_BE16(rgn + d);
         int bandBot = (ny == 0x7FFF) ? bot : ny;
         if (bandBot > GC824_CLIP_ROWS)
             bandBot = GC824_CLIP_ROWS;
         for (int yy = (y < 0 ? 0 : y); yy < bandBot; yy++) {
             int prev = 0; // clear the gap [prev, inv[s]) then jump past the span
             for (int s = 0; s + 1 < ninv; s += 2) {
-                gc_clip_clear_span(p, yy, prev, inv[s]);
+                gc_mask_and_region_row(mask, yy, prev, inv[s]);
                 prev = inv[s + 1];
             }
-            gc_clip_clear_span(p, yy, prev, GC824_CLIP_STRIDE * 8);
+            gc_mask_and_region_row(mask, yy, prev, GC824_CLIP_STRIDE * 8);
         }
         y = ny;
     }
+}
+// Intersect the clip mask with a QuickDraw region at DRAM offset `off`.
+static void gc_clip_and_region(display_card_824gc_priv_t *p, uint32_t off) {
+    if (off + 10 > GC824_DRAM_SIZE)
+        return;
+    gc_mask_and_region(p->gc_clipmask, p->dram + off, GC824_DRAM_SIZE - off);
 }
 
 // Compute the byte advance for an opcode record at DRAM offset `off`.
@@ -851,6 +1239,12 @@ static uint32_t gc_op_adv(display_card_824gc_priv_t *p, uint32_t off, uint16_t o
     case 0x07:
     case 0x08:
         return ((uint32_t)w4 + 7) & ~3u; // poly/rgn size.w at +4
+    case 0x09:
+        // opBits (inline blit): dataLen.L at +0x20 (protocol §10.1).  Dead in
+        // Sys 7 (emitter removed) and never emitted by Sys 6 either (func $22
+        // is dead code) — but give it an advance so a stream carrying it
+        // doesn't abort the interpreter.
+        return (dram_be32(p, off + 0x20) + 0x27) & ~3u;
     case 0x6A:
     case 0x6C:
         return ((uint32_t)w2 + 5) & ~3u; // rgnSize.w at +2
@@ -968,12 +1362,55 @@ static void gc_interp(display_card_824gc_priv_t *p, uint32_t base, uint32_t coun
             p->draw_count++;
             break;
         }
+        case 0x03: { // opOval: {frameFlag.w, Rect} — DrawArc with radii = rect dims
+            uint16_t frame = (uint16_t)(dram_be32(p, off) & 0xFFFF);
+            int t = (int16_t)(dram_be32(p, off + 4) >> 16);
+            int l = (int16_t)(dram_be32(p, off + 4) & 0xFFFF);
+            int b = (int16_t)(dram_be32(p, off + 8) >> 16);
+            int r = (int16_t)(dram_be32(p, off + 8) & 0xFFFF);
+            gc_draw_arc(p, t, l, b, r, 0, 360, frame);
+            p->draw_count++;
+            break;
+        }
+        case 0x02: { // opArc: {frameFlag.w, Rect, startAngle.w, arcAngle.w}
+            uint16_t frame = (uint16_t)(dram_be32(p, off) & 0xFFFF);
+            int t = (int16_t)(dram_be32(p, off + 4) >> 16);
+            int l = (int16_t)(dram_be32(p, off + 4) & 0xFFFF);
+            int b = (int16_t)(dram_be32(p, off + 8) >> 16);
+            int r = (int16_t)(dram_be32(p, off + 8) & 0xFFFF);
+            int start = (int16_t)(dram_be32(p, off + 12) >> 16);
+            int arc = (int16_t)(dram_be32(p, off + 12) & 0xFFFF);
+            gc_draw_arc(p, t, l, b, r, start, arc, frame);
+            p->draw_count++;
+            break;
+        }
+        case 0x07: { // opPoly: {frameFlag.w} + the Polygon verbatim at +4
+            uint16_t frame = (uint16_t)(dram_be32(p, off) & 0xFFFF);
+            int polySize = dram_be16(p, off + 4);
+            int npts = (polySize - 10) / 4;
+            if (npts <= 0)
+                break; // pen untouched (== ROM / card 0xC688)
+            // Sys 6 card: pen := points[0] UNCONDITIONALLY (0xC694) — even for
+            // fills (the divergence Sys 7 fixes; call-reference §6).
+            p->gc_pen_y = (int16_t)dram_be16(p, off + 0x0E);
+            p->gc_pen_x = (int16_t)dram_be16(p, off + 0x10);
+            if (frame) {
+                // FrPoly: one pen line per edge, pen := last vertex — the same
+                // line engine as op $01; no auto-close (Polygons.a:421-454).
+                for (int i = 1; i < npts; i++)
+                    gc_line_to(p, (int16_t)dram_be16(p, off + 0x10 + 4 * i), (int16_t)dram_be16(p, off + 0x0E + 4 * i));
+            } else {
+                gc_fill_poly(p, off + 4, npts);
+            }
+            p->draw_count++;
+            break;
+        }
         case 0x08: // opRgn
             gc_fill_rgn(p, off + 4);
             p->draw_count++;
             break;
         default:
-            break; // state/colour opcodes not yet modelled — no-op
+            break; // $09 opBits (dead) skipped; colour opcodes ($70/$72/...) no-op
         }
         off += adv;
     }
@@ -992,15 +1429,31 @@ static inline int gc_bmp_pixel(uint32_t base, int y, int x, int rowbytes) {
     return (b >> (7 - (x & 7))) & 1;
 }
 
+// Fetch a guest QuickDraw region (deref'd handle in host RAM) into `buf`.
+// Returns the byte count, or 0 on a reject (implausible size).
+#define GC824_RGN_MAX 4096
+static uint32_t gc_fetch_guest_rgn(uint32_t addr, uint16_t size, uint8_t *buf) {
+    addr &= 0x00FFFFFFu; // strip master-pointer flag bits (24-bit mode)
+    if (!addr || size < 10 || size > GC824_RGN_MAX)
+        return 0;
+    for (uint32_t i = 0; i < size; i++)
+        buf[i] = memory_debug_read_uint8(addr + i);
+    return size;
+}
+
 // func $15 StretchBits (CopyBits) — the blit.  Stage-2 accept envelope
-// (proposal §3.8 v1 + 1-bit masks): srcCopy, no stretch, 1-bpp, destination =
-// the screen framebuffer; everything else declines to the ROM path (result 0).
-// Request block at CB+$58 (protocol §9.1).  Returns 1 if drawn, 0 to decline.
+// (proposal §3.8 v1 + 1-bit masks): the classic boolean modes 0-7 (colorized
+// at 1 bpp from the request's fg/bk indices; §2.1 cores), no stretch, 1-bpp,
+// destination = the screen framebuffer; everything else declines to the ROM
+// path (result 0).  Request block at CB+$58 (protocol §9.1); the blit is
+// clipped to rgnA ∩ rgnB ∩ rgnC — the request block's own deref'd region
+// pointers (mask/clip/vis, +0xC0/C4/C8, sizes +0x104/6/8), which is what the
+// card's blit lane (text_28c14) consumes — NOT the queue-port clip mask.
+// Returns 1 if drawn, 0 to decline.
 static int gc_stretchbits(display_card_824gc_priv_t *p) {
     uint32_t rb = GC824_DRAM_CB + 0x58;
     uint16_t mode = dram_be16(p, rb + 0x00);
     uint32_t dstBase = dram_be32(p, rb + 0x02);
-    int dstRB = dram_be16(p, rb + 0x06) & 0x3FFF;
     int dstBnT = (int16_t)dram_be16(p, rb + 0x08), dstBnL = (int16_t)dram_be16(p, rb + 0x0A);
     uint32_t srcBase = dram_be32(p, rb + 0x36);
     int srcRB = dram_be16(p, rb + 0x3A) & 0x3FFF;
@@ -1013,16 +1466,35 @@ static int gc_stretchbits(display_card_824gc_priv_t *p) {
     int sRt = (int16_t)dram_be16(p, rb + 0xB0), sRl = (int16_t)dram_be16(p, rb + 0xB2);
     int mRt = (int16_t)dram_be16(p, rb + 0xB8), mRl = (int16_t)dram_be16(p, rb + 0xBA);
 
-    // Accept only: srcCopy, destination is the screen FB, 1:1 (no stretch).
+    // Accept only: boolean modes, destination is the screen FB, 1:1 (no stretch).
     uint32_t screen = p->super_base | (GC824_DRAM_OFFSET + GC824_FB_OFFSET);
-    if (mode != 0 || dstBase != screen) {
-        return 0;
+    if (mode > 7 || dstBase != screen) {
+        return 0; // arithmetic/hilite (incl. pending-hilite 50) → ROM
     }
     if ((dRb - dRt) != (int16_t)dram_be16(p, rb + 0xB4) - sRt ||
         (dRr - dRl) != (int16_t)dram_be16(p, rb + 0xB6) - sRl) {
         return 0; // stretched → decline
     }
 
+    // Blit clip = ∩ of the request's regions (0 = absent).  A region we can't
+    // fetch faithfully declines the whole blit — the ROM path is the safety net.
+    memset(p->gc_blitmask, 0xFF, (size_t)GC824_CLIP_STRIDE * GC824_CLIP_ROWS);
+    for (int i = 0; i < 3; i++) {
+        uint32_t rgn = dram_be32(p, rb + 0xC0 + 4u * (uint32_t)i);
+        uint16_t rsz = dram_be16(p, rb + 0x104 + 2u * (uint32_t)i);
+        if (!rgn)
+            continue;
+        uint8_t buf[GC824_RGN_MAX];
+        if (!gc_fetch_guest_rgn(rgn, rsz, buf))
+            return 0;
+        gc_mask_and_region(p->gc_blitmask, buf, rsz);
+    }
+
+    // 1-bpp colorize (§2.2): fg/bk pixel = bit 0 of the port colour indices
+    // (new-port chunky index or old-port classic constant — bit 0 either way).
+    int fg = (int)(dram_be32(p, rb + 0xE0) & 1);
+    int bk = (int)(dram_be32(p, rb + 0xE4) & 1);
+    int inv = (mode >> 2) & 1; // notSrc*: invert the source before colorizing
     gc_cursor_shield(p, dRt - dstBnT, dRl - dstBnL, dRb - dstBnT, dRr - dstBnL);
     for (int dy = dRt; dy < dRb; dy++) {
         int y = dy - dstBnT;
@@ -1035,14 +1507,41 @@ static int gc_stretchbits(display_card_824gc_priv_t *p) {
             int x = dx - dstBnL;
             if (x < 0 || x >= (int)p->display.width)
                 continue;
+            if (!(p->gc_blitmask[y * GC824_CLIP_STRIDE + (x >> 3)] & (0x80u >> (x & 7))))
+                continue; // outside rgnA∩rgnB∩rgnC
             int sx = sRl + (dx - dRl) - srcBnL;
             if (maskBase && !gc_bmp_pixel(maskBase, my, mRl + (dx - dRl) - maskBnL, maskRB))
-                continue; // outside the mask → leave the destination
+                continue; // outside the CopyMask 1-bit mask → leave the dst
             uint8_t bit = (uint8_t)(0x80u >> (x & 7));
-            if (gc_bmp_pixel(srcBase, sy, sx, srcRB))
-                row[x >> 3] |= bit; // 1 = black (fg)
-            else
-                row[x >> 3] &= (uint8_t)~bit; // 0 = white (bg)
+            int s = gc_bmp_pixel(srcBase, sy, sx, srcRB) ^ inv;
+            switch (mode & 3) {
+            case 1: // Or: fg where ink
+                if (s) {
+                    if (fg)
+                        row[x >> 3] |= bit;
+                    else
+                        row[x >> 3] &= (uint8_t)~bit;
+                }
+                break;
+            case 2: // Xor: flip where ink (never colorized)
+                if (s)
+                    row[x >> 3] ^= bit;
+                break;
+            case 3: // Bic: bk where ink
+                if (s) {
+                    if (bk)
+                        row[x >> 3] |= bit;
+                    else
+                        row[x >> 3] &= (uint8_t)~bit;
+                }
+                break;
+            default: // Copy: fg on ink, bk elsewhere
+                if (s ? fg : bk)
+                    row[x >> 3] |= bit;
+                else
+                    row[x >> 3] &= (uint8_t)~bit;
+                break;
+            }
         }
     }
     p->draw_count++;
@@ -1136,12 +1635,15 @@ static uint32_t gc_dispatch_func(display_card_824gc_priv_t *p, uint32_t func, ui
         // decline (result 0 → host runs the ROM blit).  Runs synchronously here,
         // so it lands in the framebuffer in RPC order relative to the queued
         // geometry (drawn at the preceding func $26 submits).
-        result = (p->gc_accel && gc_stretchbits(p)) ? 1 : 0;
+        result = (!p->force_decline && p->gc_accel && gc_stretchbits(p)) ? 1 : 0;
         break;
     case 0x2D: // SetPort — accept the port so its geometry queue is interpreted.
-        result = 1;
+        // gc.force_decline (the differential test oracle, proposal §4.1)
+        // declines instead: the SAME guest scene then renders via the ROM path.
+        result = p->force_decline ? 0 : 1;
         p->gc_accel = (result != 0); // gate the interpreter on port acceptance
-        LOG(3, "func $2D SetPort accepted -> card interprets the geometry queue");
+        LOG(3, "func $2D SetPort %s",
+            p->force_decline ? "declined (force_decline)" : "accepted -> card interprets the geometry queue");
         break;
     case 0x30: // FontDownload — returning 0 declines text cleanly (proposal §3.10)
         result = 0;
@@ -1646,13 +2148,15 @@ static int card_init(nubus_card_t *card, config_t *cfg, checkpoint_t *cp) {
     p->dram = calloc(1, GC824_DRAM_SIZE);
     p->regs = calloc(1, GC824_REGS_SIZE);
     p->gc_clipmask = calloc(1, (size_t)GC824_CLIP_STRIDE * GC824_CLIP_ROWS);
-    if (!p->vram || !p->vrom || !p->sram || !p->dram || !p->regs || !p->gc_clipmask) {
+    p->gc_blitmask = calloc(1, (size_t)GC824_CLIP_STRIDE * GC824_CLIP_ROWS);
+    if (!p->vram || !p->vrom || !p->sram || !p->dram || !p->regs || !p->gc_clipmask || !p->gc_blitmask) {
         free(p->vram);
         free(p->vrom);
         free(p->sram);
         free(p->dram);
         free(p->regs);
         free(p->gc_clipmask);
+        free(p->gc_blitmask);
         free(p);
         return -1;
     }
@@ -1751,6 +2255,7 @@ static void card_teardown(nubus_card_t *card, config_t *cfg) {
     free(p->dram);
     free(p->regs);
     free(p->gc_clipmask);
+    free(p->gc_blitmask);
     free(p->vrom_path);
     free(p);
     card->priv = NULL;
@@ -1954,4 +2459,17 @@ int32_t display_card_824gc_error(const nubus_card_t *card) {
         return 0;
     const display_card_824gc_priv_t *p = card->priv;
     return p ? p->error : 0;
+}
+bool display_card_824gc_force_decline(const nubus_card_t *card) {
+    if (!display_card_824gc_is_card(card))
+        return false;
+    const display_card_824gc_priv_t *p = card->priv;
+    return p ? p->force_decline : false;
+}
+void display_card_824gc_set_force_decline(nubus_card_t *card, bool v) {
+    if (!display_card_824gc_is_card(card))
+        return;
+    display_card_824gc_priv_t *p = card->priv;
+    if (p)
+        p->force_decline = v;
 }

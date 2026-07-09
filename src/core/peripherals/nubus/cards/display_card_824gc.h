@@ -17,11 +17,12 @@
 //     natively in C: the SRAM/DRAM windows, the accelerator control registers,
 //     the shared-memory command block (CB) and the bring-up state machine that
 //     makes the `.GraphAccel` driver believe a live Am29000 card booted.  The
-//     firmware bytes are *stored, not executed*.  Stage 0/1 (this file) covers
-//     identity, the register/RAM map, and the full bring-up ladder; drawing
-//     funcs decline to the ROM path (proposal §4 safety net), so the desktop
-//     renders correctly via QuickDraw's own fallback.  The DrawMultiObject
-//     interpreter and rasterizers (stage 2+) are a follow-up under gcqd/.
+//     firmware bytes are *stored, not executed*.  Stage 0/1 covers identity,
+//     the register/RAM map, and the full bring-up ladder; stage 2 adds the
+//     DrawMultiObject interpreter + 1-bpp rasterizers and the func-$15 blit.
+//     Anything outside the accept envelope declines to the ROM path (proposal
+//     §4 safety net), and gc.force_decline declines everything — the
+//     differential test oracle.
 //
 // Address model (proposal §3.2, protocol §3): the card straddles two spaces.
 // The display half + declaration ROM live in STANDARD slot space
@@ -244,5 +245,10 @@ uint64_t display_card_824gc_rpc_count(const nubus_card_t *card); // total RPCs s
 uint64_t display_card_824gc_queue_bytes(const nubus_card_t *card); // total Transport-B bytes drained
 bool display_card_824gc_gc_on(const nubus_card_t *card); // acceleration turned ON (Control $0D)
 int32_t display_card_824gc_error(const nubus_card_t *card); // last posted error (Control $14), 0 = none
+// Differential-test-oracle switch (proposal §4.1): when set, the drawing funcs
+// ($2D SetPort / $15 StretchBits / $30 FontDownload) decline, so the identical
+// guest scene renders via QuickDraw's ROM path — the accel-vs-ROM pixel oracle.
+bool display_card_824gc_force_decline(const nubus_card_t *card);
+void display_card_824gc_set_force_decline(nubus_card_t *card, bool v);
 
 #endif // NUBUS_CARDS_DISPLAY_CARD_824GC_H
