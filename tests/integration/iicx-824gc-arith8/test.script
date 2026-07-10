@@ -1,0 +1,180 @@
+# Integration test: IIcx + 8•24 GC — 8-bpp colour rasterizer math, exact bytes.
+#
+# Drives the DrawMultiObject queue directly (same poke transport as
+# iicx-824gc) with the screen at 8 bpp and asserts hand-computed framebuffer
+# bytes on the power-on CLUT (grey ramp, with the 1-bpp mono seed clut[0] =
+# white / clut[1] = black — Mac convention, bg pixel 0 = white):
+#
+#   * arithmetic transfer modes $20-$27 (qd-transfer-modes §3.1): 16-bit
+#     component math on CLUT entries, result via the card-side Color2Index —
+#     blend (default $7FFF weight = 50/50), addPin (carry/pin clamp), addOver
+#     (wraps), subPin (borrow/pin clamp), transparent (full-pixel compare
+#     against transColor = the port bk pixel: skip on match, plain copy
+#     otherwise), adMax, subOver (wraps), adMin;
+#   * op $74 opRGBPat (MakeRGBPat's 2×2 ordered dither): mid-grey $8000
+#     quantizes to level 6 -> DthrTbl13 row {AAAA,5555,5555,AAAA} -> the exact
+#     aa/55 checkerboard, anchored to the port grid.
+#
+# Layout: case i = a 4×2 rect at (0, 8i), first painted with a known base grey
+# via patCopy, then hit with one arithmetic fill.  Every expected byte below
+# is the exact 16-bit math result: e.g. blend = (40×½ + 80×½) = 60; addOver =
+# (8080+C0C0) mod 10000 = 4140 -> nearest ramp index 41.
+
+machine.nubus.video_card = "824gc"
+machine.nubus.video_mode = "gc_640x480_8bpp"
+machine.boot "iicx" 8192
+machine.rom.reload
+
+# Accelerator bring-up + SetPort (staged port record: screen base, origin 0).
+machine.memory.poke.l 0x9C006400 0x42005300
+machine.memory.poke.l 0x9C007048 0x00000001
+machine.memory.poke.l 0x9C00704C 0x00000000
+machine.memory.poke.l 0x9C007014 0xFFFFFFFF
+machine.memory.poke.l 0x9C00717E 0x9C011400
+machine.memory.poke.l 0x9C007184 0x00000000
+machine.memory.poke.l 0x9C007048 0x0000002D
+machine.memory.poke.l 0x9C00704C 0x00000000
+machine.memory.poke.l 0x9C007014 0xFFFFFFFF
+assert ${machine.memory.peek.l(0x9C00701C) == 1}         "SetPort (func $2D) not accepted at 8 bpp"
+
+machine.memory.poke.l 0x9C0076D4 0x00710001
+machine.memory.poke.l 0x9C0076D8 0xFFFFFFFF
+machine.memory.poke.l 0x9C0076DC 0xFFFFFFFF
+machine.memory.poke.l 0x9C0076E0 0x00690008
+machine.memory.poke.l 0x9C0076E4 0x00648080
+machine.memory.poke.l 0x9C0076E8 0x80808080
+machine.memory.poke.l 0x9C0076EC 0x00000000
+machine.memory.poke.l 0x9C0076F0 0x00050000
+machine.memory.poke.l 0x9C0076F4 0x00000000
+machine.memory.poke.l 0x9C0076F8 0x00020004
+machine.memory.poke.l 0x9C0076FC 0x00646060
+machine.memory.poke.l 0x9C007700 0x60606060
+machine.memory.poke.l 0x9C007704 0x00000000
+machine.memory.poke.l 0x9C007708 0x00050000
+machine.memory.poke.l 0x9C00770C 0x00000008
+machine.memory.poke.l 0x9C007710 0x0002000C
+machine.memory.poke.l 0x9C007714 0x0064C0C0
+machine.memory.poke.l 0x9C007718 0xC0C0C0C0
+machine.memory.poke.l 0x9C00771C 0x00000000
+machine.memory.poke.l 0x9C007720 0x00050000
+machine.memory.poke.l 0x9C007724 0x00000010
+machine.memory.poke.l 0x9C007728 0x00020014
+machine.memory.poke.l 0x9C00772C 0x00646060
+machine.memory.poke.l 0x9C007730 0x60606060
+machine.memory.poke.l 0x9C007734 0x00000000
+machine.memory.poke.l 0x9C007738 0x00050000
+machine.memory.poke.l 0x9C00773C 0x00000018
+machine.memory.poke.l 0x9C007740 0x0002001C
+machine.memory.poke.l 0x9C007744 0x00641111
+machine.memory.poke.l 0x9C007748 0x11111111
+machine.memory.poke.l 0x9C00774C 0x00000000
+machine.memory.poke.l 0x9C007750 0x00050000
+machine.memory.poke.l 0x9C007754 0x00000020
+machine.memory.poke.l 0x9C007758 0x00020024
+machine.memory.poke.l 0x9C00775C 0x00643030
+machine.memory.poke.l 0x9C007760 0x30303030
+machine.memory.poke.l 0x9C007764 0x00000000
+machine.memory.poke.l 0x9C007768 0x00050000
+machine.memory.poke.l 0x9C00776C 0x00000028
+machine.memory.poke.l 0x9C007770 0x0002002C
+machine.memory.poke.l 0x9C007774 0x00643030
+machine.memory.poke.l 0x9C007778 0x30303030
+machine.memory.poke.l 0x9C00777C 0x00000000
+machine.memory.poke.l 0x9C007780 0x00050000
+machine.memory.poke.l 0x9C007784 0x00000030
+machine.memory.poke.l 0x9C007788 0x00020034
+machine.memory.poke.l 0x9C00778C 0x00643030
+machine.memory.poke.l 0x9C007790 0x30303030
+machine.memory.poke.l 0x9C007794 0x00000000
+machine.memory.poke.l 0x9C007798 0x00050000
+machine.memory.poke.l 0x9C00779C 0x00000038
+machine.memory.poke.l 0x9C0077A0 0x0002003C
+machine.memory.poke.l 0x9C0077A4 0x0064B0B0
+machine.memory.poke.l 0x9C0077A8 0xB0B0B0B0
+machine.memory.poke.l 0x9C0077AC 0x00000000
+machine.memory.poke.l 0x9C0077B0 0x00050000
+machine.memory.poke.l 0x9C0077B4 0x00000040
+machine.memory.poke.l 0x9C0077B8 0x00020044
+machine.memory.poke.l 0x9C0077BC 0x00644040
+machine.memory.poke.l 0x9C0077C0 0x40404040
+machine.memory.poke.l 0x9C0077C4 0x00000000
+machine.memory.poke.l 0x9C0077C8 0x00690020
+machine.memory.poke.l 0x9C0077CC 0x00050000
+machine.memory.poke.l 0x9C0077D0 0x00000000
+machine.memory.poke.l 0x9C0077D4 0x00020004
+machine.memory.poke.l 0x9C0077D8 0x00700000
+machine.memory.poke.l 0x9C0077DC 0xC0C0C0C0
+machine.memory.poke.l 0x9C0077E0 0xC0C00000
+machine.memory.poke.l 0x9C0077E4 0x00000000
+machine.memory.poke.l 0x9C0077E8 0x00648080
+machine.memory.poke.l 0x9C0077EC 0x80808080
+machine.memory.poke.l 0x9C0077F0 0x00000000
+machine.memory.poke.l 0x9C0077F4 0x00690021
+machine.memory.poke.l 0x9C0077F8 0x00050000
+machine.memory.poke.l 0x9C0077FC 0x00000008
+machine.memory.poke.l 0x9C007800 0x0002000C
+machine.memory.poke.l 0x9C007804 0x00690022
+machine.memory.poke.l 0x9C007808 0x00050000
+machine.memory.poke.l 0x9C00780C 0x00000010
+machine.memory.poke.l 0x9C007810 0x00020014
+machine.memory.poke.l 0x9C007814 0x00700000
+machine.memory.poke.l 0x9C007818 0x20202020
+machine.memory.poke.l 0x9C00781C 0x20200000
+machine.memory.poke.l 0x9C007820 0x00000000
+machine.memory.poke.l 0x9C007824 0x00690023
+machine.memory.poke.l 0x9C007828 0x00050000
+machine.memory.poke.l 0x9C00782C 0x00000018
+machine.memory.poke.l 0x9C007830 0x0002001C
+machine.memory.poke.l 0x9C007834 0x00649090
+machine.memory.poke.l 0x9C007838 0x90909090
+machine.memory.poke.l 0x9C00783C 0x00000000
+machine.memory.poke.l 0x9C007840 0x00690024
+machine.memory.poke.l 0x9C007844 0x00050000
+machine.memory.poke.l 0x9C007848 0x00000020
+machine.memory.poke.l 0x9C00784C 0x00020024
+machine.memory.poke.l 0x9C007850 0x0064FFFF
+machine.memory.poke.l 0x9C007854 0xFFFFFFFF
+machine.memory.poke.l 0x9C007858 0x00000000
+machine.memory.poke.l 0x9C00785C 0x00050000
+machine.memory.poke.l 0x9C007860 0x00000028
+machine.memory.poke.l 0x9C007864 0x0002002C
+machine.memory.poke.l 0x9C007868 0x00648080
+machine.memory.poke.l 0x9C00786C 0x80808080
+machine.memory.poke.l 0x9C007870 0x00000000
+machine.memory.poke.l 0x9C007874 0x00690025
+machine.memory.poke.l 0x9C007878 0x00050000
+machine.memory.poke.l 0x9C00787C 0x00000030
+machine.memory.poke.l 0x9C007880 0x00020034
+machine.memory.poke.l 0x9C007884 0x00690026
+machine.memory.poke.l 0x9C007888 0x00050000
+machine.memory.poke.l 0x9C00788C 0x00000038
+machine.memory.poke.l 0x9C007890 0x0002003C
+machine.memory.poke.l 0x9C007894 0x00690027
+machine.memory.poke.l 0x9C007898 0x00050000
+machine.memory.poke.l 0x9C00789C 0x00000040
+machine.memory.poke.l 0x9C0078A0 0x00020044
+machine.memory.poke.l 0x9C0078A4 0x00690008
+machine.memory.poke.l 0x9C0078A8 0x00740000
+machine.memory.poke.l 0x9C0078AC 0x00018000
+machine.memory.poke.l 0x9C0078B0 0x80008000
+machine.memory.poke.l 0x9C0078B4 0x00050000
+machine.memory.poke.l 0x9C0078B8 0x00000048
+machine.memory.poke.l 0x9C0078BC 0x0002004C
+machine.memory.poke.l 0x9C0071C0 0x000001EC
+assert ${machine.nubus.slot[9].card.gc.queue_bytes == 0x1EC}      "queue not drained"
+
+assert ${machine.memory.peek.b(0x9C011400) == 0x60}       "blend $20: (4040*7FFF + 8080*8001)>>16 = 6060"
+assert ${machine.memory.peek.b(0x9C011408) == 0xC0}       "addPin $21: 8080+6060 = E0E0 > pin C0C0 -> pin"
+assert ${machine.memory.peek.b(0x9C011410) == 0x41}       "addOver $22: 8080+C0C0 wraps to 4140"
+assert ${machine.memory.peek.b(0x9C011418) == 0x20}       "subPin $23: 6060-8080 borrows -> pin 2020"
+assert ${machine.memory.peek.b(0x9C011420) == 0x90}       "transparent $24: src 90 != transColor -> copy"
+assert ${machine.memory.peek.b(0x9C011428) == 0x30}       "transparent $24: src == transColor (white) -> untouched"
+assert ${machine.memory.peek.b(0x9C011430) == 0x80}       "adMax $25: max(8080, 3030)"
+assert ${machine.memory.peek.b(0x9C011438) == 0xAF}       "subOver $26: 3030-8080 wraps to AFB0 -> AF"
+assert ${machine.memory.peek.b(0x9C011440) == 0x80}       "adMin $27: min(8080, B0B0)"
+
+# RGBPat: row 0 = cells 0/1 alternating (AA,55), row 1 = cells 2/3 (55,AA).
+assert ${machine.memory.peek.l(0x9C011448) == 0xAA55AA55}  "RGBPat row 0 != aa55aa55"
+assert ${machine.memory.peek.l(0x9C011848) == 0x55AA55AA}  "RGBPat row 1 != 55aa55aa"
+
+quit

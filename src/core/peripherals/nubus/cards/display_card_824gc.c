@@ -142,8 +142,9 @@ struct display_card_824gc_priv {
                            // the low byte at 8 bpp
     uint32_t gc_hilite; // hilite PIXEL (op $70 rgbHiliteColor; default low-mem
                         // HiliteRGB $0DA0) — the $32/$3A bk↔hilite swap
-    uint32_t gc_op_color; // opColor PIXEL (op $70 rgbOpColor; blend/pin weight
-                          // for the arithmetic modes — parsed, not yet used)
+    uint32_t gc_op_color; // opColor PIXEL (op $70 rgbOpColor, resolved)
+    uint16_t gc_op_rgb[3]; // opColor raw RGB — the blend weight / pin value
+                           // for the arithmetic modes (pin EQU weight)
     int16_t gc_pen_x, gc_pen_y; // pen location (opPenLoc $68), GLOBAL coords
     uint16_t gc_pen_hfrac; // pnLocHFrac (op $68 +2; default $8000) — the pen's
                            // 16.16 fraction, threaded through text runs
@@ -499,6 +500,85 @@ static void gc_boot(display_card_824gc_priv_t *p) {
 // §2 rect, §3 rrect, §7 region).  Depth: 1 bpp only for now (the boot mode);
 // other depths still decline (proposal §3.7).
 
+static uint32_t gc_resolve_rgb(display_card_824gc_priv_t *p, uint16_t r, uint16_t g, uint16_t b);
+
+// Arithmetic transfer modes $20-$27 (and their pattern twins $28-$2F) at the
+// indexed and direct depths — qd-transfer-modes.md §3.1/§3.2.  The source
+// pixel is the colorized pattern pixel (8×8 patterns DO take fg/bk under
+// arithmetic modes, §4.1); component math runs on 16-bit components (8 bpp:
+// CLUT entries replicated 8→16; 32 bpp: native bytes replicated); the result
+// lands via the card-side Color2Index (8 bpp) or packs directly (32 bpp).
+// pin EQU weight: one opColor RGB serves blend weight and add/sub pin.
+static void gc_px_arith(display_card_824gc_priv_t *p, uint8_t *b, uint32_t srcpix) {
+    int is32 = p->display.format == PIXEL_32BPP_XRGB;
+    uint32_t dstpix = is32 ? LOAD_BE32(b) & 0x00FFFFFFu : *b;
+    int variant = p->gc_mode & 7;
+    if (variant == 4) { // transparent: full-pixel compare against transColor
+        // (= the port background pixel), skip or plain copy — no math.
+        if (srcpix == p->gc_bg)
+            return;
+        if (is32)
+            STORE_BE32(b, srcpix & 0x00FFFFFFu);
+        else
+            *b = (uint8_t)srcpix;
+        return;
+    }
+    uint16_t cs[3], cd[3], cr[3];
+    if (is32) {
+        for (int c = 0; c < 3; c++) {
+            uint32_t sh = 16 - 8 * c;
+            cs[c] = (uint16_t)(((srcpix >> sh) & 0xFF) * 0x101u);
+            cd[c] = (uint16_t)(((dstpix >> sh) & 0xFF) * 0x101u);
+        }
+    } else {
+        const rgba8_t *sc = &p->clut[srcpix & 0xFF], *dc = &p->clut[dstpix & 0xFF];
+        cs[0] = (uint16_t)(sc->r * 0x101u);
+        cs[1] = (uint16_t)(sc->g * 0x101u);
+        cs[2] = (uint16_t)(sc->b * 0x101u);
+        cd[0] = (uint16_t)(dc->r * 0x101u);
+        cd[1] = (uint16_t)(dc->g * 0x101u);
+        cd[2] = (uint16_t)(dc->b * 0x101u);
+    }
+    for (int c = 0; c < 3; c++) {
+        uint32_t pin = p->gc_op_rgb[c];
+        uint32_t v;
+        switch (variant) {
+        case 0: { // blend: C' = (Cs·w + Cd·(65536−w)) >> 16, w=0 → 1
+            uint32_t w = pin ? pin : 1;
+            v = ((uint32_t)cs[c] * w + (uint32_t)cd[c] * (65536u - w)) >> 16;
+            break;
+        }
+        case 1: // addPin: carry or > pin ⇒ pin
+            v = (uint32_t)cs[c] + cd[c];
+            if (v > 0xFFFFu || v > pin)
+                v = pin;
+            break;
+        case 2: // addOver: wraps
+            v = ((uint32_t)cs[c] + cd[c]) & 0xFFFFu;
+            break;
+        case 3: // subPin: borrow or < pin ⇒ pin
+            v = (cd[c] >= cs[c]) ? (uint32_t)cd[c] - cs[c] : pin;
+            if (v < pin)
+                v = pin;
+            break;
+        case 5: // adMax
+            v = cs[c] > cd[c] ? cs[c] : cd[c];
+            break;
+        case 6: // subOver: wraps
+            v = ((uint32_t)cd[c] - cs[c]) & 0xFFFFu;
+            break;
+        default: // 7 adMin
+            v = cs[c] < cd[c] ? cs[c] : cd[c];
+            break;
+        }
+        cr[c] = (uint16_t)v;
+    }
+    if (is32) // alpha byte: add/sub/blend write 0; max/min keep dst (ours is 0)
+        STORE_BE32(b, ((uint32_t)(cr[0] >> 8) << 16) | ((uint32_t)(cr[1] >> 8) << 8) | (cr[2] >> 8));
+    else
+        *b = (uint8_t)gc_resolve_rgb(p, cr[0], cr[1], cr[2]);
+}
+
 // Apply one source/pattern INK bit `s` (0/1, pre-invert) at (x,y) under the
 // current mode + clip, at the screen depth (1 or 8 bpp — func $2D only
 // accepts those).  The classic boolean cores of qd-transfer-modes.md §2.1,
@@ -543,8 +623,14 @@ static inline void gc_px(display_card_824gc_priv_t *p, int x, int y, int s) {
                     *b = (uint8_t)p->gc_bg;
             }
             return;
-        } else {
-            LOG(1, "arithmetic mode $%02x at depth > 1 not modelled — pixel skipped", p->gc_mode);
+        } else { // arithmetic $20-$27 / $28-$2F (§3.1/§3.2)
+            uint32_t srcpix = s ? p->gc_fg : p->gc_bg; // colorized pattern pixel
+            uint8_t *b;
+            if (p->display.format == PIXEL_32BPP_XRGB)
+                b = (uint8_t *)p->display.bits + (size_t)y * p->display.stride + (size_t)x * 4;
+            else
+                b = (uint8_t *)p->display.bits + (size_t)y * p->display.stride + x;
+            gc_px_arith(p, b, srcpix);
             return;
         }
     } else if ((p->gc_mode & 0x04) != 0) {
@@ -1788,7 +1874,10 @@ static void gc_interp(display_card_824gc_priv_t *p, uint32_t base, uint32_t coun
             LOG(1, "colour pattern op $%02x not modelled — fills may be wrong", op);
             break;
         case 0x70: // opSpecialColors: rgbOpColor at +4, rgbHiliteColor at +$A
-            p->gc_op_color = gc_resolve_rgb(p, dram_be16(p, off + 4), dram_be16(p, off + 6), dram_be16(p, off + 8));
+            p->gc_op_rgb[0] = dram_be16(p, off + 4);
+            p->gc_op_rgb[1] = dram_be16(p, off + 6);
+            p->gc_op_rgb[2] = dram_be16(p, off + 8);
+            p->gc_op_color = gc_resolve_rgb(p, p->gc_op_rgb[0], p->gc_op_rgb[1], p->gc_op_rgb[2]);
             p->gc_hilite = gc_resolve_rgb(p, dram_be16(p, off + 0xA), dram_be16(p, off + 0xC), dram_be16(p, off + 0xE));
             break;
         case 0x75: // opQDGlobal (a QD-private global; identity open — no consumer)
@@ -2209,6 +2298,10 @@ static void gc_reset_draw_state(display_card_824gc_priv_t *p) {
     p->gc_hilite = gc_resolve_rgb(p, memory_debug_read_uint16(0x0DA0), memory_debug_read_uint16(0x0DA2),
                                   memory_debug_read_uint16(0x0DA4));
     p->gc_op_color = 0;
+    // Old-port arithmetic defaults (§3.1): blend weight = 50% gray $7FFF
+    // (addPin pins to white, subPin to black — mode-specific fallbacks in
+    // gc_px_arith when the weight is the default).
+    p->gc_op_rgb[0] = p->gc_op_rgb[1] = p->gc_op_rgb[2] = 0x7FFF;
     p->gc_pen_hfrac = 0x8000; // pnLocHFrac default (a half pixel)
     p->gc_pat_slot = 1;
     memset(p->gc_pat, 0, sizeof(p->gc_pat));
