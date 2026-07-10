@@ -212,6 +212,22 @@
 #define GC824_CB_CRSRRECTP 0x5F8u // host→card: host addr of CrsrRect ($083C)
 #define GC824_CB_CRSRVISP  0x5FCu // host→card: host addr of CrsrVis ($08CC)
 
+// VidComm — the display-mode-change protocol block (decl-ROM programMode
+// $3436): once the firmware stamps GC824_VC_MAGIC at +$18, every cscSetMode /
+// cscSetDefaultMode publishes the new geometry here, raises `go`, and rings
+// the $0400_0050 doorbell; the card applies the mode and CLEARS the ack byte
+// (+$04 byte 0), which the host polls before programming the ACDC/CRTC itself
+// and releasing with ack = -1.  Offsets relative to GC824_DRAM_VIDCOMM.
+#define GC824_VC_GO        0x00u // host: $80000000 = geometry valid
+#define GC824_VC_ACK       0x04u // card clears byte 0; host releases with -1
+#define GC824_VC_FBBASE    0x08u // NuBus framebuffer base for the new mode
+#define GC824_VC_ROWBYTES  0x0Cu // rowBytes
+#define GC824_VC_BPP       0x10u // pixel depth (1/2/4/8/16/24)
+#define GC824_VC_SCANLINES 0x14u // scan-line count
+#define GC824_VC_MAGIC_OFF 0x18u // firmware presence tag (host tests this)
+#define GC824_VC_PAGEFLIP  0x1Cu // page-flip/interlace state (16/32-bpp crossings)
+#define GC824_VC_MAGIC     0x57593160u // 'WY1`' — RISC video engine present
+
 // Protocol magic values.
 #define GC824_BOOT_MAGIC   0x42005300u // PublicIn+0: 'B\0S\0'
 #define GC824_ARM_MAGIC    0x73333337u // CB+0: host-owns/armed

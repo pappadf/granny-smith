@@ -1,0 +1,35 @@
+# IIcx + Display Card 8•24 GC — ACCELERATOR ON at 8 bpp.
+#
+# The video_mode seed writes the slot PRAM so the GC decl-ROM driver boots the
+# screen at 640×480 8 bpp; the accelerator comes up exactly as in
+# iicx-824gc-accel and the card rasterizes the colour desktop: real pixValue
+# resolution from the record RGBs (the Finder desktop port ships CLASSIC
+# COLOUR CONSTANTS as its "pixValues"), 8-bpp boolean cores, the func-$15
+# blit at depth, and the $32/$3A hilite swap for the selected boot volume's
+# label.  Pixel-exact against the ROM-path reference (see -decline8).
+
+# Pin the RTC so the boot is deterministic run-to-run.
+machine.rtc.time = 3000000000
+
+machine.nubus.video_card = "824gc"
+machine.nubus.video_mode = "gc_640x480_8bpp"
+machine.boot "iicx" 8192
+machine.rom.reload
+
+machine.scsi.attach_hd "../../data/systems/system_6_0_8_20mb_8_24gc_accel.img" 0
+scheduler.run 200000000
+
+assert ${machine.nubus.slot[9].card.gc.on == true}       "accelerator did not turn on"
+assert ${machine.nubus.slot[9].card.gc.state == "gc-on"} "accelerator state != gc-on"
+assert ${machine.nubus.slot[9].card.gc.error == 0}       "accelerator posted an error"
+assert ${machine.nubus.slot[9].card.gc.rpc_count > 0}    "no RPCs serviced"
+# The interpreter actually drew (the queue was used, not just declined).
+assert ${machine.nubus.slot[9].card.gc.queue_bytes > 100} "geometry queue never drained"
+
+assert ${machine.screen.width == 640}  "screen width != 640"
+assert ${machine.screen.height == 480} "screen height != 480"
+
+# The 8-bpp colour Finder desktop, drawn by the CARD — pixel-exact.
+machine.screen.match finder-824gc-8bpp-640x480.png
+
+quit

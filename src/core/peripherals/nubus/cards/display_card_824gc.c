@@ -91,6 +91,12 @@ struct display_card_824gc_priv {
     uint32_t clut_pending[3];
     uint16_t clut_long_hi;
     uint8_t sense_code; // 3-bit monitor sense the card reports
+    int seeded_bpp; // boot depth from machine.nubus.video_mode (default 1).
+                    // The decl-ROM driver programs the boot mode at Open from
+                    // the slot PRAM (which the same seed wrote), so the model's
+                    // power-on format must match it across /RESET — the direct
+                    // (no-VidComm) programming path isn't decoded.  Runtime
+                    // depth switches arrive via VidComm (see gc_vidcomm).
     // ACDC RAMDAC palette load state (GC decl-ROM SetEntries path).
     uint8_t acdc_addr; // current palette index (auto-increments per entry)
     uint8_t acdc_phase; // 0=R,1=G,2=B; reset on ADDR-port write
@@ -129,7 +135,13 @@ struct display_card_824gc_priv {
     uint8_t gc_pat[4][8]; // pattern slots 1=pnPat 2=bkPat 3=fillPat (opPattern $71)
     uint8_t gc_pat_slot; // active pattern slot selected by opWhichPat ($73)
     uint16_t gc_mode; // current transfer mode (opMode $69); 8 = patCopy
-    uint8_t gc_fg, gc_bg; // 1-bpp fg/bg pixel (opFgColor $64 / opBkColor $6B)
+    uint32_t gc_fg, gc_bg; // fg/bg PIXEL VALUES resolved from the RGBs of ops
+                           // $64/$66 and $6B/$6D — bit 0 meaningful at 1 bpp,
+                           // the low byte at 8 bpp
+    uint32_t gc_hilite; // hilite PIXEL (op $70 rgbHiliteColor; default low-mem
+                        // HiliteRGB $0DA0) — the $32/$3A bk↔hilite swap
+    uint32_t gc_op_color; // opColor PIXEL (op $70 rgbOpColor; blend/pin weight
+                          // for the arithmetic modes — parsed, not yet used)
     int16_t gc_pen_x, gc_pen_y; // pen location (opPenLoc $68)
     int16_t gc_pen_w, gc_pen_h; // pen size (opPenSize $6E)
     int16_t gc_clip_t, gc_clip_l, gc_clip_b, gc_clip_r; // clip ∩ vis bounding box
@@ -147,6 +159,8 @@ struct display_card_824gc_priv {
     gc_reg_ctx_t ctx_super; // whole super-slot space (SRAM/DRAM/ctl/comm)
     gc_reg_ctx_t ctx_gcp; // GCQD CB window (standard slot; aliases DRAM CB)
 };
+
+static pixel_format_t format_for_bpp(int bpp); // fwd (video-mode section)
 
 // === DRAM big-endian accessors ==============================================
 // The comm protocol is big-endian longwords; the DRAM buffer holds them
@@ -417,6 +431,14 @@ static void gc_boot(display_card_824gc_priv_t *p) {
     dram_set_be32(p, GC824_DRAM_PUBLICOU + GC824_PO_VSIZE, p->display.height);
     dram_set_be32(p, GC824_DRAM_PUBLICOU + GC824_PO_FBCFG, 0);
 
+    // Stamp the VidComm firmware tag: from now on the decl-ROM video driver
+    // routes every cscSetMode through the VidComm block (programMode $3568
+    // tests this magic), handing the card the new geometry explicitly — how
+    // runtime depth switches (the Monitors panel) reach the model.  Real
+    // hardware behaves the same way: the tag only exists once the GC-OS has
+    // booted, so the driver-Open boot mode always takes the direct path.
+    dram_set_be32(p, GC824_DRAM_VIDCOMM + GC824_VC_MAGIC_OFF, GC824_VC_MAGIC);
+
     // Publish NuBus(CB) where the driver polls for it.
     dram_set_be32(p, GC824_DRAM_PUBLICIN + GC824_PI_CBADDR, p->cb_nubus);
 
@@ -436,13 +458,16 @@ static void gc_boot(display_card_824gc_priv_t *p) {
 // other depths still decline (proposal §3.7).
 
 // Apply one source/pattern INK bit `s` (0/1, pre-invert) at (x,y) under the
-// current mode + clip (1-bpp MSB; pixel 0 = white, 1 = black).  The classic
-// boolean cores of qd-transfer-modes.md §2.1, colorized at 1 bpp: the invert
-// bit (modes 4-7 / 12-15) flips the source first, then Copy paints fg on ink
-// and bg elsewhere, Or paints fg where the source has ink, Bic paints bg where
-// the source has ink, and Xor flips ink pixels (never colorized).  fg/bg are
-// the 1-bpp pixel values from opFg/BkColor.  Arithmetic modes ($20+) have no
-// invert bit and are not remapped (they never reach a 1-bpp screen).
+// current mode + clip, at the screen depth (1 or 8 bpp — func $2D only
+// accepts those).  The classic boolean cores of qd-transfer-modes.md §2.1,
+// colorized: the invert bit (modes 4-7 / 12-15) flips the source first, then
+// Copy paints fg on ink and bg elsewhere, Or paints fg where the source has
+// ink, Bic paints bg where the source has ink, and Xor flips the ink pixels'
+// index bits (never colorized — at 8 bpp that is dst ^= $FF, the B/W-mask
+// expansion of §4.1).  fg/bg are the pixel values from opFg/BkColor's
+// pixValue.  Arithmetic modes ($20+) need the CLUT→component→ITab model —
+// not implemented; they draw nothing (also the ROM's illegal-mode behavior)
+// and log so a scene that needs them is visible.
 static inline void gc_px(display_card_824gc_priv_t *p, int x, int y, int s) {
     if (x < 0 || x >= (int)p->display.width || y < 0 || y >= (int)p->display.height || y >= 480)
         return;
@@ -450,14 +475,58 @@ static inline void gc_px(display_card_824gc_priv_t *p, int x, int y, int s) {
     // so a fill clipped to the desktop region does not paint over icons/windows.
     if (!(p->gc_clipmask[y * 80 + (x >> 3)] & (0x80u >> (x & 7))))
         return;
+    if (p->gc_mode & 0x20) { // arithmetic family (incl. hilite $32/$3A)
+        if (p->display.format == PIXEL_1BPP_MSB) {
+            // 1-bit dst: arithmetic remaps through arithMode[] (§1); every
+            // variant lands on an xor/or/bic/copy of the B/W source — the
+            // pre-overhaul desktop was pixel-exact treating them via the low
+            // bits, so keep that (hilite $32 -> variant 2 -> srcXor = bit1).
+        } else if ((p->gc_mode & 0x17) == 0x12) { // hilite $32/$3A (§3.1)
+            // Where the source has ink (pattern pixel ≠ bk): swap bk↔hilite
+            // in the destination; every other dst pixel is untouched.
+            if (s && p->gc_fg != p->gc_bg) {
+                uint8_t *b = (uint8_t *)p->display.bits + (size_t)y * p->display.stride + x;
+                if (*b == (uint8_t)p->gc_bg)
+                    *b = (uint8_t)p->gc_hilite;
+                else if (*b == (uint8_t)p->gc_hilite)
+                    *b = (uint8_t)p->gc_bg;
+            }
+            return;
+        } else {
+            LOG(1, "arithmetic mode $%02x at 8 bpp not modelled — pixel skipped", p->gc_mode);
+            return;
+        }
+    } else if ((p->gc_mode & 0x04) != 0) {
+        s ^= 1; // notSrc/notPat: invert the source before colorizing
+    }
+    if (p->display.format == PIXEL_8BPP) {
+        uint8_t *b = (uint8_t *)p->display.bits + (size_t)y * p->display.stride + x;
+        uint8_t fg = (uint8_t)p->gc_fg, bg = (uint8_t)p->gc_bg;
+        switch (p->gc_mode & 3) {
+        case 1:
+            if (s)
+                *b = fg;
+            break; // Or: fg where ink ((fg & $FF)|(dst & ~$FF))
+        case 2:
+            if (s)
+                *b ^= 0xFF;
+            break; // Xor: flip the index bits where ink
+        case 3:
+            if (s)
+                *b = bg;
+            break; // Bic: bg where ink
+        default:
+            *b = s ? fg : bg;
+            break; // Copy: fg on ink, bg elsewhere
+        }
+        return;
+    }
     uint8_t *b = (uint8_t *)p->display.bits + (size_t)y * p->display.stride + (x >> 3);
     uint8_t m = (uint8_t)(0x80u >> (x & 7));
-    if ((p->gc_mode & 0x24) == 0x04)
-        s ^= 1; // notSrc/notPat: invert the source before colorizing
     switch (p->gc_mode & 3) {
     case 1:
         if (s) {
-            if (p->gc_fg)
+            if (p->gc_fg & 1)
                 *b |= m;
             else
                 *b &= (uint8_t)~m;
@@ -469,14 +538,14 @@ static inline void gc_px(display_card_824gc_priv_t *p, int x, int y, int s) {
         break; // Xor: flip where ink
     case 3:
         if (s) {
-            if (p->gc_bg)
+            if (p->gc_bg & 1)
                 *b |= m;
             else
                 *b &= (uint8_t)~m;
         }
         break; // Bic: bg where ink
     default:
-        if (s ? p->gc_fg : p->gc_bg)
+        if ((s ? p->gc_fg : p->gc_bg) & 1)
             *b |= m;
         else
             *b &= (uint8_t)~m;
@@ -492,6 +561,32 @@ static inline int gc_src(display_card_824gc_priv_t *p, int x, int y) {
 static void gc_span(display_card_824gc_priv_t *p, int y, int l, int r) {
     for (int x = l; x < r; x++)
         gc_px(p, x, y, gc_src(p, x, y));
+}
+// Resolve a 48-bit QuickDraw RGB to a device pixel at the screen depth — the
+// card-side Color2Index.  1 bpp: luminance threshold (dark → black = 1).
+// 8 bpp: nearest CLUT entry; exact for black/white and the standard palette.
+// Caveat: p->clut holds the DAC (gamma-corrected) values the ACDC was
+// programmed with, so a mid-colour can land one index off the ROM's ITab
+// answer — revisit with a logical-CLUT capture if a colour scene ever shows
+// it in the differential oracle.
+static uint32_t gc_resolve_rgb(display_card_824gc_priv_t *p, uint16_t r, uint16_t g, uint16_t b) {
+    if (p->display.format != PIXEL_8BPP) {
+        uint32_t lum = (uint32_t)r + g + b;
+        return (lum < 0x18000u) ? 1u : 0u;
+    }
+    int best = 0;
+    uint32_t bestd = 0xFFFFFFFFu;
+    for (int i = 0; i < 256; i++) {
+        int dr = (int)(r >> 8) - p->clut[i].r;
+        int dg = (int)(g >> 8) - p->clut[i].g;
+        int db = (int)(b >> 8) - p->clut[i].b;
+        uint32_t d = (uint32_t)(dr * dr + dg * dg + db * db);
+        if (d < bestd) {
+            bestd = d;
+            best = i;
+        }
+    }
+    return (uint32_t)best;
 }
 // Cursor shield (gc-cursor-protocol.md §6-§8).  The real card brackets every
 // screen-touching op with erase-cursor / redraw-cursor (text_2e7e0/text_2ead0):
@@ -1295,17 +1390,18 @@ static void gc_interp(display_card_824gc_priv_t *p, uint32_t base, uint32_t coun
             p->gc_pat_slot = (uint8_t)(dram_be32(p, off) & 0xFFFF) & 3;
             break;
         case 0x64:
-        case 0x66: { // opFgColor: {RGB at +2, pixValue.L at +8}
-            uint32_t lum = (uint32_t)dram_be16(p, off + 2) + dram_be16(p, off + 4) + dram_be16(p, off + 6);
-            p->gc_fg = (lum < 0x18000u) ? 1 : 0; // dark -> black(1), light -> white(0)
+        case 0x66: // opFgColor(Idx): {RGB at +2, pixValue.L at +8}.  Resolve
+            // the pixel from the RGB — NOT from pixValue: for old-style
+            // GrafPorts the host ships port->fgColor verbatim, which is a
+            // CLASSIC COLOUR CONSTANT (33 = blackColor…), not a pixel (the
+            // Finder desktop port does exactly this; §2.2 "old ports map
+            // classic planar constants").  The RGB words are always the truth.
+            p->gc_fg = gc_resolve_rgb(p, dram_be16(p, off + 2), dram_be16(p, off + 4), dram_be16(p, off + 6));
             break;
-        }
         case 0x6B:
-        case 0x6D: { // opBkColor
-            uint32_t lum = (uint32_t)dram_be16(p, off + 2) + dram_be16(p, off + 4) + dram_be16(p, off + 6);
-            p->gc_bg = (lum < 0x18000u) ? 1 : 0;
+        case 0x6D: // opBkColor(Idx)
+            p->gc_bg = gc_resolve_rgb(p, dram_be16(p, off + 2), dram_be16(p, off + 4), dram_be16(p, off + 6));
             break;
-        }
         case 0x6A:
         case 0x6C: { // opClipRgn / opVisRgn: intersect the region into the mask
             int t = (int16_t)(dram_be32(p, off + 4) >> 16);
@@ -1409,8 +1505,20 @@ static void gc_interp(display_card_824gc_priv_t *p, uint32_t base, uint32_t coun
             gc_fill_rgn(p, off + 4);
             p->draw_count++;
             break;
+        case 0x72: // opPixPat (type-5 cache key — needs func $0C CachePixPat)
+        case 0x74: // opRGBPat (MakeRGBPat 2x2 ordered dither)
+            // A colour pattern we don't model would make the NEXT fill use a
+            // stale slot — loud log so a scene that needs these is visible.
+            LOG(1, "colour pattern op $%02x not modelled — fills may be wrong", op);
+            break;
+        case 0x70: // opSpecialColors: rgbOpColor at +4, rgbHiliteColor at +$A
+            p->gc_op_color = gc_resolve_rgb(p, dram_be16(p, off + 4), dram_be16(p, off + 6), dram_be16(p, off + 8));
+            p->gc_hilite = gc_resolve_rgb(p, dram_be16(p, off + 0xA), dram_be16(p, off + 0xC), dram_be16(p, off + 0xE));
+            break;
+        case 0x75: // opQDGlobal (a QD-private global; identity open — no consumer)
+            break;
         default:
-            break; // $09 opBits (dead) skipped; colour opcodes ($70/$72/...) no-op
+            break; // $09 opBits (dead) skipped
         }
         off += adv;
     }
@@ -1475,6 +1583,27 @@ static int gc_stretchbits(display_card_824gc_priv_t *p) {
         (dRr - dRl) != (int16_t)dram_be16(p, rb + 0xB6) - sRl) {
         return 0; // stretched → decline
     }
+    // Depths: the raw rowBytes word's bit 15 marks a PixMap (pixelSize at
+    // +0x20 in the copied map) vs a plain BitMap (1 bpp).
+    int depth = (p->display.format == PIXEL_8BPP) ? 8 : 1;
+    int dstPS = (dram_be16(p, rb + 0x06) & 0x8000) ? dram_be16(p, rb + 0x02 + 0x20) : 1;
+    int srcPS = (dram_be16(p, rb + 0x3A) & 0x8000) ? dram_be16(p, rb + 0x36 + 0x20) : 1;
+    if (dstPS != depth)
+        return 0; // request disagrees with the screen -> ROM sorts it out
+    if (depth == 1 && srcPS != 1)
+        return 0;
+    if (depth == 8 && srcPS != 8 && srcPS != 1)
+        return 0; // 8bpp dst accepts same-depth or 1-bit-expanded sources
+    if (maskBase && (dram_be16(p, rb + 0x6E) & 0x8000) && dram_be16(p, rb + 0x6A + 0x20) != 1)
+        return 0; // only 1-bit masks (deep CopyDeepMask blends -> ROM)
+    if (depth == 8) {
+        // v1 colorize envelope at 8 bpp: only the B/W port (fg black, bk
+        // white — the colorize-NOP case, §2.3).  Anything colorized routes
+        // through MakeScaleTbl in RGB space on the ROM path.
+        if (dram_be16(p, rb + 0xE8) != 0 || dram_be16(p, rb + 0xEA) != 0 || dram_be16(p, rb + 0xEC) != 0 ||
+            dram_be16(p, rb + 0xEE) != 0xFFFF || dram_be16(p, rb + 0xF0) != 0xFFFF || dram_be16(p, rb + 0xF2) != 0xFFFF)
+            return 0;
+    }
 
     // Blit clip = ∩ of the request's regions (0 = absent).  A region we can't
     // fetch faithfully declines the whole blit — the ROM path is the safety net.
@@ -1490,10 +1619,11 @@ static int gc_stretchbits(display_card_824gc_priv_t *p) {
         gc_mask_and_region(p->gc_blitmask, buf, rsz);
     }
 
-    // 1-bpp colorize (§2.2): fg/bk pixel = bit 0 of the port colour indices
-    // (new-port chunky index or old-port classic constant — bit 0 either way).
-    int fg = (int)(dram_be32(p, rb + 0xE0) & 1);
-    int bk = (int)(dram_be32(p, rb + 0xE4) & 1);
+    // fg/bk PIXEL values resolved from the request's RGBs (+0xE8/+0xEE) — the
+    // index fields (+0xE0/+0xE4) hold classic colour CONSTANTS for old-style
+    // ports (33 = blackColor…), so the RGB is the only reliable source.
+    int fg = (int)gc_resolve_rgb(p, dram_be16(p, rb + 0xE8), dram_be16(p, rb + 0xEA), dram_be16(p, rb + 0xEC));
+    int bk = (int)gc_resolve_rgb(p, dram_be16(p, rb + 0xEE), dram_be16(p, rb + 0xF0), dram_be16(p, rb + 0xF2));
     int inv = (mode >> 2) & 1; // notSrc*: invert the source before colorizing
     gc_cursor_shield(p, dRt - dstBnT, dRl - dstBnL, dRb - dstBnT, dRr - dstBnL);
     for (int dy = dRt; dy < dRb; dy++) {
@@ -1512,6 +1642,36 @@ static int gc_stretchbits(display_card_824gc_priv_t *p) {
             int sx = sRl + (dx - dRl) - srcBnL;
             if (maskBase && !gc_bmp_pixel(maskBase, my, mRl + (dx - dRl) - maskBnL, maskRB))
                 continue; // outside the CopyMask 1-bit mask → leave the dst
+            if (depth == 8) {
+                // 8-bpp dst: same-depth source = bitwise index math on bytes
+                // (§2.1, colorize-NOP guaranteed by the envelope); 1-bit
+                // source expands 1→fg pixel / 0→bk pixel first (§2.4).
+                uint8_t s;
+                if (srcPS == 8) {
+                    uint32_t a = ((srcBase & 0xF0000000u) == 0x90000000u) ? srcBase : (srcBase & 0x00FFFFFFu);
+                    s = memory_debug_read_uint8(a + (uint32_t)sy * (uint32_t)srcRB + (uint32_t)sx);
+                    if (inv)
+                        s = (uint8_t)~s;
+                } else {
+                    int b1 = gc_bmp_pixel(srcBase, sy, sx, srcRB) ^ inv;
+                    s = (uint8_t)(b1 ? fg : bk);
+                }
+                switch (mode & 3) {
+                case 1:
+                    row[x] |= s;
+                    break; // Or
+                case 2:
+                    row[x] ^= s;
+                    break; // Xor
+                case 3:
+                    row[x] &= (uint8_t)~s;
+                    break; // Bic
+                default:
+                    row[x] = s;
+                    break; // Copy
+                }
+                continue;
+            }
             uint8_t bit = (uint8_t)(0x80u >> (x & 7));
             int s = gc_bmp_pixel(srcBase, sy, sx, srcRB) ^ inv;
             switch (mode & 3) {
@@ -1558,8 +1718,15 @@ static void gc_reset_draw_state(display_card_824gc_priv_t *p) {
     p->gc_clip_b = (int16_t)p->display.height;
     p->gc_clip_r = (int16_t)p->display.width;
     gc_clip_reset(p); // all-drawable; opClipRgn/opVisRgn narrow it
-    p->gc_fg = 1; // black
-    p->gc_bg = 0; // white
+    // Default port colours as PIXEL VALUES for the screen depth: black fg,
+    // white bg (1 bpp: 1/0; 8 bpp standard CLUT: $FF/$00).
+    p->gc_fg = (p->display.format == PIXEL_8BPP) ? 0xFFu : 1u;
+    p->gc_bg = 0;
+    // Default hilite = the architectural low-mem HiliteRGB ($0DA0, 3 words) —
+    // what an old-style port uses when no op $70 arrives (§3.1).
+    p->gc_hilite = gc_resolve_rgb(p, memory_debug_read_uint16(0x0DA0), memory_debug_read_uint16(0x0DA2),
+                                  memory_debug_read_uint16(0x0DA4));
+    p->gc_op_color = 0;
     p->gc_pat_slot = 1;
     memset(p->gc_pat, 0, sizeof(p->gc_pat));
 }
@@ -1639,11 +1806,13 @@ static uint32_t gc_dispatch_func(display_card_824gc_priv_t *p, uint32_t func, ui
         break;
     case 0x2D: // SetPort — accept the port so its geometry queue is interpreted.
         // gc.force_decline (the differential test oracle, proposal §4.1)
-        // declines instead: the SAME guest scene then renders via the ROM path.
-        result = p->force_decline ? 0 : 1;
+        // declines instead: the SAME guest scene then renders via the ROM
+        // path.  Depths without rasterizers (2/4/16/32 bpp) also decline —
+        // the safety net keeps them correct until they're implemented.
+        result =
+            (!p->force_decline && (p->display.format == PIXEL_1BPP_MSB || p->display.format == PIXEL_8BPP)) ? 1 : 0;
         p->gc_accel = (result != 0); // gate the interpreter on port acceptance
-        LOG(3, "func $2D SetPort %s",
-            p->force_decline ? "declined (force_decline)" : "accepted -> card interprets the geometry queue");
+        LOG(3, "func $2D SetPort %s", result ? "accepted -> card interprets the geometry queue" : "declined");
         break;
     case 0x30: // FontDownload — returning 0 declines text cleanly (proposal §3.10)
         result = 0;
@@ -1724,6 +1893,39 @@ static void gc_drain_queue(display_card_824gc_priv_t *p) {
     dram_set_be32(p, GC824_DRAM_CB + GC824_CB_QUEUE_ACK, pub);
 }
 
+// VidComm mode change: the video driver published new geometry (see the
+// header block).  Apply it to the display and clear the ack byte the host
+// polls.  The FB base stays inside the DRAM aperture at every shipped mode
+// (0x11400 at both 1 and 8 bpp — guest-probed); reject anything that doesn't
+// decode rather than tearing the display.
+static void gc_vidcomm(display_card_824gc_priv_t *p) {
+    uint32_t vc = GC824_DRAM_VIDCOMM;
+    uint32_t fbbase = dram_be32(p, vc + GC824_VC_FBBASE);
+    uint32_t rowbytes = dram_be32(p, vc + GC824_VC_ROWBYTES);
+    uint32_t bpp = dram_be32(p, vc + GC824_VC_BPP);
+    uint32_t scanlines = dram_be32(p, vc + GC824_VC_SCANLINES);
+    dram_set_be32(p, vc + GC824_VC_GO, 0); // consume the request
+    uint32_t fboff = fbbase & 0x0FFFFFFFu; // card-local
+    if (fboff >= GC824_DRAM_OFFSET && fboff - GC824_DRAM_OFFSET < GC824_DRAM_SIZE && rowbytes >= 8 &&
+        rowbytes <= 8192 && scanlines >= 1 && scanlines <= 2048) {
+        int b = (bpp == 24) ? 32 : (int)bpp; // programMode folds 32 -> 24
+        p->display.format = format_for_bpp(b);
+        p->display.bits = p->dram + (fboff - GC824_DRAM_OFFSET);
+        p->display.stride = rowbytes;
+        p->display.height = scanlines;
+        p->display.width = 640; // fixed by the monitor; rowBytes >= width*bpp/8
+        if (b > 0 && rowbytes * 8u / (uint32_t)b < p->display.width)
+            p->display.width = rowbytes * 8u / (uint32_t)b;
+        p->display.shape_dirty = true;
+        p->display.fb_dirty = true;
+        LOG(1, "VidComm mode change: fb=$%08x rowBytes=%u bpp=%u scanlines=%u", fbbase, rowbytes, bpp, scanlines);
+    } else {
+        LOG(0, "VidComm mode change rejected: fb=$%08x rowBytes=%u bpp=%u scanlines=%u", fbbase, rowbytes, bpp,
+            scanlines);
+    }
+    dram_set_be32(p, vc + GC824_VC_ACK, 0); // ack: host polls byte 0 == 0
+}
+
 // After any guest write into DRAM, check the watched comm-region longwords and
 // react (protocol §5.3/§6).  Writes may be byte/word/long; the driver issues
 // these as MOVE.L, so reading the full longword back is robust.
@@ -1733,6 +1935,9 @@ static void gc_check_triggers(display_card_824gc_priv_t *p) {
             gc_boot(p);
         return;
     }
+    // VidComm mode-change request (geometry published + go raised).
+    if (dram_be32(p, GC824_DRAM_VIDCOMM + GC824_VC_GO) == 0x80000000u)
+        gc_vidcomm(p);
     // Arm: reply-mailbox address + arm magic.
     if (!p->armed && dram_be32(p, GC824_DRAM_CB + GC824_CB_STATUS) == GC824_ARM_MAGIC) {
         p->armed = true;
@@ -2078,15 +2283,18 @@ static void set_poweron_defaults(display_card_824gc_priv_t *p) {
     p->acdc_phase = 0;
     p->clut_long_hi = 0;
 
-    // The GC decl-ROM video driver (config 0 → 640×480) brings the screen up at
-    // 1 bpp (the System 6 boot default).  With 32-bit QuickDraw present, its
+    // The GC decl-ROM video driver (config 0 → 640×480) brings the screen up
+    // at the depth the slot PRAM selects (the video_mode seed wrote it; 1 bpp
+    // is the virgin default).  With 32-bit QuickDraw present, its
     // SecondaryInit puts the framebuffer in the super-slot DRAM aperture:
-    // ScrnBase = NuBus 0x9C011400 = p->dram + GC824_FB_OFFSET, stride 1024.
-    // QuickDraw draws the entire Finder desktop there, so that is what the host
-    // display surfaces (NOT the standard-slot VRAM, which only holds the early
-    // "Welcome to Macintosh" startup screen).  TODO: track cscSetMode depth
-    // changes instead of the fixed 1 bpp so a Monitors depth switch is honoured.
-    p->display.format = PIXEL_1BPP_MSB;
+    // ScrnBase = NuBus 0x9C011400 = p->dram + GC824_FB_OFFSET, stride 1024 at
+    // every indexed depth (verified by guest probe at 1 and 8 bpp).  QuickDraw
+    // draws the entire Finder desktop there, so that is what the host display
+    // surfaces (NOT the standard-slot VRAM, which only holds the early
+    // "Welcome to Macintosh" startup screen).  The boot mode must match what
+    // the driver will program at Open (the direct MFB/ACDC path isn't
+    // decoded); RUNTIME depth switches arrive via VidComm (gc_vidcomm).
+    p->display.format = format_for_bpp(p->seeded_bpp ? p->seeded_bpp : 1);
     p->display.width = 640u;
     p->display.height = 480u;
     p->display.stride = 1024u;
@@ -2174,22 +2382,22 @@ static int card_init(nubus_card_t *card, config_t *cfg, checkpoint_t *cp) {
     card->declrom = p->vrom;
     card->declrom_size = p->vrom_size;
 
-    // Default monitor: 640×480 (multisync), or a pending pick.
+    // Default monitor: 640×480 (multisync), or a pending pick.  The seeded
+    // depth persists in priv (not just PRAM) so set_poweron_defaults restores
+    // it across every /RESET — the guest's boot-time mode programming (the
+    // direct MFB/ACDC path) isn't decoded, and the PRAM seed tells the driver
+    // to bring the screen up at exactly this depth.
     p->sense_code = 6;
     p->display.width = 640;
     p->display.height = 480;
+    p->seeded_bpp = 1;
     if (seeded_monitor) {
         p->sense_code = seeded_monitor->sense_code;
         p->display.width = seeded_monitor->width;
         p->display.height = seeded_monitor->height;
+        p->seeded_bpp = seeded_depth_bpp;
     }
     set_poweron_defaults(p);
-    if (seeded_monitor) {
-        pixel_format_t f = format_for_bpp(seeded_depth_bpp);
-        p->display.format = f;
-        p->jmfb_row_words = (uint16_t)(p->display.width / 32u);
-        recompute_stride(p);
-    }
 
     card->priv = p;
 
