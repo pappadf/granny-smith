@@ -2694,6 +2694,12 @@ static uint32_t gc_dispatch_func(display_card_824gc_priv_t *p, uint32_t func, ui
             p->queue_ack = cnt;
         }
         dram_set_be32(p, GC824_DRAM_CB + GC824_CB_QUEUE_ACK, dram_be32(p, GC824_DRAM_CB + GC824_CB_QUEUE_PUB));
+        if (func == 0x26) {
+            // sub_7C56 resets the host's write pointers after every $26
+            // submit: the next cycle re-marshals from the buffer start.
+            p->queue_ack = 0;
+            dram_set_be32(p, GC824_DRAM_CB + GC824_CB_QUEUE_PUB, 0);
+        }
         // func $26 (submit+sync) ENDS the port epoch: on the real card the
         // DrawMultiObject activation — and the origin/clip it captured in the
         // func-$2D prologue — dies with the batch (pump status $C9), and the
@@ -2821,8 +2827,16 @@ static void gc_rpc(display_card_824gc_priv_t *p) {
 // that as the start of a new drawing cycle and reset the interpreter state.
 static void gc_drain_queue(display_card_824gc_priv_t *p) {
     uint32_t pub = dram_be32(p, GC824_DRAM_CB + GC824_CB_QUEUE_PUB);
+    // A publish value BELOW the high-water mark is NOT a buffer reset: GCQD's
+    // $1C0 counter lags one batch behind the func-$38 checkpoint (whose args
+    // carry the authoritative count that already advanced queue_ack).
+    // Re-interpreting from 0 here replayed the whole cycle after every
+    // checkpoint — each ZoomRects/DragGrayRgn XOR frame re-XORed once per
+    // step, leaving un-erased outline residue (window-open zoom, window
+    // drag).  The REAL cycle reset is the func-$26 submit (sub_7C56 resets
+    // the write pointers) — handled there; a lagging counter is ignored.
     if (pub < p->queue_ack)
-        p->queue_ack = 0; // buffer was reset → new drawing cycle
+        return;
     if (pub == p->queue_ack)
         return;
     uint32_t n = pub - p->queue_ack;
