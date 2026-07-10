@@ -2621,6 +2621,17 @@ static uint32_t gc_dispatch_func(display_card_824gc_priv_t *p, uint32_t func, ui
             p->queue_ack = cnt;
         }
         dram_set_be32(p, GC824_DRAM_CB + GC824_CB_QUEUE_ACK, dram_be32(p, GC824_DRAM_CB + GC824_CB_QUEUE_PUB));
+        // func $26 (submit+sync) ENDS the port epoch: on the real card the
+        // DrawMultiObject activation — and the origin/clip it captured in the
+        // func-$2D prologue — dies with the batch (pump status $C9), and the
+        // host clears its last-synced-port cache (sub_7C56 clears C+$C8), so
+        // the next drawing record ALWAYS re-stages CB+$170 from the live
+        // GrafPort and re-sends func $2D ($6684/$66AC/$6702).  Mirroring that
+        // here is what keeps a mid-session SetOrigin (the cdev list LDEF)
+        // coherent: never interpret another buffer on a stale origin.
+        // func $38 is the mid-batch checkpoint — the batch (and port) live on.
+        if (func == 0x26)
+            p->gc_accel = false;
         result = 0;
         break;
     }
