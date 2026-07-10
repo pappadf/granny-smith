@@ -143,7 +143,27 @@ struct display_card_824gc_priv {
     uint32_t gc_op_color; // opColor PIXEL (op $70 rgbOpColor; blend/pin weight
                           // for the arithmetic modes — parsed, not yet used)
     int16_t gc_pen_x, gc_pen_y; // pen location (opPenLoc $68)
+    uint16_t gc_pen_hfrac; // pnLocHFrac (op $68 +2; default $8000) — the pen's
+                           // 16.16 fraction, threaded through text runs
     int16_t gc_pen_w, gc_pen_h; // pen size (opPenSize $6E)
+
+    // --- Text (func $30 FontDownload + ops $67/$06; proposal §3.10) ---
+    // The host downloads font data into card caches: type 8 = strikes (raw
+    // FontRec/NFNT bytes, keyed by the host handle), type 10 = Font-Manager
+    // width tables (0x434 bytes: 256 Fixed advances + a trailer holding the
+    // strike handle at +$410 and the gc24 checksum at +$432).  op $67 selects
+    // the current font from the caches; op $06 renders with it.
+    struct gc_cache_ent {
+        uint32_t key; // host handle (the cache key); 0 = empty
+        uint8_t *data;
+        uint32_t size;
+    } gc_fonts[8], gc_wtabs[4]; // type 8 / type 10
+    int gc_font_rr, gc_wtab_rr; // round-robin replacement cursors
+    uint8_t *gc_cur_wt; // current width table (points into gc_wtabs)
+    uint8_t *gc_cur_strike; // current strike (points into gc_fonts)
+    uint32_t gc_cur_strike_size;
+    uint8_t gc_font_info[26]; // op $67 font-info block (style/scale fields)
+
     int16_t gc_clip_t, gc_clip_l, gc_clip_b, gc_clip_r; // clip ∩ vis bounding box
     uint8_t *gc_clipmask; // 1 bit/pixel drawable mask (clipRgn ∩ visRgn), stride 80
     uint8_t *gc_blitmask; // 1 bit/pixel per-blit mask (func $15 rgnA∩rgnB∩rgnC)
@@ -161,6 +181,10 @@ struct display_card_824gc_priv {
 };
 
 static pixel_format_t format_for_bpp(int bpp); // fwd (video-mode section)
+// fwds (text section — used by gc_interp/gc_boot, defined after the rasterizers)
+static void gc_font_caches_flush(display_card_824gc_priv_t *p);
+static struct gc_cache_ent *gc_cache_find(struct gc_cache_ent *tab, int n, uint32_t key);
+static void gc_draw_text(display_card_824gc_priv_t *p, uint32_t off);
 
 // === DRAM big-endian accessors ==============================================
 // The comm protocol is big-endian longwords; the DRAM buffer holds them
@@ -417,8 +441,10 @@ static void gc_boot(display_card_824gc_priv_t *p) {
 
     // Clear GCQD's private context region so its offscreen-list lock starts
     // unlocked (myflag/peer 0, list head 0) — the Am29000 firmware would zero
-    // this shared scratch at GC-OS bring-up; the HLE must do the same.
+    // this shared scratch at GC-OS bring-up; the HLE must do the same.  A
+    // fresh GC-OS boot also starts with empty caches.
     memset(p->dram + GC824_DRAM_GCTX, 0, GC824_GCTX_SIZE);
+    gc_font_caches_flush(p);
 
     // Fill the runtime PublicOu fields the kernel would (sig/version already
     // arrived as stored ACEF bytes; synthesize the signature too so the check
@@ -1368,9 +1394,33 @@ static void gc_interp(display_card_824gc_priv_t *p, uint32_t base, uint32_t coun
         case 0x69:
             p->gc_mode = (uint16_t)(dram_be32(p, off) & 0xFFFF);
             break; // opMode
-        case 0x68: // opPenLoc: Point at +4 = {v.w, h.w}
+        case 0x68: // opPenLoc: {pnLocHFrac.w at +2, Point at +4 = {v.w, h.w}}
+            p->gc_pen_hfrac = dram_be16(p, off + 2);
             p->gc_pen_y = (int16_t)(dram_be32(p, off + 4) >> 16);
             p->gc_pen_x = (int16_t)(dram_be32(p, off + 4) & 0xFFFF);
+            break;
+        case 0x67: { // opSwapFont: font-info 26 B at +2, width-table key at +$1C
+            if (off + 0x20 > GC824_DRAM_SIZE)
+                break;
+            memcpy(p->gc_font_info, p->dram + off + 2, sizeof(p->gc_font_info));
+            uint32_t wtkey = dram_be32(p, off + 0x1C);
+            struct gc_cache_ent *wt = gc_cache_find(p->gc_wtabs, 4, wtkey);
+            p->gc_cur_wt = wt ? wt->data : NULL;
+            // The strike key lives in the width table's trailer (+$410); the
+            // font handle at rec+4 is the fallback lookup (card 0xE448).
+            struct gc_cache_ent *stk = wt ? gc_cache_find(p->gc_fonts, 8, LOAD_BE32(wt->data + 0x410)) : NULL;
+            if (!stk)
+                stk = gc_cache_find(p->gc_fonts, 8, dram_be32(p, off + 4));
+            p->gc_cur_strike = stk ? stk->data : NULL;
+            p->gc_cur_strike_size = stk ? stk->size : 0;
+            if (!wt || !stk)
+                LOG(0, "opSwapFont: cache miss (wt key $%08x) — text will drop", wtkey);
+            if (dram_be32(p, off + 0x14) != dram_be32(p, off + 0x18))
+                LOG(0, "opSwapFont: scaled text (numer != denom) not modelled — drawn unscaled");
+            break;
+        }
+        case 0x06: // opText
+            gc_draw_text(p, off);
             break;
         case 0x6E: // opPenSize: Point at +4 = {v.w, h.w}
             p->gc_pen_h = (int16_t)(dram_be32(p, off + 4) >> 16);
@@ -1709,6 +1759,182 @@ static int gc_stretchbits(display_card_824gc_priv_t *p) {
     return 1;
 }
 
+// === Text (func $30 FontDownload + ops $67/$06; proposal §3.10) ==============
+// The host measures (StdTxMeas) and downloads font data; the card only draws.
+// Func $30 args (packing byte-verified from the host's sub_4A44 emitter,
+// gc24--4048.s $4D80-$4E5C): arg0 = group mask, then in order —
+//   bit 0:        {WidthTabHandle, ptr}        type-10 width table (0x434 B;
+//                 the host stamps its checksum into wt+$432 first)
+//   bit 1/bit 3:  {strikeH, ptr, size} / {strikeH, ptr}   type-8 strike,
+//                 RAM (sized copy) / ROM-resident (size computed from FontRec)
+//   bit 2/bit 4:  {fontH, ptr[, size]}         second type-8 entry, same rules
+// Any failing sub-op → result 0 (the host rolls the checksum back and draws
+// text unaccelerated — the safety net).
+// op $67 opSwapFont selects: width table by key rec+$1C; strike by the handle
+// the width table carries at +$410 (fallback: the font handle at rec+4).
+// op $06 opText renders: per-char advances from the width table's Fixed
+// entries (spaces = long A, stored into wt+$80), glyphs from the classic
+// FontRec strike (bitImage / locTable / owTable, $FFFF = missing).
+
+#define GC824_WTAB_SIZE  0x434u // Font Manager width table incl. trailer
+#define GC824_STRIKE_MAX 0x40000u // sanity cap on a strike copy
+
+static struct gc_cache_ent *gc_cache_find(struct gc_cache_ent *tab, int n, uint32_t key) {
+    for (int i = 0; i < n; i++)
+        if (key && tab[i].key == key)
+            return &tab[i];
+    return NULL;
+}
+// Copy `size` guest bytes at host pointer `ptr` (24-bit master-pointer rules,
+// as gc_bmp_pixel) into a fresh cache entry for `key`, replacing round-robin.
+static struct gc_cache_ent *gc_cache_put(struct gc_cache_ent *tab, int n, int *rr, uint32_t key, uint32_t ptr,
+                                         uint32_t size) {
+    if (!key || !size || size > GC824_STRIKE_MAX)
+        return NULL;
+    struct gc_cache_ent *e = gc_cache_find(tab, n, key);
+    if (!e) {
+        e = &tab[*rr];
+        *rr = (*rr + 1) % n;
+    }
+    uint8_t *buf = malloc(size);
+    if (!buf)
+        return NULL;
+    uint32_t a = ((ptr & 0xF0000000u) == 0x90000000u) ? ptr : (ptr & 0x00FFFFFFu);
+    for (uint32_t i = 0; i < size; i++)
+        buf[i] = memory_debug_read_uint8(a + i);
+    free(e->data);
+    e->key = key;
+    e->data = buf;
+    e->size = size;
+    return e;
+}
+static void gc_font_caches_flush(display_card_824gc_priv_t *p) {
+    for (size_t i = 0; i < sizeof(p->gc_fonts) / sizeof(p->gc_fonts[0]); i++) {
+        free(p->gc_fonts[i].data);
+        p->gc_fonts[i] = (struct gc_cache_ent){0};
+    }
+    for (size_t i = 0; i < sizeof(p->gc_wtabs) / sizeof(p->gc_wtabs[0]); i++) {
+        free(p->gc_wtabs[i].data);
+        p->gc_wtabs[i] = (struct gc_cache_ent){0};
+    }
+    p->gc_cur_wt = NULL;
+    p->gc_cur_strike = NULL;
+    p->gc_cur_strike_size = 0;
+}
+// The dense FontRec size for a ROM-resident (size-less) strike: header $1A,
+// owTable at $10 + owTLoc*2, plus lastChar-firstChar+3 trailing word entries.
+static uint32_t gc_fontrec_size(uint32_t ptr) {
+    uint32_t a = ((ptr & 0xF0000000u) == 0x90000000u) ? ptr : (ptr & 0x00FFFFFFu);
+    int first = (int16_t)memory_debug_read_uint16(a + 2);
+    int last = (int16_t)memory_debug_read_uint16(a + 4);
+    uint32_t owtloc = memory_debug_read_uint16(a + 16);
+    if (last < first)
+        return 0;
+    return 0x10u + owtloc * 2u + (uint32_t)(last - first + 3) * 2u;
+}
+// Func $30 FontDownload: parse the group mask + packed args (see above).
+static int gc_font_download(display_card_824gc_priv_t *p) {
+    uint32_t a = GC824_DRAM_CB + GC824_CB_ARGSAREA;
+    uint32_t mask = dram_be32(p, a);
+    a += 4;
+    if (mask & 1) { // width table (type 10)
+        uint32_t h = dram_be32(p, a), ptr = dram_be32(p, a + 4);
+        a += 8;
+        if (!gc_cache_put(p->gc_wtabs, 4, &p->gc_wtab_rr, h, ptr, GC824_WTAB_SIZE))
+            return 0;
+    }
+    for (int g = 0; g < 2; g++) { // strike group, then font group (type 8)
+        uint32_t ram_bit = g == 0 ? 0x2u : 0x4u, rom_bit = g == 0 ? 0x8u : 0x10u;
+        if (mask & ram_bit) {
+            uint32_t h = dram_be32(p, a), ptr = dram_be32(p, a + 4), size = dram_be32(p, a + 8);
+            a += 12;
+            if (!gc_cache_put(p->gc_fonts, 8, &p->gc_font_rr, h, ptr, size))
+                return 0;
+        } else if (mask & rom_bit) {
+            uint32_t h = dram_be32(p, a), ptr = dram_be32(p, a + 4);
+            a += 8;
+            if (!gc_cache_put(p->gc_fonts, 8, &p->gc_font_rr, h, ptr, gc_fontrec_size(ptr)))
+                return 0;
+        }
+    }
+    LOG(2, "func $30 FontDownload mask $%02x cached", mask);
+    return 1;
+}
+
+// op $06 opText: render a measured run with the current font (card 0xE660 /
+// renderer text_115c8 — a DrText port).  `off` = DRAM offset of the record.
+static void gc_draw_text(display_card_824gc_priv_t *p, uint32_t off) {
+    int len = (int16_t)dram_be16(p, off + 2);
+    uint32_t spaceW = dram_be32(p, off + 4); // long A: space-glyph Fixed width
+    uint32_t rawAdv = dram_be32(p, off + 8); // long B: raw advance; 0 = no-op
+    int32_t scaledAdv = (int32_t)dram_be32(p, off + 0xC);
+    int32_t acc = ((int32_t)p->gc_pen_x << 16) + (int32_t)p->gc_pen_hfrac;
+    int32_t accEnd = acc + scaledAdv;
+    const uint8_t *st = p->gc_cur_strike;
+    if (len > 0 && rawAdv != 0 && st && p->gc_cur_wt && off + 0x10 + (uint32_t)len <= GC824_DRAM_SIZE) {
+        // The card stores the run's space width into the cached width table's
+        // char-$20 slot, so per-space advance follows the host (0xE690).
+        STORE_BE32(p->gc_cur_wt + 0x80, spaceW);
+        int first = (int16_t)LOAD_BE16(st + 2), last = (int16_t)LOAD_BE16(st + 4);
+        int widMax = (int16_t)LOAD_BE16(st + 6);
+        int kern = (int16_t)LOAD_BE16(st + 8);
+        int height = (int16_t)LOAD_BE16(st + 14);
+        uint32_t owtloc = LOAD_BE16(st + 16);
+        int ascent = (int16_t)LOAD_BE16(st + 18);
+        uint32_t rowbytes = (uint32_t)LOAD_BE16(st + 24) * 2u;
+        const uint8_t *bits = st + 26;
+        const uint8_t *loct = st + 26 + (size_t)rowbytes * (size_t)height;
+        const uint8_t *owt = st + 16 + (size_t)owtloc * 2;
+        int nglyph = last - first + 1; // owTable/locTable index of the missing glyph
+        // Bounds: bitImage + both tables (incl. the missing glyph's end column)
+        // must lie inside the cached strike bytes.
+        bool sane = first >= 0 && last >= first && height > 0 && rowbytes > 0 &&
+                    26 + rowbytes * (size_t)height + (size_t)(nglyph + 2) * 2 <= p->gc_cur_strike_size &&
+                    16 + (size_t)owtloc * 2 + (size_t)(nglyph + 1) * 2 <= p->gc_cur_strike_size;
+        if (!sane) {
+            LOG(0, "opText: cached strike fails sanity (first %d last %d h %d rb %u size %u) — run dropped", first,
+                last, height, rowbytes, p->gc_cur_strike_size);
+        } else {
+            if (p->gc_font_info[6] || p->gc_font_info[7])
+                LOG(1, "opText: on-card style synthesis (bold/italic) not modelled — drawn plain");
+            if ((p->gc_mode & 0x27) == 0)
+                LOG(1, "opText: srcCopy text mode — background not painted (ink only)");
+            int top = p->gc_pen_y - ascent;
+            gc_cursor_shield(p, top, (acc >> 16) + kern - widMax, top + height, (accEnd >> 16) + kern + 2 * widMax);
+            for (int i = 0; i < len; i++) {
+                uint8_t c = p->dram[off + 0x10 + (uint32_t)i];
+                int idx = (c >= first && c <= last) ? c - first : nglyph;
+                uint16_t ow = LOAD_BE16(owt + (size_t)idx * 2);
+                if (ow == 0xFFFF && idx != nglyph) {
+                    idx = nglyph;
+                    ow = LOAD_BE16(owt + (size_t)idx * 2);
+                }
+                if (ow != 0xFFFF) {
+                    int goff = ow >> 8; // left-side bearing (with kernMax)
+                    int c0 = LOAD_BE16(loct + (size_t)idx * 2);
+                    int c1 = LOAD_BE16(loct + (size_t)idx * 2 + 2);
+                    int left = (acc >> 16) + kern + goff;
+                    if (c1 > c0 && (uint32_t)c1 <= rowbytes * 8u) {
+                        for (int row = 0; row < height; row++) {
+                            const uint8_t *rb = bits + (size_t)row * rowbytes;
+                            for (int col = c0; col < c1; col++)
+                                if (rb[col >> 3] & (0x80u >> (col & 7)))
+                                    gc_px(p, left + (col - c0), top + row, 1);
+                        }
+                    }
+                }
+                acc += (int32_t)LOAD_BE32(p->gc_cur_wt + (size_t)c * 4);
+            }
+            p->draw_count++;
+        }
+    } else if (len > 0 && rawAdv != 0) {
+        LOG(0, "opText with no cached font — run dropped");
+    }
+    // Mirror the host's eager pen advance in the card pen (0xE830-0xE848).
+    p->gc_pen_x = (int16_t)(accEnd >> 16);
+    p->gc_pen_hfrac = (uint16_t)(accEnd & 0xFFFF);
+}
+
 // Reset the interpreter's per-cycle state to QuickDraw defaults at the start of
 // a drawing cycle (a fresh queue buffer / a new accepted port).  State opcodes
 // in the stream then set the live values; clip only ever narrows from full.
@@ -1727,6 +1953,7 @@ static void gc_reset_draw_state(display_card_824gc_priv_t *p) {
     p->gc_hilite = gc_resolve_rgb(p, memory_debug_read_uint16(0x0DA0), memory_debug_read_uint16(0x0DA2),
                                   memory_debug_read_uint16(0x0DA4));
     p->gc_op_color = 0;
+    p->gc_pen_hfrac = 0x8000; // pnLocHFrac default (a half pixel)
     p->gc_pat_slot = 1;
     memset(p->gc_pat, 0, sizeof(p->gc_pat));
 }
@@ -1769,6 +1996,9 @@ static uint32_t gc_dispatch_func(display_card_824gc_priv_t *p, uint32_t func, ui
         // GCQD forever.  Hand out the dedicated super-slot GCTX region.
         uint32_t ctx = p->super_base | (GC824_DRAM_OFFSET + GC824_DRAM_GCTX);
         dram_set_be32(p, GC824_DRAM_CB + 0x604 + 4, ctx);
+        // PQDInit is also the fault-recovery re-init: the real handler
+        // flushes all 11 caches (protocol §9.2) — drop the font caches.
+        gc_font_caches_flush(p);
         LOG(2, "func $17 PQDInit: ScrnBase=$%08x -> ctx=$%08x", scrnbase, ctx);
         // Result 1 = registered OK — sub_61B0 checks this (== 1) and $884A posts
         // error 4 ("having difficulty") otherwise.  Protocol §9.2.
@@ -1814,9 +2044,13 @@ static uint32_t gc_dispatch_func(display_card_824gc_priv_t *p, uint32_t func, ui
         p->gc_accel = (result != 0); // gate the interpreter on port acceptance
         LOG(3, "func $2D SetPort %s", result ? "accepted -> card interprets the geometry queue" : "declined");
         break;
-    case 0x30: // FontDownload — returning 0 declines text cleanly (proposal §3.10)
-        result = 0;
-        LOG(3, "func $30 FontDownload declined (stage 1) -> ROM text");
+    case 0x30: // FontDownload — cache the strikes/width tables so ops $67/$06
+        // draw text on-card; any failure (or the oracle switch, or an
+        // unsupported depth) declines: the host rolls back its checksum and
+        // draws text unaccelerated (proposal §3.10 safety net).
+        result = (!p->force_decline && (p->display.format == PIXEL_1BPP_MSB || p->display.format == PIXEL_8BPP))
+                     ? (uint32_t)gc_font_download(p)
+                     : 0;
         break;
     default:
         if (func > 0x3B) {
@@ -2471,6 +2705,7 @@ static void card_teardown(nubus_card_t *card, config_t *cfg) {
     free(p->regs);
     free(p->gc_clipmask);
     free(p->gc_blitmask);
+    gc_font_caches_flush(p);
     free(p->vrom_path);
     free(p);
     card->priv = NULL;
