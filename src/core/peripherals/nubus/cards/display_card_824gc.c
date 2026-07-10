@@ -133,6 +133,8 @@ struct display_card_824gc_priv {
     // when func $2D (SetPort) is accepted the card interprets them.  State
     // opcodes set these fields; the next primitive resolves them.
     uint8_t gc_pat[4][8]; // pattern slots 1=pnPat 2=bkPat 3=fillPat (opPattern $71)
+    uint8_t gc_pat_kind[4]; // 0 = classic 1-bit; 2 = RGB 2x2 dither (op $74)
+    uint32_t gc_pat_cell[4][4]; // RGBPat resolved device pixels, cell 0..3
     uint8_t gc_pat_slot; // active pattern slot selected by opWhichPat ($73)
     uint16_t gc_mode; // current transfer mode (opMode $69); 8 = patCopy
     uint32_t gc_fg, gc_bg; // fg/bg PIXEL VALUES resolved from the RGBs of ops
@@ -636,7 +638,92 @@ static inline int gc_src(display_card_824gc_priv_t *p, int x, int y) {
     unsigned lx = (unsigned)(x - p->gc_org_x), ly = (unsigned)(y - p->gc_org_y);
     return (pat[ly & 7] >> (7 - (lx & 7))) & 1;
 }
+// Write a full PIXEL VALUE `v` at (x,y) under the current mode + clip — the
+// RGBPat/PixPat path: patType != 0 patterns are never colorized (§2.2), so
+// the §2.1 cores run non-colorized with the pattern pixel as S.
+static void gc_px_val(display_card_824gc_priv_t *p, int x, int y, uint32_t v) {
+    if (x < 0 || x >= (int)p->display.width || y < 0 || y >= (int)p->display.height || y >= 480)
+        return;
+    if (!(p->gc_clipmask[y * 80 + (x >> 3)] & (0x80u >> (x & 7))))
+        return;
+    if (p->gc_mode & 0x20) {
+        LOG(1, "arithmetic/hilite mode $%02x with a colour pattern not modelled — pixel skipped", p->gc_mode);
+        return;
+    }
+    if (p->display.format == PIXEL_32BPP_XRGB) {
+        uint8_t *b = (uint8_t *)p->display.bits + (size_t)y * p->display.stride + (size_t)x * 4;
+        uint32_t d = LOAD_BE32(b);
+        switch (p->gc_mode & 3) {
+        case 1:
+            d |= v;
+            break;
+        case 2:
+            d ^= v;
+            break;
+        case 3:
+            d &= ~v;
+            break;
+        default:
+            d = v;
+            break;
+        }
+        STORE_BE32(b, d & 0x00FFFFFFu);
+        return;
+    }
+    if (p->display.format == PIXEL_8BPP) {
+        uint8_t *b = (uint8_t *)p->display.bits + (size_t)y * p->display.stride + x;
+        switch (p->gc_mode & 3) {
+        case 1:
+            *b |= (uint8_t)v;
+            break;
+        case 2:
+            *b ^= (uint8_t)v;
+            break;
+        case 3:
+            *b &= (uint8_t)~v;
+            break;
+        default:
+            *b = (uint8_t)v;
+            break;
+        }
+        return;
+    }
+    uint8_t *b = (uint8_t *)p->display.bits + (size_t)y * p->display.stride + (x >> 3);
+    uint8_t m = (uint8_t)(0x80u >> (x & 7));
+    int s = (int)(v & 1);
+    switch (p->gc_mode & 3) {
+    case 1:
+        if (s)
+            *b |= m;
+        break;
+    case 2:
+        if (s)
+            *b ^= m;
+        break;
+    case 3:
+        if (s)
+            *b &= (uint8_t)~m;
+        break;
+    default:
+        if (s)
+            *b |= m;
+        else
+            *b &= (uint8_t)~m;
+        break;
+    }
+}
 static void gc_span(display_card_824gc_priv_t *p, int y, int l, int r) {
+    if (p->gc_pat_kind[p->gc_pat_slot & 3] == 2) {
+        // RGB 2x2 dither: even rows use cells 0/1, odd rows 2/3, in the
+        // PORT's coordinate space (same anchor rule as classic patterns).
+        const uint32_t *cell = p->gc_pat_cell[p->gc_pat_slot & 3];
+        unsigned ly = (unsigned)(y - p->gc_org_y);
+        for (int x = l; x < r; x++) {
+            unsigned lx = (unsigned)(x - p->gc_org_x);
+            gc_px_val(p, x, y, cell[((ly & 1) << 1) | (lx & 1)]);
+        }
+        return;
+    }
     for (int x = l; x < r; x++)
         gc_px(p, x, y, gc_src(p, x, y));
 }
@@ -1530,6 +1617,49 @@ static void gc_interp(display_card_824gc_priv_t *p, uint32_t base, uint32_t coun
             int slot = (int)(dram_be32(p, off) & 0xFFFF) & 3;
             for (int i = 0; i < 8; i++)
                 p->gc_pat[slot][i] = (uint8_t)(dram_be32(p, off + 4 + (i & ~3)) >> (24 - 8 * (i & 3)));
+            p->gc_pat_kind[slot] = 0;
+            break;
+        }
+        case 0x74: { // opRGBPat: {which.w at +4, RGB at +6} — MakeRGBPat's
+            // 2x2 ordered dither (Patterns.a PatDither): each component is
+            // quantized to 13 levels (>= 8 bpp; 5 below) and cell pixel k
+            // takes column k of the dither table, then the card's
+            // Color2Index resolves each cell to a device pixel.
+            static const uint16_t d13[13][4] = {
+                {0x0000, 0x0000, 0x0000, 0x0000},
+                {0x5555, 0x0000, 0x0000, 0x0000},
+                {0x5555, 0x0000, 0x0000, 0x5555},
+                {0x5555, 0x5555, 0x0000, 0x5555},
+                {0x5555, 0x5555, 0x5555, 0x5555},
+                {0xAAAA, 0x5555, 0x5555, 0x5555},
+                {0xAAAA, 0x5555, 0x5555, 0xAAAA},
+                {0xAAAA, 0xAAAA, 0x5555, 0xAAAA},
+                {0xAAAA, 0xAAAA, 0xAAAA, 0xAAAA},
+                {0xFFFF, 0xAAAA, 0xAAAA, 0xAAAA},
+                {0xFFFF, 0xAAAA, 0xAAAA, 0xFFFF},
+                {0xFFFF, 0xFFFF, 0xAAAA, 0xFFFF},
+                {0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF},
+            };
+            static const uint16_t d5[5][4] = {
+                {0x0000, 0x0000, 0x0000, 0x0000},
+                {0xFFFF, 0x0000, 0x0000, 0x0000},
+                {0xFFFF, 0x0000, 0x0000, 0xFFFF},
+                {0xFFFF, 0xFFFF, 0x0000, 0xFFFF},
+                {0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF},
+            };
+            int slot = (int)dram_be16(p, off + 4) & 3;
+            int deep = p->display.format == PIXEL_8BPP || p->display.format == PIXEL_32BPP_XRGB;
+            uint32_t div = deep ? 0x13B13B13u : 0x33333333u;
+            uint32_t lr = (uint32_t)(((uint64_t)dram_be16(p, off + 6) << 16) / div);
+            uint32_t lg = (uint32_t)(((uint64_t)dram_be16(p, off + 8) << 16) / div);
+            uint32_t lb = (uint32_t)(((uint64_t)dram_be16(p, off + 10) << 16) / div);
+            for (int k = 0; k < 4; k++) {
+                uint16_t r = deep ? d13[lr > 12 ? 12 : lr][k] : d5[lr > 4 ? 4 : lr][k];
+                uint16_t g = deep ? d13[lg > 12 ? 12 : lg][k] : d5[lg > 4 ? 4 : lg][k];
+                uint16_t b = deep ? d13[lb > 12 ? 12 : lb][k] : d5[lb > 4 ? 4 : lb][k];
+                p->gc_pat_cell[slot][k] = gc_resolve_rgb(p, r, g, b);
+            }
+            p->gc_pat_kind[slot] = 2;
             break;
         }
         case 0x73: // opWhichPat: select the active pattern slot (1/2/3)
@@ -1653,7 +1783,6 @@ static void gc_interp(display_card_824gc_priv_t *p, uint32_t base, uint32_t coun
             p->draw_count++;
             break;
         case 0x72: // opPixPat (type-5 cache key — needs func $0C CachePixPat)
-        case 0x74: // opRGBPat (MakeRGBPat 2x2 ordered dither)
             // A colour pattern we don't model would make the NEXT fill use a
             // stale slot — loud log so a scene that needs these is visible.
             LOG(1, "colour pattern op $%02x not modelled — fills may be wrong", op);
@@ -2083,6 +2212,7 @@ static void gc_reset_draw_state(display_card_824gc_priv_t *p) {
     p->gc_pen_hfrac = 0x8000; // pnLocHFrac default (a half pixel)
     p->gc_pat_slot = 1;
     memset(p->gc_pat, 0, sizeof(p->gc_pat));
+    memset(p->gc_pat_kind, 0, sizeof(p->gc_pat_kind));
 }
 
 // RPC (Transport A) dispatch — executed synchronously inside the doorbell
