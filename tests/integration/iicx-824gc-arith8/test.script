@@ -238,4 +238,48 @@ machine.memory.poke.l 0x9C00704C 0x00000002
 machine.memory.poke.l 0x9C007014 0xFFFFFFFF
 assert ${machine.memory.peek.l(0x9C00701C) == 1}          "func $2C FlushPixPat failed"
 
+# --- func $15 blit from an UNLOCKED offscreen (pmVersion 2): the src
+#     baseAddr is the pixel-image HANDLE; the card dereferences the master
+#     pointer.  Src: 8 bytes 10..17 at $400100, handle at $4000F0.  Request
+#     block staged at CB+$58 exactly as GCQD ships it; srcCopy to (0,100). ---
+machine.memory.poke.l 0x004000F0 0x00400100
+machine.memory.poke.l 0x00400100 0x10111213
+machine.memory.poke.l 0x00400104 0x14151617
+# dst PixMap copy: baseAddr = screen, rowBytes $8400, bounds (0,0,480,640), pixelSize 8
+machine.memory.poke.l 0x9C007058 0x00009C01
+machine.memory.poke.l 0x9C00705C 0x14008400
+machine.memory.poke.l 0x9C007060 0x00000000
+machine.memory.poke.l 0x9C007064 0x01E00280
+machine.memory.poke.l 0x9C007078 0x00080008
+# src PixMap copy at +$36: baseAddr = HANDLE $4000F0, rowBytes $8008,
+# bounds (0,0,1,8), pmVersion 2 at +$E, pixelSize 8 at +$20
+machine.memory.poke.l 0x9C00708C 0x00000040
+machine.memory.poke.l 0x9C007090 0x00F08008
+machine.memory.poke.l 0x9C007094 0x00000000
+machine.memory.poke.l 0x9C007098 0x00010008
+machine.memory.poke.l 0x9C00709C 0x00020000
+machine.memory.poke.l 0x9C0070AC 0x00080008
+# no mask
+machine.memory.poke.l 0x9C0070C2 0x00000000
+# dstRect (100,0,101,8) / srcRect (0,0,1,8) at +$A8/+$B0
+machine.memory.poke.l 0x9C007100 0x00640000
+machine.memory.poke.l 0x9C007104 0x00650008
+machine.memory.poke.l 0x9C007108 0x00000000
+machine.memory.poke.l 0x9C00710C 0x00010008
+# regions absent
+machine.memory.poke.l 0x9C007118 0x00000000
+machine.memory.poke.l 0x9C00711C 0x00000000
+machine.memory.poke.l 0x9C007120 0x00000000
+# fg black / bk white RGBs at +$E8/+$EE (B/W colorize envelope)
+machine.memory.poke.l 0x9C007140 0x00000000
+machine.memory.poke.l 0x9C007144 0x0000FFFF
+machine.memory.poke.l 0x9C007148 0xFFFFFFFF
+machine.memory.poke.l 0x9C00714C 0xFFFF0000
+machine.memory.poke.l 0x9C007048 0x00000015
+machine.memory.poke.l 0x9C00704C 0x00000003
+machine.memory.poke.l 0x9C007014 0xFFFFFFFF
+assert ${machine.memory.peek.l(0x9C00701C) == 1}          "func $15 declined the pmVersion-2 source"
+assert ${machine.memory.peek.l(0x9C02A400) == 0x10111213} "offscreen blit row lo"
+assert ${machine.memory.peek.l(0x9C02A404) == 0x14151617} "offscreen blit row hi"
+
 quit

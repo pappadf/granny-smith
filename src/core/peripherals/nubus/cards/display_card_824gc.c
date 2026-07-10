@@ -2038,6 +2038,27 @@ static uint32_t gc_fetch_guest_rgn(uint32_t addr, uint16_t size, uint8_t *buf) {
 // pointers (mask/clip/vis, +0xC0/C4/C8, sizes +0x104/6/8), which is what the
 // card's blit lane (text_28c14) consumes — NOT the queue-port clip mask.
 // Returns 1 if drawn, 0 to decline.
+// Resolve a request PixMap's pixel-image base through its pmVersion tag
+// (+$E in the copied record at `pm`).  Returns 0 to decline.
+static uint32_t gc_offscreen_base(display_card_824gc_priv_t *p, uint32_t pm, uint32_t base) {
+    if (!(dram_be16(p, pm + 4) & 0x8000))
+        return base; // plain BitMap — baseAddr is a pointer
+    uint16_t pmver = dram_be16(p, pm + 0xE);
+    switch (pmver) {
+    case 0:
+    case 1: // screen / locked offscreen: baseAddr is a real pointer
+        return base;
+    case 2: { // unlocked offscreen: baseAddr is the pixel-image HANDLE
+        uint32_t h = ((base & 0xF0000000u) == 0x90000000u) ? base : (base & 0x00FFFFFFu);
+        uint32_t master = memory_debug_read_uint32(h);
+        return master ? master : 0; // purged/empty handle → decline
+    }
+    default: // 4 = transient $4842 swizzle (or unknown) → ROM path
+        LOG(2, "blit: pmVersion %u source declined", pmver);
+        return 0;
+    }
+}
+
 static int gc_stretchbits(display_card_824gc_priv_t *p) {
     uint32_t rb = GC824_DRAM_CB + 0x58;
     uint16_t mode = dram_be16(p, rb + 0x00);
@@ -2078,14 +2099,24 @@ static int gc_stretchbits(display_card_824gc_priv_t *p) {
         return 0; // ditto at 16 bpp
     if (depth == 32 && srcPS != 32 && srcPS != 1)
         return 0;
-    // A src/mask PixMap with pmVersion != 0 is an offscreen whose pixel image
-    // lives behind a HANDLE (the type-6 cache's job, §3.5 — not implemented):
-    // its host baseAddr is not reliably readable, so decline to the ROM path
-    // (the $4842 bracket no-ops without a card copy and reads host memory).
-    if ((dram_be16(p, rb + 0x3A) & 0x8000) && dram_be16(p, rb + 0x36 + 0xE) != 0)
+    // Offscreen (GWorld) sources: pmVersion tags the baseAddr form the GCQD
+    // marshaller shipped (protocol §13 / marshaller §7.1) — 1 = locked
+    // (baseAddr is a real pointer), 2 = unlocked (baseAddr IS the pixel-image
+    // Handle: dereference the master pointer), 4 = the transient
+    // $4842-swizzle state (mid-ROM-fallback; never in a live request —
+    // decline).  The real card copies the image into its type-6 cache and
+    // blits from the copy; the HLE reads the live host pixels instead —
+    // coherent by construction, because queued draws only ever target the
+    // SCREEN here, so the host copy is always the authority (which is also
+    // why func $0D correctly returns 0 and $19/$33 stay no-ops).
+    srcBase = gc_offscreen_base(p, rb + 0x36, srcBase);
+    if (!srcBase)
         return 0;
-    if (maskBase && (dram_be16(p, rb + 0x6E) & 0x8000) && dram_be16(p, rb + 0x6A + 0xE) != 0)
-        return 0;
+    if (maskBase) {
+        maskBase = gc_offscreen_base(p, rb + 0x6A, maskBase);
+        if (!maskBase)
+            return 0;
+    }
     if (maskBase && (dram_be16(p, rb + 0x6E) & 0x8000) && dram_be16(p, rb + 0x6A + 0x20) != 1)
         return 0; // only 1-bit masks (deep CopyDeepMask blends -> ROM)
     if (depth == 8 || depth == 16) {
