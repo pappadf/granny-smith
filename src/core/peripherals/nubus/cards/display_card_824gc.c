@@ -1731,6 +1731,16 @@ static int gc_stretchbits(display_card_824gc_priv_t *p) {
         return 0;
     if (depth == 8 && srcPS != 8 && srcPS != 1)
         return 0; // 8bpp dst accepts same-depth or 1-bit-expanded sources
+    if (depth == 32 && srcPS != 32 && srcPS != 1)
+        return 0;
+    // A src/mask PixMap with pmVersion != 0 is an offscreen whose pixel image
+    // lives behind a HANDLE (the type-6 cache's job, §3.5 — not implemented):
+    // its host baseAddr is not reliably readable, so decline to the ROM path
+    // (the $4842 bracket no-ops without a card copy and reads host memory).
+    if ((dram_be16(p, rb + 0x3A) & 0x8000) && dram_be16(p, rb + 0x36 + 0xE) != 0)
+        return 0;
+    if (maskBase && (dram_be16(p, rb + 0x6E) & 0x8000) && dram_be16(p, rb + 0x6A + 0xE) != 0)
+        return 0;
     if (maskBase && (dram_be16(p, rb + 0x6E) & 0x8000) && dram_be16(p, rb + 0x6A + 0x20) != 1)
         return 0; // only 1-bit masks (deep CopyDeepMask blends -> ROM)
     if (depth == 8) {
@@ -1765,14 +1775,22 @@ static int gc_stretchbits(display_card_824gc_priv_t *p) {
     int bk = (int)gc_resolve_rgb(p, dram_be16(p, rb + 0xEE), dram_be16(p, rb + 0xF0), dram_be16(p, rb + 0xF2));
     int inv = (mode >> 2) & 1; // notSrc*: invert the source before colorizing
     gc_cursor_shield(p, dRt - dstBnT, dRl - dstBnL, dRb - dstBnT, dRr - dstBnL);
-    for (int dy = dRt; dy < dRb; dy++) {
+    // Overlapping screen->screen copies (ScrollRect) must run away from the
+    // overlap: copy bottom-up when moving content down, right-to-left when
+    // moving it right — otherwise source rows are clobbered before they are
+    // read.
+    bool down = srcBase == dstBase && dRt > sRt + (dstBnT - srcBnT);
+    bool right = srcBase == dstBase && dRl > sRl + (dstBnL - srcBnL);
+    for (int i = 0; i < dRb - dRt; i++) {
+        int dy = down ? dRb - 1 - i : dRt + i;
         int y = dy - dstBnT;
         if (y < 0 || y >= (int)p->display.height)
             continue;
         int sy = sRt + (dy - dRt) - srcBnT;
         int my = mRt + (dy - dRt) - maskBnT;
         uint8_t *row = (uint8_t *)p->display.bits + (size_t)y * p->display.stride;
-        for (int dx = dRl; dx < dRr; dx++) {
+        for (int j = 0; j < dRr - dRl; j++) {
+            int dx = right ? dRr - 1 - j : dRl + j;
             int x = dx - dstBnL;
             if (x < 0 || x >= (int)p->display.width)
                 continue;
@@ -2258,8 +2276,10 @@ static void gc_vidcomm(display_card_824gc_priv_t *p) {
         p->display.format = format_for_bpp(b);
         p->display.bits = p->dram + (fboff - GC824_DRAM_OFFSET);
         p->display.stride = rowbytes;
-        p->display.height = scanlines;
-        p->display.width = 640; // fixed by the monitor; rowBytes >= width*bpp/8
+        // `scanlines` is programMode's ADJUSTED scan count (the direct modes
+        // add +5/+60 blank/overscan lines — 545 for 640×480×32) — a CRT
+        // total, NOT the visible height.  The visible geometry is the
+        // monitor's; only narrow the width if rowBytes can't hold it.
         if (b > 0 && rowbytes * 8u / (uint32_t)b < p->display.width)
             p->display.width = rowbytes * 8u / (uint32_t)b;
         p->display.shape_dirty = true;
@@ -2652,10 +2672,10 @@ static void set_poweron_defaults(display_card_824gc_priv_t *p) {
     p->display.format = format_for_bpp(p->seeded_bpp ? p->seeded_bpp : 1);
     p->display.width = 640u;
     p->display.height = 480u;
-    // Row pitch: 1024 bytes at every indexed depth (guest-probed at 1/8 bpp);
-    // the direct modes scale it (16 bpp = 2048, 32 bpp = 4096 — power-of-two
-    // pitches, verified by guest probe at 32 bpp).
-    p->display.stride = (p->seeded_bpp == 32) ? 4096u : (p->seeded_bpp == 16) ? 2048u : 1024u;
+    // Row pitch: 1024 bytes at every indexed depth (guest-probed at 1/8 bpp).
+    // The direct modes use packed pitches (32 bpp = 2560, VidComm-probed) but
+    // can never be the BOOT depth, so the power-on pitch is always 1024.
+    p->display.stride = 1024u;
     p->display.bits = p->dram + GC824_FB_OFFSET;
     p->display.clut = p->clut;
     p->display.clut_len = 256;
