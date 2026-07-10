@@ -1909,8 +1909,12 @@ static void gc_interp(display_card_824gc_priv_t *p, uint32_t base, uint32_t coun
                 p->gc_pat_pp[slot] = (uint8_t)hit;
                 p->gc_pat_kind[slot] = 3;
             } else {
-                LOG(0, "op $72: PixPat $%08x not in the type-5 cache — fills may be wrong", key);
+                // The real card aborts the WHOLE DrawMultiObject stream here
+                // ("can't find PixPat in cache" → epilogue), so the batch's
+                // remaining records are dropped, not drawn with wrong fills.
+                LOG(0, "op $72: PixPat $%08x not in the type-5 cache — batch aborted", key);
                 p->gc_pat_kind[slot] = 0;
+                return;
             }
             break;
         }
