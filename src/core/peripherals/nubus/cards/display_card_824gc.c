@@ -128,6 +128,14 @@ struct display_card_824gc_priv {
     int32_t error; // last posted error (0 = none)
     uint32_t mfb_sync; // MFB 0x44001C0 bus-side-effect toggle (value discarded)
     uint32_t sync_hb; // read counter for the 0x4C00000 video heartbeat (bit 31)
+    // Am29000 serial command latch ($04C00000): the decl-ROM driver bit-bangs
+    // 12-bit frames into it (serialWrite $39C6: one long write per bit,
+    // bit 31, MSB first).  Command 1 = run -> slot VBL generation on
+    // (enableCardVBL $304A); 3 = idle/stop -> off (disableCardVBL $2FFA,
+    // also PrimaryInit's icache echo-fill terminator).
+    uint16_t risc_cmd_shift;
+    int risc_cmd_bits;
+    bool vbl_enabled; // slot VBL armed by RISC command 1
 
     // --- Stage 2: DrawMultiObject interpreter state (proposal §3.7) ---
     // The GCQD marshaller stages drawing as a queue of opcode records (§10.1);
@@ -3078,6 +3086,29 @@ static void gc_write(display_card_824gc_priv_t *p, uint32_t phys, uint32_t val, 
             } else if (val == 0) {
                 p->attached = false;
             }
+        } else if (cl == GC824_REG_SYNC_HB) {
+            // Serial command latch (see priv fields): shift bit 31 in;
+            // every 12th bit completes a command frame.
+            p->risc_cmd_shift = (uint16_t)((p->risc_cmd_shift << 1) | ((val >> 31) & 1u));
+            if (++p->risc_cmd_bits == 12) {
+                uint16_t cmd = p->risc_cmd_shift & 0xFFFu;
+                p->risc_cmd_bits = 0;
+                p->risc_cmd_shift = 0;
+                if (cmd == 1) {
+                    p->vbl_enabled = true;
+                    LOG(1, "RISC serial command 1 (run) -> slot VBL on");
+                } else if (cmd == 3) {
+                    p->vbl_enabled = false;
+                    nubus_deassert_irq(p->card);
+                    LOG(1, "RISC serial command 3 (stop) -> slot VBL off");
+                } else {
+                    LOG(2, "RISC serial command $%03x (ignored)", cmd);
+                }
+            }
+        } else if (cl == GC824_REG_VBL_ACK) {
+            // The slot VBL ISR ($39E2) acks with CLR.L; PrimaryInit and the
+            // mode loaders also clear it as part of their latch dance.
+            nubus_deassert_irq(p->card);
         } else if (cl == GC824_REG_KICK && val == 0xFFFFFFFFu) {
             p->gc_on = true;
             if (p->state < GC_ST_ON)
@@ -3449,7 +3480,7 @@ static void card_on_vbl(nubus_card_t *card, config_t *cfg) {
     display_card_824gc_priv_t *p = card->priv;
     if (!p)
         return;
-    if (!(p->sw_ic_reg & GC824_VINT_DISABLE))
+    if (!(p->sw_ic_reg & GC824_VINT_DISABLE) || p->vbl_enabled)
         nubus_assert_irq(card);
     // Heartbeat + ms-tick counter (the driver watchdogs these when it spins).
     if (p->booted) {

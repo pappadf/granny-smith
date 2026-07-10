@@ -129,6 +129,8 @@
 // it on each read (a free-running heartbeat), exactly like the JMFB VBL-sync
 // toggle.  Reverse-engineered from the System 6.0.x driver at $52C0-$52E2.
 #define GC824_REG_MFB_SYNC 0x44001C0u
+#define GC824_REG_VBL_CTL  0x440003Cu // W: MFB VBL-control latch strobe (CLR.L; no state)
+#define GC824_REG_VBL_ACK  0x4400048u // W: MFB int-flags — the slot VBL ISR CLR.L acks here
 // ACDC (RAMDAC/CLUT) ID register at card-local 0x46C00008.  Read-only; returns
 // the ACDC identifier (bits 24-27 = 6).  The decl-ROM video driver's ACDC probe
 // requires (read & 0x0F000000) == 0x06000000 to detect the ACDC (decl ROM
