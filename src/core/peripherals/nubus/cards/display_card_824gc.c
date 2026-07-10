@@ -148,6 +148,11 @@ struct display_card_824gc_priv {
     int16_t gc_org_x, gc_org_y; // the accepted port's local→global origin:
                                 // global = local − portBits.bounds.topLeft
                                 // (staged at CB+$170+$14; 0 for the WMgr port)
+    uint32_t gc_port_ptr; // thePort (staged at CB+$170+0) — the card re-reads
+                          // the LIVE port bounds at each drain: GCQD flushes
+                          // (func $26) BEFORE SetOrigin changes them, so a
+                          // drained batch is single-origin, but it never
+                          // re-stages the port record ($23AC)
     int16_t gc_pen_w, gc_pen_h; // pen size (opPenSize $6E)
 
     // --- Text (func $30 FontDownload + ops $67/$06; proposal §3.10) ---
@@ -1466,7 +1471,11 @@ static void gc_interp(display_card_824gc_priv_t *p, uint32_t base, uint32_t coun
     uint32_t off = GC824_DRAM_CB + (base - p->gcp_base);
     uint32_t end = off + count;
     // The accepted port's local -> global origin (func $2D staged bounds):
-    // every queued coordinate is port-LOCAL and must be shifted.
+    // every queued coordinate is port-LOCAL and must be shifted.  KNOWN
+    // LIMIT: GCQD's SetOrigin stub ($23AC) flushes the queue (func $26) but
+    // never re-stages the port record, so a mid-session origin change (the
+    // cdev list LDEF) leaves these stale until the next $2D — live-re-reading
+    // the guest port at drain time was tried and reads unstable structures.
     int ox = p->gc_org_x, oy = p->gc_org_y;
     while (off + 2 <= end) {
         uint16_t op = (uint16_t)(dram_be32(p, off) >> 16);
@@ -2169,6 +2178,7 @@ static uint32_t gc_dispatch_func(display_card_824gc_priv_t *p, uint32_t func, ui
         if (result) {
             p->gc_org_y = (int16_t)(0 - (int16_t)dram_be16(p, GC824_DRAM_CB + 0x170 + 0x14));
             p->gc_org_x = (int16_t)(0 - (int16_t)dram_be16(p, GC824_DRAM_CB + 0x170 + 0x16));
+            p->gc_port_ptr = dram_be32(p, GC824_DRAM_CB + 0x170);
         }
         p->gc_accel = (result != 0); // gate the interpreter on port acceptance
         LOG(3, "func $2D SetPort %s (org %d,%d)", result ? "accepted" : "declined", p->gc_org_x, p->gc_org_y);
