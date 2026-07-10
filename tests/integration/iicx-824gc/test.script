@@ -77,6 +77,11 @@ assert ${machine.memory.peek.l(0x9C00701C) == 1}                                
 #     is asserted byte-for-byte against QuickDraw's DrawArc conic
 #     ((2dx+1-W)²H² + (2dy+1-H)²W² <= W²H²) and PaintVector's even-odd fill
 #     with the PutLine x+½+slope/2 entry bias. ---
+# Stage the port record at CB+$170 the way GCQD's sub_4774 does: the pixmap
+# baseAddr (+$E) must be the SCREEN (the card declines other ports) and the
+# bounds (+$14) give the port's local->global origin (0,0 = the WMgr port).
+machine.memory.poke.l 0x9C00717E 0x9C011400
+machine.memory.poke.l 0x9C007184 0x00000000
 machine.memory.poke.l 0x9C007048 0x0000002D
 machine.memory.poke.l 0x9C00704C 0x00000001
 machine.memory.poke.l 0x9C007014 0xFFFFFFFF

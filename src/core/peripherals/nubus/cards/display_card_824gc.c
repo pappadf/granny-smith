@@ -142,9 +142,12 @@ struct display_card_824gc_priv {
                         // HiliteRGB $0DA0) — the $32/$3A bk↔hilite swap
     uint32_t gc_op_color; // opColor PIXEL (op $70 rgbOpColor; blend/pin weight
                           // for the arithmetic modes — parsed, not yet used)
-    int16_t gc_pen_x, gc_pen_y; // pen location (opPenLoc $68)
+    int16_t gc_pen_x, gc_pen_y; // pen location (opPenLoc $68), GLOBAL coords
     uint16_t gc_pen_hfrac; // pnLocHFrac (op $68 +2; default $8000) — the pen's
                            // 16.16 fraction, threaded through text runs
+    int16_t gc_org_x, gc_org_y; // the accepted port's local→global origin:
+                                // global = local − portBits.bounds.topLeft
+                                // (staged at CB+$170+$14; 0 for the WMgr port)
     int16_t gc_pen_w, gc_pen_h; // pen size (opPenSize $6E)
 
     // --- Text (func $30 FontDownload + ops $67/$06; proposal §3.10) ---
@@ -166,6 +169,12 @@ struct display_card_824gc_priv {
 
     int16_t gc_clip_t, gc_clip_l, gc_clip_b, gc_clip_r; // clip ∩ vis bounding box
     uint8_t *gc_clipmask; // 1 bit/pixel drawable mask (clipRgn ∩ visRgn), stride 80
+    // The CURRENT clip and vis region records (raw QD region bytes) — each
+    // op $6A/$6C REPLACES its region (QuickDraw semantics), so the effective
+    // mask is rebuilt as clip ∩ vis, not intersected cumulatively.
+    uint8_t *gc_cliprgn, *gc_visrgn; // 4 KB each; length 0 = wide open
+    uint32_t gc_cliprgn_len, gc_visrgn_len;
+    int16_t gc_rgn_ox, gc_rgn_oy; // port origin the stored regions carry
     uint8_t *gc_blitmask; // 1 bit/pixel per-blit mask (func $15 rgnA∩rgnB∩rgnC)
     uint64_t draw_count; // primitives rasterized (introspection)
     bool gc_accel; // func $2D accepted the port → interpret its queue (stage 2)
@@ -511,6 +520,15 @@ static inline void gc_px(display_card_824gc_priv_t *p, int x, int y, int s) {
             // Where the source has ink (pattern pixel ≠ bk): swap bk↔hilite
             // in the destination; every other dst pixel is untouched.
             if (s && p->gc_fg != p->gc_bg) {
+                if (p->display.format == PIXEL_32BPP_XRGB) {
+                    uint8_t *b = (uint8_t *)p->display.bits + (size_t)y * p->display.stride + (size_t)x * 4;
+                    uint32_t d = LOAD_BE32(b) & 0x00FFFFFFu;
+                    if (d == (p->gc_bg & 0x00FFFFFFu))
+                        STORE_BE32(b, p->gc_hilite & 0x00FFFFFFu);
+                    else if (d == (p->gc_hilite & 0x00FFFFFFu))
+                        STORE_BE32(b, p->gc_bg & 0x00FFFFFFu);
+                    return;
+                }
                 uint8_t *b = (uint8_t *)p->display.bits + (size_t)y * p->display.stride + x;
                 if (*b == (uint8_t)p->gc_bg)
                     *b = (uint8_t)p->gc_hilite;
@@ -519,11 +537,36 @@ static inline void gc_px(display_card_824gc_priv_t *p, int x, int y, int s) {
             }
             return;
         } else {
-            LOG(1, "arithmetic mode $%02x at 8 bpp not modelled — pixel skipped", p->gc_mode);
+            LOG(1, "arithmetic mode $%02x at depth > 1 not modelled — pixel skipped", p->gc_mode);
             return;
         }
     } else if ((p->gc_mode & 0x04) != 0) {
         s ^= 1; // notSrc/notPat: invert the source before colorizing
+    }
+    if (p->display.format == PIXEL_32BPP_XRGB) {
+        // Direct colour: the §2.3 conjugation folds into the same net visual
+        // rule the cores below implement (Or = fg where ink, Bic = bg where
+        // ink, Copy = fg/bg); Xor inverts the RGB bits under the ink, alpha
+        // byte excluded (NOPfgColorTable masking).
+        uint8_t *b = (uint8_t *)p->display.bits + (size_t)y * p->display.stride + (size_t)x * 4;
+        switch (p->gc_mode & 3) {
+        case 1:
+            if (s)
+                STORE_BE32(b, p->gc_fg & 0x00FFFFFFu);
+            break; // Or: fg where ink
+        case 2:
+            if (s)
+                STORE_BE32(b, LOAD_BE32(b) ^ 0x00FFFFFFu);
+            break; // Xor
+        case 3:
+            if (s)
+                STORE_BE32(b, p->gc_bg & 0x00FFFFFFu);
+            break; // Bic: bg where ink
+        default:
+            STORE_BE32(b, (s ? p->gc_fg : p->gc_bg) & 0x00FFFFFFu);
+            break; // Copy
+        }
+        return;
     }
     if (p->display.format == PIXEL_8BPP) {
         uint8_t *b = (uint8_t *)p->display.bits + (size_t)y * p->display.stride + x;
@@ -579,10 +622,14 @@ static inline void gc_px(display_card_824gc_priv_t *p, int x, int y, int s) {
     }
 }
 // The source INK bit at (x,y): the active pattern slot's bit.  (op $73 selects
-// the slot; op $71 sets a slot's bytes; gc_px colorizes with fg/bg.)
+// the slot; op $71 sets a slot's bytes; gc_px colorizes with fg/bg.)  The
+// pattern grid is anchored to the PORT's coordinate space (qd-transfer-modes
+// §4.1: dstPix.bounds origin + patAlign) — patterns scroll with SetOrigin'd
+// content (the Control Panel's cdev list flips the ltGray phase without this).
 static inline int gc_src(display_card_824gc_priv_t *p, int x, int y) {
     const uint8_t *pat = p->gc_pat[p->gc_pat_slot & 3];
-    return (pat[y & 7] >> (7 - (x & 7))) & 1;
+    unsigned lx = (unsigned)(x - p->gc_org_x), ly = (unsigned)(y - p->gc_org_y);
+    return (pat[ly & 7] >> (7 - (lx & 7))) & 1;
 }
 static void gc_span(display_card_824gc_priv_t *p, int y, int l, int r) {
     for (int x = l; x < r; x++)
@@ -596,6 +643,8 @@ static void gc_span(display_card_824gc_priv_t *p, int y, int l, int r) {
 // answer — revisit with a logical-CLUT capture if a colour scene ever shows
 // it in the differential oracle.
 static uint32_t gc_resolve_rgb(display_card_824gc_priv_t *p, uint16_t r, uint16_t g, uint16_t b) {
+    if (p->display.format == PIXEL_32BPP_XRGB) // direct: 00RRGGBB, no CLUT
+        return ((uint32_t)(r >> 8) << 16) | ((uint32_t)(g >> 8) << 8) | (b >> 8);
     if (p->display.format != PIXEL_8BPP) {
         uint32_t lum = (uint32_t)r + g + b;
         return (lum < 0x18000u) ? 1u : 0u;
@@ -1038,12 +1087,12 @@ static void gc_line_to(display_card_824gc_priv_t *p, int x1, int y1) {
 // opRgn ($08): fill a QuickDraw region.  Rectangular regions (rgnSize 0x0A)
 // are their bbox; complex regions are the classic band/inversion list
 // {y, x-pairs, 0x7FFF, …, 0x7FFF} (call-reference §7).
-static void gc_fill_rgn(display_card_824gc_priv_t *p, uint32_t off) {
+static void gc_fill_rgn(display_card_824gc_priv_t *p, uint32_t off, int ox, int oy) {
     uint16_t size = (uint16_t)(dram_be32(p, off) >> 16);
-    int top = (int16_t)(dram_be32(p, off) & 0xFFFF);
-    int left = (int16_t)(dram_be32(p, off + 4) >> 16);
-    int bot = (int16_t)(dram_be32(p, off + 4) & 0xFFFF);
-    int right = (int16_t)(dram_be32(p, off + 8) >> 16);
+    int top = (int16_t)(dram_be32(p, off) & 0xFFFF) + oy;
+    int left = (int16_t)(dram_be32(p, off + 4) >> 16) + ox;
+    int bot = (int16_t)(dram_be32(p, off + 4) & 0xFFFF) + oy;
+    int right = (int16_t)(dram_be32(p, off + 8) >> 16) + ox;
     if (size <= 0x0A) {
         gc_fill_rect(p, top, left, bot, right);
         return;
@@ -1053,7 +1102,8 @@ static void gc_fill_rgn(display_card_824gc_priv_t *p, uint32_t off) {
     uint32_t dend = off + size;
     int inv[128];
     int ninv = 0;
-    int y = (int16_t)dram_be16(p, d);
+    int y0raw = (int16_t)dram_be16(p, d);
+    int y = (y0raw == 0x7FFF) ? 0x7FFF : y0raw + oy;
     int guard = 0;
     while (y != 0x7FFF && d + 2 <= dend && guard++ < 2000) {
         d += 2;
@@ -1062,6 +1112,7 @@ static void gc_fill_rgn(display_card_824gc_priv_t *p, uint32_t off) {
             d += 2;
             if (x == 0x7FFF)
                 break;
+            x += ox;
             // XOR-toggle x into the sorted inversion set.
             int i = 0;
             while (i < ninv && inv[i] < x)
@@ -1077,7 +1128,8 @@ static void gc_fill_rgn(display_card_824gc_priv_t *p, uint32_t off) {
                 ninv++;
             }
         }
-        int ny = (int16_t)dram_be16(p, d);
+        int nyraw = (int16_t)dram_be16(p, d);
+        int ny = (nyraw == 0x7FFF) ? 0x7FFF : nyraw + oy;
         int bandBot = (ny == 0x7FFF) ? bot : ny;
         for (int yy = y; yy < bandBot; yy++)
             for (int s = 0; s + 1 < ninv; s += 2)
@@ -1115,37 +1167,37 @@ static int gc_pvec_cmp(const void *a, const void *b) {
 
 #define GC_POLY_MAXPTS 1024 // > any poly record the 4 KB queue can carry
 
-static void gc_fill_poly(display_card_824gc_priv_t *p, uint32_t off, int npts) {
+static void gc_fill_poly(display_card_824gc_priv_t *p, uint32_t off, int npts, int ox, int oy) {
     // `off` = DRAM offset of the Polygon record: size.w, bbox Rect, points.
-    int bbT = (int16_t)dram_be16(p, off + 2), bbB = (int16_t)dram_be16(p, off + 6);
-    int bbL = (int16_t)dram_be16(p, off + 4), bbR = (int16_t)dram_be16(p, off + 8);
+    int bbT = (int16_t)dram_be16(p, off + 2) + oy, bbB = (int16_t)dram_be16(p, off + 6) + oy;
+    int bbL = (int16_t)dram_be16(p, off + 4) + ox, bbR = (int16_t)dram_be16(p, off + 8) + ox;
     if (npts > GC_POLY_MAXPTS)
         return; // can't happen off the wire; guard the stack
     gc_pvec_t v[GC_POLY_MAXPTS + 1];
     int nv = 0;
-    int16_t oy = (int16_t)dram_be16(p, off + 10), ox = (int16_t)dram_be16(p, off + 12);
-    int16_t fy = oy, fx = ox;
+    int16_t py = (int16_t)((int16_t)dram_be16(p, off + 10) + oy), px = (int16_t)((int16_t)dram_be16(p, off + 12) + ox);
+    int16_t fy = py, fx = px;
     for (int i = 1; i <= npts; i++) {
         int16_t ny, nx;
         if (i < npts) {
-            ny = (int16_t)dram_be16(p, off + 10 + 4 * i);
-            nx = (int16_t)dram_be16(p, off + 12 + 4 * i);
+            ny = (int16_t)((int16_t)dram_be16(p, off + 10 + 4 * i) + oy);
+            nx = (int16_t)((int16_t)dram_be16(p, off + 12 + 4 * i) + ox);
         } else { // auto-close (skipped when already closed)
-            if (oy == fy && ox == fx)
+            if (py == fy && px == fx)
                 break;
             ny = fy;
             nx = fx;
         }
-        int dy = ny - oy, dx = nx - ox;
+        int dy = ny - py, dx = nx - px;
         if (dy != 0) { // horizontal edges dropped; store the upper endpoint
-            v[nv].y = dy > 0 ? oy : ny;
-            v[nv].x = dy > 0 ? ox : nx;
+            v[nv].y = dy > 0 ? py : ny;
+            v[nv].x = dy > 0 ? px : nx;
             v[nv].dy = (int16_t)dy;
             v[nv].dx = (int16_t)dx;
             nv++;
         }
-        oy = ny;
-        ox = nx;
+        py = ny;
+        px = nx;
     }
     if (nv == 0)
         return;
@@ -1234,6 +1286,7 @@ static void gc_fill_poly(display_card_824gc_priv_t *p, uint32_t off, int npts) {
 // "rect ∩ device rect then the cached clip/vis region masks").
 #define GC824_CLIP_STRIDE 80
 #define GC824_CLIP_ROWS   480
+#define GC824_RGN_MAX     4096 // cap on a stored/fetched QD region
 static void gc_clip_reset(display_card_824gc_priv_t *p) {
     memset(p->gc_clipmask, 0xFF, (size_t)GC824_CLIP_STRIDE * GC824_CLIP_ROWS);
 }
@@ -1250,14 +1303,14 @@ static void gc_mask_and_region_row(uint8_t *mask, int y, int x0, int x1) {
     for (int x = x0; x < x1; x++)
         row[x >> 3] &= (uint8_t) ~(0x80u >> (x & 7));
 }
-static void gc_mask_and_region(uint8_t *mask, const uint8_t *rgn, uint32_t maxlen) {
+static void gc_mask_and_region(uint8_t *mask, const uint8_t *rgn, uint32_t maxlen, int ox, int oy) {
     if (maxlen < 10)
         return;
     uint16_t size = LOAD_BE16(rgn);
-    int top = (int16_t)LOAD_BE16(rgn + 2);
-    int left = (int16_t)LOAD_BE16(rgn + 4);
-    int bot = (int16_t)LOAD_BE16(rgn + 6);
-    int right = (int16_t)LOAD_BE16(rgn + 8);
+    int top = (int16_t)LOAD_BE16(rgn + 2) + oy;
+    int left = (int16_t)LOAD_BE16(rgn + 4) + ox;
+    int bot = (int16_t)LOAD_BE16(rgn + 6) + oy;
+    int right = (int16_t)LOAD_BE16(rgn + 8) + ox;
     if (top < 0)
         top = 0;
     if (bot > GC824_CLIP_ROWS)
@@ -1277,7 +1330,8 @@ static void gc_mask_and_region(uint8_t *mask, const uint8_t *rgn, uint32_t maxle
     // Complex region: band/inversion list — clear the gaps between spans.
     uint32_t d = 10, dend = size < maxlen ? size : maxlen;
     int inv[128], ninv = 0, guard = 0;
-    int y = (int16_t)LOAD_BE16(rgn + d);
+    int y0raw = (int16_t)LOAD_BE16(rgn + d);
+    int y = (y0raw == 0x7FFF) ? 0x7FFF : y0raw + oy;
     while (y != 0x7FFF && d + 2 <= dend && guard++ < 2000) {
         d += 2;
         for (;;) {
@@ -1287,6 +1341,7 @@ static void gc_mask_and_region(uint8_t *mask, const uint8_t *rgn, uint32_t maxle
             d += 2;
             if (x == 0x7FFF)
                 break;
+            x += ox;
             int i = 0;
             while (i < ninv && inv[i] < x)
                 i++;
@@ -1303,7 +1358,8 @@ static void gc_mask_and_region(uint8_t *mask, const uint8_t *rgn, uint32_t maxle
         }
         if (d + 2 > dend)
             return;
-        int ny = (int16_t)LOAD_BE16(rgn + d);
+        int nyraw = (int16_t)LOAD_BE16(rgn + d);
+        int ny = (nyraw == 0x7FFF) ? 0x7FFF : nyraw + oy;
         int bandBot = (ny == 0x7FFF) ? bot : ny;
         if (bandBot > GC824_CLIP_ROWS)
             bandBot = GC824_CLIP_ROWS;
@@ -1318,11 +1374,39 @@ static void gc_mask_and_region(uint8_t *mask, const uint8_t *rgn, uint32_t maxle
         y = ny;
     }
 }
-// Intersect the clip mask with a QuickDraw region at DRAM offset `off`.
-static void gc_clip_and_region(display_card_824gc_priv_t *p, uint32_t off) {
+// Rebuild the effective drawable mask = clipRgn ∩ visRgn (each region is the
+// CURRENT one — the ops replace, not accumulate).
+static void gc_clip_rebuild(display_card_824gc_priv_t *p) {
+    memset(p->gc_clipmask, 0xFF, (size_t)GC824_CLIP_STRIDE * GC824_CLIP_ROWS);
+    if (p->gc_cliprgn_len)
+        gc_mask_and_region(p->gc_clipmask, p->gc_cliprgn, p->gc_cliprgn_len, p->gc_rgn_ox, p->gc_rgn_oy);
+    if (p->gc_visrgn_len)
+        gc_mask_and_region(p->gc_clipmask, p->gc_visrgn, p->gc_visrgn_len, p->gc_rgn_ox, p->gc_rgn_oy);
+}
+// Capture an opClipRgn/opVisRgn record (region bytes at DRAM `off`) as the
+// port's CURRENT clip or vis, then rebuild the mask.
+static void gc_clip_set_region(display_card_824gc_priv_t *p, int is_vis, uint32_t off, int ox, int oy) {
     if (off + 10 > GC824_DRAM_SIZE)
         return;
-    gc_mask_and_region(p->gc_clipmask, p->dram + off, GC824_DRAM_SIZE - off);
+    uint16_t size = (uint16_t)((p->dram[off] << 8) | p->dram[off + 1]);
+    uint8_t *dst = is_vis ? p->gc_visrgn : p->gc_cliprgn;
+    uint32_t *len = is_vis ? &p->gc_visrgn_len : &p->gc_cliprgn_len;
+    int t = (int16_t)LOAD_BE16(p->dram + off + 2), l = (int16_t)LOAD_BE16(p->dram + off + 4);
+    int b = (int16_t)LOAD_BE16(p->dram + off + 6), r = (int16_t)LOAD_BE16(p->dram + off + 8);
+    if (is_vis && (b <= t || r <= l)) {
+        // An EMPTY visRgn record is a "no restriction" placeholder: GCQD
+        // queues drawing right after one (the Control Panel radios) and the
+        // ROM path visibly draws.  An empty clipRgn IS honoured.
+        *len = 0;
+    } else if (size >= 10 && size <= GC824_RGN_MAX && off + size <= GC824_DRAM_SIZE) {
+        memcpy(dst, p->dram + off, size);
+        *len = size;
+    } else {
+        *len = 0; // unparseable — fail open (the safety net favours drawing)
+    }
+    p->gc_rgn_ox = (int16_t)ox;
+    p->gc_rgn_oy = (int16_t)oy;
+    gc_clip_rebuild(p);
 }
 
 // Compute the byte advance for an opcode record at DRAM offset `off`.
@@ -1381,6 +1465,9 @@ static void gc_interp(display_card_824gc_priv_t *p, uint32_t base, uint32_t coun
         return;
     uint32_t off = GC824_DRAM_CB + (base - p->gcp_base);
     uint32_t end = off + count;
+    // The accepted port's local -> global origin (func $2D staged bounds):
+    // every queued coordinate is port-LOCAL and must be shifted.
+    int ox = p->gc_org_x, oy = p->gc_org_y;
     while (off + 2 <= end) {
         uint16_t op = (uint16_t)(dram_be32(p, off) >> 16);
         uint32_t adv = gc_op_adv(p, off, op);
@@ -1396,8 +1483,8 @@ static void gc_interp(display_card_824gc_priv_t *p, uint32_t base, uint32_t coun
             break; // opMode
         case 0x68: // opPenLoc: {pnLocHFrac.w at +2, Point at +4 = {v.w, h.w}}
             p->gc_pen_hfrac = dram_be16(p, off + 2);
-            p->gc_pen_y = (int16_t)(dram_be32(p, off + 4) >> 16);
-            p->gc_pen_x = (int16_t)(dram_be32(p, off + 4) & 0xFFFF);
+            p->gc_pen_y = (int16_t)((int16_t)(dram_be32(p, off + 4) >> 16) + oy);
+            p->gc_pen_x = (int16_t)((int16_t)(dram_be32(p, off + 4) & 0xFFFF) + ox);
             break;
         case 0x67: { // opSwapFont: font-info 26 B at +2, width-table key at +$1C
             if (off + 0x20 > GC824_DRAM_SIZE)
@@ -1466,22 +1553,22 @@ static void gc_interp(display_card_824gc_priv_t *p, uint32_t base, uint32_t coun
                 p->gc_clip_b = (int16_t)b;
             if (r < p->gc_clip_r)
                 p->gc_clip_r = (int16_t)r;
-            gc_clip_and_region(p, off + 2); // region data starts after the opcode word
+            gc_clip_set_region(p, op == 0x6C, off + 2, ox, oy); // region follows the opcode word
             break;
         }
         case 0x01: { // opLine
-            int y = (int16_t)(dram_be32(p, off + 4) >> 16);
-            int x = (int16_t)(dram_be32(p, off + 4) & 0xFFFF);
+            int y = (int16_t)(dram_be32(p, off + 4) >> 16) + oy;
+            int x = (int16_t)(dram_be32(p, off + 4) & 0xFFFF) + ox;
             gc_line_to(p, x, y);
             p->draw_count++;
             break;
         }
         case 0x05: { // opRect
             uint16_t frame = (uint16_t)(dram_be32(p, off) & 0xFFFF);
-            int t = (int16_t)(dram_be32(p, off + 4) >> 16);
-            int l = (int16_t)(dram_be32(p, off + 4) & 0xFFFF);
-            int b = (int16_t)(dram_be32(p, off + 8) >> 16);
-            int r = (int16_t)(dram_be32(p, off + 8) & 0xFFFF);
+            int t = (int16_t)(dram_be32(p, off + 4) >> 16) + oy;
+            int l = (int16_t)(dram_be32(p, off + 4) & 0xFFFF) + ox;
+            int b = (int16_t)(dram_be32(p, off + 8) >> 16) + oy;
+            int r = (int16_t)(dram_be32(p, off + 8) & 0xFFFF) + ox;
             if (frame)
                 gc_frame_rect(p, t, l, b, r);
             else
@@ -1491,10 +1578,10 @@ static void gc_interp(display_card_824gc_priv_t *p, uint32_t base, uint32_t coun
         }
         case 0x04: { // opRRect: {frameFlag.w, Rect, ovWd.w, ovHt.w} (§3)
             uint16_t frame = (uint16_t)(dram_be32(p, off) & 0xFFFF);
-            int t = (int16_t)(dram_be32(p, off + 4) >> 16);
-            int l = (int16_t)(dram_be32(p, off + 4) & 0xFFFF);
-            int b = (int16_t)(dram_be32(p, off + 8) >> 16);
-            int r = (int16_t)(dram_be32(p, off + 8) & 0xFFFF);
+            int t = (int16_t)(dram_be32(p, off + 4) >> 16) + oy;
+            int l = (int16_t)(dram_be32(p, off + 4) & 0xFFFF) + ox;
+            int b = (int16_t)(dram_be32(p, off + 8) >> 16) + oy;
+            int r = (int16_t)(dram_be32(p, off + 8) & 0xFFFF) + ox;
             int ovW = (int16_t)(dram_be32(p, off + 12) >> 16);
             int ovH = (int16_t)(dram_be32(p, off + 12) & 0xFFFF);
             if (ovW < 0)
@@ -1510,20 +1597,20 @@ static void gc_interp(display_card_824gc_priv_t *p, uint32_t base, uint32_t coun
         }
         case 0x03: { // opOval: {frameFlag.w, Rect} — DrawArc with radii = rect dims
             uint16_t frame = (uint16_t)(dram_be32(p, off) & 0xFFFF);
-            int t = (int16_t)(dram_be32(p, off + 4) >> 16);
-            int l = (int16_t)(dram_be32(p, off + 4) & 0xFFFF);
-            int b = (int16_t)(dram_be32(p, off + 8) >> 16);
-            int r = (int16_t)(dram_be32(p, off + 8) & 0xFFFF);
+            int t = (int16_t)(dram_be32(p, off + 4) >> 16) + oy;
+            int l = (int16_t)(dram_be32(p, off + 4) & 0xFFFF) + ox;
+            int b = (int16_t)(dram_be32(p, off + 8) >> 16) + oy;
+            int r = (int16_t)(dram_be32(p, off + 8) & 0xFFFF) + ox;
             gc_draw_arc(p, t, l, b, r, 0, 360, frame);
             p->draw_count++;
             break;
         }
         case 0x02: { // opArc: {frameFlag.w, Rect, startAngle.w, arcAngle.w}
             uint16_t frame = (uint16_t)(dram_be32(p, off) & 0xFFFF);
-            int t = (int16_t)(dram_be32(p, off + 4) >> 16);
-            int l = (int16_t)(dram_be32(p, off + 4) & 0xFFFF);
-            int b = (int16_t)(dram_be32(p, off + 8) >> 16);
-            int r = (int16_t)(dram_be32(p, off + 8) & 0xFFFF);
+            int t = (int16_t)(dram_be32(p, off + 4) >> 16) + oy;
+            int l = (int16_t)(dram_be32(p, off + 4) & 0xFFFF) + ox;
+            int b = (int16_t)(dram_be32(p, off + 8) >> 16) + oy;
+            int r = (int16_t)(dram_be32(p, off + 8) & 0xFFFF) + ox;
             int start = (int16_t)(dram_be32(p, off + 12) >> 16);
             int arc = (int16_t)(dram_be32(p, off + 12) & 0xFFFF);
             gc_draw_arc(p, t, l, b, r, start, arc, frame);
@@ -1538,21 +1625,22 @@ static void gc_interp(display_card_824gc_priv_t *p, uint32_t base, uint32_t coun
                 break; // pen untouched (== ROM / card 0xC688)
             // Sys 6 card: pen := points[0] UNCONDITIONALLY (0xC694) — even for
             // fills (the divergence Sys 7 fixes; call-reference §6).
-            p->gc_pen_y = (int16_t)dram_be16(p, off + 0x0E);
-            p->gc_pen_x = (int16_t)dram_be16(p, off + 0x10);
+            p->gc_pen_y = (int16_t)((int16_t)dram_be16(p, off + 0x0E) + oy);
+            p->gc_pen_x = (int16_t)((int16_t)dram_be16(p, off + 0x10) + ox);
             if (frame) {
                 // FrPoly: one pen line per edge, pen := last vertex — the same
                 // line engine as op $01; no auto-close (Polygons.a:421-454).
                 for (int i = 1; i < npts; i++)
-                    gc_line_to(p, (int16_t)dram_be16(p, off + 0x10 + 4 * i), (int16_t)dram_be16(p, off + 0x0E + 4 * i));
+                    gc_line_to(p, (int16_t)dram_be16(p, off + 0x10 + 4 * i) + ox,
+                               (int16_t)dram_be16(p, off + 0x0E + 4 * i) + oy);
             } else {
-                gc_fill_poly(p, off + 4, npts);
+                gc_fill_poly(p, off + 4, npts, ox, oy);
             }
             p->draw_count++;
             break;
         }
         case 0x08: // opRgn
-            gc_fill_rgn(p, off + 4);
+            gc_fill_rgn(p, off + 4, ox, oy);
             p->draw_count++;
             break;
         case 0x72: // opPixPat (type-5 cache key — needs func $0C CachePixPat)
@@ -1589,7 +1677,6 @@ static inline int gc_bmp_pixel(uint32_t base, int y, int x, int rowbytes) {
 
 // Fetch a guest QuickDraw region (deref'd handle in host RAM) into `buf`.
 // Returns the byte count, or 0 on a reject (implausible size).
-#define GC824_RGN_MAX 4096
 static uint32_t gc_fetch_guest_rgn(uint32_t addr, uint16_t size, uint8_t *buf) {
     addr &= 0x00FFFFFFu; // strip master-pointer flag bits (24-bit mode)
     if (!addr || size < 10 || size > GC824_RGN_MAX)
@@ -1666,7 +1753,9 @@ static int gc_stretchbits(display_card_824gc_priv_t *p) {
         uint8_t buf[GC824_RGN_MAX];
         if (!gc_fetch_guest_rgn(rgn, rsz, buf))
             return 0;
-        gc_mask_and_region(p->gc_blitmask, buf, rsz);
+        // The regions are PORT-LOCAL like every other coordinate in the
+        // request; the dst PixMap bounds give the local->global shift.
+        gc_mask_and_region(p->gc_blitmask, buf, rsz, -dstBnL, -dstBnT);
     }
 
     // fg/bk PIXEL values resolved from the request's RGBs (+0xE8/+0xEE) — the
@@ -1897,10 +1986,18 @@ static void gc_draw_text(display_card_824gc_priv_t *p, uint32_t off) {
         } else {
             if (p->gc_font_info[6] || p->gc_font_info[7])
                 LOG(1, "opText: on-card style synthesis (bold/italic) not modelled — drawn plain");
-            if ((p->gc_mode & 0x27) == 0)
-                LOG(1, "opText: srcCopy text mode — background not painted (ink only)");
             int top = p->gc_pen_y - ascent;
             gc_cursor_shield(p, top, (acc >> 16) + kern - widMax, top + height, (accEnd >> 16) + kern + 2 * widMax);
+            if ((p->gc_mode & 0x27) == 0) {
+                // Copy-class text: the ROM renders the run into a buffer and
+                // blits the measured box, so [pen, pen+advance) ×
+                // [pen−ascent, +fRectHeight) is painted BACKGROUND before the
+                // ink lands — erasing what was there (the General cdev's
+                // ticking clock repaints its seconds digits this way).
+                for (int row = 0; row < height; row++)
+                    for (int ex = acc >> 16; ex < (accEnd >> 16); ex++)
+                        gc_px(p, ex, top + row, 0);
+            }
             for (int i = 0; i < len; i++) {
                 uint8_t c = p->dram[off + 0x10 + (uint32_t)i];
                 int idx = (c >= first && c <= last) ? c - first : nglyph;
@@ -1943,11 +2040,14 @@ static void gc_reset_draw_state(display_card_824gc_priv_t *p) {
     p->gc_clip_l = 0;
     p->gc_clip_b = (int16_t)p->display.height;
     p->gc_clip_r = (int16_t)p->display.width;
-    gc_clip_reset(p); // all-drawable; opClipRgn/opVisRgn narrow it
+    gc_clip_reset(p); // all-drawable; opClipRgn/opVisRgn replace into it
+    p->gc_cliprgn_len = 0;
+    p->gc_visrgn_len = 0;
     // Default port colours as PIXEL VALUES for the screen depth: black fg,
-    // white bg (1 bpp: 1/0; 8 bpp standard CLUT: $FF/$00).
-    p->gc_fg = (p->display.format == PIXEL_8BPP) ? 0xFFu : 1u;
-    p->gc_bg = 0;
+    // white bg (1 bpp: 1/0; 8 bpp standard CLUT: $FF/$00; 32 bpp direct:
+    // $000000/$FFFFFF).
+    p->gc_fg = (p->display.format == PIXEL_8BPP) ? 0xFFu : (p->display.format == PIXEL_32BPP_XRGB) ? 0u : 1u;
+    p->gc_bg = (p->display.format == PIXEL_32BPP_XRGB) ? 0x00FFFFFFu : 0u;
     // Default hilite = the architectural low-mem HiliteRGB ($0DA0, 3 words) —
     // what an old-style port uses when no op $70 arrives (§3.1).
     p->gc_hilite = gc_resolve_rgb(p, memory_debug_read_uint16(0x0DA0), memory_debug_read_uint16(0x0DA2),
@@ -2034,16 +2134,28 @@ static uint32_t gc_dispatch_func(display_card_824gc_priv_t *p, uint32_t func, ui
         // geometry (drawn at the preceding func $26 submits).
         result = (!p->force_decline && p->gc_accel && gc_stretchbits(p)) ? 1 : 0;
         break;
-    case 0x2D: // SetPort — accept the port so its geometry queue is interpreted.
+    case 0x2D: { // SetPort — accept the port so its geometry queue is interpreted.
+        // The staged record at CB+$170 (built by GCQD $4774): +0 thePort,
+        // +$E the port pixmap's baseAddr, +$14 its BOUNDS — the port's
+        // local→global mapping (window content is drawn in port-LOCAL
+        // coordinates; global = local − bounds.topLeft; the WMgr port's
+        // bounds are (0,0) so the desktop never exposed this).
+        // Accept only ports that target the SCREEN at a supported depth;
         // gc.force_decline (the differential test oracle, proposal §4.1)
-        // declines instead: the SAME guest scene then renders via the ROM
-        // path.  Depths without rasterizers (2/4/16/32 bpp) also decline —
-        // the safety net keeps them correct until they're implemented.
-        result =
-            (!p->force_decline && (p->display.format == PIXEL_1BPP_MSB || p->display.format == PIXEL_8BPP)) ? 1 : 0;
+        // declines everything → the ROM path renders the same scene.
+        uint32_t pbase = dram_be32(p, GC824_DRAM_CB + 0x170 + 0xE);
+        uint32_t screen = p->super_base | (GC824_DRAM_OFFSET + GC824_FB_OFFSET);
+        bool depth_ok = p->display.format == PIXEL_1BPP_MSB || p->display.format == PIXEL_8BPP ||
+                        p->display.format == PIXEL_32BPP_XRGB;
+        result = (!p->force_decline && depth_ok && pbase == screen) ? 1 : 0;
+        if (result) {
+            p->gc_org_y = (int16_t)(0 - (int16_t)dram_be16(p, GC824_DRAM_CB + 0x170 + 0x14));
+            p->gc_org_x = (int16_t)(0 - (int16_t)dram_be16(p, GC824_DRAM_CB + 0x170 + 0x16));
+        }
         p->gc_accel = (result != 0); // gate the interpreter on port acceptance
-        LOG(3, "func $2D SetPort %s", result ? "accepted -> card interprets the geometry queue" : "declined");
+        LOG(3, "func $2D SetPort %s (org %d,%d)", result ? "accepted" : "declined", p->gc_org_x, p->gc_org_y);
         break;
+    }
     case 0x30: // FontDownload — cache the strikes/width tables so ops $67/$06
         // draw text on-card; any failure (or the oracle switch, or an
         // unsupported depth) declines: the host rolls back its checksum and
@@ -2260,14 +2372,23 @@ static uint32_t gc_read(display_card_824gc_priv_t *p, uint32_t phys, unsigned wi
             //   (2) the video driver's 3-bit config strap — PrimaryInit reads
             //       bit 31 of each ($1CFE-$1D24) → a config code 0..7;
             //   (3) the VRAM-interconnect sense — vramProbe ($243C) drives
-            //       walking-ones into the bank-drive lines $2C/$30/$34 and reads
-            //       which sense bits respond, assembling a 6-bit signature.
+            //       walking-ones into the bank-drive lines $2C/$30/$34 one at a
+            //       time and reads which sense bits respond, assembling a 6-bit
+            //       signature: {p1.s48, p1.s4C, p2.s44, p2.s4C, p3.s44, p3.s48}
+            //       (pass N = drive line $2C/$30/$34).  PrimaryInit maps
+            //       $14→config 4, $00/$30→config 0, $2D→config 5, else 9.
             // Idle (no bank line driven) → bit 31 = 1: satisfies the alive
             // check AND makes the strap code 7 (→ the deep vramProbe path).
             // While vramProbe is driving a bank line → read 0, so the assembled
-            // signature is 0, which the caller maps to **config 0** (a standard
-            // monitor mode) instead of the config-9 fixed mode the old constant
-            // 0x80000000 produced (open-issues.md §0.5 / decl ROM $243C).
+            // signature is 0, which the caller maps to **config 0** — the
+            // 640×480 configuration this model is verified against.  (Probed
+            // alternatives, for the record: signature $14 → config 4 = the
+            // 512×384 monitor; $2D → config 5 = 640×480 with a 128-byte 1-bpp
+            // pitch and no 32-bpp mode.  Config 0's post-SecondaryInit
+            // sResource $A0 carries all six depths; 16/32 bpp are reachable at
+            // RUNTIME via Monitors/cscSetMode → VidComm — never at boot: the
+            // ROM Slot Manager keeps the 24-bit $B0 family, capped at 8 bpp,
+            // until SecondaryInit swaps it, exactly like real hardware.)
             uint32_t bank_drive = buf_read(p->regs, 0x2C, GC824_REGS_SIZE, 4) |
                                   buf_read(p->regs, 0x30, GC824_REGS_SIZE, 4) |
                                   buf_read(p->regs, 0x34, GC824_REGS_SIZE, 4);
@@ -2531,7 +2652,10 @@ static void set_poweron_defaults(display_card_824gc_priv_t *p) {
     p->display.format = format_for_bpp(p->seeded_bpp ? p->seeded_bpp : 1);
     p->display.width = 640u;
     p->display.height = 480u;
-    p->display.stride = 1024u;
+    // Row pitch: 1024 bytes at every indexed depth (guest-probed at 1/8 bpp);
+    // the direct modes scale it (16 bpp = 2048, 32 bpp = 4096 — power-of-two
+    // pitches, verified by guest probe at 32 bpp).
+    p->display.stride = (p->seeded_bpp == 32) ? 4096u : (p->seeded_bpp == 16) ? 2048u : 1024u;
     p->display.bits = p->dram + GC824_FB_OFFSET;
     p->display.clut = p->clut;
     p->display.clut_len = 256;
@@ -2596,7 +2720,10 @@ static int card_init(nubus_card_t *card, config_t *cfg, checkpoint_t *cp) {
     p->regs = calloc(1, GC824_REGS_SIZE);
     p->gc_clipmask = calloc(1, (size_t)GC824_CLIP_STRIDE * GC824_CLIP_ROWS);
     p->gc_blitmask = calloc(1, (size_t)GC824_CLIP_STRIDE * GC824_CLIP_ROWS);
-    if (!p->vram || !p->vrom || !p->sram || !p->dram || !p->regs || !p->gc_clipmask || !p->gc_blitmask) {
+    p->gc_cliprgn = calloc(1, GC824_RGN_MAX);
+    p->gc_visrgn = calloc(1, GC824_RGN_MAX);
+    if (!p->vram || !p->vrom || !p->sram || !p->dram || !p->regs || !p->gc_clipmask || !p->gc_blitmask ||
+        !p->gc_cliprgn || !p->gc_visrgn) {
         free(p->vram);
         free(p->vrom);
         free(p->sram);
@@ -2604,6 +2731,8 @@ static int card_init(nubus_card_t *card, config_t *cfg, checkpoint_t *cp) {
         free(p->regs);
         free(p->gc_clipmask);
         free(p->gc_blitmask);
+        free(p->gc_cliprgn);
+        free(p->gc_visrgn);
         free(p);
         return -1;
     }
@@ -2705,6 +2834,8 @@ static void card_teardown(nubus_card_t *card, config_t *cfg) {
     free(p->regs);
     free(p->gc_clipmask);
     free(p->gc_blitmask);
+    free(p->gc_cliprgn);
+    free(p->gc_visrgn);
     gc_font_caches_flush(p);
     free(p->vrom_path);
     free(p);
@@ -2772,9 +2903,11 @@ static nubus_card_t *factory(int slot, config_t *cfg, checkpoint_t *cp) {
     return card;
 }
 
-// Advertised modes.  The GC's declaration ROM carries a rich monitor table;
-// stage 0 exposes the common Apple RGB modes at 1/2/4/8 bpp (the accelerated
-// depths mirror the shipped configs).  Sense codes follow the JMFB family.
+// Advertised modes.  Seedable BOOT depths only: the ROM Slot Manager keeps
+// the 24-bit sResource family (capped at 8 bpp) until SecondaryInit swaps in
+// the six-depth $A0 family, so 16/32 bpp can never be the boot depth on
+// System 6 — they are reached at runtime via Monitors (cscSetMode → VidComm),
+// exactly like real hardware.  Sense codes follow the JMFB family.
 static const int display_card_824gc_depths[] = {1, 2, 4, 8, 0};
 // Monitor ids are prefixed "gc_" so they don't collide with the 24AC's
 // "rgb_*" ids when nubus.video_mode routes a pick to the matching card.
@@ -2785,6 +2918,10 @@ static const nubus_monitor_t display_card_824gc_monitors[] = {
      .height = 480,
      .depths = display_card_824gc_depths,
      .sense_code = 6,
+     // The GC's slot-PRAM bytes 3/4 hold the CONFIG CODE (low 3 bits), not an
+     // sRsrc id: PrimaryInit ($1DB2-$1E1E) compares the saved low 3 bits
+     // against the detected config and RESETS spDepth to $80 on mismatch.
+     // $80's low bits are 0 = config 0 ✓, so the seeded depth survives.
      .srsrc_sister = 0x80},
     {.id = "gc_832x624",
      .name = "16\" (832×624)",
