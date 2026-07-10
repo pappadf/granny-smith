@@ -1,0 +1,63 @@
+# Integration test: IIcx + 8•24 GC — 16-bpp rasterizers via a VidComm switch.
+#
+# 16 bpp is runtime-only on this card (the old ROM Slot Manager caps boot
+# depths at 8; Monitors reaches Thousands through cscSetMode -> the VidComm
+# block at DRAM+$7300).  This drives that exact protocol: geometry longs at
+# +$08..+$14, then GO = $80000000 — the card reprograms the display to
+# RGB555 and acks.  Then the usual poke transport draws:
+#
+#   * patCopy of solid red -> $7C00 (RGB555, x-bit clear);
+#   * patXor flips the 15 colour bits -> $03FF;
+#   * pattern blend ($28, default $7FFF weight) of red over black ->
+#     r = ($FFFF*$7FFF)>>16 = $7FFE -> 5 bits $0F -> $3C00.
+
+machine.nubus.video_card = "824gc"
+machine.boot "iicx" 8192
+machine.rom.reload
+
+machine.memory.poke.l 0x9C006400 0x42005300
+machine.memory.poke.l 0x9C007048 0x00000001
+machine.memory.poke.l 0x9C00704C 0x00000000
+machine.memory.poke.l 0x9C007014 0xFFFFFFFF
+
+# VidComm: fb $9C011400, rowBytes 1280, bpp 16, 480 scanlines, GO.
+machine.memory.poke.l 0x9C007308 0x9C011400
+machine.memory.poke.l 0x9C00730C 0x00000500
+machine.memory.poke.l 0x9C007310 0x00000010
+machine.memory.poke.l 0x9C007314 0x000001E0
+machine.memory.poke.l 0x9C007300 0x80000000
+assert ${machine.memory.peek.l(0x9C007300) == 0}         "VidComm GO not consumed"
+
+# SetPort must accept at 16 bpp now.
+machine.memory.poke.l 0x9C00717E 0x9C011400
+machine.memory.poke.l 0x9C007184 0x00000000
+machine.memory.poke.l 0x9C007048 0x0000002D
+machine.memory.poke.l 0x9C00704C 0x00000000
+machine.memory.poke.l 0x9C007014 0xFFFFFFFF
+assert ${machine.memory.peek.l(0x9C00701C) == 1}         "SetPort (func $2D) not accepted at 16 bpp"
+
+machine.memory.poke.l 0x9C0076D4 0x00710001
+machine.memory.poke.l 0x9C0076D8 0xFFFFFFFF
+machine.memory.poke.l 0x9C0076DC 0xFFFFFFFF
+machine.memory.poke.l 0x9C0076E0 0x00690008
+machine.memory.poke.l 0x9C0076E4 0x0064FFFF
+machine.memory.poke.l 0x9C0076E8 0x00000000
+machine.memory.poke.l 0x9C0076EC 0x00000000
+machine.memory.poke.l 0x9C0076F0 0x00050000
+machine.memory.poke.l 0x9C0076F4 0x00000000
+machine.memory.poke.l 0x9C0076F8 0x00010004
+machine.memory.poke.l 0x9C0076FC 0x0069000A
+machine.memory.poke.l 0x9C007700 0x00050000
+machine.memory.poke.l 0x9C007704 0x00000000
+machine.memory.poke.l 0x9C007708 0x00010002
+machine.memory.poke.l 0x9C00770C 0x00690028
+machine.memory.poke.l 0x9C007710 0x00050000
+machine.memory.poke.l 0x9C007714 0x00000004
+machine.memory.poke.l 0x9C007718 0x00010006
+machine.memory.poke.l 0x9C0071C0 0x00000048
+
+assert ${machine.memory.peek.l(0x9C011400) == 0x03FF03FF} "xor'd red != 03ff (RGB555)"
+assert ${machine.memory.peek.l(0x9C011404) == 0x7C007C00} "solid red != 7c00 (RGB555)"
+assert ${machine.memory.peek.l(0x9C011408) == 0x3C003C00} "50% blend of red != 3c00 (RGB555)"
+
+quit

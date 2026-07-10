@@ -525,9 +525,14 @@ static uint32_t gc_resolve_rgb(display_card_824gc_priv_t *p, uint16_t r, uint16_
 // CLUT entries replicated 8→16; 32 bpp: native bytes replicated); the result
 // lands via the card-side Color2Index (8 bpp) or packs directly (32 bpp).
 // pin EQU weight: one opColor RGB serves blend weight and add/sub pin.
+static inline uint16_t gc_c5to16(uint32_t v5) { // replicate 5 bits to 16
+    v5 &= 0x1F;
+    return (uint16_t)((v5 << 11) | (v5 << 6) | (v5 << 1) | (v5 >> 4));
+}
 static void gc_px_arith(display_card_824gc_priv_t *p, uint8_t *b, uint32_t srcpix) {
     int is32 = p->display.format == PIXEL_32BPP_XRGB;
-    uint32_t dstpix = is32 ? LOAD_BE32(b) & 0x00FFFFFFu : *b;
+    int is16 = p->display.format == PIXEL_16BPP_555;
+    uint32_t dstpix = is32 ? LOAD_BE32(b) & 0x00FFFFFFu : is16 ? (LOAD_BE16(b) & 0x7FFFu) : *b;
     int variant = p->gc_mode & 7;
     if (variant == 4) { // transparent: full-pixel compare against transColor
         // (= the port background pixel), skip or plain copy — no math.
@@ -535,6 +540,8 @@ static void gc_px_arith(display_card_824gc_priv_t *p, uint8_t *b, uint32_t srcpi
             return;
         if (is32)
             STORE_BE32(b, srcpix & 0x00FFFFFFu);
+        else if (is16)
+            STORE_BE16(b, (uint16_t)(srcpix & 0x7FFFu));
         else
             *b = (uint8_t)srcpix;
         return;
@@ -545,6 +552,12 @@ static void gc_px_arith(display_card_824gc_priv_t *p, uint8_t *b, uint32_t srcpi
             uint32_t sh = 16 - 8 * c;
             cs[c] = (uint16_t)(((srcpix >> sh) & 0xFF) * 0x101u);
             cd[c] = (uint16_t)(((dstpix >> sh) & 0xFF) * 0x101u);
+        }
+    } else if (is16) {
+        for (int c = 0; c < 3; c++) {
+            uint32_t sh = 10 - 5 * c;
+            cs[c] = gc_c5to16(srcpix >> sh);
+            cd[c] = gc_c5to16(dstpix >> sh);
         }
     } else {
         const rgba8_t *sc = &p->clut[srcpix & 0xFF], *dc = &p->clut[dstpix & 0xFF];
@@ -591,6 +604,8 @@ static void gc_px_arith(display_card_824gc_priv_t *p, uint8_t *b, uint32_t srcpi
     }
     if (is32) // alpha byte: add/sub/blend write 0; max/min keep dst (ours is 0)
         STORE_BE32(b, ((uint32_t)(cr[0] >> 8) << 16) | ((uint32_t)(cr[1] >> 8) << 8) | (cr[2] >> 8));
+    else if (is16)
+        STORE_BE16(b, (uint16_t)(((uint32_t)(cr[0] >> 11) << 10) | ((uint32_t)(cr[1] >> 11) << 5) | (cr[2] >> 11)));
     else
         *b = (uint8_t)gc_resolve_rgb(p, cr[0], cr[1], cr[2]);
 }
@@ -632,6 +647,15 @@ static inline void gc_px(display_card_824gc_priv_t *p, int x, int y, int s) {
                         STORE_BE32(b, p->gc_bg & 0x00FFFFFFu);
                     return;
                 }
+                if (p->display.format == PIXEL_16BPP_555) {
+                    uint8_t *b = (uint8_t *)p->display.bits + (size_t)y * p->display.stride + (size_t)x * 2;
+                    uint16_t d = LOAD_BE16(b) & 0x7FFFu;
+                    if (d == (p->gc_bg & 0x7FFFu))
+                        STORE_BE16(b, (uint16_t)(p->gc_hilite & 0x7FFFu));
+                    else if (d == (p->gc_hilite & 0x7FFFu))
+                        STORE_BE16(b, (uint16_t)(p->gc_bg & 0x7FFFu));
+                    return;
+                }
                 uint8_t *b = (uint8_t *)p->display.bits + (size_t)y * p->display.stride + x;
                 if (*b == (uint8_t)p->gc_bg)
                     *b = (uint8_t)p->gc_hilite;
@@ -644,6 +668,8 @@ static inline void gc_px(display_card_824gc_priv_t *p, int x, int y, int s) {
             uint8_t *b;
             if (p->display.format == PIXEL_32BPP_XRGB)
                 b = (uint8_t *)p->display.bits + (size_t)y * p->display.stride + (size_t)x * 4;
+            else if (p->display.format == PIXEL_16BPP_555)
+                b = (uint8_t *)p->display.bits + (size_t)y * p->display.stride + (size_t)x * 2;
             else
                 b = (uint8_t *)p->display.bits + (size_t)y * p->display.stride + x;
             gc_px_arith(p, b, srcpix);
@@ -673,6 +699,29 @@ static inline void gc_px(display_card_824gc_priv_t *p, int x, int y, int s) {
             break; // Bic: bg where ink
         default:
             STORE_BE32(b, (s ? p->gc_fg : p->gc_bg) & 0x00FFFFFFu);
+            break; // Copy
+        }
+        return;
+    }
+    if (p->display.format == PIXEL_16BPP_555) {
+        // Direct 15-bit colour: same net visual rules as the 8/32-bpp cores;
+        // Xor flips the colour bits (x-bit excluded).
+        uint8_t *b = (uint8_t *)p->display.bits + (size_t)y * p->display.stride + (size_t)x * 2;
+        switch (p->gc_mode & 3) {
+        case 1:
+            if (s)
+                STORE_BE16(b, (uint16_t)(p->gc_fg & 0x7FFFu));
+            break; // Or: fg where ink
+        case 2:
+            if (s)
+                STORE_BE16(b, (uint16_t)(LOAD_BE16(b) ^ 0x7FFFu));
+            break; // Xor
+        case 3:
+            if (s)
+                STORE_BE16(b, (uint16_t)(p->gc_bg & 0x7FFFu));
+            break; // Bic: bg where ink
+        default:
+            STORE_BE16(b, (uint16_t)((s ? p->gc_fg : p->gc_bg) & 0x7FFFu));
             break; // Copy
         }
         return;
@@ -772,6 +821,26 @@ static void gc_px_val(display_card_824gc_priv_t *p, int x, int y, uint32_t v) {
         STORE_BE32(b, d & 0x00FFFFFFu);
         return;
     }
+    if (p->display.format == PIXEL_16BPP_555) {
+        uint8_t *b = (uint8_t *)p->display.bits + (size_t)y * p->display.stride + (size_t)x * 2;
+        uint16_t d = LOAD_BE16(b);
+        switch (p->gc_mode & 3) {
+        case 1:
+            d |= (uint16_t)v;
+            break;
+        case 2:
+            d ^= (uint16_t)v;
+            break;
+        case 3:
+            d &= (uint16_t)~v;
+            break;
+        default:
+            d = (uint16_t)v;
+            break;
+        }
+        STORE_BE16(b, d & 0x7FFFu);
+        return;
+    }
     if (p->display.format == PIXEL_8BPP) {
         uint8_t *b = (uint8_t *)p->display.bits + (size_t)y * p->display.stride + x;
         switch (p->gc_mode & 3) {
@@ -849,6 +918,8 @@ static void gc_span(display_card_824gc_priv_t *p, int y, int l, int r) {
 static uint32_t gc_resolve_rgb(display_card_824gc_priv_t *p, uint16_t r, uint16_t g, uint16_t b) {
     if (p->display.format == PIXEL_32BPP_XRGB) // direct: 00RRGGBB, no CLUT
         return ((uint32_t)(r >> 8) << 16) | ((uint32_t)(g >> 8) << 8) | (b >> 8);
+    if (p->display.format == PIXEL_16BPP_555) // direct: 0RRRRRGGGGGBBBBB
+        return ((uint32_t)(r >> 11) << 10) | ((uint32_t)(g >> 11) << 5) | (b >> 11);
     if (p->display.format != PIXEL_8BPP) {
         uint32_t lum = (uint32_t)r + g + b;
         return (lum < 0x18000u) ? 1u : 0u;
@@ -1994,7 +2065,7 @@ static int gc_stretchbits(display_card_824gc_priv_t *p) {
     }
     // Depths: the raw rowBytes word's bit 15 marks a PixMap (pixelSize at
     // +0x20 in the copied map) vs a plain BitMap (1 bpp).
-    int depth = (p->display.format == PIXEL_8BPP) ? 8 : 1;
+    int depth = (p->display.format == PIXEL_8BPP) ? 8 : (p->display.format == PIXEL_16BPP_555) ? 16 : 1;
     int dstPS = (dram_be16(p, rb + 0x06) & 0x8000) ? dram_be16(p, rb + 0x02 + 0x20) : 1;
     int srcPS = (dram_be16(p, rb + 0x3A) & 0x8000) ? dram_be16(p, rb + 0x36 + 0x20) : 1;
     if (dstPS != depth)
@@ -2003,6 +2074,8 @@ static int gc_stretchbits(display_card_824gc_priv_t *p) {
         return 0;
     if (depth == 8 && srcPS != 8 && srcPS != 1)
         return 0; // 8bpp dst accepts same-depth or 1-bit-expanded sources
+    if (depth == 16 && srcPS != 16 && srcPS != 1)
+        return 0; // ditto at 16 bpp
     if (depth == 32 && srcPS != 32 && srcPS != 1)
         return 0;
     // A src/mask PixMap with pmVersion != 0 is an offscreen whose pixel image
@@ -2015,7 +2088,7 @@ static int gc_stretchbits(display_card_824gc_priv_t *p) {
         return 0;
     if (maskBase && (dram_be16(p, rb + 0x6E) & 0x8000) && dram_be16(p, rb + 0x6A + 0x20) != 1)
         return 0; // only 1-bit masks (deep CopyDeepMask blends -> ROM)
-    if (depth == 8) {
+    if (depth == 8 || depth == 16) {
         // v1 colorize envelope at 8 bpp: only the B/W port (fg black, bk
         // white — the colorize-NOP case, §2.3).  Anything colorized routes
         // through MakeScaleTbl in RGB space on the ROM path.
@@ -2099,6 +2172,37 @@ static int gc_stretchbits(display_card_824gc_priv_t *p) {
                     row[x] = s;
                     break; // Copy
                 }
+                continue;
+            }
+            if (depth == 16) {
+                // 16-bpp dst: same rules on 15-bit direct values.
+                uint16_t sv;
+                if (srcPS == 16) {
+                    uint32_t a = ((srcBase & 0xF0000000u) == 0x90000000u) ? srcBase : (srcBase & 0x00FFFFFFu);
+                    sv = memory_debug_read_uint16(a + (uint32_t)sy * (uint32_t)srcRB + (uint32_t)sx * 2);
+                    if (inv)
+                        sv = (uint16_t)~sv;
+                } else {
+                    int b1 = gc_bmp_pixel(srcBase, sy, sx, srcRB) ^ inv;
+                    sv = (uint16_t)(b1 ? fg : bk);
+                }
+                uint8_t *px = row + (size_t)x * 2;
+                uint16_t d = LOAD_BE16(px);
+                switch (mode & 3) {
+                case 1:
+                    d |= sv;
+                    break; // Or
+                case 2:
+                    d ^= sv;
+                    break; // Xor
+                case 3:
+                    d &= (uint16_t)~sv;
+                    break; // Bic
+                default:
+                    d = sv;
+                    break; // Copy
+                }
+                STORE_BE16(px, d & 0x7FFFu);
                 continue;
             }
             uint8_t bit = (uint8_t)(0x80u >> (x & 7));
@@ -2544,7 +2648,7 @@ static uint32_t gc_dispatch_func(display_card_824gc_priv_t *p, uint32_t func, ui
         uint32_t pbase = dram_be32(p, GC824_DRAM_CB + 0x170 + 0xE);
         uint32_t screen = p->super_base | (GC824_DRAM_OFFSET + GC824_FB_OFFSET);
         bool depth_ok = p->display.format == PIXEL_1BPP_MSB || p->display.format == PIXEL_8BPP ||
-                        p->display.format == PIXEL_32BPP_XRGB;
+                        p->display.format == PIXEL_16BPP_555 || p->display.format == PIXEL_32BPP_XRGB;
         result = (!p->force_decline && depth_ok && pbase == screen) ? 1 : 0;
         if (result) {
             p->gc_org_y = (int16_t)(0 - (int16_t)dram_be16(p, GC824_DRAM_CB + 0x170 + 0x14));
