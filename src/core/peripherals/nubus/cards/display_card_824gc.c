@@ -2086,7 +2086,10 @@ static int gc_stretchbits(display_card_824gc_priv_t *p) {
     }
     // Depths: the raw rowBytes word's bit 15 marks a PixMap (pixelSize at
     // +0x20 in the copied map) vs a plain BitMap (1 bpp).
-    int depth = (p->display.format == PIXEL_8BPP) ? 8 : (p->display.format == PIXEL_16BPP_555) ? 16 : 1;
+    int depth = (p->display.format == PIXEL_8BPP)         ? 8
+                : (p->display.format == PIXEL_16BPP_555)  ? 16
+                : (p->display.format == PIXEL_32BPP_XRGB) ? 32
+                                                          : 1;
     int dstPS = (dram_be16(p, rb + 0x06) & 0x8000) ? dram_be16(p, rb + 0x02 + 0x20) : 1;
     int srcPS = (dram_be16(p, rb + 0x3A) & 0x8000) ? dram_be16(p, rb + 0x36 + 0x20) : 1;
     if (dstPS != depth)
@@ -2119,7 +2122,7 @@ static int gc_stretchbits(display_card_824gc_priv_t *p) {
     }
     if (maskBase && (dram_be16(p, rb + 0x6E) & 0x8000) && dram_be16(p, rb + 0x6A + 0x20) != 1)
         return 0; // only 1-bit masks (deep CopyDeepMask blends -> ROM)
-    if (depth == 8 || depth == 16) {
+    if (depth == 8 || depth == 16 || depth == 32) {
         // v1 colorize envelope at 8 bpp: only the B/W port (fg black, bk
         // white — the colorize-NOP case, §2.3).  Anything colorized routes
         // through MakeScaleTbl in RGB space on the ROM path.
@@ -2234,6 +2237,37 @@ static int gc_stretchbits(display_card_824gc_priv_t *p) {
                     break; // Copy
                 }
                 STORE_BE16(px, d & 0x7FFFu);
+                continue;
+            }
+            if (depth == 32) {
+                // 32-bpp dst: same rules on 00RRGGBB longs (alpha excluded).
+                uint32_t sv;
+                if (srcPS == 32) {
+                    uint32_t a = ((srcBase & 0xF0000000u) == 0x90000000u) ? srcBase : (srcBase & 0x00FFFFFFu);
+                    sv = memory_debug_read_uint32(a + (uint32_t)sy * (uint32_t)srcRB + (uint32_t)sx * 4);
+                    if (inv)
+                        sv = ~sv;
+                } else {
+                    int b1 = gc_bmp_pixel(srcBase, sy, sx, srcRB) ^ inv;
+                    sv = (uint32_t)(b1 ? fg : bk);
+                }
+                uint8_t *px = row + (size_t)x * 4;
+                uint32_t d = LOAD_BE32(px);
+                switch (mode & 3) {
+                case 1:
+                    d |= sv;
+                    break; // Or
+                case 2:
+                    d ^= sv;
+                    break; // Xor
+                case 3:
+                    d &= ~sv;
+                    break; // Bic
+                default:
+                    d = sv;
+                    break; // Copy
+                }
+                STORE_BE32(px, d & 0x00FFFFFFu);
                 continue;
             }
             uint8_t bit = (uint8_t)(0x80u >> (x & 7));
