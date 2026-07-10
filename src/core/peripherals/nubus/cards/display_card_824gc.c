@@ -57,6 +57,7 @@ typedef enum {
 // === Per-card private state =================================================
 
 typedef struct display_card_824gc_priv display_card_824gc_priv_t;
+static void gc_pixpats_flush(display_card_824gc_priv_t *p, uint32_t key);
 
 // A device-region callback context: binds the card to the absolute physical
 // base of the region it was registered for, so one memory_interface_t serves
@@ -133,8 +134,22 @@ struct display_card_824gc_priv {
     // when func $2D (SetPort) is accepted the card interprets them.  State
     // opcodes set these fields; the next primitive resolves them.
     uint8_t gc_pat[4][8]; // pattern slots 1=pnPat 2=bkPat 3=fillPat (opPattern $71)
-    uint8_t gc_pat_kind[4]; // 0 = classic 1-bit; 2 = RGB 2x2 dither (op $74)
+    uint8_t gc_pat_kind[4]; // 0 = classic 1-bit; 2 = RGB 2x2 dither (op $74);
+                            // 3 = cached PixPat tile (op $72)
     uint32_t gc_pat_cell[4][4]; // RGBPat resolved device pixels, cell 0..3
+    // Type-5 cache: PixPats downloaded via func $0C (CachePixPat), keyed by
+    // the HOST PixPat Handle (the card keys its cache the same way — the
+    // host passes no card address and consumes none back).  The tile is
+    // expanded at cache time (PATCONVERT): every pixel resolved through the
+    // pattern's OWN ColorTable to a device pixel at the CURRENT screen depth.
+    struct gc_pixpat {
+        uint32_t key; // PixPat host Handle; 0 = free
+        uint16_t w, h; // tile bounds (powers of two — enforced at cache time)
+        uint8_t fmt; // pixel_format_t the tile was resolved at
+        uint32_t *pix; // w*h device pixels, row-major
+    } gc_pixpats[4];
+    int gc_pixpat_rr;
+    uint8_t gc_pat_pp[4]; // active gc_pixpats index per slot (kind 3)
     uint8_t gc_pat_slot; // active pattern slot selected by opWhichPat ($73)
     uint16_t gc_mode; // current transfer mode (opMode $69); 8 = patCopy
     uint32_t gc_fg, gc_bg; // fg/bg PIXEL VALUES resolved from the RGBs of ops
@@ -462,6 +477,7 @@ static void gc_boot(display_card_824gc_priv_t *p) {
     // fresh GC-OS boot also starts with empty caches.
     memset(p->dram + GC824_DRAM_GCTX, 0, GC824_GCTX_SIZE);
     gc_font_caches_flush(p);
+    gc_pixpats_flush(p, 0);
 
     // Fill the runtime PublicOu fields the kernel would (sig/version already
     // arrived as stored ACEF bytes; synthesize the signature too so the check
@@ -799,6 +815,16 @@ static void gc_px_val(display_card_824gc_priv_t *p, int x, int y, uint32_t v) {
     }
 }
 static void gc_span(display_card_824gc_priv_t *p, int y, int l, int r) {
+    if (p->gc_pat_kind[p->gc_pat_slot & 3] == 3) {
+        // Cached PixPat tile: port-anchored, power-of-two wrap (QD requires
+        // PixPat bounds to be powers of two).  patType != 0 patterns are
+        // never colorized (§2.2) — value cores, like the RGB dither.
+        const struct gc_pixpat *pp = &p->gc_pixpats[p->gc_pat_pp[p->gc_pat_slot & 3]];
+        const uint32_t *row = pp->pix + ((unsigned)(y - p->gc_org_y) & (pp->h - 1u)) * pp->w;
+        for (int x = l; x < r; x++)
+            gc_px_val(p, x, y, row[(unsigned)(x - p->gc_org_x) & (pp->w - 1u)]);
+        return;
+    }
     if (p->gc_pat_kind[p->gc_pat_slot & 3] == 2) {
         // RGB 2x2 dither: even rows use cells 0/1, odd rows 2/3, in the
         // PORT's coordinate space (same anchor rule as classic patterns).
@@ -1868,11 +1894,26 @@ static void gc_interp(display_card_824gc_priv_t *p, uint32_t base, uint32_t coun
             gc_fill_rgn(p, off + 4, ox, oy);
             p->draw_count++;
             break;
-        case 0x72: // opPixPat (type-5 cache key — needs func $0C CachePixPat)
-            // A colour pattern we don't model would make the NEXT fill use a
-            // stale slot — loud log so a scene that needs these is visible.
-            LOG(1, "colour pattern op $%02x not modelled — fills may be wrong", op);
+        case 0x72: { // opPixPat: {which.w at +2, PixPat host Handle.L at +4} —
+            // select a tile pre-downloaded via func $0C.  The host only emits
+            // this after a verified download, so a miss here means the entry
+            // was evicted or the depth changed under it — fall back to the
+            // classic slot bits and say so loudly.
+            int slot = (int)(dram_be32(p, off) & 0xFFFF) & 3;
+            uint32_t key = dram_be32(p, off + 4);
+            int hit = -1;
+            for (int i = 0; i < 4; i++)
+                if (p->gc_pixpats[i].key == key && p->gc_pixpats[i].fmt == (uint8_t)p->display.format)
+                    hit = i;
+            if (hit >= 0) {
+                p->gc_pat_pp[slot] = (uint8_t)hit;
+                p->gc_pat_kind[slot] = 3;
+            } else {
+                LOG(0, "op $72: PixPat $%08x not in the type-5 cache — fills may be wrong", key);
+                p->gc_pat_kind[slot] = 0;
+            }
             break;
+        }
         case 0x70: // opSpecialColors: rgbOpColor at +4, rgbHiliteColor at +$A
             p->gc_op_rgb[0] = dram_be16(p, off + 4);
             p->gc_op_rgb[1] = dram_be16(p, off + 6);
@@ -2155,6 +2196,108 @@ static void gc_font_caches_flush(display_card_824gc_priv_t *p) {
     p->gc_cur_strike = NULL;
     p->gc_cur_strike_size = 0;
 }
+// Func $0C CachePixPat: expand a patType-1 PixPat into a device-pixel tile
+// (the card's PATCONVERT).  Args (6 longs in the args area): {PixPat host
+// Handle (key), patType, host ptr to the patMap PixMap record, host ptr to
+// the pattern image bits, host ptr to its ColorTable or 0, ctSize or 0}.
+// The host copies nothing but this block — the card fetches the records
+// through the passed host pointers.  Result 0 = decline: the host then
+// declines the WHOLE draw to the ROM original (sub_1530 -> -1), so any
+// unsupported shape falls back safely.
+static uint32_t gc_host_addr(uint32_t ptr) {
+    return ((ptr & 0xF0000000u) == 0x90000000u) ? ptr : (ptr & 0x00FFFFFFu);
+}
+static int gc_cache_pixpat(display_card_824gc_priv_t *p) {
+    uint32_t a = GC824_DRAM_CB + GC824_CB_ARGSAREA;
+    uint32_t key = dram_be32(p, a);
+    uint32_t ptype = dram_be32(p, a + 4);
+    uint32_t pmap = gc_host_addr(dram_be32(p, a + 8));
+    uint32_t pdata = gc_host_addr(dram_be32(p, a + 12));
+    uint32_t ctab = dram_be32(p, a + 16) ? gc_host_addr(dram_be32(p, a + 16)) : 0;
+    int ctsize = (int)dram_be32(p, a + 20);
+    if (!key || ptype != 1 || !pmap || !pdata) {
+        LOG(1, "func $0C: bad args (key $%08x type %u) — declined", key, ptype);
+        return 0;
+    }
+    uint32_t rowbytes = memory_debug_read_uint16(pmap + 4) & 0x3FFFu;
+    int t = (int16_t)memory_debug_read_uint16(pmap + 6), l = (int16_t)memory_debug_read_uint16(pmap + 8);
+    int b = (int16_t)memory_debug_read_uint16(pmap + 10), r = (int16_t)memory_debug_read_uint16(pmap + 12);
+    int depth = (int16_t)memory_debug_read_uint16(pmap + 0x20);
+    int w = r - l, h = b - t;
+    // Envelope: power-of-two tile up to 64x64, indexed source depths with a
+    // ColorTable, or 32-bpp direct.  (16 bpp has no rasterizer anywhere in
+    // the model yet; PixPat bounds outside QD's power-of-two contract or a
+    // missing CLUT would tile wrongly — decline them all to the ROM path.)
+    if (w <= 0 || h <= 0 || w > 64 || h > 64 || (w & (w - 1)) || (h & (h - 1)) ||
+        !((depth == 1 || depth == 2 || depth == 4 || depth == 8) ? ctab != 0 : depth == 32)) {
+        LOG(1, "func $0C: PixPat %dx%d depth %d outside envelope — declined", w, h, depth);
+        return 0;
+    }
+    uint32_t *pix = malloc((size_t)w * h * sizeof(uint32_t));
+    if (!pix)
+        return 0;
+    for (int yy = 0; yy < h; yy++) {
+        uint32_t rowa = pdata + (uint32_t)yy * rowbytes;
+        for (int xx = 0; xx < w; xx++) {
+            uint16_t cr, cg, cb;
+            if (depth == 32) {
+                uint32_t v = memory_debug_read_uint32(rowa + (uint32_t)xx * 4);
+                cr = (uint16_t)(((v >> 16) & 0xFF) * 0x101u);
+                cg = (uint16_t)(((v >> 8) & 0xFF) * 0x101u);
+                cb = (uint16_t)((v & 0xFF) * 0x101u);
+            } else {
+                uint32_t idx;
+                if (depth == 8) {
+                    idx = memory_debug_read_uint8(rowa + (uint32_t)xx);
+                } else {
+                    uint8_t byte = memory_debug_read_uint8(rowa + (uint32_t)(xx * depth) / 8u);
+                    int sh = 8 - depth - ((xx * depth) & 7);
+                    idx = (byte >> sh) & ((1u << depth) - 1u);
+                }
+                // ColorTable entry: {value.w, r.w, g.w, b.w} at CT+8+i*8.
+                // Match on the value field (pixpat CTabs are usually the
+                // identity but QD does not require it); fall back to the
+                // index position clamped to ctSize.
+                uint32_t ent = 0xFFFFFFFFu;
+                for (int i = 0; i <= ctsize && i < 256; i++)
+                    if ((memory_debug_read_uint16(ctab + 8 + (uint32_t)i * 8) & ((1u << depth) - 1u)) == idx) {
+                        ent = ctab + 8 + (uint32_t)i * 8;
+                        break;
+                    }
+                if (ent == 0xFFFFFFFFu)
+                    ent = ctab + 8 + (uint32_t)(idx > (uint32_t)ctsize ? (uint32_t)ctsize : idx) * 8;
+                cr = memory_debug_read_uint16(ent + 2);
+                cg = memory_debug_read_uint16(ent + 4);
+                cb = memory_debug_read_uint16(ent + 6);
+            }
+            pix[yy * w + xx] = gc_resolve_rgb(p, cr, cg, cb);
+        }
+    }
+    struct gc_pixpat *e = NULL;
+    for (int i = 0; i < 4; i++)
+        if (p->gc_pixpats[i].key == key)
+            e = &p->gc_pixpats[i];
+    if (!e) {
+        e = &p->gc_pixpats[p->gc_pixpat_rr];
+        p->gc_pixpat_rr = (p->gc_pixpat_rr + 1) % 4;
+    }
+    free(e->pix);
+    *e = (struct gc_pixpat){
+        .key = key, .w = (uint16_t)w, .h = (uint16_t)h, .fmt = (uint8_t)p->display.format, .pix = pix};
+    LOG(2, "func $0C: cached PixPat $%08x %dx%d depth %d", key, w, h, depth);
+    return 1;
+}
+static void gc_pixpats_flush(display_card_824gc_priv_t *p, uint32_t key) {
+    for (int i = 0; i < 4; i++)
+        if (p->gc_pixpats[i].key && (key == 0 || p->gc_pixpats[i].key == key)) {
+            free(p->gc_pixpats[i].pix);
+            p->gc_pixpats[i] = (struct gc_pixpat){0};
+        }
+    for (int sl = 0; sl < 4; sl++)
+        if (p->gc_pat_kind[sl] == 3 && !p->gc_pixpats[p->gc_pat_pp[sl]].key)
+            p->gc_pat_kind[sl] = 0;
+}
+
 // The dense FontRec size for a ROM-resident (size-less) strike: header $1A,
 // owTable at $10 + owTLoc*2, plus lastChar-firstChar+3 trailing word entries.
 static uint32_t gc_fontrec_size(uint32_t ptr) {
@@ -2347,8 +2490,9 @@ static uint32_t gc_dispatch_func(display_card_824gc_priv_t *p, uint32_t func, ui
         uint32_t ctx = p->super_base | (GC824_DRAM_OFFSET + GC824_DRAM_GCTX);
         dram_set_be32(p, GC824_DRAM_CB + 0x604 + 4, ctx);
         // PQDInit is also the fault-recovery re-init: the real handler
-        // flushes all 11 caches (protocol §9.2) — drop the font caches.
+        // flushes all 11 caches (protocol §9.2) — drop the font + PixPat caches.
         gc_font_caches_flush(p);
+        gc_pixpats_flush(p, 0);
         LOG(2, "func $17 PQDInit: ScrnBase=$%08x -> ctx=$%08x", scrnbase, ctx);
         // Result 1 = registered OK — sub_61B0 checks this (== 1) and $884A posts
         // error 4 ("having difficulty") otherwise.  Protocol §9.2.
@@ -2407,6 +2551,16 @@ static uint32_t gc_dispatch_func(display_card_824gc_priv_t *p, uint32_t func, ui
         LOG(3, "func $2D SetPort %s (org %d,%d)", result ? "accepted" : "declined", p->gc_org_x, p->gc_org_y);
         break;
     }
+    case 0x0C: // CachePixPat — expand + cache a patType-1 PixPat (type 5).
+        // Declining makes the host fall back to the ROM original for the
+        // whole draw (sub_1530 returns -1), so the oracle switch and any
+        // out-of-envelope pattern degrade safely.
+        result = !p->force_decline ? (uint32_t)gc_cache_pixpat(p) : 0;
+        break;
+    case 0x2C: // FlushPixPat (DisposePixPat) — one long arg: the handle.
+        gc_pixpats_flush(p, dram_be32(p, GC824_DRAM_CB + GC824_CB_ARGSAREA));
+        result = 1;
+        break;
     case 0x30: // FontDownload — cache the strikes/width tables so ops $67/$06
         // draw text on-card; any failure (or the oracle switch, or an
         // unsupported depth) declines: the host rolls back its checksum and
@@ -3090,6 +3244,7 @@ static void card_teardown(nubus_card_t *card, config_t *cfg) {
     free(p->gc_cliprgn);
     free(p->gc_visrgn);
     gc_font_caches_flush(p);
+    gc_pixpats_flush(p, 0);
     free(p->vrom_path);
     free(p);
     card->priv = NULL;

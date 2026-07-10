@@ -13,7 +13,12 @@
 #     otherwise), adMax, subOver (wraps), adMin;
 #   * op $74 opRGBPat (MakeRGBPat's 2×2 ordered dither): mid-grey $8000
 #     quantizes to level 6 -> DthrTbl13 row {AAAA,5555,5555,AAAA} -> the exact
-#     aa/55 checkerboard, anchored to the port grid.
+#     aa/55 checkerboard, anchored to the port grid;
+#   * func $0C CachePixPat + op $72 opPixPat + func $2C FlushPixPat: a
+#     synthetic 8x4 2-bpp patType-1 PixPat (PixMap/patData/ColorTable staged
+#     in guest RAM — the card fetches them through the host pointers in the
+#     6-long arg block) expands through its OWN ColorTable to device pixels
+#     (PATCONVERT) and tiles port-anchored, never colorized.
 #
 # Layout: case i = a 4×2 rect at (0, 8i), first painted with a known base grey
 # via patCopy, then hit with one arithmetic fill.  Every expected byte below
@@ -176,5 +181,61 @@ assert ${machine.memory.peek.b(0x9C011440) == 0x80}       "adMin $27: min(8080, 
 # RGBPat: row 0 = cells 0/1 alternating (AA,55), row 1 = cells 2/3 (55,AA).
 assert ${machine.memory.peek.l(0x9C011448) == 0xAA55AA55}  "RGBPat row 0 != aa55aa55"
 assert ${machine.memory.peek.l(0x9C011848) == 0x55AA55AA}  "RGBPat row 1 != 55aa55aa"
+
+# --- func $0C CachePixPat: synthetic PixPat records in guest RAM ($400000 —
+#     low RAM is still ROM-overlaid at power-on).  PixMap: rowBytes 2,
+#     bounds (0,0,4,8), pixelSize 2.  patData: every row = 2-bpp indexes
+#     0,1,2,3,0,1,2,3 ($1B $1B).  ColorTable: ctSize 3, value k -> grey
+#     $20+$20k (ramp indexes $20/$40/$60/$80). ---
+machine.memory.poke.l 0x00400000 0x00000000
+machine.memory.poke.l 0x00400004 0x00020000
+machine.memory.poke.l 0x00400008 0x00000004
+machine.memory.poke.l 0x0040000C 0x00080000
+machine.memory.poke.l 0x00400020 0x00020000
+machine.memory.poke.l 0x00400040 0x1B1B1B1B
+machine.memory.poke.l 0x00400044 0x1B1B1B1B
+machine.memory.poke.l 0x00400080 0x00000000
+machine.memory.poke.l 0x00400084 0x00000003
+machine.memory.poke.l 0x00400088 0x00002020
+machine.memory.poke.l 0x0040008C 0x20202020
+machine.memory.poke.l 0x00400090 0x00014040
+machine.memory.poke.l 0x00400094 0x40404040
+machine.memory.poke.l 0x00400098 0x00026060
+machine.memory.poke.l 0x0040009C 0x60606060
+machine.memory.poke.l 0x004000A0 0x00038080
+machine.memory.poke.l 0x004000A4 0x80808080
+# Arg block (6 longs at the args area CB+$64C): {key, patType 1, &PixMap,
+# &patData, &ColorTable, ctSize}; then the func $0C doorbell (seq 2).
+machine.memory.poke.l 0x9C00764C 0xDEAD0001
+machine.memory.poke.l 0x9C007650 0x00000001
+machine.memory.poke.l 0x9C007654 0x00400000
+machine.memory.poke.l 0x9C007658 0x00400040
+machine.memory.poke.l 0x9C00765C 0x00400080
+machine.memory.poke.l 0x9C007660 0x00000003
+machine.memory.poke.l 0x9C007048 0x0000000C
+machine.memory.poke.l 0x9C00704C 0x00000001
+machine.memory.poke.l 0x9C007014 0xFFFFFFFF
+assert ${machine.memory.peek.l(0x9C00701C) == 1}          "func $0C CachePixPat declined"
+
+# op $72 selects the cached tile into slot 1; fill a 8x2 rect at (0, 88).
+# (Queue records APPEND at the already-drained offset $1EC — the drain is
+# incremental against the published count at CB+$1C0.)
+machine.memory.poke.l 0x9C0078C0 0x00690008
+machine.memory.poke.l 0x9C0078C4 0x00720001
+machine.memory.poke.l 0x9C0078C8 0xDEAD0001
+machine.memory.poke.l 0x9C0078CC 0x00050000
+machine.memory.poke.l 0x9C0078D0 0x00000058
+machine.memory.poke.l 0x9C0078D4 0x00020060
+machine.memory.poke.l 0x9C0071C0 0x00000204
+assert ${machine.memory.peek.l(0x9C011458) == 0x20406080}  "PixPat row 0 lo != 20406080"
+assert ${machine.memory.peek.l(0x9C01145C) == 0x20406080}  "PixPat row 0 hi != 20406080"
+assert ${machine.memory.peek.l(0x9C011858) == 0x20406080}  "PixPat row 1 != 20406080"
+
+# func $2C FlushPixPat (arg = the handle) invalidates the type-5 entry.
+machine.memory.poke.l 0x9C00764C 0xDEAD0001
+machine.memory.poke.l 0x9C007048 0x0000002C
+machine.memory.poke.l 0x9C00704C 0x00000002
+machine.memory.poke.l 0x9C007014 0xFFFFFFFF
+assert ${machine.memory.peek.l(0x9C00701C) == 1}          "func $2C FlushPixPat failed"
 
 quit
