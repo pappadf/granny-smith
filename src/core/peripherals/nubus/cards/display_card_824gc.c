@@ -1674,14 +1674,7 @@ static void gc_clip_set_region(display_card_824gc_priv_t *p, int is_vis, uint32_
     uint16_t size = (uint16_t)((p->dram[off] << 8) | p->dram[off + 1]);
     uint8_t *dst = is_vis ? p->gc_visrgn : p->gc_cliprgn;
     uint32_t *len = is_vis ? &p->gc_visrgn_len : &p->gc_cliprgn_len;
-    int t = (int16_t)LOAD_BE16(p->dram + off + 2), l = (int16_t)LOAD_BE16(p->dram + off + 4);
-    int b = (int16_t)LOAD_BE16(p->dram + off + 6), r = (int16_t)LOAD_BE16(p->dram + off + 8);
-    if (is_vis && (b <= t || r <= l)) {
-        // An EMPTY visRgn record is a "no restriction" placeholder: GCQD
-        // queues drawing right after one (the Control Panel radios) and the
-        // ROM path visibly draws.  An empty clipRgn IS honoured.
-        *len = 0;
-    } else if (size >= 10 && size <= GC824_RGN_MAX && off + size <= GC824_DRAM_SIZE) {
+    if (size >= 10 && size <= GC824_RGN_MAX && off + size <= GC824_DRAM_SIZE) {
         memcpy(dst, p->dram + off, size);
         *len = size;
     } else {
