@@ -2092,10 +2092,13 @@ static int gc_stretchbits(display_card_824gc_priv_t *p) {
     // Accept only: boolean modes, destination is the screen FB, 1:1 (no stretch).
     uint32_t screen = p->super_base | (GC824_DRAM_OFFSET + GC824_FB_OFFSET);
     if (mode > 7 || dstBase != screen) {
+        LOG(2, "blit declined: mode $%x dst $%08x (screen $%08x)", mode, dstBase, screen);
         return 0; // arithmetic/hilite (incl. pending-hilite 50) → ROM
     }
     if ((dRb - dRt) != (int16_t)dram_be16(p, rb + 0xB4) - sRt ||
         (dRr - dRl) != (int16_t)dram_be16(p, rb + 0xB6) - sRl) {
+        LOG(2, "blit declined: stretched %dx%d -> %dx%d", (int16_t)dram_be16(p, rb + 0xB4) - sRt,
+            (int16_t)dram_be16(p, rb + 0xB6) - sRl, dRb - dRt, dRr - dRl);
         return 0; // stretched → decline
     }
     // Depths: the raw rowBytes word's bit 15 marks a PixMap (pixelSize at
@@ -2106,16 +2109,13 @@ static int gc_stretchbits(display_card_824gc_priv_t *p) {
                                                           : 1;
     int dstPS = (dram_be16(p, rb + 0x06) & 0x8000) ? dram_be16(p, rb + 0x02 + 0x20) : 1;
     int srcPS = (dram_be16(p, rb + 0x3A) & 0x8000) ? dram_be16(p, rb + 0x36 + 0x20) : 1;
-    if (dstPS != depth)
-        return 0; // request disagrees with the screen -> ROM sorts it out
-    if (depth == 1 && srcPS != 1)
+    if (dstPS != depth || (depth == 1 && srcPS != 1) || (depth == 8 && srcPS != 8 && srcPS != 1) ||
+        (depth == 16 && srcPS != 16 && srcPS != 1) || (depth == 32 && srcPS != 32 && srcPS != 1)) {
+        // dst must match the screen depth; sources may be same-depth or
+        // 1-bit-expanded — cross-depth blits route to the ROM path.
+        LOG(2, "blit declined: depth %d dstPS %d srcPS %d", depth, dstPS, srcPS);
         return 0;
-    if (depth == 8 && srcPS != 8 && srcPS != 1)
-        return 0; // 8bpp dst accepts same-depth or 1-bit-expanded sources
-    if (depth == 16 && srcPS != 16 && srcPS != 1)
-        return 0; // ditto at 16 bpp
-    if (depth == 32 && srcPS != 32 && srcPS != 1)
-        return 0;
+    }
     // Offscreen (GWorld) sources: pmVersion tags the baseAddr form the GCQD
     // marshaller shipped (protocol §13 / marshaller §7.1) — 1 = locked
     // (baseAddr is a real pointer), 2 = unlocked (baseAddr IS the pixel-image
@@ -2134,15 +2134,22 @@ static int gc_stretchbits(display_card_824gc_priv_t *p) {
         if (!maskBase)
             return 0;
     }
-    if (maskBase && (dram_be16(p, rb + 0x6E) & 0x8000) && dram_be16(p, rb + 0x6A + 0x20) != 1)
+    if (maskBase && (dram_be16(p, rb + 0x6E) & 0x8000) && dram_be16(p, rb + 0x6A + 0x20) != 1) {
+        LOG(2, "blit declined: deep mask (%u bpp)", dram_be16(p, rb + 0x6A + 0x20));
         return 0; // only 1-bit masks (deep CopyDeepMask blends -> ROM)
+    }
     if (depth == 8 || depth == 16 || depth == 32) {
         // v1 colorize envelope at 8 bpp: only the B/W port (fg black, bk
         // white — the colorize-NOP case, §2.3).  Anything colorized routes
         // through MakeScaleTbl in RGB space on the ROM path.
         if (dram_be16(p, rb + 0xE8) != 0 || dram_be16(p, rb + 0xEA) != 0 || dram_be16(p, rb + 0xEC) != 0 ||
-            dram_be16(p, rb + 0xEE) != 0xFFFF || dram_be16(p, rb + 0xF0) != 0xFFFF || dram_be16(p, rb + 0xF2) != 0xFFFF)
+            dram_be16(p, rb + 0xEE) != 0xFFFF || dram_be16(p, rb + 0xF0) != 0xFFFF ||
+            dram_be16(p, rb + 0xF2) != 0xFFFF) {
+            LOG(2, "blit declined: colorized fg %04x/%04x/%04x bk %04x/%04x/%04x", dram_be16(p, rb + 0xE8),
+                dram_be16(p, rb + 0xEA), dram_be16(p, rb + 0xEC), dram_be16(p, rb + 0xEE), dram_be16(p, rb + 0xF0),
+                dram_be16(p, rb + 0xF2));
             return 0;
+        }
     }
 
     // Blit clip = ∩ of the request's regions (0 = absent).  A region we can't
@@ -2154,8 +2161,10 @@ static int gc_stretchbits(display_card_824gc_priv_t *p) {
         if (!rgn)
             continue;
         uint8_t buf[GC824_RGN_MAX];
-        if (!gc_fetch_guest_rgn(rgn, rsz, buf))
+        if (!gc_fetch_guest_rgn(rgn, rsz, buf)) {
+            LOG(2, "blit declined: region %d @$%08x size %u unfetchable", i, rgn, rsz);
             return 0;
+        }
         // The regions are PORT-LOCAL like every other coordinate in the
         // request; the dst PixMap bounds give the local->global shift.
         gc_mask_and_region(p->gc_blitmask, buf, rsz, -dstBnL, -dstBnT);
@@ -2731,8 +2740,13 @@ static uint32_t gc_dispatch_func(display_card_824gc_priv_t *p, uint32_t func, ui
     case 0x15: // StretchBits (CopyBits): accelerate the accept-envelope, else
         // decline (result 0 → host runs the ROM blit).  Runs synchronously here,
         // so it lands in the framebuffer in RPC order relative to the queued
-        // geometry (drawn at the preceding func $26 submits).
-        result = (!p->force_decline && p->gc_accel && gc_stretchbits(p)) ? 1 : 0;
+        // geometry (drawn at the preceding func $26 submits).  NOT gated on
+        // gc_accel: GCQD flushes with func $26 (which ends the port epoch)
+        // immediately BEFORE each blit, and the next $2D only accompanies the
+        // next queued batch — a gc_accel gate here auto-declines every blit.
+        // The request block is self-contained (its own dst base/depth/regions),
+        // and gc_stretchbits accepts only screen-destination requests.
+        result = (!p->force_decline && gc_stretchbits(p)) ? 1 : 0;
         break;
     case 0x2D: { // SetPort — accept the port so its geometry queue is interpreted.
         // The staged record at CB+$170 (built by GCQD $4774): +0 thePort,
