@@ -35,6 +35,10 @@ machine.memory.poke.l 0x9C006400 0x42005300
 machine.memory.poke.l 0x9C007048 0x00000001
 machine.memory.poke.l 0x9C00704C 0x00000000
 machine.memory.poke.l 0x9C007014 0xFFFFFFFF
+# Live-port accept test: stage a minimal old-style GrafPort at $500000 whose
+# portBits.baseAddr (+2) is the SCREEN, and point thePort (CB+$170+0) at it.
+machine.memory.poke.l 0x00500002 0x9C011400
+machine.memory.poke.l 0x9C007170 0x00500000
 machine.memory.poke.l 0x9C00717E 0x9C011400
 machine.memory.poke.l 0x9C007184 0x00000000
 machine.memory.poke.l 0x9C007048 0x0000002D

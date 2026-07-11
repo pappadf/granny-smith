@@ -2745,7 +2745,27 @@ static uint32_t gc_dispatch_func(display_card_824gc_priv_t *p, uint32_t func, ui
         // Accept only ports that target the SCREEN at a supported depth;
         // gc.force_decline (the differential test oracle, proposal §4.1)
         // declines everything → the ROM path renders the same scene.
-        uint32_t pbase = dram_be32(p, GC824_DRAM_CB + 0x170 + 0xE);
+        //
+        // The screen test reads the LIVE thePort's baseAddr, NOT the staged
+        // +$E copy: GCQD does not refresh +$E per SetPort — it leaves the
+        // screen base there even when thePort is an OFFSCREEN GrafPort (e.g.
+        // Norton's installer draws its caution text into an off-screen bitmap
+        // then CopyBits it into the dialog).  Trusting the stale +$E made the
+        // card accept that offscreen port as the screen and paint the
+        // off-screen-bound text onto the real screen at origin (0,0).  The
+        // real card resolves the port synchronously in the func-$2D prologue
+        // (text_13264 bus-master-maps the live GrafPort) — do the same:
+        // old-style GrafPort → baseAddr at thePort+2; CGrafPort (rowBytes top
+        // two bits set) → portPixMap handle at +2, then PixMap.baseAddr.
+        uint32_t tport = dram_be32(p, GC824_DRAM_CB + 0x170) & 0x00FFFFFFu;
+        uint32_t pbase;
+        if ((memory_debug_read_uint16(tport + 4) & 0xC000u) == 0xC000u) {
+            uint32_t pmh = memory_debug_read_uint32(tport + 2) & 0x00FFFFFFu;
+            uint32_t pm = memory_debug_read_uint32(pmh) & 0x00FFFFFFu;
+            pbase = memory_debug_read_uint32(pm);
+        } else {
+            pbase = memory_debug_read_uint32(tport + 2);
+        }
         uint32_t screen = p->super_base | (GC824_DRAM_OFFSET + GC824_FB_OFFSET);
         bool depth_ok = p->display.format == PIXEL_1BPP_MSB || p->display.format == PIXEL_8BPP ||
                         p->display.format == PIXEL_16BPP_555 || p->display.format == PIXEL_32BPP_XRGB;
