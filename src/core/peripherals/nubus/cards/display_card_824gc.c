@@ -142,6 +142,7 @@ struct display_card_824gc_priv {
     // when func $2D (SetPort) is accepted the card interprets them.  State
     // opcodes set these fields; the next primitive resolves them.
     uint8_t gc_pat[4][8]; // pattern slots 1=pnPat 2=bkPat 3=fillPat (opPattern $71)
+    int16_t gc_align_x, gc_align_y; // patAlign (op $75 which=1): pattern phase
     uint8_t gc_pat_kind[4]; // 0 = classic 1-bit; 2 = RGB 2x2 dither (op $74);
                             // 3 = cached PixPat tile (op $72)
     uint32_t gc_pat_cell[4][4]; // RGBPat resolved device pixels, cell 0..3
@@ -794,7 +795,7 @@ static inline void gc_px(display_card_824gc_priv_t *p, int x, int y, int s) {
 // content (the Control Panel's cdev list flips the ltGray phase without this).
 static inline int gc_src(display_card_824gc_priv_t *p, int x, int y) {
     const uint8_t *pat = p->gc_pat[p->gc_pat_slot & 3];
-    unsigned lx = (unsigned)(x - p->gc_org_x), ly = (unsigned)(y - p->gc_org_y);
+    unsigned lx = (unsigned)(x - p->gc_org_x - p->gc_align_x), ly = (unsigned)(y - p->gc_org_y - p->gc_align_y);
     return (pat[ly & 7] >> (7 - (lx & 7))) & 1;
 }
 // Write a full PIXEL VALUE `v` at (x,y) under the current mode + clip — the
@@ -897,18 +898,18 @@ static void gc_span(display_card_824gc_priv_t *p, int y, int l, int r) {
         // PixPat bounds to be powers of two).  patType != 0 patterns are
         // never colorized (§2.2) — value cores, like the RGB dither.
         const struct gc_pixpat *pp = &p->gc_pixpats[p->gc_pat_pp[p->gc_pat_slot & 3]];
-        const uint32_t *row = pp->pix + ((unsigned)(y - p->gc_org_y) & (pp->h - 1u)) * pp->w;
+        const uint32_t *row = pp->pix + ((unsigned)(y - p->gc_org_y - p->gc_align_y) & (pp->h - 1u)) * pp->w;
         for (int x = l; x < r; x++)
-            gc_px_val(p, x, y, row[(unsigned)(x - p->gc_org_x) & (pp->w - 1u)]);
+            gc_px_val(p, x, y, row[(unsigned)(x - p->gc_org_x - p->gc_align_x) & (pp->w - 1u)]);
         return;
     }
     if (p->gc_pat_kind[p->gc_pat_slot & 3] == 2) {
         // RGB 2x2 dither: even rows use cells 0/1, odd rows 2/3, in the
         // PORT's coordinate space (same anchor rule as classic patterns).
         const uint32_t *cell = p->gc_pat_cell[p->gc_pat_slot & 3];
-        unsigned ly = (unsigned)(y - p->gc_org_y);
+        unsigned ly = (unsigned)(y - p->gc_org_y - p->gc_align_y);
         for (int x = l; x < r; x++) {
-            unsigned lx = (unsigned)(x - p->gc_org_x);
+            unsigned lx = (unsigned)(x - p->gc_org_x - p->gc_align_x);
             gc_px_val(p, x, y, cell[((ly & 1) << 1) | (lx & 1)]);
         }
         return;
@@ -1997,8 +1998,22 @@ static void gc_interp(display_card_824gc_priv_t *p, uint32_t base, uint32_t coun
             p->gc_op_color = gc_resolve_rgb(p, p->gc_op_rgb[0], p->gc_op_rgb[1], p->gc_op_rgb[2]);
             p->gc_hilite = gc_resolve_rgb(p, dram_be16(p, off + 0xA), dram_be16(p, off + 0xC), dram_be16(p, off + 0xE));
             break;
-        case 0x75: // opQDGlobal (a QD-private global; identity open — no consumer)
+        case 0x75: { // opQDGlobal: {which.w at +2, value at +4}.  which 1 =
+            // patAlign (SetPatAlign / the WDEF's stripe phasing): Point{v,h}
+            // that shifts the pattern anchor — the title-bar racing stripes
+            // are drawn with pat FF00… aligned to the bar's own top-left
+            // (e.g. {7,3} for a bar at (358,2)); without it the stripes land
+            // one row off around the close box.  (Card-side analogue: the
+            // patAlign global at UNDEF+$E2 feeding text_16d44's phase.)
+            uint16_t which = (uint16_t)(dram_be32(p, off) & 0xFFFF);
+            if (which == 1) {
+                p->gc_align_y = (int16_t)(dram_be32(p, off + 4) >> 16);
+                p->gc_align_x = (int16_t)(dram_be32(p, off + 4) & 0xFFFF);
+            } else {
+                LOG(2, "opQDGlobal which=%u not modelled", which);
+            }
             break;
+        }
         default:
             break; // $09 opBits (dead) skipped
         }
@@ -2598,6 +2613,8 @@ static void gc_draw_text(display_card_824gc_priv_t *p, uint32_t off) {
 // a drawing cycle (a fresh queue buffer / a new accepted port).  State opcodes
 // in the stream then set the live values; clip only ever narrows from full.
 static void gc_reset_draw_state(display_card_824gc_priv_t *p) {
+    p->gc_align_x = 0;
+    p->gc_align_y = 0;
     p->gc_clip_t = 0;
     p->gc_clip_l = 0;
     p->gc_clip_b = (int16_t)p->display.height;
