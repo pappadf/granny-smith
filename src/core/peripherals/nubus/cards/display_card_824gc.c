@@ -1998,22 +1998,20 @@ static void gc_interp(display_card_824gc_priv_t *p, uint32_t base, uint32_t coun
             p->gc_op_color = gc_resolve_rgb(p, p->gc_op_rgb[0], p->gc_op_rgb[1], p->gc_op_rgb[2]);
             p->gc_hilite = gc_resolve_rgb(p, dram_be16(p, off + 0xA), dram_be16(p, off + 0xC), dram_be16(p, off + 0xE));
             break;
-        case 0x75: { // opQDGlobal: {which.w at +2, value at +4}.  which 1 =
-            // patAlign (SetPatAlign / the WDEF's stripe phasing): Point{v,h}
-            // that shifts the pattern anchor — the title-bar racing stripes
-            // are drawn with pat FF00… aligned to the bar's own top-left
-            // (e.g. {7,3} for a bar at (358,2)); without it the stripes land
-            // one row off around the close box.  (Card-side analogue: the
-            // patAlign global at UNDEF+$E2 feeding text_16d44's phase.)
-            uint16_t which = (uint16_t)(dram_be32(p, off) & 0xFFFF);
-            if (which == 1) {
-                p->gc_align_y = (int16_t)(dram_be32(p, off + 4) >> 16);
-                p->gc_align_x = (int16_t)(dram_be32(p, off + 4) & 0xFFFF);
-            } else {
-                LOG(2, "opQDGlobal which=%u not modelled", which);
-            }
+        case 0x75: // opQDGlobal — SetPatAlign.  The card handler ($BA28) reads
+            // the Point.L at +4 and stores it verbatim to the patAlign global
+            // (UNDEF+$E0, feeding text_16d44's phase); it NEVER inspects the
+            // word at +2.  So apply it UNCONDITIONALLY — the word at +2 is a
+            // host-side global index the card ignores (1 for a phased bar like
+            // the Trash window's {7,3}, 12 for the Control Panel's {0,1}; an
+            // earlier `which==1` gate silently dropped every other window's
+            // patAlign, so a title bar whose non-zero v-phase was carried under
+            // a different index landed its racing stripes one row off around
+            // the close box).  patAlign shifts the anchor of every pattern
+            // kind (classic 8×8, RGB dither, PixPat) — reset to 0 per cycle.
+            p->gc_align_y = (int16_t)(dram_be32(p, off + 4) >> 16);
+            p->gc_align_x = (int16_t)(dram_be32(p, off + 4) & 0xFFFF);
             break;
-        }
         default:
             break; // $09 opBits (dead) skipped
         }
