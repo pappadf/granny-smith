@@ -2020,15 +2020,26 @@ static void gc_interp(display_card_824gc_priv_t *p, uint32_t base, uint32_t coun
     p->display.fb_dirty = true;
 }
 
-// Read one 1-bpp pixel (MSB-first) at (x,y) from a guest bitmap.  `base` is a
-// QuickDraw baseAddr: a super-slot card address ($9xxxxxxx — read as-is) or a
-// host master pointer whose top byte carries HandleMgr lock/purge flags (strip
-// to the low 24 bits).  Reads go through the memory subsystem (host RAM or,
-// for cached GWorlds, card DRAM over NuBus) — the "copy callbacks elided"
-// model of proposal §3.9.
-static inline int gc_bmp_pixel(uint32_t base, int y, int x, int rowbytes) {
-    uint32_t a = ((base & 0xF0000000u) == 0x90000000u) ? base : (base & 0x00FFFFFFu);
-    uint8_t b = memory_debug_read_uint8(a + (uint32_t)y * (uint32_t)rowbytes + (uint32_t)(x >> 3));
+// Read one byte of blit source at `base + off`.  `base` is a QuickDraw
+// baseAddr: a super-slot CARD address (the screen FB or card DRAM — read the
+// card's own memory directly: a memory_debug_read of $9xxxxxxx resolves
+// through the guest's CURRENT addressing mode, and at RPC time that is
+// usually 24-bit, where it would silently read host RAM at addr&0xFFFFFF —
+// noise; this is exactly what screen→screen ScrollRect copies hit) or a host
+// master pointer whose top byte carries HandleMgr lock/purge flags (strip to
+// the low 24 bits, then read host RAM).
+static inline uint8_t gc_src_read8(display_card_824gc_priv_t *p, uint32_t base, uint32_t off) {
+    uint32_t cl = base - p->super_base;
+    if (cl < 0x10000000u) { // card-local: serve from the card's memory
+        cl = (cl - GC824_DRAM_OFFSET) + off;
+        return (cl < GC824_DRAM_SIZE) ? p->dram[cl] : 0xFF;
+    }
+    return memory_debug_read_uint8((base & 0x00FFFFFFu) + off);
+}
+
+// Read one 1-bpp pixel (MSB-first) at (x,y) from a guest bitmap.
+static inline int gc_bmp_pixel(display_card_824gc_priv_t *p, uint32_t base, int y, int x, int rowbytes) {
+    uint8_t b = gc_src_read8(p, base, (uint32_t)y * (uint32_t)rowbytes + (uint32_t)(x >> 3));
     return (b >> (7 - (x & 7))) & 1;
 }
 
@@ -2199,7 +2210,7 @@ static int gc_stretchbits(display_card_824gc_priv_t *p) {
             if (!(p->gc_blitmask[y * GC824_CLIP_STRIDE + (x >> 3)] & (0x80u >> (x & 7))))
                 continue; // outside rgnA∩rgnB∩rgnC
             int sx = sRl + (dx - dRl) - srcBnL;
-            if (maskBase && !gc_bmp_pixel(maskBase, my, mRl + (dx - dRl) - maskBnL, maskRB))
+            if (maskBase && !gc_bmp_pixel(p, maskBase, my, mRl + (dx - dRl) - maskBnL, maskRB))
                 continue; // outside the CopyMask 1-bit mask → leave the dst
             if (depth == 8) {
                 // 8-bpp dst: same-depth source = bitwise index math on bytes
@@ -2207,12 +2218,11 @@ static int gc_stretchbits(display_card_824gc_priv_t *p) {
                 // source expands 1→fg pixel / 0→bk pixel first (§2.4).
                 uint8_t s;
                 if (srcPS == 8) {
-                    uint32_t a = ((srcBase & 0xF0000000u) == 0x90000000u) ? srcBase : (srcBase & 0x00FFFFFFu);
-                    s = memory_debug_read_uint8(a + (uint32_t)sy * (uint32_t)srcRB + (uint32_t)sx);
+                    s = gc_src_read8(p, srcBase, (uint32_t)sy * (uint32_t)srcRB + (uint32_t)sx);
                     if (inv)
                         s = (uint8_t)~s;
                 } else {
-                    int b1 = gc_bmp_pixel(srcBase, sy, sx, srcRB) ^ inv;
+                    int b1 = gc_bmp_pixel(p, srcBase, sy, sx, srcRB) ^ inv;
                     s = (uint8_t)(b1 ? fg : bk);
                 }
                 switch (mode & 3) {
@@ -2235,12 +2245,12 @@ static int gc_stretchbits(display_card_824gc_priv_t *p) {
                 // 16-bpp dst: same rules on 15-bit direct values.
                 uint16_t sv;
                 if (srcPS == 16) {
-                    uint32_t a = ((srcBase & 0xF0000000u) == 0x90000000u) ? srcBase : (srcBase & 0x00FFFFFFu);
-                    sv = memory_debug_read_uint16(a + (uint32_t)sy * (uint32_t)srcRB + (uint32_t)sx * 2);
+                    uint32_t off = (uint32_t)sy * (uint32_t)srcRB + (uint32_t)sx * 2;
+                    sv = (uint16_t)(((uint16_t)gc_src_read8(p, srcBase, off) << 8) | gc_src_read8(p, srcBase, off + 1));
                     if (inv)
                         sv = (uint16_t)~sv;
                 } else {
-                    int b1 = gc_bmp_pixel(srcBase, sy, sx, srcRB) ^ inv;
+                    int b1 = gc_bmp_pixel(p, srcBase, sy, sx, srcRB) ^ inv;
                     sv = (uint16_t)(b1 ? fg : bk);
                 }
                 uint8_t *px = row + (size_t)x * 2;
@@ -2266,12 +2276,14 @@ static int gc_stretchbits(display_card_824gc_priv_t *p) {
                 // 32-bpp dst: same rules on 00RRGGBB longs (alpha excluded).
                 uint32_t sv;
                 if (srcPS == 32) {
-                    uint32_t a = ((srcBase & 0xF0000000u) == 0x90000000u) ? srcBase : (srcBase & 0x00FFFFFFu);
-                    sv = memory_debug_read_uint32(a + (uint32_t)sy * (uint32_t)srcRB + (uint32_t)sx * 4);
+                    uint32_t off = (uint32_t)sy * (uint32_t)srcRB + (uint32_t)sx * 4;
+                    sv = ((uint32_t)gc_src_read8(p, srcBase, off) << 24) |
+                         ((uint32_t)gc_src_read8(p, srcBase, off + 1) << 16) |
+                         ((uint32_t)gc_src_read8(p, srcBase, off + 2) << 8) | gc_src_read8(p, srcBase, off + 3);
                     if (inv)
                         sv = ~sv;
                 } else {
-                    int b1 = gc_bmp_pixel(srcBase, sy, sx, srcRB) ^ inv;
+                    int b1 = gc_bmp_pixel(p, srcBase, sy, sx, srcRB) ^ inv;
                     sv = (uint32_t)(b1 ? fg : bk);
                 }
                 uint8_t *px = row + (size_t)x * 4;
@@ -2294,7 +2306,7 @@ static int gc_stretchbits(display_card_824gc_priv_t *p) {
                 continue;
             }
             uint8_t bit = (uint8_t)(0x80u >> (x & 7));
-            int s = gc_bmp_pixel(srcBase, sy, sx, srcRB) ^ inv;
+            int s = gc_bmp_pixel(p, srcBase, sy, sx, srcRB) ^ inv;
             switch (mode & 3) {
             case 1: // Or: fg where ink
                 if (s) {

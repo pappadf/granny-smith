@@ -286,4 +286,32 @@ assert ${machine.memory.peek.l(0x9C00701C) == 1}          "func $15 declined the
 assert ${machine.memory.peek.l(0x9C02A400) == 0x10111213} "offscreen blit row lo"
 assert ${machine.memory.peek.l(0x9C02A404) == 0x14151617} "offscreen blit row hi"
 
+# --- func $15 SCREEN->SCREEN (the ScrollRect shape): src PixMap IS the
+#     screen (baseAddr $9C011400, pmVersion 0).  The card must read the
+#     source from its OWN framebuffer: a guest-space read of the super-slot
+#     address resolves through the guest's CURRENT addressing mode, and under
+#     a booted OS idling in 24-bit mode it aliases onto host RAM — the System
+#     Info scroll benchmark scrolled noise.  (At this test's power-on state
+#     there is no 24-bit translation, so this case pins the screen->screen
+#     CONTRACT — src pixels land at the dst, source row preserved — but the
+#     aliasing itself only reproduces under a booted OS.)
+#     Copy row 100 (blitted above) to row 102. ---
+machine.memory.poke.l 0x9C00708C 0x00009C01
+machine.memory.poke.l 0x9C007090 0x14008400
+machine.memory.poke.l 0x9C007094 0x00000000
+machine.memory.poke.l 0x9C007098 0x01E00280
+machine.memory.poke.l 0x9C00709C 0x00000000
+# dstRect (102,0,103,8) / srcRect (100,0,101,8)
+machine.memory.poke.l 0x9C007100 0x00660000
+machine.memory.poke.l 0x9C007104 0x00670008
+machine.memory.poke.l 0x9C007108 0x00640000
+machine.memory.poke.l 0x9C00710C 0x00650008
+machine.memory.poke.l 0x9C007048 0x00000015
+machine.memory.poke.l 0x9C00704C 0x00000004
+machine.memory.poke.l 0x9C007014 0xFFFFFFFF
+assert ${machine.memory.peek.l(0x9C00701C) == 1}          "func $15 declined the screen->screen copy"
+assert ${machine.memory.peek.l(0x9C02AC00) == 0x10111213} "screen->screen copy row lo"
+assert ${machine.memory.peek.l(0x9C02AC04) == 0x14151617} "screen->screen copy row hi"
+assert ${machine.memory.peek.l(0x9C02A400) == 0x10111213} "screen->screen copy clobbered the source row"
+
 quit
