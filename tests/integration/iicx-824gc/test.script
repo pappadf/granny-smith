@@ -81,7 +81,7 @@ assert ${machine.memory.peek.l(0x9C00701C) == 1}                                
 # (+$14) give the port's local->global origin (0,0 = the WMgr port).  The
 # card's accept test reads the LIVE thePort's baseAddr (not the stale staged
 # +$E copy), so stage a minimal old-style GrafPort at $500000 whose
-# portBits.baseAddr (+2) is the SCREEN and whose rowBytes (+4, top two bits
+# portBits.baseAddr (+2) is the SCREEN and whose rowBytes (+6, top two bits
 # clear) marks it old-style; point thePort (CB+$170+0) at it.
 machine.memory.poke.l 0x00500002 0x9C011400
 machine.memory.poke.l 0x9C007170 0x00500000

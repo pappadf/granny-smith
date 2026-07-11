@@ -2753,11 +2753,12 @@ static uint32_t gc_dispatch_func(display_card_824gc_priv_t *p, uint32_t func, ui
         // off-screen-bound text onto the real screen at origin (0,0).  The
         // real card resolves the port synchronously in the func-$2D prologue
         // (text_13264 bus-master-maps the live GrafPort) — do the same:
-        // old-style GrafPort → baseAddr at thePort+2; CGrafPort (rowBytes top
-        // two bits set) → portPixMap handle at +2, then PixMap.baseAddr.
+        // old-style GrafPort → baseAddr at thePort+2 (portBits.rowBytes at +6
+        // never has the top two bits set); CGrafPort → portVersion at +6 has
+        // both top bits set → portPixMap handle at +2, then PixMap.baseAddr.
         uint32_t tport = dram_be32(p, GC824_DRAM_CB + 0x170) & 0x00FFFFFFu;
         uint32_t pbase;
-        if ((memory_debug_read_uint16(tport + 4) & 0xC000u) == 0xC000u) {
+        if ((memory_debug_read_uint16(tport + 6) & 0xC000u) == 0xC000u) {
             uint32_t pmh = memory_debug_read_uint32(tport + 2) & 0x00FFFFFFu;
             uint32_t pm = memory_debug_read_uint32(pmh) & 0x00FFFFFFu;
             pbase = memory_debug_read_uint32(pm);
