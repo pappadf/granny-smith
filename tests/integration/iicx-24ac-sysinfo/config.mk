@@ -2,7 +2,7 @@
 # launch the Symantec "System Info" application.
 #
 # A variant of iicx-24ac: it boots the same 32-bit System 7.1 SCSI cdev image
-# (systems/system_7_1_20mb_24ac_cd_32bit.img) to an 8-bpp COLOUR Finder desktop
+# (systems/system_7_1_20mb_24ac_cd_32bit_gc.img) to an 8-bpp COLOUR Finder desktop
 # on the IIcx + Display Card 24AC, but instead of exercising the acceleration
 # engine through the Apple menu / Control Panels scroll, it inserts the
 # "Utilities Disk 2" floppy, lets the Finder open its window, and double-clicks

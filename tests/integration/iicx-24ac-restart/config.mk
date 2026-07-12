@@ -16,8 +16,8 @@
 # and asserts the machine reboots all the way back to the 8-bpp colour Finder
 # desktop — which is what a healthy restart does.
 #
-# The image is stored in gs-test-data as systems/system_7_1_20mb_24ac_cd_32bit.img.7z
-# and auto-extracted to systems/system_7_1_20mb_24ac_cd_32bit.img by
+# The image is stored in gs-test-data as systems/system_7_1_20mb_24ac_cd_32bit_gc.img.7z
+# and auto-extracted to systems/system_7_1_20mb_24ac_cd_32bit_gc.img by
 # scripts/fetch-test-data.sh (no TEST_SETUP needed — the .7z extraction is generic).
 
 TEST_NAME := IIcx Display Card 24AC — Finder Restart

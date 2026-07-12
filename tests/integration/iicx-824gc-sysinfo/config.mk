@@ -12,10 +12,12 @@
 # Info, selects only "Test Display", and runs the Display benchmark to its
 # System Ratings result — every scene pixel-exact with the accelerator drawing.
 #
-# The floppy fixture (apps/Norton-Utils-Disk-2.image) is in gs-test-data; the
-# HD image is currently a LOCAL fixture (copy of
-# local/gs-docs/8-24GC/debug/system_7_1_20mb_24ac_cd_32bit_gc.img — same
-# promotion status as the System-6 accel image).
+# Both fixtures live in gs-test-data and are provisioned into tests/data by
+# scripts/fetch-test-data.sh: the HD image as
+# systems/system_7_1_20mb_24ac_cd_32bit_gc.img.7z (auto-extracted) and the
+# floppy as apps/Norton-Utils-Disk-2.image (raw).  The same HD image also
+# serves the iicx-24ac* tests (verified a pixel-exact drop-in for the plain
+# 24AC image, which it supersedes on this branch).
 
 TEST_NAME := IIcx Display Card 8•24 GC — System 7.1 System Info Display benchmark (accel ON)
 TEST_DESC := Boot IIcx + 8•24 GC to the System 7.1 colour Finder, insert "Utilities Disk 2", launch System Info, select only Test Display, and Run the Display benchmark — accelerator on, pixel-exact

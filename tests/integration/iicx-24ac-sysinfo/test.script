@@ -1,7 +1,7 @@
 # Integration test: IIcx + Display Card 24AC — floppy insert + launch System Info
 #
 # A variant of iicx-24ac.  Same boot: the genuine "Step B" artifact
-# (systems/system_7_1_20mb_24ac_cd_32bit.img — a 20 MB System 7.1 SCSI HD with
+# (systems/system_7_1_20mb_24ac_cd_32bit_gc.img — a 20 MB System 7.1 SCSI HD with
 # the 24AC cdev pre-installed and 32-bit addressing on) boots the IIcx + Display
 # Card 24AC to an 8-bpp COLOUR Finder desktop (640x480).  But rather than
 # driving the acceleration engine through the Apple menu and a Control-Panels
@@ -34,7 +34,7 @@ machine.rom.reload
 
 # Attach the cdev HD at SCSI ID 0 (the boot device).  The complete valid PRAM
 # lets the ROM boot straight from SCSI (no cold-init scan).
-machine.scsi.attach_hd "../../data/systems/system_7_1_20mb_24ac_cd_32bit.img" 0
+machine.scsi.attach_hd "../../data/systems/system_7_1_20mb_24ac_cd_32bit_gc.img" 0
 
 # --- Seed a configured low-PRAM: 128 KB disk cache + AppleTalk inactive -------
 # System Info (below) pops a modal "System Differences" dialog before running if
