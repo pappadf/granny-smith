@@ -1,0 +1,122 @@
+# Integration test: IIcx + Display Card 8•24 GC — System 7.1 + System Info
+# Display benchmark, accelerator ON.
+#
+# The System-7.1 sibling of iicx-24ac-sysinfo (same workflow, same floppy,
+# same PRAM seeding) on the 8•24 GC with the accelerator drawing.  System 7 is
+# the regime the System-6 GC tests cannot reach: every window port is a
+# CGrafPort (func $2D portVersion discriminator, commit 85d0b97), GCQD flushes
+# func $26 immediately before every CopyBits (the $15 epoch gate, 7828410),
+# and ScrollRect issues screen->screen $15 blits (the MMU-mode source-read
+# aliasing, f2264c5).  Every screen.match below is drawn by the CARD within
+# its accept envelope (out-of-envelope work declines to ROM QuickDraw), so the
+# scenes double as accel-vs-ROM compositing proofs at System 7.1.
+
+# Pin the RTC so the boot is deterministic run-to-run.
+machine.rtc.time = 3000000000
+
+# --- Boot to the 8-bpp colour Finder desktop ---------------------------------
+# The gc_ video-mode seed writes the complete valid PRAM ('NuMc' validity +
+# PRAMInitTbl boot-device defaults + the GC slot sPRAMRec) so the decl-ROM
+# driver boots the screen at 640x480 8 bpp AND the ROM boots straight from the
+# SCSI HD.
+machine.nubus.video_card = "824gc"
+machine.nubus.video_mode = "gc_640x480_8bpp"
+machine.boot "iicx" 8192
+machine.rom.reload
+
+machine.scsi.attach_hd "../../data/systems/system_7_1_20mb_24ac_cd_32bit_gc.img" 0
+
+# --- Seed a configured low-PRAM: 128 KB disk cache + AppleTalk inactive -------
+# Same seed as iicx-24ac-sysinfo (see that script for the SysParam layout):
+# with the reference config in PRAM, System Info's "Run" skips the modal
+# "System Differences" advisory and starts the benchmark directly.
+machine.rtc.pram.poke 0x08 0x0388046c:4
+machine.rtc.pram.poke 0x10 0xa8000122cc0acc0a:8
+machine.rtc.pram.poke 0x18 0x0000000000026301:8
+
+# Run to the desktop.  System 7.1 + the GC driver bring-up reaches a stable
+# Finder by ~250M instr; 280M gives margin.
+scheduler.run 280000000
+
+# The card that booted into the IIcx video slot ($9) is the 8•24 GC at 8-bpp
+# 640x480, and the REAL .GraphAccel driver brought the accelerator up.
+assert ${machine.nubus.slot[9].card.name == "Apple Macintosh Display Card 8•24 GC"} "slot $9 card != 8•24 GC"
+assert ${machine.screen.width == 640}                        "boot: screen width != 640"
+assert ${machine.screen.height == 480}                       "boot: screen height != 480"
+assert ${machine.nubus.slot[9].card.framebuffer.depth == 8}  "boot: framebuffer not 8 bpp"
+assert ${machine.nubus.slot[9].card.gc.on == true}           "accelerator did not turn on"
+assert ${machine.nubus.slot[9].card.gc.state == "gc-on"}     "accelerator state != gc-on"
+assert ${machine.nubus.slot[9].card.gc.error == 0}           "accelerator posted an error"
+assert ${machine.nubus.slot[9].card.gc.rpc_count > 0}        "no RPCs serviced"
+# The System 7.1 8-bpp colour Finder desktop, card-drawn, pixel-exact.
+machine.screen.match finder-sys71-640x480-8bpp.png
+
+# --- Insert the "Utilities Disk 2" floppy into the internal drive (FD0) ------
+machine.floppy.drive[0].insert "../../data/apps/Norton-Utils-Disk-2.image"
+assert ${machine.floppy.drive[0].present} "Utilities Disk 2 not present in FD0"
+scheduler.run 60000000
+# No system error must have been raised (DSErrCode/$AF0 == 0) mounting/opening.
+assert ${machine.memory.peek.w(0xaf0) == 0} "system error raised inserting Utilities Disk 2"
+# The mounted disk with its window open — window frame, text and icons are all
+# card-drawn (System 7 CGrafPort window ports).
+machine.screen.match utilities-disk-sys71-640x480-8bpp.png
+
+# --- Launch "System Info" by double-clicking its icon -----------------------
+machine.adb.mouse.move 264 100 "global"
+scheduler.run 5000000
+machine.adb.mouse.click true
+scheduler.run 1000000
+machine.adb.mouse.click false
+scheduler.run 1000000
+machine.adb.mouse.click true
+scheduler.run 1000000
+machine.adb.mouse.click false
+scheduler.run 50000000
+# System Info is up and identified the display as "Macintosh Display Card
+# 8•24 GC" in its Selected Suites list — an end-to-end read-out of the card by
+# third-party guest software.
+machine.screen.match system-info-sys71-640x480-8bpp.png
+
+# --- De-select every suite except "Test Display" -----------------------------
+machine.adb.mouse.move 187 224 "global"
+scheduler.run 2000000
+machine.adb.mouse.click true
+scheduler.run 500000
+machine.adb.mouse.click false
+scheduler.run 1500000
+machine.adb.mouse.move 187 264 "global"
+scheduler.run 2000000
+machine.adb.mouse.click true
+scheduler.run 500000
+machine.adb.mouse.click false
+scheduler.run 1500000
+machine.adb.mouse.move 187 284 "global"
+scheduler.run 2000000
+machine.adb.mouse.click true
+scheduler.run 500000
+machine.adb.mouse.click false
+scheduler.run 3000000
+# Pixel-proof that ONLY Test Display is now checked (CPU/Volume/FPU cleared).
+machine.screen.match system-info-display-only-sys71-640x480-8bpp.png
+
+# --- Click "Run": the Display benchmark starts immediately (no dialog) --------
+# The suite exercises the accelerated paths end to end: queued geometry
+# (rects/rrects/ovals/lines), synchronous func $15 CopyBits (small + large,
+# aligned + misaligned), DrawText through the font-download machinery, and the
+# scrolling test's overlapping screen->screen blits.  It settles on the
+# "System Ratings" (Video) window; the queue must have drained megabytes of
+# opcode records — proof the card (not the ROM fallback) did the drawing.
+machine.adb.mouse.move 456 255 "global"
+scheduler.run 3000000
+machine.adb.mouse.click true
+scheduler.run 1000000
+machine.adb.mouse.click false
+scheduler.run 420000000
+assert ${machine.nubus.slot[9].card.gc.error == 0}              "accelerator posted an error during the benchmark"
+assert ${machine.nubus.slot[9].card.gc.queue_bytes > 1000000}   "geometry queue drained < 1 MB (benchmark not card-drawn)"
+# The Display benchmark completed: "System Ratings" (Video) with the Current
+# System rating vs the Quadra 700 reference — pinned pixel-exact, so the
+# accelerated benchmark OUTCOME (rating included) is part of the contract.
+machine.screen.match system-info-video-rating-sys71-640x480-8bpp.png
+
+quit
