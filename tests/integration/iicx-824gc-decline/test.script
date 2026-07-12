@@ -16,7 +16,7 @@ machine.rom.reload
 # The oracle switch: decline all drawing funcs -> ROM path renders everything.
 machine.nubus.slot[9].card.gc.force_decline = true
 
-machine.scsi.attach_hd "../../data/systems/system_6_0_8_20mb_8_24gc_accel.img" 0
+machine.scsi.attach_hd "../../data/systems/system_6_0_8_20mb_8_24gc.img" 0
 scheduler.run 200000000
 
 assert ${machine.nubus.slot[9].card.gc.force_decline == true} "force_decline lost"

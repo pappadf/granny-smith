@@ -6,10 +6,10 @@
 # command-block (CB) bring-up protocol — which the test drives directly by
 # writing the bytes the .GraphAccel driver would (boot handshake + an RPC).
 #
-# It does NOT boot the OS — that is covered end-to-end by iicx-824gc-boot, which
-# boots System 6.0.8 through the genuine decl-ROM video driver to the Finder
-# desktop.  This test drives the accelerator CB protocol directly, so no SCSI HD
-# image is needed.
+# It does NOT boot the OS — that is covered end-to-end by iicx-824gc-accel,
+# which boots System 6.0.8 through the genuine decl-ROM video driver and the
+# real .GraphAccel bring-up to the Finder desktop.  This test drives the
+# accelerator CB protocol directly, so no SCSI HD image is needed.
 
 TEST_NAME := IIcx Display Card 8•24 GC — card model + accelerator CB bring-up
 TEST_DESC := Detect the 8•24 GC card (v1.1 decl ROM, lane-0) + drive the HLE CB bring-up protocol

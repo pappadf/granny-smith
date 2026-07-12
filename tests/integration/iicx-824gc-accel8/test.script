@@ -16,7 +16,7 @@ machine.nubus.video_mode = "gc_640x480_8bpp"
 machine.boot "iicx" 8192
 machine.rom.reload
 
-machine.scsi.attach_hd "../../data/systems/system_6_0_8_20mb_8_24gc_accel.img" 0
+machine.scsi.attach_hd "../../data/systems/system_6_0_8_20mb_8_24gc.img" 0
 scheduler.run 200000000
 
 assert ${machine.nubus.slot[9].card.gc.on == true}       "accelerator did not turn on"
