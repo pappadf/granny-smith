@@ -47,4 +47,17 @@ assert ${debug.breakpoints[3].condition == "machine.cpu.d0 == 0"}
 echo ${debug.breakpoints.clear()}
 debug.breakpoints.list
 
+# --- Run-past-breakpoint (regression: "not stuck after hitting one") --------
+# The legacy web UI's debug.spec.ts pinned that after a breakpoint is hit,
+# a subsequent run advances PAST it instead of re-triggering on the same PC
+# and stalling. That command layer is gone; this reproduces the guard on the
+# object model. Two early-ROM addresses the Plus reaches deterministically.
+echo ${debug.breakpoints.add(0x4007ba)}
+scheduler.run
+assert ${machine.cpu.pc == 0x4007ba} "run did not stop at the first breakpoint"
+echo ${debug.breakpoints.add(0x4007bc)}
+scheduler.run
+assert ${machine.cpu.pc == 0x4007bc} "run got stuck — did not advance past the first breakpoint"
+echo ${debug.breakpoints.clear()}
+
 quit
