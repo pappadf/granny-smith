@@ -81,10 +81,12 @@ These are myths that repeatedly show up in discussions of the scheduler. Every o
   from `sprint_burndown` mid-flight, ending the sprint early. This is how the emulator
   keeps cycle accounting honest across slow I/O (see §6.2).
 
-- **"Switching scheduler mode (max/real/hw) rebases cycles to match instructions."**
-  No. `cpu_cycles` is invariant across mode changes. Only the cycles-per-instruction
-  ratio changes, which means the instruction count and cycle count *diverge* from that
-  point on. There is no invariant `cpu_instr_count * CPI == cpu_cycles` — see §9.
+- **"Switching scheduler mode (paced/turbo) changes what the guest executes."**
+  No. The mode is *pacing only* — it decides how many frame-units a host tick batches,
+  never how many instructions a frame-unit contains. CPI is a per-machine constant
+  independent of the mode, so `cpu_cycles`, the instruction count, and the guest's
+  execution sequence are identical in both modes (and on both targets) for a given
+  frame-unit count — see §9.
 
 ---
 
@@ -101,25 +103,35 @@ cycles = ns * s->frequency / NS_PER_SEC;     // ns -> cycles
 ```
 
 Cycles are the source of truth. Instruction counts are derived from cycles using the
-current cycles-per-instruction (CPI) ratio, and they are *not* cycle-perfect — the
-emulator models "average" CPI, not per-opcode cycle timings.
+per-machine cycles-per-instruction (CPI) constant, and they are *not* cycle-perfect —
+the emulator models "average" CPI, not per-opcode cycle timings.
 
 ### 2.1 Cycles-per-instruction (CPI)
 
-CPI depends on the scheduler mode and is configurable per machine:
+CPI is **one constant per machine**, set at init via `scheduler_set_cpi(s, cpi)` and
+independent of the pacing mode:
 
-| Mode                  | Default CPI | Notes                                       |
-|-----------------------|-------------|---------------------------------------------|
-| `schedule_hw_accuracy`| `cpi_hw` = 12  | Hardware-accurate pacing                 |
-| `schedule_real_time`  | `cpi_fast` = 4 | Real-time (wall-clock-synced) pacing     |
-| `schedule_max_speed`  | `cpi_fast` = 4 | As fast as the host can go               |
+| Machine family | CPI | Notes                                                        |
+|----------------|-----|--------------------------------------------------------------|
+| Plus (68000)   | 12  | Authentic average for the 7.8336 MHz 68000                   |
+| 030 machines (IIcx/SE30/IIx/IIci/IIsi/IIfx) | 4 | 4-clock bus cycle, 1-wait-state RAM |
+| Lisa / Mac XL  | 4   | Historical effective value (every Lisa budget derives from it) |
 
-Defaults are set in [scheduler.c:30-31](../src/core/scheduler/scheduler.c#L30) and can be
-overridden per-machine via `scheduler_set_cpi(s, cpi_hw, cpi_fast)`. The shell command
-`schedule cpi <N>` changes CPI for the currently active mode.
+The default (no `scheduler_set_cpi` call) is 12
+([scheduler.c](../src/core/scheduler/scheduler.c)). The `scheduler.cpi` attribute is
+writable as a **debug override** (1..255); changing it mid-run alters the guest
+timeline from that point on, so it is a tuning tool only.
 
-**Key consequence:** CPI can change at runtime. This means the relationship between
-cycles and instructions is not linear over time — see §9 for the implications.
+**Key consequence:** because CPI is constant, the guest's execution sequence is a pure
+function of the frame-unit count — in every pacing mode and on both targets. This is
+the **one guest timeline** property (§9, §10.4).
+
+> **History.** Before the two-mode change
+> (`local/gs-docs/proposals/proposal-scheduler-two-modes.md`), CPI depended on the
+> scheduler mode (`cpi_hw` = 12 in `hw_accuracy`, `cpi_fast` = 4 elsewhere), which made
+> the cycles↔instructions relationship piecewise and mode switches guest-visible. On
+> the Plus this also meant the default mode emulated a ~3× overclocked 68000; the
+> authentic CPI 12 is now the Plus constant.
 
 ---
 
@@ -133,8 +145,8 @@ for timing:
 
 ```c
 struct scheduler {
-    enum schedule_mode mode;         // Selects CPI
-    uint32_t cpi_hw, cpi_fast;       // Per-machine CPI values
+    enum schedule_mode mode;         // Pacing only: paced | unthrottled
+    uint32_t cpi;                    // Per-machine CPI constant (mode-independent)
     uint32_t frequency;              // CPU clock in Hz
 
     uint64_t cpu_cycles;             // Authoritative "now" at last sprint boundary
@@ -248,8 +260,9 @@ safe to call from deep inside a memory write.
 
 ### 4.4 Worked example
 
-Assume CPI=4, we are in `schedule_real_time`. The scheduler finished its last sprint at
-cycle 1,000 having retired 250 instructions. State:
+Assume a machine with CPI=4 (any pacing mode — CPI doesn't depend on it). The
+scheduler finished its last sprint at cycle 1,000 having retired 250 instructions.
+State:
 
 ```
 cpu_cycles=1000  total_instructions=250  sprint_total=0  sprint_burndown=0
@@ -522,37 +535,34 @@ If a device needs tighter-than-CPI timing (e.g., an SCC shift register), the com
 patterns are:
 
 - Schedule the event farther in advance so `N >> CPI`.
-- Switch the machine to `schedule_hw_accuracy` mode with a realistic per-instruction
-  CPI so `N` is measured in cycles, not coarse units.
 - Re-read the current time inside the callback via `scheduler_cpu_cycles(s)` and
   compensate (most VIA/SCC device models already do this for edge timings).
 
 ---
 
-## 9. Mode switching and why there is no CPI invariant
+## 9. Mode switching and the CPI invariant
 
-The following is **not** an invariant and must not be assumed:
+Since the two-mode change, `scheduler_set_mode` touches **only pacing state** (it
+resets the wall-clock estimators, §10.3); CPI never changes with the mode. As long as
+the `scheduler.cpi` debug override is untouched, the linear relationship
 
 ```
-cpu_instr_count() * avg_cycles_per_instr(s) == cpu_cycles    // WRONG
+cpu_instr_count() * CPI == cpu_cycles
 ```
 
-`scheduler_set_mode` changes the CPI immediately but leaves `cpu_cycles` and
-`total_instructions` untouched
-([scheduler.c:862-870](../src/core/scheduler/scheduler.c#L862)). From that moment on,
-future instructions advance `cpu_cycles` at the new rate. The relationship between
-total instructions and total cycles is *piecewise* linear, not globally linear.
+holds globally, and switching modes mid-run creates no discontinuity of any kind in
+the guest timeline — `cpu_cycles` stays monotonic and future instructions keep
+advancing it at the same rate.
 
-The authoritative quantity is always `cpu_cycles`. If you need to know elapsed emulated
-time, use cycles (or `scheduler_time_ns`). Don't reconstruct time from instruction
-counts.
+The authoritative quantity is still `cpu_cycles`. If you need elapsed emulated time,
+use cycles (or `scheduler_time_ns`); instruction counts are a derived, display-level
+view. The only way the relationship becomes piecewise is an explicit runtime
+`scheduler.cpi` override — a debug tool, never done by the UI or the machines.
 
-**Checkpoint restore caveat:** The restore path rebuilds `total_instructions` from the
-stored `cpu_cycles` using the *restored mode's* CPI
-([scheduler.c:552-553](../src/core/scheduler/scheduler.c#L552)). The resulting value is
-therefore an approximation — it is exact only if CPI was constant between boot and the
-checkpoint. This is acceptable because `total_instructions` is used only for display
-and debugging, not for timing.
+**Checkpoint restore:** the restore path rebuilds `total_instructions` as
+`cpu_cycles / cpi` ([scheduler.c](../src/core/scheduler/scheduler.c)). With a constant
+CPI this reconstruction is exact (previously, with mode-dependent CPI, it was only an
+approximation).
 
 ---
 
@@ -604,22 +614,41 @@ until `scheduler.stop` (or client disconnect) — exactly what web2 does.
 
 No `host_time()` value ever feeds guest execution on the headless path.
 
-### 10.3 WASM: host-clock-driven, paced for the browser
+### 10.3 WASM: host-clock-driven, two pacing modes
 
 `scheduler_main_loop(config, now_msecs)` is called once per `requestAnimationFrame`
 ([em_main.c](../src/platform/wasm/em_main.c)). It maps the elapsed host time onto a
 whole number of frame-units and runs that many via `scheduler_run_frame()`:
 
-- **`schedule_max_speed`**: as many frame-units as fit in ~50% of the smoothed host
-  loop period. Emulated time outruns real time on a fast host.
-- **`schedule_real_time`**: 1 frame-unit per host tick when the host loop period is
-  within ±50% of the Mac VBL period; otherwise the accumulator path.
-- **`schedule_hw_accuracy`**: accumulate host elapsed time in `vbl_acc_error` and run
-  `floor(vbl_acc_error / MAC_VBL_PERIOD)` frame-units, keeping emulated time in step
-  with wall-clock over the long run.
+- **`schedule_paced`** (default; "Live" in the web2 toolbar): a wall-clock
+  accumulator. Elapsed host time accumulates in `vbl_acc_error`; each whole
+  `MAC_VBL_PERIOD` earns one frame-unit, capped at `PACED_MAX_CATCHUP` (4) per tick.
+  At a ~60 Hz host this is 1 frame-unit per tick in steady state (one repeat/skip
+  every ~7 s of oscillator drift — imperceptible); on 59.94/75/120/144 Hz and VRR
+  displays the long-term rate converges to 60.147 Hz exactly. The cap prevents the
+  catch-up death-spiral on a slow host: without it, `floor(vbl_acc_error / P)` is
+  unbounded and each oversized burst lengthens the next tick's period — positive
+  feedback that could pile ~60 frame-units into one tick. Under a sustained-slow host
+  the accumulator saturates and the emulator simply lags real time by a bounded
+  amount.
+- **`schedule_unthrottled`** ("Turbo"): as many frame-units as fit in
+  `TURBO_HOST_HEADROOM` (50%) of the smoothed host loop period, leaving the rest for
+  the browser. Emulated time outruns real time on a fast host. The first tick after
+  init / checkpoint restore / mode switch has no `host_secs_per_vbl` estimate yet
+  (it's `NAN`) and is explicitly guarded to run exactly 1 frame-unit — a float→int
+  conversion of NaN is undefined behaviour.
 
-A smoothed EWMA of host seconds per VBL/loop drives the heuristics; a >1 s gap (tab
-backgrounded) is skipped to avoid fast-forwarding.
+A smoothed EWMA of host seconds per VBL/loop drives the turbo heuristic; a >1 s gap
+(tab backgrounded) resets rather than fast-forwarding. `scheduler_set_mode` resets
+the estimators and the accumulator on every switch, so turbo-shaped estimates never
+leak into paced pacing.
+
+> **History.** There used to be a third mode: `schedule_real_time` mapped host ticks
+> 1:1 onto frame-units when the host loop period was within ±50% of the VBL period,
+> falling back to the accumulator otherwise. The 1:1 branch carried a fixed 0.25–0.34%
+> rate bias at ~60 Hz hosts (right at the edge of the audio rate-trim window) and
+> already abandoned 1:1 on high-refresh displays; the accumulator subsumes it. The
+> old `hw_accuracy` mode's real content was the CPI, which is now per-machine (§2.1).
 
 ### 10.4 Determinism
 
@@ -632,8 +661,10 @@ result; it never changes the guest sequence or the stop point.
 Headless makes this directly usable: a fixed `scheduler.run N` lands on the same guest
 state every run, regardless of host load or where read-only commands (`screenshot`,
 `screen.checksum`) sit in the script. The web2 e2e login test relies on the same
-property — a fixed budget in `max` mode reproduces, bit-for-bit, the framebuffer the
-headless integration test captures.
+property — a fixed budget reproduces, bit-for-bit, the framebuffer the headless
+integration test captures. With CPI fixed per machine (§2.1) this holds in **every**
+mode: paced web2, turbo web2, and headless reproduce each other exactly at any given
+budget.
 
 > **History.** Earlier, headless used a *cycle-driven* recurring `scheduler_vbl_tick`
 > event (and `scheduler_run_until_idle`) while WASM used `scheduler_main_loop`. The two
@@ -720,7 +751,7 @@ Enforced by `scheduler_check_invariants` at every API entry/exit:
 - Queue length ≤ `MAX_SANE_EVENTS` (10000) — a loop/corruption tripwire.
 
 **Mode and pointers:**
-- `mode` is one of the three enum values.
+- `mode` is one of the two enum values (`schedule_paced` / `schedule_unthrottled`).
 - `cpu` pointer is non-NULL.
 
 All violations abort via `GS_ASSERT` / `GS_ASSERTF` (from `common.h`) with file, line,
@@ -728,19 +759,19 @@ function, and context. There are no `printf`-based error reports in the schedule
 
 ---
 
-## 13. Shell commands
+## 13. Shell surface
 
-Registered in `scheduler_init` ([scheduler.c:576-581](../src/core/scheduler/scheduler.c#L576)):
+The scheduler is an object-model citizen (`scheduler.*` paths in the typed shell):
 
-| Command                  | Description                                            |
-|--------------------------|--------------------------------------------------------|
-| `run [instructions]`     | Start execution; optionally stop after N instructions. |
-| `stop`                   | Stop execution immediately.                            |
-| `schedule`               | Show current mode and CPI.                             |
-| `schedule max\|real\|hw` | Switch mode.                                           |
-| `schedule cpi <N>`       | Override CPI for the current mode (1..255).            |
-| `status`                 | Return 1 if running, 0 if idle (useful for scripts).   |
-| `events`                 | Dump the pending event queue with Δcycles and Δµs.     |
+| Path                        | Description                                                |
+|-----------------------------|------------------------------------------------------------|
+| `scheduler.run [N]`         | Start execution; optionally stop after N instructions.     |
+| `scheduler.stop`            | Stop execution immediately.                                |
+| `scheduler.mode`            | Pacing mode: `"paced"` \| `"turbo"` (writable; legacy aliases `real`/`hw` → paced, `max` → turbo). |
+| `scheduler.cpi`             | Per-machine CPI constant; writable as a debug override (1..255). |
+| `scheduler.running`         | True while executing (useful for scripts).                 |
+| `scheduler.cycles` / `.instr_count` | Cycle / instruction counters.                      |
+| `events`                    | Dump the pending event queue with Δcycles and Δµs.         |
 
 The `events` command is the quickest way to diagnose a timing issue — it shows each
 event's absolute timestamp, delta from `cpu_cycles`, delta in microseconds, its

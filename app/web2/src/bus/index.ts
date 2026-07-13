@@ -3,6 +3,7 @@ export {
   shutdownEmulator,
   pauseEmulator,
   resumeEmulator,
+  applySchedulerMode,
   saveCheckpoint,
   bootstrap,
   isModuleReady,

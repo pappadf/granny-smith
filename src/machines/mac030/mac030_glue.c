@@ -141,7 +141,7 @@ void mac030_build_core(config_t *cfg, checkpoint_t *cp) {
     cfg->cpu = cpu_init(cfg->machine->cpu_model, cp);
     cfg->scheduler = scheduler_init(cfg->cpu, cp);
     scheduler_set_frequency(cfg->scheduler, cfg->machine->freq);
-    scheduler_set_cpi(cfg->scheduler, 4, 4);
+    scheduler_set_cpi(cfg->scheduler, 4);
 }
 
 // Populate one page in the AoS table + SoA fast-path arrays.  Read-only pages

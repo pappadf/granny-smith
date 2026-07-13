@@ -31,13 +31,28 @@ LOG_USE_CATEGORY_NAME("scheduler");
 // Constants and Macros
 // ============================================================================
 
-#define MAC_VBL_FREQUENCY             60.15 // 60 vertical blanking interrupts per second
-#define MAC_VBL_PERIOD                (1.0 / MAC_VBL_FREQUENCY) // period of one VBL in seconds
-#define CYCLES_PER_INSTR_HW_DEFAULT   12 // default cycles per instruction for hardware accuracy mode
-#define CYCLES_PER_INSTR_FAST_DEFAULT 4 // default cycles per instruction for realtime and max speed modes
-#define MAC_CPU_FREQUENCY             7833600.0
-#define MAX_EVENT_TYPES               32
-#define MAX_SANE_EVENTS               10000 // upper bound for event queue length sanity checks
+#define MAC_VBL_FREQUENCY 60.15 // 60 vertical blanking interrupts per second
+#define MAC_VBL_PERIOD    (1.0 / MAC_VBL_FREQUENCY) // period of one VBL in seconds
+// Default cycles per instruction: the authentic average for the original
+// 68000 Macs. Machines override this with one per-machine constant via
+// scheduler_set_cpi(); CPI never depends on the pacing mode.
+#define CYCLES_PER_INSTR_DEFAULT 12
+#define MAC_CPU_FREQUENCY        7833600.0
+#define MAX_EVENT_TYPES          32
+#define MAX_SANE_EVENTS          10000 // upper bound for event queue length sanity checks
+
+// Paced mode: hard cap on frame-units executed per host tick. A slow or
+// stalled host makes vbl_acc_error grow; without a cap, each oversized burst
+// lengthens the next tick's period — a positive-feedback catch-up spiral
+// (up to ~60 frame-units piling into one tick before the >1 s guard resets).
+// With the cap, a sustained-slow host simply lags real time by a bounded
+// amount instead of freezing the UI in a wall of frames.
+#define PACED_MAX_CATCHUP 4
+
+// Unthrottled ("turbo") mode: fraction of the host tick period to fill with
+// emulation, leaving the rest as idle headroom for the browser (rendering,
+// input, GC). Previously a hard-coded 0.5.
+#define TURBO_HOST_HEADROOM 0.5
 
 #define MIN(a, b) ((a) < (b) ? (a) : (b))
 
@@ -81,9 +96,9 @@ struct scheduler {
     double host_secs_per_vbl; // smoothed host seconds per VBL
     double host_secs_per_loop; // smoothed host seconds per main loop iteration
 
-    // Per-machine cycles-per-instruction tuning
-    uint32_t cpi_hw; // cycles per instruction for hardware accuracy mode
-    uint32_t cpi_fast; // cycles per instruction for realtime and max speed modes
+    // Per-machine cycles-per-instruction constant — guest-visible, identical
+    // in every pacing mode (one guest timeline)
+    uint32_t cpi;
 
     // Event type registry for checkpointing
     event_type_t event_types[MAX_EVENT_TYPES];
@@ -135,17 +150,10 @@ extern const class_desc_t scheduler_class;
 // Static Helpers
 // ============================================================================
 
-// Returns cycles per instruction based on current scheduler mode
+// Returns the per-machine cycles-per-instruction constant (mode-independent)
 static inline uint32_t avg_cycles_per_instr(struct scheduler *s) {
     GS_ASSERT(s != NULL);
-    switch (s->mode) {
-    case schedule_hw_accuracy:
-        return s->cpi_hw;
-    case schedule_real_time:
-    case schedule_max_speed:
-    default:
-        return s->cpi_fast;
-    }
+    return s->cpi;
 }
 
 // Validate all critical scheduler invariants at key transition points
@@ -162,7 +170,7 @@ static void scheduler_check_invariants(struct scheduler *s, const char *context)
                (unsigned long long)s->cpu_cycles);
 
     // Mode must be valid
-    GS_ASSERTF(s->mode >= schedule_max_speed && s->mode <= schedule_hw_accuracy, "[%s] invalid mode (%d)", context,
+    GS_ASSERTF(s->mode == schedule_paced || s->mode == schedule_unthrottled, "[%s] invalid mode (%d)", context,
                s->mode);
 
     // Event queue: first event must not be too far in the past (allow CPI overshoot)
@@ -438,8 +446,7 @@ struct scheduler *scheduler_init(struct cpu *cpu, checkpoint_t *checkpoint) {
     s->host_secs_per_vbl = NAN;
     s->host_secs_per_loop = 1.0 / 60.0;
     s->frequency = (uint32_t)MAC_CPU_FREQUENCY;
-    s->cpi_hw = CYCLES_PER_INSTR_HW_DEFAULT;
-    s->cpi_fast = CYCLES_PER_INSTR_FAST_DEFAULT;
+    s->cpi = CYCLES_PER_INSTR_DEFAULT;
     s->num_event_types = 0;
     memset(s->event_types, 0, sizeof(s->event_types));
 
@@ -458,14 +465,15 @@ struct scheduler *scheduler_init(struct cpu *cpu, checkpoint_t *checkpoint) {
         s->host_secs_per_vbl = NAN;
         s->host_secs_per_loop = 1.0 / 60.0;
 
-        // Reconstruct instruction count from restored cycle counter.
-        // Must use restored mode's CPI since global scheduler pointer is not yet updated.
-        uint32_t restored_cpi = (s->mode == schedule_hw_accuracy) ? s->cpi_hw : s->cpi_fast;
-        s->total_instructions = s->cpu_cycles / restored_cpi;
+        // Reconstruct instruction count from restored cycle counter. CPI is a
+        // per-machine constant, so this mapping is exact (cycles are the sole
+        // ground truth for time; total_instructions is display-only).
+        GS_ASSERT(s->cpi > 0);
+        s->total_instructions = s->cpu_cycles / s->cpi;
         s->sprint_total = 0;
         s->sprint_burndown = 0;
 
-        GS_ASSERT(s->mode >= schedule_max_speed && s->mode <= schedule_hw_accuracy);
+        GS_ASSERT(s->mode == schedule_paced || s->mode == schedule_unthrottled);
         GS_ASSERT(s->cpu_cycles < (1ULL << 60));
 
         // Save event data for deferred restoration (names must be resolved after device registration).
@@ -483,7 +491,7 @@ struct scheduler *scheduler_init(struct cpu *cpu, checkpoint_t *checkpoint) {
         }
     } else {
         // Fresh boot
-        s->mode = schedule_real_time;
+        s->mode = schedule_paced;
         s->cpu_cycles = 0;
         s->total_instructions = 0;
         s->sprint_total = 0;
@@ -546,7 +554,7 @@ void scheduler_delete(struct scheduler *scheduler) {
 void scheduler_checkpoint(struct scheduler *restrict scheduler, checkpoint_t *checkpoint) {
     GS_ASSERT(scheduler != NULL && checkpoint != NULL);
     GS_ASSERT(scheduler->cpu != NULL);
-    GS_ASSERT(scheduler->mode >= schedule_max_speed && scheduler->mode <= schedule_hw_accuracy);
+    GS_ASSERT(scheduler->mode == schedule_paced || scheduler->mode == schedule_unthrottled);
     GS_ASSERT(scheduler->cpu_cycles < (1ULL << 60));
     GS_ASSERT(scheduler->num_event_types >= 0 && scheduler->num_event_types <= MAX_EVENT_TYPES);
 
@@ -818,15 +826,19 @@ bool scheduler_is_running(struct scheduler *restrict s) {
     return s->running;
 }
 
-// Set the scheduler mode (max_speed, real_time, or hw_accuracy)
+// Set the scheduler pacing mode (paced or unthrottled)
 void scheduler_set_mode(struct scheduler *restrict s, enum schedule_mode mode) {
     if (!s)
         return;
     if (s->mode == mode)
         return;
     s->mode = mode;
-    if (mode == schedule_real_time)
-        s->vbl_acc_error = 0.0; // reset accumulated timing error
+    // Estimator hygiene: reset the pacing estimators on every mode switch so
+    // burst-shaped estimates from one mode don't leak into the first ticks of
+    // the other (e.g. turbo's host_secs_per_vbl into paced catch-up math).
+    s->vbl_acc_error = 0.0;
+    s->host_secs_per_vbl = NAN;
+    s->host_secs_per_loop = 1.0 / 60.0;
 }
 
 // Set the CPU clock frequency in Hz
@@ -837,21 +849,19 @@ void scheduler_set_frequency(struct scheduler *restrict s, uint32_t frequency_hz
     s->frequency = frequency_hz;
 }
 
-// Set per-machine cycles-per-instruction for each scheduler mode
-void scheduler_set_cpi(struct scheduler *restrict s, uint32_t cpi_hw, uint32_t cpi_fast) {
+// Set the per-machine cycles-per-instruction constant (mode-independent)
+void scheduler_set_cpi(struct scheduler *restrict s, uint32_t cpi) {
     if (!s)
         return;
-    GS_ASSERT(cpi_hw > 0);
-    GS_ASSERT(cpi_fast > 0);
-    s->cpi_hw = cpi_hw;
-    s->cpi_fast = cpi_fast;
+    GS_ASSERT(cpi > 0);
+    s->cpi = cpi;
 }
 
 // Run the scheduler for a specified number of instructions
 void scheduler_run_instructions(struct scheduler *restrict s, uint64_t n) {
     GS_ASSERT(s != NULL);
     GS_ASSERT(s->cpu != NULL);
-    GS_ASSERT(s->mode >= schedule_max_speed && s->mode <= schedule_hw_accuracy);
+    GS_ASSERT(s->mode == schedule_paced || s->mode == schedule_unthrottled);
 
     CHECK_INVARIANTS(s);
 
@@ -1055,28 +1065,35 @@ void scheduler_main_loop(config_t *restrict config, double now_msecs) {
     s->previous_time = now;
 
     switch (s->mode) {
-    case schedule_max_speed:
-        // Execute as many VBLs as fit in ~50% of the host loop period
-        vbls_to_execute = (int)(s->host_secs_per_loop * 0.5 / s->host_secs_per_vbl);
+    case schedule_unthrottled:
+        // Execute as many VBLs as fit in TURBO_HOST_HEADROOM of the host loop
+        // period. host_secs_per_vbl starts NAN (and is re-NAN'd on checkpoint
+        // restore and mode switch); guard the first tick explicitly — a
+        // float→int conversion of NaN is undefined behaviour.
+        if (isnan(s->host_secs_per_vbl) || s->host_secs_per_vbl <= 0.0)
+            vbls_to_execute = 1;
+        else
+            vbls_to_execute = (int)(s->host_secs_per_loop * TURBO_HOST_HEADROOM / s->host_secs_per_vbl);
         if (vbls_to_execute < 1)
             vbls_to_execute = 1;
         break;
 
-    case schedule_real_time:
-        // One-to-one mapping if host loop is close to VBL period
-        if (current_period >= MAC_VBL_PERIOD * 0.5 && current_period <= MAC_VBL_PERIOD * 1.5) {
-            vbls_to_execute = 1;
-            break;
-        }
-        // Fall through to hw_accuracy model when host loop deviates too much.
-        __attribute__((fallthrough));
-
-    case schedule_hw_accuracy:
-        // Accumulate elapsed time and execute VBLs when enough has accumulated
+    case schedule_paced:
+        // Wall-clock accumulator: run one frame-unit per accumulated VBL
+        // period. At a ~60 Hz host this is 1 per tick in steady state (one
+        // repeat/skip every ~7 s of oscillator drift); on 59.94/75/120/144 Hz
+        // and VRR displays the long-term rate converges to 60.147 Hz exactly.
         s->vbl_acc_error += current_period;
-        if (s->vbl_acc_error >= MAC_VBL_PERIOD * 0.1) {
+        if (s->vbl_acc_error >= MAC_VBL_PERIOD) {
             vbls_to_execute = (int)(s->vbl_acc_error / MAC_VBL_PERIOD);
+            if (vbls_to_execute > PACED_MAX_CATCHUP)
+                vbls_to_execute = PACED_MAX_CATCHUP;
             s->vbl_acc_error -= vbls_to_execute * MAC_VBL_PERIOD;
+            // Saturate the debt a sustained-slow host can accumulate: the
+            // emulator lags real time by at most one capped burst instead of
+            // banking unbounded catch-up work (§8.1 death-spiral).
+            if (s->vbl_acc_error > PACED_MAX_CATCHUP * MAC_VBL_PERIOD)
+                s->vbl_acc_error = PACED_MAX_CATCHUP * MAC_VBL_PERIOD;
         }
         break;
 
@@ -1119,12 +1136,10 @@ static scheduler_t *sched_self_from(struct object *self) {
 
 static const char *mode_label(enum schedule_mode m) {
     switch (m) {
-    case schedule_max_speed:
-        return "max";
-    case schedule_real_time:
-        return "real";
-    case schedule_hw_accuracy:
-        return "hw";
+    case schedule_paced:
+        return "paced";
+    case schedule_unthrottled:
+        return "turbo";
     default:
         return "?";
     }
@@ -1143,14 +1158,15 @@ static value_t sched_attr_mode_set(struct object *self, const member_t *m, value
     (void)m;
     scheduler_t *s = sched_self_from(self);
     enum schedule_mode mode;
-    if (strcmp(in.s, "max") == 0)
-        mode = schedule_max_speed;
-    else if (strcmp(in.s, "real") == 0)
-        mode = schedule_real_time;
-    else if (strcmp(in.s, "hw") == 0)
-        mode = schedule_hw_accuracy;
+    // Legacy three-mode names stay accepted as aliases so existing scripts
+    // keep working: 'real'/'hw' were the wall-clock modes → paced; 'max' was
+    // the run-flat-out mode → turbo.
+    if (strcmp(in.s, "paced") == 0 || strcmp(in.s, "real") == 0 || strcmp(in.s, "hw") == 0)
+        mode = schedule_paced;
+    else if (strcmp(in.s, "turbo") == 0 || strcmp(in.s, "max") == 0)
+        mode = schedule_unthrottled;
     else {
-        value_t e = val_err("scheduler.mode: unknown mode '%s' (valid: max, real, hw)", in.s);
+        value_t e = val_err("scheduler.mode: unknown mode '%s' (valid: paced, turbo)", in.s);
         value_free(&in);
         return e;
     }
@@ -1162,6 +1178,17 @@ static value_t sched_attr_mode_set(struct object *self, const member_t *m, value
 static value_t sched_attr_cpi(struct object *self, const member_t *m) {
     (void)m;
     return val_uint(4, avg_cycles_per_instr(sched_self_from(self)));
+}
+
+// Debug override for the per-machine CPI constant. Mode-independent; changing
+// it mid-run alters the guest timeline from that point on, so it is a tuning
+// and experimentation tool, not something the UI exposes.
+static value_t sched_attr_cpi_set(struct object *self, const member_t *m, value_t in) {
+    (void)m;
+    if (in.u < 1 || in.u > 255)
+        return val_err("scheduler.cpi: value %llu out of range (1..255)", (unsigned long long)in.u);
+    scheduler_set_cpi(sched_self_from(self), (uint32_t)in.u);
+    return val_none();
 }
 
 static value_t sched_attr_cycles(struct object *self, const member_t *m) {
@@ -1239,14 +1266,14 @@ static const member_t scheduler_members[] = {
      .attr = {.type = V_BOOL, .get = sched_attr_running, .set = NULL}},
     {.kind = M_ATTR,
      .name = "mode",
-     .doc = "Scheduler mode ('max' | 'real' | 'hw')",
+     .doc = "Pacing mode ('paced' | 'turbo'; legacy aliases real/hw → paced, max → turbo)",
      .flags = 0,
      .attr = {.type = V_STRING, .get = sched_attr_mode_get, .set = sched_attr_mode_set}},
     {.kind = M_ATTR,
      .name = "cpi",
-     .doc = "Cycles per instruction for the current mode",
-     .flags = VAL_RO,
-     .attr = {.type = V_UINT, .get = sched_attr_cpi, .set = NULL}},
+     .doc = "Per-machine cycles per instruction (mode-independent; writable as a debug override, 1..255)",
+     .flags = 0,
+     .attr = {.type = V_UINT, .get = sched_attr_cpi, .set = sched_attr_cpi_set}},
     {.kind = M_ATTR,
      .name = "cycles",
      .doc = "Total CPU cycles executed so far",

@@ -65,7 +65,7 @@ static void em_assertion_callback(const char *expr, const char *file, int line, 
 
 // Deferred speed mode: saved at parse time, applied in system_post_create()
 // when the machine (and scheduler) are created later via rom load.
-static enum schedule_mode g_deferred_speed = schedule_real_time;
+static enum schedule_mode g_deferred_speed = schedule_paced;
 static bool g_deferred_speed_set = false;
 
 // ============================================================================
@@ -1314,18 +1314,18 @@ int main(int argc, char *argv[]) {
     // When the machine already exists (--model was given), apply immediately.
     // Otherwise, system_post_create() will apply it when rom load creates the machine.
     if (speed_mode) {
-        if (strcmp(speed_mode, "max") == 0) {
-            g_deferred_speed = schedule_max_speed;
+        // Legacy three-mode names map onto the two pacing modes:
+        // realtime/hardware were wall-clock modes → paced; max → turbo.
+        if (strcmp(speed_mode, "turbo") == 0 || strcmp(speed_mode, "max") == 0) {
+            g_deferred_speed = schedule_unthrottled;
             g_deferred_speed_set = true;
-        } else if (strcmp(speed_mode, "realtime") == 0 || strcmp(speed_mode, "real") == 0) {
-            g_deferred_speed = schedule_real_time;
-            g_deferred_speed_set = true;
-        } else if (strcmp(speed_mode, "hardware") == 0 || strcmp(speed_mode, "hw") == 0 ||
-                   strcmp(speed_mode, "accuracy") == 0) {
-            g_deferred_speed = schedule_hw_accuracy;
+        } else if (strcmp(speed_mode, "paced") == 0 || strcmp(speed_mode, "realtime") == 0 ||
+                   strcmp(speed_mode, "real") == 0 || strcmp(speed_mode, "hardware") == 0 ||
+                   strcmp(speed_mode, "hw") == 0 || strcmp(speed_mode, "accuracy") == 0) {
+            g_deferred_speed = schedule_paced;
             g_deferred_speed_set = true;
         } else {
-            printf("[C] Unknown --speed mode '%s' (valid: max|realtime|hardware)\n", speed_mode);
+            printf("[C] Unknown --speed mode '%s' (valid: paced|turbo)\n", speed_mode);
         }
 
         scheduler_t *sched = system_scheduler();
@@ -1404,19 +1404,8 @@ void system_post_create(config_t *cfg) {
         scheduler_t *sched = system_scheduler();
         if (sched) {
             scheduler_set_mode(sched, g_deferred_speed);
-            const char *name = "unknown";
-            switch (g_deferred_speed) {
-            case schedule_max_speed:
-                name = "max";
-                break;
-            case schedule_real_time:
-                name = "realtime";
-                break;
-            case schedule_hw_accuracy:
-                name = "hardware";
-                break;
-            }
-            printf("[C] Deferred scheduler mode applied: --speed=%s\n", name);
+            printf("[C] Deferred scheduler mode applied: --speed=%s\n",
+                   g_deferred_speed == schedule_unthrottled ? "turbo" : "paced");
         }
     }
 }

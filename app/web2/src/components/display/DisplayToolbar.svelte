@@ -1,9 +1,15 @@
 <script lang="ts">
-  import { machine, setSchedulerMode, setZoom } from '@/state/machine.svelte';
+  import { machine, setZoom } from '@/state/machine.svelte';
   import { layout, setPanelPos, setPanelCollapsed, type PanelPos } from '@/state/layout.svelte';
   import { theme, cycleTheme, resolveTheme } from '@/state/theme.svelte';
   import { showNotification } from '@/state/toasts.svelte';
-  import { pauseEmulator, resumeEmulator, shutdownEmulator, saveCheckpoint } from '@/bus';
+  import {
+    pauseEmulator,
+    resumeEmulator,
+    shutdownEmulator,
+    saveCheckpoint,
+    applySchedulerMode,
+  } from '@/bus';
   import Icon from '../common/Icon.svelte';
   import type { IconName } from '@/lib/icons';
   import type { SchedulerMode } from '@/state/machine.svelte';
@@ -86,7 +92,7 @@
   }
 
   function onSchedulerClick(mode: SchedulerMode) {
-    setSchedulerMode(mode);
+    void applySchedulerMode(mode);
   }
 
   function onZoomInput(e: Event) {
@@ -123,21 +129,17 @@
     <div class="scheduler" role="group" aria-label="Scheduler mode">
       <button
         class="sch-btn"
-        class:active={machine.scheduler === 'strict'}
-        disabled={!isLive}
-        onclick={() => onSchedulerClick('strict')}>strict</button
-      >
-      <button
-        class="sch-btn"
         class:active={machine.scheduler === 'live'}
         disabled={!isLive}
+        title="Live — pace the machine to real time"
         onclick={() => onSchedulerClick('live')}>live</button
       >
       <button
         class="sch-btn"
-        class:active={machine.scheduler === 'fast'}
+        class:active={machine.scheduler === 'turbo'}
         disabled={!isLive}
-        onclick={() => onSchedulerClick('fast')}>fast</button
+        title="Turbo — run as fast as the host allows"
+        onclick={() => onSchedulerClick('turbo')}>turbo</button
       >
     </div>
   </div>

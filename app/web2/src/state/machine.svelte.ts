@@ -7,7 +7,11 @@ export type MachineStatus = 'no-machine' | 'running' | 'paused' | 'stopped';
 // yellow flash. The flash decays on a 180 ms timeout (matches prototype).
 export type DriveActivity = 'idle' | 'read' | 'write';
 
-export type SchedulerMode = 'strict' | 'live' | 'fast';
+// Two pacing modes, mirroring the core's schedule_paced/schedule_unthrottled
+// (proposal-scheduler-two-modes.md): 'live' = wall-clock paced, 'turbo' = as
+// fast as the host allows. The guest timeline is identical in both; only the
+// pacing differs.
+export type SchedulerMode = 'live' | 'turbo';
 
 // Typed MMU kind, sourced from `machine.profile(id).capabilities.mmu.kind`
 // (no longer guessed from the model's display name). The debug panels gate
@@ -57,6 +61,8 @@ export function setZoom(value: number): void {
   machine.zoom = Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, Math.round(value)));
 }
 
+// Pure state update. Pushing the mode to the emulator core lives in
+// bus/emulator.ts (applySchedulerMode), which calls this on success.
 export function setSchedulerMode(mode: SchedulerMode): void {
   machine.scheduler = mode;
 }
