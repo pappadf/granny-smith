@@ -43,7 +43,15 @@ export default defineConfig({
       // Headless Chromium has no GPU; web2's WebGL2 probe must pass for the
       // app to mount, so force software WebGL via swiftshader (mirrors the
       // prod-smoke config and scripts/ui2-diag.mjs).
-      args: ['--use-gl=angle', '--use-angle=swiftshader-webgl', '--ignore-gpu-blocklist'],
+      args: [
+        '--use-gl=angle',
+        '--use-angle=swiftshader-webgl',
+        '--ignore-gpu-blocklist',
+        // Containers (Codespaces/devcontainers) mount a 64 MB /dev/shm;
+        // Chromium's renderer shared memory must fall back to /tmp or the
+        // tab crashes under memory-heavy specs (large OPFS uploads, wasm).
+        '--disable-dev-shm-usage',
+      ],
     },
   },
   projects: [{ name: 'chromium', use: { browserName: 'chromium' } }],

@@ -48,6 +48,54 @@ export async function stageOpfsFile(page: Page, opfsPath: string, hostFile: stri
   );
 }
 
+// Stage a LARGE host file into OPFS in chunks. Same fixture role as
+// stageOpfsFile, but streams through page.evaluate in 8 MB slices so a
+// multi-hundred-MB image never materialises as one base64 string in either
+// the Node or the browser process. One writable spans all chunks (created
+// once, appended per slice, closed at the end).
+export async function stageOpfsFileStreaming(
+  page: Page,
+  opfsPath: string,
+  hostFile: string,
+): Promise<void> {
+  const CHUNK = 8 * 1024 * 1024;
+  const size = fs.statSync(hostFile).size;
+  const fd = fs.openSync(hostFile, 'r');
+  try {
+    await page.evaluate(async (path: string) => {
+      const rel = path.replace(/^\/opfs\/?/, '').split('/').filter(Boolean);
+      const fileName = rel.pop() as string;
+      let dir = await navigator.storage.getDirectory();
+      for (const part of rel) dir = await dir.getDirectoryHandle(part, { create: true });
+      const fh = await dir.getFileHandle(fileName, { create: true });
+      const w = await fh.createWritable();
+      (window as unknown as { __stageWritable?: unknown }).__stageWritable = w;
+    }, opfsPath);
+    const buf = Buffer.alloc(CHUNK);
+    for (let off = 0; off < size; off += CHUNK) {
+      const n = fs.readSync(fd, buf, 0, Math.min(CHUNK, size - off), off);
+      const b64 = buf.subarray(0, n).toString('base64');
+      await page.evaluate(async (data: string) => {
+        const w = (window as unknown as { __stageWritable: { write(c: Uint8Array): Promise<void> } })
+          .__stageWritable;
+        const bin = atob(data);
+        const bytes = new Uint8Array(bin.length);
+        for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+        await w.write(bytes);
+      }, b64);
+    }
+    await page.evaluate(async () => {
+      const g = window as unknown as {
+        __stageWritable?: { close(): Promise<void> };
+      };
+      await g.__stageWritable?.close();
+      delete g.__stageWritable;
+    });
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
 // Stage inline bytes as an OPFS file (for plain-file tests that need no real
 // host fixture). Same navigator.storage write the upload path uses.
 export async function stageOpfsText(page: Page, opfsPath: string, text: string): Promise<void> {
