@@ -1,10 +1,12 @@
 # Web Frontend Reference
 
-The current Granny Smith web frontend lives in `app/web2/` (Svelte 5 +
-Vite + TypeScript) — that's what `make run` serves. The legacy vanilla-
-DOM frontend in `app/web-legacy/` is kept reachable via `make run-legacy`
-during a soak period; it shares the same Emscripten / bridge / OPFS
-contract documented below. New code goes into `app/web2/`.
+The Granny Smith web frontend lives in `app/web2/` (Svelte 5 + Vite +
+TypeScript) — that's what `make run` serves. It talks to the emulator
+through the Emscripten / bridge / OPFS contract documented below.
+
+> A legacy vanilla-DOM frontend (`app/web-legacy/`) preceded web2 and was
+> removed once web2 reached parity; some comments below reference it as the
+> historical origin of a given pattern.
 
 ## Architecture: Pthreads + WasmFS + OPFS
 
@@ -404,8 +406,8 @@ of Mac archives via `archive.extract`.
 [`TerminalPane.svelte`](../app/web2/src/components/panel-views/terminal/TerminalPane.svelte)
 dynamically imports `@xterm/xterm` and `@xterm/addon-fit` on first
 mount so they're code-split out of the main bundle. The terminal's
-input state machine (`{buffer, cursor, history}`) mirrors the legacy
-`app/web-legacy/js/terminal.js`. On Enter it calls
+input state machine (`{buffer, cursor, history}`) lives in the component.
+On Enter it calls
 `gsEvalLine(line)`, which routes to the Shell class's `run` method;
 the next prompt is returned from `shell.run` and cached for the next
 `showPrompt()`. Stdout / stderr from `Module.print` lands in the same

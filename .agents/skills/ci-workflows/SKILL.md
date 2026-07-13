@@ -348,5 +348,5 @@ gh run download --branch "$(git branch --show-current)" --name playwright-traces
 
 - Workflow definitions: [.github/workflows/](../../../.github/workflows/)
 - Test data setup: [docs/TEST_DATA.md](../../../docs/TEST_DATA.md)
-- E2E test config: [tests/e2e/playwright.config.ts](../../../tests/e2e/playwright.config.ts)
+- E2E test config: [tests/e2e/playwright.web2.config.ts](../../../tests/e2e/playwright.web2.config.ts)
 - Project conventions: [AGENTS.md](../../../AGENTS.md)

@@ -8,8 +8,7 @@ Granny Smith: a browser-based Motorola 68000 Macintosh Plus–style emulator com
 - `src/platform/`: Platform-specific code (wasm/, headless/)
   - `wasm/`: WebAssembly platform for browser (em_main.c, em_audio.c, em_video.c) — compiled with Emscripten
   - `headless/`: Native command-line platform for testing (headless_main.c)
-- `app/web2/`: Browser frontend (Svelte 5 + Vite + TypeScript) — default
-- `app/web-legacy/`: Previous browser frontend (vanilla HTML/JS/CSS) — reachable via `make run-legacy` while it soaks before removal
+- `app/web2/`: Browser frontend (Svelte 5 + Vite + TypeScript) — the only UI
 - `docs/`: Design, architecture, and developer docs, mirroring the code tree:
   `docs/guide/` (dev/process), `docs/core/<subsystem>/` (mirrors `src/core/`),
   `docs/machines/<family>/` (mirrors `src/machines/`), `docs/notes/` (dated
@@ -62,11 +61,11 @@ Emulator modules (e.g., scsi, cpu, via, scc, rtc) have `.c`/`.h` files in `src/c
 - Integration tests: `make integration-test` (~1–2 min) — builds headless emulator, runs tests in `tests/integration/`
 - Single integration test: `make integration-test-<name>` (e.g., `make integration-test-se30-format-hd`)
 - List available integration tests: `make -C tests/integration list`
-- E2E/UI tests (Playwright): 
+- E2E/UI tests (Playwright, web2):
   ```bash
-  npx --prefix tests/e2e playwright test --config=tests/e2e/playwright.config.ts
+  make ui2-e2e
   ```
-  (~10–15 min, requires test data from `scripts/fetch-test-data.sh`)
+  (requires test data from `scripts/fetch-test-data.sh`)
 - In general, no need to run unit tests unless explicitly asked
 
 ### STOP. READ THIS BEFORE RUNNING ANY TEST.
@@ -153,8 +152,8 @@ to not break this rule in the first place.
 - `build/headless/gs-headless` — headless emulator with TCP shell for interactive debugging (see `.agents/skills/headless-debug/`)
 
 - `printf()` and `LOG(...)` output goes to **xterm.js** (browser terminal panel), not the JS console
-- In E2E tests, terminal output is captured in: `tests/e2e/test-results/<test-name>-<project>/xterm/*.txt`
-- Test specs live in `tests/e2e/specs/<suite>/`, shared helpers in `tests/e2e/helpers/`
+- In E2E tests, artifacts (traces, screenshots) land in `tests/e2e/test-results/<test-name>-<project>/`
+- Test specs live in `tests/e2e/web2-specs/`, shared helper in `tests/e2e/helpers/web2-fs.ts`
 
 **Log categories and levels:**
 - Each module has its own log category (e.g., `cpu`, `floppy`, `scsi`, `logpoint`)
@@ -216,10 +215,9 @@ Hardware paths are model-independent: `machine.scsi.device[0]` means the
 same on a Plus, a IIcx, and a Lisa. The `$reg` aliases (`$pc`, `$d0`, …)
 still resolve (now to `machine.cpu.*`).
 
-The browser frontend and the e2e helpers call into the tree via
-`gsEval(path, args?)` (see `app/web2/src/bus/emulator.ts`; the legacy
-helper still exists in `app/web-legacy/js/emulator.js`). Inside the
-shell, the same tree is reachable via four surface forms (proposal §4.1):
+The browser frontend calls into the tree via `gsEval(path, args?)` (see
+`app/web2/src/bus/emulator.ts`). Inside the shell, the same tree is
+reachable via four surface forms (proposal §4.1):
 
   machine.cpu.pc            # bare path → read & print
   machine.cpu.d0 = 0x1234   # path = value → write

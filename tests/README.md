@@ -36,26 +36,15 @@ tests/
 │   ├── checkpoint2/               #   Consolidated checkpoint restore
 │   └── scsi/                      #   SCSI disk boot tests
 │
-└── e2e/                            # Browser Playwright tests
-    ├── playwright.config.ts       #   Playwright config (testDir → specs/)
-    ├── fixtures.ts                #   Shared fixtures (logging, xterm capture)
-    ├── global-setup.ts            #   Builds project, starts server on :18080
-    ├── global-teardown.ts         #   Stops server
-    ├── specs/                     #   All test suites
-    │   ├── appletalk/             #     AppleTalk / AFP networking
-    │   ├── apps/                  #     MacTest application harness
-    │   ├── basic-ui/              #     UI smoke tests
-    │   ├── boot-matrix/           #     ROM × System disk matrix comparisons
-    │   ├── configuration/         #     URL-param boot + baselines
-    │   ├── debug/                 #     Debugger shell commands
-    │   ├── drag-drop/             #     File drop tests
-    │   ├── floppy/                #     Floppy insert/eject/swap
-    │   ├── peeler/                #     Archive extraction (StuffIt, HQX)
-    │   ├── scsi/                  #     SCSI hard-disk boot + baselines
-    │   ├── state/                 #     Checkpoint save/restore/reload
-    │   └── terminal/              #     Terminal panel interaction
-    ├── helpers/                   #   Shared utilities (boot, screen, mouse, …)
-    └── types/                     #   TypeScript type stubs
+└── e2e/                            # Browser Playwright tests (web2 UI)
+    ├── playwright.web2.config.ts  #   Main config (testDir → web2-specs/)
+    ├── playwright.prod-smoke.config.ts # Production-bundle boot smoke
+    ├── playwright.webkit-local.config.ts # Local WebKit upload/OPFS checks
+    ├── test_server.py             #   COOP/COEP static server
+    ├── web2-specs/                #   Functional suite (checkpoint, drop, url-boot, …)
+    ├── ui-prod-smoke/             #   Production-bundle smoke test
+    ├── webkit-local/              #   Local WebKit OPFS upload test
+    └── helpers/web2-fs.ts         #   OPFS staging + drag helpers
 ```
 
 Running Tests
@@ -87,18 +76,17 @@ make integration-test-valgrind    # Same, under Valgrind
 Requires test data + Playwright + Chromium. See `tests/e2e/README.md`.
 
 ```bash
-make e2e-test                     # Build + run all e2e tests
+make ui2-e2e                      # Build + run the web2 functional suite (alias: make e2e-test)
+make ui2-prod-smoke               # Production-bundle boot smoke (no data needed)
 ```
 
 Or with more control:
 
 ```bash
-npx --prefix tests/e2e playwright test --config=tests/e2e/playwright.config.ts
-npx --prefix tests/e2e playwright test --config=tests/e2e/playwright.config.ts specs/floppy/
-npx --prefix tests/e2e playwright test --config=tests/e2e/playwright.config.ts --headed
+npx --prefix tests/e2e playwright test --config=tests/e2e/playwright.web2.config.ts
+npx --prefix tests/e2e playwright test --config=tests/e2e/playwright.web2.config.ts url-boot
+npx --prefix tests/e2e playwright test --config=tests/e2e/playwright.web2.config.ts --headed
 ```
-
-**Video recording** is disabled by default. Enable with `PWTEST_VIDEO=1`.
 
 Test Data
 ---------
@@ -131,15 +119,16 @@ Adding New Tests
 3. `test.script` contains shell commands and expected-output checks.
 4. Run: `make -C tests/integration test-foo`.
 
-### New e2e test suite
+### New e2e test
 
-1. Create `tests/e2e/specs/foo/` with `foo.spec.ts`.
-2. Import from `../../fixtures` and `../../helpers/`.
-3. Place baseline PNGs alongside the spec.
-4. Run: `npx --prefix tests/e2e playwright test --config=tests/e2e/playwright.config.ts specs/foo/`
+1. Add `tests/e2e/web2-specs/foo.spec.ts`.
+2. Import `@playwright/test` and `../helpers/web2-fs`; drive through the shipped
+   web2 UI (web2 has no `window.gsEval` — use the Terminal panel).
+3. Run: `npx --prefix tests/e2e playwright test --config=tests/e2e/playwright.web2.config.ts foo`
 
 Baselines & Snapshots
 ---------------------
-E2e image baseline PNGs sit beside their spec files. Update with
-`UPDATE_SNAPSHOTS=1` when running the relevant suite.
+Playwright `toMatchSnapshot` baselines live in a `<spec>.ts-snapshots/`
+directory beside the spec; regenerate with `--update-snapshots`. Raw-framebuffer
+pixel oracles live in the integration tests.
 

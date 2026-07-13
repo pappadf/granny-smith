@@ -5,6 +5,11 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Removed
+- **Legacy web UI** (`app/web-legacy/`) and its Playwright suite (`tests/e2e/specs/`). The web2 Svelte UI (`app/web2/`) is now the only frontend; `make run-legacy` is gone. Coverage that was unique to the legacy e2e was ported to the web2 Playwright specs (`tests/e2e/web2-specs/`) and the headless integration tests before removal, and CI now runs the web2 e2e suite.
+
 ## [v0.6.1] — 2026-06-24
 
 ### Added

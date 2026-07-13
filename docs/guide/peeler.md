@@ -198,11 +198,12 @@ controlled.
 
 ## Testing
 
-Integration coverage lives in `tests/e2e/specs/peeler/peeler.spec.ts`,
-which uploads test archives, calls `archive.identify` /
-`archive.extract` via `gsEval`, and verifies the extracted files
-appear in OPFS. The library itself ships unit tests in
-`third-party/peeler/`.
+Archive extraction is covered end-to-end by the web2 Filesystem-tab e2e
+(`tests/e2e/web2-specs/filesystem-tab.spec.ts`), which uploads a
+StuffIt/BinHex archive and unpacks it through the shipped UI, and by the
+display-drop e2e (`tests/e2e/web2-specs/display-drop.spec.ts`). The unit
+tests in `app/web2/tests/unit/archive.test.ts` cover format detection, and
+the library itself ships unit tests in `third-party/peeler/`.
 
 ## References
 
