@@ -86,6 +86,7 @@ static value_t parse_mul(lex_t *L, const expr_ctx_t *ctx);
 static value_t parse_unary(lex_t *L, const expr_ctx_t *ctx);
 static value_t parse_postfix(lex_t *L, const expr_ctx_t *ctx);
 static value_t parse_primary(lex_t *L, const expr_ctx_t *ctx);
+static void format_value_default(const value_t *v, char **buf, size_t *len, size_t *cap);
 
 // === Numeric promotion helpers ==============================================
 //
@@ -216,6 +217,21 @@ static value_t value_equal(const value_t *a, const value_t *b) {
             label = e->enm.table[e->enm.idx];
         const char *str = s->s ? s->s : "";
         return val_bool(label && strcmp(label, str) == 0);
+    }
+    // V_LIST compares against V_STRING by its canonical "[a, b, c]"
+    // formatting (same text ${...} interpolation renders), so scripts can
+    // assert on list-returning methods — e.g.
+    // `shell.complete("machine.cpu.p", 13) == "[machine.cpu.pc]"` — without
+    // the expression layer needing list literals or indexing.
+    if ((a->kind == V_LIST && b->kind == V_STRING) || (a->kind == V_STRING && b->kind == V_LIST)) {
+        const value_t *l = a->kind == V_LIST ? a : b;
+        const value_t *s = a->kind == V_STRING ? a : b;
+        char *buf = NULL;
+        size_t len = 0, cap = 0;
+        format_value_default(l, &buf, &len, &cap);
+        bool eq = buf && strcmp(buf, s->s ? s->s : "") == 0;
+        free(buf);
+        return val_bool(eq);
     }
     return val_bool(same_kind_equal(a, b));
 }

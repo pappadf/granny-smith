@@ -45,4 +45,26 @@ assert ${machine.scsi.loopback == true}
 machine.scsi.loopback = false
 assert ${machine.scsi.loopback == false}
 
+# --- identify_hd / identify_cdrom -------------------------------------------
+# The typed classifiers the web2 upload pipeline gates on (lib/media.ts):
+# a file dropped into the HD/CD slot must identify as that media type or
+# the upload is rejected. Previously only exercised through the legacy
+# web UI's `hd validate` / `cdrom validate` commands (retired with it).
+#
+# HD: accepts anything that opens and isn't floppy-sized; a fresh
+# catalog-model image is the positive case, a blank 800K floppy the
+# negative one.
+assert ${storage.hd_create("${WORK_DIR}/ident-hd.img", "HD20SC")} "hd_create failed"
+assert ${storage.fd_create("${WORK_DIR}/ident-fd.img")} "fd_create failed"
+assert ${machine.scsi.identify_hd("${WORK_DIR}/ident-hd.img") == true} "HD image not identified as HD"
+assert ${machine.scsi.identify_hd("${WORK_DIR}/ident-fd.img") == false} "floppy wrongly identified as HD"
+assert ${machine.scsi.identify_hd("${WORK_DIR}/does-not-exist.img") == false} "missing file identified as HD"
+
+# CD-ROM: requires a recognised filesystem (ISO 9660 / HFS / APM). The
+# retail A/UX install disc is the positive case; a blank (all-zero) HD
+# image and a floppy are the negatives.
+assert ${machine.scsi.identify_cdrom("../../data/aux/aux_3.0.1/APPLE_AUX_3-0-1_RETAIL.iso") == true} "A/UX retail ISO not identified as CD-ROM"
+assert ${machine.scsi.identify_cdrom("${WORK_DIR}/ident-hd.img") == false} "blank HD image wrongly identified as CD-ROM"
+assert ${machine.scsi.identify_cdrom("${WORK_DIR}/ident-fd.img") == false} "floppy wrongly identified as CD-ROM"
+
 quit
