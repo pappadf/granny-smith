@@ -28,7 +28,11 @@ export default defineConfig({
     // then serve it with the cross-origin-isolation headers the worker needs.
     // `make ui2` does not rebuild the wasm — it expects `make` to have
     // produced build/main.{mjs,wasm} already.
-    command: `bash -c 'cd "$(git rev-parse --show-toplevel)" && make ui2 && exec python3 tests/e2e/test_server.py --root app/web2/dist --port ${PORT}'`,
+    // `cwd` below starts this in tests/e2e, so `cd ../..` reaches the repo
+    // root. Do NOT use `git rev-parse --show-toplevel` — CI containers trip
+    // git's "dubious ownership" guard, emptying the $(...) so `make ui2` runs
+    // in the wrong directory ("No rule to make target 'ui2'").
+    command: `bash -c 'cd ../.. && make ui2 && exec python3 tests/e2e/test_server.py --root app/web2/dist --port ${PORT}'`,
     cwd: __dirname,
     url: `http://localhost:${PORT}/index.html`,
     reuseExistingServer: !process.env.CI,
