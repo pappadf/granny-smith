@@ -1,0 +1,148 @@
+# Integration test: IIcx + "Macintosh Display Card 8•24 GC" ("Dolphin").
+#
+# Verifies the stage-0/1 card model:
+#   * the card is detected as an 8•24 GC (genuine v1.1 declaration ROM,
+#     341-0266, loaded via the new lane-0 byteLanes-$E1 support);
+#   * the object-model surface (slot[N].card.{name,declrom,framebuffer,gc});
+#   * the HLE accelerator bring-up state machine — the shared-memory command
+#     block (CB) protocol.  We drive it directly by writing the protocol bytes
+#     the .GraphAccel driver would write (into super-slot space, reached in the
+#     driver's 32-bit _SwapMMUMode window), and assert the card responds:
+#       - boot handshake: write the boot magic to PublicIn+0 → the card clears
+#         it, initializes the CB, fills PublicOu (signature 0x32100456), and
+#         publishes NuBus(CB) to PublicIn+0x40C;
+#       - RPC (Transport A): ring the CB doorbell for HELLO (func 1) → the card
+#         services it synchronously (result=1, status word = OK, doorbell
+#         cleared).
+#
+# NOTE (documented limitation): a *full* System 6.0.8 OS boot with this card
+# still hangs in the decl-ROM video driver's RISC-driven display bring-up
+# (cscSetMode + the MFB/ACDC hardware handshake), which requires modelling the
+# GC's Am29000-side video hardware — see
+# local/gs-docs/8-24GC/decl-rom-disasm/ and the investigation notes.  This test
+# therefore exercises the card model + the CB protocol engine directly rather
+# than booting the OS through the (as-yet-unmodelled) video handshake.
+
+# --- Select the 8•24 GC card and (re)boot the IIcx with it in slot $9. ---
+machine.nubus.video_card = "824gc"
+machine.boot "iicx" 8192
+machine.rom.reload
+
+# --- Card identity + declaration ROM (stage 0). ---
+assert ${machine.id == "iicx"}                                                    "machine.id != iicx"
+assert ${machine.nubus.slot[9].card.name == "Apple Macintosh Display Card 8•24 GC"} "slot $9 card != 8•24 GC"
+assert ${machine.nubus.slot[9].card.declrom.present}                              "declaration ROM not present"
+assert ${machine.nubus.slot[9].card.declrom.size == 0x40000}                      "declrom bus size != 256 KB"
+assert ${machine.screen.width == 640}                                             "power-on width != 640"
+assert ${machine.screen.height == 480}                                            "power-on height != 480"
+
+# --- Accelerator bring-up: fresh card is in the reset state. ---
+assert ${machine.nubus.slot[9].card.gc.state == "reset"}                          "gc.state != reset at power-on"
+assert ${machine.nubus.slot[9].card.gc.cb == 0}                                   "CB published before boot"
+
+# --- Boot handshake: write the boot magic to PublicIn+0 (card-local
+#     0x4C006400 -> super-slot 0x9C006400 for slot $9). ---
+machine.memory.poke.l 0x9C006400 0x42005300
+assert ${machine.nubus.slot[9].card.gc.state == "booted"}                         "boot handshake did not reach 'booted'"
+assert ${machine.nubus.slot[9].card.gc.cb == 0x9C007000}                          "CB address not published"
+assert ${machine.memory.peek.l(0x9C006400) == 0}                                  "boot magic not cleared by the card"
+assert ${machine.memory.peek.l(0x9C00680C) == 0x9C007000}                         "NuBus(CB) not published to PublicIn+0x40C"
+assert ${machine.memory.peek.l(0x9C006800) == 0x32100456}                         "PublicOu signature not initialized"
+assert ${machine.memory.peek.l(0x9C007000) == 0x01010000}                         "CB+0 not initialized to idle"
+
+# --- RPC (Transport A): HELLO (func 1) via the CB doorbell.
+#     cmd func @ CB+0x48, sequence @ CB+0x4C, ring doorbell @ CB+0x14 = -1. ---
+machine.memory.poke.l 0x9C007048 0x00000001
+machine.memory.poke.l 0x9C00704C 0x00000000
+machine.memory.poke.l 0x9C007014 0xFFFFFFFF
+assert ${machine.nubus.slot[9].card.gc.rpc_count == 1}                            "RPC not serviced"
+assert ${machine.nubus.slot[9].card.gc.lastfunc == 1}                             "last func != HELLO(1)"
+assert ${machine.memory.peek.l(0x9C00701C) == 1}                                  "HELLO result != 1"
+assert ${machine.memory.peek.l(0x9C007018) == 3}                                  "completion status word != OK(3)"
+assert ${machine.memory.peek.l(0x9C007014) == 0}                                  "doorbell not cleared after RPC"
+
+# --- A second RPC: liveness pass (func 2) must return 1 (Status $0A basis). ---
+#     HELLO reset the sequence, so the first post-HELLO RPC carries seq 0 (the
+#     host zeroes its counter and post-increments) — the card expects 0 next.
+machine.memory.poke.l 0x9C007048 0x00000002
+machine.memory.poke.l 0x9C00704C 0x00000000
+machine.memory.poke.l 0x9C007014 0xFFFFFFFF
+assert ${machine.nubus.slot[9].card.gc.rpc_count == 2}                            "second RPC not serviced"
+assert ${machine.memory.peek.l(0x9C00701C) == 1}                                  "liveness func(2) result != 1"
+
+# --- Stage 2: DrawMultiObject rasterizers, driven straight through the queue.
+#     SetPort (func $2D, seq 1) accepts the port -> the card interprets the
+#     Transport-B opcode stream.  Queue base = gcp+$6CC+8 = DRAM CB+$6D4 =
+#     super-slot $9C0076D4.  Three primitives whose exact 1-bpp rasterization
+#     is asserted byte-for-byte against QuickDraw's DrawArc conic
+#     ((2dx+1-W)²H² + (2dy+1-H)²W² <= W²H²) and PaintVector's even-odd fill
+#     with the PutLine x+½+slope/2 entry bias. ---
+# Stage the port record at CB+$170 the way GCQD's sub_4774 does: the bounds
+# (+$14) give the port's local->global origin (0,0 = the WMgr port).  The
+# card's accept test reads the LIVE thePort's baseAddr (not the stale staged
+# +$E copy), so stage a minimal old-style GrafPort at $500000 whose
+# portBits.baseAddr (+2) is the SCREEN and whose rowBytes (+6, top two bits
+# clear) marks it old-style; point thePort (CB+$170+0) at it.
+machine.memory.poke.l 0x00500002 0x9C011400
+machine.memory.poke.l 0x9C007170 0x00500000
+machine.memory.poke.l 0x9C00717E 0x9C011400
+machine.memory.poke.l 0x9C007184 0x00000000
+machine.memory.poke.l 0x9C007048 0x0000002D
+machine.memory.poke.l 0x9C00704C 0x00000001
+machine.memory.poke.l 0x9C007014 0xFFFFFFFF
+assert ${machine.memory.peek.l(0x9C00701C) == 1}                                  "SetPort (func $2D) not accepted"
+
+# op $71 opPattern: slot 1 (pnPat) := solid black
+machine.memory.poke.l 0x9C0076D4 0x00710001
+machine.memory.poke.l 0x9C0076D8 0xFFFFFFFF
+machine.memory.poke.l 0x9C0076DC 0xFFFFFFFF
+# op $03 opOval FILL, rect (t0,l0,b8,r8) — an 8x8 disc
+machine.memory.poke.l 0x9C0076E0 0x00030000
+machine.memory.poke.l 0x9C0076E4 0x00000000
+machine.memory.poke.l 0x9C0076E8 0x00080008
+# op $07 opPoly FILL: polySize 22, bbox (0,16,8,24), pts (0,16) (0,24) (8,16)
+# (open — the card auto-closes) — a right triangle, hypotenuse down-left
+machine.memory.poke.l 0x9C0076EC 0x00070000
+machine.memory.poke.l 0x9C0076F0 0x00160000
+machine.memory.poke.l 0x9C0076F4 0x00100008
+machine.memory.poke.l 0x9C0076F8 0x00180000
+machine.memory.poke.l 0x9C0076FC 0x00100000
+machine.memory.poke.l 0x9C007700 0x00180008
+machine.memory.poke.l 0x9C007704 0x00100000
+# op $02 opArc FILL, rect (0,32,8,40), startAngle 0, arcAngle 90 — the
+# top-right quarter wedge of the disc (the scan quits at midVert: acute arc)
+machine.memory.poke.l 0x9C007708 0x00020000
+machine.memory.poke.l 0x9C00770C 0x00000020
+machine.memory.poke.l 0x9C007710 0x00080028
+machine.memory.poke.l 0x9C007714 0x0000005A
+# publish 0x44 bytes -> the card drains + rasterizes incrementally
+machine.memory.poke.l 0x9C0071C0 0x00000044
+assert ${machine.nubus.slot[9].card.gc.queue_bytes == 0x44}                       "queue not drained"
+
+# FB rows at $9C011400 + y*1024; byte 0 = the oval, 2 = the poly, 4 = the arc.
+assert ${machine.memory.peek.b(0x9C011400) == 0x3C}                               "oval row 0 != 3C"
+assert ${machine.memory.peek.b(0x9C011800) == 0x7E}                               "oval row 1 != 7E"
+assert ${machine.memory.peek.b(0x9C011C00) == 0xFF}                               "oval row 2 != FF"
+assert ${machine.memory.peek.b(0x9C012000) == 0xFF}                               "oval row 3 != FF"
+assert ${machine.memory.peek.b(0x9C012400) == 0xFF}                               "oval row 4 != FF"
+assert ${machine.memory.peek.b(0x9C012800) == 0xFF}                               "oval row 5 != FF"
+assert ${machine.memory.peek.b(0x9C012C00) == 0x7E}                               "oval row 6 != 7E"
+assert ${machine.memory.peek.b(0x9C013000) == 0x3C}                               "oval row 7 != 3C"
+assert ${machine.memory.peek.b(0x9C011402) == 0xFF}                               "poly row 0 != FF"
+assert ${machine.memory.peek.b(0x9C011802) == 0xFE}                               "poly row 1 != FE"
+assert ${machine.memory.peek.b(0x9C011C02) == 0xFC}                               "poly row 2 != FC"
+assert ${machine.memory.peek.b(0x9C012002) == 0xF8}                               "poly row 3 != F8"
+assert ${machine.memory.peek.b(0x9C012402) == 0xF0}                               "poly row 4 != F0"
+assert ${machine.memory.peek.b(0x9C012802) == 0xE0}                               "poly row 5 != E0"
+assert ${machine.memory.peek.b(0x9C012C02) == 0xC0}                               "poly row 6 != C0"
+assert ${machine.memory.peek.b(0x9C013002) == 0x80}                               "poly row 7 != 80"
+assert ${machine.memory.peek.b(0x9C011404) == 0x0C}                               "arc row 0 != 0C"
+assert ${machine.memory.peek.b(0x9C011804) == 0x0E}                               "arc row 1 != 0E"
+assert ${machine.memory.peek.b(0x9C011C04) == 0x0F}                               "arc row 2 != 0F"
+assert ${machine.memory.peek.b(0x9C012004) == 0x0F}                               "arc row 3 != 0F"
+assert ${machine.memory.peek.b(0x9C012404) == 0x00}                               "arc row 4 != 00 (wedge must quit at midVert)"
+assert ${machine.memory.peek.b(0x9C012804) == 0x00}                               "arc row 5 != 00"
+assert ${machine.memory.peek.b(0x9C012C04) == 0x00}                               "arc row 6 != 00"
+assert ${machine.memory.peek.b(0x9C013004) == 0x00}                               "arc row 7 != 00"
+
+quit

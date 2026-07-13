@@ -1,0 +1,31 @@
+# IIcx + Display Card 8•24 GC — 8-bpp DIFFERENTIAL TEST ORACLE.
+#
+# Same boot as iicx-824gc-accel8 with gc.force_decline set: the ROM path
+# renders the identical colour scene; the screen must equal the accelerated
+# run's reference pixel-for-pixel.
+
+# Pin the RTC so the boot is deterministic run-to-run (same value as -accel8).
+machine.rtc.time = 3000000000
+
+machine.nubus.video_card = "824gc"
+machine.nubus.video_mode = "gc_640x480_8bpp"
+machine.boot "iicx" 8192
+machine.rom.reload
+
+machine.nubus.slot[9].card.gc.force_decline = true
+
+machine.scsi.attach_hd "../../data/systems/system_6_0_8_20mb_8_24gc.img" 0
+scheduler.run 200000000
+
+assert ${machine.nubus.slot[9].card.gc.force_decline == true} "force_decline lost"
+assert ${machine.nubus.slot[9].card.gc.on == true}       "accelerator did not turn on"
+assert ${machine.nubus.slot[9].card.gc.error == 0}       "accelerator posted an error"
+assert ${machine.nubus.slot[9].card.gc.rpc_count > 0}    "no RPCs serviced"
+
+assert ${machine.screen.width == 640}  "screen width != 640"
+assert ${machine.screen.height == 480} "screen height != 480"
+
+# The ROM-rendered 8-bpp desktop must equal the accelerated reference exactly.
+machine.screen.match ../iicx-824gc-accel8/finder-824gc-8bpp-640x480.png
+
+quit

@@ -3,7 +3,7 @@
 #
 # Unlike iicx-display-card-24ac (which boots the floppy System 7.0.1 with the
 # $017A boot-wait poke and exercises the engine via memory.poke/peek), this
-# boots the genuine "Step B" artifact: systems/system_7_1_20mb_24ac_cd_32bit.img
+# boots the genuine "Step B" artifact: systems/system_7_1_20mb_24ac_cd_32bit_gc.img
 # — a 20 MB System 7.1 SCSI HD with the 24AC cdev pre-installed and 32-bit
 # addressing on.  So the cdev binds at boot and drives the real card end-to-end
 # (proposal-nubus-card-display-card-24ac §3.7 Step B).
@@ -25,7 +25,7 @@ machine.rom.reload
 # The complete valid PRAM lets the ROM boot straight from SCSI (no cold-init
 # scan).  The image reaches a stable Finder by ~150M instr; 200M gives margin
 # and the frame is steady well beyond it.
-machine.scsi.attach_hd "../../data/systems/system_7_1_20mb_24ac_cd_32bit.img" 0
+machine.scsi.attach_hd "../../data/systems/system_7_1_20mb_24ac_cd_32bit_gc.img" 0
 scheduler.run 200000000
 
 # The card that booted into the IIcx video slot ($9) is the 24AC, not the

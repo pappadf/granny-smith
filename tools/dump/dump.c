@@ -535,6 +535,12 @@ static const cbtype_t g_code_bearing[] = {
     {{'B', 0x9F, 't', 't'}, CBKIND_GENERIC, "accelerator card-probe selector dispatch ('Butt')"                           },
     {{'G', 'D', 'E', 'F'},  CBKIND_GENERIC, "accelerator GDevice helper proc"                                             },
     {{'m', 'n', 't', 'r'},  CBKIND_GENERIC, "Monitors control-panel device routine"                                       },
+    // Apple 8•24 GC accelerator cdev: its 68K code modules live under the
+    // creator type 'gc24' (both the System 6 and System 7 control panels).
+    // The card's real accelerator is an on-board AMD Am29000 RISC CPU whose
+    // firmware ships in 'ACEF' resources — that is NOT 68K, so it is left as
+    // raw resource bytes (dump it, disassemble elsewhere).
+    {{'g', 'c', '2', '4'},  CBKIND_GENERIC, "Apple 8•24 GC cdev 68K code module (creator type)"                         },
 };
 static const size_t g_code_bearing_count = sizeof(g_code_bearing) / sizeof(g_code_bearing[0]);
 

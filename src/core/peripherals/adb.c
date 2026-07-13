@@ -170,6 +170,8 @@ struct adb {
     // instead of being silently lost.  Real ADB keyboards retain unread data.
     bool reply_from_kbd_queue; // reply_buf holds freshly-dequeued keyboard bytes
     unsigned int kbd_reply_tail; // kbd_queue.tail snapshot taken before the dequeue
+    bool reply_from_mouse; // reply_buf holds freshly-consumed mouse deltas
+    int mouse_reply_dx, mouse_reply_dy; // the consumed deltas (for abort restore)
 
     // === Pointers last (not checkpointed) ===
     via_t *via;
@@ -366,6 +368,16 @@ static void prepare_mouse_reply(adb_t *adb) {
     adb->mouse_dy = remain_dy;
     adb->mouse_dx = remain_dx;
 
+    // Savepoint the consumed deltas so an aborted Talk (ROM probes during
+    // its SRQ scan but never fetches the reply) can put them back — a real
+    // mouse keeps its accumulated motion until the host actually reads it.
+    // Without this the re-poll rebuilds the report from the zeroed
+    // accumulators and the movement is lost (frozen cursor; buttons still
+    // work because button state is level, not consumed).
+    adb->reply_from_mouse = true;
+    adb->mouse_reply_dx = dx;
+    adb->mouse_reply_dy = dy;
+
     // Clear the pending flag if all deltas have been consumed
     if (remain_dy == 0 && remain_dx == 0)
         adb->mouse_data_pending = false;
@@ -390,8 +402,10 @@ static void prepare_no_device_reply(adb_t *adb) {
 // Prepares the reply buffer for a Talk command targeting the given address + register
 static void prepare_talk_reply(adb_t *adb, uint8_t addr, uint8_t reg) {
     adb->reply_index = 0;
-    // Cleared here; prepare_kbd_reply re-sets it when it dequeues keyboard bytes.
+    // Cleared here; prepare_kbd_reply / prepare_mouse_reply re-set them when
+    // they consume data.
     adb->reply_from_kbd_queue = false;
+    adb->reply_from_mouse = false;
 
     if (reg == 0) {
         // On real ADB hardware, a device with no new data does not drive the
@@ -828,6 +842,15 @@ void adb_port_b_output(adb_t *adb, uint8_t value) {
                 // a real ADB keyboard keeps unread data until the host reads it.
                 LOG(2, "IDLE: aborted kbd Talk, restoring queue tail (re-present %d byte(s))", adb->reply_len);
                 adb->kbd_queue.tail = adb->kbd_reply_tail;
+            } else if (adb->reply_from_mouse) {
+                // Put the consumed deltas back into the accumulators
+                // (additive — new motion may have arrived since the prepare).
+                LOG(2, "IDLE: aborted mouse Talk, restoring deltas (dx=%d dy=%d)", adb->mouse_reply_dx,
+                    adb->mouse_reply_dy);
+                adb->mouse_dx += adb->mouse_reply_dx;
+                adb->mouse_dy += adb->mouse_reply_dy;
+                adb->reply_from_mouse = false;
+                adb->mouse_data_pending = true;
             } else {
                 LOG(2, "IDLE: aborted Talk detected (reply_len=%d), re-marking pending", adb->reply_len);
                 adb->mouse_data_pending = true;

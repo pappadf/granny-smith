@@ -1,0 +1,37 @@
+# IIcx + Display Card 8•24 GC — the DIFFERENTIAL TEST ORACLE (proposal §4.1).
+#
+# Boots the identical accel-enabled image as iicx-824gc-accel, but with
+# gc.force_decline set: the bring-up runs exactly as before (gc.on, RPCs,
+# heartbeat), yet funcs $2D/$15/$30 decline, so GCQD falls back and QuickDraw's
+# ROM bottlenecks render every primitive.  The final screen must be
+# pixel-identical to the accelerated run's reference — the accel-vs-ROM oracle.
+
+# Pin the RTC so the boot is deterministic run-to-run (same value as -accel).
+machine.rtc.time = 3000000000
+
+machine.nubus.video_card = "824gc"
+machine.boot "iicx" 8192
+machine.rom.reload
+
+# The oracle switch: decline all drawing funcs -> ROM path renders everything.
+machine.nubus.slot[9].card.gc.force_decline = true
+
+machine.scsi.attach_hd "../../data/systems/system_6_0_8_20mb_8_24gc.img" 0
+scheduler.run 200000000
+
+assert ${machine.nubus.slot[9].card.gc.force_decline == true} "force_decline lost"
+
+# Bring-up is unaffected by the decline: the driver still turns the GC on.
+assert ${machine.nubus.slot[9].card.gc.on == true}       "accelerator did not turn on"
+assert ${machine.nubus.slot[9].card.gc.state == "gc-on"} "accelerator state != gc-on"
+assert ${machine.nubus.slot[9].card.gc.error == 0}       "accelerator posted an error"
+assert ${machine.nubus.slot[9].card.gc.rpc_count > 0}    "no RPCs serviced (bring-up never engaged)"
+
+assert ${machine.screen.width == 640}  "boot: screen width != 640"
+assert ${machine.screen.height == 480} "boot: screen height != 480"
+
+# The ROM-rendered desktop must equal the accelerated run's reference exactly:
+# THE differential proof that the card's rasterizers match the ROM.
+machine.screen.match ../iicx-824gc-accel/finder-824gc-accel-640x480-1bpp.png
+
+quit

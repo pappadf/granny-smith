@@ -602,12 +602,13 @@ static memory_interface_t s_display_card_24ac_mem_iface = {
 
 // === VROM load ==============================================================
 
-// Load display-card-24ac.vrom through the shared declrom loader (search
-// paths + byteLanes expansion).  Returns true on success.
+// Load the 24AC declaration ROM through the shared content-driven declrom
+// loader (vrom.c Format-Block-CRC catalog: the explicit machine.vrom.load
+// path first, then the catalog name in the search paths; byteLanes
+// expansion).  Returns true on success.
 static bool load_vrom(display_card_24ac_priv_t *p) {
     char *path = NULL;
-    if (!declrom_load_vrom("display-card-24ac.vrom", DISPLAY_CARD_24AC_DECLROM_CHIP_SIZE, p->vrom,
-                           DISPLAY_CARD_24AC_DECLROM_BUS_SIZE, &path))
+    if (!declrom_load_vrom_card(display_card_24ac_kind.id, p->vrom, DISPLAY_CARD_24AC_DECLROM_BUS_SIZE, &path))
         return false;
     free(p->vrom_path);
     p->vrom_path = path;

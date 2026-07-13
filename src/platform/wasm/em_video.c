@@ -15,11 +15,9 @@
 //   * clut_dirty: re-upload the CLUT texture (indexed formats only)
 //   * response_dirty: re-upload the per-channel CRT response LUT
 //
-// v1 ships full pixel paths for PIXEL_1BPP_MSB and PIXEL_8BPP (the
-// shipping cards land on these); 16-bpp / 32-bpp programs are stubs
-// that draw the framebuffer as grayscale luminance so an unfinished
-// JMFB driver doesn't render garbage.  Step 6's JMFB driver fills
-// those out as it lights up colour modes.
+// Full pixel paths exist for 1bpp, 8bpp (indexed), and 16bpp/32bpp
+// (direct colour — the 8•24 GC's Thousands/Millions runtime modes).
+// 2bpp/4bpp remain grey stubs (no shipping card boots into them).
 
 #include "em.h"
 
@@ -142,7 +140,65 @@ static const char *FS_8BPP = "#version 300 es\n"
                              "    fragColor     = vec4(r_out, g_out, b_out, 1.0);\n"
                              "}\n";
 
-// Stubs for 2/4 bpp indexed: same shape as 8bpp but unpacking a 2- or
+// 32 bpp direct (PIXEL_32BPP_XRGB): the framebuffer is 00RRGGBB stored
+// big-endian, so the bytes in memory are [00, RR, GG, BB].  Uploaded as
+// RGBA8 that lands in the texel as (r=00, g=RR, b=GG, a=BB) — so the real
+// colour is (texel.g, texel.b, texel.a).  u_stride is the texel width
+// (stride/4, set by refresh_from_display), one texel per pixel.  Route
+// each channel through the CRT response LUT exactly like the 8bpp path.
+static const char *FS_32BPP = "#version 300 es\n"
+                              "precision mediump float;\n"
+                              "uniform sampler2D u_texture;\n"
+                              "uniform sampler2D u_response;\n"
+                              "uniform vec2 u_fb_size;\n"
+                              "uniform float u_stride;\n"
+                              "in  vec2 v_uv;\n"
+                              "out vec4 fragColor;\n"
+                              "void main() {\n"
+                              "    vec2 px      = v_uv * u_fb_size;\n"
+                              "    float x      = floor(px.x);\n"
+                              "    float y      = floor(px.y);\n"
+                              "    vec2 tc      = vec2((x + 0.5) / u_stride,\n"
+                              "                        (y + 0.5) / u_fb_size.y);\n"
+                              "    vec4 texel   = texture(u_texture, tc);\n"
+                              "    float r_out  = texture(u_response, vec2(texel.g, 0.5 / 3.0)).r;\n"
+                              "    float g_out  = texture(u_response, vec2(texel.b, 1.5 / 3.0)).r;\n"
+                              "    float b_out  = texture(u_response, vec2(texel.a, 2.5 / 3.0)).r;\n"
+                              "    fragColor    = vec4(r_out, g_out, b_out, 1.0);\n"
+                              "}\n";
+
+// 16 bpp direct (PIXEL_16BPP_555): 0RRRRRGGGGGBBBBB stored big-endian, so
+// the two bytes per pixel are [hi, lo] with hi = 0RRRRRGG, lo = GGGBBBBB.
+// The texture is R8 (u_stride = byte stride), so pixel x reads bytes 2x and
+// 2x+1.  highp is needed for the 15-bit reconstruction.  5-bit channels
+// scale to [0,1] via /31, then through the CRT response LUT.
+static const char *FS_16BPP =
+    "#version 300 es\n"
+    "precision highp float;\n"
+    "uniform sampler2D u_texture;\n"
+    "uniform sampler2D u_response;\n"
+    "uniform vec2 u_fb_size;\n"
+    "uniform float u_stride;\n"
+    "in  vec2 v_uv;\n"
+    "out vec4 fragColor;\n"
+    "void main() {\n"
+    "    vec2 px      = v_uv * u_fb_size;\n"
+    "    float x      = floor(px.x);\n"
+    "    float y      = floor(px.y);\n"
+    "    float row    = (y + 0.5) / u_fb_size.y;\n"
+    "    float hi     = floor(texture(u_texture, vec2((2.0 * x + 0.5) / u_stride, row)).r * 255.0 + 0.5);\n"
+    "    float lo     = floor(texture(u_texture, vec2((2.0 * x + 1.5) / u_stride, row)).r * 255.0 + 0.5);\n"
+    "    float v      = hi * 256.0 + lo;\n"
+    "    float r5     = mod(floor(v / 1024.0), 32.0);\n"
+    "    float g5     = mod(floor(v / 32.0), 32.0);\n"
+    "    float b5     = mod(v, 32.0);\n"
+    "    float r_out  = texture(u_response, vec2(r5 / 31.0, 0.5 / 3.0)).r;\n"
+    "    float g_out  = texture(u_response, vec2(g5 / 31.0, 1.5 / 3.0)).r;\n"
+    "    float b_out  = texture(u_response, vec2(b5 / 31.0, 2.5 / 3.0)).r;\n"
+    "    fragColor    = vec4(r_out, g_out, b_out, 1.0);\n"
+    "}\n";
+
+// Stub for 2/4 bpp indexed: same shape as 8bpp but unpacking a 2- or
 // 4-bit field per pixel from packed bytes.  v1 ships them as fallback
 // programs that emit grey so the canvas isn't blank when an
 // unimplemented format hits the pipeline.
@@ -211,8 +267,8 @@ static void init_programs(void) {
     s_progs[PIXEL_2BPP_MSB] = link_program(VS_SHARED, FS_GRAY_STUB, &s_uniforms[PIXEL_2BPP_MSB]);
     s_progs[PIXEL_4BPP_MSB] = link_program(VS_SHARED, FS_GRAY_STUB, &s_uniforms[PIXEL_4BPP_MSB]);
     s_progs[PIXEL_8BPP] = link_program(VS_SHARED, FS_8BPP, &s_uniforms[PIXEL_8BPP]);
-    s_progs[PIXEL_16BPP_555] = link_program(VS_SHARED, FS_GRAY_STUB, &s_uniforms[PIXEL_16BPP_555]);
-    s_progs[PIXEL_32BPP_XRGB] = link_program(VS_SHARED, FS_GRAY_STUB, &s_uniforms[PIXEL_32BPP_XRGB]);
+    s_progs[PIXEL_16BPP_555] = link_program(VS_SHARED, FS_16BPP, &s_uniforms[PIXEL_16BPP_555]);
+    s_progs[PIXEL_32BPP_XRGB] = link_program(VS_SHARED, FS_32BPP, &s_uniforms[PIXEL_32BPP_XRGB]);
 }
 
 // Pick the GL program that best matches `format`, with a 1bpp fallback

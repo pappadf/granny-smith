@@ -1,7 +1,7 @@
 # Integration test: IIcx + Display Card 24AC — Finder "Restart" reboots cleanly
 #
 # Regression guard for the warm-restart hang: on a IIcx with the 24AC card that
-# booted the 32-bit SCSI cdev image (systems/system_7_1_20mb_24ac_cd_32bit.img),
+# booted the 32-bit SCSI cdev image (systems/system_7_1_20mb_24ac_cd_32bit_gc.img),
 # picking Special ▸ Restart in the Finder used to wedge with distorted VRAM.
 # The Mac restart runs the ROM warm-boot path (mask IRQs → 68k RESET → set up
 # MMU → jump to the boot entry); the RESET instruction is meant to reset the
@@ -21,7 +21,7 @@ machine.nubus.video_card = "display_card_24ac"
 machine.nubus.video_mode = "rgb_640x480_8bpp"
 machine.boot "iicx" 8192
 machine.rom.reload
-machine.scsi.attach_hd "../../data/systems/system_7_1_20mb_24ac_cd_32bit.img" 0
+machine.scsi.attach_hd "../../data/systems/system_7_1_20mb_24ac_cd_32bit_gc.img" 0
 scheduler.run 200000000
 
 # Sanity: the 24AC booted into the IIcx video slot ($9) at 8-bpp 640x480 and we

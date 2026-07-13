@@ -640,14 +640,15 @@ static memory_interface_t s_jmfb_mem_iface = {
 
 // === Card vtable ============================================================
 
-// Load Apple-341-0868.vrom (32 KB chip image) through the shared
-// declrom loader, which searches the standard vrom paths + the ROM
-// directory, validates the byteLanes byte, and lays the chip out into
-// p->vrom (sized JMFB_DECLROM_BUS_SIZE = 128 KB).  Returns true on
-// success.
+// Load the 8•24 declaration ROM (32 KB chip image) through the shared
+// content-driven declrom loader (vrom.c Format-Block-CRC catalog): the
+// explicit machine.vrom.load path first (any filename), then the catalog
+// name in the standard vrom paths + the ROM directory; validates the
+// byteLanes byte and lays the chip out into p->vrom (sized
+// JMFB_DECLROM_BUS_SIZE = 128 KB).  Returns true on success.
 static bool load_vrom(jmfb_priv_t *p) {
     char *path = NULL;
-    if (!declrom_load_vrom("Apple-341-0868.vrom", JMFB_DECLROM_CHIP_SIZE, p->vrom, JMFB_DECLROM_BUS_SIZE, &path))
+    if (!declrom_load_vrom_card(mdc_8_24_kind.id, p->vrom, JMFB_DECLROM_BUS_SIZE, &path))
         return false;
     free(p->vrom_path);
     p->vrom_path = path;

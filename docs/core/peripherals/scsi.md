@@ -401,21 +401,41 @@ chip or a workaround for a glue-logic race.  A/UX gates it on
 SE/30 it always fires.  Either way, it must be silently absorbed
 by the chip emulation.
 
-Our emulator models this with a **PC-discriminated primer slot**
-in [scsi.c](../src/core/peripherals/scsi.c) `write_uint8`: the
-first ODR-alias write of each `data_out` phase is held (not pushed
-to `buf.data`) until the second write arrives.  If the held byte
-is `$00` and the second write comes from a **different PC** than
-the held byte, the held byte was a kernel primer and is discarded;
-otherwise it is real data and is pushed ahead of the second.  PC
-discrimination distinguishes A/UX's distinct-PC primer pattern
-(CLR.B at `$1004B888` followed by the byte-loop body at
-`$10049760+`) from MacOS's tight-loop pseudo-DMA writes (all bytes
-at one PC).
+**Scope: BLIND window only.**  This primer behavior is a property of
+the BLIND alias (`$12000`), where the host writes ahead of the target.
+The GLUE/MDU decode marks the BLIND `write_off` with `SCSI_BLIND_SEL`
+(bit `0x400`, [scsi.h](../src/core/peripherals/scsi.h)); the ODR write
+handler in [scsi.c](../src/core/peripherals/scsi.c) `write_uint8` applies
+the primer gate to that window only.  The DRQ alias (`$06000`) is
+`/DTACK`-paced — a write happens only once the chip is ready — so it has
+no "write ahead of REQ" window and is never gated.  This matters:
+**classic Mac OS drives its pseudo-DMA writes through the DRQ window**,
+and a zero-filled block (e.g. an HFS volume bitmap or B-tree node) whose
+first byte is legitimately `$00` must NOT be dropped.  Gating the DRQ
+window broke System 6.0.8 Apple HD SC Setup's HFS volume init — it wrote
+only the MDB and one bitmap block, then aborted with "unable to mount
+volume" (guarded now by the `iicx-format-hd` integration test).
 
-Visible symptom that this fixes: A/UX 3.0.1 Easy Install dialog
-now shows `(SCSI device 0 on bus 1) Untitled` instead of
-`☐Untitled`.
+Within the BLIND window, the emulator currently still distinguishes the
+A/UX primer from a real leading byte with a **PC-discriminated primer
+slot**: the first `data_out` write is held until the second; if the held
+byte is `$00` and the two writes come from different CPU PCs, the held
+byte was the primer and is discarded.  **This PC check is the one
+remaining non-hardware-faithful element** — a real NCR 5380 cannot see
+the CPU's program counter.  The faithful model is to reproduce the
+chip's ODR→bus clock timing: a byte written before the *target's* first
+`*REQ` is overwritten by the next write before it is clocked, so the
+primer drops on its own.  That requires modeling per-byte `*REQ`/ACK
+timing on the send path (the initiator polls DRQ, but the byte is
+committed to the bus only on the target's `*REQ`, which lags); a
+straightforward "drop the pre-poll write" or "drop a leading `$00`"
+approximation is not enough, because A/UX polls DRQ *before* writing the
+primer and Mac OS legitimately writes leading `$00` bytes.  See the
+`scsi_odr_auto_handshake_byte` comment for the full analysis.
+
+Visible symptom the primer handling fixes: A/UX 3.0.1 Easy Install
+dialog shows `(SCSI device 0 on bus 1) Untitled` instead of `☐Untitled`
+(guarded by `se30-aux-3`).
 
 ---
 

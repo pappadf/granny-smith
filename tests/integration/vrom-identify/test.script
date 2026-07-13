@@ -24,6 +24,12 @@ assert ${machine.vrom.identify("../../data/roms/SE30.vrom") == "{\"recognised\":
 # Apple Macintosh Display Card 24AC → "display_card_24ac", CRC $D8DAAB87.
 assert ${machine.vrom.identify("../../data/roms/display-card-24ac.vrom") == "{\"recognised\":true,\"canonical_name\":\"display-card-24ac.vrom\",\"card_id\":\"display_card_24ac\",\"compatible\":[\"display_card_24ac\"],\"size\":32768,\"crc\":\"0xd8daab87\"}"} "24AC vROM identity"
 
+# Apple Macintosh Display Card 8•24 GC ("Dolphin") → "824gc".  Three genuine
+# declaration ROMs (byteLanes $E1); v1.1 is a 64 KB chip, v1.0 / alpha 32 KB.
+assert ${machine.vrom.identify("../../data/roms/Apple-341-0266.vrom") == "{\"recognised\":true,\"canonical_name\":\"Apple-341-0266.vrom\",\"card_id\":\"824gc\",\"compatible\":[\"824gc\"],\"size\":65536,\"crc\":\"0xd722b053\"}"} "8•24 GC v1.1 vROM identity"
+assert ${machine.vrom.identify("../../data/roms/341-0812-02_1.0.vrom") == "{\"recognised\":true,\"canonical_name\":\"341-0812-02_1.0.vrom\",\"card_id\":\"824gc\",\"compatible\":[\"824gc\"],\"size\":32768,\"crc\":\"0x9e9857e8\"}"} "8•24 GC v1.0 vROM identity"
+assert ${machine.vrom.identify("../../data/roms/Dolphin_1.0A16.vrom") == "{\"recognised\":true,\"canonical_name\":\"Dolphin_1.0A16.vrom\",\"card_id\":\"824gc\",\"compatible\":[\"824gc\"],\"size\":32768,\"crc\":\"0x4740028d\"}"} "8•24 GC alpha vROM identity"
+
 # A main ROM is the wrong size for a vROM → recognised:false (no false match).
 assert ${machine.vrom.identify("../../data/roms/Plus_v3.rom") == "{\"recognised\":false}"} "non-vROM file must be unrecognised"
 
@@ -42,5 +48,7 @@ machine.nubus.video_card = "display_card_24ac"
 assert ${machine.nubus.video_card == "display_card_24ac"} "catalog card_id display_card_24ac must be a registered card"
 machine.nubus.video_card = "builtin_se30_video"
 assert ${machine.nubus.video_card == "builtin_se30_video"} "catalog card_id builtin_se30_video must be a registered card"
+machine.nubus.video_card = "824gc"
+assert ${machine.nubus.video_card == "824gc"} "catalog card_id 824gc must be a registered card"
 
 quit
