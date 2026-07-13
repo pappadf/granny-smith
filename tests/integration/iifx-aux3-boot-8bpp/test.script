@@ -1,0 +1,52 @@
+# IIfx A/UX 3.0.1 HD Boot at 8 bpp — boots to the graphical login window.
+#
+# Same guest path as iifx-aux3-boot (Mac OS boot → "A/UX Startup" → kernel →
+# UFS root mount → exec(/etc/init) → fsck → CommandShell login window) but
+# with the JMFB seeded to 13" RGB at 8 bpp before boot, the way the web2
+# New Machine dialog does it: `machine.nubus.video_mode` → `machine.boot`.
+# The card factory consumes the seed during boot (sense lines + slot-PRAM
+# savedMode $83 + the boot-ROM PRAM validity tokens + PRAMInitTbl defaults).
+#
+# Why 8 bpp gets its own pin: see config.mk (jmfb PRAM-seeding regression +
+# the PMMU instruction-fetch retry double-fault, both 8bpp-only failures).
+#
+# The HD attaches directly from tests/data; writes land in the .delta
+# sidecar (removed by the harness on exit), so the source stays pristine —
+# same pattern as iicx-824gc-accel8.
+#
+# DETERMINISM / REFERENCE PROVENANCE
+# ----------------------------------
+# Budget = 4600 VBL frame-units x 166,251 instructions = 764,754,600 — a
+# whole number of frame-units, so the run lands exactly on a frame boundary.
+# The login screen is a stable plateau from ~4000 frame-units on; the only
+# frame-to-frame difference is the Name field's blinking text cursor (a
+# 1x16 pixel column at x=320, y=241..256), whose phase is fully determined
+# by the instruction budget.  aux-login-8bpp.png is byte-identical to the
+# reference the retired legacy e2e pinned via the browser build
+# (tests/e2e/specs/iifx-aux3-boot/aux-login-8bpp.png) — the headless and
+# wasm builds produce the same framebuffer at this budget, which this test
+# quietly cross-checks.
+
+machine.nubus.video_mode = "13in_rgb_8bpp"
+machine.boot "iifx" 16384
+machine.rom.reload
+machine.scsi.attach_hd "../../data/aux/aux_3.0.1/hd160-with-aux-301.img" 0
+
+# Pin the wall clock so screenshot comparisons are reproducible.
+machine.rtc.time = 2026-04-26T21:30:36
+
+scheduler.run 764754600
+
+assert ${machine.id == "iifx"} "machine.id != iifx"
+assert ${machine.rom.checksum == "4147DD77"} "rom.checksum != 4147DD77"
+
+# JMFB at 13" RGB: 640x480, and the seeded slot-PRAM savedMode must still
+# read 8 bpp ($83) — the ROM rewriting it means the PRAM seed regressed.
+assert ${machine.screen.width == 640} "screen.width != 640"
+assert ${machine.screen.height == 480} "screen.height != 480"
+assert ${machine.rtc.pram.peek(0x48) == 0x83} "savedMode (8bpp) rewritten by ROM"
+
+# Bitwise compare against the captured A/UX graphical login window.
+machine.screen.match aux-login-8bpp.png
+
+quit
