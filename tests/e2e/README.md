@@ -1,124 +1,121 @@
 # Playwright End-to-End Tests
 
-Browser-based end-to-end tests for the Granny Smith emulator using Playwright.
+Browser-based end-to-end tests for the **web2** Granny Smith UI (Svelte 5 +
+Vite, `app/web2/`), driven through the shipped interface — the New Machine
+dialog, the Terminal panel, the Filesystem tab, and drag-and-drop — against a
+live WASM worker.
 
-All Node dev dependencies (Playwright, pngjs, types) live here to keep the
-repository root focused on the C/WebAssembly sources.
+All Node dev dependencies (Playwright) live here to keep the repository root
+focused on the C/WebAssembly sources.
 
-## Directory Structure
+> The legacy web UI (`app/web-legacy/`) and its Playwright suite were retired;
+> the coverage that was unique to it now lives either here or in the headless
+> integration tests (`tests/integration/`). See the project history for the
+> parity work.
+
+## Directory structure
 
 ```
 tests/e2e/
-├── playwright.config.ts          # Playwright configuration (testDir → specs/)
-├── package.json                  # Node dependencies (Playwright, pngjs, etc.)
-├── tsconfig.json                 # TypeScript config
-├── fixtures.ts                   # Shared test fixtures (logging, xterm capture)
-├── global-setup.ts               # Builds project, starts test server on :18080
-├── global-teardown.ts            # Stops test server
-├── test_server.py                # COOP/COEP-enabled HTTP server for tests
+├── playwright.web2.config.ts        # Main functional config (testDir → web2-specs/)
+├── playwright.prod-smoke.config.ts  # Production-bundle boot smoke (ui-prod-smoke/)
+├── playwright.webkit-local.config.ts# Local WebKit upload/OPFS checks (webkit-local/)
+├── package.json                     # Node dependencies (Playwright)
+├── tsconfig.json
+├── test_server.py                   # COOP/COEP-enabled static server (web2 + webkit configs)
+├── scripts/prod-smoke-server.mjs    # Subpath server without COI headers (prod-smoke)
 │
-├── specs/                        # All test suites (Playwright testDir)
-│   ├── appletalk/                # AppleTalk / AFP networking tests
-│   ├── apps/                     # MacTest application harness
-│   ├── basic-ui/                 # UI smoke tests (terminal toggle, etc.)
-│   ├── boot-matrix/              # ROM × System disk matrix comparisons
-│   ├── configuration/            # URL-param boot + full-screen baselines
-│   ├── debug/                    # Debugger shell command tests
-│   ├── drag-drop/                # File drop (ROM, disk, archive) tests
-│   ├── floppy/                   # Floppy insert/eject/swap workflows
-│   ├── peeler/                   # Archive extraction (StuffIt, HQX, etc.)
-│   ├── scsi/                     # SCSI hard-disk boot + image baselines
-│   ├── state/                    # Checkpoint save/restore/reload tests
-│   └── terminal/                 # Terminal panel interaction tests
+├── web2-specs/                      # Main functional suite (playwright.web2.config.ts)
+│   ├── checkpoint-resume.spec.ts    # Checkpoint save → reload → resume (+ SE/30 profile restore)
+│   ├── display-card-config.spec.ts  # New Machine dialog: card-by-name video config
+│   ├── display-drop.spec.ts         # Drag-and-drop onto the Display (ROM/floppy/checkpoint)
+│   ├── filesystem-tab.spec.ts       # Filesystem tab: descend image, copy/move/rename/unpack
+│   ├── iicx-video-modes.spec.ts     # Post-shader WebGL canvas baselines (per monitor × depth)
+│   ├── iifx-aux3-realtime.spec.ts   # A/UX 3.0.1 boot to login under the real RAF scheduler
+│   ├── lisa-xenix-profile.spec.ts   # Lisa/XL ProFile-vs-SCSI config + boot
+│   └── url-boot.spec.ts             # ?rom=… URL-parameter boot
 │
-├── helpers/                      # Shared utilities imported by specs
-│   ├── boot.ts                   # bootWithMedia, bootWithUploadedMedia
-│   ├── config-helpers.ts         # URL/config manipulation
-│   ├── drop.ts                   # Synthetic drag-and-drop event dispatch
-│   ├── logging.ts                # Test logger setup
-│   ├── memfs.ts                  # Emscripten MEMFS inspection
-│   ├── mouse.ts                  # Mouse click/double-click/drag helpers
-│   ├── run-command.ts            # Shell command execution + prompt waiting
-│   ├── screen.ts                 # Screen capture + baseline image matching
-│   └── terminal.ts               # xterm.js capture + test shim install
+├── ui-prod-smoke/                   # Production-bundle smoke (playwright.prod-smoke.config.ts)
+│   └── prod-smoke.spec.ts           # dist/ on a subpath w/o COI headers reaches __gsReady
 │
-├── types/                        # TypeScript type stubs
-│   └── pngjs.d.ts
+├── webkit-local/                    # Local WebKit only (playwright.webkit-local.config.ts)
+│   └── upload.spec.ts               # OPFS streaming upload (Safari createWritable regression)
 │
-├── README-assertions.md          # GS_ASSERT integration docs
-├── ASSERTION-IMPLEMENTATION.md   # Assertion implementation details
-└── test-results/                 # Generated: traces, screenshots, reports
+├── helpers/
+│   └── web2-fs.ts                   # gotoWeb2, OPFS staging, tree/file drag helpers
+│
+└── test-results/                    # Generated: traces, screenshots, reports
 ```
 
-## Running Tests
+## Running tests
 
 From the repository root (recommended):
 
 ```bash
-# Via Makefile
-make e2e-test
+# The functional web2 suite (Makefile)
+make ui2-e2e            # or: make e2e-test  (alias)
+
+# The production-bundle smoke test
+make ui2-prod-smoke
 
 # Via npx directly
-npx --prefix tests/e2e playwright test --config=tests/e2e/playwright.config.ts
+npx --prefix tests/e2e playwright test --config=tests/e2e/playwright.web2.config.ts
 
-# Run a single suite
-npx --prefix tests/e2e playwright test --config=tests/e2e/playwright.config.ts specs/floppy/
+# A single spec
+npx --prefix tests/e2e playwright test --config=tests/e2e/playwright.web2.config.ts url-boot
 
-# Headed mode (watch the browser)
-npx --prefix tests/e2e playwright test --config=tests/e2e/playwright.config.ts --headed
+# Headed (watch the browser)
+npx --prefix tests/e2e playwright test --config=tests/e2e/playwright.web2.config.ts --headed
 ```
 
-From this directory:
-
-```bash
-npx playwright test
-npx playwright test specs/scsi/
-```
-
-Global setup automatically builds the project and starts a test server on port
-18080 — no manual server step is needed.
+Each config's `webServer` block builds `app/web2/dist` (`make ui2`) and serves
+it with the COOP/COEP headers `SharedArrayBuffer` needs — no manual server step.
+`make ui2` expects the WASM (`make`) to have been built already.
 
 ## Prerequisites
 
-Tests require proprietary test data (ROM images, disk images) fetched via
-`scripts/fetch-test-data.sh`. See [docs/guide/TEST_DATA.md](../../docs/guide/TEST_DATA.md).
+Most functional specs boot real machines and need proprietary test data (ROMs,
+disk images) fetched via `scripts/fetch-test-data.sh` — see
+[docs/guide/TEST_DATA.md](../../docs/guide/TEST_DATA.md). The prod-smoke test
+needs no data.
 
-Install Playwright and browsers:
+Install Playwright + Chromium:
 
 ```bash
 cd tests/e2e && npm ci
 npx playwright install --with-deps chromium
 ```
 
-## Video Recording
+## Baselines & snapshots
 
-Video recording is **disabled by default** to save CPU (avoids ffmpeg overhead).
-
-To enable (useful for debugging failures):
+Playwright `toMatchSnapshot` baselines live in a `<spec>.ts-snapshots/`
+directory beside the spec (e.g. `web2-specs/iicx-video-modes.spec.ts-snapshots/`).
+Regenerate with `--update-snapshots`:
 
 ```bash
-PWTEST_VIDEO=1 npx --prefix tests/e2e playwright test --config=tests/e2e/playwright.config.ts
+npx --prefix tests/e2e playwright test --config=tests/e2e/playwright.web2.config.ts \
+    iicx-video-modes --update-snapshots
 ```
 
-Videos are saved to `test-results/` when enabled.
+Framebuffer-level pixel oracles (raw `screen.save` PNGs, monitor × depth
+matrices, boot baselines) live in the headless integration tests
+(`tests/integration/`); the web2 specs pin the *post-shader canvas* and UI
+behaviour that only a browser exercises.
 
-## Baselines & Snapshots
+## Driving the emulator from a spec
 
-Reference PNG screenshots sit beside their spec files in each suite directory.
-Update baselines by running with `UPDATE_SNAPSHOTS=1`.
+web2 has no `window.gsEval`. The typed object-model path from a test is the
+**Terminal panel**: click `.xterm`, type a shell line (`machine.cpu.pc`,
+`scheduler.run N`, `debug.breakpoints.add(…)`), and read results back from
+`.xterm-rows`. The machine auto-runs after boot, so `scheduler.stop` before any
+bounded `scheduler.run`. See `helpers/web2-fs.ts` and the existing specs for the
+OPFS-staging and drag-gesture patterns (only the HTML5 drag *gesture* is
+synthesised; the handlers, worker, and OPFS run for real).
 
-## GS_ASSERT Integration
+## Notes
 
-Tests automatically detect and fail when any `GS_ASSERT()` fires in the emulator
-C code. See [README-assertions.md](./README-assertions.md) for details.
-
-## Adding a New Test Suite
-
-1. Create a new directory under `specs/` (e.g. `specs/my-feature/`).
-2. Add `my-feature.spec.ts` importing fixtures and helpers:
-   ```typescript
-   import { test, expect } from '../../fixtures';
-   import { bootWithMedia } from '../../helpers/boot';
-   ```
-3. Add any baseline PNGs alongside the spec file.
-4. Run: `npx playwright test --config=tests/e2e/playwright.config.ts specs/my-feature/`
+- CI runs the functional suite in the `ui` job (`make ui2-e2e`, gated on test
+  data) plus the always-on prod-smoke; see `.github/workflows/tests.yml`.
+- Devcontainers mount a small `/dev/shm`; the web2 config passes
+  `--disable-dev-shm-usage` so the renderer doesn't crash under memory-heavy
+  specs.

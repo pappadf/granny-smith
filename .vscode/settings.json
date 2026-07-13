@@ -40,6 +40,6 @@
         "cstdint": "c"
     },
     "C_Cpp.formatting": "clangFormat",
-    // Point Playwright VS Code extension at relocated config
-    "playwright.testConfig": "tests/e2e/playwright.config.ts"
+    // Point Playwright VS Code extension at the web2 e2e config
+    "playwright.testConfig": "tests/e2e/playwright.web2.config.ts"
 }

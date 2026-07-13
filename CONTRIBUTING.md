@@ -67,7 +67,7 @@ make -C tests/unit run                 # CPU unit tests (~1–5 min)
 make test                              # Unit + integration tests
 
 # End-to-end tests (requires Playwright + test data)
-npx --prefix tests/e2e playwright test --config=tests/e2e/playwright.config.ts
+make ui2-e2e
 ```
 
 Please ensure all existing tests pass before submitting a PR. Add tests for new functionality where practical.
@@ -123,8 +123,7 @@ If the CI formatting check fails, the pre-commit hooks will catch it locally bef
 |-----------|----------|
 | `src/core/` | Platform-agnostic emulator (CPU, memory, peripherals, etc.) |
 | `src/platform/` | Platform-specific code (wasm/, headless/) |
-| `app/web2/` | Browser frontend (Svelte 5 + Vite + TS) — default |
-| `app/web-legacy/` | Previous frontend (HTML/JS/CSS) — reachable via `make run-legacy` |
+| `app/web2/` | Browser frontend (Svelte 5 + Vite + TS) |
 | `docs/` | Architecture and hardware documentation |
 | `tests/` | Unit, integration, and end-to-end tests |
 | `scripts/` | Build and helper scripts |

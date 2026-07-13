@@ -24,10 +24,28 @@ shell.vars
 # expand: no-op when nothing to expand; passes through verbatim.
 assert ${shell.expand("hello") == "hello"} "expand pass-through"
 
-# complete: a known prefix returns a known candidate list. Visual
-# inspection rather than assert — the expression layer doesn't yet
-# support list-indexing inside ${...}.
-shell.complete "machine.cpu.p" 5
+# complete: the tree-walking completer's decision tree, asserted via the
+# expression layer's V_LIST == V_STRING comparison (a list compares equal
+# to its canonical "[a, b]" formatting). One case per branch — previously
+# these lived in the legacy web UI's tab-complete e2e (window.tabComplete
+# was a thin wrapper over this same shell.complete engine).
+#
+# Line-start: a prefix narrows root children / root methods.
+assert ${shell.complete("mach", 4) == "[machine]"} "line-start child prefix"
+assert ${shell.complete("qu", 2) == "[quit]"} "line-start method prefix"
+# Mid-path: members of the resolved object, composed with the head so the
+# terminal performs one full-token replace.
+assert ${shell.complete("machine.cpu.p", 13) == "[machine.cpu.pc]"} "mid-path single match"
+assert ${shell.complete("machine.cpu.s", 13) == "[machine.cpu.sr, machine.cpu.ssp, machine.cpu.sp]"} "mid-path multi match"
+# Method-arg position dispatches by arg_decl kind: V_BOOL offers the
+# canonical spellings.
+assert ${shell.complete("machine.sound.mute ", 19) == "[on, off, true, false]"} "V_BOOL arg candidates"
+# Completion is deliberately suppressed inside $(...), "..." and ${...}.
+# The $ is split off via string concat so the script parser doesn't try to
+# expand a $( / ${ inside this very ${...} expression.
+assert ${shell.complete("echo $" + "(cpu.", 11) == "[]"} "no candidates inside $()"
+assert ${shell.complete("echo \"machine.cpu.", 18) == "[]"} "no candidates inside quotes"
+assert ${shell.complete("echo $" + "{cpu.", 11) == "[]"} "no candidates inside dollar-brace"
 
 # alias_set / alias_unset round-trip. Adding "foo" -> "machine.cpu.pc" should
 # make it show up in shell.aliases, and unset should remove it.

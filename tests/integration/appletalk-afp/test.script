@@ -1,0 +1,109 @@
+# AppleTalk AFP mount — Chooser → AppleShare → mount a host-shared volume.
+#
+# Boots System 6 from the SCSI HD, registers a host directory as an
+# AppleShare volume (appletalk.shares.add — the same call the frontends
+# make), then drives the guest Chooser with injected mouse input through
+# the whole client flow:
+#
+#   1. Apple menu → Chooser.
+#   2. Click AppleShare → "AppleShare requires AppleTalk" dialog → OK
+#      (activates AppleTalk).
+#   3. NBP discovery lists the emulated "Shared Folders" server —
+#      pinned by chooser-server-listed.png.
+#   4. Select it → OK → "Connect as Guest" dialog → OK → the ASP session
+#      opens and AFP enumerates the shared volume ("My Volume") —
+#      pinned by volume-list.png.
+#   5. Select the volume → OK → close the Chooser → the AFP volume icon
+#      sits mounted on the desktop — pinned by desktop-mounted.png.
+#
+# All budgets are instruction-exact and the wall clock is pinned, so every
+# match is bitwise (verified identical across runs from a clean image).
+# Mouse coordinates are Mac global (512x342); each press/release is
+# bracketed by short runs so the guest polls the transitions.
+
+machine.rtc.time = 2026-04-26T21:30:36
+
+# Boot to the Finder desktop (same budget as the scsi test).
+scheduler.run 30000000
+
+# Register the host share BEFORE AppleTalk activates, as the legacy UI did
+# (shares.add returns V_NONE; verify through the entries collection).
+appletalk.shares.add "My Volume" /tmp
+assert ${appletalk.shares.entries[0].name == "My Volume"} "share not registered"
+assert ${appletalk.shares.entries[0].path == "/tmp"} "share path wrong"
+
+# Apple menu → Chooser (press at the menu title, drag down, release).
+machine.adb.mouse.move 25 10
+scheduler.run 2000000
+machine.adb.mouse.click true
+scheduler.run 4000000
+machine.adb.mouse.move 25 110
+scheduler.run 4000000
+machine.adb.mouse.click false
+scheduler.run 60000000
+
+# Click the AppleShare icon in the Chooser's device list.
+machine.adb.mouse.move 100 85
+scheduler.run 2000000
+machine.adb.mouse.click true
+scheduler.run 2000000
+machine.adb.mouse.click false
+scheduler.run 20000000
+
+# "AppleShare requires AppleTalk" → OK. AppleTalk flips Active and the
+# NBP lookup runs; the server list must show the emulated share host.
+machine.adb.mouse.move 185 205
+scheduler.run 2000000
+machine.adb.mouse.click true
+scheduler.run 2000000
+machine.adb.mouse.click false
+scheduler.run 40000000
+machine.screen.match chooser-server-listed.png
+
+# Select "Shared Folders", then OK.
+machine.adb.mouse.move 300 85
+scheduler.run 2000000
+machine.adb.mouse.click true
+scheduler.run 2000000
+machine.adb.mouse.click false
+scheduler.run 4000000
+machine.adb.mouse.move 330 180
+scheduler.run 2000000
+machine.adb.mouse.click true
+scheduler.run 2000000
+machine.adb.mouse.click false
+scheduler.run 40000000
+
+# "Connect ... as: Guest" → OK. AFP opens the session and lists volumes.
+machine.adb.mouse.move 390 260
+scheduler.run 2000000
+machine.adb.mouse.click true
+scheduler.run 2000000
+machine.adb.mouse.click false
+scheduler.run 40000000
+machine.screen.match volume-list.png
+
+# Select "My Volume", then OK — the mount itself.
+machine.adb.mouse.move 140 110
+scheduler.run 2000000
+machine.adb.mouse.click true
+scheduler.run 2000000
+machine.adb.mouse.click false
+scheduler.run 4000000
+machine.adb.mouse.move 330 260
+scheduler.run 2000000
+machine.adb.mouse.click true
+scheduler.run 2000000
+machine.adb.mouse.click false
+scheduler.run 40000000
+
+# Close the Chooser; the AFP volume icon is on the desktop.
+machine.adb.mouse.move 72 47
+scheduler.run 2000000
+machine.adb.mouse.click true
+scheduler.run 2000000
+machine.adb.mouse.click false
+scheduler.run 40000000
+machine.screen.match desktop-mounted.png
+
+quit

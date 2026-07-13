@@ -10,7 +10,7 @@ Before making ANY code changes, verify that you can successfully:
 
 1. **Build the WASM target**: `source /opt/emsdk/emsdk_env.sh && make clean && make`
 2. **Build the headless target**: `make -f Makefile.headless clean && make -f Makefile.headless`
-3. **Run e2e tests** (if test data is available): `npx --prefix tests/e2e playwright test --config=tests/e2e/playwright.config.ts`
+3. **Run e2e tests** (if test data is available): `make ui2-e2e`
 
 If any of these fail due to environment issues (missing tools, download failures, etc.), **STOP and report the issue**. Do NOT proceed with code changes if you cannot verify them.
 

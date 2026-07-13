@@ -40,13 +40,13 @@ tests/
 │   ├── checkpoint/                #   Checkpoint save/restore
 │   ├── checkpoint2/               #   Consolidated checkpoint restore
 │   └── scsi/                      #   SCSI disk boot
-└── e2e/                            # Browser Playwright E2E tests
-    ├── specs/                     #   All test suites (12 suites)
-    ├── helpers/                   #   Shared TypeScript utilities
-    ├── types/                     #   TypeScript type stubs
-    ├── fixtures.ts                #   Shared Playwright fixtures
-    ├── global-setup.ts            #   Build + server startup
-    └── playwright.config.ts       #   Playwright configuration
+└── e2e/                            # Browser Playwright E2E tests (web2 UI)
+    ├── web2-specs/                #   Functional suite (playwright.web2.config.ts)
+    ├── ui-prod-smoke/             #   Production-bundle boot smoke
+    ├── webkit-local/             #   Local WebKit upload/OPFS checks
+    ├── helpers/web2-fs.ts         #   OPFS staging + drag helpers
+    ├── test_server.py             #   COOP/COEP static server
+    └── playwright.web2.config.ts  #   Main Playwright configuration
 ```
 
 ---
@@ -190,79 +190,73 @@ make -C tests/integration list      # List available tests
 
 ## End-to-End Tests (Playwright)
 
-Browser-based tests using Playwright that exercise the full WASM emulator in
-Chromium. Test suites live under `tests/e2e/specs/`, shared helpers under
-`tests/e2e/helpers/`.
+Browser-based tests that exercise the full WASM emulator through the **web2**
+UI (`app/web2/`) in Chromium. Specs live under `tests/e2e/web2-specs/`; the
+one shared helper is `tests/e2e/helpers/web2-fs.ts`. See
+[tests/e2e/README.md](../../tests/e2e/README.md) for the full layout.
 
-### Test Suites
+> The legacy web UI and its `tests/e2e/specs/**` suite were retired; unique
+> coverage moved here or into the headless integration tests above.
 
-| Suite | What it tests |
-|-------|---------------|
-| `appletalk/` | AppleTalk networking, AFP volume mounting |
-| `apps/` | MacTest application boot + execution |
-| `basic-ui/` | Terminal toggle, UI element presence |
-| `boot-matrix/` | ROM × System disk boot combinations |
-| `configuration/` | URL parameter boot, full-screen baselines |
-| `debug/` | Shell debugger commands |
-| `drag-drop/` | File drop (ROM, disk, archive files) |
-| `floppy/` | Floppy insert, eject, swap, disk-copy |
-| `peeler/` | Mac archive extraction via `archive.identify` / `archive.extract` (StuffIt, BinHex, …) |
-| `scsi/` | SCSI hard disk boot + image baselines |
-| `state/` | Checkpoint save/restore across page reloads |
-| `terminal/` | Terminal panel collapse/expand |
+### Specs (`tests/e2e/web2-specs/`)
+
+| Spec | What it tests |
+|------|---------------|
+| `checkpoint-resume` | Checkpoint save → reload → resume; SE/30 profile restore |
+| `display-card-config` | New Machine dialog: video card selected by name |
+| `display-drop` | Drag-and-drop onto the Display: ROM boot, floppy mount, checkpoint restore |
+| `filesystem-tab` | Filesystem tab: descend image, copy/move/rename, unpack archive |
+| `iicx-video-modes` | Post-shader WebGL canvas baselines (monitor × depth) |
+| `iifx-aux3-realtime` | A/UX 3.0.1 boot to login under the real RAF scheduler |
+| `lisa-xenix-profile` | Lisa/XL ProFile-vs-SCSI config + boot |
+| `url-boot` | `?rom=…` URL-parameter boot |
+
+Two more configs run separately: `ui-prod-smoke/` (production-bundle boot
+smoke, no data) and `webkit-local/` (local WebKit OPFS upload).
 
 ### Running E2E Tests
 
 ```bash
-make e2e-test                       # Build + run all
+make ui2-e2e                        # Build + run the functional web2 suite (alias: make e2e-test)
+make ui2-prod-smoke                 # Production-bundle smoke test
 
-# Run a specific suite
-npx --prefix tests/e2e playwright test --config=tests/e2e/playwright.config.ts specs/floppy/
+# A specific spec
+npx --prefix tests/e2e playwright test --config=tests/e2e/playwright.web2.config.ts url-boot
 
 # Headed mode
-npx --prefix tests/e2e playwright test --config=tests/e2e/playwright.config.ts --headed
+npx --prefix tests/e2e playwright test --config=tests/e2e/playwright.web2.config.ts --headed
 ```
+
+The config's `webServer` block builds + serves `app/web2/dist` automatically.
 
 ### Prerequisites
 
 ```bash
 cd tests/e2e && npm ci
 npx playwright install --with-deps chromium
-./scripts/fetch-test-data.sh
+./scripts/fetch-test-data.sh        # functional specs boot real machines
 ```
-
-### Video Recording
-
-Disabled by default. Enable with `PWTEST_VIDEO=1`:
-```bash
-PWTEST_VIDEO=1 make e2e-test
-```
-
-### GS_ASSERT Integration
-
-E2E tests automatically detect and fail when any `GS_ASSERT()` fires in the
-emulator C code. See `tests/e2e/README-assertions.md`.
 
 ### Baselines
 
-Reference PNG screenshots sit beside their spec files. Update with
-`UPDATE_SNAPSHOTS=1`.
+Playwright `toMatchSnapshot` baselines live in `<spec>.ts-snapshots/` beside
+the spec. Regenerate with `--update-snapshots`. Raw-framebuffer pixel oracles
+live in the headless integration tests, not here.
 
-### Writing a New E2E Suite
+### Writing a New E2E Spec
 
-1. Create `tests/e2e/specs/foo/` with `foo.spec.ts`.
-2. Import fixtures and helpers:
+1. Add `tests/e2e/web2-specs/foo.spec.ts`.
+2. Import Playwright + the web2 helpers:
    ```typescript
-   import { test, expect } from '../../fixtures';
-   import { bootWithMedia } from '../../helpers/boot';
-   import { matchScreenFast } from '../../helpers/screen';
+   import { test, expect } from '@playwright/test';
+   import { gotoWeb2, stageOpfsFile } from '../helpers/web2-fs';
    ```
-3. Place baseline PNGs alongside the spec.
-4. Run: `npx --prefix tests/e2e playwright test --config=tests/e2e/playwright.config.ts specs/foo/`
+3. Drive through the shipped UI (dialog, Terminal panel, drag-and-drop); web2
+   has no `window.gsEval` — reach the object model via the Terminal.
+4. Run: `npx --prefix tests/e2e playwright test --config=tests/e2e/playwright.web2.config.ts foo`
 
 ### Debugging E2E Failures
 
-- Terminal output is captured in `tests/e2e/test-results/<test>-<project>/xterm/*.txt`
 - Traces: `npx playwright show-trace tests/e2e/test-results/<test>/trace.zip`
-- Enable logging in specs: `await runCommand(page, 'log <category> <level>')`
-- Enable video: `PWTEST_VIDEO=1`
+- Screenshots/artifacts land under `tests/e2e/test-results/<test>-<project>/`
+- Drive the emulator's shell from a spec via the Terminal panel (`.xterm`)

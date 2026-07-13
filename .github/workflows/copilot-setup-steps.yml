@@ -269,8 +269,8 @@ jobs:
           echo "  make headless            - Build native headless CLI"
           echo "  make -C tests/unit run   - Run CPU unit tests"
           echo "  make integration-test    - Run integration tests"
-          echo "  npx --prefix tests/e2e playwright test --config=tests/e2e/playwright.config.ts"
-          echo "                           - Run Playwright e2e tests"
+          echo "  make ui2-e2e             - Run web2 (Svelte) Playwright e2e tests"
+          echo "  make ui2-prod-smoke      - Run web2 production-bundle smoke test"
           echo ""
           if ./scripts/fetch-test-data.sh --check 2>/dev/null; then
             echo "Test Data: ✅ Available"

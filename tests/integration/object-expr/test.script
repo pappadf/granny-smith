@@ -27,4 +27,11 @@ assert ${machine.memory.rom_size == 131072} "Plus ROM is 128 KiB"
 # Predicate assert — boolean expressions chain through.
 assert ${machine.memory.rom_size > 0 && machine.memory.ram_size > 0} "memory present"
 
+# V_LIST == V_STRING compares the list's canonical "[a, b]" formatting
+# (mirrors the V_ENUM == V_STRING label rule), so scripts can assert on
+# list-returning methods without list literals in the grammar.
+assert ${shell.meta.attributes == "[prompt, running, aliases, vars]"} "list == formatted string"
+assert ${shell.meta.attributes != "[prompt]"} "list != wrong string"
+assert ${(shell.meta.attributes == "prompt, running, aliases, vars") == false} "brackets are part of the formatting"
+
 quit
