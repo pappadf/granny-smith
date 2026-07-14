@@ -127,7 +127,7 @@ function of the frame-unit count — in every pacing mode and on both targets. T
 the **one guest timeline** property (§9, §10.4).
 
 > **History.** Before the two-mode change
-> (`local/gs-docs/proposals/proposal-scheduler-two-modes.md`), CPI depended on the
+> (`local/gs-docs/completed/proposal-scheduler-two-modes.md`), CPI depended on the
 > scheduler mode (`cpi_hw` = 12 in `hw_accuracy`, `cpi_fast` = 4 elsewhere), which made
 > the cycles↔instructions relationship piecewise and mode switches guest-visible. On
 > the Plus this also meant the default mode emulated a ~3× overclocked 68000; the

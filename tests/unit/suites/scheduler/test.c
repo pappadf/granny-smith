@@ -2,7 +2,7 @@
 // Copyright (c) pappadf
 //
 // Unit test for the two-mode scheduler pacing model
-// (local/gs-docs/proposals/proposal-scheduler-two-modes.md §7).
+// (local/gs-docs/completed/proposal-scheduler-two-modes.md §7).
 //
 // Links the real scheduler.c against a fake, test-controlled host clock and a
 // stub CPU whose sprints complete instantly (optionally advancing the fake

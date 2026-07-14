@@ -25,7 +25,7 @@ typedef void (*event_callback_t)(void *source, uint64_t data);
 #define NS_PER_SEC 1000000000ULL
 
 // Two pacing modes (see docs/core/scheduler/scheduler.md §10 and
-// local/gs-docs/proposals/proposal-scheduler-two-modes.md):
+// local/gs-docs/completed/proposal-scheduler-two-modes.md):
 //   schedule_paced       — wall-clock accumulator; the guest tracks real time
 //                          (web2 default)
 //   schedule_unthrottled — as many frame-units as the host allows ("turbo")
