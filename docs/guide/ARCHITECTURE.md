@@ -265,9 +265,11 @@ tracks clock cycles, schedules time-based events on a single priority queue,
 and runs the CPU in event-bounded sprints. See `docs/core/scheduler/scheduler.md` for the
 detailed design and `docs/core/scheduler/timing.md` for the practical timing rules.
 
-There are three execution modes (`schedule_max_speed`, `schedule_real_time`,
-`schedule_hw_accuracy`) that control the cycles-per-instruction (CPI) ratio
-and, on the WASM target, how many VBL frame-units run per host frame.
+There are two pacing modes (`schedule_paced`, `schedule_unthrottled`) that
+control, on the WASM target, how many VBL frame-units run per host frame —
+wall-clock-locked vs. as fast as the host allows. The cycles-per-instruction
+(CPI) ratio is a per-machine constant independent of the mode, so the guest's
+execution timeline is identical in both modes and on both targets.
 
 Both targets run the **same** model — a sequence of *VBL frame-units*
 (`scheduler_run_frame`: pulse VBL, then run one VBL period) — and differ only

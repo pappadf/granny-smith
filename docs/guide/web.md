@@ -371,8 +371,8 @@ invoked from `main.ts` after `whenModuleReady()` resolves:
   `scsi.attach_hd`.
 - `vrom=<url>` — downloaded into `/opfs/images/vrom/` (SE/30 / IIcx /
   IIfx).
-- `speed=max|realtime|hardware` — forwarded to the wasm module as
-  `--speed=`.
+- `speed=paced|turbo` — forwarded to the wasm module as `--speed=`
+  (legacy `max`/`realtime`/`hardware` still accepted as aliases).
 - `model=<id>` — preferred machine id (must be in the ROM's compatible
   list).
 
