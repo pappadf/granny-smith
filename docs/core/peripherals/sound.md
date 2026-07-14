@@ -10,8 +10,11 @@ source rate — fronted core-side by `audio_out.c`, which also hosts the
 deterministic capture sink for golden-WAV tests (§4a). The Plus PWM path
 described here and the ASC producer (stage 1: `asc.c`'s sample-rate drain
 event renders FIFO/wavetable frames, batches them, and pushes with the
-board's speaker mix — SE/30 sums both channels, IIx/IIcx take channel A)
-share that stream; see [asc.md](asc.md) for the chip model.
+board's speaker mix — SE/30 sums both channels, IIx/IIcx/IIci/IIsi take
+channel A) share that stream; see [asc.md](asc.md) for the chip model.
+The ASC's interrupt output is chipset-agnostic (`asc_set_irq_handler`):
+GLUE machines adapt it to VIA2 CB1, the IIci/IIsi wire it to the RBV's
+RvSndIRQ flag (bit 4, stage 2).
 
 ---
 

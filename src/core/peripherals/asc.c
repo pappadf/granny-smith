@@ -166,7 +166,12 @@ struct asc {
     memory_interface_t memory_interface;
     memory_map_t *map;
     scheduler_t *scheduler;
-    via_t *via; // VIA2 for interrupt delivery, set via asc_set_via()
+
+    // Chipset IRQ sink: the chip model stays chipset-agnostic. GLUE machines
+    // install the VIA2-CB1 adapter via asc_set_via(); RBV machines wire
+    // rbv_set_snd_irq (flag bit 4); OSS routes to its own mask model.
+    void (*irq_fn)(void *ctx, bool active);
+    void *irq_ctx;
 
     // Board speaker mix (re-set by the machine after every asc_init)
     asc_mix_t mix;
@@ -198,16 +203,14 @@ static void asc_cancel_fifo_drain(asc_t *asc);
 // Static Helpers
 // ============================================================================
 
-// Drives the VIA2 CB1 interrupt line based on current FIFO IRQ status
+// Drives the chipset interrupt sink based on current FIFO IRQ status
 static void asc_update_irq(asc_t *asc) {
     bool should_assert = (asc->fifo_irq_status != 0);
     if (should_assert == asc->irq_active)
         return; // no change
     asc->irq_active = should_assert;
-    if (asc->via) {
-        // CB1 on VIA2: port=1, c=0; active-low so invert the logic
-        via_input_c(asc->via, 1, 0, !should_assert);
-    }
+    if (asc->irq_fn)
+        asc->irq_fn(asc->irq_ctx, should_assert);
 }
 
 // Resets both FIFO channels to empty state (triggered by fifo_control bit 7 toggle)
@@ -643,7 +646,6 @@ asc_t *asc_init(memory_map_t *map, scheduler_t *scheduler, checkpoint_t *checkpo
 
     asc->map = map;
     asc->scheduler = scheduler;
-    asc->via = NULL;
     asc->mix = ASC_MIX_CH_A; // machines override via asc_set_mix
 
     // Original ASC silicon identifier (SE/30 uses 344S0053)
@@ -744,10 +746,22 @@ void asc_checkpoint(asc_t *restrict asc, checkpoint_t *checkpoint) {
 // the first overflow (e.g. MacTest sub-test 3 phase 1) calls
 // via_input_c(.., false) on a CB1 line that was zero-initialised to LOW —
 // no edge is observed and IFR_CB1 never latches.
+// Adapts the generic IRQ output to a VIA2 CB1 line (active-low)
+static void asc_via_cb1_adapter(void *ctx, bool active) {
+    via_input_c((via_t *)ctx, /*port B*/ 1, /*c index 0 = CB1*/ 0, !active);
+}
+
 void asc_set_via(asc_t *asc, via_t *via) {
-    asc->via = via;
+    asc_set_irq_handler(asc, via ? asc_via_cb1_adapter : NULL, via);
     if (via)
         via_input_c(via, /*port B*/ 1, /*c index 0 = CB1*/ 0, /*idle HIGH*/ true);
+}
+
+// Installs the chipset-specific interrupt sink (see the struct field docs).
+// `fn` receives the logical IRQ level: true = interrupt asserted.
+void asc_set_irq_handler(asc_t *asc, void (*fn)(void *ctx, bool active), void *ctx) {
+    asc->irq_fn = fn;
+    asc->irq_ctx = ctx;
 }
 
 // Selects the board's speaker mix (SE/30 sums L+R; IIx/IIcx take left).

@@ -47,8 +47,15 @@ void asc_checkpoint(asc_t *restrict asc, checkpoint_t *checkpoint);
 
 // === Wiring ===
 
-// Connects the ASC interrupt output to VIA2 CB1 (called after VIA2 creation)
+// Connects the ASC interrupt output to VIA2 CB1 (called after VIA2 creation).
+// Convenience wrapper over asc_set_irq_handler for the GLUE machines.
 void asc_set_via(asc_t *asc, via_t *via);
+
+// Installs a chipset-specific interrupt sink; `fn` receives the logical IRQ
+// level (true = asserted). RBV machines wire rbv_set_snd_irq (RvIFR bit 4);
+// OSS machines route to their per-source mask model. The chip model itself
+// stays chipset-agnostic.
+void asc_set_irq_handler(asc_t *asc, void (*fn)(void *ctx, bool active), void *ctx);
 
 // Selects the board's speaker mix (see asc_mix_t). Not checkpointed —
 // machines call this unconditionally right after asc_init.
