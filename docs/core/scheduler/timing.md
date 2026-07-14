@@ -26,23 +26,17 @@ the RAM/ROM fast path.
 
 ## Cycles-Per-Instruction (CPI)
 
-Each machine configures two CPI values at initialization:
+Each machine configures **one** CPI constant at initialization via
+`scheduler_set_cpi(s, cpi)`; `avg_cycles_per_instr(s)` returns it unchanged in
+every pacing mode. Because CPI never varies at runtime (short of the
+`scheduler.cpi` debug override), the relationship
+`total_instructions * CPI == cpu_cycles` holds globally and the guest's
+execution timeline is a pure function of the frame-unit count — identical in
+both pacing modes and on both targets.
 
-| Field | Usage |
-|-------|-------|
-| `cpi_hw` | Used in `schedule_hw_accuracy` mode |
-| `cpi_fast` | Used in `schedule_real_time` and `schedule_max_speed` modes |
-
-The active CPI is selected by `avg_cycles_per_instr(s)` based on the current
-scheduler mode. It can change at runtime when the user switches modes, creating
-a discontinuity in the instruction-to-cycle relationship. This is why
-`total_instructions * CPI != cpu_cycles` in general — it only holds when CPI
-has been constant since boot.
-
-Machines set their CPI values via `scheduler_set_cpi()` during initialization.
-For example, the SE/30 sets both to 4 (matching a 4-clock bus cycle at
-15.6672 MHz with 1-wait-state RAM), while the Plus defaults to 12/4
-(hw_accuracy/fast).
+Current values: the Plus uses 12 (the authentic average for its 7.8336 MHz
+68000); the 030 machines use 4 (4-clock bus cycle at 15.6672 MHz with
+1-wait-state RAM); the Lisa/Mac XL uses 4 (its long-standing effective value).
 
 ## The Sprint Model
 
@@ -238,8 +232,10 @@ fractions. `g_io_phantom_instructions` is reset at each sprint start and
 harvested at sprint end.
 
 Setting `g_io_cpi = 0` disables the entire mechanism. This happens implicitly
-when no I/O penalties are configured, and can be used to disable penalties in
-`schedule_max_speed` mode for raw throughput.
+when no I/O penalties are configured. Do **not** use it to disable penalties in
+one pacing mode but not the other — I/O penalties are part of the guest
+timeline, and gating them on the mode would break the one-guest-timeline
+property (identical execution in paced/turbo/headless at a given budget).
 
 ### Configuring Per-Device Penalties
 
@@ -280,22 +276,20 @@ cpu_cycles += executed_cycles;
 
 ## Scheduler Modes
 
-The scheduler supports three execution modes that affect how host wall-clock
-time maps to emulated time. The modes are only relevant to the WASM target —
-the headless target ignores host time entirely (see "Target-Specific Pacing"
+The scheduler has two **pacing** modes that decide how host wall-clock time
+maps to frame-units. The modes are only relevant to the WASM target — the
+headless target ignores host time entirely (see "Target-Specific Pacing"
 below).
 
-| Mode | CPI | Behaviour (WASM target) |
-|------|-----|-------------------------|
-| `schedule_max_speed` | `cpi_fast` | Execute as many VBLs as fit in ~50% of host loop period |
-| `schedule_real_time` | `cpi_fast` | One-to-one VBL mapping when host loop is close to VBL period |
-| `schedule_hw_accuracy` | `cpi_hw` | Accumulate elapsed host time, execute proportional VBLs |
+| Mode | Behaviour (WASM target) |
+|------|-------------------------|
+| `schedule_paced` (default; "Live") | Wall-clock accumulator: one frame-unit per accumulated VBL period, capped at `PACED_MAX_CATCHUP` (4) per host tick. Long-term rate converges to 60.147 Hz on any display refresh rate. |
+| `schedule_unthrottled` ("Turbo") | As many frame-units as fit in `TURBO_HOST_HEADROOM` (50%) of the host loop period — as fast as the host allows. |
 
-All three modes use the same sprint and event machinery. The mode only affects:
-
-1. Which CPI value is used for the instruction-to-cycle conversion
-2. How many VBL intervals are executed per host loop iteration (WASM target)
-3. Whether I/O penalties are active (configurable per machine)
+Both modes use the same sprint and event machinery, the same per-machine CPI,
+and the same I/O penalties. The mode affects **only** how many frame-units a
+host tick batches — the guest's execution sequence at a given frame-unit count
+is identical in both modes (and matches headless).
 
 ## Target-Specific Pacing
 
@@ -308,9 +302,10 @@ the run loop issues frame-units.
 
 `scheduler_main_loop()` is called from the WASM frontend once per
 `requestAnimationFrame` (~60 Hz). Each call measures elapsed host time, decides
-how many frame-units to run this tick (per the current mode), and runs that many
-via `scheduler_run_frame()`. This keeps the emulated machine synced to the
-browser's render rhythm.
+how many frame-units to run this tick (per the current pacing mode), and runs
+that many via `scheduler_run_frame()`. In `schedule_paced` this keeps the
+emulated machine synced to wall-clock (browser render rhythm); in
+`schedule_unthrottled` it fills half of each tick with emulation.
 
 ### Headless target: unthrottled, one frame-unit at a time
 
@@ -369,12 +364,14 @@ The scheduler enforces these invariants at key transition points:
 ## Checkpoint Interaction
 
 The scheduler saves its plain-data fields (including `cpu_cycles`, `mode`,
-`total_instructions`, CPI values) to checkpoints. Event queues are serialized
-using registered event type names rather than function pointers, allowing
-restoration across builds.
+`total_instructions`, the CPI constant) to checkpoints. Event queues are
+serialized using registered event type names rather than function pointers.
+(Checkpoint files are gated on an exact build-ID match, so a checkpoint never
+crosses builds — pre-two-modes checkpoints with the old three-value mode enum
+and dual CPI fields are rejected by that gate, not migrated.)
 
-On restore, `total_instructions` is reconstructed from `cpu_cycles / CPI` using
-the restored mode's CPI value. Sprint counters are reset to zero. The I/O
+On restore, `total_instructions` is reconstructed as `cpu_cycles / cpi` — exact,
+since CPI is constant. Sprint counters are reset to zero. The I/O
 penalty remainder (`g_io_penalty_remainder`) is a global carried across sprints
 and should be included in checkpoint save/restore for full accuracy, though its
 magnitude is bounded by CPI-1 and the impact of losing it is negligible.

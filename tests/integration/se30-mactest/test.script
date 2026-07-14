@@ -77,12 +77,11 @@ machine.floppy.drive[0].insert ../../data/apps/MacTest-SE30.image true
 # corrupting test patterns and causing verify failures.
 machine.adb.mouse.move 0 0
 
-# Switch to max speed for the destructive RAM test (avoid realtime throttle).
-# The test fills + verifies all 4 MB with multiple patterns (~4 min at 16 MHz).
-# After all passes, the test code returns through the destroyed stack, triggers
-# a double bus error, and the GLU resets the machine automatically.
+# The destructive RAM test fills + verifies all 4 MB with multiple patterns
+# (~4 min at 16 MHz). After all passes, the test code returns through the
+# destroyed stack, triggers a double bus error, and the GLU resets the
+# machine automatically.
 # Budget: ~5B for the test + ~1B for the reboot + ~200M for MacTest reload.
-scheduler.mode = "max"
 scheduler.run 7000000000
 
 # After the reboot, MacTest should have reloaded from the floppy and reached

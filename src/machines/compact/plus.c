@@ -181,6 +181,11 @@ static void plus_init(config_t *cfg, checkpoint_t *checkpoint) {
     cfg->cpu = cpu_init(CPU_MODEL_68000, checkpoint);
 
     cfg->scheduler = scheduler_init(cfg->cpu, checkpoint);
+    // Authentic average CPI for the 7.8336 MHz 68000: the Plus retires ~650k
+    // instructions per emulated second, matching real-hardware CPU speed
+    // relative to its VBL/timers. (The pre-two-modes scheduler defaulted to
+    // CPI 4 here — a ~3x overclocked Plus.)
+    scheduler_set_cpi(cfg->scheduler, 12);
 
     // Restore global interrupt state after scheduler (same order as checkpoint_save)
     if (checkpoint) {

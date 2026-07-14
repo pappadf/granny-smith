@@ -743,6 +743,11 @@ static void lisa_init(config_t *cfg, checkpoint_t *checkpoint) {
     // CPU budget ~1.5x, which on a throughput-bound host shows up as a sluggish
     // "?" blink and a choppy cursor.
     scheduler_set_frequency(cfg->scheduler, cfg->machine->freq);
+    // Keep the Lisa's long-standing effective CPI of 4 (the pre-two-modes
+    // default-mode value every Lisa test budget was derived at). The authentic
+    // 68000 average would be ~12; moving the Lisa to it is a separate decision
+    // with its own test re-pin, out of scope for the two-modes change.
+    scheduler_set_cpi(cfg->scheduler, 4);
 
     if (checkpoint)
         system_read_checkpoint_data(checkpoint, &cfg->irq, sizeof(cfg->irq));

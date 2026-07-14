@@ -46,9 +46,6 @@ scheduler.run 2000000
 machine.adb.mouse.click false
 scheduler.run 2000000
 
-# Switch to hardware accuracy for the test run
-scheduler.mode = "hw"
-
 # Click START button at (340, 210)
 machine.adb.mouse.move 340 210
 scheduler.run 2000000
@@ -56,15 +53,15 @@ machine.adb.mouse.click true
 scheduler.run 2000000
 machine.adb.mouse.click false
 
-# Logic test completes within ~1M hw instructions of clicking START
+# Logic test completes within ~1M instructions of clicking START
 scheduler.run 2000000
 machine.screen.match mactest-logic.png
 
-# Floppy test completes within ~7M hw instructions of logic match
+# Floppy test completes within ~7M instructions of logic match
 scheduler.run 8000000
 machine.screen.match mactest-floppy.png
 
-# Success screen within ~24M hw instructions of floppy match
+# Success screen within ~24M instructions of floppy match
 scheduler.run 25000000
 machine.screen.match mactest-success.png
 

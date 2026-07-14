@@ -24,7 +24,15 @@ typedef void (*event_callback_t)(void *source, uint64_t data);
 
 #define NS_PER_SEC 1000000000ULL
 
-enum schedule_mode { schedule_max_speed, schedule_real_time, schedule_hw_accuracy };
+// Two pacing modes (see docs/core/scheduler/scheduler.md §10 and
+// local/gs-docs/proposals/proposal-scheduler-two-modes.md):
+//   schedule_paced       — wall-clock accumulator; the guest tracks real time
+//                          (web2 default)
+//   schedule_unthrottled — as many frame-units as the host allows ("turbo")
+// Pacing only affects how many frame-units a host tick batches. The guest's
+// execution timeline is a pure function of the frame-unit count in both
+// modes: CPI is a per-machine constant and never depends on the mode.
+enum schedule_mode { schedule_paced, schedule_unthrottled };
 
 struct scheduler;
 typedef struct scheduler scheduler_t;
@@ -102,14 +110,16 @@ void scheduler_set_running(struct scheduler *restrict scheduler, bool running);
 // Check if the scheduler is currently running
 bool scheduler_is_running(struct scheduler *restrict s);
 
-// Set scheduler execution mode (max/realtime/hardware accuracy)
+// Set scheduler pacing mode (paced/unthrottled)
 void scheduler_set_mode(struct scheduler *restrict s, enum schedule_mode mode);
 
 // Set the CPU clock frequency in Hz (e.g. 7833600 for Plus, 15667200 for SE/30)
 void scheduler_set_frequency(struct scheduler *restrict s, uint32_t frequency_hz);
 
-// Set per-machine cycles-per-instruction for hardware-accuracy and fast modes
-void scheduler_set_cpi(struct scheduler *restrict s, uint32_t cpi_hw, uint32_t cpi_fast);
+// Set the per-machine cycles-per-instruction constant. Guest-visible (it sets
+// how many instructions the guest retires per emulated frame) and identical
+// in every pacing mode — one guest timeline.
+void scheduler_set_cpi(struct scheduler *restrict s, uint32_t cpi);
 
 // Get the total number of CPU instructions executed so far
 uint64_t cpu_instr_count(void);

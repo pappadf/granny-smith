@@ -8,7 +8,13 @@
 // races that state. Every JS→C call MUST route through the SAB-backed
 // bridge slot (`pending=1`, single in-flight). See docs/web.md.
 
-import { machine, type MachineStatus, type MmuKind } from '@/state/machine.svelte';
+import {
+  machine,
+  setSchedulerMode,
+  type MachineStatus,
+  type MmuKind,
+  type SchedulerMode,
+} from '@/state/machine.svelte';
 import { onFloppyDriveChange } from '@/state/images.svelte';
 import { showNotification } from '@/state/toasts.svelte';
 import { getOrCreateMachine } from '@/lib/machineId';
@@ -432,6 +438,9 @@ export async function initEmulator(config: MachineConfig): Promise<void> {
   machine.ram = config.ram;
   await applyCapabilities(config.model);
 
+  // A fresh core boots paced; re-assert the user's toolbar selection so a
+  // pre-selected Turbo survives machine (re)creation.
+  await applySchedulerMode(machine.scheduler);
   await gsEval('scheduler.run');
   // onRunStateChange will flip machine.status to 'running' once the
   // worker pushes the transition.
@@ -459,6 +468,21 @@ export async function pauseEmulator(): Promise<void> {
 
 export async function resumeEmulator(): Promise<void> {
   await gsEval('scheduler.run');
+}
+
+// UI mode name → core `scheduler.mode` value.
+const CORE_MODE: Record<SchedulerMode, string> = { live: 'paced', turbo: 'turbo' };
+
+// Push a pacing-mode change to the core and mirror it into UI state. The
+// toolbar buttons route through here so they actually reach the scheduler
+// (the pre-two-modes buttons only flipped local UI state).
+export async function applySchedulerMode(mode: SchedulerMode): Promise<void> {
+  const res = await gsEval('scheduler.mode', [CORE_MODE[mode]]);
+  if (res && typeof res === 'object' && 'error' in res) {
+    showNotification(`Scheduler mode failed: ${gsErrorText(res)}`, 'warning');
+    return;
+  }
+  setSchedulerMode(mode);
 }
 
 // Save State button path. Writes to /tmp/saved-state-<ts>.bin, then triggers
