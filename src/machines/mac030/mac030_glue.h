@@ -9,6 +9,7 @@
 #ifndef GS_MACHINES_MAC030_GLUE_H
 #define GS_MACHINES_MAC030_GLUE_H
 
+#include "asc.h" // asc_mix_t (board speaker fold)
 #include "checkpoint.h"
 #include "mac030_glue_io.h"
 #include "memory.h" // memory_interface_t
@@ -112,6 +113,7 @@ typedef struct mac030_board_desc {
     uint8_t io_unmapped_read; // value returned on an unmapped read (0 GLUE/MDU; 0xFF OSS)
     const struct nubus_slot_decl *slots; // NuBus slot table
     uint32_t bus_err_lo, bus_err_hi; // unmapped-region bus-error window
+    asc_mix_t asc_mix; // speaker fold of the ASC stereo pair (SE/30 sums; IIx/IIcx take A)
 } mac030_board_desc_t;
 
 // Create the 68030 PMMU over a board's ROM window, make it the global MMU and

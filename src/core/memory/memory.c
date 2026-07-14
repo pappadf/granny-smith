@@ -1158,6 +1158,10 @@ uint8_t *ram_native_pointer(memory_map_t *mem, uint32_t addr) {
     return mem->image + addr;
 }
 
+uint32_t memory_ram_size(memory_map_t *mem) {
+    return mem ? mem->ram_size : 0;
+}
+
 const char *memory_rom_filename(memory_map_t *mem) {
     return mem ? mem->rom_filename : NULL;
 }

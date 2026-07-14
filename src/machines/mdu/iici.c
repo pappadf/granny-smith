@@ -187,6 +187,13 @@ static void iici_scsi_irq(void *context, bool irq, bool drq) {
     rbv_set_scsi_drq(st->rbv, drq);
 }
 
+// ASC interrupt output → RBV sound flag (RvSndIRQ, RvIFR bit 4).  The RBV
+// emulates the VIA2-CB1 dispatch slot the shared OS interrupt code expects
+// (jASCInt = Via2DT+4*ifCB1); level 2 like every VIA2/RBV sound source.
+static void iici_asc_irq(void *context, bool active) {
+    rbv_set_snd_irq((rbv_t *)context, active);
+}
+
 // VIA1 outputs.  Identical to the IIcx: floppy head-select + ROM overlay on
 // port A; ADB shift-state filtering + classic RTC on port B.
 static void iici_via1_output(void *context, uint8_t port, uint8_t output) {
@@ -286,7 +293,8 @@ static void iici_build_devices(config_t *cfg, checkpoint_t *checkpoint) {
     scsi_set_irq_callback(cfg->scsi, iici_scsi_irq, cfg);
     setup_images(cfg);
 
-    st->asc = asc_init(NULL, cfg->scheduler, checkpoint); // no asc_set_via (RBV path; sound IRQ unwired, IIfx-parity)
+    st->asc = asc_init(NULL, cfg->scheduler, checkpoint);
+    asc_set_mix(st->asc, ASC_MIX_CH_A); // internal speaker takes the left channel
     st->floppy = floppy_init(FLOPPY_TYPE_SWIM, NULL, cfg->scheduler, checkpoint);
     cfg->floppy = st->floppy;
 
@@ -298,6 +306,7 @@ static void iici_build_devices(config_t *cfg, checkpoint_t *checkpoint) {
     rbv_set_power_off_callback(st->rbv, iici_power_off, cfg);
     rbv_set_mode_callback(st->rbv, iici_rbv_mode, cfg);
     rbv_set_monitor_sense(st->rbv, 6);
+    asc_set_irq_handler(st->asc, iici_asc_irq, st->rbv); // sound IRQ → RvIFR bit 4
 
     st->mmu = mac030_build_mmu(cfg, iici_board.rom_base, iici_board.rom_end);
     // TT1 identity-maps NuBus space $F0-$FF for supervisor FCs (same as SE/30).

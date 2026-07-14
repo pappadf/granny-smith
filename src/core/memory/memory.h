@@ -81,6 +81,9 @@ extern void memory_map_print(memory_map_t *mem);
 
 uint8_t *ram_native_pointer(memory_map_t *ram, uint32_t addr);
 
+// Installed RAM size in bytes (e.g. 0x100000 for a 1 MB Plus).
+uint32_t memory_ram_size(memory_map_t *mem);
+
 // Return the filename of the currently loaded ROM, or NULL if none.
 const char *memory_rom_filename(memory_map_t *mem);
 

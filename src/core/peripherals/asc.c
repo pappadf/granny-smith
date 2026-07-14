@@ -24,8 +24,16 @@
 // ============================================================================
 
 #include "asc.h"
+#include "audio_out.h"
 #include "log.h"
+#include "machine_profile.h" // machine_object()
+#include "object.h"
 #include "system.h"
+#include "value.h"
+
+// Forward declaration — the `machine.sound` class descriptor lives with the
+// object-model section near the bottom of the file; asc_init references it.
+extern const class_desc_t asc_sound_class;
 
 #include <assert.h>
 #include <stddef.h>
@@ -95,8 +103,20 @@ LOG_USE_CATEGORY_NAME("asc");
 #define MODE_FIFO      1
 #define MODE_WAVETABLE 2
 
-// Nanoseconds per FIFO drain sample (~22,257 Hz default ASC sample rate)
-#define ASC_SAMPLE_PERIOD_NS 44929ULL
+// Host-push batch size in frames. The drain event stays per-sample in
+// emulated time (FIFO pops and IRQ threshold checks are sample-exact, as the
+// ROM POST requires); only the pushes across the platform boundary are
+// batched. 64 frames ≈ 2.9 ms at 22,257 Hz — small against the worklet's
+// ~83 ms target depth.
+#define ASC_PUSH_BATCH 64
+
+// ascClockRate (0x807) → sample rate in Hz. 0 = 22,257 Hz (Mac master
+// clock/1136), 2 = 22,050 Hz, 3 = 44,100 Hz; 1 is not a documented setting
+// and falls back to the default rate.
+static const uint32_t asc_rate_table[4] = {22257, 22257, 22050, 44100};
+
+// Matching drain-event periods in nanoseconds of emulated time (1e9 / rate)
+static const uint64_t asc_period_table[4] = {44929, 44929, 45351, 22676};
 
 // ============================================================================
 // Type Definitions (Private)
@@ -138,11 +158,31 @@ struct asc {
     // Interrupt output state (true = VIA2 CB1 driven low)
     bool irq_active;
 
-    // === Pointers last (not checkpointed) ===
+    // Last byte the DAC consumed per channel — the real chip repeats it on
+    // FIFO underflow (hold-last-byte), which doubles as underrun concealment
+    uint8_t fifo_last[2];
+
+    // === Pointers / transient state last (not checkpointed) ===
     memory_interface_t memory_interface;
     memory_map_t *map;
     scheduler_t *scheduler;
-    via_t *via; // VIA2 for interrupt delivery, set via asc_set_via()
+
+    // Chipset IRQ sink: the chip model stays chipset-agnostic. GLUE machines
+    // install the VIA2-CB1 adapter via asc_set_via(); RBV machines wire
+    // rbv_set_snd_irq (flag bit 4); OSS routes to its own mask model.
+    void (*irq_fn)(void *ctx, bool active);
+    void *irq_ctx;
+
+    // Board speaker mix (re-set by the machine after every asc_init)
+    asc_mix_t mix;
+
+    // Producer push batch: mono int16 frames accumulated by the drain event
+    // and flushed to audio_out in blocks (transient — not checkpointed; a
+    // restore drops at most ASC_PUSH_BATCH-1 pending frames)
+    int16_t out_buf[ASC_PUSH_BATCH];
+    int out_count;
+
+    struct object *object; // `machine.sound` node; NULL when not attached
 };
 
 // ============================================================================
@@ -163,16 +203,14 @@ static void asc_cancel_fifo_drain(asc_t *asc);
 // Static Helpers
 // ============================================================================
 
-// Drives the VIA2 CB1 interrupt line based on current FIFO IRQ status
+// Drives the chipset interrupt sink based on current FIFO IRQ status
 static void asc_update_irq(asc_t *asc) {
     bool should_assert = (asc->fifo_irq_status != 0);
     if (should_assert == asc->irq_active)
         return; // no change
     asc->irq_active = should_assert;
-    if (asc->via) {
-        // CB1 on VIA2: port=1, c=0; active-low so invert the logic
-        via_input_c(asc->via, 1, 0, !should_assert);
-    }
+    if (asc->irq_fn)
+        asc->irq_fn(asc->irq_ctx, should_assert);
 }
 
 // Resets both FIFO channels to empty state (triggered by fifo_control bit 7 toggle)
@@ -210,14 +248,17 @@ static void fifo_push(asc_t *asc, int ch, uint8_t byte) {
         asc->fifo_above_half[ch] = true;
 }
 
-// Drains one byte from a channel's FIFO; returns 0x80 (silence) if empty
+// Drains one byte from a channel's FIFO. On underflow the real chip keeps
+// outputting the last byte it consumed (hold-last-byte) — faithful, and it
+// doubles as natural underrun concealment host-side.
 static uint8_t fifo_pop(asc_t *asc, int ch) {
     if (asc->fifo_count[ch] == 0)
-        return 0x80; // offset-binary silence
+        return asc->fifo_last[ch];
     uint16_t base = (ch == 0) ? CH_A_BASE : CH_B_BASE;
     uint8_t byte = asc->ram[base + asc->fifo_rptr[ch]];
     asc->fifo_rptr[ch] = (asc->fifo_rptr[ch] + 1) & FIFO_MASK;
     asc->fifo_count[ch]--;
+    asc->fifo_last[ch] = byte;
     return byte;
 }
 
@@ -246,34 +287,99 @@ static void fifo_check_irq(asc_t *asc) {
     }
 }
 
-// Scheduler callback: drains one sample from each active FIFO channel.
-// Simulates the ASC's internal DAC consuming samples at ~22,257 Hz.
-// This ensures FIFO IRQ thresholds fire correctly even without a platform
-// audio callback (e.g., in headless mode).
+// Extracts the 3-bit digital volume level (0-7) from the volume register
+static int get_volume(const asc_t *asc) {
+    return (asc->volume >> 5) & 0x07;
+}
+
+// Current sample rate in Hz from the clock-rate register
+static uint32_t asc_rate_hz(const asc_t *asc) {
+    return asc_rate_table[asc->clock_rate & 3];
+}
+
+// Saturates a 32-bit mix result to int16
+static int16_t sat16(int32_t v) {
+    if (v > INT16_MAX)
+        return INT16_MAX;
+    if (v < INT16_MIN)
+        return INT16_MIN;
+    return (int16_t)v;
+}
+
+// Flushes the pending push batch to the shared host audio stream
+static void asc_flush(asc_t *asc) {
+    if (asc->out_count <= 0)
+        return;
+    audio_out_push(asc->out_buf, asc->out_count, get_volume(asc));
+    asc->out_count = 0;
+}
+
+// Produces one stereo frame of chip output in DAC units scaled to int16.
+// FIFO mode: channel A drives the left DAC; in stereo (ascChipControl bit 1)
+// channel B drives the right, in mono channel A feeds both converters.
+// Wavetable mode: voices 0+1 sum to the left channel, 2+3 to the right
+// (Guide to the Macintosh Family Hardware); each voice is scaled to half
+// full-scale so a two-voice sum spans int16 exactly.
+static void asc_produce_frame(asc_t *asc, int16_t *left, int16_t *right) {
+    if (asc->mode == MODE_FIFO) {
+        uint8_t a = fifo_pop(asc, 0);
+        uint8_t b = fifo_pop(asc, 1); // both FIFOs drain regardless of routing
+        fifo_check_irq(asc);
+        bool stereo = (asc->control >> 1) & 1;
+        *left = (int16_t)(((int)a - 128) << 8);
+        *right = stereo ? (int16_t)(((int)b - 128) << 8) : *left;
+        return;
+    }
+
+    // Wavetable synthesis: in mode 2 all four voices free-run — the phase
+    // accumulators advance every sample clock with no enable gate (the boot
+    // chime never touches $805). ascWaveOneShot ($805) selects one-shot
+    // stop-at-wrap behavior per voice, which no shipped code path exercises
+    // yet; it is stored but not otherwise modeled.
+    int32_t pair[2] = {0, 0};
+    for (int v = 0; v < WAVE_VOICE_COUNT; v++) {
+        // Extract 9-bit integer from 9.15 fixed-point phase accumulator
+        int index = (asc->wave_phase[v] >> 15) & WAVE_INDEX_MASK;
+        int8_t sample = (int8_t)asc->ram[v * WAVE_TABLE_SIZE + index];
+        pair[v >> 1] += sample;
+        // Advance phase accumulator by the voice's frequency increment
+        asc->wave_phase[v] = (asc->wave_phase[v] + asc->wave_incr[v]) & PHASE_MASK;
+    }
+    *left = sat16(pair[0] << 7);
+    *right = sat16(pair[1] << 7);
+}
+
+// Scheduler callback: the ASC sample-rate producer. One frame per tick of
+// emulated time — the chip's DAC consuming FIFO bytes / walking wavetable
+// phase accumulators — so FIFO IRQ thresholds fire sample-exactly with or
+// without a host audio sink (the ROM POST requires it headlessly). The
+// resulting mono speaker frames are batched and pushed to audio_out.
 static void asc_fifo_drain_callback(void *source, uint64_t data) {
     asc_t *asc = (asc_t *)source;
     (void)data;
 
-    // Only drain if still in FIFO mode
-    if (asc->mode != MODE_FIFO)
+    // Only produce while the chip is running (FIFO or wavetable mode)
+    if (asc->mode != MODE_FIFO && asc->mode != MODE_WAVETABLE)
         return;
 
-    // Pop one sample per channel (same as asc_render does per frame)
-    fifo_pop(asc, 0);
-    fifo_pop(asc, 1);
+    int16_t left, right;
+    asc_produce_frame(asc, &left, &right);
 
-    // Check for half-empty threshold crossing
-    fifo_check_irq(asc);
+    // Board-level speaker fold: SE/30 sums both channels, IIx/IIcx take left
+    int16_t mono = (asc->mix == ASC_MIX_SUM) ? sat16((int32_t)left + right) : left;
+    asc->out_buf[asc->out_count++] = mono;
+    if (asc->out_count >= ASC_PUSH_BATCH)
+        asc_flush(asc);
 
     // Re-schedule for the next sample period
     asc_schedule_fifo_drain(asc);
 }
 
-// Schedules the next FIFO drain event at the ASC sample rate
+// Schedules the next producer event at the current ASC sample rate
 static void asc_schedule_fifo_drain(asc_t *asc) {
     if (!asc->scheduler)
         return;
-    scheduler_new_cpu_event(asc->scheduler, &asc_fifo_drain_callback, asc, 0, 0, ASC_SAMPLE_PERIOD_NS);
+    scheduler_new_cpu_event(asc->scheduler, &asc_fifo_drain_callback, asc, 0, 0, asc_period_table[asc->clock_rate & 3]);
 }
 
 // Cancels any pending FIFO drain event
@@ -289,11 +395,6 @@ static void write_wave_reg(uint32_t *reg, int byte_pos, uint8_t data) {
     uint32_t mask = ~((uint32_t)0xFF << shift);
     *reg = (*reg & mask) | ((uint32_t)data << shift);
     *reg &= PHASE_MASK; // keep only lower 24 bits
-}
-
-// Extracts the 3-bit digital volume level (0-7) from the volume register
-static int get_volume(const asc_t *asc) {
-    return (asc->volume >> 5) & 0x07;
 }
 
 // ============================================================================
@@ -404,11 +505,16 @@ static void asc_write_byte(void *device, uint32_t addr, uint8_t data) {
         uint8_t old_mode = asc->mode;
         LOG(2, "mode = %d", data);
         asc->mode = data;
-        // Start or stop scheduler-based FIFO drain when entering/leaving FIFO mode
-        if (data == MODE_FIFO && old_mode != MODE_FIFO)
+        // Start or stop the sample-rate producer when the chip starts/stops
+        // running (FIFO or wavetable mode; mode 0 = off)
+        bool was_active = (old_mode == MODE_FIFO || old_mode == MODE_WAVETABLE);
+        bool now_active = (data == MODE_FIFO || data == MODE_WAVETABLE);
+        if (now_active && !was_active)
             asc_schedule_fifo_drain(asc);
-        else if (data != MODE_FIFO && old_mode == MODE_FIFO)
+        else if (!now_active && was_active) {
             asc_cancel_fifo_drain(asc);
+            asc_flush(asc); // deliver any tail frames before going quiet
+        }
         break;
     }
 
@@ -447,7 +553,19 @@ static void asc_write_byte(void *device, uint32_t addr, uint8_t data) {
 
     case REG_CLOCK_RATE:
         LOG(3, "clock_rate = %d", data);
-        asc->clock_rate = data;
+        if ((data & 3) != (asc->clock_rate & 3)) {
+            // Rate switch: flush at the old rate, retime the producer event,
+            // and restart the host stream at the new rate
+            asc_flush(asc);
+            asc->clock_rate = data;
+            audio_out_set_rate(asc_rate_hz(asc));
+            if (asc->mode == MODE_FIFO || asc->mode == MODE_WAVETABLE) {
+                asc_cancel_fifo_drain(asc);
+                asc_schedule_fifo_drain(asc);
+            }
+        } else {
+            asc->clock_rate = data;
+        }
         break;
 
     case REG_PLAY_REC_A:
@@ -528,10 +646,14 @@ asc_t *asc_init(memory_map_t *map, scheduler_t *scheduler, checkpoint_t *checkpo
 
     asc->map = map;
     asc->scheduler = scheduler;
-    asc->via = NULL;
+    asc->mix = ASC_MIX_CH_A; // machines override via asc_set_mix
 
     // Original ASC silicon identifier (SE/30 uses 344S0053)
     asc->version = 0x00;
+
+    // DAC hold-last-byte state starts at offset-binary silence
+    asc->fifo_last[0] = 0x80;
+    asc->fifo_last[1] = 0x80;
 
     // Set up the memory-mapped I/O interface
     asc->memory_interface = (memory_interface_t){
@@ -557,9 +679,22 @@ asc_t *asc_init(memory_map_t *map, scheduler_t *scheduler, checkpoint_t *checkpo
     if (scheduler)
         scheduler_new_event_type(scheduler, "asc", asc, "fifo_drain", &asc_fifo_drain_callback);
 
-    // If restoring from a checkpoint in FIFO mode, restart the drain event
-    if (asc->mode == MODE_FIFO)
+    // If restoring from a checkpoint with the chip running, restart the
+    // producer event (rate comes from the restored clock-rate register)
+    if (asc->mode == MODE_FIFO || asc->mode == MODE_WAVETABLE)
         asc_schedule_fifo_drain(asc);
+
+    // Open the shared host audio stream: mono int16 at the chip's rate
+    audio_out_open(asc_rate_hz(asc), 1);
+
+    // Object-tree binding: `machine.sound` facade + shared capture sink
+    asc->object = object_new(&asc_sound_class, asc, "sound");
+    if (asc->object) {
+        object_set_label(asc->object, "Sound");
+        object_set_order(asc->object, 110);
+        object_attach(machine_object(), asc->object);
+        audio_out_capture_attach(asc->object);
+    }
 
     return asc;
 }
@@ -577,6 +712,12 @@ const memory_interface_t *asc_get_memory_interface(asc_t *asc) {
 void asc_delete(asc_t *asc) {
     if (!asc)
         return;
+    if (asc->object) {
+        audio_out_capture_detach();
+        object_detach(asc->object);
+        object_delete(asc->object);
+        asc->object = NULL;
+    }
     if (asc->map)
         memory_map_remove(asc->map, 0, ASC_MAPPED_SIZE, "ASC", &asc->memory_interface, asc);
     free(asc);
@@ -605,86 +746,95 @@ void asc_checkpoint(asc_t *restrict asc, checkpoint_t *checkpoint) {
 // the first overflow (e.g. MacTest sub-test 3 phase 1) calls
 // via_input_c(.., false) on a CB1 line that was zero-initialised to LOW —
 // no edge is observed and IFR_CB1 never latches.
+// Adapts the generic IRQ output to a VIA2 CB1 line (active-low)
+static void asc_via_cb1_adapter(void *ctx, bool active) {
+    via_input_c((via_t *)ctx, /*port B*/ 1, /*c index 0 = CB1*/ 0, !active);
+}
+
 void asc_set_via(asc_t *asc, via_t *via) {
-    asc->via = via;
+    asc_set_irq_handler(asc, via ? asc_via_cb1_adapter : NULL, via);
     if (via)
         via_input_c(via, /*port B*/ 1, /*c index 0 = CB1*/ 0, /*idle HIGH*/ true);
 }
 
-// ============================================================================
-// Operations (Public API)
-// ============================================================================
-
-// Renders nsamples of stereo audio into buffer (interleaved L/R, 16-bit signed).
-// In FIFO mode, drains FIFO data and checks interrupt thresholds.
-// In wavetable mode, advances phase accumulators and synthesises output.
-void asc_render(asc_t *asc, int16_t *buffer, int nsamples) {
-    if (!asc || !buffer || nsamples <= 0)
-        return;
-
-    int vol = get_volume(asc);
-
-    if (asc->mode == MODE_FIFO) {
-        // FIFO playback: drain one sample per channel per output frame
-        for (int i = 0; i < nsamples; i++) {
-            // Pop one byte per channel (8-bit offset binary, 0x80 = silence)
-            uint8_t sample_a = fifo_pop(asc, 0);
-            uint8_t sample_b = fifo_pop(asc, 1);
-
-            // Convert from offset-binary (unsigned 0-255) to signed 16-bit
-            int16_t left = (int16_t)((sample_a - 128) * vol) << 5;
-            int16_t right = (int16_t)((sample_b - 128) * vol) << 5;
-
-            // Interleaved stereo output
-            buffer[i * 2] = left;
-            buffer[i * 2 + 1] = right;
-        }
-        // Check if FIFO levels crossed the half-empty threshold
-        fifo_check_irq(asc);
-
-    } else if (asc->mode == MODE_WAVETABLE) {
-        // Wavetable synthesis: advance phase accumulators and sum active voices
-        for (int i = 0; i < nsamples; i++) {
-            int32_t mixed = 0;
-            int active_count = 0;
-
-            for (int v = 0; v < WAVE_VOICE_COUNT; v++) {
-                if (!(asc->wave_control & (1 << v)))
-                    continue; // voice not enabled
-
-                // Extract 9-bit integer from 9.15 fixed-point phase accumulator
-                int index = (asc->wave_phase[v] >> 15) & WAVE_INDEX_MASK;
-
-                // Each voice has a 512-byte table: voice 0 at 0x000, 1 at 0x200, etc.
-                int table_base = v * WAVE_TABLE_SIZE;
-                int8_t sample = (int8_t)asc->ram[table_base + index];
-
-                mixed += sample;
-                active_count++;
-
-                // Advance phase accumulator by the voice's frequency increment
-                asc->wave_phase[v] = (asc->wave_phase[v] + asc->wave_incr[v]) & PHASE_MASK;
-            }
-
-            // Scale by volume and expand to 16-bit; output same value to both channels.
-            // 4 voices × ±128 × vol(7) × 32 = up to ±114688 — far past int16's ±32767,
-            // so saturate explicitly rather than letting the cast wrap into garbage noise.
-            int16_t out = 0;
-            if (active_count > 0) {
-                int32_t scaled = mixed * vol * 32;
-                if (scaled > INT16_MAX)
-                    scaled = INT16_MAX;
-                else if (scaled < INT16_MIN)
-                    scaled = INT16_MIN;
-                out = (int16_t)scaled;
-            }
-
-            buffer[i * 2] = out;
-            buffer[i * 2 + 1] = out;
-        }
-
-    } else {
-        // Mode 0 (off) or unknown: output silence
-        memset(buffer, 0, (size_t)(nsamples * 2) * sizeof(int16_t));
-    }
+// Installs the chipset-specific interrupt sink (see the struct field docs).
+// `fn` receives the logical IRQ level: true = interrupt asserted.
+void asc_set_irq_handler(asc_t *asc, void (*fn)(void *ctx, bool active), void *ctx) {
+    asc->irq_fn = fn;
+    asc->irq_ctx = ctx;
 }
+
+// Selects the board's speaker mix (SE/30 sums L+R; IIx/IIcx take left).
+// Not checkpointed — machines call this unconditionally after asc_init.
+void asc_set_mix(asc_t *asc, asc_mix_t mix) {
+    asc->mix = mix;
+}
+
+// ============================================================================
+// Object-model surface: `machine.sound` on ASC machines
+// ============================================================================
+//
+// A read-only facade over the guest-owned chip state (rate/volume/mode),
+// plus the deterministic capture surface shared with the Plus module:
+// `sound.capture.*` (attached from audio_out) and `sound.match`.
+
+static asc_t *asc_self_from(struct object *self) {
+    return (asc_t *)object_data(self);
+}
+
+static value_t asc_attr_sample_rate(struct object *self, const member_t *m) {
+    (void)m;
+    return val_uint(4, asc_rate_hz(asc_self_from(self)));
+}
+
+static value_t asc_attr_volume(struct object *self, const member_t *m) {
+    (void)m;
+    return val_uint(1, (uint64_t)get_volume(asc_self_from(self)));
+}
+
+static value_t asc_attr_mode(struct object *self, const member_t *m) {
+    (void)m;
+    return val_uint(1, asc_self_from(self)->mode);
+}
+
+// `sound.match(reference)` — sample-exact compare of the last capture against
+// a golden PCM WAV (delegates to the shared capture sink; same contract as
+// the Plus sound class and screen.match).
+static value_t asc_method_match(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)self;
+    (void)m;
+    (void)argc;
+    return audio_out_match_value(argv[0].s);
+}
+
+static const arg_decl_t asc_match_args[] = {
+    {.name = "reference", .kind = V_STRING, .doc = "Reference WAV path (PCM int16)"},
+};
+
+static const member_t asc_sound_members[] = {
+    {.kind = M_ATTR,
+     .name = "sample_rate",
+     .flags = VAL_RO,
+     .doc = "Output sample rate in Hz (from ascClockRate)",
+     .attr = {.type = V_UINT, .get = asc_attr_sample_rate, .set = NULL}},
+    {.kind = M_ATTR,
+     .name = "volume",
+     .flags = VAL_RO,
+     .doc = "Guest-set output level (ascVolControl bits 5-7, 0..7)",
+     .attr = {.type = V_UINT, .get = asc_attr_volume, .set = NULL}},
+    {.kind = M_ATTR,
+     .name = "mode",
+     .flags = VAL_RO,
+     .doc = "Chip mode (0 = off, 1 = FIFO, 2 = wavetable)",
+     .attr = {.type = V_UINT, .get = asc_attr_mode, .set = NULL}},
+    {.kind = M_METHOD,
+     .name = "match",
+     .doc = "Compare the last capture against a reference WAV (true if identical)",
+     .method = {.args = asc_match_args, .nargs = 1, .result = V_BOOL, .fn = asc_method_match}},
+};
+
+const class_desc_t asc_sound_class = {
+    .name = "sound",
+    .members = asc_sound_members,
+    .n_members = sizeof(asc_sound_members) / sizeof(asc_sound_members[0]),
+};

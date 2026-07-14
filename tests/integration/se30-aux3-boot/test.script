@@ -22,7 +22,16 @@ machine.memory.poke.w 0x017A 0
 # "data ready" interrupt, which the NCR 5380 model raises autonomously from
 # the scheduler (scsi.c scsi_drq_service) so a STOP-halted kernel resumes.
 # Run in chunks so the per-frame VBL heartbeat is injected across the boot.
-scheduler.run 250000000
+#
+# The first chunk is budget-pinned against an A/UX-internal race in the
+# CommandShell launch: at some boot phases the DA installs its menus but
+# defers its window until the next keyboard event reaches its pty.  The
+# boot-chime producer (sound stage 1: the ASC now really renders the chime,
+# adding sample-rate scheduler events during the mode-2 window) shifted the
+# phase into the slow arm; 248M re-pins it to the fast arm with every
+# golden unchanged.  If a future timing change trips shell.png again, nudge
+# this chunk ±a few M instructions.
+scheduler.run 248000000
 scheduler.run 200000000
 scheduler.run 200000000
 

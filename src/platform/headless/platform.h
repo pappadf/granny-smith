@@ -166,14 +166,22 @@ static inline void platform_print_host_callstack(void) {
     printf("(host callstack unavailable in headless mode)\n");
 }
 
-// Audio stub (no-op in headless)
-static inline void platform_play_8bit_pwm(const uint8_t *samples, int num_samples, unsigned int volume) {
-    (void)samples;
-    (void)num_samples;
-    (void)volume;
+// Audio stream stubs (no host sink in headless mode; deterministic capture
+// for golden-WAV tests lives core-side in audio_out.c, ahead of this boundary)
+static inline void platform_audio_open(uint32_t src_rate_hz, int channels) {
+    (void)src_rate_hz;
+    (void)channels;
 }
 
-static inline void platform_init_sound(void) {}
+static inline void platform_audio_push(const int16_t *frames, int nframes, int vol_0_7) {
+    (void)frames;
+    (void)nframes;
+    (void)vol_0_7;
+}
+
+static inline void platform_audio_set_rate(uint32_t src_rate_hz) {
+    (void)src_rate_hz;
+}
 
 // Video stub (no-op in headless)
 static inline void platform_refresh_screen(struct platform *p, unsigned char *buf) {

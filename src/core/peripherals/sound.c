@@ -5,6 +5,7 @@
 // Implements the Macintosh Plus sound subsystem.
 
 #include "sound.h"
+#include "audio_out.h"
 #include "log.h"
 #include "memory.h"
 #include "object.h"
@@ -40,14 +41,23 @@ struct sound {
 
 #define BUF_SIZE 370
 
-// Selects either main or alternate sound buffer from RAM
+// PWM scan output rate: 370 samples per VBL at ~60.15 Hz (~22.255 kHz)
+#define SOUND_SRC_RATE_HZ 22255
+
+// Selects either main or alternate sound buffer from RAM.
+// The sound scanner reads from the top of *installed* RAM (the ROM places
+// the buffer at MemTop-$300), so derive the address from the machine's RAM
+// size — hardcoding the 4 MB maximum reads out of bounds on 1/2/2.5 MB
+// machines (ram_native_pointer does not fold addresses through the RAM
+// mirror the way CPU accesses do).
 void sound_use_buffer(sound_t *sound, bool main) {
+    uint32_t top = memory_ram_size(sound->mem);
     if (main) {
         // [2] the address of the main sound buffer is top of ram - 0x300
-        sound->buffer = (uint16_t *)ram_native_pointer(sound->mem, 0x400000 - 0x300);
+        sound->buffer = (uint16_t *)ram_native_pointer(sound->mem, top - 0x300);
     } else {
         // [1] the address of the alternate sound buffer is SoundBase-$5C00
-        sound->buffer = (uint16_t *)ram_native_pointer(sound->mem, 0x400000 - 0x300 - 0x5c00);
+        sound->buffer = (uint16_t *)ram_native_pointer(sound->mem, top - 0x300 - 0x5c00);
     }
 }
 
@@ -80,7 +90,7 @@ unsigned sound_get_sample_rate(const sound_t *sound) {
     // Plus PWM sound runs at 22.255 kHz (1 buffer / VBL × BUF_SIZE).
     // The rate is fixed by the hardware/host platform layer.
     (void)sound;
-    return sound ? 22255u : 0u;
+    return sound ? SOUND_SRC_RATE_HZ : 0u;
 }
 void sound_mute(sound_t *sound, bool muted) {
     if (!sound)
@@ -95,20 +105,25 @@ void sound_vbl(sound_t *restrict sound) {
 
     assert(sound->buffer != NULL);
 
-    uint8_t buf[BUF_SIZE];
+    int16_t frames[BUF_SIZE];
 
-    // The "native" sound buffer is in big endian, and high order byte is the sound
-    for (int i = 0; i < (BUF_SIZE - VBL_OFFSET); i++)
-        buf[i] = BE16(sound->buffer[VBL_OFFSET + i]) >> 8;
+    // The "native" sound buffer is in big endian, and high order byte is the
+    // sound sample (8-bit offset binary); expand to signed int16 mono frames
+    for (int i = 0; i < (BUF_SIZE - VBL_OFFSET); i++) {
+        uint8_t b = BE16(sound->buffer[VBL_OFFSET + i]) >> 8;
+        frames[i] = (int16_t)(((int)b - 128) << 8);
+    }
 
-    for (int i = BUF_SIZE - VBL_OFFSET; i < BUF_SIZE; i++)
-        buf[i] = BE16(sound->buffer[i - (BUF_SIZE - VBL_OFFSET)]) >> 8;
+    for (int i = BUF_SIZE - VBL_OFFSET; i < BUF_SIZE; i++) {
+        uint8_t b = BE16(sound->buffer[i - (BUF_SIZE - VBL_OFFSET)]) >> 8;
+        frames[i] = (int16_t)(((int)b - 128) << 8);
+    }
 
     // All buffers are forwarded unconditionally. The platform layer (em_audio.c)
     // detects silence and drops silent buffers when the ring buffer already meets
     // the target depth, preventing unbounded latency growth when the emulator
     // runs faster than real-time.
-    platform_play_8bit_pwm(buf, BUF_SIZE, sound->volume);
+    audio_out_push(frames, BUF_SIZE, (int)sound->volume);
 }
 
 // Initializes the sound subsystem
@@ -130,7 +145,8 @@ sound_t *sound_init(memory_map_t *map, checkpoint_t *checkpoint) {
 
     sound_use_buffer(sound, true);
 
-    platform_init_sound();
+    // Open the shared host audio stream: mono int16 at the PWM scan rate
+    audio_out_open(SOUND_SRC_RATE_HZ, 1);
 
     // Load from checkpoint if provided
     if (checkpoint) {
@@ -148,6 +164,8 @@ sound_t *sound_init(memory_map_t *map, checkpoint_t *checkpoint) {
         object_set_label(sound->object, "Sound");
         object_set_order(sound->object, 110);
         object_attach(machine_object(), sound->object);
+        // Deterministic capture sink for golden-WAV tests (sound.capture.*)
+        audio_out_capture_attach(sound->object);
     }
 
     return sound;
@@ -158,6 +176,7 @@ void sound_delete(sound_t *sound) {
     if (!sound)
         return;
     if (sound->object) {
+        audio_out_capture_detach();
         object_detach(sound->object);
         object_delete(sound->object);
         sound->object = NULL;
@@ -235,8 +254,23 @@ static value_t sound_method_mute(struct object *self, const member_t *m, int arg
     return val_none();
 }
 
+// `sound.match(reference)` — sample-exact compare of the last capture against
+// a golden PCM WAV (the audio analog of screen.match). Delegates to the
+// shared capture sink in audio_out.c; a mismatch returns val_err so the
+// headless script runner fails the integration test.
+static value_t sound_method_match(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)self;
+    (void)m;
+    (void)argc;
+    return audio_out_match_value(argv[0].s);
+}
+
 static const arg_decl_t sound_mute_args[] = {
     {.name = "muted", .kind = V_BOOL, .doc = "true to mute, false to unmute"},
+};
+
+static const arg_decl_t sound_match_args[] = {
+    {.name = "reference", .kind = V_STRING, .doc = "Reference WAV path (PCM int16)"},
 };
 
 static const member_t sound_members[] = {
@@ -259,6 +293,10 @@ static const member_t sound_members[] = {
      .name = "mute",
      .doc = "Mute or unmute the sound output",
      .method = {.args = sound_mute_args, .nargs = 1, .result = V_NONE, .fn = sound_method_mute}},
+    {.kind = M_METHOD,
+     .name = "match",
+     .doc = "Compare the last capture against a reference WAV (true if identical)",
+     .method = {.args = sound_match_args, .nargs = 1, .result = V_BOOL, .fn = sound_method_match}},
 };
 
 const class_desc_t sound_class = {

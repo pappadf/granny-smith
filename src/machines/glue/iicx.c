@@ -283,6 +283,7 @@ static const mac030_board_desc_t iicx_desc = {
     .slots = iicx_slots,
     .bus_err_lo = 0xF9000000,
     .bus_err_hi = 0xFEFFFFFF,
+    .asc_mix = ASC_MIX_CH_A, // internal speaker takes the left channel
 };
 
 static const mac030_glue_board_t iicx_board = {
