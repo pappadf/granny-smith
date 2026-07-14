@@ -1,0 +1,22 @@
+# SE/30 boot chime — golden-WAV capture (proposal-sound-support-all-models §5).
+#
+# Captures the ASC wavetable boot chime through the deterministic capture
+# sink (guest-rate, pre-resampling, pre-volume) and compares sample-exactly
+# against the committed golden. On mismatch the runner reports the first
+# divergent sample and writes boot-chime.wav.actual.wav for auditioning.
+#
+# Regenerate the golden by replacing the stop line with:
+#   machine.sound.capture.stop boot-chime.wav
+# then audition the WAV once before committing it.
+
+machine.sound.capture.start
+scheduler.run 12000000
+machine.sound.capture.stop
+
+# The chime window is ROM-controlled: mode 2 for exactly 15,359 samples.
+assert ${machine.sound.capture.frames == 15359} "unexpected capture length"
+
+# Sample-exact compare against the golden (fails the test on any divergence).
+machine.sound.match boot-chime.wav
+
+quit

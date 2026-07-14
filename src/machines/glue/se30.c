@@ -437,6 +437,7 @@ static const mac030_board_desc_t se30_desc = {
     .slots = se30_slots,
     .bus_err_lo = 0xF9000000,
     .bus_err_hi = 0xFDFFFFFF,
+    .asc_mix = ASC_MIX_SUM, // SE/30 board sums both channels to the speaker
 };
 
 // VRAM + VROM save (symmetric with se30_ckpt_restore_extra); defined below.

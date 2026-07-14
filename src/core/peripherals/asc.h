@@ -25,6 +25,15 @@ struct asc;
 // Opaque handle for the ASC peripheral state
 typedef struct asc asc_t;
 
+// Board-level fold of the ASC's stereo output to the (mono) internal
+// speaker: IIx/IIcx wire the speaker to the left channel; the SE/30 board
+// sums both channels. (Headphone-jack stereo switching is deliberately not
+// modeled — see proposal-sound-support-all-models §9.)
+typedef enum asc_mix {
+    ASC_MIX_CH_A = 0, // speaker = left channel (IIx, IIcx)
+    ASC_MIX_SUM = 1, // speaker = left + right sum (SE/30)
+} asc_mix_t;
+
 // === Lifecycle (Constructor / Destructor / Checkpoint) ===
 
 // Creates and initialises an ASC instance, registering it in the memory map
@@ -41,11 +50,11 @@ void asc_checkpoint(asc_t *restrict asc, checkpoint_t *checkpoint);
 // Connects the ASC interrupt output to VIA2 CB1 (called after VIA2 creation)
 void asc_set_via(asc_t *asc, via_t *via);
 
-// === Operations ===
+// Selects the board's speaker mix (see asc_mix_t). Not checkpointed —
+// machines call this unconditionally right after asc_init.
+void asc_set_mix(asc_t *asc, asc_mix_t mix);
 
-// Renders audio samples into a stereo interleaved 16-bit signed buffer.
-// Called by the platform audio callback; drains FIFO or advances wavetable.
-void asc_render(asc_t *asc, int16_t *buffer, int nsamples);
+// === Operations ===
 
 // Get the memory-mapped I/O interface for machine-level address decode
 const memory_interface_t *asc_get_memory_interface(asc_t *asc);

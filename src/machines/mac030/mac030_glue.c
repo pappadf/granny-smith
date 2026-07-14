@@ -48,6 +48,7 @@ void mac030_glue_build_peripherals(config_t *cfg, checkpoint_t *cp, mac030_glue_
 
     st->asc = asc_init(NULL, cfg->scheduler, cp);
     asc_set_via(st->asc, cfg->via2);
+    asc_set_mix(st->asc, desc->asc_mix); // board speaker fold (not checkpointed)
 
     st->floppy = floppy_init(FLOPPY_TYPE_SWIM, NULL, cfg->scheduler, cp);
     cfg->floppy = st->floppy;

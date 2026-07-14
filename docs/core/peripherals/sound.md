@@ -8,8 +8,10 @@ platform boundary is a single parameterized stream shared by all machines —
 carrying interleaved **int16** frames (mono or stereo) at a runtime-settable
 source rate — fronted core-side by `audio_out.c`, which also hosts the
 deterministic capture sink for golden-WAV tests (§4a). The Plus PWM path
-described here is the first producer of that stream; the ASC machines join it
-in later stages.
+described here and the ASC producer (stage 1: `asc.c`'s sample-rate drain
+event renders FIFO/wavetable frames, batches them, and pushes with the
+board's speaker mix — SE/30 sums both channels, IIx/IIcx take channel A)
+share that stream; see [asc.md](asc.md) for the chip model.
 
 ---
 
