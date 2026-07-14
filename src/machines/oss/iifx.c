@@ -109,6 +109,7 @@ LOG_USE_CATEGORY_NAME("iifx");
 #define IIFX_OSS_SLOT9 0
 #define IIFX_OSS_PSWM  6
 #define IIFX_OSS_PSCC  7
+#define IIFX_OSS_SOUND 8
 #define IIFX_OSS_SCSI  9
 #define IIFX_OSS_60HZ  10
 #define IIFX_OSS_VIA1  11
@@ -1213,6 +1214,17 @@ static void iifx_swim_iop_irq(void *context, bool active) {
     oss_set_source(st->oss, IIFX_OSS_PSWM, active);
 }
 
+// Routes the ASC interrupt output to OSS source 8 (OSSIntSound; level
+// register $008 = OSSMskSnd, status bit 8 in OSSIntStat $202).  The ROM
+// programs the source's level register to 2 — sound is CPU level 2 on
+// every VIA2/RBV/OSS machine (MskSound).
+static void iifx_asc_irq(void *context, bool active) {
+    config_t *cfg = (config_t *)context;
+    iifx_state_t *st = iifx_state(cfg);
+    if (st && st->oss)
+        oss_set_source(st->oss, IIFX_OSS_SOUND, active);
+}
+
 // Routes a direct SCC interrupt to the SCC IOP OSS source.
 static void iifx_scc_irq(void *context, bool active) {
     config_t *cfg = (config_t *)context;
@@ -1439,6 +1451,7 @@ static void iifx_init(config_t *cfg, checkpoint_t *checkpoint) {
     setup_images(cfg);
 
     st->asc = asc_init(NULL, cfg->scheduler, checkpoint);
+    asc_set_mix(st->asc, ASC_MIX_CH_A); // internal speaker takes the left channel
     st->floppy = floppy_init(FLOPPY_TYPE_SWIM, NULL, cfg->scheduler, checkpoint);
     cfg->floppy = st->floppy;
 
@@ -1460,6 +1473,7 @@ static void iifx_init(config_t *cfg, checkpoint_t *checkpoint) {
 
     st->oss = oss_init(iifx_oss_irq_changed, iifx_oss_control, cfg, checkpoint);
     st->oss_iface = oss_get_memory_interface(st->oss);
+    asc_set_irq_handler(st->asc, iifx_asc_irq, cfg); // sound IRQ → OSS source 8
     scsi_set_irq_callback(cfg->scsi, iifx_scsi_irq, cfg);
     st->scc_iop = iop_init(SccIopNum, st->scc_iface, cfg->scc, iifx_scc_iop_irq, cfg, cfg->scheduler, checkpoint);
     st->swim_iop =

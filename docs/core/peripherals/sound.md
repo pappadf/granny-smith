@@ -14,7 +14,9 @@ board's speaker mix — SE/30 sums both channels, IIx/IIcx/IIci/IIsi take
 channel A) share that stream; see [asc.md](asc.md) for the chip model.
 The ASC's interrupt output is chipset-agnostic (`asc_set_irq_handler`):
 GLUE machines adapt it to VIA2 CB1, the IIci/IIsi wire it to the RBV's
-RvSndIRQ flag (bit 4, stage 2).
+RvSndIRQ flag (bit 4, stage 2), and the IIfx routes it to OSS interrupt
+source 8 (OSSIntSound, stage 3). With stage 3, every supported Mac model
+boots with its chime through this one pipeline.
 
 ---
 
