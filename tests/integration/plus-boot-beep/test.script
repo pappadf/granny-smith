@@ -1,0 +1,23 @@
+# Plus boot beep — golden-WAV capture (proposal-sound-support-all-models §4).
+#
+# Captures the boot beep through the deterministic core capture sink
+# (guest-rate, pre-resampling, pre-volume) and compares it sample-exactly —
+# zero tolerance — against the committed golden. On mismatch the runner
+# reports the first divergent sample and writes boot-beep.wav.actual.wav
+# next to the golden so it can be auditioned and diffed.
+#
+# Regenerate the golden by replacing the stop line with:
+#   machine.sound.capture.stop boot-beep.wav
+# then audition the WAV once before committing it.
+
+machine.sound.capture.start
+scheduler.run 1000000
+machine.sound.capture.stop
+
+# The ROM's sound-enable window is fixed: 42 VBLs x 370 frames.
+assert ${machine.sound.capture.frames == 15540} "unexpected capture length"
+
+# Sample-exact compare against the golden (fails the test on any divergence).
+machine.sound.match boot-beep.wav
+
+quit

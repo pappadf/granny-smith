@@ -1,6 +1,15 @@
 # Sound Subsystem
 
-This document explains the Macintosh Plus audio model and the emulator's current WebAudio implementation. It focuses on the **AudioWorklet + SharedArrayBuffer ring buffer path with micro rate trim and silence-aware depth management** that is active today.
+This document explains the Macintosh Plus audio model and the emulator's current WebAudio implementation. It focuses on the **AudioWorklet ring-buffer path with micro rate trim and silence-aware depth management** that is active today.
+
+Since the stage-0 audio generalization (proposal-sound-support-all-models), the
+platform boundary is a single parameterized stream shared by all machines —
+`platform_audio_open` / `platform_audio_push` / `platform_audio_set_rate`,
+carrying interleaved **int16** frames (mono or stereo) at a runtime-settable
+source rate — fronted core-side by `audio_out.c`, which also hosts the
+deterministic capture sink for golden-WAV tests (§4a). The Plus PWM path
+described here is the first producer of that stream; the ASC machines join it
+in later stages.
 
 ---
 
@@ -58,7 +67,7 @@ Per host VBL:
     e03e5bea  30bc  MOVE.W    #$5A,(A0)
     ```
    - Sound data is in big-endian 16-bit words; high (even address) byte contains the sound sample, low (odd address) byte contains disk-speed information.
-2. All buffers are forwarded unconditionally via `platform_play_8bit_pwm(buf, 370, volume)`. Silence detection and depth management happen in the platform layer (`em_audio.c`), not here.
+2. The 8-bit offset-binary bytes are expanded to signed int16 mono frames (`(b - 128) << 8`) and forwarded unconditionally via `audio_out_push(frames, 370, volume)` → `platform_audio_push`. Silence detection and depth management happen in the platform layer (`em_audio.c`), not here.
 
 Volume (0–7) is passed through unchanged; scaling to linear 0.0–1.0 happens in JS.
 
@@ -68,67 +77,100 @@ Note: On cold boot the emulator initializes the mixer volume to 4 (a reasonable 
 
 ## 3. Data Flow Overview
 
-### 3.1 Current (AudioWorklet Pull Model)
+### 3.1 Current (AudioWorklet + MessagePort)
 
 ```
-sound_vbl()                                   (C)
-  -> platform_play_8bit_pwm()                 (C)
-    -> mplus_audio_push(ptr,len,vol)       (EM_JS)
-      - Detects silence (all bytes equal)
-      - Updates consecutive silent push counter (state[5])
-      - Copies 370 bytes to ring buffer (SharedArrayBuffer)
-      - On overflow only: drops oldest to make room
+sound_vbl()                                     (C)
+  -> audio_out_push(frames, 370, vol)           (C, core — capture-sink tap)
+    -> platform_audio_push()                    (C, platform boundary)
+      -> gs_audio_push(ptr,nframes,vol)      (EM_JS, proxied to main thread)
+        - Copies int16 frames from the WASM heap
+        - Detects silence (all samples equal)
+        - Posts {buf, vol, sil} to the worklet via MessagePort (transfer)
+
+AudioWorkletProcessor ('gs-audio-worklet') onmessage:
+  - {rate}: stream restart — flush ring, re-gate, gain ramp from 0
+  - {buf}: appends frames to its internal Int16Array ring
+           (on overflow drops oldest); tracks consecutive silent pushes
 
 AudioWorkletProcessor.process() executes per render quantum (~128 frames @ output rate):
-  - Reads current write/read indices (state[0], state[1])
-  - If not yet "started" and available < target (5 VBL) -> output silence (gate)
+  - If not yet "started" and available < target (~83 ms) -> output silence (gate)
   - Micro rate trim: PI controller computes stepAdj to keep ring depth near target
-  - If have < 2 source samples: count underrun (state[4]++), output 0
-  - Resample (linear interpolation) + one-pole LPF + volume ramp
-  - Advance fractional source position & consume ring samples traversed
-  - Store readIdx
-  - Silence-aware depth trim: if state[5] >= 8 (sustained silence),
-    trim ring depth back to targetSamples by advancing readIdx
+  - If have < 2 source frames: count underrun, output 0
+  - Resample (linear interpolation, per channel) + one-pole LPF + volume ramp
+  - Advance fractional source position & consume ring frames traversed
+  - Silence-aware depth trim: after >= 8 consecutive silent pushes,
+    trim ring depth back to the target
 ```
 
 Ring buffer semantics:
-* Capacity: 128 KiB (power-of-two) storing raw 8-bit source samples.
-* Indices: `writeIdx` = state[0], `readIdx` = state[1] (masked). One slot left empty to distinguish full vs empty.
-* Depth (source domain): `(writeIdx - readIdx) & mask`.
-* Underrun counter: state[4] — incremented for any starvation (`have < 2`).
-* Consecutive silent push count: state[5] — incremented by push side on each silent chunk, reset to 0 on non-silent. Used by worklet to identify sustained silence periods.
-* State[6], state[7]: reserved (unused).
+* Capacity: 65,536 frames (power-of-two), interleaved int16, worklet-internal.
+* Indices are in frames; depth (source domain): `(writeIdx - readIdx) & mask`.
+* Underrun counter — incremented for any starvation (`have < 2`).
+* Consecutive silent push count — incremented on each silent chunk (flagged by
+  the push side), reset to 0 on non-silent. Identifies sustained silence.
 
-**Single-writer discipline**: The push side (main thread) only writes state[0] (writeIdx) and state[5] (silent count). The worklet (audio thread) is the sole writer of state[1] (readIdx). This avoids race conditions — earlier designs where both sides wrote readIdx caused audible glitches.
+**Single-writer discipline**: the push side only sends messages; the worklet is
+the sole owner of both ring indices (it advances writeIdx in `onmessage` and
+readIdx in `process()`, which the worklet thread serializes). Earlier designs
+where two threads shared the read index caused audible glitches.
 
 ---
 
 ## 4. WebAudio Integration (Current Worklet Implementation)
 
-Implemented via `EM_JS` in `src/platform/wasm/em_audio.c` (compiled into `build/main.mjs`):
+Implemented via `EM_JS` in `src/platform/wasm/em_audio.c` (compiled into `build/main.mjs`). All calls are proxied to the main thread (AudioContext / AudioWorklet are main-thread-only under `PROXY_TO_PTHREAD`):
 
-* `mplus_audio_init()`
+* `gs_audio_init()` (from `em_audio_init()` at startup)
   - Creates / reuses `AudioContext`.
-  - Allocates `SharedArrayBuffer` for data (128 KiB) + state (8 × Int32).
-  - Dynamically generates & registers an `AudioWorkletProcessor` class.
-  - Connects the node to destination.
-* `mplus_audio_push(ptr,len,volume)`
-  - Detects silence (all bytes equal) and updates consecutive silent push counter (state[5]).
-  - Copies the 370 bytes from WASM heap into ring buffer. On overflow drops oldest to make room; never blocks.
-  - Stores volume in state[2].
-* Processor state layout (Int32 array):
-  - 0: writeIdx (written by push side)
-  - 1: readIdx (written by worklet only)
-  - 2: volume (0–7, written by push side)
-  - 3: flags (bit0 paused — currently unused)
-  - 4: underrun counter (incremented by worklet)
-  - 5: consecutiveSilentPushes (written by push side, read by worklet)
-  - 6: reserved (unused)
-  - 7: reserved (unused)
+  - Registers the `gs-audio-worklet` `AudioWorkletProcessor` class from a blob.
+  - The worklet *node* is created lazily by the first `open`.
+* `gs_audio_open(rate, channels)` (from `platform_audio_open`)
+  - Same channel count: an in-place rate change (worklet stream restart).
+  - Different channel count (or first call): (re)creates the node with
+    `outputChannelCount: [channels]` and the given source rate.
+* `gs_audio_set_rate(rate)` (from `platform_audio_set_rate`)
+  - Posts `{rate}` to the worklet: flush ring, re-gate at target depth, brief
+    gain ramp — a stream restart, per the rate-switching design.
+* `gs_audio_push(ptr, nframes, volume)` (from `platform_audio_push`)
+  - Copies `nframes × channels` int16 samples from the WASM heap (must copy —
+    the heap can grow/move), detects silence (all samples equal), and posts
+    the buffer to the worklet via MessagePort with transfer; never blocks.
 
-Fallback: If `SharedArrayBuffer` is unavailable (missing COOP/COEP), initialization logs a warning and audio is disabled. There is currently no automatic fallback. Serve via the provided dev server to enable SAB.
+Autoplay unlock: Modern browsers (especially Safari) start `AudioContext` in a suspended state until a user gesture. `gs_audio_push` attempts a `resume()` on every push, and the web2 UI resumes the context on the first user gesture.
 
-Autoplay unlock: Modern browsers (especially Safari) start `AudioContext` in a suspended state until a user gesture. The Web UI (`web/index.html`) proactively resumes the context on the Run button click and on the first pointer/keyboard/touch gesture.
+## 4a. Platform Audio API & Deterministic Capture (stage 0)
+
+The platform boundary (`src/platform/*/platform.h`) is three functions, shared
+by every machine:
+
+```c
+void platform_audio_open(uint32_t src_rate_hz, int channels /*1|2*/);
+void platform_audio_push(const int16_t *frames, int nframes, int vol_0_7);
+void platform_audio_set_rate(uint32_t src_rate_hz);   // e.g. ascClockRate
+```
+
+Producers do not call these directly — they go through `audio_out.c`
+(`audio_out_open/push/set_rate`), a thin core-side front that forwards to the
+platform sink and hosts the **capture sink** for deterministic audio testing
+(the audio analog of the `machine.screen.match` screenshot machinery):
+
+* `machine.sound.capture.start` / `machine.sound.capture.stop [file.wav]` —
+  record the producer output **at guest rate** (pre-resampling, pre-volume)
+  between two points in a test script; bounded by instruction budgets, hence
+  bit-reproducible on every host and in CI.
+* `machine.sound.match <golden>.wav` — sample-exact comparison (PCM int16 WAV;
+  channels + rate must match, zero tolerance on sample data). On mismatch it
+  reports the first divergent sample index (and its timestamp) and writes the
+  capture next to the golden as `<golden>.actual.wav` so it can be auditioned
+  and diffed.
+
+Goldens are regenerated by passing a path to `capture.stop` (then auditioned
+once before committing); see `tests/integration/plus-boot-beep/`.
+
+In headless builds the `platform_audio_*` functions are no-op stubs — the
+capture sink sits ahead of the platform boundary, so headless tests exercise
+the exact frames the browser worklet would receive.
 
 ---
 
@@ -185,11 +227,11 @@ Parameters: `Kp = 0.005`, `Ki = 0.001`, clamp ±0.002 (±2000 ppm). The wider ±
 
 **Solution**: Two coordinated mechanisms prevent this:
 
-1. **Push side** (`mplus_audio_push`): Tracks consecutive silent pushes in state[5]. Resets to 0 on any non-silent push. All buffers (including silence) are always written to the ring to maintain stream continuity for the worklet's resampler and LPF.
+1. **Push side** (`gs_audio_push`): Flags each chunk as silent/non-silent; the worklet tracks the consecutive-silent count (reset on any non-silent push). All buffers (including silence) are always written to the ring to maintain stream continuity for the worklet's resampler and LPF.
 
-2. **Worklet** (`process()`): After the normal output loop, checks state[5]. If ≥ 8 consecutive silent pushes (~133ms of sustained silence), trims ring depth back to targetSamples by advancing readIdx. This is safe because the entire ring content is guaranteed to be silence after that many consecutive silent VBLs (targetSamples ≈ 5 VBLs worth, and 8 > 5).
+2. **Worklet** (`process()`): After the normal output loop, if ≥ 8 consecutive silent pushes (~133ms of sustained silence), trims ring depth back to targetFrames by advancing readIdx. This is safe because the entire ring content is guaranteed to be silence after that many consecutive silent VBLs (target depth ≈ 5 VBLs worth, and 8 > 5).
 
-**Why trim in the worklet, not the push side**: The worklet is the sole consumer (writer of readIdx). Manipulating readIdx from the push side races with the worklet's read-modify-write of readIdx during `process()`, causing the worklet to overwrite the push side's changes — which manifested as audible glitches.
+**Why trim in the worklet, not the push side**: The worklet owns readIdx. Manipulating readIdx from another thread races with the worklet's read-modify-write of readIdx during `process()`, causing the worklet to overwrite the other side's changes — which manifested as audible glitches in earlier SharedArrayBuffer-based designs.
 
 **Why always write (never skip)**: Earlier designs skipped silent buffers on the push side. This created gaps in the sample stream, causing the worklet's LPF and resampler state to lose continuity. The result was clicks/hiccups at silence-to-sound transitions (e.g., the boot beep).
 
@@ -219,10 +261,10 @@ Additional protection:
 
 ## 9. Silence Handling
 
-* Detection: All 370 bytes in a chunk are identical → classified as silent.
+* Detection: All samples in a chunk are identical (any DC level) → classified as silent.
 * All chunks (silent or not) are always written to the ring buffer. This maintains continuous sample flow for the worklet's resampler and LPF.
-* The consecutive silent push counter (state[5]) is the signaling mechanism. It is:
-  - Incremented atomically on each silent push.
+* The consecutive silent push counter (worklet-side, driven by the push flag) is the signaling mechanism. It is:
+  - Incremented on each silent push.
   - Reset to 0 on any non-silent push.
   - Read by the worklet to decide whether depth trimming is safe.
 * The threshold of 8 consecutive silent pushes (~133ms at 60.15 Hz) ensures the entire ring content (target depth ~83ms) is silence before trimming.
@@ -241,10 +283,10 @@ Additional protection:
 ## 11. Logging & Diagnostics
 
 Worklet path currently has minimal logging (can be expanded):
-* Initialization: `[audio] worklet init targetLatency=83.xms`.
-* Underruns visible by inspecting state[4] (via Atomics from JS).
-* Consecutive silent push count visible via state[5].
-* For profiling, read `(state[0]-state[1])&mask` for current ring depth.
+* Node creation: `[audio] worklet open rate=... ch=... targetLatency=83.0ms`.
+* Underruns, silent-push count and ring depth live inside the worklet
+  (`this.underruns`, `this.silentCount`, `(wIdx-rIdx)&mask`); expose them via a
+  port message if diagnostics are needed from the page.
 
 ---
 
@@ -253,7 +295,7 @@ Worklet path currently has minimal logging (can be expanded):
 | Area | Current Approach | Limitation |
 |------|------------------|-----------|
 | Resampling | Linear + micro step trim | Modest HF loss vs polyphase |
-| Scheduling | AudioWorklet pull (ring buffer) | Requires SAB (COOP/COEP) |
+| Scheduling | AudioWorklet pull (MessagePort-fed ring) | Page still needs COOP/COEP for pthreads |
 | Latency | Fixed 5 VBL (~83 ms) | Not dynamically lowered under perfect conditions |
 | Jitter Resilience | Rate trim + silence depth trim | Non-silent starvation still audible gap |
 | Drift Correction | PI rate trim ±2000 ppm | ~0.2% max; larger drifts cause underrun/overflow |
@@ -288,14 +330,13 @@ Worklet path currently has minimal logging (can be expanded):
 
 ## 15. Security / Cross-Origin Considerations
 
-The current audio path requires SharedArrayBuffer and therefore cross-origin isolation (COOP/COEP) to be enabled by the server. Use the integrated dev server which sets these headers:
+The audio data path itself uses MessagePort (no SharedArrayBuffer), but the emulator runs with pthreads (`PROXY_TO_PTHREAD`), which requires cross-origin isolation (COOP/COEP) for the page as a whole. Use the integrated dev server which sets these headers:
 
 * `make run` → runs `scripts/dev_server.py` (serves on http://localhost:8080 with COOP/COEP)
-* Avoid serving with `python -m http.server` or opening `file://index.html`; SAB will be unavailable and audio will be disabled.
 
 Autoplay policies: A user gesture is required to start audio in many browsers. Use the Run button or press a key/click inside the page; the UI resumes the `AudioContext` automatically on first gesture.
 
-Testing: Type `beep` in the emulator terminal to play a short tone (implemented as a shell helper command in `em_audio.c`).
+Testing: headless golden-WAV capture tests (§4a) exercise the producer path deterministically; see `tests/integration/plus-boot-beep/`.
 
 ---
 
@@ -313,21 +354,26 @@ Testing: Type `beep` in the emulator terminal to play a short tone (implemented 
 ## 17. High-Level Pseudocode (Current Implementation)
 
 ```pseudo
-=== Push side (mplus_audio_push, main thread) ===
+=== Push side (gs_audio_push, main thread) ===
 
-  detect silence (all bytes equal)
-  state[5] = silent ? state[5]+1 : 0    // consecutive silent count
-  if overflow: drop oldest from ring
-  copy 370 bytes into ring
-  state[0] = new writeIdx
+  copy nframes × channels int16 samples from the WASM heap
+  detect silence (all samples equal)
+  post {buf, vol, sil} to the worklet port (transfer)
+
+=== Worklet onmessage (audio thread) ===
+
+  {rate}: srcRate = rate; flush ring; started = false; gain -> 0
+  {buf}:  silentCount = sil ? silentCount+1 : 0
+          if overflow: drop oldest frames from ring
+          append frames; advance writeIdx
 
 === Worklet (process(), audio thread) ===
 
-  avail = (w - r) & mask
-  if !started and avail < targetSamples: output zeros; return
+  avail = (w - r) & mask                       // in frames
+  if !started and avail < targetFrames: output zeros; return
 
   // PI rate trim
-  error = avail - targetSamples
+  error = avail - targetFrames
   errI = 0.995 * errI + 0.005 * error
   adj = clamp(Kp * error/target + Ki * errI/target, ±2000ppm)
   stepAdj = baseStep * (1 + adj)
@@ -335,25 +381,25 @@ Testing: Type `beep` in the emulator terminal to play a short tone (implemented 
   // Output loop
   for each output frame:
     if have < 2: underruns++; output 0; continue
-    linear interpolate two source bytes -> sample
-    one-pole LPF; volume ramp
-    advance frac += stepAdj; consume passed source samples
+    per channel: linear interpolate two source samples,
+                 one-pole LPF, volume ramp
+    advance frac += stepAdj; consume passed source frames
   store readIdx
 
   // Silence depth trim
-  if state[5] >= 8:
+  if silentCount >= 8:
     depth = (w2 - r2) & mask
-    if depth > targetSamples:
-      advance readIdx by (depth - targetSamples)
+    if depth > targetFrames:
+      advance readIdx by (depth - targetFrames)
 ```
 
 ---
 
 ## 18. Summary
 
-The emulator streams audio through an AudioWorklet pull model with a SharedArrayBuffer ring buffer. Key mechanisms:
+The emulator streams audio through an AudioWorklet pull model with a worklet-internal int16 frame ring fed over MessagePort. Key mechanisms:
 
-* **Fixed 5-VBL latency target** (~83ms, 1850 source samples).
+* **Fixed latency target** (~83ms, ≈5 Plus VBLs of source frames).
 * **PI micro rate trim** (±2000 ppm) keeps ring depth stable despite emulator speed variations.
 * **Silence-aware depth trim** by the worklet prevents latency accumulation when the emulator runs fast during silence.
 * **Always-write discipline** ensures stream continuity — silent buffers are never skipped at the push point, preventing glitches at silence-to-sound transitions.

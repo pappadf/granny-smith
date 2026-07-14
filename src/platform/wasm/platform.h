@@ -178,11 +178,18 @@ static void host_mutex_unlock(host_mutex_t *mutex) {
 
 // === Audio Platform Interface ===
 
-// Initialize sound subsystem
-void platform_init_sound(void);
+// One parameterized stream for all machines (implemented in em_audio.c):
+// open sets source rate + channel count, push feeds interleaved int16 frames,
+// set_rate restarts the stream at a new source rate (e.g. ascClockRate).
 
-// Play 8-bit PWM audio samples
-extern void platform_play_8bit_pwm(const uint8_t *samples, int num_samples, unsigned int volume);
+// Open (or re-parameterize) the host audio stream
+void platform_audio_open(uint32_t src_rate_hz, int channels);
+
+// Push interleaved int16 frames; vol_0_7 is the guest's 3-bit volume level
+void platform_audio_push(const int16_t *frames, int nframes, int vol_0_7);
+
+// Change the source sample rate mid-stream (stream restart host-side)
+void platform_audio_set_rate(uint32_t src_rate_hz);
 
 // === Timing Functions ===
 
