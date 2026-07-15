@@ -5,7 +5,26 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [v0.7.0] — 2026-07-15
+
+### Added
+- **Sound on every machine** — one platform audio stream with per-machine producers: the Apple Sound Chip (SE/30, IIx/IIcx, IIci, IIsi, IIfx) and a per-scanline PWM buffer scan on the Plus. Boot chimes, system beeps, and application audio (four-voice MusicWorks playback) all play reasonably well.
+- **Apple Macintosh Display Card 8•24 GC** — model with working QuickDraw acceleration: System 6.0.8 and 7.1 bring the accelerator up through the real .GraphAccel driver and the card renders the desktop (1/8-bit pixel-exact; runtime 32-bit via Monitors).
+- **Apple Macintosh Display Card 24AC** — NuBus colour card with QuickDraw acceleration engine; boots System 7.1 to an 8-bit colour desktop.
+- Disk Copy 6.x (NDIF) images mount read-only in the image VFS (with raw export), and the VFS also reads HFS+ / HFSX volumes.
+
+### Changed
+- Scheduler: two pacing modes (paced / turbo) with a single authentic CPI per machine; the Plus CPU speed is calibrated against real-hardware workloads.
+- System object model: devices hang off one faithful `machine.*` tree (meta objects stay at root).
+- VIA bus accesses synchronise to the E clock.
+
+### Fixed
+- Plus mouse: physical quadrature interrupt pacing and ratio-preserving delta scaling — no more 45° staircase movement, queued-up cursor gliding, or audio breakup during mouse movement.
+- web2 audio delivery: AudioWorklet start-gate re-arm and a speaker-model DC blocker remove the clicks and crackle that followed the first sound after page load.
+- web2 uploads stream to OPFS on the worker, fixing Safari's "Upload failed".
+- SCSI transfers larger than 128 KB (e.g. the System 7.1 installer writing the System file) no longer assert.
+- External-floppy insert no longer bombs the Finder (SWIM drive select), and ADB no longer drops keyboard bytes on aborted SRQ scans.
+- The 68k RESET instruction resets external peripherals, fixing warm-restart hangs with NuBus cards.
 
 ### Removed
 - **Legacy web UI** (`app/web-legacy/`) and its Playwright suite (`tests/e2e/specs/`). The web2 Svelte UI (`app/web2/`) is now the only frontend; `make run-legacy` is gone. Coverage that was unique to the legacy e2e was ported to the web2 Playwright specs (`tests/e2e/web2-specs/`) and the headless integration tests before removal, and CI now runs the web2 e2e suite.
