@@ -52,12 +52,15 @@ scheduler.run 20000000
 
 # "AppleShare requires AppleTalk" → OK. AppleTalk flips Active and the
 # NBP lookup runs; the server list must show the emulated share host.
+# (48M: the NBP discovery timers are guest-time-driven, so this budget is
+# sized for the Plus's calibrated CPI 10 — 40M, pinned at CPI 12, fell
+# just short of the reply landing in the list.)
 machine.adb.mouse.move 185 205
 scheduler.run 2000000
 machine.adb.mouse.click true
 scheduler.run 2000000
 machine.adb.mouse.click false
-scheduler.run 40000000
+scheduler.run 48000000
 machine.screen.match chooser-server-listed.png
 
 # Select "Shared Folders", then OK.
