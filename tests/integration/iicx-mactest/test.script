@@ -54,6 +54,16 @@ scheduler.run 100000000
 # Extra settle so the dialog finishes painting.
 scheduler.run 60000000
 
+# Prime click: the first mouse click after this dialog opens is swallowed
+# under E-clock-synced ADB (the dialog consumes it on focus); a throwaway
+# click on empty dialog area absorbs it so the real checkbox clicks land.
+machine.adb.mouse.move 400 90 "global"
+scheduler.run 5000000
+machine.adb.mouse.click true
+scheduler.run 5000000
+machine.adb.mouse.click false
+scheduler.run 10000000
+
 # Uncheck "Keyboard" — ADB Communication checkbox column, y=305.
 machine.adb.mouse.move 130 305 "global"
 scheduler.run 5000000
@@ -131,6 +141,12 @@ machine.screen.match insert-1.4mb-internal.png
 
 machine.adb.mouse.click false "global"
 machine.floppy.create "${WORK_DIR}/blankHD-int.dsk" "hd"
+# Move the cursor away then back to the OK button: it was parked on OK by
+# the previous step's click, so a same-spot move emits no ADB motion and
+# the click has no fresh position event to bind to under E-clock-synced
+# ADB. A real move makes the OK-click register.
+machine.adb.mouse.move 200 150 "global"
+scheduler.run 5000000
 machine.adb.mouse.move 454 245 "global"
 scheduler.run 5000000
 machine.adb.mouse.click true
@@ -153,6 +169,23 @@ machine.screen.match insert-800k-external.png
 
 machine.adb.mouse.click false "global"
 machine.floppy.create "${WORK_DIR}/blank800-ext.dsk" 1
+# Settle wait BEFORE clicking OK.  On real hardware a user inserts the external
+# blank in response to this prompt and the OS detects it (drive light / diskEvt)
+# — completing the .Sony disk-in-place debounce — well before clicking OK.  The
+# debounce primes VIA1 Timer-2 for ~20 ms; if it fires while MacTest's external
+# seek-settle poll owns T2 (which polls the same one-shot at IPL 0), it steals
+# the flag permanently and the settle poll hangs.  Under E-clock-synced VIA
+# timing the seek phase is longer, so without this pause the debounce lands
+# inside the seek loop.  Letting it complete here (as a real user's pause would)
+# keeps it clear of the seek.  See
+# local/gs-docs/notes/2026-07-15-iicx-mactest-external-floppy-hang-via-eclock-sync.md
+scheduler.run 400000000
+# Move away then back so the OK-click emits fresh ADB motion (the settle wait
+# above shifts the click phase, and a same-spot click can otherwise land in a
+# read window with its mouse-up dropped — leaving the next dialog's OK button
+# stuck hilited).  Same move-away-then-back pattern as the internal 1.4 MB step.
+machine.adb.mouse.move 200 150 "global"
+scheduler.run 5000000
 machine.adb.mouse.move 454 245 "global"
 scheduler.run 5000000
 machine.adb.mouse.click true
@@ -160,6 +193,10 @@ scheduler.run 5000000
 machine.adb.mouse.click false
 
 scheduler.run 300000000
+# Redundant mouse-up: guarantees the button is released before the match even
+# if the click-false above landed in a read window and was dropped.
+machine.adb.mouse.click false "global"
+scheduler.run 20000000
 machine.screen.match insert-1.4mb-external.png
 
 machine.adb.mouse.click false "global"

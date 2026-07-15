@@ -13,8 +13,8 @@ machine.sound.capture.start
 scheduler.run 12000000
 machine.sound.capture.stop
 
-# The chime window is ROM-controlled: mode 2 for exactly 10,454 samples.
-assert ${machine.sound.capture.frames == 10454} "unexpected capture length"
+# The chime window is ROM-controlled: mode 2 for exactly 13,405 samples.
+assert ${machine.sound.capture.frames == 13405} "unexpected capture length"
 
 # Sample-exact compare against the golden (fails the test on any divergence).
 machine.sound.match boot-chime.wav

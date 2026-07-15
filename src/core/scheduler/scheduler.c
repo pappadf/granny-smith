@@ -847,6 +847,10 @@ void scheduler_set_frequency(struct scheduler *restrict s, uint32_t frequency_hz
         return;
     GS_ASSERT(frequency_hz > 0);
     s->frequency = frequency_hz;
+    // Publish the VIA E-clock period (783.360 kHz) in CPU cycles x256 for the
+    // E-synchronized I/O penalty (memory_io_esync_penalty). Machines without
+    // esync-flagged I/O ranges simply never read it.
+    g_esync_period_x256 = (uint32_t)(((uint64_t)frequency_hz * 256 + 783360 / 2) / 783360);
 }
 
 // Set the per-machine cycles-per-instruction constant (mode-independent)
@@ -930,6 +934,10 @@ void scheduler_run_instructions(struct scheduler *restrict s, uint64_t n) {
         g_sprint_burndown_ptr = &s->sprint_burndown;
         g_io_cpi = avg_cycles_per_instr(s);
         g_io_phantom_instructions = 0;
+        // Sprint timebase for E-synchronized penalties: mid-sprint "now" =
+        // base cycles + slots consumed x CPI (see memory_io_esync_penalty)
+        g_sprint_base_cycles = s->cpu_cycles;
+        g_sprint_total_slots = instr_to_exec;
         // Note: g_io_penalty_remainder is NOT reset — it carries across sprints
         cpu_run_sprint(cpu, &s->sprint_burndown);
         g_sprint_burndown_ptr = NULL; // no longer valid outside sprint

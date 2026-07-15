@@ -41,6 +41,9 @@ uint32_t g_io_penalty_remainder = 0;
 uint32_t g_io_phantom_instructions = 0;
 uint32_t g_io_cpi = 0;
 uint32_t *g_sprint_burndown_ptr = NULL;
+uint64_t g_sprint_base_cycles = 0;
+uint32_t g_sprint_total_slots = 0;
+uint32_t g_esync_period_x256 = 0;
 
 const memory_interface_t *via_get_memory_interface(via_t *v) {
     (void)v;

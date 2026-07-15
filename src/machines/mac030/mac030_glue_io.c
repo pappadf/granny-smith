@@ -52,7 +52,10 @@ uint8_t mac030_io_read_uint8(void *ctx, uint32_t addr) {
     uint32_t offset = addr & io->mirror_mask;
     for (const mac030_io_range_t *r = io->ranges; r->end; r++) {
         if (offset >= r->base && offset < r->end) {
-            memory_io_penalty(r->penalty);
+            if (r->esync)
+                memory_io_esync_penalty(); // 6522: stall to the next E boundary
+            else
+                memory_io_penalty(r->penalty);
             if (r->read_fn)
                 return r->read_fn(io->cfg, addr);
             return io->iface[r->device]->read_uint8(io->handle[r->device], io_sub_offset(r, offset, true));
@@ -79,7 +82,10 @@ void mac030_io_write_uint8(void *ctx, uint32_t addr, uint8_t value) {
     uint32_t offset = addr & io->mirror_mask;
     for (const mac030_io_range_t *r = io->ranges; r->end; r++) {
         if (offset >= r->base && offset < r->end) {
-            memory_io_penalty(r->penalty);
+            if (r->esync)
+                memory_io_esync_penalty(); // 6522: stall to the next E boundary
+            else
+                memory_io_penalty(r->penalty);
             if (r->write_fn)
                 r->write_fn(io->cfg, addr, value);
             else
@@ -130,8 +136,8 @@ void mac030_io_fill_interface(memory_interface_t *iface) {
 //
 //   base     end      device            penalty               xform               rd  wr     name
 const mac030_io_range_t glue_io_ranges[] = {
-    {0x00000, 0x02000, MAC030_DEV_VIA1, GLUE_VIA_IO_PENALTY, MAC030_IO_MASK_A0, 0, 0, NULL, NULL, "via1"},
-    {0x02000, 0x04000, MAC030_DEV_VIA2, GLUE_VIA_IO_PENALTY, MAC030_IO_MASK_A0, 0, 0, NULL, NULL, "via2"},
+    {0x00000, 0x02000, MAC030_DEV_VIA1, GLUE_VIA_IO_PENALTY, MAC030_IO_MASK_A0, 0, 0, NULL, NULL, "via1", .esync = 1},
+    {0x02000, 0x04000, MAC030_DEV_VIA2, GLUE_VIA_IO_PENALTY, MAC030_IO_MASK_A0, 0, 0, NULL, NULL, "via2", .esync = 1},
     {0x04000, 0x06000, MAC030_DEV_SCC, GLUE_SCC_IO_PENALTY, MAC030_IO_NORMAL, 0, 0, NULL, NULL, "scc"},
     {0x06000, 0x08000, MAC030_DEV_SCSI, GLUE_SCSI_IO_PENALTY, MAC030_IO_FIXED, 0, 0x201, NULL, NULL, "scsi_drq"},
     {0x10000, 0x12000, MAC030_DEV_SCSI, GLUE_SCSI_IO_PENALTY, MAC030_IO_NORMAL, 0, 0, NULL, NULL, "scsi_reg"},

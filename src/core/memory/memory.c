@@ -78,6 +78,9 @@ uint32_t *g_bus_error_instr_ptr = NULL;
 // burndown slots, causing sprints with I/O to end sooner and keeping event
 // timing accurate.
 uint32_t g_io_penalty_remainder = 0; // sub-CPI fraction carried across sprints
+uint64_t g_sprint_base_cycles = 0; // scheduler cpu_cycles at sprint start
+uint32_t g_sprint_total_slots = 0; // sprint slot budget at sprint start
+uint32_t g_esync_period_x256 = 0; // E period in CPU cycles x256 (0 = unset)
 uint32_t g_io_phantom_instructions = 0; // phantom instructions consumed this sprint
 uint32_t g_io_cpi = 0; // current CPI for penalty conversion (0 = disabled)
 uint32_t *g_sprint_burndown_ptr = NULL; // points to scheduler's sprint_burndown during sprint
