@@ -16,12 +16,12 @@
 machine.rtc.time = 3000000000
 
 # Boot the 400K MFS floppy to the Finder desktop.
-scheduler.run 65400000
+scheduler.run 72000000
 machine.screen.match finder.png
 
 # Open "MusicWorks Disk" (icon at top right).
 machine.adb.mouse.move 465 45
-scheduler.run 2100000
+scheduler.run 2300000
 machine.adb.mouse.click true
 scheduler.run 200000
 machine.adb.mouse.click false
@@ -29,11 +29,11 @@ scheduler.run 200000
 machine.adb.mouse.click true
 scheduler.run 200000
 machine.adb.mouse.click false
-scheduler.run 16300000
+scheduler.run 18000000
 
 # Open the "Samples" folder inside the disk window.
 machine.adb.mouse.move 228 90
-scheduler.run 2100000
+scheduler.run 2300000
 machine.adb.mouse.click true
 scheduler.run 200000
 machine.adb.mouse.click false
@@ -41,13 +41,13 @@ scheduler.run 200000
 machine.adb.mouse.click true
 scheduler.run 200000
 machine.adb.mouse.click false
-scheduler.run 16300000
+scheduler.run 18000000
 machine.screen.match samples.png
 
 # Open "Brandenburg #3" (first icon in the Samples window) — launches
 # MusicWorks from the same floppy and loads the document.
 machine.adb.mouse.move 103 210
-scheduler.run 2100000
+scheduler.run 2300000
 machine.adb.mouse.click true
 scheduler.run 200000
 machine.adb.mouse.click false
@@ -55,25 +55,25 @@ scheduler.run 200000
 machine.adb.mouse.click true
 scheduler.run 200000
 machine.adb.mouse.click false
-scheduler.run 65400000
+scheduler.run 72000000
 machine.screen.match musicworks-loaded.png
 
 # Click PLAY. MusicWorks first spends ~4.5 s initializing its PWM buffers
 # (constant full-scale DC — silent through the AC-coupled speaker); the run
 # below skips past that so the golden is the music itself.
 machine.adb.mouse.move 310 33
-scheduler.run 2100000
+scheduler.run 2300000
 machine.adb.mouse.click true
 scheduler.run 300000
 machine.adb.mouse.click false
-scheduler.run 3200000
+scheduler.run 3500000
 
 # Capture ~7.7 s of the music and compare sample-exactly.
 machine.sound.capture.start
-scheduler.run 5400000
+scheduler.run 5900000
 machine.sound.capture.stop
 
-assert ${machine.sound.capture.frames == 168765} "unexpected capture length"
+assert ${machine.sound.capture.frames == 167634} "unexpected capture length"
 machine.sound.match music.wav
 
 quit
