@@ -16,6 +16,7 @@
 // === Forward Declarations ===
 struct memory;
 typedef struct memory memory_map_t;
+struct scheduler;
 
 // === Type Definitions ===
 struct sound;
@@ -23,7 +24,7 @@ typedef struct sound sound_t;
 
 // === Lifecycle (Constructor / Destructor / Checkpoint) ===
 
-sound_t *sound_init(memory_map_t *map, checkpoint_t *checkpoint);
+sound_t *sound_init(memory_map_t *map, struct scheduler *scheduler, checkpoint_t *checkpoint);
 
 void sound_delete(sound_t *sound);
 

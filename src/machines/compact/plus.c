@@ -181,11 +181,16 @@ static void plus_init(config_t *cfg, checkpoint_t *checkpoint) {
     cfg->cpu = cpu_init(CPU_MODEL_68000, checkpoint);
 
     cfg->scheduler = scheduler_init(cfg->cpu, checkpoint);
-    // Authentic average CPI for the 7.8336 MHz 68000: the Plus retires ~650k
+    // Authentic average CPI for the 7.8336 MHz 68000: the Plus retires ~712k
     // instructions per emulated second, matching real-hardware CPU speed
-    // relative to its VBL/timers. (The pre-two-modes scheduler defaulted to
-    // CPI 4 here — a ~3x overclocked Plus.)
-    scheduler_set_cpi(cfg->scheduler, 12);
+    // relative to its VBL/timers (~0.7 MIPS). Calibrated against MusicWorks
+    // 0.42: its VBL-locked synthesis engine writes 370 samples per two
+    // frames and keeps up on real hardware; at CPI 12 it misses that budget
+    // by ~9% and its own buffer content glitches (~90 transients per 8 s of
+    // music), at CPI 11 it locks cleanly (4 transients — the app's real
+    // note attacks). (The pre-two-modes scheduler defaulted to CPI 4 here —
+    // a ~3x overclocked Plus.)
+    scheduler_set_cpi(cfg->scheduler, 11);
 
     // Restore global interrupt state after scheduler (same order as checkpoint_save)
     if (checkpoint) {
@@ -202,7 +207,7 @@ static void plus_init(config_t *cfg, checkpoint_t *checkpoint) {
     // Initialise AppleTalk with scheduler and SCC dependencies (registers shell commands)
     appletalk_init(cfg->scheduler, cfg->scc, NULL);
 
-    ps->sound = sound_init(cfg->mem_map, checkpoint);
+    ps->sound = sound_init(cfg->mem_map, cfg->scheduler, checkpoint);
     cfg->sound = ps->sound; // mirror onto cfg so the object-model `sound`
                             // class can find it via cfg->sound (M7f)
 
