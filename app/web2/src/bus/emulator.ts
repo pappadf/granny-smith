@@ -66,6 +66,7 @@ interface EmscriptenModule {
 interface EmscriptenModuleConfig {
   canvas: HTMLCanvasElement;
   arguments?: string[];
+  mainScriptUrlOrBlob?: string;
   locateFile?(path: string): string;
   print?(s: string): void;
   printErr?(s: string): void;
@@ -126,6 +127,15 @@ export async function bootstrap(canvas: HTMLCanvasElement, wasmArgs: string[] = 
   Module = await createModule({
     canvas,
     arguments: wasmArgs,
+    // Pthread workers must load the exact same main.mjs URL as the main
+    // thread. Without this, Emscripten spawns them with
+    // `new URL('main.mjs', import.meta.url)` — the literal filename, which
+    // drops the `?v=` cache-buster. The main thread then runs the freshly
+    // deployed module while the worker gets a stale `main.mjs` from the
+    // browser/CDN cache (GitHub Pages caches for 600 s), and instantiating
+    // the new wasm against the old worker JS crashes the worker at load
+    // ("__emscripten_thread_crashed is not a function").
+    mainScriptUrlOrBlob: url,
     locateFile: (p: string) =>
       p.endsWith('.wasm') ? new URL(`main.wasm?v=${bust}`, document.baseURI).href : p,
     print: routePrintLine,
