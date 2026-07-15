@@ -23,6 +23,8 @@ struct mouse {
     bool x1, y1; // Current interrupt line logic levels (SCC DCD inputs)
     uint64_t tail_timestamp_x; // CPU cycle timestamp of the last scheduled X pulse (edge)
     uint64_t tail_timestamp_y; // CPU cycle timestamp of the last scheduled Y pulse (edge)
+    int8_t scale_rem_x; // Carried host-delta remainders from the 2:1 scaling,
+    int8_t scale_rem_y; // so small deltas keep their X:Y ratio across events
 
     /* Pointers last */
     struct scheduler *scheduler; // Event scheduler (CPU-cycle aligned)
@@ -30,12 +32,26 @@ struct mouse {
     via_t *via; // VIA for quadrature + button inputs
 };
 
-// Fixed cycles per slot (uniform slot timing). Adjust to tune overall pointer speed.
-#define MOUSE_CYCLES_PER_SLOT 10000
+// Constant slot spacing — the physical quadrature pace. A real mouse tops
+// out around 2,500-2,700 counts/s (~90 counts/inch at a violent ~30 in/s
+// swipe), i.e. one DCD interrupt per ~3,000 CPU cycles. The previous model
+// squeezed every host delta batch into a fixed 10,000-cycle window
+// (per_slot = 10000/steps), which was wrong at both extremes: large deltas
+// fired interrupt bursts far denser than hardware can produce (500-cycle
+// spacing at 20 counts — enough interrupt load to audibly break up
+// MusicWorks playback that a real Plus shrugs off), while a 1-count batch
+// consumed a whole 10,000-cycle tail slot, so hosts sending >~780 pointer
+// events/s (1 kHz mice, uncoalesced trackpads) grew the queue faster than
+// the timeline drained it and the cursor kept gliding after the hand
+// stopped. Uniform physical spacing fixes both: the queue drains at
+// ~2,600 counts/s — comfortably above any real drag's count rate — and
+// interrupt density can never exceed what hardware produces.
+#define MOUSE_CYCLES_PER_SLOT 3000
+
 static inline uint64_t cycles_per_slot(mouse_t *restrict m, int steps_in_batch) {
     (void)m;
-    (void)steps_in_batch; // Unused in fixed model
-    return (uint64_t)MOUSE_CYCLES_PER_SLOT / steps_in_batch;
+    (void)steps_in_batch;
+    return MOUSE_CYCLES_PER_SLOT;
 }
 
 #define EVENT_DATA_HORIZONTAL 2
@@ -97,16 +113,20 @@ static void schedule_axis(mouse_t *restrict m, int delta, bool horizontal, uint6
     }
 }
 
-// Simple legacy scaling: large deltas are halved to moderate event density
-static int scale(int value) {
-    if (value == 0)
-        return 0;
+// 2:1 host-pixel-to-count scaling with a carried remainder. Halving each
+// event independently with integer division collapsed small deltas: at high
+// pointer-event rates (1 kHz mice, uncoalesced trackpads) per-event deltas
+// are +-1..3 on both axes, and 2 and 3 both floored to 1 — nearly every
+// event contributed (+-1,+-1) and the cursor walked perfect 45-degree
+// diagonals. Carrying the remainder preserves the true X:Y ratio across
+// events (and stops odd deltas from silently losing half a count).
+static int scale(int value, int8_t *rem) {
     if (value == -1 || value == 1)
-        return value;
-    if (value < -1 || value > 1)
-        return value / 2; // Compress magnitude
-    assert(0); // Should not reach here
-    return 0;
+        return value; // Preserve single-pixel nudges exactly
+    int total = value + *rem;
+    int out = total / 2; // Truncates toward zero
+    *rem = (int8_t)(total - out * 2);
+    return out;
 }
 
 // Public entry: accepts host-relative mouse deltas and schedules corresponding quadrature pulses
@@ -117,9 +137,9 @@ extern void mouse_update(mouse_t *restrict m, bool button, int dx, int dy) {
     // Button: VIA PB3, active low (0 = pressed)
     via_input(m->via, 1, 3, !button);
 
-    // Apply simple scaling to damp extreme host motion
-    dx = scale(dx);
-    dy = scale(dy);
+    // Apply 2:1 scaling with carried remainders (ratio-preserving)
+    dx = scale(dx, &m->scale_rem_x);
+    dy = scale(dy, &m->scale_rem_y);
 
     uint64_t now_cycles = scheduler_cpu_cycles(m->scheduler);
 
@@ -131,9 +151,9 @@ extern void mouse_update(mouse_t *restrict m, bool button, int dx, int dy) {
 // Injects movement deltas without changing the current button state.
 // Used by set-mouse --hw to move the cursor through quadrature without affecting button.
 void mouse_move(mouse_t *restrict m, int dx, int dy) {
-    // Apply simple scaling to damp extreme host motion
-    dx = scale(dx);
-    dy = scale(dy);
+    // Apply 2:1 scaling with carried remainders (ratio-preserving)
+    dx = scale(dx, &m->scale_rem_x);
+    dy = scale(dy, &m->scale_rem_y);
 
     uint64_t now_cycles = scheduler_cpu_cycles(m->scheduler);
 
