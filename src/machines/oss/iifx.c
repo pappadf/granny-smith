@@ -1096,7 +1096,8 @@ static void iifx_io_ossext_write(config_t *cfg, uint32_t addr, uint8_t value) {
 //   base           end                device              penalty              xform              rd  wr
 //   read_fn/write_fn                       name
 static const mac030_io_range_t iifx_io_ranges_tbl[] = {
-    {IO_VIA1, IO_VIA1_END, MAC030_DEV_VIA1, IIFX_VIA_IO_PENALTY, MAC030_IO_MASK_A0, 0, 0, NULL, NULL, "via1"},
+    {IO_VIA1, IO_VIA1_END, MAC030_DEV_VIA1, IIFX_VIA_IO_PENALTY, MAC030_IO_MASK_A0, 0, 0, NULL, NULL, "via1",
+     .esync = 1},
     {IO_SCC_IOP, IO_SCC_IOP_END, MAC030_DEV_SCC_IOP, IIFX_IOP_IO_PENALTY, MAC030_IO_NORMAL, 0, 0, NULL, NULL,
      "scc_iop"},
     {IO_SCSI_DMA, IO_SCSI_DMA_END, MAC030_DEV_VIA1, IIFX_SCSI_IO_PENALTY, MAC030_IO_NORMAL, 0, 0, iifx_io_scsidma_read,

@@ -62,7 +62,7 @@ typedef enum {
 typedef struct mac030_io_range {
     uint32_t base, end; // [base, end) within the I/O mirror
     mac030_dev_t device; // which device handles this window (when read_fn/write_fn NULL)
-    uint16_t penalty; // memory_io_penalty cycles per byte access
+    uint16_t penalty; // memory_io_penalty cycles per byte access (ignored when esync set)
     mac030_io_xform_t xform; // offset transform
     uint16_t read_off, write_off; // sub-offsets for MAC030_IO_FIXED windows
     // Optional code hooks for windows a (device, offset) row can't express —
@@ -74,6 +74,11 @@ typedef struct mac030_io_range {
     uint8_t (*read_fn)(struct config *cfg, uint32_t addr);
     void (*write_fn)(struct config *cfg, uint32_t addr, uint8_t value);
     const char *debug_name; // for the address-map unit test + tracing
+    // 1 = 6522 window: charge the phase-accurate E-clock sync penalty
+    // instead of the fixed `penalty` (each byte access completes at the
+    // next 783.360 kHz E boundary — see memory_io_esync_penalty). Last so
+    // positional initializers stay valid; flagged rows set `.esync = 1`.
+    uint16_t esync;
 } mac030_io_range_t;
 
 // Device handles + cached memory interfaces the engine routes to, indexed by

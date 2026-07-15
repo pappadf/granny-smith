@@ -51,7 +51,7 @@ static const memory_interface_t mdu_vdac_iface = {
 //
 //   base     end      device            penalty              xform               rd  wr     name
 const mac030_io_range_t mdu_io_ranges_tbl[] = {
-    {0x00000, 0x02000, MAC030_DEV_VIA1, MDU_VIA_IO_PENALTY, MAC030_IO_MASK_A0, 0, 0, NULL, NULL, "via1"},
+    {0x00000, 0x02000, MAC030_DEV_VIA1, MDU_VIA_IO_PENALTY, MAC030_IO_MASK_A0, 0, 0, NULL, NULL, "via1", .esync = 1},
     {0x04000, 0x06000, MAC030_DEV_SCC, MDU_SCC_IO_PENALTY, MAC030_IO_NORMAL, 0, 0, NULL, NULL, "scc"},
     {0x06000, 0x08000, MAC030_DEV_SCSI, MDU_SCSI_IO_PENALTY, MAC030_IO_FIXED, 0, 0x201, NULL, NULL, "scsi_drq"},
     {0x10000, 0x12000, MAC030_DEV_SCSI, MDU_SCSI_IO_PENALTY, MAC030_IO_NORMAL, 0, 0, NULL, NULL, "scsi_reg"},

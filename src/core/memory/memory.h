@@ -171,6 +171,33 @@ extern uint32_t g_io_phantom_instructions; // phantom instructions consumed this
 extern uint32_t g_io_cpi; // current CPI for conversion (0 = disabled)
 extern uint32_t *g_sprint_burndown_ptr; // points to sprint_burndown during sprint
 
+// --- VIA E-clock synchronization (proposal-via-eclock-sync) -----------------
+//
+// 6522 VIA accesses are synchronized to the 783.360 kHz E clock on real
+// hardware: an access completes at the next E boundary, so back-to-back
+// polling loops (`TST.B (VIA); DBF`) lock to one access per E period
+// (1.2766 us) independent of CPU speed — the ROMs' pre-calibration timebase
+// (1-E "pipelined" model, settled against a real IIsi chime recording).
+// Ranges flagged `esync` charge this phase-accurate penalty instead of a
+// fixed cycle count.
+
+extern uint64_t g_sprint_base_cycles; // scheduler cpu_cycles at sprint start
+extern uint32_t g_sprint_total_slots; // sprint slot budget at sprint start
+extern uint32_t g_esync_period_x256; // E period in CPU cycles x256 (0 = unset)
+
+// Pure math: cycles from `now_cycles` to the next E boundary, in (0, E].
+// Fixed-point x256 grid keeps the boundary sequence exact for non-integer
+// cycles-per-E machines (25 MHz -> 31.91 cycles). Rounds UP to whole cycles
+// so an access always lands on/just past its boundary — never before it
+// (round-to-nearest could yield 0 and let two accesses share a boundary);
+// the overshoot self-corrects because every access re-aims at the absolute
+// grid, keeping the long-run rate exact. Deterministic.
+static inline uint32_t memory_esync_penalty_cycles(uint64_t now_cycles, uint32_t period_x256) {
+    uint32_t phase_x256 = (uint32_t)((now_cycles << 8) % period_x256);
+    uint32_t pen_x256 = period_x256 - phase_x256; // (0, period]
+    return (pen_x256 + 255) >> 8; // ceil to whole cycles
+}
+
 // Apply an I/O bus cycle penalty (extra_cycles beyond the CPI baseline).
 // Called from machine I/O dispatchers (e.g. SE/30) in the slow path only.
 static inline void memory_io_penalty(uint32_t extra_cycles) {
@@ -185,6 +212,23 @@ static inline void memory_io_penalty(uint32_t extra_cycles) {
         if (bp)
             *bp = (*bp > burn) ? (*bp - burn) : 0;
     }
+}
+
+// Charge an E-synchronized access: stall until the next E boundary.
+// "Now" is reconstructed from sprint progress (slots consumed x CPI on top
+// of the sprint's base cycles); earlier penalties in the same sprint have
+// already burned slots, so consecutive E-synced accesses see advancing time
+// and lock to the boundary grid. Sub-CPI phase jitter (< one CPI slot) is
+// inherent to the slot quantization and irrelevant against the >=20-cycle
+// E period; the long-run rate is exact.
+static inline void memory_io_esync_penalty(void) {
+    if (__builtin_expect(g_io_cpi == 0, 0) || g_esync_period_x256 == 0)
+        return; // penalties disabled / E grid not configured
+    uint64_t now = g_sprint_base_cycles;
+    uint32_t *bp = g_sprint_burndown_ptr;
+    if (bp)
+        now += (uint64_t)(g_sprint_total_slots - *bp) * g_io_cpi;
+    memory_io_penalty(memory_esync_penalty_cycles(now, g_esync_period_x256));
 }
 
 // Slow-path handlers for device I/O, unmapped, or MMU TLB miss accesses
