@@ -94,6 +94,12 @@ uint32_t g_io_penalty_remainder = 0;
 uint32_t g_io_phantom_instructions = 0;
 uint32_t g_io_cpi = 0;
 uint32_t *g_sprint_burndown_ptr = NULL;
+// E-clock sync state: normally defined in memory.c and written by scheduler.c
+// (scheduler_set_frequency / the sprint loop). memory.c is not linked into
+// this isolated scheduler suite, so stub the storage here.
+uint64_t g_sprint_base_cycles = 0;
+uint32_t g_sprint_total_slots = 0;
+uint32_t g_esync_period_x256 = 0;
 
 // Checkpointing is not exercised here (integration checkpoint tests cover it).
 void system_read_checkpoint_data_loc(checkpoint_t *checkpoint, void *data, size_t size, const char *file, int line) {
