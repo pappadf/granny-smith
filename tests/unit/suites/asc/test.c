@@ -428,7 +428,8 @@ TEST(test_producer_open_batch_and_conversion) {
 
 TEST(test_producer_stereo_mix) {
     // FIFO stereo (control bit 1): A drives left, B right. The board mix
-    // folds to the speaker: channel A on IIx/IIcx, L+R sum on the SE/30.
+    // folds to the speaker: channel A on IIx/IIcx, the averaged analog
+    // L+R mix on the SE/30.
     fresh();
     wr(R_MODE, 1);
     wr(R_CONTROL, 0x02);
@@ -449,16 +450,19 @@ TEST(test_producer_stereo_mix) {
     tick(1);
     wr(R_MODE, 0);
     ASSERT_EQ_INT((int)s_nframes, 1);
-    ASSERT_EQ_INT(s_frames[0], 32512); // 0 + right
+    ASSERT_EQ_INT(s_frames[0], 16256); // (0 + right) / 2
 }
 
 TEST(test_producer_wavetable_free_run) {
     // Wavetable voices free-run in mode 2 (no enable gate — the boot chime
     // never touches $805). Voices 0+1 sum to the left channel, 2+3 to the
-    // right; each voice scales to half full-scale.
+    // right; each voice scales to half full-scale. Table bytes are
+    // offset-binary (0x80 = zero), the same DAC convention as FIFO mode.
     fresh();
-    wr(0x000, 0x40); // voice 0 table[0] = +64
-    wr(0x400, 0x7F); // voice 2 table[0] = +127
+    wr(0x000, 0xC0); // voice 0 table[0] = +64
+    wr(0x200, 0x80); // voice 1 table[0] = 0 (silence)
+    wr(0x400, 0xFF); // voice 2 table[0] = +127
+    wr(0x600, 0x80); // voice 3 table[0] = 0 (silence)
     // Zero increments keep every voice parked on table[0]
 
     asc_set_mix(g_asc, ASC_MIX_CH_A);
@@ -466,23 +470,26 @@ TEST(test_producer_wavetable_free_run) {
     tick(1);
     wr(R_MODE, 0);
     ASSERT_EQ_INT((int)s_nframes, 1);
-    ASSERT_EQ_INT(s_frames[0], 0x40 << 7); // left pair only
+    ASSERT_EQ_INT(s_frames[0], 64 << 7); // left pair only
 
     fresh();
-    wr(0x000, 0x40);
-    wr(0x400, 0x7F);
+    wr(0x000, 0xC0);
+    wr(0x200, 0x80);
+    wr(0x400, 0xFF);
+    wr(0x600, 0x80);
     asc_set_mix(g_asc, ASC_MIX_SUM);
     wr(R_MODE, 2);
     tick(1);
     wr(R_MODE, 0);
     ASSERT_EQ_INT((int)s_nframes, 1);
-    ASSERT_EQ_INT(s_frames[0], (0x40 << 7) + (0x7F << 7)); // L + R
+    ASSERT_EQ_INT(s_frames[0], ((64 << 7) + (127 << 7)) / 2); // (L + R) / 2
 
     // Phase advance: increment of 1.0 (integer step) walks the table
     fresh();
-    wr(0x000, 10);
-    wr(0x001, 20);
-    wr(0x002, 30);
+    wr(0x000, 0x80 + 10);
+    wr(0x001, 0x80 + 20);
+    wr(0x002, 0x80 + 30);
+    wr(0x200, 0x80); // voice 1 parked on silence
     // Voice 0 increment = 0x008000 (1.0 in 9.15 fixed point)
     wr(R_WAVE + 4, 0x00);
     wr(R_WAVE + 5, 0x00);

@@ -1,0 +1,108 @@
+# IIcx + 8•24 GC — Control Panel Speaker Volume beep through the ASC
+# wavetable path (see config.mk for the regression context: offset-binary
+# wavetable samples, the one waveform the boot-chime goldens can't guard).
+#
+# Boot recipe is iicx-824gc-accel's; the desktop baseline here is pixel-
+# identical to that test's finder-824gc-accel-640x480-1bpp.png.
+#
+# Regenerate the goldens by replacing the two screen.match lines with
+# machine.screen.save and each sound stop/match pair with
+#   machine.sound.capture.stop beep.wav    (beep2.wav for the second)
+# then audition the WAVs once before committing them.
+
+machine.nubus.video_card = "824gc"
+machine.boot "iicx" 8192
+machine.rom.reload
+
+# Pin the RTC so the run is deterministic. This must come AFTER machine.boot
+# (which resets the RTC to the host wall clock) — the Control Panel's clock
+# is visible in the golden, so an unpinned RTC changes pixels run-to-run.
+machine.rtc.time = 3000000000
+
+machine.scsi.attach_hd "../../data/systems/system_6_0_8_20mb_8_24gc.img" 0
+scheduler.run 200000000
+
+# --- The Finder desktop, drawn by the card (accelerator ON). ---
+assert ${machine.nubus.slot[9].card.gc.on == true} "accelerator did not turn on"
+machine.screen.match finder-824gc-640x480-1bpp.png
+
+# --- Open the Control Panel from the Apple menu. ---
+# Held mouse-down at the Apple menu (25,10) drops the menu; "Control Panel"
+# sits at y=139; releasing over it launches the DA (General cdev selected).
+machine.adb.mouse.move 50 50 "global"
+scheduler.run 5000000
+machine.adb.mouse.move 25 10 "global"
+scheduler.run 3000000
+machine.adb.mouse.click true
+scheduler.run 8000000
+machine.adb.mouse.move 68 139 "global"
+scheduler.run 3000000
+machine.adb.mouse.click false
+scheduler.run 60000000
+machine.screen.match control-panel-general.png
+
+# --- Drag the Speaker Volume slider from level 3 to 5. ---
+# The slider track is at x=458; the level-3 knob center is y=248 and each
+# level is ~11.5 px. The knob itself must be pressed (the track is inert),
+# and the drag needs intermediate steps for the control to track it. On
+# release the Sound Manager plays the confirmation beep at the new volume:
+# mode 2 wavetable, one clean mode 2->0 window, with the decay envelope
+# re-rendering the 512-byte voice table in place ~14 times mid-play.
+machine.sound.capture.start
+machine.adb.mouse.move 458 248 "global"
+scheduler.run 3000000
+machine.adb.mouse.click true
+scheduler.run 3000000
+machine.adb.mouse.move 458 242 "global"
+scheduler.run 2000000
+machine.adb.mouse.move 458 236 "global"
+scheduler.run 2000000
+machine.adb.mouse.move 458 230 "global"
+scheduler.run 2000000
+machine.adb.mouse.move 458 225 "global"
+scheduler.run 2000000
+machine.adb.mouse.click false
+scheduler.run 40000000
+machine.sound.capture.stop
+
+# The beep window is Sound-Manager-controlled: mode 2 for exactly 5,423
+# samples (22,257 Hz), captured pre-resampling/pre-volume.
+assert ${machine.sound.capture.frames == 5423} "unexpected capture length"
+
+# Sample-exact compare against the golden (fails the test on any divergence).
+# Loudness does NOT appear in the capture: the sink is pre-volume, and the
+# slider level lands in the ASC volume register (post-DAC attenuation the
+# host applies at playback). The register is asserted directly instead.
+machine.sound.match beep.wav
+assert ${machine.sound.volume == 5} "ASC volume register != slider level 5"
+
+# --- Drag the slider one more notch, from level 5 to 6: a second beep. ---
+# The level-5 knob center is y=225, level 6 is y=214. A second, separately
+# captured beep guards the beep path's repeatability (the Sound Manager
+# re-renders the wavetable from scratch each time; state left over from the
+# first beep — table fill, phase accumulators, FIFO pointers — must not leak
+# into the next one).
+machine.sound.capture.start
+machine.adb.mouse.move 458 225 "global"
+scheduler.run 3000000
+machine.adb.mouse.click true
+scheduler.run 3000000
+machine.adb.mouse.move 458 221 "global"
+scheduler.run 2000000
+machine.adb.mouse.move 458 217 "global"
+scheduler.run 2000000
+machine.adb.mouse.move 458 214 "global"
+scheduler.run 2000000
+machine.adb.mouse.click false
+scheduler.run 40000000
+machine.sound.capture.stop
+
+assert ${machine.sound.capture.frames == 5423} "unexpected second capture length"
+# The pre-volume waveform is identical to the first beep (beep2.wav ==
+# beep.wav byte-for-byte): the Sound Manager re-renders the same table and
+# no state leaks between beeps. The second beep is LOUDER only through the
+# volume register, asserted below.
+machine.sound.match beep2.wav
+assert ${machine.sound.volume == 6} "ASC volume register != slider level 6"
+
+quit

@@ -340,7 +340,10 @@ static void asc_produce_frame(asc_t *asc, int16_t *left, int16_t *right) {
     for (int v = 0; v < WAVE_VOICE_COUNT; v++) {
         // Extract 9-bit integer from 9.15 fixed-point phase accumulator
         int index = (asc->wave_phase[v] >> 15) & WAVE_INDEX_MASK;
-        int8_t sample = (int8_t)asc->ram[v * WAVE_TABLE_SIZE + index];
+        // Wavetable bytes are offset-binary (0x80 = zero), same DAC
+        // convention as the FIFO path; the Sound Manager's beep writes a
+        // 0x80-centered sine that wraps to garbage under a plain int8 cast.
+        int sample = (int)asc->ram[v * WAVE_TABLE_SIZE + index] - 128;
         pair[v >> 1] += sample;
         // Advance phase accumulator by the voice's frequency increment
         asc->wave_phase[v] = (asc->wave_phase[v] + asc->wave_incr[v]) & PHASE_MASK;
@@ -365,8 +368,11 @@ static void asc_fifo_drain_callback(void *source, uint64_t data) {
     int16_t left, right;
     asc_produce_frame(asc, &left, &right);
 
-    // Board-level speaker fold: SE/30 sums both channels, IIx/IIcx take left
-    int16_t mono = (asc->mix == ASC_MIX_SUM) ? sat16((int32_t)left + right) : left;
+    // Board-level speaker fold: SE/30 mixes both channels into the speaker,
+    // IIx/IIcx take left. The board mix is a passive analog combine, so it
+    // averages rather than saturating — with the DACs' offset-binary DC bias
+    // a digital sum would rail at INT16_MIN and flatten the waveform.
+    int16_t mono = (asc->mix == ASC_MIX_SUM) ? (int16_t)(((int32_t)left + right) >> 1) : left;
     asc->out_buf[asc->out_count++] = mono;
     if (asc->out_count >= ASC_PUSH_BATCH)
         asc_flush(asc);

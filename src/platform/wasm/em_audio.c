@@ -79,6 +79,14 @@ EM_JS(void, gs_audio_init_js, (), {
         "    this.step=this.srcRate/this.dstRate;",
         "    this.errI=0; this.frac=0; this.lpfY=[0,0];",
         "    var fc=8000; this.lpfA=1.0-Math.exp(-2*Math.PI*fc/this.dstRate);",
+        // DC blocker (speaker AC coupling): the ASC DAC output carries a large
+        // constant offset (offset-binary DAC, unused wavetable voices at rail),
+        // and the underrun/start-gate fill value is 0 — without DC removal
+        // every delivery hiccup steps between the offset and 0, an audible
+        // full-scale click. fc ~20 Hz: inaudible, settles in a few ms.
+        "    this.dcX=[0,0]; this.dcYv=[0,0];",
+        "    this.dcR=1-2*Math.PI*20/this.dstRate;",
+        "    this.quietQ=0;", // process() quanta since the last data push
         "    this.curGain=0; this.started=false;",
         "    var self2=this;",
         "    this.port.onmessage=function(e){",
@@ -95,6 +103,7 @@ EM_JS(void, gs_audio_init_js, (), {
         "      var ch=self2.ch;",
         "      var n=(src.length/ch)|0;", // payload length in frames
         "      self2.vol=d.vol;",
+        "      self2.quietQ=0;",
         "      if(d.sil){self2.silentCount++;}else{self2.silentCount=0;}",
         "      var w=self2.wIdx, r=self2.rIdx, mask=self2.mask;",
         "      var used=(w-r)&mask, free=mask-used;",
@@ -111,8 +120,18 @@ EM_JS(void, gs_audio_init_js, (), {
         "    var ch=this.ch; var oc=out.length<ch?out.length:ch;",
         "    var w=this.wIdx, r=this.rIdx, mask=this.mask;",
         "    var avail=(w-r)&mask;",
-        // Start gate: stay silent until the ring reaches the target depth
-        "    if(!this.started){if(avail<this.targetFrames){for(var c=0;c<out.length;c++)out[c].fill(0);return true;}this.started=true;}",
+        "    this.quietQ++;",
+        // Start gate: stay silent until the ring reaches the target depth, OR
+        // until the stream has evidently ended short of it (data pending but
+        // no push for 12 quanta ~32 ms) — so sounds shorter than the cushion
+        // still play out. An active producer pushes every ~3 ms, so the quiet
+        // threshold must sit above main-thread jank (tens of ms) or the gate
+        // opens mid-fill with a shallow ring and the crackle returns.
+        "    if(!this.started){",
+        "      var ready=avail>=this.targetFrames||(avail>0&&this.quietQ>=12);",
+        "      if(!ready){for(var c=0;c<out.length;c++)out[c].fill(0);return true;}",
+        "      this.started=true;",
+        "    }",
         "    var ts=this.targetFrames;",
         "    var targetGain=Math.min(Math.max(this.vol,0),7)/7;",
         // PI controller trims the resample step ±2000 ppm toward target depth
@@ -133,13 +152,25 @@ EM_JS(void, gs_audio_init_js, (), {
         "        var s0=this.data[b0+c]/32768, s1=this.data[b1+c]/32768;",
         "        var x=s0+(s1-s0)*frac;", // linear interpolation
         "        this.lpfY[c]+=this.lpfA*(x-this.lpfY[c]);", // one-pole LPF
-        "        out[c][i]=this.lpfY[c]*this.curGain;",
+        "        var lp=this.lpfY[c];",
+        "        var hp=lp-this.dcX[c]+this.dcR*this.dcYv[c];", // DC blocker
+        "        this.dcX[c]=lp; this.dcYv[c]=hp;",
+        "        out[c][i]=hp*this.curGain;",
         "      }",
         "      this.frac+=stepAdj;",
         "      var consumed=this.frac|0;",
         "      if(consumed>0){this.frac-=consumed;var wc=consumed<have?consumed:have;r=(r+wc)&mask;}",
         "    }",
         "    this.rIdx=r;",
+        // Re-arm the start gate when the stream runs dry (a sound ended, or a
+        // deep underrun): without this only the FIRST sound after page load
+        // gets the target-depth cushion — every later one plays against a
+        // near-empty ring and crackles on every scheduling hiccup. The <2
+        // remnant frame must be discarded (rIdx=wIdx): a nonzero depth would
+        // let the quiet-stream early-open defeat the gate for the next sound.
+        "    if(this.started&&((this.wIdx-r)&mask)<2){",
+        "      this.started=false;this.rIdx=this.wIdx;this.frac=0;this.errI=0;",
+        "    }",
         // Silence-aware depth trim: during sustained silence, clamp ring depth
         // to the target so latency can't grow when the emulator outruns real time
         "    if(this.silentCount>=8){",

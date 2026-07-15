@@ -31,7 +31,7 @@ typedef struct asc asc_t;
 // modeled — see proposal-sound-support-all-models §9.)
 typedef enum asc_mix {
     ASC_MIX_CH_A = 0, // speaker = left channel (IIx, IIcx)
-    ASC_MIX_SUM = 1, // speaker = left + right sum (SE/30)
+    ASC_MIX_SUM = 1, // speaker = left + right analog mix, averaged (SE/30)
 } asc_mix_t;
 
 // === Lifecycle (Constructor / Destructor / Checkpoint) ===
