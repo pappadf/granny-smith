@@ -65,7 +65,7 @@ You will need a Macintosh ROM image and a bootable system disk image.
 4. Click **Boot** - your session is checkpointed continuously in the background, so closing or reloading the tab won't lose state
 5. Once running, you can drag-and-drop additional disk images directly onto the screen to insert them at runtime
 
-Disk images can be raw (`.dsk`, `.img`), compressed (`.sit.hqx`), or packaged in `.zip` archives. They are decompressed transparently via the bundled [peeler](third-party/peeler) library.
+Disk images can be raw (`.dsk`, `.img`), compressed (`.sit.hqx`), or packaged in `.zip` archives. They are decompressed transparently via the in-tree [peeler](src/peeler) library.
 
 For build, test, and contribution instructions, see [CONTRIBUTING.md](CONTRIBUTING.md). Architecture and design docs live in [docs/guide/ARCHITECTURE.md](docs/guide/ARCHITECTURE.md), and coding guidelines in [AGENTS.md](AGENTS.md).
 

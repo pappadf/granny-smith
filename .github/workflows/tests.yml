@@ -134,9 +134,9 @@ jobs:
         password: ${{ secrets.GITHUB_TOKEN }}
 
     steps:
-      # `submodules: recursive` is required for the WASM build step
-      # later in this job — Makefile bails early if third-party/peeler
-      # is missing.
+      # `submodules: recursive` pulls the remaining submodules (e.g.
+      # single-step-tests). Peeler is now in-tree under src/peeler, so the
+      # WASM build no longer depends on a submodule checkout.
       - uses: actions/checkout@v6
         with:
           submodules: recursive

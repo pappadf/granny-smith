@@ -47,13 +47,6 @@ $(warning emcc version $(EMCC_VERSION) != required $(EMSDK_REQUIRED_VERSION))
 endif
 endif
 
-# -- Submodule guard --
-# Fail early if required git submodules are not initialised.
-
-ifeq ($(wildcard third-party/peeler/include),)
-$(error Submodule third-party/peeler not initialised. Run: git submodule update --init --recursive)
-endif
-
 # -- Directories --
 
 BUILD_DIR     := build
@@ -63,7 +56,7 @@ WEB2_DIST     := $(WEB2_DIR)/dist
 CORE_DIR      := src/core
 MACHINES_DIR  := src/machines
 PLATFORM_DIR  := src/platform/wasm
-PEELER_DIR    := third-party/peeler
+PEELER_DIR    := src/peeler
 
 # -- Source discovery --
 # Wildcard patterns auto-discover new .c files in each subdirectory.

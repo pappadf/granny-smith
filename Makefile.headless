@@ -21,20 +21,13 @@ else
 	CFLAGS_MODE := -O2
 endif
 
-# -- Submodule guard --
-# Fail early if required git submodules are not initialised.
-
-ifeq ($(wildcard third-party/peeler/include),)
-$(error Submodule third-party/peeler not initialised. Run: git submodule update --init --recursive)
-endif
-
 # -- Directories --
 
 BUILD_DIR     := build/headless
 CORE_DIR      := src/core
 MACHINES_DIR  := src/machines
 PLATFORM_DIR  := src/platform/headless
-PEELER_DIR    := third-party/peeler
+PEELER_DIR    := src/peeler
 
 # -- Include paths --
 # Platform headers come first so platform.h overrides are picked up.

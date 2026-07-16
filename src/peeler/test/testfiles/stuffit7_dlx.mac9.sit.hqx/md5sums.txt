@@ -1,0 +1,12 @@
+3b518f038b22048669ef4bb00b130f5b  ._Test Image
+2069d2923808d40c375eadcac4b99004  ._Test Text
+7481de98c965a9b9bb10da1f903fa1e0  ._testfile.PICT
+e68d830abdf7fb247e293148b7e7bc6e  ._testfile.jpg
+2e36c487837667b03b35acbf4fc717c4  ._testfile.png
+4da94c4dbeaf8df0d1caa8d1d6364d86  ._testfile.txt
+d41d8cd98f00b204e9800998ecf8427e  Test Image
+41884e32dd65188232ce22cde06a153d  Test Text
+f7dccd7c0284863fe72708b4b85d9e35  testfile.PICT
+a6bbf07c34efeb128bbb93deb95bfc2c  testfile.jpg
+7fbb9d498791f30570295171527da66c  testfile.png
+166c16fe793527a819d8ed7837b4fa7d  testfile.txt
