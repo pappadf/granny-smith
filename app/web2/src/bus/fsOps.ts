@@ -74,8 +74,11 @@ export async function copyOutOfImage(
       if (!firstError) firstError = `'${safe}' already exists in destination`;
       continue;
     }
-    const args = sources[i].isDir ? ['-r', src, dst] : [src, dst];
-    const res = await gsEval('storage.cp', args);
+    // storage.cp preserves forks: a file carrying a resource fork / Finder
+    // Info (e.g. an NDIF disk image, whose block map lives in the resource
+    // fork) is written as an AppleDouble pair — the data fork under `dst` plus
+    // a sibling "._<name>" header — so the copy is lossless and re-mountable.
+    const res = await gsEval('storage.cp', sources[i].isDir ? ['-r', src, dst] : [src, dst]);
     if (res !== true) {
       failures.push(name);
       if (!firstError) firstError = gsErrorText(res);

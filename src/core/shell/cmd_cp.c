@@ -9,11 +9,15 @@
 // always the host backend in v1 (image writes return -EROFS
 // structurally; see §2.9 in proposal-image-vfs.md).
 //
-// Fork handling (§2.8) is not implemented in v1: HFS files are extracted
-// as their data fork only.  Opening the reserved sub-paths `<file>/rsrc`
-// and `<file>/finf` from the shell still works, so resource forks can be
-// extracted manually.
+// Fork handling: a file copied OUT of an image that carries a resource fork
+// and/or non-trivial Finder Info is materialised as an AppleDouble pair — the
+// data fork keeps the plain name, and a sibling "._<name>" header file holds
+// the resource fork (entry 2) + Finder Info (entry 9).  This is lossless (an
+// NDIF `.img`, whose block map lives in the resource fork, survives a
+// round-trip) and interoperates with macOS/Netatalk/tar.  Data-only files stay
+// single clean streams.  See proposal-appledouble-support.md §4.3.
 
+#include "appledouble.h"
 #include "shell.h"
 #include "vfs.h"
 
@@ -48,6 +52,129 @@ static void path_join(char *dst, size_t cap, const char *a, const char *b) {
 static void path_basename(const char *path, char *out, size_t cap) {
     const char *slash = strrchr(path, '/');
     snprintf(out, cap, "%s", slash ? slash + 1 : path);
+}
+
+// Read an entire VFS file into a freshly malloc'd buffer (caller frees).
+// Returns 0 on success, or a negative errno.  A missing/opaque synthetic path
+// (e.g. "<hostfile>/rsrc/_raw", which only image-backed sources expose) fails
+// cleanly here and the caller treats it as "no fork".  Bounded so a corrupt
+// length can't run away.
+#define FORK_READ_CAP (64u * 1024u * 1024u)
+static int read_vfs_file_all(const char *path, uint8_t **out, size_t *out_len) {
+    *out = NULL;
+    *out_len = 0;
+    vfs_file_t *f = NULL;
+    const vfs_backend_t *be = NULL;
+    int rc = vfs_open(path, &f, &be);
+    if (rc < 0)
+        return rc;
+    size_t cap = 0, len = 0;
+    uint8_t *buf = NULL;
+    for (;;) {
+        if (len == cap) {
+            size_t ncap = cap ? cap * 2 : 4096;
+            if (ncap > FORK_READ_CAP)
+                ncap = FORK_READ_CAP;
+            if (ncap == cap) {
+                rc = -EFBIG;
+                break;
+            }
+            uint8_t *nb = realloc(buf, ncap);
+            if (!nb) {
+                rc = -ENOMEM;
+                break;
+            }
+            buf = nb;
+            cap = ncap;
+        }
+        size_t got = 0;
+        rc = be->read(f, len, buf + len, cap - len, &got);
+        if (rc < 0)
+            break;
+        if (got == 0) {
+            rc = 0;
+            break;
+        }
+        len += got;
+    }
+    be->close(f);
+    if (rc < 0) {
+        free(buf);
+        return rc;
+    }
+    *out = buf;
+    *out_len = len;
+    return 0;
+}
+
+static bool all_zero(const uint8_t *p, size_t n) {
+    for (size_t i = 0; i < n; i++)
+        if (p[i])
+            return false;
+    return true;
+}
+
+// After a file's data fork has been copied to `dst`, preserve its resource fork
+// and Finder Info (if any) as a sibling AppleDouble "._<name>" header file.
+// Sources with neither leave `dst` a clean single stream.  Returns 0 on success
+// (including the no-fork case) or a negative errno; a fork that exists but
+// cannot be preserved is a hard error, since silent loss is the bug being
+// fixed.
+static int maybe_write_fork_sidecar(const char *src, const char *dst, struct cp_stats *s) {
+    char rsrc_path[VFS_PATH_MAX], finf_path[VFS_PATH_MAX];
+    snprintf(rsrc_path, sizeof(rsrc_path), "%s/rsrc/_raw", src);
+    snprintf(finf_path, sizeof(finf_path), "%s/finf", src);
+
+    uint8_t *rsrc = NULL, *finf = NULL;
+    size_t rsrc_len = 0, finf_len = 0;
+    (void)read_vfs_file_all(rsrc_path, &rsrc, &rsrc_len); // absent => rsrc_len 0
+    (void)read_vfs_file_all(finf_path, &finf, &finf_len);
+
+    // Only Finder Info of exactly 32 bytes and not all-zero is worth carrying.
+    const uint8_t *finder = (finf_len == AD_FINDER_INFO_SIZE && !all_zero(finf, finf_len)) ? finf : NULL;
+    if (rsrc_len == 0 && !finder) {
+        free(rsrc);
+        free(finf);
+        return 0; // data-only file: no sidecar
+    }
+
+    uint8_t *hdr = NULL;
+    size_t hdr_len = 0;
+    int rc = ad_build_sidecar(rsrc, rsrc_len, finder, &hdr, &hdr_len);
+    free(rsrc);
+    free(finf);
+    if (rc < 0) {
+        snprintf(s->detail, sizeof(s->detail), "cannot build AppleDouble header for '%s': %s", dst, strerror(-rc));
+        return rc;
+    }
+
+    // Sidecar path: "<dir>/._<basename>".
+    char sidecar[VFS_PATH_MAX];
+    const char *slash = strrchr(dst, '/');
+    if (slash) {
+        int dirlen = (int)(slash - dst);
+        snprintf(sidecar, sizeof(sidecar), "%.*s/._%s", dirlen, dst, slash + 1);
+    } else {
+        snprintf(sidecar, sizeof(sidecar), "._%s", dst);
+    }
+
+    FILE *out = fopen(sidecar, "wb");
+    if (!out) {
+        int e = errno;
+        free(hdr);
+        snprintf(s->detail, sizeof(s->detail), "cannot create AppleDouble header '%.240s': %s", sidecar, strerror(e));
+        return e ? -e : -EIO;
+    }
+    size_t wrote = fwrite(hdr, 1, hdr_len, out);
+    int close_rc = fclose(out);
+    free(hdr);
+    if (wrote != hdr_len || close_rc != 0) {
+        snprintf(s->detail, sizeof(s->detail), "write error on AppleDouble header '%.260s'", sidecar);
+        remove(sidecar);
+        return -EIO;
+    }
+    s->bytes_copied += hdr_len;
+    return 0;
 }
 
 // Copy bytes from a single source file to a single destination path.
@@ -111,7 +238,10 @@ static int copy_file(const char *src, const char *dst, struct cp_stats *s) {
     in_be->close(in);
     s->files_copied++;
     s->bytes_copied += off;
-    return 0;
+
+    // Preserve the resource fork / Finder Info as an AppleDouble sidecar when
+    // the source carries them (a no-op for data-only files).
+    return maybe_write_fork_sidecar(src, dst, s);
 }
 
 // Recursive copy.  src may be a file or a directory.  dst is the final
