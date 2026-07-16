@@ -1597,6 +1597,38 @@ static uint32_t gc_offscreen_base(display_card_824gc_priv_t *p, uint32_t pm, uin
     }
 }
 
+// An 8→8 blit is accelerated as a RAW INDEX COPY, which is only valid when
+// the ROM path would skip colour translation: CopyBits compares the source
+// and destination ColorTables' ctSeed and, on mismatch, remaps every pixel
+// through the destination's inverse table (the card firmware did the same
+// with its CTab/ITable caches — funcs $1A/$1B).  Accept the raw copy iff the
+// tables are the same handle, share a ctSeed, or carry identical RGB entries
+// (identity remap); anything else declines to ROM QuickDraw.
+// ColorTable: ctSeed.l, ctFlags.w, ctSize.w, then {value,r,g,b}.w entries.
+// The value fields are not compared: pixel-image tables are positional
+// (value == index) and device CLUT value words may carry flags.
+static bool gc_ctab_match(uint32_t src_h, uint32_t dst_h) {
+    if (src_h == dst_h)
+        return true; // same table (covers screen->screen scrolls)
+    if (!src_h || !dst_h)
+        return false;
+    uint32_t s = memory_debug_read_uint32(src_h & 0x00FFFFFFu) & 0x00FFFFFFu;
+    uint32_t d = memory_debug_read_uint32(dst_h & 0x00FFFFFFu) & 0x00FFFFFFu;
+    if (!s || !d)
+        return false; // purged/empty handle -> ROM path decides
+    if (memory_debug_read_uint32(s) == memory_debug_read_uint32(d))
+        return true; // ctSeed match — the ROM path would not translate
+    uint16_t ssz = memory_debug_read_uint16(s + 6);
+    if (ssz != memory_debug_read_uint16(d + 6) || ssz > 255)
+        return false;
+    for (uint32_t i = 0; i <= ssz; i++) {
+        for (uint32_t k = 2; k < 8; k += 2)
+            if (memory_debug_read_uint16(s + 8 + 8 * i + k) != memory_debug_read_uint16(d + 8 + 8 * i + k))
+                return false;
+    }
+    return true; // different seeds, identical entries — remap is the identity
+}
+
 int gc824_stretchbits(display_card_824gc_priv_t *p) {
     uint32_t rb = GC824_DRAM_CB + 0x58;
     uint16_t mode = dram_be16(p, rb + 0x00);
@@ -1661,6 +1693,15 @@ int gc824_stretchbits(display_card_824gc_priv_t *p) {
     if (maskBase && (dram_be16(p, rb + 0x6E) & 0x8000) && dram_be16(p, rb + 0x6A + 0x20) != 1) {
         LOG(2, "blit declined: deep mask (%u bpp)", dram_be16(p, rb + 0x6A + 0x20));
         return 0; // only 1-bit masks (deep CopyDeepMask blends -> ROM)
+    }
+    if (depth == 8 && srcPS == 8 && !gc_ctab_match(dram_be32(p, rb + 0x60), dram_be32(p, rb + 0x2C))) {
+        // Indexed same-depth source with a DIFFERENT colour table: the ROM
+        // path remaps every pixel through the inverse table, so the raw index
+        // copy is wrong (e.g. Marathon's HUD, blitted from a GWorld carrying
+        // the picture's own palette).
+        LOG(2, "blit declined: src ctab $%08x != dst ctab $%08x (needs ITab remap)", dram_be32(p, rb + 0x60),
+            dram_be32(p, rb + 0x2C));
+        return 0;
     }
     if (depth == 8 || depth == 16 || depth == 32) {
         // v1 colorize envelope at 8 bpp: only the B/W port (fg black, bk

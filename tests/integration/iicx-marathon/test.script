@@ -1,0 +1,52 @@
+# IIcx + Display Card 8•24 GC — System 6.0.8 "Marathon" image, 8 bpp.
+#
+# The video_mode seed writes the slot PRAM so the GC decl-ROM driver boots the
+# screen at 640×480 8 bpp; the machine boots System 6.0.8 from the marathon HD
+# image to a Finder desktop with the "Marathon ƒ" folder window open, then
+# double-clicks Marathon v1.2 and runs it to its main menu.  Both scenes are
+# pixel-exact against their references.
+
+# Pin the RTC so the boot is deterministic run-to-run.
+machine.rtc.time = 3000000000
+
+machine.nubus.video_card = "824gc"
+machine.nubus.video_mode = "gc_640x480_8bpp"
+machine.boot "iicx" 8192
+machine.rom.reload
+
+machine.scsi.attach_hd "../../data/systems/system_6_0_8_20mb_8_24gc_v3_marathon.img" 0
+scheduler.run 200000000
+
+# The card that booted into the IIcx video slot ($9) is the 8•24 GC at
+# 640×480 8 bpp.
+assert ${machine.nubus.slot[9].card.name == "Apple Macintosh Display Card 8•24 GC"} "slot $9 card != 8•24 GC"
+assert ${machine.screen.width == 640}                        "screen width != 640"
+assert ${machine.screen.height == 480}                       "screen height != 480"
+assert ${machine.nubus.slot[9].card.framebuffer.depth == 8}  "framebuffer not 8 bpp"
+
+# The 8-bpp Finder desktop with the Marathon folder window — pixel-exact.
+machine.screen.match finder-marathon-8bpp-640x480.png
+
+# --- Launch Marathon by double-clicking its icon in the folder window --------
+machine.adb.mouse.move 237 157 "global"
+scheduler.run 5000000
+machine.adb.mouse.click true
+scheduler.run 1000000
+machine.adb.mouse.click false
+scheduler.run 1000000
+machine.adb.mouse.click true
+scheduler.run 1000000
+machine.adb.mouse.click false
+
+# Run to the main menu.  TIMING IS A WINDOW, not just a minimum: the menu is
+# fully drawn by +75M instructions after the double-click, and Marathon starts
+# its self-running demo (fade to in-game "Arrival" gameplay) between +100M and
+# +125M — so match at +85M, mid-window.  If this run budget is ever changed,
+# it must stay inside [75M, 100M].
+scheduler.run 85000000
+
+# The Marathon main menu (Begin New Game / network / film panels, © 1994
+# Bungie footer) — pixel-exact.
+machine.screen.match marathon-menu-8bpp-640x480.png
+
+quit
