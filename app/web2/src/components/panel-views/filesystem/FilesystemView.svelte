@@ -8,6 +8,7 @@
   import { listDir } from '@/bus/vfs';
   import { acceptFilesRaw } from '@/bus/upload';
   import {
+    adSidecarPath,
     copyOutOfImage,
     moveItems,
     deleteItems,
@@ -66,7 +67,12 @@
   function entriesToNodes(
     entries: { name: string; path: string; kind: 'file' | 'directory' }[],
   ): TreeNode[] {
+    // Hide AppleDouble sidecars ("._<name>") whose data file is present in the
+    // same listing: the pair is one logical Mac file. An orphaned "._x" (no
+    // sibling "x") stays visible so it can be cleaned up.
+    const present = new Set(entries.map((e) => e.name));
     return entries
+      .filter((e) => !(e.name.startsWith('._') && present.has(e.name.slice(2))))
       .slice()
       .sort((a, b) => {
         if (a.kind !== b.kind) return a.kind === 'directory' ? -1 : 1;
@@ -453,6 +459,12 @@
     if (newName === (old.split('/').pop() ?? '')) return;
     try {
       await opfs.rename(old, newName);
+      // Keep the AppleDouble sidecar paired with its data file.
+      try {
+        await opfs.rename(adSidecarPath(old), `._${newName}`);
+      } catch {
+        // No sidecar — the common case; not an error.
+      }
       delete childrenCache[renameParentKey];
       await refresh();
       showNotification(`Renamed to '${newName}'`, 'info');

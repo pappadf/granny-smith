@@ -40,6 +40,25 @@ function basename(path: string): string {
   return path.split('/').pop() ?? '';
 }
 
+// AppleDouble header sidecar path for an OPFS data-file path: "<dir>/._<name>".
+// The sidecar carries the resource fork + Finder Info; the two files are one
+// logical Mac file and move/rename/delete together (see proposal §4.6).
+export function adSidecarPath(path: string): string {
+  const i = path.lastIndexOf('/');
+  return i >= 0 ? `${path.slice(0, i + 1)}._${path.slice(i + 1)}` : `._${path}`;
+}
+
+// Apply an OPFS op to a file's AppleDouble sidecar if one exists, ignoring the
+// common "no sidecar" case. Best-effort: never fails the primary operation.
+async function pairSidecar(op: () => Promise<void>): Promise<void> {
+  try {
+    await op();
+  } catch {
+    // No sidecar (the overwhelmingly common case), or it could not be moved —
+    // not fatal to the data-fork operation that already succeeded.
+  }
+}
+
 // Copy items OUT of a read-only image into an OPFS folder (recursive for
 // directories). Destination names are sanitised for OPFS. Existing entries
 // are never overwritten: a collision — with an existing file, or between two
@@ -104,6 +123,7 @@ export async function moveItems(
     onItem?.(name, i, srcPaths.length);
     try {
       await opfs.move(src, `${dstDir}/${name}`);
+      await pairSidecar(() => opfs.move(adSidecarPath(src), `${dstDir}/._${name}`));
     } catch (err) {
       failures.push(name);
       if (!firstError) firstError = String(err);
@@ -121,6 +141,7 @@ export async function deleteItems(paths: string[], onItem?: ProgressFn): Promise
     onItem?.(name, i, paths.length);
     try {
       await opfs.delete(paths[i]);
+      await pairSidecar(() => opfs.delete(adSidecarPath(paths[i])));
     } catch {
       failures.push(name);
     }

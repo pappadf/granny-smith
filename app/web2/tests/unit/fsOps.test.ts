@@ -11,7 +11,7 @@ vi.mock('@/bus/emulator', () => ({
   isModuleReady: () => true,
 }));
 
-import { copyOutOfImage, opfsSafeName } from '@/bus/fsOps';
+import { adSidecarPath, copyOutOfImage, deleteItems, moveItems, opfsSafeName } from '@/bus/fsOps';
 import { setOpfsBackend, MockOpfs } from '@/bus/opfs';
 import type { OpfsEntry } from '@/bus/types';
 
@@ -96,5 +96,48 @@ describe('copyOutOfImage collision guards', () => {
     expect(res.total).toBe(2);
     expect(res.failures).toEqual(['Install 1_2']);
     expect(gsEvalMock).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('AppleDouble sidecar path', () => {
+  it('derives "._<name>" next to the data file', () => {
+    expect(adSidecarPath('/opfs/images/fd/CD-ROM Setup.img')).toBe(
+      '/opfs/images/fd/._CD-ROM Setup.img',
+    );
+    expect(adSidecarPath('bare.img')).toBe('._bare.img');
+  });
+});
+
+describe('sidecar pairing on move/delete', () => {
+  it('moves the "._<name>" sidecar alongside the data file', async () => {
+    const be = new MockOpfs();
+    setOpfsBackend(be);
+    const moves: [string, string][] = [];
+    vi.spyOn(be, 'move').mockImplementation(async (src: string, dst: string) => {
+      moves.push([src, dst]);
+    });
+    const res = await moveItems(['/opfs/images/fd/CD-ROM Setup.img'], '/opfs/upload');
+    expect(res.failures).toEqual([]);
+    expect(moves).toContainEqual([
+      '/opfs/images/fd/CD-ROM Setup.img',
+      '/opfs/upload/CD-ROM Setup.img',
+    ]);
+    expect(moves).toContainEqual([
+      '/opfs/images/fd/._CD-ROM Setup.img',
+      '/opfs/upload/._CD-ROM Setup.img',
+    ]);
+  });
+
+  it('deletes the "._<name>" sidecar with the data file', async () => {
+    const be = new MockOpfs();
+    setOpfsBackend(be);
+    const deletes: string[] = [];
+    vi.spyOn(be, 'delete').mockImplementation(async (p: string) => {
+      deletes.push(p);
+    });
+    const res = await deleteItems(['/opfs/upload/CD-ROM Setup.img']);
+    expect(res.failures).toEqual([]);
+    expect(deletes).toContain('/opfs/upload/CD-ROM Setup.img');
+    expect(deletes).toContain('/opfs/upload/._CD-ROM Setup.img');
   });
 });
