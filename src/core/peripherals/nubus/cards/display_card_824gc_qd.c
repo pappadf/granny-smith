@@ -2155,10 +2155,15 @@ void gc824_reset_draw_state(display_card_824gc_priv_t *p) {
     p->gc_cliprgn_len = 0;
     p->gc_visrgn_len = 0;
     // Default port colours as PIXEL VALUES for the screen depth: black fg,
-    // white bg (1 bpp: 1/0; 8 bpp standard CLUT: $FF/$00; 32 bpp direct:
-    // $000000/$FFFFFF).
-    p->gc_fg = (p->display.format == PIXEL_8BPP) ? 0xFFu : (p->display.format == PIXEL_32BPP_XRGB) ? 0u : 1u;
-    p->gc_bg = (p->display.format == PIXEL_32BPP_XRGB) ? 0x00FFFFFFu : 0u;
+    // white bg (1 bpp: 1/0; 8 bpp standard CLUT: $FF/$00; 16 bpp direct:
+    // $0000/$7FFF; 32 bpp direct: $000000/$FFFFFF).
+    p->gc_fg = (p->display.format == PIXEL_8BPP)         ? 0xFFu
+               : (p->display.format == PIXEL_32BPP_XRGB) ? 0u
+               : (p->display.format == PIXEL_16BPP_555)  ? 0u
+                                                         : 1u;
+    p->gc_bg = (p->display.format == PIXEL_32BPP_XRGB)  ? 0x00FFFFFFu
+               : (p->display.format == PIXEL_16BPP_555) ? 0x7FFFu
+                                                        : 0u;
     // Default hilite = the architectural low-mem HiliteRGB ($0DA0, 3 words) —
     // what an old-style port uses when no op $70 arrives (§3.1).
     p->gc_hilite = gc_resolve_rgb(p, memory_debug_read_uint16(0x0DA0), memory_debug_read_uint16(0x0DA2),
