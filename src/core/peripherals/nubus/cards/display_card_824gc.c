@@ -472,14 +472,18 @@ static uint32_t gc_dispatch_func(display_card_824gc_priv_t *p, uint32_t func, ui
         gc824_pixpats_flush(p, dram_be32(p, GC824_DRAM_CB + GC824_CB_ARGSAREA));
         result = 1;
         break;
-    case 0x30: // FontDownload — cache the strikes/width tables so ops $67/$06
+    case 0x30: { // FontDownload — cache the strikes/width tables so ops $67/$06
         // draw text on-card; any failure (or the oracle switch, or an
         // unsupported depth) declines: the host rolls back its checksum and
-        // draws text unaccelerated (proposal §3.10 safety net).
-        result = (!p->force_decline && (p->display.format == PIXEL_1BPP_MSB || p->display.format == PIXEL_8BPP))
-                     ? (uint32_t)gc824_font_download(p)
-                     : 0;
+        // draws text unaccelerated (proposal §3.10 safety net).  Accepted at
+        // every port-accepted depth (1/8/16/32 — same set as func $2D): the
+        // glyph cores render through the depth-generic gc_px, and the real
+        // Rev B card accelerates text at the direct depths too.
+        bool text_depth_ok = p->display.format == PIXEL_1BPP_MSB || p->display.format == PIXEL_8BPP ||
+                             p->display.format == PIXEL_16BPP_555 || p->display.format == PIXEL_32BPP_XRGB;
+        result = (!p->force_decline && text_depth_ok) ? (uint32_t)gc824_font_download(p) : 0;
         break;
+    }
     default:
         if (func > 0x3B) {
             // Unknown function — flag the sequence/error bits (protocol §9).
