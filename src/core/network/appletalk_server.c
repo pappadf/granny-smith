@@ -4,6 +4,7 @@
 // appletalk_server.c
 // AFP file server over AppleTalk ASP/ATP protocols.
 
+#include "appledouble.h"
 #include "appletalk.h"
 #include "appletalk_internal.h"
 #include "common.h"
@@ -594,6 +595,8 @@ static bool afp_stat_path(vol_t *vol, const char *rel, struct stat *st) {
     return stat(full, st) == 0;
 }
 
+static bool afp_is_hidden_companion(const char *name); // AppleDouble sidecar filter (defined below)
+
 static uint16_t afp_count_offspring(const char *full_path) {
     if (!full_path)
         return 0;
@@ -605,6 +608,8 @@ static uint16_t afp_count_offspring(const char *full_path) {
     while ((ent = readdir(dir)) != NULL) {
         if (strcmp(ent->d_name, ".") == 0 || strcmp(ent->d_name, "..") == 0)
             continue;
+        if (afp_is_hidden_companion(ent->d_name))
+            continue; // AppleDouble sidecars are not AFP-visible files
         if (++count >= UINT16_MAX)
             break;
     }
@@ -636,23 +641,144 @@ static uint32_t afp_compute_access_rights(const struct stat *st) {
     return 0x80000000u | (owner << 16) | (group << 8) | world;
 }
 
-// Per-file/dir Finder Info storage (32 bytes each)
-typedef struct {
-    bool in_use;
-    uint16_t vol_id;
-    char rel_path[AFP_MAX_REL_PATH];
-    uint8_t finder_info[32];
-} finder_info_entry_t;
-static finder_info_entry_t g_finder_info[256];
+// === AppleDouble host-side fork + metadata sidecar =========================
+// A Mac file's resource fork and Finder Info are stored beside its data file in
+// an AppleDouble header "._<name>" (RFC 1740; proposal-appledouble-support.md
+// §4.5).  Both persist across restarts on the flat host filesystem and
+// interoperate with macOS / Netatalk.  This replaces the old volatile
+// in-memory Finder Info table and the "<name>.rsrc" resource-fork sibling.
+#define AFP_AD_MAX_RSRC (32u * 1024u * 1024u)
 
-// Look up Finder Info for a file or directory
-static finder_info_entry_t *afp_find_finder_info(uint16_t vol_id, const char *rel_path) {
-    for (int i = 0; i < ARRAY_LEN(g_finder_info); i++) {
-        if (g_finder_info[i].in_use && g_finder_info[i].vol_id == vol_id &&
-            strcmp(g_finder_info[i].rel_path, rel_path) == 0)
-            return &g_finder_info[i];
+// Write the "._<name>" sidecar path for a host file/dir into `out`.  Returns
+// false if it would escape (empty basename, e.g. a volume root) or overflow.
+static bool afp_ad_sidecar_path(const char *host_path, char *out, size_t cap) {
+    const char *slash = strrchr(host_path, '/');
+    const char *base = slash ? slash + 1 : host_path;
+    if (!*base)
+        return false;
+    int n = slash ? snprintf(out, cap, "%.*s._%s", (int)(slash - host_path + 1), host_path, base)
+                  : snprintf(out, cap, "._%s", base);
+    return n > 0 && (size_t)n < cap;
+}
+
+// Read a whole host file (<= cap) into a malloc'd buffer. 0 on success / -errno.
+static int afp_read_whole_file(const char *path, size_t cap, uint8_t **out, size_t *out_len) {
+    *out = NULL;
+    *out_len = 0;
+    FILE *f = fopen(path, "rb");
+    if (!f)
+        return -errno;
+    if (fseek(f, 0, SEEK_END) != 0) {
+        fclose(f);
+        return -EIO;
     }
-    return NULL;
+    long sz = ftell(f);
+    if (sz < 0 || (size_t)sz > cap) {
+        fclose(f);
+        return sz < 0 ? -EIO : -EFBIG;
+    }
+    rewind(f);
+    uint8_t *buf = malloc((size_t)sz ? (size_t)sz : 1);
+    if (!buf) {
+        fclose(f);
+        return -ENOMEM;
+    }
+    size_t got = fread(buf, 1, (size_t)sz, f);
+    fclose(f);
+    if (got != (size_t)sz) {
+        free(buf);
+        return -EIO;
+    }
+    *out = buf;
+    *out_len = (size_t)sz;
+    return 0;
+}
+
+// Load the resource fork (malloc'd; caller frees) and 32-byte Finder Info from
+// the sidecar.  A missing/invalid sidecar yields *rsrc=NULL, *rsrc_len=0, and
+// zero-filled `finder` (both out params optional).
+static void afp_ad_load(const char *host_path, uint8_t **rsrc, size_t *rsrc_len, uint8_t finder[32]) {
+    if (rsrc)
+        *rsrc = NULL;
+    if (rsrc_len)
+        *rsrc_len = 0;
+    if (finder)
+        memset(finder, 0, 32);
+    char sc[PATH_MAX];
+    if (!afp_ad_sidecar_path(host_path, sc, sizeof(sc)))
+        return;
+    uint8_t *raw = NULL;
+    size_t rawlen = 0;
+    if (afp_read_whole_file(sc, AFP_AD_MAX_RSRC + 4096, &raw, &rawlen) != 0)
+        return;
+    ad_file_t ad;
+    if (ad_detect(raw, rawlen) && ad_parse(raw, rawlen, &ad) == 0) {
+        if (finder && ad.finder && ad.finder_len >= 32)
+            memcpy(finder, ad.finder, 32);
+        if (rsrc && rsrc_len && ad.rsrc && ad.rsrc_len) {
+            uint8_t *r = malloc(ad.rsrc_len);
+            if (r) {
+                memcpy(r, ad.rsrc, ad.rsrc_len);
+                *rsrc = r;
+                *rsrc_len = ad.rsrc_len;
+            }
+        }
+    }
+    free(raw);
+}
+
+// Persist resource fork + Finder Info to the sidecar, or remove it when both
+// are empty (no resource fork and all-zero Finder Info). 0 / -errno.
+static int afp_ad_store(const char *host_path, const uint8_t *rsrc, size_t rsrc_len, const uint8_t finder[32]) {
+    char sc[PATH_MAX];
+    if (!afp_ad_sidecar_path(host_path, sc, sizeof(sc)))
+        return -EINVAL;
+    bool finder_set = false;
+    if (finder)
+        for (int i = 0; i < 32; i++)
+            if (finder[i]) {
+                finder_set = true;
+                break;
+            }
+    if (rsrc_len == 0 && !finder_set) {
+        unlink(sc); // nothing to store — don't leave an empty sidecar behind
+        return 0;
+    }
+    uint8_t *buf = NULL;
+    size_t buflen = 0;
+    int rc = ad_build_sidecar(rsrc, rsrc_len, finder_set ? finder : NULL, &buf, &buflen);
+    if (rc < 0)
+        return rc;
+    FILE *f = fopen(sc, "wb");
+    if (!f) {
+        int e = errno;
+        free(buf);
+        return e ? -e : -EIO;
+    }
+    size_t w = fwrite(buf, 1, buflen, f);
+    int cr = fclose(f);
+    free(buf);
+    return (w == buflen && cr == 0) ? 0 : -EIO;
+}
+
+// True for host entries that back Mac metadata and must stay invisible to AFP
+// clients: AppleDouble sidecars ("._*") and legacy resource-fork siblings.
+static bool afp_is_hidden_companion(const char *name) {
+    size_t n = strlen(name);
+    if (n >= 2 && name[0] == '.' && name[1] == '_')
+        return true;
+    if (n >= 5 && strcmp(name + n - 5, ".rsrc") == 0)
+        return true;
+    return false;
+}
+
+// Read just the resource-fork length recorded in the sidecar (0 if none).
+static uint32_t afp_ad_rsrc_len(const char *host_path) {
+    uint8_t *rsrc = NULL;
+    size_t len = 0;
+    afp_ad_load(host_path, &rsrc, &len, NULL);
+    free(rsrc);
+    return (uint32_t)len;
 }
 
 static bool afp_populate_param_area(bool is_dir, vol_t *vol, const char *rel_path, const struct stat *st, uint16_t bm,
@@ -660,13 +786,15 @@ static bool afp_populate_param_area(bool is_dir, vol_t *vol, const char *rel_pat
     if (!st)
         return false;
     int ptr;
-    // Finder Info (bit 5): look up stored info or write zeros
+    // Finder Info (bit 5): read from the AppleDouble sidecar, or zeros.
     if ((ptr = afp_param_field_ptr(is_dir, bm, pbase, 5)) >= 0) {
-        finder_info_entry_t *fi = vol ? afp_find_finder_info(vol->vol_id, rel_path ? rel_path : "") : NULL;
-        if (fi)
-            memcpy(out + ptr, fi->finder_info, 32);
+        uint8_t finder[32];
+        char full[PATH_MAX];
+        if (vol && afp_full_path(vol, rel_path ? rel_path : "", full, sizeof(full)))
+            afp_ad_load(full, NULL, NULL, finder);
         else
-            memset(out + ptr, 0, 32);
+            memset(finder, 0, 32);
+        memcpy(out + ptr, finder, 32);
     }
     if ((ptr = afp_param_field_ptr(is_dir, bm, pbase, 0)) >= 0) {
         uint16_t attr = is_dir ? afp_dir_attributes_from_stat(st) : afp_file_attributes_from_stat(st);
@@ -699,17 +827,11 @@ static bool afp_populate_param_area(bool is_dir, vol_t *vol, const char *rel_pat
             wr32be(out + ptr, (uint32_t)st->st_size);
         }
         if ((ptr = afp_param_field_ptr(false, bm, pbase, 10)) >= 0) {
-            // Resource fork length: check companion .rsrc file
+            // Resource fork length: from the AppleDouble sidecar's entry 2.
             uint32_t rsrc_len = 0;
-            if (vol && rel_path) {
-                char full[PATH_MAX], rsrc_path[PATH_MAX];
-                if (afp_full_path(vol, rel_path, full, sizeof(full))) {
-                    snprintf(rsrc_path, sizeof(rsrc_path), "%s.rsrc", full);
-                    struct stat rsrc_st;
-                    if (stat(rsrc_path, &rsrc_st) == 0)
-                        rsrc_len = (uint32_t)rsrc_st.st_size;
-                }
-            }
+            char full[PATH_MAX];
+            if (vol && rel_path && afp_full_path(vol, rel_path, full, sizeof(full)))
+                rsrc_len = afp_ad_rsrc_len(full);
             wr32be(out + ptr, rsrc_len);
         }
     } else {
@@ -766,10 +888,41 @@ static fork_t g_forks[16];
 static uint16_t g_next_fork_ref = 0x0042;
 
 // Close an open fork and release its slot
+// Flush a writable resource fork's working file back into the AppleDouble
+// sidecar, preserving the file's existing Finder Info.  No-op for data forks,
+// read-only forks, or a missing backing file.
+static void afp_fork_persist(fork_t *fk) {
+    if (!fk || !fk->is_resource || !fk->f || !(fk->access_mode & 0x0002))
+        return;
+    fflush(fk->f);
+    if (fseek(fk->f, 0, SEEK_END) != 0)
+        return;
+    long sz = ftell(fk->f);
+    if (sz < 0)
+        sz = 0;
+    uint8_t *buf = NULL;
+    if (sz > 0) {
+        buf = malloc((size_t)sz);
+        if (!buf)
+            return;
+        rewind(fk->f);
+        if (fread(buf, 1, (size_t)sz, fk->f) != (size_t)sz) {
+            free(buf);
+            return;
+        }
+    }
+    uint8_t finder[32];
+    afp_ad_load(fk->path, NULL, NULL, finder); // preserve current Finder Info
+    if (afp_ad_store(fk->path, buf, (size_t)sz, finder) != 0)
+        LOG(1, "AFP: failed to persist resource fork for '%s'", fk->rel_path);
+    free(buf);
+}
+
 static void close_fork(fork_t *fk) {
     if (!fk)
         return;
     LOG(7, "AFP fork close: ref=0x%04X path='%s'", fk->fork_ref, fk->rel_path);
+    afp_fork_persist(fk);
     if (fk->f)
         fclose(fk->f);
     memset(fk, 0, sizeof(*fk));
@@ -973,20 +1126,20 @@ static fork_t *alloc_fork(uint16_t vol_id, const char *path, const char *rel_pat
             if (rel_path)
                 strncpy(g_forks[i].rel_path, rel_path, sizeof(g_forks[i].rel_path) - 1);
             if (is_resource) {
-                // Resource forks: stored as companion .rsrc file
-                char rsrc_path[PATH_MAX];
-                snprintf(rsrc_path, sizeof(rsrc_path), "%s.rsrc", path);
-                bool want_write = (access_mode & 0x0002);
-                if (want_write) {
-                    // Try opening existing file for read/write, create if absent
-                    g_forks[i].f = fopen(rsrc_path, "r+b");
-                    if (!g_forks[i].f)
-                        g_forks[i].f = fopen(rsrc_path, "w+b");
-                } else {
-                    // Read-only; if file doesn't exist, resource fork is empty
-                    g_forks[i].f = fopen(rsrc_path, "rb");
-                    if (!g_forks[i].f)
-                        g_forks[i].f = fopen("/dev/null", "rb");
+                // Resource forks live in the AppleDouble "._<name>" sidecar.
+                // Serve them from a private temp working file seeded with the
+                // sidecar's current bytes; afp_fork_persist() writes it back on
+                // flush/close (preserving the file's Finder Info).
+                g_forks[i].f = tmpfile();
+                if (g_forks[i].f) {
+                    uint8_t *rsrc = NULL;
+                    size_t rsrc_len = 0;
+                    afp_ad_load(path, &rsrc, &rsrc_len, NULL);
+                    if (rsrc_len)
+                        fwrite(rsrc, 1, rsrc_len, g_forks[i].f);
+                    free(rsrc);
+                    fflush(g_forks[i].f);
+                    rewind(g_forks[i].f);
                 }
             } else {
                 // Data fork: "r+b" if write requested (bit 1), else "rb"
@@ -1023,25 +1176,21 @@ typedef struct {
 static dt_entry_t g_dt[8];
 static uint16_t g_next_dt_ref = 0x0100;
 
-// Store Finder Info for a file or directory
-static finder_info_entry_t *afp_set_finder_info(uint16_t vol_id, const char *rel_path, const uint8_t *info) {
-    finder_info_entry_t *fi = afp_find_finder_info(vol_id, rel_path);
-    if (!fi) {
-        for (int i = 0; i < ARRAY_LEN(g_finder_info); i++) {
-            if (!g_finder_info[i].in_use) {
-                fi = &g_finder_info[i];
-                break;
-            }
-        }
-    }
-    if (!fi)
-        return NULL;
-    fi->in_use = true;
-    fi->vol_id = vol_id;
-    strncpy(fi->rel_path, rel_path ? rel_path : "", sizeof(fi->rel_path) - 1);
-    if (info)
-        memcpy(fi->finder_info, info, 32);
-    return fi;
+// Store 32 bytes of Finder Info into a file/dir's AppleDouble sidecar,
+// preserving any existing resource fork.  Persistent across restarts.
+static void afp_set_finder_info(uint16_t vol_id, const char *rel_path, const uint8_t *info) {
+    if (!info)
+        return;
+    vol_t *vol = find_vol_by_id(vol_id);
+    char full[PATH_MAX];
+    if (!vol || !afp_full_path(vol, rel_path ? rel_path : "", full, sizeof(full)))
+        return;
+    uint8_t *rsrc = NULL;
+    size_t rsrc_len = 0;
+    afp_ad_load(full, &rsrc, &rsrc_len, NULL); // keep the resource fork intact
+    if (afp_ad_store(full, rsrc, rsrc_len, info) != 0)
+        LOG(1, "AFP: failed to store Finder Info for '%s'", rel_path ? rel_path : "");
+    free(rsrc);
 }
 
 // Desktop DB icon storage
@@ -1981,6 +2130,15 @@ static uint32_t afp_cmd_get_fork_parms(const uint8_t *in, int in_len, uint8_t *o
             return AFPERR_ParamErr;
         if (!afp_populate_param_area(false, vol, fk->rel_path, &st, bitmap, out, pbase))
             return AFPERR_ParamErr;
+        // For an open resource fork, report its live working-file length: the
+        // sidecar (which populate_param_area reads) only updates on flush/close.
+        if (fk->is_resource && fk->f) {
+            int rp = afp_param_field_ptr(false, bitmap, pbase, 10);
+            if (rp >= 0 && fseek(fk->f, 0, SEEK_END) == 0) {
+                long sz = ftell(fk->f);
+                wr32be(out + rp, (uint32_t)(sz < 0 ? 0 : sz));
+            }
+        }
         const char *name = afp_last_component(fk->rel_path);
         if (!name)
             name = "";
@@ -2026,7 +2184,8 @@ static uint32_t afp_cmd_set_fork_parms(const uint8_t *in, int in_len, uint8_t *o
             ftruncate(fd, (off_t)new_len);
     }
     if (bitmap & (1u << 10)) {
-        // Resource fork length: truncate the .rsrc companion file
+        // Resource fork length: truncate the working file; afp_fork_persist()
+        // writes the new length back to the AppleDouble sidecar on flush/close.
         if (pos + 4 > in_len)
             return AFPERR_ParamErr;
         uint32_t new_len = rd32be(in + pos);
@@ -2049,8 +2208,10 @@ static uint32_t afp_cmd_flush(const uint8_t *in, int in_len, uint8_t *out, int o
         return AFPERR_ParamErr;
     uint16_t vol_id = rd16be(in + 1);
     for (int i = 0; i < 16; i++) {
-        if (g_forks[i].in_use && g_forks[i].vol_id == vol_id && g_forks[i].f)
+        if (g_forks[i].in_use && g_forks[i].vol_id == vol_id && g_forks[i].f) {
             fflush(g_forks[i].f);
+            afp_fork_persist(&g_forks[i]); // write resource forks back to their sidecar
+        }
     }
     if (out_len)
         *out_len = 0;
@@ -2070,6 +2231,7 @@ static uint32_t afp_cmd_flush_fork(const uint8_t *in, int in_len, uint8_t *out, 
         return AFPERR_ParamErr;
     if (fk->f)
         fflush(fk->f);
+    afp_fork_persist(fk); // resource forks: write the working file back to the sidecar
     if (out_len)
         *out_len = 0;
     LOG(10, "AFP FPFlushFork: ref=0x%04X", fork_ref);
@@ -2937,8 +3099,8 @@ static uint32_t afp_cmd_create_file(const uint8_t *in, int in_len, uint8_t *out,
     if (!afp_full_path(vol, target_rel, full, sizeof(full)))
         return AFPERR_ParamErr;
 
-    // Use the catalog (not stat) to determine existence: .rsrc companion files
-    // exist on disk for resource fork storage but are not AFP-visible files.
+    // Use the catalog (not stat) to determine existence: AppleDouble sidecars
+    // exist on disk for fork/metadata storage but are not AFP-visible files.
     catalog_entry_t *existing = afp_catalog_find_by_path(vol, target_rel);
     if (existing && !existing->is_dir) {
         if (!hard_create)
@@ -2948,14 +3110,14 @@ static uint32_t afp_cmd_create_file(const uint8_t *in, int in_len, uint8_t *out,
             if (g_forks[i].in_use && strcmp(g_forks[i].path, full) == 0)
                 return AFPERR_FileBusy;
         }
-        // Truncate existing file and remove companion resource fork
+        // Truncate existing file and remove its AppleDouble sidecar
         FILE *f = fopen(full, "wb");
         if (!f)
             return AFPERR_AccessDenied;
         fclose(f);
-        char rsrc_path[PATH_MAX];
-        snprintf(rsrc_path, sizeof(rsrc_path), "%s.rsrc", full);
-        unlink(rsrc_path);
+        char sidecar[PATH_MAX];
+        if (afp_ad_sidecar_path(full, sidecar, sizeof(sidecar)))
+            unlink(sidecar);
     } else {
         // Create new file
         FILE *f = fopen(full, "wb");
@@ -3014,7 +3176,8 @@ static uint32_t afp_cmd_delete(const uint8_t *in, int in_len, uint8_t *out, int 
         return AFPERR_ObjectNotFound;
 
     if (S_ISDIR(st.st_mode)) {
-        // Check directory is empty
+        // Directory is "empty" to a client if it holds only AppleDouble
+        // sidecars (metadata, not real files).  Check emptiness ignoring them.
         DIR *dir = opendir(full);
         if (!dir)
             return AFPERR_AccessDenied;
@@ -3023,12 +3186,25 @@ static uint32_t afp_cmd_delete(const uint8_t *in, int in_len, uint8_t *out, int 
         while ((ent = readdir(dir)) != NULL) {
             if (strcmp(ent->d_name, ".") == 0 || strcmp(ent->d_name, "..") == 0)
                 continue;
+            if (afp_is_hidden_companion(ent->d_name))
+                continue;
             empty = false;
             break;
         }
-        closedir(dir);
-        if (!empty)
+        if (!empty) {
+            closedir(dir);
             return AFPERR_DirNotEmpty;
+        }
+        // Remove leftover sidecars so the rmdir can succeed.
+        rewinddir(dir);
+        while ((ent = readdir(dir)) != NULL) {
+            if (!afp_is_hidden_companion(ent->d_name))
+                continue;
+            char child[PATH_MAX];
+            if (snprintf(child, sizeof(child), "%s/%s", full, ent->d_name) < (int)sizeof(child))
+                unlink(child);
+        }
+        closedir(dir);
         if (rmdir(full) != 0)
             return AFPERR_AccessDenied;
     } else {
@@ -3039,10 +3215,10 @@ static uint32_t afp_cmd_delete(const uint8_t *in, int in_len, uint8_t *out, int 
         }
         if (unlink(full) != 0)
             return AFPERR_AccessDenied;
-        // Remove companion resource fork file if it exists
-        char rsrc_path[PATH_MAX];
-        snprintf(rsrc_path, sizeof(rsrc_path), "%s.rsrc", full);
-        unlink(rsrc_path);
+        // Remove the AppleDouble sidecar (fork + Finder Info) if present.
+        char sidecar[PATH_MAX];
+        if (afp_ad_sidecar_path(full, sidecar, sizeof(sidecar)))
+            unlink(sidecar);
     }
 
     if (out_len)
@@ -3103,11 +3279,10 @@ static uint32_t afp_cmd_rename(const uint8_t *in, int in_len, uint8_t *out, int 
     if (rename(old_full, new_full) != 0)
         return AFPERR_CantRename;
 
-    // Rename companion resource fork file if it exists
-    char old_rsrc[PATH_MAX], new_rsrc[PATH_MAX];
-    snprintf(old_rsrc, sizeof(old_rsrc), "%s.rsrc", old_full);
-    snprintf(new_rsrc, sizeof(new_rsrc), "%s.rsrc", new_full);
-    rename(old_rsrc, new_rsrc);
+    // Move the AppleDouble sidecar (fork + Finder Info) alongside the file.
+    char old_sc[PATH_MAX], new_sc[PATH_MAX];
+    if (afp_ad_sidecar_path(old_full, old_sc, sizeof(old_sc)) && afp_ad_sidecar_path(new_full, new_sc, sizeof(new_sc)))
+        rename(old_sc, new_sc);
 
     if (out_len)
         *out_len = 0;
@@ -3185,11 +3360,10 @@ static uint32_t afp_cmd_move_and_rename(const uint8_t *in, int in_len, uint8_t *
     if (rename(src_full, dst_full) != 0)
         return AFPERR_CantMove;
 
-    // Move companion resource fork file if it exists
-    char src_rsrc[PATH_MAX], dst_rsrc[PATH_MAX];
-    snprintf(src_rsrc, sizeof(src_rsrc), "%s.rsrc", src_full);
-    snprintf(dst_rsrc, sizeof(dst_rsrc), "%s.rsrc", dst_full);
-    rename(src_rsrc, dst_rsrc);
+    // Move the AppleDouble sidecar (fork + Finder Info) alongside the file.
+    char src_sc[PATH_MAX], dst_sc[PATH_MAX];
+    if (afp_ad_sidecar_path(src_full, src_sc, sizeof(src_sc)) && afp_ad_sidecar_path(dst_full, dst_sc, sizeof(dst_sc)))
+        rename(src_sc, dst_sc);
 
     if (out_len)
         *out_len = 0;
@@ -3289,19 +3463,20 @@ static uint32_t afp_cmd_copy_file(const uint8_t *in, int in_len, uint8_t *out, i
     fclose(fin);
     fclose(fout);
 
-    // Copy companion resource fork file if it exists
-    char src_rsrc[PATH_MAX], dst_rsrc[PATH_MAX];
-    snprintf(src_rsrc, sizeof(src_rsrc), "%s.rsrc", src_full);
-    snprintf(dst_rsrc, sizeof(dst_rsrc), "%s.rsrc", dst_full);
-    FILE *rfin = fopen(src_rsrc, "rb");
-    if (rfin) {
-        FILE *rfout = fopen(dst_rsrc, "wb");
-        if (rfout) {
-            while ((n = fread(buf, 1, sizeof(buf), rfin)) > 0)
-                fwrite(buf, 1, n, rfout);
-            fclose(rfout);
+    // Copy the AppleDouble sidecar (fork + Finder Info) if present.
+    char src_sc[PATH_MAX], dst_sc[PATH_MAX];
+    if (afp_ad_sidecar_path(src_full, src_sc, sizeof(src_sc)) &&
+        afp_ad_sidecar_path(dst_full, dst_sc, sizeof(dst_sc))) {
+        FILE *rfin = fopen(src_sc, "rb");
+        if (rfin) {
+            FILE *rfout = fopen(dst_sc, "wb");
+            if (rfout) {
+                while ((n = fread(buf, 1, sizeof(buf), rfin)) > 0)
+                    fwrite(buf, 1, n, rfout);
+                fclose(rfout);
+            }
+            fclose(rfin);
         }
-        fclose(rfin);
     }
 
     if (out_len)
@@ -3568,6 +3743,8 @@ static int afp_enumerate(const uint8_t *in, int in_len, uint8_t *out, int out_ma
     while ((dent = readdir(dir)) != NULL) {
         if (strcmp(dent->d_name, ".") == 0 || strcmp(dent->d_name, "..") == 0)
             continue;
+        if (afp_is_hidden_companion(dent->d_name))
+            continue; // hide AppleDouble sidecars from directory listings
         char child_full[PATH_MAX];
         if (snprintf(child_full, sizeof(child_full), "%s/%s", full_dir, dent->d_name) >= (int)sizeof(child_full))
             continue;

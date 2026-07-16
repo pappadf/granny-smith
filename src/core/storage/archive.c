@@ -8,6 +8,7 @@
 
 #include "archive.h"
 
+#include "appledouble.h"
 #include "log.h"
 #include "object.h"
 #include "peeler.h"
@@ -96,10 +97,75 @@ static int ensure_dir_exists(const archive_ctx_t *ctx, const char *path) {
     return 0;
 }
 
-// Write a single extracted file's data fork to disk under ctx->output_dir.
-// Resource forks are deliberately discarded — the emulator's MEMFS doesn't
-// model them, and the only callers want the data fork (disk images,
-// system files unpacked from .sit / .hqx).
+// Synthesize the 32-byte Finder Info block (FInfo + FXInfo) from peeler's
+// best-effort metadata — type, creator, Finder flags (big-endian), rest zero.
+// Returns true if any field was set (i.e. worth persisting).
+static bool build_finder_info(const peel_file_meta_t *m, uint8_t out[32]) {
+    memset(out, 0, 32);
+    out[0] = (uint8_t)(m->mac_type >> 24);
+    out[1] = (uint8_t)(m->mac_type >> 16);
+    out[2] = (uint8_t)(m->mac_type >> 8);
+    out[3] = (uint8_t)m->mac_type;
+    out[4] = (uint8_t)(m->mac_creator >> 24);
+    out[5] = (uint8_t)(m->mac_creator >> 16);
+    out[6] = (uint8_t)(m->mac_creator >> 8);
+    out[7] = (uint8_t)m->mac_creator;
+    out[8] = (uint8_t)(m->finder_flags >> 8);
+    out[9] = (uint8_t)m->finder_flags;
+    return m->mac_type || m->mac_creator || m->finder_flags;
+}
+
+// Write an AppleDouble "._<name>" header sidecar next to the extracted data
+// file at `data_full_path`, carrying the resource fork (entry 2) and Finder
+// Info (entry 9).  This keeps a Mac file lossless on the flat host FS — e.g. a
+// StuffIt/MacBinary-wrapped NDIF disk image unpacks to a mountable pair — and
+// interoperates with macOS/Netatalk (proposal-appledouble-support.md §Phase 3).
+// A file with neither a resource fork nor Finder Info gets no sidecar.
+// Returns 0 on success (including the no-sidecar case), -1 on write failure.
+static int write_ad_sidecar(const char *data_full_path, const peel_file_t *file) {
+    uint8_t finder[32];
+    bool finder_set = build_finder_info(&file->meta, finder);
+    if (file->resource_fork.size == 0 && !finder_set)
+        return 0; // data-only file: nothing to preserve
+
+    uint8_t *hdr = NULL;
+    size_t hdr_len = 0;
+    if (ad_build_sidecar(file->resource_fork.data, file->resource_fork.size, finder_set ? finder : NULL, &hdr,
+                         &hdr_len) != 0)
+        return 0;
+
+    char sidecar[1024];
+    const char *slash = strrchr(data_full_path, '/');
+    int n = slash ? snprintf(sidecar, sizeof(sidecar), "%.*s._%s", (int)(slash - data_full_path + 1), data_full_path,
+                             slash + 1)
+                  : snprintf(sidecar, sizeof(sidecar), "._%s", data_full_path);
+    if (n < 0 || n >= (int)sizeof(sidecar)) {
+        free(hdr);
+        fprintf(stderr, "archive: sidecar path too long\n");
+        return -1;
+    }
+
+    FILE *fp = fopen(sidecar, "wb");
+    if (!fp) {
+        free(hdr);
+        fprintf(stderr, "archive: cannot create '%s': %s\n", sidecar, strerror(errno));
+        return -1;
+    }
+    size_t written = fwrite(hdr, 1, hdr_len, fp);
+    int close_rc = fclose(fp);
+    free(hdr);
+    if (written != hdr_len || close_rc != 0) {
+        remove(sidecar);
+        fprintf(stderr, "archive: write error on sidecar '%s'\n", sidecar);
+        return -1;
+    }
+    return 0;
+}
+
+// Write a single extracted file to disk under ctx->output_dir: the data fork
+// under its name, and — when the file carries a resource fork and/or Finder
+// Info — an AppleDouble "._<name>" sidecar beside it so the fork is preserved
+// (see write_ad_sidecar).
 static int write_extracted_file(const archive_ctx_t *ctx, const peel_file_t *file) {
     const char *name = file->meta.name;
     if (!name[0])
@@ -130,7 +196,9 @@ static int write_extracted_file(const archive_ctx_t *ctx, const peel_file_t *fil
     }
 
     fclose(fp);
-    return 0;
+
+    // Preserve the resource fork + Finder Info as a sibling AppleDouble sidecar.
+    return write_ad_sidecar(full_path, file);
 }
 
 static int process_archive(archive_ctx_t *ctx, const char *filepath) {

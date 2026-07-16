@@ -1,0 +1,41 @@
+# Build artifacts
+build/
+*.o
+*.a
+*.so
+*.dylib
+*.dll
+*.exe
+
+# Compiler output
+*.out
+*.d
+
+# Editor and IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Test files
+test/internal_testfiles/
+
+# Core dumps
+core
+core.*
+vgcore.*
+
+# Profiling and coverage
+*.gcov
+*.gcda
+*.gcno
+*.profdata
+*.profraw
+gmon.out
+
+# Temporary files
+*.tmp
+*.bak
+*.log

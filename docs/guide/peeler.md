@@ -11,8 +11,9 @@ archive formats: StuffIt (`.sit`, versions 1.x–5.x), BinHex 4.0
 (`.hqx`), Compact Pro (`.cpt`), and MacBinary (`.bin`). It auto-
 detects nested formats so a `.sit.hqx` file unpacks in a single call.
 
-The library is developed independently at
-<https://github.com/pappadf/peeler> and integrated as a git submodule.
+The library originated as a standalone project at
+<https://github.com/pappadf/peeler> and now lives in-tree under
+[`src/peeler/`](../../src/peeler/) (it was previously a git submodule).
 The emulator wraps it as `archive` on the object tree so users and
 scripts never see the library name; from their point of view, the
 emulator just knows how to identify and extract Mac archives.
@@ -37,12 +38,14 @@ inspector UI.
 
 ### Integration
 
-The peeler library is integrated using a **separate library build**:
+The peeler library is vendored in-tree:
 
-- **Submodule** at `third-party/peeler/`, tracking the upstream main
-  branch.
-- **Build** — sources compiled directly alongside the emulator, with
-  include paths added in the top-level `Makefile`.
+- **Location** — `src/peeler/` (`lib/`, `include/`, `cmd/`, `docs/`,
+  `test/`), a self-contained copy of the upstream project. It keeps its
+  own standalone `Makefile` so it can still be built/tested on its own.
+- **Build** — sources are compiled directly alongside the emulator via
+  the explicit `PEELER_SRC` list in the top-level `Makefile` /
+  `Makefile.headless`, with `-Isrc/peeler/include -Isrc/peeler/lib`.
 - **Linkage** — peeler objects link into both the WASM module and the
   headless binary.
 
@@ -183,18 +186,18 @@ trace when a recognised archive fails to unpack.
 
 ## Updating peeler
 
-```bash
-cd third-party/peeler
-git pull origin main
-cd ../..
-make clean
-make
-git add third-party/peeler
-git commit -m "Update peeler to latest version"
-```
+peeler is now maintained in-tree, so changes are made directly under
+`src/peeler/` and committed like any other source. To pull in work from
+the upstream standalone repo, sync the files into `src/peeler/` (minus
+`build/` and repo scaffolding), rebuild, and commit:
 
-The submodule tracks specific commits, so updates are explicit and
-controlled.
+```bash
+# from a checkout of https://github.com/pappadf/peeler
+rsync -a --delete --exclude build --exclude .git --exclude .github \
+    peeler/ /path/to/granny-smith/src/peeler/
+cd /path/to/granny-smith && make clean && make
+git add src/peeler && git commit -m "Sync peeler from upstream"
+```
 
 ## Testing
 
@@ -203,11 +206,11 @@ Archive extraction is covered end-to-end by the web2 Filesystem-tab e2e
 StuffIt/BinHex archive and unpacks it through the shipped UI, and by the
 display-drop e2e (`tests/e2e/web2-specs/display-drop.spec.ts`). The unit
 tests in `app/web2/tests/unit/archive.test.ts` cover format detection, and
-the library itself ships unit tests in `third-party/peeler/`.
+the library itself ships unit tests in `src/peeler/test/`.
 
 ## References
 
-- peeler repository: <https://github.com/pappadf/peeler>
-- peeler documentation: `third-party/peeler/docs/`
+- peeler upstream repository: <https://github.com/pappadf/peeler>
+- peeler documentation: `src/peeler/docs/`
 - [`docs/core/shell/object-model.md`](object-model.md) — the surface
   `archive.*` participates in.

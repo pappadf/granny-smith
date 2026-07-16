@@ -11,7 +11,7 @@ vi.mock('@/bus/emulator', () => ({
   isModuleReady: () => true,
 }));
 
-import { copyOutOfImage, opfsSafeName } from '@/bus/fsOps';
+import { adSidecarPath, copyOutOfImage, deleteItems, moveItems, opfsSafeName } from '@/bus/fsOps';
 import { setOpfsBackend, MockOpfs } from '@/bus/opfs';
 import type { OpfsEntry } from '@/bus/types';
 
@@ -68,6 +68,21 @@ describe('copyOutOfImage collision guards', () => {
     expect(gsEvalMock).not.toHaveBeenCalled();
   });
 
+  it('copies a disk image out via storage.cp (fork preservation is handled C-side)', async () => {
+    // storage.cp now writes an AppleDouble "._<name>" sidecar whenever the
+    // source carries a resource fork (e.g. an NDIF image, whose block map lives
+    // there), so copy-out stays a single verb — no format sniffing here and no
+    // implicit export_raw decode.
+    const src = '/opfs/images/cd/Drivers.toast/partition2/GC for System 7.x.img';
+    const res = await copyOutOfImage([{ path: src, isDir: false }], '/opfs/images/fd');
+    expect(res.failures).toEqual([]);
+    expect(gsEvalMock).toHaveBeenCalledWith('storage.cp', [
+      src,
+      '/opfs/images/fd/GC for System 7.x.img',
+    ]);
+    expect(gsEvalMock).not.toHaveBeenCalledWith('storage.export_raw', expect.anything());
+  });
+
   it('fails the second of two batch items whose names sanitise identically', async () => {
     // HFS surfaces in-name '/' as ':'; opfsSafeName maps both to '_'.
     expect(opfsSafeName('Install 1:2')).toBe(opfsSafeName('Install 1_2'));
@@ -81,5 +96,48 @@ describe('copyOutOfImage collision guards', () => {
     expect(res.total).toBe(2);
     expect(res.failures).toEqual(['Install 1_2']);
     expect(gsEvalMock).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('AppleDouble sidecar path', () => {
+  it('derives "._<name>" next to the data file', () => {
+    expect(adSidecarPath('/opfs/images/fd/CD-ROM Setup.img')).toBe(
+      '/opfs/images/fd/._CD-ROM Setup.img',
+    );
+    expect(adSidecarPath('bare.img')).toBe('._bare.img');
+  });
+});
+
+describe('sidecar pairing on move/delete', () => {
+  it('moves the "._<name>" sidecar alongside the data file', async () => {
+    const be = new MockOpfs();
+    setOpfsBackend(be);
+    const moves: [string, string][] = [];
+    vi.spyOn(be, 'move').mockImplementation(async (src: string, dst: string) => {
+      moves.push([src, dst]);
+    });
+    const res = await moveItems(['/opfs/images/fd/CD-ROM Setup.img'], '/opfs/upload');
+    expect(res.failures).toEqual([]);
+    expect(moves).toContainEqual([
+      '/opfs/images/fd/CD-ROM Setup.img',
+      '/opfs/upload/CD-ROM Setup.img',
+    ]);
+    expect(moves).toContainEqual([
+      '/opfs/images/fd/._CD-ROM Setup.img',
+      '/opfs/upload/._CD-ROM Setup.img',
+    ]);
+  });
+
+  it('deletes the "._<name>" sidecar with the data file', async () => {
+    const be = new MockOpfs();
+    setOpfsBackend(be);
+    const deletes: string[] = [];
+    vi.spyOn(be, 'delete').mockImplementation(async (p: string) => {
+      deletes.push(p);
+    });
+    const res = await deleteItems(['/opfs/upload/CD-ROM Setup.img']);
+    expect(res.failures).toEqual([]);
+    expect(deletes).toContain('/opfs/upload/CD-ROM Setup.img');
+    expect(deletes).toContain('/opfs/upload/._CD-ROM Setup.img');
   });
 });

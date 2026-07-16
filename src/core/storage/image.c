@@ -10,6 +10,8 @@
 
 #include "image.h"
 
+#include "appledouble.h"
+#include "image_ndif.h"
 #include "log.h"
 #include "platform.h"
 #include "system.h"
@@ -17,6 +19,7 @@
 #include <assert.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <limits.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -375,6 +378,209 @@ size_t disk_write_tag(image_t *disk, size_t sector, const uint8_t *buf, size_t s
 // Scratch directory for read-only image deltas (kept volatile).
 #define IMAGE_RO_SCRATCH_DIR "/tmp/gs-image-ro"
 
+// === AppleDouble fork acquisition + host-file NDIF materialisation =========
+// A host `.img` file has only a data fork, but a Disk Copy 6 / NDIF image keeps
+// its block map ('bcem') in the resource fork.  When such a file was copied out
+// of an HFS volume as an AppleDouble pair, the resource fork lives in a sibling
+// "._<name>" (or legacy "%<name>", or a raw "<name>.rsrc").  This reunites the
+// forks and, when the data fork is NDIF-encoded, decodes it to a scratch raw
+// image so the rest of image.c opens it as an ordinary base.  See
+// proposal-appledouble-support.md §4.4.
+#define IMAGE_FORK_READ_CAP (16u * 1024u * 1024u)
+
+// Read up to `cap` bytes of a host file into a malloc'd buffer. 0 / -errno.
+static int read_whole_host_file(const char *path, size_t cap, uint8_t **out, size_t *out_len) {
+    *out = NULL;
+    *out_len = 0;
+    FILE *f = fopen(path, "rb");
+    if (!f)
+        return -errno;
+    if (fseek(f, 0, SEEK_END) != 0) {
+        fclose(f);
+        return -EIO;
+    }
+    long sz = ftell(f);
+    if (sz < 0 || (size_t)sz > cap) {
+        fclose(f);
+        return sz < 0 ? -EIO : -EFBIG;
+    }
+    rewind(f);
+    uint8_t *buf = (uint8_t *)malloc((size_t)sz ? (size_t)sz : 1);
+    if (!buf) {
+        fclose(f);
+        return -ENOMEM;
+    }
+    size_t got = fread(buf, 1, (size_t)sz, f);
+    fclose(f);
+    if (got != (size_t)sz) {
+        free(buf);
+        return -EIO;
+    }
+    *out = buf;
+    *out_len = (size_t)sz;
+    return 0;
+}
+
+// Split base_path into "<dir>/" prefix (with trailing slash, or empty) and
+// basename, writing the "._<name>"-style sidecar into `out`.
+static void fork_sidecar_path(const char *base_path, const char *prefix, char *out, size_t cap) {
+    const char *slash = strrchr(base_path, '/');
+    if (slash)
+        snprintf(out, cap, "%.*s%s%s", (int)(slash - base_path + 1), base_path, prefix, slash + 1);
+    else
+        snprintf(out, cap, "%s%s", prefix, base_path);
+}
+
+// Obtain a resource fork for base_path from a companion sidecar, tried in
+// order: AppleDouble/AppleSingle header "._<name>" then legacy "%<name>", then
+// a raw sibling "<name>.rsrc".  Returns a malloc'd buffer (caller frees) and
+// sets *out_len, or NULL when no resource fork is found.
+static uint8_t *acquire_resource_fork(const char *base_path, size_t *out_len) {
+    char path[PATH_MAX];
+    // (1)+(2): AppleDouble/AppleSingle header sidecars.
+    const char *prefixes[] = {"._", "%"};
+    for (size_t i = 0; i < sizeof(prefixes) / sizeof(prefixes[0]); i++) {
+        fork_sidecar_path(base_path, prefixes[i], path, sizeof(path));
+        uint8_t *raw = NULL;
+        size_t raw_len = 0;
+        if (read_whole_host_file(path, IMAGE_FORK_READ_CAP, &raw, &raw_len) != 0)
+            continue;
+        ad_file_t ad;
+        if (ad_detect(raw, raw_len) && ad_parse(raw, raw_len, &ad) == 0 && ad.rsrc && ad.rsrc_len) {
+            uint8_t *rf = (uint8_t *)malloc(ad.rsrc_len);
+            if (rf) {
+                memcpy(rf, ad.rsrc, ad.rsrc_len);
+                *out_len = ad.rsrc_len;
+                free(raw);
+                return rf;
+            }
+        }
+        free(raw);
+    }
+    // (3): raw sibling "<name>.rsrc".
+    snprintf(path, sizeof(path), "%s.rsrc", base_path);
+    uint8_t *raw = NULL;
+    size_t raw_len = 0;
+    if (read_whole_host_file(path, IMAGE_FORK_READ_CAP, &raw, &raw_len) == 0 && raw_len > 0) {
+        *out_len = raw_len;
+        return raw;
+    }
+    free(raw);
+    return NULL;
+}
+
+// Decode an NDIF data fork (host file `base_path`, block map `map`) into a
+// freshly created scratch raw file `scratch`. 0 / -errno.
+static int materialize_ndif_host(const char *base_path, ndif_map_t *map, const char *scratch) {
+    FILE *df = fopen(base_path, "rb");
+    if (!df)
+        return -errno;
+    FILE *out = fopen(scratch, "wb");
+    if (!out) {
+        int e = errno;
+        fclose(df);
+        return e ? -e : -EIO;
+    }
+    int rc = 0;
+    if (ftruncate(fileno(out), (off_t)map->sectors * 512) != 0) {
+        rc = -EIO;
+        goto done;
+    }
+    for (size_t i = 0; i < map->n_chunks; i++) {
+        ndif_chunk_t *c = &map->chunks[i];
+        if (c->type == NDIF_CHUNK_ZERO || c->count == 0)
+            continue; // ftruncate already zero-filled the gap
+        size_t need = (size_t)c->count * 512;
+        uint8_t *dbuf = (uint8_t *)malloc(need);
+        uint8_t *cbuf = c->length ? (uint8_t *)malloc(c->length) : NULL;
+        if (!dbuf || (c->length && !cbuf)) {
+            free(dbuf);
+            free(cbuf);
+            rc = -ENOMEM;
+            break;
+        }
+        size_t clen = 0;
+        if (c->length) {
+            if (fseek(df, (long)c->offset, SEEK_SET) != 0) {
+                free(dbuf);
+                free(cbuf);
+                rc = -EIO;
+                break;
+            }
+            clen = fread(cbuf, 1, c->length, df);
+        }
+        if (ndif_decode_chunk(c, cbuf, clen, dbuf, need) == 0) {
+            if (fseek(out, (long)c->sector * 512, SEEK_SET) != 0 || fwrite(dbuf, 1, need, out) != need)
+                rc = -EIO;
+        } else {
+            rc = -EINVAL;
+        }
+        free(dbuf);
+        free(cbuf);
+        if (rc != 0)
+            break;
+    }
+done:
+    fclose(df);
+    if (fclose(out) != 0 && rc == 0)
+        rc = -EIO;
+    return rc;
+}
+
+// FNV-1a over a NUL-terminated string, seeded, for scratch-name derivation.
+static uint32_t fork_hash_str(const char *s, uint32_t h) {
+    for (; *s; s++)
+        h = (h ^ (uint8_t)*s) * 0x01000193u;
+    return h;
+}
+
+// If base_path is an NDIF image whose block map can be recovered from a fork
+// sidecar, decode it to a cached scratch raw file and return that path
+// (malloc'd, caller frees / image takes ownership).  Otherwise return a copy of
+// base_path.  NULL only on allocation failure.
+static char *resolve_base_image(const char *base_path) {
+    size_t rlen = 0;
+    uint8_t *rfork = acquire_resource_fork(base_path, &rlen);
+    if (!rfork)
+        return dup_string(base_path);
+
+    char *result = NULL;
+    if (ndif_detect(rfork, rlen)) {
+        ndif_map_t *map = NULL;
+        if (ndif_parse(rfork, rlen, &map) == 0) {
+            // Deterministic scratch name from path + size + mtime, so repeated
+            // inserts reuse the decode and a changed source re-decodes.
+            struct stat sb;
+            uint32_t h = fork_hash_str(base_path, 0x811c9dc5u);
+            if (stat(base_path, &sb) == 0) {
+                h = fork_hash_str("\x1f", h);
+                char meta[64];
+                snprintf(meta, sizeof(meta), "%lld:%lld", (long long)sb.st_size, (long long)sb.st_mtime);
+                h = fork_hash_str(meta, h);
+            }
+            char scratch[PATH_MAX];
+            snprintf(scratch, sizeof(scratch), "%s/ndif-%08x.img", IMAGE_RO_SCRATCH_DIR, h);
+
+            struct stat cached;
+            if (stat(scratch, &cached) == 0 && cached.st_size == (off_t)map->sectors * 512) {
+                result = dup_string(scratch); // already materialised
+            } else {
+                mkdir_recursive(IMAGE_RO_SCRATCH_DIR);
+                if (materialize_ndif_host(base_path, map, scratch) == 0) {
+                    LOG(3, "decoded NDIF '%s' -> '%s' (%u sectors)", base_path, scratch, map->sectors);
+                    result = dup_string(scratch);
+                } else {
+                    remove(scratch);
+                    LOG(1, "NDIF decode failed for '%s'", base_path);
+                }
+            }
+            ndif_map_free(map);
+        }
+    }
+    free(rfork);
+    return result ? result : dup_string(base_path);
+}
+
 image_t *image_open_readonly(const char *base_path) {
     return image_open_readonly_with_geometry(base_path, (image_geometry_t){.block_size = STORAGE_BLOCK_SIZE});
 }
@@ -384,15 +590,23 @@ image_t *image_open_readonly_with_geometry(const char *base_path, image_geometry
         return NULL;
     uint32_t block_size = geometry_block_size(geom);
 
-    size_t raw_size = 0;
-    bool is_diskcopy = false;
-    if (probe_base_image(base_path, block_size, &raw_size, &is_diskcopy) != 0)
+    char *effective = resolve_base_image(base_path);
+    if (!effective)
         return NULL;
 
-    image_t *image = (image_t *)calloc(1, sizeof(image_t));
-    if (!image)
+    size_t raw_size = 0;
+    bool is_diskcopy = false;
+    if (probe_base_image(effective, block_size, &raw_size, &is_diskcopy) != 0) {
+        free(effective);
         return NULL;
-    image->filename = dup_string(base_path);
+    }
+
+    image_t *image = (image_t *)calloc(1, sizeof(image_t));
+    if (!image) {
+        free(effective);
+        return NULL;
+    }
+    image->filename = effective; // owns the (possibly NDIF-materialised) base path
     image->raw_size = raw_size;
     image->block_size = block_size;
     image->type = classify_image(raw_size);
@@ -436,13 +650,19 @@ image_t *image_create_with_geometry(const char *base_path, const char *delta_dir
     // mounts). The probe that used to live here had no effect on subsequent
     // behaviour.
 
-    size_t raw_size = 0;
-    bool is_diskcopy = false;
-    if (probe_base_image(base_path, block_size, &raw_size, &is_diskcopy) != 0)
+    char *effective = resolve_base_image(base_path);
+    if (!effective)
         return NULL;
 
-    // Default delta_dir to the directory containing the base image.  Headless
-    // callers may pass NULL when they have no machine-id concept (§2.4).
+    size_t raw_size = 0;
+    bool is_diskcopy = false;
+    if (probe_base_image(effective, block_size, &raw_size, &is_diskcopy) != 0) {
+        free(effective);
+        return NULL;
+    }
+
+    // Default delta_dir to the directory containing the (original) base image.
+    // Headless callers may pass NULL when they have no machine-id concept (§2.4).
     char *derived_dir = NULL;
     if (!delta_dir || !*delta_dir) {
         derived_dir = dirname_of(base_path);
@@ -451,6 +671,7 @@ image_t *image_create_with_geometry(const char *base_path, const char *delta_dir
     if (mkdir_recursive(delta_dir) != 0) {
         printf("image_create: cannot create delta directory: %s\n", delta_dir);
         free(derived_dir);
+        free(effective);
         return NULL;
     }
 
@@ -460,9 +681,10 @@ image_t *image_create_with_geometry(const char *base_path, const char *delta_dir
     image_t *image = (image_t *)calloc(1, sizeof(image_t));
     if (!image) {
         free(derived_dir);
+        free(effective);
         return NULL;
     }
-    image->filename = dup_string(base_path);
+    image->filename = effective; // owns the (possibly NDIF-materialised) base path
     image->raw_size = raw_size;
     image->block_size = block_size;
     image->type = classify_image(raw_size);
@@ -495,15 +717,23 @@ image_t *image_open_with_geometry(const char *base_path, const char *instance_pa
         return NULL;
     uint32_t block_size = geometry_block_size(geom);
 
-    size_t raw_size = 0;
-    bool is_diskcopy = false;
-    if (probe_base_image(base_path, block_size, &raw_size, &is_diskcopy) != 0)
+    char *effective = resolve_base_image(base_path);
+    if (!effective)
         return NULL;
 
-    image_t *image = (image_t *)calloc(1, sizeof(image_t));
-    if (!image)
+    size_t raw_size = 0;
+    bool is_diskcopy = false;
+    if (probe_base_image(effective, block_size, &raw_size, &is_diskcopy) != 0) {
+        free(effective);
         return NULL;
-    image->filename = dup_string(base_path);
+    }
+
+    image_t *image = (image_t *)calloc(1, sizeof(image_t));
+    if (!image) {
+        free(effective);
+        return NULL;
+    }
+    image->filename = effective; // owns the (possibly NDIF-materialised) base path
     image->raw_size = raw_size;
     image->block_size = block_size;
     image->type = classify_image(raw_size);

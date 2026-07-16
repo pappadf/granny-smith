@@ -5,6 +5,7 @@ Granny Smith: a browser-based Motorola 68000 Macintosh Plus–style emulator com
 ## Repository Directory Overview
 
 - `src/core/`: Platform-agnostic emulator (cpu/, memory/, peripherals/, scheduler/, debug/, storage/, network/, shell/)
+- `src/peeler/`: In-tree Mac-archive library (StuffIt/BinHex/Compact Pro/MacBinary); wrapped as the `archive` object. See `docs/guide/peeler.md`.
 - `src/platform/`: Platform-specific code (wasm/, headless/)
   - `wasm/`: WebAssembly platform for browser (em_main.c, em_audio.c, em_video.c) — compiled with Emscripten
   - `headless/`: Native command-line platform for testing (headless_main.c)
@@ -17,13 +18,14 @@ Granny Smith: a browser-based Motorola 68000 Macintosh Plus–style emulator com
 - `scripts/`: Tools and helpers
 - `tests/unit`: Unit tests (native, suites in `suites/`, infrastructure in `support/`)
 - `tests/e2e`: Playwright end-to-end tests (specs in `specs/`, helpers in `helpers/`)
-- `third-party/`: External libraries
+- `third-party/`: External libraries (git submodules, e.g. single-step-tests)
 
 Emulator modules (e.g., scsi, cpu, via, scc, rtc) have `.c`/`.h` files in `src/core/*/` and documentation under `docs/core/<subsystem>/`; machine/family docs live under `docs/machines/<family>/`.
-  
-  - `third-party/peeler` is a required git submodule for a full build. To clone with submodules, use:
-    - `git clone --recurse-submodules <repo-url>`
-    - Or, if already cloned, run: `git submodule update --init --recursive`
+
+  - The `peeler` archive library now lives in-tree at `src/peeler/` (formerly a
+    `third-party/peeler` submodule), so no submodule init is needed for it.
+    `git submodule update --init --recursive` is still used for the remaining
+    submodules under `third-party/` (e.g. single-step-tests).
 
 ## Tools and Environments
 

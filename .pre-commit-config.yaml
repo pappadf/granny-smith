@@ -5,5 +5,8 @@ repos:
   - repo: https://github.com/pre-commit/mirrors-clang-format
     rev: v18.1.8
     hooks:
+        # src/peeler is vendored from an upstream repo and kept in its own
+        # style so re-syncs stay clean; don't reformat it here.
       - id: clang-format
         types_or: [c, c++]
+        exclude: ^src/peeler/

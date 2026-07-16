@@ -1,7 +1,7 @@
 # Makefile for host-native peeler tool
-# Delegates to the peeler submodule build and copies the binary here.
+# Delegates to the in-tree peeler build (src/peeler) and copies the binary here.
 
-PEELER_DIR := ../../third-party/peeler
+PEELER_DIR := ../../src/peeler
 TOOL       := peeler
 
 .PHONY: all clean
