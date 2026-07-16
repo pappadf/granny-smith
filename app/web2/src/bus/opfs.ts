@@ -253,7 +253,7 @@ export class BrowserOpfs implements OpfsBackend {
   async scanRoms(): Promise<RomInfo[]> {
     const entries = await this.list(ROMS_DIR);
     return entries
-      .filter((e) => e.kind === 'file')
+      .filter((e) => e.kind === 'file' && !e.name.startsWith('._'))
       .map((e) => ({ name: e.name, path: e.path, size: 0 }));
   }
 
@@ -266,7 +266,10 @@ export class BrowserOpfs implements OpfsBackend {
     // can still see, insert, and delete them. list() returns [] if the dir
     // doesn't exist, so this is a no-op on fresh profiles.
     if (cat === 'fd') entries.push(...(await this.list(FDHD_DIR)));
-    return entries;
+    // AppleDouble "._<name>" sidecars are metadata for a data file, never
+    // insertable media — exclude them from every image category so they don't
+    // appear in the Images tab or the New Machine media dropdowns.
+    return entries.filter((e) => !e.name.startsWith('._'));
   }
 
   async readJson<T>(path: string): Promise<T | null> {

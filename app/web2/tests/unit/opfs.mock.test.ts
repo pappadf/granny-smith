@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import { MockOpfs, setOpfsBackend, opfs } from '@/bus/opfs';
+import { MockOpfs, BrowserOpfs, setOpfsBackend, opfs } from '@/bus/opfs';
+import type { OpfsEntry } from '@/bus/types';
 import type { RecentEntry } from '@/bus/types';
 
 beforeEach(() => setOpfsBackend(new MockOpfs()));
@@ -42,5 +43,37 @@ describe('MockOpfs', () => {
     await opfs.writeJson('/opfs/test/value.json', { hello: 'world' });
     const result = await opfs.readJson<{ hello: string }>('/opfs/test/value.json');
     expect(result).toEqual({ hello: 'world' });
+  });
+});
+
+// BrowserOpfs.scanImages / scanRoms must hide AppleDouble "._<name>" sidecars:
+// they are fork metadata for a data file, never insertable media, so they must
+// not appear in the Images tab or the New Machine media dropdowns.
+describe('scanImages/scanRoms hide AppleDouble sidecars', () => {
+  class FakeListOpfs extends BrowserOpfs {
+    entries: string[] = [];
+    async list(dir: string): Promise<OpfsEntry[]> {
+      return this.entries.map((name) => ({
+        name,
+        path: `${dir}/${name}`,
+        kind: 'file' as const,
+      }));
+    }
+  }
+
+  it('excludes "._<name>" from an image category', async () => {
+    const be = new FakeListOpfs();
+    be.entries = ['CD-ROM Setup.img', '._CD-ROM Setup.img', 'Disk Tools.dsk'];
+    const names = (await be.scanImages('fd')).map((e) => e.name);
+    expect(names).toContain('CD-ROM Setup.img');
+    expect(names).toContain('Disk Tools.dsk');
+    expect(names).not.toContain('._CD-ROM Setup.img');
+  });
+
+  it('excludes "._<name>" from the ROM listing', async () => {
+    const be = new FakeListOpfs();
+    be.entries = ['SE30.rom', '._SE30.rom'];
+    const names = (await be.scanRoms()).map((r) => r.name);
+    expect(names).toEqual(['SE30.rom']);
   });
 });
