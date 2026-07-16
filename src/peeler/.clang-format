@@ -1,0 +1,7 @@
+# src/peeler is vendored from the upstream peeler repo and kept byte-for-byte
+# in its upstream style so re-syncs stay clean diffs (see also the matching
+# exclude in .pre-commit-config.yaml).  DisableFormat makes every clang-format
+# invocation — the CI dry-run check, editor integrations, manual runs — leave
+# this tree alone.
+DisableFormat: true
+SortIncludes: Never
