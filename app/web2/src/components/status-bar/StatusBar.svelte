@@ -2,6 +2,7 @@
   import { machine, type MachineStatus } from '@/state/machine.svelte';
   import { activity } from '@/state/activity.svelte';
   import DriveActivity from './DriveActivity.svelte';
+  import Icon from '../common/Icon.svelte';
 
   // Spec §11: hidden before first machine start. Also surfaces during
   // pre-boot uploads so the user can see large-file progress in the
@@ -22,6 +23,16 @@
   function shortModel(model: string): string {
     return model.replace(/^Macintosh\s+/i, '');
   }
+
+  // Accelerated-mode CPU speed readout. The core pushes the applied multiplier
+  // (1x in every other mode), so gate on the mode too. The governor's ladder
+  // gives 1/1.5/2/3/4/6/8x — show up to one decimal, dropping a trailing .0.
+  const showSpeed = $derived(machine.scheduler === 'accel');
+  const speedLabel = $derived(
+    Number.isInteger(machine.acceleratedSpeed)
+      ? `${machine.acceleratedSpeed}×`
+      : `${machine.acceleratedSpeed.toFixed(1)}×`,
+  );
 </script>
 
 {#if visible}
@@ -36,6 +47,14 @@
       <div class="sb-item sb-state" title="Machine state">
         <span class="dot"></span><span class="label">{stateLabel[machine.status]}</span>
       </div>
+      {#if showSpeed}
+        <div
+          class="sb-item sb-speed"
+          title="CPU running at {speedLabel} the original Mac's speed (Accelerated mode); games, sound and animation stay real-time"
+        >
+          <Icon name="chip" size={13} /><span class="label">{speedLabel}</span>
+        </div>
+      {/if}
       <DriveActivity label="HD" title="Hard disk" activity={machine.driveActivity.hd} />
       <DriveActivity label="FD" title="Floppy disk" activity={machine.driveActivity.fd} />
       <DriveActivity label="CD" title="CD-ROM" activity={machine.driveActivity.cd} />
@@ -118,6 +137,13 @@
   }
   .gs-statusbar.stopped .sb-state .dot {
     background: #f14c4c;
+  }
+  .sb-speed {
+    gap: 4px;
+    font-variant-numeric: tabular-nums;
+  }
+  .sb-speed :global(.icon) {
+    opacity: 0.85;
   }
   .sb-upload {
     gap: 6px;
