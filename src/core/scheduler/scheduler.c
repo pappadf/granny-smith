@@ -1094,6 +1094,18 @@ void scheduler_set_max_speed(struct scheduler *restrict s, double multiplier) {
     scheduler_update_cpi_eff(s);
 }
 
+// The speed multiplier actually applied to the CPU right now, x256 fixed point
+// (256 = 1x = authentic). This is 1x in paced/unthrottled and, in accelerated
+// mode, the live multiplier (pinned or the governor's current rung). It is
+// what a UI should display as "how much faster than the original this CPU is
+// running" — a slowly-varying, core-driven signal (the governor steps it on a
+// ≥2 s dwell), suited to a push-on-change notification rather than polling.
+uint32_t scheduler_effective_speed_x256(struct scheduler *restrict s) {
+    if (!s || s->mode != schedule_accelerated)
+        return SPEED_X256_ONE;
+    return scheduler_current_speed_x256(s);
+}
+
 // Set the CPU clock frequency in Hz
 void scheduler_set_frequency(struct scheduler *restrict s, uint32_t frequency_hz) {
     if (!s)

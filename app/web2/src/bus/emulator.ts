@@ -11,6 +11,7 @@
 import {
   machine,
   setSchedulerMode,
+  setAcceleratedSpeed,
   type MachineStatus,
   type MmuKind,
   type SchedulerMode,
@@ -74,6 +75,7 @@ interface EmscriptenModuleConfig {
   onScreenResize?(w: number, h: number, parW?: number, parH?: number): void;
   onLogEmit?(line: string): void;
   onFloppyChange?(drive: number, present: boolean): void;
+  onSchedulerSpeed?(speedX256: number): void;
 }
 
 type CreateModule = (config: EmscriptenModuleConfig) => Promise<EmscriptenModule>;
@@ -144,6 +146,7 @@ export async function bootstrap(canvas: HTMLCanvasElement, wasmArgs: string[] = 
     onScreenResize: handleScreenResize,
     onLogEmit: routeLogEmit,
     onFloppyChange: onFloppyDriveChange,
+    onSchedulerSpeed: handleSchedulerSpeed,
   });
 
   bridgePtr = Module._get_js_bridge();
@@ -319,6 +322,13 @@ function handleRunStateChange(running: boolean): void {
   // when we know a machine is live.
   if (r) machine.status = 'running';
   else if (machine.status === 'running') machine.status = 'paused';
+}
+
+// Core-pushed accelerated-mode effective CPU speed (x256; 256 = 1x). Edge-
+// driven on the governor's rung transitions — the status bar shows it in
+// Accelerated mode. Divide by 256 for the multiplier.
+function handleSchedulerSpeed(speedX256: number): void {
+  setAcceleratedSpeed((speedX256 | 0) / 256);
 }
 
 function handleScreenResize(w: number, h: number, parW?: number, parH?: number): void {

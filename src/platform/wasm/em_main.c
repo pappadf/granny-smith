@@ -799,6 +799,22 @@ void em_main_tick(void) {
             // clang-format on
         }
     }
+
+    // Push the accelerated-mode effective CPU speed (x256; 256 = 1x) to JS on
+    // change, same diff-and-async pattern as the run-state push. The value is
+    // 1x outside accelerated mode and the governor steps it only on a ≥2 s
+    // dwell, so this fires rarely — the status bar reads it edge-driven rather
+    // than polling. JS divides by 256 for the multiplier.
+    int speed_x256 = sched ? (int)scheduler_effective_speed_x256(sched) : 256;
+    static int last_reported_speed = -1;
+    if (speed_x256 != last_reported_speed) {
+        last_reported_speed = speed_x256;
+        // clang-format off
+        MAIN_THREAD_ASYNC_EM_ASM(
+            { if (typeof Module.onSchedulerSpeed === 'function') Module.onSchedulerSpeed($0); },
+            speed_x256);
+        // clang-format on
+    }
 }
 
 // Exposed tick wrapper for Emscripten main loop

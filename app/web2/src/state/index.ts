@@ -2,6 +2,7 @@ export {
   machine,
   setZoom,
   setSchedulerMode,
+  setAcceleratedSpeed,
   startDriveActivityMock,
   stopDriveActivityMock,
   type MachineStatus,

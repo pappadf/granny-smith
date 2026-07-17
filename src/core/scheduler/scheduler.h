@@ -136,6 +136,11 @@ void scheduler_set_speed(struct scheduler *restrict s, double multiplier);
 // clamped to it at use. Persisted with the checkpoint prefix.
 void scheduler_set_max_speed(struct scheduler *restrict s, double multiplier);
 
+// The speed multiplier actually applied to the CPU right now, x256 fixed point
+// (256 = 1x). 1x in paced/unthrottled; in accelerated mode the live pinned or
+// governed multiplier. Divide by 256.0 for the display value.
+uint32_t scheduler_effective_speed_x256(struct scheduler *restrict s);
+
 // Set the CPU clock frequency in Hz (e.g. 7833600 for Plus, 15667200 for SE/30)
 void scheduler_set_frequency(struct scheduler *restrict s, uint32_t frequency_hz);
 

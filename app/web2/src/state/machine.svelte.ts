@@ -43,6 +43,11 @@ interface MachineState {
   screen: { width: number; height: number; parW: number; parH: number };
   driveActivity: { hd: DriveActivity; fd: DriveActivity; cd: DriveActivity };
   scheduler: SchedulerMode;
+  // Effective CPU speed multiplier the core is currently applying (1 = the
+  // original Mac's speed). Only meaningful — and only shown — in `accel` mode,
+  // where the adaptive governor moves it; pushed from the core on change
+  // (bus/emulator.ts handleSchedulerSpeed). 1 in every other mode.
+  acceleratedSpeed: number;
   zoom: number;
 }
 
@@ -56,6 +61,7 @@ export const machine: MachineState = $state({
   screen: { width: 512, height: 342, parW: 1, parH: 1 },
   driveActivity: { hd: 'idle', fd: 'idle', cd: 'idle' },
   scheduler: 'live',
+  acceleratedSpeed: 1,
   zoom: 200,
 });
 
@@ -70,6 +76,17 @@ export function setZoom(value: number): void {
 // bus/emulator.ts (applySchedulerMode), which calls this on success.
 export function setSchedulerMode(mode: SchedulerMode): void {
   machine.scheduler = mode;
+  // Any mode switch resets the core's governor to the authentic floor
+  // (scheduler_set_mode → scheduler_governor_reset), so the applied speed is
+  // 1x until the governor earns headroom again. Mirror that immediately; the
+  // core's push then tracks the climb. (Not a guess — it matches the
+  // documented governor-reset behaviour, like the optimistic mode mirror.)
+  machine.acceleratedSpeed = 1;
+}
+
+// Core-pushed effective CPU speed multiplier (bus/emulator.ts handleSchedulerSpeed).
+export function setAcceleratedSpeed(multiplier: number): void {
+  machine.acceleratedSpeed = multiplier;
 }
 
 // ---- Drive activity mock ----
