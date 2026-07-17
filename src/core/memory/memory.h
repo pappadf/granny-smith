@@ -252,6 +252,9 @@ void memory_write_uint32_slow(uint32_t addr, uint32_t value);
 uint8_t memory_debug_read_uint8(uint32_t addr);
 uint16_t memory_debug_read_uint16(uint32_t addr);
 uint32_t memory_debug_read_uint32(uint32_t addr);
+// Bulk equivalent of len consecutive memory_debug_read_uint8 calls, but copies
+// contiguous host-backed spans with memcpy.  Same result, far cheaper for RAM.
+void memory_debug_read_block(uint32_t addr, uint8_t *dst, uint32_t len);
 
 // Side-effect-free writes for memory.poke: write host RAM (if writable) or
 // dispatch the device write; drop ROM/unmapped silently; never fault or latch

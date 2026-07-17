@@ -574,6 +574,49 @@ uint32_t memory_debug_read_uint32(uint32_t addr) {
     return ((uint32_t)memory_debug_read_uint16(addr) << 16) | memory_debug_read_uint16(addr + 2);
 }
 
+// Bulk side-effect-free read of `len` bytes into `dst`.  Copies whole spans out
+// of a page's host backing with memcpy when possible (RAM/ROM, no MMU, no Lisa,
+// no device), and falls back to the per-byte path across page boundaries or for
+// MMU/device/unmapped pages — so the result is byte-for-byte identical to
+// calling memory_debug_read_uint8() len times, only far cheaper for the common
+// contiguous-RAM case.  Never faults the guest.
+void memory_debug_read_block(uint32_t addr, uint8_t *dst, uint32_t len) {
+    while (len) {
+        uint32_t a = addr & g_address_mask;
+        uint32_t off = a & PAGE_MASK;
+        uint32_t chunk = MEM_PAGE_SIZE - off; // stay within one page per iteration
+        if (chunk > len)
+            chunk = len;
+        // Try to memcpy the whole chunk straight out of the page's host backing.
+        // Translate through the MMU per page (offset preserved, so the chunk
+        // stays inside one physical page) so this stays fast in 32-bit mode too.
+        if (__builtin_expect(g_lisa_mmu == NULL, 1)) {
+            uint32_t phys = a;
+            bool ok = !(g_mmu && g_mmu->enabled) ||
+                      mmu_translate_checked(g_mmu, a, g_active_read == g_supervisor_read, &phys);
+            if (ok) {
+                uint32_t page = phys >> PAGE_SHIFT;
+                if ((int)page < g_page_count) {
+                    page_entry_t *pe = &g_page_table[page];
+                    if (pe->host_base && !pe->dev) {
+                        memcpy(dst, pe->host_base + (phys & PAGE_MASK), chunk);
+                        dst += chunk;
+                        addr += chunk;
+                        len -= chunk;
+                        continue;
+                    }
+                }
+            }
+        }
+        // Device / unmapped / Lisa MMU / translation miss: exact per-byte path.
+        for (uint32_t i = 0; i < chunk; i++)
+            dst[i] = memory_debug_read_uint8(a + i);
+        dst += chunk;
+        addr += chunk;
+        len -= chunk;
+    }
+}
+
 // Side-effect-free debug writes (memory.poke) — symmetric to the debug reads:
 // translate via mmu_translate_checked, write host RAM (if writable) or dispatch
 // the device write, drop ROM/unmapped silently, and NEVER fault or latch

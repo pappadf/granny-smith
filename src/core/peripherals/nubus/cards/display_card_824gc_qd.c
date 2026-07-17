@@ -1629,6 +1629,24 @@ static bool gc_ctab_match(uint32_t src_h, uint32_t dst_h) {
     return true; // different seeds, identical entries — remap is the identity
 }
 
+// True if clip-mask bits [x0, x1) in one row are all set (the blit region fully
+// covers this span, so no per-pixel clip test is needed).
+static inline bool gc_clip_row_full(const uint8_t *mrow, int x0, int x1) {
+    int x = x0;
+    while (x < x1) {
+        if ((x & 7) == 0 && x + 8 <= x1) {
+            if (mrow[x >> 3] != 0xFF)
+                return false;
+            x += 8;
+        } else {
+            if (!(mrow[x >> 3] & (0x80u >> (x & 7))))
+                return false;
+            x++;
+        }
+    }
+    return true;
+}
+
 int gc824_stretchbits(display_card_824gc_priv_t *p) {
     uint32_t rb = GC824_DRAM_CB + 0x58;
     uint16_t mode = dram_be16(p, rb + 0x00);
@@ -1748,6 +1766,56 @@ int gc824_stretchbits(display_card_824gc_priv_t *p) {
     // read.
     bool down = srcBase == dstBase && dRt > sRt + (dstBnT - srcBnT);
     bool right = srcBase == dstBase && dRl > sRl + (dstBnL - srcBnL);
+
+    // Fast path: a plain same-depth 8-bpp copy (srcCopy, no mask) — the common
+    // CopyBits shape — moves whole rows with a bulk copy instead of the
+    // per-pixel core below.  Only taken when every covered row lies fully inside
+    // the clip region (so no per-pixel clip test is needed) and the source span
+    // is resolvable; anything else falls through to the general path.
+    if (mode == 0 && depth == 8 && srcPS == 8 && !maskBase) {
+        int W = (int)p->display.width, H = (int)p->display.height;
+        int dxs = dRl > dstBnL ? dRl : dstBnL; // clamp dst span to the framebuffer
+        int dxe = dRr < dstBnL + W ? dRr : dstBnL + W;
+        int x0 = dxs - dstBnL, ncols = dxe - dxs;
+        uint32_t scl = srcBase - p->super_base; // card-local source? (see gc_src_read8)
+        bool card_src = scl < 0x10000000u;
+        uint32_t card_off = card_src ? scl - GC824_DRAM_OFFSET : 0;
+        uint32_t host_base = card_src ? 0 : (srcBase & 0x00FFFFFFu);
+        if (ncols > 0) {
+            bool eligible = true;
+            for (int i = 0; i < dRb - dRt && eligible; i++) {
+                int dy = dRt + i, y = dy - dstBnT;
+                if (y < 0 || y >= H)
+                    continue;
+                if (!gc_clip_row_full(&p->gc_blitmask[y * GC824_CLIP_STRIDE], x0, x0 + ncols))
+                    eligible = false;
+                else if (card_src) {
+                    int sy = sRt + (dy - dRt) - srcBnT;
+                    long base = (long)card_off + (long)sy * srcRB + (sRl + (dxs - dRl) - srcBnL);
+                    if (sy < 0 || base < 0 || base + ncols > (long)GC824_DRAM_SIZE)
+                        eligible = false; // out-of-DRAM span → let the general path clamp per pixel
+                }
+            }
+            if (eligible) {
+                for (int i = 0; i < dRb - dRt; i++) {
+                    int dy = down ? dRb - 1 - i : dRt + i, y = dy - dstBnT;
+                    if (y < 0 || y >= H)
+                        continue;
+                    uint8_t *drow = (uint8_t *)p->display.bits + (size_t)y * p->display.stride + x0;
+                    int sy = sRt + (dy - dRt) - srcBnT, sx0 = sRl + (dxs - dRl) - srcBnL;
+                    if (card_src)
+                        memmove(drow, p->dram + card_off + (size_t)sy * srcRB + sx0, (size_t)ncols);
+                    else
+                        memory_debug_read_block(host_base + (uint32_t)sy * (uint32_t)srcRB + (uint32_t)sx0, drow,
+                                                (uint32_t)ncols);
+                }
+                p->draw_count++;
+                p->display.fb_dirty = true;
+                return 1;
+            }
+        }
+    }
+
     for (int i = 0; i < dRb - dRt; i++) {
         int dy = down ? dRb - 1 - i : dRt + i;
         int y = dy - dstBnT;
