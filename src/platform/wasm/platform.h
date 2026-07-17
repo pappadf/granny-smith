@@ -191,6 +191,13 @@ void platform_audio_push(const int16_t *frames, int nframes, int vol_0_7);
 // Change the source sample rate mid-stream (stream restart host-side)
 void platform_audio_set_rate(uint32_t src_rate_hz);
 
+// Host audio ring fill fraction against its target depth (0.0 = empty,
+// 1.0 = at target), or < 0 when no fresh signal exists (stream closed, audio
+// idle, worklet not yet reporting). Optional feedback for the accelerated-
+// mode governor: a draining ring means the real-time deadline is already
+// being missed where it hurts first.
+double platform_audio_ring_fill(void);
+
 // === Timing Functions ===
 
 #define PLATFORM_TICKS_PER_SEC 1000

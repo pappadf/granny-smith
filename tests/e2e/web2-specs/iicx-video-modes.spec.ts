@@ -203,7 +203,7 @@ test('IIcx video modes: post-shader canvas matches per-mode baselines', async ({
 
     // Turbo (unthrottled) batching, then the three bounded run stages with
     // the boot-drive-wait skip pokes (same mechanics as the integration test).
-    await page.getByRole('button', { name: 'turbo', exact: true }).click();
+    await page.getByRole('button', { name: 'fast-forward', exact: true }).click();
     await page.locator('button.ptab[data-tab="terminal"]').click();
     await expect(page.locator('.xterm')).toBeVisible({ timeout: 15_000 });
     // The machine auto-runs after boot; halt it so the bounded run stages
