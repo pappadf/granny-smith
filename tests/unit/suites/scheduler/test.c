@@ -38,6 +38,20 @@
 //   - the speed setter clamps to [1x, 8x]
 //   - pacing: accelerated shares the paced wall-clock accumulator (rate
 //     converges to VBL_HZ, bursts capped)
+//
+// Adaptive governor (stage 2 — scheduler.speed = 0/auto; the stub CPU's
+// per-instruction host cost closes the control loop, since faster speeds
+// retire more instructions per frame and thus consume more fake host time):
+//   - steady fast host: climbs the quantized ladder one rung at a time,
+//     monotonically, respecting the dwell slew limit, and settles at the cap
+//   - steady slow host: never leaves the authentic floor (degrades to paced)
+//   - load spike: multiplicative back-off within a couple of ticks, settling
+//     at the highest rung whose utilization clears the ceiling
+//   - audio-ring pressure (optional signal) forces a back-off even at low
+//     measured utilization; signal absence (< 0) is ignored
+//   - max_speed caps both the governor and pinned speeds
+//   - pin/unpin: writing a speed pins (governor off), 0 returns to auto and
+//     restarts from the authentic floor
 
 #include "object.h"
 #include "scheduler.h"
@@ -61,6 +75,14 @@ static double g_secs_per_instr; // simulated emulation cost (0 = free)
 
 double host_time(void) {
     return g_now;
+}
+
+// --- Fake audio-ring signal (governor feedback) ----------------------------
+
+static double g_audio_fill = -1.0; // < 0 = no signal (the default contract)
+
+double platform_audio_ring_fill(void) {
+    return g_audio_fill;
 }
 
 // --- Stubs ------------------------------------------------------------------
@@ -209,6 +231,7 @@ static void ping_event(void *source, uint64_t data) {
 static scheduler_t *fresh_scheduler(bool with_ping) {
     g_now = 0.0;
     g_secs_per_instr = 0.0;
+    g_audio_fill = -1.0;
     g_vbls = 0;
     g_pings = 0;
     scheduler_t *s = scheduler_init(TEST_CPU, NULL);
@@ -602,6 +625,199 @@ TEST(test_accelerated_paced_pacing) {
     teardown(s);
 }
 
+// --- Adaptive governor (stage 2) ---------------------------------------------
+
+// Authentic instructions per frame-unit, measured (12 CPI at 7.8336 MHz).
+static uint64_t authentic_per_frame(void) {
+    scheduler_t *s = fresh_scheduler(false);
+    uint64_t i0 = cpu_instr_count();
+    scheduler_run_frame(s, TEST_CFG);
+    uint64_t pf = cpu_instr_count() - i0;
+    teardown(s);
+    return pf;
+}
+
+// Drive `ticks` 60 Hz main-loop ticks against the governor, tracking the
+// per-frame instruction count (the observable for the current speed rung).
+// Asserts every change is a single monotonic step when `expect_monotonic`,
+// and records the smallest host-time gap between consecutive changes.
+typedef struct {
+    uint64_t final_pf; // per-frame instructions after the last clean sample
+    int changes; // number of distinct per-frame-count transitions
+    double min_gap; // smallest host-seconds gap between transitions
+    uint64_t max_pf; // largest per-frame count ever observed
+} gov_trace_t;
+
+static gov_trace_t gov_drive(scheduler_t *s, double *now, int ticks, bool expect_monotonic) {
+    gov_trace_t t = {0, 0, 1e9, 0};
+    uint64_t prev_instr = cpu_instr_count();
+    uint64_t prev_vbls = g_vbls;
+    double last_change = *now;
+    for (int i = 0; i < ticks; i++) {
+        *now += 1.0 / 60.0;
+        tick_at(*now);
+        uint64_t vd = g_vbls - prev_vbls;
+        uint64_t id = cpu_instr_count() - prev_instr;
+        prev_vbls = g_vbls;
+        prev_instr = cpu_instr_count();
+        if (vd != 1)
+            continue; // only clean single-frame ticks give a per-frame sample
+        if (id > t.max_pf)
+            t.max_pf = id;
+        if (t.final_pf != 0 && id != t.final_pf) {
+            double gap = *now - last_change;
+            if (gap < t.min_gap)
+                t.min_gap = gap;
+            if (expect_monotonic)
+                ASSERT_TRUE(id > t.final_pf);
+            t.changes++;
+            last_change = *now;
+        } else if (t.final_pf == 0) {
+            last_change = *now;
+        }
+        t.final_pf = id;
+    }
+    return t;
+}
+
+// Steady fast host: the governor climbs the ladder one rung at a time —
+// monotonically, each step after at least the dwell time — and settles at
+// the 8x cap without ever overshooting it.
+TEST(test_governor_climbs_to_cap) {
+    uint64_t pf1 = authentic_per_frame();
+
+    scheduler_t *s = fresh_scheduler(false);
+    scheduler_set_mode(s, schedule_accelerated); // speed defaults to auto
+    // 1x utilization ~0.05: plenty of headroom all the way to 8x (~0.40)
+    g_secs_per_instr = 0.05 * VBL_PERIOD / (double)pf1;
+
+    double now = 0.0;
+    gov_trace_t t = gov_drive(s, &now, 25 * 60, true);
+
+    ASSERT_TRUE(t.changes == 6); // rung 0 -> 6, one step at a time
+    ASSERT_TRUE(t.min_gap > 1.8); // dwell slew limit respected (2 s nominal)
+    double ratio = (double)t.final_pf / (double)pf1;
+    ASSERT_TRUE(ratio > 7.9 && ratio < 8.1); // settled at the cap
+    ASSERT_TRUE((double)t.max_pf / (double)pf1 < 8.1); // never above it
+    teardown(s);
+}
+
+// Steady slow host: utilization at 1x already breaches the ceiling, so the
+// governor never leaves the authentic floor — accelerated degrades to paced.
+TEST(test_governor_slow_host_stays_authentic) {
+    uint64_t pf1 = authentic_per_frame();
+
+    scheduler_t *s = fresh_scheduler(false);
+    scheduler_set_mode(s, schedule_accelerated);
+    g_secs_per_instr = 0.95 * VBL_PERIOD / (double)pf1; // 1x utilization ~0.95
+
+    double now = 0.0;
+    gov_trace_t t = gov_drive(s, &now, 10 * 60, true);
+
+    ASSERT_TRUE(t.changes == 0); // never climbed
+    ASSERT_TRUE(t.final_pf == pf1); // authentic instructions per frame
+    teardown(s);
+}
+
+// Load spike: after climbing on a fast host, a 4x cost spike drives
+// utilization far past the ceiling; the governor backs off within a couple
+// of ticks per rung — no dwell on the way down — and settles at the highest
+// rung whose utilization clears the ceiling (3x here: 0.06 * 4 * 3 = 0.72).
+TEST(test_governor_spike_backoff) {
+    uint64_t pf1 = authentic_per_frame();
+
+    scheduler_t *s = fresh_scheduler(false);
+    scheduler_set_mode(s, schedule_accelerated);
+    g_secs_per_instr = 0.06 * VBL_PERIOD / (double)pf1;
+
+    double now = 0.0;
+    gov_trace_t t = gov_drive(s, &now, 25 * 60, true);
+    ASSERT_TRUE((double)t.final_pf / (double)pf1 > 7.9); // reached the cap
+
+    g_secs_per_instr *= 4.0; // spike: 8x now costs ~1.92 of the budget
+    gov_trace_t back = gov_drive(s, &now, 12 * 60, false);
+    double settled = (double)back.final_pf / (double)pf1;
+    ASSERT_TRUE(settled > 2.9 && settled < 3.1); // backed off to 3x
+    ASSERT_TRUE(back.changes >= 3); // stepped down through the rungs
+    teardown(s);
+}
+
+// Audio-ring pressure: a draining host ring forces a back-off even when the
+// measured utilization is comfortable; a recovered ring lets it climb again.
+TEST(test_governor_audio_pressure) {
+    uint64_t pf1 = authentic_per_frame();
+
+    scheduler_t *s = fresh_scheduler(false);
+    scheduler_set_mode(s, schedule_accelerated);
+    g_secs_per_instr = 0.05 * VBL_PERIOD / (double)pf1;
+
+    double now = 0.0;
+    gov_trace_t t = gov_drive(s, &now, 7 * 60, true);
+    ASSERT_TRUE(t.final_pf > pf1); // climbed at least one rung
+
+    uint64_t before = t.final_pf;
+    g_audio_fill = 0.2; // ring draining: pressure regardless of utilization
+    gov_trace_t drop = gov_drive(s, &now, 3 * 60, false);
+    ASSERT_TRUE(drop.final_pf < before); // backed off
+
+    g_audio_fill = 1.0; // ring healthy again: climbing resumes
+    gov_trace_t re = gov_drive(s, &now, 10 * 60, false);
+    ASSERT_TRUE(re.final_pf > drop.final_pf);
+    teardown(s);
+}
+
+// max_speed caps the governor's ceiling — and clamps pinned speeds too.
+TEST(test_governor_max_speed_cap) {
+    uint64_t pf1 = authentic_per_frame();
+
+    scheduler_t *s = fresh_scheduler(false);
+    scheduler_set_mode(s, schedule_accelerated);
+    scheduler_set_max_speed(s, 3.0);
+    g_secs_per_instr = 0.05 * VBL_PERIOD / (double)pf1;
+
+    double now = 0.0;
+    gov_trace_t t = gov_drive(s, &now, 15 * 60, true);
+    double ratio = (double)t.final_pf / (double)pf1;
+    ASSERT_TRUE(ratio > 2.9 && ratio < 3.1); // settled exactly at the 3x cap
+    ASSERT_TRUE((double)t.max_pf / (double)pf1 < 3.1); // never above it
+
+    // A pinned speed is clamped to the cap as well
+    scheduler_set_speed(s, 8.0);
+    uint64_t i0 = cpu_instr_count();
+    scheduler_run_frame(s, TEST_CFG);
+    double pinned = (double)(cpu_instr_count() - i0) / (double)pf1;
+    ASSERT_TRUE(pinned > 2.9 && pinned < 3.1);
+    teardown(s);
+}
+
+// Pin/unpin: auto starts from the authentic floor; a written speed pins the
+// multiplier immediately; writing 0 returns to auto at the floor again.
+TEST(test_governor_pin_unpin) {
+    uint64_t pf1 = authentic_per_frame();
+
+    scheduler_t *s = fresh_scheduler(false);
+    scheduler_set_mode(s, schedule_accelerated);
+
+    // Auto, no main-loop ticks yet: the governor sits at the authentic floor
+    uint64_t i0 = cpu_instr_count();
+    scheduler_run_frame(s, TEST_CFG);
+    ASSERT_TRUE(cpu_instr_count() - i0 == pf1);
+
+    // Pin 4x: takes effect immediately, no governor involved
+    scheduler_set_speed(s, 4.0);
+    i0 = cpu_instr_count();
+    scheduler_run_frame(s, TEST_CFG);
+    double pinned = (double)(cpu_instr_count() - i0) / (double)pf1;
+    ASSERT_TRUE(pinned > 3.9 && pinned < 4.1);
+
+    // Unpin (0 = auto): back to the floor until the governor earns headroom
+    scheduler_set_speed(s, 0.0);
+    i0 = cpu_instr_count();
+    scheduler_run_frame(s, TEST_CFG);
+    ASSERT_TRUE(cpu_instr_count() - i0 == pf1);
+    teardown(s);
+}
+
 int main(void) {
     RUN(test_paced_rate_60hz);
     RUN(test_paced_rate_5994hz);
@@ -617,6 +833,12 @@ int main(void) {
     RUN(test_accelerated_mode_switch_hygiene);
     RUN(test_accelerated_speed_clamp);
     RUN(test_accelerated_paced_pacing);
+    RUN(test_governor_climbs_to_cap);
+    RUN(test_governor_slow_host_stays_authentic);
+    RUN(test_governor_spike_backoff);
+    RUN(test_governor_audio_pressure);
+    RUN(test_governor_max_speed_cap);
+    RUN(test_governor_pin_unpin);
     fprintf(stderr, "[OK  ] scheduler suite passed\n");
     return 0;
 }

@@ -55,4 +55,8 @@ static inline uint64_t platform_ticks(void) {
 // Controllable fake host clock, implemented in test.c
 double host_time(void);
 
+// Controllable fake audio-ring fill signal (governor tests), implemented in
+// test.c; < 0 = no signal, matching the real platform contract.
+double platform_audio_ring_fill(void);
+
 #endif // PLATFORM_H

@@ -183,6 +183,12 @@ static inline void platform_audio_set_rate(uint32_t src_rate_hz) {
     (void)src_rate_hz;
 }
 
+// No host audio ring headless — the governor's audio signal is simply absent
+// (and the governor itself never runs on the budget-driven headless path).
+static inline double platform_audio_ring_fill(void) {
+    return -1.0;
+}
+
 // Video stub (no-op in headless)
 static inline void platform_refresh_screen(struct platform *p, unsigned char *buf) {
     (void)p;

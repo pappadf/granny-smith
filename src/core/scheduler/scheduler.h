@@ -122,11 +122,19 @@ bool scheduler_is_running(struct scheduler *restrict s);
 // Set scheduler pacing mode (paced/unthrottled/accelerated)
 void scheduler_set_mode(struct scheduler *restrict s, enum schedule_mode mode);
 
-// Set the accelerated-mode CPU speed multiplier (clamped to [1.0, 8.0]; stored
-// as x256 fixed point). Retained across mode switches and checkpoints, but
-// only takes effect while the mode is schedule_accelerated — paced and
-// unthrottled always run the authentic CPI.
+// Set the accelerated-mode CPU speed multiplier: 0 = auto (the adaptive
+// governor picks moment to moment, bounded by max_speed), any other value
+// pins a fixed multiplier (clamped to [1.0, 8.0]; stored as x256 fixed
+// point). Retained across mode switches and checkpoints, but only takes
+// effect while the mode is schedule_accelerated — paced and unthrottled
+// always run the authentic CPI. The governor needs the paced main loop's
+// host-timing signal, so headless accelerated runs use a pinned speed.
 void scheduler_set_speed(struct scheduler *restrict s, double multiplier);
+
+// Set the user cap on the accelerated-mode multiplier (clamped to
+// [1.0, 8.0]): the adaptive governor's ceiling, and pinned speeds are
+// clamped to it at use. Persisted with the checkpoint prefix.
+void scheduler_set_max_speed(struct scheduler *restrict s, double multiplier);
 
 // Set the CPU clock frequency in Hz (e.g. 7833600 for Plus, 15667200 for SE/30)
 void scheduler_set_frequency(struct scheduler *restrict s, uint32_t frequency_hz);

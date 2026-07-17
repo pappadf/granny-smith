@@ -161,9 +161,50 @@ formula. With the authentic integer CPI (paced/turbo) the remainder is identical
 zero and every code path is bit-identical to the pre-fractional arithmetic — pinned
 budgets do not move.
 
-`scheduler.speed` (1.0 .. 8.0, 1/256th steps) picks the multiplier; the *setting*
-persists in the checkpoint prefix while the derived `cpi_eff_x256` and the remainder
-are transient and re-derived/cleared on restore and on every mode/CPI/speed change.
+`scheduler.speed` picks the multiplier: **0 = auto** (the adaptive governor, the
+default) or 1.0 .. 8.0 to pin a fixed multiplier. The *setting* (and the
+`scheduler.max_speed` cap) persist in the checkpoint prefix while the derived
+`cpi_eff_x256`, the remainder, and all governor state are transient and
+re-derived/cleared on restore and on every mode/CPI/speed change.
+
+### 2.3 The adaptive governor (speed = auto)
+
+With `scheduler.speed = 0`, a closed-loop governor (stage 2 of the proposal, §4)
+picks the highest speed the host can sustain *without missing the real-time
+deadline* — overrunning it stalls the paced accumulator, which surfaces as audio
+underruns and stutter. Per paced main-loop tick that executed frame-units, it:
+
+1. **Measures** utilization `u = host seconds to emulate one frame-unit /
+   MAC_VBL_PERIOD` (the same measurement the pacing EWMA already makes), smoothed
+   with a fast-up/slow-down EWMA so pressure registers quickly.
+2. **AIMD on a quantized ladder** (1×, 1.5×, 2×, 3×, 4×, 6×, 8×): one rung **down**
+   immediately when the smoothed utilization crosses 0.90 or the (optional) audio
+   ring drains below half its target depth; one rung **up** only after ≥2 s of
+   residence at the current rung, outside a 1 s post-back-off holdoff, and only if
+   the utilization *projected at the next rung* stays under the 0.80 target.
+3. **Bounds**: floor = the authentic CPI (rung 0 — accelerated never runs slower
+   than real hardware; an overloaded host degrades to exactly `paced` behavior);
+   ceiling = `scheduler.max_speed` (default 8×, persisted).
+
+The dwell/holdoff slew limit and the coarse quantization are **correctness
+requirements**, not tuning niceties (proposal §4.4): the guest calibrates
+instruction-counted delays (`TimeDBRA` etc.) against the VIA at boot, so the
+machine must dwell at stable speeds rather than glide. The utilization EWMA is
+rescaled on every step (utilization is proportional to instructions per frame),
+keeping the estimator meaningful across steps.
+
+**Audio feedback** (§11.3): `platform_audio_ring_fill()` reports the host ring's
+fill fraction against its target depth, or `< 0` where the signal doesn't exist —
+headless, or audio idle. On wasm the worklet posts periodic fill reports which are
+cached and piggybacked back to the emulator thread on the (already main-thread-
+proxied) push call — no extra round trips. The governor treats the signal as
+strictly optional.
+
+**Headless**: the governor's input is the paced main loop's host-timing signal,
+which the budget-driven headless path never produces — so accelerated-auto stays
+at the authentic floor there. Headless acceleration uses a pinned
+`scheduler.speed`, which is also the §4.4-safe configuration (a constant speed is
+self-consistent with the guest's boot-time calibration).
 
 ---
 
@@ -664,7 +705,7 @@ No `host_time()` value ever feeds guest execution on the headless path.
 ([em_main.c](../src/platform/wasm/em_main.c)). It maps the elapsed host time onto a
 whole number of frame-units and runs that many via `scheduler_run_frame()`:
 
-- **`schedule_paced`** (default; "Live" in the web2 toolbar): a wall-clock
+- **`schedule_paced`** (default; "Real-Time" in the web2 toolbar): a wall-clock
   accumulator. Elapsed host time accumulates in `vbl_acc_error`; each whole
   `MAC_VBL_PERIOD` earns one frame-unit, capped at `PACED_MAX_CATCHUP` (4) per tick.
   At a ~60 Hz host this is 1 frame-unit per tick in steady state (one repeat/skip
@@ -675,13 +716,16 @@ whole number of frame-units and runs that many via `scheduler_run_frame()`:
   feedback that could pile ~60 frame-units into one tick. Under a sustained-slow host
   the accumulator saturates and the emulator simply lags real time by a bounded
   amount.
-- **`schedule_accelerated`** ("Accel"): shares the paced wall-clock accumulator
-  verbatim — same `vbl_acc_error` math, same `PACED_MAX_CATCHUP` cap — so its
-  timebase (VBL cadence, and everything cycle-derived) is real-time exactly like
-  paced. It differs from paced only in the effective CPI *inside* each frame-unit
-  (§2.2): more instructions per frame, correct clock. This is the "faster machine,
-  correct time" mode a CPU-bound title (e.g. Marathon's software renderer) wants.
-- **`schedule_unthrottled`** ("Turbo"): as many frame-units as fit in
+- **`schedule_accelerated`** ("Accelerated"): shares the paced wall-clock
+  accumulator verbatim — same `vbl_acc_error` math, same `PACED_MAX_CATCHUP` cap —
+  so its timebase (VBL cadence, and everything cycle-derived) is real-time exactly
+  like paced. It differs from paced only in the effective CPI *inside* each
+  frame-unit (§2.2): more instructions per frame, correct clock. This is the
+  "faster machine, correct time" mode a CPU-bound title (e.g. Marathon's software
+  renderer) wants. By default the adaptive governor (§2.3) picks the speed from
+  the measured per-frame host cost, evaluated right here in the main loop's
+  timing-update tail.
+- **`schedule_unthrottled`** ("Fast-Forward"): as many frame-units as fit in
   `TURBO_HOST_HEADROOM` (50%) of the smoothed host loop period, leaving the rest for
   the browser. Emulated time outruns real time on a fast host. The first tick after
   init / checkpoint restore / mode switch has no `host_secs_per_vbl` estimate yet
@@ -828,7 +872,9 @@ The scheduler is an object-model citizen (`scheduler.*` paths in the typed shell
 | `scheduler.stop`            | Stop execution immediately.                                |
 | `scheduler.mode`            | Pacing mode: `"paced"` \| `"accelerated"` \| `"turbo"` (writable; legacy aliases `real`/`hw` → paced, `max` → turbo, `accel` → accelerated). |
 | `scheduler.cpi`             | Per-machine CPI constant; writable as a debug override (1..255). |
-| `scheduler.speed`           | Accelerated-mode CPU speed multiplier (1.0 .. 8.0, 1/256th steps); persisted, but only takes effect in mode `accelerated`. |
+| `scheduler.speed`           | Accelerated-mode multiplier in force (live). Write `0` for auto (adaptive governor) or 1.0 .. 8.0 to pin; persisted, but only takes effect in mode `accelerated`. |
+| `scheduler.speed_auto`      | RO: true while the adaptive governor is choosing the speed (`speed = 0`). |
+| `scheduler.max_speed`       | Cap on the accelerated multiplier (1.0 .. 8.0, default 8): the governor's ceiling, and pinned speeds clamp to it. Persisted. |
 | `scheduler.running`         | True while executing (useful for scripts).                 |
 | `scheduler.cycles` / `.instr_count` | Cycle / instruction counters.                      |
 | `events`                    | Dump the pending event queue with Δcycles and Δµs.         |

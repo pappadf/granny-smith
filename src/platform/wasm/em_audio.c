@@ -121,6 +121,12 @@ EM_JS(void, gs_audio_init_js, (), {
         "    var w=this.wIdx, r=this.rIdx, mask=this.mask;",
         "    var avail=(w-r)&mask;",
         "    this.quietQ++;",
+        // Fill-level report every 32 quanta (~85 ms at 48 kHz): the node side
+        // caches it and the emulator's adaptive governor reads it as back-
+        // pressure (a draining ring = the real-time deadline being missed).
+        "    if(((this.statQ=(this.statQ||0)+1)&31)===0){",
+        "      this.port.postMessage({fill:avail/(this.targetFrames||1)});",
+        "    }",
         // Start gate: stay silent until the ring reaches the target depth, OR
         // until the stream has evidently ended short of it (data pending but
         // no push for 12 quanta ~32 ms) — so sounds shorter than the cushion
@@ -209,6 +215,15 @@ EM_JS(void, gs_audio_init_js, (), {
                     targetLatency: ga.targetLatency
                 }
             });
+            // Cache the worklet's periodic fill reports for the governor's
+            // ring-pressure query (returned by gs_audio_push_js).
+            ga.node.port.onmessage = function(e) {
+                var d = e.data;
+                if (d && typeof d.fill === 'number') {
+                    ga.fill = d.fill;
+                    ga.fillAt = performance.now();
+                }
+            };
             ga.node.connect(ga.ctx.destination);
             console.log('[audio] worklet open rate=' + p.rate + 'Hz ch=' + p.ch +
                         ' targetLatency=' + (ga.targetLatency * 1000).toFixed(1) + 'ms');
@@ -274,20 +289,24 @@ EM_JS(void, gs_audio_set_rate_js, (int rate), {
         ga.node.port.postMessage({rate: rate});
 });
 
-// Push interleaved int16 frames to the worklet via MessagePort
-EM_JS(void, gs_audio_push_js, (uint32_t ptr, int nframes, int volume), {
+// Push interleaved int16 frames to the worklet via MessagePort. Returns the
+// worklet's last-reported ring fill against target depth in per-mille (0 =
+// empty, 1000 = at target), or -1 when no fresh report exists — piggybacked
+// on the push so the emulator thread gets the governor's audio-pressure
+// signal with no extra main-thread round trips.
+EM_JS(int, gs_audio_push_js, (uint32_t ptr, int nframes, int volume), {
     var ga = Module.gsAudio;
     if (!ga || !ga.ctx || !ga.node || nframes <= 0)
-        return;
+        return -1;
     gs_audio_resume_js();
 
     var heap = (typeof HEAPU8 !== 'undefined') ? HEAPU8 : Module.HEAPU8;
     if (!heap)
-        return;
+        return -1;
     var bytes = nframes * ga.channels * 2;
     var end = Math.min(ptr + bytes, heap.length);
     if (ptr >= end || ((end - ptr) & 1))
-        return;
+        return -1;
 
     // Copy samples from WASM heap (must copy — heap can grow/move); the
     // slice's fresh ArrayBuffer is viewed as Int16Array in the worklet.
@@ -308,6 +327,11 @@ EM_JS(void, gs_audio_push_js, (uint32_t ptr, int nframes, int volume), {
         {buf: raw.buffer, vol: (volume | 0) & 7, sil: silent},
         [raw.buffer]
     );
+
+    // Fresh (<500 ms) worklet fill report, if any
+    if (ga.fillAt !== undefined && (performance.now() - ga.fillAt) < 500)
+        return Math.max(0, Math.min(2000, Math.round(ga.fill * 1000)));
+    return -1;
 });
 // clang-format on
 
@@ -351,11 +375,23 @@ static void gs_audio_set_rate(int rate) {
     }
 }
 
+// Last worklet-reported ring fill (fraction of target depth) and when it was
+// captured, in host seconds. Written on the emulator thread (the only pusher)
+// and read by the scheduler's governor on the same thread.
+static double g_ring_fill = -1.0;
+static double g_ring_fill_time = -1.0;
+
 static void gs_audio_push(uint32_t ptr, int nframes, int volume) {
+    int fill_pm;
     if (emscripten_is_main_browser_thread()) {
-        gs_audio_push_js(ptr, nframes, volume);
+        fill_pm = gs_audio_push_js(ptr, nframes, volume);
     } else {
-        emscripten_sync_run_in_main_runtime_thread(EM_FUNC_SIG_VIII, gs_audio_push_js, ptr, nframes, volume);
+        fill_pm =
+            (int)emscripten_sync_run_in_main_runtime_thread(EM_FUNC_SIG_IIII, gs_audio_push_js, ptr, nframes, volume);
+    }
+    if (fill_pm >= 0) {
+        g_ring_fill = (double)fill_pm / 1000.0;
+        g_ring_fill_time = host_time();
     }
 }
 
@@ -392,4 +428,14 @@ void platform_audio_push(const int16_t *frames, int nframes, int vol_0_7) {
 // Change the source sample rate mid-stream
 void platform_audio_set_rate(uint32_t src_rate_hz) {
     gs_audio_set_rate((int)src_rate_hz);
+}
+
+// Ring fill fraction against target depth for the accelerated-mode governor.
+// Fresh only while the producer is actively pushing (each push refreshes the
+// cache from the worklet's periodic reports); goes stale — and reads as
+// "no signal" — within half a second of the stream idling.
+double platform_audio_ring_fill(void) {
+    if (g_ring_fill < 0.0 || g_ring_fill_time < 0.0 || host_time() - g_ring_fill_time > 0.5)
+        return -1.0;
+    return g_ring_fill;
 }

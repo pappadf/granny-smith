@@ -131,22 +131,22 @@
         class="sch-btn"
         class:active={machine.scheduler === 'live'}
         disabled={!isLive}
-        title="Live — pace the machine to real time"
-        onclick={() => onSchedulerClick('live')}>live</button
+        title="Real-Time — runs at the original Mac's speed"
+        onclick={() => onSchedulerClick('live')}>real-time</button
       >
       <button
         class="sch-btn"
         class:active={machine.scheduler === 'accel'}
         disabled={!isLive}
-        title="Accel — faster CPU while games, sound and animations keep the correct speed (like a CPU accelerator card)"
-        onclick={() => onSchedulerClick('accel')}>accel</button
+        title="Accelerated — runs faster while keeping games, sound, and animations at the correct speed, like adding a CPU accelerator card"
+        onclick={() => onSchedulerClick('accel')}>accelerated</button
       >
       <button
         class="sch-btn"
         class:active={machine.scheduler === 'turbo'}
         disabled={!isLive}
-        title="Turbo — run everything as fast as the host allows (time itself speeds up)"
-        onclick={() => onSchedulerClick('turbo')}>turbo</button
+        title="Fast-Forward — runs everything as fast as possible to skip ahead; games and sound run fast too"
+        onclick={() => onSchedulerClick('turbo')}>fast-forward</button
       >
     </div>
   </div>

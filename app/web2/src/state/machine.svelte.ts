@@ -10,9 +10,12 @@ export type DriveActivity = 'idle' | 'read' | 'write';
 // Three pacing modes, mirroring the core's schedule_paced/schedule_accelerated/
 // schedule_unthrottled (proposal-scheduler-two-modes.md and
 // proposal-scheduler-accelerated-mode.md): 'live' = wall-clock paced, 'accel' =
-// real-time timebase with a faster CPU (accelerator-card model), 'turbo' = as
-// fast as the host allows. The guest timeline is identical in live/turbo; accel
-// trades that determinism for CPU throughput while VBL/sound stay real-time.
+// real-time timebase with a faster CPU (accelerator-card model; the adaptive
+// governor picks the speed), 'turbo' = as fast as the host allows. The guest
+// timeline is identical in live/turbo; accel trades that determinism for CPU
+// throughput while VBL/sound stay real-time. The toolbar labels these
+// Real-Time / Accelerated / Fast-Forward (proposal §5.1); the internal ids
+// below predate the relabel and stay stable.
 export type SchedulerMode = 'live' | 'accel' | 'turbo';
 
 // Typed MMU kind, sourced from `machine.profile(id).capabilities.mmu.kind`
