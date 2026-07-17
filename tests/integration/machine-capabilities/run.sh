@@ -84,6 +84,31 @@ assert_contains iicx '"requires_vrom":true'   "iicx card needs vrom"
 assert_contains iici '"id":"builtin_rbv_video"' "iici builtin video card"
 assert_absent   iici '"requires_vrom":true'     "iici card must not need vrom"
 
+# --- Computed card compatibility (no per-machine whitelists) --------------
+# Socket candidates are computed from the card registry by attachment
+# (nubus_card_fits_socket): every CARD_ATTACH_NUBUS video card is offered on
+# every machine with a user-configurable slot — IIcx, IIx, and IIfx must all
+# list the same three cards (proposal-nubus-computed-card-compatibility.md §5.3).
+for m in iicx iix iifx; do
+    assert_contains "$m" '"id":"mdc_8_24"'          "$m offers 8·24"
+    assert_contains "$m" '"id":"display_card_24ac"' "$m offers 24AC"
+    assert_contains "$m" '"id":"824gc"'             "$m offers 8·24 GC"
+done
+# The attach gate: builtin pseudo-cards (motherboard circuitry impersonating
+# a slot device) must never be offered on a socket — only where a BUILTIN
+# slot decl names them.
+for m in iicx iix iifx; do
+    assert_absent "$m" '"id":"builtin_se30_video"' "$m must not offer the SE/30 builtin"
+    assert_absent "$m" '"id":"builtin_rbv_video"'  "$m must not offer the RBV builtin"
+done
+# Conversely a machine with no socket offers no pluggable cards: the SE/30's
+# $9..$B are decoded-but-connectorless (EMPTY), so only its builtin appears.
+assert_contains se30 '"id":"builtin_se30_video"' "se30 builtin video card"
+for card in mdc_8_24 display_card_24ac 824gc; do
+    assert_absent se30 "\"id\":\"$card\"" "se30 has no socket for $card"
+    assert_absent iisi "\"id\":\"$card\"" "iisi has no socket for $card"
+done
+
 if [ "$fail" -ne 0 ]; then
     echo "--- captured profile output ---"
     cat "$OUT"

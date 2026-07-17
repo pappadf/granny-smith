@@ -356,6 +356,7 @@ static const nubus_monitor_t builtin_se30_monitors[] = {
 const nubus_card_kind_t builtin_se30_video_kind = {
     .id = "builtin_se30_video",
     .display_name = "Macintosh SE/30 Built-in Video",
+    .attach = CARD_ATTACH_BUILTIN, // motherboard circuitry — never socketed
     // The SE/30 carries no video declaration ROM in main ROM; it needs the
     // separate SE30.vrom file (the dialog's VROM picker drives this).
     .requires_vrom = true,

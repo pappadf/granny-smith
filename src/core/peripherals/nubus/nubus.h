@@ -37,14 +37,26 @@ typedef enum nubus_slot_kind {
 } nubus_slot_kind_t;
 
 // One entry in a machine's slot table.  Sentinel-terminated arrays end at
-// the entry whose `slot` is 0.
+// the entry whose `slot` is 0.  The machine declares TOPOLOGY only — which
+// slots exist, which hold a soldered-down builtin pseudo-card, which are
+// user-configurable, and what card a configurable slot ships with by
+// default.  Which cards *fit* a configurable slot is not a machine fact:
+// it is computed from each card kind's declared attachment
+// (nubus_card_fits_socket; proposal-nubus-computed-card-compatibility.md).
 typedef struct nubus_slot_decl {
     int slot; // $9..$E (0 ends the array)
     nubus_slot_kind_t kind;
     const char *builtin_card_id; // BUILTIN: card-id resolved via nubus_card_find()
-    const char *const *available_cards; // VIDEO: sentinel-terminated card-id list
     const char *default_card; // VIDEO: default when user hasn't picked
 } nubus_slot_decl_t;
+
+// True iff card kind `kind` may be seated in slot `s`.  Compatibility is
+// COMPUTED — the machine declares topology, the card declares its physical
+// attachment (card_attach_t); nobody enumerates (machine, card) pairs.
+// Today's rule is the bus standard's: any NuBus-attach card fits any
+// user-configurable slot.  Shared by the machine.profile encoder and
+// nubus_init's pick validation so the two can never diverge.
+bool nubus_card_fits_socket(const nubus_slot_decl_t *s, const nubus_card_kind_t *kind);
 
 // Standard slot space base for slot s (s ∈ $9..$E):
 //   $9 → $F9000000, $A → $FA000000, …, $E → $FE000000
@@ -69,8 +81,8 @@ void nubus_delete(nubus_bus_t *bus);
 
 // Pending user-selected video card id for the next machine.boot's VIDEO
 // slot.  Set via `machine.nubus.video_card = "display_card_24ac"` before boot;
-// nubus_init honours it iff it appears in that slot's available_cards
-// list (else it logs and falls back to the slot's default_card).  Cleared
+// nubus_init honours it iff the named kind fits the slot per
+// nubus_card_fits_socket (else it logs and falls back to default_card).  Cleared
 // after consumption so a stale pick doesn't leak into the next boot.
 // Passing NULL or "" clears the pending selection.
 void nubus_pending_video_card_set(const char *id);

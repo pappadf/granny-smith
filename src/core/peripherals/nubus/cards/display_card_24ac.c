@@ -1053,6 +1053,7 @@ static const nubus_monitor_t display_card_24ac_monitors[] = {
 const nubus_card_kind_t display_card_24ac_kind = {
     .id = "display_card_24ac",
     .display_name = "Apple Macintosh Display Card 24AC",
+    .attach = CARD_ATTACH_NUBUS,
     .requires_vrom = true,
     .monitors = display_card_24ac_monitors,
     .factory = factory,

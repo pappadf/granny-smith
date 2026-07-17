@@ -1,0 +1,38 @@
+# Integration test: IIx + Display Card 8•24 GC (ROM-only boot).
+#
+# The computed card-compatibility check end-to-end on a machine that never
+# carried the card in its (now deleted) whitelist: select the 8•24 GC,
+# re-boot the IIx, and verify the pick was honoured at nubus_init — the card
+# is seated in slot $9, its lane-0 declaration ROM is mapped, and the
+# Universal ROM's boot path brings the display up through the card's
+# decl-ROM video driver to the blinking-? screen (640×480, non-blank).
+#
+# No OS is booted: the accelerator stays in its power-on reset state (the
+# .GraphAccel INIT only runs from a System Folder), so gc.state == "reset"
+# is the EXPECTED value here — the display bring-up is pure decl-ROM driver.
+
+machine.nubus.video_card = "824gc"
+machine.boot "iix" 8192
+machine.rom.reload
+
+# Same budget as iix-boot: the Universal ROM reaches the stable blinking-?
+# screen well within 100M instructions.
+scheduler.run 100000000
+
+assert ${machine.id == "iix"} "machine.id != iix"
+
+# The pick was honoured: the 8•24 GC (not the default JMFB) sits in slot $9.
+assert ${machine.nubus.slot[9].card.name == "Apple Macintosh Display Card 8•24 GC"} "slot $9 card != 8•24 GC"
+assert ${machine.nubus.slot[9].card.declrom.present} "declaration ROM not present"
+
+# Accelerator untouched in a ROM-only boot (see header).
+assert ${machine.nubus.slot[9].card.gc.state == "reset"} "gc.state != reset in ROM-only boot"
+
+# The decl-ROM video driver brought the screen up at the card's default
+# 640×480 and painted the boot screen (see iix-boot for the checksum
+# rationale).
+assert ${machine.screen.width == 640} "screen.width != 640"
+assert ${machine.screen.height == 480} "screen.height != 480"
+assert ${machine.screen.checksum() != 0} "screen.checksum == 0 — 8•24 GC never painted"
+
+quit

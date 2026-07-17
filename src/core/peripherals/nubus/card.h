@@ -124,12 +124,29 @@ typedef struct nubus_monitor {
     const uint8_t (*crt_response)[256];
 } nubus_monitor_t;
 
+// What physical connector (if any) a card kind attaches through.  This is
+// a card-intrinsic fact: motherboard circuitry is BUILTIN wherever it
+// exists; a genuine NuBus card fits any NuBus socket on any machine, per
+// the bus standard.  Machine × card compatibility is COMPUTED by matching
+// this against the machine's slot table (nubus_card_fits_socket) — machines
+// never enumerate cards (proposal-nubus-computed-card-compatibility.md).
+// BUILTIN is deliberately 0 so a kind that forgets to declare its
+// attachment is conservatively excluded from every socket rather than
+// wrongly offered everywhere.
+typedef enum card_attach {
+    CARD_ATTACH_BUILTIN = 0, // soldered-down pseudo-slot device (SE/30 / RBV
+                             // video); only instantiable via a BUILTIN slot
+                             // decl naming it — never offered on sockets
+    CARD_ATTACH_NUBUS, // standard NuBus connector — universal
+} card_attach_t;
+
 // Per-card driver descriptor — one static instance per registered driver.
 // The dialog reads this via nubus.cards(); the bus controller reads it
 // via nubus_card_find() to resolve a card id to a factory.
 typedef struct nubus_card_kind {
     const char *id; // "mdc_8_24"
     const char *display_name; // "Apple Macintosh Display Card 8•6 / 8•24"
+    card_attach_t attach; // physical attachment; drives socket matching
     bool requires_vrom; // dialog shows VROM picker iff true
     const nubus_monitor_t *monitors; // sentinel-terminated; NULL for non-display cards
     nubus_card_factory_fn factory; // bus controller calls this once per populated slot

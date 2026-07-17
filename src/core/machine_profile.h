@@ -161,7 +161,9 @@ typedef struct hw_profile {
     int cdrom_id; // SCSI bus id for the CD bay; conventionally 3.
 
     // NuBus slot declarations — sentinel-terminated array of
-    // nubus_slot_decl_t (slot id, kind, builtin/available card list).
+    // nubus_slot_decl_t (slot id, kind, builtin card / default card).
+    // Topology only: which cards FIT a configurable slot is computed from
+    // the card registry (nubus_card_fits_socket), not listed here.
     // Used by machine.profile to enumerate cards per slot and build
     // the per-card video-mode catalog the configuration dialog needs.
     // NULL for non-NuBus machines (Plus, …).  The machine's `init`

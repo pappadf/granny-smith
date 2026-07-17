@@ -305,6 +305,7 @@ static const nubus_monitor_t builtin_rbv_monitors[] = {
 const nubus_card_kind_t builtin_rbv_video_kind = {
     .id = "builtin_rbv_video",
     .display_name = "Macintosh IIci Built-in Video",
+    .attach = CARD_ATTACH_BUILTIN, // motherboard circuitry — never socketed
     .requires_vrom = false,
     .monitors = builtin_rbv_monitors,
     .factory = factory,

@@ -1,0 +1,31 @@
+# Integration test: IIfx + Display Card 24AC (ROM-only boot).
+#
+# The computed card-compatibility check end-to-end on the OSS-family IIfx —
+# the machine whose (now deleted) whitelist drift originally motivated
+# proposal-nubus-computed-card-compatibility.md: select the 24AC, re-boot,
+# and verify the pick was honoured at nubus_init — the card is seated in
+# slot $9 and the IIfx ROM's boot path brings the display up through the
+# card's decl-ROM video driver to the blinking-? screen (640×480, non-blank).
+
+machine.nubus.video_card = "display_card_24ac"
+machine.boot "iifx" 8192
+machine.rom.reload
+
+# Same budget as the other ROM-only boots: the IIfx ROM reaches the stable
+# blinking-? screen well within 100M instructions.
+scheduler.run 100000000
+
+assert ${machine.id == "iifx"} "machine.id != iifx"
+
+# The pick was honoured: the 24AC (not the default JMFB) sits in slot $9.
+assert ${machine.nubus.slot[9].card.name == "Apple Macintosh Display Card 24AC"} "slot $9 card != 24AC"
+assert ${machine.nubus.slot[9].card.declrom.present} "declaration ROM not present"
+
+# The decl-ROM video driver brought the screen up at the card's default
+# 640×480 and painted the boot screen (see iix-boot for the checksum
+# rationale).
+assert ${machine.screen.width == 640} "screen.width != 640"
+assert ${machine.screen.height == 480} "screen.height != 480"
+assert ${machine.screen.checksum() != 0} "screen.checksum == 0 — 24AC never painted"
+
+quit

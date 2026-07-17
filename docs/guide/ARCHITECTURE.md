@@ -459,6 +459,17 @@ these instead of regex-matching the model's display name, so the debug panels,
 the VROM prompt, and the slot labels all follow from data. Because capabilities
 are *derived* from the facts, they can never drift from behavior.
 
+**Computed card compatibility (no per-machine card lists).** A machine's slot
+table declares *topology* only (which slots exist, which hold a soldered-down
+builtin pseudo-card, the shipped default); each card kind declares its
+*attachment* (`card_attach_t` — a genuine NuBus card vs. builtin motherboard
+circuitry). Which cards a configurable slot offers is **computed** by matching
+the two (`nubus_card_fits_socket`), used identically by the `machine.profile`
+encoder and `nubus_init`'s boot-time pick validation. Adding a NuBus card is
+one registry line plus one `VROM_CATALOG` row — it is then offered on every
+machine with a socket, with no per-machine edits (see
+`proposal-nubus-computed-card-compatibility.md`).
+
 The CPU is split into template-instantiated decoders (`cpu_68000.c`,
 `cpu_68030.c`) sharing helpers via `cpu_internal.h`. The memory subsystem uses a
 page-table architecture serving the static map of the 68000 machines and the
