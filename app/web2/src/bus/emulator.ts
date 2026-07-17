@@ -481,7 +481,11 @@ export async function resumeEmulator(): Promise<void> {
 }
 
 // UI mode name → core `scheduler.mode` value.
-const CORE_MODE: Record<SchedulerMode, string> = { live: 'paced', turbo: 'turbo' };
+const CORE_MODE: Record<SchedulerMode, string> = {
+  live: 'paced',
+  accel: 'accelerated',
+  turbo: 'turbo',
+};
 
 // Push a pacing-mode change to the core and mirror it into UI state. The
 // toolbar buttons route through here so they actually reach the scheduler

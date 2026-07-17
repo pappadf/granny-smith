@@ -24,15 +24,24 @@ typedef void (*event_callback_t)(void *source, uint64_t data);
 
 #define NS_PER_SEC 1000000000ULL
 
-// Two pacing modes (see docs/core/scheduler/scheduler.md §10 and
-// local/gs-docs/completed/proposal-scheduler-two-modes.md):
+// Three pacing modes (see docs/core/scheduler/scheduler.md §10,
+// local/gs-docs/completed/proposal-scheduler-two-modes.md and
+// local/gs-docs/proposals/proposal-scheduler-accelerated-mode.md):
 //   schedule_paced       — wall-clock accumulator; the guest tracks real time
 //                          (web2 default)
 //   schedule_unthrottled — as many frame-units as the host allows ("turbo")
-// Pacing only affects how many frame-units a host tick batches. The guest's
-// execution timeline is a pure function of the frame-unit count in both
-// modes: CPI is a per-machine constant and never depends on the mode.
-enum schedule_mode { schedule_paced, schedule_unthrottled };
+//   schedule_accelerated — paced timebase (VBL/VIA/sound stay real-time) with
+//                          a lowered *effective* CPI, so the CPU retires more
+//                          instructions per frame-unit — "the same Mac with a
+//                          CPU accelerator card"; scheduler.speed picks the
+//                          multiplier (1x..8x)
+// Pacing only affects how many frame-units a host tick batches. In paced and
+// unthrottled the guest's execution timeline is a pure function of the
+// frame-unit count: CPI is a per-machine constant and never depends on the
+// mode. Accelerated deliberately gives that up (it is excluded from
+// budget-pinned tests): the cycle timebase stays real-time, but instructions
+// per frame-unit scale with the speed setting.
+enum schedule_mode { schedule_paced, schedule_unthrottled, schedule_accelerated };
 
 struct scheduler;
 typedef struct scheduler scheduler_t;
@@ -110,8 +119,14 @@ void scheduler_set_running(struct scheduler *restrict scheduler, bool running);
 // Check if the scheduler is currently running
 bool scheduler_is_running(struct scheduler *restrict s);
 
-// Set scheduler pacing mode (paced/unthrottled)
+// Set scheduler pacing mode (paced/unthrottled/accelerated)
 void scheduler_set_mode(struct scheduler *restrict s, enum schedule_mode mode);
+
+// Set the accelerated-mode CPU speed multiplier (clamped to [1.0, 8.0]; stored
+// as x256 fixed point). Retained across mode switches and checkpoints, but
+// only takes effect while the mode is schedule_accelerated — paced and
+// unthrottled always run the authentic CPI.
+void scheduler_set_speed(struct scheduler *restrict s, double multiplier);
 
 // Set the CPU clock frequency in Hz (e.g. 7833600 for Plus, 15667200 for SE/30)
 void scheduler_set_frequency(struct scheduler *restrict s, uint32_t frequency_hz);

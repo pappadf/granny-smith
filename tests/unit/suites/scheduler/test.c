@@ -24,6 +24,20 @@
 //     headless-style back-to-back execution — with a self-rescheduling event
 //     in flight to exercise sprint clamping
 //   - CPI is mode-independent and settable as a single per-machine constant
+//
+// Accelerated mode (proposal-scheduler-accelerated-mode.md, stage 1 — fixed
+// multiplier via fractional effective CPI):
+//   - timebase invariance: for a sweep of speed multipliers, N frame-units
+//     advance cpu_cycles by (nearly) the paced amount and a cycle-timestamped
+//     repeating event (the VIA-timer proxy) fires the same number of times,
+//     while instruction throughput scales ~linearly with the multiplier
+//   - instruction budgets stay exact at fractional CPIs, and the carried
+//     sub-cycle remainder never loses cycles across back-to-back runs
+//   - mode-switch hygiene: leaving accelerated restores the authentic
+//     integer-CPI timeline exactly; the speed setting is inert in paced
+//   - the speed setter clamps to [1x, 8x]
+//   - pacing: accelerated shares the paced wall-clock accumulator (rate
+//     converges to VBL_HZ, bursts capped)
 
 #include "object.h"
 #include "scheduler.h"
@@ -92,12 +106,13 @@ void cpu_poll_interrupt(cpu_t *restrict cpu) {
 
 uint32_t g_io_penalty_remainder = 0;
 uint32_t g_io_phantom_instructions = 0;
-uint32_t g_io_cpi = 0;
+uint32_t g_io_cpi_x256 = 0;
 uint32_t *g_sprint_burndown_ptr = NULL;
 // E-clock sync state: normally defined in memory.c and written by scheduler.c
 // (scheduler_set_frequency / the sprint loop). memory.c is not linked into
 // this isolated scheduler suite, so stub the storage here.
 uint64_t g_sprint_base_cycles = 0;
+uint32_t g_sprint_frac_x256 = 0;
 uint32_t g_sprint_total_slots = 0;
 uint32_t g_esync_period_x256 = 0;
 
@@ -161,6 +176,10 @@ value_t val_uint(uint8_t width, uint64_t u) {
 }
 value_t val_str(const char *s) {
     (void)s;
+    return val_none();
+}
+value_t val_float(double f) {
+    (void)f;
     return val_none();
 }
 value_t val_err(const char *fmt, ...) {
@@ -439,6 +458,150 @@ TEST(test_cpi_mode_independent) {
     teardown(s);
 }
 
+// --- Accelerated mode (fixed multiplier via fractional effective CPI) --------
+
+// Timebase invariance — the core correctness property of accelerated mode:
+// the cycle timebase (which VIA φ2, sound and SCC divide down from) must not
+// move with the speed multiplier. For a sweep of speeds, N frame-units advance
+// cpu_cycles by the paced amount within one authentic-CPI instruction per
+// frame of conversion truncation, and the self-rescheduling 77,777-cycle event
+// (the VIA-timer proxy) fires the same number of times (±1) — while retired
+// instructions scale ~linearly with the multiplier.
+TEST(test_accelerated_timebase_invariant) {
+    const int frames = 400;
+
+    // Reference: authentic paced run
+    scheduler_t *s = fresh_scheduler(true);
+    for (int f = 0; f < frames; f++)
+        scheduler_run_frame(s, TEST_CFG);
+    uint64_t ref_cycles = scheduler_cpu_cycles(s);
+    uint64_t ref_instr = cpu_instr_count();
+    uint64_t ref_pings = g_pings;
+    teardown(s);
+
+    static const double speeds[] = {1.0, 2.0, 3.0, 4.0, 8.0};
+    for (unsigned i = 0; i < sizeof(speeds) / sizeof(speeds[0]); i++) {
+        s = fresh_scheduler(true);
+        scheduler_set_mode(s, schedule_accelerated);
+        scheduler_set_speed(s, speeds[i]);
+        for (int f = 0; f < frames; f++)
+            scheduler_run_frame(s, TEST_CFG);
+
+        // Timebase: total cycles within one instruction's truncation per frame
+        int64_t drift = (int64_t)scheduler_cpu_cycles(s) - (int64_t)ref_cycles;
+        int64_t tol = (int64_t)frames * DEFAULT_CPI;
+        ASSERT_TRUE(drift >= -tol && drift <= tol);
+
+        // Event cadence: the cycle-timestamped event stays real-time
+        int64_t dpings = (int64_t)g_pings - (int64_t)ref_pings;
+        ASSERT_TRUE(dpings >= -1 && dpings <= 1);
+
+        // Throughput: instructions per frame scale with the multiplier
+        double ratio = (double)cpu_instr_count() / (double)ref_instr;
+        ASSERT_TRUE(ratio > speeds[i] * 0.99 && ratio < speeds[i] * 1.01);
+        teardown(s);
+    }
+}
+
+// Instruction budgets stay exact at a fractional CPI, and the carried
+// sub-cycle remainder never loses cycles: 10 back-to-back 1000-instruction
+// runs at 5x (effective CPI 12*65536/1280 = 614 x256 = 2.3984...) retire
+// exactly 10,000 instructions and advance exactly floor(10000*614/256) cycles
+// (the remainder telescopes across sprint and run boundaries).
+TEST(test_accelerated_budget_exact) {
+    scheduler_t *s = fresh_scheduler(false);
+    scheduler_set_mode(s, schedule_accelerated);
+    scheduler_set_speed(s, 5.0); // deliberately non-dyadic: exercises the carry
+    const uint64_t eff_x256 = (12ULL << 16) / (5 * 256); // = 614
+
+    uint64_t i0 = cpu_instr_count();
+    uint64_t c0 = scheduler_cpu_cycles(s);
+    for (int k = 0; k < 10; k++)
+        scheduler_run_instructions(s, 1000);
+    ASSERT_TRUE(cpu_instr_count() - i0 == 10000);
+    ASSERT_TRUE(scheduler_cpu_cycles(s) - c0 == (10000 * eff_x256) >> 8);
+    teardown(s);
+}
+
+// Mode-switch hygiene: leaving accelerated clears the fractional carry and
+// restores the authentic timeline — a paced frame is pure integer CPI again —
+// and the speed setting is inert while paced.
+TEST(test_accelerated_mode_switch_hygiene) {
+    scheduler_t *s = fresh_scheduler(false);
+
+    // Authentic per-frame instruction count (paced, speed setting present)
+    scheduler_set_speed(s, 8.0); // must be inert outside accelerated
+    uint64_t i0 = cpu_instr_count();
+    scheduler_run_frame(s, TEST_CFG);
+    uint64_t paced_instr = cpu_instr_count() - i0;
+
+    // Accelerated at 8x: ~8x the instructions per frame
+    scheduler_set_mode(s, schedule_accelerated);
+    i0 = cpu_instr_count();
+    scheduler_run_frame(s, TEST_CFG);
+    uint64_t accel_instr = cpu_instr_count() - i0;
+    ASSERT_TRUE(accel_instr > paced_instr * 7 && accel_instr < paced_instr * 9);
+
+    // Back to paced: per-frame count returns to authentic exactly, and the
+    // frame advances instructions * CPI cycles (no leftover fractional carry)
+    scheduler_set_mode(s, schedule_paced);
+    i0 = cpu_instr_count();
+    uint64_t c0 = scheduler_cpu_cycles(s);
+    scheduler_run_frame(s, TEST_CFG);
+    uint64_t di = cpu_instr_count() - i0;
+    ASSERT_TRUE(di == paced_instr);
+    ASSERT_TRUE(scheduler_cpu_cycles(s) - c0 == di * DEFAULT_CPI);
+    teardown(s);
+}
+
+// The speed setter clamps to [1x, 8x]: below-floor requests run authentic,
+// above-cap requests run at exactly the 8x cap.
+TEST(test_accelerated_speed_clamp) {
+    // Authentic reference frame
+    scheduler_t *s = fresh_scheduler(false);
+    uint64_t i0 = cpu_instr_count();
+    scheduler_run_frame(s, TEST_CFG);
+    uint64_t ref = cpu_instr_count() - i0;
+    teardown(s);
+
+    // 0.25x clamps up to the 1x floor (never slower than real hardware)
+    s = fresh_scheduler(false);
+    scheduler_set_mode(s, schedule_accelerated);
+    scheduler_set_speed(s, 0.25);
+    i0 = cpu_instr_count();
+    scheduler_run_frame(s, TEST_CFG);
+    ASSERT_TRUE(cpu_instr_count() - i0 == ref);
+    teardown(s);
+
+    // 100x clamps down to the 8x cap
+    s = fresh_scheduler(false);
+    scheduler_set_mode(s, schedule_accelerated);
+    scheduler_set_speed(s, 100.0);
+    i0 = cpu_instr_count();
+    scheduler_run_frame(s, TEST_CFG);
+    double ratio = (double)(cpu_instr_count() - i0) / (double)ref;
+    ASSERT_TRUE(ratio > 8.0 * 0.99 && ratio < 8.0 * 1.01);
+    teardown(s);
+}
+
+// Accelerated shares the paced wall-clock accumulator: the frame-unit rate
+// converges to the Mac VBL rate and per-tick bursts stay capped — the speed
+// multiplier must never change how many frame-units a host tick earns.
+TEST(test_accelerated_paced_pacing) {
+    scheduler_t *s = fresh_scheduler(false);
+    scheduler_set_mode(s, schedule_accelerated);
+    scheduler_set_speed(s, 4.0);
+
+    double now = 0.0;
+    int ticks = (int)(100.0 * 60.0); // ~100 seconds of a 60 Hz host
+    int max_burst = run_fixed_rate(&now, 60.0, ticks);
+
+    double expected = now * VBL_HZ;
+    ASSERT_TRUE(fabs((double)g_vbls - expected) <= 2.0);
+    ASSERT_TRUE(max_burst <= PACED_MAX_CATCHUP);
+    teardown(s);
+}
+
 int main(void) {
     RUN(test_paced_rate_60hz);
     RUN(test_paced_rate_5994hz);
@@ -449,6 +612,11 @@ int main(void) {
     RUN(test_mode_switch_estimator_reset);
     RUN(test_single_timeline_across_modes);
     RUN(test_cpi_mode_independent);
+    RUN(test_accelerated_timebase_invariant);
+    RUN(test_accelerated_budget_exact);
+    RUN(test_accelerated_mode_switch_hygiene);
+    RUN(test_accelerated_speed_clamp);
+    RUN(test_accelerated_paced_pacing);
     fprintf(stderr, "[OK  ] scheduler suite passed\n");
     return 0;
 }

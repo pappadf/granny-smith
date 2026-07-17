@@ -136,9 +136,16 @@
       >
       <button
         class="sch-btn"
+        class:active={machine.scheduler === 'accel'}
+        disabled={!isLive}
+        title="Accel — faster CPU while games, sound and animations keep the correct speed (like a CPU accelerator card)"
+        onclick={() => onSchedulerClick('accel')}>accel</button
+      >
+      <button
+        class="sch-btn"
         class:active={machine.scheduler === 'turbo'}
         disabled={!isLive}
-        title="Turbo — run as fast as the host allows"
+        title="Turbo — run everything as fast as the host allows (time itself speeds up)"
         onclick={() => onSchedulerClick('turbo')}>turbo</button
       >
     </div>

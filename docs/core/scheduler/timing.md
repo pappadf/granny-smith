@@ -32,11 +32,24 @@ every pacing mode. Because CPI never varies at runtime (short of the
 `scheduler.cpi` debug override), the relationship
 `total_instructions * CPI == cpu_cycles` holds globally and the guest's
 execution timeline is a pure function of the frame-unit count — identical in
-both pacing modes and on both targets.
+the paced and unthrottled pacing modes and on both targets.
 
 Current values: the Plus uses 12 (the authentic average for its 7.8336 MHz
 68000); the 030 machines use 4 (4-clock bus cycle at 15.6672 MHz with
 1-wait-state RAM); the Lisa/Mac XL uses 4 (its long-standing effective value).
+
+### Effective CPI (accelerated mode)
+
+The sprint arithmetic actually runs on an **effective CPI** in x256 fixed point
+(`cpi_eff_x256`). In paced/unthrottled it is exactly `cpi << 8` and every
+computation below is bit-identical to the plain integer form. The `accelerated`
+mode (proposal-scheduler-accelerated-mode.md) lowers it — never raises it — by
+the `scheduler.speed` multiplier (1x..8x), so a frame-unit's fixed cycle budget
+converts to proportionally more instructions while the cycle timebase (and thus
+every cycle-derived peripheral clock) stays real-time. The sub-cycle remainder
+of each sprint (`cycle_frac_x256`) carries in scheduler state, so `cpu_cycles`
+advances by exact integers and no fraction is ever dropped. Formulas below are
+written with plain `CPI`; read `cpi_eff_x256 / 256` for the general case.
 
 ## The Sprint Model
 
@@ -216,25 +229,28 @@ function is never even compiled into the fast-path code flow.
 
 ### State and Globals
 
-The penalty mechanism uses four globals, all defined in `memory.c`:
+The penalty mechanism uses these globals, all defined in `memory.c`:
 
 | Global | Type | Description |
 |--------|------|-------------|
-| `g_io_penalty_remainder` | `uint32_t` | Sub-CPI fraction carried across sprints |
+| `g_io_penalty_remainder` | `uint32_t` | Sub-slot penalty fraction, **x256 cycles**, carried across sprints |
 | `g_io_phantom_instructions` | `uint32_t` | Phantom instructions consumed this sprint |
-| `g_io_cpi` | `uint32_t` | Current CPI for conversion; 0 = disabled |
+| `g_io_cpi_x256` | `uint32_t` | Effective CPI for conversion, x256 fixed point; 0 = disabled |
 | `g_sprint_burndown_ptr` | `uint32_t *` | Points to scheduler's `sprint_burndown` during sprint |
+| `g_sprint_frac_x256` | `uint32_t` | Scheduler's sub-cycle remainder at sprint start (E-sync "now" reconstruction) |
 
-The scheduler sets `g_io_cpi` and `g_sprint_burndown_ptr` at sprint start and
-clears `g_sprint_burndown_ptr` at sprint end. `g_io_penalty_remainder` is not
-reset at sprint boundaries — it carries across sprints to preserve sub-CPI
-fractions. `g_io_phantom_instructions` is reset at each sprint start and
-harvested at sprint end.
+The scheduler sets `g_io_cpi_x256` (to its `cpi_eff_x256`), `g_sprint_frac_x256`
+and `g_sprint_burndown_ptr` at sprint start and clears `g_sprint_burndown_ptr`
+at sprint end. `g_io_penalty_remainder` is not reset at sprint boundaries — it
+carries across sprints to preserve sub-slot fractions (penalty cycles enter the
+accumulator `<< 8`, so fractional effective CPIs convert without loss).
+`g_io_phantom_instructions` is reset at each sprint start and harvested at
+sprint end.
 
-Setting `g_io_cpi = 0` disables the entire mechanism. This happens implicitly
-when no I/O penalties are configured. Do **not** use it to disable penalties in
-one pacing mode but not the other — I/O penalties are part of the guest
-timeline, and gating them on the mode would break the one-guest-timeline
+Setting `g_io_cpi_x256 = 0` disables the entire mechanism. This happens
+implicitly when no I/O penalties are configured. Do **not** use it to disable
+penalties in one pacing mode but not the other — I/O penalties are part of the
+guest timeline, and gating them on the mode would break the one-guest-timeline
 property (identical execution in paced/turbo/headless at a given budget).
 
 ### Configuring Per-Device Penalties

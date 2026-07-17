@@ -828,7 +828,7 @@ static void print_usage(const char *program_name) {
     printf("Usage: %s [options]\n", program_name);
     printf("Options:\n");
     printf("  --model=MODEL    Specify the model type (e.g., plus)\n");
-    printf("  --speed=MODE     Scheduler mode (max|realtime|hardware)\n");
+    printf("  --speed=MODE     Scheduler mode (paced|accelerated|turbo; legacy max|realtime|hardware)\n");
     printf("  --help           Display this help message\n");
 }
 
@@ -1314,10 +1314,13 @@ int main(int argc, char *argv[]) {
     // When the machine already exists (--model was given), apply immediately.
     // Otherwise, system_post_create() will apply it when rom load creates the machine.
     if (speed_mode) {
-        // Legacy three-mode names map onto the two pacing modes:
+        // Legacy three-mode names map onto the pacing modes:
         // realtime/hardware were wall-clock modes → paced; max → turbo.
         if (strcmp(speed_mode, "turbo") == 0 || strcmp(speed_mode, "max") == 0) {
             g_deferred_speed = schedule_unthrottled;
+            g_deferred_speed_set = true;
+        } else if (strcmp(speed_mode, "accelerated") == 0 || strcmp(speed_mode, "accel") == 0) {
+            g_deferred_speed = schedule_accelerated;
             g_deferred_speed_set = true;
         } else if (strcmp(speed_mode, "paced") == 0 || strcmp(speed_mode, "realtime") == 0 ||
                    strcmp(speed_mode, "real") == 0 || strcmp(speed_mode, "hardware") == 0 ||
@@ -1325,7 +1328,7 @@ int main(int argc, char *argv[]) {
             g_deferred_speed = schedule_paced;
             g_deferred_speed_set = true;
         } else {
-            printf("[C] Unknown --speed mode '%s' (valid: paced|turbo)\n", speed_mode);
+            printf("[C] Unknown --speed mode '%s' (valid: paced|accelerated|turbo)\n", speed_mode);
         }
 
         scheduler_t *sched = system_scheduler();
@@ -1405,7 +1408,9 @@ void system_post_create(config_t *cfg) {
         if (sched) {
             scheduler_set_mode(sched, g_deferred_speed);
             printf("[C] Deferred scheduler mode applied: --speed=%s\n",
-                   g_deferred_speed == schedule_unthrottled ? "turbo" : "paced");
+                   g_deferred_speed == schedule_unthrottled   ? "turbo"
+                   : g_deferred_speed == schedule_accelerated ? "accelerated"
+                                                              : "paced");
         }
     }
 }

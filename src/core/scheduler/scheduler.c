@@ -54,6 +54,15 @@ LOG_USE_CATEGORY_NAME("scheduler");
 // input, GC). Previously a hard-coded 0.5.
 #define TURBO_HOST_HEADROOM 0.5
 
+// Accelerated mode: bounds for the fixed speed multiplier, x256 fixed point.
+// Floor 1x = authentic (the mode never runs the guest slower than real
+// hardware); the 8x cap keeps instruction-timed guest code (TimeDBRA-derived
+// busy-waits) from drifting absurdly far on fast hosts
+// (proposal-scheduler-accelerated-mode.md §4.3/§4.4).
+#define SPEED_X256_ONE     256
+#define SPEED_X256_MAX     (8 * 256)
+#define SPEED_X256_DEFAULT (4 * 256)
+
 #define MIN(a, b) ((a) < (b) ? (a) : (b))
 
 // ============================================================================
@@ -100,9 +109,25 @@ struct scheduler {
     // in every pacing mode (one guest timeline)
     uint32_t cpi;
 
+    // Accelerated-mode speed multiplier, x256 fixed point (256 = 1x). Lives
+    // in the plain-data checkpoint prefix on purpose: the user's speed
+    // *setting* persists; the derived cpi_eff_x256 below is transient and
+    // re-derived on restore. Inert unless mode == schedule_accelerated.
+    uint32_t speed_x256;
+
     // Event type registry for checkpointing
     event_type_t event_types[MAX_EVENT_TYPES];
     int num_event_types;
+
+    // Effective CPI, x256 fixed point: cpi << 8 in paced/unthrottled, lowered
+    // (never raised) in accelerated mode. Derived by scheduler_update_cpi_eff
+    // from (mode, cpi, speed_x256); deliberately after event_types so it is
+    // never checkpointed — restore re-derives it.
+    uint32_t cpi_eff_x256;
+    // Sub-cycle remainder of sprint cycle accounting, 0..255 (x256 fractional
+    // cycles). Carried across sprints so cycles advanced stay exact integers
+    // and nothing is dropped; reset on mode/CPI/speed changes and on restore.
+    uint32_t cycle_frac_x256;
 
     // Sprint execution counters (previously file-scope globals)
     uint64_t total_instructions; // accumulated instructions from completed sprints
@@ -150,10 +175,32 @@ extern const class_desc_t scheduler_class;
 // Static Helpers
 // ============================================================================
 
-// Returns the per-machine cycles-per-instruction constant (mode-independent)
+// Returns the per-machine cycles-per-instruction constant (mode-independent).
+// This is the *authentic* CPI — invariant tolerances and event-restore checks
+// key off it because the effective CPI below never exceeds it.
 static inline uint32_t avg_cycles_per_instr(struct scheduler *s) {
     GS_ASSERT(s != NULL);
     return s->cpi;
+}
+
+// Re-derive the effective CPI (x256) from mode, authentic CPI and speed
+// setting, and clear the sub-cycle remainder so no fractional carry leaks
+// across a mode/CPI/speed change. The effective CPI equals the authentic CPI
+// everywhere except accelerated mode, where it is lowered — never raised — so
+// more instructions fit in the same (real-time) cycle budget. Holding the
+// cycle rate and tuning CPI is what keeps every cycle-derived peripheral
+// clock (VIA φ2, sound scan, SCC fallback) real-time for free (proposal §3).
+static void scheduler_update_cpi_eff(struct scheduler *s) {
+    GS_ASSERT(s != NULL);
+    GS_ASSERT(s->cpi > 0);
+    uint32_t eff = s->cpi << 8;
+    if (s->mode == schedule_accelerated && s->speed_x256 > SPEED_X256_ONE) {
+        eff = (uint32_t)(((uint64_t)s->cpi << 16) / s->speed_x256);
+        if (eff == 0)
+            eff = 1; // never a zero divisor (cpi 1 at the 8x cap is still 32)
+    }
+    s->cpi_eff_x256 = eff;
+    s->cycle_frac_x256 = 0;
 }
 
 // Validate all critical scheduler invariants at key transition points
@@ -170,8 +217,13 @@ static void scheduler_check_invariants(struct scheduler *s, const char *context)
                (unsigned long long)s->cpu_cycles);
 
     // Mode must be valid
-    GS_ASSERTF(s->mode == schedule_paced || s->mode == schedule_unthrottled, "[%s] invalid mode (%d)", context,
-               s->mode);
+    GS_ASSERTF(s->mode == schedule_paced || s->mode == schedule_unthrottled || s->mode == schedule_accelerated,
+               "[%s] invalid mode (%d)", context, s->mode);
+
+    // Effective CPI: derived, nonzero, and never above the authentic CPI
+    GS_ASSERTF(s->cpi_eff_x256 > 0 && s->cpi_eff_x256 <= (s->cpi << 8), "[%s] cpi_eff_x256 out of range (%u)", context,
+               s->cpi_eff_x256);
+    GS_ASSERTF(s->cycle_frac_x256 < 256, "[%s] cycle_frac_x256 out of range (%u)", context, s->cycle_frac_x256);
 
     // Event queue: first event must not be too far in the past (allow CPI overshoot)
     if (s->cpu_events != NULL) {
@@ -215,24 +267,29 @@ static uint64_t current_cpu_cycles(struct scheduler *s) {
     GS_ASSERT(s->sprint_burndown <= s->sprint_total);
     GS_ASSERT(s->cpu_cycles < (1ULL << 60));
 
-    // Base cycles plus cycles consumed in the current sprint
+    // Base cycles plus cycles consumed in the current sprint. Fixed-point x256
+    // with the carried sub-cycle remainder — exactly consistent with the
+    // sprint's final accounting, so mid-sprint reads (VIA timers, event
+    // scheduling) and the boundary bookkeeping agree to the cycle.
     uint64_t in_sprint = s->sprint_total - s->sprint_burndown;
-    uint64_t result = s->cpu_cycles + in_sprint * avg_cycles_per_instr(s);
+    uint64_t result = s->cpu_cycles + ((in_sprint * s->cpi_eff_x256 + s->cycle_frac_x256) >> 8);
 
     // Overflow check
     GS_ASSERT(result >= s->cpu_cycles);
     return result;
 }
 
-// Convert CPU cycles to instruction count using average cycles per instruction
+// Convert CPU cycles to instruction count using the effective CPI (x256)
 static uint64_t cycles_to_instructions(struct scheduler *restrict s, uint64_t cycles) {
-    GS_ASSERT(avg_cycles_per_instr(s) > 0);
+    GS_ASSERT(s->cpi_eff_x256 > 0);
+
+    uint64_t n = (cycles << 8) / s->cpi_eff_x256;
 
     // At least 1 instruction if any cycles remain
-    if (cycles < avg_cycles_per_instr(s) && cycles > 0)
+    if (n == 0 && cycles > 0)
         return 1;
 
-    return cycles / avg_cycles_per_instr(s);
+    return n;
 }
 
 // Reconcile sprint counters so that cpu_instr_count() returns a stable value.
@@ -365,7 +422,7 @@ static void run_stop_event(void *source, uint64_t data) {
 // Returns false on overflow / zero-count / scheduler not initialised.
 static bool scheduler_run_with_budget(scheduler_t *s, uint64_t instructions) {
     GS_ASSERT(s != NULL);
-    int cpi = avg_cycles_per_instr(s);
+    uint32_t eff_x256 = s->cpi_eff_x256;
 
     // Cancel any pending stop events from previous limited runs
     remove_event(s, run_stop_event, NULL);
@@ -375,10 +432,14 @@ static bool scheduler_run_with_budget(scheduler_t *s, uint64_t instructions) {
         s->running = true;
         return true;
     }
-    if (instructions > UINT64_MAX / cpi)
+    if (instructions > UINT64_MAX / eff_x256)
         return false;
 
-    uint64_t cycles = instructions * cpi;
+    // Effective-CPI conversion: exact (bit-identical to instructions * cpi)
+    // whenever the effective CPI is the authentic integer one (paced/turbo)
+    uint64_t cycles = (instructions * eff_x256) >> 8;
+    if (cycles == 0)
+        cycles = 1; // sub-cycle budget (accelerated, tiny N) still needs a nonzero delay
     scheduler_new_cpu_event(s, run_stop_event, s, 0, cycles, 0);
     s->running = true;
     return true;
@@ -447,6 +508,7 @@ struct scheduler *scheduler_init(struct cpu *cpu, checkpoint_t *checkpoint) {
     s->host_secs_per_loop = 1.0 / 60.0;
     s->frequency = (uint32_t)MAC_CPU_FREQUENCY;
     s->cpi = CYCLES_PER_INSTR_DEFAULT;
+    s->speed_x256 = SPEED_X256_DEFAULT;
     s->num_event_types = 0;
     memset(s->event_types, 0, sizeof(s->event_types));
 
@@ -465,16 +527,24 @@ struct scheduler *scheduler_init(struct cpu *cpu, checkpoint_t *checkpoint) {
         s->host_secs_per_vbl = NAN;
         s->host_secs_per_loop = 1.0 / 60.0;
 
-        // Reconstruct instruction count from restored cycle counter. CPI is a
-        // per-machine constant, so this mapping is exact (cycles are the sole
-        // ground truth for time; total_instructions is display-only).
+        // Reconstruct instruction count from restored cycle counter. Cycles
+        // are the sole ground truth for time; total_instructions is
+        // display-only. The mapping is exact for a timeline that never ran
+        // accelerated; time spent at a lowered effective CPI makes it an
+        // underestimate — acceptable for a display counter, and the reason
+        // nothing derives timing from it.
         GS_ASSERT(s->cpi > 0);
         s->total_instructions = s->cpu_cycles / s->cpi;
         s->sprint_total = 0;
         s->sprint_burndown = 0;
 
-        GS_ASSERT(s->mode == schedule_paced || s->mode == schedule_unthrottled);
+        GS_ASSERT(s->mode == schedule_paced || s->mode == schedule_unthrottled || s->mode == schedule_accelerated);
         GS_ASSERT(s->cpu_cycles < (1ULL << 60));
+
+        // Checkpoints are build-ID-gated so the field is always present, but
+        // a corrupt speed must not poison the effective-CPI derivation.
+        if (s->speed_x256 < SPEED_X256_ONE || s->speed_x256 > SPEED_X256_MAX)
+            s->speed_x256 = SPEED_X256_DEFAULT;
 
         // Save event data for deferred restoration (names must be resolved after device registration).
         system_read_checkpoint_data(checkpoint, &s->tmp_num_events, sizeof(s->tmp_num_events));
@@ -499,6 +569,10 @@ struct scheduler *scheduler_init(struct cpu *cpu, checkpoint_t *checkpoint) {
         s->tmp_num_events = 0;
         s->tmp_events = NULL;
     }
+
+    // Derive the transient effective CPI (fresh boot and restore alike — it is
+    // never checkpointed) before anything can size a sprint or read cycles.
+    scheduler_update_cpi_eff(s);
 
     scheduler_new_event_type(s, "scheduler", s, "run_stop", run_stop_event);
     // VBL is no longer a scheduler event: every target injects it imperatively
@@ -554,7 +628,8 @@ void scheduler_delete(struct scheduler *scheduler) {
 void scheduler_checkpoint(struct scheduler *restrict scheduler, checkpoint_t *checkpoint) {
     GS_ASSERT(scheduler != NULL && checkpoint != NULL);
     GS_ASSERT(scheduler->cpu != NULL);
-    GS_ASSERT(scheduler->mode == schedule_paced || scheduler->mode == schedule_unthrottled);
+    GS_ASSERT(scheduler->mode == schedule_paced || scheduler->mode == schedule_unthrottled ||
+              scheduler->mode == schedule_accelerated);
     GS_ASSERT(scheduler->cpu_cycles < (1ULL << 60));
     GS_ASSERT(scheduler->num_event_types >= 0 && scheduler->num_event_types <= MAX_EVENT_TYPES);
 
@@ -826,7 +901,7 @@ bool scheduler_is_running(struct scheduler *restrict s) {
     return s->running;
 }
 
-// Set the scheduler pacing mode (paced or unthrottled)
+// Set the scheduler pacing mode (paced, unthrottled or accelerated)
 void scheduler_set_mode(struct scheduler *restrict s, enum schedule_mode mode) {
     if (!s)
         return;
@@ -839,6 +914,27 @@ void scheduler_set_mode(struct scheduler *restrict s, enum schedule_mode mode) {
     s->vbl_acc_error = 0.0;
     s->host_secs_per_vbl = NAN;
     s->host_secs_per_loop = 1.0 / 60.0;
+    // Entering or leaving accelerated symmetrically re-derives the effective
+    // CPI and clears the sub-cycle remainder, so no accelerated-mode speed
+    // leaks into paced/unthrottled (or vice versa).
+    scheduler_update_cpi_eff(s);
+}
+
+// Set the accelerated-mode speed multiplier (clamped to [1x, 8x]). Stored
+// x256; retained across mode switches/checkpoints but inert outside
+// schedule_accelerated.
+void scheduler_set_speed(struct scheduler *restrict s, double multiplier) {
+    if (!s)
+        return;
+    if (isnan(multiplier))
+        return;
+    double clamped = multiplier;
+    if (clamped < (double)SPEED_X256_ONE / 256.0)
+        clamped = (double)SPEED_X256_ONE / 256.0;
+    if (clamped > (double)SPEED_X256_MAX / 256.0)
+        clamped = (double)SPEED_X256_MAX / 256.0;
+    s->speed_x256 = (uint32_t)(clamped * 256.0 + 0.5);
+    scheduler_update_cpi_eff(s);
 }
 
 // Set the CPU clock frequency in Hz
@@ -859,13 +955,15 @@ void scheduler_set_cpi(struct scheduler *restrict s, uint32_t cpi) {
         return;
     GS_ASSERT(cpi > 0);
     s->cpi = cpi;
+    // The effective CPI is derived from the authentic one; keep it in step
+    scheduler_update_cpi_eff(s);
 }
 
 // Run the scheduler for a specified number of instructions
 void scheduler_run_instructions(struct scheduler *restrict s, uint64_t n) {
     GS_ASSERT(s != NULL);
     GS_ASSERT(s->cpu != NULL);
-    GS_ASSERT(s->mode == schedule_paced || s->mode == schedule_unthrottled);
+    GS_ASSERT(s->mode == schedule_paced || s->mode == schedule_unthrottled || s->mode == schedule_accelerated);
 
     CHECK_INVARIANTS(s);
 
@@ -879,7 +977,9 @@ void scheduler_run_instructions(struct scheduler *restrict s, uint64_t n) {
     debug_t *debugger = system_debug();
     bool debugger_active = debug_active(debugger);
 
-    uint64_t remaining_cycles = n * avg_cycles_per_instr(s);
+    // Cycle budget at the effective CPI (exactly n * cpi when it is the
+    // authentic integer CPI — paced/turbo budgets stay bit-identical)
+    uint64_t remaining_cycles = (n * s->cpi_eff_x256) >> 8;
 
     while (remaining_cycles > 0) {
         GS_ASSERT(s->sprint_burndown <= s->sprint_total);
@@ -932,11 +1032,13 @@ void scheduler_run_instructions(struct scheduler *restrict s, uint64_t n) {
         s->sprint_total = instr_to_exec;
         s->sprint_burndown = instr_to_exec;
         g_sprint_burndown_ptr = &s->sprint_burndown;
-        g_io_cpi = avg_cycles_per_instr(s);
+        g_io_cpi_x256 = s->cpi_eff_x256;
         g_io_phantom_instructions = 0;
         // Sprint timebase for E-synchronized penalties: mid-sprint "now" =
-        // base cycles + slots consumed x CPI (see memory_io_esync_penalty)
+        // base cycles + (slots consumed x effective CPI + carried fraction),
+        // mirroring current_cpu_cycles (see memory_io_esync_penalty)
         g_sprint_base_cycles = s->cpu_cycles;
+        g_sprint_frac_x256 = s->cycle_frac_x256;
         g_sprint_total_slots = instr_to_exec;
         // Note: g_io_penalty_remainder is NOT reset — it carries across sprints
         cpu_run_sprint(cpu, &s->sprint_burndown);
@@ -950,15 +1052,30 @@ void scheduler_run_instructions(struct scheduler *restrict s, uint64_t n) {
         uint32_t phantom = g_io_phantom_instructions;
         g_io_phantom_instructions = 0;
         s->sprint_total = 0;
-        uint32_t executed_cycles = executed_slots * avg_cycles_per_instr(s);
+        // Fixed-point x256: whole cycles advance the clock, the sub-cycle
+        // remainder carries in scheduler state so nothing is ever dropped —
+        // cycle-timestamped events and the peripheral divisors observe an
+        // exact integer cycle timeline at every effective CPI.
+        uint64_t advance_x256 = (uint64_t)executed_slots * s->cpi_eff_x256 + s->cycle_frac_x256;
+        uint32_t executed_cycles = (uint32_t)(advance_x256 >> 8);
+        s->cycle_frac_x256 = (uint32_t)(advance_x256 & 0xFF);
 
-        // Overshoot check: allow up to one instruction of overshoot
+        // Overshoot check: allow up to one (authentic-CPI) instruction of overshoot
         if (s->cpu_events != NULL) {
             GS_ASSERT(executed_cycles <= cycles_to_execute + avg_cycles_per_instr(s));
         }
 
         s->total_instructions += (executed_slots > phantom) ? (executed_slots - phantom) : 0;
-        remaining_cycles -= executed_cycles;
+        // The final sprint can overshoot the remaining budget by under one
+        // instruction — a fractional effective CPI makes this routine, but it
+        // already happened at integer CPI whenever a STOP'd-CPU advance (raw
+        // event-delta cycles) left the budget a non-multiple of CPI and the
+        // tail needed the min-1-instruction bump. Saturate: the frame ends
+        // having overshot by <1 instruction. (Before the x256 change this
+        // subtraction wrapped the unsigned budget, silently running the
+        // "frame" on to the next stop event with no VBL injection — visible
+        // as an A/UX timing-phase shift when fixed; see se30-aux3-boot.)
+        remaining_cycles = (executed_cycles < remaining_cycles) ? remaining_cycles - executed_cycles : 0;
         s->cpu_cycles += executed_cycles;
 
         // Verify event queue integrity after advancing cycles
@@ -1007,7 +1124,10 @@ void scheduler_run(struct scheduler *restrict s, double time) {
 
     s->running = true;
 
-    uint64_t instructions = (uint64_t)(time * (double)s->frequency / avg_cycles_per_instr(s));
+    // Effective-CPI sizing. The x256 scaling is by powers of two, which is
+    // exact in doubles — so with the authentic integer CPI (paced/turbo) this
+    // is bit-identical to time * frequency / cpi and pinned budgets hold.
+    uint64_t instructions = (uint64_t)(time * (double)s->frequency * 256.0 / (double)s->cpi_eff_x256);
     scheduler_run_instructions(s, instructions);
 
     CHECK_INVARIANTS(s);
@@ -1025,7 +1145,9 @@ void scheduler_run_usecs(struct scheduler *restrict s, uint64_t usecs) {
 
     s->running = true;
 
-    uint64_t instructions = (usecs * s->frequency) / (1000000ULL * avg_cycles_per_instr(s));
+    // a*256 / (b*256) == a/b in integer math, so the authentic-CPI result is
+    // unchanged; accelerated lowers the effective CPI for more instructions
+    uint64_t instructions = (usecs * s->frequency * 256ULL) / (1000000ULL * s->cpi_eff_x256);
     scheduler_run_instructions(s, instructions);
 }
 
@@ -1087,10 +1209,15 @@ void scheduler_main_loop(config_t *restrict config, double now_msecs) {
         break;
 
     case schedule_paced:
+    case schedule_accelerated:
         // Wall-clock accumulator: run one frame-unit per accumulated VBL
         // period. At a ~60 Hz host this is 1 per tick in steady state (one
         // repeat/skip every ~7 s of oscillator drift); on 59.94/75/120/144 Hz
         // and VRR displays the long-term rate converges to 60.147 Hz exactly.
+        // Accelerated shares this branch by design: it differs from paced
+        // only in the effective CPI *inside* each frame-unit, never in how
+        // many frame-units a host tick earns — that is what keeps its
+        // timebase (VBL/VIA/sound) locked to real time.
         s->vbl_acc_error += current_period;
         if (s->vbl_acc_error >= MAC_VBL_PERIOD) {
             vbls_to_execute = (int)(s->vbl_acc_error / MAC_VBL_PERIOD);
@@ -1148,6 +1275,8 @@ static const char *mode_label(enum schedule_mode m) {
         return "paced";
     case schedule_unthrottled:
         return "turbo";
+    case schedule_accelerated:
+        return "accelerated";
     default:
         return "?";
     }
@@ -1173,8 +1302,10 @@ static value_t sched_attr_mode_set(struct object *self, const member_t *m, value
         mode = schedule_paced;
     else if (strcmp(in.s, "turbo") == 0 || strcmp(in.s, "max") == 0)
         mode = schedule_unthrottled;
+    else if (strcmp(in.s, "accelerated") == 0 || strcmp(in.s, "accel") == 0)
+        mode = schedule_accelerated;
     else {
-        value_t e = val_err("scheduler.mode: unknown mode '%s' (valid: paced, turbo)", in.s);
+        value_t e = val_err("scheduler.mode: unknown mode '%s' (valid: paced, accelerated, turbo)", in.s);
         value_free(&in);
         return e;
     }
@@ -1196,6 +1327,20 @@ static value_t sched_attr_cpi_set(struct object *self, const member_t *m, value_
     if (in.u < 1 || in.u > 255)
         return val_err("scheduler.cpi: value %llu out of range (1..255)", (unsigned long long)in.u);
     scheduler_set_cpi(sched_self_from(self), (uint32_t)in.u);
+    return val_none();
+}
+
+// Accelerated-mode speed multiplier (1.0 = authentic .. 8.0). The setting is
+// retained (and checkpointed) in every mode but only applies in 'accelerated'.
+static value_t sched_attr_speed(struct object *self, const member_t *m) {
+    (void)m;
+    return val_float((double)sched_self_from(self)->speed_x256 / 256.0);
+}
+static value_t sched_attr_speed_set(struct object *self, const member_t *m, value_t in) {
+    (void)m;
+    if (isnan(in.f) || in.f < 1.0 || in.f > 8.0)
+        return val_err("scheduler.speed: %g out of range (1.0 .. 8.0)", in.f);
+    scheduler_set_speed(sched_self_from(self), in.f);
     return val_none();
 }
 
@@ -1274,14 +1419,19 @@ static const member_t scheduler_members[] = {
      .attr = {.type = V_BOOL, .get = sched_attr_running, .set = NULL}},
     {.kind = M_ATTR,
      .name = "mode",
-     .doc = "Pacing mode ('paced' | 'turbo'; legacy aliases real/hw → paced, max → turbo)",
-     .flags = 0,
+     .doc = "Pacing mode ('paced' | 'accelerated' | 'turbo'; legacy aliases real/hw → paced, max → turbo, "
+            "accel → accelerated)", .flags = 0,
      .attr = {.type = V_STRING, .get = sched_attr_mode_get, .set = sched_attr_mode_set}},
     {.kind = M_ATTR,
      .name = "cpi",
      .doc = "Per-machine cycles per instruction (mode-independent; writable as a debug override, 1..255)",
      .flags = 0,
      .attr = {.type = V_UINT, .get = sched_attr_cpi, .set = sched_attr_cpi_set}},
+    {.kind = M_ATTR,
+     .name = "speed",
+     .doc = "Accelerated-mode CPU speed multiplier (1.0 .. 8.0, 1/256th steps). Only takes effect while "
+            "mode is 'accelerated'; timebase (VBL/VIA/sound) stays real-time regardless", .flags = 0,
+     .attr = {.type = V_FLOAT, .get = sched_attr_speed, .set = sched_attr_speed_set}},
     {.kind = M_ATTR,
      .name = "cycles",
      .doc = "Total CPU cycles executed so far",

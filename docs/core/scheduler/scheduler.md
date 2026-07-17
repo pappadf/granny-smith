@@ -82,11 +82,14 @@ These are myths that repeatedly show up in discussions of the scheduler. Every o
   keeps cycle accounting honest across slow I/O (see §6.2).
 
 - **"Switching scheduler mode (paced/turbo) changes what the guest executes."**
-  No. The mode is *pacing only* — it decides how many frame-units a host tick batches,
-  never how many instructions a frame-unit contains. CPI is a per-machine constant
-  independent of the mode, so `cpu_cycles`, the instruction count, and the guest's
-  execution sequence are identical in both modes (and on both targets) for a given
-  frame-unit count — see §9.
+  No. Those two modes are *pacing only* — they decide how many frame-units a host tick
+  batches, never how many instructions a frame-unit contains. CPI is a per-machine
+  constant independent of the mode, so `cpu_cycles`, the instruction count, and the
+  guest's execution sequence are identical in both modes (and on both targets) for a
+  given frame-unit count — see §9. The **`accelerated`** mode is the deliberate
+  exception: it lowers the *effective* CPI so a frame-unit retires more instructions
+  (§2.2), which is guest-visible by design — and why it is excluded from budget-pinned
+  tests (§10.4).
 
 ---
 
@@ -133,6 +136,35 @@ the **one guest timeline** property (§9, §10.4).
 > the Plus this also meant the default mode emulated a ~3× overclocked 68000; the
 > authentic CPI 12 is now the Plus constant.
 
+### 2.2 Effective CPI and the accelerated mode
+
+The `accelerated` mode (proposal-scheduler-accelerated-mode.md, stage 1: fixed
+multiplier) re-introduces a *faster-than-authentic* CPU as an **explicit, opt-in
+mode** — the "CPU accelerator card" model: the machine keeps its real-time timebase
+(VBL, VIA φ2, sound, SCC) while the CPU retires more instructions per frame-unit.
+
+The mechanism is a **fractional effective CPI** (`cpi_eff_x256`, x256 fixed point),
+derived as `authentic_cpi / scheduler.speed` and used by all sprint sizing and cycle
+accounting. The authentic CPI stays the anchor and the floor — the mode only ever
+tunes *below* it (faster), never above. Why lower CPI instead of raising `frequency`:
+every cycle-derived peripheral clock (VIA φ2 = `cpu_cycles / freq_factor`, the Plus's
+352-cycle sound scan, the SCC cycle fallback) divides the **raw cycle count** by a
+fixed divisor. Holding the cycle rate constant and tuning instructions-per-cycle
+keeps all of them real-time for free; raising the frequency would require rescaling
+every divisor.
+
+Sprint cycle accounting carries the sub-cycle remainder (`cycle_frac_x256`) in
+scheduler state, so cycles advanced stay exact integers and nothing is dropped:
+`current_cpu_cycles()` mid-sprint, the end-of-sprint bookkeeping, and the E-sync
+penalty's reconstructed "now" all use the same `(slots × cpi_eff_x256 + frac) >> 8`
+formula. With the authentic integer CPI (paced/turbo) the remainder is identically
+zero and every code path is bit-identical to the pre-fractional arithmetic — pinned
+budgets do not move.
+
+`scheduler.speed` (1.0 .. 8.0, 1/256th steps) picks the multiplier; the *setting*
+persists in the checkpoint prefix while the derived `cpi_eff_x256` and the remainder
+are transient and re-derived/cleared on restore and on every mode/CPI/speed change.
+
 ---
 
 ## 3. Core data structures
@@ -145,9 +177,13 @@ for timing:
 
 ```c
 struct scheduler {
-    enum schedule_mode mode;         // Pacing only: paced | unthrottled
-    uint32_t cpi;                    // Per-machine CPI constant (mode-independent)
+    enum schedule_mode mode;         // paced | unthrottled | accelerated
+    uint32_t cpi;                    // Per-machine authentic CPI constant
+    uint32_t speed_x256;             // Accelerated-mode multiplier setting (persisted)
     uint32_t frequency;              // CPU clock in Hz
+
+    uint32_t cpi_eff_x256;           // Effective CPI, x256 (derived; not checkpointed)
+    uint32_t cycle_frac_x256;        // Sub-cycle sprint remainder (transient)
 
     uint64_t cpu_cycles;             // Authoritative "now" at last sprint boundary
     uint64_t total_instructions;     // Instructions retired through last sprint boundary
@@ -365,7 +401,7 @@ while (remaining_cycles > 0) {
     // 2. Execute the sprint
     sprint_total = sprint_burndown = instr_to_exec;
     g_sprint_burndown_ptr = &sprint_burndown;                    // expose to I/O penalty mechanism
-    g_io_cpi = avg_cycles_per_instr(s);
+    g_io_cpi_x256 = cpi_eff_x256;                                // effective CPI (== cpi<<8 unless accelerated)
     g_io_phantom_instructions = 0;
     cpu_run_sprint(cpu, &sprint_burndown);                       // CPU runs until burndown hits 0
     g_sprint_burndown_ptr = NULL;
@@ -374,11 +410,13 @@ while (remaining_cycles > 0) {
     executed_slots = sprint_total;                               // may have been shrunk by reconcile
     phantom = g_io_phantom_instructions;
     sprint_total = 0;
-    executed_cycles = executed_slots * avg_cycles_per_instr(s);
+    advance_x256 = executed_slots * cpi_eff_x256 + cycle_frac_x256;
+    executed_cycles = advance_x256 >> 8;                         // whole cycles advance…
+    cycle_frac_x256 = advance_x256 & 0xFF;                       // …the fraction carries (0 at integer CPI)
 
     total_instructions += (executed_slots - phantom);            // only real instructions count
     cpu_cycles += executed_cycles;                               // but all cycles count
-    remaining_cycles -= executed_cycles;
+    remaining_cycles -= executed_cycles;                         // (saturating at fractional CPIs)
 
     // 4. Fire events due at or before the new cpu_cycles
     process_event_queue(&cpu_events, cpu_cycles);
@@ -402,11 +440,11 @@ Rather than lie about this, the emulator converts the surplus cycles into **phan
 instructions** that are deducted from `sprint_burndown`:
 
 ```c
-// memory.h:142 — memory_io_penalty
-g_io_penalty_remainder += extra_cycles;
-burn = g_io_penalty_remainder / g_io_cpi;
+// memory.h — memory_io_penalty
+g_io_penalty_remainder += extra_cycles << 8;  // whole cycles onto the x256 grid
+burn = g_io_penalty_remainder / g_io_cpi_x256;
 if (burn > 0) {
-    g_io_penalty_remainder -= burn * g_io_cpi;
+    g_io_penalty_remainder -= burn * g_io_cpi_x256;
     g_io_phantom_instructions += burn;
     *g_sprint_burndown_ptr -= burn;           // ends the sprint sooner
 }
@@ -542,9 +580,10 @@ patterns are:
 
 ## 9. Mode switching and the CPI invariant
 
-Since the two-mode change, `scheduler_set_mode` touches **only pacing state** (it
-resets the wall-clock estimators, §10.3); CPI never changes with the mode. As long as
-the `scheduler.cpi` debug override is untouched, the linear relationship
+Between `paced` and `unthrottled`, `scheduler_set_mode` touches **only pacing state**
+(it resets the wall-clock estimators, §10.3); CPI never changes with the mode. As long
+as the machine never enters `accelerated` and the `scheduler.cpi` debug override is
+untouched, the linear relationship
 
 ```
 cpu_instr_count() * CPI == cpu_cycles
@@ -554,15 +593,20 @@ holds globally, and switching modes mid-run creates no discontinuity of any kind
 the guest timeline — `cpu_cycles` stays monotonic and future instructions keep
 advancing it at the same rate.
 
+Entering or leaving `accelerated` re-derives the effective CPI and clears the
+fractional remainder symmetrically, so no accelerated-mode speed leaks into the other
+modes; but time spent accelerated advances `cpu_cycles` at fewer cycles per
+instruction, making the relationship above piecewise from then on (like a
+`scheduler.cpi` override would).
+
 The authoritative quantity is still `cpu_cycles`. If you need elapsed emulated time,
 use cycles (or `scheduler_time_ns`); instruction counts are a derived, display-level
-view. The only way the relationship becomes piecewise is an explicit runtime
-`scheduler.cpi` override — a debug tool, never done by the UI or the machines.
+view.
 
 **Checkpoint restore:** the restore path rebuilds `total_instructions` as
 `cpu_cycles / cpi` ([scheduler.c](../src/core/scheduler/scheduler.c)). With a constant
-CPI this reconstruction is exact (previously, with mode-dependent CPI, it was only an
-approximation).
+CPI this reconstruction is exact for a timeline that never ran accelerated
+(accelerated time makes it an underestimate — acceptable for a display-only counter).
 
 ---
 
@@ -631,6 +675,12 @@ whole number of frame-units and runs that many via `scheduler_run_frame()`:
   feedback that could pile ~60 frame-units into one tick. Under a sustained-slow host
   the accumulator saturates and the emulator simply lags real time by a bounded
   amount.
+- **`schedule_accelerated`** ("Accel"): shares the paced wall-clock accumulator
+  verbatim — same `vbl_acc_error` math, same `PACED_MAX_CATCHUP` cap — so its
+  timebase (VBL cadence, and everything cycle-derived) is real-time exactly like
+  paced. It differs from paced only in the effective CPI *inside* each frame-unit
+  (§2.2): more instructions per frame, correct clock. This is the "faster machine,
+  correct time" mode a CPU-bound title (e.g. Marathon's software renderer) wants.
 - **`schedule_unthrottled`** ("Turbo"): as many frame-units as fit in
   `TURBO_HOST_HEADROOM` (50%) of the smoothed host loop period, leaving the rest for
   the browser. Emulated time outruns real time on a fast host. The first tick after
@@ -662,9 +712,15 @@ Headless makes this directly usable: a fixed `scheduler.run N` lands on the same
 state every run, regardless of host load or where read-only commands (`screenshot`,
 `screen.checksum`) sit in the script. The web2 e2e login test relies on the same
 property — a fixed budget reproduces, bit-for-bit, the framebuffer the headless
-integration test captures. With CPI fixed per machine (§2.1) this holds in **every**
-mode: paced web2, turbo web2, and headless reproduce each other exactly at any given
-budget.
+integration test captures. With CPI fixed per machine (§2.1) this holds in `paced`
+and `unthrottled` alike: paced web2, turbo web2, and headless reproduce each other
+exactly at any given budget.
+
+**`accelerated` is non-deterministic by construction** and excluded from this
+guarantee: its guest timeline depends on the speed setting (and, once the adaptive
+governor ships, on host load). Never pin an instruction budget or a checkpoint-replay
+expectation against accelerated mode — determinism-sensitive consumers (fixed-budget
+tests, reproduction) use `paced` with the authentic CPI.
 
 > **History.** Earlier, headless used a *cycle-driven* recurring `scheduler_vbl_tick`
 > event (and `scheduler_run_until_idle`) while WASM used `scheduler_main_loop`. The two
@@ -751,7 +807,10 @@ Enforced by `scheduler_check_invariants` at every API entry/exit:
 - Queue length ≤ `MAX_SANE_EVENTS` (10000) — a loop/corruption tripwire.
 
 **Mode and pointers:**
-- `mode` is one of the two enum values (`schedule_paced` / `schedule_unthrottled`).
+- `mode` is one of the three enum values (`schedule_paced` / `schedule_unthrottled` /
+  `schedule_accelerated`).
+- `cpi_eff_x256` is nonzero and never above the authentic `cpi << 8`;
+  `cycle_frac_x256 < 256`.
 - `cpu` pointer is non-NULL.
 
 All violations abort via `GS_ASSERT` / `GS_ASSERTF` (from `common.h`) with file, line,
@@ -767,8 +826,9 @@ The scheduler is an object-model citizen (`scheduler.*` paths in the typed shell
 |-----------------------------|------------------------------------------------------------|
 | `scheduler.run [N]`         | Start execution; optionally stop after N instructions.     |
 | `scheduler.stop`            | Stop execution immediately.                                |
-| `scheduler.mode`            | Pacing mode: `"paced"` \| `"turbo"` (writable; legacy aliases `real`/`hw` → paced, `max` → turbo). |
+| `scheduler.mode`            | Pacing mode: `"paced"` \| `"accelerated"` \| `"turbo"` (writable; legacy aliases `real`/`hw` → paced, `max` → turbo, `accel` → accelerated). |
 | `scheduler.cpi`             | Per-machine CPI constant; writable as a debug override (1..255). |
+| `scheduler.speed`           | Accelerated-mode CPU speed multiplier (1.0 .. 8.0, 1/256th steps); persisted, but only takes effect in mode `accelerated`. |
 | `scheduler.running`         | True while executing (useful for scripts).                 |
 | `scheduler.cycles` / `.instr_count` | Cycle / instruction counters.                      |
 | `events`                    | Dump the pending event queue with Δcycles and Δµs.         |

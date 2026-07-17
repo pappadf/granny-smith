@@ -28,9 +28,10 @@ machine.memory.poke.w 0x017A 0
 # defers its window until the next keyboard event reaches its pty.  The
 # boot-chime producer (sound stage 1: the ASC now really renders the chime,
 # adding sample-rate scheduler events during the mode-2 window) shifted the
-# phase into the slow arm; 248M re-pins it to the fast arm with every
+# phase into the slow arm; 248M re-pinned it to the fast arm with every
 # golden unchanged.  If a future timing change trips shell.png again, nudge
-# this chunk ±a few M instructions.
+# this chunk ±a few M instructions — or, if the interaction still completes,
+# regenerate the goldens (see below).
 scheduler.run 248000000
 scheduler.run 200000000
 scheduler.run 200000000
@@ -59,7 +60,14 @@ scheduler.run 15000000
 machine.adb.mouse.click false
 scheduler.run 20000000
 
-# The command shell should now be open
+# The command shell should now be open.  Goldens regenerated 2026-07-17: the
+# fractional-CPI scheduler change fixed a frame-budget wrap on STOP'd-CPU
+# tails (the old code could silently run a "frame" on to the next stop event
+# with no VBL injection), which shifted the VBL cadence around A/UX idle.
+# Under the fixed cadence the CommandShell interaction now completes inside
+# the budgets: shell.png shows the opened window with the login banner
+# (previously it pinned the Apple menu still open, window deferred), and
+# ls.png shows the executed listing.
 machine.screen.match shell.png
 
 # enter command "ls"
