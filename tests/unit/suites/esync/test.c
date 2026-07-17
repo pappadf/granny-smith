@@ -24,9 +24,10 @@
 // --- globals referenced by the memory.h inline helpers ----------------------
 uint32_t g_io_penalty_remainder = 0;
 uint32_t g_io_phantom_instructions = 0;
-uint32_t g_io_cpi = 0;
+uint32_t g_io_cpi_x256 = 0;
 uint32_t *g_sprint_burndown_ptr = NULL;
 uint64_t g_sprint_base_cycles = 0;
+uint32_t g_sprint_frac_x256 = 0;
 uint32_t g_sprint_total_slots = 0;
 uint32_t g_esync_period_x256 = 0;
 
@@ -107,12 +108,13 @@ TEST(test_tight_loop_locks_to_one_access_per_period) {
 // ============================================================================
 
 TEST(test_wrapper_charges_via_penalty_slots) {
-    // Simulate a sprint: CPI 4, base cycles 0, 1000-slot budget.
+    // Simulate a sprint: CPI 4 (x256 = 1024), base cycles 0, 1000-slot budget.
     uint32_t burndown = 1000;
-    g_io_cpi = 4;
+    g_io_cpi_x256 = 4 << 8;
     g_io_penalty_remainder = 0;
     g_io_phantom_instructions = 0;
     g_sprint_base_cycles = 0;
+    g_sprint_frac_x256 = 0;
     g_sprint_total_slots = 1000;
     g_sprint_burndown_ptr = &burndown;
     g_esync_period_x256 = period_x256(15667200); // 20-cycle grid
@@ -129,14 +131,42 @@ TEST(test_wrapper_charges_via_penalty_slots) {
     memory_io_esync_penalty();
     ASSERT_EQ_INT((int)burndown, 990);
 
-    // Disabled paths: no CPI (turbo-off) or no grid → no charge
-    g_io_cpi = 0;
+    // Disabled paths: no CPI (no sprint armed) or no grid → no charge
+    g_io_cpi_x256 = 0;
     memory_io_esync_penalty();
     ASSERT_EQ_INT((int)burndown, 990);
-    g_io_cpi = 4;
+    g_io_cpi_x256 = 4 << 8;
     g_esync_period_x256 = 0;
     memory_io_esync_penalty();
     ASSERT_EQ_INT((int)burndown, 990);
+
+    g_sprint_burndown_ptr = NULL;
+}
+
+TEST(test_wrapper_fractional_cpi) {
+    // Accelerated-mode effective CPI 1.5 (x256 = 384): a 20-cycle penalty
+    // burns floor(20 / 1.5) = 13 slots and carries the remaining half slot
+    // (x256 cycles: 5120 - 13*384 = 128) into the next charge.
+    uint32_t burndown = 1000;
+    g_io_cpi_x256 = 384;
+    g_io_penalty_remainder = 0;
+    g_io_phantom_instructions = 0;
+    g_sprint_base_cycles = 0;
+    g_sprint_frac_x256 = 0;
+    g_sprint_total_slots = 1000;
+    g_sprint_burndown_ptr = &burndown;
+    g_esync_period_x256 = 0; // charge raw penalties, not the E grid
+
+    memory_io_penalty(20);
+    ASSERT_EQ_INT((int)burndown, 1000 - 13);
+    ASSERT_EQ_INT((int)g_io_penalty_remainder, 20 * 256 - 13 * 384); // 128
+
+    // Second 20-cycle penalty: (5120 + 128) / 384 = 13 slots, remainder 256
+    // x256 cycles (one whole cycle banked toward the next burn) — no penalty
+    // time is ever dropped at fractional CPIs.
+    memory_io_penalty(20);
+    ASSERT_EQ_INT((int)burndown, 1000 - 26);
+    ASSERT_EQ_INT((int)g_io_penalty_remainder, 256);
 
     g_sprint_burndown_ptr = NULL;
 }
@@ -148,6 +178,7 @@ int main(void) {
     RUN(test_nonint_period_no_drift);
     RUN(test_tight_loop_locks_to_one_access_per_period);
     RUN(test_wrapper_charges_via_penalty_slots);
+    RUN(test_wrapper_fractional_cpi);
     fprintf(stderr, "esync: all tests passed\n");
     return 0;
 }

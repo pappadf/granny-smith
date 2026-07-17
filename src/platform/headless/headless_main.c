@@ -140,9 +140,10 @@ static void print_usage(const char *program) {
     printf("\n");
     printf("Options:\n");
     printf("  --help, -h      Display this help message\n");
-    printf("  --speed=MODE    Pacing mode: paced, turbo (default: paced; legacy aliases\n");
-    printf("                  realtime/hardware map to paced, max to turbo). Headless runs\n");
-    printf("                  are budget-driven, so the mode has no effect on execution.\n");
+    printf("  --speed=MODE    Pacing mode: paced, accelerated, turbo (default: paced; legacy\n");
+    printf("                  aliases realtime/hardware map to paced, max to turbo). Headless\n");
+    printf("                  runs are budget-driven; only 'accelerated' changes execution\n");
+    printf("                  (more instructions per frame-unit, scheduler.speed multiplier).\n");
     printf("  --cycles=N      Run for N CPU cycles then exit (for testing)\n");
     printf("  --quiet, -q     Suppress startup messages\n");
     printf("  --daemon        Start in daemon mode (TCP socket interface for AI agents)\n");
@@ -981,12 +982,16 @@ int main(int argc, char *argv[]) {
 
     // Set scheduler pacing mode. Legacy three-mode names stay accepted:
     // realtime/hardware → paced, max → turbo. (Headless execution is
-    // budget-driven and never consults the mode; this only keeps the flag
-    // surface consistent with the WASM target.)
+    // budget-driven and never consults the *pacing*; this keeps the flag
+    // surface consistent with the WASM target. 'accelerated' does change
+    // execution — frame-units retire more instructions at the lowered
+    // effective CPI; scheduler.speed picks the multiplier.)
     scheduler_t *sched = system_scheduler();
     if (sched) {
         if (strcmp(speed_mode, "turbo") == 0 || strcmp(speed_mode, "max") == 0) {
             scheduler_set_mode(sched, schedule_unthrottled);
+        } else if (strcmp(speed_mode, "accelerated") == 0 || strcmp(speed_mode, "accel") == 0) {
+            scheduler_set_mode(sched, schedule_accelerated);
         } else if (strcmp(speed_mode, "paced") == 0 || strcmp(speed_mode, "realtime") == 0 ||
                    strcmp(speed_mode, "real") == 0 || strcmp(speed_mode, "hardware") == 0 ||
                    strcmp(speed_mode, "hw") == 0) {

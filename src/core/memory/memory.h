@@ -165,10 +165,12 @@ extern uint32_t *g_bus_error_instr_ptr; // points to decoder's instruction count
 // I/O cycle penalty: tracks extra bus wait-state cycles for I/O accesses.
 // Penalty cycles are converted to phantom instructions that burn sprint burndown,
 // causing I/O-heavy sprints to end sooner and keeping event timing accurate.
-// g_io_cpi == 0 disables the mechanism entirely (e.g. max_speed mode).
-extern uint32_t g_io_penalty_remainder; // sub-CPI fraction carried across sprints
+// The CPI is the scheduler's *effective* CPI in x256 fixed point (cpi << 8
+// unless accelerated mode lowered it), so penalties convert at the same rate
+// the sprint accounts cycles. g_io_cpi_x256 == 0 disables the mechanism.
+extern uint32_t g_io_penalty_remainder; // sub-slot penalty fraction, x256 cycles, carried across sprints
 extern uint32_t g_io_phantom_instructions; // phantom instructions consumed this sprint
-extern uint32_t g_io_cpi; // current CPI for conversion (0 = disabled)
+extern uint32_t g_io_cpi_x256; // effective CPI for conversion, x256 (0 = disabled)
 extern uint32_t *g_sprint_burndown_ptr; // points to sprint_burndown during sprint
 
 // --- VIA E-clock synchronization (proposal-via-eclock-sync) -----------------
@@ -182,6 +184,7 @@ extern uint32_t *g_sprint_burndown_ptr; // points to sprint_burndown during spri
 // fixed cycle count.
 
 extern uint64_t g_sprint_base_cycles; // scheduler cpu_cycles at sprint start
+extern uint32_t g_sprint_frac_x256; // sub-cycle remainder at sprint start (x256)
 extern uint32_t g_sprint_total_slots; // sprint slot budget at sprint start
 extern uint32_t g_esync_period_x256; // E period in CPU cycles x256 (0 = unset)
 
@@ -200,13 +203,15 @@ static inline uint32_t memory_esync_penalty_cycles(uint64_t now_cycles, uint32_t
 
 // Apply an I/O bus cycle penalty (extra_cycles beyond the CPI baseline).
 // Called from machine I/O dispatchers (e.g. SE/30) in the slow path only.
+// The remainder accumulates x256 cycles so fractional effective CPIs
+// (accelerated mode) convert without losing sub-slot penalty time.
 static inline void memory_io_penalty(uint32_t extra_cycles) {
-    if (__builtin_expect(g_io_cpi == 0, 0))
+    if (__builtin_expect(g_io_cpi_x256 == 0, 0))
         return; // penalties disabled
-    g_io_penalty_remainder += extra_cycles;
-    uint32_t burn = g_io_penalty_remainder / g_io_cpi;
+    g_io_penalty_remainder += extra_cycles << 8; // whole cycles onto the x256 grid
+    uint32_t burn = g_io_penalty_remainder / g_io_cpi_x256;
     if (__builtin_expect(burn > 0, 1)) {
-        g_io_penalty_remainder -= burn * g_io_cpi;
+        g_io_penalty_remainder -= burn * g_io_cpi_x256;
         g_io_phantom_instructions += burn;
         uint32_t *bp = g_sprint_burndown_ptr;
         if (bp)
@@ -215,19 +220,20 @@ static inline void memory_io_penalty(uint32_t extra_cycles) {
 }
 
 // Charge an E-synchronized access: stall until the next E boundary.
-// "Now" is reconstructed from sprint progress (slots consumed x CPI on top
-// of the sprint's base cycles); earlier penalties in the same sprint have
-// already burned slots, so consecutive E-synced accesses see advancing time
-// and lock to the boundary grid. Sub-CPI phase jitter (< one CPI slot) is
-// inherent to the slot quantization and irrelevant against the >=20-cycle
-// E period; the long-run rate is exact.
+// "Now" is reconstructed from sprint progress (slots consumed x effective CPI
+// plus the sprint's carried sub-cycle fraction, on top of the base cycles —
+// mirroring the scheduler's current_cpu_cycles); earlier penalties in the
+// same sprint have already burned slots, so consecutive E-synced accesses see
+// advancing time and lock to the boundary grid. Sub-CPI phase jitter (< one
+// CPI slot) is inherent to the slot quantization and irrelevant against the
+// >=20-cycle E period; the long-run rate is exact.
 static inline void memory_io_esync_penalty(void) {
-    if (__builtin_expect(g_io_cpi == 0, 0) || g_esync_period_x256 == 0)
+    if (__builtin_expect(g_io_cpi_x256 == 0, 0) || g_esync_period_x256 == 0)
         return; // penalties disabled / E grid not configured
     uint64_t now = g_sprint_base_cycles;
     uint32_t *bp = g_sprint_burndown_ptr;
     if (bp)
-        now += (uint64_t)(g_sprint_total_slots - *bp) * g_io_cpi;
+        now += ((uint64_t)(g_sprint_total_slots - *bp) * g_io_cpi_x256 + g_sprint_frac_x256) >> 8;
     memory_io_penalty(memory_esync_penalty_cycles(now, g_esync_period_x256));
 }
 

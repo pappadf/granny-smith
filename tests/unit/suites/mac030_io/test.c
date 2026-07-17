@@ -35,13 +35,14 @@
 // --- Stubs ----------------------------------------------------------------
 // The bind() / byte-dispatch code in mac030_glue_io.c + mdu_io.c references
 // these symbols, but this test only calls the pure decode / resolve functions,
-// so trivial definitions satisfy the linker. (g_io_cpi == 0 makes
+// so trivial definitions satisfy the linker. (g_io_cpi_x256 == 0 makes
 // memory_io_penalty a no-op anyway.)
 uint32_t g_io_penalty_remainder = 0;
 uint32_t g_io_phantom_instructions = 0;
-uint32_t g_io_cpi = 0;
+uint32_t g_io_cpi_x256 = 0;
 uint32_t *g_sprint_burndown_ptr = NULL;
 uint64_t g_sprint_base_cycles = 0;
+uint32_t g_sprint_frac_x256 = 0;
 uint32_t g_sprint_total_slots = 0;
 uint32_t g_esync_period_x256 = 0;
 

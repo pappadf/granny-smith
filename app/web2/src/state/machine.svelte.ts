@@ -7,11 +7,13 @@ export type MachineStatus = 'no-machine' | 'running' | 'paused' | 'stopped';
 // yellow flash. The flash decays on a 180 ms timeout (matches prototype).
 export type DriveActivity = 'idle' | 'read' | 'write';
 
-// Two pacing modes, mirroring the core's schedule_paced/schedule_unthrottled
-// (proposal-scheduler-two-modes.md): 'live' = wall-clock paced, 'turbo' = as
-// fast as the host allows. The guest timeline is identical in both; only the
-// pacing differs.
-export type SchedulerMode = 'live' | 'turbo';
+// Three pacing modes, mirroring the core's schedule_paced/schedule_accelerated/
+// schedule_unthrottled (proposal-scheduler-two-modes.md and
+// proposal-scheduler-accelerated-mode.md): 'live' = wall-clock paced, 'accel' =
+// real-time timebase with a faster CPU (accelerator-card model), 'turbo' = as
+// fast as the host allows. The guest timeline is identical in live/turbo; accel
+// trades that determinism for CPU throughput while VBL/sound stay real-time.
+export type SchedulerMode = 'live' | 'accel' | 'turbo';
 
 // Typed MMU kind, sourced from `machine.profile(id).capabilities.mmu.kind`
 // (no longer guessed from the model's display name). The debug panels gate
