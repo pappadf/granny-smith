@@ -1,18 +1,24 @@
 # Integration test: IIfx + Display Card 24AC (ROM-only boot).
 #
-# The computed card-compatibility check end-to-end on the OSS-family IIfx —
-# the machine whose (now deleted) whitelist drift originally motivated
-# proposal-nubus-computed-card-compatibility.md: select the 24AC, re-boot,
-# and verify the pick was honoured at nubus_init — the card is seated in
-# slot $9 and the IIfx ROM's boot path brings the display up through the
-# card's decl-ROM video driver to the blinking-? screen (640×480, non-blank).
+# Computed-card-compatibility pin on the OSS-family IIfx: select the 24AC,
+# re-boot, and verify the pick was honoured at nubus_init — the card (not
+# the default JMFB) is seated in slot $9 with its declaration ROM mapped.
+#
+# What the screen assertion really checks: the IIfx ROM's ROM-only phase
+# never runs its slot scan — it blind-paints a dummy boot screen at the
+# conventional slot-9 VRAM+$A00 address (via the $Fs9xxxxx 24-bit alias)
+# without ever reading the card.  That paint is visible on the 24AC because
+# its power-on scanout matches the convention (as the JMFB's does), so a
+# non-blank screen pins both the seating and the power-on display contract.
+# The card's real decl-ROM driver path on the IIfx is exercised by the
+# System 7 boot in iifx-824gc, not here.
 
 machine.nubus.video_card = "display_card_24ac"
 machine.boot "iifx" 8192
 machine.rom.reload
 
-# Same budget as the other ROM-only boots: the IIfx ROM reaches the stable
-# blinking-? screen well within 100M instructions.
+# Same budget as the other ROM-only boots; the dummy screen is painted and
+# stable long before 100M instructions.
 scheduler.run 100000000
 
 assert ${machine.id == "iifx"} "machine.id != iifx"
@@ -21,11 +27,10 @@ assert ${machine.id == "iifx"} "machine.id != iifx"
 assert ${machine.nubus.slot[9].card.name == "Apple Macintosh Display Card 24AC"} "slot $9 card != 24AC"
 assert ${machine.nubus.slot[9].card.declrom.present} "declaration ROM not present"
 
-# The decl-ROM video driver brought the screen up at the card's default
-# 640×480 and painted the boot screen (see iix-boot for the checksum
-# rationale).
+# The blind-painted boot screen is visible through the card's power-on
+# display state at the conventional geometry.
 assert ${machine.screen.width == 640} "screen.width != 640"
 assert ${machine.screen.height == 480} "screen.height != 480"
-assert ${machine.screen.checksum() != 0} "screen.checksum == 0 — 24AC never painted"
+assert ${machine.screen.checksum() != 0} "screen.checksum == 0 — boot screen not visible"
 
 quit
