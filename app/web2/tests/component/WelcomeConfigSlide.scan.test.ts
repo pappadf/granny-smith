@@ -47,7 +47,6 @@ vi.mock('@/bus/emulator', async (importOriginal) => {
         const byId: Record<string, object> = {
           plus: {
             name: 'Macintosh Plus',
-            needs_vrom: false,
             ram_options: [1024, 2048, 4096],
             ram_default: 4096,
             floppy_slots: [
@@ -57,7 +56,6 @@ vi.mock('@/bus/emulator', async (importOriginal) => {
           },
           se30: {
             name: 'Macintosh SE/30',
-            needs_vrom: true,
             ram_options: [2048, 4096, 8192, 16384],
             ram_default: 8192,
             floppy_slots: [{ label: 'Internal Floppy', kind: 'hd' }],
