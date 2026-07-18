@@ -138,8 +138,8 @@ static value_t nubus_attr_video_mode_set(struct object *self, const member_t *m,
 
 // `nubus.video_card` — get/set the card id to install into the next
 // machine.boot's VIDEO slot.  Writes stage a pending pick that nubus_init
-// honours iff it is one of the slot's available_cards (else it falls back
-// to the slot default).  Reads return the pending id, or "" when none is
+// honours iff that kind fits the slot per nubus_card_fits_socket (else it
+// falls back to the slot default).  Reads return the pending id, or "" when none is
 // staged.  Settable from integration scripts via
 // `machine.nubus.video_card = "display_card_24ac"` before machine.boot.  The id
 // is validated against the registered card drivers so a typo is caught at

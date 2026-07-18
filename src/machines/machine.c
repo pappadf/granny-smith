@@ -270,11 +270,16 @@ static void encode_video_slots(json_builder_t *b, const hw_profile_t *p) {
         json_open_arr(b);
         if (s->kind == NUBUS_SLOT_BUILTIN) {
             encode_video_card(b, s->builtin_card_id);
-        } else if (s->available_cards) {
-            for (const char *const *c = s->available_cards; *c; c++)
-                encode_video_card(b, *c);
-        } else if (default_card) {
-            encode_video_card(b, default_card);
+        } else {
+            // Candidates are COMPUTED from the card registry: every kind
+            // whose declared attachment fits this slot and that drives a
+            // display.  Machines never enumerate cards — adding a card to
+            // the registry offers it on every compatible machine
+            // (proposal-nubus-computed-card-compatibility.md §5.3).
+            for (const nubus_card_kind_t *const *k = nubus_card_registry(); *k; k++) {
+                if (nubus_card_fits_socket(s, *k) && (*k)->monitors)
+                    encode_video_card(b, (*k)->id);
+            }
         }
         json_close_arr(b);
         json_close_obj(b);

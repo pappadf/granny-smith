@@ -80,16 +80,29 @@ const char *nubus_pending_video_card_get(void) {
     return s_pending_video_card[0] ? s_pending_video_card : NULL;
 }
 
-// Resolve the VIDEO slot's card id: honour the pending selection iff it is
-// listed in the slot's available_cards, else fall back to default_card.
+// Card ↔ slot compatibility, COMPUTED from the two declarations (see the
+// prototype comment in nubus.h): the slot must be user-configurable and the
+// kind must attach through a genuine NuBus connector.  Builtin pseudo-cards
+// (attach == CARD_ATTACH_BUILTIN, the conservative zero default) never fit
+// a socket — they exist only where a BUILTIN slot decl names them.
+bool nubus_card_fits_socket(const nubus_slot_decl_t *s, const nubus_card_kind_t *kind) {
+    if (!s || !kind)
+        return false;
+    if (s->kind != NUBUS_SLOT_VIDEO) // stage 2 renames this kind to SOCKET
+        return false;
+    return kind->attach == CARD_ATTACH_NUBUS;
+}
+
+// Resolve the VIDEO slot's card id: honour the pending selection iff that
+// kind physically fits the slot, else fall back to default_card.  The
+// rejection logs at level 0 so a bad pick is visible by default instead of
+// silently booting the wrong card.
 static const char *video_slot_card_id(const nubus_slot_decl_t *s) {
     const char *pending = nubus_pending_video_card_get();
-    if (pending && s->available_cards) {
-        for (const char *const *c = s->available_cards; *c; c++) {
-            if (strcmp(*c, pending) == 0)
-                return pending;
-        }
-        LOG(1, "nubus: pending video_card '%s' not in slot $%X available_cards; using default '%s'", pending, s->slot,
+    if (pending) {
+        if (nubus_card_fits_socket(s, nubus_card_find(pending)))
+            return pending;
+        LOG(0, "nubus: pending video_card '%s' does not fit slot $%X; using default '%s'", pending, s->slot,
             s->default_card ? s->default_card : "(none)");
     }
     return s->default_card;
@@ -118,8 +131,8 @@ nubus_bus_t *nubus_init(config_t *cfg, const nubus_slot_decl_t *slots, checkpoin
                 kind = nubus_card_find(s->builtin_card_id);
                 break;
             case NUBUS_SLOT_VIDEO:
-                // Honour a pending `nubus.video_card` pick if it is one of
-                // this slot's available_cards; otherwise the slot default.
+                // Honour a pending `nubus.video_card` pick if that kind
+                // fits this slot; otherwise the slot default.
                 kind = nubus_card_find(video_slot_card_id(s));
                 break;
             case NUBUS_SLOT_ABSENT:

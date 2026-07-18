@@ -1386,10 +1386,8 @@ static void iifx_reset(config_t *cfg) {
 }
 
 // Slot table for the six-slot IIfx NuBus cage.
-static const char *const iifx_video_cards[] = {"mdc_8_24", NULL};
-
 static const nubus_slot_decl_t iifx_slots[] = {
-    {.slot = 0x9, .kind = NUBUS_SLOT_VIDEO, .available_cards = iifx_video_cards, .default_card = "mdc_8_24"},
+    {.slot = 0x9, .kind = NUBUS_SLOT_VIDEO, .default_card = "mdc_8_24"},
     {.slot = 0xA, .kind = NUBUS_SLOT_EMPTY},
     {.slot = 0xB, .kind = NUBUS_SLOT_EMPTY},
     {.slot = 0xC, .kind = NUBUS_SLOT_EMPTY},

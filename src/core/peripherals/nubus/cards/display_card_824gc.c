@@ -1291,6 +1291,7 @@ const nubus_card_kind_t display_card_824gc_kind = {
     .id = "824gc",
     .display_name = "Apple Macintosh Display Card 8\xe2\x80\xa2"
                     "24 GC",
+    .attach = CARD_ATTACH_NUBUS,
     .requires_vrom = true,
     .monitors = display_card_824gc_monitors,
     .factory = factory,

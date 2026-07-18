@@ -14,6 +14,7 @@
 #include "log.h"
 #include "machine.h"
 #include "memory.h"
+#include "nubus.h"
 #include "rom.h"
 #include "scheduler.h"
 #include "scsi.h"
@@ -136,6 +137,8 @@ static void print_usage(const char *program) {
     printf("  fd=<file>       Floppy disk image file (optional, can specify multiple)\n");
     printf("  fd0=<file>      Floppy disk image for drive 0 (internal)\n");
     printf("  fd1=<file>      Floppy disk image for drive 1 (external)\n");
+    printf("  video_card=<id> NuBus video card for the configurable slot (e.g. 824gc);\n");
+    printf("                  default: the machine's default card\n");
     printf("  script=<file>   Shell script file to execute at startup (optional)\n");
     printf("\n");
     printf("Options:\n");
@@ -631,6 +634,7 @@ int main(int argc, char *argv[]) {
     uint64_t max_cycles = 0;
     uint32_t ram_kb = 0;
     const char *model_override = NULL;
+    const char *video_card_arg = NULL;
     int quiet = 0;
     int script_stdin = 0;
     int kill_daemon = 0;
@@ -768,6 +772,11 @@ int main(int argc, char *argv[]) {
 
         if ((value = parse_arg(arg, "model")) != NULL) {
             model_override = value;
+            continue;
+        }
+
+        if ((value = parse_arg(arg, "video_card")) != NULL) {
+            video_card_arg = value;
             continue;
         }
 
@@ -909,6 +918,15 @@ int main(int argc, char *argv[]) {
     // Set the pending ROM path BEFORE system_create so SE/30 init can
     // auto-discover a sibling SE30.vrom file during machine bring-up.
     rom_pending_set(rom_file);
+
+    // Stage the user's video-card pick BEFORE system_create so nubus_init
+    // resolves it for the configurable slot (validated by
+    // nubus_card_fits_socket; falls back to the slot default with a log).
+    // This is the headless twin of web2's pre-boot `machine.nubus.video_card`
+    // write — needed because startup-arg boots never run a script before
+    // machine creation.
+    if (video_card_arg)
+        nubus_pending_video_card_set(video_card_arg);
 
     if (!system_create(profile, NULL)) {
         fprintf(stderr, "Error: failed to create machine '%s'\n", target_model);

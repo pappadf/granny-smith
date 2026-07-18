@@ -1,0 +1,40 @@
+# Integration test: IIfx + Display Card 8•24 GC — System 7 Finder boot.
+#
+# Boots the IIfx from the System 7.0.1 HD floppy with the 8•24 GC seated in
+# slot $9 (picked via the video_card= startup arg; see config.mk for why
+# the scripted machine.boot dance can't be used on the IIfx).  System 7's
+# boot runs the genuine Slot Manager walk over the card's lane-0
+# declaration ROM and opens its video driver — the driver programs the
+# card over the RISC serial-command interface and QuickDraw draws the
+# Finder desktop into the driver-configured framebuffer.  Pixel-exact.
+#
+# The accelerator stays in reset (the Disk Tools floppy carries no
+# "8•24 GC" software file, so this is the ROM/QuickDraw decline path —
+# same rendering contract as iicx-824gc-decline).
+
+# Pin the RTC so the boot is deterministic run-to-run.
+machine.rtc.time = 3000000000
+
+# System 7.0.1 reaches a stable Finder desktop comfortably within 300M
+# instructions (iifx-boot's JMFB variant needs ~225M; the GC's driver
+# bring-up adds a little).
+scheduler.run 300000000
+
+assert ${machine.id == "iifx"} "machine.id != iifx"
+
+# The pick was honoured: the 8•24 GC (not the default JMFB) sits in slot $9.
+assert ${machine.nubus.slot[9].card.name == "Apple Macintosh Display Card 8•24 GC"} "slot $9 card != 8•24 GC"
+assert ${machine.nubus.slot[9].card.declrom.present} "declaration ROM not present"
+
+# Decline path: no GC software on the boot floppy, so the accelerator must
+# still be in its power-on reset state while the DISPLAY runs fine.
+assert ${machine.nubus.slot[9].card.gc.state == "reset"} "gc.state != reset (no GC software on Disk Tools)"
+
+assert ${machine.screen.width == 640} "screen.width != 640"
+assert ${machine.screen.height == 480} "screen.height != 480"
+
+# The System 7 Finder desktop (menu bar, Disk Tools volume, Trash), drawn
+# through the GC's decl-ROM-driver-configured framebuffer — pixel-exact.
+machine.screen.match finder-824gc.png
+
+quit
