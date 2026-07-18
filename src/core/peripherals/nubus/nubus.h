@@ -26,14 +26,16 @@ typedef struct config config_t;
 typedef struct checkpoint checkpoint_t;
 typedef struct display display_t;
 
-// Slot-table kinds.  See proposal §3.2.2.
+// Slot-table kinds.  See proposal §3.2.2 and
+// proposal-nubus-computed-card-compatibility.md §5.2.
 typedef enum nubus_slot_kind {
     NUBUS_SLOT_ABSENT = 0, // physical absence — bus errors on access
-    NUBUS_SLOT_EMPTY, // physically present, no card seated — GLUE rule
+    NUBUS_SLOT_EMPTY, // electrically decoded as empty (GLUE rule) but NOT
+                      // user-populatable — no connector (SE/30 $9..$B)
     NUBUS_SLOT_BUILTIN, // machine populates with a fixed card (e.g. SE/30 slot $E)
-    NUBUS_SLOT_VIDEO, // single user-configurable video slot — pick card,
-                      // monitor, depth from the dialog.  At most one VIDEO
-                      // entry per machine in v1.
+    NUBUS_SLOT_SOCKET, // physical connector — user-populatable; behaves
+                       // exactly like EMPTY when no card is configured.
+                       // A machine may declare any number of sockets.
 } nubus_slot_kind_t;
 
 // One entry in a machine's slot table.  Sentinel-terminated arrays end at
@@ -47,7 +49,8 @@ typedef struct nubus_slot_decl {
     int slot; // $9..$E (0 ends the array)
     nubus_slot_kind_t kind;
     const char *builtin_card_id; // BUILTIN: card-id resolved via nubus_card_find()
-    const char *default_card; // VIDEO: default when user hasn't picked
+    const char *default_card; // SOCKET: factory-default population when the
+                              // user hasn't staged a pick (NULL = ships empty)
 } nubus_slot_decl_t;
 
 // True iff card kind `kind` may be seated in slot `s`.  Compatibility is
@@ -79,14 +82,35 @@ static inline uint32_t nubus_super_slot_base(int slot) {
 nubus_bus_t *nubus_init(config_t *cfg, const nubus_slot_decl_t *slots, checkpoint_t *cp);
 void nubus_delete(nubus_bus_t *bus);
 
-// Pending user-selected video card id for the next machine.boot's VIDEO
-// slot.  Set via `machine.nubus.video_card = "display_card_24ac"` before boot;
-// nubus_init honours it iff the named kind fits the slot per
-// nubus_card_fits_socket (else it logs and falls back to default_card).  Cleared
-// after consumption so a stale pick doesn't leak into the next boot.
-// Passing NULL or "" clears the pending selection.
+// === Staged per-slot configuration (proposal §5.6, stage 2) ================
+//
+// User picks for the NEXT machine.boot live in a small staged table keyed by
+// slot number, consumed (and cleared) by nubus_init.  Slot 0 is the WILDCARD
+// entry meaning "the machine's first SOCKET" — the machine-independent
+// staging channel behind `machine.nubus.video_card` (and the headless
+// `video_card=` startup arg), preserved from the single-pending era.
+// Concrete slots ($9..$E) are staged via `machine.nubus.slot[N].card_id` /
+// `.video_mode`; a concrete entry beats the wildcard for that slot.  At
+// boot, a staged card is honoured iff it fits the slot per
+// nubus_card_fits_socket (else it logs and the slot falls back to
+// default_card); a staged mode is routed to the resolved card kind's
+// pending-mode channel just before its factory runs.
+#define NUBUS_STAGED_WILDCARD 0 // staged-table key for "first socket"
+void nubus_staged_card_set(int slot, const char *id); // NULL/"" clears
+const char *nubus_staged_card_get(int slot);
+void nubus_staged_mode_set(int slot, const char *id); // NULL/"" clears
+const char *nubus_staged_mode_get(int slot);
+
+// Wildcard-entry conveniences — the pre-stage-2 API, kept for the alias
+// attribute and the headless startup arg.  Equivalent to
+// nubus_staged_card_set/get(NUBUS_STAGED_WILDCARD, id).
 void nubus_pending_video_card_set(const char *id);
 const char *nubus_pending_video_card_get(void);
+
+// The slot declaration for slot `slot` on the running bus, or NULL when the
+// bus doesn't declare it.  Backs the object model's staged-attr validation
+// and empty-socket node enumeration.
+const nubus_slot_decl_t *nubus_slot_decl_get(nubus_bus_t *bus, int slot);
 
 // Per-slot IRQ assertion.  The bus aggregates and drives VIA2 PA[0..5]
 // (active-low) plus pulses CA1 on the umbrella transition.

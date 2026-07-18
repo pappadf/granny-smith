@@ -239,9 +239,11 @@ static void iici_via1_shift_out(void *context, uint8_t byte) {
 // user-visible NuBus expansion slots (empty in v1).
 static const nubus_slot_decl_t iici_slots[] = {
     {.slot = 0xB, .kind = NUBUS_SLOT_BUILTIN, .builtin_card_id = "builtin_rbv_video"},
-    {.slot = 0xC, .kind = NUBUS_SLOT_EMPTY},
-    {.slot = 0xD, .kind = NUBUS_SLOT_EMPTY},
-    {.slot = 0xE, .kind = NUBUS_SLOT_EMPTY},
+    // The three physical sockets ship empty (no default_card): the RBV
+    // built-in video is the factory display; a socketed card is an add-on.
+    {.slot = 0xC, .kind = NUBUS_SLOT_SOCKET},
+    {.slot = 0xD, .kind = NUBUS_SLOT_SOCKET},
+    {.slot = 0xE, .kind = NUBUS_SLOT_SOCKET},
     {0},
 };
 

@@ -247,8 +247,10 @@ static void encode_video_slots(json_builder_t *b, const hw_profile_t *p) {
         return;
     }
     for (const struct nubus_slot_decl *s = p->nubus_slots; s->slot; s++) {
-        // Only slots that can carry a video card appear here.
-        if (s->kind != NUBUS_SLOT_BUILTIN && s->kind != NUBUS_SLOT_VIDEO)
+        // Only slots that can carry a video card appear here.  Every SOCKET
+        // is emitted (a machine may declare several); the dialog's single
+        // picker configures the first one, per-socket UI comes later.
+        if (s->kind != NUBUS_SLOT_BUILTIN && s->kind != NUBUS_SLOT_SOCKET)
             continue;
         const char *default_card = (s->kind == NUBUS_SLOT_BUILTIN) ? s->builtin_card_id : s->default_card;
 
@@ -288,11 +290,13 @@ static void encode_video_slots(json_builder_t *b, const hw_profile_t *p) {
 }
 
 // The card id a slot exposes to the dialog: BUILTIN → its single card,
-// VIDEO → its default card, anything else → NULL.  Mirrors encode_video_slots.
+// SOCKET → its default card (NULL for defaultless sockets, which therefore
+// contribute nothing to the legacy view), anything else → NULL.  Mirrors
+// the pre-stage-2 single-video-slot shape web-legacy still reads.
 static const char *legacy_slot_card_id(const struct nubus_slot_decl *s) {
-    return (s->kind == NUBUS_SLOT_BUILTIN) ? s->builtin_card_id
-           : (s->kind == NUBUS_SLOT_VIDEO) ? s->default_card
-                                           : NULL;
+    return (s->kind == NUBUS_SLOT_BUILTIN)  ? s->builtin_card_id
+           : (s->kind == NUBUS_SLOT_SOCKET) ? s->default_card
+                                            : NULL;
 }
 
 // Count the (monitor, depth) tuples a card kind offers.

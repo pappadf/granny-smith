@@ -1,0 +1,48 @@
+# Integration test: per-slot staged NuBus configuration (stage 2).
+#
+# Pins the staged-config contract (proposal §5.6):
+#   * empty sockets are present in the object model (with their number);
+#   * slot[N].card_id stages a pick for THAT slot, honoured at boot;
+#   * the machine.nubus.video_card wildcard alias means "first socket" and
+#     a concrete slot entry beats it;
+#   * slot[N].video_mode seeds the resolved card's boot depth;
+#   * the whole staged table is consumed (cleared) by machine.boot.
+
+# --- Empty sockets exist as slot nodes before any staging. ---
+assert ${machine.nubus.slot[10].number == 10} "empty socket $A missing from object model"
+assert ${machine.nubus.slot[11].number == 11} "empty socket $B missing from object model"
+
+# --- Per-slot staging: pick the 24AC for socket $9, readable back. ---
+machine.nubus.slot[9].card_id = "display_card_24ac"
+assert ${machine.nubus.slot[9].card_id == "display_card_24ac"} "staged card_id not readable back"
+machine.boot "iicx" 8192
+machine.rom.reload
+assert ${machine.nubus.slot[9].card.name == "Apple Macintosh Display Card 24AC"} "per-slot pick not honoured"
+
+# --- Consumed exactly once: the staged table is empty after boot. ---
+assert ${machine.nubus.slot[9].card_id == ""} "slot[9].card_id not consumed at boot"
+assert ${machine.nubus.video_card == ""} "wildcard video_card not clear after boot"
+
+# --- Wildcard alias: video_card applies to the machine's first socket. ---
+machine.nubus.video_card = "824gc"
+machine.boot "iicx" 8192
+machine.rom.reload
+assert ${machine.nubus.slot[9].card.name == "Apple Macintosh Display Card 8•24 GC"} "wildcard alias not applied to first socket"
+
+# --- A concrete slot entry beats the wildcard for that slot. ---
+machine.nubus.video_card = "824gc"
+machine.nubus.slot[9].card_id = "display_card_24ac"
+machine.boot "iicx" 8192
+machine.rom.reload
+assert ${machine.nubus.slot[9].card.name == "Apple Macintosh Display Card 24AC"} "concrete staging must beat the wildcard"
+
+# --- Per-slot video_mode: the 8-bpp seed reaches the resolved card. ---
+machine.nubus.slot[9].card_id = "824gc"
+machine.nubus.slot[9].video_mode = "gc_640x480_8bpp"
+machine.boot "iicx" 8192
+machine.rom.reload
+assert ${machine.nubus.slot[9].card.name == "Apple Macintosh Display Card 8•24 GC"} "mode test: card not seated"
+assert ${machine.nubus.slot[9].card.mode.depth == 8} "per-slot video_mode seed did not set 8 bpp"
+assert ${machine.nubus.slot[9].video_mode == ""} "slot[9].video_mode not consumed at boot"
+
+quit
