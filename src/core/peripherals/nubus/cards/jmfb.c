@@ -684,6 +684,11 @@ static int card_init(nubus_card_t *card, config_t *cfg, checkpoint_t *cp) {
         // the slot, but the rest of the machine still boots.
         LOG(0, "Apple-341-0868.vrom not found; declaration ROM is zero-filled");
     }
+    // Publish the declaration ROM on the card struct (drives the
+    // slot[N].card.declrom object-model node, same as the 24AC / 8•24 GC);
+    // nubus_delete owns and frees card->declrom after card_teardown.
+    card->declrom = p->vrom;
+    card->declrom_size = p->vrom_size;
 
     // If a pending video-mode id was set (via `machine.video_mode =
     // "13in_rgb_8bpp"`), resolve it now — it overrides the pending
@@ -870,7 +875,7 @@ static void card_teardown(nubus_card_t *card, config_t *cfg) {
     if (!p)
         return;
     free(p->vram);
-    free(p->vrom);
+    // p->vrom is published as card->declrom; nubus_delete owns and frees it.
     free(p->vrom_path);
     free(p);
     card->priv = NULL;

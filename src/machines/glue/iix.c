@@ -86,12 +86,12 @@ static void iix_via2_shift_out(void *context, uint8_t byte) {
 // ============================================================
 
 static const nubus_slot_decl_t iix_slots[] = {
-    {.slot = 0x9, .kind = NUBUS_SLOT_VIDEO, .default_card = "mdc_8_24"},
-    {.slot = 0xA, .kind = NUBUS_SLOT_EMPTY},
-    {.slot = 0xB, .kind = NUBUS_SLOT_EMPTY},
-    {.slot = 0xC, .kind = NUBUS_SLOT_EMPTY},
-    {.slot = 0xD, .kind = NUBUS_SLOT_EMPTY},
-    {.slot = 0xE, .kind = NUBUS_SLOT_EMPTY},
+    {.slot = 0x9, .kind = NUBUS_SLOT_SOCKET, .default_card = "mdc_8_24"},
+    {.slot = 0xA, .kind = NUBUS_SLOT_SOCKET},
+    {.slot = 0xB, .kind = NUBUS_SLOT_SOCKET},
+    {.slot = 0xC, .kind = NUBUS_SLOT_SOCKET},
+    {.slot = 0xD, .kind = NUBUS_SLOT_SOCKET},
+    {.slot = 0xE, .kind = NUBUS_SLOT_SOCKET},
     {0},
 };
 

@@ -49,6 +49,9 @@
     // Per-card video slot shape (proposal §4.4) — the single source for both
     // the VROM requirement (per-card requires_vrom; see needsVrom) and the
     // video-mode list (each card's monitors × depths; see videoModes).
+    // Stage 2 of the computed-card-compatibility proposal emits EVERY
+    // declared socket here (all offering the same computed card list); the
+    // dialog configures the first entry only (see configSlot).
     video_slots?: Array<{
       slot: string;
       fixed: boolean;
@@ -124,12 +127,17 @@
     for (const v of allVroms) (out[v.cardId] ??= []).push(v);
     return out;
   });
-  // The current model's video-slot cards, flattened (machines have one slot).
-  let slotCards = $derived((currentProfile?.video_slots ?? []).flatMap((s) => s.cards ?? []));
+  // The slot this dialog configures: the FIRST video_slots entry.  Machines
+  // now declare every socket (stage 2 of the computed-card-compatibility
+  // proposal), all offering the same computed card list — the single picker
+  // drives the first one via the machine.nubus.video_card first-socket
+  // alias; a per-socket UI is future work.  On builtin-first machines
+  // (SE/30, IIci, IIsi) the first entry is the fixed built-in video, which
+  // keeps their no-picker/vROM-row behavior exactly as before.
+  let configSlot = $derived((currentProfile?.video_slots ?? [])[0]);
+  let slotCards = $derived(configSlot?.cards ?? []);
   // The slot's default card id (the C-side default pick).
-  let defaultCardId = $derived(
-    (currentProfile?.video_slots ?? []).find((s) => s.default_card)?.default_card ?? '',
-  );
+  let defaultCardId = $derived(configSlot?.default_card ?? '');
   // A card is offerable iff it needs no vROM (builtin) or its vROM is present.
   let availableCards = $derived(
     slotCards.filter((c) => !c.requires_vrom || (vromsByCardId[c.id]?.length ?? 0) > 0),
