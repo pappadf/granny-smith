@@ -1006,22 +1006,27 @@ bool adb_iop_transact(adb_t *adb, uint8_t cmd, const uint8_t *in_data, int in_da
 // "esc", a-z, 0-9 …) resolved by debug_mac_resolve_key_name, or an
 // integer ADB virtual keycode (0x00–0x7F).
 
+// Shared arg decode for press/down/up: a string name or an integer ADB
+// virtual keycode, rendered into hexbuf when numeric.
+static const char *keyboard_key_display_name(const value_t *arg, char *hexbuf, size_t hexbuf_size) {
+    if (arg->kind == V_STRING)
+        return arg->s ? arg->s : "";
+    if (arg->kind == V_INT || arg->kind == V_UINT) {
+        long long raw = (arg->kind == V_INT) ? (long long)arg->i : (long long)arg->u;
+        snprintf(hexbuf, hexbuf_size, "0x%02llx", raw);
+        return hexbuf;
+    }
+    return NULL;
+}
+
 static value_t keyboard_method_press(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)self;
     (void)m;
     (void)argc;
-    // key is V_NONE-kind: body discriminates V_STRING vs V_INT/V_UINT.
     char hexbuf[8];
-    const char *display_name = NULL;
-    if (argv[0].kind == V_STRING) {
-        display_name = argv[0].s ? argv[0].s : "";
-    } else if (argv[0].kind == V_INT || argv[0].kind == V_UINT) {
-        long long raw = (argv[0].kind == V_INT) ? (long long)argv[0].i : (long long)argv[0].u;
-        snprintf(hexbuf, sizeof(hexbuf), "0x%02llx", raw);
-        display_name = hexbuf;
-    } else {
+    const char *display_name = keyboard_key_display_name(&argv[0], hexbuf, sizeof(hexbuf));
+    if (!display_name)
         return val_err("keyboard.press: key must be a string name or integer keycode");
-    }
 
     // Tap (down then up) through the machine substrate: Macs inject via the
     // keyboard / Toolbox path, the Lisa via its COPS — one uniform path
@@ -1030,6 +1035,36 @@ static value_t keyboard_method_press(struct object *self, const member_t *m, int
         return val_err("keyboard.press: unknown key '%s'", display_name);
     system_input_key(display_name, false);
     LOG(3, "keyboard.press: key=%s", display_name);
+    return val_bool(true);
+}
+
+// `keyboard.down(key)` / `keyboard.up(key)` — the two halves of press, for
+// chords that hold a modifier across another key (e.g. Shift+/ to type '?').
+static value_t keyboard_method_down(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)self;
+    (void)m;
+    (void)argc;
+    char hexbuf[8];
+    const char *display_name = keyboard_key_display_name(&argv[0], hexbuf, sizeof(hexbuf));
+    if (!display_name)
+        return val_err("keyboard.down: key must be a string name or integer keycode");
+    if (system_input_key(display_name, true) < 0)
+        return val_err("keyboard.down: unknown key '%s'", display_name);
+    LOG(3, "keyboard.down: key=%s", display_name);
+    return val_bool(true);
+}
+
+static value_t keyboard_method_up(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)self;
+    (void)m;
+    (void)argc;
+    char hexbuf[8];
+    const char *display_name = keyboard_key_display_name(&argv[0], hexbuf, sizeof(hexbuf));
+    if (!display_name)
+        return val_err("keyboard.up: key must be a string name or integer keycode");
+    if (system_input_key(display_name, false) < 0)
+        return val_err("keyboard.up: unknown key '%s'", display_name);
+    LOG(3, "keyboard.up: key=%s", display_name);
     return val_bool(true);
 }
 
@@ -1043,6 +1078,14 @@ static const member_t keyboard_members[] = {
      .name = "press",
      .doc = "Tap a key (down + up) on the emulated keyboard",
      .method = {.args = keyboard_press_args, .nargs = 1, .result = V_BOOL, .fn = keyboard_method_press}},
+    {.kind = M_METHOD,
+     .name = "down",
+     .doc = "Hold a key down on the emulated keyboard (pair with up)",
+     .method = {.args = keyboard_press_args, .nargs = 1, .result = V_BOOL, .fn = keyboard_method_down} },
+    {.kind = M_METHOD,
+     .name = "up",
+     .doc = "Release a key held by down",
+     .method = {.args = keyboard_press_args, .nargs = 1, .result = V_BOOL, .fn = keyboard_method_up}   },
 };
 
 const class_desc_t keyboard_class = {
