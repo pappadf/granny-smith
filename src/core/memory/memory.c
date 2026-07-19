@@ -1052,15 +1052,9 @@ void memory_logpoint_install(uint32_t start_page, uint32_t end_page) {
     for (uint32_t p = start_page; p <= end_page && p < g_page_count; p++) {
         if (g_mem_logpoint_page_count[p] < 0xFF)
             g_mem_logpoint_page_count[p]++;
-        // Zero the SoA entries to force slow path for this page
-        if (g_supervisor_read)
-            g_supervisor_read[p] = 0;
-        if (g_supervisor_write)
-            g_supervisor_write[p] = 0;
-        if (g_user_read)
-            g_user_read[p] = 0;
-        if (g_user_write)
-            g_user_write[p] = 0;
+        // Zero the SoA entries to force slow path for this page — in every
+        // cached MMU-configuration set, not just the active one.
+        mmu_soa_logpoint_zero_page(p);
     }
 }
 
@@ -1083,18 +1077,11 @@ void memory_logpoint_install_phys(uint32_t start_page, uint32_t end_page) {
             g_mem_logpoint_phys_page_count[p]++;
     }
     // We can't cheaply enumerate which logical pages currently alias the
-    // watched physical pages, so conservatively invalidate the entire SoA
-    // arrays.  All logical pages re-walk on next access, and the fill path
+    // watched physical pages, so conservatively invalidate every cached SoA
+    // set.  All logical pages re-walk on next access, and the fill path
     // (mmu_fill_soa_entry) suppresses any alias hitting the watched physical.
     // One-time cost at install; fast-path unaffected once entries repopulate.
-    if (g_supervisor_read)
-        memset(g_supervisor_read, 0, (size_t)g_page_count * sizeof(uintptr_t));
-    if (g_supervisor_write)
-        memset(g_supervisor_write, 0, (size_t)g_page_count * sizeof(uintptr_t));
-    if (g_user_read)
-        memset(g_user_read, 0, (size_t)g_page_count * sizeof(uintptr_t));
-    if (g_user_write)
-        memset(g_user_write, 0, (size_t)g_page_count * sizeof(uintptr_t));
+    mmu_soa_zero_all_sets();
 }
 
 void memory_logpoint_uninstall_phys(uint32_t start_page, uint32_t end_page) {
@@ -1292,6 +1279,7 @@ void memory_populate_pages(memory_map_t *mem, uint32_t rom_start_addr, uint32_t 
         g_page_table[p].writable = true;
 
         // SoA fast-path entries: RAM is readable and writable by all
+        tlb_track_page(p); // keep the active SoA set's zeroing exact
         if (g_supervisor_read)
             g_supervisor_read[p] = adjusted;
         if (g_supervisor_write)
@@ -1332,6 +1320,7 @@ void memory_populate_pages(memory_map_t *mem, uint32_t rom_start_addr, uint32_t 
         g_page_table[p].writable = false;
 
         // SoA fast-path entries: ROM is read-only (write entries stay 0 → slow path)
+        tlb_track_page(p); // keep the active SoA set's zeroing exact
         if (g_supervisor_read)
             g_supervisor_read[p] = adjusted;
         if (g_user_read)
@@ -1371,6 +1360,7 @@ void memory_populate_ram_mirror(memory_map_t *mem, uint32_t mirror_start, uint32
         g_page_table[p].writable = true;
 
         // SoA fast-path: full read+write on both supervisor and user sides.
+        tlb_track_page(p); // keep the active SoA set's zeroing exact
         if (g_supervisor_read)
             g_supervisor_read[p] = adjusted;
         if (g_supervisor_write)
@@ -1447,6 +1437,11 @@ memory_map_t *memory_map_init(int address_bits, uint32_t ram_size, uint32_t rom_
     // Default active pointers: supervisor mode
     g_active_read = g_supervisor_read;
     g_active_write = g_supervisor_write;
+
+    // Register the freshly allocated arrays as SoA set 0 (the per-MMU-
+    // configuration set machinery in mmu.c; a no-op regime for machines
+    // without a PMMU).
+    mmu_soa_attach();
 
     // Note: rom command is registered once from setup_init() so it's
     // available before any machine is created (deferred boot).
@@ -1525,6 +1520,12 @@ void memory_map_delete(memory_map_t *mem) {
         if (g_page_table == mem->page_table) {
             g_page_table = NULL;
             g_page_count = 0;
+
+            // Release cached MMU-configuration sets and re-point the globals
+            // at the base arrays allocated by memory_map_init, so the frees
+            // below hit the right storage (idempotent if mmu_delete already
+            // ran).
+            mmu_soa_detach();
 
             // Free SoA fast-path arrays
             free(g_supervisor_read);

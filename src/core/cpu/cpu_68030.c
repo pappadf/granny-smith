@@ -107,7 +107,7 @@ static void cpu_pmmu_general(cpu_t *cpu, uint16_t opcode) {
                 uint32_t val = memory_read_uint32(ea);
                 if (mmu) {
                     mmu->tt0 = val;
-                    mmu_invalidate_tlb(mmu);
+                    mmu_root_tt_written(mmu, false);
                 }
             }
             break;
@@ -125,7 +125,7 @@ static void cpu_pmmu_general(cpu_t *cpu, uint16_t opcode) {
                 uint32_t val = memory_read_uint32(ea);
                 if (mmu) {
                     mmu->tt1 = val;
-                    mmu_invalidate_tlb(mmu);
+                    mmu_root_tt_written(mmu, false);
                 }
             }
             break;
@@ -169,7 +169,7 @@ static void cpu_pmmu_general(cpu_t *cpu, uint16_t opcode) {
             // mode=001: PFLUSHA (flush all entries)
             // mode=100: PFLUSH FC,#mask (flush by FC)
             // mode=110: PFLUSH FC,#mask,<ea> (flush by FC and EA)
-            mmu_invalidate_tlb(mmu);
+            mmu_pflush(mmu);
         }
         break;
     }
@@ -199,6 +199,7 @@ static void cpu_pmmu_general(cpu_t *cpu, uint16_t opcode) {
                 // reset loop).
                 uint32_t fd = (ext >> 8) & 1u;
                 if (mmu) {
+                    bool was_enabled = mmu->enabled;
                     mmu->tc = val;
                     mmu->enabled = TC_ENABLE(val) != 0;
                     // Validate TC configuration: IS+PS+TIA+TIB+TIC+TID must equal 32
@@ -211,8 +212,7 @@ static void cpu_pmmu_general(cpu_t *cpu, uint16_t opcode) {
                             break;
                         }
                     }
-                    if (!fd)
-                        mmu_invalidate_tlb(mmu);
+                    mmu_tc_written(mmu, fd != 0, was_enabled);
                 }
             }
             break;
@@ -242,8 +242,7 @@ static void cpu_pmmu_general(cpu_t *cpu, uint16_t opcode) {
                         break;
                     }
                     mmu->srp = val;
-                    if (!fd)
-                        mmu_invalidate_tlb(mmu);
+                    mmu_root_tt_written(mmu, fd != 0);
                 }
             }
             break;
@@ -273,8 +272,7 @@ static void cpu_pmmu_general(cpu_t *cpu, uint16_t opcode) {
                         break;
                     }
                     mmu->crp = val;
-                    if (!fd)
-                        mmu_invalidate_tlb(mmu);
+                    mmu_root_tt_written(mmu, fd != 0);
                 }
             }
             break;

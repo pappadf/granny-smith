@@ -25,7 +25,7 @@ mmu_state_t *g_mmu = NULL;
 uint64_t g_last_user_crp = 0;
 
 // ============================================================================
-// TLB population tracking (for fast invalidation)
+// Per-configuration SoA sets + population tracking
 // ============================================================================
 
 // Instead of zeroing all 1M+ page entries on every TLB invalidation (32 MB of
@@ -34,27 +34,7 @@ uint64_t g_last_user_crp = 0;
 // + ROM + VRAM), reducing invalidation cost from O(address_space) to O(working_set).
 #define TLB_TRACK_MAX 8192 // max tracked pages before fallback to full memset
 
-static uint32_t g_tlb_track[TLB_TRACK_MAX]; // populated page indices
-static int g_tlb_track_count = 0; // entries in tracking list
-// Start in overflow mode so the first invalidation (after memory_init
-// populates entries without tracking) does a full memset.  Subsequent
-// invalidations use the fast tracked path.
-static bool g_tlb_track_overflow = true;
-
-// Record that a page index has been populated in the SoA TLB arrays
-void tlb_track_page(uint32_t page_index) {
-    if (g_tlb_track_overflow)
-        return; // already in fallback mode
-    if (g_tlb_track_count >= TLB_TRACK_MAX) {
-        g_tlb_track_overflow = true;
-        return;
-    }
-    g_tlb_track[g_tlb_track_count++] = page_index;
-}
-
-// ============================================================================
-// ATC-style block-descriptor cache
-// ============================================================================
+static uint32_t g_tlb_track[TLB_TRACK_MAX]; // set 0's population list (sets 1+ allocate their own)
 
 // The guest's tables use early-termination block descriptors covering large
 // ranges (e.g. one level-A descriptor covering 32 MB).  The real 68030 ATC
@@ -76,27 +56,263 @@ typedef struct atc_block {
 } atc_block_t;
 #define ATC_BLOCKS 16 // small, round-robin; the real 68030 ATC holds 22 entries
 
-static atc_block_t g_atc_blocks[ATC_BLOCKS]; // cached block descriptors
-static int g_atc_next = 0; // round-robin replacement cursor
+// An MMU configuration signature: the full register tuple, compared exactly
+// (no hashing — a collision would silently serve wrong translations).  The
+// MMU-disabled identity view is the tuple {enabled=false, 0...}: the identity
+// mapping depends on no MMU register.
+typedef struct soa_key {
+    uint64_t crp, srp; // root pointers
+    uint32_t tc, tt0, tt1; // translation control + transparent windows
+    bool enabled; // TC.E
+} soa_key_t;
 
-// Drop every cached block descriptor.  Runs wherever a real ATC dies: any
-// invalidation that actually zeroes the SoA (PMOVE to TC/CRP/SRP/TT without
-// FD, PFLUSH variants, machine reset).  The FD (flush-disable) PMOVE forms
-// skip mmu_invalidate_tlb entirely, so cached blocks survive them — exactly
-// the hardware contract A/UX's "clear root after PMOVE, rely on ATC
-// residency" sequence needs.
-static void atc_flush(void) {
-    memset(g_atc_blocks, 0, sizeof(g_atc_blocks));
-    g_atc_next = 0;
+// One cached translation view: four SoA arrays + population tracker + block
+// cache, keyed by the MMU configuration that filled it.  System 6's per-VBL
+// _SwapMMUMode ping-pongs between two enabled configs (24/32-bit) plus the
+// disabled window — with one set per config, the switch is a pointer swap
+// instead of a zero-and-refill of the whole working set (§6 P2 of the
+// perf proposal).
+typedef struct soa_set {
+    uintptr_t *sr, *sw, *ur, *uw; // the four SoA arrays
+    uint32_t *track; // populated page indices (for fast zeroing)
+    int track_count; // entries in track list
+    bool track_overflow; // true → zero via full memset instead
+    atc_block_t blocks[ATC_BLOCKS]; // per-config block-descriptor cache
+    int atc_next; // round-robin replacement cursor
+    soa_key_t key; // config this set's contents belong to
+    bool key_valid; // false → contents unreusable (evict/zero only)
+    bool owns_storage; // true → arrays/tracker are ours to free
+    uint64_t lru; // activation stamp for eviction
+} soa_set_t;
+#define SOA_SETS 3 // disabled view + the two _SwapMMUMode configs
+
+static soa_set_t g_soa_sets[SOA_SETS]; // set 0 wraps the memory.c base arrays
+static int g_soa_active = 0; // index of the set the globals point at
+static uint64_t g_soa_lru_stamp = 0; // monotonic activation counter
+
+// Record that a page index has been populated in the active set's SoA arrays
+void tlb_track_page(uint32_t page_index) {
+    soa_set_t *s = &g_soa_sets[g_soa_active];
+    if (s->track_overflow || !s->track)
+        return; // already in fallback mode (or pre-attach: nothing to track)
+    if (s->track_count >= TLB_TRACK_MAX) {
+        s->track_overflow = true;
+        return;
+    }
+    s->track[s->track_count++] = page_index;
 }
+
+// Zero one set's SoA contents (via its tracker, or full memset on overflow)
+// and drop its block-descriptor cache.  The key is left untouched — zeroed
+// content is a valid empty view of the same configuration.
+static void soa_zero_set(soa_set_t *s) {
+    if (s->sr) {
+        if (s->track_overflow) {
+            size_t sz = (size_t)g_page_count * sizeof(uintptr_t);
+            memset(s->sr, 0, sz);
+            memset(s->sw, 0, sz);
+            memset(s->ur, 0, sz);
+            memset(s->uw, 0, sz);
+        } else {
+            // Bounds-check each index in case the tracker carries entries from
+            // a previous machine with a larger page table.
+            for (int i = 0; i < s->track_count; i++) {
+                uint32_t p = s->track[i];
+                if (p >= g_page_count)
+                    continue;
+                s->sr[p] = 0;
+                s->sw[p] = 0;
+                s->ur[p] = 0;
+                s->uw[p] = 0;
+            }
+        }
+    }
+    s->track_count = 0;
+    s->track_overflow = false;
+    memset(s->blocks, 0, sizeof(s->blocks));
+    s->atc_next = 0;
+}
+
+// Repoint the fast-path globals at a set.  Preserves which FC class (user or
+// supervisor) the active pointers select — activation sites run in supervisor
+// mode, but the nuke path (checkpoint restore) may execute with a user-mode
+// CPU image whose g_active_* must keep selecting the user tables.
+static void soa_map_set(int idx) {
+    bool user_active = g_user_read && g_active_read == g_user_read;
+    soa_set_t *s = &g_soa_sets[idx];
+    g_supervisor_read = s->sr;
+    g_supervisor_write = s->sw;
+    g_user_read = s->ur;
+    g_user_write = s->uw;
+    g_active_read = user_active ? g_user_read : g_supervisor_read;
+    g_active_write = user_active ? g_user_write : g_supervisor_write;
+    g_soa_active = idx;
+    s->lru = ++g_soa_lru_stamp;
+}
+
+// Build the key describing the MMU's current configuration.
+static soa_key_t soa_current_key(mmu_state_t *mmu) {
+    soa_key_t k = {0};
+    if (mmu && mmu->enabled) {
+        k.enabled = true;
+        k.tc = mmu->tc;
+        k.crp = mmu->crp;
+        k.srp = mmu->srp;
+        k.tt0 = mmu->tt0;
+        k.tt1 = mmu->tt1;
+    }
+    return k;
+}
+
+static bool soa_key_eq(const soa_key_t *a, const soa_key_t *b) {
+    return a->enabled == b->enabled && a->tc == b->tc && a->crp == b->crp && a->srp == b->srp && a->tt0 == b->tt0 &&
+           a->tt1 == b->tt1;
+}
+
+// Lazily allocate a set's storage (sets 1+; set 0 wraps the memory.c arrays).
+static void soa_alloc_set(soa_set_t *s) {
+    size_t sz = (size_t)g_page_count * sizeof(uintptr_t);
+    s->sr = (uintptr_t *)calloc(1, sz);
+    s->sw = (uintptr_t *)calloc(1, sz);
+    s->ur = (uintptr_t *)calloc(1, sz);
+    s->uw = (uintptr_t *)calloc(1, sz);
+    s->track = (uint32_t *)calloc(TLB_TRACK_MAX, sizeof(uint32_t));
+    s->owns_storage = true;
+}
+
+// Switch the fast path to the set matching the MMU's current configuration:
+// reuse a matching cached set as-is (the steady-state _SwapMMUMode path — a
+// pointer swap, no zeroing, no refill), or evict the least-recently-used set,
+// zero it, and re-key it.
+static void soa_activate_current(mmu_state_t *mmu) {
+    soa_key_t k = soa_current_key(mmu);
+    // Hit: an existing set already holds this configuration's view.
+    for (int i = 0; i < SOA_SETS; i++) {
+        soa_set_t *s = &g_soa_sets[i];
+        if (s->key_valid && soa_key_eq(&s->key, &k)) {
+            soa_map_set(i);
+            return;
+        }
+    }
+    // Miss: evict — prefer an invalid-keyed set, else the LRU one.
+    int victim = 0;
+    for (int i = 1; i < SOA_SETS; i++) {
+        soa_set_t *v = &g_soa_sets[victim], *s = &g_soa_sets[i];
+        if (v->key_valid != s->key_valid ? !s->key_valid : s->lru < v->lru)
+            victim = i;
+    }
+    soa_set_t *v = &g_soa_sets[victim];
+    if (!v->sr && !v->owns_storage)
+        soa_alloc_set(v); // fresh storage arrives zeroed
+    else
+        soa_zero_set(v);
+    v->key = k;
+    v->key_valid = true;
+    soa_map_set(victim);
+}
+
+// Mark the active set's contents as unreusable while keeping them mapped.
+// Used for the FD (flush-disable) PMOVE forms: hardware keeps serving the
+// resident ATC entries across the register write (the IIfx ROM's PMOVEFD CRP
+// mid-swap depends on it), but the mixed old/new contents must never be
+// key-hit by a later activation.
+static void soa_taint_active(void) {
+    g_soa_sets[g_soa_active].key_valid = false;
+}
+
+// === Lifecycle (called from memory.c map init/teardown) =====================
+
+// Capture the freshly allocated memory.c SoA arrays as set 0 and reset all
+// cached sets.  Called at the end of memory_map_init; the machine starts with
+// the MMU off, so set 0 begins keyed as the disabled identity view.
+void mmu_soa_attach(void) {
+    for (int i = 0; i < SOA_SETS; i++) {
+        soa_set_t *s = &g_soa_sets[i];
+        if (s->owns_storage) {
+            free(s->sr);
+            free(s->sw);
+            free(s->ur);
+            free(s->uw);
+            free(s->track);
+        }
+        memset(s, 0, sizeof(*s));
+    }
+    soa_set_t *s0 = &g_soa_sets[0];
+    s0->sr = g_supervisor_read;
+    s0->sw = g_supervisor_write;
+    s0->ur = g_user_read;
+    s0->uw = g_user_write;
+    s0->track = g_tlb_track;
+    // memory_map_init may pre-populate entries without tracking; make the
+    // first zeroing of set 0 a full memset (matches the old tracker's
+    // start-in-overflow default).
+    s0->track_overflow = true;
+    s0->key_valid = true; // key = {0} = disabled identity view
+    g_soa_active = 0;
+    g_soa_lru_stamp = 0;
+    s0->lru = ++g_soa_lru_stamp;
+}
+
+// Release set storage and point the globals back at the memory.c base arrays
+// (set 0) so memory_map_delete frees the right allocation.  Idempotent;
+// called from both mmu_delete and memory_map_delete.
+void mmu_soa_detach(void) {
+    if (g_soa_sets[0].sr) {
+        g_supervisor_read = g_soa_sets[0].sr;
+        g_supervisor_write = g_soa_sets[0].sw;
+        g_user_read = g_soa_sets[0].ur;
+        g_user_write = g_soa_sets[0].uw;
+        g_active_read = NULL;
+        g_active_write = NULL;
+    }
+    for (int i = 0; i < SOA_SETS; i++) {
+        soa_set_t *s = &g_soa_sets[i];
+        if (s->owns_storage) {
+            free(s->sr);
+            free(s->sw);
+            free(s->ur);
+            free(s->uw);
+            free(s->track);
+        }
+        memset(s, 0, sizeof(*s));
+    }
+    g_soa_active = 0;
+}
+
+// Zero a single page's entries in every cached set (not just the active one).
+// Memory logpoints force covered pages onto the slow path; a page left
+// populated in an inactive set would bypass the logpoint after a config
+// switch.
+void mmu_soa_logpoint_zero_page(uint32_t page_index) {
+    for (int i = 0; i < SOA_SETS; i++) {
+        soa_set_t *s = &g_soa_sets[i];
+        if (!s->sr || page_index >= g_page_count)
+            continue;
+        s->sr[page_index] = 0;
+        s->sw[page_index] = 0;
+        s->ur[page_index] = 0;
+        s->uw[page_index] = 0;
+    }
+}
+
+// Zero every cached set's contents (keys stay — an empty view is still a
+// valid view of its configuration).  Physical-space logpoint installs use
+// this: aliases of the watched physical page can live in any set.
+void mmu_soa_zero_all_sets(void) {
+    for (int i = 0; i < SOA_SETS; i++)
+        soa_zero_set(&g_soa_sets[i]);
+}
+
+// === ATC block-descriptor cache (per active set) ============================
 
 // Find the cached block covering logical_addr for this FC class, if any.
 // When TC.SRE=0 a single walk serves both FC classes (super and user share
 // the CRP), so the FC recorded at walk time doesn't restrict the hit.
 static inline atc_block_t *atc_probe(mmu_state_t *mmu, uint32_t logical_addr, bool supervisor) {
     bool sre_split = TC_SRE(mmu->tc) != 0;
+    atc_block_t *blocks = g_soa_sets[g_soa_active].blocks;
     for (int i = 0; i < ATC_BLOCKS; i++) {
-        atc_block_t *b = &g_atc_blocks[i];
+        atc_block_t *b = &blocks[i];
         if (!b->valid)
             continue;
         if ((logical_addr & b->log_mask) != b->log_base)
@@ -121,8 +337,9 @@ static void atc_invalidate_covering(mmu_state_t *mmu, uint32_t logical_addr, boo
 // Record a successful walk's early-termination descriptor in the block cache.
 static void atc_record(uint32_t log_base, uint32_t log_mask, uint32_t phys_base, bool supervisor_only,
                        bool write_protected, bool fc_super) {
-    atc_block_t *b = &g_atc_blocks[g_atc_next];
-    g_atc_next = (g_atc_next + 1) % ATC_BLOCKS;
+    soa_set_t *s = &g_soa_sets[g_soa_active];
+    atc_block_t *b = &s->blocks[s->atc_next];
+    s->atc_next = (s->atc_next + 1) % ATC_BLOCKS;
     b->log_base = log_base;
     b->log_mask = log_mask;
     b->phys_base = phys_base;
@@ -541,14 +758,11 @@ void mmu_delete(mmu_state_t *mmu) {
         // Clear the user-CRP snapshot so a fresh machine doesn't inherit
         // a stale CRP from the previous instance.
         g_last_user_crp = 0;
-        // Reset TLB-tracker state. Stale indices from this machine could
-        // index past the next machine's smaller SoA arrays. Setting
-        // overflow=true also makes the first post-init invalidate fall
-        // back to a full memset (matches the file-scope default).
-        g_tlb_track_count = 0;
-        g_tlb_track_overflow = true;
-        // Cached block descriptors belong to this machine's tables too.
-        atc_flush();
+        // Release cached sets (their contents belong to this machine's
+        // tables) and re-point the globals at the memory.c base arrays so
+        // memory_map_delete — which follows in every machine's teardown —
+        // frees the right storage.
+        mmu_soa_detach();
     }
     free(mmu);
 }
@@ -647,71 +861,88 @@ void memory_set_bus_error_range(memory_map_t *m, uint32_t start, uint32_t end) {
     g_mmu->nubus_berr_end = end;
 }
 
-// Invalidate the software TLB.  Uses the tracking list to zero only
-// populated entries — typically ~2000-3000 pages vs 1M+ for a full memset.
-// Falls back to full memset if the tracking list overflowed.
+// Invalidate the entire software TLB.  This is the "nuke" path used by
+// machine reset, checkpoint restore, and ROM reload: every cached set is
+// zeroed and un-keyed, then the active set is re-keyed to the MMU's current
+// configuration.  Guest PMOVE/PFLUSH traffic no longer comes here — it goes
+// through mmu_tc_written / mmu_root_tt_written / mmu_pflush below, which
+// preserve cached sets per configuration.
+//
+// When the MMU is disabled, host-backed pages (RAM/ROM/VRAM) are installed
+// lazily on first access by the memory.c slow path via rebuild_soa_page (the
+// eager repopulate that used to live here dominated SE/30 boot; see
+// docs/notes/mmu-tlb-invalidate-perf.md).
 void mmu_invalidate_tlb(mmu_state_t *mmu) {
-    // Fast path: when the MMU is disabled and was disabled the previous
-    // time we ran (no enabled→disabled transition), the SoA fast-path
-    // already holds the direct host-backed mappings the boot ROM relies
-    // on; PMOVE updates to TC/SRP/TT0/TT1 don't perturb them, so the
-    // zero-and-repopulate walk below is wasted work — and a hot one,
-    // because the IIcx PrimaryInit's JMFB driver fires _SwapMMUMode
-    // many thousands of times during slot-scan / sBlock dispatch and
-    // each call PMOVE-writes TC.  The full path still runs on
-    // disabled→enabled and enabled→disabled transitions, where the SoA
-    // really does need to switch shape.
-    bool now_enabled = mmu && mmu->enabled;
-    if (!now_enabled && mmu && !mmu->tlb_was_enabled) {
-        mmu->tlb_was_enabled = now_enabled;
+    for (int i = 0; i < SOA_SETS; i++) {
+        soa_zero_set(&g_soa_sets[i]);
+        g_soa_sets[i].key_valid = false;
+    }
+    soa_set_t *a = &g_soa_sets[g_soa_active];
+    a->key = soa_current_key(mmu);
+    a->key_valid = true;
+}
+
+// ============================================================================
+// PMOVE / PFLUSH notifications (called from cpu_pmmu_general)
+// ============================================================================
+
+// PMOVE to TC completed (mmu->tc / mmu->enabled already updated).  A flushing
+// write (fd=false), or any write that flips the enable state, activates the
+// set matching the new configuration — the steady-state _SwapMMUMode path,
+// where both configs stay cached and the switch is a pointer swap.  An FD
+// (flush-disable) rewrite under a live config keeps the current view mapped
+// (hardware keeps serving resident ATC entries) but taints it so the now-
+// mixed contents can never be key-hit by a later activation.
+void mmu_tc_written(mmu_state_t *mmu, bool fd, bool was_enabled) {
+    if (!mmu)
+        return;
+    if (!fd || was_enabled != mmu->enabled) {
+        soa_activate_current(mmu);
         return;
     }
-    if (mmu)
-        mmu->tlb_was_enabled = now_enabled;
-    // A real invalidation is where the hardware ATC dies too: drop the cached
-    // block descriptors along with the SoA fill.  (The dis→dis early-out above
-    // and the FD PMOVE forms — which never call here — both preserve them.)
-    atc_flush();
-    if (g_tlb_track_overflow) {
-        // Tracking overflowed — fall back to zeroing everything
-        size_t sz = (size_t)g_page_count * sizeof(uintptr_t);
-        if (g_supervisor_read)
-            memset(g_supervisor_read, 0, sz);
-        if (g_supervisor_write)
-            memset(g_supervisor_write, 0, sz);
-        if (g_user_read)
-            memset(g_user_read, 0, sz);
-        if (g_user_write)
-            memset(g_user_write, 0, sz);
-    } else {
-        // Fast path: zero only pages that were actually populated.
-        // Bounds-check each index in case the tracker carries entries from a
-        // previous machine with a larger page table (see mmu_delete's reset).
-        for (int i = 0; i < g_tlb_track_count; i++) {
-            uint32_t p = g_tlb_track[i];
-            if (p >= g_page_count)
-                continue;
-            if (g_supervisor_read)
-                g_supervisor_read[p] = 0;
-            if (g_supervisor_write)
-                g_supervisor_write[p] = 0;
-            if (g_user_read)
-                g_user_read[p] = 0;
-            if (g_user_write)
-                g_user_write[p] = 0;
-        }
+    if (mmu->enabled)
+        soa_taint_active();
+}
+
+// PMOVE to CRP/SRP/TT0/TT1 completed.  While translation is off these writes
+// don't perturb the identity view — the register simply becomes part of the
+// key at the next enable.  While enabled, a flushing write conservatively
+// kills every enabled set's contents (the rewritten register may redefine any
+// cached translation) and re-keys the active set to the new tuple; an FD
+// write taints the active set instead (hardware ATC residency, as for TC).
+void mmu_root_tt_written(mmu_state_t *mmu, bool fd) {
+    if (!mmu || !mmu->enabled)
+        return;
+    if (fd) {
+        soa_taint_active();
+        return;
     }
+    for (int i = 0; i < SOA_SETS; i++) {
+        soa_set_t *s = &g_soa_sets[i];
+        if (s->key_valid && !s->key.enabled)
+            continue; // the disabled identity view doesn't depend on MMU registers
+        soa_zero_set(s);
+        s->key_valid = false;
+    }
+    soa_set_t *a = &g_soa_sets[g_soa_active];
+    a->key = soa_current_key(mmu);
+    a->key_valid = true;
+}
 
-    // Reset tracking state
-    g_tlb_track_count = 0;
-    g_tlb_track_overflow = false;
-
-    // When the MMU is disabled, host-backed pages (RAM/ROM/VRAM) are
-    // installed lazily on first access by the memory.c slow path via
-    // rebuild_soa_page. The eager repopulate that used to live here did a
-    // linear scan of all g_page_count AoS slots (32 MB for SE/30) to find
-    // ~1500 host-backed pages — that scan dominated SE/30 boot at 37% of
-    // CPU time. See docs/notes/mmu-tlb-invalidate-perf.md.
+// PFLUSH executed: on hardware the ATC dies no matter what E currently is, so
+// every enabled configuration's cached contents die with it — a set rebuilt
+// later re-walks the guest tables, which is exactly what PFLUSH demands.
+// This is what keeps guests that edit PTEs and then PFLUSH (A/UX) correct
+// under set reuse.  The disabled identity view is not an ATC artifact and
+// survives.
+void mmu_pflush(mmu_state_t *mmu) {
+    (void)mmu;
+    for (int i = 0; i < SOA_SETS; i++) {
+        soa_set_t *s = &g_soa_sets[i];
+        if (s->key_valid && !s->key.enabled)
+            continue;
+        soa_zero_set(s);
+    }
 }
 
 // Shared tail of the fault path: after a fill attempt, if the SoA entry

@@ -156,6 +156,7 @@ void mac030_fill_page(uint32_t page_index, uint8_t *host_ptr, bool writable) {
     g_page_table[page_index].writable = writable;
     uint32_t guest_base = page_index << PAGE_SHIFT;
     uintptr_t adjusted = (uintptr_t)host_ptr - guest_base;
+    tlb_track_page(page_index); // keep the active SoA set's zeroing exact
     if (g_supervisor_read)
         g_supervisor_read[page_index] = adjusted;
     if (g_user_read)

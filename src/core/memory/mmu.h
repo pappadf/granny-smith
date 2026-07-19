@@ -80,11 +80,6 @@ typedef struct mmu_state {
     uint16_t mmusr; // MMU status register
 
     bool enabled; // TC.E bit — is translation active?
-    bool tlb_was_enabled; // last value of `enabled` seen by mmu_invalidate_tlb;
-                          // the invalidation can shortcut-return when both
-                          // current and previous calls find MMU off, since
-                          // PMOVE updates to TC/SRP/TT0/TT1 don't perturb
-                          // the direct-host SoA mappings under MMU-disabled.
 
     // Host-side state for table walks
     uint8_t *physical_ram; // base of physical RAM buffer
@@ -144,13 +139,36 @@ void mmu_delete(mmu_state_t *mmu);
 
 // === TLB Management ===
 
-// Invalidate the entire software TLB (zero all four SoA arrays).
-// Called on PMOVE to TC/CRP/SRP and PFLUSHA.
+// Invalidate the entire software TLB: zero every cached SoA set and re-key
+// the active one to the MMU's current configuration.  The "nuke" path for
+// machine reset, checkpoint restore, and ROM reload; guest PMOVE/PFLUSH
+// traffic goes through the notification functions below instead.
 void mmu_invalidate_tlb(mmu_state_t *mmu);
 
-// Record that page p has been written into one of the four SoA arrays since
-// the last invalidation. Callers in the slow path of memory.c use this when
-// lazy-installing an identity mapping for an MMU-disabled access.
+// PMOVE-completed notifications (cpu_pmmu_general).  The SoA maintains one
+// cached set per MMU configuration; these decide whether a register write
+// switches sets (TC), kills enabled sets' contents (root/TT rewrite, PFLUSH),
+// or taints the live set (FD forms, where hardware keeps ATC residency).
+void mmu_tc_written(mmu_state_t *mmu, bool fd, bool was_enabled);
+void mmu_root_tt_written(mmu_state_t *mmu, bool fd);
+void mmu_pflush(mmu_state_t *mmu);
+
+// SoA set lifecycle, called from memory.c: attach captures the freshly
+// allocated base arrays as set 0 (end of memory_map_init); detach releases
+// set storage and points the globals back at the base arrays so
+// memory_map_delete frees the right allocation (idempotent).
+void mmu_soa_attach(void);
+void mmu_soa_detach(void);
+
+// Memory-logpoint support across cached sets: zero one page's entries in
+// every set (logical logpoint install), or zero every set's contents
+// entirely (physical logpoint install — aliases can live in any set).
+void mmu_soa_logpoint_zero_page(uint32_t page_index);
+void mmu_soa_zero_all_sets(void);
+
+// Record that page p has been written into one of the active set's four SoA
+// arrays since it was last zeroed. Callers in the slow path of memory.c use
+// this when lazy-installing an identity mapping for an MMU-disabled access.
 void tlb_track_page(uint32_t page_index);
 
 // === Address Translation ===
