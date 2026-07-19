@@ -48,6 +48,11 @@ interface MachineState {
   // where the adaptive governor moves it; pushed from the core on change
   // (bus/emulator.ts handleSchedulerSpeed). 1 in every other mode.
   acceleratedSpeed: number;
+  // Live performance readout, pushed from the core ~1 Hz (perf proposal P12):
+  // emulated MIPS from instruction-count deltas, and the RAF tick rate the
+  // main loop is achieving. 0 until the first push after machine start.
+  mips: number;
+  ticksPerSecond: number;
   zoom: number;
 }
 
@@ -62,6 +67,8 @@ export const machine: MachineState = $state({
   driveActivity: { hd: 'idle', fd: 'idle', cd: 'idle' },
   scheduler: 'live',
   acceleratedSpeed: 1,
+  mips: 0,
+  ticksPerSecond: 0,
   zoom: 200,
 });
 
@@ -87,6 +94,12 @@ export function setSchedulerMode(mode: SchedulerMode): void {
 // Core-pushed effective CPU speed multiplier (bus/emulator.ts handleSchedulerSpeed).
 export function setAcceleratedSpeed(multiplier: number): void {
   machine.acceleratedSpeed = multiplier;
+}
+
+// Core-pushed live performance metrics (bus/emulator.ts handlePerfUpdate).
+export function setPerfStats(mips: number, ticksPerSecond: number): void {
+  machine.mips = mips;
+  machine.ticksPerSecond = ticksPerSecond;
 }
 
 // ---- Drive activity mock ----

@@ -12,6 +12,7 @@ import {
   machine,
   setSchedulerMode,
   setAcceleratedSpeed,
+  setPerfStats,
   type MachineStatus,
   type MmuKind,
   type SchedulerMode,
@@ -76,6 +77,7 @@ interface EmscriptenModuleConfig {
   onLogEmit?(line: string): void;
   onFloppyChange?(drive: number, present: boolean): void;
   onSchedulerSpeed?(speedX256: number): void;
+  onPerfUpdate?(mipsX100: number, tpsX10: number): void;
 }
 
 type CreateModule = (config: EmscriptenModuleConfig) => Promise<EmscriptenModule>;
@@ -147,6 +149,7 @@ export async function bootstrap(canvas: HTMLCanvasElement, wasmArgs: string[] = 
     onLogEmit: routeLogEmit,
     onFloppyChange: onFloppyDriveChange,
     onSchedulerSpeed: handleSchedulerSpeed,
+    onPerfUpdate: handlePerfUpdate,
   });
 
   bridgePtr = Module._get_js_bridge();
@@ -329,6 +332,13 @@ function handleRunStateChange(running: boolean): void {
 // Accelerated mode. Divide by 256 for the multiplier.
 function handleSchedulerSpeed(speedX256: number): void {
   setAcceleratedSpeed((speedX256 | 0) / 256);
+}
+
+// Core-pushed performance metrics, ~1 Hz (perf proposal P12): emulated MIPS
+// from instr_count deltas and the RAF tick rate. Fixed-point on the wire
+// (x100 / x10) since MAIN_THREAD_ASYNC_EM_ASM carries ints.
+function handlePerfUpdate(mipsX100: number, tpsX10: number): void {
+  setPerfStats((mipsX100 | 0) / 100, (tpsX10 | 0) / 10);
 }
 
 function handleScreenResize(w: number, h: number, parW?: number, parH?: number): void {
