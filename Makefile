@@ -171,7 +171,8 @@ LDFLAGS := $(MODE_CFLAGS) \
            -s EXPORTED_FUNCTIONS="['_main','_get_js_bridge']" \
            -s STACK_SIZE=5MB \
            -s ALLOW_MEMORY_GROWTH=1 \
-           -s USE_WEBGL2=1
+           -s USE_WEBGL2=1 \
+           $(EXTRA_CFLAGS) $(EXTRA_LDFLAGS)
 
 # -- Phony targets --
 
