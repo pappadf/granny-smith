@@ -430,6 +430,26 @@ static void iifx_apply_fmc_rom_invert(config_t *cfg, bool enable) {
     }
 }
 
+// Re-arms one ROM-window page as the first-access trap device (reset state):
+// the inverse of iifx_fill_page, restoring what memory_map_add installed.
+static void iifx_arm_rom_trap_page(iifx_state_t *st, config_t *cfg, uint32_t page_index) {
+    if ((int)page_index >= g_page_count)
+        return;
+    g_page_table[page_index].host_base = NULL;
+    g_page_table[page_index].dev = &st->rom_interface;
+    g_page_table[page_index].dev_context = cfg;
+    g_page_table[page_index].base_addr = (uint32_t)IIFX_ROM_START;
+    g_page_table[page_index].writable = false;
+    if (g_supervisor_read)
+        g_supervisor_read[page_index] = 0;
+    if (g_supervisor_write)
+        g_supervisor_write[page_index] = 0;
+    if (g_user_read)
+        g_user_read[page_index] = 0;
+    if (g_user_write)
+        g_user_write[page_index] = 0;
+}
+
 // Sets or clears the reset-time ROM overlay at physical zero.
 static void iifx_set_rom_overlay(config_t *cfg, bool overlay) {
     iifx_state_t *st = iifx_state(cfg);
@@ -445,6 +465,29 @@ static void iifx_set_rom_overlay(config_t *cfg, bool overlay) {
     for (uint32_t p = 0; p < rom_pages && (int)p < g_page_count; p++) {
         uint8_t *host_ptr = overlay ? rom_data + (p << PAGE_SHIFT) : ram_base + (p << PAGE_SHIFT);
         iifx_fill_page(p, host_ptr, !overlay);
+    }
+
+    // The $40000000 ROM window doubles as the overlay trip-wire: while the
+    // overlay is armed its pages sit on the rom_interface device so the FIRST
+    // genuine ROM access lands in iifx_rom_read_* and clears the overlay
+    // (real OSS behaviour).  Once cleared the trap has served its purpose —
+    // expose the whole window as host-backed read-only pages (the ROM image
+    // mirrored every rom_size) so the SoA fast path serves ROM fetches.
+    // Leaving the device in place taxed EVERY ROM access with a per-byte
+    // function-call dispatch, and Mac OS runs QuickDraw out of ROM: measured
+    // on Marathon gameplay, 45% of all accesses were ROM-bound slow-path,
+    // costing ~3.6x whole-machine throughput vs the IIcx.  RESET re-arms the
+    // trap.  The FMC ROM-invert POST window ($40008000-$4000FFFF) re-points
+    // its 8 pages after this via the same iifx_fill_page path.
+    uint32_t wstart = (uint32_t)(IIFX_ROM_START >> PAGE_SHIFT);
+    uint32_t wend = (uint32_t)(IIFX_ROM_END >> PAGE_SHIFT);
+    for (uint32_t p = wstart; p < wend && (int)p < g_page_count; p++) {
+        if (overlay) {
+            iifx_arm_rom_trap_page(st, cfg, p);
+        } else {
+            uint32_t guest = p << PAGE_SHIFT;
+            iifx_fill_page(p, rom_data + ((guest - (uint32_t)IIFX_ROM_START) % rom_size), false);
+        }
     }
 }
 
