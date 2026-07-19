@@ -31,7 +31,7 @@ EMU_ROOT       := $(WORKSPACE_ROOT)/src
 # -- Build directories --
 # Objects go under BUILD_DIR/obj/<test>/ to avoid collision with binary.
 
-BUILD_DIR  := $(UNIT_ROOT)/build
+BUILD_DIR  ?= $(UNIT_ROOT)/build
 OBJ_DIR    := $(BUILD_DIR)/obj/$(TEST_NAME)
 TARGET     := $(BUILD_DIR)/$(TEST_NAME)
 

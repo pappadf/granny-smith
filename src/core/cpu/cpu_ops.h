@@ -1228,30 +1228,21 @@ static inline uint32_t bf_insert_reg(uint32_t dst, int32_t offset, uint32_t w, u
     })
 
 // --- CHK.W <ea>,Dn and CHK.L <ea>,Dn ---
-// M68000PRM: N=1 if Dn < 0, N=0 if Dn > upper bound. Both cases raise the
-// CHK exception (vector 6); the handler reads N from the stacked SR to
-// distinguish underflow from overflow.
+// M68000PRM: N=1 if Dn < 0, N=0 if Dn > upper bound, otherwise formally
+// undefined — but real silicon updates N from Dn's sign even when no
+// exception is taken (cputest030 CHK.W/CHK.L pin this down), so N is set
+// unconditionally here. Underflow and overflow both raise the CHK exception
+// (vector 6); the handler reads N from the stacked SR to tell them apart.
 #define OP_CHK_W_EA_DN                                                                                                 \
     OP(                                                                                                                \
         VALID_EA(ea_data); LOAD_EA_WITH_UPDATE(16, _src); int32_t _dn = (int32_t)(int16_t)(uint16_t)DX;                \
-        int32_t _b = (int32_t)(int16_t)_src; if (_dn < 0) {                                                            \
-            cpu->negative = 1;                                                                                         \
-            EXC_CHK();                                                                                                 \
-        } else if (_dn > _b) {                                                                                         \
-            cpu->negative = 0;                                                                                         \
-            EXC_CHK();                                                                                                 \
-        })
+        int32_t _b = (int32_t)(int16_t)_src; cpu->negative = (_dn < 0);                                                \
+        if (_dn < 0) { EXC_CHK(); } else if (_dn > _b) { EXC_CHK(); })
 
 #define OP_CHK_L_EA_DN                                                                                                 \
     OP(                                                                                                                \
         VALID_EA(ea_data); LOAD_EA_WITH_UPDATE(32, _bound); int32_t _dn = (int32_t)DX; int32_t _b = (int32_t)_bound;   \
-        if (_dn < 0) {                                                                                                 \
-            cpu->negative = 1;                                                                                         \
-            EXC_CHK();                                                                                                 \
-        } else if (_dn > _b) {                                                                                         \
-            cpu->negative = 0;                                                                                         \
-            EXC_CHK();                                                                                                 \
-        })
+        cpu->negative = (_dn < 0); if (_dn < 0) { EXC_CHK(); } else if (_dn > _b) { EXC_CHK(); })
 
 // --- CHK2/CMP2: Compare with bounds ---
 // Extension word: Dn/An:Rn at bits 15:12, IS bit 11 (0=CMP2, 1=CHK2)
@@ -1682,6 +1673,17 @@ static inline uint32_t bf_insert_reg(uint32_t dst, int32_t offset, uint32_t w, u
     else if (_moves_autodec)                                                                                           \
         A(EA_REG) -= (EA_REG == 7 && (SIZE) == 1) ? 2 : (SIZE);
 
+// Source value for MOVES Rn,<ea>.  When Rn is the same address register used
+// by an (An)+/-(An) EA, real 68020/030 silicon stores the UPDATED register
+// value even though we only commit the register after the write succeeds
+// (verified against cputest030 MOVES.B/W/L).  For -(An) the updated value is
+// the effective address itself.
+#define MOVES_RN_SRC(SIZE, DA, RN, EA)                                                                                 \
+    ((DA) ? (((RN) == (uint32_t)EA_REG && _moves_autoinc)                                                              \
+                 ? A(RN) + ((EA_REG == 7 && (SIZE) == 1) ? 2u : (uint32_t)(SIZE))                                      \
+                 : (((RN) == (uint32_t)EA_REG && _moves_autodec) ? (EA) : A(RN)))                                      \
+          : D(RN))
+
 #define OP_MOVES_B_RN_EA                                                                                               \
     OP({                                                                                                               \
         VALID_EA(ea_memory &ea_alterable);                                                                             \
@@ -1692,7 +1694,7 @@ static inline uint32_t bf_insert_reg(uint32_t dst, int32_t offset, uint32_t w, u
             MOVES_EA_WITH_RETRY_SAFE(1, _ea);                                                                          \
             uintptr_t *_saved = g_active_write;                                                                        \
             g_active_write = MOVES_ALT_WRITE(cpu->dfc);                                                                \
-            WRITE8(_ea, (uint8_t)(_da ? A(_rn) : D(_rn)));                                                             \
+            WRITE8(_ea, (uint8_t)MOVES_RN_SRC(1, _da, _rn, _ea));                                                      \
             g_active_write = _saved;                                                                                   \
             if (!g_bus_error_pending) {                                                                                \
                 MOVES_COMMIT_EA(1);                                                                                    \
@@ -1710,7 +1712,7 @@ static inline uint32_t bf_insert_reg(uint32_t dst, int32_t offset, uint32_t w, u
             MOVES_EA_WITH_RETRY_SAFE(2, _ea);                                                                          \
             uintptr_t *_saved = g_active_write;                                                                        \
             g_active_write = MOVES_ALT_WRITE(cpu->dfc);                                                                \
-            WRITE16(_ea, (uint16_t)(_da ? A(_rn) : D(_rn)));                                                           \
+            WRITE16(_ea, (uint16_t)MOVES_RN_SRC(2, _da, _rn, _ea));                                                    \
             g_active_write = _saved;                                                                                   \
             if (!g_bus_error_pending) {                                                                                \
                 MOVES_COMMIT_EA(2);                                                                                    \
@@ -1728,7 +1730,7 @@ static inline uint32_t bf_insert_reg(uint32_t dst, int32_t offset, uint32_t w, u
             MOVES_EA_WITH_RETRY_SAFE(4, _ea);                                                                          \
             uintptr_t *_saved = g_active_write;                                                                        \
             g_active_write = MOVES_ALT_WRITE(cpu->dfc);                                                                \
-            WRITE32(_ea, _da ? A(_rn) : D(_rn));                                                                       \
+            WRITE32(_ea, MOVES_RN_SRC(4, _da, _rn, _ea));                                                              \
             g_active_write = _saved;                                                                                   \
             if (!g_bus_error_pending) {                                                                                \
                 MOVES_COMMIT_EA(4);                                                                                    \
