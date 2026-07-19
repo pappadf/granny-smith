@@ -51,8 +51,12 @@ LOG_USE_CATEGORY_NAME("scheduler");
 
 // Unthrottled ("turbo") mode: fraction of the host tick period to fill with
 // emulation, leaving the rest as idle headroom for the browser (rendering,
-// input, GC). Previously a hard-coded 0.5.
-#define TURBO_HOST_HEADROOM 0.5
+// input, GC). Raised from 0.5 (perf proposal P11): with WebGL rendering and
+// the SAB audio ring (P6) the browser work per tick is small, and reserving
+// half of every slice was measured to cost exactly its share of turbo
+// throughput; 0.7 keeps the UI responsive (in-browser bench terminal probes
+// still answer promptly) while returning ~40% more turbo speed.
+#define TURBO_HOST_HEADROOM 0.7
 
 // Accelerated mode: bounds for the fixed speed multiplier, x256 fixed point.
 // Floor 1x = authentic (the mode never runs the guest slower than real
