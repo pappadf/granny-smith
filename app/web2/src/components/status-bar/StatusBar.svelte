@@ -58,7 +58,9 @@
       {#if machine.status === 'running' && machine.mips > 0}
         <div
           class="sb-item sb-mips"
-          title="Emulated CPU throughput: {machine.mips.toFixed(1)} million instructions/second ({machine.ticksPerSecond.toFixed(0)} ticks/s)"
+          title="Emulated CPU throughput: {machine.mips.toFixed(
+            1,
+          )} million instructions/second ({machine.ticksPerSecond.toFixed(0)} ticks/s)"
         >
           <span class="label">{machine.mips.toFixed(1)} MIPS</span>
         </div>
