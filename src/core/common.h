@@ -23,10 +23,19 @@ extern "C" {
 // Failure handler prints diagnostics (host + target backtraces, process info) then pauses the scheduler
 void gs_assert_fail(const char *expr, const char *file, int line, const char *func, const char *fmt, ...);
 
-// Basic assert macros (always enabled; use conditional build guards yourself if desired)
+// Basic assert macros.  Enabled in every build except the GS_FAST production
+// profile (wasm release / headless MODE=fast), where they compile to nothing —
+// measured ~4.5% of steady-state gameplay host time (perf proposal §5.3).
+// The default headless build keeps them: it is the debugging tool, and CI
+// runs it so the checks retain their value.
+#ifdef GS_FAST
+#define GS_ASSERT(cond)            ((void)0)
+#define GS_ASSERTF(cond, fmt, ...) ((void)0)
+#else
 #define GS_ASSERT(cond) ((cond) ? (void)0 : gs_assert_fail(#cond, __FILE__, __LINE__, __func__, NULL))
 #define GS_ASSERTF(cond, fmt, ...)                                                                                     \
     ((cond) ? (void)0 : gs_assert_fail(#cond, __FILE__, __LINE__, __func__, (fmt), ##__VA_ARGS__))
+#endif
 
 #ifdef __cplusplus
 }

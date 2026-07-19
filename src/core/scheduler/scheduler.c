@@ -327,7 +327,16 @@ static void scheduler_governor_tick(struct scheduler *s, double host_secs_this_v
     }
 }
 
-// Validate all critical scheduler invariants at key transition points
+// Validate all critical scheduler invariants at key transition points.
+// GS_FAST (production profile): the full-queue walk itself is the cost — it
+// runs at entry and exit of scheduler_run/scheduler_run_instructions — so the
+// whole function compiles to nothing, not just its asserts.
+#ifdef GS_FAST
+static inline void scheduler_check_invariants(struct scheduler *s, const char *context) {
+    (void)s;
+    (void)context;
+}
+#else
 static void scheduler_check_invariants(struct scheduler *s, const char *context) {
     if (s == NULL)
         return;
@@ -381,6 +390,7 @@ static void scheduler_check_invariants(struct scheduler *s, const char *context)
     // CPU pointer must remain valid
     GS_ASSERTF(s->cpu != NULL, "[%s] cpu pointer is NULL", context);
 }
+#endif // GS_FAST
 
 // Convenience macro to check invariants with automatic context
 #define CHECK_INVARIANTS(s) scheduler_check_invariants((s), __func__)
@@ -428,7 +438,14 @@ static void reconcile_sprint(struct scheduler *s) {
     s->sprint_burndown = 0;
 }
 
-// Validate that the CPU event queue is properly ordered
+// Validate that the CPU event queue is properly ordered.
+// GS_FAST: compiled out — this walk runs on every event insertion (22,257×
+// per emulated second during ASC playback; perf proposal §5.3).
+#ifdef GS_FAST
+static inline void validate_cpu_events(struct scheduler *s) {
+    (void)s;
+}
+#else
 static void validate_cpu_events(struct scheduler *s) {
     GS_ASSERT(s != NULL);
 
@@ -447,6 +464,7 @@ static void validate_cpu_events(struct scheduler *s) {
         prev_ts = e->timestamp;
     }
 }
+#endif // GS_FAST
 
 // Look up registered event type names for a given source+callback pair
 static const event_type_t *find_event_type(struct scheduler *s, void *source, event_callback_t cb) {

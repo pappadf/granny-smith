@@ -112,7 +112,11 @@ ifeq ($(MODE),debug)
 else ifeq ($(MODE),sanitize)
 	MODE_CFLAGS := -O1 -g -DGS_DEBUG -fsanitize=address,undefined -sSTACK_OVERFLOW_CHECK=2
 else
-	MODE_CFLAGS := -O2
+	# Production profile: GS_ASSERT / scheduler invariant walks / libc assert
+	# compiled out (perf proposal P4) — measured +4.5% native, more in wasm
+	# (the invariant walks run per RAF frame-unit and per event insert).
+	# Debug/sanitize builds keep them all.
+	MODE_CFLAGS := -O2 -DGS_FAST -DNDEBUG
 endif
 
 # -- Include paths --
