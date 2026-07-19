@@ -1779,8 +1779,9 @@ static bool fpu_movem_data(cpu_t *cpu, fpu_state_t *fpu, uint16_t opcode, uint16
     unsigned ea_reg = opcode & 7;
 
     // 68882 FMOVEM data register encoding (MC68882 User Manual §6.1.5):
-    //   Bits 15-13 encode type: 110 = register→memory (save), 111 = memory→register (restore)
-    //   Bit 12 encodes mode: 0 = static register list (bits 7-0), 1 = dynamic (Dn in bits 6-4)
+    //   Bits 15-13 encode type: 110 (dr=0) = memory→register (restore),
+    //   111 (dr=1) = register→memory (save)
+    //   Bit 11 encodes mode: 0 = static register list (bits 7-0), 1 = dynamic (Dn in bits 6-4)
     // For (An)+ and -(An) addressing, the direction is implicit from the EA mode.
     unsigned dir;
     if (ea_mode == 3) // (An)+: always restore (memory → register)
@@ -1788,7 +1789,7 @@ static bool fpu_movem_data(cpu_t *cpu, fpu_state_t *fpu, uint16_t opcode, uint16
     else if (ea_mode == 4) // -(An): always save (register → memory)
         dir = 0;
     else
-        dir = (ext >> 13) & 1; // control modes: use ext word direction bit
+        dir = ((ext >> 13) & 1) ^ 1; // control modes: dr=1 is save, so dir(restore)=1 when dr=0
 
     // Validate EA mode before decoding register list
     if (!fpu_movem_data_ea_valid(ea_mode, ea_reg, dir))
