@@ -55,6 +55,16 @@
           <Icon name="chip" size={13} /><span class="label">{speedLabel}</span>
         </div>
       {/if}
+      {#if machine.status === 'running' && machine.mips > 0}
+        <div
+          class="sb-item sb-mips"
+          title="Emulated CPU throughput: {machine.mips.toFixed(
+            1,
+          )} million instructions/second ({machine.ticksPerSecond.toFixed(0)} ticks/s)"
+        >
+          <span class="label">{machine.mips.toFixed(1)} MIPS</span>
+        </div>
+      {/if}
       <DriveActivity label="HD" title="Hard disk" activity={machine.driveActivity.hd} />
       <DriveActivity label="FD" title="Floppy disk" activity={machine.driveActivity.fd} />
       <DriveActivity label="CD" title="CD-ROM" activity={machine.driveActivity.cd} />
@@ -144,6 +154,10 @@
   }
   .sb-speed :global(.icon) {
     opacity: 0.85;
+  }
+  .sb-mips {
+    font-variant-numeric: tabular-nums;
+    opacity: 0.75;
   }
   .sb-upload {
     gap: 6px;

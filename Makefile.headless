@@ -7,7 +7,7 @@
 CC ?= gcc
 CFLAGS_BASE := -Wall -Wextra -std=c11 -D_GNU_SOURCE -D_POSIX_C_SOURCE=200809L -MMD -MP
 
-# -- Build mode (release | debug | sanitize) --
+# -- Build mode (release | debug | sanitize | fast) --
 
 MODE ?= release
 
@@ -16,6 +16,11 @@ ifeq ($(MODE),debug)
 else ifeq ($(MODE),sanitize)
 	CFLAGS_MODE := -g -O1 -DGS_DEBUG -fsanitize=address,undefined -fno-omit-frame-pointer
 	LDFLAGS_MODE := -fsanitize=address,undefined
+else ifeq ($(MODE),fast)
+	# Benchmarking profile: GS_ASSERT/invariant walks and libc assert compiled
+	# out (perf proposal P4).  NOT the default — the headless binary is the
+	# debugging tool and CI runs the assert-enabled build.
+	CFLAGS_MODE := -O2 -DGS_FAST -DNDEBUG
 else
 	# No -DNDEBUG: keep assertions active in the headless test/debug tool
 	CFLAGS_MODE := -O2
@@ -23,7 +28,14 @@ endif
 
 # -- Directories --
 
+# fast mode builds into its own tree: CFLAGS changes don't retrigger object
+# rebuilds, so sharing build/headless would silently mix assert-enabled and
+# assert-free objects.
+ifeq ($(MODE),fast)
+BUILD_DIR     := build/headless-fast
+else
 BUILD_DIR     := build/headless
+endif
 CORE_DIR      := src/core
 MACHINES_DIR  := src/machines
 PLATFORM_DIR  := src/platform/headless

@@ -730,16 +730,27 @@ int shell_poll(void) {
 void em_main_tick(void) {
     tick_counter++;
 
-    // Calculate performance metrics every PERF_UPDATE_INTERVAL ticks
+    // Calculate performance metrics every PERF_UPDATE_INTERVAL ticks and
+    // push them to the UI (perf proposal P12: MIPS from instr_count deltas —
+    // without this, nothing in web2 would reveal a throughput regression).
     if (tick_counter % PERF_UPDATE_INTERVAL == 0) {
         double current_time = emscripten_get_now();
+        uint64_t instr_now = cpu_instr_count();
+        static uint64_t last_instr = 0;
 
         if (last_time > 0) {
             double elapsed_ms = current_time - last_time;
             ticks_per_second = (PERF_UPDATE_INTERVAL * 1000.0) / elapsed_ms;
+            double mips = (double)(instr_now - last_instr) / (elapsed_ms * 1000.0);
+            // clang-format off
+            MAIN_THREAD_ASYNC_EM_ASM(
+                { if (typeof Module.onPerfUpdate === 'function') Module.onPerfUpdate($0, $1); },
+                (int)(mips * 100.0), (int)(ticks_per_second * 10.0));
+            // clang-format on
         }
 
         last_time = current_time;
+        last_instr = instr_now;
     }
 
     // Execute based on emulation state

@@ -51,8 +51,12 @@ LOG_USE_CATEGORY_NAME("scheduler");
 
 // Unthrottled ("turbo") mode: fraction of the host tick period to fill with
 // emulation, leaving the rest as idle headroom for the browser (rendering,
-// input, GC). Previously a hard-coded 0.5.
-#define TURBO_HOST_HEADROOM 0.5
+// input, GC). Raised from 0.5 (perf proposal P11): with WebGL rendering and
+// the SAB audio ring (P6) the browser work per tick is small, and reserving
+// half of every slice was measured to cost exactly its share of turbo
+// throughput; 0.7 keeps the UI responsive (in-browser bench terminal probes
+// still answer promptly) while returning ~40% more turbo speed.
+#define TURBO_HOST_HEADROOM 0.7
 
 // Accelerated mode: bounds for the fixed speed multiplier, x256 fixed point.
 // Floor 1x = authentic (the mode never runs the guest slower than real
@@ -327,7 +331,16 @@ static void scheduler_governor_tick(struct scheduler *s, double host_secs_this_v
     }
 }
 
-// Validate all critical scheduler invariants at key transition points
+// Validate all critical scheduler invariants at key transition points.
+// GS_FAST (production profile): the full-queue walk itself is the cost — it
+// runs at entry and exit of scheduler_run/scheduler_run_instructions — so the
+// whole function compiles to nothing, not just its asserts.
+#ifdef GS_FAST
+static inline void scheduler_check_invariants(struct scheduler *s, const char *context) {
+    (void)s;
+    (void)context;
+}
+#else
 static void scheduler_check_invariants(struct scheduler *s, const char *context) {
     if (s == NULL)
         return;
@@ -381,6 +394,7 @@ static void scheduler_check_invariants(struct scheduler *s, const char *context)
     // CPU pointer must remain valid
     GS_ASSERTF(s->cpu != NULL, "[%s] cpu pointer is NULL", context);
 }
+#endif // GS_FAST
 
 // Convenience macro to check invariants with automatic context
 #define CHECK_INVARIANTS(s) scheduler_check_invariants((s), __func__)
@@ -428,7 +442,14 @@ static void reconcile_sprint(struct scheduler *s) {
     s->sprint_burndown = 0;
 }
 
-// Validate that the CPU event queue is properly ordered
+// Validate that the CPU event queue is properly ordered.
+// GS_FAST: compiled out — this walk runs on every event insertion (22,257×
+// per emulated second during ASC playback; perf proposal §5.3).
+#ifdef GS_FAST
+static inline void validate_cpu_events(struct scheduler *s) {
+    (void)s;
+}
+#else
 static void validate_cpu_events(struct scheduler *s) {
     GS_ASSERT(s != NULL);
 
@@ -447,6 +468,7 @@ static void validate_cpu_events(struct scheduler *s) {
         prev_ts = e->timestamp;
     }
 }
+#endif // GS_FAST
 
 // Look up registered event type names for a given source+callback pair
 static const event_type_t *find_event_type(struct scheduler *s, void *source, event_callback_t cb) {
@@ -457,6 +479,43 @@ static const event_type_t *find_event_type(struct scheduler *s, void *source, ev
             return &s->event_types[i];
     }
     return NULL;
+}
+
+// ============================================================================
+// Event allocation pool
+// ============================================================================
+
+// Events churn at the emulated-sample rate — the ASC FIFO drain re-arms one
+// event per sample (22,257/s during audio playback), each a calloc at insert
+// plus a free at fire (perf proposal §5.4 / P7.1).  Recycle them through a
+// small LIFO free list instead.  The pool is process-global (event_t carries
+// no per-scheduler state) and bounded; the live queue stays ~5 entries deep,
+// so the cap covers any realistic burst.
+#define EVENT_POOL_MAX 64
+static event_t *g_event_pool = NULL; // LIFO free list, linked via ->next
+static int g_event_pool_count = 0; // entries currently pooled
+
+// Pop a recycled event (zeroed, like calloc) or fall back to the allocator.
+static event_t *event_alloc(void) {
+    event_t *e = g_event_pool;
+    if (e != NULL) {
+        g_event_pool = e->next;
+        g_event_pool_count--;
+        memset(e, 0, sizeof(*e));
+        return e;
+    }
+    return (event_t *)calloc(1, sizeof(event_t));
+}
+
+// Return an event to the pool (or to the allocator once the pool is full).
+static void event_free(event_t *e) {
+    if (g_event_pool_count < EVENT_POOL_MAX) {
+        e->next = g_event_pool;
+        g_event_pool = e;
+        g_event_pool_count++;
+        return;
+    }
+    free(e);
 }
 
 // Insert an event into the queue, maintaining timestamp order
@@ -494,7 +553,7 @@ static event_t *add_event_internal(struct scheduler *restrict s, event_callback_
     else
         cycles = ns * s->frequency / NS_PER_SEC;
 
-    event_t *event = (event_t *)calloc(1, sizeof(event_t));
+    event_t *event = event_alloc();
     if (event == NULL)
         return NULL;
 
@@ -519,7 +578,7 @@ static void process_event_queue(event_t **queue, uint64_t current_time) {
         event_t *e = *queue;
         *queue = e->next;
         (e->callback)(e->source, e->data);
-        free(e);
+        event_free(e);
     }
 }
 
@@ -733,11 +792,12 @@ void scheduler_delete(struct scheduler *scheduler) {
         scheduler->object = NULL;
     }
 
-    // Free pending CPU events
+    // Free pending CPU events (through the pool so a follow-up scheduler
+    // instance can recycle them)
     event_t *e = scheduler->cpu_events;
     while (e) {
         event_t *next = e->next;
-        free(e);
+        event_free(e);
         e = next;
     }
 
@@ -844,7 +904,7 @@ void scheduler_start(struct scheduler *restrict s) {
                    saved->event_name);
 
         // Recreate and insert event
-        event_t *e = (event_t *)calloc(1, sizeof(event_t));
+        event_t *e = event_alloc();
         GS_ASSERT(e != NULL);
 
         e->timestamp = saved->timestamp;
@@ -944,7 +1004,7 @@ void remove_event(struct scheduler *restrict scheduler, event_callback_t callbac
         if ((*ev)->callback == callback && ((*ev)->source == source || source == NULL)) {
             event_t *to_remove = *ev;
             *ev = to_remove->next;
-            free(to_remove);
+            event_free(to_remove);
         } else {
             ev = &(*ev)->next;
         }
@@ -962,7 +1022,7 @@ void remove_event_by_data(struct scheduler *restrict scheduler, event_callback_t
         if ((*ev)->callback == callback && ((*ev)->source == source || source == NULL) && (*ev)->data == data) {
             event_t *to_remove = *ev;
             *ev = to_remove->next;
-            free(to_remove);
+            event_free(to_remove);
         } else {
             ev = &(*ev)->next;
         }

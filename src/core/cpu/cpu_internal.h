@@ -166,7 +166,8 @@ static inline uint32_t ea_index_value(cpu_t *restrict cpu, uint16_t ext_word) {
 }
 
 // 68020+ full extension word EA calculation (bit 8 = 1)
-static inline uint32_t calculate_ea_full(cpu_t *restrict cpu, uint16_t ext, uint32_t base_reg, bool increment) {
+static __attribute__((noinline)) uint32_t calculate_ea_full(cpu_t *restrict cpu, uint16_t ext, uint32_t base_reg,
+                                                            bool increment) {
     // The extension word (ext) was already fetched by the caller via fetch_16(cpu, increment).
     // With increment=true, cpu->pc now points past the ext word (correct for BD/OD reads).
     // With increment=false, cpu->pc still points AT the ext word (not yet advanced).
@@ -249,30 +250,14 @@ static inline uint32_t calculate_ea_full(cpu_t *restrict cpu, uint16_t ext, uint
     return result;
 }
 
-// Calculate the effective address for an operand based on mode and register
-static inline uint32_t calculate_ea(cpu_t *restrict cpu, int size, int mode, int reg, bool increment) {
+// Cold tail of calculate_ea: the less-frequent EA modes (indexed/extension,
+// absolute, PC-relative, immediate).  Kept out of line so the force-inlined
+// hot switch below stays small at each of the decoder's several hundred call
+// sites (full inlining of every mode measured flat: the saved call overhead
+// was paid back in I-cache pressure — the -O3 lesson in miniature).
+static __attribute__((noinline)) uint32_t calculate_ea_slow(cpu_t *restrict cpu, int size, int mode, int reg,
+                                                            bool increment) {
     switch (mode) {
-    case 2: // (An)
-        return cpu->a[reg];
-    case 3: // (An)+
-    {
-        uint32_t ea = cpu->a[reg];
-        if (increment)
-            cpu->a[reg] += (reg == 7 && size == 1) ? 2 : size; // stack byte adjust
-        return ea;
-    }
-    case 4: // -(An)
-    {
-        uint32_t ea = cpu->a[reg] - ((reg == 7 && size == 1) ? 2 : size);
-        if (increment)
-            cpu->a[reg] = ea;
-        return ea;
-    }
-    case 5: // (d16,An)
-    {
-        int16_t disp = fetch_16(cpu, increment);
-        return cpu->a[reg] + (int32_t)disp;
-    }
     case 6: // (d8,An,Xn) or 68020+ full extension word
     {
         uint16_t ext = fetch_16(cpu, increment);
@@ -325,8 +310,42 @@ static inline uint32_t calculate_ea(cpu_t *restrict cpu, int size, int mode, int
     return (uint32_t)-1;
 }
 
+// Calculate the effective address for an operand based on mode and register.
+// Force-inlined hot switch covering the frequent register-indirect modes
+// (An)/(An)+/-(An)/(d16,An); everything else takes the out-of-line cold tail
+// above.  Out-of-line entirely, these helpers measured ~11% of gameplay
+// runtime in call overhead (perf proposal §5.2).
+static inline __attribute__((always_inline)) uint32_t calculate_ea(cpu_t *restrict cpu, int size, int mode, int reg,
+                                                                   bool increment) {
+    switch (mode) {
+    case 2: // (An)
+        return cpu->a[reg];
+    case 3: // (An)+
+    {
+        uint32_t ea = cpu->a[reg];
+        if (increment)
+            cpu->a[reg] += (reg == 7 && size == 1) ? 2 : size; // stack byte adjust
+        return ea;
+    }
+    case 4: // -(An)
+    {
+        uint32_t ea = cpu->a[reg] - ((reg == 7 && size == 1) ? 2 : size);
+        if (increment)
+            cpu->a[reg] = ea;
+        return ea;
+    }
+    case 5: // (d16,An)
+    {
+        int16_t disp = fetch_16(cpu, increment);
+        return cpu->a[reg] + (int32_t)disp;
+    }
+    default:
+        return calculate_ea_slow(cpu, size, mode, reg, increment);
+    }
+}
+
 // Read an 8-bit value from the effective address specified in the opcode
-static inline uint8_t read_ea_8(cpu_t *restrict cpu, uint16_t opcode, bool increment) {
+static inline __attribute__((always_inline)) uint8_t read_ea_8(cpu_t *restrict cpu, uint16_t opcode, bool increment) {
     uint16_t mode = opcode >> 3 & 7;
     uint16_t reg = opcode & 7;
 
@@ -339,7 +358,7 @@ static inline uint8_t read_ea_8(cpu_t *restrict cpu, uint16_t opcode, bool incre
 }
 
 // Read a 16-bit value from the effective address specified in the opcode
-static inline uint16_t read_ea_16(cpu_t *restrict cpu, uint16_t opcode, bool increment) {
+static inline __attribute__((always_inline)) uint16_t read_ea_16(cpu_t *restrict cpu, uint16_t opcode, bool increment) {
     uint16_t mode = opcode >> 3 & 7;
     uint16_t reg = opcode & 7;
 
@@ -352,7 +371,7 @@ static inline uint16_t read_ea_16(cpu_t *restrict cpu, uint16_t opcode, bool inc
 }
 
 // Read a 32-bit value from the effective address specified in the opcode
-static inline uint32_t read_ea_32(cpu_t *restrict cpu, uint16_t opcode, bool increment) {
+static inline __attribute__((always_inline)) uint32_t read_ea_32(cpu_t *restrict cpu, uint16_t opcode, bool increment) {
     uint16_t mode = opcode >> 3 & 7;
     uint16_t reg = opcode & 7;
 
@@ -371,7 +390,8 @@ static inline uint32_t read_ea_32(cpu_t *restrict cpu, uint16_t opcode, bool inc
 // restored to pre-instruction values.  Our calculate_ea pre-increments /
 // pre-decrements An for modes 3/4; we snapshot An on entry and roll it back
 // in the slow path if the write faults.  See also movem_from_register.
-static inline void write_ea_8(cpu_t *restrict cpu, uint16_t mode, uint16_t reg, uint8_t value) {
+static inline __attribute__((always_inline)) void write_ea_8(cpu_t *restrict cpu, uint16_t mode, uint16_t reg,
+                                                             uint8_t value) {
     if (mode == 0)
         cpu->d[reg] = (cpu->d[reg] & 0xFFFFFF00) | value;
     else if (mode == 1)
@@ -385,7 +405,8 @@ static inline void write_ea_8(cpu_t *restrict cpu, uint16_t mode, uint16_t reg, 
 }
 
 // Write a 16-bit value to the effective address specified by mode and register
-static inline void write_ea_16(cpu_t *restrict cpu, uint16_t mode, uint16_t reg, uint16_t value) {
+static inline __attribute__((always_inline)) void write_ea_16(cpu_t *restrict cpu, uint16_t mode, uint16_t reg,
+                                                              uint16_t value) {
     if (mode == 0)
         cpu->d[reg] = (cpu->d[reg] & 0xFFFF0000) | value;
     else if (mode == 1)
@@ -399,7 +420,8 @@ static inline void write_ea_16(cpu_t *restrict cpu, uint16_t mode, uint16_t reg,
 }
 
 // Write a 32-bit value to the effective address specified by mode and register
-static inline void write_ea_32(cpu_t *restrict cpu, uint16_t mode, uint16_t reg, uint32_t value) {
+static inline __attribute__((always_inline)) void write_ea_32(cpu_t *restrict cpu, uint16_t mode, uint16_t reg,
+                                                              uint32_t value) {
     if (mode == 0)
         cpu->d[reg] = value;
     else if (mode == 1)
@@ -555,7 +577,7 @@ static inline uint8_t sbcd(cpu_t *restrict cpu, uint8_t xx, uint8_t yy) {
 }
 
 // Test CPU condition codes (M68000PRM table 3-19)
-static inline bool conditional_test(cpu_t *restrict cpu, uint8_t test) {
+static inline __attribute__((always_inline)) bool conditional_test(cpu_t *restrict cpu, uint8_t test) {
     assert(test < 16);
 
     switch (test) {
