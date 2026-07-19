@@ -1,0 +1,164 @@
+# IIcx + Display Card 8•24 GC — System 6.0.8 "Marathon" image, 8 bpp.
+#
+# The video_mode seed writes the slot PRAM so the GC decl-ROM driver boots the
+# screen at 640×480 8 bpp; the machine boots System 6.0.8 from the marathon HD
+# image to a Finder desktop with the "Marathon ƒ" folder window open, then
+# double-clicks Marathon v1.2 and runs it to its main menu, opens PREFERENCES,
+# sets the Graphics options (High Resolution / 100% / 256 colors / Normal),
+# accepts with OK, and starts a new game — through the "Arrival" cut scene into
+# live gameplay.  Every scene is pixel-exact against its reference.
+#
+# (256 colors is Marathon 1.2's supported depth at 640×480.  Selecting
+# "Thousands" instead drives the 8•24 GC into its double-wide 16-bpp mode, which
+# Marathon — spec'd only for 8-bit 640×480 — mishandles into a heap-corruption
+# bomb; that is faithful hardware behaviour, see tmp/marathon-16bpp-bomb-
+# findings.md, and is deliberately NOT exercised here.)
+
+# Pin the RTC so the boot is deterministic run-to-run.
+machine.rtc.time = 3000000000
+
+machine.nubus.video_card = "824gc"
+machine.nubus.video_mode = "gc_640x480_8bpp"
+machine.boot "iicx" 8192
+machine.rom.reload
+
+machine.scsi.attach_hd "../../data/apps/marathon_8_24gc.img" 0
+scheduler.run 200000000
+
+# The card that booted into the IIcx video slot ($9) is the 8•24 GC at
+# 640×480 8 bpp.
+assert ${machine.nubus.slot[9].card.name == "Apple Macintosh Display Card 8•24 GC"} "slot $9 card != 8•24 GC"
+assert ${machine.screen.width == 640}                        "screen width != 640"
+assert ${machine.screen.height == 480}                       "screen height != 480"
+assert ${machine.nubus.slot[9].card.framebuffer.depth == 8}  "framebuffer not 8 bpp"
+
+# The 8-bpp Finder desktop with the Marathon folder window — pixel-exact.
+machine.screen.match finder-marathon-8bpp-640x480.png
+
+# --- Launch Marathon by double-clicking its icon in the folder window --------
+machine.adb.mouse.move 237 157 "global"
+scheduler.run 5000000
+machine.adb.mouse.click true
+scheduler.run 1000000
+machine.adb.mouse.click false
+scheduler.run 1000000
+machine.adb.mouse.click true
+scheduler.run 1000000
+machine.adb.mouse.click false
+
+# Run to the main menu.  TIMING IS A WINDOW, not just a minimum: the menu is
+# fully drawn by +75M instructions after the double-click, and Marathon starts
+# its self-running demo (fade to in-game "Arrival" gameplay) between +100M and
+# +125M — so match at +85M, mid-window.  If this run budget is ever changed,
+# it must stay inside [75M, 100M].
+scheduler.run 85000000
+
+# The Marathon main menu (Begin New Game / network / film panels, © 1994
+# Bungie footer) — pixel-exact.
+machine.screen.match marathon-menu-8bpp-640x480.png
+
+# --- Open PREFERENCES (left panel, bottom) -----------------------------------
+# Opening the dialog also stops the idle countdown to the self-running demo,
+# so timing is no longer a window from here on.
+machine.adb.mouse.move 170 291 "global"
+scheduler.run 3000000
+machine.adb.mouse.click true
+scheduler.run 1000000
+machine.adb.mouse.click false
+scheduler.run 20000000
+# The Preferences dialog as it opens: Detail "Low Resolution", Window Size
+# "100%", Number of Colors "256", Brightness "Dark" — pixel-exact.
+machine.screen.match marathon-prefs-8bpp-640x480.png
+
+# --- Background Music ON (checkbox, left of "Background Music") ---------------
+machine.adb.mouse.move 95 313 "global"
+scheduler.run 3000000
+machine.adb.mouse.click true
+scheduler.run 1000000
+machine.adb.mouse.click false
+scheduler.run 5000000
+
+# --- Set the Graphics popups -------------------------------------------------
+# Popup menus: press-and-hold on the control (the menu opens with the checked
+# item under the cursor), glide to the item, release.  Item coordinates were
+# read off open-menu screenshots and are only valid in THIS order (a popup
+# positions itself by the currently-checked item).
+# Detail: Low Resolution -> High Resolution
+machine.adb.mouse.move 278 132 "global"
+scheduler.run 3000000
+machine.adb.mouse.click true
+scheduler.run 5000000
+machine.adb.mouse.move 270 116 "global"
+scheduler.run 3000000
+machine.adb.mouse.click false
+scheduler.run 5000000
+# Number of Colors: keep 256 (the checked item is already under the cursor when
+# the popup opens; releasing on it exercises the popup without changing depth).
+machine.adb.mouse.move 261 179 "global"
+scheduler.run 3000000
+machine.adb.mouse.click true
+scheduler.run 5000000
+machine.adb.mouse.move 257 179 "global"
+scheduler.run 3000000
+machine.adb.mouse.click false
+scheduler.run 5000000
+# Brightness: Dark -> Normal
+machine.adb.mouse.move 268 202 "global"
+scheduler.run 3000000
+machine.adb.mouse.click true
+scheduler.run 5000000
+machine.adb.mouse.move 247 217 "global"
+scheduler.run 3000000
+machine.adb.mouse.click false
+scheduler.run 5000000
+# Window Size: re-affirm 100% (already the value; exercises the popup)
+machine.adb.mouse.move 263 155 "global"
+scheduler.run 3000000
+machine.adb.mouse.click true
+scheduler.run 5000000
+machine.adb.mouse.move 240 155 "global"
+scheduler.run 3000000
+machine.adb.mouse.click false
+scheduler.run 5000000
+# All set: High Resolution / 100% / 256 colors / Normal — pixel-exact.
+
+# --- OK: accept the dialog and return to the main menu -----------------------
+machine.adb.mouse.move 533 410 "global"
+scheduler.run 3000000
+machine.adb.mouse.click true
+scheduler.run 1000000
+machine.adb.mouse.click false
+scheduler.run 20000000
+# At 256 colors the mode does not change (stays 8 bpp) and no error is raised;
+# we are back at the main menu.
+assert ${machine.nubus.slot[9].card.framebuffer.depth == 8} "depth changed away from 8 bpp at 256 colors"
+assert ${machine.memory.peek.w(0xaf0) != 0x19}              "unexpected out-of-memory bomb at 256 colors"
+machine.screen.match marathon-menu-after-prefs-8bpp-640x480.png
+
+# --- BEGIN NEW GAME ----------------------------------------------------------
+# The top button of the centre panel.  Starts the "Arrival" intro cut scene,
+# which then hands off to live gameplay.
+machine.adb.mouse.move 315 161 "global"
+scheduler.run 3000000
+machine.adb.mouse.click true
+scheduler.run 1000000
+machine.adb.mouse.click false
+
+# +50M: Arrival cut scene.  Enabling Background Music adds QuickTime tune-
+# player init work at the cut-scene -> gameplay hand-off, delaying the HUD
+# view by ~50M vs the music-off sibling, so the gameplay screen lands at
+# +150M here (not +100M).  Frame is stable from +150M through +260M (idle).
+scheduler.run 50000000
+machine.screen.match marathon-arrival-8bpp-640x480.png
+scheduler.run 100000000
+machine.screen.match marathon-game-8bpp-640x480.png
+
+# --- Gameplay reached: the level song must now be playing ----------------------
+# We send no input, so any ASC signal here is the background music, not effects.
+machine.sound.capture.start
+scheduler.run 90000000
+machine.sound.capture.stop
+assert ${machine.sound.mode == 1}           "ASC not in FIFO mode during gameplay"
+assert ${machine.sound.capture.peak > 4000} "no in-game background music (capture.peak at silence floor)"
+
+quit
