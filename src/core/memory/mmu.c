@@ -53,6 +53,86 @@ void tlb_track_page(uint32_t page_index) {
 }
 
 // ============================================================================
+// ATC-style block-descriptor cache
+// ============================================================================
+
+// The guest's tables use early-termination block descriptors covering large
+// ranges (e.g. one level-A descriptor covering 32 MB).  The real 68030 ATC
+// caches one descriptor for the whole covered range and never re-walks; the
+// old emulator approximation eagerly materialised every covered 4 KB page
+// into the SoA arrays (~9,200 entries per walk), which dominated steady-state
+// host time under System 6's per-VBL _SwapMMUMode invalidation storm (see
+// docs/proposals/proposal-performance-optimizations.md §5.1).  Instead, cache
+// the walked descriptor itself; on a later fault inside the covered range,
+// fill only the touched 4 KB page from the cached descriptor — no re-walk.
+typedef struct atc_block {
+    uint32_t log_base; // logical range base (aligned to coverage)
+    uint32_t log_mask; // ~(coverage-1)
+    uint32_t phys_base; // physical range base (same alignment)
+    bool supervisor_only; // S bit from the walked descriptor
+    bool write_protected; // W bit from the walked descriptor
+    bool fc_super; // FC class of the walk (matters when TC.SRE=1)
+    bool valid; // entry live?
+} atc_block_t;
+#define ATC_BLOCKS 16 // small, round-robin; the real 68030 ATC holds 22 entries
+
+static atc_block_t g_atc_blocks[ATC_BLOCKS]; // cached block descriptors
+static int g_atc_next = 0; // round-robin replacement cursor
+
+// Drop every cached block descriptor.  Runs wherever a real ATC dies: any
+// invalidation that actually zeroes the SoA (PMOVE to TC/CRP/SRP/TT without
+// FD, PFLUSH variants, machine reset).  The FD (flush-disable) PMOVE forms
+// skip mmu_invalidate_tlb entirely, so cached blocks survive them — exactly
+// the hardware contract A/UX's "clear root after PMOVE, rely on ATC
+// residency" sequence needs.
+static void atc_flush(void) {
+    memset(g_atc_blocks, 0, sizeof(g_atc_blocks));
+    g_atc_next = 0;
+}
+
+// Find the cached block covering logical_addr for this FC class, if any.
+// When TC.SRE=0 a single walk serves both FC classes (super and user share
+// the CRP), so the FC recorded at walk time doesn't restrict the hit.
+static inline atc_block_t *atc_probe(mmu_state_t *mmu, uint32_t logical_addr, bool supervisor) {
+    bool sre_split = TC_SRE(mmu->tc) != 0;
+    for (int i = 0; i < ATC_BLOCKS; i++) {
+        atc_block_t *b = &g_atc_blocks[i];
+        if (!b->valid)
+            continue;
+        if ((logical_addr & b->log_mask) != b->log_base)
+            continue;
+        if (sre_split && b->fc_super != supervisor)
+            continue;
+        return b;
+    }
+    return NULL;
+}
+
+// Invalidate any cached block covering logical_addr for this FC class.
+// Called before recording a fresh walk so a re-walked range (PLOAD, or a
+// mapping the guest reshaped from block to page tables) can never leave a
+// stale duplicate behind.
+static void atc_invalidate_covering(mmu_state_t *mmu, uint32_t logical_addr, bool supervisor) {
+    atc_block_t *b;
+    while ((b = atc_probe(mmu, logical_addr, supervisor)) != NULL)
+        b->valid = false;
+}
+
+// Record a successful walk's early-termination descriptor in the block cache.
+static void atc_record(uint32_t log_base, uint32_t log_mask, uint32_t phys_base, bool supervisor_only,
+                       bool write_protected, bool fc_super) {
+    atc_block_t *b = &g_atc_blocks[g_atc_next];
+    g_atc_next = (g_atc_next + 1) % ATC_BLOCKS;
+    b->log_base = log_base;
+    b->log_mask = log_mask;
+    b->phys_base = phys_base;
+    b->supervisor_only = supervisor_only;
+    b->write_protected = write_protected;
+    b->fc_super = fc_super;
+    b->valid = true;
+}
+
+// ============================================================================
 // Helpers: physical memory access during table walks
 // ============================================================================
 
@@ -467,6 +547,8 @@ void mmu_delete(mmu_state_t *mmu) {
         // back to a full memset (matches the file-scope default).
         g_tlb_track_count = 0;
         g_tlb_track_overflow = true;
+        // Cached block descriptors belong to this machine's tables too.
+        atc_flush();
     }
     free(mmu);
 }
@@ -586,6 +668,10 @@ void mmu_invalidate_tlb(mmu_state_t *mmu) {
     }
     if (mmu)
         mmu->tlb_was_enabled = now_enabled;
+    // A real invalidation is where the hardware ATC dies too: drop the cached
+    // block descriptors along with the SoA fill.  (The dis→dis early-out above
+    // and the FD PMOVE forms — which never call here — both preserve them.)
+    atc_flush();
     if (g_tlb_track_overflow) {
         // Tracking overflowed — fall back to zeroing everything
         size_t sz = (size_t)g_page_count * sizeof(uintptr_t);
@@ -628,8 +714,36 @@ void mmu_invalidate_tlb(mmu_state_t *mmu) {
     // CPU time. See docs/notes/mmu-tlb-invalidate-perf.md.
 }
 
+// Shared tail of the fault path: after a fill attempt, if the SoA entry
+// stayed zero (physical page is device, unmapped, or logpoint-suppressed),
+// decide bus error vs silent success.
+//
+// On real hardware, unmapped physical addresses cause bus errors.  However,
+// Mac OS legitimately probes RAM expansion addresses (e.g. $00F80000,
+// $80000000) via page table entries and expects to read $FF without
+// faulting, and our deferred bus error mechanism is incompatible with the
+// ROM's bail-out handler for data probes.  So only bus error for physical
+// addresses that are clearly garbage — outside all known hardware regions.
+static inline bool mmu_fault_epilogue(mmu_state_t *mmu, uint32_t emu_page, uint32_t phys_page, bool write) {
+    uint32_t page_index = emu_page >> PAGE_SHIFT;
+    if ((int)page_index < g_page_count) {
+        uintptr_t *active = write ? g_active_write : g_active_read;
+        if (active && active[page_index] == 0) {
+            // For closer ranges (e.g., $006DB000 from corrupted page tables),
+            // the f_trap handler detects unmapped instruction fetches separately.
+            if (phys_page >= mmu->ram_size_max && phys_page < mmu->rom_phys_base)
+                return false;
+        }
+    }
+    return true;
+}
+
 // Handle a TLB miss: perform table walk or TT check, fill SoA entry.
-bool mmu_handle_fault(mmu_state_t *mmu, uint32_t logical_addr, bool write, bool supervisor) {
+// `probe_atc` selects whether the block-descriptor cache may satisfy the miss
+// without a walk; PLOAD passes false to force a fresh table walk (its whole
+// purpose is to reload the ATC from the current guest tables).
+static bool mmu_handle_fault_internal(mmu_state_t *mmu, uint32_t logical_addr, bool write, bool supervisor,
+                                      bool probe_atc) {
     if (!mmu || !mmu->enabled)
         return false;
 
@@ -656,6 +770,22 @@ bool mmu_handle_fault(mmu_state_t *mmu, uint32_t logical_addr, bool write, bool 
             }
         }
         return true;
+    }
+
+    // Block-descriptor cache: a prior walk of this range cached its
+    // early-termination descriptor (the ATC residency the real 68030 gives).
+    // On hit, fill just the touched page — no guest-table re-walk, and
+    // mmu->mmusr stays untouched (matching ATC-hit behaviour on hardware).
+    // Accesses the cached permissions would REJECT fall through to the real
+    // walk so the failure publishes MMUSR exactly as before (A/UX's bus-error
+    // path reads it).
+    if (probe_atc) {
+        atc_block_t *b = atc_probe(mmu, logical_addr, supervisor);
+        if (b && !(b->supervisor_only && !supervisor) && !(b->write_protected && write)) {
+            uint32_t phys_page = b->phys_base + (emu_page - b->log_base);
+            mmu_fill_soa_entry(mmu, emu_page, phys_page, b->supervisor_only, b->write_protected, supervisor, false);
+            return mmu_fault_epilogue(mmu, emu_page, phys_page, write);
+        }
     }
 
     // Perform table walk
@@ -709,52 +839,37 @@ bool mmu_handle_fault(mmu_state_t *mmu, uint32_t logical_addr, bool write, bool 
     // When the descriptor covers more than one emulator 4KB page (e.g. an
     // early-termination page descriptor at level A with 32 MB coverage), the
     // real 68030 ATC caches a single entry for the whole range and never
-    // re-walks.  Mirror that by filling every 4KB SoA entry in the covered
-    // logical range — otherwise the guest can clear the page-table root and
-    // still execute correctly on real HW, but our emulator will re-walk the
-    // next 4KB page and (correctly) find the now-invalid root.  Observed in
-    // A/UX 3.0.1 boot where the kernel clears $104000 immediately after
-    // PMOVE TC while relying on ATC residency.
+    // re-walks — the guest can clear the page-table root and still execute
+    // correctly on real HW (observed in A/UX 3.0.1 boot, which clears
+    // $104000 immediately after PMOVE TC while relying on ATC residency).
+    // Mirror that by caching the walked descriptor; later faults inside the
+    // range fill their page from the cache without re-walking.  Any stale
+    // cached block for this range is dropped first so a fresh walk (PLOAD,
+    // or a mapping reshaped from block to page tables) always supersedes it.
+    atc_invalidate_covering(mmu, logical_addr, supervisor);
     uint32_t ps_bits = result.page_size_bits;
-    if (ps_bits > PAGE_SHIFT) {
-        uint32_t coverage = 1u << ps_bits;
-        uint32_t range_start = logical_addr & ~(coverage - 1);
-        uint32_t phys_base = result.physical_addr & ~(coverage - 1);
-        for (uint32_t off = 0; off < coverage; off += (1u << PAGE_SHIFT)) {
-            uint32_t lp = range_start + off;
-            if (lp == emu_page)
-                continue; // already filled above
-            mmu_fill_soa_entry(mmu, lp, phys_base + off, result.supervisor_only, result.write_protected, supervisor,
-                               false);
-        }
+    if (ps_bits > PAGE_SHIFT && ps_bits < 32) {
+        uint32_t log_mask = ~((1u << ps_bits) - 1);
+        atc_record(logical_addr & log_mask, log_mask, result.physical_addr & log_mask, result.supervisor_only,
+                   result.write_protected, supervisor);
     }
 
     // If phys_to_host returned NULL (unmapped physical), the SoA entry
     // stays zero.  On real hardware, the physical bus access would fail
-    // (no device responds) and generate a bus error.
-    //
-    // However, Mac OS legitimately probes RAM expansion addresses (e.g.
-    // $00F80000, $80000000) via page table entries and expects to read
-    // $FF without faulting.  Only bus error for physical addresses that
-    // are clearly garbage — outside all known hardware regions.  The gap
-    // $60000000-$EFFFFFFF has no hardware on any 68k Mac.
-    uint32_t page_index = emu_page >> PAGE_SHIFT;
-    if ((int)page_index < g_page_count) {
-        uintptr_t *active = write ? g_active_write : g_active_read;
-        if (active && active[page_index] == 0) {
-            // On real hardware, unmapped physical addresses cause bus errors.
-            // However, our deferred bus error mechanism is incompatible with
-            // the ROM's bail-out handler for data probes (the probe instruction
-            // completes before the bus error fires, breaking the expected flow).
-            // So we only bus error for addresses far beyond any hardware range.
-            // For closer ranges (e.g., $006DB000 from corrupted page tables),
-            // the f_trap handler detects unmapped instruction fetches separately.
-            if (phys_page >= mmu->ram_size_max && phys_page < mmu->rom_phys_base)
-                return false;
-        }
-    }
+    // (no device responds) and generate a bus error — see mmu_fault_epilogue.
+    return mmu_fault_epilogue(mmu, emu_page, phys_page, write);
+}
 
-    return true;
+// Handle a TLB miss: perform table walk or TT check, fill SoA entry.
+bool mmu_handle_fault(mmu_state_t *mmu, uint32_t logical_addr, bool write, bool supervisor) {
+    return mmu_handle_fault_internal(mmu, logical_addr, write, supervisor, true);
+}
+
+// PLOAD: force a fresh table walk and (re)load the cached translation,
+// bypassing the block-descriptor cache — the freshly walked descriptor
+// replaces any stale cached block for the range.
+bool mmu_pload(mmu_state_t *mmu, uint32_t logical_addr, bool write, bool supervisor) {
+    return mmu_handle_fault_internal(mmu, logical_addr, write, supervisor, false);
 }
 
 // PTEST: test address translation without faulting

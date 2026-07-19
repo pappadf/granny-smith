@@ -160,6 +160,11 @@ void tlb_track_page(uint32_t page_index);
 // Returns false if translation failed (invalid descriptor → caller raises bus error).
 bool mmu_handle_fault(mmu_state_t *mmu, uint32_t logical_addr, bool write, bool supervisor);
 
+// PLOAD instruction: like mmu_handle_fault, but always performs a fresh table
+// walk, bypassing the block-descriptor cache (PLOAD's purpose is to reload
+// the ATC from the current guest tables).
+bool mmu_pload(mmu_state_t *mmu, uint32_t logical_addr, bool write, bool supervisor);
+
 // Test address translation without faulting (PTEST instruction).
 // Performs table walk and returns MMUSR value.
 // If desc_addr_out is non-NULL, also returns the physical address of the last

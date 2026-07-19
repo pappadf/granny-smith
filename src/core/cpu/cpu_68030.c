@@ -162,7 +162,7 @@ static void cpu_pmmu_general(cpu_t *cpu, uint16_t opcode) {
                     fc = cpu->supervisor != 0 ? 5u : 1u; // undefined encoding — fall back
                 bool fc_supervisor = (fc & 4u) != 0;
                 uint32_t ea = calculate_ea(cpu, 4, ea_mode, ea_reg, true);
-                mmu_handle_fault(mmu, ea, rw == 0, fc_supervisor);
+                mmu_pload(mmu, ea, rw == 0, fc_supervisor);
             }
         } else if (mmu) {
             // PFLUSH variants: invalidate ATC entries
