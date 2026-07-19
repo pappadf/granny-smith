@@ -752,15 +752,23 @@ static void disasm_fpu_general(uint16_t opcode, uint16_t ext, char *buf, uint16_
         break;
     }
     case 6:
-    case 7: { // FMOVEM data registers
+    case 7: { // FMOVEM data registers: dr (bit 13): 0 = mem→reg (restore), 1 = reg→mem (save)
         uint8_t mask = (uint8_t)(ext & 0xFF);
+        // -(An) uses a reversed register list (bit i = FPi); all other modes use bit 7 = FP0
+        if (ea_m == 4) {
+            uint8_t rev = 0;
+            for (int i = 0; i < 8; i++)
+                if (mask & (1 << i))
+                    rev |= (uint8_t)(1 << (7 - i));
+            mask = rev;
+        }
         const char *regs = disasm_fpu_reglist(mask);
         const char *ea = disasm_ea(4, ea_m, ea_r, fetch_src, 1,
-                                   top3 == 7 ? (ea_control | ea_an_plus) : ((ea_control | ea_min_an) & ea_alterable));
-        if (top3 == 7) // mem → reg (restore)
-            sprintf(buf, "FMOVEM.X\t%s,%s", ea, regs);
-        else // reg → mem (save)
+                                   top3 == 7 ? ((ea_control | ea_min_an) & ea_alterable) : (ea_control | ea_an_plus));
+        if (top3 == 7) // reg → mem (save)
             sprintf(buf, "FMOVEM.X\t%s,%s", regs, ea);
+        else // mem → reg (restore)
+            sprintf(buf, "FMOVEM.X\t%s,%s", ea, regs);
         break;
     }
     default:
