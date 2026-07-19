@@ -803,6 +803,31 @@ static value_t asc_attr_mode(struct object *self, const member_t *m) {
     return val_uint(1, asc_self_from(self)->mode);
 }
 
+// Side-effect-free debug views of the FIFO engine.  The guest-visible
+// FIFO-IRQ status register (0x804) is read-clears, so inspecting it via
+// memory.peek perturbs the guest; these attributes read the model state
+// directly for stall diagnosis.
+static value_t asc_attr_fifo_count_a(struct object *self, const member_t *m) {
+    (void)m;
+    return val_uint(1, asc_self_from(self)->fifo_count[0]);
+}
+static value_t asc_attr_fifo_count_b(struct object *self, const member_t *m) {
+    (void)m;
+    return val_uint(1, asc_self_from(self)->fifo_count[1]);
+}
+static value_t asc_attr_fifo_irq_status(struct object *self, const member_t *m) {
+    (void)m;
+    return val_uint(1, asc_self_from(self)->fifo_irq_status);
+}
+static value_t asc_attr_fifo_armed_a(struct object *self, const member_t *m) {
+    (void)m;
+    return val_bool(asc_self_from(self)->fifo_above_half[0]);
+}
+static value_t asc_attr_fifo_armed_b(struct object *self, const member_t *m) {
+    (void)m;
+    return val_bool(asc_self_from(self)->fifo_above_half[1]);
+}
+
 // `sound.match(reference)` — sample-exact compare of the last capture against
 // a golden PCM WAV (delegates to the shared capture sink; same contract as
 // the Plus sound class and screen.match).
@@ -833,6 +858,31 @@ static const member_t asc_sound_members[] = {
      .flags = VAL_RO,
      .doc = "Chip mode (0 = off, 1 = FIFO, 2 = wavetable)",
      .attr = {.type = V_UINT, .get = asc_attr_mode, .set = NULL}},
+    {.kind = M_ATTR,
+     .name = "fifo_count_a",
+     .flags = VAL_RO,
+     .doc = "Bytes currently in FIFO A (debug view, no side effects)",
+     .attr = {.type = V_UINT, .get = asc_attr_fifo_count_a, .set = NULL}},
+    {.kind = M_ATTR,
+     .name = "fifo_count_b",
+     .flags = VAL_RO,
+     .doc = "Bytes currently in FIFO B (debug view, no side effects)",
+     .attr = {.type = V_UINT, .get = asc_attr_fifo_count_b, .set = NULL}},
+    {.kind = M_ATTR,
+     .name = "fifo_irq_status",
+     .flags = VAL_RO,
+     .doc = "FIFO IRQ status flags without the read-clears side effect",
+     .attr = {.type = V_UINT, .get = asc_attr_fifo_irq_status, .set = NULL}},
+    {.kind = M_ATTR,
+     .name = "fifo_armed_a",
+     .flags = VAL_RO,
+     .doc = "Half-empty latch armed for FIFO A (filled above half since last fire)",
+     .attr = {.type = V_BOOL, .get = asc_attr_fifo_armed_a, .set = NULL}},
+    {.kind = M_ATTR,
+     .name = "fifo_armed_b",
+     .flags = VAL_RO,
+     .doc = "Half-empty latch armed for FIFO B (filled above half since last fire)",
+     .attr = {.type = V_BOOL, .get = asc_attr_fifo_armed_b, .set = NULL}},
     {.kind = M_METHOD,
      .name = "match",
      .doc = "Compare the last capture against a reference WAV (true if identical)",
