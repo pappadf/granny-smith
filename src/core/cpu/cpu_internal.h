@@ -398,7 +398,16 @@ static inline __attribute__((always_inline)) void write_ea_8(cpu_t *restrict cpu
         cpu->a[reg] = (cpu->a[reg] & 0xFFFFFF00) | value;
     else {
         uint32_t saved_an = (mode == 3 || mode == 4) ? cpu->a[reg] : 0;
-        memory_write_uint8(calculate_ea(cpu, 1, mode, reg, true), value);
+        uint32_t ea = calculate_ea(cpu, 1, mode, reg, true);
+        // Extension-word fetch fault: abort before the data cycle. Real
+        // hardware bus-errors on the prefetch and never runs the write;
+        // the Format $B retry re-executes the whole instruction.
+        if (__builtin_expect(g_bus_error_pending, 0)) {
+            if (mode == 3 || mode == 4)
+                cpu->a[reg] = saved_an;
+            return;
+        }
+        memory_write_uint8(ea, value);
         if (__builtin_expect(g_bus_error_pending, 0) && (mode == 3 || mode == 4))
             cpu->a[reg] = saved_an;
     }
@@ -413,7 +422,14 @@ static inline __attribute__((always_inline)) void write_ea_16(cpu_t *restrict cp
         cpu->a[reg] = (cpu->a[reg] & 0xFFFF0000) | value;
     else {
         uint32_t saved_an = (mode == 3 || mode == 4) ? cpu->a[reg] : 0;
-        memory_write_uint16(calculate_ea(cpu, 2, mode, reg, true), value);
+        uint32_t ea = calculate_ea(cpu, 2, mode, reg, true);
+        // Extension-word fetch fault: abort before the data cycle (see write_ea_8).
+        if (__builtin_expect(g_bus_error_pending, 0)) {
+            if (mode == 3 || mode == 4)
+                cpu->a[reg] = saved_an;
+            return;
+        }
+        memory_write_uint16(ea, value);
         if (__builtin_expect(g_bus_error_pending, 0) && (mode == 3 || mode == 4))
             cpu->a[reg] = saved_an;
     }
@@ -428,7 +444,14 @@ static inline __attribute__((always_inline)) void write_ea_32(cpu_t *restrict cp
         cpu->a[reg] = value;
     else {
         uint32_t saved_an = (mode == 3 || mode == 4) ? cpu->a[reg] : 0;
-        memory_write_uint32(calculate_ea(cpu, 4, mode, reg, true), value);
+        uint32_t ea = calculate_ea(cpu, 4, mode, reg, true);
+        // Extension-word fetch fault: abort before the data cycle (see write_ea_8).
+        if (__builtin_expect(g_bus_error_pending, 0)) {
+            if (mode == 3 || mode == 4)
+                cpu->a[reg] = saved_an;
+            return;
+        }
+        memory_write_uint32(ea, value);
         if (__builtin_expect(g_bus_error_pending, 0) && (mode == 3 || mode == 4))
             cpu->a[reg] = saved_an;
     }
