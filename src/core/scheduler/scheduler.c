@@ -570,6 +570,10 @@ static event_t *add_event_internal(struct scheduler *restrict s, event_callback_
     return event;
 }
 
+// Total events dispatched since process start (diagnostic; exposed as
+// scheduler.events_fired).  Process-global like the event pool.
+uint64_t g_sched_events_fired = 0;
+
 // Process all events in the queue that are due at or before current_time
 static void process_event_queue(event_t **queue, uint64_t current_time) {
     GS_ASSERT(queue != NULL);
@@ -577,6 +581,7 @@ static void process_event_queue(event_t **queue, uint64_t current_time) {
     while (*queue != NULL && (*queue)->timestamp <= current_time) {
         event_t *e = *queue;
         *queue = e->next;
+        g_sched_events_fired++;
         (e->callback)(e->source, e->data);
         event_free(e);
     }
@@ -1609,6 +1614,12 @@ static value_t sched_attr_cycles(struct object *self, const member_t *m) {
     return val_uint(8, scheduler_cpu_cycles(sched_self_from(self)));
 }
 
+static value_t sched_attr_events_fired(struct object *self, const member_t *m) {
+    (void)self;
+    (void)m;
+    return val_uint(8, g_sched_events_fired);
+}
+
 static value_t sched_attr_instr_count(struct object *self, const member_t *m) {
     (void)self;
     (void)m;
@@ -1708,6 +1719,11 @@ static const member_t scheduler_members[] = {
      .doc = "Total CPU cycles executed so far",
      .flags = VAL_RO,
      .attr = {.type = V_UINT, .get = sched_attr_cycles, .set = NULL}},
+    {.kind = M_ATTR,
+     .name = "events_fired",
+     .doc = "Total scheduler events dispatched since process start (diagnostic)",
+     .flags = VAL_RO,
+     .attr = {.type = V_UINT, .get = sched_attr_events_fired, .set = NULL}},
     {.kind = M_ATTR,
      .name = "instr_count",
      .doc = "Total CPU instructions executed so far",

@@ -414,6 +414,27 @@ static value_t capture_attr_frames(struct object *self, const member_t *m) {
     return val_uint(4, audio_out_capture_frames());
 }
 
+// Peak |sample| of the current/last capture, DC-compensated against the
+// stream's first sample (the ASC's offset-binary silence sits at a constant
+// non-zero level; peak-vs-first isolates actual signal).  Diagnostic: lets a
+// live session answer "is there audio IN the stream?" without exporting a WAV.
+static value_t capture_attr_peak(struct object *self, const member_t *m) {
+    (void)self;
+    (void)m;
+    if (!s.samples || s.nsamples == 0)
+        return val_uint(4, 0);
+    int16_t base = s.samples[0];
+    int32_t peak = 0;
+    for (size_t i = 0; i < s.nsamples; i++) {
+        int32_t d = (int32_t)s.samples[i] - base;
+        if (d < 0)
+            d = -d;
+        if (d > peak)
+            peak = d;
+    }
+    return val_uint(4, (uint64_t)peak);
+}
+
 static const arg_decl_t capture_stop_args[] = {
     {.name = "path",
      .kind = V_STRING,
@@ -432,6 +453,11 @@ static const member_t capture_members[] = {
      .flags = VAL_RO,
      .doc = "Frames accumulated in the current or last capture",
      .attr = {.type = V_UINT, .get = capture_attr_frames, .set = NULL}},
+    {.kind = M_ATTR,
+     .name = "peak",
+     .flags = VAL_RO,
+     .doc = "Peak |sample - first sample| of the capture (signal presence check)",
+     .attr = {.type = V_UINT, .get = capture_attr_peak, .set = NULL}},
     {.kind = M_METHOD,
      .name = "start",
      .doc = "Start recording producer audio at guest rate (deterministic)",

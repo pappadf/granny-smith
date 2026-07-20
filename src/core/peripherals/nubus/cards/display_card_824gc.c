@@ -278,6 +278,13 @@ static void gc_boot(display_card_824gc_priv_t *p) {
     // GCQD carves the drawing queue from this block, returning free_base + 8
     // (past the {size,next} header) — the base the Transport-B stream lives at.
     p->queue_base = free_base + 8;
+    // Queue drain progress (CB+$1C8) is a POINTER in the same gcp-window
+    // domain as GCQD's write pointer $B0(C)/$B8(C) — NOT a byte count.
+    // QDDone's "is card done" check ($8710) is `CB+$1C8 >= $B8(C)`; with the
+    // queue empty the card is idle at the buffer base.  (A byte count here
+    // never reaches the pointer and QDDone spins forever — Marathon froze on
+    // its FPS-overlay draw exactly this way.)
+    dram_set_be32(p, GC824_DRAM_CB + GC824_CB_QUEUE_ACK, p->queue_base);
     uint32_t cb_local = GC824_DRAM_OFFSET + GC824_DRAM_CB; // card-local 0x0C007000
     uint32_t free_size = (0x0C00FFFCu - (cb_local + GC824_CB_FREEAREA) - 8u);
     dram_set_be32(p, GC824_DRAM_CB + GC824_CB_FREEAREA + 0, free_size);
@@ -380,7 +387,9 @@ static uint32_t gc_dispatch_func(display_card_824gc_priv_t *p, uint32_t func, ui
             p->queue_bytes += cnt - p->queue_ack;
             p->queue_ack = cnt;
         }
-        dram_set_be32(p, GC824_DRAM_CB + GC824_CB_QUEUE_ACK, dram_be32(p, GC824_DRAM_CB + GC824_CB_QUEUE_PUB));
+        // Drain progress is a gcp-window POINTER (see gc_boot); the submit's
+        // byteCount arg is authoritative for how far this batch reached.
+        dram_set_be32(p, GC824_DRAM_CB + GC824_CB_QUEUE_ACK, p->queue_base + cnt);
         if (func == 0x26) {
             // sub_7C56 resets the host's write pointers after every $26
             // submit: the next cycle re-marshals from the buffer start.
@@ -564,7 +573,9 @@ static void gc_drain_queue(display_card_824gc_priv_t *p) {
     }
     p->queue_bytes += n;
     p->queue_ack = pub;
-    dram_set_be32(p, GC824_DRAM_CB + GC824_CB_QUEUE_ACK, pub);
+    // Publish drain progress as a gcp-window POINTER (buffer base + consumed),
+    // the domain QDDone compares against $B8(C) — see gc_boot.
+    dram_set_be32(p, GC824_DRAM_CB + GC824_CB_QUEUE_ACK, p->queue_base + pub);
 }
 
 // VidComm mode change: the video driver published new geometry (see the

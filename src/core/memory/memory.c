@@ -92,6 +92,11 @@ uint8_t *g_mem_logpoint_page_count = NULL;
 uint8_t *g_mem_logpoint_phys_page_count = NULL;
 memory_logpoint_hook_t g_mem_logpoint_hook = NULL;
 
+// Slow-path access counter (diagnostic; exposed as memory.slowpath_count)
+uint64_t g_mem_slowpath_count = 0;
+// 1 MB-granularity histogram of slow-path addresses (24-bit space = 16 buckets)
+uint64_t g_mem_slowpath_hist[16] = {0};
+
 // Value-trap support: catches a specific (PA, size, value) write on the fast
 // path.  Disabled when g_value_trap_active == 0 (the common case).
 uint32_t g_value_trap_active = 0;
@@ -255,6 +260,8 @@ static inline bool dispatch_device_at_logical(uint32_t addr, bool supervisor) {
 
 // Slow path for 8-bit reads: device I/O, MMU TLB miss, or unmapped
 uint8_t memory_read_uint8_slow(uint32_t addr) {
+    g_mem_slowpath_count++;
+    g_mem_slowpath_hist[(addr >> 20) & 0xF]++;
     // Lisa segment MMU owns translation, routing, and bus errors for Lisa/XL
     // machines (its SoA stays empty so every access reaches here).
     if (__builtin_expect(g_lisa_mmu != NULL, 0))
@@ -346,6 +353,8 @@ uint8_t memory_read_uint8_slow(uint32_t addr) {
 
 // Slow path for 16-bit reads: cross-page or device I/O
 uint16_t memory_read_uint16_slow(uint32_t addr) {
+    g_mem_slowpath_count++;
+    g_mem_slowpath_hist[(addr >> 20) & 0xF]++;
     if (__builtin_expect(g_lisa_mmu != NULL, 0))
         return lisa_mmu_read16(addr, g_active_read == g_supervisor_read);
     uint32_t page = addr >> PAGE_SHIFT;
@@ -422,6 +431,8 @@ uint16_t memory_read_uint16_slow(uint32_t addr) {
 
 // Slow path for 32-bit reads: cross-page or device I/O
 uint32_t memory_read_uint32_slow(uint32_t addr) {
+    g_mem_slowpath_count++;
+    g_mem_slowpath_hist[(addr >> 20) & 0xF]++;
     if (__builtin_expect(g_lisa_mmu != NULL, 0))
         return lisa_mmu_read32(addr, g_active_read == g_supervisor_read);
     uint32_t page = addr >> PAGE_SHIFT;
@@ -706,6 +717,8 @@ bool memory_debug_write_uint32(uint32_t addr, uint32_t value) {
 
 // Slow path for 8-bit writes: device I/O, MMU TLB miss, or unmapped
 void memory_write_uint8_slow(uint32_t addr, uint8_t value) {
+    g_mem_slowpath_count++;
+    g_mem_slowpath_hist[(addr >> 20) & 0xF]++;
     if (__builtin_expect(g_lisa_mmu != NULL, 0)) {
         lisa_mmu_write8(addr, g_active_write == g_supervisor_write, value);
         return;
@@ -800,6 +813,8 @@ void memory_write_uint8_slow(uint32_t addr, uint8_t value) {
 
 // Slow path for 16-bit writes: cross-page or device I/O
 void memory_write_uint16_slow(uint32_t addr, uint16_t value) {
+    g_mem_slowpath_count++;
+    g_mem_slowpath_hist[(addr >> 20) & 0xF]++;
     if (__builtin_expect(g_lisa_mmu != NULL, 0)) {
         lisa_mmu_write16(addr, g_active_write == g_supervisor_write, value);
         return;
@@ -888,6 +903,8 @@ void memory_write_uint16_slow(uint32_t addr, uint16_t value) {
 
 // Slow path for 32-bit writes: cross-page or device I/O
 void memory_write_uint32_slow(uint32_t addr, uint32_t value) {
+    g_mem_slowpath_count++;
+    g_mem_slowpath_hist[(addr >> 20) & 0xF]++;
     if (__builtin_expect(g_lisa_mmu != NULL, 0)) {
         lisa_mmu_write32(addr, g_active_write == g_supervisor_write, value);
         return;
@@ -1699,15 +1716,81 @@ static const arg_decl_t mem_dump_args[] = {
     {.name = "count", .kind = V_INT, .validation_flags = OBJ_ARG_OPTIONAL, .doc = "byte count (default 16)"},
 };
 
+// `memory.translate(addr)` — report the debug-path translation of a logical
+// address: MMU enabled state, supervisor/user walk results (validity +
+// physical address), and the page-table backing of the physical page.
+// Diagnostic aid for when memory.peek/find results look wrong: the debug
+// read path is only trustworthy where this reports a valid mapping.
+static value_t method_mem_translate(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)self;
+    (void)m;
+    (void)argc;
+    uint32_t addr = (uint32_t)argv[0].u & g_address_mask;
+    char buf[256];
+    if (!g_mmu || !g_mmu->enabled) {
+        uint32_t page = addr >> PAGE_SHIFT;
+        const char *backing = "unmapped";
+        if ((int)page < g_page_count) {
+            page_entry_t *pe = &g_page_table[page];
+            backing = pe->host_base ? "ram/rom" : (pe->dev ? "device" : "unmapped");
+        }
+        snprintf(buf, sizeof(buf), "mmu=off phys=0x%08x backing=%s", addr, backing);
+        return val_str(buf);
+    }
+    uint32_t pa_s = 0, pa_u = 0;
+    bool ok_s = mmu_translate_checked(g_mmu, addr, true, &pa_s);
+    bool ok_u = mmu_translate_checked(g_mmu, addr, false, &pa_u);
+    const char *backing_s = "unmapped";
+    uint32_t page_s = pa_s >> PAGE_SHIFT;
+    if (ok_s && (int)page_s < g_page_count) {
+        page_entry_t *pe = &g_page_table[page_s];
+        backing_s = pe->host_base ? "ram/rom" : (pe->dev ? "device" : "unmapped");
+    }
+    snprintf(buf, sizeof(buf), "mmu=on super=%s phys_s=0x%08x user=%s phys_u=0x%08x backing_s=%s",
+             ok_s ? "valid" : "INVALID", pa_s, ok_u ? "valid" : "INVALID", pa_u, backing_s);
+    return val_str(buf);
+}
+
+static const arg_decl_t mem_translate_args[] = {
+    {.name = "addr", .kind = V_UINT, .presentation_flags = VAL_HEX, .doc = "logical guest address"},
+};
+
+static value_t attr_mem_slowpath_count(struct object *self, const member_t *m) {
+    (void)self;
+    (void)m;
+    return val_uint(8, g_mem_slowpath_count);
+}
+
+static value_t attr_mem_slowpath_hist(struct object *self, const member_t *m) {
+    (void)self;
+    (void)m;
+    char buf[512];
+    size_t off = 0;
+    for (int i = 0; i < 16; i++)
+        off += (size_t)snprintf(buf + off, sizeof(buf) - off, "%s$%X:%llu", i ? " " : "", i,
+                                (unsigned long long)g_mem_slowpath_hist[i]);
+    return val_str(buf);
+}
+
 static const member_t memory_members[] = {
     {.kind = M_ATTR,
      .name = "ram_size",
      .flags = VAL_RO,
-     .attr = {.type = V_UINT, .get = attr_mem_ram_size, .set = NULL}                                         },
+     .attr = {.type = V_UINT, .get = attr_mem_ram_size, .set = NULL}},
+    {.kind = M_ATTR,
+     .name = "slowpath_count",
+     .flags = VAL_RO,
+     .doc = "CPU memory accesses taken through the slow path since process start (diagnostic)",
+     .attr = {.type = V_UINT, .get = attr_mem_slowpath_count, .set = NULL}},
+    {.kind = M_ATTR,
+     .name = "slowpath_hist",
+     .flags = VAL_RO,
+     .doc = "Slow-path accesses bucketed by MB of (masked) address (diagnostic)",
+     .attr = {.type = V_STRING, .get = attr_mem_slowpath_hist, .set = NULL}},
     {.kind = M_ATTR,
      .name = "rom_size",
      .flags = VAL_RO,
-     .attr = {.type = V_UINT, .get = attr_mem_rom_size, .set = NULL}                                         },
+     .attr = {.type = V_UINT, .get = attr_mem_rom_size, .set = NULL}},
     {.kind = M_METHOD,
      .name = "read_cstring",
      .doc = "Read a quoted, escape-encoded C string at addr",
@@ -1715,7 +1798,11 @@ static const member_t memory_members[] = {
     {.kind = M_METHOD,
      .name = "dump",
      .doc = "Hex-dump count bytes at addr (replaces the legacy `x` / examine)",
-     .method = {.args = mem_dump_args, .nargs = 2, .result = V_BOOL, .fn = method_mem_dump}                  },
+     .method = {.args = mem_dump_args, .nargs = 2, .result = V_BOOL, .fn = method_mem_dump}},
+    {.kind = M_METHOD,
+     .name = "translate",
+     .doc = "Show debug-path MMU translation of a logical address (validity + phys + backing)",
+     .method = {.args = mem_translate_args, .nargs = 1, .result = V_STRING, .fn = method_mem_translate}},
 };
 
 const class_desc_t memory_class = {
