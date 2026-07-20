@@ -10,15 +10,19 @@
 # REAL music signal is present (DC-compensated capture.peak well above the
 # offset-binary silence floor).
 #
-# NOTE: as of this test's creation the assertion FAILS — in-game MIDI music
-# does not play in the emulator (the ASC runs but streams silence during
-# gameplay; the Background Music setting produces no audible difference).  This
-# is independent of the 8•24 GC / IIfx work (verified silent at clean HEAD too).
-# The test is the executable spec for the fix: it goes green when the
-# QuickTime-music path produces audio.  See tmp/marathon-music-findings.md.
+# NOTE: this test was RED from creation until 2026-07-20.  Root cause (full
+# dossier: local/gs-docs/marathon/README.md): at song start QuickTime's
+# software synth needs ~380 KB of System 6 system heap (128 KB mixer LUT +
+# instruments); with the image's stock 128 KB boot-block heap floor the
+# instrument fetch failed with a silently swallowed memFullErr — the whole
+# song "played" with zero loaded instruments (deterministic silence, noErr
+# everywhere).  Fixed by growing the image's system heap to 1 MB via the
+# boot blocks (bbSysHeapSize, HFS-partition offset $86 — the period-
+# authentic BootMan-style fix); the image in gs-test-data carries the patch.
+# The emulator was never at fault (core + timing chain fully exonerated).
 
 TEST_NAME := IIcx 8•24 GC — Marathon in-game background music (QuickTime MIDI)
-TEST_DESC := Run to the Marathon gameplay screen, then assert QuickTime background music is audible (currently RED — documents the missing-music bug)
+TEST_DESC := Run through the Marathon gameplay hand-off and assert the QuickTime background music is audible
 
 TEST_ROM := roms/IIcx.rom
 TEST_ARGS := model=iicx ram=8192

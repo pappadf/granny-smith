@@ -144,21 +144,27 @@ machine.adb.mouse.click true
 scheduler.run 1000000
 machine.adb.mouse.click false
 
-# +50M: Arrival cut scene.  Enabling Background Music adds QuickTime tune-
-# player init work at the cut-scene -> gameplay hand-off, delaying the HUD
-# view by ~50M vs the music-off sibling, so the gameplay screen lands at
-# +150M here (not +100M).  Frame is stable from +150M through +260M (idle).
+# +50M: Arrival cut scene.  (The test image's boot blocks set a 1 MB system
+# heap — bbSysHeapSize at HFS-partition offset $86 — so QuickTime's software
+# synth can load its instruments; with the stock 128 KB floor the instrument
+# fetch fails with a swallowed memFullErr and the song is silent.  See
+# local/gs-docs/marathon/README.md for the full root-cause dossier.)
 scheduler.run 50000000
 machine.screen.match marathon-arrival-8bpp-640x480.png
-scheduler.run 100000000
-machine.screen.match marathon-game-8bpp-640x480.png
 
-# --- Gameplay reached: the level song must now be playing ----------------------
-# We send no input, so any ASC signal here is the background music, not effects.
+# --- The level song starts during the cut-scene -> gameplay hand-off ----------
+# Music begins ~+110M after the Begin click; capture +50M..+140M.  We send no
+# input, so any ASC signal here is the background music, not effects.
 machine.sound.capture.start
 scheduler.run 90000000
 machine.sound.capture.stop
-assert ${machine.sound.mode == 1}           "ASC not in FIFO mode during gameplay"
+assert ${machine.sound.mode == 1}           "ASC not in FIFO mode during hand-off"
 assert ${machine.sound.capture.peak > 4000} "no in-game background music (capture.peak at silence floor)"
+
+# --- Gameplay: instrument loading pushes the HUD to ~+215M after Begin --------
+# The world view has a blinking light with an ~8M-instruction period (about
+# 4M matching / 4M not); +179M total lands mid-window on the reference frame.
+scheduler.run 89000000
+machine.screen.match marathon-game-8bpp-640x480.png
 
 quit
