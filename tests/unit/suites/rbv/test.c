@@ -147,6 +147,12 @@ value_t val_uint(uint8_t width, uint64_t u) {
     memset(&v, 0, sizeof(v));
     return v;
 }
+value_t val_bool(bool b) {
+    (void)b;
+    value_t v;
+    memset(&v, 0, sizeof(v));
+    return v;
+}
 
 // --- memory map: unused (both devices get map == NULL) ---
 void memory_map_add(memory_map_t *mem, uint32_t addr, uint32_t size, const char *name, memory_interface_t *iface,
