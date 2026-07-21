@@ -50,7 +50,6 @@ interface RomIdentifyResult {
 // human-readable card name is owned by the card kind (machine.profile), not here.
 interface VromIdentifyResult {
   recognised: boolean;
-  canonical_name?: string;
   card_id?: string;
   compatible?: string[];
   size?: number;
@@ -98,7 +97,6 @@ export const MEDIA_TYPES: Record<MediaTypeId, MediaTypeDescriptor> = {
         return {
           valid: true,
           info: {
-            canonicalName: parsed.canonical_name,
             cardId: parsed.card_id,
             compatible: parsed.compatible,
             checksum: parsed.crc,
@@ -108,13 +106,14 @@ export const MEDIA_TYPES: Record<MediaTypeId, MediaTypeDescriptor> = {
         return { valid: false };
       }
     },
-    // VROMs are stored under the canonical filename the core's card
-    // factories look up (e.g. JMFB hardcodes "mdc-8-24-revb-d1629664.vrom" in
-    // jmfb.c). The C-side `machine.vrom.identify` derives the canonical name
-    // from the file's content hash; the UI doesn't carry any ROM
-    // knowledge of its own.
+    // VROMs are stored by content hash (the declaration ROM's Format-Block
+    // CRC), mirroring how CPU ROMs are stored by checksum. Discovery is
+    // content-based (the core's offer registry), so the on-disk name never
+    // matters — and the UI carries no naming grammar of its own. The
+    // identify payload's crc is "0x"-prefixed; strip it for the filename.
     nameFn(originalName, info) {
-      return (info?.canonicalName as string) || originalName;
+      const crc = info?.checksum as string | undefined;
+      return crc ? crc.replace(/^0x/, '') : originalName;
     },
   },
 

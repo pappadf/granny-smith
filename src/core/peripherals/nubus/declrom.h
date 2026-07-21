@@ -83,22 +83,19 @@ void declrom_expand_lane3(const uint8_t *chip, size_t chip_size, uint8_t *bus_bu
 bool declrom_layout_chip(const uint8_t *chip, size_t chip_size, uint8_t *bus_buf, size_t bus_size, uint8_t byte_lanes);
 
 // Find the declaration-ROM chip image that provides the card `card_id` —
-// by CONTENT (the vrom.c Format-Block-CRC catalog), never by a hardcoded
-// filename — read it, and lay it out into the TAIL of `bus_buf` (bus_size
-// bytes) per its byteLanes byte (see declrom_layout_chip; the Format Block
-// always ends at the slot top, so a smaller ROM revision occupies the top of
-// a window sized for the largest one).  Tries, in order:
-//   0. the explicit `machine.vrom.load <path>` pending path (how the web UI
-//      hands over an uploaded file, whatever it is named), if it identifies
-//      to this card;
-//   1. each catalog canonical filename for this card, in each of:
-//      the pending CPU ROM's directory (where the integration-test harness
-//      keeps sibling vrom files), `/opfs/images/vrom/`, `tests/data/roms/`,
-//      and the current working directory — every hit content-verified before
-//      it is accepted.
+// by CONTENT (the vrom.c Format-Block-CRC catalog), never by a filename —
+// read it, and lay it out into the TAIL of `bus_buf` (bus_size bytes) per
+// its byteLanes byte (see declrom_layout_chip; the Format Block always ends
+// at the slot top, so a smaller ROM revision occupies the top of a window
+// sized for the largest one).  Candidates come exclusively from the offer
+// registry the platform populated before boot (vrom_offer / vrom.load — see
+// vrom.h): they are tried in pick order (explicit vrom.load first, then the
+// catalog's preferred revision, then catalog order).  Core never fabricates
+// a search path.
 // On success returns true and stores a freshly-strdup'd copy of the path it
 // loaded from in *out_path (caller frees); on miss returns false and leaves
-// *out_path NULL.  Shared by every real-ROM display card (JMFB, 24AC, 8•24 GC).
+// *out_path NULL.  Shared by every card with a real ROM file (JMFB, 24AC,
+// 8•24 GC, SE/30 built-in video).
 bool declrom_load_vrom_card(const char *card_id, uint8_t *bus_buf, size_t bus_size, char **out_path);
 
 #endif // NUBUS_DECLROM_H

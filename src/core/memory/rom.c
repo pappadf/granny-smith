@@ -47,18 +47,16 @@ static const char *const MACXL_COMPATIBLE[] = {"macxl", NULL};
 // Dedicated 512 KB Macintosh IIsi ("Erickson") ROM — not the universal ROM.
 static const char *const IISI_COMPATIBLE[] = {"iisi", NULL};
 
-// Master ROM signature table.
+// Master ROM signature table.  Content facts only — the canonical fixture
+// filenames live in tooling (scripts/rom_naming.py), not here.
 static const rom_info_t ROM_TABLE[] = {
-    // Only Rev 3 ("Loud Harmonicas") ships in tests/data; Rev 1/2 are catalogued
-    // for identify but have no canonical file (NULL — the conformance test never
-    // sees them on disk).
-    {"Macintosh Plus (Rev 1, Lonely Hearts)",   PLUS_COMPATIBLE,      0x4D1EEEE1, 128 * 1024, NULL                        },
-    {"Macintosh Plus (Rev 2, Lonely Heifers)",  PLUS_COMPATIBLE,      0x4D1EEAE1, 128 * 1024, NULL                        },
-    {"Macintosh Plus (Rev 3, Loud Harmonicas)", PLUS_COMPATIBLE,      0x4D1F8172, 128 * 1024, "plus-v3-4d1f8172.rom"      },
-    {"Universal IIx/IIcx/SE/30 ROM",            UNIVERSAL_COMPATIBLE, 0x97221136, 256 * 1024, "iix-iicx-se30-97221136.rom"},
-    {"Macintosh IIfx ROM",                      IIFX_COMPATIBLE,      0x4147DD77, 512 * 1024, "iifx-4147dd77.rom"         },
-    {"Macintosh IIci ROM",                      IICI_COMPATIBLE,      0x368CADFE, 512 * 1024, "iici-368cadfe.rom"         },
-    {"Macintosh IIsi ROM",                      IISI_COMPATIBLE,      0x36B7FB6C, 512 * 1024, "iisi-36b7fb6c.rom"         },
+    {"Macintosh Plus (Rev 1, Lonely Hearts)",   PLUS_COMPATIBLE,      0x4D1EEEE1, 128 * 1024},
+    {"Macintosh Plus (Rev 2, Lonely Heifers)",  PLUS_COMPATIBLE,      0x4D1EEAE1, 128 * 1024},
+    {"Macintosh Plus (Rev 3, Loud Harmonicas)", PLUS_COMPATIBLE,      0x4D1F8172, 128 * 1024},
+    {"Universal IIx/IIcx/SE/30 ROM",            UNIVERSAL_COMPATIBLE, 0x97221136, 256 * 1024},
+    {"Macintosh IIfx ROM",                      IIFX_COMPATIBLE,      0x4147DD77, 512 * 1024},
+    {"Macintosh IIci ROM",                      IICI_COMPATIBLE,      0x368CADFE, 512 * 1024},
+    {"Macintosh IIsi ROM",                      IISI_COMPATIBLE,      0x36B7FB6C, 512 * 1024},
 };
 
 #define ROM_TABLE_COUNT (sizeof(ROM_TABLE) / sizeof(ROM_TABLE[0]))
@@ -82,8 +80,8 @@ typedef struct lisa_rom_sig {
 } lisa_rom_sig_t;
 
 static const lisa_rom_sig_t LISA_ROM_TABLE[] = {
-    {{"Apple Lisa 2 Boot ROM (rev H)", LISA_COMPATIBLE, 0x098917B2, LISA_ROM_SIZE, "lisa2-revh-098917b2.rom"}, 0x0248},
-    {{"Macintosh XL Boot ROM (\"3A\")", MACXL_COMPATIBLE, 0x094C82F0, LISA_ROM_SIZE, "macxl-3a-094c82f0.rom"}, 0x0341},
+    {{"Apple Lisa 2 Boot ROM (rev H)", LISA_COMPATIBLE, 0x098917B2, LISA_ROM_SIZE},   0x0248},
+    {{"Macintosh XL Boot ROM (\"3A\")", MACXL_COMPATIBLE, 0x094C82F0, LISA_ROM_SIZE}, 0x0341},
 };
 
 #define LISA_ROM_TABLE_COUNT (sizeof(LISA_ROM_TABLE) / sizeof(LISA_ROM_TABLE[0]))
@@ -535,12 +533,12 @@ static value_t rom_method_reload(struct object *self, const member_t *m, int arg
 }
 
 // rom.identify(path) → JSON-encoded info map describing the ROM file:
-//   { recognised, compatible, checksum, name, canonical_name, size }
-// recognised==false implies compatible==[], name=="", canonical_name=="" but
-// the checksum and size are still populated from the file.  canonical_name is
-// the enforced on-disk filename (proposal-test-rom-naming.md), empty for ROMs
-// that are recognised but don't ship in tests/data.  Returns V_ERROR if the
-// path can not be opened (caller treats that as "no info, skip this entry").
+//   { recognised, compatible, checksum, name, size }
+// recognised==false implies compatible==[], name=="" but the checksum and
+// size are still populated from the file.  Content facts only — canonical
+// fixture naming is a tooling concern (scripts/rom_naming.py).  Returns
+// V_ERROR if the path can not be opened (caller treats that as "no info,
+// skip this entry").
 static value_t rom_method_identify(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)self;
     (void)m;
@@ -569,12 +567,6 @@ static value_t rom_method_identify(struct object *self, const member_t *m, int a
     json_str(b, hex);
     json_key(b, "name");
     json_str(b, fi.info ? fi.info->family_name : "");
-    // Canonical on-disk filename (proposal-test-rom-naming.md). Present and
-    // non-empty only for recognised ROMs that actually ship in tests/data;
-    // empty otherwise. The rom-naming conformance test asserts every file's
-    // basename equals this. Mirrors vrom.identify's canonical_name.
-    json_key(b, "canonical_name");
-    json_str(b, (fi.info && fi.info->canonical_name) ? fi.info->canonical_name : "");
     json_key(b, "size");
     json_int(b, (int64_t)fi.size);
     json_close_obj(b);

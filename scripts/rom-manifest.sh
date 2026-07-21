@@ -2,12 +2,14 @@
 #
 # rom-manifest.sh - Generate the human-readable roms/ manifest for gs-test-data.
 #
-# Machine-derives every fact it can (canonical name, size, checksum/CRC, kind,
-# compatible models / card id, family name) by running gs-headless
-# machine.(v)rom.identify over each file, then merges a small curated notes
-# table (provenance, Apple part numbers, Rev A/B, "16bpp requires this ROM")
-# that identify cannot know.  This is the tool from proposal-test-rom-naming.md
-# §4.4 — the manifest is regenerated, never hand-edited.
+# Machine-derives every fact it can (size, checksum/CRC, kind, compatible
+# models / card id, family name) by running gs-headless
+# machine.(v)rom.identify over each file, computes each file's canonical name
+# by applying the tooling grammar (scripts/rom_naming.py) to its content id,
+# then merges a small curated notes table (provenance, Apple part numbers,
+# Rev A/B, "16bpp requires this ROM") that identify cannot know.  This is the
+# tool from proposal-test-rom-naming.md §4.4 — the manifest is regenerated,
+# never hand-edited.
 #
 # Usage:
 #   scripts/rom-manifest.sh [ROMS_DIR] [OUT_FILE]
@@ -51,21 +53,24 @@ OUT="$WORK/identify.out"
 GS_STORAGE_CACHE="$WORK/cache" "$HEADLESS_BIN" \
     rom="$BOOT_ROM" --no-prompt --speed=max "script=$SCRIPT" > "$OUT" 2>/dev/null
 
-python3 - "$OUT" "$OUT_FILE" <<'PY'
+python3 - "$OUT" "$OUT_FILE" "$SCRIPT_DIR" <<'PY'
 import re, sys, os
 
-out_path, dest = sys.argv[1], sys.argv[2]
+out_path, dest, script_dir = sys.argv[1], sys.argv[2], sys.argv[3]
+sys.path.insert(0, script_dir)
+from rom_naming import canonical_name  # the tooling naming grammar
+
 lines = open(out_path, encoding="utf-8", errors="replace").read().splitlines()
 
 def field(js, key):
-    # Comma-free scalar fields (checksum, crc, canonical_name, card_id, size,
-    # recognised). NOT for `name` / `compatible`, which can contain commas.
+    # Comma-free scalar fields (checksum, crc, card_id, size, recognised).
+    # NOT for `name` / `compatible`, which can contain commas.
     m = re.search(r'(?:^|[,{])' + re.escape(key) + r':([^,}]*)', js)
     return m.group(1) if m else None
 
 def rom_name(js):
-    # rom.identify key order: ...,name:<free text>,canonical_name:...
-    m = re.search(r'(?:^|,)name:(.*?),canonical_name:', js)
+    # rom.identify key order: ...,name:<free text>,size:...
+    m = re.search(r'(?:^|,)name:(.*?),size:', js)
     return m.group(1) if m else ""
 
 def compatible(js):
@@ -135,9 +140,9 @@ out.append("|---|---|---|---|---|")
 cpu = [(b, j) for b, j in rows if b.endswith(".rom")]
 vro = [(b, j) for b, j in rows if b.endswith(".vrom")]
 for base, js in sorted(cpu):
-    canon = field(js, "canonical_name") or base
-    size  = human_kb(field(js, "size") or "0")
     chk   = field(js, "checksum") or ""
+    canon = canonical_name(chk) or base
+    size  = human_kb(field(js, "size") or "0")
     name  = rom_name(js)
     comp  = compatible(js)
     note  = NOTES.get(base, "")
@@ -149,9 +154,9 @@ out.append("")
 out.append("| Canonical file | Size | CRC | Card id | Notes |")
 out.append("|---|---|---|---|---|")
 for base, js in sorted(vro):
-    canon = field(js, "canonical_name") or base
-    size  = human_kb(field(js, "size") or "0")
     crc   = field(js, "crc") or ""
+    canon = canonical_name(crc) or base
+    size  = human_kb(field(js, "size") or "0")
     card  = field(js, "card_id") or ""
     note  = NOTES.get(base, "")
     out.append(f"| `{canon}` | {size} | `{crc}` | `{card}` | {note} |")

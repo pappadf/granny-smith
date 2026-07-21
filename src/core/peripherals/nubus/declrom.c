@@ -13,8 +13,7 @@
 #include "declrom.h"
 #include "card.h"
 #include "log.h"
-#include "rom.h" // rom_pending_path() — sibling-vrom search
-#include "vrom.h" // content identification (Format-Block CRC catalog)
+#include "vrom.h" // content identification + the platform-fed offer registry
 
 #include <stdint.h>
 #include <stdio.h>
@@ -184,7 +183,7 @@ static bool read_chip_exact(const char *path, uint8_t *buf, size_t chip_size) {
 // for a 64 KB one (the 8•24 GC v1.0 in the v1.1-sized window) occupies the
 // top half; the leading bytes stay zero, below the ROM's declared length.
 static bool load_chip_into_bus(const char *path, size_t chip_size, uint8_t *bus_buf, size_t bus_size) {
-    if (chip_size == 0 || bus_size < chip_size * 4)
+    if (chip_size == 0 || bus_size < chip_size)
         return false;
     uint8_t *chip = calloc(1, chip_size);
     if (!chip)
@@ -197,10 +196,15 @@ static bool load_chip_into_bus(const char *path, size_t chip_size, uint8_t *bus_
     // 4-lane layouts both the spec and these files place it at the highest
     // active-lane address — the chip's final byte).
     uint8_t byte_lanes = chip[chip_size - 1];
-    size_t footprint = chip_size * 4; // single-lane expansion (the common case)
-    bool ok = declrom_layout_chip(chip, chip_size, bus_buf + (bus_size - footprint), footprint, byte_lanes);
+    // A single-lane chip sparse-expands to 4× its size in bus space; a 4-lane
+    // ($0F) chip is flat-copied and occupies exactly chip_size bytes (the
+    // SE/30 onboard-video ROM, whose window equals the chip size).
+    size_t footprint = (byte_lanes == 0x0Fu) ? chip_size : chip_size * 4;
+    bool ok = bus_size >= footprint &&
+              declrom_layout_chip(chip, chip_size, bus_buf + (bus_size - footprint), footprint, byte_lanes);
     if (!ok)
-        LOG(0, "declrom_load_vrom_card: '%s' has unsupported byteLanes $%02x", path, byte_lanes);
+        LOG(0, "declrom_load_vrom_card: '%s' has unsupported byteLanes $%02x (or exceeds the bus window)", path,
+            byte_lanes);
     free(chip);
     return ok;
 }
@@ -211,78 +215,20 @@ bool declrom_load_vrom_card(const char *card_id, uint8_t *bus_buf, size_t bus_si
     if (!card_id || !bus_buf || bus_size == 0)
         return false;
 
-    // 0. The explicitly loaded vROM (machine.vrom.load <path> — how the web
-    //    UI hands over an uploaded file).  Content-verified: the file must
-    //    identify (Format-Block CRC) to THIS card; the filename is irrelevant.
-    const char *pending = vrom_pending_path();
-    vrom_id_t id;
-    if (pending && vrom_identify_card(pending, &id)) {
-        if (strcmp(id.card_id, card_id) == 0) {
-            if (load_chip_into_bus(pending, id.chip_size, bus_buf, bus_size)) {
-                if (out_path)
-                    *out_path = strdup(pending);
-                return true;
-            }
-        } else {
-            LOG(2, "vrom.load path '%s' provides card '%s', not '%s' — searching instead", pending, id.card_id,
-                card_id);
-        }
-    }
-
-    // 1..4. Search the standard locations for EVERY catalog filename that
-    //    provides this card (a card can have several ROM revisions, with
-    //    different chip sizes — e.g. the 8•24 GC's v1.1/v1.0/alpha), still
-    //    content-verifying each hit before loading it.
-    char path[1024];
+    // Walk the offer registry's candidates for this card in pick order
+    // (explicit vrom.load first, then catalog-preferred, then catalog order —
+    // see vrom_offer_find).  Every candidate was already content-identified
+    // at offer time; the first one that lays out cleanly wins.  Core never
+    // builds a path here — the platform offered every one of these.
+    size_t chip_size = 0;
     for (int n = 0;; n++) {
-        const char *filename = vrom_catalog_name(card_id, n, NULL);
-        if (!filename)
+        const char *path = vrom_offer_find(card_id, n, &chip_size);
+        if (!path)
             break;
-
-        // 1. Next to the pending CPU ROM — the directory the integration-test
-        //    harness cds into, where sibling vrom files live.
-        char *found_path = NULL;
-        const char *rom_path = rom_pending_path();
-        if (rom_path) {
-            const char *slash = strrchr(rom_path, '/');
-            if (slash) {
-                size_t dir_len = (size_t)(slash - rom_path + 1);
-                if (dir_len + strlen(filename) + 1 <= sizeof(path)) {
-                    memcpy(path, rom_path, dir_len);
-                    strcpy(path + dir_len, filename);
-                    if (vrom_identify_card(path, &id) && strcmp(id.card_id, card_id) == 0)
-                        found_path = strdup(path);
-                }
-            }
-        }
-
-        // 2..4. Standard search prefixes, in priority order.
-        static const char *const prefixes[] = {
-            "/opfs/images/vrom/",
-            "tests/data/roms/",
-            "",
-            NULL,
-        };
-        for (const char *const *pre = prefixes; !found_path && *pre; pre++) {
-            if (strlen(*pre) + strlen(filename) + 1 > sizeof(path))
-                continue;
-            strcpy(path, *pre);
-            strcat(path, filename);
-            if (vrom_identify_card(path, &id) && strcmp(id.card_id, card_id) == 0)
-                found_path = strdup(path);
-        }
-
-        if (found_path) {
-            // id was filled by the successful identify; its chip_size is the
-            // actual file size.
-            if (load_chip_into_bus(found_path, id.chip_size, bus_buf, bus_size)) {
-                if (out_path)
-                    *out_path = found_path;
-                else
-                    free(found_path);
-                return true;
-            }
-            free(found_path);
+        if (load_chip_into_bus(path, chip_size, bus_buf, bus_size)) {
+            if (out_path)
+                *out_path = strdup(path);
+            return true;
         }
     }
     return false;

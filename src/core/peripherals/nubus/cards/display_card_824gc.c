@@ -1102,8 +1102,8 @@ static int card_init(nubus_card_t *card, config_t *cfg, checkpoint_t *cp) {
     }
 
     if (!load_vrom(p))
-        LOG(0, "no 8•24 GC declaration ROM found (machine.vrom.load a GC vROM, "
-               "or place one under /opfs/images/vrom/ or tests/data/roms/); "
+        LOG(0, "no 8•24 GC declaration ROM offered (machine.vrom.load a GC vROM, "
+               "or make one available where the platform offers vROM files); "
                "declaration ROM is zero-filled");
 
     card->declrom = p->vrom;
