@@ -406,9 +406,10 @@ static void se30_post_nubus(config_t *cfg) {
     se30->vram = builtin_se30_video_vram(se30->video_card);
     se30->vrom = builtin_se30_video_vrom(se30->video_card);
     if (!se30->vram || !se30->vrom) {
-        fprintf(stderr, "Error: SE/30 Video ROM (builtin-se30-video-4f71ff1a.vrom) not found.\n"
+        fprintf(stderr, "Error: SE/30 Video ROM not found.\n"
                         "The SE/30 emulator requires a real VROM file for proper operation.\n"
-                        "Place builtin-se30-video-4f71ff1a.vrom next to the ROM file or in tests/data/roms/.\n");
+                        "Load one with machine.vrom.load, or make it available where the platform\n"
+                        "offers vROM files (e.g. next to the ROM file).\n");
         exit(1);
     }
     memory_map_host_region(cfg->mem_map, "se30_vram", se30->vram, SE30_VRAM_BASE, SE30_VRAM_SIZE, /*writable*/ true);
@@ -522,8 +523,9 @@ const hw_profile_t machine_se30 = {
     .cdrom_id = 3,
 
     // Built-in slot-$E video card.  Exposed in the profile so the config
-    // dialog reads the VROM requirement from the card (it needs builtin-se30-video-4f71ff1a.vrom);
-    // this is the same table the substrate passes to nubus_init().
+    // dialog reads the VROM requirement from the card (it needs the SE/30
+    // onboard-video vROM); this is the same table the substrate passes to
+    // nubus_init().
     .nubus_slots = se30_slots,
 
     .substrate = &glue_substrate, // shared GLUE-family substrate

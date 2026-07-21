@@ -6,7 +6,9 @@
 # nubus_vrom.md §2).  vrom.identify reads it — the direct analog of
 # rom.identify keying on the main ROM's checksum word — and maps it to the
 # nubus card-kind id the blob provides, plus a `compatible:[card_ids]` list
-# mirroring rom.identify's `compatible:[model_ids]`.  This cross-check is
+# mirroring rom.identify's `compatible:[model_ids]`.  Content facts only —
+# canonical fixture naming lives in tooling (scripts/rom_naming.py, enforced
+# by the rom-naming test), not in the identify payload.  This cross-check is
 # what protects against drift between VROM_CATALOG and the card registry.
 
 # --- Part 1: the {card_id, compatible, crc} contract (stateless probe). ---
@@ -16,19 +18,19 @@ echo ${machine.vrom.identify("../../data/roms/builtin-se30-video-4f71ff1a.vrom")
 echo ${machine.vrom.identify("../../data/roms/display-card-24ac-d8daab87.vrom")}
 
 # Macintosh Display Card 8•24 → JMFB card "mdc_8_24", CRC $D1629664.
-assert ${machine.vrom.identify("../../data/roms/mdc-8-24-revb-d1629664.vrom") == "{\"recognised\":true,\"canonical_name\":\"mdc-8-24-revb-d1629664.vrom\",\"card_id\":\"mdc_8_24\",\"compatible\":[\"mdc_8_24\"],\"size\":32768,\"crc\":\"0xd1629664\"}"} "8•24 vROM identity"
+assert ${machine.vrom.identify("../../data/roms/mdc-8-24-revb-d1629664.vrom") == "{\"recognised\":true,\"card_id\":\"mdc_8_24\",\"compatible\":[\"mdc_8_24\"],\"size\":32768,\"crc\":\"0xd1629664\"}"} "8•24 vROM identity"
 
 # SE/30 onboard video (byteLanes $0F, 4-lane) → builtin card, CRC $4F71FF1A.
-assert ${machine.vrom.identify("../../data/roms/builtin-se30-video-4f71ff1a.vrom") == "{\"recognised\":true,\"canonical_name\":\"builtin-se30-video-4f71ff1a.vrom\",\"card_id\":\"builtin_se30_video\",\"compatible\":[\"builtin_se30_video\"],\"size\":32768,\"crc\":\"0x4f71ff1a\"}"} "SE/30 onboard-video vROM identity"
+assert ${machine.vrom.identify("../../data/roms/builtin-se30-video-4f71ff1a.vrom") == "{\"recognised\":true,\"card_id\":\"builtin_se30_video\",\"compatible\":[\"builtin_se30_video\"],\"size\":32768,\"crc\":\"0x4f71ff1a\"}"} "SE/30 onboard-video vROM identity"
 
 # Apple Macintosh Display Card 24AC → "display_card_24ac", CRC $D8DAAB87.
-assert ${machine.vrom.identify("../../data/roms/display-card-24ac-d8daab87.vrom") == "{\"recognised\":true,\"canonical_name\":\"display-card-24ac-d8daab87.vrom\",\"card_id\":\"display_card_24ac\",\"compatible\":[\"display_card_24ac\"],\"size\":32768,\"crc\":\"0xd8daab87\"}"} "24AC vROM identity"
+assert ${machine.vrom.identify("../../data/roms/display-card-24ac-d8daab87.vrom") == "{\"recognised\":true,\"card_id\":\"display_card_24ac\",\"compatible\":[\"display_card_24ac\"],\"size\":32768,\"crc\":\"0xd8daab87\"}"} "24AC vROM identity"
 
 # Apple Macintosh Display Card 8•24 GC ("Dolphin") → "824gc".  Three genuine
 # declaration ROMs (byteLanes $E1); v1.1 is a 64 KB chip, v1.0 / alpha 32 KB.
-assert ${machine.vrom.identify("../../data/roms/824gc-v1.1-revb-d722b053.vrom") == "{\"recognised\":true,\"canonical_name\":\"824gc-v1.1-revb-d722b053.vrom\",\"card_id\":\"824gc\",\"compatible\":[\"824gc\"],\"size\":65536,\"crc\":\"0xd722b053\"}"} "8•24 GC v1.1 vROM identity"
-assert ${machine.vrom.identify("../../data/roms/824gc-v1.0-reva-9e9857e8.vrom") == "{\"recognised\":true,\"canonical_name\":\"824gc-v1.0-reva-9e9857e8.vrom\",\"card_id\":\"824gc\",\"compatible\":[\"824gc\"],\"size\":32768,\"crc\":\"0x9e9857e8\"}"} "8•24 GC v1.0 vROM identity"
-assert ${machine.vrom.identify("../../data/roms/824gc-v1.0a16-4740028d.vrom") == "{\"recognised\":true,\"canonical_name\":\"824gc-v1.0a16-4740028d.vrom\",\"card_id\":\"824gc\",\"compatible\":[\"824gc\"],\"size\":32768,\"crc\":\"0x4740028d\"}"} "8•24 GC alpha vROM identity"
+assert ${machine.vrom.identify("../../data/roms/824gc-v1.1-revb-d722b053.vrom") == "{\"recognised\":true,\"card_id\":\"824gc\",\"compatible\":[\"824gc\"],\"size\":65536,\"crc\":\"0xd722b053\"}"} "8•24 GC v1.1 vROM identity"
+assert ${machine.vrom.identify("../../data/roms/824gc-v1.0-reva-9e9857e8.vrom") == "{\"recognised\":true,\"card_id\":\"824gc\",\"compatible\":[\"824gc\"],\"size\":32768,\"crc\":\"0x9e9857e8\"}"} "8•24 GC v1.0 vROM identity"
+assert ${machine.vrom.identify("../../data/roms/824gc-v1.0a16-4740028d.vrom") == "{\"recognised\":true,\"card_id\":\"824gc\",\"compatible\":[\"824gc\"],\"size\":32768,\"crc\":\"0x4740028d\"}"} "8•24 GC alpha vROM identity"
 
 # A main ROM is the wrong size for a vROM → recognised:false (no false match).
 assert ${machine.vrom.identify("../../data/roms/plus-v3-4d1f8172.rom") == "{\"recognised\":false}"} "non-vROM file must be unrecognised"

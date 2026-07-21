@@ -56,6 +56,7 @@
 #include "scheduler.h"
 #include "shell.h"
 #include "system.h"
+#include "vrom.h"
 
 // ============================================================================
 // Forward Declarations
@@ -1262,6 +1263,26 @@ int main(int argc, char *argv[]) {
     mkdir("/opfs/images/cd", 0777);
     mkdir("/opfs/checkpoints", 0777);
     mkdir("/opfs/upload", 0777);
+
+    // Offer every file in the persistent vROM store to the core's content-
+    // addressed registry (names are irrelevant — each offer is identified by
+    // content).  The platform owns the filesystem; core never enumerates a
+    // directory or builds a path.  Mid-session uploads are offered by the
+    // web app's ingest path (machine.vrom.offer), so this startup pass only
+    // needs to cover what already persisted.
+    DIR *vrom_dir = opendir("/opfs/images/vrom");
+    if (vrom_dir) {
+        struct dirent *entry;
+        char vrom_path[512];
+        while ((entry = readdir(vrom_dir)) != NULL) {
+            if (entry->d_name[0] == '.')
+                continue;
+            if (snprintf(vrom_path, sizeof(vrom_path), "/opfs/images/vrom/%s", entry->d_name) >= (int)sizeof(vrom_path))
+                continue;
+            vrom_offer(vrom_path);
+        }
+        closedir(vrom_dir);
+    }
 
     // Volatile scratch space on memory backend (visible from all threads).
     backend_t membk = wasmfs_create_memory_backend();

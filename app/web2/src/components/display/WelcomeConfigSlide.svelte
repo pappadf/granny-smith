@@ -72,10 +72,11 @@
   }
 
   // One identified VROM in OPFS: which card it provides (probed via
-  // vrom.identify) so the dialog can speak in cards, not filenames.
+  // vrom.identify) so the dialog can speak in cards, not filenames. Any
+  // human-readable label comes from the card id via machine.profile
+  // (cardOptions) — the on-disk name is a content hash and never shown.
   interface VromEntry {
     path: string;
-    name: string; // canonical filename
     cardId: string; // nubus card-kind id this blob provides
     compatible: string[]; // card ids this vROM can drive (usually [cardId])
   }
@@ -152,9 +153,10 @@
   // VROM row/handling is driven by the *selected card* (the SE/30-vs-IIci
   // asymmetry): a card declares requires_vrom, not the machine.
   let needsVrom = $derived(selectedCard?.requires_vrom === true);
-  // The vROM file handed to the core for the selected card. The card factory
-  // finds its vROM on disk by canonical name, so this mainly feeds the SE/30
-  // builtin's pending-path and gates "is this card installable".
+  // The vROM file handed to the core for the selected card (an explicit
+  // machine.vrom.load — the preferred offer); it also gates "is this card
+  // installable". Without it the card factory falls back to whatever the
+  // platform offered from the OPFS store (content-matched).
   let resolvedVrom = $derived(needsVrom ? (vromsByCardId[cardId]?.[0] ?? null) : null);
   // Model expects a video card but none is installable (every candidate card
   // needs a vROM and none is present). Drives the "upload a Video ROM" hint.
@@ -236,14 +238,12 @@
     try {
       const parsed = JSON.parse(r) as {
         recognised?: boolean;
-        canonical_name?: string;
         card_id?: string;
         compatible?: string[];
       };
       if (!parsed.recognised || !parsed.card_id) return null;
       return {
         path,
-        name: parsed.canonical_name ?? path.split('/').pop() ?? path,
         cardId: parsed.card_id,
         compatible: Array.isArray(parsed.compatible) ? parsed.compatible : [parsed.card_id],
       };
@@ -448,8 +448,9 @@
       return;
     }
     const selected = romsForCurrentModel.find((r) => r.path === romPath) ?? romsForCurrentModel[0];
-    // The chosen card auto-resolves its vROM (probed by card id); the card
-    // factory then finds it on disk by canonical name. '(auto)' = no vROM.
+    // The chosen card auto-resolves its vROM (probed by card id); '(auto)'
+    // means no explicit pick — the card factory content-matches among the
+    // files the platform offered from the OPFS store.
     const vromPath = resolvedVrom ? resolvedVrom.path : '(auto)';
     const floppyPaths = floppies.map((f) =>
       f === NONE_SENTINEL || !f ? '' : `/opfs/images/fd/${f}`,

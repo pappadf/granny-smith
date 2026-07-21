@@ -28,11 +28,9 @@ typedef struct rom_info {
     const char *const *compatible; // NULL-terminated list of compatible model_ids
     uint32_t checksum; // Stored checksum (first 4 bytes, big-endian)
     uint32_t rom_size; // Expected file size in bytes
-    // Canonical on-disk filename in tests/data/roms, derived from this row per
-    // proposal-test-rom-naming.md (<targets>[-<rev>]-<checksum8>.rom). The
-    // load-bearing single source of truth for what the file MUST be named;
-    // rom.identify reports it and the rom-naming conformance test enforces it.
-    const char *canonical_name;
+    // Note: canonical fixture filenames are a tooling concern (scripts/
+    // rom_naming.py maps content identity → name for the gs-test-data repo);
+    // core reasons only in content identities and never knows a filename.
 } rom_info_t;
 
 // Look up a ROM by its stored checksum.

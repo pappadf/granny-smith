@@ -3,7 +3,8 @@
 # The enforcement that makes the reorganization stick.  Enumerates every file
 # in tests/data/roms and, via machine.(v)rom.identify, asserts:
 #   1. the file is RECOGNISED (no unknown blobs may live in the directory);
-#   2. its basename EQUALS the catalog's canonical_name (no drift);
+#   2. its basename EQUALS the canonical name the tooling grammar
+#      (scripts/rom_naming.py) derives from its content id (no drift);
 #   3. no two files share a checksum/CRC (kills duplicate blobs forever).
 #
 # Uses a run.sh runner because the object-model shell has no directory

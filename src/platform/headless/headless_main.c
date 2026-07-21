@@ -21,8 +21,10 @@
 #include "shell.h"
 #include "shell_var.h"
 #include "system.h"
+#include "vrom.h"
 
 #include <arpa/inet.h>
+#include <dirent.h>
 #include <errno.h>
 #include <getopt.h>
 #include <netinet/in.h>
@@ -619,6 +621,44 @@ int shell_poll(void) {
     return 1;
 }
 
+// Offer every *.vrom file in the ROM file's directory to the core's
+// content-addressed vROM registry.  The platform owns the filesystem: it
+// enumerates candidates and offers their paths; core identifies each by
+// content and never fabricates a path itself.  This is what makes sibling
+// vROM files (e.g. the integration harness's tests/data/roms, reached via
+// the absolute rom= path) discoverable without core knowing any directory.
+static void offer_sibling_vroms(const char *rom_path) {
+    const char *slash = strrchr(rom_path, '/');
+    char dir[1024];
+    if (slash) {
+        size_t dir_len = (size_t)(slash - rom_path);
+        if (dir_len == 0)
+            dir_len = 1; // ROM at filesystem root → "/"
+        if (dir_len >= sizeof(dir))
+            return;
+        memcpy(dir, rom_path, dir_len);
+        dir[dir_len] = '\0';
+    } else {
+        strcpy(dir, "."); // bare filename → the current directory
+    }
+    DIR *d = opendir(dir);
+    if (!d)
+        return;
+    struct dirent *entry;
+    char path[1200];
+    while ((entry = readdir(d)) != NULL) {
+        const char *name = entry->d_name;
+        size_t len = strlen(name);
+        // Only *.vrom candidates — the offer itself content-verifies them.
+        if (len < 6 || strcmp(name + len - 5, ".vrom") != 0)
+            continue;
+        if (snprintf(path, sizeof(path), "%s/%s", dir, name) >= (int)sizeof(path))
+            continue;
+        vrom_offer(path);
+    }
+    closedir(d);
+}
+
 int main(int argc, char *argv[]) {
     // Configuration from arguments
     const char *rom_file = NULL;
@@ -915,9 +955,13 @@ int main(int argc, char *argv[]) {
     if (ram_kb > 0)
         system_set_pending_ram_kb(ram_kb);
 
-    // Set the pending ROM path BEFORE system_create so SE/30 init can
-    // auto-discover a sibling builtin-se30-video-4f71ff1a.vrom file during machine bring-up.
+    // Set the pending ROM path BEFORE system_create (rom.reload depends on it).
     rom_pending_set(rom_file);
+
+    // Offer the ROM's sibling *.vrom files to the content-addressed registry
+    // BEFORE system_create so the card factories can match them during
+    // machine bring-up (offers persist across machine.boot).
+    offer_sibling_vroms(rom_file);
 
     // Stage the user's video-card pick BEFORE system_create so nubus_init
     // resolves it for the configurable slot (validated by
