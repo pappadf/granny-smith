@@ -524,11 +524,22 @@ static value_t rom_method_reload(struct object *self, const member_t *m, int arg
     (void)m;
     (void)argc;
     (void)argv;
-    const char *path = rom_pending_path();
-    if (!path || !*path)
+    const char *pending = rom_pending_path();
+    if (!pending || !*pending)
         return val_err("rom.reload: no startup ROM path recorded; pass an explicit path to rom.load instead");
-    if (rom_load_into_machine(path) != 0)
-        return val_err("rom.reload: failed to reload '%s'", path);
+    // Duplicate before loading: rom_load_into_machine re-records the pending
+    // path (rom_pending_set frees the old string), so passing the pending
+    // buffer itself would be a use-after-free inside the load.
+    char *path = strdup(pending);
+    if (!path)
+        return val_err("rom.reload: out of memory");
+    int rc = rom_load_into_machine(path);
+    if (rc != 0) {
+        value_t err = val_err("rom.reload: failed to reload '%s'", path);
+        free(path);
+        return err;
+    }
+    free(path);
     return val_bool(true);
 }
 
