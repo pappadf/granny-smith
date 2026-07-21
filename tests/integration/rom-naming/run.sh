@@ -25,7 +25,10 @@ while IFS= read -r -d '' f; do
     case "$base" in
         *.rom)  obj="machine.rom.identify"  ;;
         *.vrom) obj="machine.vrom.identify" ;;
-        *)      echo "FAIL: unexpected non-ROM file in roms/: $base"; exit 1 ;;
+        # The generated manifest (roms/README.md, proposal §4.4) and any other
+        # docs legitimately live here — they are not ROM blobs, so skip them.
+        README.md|*.md) continue ;;
+        *) echo "FAIL: unexpected non-ROM/doc file in roms/: $base"; exit 1 ;;
     esac
     printf 'echo GSFILE %s\n' "$base" >> "$SCRIPT"
     printf 'echo ${%s("%s")}\n' "$obj" "$f" >> "$SCRIPT"

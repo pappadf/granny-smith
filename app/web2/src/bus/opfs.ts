@@ -107,8 +107,16 @@ class MockOpfs implements OpfsBackend {
 
   async scanRoms(): Promise<RomInfo[]> {
     return [
-      { name: 'Macintosh Plus v3.rom', path: '/opfs/images/rom/plus-v3-4d1f8172.rom', size: 128 * 1024 },
-      { name: 'iix-iicx-se30-97221136.rom', path: '/opfs/images/rom/iix-iicx-se30-97221136.rom', size: 256 * 1024 },
+      {
+        name: 'Macintosh Plus v3.rom',
+        path: '/opfs/images/rom/plus-v3-4d1f8172.rom',
+        size: 128 * 1024,
+      },
+      {
+        name: 'iix-iicx-se30-97221136.rom',
+        path: '/opfs/images/rom/iix-iicx-se30-97221136.rom',
+        size: 256 * 1024,
+      },
     ];
   }
 
