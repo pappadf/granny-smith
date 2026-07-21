@@ -175,9 +175,14 @@ export function isModuleReady(): boolean {
 
 // --- gsEval -------------------------------------------------------------
 
-export async function gsEval(path: string, args?: unknown[]): Promise<unknown> {
+export async function gsEval(
+  path: string,
+  args?: unknown[] | Record<string, unknown>,
+): Promise<unknown> {
   if (!Module || !moduleReady) return null;
   await waitForBridgeReady();
+  // An array is positional; a plain object binds by declared argument name
+  // (proposal-named-args-boot-config §3.4).
   const argsJson = args === undefined || args === null ? '' : JSON.stringify(args);
   try {
     return await executeGsRequest(path || '', argsJson);

@@ -407,6 +407,38 @@ static void complete_method_arg(const member_t *m, int arg_idx, const char *part
     int n = m->method.nargs;
     if (n <= 0)
         return;
+
+    const arg_decl_t *args = m->method.args;
+    bool m_has_rest = (args[n - 1].validation_flags & OBJ_ARG_REST) != 0;
+    int fixed_n = m_has_rest ? n - 1 : n;
+
+    // Named-argument value: `name=partial` → complete the value against the
+    // named slot's kind (enum/bool — other kinds have no closed value set).
+    const char *eq = strchr(partial, '=');
+    if (eq && eq != partial) {
+        size_t name_len = (size_t)(eq - partial);
+        for (int i = 0; i < fixed_n; i++) {
+            const char *nm = args[i].name;
+            if (!nm || strlen(nm) != name_len || strncmp(nm, partial, name_len) != 0)
+                continue;
+            char buf[160];
+            if (args[i].kind == V_ENUM && args[i].enum_values) {
+                for (const char *const *ev = args[i].enum_values; *ev; ev++) {
+                    snprintf(buf, sizeof(buf), "%s=%s", nm, *ev);
+                    push_match(out, pool_strdup(buf), partial);
+                }
+            } else if (args[i].kind == V_BOOL) {
+                static const char *bool_vals[] = {"true", "false", NULL};
+                for (const char *const *bv = bool_vals; *bv; bv++) {
+                    snprintf(buf, sizeof(buf), "%s=%s", nm, *bv);
+                    push_match(out, pool_strdup(buf), partial);
+                }
+            }
+            return;
+        }
+        return;
+    }
+
     int idx = arg_idx;
     const arg_decl_t *last = &m->method.args[n - 1];
     if (idx >= n) {
@@ -437,6 +469,17 @@ static void complete_method_arg(const member_t *m, int arg_idx, const char *part
     }
     default:
         break;
+    }
+
+    // After the positional candidates, offer `name=` for the declared
+    // arguments this position (or a later one) could still fill by name —
+    // proposal-named-args-boot-config §3.5.
+    for (int i = arg_idx; i < fixed_n; i++) {
+        if (!args[i].name)
+            continue;
+        char nbuf[96];
+        snprintf(nbuf, sizeof(nbuf), "%s=", args[i].name);
+        push_match(out, pool_strdup(nbuf), partial);
     }
 }
 

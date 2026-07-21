@@ -34,4 +34,18 @@ assert ${shell.meta.attributes == "[prompt, running, aliases, vars]"} "list == f
 assert ${shell.meta.attributes != "[prompt]"} "list != wrong string"
 assert ${(shell.meta.attributes == "prompt, running, aliases, vars") == false} "brackets are part of the formatting"
 
+# --- Named arguments (proposal-named-args-boot-config §3) ---
+# Shell form: unquoted name=value tokens bind to declared slots, any
+# order, mixing with positionals.
+machine.boot model="plus" ram=1024
+assert ${machine.id == "plus"} "named-arg shell-form boot"
+assert ${machine.ram == 1024} "named-arg shell-form ram"
+machine.rom.reload
+
+# Call form: name=expr inside call parentheses; value is a full expression.
+t0 = ${machine.boot(ram=1024*2, model="plus")}
+assert ${machine.ram == 2048} "named-arg call-form ram"
+machine.rom.reload
+scheduler.run 1000
+
 quit

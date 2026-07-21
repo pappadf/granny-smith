@@ -346,12 +346,92 @@ static int json_parse_value(const char **pp, value_t *out) {
     return -1;
 }
 
-static int json_parse_args(const char *json, value_t **out_argv, int *out_argc) {
+// Free a parallel names array produced by the object form.
+static void free_arg_names(char **names, int argc) {
+    if (!names)
+        return;
+    for (int i = 0; i < argc; i++)
+        free(names[i]);
+    free(names);
+}
+
+// Parse `{"name": value, ...}` — the named-argument object form. Values
+// are the same primitives the array form accepts; nested containers are
+// rejected. Writes parallel names/argv arrays.
+static int json_parse_object_args(const char *p, value_t **out_argv, int *out_argc, char ***out_names) {
+    p = json_skip_ws(p + 1);
+    if (*p == '}') {
+        return 0;
+    }
+    int cap = 4, n = 0;
+    value_t *argv = (value_t *)calloc(cap, sizeof(value_t));
+    char **names = (char **)calloc(cap, sizeof(char *));
+    if (!argv || !names) {
+        free(argv);
+        free(names);
+        return -1;
+    }
+    while (*p) {
+        if (n >= cap) {
+            cap *= 2;
+            value_t *nb = (value_t *)realloc(argv, cap * sizeof(value_t));
+            char **nn = (char **)realloc(names, cap * sizeof(char *));
+            if (!nb || !nn) {
+                free_args(nb ? nb : argv, n);
+                free_arg_names(nn ? nn : names, n);
+                return -1;
+            }
+            argv = nb;
+            names = nn;
+        }
+        p = json_skip_ws(p);
+        if (json_parse_string(&p, &names[n]) < 0) {
+            free_args(argv, n);
+            free_arg_names(names, n);
+            return -1;
+        }
+        p = json_skip_ws(p);
+        if (*p != ':') {
+            free(names[n]);
+            free_args(argv, n);
+            free_arg_names(names, n);
+            return -1;
+        }
+        p++;
+        if (json_parse_value(&p, &argv[n]) < 0) {
+            free(names[n]);
+            free_args(argv, n);
+            free_arg_names(names, n);
+            return -1;
+        }
+        n++;
+        p = json_skip_ws(p);
+        if (*p == ',') {
+            p = json_skip_ws(p + 1);
+            continue;
+        }
+        if (*p == '}') {
+            break;
+        }
+        free_args(argv, n);
+        free_arg_names(names, n);
+        return -1;
+    }
+    *out_argv = argv;
+    *out_argc = n;
+    *out_names = names;
+    return 0;
+}
+
+static int json_parse_args(const char *json, value_t **out_argv, int *out_argc, char ***out_names) {
     *out_argv = NULL;
     *out_argc = 0;
+    *out_names = NULL;
     if (!json || !*json)
         return 0;
     const char *p = json_skip_ws(json);
+    if (*p == '{')
+        return json_parse_object_args(p, out_argv, out_argc, out_names);
     if (*p != '[')
         return -1;
     p = json_skip_ws(p + 1);
@@ -423,12 +503,14 @@ int gs_eval(const char *path, const char *args_json, char *out_buf, size_t out_s
 
     value_t *argv = NULL;
     int argc = 0;
+    char **arg_names = NULL;
     if (args_json && *args_json) {
-        if (json_parse_args(args_json, &argv, &argc) < 0) {
+        if (json_parse_args(args_json, &argv, &argc, &arg_names) < 0) {
             size_t p = 0;
             out_buf[0] = '\0';
             buf_append(out_buf, out_size, &p, "{\"error\":", 9);
-            buf_append_jstring(out_buf, out_size, &p, "args_json must be a JSON array of primitives");
+            buf_append_jstring(out_buf, out_size, &p,
+                               "args_json must be a JSON array of primitives or an object of named arguments");
             buf_append(out_buf, out_size, &p, "}", 1);
             return -1;
         }
@@ -438,7 +520,24 @@ int gs_eval(const char *path, const char *args_json, char *out_buf, size_t out_s
     // Method paths always dispatch via node_call. Attribute paths route to
     // node_set when args carry exactly one value, otherwise node_get. Bare
     // object/child nodes go through node_get (returns a V_OBJECT reference).
-    if (n.member && n.member->kind == M_METHOD) {
+    if (arg_names && (!n.member || n.member->kind != M_METHOD)) {
+        v = val_err("path '%s' is not a method — named arguments require one", path);
+    } else if (n.member && n.member->kind == M_METHOD && arg_names) {
+        // Object form: bind every entry by name, no positionals.
+        named_arg_t named[OBJ_BIND_MAX_ARGS];
+        if (argc > OBJ_BIND_MAX_ARGS) {
+            v = val_err("too many named arguments (limit %d)", OBJ_BIND_MAX_ARGS);
+        } else {
+            for (int i = 0; i < argc; i++) {
+                named[i].name = arg_names[i];
+                named[i].value = argv[i];
+            }
+            value_t bound[OBJ_BIND_MAX_ARGS];
+            int bound_n = 0;
+            value_t err = node_bind_args(n, 0, NULL, argc, named, bound, &bound_n);
+            v = val_is_error(&err) ? err : node_call(n, bound_n, bound);
+        }
+    } else if (n.member && n.member->kind == M_METHOD) {
         v = node_call(n, argc, argv);
     } else if (n.member && n.member->kind == M_ATTR && argc == 1) {
         // node_set takes ownership of its value; pass a copy so the
@@ -468,5 +567,6 @@ int gs_eval(const char *path, const char *args_json, char *out_buf, size_t out_s
     }
     value_free(&v);
     free_args(argv, argc);
+    free_arg_names(arg_names, argc);
     return rc;
 }

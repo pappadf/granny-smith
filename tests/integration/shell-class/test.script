@@ -38,8 +38,13 @@ assert ${shell.complete("qu", 2) == "[quit]"} "line-start method prefix"
 assert ${shell.complete("machine.cpu.p", 13) == "[machine.cpu.pc]"} "mid-path single match"
 assert ${shell.complete("machine.cpu.s", 13) == "[machine.cpu.sr, machine.cpu.ssp, machine.cpu.sp]"} "mid-path multi match"
 # Method-arg position dispatches by arg_decl kind: V_BOOL offers the
-# canonical spellings.
-assert ${shell.complete("machine.sound.mute ", 19) == "[on, off, true, false]"} "V_BOOL arg candidates"
+# canonical spellings, followed by the `name=` named-argument forms
+# (proposal-named-args-boot-config §3.5).
+assert ${shell.complete("machine.sound.mute ", 19) == "[on, off, true, false, muted=]"} "V_BOOL arg candidates"
+# A typed name prefix narrows to the named-argument form; `name=` prefix
+# completes the value with the name kept.
+assert ${shell.complete("machine.sound.mute mut", 22) == "[muted=]"} "name= prefix narrows"
+assert ${shell.complete("machine.sound.mute muted=t", 26) == "[muted=true]"} "named value completes"
 # Completion is deliberately suppressed inside $(...), "..." and ${...}.
 # The $ is split off via string concat so the script parser doesn't try to
 # expand a $( / ${ inside this very ${...} expression.
