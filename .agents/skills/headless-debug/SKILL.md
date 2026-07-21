@@ -54,15 +54,15 @@ Binary: `build/headless/gs-headless`.
 
 ```bash
 ./build/headless/gs-headless --daemon --kill --speed=max --no-prompt \
-    rom=tests/data/roms/SE30.rom [hd=disk.img] [fd=floppy.dsk] &
+    rom=tests/data/roms/iix-iicx-se30-97221136.rom [hd=disk.img] [fd=floppy.dsk] &
 sleep 2  # or block-read for "READY" on stdout
 ```
 
 Flags:
 - `--daemon` — required, enables TCP socket mode.
 - `rom=<file>` — required. ROMs live under `tests/data/roms/`
-  (`SE30.rom`, `Plus_v3.rom`, `IIcx.rom`; vrom: `SE30.vrom`,
-  `Apple-341-0868.vrom`).
+  (`iix-iicx-se30-97221136.rom`, `plus-v3-4d1f8172.rom`, `iix-iicx-se30-97221136.rom`; vrom: `builtin-se30-video-4f71ff1a.vrom`,
+  `mdc-8-24-revb-d1629664.vrom`).
 - `hd=<file>` (×8) / `fd=<file>` (×2) — pre-attach disks.
 - `--port=N` — TCP port (default **6800**).
 - `--speed=max|realtime|hardware` — default `realtime`. Use `max` for
@@ -94,7 +94,7 @@ this is a launch-environment problem.
 
 ```bash
 ./build/headless/gs-headless --daemon --kill --speed=max --no-prompt \
-    rom=tests/data/roms/SE30.rom &
+    rom=tests/data/roms/iix-iicx-se30-97221136.rom &
 sleep 2
 echo "objects" | nc -w 2 localhost 6800
 ```
@@ -455,7 +455,7 @@ machine.profile "plus"                                # ditto
 machine.rom.path                                              # currently loaded ROM
 machine.rom.checksum                                          # "97221136" (8-hex string)
 machine.rom.name                                              # "Universal IIx/IIcx/SE/30 ROM"
-machine.rom.identify "tests/data/roms/Plus_v3.rom"            # full info map (JSON)
+machine.rom.identify "tests/data/roms/plus-v3-4d1f8172.rom"            # full info map (JSON)
 ```
 
 `machine.profile(id)` returns a JSON-string carrying `id`, `name`,

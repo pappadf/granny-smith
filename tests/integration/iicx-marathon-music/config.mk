@@ -24,5 +24,5 @@
 TEST_NAME := IIcx 8•24 GC — Marathon in-game background music (QuickTime MIDI)
 TEST_DESC := Run through the Marathon gameplay hand-off and assert the QuickTime background music is audible
 
-TEST_ROM := roms/IIcx.rom
+TEST_ROM := roms/iix-iicx-se30-97221136.rom
 TEST_ARGS := model=iicx ram=8192

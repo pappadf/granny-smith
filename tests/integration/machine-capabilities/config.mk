@@ -8,5 +8,5 @@ TEST_DESC := machine.profile().capabilities mmu.kind per model + VROM-by-card
 
 # Any ROM works — machine.profile() is a static registry lookup and does
 # not boot the machine; Plus is the smallest.
-TEST_ROM := roms/Plus_v3.rom
+TEST_ROM := roms/plus-v3-4d1f8172.rom
 TEST_RUNNER := run.sh

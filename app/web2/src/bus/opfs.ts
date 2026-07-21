@@ -69,8 +69,8 @@ class MockOpfs implements OpfsBackend {
     this.dirs.add('/opfs/checkpoints');
     this.dirs.add('/opfs/upload');
     this.dirs.add('/opfs/config');
-    this.files.set('/opfs/images/rom/Plus_v3.rom', { size: 128 * 1024 });
-    this.files.set('/opfs/images/rom/SE30.rom', { size: 256 * 1024 });
+    this.files.set('/opfs/images/rom/plus-v3-4d1f8172.rom', { size: 128 * 1024 });
+    this.files.set('/opfs/images/rom/iix-iicx-se30-97221136.rom', { size: 256 * 1024 });
     this.files.set('/opfs/images/vrom/ROM_97221136', { size: 256 * 1024 });
     this.files.set('/opfs/images/vrom/ROM_SE30_VROM', { size: 256 * 1024 });
     this.files.set('/opfs/images/fd/System_7.0_Install.dsk', { size: 1440 * 1024 });
@@ -107,14 +107,22 @@ class MockOpfs implements OpfsBackend {
 
   async scanRoms(): Promise<RomInfo[]> {
     return [
-      { name: 'Macintosh Plus v3.rom', path: '/opfs/images/rom/Plus_v3.rom', size: 128 * 1024 },
-      { name: 'SE30.rom', path: '/opfs/images/rom/SE30.rom', size: 256 * 1024 },
+      {
+        name: 'Macintosh Plus v3.rom',
+        path: '/opfs/images/rom/plus-v3-4d1f8172.rom',
+        size: 128 * 1024,
+      },
+      {
+        name: 'iix-iicx-se30-97221136.rom',
+        path: '/opfs/images/rom/iix-iicx-se30-97221136.rom',
+        size: 256 * 1024,
+      },
     ];
   }
 
   async scanImages(cat: ImageCategory): Promise<OpfsEntry[]> {
     const fixtures: Record<ImageCategory, string[]> = {
-      rom: ['Plus_v3.rom', 'SE30.rom'],
+      rom: ['plus-v3-4d1f8172.rom', 'iix-iicx-se30-97221136.rom'],
       vrom: ['ROM_97221136', 'ROM_SE30_VROM'],
       fd: ['System_7.0_Install.dsk', 'Disk_Tools.dsk'],
       hd: ['hd1.img', 'hd2.img'],

@@ -17,7 +17,7 @@ byte-layout reference in [`nubus_vrom.md`](../../nubus_vrom.md).
 |---|---|
 | **Card kind** | `mdc_8_24` |
 | **ASIC** | Jackson / JMFB / Elmer (successor to Toby/TFB) |
-| **vROM** | `Apple-341-0868.vrom` (ROM `341-0868`, Rev B) |
+| **vROM** | `mdc-8-24-revb-d1629664.vrom` (ROM `341-0868`, Rev B) |
 | **Slot** | `$9` **default** video card on IIcx, IIx, IIfx |
 | **VRAM** | 2 MB (`defMinorLengthB`) |
 | **decl-ROM** | 32 KB chip → 128 KB bus footprint (byteLanes `$78`), at slot `0xFE0000` |
@@ -29,7 +29,7 @@ byte-layout reference in [`nubus_vrom.md`](../../nubus_vrom.md).
 Minimum-viable (proposal `proposal-machine-iicx-iix.md` §3.2.5): enough to boot
 System 7 to a colour desktop and let the Monitors control panel switch depth.
 
-- The card factory loads `Apple-341-0868.vrom` and registers VRAM, the
+- The card factory loads `mdc-8-24-revb-d1629664.vrom` and registers VRAM, the
   declaration ROM, and the register window on the bus.
 - One I/O dispatcher handles all four register blocks (JMFB / Stopwatch / CLUT /
   Endeavor). The registers the boot path depends on are **modelled**; everything

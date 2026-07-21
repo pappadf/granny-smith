@@ -10,6 +10,6 @@
 TEST_NAME := IIcx Display Card 8•24 GC — 8-bpp arithmetic modes + RGBPat (exact FB bytes)
 TEST_DESC := Arithmetic transfer modes ($20-$27) + MakeRGBPat dither, poke-driven, byte-exact
 
-TEST_ROM := roms/IIcx.rom
+TEST_ROM := roms/iix-iicx-se30-97221136.rom
 
 TEST_ARGS := model=iicx ram=8192

@@ -31,9 +31,9 @@ import { test, expect, type Page } from '@playwright/test';
 import * as path from 'node:path';
 import { gotoWeb2, stageOpfsFile } from '../helpers/web2-fs';
 
-const PLUS_ROM = path.resolve(__dirname, '../../data/roms/Plus_v3.rom');
-const SE30_ROM = path.resolve(__dirname, '../../data/roms/SE30.rom');
-const SE30_VROM = path.resolve(__dirname, '../../data/roms/SE30.vrom');
+const PLUS_ROM = path.resolve(__dirname, '../../data/roms/plus-v3-4d1f8172.rom');
+const SE30_ROM = path.resolve(__dirname, '../../data/roms/iix-iicx-se30-97221136.rom');
+const SE30_VROM = path.resolve(__dirname, '../../data/roms/builtin-se30-video-4f71ff1a.vrom');
 
 // Upload a ROM via the Welcome "Upload ROM..." button (the shipped path; the
 // persist bumps the image revision so the config slide re-scans).
@@ -164,7 +164,7 @@ test.describe('checkpoint save → reload → resume', () => {
 
     // The SE/30's onboard video card requires a vROM; stage it before the ROM
     // upload so the config slide's re-scan identifies both in one pass.
-    await stageOpfsFile(page, '/opfs/images/vrom/SE30.vrom', SE30_VROM);
+    await stageOpfsFile(page, '/opfs/images/vrom/builtin-se30-video-4f71ff1a.vrom', SE30_VROM);
     await uploadRom(page, SE30_ROM);
     await startMachine(page, 'se30');
 

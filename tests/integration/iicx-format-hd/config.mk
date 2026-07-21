@@ -1,7 +1,7 @@
 # Integration test configuration: IIcx + 8•24 GC — format a blank HD under System 6.0.8
 #
 # Boots a Macintosh IIcx with the Apple Macintosh Display Card 8•24 (JMFB,
-# mdc_8_24 — loads Apple-341-0868.vrom next to the ROM) from the SSW 6.0.8
+# mdc_8_24 — loads mdc-8-24-revb-d1629664.vrom next to the ROM) from the SSW 6.0.8
 # 800K boot floppy (Disk2of4, volume "Utilities"), launches Apple HD SC Setup
 # v2.0.3 off that floppy, and formats a freshly-created blank HD20SC SCSI disk
 # at ID 0 — all driven by mouse clicks, matched pixel-exact at each milestone.
@@ -18,7 +18,7 @@
 TEST_NAME := IIcx Format Blank HD (8•24, System 6.0.8)
 TEST_DESC := Boot IIcx + 8•24 GC from SSW 6.0.8 floppy, run Apple HD SC Setup, format a blank HD20SC
 
-TEST_ROM := roms/IIcx.rom
+TEST_ROM := roms/iix-iicx-se30-97221136.rom
 
 # The harness creates the IIcx with 8 MB; the script re-boots with the 8•24
 # card selected (video_card can't be passed as an arg), attaches the blank HD,

@@ -7,7 +7,7 @@ TEST_NAME := Apple Lisa 2 LOS 3.1 mouse-driven Install
 TEST_DESC := Warps the cursor to the Install button and clicks it; verifies the installer responds (reaches its disk-selection screen)
 
 # Interleaved rev-H Lisa 2 boot ROM (341-0175-H / 341-0176-H), 16 KB, checksum 0x098917B2.
-TEST_ROM := Lisa/roms/098917B2-LisaH.rom
+TEST_ROM := roms/lisa2-revh-098917b2.rom
 
 # Lisa 2, 2 MB.  Same boot as lisa-los-boot; this test adds the mouse interaction.
 # The cursor is positioned by the "global" warp: the COPS reads the OS's live

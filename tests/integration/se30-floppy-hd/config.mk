@@ -5,7 +5,7 @@ TEST_NAME := SE/30 HD Floppy Boot
 TEST_DESC := Boots SE/30 with Universal ROM from 1.44MB HD floppy and verifies Finder desktop
 
 # Universal ROM shared by SE/30, IIcx, IIx (checksum 0x97221136)
-TEST_ROM := roms/SE30.rom
+TEST_ROM := roms/iix-iicx-se30-97221136.rom
 
 # Boot from 1.44MB HD MFM floppy (System 7.0.1)
 TEST_ARGS := ram=8192 fd=$(TEST_DATA)/systems/System_7_0_1.image

@@ -27,7 +27,7 @@ import * as path from 'node:path';
 import { gotoWeb2 } from '../helpers/web2-fs';
 
 const DATA = path.resolve(__dirname, '../../data');
-const SE30_ROM = path.join(DATA, 'roms', 'SE30.rom');
+const SE30_ROM = path.join(DATA, 'roms', 'iix-iicx-se30-97221136.rom');
 
 // SE/30: 15.6672 MHz, authentic CPI 4.
 const SE30_HZ = 15_667_200;

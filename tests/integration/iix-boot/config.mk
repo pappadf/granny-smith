@@ -5,6 +5,6 @@
 TEST_NAME := IIx Boot
 TEST_DESC := Boots IIx with Universal ROM and verifies machine-ID identification
 
-TEST_ROM := roms/IIcx.rom
+TEST_ROM := roms/iix-iicx-se30-97221136.rom
 
 TEST_ARGS := model=iix ram=8192

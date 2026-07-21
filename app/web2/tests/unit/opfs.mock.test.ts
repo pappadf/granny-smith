@@ -72,8 +72,8 @@ describe('scanImages/scanRoms hide AppleDouble sidecars', () => {
 
   it('excludes "._<name>" from the ROM listing', async () => {
     const be = new FakeListOpfs();
-    be.entries = ['SE30.rom', '._SE30.rom'];
+    be.entries = ['iix-iicx-se30-97221136.rom', '._iix-iicx-se30-97221136.rom'];
     const names = (await be.scanRoms()).map((r) => r.name);
-    expect(names).toEqual(['SE30.rom']);
+    expect(names).toEqual(['iix-iicx-se30-97221136.rom']);
   });
 });

@@ -16,7 +16,7 @@
 TEST_NAME := IIfx MacTest Boot (8bpp)
 TEST_DESC := Boots Macintosh IIfx from the MacTest floppy at 8-bit colour and verifies the hardware-identification panel
 
-TEST_ROM := roms/4147DD77-IIfx.rom
+TEST_ROM := roms/iifx-4147dd77.rom
 
 # MacTest 1.0 1.44MB HD MFM floppy image.
 # RAM is pinned at 16 MB to match the iifx-boot baseline: ram=8192 currently

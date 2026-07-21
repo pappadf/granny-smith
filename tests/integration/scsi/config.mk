@@ -6,7 +6,7 @@ TEST_NAME := SCSI Hard Disk Boot
 TEST_DESC := Verifies booting from a SCSI hard disk image (hd1.zip)
 
 # Required disk images (paths relative to tests/data/)
-TEST_ROM := roms/Plus_v3.rom
+TEST_ROM := roms/plus-v3-4d1f8172.rom
 
 # Setup command: unzip hd1.zip to a temp directory before running
 # $(TEST_DATA) and $(TEST_TMPDIR) are expanded by the parent Makefile

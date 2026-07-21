@@ -10,6 +10,6 @@
 TEST_NAME := IIx System 7.0.1 Floppy Boot
 TEST_DESC := Boots IIx from the System 7.0.1 floppy and verifies no crash
 
-TEST_ROM := roms/IIcx.rom
+TEST_ROM := roms/iix-iicx-se30-97221136.rom
 
 TEST_ARGS := model=iix ram=8192 fd=$(TEST_DATA)/systems/System_7_0_1.image

@@ -332,7 +332,7 @@ const hw_profile_t machine_iicx = {
     .cdrom_id = 3,
     // The IIcx has no built-in video — its primary display comes from
     // a NuBus video card seated in slot $9 (Apple Display Card 8•24 by
-    // default).  That card needs Apple-341-0868.vrom to declare itself
+    // default).  That card needs mdc-8-24-revb-d1629664.vrom to declare itself
     // to the Slot Manager (without it, slot scan finds an empty slot
     // and the boot ROM can't bring up a framebuffer).  We mark
     // needs_vrom = true so the config dialog asks the user for a VROM

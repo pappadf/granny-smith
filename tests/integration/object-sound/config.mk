@@ -5,4 +5,4 @@
 TEST_NAME := Object-model sound class
 TEST_DESC := sound.enabled / .volume / .sample_rate / .mute() — Plus PWM module
 
-TEST_ROM := roms/Plus_v3.rom
+TEST_ROM := roms/plus-v3-4d1f8172.rom

@@ -25,8 +25,8 @@
 TEST_NAME := IIfx A/UX 3.0.1 HD Boot at 8 bpp (reaches graphical login)
 TEST_DESC := Boot IIfx (16 MB, JMFB at 13" RGB 8 bpp) from the A/UX 3.0.1 HD image; expect the graphical login window, pixel-exact.
 
-# IIfx ROM (checksum 0x4147DD77).  JMFB declrom (Apple-341-0868.vrom) is
+# IIfx ROM (checksum 0x4147DD77).  JMFB declrom (mdc-8-24-revb-d1629664.vrom) is
 # auto-discovered from the same directory as the ROM file.
-TEST_ROM := roms/4147DD77-IIfx.rom
+TEST_ROM := roms/iifx-4147dd77.rom
 
 TEST_ARGS := model=iifx ram=16384

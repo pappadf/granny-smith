@@ -10,6 +10,6 @@
 TEST_NAME := NuBus per-slot staged config
 TEST_DESC := slot[N].card_id / video_mode staging, wildcard-alias equivalence, consume-at-boot
 
-TEST_ROM := roms/IIcx.rom
+TEST_ROM := roms/iix-iicx-se30-97221136.rom
 
 TEST_ARGS := model=iicx ram=8192

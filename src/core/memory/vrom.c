@@ -123,8 +123,9 @@ static uint32_t vrom_be32(const uint8_t *p) {
 }
 
 // Catalog of known VROM blobs.  Maps the declaration ROM's Format-Block CRC
-// to the canonical on-disk filename the C-side card factories expect (e.g.
-// jmfb.c hardcodes "Apple-341-0868.vrom") and the nubus card-kind id the
+// to the canonical on-disk filename the C-side card factories search for
+// (declrom_load_vrom_card / builtin_se30_video both take the filename from
+// vrom_catalog_name — no card hardcodes it) and the nubus card-kind id the
 // blob provides.  The id is the machine-readable link a UI uses to pick the
 // card (machine.nubus.video_card); the human label is owned by the card kind
 // (nubus_card_find(id)->display_name) so it never drifts.  Adding a new VROM
@@ -135,22 +136,27 @@ struct vrom_known {
     const char *canonical_name;
     const char *card_id;
 };
+// Canonical filenames follow proposal-test-rom-naming.md:
+// <card-id>[-<rev>]-<crc8>.vrom, card-id with `_`→`-`. Apple part numbers
+// (341-0868, 341-0266, …) live in the manifest / these comments, not the
+// filename — they identify the chip, not the card. The rom-naming conformance
+// test asserts every tests/data/roms/*.vrom basename equals its row here.
 static const struct vrom_known VROM_CATALOG[] = {
-    // Macintosh Display Card 8•24 (ROM rev 341-0868). Drives the JMFB
+    // Macintosh Display Card 8•24 (ROM rev 341-0868, "Rev B"). Drives the JMFB
     // NuBus card (id "mdc_8_24") on IIcx / IIx / IIfx; loaded by jmfb.c.
-    {0xD1629664u, 0x08000, "Apple-341-0868.vrom",    "mdc_8_24"          },
+    {0xD1629664u, 0x08000, "mdc-8-24-revb-d1629664.vrom",      "mdc_8_24"          },
     // SE/30 onboard video declaration ROM (byteLanes $0F, 4-lane); loaded
     // by builtin_se30_video.c (id "builtin_se30_video").
-    {0x4F71FF1Au, 0x08000, "SE30.vrom",              "builtin_se30_video"},
+    {0x4F71FF1Au, 0x08000, "builtin-se30-video-4f71ff1a.vrom", "builtin_se30_video"},
     // Apple Macintosh Display Card 24AC (id "display_card_24ac").
-    {0xD8DAAB87u, 0x08000, "display-card-24ac.vrom", "display_card_24ac" },
+    {0xD8DAAB87u, 0x08000, "display-card-24ac-d8daab87.vrom",  "display_card_24ac" },
     // Apple Macintosh Display Card 8•24 GC ("Dolphin", id "824gc"): the
     // accelerated card.  Its declaration ROMs are byteLanes $E1 (byte lane 0);
     // v1.1 is a 64 KB chip, v1.0 / the alpha are 32 KB.  All three carry the
     // same $5A932BC7 TestPattern, so they identify by Format-Block CRC.
-    {0xD722B053u, 0x10000, "Apple-341-0266.vrom",    "824gc"             }, // v1.1 (default)
-    {0x9E9857E8u, 0x08000, "341-0812-02_1.0.vrom",   "824gc"             }, // v1.0 (shipping)
-    {0x4740028Du, 0x08000, "Dolphin_1.0A16.vrom",    "824gc"             }, // 1.00a16 alpha
+    {0xD722B053u, 0x10000, "824gc-v1.1-revb-d722b053.vrom",    "824gc"             }, // part 341-0266, v1.1 (default; 16bpp)
+    {0x9E9857E8u, 0x08000, "824gc-v1.0-reva-9e9857e8.vrom",    "824gc"             }, // part 341-0812-02, v1.0 (shipping)
+    {0x4740028Du, 0x08000, "824gc-v1.0a16-4740028d.vrom",      "824gc"             }, // "Dolphin" 1.00a16 alpha
 };
 
 // Content-identification core shared by vrom.identify and the card factories'
@@ -237,7 +243,7 @@ const char *vrom_catalog_name(const char *card_id, int idx, size_t *out_chip_siz
 // the declaration ROM's Format-Block CRC:
 //   {
 //     "recognised":     bool,
-//     "canonical_name": "display-card-24ac.vrom",     // present when recognised
+//     "canonical_name": "display-card-24ac-d8daab87.vrom",     // present when recognised
 //     "card_id":        "display_card_24ac",          // nubus card-kind id
 //     "compatible":     ["display_card_24ac"],         // card ids this blob can drive
 //     "size":           32768,

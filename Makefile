@@ -440,4 +440,4 @@ help:
 	@echo "  SPEED=max|realtime|hardware   Emulation speed"
 	@echo ""
 	@echo "Example:"
-	@echo "  make run ROM=tests/data/roms/Plus_v3.rom HD0=tests/data/systems/hd.zip"
+	@echo "  make run ROM=tests/data/roms/plus-v3-4d1f8172.rom HD0=tests/data/systems/hd.zip"

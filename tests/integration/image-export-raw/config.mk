@@ -6,4 +6,4 @@
 TEST_NAME := storage.export_raw
 TEST_DESC := Export a disk image to a flat raw file and re-mount it via the VFS
 
-TEST_ROM := roms/SE30.rom
+TEST_ROM := roms/iix-iicx-se30-97221136.rom

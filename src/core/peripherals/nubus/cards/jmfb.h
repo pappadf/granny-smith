@@ -35,7 +35,7 @@
 #define CLUT_BLOCK_OFFSET      0x200200u
 #define ENDEAVOR_BLOCK_OFFSET  0x200300u
 #define JMFB_REGISTER_SIZE     0x000400u // covers all four blocks
-// Apple-341-0868.vrom is a 32 KB chip with byteLanes = $78 (lane 3 only,
+// mdc-8-24-revb-d1629664.vrom is a 32 KB chip with byteLanes = $78 (lane 3 only,
 // per "Designing Cards and Drivers for the Macintosh Family" 3rd ed.,
 // Table 8-2).  In bus-space layout the chip's bytes appear sparsely:
 // each chip byte at lane 3 of a longword, with lanes 0-2 inactive.  So

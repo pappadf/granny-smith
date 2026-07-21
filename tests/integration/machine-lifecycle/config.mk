@@ -5,7 +5,7 @@ TEST_NAME := Machine Lifecycle (M1)
 TEST_DESC := Validates system_create/system_destroy lifecycle and checkpoint round-trip via machine_plus callbacks
 
 # Required ROM image (path relative to tests/data/)
-TEST_ROM := roms/Plus_v3.rom
+TEST_ROM := roms/plus-v3-4d1f8172.rom
 
 # No extra disk images required; uses TEST_RUNNER for multi-step execution
 TEST_RUNNER := run.sh

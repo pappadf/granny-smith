@@ -22,7 +22,7 @@
 TEST_NAME := IIcx Display Card 8•24 GC — System 7.1 System Info Display benchmark (accel ON)
 TEST_DESC := Boot IIcx + 8•24 GC to the System 7.1 colour Finder, insert "Utilities Disk 2", launch System Info, select only Test Display, and Run the Display benchmark — accelerator on, pixel-exact
 
-TEST_ROM := roms/IIcx.rom
+TEST_ROM := roms/iix-iicx-se30-97221136.rom
 
 # The harness creates the IIcx with 8 MB; the script re-boots with the 8•24 GC
 # card selected (video_card can't be passed as an arg) and attaches the SCSI HD.

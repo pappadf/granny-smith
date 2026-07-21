@@ -24,6 +24,6 @@
 TEST_NAME := Apple Lisa 2 SCO Xenix 3.0 full install
 TEST_DESC := Full Xenix 3.0 OS install onto the ProFile (hdinit, reboot, firsttime, 7 floppies), then save the cleanly-shut-down image
 
-TEST_ROM := Lisa/roms/098917B2-LisaH.rom
+TEST_ROM := roms/lisa2-revh-098917b2.rom
 
 TEST_ARGS := model=lisa ram=2048 fd=$(TEST_DATA)/Lisa/Xenix-3.0/Xenix-3.0-Boot-XProFile.dc42

@@ -11,7 +11,7 @@
 TEST_NAME := IIcx Video Modes
 TEST_DESC := Cold-boot Finder-at-N-bpp via PRAM seeding + resolution sweep on the JMFB.
 
-TEST_ROM := roms/IIcx.rom
+TEST_ROM := roms/iix-iicx-se30-97221136.rom
 
 # 8 MB RAM lets the JMFB driver complete PrimaryInit cleanly and
 # matches the iicx-floppy budget so the Finder boot timing transfers

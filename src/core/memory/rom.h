@@ -28,6 +28,11 @@ typedef struct rom_info {
     const char *const *compatible; // NULL-terminated list of compatible model_ids
     uint32_t checksum; // Stored checksum (first 4 bytes, big-endian)
     uint32_t rom_size; // Expected file size in bytes
+    // Canonical on-disk filename in tests/data/roms, derived from this row per
+    // proposal-test-rom-naming.md (<targets>[-<rev>]-<checksum8>.rom). The
+    // load-bearing single source of truth for what the file MUST be named;
+    // rom.identify reports it and the rom-naming conformance test enforces it.
+    const char *canonical_name;
 } rom_info_t;
 
 // Look up a ROM by its stored checksum.
@@ -96,7 +101,7 @@ int rom_load_into_machine(const char *path);
 int rom_load_lisa_into_machine(const char *path_a, const char *path_b);
 
 // Path of the ROM passed to the most recent rom_load_into_machine().
-// Used by SE/30 init to auto-discover a sibling SE30.vrom file.
+// Used by SE/30 init to auto-discover a sibling builtin-se30-video-4f71ff1a.vrom file.
 // Returns NULL if no ROM has been loaded.
 const char *rom_pending_path(void);
 

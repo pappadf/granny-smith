@@ -8,4 +8,4 @@
 TEST_NAME := Shell class surface
 TEST_DESC := shell.{run,complete,expand,alias_set,alias_unset,vars,aliases,prompt,running} via gs_eval
 
-TEST_ROM := roms/Plus_v3.rom
+TEST_ROM := roms/plus-v3-4d1f8172.rom

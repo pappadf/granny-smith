@@ -8,4 +8,4 @@
 TEST_NAME := Archive fork-preserving unpack
 TEST_DESC := archive.extract a StuffIt fixture; verify AppleDouble "._<name>" sidecars carry the resource fork.
 
-TEST_ROM := roms/SE30.rom
+TEST_ROM := roms/iix-iicx-se30-97221136.rom

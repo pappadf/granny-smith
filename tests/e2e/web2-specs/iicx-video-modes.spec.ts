@@ -33,8 +33,8 @@ import * as path from 'node:path';
 import { gotoWeb2, stageOpfsFile } from '../helpers/web2-fs';
 
 const DATA = path.resolve(__dirname, '../../data');
-const IICX_ROM = path.join(DATA, 'roms', 'IIcx.rom');
-const JMFB_VROM = path.join(DATA, 'roms', 'Apple-341-0868.vrom');
+const IICX_ROM = path.join(DATA, 'roms', 'iix-iicx-se30-97221136.rom');
+const JMFB_VROM = path.join(DATA, 'roms', 'mdc-8-24-revb-d1629664.vrom');
 const FD_IMAGE = path.join(DATA, 'systems', 'System_7_0_1.image');
 
 interface VideoMode {
@@ -152,7 +152,7 @@ test('IIcx video modes: post-shader canvas matches per-mode baselines', async ({
   for (const mode of MODES) {
     if (first) {
       await gotoWeb2(page);
-      await stageOpfsFile(page, '/opfs/images/vrom/Apple-341-0868.vrom', JMFB_VROM);
+      await stageOpfsFile(page, '/opfs/images/vrom/mdc-8-24-revb-d1629664.vrom', JMFB_VROM);
       await stageOpfsFile(page, '/opfs/images/fd/System_7_0_1.image', FD_IMAGE);
       const [chooser] = await Promise.all([
         page.waitForEvent('filechooser'),

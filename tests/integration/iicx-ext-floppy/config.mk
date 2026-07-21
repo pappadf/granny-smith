@@ -16,7 +16,7 @@ TEST_NAME := IIcx External Floppy Insert (System 7.1)
 TEST_DESC := Inserting a floppy into the IIcx external drive (FD1) under System 7.1 mounts it on the desktop (regression guard for the old Finder error-type-41 bomb)
 
 # Universal ROM shared by SE/30, IIcx, IIx (checksum 0x97221136)
-TEST_ROM := roms/IIcx.rom
+TEST_ROM := roms/iix-iicx-se30-97221136.rom
 
 # 8 MB RAM, matching the boot-matrix IIcx + System Software rows and the
 # sibling iicx-keyboard test.  Floppies are inserted in-script.

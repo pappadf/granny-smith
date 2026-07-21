@@ -5,4 +5,4 @@
 TEST_NAME := Object-model logpoint interpolation
 TEST_DESC := ${...} interpolation drives logpoint message formatting
 
-TEST_ROM := roms/Plus_v3.rom
+TEST_ROM := roms/plus-v3-4d1f8172.rom

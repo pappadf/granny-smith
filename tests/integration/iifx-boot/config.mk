@@ -7,7 +7,7 @@
 TEST_NAME := IIfx Floppy Boot to Finder
 TEST_DESC := Boots Macintosh IIfx from System 7.0.1 floppy and verifies the Finder desktop
 
-TEST_ROM := roms/4147DD77-IIfx.rom
+TEST_ROM := roms/iifx-4147dd77.rom
 
 # NOTE: ram=8192 currently regresses the boot (stalls in POST at $40843F96
 # while probing the SCC IOP).  ram=16384 boots cleanly through to Finder.

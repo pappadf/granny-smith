@@ -10,9 +10,9 @@
 TEST_NAME := IIx Display Card 8•24 GC boot
 TEST_DESC := Boot the IIx with the 8•24 GC selected (computed compatibility) and verify the card seats and paints
 
-# Universal IIx/IIcx/SE/30 ROM; the 8•24 GC vROM (Apple-341-0266.vrom) is
+# Universal IIx/IIcx/SE/30 ROM; the 8•24 GC vROM (824gc-v1.1-revb-d722b053.vrom) is
 # found next to it by canonical catalog name.
-TEST_ROM := roms/IIcx.rom
+TEST_ROM := roms/iix-iicx-se30-97221136.rom
 
 # The harness boots the IIx once; the script re-boots with the 8•24 GC
 # selected (video_card can't be passed as a startup arg).

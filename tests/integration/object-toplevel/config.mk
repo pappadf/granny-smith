@@ -6,4 +6,4 @@
 TEST_NAME := Object-model M8 top-level (appletalk + mouse)
 TEST_DESC := appletalk.shares/.printer + mouse.* methods
 
-TEST_ROM := roms/Plus_v3.rom
+TEST_ROM := roms/plus-v3-4d1f8172.rom

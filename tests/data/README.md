@@ -49,8 +49,8 @@ When properly configured, this directory should contain:
 tests/data/
 ├── README.md              ← You are here (this file is in the public repo)
 ├── roms/
-│   ├── Plus_v3.rom        # Macintosh Plus ROM (128 KB)
-│   └── IIcx.rom           # Macintosh IIcx ROM (optional)
+│   ├── plus-v3-4d1f8172.rom        # Macintosh Plus ROM (128 KB)
+│   └── iix-iicx-se30-97221136.rom           # Macintosh IIcx ROM (optional)
 ├── systems/
 │   ├── System_6_0_8.dsk   # System 6.0.8 boot disk (primary test target)
 │   └── ...                # Other system versions

@@ -11,5 +11,5 @@
 TEST_NAME := IIfx boot chime — golden WAV capture
 TEST_DESC := machine.sound.capture/match: ASC wavetable chime on the OSS machine (channel-A mix)
 
-TEST_ROM := roms/4147DD77-IIfx.rom
+TEST_ROM := roms/iifx-4147dd77.rom
 TEST_ARGS := model=iifx ram=8192

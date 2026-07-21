@@ -7,5 +7,5 @@
 
 TEST_NAME := dump --disasm-code (System 6 Finder)
 TEST_DESC := Snapshot CODE 1 + jump-table disasm and compare to checked-in golden
-TEST_ROM := roms/Plus_v3.rom
+TEST_ROM := roms/plus-v3-4d1f8172.rom
 TEST_RUNNER := run.sh

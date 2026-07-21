@@ -6,4 +6,4 @@
 TEST_NAME := Object-model RTC class
 TEST_DESC := rtc.time / rtc.pram peek+poke+snapshot
 
-TEST_ROM := roms/Plus_v3.rom
+TEST_ROM := roms/plus-v3-4d1f8172.rom

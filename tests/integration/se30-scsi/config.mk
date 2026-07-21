@@ -6,7 +6,7 @@ TEST_NAME := SE/30 SCSI Hard Disk Boot
 TEST_DESC := Verifies SE/30 booting from a SCSI hard disk image (hd1.zip)
 
 # Required disk images (paths relative to tests/data/)
-TEST_ROM := roms/IIcx.rom
+TEST_ROM := roms/iix-iicx-se30-97221136.rom
 
 # Setup command: unzip hd1.zip to a temp directory before running
 # $(TEST_DATA) and $(TEST_TMPDIR) are expanded by the parent Makefile

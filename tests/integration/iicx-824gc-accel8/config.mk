@@ -12,6 +12,6 @@
 TEST_NAME := IIcx Display Card 8•24 GC — accelerator ON at 8 bpp
 TEST_DESC := Boot IIcx + 8•24 GC at 8 bpp with the accelerator drawing; colour desktop pixel-exact
 
-TEST_ROM := roms/IIcx.rom
+TEST_ROM := roms/iix-iicx-se30-97221136.rom
 
 TEST_ARGS := model=iicx ram=8192

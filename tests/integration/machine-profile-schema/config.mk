@@ -8,5 +8,5 @@ TEST_NAME := Machine Profile Schema Snapshot
 TEST_DESC := machine.profile() JSON shape pinned per model (added/removed/retyped field => fail)
 
 # Any ROM works — machine.profile() is a static registry lookup, no boot.
-TEST_ROM := roms/Plus_v3.rom
+TEST_ROM := roms/plus-v3-4d1f8172.rom
 TEST_RUNNER := run.sh

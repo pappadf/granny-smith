@@ -6,5 +6,5 @@
 TEST_NAME := Object-model floppy class
 TEST_DESC := floppy.drives[0|1] indexed children + eject method
 
-TEST_ROM := roms/Plus_v3.rom
+TEST_ROM := roms/plus-v3-4d1f8172.rom
 TEST_ARGS := fd0=$(TEST_DATA)/systems/System_6_0_8.dsk

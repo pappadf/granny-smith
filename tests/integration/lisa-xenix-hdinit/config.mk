@@ -23,7 +23,7 @@
 TEST_NAME := Apple Lisa 2 SCO Xenix 3.0 hdinit
 TEST_DESC := Boot Xenix and run hdinit to initialize the ProFile (mkfs + fsck + boot block)
 
-TEST_ROM := Lisa/roms/098917B2-LisaH.rom
+TEST_ROM := roms/lisa2-revh-098917b2.rom
 
 # Lisa 2, 2 MB.  Boot from the Xenix "Boot XProFile Patch" floppy (the plain Boot
 # floppy's pf driver cannot drive an external ProFile).

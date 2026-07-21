@@ -27,9 +27,9 @@ import { test, expect } from '@playwright/test';
 import * as path from 'node:path';
 import { gotoWeb2, stageOpfsFile } from '../helpers/web2-fs';
 
-const IICX_ROM = path.resolve(__dirname, '../../data/roms/IIcx.rom');
-const VROM_8_24 = path.resolve(__dirname, '../../data/roms/Apple-341-0868.vrom');
-const VROM_24AC = path.resolve(__dirname, '../../data/roms/display-card-24ac.vrom');
+const IICX_ROM = path.resolve(__dirname, '../../data/roms/iix-iicx-se30-97221136.rom');
+const VROM_8_24 = path.resolve(__dirname, '../../data/roms/mdc-8-24-revb-d1629664.vrom');
+const VROM_24AC = path.resolve(__dirname, '../../data/roms/display-card-24ac-d8daab87.vrom');
 
 test('New Machine dialog: pick the 24AC card by name and boot it', async ({ page }) => {
   test.setTimeout(120_000);
@@ -38,8 +38,8 @@ test('New Machine dialog: pick the 24AC card by name and boot it', async ({ page
   // Stage both IIcx video-card vROMs under their canonical names so the card
   // picker has a real choice (8•24 vs 24AC). Done before the ROM upload so the
   // upload's image-revision bump re-scans and identifies them in one pass.
-  await stageOpfsFile(page, '/opfs/images/vrom/Apple-341-0868.vrom', VROM_8_24);
-  await stageOpfsFile(page, '/opfs/images/vrom/display-card-24ac.vrom', VROM_24AC);
+  await stageOpfsFile(page, '/opfs/images/vrom/mdc-8-24-revb-d1629664.vrom', VROM_8_24);
+  await stageOpfsFile(page, '/opfs/images/vrom/display-card-24ac-d8daab87.vrom', VROM_24AC);
 
   // Upload the IIcx ROM via the Welcome "Upload ROM..." button. The persist
   // bumps the image revision, which re-scans the config slide (ROM + the two

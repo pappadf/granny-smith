@@ -9,7 +9,7 @@
 TEST_NAME := IIcx dual display
 TEST_DESC := Boot the IIcx with two video cards (JMFB in $9 + 8•24 GC staged into $A) and pin the dual-card contract
 
-TEST_ROM := roms/IIcx.rom
+TEST_ROM := roms/iix-iicx-se30-97221136.rom
 
 # The harness boots the IIcx once; the script stages socket $A and re-boots.
 TEST_ARGS := model=iicx ram=8192

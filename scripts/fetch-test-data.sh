@@ -55,7 +55,7 @@ check_data_available() {
         return 0
     fi
     # Also check for key files as fallback
-    if [[ -f "$DATA_DIR/roms/Plus_v3.rom" ]] && [[ -d "$DATA_DIR/systems" ]]; then
+    if [[ -f "$DATA_DIR/roms/plus-v3-4d1f8172.rom" ]] && [[ -d "$DATA_DIR/systems" ]]; then
         return 0
     fi
     return 1

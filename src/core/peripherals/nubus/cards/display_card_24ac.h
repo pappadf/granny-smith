@@ -117,7 +117,7 @@
 #define DISPLAY_CARD_24AC_COMMIT_CMD 0x00000004u
 
 // === Declaration ROM ========================================================
-// display-card-24ac.vrom: 32 KB chip, byteLanes = $78 (lane 3 only) → 128 KB
+// display-card-24ac-d8daab87.vrom: 32 KB chip, byteLanes = $78 (lane 3 only) → 128 KB
 // of bus space at slot_base + 0xFE0000 (identical layout to the 8•24).
 #define DISPLAY_CARD_24AC_DECLROM_CHIP_SIZE  0x008000u // 32 KB raw chip data (file size)
 #define DISPLAY_CARD_24AC_DECLROM_BUS_SIZE   0x020000u // 128 KB bus-space footprint (chip × 4)

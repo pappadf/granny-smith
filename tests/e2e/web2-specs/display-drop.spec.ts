@@ -20,7 +20,7 @@ import * as path from 'node:path';
 import { gotoWeb2 } from '../helpers/web2-fs';
 
 const DATA = path.resolve(__dirname, '../../data');
-const PLUS_ROM = path.join(DATA, 'roms', 'Plus_v3.rom');
+const PLUS_ROM = path.join(DATA, 'roms', 'plus-v3-4d1f8172.rom');
 const SYSTEM_FD = path.join(DATA, 'systems', 'System_6_0_8.dsk');
 
 // Dispatch dragenter/dragover/drop onto the Display area with a real File in
@@ -90,7 +90,7 @@ test('drop workflow: ROM auto-boots, floppy auto-mounts, unknown file warns', as
   await gotoWeb2(page);
 
   // 1. ROM onto the Welcome display → default machine boots straight away.
-  await dropOnDisplay(page, 'Plus_v3.rom', PLUS_ROM);
+  await dropOnDisplay(page, 'plus-v3-4d1f8172.rom', PLUS_ROM);
   await expect(toast(page, 'Booted plus from uploaded ROM')).toBeVisible({ timeout: 60_000 });
   await expect(page.locator('.welcome-layer')).toHaveCount(0);
   await expect(page.locator('.gs-statusbar .sb-state .label')).toHaveText('Running');
@@ -116,7 +116,7 @@ test('checkpoint drop restores the saved machine state', async ({ page }) => {
 
   // Boot a machine via ROM drop, then pause it so the snapshot captures a
   // deterministic instruction count (a paused snapshot restores paused).
-  await dropOnDisplay(page, 'Plus_v3.rom', PLUS_ROM);
+  await dropOnDisplay(page, 'plus-v3-4d1f8172.rom', PLUS_ROM);
   await expect(toast(page, 'Booted plus from uploaded ROM')).toBeVisible({ timeout: 60_000 });
 
   await page.locator('button.ptab[data-tab="terminal"]').click();

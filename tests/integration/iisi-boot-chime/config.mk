@@ -7,5 +7,5 @@
 TEST_NAME := IIsi boot chime — golden WAV capture
 TEST_DESC := machine.sound.capture/match: ASC wavetable chime on the V8 machine (channel-A mix)
 
-TEST_ROM := roms/36B7FB6C-IIsi.rom
+TEST_ROM := roms/iisi-36b7fb6c.rom
 TEST_ARGS := model=iisi ram=17408

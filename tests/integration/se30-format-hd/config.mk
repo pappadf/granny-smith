@@ -6,7 +6,7 @@ TEST_NAME := SE/30 Format Blank HD
 TEST_DESC := Creates blank 80MB image via hd create, boots 7.0.1 floppy, opens HD SC Setup
 
 # SE/30 Universal ROM
-TEST_ROM := roms/SE30.rom
+TEST_ROM := roms/iix-iicx-se30-97221136.rom
 
 # Remove stale delta/journal files so the floppy boots from a clean base image
 TEST_SETUP := rm -f $(TEST_DATA)/systems/System_7_0_1.image.delta $(TEST_DATA)/systems/System_7_0_1.image.journal

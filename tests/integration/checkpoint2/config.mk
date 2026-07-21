@@ -7,7 +7,7 @@ TEST_NAME := Checkpoint Save/Load v2
 TEST_DESC := Tests save-state and load-state with persistent test artifacts
 
 # Required disk images (paths relative to tests/data/)
-TEST_ROM := roms/Plus_v3.rom
+TEST_ROM := roms/plus-v3-4d1f8172.rom
 
 # This test uses a custom runner script that operates on static script files
 # and uses a persistent test-results directory instead of /tmp

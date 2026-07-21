@@ -5,7 +5,7 @@ TEST_NAME := SE/30 Floppy Boot
 TEST_DESC := Boots SE/30 with Universal ROM from System 7.1 floppy and verifies display
 
 # Universal ROM shared by SE/30, IIcx, IIx (checksum 0x97221136)
-TEST_ROM := roms/IIcx.rom
+TEST_ROM := roms/iix-iicx-se30-97221136.rom
 
 # Boot from System 7.1 floppy disk.  Pin RAM at 4 MB to match the existing
 # screenshot baseline; SE/30's profile default is 8 MB (proposal §3.1) and

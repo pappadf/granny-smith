@@ -15,7 +15,7 @@
 TEST_NAME := IIcx Display Card 24AC — 32-bit SCSI cdev boot
 TEST_DESC := Boot IIcx + 24AC from the 32-bit System 7.1 SCSI cdev image to an 8-bpp colour Finder desktop
 
-TEST_ROM := roms/IIcx.rom
+TEST_ROM := roms/iix-iicx-se30-97221136.rom
 
 # The harness creates the IIcx with 8 MB; the script re-boots with the 24AC
 # card selected (video_card can't be passed as an arg) and attaches the SCSI HD.

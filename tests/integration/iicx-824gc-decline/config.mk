@@ -12,6 +12,6 @@
 TEST_NAME := IIcx Display Card 8•24 GC — force_decline differential oracle
 TEST_DESC := Same boot as iicx-824gc-accel but every drawing func declines; the ROM path must render the identical pixels
 
-TEST_ROM := roms/IIcx.rom
+TEST_ROM := roms/iix-iicx-se30-97221136.rom
 
 TEST_ARGS := model=iicx ram=8192

@@ -21,7 +21,7 @@ const SRC = join(here, '..', '..', 'src');
 const FORBIDDEN: { why: string; pattern: RegExp }[] = [
   {
     // The smoking gun: an escaped-slash model name inside a regex literal.
-    // "SE30.rom" (a filename) has no backslash, so it does not match this.
+    // "iix-iicx-se30-97221136.rom" (a filename) has no backslash, so it does not match this.
     why: 'regex literal matching the "SE/30" model name (use machine.profile capabilities instead)',
     pattern: /SE\\\/30/,
   },

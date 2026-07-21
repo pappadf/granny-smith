@@ -63,7 +63,7 @@ void declrom_install(nubus_card_t *card, const declrom_builder_t *b);
 // Load a real declaration-ROM binary from disk into a freshly-allocated
 // buffer of size `expected_size`.  Returns the buffer (caller owns) on
 // success, NULL on miss.  Used by cards that prefer a real ROM file
-// (e.g. the JMFB card with `Apple-341-0868.vrom`) and fall back to the
+// (e.g. the JMFB card with `mdc-8-24-revb-d1629664.vrom`) and fall back to the
 // builder on miss.  v1 stub — body lands in step 6.
 uint8_t *declrom_load(const char *path, size_t expected_size);
 

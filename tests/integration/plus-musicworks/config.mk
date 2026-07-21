@@ -13,5 +13,5 @@
 TEST_NAME := Plus MusicWorks — Brandenburg No. 3 playback
 TEST_DESC := Boot MFS floppy to Finder, open Samples/Brandenburg No. 3 in MusicWorks, PLAY; golden-WAV match of the PWM music
 
-TEST_ROM := roms/Plus_v3.rom
+TEST_ROM := roms/plus-v3-4d1f8172.rom
 TEST_ARGS := fd=$(TEST_DATA)/apps/MusicWorks-0.42.image

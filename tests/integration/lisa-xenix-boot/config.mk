@@ -24,7 +24,7 @@
 TEST_NAME := Apple Lisa 2 boot Xenix from the ProFile
 TEST_DESC := Boots the installed Xenix 3.0 ProFile to its multi-user startup prompt
 
-TEST_ROM := Lisa/roms/098917B2-LisaH.rom
+TEST_ROM := roms/lisa2-revh-098917b2.rom
 TEST_ARGS := model=lisa ram=2048 fd=$(TEST_DATA)/Lisa/Xenix-3.0/Xenix-3.0-Boot-XProFile.dc42
 
 # Copy the installed image to a writable scratch path so the staged input is never
