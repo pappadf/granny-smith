@@ -9,7 +9,7 @@
 // acceleration engine the dossier's hardware spec (doc 3) describes.
 //
 // Two halves (proposal §0):
-//   * Phase 1 (display): loads the genuine display-card-24ac.vrom and
+//   * Phase 1 (display): loads the genuine display-card-24ac-d8daab87.vrom and
 //     presents a linear framebuffer + CLUT + VBL slot IRQ.  The card's own
 //     System 7 video driver (in the vrom) programs the standard video
 //     registers; we model the ones it touches (CLUT, depth/mode latch,
@@ -796,7 +796,7 @@ static int card_init(nubus_card_t *card, config_t *cfg, checkpoint_t *cp) {
         // requires_vrom gates the dialog on a real file; reaching here means
         // CI ran without one.  Log loudly and continue with a zero declrom —
         // PrimaryInit finds no Format Header and the OS skips the slot.
-        LOG(0, "display-card-24ac.vrom not found; declaration ROM is zero-filled");
+        LOG(0, "display-card-24ac-d8daab87.vrom not found; declaration ROM is zero-filled");
     }
 
     // Publish the declaration ROM on the generic card handle so the

@@ -10,7 +10,7 @@ TEST_NAME := SE/30 A/UX 3.0.1 Boot (retail SE)
 TEST_DESC := Boot SE/30 from retail A/UX 3.0.1 SE floppy + CD; mount root from CD-ROM
 
 # Universal ROM shared by SE/30, IIcx, IIx (checksum 0x97221136)
-TEST_ROM := roms/SE30.rom
+TEST_ROM := roms/iix-iicx-se30-97221136.rom
 
 # Always start clean: copy the boot floppy (DiskCopy 4.2, 800 KB) into
 # TEST_TMPDIR so its .delta/.journal are wiped with the tempdir on exit;

@@ -337,7 +337,7 @@ The SE/30 has **no programmable video device**: the built-in 9″ display is
 a fixed 512×342 1-bit framebuffer scanned out of main RAM by the GLUE
 ASIC. There is no CLUT, no depth control, and no real video driver in
 the System file. To make the Slot Manager and `_InitGraf` happy, however,
-the SE/30 ROM (and our `tests/data/roms/SE30.vrom` declaration ROM)
+the SE/30 ROM (and our `tests/data/roms/builtin-se30-video-4f71ff1a.vrom` declaration ROM)
 exposes the built-in display as a **pseudo-slot at slot $9** with a
 single mode-list entry (`spID = $80`, 1 bpp, 512×342). The 8-byte
 sPRAMRec at `$46..$4D` is therefore real and is maintained by the Slot
@@ -361,7 +361,7 @@ from an Apple-supplied or third-party NuBus card installed in one of
 slots `$9..$E`. In our integration test
 [tests/integration/iicx-floppy/config.mk](../tests/integration/iicx-floppy/config.mk),
 the card we install is the **Apple Macintosh Display Card 8•24** (Apple
-codename "JMFB", declaration ROM `Apple-341-0868.vrom`,
+codename "JMFB", declaration ROM `mdc-8-24-revb-d1629664.vrom`,
 [src/core/peripherals/nubus/cards/jmfb.c](../src/core/peripherals/nubus/cards/jmfb.c)).
 That card is multi-mode and multi-depth (1/2/4/8/16/24 bpp, multiple
 resolutions selected by the connected monitor's sense lines), so its
@@ -603,7 +603,7 @@ pram[0x02:0x04]       = b'\x4F\x48'
 #    On SE/30: built-in 1-bit pseudo-slot (only valid depth/mode is $80).
 #    On IIcx:  first NuBus card; for the Apple Display Card 8•24 (JMFB)
 #              the depth byte should match a depth advertised by
-#              Apple-341-0868.vrom (e.g. $80=1bpp, $81=2bpp, $82=4bpp,
+#              mdc-8-24-revb-d1629664.vrom (e.g. $80=1bpp, $81=2bpp, $82=4bpp,
 #              $83=8bpp) and the mode byte should match a mode-list
 #              entry advertised by the same vrom.
 slot9 = 0x46

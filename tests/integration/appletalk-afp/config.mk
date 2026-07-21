@@ -12,7 +12,7 @@
 TEST_NAME := AppleTalk AFP Mount
 TEST_DESC := Chooser -> AppleShare -> discover host share -> connect as Guest -> mount volume on the desktop.
 
-TEST_ROM := roms/Plus_v3.rom
+TEST_ROM := roms/plus-v3-4d1f8172.rom
 
 TEST_SETUP := unzip -o -q $(TEST_DATA)/systems/hd1.zip -d $(TEST_TMPDIR)
 

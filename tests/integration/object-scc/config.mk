@@ -6,4 +6,4 @@
 TEST_NAME := Object-model SCC class
 TEST_DESC := scc.loopback / scc.reset / scc.{a,b}.* expose the SCC peripheral
 
-TEST_ROM := roms/Plus_v3.rom
+TEST_ROM := roms/plus-v3-4d1f8172.rom

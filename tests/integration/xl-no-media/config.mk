@@ -11,7 +11,7 @@ TEST_DESC := Boots the Macintosh XL with no floppy and no ProFile; the boot ROM 
 
 # Interleaved Macintosh XL "3A" boot ROM (341-0346-A / 341-0347-A), 16 KB,
 # checksum 0x094C82F0.
-TEST_ROM := Lisa/roms/094C82F0-MacXL.rom
+TEST_ROM := roms/macxl-3a-094c82f0.rom
 
 # Macintosh XL, 1 MB (the macxl profile default, so the 608x431 framebuffer sits
 # at $F8000 and the rendered prompt is reproducible).  No fd= and no profile=

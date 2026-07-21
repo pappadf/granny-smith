@@ -5,7 +5,7 @@ TEST_NAME := SE/30 A/UX 3.0.1 HD Boot
 TEST_DESC := Boot SE/30 with 16 MB RAM from a pre-installed A/UX 3.0.1 HD image
 
 # Universal ROM shared by SE/30, IIcx, IIx (checksum 0x97221136)
-TEST_ROM := roms/SE30.rom
+TEST_ROM := roms/iix-iicx-se30-97221136.rom
 
 # Copy the HD image into TEST_TMPDIR so its .delta/.journal are wiped with
 # the tempdir on exit; the source image is left untouched between runs.

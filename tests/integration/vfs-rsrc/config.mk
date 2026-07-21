@@ -5,4 +5,4 @@
 
 TEST_NAME := VFS resource-fork tree
 TEST_DESC := Walk /rsrc/<TYPE>/<id> and .info sidecars on a System 6 floppy
-TEST_ROM := roms/Plus_v3.rom
+TEST_ROM := roms/plus-v3-4d1f8172.rom

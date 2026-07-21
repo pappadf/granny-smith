@@ -175,7 +175,7 @@ const hw_profile_t machine_iix = {
     .has_cdrom = true,
     .cdrom_id = 3,
     // Same reasoning as IIcx: no built-in video, so the slot card's
-    // VROM (Apple-341-0868.vrom for the default JMFB card) must be
+    // VROM (mdc-8-24-revb-d1629664.vrom for the default JMFB card) must be
     // present.  See iicx.c for the full comment.
 
     .nubus_slots = iix_slots,

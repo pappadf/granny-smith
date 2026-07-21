@@ -14,9 +14,9 @@
 TEST_NAME := IIfx Display Card 24AC boot
 TEST_DESC := Boot the IIfx with the 24AC selected (computed compatibility) and verify the card seats and the boot screen shows
 
-# Dedicated IIfx ROM; the 24AC vROM (display-card-24ac.vrom) is found next
+# Dedicated IIfx ROM; the 24AC vROM (display-card-24ac-d8daab87.vrom) is found next
 # to it by canonical catalog name.
-TEST_ROM := roms/4147DD77-IIfx.rom
+TEST_ROM := roms/iifx-4147dd77.rom
 
 # The harness boots the IIfx once; the script re-boots with the 24AC
 # selected (the ROM-only phase needs no disk).

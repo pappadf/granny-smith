@@ -21,7 +21,7 @@
 TEST_NAME := IIcx 8•24 GC — Control Panel volume beep (ASC wavetable path)
 TEST_DESC := Boot to Finder, open Control Panel via Apple menu, drag Speaker Volume; golden-WAV match of the Sound Manager beep
 
-TEST_ROM := roms/IIcx.rom
+TEST_ROM := roms/iix-iicx-se30-97221136.rom
 
 # The harness creates the IIcx with 8 MB; the script re-boots with the 8•24 GC
 # card selected (video_card can't be passed as an arg) and attaches the SCSI HD.

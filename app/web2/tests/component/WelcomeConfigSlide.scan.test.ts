@@ -130,7 +130,7 @@ describe('WelcomeConfigSlide OPFS scan', () => {
       new StubOpfs({
         rom: [
           { name: 'Plus_v1.rom', path: '/opfs/images/rom/Plus_v1.rom', kind: 'file' },
-          { name: 'Plus_v3.rom', path: '/opfs/images/rom/Plus_v3.rom', kind: 'file' },
+          { name: 'plus-v3-4d1f8172.rom', path: '/opfs/images/rom/plus-v3-4d1f8172.rom', kind: 'file' },
         ],
       }),
     );
@@ -148,8 +148,8 @@ describe('WelcomeConfigSlide OPFS scan', () => {
     setOpfsBackend(
       new StubOpfs({
         rom: [
-          { name: 'Plus_v3.rom', path: '/opfs/images/rom/Plus_v3.rom', kind: 'file' },
-          { name: 'SE30.rom', path: '/opfs/images/rom/SE30.rom', kind: 'file' },
+          { name: 'plus-v3-4d1f8172.rom', path: '/opfs/images/rom/plus-v3-4d1f8172.rom', kind: 'file' },
+          { name: 'iix-iicx-se30-97221136.rom', path: '/opfs/images/rom/iix-iicx-se30-97221136.rom', kind: 'file' },
         ],
       }),
     );

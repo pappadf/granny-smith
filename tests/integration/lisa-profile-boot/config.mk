@@ -30,6 +30,6 @@
 TEST_NAME := Apple Lisa 2 boot LOS from the ProFile
 TEST_DESC := Cold-boots the installed ProFile via its on-disk PRAM snapshot (no floppy); catches a non-clean-shutdown image
 
-TEST_ROM := Lisa/roms/098917B2-LisaH.rom
+TEST_ROM := roms/lisa2-revh-098917b2.rom
 TEST_ARGS := model=lisa ram=2048
 TEST_SETUP := cp "$(TEST_DATA)/Lisa/LisaOfficeSystem-3.1/LOS-3.1-ProFile.image" "$(WORK_DIR)/profile.image" && python3 lisa-profile-boot/seed_pram.py "$(WORK_DIR)/profile.pram" --coldboot

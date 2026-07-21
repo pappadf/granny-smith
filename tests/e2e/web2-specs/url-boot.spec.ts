@@ -17,7 +17,7 @@ import { test, expect, type Page } from '@playwright/test';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 
-const PLUS_ROM = path.resolve(__dirname, '../../data/roms/Plus_v3.rom');
+const PLUS_ROM = path.resolve(__dirname, '../../data/roms/plus-v3-4d1f8172.rom');
 
 // Serve the ROM bytes from disk for any request to the sentinel path the
 // URL params point at. Must be registered before goto so the in-page

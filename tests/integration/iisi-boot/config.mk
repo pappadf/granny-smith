@@ -10,7 +10,7 @@ TEST_NAME := IIsi Floppy Boot
 TEST_DESC := Boots the Macintosh IIsi (Egret + V8 built-in video at physical 0) from System 7.0.1 floppy and verifies the Finder desktop
 
 # Dedicated 512 KB Macintosh IIsi ("Erickson") ROM, checksum 0x36B7FB6C.
-TEST_ROM := roms/36B7FB6C-IIsi.rom
+TEST_ROM := roms/iisi-36b7fb6c.rom
 
 # RAM pinned at 17 MB = 1 MB soldered Bank A ($00000000, holds the video frame
 # buffer at its bottom) + 16 MB Bank B ($04000000, system "low memory"), the

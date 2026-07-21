@@ -31,8 +31,8 @@ import * as path from 'node:path';
 import { gotoWeb2, stageOpfsFile, stageOpfsFileStreaming } from '../helpers/web2-fs';
 
 const DATA = path.resolve(__dirname, '../../data');
-const IIFX_ROM = path.join(DATA, 'roms', '4147DD77-IIfx.rom');
-const JMFB_VROM = path.join(DATA, 'roms', '341-0868.vrom');
+const IIFX_ROM = path.join(DATA, 'roms', 'iifx-4147dd77.rom');
+const JMFB_VROM = path.join(DATA, 'roms', 'mdc-8-24-revb-d1629664.vrom');
 const AUX_HD = path.join(DATA, 'aux', 'aux_3.0.1', 'hd160-with-aux-301.img');
 // The 8bpp A/UX login framebuffer — same bytes as the integration
 // reference (tests/integration/iifx-aux3-boot-8bpp/aux-login-8bpp.png).
@@ -64,7 +64,7 @@ test('IIfx A/UX 3.0.1 free-runs under the real RAF scheduler to the login', asyn
   // worker-side copying, and the streaming upload path has its own e2e
   // (webkit-local/upload.spec.ts). Staged before the ROM upload so the config
   // slide's re-scan lists everything in one pass.
-  await stageOpfsFile(page, '/opfs/images/vrom/341-0868.vrom', JMFB_VROM);
+  await stageOpfsFile(page, '/opfs/images/vrom/mdc-8-24-revb-d1629664.vrom', JMFB_VROM);
   await stageOpfsFile(page, '/opfs/upload/login-ref.png', LOGIN_REF);
   await stageOpfsFileStreaming(page, '/opfs/images/hd/hd160-with-aux-301.img', AUX_HD);
 

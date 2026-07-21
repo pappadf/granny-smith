@@ -26,8 +26,8 @@ describe('ImagesView', () => {
       const names = Array.from(container.querySelectorAll('.image-row .name')).map(
         (e) => e.textContent,
       );
-      expect(names).toContain('Plus_v3.rom');
-      expect(names).toContain('SE30.rom');
+      expect(names).toContain('plus-v3-4d1f8172.rom');
+      expect(names).toContain('iix-iicx-se30-97221136.rom');
     });
   });
 

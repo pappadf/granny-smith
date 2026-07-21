@@ -17,8 +17,8 @@
 storage.hd_create ${WORK_DIR}/blank.img HD20SC
 
 # Select the 8•24 GC + 13" RGB 640x480 sense, boot the IIcx with 8 MB, and
-# reload the ROM so the card's declaration ROM (Apple-341-0868.vrom, found
-# next to IIcx.rom) binds.  video_card can't be passed as a boot arg.
+# reload the ROM so the card's declaration ROM (mdc-8-24-revb-d1629664.vrom, found
+# next to iix-iicx-se30-97221136.rom) binds.  video_card can't be passed as a boot arg.
 machine.nubus.video_card = "mdc_8_24"
 machine.nubus.video_sense = 0x6
 machine.boot "iicx" 8192

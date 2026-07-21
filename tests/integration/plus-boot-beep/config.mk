@@ -13,4 +13,4 @@
 TEST_NAME := Plus boot beep — golden WAV capture
 TEST_DESC := machine.sound.capture/match: deterministic Plus PWM audio through the generalized audio path
 
-TEST_ROM := roms/Plus_v3.rom
+TEST_ROM := roms/plus-v3-4d1f8172.rom

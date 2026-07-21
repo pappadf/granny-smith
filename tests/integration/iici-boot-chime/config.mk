@@ -10,5 +10,5 @@
 TEST_NAME := IIci boot chime — golden WAV capture
 TEST_DESC := machine.sound.capture/match: ASC wavetable chime on the RBV machine (channel-A mix)
 
-TEST_ROM := roms/368CADFE-IIci.rom
+TEST_ROM := roms/iici-368cadfe.rom
 TEST_ARGS := model=iici ram=8192

@@ -18,7 +18,7 @@ You can specify images directly in the page URL as query arguments (e.g., `rom=.
 
 **Example:**
 ```
-https://your-emulator-page?rom=https://example.com/Plus_v3.rom&fd0=https://example.com/System_6_0_8.dsk
+https://your-emulator-page?rom=https://example.com/plus-v3-4d1f8172.rom&fd0=https://example.com/System_6_0_8.dsk
 ```
 This will download the ROM and floppy disk images and place them under `/persist/boot/rom` and `/persist/boot/fd0` respectively.
 

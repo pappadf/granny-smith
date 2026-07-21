@@ -7,4 +7,4 @@ TEST_NAME := Image partmap
 TEST_DESC := Exercises `image partmap` and `image probe` against an APM-formatted A/UX disk image
 
 # Universal ROM shared by SE/30, IIcx, IIx
-TEST_ROM := roms/SE30.rom
+TEST_ROM := roms/iix-iicx-se30-97221136.rom

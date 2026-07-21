@@ -6,4 +6,4 @@
 TEST_NAME := Object-model eval (Plus)
 TEST_DESC := Smoke test for `eval` shell command — cpu/memory/machine paths
 
-TEST_ROM := roms/Plus_v3.rom
+TEST_ROM := roms/plus-v3-4d1f8172.rom

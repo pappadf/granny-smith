@@ -17,7 +17,7 @@ vi.mock('@/bus/emulator', async (importOriginal) => {
     gsEval: async (path: string, args?: unknown[]) => {
       if (path === 'machine.rom.identify') {
         const p = (args?.[0] as string) ?? '';
-        if (p.endsWith('Plus_v3.rom')) {
+        if (p.endsWith('plus-v3-4d1f8172.rom')) {
           return JSON.stringify({
             recognised: true,
             checksum: 'plus-checksum',
@@ -26,7 +26,7 @@ vi.mock('@/bus/emulator', async (importOriginal) => {
             size: 128 * 1024,
           });
         }
-        if (p.endsWith('SE30.rom')) {
+        if (p.endsWith('iix-iicx-se30-97221136.rom')) {
           return JSON.stringify({
             recognised: true,
             checksum: 'se30-checksum',

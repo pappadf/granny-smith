@@ -6,7 +6,7 @@ TEST_NAME := Apple Lisa 2 LOS 3.1 boot
 TEST_DESC := Boots the Lisa 2 from the Lisa Office System 3.1 install floppy to the Install/Repair/Restore menu
 
 # Interleaved rev-H Lisa 2 boot ROM (341-0175-H / 341-0176-H), 16 KB, checksum 0x098917B2.
-TEST_ROM := Lisa/roms/098917B2-LisaH.rom
+TEST_ROM := roms/lisa2-revh-098917b2.rom
 
 # Lisa 2, 2 MB.  Booting the Office System exercises the whole stack: the boot
 # ROM sizes/maps RAM and loads the OS off the Sony 400K floppy; the OS mounts the

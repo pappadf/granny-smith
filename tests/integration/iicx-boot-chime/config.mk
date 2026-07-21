@@ -7,5 +7,5 @@
 TEST_NAME := IIcx boot chime — golden WAV capture
 TEST_DESC := machine.sound.capture/match: ASC wavetable chime through the producer path (IIcx channel-A mix)
 
-TEST_ROM := roms/IIcx.rom
+TEST_ROM := roms/iix-iicx-se30-97221136.rom
 TEST_ARGS := model=iicx

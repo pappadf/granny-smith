@@ -8,4 +8,4 @@ TEST_NAME := Image UFS traverse
 TEST_DESC := Descends into the A/UX 3.0.1 UFS root partition and copies out /etc
 
 # Universal ROM shared by SE/30, IIcx, IIx
-TEST_ROM := roms/SE30.rom
+TEST_ROM := roms/iix-iicx-se30-97221136.rom

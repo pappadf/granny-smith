@@ -30,7 +30,7 @@ import * as path from 'node:path';
 import { gotoWeb2 } from '../helpers/web2-fs';
 
 const DATA = path.resolve(__dirname, '../../data');
-const SE30_ROM = path.join(DATA, 'roms', 'SE30.rom');
+const SE30_ROM = path.join(DATA, 'roms', 'iix-iicx-se30-97221136.rom');
 
 const LABEL = process.env.PERF_LABEL ?? 'unlabeled';
 const WINDOWS = Number(process.env.PERF_WINDOWS ?? 3);

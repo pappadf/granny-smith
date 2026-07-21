@@ -21,7 +21,7 @@
 TEST_NAME := IIcx Display Card 8•24 GC — Marathon boot + new game at 8 bpp
 TEST_DESC := Boot IIcx + 8•24 GC at 8 bpp, launch Marathon, set Preferences to High-Res/100%/256/Normal, OK, Begin New Game through the Arrival cut scene into gameplay; pixel-exact
 
-TEST_ROM := roms/IIcx.rom
+TEST_ROM := roms/iix-iicx-se30-97221136.rom
 
 # The harness creates the IIcx with 8 MB; the script re-boots with the 8•24 GC
 # card selected (video_card can't be passed as an arg) and attaches the SCSI HD.

@@ -10,7 +10,7 @@ TEST_NAME := Boot Matrix
 TEST_DESC := Cold-boot a Plus across multiple System Software versions in one daemon run.
 
 # Macintosh Plus ROM (shared across the whole matrix)
-TEST_ROM := roms/Plus_v3.rom
+TEST_ROM := roms/plus-v3-4d1f8172.rom
 
 # Start the daemon with a Plus profile at 1 MB so the first
 # `machine.boot` in test.script has a sensible baseline to re-instantiate

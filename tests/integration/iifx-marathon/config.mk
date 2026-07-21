@@ -11,7 +11,7 @@
 TEST_NAME := IIfx Display Card 8•24 GC — Marathon boot + new game at 8 bpp
 TEST_DESC := Boot IIfx + 8•24 GC at 8 bpp, launch Marathon, set Preferences to High-Res/100%/256/Normal, OK, Begin New Game through the Arrival cut scene into gameplay; pixel-exact
 
-TEST_ROM := roms/4147DD77-IIfx.rom
+TEST_ROM := roms/iifx-4147dd77.rom
 
 # The harness creates the IIfx with 16 MB; the script re-boots with the
 # 8•24 GC card selected and attaches the SCSI HD.

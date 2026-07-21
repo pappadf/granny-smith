@@ -26,7 +26,7 @@ import { test, expect } from '@playwright/test';
 import * as path from 'node:path';
 import { gotoWeb2 } from '../helpers/web2-fs';
 
-const LISA_ROM = path.resolve(__dirname, '../../data/Lisa/roms/098917B2-LisaH.rom');
+const LISA_ROM = path.resolve(__dirname, '../../data/roms/lisa2-revh-098917b2.rom');
 const XENIX_HD = path.resolve(__dirname, '../../data/Lisa/Xenix-3.0/Xenix-3.0-ProFile.image');
 const XENIX_HD_NAME = 'Xenix-3.0-ProFile.image';
 

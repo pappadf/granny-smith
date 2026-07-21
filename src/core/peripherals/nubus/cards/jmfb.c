@@ -6,7 +6,7 @@
 // proposal-machine-iicx-iix.md §3.2.5 + jmfb.h for the contract.
 //
 // Implementation status (proposal step 6, minimum-viable):
-//   * Card factory loads `Apple-341-0868.vrom` and registers VRAM,
+//   * Card factory loads `mdc-8-24-revb-d1629664.vrom` and registers VRAM,
 //     declrom, and the register window on the bus.
 //   * I/O dispatcher in this file handles all four register blocks at
 //     a single switch.  Modelled handlers cover the registers the
@@ -17,7 +17,7 @@
 //     up the user's `monitor=` choice.
 //   * CLUT writes feed display.clut and set clut_dirty; depth changes
 //     via CLUTPBCR feed display.format and set shape_dirty.
-//   * Mode-table parsing inside `Apple-341-0868.vrom` is left to the
+//   * Mode-table parsing inside `mdc-8-24-revb-d1629664.vrom` is left to the
 //     System 7 driver — we present the bytes; it walks them.
 
 #include "jmfb.h"
@@ -682,7 +682,7 @@ static int card_init(nubus_card_t *card, config_t *cfg, checkpoint_t *cp) {
         // one.  Log loudly and continue with a zero-filled declrom —
         // PrimaryInit won't find a Format Header and the OS will skip
         // the slot, but the rest of the machine still boots.
-        LOG(0, "Apple-341-0868.vrom not found; declaration ROM is zero-filled");
+        LOG(0, "mdc-8-24-revb-d1629664.vrom not found; declaration ROM is zero-filled");
     }
     // Publish the declaration ROM on the card struct (drives the
     // slot[N].card.declrom object-model node, same as the 24AC / 8•24 GC);

@@ -9,7 +9,7 @@ Catalogued in [`video.md`](../../video.md) §2.3; vROM byte-layout reference in
 | | |
 |---|---|
 | **Card kind** | `display_card_24ac` |
-| **vROM** | `display-card-24ac.vrom` (carries its own System 7 video driver) |
+| **vROM** | `display-card-24ac-d8daab87.vrom` (carries its own System 7 video driver) |
 | **Slot** | IIcx video slot `$9` (selectable via `machine.nubus.video_card`) |
 | **VRAM** | 4 MB, flat aperture at slot offset 0 (no VideoBase/RowWords register) |
 | **Depths** | 1 / 4 / 8 / 16 / 32 bpp (no 2 bpp) |

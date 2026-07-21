@@ -104,8 +104,8 @@ assert ${scheduler.instr_count * 1000000000 / (scheduler.host_user_ns - t0) > 50
 # ====================================================================
 #
 # The SE/30 uses the Universal ROM (the same image shared with IIcx and
-# IIx; we keep the canonical filename IIcx.rom).  Switching ROMs is a
-# `rom.load` from the script — the daemon was started with Plus_v3.rom
+# IIx; we keep the canonical filename iix-iicx-se30-97221136.rom).  Switching ROMs is a
+# `rom.load` from the script — the daemon was started with plus-v3-4d1f8172.rom
 # from config.mk, but each iteration is free to swap ROMs before
 # running.  The Universal ROM also runs a ~13 s (guest time) boot-drive-
 # discovery wait at $40801610 before falling through to the actual boot;
@@ -116,7 +116,7 @@ assert ${scheduler.instr_count * 1000000000 / (scheduler.host_user_ns - t0) > 50
 
 # --- SE/30 + System Software 6.0.8 (800K) @ 4 MB RAM ----------------
 machine.boot "se30" 4096
-machine.rom.load "../../data/roms/IIcx.rom"
+machine.rom.load "../../data/roms/iix-iicx-se30-97221136.rom"
 machine.floppy.drive[0].insert "../../data/systems/SSW-6.08-800K/SSW 6.0.8-800k Disk1of4"
 t0 = ${scheduler.host_user_ns}
 scheduler.run 40000000
@@ -156,7 +156,7 @@ assert ${scheduler.instr_count * 1000000000 / (scheduler.host_user_ns - t0) > 10
 # took effect end-to-end).
 machine.nubus.video_sense = 0x6
 machine.boot "iicx" 4096
-machine.rom.load "../../data/roms/IIcx.rom"
+machine.rom.load "../../data/roms/iix-iicx-se30-97221136.rom"
 machine.floppy.drive[0].insert "../../data/systems/SSW-6.08-800K/SSW 6.0.8-800k Disk1of4"
 machine.rtc.pram.validate
 machine.rtc.pram.poke 0x46 0x002780a6a6000000:8
@@ -198,7 +198,7 @@ assert ${scheduler.instr_count * 1000000000 / (scheduler.host_user_ns - t0) > 50
 # because Disk Tools' INIT chain is heavier.
 machine.nubus.video_sense = 0x6
 machine.boot "iicx" 8192
-machine.rom.load "../../data/roms/IIcx.rom"
+machine.rom.load "../../data/roms/iix-iicx-se30-97221136.rom"
 machine.floppy.drive[0].insert "../../data/systems/SSW-7.0-800K/Disk Tools.image"
 machine.rtc.pram.validate
 machine.rtc.pram.poke 0x46 0x002781a6a6000000:8

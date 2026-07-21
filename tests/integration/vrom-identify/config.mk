@@ -11,6 +11,6 @@
 TEST_NAME := vrom.identify probe surface
 TEST_DESC := vrom.identify Format-Block CRC identity + card_id/compatible contract + catalog/registry drift guard
 
-TEST_ROM := roms/IIcx.rom
+TEST_ROM := roms/iix-iicx-se30-97221136.rom
 
 TEST_ARGS := model=iicx ram=8192

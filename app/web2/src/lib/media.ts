@@ -109,7 +109,7 @@ export const MEDIA_TYPES: Record<MediaTypeId, MediaTypeDescriptor> = {
       }
     },
     // VROMs are stored under the canonical filename the core's card
-    // factories look up (e.g. JMFB hardcodes "Apple-341-0868.vrom" in
+    // factories look up (e.g. JMFB hardcodes "mdc-8-24-revb-d1629664.vrom" in
     // jmfb.c). The C-side `machine.vrom.identify` derives the canonical name
     // from the file's content hash; the UI doesn't carry any ROM
     // knowledge of its own.

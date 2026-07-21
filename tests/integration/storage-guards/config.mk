@@ -8,5 +8,5 @@
 TEST_NAME := storage.rm/mv guards
 TEST_DESC := Protected paths, self-move, and existing-destination refusals
 
-TEST_ROM := roms/Plus_v3.rom
+TEST_ROM := roms/plus-v3-4d1f8172.rom
 TEST_RUNNER := run.sh

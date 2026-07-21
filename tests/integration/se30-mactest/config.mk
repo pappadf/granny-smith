@@ -5,7 +5,7 @@ TEST_NAME := SE/30 MacTest Boot
 TEST_DESC := Boots SE/30 with MacTest SE/30 floppy, dismisses splash, verifies test UI
 
 # Universal ROM shared by SE/30, IIcx, IIx (checksum 0x97221136)
-TEST_ROM := roms/SE30.rom
+TEST_ROM := roms/iix-iicx-se30-97221136.rom
 
 # MacTest SE/30 floppy disk image (800K DiskCopy)
 # Boot from drive 0 (IWM SELECT=0).  MacTest's floppy test (TEST_PERFO) ejects

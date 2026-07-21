@@ -131,7 +131,7 @@ $40802A72  6600  BNE       *+$01CA       ; -> $40802C3C
 SE/30 ROM is mapped at `0x40800000`:
 
 ```bash
-./tools/disasm/disasm -a 0x40800000 -n 50 tests/data/roms/SE30.rom
+./tools/disasm/disasm -a 0x40800000 -n 50 tests/data/roms/iix-iicx-se30-97221136.rom
 ```
 
 ### Disassemble from a specific offset
@@ -139,7 +139,7 @@ SE/30 ROM is mapped at `0x40800000`:
 The SE/30 entry point is at ROM offset `0x90`:
 
 ```bash
-./tools/disasm/disasm -a 0x40800000 -o 0x90 -n 20 tests/data/roms/SE30.rom
+./tools/disasm/disasm -a 0x40800000 -o 0x90 -n 20 tests/data/roms/iix-iicx-se30-97221136.rom
 ```
 
 ### Disassemble a specific byte range
@@ -147,7 +147,7 @@ The SE/30 entry point is at ROM offset `0x90`:
 Show exactly 256 bytes starting at offset `0x3F61C`:
 
 ```bash
-./tools/disasm/disasm -a 0x40800000 -o 0x3F61C -l 256 tests/data/roms/SE30.rom
+./tools/disasm/disasm -a 0x40800000 -o 0x3F61C -l 256 tests/data/roms/iix-iicx-se30-97221136.rom
 ```
 
 ### View a code region without address remapping
@@ -155,7 +155,7 @@ Show exactly 256 bytes starting at offset `0x3F61C`:
 If you just want raw offsets (no base address):
 
 ```bash
-./tools/disasm/disasm -o 0x90 -n 10 tests/data/roms/SE30.rom
+./tools/disasm/disasm -o 0x90 -n 10 tests/data/roms/iix-iicx-se30-97221136.rom
 ```
 
 Addresses will start from `0x00000090`.
@@ -172,9 +172,9 @@ Works on any raw 68K binary (disk sector dumps, code resources, etc.):
 
 | Machine | ROM file | Base address |
 |---------|----------|-------------|
-| SE/30 | `tests/data/roms/SE30.rom` | `0x40800000` |
-| Mac Plus | `tests/data/roms/Plus_v3.rom` | `0x00400000` |
-| IIcx | `tests/data/roms/IIcx.rom` | `0x40800000` |
+| SE/30 | `tests/data/roms/iix-iicx-se30-97221136.rom` | `0x40800000` |
+| Mac Plus | `tests/data/roms/plus-v3-4d1f8172.rom` | `0x00400000` |
+| IIcx | `tests/data/roms/iix-iicx-se30-97221136.rom` | `0x40800000` |
 
 ## 7. Tips
 

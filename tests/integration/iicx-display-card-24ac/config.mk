@@ -17,9 +17,9 @@
 TEST_NAME := IIcx Display Card 24AC
 TEST_DESC := Display Card 24AC: engine decode + engine-vs-fallback oracle + object model + 8bpp colour desktop.
 
-TEST_ROM := roms/IIcx.rom
+TEST_ROM := roms/iix-iicx-se30-97221136.rom
 
 # 8 MB RAM matches the iicx-video-modes budget so the boot-ROM slot scan /
-# PrimaryInit timing transfers directly.  The display-card-24ac.vrom is
+# PrimaryInit timing transfers directly.  The display-card-24ac-d8daab87.vrom is
 # found next to the ROM via the shared declrom loader's rom-dir search.
 TEST_ARGS := model=iicx ram=8192 fd=$(TEST_DATA)/systems/System_7_0_1.image

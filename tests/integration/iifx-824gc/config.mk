@@ -21,7 +21,7 @@
 TEST_NAME := IIfx Display Card 8•24 GC — System 7 Finder
 TEST_DESC := Boot the IIfx with the 8•24 GC (computed compatibility) from the System 7.0.1 floppy to a pixel-exact Finder desktop
 
-TEST_ROM := roms/4147DD77-IIfx.rom
+TEST_ROM := roms/iifx-4147dd77.rom
 
 # Same floppy + RAM as iifx-boot; video_card= stages the pick before
 # machine creation (the headless twin of web2's pre-boot

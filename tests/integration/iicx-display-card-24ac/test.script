@@ -3,7 +3,7 @@
 # See proposal-nubus-card-display-card-24ac.md.  The card is a framebuffer +
 # CLUT + VBL display card (Phase 1) plus a hardware QuickDraw fill/raster
 # accelerator (Phase 2).  This test exercises both halves on the IIcx with
-# the genuine display-card-24ac.vrom, plus the object-model surface
+# the genuine display-card-24ac-d8daab87.vrom, plus the object-model surface
 # (proposal §3.8) and the 8-bpp colour desktop (proposal §2 exit criterion).
 #
 # Slot-space layout (slot $9 -> base 0xF9000000), from the dossier hardware

@@ -161,8 +161,8 @@ static void print_usage(const char *program) {
     printf("  %s rom=plus.rom\n", program);
     printf("  %s rom=plus.rom hd=disk.img\n", program);
     printf("  %s rom=plus.rom fd=system.dsk script=boot.sh\n", program);
-    printf("  %s --daemon rom=SE30.rom\n", program);
-    printf("  %s --daemon --port=7000 rom=SE30.rom hd=disk.img\n", program);
+    printf("  %s --daemon rom=iix-iicx-se30-97221136.rom\n", program);
+    printf("  %s --daemon --port=7000 rom=iix-iicx-se30-97221136.rom hd=disk.img\n", program);
 }
 
 // Global script exit code (set by commands like screenshot match)
@@ -916,7 +916,7 @@ int main(int argc, char *argv[]) {
         system_set_pending_ram_kb(ram_kb);
 
     // Set the pending ROM path BEFORE system_create so SE/30 init can
-    // auto-discover a sibling SE30.vrom file during machine bring-up.
+    // auto-discover a sibling builtin-se30-video-4f71ff1a.vrom file during machine bring-up.
     rom_pending_set(rom_file);
 
     // Stage the user's video-card pick BEFORE system_create so nubus_init

@@ -8,7 +8,7 @@
 //
 // What the card owns:
 //   * 64 KB VRAM at $FEE00000
-//   * 32 KB declaration ROM at $FEFF8000 (real SE30.vrom if available,
+//   * 32 KB declaration ROM at $FEFF8000 (real builtin-se30-video-4f71ff1a.vrom if available,
 //     synthesised fallback otherwise; the byte-banged synth is the same
 //     220-line sequence se30.c used to carry inline)
 //   * the display_t exposed via system_display() — 512×342×1bpp, with
@@ -50,7 +50,7 @@ typedef struct {
 // === VROM loading / synth (moved verbatim from se30.c) ======================
 
 // Build a minimal fallback NuBus declaration ROM (8 KB at the top of the
-// 32 KB buffer) when the real SE30.vrom is not available.  The byte
+// 32 KB buffer) when the real builtin-se30-video-4f71ff1a.vrom is not available.  The byte
 // sequence below is taken verbatim from the legacy se30_build_vrom_fallback
 // in src/machines/se30.c — see that history for rationale.
 static void synthesise_vrom_fallback(uint8_t *rom) {
@@ -227,10 +227,21 @@ static bool load_real_vrom(config_t *cfg, uint8_t *vrom_buf, char **out_path) {
         }
         LOG(0, "VROM file %s not found or wrong size", explicit_path);
     }
-    static const char *search_paths[] = {"/opfs/images/vrom/SE30.vrom", "tests/data/roms/SE30.vrom", "SE30.vrom", NULL};
-    for (const char **p = search_paths; *p; p++) {
-        if (try_load_vrom(*p, vrom_buf)) {
-            *out_path = strdup(*p);
+    // Canonical filename is owned by the vROM catalog (single source of truth —
+    // proposal-test-rom-naming.md), never hardcoded here. Search the standard
+    // prefixes, then the directory holding the loaded ROM.
+    const char *fname = vrom_catalog_name("builtin_se30_video", 0, NULL);
+    if (!fname)
+        fname = "builtin-se30-video-4f71ff1a.vrom"; // defensive; the catalog row must exist
+    static const char *const prefixes[] = {"/opfs/images/vrom/", "tests/data/roms/", "", NULL};
+    char vrom_path[512];
+    for (const char *const *pre = prefixes; *pre; pre++) {
+        if (strlen(*pre) + strlen(fname) + 1 > sizeof(vrom_path))
+            continue;
+        strcpy(vrom_path, *pre);
+        strcat(vrom_path, fname);
+        if (try_load_vrom(vrom_path, vrom_buf)) {
+            *out_path = strdup(vrom_path);
             return true;
         }
     }
@@ -241,10 +252,9 @@ static bool load_real_vrom(config_t *cfg, uint8_t *vrom_buf, char **out_path) {
         const char *slash = strrchr(rom_path, '/');
         if (slash) {
             size_t dir_len = (size_t)(slash - rom_path + 1);
-            char vrom_path[512];
-            if (dir_len + sizeof("SE30.vrom") <= sizeof(vrom_path)) {
+            if (dir_len + strlen(fname) + 1 <= sizeof(vrom_path)) {
                 memcpy(vrom_path, rom_path, dir_len);
-                memcpy(vrom_path + dir_len, "SE30.vrom", sizeof("SE30.vrom"));
+                strcpy(vrom_path + dir_len, fname);
                 if (try_load_vrom(vrom_path, vrom_buf)) {
                     *out_path = strdup(vrom_path);
                     return true;
@@ -252,7 +262,7 @@ static bool load_real_vrom(config_t *cfg, uint8_t *vrom_buf, char **out_path) {
             }
         }
     }
-    LOG(0, "FATAL: Real VROM (SE30.vrom) not found.");
+    LOG(0, "FATAL: Real VROM (%s) not found.", fname);
     return false;
 }
 
@@ -275,7 +285,7 @@ static int card_init(nubus_card_t *card, config_t *cfg, checkpoint_t *cp) {
         if (!cp) {
             // Real VROM was the long-standing requirement on cold boot;
             // fall back to the synthesised image so the SE/30 keeps booting
-            // even when SE30.vrom is absent in CI environments.
+            // even when builtin-se30-video-4f71ff1a.vrom is absent in CI environments.
             synthesise_vrom_fallback(p->vrom);
         }
         // Restoring from a checkpoint?  The VROM contents will be overwritten
@@ -358,7 +368,7 @@ const nubus_card_kind_t builtin_se30_video_kind = {
     .display_name = "Macintosh SE/30 Built-in Video",
     .attach = CARD_ATTACH_BUILTIN, // motherboard circuitry — never socketed
     // The SE/30 carries no video declaration ROM in main ROM; it needs the
-    // separate SE30.vrom file (the dialog's VROM picker drives this).
+    // separate builtin-se30-video-4f71ff1a.vrom file (the dialog's VROM picker drives this).
     .requires_vrom = true,
     .monitors = builtin_se30_monitors,
     .factory = factory,

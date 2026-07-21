@@ -37,7 +37,7 @@ import * as path from 'node:path';
 
 // A real, in-catalog SE/30 onboard-video VROM (32 KB). Named with a space +
 // parentheses to match the reported "SE30 (1).vrom".
-const SE30_VROM = path.resolve(__dirname, '../../data/roms/SE30.vrom');
+const SE30_VROM = path.resolve(__dirname, '../../data/roms/builtin-se30-video-4f71ff1a.vrom');
 
 // Boot the app as a first-time visitor. Skips on engines without OPFS (Linux
 // WebKitGTK) — there the emulator can't boot at all, which is a different issue.

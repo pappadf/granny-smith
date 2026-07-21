@@ -25,6 +25,6 @@ storage.images[1].filename
 # storage.import — copy a small file to a chosen destination via the
 # legacy `cp` route, then verify storage.import without dst_path
 # falls back to the content-hash naming under /opfs/images/.
-echo ${storage.import("../../data/roms/Plus_v3.rom", "/tmp/imported_rom.bin")}
+echo ${storage.import("../../data/roms/plus-v3-4d1f8172.rom", "/tmp/imported_rom.bin")}
 
 quit

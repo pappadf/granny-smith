@@ -14,7 +14,7 @@
 TEST_NAME := IIcx Display Card 8•24 GC — card model + accelerator CB bring-up
 TEST_DESC := Detect the 8•24 GC card (v1.1 decl ROM, lane-0) + drive the HLE CB bring-up protocol
 
-TEST_ROM := roms/IIcx.rom
+TEST_ROM := roms/iix-iicx-se30-97221136.rom
 
 # The harness creates the IIcx with 8 MB; the script re-boots with the 8•24 GC
 # card selected (video_card can't be passed as an arg).

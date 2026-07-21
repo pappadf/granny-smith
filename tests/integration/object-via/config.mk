@@ -8,4 +8,4 @@ TEST_NAME := Object-model VIA classes
 TEST_DESC := via1 / via2 status registers + port_a / port_b children
 
 # Universal ROM shared by SE/30, IIcx, IIx (checksum 0x97221136)
-TEST_ROM := roms/IIcx.rom
+TEST_ROM := roms/iix-iicx-se30-97221136.rom

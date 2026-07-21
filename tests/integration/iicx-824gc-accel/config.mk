@@ -19,7 +19,7 @@
 TEST_NAME := IIcx Display Card 8•24 GC — accelerator ON (real .GraphAccel bring-up)
 TEST_DESC := Boot IIcx + 8•24 GC with the accelerator enabled; bring-up clean (gc.on, error 0, RPCs), desktop renders, no dialog
 
-TEST_ROM := roms/IIcx.rom
+TEST_ROM := roms/iix-iicx-se30-97221136.rom
 
 # The harness creates the IIcx with 8 MB; the script re-boots with the 8•24 GC
 # card selected (video_card can't be passed as an arg) and attaches the SCSI HD.

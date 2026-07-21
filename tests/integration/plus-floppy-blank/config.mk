@@ -12,7 +12,7 @@
 TEST_NAME := Plus Blank Floppy
 TEST_DESC := Create a blank floppy, mount it as the 2nd drive under System 6, hit the initialize-disk dialog, eject from Finder.
 
-TEST_ROM := roms/Plus_v3.rom
+TEST_ROM := roms/plus-v3-4d1f8172.rom
 
 # Boot from System 6.0.8 in the internal drive; the blank floppy is created
 # by the script into WORK_DIR and inserted into the external drive.

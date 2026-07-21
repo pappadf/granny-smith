@@ -31,8 +31,8 @@ Located in `tests/data/roms/`:
 
 | File         | Size    | Description            |
 |--------------|---------|------------------------|
-| `Plus_v3.rom`| 128 KB  | Macintosh Plus ROM v3  |
-| `IIcx.rom`   | 256 KB  | Macintosh IIcx ROM     |
+| `plus-v3-4d1f8172.rom`| 128 KB  | Macintosh Plus ROM v3  |
+| `iix-iicx-se30-97221136.rom`   | 256 KB  | Macintosh IIcx ROM     |
 
 **How to obtain:**
 - Extract from a physical Macintosh using ROM extraction tools
@@ -80,8 +80,8 @@ Your `tests/data/` directory should look like this:
 tests/data/
 ├── README.md           (this can remain - explains the directory)
 ├── roms/
-│   ├── Plus_v3.rom     (128 KB - Macintosh Plus ROM)
-│   └── IIcx.rom        (256 KB - optional)
+│   ├── plus-v3-4d1f8172.rom     (128 KB - Macintosh Plus ROM)
+│   └── iix-iicx-se30-97221136.rom        (256 KB - optional)
 ├── systems/
 │   ├── System_6_0_8.dsk   (819,200 bytes - primary test system)
 │   ├── System_7_1_0.dsk   (optional)
@@ -107,7 +107,7 @@ The test data is stored in a private GitHub repository. To set this up:
    ```
    gs-test-data/
    ├── roms/
-   │   └── Plus_v3.rom
+   │   └── plus-v3-4d1f8172.rom
    ├── systems/
    │   ├── System_6_0_8.dsk
    │   └── ...
@@ -198,4 +198,4 @@ ls -la tests/data/roms/
 ls -la tests/data/systems/
 ```
 
-The most commonly needed file is `tests/data/roms/Plus_v3.rom` and `tests/data/systems/System_6_0_8.dsk`.
+The most commonly needed file is `tests/data/roms/plus-v3-4d1f8172.rom` and `tests/data/systems/System_6_0_8.dsk`.

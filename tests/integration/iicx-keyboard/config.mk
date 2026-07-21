@@ -13,7 +13,7 @@ TEST_NAME := IIcx Keyboard (System 7.1 Find dialog)
 TEST_DESC := IIcx ADB keyboard under System 7.1: types "macintosh" into Finder's Find dialog and verifies every key lands
 
 # Universal ROM shared by SE/30, IIcx, IIx (checksum 0x97221136)
-TEST_ROM := roms/IIcx.rom
+TEST_ROM := roms/iix-iicx-se30-97221136.rom
 
 # 8 MB RAM matches the boot-matrix IIcx + System Software row.  The floppy is
 # inserted in-script (machine.boot discards the daemon's initial drive state),

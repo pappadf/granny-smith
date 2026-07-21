@@ -35,6 +35,6 @@
 TEST_NAME := Apple Lisa 2 LOS 3.1 ProFile install
 TEST_DESC := Full LOS 3.1 install onto the ProFile, then reboot off it and cleanly power off
 
-TEST_ROM := Lisa/roms/098917B2-LisaH.rom
+TEST_ROM := roms/lisa2-revh-098917b2.rom
 TEST_ARGS := model=lisa ram=2048 fd=$(TEST_DATA)/Lisa/LisaOfficeSystem-3.1/LOS-3.1-1.image
 TEST_SETUP := python3 lisa-profile-boot/seed_pram.py "$(WORK_DIR)/profile.pram"

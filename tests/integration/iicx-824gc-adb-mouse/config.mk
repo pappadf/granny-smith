@@ -16,6 +16,6 @@
 TEST_NAME := IIcx Display Card 8•24 GC — ADB mouse deltas move the cursor
 TEST_DESC := ADB delta injection (web2 route) updates Mouse/RawMouse via the slot VBL cursor task
 
-TEST_ROM := roms/IIcx.rom
+TEST_ROM := roms/iix-iicx-se30-97221136.rom
 
 TEST_ARGS := model=iicx ram=8192
