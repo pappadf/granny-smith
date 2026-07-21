@@ -40,12 +40,11 @@ assert ${(shell.meta.attributes == "prompt, running, aliases, vars") == false} "
 machine.boot model="plus" ram=1024
 assert ${machine.id == "plus"} "named-arg shell-form boot"
 assert ${machine.ram == 1024} "named-arg shell-form ram"
-machine.rom.reload
 
 # Call form: name=expr inside call parentheses; value is a full expression.
+# The ROM is inherited from the built-from record and re-staged by boot.
 t0 = ${machine.boot(ram=1024*2, model="plus")}
 assert ${machine.ram == 2048} "named-arg call-form ram"
-machine.rom.reload
 scheduler.run 1000
 
 quit

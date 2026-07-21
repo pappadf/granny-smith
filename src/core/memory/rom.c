@@ -15,6 +15,7 @@
 
 #include "cpu.h"
 #include "json_encode.h"
+#include "machine_config.h"
 #include "machine_profile.h"
 #include "memory.h"
 #include "mmu.h"
@@ -367,9 +368,11 @@ static int install_rom_into_machine(const uint8_t *rom_data, size_t file_size, c
                memory_rom_size(mem));
     }
 
-    // Track the pending path so SE/30 init (which chains through machine
-    // reset) can find a sibling builtin-se30-video-4f71ff1a.vrom file.
+    // Track the pending path (rom.reload's input) and write the built-from
+    // record back so machine.config keeps answering "how do I recreate
+    // what I'm looking at" after a live ROM swap.
     rom_pending_set(path);
+    machine_config_note_rom(path, checksum);
 
     memory_install_rom(mem, rom_data, file_size, path);
 

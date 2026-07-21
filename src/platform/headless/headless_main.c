@@ -13,6 +13,7 @@
 #include "image.h"
 #include "log.h"
 #include "machine.h"
+#include "machine_config.h"
 #include "memory.h"
 #include "nubus.h"
 #include "rom.h"
@@ -952,33 +953,26 @@ int main(int argc, char *argv[]) {
         return 1;
     }
 
-    if (ram_kb > 0)
-        system_set_pending_ram_kb(ram_kb);
-
-    // Set the pending ROM path BEFORE system_create (rom.reload depends on it).
-    rom_pending_set(rom_file);
-
     // Offer the ROM's sibling *.vrom files to the content-addressed registry
-    // BEFORE system_create so the card factories can match them during
-    // machine bring-up (offers persist across machine.boot).
+    // BEFORE the boot so the card factories can match them during machine
+    // bring-up (offers persist across machine.boot).
     offer_sibling_vroms(rom_file);
 
-    // Stage the user's video-card pick BEFORE system_create so nubus_init
-    // resolves it for the configurable slot (validated by
-    // nubus_card_fits_socket; falls back to the slot default with a log).
-    // This is the headless twin of web2's pre-boot `machine.nubus.video_card`
-    // write — needed because startup-arg boots never run a script before
-    // machine creation.
-    if (video_card_arg)
-        nubus_pending_video_card_set(video_card_arg);
-
-    if (!system_create(profile, NULL)) {
-        fprintf(stderr, "Error: failed to create machine '%s'\n", target_model);
-        return 1;
-    }
-
-    if (rom_load_into_machine(rom_file) != 0) {
-        fprintf(stderr, "Error: failed to load ROM bytes into machine\n");
+    // Startup is the same boot-document path scripts use (machine.boot):
+    // CLI args fill the document, machine_boot_apply validates and
+    // constructs, and the built-from record makes later argument-less
+    // `machine.boot` reboots inherit this configuration.
+    boot_config_t boot_doc = {
+        .model = target_model,
+        .ram_kb = ram_kb,
+        .rom = rom_file,
+        .video_card = video_card_arg,
+        .video_sense = -1,
+    };
+    value_t boot_err = machine_boot_apply(&boot_doc);
+    if (val_is_error(&boot_err)) {
+        fprintf(stderr, "Error: %s\n", boot_err.err ? boot_err.err : "boot failed");
+        value_free(&boot_err);
         return 1;
     }
 

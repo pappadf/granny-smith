@@ -86,6 +86,11 @@ static bool video_mode_id_known(const char *id) {
            display_card_824gc_video_mode_lookup(id, NULL, NULL);
 }
 
+// Exported for boot-document validation (machine.boot video_mode=).
+bool nubus_video_mode_known(const char *id) {
+    return video_mode_id_known(id);
+}
+
 // `nubus.video_mode` — get/set the staged high-level video-mode id for the
 // next machine.boot's FIRST socket (the wildcard staged entry — the
 // machine-independent alias, see nubus.h §staged configuration).  The id

@@ -22,9 +22,7 @@
 
 # Configure the JMFB for 13" RGB at 8 bpp before boot (same mechanism as
 # iicx-mactest); the pending mode is applied by the following machine.boot.
-machine.nubus.video_mode = "13in_rgb_8bpp"
-machine.boot "iifx" 16384
-machine.rom.reload
+machine.boot model="iifx" ram=16384 video_mode="13in_rgb_8bpp"
 machine.floppy.drive[0].insert "../../data/apps/MacTest-IIfx.image" true
 
 # Boot to the Happy Mac, run MacTest's launch-time hardware probe, and draw

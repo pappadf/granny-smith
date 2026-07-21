@@ -291,6 +291,35 @@ const char *vrom_offer_find(const char *card_id, int idx, size_t *out_chip_size)
     return NULL;
 }
 
+bool vrom_offer_info(const char *path, uint32_t *out_crc, bool *out_explicit) {
+    if (!path)
+        return false;
+    for (size_t i = 0; i < s_offer_count; i++) {
+        if (strcmp(s_offers[i].path, path) != 0)
+            continue;
+        if (out_crc)
+            *out_crc = s_offers[i].crc;
+        if (out_explicit)
+            *out_explicit = s_offers[i].explicit_pick;
+        return true;
+    }
+    return false;
+}
+
+bool vrom_card_catalogued(const char *card_id) {
+    if (!card_id || !*card_id)
+        return false;
+    for (size_t r = 0; r < VROM_CATALOG_COUNT; r++) {
+        if (strcmp(VROM_CATALOG[r].card_id, card_id) == 0)
+            return true;
+    }
+    return false;
+}
+
+bool vrom_card_resolvable(const char *card_id) {
+    return vrom_offer_find(card_id, 0, NULL) != NULL;
+}
+
 // ============================================================================
 // Explicit pick (vrom.load)
 // ============================================================================

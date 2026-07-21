@@ -11,9 +11,7 @@
 # .GraphAccel INIT only runs from a System Folder), so gc.state == "reset"
 # is the EXPECTED value here — the display bring-up is pure decl-ROM driver.
 
-machine.nubus.video_card = "824gc"
-machine.boot "iix" 8192
-machine.rom.reload
+machine.boot model="iix" ram=8192 video_card="824gc"
 
 # Same budget as iix-boot: the Universal ROM reaches the stable blinking-?
 # screen well within 100M instructions.

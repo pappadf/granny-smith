@@ -417,8 +417,8 @@ async function maybeBootFromRom(romPath: string): Promise<void> {
       /* keep default */
     }
   }
-  await gsEval('machine.boot', [model, ramKb]);
-  await gsEval('machine.rom.load', [romPath]);
+  // One boot document — the core validates and installs the ROM itself.
+  await gsEval('machine.boot', { model, ram: ramKb, rom: romPath });
   machine.model = model;
   machine.ram = `${ramKb / 1024} MB`;
   await applyCapabilities(model);

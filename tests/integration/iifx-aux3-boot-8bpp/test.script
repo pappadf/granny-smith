@@ -27,9 +27,7 @@
 # wasm builds produce the same framebuffer at this budget, which this test
 # quietly cross-checks.
 
-machine.nubus.video_mode = "13in_rgb_8bpp"
-machine.boot "iifx" 16384
-machine.rom.reload
+machine.boot model="iifx" ram=16384 video_mode="13in_rgb_8bpp"
 machine.scsi.attach_hd "../../data/aux/aux_3.0.1/hd160-with-aux-301.img" 0
 
 # Pin the wall clock so screenshot comparisons are reproducible.

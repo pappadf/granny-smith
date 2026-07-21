@@ -414,44 +414,27 @@ export async function applyCapabilities(model: string): Promise<void> {
   machine.fpu = fpu;
 }
 
-// Boot a machine from a config. Sequence mirrors app/web/js/config-dialog.js
-// bootFromConfig (the happy path; model-specific quirks land as bugs surface).
+// Boot a machine from a config. Construction-time settings travel as ONE
+// machine.boot configuration document (named JSON-object args, proposal
+// proposal-named-args-boot-config §4) — the core validates everything
+// before tearing the old machine down, stages the vROM pick, seeds the
+// video card/sense/mode, and installs the ROM itself. Only runtime media
+// (floppies/HD/CD) remain imperative calls after the boot.
 export async function initEmulator(config: MachineConfig): Promise<void> {
-  // VROM and video-mode setup happen before machine.boot so card factories
-  // can consume the sense lines during boot.
-  if (config.vrom && config.vrom !== '(auto)') {
-    await gsEval('machine.vrom.load', [config.vrom]);
-  }
-  // Select the NuBus video card before boot. Without this the slot falls back
-  // to its default card (e.g. the IIcx's "mdc_8_24"), so an uploaded 24AC vROM
-  // would boot an 8•24 instead. The id comes from the dialog's probe of the
-  // chosen card; the card factory content-matches its vROM among the offered
-  // files (the explicit vrom.load above being the preferred pick).
-  if (config.videoCard) {
-    await gsEval('machine.nubus.video_card', [config.videoCard]);
-  }
-  // Seed the JMFB video mode before machine.boot so the card factory consumes
-  // it (sets the sense lines + slot-PRAM/video defaults).  web-legacy's
-  // bootFromConfig does this; omitting it left the JMFB unseeded and A/UX hung
-  // enabling its device drivers on real hardware.
-  if (config.videoMode) {
-    await gsEval('machine.nubus.video_mode', [config.videoMode]);
-  }
+  const doc: Record<string, unknown> = {};
+  if (config.model) doc.model = config.model;
   // Map the human-readable RAM string ('4 MB') to KB the boot path wants.
   const ramKB = ramStringToKb(config.ram);
-  if (config.model) {
-    await gsEval('machine.boot', [config.model, ramKB]);
-  }
-  // ROM: in this Phase 2/3 shape the user's MachineConfig stores the
-  // OPFS path of the ROM directly (Welcome's scan populates the select
-  // with paths). When the path is missing or '(auto)' we skip the load —
-  // useful for the URL-media path where rom.load happens elsewhere.
-  if (config.rom && config.rom !== '(auto)') {
-    const ok = await gsEval('machine.rom.load', [config.rom]);
-    if (ok !== true) {
-      showNotification('Failed to load ROM', 'error');
-      return;
-    }
+  if (ramKB) doc.ram = ramKB;
+  // '(auto)' means "let the offer registry resolve" — omit the field.
+  if (config.rom && config.rom !== '(auto)') doc.rom = config.rom;
+  if (config.vrom && config.vrom !== '(auto)') doc.vrom = config.vrom;
+  if (config.videoCard) doc.video_card = config.videoCard;
+  if (config.videoMode) doc.video_mode = config.videoMode;
+  const ok = await gsEval('machine.boot', doc);
+  if (ok !== true) {
+    showNotification(`Boot failed: ${gsErrorText(ok)}`, 'error');
+    return;
   }
   for (let i = 0; i < (config.floppies?.length ?? 0); i++) {
     const path = config.floppies[i];

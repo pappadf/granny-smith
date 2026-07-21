@@ -88,8 +88,9 @@ export async function processUrlMedia(rawParams: URLSearchParams): Promise<boole
   const profile = await parseProfile(chosen);
   const ramKb = profile?.ram_default ?? 4096;
 
-  await gsEval('machine.boot', [chosen, ramKb]);
-  await gsEval('machine.rom.load', [tmpRomPath]);
+  // One boot document: the core validates model/ram/rom together and
+  // installs the ROM itself (proposal-named-args-boot-config §4).
+  await gsEval('machine.boot', { model: chosen, ram: ramKb, rom: tmpRomPath });
 
   for (const fd of params.floppies) {
     await gsEval('machine.floppy.drive[0].insert', [`/tmp/url_${fd.slot}`, true]);

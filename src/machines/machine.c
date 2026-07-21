@@ -9,12 +9,16 @@
 #include "cpu.h"
 #include "json_encode.h"
 #include "log.h"
+#include "machine_config.h"
 #include "nubus.h"
 #include "object.h"
+#include "rom.h"
 #include "system.h"
 #include "system_config.h"
 #include "value.h"
+#include "vrom.h"
 #include "nubus/card.h"
+#include "nubus/cards/jmfb.h"
 
 LOG_USE_CATEGORY_NAME("setup");
 
@@ -23,6 +27,7 @@ LOG_USE_CATEGORY_NAME("setup");
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 // Registry of built-in machine profiles.  A static const array iterated
 // directly (proposal §4.6): adding a machine is one line here, no runtime
@@ -407,38 +412,249 @@ static void format_ram_options(char *buf, size_t bufsize, const hw_profile_t *p)
         snprintf(buf, bufsize, "<none>");
 }
 
-// machine.boot(model, ram) — atomic machine creation.  Tears down any
-// existing machine and creates a fresh one with no ROM loaded.  Caller must
-// follow up with rom.load(path) to actually run anything.
+// === Boot document (proposal-named-args-boot-config §4) =====================
 //
-// Both arguments are required: ram must be one of the model's ram_options.
-static value_t machine_method_boot(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
-    (void)argc;
-    const char *model_id = argv[0].s;
-    const hw_profile_t *profile = machine_find(model_id);
-    if (!profile)
-        return val_err("machine.boot: unknown model '%s'", model_id);
+// machine.boot consumes one atomic configuration document: every argument
+// is optional and inherits from the live machine's built-from record; all
+// validation runs BEFORE the old machine is torn down, so a rejected boot
+// leaves the running machine untouched.
 
-    // framework guarantees V_UINT
-    uint32_t ram_kb = (uint32_t)argv[1].u;
+// Strict declaration-ROM resolution (§4.1): every catalogued card the
+// user EXPLICITLY picked (per-slot staged entry, or the document's
+// wildcard card for the first socket) must resolve from the offer
+// registry, or the boot is rejected before teardown.  Factory-default
+// socket population and BUILTIN cards are exempt: an unsatisfiable
+// default degrades to an empty slot with a log (as before), and a
+// soldered-down card owns its own fallback policy (the SE/30
+// synthesises its onboard vROM when none was offered).
+static value_t validate_vrom_resolution(const hw_profile_t *profile, const char *wildcard_card) {
+    if (!profile->nubus_slots)
+        return val_none();
+    bool wildcard_used = false;
+    for (const nubus_slot_decl_t *d = profile->nubus_slots; d->slot; d++) {
+        if (d->kind != NUBUS_SLOT_SOCKET)
+            continue;
+        // Explicit picks only, mirroring nubus_init's precedence: a
+        // per-slot staged entry beats the wildcard; the wildcard applies
+        // to the first socket without a concrete entry.
+        const char *card_id = nubus_staged_card_get(d->slot);
+        if ((!card_id || !*card_id) && !wildcard_used && wildcard_card && *wildcard_card) {
+            card_id = wildcard_card;
+            wildcard_used = true;
+        }
+        if (!card_id || !*card_id)
+            continue;
+        if (vrom_card_catalogued(card_id) && !vrom_card_resolvable(card_id)) {
+            return val_err("machine.boot: card '%s' (slot $%X) needs a declaration ROM but no offered "
+                           "vROM file provides it",
+                           card_id, d->slot);
+        }
+    }
+    return val_none();
+}
+
+// Stamp the record's `created` field with the current UTC time (ISO8601).
+static void stamp_created(char *buf, size_t bufsize) {
+    time_t now = time(NULL);
+    struct tm tm_utc;
+    if (gmtime_r(&now, &tm_utc))
+        strftime(buf, bufsize, "%Y-%m-%dT%H:%M:%SZ", &tm_utc);
+    else
+        snprintf(buf, bufsize, "unknown");
+}
+
+// Apply one boot document: inherit → validate → tear down → construct →
+// record.  Shared by machine.boot and headless startup.  Returns V_NONE on
+// success, V_ERROR (with the old machine still running) on rejection.
+value_t machine_boot_apply(const boot_config_t *doc_in) {
+    const machine_config_record_t *rec = machine_config_record();
+    boot_config_t doc = *doc_in;
+
+    // Inherited strings are copied out of the record: the record is
+    // rewritten during construction (rom.load write-back, step 4), so a
+    // borrowed pointer into it would alias its own destination.
+    char model_buf[MC_ID_MAX], card_buf[MC_ID_MAX], mode_buf[MC_ID_MAX];
+    char rom_buf[MC_PATH_MAX], rom2_buf[MC_PATH_MAX], vrom_buf[MC_PATH_MAX];
+
+    // 1. Inheritance: every field not given falls back to the record.
+    if (!doc.model || !*doc.model) {
+        snprintf(model_buf, sizeof(model_buf), "%s", rec->valid ? rec->model : "");
+        doc.model = *model_buf ? model_buf : NULL;
+    }
+    if (!doc.rom || !*doc.rom) {
+        snprintf(rom_buf, sizeof(rom_buf), "%s", rec->valid ? rec->rom : "");
+        doc.rom = *rom_buf ? rom_buf : NULL;
+    }
+    if (!doc.rom2 || !*doc.rom2) {
+        snprintf(rom2_buf, sizeof(rom2_buf), "%s", rec->valid ? rec->rom2 : "");
+        doc.rom2 = *rom2_buf ? rom2_buf : NULL;
+    }
+    if (!doc.vrom || !*doc.vrom) {
+        snprintf(vrom_buf, sizeof(vrom_buf), "%s", rec->valid ? rec->vrom : "");
+        doc.vrom = *vrom_buf ? vrom_buf : NULL;
+    }
+    if (!doc.video_card || !*doc.video_card) {
+        snprintf(card_buf, sizeof(card_buf), "%s", rec->valid ? rec->video_card : "");
+        doc.video_card = *card_buf ? card_buf : NULL;
+    }
+    if (doc.video_sense < 0)
+        doc.video_sense = rec->valid ? rec->video_sense : -1;
+    if (!doc.video_mode || !*doc.video_mode) {
+        snprintf(mode_buf, sizeof(mode_buf), "%s", rec->valid ? rec->video_mode : "");
+        doc.video_mode = *mode_buf ? mode_buf : NULL;
+    }
+
+    // 2. Validation — all of it before system_destroy.
+    if (!doc.model || !*doc.model)
+        return val_err("machine.boot: no model given and no machine to inherit from");
+    const hw_profile_t *profile = machine_find(doc.model);
+    if (!profile)
+        return val_err("machine.boot: unknown model '%s'", doc.model);
+
+    uint32_t ram_kb = doc.ram_kb;
+    if (ram_kb == 0)
+        ram_kb = (rec->valid && strcmp(rec->model, profile->id) == 0) ? rec->ram_kb : profile->ram_default / 1024u;
     if (!ram_option_allowed(profile, ram_kb)) {
         char options[128];
         format_ram_options(options, sizeof(options), profile);
         return val_err("machine.boot: ram %u KB not in profile.ram_options for %s [%s]", ram_kb, profile->name,
                        options);
     }
-    system_set_pending_ram_kb(ram_kb);
 
+    if (!doc.rom || !*doc.rom)
+        return val_err("machine.boot: no rom given and no machine to inherit from");
+    rom_file_info_t rom_fi = {0};
+    if (rom_probe_file(doc.rom, &rom_fi) != 0)
+        return val_err("machine.boot: cannot read rom '%s'", doc.rom);
+    if (doc.rom2 && *doc.rom2) {
+        // Two-chip Lisa/XL form: the chips identify only after interleaving,
+        // so per-file identification is skipped here; the loader validates.
+        FILE *f = fopen(doc.rom2, "rb");
+        if (!f)
+            return val_err("machine.boot: cannot read rom2 '%s'", doc.rom2);
+        fclose(f);
+    } else if (rom_fi.info) {
+        bool ok = false;
+        for (const char *const *p = rom_fi.info->compatible; *p; p++) {
+            if (strcmp(*p, profile->id) == 0) {
+                ok = true;
+                break;
+            }
+        }
+        if (!ok)
+            return val_err("machine.boot: rom '%s' (%s) is not compatible with model '%s'", doc.rom,
+                           rom_fi.info->family_name, profile->id);
+    } else {
+        return val_err("machine.boot: rom '%s' is not a recognised ROM image (checksum %08X)", doc.rom,
+                       rom_fi.checksum);
+    }
+
+    if (doc.video_card && *doc.video_card) {
+        if (!profile->nubus_slots)
+            return val_err("machine.boot: model '%s' has no NuBus slots for video_card '%s'", profile->id,
+                           doc.video_card);
+        if (!nubus_card_find(doc.video_card))
+            return val_err("machine.boot: unknown card id '%s' (see nubus.cards())", doc.video_card);
+    }
+    if (doc.video_sense > 7)
+        return val_err("machine.boot: video_sense must be 0..7 (got %d)", doc.video_sense);
+    if (doc.video_mode && *doc.video_mode && !nubus_video_mode_known(doc.video_mode))
+        return val_err("machine.boot: unknown video-mode id '%s'", doc.video_mode);
+
+    // Explicit vROM pick: the file must identify as a known declaration ROM
+    // before it can win the pick order.
+    if (doc.vrom && *doc.vrom) {
+        vrom_id_t vid;
+        if (!vrom_identify_card(doc.vrom, &vid))
+            return val_err("machine.boot: vrom '%s' is not a recognised declaration ROM", doc.vrom);
+    }
+
+    // Strict resolution for socket cards. The effective wildcard pick may
+    // also come from a pre-boot `nubus.video_card =` staging write (legacy
+    // couplet form, retired in stage 3) — honour it so validation checks
+    // the card that will actually seat.
+    if (doc.vrom && *doc.vrom)
+        vrom_set_path(doc.vrom);
+    const char *wildcard_card = doc.video_card;
+    if (!wildcard_card || !*wildcard_card)
+        wildcard_card = nubus_staged_card_get(NUBUS_STAGED_WILDCARD);
+    value_t verr = validate_vrom_resolution(profile, wildcard_card);
+    if (val_is_error(&verr))
+        return verr;
+
+    // 3. Teardown + atomic construction.
     if (global_emulator) {
         system_destroy(global_emulator);
         global_emulator = NULL;
     }
+
+    // Seed the construction channels from the document. Only fields the
+    // document carries are written — a pre-boot staging write (legacy
+    // couplet form) survives an inheriting boot until stage 3 retires
+    // that surface.
+    system_set_pending_ram_kb(ram_kb);
+    rom_pending_set(doc.rom);
+    if (doc.video_card && *doc.video_card)
+        nubus_staged_card_set(NUBUS_STAGED_WILDCARD, doc.video_card);
+    if (doc.video_mode && *doc.video_mode)
+        nubus_staged_mode_set(NUBUS_STAGED_WILDCARD, doc.video_mode);
+    if (doc.video_sense >= 0)
+        jmfb_pending_sense_set((uint8_t)doc.video_sense);
+
+    machine_config_reset_vroms();
     config_t *cfg = system_create(profile, NULL);
     if (!cfg)
-        return val_err("machine.boot: failed to create %s", model_id);
+        return val_err("machine.boot: failed to create %s", profile->id);
+
+    int rom_rc;
+    if (doc.rom2 && *doc.rom2)
+        rom_rc = rom_load_lisa_into_machine(doc.rom, doc.rom2);
+    else
+        rom_rc = rom_load_into_machine(doc.rom);
+    if (rom_rc != 0)
+        return val_err("machine.boot: machine created but ROM staging failed for '%s'", doc.rom);
+
+    // 4. The built-from record — the machine's birth certificate.
+    machine_config_record_t *w = machine_config_record_mut();
+    snprintf(w->model, sizeof(w->model), "%s", profile->id);
+    w->ram_kb = cfg->ram_size / 1024u;
+    snprintf(w->rom, sizeof(w->rom), "%s", doc.rom);
+    w->rom_crc = rom_fi.checksum;
+    snprintf(w->rom2, sizeof(w->rom2), "%s", doc.rom2 ? doc.rom2 : "");
+    snprintf(w->vrom, sizeof(w->vrom), "%s", doc.vrom ? doc.vrom : "");
+    snprintf(w->video_card, sizeof(w->video_card), "%s", doc.video_card ? doc.video_card : "");
+    w->video_sense = doc.video_sense;
+    snprintf(w->video_mode, sizeof(w->video_mode), "%s", doc.video_mode ? doc.video_mode : "");
+    stamp_created(w->created, sizeof(w->created));
+    w->valid = true;
+
     LOG(1, "Machine created: %s (%s), RAM: %u KB", profile->name, profile->id, cfg->ram_size / 1024u);
+    return val_none();
+}
+
+// machine.boot — atomic, self-contained configuration document.  All
+// arguments optional; unspecified ones inherit from machine.config (the
+// built-from record), so a bare `machine.boot` is a plain reboot with the
+// ROM re-staged.  Empty-string / 0 defaults are the "not given" sentinels
+// (an explicitly empty value is rejected by the named-argument grammar).
+static value_t machine_method_boot(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)self;
+    (void)m;
+    (void)argc;
+    boot_config_t doc = {
+        .model = argv[0].s,
+        .ram_kb = (uint32_t)argv[1].u,
+        .rom = argv[2].s,
+        .vrom = argv[3].s,
+        .video_card = argv[4].s,
+        .video_sense = (argv[5].u == 0xFF) ? -1 : (int)argv[5].u,
+        .video_mode = argv[6].s,
+        .rom2 = argv[7].s,
+    };
+    value_t err = machine_boot_apply(&doc);
+    if (val_is_error(&err))
+        return err;
+    value_free(&err);
     return val_bool(true);
 }
 
@@ -451,9 +667,54 @@ static value_t machine_method_register(struct object *self, const member_t *m, i
     return val_bool(gs_register_machine(argv[0].s, argv[1].s) == 0);
 }
 
+// "Not given" sentinels for the all-optional boot document: empty string /
+// 0 / 0xFF mean "inherit from machine.config" (§4.1).  An explicitly empty
+// named value (`rom=`) is rejected by the shell grammar before binding.
+static const value_t k_unset_str = {.kind = V_STRING, .s = (char *)""};
+static const value_t k_unset_u32 = {.kind = V_UINT, .u = 0};
+static const value_t k_unset_sense = {.kind = V_UINT, .u = 0xFF};
+
 static const arg_decl_t machine_boot_args[] = {
-    {.name = "model", .kind = V_STRING, .validation_flags = OBJ_ARG_NONEMPTY, .doc = "Machine model id (plus / se30)"},
-    {.name = "ram", .kind = V_UINT, .doc = "RAM in KB; must be one of profile.ram_options"},
+    {.name = "model",
+     .kind = V_STRING,
+     .validation_flags = OBJ_ARG_OPTIONAL,
+     .default_value = &k_unset_str,
+     .doc = "Machine model id (plus / se30 / ...); default: inherit"              },
+    {.name = "ram",
+     .kind = V_UINT,
+     .validation_flags = OBJ_ARG_OPTIONAL,
+     .default_value = &k_unset_u32,
+     .doc = "RAM in KB (one of profile.ram_options); default: inherit"            },
+    {.name = "rom",
+     .kind = V_STRING,
+     .validation_flags = OBJ_ARG_OPTIONAL,
+     .default_value = &k_unset_str,
+     .doc = "ROM file path; default: inherit (re-stages the same ROM)"            },
+    {.name = "vrom",
+     .kind = V_STRING,
+     .validation_flags = OBJ_ARG_OPTIONAL,
+     .default_value = &k_unset_str,
+     .doc = "Explicit declaration-ROM pick; default: auto-resolve from offers"    },
+    {.name = "video_card",
+     .kind = V_STRING,
+     .validation_flags = OBJ_ARG_OPTIONAL,
+     .default_value = &k_unset_str,
+     .doc = "Card id for the first NuBus socket; default: inherit / slot default" },
+    {.name = "video_sense",
+     .kind = V_UINT,
+     .validation_flags = OBJ_ARG_OPTIONAL,
+     .default_value = &k_unset_sense,
+     .doc = "Monitor sense 0..7; default: inherit / card default"                 },
+    {.name = "video_mode",
+     .kind = V_STRING,
+     .validation_flags = OBJ_ARG_OPTIONAL,
+     .default_value = &k_unset_str,
+     .doc = "Video-mode id (see machine.profile); default: inherit / card default"},
+    {.name = "rom2",
+     .kind = V_STRING,
+     .validation_flags = OBJ_ARG_OPTIONAL,
+     .default_value = &k_unset_str,
+     .doc = "Lisa/XL second ROM chip (two-chip form); default: single-file rom"   },
 };
 
 static const arg_decl_t machine_register_args[] = {
@@ -497,8 +758,8 @@ static const member_t machine_members[] = {
      .method = {.args = machine_profile_args, .nargs = 1, .result = V_STRING, .fn = machine_method_profile}},
     {.kind = M_METHOD,
      .name = "boot",
-     .doc = "Tear down any active machine and create a new one (no ROM loaded yet)",
-     .method = {.args = machine_boot_args, .nargs = 2, .result = V_BOOL, .fn = machine_method_boot}},
+     .doc = "Boot a machine from a configuration document; omitted arguments inherit from machine.config",
+     .method = {.args = machine_boot_args, .nargs = 8, .result = V_BOOL, .fn = machine_method_boot}},
     {.kind = M_METHOD,
      .name = "register",
      .doc = "Record the active machine identity for checkpointing",
@@ -534,6 +795,9 @@ struct object *machine_object(void) {
         if (s_machine_object) {
             object_set_order(s_machine_object, -100); // machine sorts first under the root
             object_attach(object_root(), s_machine_object);
+            // The read-only built-from record rides along for the process
+            // lifetime, like the machine container itself.
+            machine_config_object_init(s_machine_object);
         }
     }
     return s_machine_object;

@@ -51,9 +51,9 @@ assert ${machine.ram == 2560} "machine.ram reflects 2.5 MB after re-boot"
 assert ${machine.boot("plus", 4096)} "ram=4096 must succeed for Plus"
 
 # Switch to SE/30 with its default 8 MB to confirm the cross-model attr
-# update.  No ROM is loaded into the new machine, so we only check the
-# profile-derived attributes.
-assert ${machine.boot("se30", 8192)} "machine.boot(se30, 8192)"
+# update.  The model switch needs a compatible ROM in the document — the
+# inherited Plus ROM would (correctly) be rejected by validation.
+assert ${machine.boot("se30", 8192, "../../data/roms/iix-iicx-se30-97221136.rom")} "machine.boot(se30, 8192)"
 assert ${machine.id == "se30"} "machine.id after se30 boot"
 assert ${machine.ram == 8192} "machine.ram after se30 boot"
 assert ${machine.freq == 15667200} "machine.freq after se30 boot"

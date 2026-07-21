@@ -11,9 +11,7 @@
 #   * pattern blend ($28, default $7FFF weight) of red over black ->
 #     r = ($FFFF*$7FFF)>>16 = $7FFE -> 5 bits $0F -> $3C00.
 
-machine.nubus.video_card = "824gc"
-machine.boot "iicx" 8192
-machine.rom.reload
+machine.boot model="iicx" ram=8192 video_card="824gc"
 
 machine.memory.poke.l 0x9C006400 0x42005300
 machine.memory.poke.l 0x9C007048 0x00000001

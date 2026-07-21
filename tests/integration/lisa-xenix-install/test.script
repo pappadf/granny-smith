@@ -57,11 +57,10 @@ machine.screen.match expected_hdinit.png
 
 # === (§1.5.3) Reboot and boot the hard-disk kernel =========================
 # Persist the freshly-initialized ProFile, power-cycle the machine (machine.boot
-# re-instantiates it; rom.reload reloads the boot ROM), reattach the same ProFile
+# re-instantiates it and re-stages the inherited boot ROM), reattach the same ProFile
 # image, and re-insert the boot floppy so the ROM auto-boots its loader.
 machine.hd.save "${WORK_DIR}/xenix_hd.image"
-machine.boot "lisa" 2048
-machine.rom.reload
+machine.boot model="lisa" ram=2048
 machine.hd.attach "${WORK_DIR}/xenix_hd.image"
 machine.floppy.drive.0.insert "../../data/Lisa/Xenix-3.0/Xenix-3.0-Boot-XProFile.dc42"
 scheduler.run 60000000

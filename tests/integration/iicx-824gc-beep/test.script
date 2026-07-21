@@ -10,9 +10,7 @@
 #   machine.sound.capture.stop beep.wav    (beep2.wav for the second)
 # then audition the WAVs once before committing them.
 
-machine.nubus.video_card = "824gc"
-machine.boot "iicx" 8192
-machine.rom.reload
+machine.boot model="iicx" ram=8192 video_card="824gc"
 
 # Pin the RTC so the run is deterministic. This must come AFTER machine.boot
 # (which resets the RTC to the host wall clock) — the Control Panel's clock

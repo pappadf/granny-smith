@@ -70,6 +70,22 @@ void vrom_offer_clear(void);
 // *out_chip_size (optional), or NULL when exhausted.
 const char *vrom_offer_find(const char *card_id, int idx, size_t *out_chip_size);
 
+// Content facts for a registered offer, looked up by its path (as returned
+// from vrom_offer_find).  Used by the card loader to report the resolved
+// pick into the built-from record.  Returns false if the path is not a
+// registered offer.
+bool vrom_offer_info(const char *path, uint32_t *out_crc, bool *out_explicit);
+
+// True iff the catalog lists a declaration ROM for this card id — i.e. the
+// card needs a vROM and boot's strict-resolution validation applies
+// (proposal-named-args-boot-config §4.1).
+bool vrom_card_catalogued(const char *card_id);
+
+// True iff an offered candidate resolves for this card id (pick order as
+// vrom_offer_find).  Boot validation rejects a configuration whose
+// catalogued cards cannot all resolve.
+bool vrom_card_resolvable(const char *card_id);
+
 // Set the explicit vROM pick (vrom.load): an offer that is also the
 // *preferred* candidate for whichever card its content provides.  Also
 // recorded verbatim for the vrom.path attribute.  Returns 0 on success,

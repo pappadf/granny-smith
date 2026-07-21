@@ -101,6 +101,10 @@ const char *nubus_staged_card_get(int slot);
 void nubus_staged_mode_set(int slot, const char *id); // NULL/"" clears
 const char *nubus_staged_mode_get(int slot);
 
+// True iff `id` names a video mode in any registered card's catalog.
+// Boot-document validation for machine.boot's video_mode= argument.
+bool nubus_video_mode_known(const char *id);
+
 // Wildcard-entry conveniences — the pre-stage-2 API, kept for the alias
 // attribute and the headless startup arg.  Equivalent to
 // nubus_staged_card_set/get(NUBUS_STAGED_WILDCARD, id).
