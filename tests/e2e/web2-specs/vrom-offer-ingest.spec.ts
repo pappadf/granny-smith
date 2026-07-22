@@ -134,6 +134,9 @@ test('mid-session vROM upload is offered: "(auto)" boot content-matches it witho
   //    default card (mdc_8_24) must find its declaration ROM among the
   //    offered candidates — the file we just dropped, under its hash name.
   await terminalRun(page, 'machine.boot model="iicx" ram=8192 rom="/opfs/images/rom/97221136"');
+  // Let the boot's terminal output settle before typing the next line —
+  // keystrokes race the xterm render of the ROM-load prints otherwise.
+  await page.waitForTimeout(3_000);
   expect(await terminalEval(page, "machine.id")).toBe("iicx");
   expect(
     await terminalEval(page, "machine.nubus.slot[9].card.declrom.present"),
