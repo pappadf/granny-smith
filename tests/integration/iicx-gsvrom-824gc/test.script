@@ -1,0 +1,11 @@
+# Generic GC bring-up: boot the 6.0.8 GC system; the 8•24 GC extension
+# matches the GS ROM's identity records and starts GC-OS on the card.
+machine.boot model="iicx" ram=8192 video_card="8_24gc"
+machine.rtc.time = 3000000000
+machine.scsi.attach_hd "../../data/systems/system_6_0_8_20mb_8_24gc.img" 0
+scheduler.run 200000000
+assert ${machine.nubus.slot[9].card.gc.on == true}       "accelerator did not turn on"
+assert ${machine.nubus.slot[9].card.gc.state == "gc-on"} "accelerator state != gc-on"
+assert ${machine.nubus.slot[9].card.gc.error == 0}       "accelerator posted an error"
+assert ${machine.nubus.slot[9].card.gc.rpc_count > 0}    "no RPCs serviced (bring-up never engaged)"
+quit

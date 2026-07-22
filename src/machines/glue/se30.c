@@ -389,7 +389,10 @@ static const nubus_slot_decl_t se30_slots[] = {
     {.slot = 0x9, .kind = NUBUS_SLOT_EMPTY},
     {.slot = 0xA, .kind = NUBUS_SLOT_EMPTY},
     {.slot = 0xB, .kind = NUBUS_SLOT_EMPTY},
-    {.slot = 0xE, .kind = NUBUS_SLOT_BUILTIN, .builtin_card_id = "builtin_se30_video"},
+    // Default: the generic sibling ("se30", built-in GS declaration ROM) so
+    // every SE/30 boots with working video and no vROM file; video_card=
+    // "builtin_se30_video" picks the real kind when a dump is offered.
+    {.slot = 0xE, .kind = NUBUS_SLOT_BUILTIN, .builtin_card_id = "se30"},
     {0},
 };
 

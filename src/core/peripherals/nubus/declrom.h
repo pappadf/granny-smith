@@ -98,4 +98,13 @@ bool declrom_layout_chip(const uint8_t *chip, size_t chip_size, uint8_t *bus_buf
 // 8•24 GC, SE/30 built-in video).
 bool declrom_load_vrom_card(const char *card_id, uint8_t *bus_buf, size_t bus_size, char **out_path);
 
+// Install a BUILT-IN declaration ROM image (a gsvrom.h blob) into the tail
+// of the card's bus window, exactly as declrom_load_vrom_card lays out a
+// file-backed chip — byteLanes read from the chip's last byte — and report
+// the pick into the built-from record with the "builtin:<card_id>" locator
+// (path-less, identified by CRC; proposal-generic-nubus-vrom.md sec. 6.2).
+// Returns true on success.
+bool declrom_install_builtin(const char *card_id, const uint8_t *chip, size_t chip_size, uint8_t *bus_buf,
+                             size_t bus_size);
+
 #endif // NUBUS_DECLROM_H

@@ -520,7 +520,10 @@ static value_t slot_attr_card_id_set(struct object *self, const member_t *m, val
     }
     // "" clears; a non-empty id must name a registered card (typo guard).
     if (*id && !nubus_card_find(id)) {
-        value_t err = val_err("slot[%X].card_id: unknown card id '%s' (see nubus.cards())", slot, id);
+        const char *near = nubus_card_suggest(id);
+        value_t err = near ? val_err("slot[%X].card_id: unknown card id '%s' — did you mean '%s'? (see nubus.cards())",
+                                     slot, id, near)
+                           : val_err("slot[%X].card_id: unknown card id '%s' (see nubus.cards())", slot, id);
         value_free(&in);
         return err;
     }

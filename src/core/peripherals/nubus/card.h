@@ -158,4 +158,8 @@ typedef struct nubus_card_kind {
 const nubus_card_kind_t *nubus_card_find(const char *id);
 const nubus_card_kind_t *const *nubus_card_registry(void);
 
+// For unknown-id error messages: the registered id that differs from `id`
+// only by underscores (e.g. "824gc" for a mistyped "8_24_gc"), or NULL.
+const char *nubus_card_suggest(const char *id);
+
 #endif // NUBUS_CARD_H

@@ -21,6 +21,7 @@
 #include "checkpoint.h"
 #include "declrom.h"
 #include "display.h"
+#include "gsvrom.h"
 #include "log.h"
 #include "system.h"
 #include "system_config.h"
@@ -216,7 +217,7 @@ static bool load_real_vrom(uint8_t *vrom_buf, char **out_path) {
 
 // === Card vtable ============================================================
 
-static int card_init(nubus_card_t *card, config_t *cfg, checkpoint_t *cp) {
+static int card_init_common(nubus_card_t *card, config_t *cfg, checkpoint_t *cp, bool generic) {
     (void)cp;
     se30_priv_t *p = calloc(1, sizeof(*p));
     if (!p)
@@ -230,11 +231,20 @@ static int card_init(nubus_card_t *card, config_t *cfg, checkpoint_t *cp) {
         return -1;
     }
     (void)cfg;
-    if (!load_real_vrom(p->vrom, &p->vrom_path)) {
+    if (generic) {
+        // Generic sibling kind ("se30"): install the built-in GS vROM blob —
+        // a full declaration ROM with a real display driver, replacing the
+        // old synthesise_vrom_fallback role (proposal-generic-nubus-vrom
+        // sec. 7.4).  The offer registry is never consulted.
+        size_t chip_size = 0;
+        const uint8_t *chip = gsvrom_blob(GSVROM_SE30, &chip_size);
+        if (!declrom_install_builtin(builtin_se30_video_generic_kind.id, chip, chip_size, p->vrom, SE30_VROM_SIZE))
+            LOG(0, "se30: built-in declaration ROM failed to install; declaration ROM is zero-filled");
+    } else if (!load_real_vrom(p->vrom, &p->vrom_path)) {
         if (!cp) {
             // Real VROM was the long-standing requirement on cold boot;
-            // fall back to the synthesised image so the SE/30 keeps booting
-            // even when no onboard-video vROM was offered (CI environments).
+            // fall back to the synthesised image so the real kind keeps
+            // booting even when no onboard-video vROM was offered.
             synthesise_vrom_fallback(p->vrom);
         }
         // Restoring from a checkpoint?  The VROM contents will be overwritten
@@ -280,27 +290,58 @@ static const char *card_name(const nubus_card_t *card) {
     return "Macintosh SE/30 Built-in Video";
 }
 
+// Thin per-kind init wrappers — the sibling pair shares one HLE model
+// (proposal-generic-nubus-vrom sec. 6.1: "one HLE model per pair").
+static int card_init_real(nubus_card_t *card, config_t *cfg, checkpoint_t *cp) {
+    return card_init_common(card, cfg, cp, /*generic*/ false);
+}
+
+static int card_init_generic(nubus_card_t *card, config_t *cfg, checkpoint_t *cp) {
+    return card_init_common(card, cfg, cp, /*generic*/ true);
+}
+
+static const char *card_name_generic(const nubus_card_t *card) {
+    (void)card;
+    return "Macintosh SE/30 Built-in Video (generic video ROM)";
+}
+
 static const nubus_card_ops_t builtin_se30_video_ops = {
-    .init = card_init,
+    .init = card_init_real,
     .teardown = card_teardown,
     .on_vbl = NULL, // VBL slot-IRQ flow stays in se30_trigger_vbl for v1
     .display = card_display,
     .name = card_name,
 };
 
+static const nubus_card_ops_t builtin_se30_video_generic_ops = {
+    .init = card_init_generic,
+    .teardown = card_teardown,
+    .on_vbl = NULL,
+    .display = card_display,
+    .name = card_name_generic,
+};
+
 // === Factory + kind descriptor ==============================================
 
-static nubus_card_t *factory(int slot, config_t *cfg, checkpoint_t *cp) {
+static nubus_card_t *factory_common(int slot, config_t *cfg, checkpoint_t *cp, const nubus_card_ops_t *ops) {
     nubus_card_t *card = calloc(1, sizeof(*card));
     if (!card)
         return NULL;
-    card->ops = &builtin_se30_video_ops;
+    card->ops = ops;
     card->slot = slot;
     if (card->ops->init(card, cfg, cp) != 0) {
         free(card);
         return NULL;
     }
     return card;
+}
+
+static nubus_card_t *factory(int slot, config_t *cfg, checkpoint_t *cp) {
+    return factory_common(slot, cfg, cp, &builtin_se30_video_ops);
+}
+
+static nubus_card_t *factory_generic(int slot, config_t *cfg, checkpoint_t *cp) {
+    return factory_common(slot, cfg, cp, &builtin_se30_video_generic_ops);
 }
 
 // One monitor entry — the SE/30 built-in is fixed at 512×342×1bpp; the
@@ -321,6 +362,19 @@ const nubus_card_kind_t builtin_se30_video_kind = {
     .requires_vrom = true,
     .monitors = builtin_se30_monitors,
     .factory = factory,
+};
+
+// Generic sibling kind ("se30") with the built-in GS declaration ROM —
+// the SE/30 profile's default, so every SE/30 boots with working video
+// and no uploaded vROM (proposal-generic-nubus-vrom sec. 7.4).  The
+// real kind stays selectable via video_card= when a dump is offered.
+const nubus_card_kind_t builtin_se30_video_generic_kind = {
+    .id = "se30",
+    .display_name = "Macintosh SE/30 Built-in Video (generic video ROM)",
+    .attach = CARD_ATTACH_BUILTIN,
+    .requires_vrom = false,
+    .monitors = builtin_se30_monitors,
+    .factory = factory_generic,
 };
 
 // === SE/30-specific public hooks ============================================

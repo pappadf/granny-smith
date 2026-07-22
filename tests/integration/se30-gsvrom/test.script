@@ -1,0 +1,15 @@
+# SE/30 boot on the generic built-in declaration ROM (the profile default).
+# The five-line boot prefix mirrors iicx-video-modes; the machine then runs
+# on to the Finder desktop.
+machine.rtc.time = 3000000000
+scheduler.run 50000000
+machine.memory.poke.w 0x017A 0x8805
+scheduler.run 1500000
+machine.memory.poke.w 0x017A 0
+scheduler.run 111000000
+assert ${machine.id == "se30"}                       "machine.id != se30"
+assert ${machine.screen.width == 512}                "width != 512"
+assert ${machine.screen.height == 342}               "height != 342"
+assert ${machine.config.vroms != ""}                 "built-from vrom record empty"
+machine.screen.match finder-se30-gsvrom-512x342.png
+quit

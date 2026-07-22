@@ -13,6 +13,7 @@
 // only ever an opaque handle used to open the file.
 
 #include "vrom.h"
+#include "gsvrom.h" // built-in generic declROM blobs (dumped-copy recognition)
 
 #include "log.h"
 #include "machine_profile.h"
@@ -152,6 +153,29 @@ static enum vrom_id_result vrom_identify_core(const char *path, vrom_id_t *out, 
                 out->crc = crc;
                 out->chip_size = size;
                 out->card_id = VROM_CATALOG[i].card_id;
+            }
+            return VROM_ID_KNOWN;
+        }
+    }
+    // Not a catalogued Apple dump — recognise a dumped copy of one of our
+    // own built-in generic images by its stored Format-Block CRC (the
+    // generic kinds never LOAD from files, but vrom.identify should still
+    // name a dump; proposal-generic-nubus-vrom.md sec. 6.1).
+    static const struct {
+        gsvrom_personality_t personality;
+        const char *card_id;
+    } gs_blobs[] = {
+        {GSVROM_JMFB,   "8_24"  },
+        {GSVROM_BOOGIE, "24ac"  },
+        {GSVROM_MDCGC,  "8_24gc"},
+        {GSVROM_SE30,   "se30"  },
+    };
+    for (size_t i = 0; i < sizeof(gs_blobs) / sizeof(gs_blobs[0]); i++) {
+        if (gsvrom_blob_crc(gs_blobs[i].personality) == crc) {
+            if (out) {
+                out->crc = crc;
+                out->chip_size = size;
+                out->card_id = gs_blobs[i].card_id;
             }
             return VROM_ID_KNOWN;
         }

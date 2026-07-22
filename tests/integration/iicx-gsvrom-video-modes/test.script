@@ -1,0 +1,149 @@
+# Integration test: IIcx Video Modes — GS generic vROM ("8_24" kind)
+#
+# Clone of ../iicx-video-modes running on the generic JMFB sibling with
+# the built-in GS declaration ROM (proposal-generic-nubus-vrom.md,
+# stage 1).  Differences from the real-vROM suite:
+#
+#   * `video_card="8_24"` — the generic kind; no vROM file is consulted
+#     (the offer registry is bypassed by construction).
+#   * Mode selection via the staged `video_mode=` boot argument; the C
+#     side seeds the same slot-9 sPRAMRec bytes the real suite pokes by
+#     hand (savedMode $80..$83, sister $Ax).
+#   * Its own reference PNGs: the GS ROM ships identity gamma for every
+#     monitor, so 21" Kong renders neutral (no Apple gamma
+#     pre-correction to invert) and the gray desktop pattern comes from
+#     the GS driver's own GrayScreen fill.
+#
+# Boot budget per cell: identical five-line prefix to iicx-video-modes
+# (50M to the Universal-ROM wait routine, $017A Cmd-Shift-Power poke to
+# short-circuit boot-drive discovery, 11M to the stable Welcome window).
+
+# --- 13" RGB at 1/2/4/8 bpp --------------------------------------------------
+machine.boot model="iicx" ram=8192 video_card="8_24" video_mode="13in_rgb_1bpp"
+machine.floppy.drive[0].insert "../../data/systems/System_7_0_1.image"
+scheduler.run 50000000
+machine.memory.poke.w 0x017A 0x8805
+scheduler.run 1500000
+machine.memory.poke.w 0x017A 0
+scheduler.run 11000000
+assert ${machine.id == "iicx"}                      "machine.id != iicx"
+assert ${machine.screen.width == 640}               "13in_rgb 1bpp width != 640"
+assert ${machine.screen.height == 480}              "13in_rgb 1bpp height != 480"
+assert ${machine.rtc.pram.peek(0x48) == 0x80}       "13in_rgb 1bpp savedMode != 0x80"
+assert ${machine.rtc.pram.peek(0x49) == 0xa6}       "13in_rgb 1bpp sister != 0xa6"
+assert ${machine.memory.peek.l(0xf9200208) == 0x80} "13in_rgb 1bpp CLUTPBCR != 0x80"
+assert ${machine.memory.peek.l(0xf920000c) == 0x14} "13in_rgb 1bpp RowWords != 0x14"
+machine.screen.match welcome-13in_rgb-640x480-1bpp.png
+
+machine.boot model="iicx" ram=8192 video_card="8_24" video_mode="13in_rgb_2bpp"
+machine.floppy.drive[0].insert "../../data/systems/System_7_0_1.image"
+scheduler.run 50000000
+machine.memory.poke.w 0x017A 0x8805
+scheduler.run 1500000
+machine.memory.poke.w 0x017A 0
+scheduler.run 11000000
+assert ${machine.rtc.pram.peek(0x48) == 0x81}       "13in_rgb 2bpp savedMode != 0x81"
+assert ${machine.memory.peek.l(0xf9200208) == 0x88} "13in_rgb 2bpp CLUTPBCR != 0x88"
+assert ${machine.memory.peek.l(0xf920000c) == 0x28} "13in_rgb 2bpp RowWords != 0x28"
+machine.screen.match welcome-13in_rgb-640x480-2bpp.png
+
+machine.boot model="iicx" ram=8192 video_card="8_24" video_mode="13in_rgb_4bpp"
+machine.floppy.drive[0].insert "../../data/systems/System_7_0_1.image"
+scheduler.run 50000000
+machine.memory.poke.w 0x017A 0x8805
+scheduler.run 1500000
+machine.memory.poke.w 0x017A 0
+scheduler.run 11000000
+assert ${machine.rtc.pram.peek(0x48) == 0x82}       "13in_rgb 4bpp savedMode != 0x82"
+assert ${machine.memory.peek.l(0xf9200208) == 0x90} "13in_rgb 4bpp CLUTPBCR != 0x90"
+assert ${machine.memory.peek.l(0xf920000c) == 0x50} "13in_rgb 4bpp RowWords != 0x50"
+machine.screen.match welcome-13in_rgb-640x480-4bpp.png
+
+machine.boot model="iicx" ram=8192 video_card="8_24" video_mode="13in_rgb_8bpp"
+machine.floppy.drive[0].insert "../../data/systems/System_7_0_1.image"
+scheduler.run 50000000
+machine.memory.poke.w 0x017A 0x8805
+scheduler.run 1500000
+machine.memory.poke.w 0x017A 0
+scheduler.run 11000000
+assert ${machine.rtc.pram.peek(0x48) == 0x83}       "13in_rgb 8bpp savedMode != 0x83"
+assert ${machine.memory.peek.l(0xf9200208) == 0x98} "13in_rgb 8bpp CLUTPBCR != 0x98"
+assert ${machine.memory.peek.l(0xf920000c) == 0xa0} "13in_rgb 8bpp RowWords != 0xa0"
+machine.screen.match welcome-13in_rgb-640x480-8bpp.png
+
+# --- 12" RGB at 1/8 bpp ------------------------------------------------------
+machine.boot model="iicx" ram=8192 video_card="8_24" video_mode="12in_rgb_1bpp"
+machine.floppy.drive[0].insert "../../data/systems/System_7_0_1.image"
+scheduler.run 50000000
+machine.memory.poke.w 0x017A 0x8805
+scheduler.run 1500000
+machine.memory.poke.w 0x017A 0
+scheduler.run 11000000
+assert ${machine.screen.width == 512}               "12in_rgb 1bpp width != 512"
+assert ${machine.screen.height == 384}              "12in_rgb 1bpp height != 384"
+assert ${machine.rtc.pram.peek(0x48) == 0x80}       "12in_rgb 1bpp savedMode != 0x80"
+assert ${machine.rtc.pram.peek(0x49) == 0xa2}       "12in_rgb 1bpp sister != 0xa2"
+machine.screen.match welcome-12in_rgb-512x384-1bpp.png
+
+machine.boot model="iicx" ram=8192 video_card="8_24" video_mode="12in_rgb_8bpp"
+machine.floppy.drive[0].insert "../../data/systems/System_7_0_1.image"
+scheduler.run 50000000
+machine.memory.poke.w 0x017A 0x8805
+scheduler.run 1500000
+machine.memory.poke.w 0x017A 0
+scheduler.run 11000000
+assert ${machine.rtc.pram.peek(0x48) == 0x83}       "12in_rgb 8bpp savedMode != 0x83"
+machine.screen.match welcome-12in_rgb-512x384-8bpp.png
+
+# --- 15" Portrait B&W at 1/8 bpp ---------------------------------------------
+machine.boot model="iicx" ram=8192 video_card="8_24" video_mode="15in_bw_1bpp"
+machine.floppy.drive[0].insert "../../data/systems/System_7_0_1.image"
+scheduler.run 50000000
+machine.memory.poke.w 0x017A 0x8805
+scheduler.run 1500000
+machine.memory.poke.w 0x017A 0
+scheduler.run 11000000
+assert ${machine.screen.width == 640}               "15in_bw 1bpp width != 640"
+assert ${machine.screen.height == 870}              "15in_bw 1bpp height != 870"
+assert ${machine.rtc.pram.peek(0x48) == 0x80}       "15in_bw 1bpp savedMode != 0x80"
+assert ${machine.rtc.pram.peek(0x49) == 0xa1}       "15in_bw 1bpp sister != 0xa1"
+machine.screen.match welcome-15in_bw-640x870-1bpp.png
+
+machine.boot model="iicx" ram=8192 video_card="8_24" video_mode="15in_bw_8bpp"
+machine.floppy.drive[0].insert "../../data/systems/System_7_0_1.image"
+scheduler.run 50000000
+machine.memory.poke.w 0x017A 0x8805
+scheduler.run 1500000
+machine.memory.poke.w 0x017A 0
+scheduler.run 11000000
+assert ${machine.rtc.pram.peek(0x48) == 0x83}       "15in_bw 8bpp savedMode != 0x83"
+machine.screen.match welcome-15in_bw-640x870-8bpp.png
+
+# --- 21" RGB at 1/8 bpp (neutral grays — identity gamma, see header) ---------
+machine.boot model="iicx" ram=8192 video_card="8_24" video_mode="21in_rgb_1bpp"
+machine.floppy.drive[0].insert "../../data/systems/System_7_0_1.image"
+scheduler.run 50000000
+machine.memory.poke.w 0x017A 0x8805
+scheduler.run 1500000
+machine.memory.poke.w 0x017A 0
+scheduler.run 11000000
+assert ${machine.screen.width == 1152}              "21in_rgb 1bpp width != 1152"
+assert ${machine.screen.height == 870}              "21in_rgb 1bpp height != 870"
+assert ${machine.rtc.pram.peek(0x48) == 0x80}       "21in_rgb 1bpp savedMode != 0x80"
+assert ${machine.rtc.pram.peek(0x49) == 0xa7}       "21in_rgb 1bpp sister != 0xa7"
+machine.screen.match welcome-21in_rgb-1152x870-1bpp.png
+
+machine.boot model="iicx" ram=8192 video_card="8_24" video_mode="21in_rgb_8bpp"
+machine.floppy.drive[0].insert "../../data/systems/System_7_0_1.image"
+scheduler.run 50000000
+machine.memory.poke.w 0x017A 0x8805
+scheduler.run 1500000
+machine.memory.poke.w 0x017A 0
+scheduler.run 11000000
+assert ${machine.rtc.pram.peek(0x48) == 0x83}       "21in_rgb 8bpp savedMode != 0x83"
+machine.screen.match welcome-21in_rgb-1152x870-8bpp.png
+
+# --- built-from record: the generic blob is recorded path-less by CRC --------
+assert ${machine.config.video_card == "8_24"}       "built-from video_card != 8_24"
+
+quit

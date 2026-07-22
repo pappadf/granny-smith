@@ -268,8 +268,21 @@ static void encode_video_slots(json_builder_t *b, const hw_profile_t *p) {
             snprintf(slot_buf, sizeof slot_buf, "%X", s->slot); // "9".."E"
             json_str(b, slot_buf);
         }
+        // A BUILTIN slot may have sibling kinds (same monitor table, both
+        // BUILTIN-attach — the SE/30's generic/real video pair): those are
+        // selectable via video_card=, so the slot is only "fixed" when the
+        // declared kind has no sibling.
+        int builtin_candidates = 1;
+        const nubus_card_kind_t *decl_kind =
+            (s->kind == NUBUS_SLOT_BUILTIN) ? nubus_card_find(s->builtin_card_id) : NULL;
+        if (decl_kind) {
+            for (const nubus_card_kind_t *const *k = nubus_card_registry(); *k; k++) {
+                if (*k != decl_kind && (*k)->attach == CARD_ATTACH_BUILTIN && (*k)->monitors == decl_kind->monitors)
+                    builtin_candidates++;
+            }
+        }
         json_key(b, "fixed");
-        json_bool(b, s->kind == NUBUS_SLOT_BUILTIN);
+        json_bool(b, s->kind == NUBUS_SLOT_BUILTIN && builtin_candidates == 1);
         json_key(b, "default_card");
         json_str(b, default_card ? default_card : "");
 
@@ -277,6 +290,12 @@ static void encode_video_slots(json_builder_t *b, const hw_profile_t *p) {
         json_open_arr(b);
         if (s->kind == NUBUS_SLOT_BUILTIN) {
             encode_video_card(b, s->builtin_card_id);
+            if (decl_kind) {
+                for (const nubus_card_kind_t *const *k = nubus_card_registry(); *k; k++) {
+                    if (*k != decl_kind && (*k)->attach == CARD_ATTACH_BUILTIN && (*k)->monitors == decl_kind->monitors)
+                        encode_video_card(b, (*k)->id);
+                }
+            }
         } else {
             // Candidates are COMPUTED from the card registry: every kind
             // whose declared attachment fits this slot and that drives a
@@ -552,8 +571,13 @@ value_t machine_boot_apply(const boot_config_t *doc_in) {
         if (!profile->nubus_slots)
             return val_err("machine.boot: model '%s' has no NuBus slots for video_card '%s'", profile->id,
                            doc.video_card);
-        if (!nubus_card_find(doc.video_card))
+        if (!nubus_card_find(doc.video_card)) {
+            const char *near = nubus_card_suggest(doc.video_card);
+            if (near)
+                return val_err("machine.boot: unknown card id '%s' — did you mean '%s'? (see nubus.cards())",
+                               doc.video_card, near);
             return val_err("machine.boot: unknown card id '%s' (see nubus.cards())", doc.video_card);
+        }
     }
     if (doc.video_sense > 7)
         return val_err("machine.boot: video_sense must be 0..7 (got %d)", doc.video_sense);

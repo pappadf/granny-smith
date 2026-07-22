@@ -10,4 +10,7 @@ TEST_ROM := roms/iix-iicx-se30-97221136.rom
 # Boot from System 7.1 floppy disk.  Pin RAM at 4 MB to match the existing
 # screenshot baseline; SE/30's profile default is 8 MB (proposal §3.1) and
 # the About box's "Total Memory" line would otherwise drift.
-TEST_ARGS := ram=4096 fd=$(TEST_DATA)/systems/System_7_1_0.dsk
+# Pinned to the REAL onboard-video vROM kind: this suite's reference PNGs
+# were captured against it, and the SE/30 profile now defaults to the
+# generic GS-vROM sibling (proposal-generic-nubus-vrom.md stage 3).
+TEST_ARGS := video_card=builtin_se30_video ram=4096 fd=$(TEST_DATA)/systems/System_7_1_0.dsk

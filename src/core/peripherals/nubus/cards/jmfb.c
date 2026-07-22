@@ -26,6 +26,7 @@
 #include "checkpoint.h"
 #include "declrom.h"
 #include "display.h"
+#include "gsvrom.h"
 #include "log.h"
 #include "memory.h"
 #include "nubus.h"
@@ -656,7 +657,7 @@ static bool load_vrom(jmfb_priv_t *p) {
     return true;
 }
 
-static int card_init(nubus_card_t *card, config_t *cfg, checkpoint_t *cp) {
+static int card_init_common(nubus_card_t *card, config_t *cfg, checkpoint_t *cp, bool generic) {
     (void)cp;
     jmfb_priv_t *p = calloc(1, sizeof(*p));
     if (!p)
@@ -676,7 +677,17 @@ static int card_init(nubus_card_t *card, config_t *cfg, checkpoint_t *cp) {
         return -1;
     }
 
-    if (!load_vrom(p)) {
+    if (generic) {
+        // Generic sibling kind ("8_24"): install the built-in GS vROM blob;
+        // the offer registry is never consulted (proposal-generic-nubus-vrom
+        // sec. 6.1) — the blob is compiled in and its content is known.
+        size_t chip_size = 0;
+        const uint8_t *chip = gsvrom_blob(GSVROM_JMFB, &chip_size);
+        if (declrom_install_builtin(jmfb_generic_kind.id, chip, chip_size, p->vrom, JMFB_DECLROM_BUS_SIZE))
+            p->vrom_size = JMFB_DECLROM_BUS_SIZE;
+        else
+            LOG(0, "8_24: built-in declaration ROM failed to install; declaration ROM is zero-filled");
+    } else if (!load_vrom(p)) {
         // requires_vrom is true on this kind, so the dialog gates
         // boot on a real VROM file; reaching here means CI ran without
         // one.  Log loudly and continue with a zero-filled declrom —
@@ -746,7 +757,12 @@ static int card_init(nubus_card_t *card, config_t *cfg, checkpoint_t *cp) {
     // renders neutral grays correctly).  Kong's CRT amplified blue more
     // than R/G, so its non-NULL kong_crt_response table inverts Apple's
     // gamma pre-correction at display time.
-    p->display.crt_response = monitor ? monitor->crt_response : NULL;
+    // The generic kind always uses identity response: the GS vROM ships
+    // identity gamma for every monitor, so there is no Apple gamma
+    // pre-correction to invert (jmfb_generic_monitors carries no
+    // crt_response either — this belt-and-braces NULL keeps the two
+    // consistent even if the tables drift).
+    p->display.crt_response = (!generic && monitor) ? monitor->crt_response : NULL;
     p->display.response_dirty = true;
 
     // Initial CLUT — a simple grayscale ramp so the canvas isn't blank
@@ -906,27 +922,60 @@ static const char *card_name(const nubus_card_t *card) {
            "24"; // "8•24"
 }
 
+// Thin per-kind init wrappers — the sibling pair shares one HLE model
+// (card_init_common); only the declROM source differs (proposal-generic-
+// nubus-vrom sec. 6.1: "one HLE model per pair — hard rule").
+static int card_init_real(nubus_card_t *card, config_t *cfg, checkpoint_t *cp) {
+    return card_init_common(card, cfg, cp, /*generic*/ false);
+}
+
+static int card_init_generic(nubus_card_t *card, config_t *cfg, checkpoint_t *cp) {
+    return card_init_common(card, cfg, cp, /*generic*/ true);
+}
+
+static const char *card_name_generic(const nubus_card_t *card) {
+    (void)card;
+    return "Apple Macintosh Display Card 8\xe2\x80\xa2"
+           "24 (generic video ROM)";
+}
+
 static const nubus_card_ops_t mdc_8_24_ops = {
-    .init = card_init,
+    .init = card_init_real,
     .teardown = card_teardown,
     .on_vbl = card_on_vbl,
     .display = card_display,
     .name = card_name,
 };
 
+static const nubus_card_ops_t jmfb_generic_ops = {
+    .init = card_init_generic,
+    .teardown = card_teardown,
+    .on_vbl = card_on_vbl,
+    .display = card_display,
+    .name = card_name_generic,
+};
+
 // === Factory + kind descriptor ==============================================
 
-static nubus_card_t *factory(int slot, config_t *cfg, checkpoint_t *cp) {
+static nubus_card_t *factory_common(int slot, config_t *cfg, checkpoint_t *cp, const nubus_card_ops_t *ops) {
     nubus_card_t *card = calloc(1, sizeof(*card));
     if (!card)
         return NULL;
-    card->ops = &mdc_8_24_ops;
+    card->ops = ops;
     card->slot = slot;
     if (card->ops->init(card, cfg, cp) != 0) {
         free(card);
         return NULL;
     }
     return card;
+}
+
+static nubus_card_t *factory(int slot, config_t *cfg, checkpoint_t *cp) {
+    return factory_common(slot, cfg, cp, &mdc_8_24_ops);
+}
+
+static nubus_card_t *factory_generic(int slot, config_t *cfg, checkpoint_t *cp) {
+    return factory_common(slot, cfg, cp, &jmfb_generic_ops);
 }
 
 // Monitor types the Rev B ROM supports (proposal §3.2.5 + the mode
@@ -1181,4 +1230,56 @@ const nubus_card_kind_t mdc_8_24_kind = {
     .requires_vrom = true,
     .monitors = mdc_8_24_monitors,
     .factory = factory,
+};
+
+// Monitor list for the generic sibling kind — same geometry / sense /
+// sister scheme as the real card (the GS vROM reproduces the Ax sister
+// sResource IDs so PRAM seeding works identically), but with no
+// crt_response entries: the generic ROM ships identity gamma for every
+// monitor, so there is no Apple gamma pre-correction to invert (the
+// real 21" Kong entry compensates for Apple's B-attenuated 'gama'
+// table, which the generic ROM deliberately does not reproduce).
+static const nubus_monitor_t jmfb_generic_monitors[] = {
+    {.id = "13in_rgb",
+     .name = "13\" AppleColor",
+     .width = 640,
+     .height = 480,
+     .depths = mdc_8_24_4depths,
+     .sense_code = 0x6,
+     .srsrc_sister = 0xA6},
+    {.id = "12in_rgb",
+     .name = "12\" RGB",
+     .width = 512,
+     .height = 384,
+     .depths = mdc_8_24_4depths,
+     .sense_code = 0x2,
+     .srsrc_sister = 0xA2},
+    {.id = "15in_bw",
+     .name = "15\" Portrait B&W",
+     .width = 640,
+     .height = 870,
+     .depths = mdc_8_24_4depths,
+     .sense_code = 0x1,
+     .srsrc_sister = 0xA1},
+    {.id = "21in_rgb",
+     .name = "21\" RGB",
+     .width = 1152,
+     .height = 870,
+     .depths = mdc_8_24_4depths,
+     .sense_code = 0x0,
+     .srsrc_sister = 0xA7},
+    {0},
+};
+
+// Generic sibling kind: always-available twin of mdc_8_24 with a built-in
+// declaration ROM — zero-configuration by construction (proposal-generic-
+// nubus-vrom sec. 6.1).  The short id is what users type in boot documents.
+const nubus_card_kind_t jmfb_generic_kind = {
+    .id = "8_24",
+    .display_name = "Apple Macintosh Display Card 8\xe2\x80\xa2"
+                    "24 (generic video ROM)",
+    .attach = CARD_ATTACH_NUBUS,
+    .requires_vrom = false,
+    .monitors = jmfb_generic_monitors,
+    .factory = factory_generic,
 };

@@ -8,4 +8,7 @@ TEST_DESC := Boots SE/30 with Universal ROM from 1.44MB HD floppy and verifies F
 TEST_ROM := roms/iix-iicx-se30-97221136.rom
 
 # Boot from 1.44MB HD MFM floppy (System 7.0.1)
-TEST_ARGS := ram=8192 fd=$(TEST_DATA)/systems/System_7_0_1.image
+# Pinned to the REAL onboard-video vROM kind: this suite's reference PNGs
+# were captured against it, and the SE/30 profile now defaults to the
+# generic GS-vROM sibling (proposal-generic-nubus-vrom.md stage 3).
+TEST_ARGS := video_card=builtin_se30_video ram=8192 fd=$(TEST_DATA)/systems/System_7_0_1.image

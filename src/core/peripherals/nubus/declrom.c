@@ -210,6 +210,30 @@ static bool load_chip_into_bus(const char *path, size_t chip_size, uint8_t *bus_
     return ok;
 }
 
+bool declrom_install_builtin(const char *card_id, const uint8_t *chip, size_t chip_size, uint8_t *bus_buf,
+                             size_t bus_size) {
+    if (!card_id || !chip || chip_size < 20 || !bus_buf)
+        return false;
+    // Lay the blob out exactly like a file-backed chip: byteLanes from the
+    // chip's last byte, tail-placed so the Format Block ends at the slot top.
+    uint8_t byte_lanes = chip[chip_size - 1];
+    size_t footprint = (byte_lanes == 0x0Fu) ? chip_size : chip_size * 4;
+    if (bus_size < footprint ||
+        !declrom_layout_chip(chip, chip_size, bus_buf + (bus_size - footprint), footprint, byte_lanes)) {
+        LOG(0, "declrom_install_builtin: '%s' blob has unsupported byteLanes $%02x (or exceeds the bus window)",
+            card_id, byte_lanes);
+        return false;
+    }
+    // Report the pick into the built-from record like any resolved declROM —
+    // path-less, identified by the blob's stored Format-Block CRC.
+    const uint8_t *t = chip + chip_size - 12; // CRC field, big-endian
+    uint32_t crc = ((uint32_t)t[0] << 24) | ((uint32_t)t[1] << 16) | ((uint32_t)t[2] << 8) | (uint32_t)t[3];
+    char locator[64];
+    snprintf(locator, sizeof locator, "builtin:%s", card_id);
+    machine_config_note_vrom(card_id, locator, crc, /*explicit_pick*/ false);
+    return true;
+}
+
 bool declrom_load_vrom_card(const char *card_id, uint8_t *bus_buf, size_t bus_size, char **out_path) {
     if (out_path)
         *out_path = NULL;

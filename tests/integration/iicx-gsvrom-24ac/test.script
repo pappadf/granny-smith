@@ -1,0 +1,28 @@
+# Generic 24AC: staged video modes ride the same PRAM-seeding path as the
+# other siblings; the extended-sense probe in the GS ROM picks the monitor.
+machine.boot model="iicx" ram=8192 video_card="24ac" video_mode="rgb_640x480_8bpp"
+machine.floppy.drive[0].insert "../../data/systems/System_7_0_1.image"
+scheduler.run 50000000
+machine.memory.poke.w 0x017A 0x8805
+scheduler.run 1500000
+machine.memory.poke.w 0x017A 0
+scheduler.run 11000000
+assert ${machine.screen.width == 640}                "24ac 640x480 width != 640"
+assert ${machine.screen.height == 480}               "24ac 640x480 height != 480"
+assert ${machine.rtc.pram.peek(0x48) == 0x82}        "24ac savedMode != 0x82 (8bpp)"
+assert ${machine.rtc.pram.peek(0x49) == 0x6b}        "24ac sister != 0x6b"
+machine.screen.match welcome-24ac-640x480-8bpp.png
+
+machine.boot model="iicx" ram=8192 video_card="24ac" video_mode="rgb_832x624_8bpp"
+machine.floppy.drive[0].insert "../../data/systems/System_7_0_1.image"
+scheduler.run 50000000
+machine.memory.poke.w 0x017A 0x8805
+scheduler.run 1500000
+machine.memory.poke.w 0x017A 0
+scheduler.run 11000000
+assert ${machine.screen.width == 832}                "24ac 832x624 width != 832"
+assert ${machine.screen.height == 624}               "24ac 832x624 height != 624"
+assert ${machine.rtc.pram.peek(0x48) == 0x82}        "24ac savedMode != 0x82 (8bpp)"
+assert ${machine.rtc.pram.peek(0x49) == 0x6d}        "24ac sister != 0x6d"
+machine.screen.match welcome-24ac-832x624-8bpp.png
+quit
