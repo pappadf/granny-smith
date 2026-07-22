@@ -132,12 +132,11 @@ machine.screen.match expected_installed.png
 # not the ProFile — pressing power-off here would be a no-op (the floppy-booted
 # installer ignores the COPS $FB switch).  To leave the ProFile cleanly unmounted
 # we must run the OS FROM it: persist the just-installed image, power-cycle into it
-# (machine.boot re-creates the machine, rom.reload reloads the boot ROM), and
+# (machine.boot re-creates the machine and re-stages the inherited boot ROM), and
 # re-attach the SAME image with the clean-shutdown PRAM (TEST_SETUP) so the ROM
 # auto-boots the ProFile with no floppy — exactly lisa-profile-boot's cold boot.
 machine.hd.save "${WORK_DIR}/lisa-los-installed-raw.image"
-machine.boot "lisa" 2048
-machine.rom.reload
+machine.boot model="lisa" ram=2048
 machine.hd.attach "${WORK_DIR}/lisa-los-installed-raw.image"
 assert ${machine.hd.pram_load("${WORK_DIR}/profile.pram")} "pram_load failed"
 

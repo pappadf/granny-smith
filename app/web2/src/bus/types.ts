@@ -7,21 +7,22 @@ export interface MachineConfig {
   /** Optional human-readable model name from `machine.profile(id).name`,
    *  used for status-bar display when set. Falls back to `model` if absent. */
   modelName?: string;
-  /** ROM image path (under /opfs/images/rom/). Empty / unset = use the
-   *  C-side default for the model (machine.boot may succeed without one
-   *  during early development). */
+  /** ROM image path (under /opfs/images/rom/). Becomes the boot document's
+   *  `rom` field; unset / '(auto)' = inherit from the live machine's
+   *  built-from record (machine.config). */
   rom?: string;
   vrom: string;
-  /** NuBus video card-kind id to install (e.g. "display_card_24ac", "mdc_8_24"),
-   *  applied via `machine.nubus.video_card` before `machine.boot`. Unset = use the
-   *  slot's default card. The dialog derives this from the chosen card (whose vROM
-   *  it auto-resolves), so the right card boots instead of the slot default. */
+  /** NuBus video card-kind id to install (e.g. "display_card_24ac", "mdc_8_24") —
+   *  the boot document's `video_card` field. Unset = use the slot's default
+   *  card. The dialog derives this from the chosen card (whose vROM it
+   *  auto-resolves), so the right card boots instead of the slot default. */
   videoCard?: string;
-  /** JMFB video-mode id (e.g. "13in_rgb_1bpp") seeded via `machine.nubus.video_mode`
-   *  before `machine.boot`, matching web-legacy's bootFromConfig.  Without it
-   *  the JMFB card never seeds its slot-PRAM / video defaults and A/UX hangs
-   *  while enabling its device drivers on real hardware.  Unset on models with
-   *  no configurable video (Plus / SE/30). */
+  /** JMFB video-mode id (e.g. "13in_rgb_1bpp") — the boot document's
+   *  `video_mode` field; the card factory consumes it during boot (sense
+   *  lines + slot-PRAM/video defaults).  Without it the JMFB card never
+   *  seeds its slot-PRAM / video defaults and A/UX hangs while enabling
+   *  its device drivers on real hardware.  Unset on models with no
+   *  configurable video (Plus / SE/30). */
   videoMode?: string;
   ram: string;
   /** Ordered list of floppy image paths, one per drive slot. Entries that

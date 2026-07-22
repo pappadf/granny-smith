@@ -25,10 +25,7 @@
 # is the exact 16-bit math result: e.g. blend = (40×½ + 80×½) = 60; addOver =
 # (8080+C0C0) mod 10000 = 4140 -> nearest ramp index 41.
 
-machine.nubus.video_card = "824gc"
-machine.nubus.video_mode = "gc_640x480_8bpp"
-machine.boot "iicx" 8192
-machine.rom.reload
+machine.boot model="iicx" ram=8192 video_card="824gc" video_mode="gc_640x480_8bpp"
 
 # Accelerator bring-up + SetPort (staged port record: screen base, origin 0).
 machine.memory.poke.l 0x9C006400 0x42005300

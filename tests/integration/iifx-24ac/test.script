@@ -13,9 +13,7 @@
 # The card's real decl-ROM driver path on the IIfx is exercised by the
 # System 7 boot in iifx-824gc, not here.
 
-machine.nubus.video_card = "display_card_24ac"
-machine.boot "iifx" 8192
-machine.rom.reload
+machine.boot model="iifx" ram=8192 video_card="display_card_24ac"
 
 # Same budget as the other ROM-only boots; the dummy screen is painted and
 # stable long before 100M instructions.

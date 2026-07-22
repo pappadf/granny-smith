@@ -473,9 +473,10 @@ no per-machine edits (see `proposal-nubus-computed-card-compatibility.md`).
 Each socket resolves its configuration independently at boot, so machines
 boot multi-card (e.g. two displays). Picks are staged per slot in the object
 model — `machine.nubus.slot[N].card_id` / `.video_mode`, consumed by the
-next `machine.boot` — while `machine.nubus.video_card` / `video_mode` remain
-as wildcard aliases meaning "the first socket" (what the config dialog and
-the headless `video_card=` arg use). `machine.screen` shows the *primary*
+next `machine.boot` — while the boot document's `video_card=` /
+`video_sense=` / `video_mode=` arguments name "the first socket" (what the
+config dialog and the headless `video_card=` arg use; see
+proposal-named-args-boot-config.md). `machine.screen` shows the *primary*
 display: the first populated video slot in declared order.
 
 The CPU is split into template-instantiated decoders (`cpu_68000.c`,

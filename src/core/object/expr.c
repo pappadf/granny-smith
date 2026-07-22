@@ -342,48 +342,123 @@ static bool read_path_segments(lex_t *L, const expr_ctx_t *ctx, char *path_buf, 
     return true;
 }
 
-// Parse a comma-separated argument list inside a method call. The
-// opening `(` has already been consumed. On success, consumes the
-// closing `)` and writes argv/argc; caller frees argv items and array.
-static bool parse_call_args(lex_t *L, const expr_ctx_t *ctx, value_t **out_argv, int *out_argc) {
+// A parsed `name=expr` argument inside a call-args list: heap-owned
+// name plus the evaluated value.
+typedef struct {
+    char *name;
+    value_t value;
+} call_named_t;
+
+// Free a parsed call-args result (positional values, named names+values).
+static void free_call_args(value_t *argv, int argc, call_named_t *named, int named_n) {
+    for (int i = 0; i < argc; i++)
+        value_free(&argv[i]);
+    free(argv);
+    for (int i = 0; i < named_n; i++) {
+        free(named[i].name);
+        value_free(&named[i].value);
+    }
+    free(named);
+}
+
+// If the cursor sits on `ident =` (a single '=', not '=='), consume it
+// and return the heap-duplicated identifier; otherwise leave the cursor
+// untouched and return NULL. This is the named-argument marker in call
+// syntax — a lone '=' inside call parentheses was previously invalid, so
+// the grammar is unambiguous.
+static char *lex_named_arg_ident(lex_t *L) {
+    const char *p = L->p;
+    if (!(isalpha((unsigned char)*p) || *p == '_'))
+        return NULL;
+    const char *start = p;
+    while (isalnum((unsigned char)*p) || *p == '_')
+        p++;
+    size_t n = (size_t)(p - start);
+    while (*p && isspace((unsigned char)*p))
+        p++;
+    if (*p != '=' || p[1] == '=')
+        return NULL;
+    char *name = (char *)malloc(n + 1);
+    if (!name)
+        return NULL;
+    memcpy(name, start, n);
+    name[n] = '\0';
+    L->p = p + 1; // past the '='
+    return name;
+}
+
+// Parse a comma-separated argument list inside a method call: positional
+// expressions first, then `name=expr` named arguments (proposal
+// proposal-named-args-boot-config §3.3). The opening `(` has already
+// been consumed. On success, consumes the closing `)` and writes the
+// positional argv/argc plus the named list; caller frees everything via
+// free_call_args.
+static bool parse_call_args(lex_t *L, const expr_ctx_t *ctx, value_t **out_argv, int *out_argc,
+                            call_named_t **out_named, int *out_named_n) {
     *out_argv = NULL;
     *out_argc = 0;
+    *out_named = NULL;
+    *out_named_n = 0;
     lex_skip_ws(L);
     if (*L->p == ')') {
         L->p++;
         return true;
     }
-    size_t cap = 4;
+    size_t cap = 4, ncap = 0;
     value_t *argv = (value_t *)calloc(cap, sizeof(value_t));
-    int argc = 0;
+    call_named_t *named = NULL;
+    int argc = 0, named_n = 0;
     while (1) {
+        char *name = lex_named_arg_ident(L);
         value_t a = parse_expr(L, ctx);
         if (L->err_set || val_is_error(&a)) {
             if (val_is_error(&a) && !L->err_set)
                 lex_error(L, "%s", a.err ? a.err : "bad argument");
             value_free(&a);
-            for (int i = 0; i < argc; i++)
-                value_free(&argv[i]);
-            free(argv);
+            free(name);
+            free_call_args(argv, argc, named, named_n);
             return false;
         }
-        if ((size_t)argc == cap) {
-            cap *= 2;
-            value_t *na = (value_t *)realloc(argv, cap * sizeof(value_t));
-            if (!na) {
-                lex_error(L, "out of memory");
+        if (name) {
+            if ((size_t)named_n == ncap) {
+                ncap = ncap ? ncap * 2 : 4;
+                call_named_t *nn = (call_named_t *)realloc(named, ncap * sizeof(*nn));
+                if (!nn) {
+                    lex_error(L, "out of memory");
+                    value_free(&a);
+                    free(name);
+                    free_call_args(argv, argc, named, named_n);
+                    return false;
+                }
+                named = nn;
+            }
+            named[named_n].name = name;
+            named[named_n].value = a;
+            named_n++;
+        } else {
+            if (named_n > 0) {
+                lex_error(L, "positional argument after named argument");
                 value_free(&a);
-                for (int i = 0; i < argc; i++)
-                    value_free(&argv[i]);
-                free(argv);
+                free_call_args(argv, argc, named, named_n);
                 return false;
             }
-            argv = na;
+            if ((size_t)argc == cap) {
+                cap *= 2;
+                value_t *na = (value_t *)realloc(argv, cap * sizeof(value_t));
+                if (!na) {
+                    lex_error(L, "out of memory");
+                    value_free(&a);
+                    free_call_args(argv, argc, named, named_n);
+                    return false;
+                }
+                argv = na;
+            }
+            argv[argc++] = a;
         }
-        argv[argc++] = a;
         lex_skip_ws(L);
         if (*L->p == ',') {
             L->p++;
+            lex_skip_ws(L);
             continue;
         }
         if (*L->p == ')') {
@@ -391,13 +466,13 @@ static bool parse_call_args(lex_t *L, const expr_ctx_t *ctx, value_t **out_argv,
             break;
         }
         lex_error(L, "expected ',' or ')'");
-        for (int i = 0; i < argc; i++)
-            value_free(&argv[i]);
-        free(argv);
+        free_call_args(argv, argc, named, named_n);
         return false;
     }
     *out_argv = argv;
     *out_argc = argc;
+    *out_named = named;
+    *out_named_n = named_n;
     return true;
 }
 
@@ -503,12 +578,10 @@ static value_t parse_primary(lex_t *L, const expr_ctx_t *ctx) {
             if (call_open) {
                 // Drain any args to keep the cursor advancing.
                 value_t *argv = NULL;
-                int argc = 0;
-                if (parse_call_args(L, ctx, &argv, &argc)) {
-                    for (int i = 0; i < argc; i++)
-                        value_free(&argv[i]);
-                    free(argv);
-                }
+                call_named_t *named = NULL;
+                int argc = 0, named_n = 0;
+                if (parse_call_args(L, ctx, &argv, &argc, &named, &named_n))
+                    free_call_args(argv, argc, named, named_n);
             }
             return val_err("path '%s' has no root", path_buf);
         }
@@ -516,24 +589,44 @@ static value_t parse_primary(lex_t *L, const expr_ctx_t *ctx) {
         if (!node_valid(node)) {
             if (call_open) {
                 value_t *argv = NULL;
-                int argc = 0;
-                if (parse_call_args(L, ctx, &argv, &argc)) {
-                    for (int i = 0; i < argc; i++)
-                        value_free(&argv[i]);
-                    free(argv);
-                }
+                call_named_t *named = NULL;
+                int argc = 0, named_n = 0;
+                if (parse_call_args(L, ctx, &argv, &argc, &named, &named_n))
+                    free_call_args(argv, argc, named, named_n);
             }
             return val_err("path '%s' did not resolve", path_buf);
         }
         if (call_open) {
             value_t *argv = NULL;
-            int argc = 0;
-            if (!parse_call_args(L, ctx, &argv, &argc))
+            call_named_t *named = NULL;
+            int argc = 0, named_n = 0;
+            if (!parse_call_args(L, ctx, &argv, &argc, &named, &named_n))
                 return val_err("bad call");
-            value_t r = node_call(node, argc, argv);
-            for (int i = 0; i < argc; i++)
-                value_free(&argv[i]);
-            free(argv);
+            value_t r;
+            if (named_n > 0) {
+                // Bind named arguments against the method's declared slots,
+                // then call with the resulting positional argv.
+                named_arg_t nb[OBJ_BIND_MAX_ARGS];
+                if (named_n > OBJ_BIND_MAX_ARGS) {
+                    free_call_args(argv, argc, named, named_n);
+                    return val_err("too many named arguments");
+                }
+                for (int i = 0; i < named_n; i++) {
+                    nb[i].name = named[i].name;
+                    nb[i].value = named[i].value;
+                }
+                value_t bound[OBJ_BIND_MAX_ARGS];
+                int bound_n = 0;
+                value_t err = node_bind_args(node, argc, argv, named_n, nb, bound, &bound_n);
+                if (val_is_error(&err)) {
+                    free_call_args(argv, argc, named, named_n);
+                    return err;
+                }
+                r = node_call(node, bound_n, bound);
+            } else {
+                r = node_call(node, argc, argv);
+            }
+            free_call_args(argv, argc, named, named_n);
             return r;
         }
         return node_get(node);

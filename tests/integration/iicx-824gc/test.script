@@ -24,9 +24,7 @@
 # than booting the OS through the (as-yet-unmodelled) video handshake.
 
 # --- Select the 8•24 GC card and (re)boot the IIcx with it in slot $9. ---
-machine.nubus.video_card = "824gc"
-machine.boot "iicx" 8192
-machine.rom.reload
+machine.boot model="iicx" ram=8192 video_card="824gc"
 
 # --- Card identity + declaration ROM (stage 0). ---
 assert ${machine.id == "iicx"}                                                    "machine.id != iicx"

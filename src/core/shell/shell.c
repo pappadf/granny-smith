@@ -49,7 +49,10 @@ static volatile int32_t shell_initialized = 0;
 // typed object-model bridge can split free-form spec strings (e.g.
 // logpoint specs, log argv) without routing through `shell_dispatch`.
 // `line` is mutated in place; returned argv pointers point inside it.
-int tokenize(char *line, char *argv[], int max) {
+// The _q variant additionally records, per token, whether the token
+// *started* with a quote character — the named-argument escape hatch
+// (a quoted token is always a plain string, never `name=value`).
+static int tokenize_q(char *line, char *argv[], unsigned char quoted[], int max) {
     // Tokenizer with support for: \-escapes, ASCII and UTF-8 curly
     // quotes, and ' / " quoted strings. `${...}` substitution has
     // already been resolved by shell_var_expand before tokenisation,
@@ -68,6 +71,14 @@ int tokenize(char *line, char *argv[], int max) {
             break;
         if (argc == max)
             return -1;
+
+        // Record whether this token opens with a quote (", ', or a UTF-8
+        // curly quote) before the quote characters are stripped in place.
+        if (quoted) {
+            bool q = (*p == '"' || *p == '\'' ||
+                      ((unsigned char)p[0] == 0xE2 && (unsigned char)p[1] == 0x80 && (unsigned char)p[2] == 0x9C));
+            quoted[argc] = q ? 1 : 0;
+        }
 
         argv[argc++] = p;
         char *dst = p;
@@ -140,9 +151,14 @@ int tokenize(char *line, char *argv[], int max) {
     return argc;
 }
 
+int tokenize(char *line, char *argv[], int max) {
+    return tokenize_q(line, argv, NULL, max);
+}
+
 // Forward declaration — definition lives below in the shell-form
 // grammar block. Returns 0 on success, -1 on error, 1 if unhandled.
-static int try_path_dispatch(int argc, char **argv);
+// `quoted` may be NULL (no named-argument recognition then).
+static int try_path_dispatch(int argc, char **argv, const unsigned char *quoted);
 
 // Dispatch a command line. Phase 5c — the legacy registry is gone;
 // everything routes through the typed path-form parser. No longer in
@@ -172,13 +188,14 @@ static void dispatch_command(char *line, struct cmd_result *res) {
     }
 
     char *argv[MAXTOK];
-    int argc = tokenize(expanded, argv, MAXTOK);
+    unsigned char quoted[MAXTOK];
+    int argc = tokenize_q(expanded, argv, quoted, MAXTOK);
     if (argc <= 0) {
         free(expanded);
         return;
     }
 
-    int pd = try_path_dispatch(argc, argv);
+    int pd = try_path_dispatch(argc, argv, quoted);
     if (pd < 0)
         cmd_err(res, "command failed");
     else if (pd > 0)
@@ -417,9 +434,38 @@ static void format_value_print(const value_t *v) {
     }
 }
 
+// If `tok` has the shape ident=rest where ident matches a declared fixed
+// argument of method `m`, split it in place (the '=' becomes NUL) and
+// return the value part via *out_rest; returns the argument name, or NULL
+// if the token is not a named argument of this method. Tokens that were
+// quoted never reach this check (escape hatch).
+static const char *named_arg_split(char *tok, const member_t *m, const char **out_rest) {
+    if (!m || m->kind != M_METHOD || !m->method.args || m->method.nargs <= 0)
+        return NULL;
+    if (!(isalpha((unsigned char)tok[0]) || tok[0] == '_'))
+        return NULL;
+    size_t n = 1;
+    while (tok[n] && (isalnum((unsigned char)tok[n]) || tok[n] == '_'))
+        n++;
+    if (tok[n] != '=')
+        return NULL;
+    const arg_decl_t *args = m->method.args;
+    bool has_rest = (args[m->method.nargs - 1].validation_flags & OBJ_ARG_REST) != 0;
+    int fixed_n = has_rest ? m->method.nargs - 1 : m->method.nargs;
+    for (int i = 0; i < fixed_n; i++) {
+        if (args[i].name && strlen(args[i].name) == n && strncmp(args[i].name, tok, n) == 0) {
+            tok[n] = '\0';
+            *out_rest = tok + n + 1;
+            return tok;
+        }
+    }
+    return NULL;
+}
+
 // Returns 0 if handled successfully, -1 if handled with error, or 1 if
 // not a path (caller continues with the unknown-command path).
-static int try_path_dispatch(int argc, char **argv) {
+// `quoted` may be NULL (no named-argument recognition then).
+static int try_path_dispatch(int argc, char **argv, const unsigned char *quoted) {
     if (argc < 1)
         return 1;
     // Resolve argv[0] against the object root.  Anything that names a
@@ -487,26 +533,70 @@ static int try_path_dispatch(int argc, char **argv) {
         return 0;
     }
 
-    // Method call form: `path arg arg arg ...`.
+    // Method call form: `path arg arg name=value ...` — positional tokens
+    // first, then named arguments targeting declared slots (proposal
+    // proposal-named-args-boot-config §3.2). A token is named iff it was
+    // unquoted, matches ident=rest, and ident names a declared argument of
+    // this method; everything else stays a positional token.
     if (n.member && n.member->kind == M_METHOD) {
         int call_argc = argc - 1;
         value_t *vals = call_argc > 0 ? (value_t *)calloc((size_t)call_argc, sizeof(value_t)) : NULL;
+        named_arg_t named[MAXTOK];
         if (call_argc > 0 && !vals) {
             fprintf(stderr, "%s: out of memory\n", argv[0]);
             return -1;
         }
+        int pos_n = 0, named_n = 0;
         for (int i = 0; i < call_argc; i++) {
-            vals[i] = parse_literal_full(argv[i + 1], NULL, 0);
-            if (val_is_error(&vals[i])) {
+            char *tok = argv[i + 1];
+            const char *rest = NULL;
+            const char *name = (!quoted || !quoted[i + 1]) ? named_arg_split(tok, n.member, &rest) : NULL;
+            if (name) {
+                if (!*rest) {
+                    fprintf(stderr, "%s: empty value for argument '%s' (omit the argument instead)\n", argv[0], name);
+                    goto shell_call_cleanup_err;
+                }
+                value_t v = parse_literal_full((char *)rest, NULL, 0);
+                if (val_is_error(&v)) {
+                    value_free(&v);
+                    v = val_str(rest);
+                }
+                named[named_n].name = name;
+                named[named_n].value = v;
+                vals[pos_n + named_n] = v; // keep every parsed value freeable in one sweep
+                named_n++;
+                continue;
+            }
+            if (named_n > 0) {
+                fprintf(stderr, "%s: positional argument '%s' after named argument\n", argv[0], tok);
+                goto shell_call_cleanup_err;
+            }
+            vals[pos_n] = parse_literal_full(tok, NULL, 0);
+            if (val_is_error(&vals[pos_n])) {
                 // Fall back to treating the token as a string literal —
                 // mirrors the way most legacy commands accept a bare
                 // word as a path/name.
-                value_free(&vals[i]);
-                vals[i] = val_str(argv[i + 1]);
+                value_free(&vals[pos_n]);
+                vals[pos_n] = val_str(tok);
             }
+            pos_n++;
         }
-        value_t result = node_call(n, call_argc, vals);
-        for (int i = 0; i < call_argc; i++)
+
+        value_t result;
+        if (named_n > 0) {
+            value_t bound[OBJ_BIND_MAX_ARGS];
+            int bound_n = 0;
+            value_t err = node_bind_args(n, pos_n, vals, named_n, named, bound, &bound_n);
+            if (val_is_error(&err)) {
+                fprintf(stderr, "%s: %s\n", argv[0], err.err ? err.err : "bind failed");
+                value_free(&err);
+                goto shell_call_cleanup_err;
+            }
+            result = node_call(n, bound_n, bound);
+        } else {
+            result = node_call(n, pos_n, vals);
+        }
+        for (int i = 0; i < pos_n + named_n; i++)
             value_free(&vals[i]);
         free(vals);
         if (val_is_error(&result)) {
@@ -517,6 +607,15 @@ static int try_path_dispatch(int argc, char **argv) {
         format_value_print(&result);
         value_free(&result);
         return 0;
+
+    shell_call_cleanup_err:
+        // Error path before the call happened — free every parsed value
+        // (calloc zeroed the tail, and value_free on a zeroed slot is a
+        // no-op) and report the statement as failed.
+        for (int i = 0; i < pos_n + named_n; i++)
+            value_free(&vals[i]);
+        free(vals);
+        return -1;
     }
 
     // Bare path read.
@@ -556,7 +655,8 @@ uint64_t shell_dispatch(char *line) {
     }
 
     char *argv[MAXTOK];
-    int argc = tokenize(expanded, argv, MAXTOK);
+    unsigned char quoted[MAXTOK];
+    int argc = tokenize_q(expanded, argv, quoted, MAXTOK);
     if (argc < 0) {
         fputs("too many arguments\n", stderr);
         free(expanded);
@@ -567,7 +667,7 @@ uint64_t shell_dispatch(char *line) {
         return 0;
     }
 
-    int pd = try_path_dispatch(argc, argv);
+    int pd = try_path_dispatch(argc, argv, quoted);
     if (pd > 0)
         fprintf(stderr, "Unknown command: '%s'\n", argv[0]);
     free(expanded);

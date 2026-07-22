@@ -7,8 +7,8 @@
 // platform enumerates /opfs/images/vrom once at startup, so a vROM uploaded
 // MID-SESSION must be offered to the core's registry by the ingest path
 // itself (upload.ts persist → machine.vrom.offer) or an "(auto)" boot —
-// one with no explicit machine.vrom.load — would not see the file until the
-// next page reload.  Also pins §3.6a: the stored name is the content hash
+// one with no explicit vrom= pick in the boot document — would not see the
+// file until the next page reload.  Also pins §3.6a: the stored name is the content hash
 // (the declaration ROM's Format-Block CRC), the upload name is discarded,
 // and discovery is content-based so the weird upload name never matters.
 //
@@ -17,7 +17,7 @@
 //      identifies it by the card it provides, and it lands at
 //      /opfs/images/vrom/d1629664 (content-hashed);
 //   2. upload the IIcx ROM via the Welcome button (no auto-boot);
-//   3. boot the IIcx from the Terminal panel WITHOUT any vrom.load — the
+//   3. boot the IIcx from the Terminal panel WITHOUT any vrom= pick — the
 //      slot-$9 default card (mdc_8_24) must content-match the offered file
 //      and expose its declaration ROM (machine.nubus.slot[9].card.declrom).
 
@@ -130,11 +130,13 @@ test('mid-session vROM upload is offered: "(auto)" boot content-matches it witho
     await terminalEval(page, 'storage.path_size("/opfs/images/vrom/d1629664")'),
   ).toBe("32768");
 
-  // 4. "(auto)" boot: machine.boot + rom.load with NO vrom.load. The slot-$9
+  // 4. "(auto)" boot: one boot document with NO vrom= pick. The slot-$9
   //    default card (mdc_8_24) must find its declaration ROM among the
   //    offered candidates — the file we just dropped, under its hash name.
-  await terminalRun(page, 'machine.boot "iicx" 8192');
-  await terminalRun(page, 'machine.rom.load "/opfs/images/rom/97221136"');
+  await terminalRun(page, 'machine.boot model="iicx" ram=8192 rom="/opfs/images/rom/97221136"');
+  // Let the boot's terminal output settle before typing the next line —
+  // keystrokes race the xterm render of the ROM-load prints otherwise.
+  await page.waitForTimeout(3_000);
   expect(await terminalEval(page, "machine.id")).toBe("iicx");
   expect(
     await terminalEval(page, "machine.nubus.slot[9].card.declrom.present"),

@@ -101,11 +101,9 @@ const char *nubus_staged_card_get(int slot);
 void nubus_staged_mode_set(int slot, const char *id); // NULL/"" clears
 const char *nubus_staged_mode_get(int slot);
 
-// Wildcard-entry conveniences — the pre-stage-2 API, kept for the alias
-// attribute and the headless startup arg.  Equivalent to
-// nubus_staged_card_set/get(NUBUS_STAGED_WILDCARD, id).
-void nubus_pending_video_card_set(const char *id);
-const char *nubus_pending_video_card_get(void);
+// True iff `id` names a video mode in any registered card's catalog.
+// Boot-document validation for machine.boot's video_mode= argument.
+bool nubus_video_mode_known(const char *id);
 
 // The slot declaration for slot `slot` on the running bus, or NULL when the
 // bus doesn't declare it.  Backs the object model's staged-attr validation
@@ -138,6 +136,9 @@ nubus_card_t *nubus_primary_display_card(nubus_bus_t *bus);
 // objects are owned here (object_delete_tree on teardown), not by the bus.
 void nubus_objects_build(nubus_bus_t *bus);
 void nubus_objects_teardown(void);
+// Teardown only if the trees describe `bus` (checkpoint-restore ordering:
+// the new machine's tree is built before the old machine is destroyed).
+void nubus_objects_teardown_owned(nubus_bus_t *bus);
 
 // The framebuffer node object of the active (primary-display) card, or NULL —
 // the target of the `machine.screen.source` reference edge.  Re-resolved on

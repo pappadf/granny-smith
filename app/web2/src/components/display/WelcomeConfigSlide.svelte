@@ -457,18 +457,22 @@
     );
     const hdPath = hd === NONE_SENTINEL ? NONE_SENTINEL : `/opfs/images/hd/${hd}`;
     const cdPath = cd === NONE_SENTINEL ? NONE_SENTINEL : `/opfs/images/cd/${cd}`;
+    // A fixed builtin video slot (SE/30 / IIci / IIsi) hard-wires its card
+    // and has no C-side video-mode catalog — the boot document carries
+    // neither field for it (boot validation rejects unknown mode ids).
+    const fixedVideo = configSlot?.fixed === true;
     await initEmulator({
       model: modelId,
       modelName,
       rom: selected.path,
       vrom: vromPath,
-      // The selected NuBus video card; applied via machine.nubus.video_card so
+      // The selected NuBus video card — the boot document's video_card=, so
       // the right card boots instead of the slot default (the 24AC-vs-8•24 bug).
-      videoCard: cardId || undefined,
+      videoCard: fixedVideo ? undefined : cardId || undefined,
       // Seed the selected video mode (matches web-legacy's bootFromConfig).
       // Without it the card never seeds its slot-PRAM/video defaults and A/UX
       // hangs enabling its device drivers on real hardware.
-      videoMode: videoMode || undefined,
+      videoMode: fixedVideo ? undefined : videoMode || undefined,
       ram,
       floppies: floppyPaths,
       hd: hdPath,

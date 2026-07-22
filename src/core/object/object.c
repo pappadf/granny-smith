@@ -1092,9 +1092,19 @@ static value_t node_validate_args(struct object *obj, const member_t *m, int in_
     bool has_rest = (nargs > 0) && (args[nargs - 1].validation_flags & OBJ_ARG_REST) != 0;
     int fixed_n = has_rest ? (nargs - 1) : nargs;
 
+    // Highest slot carrying a real value. A V_NONE in a fixed slot is the
+    // named-arg binder's "unfilled" marker (also produced by JSON null) and
+    // is treated exactly like a missing trailing argument.
+    int last_given = -1;
+    for (int i = 0; i < in_argc; i++) {
+        if (i >= fixed_n || in_argv[i].kind != V_NONE)
+            last_given = i;
+    }
+
     // Arity check.
     for (int i = 0; i < fixed_n; i++) {
-        if (i >= in_argc && !(args[i].validation_flags & OBJ_ARG_OPTIONAL) && !args[i].default_value) {
+        bool missing = (i >= in_argc) || (in_argv[i].kind == V_NONE);
+        if (missing && !(args[i].validation_flags & OBJ_ARG_OPTIONAL) && !args[i].default_value) {
             return val_err("%s: missing argument '%s'", prefix, args[i].name ? args[i].name : "?");
         }
     }
@@ -1114,11 +1124,16 @@ static value_t node_validate_args(struct object *obj, const member_t *m, int in_
         typed_slot_t s;
         slot_from_arg(&s, &args[i]);
 
-        if (i >= in_argc) {
-            // Optional missing — fill with default if provided.
+        if (i >= in_argc || in_argv[i].kind == V_NONE) {
+            // Optional missing (or a V_NONE hole) — fill with default if
+            // provided.
             if (args[i].default_value) {
                 scratch[i] = *args[i].default_value;
                 any_rewrite = true;
+            } else if (i < last_given) {
+                // A hole before a later given slot can't be expressed to the
+                // body (argc truncation only works at the tail).
+                return val_err("%s: missing argument '%s'", prefix, args[i].name ? args[i].name : "?");
             } else {
                 // Optional without default — body sees argc < nargs.
                 eff_n = i;
@@ -1338,4 +1353,93 @@ value_t node_call(node_t n, int argc, const value_t *argv) {
     }
 #endif
     return out;
+}
+
+// Append the method's declared fixed-argument names to buf as a
+// comma-separated list (for unknown-name error messages).
+static void format_declared_names(char *buf, size_t buf_size, const arg_decl_t *args, int fixed_n) {
+    size_t pos = 0;
+    buf[0] = '\0';
+    for (int i = 0; i < fixed_n; i++) {
+        const char *name = args[i].name ? args[i].name : "?";
+        int wrote = snprintf(buf + pos, buf_size - pos, "%s%s", i ? ", " : "", name);
+        if (wrote < 0 || (size_t)wrote >= buf_size - pos)
+            break;
+        pos += (size_t)wrote;
+    }
+}
+
+value_t node_bind_args(node_t n, int pos_argc, const value_t *pos_argv, int named_n, const named_arg_t *named,
+                       value_t *out_argv, int *out_argc) {
+    if (!node_valid(n) || !n.member || n.member->kind != M_METHOD)
+        return val_err("named arguments: not a method");
+
+    const arg_decl_t *args = n.member->method.args;
+    int nargs = n.member->method.nargs;
+
+    char prefix[128];
+    format_member_path(prefix, sizeof(prefix), n.obj, n.member);
+
+    // Methods without a declared args[] table don't participate in named
+    // binding (legacy variadic surface like `echo`) — positional-only.
+    if (!args || nargs <= 0) {
+        if (named_n > 0)
+            return val_err("%s: method does not declare named arguments", prefix);
+        if (pos_argc > OBJ_BIND_MAX_ARGS)
+            return val_err("%s: too many arguments (got %d, limit %d)", prefix, pos_argc, OBJ_BIND_MAX_ARGS);
+        for (int i = 0; i < pos_argc; i++)
+            out_argv[i] = pos_argv[i];
+        *out_argc = pos_argc;
+        return val_none();
+    }
+
+    bool has_rest = (nargs > 0) && (args[nargs - 1].validation_flags & OBJ_ARG_REST) != 0;
+    int fixed_n = has_rest ? (nargs - 1) : nargs;
+
+    if (pos_argc > OBJ_BIND_MAX_ARGS || nargs > OBJ_BIND_MAX_ARGS)
+        return val_err("%s: too many arguments (limit %d)", prefix, OBJ_BIND_MAX_ARGS);
+
+    // Positionals fill slots left to right (a positional tail beyond
+    // fixed_n feeds the rest slot exactly as before).
+    int out_n = pos_argc;
+    for (int i = 0; i < pos_argc; i++)
+        out_argv[i] = pos_argv[i];
+
+    bool named_filled[OBJ_BIND_MAX_ARGS] = {false};
+    for (int k = 0; k < named_n; k++) {
+        const char *name = named[k].name ? named[k].name : "";
+        int idx = -1;
+        for (int i = 0; i < fixed_n; i++) {
+            if (args[i].name && strcmp(args[i].name, name) == 0) {
+                idx = i;
+                break;
+            }
+        }
+        if (idx < 0) {
+            // The rest slot is positional-tail only — name it explicitly.
+            if (has_rest && args[fixed_n].name && strcmp(args[fixed_n].name, name) == 0)
+                return val_err("%s: argument '%s' is a rest slot and cannot be passed by name", prefix, name);
+            char names[160];
+            format_declared_names(names, sizeof(names), args, fixed_n);
+            return val_err("%s: unknown argument '%s' (declared: %s)", prefix, name, names);
+        }
+        if (idx < pos_argc)
+            return val_err("%s: duplicate argument '%s' (already given positionally)", prefix, name);
+        if (named_filled[idx])
+            return val_err("%s: duplicate argument '%s'", prefix, name);
+        named_filled[idx] = true;
+        out_argv[idx] = named[k].value;
+        if (idx + 1 > out_n)
+            out_n = idx + 1;
+    }
+
+    // Slots between the positional prefix and the highest named slot that
+    // no named arg claimed become V_NONE holes for the validator.
+    for (int i = pos_argc; i < out_n; i++) {
+        if (!named_filled[i])
+            out_argv[i] = val_none();
+    }
+
+    *out_argc = out_n;
+    return val_none();
 }

@@ -14,11 +14,8 @@
 # checkbox coordinates used below.
 
 # Configure JMFB for 13" RGB at 8 bpp.  Equivalent to the explicit
-# nubus.video_sense + rtc.pram.poke pair used by iicx-video-modes.
-machine.nubus.video_mode = "13in_rgb_8bpp"
-
-machine.boot "iicx" 4096
-machine.rom.reload
+# video_sense + rtc.pram.poke pair used by iicx-video-modes.
+machine.boot model="iicx" ram=4096 video_mode="13in_rgb_8bpp"
 machine.floppy.drive[0].insert "../../data/apps/MacTest-IIcx-IIci.image" true
 
 machine.scc.loopback = true

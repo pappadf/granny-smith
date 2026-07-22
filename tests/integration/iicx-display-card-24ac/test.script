@@ -24,8 +24,7 @@
 # resulting VRAM against hand-computed values.  A fresh machine.boot
 # leaves the card at its 8 bpp power-on default.
 # =====================================================================
-machine.nubus.video_card = "display_card_24ac"
-machine.boot "iicx" 8192
+machine.boot model="iicx" ram=8192 video_card="display_card_24ac"
 assert ${machine.id == "iicx"}                                   "machine.id != iicx"
 
 # Card present + engine status: STATUS[2:0] = depth code 2 (8 bpp power-on
@@ -146,10 +145,7 @@ assert ${machine.screen.source.depth == 8}                       "object model: 
 # Cmd-Shift-Power poke that short-circuits boot-drive discovery + 70M to land
 # in the stable Finder window.  (Same mechanics as iicx-video-modes.)
 # =====================================================================
-machine.nubus.video_card = "display_card_24ac"
-machine.nubus.video_mode = "rgb_640x480_8bpp"
-machine.boot "iicx" 8192
-machine.rom.reload
+machine.boot model="iicx" ram=8192 video_card="display_card_24ac" video_mode="rgb_640x480_8bpp"
 machine.floppy.drive[0].insert "../../data/systems/System_7_0_1.image"
 scheduler.run 50000000
 machine.memory.poke.w 0x017A 0x8805

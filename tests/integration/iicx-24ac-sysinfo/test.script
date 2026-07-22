@@ -27,10 +27,7 @@
 # defaults + the slot sPRAMRec savedMode $82) — which both selects 8-bpp colour
 # AND arms the 32-bit SCSI HD boot in one shot.  (video_card can't be an arg, so
 # the harness booted the default card; we re-boot here.)
-machine.nubus.video_card = "display_card_24ac"
-machine.nubus.video_mode = "rgb_640x480_8bpp"
-machine.boot "iicx" 8192
-machine.rom.reload
+machine.boot model="iicx" ram=8192 video_card="display_card_24ac" video_mode="rgb_640x480_8bpp"
 
 # Attach the cdev HD at SCSI ID 0 (the boot device).  The complete valid PRAM
 # lets the ROM boot straight from SCSI (no cold-init scan).

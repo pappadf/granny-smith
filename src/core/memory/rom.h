@@ -98,20 +98,6 @@ int rom_load_into_machine(const char *path);
 // success, -1 on failure (no machine, unreadable/wrong-size chips).
 int rom_load_lisa_into_machine(const char *path_a, const char *path_b);
 
-// Path of the ROM passed to the most recent rom_load_into_machine().
-// Used by SE/30 init to auto-discover a sibling builtin-se30-video-4f71ff1a.vrom file.
-// Returns NULL if no ROM has been loaded.
-const char *rom_pending_path(void);
-
-// Set the pending ROM path before machine creation. Required when callers
-// (e.g. headless_main) want SE/30 vrom auto-discovery to know where the
-// ROM came from — otherwise SE/30 init can only fall back to fixed paths.
-// rom_load_into_machine() also calls this internally on its way through.
-int rom_pending_set(const char *path);
-
-// Clear the pending path (called from system_destroy).
-void rom_pending_clear(void);
-
 // === Lifecycle =============================================================
 //
 // rom_init() creates the singleton `rom` object node and attaches it under

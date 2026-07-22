@@ -17,10 +17,7 @@
 # Pin the RTC so the boot is deterministic run-to-run.
 machine.rtc.time = 3000000000
 
-machine.nubus.video_card = "824gc"
-machine.nubus.video_mode = "gc_640x480_8bpp"
-machine.boot "iicx" 8192
-machine.rom.reload
+machine.boot model="iicx" ram=8192 video_card="824gc" video_mode="gc_640x480_8bpp"
 
 machine.scsi.attach_hd "../../data/apps/marathon_8_24gc.img" 0
 scheduler.run 200000000

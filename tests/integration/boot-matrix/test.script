@@ -14,10 +14,10 @@
 #
 # Each iteration:
 #
-#   1. `machine.boot "plus" N`    re-instantiates the Plus at the
-#      iteration's RAM size, throwing away all prior guest state.
-#   2. `rom.reload`               re-loads the ROM image from disk
-#      (the new machine doesn't inherit the prior ROM mapping).
+#   1. `machine.boot model="plus" ram=N` re-instantiates the Plus at
+#      the iteration's RAM size, throwing away all prior guest state;
+#      the ROM is inherited from the built-from record and re-staged
+#      by the boot itself (proposal-named-args-boot-config §4.1).
 #   3. `floppy.drives[0].insert`  mounts the per-iteration system disk.
 #   4. `t0 = ${scheduler.host_user_ns}`  snapshots POSIX user-CPU
 #      before this iteration's run.  Typed shell variable — value
@@ -44,8 +44,7 @@
 # "Welcome to Macintosh" splash.
 
 # --- System Software 2.0 (400K) @ 1 MB RAM --------------------------
-machine.boot "plus" 1024
-machine.rom.reload
+machine.boot model="plus" ram=1024
 machine.floppy.drive[0].insert "../../data/systems/SSW-2.0-400K/System Disk.image"
 t0 = ${scheduler.host_user_ns}
 scheduler.run 17000000
@@ -58,8 +57,7 @@ echo "ssw-2.0/1M:    ${scheduler.instr_count * 1000 / (scheduler.host_user_ns - 
 assert ${scheduler.instr_count * 1000000000 / (scheduler.host_user_ns - t0) > 50000000} "ssw-2.0/1M: emulator throughput below 50 MIPS"
 
 # --- System Software 3.2 (400K) @ 2 MB RAM --------------------------
-machine.boot "plus" 2048
-machine.rom.reload
+machine.boot model="plus" ram=2048
 machine.floppy.drive[0].insert "../../data/systems/SSW-3.2-400K/System Installation v1.0.image"
 t0 = ${scheduler.host_user_ns}
 scheduler.run 24000000
@@ -72,8 +70,7 @@ echo "ssw-3.2/2M:    ${scheduler.instr_count * 1000 / (scheduler.host_user_ns - 
 assert ${scheduler.instr_count * 1000000000 / (scheduler.host_user_ns - t0) > 50000000} "ssw-3.2/2M: emulator throughput below 50 MIPS"
 
 # --- System Software 4.2 (800K) @ 2.5 MB RAM ------------------------
-machine.boot "plus" 2560
-machine.rom.reload
+machine.boot model="plus" ram=2560
 machine.floppy.drive[0].insert "../../data/systems/SSW-4.2-800K/System Tools 1.image"
 t0 = ${scheduler.host_user_ns}
 scheduler.run 33000000
@@ -86,8 +83,7 @@ echo "ssw-4.2/2.5M:  ${scheduler.instr_count * 1000 / (scheduler.host_user_ns - 
 assert ${scheduler.instr_count * 1000000000 / (scheduler.host_user_ns - t0) > 50000000} "ssw-4.2/2.5M: emulator throughput below 50 MIPS"
 
 # --- System Software 6.0.8 (800K) @ 4 MB RAM ------------------------
-machine.boot "plus" 4096
-machine.rom.reload
+machine.boot model="plus" ram=4096
 machine.floppy.drive[0].insert "../../data/systems/SSW-6.08-800K/SSW 6.0.8-800k Disk1of4"
 t0 = ${scheduler.host_user_ns}
 scheduler.run 40000000
@@ -115,8 +111,7 @@ assert ${scheduler.instr_count * 1000000000 / (scheduler.host_user_ns - t0) > 50
 # the full mechanism.
 
 # --- SE/30 + System Software 6.0.8 (800K) @ 4 MB RAM ----------------
-machine.boot "se30" 4096
-machine.rom.load "../../data/roms/iix-iicx-se30-97221136.rom"
+machine.boot model="se30" ram=4096 rom="../../data/roms/iix-iicx-se30-97221136.rom"
 machine.floppy.drive[0].insert "../../data/systems/SSW-6.08-800K/SSW 6.0.8-800k Disk1of4"
 t0 = ${scheduler.host_user_ns}
 scheduler.run 40000000
@@ -154,9 +149,7 @@ assert ${scheduler.instr_count * 1000000000 / (scheduler.host_user_ns - t0) > 10
 # Apple menu to "About the Finder" and match the dialog (which carries
 # the "Total Memory: 4,096K" line — extra confirmation that ram=4096
 # took effect end-to-end).
-machine.nubus.video_sense = 0x6
-machine.boot "iicx" 4096
-machine.rom.load "../../data/roms/iix-iicx-se30-97221136.rom"
+machine.boot model="iicx" ram=4096 rom="../../data/roms/iix-iicx-se30-97221136.rom" video_sense=6
 machine.floppy.drive[0].insert "../../data/systems/SSW-6.08-800K/SSW 6.0.8-800k Disk1of4"
 machine.rtc.pram.validate
 machine.rtc.pram.poke 0x46 0x002780a6a6000000:8
@@ -196,9 +189,7 @@ assert ${scheduler.instr_count * 1000000000 / (scheduler.host_user_ns - t0) > 50
 # About box reports "Total Memory: 8,192K" — extra confirmation that
 # ram=8192 took effect.  Cycle budgets are wider than the 6.0.8 row
 # because Disk Tools' INIT chain is heavier.
-machine.nubus.video_sense = 0x6
-machine.boot "iicx" 8192
-machine.rom.load "../../data/roms/iix-iicx-se30-97221136.rom"
+machine.boot model="iicx" ram=8192 rom="../../data/roms/iix-iicx-se30-97221136.rom" video_sense=6
 machine.floppy.drive[0].insert "../../data/systems/SSW-7.0-800K/Disk Tools.image"
 machine.rtc.pram.validate
 machine.rtc.pram.poke 0x46 0x002781a6a6000000:8

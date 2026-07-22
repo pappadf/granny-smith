@@ -13,6 +13,7 @@
 #include "declrom.h"
 #include "card.h"
 #include "log.h"
+#include "machine_config.h" // resolved-pick reporting into the built-from record
 #include "vrom.h" // content identification + the platform-fed offer registry
 
 #include <stdint.h>
@@ -226,6 +227,13 @@ bool declrom_load_vrom_card(const char *card_id, uint8_t *bus_buf, size_t bus_si
         if (!path)
             break;
         if (load_chip_into_bus(path, chip_size, bus_buf, bus_size)) {
+            // Report the winning pick into the built-from record so
+            // machine.config.vroms answers which revision this machine
+            // actually runs (proposal-named-args-boot-config §4.2).
+            uint32_t crc = 0;
+            bool explicit_pick = false;
+            vrom_offer_info(path, &crc, &explicit_pick);
+            machine_config_note_vrom(card_id, path, crc, explicit_pick);
             if (out_path)
                 *out_path = strdup(path);
             return true;

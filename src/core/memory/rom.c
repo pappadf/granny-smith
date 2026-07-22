@@ -15,6 +15,7 @@
 
 #include "cpu.h"
 #include "json_encode.h"
+#include "machine_config.h"
 #include "machine_profile.h"
 #include "memory.h"
 #include "mmu.h"
@@ -298,32 +299,6 @@ uint8_t *rom_load_lisa_pair(const char *path_a, const char *path_b, size_t *out_
 }
 
 // ============================================================================
-// Pending-path tracking (consumed by SE/30 vrom auto-discovery)
-// ============================================================================
-
-static char *s_pending_rom_path = NULL;
-
-const char *rom_pending_path(void) {
-    return s_pending_rom_path;
-}
-
-int rom_pending_set(const char *path) {
-    if (!path)
-        return -1;
-    char *dup = strdup(path);
-    if (!dup)
-        return -1;
-    free(s_pending_rom_path);
-    s_pending_rom_path = dup;
-    return 0;
-}
-
-void rom_pending_clear(void) {
-    free(s_pending_rom_path);
-    s_pending_rom_path = NULL;
-}
-
-// ============================================================================
 // Load into active machine
 // ============================================================================
 
@@ -367,9 +342,9 @@ static int install_rom_into_machine(const uint8_t *rom_data, size_t file_size, c
                memory_rom_size(mem));
     }
 
-    // Track the pending path so SE/30 init (which chains through machine
-    // reset) can find a sibling builtin-se30-video-4f71ff1a.vrom file.
-    rom_pending_set(path);
+    // Write the built-from record back so machine.config keeps answering
+    // "how do I recreate what I'm looking at" after a live ROM swap.
+    machine_config_note_rom(path, checksum);
 
     memory_install_rom(mem, rom_data, file_size, path);
 
@@ -511,27 +486,6 @@ static value_t rom_method_load_lisa(struct object *self, const member_t *m, int 
     return val_bool(true);
 }
 
-// rom.reload — load the ROM file the binary was launched with into
-// the active machine.  Convenience for integration test scripts that
-// `machine.boot` mid-stream to reset state and then need to re-stage
-// the same ROM bytes; the script doesn't otherwise have access to the
-// startup-time absolute path.  The pending path is set by the platform
-// at startup (rom_pending_set) and never cleared, so reload is always
-// a no-arg operation.  Errors if no startup ROM was specified or if
-// no machine is currently active.
-static value_t rom_method_reload(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
-    (void)argc;
-    (void)argv;
-    const char *path = rom_pending_path();
-    if (!path || !*path)
-        return val_err("rom.reload: no startup ROM path recorded; pass an explicit path to rom.load instead");
-    if (rom_load_into_machine(path) != 0)
-        return val_err("rom.reload: failed to reload '%s'", path);
-    return val_bool(true);
-}
-
 // rom.identify(path) → JSON-encoded info map describing the ROM file:
 //   { recognised, compatible, checksum, name, size }
 // recognised==false implies compatible==[], name=="" but the checksum and
@@ -618,10 +572,6 @@ static const member_t rom_members[] = {
      .doc = "Interleave two Lisa/XL ROM chip files into the 16 KB boot ROM and load it",
      .method = {.args = rom_lisa_pair_args, .nargs = 2, .result = V_BOOL, .fn = rom_method_load_lisa}},
     {.kind = M_METHOD,
-     .name = "reload",
-     .doc = "Reload the startup-time ROM (path remembered from launch)",
-     .method = {.args = NULL, .nargs = 0, .result = V_BOOL, .fn = rom_method_reload}},
-    {.kind = M_METHOD,
      .name = "identify",
      .doc = "Return a JSON-encoded info map for a ROM file (compatible/checksum/name/size/recognised)",
      .method = {.args = rom_path_arg, .nargs = 1, .result = V_STRING, .fn = rom_method_identify}},
@@ -662,5 +612,4 @@ void rom_delete(void) {
         object_delete(s_rom_object);
         s_rom_object = NULL;
     }
-    rom_pending_clear();
 }

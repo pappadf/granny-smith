@@ -321,6 +321,33 @@ value_t node_get(node_t n);
 value_t node_set(node_t n, value_t v);
 value_t node_call(node_t n, int argc, const value_t *argv);
 
+// === Named-argument binder ===================================================
+
+// One named argument: a declared-slot name plus its value.
+typedef struct {
+    const char *name; // borrowed from the caller
+    value_t value; // owned by the caller (binder aliases, never copies)
+} named_arg_t;
+
+// Maximum total bound arguments (mirrors the validator's scratch capacity).
+#define OBJ_BIND_MAX_ARGS 16
+
+// Bind a (positional list, named list) pair against a method's declared
+// args[] table, producing the purely positional argv that node_call /
+// node_validate_args consume. Rules (proposal-named-args-boot-config §3.1):
+// positionals fill slots left to right; named args target declared fixed
+// slots by name in any order; duplicates and unknown names are errors;
+// OBJ_ARG_REST slots are positional-tail only. Unfilled interior slots are
+// emitted as V_NONE holes, which the validator treats exactly like missing
+// trailing arguments (default-fill, or "missing argument" error).
+//
+// out_argv must have capacity OBJ_BIND_MAX_ARGS. Bound values alias the
+// caller's pos_argv/named values (holes own nothing), so the caller frees
+// its originals as usual and must not free out_argv slots. Returns V_NONE
+// on success, V_ERROR on a binding error.
+value_t node_bind_args(node_t n, int pos_argc, const value_t *pos_argv, int named_n, const named_arg_t *named,
+                       value_t *out_argv, int *out_argc);
+
 // Single-segment descent. Used by the resolver and by the completer.
 node_t node_child(node_t n, const char *segment);
 

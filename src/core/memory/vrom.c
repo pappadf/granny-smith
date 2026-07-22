@@ -291,68 +291,59 @@ const char *vrom_offer_find(const char *card_id, int idx, size_t *out_chip_size)
     return NULL;
 }
 
+bool vrom_offer_info(const char *path, uint32_t *out_crc, bool *out_explicit) {
+    if (!path)
+        return false;
+    for (size_t i = 0; i < s_offer_count; i++) {
+        if (strcmp(s_offers[i].path, path) != 0)
+            continue;
+        if (out_crc)
+            *out_crc = s_offers[i].crc;
+        if (out_explicit)
+            *out_explicit = s_offers[i].explicit_pick;
+        return true;
+    }
+    return false;
+}
+
+bool vrom_card_catalogued(const char *card_id) {
+    if (!card_id || !*card_id)
+        return false;
+    for (size_t r = 0; r < VROM_CATALOG_COUNT; r++) {
+        if (strcmp(VROM_CATALOG[r].card_id, card_id) == 0)
+            return true;
+    }
+    return false;
+}
+
+bool vrom_card_resolvable(const char *card_id) {
+    return vrom_offer_find(card_id, 0, NULL) != NULL;
+}
+
 // ============================================================================
 // Explicit pick (vrom.load)
 // ============================================================================
 
-static char *s_pending_vrom_path = NULL;
-
 int vrom_set_path(const char *path) {
     if (!path || !*path) {
-        printf("vrom.load: expected a non-empty path\n");
+        printf("vrom: expected a non-empty path\n");
         return -1;
     }
-    char *dup = strdup(path);
-    if (!dup)
-        return -1;
-    free(s_pending_vrom_path);
-    s_pending_vrom_path = dup;
-    // vrom.load is sugar for "offer + preferred pick": register the file so
-    // the next machine init matches it by content.  An unrecognised file is
-    // recorded for the vrom.path echo but never matched (offer drops it).
+    // The boot document's vrom= explicit pick: an offer that wins the pick
+    // order for whichever card its content provides.  An unrecognised file
+    // is dropped by the offer (with a log).
     vrom_offer_add(path, true);
     return 0;
-}
-
-const char *vrom_pending_path(void) {
-    return s_pending_vrom_path;
-}
-
-void vrom_pending_clear(void) {
-    free(s_pending_vrom_path);
-    s_pending_vrom_path = NULL;
 }
 
 // ============================================================================
 // Object-model class descriptor
 // ============================================================================
 
-static value_t vrom_attr_path(struct object *self, const member_t *m) {
-    (void)self;
-    (void)m;
-    const char *p = vrom_pending_path();
-    return val_str(p ? p : "");
-}
-
-static value_t vrom_attr_loaded(struct object *self, const member_t *m) {
-    (void)self;
-    (void)m;
-    return val_bool(vrom_pending_path() != NULL);
-}
-
 static value_t vrom_attr_size(struct object *self, const member_t *m) {
     (void)self;
     (void)m;
     return val_uint(4, VROM_EXPECTED_SIZE);
-}
-
-static value_t vrom_method_load(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
-    (void)argc;
-    if (vrom_set_path(argv[0].s) != 0)
-        return val_err("vrom.load: failed");
-    return val_bool(true);
 }
 
 // vrom.offer(path) — platform/UI hook into the offer registry, e.g. web2's
@@ -427,24 +418,10 @@ static const arg_decl_t vrom_path_arg[] = {
 
 static const member_t vrom_members[] = {
     {.kind = M_ATTR,
-     .name = "path",
-     .doc = "Path of the pending VROM (empty if none)",
-     .flags = VAL_RO,
-     .attr = {.type = V_STRING, .get = vrom_attr_path, .set = NULL}},
-    {.kind = M_ATTR,
-     .name = "loaded",
-     .doc = "True if a VROM path has been set",
-     .flags = VAL_RO,
-     .attr = {.type = V_BOOL, .get = vrom_attr_loaded, .set = NULL}},
-    {.kind = M_ATTR,
      .name = "size",
      .doc = "Expected VROM size in bytes (32 KB)",
      .flags = VAL_RO,
      .attr = {.type = V_UINT, .get = vrom_attr_size, .set = NULL}},
-    {.kind = M_METHOD,
-     .name = "load",
-     .doc = "Offer the VROM at path and make it the preferred pick at the next machine init",
-     .method = {.args = vrom_path_arg, .nargs = 1, .result = V_BOOL, .fn = vrom_method_load}},
     {.kind = M_METHOD,
      .name = "offer",
      .doc = "Offer a candidate VROM file; true iff recognised and registered",
@@ -484,6 +461,5 @@ void vrom_delete(void) {
         object_delete(s_vrom_object);
         s_vrom_object = NULL;
     }
-    vrom_pending_clear();
     vrom_offer_clear();
 }

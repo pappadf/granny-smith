@@ -13,7 +13,7 @@
 # This is the comprehensive Xenix test (the lisa-xenix-hdinit test covers only the
 # fast hard-disk-init phase).  It exercises the whole stack: the segment-MMU
 # stack-segment limit, the ProFile 6-byte pf handshake, the 68000 data-bus-error
-# saved-PC stack-growth-probe fix, a guest reboot (machine.boot + rom.reload with
+# saved-PC stack-growth-probe fix, a guest reboot (an inheriting machine.boot with
 # a persisted ProFile image), booting the kernel from the hard disk, and seven
 # tar-from-floppy distribution reads with eject/insert disk swaps.
 #

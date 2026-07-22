@@ -39,18 +39,20 @@ assert ${machine.vrom.identify("../../data/roms/plus-v3-4d1f8172.rom") == "{\"re
 assert ${!machine.vrom.identify("/dev/null/nonexistent")} "unreadable path must yield V_ERROR"
 
 # --- Part 2: every catalog card_id resolves to a registered nubus card. ---
-# The machine.nubus.video_card setter validates the id against
-# nubus_card_registry(); the readback proves the catalog and the registry
-# don't drift (proposal §6).  IIcx has a nubus, so the object exists.
-machine.boot "iicx" 8192
+# The slot[N].card_id setter validates the id against nubus_card_registry();
+# the readback proves the catalog and the registry don't drift (proposal §6).
+# IIcx has a nubus with socket $9, so the staged attr exists.  Each pick is
+# cleared afterwards so no staging leaks out of the test.
+machine.boot model="iicx" ram=8192
 assert ${machine.id == "iicx"} "machine.boot iicx (nubus present)"
-machine.nubus.video_card = "mdc_8_24"
-assert ${machine.nubus.video_card == "mdc_8_24"} "catalog card_id mdc_8_24 must be a registered card"
-machine.nubus.video_card = "display_card_24ac"
-assert ${machine.nubus.video_card == "display_card_24ac"} "catalog card_id display_card_24ac must be a registered card"
-machine.nubus.video_card = "builtin_se30_video"
-assert ${machine.nubus.video_card == "builtin_se30_video"} "catalog card_id builtin_se30_video must be a registered card"
-machine.nubus.video_card = "824gc"
-assert ${machine.nubus.video_card == "824gc"} "catalog card_id 824gc must be a registered card"
+machine.nubus.slot[9].card_id = "mdc_8_24"
+assert ${machine.nubus.slot[9].card_id == "mdc_8_24"} "catalog card_id mdc_8_24 must be a registered card"
+machine.nubus.slot[9].card_id = "display_card_24ac"
+assert ${machine.nubus.slot[9].card_id == "display_card_24ac"} "catalog card_id display_card_24ac must be a registered card"
+machine.nubus.slot[9].card_id = "builtin_se30_video"
+assert ${machine.nubus.slot[9].card_id == "builtin_se30_video"} "catalog card_id builtin_se30_video must be a registered card"
+machine.nubus.slot[9].card_id = "824gc"
+assert ${machine.nubus.slot[9].card_id == "824gc"} "catalog card_id 824gc must be a registered card"
+machine.nubus.slot[9].card_id = ""
 
 quit

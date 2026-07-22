@@ -9,9 +9,7 @@
 # Pin the RTC so the boot is deterministic run-to-run (same value as -accel).
 machine.rtc.time = 3000000000
 
-machine.nubus.video_card = "824gc"
-machine.boot "iicx" 8192
-machine.rom.reload
+machine.boot model="iicx" ram=8192 video_card="824gc"
 
 # The oracle switch: decline all drawing funcs -> ROM path renders everything.
 machine.nubus.slot[9].card.gc.force_decline = true

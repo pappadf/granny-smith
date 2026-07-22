@@ -20,8 +20,10 @@
 #include "floppy.h"
 #include "image.h"
 #include "image_vfs.h"
+#include "jmfb.h" // restored-record sense seeding on checkpoint load
 #include "keyboard.h"
 #include "log.h"
+#include "machine_config.h"
 #include "machine_profile.h"
 #include "memory.h"
 #include "mouse.h"
@@ -1109,6 +1111,11 @@ int system_checkpoint(const char *filename, checkpoint_kind_t kind) {
         return GS_ERROR;
     }
 
+    // Built-from record first (fixed-size POD; the stream is build-ID-gated
+    // so the layout may change freely between builds). Restore reads it
+    // symmetrically in system_restore before machine construction.
+    system_write_checkpoint_data(checkpoint, machine_config_record(), sizeof(machine_config_record_t));
+
     // Delegate all state serialisation to the machine profile
     global_emulator->machine->substrate->checkpoint_save(global_emulator, checkpoint);
 
@@ -1138,6 +1145,13 @@ config_t *system_restore(const char *filename) {
     // Save the current global emulator so we can restore it on error.
     config_t *prev = global_emulator;
 
+    // Read the built-from record (mirrors the write in system_checkpoint).
+    // It is installed only after the restore succeeds, so a failed restore
+    // leaves the previous machine's record intact.
+    machine_config_record_t restored_record;
+    memset(&restored_record, 0, sizeof(restored_record));
+    system_read_checkpoint_data(checkpoint, &restored_record, sizeof(restored_record));
+
     // Determine machine profile from the checkpoint header, falling back to
     // the current machine or Plus for backward compatibility.
     const hw_profile_t *profile = NULL;
@@ -1153,6 +1167,26 @@ config_t *system_restore(const char *filename) {
     if (saved_ram_kb > 0)
         system_set_pending_ram_kb(saved_ram_kb);
 
+    // Seed the construction channels from the restored record so socket
+    // resolution recreates the SAVED card configuration — the staged table
+    // was consumed by the previous boot, and a checkpoint written with a
+    // non-default card must not restore against the slot default (the
+    // strictly-ordered stream would misalign).
+    if (restored_record.valid) {
+        if (restored_record.video_card[0])
+            nubus_staged_card_set(NUBUS_STAGED_WILDCARD, restored_record.video_card);
+        if (restored_record.video_mode[0])
+            nubus_staged_mode_set(NUBUS_STAGED_WILDCARD, restored_record.video_mode);
+        if (restored_record.video_sense >= 0)
+            jmfb_pending_sense_set((uint8_t)restored_record.video_sense);
+        if (restored_record.vrom[0])
+            vrom_set_path(restored_record.vrom);
+    }
+
+    // Fresh vROM-pick list for the restore construction (the card loaders
+    // re-report their picks during system_create).
+    machine_config_reset_vroms();
+
     config_t *config = system_create(profile, checkpoint);
 
     if (checkpoint_has_error(checkpoint)) {
@@ -1165,6 +1199,19 @@ config_t *system_restore(const char *filename) {
     }
 
     checkpoint_close(checkpoint);
+
+    // Install the restored built-from record so machine.config answers for
+    // the restored machine and argument-less reboots inherit it. The vROM
+    // pick list reflects THIS construction (the loaders re-reported during
+    // system_create), so keep the fresh entries over the serialized ones.
+    machine_config_record_t *rec = machine_config_record_mut();
+    machine_config_vrom_t fresh_vroms[MC_MAX_VROMS];
+    memcpy(fresh_vroms, rec->vroms, sizeof(fresh_vroms));
+    int32_t fresh_n = rec->n_vroms;
+    *rec = restored_record;
+    memcpy(rec->vroms, fresh_vroms, sizeof(rec->vroms));
+    rec->n_vroms = fresh_n;
+
     printf("Checkpoint restored from %s\n", filename);
     return config;
 }
