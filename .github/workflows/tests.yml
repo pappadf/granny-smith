@@ -44,6 +44,15 @@ jobs:
             apt-get update -qq && apt-get install -y -qq p7zip-full
           fi
 
+      # m68k binutils assembles the generic declaration-ROM fragments
+      # (tools/vrom / src/core/peripherals/nubus/vrom68k).  The devcontainer
+      # image ships it; this step covers image versions that predate it.
+      - name: Install m68k binutils
+        run: |
+          if ! command -v m68k-linux-gnu-as >/dev/null 2>&1; then
+            apt-get update -qq && apt-get install -y -qq binutils-m68k-linux-gnu
+          fi
+
       # Fetch proprietary test data (only works for internal builds with token access)
       - name: Fetch test data
         id: fetch-data
@@ -147,6 +156,14 @@ jobs:
         run: |
           if ! command -v 7z >/dev/null 2>&1; then
             apt-get update -qq && apt-get install -y -qq p7zip-full
+          fi
+
+      # m68k binutils assembles the generic declaration-ROM fragments for
+      # the WASM build (see the matching step in the test job above).
+      - name: Install m68k binutils
+        run: |
+          if ! command -v m68k-linux-gnu-as >/dev/null 2>&1; then
+            apt-get update -qq && apt-get install -y -qq binutils-m68k-linux-gnu
           fi
 
       # Fetch proprietary test data (internal builds with token access only).

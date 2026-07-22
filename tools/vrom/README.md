@@ -8,7 +8,6 @@ For what the ROM *is* and how the emulator uses it, see
 ## Files
 
 ```
-fetch-vasm.sh     pinned vasm 2.0f fetch + build (cached under build/vasm/)
 Makefile          assembles the four personalities, stamps CRCs, embeds blobs
 crc.py            Format-Block finaliser (Length / CRC / ByteLanes)
 embed.py          built images → the committed gsvrom_blobs.h
@@ -25,7 +24,8 @@ ops_se30.s        SE30 (built-in video) personality
 
 The shared-core / personality split is described in the doc linked above;
 in this tree the shared core is `gsvrom_init.s` + `gsvrom_drvr.s`, and each
-`ops_*.s` is one personality selected at assembly time by a `-D` symbol.
+`ops_*.s` is one personality selected at assembly time by a `--defsym`
+symbol.
 
 ## Building
 
@@ -37,15 +37,19 @@ This assembles one image per personality, stamps each Format Block, and
 regenerates the **committed** header
 `src/core/peripherals/nubus/gsvrom_blobs.h` (the images embedded as C byte
 arrays). Because that header is checked in, an ordinary emulator build needs
-**neither vasm nor network access** — you only run this target after editing
-the ROM source, and commit the regenerated header alongside the change.
+**no m68k toolchain** — you only run this target after editing the ROM
+source, and commit the regenerated header alongside the change.
 
-The assembler is [vasm](http://sun.hasenbraten.de/vasm/) (the `vasmm68k_mot`
-Motorola-syntax build). `fetch-vasm.sh` downloads a checksum-pinned 2.0f
-tarball and builds it into `build/vasm/` on first use; the Makefile invokes
-it automatically. vasm's licence permits free use but restricts source
-redistribution, so it is fetched on demand rather than vendored into the
-repo.
+The assembler is GNU binutils targeting m68k: `m68k-linux-gnu-as` +
+`objcopy -O binary`, from Ubuntu/Debian's `binutils-m68k-linux-gnu` package
+(2.42 is the verified baseline; the devcontainer image ships it).  Any
+m68k-targeted binutils works because the output is a raw binary — set
+`M68K_AS=`/`M68K_OBJCOPY=` for e.g. an `m68k-elf` cross build on macOS.
+The source is gas syntax in `.altmacro` mode; note the port rules baked
+into `gsvrom_macros.i` (packed list entries use `+`, never `|` — gas
+silently mis-folds a masked forward difference OR'd with a constant —
+and strings use `.ascii`/`.asciz` because `dc.b` silently drops string
+operands).
 
 ## Image layout
 
