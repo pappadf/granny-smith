@@ -106,16 +106,6 @@ const char *nubus_staged_mode_get(int slot) {
     return s_staged[slot].mode[0] ? s_staged[slot].mode : NULL;
 }
 
-// Wildcard conveniences — the pre-stage-2 names, kept for the alias
-// attribute and the headless startup arg.
-void nubus_pending_video_card_set(const char *id) {
-    nubus_staged_card_set(NUBUS_STAGED_WILDCARD, id);
-}
-
-const char *nubus_pending_video_card_get(void) {
-    return nubus_staged_card_get(NUBUS_STAGED_WILDCARD);
-}
-
 static void staged_clear_all(void) {
     memset(s_staged, 0, sizeof s_staged);
 }
@@ -252,8 +242,10 @@ nubus_bus_t *nubus_init(config_t *cfg, const nubus_slot_decl_t *slots, checkpoin
 void nubus_delete(nubus_bus_t *bus) {
     if (!bus)
         return;
-    // Drop the object-model node trees before the cards they read go away.
-    nubus_objects_teardown();
+    // Drop the object-model node trees before the cards they read go away
+    // (ownership-checked: on checkpoint restore this bus may already have
+    // been superseded by the new machine's tree).
+    nubus_objects_teardown_owned(bus);
     for (int i = 0; i < NUBUS_MAX_SLOTS; i++) {
         nubus_card_t *card = bus->cards[i];
         if (!card)

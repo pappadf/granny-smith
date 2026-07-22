@@ -86,19 +86,11 @@ bool vrom_card_catalogued(const char *card_id);
 // catalogued cards cannot all resolve.
 bool vrom_card_resolvable(const char *card_id);
 
-// Set the explicit vROM pick (vrom.load): an offer that is also the
-// *preferred* candidate for whichever card its content provides.  Also
-// recorded verbatim for the vrom.path attribute.  Returns 0 on success,
-// -1 on an empty path / OOM.
+// Register the boot document's vrom= explicit pick: an offer that is also
+// the *preferred* candidate for whichever card its content provides
+// (proposal-named-args-boot-config §4.1).  Returns 0 on success, -1 on an
+// empty path.
 int vrom_set_path(const char *path);
-
-// Path most recently set by vrom_set_path(), or NULL if none.  Echo-back
-// for the vrom.path / vrom.loaded attributes only — discovery goes through
-// the offer registry.
-const char *vrom_pending_path(void);
-
-// Clear the explicit pick (called from vrom_delete).
-void vrom_pending_clear(void);
 
 // === Lifecycle =============================================================
 //

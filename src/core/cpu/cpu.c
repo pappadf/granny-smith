@@ -214,8 +214,18 @@ extern cpu_t *cpu_init(int cpu_model, checkpoint_t *checkpoint) {
 
     // Load from checkpoint if provided
     if (checkpoint) {
-        // Read contiguous plain-data portion of cpu_t (everything before the first pointer)
+        // The stream carries the whole struct, including the SAVE-TIME
+        // pointer fields. NULL them all so the bindings below (and
+        // cpu_attach_mmu, whose idempotence guard tests mmu_object) are
+        // rebuilt for THIS machine — a stale non-NULL pointer here made
+        // teardown free another machine's objects after a same-process
+        // restore (double free) and left machine.cpu.mmu unbound.
         system_read_checkpoint_data(checkpoint, cpu, sizeof(cpu_t));
+        cpu->mmu = NULL;
+        cpu->fpu = NULL;
+        cpu->cpu_object = NULL;
+        cpu->fpu_object = NULL;
+        cpu->mmu_object = NULL;
     } else {
         cpu->cpu_model = cpu_model;
         // Initial PC and SSP will be loaded from reset vectors after ROM is loaded

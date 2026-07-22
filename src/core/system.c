@@ -20,6 +20,7 @@
 #include "floppy.h"
 #include "image.h"
 #include "image_vfs.h"
+#include "jmfb.h" // restored-record sense seeding on checkpoint load
 #include "keyboard.h"
 #include "log.h"
 #include "machine_config.h"
@@ -1165,6 +1166,22 @@ config_t *system_restore(const char *filename) {
     uint32_t saved_ram_kb = checkpoint_get_ram_size_kb(checkpoint);
     if (saved_ram_kb > 0)
         system_set_pending_ram_kb(saved_ram_kb);
+
+    // Seed the construction channels from the restored record so socket
+    // resolution recreates the SAVED card configuration — the staged table
+    // was consumed by the previous boot, and a checkpoint written with a
+    // non-default card must not restore against the slot default (the
+    // strictly-ordered stream would misalign).
+    if (restored_record.valid) {
+        if (restored_record.video_card[0])
+            nubus_staged_card_set(NUBUS_STAGED_WILDCARD, restored_record.video_card);
+        if (restored_record.video_mode[0])
+            nubus_staged_mode_set(NUBUS_STAGED_WILDCARD, restored_record.video_mode);
+        if (restored_record.video_sense >= 0)
+            jmfb_pending_sense_set((uint8_t)restored_record.video_sense);
+        if (restored_record.vrom[0])
+            vrom_set_path(restored_record.vrom);
+    }
 
     // Fresh vROM-pick list for the restore construction (the card loaders
     // re-report their picks during system_create).

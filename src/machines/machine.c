@@ -430,18 +430,17 @@ static void format_ram_options(char *buf, size_t bufsize, const hw_profile_t *p)
 static value_t validate_vrom_resolution(const hw_profile_t *profile, const char *wildcard_card) {
     if (!profile->nubus_slots)
         return val_none();
-    bool wildcard_used = false;
+    bool first_socket = true;
     for (const nubus_slot_decl_t *d = profile->nubus_slots; d->slot; d++) {
         if (d->kind != NUBUS_SLOT_SOCKET)
             continue;
         // Explicit picks only, mirroring nubus_init's precedence: a
-        // per-slot staged entry beats the wildcard; the wildcard applies
-        // to the first socket without a concrete entry.
+        // per-slot staged entry beats the wildcard, and the wildcard is
+        // honoured only on the machine's FIRST socket.
         const char *card_id = nubus_staged_card_get(d->slot);
-        if ((!card_id || !*card_id) && !wildcard_used && wildcard_card && *wildcard_card) {
+        if ((!card_id || !*card_id) && first_socket && wildcard_card && *wildcard_card)
             card_id = wildcard_card;
-            wildcard_used = true;
-        }
+        first_socket = false;
         if (!card_id || !*card_id)
             continue;
         if (vrom_card_catalogued(card_id) && !vrom_card_resolvable(card_id)) {
@@ -569,16 +568,11 @@ value_t machine_boot_apply(const boot_config_t *doc_in) {
             return val_err("machine.boot: vrom '%s' is not a recognised declaration ROM", doc.vrom);
     }
 
-    // Strict resolution for socket cards. The effective wildcard pick may
-    // also come from a pre-boot `nubus.video_card =` staging write (legacy
-    // couplet form, retired in stage 3) — honour it so validation checks
-    // the card that will actually seat.
+    // Strict resolution for explicitly picked socket cards (per-slot staged
+    // entries and the document's wildcard card).
     if (doc.vrom && *doc.vrom)
         vrom_set_path(doc.vrom);
-    const char *wildcard_card = doc.video_card;
-    if (!wildcard_card || !*wildcard_card)
-        wildcard_card = nubus_staged_card_get(NUBUS_STAGED_WILDCARD);
-    value_t verr = validate_vrom_resolution(profile, wildcard_card);
+    value_t verr = validate_vrom_resolution(profile, doc.video_card);
     if (val_is_error(&verr))
         return verr;
 
@@ -589,11 +583,9 @@ value_t machine_boot_apply(const boot_config_t *doc_in) {
     }
 
     // Seed the construction channels from the document. Only fields the
-    // document carries are written — a pre-boot staging write (legacy
-    // couplet form) survives an inheriting boot until stage 3 retires
-    // that surface.
+    // document carries are written — a per-slot staged card entry
+    // (slot[N].card_id, the surviving multi-card surface) is left alone.
     system_set_pending_ram_kb(ram_kb);
-    rom_pending_set(doc.rom);
     if (doc.video_card && *doc.video_card)
         nubus_staged_card_set(NUBUS_STAGED_WILDCARD, doc.video_card);
     if (doc.video_mode && *doc.video_mode)

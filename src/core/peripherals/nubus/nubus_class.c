@@ -45,42 +45,6 @@ static value_t nubus_method_cards(struct object *self, const member_t *m, int ar
     return val_list(items, n);
 }
 
-// `nubus.video_sense` — get/set the JMFB-card monitor sense for the
-// next machine.boot.  Reads return the current pending value (which
-// the JMFB factory will consume on its next instantiation); writes
-// stage the new value.  Valid raw-sense codes are 0..6 per
-// JMFBPrimaryInit.a's sense table (0=21" RGB / 1=15" Mono /
-// 2=12" RGB / 3=21" B&W / 4=NTSC / 5=15" RGB / 6=13" RGB / 7=no
-// connect).  Settable from integration test scripts via
-// `nubus.video_sense = N` before `machine.boot`.
-static value_t nubus_attr_video_sense_get(struct object *self, const member_t *m) {
-    (void)self;
-    (void)m;
-    value_t v = val_uint(1, jmfb_pending_sense_get());
-    v.flags |= VAL_HEX;
-    return v;
-}
-
-static value_t nubus_attr_video_sense_set(struct object *self, const member_t *m, value_t in) {
-    (void)self;
-    (void)m;
-    if (in.kind != V_UINT) {
-        value_free(&in);
-        return val_err("nubus.video_sense: expected unsigned integer 0..7");
-    }
-    if (in.u > 7) {
-        value_free(&in);
-        return val_err("nubus.video_sense: value must be 0..7 (got %llu)", (unsigned long long)in.u);
-    }
-    jmfb_pending_sense_set((uint8_t)in.u);
-    value_free(&in);
-    return val_none();
-}
-
-// True iff `id` names a video mode in ANY registered card's catalog —
-// the set-time typo guard for staged video-mode ids.  Which card the mode
-// finally seeds is decided at boot (nubus_init routes each slot's staged
-// mode into its resolved card kind; a kind mismatch logs and is ignored).
 static bool video_mode_id_known(const char *id) {
     return jmfb_video_mode_lookup(id, NULL, NULL) || display_card_24ac_video_mode_lookup(id, NULL, NULL) ||
            display_card_824gc_video_mode_lookup(id, NULL, NULL);
@@ -89,77 +53,6 @@ static bool video_mode_id_known(const char *id) {
 // Exported for boot-document validation (machine.boot video_mode=).
 bool nubus_video_mode_known(const char *id) {
     return video_mode_id_known(id);
-}
-
-// `nubus.video_mode` — get/set the staged high-level video-mode id for the
-// next machine.boot's FIRST socket (the wildcard staged entry — the
-// machine-independent alias, see nubus.h §staged configuration).  The id
-// matches one of `machine.profile(...).video_modes[].id` (e.g.
-// "13in_rgb_8bpp").  At boot the id is routed into the resolved card's
-// pending-mode channel; the card factory then writes the boot-ROM PRAM
-// validity tokens plus the slot-PRAMRec bytes so the Slot Manager's
-// GET_SLOT_DEPTH lands on the requested mode.  Reading returns the staged
-// id (or the empty string); writing "" clears it.
-static value_t nubus_attr_video_mode_get(struct object *self, const member_t *m) {
-    (void)self;
-    (void)m;
-    const char *id = nubus_staged_mode_get(NUBUS_STAGED_WILDCARD);
-    return val_str(id ? id : "");
-}
-
-static value_t nubus_attr_video_mode_set(struct object *self, const member_t *m, value_t in) {
-    (void)self;
-    (void)m;
-    if (in.kind != V_STRING) {
-        value_free(&in);
-        return val_err("nubus.video_mode: expected string id (e.g. \"13in_rgb_8bpp\")");
-    }
-    const char *id = in.s ? in.s : "";
-    // Validate up front so a typo is caught at set time; "" clears.
-    if (*id && !video_mode_id_known(id)) {
-        value_t err = val_err("nubus.video_mode: unknown video-mode id '%s'", id);
-        value_free(&in);
-        return err;
-    }
-    nubus_staged_mode_set(NUBUS_STAGED_WILDCARD, id);
-    value_free(&in);
-    return val_none();
-}
-
-// `nubus.video_card` — get/set the card id to install into the next
-// machine.boot's FIRST socket (the wildcard staged entry; concrete slots
-// stage via `slot[N].card_id`).  nubus_init honours the pick iff that kind
-// fits the socket per nubus_card_fits_socket (else it logs and falls back
-// to the slot default).  Reads return the staged id, or "" when none is
-// staged.  Settable from integration scripts via
-// `machine.nubus.video_card = "display_card_24ac"` before machine.boot.  The id
-// is validated against the registered card drivers so a typo is caught at
-// set time rather than silently falling back at boot.
-static value_t nubus_attr_video_card_get(struct object *self, const member_t *m) {
-    (void)self;
-    (void)m;
-    const char *id = nubus_pending_video_card_get();
-    return val_str(id ? id : "");
-}
-
-static value_t nubus_attr_video_card_set(struct object *self, const member_t *m, value_t in) {
-    (void)self;
-    (void)m;
-    if (in.kind != V_STRING) {
-        value_free(&in);
-        return val_err("nubus.video_card: expected card-id string (e.g. \"display_card_24ac\")");
-    }
-    const char *id = in.s ? in.s : "";
-    // Empty clears the pending pick; a non-empty id must name a registered
-    // card driver (nubus.cards() lists them).
-    if (*id && !nubus_card_find(id)) {
-        value_t err = val_err("nubus.video_card: unknown card id '%s' (see nubus.cards())", id);
-        value_free(&in);
-        return err;
-    }
-    nubus_pending_video_card_set(id);
-    value_free(&in);
-    return val_none();
 }
 
 // === Per-card object-model surface (proposal §3.8) ==========================
@@ -734,21 +627,6 @@ static const member_t nubus_members[] = {
      .name = "cards",
      .doc = "List the ids of all registered NuBus card drivers",
      .method = {.args = NULL, .nargs = 0, .result = V_LIST, .fn = nubus_method_cards}},
-    {.kind = M_ATTR,
-     .name = "video_card",
-     .doc = "Pending video-slot card id for next machine.boot (e.g. \"display_card_24ac\")",
-     .flags = 0,
-     .attr = {.type = V_STRING, .get = nubus_attr_video_card_get, .set = nubus_attr_video_card_set}},
-    {.kind = M_ATTR,
-     .name = "video_sense",
-     .doc = "Pending JMFB monitor sense (0..6, 7 = no connect)",
-     .flags = 0,
-     .attr = {.type = V_UINT, .get = nubus_attr_video_sense_get, .set = nubus_attr_video_sense_set}},
-    {.kind = M_ATTR,
-     .name = "video_mode",
-     .doc = "Pending video-mode id for next machine.boot (matches profile.video_modes[].id)",
-     .flags = 0,
-     .attr = {.type = V_STRING, .get = nubus_attr_video_mode_get, .set = nubus_attr_video_mode_set}},
 };
 
 const class_desc_t nubus_class = {
@@ -826,6 +704,15 @@ void nubus_objects_teardown(void) {
         memset(&g_slot_nodes[i], 0, sizeof(g_slot_nodes[i]));
     }
     g_obj_bus = NULL;
+}
+
+void nubus_objects_teardown_owned(nubus_bus_t *bus) {
+    // Tear down the node trees only when they describe THIS bus.  On
+    // checkpoint restore the new machine (and its tree) is built BEFORE the
+    // old machine is destroyed; the old bus's teardown must not rip down
+    // the new machine's freshly built tree.
+    if (g_obj_bus == bus)
+        nubus_objects_teardown();
 }
 
 struct object *nubus_active_framebuffer_object(void) {
