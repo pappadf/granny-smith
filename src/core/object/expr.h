@@ -61,6 +61,14 @@ typedef struct expr_ctx {
     void *binding_ud; // user-data for binding callback
 } expr_ctx_t;
 
+// Read a normalized path (`a.b`, `a.b[0]`, `a.b["key"]` segment text)
+// against `root`. Resolves the full path as a tree node when possible;
+// otherwise resolves the longest prefix that is a node, reads its value,
+// and descends the remaining segments into that V_MAP / V_LIST value —
+// the access path behind `machine.config.vroms[0].card_id`. Returns the
+// (owned) value or V_ERROR.
+value_t expr_object_path_read(struct object *root, const char *path);
+
 // Evaluate the expression in `src` (the body of a `$(...)` form, with
 // no surrounding parens). Returns the resulting value_t (or V_ERROR on
 // syntax/type/resolution errors). Caller frees with value_free.

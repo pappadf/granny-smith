@@ -53,7 +53,7 @@ per line, except that brace blocks span lines (see below).
 | `EXPR` | Expression statement (REPL prints; scripts stay silent) |
 | `if EXPR { … } elif EXPR { … } else { … }` | Conditional |
 | `while EXPR { … }` | Pre-test loop; the condition re-evaluates per iteration |
-| `for NAME in EXPR { … }` | Iterate a list, `a..b` range, or bytes |
+| `for NAME in EXPR { … }` | Iterate a list, map (keys), `a..b` range, or bytes |
 | `break` / `continue` | Loop control (innermost loop) |
 | `return [EXPR]` | Return from the enclosing function |
 | `def NAME(P1, …) { … }` | Define a function |

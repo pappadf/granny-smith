@@ -141,6 +141,17 @@ static void format_value_json(const value_t *v, char *buf, size_t size, size_t *
         }
         buf_append(buf, size, pos, "]", 1);
         break;
+    case V_MAP:
+        buf_append(buf, size, pos, "{", 1);
+        for (size_t i = 0; i < v->map.len; i++) {
+            if (i)
+                buf_append(buf, size, pos, ",", 1);
+            buf_append_jstring(buf, size, pos, v->map.entries[i].key);
+            buf_append(buf, size, pos, ":", 1);
+            format_value_json(&v->map.entries[i].val, buf, size, pos);
+        }
+        buf_append(buf, size, pos, "}", 1);
+        break;
     case V_OBJECT: {
         const class_desc_t *cls = v->obj ? object_class(v->obj) : NULL;
         const char *cls_name = (cls && cls->name) ? cls->name : "object";

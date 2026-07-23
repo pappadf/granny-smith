@@ -6,18 +6,17 @@ import { buildCommandsTree, type CommandNode } from '@/lib/commandsTree';
 //   root → machine → cpu (with a `step` method) ; root verbs `echo`/`download`
 //   plus one alias. We assert the generated shape, not a hand-listed set.
 vi.mock('@/bus/emulator', () => {
-  const methodInfo = (name: string, doc = '', task = '') =>
-    JSON.stringify({
-      name,
-      verb: name,
-      category: 'basic',
-      task,
-      doc,
-      destructive: false,
-      mutate: false,
-      hidden: false,
-      nargs: 0,
-    });
+  const methodInfo = (name: string, doc = '', task = '') => ({
+    name,
+    verb: name,
+    category: 'basic',
+    task,
+    doc,
+    destructive: false,
+    mutate: false,
+    hidden: false,
+    nargs: 0,
+  });
   return {
     isModuleReady: () => true,
     gsEval: async (path: string, args?: unknown[]) => {

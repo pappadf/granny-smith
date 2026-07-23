@@ -186,6 +186,22 @@ only to itself, falsy). Errors are not truth values — an error reaching
 `try(..., none) == none`. Indexed children use brackets
 (`debug.breakpoints[3].addr`); list results index too (`$hits[0]`).
 
+Map-shaped results (`machine.profile`, `machine.rom.identify`,
+`debug.frame`, …) are typed `V_MAP` values: read keys with dotted
+`map.key` or bracket `map["key"]` segments, on paths, call results, and
+bindings alike — `machine.profile("se30").capabilities.mmu.kind`,
+`machine.config.vroms[0].card_id`, `$info.checksum`. `for k in MAP`
+iterates keys; `len(map)` counts entries; `${MAP}` interpolates as
+compact JSON text.
+
+Map-shaped results (`machine.profile`, `machine.rom.identify`,
+`debug.frame`, …) are typed `V_MAP` values: read keys with dotted
+`map.key` or bracket `map["key"]` segments, on paths, call results, and
+bindings alike — `machine.profile("se30").capabilities.mmu.kind`,
+`machine.config.vroms[0].card_id`, `$info.checksum`. `for k in MAP`
+iterates keys; `len(map)` counts entries; `${MAP}` interpolates as
+compact JSON text.
+
 ### 4.3 Bindings and aliases
 
 `$name` resolves scoped `let` bindings first, then the alias table.
@@ -420,20 +436,23 @@ byte-identical framebuffers.
 machine.id                                            # "se30"
 machine.ram                                           # 8192 (KB)
 machine.freq                                          # 15667200 (Hz)
-machine.profile "se30"                                # full profile (JSON string)
+machine.profile "se30"                                # full profile (typed map)
 machine.profile "plus"                                # ditto
 
 machine.rom.path                                              # currently loaded ROM
 machine.rom.checksum                                          # "97221136" (8-hex string)
 machine.rom.name                                              # "Universal IIx/IIcx/SE/30 ROM"
-machine.rom.identify "tests/data/roms/plus-v3-4d1f8172.rom"            # full info map (JSON)
+machine.rom.identify "tests/data/roms/plus-v3-4d1f8172.rom"            # full info map (typed)
 ```
 
-`machine.profile(id)` returns a JSON-string carrying `id`, `name`,
+`machine.profile(id)` returns a typed map carrying `id`, `name`,
 `freq`, `ram_options`, `ram_default`, `ram_max`, `floppy_slots`,
-`scsi_slots`, `has_cdrom`, `cdrom_id`, `needs_vrom`. `machine.rom.identify(path)`
-returns `{recognised, compatible, checksum, name, size}`. For
-unreadable paths both return an error.
+`scsi_slots`, `hd_bus`, `has_cdrom`, `cdrom_id`, `capabilities`,
+`video_slots`. `machine.rom.identify(path)` returns
+`{recognised, compatible, checksum, name, size}`. Key access works
+directly (`machine.profile("se30").capabilities.mmu.kind`); `${…}`
+interpolation renders a map as compact JSON. For unreadable paths both
+return an error.
 
 ### 6.9 Scheduler control
 

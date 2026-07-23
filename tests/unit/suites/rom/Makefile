@@ -1,5 +1,5 @@
 # Lisa/XL ROM interleave + identification unit test (Step 1 of the Lisa-XL work)
-# Links the real rom.c against real memory.c/mmu.c/object/value/meta + json,
+# Links the real rom.c against real memory.c/mmu.c/object/value/meta,
 # with stub system/cpu, to exercise interleaving and signature identification.
 
 TEST_NAME := rom
@@ -50,7 +50,6 @@ SRCS := $(CURDIR)/test.c \
         $(EMU_ROOT)/core/memory/memory.c \
         $(EMU_ROOT)/core/memory/mmu.c \
         $(EMU_ROOT)/core/machine_config.c \
-        $(EMU_ROOT)/core/object/json_encode.c \
         $(EMU_ROOT)/core/object/meta.c \
         $(EMU_ROOT)/core/object/object.c \
         $(EMU_ROOT)/core/object/value.c

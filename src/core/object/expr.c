@@ -97,8 +97,10 @@ static value_t parse_unary(lex_t *L, const expr_ctx_t *ctx);
 static value_t parse_postfix(lex_t *L, const expr_ctx_t *ctx);
 static value_t parse_primary(lex_t *L, const expr_ctx_t *ctx);
 static void format_value_default(const value_t *v, char **buf, size_t *len, size_t *cap);
+static void format_value_json_text(const value_t *v, char **buf, size_t *len, size_t *cap);
 static void buf_append(char **buf, size_t *len, size_t *cap, const char *s, size_t n);
 static value_t eval_binding_expr(lex_t *L, const expr_ctx_t *ctx);
+static value_t value_subpath_read(const value_t *base, const char *sub);
 
 // === Numeric promotion helpers ==============================================
 //
@@ -249,10 +251,53 @@ static value_t value_equal(const value_t *a, const value_t *b) {
         free(buf);
         return val_bool(eq);
     }
+    // V_MAP compares against V_STRING by its canonical JSON text (the same
+    // form ${...} interpolation renders), mirroring the V_LIST rule above.
+    if ((a->kind == V_MAP && b->kind == V_STRING) || (a->kind == V_STRING && b->kind == V_MAP)) {
+        const value_t *m = a->kind == V_MAP ? a : b;
+        const value_t *s = a->kind == V_STRING ? a : b;
+        char *buf = NULL;
+        size_t len = 0, cap = 0;
+        format_value_json_text(m, &buf, &len, &cap);
+        bool eq = buf && strcmp(buf, s->s ? s->s : "") == 0;
+        free(buf);
+        return val_bool(eq);
+    }
     return val_bool(same_kind_equal(a, b));
 }
 
 // === Path parsing inside expressions ========================================
+
+// Append one bracket index segment to a path buffer: `[N]` for numeric
+// indices (object-tree indexed children, list positions) or `["key"]`
+// for string indices (map keys, shell v2 map access). Keys containing
+// `"` or `\` are rejected so the segment text stays unambiguous.
+static bool append_index_segment(const value_t *idx, char *buf, size_t buf_size, size_t *pi, char *err_buf,
+                                 size_t err_size) {
+    int n;
+    if (idx->kind == V_STRING) {
+        const char *k = idx->s ? idx->s : "";
+        if (strpbrk(k, "\"\\")) {
+            snprintf(err_buf, err_size, "map key may not contain '\"' or '\\'");
+            return false;
+        }
+        n = snprintf(buf + *pi, buf_size - *pi, "[\"%s\"]", k);
+    } else {
+        bool ok = false;
+        int64_t iv = val_as_i64(idx, &ok);
+        if (!ok) {
+            snprintf(err_buf, err_size, "index must be numeric or a string key");
+            return false;
+        }
+        n = snprintf(buf + *pi, buf_size - *pi, "[%lld]", (long long)iv);
+    }
+    if (n < 0 || (size_t)n >= buf_size - *pi) {
+        snprintf(err_buf, err_size, "path too long");
+        return false;
+    }
+    *pi += (size_t)n;
+    return true;
+}
 //
 // Inside `$(...)` a bare identifier is a path head; further segments
 // follow via `.`/`[...]`. The path is read into a buffer, then handed
@@ -316,7 +361,8 @@ static bool read_path_segments(lex_t *L, const expr_ctx_t *ctx, char *path_buf, 
             }
             pi += (size_t)n;
         } else if (*L->p == '[') {
-            // Index: evaluate inner expression and stringify as integer.
+            // Index: evaluate inner expression; integers address indexed
+            // children / list slots, strings address map keys.
             L->p++;
             value_t idx = parse_expr(L, ctx);
             if (L->err_set) {
@@ -328,25 +374,20 @@ static bool read_path_segments(lex_t *L, const expr_ctx_t *ctx, char *path_buf, 
                 value_free(&idx);
                 return false;
             }
-            bool ok = false;
-            int64_t iv = val_as_i64(&idx, &ok);
-            value_free(&idx);
-            if (!ok) {
-                lex_error(L, "index must be numeric");
-                return false;
-            }
             lex_skip_ws(L);
             if (*L->p != ']') {
+                value_free(&idx);
                 lex_error(L, "expected ']'");
                 return false;
             }
             L->p++;
-            n = snprintf(path_buf + pi, path_size - pi, "[%lld]", (long long)iv);
-            if (n < 0 || (size_t)n >= path_size - pi) {
-                lex_error(L, "path too long");
+            char err[128];
+            bool ok = append_index_segment(&idx, path_buf, path_size, &pi, err, sizeof(err));
+            value_free(&idx);
+            if (!ok) {
+                lex_error(L, "%s", err);
                 return false;
             }
-            pi += (size_t)n;
         } else if (*L->p == '(') {
             L->p++;
             *call_open = true;
@@ -567,25 +608,20 @@ static bool read_sub_segments(lex_t *L, const expr_ctx_t *ctx, char *sub_buf, si
                 value_free(&idx);
                 return false;
             }
-            bool ok = false;
-            int64_t iv = val_as_i64(&idx, &ok);
-            value_free(&idx);
-            if (!ok) {
-                lex_error(L, "index must be numeric");
-                return false;
-            }
             lex_skip_ws(L);
             if (*L->p != ']') {
+                value_free(&idx);
                 lex_error(L, "expected ']'");
                 return false;
             }
             L->p++;
-            int n = snprintf(sub_buf + pi, sub_size - pi, "[%lld]", (long long)iv);
-            if (n < 0 || (size_t)n >= sub_size - pi) {
-                lex_error(L, "path too long");
+            char err[128];
+            bool ok = append_index_segment(&idx, sub_buf, sub_size, &pi, err, sizeof(err));
+            value_free(&idx);
+            if (!ok) {
+                lex_error(L, "%s", err);
                 return false;
             }
-            pi += (size_t)n;
         } else if (*L->p == '(') {
             L->p++;
             *call_open = true;
@@ -595,6 +631,136 @@ static bool read_sub_segments(lex_t *L, const expr_ctx_t *ctx, char *sub_buf, si
         }
     }
     return true;
+}
+
+// === Structured-value path access (V_MAP / V_LIST, shell v2) ================
+
+// Walk continuation-segment text (`.key`, `[N]`, `["key"]` — the textual
+// form the segment lexers build) into a structured value, borrowing all
+// the way down, and return a deep copy of the addressed value. `.key` and
+// `["key"]` resolve map keys; `[N]` resolves list indices (and `.N` is
+// accepted as a list index, mirroring the object tree's `.N` spelling).
+static value_t value_subpath_read(const value_t *base, const char *sub) {
+    const value_t *cur = base;
+    const char *s = sub;
+    while (*s) {
+        if (s[0] == '[' && s[1] == '"') {
+            // ["key"] — map key access.
+            const char *k = s + 2;
+            const char *e = strchr(k, '"');
+            if (!e || e[1] != ']')
+                return val_err("bad map-key segment in '%s'", sub);
+            char key[128];
+            size_t kn = (size_t)(e - k);
+            if (kn >= sizeof(key))
+                return val_err("map key too long");
+            memcpy(key, k, kn);
+            key[kn] = '\0';
+            if (cur->kind != V_MAP)
+                return val_err("cannot index a non-map with [\"%s\"]", key);
+            const value_t *hit = value_map_get(cur, key);
+            if (!hit)
+                return val_err("no key '%s' in map", key);
+            cur = hit;
+            s = e + 2;
+        } else if (s[0] == '[') {
+            char *endp = NULL;
+            long long idx = strtoll(s + 1, &endp, 10);
+            if (!endp || *endp != ']')
+                return val_err("bad index segment in '%s'", sub);
+            if (cur->kind != V_LIST)
+                return val_err("cannot index a %s with [%lld]",
+                               cur->kind == V_MAP ? "map (keys are strings)" : "non-list", idx);
+            if (idx < 0 || (size_t)idx >= cur->list.len)
+                return val_err("index %lld out of range (len %zu)", idx, cur->list.len);
+            cur = &cur->list.items[idx];
+            s = endp + 1;
+        } else if (s[0] == '.') {
+            const char *q = s + 1;
+            char seg[128];
+            size_t sn = 0;
+            while ((isalnum((unsigned char)*q) || *q == '_') && sn + 1 < sizeof(seg))
+                seg[sn++] = *q++;
+            seg[sn] = '\0';
+            if (sn == 0)
+                return val_err("bad segment in '%s'", sub);
+            if (cur->kind == V_LIST) {
+                // `.N` — numeric segment as list index (object-tree spelling).
+                char *endp = NULL;
+                long long idx = strtoll(seg, &endp, 10);
+                if (!endp || *endp != '\0')
+                    return val_err("'%s': list access needs an index", seg);
+                if (idx < 0 || (size_t)idx >= cur->list.len)
+                    return val_err("index %lld out of range (len %zu)", idx, cur->list.len);
+                cur = &cur->list.items[idx];
+            } else if (cur->kind == V_MAP) {
+                const value_t *hit = value_map_get(cur, seg);
+                if (!hit)
+                    return val_err("no key '%s' in map", seg);
+                cur = hit;
+            } else {
+                return val_err("'.%s': value is not a map or list", seg);
+            }
+            s = q;
+        } else {
+            return val_err("bad segment text '%s'", s);
+        }
+    }
+    return value_dup(cur);
+}
+
+value_t expr_object_path_read(struct object *root, const char *path) {
+    if (!root)
+        return val_err("path '%s' has no root", path ? path : "");
+    node_t node = object_resolve(root, path);
+    if (node_valid(node))
+        return node_get(node);
+    // The full path is not a tree node. Resolve the longest prefix that
+    // is, read its value, and descend the remaining segments into that
+    // value — this is what makes `machine.config.vroms[0].card_id` read
+    // through a map/list-shaped attribute result.
+    size_t splits[64];
+    int n_splits = 0;
+    const char *p = path;
+    while (*p && n_splits < (int)(sizeof(splits) / sizeof(splits[0]))) {
+        if (*p == '[') {
+            splits[n_splits++] = (size_t)(p - path);
+            // Skip to the matching ']' (quote-aware for ["key"] segments).
+            p++;
+            bool in_q = false;
+            for (; *p; p++) {
+                if (*p == '"')
+                    in_q = !in_q;
+                else if (*p == ']' && !in_q) {
+                    p++;
+                    break;
+                }
+            }
+            continue;
+        }
+        if (*p == '.')
+            splits[n_splits++] = (size_t)(p - path);
+        p++;
+    }
+    char prefix[512];
+    for (int i = n_splits - 1; i >= 0; i--) {
+        size_t plen = splits[i];
+        if (plen == 0 || plen >= sizeof(prefix))
+            continue;
+        memcpy(prefix, path, plen);
+        prefix[plen] = '\0';
+        node = object_resolve(root, prefix);
+        if (!node_valid(node))
+            continue;
+        VALUE_AUTO base = node_get(node);
+        // Only structured values admit segment descent. An object or
+        // scalar prefix means the tail is a plain typo — keep scanning
+        // shorter prefixes so the error stays "did not resolve".
+        if (base.kind != V_MAP && base.kind != V_LIST)
+            continue;
+        return value_subpath_read(&base, path + plen);
+    }
+    return val_err("path '%s' did not resolve", path);
 }
 
 // `$name` primary: look the binding up via ctx->binding, then apply
@@ -643,45 +809,23 @@ static value_t eval_binding_expr(lex_t *L, const expr_ctx_t *ctx) {
             return val_err("reference path too long");
         if (!ctx->root)
             return val_err("'$%s' has no root to resolve against", ident);
-        node_t node = object_resolve(ctx->root, full);
-        if (!node_valid(node))
-            return val_err("'$%s' → '%s' did not resolve", ident, full);
-        if (call_open)
+        if (call_open) {
+            node_t node = object_resolve(ctx->root, full);
+            if (!node_valid(node))
+                return val_err("'$%s' → '%s' did not resolve", ident, full);
             return call_node_with_args(L, ctx, node);
-        return node_get(node);
+        }
+        // Read path: full node read, or map/list descent through a
+        // structured attribute value (expr_object_path_read fallback).
+        return expr_object_path_read(ctx->root, full);
     }
 
-    if (base.kind == V_LIST && has_sub && !call_open) {
-        // List indexing: `$hits[0]`, `$m[1][2]`. The continuation text
-        // holds only stringified `[N]` segments for lists.
-        const char *s = sub;
-        value_t cur = base; // owned
-        while (*s) {
-            if (*s != '[') {
-                value_free(&cur);
-                return val_err("'$%s': lists support only [index] access", ident);
-            }
-            char *endp = NULL;
-            long long idx = strtoll(s + 1, &endp, 10);
-            if (!endp || *endp != ']') {
-                value_free(&cur);
-                return val_err("'$%s': bad list index", ident);
-            }
-            if (cur.kind != V_LIST) {
-                value_free(&cur);
-                return val_err("'$%s': cannot index into a non-list", ident);
-            }
-            if (idx < 0 || (size_t)idx >= cur.list.len) {
-                size_t n = cur.list.len;
-                value_free(&cur);
-                return val_err("'$%s': index %lld out of range (len %zu)", ident, idx, n);
-            }
-            value_t item = value_dup(&cur.list.items[idx]);
-            value_free(&cur);
-            cur = item;
-            s = endp + 1;
-        }
-        return cur;
+    if ((base.kind == V_LIST || base.kind == V_MAP) && has_sub && !call_open) {
+        // Structured-value access: `$hits[0]`, `$m[1][2]`, `$info.name`,
+        // `$info["name"]` — descend the continuation segments.
+        value_t r = value_subpath_read(&base, sub);
+        value_free(&base);
+        return r;
     }
 
     if (base.kind == V_OBJECT && (has_sub || call_open)) {
@@ -760,12 +904,14 @@ static value_t eval_builtin_len(int argc, const value_t *argv) {
         return val_int((int64_t)(v->s ? strlen(v->s) : 0));
     case V_LIST:
         return val_int((int64_t)v->list.len);
+    case V_MAP:
+        return val_int((int64_t)v->map.len);
     case V_BYTES:
         return val_int((int64_t)v->bytes.n);
     case V_RANGE:
         return val_int(v->range.stop > v->range.start ? v->range.stop - v->range.start : 0);
     default:
-        return val_err("len: takes a string, list, bytes, or range");
+        return val_err("len: takes a string, list, map, bytes, or range");
     }
 }
 
@@ -975,11 +1121,36 @@ static value_t parse_primary(lex_t *L, const expr_ctx_t *ctx) {
                     return r;
                 }
                 free_call_args(argv, argc, named, named_n);
+                return val_err("path '%s' did not resolve", path_buf);
             }
-            return val_err("path '%s' did not resolve", path_buf);
+            // Not a tree node: try a map/list read through a structured
+            // attribute value (machine.config.vroms[0].card_id).
+            return expr_object_path_read(ctx->root, path_buf);
         }
-        if (call_open)
-            return call_node_with_args(L, ctx, node);
+        if (call_open) {
+            value_t r = call_node_with_args(L, ctx, node);
+            // Trailing `.key` / `[...]` segments on a call result descend
+            // into the returned map/list:
+            //   machine.profile("se30").capabilities.mmu.kind
+            if (!val_is_error(&r) && (r.kind == V_MAP || r.kind == V_LIST) && (*L->p == '.' || *L->p == '[')) {
+                char sub[256];
+                bool sub_call = false;
+                if (!read_sub_segments(L, ctx, sub, sizeof(sub), &sub_call)) {
+                    value_free(&r);
+                    return val_err("bad path after call result");
+                }
+                if (sub_call) {
+                    value_free(&r);
+                    return val_err("cannot call a method on a call result");
+                }
+                if (sub[0]) {
+                    value_t d = value_subpath_read(&r, sub);
+                    value_free(&r);
+                    return d;
+                }
+            }
+            return r;
+        }
         return node_get(node);
     }
 
@@ -1834,6 +2005,127 @@ static void format_value_default(const value_t *v, char **buf, size_t *len, size
             format_value_default(&v->list.items[i], buf, len, cap);
         }
         buf_append(buf, len, cap, "]", 1);
+        return;
+    case V_MAP:
+        // Maps interpolate as canonical compact JSON so `${machine.profile(m)}`
+        // stays machine-parseable text (schema probes pipe it to JSON parsers).
+        format_value_json_text(v, buf, len, cap);
+        return;
+    }
+    if (n > 0)
+        buf_append(buf, len, cap, tmp, (size_t)n);
+}
+
+// Append `s` as a JSON string literal (quotes + RFC 8259 escapes) to the
+// growable buffer. Serialization twin of api.c's buf_append_jstring.
+static void buf_append_json_string(char **buf, size_t *len, size_t *cap, const char *s) {
+    buf_append(buf, len, cap, "\"", 1);
+    for (const char *p = s ? s : ""; *p; p++) {
+        unsigned char c = (unsigned char)*p;
+        char esc[8];
+        switch (c) {
+        case '"':
+            buf_append(buf, len, cap, "\\\"", 2);
+            break;
+        case '\\':
+            buf_append(buf, len, cap, "\\\\", 2);
+            break;
+        case '\n':
+            buf_append(buf, len, cap, "\\n", 2);
+            break;
+        case '\r':
+            buf_append(buf, len, cap, "\\r", 2);
+            break;
+        case '\t':
+            buf_append(buf, len, cap, "\\t", 2);
+            break;
+        default:
+            if (c < 0x20) {
+                int k = snprintf(esc, sizeof(esc), "\\u%04x", c);
+                buf_append(buf, len, cap, esc, (size_t)k);
+            } else {
+                buf_append(buf, len, cap, (const char *)&c, 1);
+            }
+        }
+    }
+    buf_append(buf, len, cap, "\"", 1);
+}
+
+// Render a value subtree as strict compact JSON (the map interpolation
+// form). Follows the same per-kind rules as the gsEval bridge's
+// format_value_json so `${map}` text and the bridge agree byte-for-byte.
+static void format_value_json_text(const value_t *v, char **buf, size_t *len, size_t *cap) {
+    char tmp[64];
+    int n = 0;
+    switch (v->kind) {
+    case V_NONE:
+        buf_append(buf, len, cap, "null", 4);
+        return;
+    case V_BOOL:
+        buf_append(buf, len, cap, v->b ? "true" : "false", v->b ? 4 : 5);
+        return;
+    case V_INT:
+        n = snprintf(tmp, sizeof(tmp), "%lld", (long long)v->i);
+        break;
+    case V_UINT:
+        if (v->flags & VAL_HEX)
+            n = snprintf(tmp, sizeof(tmp), "\"0x%llx\"", (unsigned long long)v->u);
+        else
+            n = snprintf(tmp, sizeof(tmp), "%llu", (unsigned long long)v->u);
+        break;
+    case V_FLOAT:
+        n = snprintf(tmp, sizeof(tmp), "%g", v->f);
+        break;
+    case V_STRING:
+        buf_append_json_string(buf, len, cap, v->s);
+        return;
+    case V_BYTES:
+        buf_append(buf, len, cap, "\"0x", 3);
+        for (size_t i = 0; i < v->bytes.n; i++) {
+            int k = snprintf(tmp, sizeof(tmp), "%02x", v->bytes.p[i]);
+            buf_append(buf, len, cap, tmp, (size_t)k);
+        }
+        buf_append(buf, len, cap, "\"", 1);
+        return;
+    case V_ENUM:
+        if (v->enm.table && (size_t)v->enm.idx < v->enm.n_table && v->enm.table[v->enm.idx])
+            buf_append_json_string(buf, len, cap, v->enm.table[v->enm.idx]);
+        else
+            n = snprintf(tmp, sizeof(tmp), "%d", v->enm.idx);
+        break;
+    case V_LIST:
+        buf_append(buf, len, cap, "[", 1);
+        for (size_t i = 0; i < v->list.len; i++) {
+            if (i)
+                buf_append(buf, len, cap, ",", 1);
+            format_value_json_text(&v->list.items[i], buf, len, cap);
+        }
+        buf_append(buf, len, cap, "]", 1);
+        return;
+    case V_MAP:
+        buf_append(buf, len, cap, "{", 1);
+        for (size_t i = 0; i < v->map.len; i++) {
+            if (i)
+                buf_append(buf, len, cap, ",", 1);
+            buf_append_json_string(buf, len, cap, v->map.entries[i].key);
+            buf_append(buf, len, cap, ":", 1);
+            format_value_json_text(&v->map.entries[i].val, buf, len, cap);
+        }
+        buf_append(buf, len, cap, "}", 1);
+        return;
+    case V_OBJECT:
+    case V_ERROR:
+    case V_REF:
+    case V_RANGE:
+        // Non-data kinds inside a map: fall back to the display form,
+        // quoted so the surrounding document stays valid JSON.
+        {
+            char *inner = NULL;
+            size_t ilen = 0, icap = 0;
+            format_value_default(v, &inner, &ilen, &icap);
+            buf_append_json_string(buf, len, cap, inner ? inner : "");
+            free(inner);
+        }
         return;
     }
     if (n > 0)

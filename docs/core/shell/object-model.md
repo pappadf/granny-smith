@@ -54,17 +54,28 @@ the same errors. There is no shadow API.
 
 Every value crossing an object-model boundary is a `value_t` — a tagged
 union with a discriminator (`V_NONE` / `V_BOOL` / `V_INT` / `V_UINT` /
-`V_FLOAT` / `V_STRING` / `V_BYTES` / `V_ENUM` / `V_LIST` / `V_OBJECT` /
-`V_ERROR`), a width hint for fixed-size integers, and display flags
-(`VAL_HEX`, `VAL_RO`, `VAL_VOLATILE`, `VAL_SENSITIVE`, …). Errors are
+`V_FLOAT` / `V_STRING` / `V_BYTES` / `V_ENUM` / `V_LIST` / `V_MAP` /
+`V_OBJECT` / `V_ERROR`), a width hint for fixed-size integers, and display
+flags (`VAL_HEX`, `VAL_RO`, `VAL_VOLATILE`, `VAL_SENSITIVE`, …). Errors are
 in-band: a `value_t` of kind `V_ERROR` carries a string message rather
 than relying on a separate return channel or out-pointer.
 
 Ownership is single-owner: the receiver of a `value_t` owns it and
 must call `value_free` (which is safe on every kind, including the
 inline ones). Heap-owning kinds (`V_STRING`, `V_BYTES`, `V_ERROR`,
-`V_LIST` recursively) `strdup` their inputs at construction time, so
-there is no borrowed-string path to confuse callers.
+`V_LIST` and `V_MAP` recursively) `strdup` their inputs at construction
+time, so there is no borrowed-string path to confuse callers.
+
+`V_MAP` is the keyed sibling of `V_LIST`: an insertion-ordered sequence
+of unique `{key → value}` entries with heap-owned keys and recursively
+owned values. Map-shaped method results (`machine.profile`,
+`machine.rom.identify`, `debug.frame`, `meta.method_info`, …) return it
+directly; the gsEval bridge serialises it as a JSON object exactly once
+(the browser receives a native object, never a JSON string to re-parse).
+Methods build maps with the `val_map_new` / `val_map_put` /
+`val_map_finish` builder and read them with `value_map_get`. In `${…}`
+interpolation a map renders as compact canonical JSON, so
+`echo "${machine.profile("se30")}"` emits machine-parseable text.
 
 Display flags follow the value: an attribute declared with `VAL_HEX`
 emits values that the JSON encoder serialises as `"0x12345678"`; the
@@ -150,8 +161,24 @@ splices its formatted value. Inside expression mode, a bare path is a
 `node_get` (or, with a trailing call-form argument list, `node_call`);
 `$name` reads a binding; literals and operators work the way they do
 in C. Truthiness is per kind (shell v2 §3.6): numbers ≠ 0, non-empty
-strings/lists/bytes, `none` never, and errors are not truth values —
+strings/lists/bytes/maps, `none` never, and errors are not truth values —
 an error reaching a condition aborts.
+
+Paths keep resolving *into* structured values (`V_MAP` / `V_LIST`):
+when a path prefix names a node whose value is a map or list, the
+remaining segments index into that value — dotted `map.key`, bracket
+`map["key"]` (any string expression), and numeric `list[N]`. The same
+segments work after a call form and through bindings:
+
+    machine.config.vroms[0].card_id            # list → map → value
+    machine.profile("se30").capabilities.mmu.kind
+    let info = machine.rom.identify("boot.rom")
+    echo "${$info.checksum} ${$info["name"]}"
+    for k in machine.profile("se30").capabilities { echo "$k" }   # keys
+
+`for … in` over a map iterates its keys (fetch values with `map[$k]`);
+`len(map)` counts entries. Maps are read-only through this surface —
+there is no `map.key = …` write path.
 
 `$name` is the unified binding surface (shell v2 §3.4/§3.5): scoped
 `let` bindings first, then the alias table, whose entries behave as

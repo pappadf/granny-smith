@@ -23,22 +23,22 @@ vi.mock('@/bus/emulator', async (importOriginal) => {
         // matches 'se30'. Tests that need finer control swap in a
         // different fixture via the StubOpfs path list.
         if (/Plus/i.test(p)) {
-          return JSON.stringify({
+          return {
             recognised: true,
             checksum: `cs-${p}`,
             name: 'Macintosh Plus ROM',
             compatible: ['plus'],
             size: 128 * 1024,
-          });
+          };
         }
         if (/SE30|SE_30|SE\/30/i.test(p)) {
-          return JSON.stringify({
+          return {
             recognised: true,
             checksum: `cs-${p}`,
             name: 'Macintosh SE/30 ROM',
             compatible: ['se30'],
             size: 256 * 1024,
-          });
+          };
         }
         return null;
       }
@@ -61,7 +61,7 @@ vi.mock('@/bus/emulator', async (importOriginal) => {
             floppy_slots: [{ label: 'Internal Floppy', kind: 'hd' }],
           },
         };
-        return JSON.stringify(byId[id] ?? { name: id });
+        return byId[id] ?? { name: id };
       }
       return null;
     },

@@ -14,7 +14,6 @@
 #include "rom.h"
 
 #include "cpu.h"
-#include "json_encode.h"
 #include "machine_config.h"
 #include "machine_profile.h"
 #include "memory.h"
@@ -486,7 +485,7 @@ static value_t rom_method_load_lisa(struct object *self, const member_t *m, int 
     return val_bool(true);
 }
 
-// rom.identify(path) → JSON-encoded info map describing the ROM file:
+// rom.identify(path) → typed info map describing the ROM file:
 //   { recognised, compatible, checksum, name, size }
 // recognised==false implies compatible==[], name=="" but the checksum and
 // size are still populated from the file.  Content facts only — canonical
@@ -501,31 +500,23 @@ static value_t rom_method_identify(struct object *self, const member_t *m, int a
     if (rom_probe_file(argv[0].s, &fi) != 0)
         return val_err("rom.identify: cannot read '%s'", argv[0].s);
 
-    json_builder_t *b = json_builder_new();
-    if (!b)
-        return val_err("rom.identify: out of memory");
-
-    json_open_obj(b);
-    json_key(b, "recognised");
-    json_bool(b, fi.info != NULL);
-    json_key(b, "compatible");
-    json_open_arr(b);
+    value_map_builder_t *b = val_map_new();
+    val_map_put(b, "recognised", val_bool(fi.info != NULL));
+    value_t *compat = NULL;
+    size_t n_compat = 0, cap_compat = 0;
     if (fi.info && fi.info->compatible) {
         for (const char *const *p = fi.info->compatible; *p; p++)
-            json_str(b, *p);
+            val_list_push(&compat, &n_compat, &cap_compat, val_str(*p));
     }
-    json_close_arr(b);
+    val_map_put(b, "compatible", val_list(compat, n_compat));
+    // Checksum keeps its historical 8-uppercase-hex text form — web2
+    // stores ROMs under this exact string.
     char hex[16];
     snprintf(hex, sizeof(hex), "%08X", fi.checksum);
-    json_key(b, "checksum");
-    json_str(b, hex);
-    json_key(b, "name");
-    json_str(b, fi.info ? fi.info->family_name : "");
-    json_key(b, "size");
-    json_int(b, (int64_t)fi.size);
-    json_close_obj(b);
-
-    return json_finish(b);
+    val_map_put(b, "checksum", val_str(hex));
+    val_map_put(b, "name", val_str(fi.info ? fi.info->family_name : ""));
+    val_map_put(b, "size", val_int((int64_t)fi.size));
+    return val_map_finish(b);
 }
 
 static const arg_decl_t rom_path_arg[] = {
@@ -573,8 +564,8 @@ static const member_t rom_members[] = {
      .method = {.args = rom_lisa_pair_args, .nargs = 2, .result = V_BOOL, .fn = rom_method_load_lisa}},
     {.kind = M_METHOD,
      .name = "identify",
-     .doc = "Return a JSON-encoded info map for a ROM file (compatible/checksum/name/size/recognised)",
-     .method = {.args = rom_path_arg, .nargs = 1, .result = V_STRING, .fn = rom_method_identify}},
+     .doc = "Return a typed info map for a ROM file (compatible/checksum/name/size/recognised)",
+     .method = {.args = rom_path_arg, .nargs = 1, .result = V_MAP, .fn = rom_method_identify}},
 };
 
 const class_desc_t rom_class = {

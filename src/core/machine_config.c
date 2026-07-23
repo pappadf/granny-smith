@@ -7,11 +7,11 @@
 
 #include "machine_config.h"
 
-#include "json_encode.h"
 #include "object.h"
 #include "value.h"
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 // Process-global record — one live machine at a time, like the machine
@@ -116,32 +116,29 @@ static value_t cfg_attr_valid(struct object *self, const member_t *m) {
     return val_bool(s_record.valid);
 }
 
-// `machine.config.vroms` — JSON array of the resolved declaration-ROM
-// picks: [{card_id, path, crc, explicit}, ...] in load order.
+// `machine.config.vroms` — list of the resolved declaration-ROM picks:
+// [{card_id, path, crc, explicit}, ...] maps in load order.
 static value_t cfg_attr_vroms(struct object *self, const member_t *m) {
     (void)self;
     (void)m;
-    json_builder_t *b = json_builder_new();
-    if (!b)
-        return val_err("machine.config.vroms: out of memory");
-    json_open_arr(b);
+    value_t *items = NULL;
+    if (s_record.n_vroms > 0) {
+        items = (value_t *)calloc((size_t)s_record.n_vroms, sizeof(value_t));
+        if (!items)
+            return val_err("machine.config.vroms: out of memory");
+    }
     for (int i = 0; i < s_record.n_vroms; i++) {
         const machine_config_vrom_t *e = &s_record.vroms[i];
-        json_open_obj(b);
-        json_key(b, "card_id");
-        json_str(b, e->card_id);
-        json_key(b, "path");
-        json_str(b, e->path);
-        json_key(b, "crc");
+        value_map_builder_t *b = val_map_new();
+        val_map_put(b, "card_id", val_str(e->card_id));
+        val_map_put(b, "path", val_str(e->path));
         char hex[16];
         snprintf(hex, sizeof(hex), "0x%08x", e->crc);
-        json_str(b, hex);
-        json_key(b, "explicit");
-        json_bool(b, e->explicit_pick);
-        json_close_obj(b);
+        val_map_put(b, "crc", val_str(hex));
+        val_map_put(b, "explicit", val_bool(e->explicit_pick));
+        items[i] = val_map_finish(b);
     }
-    json_close_arr(b);
-    return json_finish(b);
+    return val_list(items, (size_t)s_record.n_vroms);
 }
 
 static const member_t config_members[] = {
@@ -182,9 +179,9 @@ static const member_t config_members[] = {
      .attr = {.type = V_STRING, .get = cfg_attr_vrom, .set = NULL}       },
     {.kind = M_ATTR,
      .name = "vroms",
-     .doc = "JSON array of resolved declaration-ROM picks per card",
+     .doc = "Resolved declaration-ROM picks per card: [{card_id, path, crc, explicit}]",
      .flags = VAL_RO,
-     .attr = {.type = V_STRING, .get = cfg_attr_vroms, .set = NULL}      },
+     .attr = {.type = V_LIST, .get = cfg_attr_vroms, .set = NULL}        },
     {.kind = M_ATTR,
      .name = "video_card",
      .doc = "Wildcard-socket card id from the boot document",
