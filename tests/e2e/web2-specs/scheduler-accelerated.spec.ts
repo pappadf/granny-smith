@@ -53,7 +53,7 @@ async function probeCounters(
     const key = `rate${++probeSeq}`;
     await terminalRun(
       page,
-      `echo ${key}=\${scheduler.cycles},\${machine.cpu.instr_count}`,
+      `echo "${key}=\${scheduler.cycles},\${machine.cpu.instr_count}"`,
     );
     await page.waitForTimeout(400);
     const text = await page.locator('.xterm-rows').innerText();
@@ -70,7 +70,7 @@ async function probeCounters(
 async function probeString(page: Page, expr: string): Promise<string> {
   for (let attempt = 0; attempt < 30; attempt++) {
     const key = `str${++probeSeq}`;
-    await terminalRun(page, `echo ${key}=[${'$'}{${expr}}]`);
+    await terminalRun(page, `echo "${key}=[${'$'}{${expr}}]"`);
     await page.waitForTimeout(400);
     const text = await page.locator('.xterm-rows').innerText();
     const m = text.match(new RegExp(`${key}=\\[([A-Za-z0-9_.-]+)\\]`));

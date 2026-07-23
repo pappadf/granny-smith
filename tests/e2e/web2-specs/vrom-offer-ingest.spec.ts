@@ -83,7 +83,7 @@ async function terminalRun(page: Page, line: string): Promise<void> {
 let probeSeq = 0;
 async function terminalEval(page: Page, expr: string): Promise<string | null> {
   const key = `voi${++probeSeq}`;
-  await terminalRun(page, `echo ${key}=\${${expr}}`);
+  await terminalRun(page, `echo "${key}=\${${expr}}"`);
   for (let i = 0; i < 25; i++) {
     await page.waitForTimeout(400);
     const text = await page.locator(".xterm-rows").innerText();
