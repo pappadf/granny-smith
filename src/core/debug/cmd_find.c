@@ -8,7 +8,6 @@
 // scan, defaulting to the whole address space (g_address_mask).
 
 #include "addr_format.h"
-#include "cmd_types.h"
 #include "debug.h"
 #include "memory.h"
 #include "object.h"

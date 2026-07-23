@@ -8,9 +8,6 @@
 
 #include "alias.h"
 #include "cmd_complete.h"
-#include "cmd_io.h"
-#include "cmd_parse.h"
-#include "cmd_types.h"
 #include "debug.h"
 #include "expr.h"
 #include "log.h"
@@ -43,130 +40,20 @@
 // read the flag from another thread.
 static volatile int32_t shell_initialized = 0;
 
-/* --- tokenizer ----------------------------------------------------------- */
-#define MAXTOK 32
-
-// In-place tokenizer exposed via shell.h as `shell_tokenize` so the
-// typed object-model bridge can split free-form spec strings (e.g.
-// logpoint specs, log argv) without routing through `shell_dispatch`.
-// `line` is mutated in place; returned argv pointers point inside it.
-// The _q variant additionally records, per token, whether the token
-// *started* with a quote character — the named-argument escape hatch
-// (a quoted token is always a plain string, never `name=value`).
-static int tokenize_q(char *line, char *argv[], unsigned char quoted[], int max) {
-    // Tokenizer with support for: \-escapes, ASCII and UTF-8 curly
-    // quotes, and ' / " quoted strings. `${...}` substitution has
-    // already been resolved by shell_var_expand before tokenisation,
-    // so the tokenizer only sees the post-expansion source — except
-    // inside single-quoted regions, where `${...}` survives verbatim
-    // (the deferred-eval opt-out used by logpoint messages).
-    int argc = 0;
-    int esc = 0;
-    enum { Q_NONE = 0, Q_DQUOTE, Q_SQUOTE, Q_CURLY } qstate = Q_NONE;
-
-    char *p = line;
-    while (*p) {
-        while (*p && isspace((unsigned char)*p))
-            p++;
-        if (!*p)
-            break;
-        if (argc == max)
-            return -1;
-
-        // Record whether this token opens with a quote (", ', or a UTF-8
-        // curly quote) before the quote characters are stripped in place.
-        if (quoted) {
-            bool q = (*p == '"' || *p == '\'' ||
-                      ((unsigned char)p[0] == 0xE2 && (unsigned char)p[1] == 0x80 && (unsigned char)p[2] == 0x9C));
-            quoted[argc] = q ? 1 : 0;
-        }
-
-        argv[argc++] = p;
-        char *dst = p;
-
-        for (;;) {
-            unsigned char c = (unsigned char)*p;
-            if (c == '\0') {
-                *dst = '\0';
-                break;
-            }
-
-            if (esc) {
-                *dst++ = *p++;
-                esc = 0;
-                continue;
-            }
-
-            // UTF-8 curly quotes (E2 80 9C/9D)
-            if ((unsigned char)p[0] == 0xE2 && (unsigned char)p[1] == 0x80 &&
-                ((unsigned char)p[2] == 0x9C || (unsigned char)p[2] == 0x9D)) {
-                if (qstate == Q_NONE)
-                    qstate = Q_CURLY;
-                else if (qstate == Q_CURLY)
-                    qstate = Q_NONE;
-                else {
-                    *dst++ = *p++;
-                    continue;
-                }
-                p += 3;
-                continue;
-            }
-
-            if (*p == '\\') {
-                esc = 1;
-                p++;
-                continue;
-            }
-
-            if (*p == '"') {
-                if (qstate == Q_NONE)
-                    qstate = Q_DQUOTE;
-                else if (qstate == Q_DQUOTE)
-                    qstate = Q_NONE;
-                else
-                    *dst++ = *p;
-                p++;
-                continue;
-            }
-
-            if (*p == '\'') {
-                if (qstate == Q_NONE)
-                    qstate = Q_SQUOTE;
-                else if (qstate == Q_SQUOTE)
-                    qstate = Q_NONE;
-                else
-                    *dst++ = *p;
-                p++;
-                continue;
-            }
-
-            if (qstate == Q_NONE && isspace((unsigned char)*p)) {
-                *dst = '\0';
-                p++;
-                break;
-            }
-
-            *dst++ = *p++;
-        }
-    }
-    return argc;
-}
-
-int tokenize(char *line, char *argv[], int max) {
-    return tokenize_q(line, argv, NULL, max);
-}
-
 // Run a free-form line through the v2 script interpreter (REPL
 // semantics). Used by the Shell class's `run` method.
-void shell_internal_dispatch_command(char *line, struct cmd_result *res) {
-    memset(res, 0, sizeof(*res));
-    res->type = RES_OK;
+bool shell_internal_dispatch_command(char *line, char *err_buf, size_t err_size) {
     if (!shell_initialized) {
-        cmd_err(res, "shell not initialized");
-        return;
+        if (err_buf && err_size)
+            snprintf(err_buf, err_size, "shell not initialized");
+        return false;
     }
-    if (script_run_line(line) != 0)
-        cmd_err(res, "command failed");
+    if (script_run_line(line) != 0) {
+        if (err_buf && err_size)
+            snprintf(err_buf, err_size, "command failed");
+        return false;
+    }
+    return true;
 }
 
 // === Value printing (the REPL formatting surface, §5) ======================

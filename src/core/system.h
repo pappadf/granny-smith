@@ -200,12 +200,12 @@ int system_probe_floppy(const char *path);
 // platform tick to push drive-present changes to the UI.
 bool system_fd_present(int drive);
 
-// argv-driven entry points for the legacy `fd` / `hd` shell commands.
-// Used by the typed object-model bridge (fd_insert, hd_create, hd_attach
-// wrappers) to bypass shell_dispatch / find_cmd registry lookup.
-int shell_fd_argv(int argc, char **argv);
-int shell_hd_argv(int argc, char **argv);
-int shell_image_argv(int argc, char **argv);
+// Typed object-model entry points for disk operations. The typed
+// methods (floppy.drives[N].insert, scsi.attach_hd, storage.hd_create)
+// call these directly. Each returns 0 on success, negative on error.
+int system_fd_insert(const char *path, int drive, bool writable);
+int system_hd_attach(const char *path, int scsi_id);
+int system_hd_create(const char *path, const char *size_str);
 
 // Pending RAM override for next system_create() call (KB, 0 = use default)
 void system_set_pending_ram_kb(uint32_t kb);

@@ -31,10 +31,8 @@ struct class_desc;
 
 // === Method argument declaration =============================================
 
-// Note: prefixed `OBJ_ARG_*` to avoid collision with the legacy
-// shell's `ARG_OPTIONAL` / `ARG_REST` macros defined in cmd_types.h
-// (different values, different namespace). Translation units that
-// include both headers must keep these distinct.
+// Prefixed `OBJ_ARG_*` for a clear namespace on the typed object-model
+// argument declarations.
 #define OBJ_ARG_OPTIONAL    0x0001u // trailing optional argument
 #define OBJ_ARG_REST        0x0002u // slurp all remaining arguments into a V_LIST
 #define OBJ_ARG_NONEMPTY    0x0004u // V_STRING value must be non-NULL and non-empty

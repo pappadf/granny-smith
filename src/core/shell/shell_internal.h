@@ -10,7 +10,9 @@
 #ifndef GS_SHELL_INTERNAL_H
 #define GS_SHELL_INTERNAL_H
 
-#include "cmd_types.h"
+#include <stdbool.h>
+#include <stddef.h>
+
 #include "value.h"
 
 #ifdef __cplusplus
@@ -19,8 +21,9 @@ extern "C" {
 
 // Run a free-form shell line through the v2 script interpreter with
 // REPL semantics. Used by the Shell class's `run` method; not
-// otherwise reachable. `res` is filled with the dispatch outcome.
-void shell_internal_dispatch_command(char *line, struct cmd_result *res);
+// otherwise reachable. Returns true on success; on failure returns
+// false and writes a brief reason into `err_buf` (if non-NULL).
+bool shell_internal_dispatch_command(char *line, char *err_buf, size_t err_size);
 
 // The REPL value formatter (§5): scalars, object attribute tables, and
 // object-list tables. Used by the script interpreter for interactive

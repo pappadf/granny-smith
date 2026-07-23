@@ -1052,10 +1052,7 @@ int main(int argc, char *argv[]) {
     for (int i = 0; i < 2; i++) {
         if (!fd_explicit[i])
             continue;
-        char drive_str[8];
-        snprintf(drive_str, sizeof(drive_str), "%d", i);
-        char *fake_argv[] = {"fd", "insert", (char *)fd_explicit[i], drive_str, "true"};
-        int rc = shell_fd_argv(5, fake_argv);
+        int rc = system_fd_insert(fd_explicit[i], i, true);
         if (rc == 0) {
             if (!quiet)
                 printf("Inserted FD[%d]: %s\n", i, fd_explicit[i]);
@@ -1065,9 +1062,9 @@ int main(int argc, char *argv[]) {
     }
 
     // Insert sequential fd= floppy images into first available drives
+    // (writable by default, matching the legacy `fd insert` default).
     for (int i = 0; i < fd_count; i++) {
-        char *fake_argv[] = {"fd", "insert", (char *)fd_files[i]};
-        int rc = shell_fd_argv(3, fake_argv);
+        int rc = system_fd_insert(fd_files[i], -1, true);
         if (rc == 0) {
             if (!quiet)
                 printf("Inserted FD[%d]: %s\n", i, fd_files[i]);

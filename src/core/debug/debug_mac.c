@@ -6,7 +6,6 @@
 
 #include "debug_mac.h"
 
-#include "cmd_types.h"
 #include "cpu.h"
 #include "memory.h"
 #include "mmu.h"

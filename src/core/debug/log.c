@@ -139,96 +139,94 @@ static int parse_onoff(const char *v, int *out) {
     return -1;
 }
 
-uint64_t cmd_log(int argc, char *argv[]) {
-    // Unified usage:
-    //   log                              -> list all categories
-    //   log <cat>                        -> show config for category
-    //   log <cat> [<level>|level=N] [stdout=on|off] [file=<path>|file=off] [ts=on|off] [pc=on|off]
+// Apply one whitespace-delimited config token to category `c`: a bare
+// non-negative integer sets the level; `key=val` sets stdout / file /
+// ts / pc / level. `tok` is a NUL-terminated copy the caller owns.
+static void apply_log_token(struct log_category *c, char *tok) {
+    char *eq = strchr(tok, '=');
+    if (!eq) {
+        char *end = NULL;
+        long lvl = strtol(tok, &end, 10);
+        if (end && *end == '\0' && lvl >= 0)
+            c->level = (int)lvl;
+        else
+            printf("log: unrecognized option '%s'\n", tok);
+        return;
+    }
+    *eq = '\0';
+    const char *key = tok;
+    const char *val = eq + 1;
+    if (strcasecmp(key, "level") == 0) {
+        char *end = NULL;
+        long lvl = strtol(val, &end, 10);
+        if (!(end && *end == '\0') || lvl < 0)
+            puts("log: invalid level");
+        else
+            c->level = (int)lvl;
+    } else if (strcasecmp(key, "stdout") == 0) {
+        int b;
+        if (parse_onoff(val, &b) == 0)
+            c->to_stdout = b;
+        else
+            puts("log: stdout expects on/off");
+    } else if (strcasecmp(key, "file") == 0) {
+        (void)set_category_file(c, val); // set_category_file prints on failure
+    } else if (strcasecmp(key, "ts") == 0 || strcasecmp(key, "timestamp") == 0) {
+        int b;
+        if (parse_onoff(val, &b) == 0)
+            c->timestamp = b;
+        else
+            puts("log: ts expects on/off");
+    } else if (strcasecmp(key, "pc") == 0) {
+        int b;
+        if (parse_onoff(val, &b) == 0)
+            c->show_pc = b;
+        else
+            puts("log: pc expects on/off");
+    } else {
+        printf("log: unknown key '%s'", key);
+    }
+}
 
-    if (argc == 1) {
-        for (struct log_category *c = s_registry_head; c; c = c->next) {
+// `debug.log(category, spec)` core. `category` names the log category
+// (created on demand); `spec` is NULL/empty to just print the current
+// config, or a whitespace-delimited option string
+// (`"5"`, `"level=5 file=tmp/x.log stdout=off ts=on"`). Returns 0.
+int log_configure(const char *category, const char *spec) {
+    if (!category || !*category) {
+        for (struct log_category *c = s_registry_head; c; c = c->next)
             print_category_config(c);
-        }
         return 0;
     }
-
-    const char *cat_name = argv[1];
-    struct log_category *c = find_category(cat_name);
-
-    if (argc == 2) {
+    struct log_category *c = find_category(category);
+    if (!spec || !*spec) {
         if (!c) {
-            printf("unknown category \"%s\"\n", cat_name);
+            printf("unknown category \"%s\"\n", category);
             return 0;
         }
         print_category_config(c);
         return 0;
     }
-
-    // If setting options and category doesn't exist yet, create it to allow pre-config
+    // Setting options: create the category on demand for pre-config.
     if (!c) {
-        c = create_category(cat_name);
+        c = create_category(category);
         if (!c) {
             puts("log: out of memory");
-            return 0;
+            return -1;
         }
         c->next = s_registry_head;
         s_registry_head = c;
     }
-
-    for (int i = 2; i < argc; ++i) {
-        char *arg = argv[i];
-        char *eq = strchr(arg, '=');
-        if (!eq) {
-            // bare integer means level
-            char *end = NULL;
-            long lvl = strtol(arg, &end, 10);
-            if (end && *end == '\0' && lvl >= 0) {
-                c->level = (int)lvl;
-                continue;
-            }
-            printf("log: unrecognized option '%s'\n", arg);
-            continue;
-        }
-
-        *eq = '\0';
-        const char *key = arg;
-        const char *val = eq + 1;
-
-        if (strcasecmp(key, "level") == 0) {
-            char *end = NULL;
-            long lvl = strtol(val, &end, 10);
-            if (!(end && *end == '\0') || lvl < 0) {
-                puts("log: invalid level");
-            } else
-                c->level = (int)lvl;
-        } else if (strcasecmp(key, "stdout") == 0) {
-            int b;
-            if (parse_onoff(val, &b) == 0)
-                c->to_stdout = b;
-            else
-                puts("log: stdout expects on/off");
-        } else if (strcasecmp(key, "file") == 0) {
-            // error already printed by set_category_file on failure
-            (void)set_category_file(c, val);
-        } else if (strcasecmp(key, "ts") == 0 || strcasecmp(key, "timestamp") == 0) {
-            int b;
-            if (parse_onoff(val, &b) == 0)
-                c->timestamp = b;
-            else
-                puts("log: ts expects on/off");
-        } else if (strcasecmp(key, "pc") == 0) {
-            int b;
-            if (parse_onoff(val, &b) == 0)
-                c->show_pc = b;
-            else
-                puts("log: pc expects on/off");
-        } else {
-            printf("log: unknown key '%s'\n", key);
-        }
-
-        *eq = '='; // restore original string (not strictly needed)
+    // Split `spec` on whitespace into tokens and apply each.
+    char *copy = strdup(spec);
+    if (!copy) {
+        puts("log: out of memory");
+        return -1;
     }
-
+    char *save = NULL;
+    for (char *tok = strtok_r(copy, " \t", &save); tok; tok = strtok_r(NULL, " \t", &save))
+        apply_log_token(c, tok);
+    free(copy);
     print_category_config(c);
     return 0;
 }

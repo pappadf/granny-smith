@@ -111,18 +111,6 @@ int delete_all_breakpoints(debug_t *debug);
 void list_logpoints(debug_t *debug);
 int delete_all_logpoints(debug_t *debug);
 
-// argv-driven entry point for the rich-parser `examine` command. The
-// former `logpoint` / `find` spec-string entry points are gone (shell
-// v2 §6.2): debug.logpoints.add takes typed named arguments and the
-// find.* methods scan natively, returning V_LIST results.
-int shell_examine_argv(int argc, char **argv);
-
-// Truthiness check used by typed `assert` root method. Strings like
-// "false", "0", or formatted-error tails are falsy; everything else
-// (including the empty/whitespace-only result of an unknown enum) is
-// truthy.
-bool predicate_is_truthy(const char *s);
-
 // Framebuffer utilities — used by typed `screen.*` wrappers and the
 // legacy `screenshot` command.  Each takes a const display_t * so the
 // helper can read `bits`, `width`, `height`, `stride`, `format`, and (in

@@ -21,7 +21,6 @@
 
 #include "alias.h"
 #include "cmd_complete.h"
-#include "cmd_types.h"
 #include "expr.h"
 #include "object.h"
 #include "scheduler.h"
@@ -155,9 +154,9 @@ static value_t shell_method_run(struct object *self, const member_t *m, int argc
     if (argc < 1 || argv[0].kind != V_STRING || !argv[0].s)
         return val_err("shell.run: expected (line)");
 
-    // dispatch_command mutates the line buffer (tokenizer is in-place),
-    // so hand it a writable copy. Strip trailing CR/LF the way em_main.c
-    // used to before this method existed.
+    // The interpreter mutates its line buffer, so hand it a writable
+    // copy. Strip trailing CR/LF the way em_main.c used to before this
+    // method existed.
     char *line = strdup(argv[0].s);
     if (!line)
         return val_err("shell.run: out of memory");
@@ -165,21 +164,19 @@ static value_t shell_method_run(struct object *self, const member_t *m, int argc
     while (len > 0 && (line[len - 1] == '\n' || line[len - 1] == '\r'))
         line[--len] = '\0';
 
-    struct cmd_result res;
-    memset(&res, 0, sizeof(res));
-    shell_internal_dispatch_command(line, &res);
+    char err[128] = {0};
+    bool ok = shell_internal_dispatch_command(line, err, sizeof(err));
     free(line);
+
+    // The dispatcher already printed any error to stderr; on failure
+    // return a V_ERROR carrying a brief reason so JS callers can branch
+    // on success without parsing the streamed text. On success return
+    // the new prompt text.
+    if (!ok)
+        return val_err("%s", err[0] ? err : "command failed");
 
     char prompt[256];
     shell_build_prompt(prompt, sizeof(prompt));
-
-    if (res.type == RES_ERR) {
-        // The dispatcher already printed the error to stderr; return a
-        // V_ERROR carrying a brief reason so JS callers can branch on
-        // success/failure without parsing the streamed text. The
-        // dispatcher's user-facing message lives in `result_buf`.
-        return val_err("%s", res.result_buf[0] ? res.result_buf : "command failed");
-    }
     return val_str(prompt);
 }
 

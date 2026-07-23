@@ -35,9 +35,7 @@ go through `shell.eval(text)`.
 | [shell_var.c](../src/core/shell/shell_var.c) | Scoped binding store (`let` bindings, `--var`, alias fallback) |
 | [shell_funcs.c](../src/core/shell/shell_funcs.c) | User-defined functions (`def`), the `shell.functions` surface |
 | [cmd_complete.c](../src/core/shell/cmd_complete.c) | Metadata-driven tab completion (keywords, `$bindings`, tree paths) |
-| [cmd_symbol.c](../src/core/shell/cmd_symbol.c) | Legacy symbol fallback for MMU regs and CCR bits |
 | [cmd_cp.c](../src/core/shell/cmd_cp.c) | Recursive-copy implementation behind `storage.cp` / `storage.import` |
-| [cmd_image.c](../src/core/shell/cmd_image.c) | Image probe / mount helpers shared by storage and floppy/scsi classes |
 | `src/core/object/expr.c` | Expression grammar and evaluator; string interpolation; `try`/`error`/`range`/`len` |
 
 ## Statements

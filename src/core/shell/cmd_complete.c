@@ -9,7 +9,6 @@
 // and any cursor inside `$(...)`, `${...}`, or `"..."` returns nothing.
 
 #include "cmd_complete.h"
-#include "cmd_symbol.h"
 #include "shell_var.h"
 #include "worker_thread.h"
 
