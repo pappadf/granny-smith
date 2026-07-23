@@ -55,6 +55,7 @@ typedef struct machine_config_record {
     char video_card[MC_ID_MAX]; // wildcard-socket card id ("" = slot default)
     int32_t video_sense; // -1 = unset
     char video_mode[MC_ID_MAX]; // wildcard video-mode id ("" = card default)
+    char custom_mode[MC_ID_MAX]; // "WxHxD" custom resolution ("" = none)
     char created[24]; // ISO8601 UTC, stamped by boot
     machine_config_vrom_t vroms[MC_MAX_VROMS]; // resolved picks, in load order
     int32_t n_vroms;
@@ -71,6 +72,7 @@ typedef struct boot_config {
     const char *video_card;
     int video_sense; // -1 = not given
     const char *video_mode;
+    const char *custom_mode; // "WxHxD" custom resolution (NULL = none)
 } boot_config_t;
 
 // Read-only view of the live record (never NULL; check ->valid).

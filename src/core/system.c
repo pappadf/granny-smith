@@ -856,6 +856,8 @@ config_t *system_restore(const char *filename) {
             nubus_staged_card_set(NUBUS_STAGED_WILDCARD, restored_record.video_card);
         if (restored_record.video_mode[0])
             nubus_staged_mode_set(NUBUS_STAGED_WILDCARD, restored_record.video_mode);
+        if (restored_record.custom_mode[0])
+            nubus_staged_custom_mode_set(NUBUS_STAGED_WILDCARD, restored_record.custom_mode);
         if (restored_record.video_sense >= 0)
             jmfb_pending_sense_set((uint8_t)restored_record.video_sense);
         if (restored_record.vrom[0])

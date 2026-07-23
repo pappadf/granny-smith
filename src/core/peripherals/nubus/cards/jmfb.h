@@ -117,6 +117,12 @@ uint8_t jmfb_pending_sense_get(void);
 void jmfb_pending_video_mode_set(const char *id);
 const char *jmfb_pending_video_mode_get(void);
 
+// Pending "WxHxD" custom resolution (proposal-nubus-runtime-vrom §3.6):
+// the generic 8_24 kind generates a video sResource at this geometry and
+// boots its default 13" RGB monitor on it.  NULL/"" clears.
+void jmfb_pending_custom_mode_set(const char *spec);
+const char *jmfb_pending_custom_mode_get(void);
+
 // Look up a video-mode entry by id ("monitor_Nbpp") in the JMFB
 // catalog.  Writes the resolved monitor + depth into *out_monitor
 // / *out_depth_bpp on success and returns true; returns false (and

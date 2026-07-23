@@ -50,15 +50,64 @@ model is therefore a new personality (a few register equates, its tables,
 its eight routines), not a new ROM.
 
 There are four personalities today — **JMFB** (8•24), **Boogie** (Display
-Card 24AC), **MDCGC** (8•24 GC), and **SE30** (built-in video) — assembled
-into four separate images that the emulator embeds.
+Card 24AC), **MDCGC** (8•24 GC), and **SE30** (built-in video).
 
 A structural constraint worth knowing when reading the source: the Slot
 Manager copies each executable block (`PrimaryInit`, the `DRVR`) out of the
 ROM and into RAM before running it, so each block must be self-contained.
 `PrimaryInit` and the `DRVR` therefore each embed their **own** copy of the
-personality's tables and leaf routines rather than sharing one copy in ROM
-data space.
+personality's leaf routines rather than sharing one copy in ROM data space.
+
+## Where the bytes come from: generated records, spliced code
+
+The declaration ROM is **not** a committed image. It is built at machine
+construction, in two halves (proposal-nubus-runtime-vrom):
+
+- The **declarative records** — the sResource directory, the board
+  sResource (BoardId, vendor strings, PRAM defaults), and one functional
+  video sResource per monitor with its `mVidParams` (PixMap) blocks — are
+  *generated in C* by the declaration-ROM builder (`declrom.c`), fed from
+  the card kind's `monitors[]` table. That table is the **single source of
+  truth for mode geometry**: `gsvrom_generate` reads each monitor's width,
+  height, and depth list straight out of it, so a mode declared to the OS
+  and a mode the HLE displays can never disagree. The builder serialises
+  the image bottom-up (every record before the list that points at it, so
+  every offset is a backward self-relative reference) and computes the
+  Format-Block CRC in C — the job the old `crc.py` did at build time.
+
+- The **68K code blocks** — `PrimaryInit`, the `DRVR`, and the GC's
+  `SecondaryInit` — are per-personality fragments under
+  `src/core/peripherals/nubus/vrom68k/`, assembled by the core build (see
+  below) and spliced into the generated image verbatim. Because the Slot
+  Manager copies each block to RAM before running it, the fragments are
+  self-contained; the builder only wires the directory entries that point
+  at them. What the fragments still carry beyond code is *logic-only*
+  data: the sense-probe strategy, the per-depth gray-fill patterns, and a
+  bare list of the personality's top-level video spIDs (the sister ids the
+  emulator seeds into PRAM) that `PrimaryInit`'s prune walks. Mode
+  geometry is **not** in the fragments — `PrimaryInit` and the `DRVR` read
+  the boot mode's `vpRowBytes`/bounds back out of the generated records
+  through the Slot Manager (`sRsrcInfo` → `sFindStruct` → `sReadStruct`),
+  exactly as the genuine Apple drivers do.
+
+### Building the 68K fragments
+
+The fragments are ordinary targets of the main build. `Makefile` and
+`Makefile.headless` (and so the wasm and headless builds) both include
+`src/core/peripherals/nubus/vrom68k/vrom68k.mk`, which assembles each
+`frag_<block>.s` per personality with **GNU binutils targeting m68k**
+(`m68k-linux-gnu-as` + `objcopy -O binary`, from the
+`binutils-m68k-linux-gnu` package; any m68k-targeted binutils works —
+override `M68K_AS`/`M68K_OBJCOPY`) and embeds the raw blocks into a
+generated header `build/vrom68k/gsvrom_fragments.h` (never committed).
+Editing a `.s` file rebuilds fragment → header → object with real
+dependency tracking. There is deliberately **no** fallback when the
+assembler is absent: the build fails with an actionable message rather
+than producing environment-dependent content. The source is gas syntax
+in `.altmacro` mode; two port hazards are fenced in the macros —
+list-entry offsets use `+` not `|` (gas silently mis-folds a masked
+forward difference OR'd with a constant), and strings use
+`.ascii`/`.asciz` (gas's `dc.b` silently drops string operands).
 
 ## Two 68K correctness rules
 
@@ -89,26 +138,41 @@ two variants drive the *same* emulated hardware model (they live in the same
 | `824gc` | `8_24gc` | MDCGC | config 0 (640×480); GC accelerator bring-up (see gaps) |
 | `builtin_se30_video` | `se30` | SE30 | the SE/30 profile default — boots with no ROM file |
 
-The generic variant sets `requires_vrom = false` and installs its embedded
-image directly (`declrom_install_builtin`) rather than consulting the offer
-registry of supplied ROM files. The image is laid out exactly like a
+The generic variant sets `requires_vrom = false` and, at `card_init`,
+calls `gsvrom_generate` to build its image, then installs it directly
+(`declrom_install_builtin`) rather than consulting the offer registry of
+supplied ROM files. The finished image is laid out exactly like a
 file-backed chip — tail-placed at the top of the card's declaration-ROM
-window per its `byteLanes` byte — and the choice is recorded in the machine's
-built-from record path-lessly, as `builtin:<id>` with the image's
-Format-Block CRC, so a restored machine reconstructs the same card.
+window per its `byteLanes` byte — and the choice is recorded in the
+machine's built-from record path-lessly, as `builtin:<id>`. Generation is
+deterministic within one emulator build, so a checkpoint restore
+reconstructs bit-identical content from the recorded configuration (kind +
+video_mode + custom mode); the recorded CRC is informational, since it
+varies with the mode set and with the binutils version that assembled the
+fragments.
 
 Selection and identification:
 
 - `video_card=<id>` picks a variant at boot. For the SE/30, whose video is a
   built-in (non-socketed) device, the boot document may still substitute the
   real kind for the generic default (only built-in-attach kinds are eligible).
+- `custom_mode="WxHxD"` (generic `8_24` kind today) boots the card's
+  default monitor at a user-chosen resolution: the generated records carry
+  a video sResource at that geometry and the HLE displays it. The spec is
+  validated at boot (well-formed `WxHxD`, supported depth, width a multiple
+  of 32, `rowBytes < $4000`) and again at `card_init` against the card's
+  framebuffer window; a mode whose framebuffer overflows the window is
+  refused with a clear log and the card falls back to its default geometry.
+  Modes larger than the 1 MB minor window need the QD32 re-open path (see
+  gaps) and are rejected.
 - `machine.profile` lists both variants for a slot; a built-in slot that has
   a generic variant is reported as not `fixed`, so the configuration UI
   offers the choice with the generic option always available (it needs no
   uploaded file).
 - `vrom.identify` recognises a dumped copy of one of our own generic images
-  by its Format-Block CRC and names the matching card id, even though the
-  generic variants never load ROMs from files.
+  **structurally** — a right-sized image whose board sResource carries the
+  `granny-smith` VendorId, keyed to the card id by its BoardId. A generated
+  image has no fixed CRC to match, so the old fixed-CRC recognition is gone.
 
 ### Tests
 
@@ -119,6 +183,14 @@ Selection and identification:
 - `iicx-gsvrom-824gc` — the MDCGC personality's accelerator bring-up ladder
   (attach → boot → arm → gc-on).
 - `se30-gsvrom` — the SE30 personality booting to the Finder with no ROM file.
+- `iicx-gsvrom-custom-mode` — the JMFB personality booting at a `custom_mode=`
+  resolution (800×600×8) that fits the minor window.
+
+A host-side unit suite (`tests/unit/suites/declrom`) generates every
+personality's image without booting a guest and checks its structure
+(directory walk, ascending ids, no zero offsets, verbatim fragment
+splicing), identity (BoardId, vendor string, sResource names), and
+regeneration determinism.
 
 ## Known gaps
 
@@ -141,11 +213,13 @@ Selection and identification:
   families) is in place.
 - **24AC direct colour.** 16/32-bpp boot is partially validated — 16 bpp
   reaches the desktop; colour fidelity at the direct depths is unverified.
-- **User-defined custom resolutions** (load-time patching of a personality
-  image's mode records) are not implemented.
+- **Custom resolutions on other kinds.** `custom_mode=` is wired for the
+  generic `8_24` (JMFB) kind; the other generic kinds fall back to their
+  fixed monitor sets (they log and ignore a staged custom mode).
 
 ## See also
 
 - [nubus_vrom.md](nubus_vrom.md) — the declaration-ROM byte layout and Slot
   Manager contract this firmware implements.
-- `tools/vrom/README.md` — how the images are assembled and embedded.
+- `src/core/peripherals/nubus/vrom68k/` — the 68K fragment sources and
+  `vrom68k.mk` (assembled by the core build; no separate toolchain).

@@ -64,6 +64,12 @@ static bool s_pending_sense_set = false;
 // Empty string means "no pending mode — fall back to plain sense".
 static char s_pending_video_mode_id[32] = "";
 
+// Pending "WxHxD" custom resolution set via `custom_mode=` (proposal-
+// nubus-runtime-vrom §3.6).  The generic kind generates a video
+// sResource at this geometry and boots its default monitor on it.
+// Empty string means "no custom mode".
+static char s_pending_custom_mode[40] = "";
+
 // === Per-card private state =================================================
 
 typedef struct {
@@ -677,12 +683,55 @@ static int card_init_common(nubus_card_t *card, config_t *cfg, checkpoint_t *cp,
         return -1;
     }
 
+    // A staged custom resolution overrides the default monitor's geometry
+    // (proposal-nubus-runtime-vrom §3.6): the card senses its default 13"
+    // RGB monitor, but that monitor's video sResource — and the HLE
+    // display — carry the WxHxD the user asked for.  Consumed here so the
+    // generic build below emits records for it; validated against this
+    // card's framebuffer window.  custom_monitors backs the pointers in
+    // the runtime monitor list; it is read only within this call (the
+    // builder copies what it needs and the display geometry is captured
+    // into p->display), so a local is enough.
+    nubus_monitor_t custom_monitors[5];
+    const nubus_monitor_t *gen_monitors = generic ? jmfb_generic_kind.monitors : NULL;
+    uint32_t custom_w = 0, custom_h = 0, custom_d = 0;
+    bool custom_active = false;
+    if (generic && s_pending_custom_mode[0]) {
+        const char *why = NULL;
+        if (!nubus_custom_mode_parse(s_pending_custom_mode, &custom_w, &custom_h, &custom_d, &why)) {
+            LOG(0, "8_24: custom_mode '%s' rejected: %s", s_pending_custom_mode, why);
+        } else if (custom_d != 1 && custom_d != 2 && custom_d != 4 && custom_d != 8) {
+            LOG(0, "8_24: custom_mode depth %u unsupported (this card has no direct modes; use 1/2/4/8)", custom_d);
+        } else if ((uint64_t)custom_w * custom_h * custom_d / 8 + 0xA00 > JMFB_VRAM_SIZE) {
+            LOG(0, "8_24: custom_mode %ux%ux%u framebuffer exceeds the %u-byte window", custom_w, custom_h, custom_d,
+                (unsigned)JMFB_VRAM_SIZE);
+        } else {
+            // Copy the generic monitor list and rewrite the default (13" RGB,
+            // sense $6) entry to the custom geometry; the rest stay so their
+            // sResources still exist (the sensed one wins at boot).
+            size_t n = 0;
+            for (const nubus_monitor_t *mm = jmfb_generic_kind.monitors; mm->id && n < 4; mm++)
+                custom_monitors[n++] = *mm;
+            for (size_t i = 0; i < n; i++) {
+                if (custom_monitors[i].sense_code == 0x6) {
+                    custom_monitors[i].width = custom_w;
+                    custom_monitors[i].height = custom_h;
+                    custom_monitors[i].name = "Custom";
+                }
+            }
+            custom_monitors[n] = (nubus_monitor_t){0};
+            gen_monitors = custom_monitors;
+            custom_active = true;
+        }
+    }
+    s_pending_custom_mode[0] = '\0';
+
     if (generic) {
         // Generic sibling kind ("8_24"): generate the GS declaration ROM at
-        // card_init — records from jmfb_generic_monitors[], code fragments
-        // spliced, CRC stamped in C (proposal-nubus-runtime-vrom §4); the
-        // offer registry is never consulted.
-        declrom_builder_t *bld = gsvrom_generate(GSVROM_JMFB, jmfb_generic_kind.monitors);
+        // card_init — records from the (possibly custom-overridden) monitor
+        // list, code fragments spliced, CRC stamped in C (proposal-nubus-
+        // runtime-vrom §4); the offer registry is never consulted.
+        declrom_builder_t *bld = gsvrom_generate(GSVROM_JMFB, gen_monitors);
         size_t img_size = 0;
         const uint8_t *img = bld ? declrom_builder_bytes(bld, &img_size) : NULL;
         if (img && declrom_install_builtin(jmfb_generic_kind.id, img, img_size, p->vrom, JMFB_DECLROM_BUS_SIZE))
@@ -718,6 +767,21 @@ static int card_init_common(nubus_card_t *card, config_t *cfg, checkpoint_t *cp,
         }
         s_pending_video_mode_id[0] = '\0';
     }
+    // A validated custom resolution overrode the default monitor above:
+    // sense the default 13" RGB ($6) and seed PRAM to its sister ($A6) at
+    // the requested depth, exactly like a video_mode pick but with the
+    // geometry the generated records now carry.
+    if (custom_active) {
+        for (size_t i = 0; custom_monitors[i].id; i++) {
+            if (custom_monitors[i].sense_code == 0x6) {
+                seeded_monitor = &custom_monitors[i];
+                break;
+            }
+        }
+        seeded_depth_bpp = (int)custom_d;
+        s_pending_sense = 0x6;
+        s_pending_sense_set = true;
+    }
 
     // Monitor sense code — consumed from the pending-sense slot the
     // shell can set via `nubus.video_sense = N` before `machine.boot`.
@@ -733,6 +797,12 @@ static int card_init_common(nubus_card_t *card, config_t *cfg, checkpoint_t *cp,
     const nubus_monitor_t *monitor = monitor_for_sense(p->sense_code);
     uint32_t mon_w = monitor ? monitor->width : 640;
     uint32_t mon_h = monitor ? monitor->height : 480;
+    // The custom resolution rides the sensed default monitor's slot, so
+    // the HLE display geometry follows the override, not the stock 13".
+    if (custom_active) {
+        mon_w = custom_w;
+        mon_h = custom_h;
+    }
 
     // Default register state from PrimaryInit's expected starting point.
     // The Apple Display Card 8•24 powers up at 1 bpp; PrimaryInit fills
@@ -1177,6 +1247,18 @@ void jmfb_pending_video_mode_set(const char *id) {
 
 const char *jmfb_pending_video_mode_get(void) {
     return s_pending_video_mode_id[0] ? s_pending_video_mode_id : NULL;
+}
+
+void jmfb_pending_custom_mode_set(const char *spec) {
+    if (!spec || !*spec) {
+        s_pending_custom_mode[0] = '\0';
+        return;
+    }
+    snprintf(s_pending_custom_mode, sizeof s_pending_custom_mode, "%s", spec);
+}
+
+const char *jmfb_pending_custom_mode_get(void) {
+    return s_pending_custom_mode[0] ? s_pending_custom_mode : NULL;
 }
 
 // Parse "monitor_Nbpp" into (monitor, N).  monitor portion is matched

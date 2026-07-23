@@ -101,6 +101,17 @@ const char *nubus_staged_card_get(int slot);
 void nubus_staged_mode_set(int slot, const char *id); // NULL/"" clears
 const char *nubus_staged_mode_get(int slot);
 
+// Staged "WxHxD" custom resolution (proposal-nubus-runtime-vrom §3.6):
+// the generic display kinds generate a video sResource for it and boot
+// their default monitor at that geometry.  NULL/"" clears.
+void nubus_staged_custom_mode_set(int slot, const char *spec);
+const char *nubus_staged_custom_mode_get(int slot);
+
+// Parse/validate a "WxHxD" custom-mode spec (shared by boot validation
+// and card_init).  Returns false with *err set (static string) on a
+// malformed or out-of-range spec.
+bool nubus_custom_mode_parse(const char *spec, uint32_t *out_w, uint32_t *out_h, uint32_t *out_d, const char **err);
+
 // True iff `id` names a video mode in any registered card's catalog.
 // Boot-document validation for machine.boot's video_mode= argument.
 bool nubus_video_mode_known(const char *id);
