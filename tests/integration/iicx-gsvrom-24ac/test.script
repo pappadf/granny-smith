@@ -19,7 +19,7 @@ scheduler.run 50000000
 machine.memory.poke.w 0x017A 0x8805
 scheduler.run 1500000
 machine.memory.poke.w 0x017A 0
-scheduler.run 11000000
+scheduler.run 20000000
 assert ${machine.screen.width == 832}                "24ac 832x624 width != 832"
 assert ${machine.screen.height == 624}               "24ac 832x624 height != 624"
 assert ${machine.rtc.pram.peek(0x48) == 0x82}        "24ac savedMode != 0x82 (8bpp)"

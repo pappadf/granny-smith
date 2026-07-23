@@ -299,11 +299,13 @@
 .equ pvMode,          8               | word: current csMode (0x80 + depth code)
 .equ pvFlags,         10              | word: bit0 gray mode, bit1 VBL disabled
 .equ pvSlot,          12              | word: slot number
-.equ pvWidth,         14              | word: monitor width
-.equ pvHeight,        16              | word: monitor height
-.equ pvMMUSave,       18              | byte: saved addressing mode (Swap32)
+.equ pvWidth,         14              | word: monitor width  (from the record)
+.equ pvHeight,        16              | word: monitor height (from the record)
+.equ pvRowBytes,      18              | word: current-mode vpRowBytes (record)
 .equ pvSQEl,          20              | 16-byte slot interrupt queue element
 .equ pvGamma,         36              | 3x256 gamma LUT (R, G, B planes)
 .equ pvClut,          36+768          | 3x256 raw CLUT copy (R, G, B planes)
 .equ pvGTbl,          36+768+768      | GammaTbl block for GetGamma (12+256)
+.equ pvSpID,          36+768+768+268  | word: dCtlSlotId (the sResource that
+                                        | loaded us; DrvReadVP queries it)
 .equ pvSize,          36+768+768+268+2

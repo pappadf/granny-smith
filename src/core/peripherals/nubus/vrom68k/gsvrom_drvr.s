@@ -60,22 +60,15 @@ DrvOpen:
 	move.l	dCtlDevBase(a3),pvBase(a5)
 	move.w	#0x80,pvMode(a5)        | power-on depth: 1 bpp
 
-	| monitor geometry: dCtlSlotId names the sResource that loaded us
-	moveq	#0,d6
-	move.b	dCtlSlotId(a3),d6
-	lea	DRMonTab(pc),a0
-DrvOpenFind:
-	move.w	(a0),d0
-	beq.s	DrvOpenDefMon           | not found — first table row
-	cmp.w	d0,d6
-	beq.s	DrvOpenGotMon
-	addq.w	#6,a0
-	bra.s	DrvOpenFind
-DrvOpenDefMon:
-	lea	DRMonTab(pc),a0
-DrvOpenGotMon:
-	move.w	2(a0),pvWidth(a5)
-	move.w	4(a0),pvHeight(a5)
+	| monitor geometry: dCtlSlotId names the sResource that loaded us —
+	| walk its records with the Slot Manager instead of an in-code
+	| table, exactly like the genuine 8*24/GC drivers (§3.4).
+	moveq	#0,d0
+	move.b	dCtlSlotId(a3),d0
+	move.w	d0,pvSpID(a5)
+	move.w	#0x80,d0                | boot-mode VPBlock: width/height/stride
+	bsr	DrvReadVP
+	bne	DrvOpenFailFree         | no records — refuse the open
 
 	| identity gamma LUT + GetGamma table + grayscale-ramp CLUT copy
 	bsr	GammaIdentity
@@ -122,14 +115,23 @@ DrvOpenOk:
 	rts
 | Re-opened on a different sResource family (32-Bit QuickDraw's slot
 | upgrade re-opens the driver on the 32-bit family): keep the existing
-| state but track the new device base.
+| state but track the new device base and record source.
 DrvOpenAgain:
 	movea.l	dCtlStorage(a3),a5
 	move.l	(a5),d0
 	dc.w	_StripAddress
 	movea.l	d0,a5
 	move.l	dCtlDevBase(a3),pvBase(a5)
-	bra.s	DrvOpenOk
+	moveq	#0,d0
+	move.b	dCtlSlotId(a3),d0
+	move.w	d0,pvSpID(a5)           | the (possibly new) family's id
+	move.w	pvMode(a5),d0
+	bsr	DrvReadVP               | best-effort geometry refresh — the
+	bra.s	DrvOpenOk               | families share mode geometry
+DrvOpenFailFree:
+	movea.l	dCtlStorage(a3),a0      | undo the allocation before failing
+	dc.w	_DisposeHandle
+	clr.l	dCtlStorage(a3)
 DrvOpenFail:
 	movem.l	(sp)+,d1-d7/a0-a6
 	moveq	#openErr,d0
@@ -590,20 +592,67 @@ StGetCurMode:
 
 | === Shared helpers ==========================================================
 
+| DrvReadVP: read the head of mode-list id D0.W's VPBlock from the
+| sResource that loaded us (pvSpID) and cache vpRowBytes / width /
+| height in private storage — the driver reads the generated records
+| instead of carrying its own geometry table (§3.4).  In: D0.W = mode
+| id (0x80 + depth code), A5 = private.  Out: D0 = 0 on success (Z
+| set), Slot Manager error otherwise; other registers preserved.
+DrvReadVP:
+	movem.l	d3/a0-a1,-(sp)
+	move.w	d0,d3                   | D3 = mode-list id
+	suba.w	#spBlockSize+20,sp
+	movea.l	sp,a0                   | A0 = spBlock
+	lea	spBlockSize(sp),a1      | A1 = VPBlock head buffer (20 bytes)
+	move.w	pvSlot(a5),d0
+	move.b	d0,spSlot(a0)
+	move.w	pvSpID(a5),d0
+	move.b	d0,spID(a0)
+	clr.b	spExtDev(a0)
+	moveq	#sRsrcInfo,d0
+	dc.w	_SlotManager
+	bne.s	DrvRVPOut
+	move.b	d3,spID(a0)             | the mode-list entry
+	moveq	#sFindStruct,d0
+	dc.w	_SlotManager
+	bne.s	DrvRVPOut
+	move.b	#1,spID(a0)             | mVidParams
+	moveq	#sFindStruct,d0
+	dc.w	_SlotManager
+	bne.s	DrvRVPOut
+	move.l	a1,spResult(a0)
+	moveq	#20,d0
+	move.l	d0,spSize(a0)
+	moveq	#sReadStruct,d0
+	dc.w	_SlotManager
+	bne.s	DrvRVPOut
+	move.w	8(a1),pvRowBytes(a5)    | vpRowBytes
+	move.w	14(a1),pvHeight(a5)     | vpBounds bottom
+	move.w	16(a1),pvWidth(a5)      | vpBounds right
+	moveq	#0,d0
+DrvRVPOut:
+	adda.w	#spBlockSize+20,sp      | ADDA/MOVEM leave the cc from D0
+	movem.l	(sp)+,d3/a0-a1
+	rts
+
 | Program the hardware for the current pvMode (depth + stride + base).
 ApplyMode:
+	move.w	pvMode(a5),d0
+	bsr	DrvReadVP               | refresh the cached stride from the
+	                                | record (best-effort: the cache
+	                                | already holds this family's values)
 	bsr	Swap32
 	movea.l	pvSlotBase(a5),a4
 	move.w	pvMode(a5),d0
 	sub.w	#0x80,d0                | depth code
-	move.w	pvWidth(a5),d1          | monitor width — the op derives
-	bsr	DRSetDepth              | whatever stride encoding it needs
+	move.w	pvRowBytes(a5),d1       | target-mode vpRowBytes — the op
+	bsr	DRSetDepth              | derives its stride encoding from it
 	bsr	SwapBack
 	rts
 
 | 50%-gray dither fill of the whole screen at the current depth.
-| Row geometry comes from the personality's log2(bpp) table; the fill
-| pattern from its per-depth pattern table.
+| Row geometry comes from the record-cached vpRowBytes; the fill
+| pattern from the personality's per-depth pattern table.
 GrayFill:
 	move.w	pvMode(a5),d0
 	sub.w	#0x80,d0
@@ -616,15 +665,8 @@ GrayFill:
 	bhs.s	GrayNoDither            | depths fill solid 50% gray
 	moveq	#-1,d5
 GrayNoDither:
-	.if	GS_ROWLONGS_FIXED
-	move.w	#GS_ROWLONGS_FIXED,d2   | fixed row pitch (e.g. GC: 1024 bytes)
-	.else
-	lea	DRLogBppTab(pc),a1
-	move.b	(a1,d0.w),d0            | shift count = log2(bpp)
-	move.w	pvWidth(a5),d2
-	lsr.w	#5,d2
-	lsl.w	d0,d2                   | longs per row = (width/32) << log2(bpp)
-	.endif
+	move.w	pvRowBytes(a5),d2
+	lsr.w	#2,d2                   | longs per row = vpRowBytes / 4
 	move.w	pvHeight(a5),d3
 	bsr	Swap32
 	movea.l	pvSlotBase(a5),a4

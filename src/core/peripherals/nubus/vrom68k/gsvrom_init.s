@@ -37,13 +37,25 @@ GSPrimaryInit:
 	bsr	PIReadSense
 	move.b	d0,d6                   | D6.b = chosen spID (0 = none)
 
-	| prune: delete every monitor sResource except the sensed one
-	lea	PIMonTab(pc),a3
+	| prune: delete every top-level video sResource except the sensed
+	| monitor's (and the deferred 32-bit family, when the personality has
+	| one — the boot-time Slot Manager follows the PRAM savedSRsrcID to
+	| the boot family, and 32-Bit QuickDraw's slot upgrade re-opens the
+	| driver on the 32-bit sister once it loads).  The set of top-level
+	| spIDs is the one private convention the fragment still carries
+	| (§3.4: "the sister ids the emulator seeds into PRAM"); it is NOT
+	| mode geometry (that now lives only in the generated records) — so
+	| the personality's SpidTab lists ids alone, no width/height.
+	lea	PISpidTab(pc),a3
 PIPruneLoop:
 	move.w	(a3),d0
 	beq.s	PIPruned                | table terminator
 	cmp.b	d0,d6
 	beq.s	PIPruneKeep             | the chosen monitor stays
+	.if	GS_DEFER_SPID
+	cmp.b	#GS_DEFER_SPID,d0
+	beq.s	PIPruneKeep             | the 32-bit family stays for QD32
+	.endif
 	suba.w	#spBlockSize,sp
 	movea.l	sp,a0
 	move.b	d5,spSlot(a0)
@@ -53,45 +65,58 @@ PIPruneLoop:
 	dc.w	_SlotManager
 	adda.w	#spBlockSize,sp
 PIPruneKeep:
-	addq.w	#6,a3
+	addq.w	#2,a3
 	bra.s	PIPruneLoop
 PIPruned:
-	| (The 32-bit family GS_DEFER_SPID — when the personality has one —
-	| is left in the SRT untouched: the boot-time Slot Manager follows
-	| the PRAM savedSRsrcID to the boot family, and 32-Bit QuickDraw's
-	| slot-device upgrade pass re-opens the driver on the 32-bit sister
-	| (boot spID + 0x20) once it loads.)
 	tst.b	d6
 	beq	PIDone                  | no monitor: slot goes quietly dark
 
-	| geometry of the chosen monitor
-	lea	PIMonTab(pc),a3
-PIFindMon:
-	move.w	(a3),d0
-	beq	PIDone
-	cmp.b	d0,d6
-	beq.s	PIFoundMon
-	addq.w	#6,a3
-	bra.s	PIFindMon
-PIFoundMon:
-	move.w	2(a3),d2                | D2 = width
-	move.w	4(a3),d3                | D3 = height
+	| geometry of the chosen monitor: its boot-mode (0x80) VPBlock read
+	| from the generated records — the monitors[] table's single source
+	| of truth (§3.4).  Allocation-free Slot Manager forms only: no
+	| Memory Manager exists yet, so sGetBlock is off the table here.
+	suba.w	#spBlockSize+20,sp
+	movea.l	sp,a3                   | A3 = spBlock
+	lea	spBlockSize(sp),a1      | A1 = VPBlock head buffer (20 bytes)
+	move.b	d5,spSlot(a3)
+	move.b	d6,spID(a3)
+	clr.b	spExtDev(a3)
+	movea.l	a3,a0
+	moveq	#sRsrcInfo,d0
+	dc.w	_SlotManager
+	bne	PIVPFail
+	move.b	#0x80,spID(a3)          | the boot-depth mode entry
+	movea.l	a3,a0
+	moveq	#sFindStruct,d0
+	dc.w	_SlotManager
+	bne	PIVPFail
+	move.b	#1,spID(a3)             | mVidParams
+	movea.l	a3,a0
+	moveq	#sFindStruct,d0
+	dc.w	_SlotManager
+	bne	PIVPFail
+	move.l	a1,spResult(a3)
+	moveq	#20,d0
+	move.l	d0,spSize(a3)
+	movea.l	a3,a0
+	moveq	#sReadStruct,d0
+	dc.w	_SlotManager
+	bne	PIVPFail
+	move.w	8(a1),d2                | D2 = vpRowBytes (1-bpp boot mode)
+	move.w	14(a1),d3               | D3 = height (vpBounds bottom)
+	adda.w	#spBlockSize+20,sp
 
 	| hardware bring-up quirks, then the 1-bpp boot mode
 	bsr	PIHwInit
 	moveq	#0,d0                   | depth code 0 = 1 bpp
-	move.w	d2,d1                   | monitor width
+	move.w	d2,d1                   | boot-mode row bytes for the op
 	bsr	PISetDepth
 
 	| gray the screen: alternating 0xAAAAAAAA / 0x55555555 rows at 1 bpp
 	bsr	PIFbBase                | A1 = framebuffer base (op-provided)
 	movea.l	a1,a0
-	.if	GS_ROWLONGS_FIXED
-	move.w	#GS_ROWLONGS_FIXED,d0   | fixed row pitch (e.g. GC: 1024 bytes)
-	.else
 	move.w	d2,d0
-	lsr.w	#5,d0                   | longs per row = width/32 at 1 bpp
-	.endif
+	lsr.w	#2,d0                   | longs per row = vpRowBytes / 4
 	move.l	#0xAAAAAAAA,d1
 	move.w	d3,d4
 	subq.w	#1,d4
@@ -134,6 +159,11 @@ PIModeOk:
 	dc.w	_SlotManager
 PIPramOk:
 	adda.w	#spBlockSize+8,sp
+	bra.s	PIDone
+
+PIVPFail:
+	adda.w	#spBlockSize+20,sp      | record walk failed — leave the slot
+	                                | dark rather than paint blind
 
 PIDone:
 	move.b	d7,d0                   | restore addressing mode

@@ -21,7 +21,6 @@
 .equ GREG_FB_OFFSET,   0x11400         | framebuffer offset within card DRAM
 .equ GS_NMODES,        4               | 0x80..0x83 = 1/2/4/8 bpp boot depths
 .equ GS_FIRSTDIRECT,   8               | direct modes arrive via VidComm only
-.equ GS_ROWLONGS_FIXED, 256            | fixed 1024-byte row pitch (256 longs)
 .equ GS_BOOT_SPID,     0x80            | 24-bit boot family (std-slot VRAM)
 .equ GS_DEFER_SPID,    0xA0            | 32-bit family (super-slot DRAM) that
                                         | 32-Bit QuickDraw re-opens the driver
@@ -49,12 +48,13 @@
 | One monitor in stage 2: config 0 = 640x480 (the verified HLE config; the
 | 16" config-1 variant runs through VidComm and is a stage-4 follow-up).
 	.macro	EmitCPB pfx
-\pfx&MonTab:
-	dc.w	0x0080,640,480          | 13"/config 0 (sense 6, spID 0x80)
-	dc.w	0
-\pfx&LogBppTab:
-	dc.b	0,1,2,3                 | 1/2/4/8 bpp
-	.balign	2
+| Top-level video spID: the 24-bit boot family (the 0xA0 32-bit sister
+| is kept by GS_DEFER_SPID, not listed here); geometry lives only in
+| the generated records (§3.4).
+\pfx&SpidTab:
+	dc.w	0x0080
+	dc.w	0                       | terminator
+| 50%-gray fill pattern per depth code (csMode - 0x80).
 \pfx&PatTab:
 	dc.l	0xAAAAAAAA              | 1 bpp checker
 	dc.l	0xCCCCCCCC              | 2 bpp

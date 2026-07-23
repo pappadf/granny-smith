@@ -15,7 +15,6 @@
 .equ GS_FB_MINOR,      0xA00           | framebuffer offset in standard slot space
 .equ GS_NMODES,        4               | mode-list entries 0x80..0x83 (1/2/4/8 bpp)
 .equ GS_FIRSTDIRECT,   8               | no direct-RGB depth codes on this card
-.equ GS_ROWLONGS_FIXED, 0              | 0 = tight stride (width*bpp/32 longs/row)
 .equ GS_DEFER_SPID,    0               | no deferred 32-bit sResource family
 
 | DRVR name — "." + the functional sResource name the builder generates
@@ -42,11 +41,10 @@
 | Monitor table rows: spID.w, width.w, height.w — spIDs reproduce the real
 | ROM's ACTIVE Ax sister scheme so emulator PRAM seeding matches (sec. 3.3).
 	.macro	EmitCPB pfx
-\pfx&MonTab:
-	dc.w	0x00A6,640,480          | 13" AppleColor  (sense 6)
-	dc.w	0x00A2,512,384          | 12" RGB         (sense 2)
-	dc.w	0x00A1,640,870          | 15" Portrait    (sense 1)
-	dc.w	0x00A7,1152,870         | 21" RGB         (sense 0)
+| Top-level video spIDs (the ACTIVE Ax sister scheme) — the prune's
+| kill-list; geometry lives only in the generated records (§3.4).
+\pfx&SpidTab:
+	dc.w	0x00A6,0x00A2,0x00A1,0x00A7
 	dc.w	0                       | terminator
 | Raw 3-bit sense -> functional sResource spID (0 = no usable monitor).
 | Mapping mirrors jmfb.c::monitor_for_sense (JMFBPrimaryInit.a's table).
@@ -59,11 +57,7 @@
 	dc.b	0xA1                    | 101 RGB Portrait
 	dc.b	0xA6                    | 110 Standard RGB 13"
 	dc.b	0                       | 111 no connect / extended sense
-| Depth-code tables, indexed by (csMode - 0x80): log2(bpp) shift counts
-| and the 50%-gray fill pattern per depth.
-\pfx&LogBppTab:
-	dc.b	0,1,2,3                 | 1/2/4/8 bpp
-	.balign	2
+| 50%-gray fill pattern per depth code (csMode - 0x80).
 \pfx&PatTab:
 	dc.l	0xAAAAAAAA              | 1 bpp checker
 	dc.l	0xCCCCCCCC              | 2 bpp
@@ -107,16 +101,15 @@
 	move.w	d1,d0
 	rts
 
-| SetDepth: in D0.W = depth code 0..3 (1<<code bpp), D1.W = monitor
-| width.  Programs depth + stride + framebuffer base.
+| SetDepth: in D0.W = depth code 0..3 (1<<code bpp), D1.W = the target
+| mode's vpRowBytes (from the record).  Programs depth + stride + base.
 \pfx&SetDepth:
 	movem.l	d0-d2,-(sp)
 	move.w	d0,d2
 	lsl.w	#3,d2
 	or.w	#0x80,d2                | PBCR = 0x80 | code<<3 (matches the
 	                                | real driver's observable values)
-	lsr.w	#5,d1
-	lsl.w	d0,d1                   | RowWords = (width/32) << log2(bpp)
+	lsr.w	#2,d1                   | RowWords = vpRowBytes / 4
 	moveq	#0,d0
 	move.w	d2,d0
 	move.l	d0,JREG_PBCR(a4)

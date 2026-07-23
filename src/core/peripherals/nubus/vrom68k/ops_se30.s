@@ -14,7 +14,6 @@
 .equ GS_FB_MINOR,      0               | device base 0; offset rides vpBaseOffset
 .equ GS_NMODES,        1               | 1 bpp only
 .equ GS_FIRSTDIRECT,   8               | no direct modes
-.equ GS_ROWLONGS_FIXED, 0              | tight stride (64 bytes at 512 px)
 .equ GS_DEFER_SPID,    0               | no deferred family
 
 .equ SE30_FB_OFFSET,   0xE08040        | framebuffer from the 0xFE000000 base
@@ -26,13 +25,12 @@
 
 | --- CPB data (EmitCPB <pfx>) ------------------------------------------------
 	.macro	EmitCPB pfx
-\pfx&MonTab:
-	dc.w	0x0080,512,342          | built-in 9" CRT (spID 0x80)
-	dc.w	0
-\pfx&LogBppTab:
-	dc.b	0                       | 1 bpp
-	dc.b	0
-	.balign	2
+| Top-level video spID (the built-in CRT); geometry lives only in the
+| generated records (§3.4).
+\pfx&SpidTab:
+	dc.w	0x0080
+	dc.w	0                       | terminator
+| 50%-gray fill pattern per depth code (csMode - 0x80).
 \pfx&PatTab:
 	dc.l	0xAAAAAAAA              | 1 bpp checker
 	.endm
