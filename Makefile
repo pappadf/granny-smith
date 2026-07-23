@@ -100,6 +100,14 @@ DEP := $(OBJ:.o=.d)
 
 OUTPUT := $(BUILD_DIR)/main.mjs
 
+# -- GS declaration-ROM 68K fragments --
+# Assembled by m68k binutils into build/vrom68k/ (shared with the
+# headless build — the fragments are target-independent data).  Defines
+# VROM68K_HEADER and the rules that produce it; gsvrom_data.c includes
+# the generated header.
+
+include src/core/peripherals/nubus/vrom68k/vrom68k.mk
+
 # -- Build mode (release | debug | sanitize) --
 
 MODE ?= release
@@ -144,7 +152,8 @@ INCLUDES := -I$(CORE_DIR) \
             -I$(MACHINES_DIR)/oss \
             -I$(MACHINES_DIR)/compact \
             -I$(MACHINES_DIR)/lisa \
-            -I$(PLATFORM_DIR)
+            -I$(PLATFORM_DIR) \
+            -I$(VROM68K_OUT)
 
 # -- Compile flags (source -> object) --
 # -MMD -MP generates .d dependency files alongside each .o so that
@@ -202,6 +211,9 @@ $(OBJ_DIR)/%.o: %.c
 # Force-rebuild build_id.o so __DATE__/__TIME__ stay current
 FORCE:
 $(OBJ_DIR)/$(CORE_DIR)/build_id.o: FORCE
+
+# gsvrom_data.c embeds the generated fragments header.
+$(OBJ_DIR)/$(CORE_DIR)/peripherals/nubus/gsvrom_data.o: $(VROM68K_HEADER)
 
 # Link all objects into the final WASM module
 $(OUTPUT): $(OBJ)

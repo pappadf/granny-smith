@@ -125,6 +125,9 @@
 
 // Per-card kind descriptor — registered in nubus.c's g_card_registry.
 extern const nubus_card_kind_t display_card_24ac_kind;
+// Generic sibling ("24ac") with the built-in GS declaration ROM — same HLE
+// model, no vROM file needed (proposal-generic-nubus-vrom.md sec. 6.1).
+extern const nubus_card_kind_t display_card_24ac_generic_kind;
 
 // === Video-mode selection (machine.nubus.video_mode) ========================
 // A pending "<monitor>_<N>bpp" id (e.g. "rgb_640x480_8bpp"), consumed by the

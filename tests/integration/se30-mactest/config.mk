@@ -14,5 +14,7 @@ TEST_ROM := roms/iix-iicx-se30-97221136.rom
 # Pin RAM at 4 MB to match the existing screenshot baseline; SE/30's profile
 # default is 8 MB now (proposal §3.1) and MacTest's RAM-test reports would
 # otherwise drift across the screenshots.
-TEST_ARGS := ram=4096 fd0=$(TEST_DATA)/apps/MacTest-SE30.image
-
+# Pinned to the REAL onboard-video vROM kind: this suite's reference PNGs
+# were captured against it, and the SE/30 profile now defaults to the
+# generic GS-vROM sibling (proposal-generic-nubus-vrom.md stage 3).
+TEST_ARGS := video_card=builtin_se30_video ram=4096 fd0=$(TEST_DATA)/apps/MacTest-SE30.image

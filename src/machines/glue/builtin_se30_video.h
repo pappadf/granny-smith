@@ -21,6 +21,9 @@
 // Card-kind descriptor — exported as the single source of truth for the
 // driver.  The bus controller calls .factory once per BUILTIN slot.
 extern const nubus_card_kind_t builtin_se30_video_kind;
+// Generic sibling ("se30") with the built-in GS declaration ROM — the
+// SE/30 profile default (proposal-generic-nubus-vrom.md sec. 7.4).
+extern const nubus_card_kind_t builtin_se30_video_generic_kind;
 
 // === SE/30-specific hooks the machine calls into ============================
 //

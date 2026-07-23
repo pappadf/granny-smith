@@ -268,8 +268,21 @@ static void encode_video_slots(json_builder_t *b, const hw_profile_t *p) {
             snprintf(slot_buf, sizeof slot_buf, "%X", s->slot); // "9".."E"
             json_str(b, slot_buf);
         }
+        // A BUILTIN slot may have sibling kinds (same monitor table, both
+        // BUILTIN-attach — the SE/30's generic/real video pair): those are
+        // selectable via video_card=, so the slot is only "fixed" when the
+        // declared kind has no sibling.
+        int builtin_candidates = 1;
+        const nubus_card_kind_t *decl_kind =
+            (s->kind == NUBUS_SLOT_BUILTIN) ? nubus_card_find(s->builtin_card_id) : NULL;
+        if (decl_kind) {
+            for (const nubus_card_kind_t *const *k = nubus_card_registry(); *k; k++) {
+                if (*k != decl_kind && (*k)->attach == CARD_ATTACH_BUILTIN && (*k)->monitors == decl_kind->monitors)
+                    builtin_candidates++;
+            }
+        }
         json_key(b, "fixed");
-        json_bool(b, s->kind == NUBUS_SLOT_BUILTIN);
+        json_bool(b, s->kind == NUBUS_SLOT_BUILTIN && builtin_candidates == 1);
         json_key(b, "default_card");
         json_str(b, default_card ? default_card : "");
 
@@ -277,6 +290,12 @@ static void encode_video_slots(json_builder_t *b, const hw_profile_t *p) {
         json_open_arr(b);
         if (s->kind == NUBUS_SLOT_BUILTIN) {
             encode_video_card(b, s->builtin_card_id);
+            if (decl_kind) {
+                for (const nubus_card_kind_t *const *k = nubus_card_registry(); *k; k++) {
+                    if (*k != decl_kind && (*k)->attach == CARD_ATTACH_BUILTIN && (*k)->monitors == decl_kind->monitors)
+                        encode_video_card(b, (*k)->id);
+                }
+            }
         } else {
             // Candidates are COMPUTED from the card registry: every kind
             // whose declared attachment fits this slot and that drives a
@@ -472,7 +491,7 @@ value_t machine_boot_apply(const boot_config_t *doc_in) {
     // Inherited strings are copied out of the record: the record is
     // rewritten during construction (rom.load write-back, step 4), so a
     // borrowed pointer into it would alias its own destination.
-    char model_buf[MC_ID_MAX], card_buf[MC_ID_MAX], mode_buf[MC_ID_MAX];
+    char model_buf[MC_ID_MAX], card_buf[MC_ID_MAX], mode_buf[MC_ID_MAX], custom_buf[MC_ID_MAX];
     char rom_buf[MC_PATH_MAX], rom2_buf[MC_PATH_MAX], vrom_buf[MC_PATH_MAX];
 
     // 1. Inheritance: every field not given falls back to the record.
@@ -501,6 +520,10 @@ value_t machine_boot_apply(const boot_config_t *doc_in) {
     if (!doc.video_mode || !*doc.video_mode) {
         snprintf(mode_buf, sizeof(mode_buf), "%s", rec->valid ? rec->video_mode : "");
         doc.video_mode = *mode_buf ? mode_buf : NULL;
+    }
+    if (!doc.custom_mode || !*doc.custom_mode) {
+        snprintf(custom_buf, sizeof(custom_buf), "%s", rec->valid ? rec->custom_mode : "");
+        doc.custom_mode = *custom_buf ? custom_buf : NULL;
     }
 
     // 2. Validation — all of it before system_destroy.
@@ -552,13 +575,23 @@ value_t machine_boot_apply(const boot_config_t *doc_in) {
         if (!profile->nubus_slots)
             return val_err("machine.boot: model '%s' has no NuBus slots for video_card '%s'", profile->id,
                            doc.video_card);
-        if (!nubus_card_find(doc.video_card))
+        if (!nubus_card_find(doc.video_card)) {
+            const char *near = nubus_card_suggest(doc.video_card);
+            if (near)
+                return val_err("machine.boot: unknown card id '%s' — did you mean '%s'? (see nubus.cards())",
+                               doc.video_card, near);
             return val_err("machine.boot: unknown card id '%s' (see nubus.cards())", doc.video_card);
+        }
     }
     if (doc.video_sense > 7)
         return val_err("machine.boot: video_sense must be 0..7 (got %d)", doc.video_sense);
     if (doc.video_mode && *doc.video_mode && !nubus_video_mode_known(doc.video_mode))
         return val_err("machine.boot: unknown video-mode id '%s'", doc.video_mode);
+    if (doc.custom_mode && *doc.custom_mode) {
+        const char *why = NULL;
+        if (!nubus_custom_mode_parse(doc.custom_mode, NULL, NULL, NULL, &why))
+            return val_err("machine.boot: custom_mode '%s' invalid: %s", doc.custom_mode, why);
+    }
 
     // Explicit vROM pick: the file must identify as a known declaration ROM
     // before it can win the pick order.
@@ -590,6 +623,8 @@ value_t machine_boot_apply(const boot_config_t *doc_in) {
         nubus_staged_card_set(NUBUS_STAGED_WILDCARD, doc.video_card);
     if (doc.video_mode && *doc.video_mode)
         nubus_staged_mode_set(NUBUS_STAGED_WILDCARD, doc.video_mode);
+    if (doc.custom_mode && *doc.custom_mode)
+        nubus_staged_custom_mode_set(NUBUS_STAGED_WILDCARD, doc.custom_mode);
     if (doc.video_sense >= 0)
         jmfb_pending_sense_set((uint8_t)doc.video_sense);
 
@@ -617,6 +652,7 @@ value_t machine_boot_apply(const boot_config_t *doc_in) {
     snprintf(w->video_card, sizeof(w->video_card), "%s", doc.video_card ? doc.video_card : "");
     w->video_sense = doc.video_sense;
     snprintf(w->video_mode, sizeof(w->video_mode), "%s", doc.video_mode ? doc.video_mode : "");
+    snprintf(w->custom_mode, sizeof(w->custom_mode), "%s", doc.custom_mode ? doc.custom_mode : "");
     stamp_created(w->created, sizeof(w->created));
     w->valid = true;
 
@@ -642,6 +678,7 @@ static value_t machine_method_boot(struct object *self, const member_t *m, int a
         .video_sense = (argv[5].u == 0xFF) ? -1 : (int)argv[5].u,
         .video_mode = argv[6].s,
         .rom2 = argv[7].s,
+        .custom_mode = argv[8].s,
     };
     value_t err = machine_boot_apply(&doc);
     if (val_is_error(&err))
@@ -707,6 +744,11 @@ static const arg_decl_t machine_boot_args[] = {
      .validation_flags = OBJ_ARG_OPTIONAL,
      .default_value = &k_unset_str,
      .doc = "Lisa/XL second ROM chip (two-chip form); default: single-file rom"   },
+    {.name = "custom_mode",
+     .kind = V_STRING,
+     .validation_flags = OBJ_ARG_OPTIONAL,
+     .default_value = &k_unset_str,
+     .doc = "Custom resolution WxHxD (generic 8_24 kind); default: none"          },
 };
 
 static const arg_decl_t machine_register_args[] = {
@@ -751,7 +793,7 @@ static const member_t machine_members[] = {
     {.kind = M_METHOD,
      .name = "boot",
      .doc = "Boot a machine from a configuration document; omitted arguments inherit from machine.config",
-     .method = {.args = machine_boot_args, .nargs = 8, .result = V_BOOL, .fn = machine_method_boot}},
+     .method = {.args = machine_boot_args, .nargs = 9, .result = V_BOOL, .fn = machine_method_boot}},
     {.kind = M_METHOD,
      .name = "register",
      .doc = "Record the active machine identity for checkpointing",

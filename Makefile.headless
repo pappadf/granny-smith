@@ -41,6 +41,13 @@ MACHINES_DIR  := src/machines
 PLATFORM_DIR  := src/platform/headless
 PEELER_DIR    := src/peeler
 
+# -- GS declaration-ROM 68K fragments --
+# Assembled by m68k binutils into build/vrom68k/ (shared with the wasm
+# build — the fragments are target-independent data).  Defines
+# VROM68K_HEADER and the rules that produce it.
+
+include src/core/peripherals/nubus/vrom68k/vrom68k.mk
+
 # -- Include paths --
 # Platform headers come first so platform.h overrides are picked up.
 
@@ -67,7 +74,8 @@ INCLUDES := -I$(PLATFORM_DIR) \
             -I$(MACHINES_DIR)/compact \
             -I$(MACHINES_DIR)/lisa \
             -I$(PEELER_DIR)/include \
-            -I$(PEELER_DIR)/lib
+            -I$(PEELER_DIR)/lib \
+            -I$(VROM68K_OUT)
 
 # -- Source discovery --
 # Wildcard patterns auto-discover new .c files in each subdirectory.
@@ -132,6 +140,11 @@ $(BUILD_DIR)/%.o: %.c
 # Force-rebuild build_id.o so __DATE__/__TIME__ stay current
 FORCE:
 $(BUILD_DIR)/$(CORE_DIR)/build_id.o: FORCE
+
+# gsvrom_data.c embeds the generated fragments header (edit a vrom68k
+# .s file → make rebuilds fragment, header, object — real dependency
+# tracking; the stale-blob failure mode is gone).
+$(BUILD_DIR)/$(CORE_DIR)/peripherals/nubus/gsvrom_data.o: $(VROM68K_HEADER)
 
 # Link all objects into the headless binary
 $(OUTPUT): $(OBJ)

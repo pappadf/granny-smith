@@ -14,4 +14,7 @@ TEST_ROM := roms/iix-iicx-se30-97221136.rom
 TEST_SETUP := cp "$(TEST_DATA)/aux/aux_3.0.1/hd160-with-aux-301.img" "$(TEST_TMPDIR)/hd.img"
 
 # 16 MB RAM required for A/UX boot.
-TEST_ARGS := ram=16384 hd=$(TEST_TMPDIR)/hd.img
+# Pinned to the REAL onboard-video vROM kind: this suite's reference PNGs
+# were captured against it, and the SE/30 profile now defaults to the
+# generic GS-vROM sibling (proposal-generic-nubus-vrom.md stage 3).
+TEST_ARGS := video_card=builtin_se30_video ram=16384 hd=$(TEST_TMPDIR)/hd.img

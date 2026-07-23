@@ -32,6 +32,7 @@
 #include "checkpoint.h"
 #include "declrom.h"
 #include "display.h"
+#include "gsvrom.h"
 #include "log.h"
 #include "memory.h"
 #include "nubus.h"
@@ -1057,7 +1058,7 @@ static void set_poweron_defaults(display_card_824gc_priv_t *p) {
     p->clut[1] = (rgba8_t){0, 0, 0, 255};
 }
 
-static int card_init(nubus_card_t *card, config_t *cfg, checkpoint_t *cp) {
+static int card_init_common(nubus_card_t *card, config_t *cfg, checkpoint_t *cp, bool generic) {
     (void)cp;
     display_card_824gc_priv_t *p = calloc(1, sizeof(*p));
     if (!p)
@@ -1101,7 +1102,22 @@ static int card_init(nubus_card_t *card, config_t *cfg, checkpoint_t *cp) {
         return -1;
     }
 
-    if (!load_vrom(p))
+    if (generic) {
+        // Generic sibling kind ("8_24gc"): generate the GS declaration ROM
+        // at card_init — the boot family + 32-bit sister family from the
+        // generic monitors[] row, code fragments (incl. SecondaryInit)
+        // spliced, CRC stamped in C (proposal-nubus-runtime-vrom §4); the
+        // offer registry is never consulted.
+        declrom_builder_t *bld = gsvrom_generate(GSVROM_MDCGC, display_card_824gc_generic_kind.monitors);
+        size_t img_size = 0;
+        const uint8_t *img = bld ? declrom_builder_bytes(bld, &img_size) : NULL;
+        if (img &&
+            declrom_install_builtin(display_card_824gc_generic_kind.id, img, img_size, p->vrom, GC824_DECLROM_BUS_SIZE))
+            p->vrom_size = GC824_DECLROM_BUS_SIZE;
+        else
+            LOG(0, "8_24gc: built-in declaration ROM failed to generate; declaration ROM is zero-filled");
+        declrom_builder_free(bld);
+    } else if (!load_vrom(p))
         LOG(0, "no 8•24 GC declaration ROM offered (machine.vrom.load a GC vROM, "
                "or make one available where the platform offers vROM files); "
                "declaration ROM is zero-filled");
@@ -1244,8 +1260,24 @@ static const char *card_name(const nubus_card_t *card) {
            "24 GC";
 }
 
+// Thin per-kind init wrappers — the sibling pair shares one HLE model
+// (proposal-generic-nubus-vrom sec. 6.1: "one HLE model per pair").
+static int card_init_real(nubus_card_t *card, config_t *cfg, checkpoint_t *cp) {
+    return card_init_common(card, cfg, cp, /*generic*/ false);
+}
+
+static int card_init_generic(nubus_card_t *card, config_t *cfg, checkpoint_t *cp) {
+    return card_init_common(card, cfg, cp, /*generic*/ true);
+}
+
+static const char *card_name_generic(const nubus_card_t *card) {
+    (void)card;
+    return "Apple Macintosh Display Card 8\xe2\x80\xa2"
+           "24 GC (generic video ROM)";
+}
+
 static const nubus_card_ops_t display_card_824gc_ops = {
-    .init = card_init,
+    .init = card_init_real,
     .teardown = card_teardown,
     .reset = card_reset,
     .on_vbl = card_on_vbl,
@@ -1253,19 +1285,36 @@ static const nubus_card_ops_t display_card_824gc_ops = {
     .name = card_name,
 };
 
+static const nubus_card_ops_t display_card_824gc_generic_ops = {
+    .init = card_init_generic,
+    .teardown = card_teardown,
+    .reset = card_reset,
+    .on_vbl = card_on_vbl,
+    .display = card_display,
+    .name = card_name_generic,
+};
+
 // === Factory + kind descriptor ==============================================
 
-static nubus_card_t *factory(int slot, config_t *cfg, checkpoint_t *cp) {
+static nubus_card_t *factory_common(int slot, config_t *cfg, checkpoint_t *cp, const nubus_card_ops_t *ops) {
     nubus_card_t *card = calloc(1, sizeof(*card));
     if (!card)
         return NULL;
-    card->ops = &display_card_824gc_ops;
+    card->ops = ops;
     card->slot = slot;
     if (card->ops->init(card, cfg, cp) != 0) {
         free(card);
         return NULL;
     }
     return card;
+}
+
+static nubus_card_t *factory(int slot, config_t *cfg, checkpoint_t *cp) {
+    return factory_common(slot, cfg, cp, &display_card_824gc_ops);
+}
+
+static nubus_card_t *factory_generic(int slot, config_t *cfg, checkpoint_t *cp) {
+    return factory_common(slot, cfg, cp, &display_card_824gc_generic_ops);
 }
 
 // Advertised modes.  Seedable BOOT depths only: the ROM Slot Manager keeps
@@ -1306,6 +1355,35 @@ const nubus_card_kind_t display_card_824gc_kind = {
     .requires_vrom = true,
     .monitors = display_card_824gc_monitors,
     .factory = factory,
+};
+
+// Monitor list for the generic sibling: config 0 (640×480) only in this
+// stage — the 16" config rides the GC-OS VidComm channel and lands with
+// the extended-mode work (proposal sec. 9 stage 4).
+static const nubus_monitor_t display_card_824gc_generic_monitors[] = {
+    {.id = "gc_640x480",
+     .name = "13\" AppleColor (640×480)",
+     .width = 640,
+     .height = 480,
+     .depths = display_card_824gc_depths,
+     .sense_code = 6,
+     // The GS ROM's boot family id (low 3 bits = config 0); its
+     // PrimaryInit rewrites the sister bytes to this id.
+     .srsrc_sister = 0x80},
+    {0},
+};
+
+// Generic sibling kind: always-available twin with the built-in GS
+// declaration ROM.  Note the id is one underscore from the real "824gc"
+// (proposal sec. 11.3) — deliberate short boot-document spelling.
+const nubus_card_kind_t display_card_824gc_generic_kind = {
+    .id = "8_24gc",
+    .display_name = "Apple Macintosh Display Card 8\xe2\x80\xa2"
+                    "24 GC (generic video ROM)",
+    .attach = CARD_ATTACH_NUBUS,
+    .requires_vrom = false,
+    .monitors = display_card_824gc_generic_monitors,
+    .factory = factory_generic,
 };
 
 // === Video-mode selection ===================================================
@@ -1363,7 +1441,9 @@ bool display_card_824gc_video_mode_lookup(const char *id, const nubus_monitor_t 
 // === Accelerator introspection (object model) ===============================
 
 bool display_card_824gc_is_card(const nubus_card_t *card) {
-    return card && card->ops == &display_card_824gc_ops;
+    // Both siblings share the HLE model — the generic kind differs only in
+    // its ops->init/name wrappers.
+    return card && (card->ops == &display_card_824gc_ops || card->ops == &display_card_824gc_generic_ops);
 }
 const char *display_card_824gc_state(const nubus_card_t *card) {
     if (!display_card_824gc_is_card(card))

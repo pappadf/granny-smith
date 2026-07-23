@@ -57,12 +57,16 @@ test('New Machine dialog: pick the 24AC card by name and boot it', async ({ page
   await expect(model.locator('option[value="iicx"]')).toHaveCount(1, { timeout: 30_000 });
   await model.selectOption('iicx');
 
-  // The Display Card picker speaks in *cards*, not vROM filenames: two options,
-  // one of which is the 24AC, and never a raw ".vrom" name.
+  // The Display Card picker speaks in *cards*, not vROM filenames, and never
+  // a raw ".vrom" name.  Five options for the IIcx socket: the two real cards
+  // identified from the staged vROMs (8•24, 24AC) plus the three always-
+  // available generic siblings (8_24, 24ac, 8_24gc) that need no dump
+  // (proposal-generic-nubus-vrom §6.1).  "24AC" therefore matches two — the
+  // real card and its generic sibling.
   const card = page.locator('#cfg-card');
   await expect(card).toBeVisible({ timeout: 30_000 });
-  await expect(card.locator('option')).toHaveCount(2);
-  await expect(card.locator('option', { hasText: '24AC' })).toHaveCount(1);
+  await expect(card.locator('option')).toHaveCount(5);
+  await expect(card.locator('option', { hasText: '24AC' })).toHaveCount(2);
   await expect(card.locator('option', { hasText: '.vrom' })).toHaveCount(0);
 
   // Pick the 24AC card and start.

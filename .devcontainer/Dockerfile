@@ -12,6 +12,7 @@ ARG NODE_MAJOR=22
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
     build-essential \
+    binutils-m68k-linux-gnu \
     cmake \
     ninja-build \
     python3 \

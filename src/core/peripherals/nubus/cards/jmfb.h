@@ -83,8 +83,12 @@
 // to disable) in the slot's video ROM.
 #define VINT_DISABLE 0x0002u
 
-// Per-card kind descriptor — registered in nubus.c's g_card_registry.
+// Per-card kind descriptors — registered in nubus.c's g_card_registry.
+// mdc_8_24 is the real card (needs an offered vROM dump); 8_24 is its
+// always-available generic sibling with the built-in GS declaration ROM
+// (same HLE register model — see proposal-generic-nubus-vrom.md sec. 6.1).
 extern const nubus_card_kind_t mdc_8_24_kind;
+extern const nubus_card_kind_t jmfb_generic_kind;
 
 // Pending monitor sense for the next-instantiated JMFB card.  Set
 // before `machine.boot` to make the new machine's JMFB report a
@@ -112,6 +116,12 @@ uint8_t jmfb_pending_sense_get(void);
 // the pending selection.
 void jmfb_pending_video_mode_set(const char *id);
 const char *jmfb_pending_video_mode_get(void);
+
+// Pending "WxHxD" custom resolution (proposal-nubus-runtime-vrom §3.6):
+// the generic 8_24 kind generates a video sResource at this geometry and
+// boots its default 13" RGB monitor on it.  NULL/"" clears.
+void jmfb_pending_custom_mode_set(const char *spec);
+const char *jmfb_pending_custom_mode_get(void);
 
 // Look up a video-mode entry by id ("monitor_Nbpp") in the JMFB
 // catalog.  Writes the resolved monitor + depth into *out_monitor

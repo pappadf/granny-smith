@@ -26,6 +26,7 @@
 #include "checkpoint.h"
 #include "declrom.h"
 #include "display.h"
+#include "gsvrom.h"
 #include "log.h"
 #include "memory.h"
 #include "nubus.h"
@@ -62,6 +63,12 @@ static bool s_pending_sense_set = false;
 // invocation).  At most 31 chars + NUL fits any "monitor_Nbpp" id.
 // Empty string means "no pending mode — fall back to plain sense".
 static char s_pending_video_mode_id[32] = "";
+
+// Pending "WxHxD" custom resolution set via `custom_mode=` (proposal-
+// nubus-runtime-vrom §3.6).  The generic kind generates a video
+// sResource at this geometry and boots its default monitor on it.
+// Empty string means "no custom mode".
+static char s_pending_custom_mode[40] = "";
 
 // === Per-card private state =================================================
 
@@ -656,7 +663,7 @@ static bool load_vrom(jmfb_priv_t *p) {
     return true;
 }
 
-static int card_init(nubus_card_t *card, config_t *cfg, checkpoint_t *cp) {
+static int card_init_common(nubus_card_t *card, config_t *cfg, checkpoint_t *cp, bool generic) {
     (void)cp;
     jmfb_priv_t *p = calloc(1, sizeof(*p));
     if (!p)
@@ -676,7 +683,63 @@ static int card_init(nubus_card_t *card, config_t *cfg, checkpoint_t *cp) {
         return -1;
     }
 
-    if (!load_vrom(p)) {
+    // A staged custom resolution overrides the default monitor's geometry
+    // (proposal-nubus-runtime-vrom §3.6): the card senses its default 13"
+    // RGB monitor, but that monitor's video sResource — and the HLE
+    // display — carry the WxHxD the user asked for.  Consumed here so the
+    // generic build below emits records for it; validated against this
+    // card's framebuffer window.  custom_monitors backs the pointers in
+    // the runtime monitor list; it is read only within this call (the
+    // builder copies what it needs and the display geometry is captured
+    // into p->display), so a local is enough.
+    nubus_monitor_t custom_monitors[5];
+    const nubus_monitor_t *gen_monitors = generic ? jmfb_generic_kind.monitors : NULL;
+    uint32_t custom_w = 0, custom_h = 0, custom_d = 0;
+    bool custom_active = false;
+    if (generic && s_pending_custom_mode[0]) {
+        const char *why = NULL;
+        if (!nubus_custom_mode_parse(s_pending_custom_mode, &custom_w, &custom_h, &custom_d, &why)) {
+            LOG(0, "8_24: custom_mode '%s' rejected: %s", s_pending_custom_mode, why);
+        } else if (custom_d != 1 && custom_d != 2 && custom_d != 4 && custom_d != 8) {
+            LOG(0, "8_24: custom_mode depth %u unsupported (this card has no direct modes; use 1/2/4/8)", custom_d);
+        } else if ((uint64_t)custom_w * custom_h * custom_d / 8 + 0xA00 > JMFB_VRAM_SIZE) {
+            LOG(0, "8_24: custom_mode %ux%ux%u framebuffer exceeds the %u-byte window", custom_w, custom_h, custom_d,
+                (unsigned)JMFB_VRAM_SIZE);
+        } else {
+            // Copy the generic monitor list and rewrite the default (13" RGB,
+            // sense $6) entry to the custom geometry; the rest stay so their
+            // sResources still exist (the sensed one wins at boot).
+            size_t n = 0;
+            for (const nubus_monitor_t *mm = jmfb_generic_kind.monitors; mm->id && n < 4; mm++)
+                custom_monitors[n++] = *mm;
+            for (size_t i = 0; i < n; i++) {
+                if (custom_monitors[i].sense_code == 0x6) {
+                    custom_monitors[i].width = custom_w;
+                    custom_monitors[i].height = custom_h;
+                    custom_monitors[i].name = "Custom";
+                }
+            }
+            custom_monitors[n] = (nubus_monitor_t){0};
+            gen_monitors = custom_monitors;
+            custom_active = true;
+        }
+    }
+    s_pending_custom_mode[0] = '\0';
+
+    if (generic) {
+        // Generic sibling kind ("8_24"): generate the GS declaration ROM at
+        // card_init — records from the (possibly custom-overridden) monitor
+        // list, code fragments spliced, CRC stamped in C (proposal-nubus-
+        // runtime-vrom §4); the offer registry is never consulted.
+        declrom_builder_t *bld = gsvrom_generate(GSVROM_JMFB, gen_monitors);
+        size_t img_size = 0;
+        const uint8_t *img = bld ? declrom_builder_bytes(bld, &img_size) : NULL;
+        if (img && declrom_install_builtin(jmfb_generic_kind.id, img, img_size, p->vrom, JMFB_DECLROM_BUS_SIZE))
+            p->vrom_size = JMFB_DECLROM_BUS_SIZE;
+        else
+            LOG(0, "8_24: built-in declaration ROM failed to generate; declaration ROM is zero-filled");
+        declrom_builder_free(bld);
+    } else if (!load_vrom(p)) {
         // requires_vrom is true on this kind, so the dialog gates
         // boot on a real VROM file; reaching here means CI ran without
         // one.  Log loudly and continue with a zero-filled declrom —
@@ -704,6 +767,21 @@ static int card_init(nubus_card_t *card, config_t *cfg, checkpoint_t *cp) {
         }
         s_pending_video_mode_id[0] = '\0';
     }
+    // A validated custom resolution overrode the default monitor above:
+    // sense the default 13" RGB ($6) and seed PRAM to its sister ($A6) at
+    // the requested depth, exactly like a video_mode pick but with the
+    // geometry the generated records now carry.
+    if (custom_active) {
+        for (size_t i = 0; custom_monitors[i].id; i++) {
+            if (custom_monitors[i].sense_code == 0x6) {
+                seeded_monitor = &custom_monitors[i];
+                break;
+            }
+        }
+        seeded_depth_bpp = (int)custom_d;
+        s_pending_sense = 0x6;
+        s_pending_sense_set = true;
+    }
 
     // Monitor sense code — consumed from the pending-sense slot the
     // shell can set via `nubus.video_sense = N` before `machine.boot`.
@@ -719,6 +797,12 @@ static int card_init(nubus_card_t *card, config_t *cfg, checkpoint_t *cp) {
     const nubus_monitor_t *monitor = monitor_for_sense(p->sense_code);
     uint32_t mon_w = monitor ? monitor->width : 640;
     uint32_t mon_h = monitor ? monitor->height : 480;
+    // The custom resolution rides the sensed default monitor's slot, so
+    // the HLE display geometry follows the override, not the stock 13".
+    if (custom_active) {
+        mon_w = custom_w;
+        mon_h = custom_h;
+    }
 
     // Default register state from PrimaryInit's expected starting point.
     // The Apple Display Card 8•24 powers up at 1 bpp; PrimaryInit fills
@@ -746,7 +830,12 @@ static int card_init(nubus_card_t *card, config_t *cfg, checkpoint_t *cp) {
     // renders neutral grays correctly).  Kong's CRT amplified blue more
     // than R/G, so its non-NULL kong_crt_response table inverts Apple's
     // gamma pre-correction at display time.
-    p->display.crt_response = monitor ? monitor->crt_response : NULL;
+    // The generic kind always uses identity response: the GS vROM ships
+    // identity gamma for every monitor, so there is no Apple gamma
+    // pre-correction to invert (jmfb_generic_monitors carries no
+    // crt_response either — this belt-and-braces NULL keeps the two
+    // consistent even if the tables drift).
+    p->display.crt_response = (!generic && monitor) ? monitor->crt_response : NULL;
     p->display.response_dirty = true;
 
     // Initial CLUT — a simple grayscale ramp so the canvas isn't blank
@@ -906,27 +995,60 @@ static const char *card_name(const nubus_card_t *card) {
            "24"; // "8•24"
 }
 
+// Thin per-kind init wrappers — the sibling pair shares one HLE model
+// (card_init_common); only the declROM source differs (proposal-generic-
+// nubus-vrom sec. 6.1: "one HLE model per pair — hard rule").
+static int card_init_real(nubus_card_t *card, config_t *cfg, checkpoint_t *cp) {
+    return card_init_common(card, cfg, cp, /*generic*/ false);
+}
+
+static int card_init_generic(nubus_card_t *card, config_t *cfg, checkpoint_t *cp) {
+    return card_init_common(card, cfg, cp, /*generic*/ true);
+}
+
+static const char *card_name_generic(const nubus_card_t *card) {
+    (void)card;
+    return "Apple Macintosh Display Card 8\xe2\x80\xa2"
+           "24 (generic video ROM)";
+}
+
 static const nubus_card_ops_t mdc_8_24_ops = {
-    .init = card_init,
+    .init = card_init_real,
     .teardown = card_teardown,
     .on_vbl = card_on_vbl,
     .display = card_display,
     .name = card_name,
 };
 
+static const nubus_card_ops_t jmfb_generic_ops = {
+    .init = card_init_generic,
+    .teardown = card_teardown,
+    .on_vbl = card_on_vbl,
+    .display = card_display,
+    .name = card_name_generic,
+};
+
 // === Factory + kind descriptor ==============================================
 
-static nubus_card_t *factory(int slot, config_t *cfg, checkpoint_t *cp) {
+static nubus_card_t *factory_common(int slot, config_t *cfg, checkpoint_t *cp, const nubus_card_ops_t *ops) {
     nubus_card_t *card = calloc(1, sizeof(*card));
     if (!card)
         return NULL;
-    card->ops = &mdc_8_24_ops;
+    card->ops = ops;
     card->slot = slot;
     if (card->ops->init(card, cfg, cp) != 0) {
         free(card);
         return NULL;
     }
     return card;
+}
+
+static nubus_card_t *factory(int slot, config_t *cfg, checkpoint_t *cp) {
+    return factory_common(slot, cfg, cp, &mdc_8_24_ops);
+}
+
+static nubus_card_t *factory_generic(int slot, config_t *cfg, checkpoint_t *cp) {
+    return factory_common(slot, cfg, cp, &jmfb_generic_ops);
 }
 
 // Monitor types the Rev B ROM supports (proposal §3.2.5 + the mode
@@ -1127,6 +1249,18 @@ const char *jmfb_pending_video_mode_get(void) {
     return s_pending_video_mode_id[0] ? s_pending_video_mode_id : NULL;
 }
 
+void jmfb_pending_custom_mode_set(const char *spec) {
+    if (!spec || !*spec) {
+        s_pending_custom_mode[0] = '\0';
+        return;
+    }
+    snprintf(s_pending_custom_mode, sizeof s_pending_custom_mode, "%s", spec);
+}
+
+const char *jmfb_pending_custom_mode_get(void) {
+    return s_pending_custom_mode[0] ? s_pending_custom_mode : NULL;
+}
+
 // Parse "monitor_Nbpp" into (monitor, N).  monitor portion is matched
 // case-sensitively against entries in mdc_8_24_monitors[]; N is parsed
 // as a decimal integer and validated against the monitor's depth list.
@@ -1181,4 +1315,56 @@ const nubus_card_kind_t mdc_8_24_kind = {
     .requires_vrom = true,
     .monitors = mdc_8_24_monitors,
     .factory = factory,
+};
+
+// Monitor list for the generic sibling kind — same geometry / sense /
+// sister scheme as the real card (the GS vROM reproduces the Ax sister
+// sResource IDs so PRAM seeding works identically), but with no
+// crt_response entries: the generic ROM ships identity gamma for every
+// monitor, so there is no Apple gamma pre-correction to invert (the
+// real 21" Kong entry compensates for Apple's B-attenuated 'gama'
+// table, which the generic ROM deliberately does not reproduce).
+static const nubus_monitor_t jmfb_generic_monitors[] = {
+    {.id = "13in_rgb",
+     .name = "13\" AppleColor",
+     .width = 640,
+     .height = 480,
+     .depths = mdc_8_24_4depths,
+     .sense_code = 0x6,
+     .srsrc_sister = 0xA6},
+    {.id = "12in_rgb",
+     .name = "12\" RGB",
+     .width = 512,
+     .height = 384,
+     .depths = mdc_8_24_4depths,
+     .sense_code = 0x2,
+     .srsrc_sister = 0xA2},
+    {.id = "15in_bw",
+     .name = "15\" Portrait B&W",
+     .width = 640,
+     .height = 870,
+     .depths = mdc_8_24_4depths,
+     .sense_code = 0x1,
+     .srsrc_sister = 0xA1},
+    {.id = "21in_rgb",
+     .name = "21\" RGB",
+     .width = 1152,
+     .height = 870,
+     .depths = mdc_8_24_4depths,
+     .sense_code = 0x0,
+     .srsrc_sister = 0xA7},
+    {0},
+};
+
+// Generic sibling kind: always-available twin of mdc_8_24 with a built-in
+// declaration ROM — zero-configuration by construction (proposal-generic-
+// nubus-vrom sec. 6.1).  The short id is what users type in boot documents.
+const nubus_card_kind_t jmfb_generic_kind = {
+    .id = "8_24",
+    .display_name = "Apple Macintosh Display Card 8\xe2\x80\xa2"
+                    "24 (generic video ROM)",
+    .attach = CARD_ATTACH_NUBUS,
+    .requires_vrom = false,
+    .monitors = jmfb_generic_monitors,
+    .factory = factory_generic,
 };

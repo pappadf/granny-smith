@@ -37,6 +37,7 @@
 #include "checkpoint.h"
 #include "declrom.h"
 #include "display.h"
+#include "gsvrom.h"
 #include "log.h"
 #include "memory.h"
 #include "nubus.h"
@@ -94,6 +95,12 @@ struct display_card_24ac_priv {
     uint8_t sense_primary; // primary sense code 0-7 the monitor reports
     uint8_t sense_ext; // 6-bit extended-sense code (for primary 6/7 monitors)
     uint8_t sense_last_write; // last byte written to 0xD8000D (which lines driven)
+    // The CONNECTED monitor — physical-plug state, chosen at card_init
+    // (default or staged video mode).  Survives the /RESET hook: a bus
+    // reset re-initialises registers, it does not unplug the display.
+    uint16_t mon_width; // connected monitor geometry
+    uint16_t mon_height;
+    uint8_t mon_sense_ext; // its extended-sense code
     bool vbl_enabled; // slot VBL IRQ armed (VIDCTL bit 7 clear)
 
     // === Phase 2 acceleration engine ===
@@ -711,11 +718,14 @@ static void set_poweron_defaults(display_card_24ac_priv_t *p) {
     p->vbl_enabled = false;
     p->mode_reg = 0x40u; // 8 bpp depth code in bits 7-5 (0x40 = code 2, vrom RE)
     p->depth_reg = 0;
-    // Default monitor: 640×480 multisync (sRsrc id $6B = primary sense 6 +
-    // extended-sense code $03).  Unlike the $40 "two-page" monitor (1152×870,
-    // grayscale 1bpp only), the multisync display supports colour depths.
+    // Monitor sense reflects the CONNECTED monitor (p->mon_*, set at
+    // card_init — default 640×480 multisync, ext code $03, or the staged
+    // video-mode pick).  A warm /RESET must not "unplug" the display:
+    // the boot ROM executes a 68k RESET early in StartBoot, and the
+    // sensed monitor has to survive it or a staged mode silently falls
+    // back to the default monitor when PrimaryInit re-reads the lines.
     p->sense_primary = 6;
-    p->sense_ext = 0x03;
+    p->sense_ext = p->mon_sense_ext;
     p->sense_last_write = 0;
     p->status_busy = 0;
 
@@ -735,14 +745,14 @@ static void set_poweron_defaults(display_card_24ac_priv_t *p) {
     p->status_class_bit = true; // large-VRAM organisation
     p->config_variant_bit = true; // large-VRAM geometry variant
 
-    // Default 640×480 8 bpp (the sensed multisync monitor).  cscSetMode
-    // (→ apply_mode_depth) re-derives the pixel format and stride as the OS
-    // changes depth; the power-on default matches the MODE register seed above
-    // so the framebuffer alias has the right 8-bpp stride before the OS runs.
+    // Connected-monitor geometry at 8 bpp.  cscSetMode (→ apply_mode_depth)
+    // re-derives the pixel format and stride as the OS changes depth; the
+    // power-on default matches the MODE register seed above so the
+    // framebuffer alias has the right 8-bpp stride before the OS runs.
     // The framebuffer sits at VRAM offset 0 (ScrnBase = slot+0x900000 → the
     // alias → VRAM[0]).
-    p->display.width = 640;
-    p->display.height = 480;
+    p->display.width = p->mon_width;
+    p->display.height = p->mon_height;
     p->display.format = PIXEL_8BPP;
     recompute_stride(p); // 640 bytes/row at 8 bpp
     p->display.bits = p->vram;
@@ -764,7 +774,7 @@ static void set_poweron_defaults(display_card_24ac_priv_t *p) {
     }
 }
 
-static int card_init(nubus_card_t *card, config_t *cfg, checkpoint_t *cp) {
+static int card_init_common(nubus_card_t *card, config_t *cfg, checkpoint_t *cp, bool generic) {
     (void)cp;
     display_card_24ac_priv_t *p = calloc(1, sizeof(*p));
     if (!p)
@@ -792,7 +802,21 @@ static int card_init(nubus_card_t *card, config_t *cfg, checkpoint_t *cp) {
         return -1;
     }
 
-    if (!load_vrom(p)) {
+    if (generic) {
+        // Generic sibling kind ("24ac"): generate the GS declaration ROM at
+        // card_init — records from the shared monitors[] table, code
+        // fragments spliced, CRC stamped in C (proposal-nubus-runtime-vrom
+        // §4); the offer registry is never consulted.
+        declrom_builder_t *bld = gsvrom_generate(GSVROM_BOOGIE, display_card_24ac_generic_kind.monitors);
+        size_t img_size = 0;
+        const uint8_t *img = bld ? declrom_builder_bytes(bld, &img_size) : NULL;
+        if (img && declrom_install_builtin(display_card_24ac_generic_kind.id, img, img_size, p->vrom,
+                                           DISPLAY_CARD_24AC_DECLROM_BUS_SIZE))
+            p->vrom_size = DISPLAY_CARD_24AC_DECLROM_BUS_SIZE;
+        else
+            LOG(0, "24ac: built-in declaration ROM failed to generate; declaration ROM is zero-filled");
+        declrom_builder_free(bld);
+    } else if (!load_vrom(p)) {
         // requires_vrom gates the dialog on a real file; reaching here means
         // CI ran without one.  Log loudly and continue with a zero declrom —
         // PrimaryInit finds no Format Header and the OS skips the slot.
@@ -805,21 +829,28 @@ static int card_init(nubus_card_t *card, config_t *cfg, checkpoint_t *cp) {
     card->declrom = p->vrom;
     card->declrom_size = p->vrom_size;
 
-    // Phase-1 starting state: 8 bpp, 640×480, framebuffer at VRAM offset 0.
-    // The vrom's video driver re-programs depth/CLUT/timing at boot.  The
-    // power-on register/engine/display state (and the grayscale CLUT ramp)
-    // is shared with the /RESET hook — see set_poweron_defaults.
+    // The connected monitor: the default 640×480 multisync, or the staged
+    // video-mode pick.  Stored as plug state so it survives the /RESET hook
+    // (set_poweron_defaults derives sense + geometry from it).
+    p->mon_width = 640;
+    p->mon_height = 480;
+    p->mon_sense_ext = 0x03;
+    if (seeded_monitor) {
+        p->mon_width = (uint16_t)seeded_monitor->width;
+        p->mon_height = (uint16_t)seeded_monitor->height;
+        p->mon_sense_ext = ext_for_sister(seeded_monitor->srsrc_sister);
+    }
+
+    // Phase-1 starting state: 8 bpp at the connected monitor's geometry,
+    // framebuffer at VRAM offset 0.  The vrom's video driver re-programs
+    // depth/CLUT/timing at boot.  The power-on register/engine/display state
+    // (and the grayscale CLUT ramp) is shared with the /RESET hook — see
+    // set_poweron_defaults.
     set_poweron_defaults(p);
 
-    // Apply a pending video-mode pick over the power-on defaults: report the
-    // chosen monitor on the sense lines and bring the framebuffer up at the
-    // chosen depth/geometry (the OS re-confirms both via the sResource + the
-    // PRAM seed below).
+    // Apply a pending video-mode pick's DEPTH over the power-on defaults
+    // (the OS re-confirms it via the sResource + the PRAM seed below).
     if (seeded_monitor) {
-        p->sense_primary = 6;
-        p->sense_ext = ext_for_sister(seeded_monitor->srsrc_sister);
-        p->display.width = seeded_monitor->width;
-        p->display.height = seeded_monitor->height;
         pixel_format_t f = format_for_bpp(seeded_depth_bpp);
         p->display.format = f;
         p->mode_reg = modebits_for_format(f);
@@ -991,8 +1022,23 @@ static const char *card_name(const nubus_card_t *card) {
     return "Apple Macintosh Display Card 24AC";
 }
 
+static const char *card_name_generic(const nubus_card_t *card) {
+    (void)card;
+    return "Apple Macintosh Display Card 24AC (generic video ROM)";
+}
+
+// Thin per-kind init wrappers — the sibling pair shares one HLE model
+// (proposal-generic-nubus-vrom sec. 6.1: "one HLE model per pair").
+static int card_init_real(nubus_card_t *card, config_t *cfg, checkpoint_t *cp) {
+    return card_init_common(card, cfg, cp, /*generic*/ false);
+}
+
+static int card_init_generic(nubus_card_t *card, config_t *cfg, checkpoint_t *cp) {
+    return card_init_common(card, cfg, cp, /*generic*/ true);
+}
+
 static const nubus_card_ops_t display_card_24ac_ops = {
-    .init = card_init,
+    .init = card_init_real,
     .teardown = card_teardown,
     .reset = card_reset,
     .on_vbl = card_on_vbl,
@@ -1000,19 +1046,36 @@ static const nubus_card_ops_t display_card_24ac_ops = {
     .name = card_name,
 };
 
+static const nubus_card_ops_t display_card_24ac_generic_ops = {
+    .init = card_init_generic,
+    .teardown = card_teardown,
+    .reset = card_reset,
+    .on_vbl = card_on_vbl,
+    .display = card_display,
+    .name = card_name_generic,
+};
+
 // === Factory + kind descriptor ==============================================
 
-static nubus_card_t *factory(int slot, config_t *cfg, checkpoint_t *cp) {
+static nubus_card_t *factory_common(int slot, config_t *cfg, checkpoint_t *cp, const nubus_card_ops_t *ops) {
     nubus_card_t *card = calloc(1, sizeof(*card));
     if (!card)
         return NULL;
-    card->ops = &display_card_24ac_ops;
+    card->ops = ops;
     card->slot = slot;
     if (card->ops->init(card, cfg, cp) != 0) {
         free(card);
         return NULL;
     }
     return card;
+}
+
+static nubus_card_t *factory(int slot, config_t *cfg, checkpoint_t *cp) {
+    return factory_common(slot, cfg, cp, &display_card_24ac_ops);
+}
+
+static nubus_card_t *factory_generic(int slot, config_t *cfg, checkpoint_t *cp) {
+    return factory_common(slot, cfg, cp, &display_card_24ac_generic_ops);
 }
 
 // Advertised modes (vrom identity strings, proposal §3.1): 640×480,
@@ -1057,6 +1120,19 @@ const nubus_card_kind_t display_card_24ac_kind = {
     .requires_vrom = true,
     .monitors = display_card_24ac_monitors,
     .factory = factory,
+};
+
+// Generic sibling kind: always-available twin with the built-in GS
+// declaration ROM (proposal-generic-nubus-vrom sec. 6.1).  Same monitor
+// table — the 24AC entries carry no crt_response and the GS ROM ships
+// identity gamma, so the tables genuinely coincide.
+const nubus_card_kind_t display_card_24ac_generic_kind = {
+    .id = "24ac",
+    .display_name = "Apple Macintosh Display Card 24AC (generic video ROM)",
+    .attach = CARD_ATTACH_NUBUS,
+    .requires_vrom = false,
+    .monitors = display_card_24ac_monitors,
+    .factory = factory_generic,
 };
 
 // === Video-mode selection (machine.nubus.video_mode) ========================
@@ -1117,7 +1193,9 @@ bool display_card_24ac_video_mode_lookup(const char *id, const nubus_monitor_t *
 // === Engine introspection (object model) ====================================
 
 bool display_card_24ac_is_card(const nubus_card_t *card) {
-    return card && card->ops == &display_card_24ac_ops;
+    // Both siblings share the HLE model — the generic kind differs only in
+    // its ops->init/name wrappers.
+    return card && (card->ops == &display_card_24ac_ops || card->ops == &display_card_24ac_generic_ops);
 }
 
 bool display_card_24ac_engine_enabled(const nubus_card_t *card) {

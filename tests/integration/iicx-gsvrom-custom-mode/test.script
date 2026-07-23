@@ -1,0 +1,18 @@
+# Generic 8_24 at a custom resolution: the declaration ROM is generated
+# with an 800x600 video sResource (the default 13" monitor's slot), the
+# staged custom depth (8bpp) is PRAM-seeded, and the Welcome screen paints
+# at 800x600.  The five-line boot prefix mirrors iicx-gsvrom-video-modes.
+machine.boot model="iicx" ram=8192 video_card="8_24" custom_mode="800x600x8"
+machine.floppy.drive[0].insert "../../data/systems/System_7_0_1.image"
+scheduler.run 50000000
+machine.memory.poke.w 0x017A 0x8805
+scheduler.run 1500000
+machine.memory.poke.w 0x017A 0
+scheduler.run 111000000
+assert machine.screen.width == 800                "custom width != 800"
+assert machine.screen.height == 600               "custom height != 600"
+assert machine.config.custom_mode == "800x600x8"  "custom_mode not recorded"
+assert machine.rtc.pram.peek(0x48) == 0x83        "savedMode != 0x83 (8bpp)"
+assert machine.rtc.pram.peek(0x49) == 0xa6        "sister != 0xa6 (default monitor)"
+machine.screen.match finder-custom-800x600-8bpp.png
+quit

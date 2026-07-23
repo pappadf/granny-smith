@@ -47,7 +47,11 @@ Emulator modules (e.g., scsi, cpu, via, scc, rtc) have `.c`/`.h` files in `src/c
    npx playwright install --with-deps chromium
    ```
 
-**Required tools:** `emcc` (4.0.10), `make`, `node` (18+), `python3`, `git`  
+**Required tools:** `emcc` (4.0.10), `make`, `node` (18+), `python3`, `git`,
+`binutils-m68k-linux-gnu` (2.42+; assembles the generic NuBus declaration-ROM
+68K fragments — `src/core/peripherals/nubus/vrom68k/`. Any m68k-targeted
+binutils works; override `M68K_AS`/`M68K_OBJCOPY` if yours differ. Shipped in
+the devcontainer image.)  
 **Local server:** `scripts/dev_server.py` or `python3 -m http.server 8080`  
 **CI:** GitHub Actions workflows in `.github/workflows/`
 
