@@ -457,10 +457,18 @@
     );
     const hdPath = hd === NONE_SENTINEL ? NONE_SENTINEL : `/opfs/images/hd/${hd}`;
     const cdPath = cd === NONE_SENTINEL ? NONE_SENTINEL : `/opfs/images/cd/${cd}`;
-    // A fixed builtin video slot (SE/30 / IIci / IIsi) hard-wires its card
-    // and has no C-side video-mode catalog — the boot document carries
-    // neither field for it (boot validation rejects unknown mode ids).
+    // A fixed builtin video slot (IIci / IIsi) hard-wires its card and has
+    // no C-side video-mode catalog — the boot document carries neither
+    // field for it (boot validation rejects unknown mode ids).
     const fixedVideo = configSlot?.fixed === true;
+    // Card configurability and mode-catalog presence are INDEPENDENT: the
+    // SE/30's builtin slot is now card-configurable (generic vs real vROM)
+    // yet still has a single fixed 1-bpp mode with no C-side catalog.  So
+    // gate video_mode on there being an actual choice (more than one mode —
+    // the same condition that shows the picker), not on `fixedVideo`; else
+    // the lone auto-selected `se30_internal_1bpp` id is sent and boot
+    // validation rejects it as unknown.
+    const hasVideoModeChoice = videoModes.length > 1;
     await initEmulator({
       model: modelId,
       modelName,
@@ -472,7 +480,7 @@
       // Seed the selected video mode (matches web-legacy's bootFromConfig).
       // Without it the card never seeds its slot-PRAM/video defaults and A/UX
       // hangs enabling its device drivers on real hardware.
-      videoMode: fixedVideo ? undefined : videoMode || undefined,
+      videoMode: fixedVideo || !hasVideoModeChoice ? undefined : videoMode || undefined,
       ram,
       floppies: floppyPaths,
       hd: hdPath,
