@@ -26,13 +26,13 @@ machine.memory.poke.w 0x017A 0x8805
 scheduler.run 1500000
 machine.memory.poke.w 0x017A 0
 scheduler.run 11000000
-assert ${machine.id == "iicx"}                      "machine.id != iicx"
-assert ${machine.screen.width == 640}               "13in_rgb 1bpp width != 640"
-assert ${machine.screen.height == 480}              "13in_rgb 1bpp height != 480"
-assert ${machine.rtc.pram.peek(0x48) == 0x80}       "13in_rgb 1bpp savedMode != 0x80"
-assert ${machine.rtc.pram.peek(0x49) == 0xa6}       "13in_rgb 1bpp sister != 0xa6"
-assert ${machine.memory.peek.l(0xf9200208) == 0x80} "13in_rgb 1bpp CLUTPBCR != 0x80"
-assert ${machine.memory.peek.l(0xf920000c) == 0x14} "13in_rgb 1bpp RowWords != 0x14"
+assert machine.id == "iicx"                      "machine.id != iicx"
+assert machine.screen.width == 640               "13in_rgb 1bpp width != 640"
+assert machine.screen.height == 480              "13in_rgb 1bpp height != 480"
+assert machine.rtc.pram.peek(0x48) == 0x80       "13in_rgb 1bpp savedMode != 0x80"
+assert machine.rtc.pram.peek(0x49) == 0xa6       "13in_rgb 1bpp sister != 0xa6"
+assert machine.memory.peek.l(0xf9200208) == 0x80 "13in_rgb 1bpp CLUTPBCR != 0x80"
+assert machine.memory.peek.l(0xf920000c) == 0x14 "13in_rgb 1bpp RowWords != 0x14"
 machine.screen.match welcome-13in_rgb-640x480-1bpp.png
 
 machine.boot model="iicx" ram=8192 video_card="8_24" video_mode="13in_rgb_2bpp"
@@ -42,9 +42,9 @@ machine.memory.poke.w 0x017A 0x8805
 scheduler.run 1500000
 machine.memory.poke.w 0x017A 0
 scheduler.run 11000000
-assert ${machine.rtc.pram.peek(0x48) == 0x81}       "13in_rgb 2bpp savedMode != 0x81"
-assert ${machine.memory.peek.l(0xf9200208) == 0x88} "13in_rgb 2bpp CLUTPBCR != 0x88"
-assert ${machine.memory.peek.l(0xf920000c) == 0x28} "13in_rgb 2bpp RowWords != 0x28"
+assert machine.rtc.pram.peek(0x48) == 0x81       "13in_rgb 2bpp savedMode != 0x81"
+assert machine.memory.peek.l(0xf9200208) == 0x88 "13in_rgb 2bpp CLUTPBCR != 0x88"
+assert machine.memory.peek.l(0xf920000c) == 0x28 "13in_rgb 2bpp RowWords != 0x28"
 machine.screen.match welcome-13in_rgb-640x480-2bpp.png
 
 machine.boot model="iicx" ram=8192 video_card="8_24" video_mode="13in_rgb_4bpp"
@@ -54,9 +54,9 @@ machine.memory.poke.w 0x017A 0x8805
 scheduler.run 1500000
 machine.memory.poke.w 0x017A 0
 scheduler.run 11000000
-assert ${machine.rtc.pram.peek(0x48) == 0x82}       "13in_rgb 4bpp savedMode != 0x82"
-assert ${machine.memory.peek.l(0xf9200208) == 0x90} "13in_rgb 4bpp CLUTPBCR != 0x90"
-assert ${machine.memory.peek.l(0xf920000c) == 0x50} "13in_rgb 4bpp RowWords != 0x50"
+assert machine.rtc.pram.peek(0x48) == 0x82       "13in_rgb 4bpp savedMode != 0x82"
+assert machine.memory.peek.l(0xf9200208) == 0x90 "13in_rgb 4bpp CLUTPBCR != 0x90"
+assert machine.memory.peek.l(0xf920000c) == 0x50 "13in_rgb 4bpp RowWords != 0x50"
 machine.screen.match welcome-13in_rgb-640x480-4bpp.png
 
 machine.boot model="iicx" ram=8192 video_card="8_24" video_mode="13in_rgb_8bpp"
@@ -66,9 +66,9 @@ machine.memory.poke.w 0x017A 0x8805
 scheduler.run 1500000
 machine.memory.poke.w 0x017A 0
 scheduler.run 11000000
-assert ${machine.rtc.pram.peek(0x48) == 0x83}       "13in_rgb 8bpp savedMode != 0x83"
-assert ${machine.memory.peek.l(0xf9200208) == 0x98} "13in_rgb 8bpp CLUTPBCR != 0x98"
-assert ${machine.memory.peek.l(0xf920000c) == 0xa0} "13in_rgb 8bpp RowWords != 0xa0"
+assert machine.rtc.pram.peek(0x48) == 0x83       "13in_rgb 8bpp savedMode != 0x83"
+assert machine.memory.peek.l(0xf9200208) == 0x98 "13in_rgb 8bpp CLUTPBCR != 0x98"
+assert machine.memory.peek.l(0xf920000c) == 0xa0 "13in_rgb 8bpp RowWords != 0xa0"
 machine.screen.match welcome-13in_rgb-640x480-8bpp.png
 
 # --- 12" RGB at 1/8 bpp ------------------------------------------------------
@@ -79,10 +79,10 @@ machine.memory.poke.w 0x017A 0x8805
 scheduler.run 1500000
 machine.memory.poke.w 0x017A 0
 scheduler.run 11000000
-assert ${machine.screen.width == 512}               "12in_rgb 1bpp width != 512"
-assert ${machine.screen.height == 384}              "12in_rgb 1bpp height != 384"
-assert ${machine.rtc.pram.peek(0x48) == 0x80}       "12in_rgb 1bpp savedMode != 0x80"
-assert ${machine.rtc.pram.peek(0x49) == 0xa2}       "12in_rgb 1bpp sister != 0xa2"
+assert machine.screen.width == 512               "12in_rgb 1bpp width != 512"
+assert machine.screen.height == 384              "12in_rgb 1bpp height != 384"
+assert machine.rtc.pram.peek(0x48) == 0x80       "12in_rgb 1bpp savedMode != 0x80"
+assert machine.rtc.pram.peek(0x49) == 0xa2       "12in_rgb 1bpp sister != 0xa2"
 machine.screen.match welcome-12in_rgb-512x384-1bpp.png
 
 machine.boot model="iicx" ram=8192 video_card="8_24" video_mode="12in_rgb_8bpp"
@@ -92,7 +92,7 @@ machine.memory.poke.w 0x017A 0x8805
 scheduler.run 1500000
 machine.memory.poke.w 0x017A 0
 scheduler.run 11000000
-assert ${machine.rtc.pram.peek(0x48) == 0x83}       "12in_rgb 8bpp savedMode != 0x83"
+assert machine.rtc.pram.peek(0x48) == 0x83       "12in_rgb 8bpp savedMode != 0x83"
 machine.screen.match welcome-12in_rgb-512x384-8bpp.png
 
 # --- 15" Portrait B&W at 1/8 bpp ---------------------------------------------
@@ -103,10 +103,10 @@ machine.memory.poke.w 0x017A 0x8805
 scheduler.run 1500000
 machine.memory.poke.w 0x017A 0
 scheduler.run 11000000
-assert ${machine.screen.width == 640}               "15in_bw 1bpp width != 640"
-assert ${machine.screen.height == 870}              "15in_bw 1bpp height != 870"
-assert ${machine.rtc.pram.peek(0x48) == 0x80}       "15in_bw 1bpp savedMode != 0x80"
-assert ${machine.rtc.pram.peek(0x49) == 0xa1}       "15in_bw 1bpp sister != 0xa1"
+assert machine.screen.width == 640               "15in_bw 1bpp width != 640"
+assert machine.screen.height == 870              "15in_bw 1bpp height != 870"
+assert machine.rtc.pram.peek(0x48) == 0x80       "15in_bw 1bpp savedMode != 0x80"
+assert machine.rtc.pram.peek(0x49) == 0xa1       "15in_bw 1bpp sister != 0xa1"
 machine.screen.match welcome-15in_bw-640x870-1bpp.png
 
 machine.boot model="iicx" ram=8192 video_card="8_24" video_mode="15in_bw_8bpp"
@@ -116,7 +116,7 @@ machine.memory.poke.w 0x017A 0x8805
 scheduler.run 1500000
 machine.memory.poke.w 0x017A 0
 scheduler.run 11000000
-assert ${machine.rtc.pram.peek(0x48) == 0x83}       "15in_bw 8bpp savedMode != 0x83"
+assert machine.rtc.pram.peek(0x48) == 0x83       "15in_bw 8bpp savedMode != 0x83"
 machine.screen.match welcome-15in_bw-640x870-8bpp.png
 
 # --- 21" RGB at 1/8 bpp (neutral grays — identity gamma, see header) ---------
@@ -127,10 +127,10 @@ machine.memory.poke.w 0x017A 0x8805
 scheduler.run 1500000
 machine.memory.poke.w 0x017A 0
 scheduler.run 11000000
-assert ${machine.screen.width == 1152}              "21in_rgb 1bpp width != 1152"
-assert ${machine.screen.height == 870}              "21in_rgb 1bpp height != 870"
-assert ${machine.rtc.pram.peek(0x48) == 0x80}       "21in_rgb 1bpp savedMode != 0x80"
-assert ${machine.rtc.pram.peek(0x49) == 0xa7}       "21in_rgb 1bpp sister != 0xa7"
+assert machine.screen.width == 1152              "21in_rgb 1bpp width != 1152"
+assert machine.screen.height == 870              "21in_rgb 1bpp height != 870"
+assert machine.rtc.pram.peek(0x48) == 0x80       "21in_rgb 1bpp savedMode != 0x80"
+assert machine.rtc.pram.peek(0x49) == 0xa7       "21in_rgb 1bpp sister != 0xa7"
 machine.screen.match welcome-21in_rgb-1152x870-1bpp.png
 
 machine.boot model="iicx" ram=8192 video_card="8_24" video_mode="21in_rgb_8bpp"
@@ -140,10 +140,10 @@ machine.memory.poke.w 0x017A 0x8805
 scheduler.run 1500000
 machine.memory.poke.w 0x017A 0
 scheduler.run 11000000
-assert ${machine.rtc.pram.peek(0x48) == 0x83}       "21in_rgb 8bpp savedMode != 0x83"
+assert machine.rtc.pram.peek(0x48) == 0x83       "21in_rgb 8bpp savedMode != 0x83"
 machine.screen.match welcome-21in_rgb-1152x870-8bpp.png
 
 # --- built-from record: the generic blob is recorded path-less by CRC --------
-assert ${machine.config.video_card == "8_24"}       "built-from video_card != 8_24"
+assert machine.config.video_card == "8_24"       "built-from video_card != 8_24"
 
 quit

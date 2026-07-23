@@ -9,10 +9,10 @@ machine.memory.poke.w 0x017A 0x8805
 scheduler.run 1500000
 machine.memory.poke.w 0x017A 0
 scheduler.run 111000000
-assert ${machine.screen.width == 800}                "custom width != 800"
-assert ${machine.screen.height == 600}               "custom height != 600"
-assert ${machine.config.custom_mode == "800x600x8"}  "custom_mode not recorded"
-assert ${machine.rtc.pram.peek(0x48) == 0x83}        "savedMode != 0x83 (8bpp)"
-assert ${machine.rtc.pram.peek(0x49) == 0xa6}        "sister != 0xa6 (default monitor)"
+assert machine.screen.width == 800                "custom width != 800"
+assert machine.screen.height == 600               "custom height != 600"
+assert machine.config.custom_mode == "800x600x8"  "custom_mode not recorded"
+assert machine.rtc.pram.peek(0x48) == 0x83        "savedMode != 0x83 (8bpp)"
+assert machine.rtc.pram.peek(0x49) == 0xa6        "sister != 0xa6 (default monitor)"
 machine.screen.match finder-custom-800x600-8bpp.png
 quit
