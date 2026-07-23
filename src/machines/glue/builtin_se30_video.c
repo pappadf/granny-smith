@@ -171,14 +171,18 @@ static int card_init_common(nubus_card_t *card, config_t *cfg, checkpoint_t *cp,
     }
     (void)cfg;
     if (generic) {
-        // Generic sibling kind ("se30"): install the built-in GS vROM blob —
-        // a full declaration ROM with a real display driver, replacing the
-        // old synthesise_vrom_fallback role (proposal-generic-nubus-vrom
-        // sec. 7.4).  The offer registry is never consulted.
-        size_t chip_size = 0;
-        const uint8_t *chip = gsvrom_blob(GSVROM_SE30, &chip_size);
-        if (!declrom_install_builtin(builtin_se30_video_generic_kind.id, chip, chip_size, p->vrom, SE30_VROM_SIZE))
-            LOG(0, "se30: built-in declaration ROM failed to install; declaration ROM is zero-filled");
+        // Generic sibling kind ("se30"): generate the GS declaration ROM —
+        // a full declaration ROM with a real display driver, records from
+        // builtin_se30_monitors[], code fragments spliced, CRC stamped in C
+        // (proposal-nubus-runtime-vrom §4).  The offer registry is never
+        // consulted.
+        declrom_builder_t *bld = gsvrom_generate(GSVROM_SE30, builtin_se30_video_generic_kind.monitors);
+        size_t img_size = 0;
+        const uint8_t *img = bld ? declrom_builder_bytes(bld, &img_size) : NULL;
+        if (!img ||
+            !declrom_install_builtin(builtin_se30_video_generic_kind.id, img, img_size, p->vrom, SE30_VROM_SIZE))
+            LOG(0, "se30: built-in declaration ROM failed to generate; declaration ROM is zero-filled");
+        declrom_builder_free(bld);
     } else if (!load_real_vrom(p->vrom, &p->vrom_path)) {
         if (!cp) {
             // Real VROM was the long-standing requirement on cold boot;
@@ -288,7 +292,14 @@ static nubus_card_t *factory_generic(int slot, config_t *cfg, checkpoint_t *cp) 
 // show even though the user can't change it.
 static const int builtin_se30_depths[] = {1, 0};
 static const nubus_monitor_t builtin_se30_monitors[] = {
-    {.id = "se30_internal", .name = "Built-in 9\" CRT", .width = 512, .height = 342, .depths = builtin_se30_depths},
+    {.id = "se30_internal",
+     .name = "Built-in 9\" CRT",
+     .width = 512,
+     .height = 342,
+     .depths = builtin_se30_depths,
+     // The generated GS vROM's functional sResource id (gsvrom_generate
+     // uses srsrc_sister as the spID; the assembled images used $80).
+     .srsrc_sister = 0x80},
     {0},
 };
 

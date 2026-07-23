@@ -30,11 +30,6 @@
 | Super-slot framebuffer: card DRAM base + 0x11400 (GC824_FB_OFFSET).
 .equ GREG_FB_SUPER,    0xC011400
 
-	.macro	GSVidNameStr
-GSVidName:
-	.asciz	"Display_Video_Apple_MDCGC"
-	.balign	2
-	.endm
 	.macro	GSDrvrName
 	dc.b	26
 	.ascii	".Display_Video_Apple_MDCGC"

@@ -1103,16 +1103,20 @@ static int card_init_common(nubus_card_t *card, config_t *cfg, checkpoint_t *cp,
     }
 
     if (generic) {
-        // Generic sibling kind ("8_24gc"): install the built-in GS vROM blob;
-        // the offer registry is never consulted (proposal-generic-nubus-vrom
-        // sec. 6.1).
-        size_t chip_size = 0;
-        const uint8_t *chip = gsvrom_blob(GSVROM_MDCGC, &chip_size);
-        if (declrom_install_builtin(display_card_824gc_generic_kind.id, chip, chip_size, p->vrom,
-                                    GC824_DECLROM_BUS_SIZE))
+        // Generic sibling kind ("8_24gc"): generate the GS declaration ROM
+        // at card_init — the boot family + 32-bit sister family from the
+        // generic monitors[] row, code fragments (incl. SecondaryInit)
+        // spliced, CRC stamped in C (proposal-nubus-runtime-vrom §4); the
+        // offer registry is never consulted.
+        declrom_builder_t *bld = gsvrom_generate(GSVROM_MDCGC, display_card_824gc_generic_kind.monitors);
+        size_t img_size = 0;
+        const uint8_t *img = bld ? declrom_builder_bytes(bld, &img_size) : NULL;
+        if (img &&
+            declrom_install_builtin(display_card_824gc_generic_kind.id, img, img_size, p->vrom, GC824_DECLROM_BUS_SIZE))
             p->vrom_size = GC824_DECLROM_BUS_SIZE;
         else
-            LOG(0, "8_24gc: built-in declaration ROM failed to install; declaration ROM is zero-filled");
+            LOG(0, "8_24gc: built-in declaration ROM failed to generate; declaration ROM is zero-filled");
+        declrom_builder_free(bld);
     } else if (!load_vrom(p))
         LOG(0, "no 8•24 GC declaration ROM offered (machine.vrom.load a GC vROM, "
                "or make one available where the platform offers vROM files); "

@@ -15,11 +15,6 @@
 .equ GS_ROWLONGS_FIXED, 0              | 0 = tight stride (width*bpp/32 longs/row)
 .equ GS_DEFER_SPID,    0               | no deferred 32-bit sResource family
 
-	.macro	GSVidNameStr
-GSVidName:
-	.asciz	"Display_Video_Apple_Boogie"
-	.balign	2
-	.endm
 	.macro	GSDrvrName
 	dc.b	27
 	.ascii	".Display_Video_Apple_Boogie"

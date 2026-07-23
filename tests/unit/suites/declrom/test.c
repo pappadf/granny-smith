@@ -1,13 +1,14 @@
-// Declaration-ROM builder unit tests (runtime-vrom proposal stage B).
+// Declaration-ROM builder unit tests (runtime-vrom proposal stages B/C).
 //
-// The heart of the suite: generate a JMFB-shaped image with the builder
-// — splicing the PrimaryInit / DRVR blocks extracted from the assembled
-// gsvrom blob — and assert its structural fingerprint (directory walk,
-// record content, spliced code bytes) is IDENTICAL to the assembled
-// blob's.  Offsets and record placement may differ; everything the Slot
-// Manager consumes must not.  Plus the §5 validation guards: zero
-// offsets, non-ascending ids, and CRC corruption must all be caught.
+// gsvrom_generate builds every personality's image host-side from a
+// monitors[] table mirroring the card kinds'; each image must pass the
+// §5 structural validator, carry the expected identity (BoardId, vendor
+// string, sResource names), splice the assembled fragments verbatim,
+// and regenerate bit-identically (checkpoint-restore determinism).
+// Plus the validation guards: zero offsets, non-ascending ids, and CRC
+// corruption must all be caught.
 
+#include "card.h"
 #include "declrom.h"
 #include "gsvrom.h"
 #include "test_assert.h"
@@ -37,6 +38,47 @@ bool vrom_offer_info(const char *path, uint32_t *out_crc, bool *out_explicit) {
     return false;
 }
 
+// --- Monitor tables mirroring the card kinds' --------------------------------
+
+static const int depths4[] = {1, 2, 4, 8, 0};
+static const int depths5[] = {1, 4, 8, 16, 32, 0};
+static const int depths1[] = {1, 0};
+
+static const nubus_monitor_t jmfb_mons[] = {
+    {.id = "13in_rgb", .width = 640, .height = 480, .depths = depths4, .srsrc_sister = 0xA6},
+    {.id = "12in_rgb", .width = 512, .height = 384, .depths = depths4, .srsrc_sister = 0xA2},
+    {.id = "15in_bw", .width = 640, .height = 870, .depths = depths4, .srsrc_sister = 0xA1},
+    {.id = "21in_rgb", .width = 1152, .height = 870, .depths = depths4, .srsrc_sister = 0xA7},
+    {0},
+};
+static const nubus_monitor_t boogie_mons[] = {
+    {.id = "rgb_640x480", .width = 640, .height = 480, .depths = depths5, .srsrc_sister = 0x6B},
+    {.id = "rgb_800x600", .width = 800, .height = 600, .depths = depths5, .srsrc_sister = 0x6C},
+    {.id = "rgb_832x624", .width = 832, .height = 624, .depths = depths5, .srsrc_sister = 0x6D},
+    {0},
+};
+static const nubus_monitor_t gc_mons[] = {
+    {.id = "gc_640x480", .width = 640, .height = 480, .depths = depths4, .srsrc_sister = 0x80},
+    {0},
+};
+static const nubus_monitor_t se30_mons[] = {
+    {.id = "se30_internal", .width = 512, .height = 342, .depths = depths1, .srsrc_sister = 0x80},
+    {0},
+};
+
+static const struct {
+    gsvrom_personality_t p;
+    const nubus_monitor_t *mons;
+    uint16_t board_id;
+    const char *vid_name;
+    size_t n_vidsrsrc; // directory video entries (GC adds the $A0 family)
+} PERSONALITIES[] = {
+    {GSVROM_JMFB,   jmfb_mons,   0x0027, "Display_Video_Apple_MDC",    4},
+    {GSVROM_BOOGIE, boogie_mons, 0x05FA, "Display_Video_Apple_Boogie", 3},
+    {GSVROM_MDCGC,  gc_mons,     0x002C, "Display_Video_Apple_MDCGC",  2},
+    {GSVROM_SE30,   se30_mons,   0x000C, "Display_Video_Apple_SE30",   1},
+};
+
 // --- Image walking helpers ---------------------------------------------------
 
 static uint32_t be32(const uint8_t *p) {
@@ -52,111 +94,9 @@ static size_t target_of(const uint8_t *img, size_t at) {
     return at + (size_t)(intptr_t)rel;
 }
 
-// Fingerprint sink: canonical text lines appended to a growing buffer.
-typedef struct {
-    char *buf;
-    size_t len, cap;
-} fp_t;
-
-static void fp_addf(fp_t *f, const char *fmt, ...) {
-    char line[512];
-    va_list ap;
-    va_start(ap, fmt);
-    vsnprintf(line, sizeof line, fmt, ap);
-    va_end(ap);
-    size_t n = strlen(line);
-    if (f->len + n + 2 > f->cap) {
-        f->cap = (f->cap ? f->cap * 2 : 65536) + n;
-        f->buf = realloc(f->buf, f->cap);
-        ASSERT_TRUE(f->buf != NULL);
-    }
-    memcpy(f->buf + f->len, line, n);
-    f->len += n;
-    f->buf[f->len++] = '\n';
-    f->buf[f->len] = '\0';
-}
-
-static void fp_hex(fp_t *f, const char *tag, const uint8_t *p, size_t n) {
-    char *line = malloc(n * 2 + strlen(tag) + 2);
-    ASSERT_TRUE(line != NULL);
-    char *w = line + sprintf(line, "%s ", tag);
-    for (size_t i = 0; i < n; i++)
-        w += sprintf(w, "%02x", p[i]);
-    fp_addf(f, "%s", line);
-    free(line);
-}
-
-// Fingerprint one size-prefixed block (sBlock / sExecBlock) verbatim.
-static void fp_block(fp_t *f, const char *tag, const uint8_t *img, size_t at) {
-    uint32_t size = be32(img + at);
-    fp_hex(f, tag, img + at, size);
-}
-
-// Fingerprint a mode list: data entries + the VPBlock bytes.
-static void fp_mode_list(fp_t *f, const uint8_t *img, size_t at) {
-    for (size_t e = at; (be32(img + e) >> 24) != 0xFF; e += 4) {
-        uint8_t id = (uint8_t)(be32(img + e) >> 24);
-        if (id == 1) // mVidParams
-            fp_block(f, "    vp", img, target_of(img, e));
-        else
-            fp_addf(f, "    m e%u dat %#x", id, be32(img + e) & 0xFFFFFF);
-    }
-}
-
-// Fingerprint one sResource list; `board` selects the id namespace.
-static void fp_srsrc(fp_t *f, const uint8_t *img, size_t at, int board) {
-    for (size_t e = at; (be32(img + e) >> 24) != 0xFF; e += 4) {
-        uint8_t id = (uint8_t)(be32(img + e) >> 24);
-        uint32_t low = be32(img + e) & 0xFFFFFF;
-        size_t tgt = target_of(img, e);
-        if (id == 1) { // sRsrcType: 8-byte record
-            fp_hex(f, "  type", img + tgt, 8);
-        } else if (id == 2) { // sRsrcName cString
-            fp_addf(f, "  name %s", (const char *)img + tgt);
-        } else if (board && id == 32) {
-            fp_addf(f, "  boardid %#x", low);
-        } else if (board && id == 33) {
-            fp_block(f, "  pram", img, tgt);
-        } else if (board && (id == 34 || id == 38)) {
-            fp_addf(f, "  exec e%u:", id);
-            fp_block(f, "  code", img, tgt);
-        } else if (board && id == 36) { // VendorInfo sub-list of cStrings
-            for (size_t v = tgt; (be32(img + v) >> 24) != 0xFF; v += 4)
-                fp_addf(f, "  vendor%u %s", (uint8_t)(be32(img + v) >> 24), (const char *)img + target_of(img, v));
-        } else if (!board && id == 4) { // sDriver directory
-            for (size_t d = tgt; (be32(img + d) >> 24) != 0xFF; d += 4) {
-                fp_addf(f, "  drvr cpu%u:", (uint8_t)(be32(img + d) >> 24));
-                fp_block(f, "  drvrblk", img, target_of(img, d));
-            }
-        } else if (!board && (id == 7 || id == 8)) { // data entries
-            fp_addf(f, "  e%u dat %#x", id, low);
-        } else if (!board && (id == 10 || id == 11 || id == 12 || id == 13)) {
-            fp_addf(f, "  e%u long %#x", id, be32(img + tgt));
-        } else if (!board && id >= 128) { // mode list
-            fp_addf(f, "  mode %#x:", id);
-            fp_mode_list(f, img, tgt);
-        } else {
-            fp_addf(f, "  e%u raw %#x", id, low);
-        }
-    }
-}
-
-// Fingerprint a whole image from its Format Block down.
-static char *fingerprint(const uint8_t *img, size_t size) {
-    fp_t f = {0};
-    size_t fb = size - 20;
-    fp_addf(&f, "format rev=%u fmt=%u lanes=%#04x", img[fb + 12], img[fb + 13], img[size - 1]);
-    size_t dir = target_of(img, fb);
-    for (size_t e = dir; (be32(img + e) >> 24) != 0xFF; e += 4) {
-        uint8_t id = (uint8_t)(be32(img + e) >> 24);
-        fp_addf(&f, "srsrc %#x", id);
-        fp_srsrc(&f, img, target_of(img, e), id == 1);
-    }
-    return f.buf;
-}
-
-// Find the offset of a board-sResource entry's block in an image
-// (e.g. PrimaryInit = 34).  Returns 0 if absent.
+// Find a board-sResource entry's target block (e.g. PrimaryInit = 34);
+// SIZE_MAX if absent (offset 0 is a legitimate block position — the
+// first spliced fragment starts the image).
 static size_t find_board_block(const uint8_t *img, size_t size, uint8_t want_id) {
     size_t fb = size - 20;
     size_t dir = target_of(img, fb);
@@ -168,28 +108,55 @@ static size_t find_board_block(const uint8_t *img, size_t size, uint8_t want_id)
             if ((uint8_t)(be32(img + be) >> 24) == want_id)
                 return target_of(img, be);
     }
-    return 0;
+    return (size_t)-1;
 }
 
-// Find the DRVR sBlock via the first video sResource's sDriver dir.
+// Count directory entries with id != 1 (the functional sResources).
+static size_t count_vid_srsrcs(const uint8_t *img, size_t size) {
+    size_t fb = size - 20;
+    size_t dir = target_of(img, fb);
+    size_t n = 0;
+    for (size_t e = dir; (be32(img + e) >> 24) != 0xFF; e += 4)
+        if ((uint8_t)(be32(img + e) >> 24) != 1)
+            n++;
+    return n;
+}
+
+// Find the DRVR sBlock via the first video sResource's sDriver dir;
+// SIZE_MAX if absent.
 static size_t find_drvr_block(const uint8_t *img, size_t size) {
     size_t fb = size - 20;
     size_t dir = target_of(img, fb);
     for (size_t e = dir; (be32(img + e) >> 24) != 0xFF; e += 4) {
         uint8_t id = (uint8_t)(be32(img + e) >> 24);
-        if (id < 128)
+        if (id == 1)
             continue;
         size_t sr = target_of(img, e);
         for (size_t ve = sr; (be32(img + ve) >> 24) != 0xFF; ve += 4)
             if ((uint8_t)(be32(img + ve) >> 24) == 4)
                 return target_of(img, target_of(img, ve)); // dir's first entry
     }
-    return 0;
+    return (size_t)-1;
 }
 
-// --- The JMFB-shaped build ---------------------------------------------------
+// The first video sResource's name cString, or NULL.
+static const char *find_vid_name(const uint8_t *img, size_t size) {
+    size_t fb = size - 20;
+    size_t dir = target_of(img, fb);
+    for (size_t e = dir; (be32(img + e) >> 24) != 0xFF; e += 4) {
+        uint8_t id = (uint8_t)(be32(img + e) >> 24);
+        if (id == 1)
+            continue;
+        size_t sr = target_of(img, e);
+        for (size_t ve = sr; (be32(img + ve) >> 24) != 0xFF; ve += 4)
+            if ((uint8_t)(be32(img + ve) >> 24) == 2)
+                return (const char *)img + target_of(img, ve);
+    }
+    return NULL;
+}
 
-// One VideoSRsrc4-shaped descriptor: four indexed depths, tight stride.
+// --- A minimal JMFB-shaped build used by the guard tests ---------------------
+
 static void add_jmfb_monitor(declrom_builder_t *b, uint8_t spid, uint16_t w, uint16_t h) {
     declrom_vidmode_t modes[4];
     for (int i = 0; i < 4; i++) {
@@ -220,84 +187,59 @@ static void add_jmfb_monitor(declrom_builder_t *b, uint8_t spid, uint16_t w, uin
     ASSERT_TRUE(declrom_add_video_srsrc(b, spid, &v));
 }
 
-TEST(test_blobs_validate) {
-    // All four embedded blobs must pass the structural validator.
-    for (int p = 0; p < 4; p++) {
-        size_t n = 0;
-        const uint8_t *img = gsvrom_blob((gsvrom_personality_t)p, &n);
-        ASSERT_TRUE(img != NULL);
-        ASSERT_TRUE(declrom_image_validate(img, n));
-    }
-}
+// --- Tests -------------------------------------------------------------------
 
-TEST(test_generated_matches_blob) {
-    size_t blob_size = 0;
-    const uint8_t *blob = gsvrom_blob(GSVROM_JMFB, &blob_size);
-    ASSERT_TRUE(blob != NULL);
-
-    // Extract the blob's own exec + driver blocks for splicing.
-    size_t pi_at = find_board_block(blob, blob_size, 34);
-    size_t drvr_at = find_drvr_block(blob, blob_size);
-    ASSERT_TRUE(pi_at != 0 && drvr_at != 0);
-    uint32_t pi_size = be32(blob + pi_at);
-    uint32_t drvr_size = be32(blob + drvr_at);
-
-    declrom_builder_t *b = declrom_builder_new(0x8000);
-    ASSERT_TRUE(b != NULL);
-    ASSERT_TRUE(declrom_set_board(b, "GS Generic Display (8*24)", 0x0027));
-    declrom_set_vendor(b, "granny-smith", "1.0", "gsvrom");
-    static const uint8_t pram[6] = {0x80, 0, 0, 0, 0, 0}; // b1 = savedMode
-    declrom_set_pram_init(b, pram);
-    ASSERT_TRUE(declrom_add_exec(b, DECLROM_PRIMARY_INIT, blob + pi_at, pi_size));
-    ASSERT_TRUE(declrom_add_drvr(b, blob + drvr_at, drvr_size));
-    // Deliberately added out of spID order — finalise must sort.
-    add_jmfb_monitor(b, 0xA6, 640, 480);
-    add_jmfb_monitor(b, 0xA1, 640, 870);
-    add_jmfb_monitor(b, 0xA7, 1152, 870);
-    add_jmfb_monitor(b, 0xA2, 512, 384);
-    ASSERT_TRUE(declrom_finalise(b, 0x0F));
-
-    size_t gen_size = 0;
-    const uint8_t *gen = declrom_builder_bytes(b, &gen_size);
-    ASSERT_TRUE(gen != NULL && gen_size > 20);
-    ASSERT_TRUE(declrom_image_validate(gen, gen_size));
-
-    // The structural fingerprints must be byte-for-byte identical even
-    // though offsets and record placement differ.
-    char *fp_blob = fingerprint(blob, blob_size);
-    char *fp_gen = fingerprint(gen, gen_size);
-    if (strcmp(fp_blob, fp_gen) != 0) {
-        fprintf(stderr, "--- blob fingerprint ---\n%s\n--- generated fingerprint ---\n%s\n", fp_blob, fp_gen);
-        ASSERT_TRUE(!"fingerprints differ");
-    }
-    free(fp_blob);
-    free(fp_gen);
-    declrom_builder_free(b);
-}
-
-TEST(test_determinism) {
-    // Two builds from identical inputs must be byte-identical.
-    uint8_t *first = NULL;
-    size_t first_size = 0;
-    for (int round = 0; round < 2; round++) {
-        declrom_builder_t *b = declrom_builder_new(0x8000);
-        ASSERT_TRUE(declrom_set_board(b, "Determinism", 0x1234));
-        add_jmfb_monitor(b, 0xA6, 640, 480);
-        add_jmfb_monitor(b, 0xA1, 640, 870);
-        ASSERT_TRUE(declrom_finalise(b, 0x0F));
+TEST(test_generate_all_personalities) {
+    for (size_t i = 0; i < sizeof(PERSONALITIES) / sizeof(PERSONALITIES[0]); i++) {
+        declrom_builder_t *b = gsvrom_generate(PERSONALITIES[i].p, PERSONALITIES[i].mons);
+        ASSERT_TRUE(b != NULL);
         size_t n = 0;
         const uint8_t *img = declrom_builder_bytes(b, &n);
-        if (round == 0) {
-            first = malloc(n);
-            memcpy(first, img, n);
-            first_size = n;
-        } else {
-            ASSERT_EQ_INT((int)first_size, (int)n);
-            ASSERT_TRUE(memcmp(first, img, n) == 0);
-        }
+        ASSERT_TRUE(img != NULL && n > 20);
+        // §5 structural validation.
+        ASSERT_TRUE(declrom_image_validate(img, n));
+        // Identity: vendor string + BoardId (the structural-recognition
+        // pair vrom.identify keys on).
+        uint16_t board_id = 0;
+        ASSERT_TRUE(declrom_identify_vendor(img, n, "granny-smith", &board_id));
+        ASSERT_EQ_INT(PERSONALITIES[i].board_id, board_id);
+        // The functional sResources: count + name.
+        ASSERT_EQ_INT((int)PERSONALITIES[i].n_vidsrsrc, (int)count_vid_srsrcs(img, n));
+        const char *vname = find_vid_name(img, n);
+        ASSERT_TRUE(vname && strcmp(vname, PERSONALITIES[i].vid_name) == 0);
+        // The spliced code blocks are the assembled fragments, verbatim.
+        size_t fn = 0;
+        const uint8_t *frag = gsvrom_frag(PERSONALITIES[i].p, GSVROM_FRAG_INIT, &fn);
+        size_t pi = find_board_block(img, n, 34);
+        ASSERT_TRUE(frag && pi != (size_t)-1 && memcmp(img + pi, frag, fn) == 0);
+        frag = gsvrom_frag(PERSONALITIES[i].p, GSVROM_FRAG_DRVR, &fn);
+        size_t dr = find_drvr_block(img, n);
+        ASSERT_TRUE(frag && dr != (size_t)-1 && memcmp(img + dr, frag, fn) == 0);
+        frag = gsvrom_frag(PERSONALITIES[i].p, GSVROM_FRAG_SINIT, &fn);
+        size_t si = find_board_block(img, n, 38);
+        if (PERSONALITIES[i].p == GSVROM_MDCGC)
+            ASSERT_TRUE(frag && si != (size_t)-1 && memcmp(img + si, frag, fn) == 0);
+        else
+            ASSERT_TRUE(!frag && si == (size_t)-1);
         declrom_builder_free(b);
     }
-    free(first);
+}
+
+TEST(test_generate_determinism) {
+    // Regeneration must be bit-identical (checkpoint restore rebuilds the
+    // image from the recorded configuration; proposal §4).
+    for (size_t i = 0; i < sizeof(PERSONALITIES) / sizeof(PERSONALITIES[0]); i++) {
+        declrom_builder_t *b1 = gsvrom_generate(PERSONALITIES[i].p, PERSONALITIES[i].mons);
+        declrom_builder_t *b2 = gsvrom_generate(PERSONALITIES[i].p, PERSONALITIES[i].mons);
+        ASSERT_TRUE(b1 && b2);
+        size_t n1 = 0, n2 = 0;
+        const uint8_t *i1 = declrom_builder_bytes(b1, &n1);
+        const uint8_t *i2 = declrom_builder_bytes(b2, &n2);
+        ASSERT_EQ_INT((int)n1, (int)n2);
+        ASSERT_TRUE(memcmp(i1, i2, n1) == 0);
+        declrom_builder_free(b1);
+        declrom_builder_free(b2);
+    }
 }
 
 TEST(test_validation_guards) {
@@ -324,7 +266,6 @@ TEST(test_validation_guards) {
 
     // 3. A flipped content byte breaks the CRC.
     memcpy(copy, img, n);
-    copy[dir] ^= 0; // keep structure; corrupt a name byte instead
     copy[target_of(copy, dir)] ^= 0xFF;
     ASSERT_TRUE(!declrom_image_validate(copy, n));
 
@@ -342,11 +283,12 @@ TEST(test_builder_input_guards) {
     ASSERT_TRUE(declrom_set_board(b, "X", 1));
     // Only dense 4-lane images are generated.
     ASSERT_TRUE(!declrom_finalise(b, 0x78));
-    // spid outside the designer range.
+    // spid colliding with the board id / terminator.
     declrom_vidmode_t m = {
         .row_bytes = 64, .width = 512, .height = 342, .pixel_size = 1, .cmp_count = 1, .cmp_size = 1, .page_count = 1};
     declrom_vidsrsrc_t v = {.name = "n", .modes = &m, .mode_count = 1, .length = 64 * 342};
     ASSERT_TRUE(!declrom_add_video_srsrc(b, 0x01, &v));
+    ASSERT_TRUE(!declrom_add_video_srsrc(b, 0xFF, &v));
     // duplicate spid.
     ASSERT_TRUE(declrom_add_video_srsrc(b, 0x80, &v));
     ASSERT_TRUE(!declrom_add_video_srsrc(b, 0x80, &v));
@@ -365,9 +307,8 @@ TEST(test_builder_input_guards) {
 }
 
 int main(void) {
-    RUN(test_blobs_validate);
-    RUN(test_generated_matches_blob);
-    RUN(test_determinism);
+    RUN(test_generate_all_personalities);
+    RUN(test_generate_determinism);
     RUN(test_validation_guards);
     RUN(test_builder_input_guards);
     fprintf(stderr, "declrom: all tests passed\n");

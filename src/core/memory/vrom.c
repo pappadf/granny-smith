@@ -13,7 +13,7 @@
 // only ever an opaque handle used to open the file.
 
 #include "vrom.h"
-#include "gsvrom.h" // built-in generic declROM blobs (dumped-copy recognition)
+#include "declrom.h" // structural recognition of generated GS images
 
 #include "log.h"
 #include "machine_profile.h"
@@ -158,27 +158,41 @@ static enum vrom_id_result vrom_identify_core(const char *path, vrom_id_t *out, 
         }
     }
     // Not a catalogued Apple dump — recognise a dumped copy of one of our
-    // own built-in generic images by its stored Format-Block CRC (the
-    // generic kinds never LOAD from files, but vrom.identify should still
-    // name a dump; proposal-generic-nubus-vrom.md sec. 6.1).
+    // own GENERATED generic images structurally: the runtime-generated GS
+    // vROM has no fixed CRC to match (its content varies with the mode
+    // set and the toolchain that assembled the fragments), so identity is
+    // the board sResource's "granny-smith" VendorId plus its BoardId
+    // (proposal-nubus-runtime-vrom §4).
     static const struct {
-        gsvrom_personality_t personality;
+        uint16_t board_id;
         const char *card_id;
-    } gs_blobs[] = {
-        {GSVROM_JMFB,   "8_24"  },
-        {GSVROM_BOOGIE, "24ac"  },
-        {GSVROM_MDCGC,  "8_24gc"},
-        {GSVROM_SE30,   "se30"  },
+    } gs_boards[] = {
+        {0x0027, "8_24"  },
+        {0x05FA, "24ac"  },
+        {0x002C, "8_24gc"},
+        {0x000C, "se30"  },
     };
-    for (size_t i = 0; i < sizeof(gs_blobs) / sizeof(gs_blobs[0]); i++) {
-        if (gsvrom_blob_crc(gs_blobs[i].personality) == crc) {
-            if (out) {
-                out->crc = crc;
-                out->chip_size = size;
-                out->card_id = gs_blobs[i].card_id;
+    uint8_t *whole = malloc(size);
+    if (whole) {
+        f = fopen(path, "rb");
+        bool read_ok = f && fread(whole, 1, size, f) == size;
+        if (f)
+            fclose(f);
+        uint16_t board_id = 0;
+        if (read_ok && declrom_identify_vendor(whole, size, "granny-smith", &board_id)) {
+            for (size_t i = 0; i < sizeof(gs_boards) / sizeof(gs_boards[0]); i++) {
+                if (gs_boards[i].board_id == board_id) {
+                    if (out) {
+                        out->crc = crc;
+                        out->chip_size = size;
+                        out->card_id = gs_boards[i].card_id;
+                    }
+                    free(whole);
+                    return VROM_ID_KNOWN;
+                }
             }
-            return VROM_ID_KNOWN;
         }
+        free(whole);
     }
     return VROM_ID_UNKNOWN;
 }

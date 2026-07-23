@@ -139,6 +139,15 @@ bool declrom_finalise(declrom_builder_t *b, uint8_t byte_lanes);
 // Block in its last 20 bytes.
 bool declrom_image_validate(const uint8_t *img, size_t size);
 
+// Structural identification of a generated GS image (or a dumped copy
+// of one): walks the image's board sResource and returns true — with
+// the 16-bit BoardId in *out_board_id — when its VendorInfo VendorId
+// cString equals `vendor`.  Tolerates leading zero padding (a dump of
+// the slot window carries the tail-placed image).  Replaces the
+// fixed-CRC recognition rows: a runtime-generated image has no stable
+// CRC to match (proposal-nubus-runtime-vrom §4).
+bool declrom_identify_vendor(const uint8_t *img, size_t size, const char *vendor, uint16_t *out_board_id);
+
 // Copy the builder's buffer into the card's declrom slot.  Increments
 // `card->declrom_size` and stashes the bytes; ownership of the bytes
 // transfers to the card.

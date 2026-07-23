@@ -803,16 +803,19 @@ static int card_init_common(nubus_card_t *card, config_t *cfg, checkpoint_t *cp,
     }
 
     if (generic) {
-        // Generic sibling kind ("24ac"): install the built-in GS vROM blob;
-        // the offer registry is never consulted (proposal-generic-nubus-vrom
-        // sec. 6.1).
-        size_t chip_size = 0;
-        const uint8_t *chip = gsvrom_blob(GSVROM_BOOGIE, &chip_size);
-        if (declrom_install_builtin(display_card_24ac_generic_kind.id, chip, chip_size, p->vrom,
-                                    DISPLAY_CARD_24AC_DECLROM_BUS_SIZE))
+        // Generic sibling kind ("24ac"): generate the GS declaration ROM at
+        // card_init — records from the shared monitors[] table, code
+        // fragments spliced, CRC stamped in C (proposal-nubus-runtime-vrom
+        // §4); the offer registry is never consulted.
+        declrom_builder_t *bld = gsvrom_generate(GSVROM_BOOGIE, display_card_24ac_generic_kind.monitors);
+        size_t img_size = 0;
+        const uint8_t *img = bld ? declrom_builder_bytes(bld, &img_size) : NULL;
+        if (img && declrom_install_builtin(display_card_24ac_generic_kind.id, img, img_size, p->vrom,
+                                           DISPLAY_CARD_24AC_DECLROM_BUS_SIZE))
             p->vrom_size = DISPLAY_CARD_24AC_DECLROM_BUS_SIZE;
         else
-            LOG(0, "24ac: built-in declaration ROM failed to install; declaration ROM is zero-filled");
+            LOG(0, "24ac: built-in declaration ROM failed to generate; declaration ROM is zero-filled");
+        declrom_builder_free(bld);
     } else if (!load_vrom(p)) {
         // requires_vrom gates the dialog on a real file; reaching here means
         // CI ran without one.  Log loudly and continue with a zero declrom —

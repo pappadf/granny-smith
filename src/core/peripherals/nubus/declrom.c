@@ -729,6 +729,70 @@ bool declrom_image_validate(const uint8_t *img, size_t size) {
     return true;
 }
 
+bool declrom_identify_vendor(const uint8_t *img, size_t size, const char *vendor, uint16_t *out_board_id) {
+    if (!img || !vendor || size < DECLROM_FB_SIZE + 8)
+        return false;
+    size_t fb = size - DECLROM_FB_SIZE;
+    uint32_t testpat = 0, dirent = 0;
+    if (!img_be32(img, size, fb + 14, &testpat) || testpat != DECLROM_TESTPATTERN)
+        return false;
+    size_t dir_at;
+    if (!img_be32(img, size, fb, &dirent) || !entry_target(img, size, fb, dirent, &dir_at))
+        return false;
+    // Find the board sResource (directory id 1), then its BoardId and
+    // VendorInfo entries.
+    for (size_t e = dir_at;; e += 4) {
+        uint32_t entry;
+        if (!img_be32(img, size, e, &entry))
+            return false;
+        uint8_t id = (uint8_t)(entry >> 24);
+        if (id == ID_END_OF_LIST)
+            return false; // no board sResource
+        if (id != 1)
+            continue;
+        size_t board;
+        if (!entry_target(img, size, e, entry, &board))
+            return false;
+        bool vendor_ok = false;
+        uint16_t board_id = 0;
+        bool board_id_seen = false;
+        for (size_t be = board;; be += 4) {
+            uint32_t bentry;
+            if (!img_be32(img, size, be, &bentry))
+                return false;
+            uint8_t bid = (uint8_t)(bentry >> 24);
+            if (bid == ID_END_OF_LIST)
+                break;
+            if (bid == ID_BOARD_ID) {
+                board_id = (uint16_t)(bentry & 0xFFFF);
+                board_id_seen = true;
+            } else if (bid == ID_VENDOR_INFO) {
+                size_t vlist;
+                if (!entry_target(img, size, be, bentry, &vlist))
+                    return false;
+                for (size_t ve = vlist;; ve += 4) {
+                    uint32_t ventry;
+                    if (!img_be32(img, size, ve, &ventry))
+                        return false;
+                    uint8_t vid = (uint8_t)(ventry >> 24);
+                    if (vid == ID_END_OF_LIST)
+                        break;
+                    size_t str_at;
+                    if (vid == ID_VENDOR_ID && entry_target(img, size, ve, ventry, &str_at)) {
+                        size_t maxlen = size - str_at;
+                        if (strnlen((const char *)img + str_at, maxlen) < maxlen &&
+                            strcmp((const char *)img + str_at, vendor) == 0)
+                            vendor_ok = true;
+                    }
+                }
+            }
+        }
+        if (vendor_ok && board_id_seen && out_board_id)
+            *out_board_id = board_id;
+        return vendor_ok && board_id_seen;
+    }
+}
+
 void declrom_install(nubus_card_t *card, const declrom_builder_t *b) {
     if (!card || !b || !b->buf || b->used == 0)
         return;

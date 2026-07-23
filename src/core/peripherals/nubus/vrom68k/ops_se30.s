@@ -19,11 +19,6 @@
 
 .equ SE30_FB_OFFSET,   0xE08040        | framebuffer from the 0xFE000000 base
 
-	.macro	GSVidNameStr
-GSVidName:
-	.asciz	"Display_Video_Apple_SE30"
-	.balign	2
-	.endm
 	.macro	GSDrvrName
 	dc.b	25
 	.ascii	".Display_Video_Apple_SE30"

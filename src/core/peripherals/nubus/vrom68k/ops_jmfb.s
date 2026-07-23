@@ -18,13 +18,9 @@
 .equ GS_ROWLONGS_FIXED, 0              | 0 = tight stride (width*bpp/32 longs/row)
 .equ GS_DEFER_SPID,    0               | no deferred 32-bit sResource family
 
-| Functional sResource name — Mac-side software matches on this exact
-| string (proposal sec. 7.1); the DRVR name is "." + it.
-	.macro	GSVidNameStr
-GSVidName:
-	.asciz	"Display_Video_Apple_MDC"
-	.balign	2
-	.endm
+| DRVR name — "." + the functional sResource name the builder generates
+| ("Display_Video_Apple_MDC"; Mac-side software matches on the exact
+| string, proposal sec. 7.1).
 	.macro	GSDrvrName
 	dc.b	24
 	.ascii	".Display_Video_Apple_MDC"
