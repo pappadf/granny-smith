@@ -8,7 +8,7 @@ scheduler.run 50000
 # Top-level floppy. Plus uses the IWM controller; sel is the active
 # drive selector.
 machine.floppy
-assert ${machine.floppy.type == "iwm"} "Plus floppy controller is iwm"
+assert machine.floppy.type == "iwm" "Plus floppy controller is iwm"
 machine.floppy.sel
 
 # Drives collection.
@@ -17,21 +17,21 @@ machine.floppy.drive
 # Drive 0: populated by --fd0=. After 50K cycles the head is at
 # track 0, side 0, motor still spinning up. The inserted medium is a
 # first-class node now (drive[N].disk); its path is disk.path.
-assert ${machine.floppy.drive[0].index == 0}
-assert ${machine.floppy.drive[0].present == true}
-assert ${machine.floppy.drive[0].track == 0}
-assert ${machine.floppy.drive[0].side == 0}
+assert machine.floppy.drive[0].index == 0
+assert machine.floppy.drive[0].present == true
+assert machine.floppy.drive[0].track == 0
+assert machine.floppy.drive[0].side == 0
 machine.floppy.drive[0].motor_on
-assert ${machine.floppy.drive[0].disk.present == true} "drive 0 disk node present"
+assert machine.floppy.drive[0].disk.present == true "drive 0 disk node present"
 machine.floppy.drive[0].disk.path
 
 # Drive 1: empty — the disk node is absent (no medium loaded).
-assert ${machine.floppy.drive[1].index == 1}
-assert ${machine.floppy.drive[1].present == false}
+assert machine.floppy.drive[1].index == 1
+assert machine.floppy.drive[1].present == false
 
 # Eject drive 0 — present must flip to false and the disk node disappears.
-echo ${machine.floppy.drive[0].eject()}
-assert ${machine.floppy.drive[0].present == false}
+echo "${machine.floppy.drive[0].eject()}"
+assert machine.floppy.drive[0].present == false
 
 # Ejecting an already-empty drive is an error (the method is honest
 # rather than silently no-op'ing — the harness shouldn't fail on

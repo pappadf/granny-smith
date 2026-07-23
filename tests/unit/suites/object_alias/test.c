@@ -106,9 +106,14 @@ TEST(test_reserved_word_rejected) {
     ASSERT_TRUE(alias_add_user("true", "cpu.pc", err, sizeof(err)) < 0);
     ASSERT_TRUE(strstr(err, "reserved") != NULL);
 
-    // Boolean-literal spellings are reserved (proposal §2.3).
-    ASSERT_TRUE(alias_add_user("on", "cpu.pc", err, sizeof(err)) < 0);
-    ASSERT_TRUE(alias_add_user("yes", "cpu.pc", err, sizeof(err)) < 0);
+    // Shell v2 statement keywords and the `none` literal are reserved.
+    ASSERT_TRUE(alias_add_user("def", "cpu.pc", err, sizeof(err)) < 0);
+    ASSERT_TRUE(alias_add_user("none", "cpu.pc", err, sizeof(err)) < 0);
+
+    // `on`/`yes` were demoted from reserved words (shell v2 §3.11) —
+    // they are ordinary identifiers again and alias fine.
+    ASSERT_TRUE(alias_add_user("on", "cpu.pc", err, sizeof(err)) == 0);
+    ASSERT_TRUE(alias_add_user("yes", "cpu.pc", err, sizeof(err)) == 0);
 }
 
 // Closed-namespace: a `$name` lookup must NOT silently fall through

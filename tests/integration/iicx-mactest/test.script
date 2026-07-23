@@ -24,12 +24,12 @@ machine.scsi.loopback = true
 # Boot past Happy Mac through splash screens to MacTest main UI.
 scheduler.run 200000000
 
-assert ${machine.id == "iicx"}              "machine.id != iicx"
-assert ${machine.screen.width == 640}               "screen.width != 640 (JMFB not seated?)"
-assert ${machine.screen.height == 480}              "screen.height != 480"
-assert ${machine.rtc.pram.peek(0x48) == 0x83}       "savedMode != 0x83 (8bpp)"
-assert ${machine.memory.peek.l(0xf9200208) == 0x98} "JMFB CLUTPBCR != 0x98 (8bpp)"
-assert ${machine.memory.peek.l(0xf920000c) == 0xa0} "JMFB RowWords != 0xa0 (640*8/8/8)"
+assert machine.id == "iicx" "machine.id != iicx"
+assert machine.screen.width == 640 "screen.width != 640 (JMFB not seated?)"
+assert machine.screen.height == 480 "screen.height != 480"
+assert machine.rtc.pram.peek(0x48) == 0x83 "savedMode != 0x83 (8bpp)"
+assert machine.memory.peek.l(0xf9200208) == 0x98 "JMFB CLUTPBCR != 0x98 (8bpp)"
+assert machine.memory.peek.l(0xf920000c) == 0xa0 "JMFB RowWords != 0xa0 (640*8/8/8)"
 
 machine.screen.match main.png
 
@@ -123,7 +123,7 @@ machine.adb.mouse.click false
 scheduler.run 100000000
 machine.screen.match insert-800k-internal.png
 
-machine.floppy.create "${WORK_DIR}/blank800-int.dsk" 0
+machine.floppy.create "$WORK_DIR/blank800-int.dsk" 0
 scheduler.run 10000000
 
 # OK on the "insert disk" dialog (~454, 245).
@@ -137,7 +137,7 @@ scheduler.run 300000000
 machine.screen.match insert-1.4mb-internal.png
 
 machine.adb.mouse.click false "global"
-machine.floppy.create "${WORK_DIR}/blankHD-int.dsk" "hd"
+machine.floppy.create "$WORK_DIR/blankHD-int.dsk" "hd"
 # Move the cursor away then back to the OK button: it was parked on OK by
 # the previous step's click, so a same-spot move emits no ADB motion and
 # the click has no fresh position event to bind to under E-clock-synced
@@ -165,7 +165,7 @@ scheduler.run 150000000
 machine.screen.match insert-800k-external.png
 
 machine.adb.mouse.click false "global"
-machine.floppy.create "${WORK_DIR}/blank800-ext.dsk" 1
+machine.floppy.create "$WORK_DIR/blank800-ext.dsk" 1
 # Settle wait BEFORE clicking OK.  On real hardware a user inserts the external
 # blank in response to this prompt and the OS detects it (drive light / diskEvt)
 # — completing the .Sony disk-in-place debounce — well before clicking OK.  The
@@ -197,9 +197,9 @@ scheduler.run 20000000
 machine.screen.match insert-1.4mb-external.png
 
 machine.adb.mouse.click false "global"
-machine.floppy.create "${WORK_DIR}/blankHD-ext.dsk" "hd"
+machine.floppy.create "$WORK_DIR/blankHD-ext.dsk" "hd"
 machine.floppy.drive[0].eject
-machine.floppy.drive[1].insert "${WORK_DIR}/blankHD-ext.dsk" true
+machine.floppy.drive[1].insert "$WORK_DIR/blankHD-ext.dsk" true
 
 machine.adb.mouse.move 454 245 "global"
 scheduler.run 5000000
@@ -253,7 +253,7 @@ machine.adb.mouse.move 0 0
 # disabled Keyboard/Mouse phases, and reach the RAM-test "Testing
 # RAM1..." status display.
 scheduler.run 600000000
-machine.screen.save "${WORK_DIR}/post-floppy-state.png"
+machine.screen.save "$WORK_DIR/post-floppy-state.png"
 machine.screen.save "post-floppy-state.png"
 
 # Let the RAM test run.  On real IIcx hardware MacTest's RAM test
@@ -277,7 +277,7 @@ machine.screen.save "post-floppy-state.png"
 # wiring exercised by MacTest.  Filed as future work — for now the
 # test stops at the RAM-running display.
 scheduler.run 4000000000
-machine.screen.save "${WORK_DIR}/ram-running.png"
+machine.screen.save "$WORK_DIR/ram-running.png"
 machine.screen.save "ram-running.png"
 
 quit

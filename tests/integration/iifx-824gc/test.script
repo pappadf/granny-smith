@@ -20,18 +20,18 @@ machine.rtc.time = 3000000000
 # bring-up adds a little).
 scheduler.run 300000000
 
-assert ${machine.id == "iifx"} "machine.id != iifx"
+assert machine.id == "iifx" "machine.id != iifx"
 
 # The pick was honoured: the 8•24 GC (not the default JMFB) sits in slot $9.
-assert ${machine.nubus.slot[9].card.name == "Apple Macintosh Display Card 8•24 GC"} "slot $9 card != 8•24 GC"
-assert ${machine.nubus.slot[9].card.declrom.present} "declaration ROM not present"
+assert machine.nubus.slot[9].card.name == "Apple Macintosh Display Card 8•24 GC" "slot $9 card != 8•24 GC"
+assert machine.nubus.slot[9].card.declrom.present "declaration ROM not present"
 
 # Decline path: no GC software on the boot floppy, so the accelerator must
 # still be in its power-on reset state while the DISPLAY runs fine.
-assert ${machine.nubus.slot[9].card.gc.state == "reset"} "gc.state != reset (no GC software on Disk Tools)"
+assert machine.nubus.slot[9].card.gc.state == "reset" "gc.state != reset (no GC software on Disk Tools)"
 
-assert ${machine.screen.width == 640} "screen.width != 640"
-assert ${machine.screen.height == 480} "screen.height != 480"
+assert machine.screen.width == 640 "screen.width != 640"
+assert machine.screen.height == 480 "screen.height != 480"
 
 # The System 7 Finder desktop (menu bar, Disk Tools volume, Trash), drawn
 # through the GC's decl-ROM-driver-configured framebuffer — pixel-exact.

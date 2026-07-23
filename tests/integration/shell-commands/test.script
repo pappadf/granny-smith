@@ -13,40 +13,41 @@ machine.cpu
 # print fp0..fp7 / fpcr / fpsr / fpiar).
 
 # disasm defaults to PC when no count is given.
-assert ${debug.disasm()} "disasm (default count) failed"
+assert debug.disasm() "disasm (default count) failed"
 
 # disasm with explicit count.
-assert ${debug.disasm(5)} "disasm 5 failed"
+assert debug.disasm(5) "disasm 5 failed"
 
 # Help on a typed root method still works.
 help debug.disasm
 
-# Logpoint list (should be empty).
-assert ${debug.logpoints.list()} "debug.logpoints.list failed"
+# Logpoint entries (should be empty; `list` is retired — entries is
+# the data, the REPL table formatter is the presentation).
+assert len(debug.logpoints.entries) == 0 "logpoints should start empty"
 
 # Scheduler pacing-mode attribute: two canonical names plus the legacy
 # three-mode aliases (real/hw -> paced, max -> turbo). Pacing is a no-op on
 # the headless target, so switching is safe here; this pins the mapping.
 # (No default-mode assert: the integration runner sets --speed=max itself.)
 scheduler.mode = "paced"
-assert ${scheduler.mode == "paced"} "paced not accepted"
+assert scheduler.mode == "paced" "paced not accepted"
 scheduler.mode = "turbo"
-assert ${scheduler.mode == "turbo"} "turbo not accepted"
+assert scheduler.mode == "turbo" "turbo not accepted"
 scheduler.mode = "real"
-assert ${scheduler.mode == "paced"} "legacy alias real did not map to paced"
+assert scheduler.mode == "paced" "legacy alias real did not map to paced"
 scheduler.mode = "max"
-assert ${scheduler.mode == "turbo"} "legacy alias max did not map to turbo"
+assert scheduler.mode == "turbo" "legacy alias max did not map to turbo"
 scheduler.mode = "hw"
-assert ${scheduler.mode == "paced"} "legacy alias hw did not map to paced"
+assert scheduler.mode == "paced" "legacy alias hw did not map to paced"
 
 # CPI is a per-machine constant (SE/30: 4), mode-independent, and writable
 # as a debug override.
-assert ${scheduler.cpi == 4} "SE/30 CPI not 4"
+assert scheduler.cpi == 4 "SE/30 CPI not 4"
 scheduler.mode = "turbo"
-assert ${scheduler.cpi == 4} "CPI changed with mode"
+assert scheduler.cpi == 4 "CPI changed with mode"
 scheduler.mode = "paced"
 scheduler.cpi = 12
-assert ${scheduler.cpi == 12} "cpi override not applied"
+assert scheduler.cpi == 12 "cpi override not applied"
 scheduler.cpi = 4
 
 quit

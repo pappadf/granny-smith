@@ -16,15 +16,15 @@ machine.boot model="iicx" ram=8192 video_card="824gc" video_mode="gc_640x480_8bp
 machine.scsi.attach_hd "../../data/systems/system_6_0_8_20mb_8_24gc.img" 0
 scheduler.run 200000000
 
-assert ${machine.nubus.slot[9].card.gc.on == true}       "accelerator did not turn on"
-assert ${machine.nubus.slot[9].card.gc.state == "gc-on"} "accelerator state != gc-on"
-assert ${machine.nubus.slot[9].card.gc.error == 0}       "accelerator posted an error"
-assert ${machine.nubus.slot[9].card.gc.rpc_count > 0}    "no RPCs serviced"
+assert machine.nubus.slot[9].card.gc.on == true "accelerator did not turn on"
+assert machine.nubus.slot[9].card.gc.state == "gc-on" "accelerator state != gc-on"
+assert machine.nubus.slot[9].card.gc.error == 0 "accelerator posted an error"
+assert machine.nubus.slot[9].card.gc.rpc_count > 0 "no RPCs serviced"
 # The interpreter actually drew (the queue was used, not just declined).
-assert ${machine.nubus.slot[9].card.gc.queue_bytes > 100} "geometry queue never drained"
+assert machine.nubus.slot[9].card.gc.queue_bytes > 100 "geometry queue never drained"
 
-assert ${machine.screen.width == 640}  "screen width != 640"
-assert ${machine.screen.height == 480} "screen height != 480"
+assert machine.screen.width == 640 "screen width != 640"
+assert machine.screen.height == 480 "screen height != 480"
 
 # The 8-bpp colour Finder desktop, drawn by the CARD — pixel-exact.
 machine.screen.match finder-824gc-8bpp-640x480.png

@@ -73,7 +73,7 @@ machine.sound.capture.start
 scheduler.run 5900000
 machine.sound.capture.stop
 
-assert ${machine.sound.capture.frames == 167634} "unexpected capture length"
+assert machine.sound.capture.frames == 167634 "unexpected capture length"
 machine.sound.match music.wav
 
 quit

@@ -12,16 +12,16 @@ machine.scsi.attach_hd "../../data/systems/system_6_0_8_20mb_8_24gc.img" 0
 scheduler.run 200000000
 
 # Boot leaves the cursor at the (15,15) init position.
-assert ${machine.memory.peek.l(0x830) == 0x000F000F}  "Mouse != (15,15) after boot"
+assert machine.memory.peek.l(0x830) == 0x000F000F "Mouse != (15,15) after boot"
 
 machine.adb.mouse.move 40 40 "hw"
 scheduler.run 20000000
-assert ${machine.memory.peek.l(0x828) == 0x00370037}  "MTemp: ADB delta not consumed (aborted-Talk delta loss)"
-assert ${machine.memory.peek.l(0x82C) == 0x00370037}  "RawMouse: cursor task did not run (slot VBL not firing)"
-assert ${machine.memory.peek.l(0x830) == 0x00370037}  "Mouse != (55,55) after +40,+40"
+assert machine.memory.peek.l(0x828) == 0x00370037 "MTemp: ADB delta not consumed (aborted-Talk delta loss)"
+assert machine.memory.peek.l(0x82C) == 0x00370037 "RawMouse: cursor task did not run (slot VBL not firing)"
+assert machine.memory.peek.l(0x830) == 0x00370037 "Mouse != (55,55) after +40,+40"
 
 machine.adb.mouse.move -20 10 "hw"
 scheduler.run 20000000
-assert ${machine.memory.peek.l(0x830) == 0x00410023}  "Mouse != (35,65) after -20,+10"
+assert machine.memory.peek.l(0x830) == 0x00410023 "Mouse != (35,65) after -20,+10"
 
 quit

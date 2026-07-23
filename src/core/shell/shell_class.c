@@ -22,8 +22,10 @@
 #include "alias.h"
 #include "cmd_complete.h"
 #include "cmd_types.h"
+#include "expr.h"
 #include "object.h"
 #include "scheduler.h"
+#include "script.h"
 #include "shell.h"
 #include "shell_internal.h"
 #include "shell_var.h"
@@ -209,27 +211,23 @@ static value_t shell_method_complete(struct object *self, const member_t *m, int
     return val_list(items, (size_t)comp.count);
 }
 
-// `shell.expand(text)` — variable / `${...}` / `$(...)` expansion.
-// Wraps shell_var_expand for test harnesses and the new UI's terminal
-// pre-flight (showing what a typed line will expand to before submit).
+// `shell.expand(text)` — interpolate a string body (`${…}` / `$name`)
+// against the current bindings. Retained for test harnesses; line-level
+// preprocessing no longer exists in v2, so this is exactly the
+// dq-string interpolator.
 static value_t shell_method_expand(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)self;
     (void)m;
     if (argc < 1 || argv[0].kind != V_STRING || !argv[0].s)
         return val_err("shell.expand: expected (text)");
-    char *out = shell_var_expand(argv[0].s);
-    if (!out)
-        return val_err("shell.expand: expansion failed");
-    value_t v = val_str(out);
-    free(out);
-    return v;
+    expr_ctx_t ectx;
+    script_expr_ctx(&ectx);
+    return expr_interpolate_body(argv[0].s, &ectx);
 }
 
-// `shell.script_run(path)` — open a script file and dispatch each
-// non-empty, non-comment line through the typed dispatcher. Returns
-// the number of lines actually run. Mirrors the headless `script=` flag
-// but stays platform-neutral (no scheduler-pumping helper); long-running
-// commands inside the script will block the worker until they finish.
+// `shell.script_run(path)` — parse the whole file with the v2 script
+// interpreter (block-aware) and execute it non-interactively. Returns
+// V_NONE on success, V_ERROR if the script aborted.
 static value_t shell_method_script_run(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)self;
     (void)m;
@@ -239,20 +237,39 @@ static value_t shell_method_script_run(struct object *self, const member_t *m, i
     FILE *f = fopen(path, "r");
     if (!f)
         return val_err("shell.script_run: cannot open '%s'", path);
-
-    int64_t lines_run = 0;
-    char line[1024];
-    while (fgets(line, sizeof(line), f)) {
-        size_t len = strlen(line);
-        while (len > 0 && (line[len - 1] == '\n' || line[len - 1] == '\r'))
-            line[--len] = '\0';
-        if (len == 0 || line[0] == '#')
-            continue;
-        shell_dispatch(line);
-        lines_run++;
+    // Slurp the file so multi-line blocks parse as a unit.
+    fseek(f, 0, SEEK_END);
+    long size = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    if (size < 0)
+        size = 0;
+    char *src = (char *)malloc((size_t)size + 1);
+    if (!src) {
+        fclose(f);
+        return val_err("shell.script_run: out of memory");
     }
+    size_t got = fread(src, 1, (size_t)size, f);
+    src[got] = '\0';
     fclose(f);
-    return val_int(lines_run);
+    int rc = script_run_source(src);
+    free(src);
+    if (rc != 0)
+        return val_err("shell.script_run: '%s' failed", path);
+    return val_none();
+}
+
+// `shell.eval(text)` — run a (possibly multi-line) script source string
+// through the interpreter. The JS terminal and tests use this to submit
+// brace-balanced buffers without touching disk.
+static value_t shell_method_eval(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)self;
+    (void)m;
+    (void)argc;
+    if (argv[0].kind != V_STRING || !argv[0].s)
+        return val_err("shell.eval: expected (text)");
+    if (script_run_source(argv[0].s) != 0)
+        return val_err("shell.eval: script failed");
+    return val_none();
 }
 
 // `shell.alias_set(name, expansion)` — thin wrapper over alias_add_user.
@@ -277,9 +294,10 @@ static value_t shell_method_alias_unset(struct object *self, const member_t *m, 
     return val_none();
 }
 
-// `shell.interrupt()` — stop the running scheduler. Equivalent to the
-// terminal's Ctrl-C path, exposed as a method so JS callers route
-// through `gs_eval` like every other interaction.
+// `shell.interrupt()` — stop the running scheduler and cancel any
+// running script loop at its next iteration check (§3.8). Equivalent
+// to the terminal's Ctrl-C path, exposed as a method so JS callers
+// route through `gs_eval` like every other interaction.
 static value_t shell_method_interrupt(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)self;
     (void)m;
@@ -288,6 +306,7 @@ static value_t shell_method_interrupt(struct object *self, const member_t *m, in
     scheduler_t *s = system_scheduler();
     if (s)
         scheduler_stop(s);
+    script_interrupt();
     return val_none();
 }
 
@@ -311,6 +330,10 @@ static const arg_decl_t shell_expand_args[] = {
 
 static const arg_decl_t shell_script_run_args[] = {
     {.name = "path", .kind = V_STRING, .doc = "Script file path"},
+};
+
+static const arg_decl_t shell_eval_args[] = {
+    {.name = "text", .kind = V_STRING, .doc = "Script source (may span multiple lines)"},
 };
 
 static const arg_decl_t shell_alias_set_args[] = {
@@ -357,8 +380,12 @@ static const member_t shell_members[] = {
      .method = {.args = shell_expand_args, .nargs = 1, .result = V_STRING, .fn = shell_method_expand}},
     {.kind = M_METHOD,
      .name = "script_run",
-     .doc = "Run every command in a script file; returns the line count",
-     .method = {.args = shell_script_run_args, .nargs = 1, .result = V_INT, .fn = shell_method_script_run}},
+     .doc = "Parse and run a script file (block-aware); errors abort the script",
+     .method = {.args = shell_script_run_args, .nargs = 1, .result = V_NONE, .fn = shell_method_script_run}},
+    {.kind = M_METHOD,
+     .name = "eval",
+     .doc = "Run a (possibly multi-line) script source string",
+     .method = {.args = shell_eval_args, .nargs = 1, .result = V_NONE, .fn = shell_method_eval}},
     {.kind = M_METHOD,
      .name = "alias_set",
      .doc = "Register or replace a user alias",

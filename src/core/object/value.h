@@ -35,6 +35,8 @@ typedef enum {
     V_LIST, // heap-owned, recursively owned items
     V_OBJECT, // non-owning reference to a tree node
     V_ERROR, // heap-owned error message
+    V_REF, // heap-owned object-tree path text; re-resolved on every access
+    V_RANGE, // half-open integer range [start, stop)
 } value_kind_t;
 
 // Display / semantic flags. Stored on attribute member_t and copied onto
@@ -75,6 +77,11 @@ typedef struct value {
         } list;
         struct object *obj; // non-owning
         char *err; // heap-owned
+        char *ref; // heap-owned path text (V_REF); freed by value_free
+        struct {
+            int64_t start;
+            int64_t stop;
+        } range; // half-open [start, stop)
     };
 } value_t;
 
@@ -93,6 +100,8 @@ value_t val_enum(int idx, const char *const *table, size_t n_table);
 value_t val_list(value_t *items, size_t len); // takes ownership of items array
 value_t val_obj(struct object *o);
 value_t val_err(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
+value_t val_ref(const char *path); // node reference by path text (strdup'd)
+value_t val_range(int64_t start, int64_t stop); // half-open [start, stop)
 
 // Convenience constants.
 #define V_NONE_VAL (val_none())

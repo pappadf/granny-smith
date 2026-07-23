@@ -27,37 +27,37 @@
 machine.boot model="iicx" ram=8192 video_card="824gc"
 
 # --- Card identity + declaration ROM (stage 0). ---
-assert ${machine.id == "iicx"}                                                    "machine.id != iicx"
-assert ${machine.nubus.slot[9].card.name == "Apple Macintosh Display Card 8•24 GC"} "slot $9 card != 8•24 GC"
-assert ${machine.nubus.slot[9].card.declrom.present}                              "declaration ROM not present"
-assert ${machine.nubus.slot[9].card.declrom.size == 0x40000}                      "declrom bus size != 256 KB"
-assert ${machine.screen.width == 640}                                             "power-on width != 640"
-assert ${machine.screen.height == 480}                                            "power-on height != 480"
+assert machine.id == "iicx" "machine.id != iicx"
+assert machine.nubus.slot[9].card.name == "Apple Macintosh Display Card 8•24 GC" "slot $9 card != 8•24 GC"
+assert machine.nubus.slot[9].card.declrom.present "declaration ROM not present"
+assert machine.nubus.slot[9].card.declrom.size == 0x40000 "declrom bus size != 256 KB"
+assert machine.screen.width == 640 "power-on width != 640"
+assert machine.screen.height == 480 "power-on height != 480"
 
 # --- Accelerator bring-up: fresh card is in the reset state. ---
-assert ${machine.nubus.slot[9].card.gc.state == "reset"}                          "gc.state != reset at power-on"
-assert ${machine.nubus.slot[9].card.gc.cb == 0}                                   "CB published before boot"
+assert machine.nubus.slot[9].card.gc.state == "reset" "gc.state != reset at power-on"
+assert machine.nubus.slot[9].card.gc.cb == 0 "CB published before boot"
 
 # --- Boot handshake: write the boot magic to PublicIn+0 (card-local
 #     0x4C006400 -> super-slot 0x9C006400 for slot $9). ---
 machine.memory.poke.l 0x9C006400 0x42005300
-assert ${machine.nubus.slot[9].card.gc.state == "booted"}                         "boot handshake did not reach 'booted'"
-assert ${machine.nubus.slot[9].card.gc.cb == 0x9C007000}                          "CB address not published"
-assert ${machine.memory.peek.l(0x9C006400) == 0}                                  "boot magic not cleared by the card"
-assert ${machine.memory.peek.l(0x9C00680C) == 0x9C007000}                         "NuBus(CB) not published to PublicIn+0x40C"
-assert ${machine.memory.peek.l(0x9C006800) == 0x32100456}                         "PublicOu signature not initialized"
-assert ${machine.memory.peek.l(0x9C007000) == 0x01010000}                         "CB+0 not initialized to idle"
+assert machine.nubus.slot[9].card.gc.state == "booted" "boot handshake did not reach 'booted'"
+assert machine.nubus.slot[9].card.gc.cb == 0x9C007000 "CB address not published"
+assert machine.memory.peek.l(0x9C006400) == 0 "boot magic not cleared by the card"
+assert machine.memory.peek.l(0x9C00680C) == 0x9C007000 "NuBus(CB) not published to PublicIn+0x40C"
+assert machine.memory.peek.l(0x9C006800) == 0x32100456 "PublicOu signature not initialized"
+assert machine.memory.peek.l(0x9C007000) == 0x01010000 "CB+0 not initialized to idle"
 
 # --- RPC (Transport A): HELLO (func 1) via the CB doorbell.
 #     cmd func @ CB+0x48, sequence @ CB+0x4C, ring doorbell @ CB+0x14 = -1. ---
 machine.memory.poke.l 0x9C007048 0x00000001
 machine.memory.poke.l 0x9C00704C 0x00000000
 machine.memory.poke.l 0x9C007014 0xFFFFFFFF
-assert ${machine.nubus.slot[9].card.gc.rpc_count == 1}                            "RPC not serviced"
-assert ${machine.nubus.slot[9].card.gc.lastfunc == 1}                             "last func != HELLO(1)"
-assert ${machine.memory.peek.l(0x9C00701C) == 1}                                  "HELLO result != 1"
-assert ${machine.memory.peek.l(0x9C007018) == 3}                                  "completion status word != OK(3)"
-assert ${machine.memory.peek.l(0x9C007014) == 0}                                  "doorbell not cleared after RPC"
+assert machine.nubus.slot[9].card.gc.rpc_count == 1 "RPC not serviced"
+assert machine.nubus.slot[9].card.gc.lastfunc == 1 "last func != HELLO(1)"
+assert machine.memory.peek.l(0x9C00701C) == 1 "HELLO result != 1"
+assert machine.memory.peek.l(0x9C007018) == 3 "completion status word != OK(3)"
+assert machine.memory.peek.l(0x9C007014) == 0 "doorbell not cleared after RPC"
 
 # --- A second RPC: liveness pass (func 2) must return 1 (Status $0A basis). ---
 #     HELLO reset the sequence, so the first post-HELLO RPC carries seq 0 (the
@@ -65,8 +65,8 @@ assert ${machine.memory.peek.l(0x9C007014) == 0}                                
 machine.memory.poke.l 0x9C007048 0x00000002
 machine.memory.poke.l 0x9C00704C 0x00000000
 machine.memory.poke.l 0x9C007014 0xFFFFFFFF
-assert ${machine.nubus.slot[9].card.gc.rpc_count == 2}                            "second RPC not serviced"
-assert ${machine.memory.peek.l(0x9C00701C) == 1}                                  "liveness func(2) result != 1"
+assert machine.nubus.slot[9].card.gc.rpc_count == 2 "second RPC not serviced"
+assert machine.memory.peek.l(0x9C00701C) == 1 "liveness func(2) result != 1"
 
 # --- Stage 2: DrawMultiObject rasterizers, driven straight through the queue.
 #     SetPort (func $2D, seq 1) accepts the port -> the card interprets the
@@ -88,7 +88,7 @@ machine.memory.poke.l 0x9C007184 0x00000000
 machine.memory.poke.l 0x9C007048 0x0000002D
 machine.memory.poke.l 0x9C00704C 0x00000001
 machine.memory.poke.l 0x9C007014 0xFFFFFFFF
-assert ${machine.memory.peek.l(0x9C00701C) == 1}                                  "SetPort (func $2D) not accepted"
+assert machine.memory.peek.l(0x9C00701C) == 1 "SetPort (func $2D) not accepted"
 
 # op $71 opPattern: slot 1 (pnPat) := solid black
 machine.memory.poke.l 0x9C0076D4 0x00710001
@@ -115,32 +115,32 @@ machine.memory.poke.l 0x9C007710 0x00080028
 machine.memory.poke.l 0x9C007714 0x0000005A
 # publish 0x44 bytes -> the card drains + rasterizes incrementally
 machine.memory.poke.l 0x9C0071C0 0x00000044
-assert ${machine.nubus.slot[9].card.gc.queue_bytes == 0x44}                       "queue not drained"
+assert machine.nubus.slot[9].card.gc.queue_bytes == 0x44 "queue not drained"
 
 # FB rows at $9C011400 + y*1024; byte 0 = the oval, 2 = the poly, 4 = the arc.
-assert ${machine.memory.peek.b(0x9C011400) == 0x3C}                               "oval row 0 != 3C"
-assert ${machine.memory.peek.b(0x9C011800) == 0x7E}                               "oval row 1 != 7E"
-assert ${machine.memory.peek.b(0x9C011C00) == 0xFF}                               "oval row 2 != FF"
-assert ${machine.memory.peek.b(0x9C012000) == 0xFF}                               "oval row 3 != FF"
-assert ${machine.memory.peek.b(0x9C012400) == 0xFF}                               "oval row 4 != FF"
-assert ${machine.memory.peek.b(0x9C012800) == 0xFF}                               "oval row 5 != FF"
-assert ${machine.memory.peek.b(0x9C012C00) == 0x7E}                               "oval row 6 != 7E"
-assert ${machine.memory.peek.b(0x9C013000) == 0x3C}                               "oval row 7 != 3C"
-assert ${machine.memory.peek.b(0x9C011402) == 0xFF}                               "poly row 0 != FF"
-assert ${machine.memory.peek.b(0x9C011802) == 0xFE}                               "poly row 1 != FE"
-assert ${machine.memory.peek.b(0x9C011C02) == 0xFC}                               "poly row 2 != FC"
-assert ${machine.memory.peek.b(0x9C012002) == 0xF8}                               "poly row 3 != F8"
-assert ${machine.memory.peek.b(0x9C012402) == 0xF0}                               "poly row 4 != F0"
-assert ${machine.memory.peek.b(0x9C012802) == 0xE0}                               "poly row 5 != E0"
-assert ${machine.memory.peek.b(0x9C012C02) == 0xC0}                               "poly row 6 != C0"
-assert ${machine.memory.peek.b(0x9C013002) == 0x80}                               "poly row 7 != 80"
-assert ${machine.memory.peek.b(0x9C011404) == 0x0C}                               "arc row 0 != 0C"
-assert ${machine.memory.peek.b(0x9C011804) == 0x0E}                               "arc row 1 != 0E"
-assert ${machine.memory.peek.b(0x9C011C04) == 0x0F}                               "arc row 2 != 0F"
-assert ${machine.memory.peek.b(0x9C012004) == 0x0F}                               "arc row 3 != 0F"
-assert ${machine.memory.peek.b(0x9C012404) == 0x00}                               "arc row 4 != 00 (wedge must quit at midVert)"
-assert ${machine.memory.peek.b(0x9C012804) == 0x00}                               "arc row 5 != 00"
-assert ${machine.memory.peek.b(0x9C012C04) == 0x00}                               "arc row 6 != 00"
-assert ${machine.memory.peek.b(0x9C013004) == 0x00}                               "arc row 7 != 00"
+assert machine.memory.peek.b(0x9C011400) == 0x3C "oval row 0 != 3C"
+assert machine.memory.peek.b(0x9C011800) == 0x7E "oval row 1 != 7E"
+assert machine.memory.peek.b(0x9C011C00) == 0xFF "oval row 2 != FF"
+assert machine.memory.peek.b(0x9C012000) == 0xFF "oval row 3 != FF"
+assert machine.memory.peek.b(0x9C012400) == 0xFF "oval row 4 != FF"
+assert machine.memory.peek.b(0x9C012800) == 0xFF "oval row 5 != FF"
+assert machine.memory.peek.b(0x9C012C00) == 0x7E "oval row 6 != 7E"
+assert machine.memory.peek.b(0x9C013000) == 0x3C "oval row 7 != 3C"
+assert machine.memory.peek.b(0x9C011402) == 0xFF "poly row 0 != FF"
+assert machine.memory.peek.b(0x9C011802) == 0xFE "poly row 1 != FE"
+assert machine.memory.peek.b(0x9C011C02) == 0xFC "poly row 2 != FC"
+assert machine.memory.peek.b(0x9C012002) == 0xF8 "poly row 3 != F8"
+assert machine.memory.peek.b(0x9C012402) == 0xF0 "poly row 4 != F0"
+assert machine.memory.peek.b(0x9C012802) == 0xE0 "poly row 5 != E0"
+assert machine.memory.peek.b(0x9C012C02) == 0xC0 "poly row 6 != C0"
+assert machine.memory.peek.b(0x9C013002) == 0x80 "poly row 7 != 80"
+assert machine.memory.peek.b(0x9C011404) == 0x0C "arc row 0 != 0C"
+assert machine.memory.peek.b(0x9C011804) == 0x0E "arc row 1 != 0E"
+assert machine.memory.peek.b(0x9C011C04) == 0x0F "arc row 2 != 0F"
+assert machine.memory.peek.b(0x9C012004) == 0x0F "arc row 3 != 0F"
+assert machine.memory.peek.b(0x9C012404) == 0x00 "arc row 4 != 00 (wedge must quit at midVert)"
+assert machine.memory.peek.b(0x9C012804) == 0x00 "arc row 5 != 00"
+assert machine.memory.peek.b(0x9C012C04) == 0x00 "arc row 6 != 00"
+assert machine.memory.peek.b(0x9C013004) == 0x00 "arc row 7 != 00"
 
 quit

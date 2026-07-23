@@ -31,16 +31,16 @@ machine.floppy.drive[0].insert "../../data/apps/MacTest-IIfx.image" true
 # count main.png was captured at for the screen.match below to be deterministic.
 scheduler.run 360000000
 
-assert ${machine.id == "iifx"}              "machine.id != iifx"
-assert ${machine.rom.checksum == "4147DD77"}        "rom.checksum != 4147DD77"
+assert machine.id == "iifx" "machine.id != iifx"
+assert machine.rom.checksum == "4147DD77" "rom.checksum != 4147DD77"
 
 # JMFB seated for 13" RGB 8 bpp: 640x480, savedMode $83, and the slot-9 JMFB
 # CLUTPBCR / RowWords registers match the iicx-video-modes 8 bpp baseline.
-assert ${machine.screen.width == 640}               "screen.width != 640"
-assert ${machine.screen.height == 480}              "screen.height != 480"
-assert ${machine.rtc.pram.peek(0x48) == 0x83}       "savedMode != 0x83 (8bpp)"
-assert ${machine.memory.peek.l(0xf9200208) == 0x98} "JMFB CLUTPBCR != 0x98 (8bpp)"
-assert ${machine.memory.peek.l(0xf920000c) == 0xa0} "JMFB RowWords != 0xa0 (640*8/8/8)"
+assert machine.screen.width == 640 "screen.width != 640"
+assert machine.screen.height == 480 "screen.height != 480"
+assert machine.rtc.pram.peek(0x48) == 0x83 "savedMode != 0x83 (8bpp)"
+assert machine.memory.peek.l(0xf9200208) == 0x98 "JMFB CLUTPBCR != 0x98 (8bpp)"
+assert machine.memory.peek.l(0xf920000c) == 0xa0 "JMFB RowWords != 0xa0 (640*8/8/8)"
 
 # Verify the MacTest main window matches the reference: MacTest menu bar, the
 # Start/Stop/Pause/Log toolbar, and the hardware-identification panel reporting

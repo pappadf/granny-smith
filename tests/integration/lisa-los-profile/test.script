@@ -30,9 +30,9 @@
 machine.hd.attach
 scheduler.run 50000000
 
-assert ${machine.id == "lisa"} "machine.id != lisa"
-assert ${machine.rom.checksum == "098917B2"} "rom.checksum != 098917B2 (rev-H)"
-assert ${machine.hd.present == true} "ProFile should be attached"
+assert machine.id == "lisa" "machine.id != lisa"
+assert machine.rom.checksum == "098917B2" "rom.checksum != 098917B2 (rev-H)"
+assert machine.hd.present == true "ProFile should be attached"
 
 # (1) Install.
 machine.adb.mouse.move 648 211 "global"
@@ -135,10 +135,10 @@ machine.screen.match expected_installed.png
 # (machine.boot re-creates the machine and re-stages the inherited boot ROM), and
 # re-attach the SAME image with the clean-shutdown PRAM (TEST_SETUP) so the ROM
 # auto-boots the ProFile with no floppy — exactly lisa-profile-boot's cold boot.
-machine.hd.save "${WORK_DIR}/lisa-los-installed-raw.image"
+machine.hd.save "$WORK_DIR/lisa-los-installed-raw.image"
 machine.boot model="lisa" ram=2048
-machine.hd.attach "${WORK_DIR}/lisa-los-installed-raw.image"
-assert ${machine.hd.pram_load("${WORK_DIR}/profile.pram")} "pram_load failed"
+machine.hd.attach "$WORK_DIR/lisa-los-installed-raw.image"
+assert machine.hd.pram_load("${$WORK_DIR}/profile.pram") "pram_load failed"
 
 # Boot to the Office System desktop; the first boot opens a "clock not set" note,
 # which we dismiss (warp onto OK — closed-loop on $CC00F0/F2 — and click), leaving
@@ -162,5 +162,5 @@ machine.screen.match expected_poweroff.png
 
 # Save the cleanly-unmounted, self-contained single-file image (flat 532-byte
 # blocks) as the bootable LOS-on-HD artifact (lisa-profile-boot consumes it).
-assert ${machine.hd.save("${WORK_DIR}/lisa-los-installed.image")} "profile.save failed"
+assert machine.hd.save("${$WORK_DIR}/lisa-los-installed.image") "profile.save failed"
 quit

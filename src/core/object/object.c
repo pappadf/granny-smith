@@ -345,24 +345,28 @@ static struct object *find_attached_child(struct object *parent, const char *nam
 // proposal-module-object-model.md §2.3.
 
 static const char *const RESERVED_WORDS[] = {
-    // Boolean literal spellings.
+    // Literal spellings. `on`/`off`/`yes`/`no` are demoted from reserved
+    // words to bool-slot input coercions (validate_slot) per shell v2
+    // §3.11 — they are ordinary identifiers again.
     "true",
     "false",
-    "on",
-    "off",
-    "yes",
-    "no",
-    // Script-grammar keywords.
+    "none",
+    // Statement keywords (shell v2 §3.11).
     "let",
+    "alias",
     "if",
+    "elif",
     "else",
     "while",
-    // Future-reserved.
     "for",
-    "do",
-    "return",
+    "in",
     "break",
     "continue",
+    "return",
+    "def",
+    "assert",
+    // Held for a possible future post-test loop.
+    "do",
 };
 
 bool object_is_reserved_word(const char *name) {
@@ -852,6 +856,10 @@ static const char *kind_name(value_kind_t k) {
         return "OBJECT";
     case V_ERROR:
         return "ERROR";
+    case V_REF:
+        return "REF";
+    case V_RANGE:
+        return "RANGE";
     }
     return "?";
 }
@@ -960,6 +968,24 @@ static validate_status_t validate_slot(const typed_slot_t *s, const value_t *in,
             bool ok = false;
             double f = val_as_f64(in, &ok);
             *out = (value_t){.kind = V_FLOAT, .width = 8, .f = f};
+            rewrote = true;
+        }
+        // string → bool: accept the classic switch spellings. `on`/`off`/
+        // `yes`/`no` stopped being reserved words (shell v2 §3.11), so they
+        // arrive as V_STRING from argument mode; map them here so bool slots
+        // keep their old ergonomics.
+        else if (s->kind == V_BOOL && in->kind == V_STRING) {
+            const char *str = in->s ? in->s : "";
+            bool bv;
+            if (!strcmp(str, "true") || !strcmp(str, "on") || !strcmp(str, "yes") || !strcmp(str, "1"))
+                bv = true;
+            else if (!strcmp(str, "false") || !strcmp(str, "off") || !strcmp(str, "no") || !strcmp(str, "0"))
+                bv = false;
+            else {
+                snprintf(err_buf, err_size, "must be a boolean (true/false/on/off/yes/no), got '%.20s'", str);
+                return VALIDATE_ERR;
+            }
+            *out = (value_t){.kind = V_BOOL, .width = 1, .b = bv};
             rewrote = true;
         }
         // int 0/1 → bool
@@ -1273,6 +1299,34 @@ value_t node_get(node_t n) {
         if (n.member->child.indexed) {
             if (!n.member->child.get)
                 return val_err("indexed child '%s' has no get callback", n.member->name);
+            if (n.index < 0) {
+                // Index-less read of an indexed collection returns the
+                // whole collection as V_LIST of entry objects (shell v2
+                // §6.1: `.entries` is the data; the REPL's table
+                // formatter is the presentation).
+                size_t cap = 8, len = 0;
+                value_t *items = (value_t *)malloc(cap * sizeof(value_t));
+                if (!items)
+                    return val_err("out of memory");
+                if (n.member->child.next) {
+                    for (int i = n.member->child.next(n.obj, -1); i >= 0; i = n.member->child.next(n.obj, i)) {
+                        struct object *c = n.member->child.get(n.obj, i);
+                        if (!c)
+                            continue;
+                        if (len == cap) {
+                            cap *= 2;
+                            value_t *t = (value_t *)realloc(items, cap * sizeof(value_t));
+                            if (!t) {
+                                free(items);
+                                return val_err("out of memory");
+                            }
+                            items = t;
+                        }
+                        items[len++] = val_obj(c);
+                    }
+                }
+                return val_list(items, len);
+            }
             struct object *c = n.member->child.get(n.obj, n.index);
             if (!c) {
                 // The user-facing path is typically `<parent>[<i>]`

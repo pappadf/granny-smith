@@ -6,10 +6,10 @@ scheduler.run 50000
 # their values depend on how far through boot we ran. The legacy
 # `eval <path>` form still works (it lives on as a JSON-printer);
 # we mix both forms below to exercise each.
-assert ${machine.id == "plus"} "expected Plus machine"
-assert ${machine.freq == 7833600} "Plus runs at 7.83 MHz"
-assert ${machine.memory.ram_size == 4194304} "Plus has 4 MiB RAM"
-assert ${machine.memory.rom_size == 131072} "Plus has 128 KiB ROM"
+assert machine.id == "plus" "expected Plus machine"
+assert machine.freq == 7833600 "Plus runs at 7.83 MHz"
+assert machine.memory.ram_size == 4194304 "Plus has 4 MiB RAM"
+assert machine.memory.rom_size == 131072 "Plus has 128 KiB ROM"
 machine.name
 machine.cpu.pc
 machine.cpu.d0
@@ -21,9 +21,9 @@ scheduler
 
 # Mac low-memory globals via debug.mac.globals.read — value lookup
 # delegates to mac_globals_data.c.
-echo ${debug.mac.globals.read("MBState")}
-echo ${debug.mac.globals.read("Ticks")}
-echo ${debug.mac.globals.read("ROMBase")}
+echo "${debug.mac.globals.read("MBState")}"
+echo "${debug.mac.globals.read("Ticks")}"
+echo "${debug.mac.globals.read("ROMBase")}"
 machine.cpu.ccr
 machine.cpu.sp
 
@@ -31,9 +31,9 @@ machine.cpu.sp
 # sound.enabled is a writable V_BOOL attribute; the assert form is a
 # stronger check than a bare-read whose output used to be eyeballed.
 machine.sound.enabled = false
-assert ${machine.sound.enabled == false}
+assert machine.sound.enabled == false
 machine.sound.enabled = true
-assert ${machine.sound.enabled == true}
+assert machine.sound.enabled == true
 
 # Legacy `eval` continues to work in parallel for the JSON shape.
 machine.id

@@ -15,7 +15,7 @@
 # PA $0828 whenever the CPU happens to be in supervisor mode at the tick
 # boundary.  --aux uses a user-mode-only guard tick, so it pins MAE's MTemp
 # without corrupting the kernel.
-machine.rtc.time = 2026-04-26T21:30:36
+machine.rtc.time = "2026-04-26T21:30:36"
 
 # Boot the floppy + CD to the A/UX Easy Install screen (~600M instructions).
 # A/UX is interrupt-driven: the kernel sleeps for each CD read and is woken by

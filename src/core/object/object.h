@@ -39,6 +39,11 @@ struct class_desc;
 #define OBJ_ARG_REST        0x0002u // slurp all remaining arguments into a V_LIST
 #define OBJ_ARG_NONEMPTY    0x0004u // V_STRING value must be non-NULL and non-empty
 #define OBJ_ARG_STRICT_KIND 0x0008u // disable int↔uint, int→float, string→enum coercion
+// OBJ_ARG_TEMPLATE — deferred-eval string slot (shell v2 §6.3): the
+// command parser stores the raw, uninterpolated string body; the owning
+// subsystem evaluates it later (possibly repeatedly) with extra
+// bindings, e.g. logpoint messages with `$value`/`$addr`/`$size`.
+#define OBJ_ARG_TEMPLATE 0x0020u
 
 // === Member visibility category (proposal-system-object-model.md §7.2) =======
 //

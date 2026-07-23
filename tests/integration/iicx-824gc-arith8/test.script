@@ -41,7 +41,7 @@ machine.memory.poke.l 0x9C007184 0x00000000
 machine.memory.poke.l 0x9C007048 0x0000002D
 machine.memory.poke.l 0x9C00704C 0x00000000
 machine.memory.poke.l 0x9C007014 0xFFFFFFFF
-assert ${machine.memory.peek.l(0x9C00701C) == 1}         "SetPort (func $2D) not accepted at 8 bpp"
+assert machine.memory.peek.l(0x9C00701C) == 1 "SetPort (func $2D) not accepted at 8 bpp"
 
 machine.memory.poke.l 0x9C0076D4 0x00710001
 machine.memory.poke.l 0x9C0076D8 0xFFFFFFFF
@@ -167,21 +167,21 @@ machine.memory.poke.l 0x9C0078B4 0x00050000
 machine.memory.poke.l 0x9C0078B8 0x00000048
 machine.memory.poke.l 0x9C0078BC 0x0002004C
 machine.memory.poke.l 0x9C0071C0 0x000001EC
-assert ${machine.nubus.slot[9].card.gc.queue_bytes == 0x1EC}      "queue not drained"
+assert machine.nubus.slot[9].card.gc.queue_bytes == 0x1EC "queue not drained"
 
-assert ${machine.memory.peek.b(0x9C011400) == 0x60}       "blend $20: (4040*7FFF + 8080*8001)>>16 = 6060"
-assert ${machine.memory.peek.b(0x9C011408) == 0xC0}       "addPin $21: 8080+6060 = E0E0 > pin C0C0 -> pin"
-assert ${machine.memory.peek.b(0x9C011410) == 0x41}       "addOver $22: 8080+C0C0 wraps to 4140"
-assert ${machine.memory.peek.b(0x9C011418) == 0x20}       "subPin $23: 6060-8080 borrows -> pin 2020"
-assert ${machine.memory.peek.b(0x9C011420) == 0x90}       "transparent $24: src 90 != transColor -> copy"
-assert ${machine.memory.peek.b(0x9C011428) == 0x30}       "transparent $24: src == transColor (white) -> untouched"
-assert ${machine.memory.peek.b(0x9C011430) == 0x80}       "adMax $25: max(8080, 3030)"
-assert ${machine.memory.peek.b(0x9C011438) == 0xAF}       "subOver $26: 3030-8080 wraps to AFB0 -> AF"
-assert ${machine.memory.peek.b(0x9C011440) == 0x80}       "adMin $27: min(8080, B0B0)"
+assert machine.memory.peek.b(0x9C011400) == 0x60 "blend $20: (4040*7FFF + 8080*8001)>>16 = 6060"
+assert machine.memory.peek.b(0x9C011408) == 0xC0 "addPin $21: 8080+6060 = E0E0 > pin C0C0 -> pin"
+assert machine.memory.peek.b(0x9C011410) == 0x41 "addOver $22: 8080+C0C0 wraps to 4140"
+assert machine.memory.peek.b(0x9C011418) == 0x20 "subPin $23: 6060-8080 borrows -> pin 2020"
+assert machine.memory.peek.b(0x9C011420) == 0x90 "transparent $24: src 90 != transColor -> copy"
+assert machine.memory.peek.b(0x9C011428) == 0x30 "transparent $24: src == transColor (white) -> untouched"
+assert machine.memory.peek.b(0x9C011430) == 0x80 "adMax $25: max(8080, 3030)"
+assert machine.memory.peek.b(0x9C011438) == 0xAF "subOver $26: 3030-8080 wraps to AFB0 -> AF"
+assert machine.memory.peek.b(0x9C011440) == 0x80 "adMin $27: min(8080, B0B0)"
 
 # RGBPat: row 0 = cells 0/1 alternating (AA,55), row 1 = cells 2/3 (55,AA).
-assert ${machine.memory.peek.l(0x9C011448) == 0xAA55AA55}  "RGBPat row 0 != aa55aa55"
-assert ${machine.memory.peek.l(0x9C011848) == 0x55AA55AA}  "RGBPat row 1 != 55aa55aa"
+assert machine.memory.peek.l(0x9C011448) == 0xAA55AA55 "RGBPat row 0 != aa55aa55"
+assert machine.memory.peek.l(0x9C011848) == 0x55AA55AA "RGBPat row 1 != 55aa55aa"
 
 # --- func $0C CachePixPat: synthetic PixPat records in guest RAM ($400000 —
 #     low RAM is still ROM-overlaid at power-on).  PixMap: rowBytes 2,
@@ -216,7 +216,7 @@ machine.memory.poke.l 0x9C007660 0x00000003
 machine.memory.poke.l 0x9C007048 0x0000000C
 machine.memory.poke.l 0x9C00704C 0x00000001
 machine.memory.poke.l 0x9C007014 0xFFFFFFFF
-assert ${machine.memory.peek.l(0x9C00701C) == 1}          "func $0C CachePixPat declined"
+assert machine.memory.peek.l(0x9C00701C) == 1 "func $0C CachePixPat declined"
 
 # op $72 selects the cached tile into slot 1; fill a 8x2 rect at (0, 88).
 # (Queue records APPEND at the already-drained offset $1EC — the drain is
@@ -228,16 +228,16 @@ machine.memory.poke.l 0x9C0078CC 0x00050000
 machine.memory.poke.l 0x9C0078D0 0x00000058
 machine.memory.poke.l 0x9C0078D4 0x00020060
 machine.memory.poke.l 0x9C0071C0 0x00000204
-assert ${machine.memory.peek.l(0x9C011458) == 0x20406080}  "PixPat row 0 lo != 20406080"
-assert ${machine.memory.peek.l(0x9C01145C) == 0x20406080}  "PixPat row 0 hi != 20406080"
-assert ${machine.memory.peek.l(0x9C011858) == 0x20406080}  "PixPat row 1 != 20406080"
+assert machine.memory.peek.l(0x9C011458) == 0x20406080 "PixPat row 0 lo != 20406080"
+assert machine.memory.peek.l(0x9C01145C) == 0x20406080 "PixPat row 0 hi != 20406080"
+assert machine.memory.peek.l(0x9C011858) == 0x20406080 "PixPat row 1 != 20406080"
 
 # func $2C FlushPixPat (arg = the handle) invalidates the type-5 entry.
 machine.memory.poke.l 0x9C00764C 0xDEAD0001
 machine.memory.poke.l 0x9C007048 0x0000002C
 machine.memory.poke.l 0x9C00704C 0x00000002
 machine.memory.poke.l 0x9C007014 0xFFFFFFFF
-assert ${machine.memory.peek.l(0x9C00701C) == 1}          "func $2C FlushPixPat failed"
+assert machine.memory.peek.l(0x9C00701C) == 1 "func $2C FlushPixPat failed"
 
 # --- func $15 blit from an UNLOCKED offscreen (pmVersion 2): the src
 #     baseAddr is the pixel-image HANDLE; the card dereferences the master
@@ -279,9 +279,9 @@ machine.memory.poke.l 0x9C00714C 0xFFFF0000
 machine.memory.poke.l 0x9C007048 0x00000015
 machine.memory.poke.l 0x9C00704C 0x00000003
 machine.memory.poke.l 0x9C007014 0xFFFFFFFF
-assert ${machine.memory.peek.l(0x9C00701C) == 1}          "func $15 declined the pmVersion-2 source"
-assert ${machine.memory.peek.l(0x9C02A400) == 0x10111213} "offscreen blit row lo"
-assert ${machine.memory.peek.l(0x9C02A404) == 0x14151617} "offscreen blit row hi"
+assert machine.memory.peek.l(0x9C00701C) == 1 "func $15 declined the pmVersion-2 source"
+assert machine.memory.peek.l(0x9C02A400) == 0x10111213 "offscreen blit row lo"
+assert machine.memory.peek.l(0x9C02A404) == 0x14151617 "offscreen blit row hi"
 
 # --- func $15 SCREEN->SCREEN (the ScrollRect shape): src PixMap IS the
 #     screen (baseAddr $9C011400, pmVersion 0).  The card must read the
@@ -306,9 +306,9 @@ machine.memory.poke.l 0x9C00710C 0x00650008
 machine.memory.poke.l 0x9C007048 0x00000015
 machine.memory.poke.l 0x9C00704C 0x00000004
 machine.memory.poke.l 0x9C007014 0xFFFFFFFF
-assert ${machine.memory.peek.l(0x9C00701C) == 1}          "func $15 declined the screen->screen copy"
-assert ${machine.memory.peek.l(0x9C02AC00) == 0x10111213} "screen->screen copy row lo"
-assert ${machine.memory.peek.l(0x9C02AC04) == 0x14151617} "screen->screen copy row hi"
-assert ${machine.memory.peek.l(0x9C02A400) == 0x10111213} "screen->screen copy clobbered the source row"
+assert machine.memory.peek.l(0x9C00701C) == 1 "func $15 declined the screen->screen copy"
+assert machine.memory.peek.l(0x9C02AC00) == 0x10111213 "screen->screen copy row lo"
+assert machine.memory.peek.l(0x9C02AC04) == 0x14151617 "screen->screen copy row hi"
+assert machine.memory.peek.l(0x9C02A400) == 0x10111213 "screen->screen copy clobbered the source row"
 
 quit

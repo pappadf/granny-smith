@@ -24,17 +24,17 @@
 
 # Pin the wall clock so screenshot comparisons are reproducible (matches
 # iifx-aux3-boot).
-machine.rtc.time = 2026-04-26T21:30:36
+machine.rtc.time = "2026-04-26T21:30:36"
 
 # ~1.5 G cycles takes the IIfx through Mac OS boot, the A/UX launch, the
 # A/UX kernel, the UFS root mount, exec(/etc/init), fsck, and to the
 # graphical CommandShell login window (bitwise-stable from ~1.3 G on).
 scheduler.run 1500000000
 
-assert ${machine.id == "iifx"} "machine.id != iifx"
-assert ${machine.rom.checksum == "4147DD77"} "rom.checksum != 4147DD77"
-assert ${machine.screen.width == 640} "screen.width != 640"
-assert ${machine.screen.height == 480} "screen.height != 480"
+assert machine.id == "iifx" "machine.id != iifx"
+assert machine.rom.checksum == "4147DD77" "rom.checksum != 4147DD77"
+assert machine.screen.width == 640 "screen.width != 640"
+assert machine.screen.height == 480 "screen.height != 480"
 
 # Sanity: we are at the same login window iifx-aux3-boot pins (compare the
 # blinking-cursor-free Name-field region).

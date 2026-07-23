@@ -35,8 +35,8 @@ storage.path_exists ../../data/systems/System_6_0_8.dsk/partition1/System\ Folde
 
 # Recursive copy of the synthetic tree out to the host.  Reads every leaf;
 # any path-resolution bug would surface as a failed cp.
-storage.cp -r ../../data/systems/System_6_0_8.dsk/partition1/System\ Folder/Finder/rsrc/ ${WORK_DIR}/rsrc-dump/
-vfs.ls ${WORK_DIR}/rsrc-dump
+storage.cp -r ../../data/systems/System_6_0_8.dsk/partition1/System\ Folder/Finder/rsrc/ "$WORK_DIR/rsrc-dump/"
+vfs.ls "$WORK_DIR/rsrc-dump"
 
 # Drop the mount on the way out so the next test starts from a clean slate.
 storage.unmount ../../data/systems/System_6_0_8.dsk

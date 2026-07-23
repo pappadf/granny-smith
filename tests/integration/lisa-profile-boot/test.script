@@ -10,13 +10,13 @@
 # resolves the ProFile from that snapshot and boots; a non-clean-shutdown image
 # leaves a floppy-only snapshot and fails with error 10738.
 
-machine.hd.attach "${WORK_DIR}/profile.image"
-assert ${machine.id == "lisa"} "machine.id != lisa"
-assert ${machine.rom.checksum == "098917B2"} "rom.checksum != 098917B2 (rev-H)"
-assert ${machine.hd.present == true} "ProFile should be attached"
+machine.hd.attach "$WORK_DIR/profile.image"
+assert machine.id == "lisa" "machine.id != lisa"
+assert machine.rom.checksum == "098917B2" "rom.checksum != 098917B2 (rev-H)"
+assert machine.hd.present == true "ProFile should be attached"
 
 # Seed (invalid) parameter memory before the ROM reads it at startup.
-assert ${machine.hd.pram_load("${WORK_DIR}/profile.pram")} "pram_load failed"
+assert machine.hd.pram_load("${$WORK_DIR}/profile.pram") "pram_load failed"
 
 # The ROM reads PRAM -> BootVol=2 -> PROBOOT the ProFile -> loader -> SYSTEM.OS;
 # pm_good=false, so INIT_CONFIG restores the on-disk MDDF snapshot and FIND_PM_IDS

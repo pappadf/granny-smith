@@ -1,117 +1,83 @@
-# Integration test: Debug tooling — `find` family
-# (PR1 + PR2 of proposal-debug-tooling.md).
+# Integration test: Debug tooling — `find` family (shell v2).
 #
-# Uses the typed `find.{str|bytes|long|word}` methods. Each method
-# delegates to the legacy `find` parser via shell_dispatch, so error
-# messages are preserved unchanged. The runner (run.sh) captures
-# stdout and greps for the parser's output markers.
+# `find.{str|bytes|word|long}` return a V_LIST of match addresses
+# (shell v2 §6.1); failures return V_ERROR. This script asserts on the
+# typed results and echoes stable markers that run.sh greps.
 
 # === find: introspection ================================================
 
 # methods("find") lists the four sub-command methods this script
-# exercises. Replaces the legacy `help find` synopsis check.
-echo ${methods("find")}
+# exercises.
+echo "${methods("find")}"
 
 # === find.str: ASCII search =============================================
 
 # "Apple" appears in the Plus ROM (which is mirrored at 0x400000).
 # Restrict the scan to the primary mirror so the expected hit count is
 # stable.
-find.str "Apple" "$400000..$440000"
+let hits = find.str("Apple", 0x400000, 0x440000)
+assert len($hits) > 0 "find.str should locate 'Apple' in the ROM mirror"
+echo "str-first=${$hits[0]:08x}"
+echo "str-count=${len($hits)}"
 
-# `all` token uncaps the hit limit (exercises the 'all' parser path).
-find.str "Apple" "$400000..$440000 all"
+# Bounded scan (start + count window).
+let windowed = find.str("Apple", 0x400000, 0x400000 + 0x40000 - 1)
+assert len($windowed) == len($hits) "windowed scan should see the same hits"
 
-# "<start> <count>" form: scan exactly 0x40000 bytes from 0x400000.
-find.str "Apple" "$400000 0x40000"
-
-# Empty pattern should be rejected.
-find.str "" "$400000..$440000"
+# Empty pattern is a typed error, not a silent no-op.
+assert try(find.str("", 0x400000, 0x440000), none) == none "empty pattern must error"
 
 # === find.bytes: hex-byte-sequence search ===============================
 
 # Search for NOP (4E 71) in the mapped address range.
-find.bytes "4E 71" "$400000..$440000"
+let nops = find.bytes("4E 71", 0x400000, 0x440000)
+assert len($nops) > 0 "find.bytes should hit 68K NOPs"
+echo "nop-count=${len($nops)}"
 
-# Longer pattern with range.
-find.bytes "4E B9" "$400000..$440000"
+# Non-hex token is rejected.
+assert try(find.bytes("ZZ"), none) == none "non-hex byte token must error"
 
-# Non-hex token should be rejected (ZZ is not a valid hex byte).
-find.bytes "ZZ"
+# === find.word / find.long: big-endian value search =====================
 
-# Hex mixed with range on the same line.
-find.bytes "4E 71" "$400000..$440000 all"
-
-# === find.word: 16-bit big-endian value search ==========================
-
-# "Apple" begins with bytes 41 70 ('A','p'), so word $4170 hits wherever
+# "Apple" begins with bytes 41 70 ('A','p'), so word 0x4170 hits where
 # "Apple" starts — same location the str test already asserts.
-# `$XXXX` parses as V_STRING in path-form and is forwarded verbatim to
-# the legacy parser, which interprets the `$` prefix as hex.
-find.word $4170 "$400000..$440000"
+# Probe a window pinned at the known str hit so the first word/long
+# match is exactly that address (0x4170 also occurs elsewhere in ROM).
+let w = find.word(0x4170, $hits[0], $hits[0] + 3)
+assert $w[0] == $hits[0] "find.word should hit at the str offset"
+echo "word-first=${$w[0]:08x}"
 
-# 0x-prefixed value parses as V_INT and is dispatched as 0xN.
-find.word 0x4170 "$400000..$440000"
-
-# Bare-hex form (no prefix) needs quoting in path-form so the literal
-# parser doesn't read it as decimal — quote it as a string and the
-# legacy parser still treats it as hex.
-find.word "4170" "$400000..$440000"
+let l = find.long(0x4170706C, $hits[0], $hits[0] + 7)
+assert $l[0] == $hits[0] "find.long should hit at the str offset"
+echo "long-first=${$l[0]:08x}"
 
 # Values exceeding 16 bits must be rejected — not silently truncated.
-find.word $10000 "$400000..$440000"
+assert try(find.word(0x10000, 0x400000, 0x440000), none) == none "16-bit overflow must error"
 
-# Non-numeric value should produce a clear error.
-find.word zzz "$400000..$440000"
-
-# === find.long: 32-bit big-endian value search ==========================
-
-# First four bytes of "Apple" = 41 70 70 6C; long $4170706C hits at the
-# same address as the str match.
-find.long $4170706C "$400000..$440000"
-
-# `all` token uncaps the hit limit for the long variant too.
-find.long $4170706C "$400000..$440000 all"
-
-# "<start> <count>" range form works for long as well.
-find.long $4170706C "$400000 0x40000"
-
-# === Error paths: bad range forms =======================================
-
-# Missing right side of ..
-find.str "Apple" "$400000.."
-
-# Backwards range.
-find.str "Apple" "$500000..$400000"
+# Backwards range is rejected.
+assert try(find.str("Apple", 0x500000, 0x400000), none) == none "backwards range must error"
 
 # === format specs in ${expr:fmt} ========================================
 #
-# Format specs were silently broken in shell_var.c — the colon was not
-# split off before expr_eval, so the spec leaked into the body and
-# tripped the parser with "trailing garbage". These exercises pin down
-# the supported specs (decimal, hex, width-padded hex, force-string) so
-# we don't regress them.
+# These exercises pin down the supported specs (decimal, hex,
+# width-padded hex, force-string) so we don't regress them.
 
-# Each unquoted form prints the formatted value. Padding-sensitive
-# specs (`8X`, `5d`) are wrapped in `"..."` because an unquoted ${...}
-# whose result contains whitespace is word-split by the tokenizer
-# (standard shell behaviour); quoting forces it into a single arg.
-echo ${0xab:x}
-echo ${0xab:08x}
+echo "${0xab:x}"
+echo "${0xab:08x}"
 echo "[${0xab:8X}]"
-echo ${0xab:d}
+echo "${0xab:d}"
 echo "[${42:5d}]"
-echo ${"hello":s}
+echo "${"hello":s}"
 echo "fmt-marker[${0xab:08x}]"
 
-# === indexed-child error message naming ================================
+# === indexed-child access ===============================================
 #
-# `debug.breakpoints[42]` historically reported `'entries[0]' is empty`
-# which leaked the internal child name. After the fix the parent
-# object's name appears in the diagnostic.
+# Reading an empty indexed slot is a typed error (script-abort without
+# try); reading the index-less collection yields the entries list.
 
 debug.breakpoints.clear
-debug.breakpoints[42]
+assert try(debug.breakpoints[42], none) == none "empty slot read must error"
+assert len(debug.breakpoints.entries) == 0 "cleared collection reads as empty list"
 
 # === debug.disasm with explicit address =================================
 #

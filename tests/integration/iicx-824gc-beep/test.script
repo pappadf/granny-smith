@@ -21,7 +21,7 @@ machine.scsi.attach_hd "../../data/systems/system_6_0_8_20mb_8_24gc.img" 0
 scheduler.run 200000000
 
 # --- The Finder desktop, drawn by the card (accelerator ON). ---
-assert ${machine.nubus.slot[9].card.gc.on == true} "accelerator did not turn on"
+assert machine.nubus.slot[9].card.gc.on == true "accelerator did not turn on"
 machine.screen.match finder-824gc-640x480-1bpp.png
 
 # --- Open the Control Panel from the Apple menu. ---
@@ -65,14 +65,14 @@ machine.sound.capture.stop
 
 # The beep window is Sound-Manager-controlled: mode 2 for exactly 5,423
 # samples (22,257 Hz), captured pre-resampling/pre-volume.
-assert ${machine.sound.capture.frames == 5423} "unexpected capture length"
+assert machine.sound.capture.frames == 5423 "unexpected capture length"
 
 # Sample-exact compare against the golden (fails the test on any divergence).
 # Loudness does NOT appear in the capture: the sink is pre-volume, and the
 # slider level lands in the ASC volume register (post-DAC attenuation the
 # host applies at playback). The register is asserted directly instead.
 machine.sound.match beep.wav
-assert ${machine.sound.volume == 5} "ASC volume register != slider level 5"
+assert machine.sound.volume == 5 "ASC volume register != slider level 5"
 
 # --- Drag the slider one more notch, from level 5 to 6: a second beep. ---
 # The level-5 knob center is y=225, level 6 is y=214. A second, separately
@@ -95,12 +95,12 @@ machine.adb.mouse.click false
 scheduler.run 40000000
 machine.sound.capture.stop
 
-assert ${machine.sound.capture.frames == 5423} "unexpected second capture length"
+assert machine.sound.capture.frames == 5423 "unexpected second capture length"
 # The pre-volume waveform is identical to the first beep (beep2.wav ==
 # beep.wav byte-for-byte): the Sound Manager re-renders the same table and
 # no state leaks between beeps. The second beep is LOUDER only through the
 # volume register, asserted below.
 machine.sound.match beep2.wav
-assert ${machine.sound.volume == 6} "ASC volume register != slider level 6"
+assert machine.sound.volume == 6 "ASC volume register != slider level 6"
 
 quit

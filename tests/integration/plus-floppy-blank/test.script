@@ -14,16 +14,16 @@
 
 # Create the blank floppy before booting far — fd_create is a host-side
 # image op, independent of guest state.
-assert ${storage.fd_create("${WORK_DIR}/blank.dsk")} "fd_create failed"
+assert storage.fd_create("${$WORK_DIR}/blank.dsk") "fd_create failed"
 
 # Boot to the System Tools desktop.
 scheduler.run 30000000
 
 # Insert the blank into the external drive. System 6 spins it up, fails to
 # mount, and offers to initialize it.
-machine.floppy.drive[1].insert "${WORK_DIR}/blank.dsk" true
+machine.floppy.drive[1].insert "$WORK_DIR/blank.dsk" true
 scheduler.run 20000000
-assert ${machine.floppy.drive[1].present} "blank floppy not present in drive 1"
+assert machine.floppy.drive[1].present "blank floppy not present in drive 1"
 machine.screen.match init-dialog.png
 
 # Click "Eject" (leftmost button) — dismiss without initializing.
@@ -35,7 +35,7 @@ machine.adb.mouse.click false
 scheduler.run 20000000
 
 # The blank is ejected and the desktop is back.
-assert ${machine.floppy.drive[1].present == false} "blank floppy still present after Eject"
+assert machine.floppy.drive[1].present == false "blank floppy still present after Eject"
 machine.screen.match desktop-after-eject.png
 
 quit

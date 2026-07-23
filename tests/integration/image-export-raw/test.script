@@ -4,19 +4,19 @@
 # into this directory, so image paths are relative and WORK_DIR is absolute.
 
 # Export the source floppy to a flat raw image.
-assert ${storage.export_raw("../../data/systems/System_6_0_8.dsk", "${WORK_DIR}/exported.img")} "export_raw returned false"
+assert storage.export_raw("../../data/systems/System_6_0_8.dsk", "${$WORK_DIR}/exported.img") "export_raw returned false"
 
 # The exported file exists on the host and is the decoded logical size
 # (raw 800 KB floppy = 819200 bytes).
-assert ${storage.path_exists("${WORK_DIR}/exported.img")} "exported image missing on host"
-assert ${storage.path_size("${WORK_DIR}/exported.img") == 819200} "exported image wrong size"
+assert storage.path_exists("${$WORK_DIR}/exported.img") "exported image missing on host"
+assert storage.path_size("${$WORK_DIR}/exported.img") == 819200 "exported image wrong size"
 
 # Round-trip: the exported raw image re-mounts as a bare HFS volume and its
 # root directory lists entries (same opendir/readdir path as the source).
-storage.probe ${WORK_DIR}/exported.img
-assert ${vfs.list("${WORK_DIR}/exported.img/partition1")} "exported raw image did not re-mount as HFS"
+storage.probe "$WORK_DIR/exported.img"
+assert vfs.list("${$WORK_DIR}/exported.img/partition1") "exported raw image did not re-mount as HFS"
 
 # Sanity: the source still lists too (no state clobbered by the export).
-assert ${vfs.list("../../data/systems/System_6_0_8.dsk/partition1")} "source listing empty after export"
+assert vfs.list("../../data/systems/System_6_0_8.dsk/partition1") "source listing empty after export"
 
 quit

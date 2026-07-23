@@ -17,10 +17,10 @@
 
 scheduler.run 80000000
 
-assert ${machine.id == "lisa"} "machine.id != lisa"
-assert ${machine.rom.checksum == "098917B2"} "rom.checksum != 098917B2 (rev-H)"
-assert ${machine.screen.width == 720} "screen.width != 720"
-assert ${machine.screen.height == 364} "screen.height != 364"
+assert machine.id == "lisa" "machine.id != lisa"
+assert machine.rom.checksum == "098917B2" "rom.checksum != 098917B2 (rev-H)"
+assert machine.screen.width == 720 "screen.width != 720"
+assert machine.screen.height == 364 "screen.height != 364"
 
 # Verify the LOS 3.1 Install/Repair/Restore menu matches the reference:
 #   "Lisa 7/7  Office System 3.0  (c)1983, 1984 apple computer, inc."

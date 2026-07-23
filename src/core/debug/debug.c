@@ -32,6 +32,7 @@
 #include "root.h"
 #include "scheduler.h"
 #include "shell.h"
+#include "shell_var.h"
 #include "system.h"
 #include "system_config.h"
 #include "value.h"
@@ -166,6 +167,13 @@ breakpoint_t *set_breakpoint(debug_t *debug, uint32_t addr, addr_space_t space) 
     return bp;
 }
 
+// `$name` resolver for debugger-side expression contexts: straight
+// through to the shell's scoped binding store (+ alias table).
+static value_t debug_shell_binding(void *ud, const char *name) {
+    (void)ud;
+    return shell_binding_get(name);
+}
+
 // Evaluate a breakpoint condition expression using the full ${...}
 // expression grammar (see src/core/object/expr.c).  Supports anything
 // expr_eval supports — paths (cpu.pc, cpu.d0), method calls
@@ -188,9 +196,7 @@ static bool eval_breakpoint_condition(const char *expr) {
 
     expr_ctx_t ctx = {
         .root = object_root(),
-        .alias = NULL, // bp conditions don't currently support shell aliases
-        .alias_ud = NULL,
-        .binding = NULL, // bp conditions don't currently support shell vars
+        .binding = debug_shell_binding, // $name → shell bindings/aliases
         .binding_ud = NULL,
     };
 
@@ -346,25 +352,13 @@ logpoint_t *set_memory_logpoint(debug_t *debug, uint32_t addr, uint32_t end_addr
     return lp;
 }
 
-// Adapter for expr_alias_fn — alias_lookup's signature differs because
-// it also returns the alias kind via an out-pointer.
-static const char *alias_lookup_for_expr(void *ud, const char *name) {
-    (void)ud;
-    return alias_lookup(name, NULL);
-}
-
-// Expand a logpoint message via the unified ${...} interpolator. Sets
-// up the `lp` synthetic context with addr/value/size, then calls
-// expr_interpolate_string against the object root with the alias
-// resolver bound. Outside ${...} the message is literal — a bare `$`
-// is just a dollar sign. Use ${cpu.pc}, ${lp.value},
-// ${memory.peek.l(<addr>)}, ${memory.read_cstring(<addr>)}.
-// Per-fire bindings exposed during logpoint message expansion. The
-// three event-intrinsic values (`value`, `addr`, `size`) live nowhere
+// Expand a logpoint message template at fire time (shell v2 §6.3).
+// The message is a stored (raw) interpolating-string body: `${expr}`
+// splices any expression, `$name` splices a binding. The three
+// event-intrinsic values (`$value`, `$addr`, `$size`) live nowhere
 // else — there is no persistent object holding "the byte that just got
-// written to 0x4000". The deferred interpolator queries this binding
-// table for bare identifiers; everything else (registers, memory,
-// peripherals) resolves through the normal object tree at fire time.
+// written to 0x4000" — so they are pushed as per-fire bindings, layered
+// in front of the shell's regular binding store.
 typedef struct {
     uint32_t addr;
     uint32_t value;
@@ -389,7 +383,9 @@ static value_t lp_binding(void *ud, const char *name) {
     }
     if (strcmp(name, "size") == 0)
         return val_uint(1, lp->size);
-    return val_none();
+    // Everything else falls through to the shell's binding store
+    // (scoped `let` bindings, then the alias table as V_REF).
+    return shell_binding_get(name);
 }
 
 static void format_logpoint_message(char *buf, size_t buf_size, const char *msg, uint32_t addr, uint32_t value,
@@ -401,14 +397,12 @@ static void format_logpoint_message(char *buf, size_t buf_size, const char *msg,
     lp_bindings_t lp = {.addr = addr, .value = value, .size = size};
     expr_ctx_t ctx = {
         .root = object_root(),
-        .alias = alias_lookup_for_expr,
-        .alias_ud = NULL,
         .binding = lp_binding,
         .binding_ud = &lp,
     };
-    value_t v = expr_interpolate_string(msg, &ctx);
+    value_t v = expr_interpolate_body(msg, &ctx);
 
-    const char *s = (v.kind == V_STRING && v.s) ? v.s : "";
+    const char *s = (v.kind == V_STRING && v.s) ? v.s : (v.kind == V_ERROR && v.err) ? v.err : "";
     size_t n = strlen(s);
     if (n >= buf_size)
         n = buf_size - 1;
@@ -2455,220 +2449,6 @@ static void cmd_examine_handler(struct cmd_context *ctx, struct cmd_result *res)
 }
 
 // --- disasm ---
-// --- logpoint ---
-static void cmd_logpoint_handler(struct cmd_context *ctx, struct cmd_result *res) {
-    debug_t *debug = system_debug();
-    if (!debug) {
-        cmd_err(res, "debug not available");
-        return;
-    }
-
-    // Bare invocation or "list": dump all logpoints
-    if (ctx->raw_argc <= 1 || (ctx->subcmd && strcmp(ctx->subcmd, "list") == 0)) {
-        list_logpoints(debug);
-        cmd_ok(res);
-        return;
-    }
-
-    // "clear": delete all logpoints
-    if (ctx->subcmd && strcmp(ctx->subcmd, "clear") == 0) {
-        delete_all_logpoints(debug);
-        cmd_printf(ctx, "All logpoints deleted\n");
-        cmd_ok(res);
-        return;
-    }
-
-    // "del": delete by #id, address, or all
-    if (ctx->subcmd && strcmp(ctx->subcmd, "del") == 0) {
-        if (ctx->raw_argc < 3) {
-            cmd_err(res, "usage: logpoint del <#id|address|all>");
-            return;
-        }
-        const char *target = ctx->raw_argv[2];
-        if (strcmp(target, "all") == 0) {
-            delete_all_logpoints(debug);
-            cmd_printf(ctx, "All logpoints deleted\n");
-            cmd_ok(res);
-            return;
-        }
-        if (target[0] == '#') {
-            int id = atoi(target + 1);
-            if (delete_logpoint_by_id(debug, id) == 0)
-                cmd_printf(ctx, "Logpoint #%d deleted\n", id);
-            else
-                cmd_err(res, "No logpoint with id #%d", id);
-            return;
-        }
-        uint32_t addr;
-        addr_space_t sp;
-        if (!parse_address(target, &addr, &sp)) {
-            cmd_err(res, "Invalid address: %s", target);
-            return;
-        }
-        if (delete_logpoint(debug, addr) == 0)
-            cmd_printf(ctx, "Logpoint at $%08X deleted\n", addr);
-        else
-            cmd_err(res, "No logpoint at $%08X", addr);
-        return;
-    }
-
-    // Otherwise: "set" (default subcommand) — set a logpoint.
-    // Syntax:
-    //   logpoint [set] [--write|--read|--rw] <addr[.size]> [msg] [key=val...]
-    int arg_idx = 1;
-    if (ctx->subcmd && strcmp(ctx->subcmd, "set") == 0)
-        arg_idx = 2;
-
-    // Pre-scan for kind flags so they can appear before or after the address.
-    int kind = LP_KIND_PC;
-    for (int i = arg_idx; i < ctx->raw_argc; i++) {
-        const char *a = ctx->raw_argv[i];
-        if (strcmp(a, "--write") == 0)
-            kind = (kind == LP_KIND_READ) ? LP_KIND_RW : LP_KIND_WRITE;
-        else if (strcmp(a, "--read") == 0)
-            kind = (kind == LP_KIND_WRITE) ? LP_KIND_RW : LP_KIND_READ;
-        else if (strcmp(a, "--rw") == 0)
-            kind = LP_KIND_RW;
-    }
-
-    // Find first non-flag argument: this is the address
-    int addr_arg = -1;
-    for (int i = arg_idx; i < ctx->raw_argc; i++) {
-        const char *a = ctx->raw_argv[i];
-        if (a[0] == '-' && a[1] == '-')
-            continue;
-        addr_arg = i;
-        break;
-    }
-    if (addr_arg < 0) {
-        cmd_err(res, "usage: logpoint set [--write|--read] <addr[.b|.w|.l]> [msg]");
-        return;
-    }
-
-    uint32_t addr, end_addr;
-    unsigned size = 0;
-    addr_space_t space = ADDR_LOGICAL;
-    if (!parse_logpoint_target(ctx->raw_argv[addr_arg], &addr, &end_addr, &size, &space)) {
-        cmd_err(res, "Invalid address: %s", ctx->raw_argv[addr_arg]);
-        return;
-    }
-    // For memory logpoints with a size suffix and no explicit range, widen
-    // the end to size-1 past the start so the hook matches all accesses
-    // overlapping the address.
-    if (kind != LP_KIND_PC && size > 0 && end_addr == addr)
-        end_addr = addr + size - 1;
-
-    // Parse remaining args (message + key=val), skipping flags and the address
-    const char *message = NULL;
-    const char *category_name = (kind == LP_KIND_PC) ? "logpoint" : "memory";
-    int level = 0;
-    for (int i = arg_idx; i < ctx->raw_argc; i++) {
-        if (i == addr_arg)
-            continue;
-        char *a = ctx->raw_argv[i];
-        if (a[0] == '-' && a[1] == '-')
-            continue; // kind flag, already handled
-        // Tokens of the form `<known-key>=<value>` are recognised as
-        // named parameters. Anything else — including a message like
-        // "pc=${cpu.pc}" that happens to contain `=` — is treated as
-        // the message body. ${...} interpolation in a message naturally
-        // contains `key=value` text patterns that pre-existing logic
-        // would have mis-parsed.
-        char *equals = strchr(a, '=');
-        bool is_named = false;
-        const char *key = NULL, *value = NULL;
-        if (equals) {
-            size_t klen = (size_t)(equals - a);
-            if ((klen == 8 && memcmp(a, "category", 8) == 0) || (klen == 5 && memcmp(a, "level", 5) == 0) ||
-                (klen == 5 && memcmp(a, "value", 5) == 0)) {
-                is_named = true;
-                *equals = '\0';
-                key = a;
-                value = equals + 1;
-            }
-        }
-        if (is_named) {
-            if (strcmp(key, "category") == 0)
-                category_name = value;
-            else if (strcmp(key, "level") == 0) {
-                level = atoi(value);
-                if (level < 0) {
-                    cmd_err(res, "Invalid level: %s", value);
-                    return;
-                }
-            } else if (strcmp(key, "value") == 0) {
-                // Already parsed above; restore '=' and continue.
-                *equals = '=';
-                continue;
-            }
-        } else if (!message) {
-            message = a;
-        } else {
-            cmd_err(res, "Unexpected argument: %s", a);
-            return;
-        }
-    }
-
-    // Pre-scan for value=$X filter (memory logpoints only)
-    bool have_value_filter = false;
-    uint32_t value_filter = 0;
-    for (int i = arg_idx; i < ctx->raw_argc; i++) {
-        if (i == addr_arg)
-            continue;
-        char *a = ctx->raw_argv[i];
-        if (strncmp(a, "value=", 6) == 0) {
-            const char *vstr = a + 6;
-            if (*vstr == '$')
-                vstr++;
-            char *endp = NULL;
-            unsigned long v = strtoul(vstr, &endp, 16);
-            if (!endp || *endp != '\0') {
-                cmd_err(res, "Invalid value=: %s", a + 6);
-                return;
-            }
-            value_filter = (uint32_t)v;
-            have_value_filter = true;
-        }
-    }
-    if (have_value_filter && kind == LP_KIND_PC) {
-        cmd_err(res, "value= filter is only supported on memory logpoints");
-        return;
-    }
-
-    log_category_t *category = log_get_category(category_name);
-    if (!category)
-        category = log_register_category(category_name);
-    if (!category) {
-        cmd_err(res, "Failed to register log category: %s", category_name);
-        return;
-    }
-
-    logpoint_t *lp;
-    if (kind == LP_KIND_PC)
-        lp = set_logpoint(debug, addr, end_addr, category, level);
-    else
-        lp = set_memory_logpoint(debug, addr, end_addr, space, kind, category, level);
-    if (!lp) {
-        cmd_err(res, "Failed to set logpoint");
-        return;
-    }
-    if (message)
-        lp->message = strdup(message);
-    if (have_value_filter) {
-        lp->value_filter_active = true;
-        lp->value_filter = value_filter;
-    }
-
-    const char *kstr = lp_kind_label(kind);
-    if (addr == end_addr)
-        cmd_printf(ctx, "logpoint %s set at $%08X (category: %s, level: %d)%s\n", kstr, addr, category_name, level,
-                   have_value_filter ? " [value-filtered]" : "");
-    else
-        cmd_printf(ctx, "logpoint %s set at $%08X-$%08X (category: %s, level: %d)%s\n", kstr, addr, end_addr,
-                   category_name, level, have_value_filter ? " [value-filtered]" : "");
-    cmd_ok(res);
-}
-
 // ============================================================================
 // Command Registration Tables
 // ============================================================================
@@ -2682,49 +2462,6 @@ static const struct arg_spec print_args[] = {
 static const struct arg_spec examine_args[] = {
     {"address", ARG_ADDR,               "start address"                         },
     {"count",   ARG_INT | ARG_OPTIONAL, "bytes to display (default 64, max 512)"},
-};
-
-// --- logpoint ---
-// Handler drives off raw_argv (supports --write/--read flags, ranges, key=val
-// options, and substitutions in the message).  The spec below is loose so the
-// framework doesn't reject legitimate combinations.
-static const struct arg_spec lp_set_args[] = {
-    {"target",  ARG_STRING | ARG_OPTIONAL, "[--write|--read] <address[.b|.w|.l]>"                             },
-    {"message", ARG_REST | ARG_OPTIONAL,   "log message (${cpu.pc}, ${lp.value}, ${lp.addr}, ${...:08x}, ...)"},
-};
-static const struct arg_spec lp_del_args[] = {
-    {"target", ARG_STRING, "#id, address, or 'all'"},
-};
-static const struct subcmd_spec logpoint_subcmds[] = {
-    {NULL,    NULL, lp_set_args, 2, "set logpoint"        },
-    {"set",   NULL, lp_set_args, 2, "set logpoint"        },
-    {"del",   NULL, lp_del_args, 1, "delete logpoint(s)"  },
-    {"list",  NULL, NULL,        0, "list all logpoints"  },
-    {"clear", NULL, NULL,        0, "delete all logpoints"},
-};
-
-// --- find ---
-// Handler parses raw_argv directly: "bytes" consumes a variable number of hex
-// tokens, and the trailing range/"all" slot is positional but optional.  The
-// arg specs below are loose so the framework doesn't reject legitimate forms.
-void cmd_find_handler(struct cmd_context *ctx, struct cmd_result *res);
-static const struct arg_spec find_str_args[] = {
-    {"text", ARG_STRING,              "literal ASCII/UTF-8 text to search for"},
-    {"rest", ARG_REST | ARG_OPTIONAL, "[range] [all]"                         },
-};
-static const struct arg_spec find_bytes_args[] = {
-    {"bytes", ARG_REST, "2-digit hex tokens, optional [range] [all]"},
-};
-// find word / find long share the same shape: one numeric value then optional [range] [all].
-static const struct arg_spec find_value_args[] = {
-    {"value", ARG_STRING,              "numeric value ($hex, 0xhex, or bare hex)"},
-    {"rest",  ARG_REST | ARG_OPTIONAL, "[range] [all]"                           },
-};
-static const struct subcmd_spec find_subcmds[] = {
-    {"str",   NULL, find_str_args,   2, "find ASCII/UTF-8 text"             },
-    {"bytes", NULL, find_bytes_args, 1, "find a byte sequence (2-digit hex)"},
-    {"word",  NULL, find_value_args, 2, "find a 16-bit big-endian value"    },
-    {"long",  NULL, find_value_args, 2, "find a 32-bit big-endian value"    },
 };
 
 // ============================================================================
@@ -3131,26 +2868,6 @@ int shell_examine_argv(int argc, char **argv) {
     return (int)run_handler(cmd_examine_handler, &reg, argc, argv);
 }
 
-int shell_logpoint_argv(int argc, char **argv) {
-    static const struct cmd_reg reg = {
-        .name = "logpoint",
-        .fn = cmd_logpoint_handler,
-        .subcmds = logpoint_subcmds,
-        .n_subcmds = 5,
-    };
-    return (int)run_handler(cmd_logpoint_handler, &reg, argc, argv);
-}
-
-int shell_find_argv(int argc, char **argv) {
-    static const struct cmd_reg reg = {
-        .name = "find",
-        .fn = cmd_find_handler,
-        .subcmds = find_subcmds,
-        .n_subcmds = 4,
-    };
-    return (int)run_handler(cmd_find_handler, &reg, argc, argv);
-}
-
 // === Object-model class descriptors =========================================
 //
 // `debug.breakpoints` / `debug.logpoints` are indexed children
@@ -3485,17 +3202,6 @@ static value_t bp_method_clear(struct object *self, const member_t *m, int argc,
     return val_none();
 }
 
-static value_t bp_method_list(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)m;
-    (void)argc;
-    (void)argv;
-    debug_t *debug = debug_from(self);
-    if (!debug)
-        return val_err("debugger not initialised");
-    list_breakpoints(debug);
-    return val_none();
-}
-
 static value_t lp_method_clear(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)m;
     (void)argc;
@@ -3507,33 +3213,119 @@ static value_t lp_method_clear(struct object *self, const member_t *m, int argc,
     return val_none();
 }
 
-static value_t lp_method_list(struct object *self, const member_t *m, int argc, const value_t *argv) {
+// `debug.logpoints.add` — typed named-argument surface (shell v2 §6.2):
+//   debug.logpoints.add addr=0x16A width=l mode=write level=5 \
+//       message="Ticks pc=${machine.cpu.pc:08x} val=${$value:08x}"
+// `message` is a template slot (§6.3): stored raw, evaluated per fire
+// with `$value`/`$addr`/`$size` bindings in scope. Returns the created
+// entry object, like breakpoints.add.
+static value_t lp_method_add(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)m;
-    (void)argc;
-    (void)argv;
     debug_t *debug = debug_from(self);
     if (!debug)
         return val_err("debugger not initialised");
-    list_logpoints(debug);
-    return val_none();
-}
 
-// `debug.logpoints.add(spec)` — install a logpoint from the legacy spec
-// string (e.g. `--write 0x000016A.l "Ticks bumped pc=${cpu.pc} ..." level=5`).
-// Forwarded to shell_logpoint_argv which carries the rich-parser command body.
-static value_t lp_method_add(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
-    (void)argc;
-    char line[2048];
-    int n = snprintf(line, sizeof(line), "logpoint %s", argv[0].s);
-    if (n < 0 || (size_t)n >= sizeof(line))
-        return val_err("logpoints.add: argument too long");
-    char *targv[32];
-    int targc = tokenize(line, targv, 32);
-    if (targc <= 0)
-        return val_err("logpoints.add: empty spec");
-    return val_bool(shell_logpoint_argv(targc, targv) == 0);
+    // argv: 0 addr, 1 mode, 2 width, 3 end, 4 message, 5 level,
+    //       6 category, 7 value, 8 space
+    uint32_t addr = (uint32_t)argv[0].u;
+
+    const char *mode = (argc > 1 && argv[1].kind == V_STRING && argv[1].s) ? argv[1].s : "pc";
+    int kind;
+    if (strcmp(mode, "pc") == 0)
+        kind = LP_KIND_PC;
+    else if (strcmp(mode, "read") == 0)
+        kind = LP_KIND_READ;
+    else if (strcmp(mode, "write") == 0)
+        kind = LP_KIND_WRITE;
+    else if (strcmp(mode, "rw") == 0)
+        kind = LP_KIND_RW;
+    else
+        return val_err("logpoints.add: mode must be pc, read, write, or rw");
+
+    unsigned size = 0;
+    if (argc > 2 && argv[2].kind == V_STRING && argv[2].s && argv[2].s[0]) {
+        const char *w = argv[2].s;
+        if (strcmp(w, "b") == 0)
+            size = 1;
+        else if (strcmp(w, "w") == 0)
+            size = 2;
+        else if (strcmp(w, "l") == 0)
+            size = 4;
+        else
+            return val_err("logpoints.add: width must be b, w, or l");
+    }
+
+    uint32_t end_addr = addr;
+    if (argc > 3 && (argv[3].kind == V_UINT || argv[3].kind == V_INT)) {
+        bool ok = false;
+        uint64_t e = val_as_u64(&argv[3], &ok);
+        if (ok && argv[3].kind == V_UINT)
+            end_addr = (uint32_t)e;
+        else if (ok && argv[3].kind == V_INT && argv[3].i >= 0)
+            end_addr = (uint32_t)argv[3].i;
+    }
+    // Memory logpoints with a width and no explicit range widen to
+    // cover every access overlapping the address.
+    if (kind != LP_KIND_PC && size > 0 && end_addr == addr)
+        end_addr = addr + size - 1;
+
+    const char *message = (argc > 4 && argv[4].kind == V_STRING && argv[4].s && argv[4].s[0]) ? argv[4].s : NULL;
+
+    int level = 0;
+    if (argc > 5) {
+        bool ok = false;
+        int64_t lv = val_as_i64(&argv[5], &ok);
+        if (ok)
+            level = (int)lv;
+        if (level < 0)
+            return val_err("logpoints.add: level must be >= 0");
+    }
+
+    const char *category_name = (argc > 6 && argv[6].kind == V_STRING && argv[6].s && argv[6].s[0])
+                                    ? argv[6].s
+                                    : (kind == LP_KIND_PC ? "logpoint" : "memory");
+
+    bool have_value_filter = false;
+    uint32_t value_filter = 0;
+    if (argc > 7 && (argv[7].kind == V_UINT || argv[7].kind == V_INT)) {
+        bool ok = false;
+        uint64_t v = val_as_u64(&argv[7], &ok);
+        if (ok && !(argv[7].kind == V_INT && argv[7].i < 0)) {
+            have_value_filter = true;
+            value_filter = (uint32_t)v;
+        }
+    }
+    if (have_value_filter && kind == LP_KIND_PC)
+        return val_err("logpoints.add: value filter is only supported on memory logpoints");
+
+    addr_space_t space = ADDR_LOGICAL;
+    if (argc > 8 && argv[8].kind == V_STRING && argv[8].s && argv[8].s[0]) {
+        if (strcmp(argv[8].s, "physical") == 0)
+            space = ADDR_PHYSICAL;
+        else if (strcmp(argv[8].s, "logical") != 0)
+            return val_err("logpoints.add: space must be \"logical\" or \"physical\"");
+    }
+
+    log_category_t *category = log_get_category(category_name);
+    if (!category)
+        category = log_register_category(category_name);
+    if (!category)
+        return val_err("logpoints.add: cannot register category '%s'", category_name);
+
+    logpoint_t *lp;
+    if (kind == LP_KIND_PC)
+        lp = set_logpoint(debug, addr, end_addr, category, level);
+    else
+        lp = set_memory_logpoint(debug, addr, end_addr, space, kind, category, level);
+    if (!lp)
+        return val_err("logpoints.add: allocation failed");
+    if (message)
+        lp->message = strdup(message);
+    if (have_value_filter) {
+        lp->value_filter_active = true;
+        lp->value_filter = value_filter;
+    }
+    return val_obj(logpoint_get_entry_object(lp));
 }
 
 static const arg_decl_t bp_add_args[] = {
@@ -3545,10 +3337,61 @@ static const arg_decl_t bp_add_args[] = {
      .doc = "\"logical\" (default) or \"physical\""                                                                 },
 };
 
+// Interior optional slots need defaults so the named-argument binder's
+// V_NONE holes fill instead of erroring (see node_validate_args).
+static const value_t lp_def_mode = {.kind = V_STRING, .s = (char *)"pc"};
+static const value_t lp_def_width = {.kind = V_STRING, .s = (char *)""};
+static const value_t lp_def_end = {.kind = V_INT, .i = -1};
+static const value_t lp_def_message = {.kind = V_STRING, .s = (char *)""};
+static const value_t lp_def_level = {.kind = V_INT, .i = 0};
+static const value_t lp_def_category = {.kind = V_STRING, .s = (char *)""};
+static const value_t lp_def_value = {.kind = V_INT, .i = -1};
+static const value_t lp_def_space = {.kind = V_STRING, .s = (char *)"logical"};
+
 static const arg_decl_t lp_add_args[] = {
-    {.name = "spec",
+    {.name = "addr", .kind = V_UINT, .presentation_flags = VAL_HEX, .doc = "address (or range start)"},
+    {.name = "mode",
      .kind = V_STRING,
-     .doc = "Legacy logpoint spec string (e.g. `--write 0x000016A.l \"text\" level=5`)"},
+     .validation_flags = OBJ_ARG_OPTIONAL,
+     .default_value = &lp_def_mode,
+     .doc = "pc (default), read, write, or rw"},
+    {.name = "width",
+     .kind = V_STRING,
+     .validation_flags = OBJ_ARG_OPTIONAL,
+     .default_value = &lp_def_width,
+     .doc = "access width for memory modes: b, w, or l"},
+    {.name = "end",
+     .kind = V_UINT,
+     .validation_flags = OBJ_ARG_OPTIONAL,
+     .presentation_flags = VAL_HEX,
+     .default_value = &lp_def_end,
+     .doc = "range end address, inclusive"},
+    {.name = "message",
+     .kind = V_STRING,
+     .validation_flags = OBJ_ARG_OPTIONAL | OBJ_ARG_TEMPLATE,
+     .default_value = &lp_def_message,
+     .doc = "fire-time template; $value/$addr/$size bind per fire"},
+    {.name = "level",
+     .kind = V_INT,
+     .validation_flags = OBJ_ARG_OPTIONAL,
+     .default_value = &lp_def_level,
+     .doc = "log level (default 0)"},
+    {.name = "category",
+     .kind = V_STRING,
+     .validation_flags = OBJ_ARG_OPTIONAL,
+     .default_value = &lp_def_category,
+     .doc = "log category (default: logpoint / memory)"},
+    {.name = "value",
+     .kind = V_UINT,
+     .validation_flags = OBJ_ARG_OPTIONAL,
+     .presentation_flags = VAL_HEX,
+     .default_value = &lp_def_value,
+     .doc = "only fire when the accessed value matches (memory modes)"},
+    {.name = "space",
+     .kind = V_STRING,
+     .validation_flags = OBJ_ARG_OPTIONAL,
+     .default_value = &lp_def_space,
+     .doc = "\"logical\" (default) or \"physical\""},
 };
 
 static const member_t bp_collection_members[] = {
@@ -3560,10 +3403,8 @@ static const member_t bp_collection_members[] = {
      .name = "clear",
      .doc = "Remove every breakpoint",
      .method = {.args = NULL, .nargs = 0, .result = V_NONE, .fn = bp_method_clear}},
-    {.kind = M_METHOD,
-     .name = "list",
-     .doc = "Print the breakpoint table",
-     .method = {.args = NULL, .nargs = 0, .result = V_NONE, .fn = bp_method_list}},
+    // `list` retired (shell v2 §6.1): read `entries` — the REPL renders
+    // an object list as a table.
     {.kind = M_CHILD,
      .name = "entries",
      .child = {.cls = &breakpoint_entry_class,
@@ -3583,16 +3424,13 @@ const class_desc_t bp_collection_class = {
 static const member_t lp_collection_members[] = {
     {.kind = M_METHOD,
      .name = "add",
-     .doc = "Install a logpoint from a spec string",
-     .method = {.args = lp_add_args, .nargs = 1, .result = V_BOOL, .fn = lp_method_add}},
+     .doc = "Install a logpoint (named args; message= is a fire-time template)",
+     .method = {.args = lp_add_args, .nargs = 9, .result = V_OBJECT, .fn = lp_method_add}},
     {.kind = M_METHOD,
      .name = "clear",
      .doc = "Remove every logpoint",
      .method = {.args = NULL, .nargs = 0, .result = V_NONE, .fn = lp_method_clear}},
-    {.kind = M_METHOD,
-     .name = "list",
-     .doc = "Print the logpoint table",
-     .method = {.args = NULL, .nargs = 0, .result = V_NONE, .fn = lp_method_list}},
+    // `list` retired (shell v2 §6.1): read `entries`.
     {.kind = M_CHILD,
      .name = "entries",
      .child = {.cls = &logpoint_entry_class,

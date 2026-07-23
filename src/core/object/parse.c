@@ -224,7 +224,7 @@ static value_t parse_float_literal(const char **p) {
                 has_digits = true;
             q++;
         }
-        if (*q == '.') {
+        if (*q == '.' && q[1] != '.') { // `..` is the range operator, not a decimal point
             has_dot = true;
             q++;
             while (isxdigit((unsigned char)*q) || *q == '_') {
@@ -249,7 +249,7 @@ static value_t parse_float_literal(const char **p) {
                 has_digits = true;
             q++;
         }
-        if (*q == '.') {
+        if (*q == '.' && q[1] != '.') { // `..` is the range operator, not a decimal point
             has_dot = true;
             q++;
             while (isdigit((unsigned char)*q) || *q == '_') {
@@ -317,7 +317,9 @@ value_t parse_literal(const char **p, const char *const *enum_table, size_t n_en
     if (*q == '"')
         return parse_string_literal(p);
 
-    // Boolean keywords (reserved words; cannot be shadowed).
+    // Literal keywords (reserved words; cannot be shadowed). `on`/`off`/
+    // `yes`/`no` are no longer global literals — bool-typed slots coerce
+    // those strings in validate_slot instead (shell v2 §3.11).
     {
         const char *r;
         if ((r = match_keyword(q, "true"))) {
@@ -328,21 +330,9 @@ value_t parse_literal(const char **p, const char *const *enum_table, size_t n_en
             *p = r;
             return val_bool(false);
         }
-        if ((r = match_keyword(q, "on"))) {
+        if ((r = match_keyword(q, "none"))) {
             *p = r;
-            return val_bool(true);
-        }
-        if ((r = match_keyword(q, "off"))) {
-            *p = r;
-            return val_bool(false);
-        }
-        if ((r = match_keyword(q, "yes"))) {
-            *p = r;
-            return val_bool(true);
-        }
-        if ((r = match_keyword(q, "no"))) {
-            *p = r;
-            return val_bool(false);
+            return val_none();
         }
     }
 
@@ -356,13 +346,14 @@ value_t parse_literal(const char **p, const char *const *enum_table, size_t n_en
         if (*scan == '+' || *scan == '-')
             scan++;
         bool maybe_float = false;
-        if (*scan == '.')
+        if (*scan == '.' && scan[1] != '.')
             maybe_float = true;
         else if (scan[0] == '0' && (scan[1] == 'x' || scan[1] == 'X')) {
             const char *r = scan + 2;
             while (isxdigit((unsigned char)*r) || *r == '_' || *r == '.') {
                 if (*r == '.') {
-                    maybe_float = true;
+                    if (r[1] != '.') // `..` is the range operator
+                        maybe_float = true;
                     break;
                 }
                 r++;
@@ -377,7 +368,7 @@ value_t parse_literal(const char **p, const char *const *enum_table, size_t n_en
             const char *r = scan;
             while (isdigit((unsigned char)*r) || *r == '_')
                 r++;
-            if (*r == '.')
+            if (*r == '.' && r[1] != '.') // `..` is the range operator
                 maybe_float = true;
             else if (*r == 'e' || *r == 'E')
                 maybe_float = true;

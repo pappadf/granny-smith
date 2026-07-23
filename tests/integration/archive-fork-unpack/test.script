@@ -4,17 +4,17 @@
 # Fixture ships in-tree with the peeler sources; the runner cd's into this test
 # directory, so the repo root is three levels up.
 
-archive.extract "../../../src/peeler/test/testfiles/stuffit45_dlx.mac9.sit/testfile.stuffit45_dlx.mac9.sit" "${WORK_DIR}/out"
+archive.extract "../../../src/peeler/test/testfiles/stuffit45_dlx.mac9.sit/testfile.stuffit45_dlx.mac9.sit" "$WORK_DIR/out"
 
 # The data fork lands under the plain name.
-assert ${storage.path_exists("${WORK_DIR}/out/testfile.PICT")} "PICT data fork missing"
+assert storage.path_exists("${$WORK_DIR}/out/testfile.PICT") "PICT data fork missing"
 
 # Its resource fork + Finder Info land in the sibling AppleDouble sidecar, which
 # must be a substantial file (the PICT resource fork is tens of KB), not a stub.
-assert ${storage.path_exists("${WORK_DIR}/out/._testfile.PICT")} "PICT AppleDouble sidecar missing"
-assert ${storage.path_size("${WORK_DIR}/out/._testfile.PICT") > 1000} "PICT resource fork not preserved"
+assert storage.path_exists("${$WORK_DIR}/out/._testfile.PICT") "PICT AppleDouble sidecar missing"
+assert storage.path_size("${$WORK_DIR}/out/._testfile.PICT") > 1000 "PICT resource fork not preserved"
 
 # A resource-fork-only file (empty data fork) still yields a sidecar.
-assert ${storage.path_exists("${WORK_DIR}/out/._Test Image")} "resource-only file lost its fork"
+assert storage.path_exists("${$WORK_DIR}/out/._Test Image") "resource-only file lost its fork"
 
 quit

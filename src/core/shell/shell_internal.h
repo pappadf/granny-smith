@@ -11,16 +11,21 @@
 #define GS_SHELL_INTERNAL_H
 
 #include "cmd_types.h"
+#include "value.h"
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-// Run a free-form shell line through the typed path-form dispatcher
-// (the static `dispatch_command()` in shell.c). Used by the Shell
-// class's `run` method; not otherwise reachable. `line` is mutated by
-// the tokeniser; `res` is filled with the dispatch outcome.
+// Run a free-form shell line through the v2 script interpreter with
+// REPL semantics. Used by the Shell class's `run` method; not
+// otherwise reachable. `res` is filled with the dispatch outcome.
 void shell_internal_dispatch_command(char *line, struct cmd_result *res);
+
+// The REPL value formatter (§5): scalars, object attribute tables, and
+// object-list tables. Used by the script interpreter for interactive
+// statement results.
+void shell_print_value(const value_t *v);
 
 #ifdef __cplusplus
 }

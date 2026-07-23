@@ -99,20 +99,29 @@ TEST(test_floats) {
     value_free(&v);
 }
 
-// Boolean literal spellings (all six are reserved words).
+// Literal keywords. `true`/`false` are the only boolean spellings in
+// shell v2 (§3.11) — `on`/`off`/`yes`/`no` were demoted to bool-slot
+// input coercions and now parse as plain identifier strings. `none` is
+// the V_NONE literal.
 TEST(test_bools) {
-    const char *yes_forms[] = {"true", "on", "yes"};
-    const char *no_forms[] = {"false", "off", "no"};
-    for (size_t i = 0; i < 3; i++) {
-        value_t v = parse_str(yes_forms[i]);
-        ASSERT_EQ_INT(V_BOOL, v.kind);
-        ASSERT_TRUE(v.b);
-        value_free(&v);
-    }
-    for (size_t i = 0; i < 3; i++) {
-        value_t v = parse_str(no_forms[i]);
-        ASSERT_EQ_INT(V_BOOL, v.kind);
-        ASSERT_TRUE(!v.b);
+    value_t v = parse_str("true");
+    ASSERT_EQ_INT(V_BOOL, v.kind);
+    ASSERT_TRUE(v.b);
+    value_free(&v);
+
+    v = parse_str("false");
+    ASSERT_EQ_INT(V_BOOL, v.kind);
+    ASSERT_TRUE(!v.b);
+    value_free(&v);
+
+    v = parse_str("none");
+    ASSERT_EQ_INT(V_NONE, v.kind);
+    value_free(&v);
+
+    const char *demoted[] = {"on", "off", "yes", "no"};
+    for (size_t i = 0; i < 4; i++) {
+        v = parse_str(demoted[i]);
+        ASSERT_EQ_INT(V_STRING, v.kind);
         value_free(&v);
     }
 }
@@ -180,8 +189,13 @@ TEST(test_reserved_word_check) {
     ASSERT_TRUE(!object_validate_name("while", err, sizeof(err)));
     ASSERT_TRUE(!object_validate_name("if", err, sizeof(err)));
     ASSERT_TRUE(!object_validate_name("else", err, sizeof(err)));
-    ASSERT_TRUE(!object_validate_name("on", err, sizeof(err)));
-    ASSERT_TRUE(!object_validate_name("yes", err, sizeof(err)));
+    ASSERT_TRUE(!object_validate_name("def", err, sizeof(err)));
+    ASSERT_TRUE(!object_validate_name("none", err, sizeof(err)));
+    ASSERT_TRUE(!object_validate_name("assert", err, sizeof(err)));
+
+    // `on`/`yes` were demoted from reserved words (shell v2 §3.11).
+    ASSERT_TRUE(object_validate_name("on", err, sizeof(err)));
+    ASSERT_TRUE(object_validate_name("yes", err, sizeof(err)));
 
     // Bad identifiers.
     ASSERT_TRUE(!object_validate_name("", err, sizeof(err)));

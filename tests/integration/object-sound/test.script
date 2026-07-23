@@ -15,11 +15,11 @@ machine.sound.enabled
 machine.sound.volume
 
 # Mute via the method, assert `enabled` flipped to false.
-echo ${machine.sound.mute(true)}
-assert ${machine.sound.enabled == false}
+echo "${machine.sound.mute(true)}"
+assert machine.sound.enabled == false
 
 # Unmute and assert `enabled` flips back to true.
-echo ${machine.sound.mute(false)}
-assert ${machine.sound.enabled == true}
+echo "${machine.sound.mute(false)}"
+assert machine.sound.enabled == true
 
 quit

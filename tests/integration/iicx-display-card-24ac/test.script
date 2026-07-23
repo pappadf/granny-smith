@@ -25,13 +25,13 @@
 # leaves the card at its 8 bpp power-on default.
 # =====================================================================
 machine.boot model="iicx" ram=8192 video_card="display_card_24ac"
-assert ${machine.id == "iicx"}                                   "machine.id != iicx"
+assert machine.id == "iicx" "machine.id != iicx"
 
 # Card present + engine status: STATUS[2:0] = depth code 2 (8 bpp power-on
 # default — vrom RE depth ladder), STATUS[3] = class bit (large-VRAM) → low
 # nibble 0x0A.  CONFIG[0] = geometry variant.
-assert ${(machine.memory.peek.b(0xF9D00402) & 0x0F) == 0x0A}     "STATUS low nibble != 0x0A (card absent / wrong depth)"
-assert ${machine.memory.peek.b(0xF9D40402) == 0x01}             "CONFIG (geometry variant) != 0x01"
+assert (machine.memory.peek.b(0xF9D00402) & 0x0F) == 0x0A "STATUS low nibble != 0x0A (card absent / wrong depth)"
+assert machine.memory.peek.b(0xF9D40402) == 0x01 "CONFIG (geometry variant) != 0x01"
 
 # --- Fill: load a 4-byte pattern operand, commit, then run-length fill ---
 # CONTROL=$01 (fill); operand=$AABBCCDD; commit ($4 written twice through
@@ -41,19 +41,19 @@ machine.memory.poke.b 0xF9D40403 0x01
 machine.memory.poke.l 0xF93FE000 0xAABBCCDD
 machine.memory.poke.l 0xF97FE000 0x04
 machine.memory.poke.l 0xF97FE000 0x04
-assert ${machine.memory.peek.l(0xF93FE000) == 0xAABBCCDD}        "operand aperture read-back mismatch"
+assert machine.memory.peek.l(0xF93FE000) == 0xAABBCCDD "operand aperture read-back mismatch"
 machine.memory.poke.l 0xF9400000 0x10
-assert ${machine.memory.peek.l(0xF9000000) == 0xAABBCCDD}        "fill: word 0 not operand pattern"
-assert ${machine.memory.peek.l(0xF900000C) == 0xAABBCCDD}        "fill: word 3 not operand pattern"
-assert ${machine.memory.peek.l(0xF9000010) == 0x00000000}        "fill: overran the 16-byte run"
+assert machine.memory.peek.l(0xF9000000) == 0xAABBCCDD "fill: word 0 not operand pattern"
+assert machine.memory.peek.l(0xF900000C) == 0xAABBCCDD "fill: word 3 not operand pattern"
+assert machine.memory.peek.l(0xF9000010) == 0x00000000 "fill: overran the 16-byte run"
 
 # --- Solid fill at a non-zero destination (operand = colour ×4) ---
 machine.memory.poke.l 0xF93FE000 0xCCCCCCCC
 machine.memory.poke.l 0xF97FE000 0x04
 machine.memory.poke.l 0xF9401000 0x08
-assert ${machine.memory.peek.l(0xF9001000) == 0xCCCCCCCC}        "solid fill: word 0"
-assert ${machine.memory.peek.l(0xF9001004) == 0xCCCCCCCC}        "solid fill: word 1"
-assert ${machine.memory.peek.l(0xF9001008) == 0x00000000}        "solid fill: overran the 8-byte run"
+assert machine.memory.peek.l(0xF9001000) == 0xCCCCCCCC "solid fill: word 0"
+assert machine.memory.peek.l(0xF9001004) == 0xCCCCCCCC "solid fill: word 1"
+assert machine.memory.peek.l(0xF9001008) == 0x00000000 "solid fill: overran the 8-byte run"
 
 # --- Block copy (CONTROL=$7F): VRAM→VRAM via the two-write handshake ---
 # The driver (ScrollRect / CopyBits) latches a SOURCE with a no-flag write to
@@ -66,13 +66,13 @@ machine.memory.poke.l 0xF9000204 0x55667788
 machine.memory.poke.b 0xF9D40403 0x7F
 machine.memory.poke.l 0xF9400200 0x00000008
 machine.memory.poke.l 0xF9404000 0x40000008
-assert ${machine.memory.peek.l(0xF9004000) == 0x11223344}        "block copy: long 0"
-assert ${machine.memory.peek.l(0xF9004004) == 0x55667788}        "block copy: long 1"
-assert ${machine.memory.peek.l(0xF9004008) == 0x00000000}        "block copy: overran the 8-byte run"
+assert machine.memory.peek.l(0xF9004000) == 0x11223344 "block copy: long 0"
+assert machine.memory.peek.l(0xF9004004) == 0x55667788 "block copy: long 1"
+assert machine.memory.peek.l(0xF9004008) == 0x00000000 "block copy: overran the 8-byte run"
 # A no-flag write only latches — it must NOT store its value as pixels.
-assert ${machine.memory.peek.l(0xF9000200) == 0x11223344}        "source-latch write must not corrupt VRAM"
+assert machine.memory.peek.l(0xF9000200) == 0x11223344 "source-latch write must not corrupt VRAM"
 # Reading the active-bank alias returns the underlying passive VRAM.
-assert ${machine.memory.peek.l(0xF9404000) == 0x11223344}        "active-bank alias read != passive VRAM"
+assert machine.memory.peek.l(0xF9404000) == 0x11223344 "active-bank alias read != passive VRAM"
 
 # =====================================================================
 # Part C — engine-vs-fallback oracle (proposal §3.5) + object model (§3.8).
@@ -106,23 +106,23 @@ machine.memory.poke.l 0xF940304C 0xA1B2C3D4
 machine.nubus.slot[9].card.engine.enabled = true
 
 # Engine fill (region E) must equal the CPU fill (region F), byte for byte.
-assert ${machine.memory.peek.l(0xF9003000) == machine.memory.peek.l(0xF9003040)} "oracle: engine fill != CPU fallback (long 0)"
-assert ${machine.memory.peek.l(0xF9003004) == machine.memory.peek.l(0xF9003044)} "oracle: engine fill != CPU fallback (long 1)"
-assert ${machine.memory.peek.l(0xF900300C) == machine.memory.peek.l(0xF900304C)} "oracle: engine fill != CPU fallback (long 3)"
-assert ${machine.memory.peek.l(0xF9003000) == 0xA1B2C3D4}        "oracle: engine fill pattern wrong"
+assert machine.memory.peek.l(0xF9003000) == machine.memory.peek.l(0xF9003040) "oracle: engine fill != CPU fallback (long 0)"
+assert machine.memory.peek.l(0xF9003004) == machine.memory.peek.l(0xF9003044) "oracle: engine fill != CPU fallback (long 1)"
+assert machine.memory.peek.l(0xF900300C) == machine.memory.peek.l(0xF900304C) "oracle: engine fill != CPU fallback (long 3)"
+assert machine.memory.peek.l(0xF9003000) == 0xA1B2C3D4 "oracle: engine fill pattern wrong"
 
 # Object-model surface (proposal §3.8): the populated slot projects a card
 # node with framebuffer / declrom / clut / mode / engine children.
-assert ${machine.nubus.slot[9].number == 0x9}                    "object model: slot[9].number"
-assert ${machine.nubus.slot[9].card.name == "Apple Macintosh Display Card 24AC"} "object model: card.name"
-assert ${machine.nubus.slot[9].card.framebuffer.base == 0xF9000000}  "object model: framebuffer.base"
-assert ${machine.nubus.slot[9].card.framebuffer.depth == 8}      "object model: framebuffer.depth (8bpp power-on)"
-assert ${machine.nubus.slot[9].card.declrom.size == 0x20000}     "object model: declrom.size (128 KB)"
-assert ${machine.nubus.slot[9].card.declrom.present == true}     "object model: declrom.present"
-assert ${machine.nubus.slot[9].card.clut.len == 256}            "object model: clut.len"
-assert ${machine.nubus.slot[9].card.engine.enabled == true}     "object model: engine.enabled"
+assert machine.nubus.slot[9].number == 0x9 "object model: slot[9].number"
+assert machine.nubus.slot[9].card.name == "Apple Macintosh Display Card 24AC" "object model: card.name"
+assert machine.nubus.slot[9].card.framebuffer.base == 0xF9000000 "object model: framebuffer.base"
+assert machine.nubus.slot[9].card.framebuffer.depth == 8 "object model: framebuffer.depth (8bpp power-on)"
+assert machine.nubus.slot[9].card.declrom.size == 0x20000 "object model: declrom.size (128 KB)"
+assert machine.nubus.slot[9].card.declrom.present == true "object model: declrom.present"
+assert machine.nubus.slot[9].card.clut.len == 256 "object model: clut.len"
+assert machine.nubus.slot[9].card.engine.enabled == true "object model: engine.enabled"
 # screen.source is a reference edge to the active card's framebuffer node.
-assert ${machine.screen.source.depth == 8}                       "object model: screen.source → framebuffer"
+assert machine.screen.source.depth == 8 "object model: screen.source → framebuffer"
 
 # =====================================================================
 # Part B — Phase-1/2 boot to an 8-bpp COLOUR Finder desktop.  Cold-boot
@@ -152,13 +152,13 @@ machine.memory.poke.w 0x017A 0x8805
 scheduler.run 1500000
 machine.memory.poke.w 0x017A 0
 scheduler.run 70000000
-assert ${machine.screen.width == 640}                            "boot: screen width != 640"
-assert ${machine.screen.height == 480}                           "boot: screen height != 480"
+assert machine.screen.width == 640 "boot: screen width != 640"
+assert machine.screen.height == 480 "boot: screen height != 480"
 # The OS selected 8 bpp: MODE depth bits 7-5 == 0x40 (vrom RE depth ladder).
-assert ${(machine.memory.peek.b(0xF9D80001) & 0xE0) == 0x40}     "boot: MODE depth latch != 8 bpp"
-assert ${machine.rtc.pram.peek(0x48) == 0x82}                    "boot: savedMode (8bpp) rewritten by ROM"
+assert (machine.memory.peek.b(0xF9D80001) & 0xE0) == 0x40 "boot: MODE depth latch != 8 bpp"
+assert machine.rtc.pram.peek(0x48) == 0x82 "boot: savedMode (8bpp) rewritten by ROM"
 # The colour desktop is the card's framebuffer at 8 bpp.
-assert ${machine.nubus.slot[9].card.framebuffer.depth == 8}      "boot: framebuffer not 8 bpp"
+assert machine.nubus.slot[9].card.framebuffer.depth == 8 "boot: framebuffer not 8 bpp"
 machine.screen.match finder-640x480-8bpp.png
 
 quit

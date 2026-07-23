@@ -24,8 +24,8 @@ vfs.mkdir ../../data/aux/aux_3.0.1/APPLE_AUX_3-0-1_RETAIL.iso/partition6/newdir
 # Recursive cp out of UFS into WORK_DIR (host path provided by runner).
 # /etc is ~380 entries including symlinks; exercises direct + single-indirect
 # reads, symlink extraction (via file contents), and mkdir recursion.
-storage.cp -r ../../data/aux/aux_3.0.1/APPLE_AUX_3-0-1_RETAIL.iso/partition6/etc ${WORK_DIR}/aux-etc
-vfs.ls ${WORK_DIR}/aux-etc
+storage.cp -r ../../data/aux/aux_3.0.1/APPLE_AUX_3-0-1_RETAIL.iso/partition6/etc "$WORK_DIR/aux-etc"
+vfs.ls "$WORK_DIR/aux-etc"
 
 # Auto-mount cache visible to the user.
 storage.mounts

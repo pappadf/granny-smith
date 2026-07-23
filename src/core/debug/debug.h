@@ -111,13 +111,11 @@ int delete_all_breakpoints(debug_t *debug);
 void list_logpoints(debug_t *debug);
 int delete_all_logpoints(debug_t *debug);
 
-// argv-driven entry points for the rich-parser `examine` / `logpoint` /
-// `find` commands. The typed object-model bridge tokenises its spec
-// strings via shell_tokenize and calls these directly so the rich-parser
-// command bodies stay in one place.
+// argv-driven entry point for the rich-parser `examine` command. The
+// former `logpoint` / `find` spec-string entry points are gone (shell
+// v2 §6.2): debug.logpoints.add takes typed named arguments and the
+// find.* methods scan natively, returning V_LIST results.
 int shell_examine_argv(int argc, char **argv);
-int shell_logpoint_argv(int argc, char **argv);
-int shell_find_argv(int argc, char **argv);
 
 // Truthiness check used by typed `assert` root method. Strings like
 // "false", "0", or formatted-error tails are falsy; everything else

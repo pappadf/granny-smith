@@ -160,25 +160,23 @@ to not break this rule in the first place.
 **Log categories and levels:**
 - Each module has its own log category (e.g., `cpu`, `floppy`, `scsi`, `logpoint`)
 - Categories have a level threshold (0 = off); a `LOG(level, ...)` call only emits if `level <= category_level`
-- Enable via shell: `log <category> <level>` (e.g., `log cpu 10`)
-- Redirect to file: `log cpu 10 file=/tmp/cpu.log`
+- Enable via shell: `debug.log <category> <level>` (e.g., `debug.log cpu 10`)
+- Redirect to file: `debug.log cpu "level=10 file=tmp/cpu.log"`
 
-**Logpoints (`src/debug.c`):**
+**Logpoints (`src/core/debug/debug.c`):**
 - PC logpoints emit a log message when the CPU executes a specific address or range, without stopping
-- Set via shell: `logpoint <addr> [message] [category=<name>] [level=<n>]`
-- The default category is `logpoint` for PC logpoints; enable it with `log logpoint 10`
+- Set via shell (named arguments, shell v2 §6.2): `debug.logpoints.add addr=<addr> [message="…"] [category=<name>] [level=<n>]`
+- The default category is `logpoint` for PC logpoints; enable it with `debug.log logpoint 10`
 - Memory logpoints fire on **read** or **write** accesses without halting:
-  - `logpoint --write <addr>[.b|.w|.l] [msg]` — log every write
-  - `logpoint --read <addr>[.b|.w|.l] [msg]` — log every read
-  - `logpoint --rw <addr>[.b|.w|.l] [msg]` — log either direction
-  - Default category is `memory` (enable with `log memory 1`)
-  - Messages may reference `$pc`, `$value`, `$instruction_pc`, `$cpu.d0..d7`, `$cpu.a0..a7`, `$addr`
+  - `debug.logpoints.add addr=<addr> mode=write width=l message="…"` — log every write (`mode=read` / `mode=rw` likewise; `width` is `b`/`w`/`l`)
+  - Default category is `memory` (enable with `debug.log memory 1`)
+  - `message=` is a fire-time template (shell v2 §6.3): `${machine.cpu.pc}` splices any expression; `$value`, `$addr`, `$size` are per-fire bindings
   - Implemented without slowing the fast path: covered pages are zeroed in the
     SoA arrays so only logged pages take the slow-path penalty (see `docs/core/memory/memory.md`)
-- Bus-error / exception trace ring is always on; dump with `info exceptions [N]`,
-  stream live with `log exceptions 1`
+- Bus-error / exception trace ring is always on; dump with `debug.exceptions [filter]`,
+  stream live with `debug.log exceptions 1`
 
-**In Playwright E2E tests:** Use `await runCommand(page, 'log <category> <level>')` or `await runCommand(page, 'logpoint ...')` to enable logging or set logpoints programmatically.
+**In Playwright E2E tests:** Use `await runCommand(page, 'debug.log <category> <level>')` or `await runCommand(page, 'debug.logpoints.add ...')` to enable logging or set logpoints programmatically.
 
 ## Coding Guidelines
 
@@ -218,13 +216,21 @@ same on a Plus, a IIcx, and a Lisa. The `$reg` aliases (`$pc`, `$d0`, …)
 still resolve (now to `machine.cpu.*`).
 
 The browser frontend calls into the tree via `gsEval(path, args?)` (see
-`app/web2/src/bus/emulator.ts`). Inside the shell, the same tree is
-reachable via four surface forms (proposal §4.1):
+`app/web2/src/bus/emulator.ts`). Inside the shell (v2 script language —
+see `docs/core/shell/shell.md`), the same tree is reachable via:
 
-  machine.cpu.pc            # bare path → read & print
-  machine.cpu.d0 = 0x1234   # path = value → write
-  machine.cpu.step 1000     # path arg → method call (shell form)
-  $(machine.cpu.step(1000)) # path(args) → method call (call form, expressions)
+  machine.cpu.pc                 # bare path → read (& print at the REPL)
+  machine.cpu.d0 = 0x1234        # path = expr → typed write
+  machine.cpu.step 1000          # path arg → method call (argument mode)
+  machine.cpu.step(1000)         # call form, usable in any expression
+  let t0 = scheduler.host_user_ns  # typed binding; read back as $t0
+  echo "pc=${machine.cpu.pc:08x}"  # ${…} interpolation inside strings
+
+The v2 language also has `if`/`elif`/`else`, `while`, `for … in`,
+`break`/`continue`, `def` functions (`shell.functions`), `assert EXPR
+["msg"]`, `alias NAME = PATH` reference bindings, and `try(EXPR,
+FALLBACK)`/`none` for expected-failure probes. Scripts print nothing
+implicitly (use `echo`); the first error aborts the script.
 
 The legacy `eval <path>` and `runCommand`/`runCommandJSON` JS helpers
 remain only as the terminal-input bridge and the two pre-main-loop

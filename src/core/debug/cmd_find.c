@@ -2,15 +2,10 @@
 // Copyright (c) pappadf
 
 // cmd_find.c
-// "find" shell command: memory search (proposal-debug-tooling.md §3.1).
-// Sub-commands:
-//   find str   <text>    [range] [all]   - ASCII/UTF-8 literal search
-//   find bytes <hex...>  [range] [all]   - byte-sequence search (2-digit hex tokens)
-//   find word  <value>   [range] [all]   - 16-bit value search (68K big-endian)
-//   find long  <value>   [range] [all]   - 32-bit value search (68K big-endian)
-// Range forms: "<start>..<end>" (half-open) or "<start> <count>".
-// Omitted range → whole address space (bounded by g_address_mask).
-// A trailing "all" token removes the default FIND_DEFAULT_LIMIT hit cap.
+// `find.*` memory search (shell v2 §6.1): find.str / find.bytes /
+// find.word / find.long return the complete V_LIST of match addresses
+// (empty list = not found); optional start/end arguments bound the
+// scan, defaulting to the whole address space (g_address_mask).
 
 #include "addr_format.h"
 #include "cmd_types.h"
@@ -47,108 +42,35 @@ static bool parse_hex_byte(const char *tok, uint8_t *byte_out) {
     return true;
 }
 
-// Split a "<start>..<end>" token; returns true and fills start/end (half-open → inclusive end).
-static bool parse_range_dotdot(const char *tok, uint32_t *start_out, uint32_t *end_incl_out, const char **err_out) {
-    const char *dots = strstr(tok, "..");
-    if (!dots)
-        return false;
-    char start_buf[64];
-    size_t n = (size_t)(dots - tok);
-    if (n == 0 || n >= sizeof(start_buf)) {
-        *err_out = "malformed range";
-        return false;
-    }
-    memcpy(start_buf, tok, n);
-    start_buf[n] = '\0';
-    addr_space_t s0, s1;
-    uint32_t start, end;
-    if (!parse_address(start_buf, &start, &s0) || !parse_address(dots + 2, &end, &s1)) {
-        *err_out = "invalid range endpoint";
-        return false;
-    }
-    if (end <= start) {
-        *err_out = "range end must be greater than start";
-        return false;
-    }
-    *start_out = start;
-    *end_incl_out = end - 1;
-    return true;
-}
+// === Object-model class descriptor =========================================
+//
+// Shell v2 §6.1: the `find.*` methods return data — a V_LIST of match
+// addresses (empty list = not found) — and the REPL formats it. The
+// printed match report and the `all` hit cap are gone: the list is
+// always complete (bounded by FIND_MAX_HITS as a runaway guard).
+// Optional `start` / `end` arguments bound the scan; `end` is
+// inclusive and defaults to the current address mask.
 
-// Parse trailing positional tokens as an optional range and/or trailing "all" token.
-// On return, *start/*end_incl are set (default: full address space), *limit is the hit cap.
-// Returns false on parse error (msg via *err_out); true otherwise.
-// tokens: raw_argv slice starting after the pattern args.
-static bool parse_tail(int n_tokens, char **tokens, uint32_t *start_out, uint32_t *end_incl_out, int *limit_out,
-                       const char **err_out) {
-    *start_out = 0;
-    *end_incl_out = g_address_mask;
-    *limit_out = FIND_DEFAULT_LIMIT;
+#define FIND_MAX_HITS 65536
 
-    int i = 0;
-    if (i < n_tokens && strcasecmp(tokens[i], "all") != 0) {
-        // Either "<start>..<end>" or "<start>" (possibly followed by "<count>")
-        uint32_t start, end_incl;
-        if (parse_range_dotdot(tokens[i], &start, &end_incl, err_out)) {
-            *start_out = start;
-            *end_incl_out = end_incl;
-            i++;
-        } else if (*err_out) {
-            return false;
-        } else {
-            // Try "<start> <count>" pair
-            addr_space_t sp;
-            if (!parse_address(tokens[i], &start, &sp)) {
-                *err_out = "invalid range start";
-                return false;
-            }
-            if (i + 1 >= n_tokens || strcasecmp(tokens[i + 1], "all") == 0) {
-                *err_out = "expected '<start>..<end>' or '<start> <count>'";
-                return false;
-            }
-            char *endp;
-            unsigned long count = strtoul(tokens[i + 1], &endp, 0);
-            if (*endp != '\0' || count == 0) {
-                *err_out = "invalid count";
-                return false;
-            }
-            *start_out = start;
-            *end_incl_out = start + (uint32_t)(count - 1);
-            i += 2;
-        }
-    }
-
-    // Trailing "all" removes the hit cap
-    if (i < n_tokens) {
-        if (strcasecmp(tokens[i], "all") == 0) {
-            *limit_out = 0; // 0 = unlimited
-            i++;
-        }
-    }
-    if (i != n_tokens) {
-        *err_out = "unexpected extra arguments";
-        return false;
-    }
-    return true;
-}
-
-// Linear scan of [start..end_incl] for `pattern` of length plen; prints matches to ctx->out.
-// Returns the number of hits found (capped at limit if > 0).
-static uint32_t scan_memory(struct cmd_context *ctx, uint32_t start, uint32_t end_incl, const uint8_t *pattern,
-                            size_t plen, int limit, const char *label, uint32_t *hits_shown_out) {
-    uint32_t hits = 0;
-    uint32_t shown = 0;
-
+// Linear scan of [start..end_incl]; returns a V_LIST of V_UINT hit
+// addresses (hex-flagged), or V_ERROR on overflow/oom.
+static value_t scan_memory_list(uint32_t start, uint32_t end_incl, const uint8_t *pattern, size_t plen) {
     if (plen == 0)
-        return 0;
-    // Avoid wraparound: clamp so end_incl - (plen-1) doesn't underflow
+        return val_err("find: empty pattern");
     uint64_t last = (uint64_t)end_incl;
     if (last + 1 < plen)
-        return 0;
+        return val_list(NULL, 0);
     uint64_t stop = last - (plen - 1);
 
-    // Byte-by-byte rolling compare. Use the side-effect-free debug read so a
-    // scan that crosses unmapped pages can't latch a spurious guest bus error.
+    size_t cap = 16, len = 0;
+    value_t *items = (value_t *)malloc(cap * sizeof(value_t));
+    if (!items)
+        return val_err("find: out of memory");
+
+    // Byte-by-byte rolling compare. Use the side-effect-free debug read
+    // so a scan crossing unmapped pages can't latch a spurious guest bus
+    // error.
     for (uint64_t a = start; a <= stop; a++) {
         if (memory_debug_read_uint8((uint32_t)a) != pattern[0])
             continue;
@@ -161,273 +83,188 @@ static uint32_t scan_memory(struct cmd_context *ctx, uint32_t start, uint32_t en
         }
         if (!match)
             continue;
-        hits++;
-        if (limit == 0 || shown < (uint32_t)limit) {
-            cmd_printf(ctx, "$%08X  %s\n", (uint32_t)a, label);
-            shown++;
+        if (len == FIND_MAX_HITS) {
+            for (size_t i = 0; i < len; i++)
+                value_free(&items[i]);
+            free(items);
+            return val_err("find: more than %d matches; narrow the range", FIND_MAX_HITS);
         }
+        if (len == cap) {
+            cap *= 2;
+            value_t *t = (value_t *)realloc(items, cap * sizeof(value_t));
+            if (!t) {
+                free(items);
+                return val_err("find: out of memory");
+            }
+            items = t;
+        }
+        value_t v = val_uint(4, (uint32_t)a);
+        v.flags |= VAL_HEX;
+        items[len++] = v;
     }
-    if (hits_shown_out)
-        *hits_shown_out = shown;
-    return hits;
+    return val_list(items, len);
 }
 
-// Build a short label string for printing alongside each match.
-// For `str`: the printable/escaped text, truncated if long.
-// For `bytes`: "hex hex ..." of the first few bytes.
-static void format_label(char *buf, size_t bufsz, const char *subcmd, const uint8_t *pat, size_t plen) {
-    if (strcmp(subcmd, "str") == 0) {
-        size_t o = 0;
-        buf[o++] = '"';
-        for (size_t i = 0; i < plen && o < bufsz - 2; i++) {
-            uint8_t b = pat[i];
-            if (b >= 0x20 && b <= 0x7e && b != '"' && b != '\\') {
-                buf[o++] = (char)b;
-            } else {
-                if (o + 4 >= bufsz)
-                    break;
-                o += (size_t)snprintf(buf + o, bufsz - o, "\\x%02X", b);
-            }
-        }
-        if (o < bufsz - 1)
-            buf[o++] = '"';
-        buf[o] = '\0';
-    } else if (strcmp(subcmd, "word") == 0 && plen == 2) {
-        // Print the matched value as a single $XXXX literal (reconstruct from big-endian bytes).
-        uint16_t v = (uint16_t)(((uint16_t)pat[0] << 8) | pat[1]);
-        snprintf(buf, bufsz, "$%04X", v);
-    } else if (strcmp(subcmd, "long") == 0 && plen == 4) {
-        // Print the matched value as a single $XXXXXXXX literal (reconstruct from big-endian bytes).
-        uint32_t v = ((uint32_t)pat[0] << 24) | ((uint32_t)pat[1] << 16) | ((uint32_t)pat[2] << 8) | pat[3];
-        snprintf(buf, bufsz, "$%08X", v);
-    } else {
-        size_t o = 0;
-        size_t show = plen < 8 ? plen : 8;
-        for (size_t i = 0; i < show; i++) {
-            o += (size_t)snprintf(buf + o, bufsz - o, "%s%02X", i == 0 ? "" : " ", pat[i]);
-        }
-        if (plen > show && o + 4 < bufsz)
-            snprintf(buf + o, bufsz - o, " ...");
+// Decode the optional start/end argument pair shared by every method:
+// argv[i0] = start (default 0), argv[i0+1] = end inclusive (default
+// g_address_mask). A V_NONE hole means "not given".
+static bool find_range_args(int argc, const value_t *argv, int i0, uint32_t *start_out, uint32_t *end_out) {
+    *start_out = 0;
+    *end_out = g_address_mask;
+    if (argc > i0 && argv[i0].kind != V_NONE) {
+        bool ok = false;
+        uint64_t s = val_as_u64(&argv[i0], &ok);
+        if (!ok)
+            return false;
+        *start_out = (uint32_t)s;
     }
-}
-
-// "find" command handler; dispatches on subcmd name.
-void cmd_find_handler(struct cmd_context *ctx, struct cmd_result *res) {
-    const char *subcmd = ctx->subcmd;
-    if (subcmd == NULL) {
-        cmd_err(res, "usage: find {str|bytes|word|long} <pattern> [range] [all]");
-        return;
+    if (argc > i0 + 1 && argv[i0 + 1].kind != V_NONE) {
+        bool ok = false;
+        uint64_t e = val_as_u64(&argv[i0 + 1], &ok);
+        if (!ok)
+            return false;
+        *end_out = (uint32_t)e;
     }
-
-    uint8_t pattern[FIND_MAX_PATTERN_LEN];
-    size_t plen = 0;
-    int tail_idx = 0; // first raw_argv index of range/all tokens
-
-    if (strcmp(subcmd, "str") == 0) {
-        // raw_argv[0]=find, [1]=str, [2]=text, [3..]=optional range/all
-        if (ctx->raw_argc < 3) {
-            cmd_err(res, "usage: find str <text> [range] [all]");
-            return;
-        }
-        const char *text = ctx->raw_argv[2];
-        size_t n = strlen(text);
-        if (n == 0) {
-            cmd_err(res, "find str: empty pattern");
-            return;
-        }
-        if (n > FIND_MAX_PATTERN_LEN) {
-            cmd_err(res, "find str: pattern too long (max %d)", FIND_MAX_PATTERN_LEN);
-            return;
-        }
-        memcpy(pattern, text, n);
-        plen = n;
-        tail_idx = 3;
-    } else if (strcmp(subcmd, "bytes") == 0) {
-        // Consume hex tokens until a non-hex token appears (which starts the range/all tail).
-        if (ctx->raw_argc < 3) {
-            cmd_err(res, "usage: find bytes <hex...> [range] [all]");
-            return;
-        }
-        int i = 2;
-        for (; i < ctx->raw_argc; i++) {
-            uint8_t b;
-            if (!parse_hex_byte(ctx->raw_argv[i], &b))
-                break;
-            if (plen >= FIND_MAX_PATTERN_LEN) {
-                cmd_err(res, "find bytes: pattern too long (max %d)", FIND_MAX_PATTERN_LEN);
-                return;
-            }
-            pattern[plen++] = b;
-        }
-        if (plen == 0) {
-            cmd_err(res, "find bytes: expected 2-digit hex tokens (e.g. '4E B9')");
-            return;
-        }
-        tail_idx = i;
-    } else if (strcmp(subcmd, "word") == 0 || strcmp(subcmd, "long") == 0) {
-        // Numeric value → big-endian byte pattern (68K memory is big-endian).
-        if (ctx->raw_argc < 3) {
-            cmd_err(res, "usage: find %s <value> [range] [all]", subcmd);
-            return;
-        }
-        // Reuse parse_address for $/0x/bare-hex parsing; the space qualifier is ignored here.
-        uint32_t value;
-        addr_space_t sp;
-        if (!parse_address(ctx->raw_argv[2], &value, &sp)) {
-            cmd_err(res, "find %s: invalid value '%s'", subcmd, ctx->raw_argv[2]);
-            return;
-        }
-        if (strcmp(subcmd, "word") == 0) {
-            // Reject values that don't fit in 16 bits so a typo can't silently truncate.
-            if (value > 0xFFFFu) {
-                cmd_err(res, "find word: value $%X exceeds 16 bits", value);
-                return;
-            }
-            pattern[0] = (uint8_t)(value >> 8);
-            pattern[1] = (uint8_t)value;
-            plen = 2;
-        } else {
-            pattern[0] = (uint8_t)(value >> 24);
-            pattern[1] = (uint8_t)(value >> 16);
-            pattern[2] = (uint8_t)(value >> 8);
-            pattern[3] = (uint8_t)value;
-            plen = 4;
-        }
-        tail_idx = 3;
-    } else {
-        cmd_err(res, "find: unknown sub-command '%s' (expected str, bytes, word, or long)", subcmd);
-        return;
-    }
-
-    // Parse optional range + trailing "all"
-    uint32_t start = 0, end_incl = g_address_mask;
-    int limit = FIND_DEFAULT_LIMIT;
-    const char *err = NULL;
-    int n_tail = ctx->raw_argc - tail_idx;
-    if (!parse_tail(n_tail, &ctx->raw_argv[tail_idx], &start, &end_incl, &limit, &err)) {
-        cmd_err(res, "find %s: %s", subcmd, err ? err : "invalid arguments");
-        return;
-    }
-
-    // Format match label (what pattern was found)
-    char label[64];
-    format_label(label, sizeof(label), subcmd, pattern, plen);
-
-    uint32_t shown = 0;
-    uint32_t total = scan_memory(ctx, start, end_incl, pattern, plen, limit, label, &shown);
-
-    if (total == 0) {
-        cmd_printf(ctx, "no matches in $%08X..$%08X\n", start, end_incl);
-    } else if (limit > 0 && total > shown) {
-        cmd_printf(ctx, "... (%u more, use 'find %s ... all')\n", (unsigned)(total - shown), subcmd);
-    }
-    // Exit code 0 for success (with or without matches) so scripted drivers
-    // don't treat "found 17 hits" as a shell error.  The hit count is in the
-    // printed output; the result stays OK.
-    cmd_ok(res);
-}
-
-// === Object-model class descriptor =========================================
-//
-// Wraps `find str|bytes|long|word`. Each method takes the literal
-// pattern token plus an optional rest string (range / "all" markers)
-// and dispatches the joined legacy line. Variadic byte patterns are
-// accepted as a space-separated hex string ("4E 71") since the legacy
-// parser tokenises on whitespace anyway.
-
-static value_t find_dispatch_kind(const char *kind, int argc, const value_t *argv, const char *err_label) {
-    char buf[1024];
-    int pos = snprintf(buf, sizeof(buf), "find %s ", kind);
-    if (pos < 0)
-        return val_err("%s: format error", err_label);
-    // `find bytes` is variadic in the legacy parser: each hex byte
-    // must arrive as a separate whitespace-delimited token. Forward
-    // the pattern string unquoted so re-tokenisation splits it.
-    // `find str` needs the opposite — the pattern is one token even
-    // if it contains spaces — so we quote it. Numeric patterns pass
-    // through as `0xN`.
-    bool is_bytes = (strcmp(kind, "bytes") == 0);
-    if (argv[0].kind == V_STRING) {
-        if (is_bytes)
-            pos += snprintf(buf + pos, sizeof(buf) - (size_t)pos, "%s", argv[0].s ? argv[0].s : "");
-        else
-            pos += snprintf(buf + pos, sizeof(buf) - (size_t)pos, "\"%s\"", argv[0].s ? argv[0].s : "");
-    } else if (argv[0].kind == V_INT) {
-        pos += snprintf(buf + pos, sizeof(buf) - (size_t)pos, "0x%llx", (unsigned long long)argv[0].i);
-    } else if (argv[0].kind == V_UINT) {
-        pos += snprintf(buf + pos, sizeof(buf) - (size_t)pos, "0x%llx", (unsigned long long)argv[0].u);
-    } else {
-        return val_err("%s: pattern must be string or integer", err_label);
-    }
-    if (argc >= 2 && argv[1].s && *argv[1].s) {
-        pos += snprintf(buf + pos, sizeof(buf) - (size_t)pos, " %s", argv[1].s);
-    }
-    if (pos < 0 || (size_t)pos >= sizeof(buf))
-        return val_err("%s: arguments too long", err_label);
-    char *targv[32];
-    int targc = tokenize(buf, targv, 32);
-    if (targc <= 0)
-        return val_err("%s: tokenisation failed", err_label);
-    return val_bool(shell_find_argv(targc, targv) == 0);
+    return *end_out >= *start_out;
 }
 
 static value_t find_method_str(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)self;
     (void)m;
-    return find_dispatch_kind("str", argc, argv, "find.str");
+    const char *text = argv[0].s ? argv[0].s : "";
+    size_t n = strlen(text);
+    if (n == 0)
+        return val_err("find.str: empty pattern");
+    if (n > FIND_MAX_PATTERN_LEN)
+        return val_err("find.str: pattern too long (max %d)", FIND_MAX_PATTERN_LEN);
+    uint32_t start, end;
+    if (!find_range_args(argc, argv, 1, &start, &end))
+        return val_err("find.str: invalid range");
+    return scan_memory_list(start, end, (const uint8_t *)text, n);
 }
 
 static value_t find_method_bytes(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)self;
     (void)m;
-    return find_dispatch_kind("bytes", argc, argv, "find.bytes");
+    // Pattern arrives as a space-separated hex string ("4E 71").
+    uint8_t pattern[FIND_MAX_PATTERN_LEN];
+    size_t plen = 0;
+    const char *p = argv[0].s ? argv[0].s : "";
+    while (*p) {
+        while (*p == ' ' || *p == '\t')
+            p++;
+        if (!*p)
+            break;
+        char tok[3] = {0};
+        if (!isxdigit((unsigned char)p[0]) || !isxdigit((unsigned char)p[1]))
+            return val_err("find.bytes: expected 2-digit hex tokens (e.g. \"4E B9\")");
+        tok[0] = p[0];
+        tok[1] = p[1];
+        p += 2;
+        if (*p && *p != ' ' && *p != '\t')
+            return val_err("find.bytes: expected 2-digit hex tokens (e.g. \"4E B9\")");
+        uint8_t b;
+        if (!parse_hex_byte(tok, &b))
+            return val_err("find.bytes: bad hex byte '%s'", tok);
+        if (plen >= FIND_MAX_PATTERN_LEN)
+            return val_err("find.bytes: pattern too long (max %d)", FIND_MAX_PATTERN_LEN);
+        pattern[plen++] = b;
+    }
+    if (plen == 0)
+        return val_err("find.bytes: empty pattern");
+    uint32_t start, end;
+    if (!find_range_args(argc, argv, 1, &start, &end))
+        return val_err("find.bytes: invalid range");
+    return scan_memory_list(start, end, pattern, plen);
 }
 
-static value_t find_method_long(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
-    return find_dispatch_kind("long", argc, argv, "find.long");
+static value_t find_int_common(const char *label, size_t width, int argc, const value_t *argv) {
+    bool ok = false;
+    uint64_t value = val_as_u64(&argv[0], &ok);
+    if (!ok)
+        return val_err("%s: value must be an integer", label);
+    if (width == 2 && value > 0xFFFFu)
+        return val_err("%s: value 0x%llx exceeds 16 bits", label, (unsigned long long)value);
+    if (width == 4 && value > 0xFFFFFFFFu)
+        return val_err("%s: value 0x%llx exceeds 32 bits", label, (unsigned long long)value);
+    uint8_t pattern[4];
+    for (size_t i = 0; i < width; i++)
+        pattern[i] = (uint8_t)(value >> (8 * (width - 1 - i))); // 68K big-endian
+    uint32_t start, end;
+    if (!find_range_args(argc, argv, 1, &start, &end))
+        return val_err("%s: invalid range", label);
+    return scan_memory_list(start, end, pattern, width);
 }
 
 static value_t find_method_word(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)self;
     (void)m;
-    return find_dispatch_kind("word", argc, argv, "find.word");
+    return find_int_common("find.word", 2, argc, argv);
+}
+
+static value_t find_method_long(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)self;
+    (void)m;
+    return find_int_common("find.long", 4, argc, argv);
 }
 
 static const arg_decl_t find_str_args[] = {
     {.name = "text", .kind = V_STRING, .doc = "Search text"},
-    {.name = "rest",
-     .kind = V_STRING,
+    {.name = "start",
+     .kind = V_UINT,
      .validation_flags = OBJ_ARG_OPTIONAL,
-     .doc = "Optional range [+ \"all\"], e.g. \"$400000..$440000 all\""},
+     .presentation_flags = VAL_HEX,
+     .doc = "Scan start address (default 0)"},
+    {.name = "end",
+     .kind = V_UINT,
+     .validation_flags = OBJ_ARG_OPTIONAL,
+     .presentation_flags = VAL_HEX,
+     .doc = "Scan end address, inclusive (default: address mask)"},
 };
 static const arg_decl_t find_bytes_args[] = {
     {.name = "hex", .kind = V_STRING, .doc = "Space-separated hex bytes (\"4E 71\")"},
-    {.name = "rest", .kind = V_STRING, .validation_flags = OBJ_ARG_OPTIONAL, .doc = "Optional range [+ \"all\"]"},
+    {.name = "start",
+     .kind = V_UINT,
+     .validation_flags = OBJ_ARG_OPTIONAL,
+     .presentation_flags = VAL_HEX,
+     .doc = "Scan start address (default 0)"},
+    {.name = "end",
+     .kind = V_UINT,
+     .validation_flags = OBJ_ARG_OPTIONAL,
+     .presentation_flags = VAL_HEX,
+     .doc = "Scan end address, inclusive (default: address mask)"},
 };
 static const arg_decl_t find_int_args[] = {
-    {.name = "value", .kind = V_INT, .doc = "Integer value to search for"},
-    {.name = "rest", .kind = V_STRING, .validation_flags = OBJ_ARG_OPTIONAL, .doc = "Optional range [+ \"all\"]"},
+    {.name = "value", .kind = V_UINT, .presentation_flags = VAL_HEX, .doc = "Integer value to search for"},
+    {.name = "start",
+     .kind = V_UINT,
+     .validation_flags = OBJ_ARG_OPTIONAL,
+     .presentation_flags = VAL_HEX,
+     .doc = "Scan start address (default 0)"},
+    {.name = "end",
+     .kind = V_UINT,
+     .validation_flags = OBJ_ARG_OPTIONAL,
+     .presentation_flags = VAL_HEX,
+     .doc = "Scan end address, inclusive (default: address mask)"},
 };
 
 static const member_t find_members[] = {
     {.kind = M_METHOD,
      .name = "str",
-     .doc = "Search memory for a UTF-8 string",
-     .method = {.args = find_str_args, .nargs = 2, .result = V_BOOL, .fn = find_method_str}    },
+     .doc = "Search memory for a UTF-8 string; returns the list of match addresses",
+     .method = {.args = find_str_args, .nargs = 3, .result = V_LIST, .fn = find_method_str}    },
     {.kind = M_METHOD,
      .name = "bytes",
-     .doc = "Search memory for a sequence of bytes (hex string)",
-     .method = {.args = find_bytes_args, .nargs = 2, .result = V_BOOL, .fn = find_method_bytes}},
+     .doc = "Search memory for a byte sequence (hex string); returns the match addresses",
+     .method = {.args = find_bytes_args, .nargs = 3, .result = V_LIST, .fn = find_method_bytes}},
     {.kind = M_METHOD,
      .name = "long",
-     .doc = "Search memory for a 32-bit integer",
-     .method = {.args = find_int_args, .nargs = 2, .result = V_BOOL, .fn = find_method_long}   },
+     .doc = "Search memory for a 32-bit big-endian value; returns the match addresses",
+     .method = {.args = find_int_args, .nargs = 3, .result = V_LIST, .fn = find_method_long}   },
     {.kind = M_METHOD,
      .name = "word",
-     .doc = "Search memory for a 16-bit integer",
-     .method = {.args = find_int_args, .nargs = 2, .result = V_BOOL, .fn = find_method_word}   },
+     .doc = "Search memory for a 16-bit big-endian value; returns the match addresses",
+     .method = {.args = find_int_args, .nargs = 3, .result = V_LIST, .fn = find_method_word}   },
 };
 
 const class_desc_t find_class = {

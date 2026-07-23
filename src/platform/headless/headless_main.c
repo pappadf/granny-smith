@@ -18,6 +18,7 @@
 #include "nubus.h"
 #include "rom.h"
 #include "scheduler.h"
+#include "script.h"
 #include "scsi.h"
 #include "shell.h"
 #include "shell_var.h"
@@ -378,7 +379,10 @@ static void daemon_handle_client(int client_fd) {
     // Redirect output to the client socket
     daemon_redirect_output(client_fd);
 
-    // Process each newline-delimited command (IMP-104)
+    // Process each newline-delimited command (IMP-104). Lines
+    // accumulate while a multi-line block is open (unbalanced '{').
+    char acc[4096];
+    size_t acc_len = 0;
     char *line = buf;
     while (line && *line && !quit_requested) {
         // Find end of current command
@@ -391,10 +395,20 @@ static void daemon_handle_client(int client_fd) {
         while (len > 0 && line[len - 1] == '\r')
             line[--len] = '\0';
 
-        // Skip empty lines
-        if (len > 0) {
-            // Execute the command
-            shell_dispatch(line);
+        // Accumulate into the continuation buffer.
+        if (len > 0 && acc_len + len + 2 < sizeof(acc)) {
+            memcpy(acc + acc_len, line, len);
+            acc_len += len;
+            acc[acc_len++] = '\n';
+            acc[acc_len] = '\0';
+        }
+
+        // Skip empty buffers / open blocks
+        if (acc_len > 0 && !script_needs_continuation(acc)) {
+            // Execute the accumulated chunk
+            shell_dispatch(acc);
+            acc_len = 0;
+            acc[0] = '\0';
 
             // If the scheduler is running after the command, pump until done
             // with periodic heartbeat to prevent TCP client timeouts (IMP-105)
@@ -471,69 +485,57 @@ static const char *parse_arg(const char *arg, const char *key) {
     return NULL;
 }
 
-// Run commands from a script file
+// Script-interpreter pump hook: after each executed statement, drive
+// the scheduler to completion (heartbeat included, IMP-105) and report
+// whether a quit was requested so the interpreter can stop cleanly.
+static bool headless_script_pump(void) {
+    pump_scheduler_with_heartbeat();
+    return quit_requested != 0;
+}
+
+// Run a script file through the v2 interpreter. The whole file is
+// parsed up front (multi-line blocks need the full source), then
+// executed; the pump hook drives the scheduler between statements.
 static int run_script_file(const char *filename) {
     FILE *f = fopen(filename, "r");
     if (!f) {
         fprintf(stderr, "Error: Cannot open script file: %s\n", filename);
         return -1;
     }
-
-    char line[1024];
-    int line_num = 0;
-    while (fgets(line, sizeof(line), f)) {
-        line_num++;
-
-        // Strip trailing newline
-        size_t len = strlen(line);
-        while (len > 0 && (line[len - 1] == '\n' || line[len - 1] == '\r'))
-            line[--len] = '\0';
-
-        // Skip empty lines and comments
-        if (len == 0 || line[0] == '#')
-            continue;
-
-        // Handle include directive (IMP-804)
-        if (strncmp(line, "include ", 8) == 0) {
-            const char *inc_path = line + 8;
-            // Skip leading whitespace
-            while (*inc_path == ' ' || *inc_path == '\t')
-                inc_path++;
-            if (*inc_path) {
-                printf("> include %s\n", inc_path);
-                run_script_file(inc_path);
-                if (quit_requested)
-                    break;
-                continue;
-            }
-        }
-
-        // Execute the command and capture return code
-        printf("> %s\n", line);
-        int result = shell_dispatch(line);
-
-        // Non-zero return code indicates error (e.g., screenshot match mismatch)
-        if (result != 0) {
-            g_script_exit_code = result;
-        }
-
-        // If the command started the scheduler (e.g., "run"), pump the main loop
-        // until execution stops, with periodic heartbeat output (IMP-105).
-        pump_scheduler_with_heartbeat();
-
-        // Check if quit was requested
-        if (quit_requested) {
-            break;
-        }
+    fseek(f, 0, SEEK_END);
+    long size = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    if (size < 0)
+        size = 0;
+    char *src = malloc((size_t)size + 1);
+    if (!src) {
+        fclose(f);
+        fprintf(stderr, "Error: out of memory reading script: %s\n", filename);
+        return -1;
     }
-
+    size_t got = fread(src, 1, (size_t)size, f);
+    src[got] = '\0';
     fclose(f);
+
+    printf("> running %s\n", filename);
+    int result = script_run_source(src);
+    free(src);
+    if (result != 0) {
+        // v2 scripts abort on the first error (§3.9); a script that
+        // aborted never reaches its `quit`, so exit here instead of
+        // dropping into the interactive loop.
+        g_script_exit_code = 1;
+        quit_requested = 1;
+    }
     return 0;
 }
 
-// Run commands from stdin (IMP-803)
+// Run commands from stdin (IMP-803). Lines accumulate while a
+// multi-line block is open (unbalanced '{'), then submit as one chunk.
 static int run_script_stdin(void) {
     char line[1024];
+    char buf[8192];
+    size_t buf_len = 0;
     char last_cmd[1024] = {0};
     while (fgets(line, sizeof(line), stdin)) {
         // Strip trailing newline
@@ -545,28 +547,38 @@ static int run_script_stdin(void) {
         if (line[0] == '#')
             continue;
 
-        // Empty line repeats last command (IMP-806)
-        if (len == 0) {
+        // Empty line repeats last command (IMP-806) — only outside a
+        // continuation.
+        if (len == 0 && buf_len == 0) {
             if (last_cmd[0] == '\0')
                 continue;
             strncpy(line, last_cmd, sizeof(line) - 1);
             line[sizeof(line) - 1] = '\0';
-        } else {
+            len = strlen(line);
+        } else if (buf_len == 0) {
             strncpy(last_cmd, line, sizeof(last_cmd) - 1);
             last_cmd[sizeof(last_cmd) - 1] = '\0';
         }
 
-        // Execute the command and capture return code
-        printf("> %s\n", line);
-        int result = shell_dispatch(line);
+        // Accumulate into the continuation buffer.
+        if (buf_len + len + 2 < sizeof(buf)) {
+            memcpy(buf + buf_len, line, len);
+            buf_len += len;
+            buf[buf_len++] = '\n';
+            buf[buf_len] = '\0';
+        }
+        if (script_needs_continuation(buf))
+            continue;
+
+        printf("> %s\n", buf);
+        int result = script_run_line(buf); // interactive: results print
+        buf_len = 0;
+        buf[0] = '\0';
 
         // Non-zero return code indicates error
         if (result != 0) {
-            g_script_exit_code = result;
+            g_script_exit_code = 1;
         }
-
-        // Pump scheduler if command started it, with heartbeat (IMP-105)
-        pump_scheduler_with_heartbeat();
 
         // Check if quit was requested
         if (quit_requested)
@@ -601,7 +613,15 @@ void print_prompt(void) {
     fflush(stdout);
 }
 
-// Poll for shell input (called from main loop)
+// Poll for shell input (called from main loop). Lines accumulate while
+// a multi-line block is open (continuation prompt "... ").
+static char g_repl_buf[8192];
+static size_t g_repl_len = 0;
+
+bool shell_repl_continuing(void) {
+    return g_repl_len > 0;
+}
+
 int shell_poll(void) {
     if (!stdin_has_data())
         return 0;
@@ -615,9 +635,26 @@ int shell_poll(void) {
     while (len > 0 && (line[len - 1] == '\n' || line[len - 1] == '\r'))
         line[--len] = '\0';
 
-    if (len > 0) {
-        shell_dispatch(line);
+    if (len == 0 && g_repl_len == 0)
+        return 1;
+
+    if (g_repl_len + len + 2 < sizeof(g_repl_buf)) {
+        memcpy(g_repl_buf + g_repl_len, line, len);
+        g_repl_len += len;
+        g_repl_buf[g_repl_len++] = '\n';
+        g_repl_buf[g_repl_len] = '\0';
     }
+    if (script_needs_continuation(g_repl_buf)) {
+        if (!g_daemon_mode) {
+            printf("... ");
+            fflush(stdout);
+        }
+        return 1;
+    }
+
+    shell_dispatch(g_repl_buf);
+    g_repl_len = 0;
+    g_repl_buf[0] = '\0';
 
     return 1;
 }
@@ -883,6 +920,9 @@ int main(int argc, char *argv[]) {
 
     // Initialize shell and emulator
     shell_init();
+
+    // Between-statement scheduler pump for the script interpreter.
+    script_set_pump_hook(headless_script_pump);
 
     // Apply --var definitions (after shell_init which calls shell_var_init)
     for (int i = 0; i < var_count; i++) {

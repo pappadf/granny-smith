@@ -8,9 +8,9 @@
 # p=44 f=69 e=60 x=7a 0=51 9=50 comma=5d Return=48 shift=7e.
 
 machine.hd.attach
-assert ${machine.id == "lisa"} "machine.id != lisa"
-assert ${machine.rom.checksum == "098917B2"} "rom.checksum != 098917B2 (rev-H)"
-assert ${machine.hd.present == true} "ProFile should be attached"
+assert machine.id == "lisa" "machine.id != lisa"
+assert machine.rom.checksum == "098917B2" "rom.checksum != 098917B2 (rev-H)"
+assert machine.hd.present == true "ProFile should be attached"
 
 # === (§1.5.1) Boot the floppy to the <BootFloppy> shell ======================
 scheduler.run 60000000
@@ -59,9 +59,9 @@ machine.screen.match expected_hdinit.png
 # Persist the freshly-initialized ProFile, power-cycle the machine (machine.boot
 # re-instantiates it and re-stages the inherited boot ROM), reattach the same ProFile
 # image, and re-insert the boot floppy so the ROM auto-boots its loader.
-machine.hd.save "${WORK_DIR}/xenix_hd.image"
+machine.hd.save "$WORK_DIR/xenix_hd.image"
 machine.boot model="lisa" ram=2048
-machine.hd.attach "${WORK_DIR}/xenix_hd.image"
+machine.hd.attach "$WORK_DIR/xenix_hd.image"
 machine.floppy.drive.0.insert "../../data/Lisa/Xenix-3.0/Xenix-3.0-Boot-XProFile.dc42"
 scheduler.run 60000000
 # At the loader "boot :" prompt, type "pf(0,0)xenix" to load the kernel from the
@@ -231,5 +231,5 @@ machine.screen.match expected_complete.png
 # is no soft power-off to press here: the OS has already halted itself.  Persist the
 # fully-installed, cleanly-shut-down image as the bootable artifact (consumed by the
 # lisa-xenix-boot test).
-assert ${machine.hd.save("${WORK_DIR}/xenix-installed.image")} "profile.save failed"
+assert machine.hd.save("${$WORK_DIR}/xenix-installed.image") "profile.save failed"
 quit

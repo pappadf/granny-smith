@@ -10,13 +10,16 @@
 
 #include "cmd_complete.h"
 #include "cmd_symbol.h"
+#include "shell_var.h"
 #include "worker_thread.h"
 
 #include <ctype.h>
 #include <stdbool.h>
+#include <stdio.h>
 #include <string.h>
 #include <strings.h>
 
+#include "../object/alias.h"
 #include "../object/object.h"
 #include "../object/value.h"
 #include "../vfs/vfs.h"
@@ -552,6 +555,45 @@ static cursor_info_t scan_to_cursor(const char *line, int cursor_pos) {
 
 // === Public entry point =====================================================
 
+// === Binding-name completion (`$par` → `$pc`, `$pram_...`) =================
+
+typedef struct {
+    struct completion *out;
+    const char *prefix; // without the leading '$'
+} binding_complete_ctx_t;
+
+static bool binding_complete_var_cb(const char *name, const value_t *v, void *ud) {
+    (void)v;
+    binding_complete_ctx_t *cc = (binding_complete_ctx_t *)ud;
+    if (!name || (cc->prefix[0] && strncasecmp(name, cc->prefix, strlen(cc->prefix)) != 0))
+        return true;
+    char buf[128];
+    snprintf(buf, sizeof(buf), "$%s", name);
+    push_match(cc->out, pool_strdup(buf), NULL);
+    return true;
+}
+
+static bool binding_complete_alias_cb(const char *name, const char *path, alias_kind_t kind, void *ud) {
+    (void)path;
+    (void)kind;
+    binding_complete_ctx_t *cc = (binding_complete_ctx_t *)ud;
+    if (cc->prefix[0] && strncasecmp(name, cc->prefix, strlen(cc->prefix)) != 0)
+        return true;
+    char buf[128];
+    snprintf(buf, sizeof(buf), "$%s", name ? name : "");
+    push_match(cc->out, pool_strdup(buf), NULL);
+    return true;
+}
+
+static void complete_bindings(const char *prefix, struct completion *out) {
+    binding_complete_ctx_t cc = {.out = out, .prefix = prefix};
+    // Scope bindings first (let / --var), then the alias table. The
+    // alias walk is prefix-filtered in its callback so the ~500-entry
+    // mac-global table doesn't flood a bare `$`.
+    shell_var_each(binding_complete_var_cb, &cc);
+    alias_each(binding_complete_alias_cb, &cc);
+}
+
 void shell_complete(const char *line, int cursor_pos, struct completion *out) {
     // Thread-affinity guard (compiled out in release). See worker_thread.h.
     worker_thread_assert("shell_complete");
@@ -581,15 +623,27 @@ void shell_complete(const char *line, int cursor_pos, struct completion *out) {
     memcpy(partial, line + info.word_start, plen);
     partial[plen] = '\0';
 
-    // Word 0: command position. Suggest root members + attached children,
-    // filtered by the typed prefix. Mid-path partials (containing '.' or
-    // '[') walk into the tree.
+    // Binding names after `$` (shell v2): scope bindings + aliases.
+    if (partial[0] == '$') {
+        complete_bindings(partial + 1, out);
+        return;
+    }
+
+    // Word 0: command position. Suggest statement keywords and root
+    // members + attached children, filtered by the typed prefix.
+    // Mid-path partials (containing '.' or '[') walk into the tree.
     if (info.word_count == 0) {
         bool dotted = (strchr(partial, '.') != NULL) || (strchr(partial, '[') != NULL);
-        if (dotted)
+        if (dotted) {
             complete_path(partial, out);
-        else
+        } else {
+            // Statement keywords (shell v2 §3.11).
+            static const char *const kws[] = {"let", "alias", "if",       "elif",   "else", "while",
+                                              "for", "break", "continue", "return", "def",  "assert"};
+            for (size_t i = 0; i < sizeof(kws) / sizeof(kws[0]); i++)
+                push_match(out, kws[i], partial);
             complete_root_members(partial, out);
+        }
         return;
     }
 
